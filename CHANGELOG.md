@@ -2,184 +2,208 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
-## v0.1.592 (2026-07-28)
+## v0.1.593 (2026-07-30)
 
 ### 新功能
+- **website** · changelog 搜索改为多词 AND 匹配，跨字段可组合命中 `65d16cba`
+- **website** · changelog 并入官网 /changelog，删除独立 mini 站 `cb49987b`
 - **website** · 新增叙述覆盖度门禁 —— 命令改动自动触发 --coverage 检查 `34ad2a2d`
-  - 每个内置命令必须在 ref/ 参考表之外至少一篇指南页提到，
-  - 防止"只进字典不进教程"。当前为告警模式（--coverage 恒退 0），
-  - 存量 18 个未覆盖命令清完后切换为 --coverage-strict 阻断。
 - **website** · 阶段 4 服务器上线 —— 官网/文档站发布链路 + nginx 切站 `feee6b10`
-  - 版本目录 + symlink 原子切换，rsync 全部完成并校验 index.html 后才 ln -sfn
-  - --dry-run / --no-gen / --rollback / --allow-dirty
-  - 发布前 free -m / df -h 门禁（可用内存 < 300MB 拒绝发布而非中途 OOM）
-  - gzip -9 -k 预压缩，配合 gzip_static 零 CPU 开销直吐
-  - 保留最近 3 版，清理显式跳过 current 指向的目录
-  - 冒烟强制校验 install.sh 返回 200（风险 1 的常态化防线）
-  - 比方案多做两处：上传后 chown root:root（rsync -a 会带上构建机 uid 501:staff）； ssh 调用清 LC_ALL/LANG（否则每条远程命令吐 setlocale 噪音淹掉真 warn）
-  - §5.3 的 location ~* \.html$ 正则会赢下匹配并旁路 /releases/ 的 alias， 致 CHANGELOG.html 404（原文只预见了「加 no-cache」）。已删该块， no-cache 收敛到各 location 内。
 - **website,docs** · 参考文档生成器落地——运行时自省 + 对账门禁 + holdout 公开面适配 `9346c17b`
-  - 优先运行时自省，不静态解析源码文本。工具走 --dump-tools、斜杠命令走 loadBuiltinCommands()、Hook 事件走枚举、settings 走 SettingsSchema().shape， 只有 help.ts 这类"人看的文本"才做文本解析并配结构化源交叉对账。
-  - --check 对账模式供 pre-commit 门禁调用，漂移退 1。
-  - --stale 报告 >90 天未复核的指南页，只告警不阻塞。
-  - src/cli.ts 加 --dump-tools 隐藏出口（与发给 LLM 的工具定义同源）
-  - src/help.ts / src/config/config.ts / src/hook/types.ts 注释补全
-  - pre-commit.sh 接 docs:gen-reference-check，拦参考页漂移
-  - pre-push.sh 检测 website/ 变动跑站点构建（死链检测 = 构建门禁，§4.5.4 第四道）
-  - eval holdout 门禁把 website/ 纳入公开面扫描，sid×file 两层循环改单次 grep -f（7200 次进程 → 1 次，否则撞穿 5s 超时会被 --no-verify 绕过）
 - **website,docs** · 搭建 VitePress 官网文档站点 + 参考文档生成器 `19ee0a4a`
-  - 新增 website/ VitePress 站点：自定义品牌主题、站点配置、 start/use/extend/ref/team 五大分区 markdown 页面骨架
-  - 新增 tokenize 侧边栏/大纲提取工具及单元测试
-  - 新增 scripts/docs-gen-reference.ts 参考文档生成器
-  - package.json 增加 website:dev/build/preview 与 docs:gen-reference 脚本
-  - 新增官网与文档站点部署方案设计文档
-  - 新增 README.md
 - **agent,skill,swarm,tool,query** · 对齐 CC 缺口方案双检 + 多模块补全修复（P0-P3） `17fe77f6`
-  - agent: 新增 depth-context 子代理深度上下文；frontmatter 消费 model/skills/color 等字段；explore 彻底程度引导；agent-color 注册
-  - skill: 新增 listing 元信息；PR 归因统一注入 commit-push-pr/pr-workflow/pr 三条路径；skill 元工具化收敛（删 tool.ts，meta-tool 收口）
-  - swarm/team: 新增 team-context/team-message；接通 mailbox 双向通信； structured-task-store 持久化 + 认领调度
-  - tool/permission: git 全局选项(-c/-C/--no-pager)只读判定剥离与细分； git 操作分类归一化（-c 前缀不撑开分类）
-  - query: 新增 post-compact；compact/partial-compact 阶段增强
-  - session: rewind-manager/store 增强；fork session 支持
-  - config: 新增 plugin-only-policy；settings schema 扩展（prAttribution 等）
 - **session,checkpoint,skill,cli** · 会话持久化对齐 CC §14 + Skill 元工具化重构（P0-P3） `9de3fdd6`
-  - P0-B1: checkpoint 覆盖 Bash/NotebookEdit 改文件（cp/>/>>/tee/sed -i 提取，动态路径静默跳过）
-  - P0-G1: --session-id <uuid> CLI 入口接线 + UUID 校验 + 组合约束
-  - P1-G2: --fork-session + /fork 分叉会话（拷贝历史 + 重新盖戳 + checkpoint 复制）
-  - P1-G3: per-message usage 落盘（assistant 记录内嵌 usage/model/stopReason）
-  - P1-G4: --no-session-persistence 禁用持久化（headless/CI 门控）
-  - P1-G5: /rename 会话重命名
-  - P1-G6: 三优先级排队 now>next>later + ↑ 弹回编辑
-  - P2-G7: per-message gitBranch/permissionMode/cwd 落盘
 - **agent,swarm,tool,permission** · 子代理系统对齐 CC §11 + git 归因/危险检测统一 + bash 快照受影响文件追踪（P0-P3） `b29c1955`
-  - 内置 explore/plan/summarize 新增 modelTier 语义档位，未配 subAgentModels 时走便宜模型（registry.ts）
-  - 自定义/插件 agent frontmatter model 字段消费透传（custom.ts / loadPluginAgents.ts / cli.ts）
-  - frontmatter skills 预加载：AgentDefinition.skills + skill-preload.ts 注入子代理 system prompt
-  - frontmatter color 消费：自定义 agent UI 区分色（color.ts / AgentsDialog.tsx）
-  - Agent Teams mailbox 双向通信接通：成员 onBeforeTurn drain 邮箱（team.ts / sub-agent.ts）
-  - explore 彻底程度引导文案补齐（agent-definition.ts）
-  - frontmatter permissionMode/hooks/background/isolation 消费（agent-hooks.ts / custom.ts）
-  - 共享任务列表持久化 + 与 swarm 打通：team-task-store.ts 落盘 .sid-code/tasks/，成员认领调度
 - **context,llm,query** · 上下文窗口管理对齐 CC §12 缺口修复（P0-P3） `91011f4e`
-  - P0-2: 调整压缩阈值系数，1M 窗口触发从 88% 提前到 82%
-  - P1-1: 新增 SID_CODE_AUTOCOMPACT_PCT env 覆盖压缩阈值（接活 compactThreshold 死参数）
-  - P1-2: /compact focus on X 自由文本聚焦参数（透传 customInstructions）
-  - P1-3: PreCompact hook 手动压缩也触发 + additionalContext 注入摘要 prompt
-  - P2-1: MAX_THINKING_TOKENS 思考预算上限（manual 精确钳制 / adaptive 映射降档）
-  - P3-1: 读取 CLAUDE_CODE_SUBAGENT_MODEL env 填充子代理默认模型
-  - 新增 merge-instructions 工具函数合并用户 focus + hook 指令
-  - 迁移 skill 新增 apply-migration 脚本 + 测试
 - **mcp** · 对齐 CC 缺口修复 B1-B3/G1-G6 + G5 mcp serve `01533f88`
-  - B1: 接线 mergeMcpConfigs 三作用域合并(user>local>project)+签名去重+policy
-  - B2: 删除死代码 class MCPCommand
-  - B3: 补 /mcp prompt 执行子命令(MCPPromptRunCommand)
-  - G1: 新增 ListMcpResources/ReadMcpResource 工具 + @server:uri 提及展开
-  - G2: prompts 注册为 mcp__server__prompt slash 命令(动态随连接刷新)
-  - G3: MAX_MCP_OUTPUT_TOKENS token 维度输出上限(mcp-output-limit.ts)
-  - G4: StreamableHTTP 标准传输(session-id 保持 + SSE 分流)
-  - G5: mcp serve 把自身工具暴露为 MCP server(stdio),默认仅只读工具, --allow-write 放开写/执行类; 新增 server-transport.ts + mcp-serve.ts
 - **memory,command,config** · 外部 @import 审批命令入口 + 父目录链 git root 上界 `beef9924`
-  - M4-4/M4-5：新增 /memory external allow|deny|status 子命令，支持拒绝外部导入后 注入 system-reminder 告知模型指令缺失，并接线 setExternalImportsApproved/ getExternalImportsState 到 AppContext
-  - M7：findCLAUDEmdChain 父目录链上界新增 git 仓库根检测（existsSync 探测 .git）， monorepo 场景下父链止于仓库根，避免拉入仓库外无关上层目录
-  - CLAUDE.md 清理废弃 stable 别名说明
-  - 旧审计文档归档至 double-check 子目录
 - **memory,config,ui** · 记忆系统增强 + CLAUDE.md 导入处理（M2/M3/M4/M7/M9/M11） `c7f8df13`
-  - M2: auto-memory 后台提取开关（env SID_CODE_AUTO_MEMORY > settings > 默认 true）， 运行时热接线/断线，新增 /memory auto 命令
-  - M3: CLAUDE.md @import 扩展白名单（.txt/.json）+ 行内导入识别 + 跳过代码围栏/行内代码
-  - M4: 外部 @import 审批机制，未批准路径跳过并弹 ClaudeMdExternalImportDialog 审批
-  - M7: 父目录链多层 CLAUDE.md 逐层加载（越深优先级越高）
-  - M9: symlink 指向的规则文件去重防重复加载
-  - M11: 记忆改走索引指针路径（memorySystemPrompt 替代全文摘要）
 - **hook,skill,command** · Hook 系统对齐 CC 缺口 G7/G10/G11/G13 + Skill 禁用统一 + 清理废弃模块 `c7a44575`
-  - G7 异步 hook（async/asyncRewake）：command 类型后台执行不阻塞主循环， exit 2 时 stderr 下轮回灌唤醒模型；会话结束清理已完成条目
-  - G10 if 条件过滤：matcher 命中工具名后，用权限规则语法（如 Bash(git *)） 对 tool_input 二次过滤
-  - G11 新事件：InstructionsLoaded / TeammateIdle / Elicitation / ElicitationResult
-  - G13 企业策略 Hook 门控：disableAllHooks / allowManagedHooksOnly （managed-settings.json，fire-and-forget 不影响启动）
-  - bundled skill 同样 honor disabledSkills（原仅磁盘 skill 生效）
-  - UnifiedCommandRegistry.setDisabledSkills() 运行时更新禁用列表，清缓存重载
-  - budget 新增 estimateSkillListingTokens 估算注入 token
-  - 删除 config-snapshot.ts / permission-race.ts(@deprecated) / resolve-once.ts
 - **hook,query,agent,permission** · hook 系统增强——PreToolUse 统一解读 + 退出码对齐 CC + prompt/agent 类型 + 真子代理执行器 `5d6c9a06`
-  - G3：抽取 interpretPreToolUse 统一解读 PreToolUse（block/ permissionDecision/updatedInput），主循环、进程内子代理、spawn 子代理三处共享；permissionDecision 注入 PermissionChecker.check， 避免各处自行解读口径漂移
-  - G4：退出码语义对齐 Claude Code——仅 exit 2 阻塞，其余非零为非阻塞 告警；SessionStart/SubagentStart/Setup 忽略阻塞（降级 systemMessage）
-  - G5：新增 prompt / agent 两种 LLM 层 hook 类型（config/schema/ registry/planner/runner 全链路支持），agent 类型可声明工具白名单
-  - G6：agent hook 注入真子代理执行器（携带工具注册表 + ProviderRegistry），启动只读子代理多轮验证而非退化为单轮 LLM 调用； 宽松解析 {ok, reason} 裁决，解析不到默认放行不误阻塞
-  - UI 清理：移除 spinner 行尾 effortGlyph 显示（Composer/ LoadingIndicator）
 
 ### 修复
+- 上下文注入三连根因修复落地（语义围栏 + 假压缩误报 + 双通道重复注入） `84877be2`
+- 记忆键归一化清理 + Read NUL 报错增强 + todo-write 软提示降级 `49fd6f20`
+- 上下文注入审计第 7 批修复 + 死代码清理 `23f45e80`
+- 负收益防线审计第 2 轮修复落地 + 上下文注入审计第 6 批 `90898fb3`
+- 负收益防线审计修复落地（发现 1-6，批次 A/B/C/D/E） `25f725b0`
+- 审计第 4、5 批修复（作用域规则闸门 + 消息保真） `01bbf262`
+- **system-prompt** · 缓存键从手写维度列表改为自动遍历 ctx 字段 `8cdcdc70`
+- 审计第 2 批三项功能等同修复（团队记忆同步/skill 上报/IDE 增量注入） `35b03e9e`
+- 审计第 1 批三项安全修复（@权限校验/frontmatter fail-closed/记忆键单射） `ee1fb493`
+- **website** · ref 页面「请勿手工编辑」提示从 danger 框改为 HTML 注释 `65b84e3c`
+- JIT 规则 paths 作用域真正生效 + history-adapter 保留 tool_result `d82fbff0`
 - **website** · 表格改回 display:block 修复长 URL 撑破容器溢出 `28330ede`
-  - .vp-doc table 曾被改成 display:table，内容超宽时无滚动条，
-  - 长 URL 撑破容器溢出到右侧 aside。改回 block + overflow-x:auto
-  - 触发横向滚动。
 - **website-deploy** · 修首页冒烟假失败 —— pipefail + grep -q 让 curl 吃 EPIPE(exit 23) `183636a5`
-  - 限速 3000 场景 3/3 通过（旧写法同条件 3/3 失败）
-  - 四条分支实测均判定正确：连不上(curl 7) / 404(curl 22) / 有响应但内容不含目标串 / 正常首页
-  - bash -n 语法检查通过
-  - 真实跑一次 ./scripts/website-deploy.sh，第 12 步两条冒烟全绿
 - **llm,query** · 迁移 skill 崩溃复盘修复 + todo gate 误判自愈 + 北极星宗旨 `b483a2bc`
-  - openai.ts: [DONE] 后立即跳出 while 不再 reader.read()，消除网关 延迟关 socket 的空转窗口；reader.cancel() 用 .catch() 兜住异步 rejection，防止 unhandledRejection 崩溃
-  - errors.ts: 新增 RETRYABLE_CONNECTION_MESSAGES 消息文本兜底，识别 裸 Error 类型的连接关闭错误（无 .code 字段，此前落到无法分类不重试）
-  - normalize-tool-input.ts: RAW_STRING_FIELDS 白名单保护文件内容类字段 不被 JSON.parse 误转成对象（write.content 等）
-  - loop.ts: 续命耗尽时区分"忘标记"（有产出却不翻状态位）与"真没做完"， 忘标记走中性收尾不抛假警报
-  - todo-reminder.ts/types.ts: 新增 forgotMark 阈值、产出文本阈值、中性收尾文案
 
 ### 文档
+- 上下文注入错位根因排查（reminder 前置拼接淹没用户指令 + system/user 双通道重复注入） `ef2dc751`
+- 负收益防线审计第 2 版 + 企业级能力调研与规划 `7111cced`
+- 审计清单补验完成（第20-22条）与修复执行计划，新增质量方法论 `2e51c01b`
+- **website** · 精简首页 tagline，砍通用能力罗列突出四条差异化 `7ad881d5`
+- **website** · 首页定位从「跑在终端」改为「长在企业研发环境里」 `1abf9b77`
+- **website** · 扩写 11 篇叙述页补全覆盖度 + 同步报告 §5 修复标注 `054a8258`
+- **website** · 修复参考页三处脚本口径漏项（覆盖度报告 §5） `a450fa46`
+- **website** · 补全 P1 用户会主动找但找不到的叙述文档（覆盖度报告 §2.2 八项） `1ad35f71`
+- 精简 CLAUDE.md，去重复表述保留全部规则（190→169 行） `0f7eeb21`
+- CLAUDE.md 新增「不删无关文件」铁律与会话自检第 4 条 `4f1bd8ad`
+- **website** · 补全 P0 能力型命令叙述文档（覆盖度报告 §2.1 七项） `b7d3c534`
+- 新增上下文注入作用域审计文档，同步官网导航与 README 格式 `504e3c97`
 - **reference** · 记 T-5.7 验收 —— L5 team 全部 5 篇已写实并上线 `0c564581`
-  - quota.costLimit 用 ?? 兜住 costLimit，配了前者会让 --max-budget-usd 静默失效， 而团队模板恰好带 quota.costLimit:100 → 全团队该参数默认无效
-  - 企业策略路径分裂：权限规则读 /etc/ 与 ~/ 两候选，但模式管控开关只读 ~/， 且 /etc/sid-code/policy.json 是废弃路径、字段进不了运行时 Config
-  - team-defaults 补全用的是编译进二进制的模板而非服务器那份， 故 --upload-team-defaults 后老用户要等发新版才生效
 - **website** · 阶段 5 内容撰写 T-5.7 —— L5 team 最后 1 篇 observability 写实 `2d62bf62`
-  - 落盘结构取自真实会话目录 ls（9 个文件：metadata/session-summary/session.traj/ raw.jsonl/events.jsonl/messages.json/raw_preview/audit_range/warn.log）， events.jsonl 的 13 类事件分布由 python 统计真实文件得出
-  - trace-digest.ts 实跑一个真实会话，输出原文摘录（含 L0 事实层/L1 假设层带证伪条件、 Provider 健康 TTFT P50）。顺带记下该例的一个真实反差：metadata.exit_status=error 但 messages.json 的 abnormal=false / exit=end_turn，故正文点明"error 状态不等于异常终止"
-  - 上传形态取自 uploader.ts:246-266：POST <url>/api/v1/upload/session-file、 multipart、X-Upload-Token + X-Content-SHA256、gzip level 6、30s 超时、5 次指数退避
-  - 三个开关（enabled / upload.url+token / auto_upload / delete_after_upload）相互独立， 依据 cli.ts:505-511 的注释与实现
-  - LRU 保留 100 个会话、优先删已上传（collector.ts:180-198）
-  - 如实写边界：影子调用用量此前只在 SessionEnd 同步一次、崩溃即丢，现已由 setSideStatsObserver 每次落定即同步（collector.ts:186-191, 1740-1750）； 以及无实时 dashboard、平台侧口径不在本页范围
 - **website** · 记 T-5.6 验收 —— L3 extend 6 篇已写实并上线 `8ac0d1a0`
-  - 项目级 Skill 在 -p 下默认加载不到（cli.ts:1328），是设计而非 bug， 但对 CI 使用者是硬卡点，文档已按"先给现象再给根因"写。
-  - --json-schema 校验通过的载荷不进 stdout（app.ts:4467）， 故文档不把它当"取结构化结果的通道"，另给两条可用替代。
 - **website** · 阶段 5 内容撰写 T-5.7 —— P6 L5 team 4 篇写实 `77bf11f9`
-  - website/team/ 下 4 个占位页改成正文（defaults/migrate/policy/quota）。
-  - 这批内容是本次会话之前已在工作区完成、尚未提交的部分，此处单独成一次提交
-  - 与 T-5.6 分开记账，避免两个批次的改动混在同一个 commit 里。
-  - observability.md 仍是占位页（T-5.7 剩余项）。
 - **website** · 阶段 5 内容撰写 T-5.6 —— P5 L3 extend 其余 6 篇写实 `b8633a23`
-  - index：五条扩展路径选择表。核心是「谁能拦住模型」——只有 Hook 能阻断， 其余四条都是提示词/工具，模型可以不听；以及未触发时的上下文开销对比 （Skill 摘要实测 0.5K tok，Hook/子代理/MCP 为 0，CLAUDE.md 全文常驻）。
-  - skills：8 个内置 Skill 的 description 逐条从 SKILL.md 取；实测坐实了 「项目级 Skill 在 -p 下默认加载不到」——同一个 Skill 同一条命令， 未开 trust_project_extensions 时模型答「这个 Skill 目前不存在」， 开了之后正确输出。根因在 cli.ts:1328（print 模式 onUntrusted 直接返回 […
-  - mcp：mcp add/list/get/remove 四个子命令在隔离 SID_CONFIG_DIR 下实跑； 写清「接上了但模型说没有 mcp 工具」不是故障而是默认延迟加载， 实测走 tool_search 即拿到 mcp__fetch-demo__echo；补 toolSearchKeepLoaded 豁免写法。
-  - lsp：10 个操作 + 内置 10 种语言目录（逐条对 builtin-servers.ts 核）； hover/findReferences/documentSymbol/workspaceSymbol/codeAction 五个操作 与诊断注入的原始输出均由直连 LSPTool 取得；两类「未找到服务器」报错 （内置未装 .css / 长尾 .rb）从真实输出复制。
-  - headless：三种输出格式的实测形态，含 stream-json 的 result 消息 （total_cost_usd 只在这条里有）。两个会让脚本静默出错的坑写在显眼处： ① debug 开着时日志走 stdout 直接撑爆 jq，且 app.json 里 debug 可能被改成 true； ② --json-schema 校验通过的载荷不进 stdout（app.ts:4467 只取最…
-  - plugins：三层架构与 plugin.json 字段对 validate.ts 核；--plugin-dir 实测 加载（日志 1 命令 + 1 Skill）；点破「问模型有没有某斜杠命令」问不出来—— 斜杠命令不进模型上下文，实测模型翻遍目录答「没有」而命令加载得好好的。 Bridge 补足权限转发/单轮串行/UUID 去重三个语义，并标注它等于交出执行权。
 - **website** · 记 T-5.5 验收 —— ref/glossary 术语表已写实并上线 `1b3ac1dc`
-  - §10 阶段 5 的 T-5.5 划掉并补取证清单（10 条术语的源码/实跑出处）
-  - §6.4 的 P4 行去掉"glossary 仍属 T-5.5 待写"这句已过期的注解
-  - last_verified 推到 2026-07-28
 - **website** · 阶段 5 内容撰写 T-5.5 —— ref/glossary 术语表写实（L4 唯一人工页） `5b410228`
-  - effort 档位：五档 low/medium/high/xhigh/max + auto 取自 `EFFORT_LEVELS`（llm/effort.ts:29）；「标度与底层模型无关、不支持的 档位会明确告知实际下发档」取自 effort 命令的钳制提示逻辑。
-  - 权限模式：八档与状态栏显示名逐条对照 `getModeName()`（permission/mode.ts:59）。
-  - 上下文窗口：「按模型算、8K–1M」取自 model-registry 的 contextWindow 实测区间。
-  - 会话 id 格式：`YYYYMMDD-HHMMSS-<8位hex>` 取自 session/id.ts，示例用真实落盘会话。
-  - 轨迹：三个文件（session.traj / events.jsonl / raw.jsonl）以真实轨迹目录核对。
-  - microcompact：可丢弃 vs 不可复现工具的分类取自 compact/microcompact.ts 白名单。
-  - 记忆：「索引进上下文 + 按需 Read」取自 memory/prompt.ts 提示词原文； 按 git 顶层目录分桶取自 memory/paths.ts:53。
-  - 回退点 30 个上限取自 `MAX_REWIND_POINTS`；checkpoint 粒度取自 checkpoint/manager.ts。
 - **website** · 阶段 5 内容撰写 T-5.3/T-5.4 —— P2 差异化 4 篇 + P3 L2 其余 7 篇写实 `7b52563d`
-  - T-5.3（P2）：permissions / cost / hooks / subagents
-  - T-5.4（P3）：interactive / sessions / context / plan-mode / memory / worktree / troubleshooting
-  - 更新 llms.txt 与设计方案追踪表
 - **website** · 阶段 5 内容撰写 T-5.1/T-5.2 —— 落地页数字复核 + L1 入门 5 篇写实 `b0ecd226`
-  - start/install：三类失败（PATH / 架构 / 权限）报错文本取自 install-template.sh 真实分支；按脚本实际行为写清"只追加不覆盖 / 留 2 个旧版本 / 已有配置不动 / sha256 失败在切软链前中止"；点破 sc 别名等价 --dangerously-skip-permissions。
-  - start/configure：/v1 两族相反规则实测两个方向 —— anthropic 多写 /v1 → 真 404 "Invalid URL (POST /v1/v1/messages)"； openai 漏写 /v1 → 不报 404 而是 HTTP 200 的 HTML 错误页（被非 SSE 检测拦下）。 两段报错均从真实输出复制。给出"配完先跑 auth status"而非靠能否启动…
-  - start/first-task：真跑了一个完整任务（故意写错的 add 函数 + node 断言测试）， 工具序列、模型结论、会话摘要（$0.0813 / 缓存 55% / 6 成功 0 失败）全是实测原文； y/n/a 语义与"危险操作标红且默认聚焦拒绝"取自 PermissionPrompt.tsx。
-  - start/next：四条路径 + 参考页速查表，链接经死链检测验证。
 
 ### 其他
 - **website** · 同步 llms.txt —— observability 页 description 变更 `0f9390f2`
-  - docs-gen-reference 的产物，随 team/observability.md 的 frontmatter description
-  - 从占位文案改成正文文案而自动更新。非手改。
 - **git,docs** · 统一 commit 归因邮箱至 sid-code.cc 并补设计方案阶段 3 验收 `4583d1cc`
-  - 归因邮箱 dev→cc：config 默认值、git-attribution 常量、两处文档引用同步
-  - 设计方案文档标记阶段 3（参考文档生成器）T-3.1–T-3.12 全部完成， 含实测数字更正、4 个实现期真缺陷、T-3.6b 双防线独立性结论
+
+## v0.1.592 (2026-07-23)
+
+### 新功能
+- **query,trace** · SID_MAX_TURNS 软阈值提醒 + 只读死锁缺口 A/B 修复 + model_at_start 归因 + 空壳清理放宽 `60f4c8b2`
+  - 新增 SID_MAX_TURNS 软阈值提醒（第四层兜底）：默认关闭，仅显式设置时启用， 单条消息处理超过 N 轮时一次性注入软提醒，不强杀，尊重"不打断长任务"偏好
+  - 缺口 A 修复：isReadonlyProbeCommand 剥离 cd/env 前缀后再判只读， 让 `cd /a/b && git status` 等真实死锁形态进入检测
+  - 缺口 B 修复：read/ls/glob/grep/lsp 等纯只读工具折叠进 probe 签名， 使 `git status ↔ read 同区域` 交替空转构成稳定复合签名，不再被交替清零
+  - §6.4 model_at_start 归因字段：trace 中新增启动模型追踪， model 跟踪 /model 切换后的实际模型，供归因对照
+  - §6.1 放宽空壳清理：覆盖"发出一次 BeforeModel 即被 abort、0 token" 的启动即中断会话，清理全天噪音
+- **ui** · 状态栏重构为两行分层布局 + 两色层次 `e4eee675`
+  - Footer 从单行四区改为两行：行1(会话/运行态)左对齐、行2(环境/上下文)右对齐
+  - 引入两色层次：单位/符号(暗色后退) + 数值(亮色前进)，全程有层次不再一片灰
+  - 修复权限模式恒被截断：去掉内层 width="100%"，行宽由 flex 父容器自然决定
+  - 窄屏渐进隐藏改为各行独立按 dropOrder 丢计量项
+  - fallback 测试适配：移除 defaultModel、传 defaultParams
+  - 新增状态切换/阻塞交互/后台看门狗修复方案文档
+- 补齐 CC 对齐缺口——Vim 引擎、会话回退、14 个新命令、CLI 校验与 UI 增强 `c5a67324`
+  - 新增 Vim 编辑引擎（src/ui/vim/）：motions/operators/text-objects/transitions
+  - 新增会话回退管理器（rewind-manager）+ RewindDialog UI
+  - 新增 14 个命令：batch/bug/claude-api/color/fast/fork/insights/ keybindings/statusline/terminal-setup/tui/agents/auth/mcp-cli
+  - 新增 CLI 标志校验（flag-e2e/flag-validators）
+  - 新增剪贴板图片粘贴、Shell 任务接管（adopt）
+  - 文档重组：对齐方案文件移入 double-check/ 子目录
+  - 各模块配套测试覆盖
+- **command,skill** · 新增 6 个命令 + /pr skill `1c90ca9c`
+  - 新增 /context /copy /rename /statusline /vim /workflows 命令，
+  - 新增 /pr bundled skill（对齐 CC），app 层增强 setVimMode/
+  - setStatusLine/renameSession/stream-json 双向流/maxBudgetUsd，
+  - UI 增强状态栏 Vim 模式，新增 3 组测试。
+- 大规模补齐 CC 对齐缺口——CLI/权限/会话/UI/命令/配置全面补全 `6420a7c1`
+  - CLI：新增 session-id、effort、allow-tool 等 20+ 参数，对齐 CC 启动参数集
+  - 权限：acceptEdits 下文件系统命令放行、路径/Shell 规则匹配、mode-policy
+  - 会话：fork-session 分叉、no-session-persistence、sessionName
+  - 命令：新增 /status、/todos 内置命令
+  - UI：ContextDialog、Footer 状态栏、statusline、external-editor、kill-ring
+  - 配置：扩展 Config 接口 30+ 字段，settings 源控制、MCP 配置源
+  - 工具：WebFetch 预授权域名、工具白名单替换
+  - 测试：新增 10+ 测试文件覆盖各模块
+- **query** · 统一优先级消息队列 + mid-turn 抢占 drain,补齐缓存/环境/终止对齐 `a943c6e9`
+  - 新增 message-queue-manager.ts:收敛用户输入/后台通知/agent 消息到 now/next/later 优先级队列
+  - loop.ts 支持 mid-turn 抢占 drain(now 级,SID_ENABLE_MIDTURN_DRAIN 灰度开关)
+  - stop_sequence 纳入正常终止白名单,走完整收尾链
+  - cache-strategy: 工具区缓存断点 markLastToolCacheBreakpoint(仅直连 Anthropic)+断点预算护栏计入 tools
+  - system-prompt: 新增上下文管理静态告知(增强 5.3)+环境信息补齐 git 仓库判定与 OS Version
+  - errors.ts 登记 midturn-preempt abort reason
+  - task/notification 接入统一队列
+  - 补充 message-queue-manager / midturn-drain / stop-sequence-end-turn 测试
+- **tool** · P2-17 cron 人类可读调度 + P2-15 sub_agent 透出 model/cwd `3a2a03ab`
+  - P2-17：新增 cron/describe.ts 的 cronToHuman，识别每 N 分钟/每小时/每天/
+  - 工作日/每周某几天/每月某日等常见模式，识别不了回落原始 cron；cron_list
+  - 输出「人读描述（原始 cron）」。
+  - P2-15：sub_agent schema 补 model（每次调用覆盖模型）与 cwd（工作目录），
+  - 同步/后台两路径均透传到 SubAgentTask（内部本就支持，此前未暴露给 LLM）。
+  - 测试 tests/cron/describe.test.ts 9 pass + tests/agent/sub-agent.test.ts
+  - 29 pass；全量 5809 pass；make rebuild 通过。
+- **web-fetch** · P2-2 HTML→Markdown 保留页面结构 `d82a5e0c`
+  - 标题→# 前缀、链接→[text](url)、列表→- 前缀、表格单元格→| 分隔
+  - 强调→**/*、行内代码→反引号
+  - 去 script/style/HTML 注释，解码十六进制/数字/具名实体
+  - javascript: 伪协议链接只保留文字，防注入
+- **tool** · 补齐结构化任务清单 + WebFetch 缓存/prompt + bash 超时 env 覆盖 `161fc280`
+  - 新增 structured-task-store：subject/status/owner/blocks/blockedBy 双向依赖边维护 + 成环检测 + isTaskUnblocked
+  - 新增 task_create/task_update/task_get/task_list 四工具（结构化清单）
+  - 原后台任务族改名 bg_task_get/bg_task_list（语义对应 CC TaskOutput 族）
+  - 同步 coordinator/loop-detection/agent-definition/tool-filter/ tool-classifier/cli 全部引用
+- **skill** · 新增 claude-code-migration 迁移技能 `17123e5f`
+  - 将 Claude Code 的用户级和项目级配置迁移到 sid-code，支持
+  - settings、MCP servers、commands、skills、agents、hooks、memory、
+  - output styles、permissions 等配置的迁移。
+  - 新增 inspect-migration.mjs 只读检查脚本、mapping.md 映射准绳、
+  - E2E 测试脚本及 Claude Code 设计空间研究文档。
+
+### 修复
+- **trace,hook,query,tool,task** · eval-session 评估 4 项缺陷修复 + 文档测试闭环 `e8b5c6de`
+  - queryLoop 侧 StreamPhase 快照 key 是 `${loop_id}:${turn_index}`，采集器配对看门狗此前用 「累计 pair 数 + 1」查快照，key 语义不同 → 除首条用户消息外永远查不到，stream_snapshot 恒 null（死代码）。新增 BeforeModelInput.stream_snapshot_ref 透传 turn_index +…
+  - 慢模型 + 长上下文下单轮生成超 2 分钟配对阈值是常态，但流仍在收 chunk 并非 hang。
+  - 看 stream_snapshot.still_progressing：流有进展 → 降级为 [低] model_call_slow_response， 不再进 high_severity_anomalies；真 hang（无进展/已 abort）仍报 [高] watchdog（digest.ts/collector.ts）。
+  - 原 `errors` 字段实为 high+medium 异常计数（含 watchdog/stuck_loop 假阳性），被误当真错误数 灌水进分诊主键。拆为三字段：`real_errors`（诚实错误计数，仅 is_error/TurnError 等）、 `anomalies_count`（异常总数，含假阳性，仅供参考）、`errors`（弃用别名 = anomalies_count，向后兼容）。
+  - 批量分诊主键改用 `select(.real_errors>0 or .high_severity_anomalies>0)`（digest.ts + 文档同步）。
+  - 弱模型对大文件常做几十次 limit=10~60 窄窗读、反复重读同一区域（实证 33 次），read 是纯只读、 无引导信号 → 拉长步数 + 推高 token。新增「重复窄读」非阻塞提示：同文件 ≥3 次且与历史高度重叠 → 提示复用/整读；首次对小文件传小 limit → 提示可一次整读。绝不拦截只读操作（read.ts）。
+  - 防回归：提示含每轮自增的「第 N 次」元信息，会破坏 repeated-readonly-guard 的内容签名（每轮都变 → repeatCount 清零 → 瘫痪 git-status 冻结死循环止损阀）。新增 stripReadEfficiencyHint， loop-detection 做签名前先剥离该段（read.ts/loop.ts + 单测覆盖签名稳定性）。
+  - flush() 此前另起 drain 与在途 drain 竞争，可能先看到空队列而提前 resolve，读端拿到不存在文件。
+- **telemetry,trace** · 账本增量落盘 + 并行子代理误报修复 + ✗标记只信is_error `509d93d7`
+  - 成本不落账本(高)：usage-ledger 从 append 改 upsert，每轮 AfterModel 增量落盘，去掉 ledgerWritten flag；读侧 dedupeBySession 兼容历史 append 多行。交互式会话任务完成后不再丢账本。
+  - 并行子代理误报循环(中)：digest shape run 检测加时间戳窗口，同时间戳 派发的 fan-out 不计 run；保留串行空转告警。
+  - ✗标记混淆(低)：移除关键词启发式，✗ 只留给 is_error===true 的真失败。
+- **llm,query,config** · 补齐 git 快照死循环 4 个缺口 + 文档归档 `e92aafc0`
+  - §6.3 重复开流成因遥测（原未落地）：fallback.ts 重开流路径读 stream-observer snapshot 的 timeoutsFired，推导结构化 reopenReason （idle/content_progress/fallback_stream_timeout），无超时记录则取 classified.reason；retry-telemetry.ts 新增 reop…
+  - abort 路径必达+集成测试（原部分落地）：empty-param 测试用真实 AbortController 在 processStream 返回前触发 abort，断言 cancel result 含「被中断/未执行/没有落地/分段写入」且已 sessionStore 落盘
+  - 第一层脏工作区单测（原部分落地）：attachments 测试创建临时 git 仓库 →commit→制造 untracked+modified 脏状态，断言脏文件名绝不泄漏进 <git-status>
+  - 文档归档：根治-git快照死循环 todo→done；新增两份排查/评估文档
+- 双层预防根治 git 快照冻结死循环 + 全屏有界视口物理根治幽灵残留 `681f7231`
+  - 第一层（attachments.ts）：移除 volatile Status 块，消除净/脏矛盾源
+  - 第二层（empty-param.ts, loop.ts）：空参数/中断回执明确"未落地"，覆盖 abort 路径
+  - 方案乙（config.ts, app.ts, cli.ts, help.ts, tui.ts）：默认全屏 alt-screen 有界视口，--inline 逃生舱
+  - 子代理前台不再双投递通知（sub-agent.ts, agent-task.ts）
+  - UI 修复：sub_agent 卡片 header、live tool 视口封顶等
+  - 自检更新 + 测试更新
+- H1-H10 系统性修复——fallback 死代码、terminal 拉黑、硬超时误杀、孤儿弹窗、子代理 thinking 收口 `0bf9bae0`
+  - H1: fallback 注入 resolveContextLimit 回调，根治 tryRecoverMaxTokens 死代码
+  - （构造从不传 contextLimit → 恒 return null）
+  - H2: 用户显式切模型或降级选中时清除 terminal 拉黑态，避免切了等于没切
+  - H3: CLAUDE.md 模型切换复用 applyPrimaryModelSwitch 统一重算路径
+  - （此前裸改 config.model，maxTokens/provider/effort 全失真致 400）
+  - H4: fallback 注入 resolveMaxOutputTokens，修复自定义模型漏钳制 maxTokens 致 400
+  - H5: config.ts 新增 resolveMaxOutputTokensForModel 导出
+  - H6: turn_hard 超时改为 setInterval 周期检查，与人机等待闸门共享状态，
+- **fallback,query,config** · 修复 fallback 切模型 maxTokens 不重算致 400 + 看门狗误杀弹窗 `dac6cbc5`
+  - config: 登记 _explicitMaxTokens 提前到首次 resolveCurrentModelConfig 之前，避免用户显式值被模型推导覆盖；新增 clampMaxTokensToModelCeiling 统一钳制
+  - app: 抽取 applyPrimaryModelSwitch 统一 /model 切换与 fallback 降级 的主模型写回逻辑，确保两条入口均重算 maxTokens
+  - fallback: 切到 fallback 模型时按注册表上限钳制 maxTokens
+- **fallback,query,config** · 修复 fallback 切模型 maxTokens 不重算致 400 + 看门狗误杀弹窗 `2d12bfc9`
+  - config: 登记 _explicitMaxTokens 提前到首次 resolveCurrentModelConfig 之前，避免用户显式值被模型推导覆盖；新增 clampMaxTokensToModelCeiling 统一钳制
+  - app: 抽取 applyPrimaryModelSwitch 统一 /model 切换与 fallback 降级 的主模型写回逻辑，确保两条入口均重算 maxTokens
+  - fallback: 切到 fallback 模型时按注册表上限钳制 maxTokens
+- **query,permission** · 补齐队列/权限/clear 三处缺口 `21a3cd2c`
+  - 队列：drainByPriorityAndKind 双条件精确出队，mid-turn 只取 user-input
+  - 不误吞其他 kind（如 permission-response）
+  - 权限：checkDenyRules 复合命令逐子命令拆分匹配 deny 规则，任一命中即
+  - 整体拒绝（some 语义），修补 `ls && curl evil.com` 绕过 deny 前缀的安全缺口
+  - /clear：两处增加 clearMessageQueue() 调用，防止跨会话残留
+  - 配置：新增 askUserQuestionTimeout 配置项
+  - 测试：补齐对应测试用例
+
+### 文档
+- **skill** · 完善 eval-session 评估文档——执行环境约定、跨段桥接、批量分诊与能力链路探针 `240efac8`
+  - 增加执行环境约定（分清"谁在评""评谁"）
+  - 新增 Phase 3.5 跨段桥接（模型失误→harness 发现）
+  - 新增 Phase 0 适评性分诊与批量分诊脚本
+  - 新增成本基线判读与 B 路能力链路探针
+  - 术语统一：缺陷→发现（缺陷+优化点）
+  - 更新完成判据与输出模板
+- 重组对齐 claude-code 缺口修复方案文档 + 新增安全审计 `1394f629`
+  - 将 todo 下分散的对标方案文档归并进「对齐claude-code-缺口修复方案/」目录并编号
+  - 新增 09-20 记忆/MCP/子代理/上下文窗口/Git/会话/IDE/SDK/Skills/配置/生态等对标方案
+  - 新增 docs/security-audit prompt 注入与凭证管理审计
+- 发布流程第一步移除重复的 bun test，release.sh 内部已自带门禁 `20a9bd66`
+
+### 其他
+- doc: 新增方案设计文档 幽灵残留：完全对齐 claude-code 渲染架构 —— 物理根治 `1ebaf645`
 
 ## v0.1.591 (2026-07-17)
 
