@@ -364,6 +364,9 @@ export class App {
   /** P2-1：本会话累积的 checkpoint 快照 id 序列（去重、按创建顺序），随 file_changes 落盘。
    *  resume 时从被恢复会话的 file_changes.snapshotIds 预填，使跨会话仍能把文件集反查回快照。 */
   private changedFileSnapshotIds: string[] = [];
+  /** 本进程内已尝试过能力探针的模型名（见 maybeProbeUnknownModel）。防止同一模型反复切入切出时
+   *  重复发探针请求——不持久化，只是同一进程生命周期内的去重，不影响探针本身的成败判定。 */
+  private probedModels: Set<string> = new Set();
   /**
    * GAP-01：当前 turn 的流式工具预执行结果缓存（tool_use_id → SingleToolOutcome）。
    * processStream 在流式回调中对并发安全工具抢先执行，结果暂存于此；随后 executeTools
@@ -541,6 +544,21 @@ export class App {
         saveAppConfig((c: any) => ({ ...c, lastPricingSyncVersion: currentVersion }));
       }
     } catch { /* 采集不可用不影响启动 */ }
+
+    // 模型**能力**目录同步（与上面的**价格**采集互补，见 model-capabilities.ts 职责切分）。
+    // 让「用户只配 name/endpoint/apiKey」的模型也能拿到准确 contextWindow / maxOutputTokens /
+    // effort 档位，而不是落到兜底值（1M 兜底对 272K 窗口的模型会高估 3.8 倍并吃 400）。
+    //
+    // fire-and-forget + 7 天 TTL + 失败指数退避：不 await（不拖慢启动），失败静默保留旧缓存。
+    try {
+      const capMod = require("./llm/model-capabilities.ts");
+      capMod.loadCapabilityCache(); // 同步载入，供本会话立即使用
+      if (capMod.shouldSyncCatalogs()) {
+        void capMod.syncExternalCatalogs().catch(() => {
+          /* 纯优化项：失败退回注册表 + 兜底，用户无需处置 */
+        });
+      }
+    } catch { /* 能力采集不可用不影响启动 */ }
     // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
     setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
@@ -1405,6 +1423,42 @@ export class App {
     if (opts?.persist) this.persistModelField("model", model);
     // P1-4b：落会话级 agent 设置快照，供 resume 恢复本会话使用的模型。
     this.persistAgentSetting();
+    // 首次切到「注册表 + 能力缓存都没有记录」的模型时，后台探一次能力（不阻塞本次切换）。
+    // 见 maybeProbeUnknownModel：让 /effort 和 contextWindow 从第一次真实请求起就准，
+    // 而不必等一次真实 400 才触发 openai.ts 的自愈重试。
+    this.maybeProbeUnknownModel(model);
+  }
+
+  /**
+   * 未知模型能力探针入口（applyPrimaryModelSwitch 尾部调用，覆盖 /model 切换、fallback 降级、
+   * CLAUDE.md `# Model` 三条路径——它们都汇合于 applyPrimaryModelSwitch 这个单一真相源）。
+   *
+   * fire-and-forget：不 await、内部任何异常都不外泄，绝不影响模型切换本身。
+   * 只在下面三个条件同时成立时才发起探针，其余一律静默跳过：
+   *   1. provider === "openai" —— 探针发的是 openai 线格式字段（reasoning_effort），
+   *      对 anthropic（thinking.budget_tokens）/ollama 没有意义，见 model-capabilities.ts 头部注释。
+   *   2. 有 baseURL + apiKey —— 缺一个都发不出真实请求，硬探只会白拿一个 401。
+   *   3. 注册表与能力缓存都没有这个模型的记录 —— 已有数据（无论来自内置注册表、外部目录
+   *      同步、上次探针还是自愈学习）都无需重新探测，避免重复打请求。
+   */
+  private maybeProbeUnknownModel(model: string): void {
+    if (this.config.provider !== "openai") return;
+    const apiKey = this.config.openaiKey;
+    const baseURL = this.config.baseURL;
+    if (!apiKey || !baseURL) return;
+    if (this.probedModels.has(model)) return;
+    try {
+      const { lookupRegistry } = require("./llm/model-registry.ts");
+      if (lookupRegistry(model)) return;
+      const { lookupCapability } = require("./llm/model-capabilities.ts");
+      if (lookupCapability(model)) return;
+    } catch {
+      return; // 判断本身失败就不冒险探，探针是纯优化项
+    }
+    this.probedModels.add(model);
+    void import("./llm/openai.ts")
+      .then((m) => m.probeOpenAICompatModel(model, baseURL, apiKey))
+      .catch(() => { /* 纯优化项：探针失败不影响模型正常使用，下次真实请求走自愈兜底 */ });
   }
 
   /**

@@ -351,3 +351,41 @@ describe("OpenAI Responses API strict 模式工具 schema 改造", () => {
     });
   });
 });
+
+/**
+ * 回归：Responses API 的推理强度必须走**嵌套** `reasoning.effort`。
+ *
+ * Chat Completions 用顶层 `reasoning_effort`，Responses API 用嵌套 `reasoning.effort`——
+ * 字段名与层级都不同。buildResponsesRequest 此前完全没有 reasoning 字段，导致 effort.ts
+ * 即使解析出档位也发不出去（/effort 看着生效、线上其实静默丢弃）。
+ *
+ * [实测: uniapi 网关 /v1/responses — xhigh→reasoning_tokens=9、max→18、minimal→400]
+ */
+describe("Responses API 推理强度下发（reasoning.effort）", () => {
+  function paramsWithEffort(effort: SendParams["reasoningEffort"]): SendParams {
+    return {
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      maxTokens: 1024,
+      reasoningEffort: effort,
+    };
+  }
+
+  test("5 档全部原样进入 reasoning.effort（含 xhigh，不钳制）", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      const req = buildResponsesRequest(paramsWithEffort(effort), "gpt-5.6-luna");
+      expect(req.reasoning).toEqual({ effort });
+    }
+  });
+
+  test("不下发顶层 reasoning_effort（那是 Chat Completions 的字段，此路径无效）", () => {
+    const req = buildResponsesRequest(paramsWithEffort("high"), "gpt-5.6-luna");
+    expect((req as unknown as Record<string, unknown>).reasoning_effort).toBeUndefined();
+  });
+
+  test("auto（undefined）时不下发 reasoning，沿用服务端默认（实测 medium）", () => {
+    const req = buildResponsesRequest(paramsWithEffort(undefined), "gpt-5.6-luna");
+    expect(req.reasoning).toBeUndefined();
+    expect("reasoning" in req).toBe(false);
+  });
+});

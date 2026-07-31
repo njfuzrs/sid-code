@@ -20,6 +20,7 @@
 
 import type { SendParams } from "./types.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
+import { lookupCapability } from "./model-capabilities.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 1. 统一内部标度（与协议无关）
@@ -34,16 +35,27 @@ export type EffortSetting = EffortLevel | undefined;
 
 /**
  * 线格式档位（各 provider 的 reasoning_effort / output_config.effort 实际认可的值）。
- * 统一档位含 xhigh，但没有任何 provider 的线格式认 "xhigh"——它必须在 applier 里钳到本四档之一。
- * 这个类型让钳制结果与线格式字段（SendParams.reasoningEffort / outputConfig.effort）严格对齐。
+ *
+ * ⚠ 历史注释曾断言「没有任何 provider 的线格式认 xhigh」——GPT-5.6 族起该断言不再成立：
+ * `reasoning.effort` 原生接受 none/low/medium/high/xhigh/max（`minimal` 反而被拒）。
+ * 故 xhigh 进入本类型，由各 applier 自行决定钳制或原样透传。
+ * [实测: uniapi 网关 /v1/responses，luna xhigh→reasoning_tokens=9、max→18；
+ *  官方: developers.openai.com/api/docs/models/gpt-5.6-sol]
  */
-type WireEffort = "low" | "medium" | "high" | "max";
+type WireEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * 把统一档位钳到「支持 max 的线格式」（DeepSeek/GLM/Anthropic-adaptive 用）：
+ * 不含 xhigh 的线格式子集（绝大多数 provider 的实际可用值域）。
+ * 两个 clamp 函数的返回类型收窄到此，避免把 xhigh 漏给不认它的 provider
+ * （SendParams.reasoningEffort 亦不含 xhigh，类型层直接挡住）。
+ */
+type WireEffortNoXhigh = Exclude<WireEffort, "xhigh">;
+
+/**
+ * 把统一档位钳到「支持 max 但不支持 xhigh 的线格式」（DeepSeek/GLM/Anthropic-adaptive 用）：
  * xhigh → max（视为最高档），其余原样。
  */
-function clampToMaxWire(effort: EffortLevel): WireEffort {
+function clampToMaxWire(effort: EffortLevel): WireEffortNoXhigh {
   return effort === "xhigh" ? "max" : effort;
 }
 
@@ -51,7 +63,7 @@ function clampToMaxWire(effort: EffortLevel): WireEffort {
  * 把统一档位钳到「无 max 的线格式」（o-series/Grok 用）：
  * max 与 xhigh 均 → high，其余原样。
  */
-function clampToHighWire(effort: EffortLevel): WireEffort {
+function clampToHighWire(effort: EffortLevel): WireEffortNoXhigh {
   return effort === "max" || effort === "xhigh" ? "high" : effort;
 }
 
@@ -253,6 +265,27 @@ function applyGrokOpenAI(params: SendParams, effort: EffortSetting, _thinking: b
   }
 }
 
+/**
+ * 规则 8：OpenAI Responses API 族（GPT-5.x，走 POST /v1/responses 的 `reasoning.effort`）。
+ *
+ * - 无显式思考开关（推理内置、不可关），thinking no-op —— 故不下发 params.thinking。
+ * - effort → reasoning_effort，**5 档原样透传不钳制**：该族是目前唯一原生认 xhigh 的协议族。
+ *   由 openai-responses-request.ts 的 buildResponsesRequest 转成嵌套 `reasoning:{effort}`。
+ *
+ * 此前本族错绑 applyNoop（连同 CAPABILITY_FLAGS.supportsEffort=false），导致 /effort 对所有
+ * GPT-5.x 硬报「不支持推理强度档位切换」——但服务端实际会校验该字段（传非法值返回 400
+ * `param: reasoning.effort`），证明能力真实存在，是我们没接线。
+ *
+ * [实测: uniapi 网关 /v1/responses — low/medium/high→reasoning_tokens=0、xhigh→9、max→18、
+ *  minimal→400「not supported with this model」；不传时服务端回显默认 effort=medium]
+ * [官方: developers.openai.com/api/docs/models/gpt-5.6-sol、/guides/reasoning]
+ */
+function applyOpenAIResponses(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
+  if (effort !== undefined) {
+    params.reasoningEffort = effort;
+  }
+}
+
 const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = {
   "deepseek-openai": applyDeepSeekOpenAI,
   "deepseek-anthropic": applyDeepSeekAnthropic,
@@ -260,7 +293,7 @@ const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = 
   "o-series": applyOSeries,
   "glm-openai": applyGLMOpenAI,
   "grok-openai": applyGrokOpenAI,
-  "openai-responses": applyNoop,
+  "openai-responses": applyOpenAIResponses,
   unknown: applyNoop,
 };
 
@@ -317,13 +350,19 @@ const CAPABILITY_FLAGS: Record<
     defaultEffort: "low",
   },
   "openai-responses": {
-    // GPT-5.x Responses API：当前不支持 reasoning_effort / thinking 开关。
-    // 未来 o-series 迁移到 Responses API 时再扩展。
-    supportsEffort: false,
-    supportsMaxEffort: false,
+    // GPT-5.x Responses API：`reasoning.effort` 原生支持 5 档（含 xhigh，无需钳制）。
+    // 无显式思考开关（推理内置、不可关）→ supportsThinkingToggle=false，但这**不影响**
+    // effort 下发（applyOpenAIResponses 不受 thinking 门控，与 Grok 同构）。
+    // defaultEffort=medium 取自服务端实测回显（不传 reasoning 时 echo effort=medium）。
+    //
+    // ⚠ 此前这里是 supportsEffort:false + APPLIERS 绑 applyNoop，注释写「当前不支持」——
+    // 实为未接线而非真不支持：服务端对非法值返回 400 `param: reasoning.effort`，
+    // 证明字段被校验、能力存在。修复见 applyOpenAIResponses 的实测记录。
+    supportsEffort: true,
+    supportsMaxEffort: true,
     supportsThinkingToggle: false,
     thinkingDefaultOn: false,
-    defaultEffort: "high",
+    defaultEffort: "medium",
   },
   unknown: {
     supportsEffort: false,
@@ -381,16 +420,26 @@ function classifyCapability(opts: {
   if (/grok/i.test(model)) {
     return "grok-openai";
   }
+  // Responses API 协议族：判据是「该端点/模型是否走 /v1/responses」这一**协议事实**，
+  // 由 openai.ts shouldUseResponsesAPI 统一裁决，不在这里复制模型名正则。
+  //
+  // ⚠ 曾经这里写过 `/^gpt-5\./i` 兜底——那正是「出一个新模型改一次代码」的老路，
+  // 且违反 `feedback-no-hardcoded-model-tier-rules`（不按模型名硬编码分档）。
+  // 现已删除：未注册模型的 effort 能力改由 model-capabilities.ts 的动态采集
+  //（外部目录 + 服务端自报探针 + 400 自愈）数据驱动，见 resolveEffortCapability 优先级 2.5。
   return "unknown";
 }
 
 /**
  * 解析当前模型的 effort 能力描述符。
  *
- * 判定优先级（对标 cc 三级链）：
+ * 判定优先级：
  *   1. 用户显式声明 modelConfig.supportsThinking === false → 强制 unknown（全不支持，避贸然 400）。
- *   2. 内置模型名 / 端点匹配（deepseek 双端点 / anthropic 原生 / o-series）。
- *   3. 兜底 unknown（不支持，不下发 effort）。
+ *   2. 内置协议族匹配（deepseek 双端点 / anthropic 原生 / o-series / GLM / Grok）。
+ *   2.5 **动态能力缓存**（model-capabilities.ts）——协议族判为 unknown 时的数据驱动兜底：
+ *       外部目录同步 + 服务端自报探针 + 400 自愈采到的 effort 档位。这是「用户只配
+ *       name/endpoint/apiKey 就能用」的关键一环，替代了此前按模型名硬编码的 /^gpt-5\./i。
+ *   3. 兜底 unknown（不下发 effort）。
  */
 export function resolveEffortCapability(opts: {
   model: string;
@@ -404,7 +453,76 @@ export function resolveEffortCapability(opts: {
   }
 
   const kind = classifyCapability(opts);
-  return { ...CAPABILITY_FLAGS[kind], applyToSendParams: APPLIERS[kind] };
+  if (kind !== "unknown") {
+    return { ...CAPABILITY_FLAGS[kind], applyToSendParams: APPLIERS[kind] };
+  }
+
+  // 优先级 2.5：协议族未知 → 查动态能力缓存（纯内存读，不触网）。
+  return resolveFromCapabilityCache(opts.model);
+}
+
+/**
+ * 未知协议族的能力兜底 —— 由 model-capabilities.ts 的采集数据驱动，零模型名判据。
+ *
+ * 三种情形：
+ * - 缓存有非空 `effortValues` → 支持 effort。`supportsMaxEffort` 依据档位表里有没有 max；
+ *   `defaultEffort` 取档位表的中位偏低档（服务端普遍以 medium 为默认，实测 GPT-5.6 回显 medium）。
+ * - 缓存有**空** `effortValues`（探针 200 证实服务端不校验该字段）→ 明确不支持，同 unknown。
+ * - 缓存无记录 → 乐观放行（supportsEffort=true）。这是「永不报错」的核心取舍：
+ *   宁可发出去被 400 后自愈（learnFromError 会剥字段重试并记住），也不要在 /effort 上
+ *   硬报「不支持」把用户挡死。首次可能多一次重试，之后就准了。
+ */
+function resolveFromCapabilityCache(model: string): EffortCapability {
+  const cap = lookupCapability(model);
+
+  // 明确不支持（探针已证实服务端不校验 reasoning_effort）。
+  if (cap?.effortValues && cap.effortValues.length === 0) {
+    return { ...CAPABILITY_FLAGS.unknown, applyToSendParams: APPLIERS.unknown };
+  }
+
+  const values = cap?.effortValues;
+  const supportsMax = values ? values.includes("max") : true;
+  // 已知档位表里挑默认档：优先 medium（服务端最常见默认），否则退到 high，再否则第一档。
+  const defaultEffort: EffortLevel = values
+    ? values.includes("medium")
+      ? "medium"
+      : values.includes("high")
+        ? "high"
+        : (values.find((v: string) => isEffortLevel(v)) as EffortLevel | undefined) ?? "medium"
+    : "medium";
+
+  return {
+    supportsEffort: true,
+    supportsMaxEffort: supportsMax,
+    // 未知模型不猜「思考开关」——它比 effort 更容易 400（DeepSeek/GLM 的 thinking 结构各异）。
+    supportsThinkingToggle: false,
+    thinkingDefaultOn: false,
+    defaultEffort,
+    applyToSendParams: (params, effort) => {
+      if (effort === undefined) return;
+      // 有档位表就按表钳（表外档位降到表内最接近的低档），无表则原样发，让服务端裁决 + 自愈兜底。
+      params.reasoningEffort = values ? clampToKnownValues(effort, values) : clampToMaxWire(effort);
+    },
+  };
+}
+
+/**
+ * 把统一档位钳到「服务端自报的档位表」之内。
+ *
+ * 策略：先试原档；不在表内则沿标度**向下**找最近的可用档（宁可弱一点也不要 400）；
+ * 全表都比它低则取表内最高档。`none`/`minimal` 不作为降级目标——它们语义是「几乎不推理」，
+ * 用户要 high 却降到 none 属于静默失真，宁可取表内最高的正常档。
+ */
+function clampToKnownValues(effort: EffortLevel, values: string[]): SendParams["reasoningEffort"] {
+  const SCALE: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+  const usable = SCALE.filter((v) => values.includes(v));
+  if (usable.length === 0) return undefined; // 表里只有 none/minimal → 不下发，交给服务端默认
+  if (usable.includes(effort)) return effort;
+  const idx = SCALE.indexOf(effort);
+  for (let i = idx - 1; i >= 0; i--) {
+    if (usable.includes(SCALE[i])) return SCALE[i];
+  }
+  return usable[usable.length - 1];
 }
 
 // ─────────────────────────────────────────────────────────────

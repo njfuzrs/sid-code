@@ -5,6 +5,7 @@
 
 import type { Message, ToolDefinition } from "./types.ts";
 import { lookupRegistry } from "./model-registry.ts";
+import { lookupCapability } from "./model-capabilities.ts";
 // 审计第 21 条：收敛到 context/token.ts 的统一块估算（补全 thinking/redacted_thinking/mediaBlocks）。
 import { estimateBlockTokens } from "../context/token.ts";
 
@@ -108,14 +109,34 @@ export class TokenEstimator {
   ): number {
     // 1. 用户配置优先：availableModels 里同名模型声明的 contextWindow 是权威值，
     //    避免内置静态表与用户真实部署（自建/代理/新版本）漂移。
+    //    Number.isFinite 防手改 settings.json 写出 1e400 之类溢出成 Infinity 的值——
+    //    `Infinity > 0` 为 true，只查 `> 0` 挡不住，会让上下文预算永远「还有空间」。
     const userModel = availableModels?.find(m => m.name === model);
-    if (typeof userModel?.contextWindow === "number" && userModel.contextWindow > 0) {
+    if (
+      typeof userModel?.contextWindow === "number" &&
+      Number.isFinite(userModel.contextWindow) &&
+      userModel.contextWindow > 0
+    ) {
       return userModel.contextWindow;
     }
 
     // 2. 从统一注册表查找（替代旧的 MODEL_CONTEXT_LIMITS 静态表）
     const entry = lookupRegistry(model);
     if (entry) return entry.contextWindow;
+
+    // 2.5 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得）。
+    //     这是「未知模型也有准确窗口」的关键一环：注册表覆盖不到的新模型（网关先上线、
+    //     或用户自配的任意模型）在这里拿到真实窗口，而不是落到 1M 兜底。
+    //     实测意义：gpt-5.3-codex 真实窗口 272K，兜底 1M 会高估 3.8 倍——高估直接导致
+    //     塞太多 token 吃 400，正是那份 todo 文档记录的失真。
+    //
+    //     ⚠ 数值校验用 Number.isFinite（而非仅 `> 0`）是防御性重复：model-capabilities.ts
+    //     的 sanitizeEntry 已经在写入/载入两处拦住 Infinity/NaN，这里理论上收到的必是干净值。
+    //     但曾经因为 loadCapabilityCache 漏做校验，`{"contextWindow":1e400}`（JSON 解析后
+    //     变成 Infinity）能一路传到这里——`Infinity > 0` 为 true，旧检查完全放行，
+    //     导致「上下文永远没满」的静默失效（不报错，比报错更难发现）。两道关卡都要拦。
+    const dynamic = lookupCapability(model)?.contextWindow;
+    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
 
     // 兜底：未知模型回退到可配置的默认值（1M）。
     // 详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md
@@ -134,11 +155,21 @@ export class TokenEstimator {
     availableModels?: Array<{ name?: string; maxOutputTokens?: number }>,
   ): number | undefined {
     const userModel = availableModels?.find(m => m.name === model);
-    if (typeof userModel?.maxOutputTokens === "number" && userModel.maxOutputTokens > 0) {
+    if (
+      typeof userModel?.maxOutputTokens === "number" &&
+      Number.isFinite(userModel.maxOutputTokens) &&
+      userModel.maxOutputTokens > 0
+    ) {
       return userModel.maxOutputTokens;
     }
     const entry = lookupRegistry(model);
-    if (entry && entry.maxOutputTokens > 0) return entry.maxOutputTokens;
+    if (entry && Number.isFinite(entry.maxOutputTokens) && entry.maxOutputTokens > 0) {
+      return entry.maxOutputTokens;
+    }
+    // 动态能力缓存兜底（与 getContextLimit 的优先级 2.5 同源）。仍拿不到才返回 undefined
+    // ——由 ContextManager 用默认预留兜底，而不是在这里编一个数字。
+    const dynamic = lookupCapability(model)?.maxOutputTokens;
+    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
     return undefined;
   }
 

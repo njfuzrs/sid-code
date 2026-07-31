@@ -109,6 +109,22 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // OpenAI / GPT
   // ══════════════════════════════════════════════════════════════════
+  // GPT-5.6 族（2026-07-09 GA，三档：luna 轻量 / terra 均衡 / sol 旗舰）。
+  // 三者 contextWindow、maxOutputTokens、能力位完全一致，只有价格与推理质量不同。
+  // `gpt-5.6` 裸名是别名，官方路由到 sol。
+  //
+  // ⚠ contextWindow=1_050_000 但官方另有 **max input 922_000** 的独立限制——超过即返回
+  // "input exceeds the context window"（实测 900k 过、990k 拒）。sid-code 目前无「输入上限」
+  // 字段来表达这个差异，故此处如实填窗口值；真正的输入裁剪由 auto-compact 的完成缓冲区兜底。
+  // [官方: developers.openai.com/api/docs/models/gpt-5.6-sol；实测: uniapi 网关夹逼]
+  //
+  // pricing 为**官方标准价**（USD/1M）。网关渠道价（luna 实采 0.17/1.02）由 gateway-pricing.ts
+  // 按渠道名精确命中并优先于此——此处仅作渠道 miss 时的兜底，勿用渠道价覆盖。
+  // 注：官方对 >272K 输入的请求按 2x input / 1.5x output 计价，本表不表达该分层。
+  "gpt-5.6": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 } },
+  "gpt-5.6-sol": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 } },
+  "gpt-5.6-terra": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 } },
+  "gpt-5.6-luna": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 } },
   "gpt-5.5": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
   "gpt-5.5-pro": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 30, output: 180, cacheRead: 0, cacheWrite: 0 } },
   "gpt-5.4": { contextWindow: 1_050_000, maxOutputTokens: 128_000, supportsThinking: false, protocolKind: "openai-responses", pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 } },

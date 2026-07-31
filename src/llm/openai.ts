@@ -24,6 +24,7 @@ import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts"
 import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
+import { learnFromError } from "./model-capabilities.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -580,6 +581,68 @@ export class OpenAIProvider implements Provider {
   }
 
   async *sendMessageStream(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
+    // 能力自愈外层：首次因「我们多发了一个模型不认的能力字段」而 400 时，剥掉该字段重试一次。
+    // 让「用户只配 name/endpoint/apiKey」的未知模型也能一次成功，而不是把 400 抛给用户。
+    // 详见 healCapabilityAndRetry 与 model-capabilities.ts 的自愈说明。
+    yield* this.withCapabilityHealing(params, signal);
+  }
+
+  /**
+   * 能力自愈包装 —— 「永不报错」的执行层。
+   *
+   * 未知模型的能力靠乐观假设（见 effort.ts resolveFromCapabilityCache），假设错了会 400。
+   * 这里捕获那类 400，从错误文本学到真值（写入能力缓存），剥掉冒犯字段重试一次。
+   * 用户看到的是一次正常完成的请求；下次起缓存已准，不再多这一跳。
+   *
+   * 只自愈**我们自己多发的能力字段**（当前：reasoning_effort / reasoning.effort）。
+   * 其余错误（鉴权、限流、上下文超限、模型不存在）原样透出——那些不是能力误判，
+   * 盲目重试只会掩盖真问题。
+   */
+  private async *withCapabilityHealing(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
+    const model = params.model || this._model;
+    let healed = false;
+
+    for (const attempt of [0, 1]) {
+      let capabilityError: string | null = null;
+
+      for await (const ev of this.sendMessageStreamInner(params, signal)) {
+        // 只在「首次尝试 + 尚未产出任何内容」的错误上考虑自愈；已经开始输出就不能重发。
+        if (attempt === 0 && ev.type === "error") {
+          const msg = ev.error?.message ?? "";
+          const advice = learnFromError(model, msg);
+          // dropEffort 且我们确实发了 effort → 说明是能力误判，值得剥字段重试。
+          if (advice.dropEffort && params.reasoningEffort !== undefined) {
+            capabilityError = msg;
+            break;
+          }
+        }
+        yield ev;
+      }
+
+      if (capabilityError === null) return; // 正常完成或不可自愈的错误（已 yield 出去）
+
+      // 剥掉 effort 字段重试。params 是调用方对象，不可原地改 → 浅拷贝。
+      getLogger().debug(
+        "LLM:OPENAI",
+        `能力自愈：${model} 拒绝 reasoning_effort，剥离该字段重试`,
+        { error: capabilityError.slice(0, 160) },
+      );
+      params = { ...params, reasoningEffort: undefined };
+      healed = true;
+    }
+
+    if (healed) {
+      getLogger().debug("LLM:OPENAI", `能力自愈完成：${model}`);
+    }
+  }
+
+  private async *sendMessageStreamInner(
     params: SendParams,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
@@ -1794,4 +1857,43 @@ export class OpenAIProvider implements Provider {
       }
     }
   }
+}
+
+/**
+ * 未知模型的能力探针入口（app.ts::maybeProbeUnknownModel 在 /model 切到一个注册表 + 能力
+ * 缓存都没有记录的模型时调用）。
+ *
+ * 只做一件事：给 model-capabilities.ts 的 probeModelCapability 包一层 openai 线格式的
+ * `send` 适配器——该模块自身故意不碰任何 provider 实现（见其文件头注释「避免本模块依赖
+ * provider」），HTTP 细节（端点拼接 `/chat/completions`、Bearer 鉴权）留给调用方，此函数
+ * 就是 openai 协议族的那份适配器，与本文件其余请求方法（如 sendMessageNonStream）拼端点
+ * 的方式一致。
+ *
+ * 失败静默：探针是纯优化项，网络错误/超时/无法识别的响应都不抛出——真实对话请求若撞上
+ * 同样的能力误判，自有 withCapabilityHealing 兜底重试，探针只是想提前把这一跳省掉。
+ */
+export async function probeOpenAICompatModel(
+  model: string,
+  baseURL: string,
+  apiKey: string,
+): Promise<void> {
+  const { probeModelCapability } = await import("./model-capabilities.ts");
+  const base = baseURL.replace(/\/$/, "");
+  await probeModelCapability({
+    model,
+    send: async (body) => {
+      const resp = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (resp.ok) return { ok: true };
+      const errorMessage = await resp.text().catch(() => "");
+      return { ok: false, errorMessage };
+    },
+  });
 }

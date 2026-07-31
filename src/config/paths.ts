@@ -95,6 +95,12 @@ export const sidPaths = {
   lspConfig: () => sidHomePath("lsp.json"),
   /** 网关定价采集缓存（全局共享，不随会话；带 pricing_version + fetched_at） */
   gatewayPricing: () => sidHomePath("gateway-pricing.json"),
+  /**
+   * 模型**能力**缓存（contextWindow / maxOutputTokens / effort 档位）。
+   * 与 gatewayPricing 的关键差异：能力是模型固有属性 → 按模型名单键、**不按端点分桶**；
+   * 价格随渠道变 → 按「模型名 + 端点」复合键。见 model-capabilities.ts 头部注释。
+   */
+  modelCapabilities: () => sidHomePath("model-capabilities.json"),
 
   // ── 日志归拢：logs/ ──
   logs: () => sidHomePath("logs"),

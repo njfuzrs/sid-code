@@ -292,13 +292,16 @@ export interface SendParams {
     budgetTokens: number;  // 思考预算 token 数（仅 Anthropic 生效）
   };
   /**
-   * 推理强度（思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`）。
+   * 推理强度（思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`；
+   * Responses API 走嵌套的 `reasoning.effort`）。
    * - **DeepSeek**：仅接受 "high" | "max"（low/medium 会被服务端映射为 high，xhigh 映射为 max）。
    * - **OpenAI o-series**：接受 "low" | "medium" | "high"（无 max，max 由映射层降为 high）。
-   * 不传则不下发该字段，沿用服务端默认（DeepSeek 普通请求 high，Claude Code 类 Agent 请求 max）。
+   * - **GPT-5.6 族（openai-responses）**：原生接受 low/medium/high/xhigh/max，
+   *   是目前唯一无需钳制 `xhigh` 的协议族（`minimal` 反而被服务端拒绝）。
+   * 不传则不下发该字段，沿用服务端默认（DeepSeek 普通请求 high；GPT-5.6 为 medium）。
    * Anthropic provider 忽略此字段（其思考强度走 thinking.budgetTokens）。
    */
-  reasoningEffort?: "low" | "medium" | "high" | "max";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。

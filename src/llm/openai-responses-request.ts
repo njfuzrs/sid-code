@@ -32,6 +32,15 @@ export interface ResponsesAPIRequest {
   top_p?: number;
   tool_choice?: "auto" | "none" | "required" | { type: "function"; name: string };
   parallel_tool_calls?: boolean;
+  /**
+   * 推理配置（GPT-5.x 专有）。Chat Completions 用顶层 `reasoning_effort`，
+   * Responses API 改用嵌套的 `reasoning.effort` —— 字段名与层级都不同，
+   * 故 applyDeepSeekThinking 那套顶层透传在本路径完全不生效，必须在此单独构造。
+   *
+   * 值域 low/medium/high/xhigh/max（含 xhigh，无需钳制）；`minimal` 会被服务端拒绝。
+   * 不传则沿用服务端默认（实测 GPT-5.6 回显 medium）。
+   */
+  reasoning?: { effort: "low" | "medium" | "high" | "xhigh" | "max" };
 }
 
 /** Responses API input item —— 消息或函数调用/输出 */
@@ -372,6 +381,13 @@ export function buildResponsesRequest(params: SendParams, effectiveModel: string
   // 并行工具调用开关
   if (params.parallelToolCalls !== undefined) {
     request.parallel_tool_calls = params.parallelToolCalls;
+  }
+
+  // 推理强度 → 嵌套 reasoning.effort（Chat Completions 的顶层 reasoning_effort 在本路径无效）。
+  // effort.ts 的 applyOpenAIResponses 已把统一档位原样写进 params.reasoningEffort（含 xhigh），
+  // 这里只做「顶层 → 嵌套」的形态转换，不再二次钳制。
+  if (params.reasoningEffort !== undefined) {
+    request.reasoning = { effort: params.reasoningEffort };
   }
 
   return request;

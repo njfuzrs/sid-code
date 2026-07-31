@@ -8,7 +8,8 @@
  * - effort.ts classifyCapability 与 catalog protocolKind 整合测试
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach } from "bun:test";
+import { __resetCapabilityCacheForTest } from "../../src/llm/model-capabilities.ts";
 import { guardedStream } from "../../src/llm/stream-guard.ts";
 import { filterParamsForModel } from "../../src/llm/model-capability-filter.ts";
 import { lookupCatalog } from "../../src/llm/model-params-catalog.ts";
@@ -310,6 +311,12 @@ describe("model-params-catalog — 协议能力字段", () => {
 // ─── effort.ts classifyCapability 与 catalog 整合测试 ────────────────────
 
 describe("effort.ts — catalog protocolKind 优先于 runtime 推断", () => {
+  // 隔离真实能力缓存：未知模型分支会查 ~/.sid-code/model-capabilities.json，
+  // 开发机同步过 2900+ 条真实数据后，断言结果会随磁盘状态漂移。见 effort.test.ts 同注释。
+  beforeEach(() => {
+    __resetCapabilityCacheForTest({});
+  });
+
   test("o3 通过 catalog.protocolKind 识别为 o-series", () => {
     const cap = resolveEffortCapability({
       model: "o3",
@@ -363,12 +370,19 @@ describe("effort.ts — catalog protocolKind 优先于 runtime 推断", () => {
     expect(cap.thinkingDefaultOn).toBe(true);
   });
 
-  test("未知模型走 unknown 兜底", () => {
+  // ⚠ 契约变更（原用例名「未知模型走 unknown 兜底」）：未知模型不再判「不支持 effort」。
+  //
+  // 旧行为下 /effort 对任何未注册模型直接报错，用户只能等注册表补条目——这是
+  // 「出一个新模型改一次代码」的根源。新行为改为**乐观放行 + 400 自愈**：
+  // 真发请求被拒时，withCapabilityHealing 剥掉 effort 字段重试并把结论写进能力缓存
+  //（见 model-capabilities.ts）。thinking 开关仍保持不猜。
+  test("未知模型：effort 乐观放行（可自愈），thinking 仍不猜", () => {
     const cap = resolveEffortCapability({
       model: "some-random-model",
       provider: "openai",
     });
-    expect(cap.supportsEffort).toBe(false);
-    expect(cap.supportsMaxEffort).toBe(false);
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.supportsThinkingToggle).toBe(false);
+    expect(cap.thinkingDefaultOn).toBe(false);
   });
 });
