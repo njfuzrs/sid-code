@@ -1,8 +1,8 @@
 {
   "generatedAt": "2026-07-31",
-  "currentVersion": "0.1.596",
-  "totalVersions": 15,
-  "totalCommits": 229,
+  "currentVersion": "0.1.597",
+  "totalVersions": 16,
+  "totalCommits": 232,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,71 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.597",
+      "date": "2026-07-31",
+      "isGenesis": false,
+      "count": 3,
+      "groups": [
+        {
+          "key": "feat",
+          "title": "新功能",
+          "commits": [
+            {
+              "scope": "llm",
+              "desc": "模型能力动态采集与 GPT-5.x effort 接线",
+              "hash": "ba7a16a6",
+              "details": [
+                "新增 model-capabilities.ts：外部目录同步 + 服务端探针 + 400 自愈， 实现\"用户只配 name/endpoint/apiKey 就能用\"",
+                "effort.ts openai-responses 从 applyNoop 改为 applyOpenAIResponses， 5 档原样透传（含 xhigh），该族当前唯一原生认 xhigh 的协议族",
+                "未知协议族模型：从\"不支持 effort\"改为乐观放行 + 400 自愈兜底， 避免\"出一个新模型改一次代码\"",
+                "注册表新增 GPT-5.6 三档（luna/terra/sol），contextWindow=1_050_000",
+                "App 新增 maybeProbeUnknownModel 探针入口，fire-and-forget 不阻塞",
+                "测试同步更新，新增模型能力缓存隔离（beforeEach 重置）"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "refactor",
+          "title": "重构",
+          "commits": [
+            {
+              "scope": "build",
+              "desc": "重命名构建目标，make build 不动版本号",
+              "hash": "0902b048",
+              "details": [
+                "make build 改为日常开发构建（不动版本号），替代旧的 make rebuild",
+                "新增 make build-bump 目标，显式 bump 版本号再构建",
+                "make rebuild 保留为 make build 别名（兼容历史文档）",
+                "更新所有文档/脚本/源码注释中的 make rebuild → make build",
+                "修复 CI 构建命令（eval-pr-smoke.yml）",
+                "新增 tests/build-target-naming.test.ts 测试"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "docs",
+          "title": "文档",
+          "commits": [
+            {
+              "scope": "jit-context",
+              "desc": "同步第 5/7 批落地状态 + 补真实基线数据",
+              "hash": "79f71392",
+              "details": [
+                "顶部状态说明：剩余 4 项 → 仅 3 项未做",
+                "§0 总览表\"共同盲区\"行：🟡 → ✅",
+                "§8.9 章节标题同步",
+                "§11 第 1/3 批框注：消费端已通，划掉\"量不出来\"",
+                "§11.1 第 5/7 批 checklist：[ ] → [x]，补落地指针",
+                "§10.3 新增基线数据表：2 个真实会话实测 （命中率/累积峰值/P95/归因，验证度量闭环打通）"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.596",
       "date": "2026-07-31",
