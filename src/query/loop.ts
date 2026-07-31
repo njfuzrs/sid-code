@@ -118,16 +118,32 @@ import {
   contextPressureLevel,
   CONTEXT_PRESSURE_REMINDER_INTERVAL,
 } from "./context-pressure.ts";
-import { detectInvestigationContext, buildHypothesisGuideReminder } from "./hypothesis-guide.ts";
+import {
+  buildJudgmentGuideReminder,
+  buildMinimalGuideReminder,
+  detectInvestigateToEditTransition,
+  detectInvestigationContext,
+  detectUnregisteredJudgment,
+  hasReadOnlyProbe,
+} from "./hypothesis-guide.ts";
 import { collectDiagnosticText, getLSPHealthWarning } from "../lsp/manager.ts";
 import { buildPermissionModeReminder, isRuntimeModeSwitch, PERMISSION_MODE_REMINDER_INTERVAL } from "./permission-reminder.ts";
 import {
   buildContradictionReminder,
   buildDeliveryGateReminder,
+  buildRefutedReuseReminder,
+  buildStaleLedgerReminder,
   buildStrategyShiftReminder,
   collectEvidenceTexts,
   CONSECUTIVE_REFUTATION_NAG_THRESHOLD,
+  detectRefutedReuse,
+  HYPOTHESIS_STALE_TURNS,
 } from "./hypothesis-ledger.ts";
+import {
+  appendDeliverableText,
+  getDeliverableText,
+  resetDeliverableText,
+} from "./deliverable-text.ts";
 import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
@@ -342,6 +358,31 @@ function settleCompaction(
  * 与 HypothesisGuideInjected / GoalGateDecision 同机制：deps 未提供 sink 时静默跳过，
  * 写入异常一律吞掉——可观测性埋点绝不能反过来阻断主循环。
  */
+/**
+ * 缺口7：统一的"轮次口径"三件套，供所有按轮落 trace 的事件复用。
+ *
+ * 为什么必须三个字段一起给，而不是把 `turn` 直接改成累计值：
+ *   - `turn`（消息内，`LoopState.turnCount`）保留兼容——已落盘的 events.jsonl 里
+ *     全部是这个口径，直接改语义会让历史数据与新数据同名不同义，比口径分裂更糟；
+ *   - `absoluteTurn`（会话累计）才是"会话进行到第几轮"，跨消息可比较、可相减；
+ *   - `promptSeq`（第几条用户消息）让 `turn` 的回绕可还原——实测 `135709-1a73c7a1`
+ *     会话出现 `turn=20` 之后又是 `turn=3`，没有 promptSeq 就无法与"真的退回第 3 轮"区分。
+ *
+ * 这是缺口 1/2/4 效果验证的地基：先改行为再补埋点，等于拿有系统误差的尺子量自己的
+ * 改动效果（设计文档 §2.3 初稿把 44 轮写成 52 轮就是这么来的）。
+ */
+function turnMetrics(
+  state: LoopState,
+  sessionState: SessionState,
+  promptSeq: number,
+): { turn: number; absoluteTurn: number; promptSeq: number } {
+  return {
+    turn: state.turnCount,
+    absoluteTurn: sessionState.getAbsoluteTurn(),
+    promptSeq,
+  };
+}
+
 function emitNagInjectedEvent(
   deps: QueryDeps,
   sessionId: string,
@@ -349,6 +390,10 @@ function emitNagInjectedEvent(
     /** 催促通道，用于把两条独立通道分开统计（原共享计数器的受害方就靠它区分）。 */
     kind: "todo" | "work-log";
     turn: number;
+    /** 缺口7：会话累计轮次（不随用户消息重置），跨消息可比较。 */
+    absoluteTurn?: number;
+    /** 缺口7：第几条用户消息，让 turn 的回绕可还原。 */
+    promptSeq?: number;
     nagCount: number;
     cap: number;
     countedAsNoProgress: boolean;
@@ -391,6 +436,10 @@ function emitStuckGuardEvent(
     /** remind = 注入收敛提醒；terminate = 强制收尾（唯一会掐断用户任务的动作）。 */
     action: "remind" | "terminate";
     turn: number;
+    /** 缺口7：会话累计轮次（不随用户消息重置），跨消息可比较。 */
+    absoluteTurn?: number;
+    /** 缺口7：第几条用户消息，让 turn 的回绕可还原。 */
+    promptSeq?: number;
     /** 连续相同签名次数（阈值 STUCK_REPEAT_THRESHOLD），用于事后核对判据是否过紧/过松。 */
     repeatCount: number;
     reminderCount: number;
@@ -456,6 +505,10 @@ export async function* queryLoop(
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // 缺口7：本次 queryLoop 即"第几条用户消息"。埋点带上它，`turn=3` 才能还原到
+  // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
+  // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
+  const promptSeq = sessionState.nextPromptSeq();
   const diminishingDetector = new DiminishingReturnsDetector();
   // P0-3：Token Budget 续写——解析本条用户消息里的 "+500k" 类预算指令（一次性，
   // 随每条新用户消息的新 state 天然重置，见 LoopState.tokenBudgetTarget 注释）。
@@ -527,6 +580,11 @@ export async function* queryLoop(
   try {
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
+    // 缺口7：与消息内 turnCount 严格同点推进会话累计轮次。两者必须同点自增，
+    // 否则 absoluteTurn 会漂移——漂移的绝对轮次比没有绝对轮次更糟（前者会被当真）。
+    // 递增后由 turnMetrics() 经 sessionState.getAbsoluteTurn() 读取，不留局部变量，
+    // 避免出现"局部快照"和"会话真值"两个来源再分裂一次。
+    sessionState.nextAbsoluteTurn();
     loopDetector.recordTurn();
 
     // ─── 后台任务完成通知回注（对标 claude-code <task-notification> 投递）───
@@ -1004,7 +1062,7 @@ export async function* queryLoop(
               // 与 HypothesisGuideInjected 同机制，try/catch 兜底不阻断主循环。
               emitNagInjectedEvent(deps, sessionState.sessionId, {
                 kind: "todo",
-                turn: state.turnCount,
+                ...turnMetrics(state, sessionState, promptSeq),
                 nagCount: state.todoNagCount ?? 0,
                 cap: MAX_NO_PROGRESS_NAGS,
                 countedAsNoProgress: decision.countedAsNoProgress,
@@ -1044,7 +1102,7 @@ export async function* queryLoop(
             log.info("QUERY_LOOP", `P2-2：回注工作日志摘要（已完成 ${snap.completed.length} / 待办 ${snap.pending.length}，无进展催促 ${state.progressNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
             emitNagInjectedEvent(deps, sessionState.sessionId, {
               kind: "work-log",
-              turn: state.turnCount,
+              ...turnMetrics(state, sessionState, promptSeq),
               nagCount: state.progressNagCount ?? 0,
               cap: MAX_NO_PROGRESS_NAGS,
               countedAsNoProgress: decision.countedAsNoProgress,
@@ -1069,7 +1127,10 @@ export async function* queryLoop(
     if (state.turnCount === 1 && !state.hypothesisGuideInjected) {
       const userText = extractLastUserInput(ctxMgr);
       if (detectInvestigationContext(userText)) {
-        reminderParts.push(buildHypothesisGuideReminder());
+        // 缺口3 修复项2：turn-1 通道降级为极简一句。完整引导（含"为什么要登记"
+        // "怎么写证伪条件"）交给紧贴判断的那次事件驱动注入——实测 13 次 turn-1 注入
+        // 对应的首次 register 都发生在 turn 2-12，完整篇幅投在这里是投在了低效时机。
+        reminderParts.push(buildMinimalGuideReminder());
         state.hypothesisGuideInjected = true;
         log.info("QUERY_LOOP", "注入假设纪律首轮引导（命中调查性上下文）");
         // 可观测性：把"首轮引导注入命中"落成结构化 trace 事件（events.jsonl），
@@ -1082,7 +1143,11 @@ export async function* queryLoop(
               session_id: sessionState.sessionId,
               timestamp: new Date().toISOString(),
               data: {
-                turn: state.turnCount,
+                // 缺口7：三口径一起落（turn 兼容 / absoluteTurn 可比较 / promptSeq 可还原回绕）
+                ...turnMetrics(state, sessionState, promptSeq),
+                // 缺口3：区分两条注入通道。`turn-1` 是任务开头的兜底引导，`judgment` 是
+                // 紧随判断的事件驱动引导。不分开则"改时机后采纳率提升多少"无法归因。
+                trigger: "turn-1",
                 userTextPreview: userText.slice(0, 200),
               },
             });
@@ -1121,6 +1186,25 @@ export async function* queryLoop(
         `注入换策略提示（连续推翻 ${state.pendingHypothesisStrategyShift} 条假设且零确认）`,
       );
       state.pendingHypothesisStrategyShift = undefined;
+    }
+
+    // 缺口3（事件驱动引导·注入端）：上一轮检出"刚形成未登记判断"，本轮注入登记引导。
+    // 走 critical 档：这条提醒的全部价值在于"紧贴那个判断到达"——被压到用户指令之后
+    // 就退化成了又一条泛化提示，正是本缺口要修的时机错配。
+    if (state.pendingJudgmentGuide) {
+      criticalReminderParts.push(buildJudgmentGuideReminder());
+      log.info("QUERY_LOOP", "缺口3：注入假设登记引导（紧随刚形成的判断，仅一次）");
+      state.pendingJudgmentGuide = undefined;
+    }
+
+    // 缺口2 层次2（假设登记表空转 → 续期提醒·注入端）：上一轮检出登记表已连续 N 轮
+    // 空转，本轮注入一次轻量提示。走**普通档**而非 critical：它不是"手上有矛盾证据
+    // 待裁决"这类紧急事项，只是一个时机提醒，不该抢在用户指令前面。会话级一次性
+    // （标志挂 ledger.staleNagged，跨用户消息有效）。
+    if (state.pendingHypothesisStaleReminder) {
+      reminderParts.push(state.pendingHypothesisStaleReminder);
+      log.info("QUERY_LOOP", "注入假设登记表续期提醒（中段空转，仅一次）");
+      state.pendingHypothesisStaleReminder = undefined;
     }
 
     // 方向 2/4/6（git-status 快照冻结死循环止损阀·注入端）：上一轮检出"卡在只读命令上"，
@@ -2230,6 +2314,70 @@ export async function* queryLoop(
       log.llmResponseText(responseText);
     }
 
+    // ─── 缺口3：假设纪律引导的事件驱动注入（检测端）───
+    // 根因：原引导绑死 turnCount===1（任务开头），而模型在第 1 轮通常还没形成任何判断
+    // ——提示到达时无对应物可登记；等到第 10-30 轮真正形成"我认为是 X"时，那条提示已被
+    // 几十轮工具输出冲远。这里改成在**模型刚写下断言之后**注入，时机才对得上。
+    //
+    // 两个信号（文档 §缺口3 按可靠性排序的前两条）：
+    //   signal A `judgment`：assistant 文本含判断性表述（"根因是"/"这说明"…）;
+    //   signal B `probe-to-edit`：连续 read/grep 后首次 edit/write——从"查"转入"改"
+    //     说明已下结论。它覆盖 A 抓不到的情形：模型可以一句解释都不写就直接开始改，
+    //     那时判断同样已形成、同样未登记。
+    //
+    // 三重降误报（引导是软提醒，但反复提醒同样是负收益）：
+    //   1. 只在登记表**为空**时触发——已经在用这套机制的会话不需要被教;
+    //   2. 会话级一次性（hypothesisEventGuideInjected）;
+    //   3. 判据只看表层特征，不做语义理解（保守，宁可漏不可扰）。
+    if (!state.hypothesisEventGuideInjected && deps.getHypothesisLedger) {
+      try {
+        const ledger = deps.getHypothesisLedger();
+        // 登记表非空 = 模型已在用这套机制，不必再引导（这条是主要的降误报手段）。
+        if (ledger && ledger.isEmpty()) {
+          const turnToolNames = response.content
+            .filter((b): b is typeof b & { type: "tool_use" } => b.type === "tool_use")
+            .map((b) => b.name);
+          // 累积"本会话是否有过只读探查"——signal B 的前置条件。挂 SessionState 而非
+          // LoopState：探查可能发生在上一条用户消息里，LoopState 每条消息新建会丢。
+          if (hasReadOnlyProbe(turnToolNames)) {
+            sessionState.set("hypothesisSawReadOnlyProbe", true);
+          }
+          const sawProbe = sessionState.get("hypothesisSawReadOnlyProbe") === true;
+          let trigger: "judgment" | "probe-to-edit" | undefined;
+          if (responseText && detectUnregisteredJudgment(responseText)) {
+            trigger = "judgment";
+          } else if (detectInvestigateToEditTransition(turnToolNames, sawProbe)) {
+            trigger = "probe-to-edit";
+          }
+          if (trigger) {
+            state.pendingJudgmentGuide = true;
+            state.hypothesisEventGuideInjected = true;
+            log.info(
+              "QUERY_LOOP",
+              `缺口3：检测到刚形成的未登记判断（${trigger}），下一轮注入假设登记引导`,
+            );
+            if (deps.traceAppendEvent) {
+              try {
+                deps.traceAppendEvent({
+                  event: "HypothesisGuideInjected",
+                  session_id: sessionState.sessionId,
+                  timestamp: new Date().toISOString(),
+                  data: {
+                    ...turnMetrics(state, sessionState, promptSeq),
+                    // trigger 区分三条注入通道：`turn-1`（降级兜底）/`judgment`/
+                    // `probe-to-edit`。分开计数才能回答"改注入时机后采纳率提升了多少"
+                    // ——否则三条通道混在一个事件名下无法归因。
+                    trigger,
+                    textPreview: responseText.slice(0, 200),
+                  },
+                });
+              } catch { /* trace 写入失败不阻断 */ }
+            }
+          }
+        }
+      } catch { /* 观测类检测，异常不阻断主循环 */ }
+    }
+
     // ─── AfterModel hook ───
     if (hookSystem) {
       const afterModelResult = await hookSystem.fireAfterModelEvent(
@@ -2742,7 +2890,12 @@ export async function* queryLoop(
       // 注入 0 次——H1-H6 全 refuted、0 open，闸门不响，而这恰是最该拦的场景。
       if (deps.getHypothesisLedger) {
         const ledger = deps.getHypothesisLedger();
-        if (ledger && ledger.hasUnsettled()) {
+        // 缺口1：闸门增加第二个条件 hasChallengedConfirmed()。
+        // hasUnsettled() 的口径刻意**不动**（confirmed 仍不算未结清，否则每条确认假设
+        // 都拦一道、正常交付被误伤），但"确认后又被证据打脸"必须单独拦——那是
+        // "提前宣布胜利"绕过审查的后窗：`falsifier` 不可修改防的是事后挪靶子，
+        // 却没有任何机制防提前宣布胜利，而后者达到完全相同的效果且更省事。
+        if (ledger && (ledger.hasUnsettled() || ledger.hasChallengedConfirmed())) {
           const retries = state.hypothesisGateRetryCount ?? 0;
           // 续命预算按"还有没有可推进的动作"分档，而不是一刀切 2 次：
           //   - 有 open 假设 → 2 次：open 是可推进的（去取证 → confirm/refute），
@@ -2751,23 +2904,39 @@ export async function* queryLoop(
           //     唯一能做的就是"别把它写成结论/如实标注已证伪"。这一点提醒一次就够，
           //     再拦第二次纯属多烧一轮 token 且无动作可做——正是本次要避免的
           //     "多了步骤、没有收益"。
-          const gateHasOpen = ledger.hasOpen();
+          // 缺口1：续命预算的分档判据里，"确认后被打脸"算**可推进动作**——模型可以
+          // reopen 去补证据、也可以复核后维持结论，两者都是实质动作，与 open 同档。
+          const gateHasOpen = ledger.hasOpen() || ledger.hasChallengedConfirmed();
           const MAX_HYPOTHESIS_GATE_RETRIES = gateHasOpen ? 2 : 1;
           if (retries < MAX_HYPOTHESIS_GATE_RETRIES) {
             state.hypothesisGateRetryCount = retries + 1;
             const unsettled = ledger.unsettled();
+            const challengedConfirmed = ledger.challengedConfirmed();
             ctxMgr.addMessage({
               role: "user",
-              content: [{ type: "text", text: buildDeliveryGateReminder(unsettled) }],
+              content: [
+                {
+                  type: "text",
+                  text: buildDeliveryGateReminder(unsettled, challengedConfirmed),
+                },
+              ],
             });
             log.info(
               "QUERY_LOOP",
-              `环节③ 交付门禁拦截——仍有 ${unsettled.length} 条假设未确认，软续命 ${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES}`,
+              `环节③ 交付门禁拦截——${unsettled.length} 条假设未确认` +
+                (challengedConfirmed.length > 0
+                  ? ` + ${challengedConfirmed.length} 条已确认假设确认后被证据挑战`
+                  : "") +
+                `，软续命 ${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES}`,
             );
             yield {
               kind: "system",
               level: "info",
-              text: `检测到 ${unsettled.length} 条假设未结清，请先裁决再收尾 (${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES})`,
+              text:
+                (unsettled.length > 0
+                  ? `检测到 ${unsettled.length} 条假设未结清`
+                  : `检测到 ${challengedConfirmed.length} 条已确认假设存在反证`) +
+                `，请先裁决再收尾 (${state.hypothesisGateRetryCount}/${MAX_HYPOTHESIS_GATE_RETRIES})`,
             };
             setTransition(state, { type: "hypothesis_gate_retry" }, deps, sessionState.sessionId);
             continue;
@@ -2776,6 +2945,65 @@ export async function* queryLoop(
             "QUERY_LOOP",
             `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，放行（模型应已在交付物中如实降级未确认假设）`,
           );
+        }
+
+        // 缺口2 层次1（交付物内容检查）：门禁只看登记表状态，从不看模型实际写出的字
+        // ——被推翻的说法可以原样写进交付物而不触发任何检查，机制3 的"不得作为结论
+        // 交付"因此只是声明、不是校验。这里补上校验：用 refuted 假设 statement 里
+        // **过了泛化门槛**的具体标识符去匹配本会话写出的交付物文本。
+        //
+        // 与上面的门禁分开续命预算（refutedReuseGateRetryCount）：共用会让先触发的
+        // 那道把预算吃光、另一道永久哑火——正是上一轮修复里 todo/work-log 共享计数器
+        // 踩过的坑。只续命 1 次：这是一次"请自查"，模型要么改要么确认无碍，无需第二次。
+        if (ledger && !state.pendingRefutedReuseCleared) {
+          try {
+            const refuted = ledger.refutedItems();
+            if (refuted.length > 0) {
+              const deliverable = getDeliverableText(sessionState);
+              const reuseHits = detectRefutedReuse(refuted, deliverable);
+              const reuseRetries = state.refutedReuseGateRetryCount ?? 0;
+              if (reuseHits.length > 0 && reuseRetries < 1) {
+                state.refutedReuseGateRetryCount = reuseRetries + 1;
+                // 一次性置位（本条用户消息内）：不置位的话模型改完再收尾会命中同一批
+                // 标识符——它可能只是在如实标注"该假设已被证伪"（那正是门禁要求的正确
+                // 做法），反复质疑模型写对的东西是纯负收益。
+                state.pendingRefutedReuseCleared = true;
+                // 同时清空会话级交付物缓冲：`pendingRefutedReuseCleared` 挂在 LoopState、
+                // 随下一条用户消息归零，若缓冲不清，下一条消息会拿**旧文本**再命中一次
+                // 同样的标识符（模型此时甚至没写任何新东西）。清空后，只有新写出的内容
+                // 才可能再触发——这才是"检查新交付物"而不是"反复检查同一段文本"。
+                resetDeliverableText(sessionState);
+                ctxMgr.addMessage({
+                  role: "user",
+                  content: [{ type: "text", text: buildRefutedReuseReminder(reuseHits) }],
+                });
+                log.info(
+                  "QUERY_LOOP",
+                  `缺口2 交付物复用检查命中 ${reuseHits.length} 条已推翻假设的说法（${reuseHits
+                    .map((h) => `${h.hypothesisId}:${h.matchedIdentifier}`)
+                    .join(",")}），软续命 1/1 请模型自查`,
+                );
+                yield {
+                  kind: "system",
+                  level: "info",
+                  text: `交付物中出现 ${reuseHits.length} 处与已推翻假设重合的表述，请自查 (1/1)`,
+                };
+                setTransition(
+                  state,
+                  { type: "hypothesis_gate_retry" },
+                  deps,
+                  sessionState.sessionId,
+                );
+                continue;
+              }
+            }
+          } catch (e) {
+            // 纯增量检查，异常一律吞掉——它绝不能反过来阻断正常收尾。
+            log.warn(
+              "QUERY_LOOP",
+              `缺口2 交付物复用检查异常（不阻断收尾）: ${(e as Error)?.message}`,
+            );
+          }
         }
       }
 
@@ -3000,11 +3228,29 @@ export async function* queryLoop(
                 timestamp: new Date().toISOString(),
                 data: {
                   tool: b.name,
-                  turn: state.turnCount,
+                  // 缺口7：`data.turn` 是**每条用户消息内重置**的计数器，此前它是这个事件里
+                  // 唯一的轮次口径，导致"这条假设存活了多久""登记发生在会话哪个阶段"
+                  // （缺口 2 的核心度量）在跨消息会话里全部失真。补 absoluteTurn/promptSeq。
+                  ...turnMetrics(state, sessionState, promptSeq),
                   guideInjected: state.hypothesisGuideInjected === true,
                 },
               });
             } catch { /* trace 写入失败不阻断 */ }
+          }
+          // 缺口2 层次1（交付物文本采集）：把 write/edit 类工具**写出去的内容**攒进
+          // 会话级缓冲，供收尾时检查"是否复用了已推翻假设的说法"。
+          //
+          // 为什么必须在这里采集、而不是收尾时回溯上下文：交付物内容多为大段文本，
+          // 上下文里可能已被 compact 折叠或截断，收尾时回溯不到；而这里是它进入
+          // 系统的唯一入口。只在登记表里真有 refuted 假设时才采集——不用这套机制的
+          // 会话（占实测 89.7%）不该为此付任何内存代价。
+          if (deps.getHypothesisLedger) {
+            try {
+              const ledger = deps.getHypothesisLedger();
+              if (ledger && ledger.refutedItems().length > 0) {
+                appendDeliverableText(sessionState, b.name, b.input);
+              }
+            } catch { /* 采集失败不阻断主循环 */ }
           }
         }
       }
@@ -3083,11 +3329,36 @@ export async function* queryLoop(
               return useBlock && useBlock.type === "tool_use" ? useBlock.name : "";
             });
             const hits = ledger.detectContradictions(evidenceItems);
+            // 缺口5（会话内词频自适应·统计端）：与 detectContradictions **同一批**文本
+            // 喂给频次表。必须在 detect **之后**调用：先检测再计数，才能保证一条 cue
+            // 的首次命中永远放行（详见 shouldSuppressByFrequency 的护栏 2）。
+            ledger.observeEvidence(evidenceItems);
             if (hits.length > 0) {
               state.pendingContradictions = [...(state.pendingContradictions ?? []), ...hits];
+              const reopenCount = hits.filter((h) => h.afterConfirm).length;
               log.info(
                 "QUERY_LOOP",
-                `假设登记表矛盾检测命中 ${hits.length} 条（${hits.map((h) => h.hypothesisId).join(",")}），下一轮注入矛盾中断`,
+                `假设登记表矛盾检测命中 ${hits.length} 条（${hits.map((h) => h.hypothesisId).join(",")}）` +
+                  (reopenCount > 0 ? `，其中 ${reopenCount} 条为已确认假设的翻案挑战` : "") +
+                  `，下一轮注入矛盾中断`,
+              );
+            }
+
+            // 缺口2 层次2（假设登记表空转·检测端）：登记表非空但已连续 N 轮无任何假设
+            // 操作，而模型仍在读/改代码——这段"中段空转"是三道闸门的共同盲区（它们只
+            // 在登记时和收尾时工作）。用会话累计轮次判定，不能用消息内 turnCount：
+            // 后者每条用户消息归零，长会话里永远凑不满阈值 → 这道提醒会永久哑火。
+            if (
+              ledger.claimStaleNag(sessionState.getAbsoluteTurn(), HYPOTHESIS_STALE_TURNS)
+            ) {
+              const idle = sessionState.getAbsoluteTurn() - ledger.lastActivityTurn();
+              state.pendingHypothesisStaleReminder = buildStaleLedgerReminder(
+                idle,
+                ledger.all().length,
+              );
+              log.info(
+                "QUERY_LOOP",
+                `假设登记表已空转 ${idle} 轮（共 ${ledger.all().length} 条假设），下一轮注入续期提醒（仅一次）`,
               );
             }
 
@@ -3249,7 +3520,7 @@ export async function* queryLoop(
           );
           emitStuckGuardEvent(deps, sessionState.sessionId, {
             action: "remind",
-            turn: state.turnCount,
+            ...turnMetrics(state, sessionState, promptSeq),
             repeatCount: state.repeatedReadonly.repeatCount,
             reminderCount: state.repeatedReadonly.reminderCount,
             command: decision.command.trim().slice(0, 200),
@@ -3274,7 +3545,7 @@ export async function* queryLoop(
           // 若埋在 return 之后就永远不会执行，而它恰恰是最需要留痕的一次。
           emitStuckGuardEvent(deps, sessionState.sessionId, {
             action: "terminate",
-            turn: state.turnCount,
+            ...turnMetrics(state, sessionState, promptSeq),
             repeatCount: state.repeatedReadonly?.repeatCount ?? 0,
             reminderCount: state.repeatedReadonly?.reminderCount ?? 0,
             command: decision.command.trim().slice(0, 200),

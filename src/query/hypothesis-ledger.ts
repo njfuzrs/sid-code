@@ -28,6 +28,22 @@ export interface HypothesisEvidence {
   turn?: number;
 }
 
+/**
+ * 缺口4:证据方向。
+ *
+ * 根因(全量 68 会话里 `keep_open` 只在 1 个会话出现过 2 次,近乎死选项):
+ * `keep_open` 的实现是**无条件** `h.refuting.push(ev)`。于是模型想说"我有一些支持证据
+ * 但还不够定论"时**没有对应出口**——用 keep_open 会把支持证据错误地记进 refuting。
+ * 语义缺口让选项不可用,三元裁决事实上二元化成 confirm / refute,而二元化会把
+ * "证据不足"的真实处境推向 `confirm`(refute 意味着放弃线索,confirm 能继续推进),
+ * 与缺口1(confirm 曾是单向吸收态)形成正反馈:
+ *   证据不足 → 事实二元化 → 倾向 confirm → 永久免疫证伪 → 错误结论畅通交付
+ *
+ * `neutral` 是 keep_open 未显式给方向时的默认落点:此时"这条证据算支持还是反驳"
+ * 本来就未定,硬塞进任一侧都是在伪造信息——这正是本缺口要修的病。
+ */
+export type EvidenceDirection = "supporting" | "refuting" | "neutral";
+
 export interface Hypothesis {
   id: string;
   /** 假设描述 */
@@ -45,6 +61,13 @@ export interface Hypothesis {
   status: HypothesisStatus;
   supporting: HypothesisEvidence[];
   refuting: HypothesisEvidence[];
+  /**
+   * 缺口4:方向未定的存疑证据(keep_open 未显式给方向时的落点)。
+   *
+   * 与 supporting/refuting 分开存,而不是二选一硬塞:"证据不足以定论"这件事本身
+   * 是有信息量的,把它记进 refuting 会让"连续推翻计数""交付门禁文案"都读到假信息。
+   */
+  neutral: HypothesisEvidence[];
   /** 创建轮次 */
   createdTurn: number;
   /** 最后状态变更轮次 */
@@ -53,6 +76,22 @@ export interface Hypothesis {
    * 已就该假设触发过矛盾中断的证据指纹集合(去重),避免同一条证据反复打断。
    */
   challengedFingerprints: string[];
+  /**
+   * 缺口1:该假设 confirm **之后**又被证据命中证伪条件的次数。
+   *
+   * 存在理由(fdb47f30 的原样复发):`falsifier` 被刻意设成不可修改(防"事后挪动靶子"),
+   * 却没有任何机制防"提前宣布胜利"——两者达到完全相同的效果:让一个未充分验证的判断
+   * 免于审查。而后者**更省事**:模型只要在证据不足时喊一声 confirm,就永久获得免疫,
+   * harness 全程沉默。这个计数让"确认后又被打脸几次"进交付门禁文案,模型无法假装没看见。
+   */
+  challengedAfterConfirm: number;
+  /**
+   * 缺口1:已就该假设注入过"翻案中断"的次数(上限 MAX_REOPEN_CHALLENGES)。
+   *
+   * 与 challengedAfterConfirm 分开计:后者是**事实**(被打脸几次,永久累加,进门禁文案),
+   * 前者是**打扰预算**(注入几次就够了)。合成一个会让"上限用尽"顺带把事实抹掉。
+   */
+  reopenChallengeCount: number;
 }
 
 /** 登记一条假设的入参 */
@@ -68,10 +107,23 @@ export interface RegisterInput {
 /** 对一条假设裁决的入参 */
 export interface ChallengeInput {
   id: string;
-  /** 裁决:确认 / 推翻 / 仍存疑(补充证据但不结案) */
-  verdict: "confirm" | "refute" | "keep_open";
+  /**
+   * 裁决:确认 / 推翻 / 仍存疑(补充证据但不结案) / 翻案(缺口1)。
+   *
+   * `reopen`(缺口1)是 confirmed 的出口:被新证据挑战后可回到 open,重新受门禁约束。
+   * 刻意**不**让 refuted 可翻案——两个方向风险不对称:refute 是保守方向(不会把猜测
+   * 写成结论),confirm 是激进方向(会)。让 refuted 也能翻会引入"翻来覆去永不收敛"
+   * 的新风险,收益却小(refuted 假设本就不会被写成结论)。
+   */
+  verdict: "confirm" | "refute" | "keep_open" | "reopen";
   /** 裁决依据(证据) */
   evidence: HypothesisEvidence;
+  /**
+   * 缺口4:本条证据的方向。仅对 `keep_open` / `reopen` 有意义——
+   * confirm/refute 的方向由 verdict 自身决定(分别必为 supporting/refuting)。
+   * 不给则落 `neutral`(见 EvidenceDirection 注释:硬塞进任一侧就是伪造信息)。
+   */
+  evidenceDirection?: EvidenceDirection;
   turn?: number;
 }
 
@@ -84,6 +136,14 @@ export interface ContradictionHit {
   matchedCue: string;
   /** 触发命中的证据片段 */
   evidenceSnippet: string;
+  /**
+   * 缺口1:该命中发生在假设已 confirmed 之后(=「翻案中断」而非普通矛盾中断)。
+   *
+   * 分档的唯一理由是**措辞**:模型在真实轨迹里会把机制提示读成指责并开始自我批判
+   * (见缺口6),所以翻案文案必须框定为"确认后又出现了这些证据,请确认结论仍然成立",
+   * 而不是"你确认错了"。行为上两者一样(都只是请模型裁决,不阻断)。
+   */
+  afterConfirm?: boolean;
 }
 
 const STOPWORDS = new Set([
@@ -228,6 +288,28 @@ export function isEmptyResultText(s: string): boolean {
 export const HYPOTHESIS_TOOL_NAMES = new Set(["hypothesis_register", "hypothesis_challenge"]);
 
 /**
+ * 缺口1:单条已确认假设最多注入几次「翻案中断」。
+ *
+ * 取 2 的理由:翻案中断的价值高度集中在**第一次**——它要做的事只是"请你确认结论
+ * 仍然成立"。同一条假设被同类证据反复打断时,收益递减而成本线性增长,而反复打扰
+ * 恰恰是本轮修复要避免的"多了步骤、没有收益"。给 2 次而非 1 次是留一次余量:
+ * 第一次可能真是词面撞车,第二次来自不同证据时仍值得再问一遍。
+ *
+ * 注意:超预算只停**注入**,不停 `challengedAfterConfirm` 累加——事实必须留痕,
+ * 它会进交付门禁文案("H3 已确认,但此后有 N 条证据命中其证伪条件")。
+ */
+export const MAX_REOPEN_CHALLENGES = 2;
+
+/**
+ * 缺口5:会话内 cue 词频抑制阈值(严格大于才抑制)。
+ *
+ * 取 6 = max(实测噪音 per-session 条数)+1,推导见 `shouldSuppressByFrequency` 注释。
+ * 关键是**别取 5**:实测 `onrender`/`playwright` 恰好等于 5,阈值语义差一档就从
+ * "不抑制"翻成"抑制"。取 6 保证任何 cue 都能先触发至少一次真中断再可能被静音。
+ */
+export const SESSION_CUE_FREQ_THRESHOLD = 6;
+
+/**
  * 从本轮 tool_result 里挑出可作为"新证据"的文本(机制2 的输入)。
  *
  * 纯函数,便于单测(主循环那段拿不到测试夹具)。做两件事:
@@ -297,6 +379,18 @@ export class HypothesisLedger {
    * 会再次注入,而提示文案明写"本提醒只出现一次"。跟着 ledger 走才与假设状态同寿。
    */
   private strategyNagged = false;
+  /**
+   * 缺口5:cue → 本会话内"含该 cue 的证据条数"(document frequency)。
+   *
+   * 刻意**不**持久化:词频是"本会话语境"的度量,resume 后语境可能已完全不同,
+   * 回灌旧频次等于让上个会话的语境永久静音这个 cue——那是把一个软抑制变成了硬删除。
+   * 空表的降级方向是"多提醒一次",与本模块其它降级选择同向(宁可多提醒,不要哑火)。
+   */
+  private cueDocFreq = new Map<string, number>();
+  /**
+   * 缺口2 层次2:假设"续期"提醒是否已给过(会话级一次性,与 strategyNagged 同理由挂 ledger)。
+   */
+  private staleNagged = false;
 
   /** 机制1:登记假设,强制带 falsifier。返回新建的假设。 */
   register(input: RegisterInput): Hypothesis {
@@ -321,9 +415,12 @@ export class HypothesisLedger {
       status: "open",
       supporting: input.supporting ? [...input.supporting] : [],
       refuting: [],
+      neutral: [],
       createdTurn: input.turn ?? 0,
       updatedTurn: input.turn ?? 0,
       challengedFingerprints: [],
+      challengedAfterConfirm: 0,
+      reopenChallengeCount: 0,
     };
     this.items.set(id, h);
     return h;
@@ -340,9 +437,23 @@ export class HypothesisLedger {
     } else if (input.verdict === "refute") {
       h.refuting.push(ev);
       h.status = "refuted";
+    } else if (input.verdict === "reopen") {
+      // 缺口1:confirmed 的出口——被新证据挑战后退回 open,重新受交付门禁约束。
+      // 允许从任何非 refuted 状态调用(在 open 上调等价于 keep_open,不报错更宽容:
+      // 模型分不清"该 reopen 还是 keep_open"时不该被工具报错打断思路)。
+      // refuted 刻意不可翻案(见 ChallengeInput.verdict 注释的风险不对称论证)。
+      if (h.status === "refuted") {
+        throw new Error(
+          `${h.id} 已被推翻(refuted 是终态,不可翻案)。若确认此前的推翻有误,请登记一条新假设。`,
+        );
+      }
+      this.pushDirectional(h, ev, input.evidenceDirection);
+      h.status = "open";
     } else {
-      // keep_open:补充反驳证据但不结案(证据不足以定论)
-      h.refuting.push(ev);
+      // keep_open:补充证据但不结案(证据不足以定论)。
+      // 缺口4:此前**无条件** push 进 refuting——模型想说"有些支持证据但还不够定论"
+      // 时没有出口,支持证据被错记成反驳。现按显式方向落位,不给方向则落 neutral。
+      this.pushDirectional(h, ev, input.evidenceDirection);
       h.status = "open";
     }
     h.updatedTurn = input.turn ?? h.updatedTurn;
@@ -353,8 +464,30 @@ export class HypothesisLedger {
   }
 
   /**
-   * 机制2 核心:用一段新证据文本,检测是否与任何 open 假设的 falsifier 线索矛盾。
+   * 缺口4:按证据方向落位。方向缺省时进 `neutral`——不硬塞进 supporting/refuting。
+   *
+   * 为什么默认不是 refuting(旧行为):`keep_open` 的字面语义是"还不能定论",
+   * 把它一律当反驳会让 `consecutiveRefutations()`(换策略判据)和交付门禁文案
+   * 都读到伪造的方向信息,而这两处都会据此改变对模型的提示。
+   */
+  private pushDirectional(
+    h: Hypothesis,
+    ev: HypothesisEvidence,
+    direction: EvidenceDirection | undefined,
+  ): void {
+    if (direction === "supporting") h.supporting.push(ev);
+    else if (direction === "refuting") h.refuting.push(ev);
+    else h.neutral.push(ev);
+  }
+
+  /**
+   * 机制2 核心:用一段新证据文本,检测是否与任何**未被推翻**假设的 falsifier 线索矛盾。
    * 命中即返回(可能多条),由主循环据此注入矛盾中断。已就同一证据裁决过的不再触发。
+   *
+   * 缺口1:扫描范围由 `status === "open"` 放宽到 `status !== "refuted"`——
+   *   - `open` → 照旧(普通矛盾中断);
+   *   - `confirmed` → **纳入扫描**,命中产出 `afterConfirm: true` 的「翻案中断」;
+   *   - `refuted` → 继续跳过(已排除的假设不必反复翻,且 refuted 不会被写成结论)。
    */
   detectContradictions(evidence: string | string[]): ContradictionHit[] {
     // 发现 3 后半:支持**逐条** tool_result 而非整轮拼接串。
@@ -373,32 +506,166 @@ export class HypothesisLedger {
       const hay = text.toLowerCase();
       const fp = fingerprint(text);
       for (const h of this.items.values()) {
-        if (h.status !== "open") continue; // 只挑战未结案的
+        // 缺口1:refuted 是终态、不再挑战;open 与 confirmed 都要扫。
+        if (h.status === "refuted") continue;
         if (h.challengedFingerprints.includes(fp)) continue; // 该证据已处理过
         // 同一轮内一条假设最多产出一条命中(多条 tool_result 都撞同一假设时不重复打扰)
         if (hits.some((x) => x.hypothesisId === h.id)) continue;
+        const afterConfirm = h.status === "confirmed";
+        // 缺口1:翻案中断的打扰预算(普通矛盾中断不受此限)。已确认的假设反复被同类
+        // 词面撞车打断,收益递减而成本线性——超预算后仍累加 challengedAfterConfirm
+        // (事实要留痕、进门禁文案),只是不再注入中断。
+        if (afterConfirm && h.reopenChallengeCount >= MAX_REOPEN_CHALLENGES) {
+          continue;
+        }
         for (const cue of h.falsifierCues) {
-          if (cue && hay.includes(cue)) {
-            hits.push({
-              hypothesisId: h.id,
-              statement: h.statement,
-              falsifier: h.falsifier,
-              matchedCue: cue,
-              evidenceSnippet: text.replace(/\s+/g, " ").trim().slice(0, 200),
-            });
-            // 记入指纹,避免下一轮同证据重复触发(本轮已会注入中断)
-            h.challengedFingerprints.push(fp);
-            break; // 一条假设命中一次即可
+          if (!cue || !hay.includes(cue)) continue;
+          // 缺口5:会话内语境高频词抑制。cue 通过了静态长度门槛,但"够长"不等于
+          // "在本任务语境里够特异"——实测 `onrender`×5 / `playwright`×5 /
+          // `contextwindow`×3 都是长度合格却在本会话遍地出现的词。
+          // 判据只看**本会话已见过多少条不同证据含该词**,首次命中永远放行(见
+          // shouldSuppressByFrequency 的护栏说明)。
+          if (this.shouldSuppressByFrequency(cue)) break;
+          hits.push({
+            hypothesisId: h.id,
+            statement: h.statement,
+            falsifier: h.falsifier,
+            matchedCue: cue,
+            evidenceSnippet: text.replace(/\s+/g, " ").trim().slice(0, 200),
+            ...(afterConfirm ? { afterConfirm: true } : {}),
+          });
+          // 记入指纹,避免下一轮同证据重复触发(本轮已会注入中断)
+          h.challengedFingerprints.push(fp);
+          if (afterConfirm) {
+            // 事实(被打脸几次)与打扰预算(注入几次)分开计,见字段注释。
+            h.challengedAfterConfirm += 1;
+            h.reopenChallengeCount += 1;
           }
+          break; // 一条假设命中一次即可
         }
       }
     }
     return hits;
   }
 
+  /**
+   * 缺口5:登记一批证据文本里出现过哪些 cue(会话内词频统计的输入)。
+   *
+   * 由主循环在每轮工具结果回流时调用,**与 detectContradictions 同一批文本**。
+   * 统计口径是"含该 cue 的证据条数"而非"出现次数"——同一条 tool_result 里
+   * `resize` 出现 30 次只算 1 条,否则一个长文件就能把任何 cue 打成"高频词"。
+   */
+  observeEvidence(evidence: string | string[]): void {
+    const items = (Array.isArray(evidence) ? evidence : [evidence]).filter(
+      (t): t is string => typeof t === "string" && t.length > 0,
+    );
+    if (items.length === 0) return;
+    // 只统计"当前登记表里真的在用的 cue",避免为无关词无限增长这张表。
+    const activeCues = new Set<string>();
+    for (const h of this.items.values()) {
+      for (const cue of h.falsifierCues) if (cue) activeCues.add(cue);
+    }
+    if (activeCues.size === 0) return;
+    for (const text of items) {
+      if (isEmptyResultText(text)) continue;
+      const hay = text.toLowerCase();
+      for (const cue of activeCues) {
+        if (hay.includes(cue)) {
+          this.cueDocFreq.set(cue, (this.cueDocFreq.get(cue) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  /**
+   * 缺口5:该 cue 是否已被本会话语境证明为"高频泛化词",本次命中应跳过。
+   *
+   * 两条护栏(缺一不可,否则这个自适应会自己变成新的漏报源):
+   *   1. **只跳过本次命中,绝不删 cue**——词频是会话内的、可能只是某个阶段的语境,
+   *      删掉就永久失去检测能力,而漏报正是本模块最怕的失效方向(fdb47f30 的形态)。
+   *   2. **首次命中永远放行**：判据用 `> SESSION_CUE_FREQ_THRESHOLD` 且统计发生在
+   *      检测**同批**文本上,含该 cue 的当前这批已计入频次。阈值取 6 保证一条 cue
+   *      至少能触发一次真中断后才可能被抑制——「一次都没提醒过就被静音」是不可接受的。
+   *
+   * 阈值 6 的推导(设计文档 §2.5 实测的残留噪音分布):真实语料里 per-session
+   * 含 cue 证据条数最高的是 `onrender`=5 / `playwright`=5 / `prevscreen`=4 /
+   * `handleresize`=4 / `contextwindow`=3。取 6 = max(实测噪音)+1,意味着**本次改动
+   * 对已知噪音样本一次都不抑制**——刻意保守:抑制的是"比已知最坏情况还泛化"的词。
+   * 文档目测的 5 会把 `onrender`/`playwright` 卡在边界(它们恰好等于 5,`> 5` 不成立、
+   * `>= 5` 成立),阈值语义差一档就从"不抑制"翻成"抑制",故明确写成 `>` 且取 6。
+   */
+  private shouldSuppressByFrequency(cue: string): boolean {
+    return (this.cueDocFreq.get(cue) ?? 0) > SESSION_CUE_FREQ_THRESHOLD;
+  }
+
+  /** 缺口5:只读快照,供单测与离线核对(不暴露内部 Map 引用)。 */
+  cueFrequencySnapshot(): Record<string, number> {
+    return Object.fromEntries(this.cueDocFreq);
+  }
+
   /** 机制3:交付门禁——返回仍为 open / refuted 的假设(不得作为结论交付) */
   unsettled(): Hypothesis[] {
     return [...this.items.values()].filter((h) => h.status !== "confirmed");
+  }
+
+  /**
+   * 缺口1:已确认、但确认之后又被证据命中证伪条件的假设。
+   *
+   * 交付门禁的**第二道闸门**:`hasUnsettled()` 口径刻意不变(confirmed 仍不算未结清,
+   * 否则每条确认假设都会拦一道、正常交付被误伤),但"确认后又被打脸"的假设必须单独拦
+   * ——这正是"提前宣布胜利"绕过审查的那扇后窗。
+   */
+  challengedConfirmed(): Hypothesis[] {
+    return [...this.items.values()].filter(
+      (h) => h.status === "confirmed" && h.challengedAfterConfirm > 0,
+    );
+  }
+
+  /** 缺口1:是否存在"确认后又被证据挑战过"的假设(门禁闸门用)。 */
+  hasChallengedConfirmed(): boolean {
+    for (const h of this.items.values()) {
+      if (h.status === "confirmed" && h.challengedAfterConfirm > 0) return true;
+    }
+    return false;
+  }
+
+  /** 缺口2:所有已被推翻的假设(供"交付物是否复用了已推翻说法"检查)。 */
+  refutedItems(): Hypothesis[] {
+    return [...this.items.values()].filter((h) => h.status === "refuted");
+  }
+
+  /** 缺口2:登记表里最后一次 hypothesis 操作发生的轮次（用 updatedTurn 的最大值）。 */
+  lastActivityTurn(): number {
+    let max = 0;
+    for (const h of this.items.values()) {
+      if (h.updatedTurn > max) max = h.updatedTurn;
+      if (h.createdTurn > max) max = h.createdTurn;
+    }
+    return max;
+  }
+
+  /**
+   * 缺口2 层次2:判定「该给假设续期提醒了吗」,并在返回 true 时**就地置位**一次性标志。
+   *
+   * 与 claimStrategyNag 同款「判据+置位原子」设计:分开会让调用方漏置位就每 N 轮刷屏、
+   * 错置位就永久哑火。
+   *
+   * 判据(三条同时满足):
+   *   1. 登记表**非空**——从不用这套机制的会话不该被打扰(占全量 68 会话的 89.7%);
+   *   2. 距末次假设操作已超 staleTurns 轮;
+   *   3. 尚未给过(会话级一次性)。
+   *
+   * 刻意**不**要求"有未结清假设":假设全部结清后的空转期恰恰是风险最高的阶段
+   * (设计文档 §2.3:假设集中在会话前 1/4 结清,之后 32-65 轮登记表完全空转,
+   * 而那正是改代码+写交付物的阶段)。
+   */
+  claimStaleNag(currentTurn: number, staleTurns: number): boolean {
+    if (this.staleNagged) return false;
+    if (this.items.size === 0) return false;
+    const last = this.lastActivityTurn();
+    if (currentTurn - last < staleTurns) return false;
+    this.staleNagged = true;
+    return true;
   }
 
   get(id: string): Hypothesis | undefined {
@@ -498,6 +765,11 @@ export class HypothesisLedger {
     this.seq = 0;
     // 一次性标志随 /clear 一并清零：新一轮排查是全新的搜索过程，应当重新有机会拿到提示。
     this.strategyNagged = false;
+    // 缺口2 层次2：续期提醒同理由随 /clear 清零。
+    this.staleNagged = false;
+    // 缺口5：词频是"本会话语境"的度量，/clear 后语境重置，频次表必须一并清空——
+    // 否则清空对话后旧语境仍在静音某些 cue（软抑制退化成隐形的硬删除）。
+    this.cueDocFreq.clear();
   }
 
   /**
@@ -509,7 +781,7 @@ export class HypothesisLedger {
    *
    * 全量存储 items(含证据链/证伪线索/状态)+ seq(保持 id 单调递增,避免恢复后 register 撞号)。
    */
-  serialize(): { seq: number; items: Hypothesis[]; strategyNagged?: boolean } {
+  serialize(): { seq: number; items: Hypothesis[]; strategyNagged?: boolean; staleNagged?: boolean } {
     return {
       seq: this.seq,
       // 缺陷3：一次性标志随快照走。理由与 items 持久化同源——跨会话续做同一排查时
@@ -517,11 +789,17 @@ export class HypothesisLedger {
       // 而文案明写"本提醒只出现一次"。
       strategyNagged: this.strategyNagged,
       // 深拷贝,防止外部改写快照污染内部状态(与 TodoWriteTool.serialize 同款纪律)
+      // 缺口2 层次2：续期提醒的一次性标志同理由随快照走（否则 `-c` 恢复后重复提醒）。
+      staleNagged: this.staleNagged,
+      // 深拷贝,防止外部改写快照污染内部状态(与 TodoWriteTool.serialize 同款纪律)
       items: [...this.items.values()].map((h) => ({
         ...h,
         falsifierCues: [...h.falsifierCues],
         supporting: h.supporting.map((e) => ({ ...e })),
         refuting: h.refuting.map((e) => ({ ...e })),
+        // 缺口4：neutral 与 supporting/refuting 同等持久化——它承载"证据不足以定论"
+        // 这个有信息量的事实，丢了就等于 resume 后把存疑证据当无证据。
+        neutral: h.neutral.map((e) => ({ ...e })),
         challengedFingerprints: [...h.challengedFingerprints],
       })),
     };
@@ -534,7 +812,12 @@ export class HypothesisLedger {
    * seq 取「快照 seq」与「回灌成功的最大 H 编号」的较大值——即使 seq 字段丢失或偏小,也能保证
    * 后续 register 生成的 id 不与已恢复假设撞号。
    */
-  hydrate(snapshot: { seq?: unknown; items?: unknown; strategyNagged?: unknown } | undefined | null): void {
+  hydrate(
+    snapshot:
+      | { seq?: unknown; items?: unknown; strategyNagged?: unknown; staleNagged?: unknown }
+      | undefined
+      | null,
+  ): void {
     if (!snapshot || typeof snapshot !== "object") return;
     const rawItems = (snapshot as { items?: unknown }).items;
     if (!Array.isArray(rawItems)) return;
@@ -555,9 +838,18 @@ export class HypothesisLedger {
         status: h.status,
         supporting: Array.isArray(h.supporting) ? h.supporting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
         refuting: Array.isArray(h.refuting) ? h.refuting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
+        // 缺口4：旧快照没有 neutral 字段 → 回灌为空数组（安全降级：只是少了存疑证据的
+        // 展示，不影响任何判据；绝不把旧的 refuting 内容挪过来伪造方向）。
+        neutral: Array.isArray(h.neutral) ? h.neutral.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
         createdTurn: typeof h.createdTurn === "number" ? h.createdTurn : 0,
         updatedTurn: typeof h.updatedTurn === "number" ? h.updatedTurn : 0,
         challengedFingerprints: Array.isArray(h.challengedFingerprints) ? h.challengedFingerprints.filter((f): f is string => typeof f === "string") : [],
+        // 缺口1：旧快照缺字段 → 0。降级方向是"确认后被打脸的历史丢了、门禁不拦"，
+        // 与 strategyNagged 缺字段时的选择一致：宁可漏一次提醒，不要凭空造出一次拦截。
+        challengedAfterConfirm: typeof h.challengedAfterConfirm === "number" && h.challengedAfterConfirm >= 0 ? h.challengedAfterConfirm : 0,
+        // 打扰预算刻意**不**从快照恢复语义上的"已用尽"——resume 是新一段排查，
+        // 让每条已确认假设重新有 MAX_REOPEN_CHALLENGES 次机会。同样是"宁可多提醒"。
+        reopenChallengeCount: 0,
       });
       // 从 id(形如 "H3")提取编号,兜底 seq
       const m = /^H(\d+)$/.exec(h.id);
@@ -570,6 +862,10 @@ export class HypothesisLedger {
     // 这是安全的降级方向：宁可多给一次有用提示，不要静默哑火）。
     if ((snapshot as { strategyNagged?: unknown }).strategyNagged === true) {
       this.strategyNagged = true;
+    }
+    // 缺口2 层次2：续期提醒的一次性标志同款回灌（缺字段 → false，即恢复后仍有一次机会）。
+    if ((snapshot as { staleNagged?: unknown }).staleNagged === true) {
+      this.staleNagged = true;
     }
   }
 }
@@ -584,21 +880,43 @@ export class HypothesisLedger {
  * "进程没崩"的证据(命中了"崩溃"假设的证伪条件),却没有停下来裁决就继续写"崩溃"。
  */
 export function buildContradictionReminder(hits: ContradictionHit[]): string {
-  const lines = hits.map(
-    (h) =>
-      `- ${h.hypothesisId}「${h.statement}」的证伪条件是:${h.falsifier}\n` +
-      `  刚出现的证据命中了它的关键线索「${h.matchedCue}」:${h.evidenceSnippet}`,
-  );
+  // 缺口1:把「已确认假设被打脸」单独分段。行为上两者一样(都只是请模型裁决、不阻断),
+  // 分档的唯一理由是**措辞**——模型在真实轨迹里会把机制提示读成指责并开始自我批判
+  // (缺口6),所以翻案段必须框定成"请确认结论仍然成立",而不是"你确认错了"。
+  const plain = hits.filter((h) => !h.afterConfirm);
+  const afterConfirm = hits.filter((h) => h.afterConfirm);
+  const fmt = (h: ContradictionHit) =>
+    `- ${h.hypothesisId}「${h.statement}」的证伪条件是:${h.falsifier}\n` +
+    `  刚出现的证据命中了它的关键线索「${h.matchedCue}」:${h.evidenceSnippet}`;
+
+  const sections: string[] = [];
+  if (plain.length > 0) {
+    sections.push(
+      `以下新证据的文本命中了你之前登记假设的证伪条件线索,\n` +
+        `可能与假设相关,也可能只是词面撞车——请你自己判断。\n\n${plain.map(fmt).join("\n")}\n\n` +
+        `如果你判断证据确实与某条假设相关,可用 hypothesis_challenge 更新其状态:\n` +
+        `- 证据推翻了假设 → verdict=refute(这是有价值的纠偏,不是失败);\n` +
+        `- 证据不足以定论 → verdict=keep_open(可用 evidence_direction 标明这条证据偏支持还是偏反驳);\n` +
+        `- 证据其实支持假设或只是词面撞车、不构成矛盾 → 可忽略本提醒,或按需 confirm/keep_open。`,
+    );
+  }
+  if (afterConfirm.length > 0) {
+    sections.push(
+      `下面这些假设你**已经确认过**,但之后又出现了命中其证伪条件线索的证据:\n\n` +
+        `${afterConfirm.map(fmt).join("\n")}\n\n` +
+        `这不是说你确认错了——多半只是词面撞车。只需确认一下当初的结论在这些新证据下仍然成立:\n` +
+        `- 结论仍成立(证据无关/其实支持) → 无需任何动作,继续即可;\n` +
+        `- 新证据确实动摇了它 → hypothesis_challenge verdict=reopen 退回 open,重新取证;\n` +
+        `- 已能直接推翻 → verdict=refute。\n` +
+        `早期确认的结论在后续证据面前复核一次,是这套机制存在的原因:确认不该等于免于审查。`,
+    );
+  }
+
   return `<system-reminder>
-提示(请勿向用户提及本提醒):以下新证据的文本命中了你之前登记假设的证伪条件线索,
-可能与假设相关,也可能只是词面撞车——请你自己判断。
+提示(请勿向用户提及本提醒):
 
-${lines.join("\n")}
+${sections.join("\n\n")}
 
-如果你判断证据确实与某条假设相关,可用 hypothesis_challenge 更新其状态:
-- 证据推翻了假设 → verdict=refute(这是有价值的纠偏,不是失败);
-- 证据不足以定论 → verdict=keep_open;
-- 证据其实支持假设或只是词面撞车、不构成矛盾 → 可忽略本提醒,或按需 confirm/keep_open。
 本提醒仅供参考,不要求你中断当前工作;若无关可直接继续。
 </system-reminder>`;
 }
@@ -609,17 +927,52 @@ ${lines.join("\n")}
  * 模型试图收尾(end_turn)但仍有 open/refuted 假设未结清时注入,阻止它把未证实的假设
  * 当结论交付。对齐 todo 完成度门禁的思路,但门的是"结论的证据成色"而非"任务完成度"。
  */
-export function buildDeliveryGateReminder(unsettled: Hypothesis[]): string {
-  const lines = unsettled.map((h) => `- ${h.id} [${h.status}]「${h.statement}」`);
+export function buildDeliveryGateReminder(
+  unsettled: Hypothesis[],
+  /**
+   * 缺口1:已确认但确认后又被证据挑战过的假设。空数组时文案与旧版等价
+   * (调用方不传即保持向后兼容)。
+   */
+  challengedConfirmed: Hypothesis[] = [],
+): string {
+  const sections: string[] = [];
+  if (unsettled.length > 0) {
+    const lines = unsettled.map((h) => `- ${h.id} [${h.status}]「${h.statement}」`);
+    sections.push(
+      `假设登记表中仍有 ${unsettled.length} 条假设未被确认(状态为 open 或 refuted):\n` +
+        `${lines.join("\n")}\n\n` +
+        `机制3 交付门禁:**未确认的假设不得作为结论写进最终交付物。**\n` +
+        `请逐条处理:\n` +
+        `- 还能验证的 → 去取证后用 hypothesis_challenge 裁决;\n` +
+        `- 已被推翻(refuted)的 → 不要写进结论,或明确标注"此前假设已被证伪";\n` +
+        `- 确实无法定论的 → 在交付物里如实降级为"待验证",不要伪装成已确认的根因。`,
+    );
+  }
+  if (challengedConfirmed.length > 0) {
+    // 缺口1:让"确认后被打脸"这个事实进门禁文案。此前 confirmed 是单向吸收态,
+    // 模型只要在证据不足时喊一声 confirm 就永久免疫审查(比"事后挪动靶子"更省事,
+    // 而后者是被刻意禁止的)。这段不阻止交付,只要求结论对得上证据。
+    const lines = challengedConfirmed.map(
+      (h) =>
+        `- ${h.id}「${h.statement}」:确认后有 ${h.challengedAfterConfirm} 条证据命中过它的证伪条件` +
+        `(证伪条件:${h.falsifier})`,
+    );
+    sections.push(
+      `另有 ${challengedConfirmed.length} 条**已确认**假设,在确认之后又被证据命中过证伪条件:\n` +
+        `${lines.join("\n")}\n\n` +
+        `交付前请确认这些结论仍然站得住:\n` +
+        `- 复核后仍成立 → 直接交付即可,无需额外动作;\n` +
+        `- 当初确认得过早、证据其实不足 → hypothesis_challenge verdict=reopen 退回 open,` +
+        `或 verdict=refute 推翻,并据此改写结论。\n` +
+        `确认过的判断在新证据面前复核一次不是走形式:把没验证充分的结论写成根因,` +
+        `正是这套机制要防的那类错误。`,
+    );
+  }
+  if (sections.length === 0) return "";
   return `<system-reminder>
-你正准备收尾,但假设登记表中仍有 ${unsettled.length} 条假设未被确认(状态为 open 或 refuted):
-${lines.join("\n")}
+你正准备收尾,但假设登记表还有需要处理的地方:
 
-机制3 交付门禁:**未确认的假设不得作为结论写进最终交付物。**
-请逐条处理:
-- 还能验证的 → 去取证后用 hypothesis_challenge 裁决;
-- 已被推翻(refuted)的 → 不要写进结论,或明确标注"此前假设已被证伪";
-- 确实无法定论的 → 在交付物里如实降级为"待验证",不要伪装成已确认的根因。
+${sections.join("\n\n")}
 </system-reminder>`;
 }
 
@@ -658,5 +1011,122 @@ export function buildStrategyShiftReminder(refutedCount: number): string {
 - 问用户:补一个关键的复现条件或环境细节,往往比再猜三次都有效。
 
 已推翻的假设是有效产出(缩小了空间),不必回头翻案。本提醒只出现一次。
+</system-reminder>`;
+}
+
+// ─────────────────── 缺口2:门禁与交付物挂钩 ───────────────────
+
+/**
+ * 缺口2 层次2:假设登记表"空转"多少轮后给一次续期提醒。
+ *
+ * 取 20 的依据(设计文档 §2.3 换算成会话内绝对轮次后的尾部空转实测):
+ * `162226`=44 轮 / `172113`=56 轮 / `144806`=65 轮 / `180029`=32 轮。
+ * 也就是说假设集中在会话**前 1/4** 结清,之后几十轮登记表完全空转——而那几十轮
+ * 恰恰是改代码、写交付物的阶段,也是"把未验证判断写成结论"最可能发生的阶段。
+ *
+ * 20 是"已经明显空转、但还没滑到交付"的位置:实测最小空转样本是 32 轮,取 20
+ * 能在最短的那条轨迹上也提前十几轮命中;再小(如 10)会打扰正常的"登记完就去实现"节奏。
+ */
+export const HYPOTHESIS_STALE_TURNS = 20;
+
+/**
+ * 缺口2 层次2:构造"假设登记表已空转"的续期提醒。
+ *
+ * 定位:这是**唯一**在"会话中段"提醒假设纪律的机制。此前三道闸门全部集中在
+ * 「登记时」和「收尾时」,中间几十轮无人看管——模型在这段里形成的新判断不会经过
+ * 登记,于是三道机制对它们全部失效(不是防线被绕过,是它们从未进入防线视野)。
+ *
+ * 措辞刻意轻量、且明说可忽略:空转本身不是错误(假设都结清了很正常),
+ * 它只是一个"要不要把新形成的判断也登记一下"的时机提示。会话级只给一次。
+ */
+export function buildStaleLedgerReminder(idleTurns: number, total: number): string {
+  return `<system-reminder>
+提示(请勿向用户提及本提醒):你已登记过 ${total} 条假设,但最近约 ${idleTurns} 轮没有任何
+假设登记/裁决动作,而这期间你仍在读代码、改代码。
+
+这不是问题,只是一个时机提示:这几十轮里你很可能又形成了新的判断(某处代码是这样工作的、
+某个改动能修掉问题)。这类判断如果没登记,就不会被证伪检测和交付门禁看到——三道机制
+对它们是完全失效的,不是被绕过,而是从未进入视野。
+
+如果手上确实有还没验证的判断,值得 hypothesis_register 登记一下;
+如果当前工作已经是在执行确定的方案、没有待验证判断,忽略本提醒即可。本提醒只出现一次。
+</system-reminder>`;
+}
+
+/**
+ * 缺口2 层次1:从一条已推翻假设的 statement 里提取"足够具体、可用于文本匹配"的标识符。
+ *
+ * 复用 `sanitizeExplicitCues` 的泛化门槛(而不是另造一套):这个门槛的整个存在理由就是
+ * "把一碰就中的泛化词筛掉",而本处要防的误报形态与矛盾检测完全同类——用 statement 里的
+ * `config`/`output` 这种词去匹配交付物,必然全中。共用门槛也保证两处口径不会各自漂移。
+ */
+export function refutedStatementIdentifiers(h: Hypothesis): string[] {
+  // statement 是自然语言句子,先按 extractCues 的口径拿到长片段/长标识符,
+  // 再过一遍 sanitizeExplicitCues 的门槛(extractCues 已含门槛,这里是双保险且去重)。
+  return sanitizeExplicitCues(extractCues(h.statement));
+}
+
+/** 缺口2 层次1:一条"已推翻说法可能被复用进交付物"的命中。 */
+export interface RefutedReuseHit {
+  hypothesisId: string;
+  statement: string;
+  /** 命中的具体标识符(不是整句,便于模型定位) */
+  matchedIdentifier: string;
+}
+
+/**
+ * 缺口2 层次1:检查交付物文本里是否复用了已推翻假设的具体说法。
+ *
+ * 为什么必须做这一层:三道机制全部作用在**登记表状态**上,没有任何一处看过模型
+ * 实际写出去的字。真实轨迹里(`142920`)H1-H6 全 refuted,而门禁只问"假设结清了吗",
+ * 不问"你交付物里那段结论是不是就是刚才被推翻的 H3"——被推翻的说法可以原样写进
+ * 交付物而不触发任何检查,机制3 的"不得作为结论交付"因此只是**声明**,不是**校验**。
+ *
+ * 判据刻意保守(宁可漏报不误报,误报会让模型怀疑自己写对的东西):
+ *   - 只用过了泛化门槛的具体标识符,不做语义匹配;
+ *   - 每条假设最多产出一条命中;
+ *   - 输出是**疑问句**而非断言(见 buildRefutedReuseReminder)——匹配到标识符不等于
+ *     真的复用了错误结论,模型完全可能是在写"H3 已被证伪"这种如实标注。
+ */
+export function detectRefutedReuse(
+  refuted: Hypothesis[],
+  deliverableText: string,
+): RefutedReuseHit[] {
+  if (!deliverableText || refuted.length === 0) return [];
+  const hay = deliverableText.toLowerCase();
+  const hits: RefutedReuseHit[] = [];
+  for (const h of refuted) {
+    for (const id of refutedStatementIdentifiers(h)) {
+      if (id && hay.includes(id)) {
+        hits.push({ hypothesisId: h.id, statement: h.statement, matchedIdentifier: id });
+        break; // 一条假设一条命中即可,不刷屏
+      }
+    }
+  }
+  return hits;
+}
+
+/**
+ * 缺口2 层次1:构造"交付物疑似复用已推翻说法"的提醒。
+ *
+ * 全文用疑问句、且明说"可能只是词面重合":匹配到标识符**不等于**复用了错误结论——
+ * 模型可能正在如实标注"此前 H3 假设已被证伪"(那恰恰是门禁要求的正确做法)。
+ * 断言式措辞会让模型怀疑自己写对的东西,那是负收益。
+ */
+export function buildRefutedReuseReminder(hits: RefutedReuseHit[]): string {
+  const lines = hits.map(
+    (h) => `- ${h.hypothesisId}「${h.statement}」(交付物里出现了其中的「${h.matchedIdentifier}」)`,
+  );
+  return `<system-reminder>
+提示(请勿向用户提及本提醒):你刚写出的内容里出现了一些字眼,与此前**已被推翻**的假设有重合:
+
+${lines.join("\n")}
+
+这可能只是词面重合(比如你正在如实说明"该假设已被证伪",那完全正确),也可能是
+被推翻的说法又被当成结论写了进去。请自查一下:交付物里这部分表述,是否仍把上面
+这些已证伪的判断当作成立的结论?
+
+- 若只是词面重合或已如实标注 → 无需任何动作;
+- 若确实复用了已推翻的说法 → 请改写该处,或明确标注它已被证伪。
 </system-reminder>`;
 }

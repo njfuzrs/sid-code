@@ -41,7 +41,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `exit_worktree` | 退出当前 Worktree 并返回主工作区。 | — | `action` `discard_changes` |
 | `glob` | 使用 glob 模式查找文件。结果按修改时间降序排列（最近编辑的在前）。支持通配符如 **/*.ts | `pattern` | `path` `ignore` |
 | `grep` | 在文件中搜索匹配正则表达式的内容。基于 ripgrep 构建，支持三种输出模式：files_with_matches（默认，最省 token）、content（显示匹配行和上下文）、count（显示匹配数）。 | `pattern` | `path` `output_mode` `case_insensitive` `glob` `type` `context` `before_context` `after_context` `head_limit` `offset` `max_matches_per_file` `fixed_strings` `multiline` `total_max_matches` |
-| `hypothesis_challenge` | 对假设登记表中的某条假设做裁决:确认、推翻、或仍存疑。 | `id` `verdict` `evidence` | — |
+| `hypothesis_challenge` | 对假设登记表中的某条假设做裁决:确认、推翻、或仍存疑。 | `id` `verdict` `evidence` | `evidence_direction` |
 | `hypothesis_register` | 登记一条排查/根因假设到假设登记表,**强制预注册证伪条件**。 | `statement` `falsifier` | `falsifier_cues` `supporting_evidence` |
 | `ls` | 列举目录的直接子项（非递归）。目录优先，同类按字母升序，显示文件大小与符号链接。 | `dir_path` | `ignore` |
 | `lsp` | 与 Language Server Protocol（LSP）服务器交互，获取精确的代码智能信息：跳转定义、查找引用、悬停类型/文档、文件符号列表、全工作区符号搜索、查找实现、调用层级、以及获取确定性代码修复建议（co… | `operation` `filePath` | `line` `character` `query` |

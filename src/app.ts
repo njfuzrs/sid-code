@@ -1643,12 +1643,60 @@ export class App {
     todoTool?.reset?.();
   }
 
+  /**
+   * 缺口8：给假设工具接线埋点写入端与真实轮次取值器（延迟接线）。
+   *
+   * 两件事此前都是缺的：
+   *   1. 裁决**没有任何埋点**——events.jsonl 里只有 HypothesisToolUsed（记"调了哪个工具"），
+   *      答不出"confirm 时平均握有几条带 source 的支持证据"，而那是判定缺口1/4 修没修对
+   *      的唯一硬指标。
+   *   2. 轮次恒为 0（cli.ts 原注释："turnProvider 暂用占位"）——于是 createdTurn/updatedTurn
+   *      全是 0，"假设从登记到裁决跨了几轮""登记表空转了多久"（缺口2 的判据）全部失真。
+   *      接的是**会话累计轮次**而非消息内 turnCount：后者每条用户消息归零，相减无意义。
+   */
+  private wireHypothesisTools(
+    collector: import("./trace/collector.ts").TraceCollector | null,
+  ): void {
+    try {
+      const regTool = this.toolRegistry.get("hypothesis_register") as
+        | import("./tool/hypothesis.ts").HypothesisRegisterTool
+        | undefined;
+      const chTool = this.toolRegistry.get("hypothesis_challenge") as
+        | import("./tool/hypothesis.ts").HypothesisChallengeTool
+        | undefined;
+      const turnProvider = () => this.sessionState.getAbsoluteTurn();
+      regTool?.setTurnProvider(turnProvider);
+      chTool?.setTurnProvider(turnProvider);
+      if (collector && chTool) {
+        // 与 engine.ts 的 traceAppendEvent 走同一条写入路径（collector.writer.appendEvent），
+        // 保证 HypothesisSettled 与 HypothesisToolUsed/HypothesisGuideInjected 落在同一
+        // events.jsonl、可直接 join 分析。
+        chTool.setTraceSink(
+          (event) => {
+            try {
+              (collector as any).writer?.appendEvent?.(event);
+            } catch { /* 埋点写入失败静默 */ }
+          },
+          () => this.sessionState.sessionId,
+        );
+      }
+    } catch (e) {
+      getLogger().warn("APP", `假设工具接线失败（不阻断，埋点/轮次降级）: ${(e as Error)?.message}`);
+    }
+  }
+
   /** /clear 时重置假设登记表（环节③） */
   private resetHypothesisLedger(): void {
     const regTool = this.toolRegistry.get("hypothesis_register") as
       | import("./tool/hypothesis.ts").HypothesisRegisterTool
       | undefined;
     regTool?.getLedger()?.reset();
+    // 缺口2 层次1：交付物文本缓冲与登记表同寿——ledger 清空后旧交付物文本已无对照
+    // 依据（refuted 假设都没了），留着只会白占内存。
+    // 动态 import 与本文件对 query/* 的既有引用风格一致（避免给 app.ts 顶部再加静态依赖）。
+    import("./query/deliverable-text.ts")
+      .then((m) => m.resetDeliverableText(this.sessionState))
+      .catch(() => { /* 纯清理，异常不阻断 /clear */ });
   }
 
   /**
@@ -2393,6 +2441,10 @@ export class App {
     if (traceCollectorInstance && this.queryEngine) {
       (this.queryEngine as any).deps.traceCollector = traceCollectorInstance;
     }
+
+    // 缺口8：给假设工具接上埋点写入端 + 真实轮次取值器（延迟接线，此时 writer 已就绪）。
+    // 与 wireSubAgentUsageSink 同款时序：工具在 cli.ts 注册时 collector 还不存在。
+    this.wireHypothesisTools(traceCollectorInstance);
 
     // T12：绑定 RetryTelemetry 事件写入器（延迟绑定，此时 writer 已就绪）
     if (traceCollectorInstance) {

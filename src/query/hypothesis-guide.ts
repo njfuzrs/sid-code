@@ -225,22 +225,127 @@ export function diagnoseInvestigationContext(userMessage: string): {
   return { hasPath, hasVerb, highSignal, jsonTitleHit, triggered, quadrant };
 }
 
-/**
- * 构造假设纪律 system-reminder（一次性强推）。
- *
- * 措辞为"建议"而非"强制"——不阻断、不等待、不打回，模型仍有裁量权决定用不用。
- * 这是设计决策：硬塞会误伤简单任务，软推 + 模型判断是更好的平衡点。
- *
- * @returns system-reminder 文本
- */
-export function buildHypothesisGuideReminder(): string {
-  return `<system-reminder>
-这看起来是一个核查 / 排查 / 审计类任务。提醒：当你形成第一个"我认为是 X"的事实性判断时，先用 \`hypothesis_register\` 登记它、写清证伪条件（"看到什么证据就推翻"），而不是直接当结论写下去。
+// ─────────────── 缺口3：事件驱动的注入时机（判断刚形成时，而非任务开头） ───────────────
+//
+// 原 `buildHypothesisGuideReminder`（turn-1 的完整引导）已删除，其内容一分为二：
+//   - "该用这套机制"这一句 → buildMinimalGuideReminder（turn-1 兜底，极简）;
+//   - "先 read 再下结论"/"附 file:line 证据指针"两条配套习惯 → buildJudgmentGuideReminder
+//     （紧贴判断形成的时机，那里它们才用得上）。
+// 删掉而非保留一个无人调用的导出：本文档 §五的成本纪律要求砍掉不产生新信息的步骤，
+// 死代码留在这里只会让下一个读者以为 turn-1 还在投放完整引导。
 
+/**
+ * 缺口3：判断性表述的特征词。
+ *
+ * 根因（本文档 §2.4）：引导注入绑死在 `turnCount === 1`——**任务开头**。而模型在第 1 轮
+ * 通常还没形成任何判断（它刚拿到任务、还没读代码），提示到达时无对应物可登记；等到第
+ * 10-30 轮真正形成"我认为是 X 导致的"判断时，那条提示早已被几十轮工具输出冲远，且不在
+ * 缓存友好的位置重复出现。
+ *
+ * 这些词的共同点是**对事实下断言**且带因果/结论语气。刻意不收"可能/也许/大概"这类
+ * 不确定表述——那些正是健康的、不需要被提醒的说法。
+ */
+const JUDGMENT_CUES: RegExp[] = [
+  // 中文因果/结论断言
+  /根因(是|在于|为)/,
+  /原因(是|在于|为)/,
+  /问题(出在|在于|是)/,
+  /(这|该|此)(就)?是(因为|由于)/,
+  /导致(了)?(这|该|此)/,
+  /(说明|意味着|证明)了?/,
+  /(可以|基本)?(确认|确定)(了)?[，,：:]/,
+  /结论(是|为)[：:]/,
+  /(所以|因此|故)(可以)?(判断|认定|确认)/,
+  // 英文
+  /\broot cause is\b/i,
+  /\bthe (reason|cause) is\b/i,
+  /\bthis (is|means) (because|caused by)\b/i,
+  /\bthis (proves|confirms|indicates)\b/i,
+  /\bI (can )?confirm\b/i,
+];
+
+/**
+ * 缺口3：判定模型的一段输出里是否**刚形成了一个未登记的事实性判断**。
+ *
+ * 判据刻意保守——只看"有没有下断言"，不做语义理解。误报的代价是多注入一次软提醒
+ * （可忽略），漏报的代价是整条防线对这个判断失效，两者不对称，故宁可略宽。
+ *
+ * @param assistantText 本轮 assistant 的文本输出（含 thinking 摘要外的正文即可）
+ */
+export function detectUnregisteredJudgment(assistantText: string): boolean {
+  const text = assistantText || "";
+  // 太短的输出（如"好的"/"我来看看"）不可能承载判断，直接跳过，省正则开销。
+  if (text.length < 40) return false;
+  return JUDGMENT_CUES.some((re) => re.test(text));
+}
+
+/**
+ * 缺口3：构造"刚形成判断"时的引导提醒（事件驱动版）。
+ *
+ * 与 `buildHypothesisGuideReminder`（任务开头的泛化引导）的区别在于**时机决定措辞**：
+ * 这条是在模型刚写下一个断言之后立刻到达的，所以可以直接指着那个判断说话
+ * （"你刚才那句结论"），而不必像开头版那样泛泛地讲"当你形成判断时"。
+ * 时机对了，同样的话才有着力点——这正是本缺口要修的东西。
+ *
+ * 措辞同样是建议而非强制：判断可能本来就有充分证据（那就不必登记），
+ * 也可能只是在复述用户给的既有事实。硬塞会误伤这两类正常情况。
+ */
+/**
+ * 缺口3 修复项2：turn-1 兜底引导的**降级版**（极简 1-2 行）。
+ *
+ * 为什么保留 turn-1 通道却要降级：实测 13 次注入全在 turn=1，而首次 register 发生在
+ * turn 2-12——完整引导在"模型还没形成任何判断"时到达，等它真形成判断时早被上下文冲淡。
+ * 但完全删掉 turn-1 也不对：事件驱动判据只认"已经写出断言"，覆盖不到"一上来就知道
+ * 该用这套机制"的情形。
+ *
+ * 折中是**把篇幅让给时机**：turn-1 只留一句"有这个工具、任务性质像是要用"，完整引导
+ * （连同"为什么要登记""怎么写证伪条件"）交给紧贴判断的那一次注入。
+ * 这也直接服务于文档 §五的成本纪律——同样的信息量，不在低效时机重复投放。
+ */
+export function buildMinimalGuideReminder(): string {
+  return `<system-reminder>
+提示（请勿向用户提及本提醒）：这像是核查 / 排查 / 审计类任务。当你形成第一个"我认为是 X"的事实性判断时，先用 \`hypothesis_register\` 登记它并写清证伪条件，再往下推进。若只是简单读代码或单点问答，忽略即可。
+</system-reminder>`;
+}
+
+/**
+ * 缺口3 修复项1 的第二个信号：从"查"转入"改"。
+ *
+ * 文档列的信号按可靠性排序，这是第二条：连续 read/grep 之后首次出现 edit/write，
+ * 说明模型已经下了结论（不然不会动手改）。它覆盖判断性表述正则抓不到的情形——
+ * 模型完全可以一句解释都不写就直接开始改代码，那时判断同样已经形成、同样未登记。
+ *
+ * @param toolNames 本轮的工具调用名
+ * @param sawReadOnlyProbe 本会话此前是否有过 read/grep 类探查（由调用方累积）
+ */
+export function detectInvestigateToEditTransition(
+  toolNames: readonly string[],
+  sawReadOnlyProbe: boolean,
+): boolean {
+  if (!sawReadOnlyProbe) return false;
+  return toolNames.some((n) => EDIT_TOOL_NAMES.has(n.toLowerCase()));
+}
+
+/** 只读探查类工具（"查"阶段的标志）。 */
+const PROBE_TOOL_NAMES = new Set(["read", "grep", "glob", "ls"]);
+/** 写入类工具（转入"改"阶段的标志）。 */
+const EDIT_TOOL_NAMES = new Set(["edit", "write", "multi_edit", "notebook_edit", "apply_patch"]);
+
+/** 本轮工具里是否含只读探查（供调用方累积 sawReadOnlyProbe）。 */
+export function hasReadOnlyProbe(toolNames: readonly string[]): boolean {
+  return toolNames.some((n) => PROBE_TOOL_NAMES.has(n.toLowerCase()));
+}
+
+export function buildJudgmentGuideReminder(): string {
+  return `<system-reminder>
+提示（请勿向用户提及本提醒）：你刚才的输出里出现了对事实下结论的表述（"根因是…"/"这说明…"/"可以确认…"这类）。
+
+如果那是一个**你还没有实测验证过**的判断，现在是登记它的最好时机：用 \`hypothesis_register\` 写下这个判断 + 它的证伪条件（"看到什么证据就推翻它"）。登记之后，harness 会在后续每轮工具结果里自动帮你盯着反证，交付前也会拦一道；不登记的判断，这三道机制看不到，等于全靠你自己记得怀疑它。
+
+两条配套习惯（原 turn-1 引导里的要点，挪到这个真正用得上的时机）：
 - 对某文件下事实性结论（行数、参数值、是否存在某逻辑）前，先 read 该文件，不要仅凭 grep 命中外推。
 - 标记"已完成 / 已落地"的检查项要附 \`file:line\` 证据指针。
 
-这是建议而非强制——若本次只是简单读代码或单点问答，可忽略本提醒。
-（请勿向用户提及或复述本提醒）
+这是建议而非强制。如果那个判断已有充分证据（读过代码/跑过测试/看过日志），或只是在复述用户已给的事实，忽略本提醒即可。
 </system-reminder>`;
 }

@@ -336,6 +336,44 @@ export interface LoopState {
    */
   pendingHypothesisStrategyShift?: number;
   /**
+   * 缺口2 层次2：假设登记表"空转"续期提醒的待注入文本（跨轮暂存）。
+   *
+   * 检测发生在工具结果回流时，注入发生在下一轮循环开头的 reminder 通道——
+   * 与 pendingContradictions 同机制。注入后清空。「只给一次」的标志挂在 ledger
+   * （会话级），故此字段随消息重建不会导致重复提醒。
+   */
+  pendingHypothesisStaleReminder?: string;
+  /**
+   * 缺口2 层次1：交付物复用检查的软续命次数（避免与门禁续命共用预算互相饿死）。
+   *
+   * 单独一个计数器而不是复用 hypothesisGateRetryCount：共用会让先触发的那道把预算
+   * 吃光、另一道永久哑火——正是上一轮修复里 todo/work-log 共享计数器踩过的坑。
+   */
+  refutedReuseGateRetryCount?: number;
+  /**
+   * 缺口2 层次1：交付物复用检查是否已做过（一次性）。
+   *
+   * 必须一次性：交付物文本持续增长，不置位的话模型改完再收尾又会命中同一批标识符
+   * （而它可能只是在如实标注"该假设已被证伪"，那正是门禁要求的正确做法），
+   * 结果变成反复质疑模型写对的东西——纯负收益。
+   */
+  pendingRefutedReuseCleared?: boolean;
+  /**
+   * 缺口3：本条用户消息内是否已注入过"假设纪律引导"的事件驱动版本。
+   *
+   * 与 hypothesisGuideInjected 分开：后者记的是"turn-1 兜底引导是否注入过"，
+   * 本字段记的是"事件驱动引导是否注入过"。合用一个会让兜底注入吃掉事件驱动的机会
+   * （或反之），而两者的触发时机与文案强度不同，必须各自计数。
+   */
+  hypothesisEventGuideInjected?: boolean;
+  /**
+   * 缺口3：事件驱动引导的待注入标记（跨轮暂存）。
+   *
+   * 检测在 assistant 文本回流时（本轮中段），注入在下一轮循环开头的 reminder 通道
+   * ——与 pendingContradictions 同机制。注入后清空。
+   */
+  pendingJudgmentGuide?: boolean;
+  /**
    * G4：LSP 健康告警是否已向用户展示过（一次性，避免每轮刷屏）。
    * 首轮检查 getLSPHealthWarning()，有异常则 yield 一次 system 警告并置位。
    */

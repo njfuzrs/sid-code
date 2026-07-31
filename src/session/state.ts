@@ -86,11 +86,59 @@ export class SessionState {
   private sessionData = new Map<string, any>();
   /** 用户配置的模型列表（携带定价 + provider 信息），用于定价/inferProvider 优先使用 */
   private availableModels: PricingModelEntry[] = [];
+  /**
+   * 缺口7：会话累计轮次（**不随用户消息重置**）。
+   *
+   * 根因：`LoopState.turnCount` 由 `createInitialLoopState` 在每条用户消息（每次
+   * `queryLoop` 调用）时新建 → 每条消息从 0 重数，而 `AfterModel.data.index` 是会话
+   * 累计。两个口径此前都以 `turn` 之名落进 events.jsonl，导致跨消息会话里"这条假设
+   * 存活了多久""登记发生在会话哪个阶段"这类问题**无法回答且不会报错**——只会静静
+   * 给出错误结论（设计文档 §2.3 初稿把 44 轮写成 52 轮，就是直接把两个计数器相减）。
+   *
+   * 埋点侧的正确做法是同时落两个字段：`turn`（消息内，保留兼容）+ `absoluteTurn`
+   * （本字段）+ `promptSeq`（第几条用户消息），让 `turn=3` 可还原到具体哪条消息。
+   */
+  private absoluteTurnCount = 0;
+  /** 缺口7：第几条用户消息（每次 queryLoop 启动 +1，从 1 开始）。 */
+  private promptSeq = 0;
 
   constructor(sessionId: string, cwd?: string) {
     this.sessionId = sessionId;
     this.cwd = cwd ?? process.cwd();
     this.startTime = Date.now();
+  }
+
+  /**
+   * 缺口7：递增会话累计轮次并返回新值（queryLoop 每轮 turnCount++ 时同步调用）。
+   *
+   * 与 `LoopState.turnCount++` 严格同点调用，保证两个计数器同步推进——否则
+   * absoluteTurn 会漂移，而漂移的绝对轮次比没有绝对轮次更糟（前者会被当真）。
+   */
+  nextAbsoluteTurn(): number {
+    this.absoluteTurnCount += 1;
+    return this.absoluteTurnCount;
+  }
+
+  /** 缺口7：读当前会话累计轮次（不递增），供埋点补齐 absoluteTurn。 */
+  getAbsoluteTurn(): number {
+    return this.absoluteTurnCount;
+  }
+
+  /**
+   * 缺口7：递增用户消息序号并返回新值（queryLoop 启动时调用一次）。
+   *
+   * resume 场景刻意**不**回灌：resume 后 promptSeq 从 1 重数，但 events.jsonl 里
+   * session_id 相同、时间戳单调，离线分析仍可按"文件内出现顺序 + promptSeq 回绕点"
+   * 切分。回灌反而要引入一份新的持久化状态，成本高于收益。
+   */
+  nextPromptSeq(): number {
+    this.promptSeq += 1;
+    return this.promptSeq;
+  }
+
+  /** 缺口7：读当前用户消息序号（不递增）。 */
+  getPromptSeq(): number {
+    return this.promptSeq;
   }
 
   /** 注入用户配置的模型列表（含 pricing/provider），供定价解析和 provider 推断优先使用 */

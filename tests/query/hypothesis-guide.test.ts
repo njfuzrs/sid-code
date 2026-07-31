@@ -12,7 +12,8 @@
 import { describe, test, expect } from "bun:test";
 import {
   detectInvestigationContext,
-  buildHypothesisGuideReminder,
+  buildJudgmentGuideReminder,
+  buildMinimalGuideReminder,
 } from "../../src/query/hypothesis-guide.ts";
 
 // ─── Layer 1: AND 条件（路径 + 调查性动词） ───
@@ -193,21 +194,51 @@ describe("残余盲区（预期行为，非 bug）", () => {
 
 // ─── reminder 文本约束 ───
 
-describe("buildHypothesisGuideReminder — 文本约束", () => {
+// 缺口3：原 buildHypothesisGuideReminder（turn-1 完整引导）已删除，内容一分为二：
+//   - "该用这套机制"一句 → buildMinimalGuideReminder（turn-1 兜底，极简）;
+//   - "先 read 再下结论"/"附 file:line" → buildJudgmentGuideReminder（紧贴判断形成的时机）。
+// 原三条断言在此按新归属逐条保留，一条不丢。
+describe("buildMinimalGuideReminder — turn-1 降级兜底的文本约束", () => {
   test("含 hypothesis_register 工具引导与证伪条件提示", () => {
-    const r = buildHypothesisGuideReminder();
+    const r = buildMinimalGuideReminder();
     expect(r).toContain("hypothesis_register");
     expect(r).toContain("证伪条件");
-    expect(r).toContain("file:line");
-  });
-
-  test("是建议而非强制（保留模型裁量权）", () => {
-    const r = buildHypothesisGuideReminder();
-    expect(r).toContain("建议而非强制");
   });
 
   test("含 system-reminder 包裹与'请勿向用户复述'约束", () => {
-    const r = buildHypothesisGuideReminder();
+    const r = buildMinimalGuideReminder();
+    expect(r).toContain("<system-reminder>");
+    expect(r).toContain("请勿向用户");
+  });
+
+  test("确实是「极简」——显著短于完整引导，篇幅让给真正用得上的时机", () => {
+    // 降级的意义在于篇幅：turn-1 只留一句，完整引导交给 judgment 通道。
+    // 若哪天有人把内容加回来，这条会失败并提醒他先读缺口3 的时机论证。
+    expect(buildMinimalGuideReminder().length).toBeLessThan(
+      buildJudgmentGuideReminder().length,
+    );
+  });
+});
+
+describe("buildJudgmentGuideReminder — 事件驱动引导的文本约束", () => {
+  test("含 hypothesis_register 工具引导与证伪条件提示", () => {
+    const r = buildJudgmentGuideReminder();
+    expect(r).toContain("hypothesis_register");
+    expect(r).toContain("证伪条件");
+  });
+
+  test("承接原 turn-1 引导的两条配套习惯（含 file:line 证据指针）", () => {
+    const r = buildJudgmentGuideReminder();
+    expect(r).toContain("file:line");
+    expect(r).toContain("先 read 该文件");
+  });
+
+  test("是建议而非强制（保留模型裁量权）", () => {
+    expect(buildJudgmentGuideReminder()).toContain("建议而非强制");
+  });
+
+  test("含 system-reminder 包裹与'请勿向用户复述'约束", () => {
+    const r = buildJudgmentGuideReminder();
     expect(r).toContain("<system-reminder>");
     expect(r).toContain("请勿向用户");
   });
