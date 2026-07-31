@@ -6,6 +6,8 @@
 #   ./scripts/release.sh --upload                # 打包后上传到服务器
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
+#   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
+#   ./scripts/release.sh --no-commit             # 不自动提交 bump（tag 会与版本号错位，仅特殊情况）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
 #
@@ -22,14 +24,23 @@
 #   升级 rg 版本：改 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION → 跑 --all 下载新版本
 #   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
-# Changelog + Git Tag：bump 版本号之后、构建之前，脚本会自动
-#   ① 跑 scripts/generate-changelog.ts 从 git 历史生成三份产物：
+# Changelog + Git Commit + Git Tag（顺序在 2026-08-01 调整，见下方 ★）：
+#   ① bump 版本号之后，跑 scripts/generate-changelog.ts 从 git 历史生成三份产物：
 #      · CHANGELOG.md                          文本事实源（仓库根，累积追踪）
 #      · website/.vitepress/data/changelog.json 官网 /changelog 页的数据源
 #      · CHANGELOG.html                        跳转页 → /changelog（保住散落各处的老链接）
-#   ② 打 annotated tag vX.Y.Z 到当前 HEAD
+#   ② 4 平台构建 + 本机冒烟 + --self-check 全部通过后，脚本**自己提交** `bump vX.Y.Z`
+#      （只 add package.json / changelog 三产物 / builtin-embedded.generated.ts）
+#   ③ 把 annotated tag vX.Y.Z 打在**这个 bump 提交**上，并当场校验
+#      `git show <tag>:package.json` 的版本号与 tag 一致
 #   --upload 时额外把 CHANGELOG.md + CHANGELOG.html 传到服务器顶层、并在上传成功后 push tag。
-#   两者失败都不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
+#   changelog 失败不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
+#
+#   ★ 为什么②③要这么排：旧流程把 tag 打在 bump **之前**的 HEAD 上，bump 提交留给用户
+#   事后手工补。结果 tag 指向的 commit 里 package.json 比 tag 低一位——实测 v0.1.591…
+#   v0.1.596 六个 tag 全部错位，`git checkout <tag>` 重建不出对应二进制，把 CLAUDE.md §1
+#   "产物必须能对应确切 commit"这条铁律架空了。现在由脚本负责提交，对齐不再依赖人的记性。
+#   特殊情况可用 --no-commit 跳过（届时会 warn 提示 tag 将错位）。
 #
 #   ⚠ 用户可见的更新日志现在是**官网 /changelog 页**，它是站点构建期快照 ——
 #   本脚本只生成数据，不发布站点。发完版必须按 CLAUDE.md 铁律第 5.5 步跑
@@ -40,7 +51,11 @@
 #   推荐做法：直接 ./scripts/release.sh --upload（一次 bump 到位）。日常的 `make build`
 #   不动版本号，先跑它验证构建是安全的；但若你显式跑过 `make build-bump`（它会 bump），
 #   再直接 release 会导致版本号 +2 —— 此时加 --no-bump 复用现有版本号。
-#   本次失败重跑（已 bump 过但没发出去）同样用 --no-bump。
+#
+# 中途失败怎么办：直接重跑，**不需要** --no-bump。
+#   脚本装了 EXIT trap，非正常退出时会把 package.json 与 changelog 三产物回滚到运行前的
+#   状态（仅回滚运行前本就 clean 的文件，绝不吃掉你自己的改动），并在 stderr 打印回滚结果。
+#   所以失败不再消耗版本号。已成功创建的本地 tag 刻意不删（创建是幂等的），重跑会复用。
 #
 # 环境变量（--upload 时使用）：
 #   DEPLOY_SSH_HOST         服务器地址（分发 host 的唯一权威，install.sh 的下载地址由它派生）
@@ -121,12 +136,16 @@ RIPGREP_DIR=""
 RIPGREP_VERSION=""
 DO_BUMP=true
 DO_TEST=true
+ALLOW_DIRTY=false
+NO_COMMIT=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --upload) DO_UPLOAD=true; shift ;;
         --no-bump) DO_BUMP=false; shift ;;
         --skip-test) DO_TEST=false; shift ;;
+        --allow-dirty) ALLOW_DIRTY=true; shift ;;
+        --no-commit) NO_COMMIT=true; shift ;;
         --upload-team-defaults)
             DO_UPLOAD_TEAM_DEFAULTS=true
             TEAM_DEFAULTS_FILE="${2:-}"
@@ -202,6 +221,111 @@ run_scp() {
     fi
 }
 
+# ─── 失败回滚（EXIT trap）───────────────────────────────────────────────────
+#
+# 为什么必须有：本脚本 `set -euo pipefail`，任何一步失败都是**立即裸退出**。而 bump-version
+# 跑在整条链的最前面（版本号 +1 写回 package.json），失败概率最高的几步——4 次交叉编译、
+# 本机冒烟、--self-check、以及全部 scp——都在它之后。没有 trap 的话，中途失败会留下一个
+# 已 +1 的 package.json，用户直接重跑就再 +1：一次失败烧掉一个版本号，且那个号已经带着
+# tag 和 changelog 条目留在本地。
+#
+# 更隐蔽的连带风险：被烧掉的版本号会留下一个指向 HEAD 的 tag，而 changelog 的版本区间是
+# `最新tag..HEAD`（generate-changelog.ts）。默认重跑时这个区间算出来是空的，于是新版本的
+# changelog 是空的，本次真实提交全被记在那个从未发布的版本名下。
+#
+# 回滚策略：只恢复**本脚本自己改过的、且能安全恢复的**本地文件，绝不碰用户的其它改动。
+#   - package.json / changelog 三产物：仅当本次运行前它们是 clean 的才 git checkout 恢复。
+#     若运行前就已脏（用户自己在改），保持原样并提示——宁可不回滚，也不能吃掉用户的改动。
+#   - vendor/rg-embed：不入库，直接重新落成本机平台（见 restore_rg_embed）。
+#   - 本地 tag：**刻意不删**。tag 创建是幂等的（同名跳过），删了反而可能删掉用户手工打的。
+#     只在回滚提示里告诉用户它还在。
+#
+# 成功路径也会走这个 trap（EXIT 无条件触发），靠 RELEASE_OK 标记区分，成功时只做
+# rg-embed 的平台还原、不碰 git。
+
+RELEASE_OK=false
+ROLLBACK_FILES=()      # 本次运行前是 clean、因此可安全 git checkout 恢复的文件
+BUMP_APPLIED=false
+
+# 记录某个文件在"被本脚本修改之前"是否干净；只有干净的才登记进回滚清单。
+track_for_rollback() {
+    local f="$1"
+    if [ -z "$(git status --porcelain -- "$f" 2>/dev/null)" ]; then
+        ROLLBACK_FILES+=("$f")
+    else
+        warn "$f 在本次运行前已有未提交改动 —— 失败时不会自动回滚它（避免吃掉你的改动）"
+    fi
+}
+
+# 把 vendor/rg-embed 还原成**本机平台**的二进制。
+# 4 平台循环会把这个固定嵌入路径依次覆盖，跑完残留的是最后一个 target（linux-arm64）。
+# 不还原的话，接下来在本机跑 make build 若 --as-embed 恰好失败（Makefile 那行前导 `-`
+# 忽略错误），就会把 Linux rg 嵌进本机产物 —— 静默降级，极难发现。
+restore_rg_embed() {
+    local self_p rg_file embed_path
+    self_p="$(self_platform)"
+    [ -n "$self_p" ] || return 0
+    # vendor/ 不存在就没什么可还原的（也别让重定向失败往 stderr 吐裸错误）
+    [ -d "$ROOT/vendor" ] || return 0
+    embed_path="$ROOT/vendor/rg-embed"
+    # 嵌入文件本来就不存在时无需处理：下次 make build 的 --as-embed 会重新落成
+    [ -e "$embed_path" ] || return 0
+    rg_file="$ROOT/vendor/ripgrep/${RG_VERSION}/rg-${self_p}"
+    if [ -f "$rg_file" ]; then
+        cp "$rg_file" "$embed_path" 2>/dev/null || return 0
+        chmod +x "$embed_path" 2>/dev/null || true
+        info "已把 vendor/rg-embed 还原为本机平台（${self_p}）"
+    else
+        # 本机平台的 rg 都没有，那就置空：宁可"无内嵌 rg"（设计内降级），
+        # 也不能留一个其它平台的二进制在那儿等着被嵌错。
+        : > "$embed_path" 2>/dev/null || true
+        info "已清空 vendor/rg-embed（缺本机平台 rg，避免残留其它平台二进制）"
+    fi
+}
+
+on_exit() {
+    local code=$?
+
+    # rg-embed 无论成败都要还原成本机平台（它是跨命令共享的可变状态）
+    restore_rg_embed
+
+    if [ "$RELEASE_OK" = true ] || [ "$code" -eq 0 ]; then
+        return
+    fi
+
+    echo "" >&2
+    # ⚠ 变量必须用 ${} 包裹：macOS 自带 bash 3.2 会把紧随其后的**全角字符**字节
+    # 当成变量名的一部分（`$code）` → 变量名 "code）"），`set -u` 下直接
+    # "unbound variable" 致命退出 —— 那会让回滚逻辑恰好在最需要它的时候崩掉。
+    echo "  ══ 发布中断（退出码 ${code}），正在回滚本地状态 ══" >&2
+
+    if [ ${#ROLLBACK_FILES[@]} -gt 0 ]; then
+        # git checkout -- 只作用于登记过的、运行前 clean 的文件，不会波及其它改动
+        if git checkout -- "${ROLLBACK_FILES[@]}" 2>/dev/null; then
+            for f in "${ROLLBACK_FILES[@]}"; do
+                info "已回滚 $f"
+            done
+        else
+            warn "自动回滚失败，请手动检查：${ROLLBACK_FILES[*]}"
+        fi
+    fi
+
+    if [ "$BUMP_APPLIED" = true ]; then
+        local now_ver
+        now_ver="$(bun -e "console.log(require('./package.json').version)" 2>/dev/null || echo "?")"
+        echo "  版本号已恢复为 v${now_ver}（本次未发布成功，版本号不该被消耗）" >&2
+    fi
+
+    if [ -n "${TAG:-}" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+        echo "  ⓘ 本地 tag $TAG 仍存在（未自动删除，创建是幂等的）。" >&2
+        echo "    重跑本脚本会复用它；确认不需要可手动 git tag -d $TAG" >&2
+    fi
+
+    echo "  修复问题后直接重跑即可（版本号已回滚，无需 --no-bump）。" >&2
+}
+
+trap on_exit EXIT
+
 # ─── 单独上传团队默认配置（不涉及版本构建）───
 
 if [ "$DO_UPLOAD_TEAM_DEFAULTS" = true ]; then
@@ -263,10 +387,36 @@ else
     echo ""
 fi
 
+# ─── 工作区洁净门禁（机械化执行 CLAUDE.md §1 的"产物必须对应确切 commit"铁律）───
+#
+# 这条铁律以前只写在文档里，靠人记。但发布产物是从**工作区**编译的：工作区脏就意味着
+# 产物包含未提交代码，出线上问题时无法定位到确切源码版本——正是铁律要防的事。
+# 姊妹脚本 website-deploy.sh 早就有同款门禁（--allow-dirty），这里补齐，保持一致。
+#
+# 注意必须放在 bump 之前：bump 自己就会让工作区变脏。
+
+if [ "$ALLOW_DIRTY" = false ]; then
+    _dirty="$(git status --porcelain 2>/dev/null || true)"
+    if [ -n "$_dirty" ]; then
+        echo "  ❌ git 工作区有未提交改动 —— 发布产物须能对应确切 commit（CLAUDE.md §1 铁律）。" >&2
+        echo "" >&2
+        printf '%s\n' "$_dirty" | head -20 >&2
+        echo "" >&2
+        echo "  正确做法：先提交功能代码，再发布（禁止先发布后提交）。" >&2
+        fail "确认无碍可加 --allow-dirty 跳过本门禁"
+    fi
+    ok "工作区干净"
+else
+    warn "已跳过工作区洁净门禁（--allow-dirty）：产物可能包含未提交代码"
+fi
+echo ""
+
 # ─── 版本号（只 bump 一次，4 个目标复用）───
 
 if [ "$DO_BUMP" = true ]; then
+    track_for_rollback "package.json"
     bun run scripts/bump-version.ts
+    BUMP_APPLIED=true
 else
     echo "  跳过 bump-version（--no-bump）：复用 package.json 当前版本号"
 fi
@@ -274,24 +424,14 @@ VERSION="$(bun -e "console.log(require('./package.json').version)")"
 echo "  版本: v$VERSION"
 echo ""
 
-# ─── 生成 changelog + 打 annotated tag（bump 之后、构建之前）───
-# tag 打在当前 HEAD（已提交的功能代码）上，符合"发布产物对应确切 commit"的铁律。
-# bump 提交由用户在 release.sh 结束后补做；tag 的 push 推迟到上传成功之后（见下方 --upload 块），
-# 避免为一个尚未上传成功的版本对外广播 tag。
+# ─── 生成 changelog（bump 之后；tag 推迟到构建通过之后，见下方"提交 bump + 打 tag"）───
 TAG="v$VERSION"
 
 echo ">>> 生成 changelog (v$VERSION) ..."
+for _f in CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json; do
+    track_for_rollback "$_f"
+done
 bun run scripts/generate-changelog.ts "$VERSION" || warn "changelog 生成失败（不阻断发布）"
-
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
-    warn "tag $TAG 已存在，跳过创建（--no-bump 复用场景）"
-else
-    if git tag -a "$TAG" -m "Release $TAG"; then
-        ok "已创建 tag ${TAG}（HEAD=$(git rev-parse --short HEAD)）"
-    else
-        warn "tag 创建失败（不阻断发布）"
-    fi
-fi
 echo ""
 
 # ─── --no-bump 覆盖同版本告警：上传前先探测服务器是否已存在该版本 ───
@@ -412,6 +552,86 @@ fi
 
 echo ""
 
+# ─── 提交 bump + 打 annotated tag（构建与冒烟全部通过之后）─────────────────────
+#
+# ★为什么放在这里、且由脚本自己提交（2026-08-01 修复）：
+#
+# 旧流程是「tag 打在 bump 之前的 HEAD 上，bump 提交由用户在脚本结束后手工补做」。
+# 后果是 tag 指向的那个 commit 里 package.json 版本号比 tag **低一位**——实测
+# v0.1.591…v0.1.596 六个 tag 无一例外全部错位。于是 `git checkout v0.1.596` 构建出的
+# 二进制自报 0.1.595，**没有任何 git 引用能重建出线上那个二进制**，CLAUDE.md §1 那条
+# "发布产物必须能对应到一个确切 git commit，否则出线上问题无法定位到确切代码版本"
+# 的铁律在事实上是失效的——而且失效方式恰好就是它想防的。
+#
+# 修法：脚本自己把 bump + changelog 产物提交掉，再把 tag 打在**这个**提交上。
+# 于是 tag ↔ 源码版本号天然对齐，无需依赖人记得补第 4 步。
+#
+# 放在构建/冒烟/自检**之后**：这些步骤是最可能失败的，失败时不该留下提交和 tag。
+# 到了这一行，产物已经证明可用，提交才有意义。
+# 上传仍在其后——tag 的 push 继续推迟到上传成功之后，不为尚未上线的版本对外广播。
+#
+# generate-changelog.ts 会过滤 `^bump v\d` 的提交，所以这个自动提交不会污染 changelog。
+
+RELEASE_COMMIT_FILES=(
+    package.json
+    CHANGELOG.md
+    CHANGELOG.html
+    website/.vitepress/data/changelog.json
+    src/skill/builtin-embedded.generated.ts
+)
+
+if [ "$NO_COMMIT" = true ]; then
+    warn "已跳过自动提交（--no-commit）：tag 将打在当前 HEAD 上，可能与 package.json 版本号错位"
+elif [ "$DO_BUMP" = false ]; then
+    info "跳过自动提交（--no-bump：版本号未变，无 bump 需要提交）"
+else
+    echo ">>> 提交版本号 + changelog 产物 ..."
+    # 只 add 本脚本自己产出的文件，绝不 git add -A（避免把用户无关改动裹进发布提交）
+    _to_commit=()
+    for _f in "${RELEASE_COMMIT_FILES[@]}"; do
+        [ -e "$ROOT/$_f" ] && _to_commit+=("$_f")
+    done
+    # ⚠ macOS 自带 bash 3.2：`set -u` 下展开**空数组** "${arr[@]}" 会直接
+    # "unbound variable" 致命退出（bash 4.4+ 才修）。所以必须先判长度再展开。
+    if [ ${#_to_commit[@]} -eq 0 ]; then
+        warn "没有任何待提交产物存在，跳过提交"
+    else
+        git add -- "${_to_commit[@]}" || fail "git add 失败"
+    fi
+
+    if git diff --cached --quiet; then
+        info "无内容需要提交（产物与 HEAD 一致）"
+    else
+        git commit -q -m "bump ${TAG}" || fail "git commit 失败"
+        # 提交成功后这些文件已进入历史，回滚清单作废：再 checkout 会把发布提交的内容清掉
+        ROLLBACK_FILES=()
+        BUMP_APPLIED=false
+        ok "已提交 bump ${TAG}（$(git rev-parse --short HEAD)）"
+    fi
+fi
+
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    warn "tag $TAG 已存在，跳过创建（--no-bump 复用场景）"
+else
+    if git tag -a "$TAG" -m "Release $TAG"; then
+        ok "已创建 tag ${TAG}（HEAD=$(git rev-parse --short HEAD)）"
+        # 立刻验证对齐，把"错位一位"这类回归钉死在发布时刻而不是事后考古
+        _tag_pkg_ver="$(git show "$TAG:package.json" 2>/dev/null | bun -e "
+            let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+              try{console.log(JSON.parse(s).version)}catch{console.log('')}
+            })" 2>/dev/null || echo "")"
+        if [ -n "$_tag_pkg_ver" ] && [ "$_tag_pkg_ver" != "$VERSION" ]; then
+            warn "tag $TAG 指向的提交里 package.json 是 v${_tag_pkg_ver}（期望 v${VERSION}）——"
+            warn "  该 tag 无法重建出本次发布的二进制。若用了 --no-commit，这是预期行为。"
+        else
+            ok "tag ↔ 源码版本号对齐校验通过（v${VERSION}）"
+        fi
+    else
+        warn "tag 创建失败（不阻断发布）"
+    fi
+fi
+echo ""
+
 # ─── 生成 install.sh：把 DEPLOY_SSH_HOST 注入为下载地址，服务器地址只需在 deploy.env 改一处 ───
 
 sed "s#121\.196\.144\.227#${DEPLOY_SSH_HOST}#g" \
@@ -445,12 +665,83 @@ if [ "$DO_UPLOAD" = true ]; then
     echo ""
     echo ">>> 上传到 ${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH} ..."
 
-    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "mkdir -p '${DEPLOY_PATH}/${VERSION}'"
+    # ─── 版本目录：先传进临时目录，全部就位并校验通过后再原子 mv 到正式路径 ──────────
+    #
+    # 旧写法是 `mkdir -p <path>/<version>` 后直接往里逐个 scp。中途任何一个 scp 失败
+    # （网络抖动、磁盘满、Ctrl-C）都会在服务器上留下一个**只含部分平台**的版本目录，
+    # 脚本既不清理也不告知。latest.txt 放最后确实挡住了"用户装到半成品版本"的主路径，
+    # 但挡不住这些：
+    #   · 重跑若带 --no-bump，覆盖上传时残留的旧平台文件不会被清掉（新旧文件混在一个目录）；
+    #   · 用户/脚本按显式版本号直接取 URL（不读 latest.txt）时会拿到 404 或残缺集合；
+    #   · 服务器端清理逻辑按目录计数保留 N 个版本，半成品目录也占一个名额。
+    #
+    # 改为 staging + mv：mv 在同一文件系统内是原子的，正式目录要么不存在、要么内容完整。
+    # 临时目录带 $$（PID）后缀避免并发发布互相踩，失败时由远端 trap 自己清掉。
+    _remote_staging="${DEPLOY_PATH}/.upload-${VERSION}-$$"
+    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "mkdir -p '${_remote_staging}'" \
+        || fail "创建远程临时目录失败: ${_remote_staging}"
+
+    # 任何一步失败都要清掉远端半成品，否则残留一堆 .upload-* 垃圾目录
+    _cleanup_remote_staging() {
+        run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "rm -rf '${_remote_staging}'" 2>/dev/null || true
+    }
 
     for f in "$VERSION_DIR"/*; do
         info "上传 $(basename "$f") ..."
-        run_scp "$f" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/${VERSION}/"
+        run_scp "$f" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${_remote_staging}/" || {
+            _cleanup_remote_staging
+            fail "上传 $(basename "$f") 失败，已清理远端半成品目录（服务器上的 v${VERSION} 未被改动）"
+        }
     done
+
+    # ─── 落地前校验：在服务器上比对 sha256，挡住传输过程中的静默损坏 ───
+    # 本地生成过 .sha256，但此前从没在服务器侧验过——传坏了要等用户安装时才发现。
+    info "服务器端校验 sha256 ..."
+    _verify_cmd="cd '${_remote_staging}' || exit 1
+for s in *.sha256; do
+    [ -e \"\$s\" ] || continue
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
+    else
+        echo \"__NO_SHA_TOOL__\"; exit 0
+    fi
+done
+echo __SHA_OK__"
+    _verify_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_verify_cmd" 2>&1)" || {
+        _cleanup_remote_staging
+        fail "服务器端 sha256 校验失败（产物可能在传输中损坏）：${_verify_out}"
+    }
+    case "$_verify_out" in
+        *__SHA_OK__*)        ok "sha256 校验通过（${#TARGETS[@]} 个平台产物）" ;;
+        *__NO_SHA_TOOL__*)   warn "服务器上没有 sha256sum/shasum，跳过落地前校验" ;;
+        *)                   _cleanup_remote_staging
+                             fail "服务器端 sha256 校验输出异常：${_verify_out}" ;;
+    esac
+
+    # ─── 原子切换：旧目录先挪走，新目录 mv 到位，成功后再删旧 ───
+    info "原子切换到 ${DEPLOY_PATH}/${VERSION} ..."
+    _swap_cmd="set -e
+cd '${DEPLOY_PATH}'
+_old=''
+if [ -d '${VERSION}' ]; then
+    _old='.old-${VERSION}-$$'
+    mv '${VERSION}' \"\$_old\"
+fi
+if mv '.upload-${VERSION}-$$' '${VERSION}'; then
+    [ -n \"\$_old\" ] && rm -rf \"\$_old\"
+    exit 0
+else
+    # 切换失败：把旧目录放回去，保证服务器停留在切换前的可用状态
+    [ -n \"\$_old\" ] && mv \"\$_old\" '${VERSION}'
+    exit 1
+fi"
+    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_swap_cmd" || {
+        _cleanup_remote_staging
+        fail "原子切换失败（服务器上的 v${VERSION} 保持切换前状态）"
+    }
+    ok "v${VERSION} 目录已完整就位"
 
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 

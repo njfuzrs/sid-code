@@ -20,6 +20,17 @@ export interface StreamProcessResult {
   stopReason: string | null;
   usage: Usage;
   errorMessage?: string;
+  /**
+   * R1：流内 error 事件的**结构化字段**原样透传（type / statusCode / streamLevel）。
+   *
+   * 为什么必须留：OpenAI 族的流内 error 常常 `message` 里没有任何可匹配的关键词，
+   * 判定完全依赖 `error.type`/`code`（见 openai.ts:1644-1646 的注释与构造）。
+   * 若只保留 errorMessage 文本、让调用方用 classifyError(new Error(msg)) 去猜，
+   * 形如 `{message:"OpenAI 流内错误: Service is busy right now", type:"rate_limit_error"}`
+   * 会被判成**不可重试的普通 Error**，而主路径用 classifyStreamError 会正确判成
+   * rate_limit → 该重试的不重试，限流下子代理照旧秒失败（R1 的初版就踩了这个坑）。
+   */
+  errorMeta?: { type?: string; statusCode?: number; streamLevel?: boolean };
 }
 
 /** 子代理流处理器配置（T4：补齐心跳 + 整体超时，对标主循环 query/stream-processor.ts） */
@@ -191,6 +202,12 @@ export async function processStream(
           stopReason: "error",
           usage,
           errorMessage: `LLM 错误: ${event.error.message}`,
+          // R1：结构化字段原样带出，供调用方走 classifyStreamError 精确判定（见 errorMeta 注释）
+          errorMeta: {
+            type: event.error.type,
+            statusCode: event.error.statusCode,
+            streamLevel: event.error.streamLevel,
+          },
         };
 
       case "system_api_error":

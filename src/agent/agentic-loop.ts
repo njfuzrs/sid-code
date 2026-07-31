@@ -13,11 +13,20 @@ import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase } from "../trace/stream-observer.ts";
+import { emitStreamPhase, clearStreamSnapshot } from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
-import { AGENT_STREAM_TIMEOUT_REASON, classifyError, TerminalError } from "../llm/errors.ts";
+import {
+  AGENT_STREAM_TIMEOUT_REASON,
+  classifyError,
+  classifyStreamError,
+  isInternalTimeoutAbortReason,
+  RetryableError,
+  TerminalError,
+} from "../llm/errors.ts";
+import { calculateRetryDelay, MAX_DELAY_MS as RETRY_MAX_DELAY_MS } from "../llm/retry-backoff.ts";
+import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { executeTools } from "./tool-executor.ts";
 import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
 
@@ -89,6 +98,19 @@ export interface AgentLoopConfig {
    * 缺省时子代理不走 JIT（兼容旧测试 / 纯计算型子代理）。
    */
   discoverJitContext?: (toolBlocks: Array<{ name: string; input: unknown }>) => void;
+  /**
+   * R1：单轮 LLM 调用的最大重试次数（限流 / 过载 / 网络抖动等可重试错误）。
+   *
+   * 缺省走 network-profile 的 maxTimeoutRetries（当前 10），与主循环同源——
+   * 改 settings.network.maxTimeoutRetries 或 SID_CODE_MAX_TIMEOUT_RETRIES 一处生效，
+   * 不在此另立平行常量（fallback.ts 顶部注释记录过「两阶段各自维护上限架空统一配置」的同型事故）。
+   * 测试可传 0 显式关闭重试。
+   */
+  maxStreamRetries?: number;
+  /** R1：退避基数（毫秒）。缺省走 network-profile 的 retryBackoffBaseMs（当前 5s）。 */
+  retryBackoffBaseMs?: number;
+  /** R1：退避上限（毫秒）。缺省走 network-profile 的 retryBackoffMaxMs（当前 120s）。 */
+  retryBackoffMaxMs?: number;
 }
 
 /** Agent 循环结果 */
@@ -103,6 +125,31 @@ export interface AgentLoopResult {
   messages: Array<{ role: string; content: ContentBlock[] }>;
   /** 失败时携带的错误消息 */
   errorMessage?: string;
+}
+
+// ============================================================
+// 内部工具
+// ============================================================
+
+/**
+ * 可中断的 sleep（用于重试退避）。
+ *
+ * signal abort 时立即 reject，不等满延迟——否则用户 ESC 后还要干等最长 120s 才响应，
+ * 而退避恰恰是延迟最长的环节。已 abort 的 signal 直接 reject（不进定时器）。
+ */
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 // ============================================================
@@ -146,6 +193,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
   };
+
+  // R1：重试/退避参数走 resolveLoopTimeouts（env > settings > 统一默认值），与主循环同源。
+  // SubAgent 不持有 Config 对象，直接读 DEFAULTS 会让 env 覆盖对子代理静默失效——
+  // 那就成了「看起来接了统一配置，实际只有主路径生效」的半接线状态。
+  // 在轮次循环外解析一次即可（同一子代理生命周期内配置不变）。
+  const netTimeouts = resolveLoopTimeouts({});
 
   while (turns < maxTurns) {
     turns++;
@@ -197,69 +250,206 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       ...config.sendParamsExtra,
     };
 
-    // T4：per-turn AbortController，与父 signal 合并后传给上游流。
-    // 让 processStream 的心跳/整体超时在触发时能主动 abort 上游（而非仅靠外层
-    // 5min Promise.race——它在 Bun 事件循环阻塞时可能延迟数分钟才 fire）。
-    const turnAbort = new AbortController();
-    const combinedSignal = AbortSignal.any([signal, turnAbort.signal]);
-
     // T13.1：子代理 LLM 调用 StreamPhase 事件（fetch_sent）
     const agentStreamIndex = 10000 + turns;
     const turnStartTime = Date.now();
-    emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model });
 
-    const stream = provider.sendMessageStream(sendParams, combinedSignal);
+    // ══════════════════════════════════════════════════════════════════
+    // R1：子代理 LLM 调用重试 + 指数退避
+    //
+    // 事故 20260730-183103-5e334145：子代理走 provider.sendMessageStream() 直连，
+    // **完全绕过** ModelFallback —— 而重试/退避逻辑当时只存在于 fallback 内部。
+    // 结果一次 429 就让子代理立即失败：轨迹里 429（10:35:24.586）到 SubagentStop
+    // status=error（.588）间隔 1ms，零重试。6 个并行子代理 2 个因此失败，
+    // 而主循环遇同样的 429 会重试到成功——同一模型、同一网关，两条路径行为割裂。
+    //
+    // 这里补齐重试，两个关键点：
+    //  ① 429 不是抛异常，而是以流内 error 事件回来（stream-processor 转成
+    //     stopReason="error"）。所以**两条失败路径都要接**：throw 的走 catch，
+    //     stopReason="error" 的走下方显式检查——只补 catch 会完全漏掉真实的限流场景。
+    //  ② 退避延迟复用 retry-backoff.ts（与主路径同一实现），尊重服务端
+    //     Retry-After / rate-limit-reset header，限流用单向正抖动避免早于服务端最小间隔。
+    //
+    // 重试是安全的：本轮 assistant 消息在流成功**之后**才 addMessage，
+    // 失败重试不会把半截响应留在 ctxMgr 里（sendParams.messages 每次取同一份快照）。
+    // ══════════════════════════════════════════════════════════════════
+    const streamMaxRetries = config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries;
+    let response: StreamProcessResult | undefined;
+    let failureResult: AgentLoopResult | undefined;
 
-    // B2: 子代理硬超时保护（对齐主循环 L1），作为 T4 setInterval 心跳之上的最后兜底
-    const AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5min
-    let agentTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
-    const timeoutPromise = new Promise<StreamProcessResult>((_, reject) => {
-      agentTimeoutTimer = setTimeout(() => {
-        // H10：超时改用带 reason 的 abort，而非裸 Error。turnAbort 被 abort 后：
-        //  ① 上游 fetch/SSE reader 以裸字符串 AGENT_STREAM_TIMEOUT_REASON reject——已登记
-        //     ABORT_REASONS，被 isAbortError 识别为「中断」而非真故障，杜绝孤儿 rejection 崩溃；
-        //  ② 该 reason 属 INTERNAL_TIMEOUT_ABORT_REASONS，未来若上层改依 reason 区分「内部超时
-        //     可重试 vs 用户取消不重试」，能被正确判为内部超时；
-        //  ③ processStream 感知 turnAbort → 抛 abort 错误，与本 reject 竞争，无论谁赢，
-        //     catch 分支都据 signal.reason 归因，不再依赖易被覆盖的错误消息文本。
-        try { turnAbort.abort(AGENT_STREAM_TIMEOUT_REASON); } catch { /* 幂等 */ }
-        reject(new Error(`子代理流式超时：${AGENT_STREAM_TIMEOUT_MS / 1000}s 无响应`));
-      }, AGENT_STREAM_TIMEOUT_MS);
-    });
+    for (let attempt = 0; ; attempt++) {
+      // T4：per-turn AbortController，与父 signal 合并后传给上游流。
+      // 让 processStream 的心跳/整体超时在触发时能主动 abort 上游（而非仅靠外层
+      // 5min Promise.race——它在 Bun 事件循环阻塞时可能延迟数分钟才 fire）。
+      // 注意：必须每次重试**新建**，abort 过的 controller 不可复用（否则重试的流
+      // 一建立就被已 abort 的 signal 立即掐断）。
+      const turnAbort = new AbortController();
+      const combinedSignal = AbortSignal.any([signal, turnAbort.signal]);
 
-    // 处理流式响应（T4：传入心跳 + 整体超时 + turnAbort 引用）
-    let response: StreamProcessResult;
-    try {
-      response = await Promise.race([
-        processStream(stream, {
-          signal: combinedSignal,
-          getAbortController: () => turnAbort,
-        }),
-        timeoutPromise,
-      ]);
-      // 正常 settle：清超时定时器，避免 5min 后无谓 fire + 阻止进程退出。
-      if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
-      // T13.1：子代理 LLM 调用完成
-      emitStreamPhase(agentStreamIndex, "completed", { caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime });
-    } catch (err: any) {
-      if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
+      emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt });
+
+      // B2: 子代理硬超时保护（对齐主循环 L1），作为 T4 setInterval 心跳之上的最后兜底
+      const AGENT_STREAM_TIMEOUT_MS = 5 * 60 * 1000; // 5min
+      let agentTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<StreamProcessResult>((_, reject) => {
+        agentTimeoutTimer = setTimeout(() => {
+          // H10：超时改用带 reason 的 abort，而非裸 Error。turnAbort 被 abort 后：
+          //  ① 上游 fetch/SSE reader 以裸字符串 AGENT_STREAM_TIMEOUT_REASON reject——已登记
+          //     ABORT_REASONS，被 isAbortError 识别为「中断」而非真故障，杜绝孤儿 rejection 崩溃；
+          //  ② 该 reason 属 INTERNAL_TIMEOUT_ABORT_REASONS，据此可与「用户取消」区分：
+          //     内部超时可重试，用户取消必须立即停（见下方 catch 的归因分支）；
+          //  ③ processStream 感知 turnAbort → 抛 abort 错误，与本 reject 竞争，无论谁赢，
+          //     catch 分支都据 signal.reason 归因，不再依赖易被覆盖的错误消息文本。
+          try { turnAbort.abort(AGENT_STREAM_TIMEOUT_REASON); } catch { /* 幂等 */ }
+          reject(new Error(`子代理流式超时：${AGENT_STREAM_TIMEOUT_MS / 1000}s 无响应`));
+        }, AGENT_STREAM_TIMEOUT_MS);
+      });
+
+      // 处理流式响应（T4：传入心跳 + 整体超时 + turnAbort 引用）
+      let attemptError: unknown;
+      let attemptResponse: StreamProcessResult | undefined;
+      try {
+        const stream = provider.sendMessageStream(sendParams, combinedSignal);
+        attemptResponse = await Promise.race([
+          processStream(stream, {
+            signal: combinedSignal,
+            getAbortController: () => turnAbort,
+          }),
+          timeoutPromise,
+        ]);
+        // 正常 settle：清超时定时器，避免 5min 后无谓 fire + 阻止进程退出。
+        if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
+      } catch (err: any) {
+        if (agentTimeoutTimer !== null) clearTimeout(agentTimeoutTimer);
+        attemptError = err;
+      }
+
+      // ── 归一化：把「抛异常」与「stopReason=error」两条失败路径合并成同一个 err ──
+      // 真实的 429 走后者（provider 以流内 error 事件上报），只判前者会完全漏掉限流。
+      let failure: unknown = attemptError;
+      // 流内 error 的结构化字段（type/statusCode/streamLevel），用于下方精确分类。
+      let failureMeta: { type?: string; statusCode?: number; streamLevel?: boolean } | undefined;
+      if (!failure && attemptResponse?.stopReason === "error") {
+        failure = new Error(attemptResponse.errorMessage || "LLM 错误");
+        failureMeta = attemptResponse.errorMeta;
+      }
+
+      if (!failure) {
+        // T13.1：子代理 LLM 调用完成
+        emitStreamPhase(agentStreamIndex, "completed", {
+          caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime,
+        });
+        response = attemptResponse;
+        break;
+      }
+
+      // R1：失败 attempt 的 token 也要计入。
+      // 服务端对**已产出**的 token 是照常计费的：message_start 已带 inputTokens，
+      // 中断前的 message_delta 已带 outputTokens。只累加成功那次会让「重试 N 次后成功」
+      // 的真实消耗被静默吞掉 N-1 份，直接体现为「网关账单 > 本地 traj 统计」。
+      // 放在这里（失败分支）而非成功分支：成功那次由下方 line 503 统一累加，不能重复计。
+      if (attemptResponse?.usage) accumulateUsage(totalUsage, attemptResponse.usage);
+
+      const errMessage = (failure as any)?.message ?? String(failure);
       // T13.1：子代理 LLM 调用失败
-      emitStreamPhase(agentStreamIndex, "error", { caller: "sub-agent", model, error: err.message, elapsed_ms: Date.now() - turnStartTime });
+      emitStreamPhase(agentStreamIndex, "error", {
+        caller: "sub-agent", model, error: errMessage, attempt,
+        elapsed_ms: Date.now() - turnStartTime,
+      });
+
       // H9：terminal 类错误（认证失败 / 模型不存在 / 内容策略 / invalid_request）跨路径共享拉黑——
       // 与主 fallback 引擎共用同一 availability 实例，markTerminal 后主路径/其它子代理/side-call
       // 下次都不再选这个坏模型，不必各自再撞一次。仅对 classifyError 判定为 TerminalError 的才拉黑；
       // 超时/abort/限流等非 terminal 错误不动 availability（它们可重试，拉黑会误伤）。
+      let classified: TerminalError | RetryableError | Error;
       try {
-        if (availability) {
-          const classified = classifyError(err);
-          if (classified instanceof TerminalError) {
-            availability.markTerminal(model, classified.message);
-            log.warn("AGENT_LOOP", `子代理模型 ${model} 判定 terminal（${classified.message}），已跨路径拉黑`);
-          }
+        // 流内 error（streamLevel）走 classifyStreamError——与主路径 fallback.ts:583-589 同一判据。
+        // 关键：OpenAI 族流内 error 的 message 常无关键词，判定全靠 error.type/code
+        // （openai.ts:1644-1646）。这里若退回 classifyError(new Error(msg)) 按文本猜，
+        // 形如 type=rate_limit_error 但 message 无 "429" 的限流会被判成不可重试的普通
+        // Error → 该重试的不重试，等于 R1 白做。errorMeta 缺失时（抛异常路径）才用 classifyError。
+        classified = failureMeta?.streamLevel
+          ? classifyStreamError(
+              model.split(":")[0] || model,
+              errMessage,
+              failureMeta.type,
+              failureMeta.statusCode,
+            )
+          : classifyError(failure);
+      } catch {
+        classified = failure instanceof Error ? failure : new Error(errMessage);
+      }
+      try {
+        if (availability && classified instanceof TerminalError) {
+          availability.markTerminal(model, classified.message);
+          log.warn("AGENT_LOOP", `子代理模型 ${model} 判定 terminal（${classified.message}），已跨路径拉黑`);
         }
       } catch { /* 分类失败不影响错误返回 */ }
-      // 超时或 abort 都走错误返回
-      log.error("AGENT_LOOP", `流式处理异常: ${err.message}`);
+
+      // ── 是否重试 ──
+      // 用户主动取消（父 signal abort 且非内部超时自愈）：立即停，不重试也不退避。
+      const userCancelled =
+        signal.aborted && !isInternalTimeoutAbortReason((signal as any).reason);
+      const retryable = classified instanceof RetryableError ? classified : undefined;
+      const canRetry = !!retryable && !userCancelled && attempt < streamMaxRetries;
+
+      if (!canRetry) {
+        if (retryable && !userCancelled) {
+          log.error("AGENT_LOOP", `流式重试 ${attempt} 次仍失败（${retryable.reason}），放弃: ${errMessage}`);
+        } else {
+          log.error("AGENT_LOOP", `流式处理异常: ${errMessage}`);
+        }
+        failureResult = {
+          success: false,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+          errorMessage: errMessage || "流式处理超时",
+        };
+        break;
+      }
+
+      // 退避后重试。延迟走与主路径同一份 retry-backoff（尊重服务端 Retry-After /
+      // rate-limit-reset，限流用单向正抖动，避免早于服务端最小间隔再撞一次）。
+      const delayMs = calculateRetryDelay(failure, attempt, classified, {
+        maxDelayMs: RETRY_MAX_DELAY_MS,
+        retryBackoffBaseMs: config.retryBackoffBaseMs ?? netTimeouts.retryBackoffBaseMs,
+        retryBackoffMaxMs: config.retryBackoffMaxMs ?? netTimeouts.retryBackoffMaxMs,
+      });
+      log.warn(
+        "AGENT_LOOP",
+        `子代理 LLM 失败（${retryable.reason}），${delayMs}ms 后重试 ` +
+        `${attempt + 1}/${streamMaxRetries}: ${errMessage.slice(0, 200)}`,
+      );
+      try {
+        await sleepWithAbort(delayMs, signal);
+        // 重试前清除本轮旧快照（对齐主循环 query/loop.ts:2046 的 Fix 2）。
+        // 快照按 loopId:index 为 key，本轮重试共用同一 agentStreamIndex，不清就会把
+        // 上一次失败的 lastContentProgressAt / chunksReceived 留给下一次：
+        //  ① openai.ts 的 idle/header 看门狗读到过期的「最近进展时刻」→ 可能立即误杀新流；
+        //  ② collector.ts 的 ModelCallUnpaired 配对检查读到脏 chunk 计数 → 把「慢但活着」
+        //     与「已死」判反（see collector.ts:687-695 的 still_progressing 判据）。
+        clearStreamSnapshot(agentStreamIndex);
+      } catch {
+        // 退避期间被中断（用户 ESC / 父 signal abort）：不再重试，按中断返回。
+        failureResult = {
+          success: false,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+          errorMessage: errMessage || "重试退避期间被中断",
+        };
+        break;
+      }
+    }
+
+    if (failureResult) return failureResult;
+    if (!response) {
+      // 理论不可达（上面两条出口必有其一），留兜底避免后续裸用 response。
       return {
         success: false,
         turns,
@@ -267,9 +457,10 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         toolUseCount,
         lastTextOutput,
         messages: ctxMgr.getMessages(),
-        errorMessage: err.message || "流式处理超时",
+        errorMessage: "流式处理未返回结果",
       };
     }
+
     if (config.onStreamText) {
       const responseText = response.content
         .filter(b => b.type === "text")
@@ -278,7 +469,10 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       if (responseText) config.onStreamText(responseText);
     }
 
-    // LLM API 错误：返回失败（不 throw，由调用方转换为状态变更）
+    // LLM API 错误：返回失败（不 throw，由调用方转换为状态变更）。
+    // R1 之后此分支正常不可达——stopReason="error" 已在上方重试循环里被归一化成 failure
+    // 并重试/放弃。保留为安全网：若将来有人在循环里新增 break 路径而漏判 error，
+    // 这里仍会兜住，不至于把错误响应当成功继续跑工具。
     if (response.stopReason === "error") {
       log.error("AGENT_LOOP", `LLM 错误: ${response.errorMessage}`);
       return {

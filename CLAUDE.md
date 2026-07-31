@@ -99,42 +99,38 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 
 ### 发布上线
 
-**⚠️ 铁律：先提交功能代码，再发布，最后补 bump 提交。禁止先发布后提交。**
-发布产物必须能对应到一个确切 git commit。先发布后提交会开一个「已发布但未提交」的窗口——期间任何源码改动都会让线上二进制与 commit 对不上，出线上问题无法定位到确切代码版本；且 `release.sh` 首次失败时也会残留一个已 bump 但未发布的脏版本号。
+**⚠️ 铁律：先提交功能代码，再发布。禁止先发布后提交。**
+发布产物必须能对应到一个确切 git commit。先发布后提交会开一个「已发布但未提交」的窗口——期间任何源码改动都会让线上二进制与 commit 对不上，出线上问题无法定位到确切代码版本。
 
-标准顺序：
+这条铁律现在由脚本**机械化执行**，不再只靠人记（2026-08-01）：
+
+- `release.sh` 开头有**工作区洁净门禁**，脏就直接拒绝发布（确认无碍加 `--allow-dirty`）。
+- bump 提交与 tag 都由 `release.sh` 自己完成，且 tag 打在 bump 提交上、当场校验对齐。以前是「tag 打在 bump 前的 HEAD、bump 提交人工补做」，导致 tag 指向的 commit 里版本号比 tag 低一位（实测 v0.1.591…v0.1.596 **六个 tag 全部错位**，`git checkout <tag>` 重建不出对应二进制）。
+
+标准顺序（脚本接管了原来的第 4/5 步，现在只有 4 步）：
 
 ```bash
 # 1. 验证构建（全量单测由 release.sh 门禁负责，此处不重复跑）
 make build
 
-# 2. 先提交功能代码（此时版本号还没动，固化「功能」这个逻辑单元）
+# 2. 提交功能代码（工作区必须干净，否则 release.sh 会拒绝）
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布：内部 bump 版本号 + 生成 changelog 三产物 + 打 tag + 重新生成
-#    builtin-embedded.generated.ts；不需要先手动 bump 版本号
+# 3. 发布：门禁(bun test) → bump → changelog → 4 平台构建 → 冒烟+自检
+#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → push tag
 ./scripts/release.sh --upload
 
-# 4. 补提交版本号 + changelog 三产物（漏掉 changelog.json 官网 /changelog 就拿不到这个版本）
-git add package.json src/skill/builtin-embedded.generated.ts \
-        CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json
-git commit -m "bump vX.Y.Z"
-
-# 5. 推送（tag 已在 release.sh 上传后推过，这里兜底补推）
+# 4. 推送 + 发布官网（/changelog 是站点构建期快照，release.sh 只生成数据不发站点）
 git push
-
-# 5.5 发布官网（必做）：/changelog 是站点构建期快照，release.sh 只生成数据不发站点。
-#     必须放在 bump 提交之后，工作区干净才过得了 website-deploy.sh 的 dirty 门禁。
 ./scripts/website-deploy.sh
-
-# 6. 对齐开发版二进制版本号（见下方 Make 表格注解，不补则 sc-dev 比线上低一位）
-make build
 ```
 
-> `release.sh` 首次失败（如上传阶段报错）已 bump 过版本号时，第二次用 `--no-bump --upload` 复用。重跑安全：tag 已存在会跳过创建，changelog 同版本块原地替换，均幂等。
+> **中途失败直接重跑，不需要 `--no-bump`。** 脚本装了 EXIT trap：非正常退出会把 `package.json` 与 changelog 三产物回滚到运行前状态（只回滚运行前本就 clean 的文件，不会吃掉你自己的改动），所以失败不再消耗版本号。已创建的本地 tag 刻意不删（创建幂等），重跑复用。
 >
-> **Changelog + Tag**：release.sh 在 bump 后从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog，并打 annotated tag `vX.Y.Z`。**git 历史是唯一事实源**，每次运行完整重建，确定性且幂等。三份产物各有唯一职责：
+> `--no-bump` 现在只用于一个场景：你显式跑过 `make build-bump` 已经 bump 过，不想再 +1。
+>
+> **Changelog + Tag**：release.sh 在 bump 后从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。**git 历史是唯一事实源**，每次运行完整重建，确定性且幂等。三份产物各有唯一职责：
 >
 > | 产物 | 职责 |
 > | --- | --- |

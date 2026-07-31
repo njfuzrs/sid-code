@@ -15,7 +15,7 @@ const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 /** 未知模型 + 未声明 contextWindow 时的兜底窗口（tokens）。
  *  默认 1M（2026 年主流大模型上下文窗口普遍达 1M：Claude/GPT/DeepSeek/Kimi/Qwen/GLM/Gemini 全系）。
  *  可经 SID_FALLBACK_CONTEXT_WINDOW 覆盖。非法值（NaN/≤0）静默回退默认，绝不更紧。
- *  详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md */
+ *  详见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md */
 const DEFAULT_FALLBACK_CONTEXT_WINDOW = 1_000_000;
 
 function resolveFallbackWindow(): number {
@@ -139,7 +139,7 @@ export class TokenEstimator {
     if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
 
     // 兜底：未知模型回退到可配置的默认值（1M）。
-    // 详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md
+    // 详见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md
     return resolveFallbackWindow();
   }
 

@@ -1,8 +1,15 @@
 /**
  * /model discover — 自动发现模型参数
  *
- * 遍历 availableModels，通过 Provider API 查询 + 内置速查表兜底，
- * 获取每个模型的 contextWindow / maxOutputTokens。
+ * 遍历 availableModels，按 Provider API 查询 → 动态能力缓存 → 内置速查表 的顺序
+ * 解析每个模型的 contextWindow / maxOutputTokens。
+ *
+ * 三档各管一段，缺一不可：
+ * - **API**：Anthropic/Gemini 的 `/v1/models/{id}` 返回权威能力字段。
+ * - **能力缓存**（llm/model-capabilities.ts）：OpenAI 兼容类（Moonshot/Qwen/GLM/DeepSeek）
+ *   的 `/v1/models` **不返回**能力字段，API 这条路对它们无解，只能靠外部目录同步/探针/
+ *   自愈采集的缓存。这一档恰好覆盖本命令最该帮到的那批模型。
+ * - **速查表**：随版本冻结的内置常量，最后兜底。
  *
  * 用法:
  *   /model discover          → 干跑模式，只查询展示结果
@@ -13,6 +20,7 @@
 import type { LocalCommandResult, CommandContext } from "../../types.ts";
 import type { ModelConfig } from "../../../config/config.ts";
 import { lookupCatalog } from "../../../llm/model-params-catalog.ts";
+import { lookupCapability } from "../../../llm/model-capabilities.ts";
 import {
   getSettingsForSource,
   patchSettingsFile,
@@ -21,7 +29,12 @@ import { getLogger } from "../../../debug/logger.ts";
 
 // ─── 类型 ───────────────────────────────────────────────────────────
 
-type DiscoverSource = "api" | "catalog" | "unchanged" | "failed";
+/**
+ * 参数来源。`cache` = 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得，
+ * 见 llm/model-capabilities.ts）——它是 OpenAI 兼容类模型的主要来源，因为那些
+ * 端点的 `/v1/models` 不返回能力字段，API 查询这条路对它们天然无解。
+ */
+type DiscoverSource = "api" | "cache" | "catalog" | "unchanged" | "failed";
 
 interface DiscoverResult {
   model: ModelConfig;
@@ -59,7 +72,7 @@ export async function discoverModels(
 
   // 筛选有变更的结果
   const updates = results.filter(
-    (r) => r.source === "api" || r.source === "catalog",
+    (r) => r.source === "api" || r.source === "cache" || r.source === "catalog",
   );
 
   const report = buildReport(results);
@@ -134,7 +147,26 @@ async function discoverSingle(
     );
   }
 
-  // 2. 内置速查表兜底
+  // 2. 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得）。
+  //    优先于静态速查表：缓存是按天刷新的实测数据，速查表是随版本冻结的内置常量。
+  //
+  //    ⚠ 这一档此前完全缺失，是 /model discover 的一个真实缺口（2026-08-01 补）：
+  //    解析链止于速查表，于是**恰好是本命令最该帮到的那批模型**——OpenAI 兼容类
+  //    （Moonshot/Qwen/GLM/DeepSeek，它们的 /v1/models 不返回能力字段，queryProviderAPI
+  //    对其直接返回 null）——一路落到「失败」，而准确数值其实就躺在
+  //    ~/.sid-code/model-capabilities.json 里（实测 2920 条）。用户看到的是
+  //    「⚠ 失败」，工具却明明知道答案。
+  const cached = lookupCapability(model.name);
+  if (cached && (cached.contextWindow || cached.maxOutputTokens)) {
+    return {
+      model,
+      contextWindow: cached.contextWindow ?? model.contextWindow ?? null,
+      maxOutputTokens: cached.maxOutputTokens ?? model.maxOutputTokens ?? null,
+      source: "cache",
+    };
+  }
+
+  // 3. 内置速查表兜底
   const catalogEntry = lookupCatalog(model.name);
   if (catalogEntry) {
     return {
@@ -145,7 +177,7 @@ async function discoverSingle(
     };
   }
 
-  // 3. 全部失败
+  // 4. 全部失败
   return { model, contextWindow: null, maxOutputTokens: null, source: "failed" };
 }
 
@@ -317,6 +349,8 @@ function sourceIcon(source: DiscoverSource): string {
   switch (source) {
     case "api":
       return "✓";
+    case "cache":
+      return "✓";
     case "catalog":
       return "◇";
     case "unchanged":
@@ -330,6 +364,8 @@ function sourceLabel(source: DiscoverSource): string {
   switch (source) {
     case "api":
       return "API";
+    case "cache":
+      return "能力缓存";
     case "catalog":
       return "速查表";
     case "unchanged":
@@ -347,4 +383,15 @@ function formatTokens(n: number): string {
 
 function pad(s: string, width: number): string {
   return s.length >= width ? s : s + " ".repeat(width - s.length);
+}
+
+/**
+ * 测试钩子：直接驱动单模型解析链，验证「API → 能力缓存 → 速查表 → 失败」的档位选择。
+ * 走 discoverModels 需要构造完整 CommandContext 与 settings 读写，对断言解析优先级是噪音。
+ */
+export function __discoverSingleForTest(
+  model: ModelConfig,
+  force = false,
+): Promise<DiscoverResult> {
+  return discoverSingle(model, force);
 }

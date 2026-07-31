@@ -17,6 +17,10 @@
  *   2. 无进展止损阀（方向 2/4/6）：repeated-readonly-guard 的探查命令识别与卡住判定生效。
  */
 
+import { chmodSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 /** 单条自检结果。 */
 interface CheckResult {
   name: string;
@@ -121,11 +125,151 @@ async function checkStuckGuard(): Promise<CheckResult> {
 }
 
 /**
+ * 校验 3：内置 skill 已嵌入二进制。
+ *
+ * 背景：`embed-builtin-skills.ts` 把 src/skill/builtin/ 下的文件生成成
+ * builtin-embedded.generated.ts 再随 --compile 打进产物。这个生成物是入库文件，
+ * 于是有一类静默失败：skill 源文件改了/新增了，但忘了跑生成脚本（或生成脚本
+ * 产出了空清单），二进制里就是旧快照甚至空清单——运行时表现为「内置 skill 消失」，
+ * 而在此之前的自检一路绿灯。
+ *
+ * 这里刻意**不写死 skill 数量**（写死的话每加一个 skill 都要改断言，改的手会顺手
+ * 把数字改对，断言退化成摆设）。只断言三件与数量无关的不变量：
+ *   - 清单非空（挡住"生成了个空数组"）；
+ *   - 哈希非空（ensure-builtin.ts 靠它判断是否需要重新释放，空哈希会让释放逻辑失准）；
+ *   - 每个条目都有 name 且至少含一个文件（挡住"结构在但内容空"）。
+ */
+async function checkEmbeddedSkills(): Promise<CheckResult> {
+  const name = "内置 skill 已嵌入";
+  try {
+    const { EMBEDDED_BUILTIN_SKILLS, EMBEDDED_BUILTIN_SKILLS_HASH } = await import(
+      "../skill/builtin-embedded.generated.ts"
+    );
+
+    if (!Array.isArray(EMBEDDED_BUILTIN_SKILLS) || EMBEDDED_BUILTIN_SKILLS.length === 0) {
+      return {
+        name,
+        ok: false,
+        detail: "嵌入的内置 skill 清单为空——几乎可以断定漏跑 embed-builtin-skills.ts，请重新 make build。",
+      };
+    }
+    if (!EMBEDDED_BUILTIN_SKILLS_HASH) {
+      return {
+        name,
+        ok: false,
+        detail: "EMBEDDED_BUILTIN_SKILLS_HASH 为空，运行时释放判断会失准（见 ensure-builtin.ts）。",
+      };
+    }
+    const broken = EMBEDDED_BUILTIN_SKILLS.filter(
+      (s: any) => !s?.name || !Array.isArray(s?.files) || s.files.length === 0,
+    );
+    if (broken.length > 0) {
+      const names = broken.map((s: any) => s?.name ?? "(无名)").join("、");
+      return { name, ok: false, detail: `以下 skill 结构异常（无名或无文件）：${names}` };
+    }
+    return {
+      name,
+      ok: true,
+      detail: `${EMBEDDED_BUILTIN_SKILLS.length} 个 skill 已内联（hash=${String(EMBEDDED_BUILTIN_SKILLS_HASH).slice(0, 8)}）`,
+    };
+  } catch (e: any) {
+    return { name, ok: false, detail: `执行异常：${e?.message ?? String(e)}` };
+  }
+}
+
+/**
+ * 校验 4：内嵌 ripgrep 是**当前平台可执行**的二进制。
+ *
+ * 背景：`vendor/rg-embed` 是 bun --compile 的固定嵌入路径，属于跨命令共享的可变状态。
+ * release.sh 的 4 平台循环会把它依次覆盖成各平台二进制，跑完残留最后一个 target
+ * （linux-arm64）；此后若 `make build` 里的 `fetch-ripgrep.ts --as-embed` 失败
+ * （Makefile 那行有前导 `-`，失败被忽略），0 字节兜底又只在文件**不存在**时触发，
+ * 于是会把一个 Linux rg 嵌进 mac 产物。运行时不报错，只是静默降级回系统 rg
+ * （见 ripgrep.ts 的 probeRg），因此非常难发现——正好是自检该管的事。
+ *
+ * 判定分三态而非二态：
+ *   - 0 字节 = 设计内的「本次不含内嵌 rg」降级，**视为通过**并说明清楚（best-effort 语义）；
+ *   - 非空且能跑通 `--version` = 通过；
+ *   - 非空但跑不通 = 失败（这就是错平台/损坏的特征）。
+ *
+ * dev 模式（bun run src）下 ensure-ripgrep 的守卫根本不会加载嵌入模块，
+ * 此时跳过（视为通过），避免 dev 环境误报。
+ */
+async function checkEmbeddedRipgrep(): Promise<CheckResult> {
+  const name = "内嵌 ripgrep 平台匹配";
+  try {
+    const { IS_DEV_MODE } = await import("../bootstrap/resolve-executable.ts");
+    if (IS_DEV_MODE) {
+      return { name, ok: true, detail: "dev 模式跳过（不加载嵌入 rg，运行时用系统 rg）" };
+    }
+
+    const { rgEmbeddedPath } = await import("../tool/rg-embedded.ts");
+    const bytes = await Bun.file(rgEmbeddedPath).arrayBuffer();
+    if (bytes.byteLength === 0) {
+      return {
+        name,
+        ok: true,
+        detail: "0 字节占位（本次产物不含内嵌 rg，运行时回退系统 rg——设计内降级）",
+      };
+    }
+
+    // 释放到临时文件再探测：嵌入路径是 /$bunfs/ 虚拟路径，不能直接 spawn。
+    const tmp = join(
+      tmpdir(),
+      `sid-code-selfcheck-rg-${process.pid}-${bytes.byteLength.toString(36)}`,
+    );
+    try {
+      await Bun.write(tmp, bytes);
+      chmodSync(tmp, 0o755);
+
+      // 错平台二进制在 macOS 上是 spawn **抛异常**（ENOEXEC），不是返回 success:false，
+      // 所以这里必须 try 包住——否则会被外层 catch 兜成"执行异常：ENOEXEC ... /tmp/xxx"，
+      // 泄漏一个无意义的临时路径而不是说出真正的病因。
+      let spawned: { success: boolean; stdout: Uint8Array } | null = null;
+      let spawnErr = "";
+      try {
+        const proc = Bun.spawnSync([tmp, "--version"], { stdout: "pipe", stderr: "pipe" });
+        spawned = { success: proc.success, stdout: proc.stdout };
+      } catch (e: any) {
+        spawnErr = e?.code ?? e?.message ?? String(e);
+      }
+
+      if (!spawned?.success) {
+        return {
+          name,
+          ok: false,
+          detail:
+            `内嵌 rg 有 ${bytes.byteLength} 字节但无法在本机（${process.platform}/${process.arch}）执行` +
+            `${spawnErr ? `（${spawnErr}）` : ""} —— 几乎可以断定嵌入了**错误平台**的二进制：` +
+            `release.sh 的 4 平台循环会把 vendor/rg-embed 覆盖成最后一个 target（linux-arm64）。` +
+            `请重新 make build，让 fetch-ripgrep.ts --as-embed 落成本机平台。`,
+        };
+      }
+      const ver = new TextDecoder().decode(spawned.stdout).split("\n")[0]?.trim() ?? "";
+      return { name, ok: true, detail: `本机可执行（${ver || "版本未知"}）` };
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // 清理失败无所谓（临时目录），不能因此让自检失败
+      }
+    }
+  } catch (e: any) {
+    return { name, ok: false, detail: `执行异常：${e?.message ?? String(e)}` };
+  }
+}
+
+/**
  * 运行全部自检。返回 true=全部通过，false=至少一条失败。
  * 结果逐条打印到 stderr（便于 CI 日志抓取），不污染 stdout。
  */
 export async function runSelfCheck(): Promise<boolean> {
-  const results = await Promise.all([checkGitStatusAnchor(), checkStuckGuard()]);
+  const results = await Promise.all([
+    checkGitStatusAnchor(),
+    checkStuckGuard(),
+    checkEmbeddedSkills(),
+    checkEmbeddedRipgrep(),
+  ]);
   let allOk = true;
   console.error("── sid-code 编译产物自检 ──");
   for (const r of results) {

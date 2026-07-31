@@ -89,14 +89,39 @@ export function is404Error(error: unknown): boolean {
   return msg.includes("404") || msg.includes("model_not_found") || msg.includes("not_found_error");
 }
 
+/**
+ * 上下文超限判定 —— **全仓唯一事实源（SSOT）**，勿再另写一份 pattern 列表。
+ *
+ * 判据是「上下文装不下」这一类服务端错误的措辞并集。各供应商措辞差异很大，且都不带
+ * 稳定的错误码，只能靠文本特征匹配——正因如此，**必须只有一份列表**：
+ *
+ * 2026-08-01 事故（本条注释的由来）：曾有三份各自维护的重复实现，pattern 互不相同——
+ *   - `query/reactive-compact.ts::isPromptTooLongError`（**驱动真实压缩的活路径**）
+ *   - 本函数（此前只被 classifyAPIError 用于日志打标）
+ *   - `llm/model-capabilities.ts::learnFromError` 的 contextExceeded 分支
+ * 实测活路径漏判 4 种真实措辞：`context_length_exceeded`、`exceeds the context window`、
+ * `too many tokens`、`reduce the length`。后果不是报错而是**该压缩时不压缩**——
+ * reactiveCompact 不触发，用户直接吃一个本可自动恢复的失败。三份列表里覆盖最全的
+ * 反而是当时只用来打日志标签的这一份，最需要它的活路径最弱。
+ *
+ * 现在另两处都委托到这里（见各自注释）。新增措辞只加在这个函数里。
+ */
 export function isPromptTooLong(error: unknown): boolean {
   const msg = lower(error);
   return (
     msg.includes("prompt is too long") ||
     msg.includes("prompt too long") ||
+    msg.includes("prompt_too_long") ||
     msg.includes("context length") ||
     msg.includes("context_length_exceeded") ||
-    msg.includes("maximum context length")
+    msg.includes("maximum context length") ||
+    msg.includes("exceeds the context window") ||
+    msg.includes("context window") ||
+    msg.includes("too many tokens") ||
+    msg.includes("reduce the length") ||
+    // 「token…exceed」的松散组合（如 "total tokens exceeded the limit"）。
+    // 放在最后：它最宽，前面的精确特征先行命中，便于排查是哪一条匹配的。
+    (msg.includes("token") && msg.includes("exceed"))
   );
 }
 

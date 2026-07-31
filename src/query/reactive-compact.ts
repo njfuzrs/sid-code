@@ -6,6 +6,8 @@
 
 import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
+// 上下文超限判定的唯一事实源（见 isPromptTooLongError 的委托注释）
+import { isPromptTooLong } from "../api/errors.ts";
 // 前缀取单一事实源，不在本文件硬编码字面量（isInternalTextBlock 的剥离判定必须与注入端逐字节一致）
 import {
   REATTACH_FILE_PREFIX,
@@ -244,17 +246,17 @@ function buildReactiveCompactSummary(
 }
 
 /**
- * 检测错误是否为 prompt-too-long
+ * 检测错误是否为 prompt-too-long（驱动 reactiveCompact 的活判据）。
+ *
+ * ⚠ 委托到 `api/errors.ts::isPromptTooLong` —— 那里是全仓唯一事实源，**不要在这里
+ * 重新维护一份 pattern 列表**。此前这里是独立实现，比 SSOT 少 4 种真实措辞
+ * （`context_length_exceeded` / `exceeds the context window` / `too many tokens` /
+ * `reduce the length`），导致这些服务端措辞下**该压缩却不压缩**：本函数是
+ * query/loop.ts 触发 reactiveCompact 的唯一闸门，漏判即等于把一个本可自动恢复的
+ * 失败直接抛给用户。详见 SSOT 处的事故注释。
  */
 export function isPromptTooLongError(err: any): boolean {
-  const msg = (err?.message || String(err)).toLowerCase();
-  return (
-    msg.includes("prompt is too long") ||
-    msg.includes("prompt_too_long") ||
-    msg.includes("context length exceeded") ||
-    msg.includes("maximum context length") ||
-    (msg.includes("token") && msg.includes("exceed"))
-  );
+  return isPromptTooLong(err);
 }
 
 /** DiminishingReturnsDetector 可选构造配置 */

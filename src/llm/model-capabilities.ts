@@ -30,7 +30,7 @@
  *
  * 3. **自愈学习**（learnFromError）：真实请求 400 时从错误里反推真值并写回缓存。
  *    这是「永不报错」的最后一道保障，也顺带根治 contextWindow 兜底猜错
- *    （见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md）：
+ *    （见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md）：
  *    兜底猜大了会撞 400，撞一次就学到真实上限，不必等人工补表。
  *
  * 容错：第三方 HTTP 属**不可信数据**——严格数值校验，非法条目丢弃；任何失败都静默
@@ -42,6 +42,8 @@ import { dirname } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { getLogger } from "../debug/logger.ts";
+// 上下文超限判定的唯一事实源（见 learnFromError 第 3 段的委托说明）
+import { isPromptTooLong } from "../api/errors.ts";
 
 /**
  * ⚠ 每次调用时取 logger，不可模块级捕获——与 gateway-pricing.ts 同理：
@@ -90,8 +92,28 @@ const SCHEMA_VERSION = 1;
  */
 const MAX_CACHE_ENTRIES = 20_000;
 
-/** 外部目录同步 TTL：7 天（模型能力变动远慢于价格，无需频繁拉）。 */
-const CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * 外部目录同步 TTL：默认 **1 天**，可经 `SID_MODEL_CATALOG_TTL_MS` 覆盖。
+ *
+ * 为什么是 1 天而不是 7 天（2026-08-01 从 7 天下调）：模型迭代节奏就是按天的——
+ * 网关先上线一个新模型、我们的注册表还没有它，这个空窗期里能力全靠本模块采集。
+ * 7 天 TTL 意味着最坏情况用户要拿着「1M 兜底」跑一周（对真实 272K 窗口的模型
+ * 高估 3.8 倍，直接吃 400）。1 天把这个空窗压到可接受。
+ *
+ * 代价评估（结论：可接受）：
+ * - 流量：两源合计约 2.7MB/天/机器（litellm 1.67MB + OpenRouter），fire-and-forget
+ *   不在启动关键路径上，用户不可感知。
+ * - 上游坏数据传播更快：由 sanitizeEntry（拦 Infinity/NaN/非正/非整）+ voteMerge
+ *   （窗口取两源最小值）两道防线兜住，与拉取频率无关。
+ * - 失败不会因变频而变吵：全源失败仍走指数退避（30min 起、封顶 24h）+ debug 级日志。
+ */
+const DEFAULT_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 解析目录同步 TTL：env 覆盖（正有限数）> 默认 1 天。非法值静默回退默认。 */
+function resolveCatalogTtlMs(): number {
+  const raw = Number(process.env.SID_MODEL_CATALOG_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CATALOG_TTL_MS;
+}
 
 /** 同步失败退避基数（指数退避，封顶 24h）——对齐 gateway-pricing 的负缓存策略。 */
 const FAIL_BACKOFF_BASE_MS = 30 * 60 * 1000;
@@ -103,10 +125,9 @@ const FAIL_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
  * ⚠ 这里出现的是**数据源域名**，不是模型名判据——不违反「不按模型名硬编码」原则。
  * 新增模型无需改这里；只有数据源本身失效才需要维护。
  *
- * 已实测排除、勿再尝试的源（避免后人重复踩坑）：
- * - `apihub.agent-ai.com/api/pricing` —— DNS NXDOMAIN，连 TCP 都建不起来。
- * - `models.dev/api.json` —— 请求超时；其 jsdelivr 镜像路径返回 404，无可用镜像。
- * 两者均已从方案中移除，不作为候选。
+ * 选源的硬约束是**国内可达性**，不是数据质量——曾有两个候选源因 DNS 不可解析 / 请求超时
+ * 且无可用 CDN 镜像而实测排除（已从方案中彻底移除，不再列具体域名以免被误当候选重试）。
+ * 新增源前先在国内网络实测直连与 jsdelivr 镜像两条路径，再谈字段覆盖率。
  */
 const CATALOG_SOURCES = [
   {
@@ -428,7 +449,7 @@ export function shouldSyncCatalogs(now = Date.now()): boolean {
   const syncedAt = memMeta.syncedAt;
   if (!syncedAt) return true;
   const fails = memMeta.failCount ?? 0;
-  const wait = fails > 0 ? computeCatalogBackoffMs(fails) : CATALOG_TTL_MS;
+  const wait = fails > 0 ? computeCatalogBackoffMs(fails) : resolveCatalogTtlMs();
   return now - syncedAt >= wait;
 }
 
@@ -652,9 +673,89 @@ export async function probeModelCapability(opts: {
 // 数据源 3：自愈学习
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 判断一条错误是否「值得剥掉 effort 字段重试」——**不看措辞，只看结构**。
+ *
+ * 为什么必须有这一层（2026-08-01）：`learnFromError` 靠文本特征识别 effort 相关错误，
+ * 而我们现在会对未知协议族**主动多发** `reasoning_effort`（见 openai.ts 的
+ * isUnknownFamily 分支）。两者相乘出一个新风险：措辞没匹配上 → 不自愈 → 用户看到一个
+ * **修复前根本不存在**的 400。实测 11 种真实措辞里有 5 种匹配不上：
+ *   - `Extra inputs are not permitted [type=extra_forbidden]`（vLLM / pydantic 兼容层）
+ *   - `Invalid request body` / `One or more parameters are invalid`（不含字段名）
+ *   - `400 Bad Request`（网关透传截断，正文全丢）
+ *   - `参数错误：不支持的参数`（中文网关，不含字段名）
+ * 「猜错了要能兜住」是这套乐观放行机制成立的前提，而靠穷举措辞永远兜不住——
+ * 下一个网关的下一种文案又会漏。
+ *
+ * 结构判据：**HTTP 4xx（客户端错误，即"你发的东西不对"）+ 我们确实发了该字段**。
+ * 剥掉一个纯优化字段重试一次的代价极低（一次额外请求），而漏判的代价是功能不可用。
+ *
+ * 刻意排除：
+ * - 5xx / 无状态码（网络中断、超时）——不是"我们发的东西不对"，重试无意义且会掩盖真故障。
+ * - 401/403/404/429——语义明确且与请求体无关（鉴权/限流/模型不存在），剥字段纯属浪费一次请求。
+ * - 上下文超限（413 或文本命中 isPromptTooLong）——真因是历史太长，该走压缩而非剥字段。
+ */
+export function shouldRetryWithoutEffort(opts: {
+  /** HTTP 状态码。取不到就传 undefined——此时只在文本明确提到 effort 字段时才自愈。 */
+  statusCode?: number;
+  /** 服务端错误文本（可能为空，如网关只透传了 "400 Bad Request"）。 */
+  errorMessage?: string;
+}): boolean {
+  const msg = opts.errorMessage ?? "";
+
+  // 文本明确提到 effort 字段 → 无论状态码都自愈（覆盖网关未透传状态码的情形）。
+  if (/reasoning_effort|reasoning\.effort/i.test(msg)) return true;
+
+  // 上下文超限走压缩，不是能力误判。
+  if (isPromptTooLong(msg)) return false;
+
+  const code = opts.statusCode;
+  if (code === undefined) return false; // 无状态码 + 无字段名 → 证据不足，不猜
+  if (code === 401 || code === 403 || code === 404 || code === 429 || code === 413) return false;
+  return code >= 400 && code < 500;
+}
+
+/**
+ * 记下「该模型不接受 `reasoning_effort`」—— 剥字段重试**成功之后**调用。
+ *
+ * 为什么必需：`shouldRetryWithoutEffort` 的结构兜底不看措辞，因此也**学不到任何东西**
+ * （措辞里没有档位列表可抽）。若只重试不记账，就会退化成「每次对话都先撞一次 400 再重试」——
+ * 永久 2 倍请求数、2 倍首字延迟。自愈的承诺是「首次可能多一跳，之后就准了」，
+ * 记账是「之后就准了」这半句的全部实现。
+ *
+ * 写 `effortValues: []` 而非删条目：空数组是「服务端明确不校验/不接受该字段」的既有语义
+ * （见 probeModelCapability 的 200 分支），`effort.ts::resolveFromCapabilityCache` 读到空数组
+ * 就会走 unknown 档、不再下发字段——正是我们想要的下一次行为。
+ *
+ * ⚠ 只在重试**成功**后调用。若剥掉 effort 仍失败，说明真因不是这个字段，
+ * 记账就会冤枉它：那个模型可能明明支持 effort，却被永久标记为不支持。
+ */
+export function recordEffortRejected(model: string): void {
+  // 已有非空档位列表（来自用户配置/目录/探针的可信数据）→ 不覆盖。
+  // 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」，
+  // 抹成 [] 会把一个支持 effort 的模型永久降级。
+  const existing = lookupCapability(model);
+  if (existing?.effortValues && existing.effortValues.length > 0) return;
+
+  mergeEntry(model, {
+    effortValues: [],
+    supportsReasoning: false,
+    source: "healed",
+    fetchedAt: Date.now(),
+  });
+  persist();
+  log().debug("MODEL-CAP", `自愈记账：${model} 不接受 reasoning_effort，后续不再下发`);
+}
+
 /** 自愈动作建议——调用方据此决定「剥掉哪个字段重试」。 */
 export interface HealAdvice {
-  /** 是否应剥掉 effort 字段后重试（该模型不接受我们发的档位）。 */
+  /**
+   * 是否应剥掉 effort 字段后重试（该模型不接受我们发的档位）。
+   *
+   * ⚠ 这是**基于措辞**的判定，只在错误文本明确提到 `reasoning_effort` 时为 true。
+   * 执行层不要只依赖它——措辞匹配必然有漏网（详见 shouldRetryWithoutEffort），
+   * 请把两者**或**起来用：`advice.dropEffort || shouldRetryWithoutEffort({...})`。
+   */
   dropEffort?: boolean;
   /** 是否是上下文超限（调用方应压缩上下文而非重试原请求）。 */
   contextExceeded?: boolean;
@@ -678,7 +779,6 @@ export interface HealAdvice {
 export function learnFromError(model: string, errorMessage: string): HealAdvice {
   const advice: HealAdvice = {};
   if (!errorMessage) return advice;
-  const lower = errorMessage.toLowerCase();
 
   // ── 1. effort 相关（字段名出现即认定与 effort 有关，不看模型名） ──
   const mentionsEffort = /reasoning_effort|reasoning\.effort/i.test(errorMessage);
@@ -713,12 +813,10 @@ export function learnFromError(model: string, errorMessage: string): HealAdvice 
     log().debug("MODEL-CAP", `自愈：${model} maxOutputTokens 学习为 ${maxOut}`);
   }
 
-  // ── 3. 上下文超限（措辞跨供应商差异大，用多个特征词并集） ──
-  if (
-    /exceeds the context window|context_length_exceeded|maximum context length|too many tokens|reduce the length/i.test(
-      lower,
-    )
-  ) {
+  // ── 3. 上下文超限 ──
+  // 委托到 api/errors.ts::isPromptTooLong（全仓唯一事实源），不在此重复维护 pattern 列表。
+  // 措辞跨供应商差异极大且无稳定错误码，三份各自维护的列表必然漂移——已出过事故，详见该处注释。
+  if (isPromptTooLong(errorMessage)) {
     advice.contextExceeded = true;
   }
 

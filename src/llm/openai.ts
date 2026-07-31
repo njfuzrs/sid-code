@@ -24,7 +24,13 @@ import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts"
 import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
-import { learnFromError } from "./model-capabilities.ts";
+import {
+  learnFromError,
+  shouldRetryWithoutEffort,
+  recordEffortRejected,
+} from "./model-capabilities.ts";
+// 状态码提取（非流式自愈的结构判据用）——兼容 status / statusCode / response.status 多种形态
+import { extractHTTPStatus } from "../api/error-utils.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -317,10 +323,9 @@ export class OpenAIProvider implements Provider {
    * - **Grok**（xAI，OpenAI 兼容端点，grok-api.md:30,157,277）：无思考开关，仅 `reasoning_effort`
    *   （none/low/medium/high，无 max；effort.ts 已把 max 钳为 high）。
    * - **OpenAI o-series**：无思考开关，仅 `reasoning_effort`（low/medium/high）。
+   * - **未知协议族**（`protocolKind` 缺失且模型名不匹配上面任何一族）：只下发
+   *   `reasoning_effort`，**不**下发 `thinking`。见下方 isUnknownFamily 的详细说明。
    * - `user_id`——KVCache/调度/内容安全隔离，通用字段，任意端点按需下发（他端忽略不报错）。
-   *
-   * 仅对声明/识别为支持的协议族下发 thinking/reasoning_effort（未知端点不认这两个字段,
-   * 贸然下发可能 400）。
    */
   private applyDeepSeekThinking(requestBody: any, params: SendParams, model: string): void {
     const kind = lookupCatalog(model)?.protocolKind;
@@ -328,6 +333,41 @@ export class OpenAIProvider implements Provider {
     const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
     const isGrok = kind === "grok-openai" || (kind === undefined && /grok/i.test(model));
     const isOSeries = kind === "o-series" || (kind === undefined && /^o[0-9]/i.test(model));
+
+    /**
+     * 未知协议族兜底 —— 修复「动态能力采集对未知模型整链空转」的断点（2026-08-01）。
+     *
+     * 症状：effort.ts 的 resolveFromCapabilityCache 对未知族**乐观放行**
+     * （supportsEffort=true），算出 params.reasoningEffort="high"；但这里的分派只认
+     * deepseek/glm/grok/o-series 四族，未知族没有任何分支接它——字段算出来却**从不进
+     * requestBody**。实测 kimi-k3 / qwen3-coder-plus / 任意新模型全部如此。
+     *
+     * 连带后果比「effort 不生效」严重得多：字段发不出去 ⇒ 服务端永远不会因它报 400
+     * ⇒ withCapabilityHealing 的自愈**对未知模型永不触发** ⇒ model-capabilities.ts 的
+     * 「乐观放行 + 400 自愈学真值」闭环在它唯一的目标人群上是断的。整套动态采集机制
+     * 恰好在最需要它的地方空转。
+     *
+     * 取舍（明知代价，仍选下发）：下发等于主动去撞可能的 400 换取自愈学习，首次请求
+     * 可能多一跳重试。之所以可接受——
+     *   1. 撞了就学到：learnFromError 记住服务端自报档位，剥字段重试一次即成功，
+     *      用户看到的是一次正常完成的请求；下次起缓存已准，不再多这一跳。
+     *   2. 大量 OpenAI 兼容端点对不认识的顶层字段是**忽略**而非报错，多数情况零代价。
+     *   3. 反面更糟：永不下发 = 用户设了 /effort 却静默无效，且这个静默永远不会自愈。
+     *
+     * 只下发 reasoning_effort、**不**下发 thinking：与 effort.ts 同一判断
+     * （supportsThinkingToggle=false）——thinking 的结构各家不同（DeepSeek/GLM 是
+     * `{type}`、Anthropic 是 `{budget_tokens}`），瞎猜结构的 400 风险远高于一个标量字段，
+     * 且无法从错误文本反推出正确结构，自愈救不回来。
+     *
+     * ⚠ 判据是「`protocolKind` 缺失**且**四族正则都不匹配」，不是「不属于这四族」。
+     * 差别在 catalog 里已声明为**其它已知族**的模型（如 `openai-responses`）：它们各有
+     * 专属 applier 与专属线格式，不该被当成未知族。这里必须排除掉，否则会踩到一个真实
+     * 路径——`sendMessageNonStreaming` 不做 Responses 分派（只有流式 sendMessageStreamInner
+     * 分派），GPT-5.x 走「流式失败降级到非流式」时会落进本函数，把 Responses 专属的
+     * `xhigh`/`max` 档位当普通 `reasoning_effort` 发到 Chat Completions 线上（该协议族是
+     * 当前唯一原生认 xhigh 的，其它端点不认）。
+     */
+    const isUnknownFamily = kind === undefined && !isDeepSeek && !isGLM && !isGrok && !isOSeries;
 
     const thinkingDisabled = params.thinking?.enabled === false;
 
@@ -355,6 +395,13 @@ export class OpenAIProvider implements Provider {
     // OpenAI o-series（o1/o3/o4…）：内置推理，仅透传 reasoning_effort（low/medium/high，无 max）。
     // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里再兜一道。
     if (isOSeries && params.reasoningEffort && params.reasoningEffort !== "max") {
+      requestBody.reasoning_effort = params.reasoningEffort;
+    }
+
+    // 未知协议族：只透传 reasoningEffort（档位已由 effort.ts 依能力缓存钳过）。
+    // 见 isUnknownFamily 的详细说明——这一支是自愈闭环的入口，删掉它整套动态采集对
+    // 未知模型即失效。thinkingDisabled 时不下发，与其它族保持一致语义。
+    if (isUnknownFamily && params.reasoningEffort && !thinkingDisabled) {
       requestBody.reasoning_effort = params.reasoningEffort;
     }
 
@@ -600,6 +647,12 @@ export class OpenAIProvider implements Provider {
    * 只自愈**我们自己多发的能力字段**（当前：reasoning_effort / reasoning.effort）。
    * 其余错误（鉴权、限流、上下文超限、模型不存在）原样透出——那些不是能力误判，
    * 盲目重试只会掩盖真问题。
+   *
+   * 判据是「措辞匹配 **或** 结构匹配」，两条缺一不可：
+   * - `learnFromError().dropEffort` 认措辞，顺带把服务端自报的档位学进缓存（有值才学）。
+   * - `shouldRetryWithoutEffort()` 只认 HTTP 4xx，不看措辞——这是兜底。
+   * 因为我们现在会对未知族**主动多发** `reasoning_effort`，若只靠措辞匹配，
+   * 漏判就等于让用户看到一个修复前不存在的 400（实测 11 种真实措辞漏 5 种）。
    */
   private async *withCapabilityHealing(
     params: SendParams,
@@ -610,14 +663,23 @@ export class OpenAIProvider implements Provider {
 
     for (const attempt of [0, 1]) {
       let capabilityError: string | null = null;
+      // 本轮是否出过错。第二轮的错误是直接 yield 出去的（不再自愈），
+      // capabilityError 仍为 null——不单独记一个标志就会把「重试也失败」当成成功记账。
+      let sawError = false;
 
       for await (const ev of this.sendMessageStreamInner(params, signal)) {
-        // 只在「首次尝试 + 尚未产出任何内容」的错误上考虑自愈；已经开始输出就不能重发。
-        if (attempt === 0 && ev.type === "error") {
+        if (ev.type === "error") sawError = true;
+        // 只在「首次尝试 + 尚未产出任何内容 + 我们确实发了 effort」的错误上考虑自愈；
+        // 已经开始输出就不能重发（会重复内容）。
+        if (attempt === 0 && ev.type === "error" && params.reasoningEffort !== undefined) {
           const msg = ev.error?.message ?? "";
+          // learnFromError 有副作用（把学到的档位写进缓存），无论是否重试都值得先跑一次。
           const advice = learnFromError(model, msg);
-          // dropEffort 且我们确实发了 effort → 说明是能力误判，值得剥字段重试。
-          if (advice.dropEffort && params.reasoningEffort !== undefined) {
+          const structural = shouldRetryWithoutEffort({
+            statusCode: ev.error?.statusCode,
+            errorMessage: msg,
+          });
+          if (advice.dropEffort || structural) {
             capabilityError = msg;
             break;
           }
@@ -625,7 +687,12 @@ export class OpenAIProvider implements Provider {
         yield ev;
       }
 
-      if (capabilityError === null) return; // 正常完成或不可自愈的错误（已 yield 出去）
+      if (capabilityError === null) {
+        // 第二轮（已剥掉 effort）且本轮**没有任何错误** → 重试确实成功，记账让下次不再多这一跳。
+        // 必须校 sawError：若剥掉仍失败，真因不是这个字段，记账会把一个支持 effort 的模型冤枉成不支持。
+        if (attempt === 1 && !sawError) recordEffortRejected(model);
+        return; // 正常完成或不可自愈的错误（已 yield 出去）
+      }
 
       // 剥掉 effort 字段重试。params 是调用方对象，不可原地改 → 浅拷贝。
       getLogger().debug(
@@ -805,7 +872,9 @@ export class OpenAIProvider implements Provider {
         );
         yield {
           type: "error",
-          error: { message: `OpenAI API 错误: ${response.status} ${error}` },
+          // statusCode 必须带上：能力自愈的结构判据（shouldRetryWithoutEffort）看的是
+          // HTTP 码而非措辞——网关可能只透传一句 "400 Bad Request"，正文里啥字段名都没有。
+          error: { message: `OpenAI API 错误: ${response.status} ${error}`, statusCode: response.status },
         };
         return;
       }
@@ -1214,7 +1283,55 @@ export class OpenAIProvider implements Provider {
    * 非流式请求（流式降级场景使用）。
    * 复用 convertMessages，用普通 chat/completions 请求（stream:false）。
    */
+  /**
+   * 非流式请求（网关不支持 SSE 时由 stream-handler 降级到此，也被 warmup / 分类器等旁路直接调用）。
+   *
+   * 这层只做**能力自愈**，真正的请求在 sendMessageNonStreamingInner。
+   * 与流式路径的 withCapabilityHealing 严格同构：首次因「我们多发了一个模型不认的能力字段」
+   * 而失败时，剥掉该字段重试一次。
+   *
+   * 为什么非流式也必须有（2026-08-01 补齐）：此前只有流式包了自愈，于是同一个未知模型
+   * 「流式能自愈、降级到非流式就不能」——而降级本身往往发生在网关异常的时候，正是最不该
+   * 再叠加一个可自愈失败的时刻。自愈是「永不报错」的执行层，两条路径的能力必须对称，
+   * 否则用户遇到的行为取决于当时走了哪条路，无法解释也无法复现。
+   */
   async sendMessageNonStreaming(
+    params: SendParams,
+    signal?: AbortSignal,
+  ): Promise<AccumulatedResponse> {
+    const model = params.model || this._model;
+    try {
+      return await this.sendMessageNonStreamingInner(params, signal);
+    } catch (err) {
+      // 只自愈「我们自己多发的能力字段」，且必须确实发了它——其余错误（鉴权、限流、
+      // 上下文超限、模型不存在）原样抛出，盲目重试只会掩盖真问题。
+      if (params.reasoningEffort === undefined) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      // 与流式路径同一套判据：措辞匹配（顺带学档位）**或** 结构匹配（HTTP 4xx 兜底）。
+      const advice = learnFromError(model, msg);
+      const structural = shouldRetryWithoutEffort({
+        statusCode: extractHTTPStatus(err),
+        errorMessage: msg,
+      });
+      if (!advice.dropEffort && !structural) throw err;
+      getLogger().debug(
+        "LLM:OPENAI",
+        `能力自愈（非流式）：${model} 拒绝 reasoning_effort，剥离该字段重试`,
+        { error: msg.slice(0, 160) },
+      );
+      const healed = await this.sendMessageNonStreamingInner(
+        { ...params, reasoningEffort: undefined },
+        signal,
+      );
+      // 走到这里说明重试**没有抛错**即成功——记账让下次不再多这一跳。
+      // （抛错会直接冒泡出去，不会执行到这行，天然满足「只在成功后记」。）
+      recordEffortRejected(model);
+      getLogger().debug("LLM:OPENAI", `能力自愈完成（非流式）：${model}`);
+      return healed;
+    }
+  }
+
+  private async sendMessageNonStreamingInner(
     params: SendParams,
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
@@ -1272,7 +1389,12 @@ export class OpenAIProvider implements Provider {
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`OpenAI API 错误: ${response.status} ${errText}`);
+      const err = new Error(`OpenAI API 错误: ${response.status} ${errText}`);
+      // 挂上状态码：能力自愈的结构判据看 HTTP 码而非措辞（网关可能只回 "400 Bad Request"）。
+      // 用 statusCode + status 两个名字，兼容 errors.ts::extractHTTPStatus 的两种读法。
+      (err as any).statusCode = response.status;
+      (err as any).status = response.status;
+      throw err;
     }
 
     const data: any = await response.json();

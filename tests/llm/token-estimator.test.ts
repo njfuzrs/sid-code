@@ -178,7 +178,7 @@ describe("TokenEstimator", () => {
     });
 
     test("未知模型返回默认值 1_000_000", () => {
-      // 兜底从 128K 提至 1M（2026 年主流模型普遍 1M），详见 docs/bugfixes/todo/20260730-未知模型contextWindow兜底失真-根因与待修方案.md
+      // 兜底从 128K 提至 1M（2026 年主流模型普遍 1M），详见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md
       expect(estimator.getContextLimit("unknown-model")).toBe(1_000_000);
     });
 

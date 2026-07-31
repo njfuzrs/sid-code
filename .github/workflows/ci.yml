@@ -1,0 +1,54 @@
+# CI 门禁：全量单测 + 构建（2026-08-01 补齐）
+#
+# 为什么需要：在此之前仓库有 5 个 workflow，但**没有一个跑全量 bun test**
+#   · docs-lint.yml            只在 docs/ 改动时跑文档规则
+#   · provider-daily-canary.yml 定时任务，且只跑 tests/llm/vcr/ 子集
+#   · eval-pr-smoke.yml         只跑 5 个 P0 eval case
+#   · eval-weekly.yml / judge-calibration.yml  定时的评估任务
+# 于是 PR 阶段测试完全不设防，问题一路憋到 `./scripts/release.sh` 的发布前门禁才炸。
+# 那是最糟的暴露时机：门禁在 bump-version **之后**（版本号已经 +1），且此时人已经在
+# 发布流程中间，压力最大、最容易顺手加 --skip-test 绕过。
+#
+# 把同一道关卡前移到 PR：让失败发生在写代码的时候，而不是发版的时候。
+#
+# 刻意**不含**类型检查（`tsc --noEmit`）：仓库当前有存量类型错误，按项目决定暂不纳入门禁。
+# 将来要加就在这里加一个 step，别另开 workflow。
+
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+# 同一分支的旧 run 自动取消，避免连续 push 时排队浪费 runner
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # 本地全量约 105s；给足余量覆盖 CI 冷启动与依赖安装
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      # 与 release.sh 发布前门禁同源（同一条 `bun test`），前移到 PR 阶段
+      - name: 全量单测
+        run: bun test
+
+      # make build 不动版本号，CI 里跑它不会让 package.json 变脏。
+      # 末尾的 ./sid-code --self-check 会断言关键修复已内联 + 内置 skill 已嵌入
+      # + 内嵌 rg 平台匹配，等于顺带验证了构建产物可用。
+      - name: 构建 + 产物自检
+        run: make build

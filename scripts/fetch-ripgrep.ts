@@ -34,7 +34,7 @@
  */
 
 import { mkdir, writeFile, copyFile, chmod } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
@@ -189,14 +189,28 @@ async function main() {
 
 main().catch(async (err) => {
   console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
-  // --as-embed 场景下即使拉取失败，也要保证 vendor/rg-embed 存在（0 字节兜底）——
-  // 该文件不再是 git 追踪的占位文件，若这里不兜底，bun build --compile 的固定 import
-  // 路径会因缺文件直接报错，而不是像设计意图那样降级为「运行时回退系统 rg」。
+  // --as-embed 场景下拉取失败时，必须把 vendor/rg-embed **无条件截断为 0 字节**。
+  //
+  // ⚠ 这里原先是 `if (!existsSync(embedPath))`——只在文件缺失时兜底。那个条件有个致命
+  // 缺口：release.sh 的 4 平台循环跑完会在这个固定路径上残留**最后一个 target**
+  // （linux-arm64）的二进制。此后在 mac 上跑 make build，若 --as-embed 失败
+  //（Makefile 那行有前导 `-`，失败被 make 忽略），文件是"存在"的于是兜底不触发，
+  // 于是一个 Linux rg 被嵌进 mac 产物。运行时不报错，只在 probeRg 探测失败后静默
+  // 降级回系统 rg——极难发现。
+  //
+  // 正确语义是「本次没能准备好 rg」而不是「文件在不在」：拉取失败就该把这个共享的
+  // 可变状态清空，让产物明确退化为设计内的"无内嵌 rg"，而不是继承上一次的脏值。
   if (process.argv.slice(2).includes("--as-embed")) {
     const embedPath = join(VENDOR_DIR, "rg-embed");
-    if (!existsSync(embedPath)) {
-      await mkdir(VENDOR_DIR, { recursive: true });
-      await writeFile(embedPath, new Uint8Array(0));
+    await mkdir(VENDOR_DIR, { recursive: true });
+    const hadStale = existsSync(embedPath) && statSync(embedPath).size > 0;
+    await writeFile(embedPath, new Uint8Array(0));
+    if (hadStale) {
+      console.error(
+        `  ⚠️  已清空 ${embedPath}（原有内容来源不明，可能是上次 release.sh 循环残留的其它平台二进制，` +
+          `继承它会把错平台 rg 嵌进本次产物）`,
+      );
+    } else {
       console.error(`  ⚠️  已写入 0 字节兜底 → ${embedPath}（本次产物不含内嵌 rg，运行时回退系统 rg）`);
     }
   }
