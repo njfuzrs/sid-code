@@ -17,6 +17,7 @@ import { extname } from "path";
 import { glob } from "glob";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { searchToolPaths } from "./jit-affected-paths.ts";
 import { isBinaryContent, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -80,6 +81,18 @@ export class ReadManyTool implements Tool {
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readManySchema();
+
+  /**
+   * P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
+   *
+   * read_many 是原硬编码名单漏得最狠的一个：子代理常用它批量读
+   * `["src/ui/**\/*.tsx"]`，而 `pattern` 是数组、无 `file_path` 字段，
+   * 集中式提取一条都取不到 → 那个目录的规范**静默**全丢。
+   * `searchToolPaths` 会把 `path`（搜索根）与每个 pattern 的静态前缀都报出来。
+   */
+  jitAffectedPaths(input: unknown): string[] {
+    return searchToolPaths(input, "pattern");
+  }
 
   /**
    * 构造函数兼容两种 tracker 类型（与 ReadTool 对齐）：

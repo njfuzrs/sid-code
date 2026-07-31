@@ -287,8 +287,15 @@ export interface ToolExecutorDeps {
   ) => Promise<{ followup?: ContentBlock[] } | void>;
   /** Plan Mode 系统提醒 */
   getPlanModeReminder?: () => Promise<string | null>;
-  /** JIT 上下文发现 */
-  discoverJitContext?: (toolBlocks: ToolUseBlock[]) => Promise<void>;
+  /**
+   * JIT 上下文发现（P2-3：**同步返回、内部 fire-and-forget**）。
+   *
+   * 返回类型刻意是 `void` 而非 `Promise<void>`：JIT 的产物是给**下一轮**请求用的
+   * （追加到系统提示词），本轮工具结果不需要它。原先返回 promise 并被 `await`，
+   * 把 stat / 读盘 / `@import` 递归展开全串进了「工具执行完 → 结果返回模型」之间，
+   * 直接计入 TTFT。类型上收成 `void` 可以让「谁再 await 它」变成编译期错误。
+   */
+  discoverJitContext?: (toolBlocks: ToolUseBlock[]) => void;
   /**
    * 工具进度回调（G5 接线）。长跑工具在执行期间吐出的中间进度经此上报 UI（如状态栏）。
    * 未注入（无头模式）时安全跳过——执行器传给 tool.execute 的 onProgress 变为 no-op。
@@ -647,9 +654,9 @@ export async function executeTools(
     }
   }
 
-  // JIT 上下文发现
+  // JIT 上下文发现（P2-3：不 await——产物给下一轮用，await 会把读盘算进 TTFT）
   if (deps.discoverJitContext) {
-    await deps.discoverJitContext(toolBlocks.map(t => t.block));
+    deps.discoverJitContext(toolBlocks.map(t => t.block));
   }
 
   return { results, followup };

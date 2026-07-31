@@ -7,6 +7,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { statSync, existsSync } from "node:fs";
 import { relative, resolve, normalize } from "node:path";
 import { z } from "zod/v4";
@@ -64,6 +65,17 @@ interface StructuredOutput {
 export class GrepTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = grepSchema();
+
+  /**
+   * P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
+   *
+   * 只用 `path`（搜索根），**不解析 `pattern`** —— grep 的 pattern 是正则而非 glob，
+   * 把 `src/\w+\.ts` 这类正则送进 glob 前缀提取会得到伪目录。
+   * `glob` 字段（文件名过滤）同理不含目录信息，也不报。
+   */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "path");
+  }
 
   readOnly(): boolean {
     return true;

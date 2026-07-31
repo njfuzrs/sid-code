@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -85,6 +86,11 @@ function findCellIndex(cells: NotebookCell[], cellId: string): number {
 export class NotebookEditTool implements Tool {
   name(): string {
     return "notebook_edit";
+  }
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "notebook_path");
   }
 
   searchHint = "edit jupyter notebook cell ipynb";

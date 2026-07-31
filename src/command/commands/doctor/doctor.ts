@@ -12,6 +12,8 @@
 
 import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
+import { relative } from "path";
+import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from "../../../config/rules.ts";
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../../../ui/constants/figures.ts";
 import { getSidHome, sidPaths } from "../../../config/paths.ts";
@@ -31,6 +33,35 @@ function mark(status: CheckStatus): string {
   if (status === "ok") return SUCCESS_MARK;
   if (status === "warn") return WARNING_MARK;
   return ERROR_MARK;
+}
+
+/**
+ * P2-2：检查是否有超过建议上限的规则文件（CLAUDE.md / .claude/rules）。
+ *
+ * 对齐 CC `doctorContextWarnings.ts:57` —— 只**告警**，绝不截断内容。
+ * 超限文件会让每一轮请求都多带这些字节（JIT 注入单调增长、永不移除），
+ * 成本曲线是累积量而非单次量，所以值得在 doctor 里显式提醒用户拆分。
+ *
+ * 数据来自 `rules.ts` 的登记表（启动期主加载与 JIT 按需加载共用同一判定函数），
+ * 因此本项只在**本次会话确实加载过**超限文件时才出现 —— 不做额外扫盘。
+ */
+function checkLargeRuleFiles(cwd: string): CheckItem[] {
+  const large = getLargeMemoryFiles();
+  if (large.length === 0) return [];
+  return large.map(({ path, chars }) => {
+    let shown = path;
+    try {
+      const rel = relative(cwd, path);
+      if (rel && !rel.startsWith("..")) shown = rel;
+    } catch { /* 相对化失败就用绝对路径 */ }
+    return {
+      status: "warn" as const,
+      label: "规则文件过大",
+      detail:
+        `${shown} 有 ${chars} 字符，超过建议上限 ${MAX_MEMORY_CHARACTER_COUNT}。` +
+        `内容未被截断（全部生效），但会推高每轮请求成本，建议拆分到 .claude/rules/ 下按主题分文件。`,
+    };
+  });
 }
 
 /** 检查 cwd 是否 git 仓库。 */
@@ -219,6 +250,9 @@ const mod: LocalCommandModule = {
 
     // MCP
     items.push(...checkMCP(ctx));
+
+    // P2-2：规则文件体积告警（只告警不截断，对齐 CC doctorContextWarnings）
+    items.push(...checkLargeRuleFiles(ctx.cwd));
 
     // 组装报告：字形靠颜色/形状区分，标签左对齐成列
     const labelWidth = Math.max(...items.map((i) => i.label.length));

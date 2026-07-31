@@ -22,8 +22,16 @@ import { getLogger } from "../debug/logger.ts";
 import { sidHomePath } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
 
-/** CLAUDE.md 文件名候选列表（对标 Claude Code） */
-const CLAUDE_MD_FILES = [
+/**
+ * CLAUDE.md 文件名候选列表（对标 Claude Code）。
+ *
+ * ⚠️ **单一事实源**：JIT 发现路径（`config/jit-context.ts`）必须 import 本常量，
+ * 不得自建同名副本。此前两处各有一份独立定义，JIT 侧漏了 `CLAUDE.local.md` 与
+ * `.claude/rules/`，形成「主加载路径支持、JIT 路径盲区」的双通道漂移
+ * （见 docs/bugfixes/todo/20260731-上下文JIT机制… P1-1）。
+ * 哨兵测试：`tests/config/jit-rules-single-source.test.ts`。
+ */
+export const CLAUDE_MD_FILES = [
   "CLAUDE.md",
   ".claude.md",
   "claude.md",
@@ -32,13 +40,52 @@ const CLAUDE_MD_FILES = [
 ] as const;
 
 /** 本地私有规则文件名（不检入代码库，优先级最高） */
-const CLAUDE_LOCAL_FILES = [
+export const CLAUDE_LOCAL_FILES = [
   "CLAUDE.local.md",
   ".claude/CLAUDE.local.md",
 ] as const;
 
 /** 项目规则目录（.claude/rules/*.md） */
-const CLAUDE_RULES_DIR = ".claude/rules";
+export const CLAUDE_RULES_DIR = ".claude/rules";
+
+/**
+ * 单份规则文件字符数**告警**阈值（对齐 CC `MAX_MEMORY_CHARACTER_COUNT = 40000`）。
+ *
+ * ⚠️ 这是**告警**阈值，**不是截断阈值**。CC 的 4 个消费方全部只 filter + 提示，
+ * 从不改动注入内容。静默截断比不截断更危险：规则前半段生效、后半段静默消失，
+ * 而模型对「上下文里有什么」没有元认知，会按残缺规则自信行事。
+ * 详见 docs/bugfixes/todo/20260731-上下文JIT机制… §6 的失效模式对比表。
+ */
+export const MAX_MEMORY_CHARACTER_COUNT = 40000;
+
+/**
+ * 超限规则文件登记表（path → 字符数）。两条注入通道（启动期主加载 / JIT 按需）
+ * 共用，避免「JIT 注入的告警、启动期注入的不告警」这种行为不一致。
+ * 由 /doctor 等用户可见出口经 `getLargeMemoryFiles()` 读取。
+ */
+const _largeMemoryFiles = new Map<string, number>();
+
+/**
+ * 登记一份超限规则文件（仅当确实超过阈值时登记）。返回是否超限。
+ * 只记录、不改动内容——调用方拿到 true 时**不应**截断，只用于告警。
+ */
+export function noteMemoryFileSize(absolutePath: string, chars: number): boolean {
+  if (chars <= MAX_MEMORY_CHARACTER_COUNT) return false;
+  _largeMemoryFiles.set(absolutePath, chars);
+  return true;
+}
+
+/** 读取当前所有超限规则文件（供 /doctor 等用户可见出口展示）。 */
+export function getLargeMemoryFiles(): Array<{ path: string; chars: number }> {
+  return [..._largeMemoryFiles.entries()]
+    .map(([path, chars]) => ({ path, chars }))
+    .sort((a, b) => b.chars - a.chars);
+}
+
+/** 清空超限登记（测试隔离用）。 */
+export function resetLargeMemoryFiles(): void {
+  _largeMemoryFiles.clear();
+}
 
 /**
  * M6：用户级规则目录候选（~/.claude/rules 优先，回退 ~/.sid-code/rules）。
@@ -72,7 +119,7 @@ function managedRootDirs(): string[] {
  * M9：安全解析路径——若为 symlink 则跟随到 realpath，断链/不存在时回退原路径。
  * 用于规则目录扫描与循环检测，防 symlink 环 + 指向意外目标。
  */
-function safeResolvePath(absolutePath: string): string {
+export function safeResolvePath(absolutePath: string): string {
   // 直接 realpathSync：解析路径中**所有**层级的 symlink（含父目录），
   // 得到唯一 canonical 路径，作为去重键最可靠（symlink 与真身归一）。
   try {
@@ -654,6 +701,16 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
     });
 
     log.debug("RULES", `加载 CLAUDE.md: ${filePath} (${content.length} 字符)`);
+    // P2-2：超限只登记 + 告警，**绝不截断**（见 MAX_MEMORY_CHARACTER_COUNT 注释）。
+    // 阈值判定落在两条注入通道共用的位置（JIT 侧调 noteMemoryFileSize 同一函数），
+    // 避免「启动期不告警、JIT 告警」的行为不一致。
+    if (noteMemoryFileSize(filePath, content.length)) {
+      log.warn(
+        "RULES",
+        `规则文件超过建议上限 ${MAX_MEMORY_CHARACTER_COUNT} 字符（${content.length}），` +
+          `会推高每轮请求成本，建议拆分: ${filePath}（内容未被截断，全部生效）`,
+      );
+    }
     return parseClaudeMd(content, filePath);
   } catch (err) {
     log.error("RULES", `读取 CLAUDE.md 失败: ${filePath}`, err);

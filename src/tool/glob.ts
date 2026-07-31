@@ -27,6 +27,7 @@ import { statSync } from "fs";
 import { join, isAbsolute, sep } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { searchToolPaths } from "./jit-affected-paths.ts";
 import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -66,8 +67,12 @@ function noIgnore(): boolean {
  *
  * 例：/a/b/src/**\/*.ts → { baseDir: '/a/b/src', relativePattern: '**\/*.ts' }
  *     /a/b/file.ts（无通配）→ { baseDir: '/a/b', relativePattern: 'file.ts' }
+ *
+ * 导出原因（P2-9 / §8.9-2）：JIT 上下文发现需要同一套「pattern 的静态前缀是哪个目录」
+ * 判定 —— `glob("src/ui/**\/*.tsx")` 不带 `path` 参数时，若不提取前缀就只能退化成
+ * 项目根，`src/ui` 的规范拿不到。复用此函数而非重写，避免两套算法漂移。
  */
-function extractGlobBaseDirectory(pattern: string): { baseDir: string; relativePattern: string } {
+export function extractGlobBaseDirectory(pattern: string): { baseDir: string; relativePattern: string } {
   const globChars = /[*?[{]/;
   const match = pattern.match(globChars);
 
@@ -101,6 +106,17 @@ const globSchema = lazySchema(() =>
 export class GlobTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = globSchema();
+
+  /**
+   * P2-9 / §8.9-2：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
+   *
+   * 关键是 pattern 里的静态前缀也要报：`glob("src/ui/**\/*.tsx")` 不带 `path` 时，
+   * 只看 `path` 会退化成项目根，`src/ui` 的规范一份拿不到。走
+   * `searchToolPaths` → `extractGlobBaseDirectory`（glob 自身用的同一函数）。
+   */
+  jitAffectedPaths(input: unknown): string[] {
+    return searchToolPaths(input, "pattern");
+  }
 
   /**
    * G21：可选的"路径隐藏"判定回调（给定绝对路径 → 是否被权限 deny 规则命中）。

@@ -63,13 +63,18 @@ import {
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "./sdk/index.ts";
-import { JitContextManager } from "./config/jit-context.ts";
+import { JitContextManager, type JitDiscovery } from "./config/jit-context.ts";
+import {
+  collectJitAccessedPaths,
+  resolveJitPathExtractor,
+} from "./tool/jit-affected-paths.ts";
+import { estimateTextTokens } from "./context/token.ts";
 import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason } from "./llm/errors.ts";
 import * as CrashMarker from "./trace/crash-marker.ts";
 import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
-import { resolve, extname, join } from "path";
+import { resolve, extname, join, relative, basename } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
@@ -292,14 +297,27 @@ const GOAL_STATE_CLEARED_MARKER = "__CLEARED__";
  */
 export function mergeJitContextIntoPrompt(
   prompt: string,
-  jitContexts: string | null | undefined,
+  jitContexts: string | string[] | null | undefined,
 ): { prompt: string; appended: boolean } {
   // 无已加载 JIT：原样返回，不产生多余空行
   if (!jitContexts) return { prompt, appended: false };
-  // 幂等：已含该正文时不重复追加（压缩路径可能对同一份提示词反复调用）
-  if (prompt.includes(jitContexts)) return { prompt, appended: false };
-  return { prompt: prompt + "\n\n" + jitContexts, appended: true };
+
+  // 逐块判定（审计：整串 includes 的幂等性依赖"两次调用之间集合没变"这个隐性前提）。
+  //
+  // 整串形态的失效路径：第一次回灌了 [A]，随后 JIT 又加载了 B，第二次传入的整串是
+  // "A\n\nB" —— 提示词里只有 A，`includes("A\n\nB")` 为 false → 整串追加 →
+  // A 在上下文里出现两遍。逐块判定后每块独立比对，只补真正缺的那块。
+  const blocks = Array.isArray(jitContexts) ? jitContexts : [jitContexts];
+  const missing = blocks.filter((b) => b && !prompt.includes(b));
+  if (missing.length === 0) return { prompt, appended: false };
+  return { prompt: prompt + "\n\n" + missing.join("\n\n"), appended: true };
 }
+
+// P2-9：`collectJitAccessedPaths` / `resolveJitPathExtractor` 定义在
+// `tool/jit-affected-paths.ts`（低依赖模块），此处重新导出以保持既有 import 路径。
+// 不能反过来（放在 app.ts 让 sub-agent.ts 去 import）：那会形成
+// app → sub-agent → app 的循环依赖。
+export { collectJitAccessedPaths, resolveJitPathExtractor };
 
 export class App {
   private config: Config;
@@ -350,6 +368,19 @@ export class App {
   private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
+  /**
+   * P2-3：JIT 发现的串行队列。JIT 改为 fire-and-forget 后，多个工具块可能并发触发，
+   * 而注入是 `getSystemPrompt` → `setSystemPrompt` 的 read-modify-write，并发会互相
+   * 覆盖。用一条 promise 链串起来（JIT 不在关键路径上，排队无成本）。
+   */
+  private jitQueue: Promise<void> = Promise.resolve();
+  /**
+   * P1-7：启动期 CLAUDE.md / 记忆索引的 token 基线。
+   * `setMemoryTokens` 是覆盖式，JIT 增量必须叠加在这个基线上报，否则二者互相抹掉。
+   */
+  private baseMemoryTokens = 0;
+  /** P2-8：已向用户报告过的 JIT 失败（`path::code` 去重键），避免每轮重复刷屏 */
+  private reportedJitFailures = new Set<string>();
   /** TelemetryHookProbe 引用（供 Harness 注册 enricher） */
   private telemetryProbe?: import("./telemetry/hook-probe.ts").TelemetryHookProbe;
   /** Plan Mode 管理器 */
@@ -721,6 +752,12 @@ export class App {
 
     // 初始化 JIT 上下文管理器
     this.jitContextMgr = new JitContextManager();
+    // P1-6：把 JIT 回灌下沉进 ctxMgr.setSystemPrompt，使**任何**覆盖式重建
+    // （含 /memory reload 这类拿着 ctxMgr 的外部调用方）都自动带上已加载的子目录规则。
+    // jitContext 配置关闭时提供空列表 → 行为等同未注入。
+    this.ctxMgr.setJitBlocksProvider(() =>
+      this.config.jitContext === false ? [] : this.jitContextMgr.getLoadedBlocks(),
+    );
 
     // 初始化 Hook 系统
     this.hookSystem = new HookSystem();
@@ -1719,6 +1756,16 @@ export class App {
         // goal 特殊：goalState 已置 null，persistGoalState() 会 no-op 落不了空目标，
         // 故用清除哨兵覆盖 clear 前的旧目标快照，restoreSession 读到哨兵即跳过恢复。
         this.persistGoalState(true);
+        // P2-7：JIT 缓存重置（对齐 CC `commands/clear/conversation.ts:132` 的
+        // `loadedNestedMemoryPaths?.clear()`）。`reset()` 此前**无任何生产调用方** ——
+        // 注释写着"会话重启时调用"但没人调，于是 `/clear` 后 loadedFiles 仍记着
+        // clear 前加载过的文件，而系统提示词已重建（JIT 追加内容被抹掉）：
+        // 两边不一致 → 那些规则**永久丢失**直到进程重启，且再次触达也不会重新注入。
+        // 必须在 rebuildDisplay/系统提示词重建这一批里一起归零。
+        this.jitContextMgr.reset();
+        this.reportedJitFailures.clear();
+        // 记账同步归零（JIT 分量已清，基线由后续重建的 onSectionTokens 重新报）
+        this.refreshMemoryTokenAccounting();
         // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
         resetCacheDetection();
         clearCacheBreaks();
@@ -1897,7 +1944,22 @@ export class App {
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
       // 模型可能"忘记"它们仍然有效。复用 applySystemPrompt 的回灌逻辑
       // （此前这里是独立的一份实现，rebuild 路径漏抄 → 第 11 条）。
+      //
+      // P1-2 + P2-7：回灌**之前**先剔掉磁盘上已变更/已删除的条目。顺序不能反 ——
+      // 先回灌再 prune 等于把陈旧内容灌进去再删记录，上下文里留下的仍是旧规则。
+      // 被剔掉的不回灌，留给下次触达重读盘 + 重判作用域（对齐 CC 的 lazy re-inject
+      // 那一半），仍在作用域内且未变更的立即回灌（保住我们对 CC 的领先那一半）。
+      try {
+        const pruned = this.jitContextMgr.pruneStale();
+        if (pruned > 0) {
+          getLogger().info("JIT", `压缩前剔除 ${pruned} 份已变更/已删除的规则缓存`);
+        }
+      } catch (err: any) {
+        getLogger().debug("JIT", `压缩前 JIT 剔除失败（不阻断压缩）: ${err?.message}`);
+      }
       this.applySystemPrompt(this.ctxMgr.getSystemPrompt(), "压缩后");
+      // P1-7：prune + 回灌后 JIT 总量变了，记账同步（否则压缩阈值按旧量算）
+      this.refreshMemoryTokenAccounting();
       // 静默-9：把压缩结果透传给 loop 层，truncated 时提示用户上下文有损。
       return outcome;
     });
@@ -2083,7 +2145,7 @@ export class App {
         this.toolRegistry.all(),
         denyRulesSummary,
         // §12 P0-1：记忆/CLAUDE.md 分段记账 → /context 独立类别
-        (s) => this.ctxMgr.setMemoryTokens(s.memory),
+        (s) => this.setBaseMemoryTokens(s.memory),
       );
     } else {
       // 预置 systemPrompt 分支：跳过附件构建，但多来源权限规则仍需加载（原 initRules 在此之外，
@@ -2243,6 +2305,19 @@ export class App {
     // 启动 CLAUDE.md 文件变化监听（变更时重新加载规则 + 重建系统提示词）
     watchCLAUDEmd(process.cwd(), async (changedPath) => {
       log.info("APP", `CLAUDE.md 已变更: ${changedPath}`);
+      // 0. P1-2：让 JIT 对该文件的快照立即失效。
+      //    不失效的话：JIT 已把它记为「已加载」，重建后的系统提示词会经
+      //    applySystemPrompt 回灌**旧正文**，用户改了规则却永远看不到效果 ——
+      //    这是「会话中途修改子目录 CLAUDE.md，JIT 永远用旧内容」的确切路径。
+      //    invalidate 同时清掉该文件所在目录的 scannedDirs 登记，
+      //    使下次触达能重新读盘 + 重新判定 frontmatter 作用域。
+      try {
+        if (this.jitContextMgr.invalidate(changedPath)) {
+          log.info("JIT", `规则变更，已失效 JIT 缓存: ${changedPath}`);
+        }
+      } catch (err: any) {
+        log.debug("JIT", `JIT 缓存失效失败（不阻断规则重载）: ${err?.message}`);
+      }
       // 1. clearPromptCache 已在 watchCLAUDEmd 内部调用
       // 2. 重新加载并应用规则
       const newRules = await loadAllCLAUDEmd(process.cwd());
@@ -2297,7 +2372,7 @@ export class App {
               ? (this.permissionChecker as any).describeDenyRules() || undefined
               : undefined,
           // §12 P0-1：CLAUDE.md 变更后记忆类占用会变，重建时同步刷新分段记账
-          onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
+          onSectionTokens: (s) => this.setBaseMemoryTokens(s.memory),
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
         // 走 applySystemPrompt 而非裸 setSystemPrompt：否则已加载的 JIT 子目录规则
@@ -2809,7 +2884,7 @@ export class App {
             ? (this.permissionChecker as any).describeDenyRules() || undefined
             : undefined,
         // §12 P0-1：运行时偏好变更（/language 等）后同步刷新记忆分段记账
-        onSectionTokens: (s) => this.ctxMgr.setMemoryTokens(s.memory),
+        onSectionTokens: (s) => this.setBaseMemoryTokens(s.memory),
       });
       // 同上：覆盖式重建必须回灌 JIT，否则 /language、/model 一切就丢掉子目录规则（第 11 条）。
       this.applySystemPrompt(newPrompt, "运行时偏好变更重建");
@@ -4115,45 +4190,75 @@ export class App {
     }
   }
 
-  /** JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md */
-  private async discoverJitContext(toolBlocks: ToolUseBlock[]): Promise<void> {
+  /**
+   * JIT 上下文发现：根据工具访问的路径发现新的 CLAUDE.md。
+   *
+   * ## 为什么 fire-and-forget（P2-3）
+   *
+   * 此函数原先被 `tool-executor.ts` `await`，串在「工具执行完 → 结果返回给模型」之间。
+   * JIT 内部有 stat / 读盘 / `@import` 递归展开，全部落在关键路径上，直接进 TTFT。
+   * 而 JIT 注入的目标是「**下一轮**请求带上规则」——本轮工具结果并不需要它。
+   * 故改为不阻塞：`void` 掉 promise，用内部串行队列保证多次调用不并发改写系统提示词。
+   *
+   * CC 同样是 fire-and-forget（attachments 在下一轮 assembly 时读 `readFileState`）。
+   */
+  private discoverJitContext(toolBlocks: ToolUseBlock[]): void {
     // 配置开关（默认开启）
     if (this.config.jitContext === false) return;
 
+    const paths = collectJitAccessedPaths(toolBlocks, process.cwd(), (name) =>
+      resolveJitPathExtractor(this.toolRegistry, name),
+    );
+    if (paths.length === 0) return;
+
+    // 串行化：多个工具块并发触发时，`getSystemPrompt` → `setSystemPrompt` 的
+    // read-modify-write 会互相覆盖（后写者用的是读时的旧快照）。用一条 promise 链
+    // 串起来即可，代价是 JIT 之间排队——它们本来就不在关键路径上。
+    this.jitQueue = this.jitQueue
+      .then(() => this.runJitDiscovery(paths))
+      .catch((err: any) => {
+        getLogger().warn("JIT", `JIT 发现队列异常（已隔离，不影响主流程）: ${err?.message}`);
+      });
+  }
+
+  /** JIT 发现的实际执行体（由 `discoverJitContext` 经串行队列驱动） */
+  private async runJitDiscovery(paths: string[]): Promise<void> {
     const log = getLogger();
     const projectRoot = process.cwd();
 
-    // 收集工具访问的路径
-    const accessedPaths: string[] = [];
-    for (const block of toolBlocks) {
-      // 只处理文件操作工具
-      if (!["read", "write", "edit", "grep", "glob"].includes(block.name)) {
-        continue;
-      }
-
-      const input = block.input as any;
-      if (input?.file_path) {
-        accessedPaths.push(input.file_path);
-      } else if (input?.path) {
-        accessedPaths.push(input.path);
-      } else if (input?.pattern && block.name === "glob") {
-        // glob 工具访问的是当前目录
-        accessedPaths.push(input.path || projectRoot);
-      }
-    }
-
-    if (accessedPaths.length === 0) return;
-
-    // 对每个路径尝试发现上下文
-    for (const path of accessedPaths) {
+    for (const path of paths) {
       try {
-        const newContext = await this.jitContextMgr.discoverContext(path, projectRoot);
-        if (newContext) {
-          // 将新上下文追加到系统提示词
-          const currentPrompt = this.ctxMgr.getSystemPrompt();
-          this.ctxMgr.setSystemPrompt(currentPrompt + "\n\n" + newContext);
-          log.info("JIT", `已加载 JIT 上下文 (${newContext.length} 字符)`);
+        const r = await this.jitContextMgr.discoverDetailed(path, projectRoot);
+
+        // P2-8：读取失败可见化。ENOENT 已在 manager 内被判为正常、不进 failures；
+        // 到这里的都是 EACCES / 编码 / IO / import 展开失败——用户有必要知道
+        // 「规则文件在那里但没能加载」，否则模型行为不符合规范却查不出原因。
+        if (r.failures.length > 0) {
+          this.notifyJitFailures(r.failures);
         }
+
+        // P1-3：埋点。无论有无新发现都打——「触达了但没规则」与「触达了有规则」
+        // 的比值就是 JIT 的实际覆盖率，只在命中时打点会让分母永远缺失。
+        this.recordJitEvent(path, projectRoot, r);
+
+        if (!r.text) continue;
+
+        // 追加到系统提示词（走 mergeJitContextIntoPrompt 的逐块幂等判定，
+        // 避免 applySystemPrompt 回灌与本次追加叠加成重复注入）
+        const currentPrompt = this.ctxMgr.getSystemPrompt();
+        const merged = mergeJitContextIntoPrompt(currentPrompt, this.jitContextMgr.getLoadedBlocks());
+        if (merged.appended) this.ctxMgr.setSystemPrompt(merged.prompt);
+
+        // P1-7：JIT 注入字节进记账。不记的话 memoryFiles 分类只含启动期 CLAUDE.md，
+        // 而 JIT 注入是**单调增长且每轮全量携带**的——不记账会让 /context 的
+        // Memory files 分类系统性低估，压缩阈值判断跟着偏。
+        this.refreshMemoryTokenAccounting();
+
+        log.info(
+          "JIT",
+          `已加载 JIT 上下文 ${r.loaded.length} 份 (${r.text.length} 字符, ${r.elapsedMs.toFixed(0)}ms): ` +
+            r.loaded.map((l) => `${l.relPath}[${l.reason}]`).join(", "),
+        );
       } catch (err) {
         log.warn("JIT", `JIT 上下文发现失败: ${path}`, err);
       }
@@ -4161,41 +4266,136 @@ export class App {
   }
 
   /**
-   * 覆盖式写入系统提示词的**唯一收口**：写回 ctxMgr 的同时回灌已加载的 JIT 上下文。
+   * P1-7：记录启动期/重建期的记忆 token 基线，并立即把「基线 + JIT」的合计报给 ctxMgr。
    *
-   * ## 为什么必须收口
+   * 所有 `onSectionTokens` 回调都必须经这里，不能裸调 `ctxMgr.setMemoryTokens` ——
+   * 那是覆盖式写入，会把已注入的 JIT 增量抹成 0（`/language`、CLAUDE.md watcher
+   * 等任意一次重建都会触发），使 /context 的 Memory files 分类与压缩阈值系统性低估。
+   */
+  private setBaseMemoryTokens(tokens: number): void {
+    this.baseMemoryTokens = Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+    this.refreshMemoryTokenAccounting();
+  }
+
+  /**
+   * P1-7：把「启动期 CLAUDE.md + JIT 注入」的合计字节折算成 token 报给 ctxMgr。
    *
-   * JIT 上下文（子目录 CLAUDE.md）是以「追加到系统提示词末尾」的方式生效的
-   * （见 `checkJitContext`）。而覆盖式重建（`rebuildSystemPrompt`、CLAUDE.md watcher）
-   * 直接 `setSystemPrompt(newPrompt)`，把这些追加内容整体抹掉。
+   * `setMemoryTokens` 是覆盖式（非累加），所以必须每次报**合计值**：
+   * 基线（启动期 onSectionTokens 报过的 memory 分量）由 `baseMemoryTokens` 记住，
+   * 再叠加 JIT 当前总量。只报 JIT 会把基线抹掉，只报基线会漏 JIT。
+   */
+  private refreshMemoryTokenAccounting(): void {
+    try {
+      const jitBytes = this.config.jitContext === false ? 0 : this.jitContextMgr.getLoadedBytes();
+      // 与 ctxMgr 内部同一套启发式估算器，保证分类量与总量口径一致
+      const jitTokens = jitBytes > 0 ? estimateTextTokens(this.jitContextMgr.getLoadedContexts() ?? "") : 0;
+      this.ctxMgr.setMemoryTokens(this.baseMemoryTokens + jitTokens);
+    } catch (err: any) {
+      getLogger().debug("JIT", `记忆 token 记账更新失败（不影响主流程）: ${err?.message}`);
+    }
+  }
+
+  /**
+   * P1-3：JIT 轨迹事件。字段口径服务于三个具体问题（不是"先埋着以后再说"）：
+   *  1. JIT 到底命中过几次、命中哪些文件（`loaded` / `reason`）→ 覆盖率
+   *  2. 注入了多少字节、其中多少是超限文件（`bytes` / `oversized`）→ 累积成本（§10.3）
+   *  3. 作用域跳过了多少、失败了多少（`scope_skipped` / `failures`）→ 浪费率与静默失效
+   * 路径统一相对项目根，避免把用户绝对路径写进可上传的轨迹。
+   */
+  private recordJitEvent(accessedPath: string, projectRoot: string, r: JitDiscovery): void {
+    try {
+      const rel = (p: string) => {
+        const r2 = relative(projectRoot, p);
+        // 项目外路径（不该出现，出现即边界判定有问题）只记文件名，不泄露绝对路径
+        return !r2 || r2.startsWith("..") ? basename(p) : r2;
+      };
+      this.traceCollector?.recordCustomEvent?.("jit_context", {
+        accessed_path: rel(accessedPath),
+        hit: r.loaded.length > 0,
+        loaded_count: r.loaded.length,
+        loaded: r.loaded.map((l) => ({
+          path: l.relPath,
+          bytes: l.bytes,
+          reason: l.reason,
+          oversized: l.oversized,
+        })),
+        injected_bytes: r.loaded.reduce((s, l) => s + l.bytes, 0),
+        /** 会话累计（含本次）：§10.3 的"累积总量"曲线就靠这个字段画 */
+        cumulative_bytes: this.jitContextMgr.getLoadedBytes(),
+        scope_skipped: r.scopeSkipped,
+        failures: r.failures.map((f) => ({ path: rel(f.path), code: f.code, phase: f.phase })),
+        elapsed_ms: Math.round(r.elapsedMs),
+      });
+    } catch { /* 埋点失败静默，绝不影响主流程 */ }
+
+    // G11：InstructionsLoaded hook——JIT 也是「指令进入上下文」的一条通道。
+    // 此前只有启动期主加载触发，hook 使用方看不到会话中途新增的规则。
+    if (r.loaded.length === 0) return;
+    void this.hookSystem
+      .fireInstructionsLoadedEvent(
+        r.loaded.map((l) => l.relPath),
+        r.loaded.reduce((s, l) => s + l.bytes, 0),
+      )
+      .catch((e) => {
+        getLogger().debug("JIT", `InstructionsLoaded hook 触发失败（不影响主流程）: ${e}`);
+      });
+  }
+
+  /**
+   * P2-8：把 JIT 读取失败告知用户。
    *
-   * 抹掉后**不会自愈**：`JitContextManager.loadedFiles` 已把该文件记为已加载，
-   * 后续再访问同目录也不再重新注入——规则永久丢失直到进程重启。
-   * 与第 1 条（主加载跳过带作用域的规则）叠加时尤其严重：那时 JIT 是唯一注入途径，
-   * 而这条途径的产物会被任意一次 `/model`、`/language` 切换抹平。
+   * 主加载路径早已把静默 catch 改成可见提示（`rules.ts` 的
+   * `recordSkippedExternalImport` 注释），JIT 是没跟上的那一条。这里走
+   * system-reminder 通道——比 log.warn 更可见（用户不看日志），比弹窗更轻
+   * （不打断输入）。同一 path+code 只报一次，避免每轮触达同一坏文件反复刷屏。
+   */
+  private notifyJitFailures(failures: JitDiscovery["failures"]): void {
+    const fresh = failures.filter((f) => {
+      const key = `${f.path}::${f.code}`;
+      if (this.reportedJitFailures.has(key)) return false;
+      this.reportedJitFailures.add(key);
+      return true;
+    });
+    if (fresh.length === 0) return;
+
+    const lines = fresh.map((f) => `  · ${f.path} [${f.code} @ ${f.phase}] ${f.message}`);
+    const text =
+      `<system-reminder>\n` +
+      `以下项目规则文件（CLAUDE.md / .claude/rules）存在但**加载失败**，其规则未生效：\n` +
+      `${lines.join("\n")}\n` +
+      `常见原因：文件权限（EACCES）、非 UTF-8 编码、@import 目标不可读。\n` +
+      `请告知用户修复，或在无法修复时明确说明「该目录规范未加载」，不要假定已遵循。\n` +
+      `</system-reminder>`;
+    try {
+      this.ctxMgr.addMessage({ role: "user", content: [{ type: "text", text }] });
+    } catch (err: any) {
+      getLogger().warn("JIT", `注入 JIT 失败提示失败: ${err?.message}`);
+    }
+  }
+
+  /**
+   * 覆盖式写入系统提示词 + 记一条「为什么重建」的日志。
    *
-   * 追加式内容天生会被覆盖式重建丢掉，所以修法不是"在 rebuild 里补一次回灌"
-   * （下一个重建入口还会漏），而是让**所有**覆盖式写入都只走这一个函数。
+   * ## JIT 回灌已下沉，本函数不再是唯一收口
+   *
+   * JIT 上下文（子目录 CLAUDE.md）以「追加到系统提示词末尾」的方式生效，因此任何
+   * 覆盖式重建（`rebuildSystemPrompt`、CLAUDE.md watcher、`/memory reload`）都会把它
+   * 抹掉，且**不会自愈**（JIT 已记该文件为已加载，再触达也不重注入 → 规则永久丢失）。
+   *
+   * 此前靠「所有覆盖式写入都走 applySystemPrompt」这条**纪律**来保证回灌，但纪律挡不住
+   * 拿到 `ctxMgr` 的外部调用方：`/memory reload` 直接调裸 `setSystemPrompt` 就漏了
+   * （P1-6）。现在回灌下沉进 `ContextManager.setSystemPrompt`（见
+   * `setJitBlocksProvider`），**任何**写入者都自动带上 JIT，没有可绕过的路径。
+   *
+   * 本函数保留的价值只剩「带 reason 的可观测性」：让日志能区分是 `/model` 切换、
+   * watcher 变更还是压缩后重建触发的重写。新代码直接调 `ctxMgr.setSystemPrompt` 也安全。
    */
   private applySystemPrompt(newPrompt: string, reason: string): void {
-    const log = getLogger();
-    let finalPrompt = newPrompt;
-
-    try {
-      const jitContexts = this.config.jitContext === false
-        ? null
-        : this.jitContextMgr.getLoadedContexts();
-      const merged = mergeJitContextIntoPrompt(newPrompt, jitContexts);
-      finalPrompt = merged.prompt;
-      if (merged.appended) {
-        log.info("JIT", `${reason}：回灌 JIT 上下文 (${jitContexts!.length} 字符)`);
-      }
-    } catch (err: any) {
-      // 回灌失败不能阻断提示词写入——丢作用域规则比丢整个系统提示词轻得多
-      log.debug("JIT", `${reason}：JIT 回灌跳过: ${err?.message}`);
+    const before = this.jitContextMgr.getLoadedBytes();
+    this.ctxMgr.setSystemPrompt(newPrompt);
+    if (before > 0) {
+      getLogger().debug("JIT", `${reason}：系统提示词重建，JIT 上下文 ${before} 字符已随写入回灌`);
     }
-
-    this.ctxMgr.setSystemPrompt(finalPrompt);
   }
 
   /** 构建 SessionEnd 统计数据 */

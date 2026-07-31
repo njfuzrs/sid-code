@@ -8,6 +8,7 @@ import { readdirSync, lstatSync, statSync, readlinkSync, type Dirent } from "fs"
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -75,6 +76,11 @@ interface LsEntry {
 export class LsTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = lsSchema();
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "dir_path");
+  }
 
   /**
    * G21：可选的"路径隐藏"判定回调（给定绝对路径 → 是否被权限 deny 规则命中）。

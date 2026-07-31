@@ -116,6 +116,37 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 不声明（undefined/false）表示"受循环检测约束"，是绝大多数读写/搜索类工具的默认。
    */
   exemptFromLoopDetection?: boolean;
+
+  /**
+   * P2-9：工具自报「本次调用触达了哪些文件系统路径」，供 JIT 上下文发现使用。
+   *
+   * ## 为什么是工具自报而不是集中式名单
+   *
+   * 原实现在 `app.ts` 硬编码 `["read","write","edit","grep","glob"]` 并手挑
+   * `file_path` / `path` 字段。两个必然的漂移方向：
+   *   - **漏工具**：仓库里接受路径参数的文件类工具有 10 个，`read_many`（`paths[]`）、
+   *     `notebook_edit`、`ls`、`lsp` 全在名单外 —— 子代理用 read_many 批量读
+   *     `src/ui/*.tsx` 时，那个目录的规范一份都拿不到，且**静默无日志**。
+   *   - **漏字段**：`glob("src/ui/**\/*.tsx")` 把目录写在 pattern 里、不传 `path`，
+   *     集中式提取只能退化成项目根。
+   * 名单与真实注册工具之间没有对账机制，新增工具时必然忘记评估 —— 这与
+   * `exemptFromLoopDetection` 从死名单改为工具自报是同一个教训。
+   *
+   * ## 契约
+   *
+   * - **纯函数、无副作用、不抛**：在工具执行**之后**被调用，只读 input。
+   *   实现内不要做 IO（不要 stat / readdir）—— JIT 自己会做，重复 IO 纯属浪费。
+   * - **可返回不存在的路径**：write 新建文件、edit 创建文件时目标尚不存在，
+   *   JIT 会退化为取其 `dirname`，这正是期望行为（新文件也该受目录规范约束）。
+   * - **可返回相对路径**：JIT 侧统一过 `normalizeToolPath` 归一化，
+   *   工具不必自己绝对化（但若工具内部已有绝对化结果，返回它更省一次 resolve）。
+   * - **只报「文件语义」的路径**：URL、glob 通配部分、正则 pattern 都不要报。
+   *   报错的代价是无意义 stat + 可能的误注入（把不相干目录的规则灌进上下文）。
+   * - **未实现（undefined）= 本工具不触发 JIT**。这是 fail-closed 的一侧：
+   *   漏报由 `tests/tool/jit-affected-paths-audit.test.ts` 与「接受路径参数的工具」
+   *   清单双向对账，变成 CI 可见的硬错误，而不是运行时的静默失效。
+   */
+  jitAffectedPaths?(input: Input): string[];
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====

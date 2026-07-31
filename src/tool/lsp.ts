@@ -23,6 +23,7 @@ import type {
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import {
   formatLocations,
   formatHover,
@@ -160,6 +161,11 @@ export async function filterGitignored(
 
 export class LSPTool implements Tool {
   readonly zodSchema = lspSchema();
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "filePath");
+  }
   readonly searchHint = "code intelligence definition references hover symbols";
 
   name(): string {

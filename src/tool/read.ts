@@ -19,6 +19,7 @@ import { statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { detectBinaryContent, formatBinaryRejection, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -296,6 +297,11 @@ export class ReadTool implements Tool {
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readSchema();
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "file_path");
+  }
 
   /**
    * 构造函数兼容两种 tracker 类型：

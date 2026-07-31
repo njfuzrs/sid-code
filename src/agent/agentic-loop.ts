@@ -74,6 +74,21 @@ export interface AgentLoopConfig {
    *  主路径/子代理/side-call 共享——避免同一坏模型下次子代理再选它撞一次。缺省时不做拉黑（兼容
    *  无 registry 的旧测试）。 */
   availability?: import("../llm/availability.ts").ModelAvailabilityService;
+  /**
+   * P2-1：JIT 上下文发现（子代理侧）。
+   *
+   * 子代理此前完全不走 JIT —— 读写 `src/ui/` 下文件时拿不到该目录规范，
+   * 而子代理恰恰是「被派去改某个具体模块」的高频场景，正是最需要目录规则的地方。
+   *
+   * **必须是独立实例，不能共享主代理的 JitContextManager**（对齐 CC 为 forked agent
+   * 分配独立 `loadedNestedMemoryPaths` 的做法）：子代理有自己的上下文窗口，
+   * 父代理注入过不代表子代理上下文里有；共享去重集会让父加载过的规则子代理**永远**
+   * 拿不到 —— 比不接 JIT 更糟（看起来接了，实际静默失效）。
+   *
+   * 与主路径同为 fire-and-forget（返回 void）：产物给下一轮用，await 会算进 TTFT。
+   * 缺省时子代理不走 JIT（兼容旧测试 / 纯计算型子代理）。
+   */
+  discoverJitContext?: (toolBlocks: Array<{ name: string; input: unknown }>) => void;
 }
 
 /** Agent 循环结果 */
@@ -414,6 +429,17 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       // 执行工具
       const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker, config.onToolProgress);
       ctxMgr.addMessage({ role: "user", content: toolResults });
+
+      // P2-1：JIT 上下文发现（子代理侧，独立实例）。放在 addMessage 之后、
+      // 与主路径同一位置语义：本轮工具已产出结果，发现的规则供**下一轮**请求携带。
+      // 不 await（fire-and-forget），读盘不进本轮关键路径。
+      if (config.discoverJitContext) {
+        config.discoverJitContext(
+          toolUseBlocks
+            .filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use")
+            .map((b) => ({ name: b.name, input: b.input })),
+        );
+      }
 
       // 记录本轮编辑过的文件（供下一轮 LSP 诊断注入的作用域）。仅当具备编辑能力时才收集，
       // 与注入门控保持一致。tool_result 的 is_error 判定成功——失败的编辑不纳入诊断作用域。

@@ -522,9 +522,50 @@ export class Manager {
     this.lastActualInputTokens = 0;
   }
 
-  /** 设置系统提示词 */
+  /**
+   * P1-6：JIT 上下文块的提供者（由 App 注入）。
+   *
+   * 语义：返回「当前应当出现在系统提示词末尾的 JIT 块列表」。`setSystemPrompt` 每次
+   * 覆盖式写入时都会问它一遍，把缺失的块补回去。未注入（undefined）时行为与改造前
+   * 完全一致（不做任何回灌）——子代理 / headless / 测试路径无需关心。
+   */
+  private jitBlocksProvider?: () => string[];
+
+  /**
+   * 注入 JIT 块提供者，把「覆盖式重建会丢 JIT」的收口**下沉到本类**。
+   *
+   * ## 为什么必须下沉，而不是在 App 里守一个 applySystemPrompt
+   *
+   * JIT 上下文以「追加到系统提示词末尾」的方式生效，因此任何覆盖式
+   * `setSystemPrompt(newPrompt)` 都会把它整体抹掉，且**不会自愈**（JIT 已把该文件
+   * 记为已加载，再触达同目录也不重新注入 → 规则永久丢失直到进程重启）。
+   *
+   * App 侧曾用 `applySystemPrompt` 做唯一收口，但收口只在 App 内部有效：
+   * `/memory reload`（`command/builtins.ts`）拿到的是 `ctx.ctxMgr`，直接调裸
+   * `setSystemPrompt` 就绕过了收口 —— 这正是 P1-6 的成因，也是「靠纪律维持的收口
+   * 必然漏网」的又一例。把回灌放进 `setSystemPrompt` 本身后，**没有可绕过的路径**：
+   * 所有写入者共享同一个不变量，新增入口不必知道 JIT 的存在。
+   */
+  setJitBlocksProvider(provider: (() => string[]) | undefined): void {
+    this.jitBlocksProvider = provider;
+  }
+
+  /**
+   * 设置系统提示词。
+   *
+   * 覆盖式写入，但会自动把已加载的 JIT 上下文块补回末尾（见
+   * `setJitBlocksProvider`）。逐块判定幂等：已在 prompt 里的块不重复追加。
+   */
   setSystemPrompt(prompt: string): void {
-    this.systemPrompt = prompt;
+    let finalPrompt = prompt;
+    try {
+      const blocks = this.jitBlocksProvider?.() ?? [];
+      const missing = blocks.filter((b) => b && !prompt.includes(b));
+      if (missing.length > 0) finalPrompt = prompt + "\n\n" + missing.join("\n\n");
+    } catch {
+      // 回灌失败不能阻断提示词写入——丢作用域规则比丢整个系统提示词轻得多
+    }
+    this.systemPrompt = finalPrompt;
   }
 
   /** 获取系统提示词 */

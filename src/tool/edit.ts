@@ -13,6 +13,7 @@ import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -373,6 +374,11 @@ export class EditTool implements Tool {
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = editSchema();
+
+  /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "file_path");
+  }
 
   constructor(tracker?: FileReadTracker) {
     this.tracker = tracker ?? null;

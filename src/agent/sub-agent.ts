@@ -30,6 +30,8 @@ import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
+import { JitContextManager } from "../config/jit-context.ts";
+import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { describeToolActivity } from "./progress.ts";
 import {
   createAgentTask,
@@ -308,6 +310,73 @@ export class SubAgent {
   /** 获取权限检查器（供 runAgentLoop config 透传） */
   getPermissionChecker(): Checker | null {
     return this.permissionChecker;
+  }
+
+  /**
+   * P2-1：为一次子代理执行创建**独立**的 JIT 发现回调。
+   *
+   * ## 为什么每次执行新建实例，而不是 SubAgent 的字段
+   *
+   * 对齐 CC 为 forked agent 分配独立 `loadedNestedMemoryPaths`（`forkedAgent.ts:383`）
+   * 的做法，并且更进一步：连同一个 SubAgent 对象的**多次**执行之间也不共享。
+   * 每次执行有各自的 ctxMgr（各自的上下文窗口），共享去重集会让第二次执行
+   * 认为规则「已加载」而跳过 —— 但它的 ctxMgr 是全新的，里面什么都没有，
+   * 于是规则静默丢失。这类「看起来接了 JIT、实际失效」比不接更难排查。
+   *
+   * 注入路径：把 JIT 正文追加到子代理**自己**的 ctxMgr 系统提示词末尾。
+   * 子代理的 ctxMgr 同样注册了 jitBlocksProvider（见下），所以其内部任何
+   * 覆盖式重建也不会丢这些规则。
+   *
+   * @param ctxMgr 该次执行的上下文管理器（JIT 注入目标）
+   * @param jitDisabled 配置关闭 JIT 时传 true → 返回 undefined，loop 侧不触发
+   */
+  private createJitDiscoverer(
+    ctxMgr: ContextManager,
+    jitDisabled = false,
+  ): ((toolBlocks: Array<{ name: string; input: unknown }>) => void) | undefined {
+    if (jitDisabled) return undefined;
+
+    const mgr = new JitContextManager();
+    // 与主路径同构：子代理 ctxMgr 的覆盖式写入也自动回灌 JIT
+    ctxMgr.setJitBlocksProvider(() => mgr.getLoadedBlocks());
+
+    // 串行队列：多个工具块并发触发时，read-modify-write 会互相覆盖
+    let queue: Promise<void> = Promise.resolve();
+
+    return (toolBlocks) => {
+      const paths = collectJitAccessedPaths(
+        toolBlocks as Array<{ name: string; input: unknown }> as any,
+        process.cwd(),
+        (name) => {
+          const tool = this.toolRegistry.get(name) as
+            | { jitAffectedPaths?: (input: unknown) => string[] }
+            | undefined;
+          return tool?.jitAffectedPaths ? (input) => tool.jitAffectedPaths!(input) : undefined;
+        },
+      );
+      if (paths.length === 0) return;
+
+      queue = queue
+        .then(async () => {
+          const log = getLogger();
+          for (const p of paths) {
+            try {
+              const r = await mgr.discoverDetailed(p, process.cwd());
+              if (!r.text) continue;
+              // 走 setSystemPrompt（内部逐块幂等回灌），不手工拼接
+              ctxMgr.setSystemPrompt(ctxMgr.getSystemPrompt());
+              log.info(
+                "JIT",
+                `子代理已加载 JIT 上下文 ${r.loaded.length} 份 (${r.text.length} 字符): ` +
+                  r.loaded.map((l) => l.relPath).join(", "),
+              );
+            } catch (err: any) {
+              log.warn("JIT", `子代理 JIT 发现失败: ${p} (${err?.message})`);
+            }
+          }
+        })
+        .catch(() => { /* JIT 失败绝不影响子代理主流程 */ });
+    };
   }
 
   /** 从 ProviderRegistry 创建（子代理类型决定 model/provider） */
@@ -1123,6 +1192,9 @@ export class SubAgent {
         // H9：透传共享的 availability（与主 fallback 引擎同一实例），子代理 terminal 类错误
         // 跨路径拉黑。registry 缺省（旧测试）时为 undefined，runAgentLoop 内做空值保护。
         availability: this.registry?.availability,
+        // P2-1：子代理 JIT 上下文发现（**独立**实例，不共享父代理去重集，见
+        // createJitDiscoverer 注释——共享会让父加载过的规则子代理永远拿不到）。
+        discoverJitContext: this.createJitDiscoverer(ctxMgr),
         hookSystem: this.hookSystem,
         permissionChecker: this.permissionChecker ?? undefined,
         onBeforeTurn: (turn) => {
@@ -1377,6 +1449,9 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         hookSystem: this.hookSystem,
+        // P2-1：自定义子代理同样走 JIT（独立实例）。两条 runAgentLoop 路径都要接，
+        // 只接一条会让"用了自定义 agent 就没有目录规则"成为隐形差异。
+        discoverJitContext: this.createJitDiscoverer(ctxMgr),
         sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;

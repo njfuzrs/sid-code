@@ -10,6 +10,7 @@ import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
 import { detectTruncation } from "./truncation-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
+import { pickPaths } from "./jit-affected-paths.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { z } from "zod/v4";
@@ -26,6 +27,14 @@ const writeSchema = lazySchema(() =>
 export class WriteTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = writeSchema();
+
+  /**
+   * P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
+   * write 常创建**尚不存在**的文件，JIT 会退化取 dirname —— 新文件也该受目录规范约束。
+   */
+  jitAffectedPaths(input: unknown): string[] {
+    return pickPaths(input, "file_path");
+  }
 
   /**
    * FileReadTracker：与 read/edit/read_many 共享同一实例，承载「先读后写」校验状态。
