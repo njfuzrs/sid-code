@@ -417,6 +417,14 @@ export function emitWatchdogKill(
     human_input_pause_accum_ms?: number;
     raw_no_progress_ms?: number;
     effective_threshold_ms?: number;
+    /**
+     * 缺口7（轮次口径统一）：会话累计轮次（跨用户消息不归零）。
+     * `index` 是消息内 turnCount、跨消息回绕，离线分析"强杀发生在会话哪一阶段"
+     * 与 hypothesis 各事件不可比。absoluteTurn 补齐后可比。可选：不注入则不落。
+     */
+    absoluteTurn?: number;
+    /** 缺口7：第几条用户消息，让 index 的回绕可还原。可选，同 absoluteTurn。 */
+    promptSeq?: number;
   },
 ): void {
   try {
@@ -475,6 +483,14 @@ export function emitTimerDrift(
     actual_ms: number;
     /** 迟到量 = actual - expected */
     drift_ms: number;
+    /**
+     * 缺口7（轮次口径统一）：会话累计轮次（跨用户消息不归零）。
+     * `index` 是消息内 turnCount、跨消息回绕，离线分析"迟到发生在会话哪一阶段"
+     * 与 hypothesis 各事件不可比。absoluteTurn 补齐后可比。可选：不注入则不落。
+     */
+    absoluteTurn?: number;
+    /** 缺口7：第几条用户消息，让 index 的回绕可还原。可选，同 absoluteTurn。 */
+    promptSeq?: number;
   },
 ): void {
   try {

@@ -43,6 +43,15 @@ export interface GoalGateContext {
   /** Trace 事件写入（可选——未注入则不写 trace） */
   traceAppendEvent?: (event: { event: string; session_id: string; timestamp: string; data?: Record<string, unknown> }) => void;
   sessionId?: string;
+  /**
+   * 缺口7（轮次口径统一）：会话累计轮次（跨用户消息不归零）。
+   * GoalGateDecision 的 `turn` 是 goal 内部计数（goal.turnsUsed），与 LoopState.turnCount
+   * 同为消息内口径、跨消息回绕——离线分析"这条决策发生在会话哪一阶段"时不可靠。
+   * absoluteTurn 让它与 hypothesis 各事件可比、可相减。可选：不注入则降级为不落该字段。
+   */
+  absoluteTurn?: number;
+  /** 缺口7：第几条用户消息，让 turn 回绕可还原。可选，同 absoluteTurn。 */
+  promptSeq?: number;
 }
 
 // ─── 核心逻辑 ───
@@ -58,7 +67,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   /** 需要显示给用户的系统消息 */
   systemMessages: Array<{ level: "info" | "warning"; text: string }>;
 }> {
-  const { goal, messages, turnUsage, evalConfig, goalConfig = DEFAULT_GOAL_CONFIG, blockedDetector, traceAppendEvent, sessionId } = ctx;
+  const { goal, messages, turnUsage, evalConfig, goalConfig = DEFAULT_GOAL_CONFIG, blockedDetector, traceAppendEvent, sessionId, absoluteTurn, promptSeq } = ctx;
   const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> = [];
   const systemMessages: Array<{ level: "info" | "warning"; text: string }> = [];
 
@@ -72,7 +81,12 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         timestamp: new Date().toISOString(),
         data: {
           goalId: goal.id,
-          turn: goal.turnsUsed,
+          // 缺口7：`turn`（goal.turnsUsed）是消息内口径、跨消息回绕，与 hypothesis
+          // 各事件不可直接比较/相减。absoluteTurn（会话累计）补齐后，"这条决策发生在
+          // 会话哪一阶段"才可跨消息还原。两字段都可选——不注入则降级为不落，不阻断。
+          ...(typeof absoluteTurn === "number" ? { turn: absoluteTurn } : { turn: goal.turnsUsed }),
+          ...(typeof absoluteTurn === "number" ? { absoluteTurn } : {}),
+          ...(typeof promptSeq === "number" ? { promptSeq } : {}),
           shouldContinue,
           reason,
           objective: goal.objective.slice(0, 200),

@@ -1773,6 +1773,9 @@ export async function* queryLoop(
                   expected_ms: TURN_HARD_CHECK_INTERVAL_MS,
                   actual_ms: actual,
                   drift_ms: actual - TURN_HARD_CHECK_INTERVAL_MS,
+                  // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
+                  absoluteTurn: sessionState.getAbsoluteTurn(),
+                  promptSeq,
                 });
               }
             }
@@ -1860,6 +1863,9 @@ export async function* queryLoop(
                   expected_ms: WATCHDOG_CHECK_INTERVAL_MS,
                   actual_ms: actual,
                   drift_ms: actual - WATCHDOG_CHECK_INTERVAL_MS,
+                  // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
+                  absoluteTurn: sessionState.getAbsoluteTurn(),
+                  promptSeq,
                 });
               }
             }
@@ -1913,6 +1919,10 @@ export async function* queryLoop(
               human_input_pause_accum_ms: humanInputPauseAccumMs,
               raw_no_progress_ms: Date.now() - lastProgressAt,
               effective_threshold_ms: effectiveThresholdMs,
+              // 缺口7：与 hypothesis 各事件统一轮次口径。index（state.turnCount）是消息内计数、
+              // 跨消息回绕，离线分析"强杀发生在会话哪一阶段"时与 hypothesis 事件不可直接比较。
+              absoluteTurn: sessionState.getAbsoluteTurn(),
+              promptSeq,
             });
             // 尽力而为：主动 abort 上游 fetch（即便对已 hang 的 reader 无效也无害）。
             // Fix 3 根治：只 abort 本轮子 controller，不碰会话级 signal。
@@ -3101,6 +3111,11 @@ export async function* queryLoop(
               blockedDetector: goalBlockedDetector,
               traceAppendEvent: deps.traceAppendEvent,
               sessionId: sessionState.sessionId,
+              // 缺口7：GoalGateDecision 与 hypothesis 各事件统一轮次口径。
+              // turn（goal.turnsUsed）是消息内计数、跨消息回绕，离线分析"决策发生在
+              // 会话哪一阶段"时与 hypothesis 事件不可直接比较。absoluteTurn/promptSeq 补齐后可比。
+              absoluteTurn: sessionState.getAbsoluteTurn(),
+              promptSeq,
             });
 
             // 注入消息
