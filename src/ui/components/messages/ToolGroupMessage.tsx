@@ -10,7 +10,7 @@ import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { ToolMessage } from "./ToolMessage.tsx";
 import { isShellTool, type ToolCallStatus } from "./ToolShared.tsx";
-import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "../../ui-utils.ts";
+import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput, getThinkThought } from "../../ui-utils.ts";
 import { useOverflowState } from "../../contexts/OverflowContext.tsx";
 import { theme } from "../../semantic-colors.ts";
 
@@ -97,6 +97,9 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             ? (tool.input as any)?.command || ""
             : undefined;
 
+        // think 工具：思考正文在 input 里（工具结果只是无信息确认语），取出交给结果区展示
+        const thinkThought = getThinkThought(tool.name, tool.input);
+
         return (
           <ToolMessage
             key={tool.id}
@@ -117,6 +120,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}
             elapsedMs={tool.elapsedMs}
             shellCommand={shellCommand}
+            thinkThought={thinkThought}
           />
         );
       })}

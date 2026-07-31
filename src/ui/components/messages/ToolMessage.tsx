@@ -26,15 +26,36 @@ import {
   type TextEmphasis,
 } from "./ToolShared.tsx";
 import { ToolResultDisplay } from "./ToolResultDisplay.tsx";
+import { SlicingMaxSizedBox } from "../SlicingMaxSizedBox.tsx";
+import { THINK_HEADER_LABEL } from "../../ui-utils.ts";
 import { theme } from "../../semantic-colors.ts";
 import { TREE_BRANCH } from "../../constants/figures.ts";
-import { useUIState } from "../../contexts/UIStateContext.tsx";
+import { useUIState, useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
 import { truncateShellCommand } from "../../constants/collapse.ts";
+
+/**
+ * think 思考正文的折叠基线（视觉行）。
+ *
+ * 比普通工具结果（3 行）宽松：思考本身就是要给人读的推理，3 行读不出所以然；
+ * 但也不能不折叠——连续多次 think 会灌满屏幕。8 行够展示一段完整推理的主干，
+ * 超出走统一的 `… N 行已折叠 · ctrl+o 展开`。
+ */
+const THINK_COLLAPSE_MAX_LINES = 8;
+
+/** 思考正文换行的安全边距（与 ToolResultDisplay 的 WRAP_WIDTH_PADDING 同量级）。 */
+const THINK_WRAP_PADDING = 8;
 
 export interface ToolMessageProps {
   name: string;
   description: string;
   resultDisplay?: string;
+  /**
+   * think 工具记录的思考正文（来自 input.thought）。
+   *
+   * think 的工具**结果**只是一句无信息确认语「已记录思考。」，真正的内容在输入里。
+   * 传入后结果区（⎿）改为展示这段思考正文，用户才看得出记了什么。
+   */
+  thinkThought?: string;
   status: ToolCallStatus;
   terminalWidth: number;
   emphasis?: TextEmphasis;
@@ -75,8 +96,12 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   resultSummary,
   elapsedMs,
   shellCommand,
+  thinkThought,
 }) => {
   const { expandLevel } = useUIState();
+  // 思考正文折叠档：与工具结果/命令输出共用同一套 ctrl+o 阶梯展开语义
+  // （全展开档返回 undefined = 不截断）。
+  const thinkMaxLines = useExpandedMaxLines(THINK_COLLAPSE_MAX_LINES);
   // 展开级别：0=折叠 1=更多 2=全展开。level >= 1 时命令不再截断，
   // 让用户按一次 ctrl+o 即可看到完整命令（对标 cc 的阶梯展开直觉）。
   const isFullyExpanded = expandLevel >= 1;
@@ -84,9 +109,13 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const isShell = isShellTool(name);
   const hasShellCommand = isShell && !!shellCommand;
 
+  // think 工具：结果区改展示思考正文，而不是那句无信息的「已记录思考。」。
+  // 出错时（空思考，工具自身回 isError）仍走原结果渲染路径，让错误可见。
+  const hasThinkThought = !!thinkThought && !isError;
+
   // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=3 折叠）
   const hasProgress = status === "executing" && progress !== undefined;
-  const shouldExpandContent = !!resultDisplay || hasProgress;
+  const shouldExpandContent = !!resultDisplay || hasProgress || hasThinkThought;
 
   // Header 行：bash 工具不显示长命令（移到下方独立区域展示），header 保持简洁。
   // shell 工具 executing 时 header 已有 ToolStatusIndicator 的状态点流转，
@@ -96,7 +125,17 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       <ToolStatusIndicator status={status} />
       <ToolInfo
         name={name}
-        description={hasShellCommand ? "" : description}
+        // think 与 bash 同理：正文移到下方独立区域后，header 不再重复同一段文字
+        // （思考短于 44 列时 header 摘要与正文会一模一样，读起来像卡带）。
+        // 但 header 不能退回光秃秃的 `⏺ think`——那正是本次要修的问题；改用用途标签
+        // 回答"这一步在干什么"，与下方"记了什么"分工。
+        description={
+          hasShellCommand
+            ? ""
+            : hasThinkThought
+              ? THINK_HEADER_LABEL
+              : description
+        }
         status={status}
         emphasis={emphasis}
         // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
@@ -209,17 +248,31 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
                 barWidth={20}
               />
             )}
-            <ToolResultDisplay
-              resultDisplay={resultDisplay}
-              terminalWidth={Math.max(1, terminalWidth - 4)}
-              isDiff={isDiff}
-              filename={filename}
-              structuredPatch={structuredPatch}
-              isError={isError}
-              renderOutputAsMarkdown={renderOutputAsMarkdown}
-              maxLines={3}
-              overflowDirection="bottom"
-            />
+            {hasThinkThought ? (
+              // think：展示思考正文本身（工具结果那句「已记录思考。」无信息量，丢弃）。
+              // italic + secondary 与 ThinkingMessage 的思考语言一致——都是"模型在想"，
+              // 视觉上应同族，而不是长成普通工具输出。
+              // 折叠走 SlicingMaxSizedBox（同步一次成型，Static 安全；见 src/ui/CLAUDE.md L3.3）。
+              <SlicingMaxSizedBox
+                text={thinkThought!}
+                maxLines={thinkMaxLines}
+                overflowDirection="bottom"
+                maxColumnWidth={Math.max(20, terminalWidth - 4 - THINK_WRAP_PADDING)}
+                color={theme.text.secondary}
+              />
+            ) : (
+              <ToolResultDisplay
+                resultDisplay={resultDisplay}
+                terminalWidth={Math.max(1, terminalWidth - 4)}
+                isDiff={isDiff}
+                filename={filename}
+                structuredPatch={structuredPatch}
+                isError={isError}
+                renderOutputAsMarkdown={renderOutputAsMarkdown}
+                maxLines={3}
+                overflowDirection="bottom"
+              />
+            )}
           </Box>
         </Box>
       )}
