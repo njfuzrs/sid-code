@@ -84,6 +84,40 @@ describe("UploadManager", () => {
     expect(mgr.isServerReachable()).toBe(true);
   });
 
+  /**
+   * 回归（实测 P0）：`outputDir: undefined` 曾让**整个轨迹采集静默失效**。
+   *
+   * 根因是对象展开的顺序陷阱 —— `{...defaults, ...options}` 里 options 的
+   * **显式 undefined 键会覆盖默认值**（不同于「键不存在」）。而调用方
+   * `init-helpers.ts` 传的正是 `outputDir: traceConfig.outputDir`，
+   * settings.json 未写 `trace.output_dir` 时它就是 undefined
+   * → `join(undefined, ".upload_queue.jsonl")` 抛错
+   * → TraceCollector 构造失败
+   * → 日志只有一行「轨迹采集初始化失败」，其余功能全正常，**什么都没被记录**。
+   *
+   * 这条断言锁住兜底：显式 undefined 与键缺失都必须回落到默认目录。
+   */
+  test("outputDir 显式传 undefined 不抛错（可度量底座的护栏）", () => {
+    expect(
+      () =>
+        new UploadManager({
+          baseUrl: "http://localhost:8080",
+          token: "test-token",
+          outputDir: undefined,
+        }),
+    ).not.toThrow();
+  });
+
+  test("outputDir 键缺失 / 空串同样回落默认目录", () => {
+    expect(
+      () => new UploadManager({ baseUrl: "http://localhost:8080", token: "t" }),
+    ).not.toThrow();
+    // 空字符串不是合法目录，必须与 undefined 同样兜底（故用真值判断而非 ??）
+    expect(
+      () => new UploadManager({ baseUrl: "http://localhost:8080", token: "t", outputDir: "" }),
+    ).not.toThrow();
+  });
+
   // ─── 单文件上传 ───
 
   test("uploadFileWithRetry: 上传成功（200 OK）", async () => {

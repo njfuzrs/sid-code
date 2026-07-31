@@ -82,6 +82,82 @@ export function searchToolPaths(input: unknown, patternField = "pattern"): strin
 }
 
 /**
+ * 从 shell 命令文本里提取**写入目标**路径（第 7 批 · §8.9 共同盲区）。
+ *
+ * ## 这是个什么盲区
+ *
+ * `bash` 用 `cat > src/ui/x.tsx`、`sed -i` 改了文件，JIT 完全不触发 ——
+ * 模型接着改同目录的其它文件时，那个目录的规范一份都拿不到。CC 也没有这条，
+ * 所以不是「我们落后」，但确实是能力上限。
+ *
+ * ## 为什么必须保守（宁漏不误）
+ *
+ * 误报的代价**高于**漏报：把不相干目录的规则灌进上下文既烧 token，又可能让模型
+ * 遵循错误的规范。而漏报只是回到现状（本来就不触发）。所以这里只认几个
+ * **高确定性形态**，任何拿不准的一律不报：
+ *
+ *   - `> path` / `>> path`（含 `1>` `2>` 等 fd 前缀）
+ *   - `tee path` / `tee -a path`
+ *   - `sed -i ... path` / `sed --in-place ... path`
+ *
+ * 刻意**不**支持的形态及理由：
+ *   - `mv` / `cp` / `install`：目标可能是目录、可能带多个源，语义判定复杂；
+ *     且这类操作通常紧跟真实的文件类工具调用，靠那条也能触发。
+ *   - 变量与命令替换（`> $OUT`、`> $(mktemp)`）：值在运行时才知道，静态提取必错。
+ *   - 进程替换 `>(cmd)`、fd 复制 `>&2`：不是文件路径。
+ *   - `/dev/*`、`/tmp/*`：不是项目内业务文件，报了只会白扫。
+ *
+ * 契约同 `jitAffectedPaths`：纯函数、不 IO、不抛。
+ */
+export function bashWriteTargets(command: unknown): string[] {
+  if (typeof command !== "string" || !command.trim()) return [];
+  // 超长命令（通常是 heredoc 灌大段内容）只看前段，避免正则在极端输入上退化
+  const cmd = command.length > 4000 ? command.slice(0, 4000) : command;
+
+  const out: string[] = [];
+  const push = (raw: string | undefined) => {
+    if (!raw) return;
+    let p = raw.trim();
+    // 去掉成对引号（`> "src/a b.ts"`）
+    if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
+      p = p.slice(1, -1);
+    }
+    if (!p) return;
+    // 含变量 / 命令替换 / 通配 → 静态提取不可靠，直接放弃（宁漏不误）
+    if (/[$`*?]/.test(p)) return;
+    // 不是文件路径的形态：fd 复制（`&2`）、进程替换残留、纯选项
+    if (p.startsWith("&") || p.startsWith("-")) return;
+    // 设备/临时目录不是业务文件，报了只是白扫一遍目录链
+    if (/^\/dev\//.test(p) || /^\/tmp\//.test(p) || p === "/dev/null") return;
+    if (!out.includes(p)) out.push(p);
+  };
+
+  // 目标 token：优先整段匹配引号内内容（`> "src/my dir/a.ts"` 含空格，按空白切会截断），
+  // 否则取到下一个空白/管道/重定向符为止。
+  const TARGET = `"[^"]*"|'[^']*'|[^>&|;<\\s]+`;
+
+  // ① 重定向：`>` / `>>`，允许前置 fd 数字（`2> log`）。
+  //    非引号分支的 `[^>&|;<\s]` 起始确保排除 `>&2`、`>>|` 这类非路径目标。
+  for (const m of cmd.matchAll(new RegExp(`(?:^|[\\s;&|])\\d*>>?\\s*(${TARGET})`, "g"))) push(m[1]);
+
+  // ② tee：`tee out.txt` / `tee -a out.txt`
+  for (const m of cmd.matchAll(new RegExp(`(?:^|[\\s;&|])tee\\s+((?:-[a-zA-Z-]+\\s+)*)(${TARGET})`, "g"))) push(m[2]);
+
+  // ③ sed 原地改：`sed -i 's/a/b/' file` / `sed --in-place=bak -e ... file`
+  //    取该 sed 片段的**最后一个**非选项参数作为目标文件。
+  for (const seg of cmd.split(/[;|&\n]+/)) {
+    if (!/(?:^|\s)sed\s/.test(seg)) continue;
+    if (!/\s-i\b|--in-place/.test(seg)) continue;
+    const toks = seg.trim().split(/\s+/);
+    const last = toks[toks.length - 1];
+    // 最后一个 token 是脚本本体（`'s/a/b/'`）而非文件时不报
+    if (last && !/^-/.test(last) && !/^['"]?s[/|,]/.test(last)) push(last);
+  }
+
+  return out;
+}
+
+/**
  * 从工具调用块提取「应触发 JIT 发现」的路径集合。
  *
  * 抽成纯函数导出是为了让下面几条判定可被直接测试（它们都曾是静默失效的来源）：

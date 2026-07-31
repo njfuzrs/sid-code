@@ -74,10 +74,16 @@ import * as CrashMarker from "./trace/crash-marker.ts";
 import * as PidManager from "./trace/pid-manager.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
-import { resolve, extname, join, relative, basename } from "path";
+import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
+import {
+  buildJitEventData,
+  emitJitEvent,
+  setJitTraceSink,
+  JIT_EVENT_NAME,
+} from "./trace/jit-telemetry.ts";
 import { setGitOperationObserver, resetGitOperationStats, type GitOperationEvent } from "./tool/git-operation-tracking.ts";
 import { withSideCallDeadline } from "./llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "./config/network-profile.ts";
@@ -2446,6 +2452,15 @@ export class App {
     // 与 wireSubAgentUsageSink 同款时序：工具在 cli.ts 注册时 collector 还不存在。
     this.wireHypothesisTools(traceCollectorInstance);
 
+    // 第 5 批：JIT 埋点 sink。主循环与**子代理**共用这一条通道 ——
+    // 子代理有 6 处创建点且不持有 collector，模块级 sink 避免逐个穿线；
+    // 不接的话子代理那侧的命中与字节全丢，命中率会系统性偏低。
+    setJitTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(JIT_EVENT_NAME, data)
+        : null,
+    );
+
     // T12：绑定 RetryTelemetry 事件写入器（延迟绑定，此时 writer 已就绪）
     if (traceCollectorInstance) {
       this._retryTelemetryWriter = (event) => {
@@ -4355,30 +4370,17 @@ export class App {
    * 路径统一相对项目根，避免把用户绝对路径写进可上传的轨迹。
    */
   private recordJitEvent(accessedPath: string, projectRoot: string, r: JitDiscovery): void {
-    try {
-      const rel = (p: string) => {
-        const r2 = relative(projectRoot, p);
-        // 项目外路径（不该出现，出现即边界判定有问题）只记文件名，不泄露绝对路径
-        return !r2 || r2.startsWith("..") ? basename(p) : r2;
-      };
-      this.traceCollector?.recordCustomEvent?.("jit_context", {
-        accessed_path: rel(accessedPath),
-        hit: r.loaded.length > 0,
-        loaded_count: r.loaded.length,
-        loaded: r.loaded.map((l) => ({
-          path: l.relPath,
-          bytes: l.bytes,
-          reason: l.reason,
-          oversized: l.oversized,
-        })),
-        injected_bytes: r.loaded.reduce((s, l) => s + l.bytes, 0),
-        /** 会话累计（含本次）：§10.3 的"累积总量"曲线就靠这个字段画 */
-        cumulative_bytes: this.jitContextMgr.getLoadedBytes(),
-        scope_skipped: r.scopeSkipped,
-        failures: r.failures.map((f) => ({ path: rel(f.path), code: f.code, phase: f.phase })),
-        elapsed_ms: Math.round(r.elapsedMs),
-      });
-    } catch { /* 埋点失败静默，绝不影响主流程 */ }
+    // payload 构造下沉到 trace/jit-telemetry.ts —— 子代理路径（sub-agent.ts）走同一个
+    // 构造器与同一条 sink，否则子代理的命中/字节永远不进统计，命中率系统性偏低。
+    emitJitEvent(
+      buildJitEventData({
+        accessedPath,
+        projectRoot,
+        discovery: r,
+        cumulativeBytes: this.jitContextMgr.getLoadedBytes(),
+        source: "main",
+      }),
+    );
 
     // G11：InstructionsLoaded hook——JIT 也是「指令进入上下文」的一条通道。
     // 此前只有启动期主加载触发，hook 使用方看不到会话中途新增的规则。

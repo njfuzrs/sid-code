@@ -195,6 +195,59 @@ export interface ProviderDigestStats {
 }
 
 /**
+ * 第 5 批：JIT 上下文度量聚合（消费 `jit_context` 事件）。
+ *
+ * 埋点（第 1 批）只解决了「有没有数据」，本结构解决「数据能不能回答问题」。
+ * 四个问题对应四组字段，字段口径与 `app.ts:recordJitEvent` 的产出严格一一对应：
+ *  1. **触发了几次、命中率多少** → `injections` / `hits` / `hitRate`
+ *  2. **注入了多少字节、累积多少** → `injectedBytes` / `cumulativeBytes`（§10.3 的成本曲线）
+ *  3. **浪费了多少** → `scopeSkipped` / `wasteRate`（有规则文件但作用域没命中 = 白扫）
+ *  4. **进不进 TTFT** → `elapsedP50` / `elapsedP95`（P2-3 fire-and-forget 的实测验收）
+ */
+export interface JitDigestStats {
+  /** JIT 发现被触发的次数（= `jit_context` 事件条数，含未命中） */
+  injections: number;
+  /** 其中命中（加载到至少一份规则）的次数 */
+  hits: number;
+  /** 命中率 = hits / injections。分母含未命中才是真覆盖率（见埋点注释） */
+  hitRate: number;
+  /** 累计加载的规则文件份数（同一文件多次重载会重复计数） */
+  loadedCount: number;
+  /** 去重后的规则文件数（按相对路径） */
+  uniqueFiles: number;
+  /** 本次会话累计注入字节（各次 `injected_bytes` 之和） */
+  injectedBytes: number;
+  /**
+   * 会话级累积量峰值（取 `cumulative_bytes` 最大值）。
+   * §10.3 已论证治理重点是**累积总量**而非单份大小 —— 这个字段就是那条曲线的终点值。
+   * 与 `injectedBytes` 的差别：后者是"注入动作"之和（含重载的重复计入），
+   * 前者是 manager 当前持有的去重后总量，即真正每轮携带进上下文的成本。
+   */
+  cumulativeBytes: number;
+  /** 因 `paths:` 作用域未命中而跳过的文件数 */
+  scopeSkipped: number;
+  /**
+   * 浪费率 = scopeSkipped / (loadedCount + scopeSkipped)。
+   * 分母是"扫到的带规则文件总数"，所以这个比值答的是
+   * 「找到的规则里有多大比例白扫了」，而不是「触发里有多少次没用」。
+   */
+  wasteRate: number;
+  /** 超过大小告警阈值的文件份数（P2-2：仅告警不截断） */
+  oversized: number;
+  /** 读取失败次数（P2-8：ENOENT 不计入，这里都是真实错误） */
+  failures: number;
+  /** 失败明细（按 code 聚合，便于一眼看出是权限问题还是编码问题） */
+  failureCodes: Record<string, number>;
+  /** 加载归因分布（`nested_traversal` / `path_glob_match` / `local` / `rules_dir`） */
+  reasonCounts: Record<string, number>;
+  /** 单次 JIT 发现耗时分位数（ms）—— 验证 P2-3 是否真的不进关键路径 */
+  elapsedP50?: number;
+  elapsedP95?: number;
+  /** 字节数最大的前几份规则文件（定位"谁在吃上下文"） */
+  topFiles: Array<{ path: string; bytes: number; reason: string }>;
+}
+
+/**
  * 单个子代理执行 span（digest 消费视角）。
  *
  * 由 events.jsonl 的 SubagentStart / SubagentStop 事件配对而成：
@@ -264,6 +317,8 @@ export interface Digest {
   providerStats?: ProviderDigestStats[];
   /** §9.6：子代理执行汇总（几成几败 + 串行/并行判定）。无子代理时 undefined。 */
   subAgents?: SubAgentSummary;
+  /** 第 5 批：JIT 上下文度量。无 `jit_context` 事件时 undefined（老会话/JIT 关闭）。 */
+  jit?: JitDigestStats;
 }
 
 export interface SessionRef {
@@ -323,6 +378,14 @@ function fmtDuration(ms: number | undefined): string {
 function truncate(s: string, n: number): string {
   const clean = s.replace(/\s+/g, " ").trim();
   return clean.length > n ? clean.slice(0, n) + "…" : clean;
+}
+
+/** 字节数人类可读（JIT 度量的字节量级横跨 B~百 KB，统一收口避免各处手写除法） */
+function fmtBytes(n: number | undefined): string {
+  if (!n || n <= 0) return "0B";
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(2)}MB`;
 }
 
 /** 取文件 mtime 的 ISO 字符串(用于 provenance 时效)。文件不存在/读不到返回 undefined。 */
@@ -1331,6 +1394,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── T12.5：按 Provider 聚合诊断信号 ──
   const providerStats = aggregateProviderStats(events);
 
+  // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
+  const jit = aggregateJitStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -1354,6 +1420,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     crash: crashSnapshot ? { reason: crashSnapshot.reason, attribution: crashSnapshot.attribution } : undefined,
     providerStats: providerStats.length > 0 ? providerStats : undefined,
     subAgents: subAgents ?? undefined,
+    jit: jit ?? undefined,
   };
 }
 
@@ -1491,6 +1558,69 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
       L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`);
+    }
+  }
+
+  // 第 5 批：JIT 上下文 section。验收标准就是这一节能直接答出
+  // 「命中率多少 / 平均注入多少字节 / 浪费率多少」，不用再手工 grep events.jsonl。
+  if (d.jit) {
+    const j = d.jit;
+    L.push("");
+    const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+    // 命中率低不一定是 bug（很多目录本来就没规则），但浪费率高一定值得看：
+    // 说明扫到的规则大多因 paths: 没命中而白读盘。
+    const hitColor: Color = j.hits === 0 ? "gray" : "green";
+    L.push(
+      c("bold", "JIT 上下文:") +
+        " " +
+        c(hitColor, `触发 ${j.injections} 次 / 命中 ${j.hits} 次（${pct(j.hitRate)}）`) +
+        c("gray", `  加载 ${j.loadedCount} 份（去重 ${j.uniqueFiles}）`),
+    );
+    const avgBytes = j.injections > 0 ? Math.round(j.injectedBytes / j.injections) : 0;
+    L.push(
+      c("gray", "  字节: ") +
+        `本次注入合计 ${fmtBytes(j.injectedBytes)}（均次 ${fmtBytes(avgBytes)}）` +
+        c("gray", "  累积峰值: ") +
+        // 累积量是每轮都全量携带的成本（§10.3），超过 40KB 值得警觉
+        (j.cumulativeBytes > 40_000
+          ? c("yellow", `${fmtBytes(j.cumulativeBytes)} ⚡累积偏高`)
+          : fmtBytes(j.cumulativeBytes)),
+    );
+    if (j.scopeSkipped > 0 || j.loadedCount > 0) {
+      const wasteColor: Color = j.wasteRate > 0.5 ? "yellow" : "gray";
+      L.push(
+        c("gray", "  浪费率: ") +
+          c(wasteColor, `${pct(j.wasteRate)}`) +
+          c("gray", `（作用域跳过 ${j.scopeSkipped} 份 / 扫到 ${j.loadedCount + j.scopeSkipped} 份）`),
+      );
+    }
+    if (j.elapsedP50 != null) {
+      // P2-3 验收：JIT 已是 fire-and-forget，这里的耗时**不进 TTFT**。
+      // 但仍需盯 P95——它反映的是 JIT 队列可能拖到下一轮的程度。
+      //
+      // 不能用 fmtDuration：它把 0 当"缺失"渲染成 `?`（对 API 耗时是对的，
+      // 0ms 的请求不存在）。但 JIT 命中缓存时 **0ms 是真实且常见的值**，
+      // 渲染成 `?` 会让读者以为埋点没采到，把"快"误读成"坏"。
+      const ms = (v: number) => `${Math.round(v)}ms`;
+      L.push(
+        c("gray", "  耗时: ") +
+          `P50=${ms(j.elapsedP50)} P95=${ms(j.elapsedP95 ?? j.elapsedP50)}` +
+          c("gray", "（fire-and-forget，不进 TTFT）"),
+      );
+    }
+    const reasons = Object.entries(j.reasonCounts).sort((a, b) => b[1] - a[1]);
+    if (reasons.length > 0) {
+      L.push(c("gray", "  归因: ") + reasons.map(([r, n]) => `${r}×${n}`).join("  "));
+    }
+    if (j.oversized > 0) {
+      L.push(c("yellow", `  ⚡ ${j.oversized} 份超大小告警阈值（内容未截断，见 /doctor）`));
+    }
+    if (j.failures > 0) {
+      const codes = Object.entries(j.failureCodes).map(([k, n]) => `${k}×${n}`).join(" ");
+      L.push(c("red", `  ✗ ${j.failures} 次读取失败: ${codes}`) + c("gray", "（ENOENT 已排除，均为真实错误）"));
+    }
+    for (const f of j.topFiles) {
+      L.push(c("gray", `    · ${truncate(f.path, 60)} ${fmtBytes(f.bytes)} [${f.reason}]`));
     }
   }
 
@@ -1677,6 +1807,107 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
     });
   }
   return result;
+}
+
+// ─────────────────────── 第 5 批：JIT 上下文度量聚合 ───────────────────────
+
+/**
+ * 从 events.jsonl 聚合 JIT 上下文度量（导出供测试与上层脚本使用）。
+ *
+ * 消费的是 `app.ts:recordJitEvent` 打的 `jit_context` 事件。**未命中也打点**，
+ * 所以这里的 `injections` 是分母、`hits` 是分子，命中率才有意义 ——
+ * 只统计命中会让覆盖率永远看起来是 100%。
+ *
+ * 无事件时返回 `null`（而非零值对象）：区分「JIT 跑了但没命中」与
+ * 「这个会话根本没有 JIT 数据」（老轨迹 / 配置关闭 / 全程没碰文件类工具）。
+ * 渲染层据此决定整节是否显示 —— 显示一堆 0 会让人误以为 JIT 坏了。
+ */
+export function aggregateJitStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): JitDigestStats | null {
+  const jitEvents = events.filter((e) => e.event === "jit_context" && e.data);
+  if (jitEvents.length === 0) return null;
+
+  let hits = 0;
+  let loadedCount = 0;
+  let injectedBytes = 0;
+  let cumulativeBytes = 0;
+  let scopeSkipped = 0;
+  let oversized = 0;
+  let failures = 0;
+  const failureCodes: Record<string, number> = {};
+  const reasonCounts: Record<string, number> = {};
+  const uniquePaths = new Set<string>();
+  const elapsed: number[] = [];
+  /** 按文件聚合字节：同一文件重载多次只保留最大值，避免 topFiles 把重载次数当体积 */
+  const fileBytes = new Map<string, { bytes: number; reason: string }>();
+
+  for (const e of jitEvents) {
+    const d = e.data!;
+    if (d.hit === true) hits++;
+    scopeSkipped += num(d.scope_skipped);
+    injectedBytes += num(d.injected_bytes);
+    // 累积量取最大值而非末值：会话中途 /clear 或 compact 会 reset manager，
+    // 末值可能被清零，峰值才代表"上下文最重时扛了多少"。
+    cumulativeBytes = Math.max(cumulativeBytes, num(d.cumulative_bytes));
+
+    const ms = num(d.elapsed_ms);
+    if (ms >= 0 && d.elapsed_ms != null) elapsed.push(ms);
+
+    const loaded = Array.isArray(d.loaded) ? (d.loaded as Array<Record<string, unknown>>) : [];
+    loadedCount += loaded.length;
+    for (const l of loaded) {
+      const p = typeof l.path === "string" ? l.path : "(unknown)";
+      const bytes = num(l.bytes);
+      const reason = typeof l.reason === "string" ? l.reason : "unknown";
+      uniquePaths.add(p);
+      if (l.oversized === true) oversized++;
+      reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
+      const prev = fileBytes.get(p);
+      if (!prev || bytes > prev.bytes) fileBytes.set(p, { bytes, reason });
+    }
+
+    const fails = Array.isArray(d.failures) ? (d.failures as Array<Record<string, unknown>>) : [];
+    failures += fails.length;
+    for (const f of fails) {
+      const code = typeof f.code === "string" ? f.code : "UNKNOWN";
+      failureCodes[code] = (failureCodes[code] ?? 0) + 1;
+    }
+  }
+
+  const sortedElapsed = elapsed.slice().sort((a, b) => a - b);
+  // 浪费率分母 = 扫到的带规则文件总数（命中的 + 因作用域跳过的）。
+  // 用 injections 当分母是错的——那答的是另一个问题（触发中有多少次空手而归）。
+  const scanned = loadedCount + scopeSkipped;
+  const topFiles = [...fileBytes.entries()]
+    .map(([path, v]) => ({ path, bytes: v.bytes, reason: v.reason }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 5);
+
+  return {
+    injections: jitEvents.length,
+    hits,
+    hitRate: jitEvents.length > 0 ? hits / jitEvents.length : 0,
+    loadedCount,
+    uniqueFiles: uniquePaths.size,
+    injectedBytes,
+    cumulativeBytes,
+    scopeSkipped,
+    wasteRate: scanned > 0 ? scopeSkipped / scanned : 0,
+    oversized,
+    failures,
+    failureCodes,
+    reasonCounts,
+    elapsedP50: percentile(sortedElapsed, 0.5),
+    elapsedP95: percentile(sortedElapsed, 0.95),
+    topFiles,
+  };
+}
+
+/** 事件字段取数：非有限数字统一归 0，避免 undefined 参与算术得出 NaN 污染整节 */
+function num(v: unknown): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /** 计算已排序数组的百分位数（导出供 provider-health 等模块共用，避免逻辑重复） */

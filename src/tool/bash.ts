@@ -27,6 +27,7 @@ import { getCwd, setCwd, getOriginalCwd } from "../bootstrap/state.ts";
 import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+import { bashWriteTargets } from "./jit-affected-paths.ts";
 
 /** Bash 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const bashSchema = lazySchema(() =>
@@ -359,6 +360,23 @@ export class BashTool implements Tool {
 
   name(): string {
     return "bash";
+  }
+
+  /**
+   * 第 7 批 · §8.9 共同盲区：bash 写文件也要触发 JIT。
+   *
+   * `cat > src/ui/x.tsx` / `sed -i` 改了文件却不触发 JIT —— 模型接着改同目录其它
+   * 文件时拿不到该目录的规范，且**静默无日志**。CC 也没有这条，但它确实是能力上限。
+   *
+   * 只认高确定性写入形态（`>` / `>>` / `tee` / `sed -i`），提取逻辑与判据见
+   * `bashWriteTargets`。**不报 `cwd`**：它是命令的工作目录，不是被读写的业务文件，
+   * 报了会把整个目录链的规则在每次 bash 调用时都灌一遍（绝大多数 bash 调用
+   * 如 `git status` / `make` 根本不碰项目文件），纯属浪费 —— 与 `enter_worktree`
+   * 登记豁免的理由同源。
+   */
+  jitAffectedPaths(input: unknown): string[] {
+    if (!input || typeof input !== "object") return [];
+    return bashWriteTargets((input as { command?: unknown }).command);
   }
 
   description(): string {

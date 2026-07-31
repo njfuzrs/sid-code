@@ -36,8 +36,15 @@ const TOOL_SRC_DIRS = [join(REPO_ROOT, "src", "tool"), join(REPO_ROOT, "src", "a
  *
  * 不含 `pattern`：grep/glob 的 pattern 是正则/通配，本身不是路径 —— 它们各自的
  * `jitAffectedPaths` 内部才做前缀提取（`globPatternDirs` / `searchToolPaths`）。
+ *
+ * 含 `cwd`（第 7 批新增）：`bash` 的 `command` 字段本身不是路径字段，靠字段名匹配
+ * 永远发现不了 bash 需要评估 —— 这正是「共同盲区」审计本身的盲区（bash 写文件
+ * 不触发 JIT 这条缺口存在了很久却没有测试红灯提醒）。`cwd` 是 bash 唯一真实的
+ * 路径类字段，加入后审计至少能把 bash 拉进「需要显式决定」的范围；bash 是否
+ * 该报 cwd 本身、以及它从 command 文本提取写目标的实现见 `bash.ts:jitAffectedPaths`
+ * 与 `jit-affected-paths.ts:bashWriteTargets`。
  */
-const PATH_FIELD_NAMES = ["file_path", "notebook_path", "dir_path", "paths", "path"] as const;
+const PATH_FIELD_NAMES = ["file_path", "notebook_path", "dir_path", "paths", "path", "cwd"] as const;
 
 /**
  * 显式豁免名单：接受路径参数但**有意**不触发 JIT 的工具。
@@ -131,7 +138,7 @@ describe("P2-9 JIT 触发路径自报：与真实工具双向对账", () => {
     const declared = FACTS.filter((f) => f.declaresJit).map((f) => f.tool).sort();
     // 快照式断言：不是为了锁死数字，而是让"某个工具的 JIT 触发被悄悄删掉"变成红灯。
     expect(declared).toEqual([
-      "edit", "glob", "grep", "ls", "lsp",
+      "bash", "edit", "glob", "grep", "ls", "lsp",
       "notebook_edit", "read", "read_many", "write",
     ]);
   });
@@ -144,6 +151,7 @@ describe("P2-9 契约：jitAffectedPaths 不得抛异常（畸形入参返回空
     undefined, null, {}, [], "string", 42,
     { file_path: null }, { file_path: 123 }, { paths: "not-an-array" },
     { paths: [null, 1, {}] }, { path: {} }, { pattern: null },
+    { command: null }, { command: 123 }, { command: "a".repeat(20_000) },
   ];
 
   test("各工具对畸形入参均返回数组且不抛", async () => {
@@ -153,14 +161,15 @@ describe("P2-9 契约：jitAffectedPaths 不得抛异常（畸形入参返回空
     const { GrepTool } = await import("../../src/tool/grep.ts");
     const { GlobTool } = await import("../../src/tool/glob.ts");
     const { LsTool } = await import("../../src/tool/ls.ts");
+    const { BashTool } = await import("../../src/tool/bash.ts");
 
     const instances: Array<{ name: string; fn: (i: unknown) => string[] }> = [];
-    for (const Ctor of [ReadTool, WriteTool, EditTool, GrepTool, GlobTool, LsTool] as any[]) {
+    for (const Ctor of [ReadTool, WriteTool, EditTool, GrepTool, GlobTool, LsTool, BashTool] as any[]) {
       const inst = new Ctor();
       if (typeof inst.jitAffectedPaths !== "function") continue;
       instances.push({ name: inst.name(), fn: (i) => inst.jitAffectedPaths(i) });
     }
-    expect(instances.length).toBeGreaterThanOrEqual(6);
+    expect(instances.length).toBeGreaterThanOrEqual(7);
 
     for (const { name, fn } of instances) {
       for (const input of MALFORMED) {

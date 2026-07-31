@@ -110,6 +110,16 @@ export class UploadManager implements TraceUploaderInterface {
   private readonly retryQueuePath: string;
 
   constructor(options: UploadOptions) {
+    // ⚠️ 顺序陷阱（实测 P0）：`...options` 在默认值**之后**展开，而调用方
+    // （`init-helpers.ts:37`）传的是 `outputDir: traceConfig.outputDir` ——
+    // settings.json 里没写 `trace.output_dir` 时它是**显式 undefined 键**，
+    // 展开会把上面的默认值覆盖成 undefined（`{...{a:1}, ...{a:undefined}}.a === undefined`），
+    // 于是 `join(undefined, ...)` 抛 "paths[0] must be of type string"，
+    // 整个 TraceCollector 初始化失败 → **全部轨迹采集静默失效**。
+    //
+    // 症状极具误导性：日志只有一行 `轨迹采集初始化失败`，而 JIT / 工具 / 模型
+    // 全部正常工作，只是「什么都没被记录下来」—— 可度量底座直接归零。
+    // 修法是展开后对有默认值的**路径类**字段做 undefined 兜底，而不是指望调用方不传。
     this.opts = {
       toolSource: "sid-code",
       maxRetries: 5,
@@ -117,11 +127,13 @@ export class UploadManager implements TraceUploaderInterface {
       compress: true,
       userId: "",
       deviceId: "",
-      outputDir: sidPaths.trajectories(),
       deleteAfterUpload: false,
       recomputeCostBeforeUpload: true,
       availableModels: [],
       ...options,
+      // outputDir 的默认值必须放在展开**之后**：显式 undefined 键会穿透默认值
+      // （见上方注释的 P0），这里是唯一收口点。空字符串同样不是合法目录，故用真值判断。
+      outputDir: options.outputDir || sidPaths.trajectories(),
     };
     // P1-5：队列文件从 outputDir 派生，而非全局 sidPaths.uploadQueue()。
     // 否则测试传 outputDir:tmpDir 以为隔离了，实际每跑一次就往真实 HOME 追加条目

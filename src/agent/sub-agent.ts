@@ -32,6 +32,7 @@ import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
 import { JitContextManager } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
+import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
 import { describeToolActivity } from "./progress.ts";
 import {
   createAgentTask,
@@ -361,7 +362,24 @@ export class SubAgent {
           const log = getLogger();
           for (const p of paths) {
             try {
-              const r = await mgr.discoverDetailed(p, process.cwd());
+              const cwd = process.cwd();
+              const r = await mgr.discoverDetailed(p, cwd);
+
+              // 第 5 批：子代理侧也要打点。此前只有主循环打，子代理这条通道
+              // （P2-1 接的独立 manager）完全不进统计 —— 用到子代理的会话，
+              // JIT 命中率与字节量会系统性偏低，第 6 批的成本治理会建立在错的曲线上。
+              // 与主循环共用 buildJitEventData，`source: "subagent"` 供分通道归因。
+              // 未命中也打（分母不能缺），所以放在 `!r.text` 提前返回之前。
+              emitJitEvent(
+                buildJitEventData({
+                  accessedPath: p,
+                  projectRoot: cwd,
+                  discovery: r,
+                  cumulativeBytes: mgr.getLoadedBytes(),
+                  source: "subagent",
+                }),
+              );
+
               if (!r.text) continue;
               // 走 setSystemPrompt（内部逐块幂等回灌），不手工拼接
               ctxMgr.setSystemPrompt(ctxMgr.getSystemPrompt());

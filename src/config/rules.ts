@@ -21,6 +21,7 @@ import type { FSWatcher } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidHomePath } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
+import { getOriginalCwd } from "../bootstrap/state.ts";
 
 /**
  * CLAUDE.md 文件名候选列表（对标 Claude Code）。
@@ -905,10 +906,15 @@ async function loadLocalRules(projectRoot: string): Promise<ProjectRules | null>
  *   于是全部生产调用点（都没传）都让作用域规则永不生效。默认值必须是"采集"而非"空"：
  *   留成空的话，下一个新增调用点还会再犯同一个错。
  *   显式传 `[]` 仍表示"无活动范围"（测试用它断言拒绝行为）。
+ * @param opts.originalCwdActiveFiles  第 7 批：Managed / User / userRulesDir 三层 `paths:`
+ *   判定用的活动文件列表（相对 `getOriginalCwd()`，语义见下方"glob 基准分层"说明）。
+ *   同 `activeFiles`：不传时按需自动采集（惰性——只有真的存在这三层的带 `paths:` 规则时才算）。
+ *   测试用它绕开 `getOriginalCwd()` 在进程内不可变的限制来做确定性断言，
+ *   不必也不应该依赖真实 `git status`。
  */
 export async function loadAllCLAUDEmd(
   startDir: string,
-  opts?: { activeFiles?: string[] },
+  opts?: { activeFiles?: string[]; originalCwdActiveFiles?: string[] },
 ): Promise<ProjectRules | null> {
   const log = getLogger();
   // M9：跨所有规则目录/文件共享的 realpath 去重集合，防 symlink 重复加载 / 环。
@@ -966,6 +972,51 @@ export async function loadAllCLAUDEmd(
     log.debug("RULES", `自动采集作用域活动文件 ${activeFiles.length} 个（projectRoot=${projectRoot}）`);
   }
 
+  // 第 7 批：`paths:` glob 基准目录按层分层，对齐 CC（`claudemd.ts:1376-1380`）——
+  // Project 层用 `projectRoot`（本函数已如此实现，无需改动）；
+  // Managed / User / userRulesDir 层用**会话启动时的原始 cwd**（`getOriginalCwd()`）。
+  //
+  // 为什么两者不能共用一套基准：managed（企业下发）/ user（`~/.claude`）层的规则
+  // 不属于任何具体项目，作者写 `paths:` 时并不知道、也不该关心「当前项目的目录结构」——
+  // 它的自然锚点是「用户此刻工作在哪」，而这个锚点必须在会话全程稳定，不能随
+  // bash `cd`（只改 `state.cwd`，见 `bootstrap/state.ts`）或 `/worktree` 切换
+  // （`worktree/canonical.ts:73` 会真调用 `process.chdir()`）而漂移——否则同一条
+  // 企业规则会因为用户中途 `cd` 到项目子目录、或切换 worktree，作用域判定悄悄改变。
+  // `getOriginalCwd()` 在会话启动时固定为 `process.cwd()` 且此后不变，正是这个稳定锚点；
+  // 而 `projectRoot` 在 `/worktree` 切换后会指向新 worktree，两者此时才会真正分叉
+  // （launch 目录 == 项目根的常见情形下二者相同，此改动对现状零影响，只在
+  // worktree 切换等边角场景生效）。
+  //
+  // 惰性 + 缓存，而不是像 `activeFiles` 那样直接算：
+  //   ① 调用方显式传了 `opts.originalCwdActiveFiles`（测试专用）时直接采用，
+  //      不发起任何真实采集——`getOriginalCwd()` 在进程内是不可变的会话启动值
+  //      （`bootstrap/state.ts` 无 setter），测试若不显式覆盖这份列表，
+  //      唯一能测的就是"当前 `bun test` 进程的真实 cwd"，与被测夹具无关。
+  //   ② 调用方只传了 `opts.activeFiles`（未传本参数）且 `originalCwd === projectRoot`
+  //      时复用 `activeFiles`——这是绝大多数测试与常规运行的情形（会话启动目录
+  //      就是项目根），复用避免二次采集，语义上也确实等价（同一基准）。
+  //   ③ 否则（真实会话、且 `getOriginalCwd()` 与 `projectRoot` 确已分叉，
+  //      如 `/worktree` 切换后）才发起 `collectActiveScopeFiles(originalCwd, originalCwd)`
+  //      这个真实的 git-status 调用。
+  //   ④ 无论走哪条分支，只有当**真的存在一条 managed/user/userRulesDir 层规则
+  //      带非空 `paths:`** 时才会被调用（见 `keepInScope` 的 `needsOriginalCwdBasis`
+  //      判定）——绝大多数会话这三层要么不存在、要么没有 `paths:`
+  //      （`rulesPathsMatch` 对空 paths 直接返回 true），提前算纯属浪费。
+  const originalCwd = getOriginalCwd();
+  let cachedOriginalCwdActiveFiles: string[] | undefined = opts?.originalCwdActiveFiles;
+  const getOriginalCwdActiveFiles = (): string[] => {
+    if (cachedOriginalCwdActiveFiles === undefined) {
+      cachedOriginalCwdActiveFiles =
+        opts?.activeFiles !== undefined || originalCwd === projectRoot
+          ? activeFiles
+          : collectActiveScopeFiles(originalCwd, originalCwd);
+    }
+    return cachedOriginalCwdActiveFiles;
+  };
+
+  /** Managed / User / userRulesDir 三层用 originalCwd 基准，其余层用 projectRoot 基准 */
+  const ORIGINAL_CWD_BASIS_LAYERS = new Set<ProjectRules["layer"]>(["managed", "user", "userRulesDir"]);
+
   // 实际合并进结果的文件清单（按合并顺序）。这是 JIT 预标记的事实源：
   // 只预标记真正注入了的文件，被作用域拦下的**不标记**，留给 JIT 在触达对应目录时按需注入。
   const loadedPaths: string[] = [];
@@ -974,14 +1025,17 @@ export async function loadAllCLAUDEmd(
   // 同层多文件在这里就地过滤，**过滤在合并之前**。此前是「先 merge 同层 → 再统一过滤」，
   // 而 merge 会抹掉 paths，导致带作用域的文件被同层无条件文件夹带进来、在任意 cwd 无条件生效。
   const keepInScope = (rules: ProjectRules): boolean => {
-    if (rulesPathsMatch(rules.paths, activeFiles)) {
+    const needsOriginalCwdBasis =
+      rules.paths && rules.paths.length > 0 && ORIGINAL_CWD_BASIS_LAYERS.has(rules.layer);
+    const basis = needsOriginalCwdBasis ? getOriginalCwdActiveFiles() : activeFiles;
+    if (rulesPathsMatch(rules.paths, basis)) {
       loadedPaths.push(rules.sourcePath);
       return true;
     }
     log.info(
       "RULES",
       `规则 paths 条件不匹配当前作用域，跳过: ${rules.sourcePath}` +
-        ` (paths=${JSON.stringify(rules.paths)}, activeFiles=${activeFiles.length} 个)`,
+        ` (paths=${JSON.stringify(rules.paths)}, layer=${rules.layer}, activeFiles=${basis.length} 个)`,
     );
     return false;
   };
