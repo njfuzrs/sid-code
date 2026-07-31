@@ -92,6 +92,32 @@ const SHELL_PROMPT = "! ";
 const MAX_INPUT_LINES = 8;
 
 /**
+ * 输入框边框：只画上下两条细横线，不画左右竖线。
+ *
+ * 终端里的"框"就是文本。左右竖线和输入内容同处一行，用户拖选多行输入去复制时，
+ * `│ 内容 │` 的竖线会被一起选中，粘出去满是无关线框（长文本换行越多越脏）。
+ * 上下横线独占自己的行，横向拖选内容时选不到，复制干净。
+ *
+ * 字形用 `single` 的 `─`（细）而非 `bold` 的 `━`（粗）：横线通宽跑满终端，
+ * 粗字形铺满一整行太抢眼，把视觉重心从输入内容上夺走了。
+ * 颜色用 `theme.border.default` 而非品牌色 `ui.active`——边框是容器不是重点，
+ * 品牌色留给 `>` 提示符点睛（L1.2 克制点睛 / L2.1 排版 > 颜色）。
+ */
+const INPUT_BORDER_PROPS = {
+  borderStyle: "single",
+  borderLeft: false,
+  borderRight: false,
+} as const;
+
+/**
+ * 输入框边框色 = footer 里当前模型名的颜色（`Footer.tsx` 的 `val`，即 `theme.text.primary`）。
+ *
+ * 必须是函数而非模块级常量：`theme` 是 themeManager 的惰性代理（`semantic-colors.ts` 用
+ * getter 转发），模块级 `const` 会在 import 时把值定死，`/theme` 切换暗亮后边框仍是旧色。
+ */
+const inputBorderColor = () => theme.text.primary;
+
+/**
  * 清理粘贴文本：
  * - Tab → 2 空格
  * - 控制字符（\x00-\x1f 除 \t \r \n）→ 删除
@@ -124,7 +150,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
   const prevLoadingRef = useRef(isLoading);
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
-  const availableWidth = Math.max(10, termWidth - 4); // round 边框左右各 1 + paddingX=1 左右各 1
+  // 无左右边框（INPUT_BORDER_PROPS），可用宽度只扣 paddingX=1 左右各 1。
+  const availableWidth = Math.max(10, termWidth - 2);
 
   // Shell 模式状态（! 前缀直接执行 shell 命令）
   const [shellModeActive, setShellModeActive] = useState(false);
@@ -765,7 +792,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       <Box
         flexDirection="column"
         width={termWidth}
-        borderStyle="round"
+        {...INPUT_BORDER_PROPS}
         borderColor={theme.status.warning}
         paddingX={1}
       >
@@ -877,8 +904,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         {shellHint}
         <Box
           width={termWidth}
-          borderStyle="round"
-          borderColor={theme.ui.active}
+          {...INPUT_BORDER_PROPS}
+          borderColor={inputBorderColor()}
           paddingX={1}
         >
           <Text>
@@ -988,8 +1015,8 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       )}
       <Box
         width={termWidth}
-        borderStyle="round"
-        borderColor={theme.ui.active}
+        {...INPUT_BORDER_PROPS}
+        borderColor={inputBorderColor()}
         paddingX={1}
         flexDirection="column"
       >
