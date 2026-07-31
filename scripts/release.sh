@@ -4,7 +4,7 @@
 # 用法：
 #   ./scripts/release.sh                        # 门禁(bun test)+bump 版本号+构建 4 目标并打包到 dist/release/
 #   ./scripts/release.sh --upload                # 打包后上传到服务器
-#   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（配合先跑过 make build 的场景）
+#   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
@@ -36,9 +36,11 @@
 #   ./scripts/website-deploy.sh，否则线上 /changelog 还停在上一个版本。
 #   website-deploy.sh 开头有版本一致性检查会 warn 提醒这件事。
 #
-# 版本号 bump 规则：release.sh 默认自增 patch 版本号一次。若你已经先跑过 make build
-#   （它内部也会 bump），再直接 release 会导致版本号 +2；此时加 --no-bump 复用现有版本号。
-#   推荐做法：不要先 make build，直接 ./scripts/release.sh --upload（一次 bump 到位）。
+# 版本号 bump 规则：release.sh 默认自增 patch 版本号一次。
+#   推荐做法：直接 ./scripts/release.sh --upload（一次 bump 到位）。日常的 `make build`
+#   不动版本号，先跑它验证构建是安全的；但若你显式跑过 `make build-bump`（它会 bump），
+#   再直接 release 会导致版本号 +2 —— 此时加 --no-bump 复用现有版本号。
+#   本次失败重跑（已 bump 过但没发出去）同样用 --no-bump。
 #
 # 环境变量（--upload 时使用）：
 #   DEPLOY_SSH_HOST         服务器地址（分发 host 的唯一权威，install.sh 的下载地址由它派生）

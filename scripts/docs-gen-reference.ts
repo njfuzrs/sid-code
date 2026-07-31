@@ -88,7 +88,7 @@ interface ToolDef {
 
 /**
  * 取工具定义。走 `bun run src/entrypoints/bootstrap.ts --dump-tools` 而非编译好的
- * ./sid-code 二进制：二进制可能是旧版（忘了 make rebuild），那样生成的文档会对应
+ * ./sid-code 二进制：二进制可能是旧版（忘了 make build），那样生成的文档会对应
  * 上一次编译时的源码——正是本生成器要防的漂移。从源码跑保证与工作区一致。
  */
 function loadTools(): ToolDef[] {

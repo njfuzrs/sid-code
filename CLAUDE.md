@@ -29,7 +29,8 @@
 
 - **语言**：所有回复、代码注释、文档均用中文
 - **联网工具**：遇到不熟悉的 API / 库 / 报错信息时，主动用 tavily-mcp / context7-mcp 查最新文档，不要凭记忆猜
-- **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）以及跑 `make rebuild` 验证构建成功，**不可跳过，必须执行**
+- **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）以及跑 `make build` 验证构建成功，**不可跳过，必须执行**
+  —— 日常开发只用 `make build`（不动版本号）。**不要**用 `make build-bump`，它会把版本号 +1。
 - **改了参考页数据源要重新生成官网参考页**：动过 `src/help.ts`、`src/cli.ts`、`src/tool/`、`src/command/`、`src/config/`、`src/hook/` 之后，跑一次
   `bun run docs:gen-reference`，并把 `website/ref/` 与 `website/public/llms.txt` 的改动一并提交。
   `website/ref/` 下 6 页（CLI 参数 / 工具 / 斜杠命令 / Hook 事件 / settings 字段 / 环境变量）是**从源码生成**的，
@@ -88,9 +89,13 @@
 
 ```bash
 git pull          # 拉最新源码
-make rebuild      # 重建二进制（版本号不变）
+make build        # 构建二进制（版本号不变，日常就用这个）
 sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 ```
+
+> **一句话记法：本地开发只有 `make build`。** 它不动版本号，跑多少次都一样。
+> 带 `-bump` 后缀的目标才会改版本号，而版本号只在发布时才该变——发布走 `release.sh`，
+> 它自己会 bump，**不需要**你先手动 bump。
 
 ### 发布上线
 
@@ -101,14 +106,14 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 
 ```bash
 # 1. 验证构建（全量单测由 release.sh 门禁负责，此处不重复跑）
-make rebuild
+make build
 
 # 2. 先提交功能代码（此时版本号还没动，固化「功能」这个逻辑单元）
 git add <改动文件>
 git commit -m "feat: ..."
 
 # 3. 发布：内部 bump 版本号 + 生成 changelog 三产物 + 打 tag + 重新生成
-#    builtin-embedded.generated.ts；不需要先跑 make build
+#    builtin-embedded.generated.ts；不需要先手动 bump 版本号
 ./scripts/release.sh --upload
 
 # 4. 补提交版本号 + changelog 三产物（漏掉 changelog.json 官网 /changelog 就拿不到这个版本）
@@ -124,7 +129,7 @@ git push
 ./scripts/website-deploy.sh
 
 # 6. 对齐开发版二进制版本号（见下方 Make 表格注解，不补则 sc-dev 比线上低一位）
-make rebuild
+make build
 ```
 
 > `release.sh` 首次失败（如上传阶段报错）已 bump 过版本号时，第二次用 `--no-bump --upload` 复用。重跑安全：tag 已存在会跳过创建，changelog 同版本块原地替换，均幂等。
@@ -154,16 +159,25 @@ sid-code update    # 下载服务器最新版
 sc                 # 启动线上稳定版（sc / sid-code 就是线上版）
 ```
 
-### 三个 Make 目标职责
+### 三个构建目标职责
 
-| 命令                            | 版本号 | 用途                                    |
-| ------------------------------- | ------ | --------------------------------------- |
-| `make rebuild`                  | 不变   | 日常开发：拉代码后更新二进制            |
-| `make build`                    | +1     | 本地自测：构建带新版本号的二进制        |
-| `./scripts/release.sh --upload` | +1     | 正式发布：构建 4 平台制品并上传到服务器 |
+| 命令                            | 版本号 | 用途                                                  |
+| ------------------------------- | ------ | ----------------------------------------------------- |
+| `make build`                    | 不变   | **日常开发（99% 的场合）**：改完 / 拉完代码重建二进制 |
+| `make build-bump`               | +1     | 少见：想本地自测一个带新版本号的二进制                |
+| `./scripts/release.sh --upload` | +1     | 正式发布：构建 4 平台制品并上传到服务器               |
+
+**选哪个：默认 `make build`。** 只要你不是在专门测「版本号本身」，就用它。
+`make rebuild` 保留为 `make build` 的别名（历史文档里到处是它），敲了也不会出错，
+但新写的文档 / 命令一律用 `make build`。
+
+> **命名为什么是这样**（2026-07-31 调整，别改回去）：`build` 是所有项目里「编译一下」的通用词，
+> 人和模型都会条件反射地敲它。旧设计把 `build` 绑成「bump 版本号 + 编译」、把日常不 bump 的构建
+> 叫 `rebuild`，语义正好反了 —— 结果本地开发反复误敲 `make build`，静默把版本号 +1，后面再跑
+> `release.sh` 就一次跳两个版本。现在最容易被敲到的词绑到最安全的行为上：**敲错只是白编译一次。**
 
 三条由「版本号内联进二进制」派生的规则（`bun build --compile` 编译时把 `package.json` 写进产物，git pull 更新源码不会改它）：
 
 - **源码更新后必须重新编译**，否则跑的还是旧代码。
-- **版本号只 bump 一次**：直接 `./scripts/release.sh --upload`，别先跑 `make build`（它内部也 bump，会让版本号 +2）。已 bump 过用 `--no-bump --upload` 复用。
-- **`make build` / `release.sh` 之后补一次 `make rebuild`**：发布制品是跨平台编译产物，仓库根的开发版二进制不会跟着更新，内联版本号还停在旧值 —— 不补则 `sc-dev` 显示的版本比线上低一位，容易误判。
+- **版本号只 bump 一次**：直接 `./scripts/release.sh --upload`，别先跑 `make build-bump`（它也 bump，会让版本号 +2）。已 bump 过用 `--no-bump --upload` 复用。
+- **`build-bump` / `release.sh` 之后补一次 `make build`**：发布制品是跨平台编译产物，仓库根的开发版二进制不会跟着更新，内联版本号还停在旧值 —— 不补则 `sc-dev` 显示的版本比线上低一位，容易误判。

@@ -1,6 +1,7 @@
 /**
  * 自增 package.json 的 patch 版本号（x.y.z → x.y.z+1）
- * 用于 make build 前自动更新版本，确保每次编译的二进制携带唯一版本号
+ * 由 `make build-bump` 与 release.sh 调用，确保每次发布的二进制携带唯一版本号。
+ * 注意：日常开发的 `make build` **不**调用本脚本——版本号只在发布（或显式 build-bump）时才变。
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";

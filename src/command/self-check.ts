@@ -3,11 +3,11 @@
  *
  * 背景（根因分析-commit任务git状态快照冻结死循环.md 第 2 环）：
  * `bun build --compile` 在**编译时**把源码内联进二进制。git pull / commit 更新了源码后，
- * 磁盘上的二进制不会跟着变——若忘了 `make rebuild`，跑的还是旧逻辑。那次 git-status
+ * 磁盘上的二进制不会跟着变——若忘了 `make build`，跑的还是旧逻辑。那次 git-status
  * 快照冻结死循环的**直接触发因素**，正是"源码已含方向 1 修复（3a63743），但运行的二进制
  * 编译自更早提交"，导致 system prompt 里注入的还是无锚点的旧格式快照。
  *
- * 本模块让**二进制自己**跑一遍关键代码路径并断言修复已内联。`make build` / `make rebuild`
+ * 本模块让**二进制自己**跑一遍关键代码路径并断言修复已内联。`make build` / `build-bump`
  * 末尾调用 `<binary> --self-check`：编译出的产物一旦缺失关键修复就当场以非零码失败，
  * 把"源码有修复但二进制没重编"这个隐形发布陷阱变成显式的、构建期就暴露的硬错误。
  *
@@ -60,7 +60,7 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
         ok: false,
         detail:
           `git-status 块缺少锚点文案：${missing.map((m) => `"${m}"`).join("、")}。` +
-          `这几乎可以断定二进制编译自方向 1 修复之前——请重新 make rebuild。`,
+          `这几乎可以断定二进制编译自方向 1 修复之前——请重新 make build。`,
       };
     }
     // ★关键回归护栏：volatile `Status:` 块必须已被物理移除。
@@ -70,7 +70,7 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
         ok: false,
         detail:
           `git-status 块仍含会过期的 "Status:" 文件状态列表——这是死循环矛盾源，` +
-          `必须移除(只留 branch/commits)。若二进制含此块，说明编译自根治修复之前，请重新 make rebuild。`,
+          `必须移除(只留 branch/commits)。若二进制含此块，说明编译自根治修复之前，请重新 make build。`,
       };
     }
     return { name, ok: true, detail: "锚点齐全且 volatile Status 块已移除" };
@@ -136,7 +136,7 @@ export async function runSelfCheck(): Promise<boolean> {
   if (allOk) {
     console.error("自检通过：关键修复已内联进二进制。");
   } else {
-    console.error("自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 `make rebuild`。");
+    console.error("自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 `make build`。");
   }
   return allOk;
 }

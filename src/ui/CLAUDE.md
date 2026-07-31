@@ -252,7 +252,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 1. `bunx tsc --noEmit` 确认改动文件无类型错误（JSX runtime 的 "React is declared but never read" 是误报，可忽略）。
 2. `bun test`（全量单测，以实际输出为准）。
-3. `make build` 验证构建成功。
+3. `make build` 验证构建成功（不动版本号；别用 `make build-bump`，那个会 +1）。
 4. 临时预览脚本用完即删。
 
 ### 5.2 验证视觉改动的正确姿势

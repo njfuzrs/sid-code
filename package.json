@@ -6,7 +6,8 @@
   "main": "src/entrypoints/bootstrap.ts",
   "scripts": {
     "dev": "bun run src/entrypoints/bootstrap.ts",
-    "build": "bun build --compile --outfile sid-code src/entrypoints/bootstrap.ts",
+    "build": "make build",
+    "build-bump": "make build-bump",
     "test": "bun test",
     "test:ui": "bun test tests/ui src/ui",
     "test:ui:stats": "bun run scripts/ui-test-stats.ts",

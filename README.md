@@ -92,7 +92,7 @@ $ sc
 git clone http://gitlab.example.com/zhourusheng/sid-code.git
 cd sid-code
 bun install
-make rebuild          # 重建开发版二进制（版本号不变）
+make build            # 构建开发版二进制（版本号不变，日常就用这个）
 sc-dev                # 启动开发版
 bun test              # 全量单测
 ```

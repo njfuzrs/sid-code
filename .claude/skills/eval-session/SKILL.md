@@ -70,7 +70,7 @@ todo-fix 清单(派生物,每条都必须回指某条已确认的评估结论)
 
 1. **两类路径分清**:
    - **被评对象的运行时产物**——`~/.sid-code/trajectories/sessions/`(轨迹)、`~/.sid-code/usage-ledger.jsonl`(账本)是 sid-code 运行时写死的**绝对位置**,和执行者是谁、cwd 在哪无关,直接用。
-   - **需在 sid-code 仓库内跑的命令**——`bun scripts/trace-digest.ts`、报告输出目录 `docs/bugfixes/todo/eval/`、以及修复期的 `bun test`/`git stash`/`make rebuild` 全都**相对 sid-code 仓库根**。执行前先确认当前 cwd 就是 sid-code 仓库根(`ls scripts/trace-digest.ts` 能命中);不在则先 `cd` 过去或用仓库绝对路径,别在别的 cwd 下盲跑导致"脚本找不到 / 报告写错地方"。
+   - **需在 sid-code 仓库内跑的命令**——`bun scripts/trace-digest.ts`、报告输出目录 `docs/bugfixes/todo/eval/`、以及修复期的 `bun test`/`git stash`/`make build` 全都**相对 sid-code 仓库根**。执行前先确认当前 cwd 就是 sid-code 仓库根(`ls scripts/trace-digest.ts` 能命中);不在则先 `cd` 过去或用仓库绝对路径,别在别的 cwd 下盲跑导致"脚本找不到 / 报告写错地方"。
 2. **MEMORY.md 交叉核对是"有则做"的增强,不是硬前提**:铁律第 4 条要查的 `MEMORY.md` 是**这台机器上为 sid-code 维护的项目记忆**。执行者若能读到(如就是本机 Claude Code / sid-code)就核对;读不到(换机器、无该项目记忆)则**跳过并在报告注明"未核对历史记忆,复发性判断置信度下降"**,不要因路径不存在而报错或卡住。
 3. **sid-code 仓库根怎么定位**:优先用用户明示的路径;未明示时,从 `~/.sid-code` 或轨迹里的线索找,或直接问用户"sid-code 仓库在哪"。别假设 cwd 已经在那里。
 
@@ -259,7 +259,7 @@ grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/
 
 ## 后续:修复与验证生效(本 skill 不执行,但要交代清楚)
 
-修复在另一个会话做。届时遵循项目 CLAUDE.md 验证铁律:改完跑 `bun test` 全量 + `make rebuild`,**并按本报告 todo-fix 里每条预置的"验证方法"逐条确认修改真的生效**(如"改完后重新评估一个同类会话,确认账本已有该会话记录"),而不是只看编译通过就算完。本 skill 的职责是把这些验证方法提前写好,让修复会话有据可依。
+修复在另一个会话做。届时遵循项目 CLAUDE.md 验证铁律:改完跑 `bun test` 全量 + `make build`,**并按本报告 todo-fix 里每条预置的"验证方法"逐条确认修改真的生效**(如"改完后重新评估一个同类会话,确认账本已有该会话记录"),而不是只看编译通过就算完。本 skill 的职责是把这些验证方法提前写好,让修复会话有据可依。
 
 ## 陷阱:trace-digest 的已知假阳性(别当真缺陷)
 

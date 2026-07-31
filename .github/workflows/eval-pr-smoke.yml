@@ -44,7 +44,8 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build sid-code (smoke 需要)
-        run: bun run build || echo "build failed, retry without makefile"
+        # make build 不动版本号，CI 里跑它不会让 package.json 变脏
+        run: make build
 
       - name: Run smoke eval (5 P0 case × sid-code)
         id: smoke
