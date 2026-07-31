@@ -75,6 +75,15 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
   - `border.*` / `background.*` — 边框、背景
 - **`theme.status` 没有 `info`**。需要"信息蓝"用 `theme.ui.active`。（历史踩坑：`theme.status.info` 是 undefined，会静默回退终端默认色。）这与 cc 一致——cc 也只有 success/error/warning 三状态色，"提示/信息"复用 suggestion 蓝。**保持三状态体系，不要扩张状态色。**
 - **克制点睛**：颜色只在关键处点睛——品牌蓝引导、绿色完成、红色错误、黄色警告，不要整屏彩色。
+- **需要"介于两个 token 之间"的弱化档 → 从 token 派生，不要拍 hex、也不要错配一个近似 token** ✅：
+  现成 token 是**语义**锚点（正文 / 品牌 / 状态 / 边框），不是明度色阶。遇到"想要这个颜色，
+  但要更淡一档当结构线/背景衬托"的需求，正确出口是 `themes/color-utils.ts` 的
+  `mixToContrast(color, background, targetRatio)` —— 把 token 朝背景混淡到指定 WCAG 对比度。
+  - **按目标对比度反解，别写死混合比例**：项目有 6 套主题、背景亮度差异大，同一个
+    `mix(c, bg, 60%)` 在各主题算出的对比度能差一倍；按对比度反解才能全主题观感一致。
+  - 参考档位：装饰性结构线 ~2.6（见 L2.2 输入框边框）；低于 ~2.0 糊进背景，高于 ~3.5 抢正文重心。
+  - 派生出的颜色**仍然继承原 token 的色相**，所以"和 X 保持统一"要理解成**同色相不同明度**
+    （L1 元原则① 同族递进），而不是取同一个色值——同色值意味着两者视觉权重相同，层次就没了。
 - **改配色后验证实际解析值**，别只看 `semantic-tokens.ts` 的定义（定义 ≠ 生效，曾因 Theme 漏传 semanticColors 参数导致设计稿没生效）：
   ```bash
   bun -e 'import { themeManager } from "./src/ui/themes/theme-manager.ts"; console.log(themeManager.getSemanticColors())'
@@ -124,16 +133,26 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
   横线跑满整个终端宽度，面积比带竖线时的短边框大得多，**字形和颜色在通宽下都会被放大**。
   - 字形用 `single` 的 `─`，**不要**用 `bold` 的 `━`——"去掉竖线所以横线要更有存在感"
     是错的直觉，实测通宽 `━` 太抢眼，把视觉重心从输入内容上夺走。
-  - 颜色用 `theme.text.primary`（`#cdd6f4`），**与 footer 里当前模型名同色**
-    （`Footer.tsx` 的 `val`）——输入框边框是常驻结构，和 footer 同色让底部两条基线读起来
-    是一套东西。两个方向都别越界：
-    - 不要用品牌色 `theme.ui.active`（`#89b4fa`）——边框不是重点，品牌色留给 `>` 点睛；
-    - 也不要用 `theme.border.default`（`#45475a`）——通宽下这个暗度直接糊进背景，框不住。
-  - 例外：**颜色承载语义时才允许亮**。如反向搜索框用 `theme.status.warning`，
-    那个黄是"当前处于搜索模式"的模式信号，不是装饰，应当显眼。
+  - 颜色用**品牌色同色相的弱化档**，靠对比度定档而不是拍一个 token：
+    `mixToContrast(theme.ui.active, theme.background.primary, 2.6)`
+    （`InputArea.tsx` 的 `inputBorderColor()`，工具在 `themes/color-utils.ts`）。
+    与 `>` 提示符**统一的是色相，不是色值**——同一个蓝，提示符满强度点睛（暗色 7.79），
+    边框弱化到结构层（~2.6），构成 L1 元原则①的同族递进。
+  - **对比度取值窗口很窄，两个方向都别越界**（各撞过一次，别再来第三次）：
+    - 低于 ~2.0 糊进背景框不住 —— `theme.border.default`（`#45475a`）暗色下仅 **1.80**；
+    - 高于 ~3.5 与正文抢重心 —— `theme.text.primary`（`#cdd6f4`）高达 **11.34**，
+      比它框住的输入正文和点睛的 `>` 都亮，视觉层次整个反了，通宽横线又把这份过亮放大，
+      观感就是"输入框特别显眼、颜色不协调"。**别再改回 `text.primary`。**
+  - **为什么按对比度反解、不写死混合比例**：各主题背景亮度不同，同一个 `mix(brand, bg, 60%)`
+    在 6 套主题里算出的对比度能差一倍。按目标反解后实测全主题收敛在 2.58~2.59，观感一致。
+    回归测试：`tests/ui/input-border-color.test.ts`（锁上下界、层次不反转、色相同族）。
+  - 例外：**颜色承载语义时换色相，但仍然弱化**。反向搜索框用 `status.warning` 的色相
+    （黄 = 处于搜索模式，是模式信号不是装饰），但同样走 `modeBorderColor()` 压到 2.6 ——
+    模式信号靠框内"反向搜索:"文字满强度传达，不靠通宽横线嚷嚷。
   - **取色必须惰性求值**：`theme` 是 themeManager 的 getter 代理，写成模块级
-    `const C = theme.text.primary` 会在 import 时定死，`/theme` 切暗亮后边框仍是旧色。
-    用函数（`InputArea.tsx` 的 `inputBorderColor()`）或在 render 内直接读。
+    `const C = theme.ui.active` 会在 import 时定死，`/theme` 切暗亮后边框仍是旧色。
+    用函数（`inputBorderColor()` / `modeBorderColor()`）或在 render 内直接读。
+    （`mixToContrast` 内部带缓存，每帧调用不会重复二分求解。）
 
 ### 2.3 缩进对齐成列 ✅
 
@@ -313,6 +332,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | L1 字形 | `icon = isError ? "✕" : "✓"`（散落、字形不一） | 从 `figures.ts` 取 `ERROR_MARK`/`SUCCESS_MARK` |
 | L1 颜色 | `color={theme.status.info}`（undefined） | `color={theme.ui.active}` |
 | L1 颜色 | `borderColor="#f9e2af"` | `borderColor={theme.status.warning}` |
+| L1 颜色 | 想要弱化档就错配一个近似 token（通宽边框用 `text.primary`，比正文还亮） | `mixToContrast(theme.ui.active, theme.background.primary, 2.6)` — 同色相弱化 |
 | L2 布局 | 顶/分隔/中/底 四个 Box 拼边框 | 单个 `borderStyle="round"` 容器 + 内部 `borderTop` 分隔 |
 | L2 对齐 | `text.length` 算列宽（CJK 漂移） | `stringWidth(text)` |
 | L2 状态 | 完成态只把字变绿 | 实心字形 `●` + `strikethrough`（字形+排版双通道） |

@@ -55,6 +55,7 @@ import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/in
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 import { getAppConfig, shouldShowHint, markHintShown } from "../config/app-config.ts";
 import { ARROW_PROMPT } from "./constants/figures.ts";
+import { mixToContrast } from "./themes/color-utils.ts";
 
 interface InputAreaProps {
   /**
@@ -100,8 +101,7 @@ const MAX_INPUT_LINES = 8;
  *
  * 字形用 `single` 的 `─`（细）而非 `bold` 的 `━`（粗）：横线通宽跑满终端，
  * 粗字形铺满一整行太抢眼，把视觉重心从输入内容上夺走了。
- * 颜色用 `theme.border.default` 而非品牌色 `ui.active`——边框是容器不是重点，
- * 品牌色留给 `>` 提示符点睛（L1.2 克制点睛 / L2.1 排版 > 颜色）。
+ * 颜色见 `inputBorderColor()`。
  */
 const INPUT_BORDER_PROPS = {
   borderStyle: "single",
@@ -110,12 +110,37 @@ const INPUT_BORDER_PROPS = {
 } as const;
 
 /**
- * 输入框边框色 = footer 里当前模型名的颜色（`Footer.tsx` 的 `val`，即 `theme.text.primary`）。
+ * 边框相对背景的目标对比度。装饰性通宽横线的取值窗口很窄：
+ * - < ~2.0：糊进背景，框不住（实测 `border.default` 暗色下仅 1.80）；
+ * - > ~3.5：开始与输入正文抢视觉重心（旧版 `text.primary` 高达 11.34，比它框住的
+ *   内容和点睛的 `>` 都更亮，视觉层次整个反了——这正是"边框很显眼"的根因）。
+ * 2.6 落在窗口中段：轮廓清晰可见，但明确退在正文之后。
+ */
+const BORDER_TARGET_CONTRAST = 2.6;
+
+/**
+ * 输入框边框色 = 品牌蓝（`>` 提示符同色相）混向背景，压到 {@link BORDER_TARGET_CONTRAST}。
+ *
+ * **和 `>` 统一的是色相，不是色值**：提示符 `ui.active` 满强度点睛（暗色下对比度 7.79），
+ * 边框取同一色相的弱化档（~2.6）当结构线。同族递进（L1 元原则①：同一色相靠明度表达层次），
+ * 底部两条横线与 `>` 读起来是一套东西，而边框不与内容争重心。
  *
  * 必须是函数而非模块级常量：`theme` 是 themeManager 的惰性代理（`semantic-colors.ts` 用
  * getter 转发），模块级 `const` 会在 import 时把值定死，`/theme` 切换暗亮后边框仍是旧色。
+ * （`mixToContrast` 内部有缓存，每帧调用不重复求解。）
  */
-const inputBorderColor = () => theme.text.primary;
+const inputBorderColor = () =>
+  mixToContrast(theme.ui.active, theme.background.primary, BORDER_TARGET_CONTRAST);
+
+/**
+ * 特殊模式（反向搜索 / shell）的边框色：同样弱化到结构层，但保留模式色相。
+ *
+ * 模式色承载语义（黄 = 搜索中、非常态），所以走 status.warning 而非品牌蓝；
+ * 但它仍是边框，同样压到 {@link BORDER_TARGET_CONTRAST}——模式信号靠框内的
+ * "反向搜索:" 文字满强度传达，不靠通宽横线嚷嚷。
+ */
+const modeBorderColor = (color: string) =>
+  mixToContrast(color, theme.background.primary, BORDER_TARGET_CONTRAST);
 
 /**
  * 清理粘贴文本：
@@ -793,7 +818,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
         flexDirection="column"
         width={termWidth}
         {...INPUT_BORDER_PROPS}
-        borderColor={theme.status.warning}
+        borderColor={modeBorderColor(theme.status.warning)}
         paddingX={1}
       >
         <Box>

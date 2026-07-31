@@ -127,6 +127,55 @@ export function interpolateColor(
   }
 }
 
+/** mixToContrast 结果缓存：惰性取色会在每次 render 调用，二分求解不该每帧重算。 */
+const mixToContrastCache = new Map<string, string>();
+
+/**
+ * 把 `color` 朝 `background` 方向混淡，直到与背景的对比度**刚好不高于** `targetRatio`。
+ *
+ * 用途：需要"同一个色相、但退到结构层"的弱化色（如输入框边框相对提示符）。
+ * 直接写死混合比例（`mix(brand, bg, 60%)`）在不同主题下效果不一致——各主题背景亮度不同，
+ * 同一比例算出的对比度能差一倍。按目标对比度反解比例，才能让所有主题观感一致。
+ *
+ * 若 `color` 本身对比度已 ≤ 目标（即已经足够弱），原样返回，不会反向加强。
+ *
+ * @param targetRatio WCAG 对比度目标（1 = 与背景同色不可见）。装饰性边框取 2~3 之间：
+ *                    低于 ~2 会糊进背景，高于 ~3.5 开始与正文抢视觉重心。
+ */
+export function mixToContrast(
+  color: string,
+  background: string,
+  targetRatio: number,
+): string {
+  const cacheKey = `${color}|${background}|${targetRatio}`;
+  const cached = mixToContrastCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const fg = tinycolor(color);
+  const bg = tinycolor(background);
+  if (!fg.isValid() || !bg.isValid()) return color;
+
+  let result = color;
+  if (tinycolor.readability(color, background) > targetRatio) {
+    // 二分求解混合比例：比例越大越靠近背景、对比度越低（单调），可二分。
+    let lo = 0; // 纯 color，对比度最高
+    let hi = 100; // 纯 background，对比度 = 1
+    for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2;
+      const candidate = tinycolor.mix(fg, bg, mid).toHexString();
+      if (tinycolor.readability(candidate, background) > targetRatio) {
+        lo = mid; // 还太强，继续朝背景混
+      } else {
+        hi = mid;
+      }
+    }
+    result = tinycolor.mix(fg, bg, hi).toHexString();
+  }
+
+  mixToContrastCache.set(cacheKey, result);
+  return result;
+}
+
 /**
  * 根据背景色判断主题类型
  */
