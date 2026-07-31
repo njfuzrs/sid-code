@@ -16,32 +16,45 @@
  *   3. 无 `opts.originalCwdActiveFiles` 覆盖、且没有任何 managed/user/userRulesDir
  *      规则携带 `paths:` 时，不会意外依赖真实 `getOriginalCwd()`（惰性求值验证）
  *
- * userRulesDir 层测试用 `HOME` 环境变量重定向（`os.homedir()` 遵循 `$HOME`），
- * 与 `tests/session/store.test.ts` 同款手法——避免写真实用户目录，也避免碰
- * managed 层用到的系统级目录（`/etc/sid-code` 等，测试环境下大概率无权限写）。
+ * userRulesDir 层测试用 `mock.module("node:os")` 重定向 `homedir()`——
+ * Bun 的 `os.homedir()` **不认 `process.env.HOME`**（与 Node.js 行为不同），
+ * 直接设 `process.env.HOME` 会让 `findGlobalCLAUDEmd()` / `userRulesDirs()` 仍指向
+ * 真实家目录，测试夹具完全失效。改用 `mock.module` 从模块层面拦截 `homedir()`，
+ * 让 fakeHome 真正生效——避免写真实用户目录，也避免碰 managed 层系统级目录。
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { loadAllCLAUDEmd } from "../../src/config/rules.ts";
 
+// ─── mock os.homedir() ───
+// Bun 下 os.homedir() 不读 process.env.HOME，必须从模块层面 mock。
+// mockHome 在 beforeEach 里设为 fakeHome、afterEach 里清空回退真实值。
+let mockHome: string | undefined;
+mock.module("node:os", () => {
+  const real = require("node:os");
+  return {
+    ...real,
+    homedir: () => mockHome ?? real.homedir(),
+  };
+});
+
 describe("`paths:` glob 基准按层分层（第 7 批）", () => {
   let proj: string;
   let fakeHome: string;
-  let origHome: string | undefined;
 
   beforeEach(() => {
     proj = mkdtempSync(join(tmpdir(), "sid-glob-basis-proj-"));
     fakeHome = mkdtempSync(join(tmpdir(), "sid-glob-basis-home-"));
-    origHome = process.env.HOME;
-    process.env.HOME = fakeHome;
+    // 通过 mock.module 拦截 os.homedir()，让 fakeHome 真正生效
+    // （Bun 下设 process.env.HOME 无效，见文件头注释）
+    mockHome = fakeHome;
     writeFileSync(join(proj, "CLAUDE.md"), "# Instructions\n项目根规则 ROOT_MARKER");
   });
 
   afterEach(() => {
-    if (origHome === undefined) delete process.env.HOME;
-    else process.env.HOME = origHome;
+    mockHome = undefined;
     try { rmSync(proj, { recursive: true, force: true }); } catch { /* ignore */ }
     try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
