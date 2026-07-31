@@ -118,16 +118,29 @@ ${renderTodoLines(todos)}
 /**
  * P0-3：构造 end_turn 完成度拦截消息（软续命）。
  * 模型试图收尾但仍有未完成项时注入，驱动它继续做完而非提前 end_turn。
+ *
+ * `alreadyDelivered`（本轮已输出实质正文，由调用方按 TODO_GATE_PRODUCTIVE_TEXT_MIN 判定）
+ * 时追加"禁止重述"约束：这是「重复输出」缺陷的根治点。
+ *
+ * 缺陷复现（2026-07-30，docs/_template/遗留最后一项todoitem…txt 附录 TUI 转录）：
+ * 模型输出完整报告后 end_turn，只是漏标最后一项 → 本 gate 拦下 → 模型正确判断出
+ * "报告已在上一轮完整输出，只是忘了标记"→ 补标记 → todo_write 全部完成分支回
+ * "请汇总执行结果并告知用户"（无条件祈使句）→ 模型把整份报告**又打了一遍**。
+ * 模型自己的判断是对的，是被 harness 的指令盖过去了。所以修复要落在"harness 别在
+ * 已交付时下汇总命令"，而不是指望模型顶住指令。
  */
-export function buildTodoGateMessage(todos: TodoItem[]): string {
+export function buildTodoGateMessage(todos: TodoItem[], alreadyDelivered = false): string {
   const pending = unfinishedTodos(todos);
+  const noRestate = alreadyDelivered
+    ? `\n注意：你本轮**已经输出过实质结论**。补标记后请仅用一句话收尾，**不要重述/重新输出**已经给过用户的报告、结论或代码——重复输出对用户是纯噪音。`
+    : "";
   return `<system-reminder>
 检测到你试图结束本轮对话，但任务清单中仍有 ${pending.length} 项未完成：
 ${renderTodoLines(pending)}
 请对照实际进展判断，二选一：
 1. 若这些项**尚未真正做完**：继续完成，不要提前收尾；完成每一项后用 todo_write 标记 completed。
 2. 若这些项**其实已经做完**（代码已改、构建/测试已过），只是忘了标记：直接用 todo_write 标为 completed 并如实收尾。**切勿**为了让清单"看起来还有活"而去臆造用户没要求的新工作，或假设已交付的产物有故障再去排查——现状描述不等于 bug 报告，没有用户新反馈就不要脑补故障。
-如果某项确实无法完成，请明确说明原因（而不是默默跳过或谎报完成）。
+如果某项确实无法完成，请明确说明原因（而不是默默跳过或谎报完成）。${noRestate}
 </system-reminder>`;
 }
 

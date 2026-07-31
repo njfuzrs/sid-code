@@ -2843,7 +2843,15 @@ export async function* queryLoop(
             state.todoGateRetryCount = retries + 1;
             ctxMgr.addMessage({
               role: "user",
-              content: [{ type: "text", text: buildTodoGateMessage(todoState.todos) }],
+              content: [
+                {
+                  type: "text",
+                  // 「重复输出」修复：把本轮"已输出实质正文"的判定传下去，让提醒在
+                  // 已交付时明确禁止重述。producedSubstantialText 就在上面几行算好，
+                  // 是这一层独有的精确信号——工具层拿不到，所以约束必须由这里下达。
+                  text: buildTodoGateMessage(todoState.todos, producedSubstantialText),
+                },
+              ],
             });
             log.info(
               "QUERY_LOOP",

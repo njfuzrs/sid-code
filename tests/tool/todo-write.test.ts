@@ -164,6 +164,24 @@ describe("TodoWriteTool", () => {
     expect(result.output).toContain("汇总");
   });
 
+  // 「补标记后重复输出整份报告」回归守卫（2026-07-30 实测缺陷）。
+  // 旧文案是无条件祈使句「请汇总执行结果并告知用户」，模型在"正文已输出、回头补标
+  // 最后一项"时也照做，把整份报告重打一遍。转录见
+  // docs/_template/遗留最后一项todoitem…txt。这里锁住"必须带条件分流"。
+  it("全部完成文案不得是无条件祈使句（必须给'已输出过则不重复'的分流）", async () => {
+    const tool = new TodoWriteTool();
+    await tool.execute({ todos: [makeTodo("任务1", "in_progress")] });
+    const result = await tool.execute({ todos: [makeTodo("任务1", "completed")] });
+
+    // 必须明确给出"已经输出过 → 不要重复"这条出路
+    expect(result.output).toContain("不要重复输出");
+    expect(result.output).toContain("已经完整输出过");
+    // 汇总必须是带条件的（"若…尚未…"），不能是裸命令
+    expect(result.output).toContain("尚未");
+    // 锁死旧的无条件祈使句不再出现
+    expect(result.output).not.toContain("请汇总执行结果并告知用户");
+  });
+
   it("单 in_progress 正常工作", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({

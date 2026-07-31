@@ -78,6 +78,40 @@ describe("todo-reminder — P0-3 完成度闸门", () => {
   });
 });
 
+/**
+ * 「补标记后重复输出整份报告」回归守卫。
+ *
+ * 缺陷链（2026-07-30 实测，转录见 docs/_template/遗留最后一项todoitem…txt）：
+ * 模型输出完整报告 → end_turn（漏标最后一项）→ gate 拦下 → 模型补标记 →
+ * todo_write 全部完成分支回"请汇总执行结果并告知用户" → 报告被重打一遍。
+ * 两层修复：① gate 在"本轮已输出实质正文"时下发禁止重述约束；
+ * ② todo_write 全完成文案从无条件祈使句降级为带条件分流。
+ */
+describe("todo-reminder — 已交付时禁止重述（重复输出修复）", () => {
+  const todos: TodoItem[] = [
+    todo("已交付的活", "completed"),
+    todo("忘标记的活", "pending"),
+  ];
+
+  it("alreadyDelivered=true：明确禁止重述已给过的结论", () => {
+    const m = buildTodoGateMessage(todos, true);
+    expect(m).toContain("不要重述");
+    expect(m).toContain("已经输出过实质结论");
+    // 原有的完成度约束不能因此丢失
+    expect(m).toContain("仍有 1 项未完成");
+    expect(m).toContain("不要提前收尾");
+  });
+
+  it("alreadyDelivered=false / 缺省：不下禁止重述约束（本轮没产出，该输出就得输出）", () => {
+    const withFlag = buildTodoGateMessage(todos, false);
+    const withoutFlag = buildTodoGateMessage(todos);
+    expect(withFlag).not.toContain("不要重述");
+    expect(withoutFlag).not.toContain("不要重述");
+    // 缺省参数必须等价于显式 false，避免调用方漏传时行为漂移
+    expect(withoutFlag).toBe(withFlag);
+  });
+});
+
 describe("todo-reminder — P0-3 误判自愈（忘标记 vs 真没做完）", () => {
   it("忘标记阈值取满续命次数（最保守：每次都有产出却不翻状态位才判忘标记）", () => {
     expect(TODO_GATE_FORGOT_MARK_THRESHOLD).toBe(MAX_TODO_GATE_RETRIES);
