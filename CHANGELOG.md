@@ -2,6 +2,121 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.596 (2026-07-31)
+
+### 新功能
+- **website** · 新增「文章」板块 + 首篇《JIT 上下文》 `a66cb95c`
+  - website/blog/ 放文章 md，/blog/ 为列表页
+  - .vitepress/blog-meta.ts 为元数据唯一事实源（扫目录，不手写清单） sidebar 与列表页共用它，两处顺序/标题不会各自漂移
+  - BlogIndex.vue 列表卡片 + 标签筛选；BlogMeta.vue 文章页元信息行 （日期/阅读时长/标签自动渲染，作者只写 date 与 tags）
+  - 列表页 search: false —— 否则每篇文章在搜索结果里出现两次
+  - llms.txt 新增「文章」段落分类
+
+### 修复
+- **jit-context** · 补齐第 5/7 批缺口 + 轨迹采集 P0 修复 `04d30c32`
+  - 第 5 批：JIT 埋点——子代理侧打点（sub-agent.ts）、主循环埋点
+  - 下沉到 trace/jit-telemetry.ts、JIT 度量聚合（digest.ts）
+  - 第 7 批：作用域基准分层——managed/user/userRulesDir 层用
+  - originalCwd 基准（rules.ts）；bash 写文件触发 JIT（bashWriteTargets）
+  - P0 修复：uploader.ts outputDir 显式 undefined 覆盖默认值
+  - 导致轨迹采集静默失效
+- **hypothesis** · 缺口7第3条——GoalGateDecision/TimerDrift/WatchdogKill 补 absoluteTurn/promptSeq 统一轮次口径 `ac5b4cd7`
+  - goal-gate.ts：GoalGateContext 加可选 absoluteTurn/promptSeq， emitTraceEvent 注入时落 absoluteTurn，未注入降级为原 turn（向后兼容）
+  - stream-observer.ts：emitTimerDrift/emitWatchdogKill 签名各加两可选字段
+  - loop.ts：4 处调用点传参（handleGoalGate 1处 + emitTimerDrift 2处 + emitWatchdogKill 1处），都传 sessionState.getAbsoluteTurn() + promptSeq
+- **hypothesis** · 修补假设纪律机制八缺口（翻案/证据方向/事件驱动注入/埋点/轮次支撑） `41bede2c`
+  - 缺口1：翻案机制（confirmed→reopen，上限 2 次，challengedAfterConfirm 永久留痕）
+  - 缺口2：交付物缓冲与 ledger 同寿，/clear 一并清理
+  - 缺口3：事件驱动注入（turn-1 降级极简，judgment 引导紧贴判断时机）
+  - 缺口4：证据方向三分（supporting/refuting/neutral），neutral 为缺省落点
+  - 缺口5：cue 词频抑制（SESSION_CUE_FREQ_THRESHOLD=6）
+  - 缺口6：翻案文案措辞优化（不触发自我批判）
+  - 缺口7：strategicNag 文案从泛化改为特指
+  - 缺口8：HypothesisSettled 埋点 + 真实轮次取值器（延迟接线）
+- **jit-context** · 补齐 JIT 上下文对标 CC 的第 0/1/2 批缺口（P0-2 + P1-1~7 + P2-2/7/8/9） `97336b84`
+  - P0-2 符号链接出项目外泄露：realpath 解引用与路径段比对**叠加**，且向上遍历 每一步都重新 realpath（只在入口解一次挡不住「入口在项目内、祖先链爬出去」）； visitedDirs 防 symlink 环。边界两侧同口径，项目根本身是 symlink 时不误伤。
+  - P1-4 路径口径统一：accessedPath / projectRoot 均过 normalizeToolPath。此前传 相对路径时 dirname 得到相对段，与绝对 root 比对必然失败，while 一次都不进， **静默返回 null**（轨迹里 grep/glob 的 path 本就允许相对路径）。
+  - P2-5 去掉 toLowerCase()：去重键改用 realpath 原样。小写化在大小写敏感 FS 上 会把 src/Ui 与 src/ui 撞成一份。与 P1-4 是「统一路径口径」的两面，合并改造。
+  - P1-5 break → continue：作用域未命中只跳过该候选，不再连带抑制同目录无条件规则。
+  - P1-1 候选文件名单一事实源：从 rules.ts import，并新增 CLAUDE.local.md 与 .claude/rules/**.md（此前完全盲区）；rules 目录逐份独立判定并全部注入。
+  - P1-2 快照新鲜度：loadedFiles 从 Set 升级为 Map<path, {mtime,size}>，命中时比对 时间戳，变了就重读。关键是 scannedDirs 目录级短路必须让位于新鲜度校验—— 否则「同目录复访」（改完 src/ui/CLAUDE.md 接着读该目录下另一个文件）这个最主要 的场景里短路先生效、mtime 比对一次都不执行，P1-2 等于没做。为此引入 has…
+  - P1-6 收口下沉：JIT 回灌放进 ContextManager.setSystemPrompt 本身，使任何覆盖式 重建（/memory reload、/language、watcher、压缩后重建）都不会丢子目录规则—— 靠纪律维持的收口必然漏网，改成没有可绕过的路径。
+  - P1-7 注入字节进记账：新增 setBaseMemoryTokens 统一收口，上报「基线 + JIT」合计 （setMemoryTokens 是覆盖式，裸调会把 JIT 增量抹成 0）。此前 /context 的 Memory files 分类系统性低估，压缩阈值判断跟着偏。
+- **config** · JIT 项目边界从字符串前缀匹配改为路径段匹配 `f546a55b`
+  - 回归测试（tests/config/jit-context-boundary.test.ts）
+  - JIT 机制对标 CC 的缺口分析文档
+- **config** · §8 静默遵循规则优化——去反例字面量+加反向边界 `840cc906`
+  - 去掉 ✗ 反例字面量，改为句式描述，防止反向诱导模型照抄
+  - 补充「系统自动添加/与出现位置无关」归因框定，模型有依据判断
+  - 加反向边界：用户直接询问时允许如实回答，防止过度执行
+  - 同步更新 attachments.ts 中 system-reminder 文案
+  - 更新测试用例：去掉反例断言，增补反向边界与归因断言
+- **query** · hypothesis 三缺陷修复（显式 cues 过滤/交付门禁闸门/策略提示） `673952a1`
+  - 缺陷1：显式 falsifierCues 跳过泛化门槛，防线在生产主路径上 完全失效。新增 sanitizeExplicitCues() 做筛而不做弃。
+  - 缺陷2：交付门禁闸门 hasOpen() 与载荷 unsettled() 口径不一致， 全 refuted 时闸门不响。新增 hasUnsettled() 统一判据。
+  - 缺陷3：连续推翻零确认时无换策略提示，模型连推 6 条才自省。 新增 consecutiveRefutations() + claimStrategyNag() 一次性信号， 达阈值注入 buildStrategyShiftReminder() 提示换取证手段。
+- **ink,ui,config** · Footer 行2 右对齐真根因修复 + 规则落地 `17e2caa4`
+  - yoga 多槽布局缓存（_vendor/yoga-layout）在 performLayout 时命中旧 世代缓存，跳过子节点定位，flex-end 的 left 冻结在旧宽度
+  - TerminalContext 挂独立的 stdout.resize 监听，闭包捕获的 proxy 恒 为旧值，导致 dimensions 永久滞后一次 resize
+  - 系统提示词 §8「禁止复述 harness 注入的内部上下文」规则
+  - attachments.ts / jit-context.ts 静默遵循指令
+  - 前两轮 bugfix 文档标注「结论已作废」
+  - 新增 yoga-layout-cache-positions 与 internal-context-silence 测试
+  - 方法论文档沉淀第三轮教训（5 条硬规则）
+- **migration, trace, cli** · 审计发现修复五合一 `8ee9d443`
+  - P1-4: 迁移失败兜底——setStoredMigrationVersion 自包 try/catch，cli.ts 调用方也兜一层
+  - P1-5: 上传队列隔离——retryQueuePath 从全局 sidPaths 改为 outputDir 派生
+  - P1-6: 上传队列去重 + 封顶——同 session_id+file 跳过追加，队列超 5000 条丢最旧
+  - P0-3: 审计日志行号改字节偏移——statSync O(1) 替代 readFileSync+split 数行号
+  - P2-7/8: 启动期日志降级——initLogger 之前的 warn 泄漏 stderr，降级 debug 静默吞掉
+- **ink** · 主屏 resize 后 Footer 行2 右对齐失效修复 `45e085ef`
+  - 主屏设 prevFrameContaminated=true，与 altScreen 的 resetFramesForAltScreen 对称，强制下一帧 full-damage（防 blit 用 旧宽度 stale cells）
+  - 无条件先调 onComputeLayout() 重算 yoga——commit 短路时唯一重算 入口；幂等（后续 commit 的 onComputeLayout 重算同一布局）
+  - 无条件调 scheduleRender() 绘制一帧——onComputeLayout 只更新 yoga 不绘制，commit 短路时 onRender 也不调；scheduleRender 经 throttle 排在 onComputeLayout 之后，读到新宽度，无 viewport/content 错配
+- **llm** · 未知模型 contextWindow 兜底从 128K 提至 1M + 删 deepseek 特判 `8b83636d`
+  - token-estimator.ts: 兜底 128K→1M，删 deepseek 特判，更新注释
+  - token-estimator.test.ts: 同步修正 4 处断言（契约变更）
+  - 新增待修方案文档：记录 4 个数据源调研（apihub 不可达 / uniapi 无能力字段 / tags 覆盖率 14% / Moonshot /v1/models 不返回 context_window）+ 候选方案
+- **config** · 移除启动期明文 API key 告警（误报占位符展开值） `214a3b1f`
+  - 删除 warnPlaintextApiKeys 函数、plaintextWarned Set、调用点
+  - 删除因此变未使用的 getLogger import
+  - install-guide 3.2 节补 env 占位符安全建议段落
+
+### 文档
+- **jit-context** · 标记第 0/1/2 批已完成 + 剩余工作重新分小批次 `1da73d68`
+  - 逐条核对代码与测试，标出实际完成状态（14 条已修 / 1 条部分 / 3 条未做）， §0 总览表的「现状」列改为写清**实施要点**而非只打勾 —— 有几条的实际做法与 原方案不同（P2-9 直接做根治版而非先补 4 个工具名；P1-2 是 A+B 混合且额外需要 让目录短路让位于新鲜度校验），只打勾会丢掉这些信息。
+  - 新增「本轮实施纪要」，记两类文档原先没有的信息：
+  - `scannedDirs` 目录级短路先于新鲜度校验执行，导致方案 A 单独实施是**无效的** （同目录复访场景下 mtime 比对根本走不到）—— 这条不写下来，下次改 P1-2 会重踩；
+  - 3 个「看起来是代码 bug、实为测试自身错」的假失败根因（normalizeToolPath 读 bootstrap cwd 而非 process.cwd()、macOS /var→/private/var symlink、APFS 大小写不敏感导致 fixture 自我覆盖）。
+  - 剩余工作重新拆成第 5~8 批，每批**独立可交付且一次会话能收尾**，并标注批次依赖：
+  - 第 5 批 度量闭环（最高优先级）：埋点只做了采集端，轨迹里有 jit_context 事件但 无任何消费方 —— 现状是「JIT 改好了没有」量不出来，与北极星「可度量」冲突；
+  - 第 6 批 成本治理（依赖第 5 批曲线，无数据不动手）；
+  - 第 7 批 覆盖面补齐（Bash 写文件触发 / paths glob 基准分层，可并行）；
+- **jit-context** · 二次评审后更新缺口清单——5个新缺陷+1处勘误+2项上调 `21e41a17`
+  - 新增 P1-4~P1-7、P2-9 共 5 个实测复现缺陷
+  - 纠正 §9 优势-3 关于 CC 压缩回灌的认知错误
+  - 符号链接泄露（原 P2-6）上调至 P0-2，reset() 零调用（原 P2-7）上调至 P1
+  - 新增 §12.4 可重跑实测脚本与 §12.5 单测补充清单（8 项）
+  - 同步更新 §附 A 代码位置索引，补全 CC 侧对照引用
+- **hypothesis** · 假设纪律元认知外化八缺口分析与修复设计 `7f0d8e32`
+  - 分析 hypothesis 假设纪律机制的 8 个缺口，涵盖 confirmed 单向吸收态
+  - (P0)、生命周期覆盖前 1/4(P0)、turn 口径分裂(P1) 等，附执行顺序与
+  - 优先级建议。
+
+### 其他
+- **config** · 修复 rules-glob-basis-layering 夹具——mock os.homedir 让 fakeHome 生效 `78c1c1c7`
+  - 发布门禁被 3 个测试失败拦住，根因是测试夹具假设错误：
+  - Bun 的 os.homedir() 不认 process.env.HOME 重定向（与 Node.js 行为
+  - 不同）。测试设 process.env.HOME = fakeHome 后，findGlobalCLAUDEmd()
+  - 和 userRulesDirs() 仍指向真实家目录——导致 ① 测试写在 fakeHome/
+  - .claude/rules/ 的规则永远扫不到（userRulesDir 层空载）；② 真实
+  - ~/.claude/CLAUDE.md 反而被加载。连无 paths 前置条件的无条件规则
+  - （always.md）都加载失败，排除了 paths 匹配逻辑问题。
+  - 修复：改用 mock.module("node:os") 从模块层面拦截 homedir()，让
+- **trace** · 上传队列隔离与去重门禁测试（P1-5/P1-6） `3288f86b`
+  - 为上一轮审计修复补充门禁测试：断言 retryQueuePath 从 outputDir 派生
+  - 而非 sidPaths.uploadQueue()，以及同 session_id+file 不重复追加。
+
 ## v0.1.595 (2026-07-30)
 
 ### 修复
