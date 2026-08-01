@@ -1099,7 +1099,22 @@ export class OpenAIProvider implements Provider {
 
   /**
    * 判断当前 baseURL 是否为官方 OpenAI 端点。
-   * 仅 api.openai.com 走 Responses API，兼容端点（DeepSeek/Kimi/GLM/Grok 等）永不触发。
+   *
+   * ⚠️ 这只是 shouldUseResponsesAPI 的**优先级 3**（启发式兜底前的守门），
+   * **不是**"只有官方端点才走 Responses API"的总闸门——优先级 2 的 catalog
+   * `protocolKind: "openai-responses"` 声明在它**之前**短路返回 true。
+   *
+   * 也就是说：注册在 model-registry 里声明了 openai-responses 的模型（如 gpt-5.6 族），
+   * 即便跑在企业网关（uniapi 等兼容端点）上也会走 Responses API。这是**有意的**——
+   * 声明式配置的权威性高于端点启发式，否则同一模型换个网关就静默降级到
+   * Chat Completions，丢掉 reasoning.effort 等 Responses 专有能力。
+   *
+   * 前提是网关自身实现了 `/responses`。实测 uniapi 网关支持（返回标准 OpenAI 形状的
+   * 响应与错误体）。若某网关不支持，用 `SID_CODE_OPENAI_PROTOCOL=chat`（优先级 1）
+   * 强制降级，不要改这里的判断。
+   *
+   * 本方法真正的作用域：**未注册**的模型名（优先级 4 的 `/^gpt-5\./` 启发式）——
+   * 只有官方端点才允许靠模型名猜协议，兼容端点上的未注册模型一律走 Chat Completions。
    */
   private isOfficialOpenAIEndpoint(): boolean {
     try {

@@ -176,6 +176,7 @@ Worktree 隔离:
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
   SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启
   SID_ENABLE_BARE_ELLIPSIS_CHECK  裸符号省略号检测 [...]/(...)  默认关闭（实测真阳性 0、误报高），设为 1 可显式开启
+  SID_ENABLE_HYPOTHESIS         假设登记表（含矛盾中断/交付门禁）默认关闭：受控 A/B 实测 ON/OFF 准确率同为 5.00/5，ON 却多花 +75% input、+61% 耗时，设为 1 可显式开启
 
   系统路径:
   SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code）

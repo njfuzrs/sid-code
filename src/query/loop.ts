@@ -1211,7 +1211,15 @@ export async function* queryLoop(
     // hypothesisGuideInjected 与 turnCount===1 双保险，保证同一条消息内不重复注入。
     // AND 检测（路径+动词）+ system-prompt 常驻引导兜底，详见
     // docs/bugfixes/todo/最终结论与TODO-彻底修复防线零触发.md。
-    if (state.turnCount === 1 && !state.hypothesisGuideInjected) {
+    // 2026-08-01：机制默认关闭（SID_ENABLE_HYPOTHESIS=1 才注册工具），此时引导必须
+    // 一并静默——否则会催模型去调一个不存在的工具（必然 tool_use 失败）。
+    // 判据用 ledger 可达性而非直接读 env：与下面 judgment 通道（`if (ledger && ...)`）
+    // 同源，只有一处事实源，不会出现"env 关了但某条通道漏改"的漂移。
+    if (
+      state.turnCount === 1 &&
+      !state.hypothesisGuideInjected &&
+      deps.getHypothesisLedger?.() != null
+    ) {
       const userText = extractLastUserInput(ctxMgr);
       if (detectInvestigationContext(userText)) {
         // 缺口3 修复项2：turn-1 通道降级为极简一句。完整引导（含"为什么要登记"

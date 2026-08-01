@@ -144,7 +144,24 @@ const WRITE_TOOLS = new Set(["write", "edit"]);
  * 默认走 ask 而非无条件放行；预授权代码类域名由 web_fetch 自身的 checkPermissions 免确认放行，
  * domain 粒度授权由 WebFetch(domain:x) 规则控制。
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many", "save_memory"]);
+const READ_ONLY_TOOLS = new Set([
+  "read",
+  "grep",
+  "glob",
+  "ls",
+  "read_many",
+  "save_memory",
+  // 2026-08-01（A/B 实测发现）：假设登记表两个工具只写**进程内存**里的 ledger，
+  // 全文件零 fs / 网络 / 子进程调用（hypothesis.ts + hypothesis-ledger.ts 均已核对），
+  // 且自身 readOnly() 就返回 true。此前不在本表 → 落到 Step 14 默认 ask → 无头模式
+  // （-p）直接 deny，实测 11 次 ON 臂运行全部收到「权限拒绝: 非交互模式」，
+  // 假设机制在无头/评测/CI 场景**完全失效**且无任何报错，只在日志里留一行。
+  // 这也让「防线零触发」类排查极易误判成模型不调工具，而真因是权限层拦死。
+  // 注意与 todo_write 的区别：后者 readOnly() 返回 false（会落盘 progress 文件），
+  // 其在无头模式被拒是符合设计的，不在本次放行范围内。
+  "hypothesis_register",
+  "hypothesis_challenge",
+]);
 
 /** 会话记忆最大条目数 */
 const MAX_SESSION_MEMORY = 1000;

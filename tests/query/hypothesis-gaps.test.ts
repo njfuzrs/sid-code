@@ -29,6 +29,7 @@ import {
   HYPOTHESIS_STALE_TURNS,
   MAX_REOPEN_CHALLENGES,
   SESSION_CUE_FREQ_THRESHOLD,
+  isHypothesisEnabled,
 } from "../../src/query/hypothesis-ledger.ts";
 import {
   buildJudgmentGuideReminder,
@@ -363,6 +364,7 @@ describe("缺口2 层次1：交付物复用已推翻说法的检查", () => {
       challengedFingerprints: [],
       challengedAfterConfirm: 0,
       reopenChallengeCount: 0,
+      challengesAcknowledged: 0,
     };
     // config(6) 短于 MIN_EN_CUE_LENGTH=8，不该成为标识符——否则任何提到 config
     // 的交付物都会命中，纯误报
@@ -687,5 +689,169 @@ describe("新字段的序列化与回灌", () => {
     const b = new HypothesisLedger();
     b.hydrate(JSON.parse(JSON.stringify(a.serialize())));
     expect(b.claimStaleNag(999, HYPOTHESIS_STALE_TURNS)).toBe(false);
+  });
+});
+
+// ───────────── 2026-08-01 成本收益实测：交付门禁永久武装 + 空转裁决 ─────────────
+//
+// 实测会话 20260801-120158-d91920a0（68 轮）：假设机制占 31.4% input token、31.1%
+// API 墙钟；26 次裁决里 11 次（42%）是"绕一圈回到同一结论"的空转；末尾 turn 64/66
+// 连续两次被交付门禁拦截、turn 65/67 把三条已 confirmed 假设原地重 confirm，
+// 4 轮零新增结论。根因是 challengedAfterConfirm 只增不减，而门禁闸门读的正是它。
+
+describe("交付门禁：确认即复核，闸门不再永久武装", () => {
+  /** 让一条已 confirmed 的假设被证据打脸一次（走真实的 detectContradictions 路径）。 */
+  function confirmThenSlap(ledger: HypothesisLedger, cue: string) {
+    const h = registerWithCue(ledger, cue);
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "确认" }, turn: 2 });
+    const hits = ledger.detectContradictions([`日志显示 ${cue} 其实走到了这里`]);
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.afterConfirm).toBe(true);
+    return h;
+  }
+
+  test("被打脸后门禁武装；模型复核（重新 confirm）后闸门放下", () => {
+    const ledger = new HypothesisLedger();
+    const h = confirmThenSlap(ledger, "handleconnection");
+    // 打脸后：门禁该拦——这是缺口1 的原有防线，必须保持。
+    expect(ledger.hasChallengedConfirmed()).toBe(true);
+    expect(ledger.challengedConfirmed().map((c) => c.id)).toEqual([h.id]);
+
+    // 模型复核并重新确认 → 闸门放下。旧实现这里仍为 true，于是每次收尾都再拦一遍。
+    ledger.challenge({
+      id: h.id,
+      verdict: "confirm",
+      evidence: { note: "复核后仍成立", source: "src/x.ts:10" },
+      turn: 5,
+    });
+    expect(ledger.hasChallengedConfirmed()).toBe(false);
+    expect(ledger.challengedConfirmed()).toEqual([]);
+    // 事实必须留痕（门禁文案要用），只是不再武装闸门。
+    expect(ledger.get(h.id)!.challengedAfterConfirm).toBe(1);
+    expect(ledger.get(h.id)!.challengesAcknowledged).toBe(1);
+  });
+
+  test("复核后又来新证据 → 闸门重新武装（防线未被削弱）", () => {
+    const ledger = new HypothesisLedger();
+    const h = confirmThenSlap(ledger, "handleconnection");
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "复核" }, turn: 5 });
+    expect(ledger.hasChallengedConfirmed()).toBe(false);
+
+    // 不同证据文本 → 新指纹 → 再次命中（reopenChallengeCount 预算内）。
+    const hits = ledger.detectContradictions([`另一处调用栈里 handleconnection 也执行了`]);
+    expect(hits.length).toBe(1);
+    expect(ledger.hasChallengedConfirmed()).toBe(true);
+    expect(ledger.get(h.id)!.challengedAfterConfirm).toBe(2);
+    expect(ledger.get(h.id)!.challengesAcknowledged).toBe(1);
+  });
+
+  test("reopen 不推进复核水位（退回 open 是重新取证，不是复核结论）", () => {
+    const ledger = new HypothesisLedger();
+    const h = confirmThenSlap(ledger, "handleconnection");
+    ledger.challenge({ id: h.id, verdict: "reopen", evidence: { note: "证据不足" }, turn: 5 });
+    expect(ledger.get(h.id)!.challengesAcknowledged).toBe(0);
+    // reopen 后 status=open，此时该由 hasUnsettled() 那道闸门接管。
+    expect(ledger.hasUnsettled()).toBe(true);
+  });
+
+  test("复核水位随快照走（否则 resume 后凭空多出一次拦截）", () => {
+    const a = new HypothesisLedger();
+    const h = confirmThenSlap(a, "handleconnection");
+    a.challenge({ id: h.id, verdict: "confirm", evidence: { note: "复核" }, turn: 5 });
+    expect(a.hasChallengedConfirmed()).toBe(false);
+
+    const b = new HypothesisLedger();
+    b.hydrate(JSON.parse(JSON.stringify(a.serialize())));
+    expect(b.get(h.id)!.challengesAcknowledged).toBe(1);
+    expect(b.hasChallengedConfirmed()).toBe(false);
+  });
+
+  test("手改快照造出的负差值被 clamp（acknowledged 不得超过事实次数）", () => {
+    const ledger = new HypothesisLedger();
+    const h = registerWithCue(ledger, "handleconnection");
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "确认" }, turn: 2 });
+    const snap = JSON.parse(JSON.stringify(ledger.serialize()));
+    snap.items[0].challengedAfterConfirm = 1;
+    snap.items[0].challengesAcknowledged = 99;
+    const b = new HypothesisLedger();
+    b.hydrate(snap);
+    expect(b.get(h.id)!.challengesAcknowledged).toBe(1);
+    expect(b.hasChallengedConfirmed()).toBe(false);
+  });
+});
+
+describe("空转裁决：同结论重复裁决被识别", () => {
+  test("对已 confirmed 假设用同一条证据再 confirm → redundant", () => {
+    const ledger = new HypothesisLedger();
+    const h = registerWithCue(ledger, "handleconnection");
+    const ev = { note: "读了 src/x.ts:10 确认", source: "src/x.ts:10" };
+    const first = ledger.challenge({ id: h.id, verdict: "confirm", evidence: ev, turn: 2 });
+    expect(first.redundant).toBe(false);
+
+    const again = ledger.challenge({ id: h.id, verdict: "confirm", evidence: ev, turn: 9 });
+    expect(again.redundant).toBe(true);
+  });
+
+  test("状态变更不算空转", () => {
+    const ledger = new HypothesisLedger();
+    const h = registerWithCue(ledger, "handleconnection");
+    const r = ledger.challenge({
+      id: h.id,
+      verdict: "keep_open",
+      evidence: { note: "存疑" },
+      turn: 2,
+    });
+    expect(r.redundant).toBe(false);
+    // open → confirmed 是实质进展
+    const c = ledger.challenge({
+      id: h.id,
+      verdict: "confirm",
+      evidence: { note: "存疑" },
+      turn: 3,
+    });
+    expect(c.redundant).toBe(false);
+  });
+
+  test("带新证据的重复 confirm 不算空转（证据是新的就有信息量）", () => {
+    const ledger = new HypothesisLedger();
+    const h = registerWithCue(ledger, "handleconnection");
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: { note: "证据甲" }, turn: 2 });
+    const r = ledger.challenge({
+      id: h.id,
+      verdict: "confirm",
+      evidence: { note: "证据乙（另一处）", source: "src/y.ts:20" },
+      turn: 5,
+    });
+    expect(r.redundant).toBe(false);
+  });
+
+  test("有待复核打脸时的 confirm 是复核动作，不算空转", () => {
+    const ledger = new HypothesisLedger();
+    const h = registerWithCue(ledger, "handleconnection");
+    const ev = { note: "确认" };
+    ledger.challenge({ id: h.id, verdict: "confirm", evidence: ev, turn: 2 });
+    ledger.detectContradictions([`日志显示 handleconnection 其实走到了这里`]);
+    // 证据同上一条（指纹已存在）、状态也不变，但有待复核打脸 → 必须放行
+    const r = ledger.challenge({ id: h.id, verdict: "confirm", evidence: ev, turn: 6 });
+    expect(r.redundant).toBe(false);
+    expect(ledger.hasChallengedConfirmed()).toBe(false);
+  });
+});
+
+describe("机制总开关：SID_ENABLE_HYPOTHESIS", () => {
+  test("默认关闭；设为 1 时显式开启", () => {
+    const saved = process.env.SID_ENABLE_HYPOTHESIS;
+    try {
+      delete process.env.SID_ENABLE_HYPOTHESIS;
+      expect(isHypothesisEnabled()).toBe(false);
+      process.env.SID_ENABLE_HYPOTHESIS = "1";
+      expect(isHypothesisEnabled()).toBe(true);
+      // 只认 "1"，避免 SID_ENABLE_HYPOTHESIS=true 之类的写法被误读成开启
+      process.env.SID_ENABLE_HYPOTHESIS = "true";
+      expect(isHypothesisEnabled()).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.SID_ENABLE_HYPOTHESIS;
+      else process.env.SID_ENABLE_HYPOTHESIS = saved;
+    }
   });
 });

@@ -176,6 +176,28 @@ function makeNullable(schema: unknown): unknown {
  *
  * 用运行时自检而非按工具名硬编码豁免：未来任何新增的 `z.any()`/`z.unknown()` 字段工具
  * 都会被自动识别并降级，不会再次踩坑。
+ *
+ * ## 第二类不兼容：动态 key 字典（record 模式）
+ *
+ * 除「无约束任意值」外，OpenAI strict 还**不接受描述动态 key 的关键字**：
+ * `propertyNames`、`patternProperties`，以及 `additionalProperties` 为 schema 对象
+ * （而非 `false`）的写法。原因同样是 strict 的本质是约束解码——它要求 key 集合是
+ * 编译期已知的有限集，而字典的 key 是运行时才知道的。
+ *
+ * 背景（2026-08-01 生产事故）：`task_create` / `task_update` 的 `metadata` 字段是
+ * `z.record(z.string(), z.unknown())`，转 JSON Schema 后带 `propertyNames`，被
+ * OpenAI 直接 400：
+ *
+ *   `Invalid schema for function 'task_create': In context=('properties','metadata'),
+ *    'propertyNames' is not permitted.`
+ *
+ * 注意这是**整个请求 400**——该轮所有工具定义（实测 137 个）全部发不出去，不只是
+ * task_create 不可用。实测一次会话中复发 8 次。
+ *
+ * 本函数原先只递归 `properties` / `items`，对 record 类型的这三个关键字**完全不检查**，
+ * 所以漏了过去。讽刺的是 `toStrictJsonSchema` 顶部注释早就写明「不处理 record/字典模式…
+ * 一旦出现，应在 registry.ts 层面不给该工具打 strict:true」——预判到了，但没接线。
+ * 现在补上：识别到就整体降级为非 strict，与 `z.unknown()` 走同一条兜底路径。
  */
 function hasStrictIncompatibleNode(schema: unknown): boolean {
   if (schema === null || typeof schema !== "object") return false;
@@ -191,6 +213,19 @@ function hasStrictIncompatibleNode(schema: unknown): boolean {
 
   // 「无约束任意值」叶子：既无 type，也无 enum/const/$ref/组合器，且不是 object/array 结构节点。
   if (!hasType && !hasEnumOrConst && !hasRef && !hasCombinator && !isStructural) {
+    return true;
+  }
+
+  // 「动态 key 字典」节点：strict 模式不允许描述运行时 key 的关键字。
+  // propertyNames / patternProperties 一出现即不兼容；additionalProperties 只允许
+  // 显式 false（"禁止额外字段"是 strict 的硬性要求），为 schema 对象则是字典语义。
+  if (node.propertyNames !== undefined || node.patternProperties !== undefined) {
+    return true;
+  }
+  if (
+    node.additionalProperties !== undefined
+    && node.additionalProperties !== false
+  ) {
     return true;
   }
 

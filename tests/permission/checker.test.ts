@@ -48,6 +48,50 @@ describe("PermissionChecker", () => {
     expect(result.allowed).toBe(true);
   });
 
+  /**
+   * 2026-08-01（A/B 实测发现的真 bug）：假设登记表两个工具只写进程内存里的 ledger，
+   * 自身 readOnly() 返回 true，但此前不在 READ_ONLY_TOOLS → 落到默认 ask →
+   * 无头模式（print / maxTurns>0）直接 deny。实测 11 次 -p 运行全部收到
+   * 「权限拒绝: 非交互模式」，机制在无头/评测/CI 场景完全失效且不报错，
+   * 只在日志留一行——极易误判成「模型不调工具」。
+   */
+  describe("假设登记表工具在无头模式下不被误拒", () => {
+    for (const tool of ["hypothesis_register", "hypothesis_challenge"]) {
+      test(`${tool} 交互模式放行`, async () => {
+        const checker = new PermissionChecker(defaultConfig());
+        const r = await checker.check({ toolName: tool, input: { statement: "x" } });
+        expect(r.allowed).toBe(true);
+      });
+
+      test(`${tool} 无头模式（print）仍放行`, async () => {
+        const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+        const r = await checker.check({ toolName: tool, input: { statement: "x" } });
+        expect(r.allowed).toBe(true);
+      });
+
+      test(`${tool} 批处理模式（maxTurns>0）仍放行`, async () => {
+        const checker = new PermissionChecker({ ...defaultConfig(), maxTurns: 40 });
+        const r = await checker.check({ toolName: tool, input: { statement: "x" } });
+        expect(r.allowed).toBe(true);
+      });
+    }
+
+    test("对照：todo_write 的 readOnly() 为 false，无头模式被拒是符合设计的", async () => {
+      const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      expect(r.allowed).toBe(false);
+    });
+
+    test("禁用工具优先级高于只读放行（disallowedTools 仍能拦住）", async () => {
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        disallowedTools: ["hypothesis_register"],
+      });
+      const r = await checker.check({ toolName: "hypothesis_register", input: { statement: "x" } });
+      expect(r.allowed).toBe(false);
+    });
+  });
+
   test("grep 和 glob 自动放行", async () => {
     const checker = new PermissionChecker(defaultConfig());
     const r1 = await checker.check({ toolName: "grep", input: { pattern: "foo" } });

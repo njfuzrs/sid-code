@@ -92,6 +92,23 @@ export interface Hypothesis {
    * 前者是**打扰预算**(注入几次就够了)。合成一个会让"上限用尽"顺带把事实抹掉。
    */
   reopenChallengeCount: number;
+  /**
+   * 已被模型**复核过**的打脸次数(≤ challengedAfterConfirm)。
+   *
+   * 存在理由(2026-08-01 成本收益实测,会话 20260801-120158-d91920a0):
+   * 此前 `challengedAfterConfirm` 只增不减,而交付门禁的闸门读的正是它
+   * (`hasChallengedConfirmed()`)——于是一条假设只要被撞过一次,门禁对该会话
+   * **永久武装**:模型复核后重新 confirm,闸门条件依然为真,下一次收尾再拦一遍。
+   * 实测末尾 turn 64/66 连续两次拦截、turn 65/67 把三条已确认假设原地重confirm,
+   * 4 轮零新增结论——这就是用户看到的"鬼打墙"。
+   *
+   * 修法不是把事实抹掉(那会丢掉门禁文案要的留痕),而是把「事实」与「是否已复核」
+   * 分开:`challengedAfterConfirm` 仍永久累加,门禁只看**未复核**的差值
+   * (`challengedAfterConfirm > challengesAcknowledged`)。语义因此完整:
+   *   - 复核过 → 闸门放下,不再重复拦;
+   *   - 复核后**又**来新证据 → 差值再次为正,闸门重新武装(防线未被削弱)。
+   */
+  challengesAcknowledged: number;
 }
 
 /** 登记一条假设的入参 */
@@ -310,6 +327,35 @@ export const MAX_REOPEN_CHALLENGES = 2;
 export const SESSION_CUE_FREQ_THRESHOLD = 6;
 
 /**
+ * 假设登记表机制总开关——**默认关闭**,设 `SID_ENABLE_HYPOTHESIS=1` 显式开启。
+ *
+ * 为什么默认关(2026-08-01 受控 A/B,fixture=/tmp/hyp-ab4,gpt-5.6-luna,ON/OFF 各 4 次):
+ * 同一份受控仓库(设计文档声称 5 项全实现,真值 2 项落地 / 3 项分别是死代码、字段从不
+ * 累加、条件恒 false),两臂对比结果:
+ *
+ *   臂    准确率      轮数    input      output    耗时
+ *   ON    5.00/5      23.2    792,959    11,757    162s
+ *   OFF   5.00/5      15.2    451,892     8,316    100s
+ *   差      0        +52%      +75%       +41%     +61%
+ *
+ * ON 臂机制**全程活跃**(register 6.0 / challenge 6.0 / settled 6.0,交付门禁每次都
+ * 触发,纯假设轮 10.0/23.2),但准确率一题都没多做对。即:多花 75% input、61% 墙钟,
+ * 换来零质量增益。此前另一次单会话观测(20260801-120158-d91920a0)也显示它吃掉 31.4%
+ * input,其中 42% 的裁决是"绕一圈回到同一结论"的空转。
+ *
+ * 与 SID_ENABLE_LOOP_DETECTION / SID_ENABLE_BARE_ELLIPSIS_CHECK 同范式:代码不删、
+ * 仅默认关,需要时(接入行为不稳定的弱模型、或做长链根因排查)显式开启。留着代码是
+ * 因为 A/B 只覆盖单一 fixture / 单模型 / n=4,不足以证明它**永远**无用;但"默认付费"
+ * 需要正收益证据,而这个证据目前不存在。
+ *
+ * 命名从 SID_DISABLE_HYPOTHESIS 改为 SID_ENABLE_HYPOTHESIS:开关的默认值方向变了,
+ * 沿用 DISABLE_ 前缀会让"不设任何 env"读起来像开启,与实际相反。
+ */
+export function isHypothesisEnabled(): boolean {
+  return process.env.SID_ENABLE_HYPOTHESIS === "1";
+}
+
+/**
  * 从本轮 tool_result 里挑出可作为"新证据"的文本(机制2 的输入)。
  *
  * 纯函数,便于单测(主循环那段拿不到测试夹具)。做两件事:
@@ -421,19 +467,34 @@ export class HypothesisLedger {
       challengedFingerprints: [],
       challengedAfterConfirm: 0,
       reopenChallengeCount: 0,
+      challengesAcknowledged: 0,
     };
     this.items.set(id, h);
     return h;
   }
 
-  /** 裁决一条假设(机制2 的人/模型响应入口) */
-  challenge(input: ChallengeInput): Hypothesis {
+  /**
+   * 裁决一条假设(机制2 的人/模型响应入口)。
+   *
+   * 返回 `{ h, redundant }`:`redundant=true` 表示这次裁决没有改变任何状态,也没有
+   * 结清任何未复核的打脸——即"绕一圈回到同一结论"的空转(实测 26 次裁决里 11 次
+   * 是这种,占 42%)。调用方据此回一句短提示而非完整登记表,省掉下一轮的往返。
+   */
+  challenge(input: ChallengeInput): { h: Hypothesis; redundant: boolean } {
     const h = this.items.get(input.id);
     if (!h) throw new Error(`未找到假设 ${input.id}`);
     const ev = { ...input.evidence, turn: input.evidence.turn ?? input.turn };
+    // 空转判定必须在改状态**之前**取快照:状态未变 + 没有待复核的打脸 + 证据不是新的。
+    const statusBefore = h.status;
+    const pendingBefore = h.challengedAfterConfirm - h.challengesAcknowledged;
+    const evFp = fingerprint(`${ev.note} ${ev.source ?? ""}`);
+    const evidenceIsNew = !h.challengedFingerprints.includes(evFp);
     if (input.verdict === "confirm") {
       h.supporting.push(ev);
       h.status = "confirmed";
+      // 关键修复:确认即视为"已复核这些打脸"。事实(challengedAfterConfirm)不动,
+      // 只推进复核水位——门禁因此放下,而复核后新来的证据仍会让差值重新为正。
+      h.challengesAcknowledged = h.challengedAfterConfirm;
     } else if (input.verdict === "refute") {
       h.refuting.push(ev);
       h.status = "refuted";
@@ -458,9 +519,12 @@ export class HypothesisLedger {
     }
     h.updatedTurn = input.turn ?? h.updatedTurn;
     // 裁决后,把本条证据指纹记入已处理集合(防止同证据再次触发中断)
-    const fp = fingerprint(`${ev.note} ${ev.source ?? ""}`);
-    if (!h.challengedFingerprints.includes(fp)) h.challengedFingerprints.push(fp);
-    return h;
+    if (evidenceIsNew) h.challengedFingerprints.push(evFp);
+    // 空转 = 状态没变 + 本来就没有待复核的打脸 + 证据也不是新的。
+    // 三个条件必须同时成立才算空转:状态变了是实质进展;有待复核打脸时的 confirm
+    // 是"复核动作"(会推进 challengesAcknowledged),都不该被判为空转。
+    const redundant = h.status === statusBefore && pendingBefore === 0 && !evidenceIsNew;
+    return { h, redundant };
   }
 
   /**
@@ -614,17 +678,25 @@ export class HypothesisLedger {
    * 交付门禁的**第二道闸门**:`hasUnsettled()` 口径刻意不变(confirmed 仍不算未结清,
    * 否则每条确认假设都会拦一道、正常交付被误伤),但"确认后又被打脸"的假设必须单独拦
    * ——这正是"提前宣布胜利"绕过审查的那扇后窗。
+   *
+   * 2026-08-01(成本收益实测)口径修正:判据从"被打脸过"改为"有**未复核**的打脸"
+   * ——`challengedAfterConfirm > challengesAcknowledged`。旧口径只增不减,让门禁在
+   * 一条假设被撞一次后对整个会话永久武装:模型复核并重新 confirm 后闸门依然为真,
+   * 下次收尾再拦一遍(实测末尾连拦 2 次、4 轮零新增结论)。改成差值后语义完整:
+   * 复核过就放下,复核后又来新证据则重新武装。
    */
   challengedConfirmed(): Hypothesis[] {
     return [...this.items.values()].filter(
-      (h) => h.status === "confirmed" && h.challengedAfterConfirm > 0,
+      (h) => h.status === "confirmed" && h.challengedAfterConfirm > h.challengesAcknowledged,
     );
   }
 
-  /** 缺口1:是否存在"确认后又被证据挑战过"的假设(门禁闸门用)。 */
+  /** 缺口1:是否存在"确认后又被证据挑战过、且尚未复核"的假设(门禁闸门用)。 */
   hasChallengedConfirmed(): boolean {
     for (const h of this.items.values()) {
-      if (h.status === "confirmed" && h.challengedAfterConfirm > 0) return true;
+      if (h.status === "confirmed" && h.challengedAfterConfirm > h.challengesAcknowledged) {
+        return true;
+      }
     }
     return false;
   }
@@ -850,6 +922,18 @@ export class HypothesisLedger {
         // 打扰预算刻意**不**从快照恢复语义上的"已用尽"——resume 是新一段排查，
         // 让每条已确认假设重新有 MAX_REOPEN_CHALLENGES 次机会。同样是"宁可多提醒"。
         reopenChallengeCount: 0,
+        // 复核水位如实回灌:它与 challengedAfterConfirm 成对决定门禁是否武装。
+        // 只回灌其中一个会造出假状态——单独丢 acknowledged 会让 resume 后凭空多出
+        // 一次拦截(旧会话已复核过的打脸重新变成"未复核")。缺字段时按 0 降级，
+        // 并 clamp 到 challengedAfterConfirm 以内，防手改快照造出负差值。
+        challengesAcknowledged: Math.min(
+          typeof h.challengesAcknowledged === "number" && h.challengesAcknowledged >= 0
+            ? h.challengesAcknowledged
+            : 0,
+          typeof h.challengedAfterConfirm === "number" && h.challengedAfterConfirm >= 0
+            ? h.challengedAfterConfirm
+            : 0,
+        ),
       });
       // 从 id(形如 "H3")提取编号,兜底 seq
       const m = /^H(\d+)$/.exec(h.id);

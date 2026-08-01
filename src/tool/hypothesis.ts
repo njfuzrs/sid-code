@@ -240,6 +240,12 @@ export class HypothesisChallengeTool implements Tool {
     verdict: string,
     direction: string | undefined,
     turn: number,
+    /**
+     * 本次裁决是否为空转(状态未变 + 无待复核证据 + 证据非新)。
+     * 落进事件才能在现网回答"空转率是多少"——2026-08-01 实测 42% 靠离线重算得出,
+     * 当时事件里没有这个字段,只能凭 verdict 序列反推。
+     */
+    redundant: boolean,
   ): void {
     if (!this.traceSink) return;
     try {
@@ -264,6 +270,10 @@ export class HypothesisChallengeTool implements Tool {
           refutingWithSource: withSource(h.refuting),
           /** 缺口1:确认后又被证据打脸的次数(0 表示没被挑战过) */
           challengedAfterConfirm: h.challengedAfterConfirm,
+          /** 其中已被复核过的次数;与上一字段的差值 >0 才武装交付门禁 */
+          challengesAcknowledged: h.challengesAcknowledged,
+          /** 本次裁决是否空转(离线算空转率用,不必再从 verdict 序列反推) */
+          redundant,
           /** 该假设从登记到本次裁决跨了几轮(turn 口径同 createdTurn,由 turnProvider 决定) */
           turn,
           createdTurn: h.createdTurn,
@@ -341,7 +351,7 @@ fdb47f30 的教训正是:已推出"进程没崩"的正确证据,却因不愿推�
     }
     try {
       const turn = this.turnProvider();
-      const h = this.ledger.challenge({
+      const { h, redundant } = this.ledger.challenge({
         id: p.id,
         verdict: p.verdict,
         evidence: { ...p.evidence, turn },
@@ -356,7 +366,20 @@ fdb47f30 的教训正是:已推出"进程没崩"的正确证据,却因不愿推�
       // 修没修对的唯一硬指标:若 confirm 大多只有 0-1 条无 source 证据,说明"提前宣布
       // 胜利"依然普遍,翻案机制该收紧;若普遍 2 条以上带 source,说明确认是扎实的。
       // 带 source 的比例单独记:出处指针是证据可回溯性的代理指标(对齐 digest 的 Provenance)。
-      this.emitSettled(h, p.verdict, p.evidence_direction, turn);
+      this.emitSettled(h, p.verdict, p.evidence_direction, turn, redundant);
+      // 2026-08-01 成本收益实测:26 次裁决里 11 次(42%)是"绕一圈回到同一结论"的空转。
+      // 空转轮的边际成本等于一次真实工作轮(实测纯假设轮平均 32.9s、与工作轮 32.5s
+      // 几乎相同,因为整个上下文要全价重发),而产出信息量为零。
+      //
+      // 这里回一句短提示而不是完整登记表:载荷越长,模型越倾向"再读一遍再回一次",
+      // 空转就自我延续。明确告诉它"状态没变、无需再裁决"是打断该循环的最短路径。
+      if (redundant) {
+        return {
+          output:
+            `${h.id} 已是 ${h.status},本次裁决未改变状态、也没有待复核的新证据——无需重复裁决。\n` +
+            `若要继续推进:补充**新**证据后再裁决,或直接交付(该假设已结清)。`,
+        };
+      }
       const unsettled = this.ledger.unsettled();
       const tailParts: string[] = [];
       if (unsettled.length > 0) {

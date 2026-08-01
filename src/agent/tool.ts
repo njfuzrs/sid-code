@@ -43,7 +43,10 @@ const subAgentSchema = lazySchema(() => {
     model: z
       .string()
       .optional()
-      .describe("覆盖子代理使用的模型（省略时按子代理类型的默认模型）。用于给重任务派更强模型、给轻任务派更省模型。"),
+      .describe(
+        "覆盖子代理使用的模型（省略时按子代理类型的默认模型）。用于给重任务派更强模型、给轻任务派更省模型。"
+        + "必须是当前配置里可用的完整模型名（区分大小写），不要凭印象缩写或臆造名字；不确定就省略该参数。",
+      ),
     cwd: z
       .string()
       .optional()
@@ -386,6 +389,28 @@ ${typeLines}
     const validTypes = getActiveAgentTypes();
     if (!validTypes.includes(params.type)) {
       return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
+    }
+
+    // model 白名单校验（与上面 type 校验同一范式：非法值当场退回可选清单，不透传给网关）。
+    //
+    // 背景（2026-08-01 生产事故）：模型臆造了不存在的模型名 "deepseek"（用户实配的是
+    // ali-deepseek-v4-pro / ali-deepseek-v4-flash）。此前 model 只有 z.string() 无任何
+    // 校验，臆造名直穿到网关 → 503 model_not_found，且连带污染两处内部状态：
+    // AGENT_LOOP 把这个不存在的名字"跨路径拉黑"，SESSION 用兜底价给它估算成本。
+    //
+    // fail-open 原则：清单为空（用户没配 availableModels）时一律放行——宁可让请求
+    // 到网关去失败，也不能因为本地无从判断就误拦用户合法配置的模型。
+    if (params.model?.trim()) {
+      const requested = params.model.trim();
+      const known = this.providerRegistry.getKnownModelNames();
+      if (known.length > 0 && !known.includes(requested)) {
+        return {
+          output:
+            `错误: 模型 "${requested}" 不在可用模型列表中，可选: ${known.join(", ")}。\n`
+            + `请改用列表中的准确名称（区分大小写），或省略 model 参数以使用该子代理类型的默认模型。`,
+          isError: true,
+        };
+      }
     }
 
     // P2-1：agent 定义声明的 background / isolation 作为默认值，显式工具参数优先覆盖。

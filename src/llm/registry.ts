@@ -44,6 +44,37 @@ export class ProviderRegistry {
     this.availability = new ModelAvailabilityService();
   }
 
+  /**
+   * 已知可用的模型名清单（去重、保序），用于「模型名白名单校验」。
+   *
+   * 来源：availableModels 配置 + 主模型 + 降级模型 + subAgentModels 里已配置的值。
+   * 后三者也纳入，是因为它们即便没写进 availableModels 也一定是用户有意指定的
+   * 合法目标（顶层字段会回填连接信息），不能被判成非法。
+   *
+   * 背景（2026-08-01 生产事故）：`sub_agent` 的 `model` 参数只有 `z.string()`，
+   * 无任何校验。模型臆造了一个不存在的名字 `"deepseek"`（用户配的实际是
+   * `ali-deepseek-v4-pro` / `ali-deepseek-v4-flash`）并直接透传给网关，得到
+   * `503 model_not_found`。连带两个次生污染：`AGENT_LOOP` 把这个根本不存在的
+   * 模型名"跨路径拉黑"，`SESSION` 又用兜底价给它估了成本。
+   *
+   * 返回空数组表示「无从判断」（用户没配 availableModels），调用方必须 fail-open
+   * 放行——绝不能因为清单为空就把所有模型都判为非法。
+   */
+  getKnownModelNames(): string[] {
+    const names: string[] = [];
+    const push = (n: string | undefined) => {
+      const v = n?.trim();
+      if (v && !names.includes(v)) names.push(v);
+    };
+
+    for (const m of this.config.availableModels ?? []) push(m.name);
+    push(this.config.model);
+    push(this.config.fallbackModel);
+    for (const v of Object.values(this.subAgentModels)) push(v);
+
+    return names;
+  }
+
   /** 获取当前主 Provider（根据 config.provider + config.baseURL） */
   getProvider(): Provider {
     return this.getProviderFor(

@@ -1251,10 +1251,17 @@ export async function main(): Promise<void> {
     // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
     // register 工具持有 ledger，challenge 工具复用同一实例；turnProvider 暂用占位（轮次仅用于
     // 证据追溯，非关键路径）。queryLoop 经 deps.getHypothesisLedger 读取做矛盾中断 + 交付门禁。
-    const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("./tool/hypothesis.ts");
-    const hypothesisRegisterTool = new HypothesisRegisterTool();
-    toolRegistry.register(hypothesisRegisterTool);
-    toolRegistry.register(new HypothesisChallengeTool(hypothesisRegisterTool.getLedger()));
+    // 2026-08-01：整段受 isHypothesisEnabled() gate 保护，**默认关闭**，
+    // 需 SID_ENABLE_HYPOTHESIS=1 显式开启。依据是受控 A/B：ON/OFF 准确率同为 5.00/5，
+    // 而 ON 多花 +75% input、+61% 墙钟（详见 hypothesis-ledger.ts 的开关注释）。
+    // 不注册工具时 deps.getHypothesisLedger 也拿不到 ledger，矛盾中断/交付门禁一并静默。
+    const { isHypothesisEnabled } = await import("./query/hypothesis-ledger.ts");
+    if (isHypothesisEnabled()) {
+      const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("./tool/hypothesis.ts");
+      const hypothesisRegisterTool = new HypothesisRegisterTool();
+      toolRegistry.register(hypothesisRegisterTool);
+      toolRegistry.register(new HypothesisChallengeTool(hypothesisRegisterTool.getLedger()));
+    }
 
     // 注册子代理工具
     const { SubAgentTool } = await import("./agent/tool.ts");

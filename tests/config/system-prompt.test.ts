@@ -293,3 +293,33 @@ describe("#11 resolvePromptMaxTokens（系统提示词预算动态化）", () =>
     expect(resolvePromptMaxTokens({ tools: [] })).toBe(180_000);
   });
 });
+
+/**
+ * 2026-08-01：假设机制默认关闭（SID_ENABLE_HYPOTHESIS=1 才注册工具）。
+ * 那段常驻引导必须跟着走——否则是在教模型调用一个不存在的工具（必然 tool_use 失败），
+ * 同时白占 system prompt 的 token。判据取实际工具列表，与 cli.ts 的注册决定同源。
+ */
+describe("假设纪律引导随 hypothesis_register 是否注册而去留", () => {
+  beforeEach(() => clearPromptCache());
+
+  // 需要至少一个非假设工具：工具列表为空时整个 tool-guide 段都不渲染。
+  const filler = makeTool({ name: "read", desc: "读文件" });
+  const build = (tools: ReturnType<typeof makeTool>[]) =>
+    buildSystemPrompt({ tools, workDir: "/tmp", model: "m" } as never);
+
+  test("工具已注册 → 注入完整假设纪律（含工具名）", () => {
+    const s = build([filler, makeTool({ name: "hypothesis_register", desc: "登记假设" })]);
+    expect(s).toContain("hypothesis_register");
+    expect(s).toContain("走假设纪律");
+  });
+
+  test("工具未注册 → 不提工具名，但保留取证纪律（read 先行 + file:line 证据）", () => {
+    const s = build([filler]);
+    expect(s).not.toContain("hypothesis_register");
+    expect(s).not.toContain("走假设纪律");
+    // 降级不等于放弃：这两条与假设工具无关，是独立成立的取证要求，必须留下。
+    expect(s).toContain("形成事实性判断时的取证纪律");
+    expect(s).toContain("必须先 read 该文件");
+    expect(s).toContain("证据指针");
+  });
+});

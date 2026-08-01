@@ -12,6 +12,7 @@
  */
 
 import type { LegacyTool } from "./types.ts";
+import { normalizeStrictNulls } from "./nullish-normalize.ts";
 
 /** 校验结果 */
 export type ToolInputValidation =
@@ -62,7 +63,15 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
     return { ok: true, data: input };
   }
 
-  const result = schema.safeParse(input);
+  // strict 契约回填：OpenAI strict 模式要求 optional 字段进 required 并用 null 表达
+  // "未提供"（见 openai-responses-request.ts toStrictJsonSchema），模型遵约传 null
+  // 后会被原始 zod schema 的 `.optional()` 拒绝——sid-code 让模型传 null 又拒绝它。
+  // 这里在校验前把这类 null 翻译回 zod 的"未提供"表示法。
+  // 只处理「optional 且未显式 nullable」的字段，`.nullable()` 的业务 null 不受影响；
+  // 同时拦下 `z.coerce.*` 把 null 静默转成 0 的污染（详见 nullish-normalize.ts）。
+  const normalized = normalizeStrictNulls(schema, input);
+
+  const result = schema.safeParse(normalized);
   if (result.success) {
     return { ok: true, data: result.data };
   }

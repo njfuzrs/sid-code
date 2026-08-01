@@ -20,7 +20,16 @@ const MAX_OUTPUT_LENGTH = 30000;
 const grepSchema = lazySchema(() =>
   z.object({
     pattern: z.string().describe("要搜索的正则表达式模式"),
-    path: z.string().optional().describe("要搜索的文件或目录路径，默认为当前目录"),
+    // ⚠️ 描述必须明确"单个路径"：同 schema 里 glob 的描述写着"多个模式用空格分隔"，
+    // 实测模型会把这个语感带到 path 上，用空格拼 3 个绝对路径塞进来（2026-08-01 会话），
+    // 得到"路径不存在 '<拼接串>'"。要搜多处应发多次调用，或指向共同父目录 + glob 收窄。
+    path: z
+      .string()
+      .optional()
+      .describe(
+        "要搜索的**单个**文件或目录路径，默认为当前目录。不支持传多个路径（不要用空格/逗号拼接）——"
+        + "要搜多个位置请分多次调用，或传它们的共同父目录并用 glob/type 收窄范围。",
+      ),
     output_mode: z
       .enum(["files_with_matches", "content", "count"])
       .optional()

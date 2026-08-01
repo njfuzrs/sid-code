@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **68** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 80 个）交叉核对。
+> 共 **69** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 81 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -62,6 +62,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_DISABLE_PROJECT_RULES` | 设为 1 跳过 CLAUDE.md 加载（评测隔离） |
 | `SID_ENABLE_LOOP_DETECTION` | 循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启 |
 | `SID_ENABLE_BARE_ELLIPSIS_CHECK` | 裸符号省略号检测 [...]/(...) 默认关闭（实测真阳性 0、误报高），设为 1 可显式开启 |
+| `SID_ENABLE_HYPOTHESIS` | 假设登记表（含矛盾中断/交付门禁）默认关闭：受控 A/B 实测 ON/OFF 准确率同为 5.00/5，ON 却多花 +75% input、+61% 耗时，设为 1 可显式开启 |
 
 ## 系统路径
 
