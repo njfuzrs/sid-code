@@ -485,7 +485,12 @@ export interface QueryDeps {
     turnAbortController?: AbortController,
   ) => Promise<AccumulatedResponse>;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
-  executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
+  executeTools: (content: ContentBlock[]) => Promise<{
+    results: ContentBlock[];
+    followup?: ContentBlock[];
+    /** 每个工具自身的真实耗时（tool_use_id → ms），供 tool_end 如实上报，缺省时回退批次平摊。 */
+    durations?: Map<string, number>;
+  }>;
   /** 自动压缩。返回压缩结果：summarized=摘要成功 / truncated=降级为有损截断 / skipped=未压缩。
    *  静默-9：loop 侧据此对 truncated 结果 yield warning 提示用户上下文有损。
    *  用宽松的 string 返回类型以避免 types.ts 反向依赖 auto-compact.ts（保持底层模块无依赖）。 */

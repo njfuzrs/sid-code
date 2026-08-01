@@ -31,6 +31,15 @@ import { recordEditOutcome } from "./edit-failure-tracker.ts";
 interface SingleToolOutcome {
   block: ContentBlock;
   contextModifier?: (context: ToolUseContext) => ToolUseContext;
+  /**
+   * 本工具**自身**的真实耗时（毫秒），由 executeSingleTool 在各返回路径统一测量。
+   *
+   * 为什么必须逐工具携带：并行批次里 4 个工具的耗时可能是 1s/1s/1s/20s，此前
+   * loop.ts 用「批次总耗时 ÷ 工具数」平摊，4 个全报 ~5.75s——真正的元凶被平摊掉，
+   * 用户无法从卡片上看出是谁慢。真值本来就在这里算好了（addToolDuration 已在用），
+   * 只是没往上带，属于纯信息丢失。
+   */
+  elapsedMs?: number;
 }
 export type { SingleToolOutcome };
 
@@ -329,6 +338,36 @@ export interface ToolExecutorDeps {
    * 则直接复用（不再 fire）。未注入（子代理/旧测试）时 executeSingleTool 自行 fire。
    */
   preToolUseCache?: Map<string, { result: AggregatedHookResult; interpretation: PreToolUseInterpretation }>;
+  /**
+   * 单工具「结果已就绪」增量回调——**每个**工具一落地就立刻触发一次，不等同批次的兄弟。
+   *
+   * 这是「批量执行等到批量结束才输出」的正解。此前 executeTools 的出口是
+   * `Promise<{results}>`：并行批次内 4 个只读工具确实是并发跑的，但 withConcurrencyLimit
+   * 末尾 `await Promise.all(workers)` 必须等**最慢**那个才返回，先完成的结果只是躺在
+   * resultMap 里；主循环拿到全量数组后一次性 addMessage，UI 的卡片翻转又依赖那条消息
+   * （history-adapter 靠 tool_result 才把 Executing 合并成 Success/Error）——三层栅栏叠加，
+   * 于是「3 个 grep 1 秒跑完 + 1 个 glob 撞 20s 超时」表现为：20 秒里屏幕上一个结果都没有，
+   * 然后 4 张卡片同一帧一起翻。
+   *
+   * 与 claude-code 的差异（刻意，非偷懒）：CC 的 runTools 是 AsyncGenerator，用
+   * utils/generators.ts 的 `all()`（Promise.race 池）做到「谁先产出先 yield 谁」，每个结果
+   * 当场成为一条独立消息推给 UI。我们**不能**照搬这一步——CC 的 message 是 UI 层的，
+   * 而我们这条链直接就是 ctxMgr 历史：Anthropic 与 OpenAI 都要求同一个 assistant turn 的
+   * 全部 tool_result 紧跟在**同一条**后继消息里（OpenAI 少一个 tool_call_id 即 400，见
+   * ADR-039），把 N 个结果拆成 N 条 user 消息会当场违反协议。
+   *
+   * 所以这里做的是**关注点分离**：协议侧仍旧一条消息、齐了才提交（不变量不动）；
+   * 显示侧走这条旁路侧信道即时翻卡。用户看到的时序与 CC 一致，协议正确性比 CC 更强
+   * （CC 只需服务 Anthropic 一家，我们要同时满足多 provider 的配对约束）。
+   *
+   * 语义保证：
+   *   - 每个 tool_use_id **至多触发一次**（幂等由调用方 settle() 保证）；
+   *   - 覆盖所有结果来源：正常完成 / hook 阻止 / 参数校验失败 / 权限拒绝 / 工具不存在 /
+   *     bash 级联跳过 / 并发异常兜底——凡是会进 resultMap 的，都会先经过这里；
+   *   - 回调内异常一律吞掉，绝不影响工具执行与协议组装（纯展示增强）。
+   *   - 未注入（无头模式 / 子代理 / 老测试）时完全不触发，行为与改造前逐字节一致。
+   */
+  onToolSettled?: (toolUseId: string, settled: { block: ContentBlock; elapsedMs?: number }) => void;
 }
 
 /**
@@ -341,6 +380,14 @@ export interface ToolExecutorDeps {
 export interface ExecuteToolsResult {
   results: ContentBlock[];
   followup?: ContentBlock[];
+  /**
+   * 每个工具**自身**的真实耗时（tool_use_id → 毫秒）。
+   *
+   * 供上层 tool_end 事件如实上报单工具耗时。此前 loop.ts 用「批次总耗时 ÷ 工具数」
+   * 平摊：并行批次 [grep 1s, grep 1s, read 1s, glob 20s] 会让 4 个工具全部显示 ~5.75s，
+   * 真正的元凶被平摊掉，用户根本看不出是谁慢——这是纯粹的信息丢失（真值执行层一直有）。
+   */
+  durations?: Map<string, number>;
 }
 
 /**
@@ -395,9 +442,42 @@ export async function executeTools(
     }
   }
 
+  /**
+   * 增量呈现：单工具结果落地即上报（唯一出口，幂等）。
+   *
+   * 为什么把它做成「唯一出口」而不是在各处零散调 deps.onToolSettled：本函数有 7 条
+   * 会往 resultMap 写结果的路径（工具不存在 / 权限拒绝 / 并行完成 / 并行 bash 级联取消 /
+   * 并行异常兜底 / 串行完成 / 串行 bash 跳过），零散调用必然漏（漏一条 = 那个工具的卡片
+   * 永远停在 Executing，比不做更糟）。统一走 settle()，靠 reported 集合去重，新增结果
+   * 路径时只要走 settle 就自动获得增量呈现。
+   *
+   * 刻意**不**覆盖的一条：末尾 yieldMissingToolResults 的协议兜底占位。那条路径的存在
+   * 意义是"防御 resultMap 漏了某个 idx"，属于不该发生的兜底；它产出的结果不进 resultMap，
+   * 也就不该反映成 UI 上的正常完成态。真漏了会有 log.error 报警，比静默翻卡更可诊断。
+   */
+  // 结果收集（按原始顺序索引存储）。原先分 rejectedResults（预检期拒绝）与 resultMap
+  // （执行期结果）两个 Map 再合并，现在统一收进这一个——让 settle() 成为**所有**结果的
+  // 唯一写入口，杜绝「某条路径绕过增量上报」。
+  const resultMap: Map<number, ContentBlock> = new Map();
+  const reported = new Set<string>();
+  const durations = new Map<string, number>();
+  const settle = (idx: number, block: ContentBlock, elapsedMs?: number): void => {
+    resultMap.set(idx, block);
+    const id = (block as any).tool_use_id;
+    // 耗时表与增量回调解耦：无头模式没注入 onToolSettled，但 tool_end 的真实耗时仍要正确。
+    if (typeof id === "string" && elapsedMs !== undefined) durations.set(id, elapsedMs);
+    if (!deps.onToolSettled) return;
+    if (typeof id !== "string" || reported.has(id)) return;
+    reported.add(id);
+    try {
+      deps.onToolSettled(id, { block, elapsedMs });
+    } catch {
+      /* 展示侧回调异常绝不影响执行与协议组装 */
+    }
+  };
+
   // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
   const checkedTools: { block: ToolUseBlock; tool: Tool; idx: number }[] = [];
-  const rejectedResults: Map<number, ContentBlock> = new Map();
 
   for (const { block, idx } of toolBlocks) {
     const tool = deps.toolRegistry.get(block.name);
@@ -412,7 +492,7 @@ export async function executeTools(
         ? `工具 "${block.name}" 存在但尚未加载（schema 未发送）。请先调用 tool_search 工具（参数 query: "select:${block.name}"）激活它，然后重试本次调用。`
         : `工具 "${block.name}" 未找到。可用工具请通过 tool_search 查询。`;
       log.error("TOOL", `工具未找到: ${block.name} (deferred=${isDeferred})`);
-      rejectedResults.set(idx, {
+      settle(idx, {
         type: "tool_result",
         tool_use_id: block.id,
         content: errorContent,
@@ -432,7 +512,7 @@ export async function executeTools(
     // 权限检查（GAP-01：提取为共享函数 resolveToolPermission，批量/流式路径复用同一逻辑）
     const reject = await resolveToolPermission(block, tool, deps);
     if (reject) {
-      rejectedResults.set(idx, reject);
+      settle(idx, reject);
       continue;
     }
 
@@ -446,8 +526,6 @@ export async function executeTools(
 
   log.debug("TOOL", `分区并发(贪心连续合并): ${batches.length} 个批次 [${batches.map(b => `${b.isConcurrencySafe ? "‖" : "→"}${b.items.length}`).join(", ")}]`);
 
-  // 结果收集（按原始顺序索引存储）
-  const resultMap: Map<number, ContentBlock> = new Map(rejectedResults);
   // GAP-06：按原始顺序收集 contextModifier，执行后一次性按序应用。
   const contextModifiers: Array<{ idx: number; modifier: (ctx: ToolUseContext) => ToolUseContext }> = [];
   // GAP-02（串行 Bash 级联）：一旦某个 Bash 命令失败，同一轮内后续 Bash 工具跳过执行。
@@ -488,6 +566,14 @@ export async function executeTools(
                   log.info("TOOL", "Bash 失败级联：联动取消其余兄弟工具（sibling-abort-bash-error）");
                   siblingController.abort("sibling_bash_error");
                 }
+                // 增量呈现的**关键位置**：在 thunk 内、该工具自己 settle 的那一刻上报，
+                // 而不是等 withConcurrencyLimit 返回后的收集循环——那个循环在
+                // `await Promise.all(workers)` 之后，已经是"最慢的兄弟也跑完了"，
+                // 在那里上报等于什么都没做（正是本次要治的栅栏）。
+                settle(idx, outcome.block, outcome.elapsedMs);
+                if (outcome.contextModifier) {
+                  contextModifiers.push({ idx, modifier: outcome.contextModifier });
+                }
                 return { idx, result: outcome };
               });
             }
@@ -516,11 +602,9 @@ export async function executeTools(
         for (let i = 0; i < batchResults.length; i++) {
           const r = batchResults[i];
           if (r.status === "fulfilled") {
-            const { idx, result: outcome } = r.value;
-            resultMap.set(idx, outcome.block);
-            if (outcome.contextModifier) {
-              contextModifiers.push({ idx, modifier: outcome.contextModifier });
-            }
+            // fulfilled 的结果与 contextModifier 已在 thunk 内即时 settle/收集（见上），
+            // 此处无需重复——重复 set 无害但 contextModifiers 会被 push 两次，
+            // 导致 permissionMode 切换等副作用应用两遍。
           } else {
             const { block: failBlock, idx: failIdx } = batch.items[i];
             // GAP-02：被 bash 级联取消的兄弟（sibling_bash_error / withConcurrencyLimit 跳过占位）→
@@ -531,7 +615,7 @@ export async function executeTools(
               : String(rawReason).includes("sibling-abort");
             if (isBashCascade) {
               log.info("TOOL", `并行工具 ${failBlock.name} 因兄弟 Bash 失败被级联取消`);
-              resultMap.set(failIdx, {
+              settle(failIdx, {
                 type: "tool_result",
                 tool_use_id: failBlock.id,
                 content: `已取消：同批次中先行的 Bash 命令执行失败，为避免依赖链上的无效执行，本工具未运行。`,
@@ -539,7 +623,7 @@ export async function executeTools(
               });
             } else {
               log.error("TOOL", `并行工具 ${failBlock.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`);
-              resultMap.set(failIdx, {
+              settle(failIdx, {
                 type: "tool_result",
                 tool_use_id: failBlock.id,
                 content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
@@ -557,7 +641,7 @@ export async function executeTools(
         // GAP-02：串行 Bash 级联——前序 Bash 已失败时，跳过后续 Bash（依赖链无意义）。
         if (bashCascadeTripped && block.name === "bash") {
           log.info("TOOL", `串行 Bash 级联：跳过 ${block.name}（同轮先行 Bash 命令已失败）`);
-          resultMap.set(idx, {
+          settle(idx, {
             type: "tool_result",
             tool_use_id: block.id,
             content: `已取消：同一轮中先行的 Bash 命令执行失败，后续 Bash 命令通常依赖其结果，为避免无效执行已跳过。如需强制执行请单独重试。`,
@@ -569,7 +653,7 @@ export async function executeTools(
         // 但保留一致性检查——若命中则跳过重复执行）。
         const precomputed = deps.getPrecomputedResult?.(block.id);
         const outcome = precomputed ?? await executeSingleTool(block, tool, deps);
-        resultMap.set(idx, outcome.block);
+        settle(idx, outcome.block, outcome.elapsedMs);
         if (outcome.contextModifier) {
           contextModifiers.push({ idx, modifier: outcome.contextModifier });
         }
@@ -659,7 +743,7 @@ export async function executeTools(
     deps.discoverJitContext(toolBlocks.map(t => t.block));
   }
 
-  return { results, followup };
+  return { results, followup, durations };
 }
 
 /**
@@ -861,6 +945,13 @@ export async function executeSingleTool(
 
   log.toolStart(block.name, block.input);
 
+  // 函数级计时锚点：覆盖**所有**返回路径，包含 hook 阻止 / 参数校验失败这类
+  // 在 startTime（tool.execute 前那个锚点）之前就 return 的早退分支。
+  // 下方 startTime 仍保留独立测量 tool.execute 本身的耗时——两者口径不同：
+  //   toolStartedAt → 工具在调度器视角的墙钟耗时（含 hook/权限/校验开销），供 UI 展示
+  //   startTime     → 纯执行耗时，供 addToolDuration 统计与日志（保持原语义不变）
+  const toolStartedAt = Date.now();
+
   // GAP-11：MCP 工具的 PostToolUse hook 需拿到**原始未截断**输出（脱敏/审计/格式转换
   // 场景要看原文），内置工具沿用"截断后即最终输出"（hook 看到什么模型看到什么）。
   const isMcpTool = block.name.startsWith("mcp__");
@@ -892,6 +983,7 @@ export async function executeSingleTool(
         content: `Hook 阻止执行: ${reason}`,
         is_error: true,
       },
+      elapsedMs: Date.now() - toolStartedAt,
     };
   }
 
@@ -934,6 +1026,7 @@ export async function executeSingleTool(
         content,
         is_error: true,
       },
+      elapsedMs: Date.now() - toolStartedAt,
     };
   }
   // GAP-08：纵深防御——校验通过后、执行前剥离模型可能自行伪造的内部字段
@@ -1049,6 +1142,7 @@ export async function executeSingleTool(
       },
       // GAP-06：透传工具的 contextModifier，由 executeTools 在结果收集后按原始顺序应用。
       contextModifier: result.contextModifier,
+      elapsedMs: Date.now() - toolStartedAt,
     };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;
@@ -1078,6 +1172,7 @@ export async function executeSingleTool(
         content: `工具执行异常: ${err.message}`,
         is_error: true,
       },
+      elapsedMs: Date.now() - toolStartedAt,
     };
   }
 }

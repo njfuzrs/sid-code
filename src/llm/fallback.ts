@@ -41,6 +41,7 @@ import { lookupRegistry } from "./model-registry.ts";
 import type { RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { calculateRetryDelay as calculateSharedRetryDelay } from "./retry-backoff.ts";
+import { disableKeepAlive } from "./keepalive.ts";
 
 // ═══════════════════════════════════════════════════════════════════
 // 查询来源分类（从 retry-engine.ts 吸收）
@@ -71,15 +72,10 @@ export function shouldRetry529(querySource?: QuerySource): boolean {
 // 重试常量
 // ═══════════════════════════════════════════════════════════════════
 
-/** 连接阶段重试配置。
- *  maxDelayMs 从 30s 抬到 120s：与 network-profile 的 retryBackoffMaxMs 对齐，否则本阶段
- *  退避会被更紧的 30s 上限截断，架空统一配置。maxRetries 仅在未注入 config.maxRetries 时
- *  兜底（生产由 app.ts 注入 maxTimeoutRetries=10）。 */
-const CONNECTION_RETRY = {
-  maxRetries: 3,
-  initialDelayMs: 1000,
-  maxDelayMs: 120000,
-};
+// B1-b：原 CONNECTION_RETRY 常量已删除。它只服务于「连接阶段重试 for 循环」，
+// 而该循环在生产路径不可达（sendMessageStream 是惰性 async generator 工厂 +
+// 两个 provider 都把连接错误转成流内 error 事件而非抛出），已随之删除。
+// 现在只有一套重试参数 STREAM_RETRY，不再有两份平行配置可供漂移。
 
 /** 流式阶段重试配置。
  *  maxDelayMs 从 10s 抬到 120s（最关键）：旧值 10s 把流式退避硬砍到 10 秒内，遇限流/过载时
@@ -128,8 +124,10 @@ const MAX_529_CONSECUTIVE = 3;
 /** persistent retry 最大退避（5 分钟） */
 const PERSISTENT_MAX_DELAY_MS = 300_000;
 
-/** persistent retry heartbeat 间隔（30 秒） */
-const PERSISTENT_HEARTBEAT_MS = 30_000;
+// B1-b：原 PERSISTENT_HEARTBEAT_MS（30s）已删除。它只用于「重连同步抛错后 persistent
+// 模式的心跳等待」——该分支随重连 try/catch 一并删除（重连现走 openStream 归一化，
+// 同步抛错会回到统一的流式 catch，persistent 无限重试由
+// `attempt >= streamMaxRetries` 分支的 `attempt = -1` 承担，语义不变且只剩一处）。
 
 // ═══════════════════════════════════════════════════════════════════
 // 类型定义
@@ -233,6 +231,36 @@ export interface SystemAPIErrorMessage {
   category: string;
 }
 
+/**
+ * 单次调用级参数覆盖（B1-a）。
+ *
+ * 对标 claude-code `withRetry.ts` 的 `options` 参数：**per-call 差异靠传参表达，
+ * 而不是靠实例配置**。背景（§0.2 实证 4）：`querySource` 等字段原本只存在于
+ * `this.config`，而 `app.ts:709` 是全进程单实例 —— 单实例无法同时正确服务
+ * `main_thread`（前台）与 `agent`（子代理）/ 后台 side-call，而 529 前后台闸门
+ * 恰好依赖 querySource，故闸门在并发下必然失准。
+ *
+ * 未传的字段**全部回落 `this.config`**，因此现有调用方（`engine.ts:275` 等）
+ * 零改动、行为逐字段不变。B2 让子代理走漏斗时，只需在这里传
+ * `{ querySource: "agent:builtin", switchMode: "auto" }` —— 旧文档因
+ * 「生产默认 switchMode=ask 需要 TUI」把「子代理不能降级」记为合理设计差异，
+ * 改成 per-call 后这只是一个参数，差异消失。
+ */
+export interface PerCallOptions {
+  /** 本次调用的查询来源（影响 529 前后台闸门）。未传回落 config.querySource。 */
+  querySource?: QuerySource;
+  /** 本次调用的降级模式。未传回落 config.fallbackSwitchMode（生产默认 ask）。 */
+  switchMode?: FallbackSwitchMode;
+  /** 本次调用的降级目标模型。未传回落 config.fallbackModel。 */
+  fallbackModel?: string;
+  /** 本次调用的降级目标 provider。未传回落 config.fallbackProvider。 */
+  fallbackProvider?: Provider;
+  /** 本次调用的重试上界。未传回落 config.maxRetries。 */
+  maxRetries?: number;
+  /** 发起方 agent 标识（遥测归因与 B4 per-agent 状态隔离用）。 */
+  agentId?: string;
+}
+
 /** 内部重试上下文 */
 interface RetryContext {
   /** 401 认证错误的「只重试一次」闸门（首个 401 置位并立即重试；第二个 401 因已置位落到
@@ -251,6 +279,19 @@ interface RetryContext {
   /** 不确定-2/3：本次 executeWithFallback 调用内累计的重试次数（连接阶段 + 流式阶段共享）。
    *  达到 maxRetriesPerCall 上界后不再重试，防两阶段独立计数叠加成退避风暴。 */
   totalRetriesThisCall: number;
+  /** B1-a：本次调用内是否已降级过（二次降级短路判据）。
+   *
+   *  原为实例字段 `this.hasFallenBack`，而 `app.ts` 是全进程单实例 → 6 个并行子代理
+   *  共用一个标志：A 降级过一次置位后，B/C/D 再想降级会被 `tryFallback` 静默拒绝
+   *  （§0.2 实证 2）。`engine.ts:275` 每次调用前先 `reset()` 正是「状态共享」的证据
+   *  —— 无状态的实现不需要 reset，且并行调用会互相 reset 打架。
+   *
+   *  搬到 per-call 后职责分离：**控制流判据**取本上下文（并发安全）；实例侧
+   *  `lastCallFellBack` 只作为「上次调用是否降级」的**上报位**给
+   *  `checkFallbackOccurred()`（`loop.ts:2643` 消费它 yield tombstone）。 */
+  hasFallenBack: boolean;
+  /** B1-a：本次调用的有效 per-call 覆盖（未传字段已在入口回落 this.config）。 */
+  perCall: PerCallOptions;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -260,7 +301,14 @@ interface RetryContext {
 export class ModelFallback {
   private config: FallbackConfig;
   private listener: FallbackListener | null;
-  private hasFallenBack = false;
+  /** B1-a：**上报位**，不是控制位。
+   *
+   *  记录「最近一次 executeWithFallback 调用是否发生过降级」，供
+   *  `checkFallbackOccurred()` → `loop.ts:2643` yield tombstone 撤回已推给 UI 的
+   *  半截 assistant 消息。降级的**控制流判据**已搬进 per-call 的
+   *  `RetryContext.hasFallenBack`（见其注释），故并行子代理不再互相干扰彼此的
+   *  降级能力；本字段被并发覆盖最坏只影响 tombstone 时机（UI 提示），不影响韧性决策。 */
+  private lastCallFellBack = false;
   private availability: ModelAvailabilityService;
 
   constructor(config: Partial<FallbackConfig> = {}, listener?: FallbackListener) {
@@ -302,7 +350,7 @@ export class ModelFallback {
     this.config.fallbackModel = fallbackModel;
     this.config.fallbackProvider = fallbackProvider;
     // 已发生过的降级状态重置，避免旧降级标志影响新目标判定。
-    this.hasFallenBack = false;
+    this.lastCallFellBack = false;
   }
 
   /**
@@ -317,12 +365,24 @@ export class ModelFallback {
     primaryProvider: Provider,
     params: SendParams,
     signal?: AbortSignal,
+    perCallOptions?: PerCallOptions,
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
 
     if (signal?.aborted) {
       throw new RequestAbortedError("Request aborted");
     }
+
+    // B1-a：解析 per-call 覆盖 —— 未传的字段**逐个回落 this.config**，
+    // 故现有三参调用方（engine.ts:275 等）行为逐字段不变。
+    const perCall: PerCallOptions = {
+      querySource: perCallOptions?.querySource ?? this.config.querySource,
+      switchMode: perCallOptions?.switchMode ?? this.config.fallbackSwitchMode,
+      fallbackModel: perCallOptions?.fallbackModel ?? this.config.fallbackModel,
+      fallbackProvider: perCallOptions?.fallbackProvider ?? this.config.fallbackProvider,
+      maxRetries: perCallOptions?.maxRetries ?? this.config.maxRetries,
+      agentId: perCallOptions?.agentId,
+    };
 
     // § 注入流内遥测转发：把 provider 产出的协议无关 StreamTelemetrySignal
     // 转成 RetryTelemetryEvent，进入统一遥测通道（events.jsonl / trace-digest.ts）。
@@ -403,116 +463,51 @@ export class ModelFallback {
       disableKeepAlive: this.config.disableKeepAlive ?? false,
       consecutive529: 0,
       totalRetriesThisCall: 0,
+      // B1-a：降级控制态从实例字段搬入 per-call 上下文（并发安全，见字段注释）。
+      hasFallenBack: false,
+      perCall,
     };
     // 不确定-2/3：单次调用共享重试预算上界（连接 + 流式两阶段合并计数）。
     const maxRetriesPerCall = this.config.maxRetriesPerCall ?? NETWORK_DEFAULTS.maxTimeoutRetries;
 
     // ═══════════════════════════════════════════════════════════════
-    // 阶段 1：连接（获取流对象）
+    // 建流（不重试）——B1-b：原「阶段 1：连接重试 for 循环」已删除
     // ═══════════════════════════════════════════════════════════════
-    let stream: AsyncIterable<StreamEvent> | null = null;
-
-    const connMaxRetries = this.config.maxRetries ?? CONNECTION_RETRY.maxRetries;
-    for (let attempt = 0; attempt <= connMaxRetries; attempt++) {
-      try {
-        log.debug("FALLBACK", `连接阶段尝试 ${attempt + 1}/${connMaxRetries + 1}`);
-
-        // 应用 max_tokens 覆盖（溢出恢复时）
-        const effectiveParams = ctx.maxTokensOverride
-          ? { ...params, maxTokens: ctx.maxTokensOverride }
-          : params;
-
-        stream = primaryProvider.sendMessageStream(effectiveParams, makeCombinedSignal());
-        ctx.consecutive529 = 0; // 连接成功，重置 529 计数
-        break;
-      } catch (err) {
-        if (signal?.aborted || isAbortError(err)) {
-          throw toAbortError(err);
-        }
-
-        // ── 401 认证错误：retry-once 闸门（N1：暂无真刷新钩子，仅重试一次，见 RetryContext 注释）──
-        if (is401Error(err) && !ctx.needsAuthRefresh) {
-          log.info("FALLBACK", "401 认证错误，触发 retry-once 闸门并重试（暂无凭据刷新钩子）");
-          ctx.needsAuthRefresh = true;
-          this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) });
-          // 不退避，直接重试
-          continue;
-        }
-
-        // ── ECONNRESET / EPIPE：禁用 keep-alive ──
-        const code = getNetworkErrorCode(err);
-        if ((code === "ECONNRESET" || code === "EPIPE") && !ctx.disableKeepAlive) {
-          log.info("FALLBACK", `${code} 检测到，禁用 keep-alive 连接池`);
-          ctx.disableKeepAlive = true;
-          this.config.disableKeepAlive = true;
-        }
-
-        const classified = classifyError(err);
-
-        // ── 终端错误：直接 fallback ──
-        if (classified instanceof TerminalError) {
-          this.availability.markTerminal(params.model, classified.reason);
-          log.error("FALLBACK", `终端错误: ${classified.reason}`);
-          yield* this.tryFallback(params, signal);
-          return;
-        }
-
-        // ── 529 连续计数 ──
-        if (classified instanceof RetryableError && classified.reason === "overloaded") {
-          ctx.consecutive529++;
-        }
-
-        if (attempt >= connMaxRetries) {
-          log.warn("FALLBACK", `连接阶段重试 ${connMaxRetries} 次后仍失败`);
-          this.availability.markRetryOnce(params.model, "连接失败");
-          break;
-        }
-
-        // 不确定-2/3：单次调用共享重试预算上界——防连接+流式两阶段独立计数叠加成退避风暴。
-        if (ctx.totalRetriesThisCall >= maxRetriesPerCall) {
-          log.warn(
-            "FALLBACK",
-            `连接阶段：单次调用累计重试已达上界 ${maxRetriesPerCall}，停止重试转 fallback`,
-          );
-          this.availability.markRetryOnce(params.model, "单次调用重试上界");
-          break;
-        }
-        ctx.totalRetriesThisCall++;
-
-        // ── 可重试：计算延迟 ──
-        const delayMs = this.calculateRetryDelay(err, attempt, classified, CONNECTION_RETRY.maxDelayMs);
-
-        log.info("FALLBACK", `连接重试 ${attempt + 1}，延迟 ${delayMs}ms`);
-        this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
-        this.emitTelemetry({
-          type: "retry",
-          model: params.model,
-          attempt: attempt + 1,
-          delayMs,
-          error: classified.message,
-          phase: "connection",
-        });
-
-        yield* this.sleepWithProgress(
-          delayMs,
-          attempt + 1,
-          connMaxRetries + 1,
-          "retry",
-          signal,
-        );
-      }
-    }
-
-    if (!stream) {
-      yield* this.tryFallback(params, signal);
-      return;
-    }
+    //
+    // 为什么删：`sendMessageStream` 是 **async generator 工厂**，调用它只是构造
+    // 生成器对象、**不执行任何函数体**（惰性求值）——真正的网络 IO 直到下方流式
+    // 阶段第一次 `iterator.next()` 才发生。因此原循环的 catch 在生产路径**永远
+    // 捕不到网络错误**：401/ECONNRESET/529 全部在流式阶段抛出。
+    //
+    // 更强的证据（实测两条 provider 路径）：两个 provider 都**不抛**连接错误，
+    // 而是把它转成流内 error 事件 —— `anthropic.ts:610-617` catch 后
+    // `yield {type:"error"}`，`openai.ts:862-880` 对 `!response.ok` 同样
+    // `yield {type:"error"}`。即连接失败在生产路径连「抛出」都不会发生，
+    // 原循环的 catch 是双重不可达。
+    //
+    // 于是它承载的三项能力（401 retry-once 闸门 / ECONNRESET 禁 keep-alive /
+    // 529 计数）全是**死代码**，看着有、实际从不生效。B1-b 把它们搬进下方流式
+    // catch（真正会执行的地方），此处只保留一次同步建流：
+    //   - 生产：构造生成器不会抛，等价于原循环首次迭代成功；
+    //   - 测试：少数 mock 用**非 generator 函数**同步 throw（如 `throwProvider`），
+    //     这条 try 保证它们仍被归一化为流式路径的可重试错误，而不是穿透成未捕获异常。
+    // 防复发：`tests/llm/fallback-connection-loop-removed.test.ts` 钉住「本文件
+    // 不得再出现连接阶段重试循环」，避免日后被"修活"成第二份平行实现。
+    const initialParams = ctx.maxTokensOverride
+      ? { ...params, maxTokens: ctx.maxTokensOverride }
+      : params;
+    let stream: AsyncIterable<StreamEvent> = this.openStream(
+      primaryProvider,
+      initialParams,
+      makeCombinedSignal(),
+      signal,
+    );
 
     // ═══════════════════════════════════════════════════════════════
-    // 阶段 2：流式消费
+    // 流式消费（唯一的重试点）
     // ═══════════════════════════════════════════════════════════════
     let hasYieldedContent = false;
-    const streamMaxRetries = this.config.maxRetries ?? STREAM_RETRY.maxRetries;
+    const streamMaxRetries = perCall.maxRetries ?? STREAM_RETRY.maxRetries;
 
     try {
       for (let attempt = 0; attempt <= streamMaxRetries; attempt++) {
@@ -586,7 +581,7 @@ export class ModelFallback {
               if (classified instanceof TerminalError) {
                 this.availability.markTerminal(params.model, classified.reason);
                 log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
-                yield* this.tryFallback(params, signal);
+                yield* this.tryFallback(params, signal, ctx);
                 return;
               }
 
@@ -601,16 +596,16 @@ export class ModelFallback {
               if (
                 classified instanceof RetryableError &&
                 classified.reason === "overloaded" &&
-                !shouldRetry529(this.config.querySource)
+                !shouldRetry529(perCall.querySource)
               ) {
                 log.info("FALLBACK", `后台查询遇 529，立即放弃`);
-                this.listener?.on529Dropped?.(this.config.querySource ?? "unknown");
+                this.listener?.on529Dropped?.(perCall.querySource ?? "unknown");
                 this.emitTelemetry({
                   type: "529_dropped",
                   model: params.model,
-                  querySource: this.config.querySource ?? "unknown",
+                  querySource: perCall.querySource ?? "unknown",
                 });
-                yield* this.tryFallback(params, signal);
+                yield* this.tryFallback(params, signal, ctx);
                 return;
               }
 
@@ -624,10 +619,10 @@ export class ModelFallback {
                 this.emitTelemetry({
                   type: "fallback",
                   model: params.model,
-                  fallbackModel: this.config.fallbackModel,
+                  fallbackModel: perCall.fallbackModel,
                   error: "连续 529 错误",
                 });
-                yield* this.tryFallback(params, signal);
+                yield* this.tryFallback(params, signal, ctx);
                 return;
               }
 
@@ -636,7 +631,7 @@ export class ModelFallback {
                 throw classified;
               }
 
-              yield* this.tryFallback(params, signal);
+              yield* this.tryFallback(params, signal, ctx);
               return;
             }
 
@@ -676,6 +671,66 @@ export class ModelFallback {
             throw toAbortError(err);
           }
 
+          // ═══════════════════════════════════════════════════════════
+          // B1-b 复活①：401 retry-once 闸门
+          // ═══════════════════════════════════════════════════════════
+          //
+          // **必须置于 classifyError 之前**：401 会被 classifyError 判成
+          // TerminalError("auth_failed") → 下面立刻 markTerminal 拉黑模型 + 转
+          // fallback。放在其后等于闸门永不生效（这正是它在原连接循环里"看着有、
+          // 实际从不执行"之外的第二重失效）。
+          //
+          // 语义（沿用 RetryContext.needsAuthRefresh 注释）：首个 401 置位并**不退避**
+          // 立即重试一次——覆盖凭据瞬时失效/网关抖动；第二个 401 因已置位而落到
+          // classifyError → TerminalError → 拉黑 + fallback，不会无限重试。
+          // N1（另案）：暂无凭据刷新钩子，重试用的仍是旧凭据，故它只是「retry-once
+          // 闸门」而非「刷新触发器」。
+          if (!isTimeoutAbort && is401Error(err) && !ctx.needsAuthRefresh) {
+            log.info("FALLBACK", "401 认证错误，触发 retry-once 闸门并重试（暂无凭据刷新钩子，不退避）");
+            ctx.needsAuthRefresh = true;
+            this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) });
+            resetStreamTimeout();
+            try {
+              const retryParams = ctx.maxTokensOverride
+                ? { ...params, maxTokens: ctx.maxTokensOverride }
+                : params;
+              stream = primaryProvider.sendMessageStream(retryParams, makeCombinedSignal());
+              hasYieldedContent = false;
+              // 不消耗 attempt 预算：retry-once 闸门自带"只一次"上界（needsAuthRefresh
+              // 已置位），且不退避——与 CC withRetry 的 401 刷新重试同语义。
+              attempt--;
+              continue;
+            } catch (reauthErr) {
+              if (signal?.aborted || isAbortError(reauthErr)) {
+                throw toAbortError(reauthErr);
+              }
+              log.error("FALLBACK", `401 重试建流失败: ${reauthErr}`);
+              yield* this.tryFallback(params, signal, ctx);
+              return;
+            }
+          }
+
+          // ═══════════════════════════════════════════════════════════
+          // B1-b 复活②：ECONNRESET / EPIPE → 禁用 keep-alive
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 与①同理，原先只在不可达的连接 catch 里置位；且置位的两个字段
+          // （ctx.disableKeepAlive / config.disableKeepAlive）**全仓无消费者**，
+          // 即便执行了也是空转。现同时接线真消费者：`keepalive.ts` 的进程级开关
+          // → provider fetch 选项 `{ keepalive: false }`（anthropic 走自定义 fetch
+          // 包装，openai 走 fetch init 展开）。
+          //
+          // 为什么必须禁用而非原样重试：ECONNRESET/EPIPE 的典型成因是连接池里的
+          // socket 已被对端/网关单方面关闭而本地仍认为可用，**原样重试会命中同一条
+          // 死连接**，重试次数被白烧。禁用复用后强制新建连接才可能自愈。
+          const netCode = getNetworkErrorCode(err);
+          if ((netCode === "ECONNRESET" || netCode === "EPIPE") && !ctx.disableKeepAlive) {
+            log.info("FALLBACK", `${netCode} 检测到，禁用 keep-alive 连接池（进程级，后续请求不复用连接）`);
+            ctx.disableKeepAlive = true;
+            this.config.disableKeepAlive = true;
+            disableKeepAlive(); // ← 真消费者：进入 provider 的 fetch 选项
+          }
+
           const classified = isTimeoutAbort
             ? new RetryableError(`流式整体超时（${streamTimeoutMs / 1000}s 无数据）`, "timeout")
             : classifyError(err);
@@ -683,7 +738,7 @@ export class ModelFallback {
           if (classified instanceof TerminalError) {
             this.availability.markTerminal(params.model, classified.reason);
             log.error("FALLBACK", `终端错误: ${classified.reason}`);
-            yield* this.tryFallback(params, signal);
+            yield* this.tryFallback(params, signal, ctx);
             return;
           }
 
@@ -773,34 +828,21 @@ export class ModelFallback {
           resetStreamTimeout();
 
           // 重新获取流
-          try {
-            const effectiveParams = ctx.maxTokensOverride
-              ? { ...params, maxTokens: ctx.maxTokensOverride }
-              : params;
-            stream = primaryProvider.sendMessageStream(effectiveParams, makeCombinedSignal());
-            // 清空内容标志（新流需要重新检测）
-            hasYieldedContent = false;
-          } catch (reconnectErr) {
-            if (signal?.aborted || isAbortError(reconnectErr)) {
-              throw toAbortError(reconnectErr);
-            }
-            log.error("FALLBACK", `重连失败: ${reconnectErr}`);
-
-            if (this.config.persistent) {
-              log.info("FALLBACK", "persistent 模式，重连失败后继续等待");
-              yield* this.sleepWithProgress(
-                PERSISTENT_HEARTBEAT_MS,
-                attempt + 1,
-                streamMaxRetries + 1,
-                "persistent_retry",
-                signal,
-              );
-              attempt = -1;
-              continue;
-            }
-
-            break;
-          }
+          // B1-b：与首次建流走**同一个** openStream —— 同步抛错被归一化成「首次
+          // next() 即抛」的流，于是下一轮迭代照常进入本 catch 继续退避重试。
+          //
+          // 修复前这里是独立 try/catch，同步抛错直接 `break` 转 fallback，形成
+          // 「首次同步抛错可重试、重试时同步抛错却立刻放弃」两套语义。实测回归：
+          // `stream-interrupt-recovery.test.ts` 的 ECONNRESET 用例断言 3 次尝试
+          // （2 失败 + 1 成功），旧 break 路径只跑 2 次就降级。
+          stream = this.openStream(
+            primaryProvider,
+            ctx.maxTokensOverride ? { ...params, maxTokens: ctx.maxTokensOverride } : params,
+            makeCombinedSignal(),
+            signal,
+          );
+          // 清空内容标志（新流需要重新检测）
+          hasYieldedContent = false;
         }
       }
     } finally {
@@ -814,9 +856,9 @@ export class ModelFallback {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 阶段 3：Fallback Provider
+    // 重试耗尽 → Fallback Provider
     // ═══════════════════════════════════════════════════════════════
-    yield* this.tryFallback(params, signal);
+    yield* this.tryFallback(params, signal, ctx);
   }
 
   /**
@@ -832,6 +874,7 @@ export class ModelFallback {
   private async *tryFallback(
     params: SendParams,
     signal?: AbortSignal,
+    ctx?: RetryContext,
   ): AsyncGenerator<StreamEvent> {
     const log = getLogger();
 
@@ -840,7 +883,9 @@ export class ModelFallback {
     }
 
     // 已经用过 fallback（二次降级）→ 不再重复切换，直接报错。
-    if (this.hasFallenBack) {
+    // B1-a：判据取 per-call 上下文（并发安全）；ctx 缺省时（理论上不发生，仅防御
+    // 未来新增调用路径漏传）回落实例上报位，保持旧行为而非静默放开二次降级。
+    if (ctx ? ctx.hasFallenBack : this.lastCallFellBack) {
       log.error("FALLBACK", "主 Provider 失败且 fallback 已用尽");
       yield {
         type: "error",
@@ -849,7 +894,13 @@ export class ModelFallback {
       return;
     }
 
-    const mode = this.config.fallbackSwitchMode ?? "auto";
+    // B1-a：per-call 覆盖优先（ctx 缺省时回落 config，行为不变）。
+    // B2 让子代理走漏斗时传 switchMode:"auto" 即可绕开需要 TUI 的 ask 模式——
+    // 旧文档把「子代理不能降级」记为设计差异，改成 per-call 后它只是一个参数。
+    const pc = ctx?.perCall;
+    const mode = pc?.switchMode ?? this.config.fallbackSwitchMode ?? "auto";
+    const cfgFallbackModel = pc?.fallbackModel ?? this.config.fallbackModel;
+    const cfgFallbackProvider = pc?.fallbackProvider ?? this.config.fallbackProvider;
 
     // ── "off"：禁用降级，直接报错终止本轮 ──
     if (mode === "off") {
@@ -871,18 +922,18 @@ export class ModelFallback {
         decision = await this.config.onFallbackDecision({
           failedModel: params.model,
           reason: "主模型重试耗尽",
-          defaultFallbackModel: this.config.fallbackModel || undefined,
+          defaultFallbackModel: cfgFallbackModel || undefined,
           signal,
         });
       } catch (err) {
         // 钩子抛错 → fail-open 到 auto 语义（保任务不中断，切默认 fallback）。
         log.warn("FALLBACK", `onFallbackDecision 钩子异常，fail-open 到默认降级: ${err}`);
         decision = { action: "abort" };
-        if (this.config.fallbackProvider && this.config.fallbackModel) {
+        if (cfgFallbackProvider && cfgFallbackModel) {
           decision = {
             action: "switch",
-            model: this.config.fallbackModel,
-            provider: this.config.fallbackProvider,
+            model: cfgFallbackModel,
+            provider: cfgFallbackProvider,
           };
         }
       }
@@ -898,8 +949,8 @@ export class ModelFallback {
       targetProvider = decision.provider;
     } else {
       // auto（或 ask 但无钩子）：切 config 里的默认 fallback。
-      targetModel = this.config.fallbackModel || undefined;
-      targetProvider = this.config.fallbackProvider;
+      targetModel = cfgFallbackModel || undefined;
+      targetProvider = cfgFallbackProvider;
     }
 
     // ── 无可用目标 → 报错 ──
@@ -913,7 +964,10 @@ export class ModelFallback {
     }
 
     // ── 执行切换 ──
-    this.hasFallenBack = true;
+    // B1-a：控制态记在 per-call 上下文（并发安全，决定"本次调用不再二次降级"）；
+    // 实例侧只更新上报位，供 loop.ts 的 tombstone 检查消费。
+    if (ctx) ctx.hasFallenBack = true;
+    this.lastCallFellBack = true;
     log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
     this.listener?.onFallback?.("主模型失败", targetModel);
     this.emitTelemetry({
@@ -924,6 +978,38 @@ export class ModelFallback {
     });
 
     yield* this.streamFromFallback(params, targetModel, targetProvider, signal);
+  }
+
+  /**
+   * 建流并归一化「同步抛错」（B1-b）。
+   *
+   * `sendMessageStream` 在生产路径是 async generator 工厂：调用它只构造生成器、
+   * 不执行函数体，故网络错误都在首次 `next()`（即流式消费阶段）抛出，本函数的
+   * catch 在生产路径不会命中。但部分测试 mock 用**非 generator 函数**同步 throw，
+   * 若不归一化就会穿透成未捕获异常、绕过全部韧性逻辑。
+   *
+   * 归一化为「首次 next() 即抛该错误」的流后，两类 provider 走**完全相同**的
+   * 处置路径（401 闸门 / keep-alive / 529 计数 / 退避重试），不再有第二份实现。
+   *
+   * abort 例外：用户中断（ESC）必须立即传播，不能包装成可重试错误。
+   */
+  private openStream(
+    provider: Provider,
+    params: SendParams,
+    combinedSignal: AbortSignal | undefined,
+    outerSignal: AbortSignal | undefined,
+  ): AsyncIterable<StreamEvent> {
+    try {
+      return provider.sendMessageStream(params, combinedSignal);
+    } catch (err) {
+      if (outerSignal?.aborted || isAbortError(err)) {
+        throw toAbortError(err);
+      }
+      const thrown = err;
+      return (async function* (): AsyncIterable<StreamEvent> {
+        throw thrown;
+      })();
+    }
   }
 
   /**
@@ -1183,13 +1269,21 @@ export class ModelFallback {
     }
   }
 
-  /** 检查是否发生了模型降级 */
+  /** 检查最近一次调用是否发生了模型降级（上报位，非控制位）。
+   *  消费方：`loop.ts:2643` —— 降级发生时 yield tombstone 撤回已推给 UI 的半截
+   *  assistant 消息。控制流判据在 per-call 的 `RetryContext.hasFallenBack`。 */
   checkFallbackOccurred(): boolean {
-    return this.hasFallenBack;
+    return this.lastCallFellBack;
   }
 
-  /** 重置回退状态（用于新的请求） */
+  /** 清除降级上报位。
+   *
+   *  B1-a 说明：方案原文要求删除本方法，理由是「reset() 的存在本身就是状态共享的
+   *  证据」。该论断对**控制态**成立（已搬进 per-call，见 RetryContext.hasFallenBack），
+   *  但本方法在搬迁后语义已变 —— 它清的是**上报位**，且有真实消费者：
+   *  `loop.ts:2648` 在 yield tombstone 之后调 `resetFallbackFlag()` 把信号消费掉，
+   *  否则同一轮后续检查会重复 yield tombstone。故保留，不再删除。 */
   reset(): void {
-    this.hasFallenBack = false;
+    this.lastCallFellBack = false;
   }
 }

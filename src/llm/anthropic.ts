@@ -29,6 +29,7 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
+import { wrapFetchWithKeepAlive } from "./keepalive.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired, emitStreamPhase, emitHttpConnected } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
@@ -98,7 +99,11 @@ export class AnthropicProvider implements Provider {
       // 部分第三方 Anthropic 兼容代理只发 data: 行、省略 event: 行，会导致 SDK 的
       // SSE 解析器静默丢弃整条流（earendil-works/pi #1983）。shim 仅在检测到缺失时
       // 介入，对规范代理零影响；SIDCODE_SSE_EVENT_SHIM=off 可完全旁路。
-      fetch: wrapFetchWithEventLineShim(),
+      // B1-b：再套一层 keep-alive 包装（内层，最贴近真实 fetch），让 fallback 在
+      // ECONNRESET/EPIPE 后置位的开关真正进入 fetch 选项。SDK 的请求 init 由其内部
+      // 构造、我们拿不到，故只能在 fetch 边界注入；包装内部每次调用动态读开关，
+      // 所以 client 构造早于 disableKeepAlive() 也能生效。
+      fetch: wrapFetchWithEventLineShim(wrapFetchWithKeepAlive()),
     });
     this._model = model;
   }

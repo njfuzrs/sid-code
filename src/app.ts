@@ -3863,6 +3863,14 @@ export class App {
       onSnapshotCreated: (snapshotId) => { this.latestCheckpointSnapshotId = snapshotId; },
       // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
       getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),
+      // 增量呈现：单工具结果一落地就翻卡，不等同批次最慢的兄弟。
+      // late-bound（在回调内部读 this.liveToolSettledSink，而非在此处判空后固化）：
+      // buildToolExecutorDeps 可能早于 setupTUICallbacks 执行（如启动即流式预执行），
+      // 若在此处按当时的 null 固化成 undefined，这份 deps 就永久失去增量翻卡能力。
+      // 无头模式 / 子代理下 sink 恒为 null，回调是 no-op，零行为变化。
+      onToolSettled: (toolUseId, settled) => {
+        this.liveToolSettledSink?.(toolUseId, settled);
+      },
     };
   }
 
@@ -4186,6 +4194,20 @@ export class App {
    */
   private liveToolProgressSink:
     | ((toolUseId: string, text: string | null) => void)
+    | null = null;
+
+  /**
+   * 工具「已完成」侧信道接收器（并行批次内先完成先翻卡）。
+   *
+   * 由 setupTUICallbacks 注册实现（写 Map + 轻量重渲），buildToolExecutorDeps.onToolSettled
+   * 调用它。TUI 未就绪（无头模式 / 子代理）时为 null，安全跳过——此时行为与改造前一致：
+   * 结果仍旧在批次结束后一次性呈现，只是无头模式本就没有卡片可翻。
+   *
+   * @param toolUseId 工具调用 id（对应 executing 工具项的 callId）
+   * @param settled 该工具的 tool_result 块 + 它自身的真实耗时
+   */
+  private liveToolSettledSink:
+    | ((toolUseId: string, settled: { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }) => void)
     | null = null;
 
   /**
@@ -5474,7 +5496,9 @@ export class App {
 
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
-    const { messagesToHistoryItems } = await import("./ui/history-adapter.ts");
+    // buildCompletedToolCall 与 messagesToHistoryItems 同源：增量翻卡与批次末重建必须
+    // 用同一份合并实现，否则两套渲染的 diff 判定/摘要文案会不一致，卡片完成后又变一次。
+    const { messagesToHistoryItems, buildCompletedToolCall } = await import("./ui/history-adapter.ts");
     // ToolCallStatus 是运行时枚举（非纯类型），实时进度注入需按值比较 Executing 态，故动态引入。
     const { ToolCallStatus } = await import("./ui/types.ts");
     let lastSyncedCount = 0;
@@ -5496,6 +5520,50 @@ export class App {
     // 把进度注入到对应的 executing 工具项的 progressMessage 字段（渲染链 ToolMessage 已支持）。
     // tool_end 时清除该工具的条目，避免进度残留到已完成态。
     const liveToolProgress = new Map<string, string>();
+
+    // ── 工具「已完成」侧信道（并行批次内先完成先翻卡）──
+    //
+    // 治的问题：并行批次的 N 个工具确实是并发跑的，但结果出口是一次性的——
+    // withConcurrencyLimit 末尾 await Promise.all(workers) 要等最慢的那个，主循环再把
+    // N 个 tool_result 打包成**一条** user 消息 addMessage，而 history-adapter 的卡片翻转
+    // 恰恰依赖那条消息。于是「3 个 grep 1 秒完成 + 1 个 glob 撞 20s 超时」的观感是：
+    // 20 秒里屏幕上一个结果都没有，然后 4 张卡片同一帧一起翻。
+    //
+    // 侧信道语义与 liveToolProgress 完全同构（同一套 inject + 轻量刷新机制，复用已验证的
+    // 引用稳定化策略），区别只在注入的是**完成态整卡**而非进度文本：
+    //   - 键：tool_use_id；值：executor 透传的 tool_result 块 + 该工具自身真实耗时。
+    //   - executeTools 内每个工具一 settle 就写这里并触发一次轻量重渲。
+    //   - tool_result 正式入 ctxMgr 后，messagesToHistoryItems 会用**同一个**
+    //     buildCompletedToolCall 重建出完全一致的卡片，侧信道条目随轮末 clear 退场——
+    //     所以不存在"增量卡"与"最终卡"两套渲染导致的视觉跳变。
+    const liveToolSettled = new Map<string, { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }>();
+
+    /**
+     * 把侧信道里已完成的工具结果注入到仍是 executing 态的工具项，就地翻成 success/error。
+     *
+     * 只改 status===Executing 的项：tool_result 已入 ctxMgr 的项本就是完成态（由权威路径
+     * 渲染），不需要也不应该被侧信道二次覆盖。
+     */
+    const injectLiveToolSettled = (
+      historyItems: import("./ui/types.ts").HistoryItem[],
+    ): void => {
+      if (liveToolSettled.size === 0) return;
+      for (const item of historyItems) {
+        if (item.type !== "tool_group") continue;
+        for (let i = 0; i < item.tools.length; i++) {
+          const tool = item.tools[i];
+          if (tool.status !== ToolCallStatus.Executing) continue;
+          const settled = liveToolSettled.get(tool.callId);
+          if (!settled || (settled.block as any).type !== "tool_result") continue;
+          item.tools[i] = buildCompletedToolCall(
+            settled.block as any,
+            tool.name,
+            tool,
+            settled.elapsedMs,
+          );
+        }
+      }
+    };
 
     /**
      * 把侧信道里的实时进度注入到 executing 态工具项。就地改 progressMessage（这些 item
@@ -5536,10 +5604,17 @@ export class App {
       let changed = false;
       const next = prev.map((item) => {
         if (item.type !== "tool_group") return item;
-        // 该 group 是否含 executing 工具且进度有更新
+        // 该 group 是否含 executing 工具且进度/完成态有更新
         let groupChanged = false;
         const tools = item.tools.map((tool) => {
           if (tool.status !== ToolCallStatus.Executing) return tool;
+          // 完成态优先于进度：工具已 settle 就直接翻成 success/error 整卡，
+          // 不再理它的中途进度文本（进度是"执行中"的产物，完成后就是噪音）。
+          const settled = liveToolSettled.get(tool.callId);
+          if (settled && (settled.block as any).type === "tool_result") {
+            groupChanged = true;
+            return buildCompletedToolCall(settled.block as any, tool.name, tool, settled.elapsedMs);
+          }
           const progress = liveToolProgress.get(tool.callId);
           if (progress === undefined || progress === tool.progressMessage) return tool;
           groupChanged = true;
@@ -5550,7 +5625,7 @@ export class App {
         return { ...item, tools };
       });
 
-      // 没有任何 live 工具进度变化：无需重渲（内容去重已在 sink 层做，这里是二次兜底）。
+      // 没有任何 live 工具进度/完成态变化：无需重渲（内容去重已在 sink 层做，这里是二次兜底）。
       if (!changed) return true;
       updateState({ historyItems: next });
       return true;
@@ -5571,6 +5646,10 @@ export class App {
       // 这样 tool_use 和 tool_result 能正确合并，description/input 不会丢失
       historyIdCounter = 0;
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      // 顺序要求：settled 先于 progress。先把已完成的工具翻成 success/error，
+      // 之后 progress 注入只认剩下的 executing 项——否则已完成工具的残留进度文本
+      // 会被贴到刚翻好的完成态卡片上。
+      injectLiveToolSettled(historyItems);
       injectLiveToolProgress(historyItems);
 
       lastSyncedCount = allMsgs.length;
@@ -5606,6 +5685,24 @@ export class App {
       if (!refreshLiveProgressInPlace()) syncDisplay({});
     };
 
+    // 注册工具「已完成」接收器：executeTools 内每个工具 settle 时立即调用，把该工具的
+    // tool_result 写入侧信道并当场翻卡——不等同批次里最慢的兄弟。
+    //
+    // 复用 refreshLiveProgressInPlace 这条轻量路径的理由：翻卡与刷进度是同一类操作
+    // （只改某个 executing 工具项，不动 ctxMgr），引用稳定化策略也完全一样，
+    // 没必要再造一条并行路径。返回 false（有新消息未同步）时回退全量重建保正确。
+    //
+    // 清理：与 liveToolProgress 同批在轮末 clear。工具的 tool_result 正式入 ctxMgr 后，
+    // 权威路径会渲染出同样的完成态卡片，侧信道条目此时已无作用，留到轮末统一回收即可
+    // ——注入函数只认 status===Executing，不会二次覆盖已完成项。
+    this.liveToolSettledSink = (toolUseId, settled) => {
+      if (liveToolSettled.has(toolUseId)) return; // 幂等：同一工具只翻一次
+      liveToolSettled.set(toolUseId, settled);
+      // 该工具已完成，它的中途进度文本就是噪音，顺手清掉，避免轮末前一直挂着。
+      liveToolProgress.delete(toolUseId);
+      if (!refreshLiveProgressInPlace()) syncDisplay({});
+    };
+
     /** 重建（/compact 后消息被压缩，需要完整重建） */
     const rebuildDisplay = (extraPatch?: Partial<import("./ui/App.tsx").TUIState>) => {
       const allMsgs = this.ctxMgr.getMessages();
@@ -5616,6 +5713,7 @@ export class App {
       const systemItems = bridge.current.displayItems.filter(d => d.kind === "system");
       const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      injectLiveToolSettled(historyItems);
       injectLiveToolProgress(historyItems);
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
       // 每次重建时刷新后台任务面板
@@ -6187,6 +6285,10 @@ export class App {
       // 本轮所有工具已完成，清空实时进度侧信道，防 Map 跨轮累积。已完成工具在 injectLiveToolProgress
       // 里本就不再被注入（只注入 executing 态），此处仅回收内存。
       liveToolProgress.clear();
+      // 同理清空「已完成」侧信道：此时全部 tool_result 都已入 ctxMgr，权威路径（
+      // messagesToHistoryItems + buildCompletedToolCall）渲染出的卡片与侧信道注入的完全一致，
+      // 条目已无作用。必须清——否则下一轮若出现相同 tool_use_id（重试场景）会命中陈旧结果。
+      liveToolSettled.clear();
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
       this.busy = false;

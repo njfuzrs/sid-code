@@ -16,7 +16,7 @@ import {
   ToolCallStatus,
   type ToolResultDisplay,
 } from "./types.ts";
-import type { Message } from "../llm/types.ts";
+import type { Message, ContentBlock } from "../llm/types.ts";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -452,6 +452,54 @@ export function messagesToHistoryItemsWithMap(
   return items;
 }
 
+/**
+ * 把一个 tool_result 块 + 它对应的 pending tool_use 合并成**完成态**工具卡片。
+ *
+ * 从 convertUserMessage 内联逻辑提取为导出函数，供两个调用方共用：
+ *   1. convertUserMessage —— tool_result 已入 ctxMgr 后的正常重建路径（权威路径）；
+ *   2. app.ts 的 liveToolSettled 侧信道 —— 工具刚跑完、tool_result 尚未入 ctxMgr 时的
+ *      即时翻卡（并行批次里先完成的工具不必等最慢的兄弟）。
+ *
+ * 必须共用同一份实现，否则「增量翻的卡」与「批次结束后重建的卡」会出现视觉跳变
+ * （diff 判定 / 摘要文案 / 文件名任一处不一致，用户都会看到卡片内容在完成后又变一次）。
+ */
+export function buildCompletedToolCall(
+  block: Extract<ContentBlock, { type: "tool_result" }>,
+  toolName: string,
+  pending?: IndividualToolCallDisplay,
+  elapsedMs?: number,
+): IndividualToolCallDisplay {
+  const isError = !!block.is_error;
+
+  // 结构化 diff 优先(edit/write):有 patch 即判定为 diff,UI 直接渲染;
+  // 缺失时(旧会话重放/其它工具)降级到对 content 的正则检测。
+  const hasPatch = !!block.structuredPatch?.length;
+  const resultDisplay: ToolResultDisplay = {
+    content: block.content,
+    isError,
+    isDiff: hasPatch || isDiffContent(toolName, block.content),
+    filename: getFilenameFromInput(toolName, pending?.input ?? {}),
+    ...(hasPatch ? { structuredPatch: block.structuredPatch } : {}),
+  };
+
+  return {
+    callId: block.tool_use_id,
+    name: pending?.name ?? toolName,
+    description: pending?.description ?? getToolSummary(toolName, {}),
+    input: pending?.input ?? {},
+    status: isError ? ToolCallStatus.Error : ToolCallStatus.Success,
+    resultDisplay,
+    resultSummary: getResultSummary(toolName, block.content, isError),
+    // 真实耗时：增量路径由执行器透传；重建路径（tool_result 已入历史）没有这个信息，
+    // 沿用 pending 上已有的值（若有），保证卡片完成后耗时不会凭空消失。
+    ...(elapsedMs !== undefined
+      ? { elapsedMs }
+      : pending?.elapsedMs !== undefined
+        ? { elapsedMs: pending.elapsedMs }
+        : {}),
+  };
+}
+
 // ── 内部转换函数 ──
 
 function convertUserMessage(
@@ -468,30 +516,9 @@ function convertUserMessage(
       textBlocks.push(block.text);
     } else if (block.type === "tool_result") {
       const toolName = toolNameMap.get(block.tool_use_id) || "unknown";
-      const isError = !!block.is_error;
       const pending = pendingToolCalls.get(block.tool_use_id);
 
-      // 结构化 diff 优先(edit/write):有 patch 即判定为 diff,UI 直接渲染;
-      // 缺失时(旧会话重放/其它工具)降级到对 content 的正则检测。
-      const hasPatch = !!block.structuredPatch?.length;
-      const resultDisplay: ToolResultDisplay = {
-        content: block.content,
-        isError,
-        isDiff: hasPatch || isDiffContent(toolName, block.content),
-        filename: getFilenameFromInput(toolName, pending?.input ?? {}),
-        ...(hasPatch ? { structuredPatch: block.structuredPatch } : {}),
-      };
-
-      // 合并 pending tool_use + tool_result
-      mergedTools.push({
-        callId: block.tool_use_id,
-        name: pending?.name ?? toolName,
-        description: pending?.description ?? getToolSummary(toolName, {}),
-        input: pending?.input ?? {},
-        status: isError ? ToolCallStatus.Error : ToolCallStatus.Success,
-        resultDisplay,
-        resultSummary: getResultSummary(toolName, block.content, isError),
-      });
+      mergedTools.push(buildCompletedToolCall(block, toolName, pending));
 
       // 已合并，从 pending 中移除
       pendingToolCalls.delete(block.tool_use_id);

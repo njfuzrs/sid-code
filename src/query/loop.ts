@@ -3487,10 +3487,12 @@ export async function* queryLoop(
       const toolPerfHandle = getPerfTimer().start(`tool_batch_${state.turnCount}`);
       let toolResults: import("../llm/types.ts").ContentBlock[];
       let toolFollowup: import("../llm/types.ts").ContentBlock[] | undefined;
+      let toolDurations: Map<string, number> | undefined;
       try {
         const ret = await deps.executeTools(response.content);
         toolResults = ret.results;
         toolFollowup = ret.followup;
+        toolDurations = ret.durations;
       } catch (err: any) {
         toolPerfHandle.end();
         if (isAbortError(err)) {
@@ -3653,7 +3655,10 @@ export async function* queryLoop(
       for (const r of toolResults) {
         if (r.type === "tool_result") resultMap.set(r.tool_use_id, r);
       }
-      const perToolDuration = Math.round(
+      // 回退口径：执行层没给真实耗时时（老实现/异常路径未记录）才按批次平摊。
+      // 平摊是**失真**的——并行批次 [1s, 1s, 1s, 20s] 会让 4 个工具全报 ~5.75s，
+      // 把唯一的慢工具藏起来。所以只在拿不到真值时用，且逐工具优先取真值。
+      const fallbackDuration = Math.round(
         toolBlocks.length > 0
           ? toolBatchElapsed / toolBlocks.length
           : toolBatchElapsed,
@@ -3663,7 +3668,8 @@ export async function* queryLoop(
         if (b.type !== "tool_use") continue;
         const result = resultMap.get(b.id);
         const isError = result && result.type === "tool_result" ? !!result.is_error : false;
-        yield { kind: "tool_end", toolName: b.name, result: { isError, elapsedMs: perToolDuration } };
+        const elapsedMs = toolDurations?.get(b.id) ?? fallbackDuration;
+        yield { kind: "tool_end", toolName: b.name, result: { isError, elapsedMs } };
       }
 
       // F1：工具成功执行 → 模型已恢复正常生成参数的能力，清零连续退化计数

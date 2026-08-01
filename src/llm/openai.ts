@@ -35,11 +35,13 @@ import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
+import { getKeepAliveFetchOptions } from "./keepalive.ts";
 import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
 import { parseResponsesStream } from "./openai-responses.ts";
+import { extractInternalEnTags } from "../config/prompt-lang.ts";
 
 /**
  * 从纯文本中提取内联 <think>...</think> 标签为独立的 thinking 内容。
@@ -836,6 +838,11 @@ export class OpenAIProvider implements Provider {
           },
           body: JSON.stringify(sanitizeStrings(requestBody)),
           signal: fetchSignal,
+          // B1-b：ECONNRESET/EPIPE 后 fallback 会置位进程级 keep-alive 开关，此处是
+          // 真消费点——禁用后展开为 { keepalive: false }，强制新建连接而非复用池里
+          // 那条已被对端关闭的死 socket（否则重试仍命中同一条，白烧重试次数）。
+          // 未禁用时展开为空对象，规范路径逐字段不变。
+          ...getKeepAliveFetchOptions(),
         });
       } catch (err: any) {
         // 区分"本地响应头超时"与"外层 signal（用户 ESC / fallback 整体超时）中断"：
@@ -1184,6 +1191,8 @@ export class OpenAIProvider implements Provider {
         },
         body: JSON.stringify(sanitizeStrings(requestBody)),
         signal: fetchSignal,
+        // B1-b：keep-alive 开关真消费点（同 chat/completions 流式路径）。
+        ...getKeepAliveFetchOptions(),
       });
     } catch (err: any) {
       if (headerTimedOut) {
@@ -1397,6 +1406,9 @@ export class OpenAIProvider implements Provider {
       },
       body: JSON.stringify(sanitizeStrings(requestBody)),
       signal,
+      // B1-b：非流式路径同样消费 keep-alive 开关——它是流式失败后的降级路径，
+      // 若这里仍复用死 socket，降级会跟着一起失败。
+      ...getKeepAliveFetchOptions(),
     });
 
     // G8：非流式路径同样提取 rate-limit header
@@ -1436,11 +1448,25 @@ export class OpenAIProvider implements Provider {
         if (extracted.thinking) {
           content.push({ type: "thinking", thinking: extracted.thinking });
         }
-        if (extracted.text) {
-          content.push({ type: "text", text: extracted.text });
+        // <internal_en> 归位：中文铁律模式的提示词允许模型把英文技术思考包进该标签
+        // （见 system-prompt.ts 思考语言疏导段）。标签只是给模型的书写协议，不该泄漏到
+        // 正文——与 <think> 同样处理成 thinking 块，思考区照常可见、正文保持纯中文。
+        const en = extractInternalEnTags(extracted.text);
+        if (en.thinking) {
+          content.push({ type: "thinking", thinking: en.thinking });
+        }
+        if (en.text) {
+          content.push({ type: "text", text: en.text });
         }
       } else {
-        content.push({ type: "text", text: msg.content });
+        // reasoning_content 已提供思考链，但正文里仍可能带 <internal_en>（两条通道不互斥）。
+        const en = extractInternalEnTags(msg.content);
+        if (en.thinking) {
+          content.push({ type: "thinking", thinking: en.thinking });
+        }
+        if (en.text) {
+          content.push({ type: "text", text: en.text });
+        }
       }
     }
     if (Array.isArray(msg.tool_calls)) {
@@ -2027,6 +2053,10 @@ export async function probeOpenAICompatModel(
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10_000),
+        // B1-b：能力探测虽是一次性调用（自带 10s 超时、不进重试漏斗），也一并消费
+        // keep-alive 开关——保持「本文件所有 fetch 出口都读同一个开关」的不变式，
+        // 避免日后有人照着这里新增 fetch 时漏掉。
+        ...getKeepAliveFetchOptions(),
       });
       if (resp.ok) return { ok: true };
       const errorMessage = await resp.text().catch(() => "");
