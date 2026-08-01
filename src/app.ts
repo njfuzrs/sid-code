@@ -77,6 +77,9 @@ import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
+import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
+import { startPreventSleep, stopPreventSleep } from "./utils/prevent-sleep.ts";
+import { getSleepLedger } from "./utils/sleep-detect.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
 import {
   buildJitEventData,
@@ -5762,15 +5765,39 @@ export class App {
       // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
       const { resolveLoopTimeouts: resolveSessionTimeouts } = require("./config/network-profile.ts");
       const SESSION_TIMEOUT_MS = resolveSessionTimeouts({ network: this.config.network }).maxSessionDurationMs;
-      const sessionTimer = setTimeout(() => {
-        log.warn("TUI", `Session 超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限，触发 abort`);
+      // ─── 会话硬顶改为周期检查 + 剔除休眠时长（事故 20260801-175042-699f69f8）───
+      //
+      // 原实现是裸 setTimeout(SESSION_TIMEOUT_MS)：休眠期间进程被冻结、挂钟照走，
+      // 醒来后这个 timer 立刻补 fire。那次事故三段休眠共约 47 分钟，直接把用户
+      // 60 分钟的"本轮连续执行"额度睡掉了大半——用户明明只跑了十几分钟业务。
+      //
+      // 修法与 loop.ts 的 turn_hard 同构（那里已经为"等用户输入"做过同样的改造）：
+      // 一次性 setTimeout → 周期 setInterval 比对"业务耗时"，休眠时长整体剔除。
+      // 判据口径与 loop.ts 共用 sleep-detect 的同一个全局账本，不会两处各算一套。
+      const sessionStartedAt = Date.now();
+      const SESSION_CHECK_INTERVAL_MS = Math.max(1_000, Math.min(5_000, SESSION_TIMEOUT_MS));
+      const sleepAtSessionStart = getSleepLedger().getTotalMs();
+      const sessionTimer = setInterval(() => {
+        // 本轮期间新增的休眠时长（账本是会话级累计，需减去本轮起点的基线）。
+        const sleptThisTurn = getSleepLedger().getTotalMs() - sleepAtSessionStart;
+        const businessElapsed = Date.now() - sessionStartedAt - sleptThisTurn;
+        if (businessElapsed < SESSION_TIMEOUT_MS) return;
+        log.warn(
+          "TUI",
+          `Session 业务耗时超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限（已剔除 ${Math.round(sleptThisTurn / 1000)}s 休眠），触发 abort`,
+        );
         // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
         // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
         // 而非笼统的"已取消当前响应"，且不触发输入框回填。
         this.abortController?.abort("session-timeout");
-      }, SESSION_TIMEOUT_MS);
+      }, SESSION_CHECK_INTERVAL_MS);
 
       this.busy = true;
+      // ─── 任务保活：干活期间阻止系统空闲休眠 ───
+      // 接线点刻意选在"本轮开始"而非"进程启动"：只在真正干活时挡休眠，空闲等用户
+      // 输入时允许机器睡（人不在，不该钉着别人的机器）。与 finally 里的 stop 配对，
+      // 靠 refCount 支持嵌套/并发轮次。
+      startPreventSleep();
 
       // 乐观更新：用户消息立即追加到 historyItems，不等 queryEngine.submitMessage
       // 内部 hook/thinking 解析完毕 yield user_message_added。修复 ESC 中断后重发消息
@@ -6112,8 +6139,12 @@ export class App {
           throw err;
         }
       } finally {
-        // 清理 session 超时定时器
-        clearTimeout(sessionTimer);
+        // 清理 session 超时定时器（现为 setInterval，见上方周期检查改造说明）
+        clearInterval(sessionTimer);
+        // 与本轮开头的 startPreventSleep() 配对：本轮干完就放开休眠。
+        // 放在 finally 而非 done 分支——异常/中断路径同样必须放开，否则计数泄漏会
+        // 让机器在任务早已结束后仍被钉醒（refCount 永不归零）。
+        stopPreventSleep();
 
         // 兜底：确保异常路径也能正确清理（回调置 null 防止 stale 闭包追加 delta）
         streamingFullText = "";
@@ -6165,8 +6196,68 @@ export class App {
       await tuiAgentLoop(text);
     });
 
+    /**
+     * 执行用户在输入框中以 `!` 前缀提交的 Shell 命令。
+     *
+     * 这条路径直接构造 bash tool_use，复用现有工具执行器的权限、hook、schema、
+     * checkpoint 和结果处理，不再把 Shell 命令伪装成未注册的 `/bash` 斜杠命令。
+     */
+    const executeInteractiveShell = async (command: string): Promise<void> => {
+      const trimmedCommand = command.trim();
+      if (!trimmedCommand) return;
+
+      const toolUseId = `interactive-bash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const commandInput = `/bash ${trimmedCommand}`;
+      const toolBlock = buildInteractiveBashToolUse(trimmedCommand, toolUseId) as ToolUseBlock;
+      if (!toolBlock) return;
+
+      addStatusMessage("interactive-bash", `⏺ bash 执行中：${trimmedCommand}`);
+      updateState({
+        isLoading: true,
+        isToolExecuting: true,
+        toolName: "bash",
+        toolInput: toolBlock.input,
+      });
+
+      this.abortController = new AbortController();
+      try {
+        const result = await this.executeTools([toolBlock]);
+        const toolResult = result.results.find(
+          (block): block is Extract<ContentBlock, { type: "tool_result" }> =>
+            block.type === "tool_result" && block.tool_use_id === toolUseId,
+        );
+        const output = toolResult?.content ?? "工具未返回结果";
+        appendCommandOutput(commandInput, output, !!toolResult?.is_error);
+      } catch (error: any) {
+        const message = error?.message ?? String(error);
+        appendCommandOutput(commandInput, `执行失败: ${message}`, true);
+        log.error("TUI:SHELL", "交互式 Shell 执行失败", { error: message, stack: error?.stack });
+      } finally {
+        this.abortController = null;
+        liveToolProgress.delete(toolUseId);
+        removeStatusMessage("interactive-bash");
+        updateState({
+          isLoading: false,
+          isStreaming: false,
+          streamingText: "",
+          streamingThinking: "",
+          streamingThinkingStartMs: undefined,
+          streamingLine: "",
+          toolName: null,
+          toolInput: null,
+          isToolExecuting: false,
+          lastToolResult: {
+            toolName: "bash",
+            isError: false,
+            elapsedMs: 0,
+          },
+        });
+      }
+    };
+
     // 回调
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
+      onShellCommand: executeInteractiveShell,
       onUserInput: async (text, opts) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
         // P2-1：本轮用户输入提交前登记回退点（对话锚点=当前消息数组长度，文件锚点=最新快照 id）。
@@ -6373,6 +6464,12 @@ export class App {
         log.info("TUI:CMD", `斜杠命令: /${cmd} ${args}`);
 
         const commandInput = `/${cmd}${args ? " " + args : ""}`;
+
+        // 兼容旧版输入框曾生成的 `/bash <command>`，直接转入真实 Bash 工具管线。
+        if (cmd === "bash") {
+          await executeInteractiveShell(args);
+          return;
+        }
 
         // P1-8 --disable-slash-commands：禁用时不解析为命令，原文当普通输入交给 LLM。
         if (this.config.disableSlashCommands) {

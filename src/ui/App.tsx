@@ -36,6 +36,7 @@ import { StreamingState } from "./types.ts";
 import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
+import { parseShellInput } from "./shell-input.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -63,6 +64,8 @@ export { isPlaceholderMessage, messagesToHistoryItems };
 export interface TUICallbacks {
   onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
+  /** 直接执行交互式 Shell 命令，不经过斜杠命令注册表。 */
+  onShellCommand: (command: string) => Promise<void>;
   onInterrupt: () => void;
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
   onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
@@ -829,10 +832,15 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return true;
   });
 
-  // 底层分发：真正把一条输入送到 App 业务层（斜杠命令 / 普通输入）。
+  // 底层分发：真正把一条输入送到 App 业务层（Shell / 斜杠命令 / 普通输入）。
   // 被 handleSubmit（直送）与消息队列（接续）共用。
   const dispatchInput = useCallback(async (text: string) => {
     log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
+    const shellCommand = parseShellInput(text);
+    if (shellCommand) {
+      await callbacks.onShellCommand(shellCommand);
+      return;
+    }
     if (text.startsWith("/")) {
       const [cmd, ...rest] = text.slice(1).split(" ");
       if (cmd === "exit" || cmd === "quit") { triggerQuit(); return; }

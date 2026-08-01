@@ -5,6 +5,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
 import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
+import { resolveGrepType } from "./grep-type-alias.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
@@ -36,7 +37,13 @@ const grepSchema = lazySchema(() =>
       .describe("输出模式：files_with_matches（默认，只返回文件路径）、content（显示匹配行）、count（显示匹配数）"),
     case_insensitive: z.boolean().optional().describe("是否忽略大小写，默认 false"),
     glob: z.string().optional().describe("文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'），多个模式用空格分隔"),
-    type: z.string().optional().describe("按文件类型过滤（如 'ts'、'py'、'js'），比 glob 更高效"),
+    // 描述里点名 tsx/jsx 的坑：ripgrep 没有 tsx/jsx 类型（ts 已含 *.tsx，js 已含 *.jsx）。
+    // 写错也不会失败（工具层会归一或降级），但直接写对能省掉一次提示往返。
+    type: z.string().optional().describe(
+      "按 ripgrep 文件类型过滤（如 'ts'、'js'、'py'、'go'、'rust'），比 glob 更高效。"
+      + "注意：ripgrep 无 'tsx'/'jsx' 类型——'ts' 已包含 *.tsx，'js' 已包含 *.jsx；"
+      + "要精确只搜 .tsx 请用 glob='*.tsx'",
+    ),
     context: z.coerce.number().int().min(0).optional().describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
     before_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
     after_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
@@ -287,9 +294,15 @@ export class GrepTool implements Tool {
       }
     }
 
-    // 文件类型过滤
-    if (params.type) {
-      args.push("--type", params.type);
+    // 文件类型过滤：先归一别名、非法值降级为 glob，绝不把 unrecognized file type
+    // 变成整次搜索失败（事故 20260801：type="tsx" → rg 退出码 2，搜索全废）。
+    // 详见 grep-type-alias.ts 的立场说明。
+    const resolvedType = resolveGrepType(params.type);
+    if (resolvedType.rgType) {
+      args.push("--type", resolvedType.rgType);
+    }
+    if (resolvedType.fallbackGlob) {
+      args.push("--glob", resolvedType.fallbackGlob);
     }
 
     // Pattern 处理：以 - 开头的 pattern 用 -e 指定（对标 CC 做法，比 "--" 更精确）
@@ -302,8 +315,12 @@ export class GrepTool implements Tool {
 
     const lines = await ripGrep(args, searchPath, abortSignal);
 
+    // type 归一/降级的提示前置到输出里：模型必须知道"实际搜的范围与它写的不同"，
+    // 否则会把降级后的宽结果当成精确结果，或把 0 命中误判成"确实不存在"。
+    const typeNotice = resolvedType.notice ? `（提示）${resolvedType.notice}\n\n` : "";
+
     if (lines.length === 0) {
-      return { output: "未找到匹配的内容" };
+      return { output: `${typeNotice}未找到匹配的内容` };
     }
 
     // 按 mtime 排序（files_with_matches / count 模式）
@@ -314,7 +331,7 @@ export class GrepTool implements Tool {
 
     const output = this.formatStructuredOutput(mode, pagedLines, searchPath, appliedLimit, offset);
 
-    return { output };
+    return { output: `${typeNotice}${output}` };
   }
 
   /**

@@ -92,6 +92,108 @@ describe("todo 清单 serialize/hydrate round-trip", () => {
   });
 });
 
+describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）", () => {
+  /**
+   * `currentTodos` 在全部完成时被刻意清空（TUI 面板收起），于是**恰好在任务全做完这个
+   * 最该留痕的时刻**，旧快照是 `{todos: []}`：resume 后事实清单恒空 →
+   * `getTodoTerminalState()` 返 null → 续接会话的终态进度快照静默失效。
+   *
+   * 修法是快照里多带一份事实语义（`lastWritten`），**不是**让 `todos` 改读事实清单——
+   * 那会让 resume 后 TUI 挂着全绿清单不消失，是行为回退。下面第二条正是钉住这一点。
+   */
+  test("全部完成 → resume 后仍能取回完整 completed 清单", async () => {
+    const orig = await toolWithTodos([
+      { content: "任务A", activeForm: "正在做A", status: "completed" },
+      { content: "任务B", activeForm: "正在做B", status: "completed" },
+    ]);
+    // 展示语义已清空（面板收起），事实语义仍在
+    expect(orig.getTodos()).toEqual([]);
+    expect(orig.getLastWrittenTodos().length).toBe(2);
+
+    const restored = new TodoWriteTool();
+    restored.hydrate(orig.serialize());
+
+    // 修复前：这里是 []，终态进度快照在续接会话里落不了盘
+    expect(restored.getLastWrittenTodos().length).toBe(2);
+    expect(restored.getLastWrittenTodos().every((t) => t.status === "completed")).toBe(true);
+  });
+
+  test("resume 后 TUI 展示清单仍为空（不复活全绿面板，防行为回退）", async () => {
+    const orig = await toolWithTodos([
+      { content: "任务A", activeForm: "正在做A", status: "completed" },
+    ]);
+    const restored = new TodoWriteTool();
+    restored.hydrate(orig.serialize());
+    // 展示语义必须保持"收起"——这条与上一条是一对，缺了就分不清"修好了"和"改回退了"
+    expect(restored.getTodos()).toEqual([]);
+  });
+
+  test("未全完成时两份语义一致，且快照不带多余字段（格式不 churn）", async () => {
+    const orig = await toolWithTodos([
+      { content: "任务A", activeForm: "正在做A", status: "in_progress" },
+      { content: "任务B", activeForm: "正在做B", status: "pending" },
+    ]);
+    const snap = orig.serialize();
+    // 非 allDone 时两者等价，无需额外字段 → 与旧格式逐字节一致
+    expect(snap.lastWritten).toBeUndefined();
+
+    const restored = new TodoWriteTool();
+    restored.hydrate(snap);
+    expect(restored.getTodos()).toEqual(orig.getTodos());
+    expect(restored.getLastWrittenTodos()).toEqual(orig.getLastWrittenTodos());
+  });
+
+  test("旧快照（无 lastWritten 字段）回灌不崩，事实清单回退到展示清单", () => {
+    const restored = new TodoWriteTool();
+    restored.hydrate({
+      todos: [{ content: "旧格式", activeForm: "正在旧格式", status: "pending" }],
+    } as any);
+    expect(restored.getTodos().length).toBe(1);
+    expect(restored.getLastWrittenTodos().length).toBe(1);
+  });
+
+  test("lastWritten 脏数据被逐项清洗，不抛错也不污染", () => {
+    const restored = new TodoWriteTool();
+    expect(() =>
+      restored.hydrate({
+        todos: [],
+        lastWritten: [
+          { content: "好的", activeForm: "正在好的", status: "completed" },
+          { bad: 1 },
+          null,
+          { content: "无效状态", activeForm: "x", status: "nope" },
+        ],
+      } as any),
+    ).not.toThrow();
+    expect(restored.getLastWrittenTodos().length).toBe(1);
+    expect(restored.getLastWrittenTodos()[0].content).toBe("好的");
+  });
+
+  test("多次 resume 不失真（终态快照可反复 round-trip）", async () => {
+    const orig = await toolWithTodos([
+      { content: "任务A", activeForm: "正在做A", status: "completed" },
+    ]);
+    const r1 = new TodoWriteTool();
+    r1.hydrate(orig.serialize());
+    const r2 = new TodoWriteTool();
+    r2.hydrate(r1.serialize());
+    expect(r2.getLastWrittenTodos()).toEqual(orig.getLastWrittenTodos());
+    expect(r2.getTodos()).toEqual([]);
+  });
+
+  test("/clear 后落空快照 → 恢复后两份语义都为空（不复活幽灵终态）", async () => {
+    const orig = await toolWithTodos([
+      { content: "任务A", activeForm: "正在做A", status: "completed" },
+    ]);
+    orig.reset();
+    const restored = new TodoWriteTool();
+    restored.hydrate(orig.serialize());
+    // reset 把两份都清了，快照也就不带 lastWritten → 不该反向复活上一个任务的终态
+    expect(restored.getTodos()).toEqual([]);
+    expect(restored.getLastWrittenTodos()).toEqual([]);
+  });
+});
+
 describe("hydrate 对脏/空快照容错，不抛错", () => {
   test("undefined / null / 非对象 全部安全跳过", () => {
     const tool = new TodoWriteTool();

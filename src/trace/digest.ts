@@ -248,6 +248,60 @@ export interface JitDigestStats {
 }
 
 /**
+ * todo 清单实时性度量（2026-08-02，方案 §8.3 的度量出口）。
+ *
+ * ## 为什么这一节必须存在
+ *
+ * "todolist 不实时、最后一次性才勾选"这个缺陷的**定义本身**就是一条指标：清单被更新了
+ * 几次、分布在哪些轮次。而它此前完全没有 digest 出口——三个事件（`TodoProgressAdvanced` /
+ * `NoProgressNagInjected` / `LoopTransition:todo_gate_retry`）都在往 events.jsonl 里写，
+ * 却没有任何地方读，等于**采了不看**。
+ *
+ * 那次排查的定性只能靠间接证据：`~/.sid-code/progress/<id>.md` 只被写过一次 → 反推
+ * "整场会话 todo_write 只成功调用过 1 次"。而那个文件本身当时还有"全完成时不落盘"的缺口，
+ * 两个不确定性叠在一起，结论差点建在流沙上。
+ *
+ * ## 三个指标各答什么问题（对应三层防御）
+ *
+ * - `advances` —— L1（`tool_result` 前向指令）有没有用：模型到底碰了几次清单；
+ * - `reminders` —— L2（周期回注）有没有真的在响：旧实现 60 轮只响 1 次，全网累计仅 3 次；
+ * - `gateRetries` —— L3（end_turn 兜底）有没有从主力退回兜底位：这个数**越低越好**，
+ *   它高就说明实时化没生效、还在靠收尾硬拦。
+ *
+ * `advanceRatio` 是最终验收口径：推进次数 / 清单项数。方案定的目标是 ≥ 0.5
+ * （做完一半以上的项时至少标记过一次），< 0.5 意味着仍在攒着最后一起勾。
+ */
+export interface TodoDigestStats {
+  /** 清单被推进的次数（`TodoProgressAdvanced` 条数 = writeVersion 增长次数） */
+  advances: number;
+  /** 会话终态的清单项数（取最后一条事件的 total） */
+  total: number;
+  /** 会话终态已完成项数 */
+  completed: number;
+  /** 会话终态未完成项数（> 0 说明收尾时仍有没做完/没标记的项） */
+  unfinished: number;
+  /**
+   * 实时性比值 = advances / total。方案验收线 ≥ 0.5。
+   * total 为 0（从未建过清单）时为 undefined —— 不是 0，二者含义不同：
+   * "没建清单"无所谓实时性，"建了却没推进"才是缺陷。
+   */
+  advanceRatio?: number;
+  /** 相邻两次推进间隔了多少轮（按 absoluteTurn 差），用于看"是否前松后紧" */
+  advanceGaps: number[];
+  /** todo 通道回注次数（`NoProgressNagInjected` 且 kind=todo） */
+  reminders: number;
+  /** 其中因压缩旁路强制重注的次数（afterCompact=true） */
+  remindersAfterCompact: number;
+  /**
+   * 回注时"距上次 todo_write"的最大轮数。
+   * 它是**停滞深度**：这个数很大说明模型长时间没碰清单，阈值可能过松。
+   */
+  maxTurnsSinceWrite?: number;
+  /** end_turn todo gate 软续命次数（越低越好，见接口注释） */
+  gateRetries: number;
+}
+
+/**
  * 单个子代理执行 span（digest 消费视角）。
  *
  * 由 events.jsonl 的 SubagentStart / SubagentStop 事件配对而成：
@@ -319,6 +373,11 @@ export interface Digest {
   subAgents?: SubAgentSummary;
   /** 第 5 批：JIT 上下文度量。无 `jit_context` 事件时 undefined（老会话/JIT 关闭）。 */
   jit?: JitDigestStats;
+  /**
+   * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
+   * （老会话 / 整场没建过清单）。
+   */
+  todo?: TodoDigestStats;
 }
 
 export interface SessionRef {
@@ -1397,6 +1456,10 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
   const jit = aggregateJitStats(events);
 
+  // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
+  // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
+  const todo = aggregateTodoStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -1421,6 +1484,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     providerStats: providerStats.length > 0 ? providerStats : undefined,
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
+    todo: todo ?? undefined,
   };
 }
 
@@ -1621,6 +1685,60 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
     for (const f of j.topFiles) {
       L.push(c("gray", `    · ${truncate(f.path, 60)} ${fmtBytes(f.bytes)} [${f.reason}]`));
+    }
+  }
+
+  // 2026-08-02：todo 实时性 section。验收标准就是这一节能直接答出
+  // 「清单推进了几次 / 回注响了几次 / 收尾兜底拦了几次」，不用再手工 grep events.jsonl。
+  if (d.todo) {
+    const t = d.todo;
+    L.push("");
+    // 推进比值是核心口径（方案验收线 ≥ 0.5）：低于线就是"仍在攒着最后一起勾"。
+    // total=0（没建过清单却有 gate/回注事件）单独走灰色，不套用比值判定。
+    const ratio = t.advanceRatio;
+    const ratioColor: Color =
+      ratio === undefined ? "gray" : ratio >= 0.5 ? "green" : ratio >= 0.25 ? "yellow" : "red";
+    const ratioText =
+      ratio === undefined ? "（本会话未建清单）" : `实时性 ${(ratio * 100).toFixed(0)}%`;
+    L.push(
+      c("bold", "todo 实时性:") +
+        " " +
+        c(ratioColor, `推进 ${t.advances} 次 / ${t.total} 项  ${ratioText}`) +
+        (t.total > 0
+          ? c("gray", `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成`)
+          : ""),
+    );
+    if (ratio !== undefined && ratio < 0.5) {
+      // 点破而不只是标黄：这条线是缺陷本体的判据，读者需要知道该怎么读它。
+      L.push(
+        c("yellow", "  ⚠ 低于 0.5 验收线") +
+          c("gray", "：清单更新次数不足项数一半，仍偏向「最后一次性勾选」"),
+      );
+    }
+    if (t.advanceGaps.length > 0) {
+      const maxGap = Math.max(...t.advanceGaps);
+      L.push(
+        c("gray", "  推进间隔: ") +
+          t.advanceGaps.join(", ") +
+          c("gray", ` 轮（最大 ${maxGap}）`),
+      );
+    }
+    // 回注次数是 L2 通道的存活证明：旧实现 60 轮只响 1 次、全网累计仅 3 次。
+    // 0 次不一定是 bug（模型一直在勤勉更新就不该被催），但配上大的 maxTurnsSinceWrite
+    // 就说明通道又哑了。
+    const nagBits: string[] = [`回注 ${t.reminders} 次`];
+    if (t.remindersAfterCompact > 0) nagBits.push(`其中压缩旁路 ${t.remindersAfterCompact} 次`);
+    if (t.maxTurnsSinceWrite != null) nagBits.push(`最长停滞 ${t.maxTurnsSinceWrite} 轮未碰清单`);
+    L.push(c("gray", "  L2 回注: ") + nagBits.join(c("gray", " / ")));
+    // gate 触发次数越低越好：它高 = 实时化没生效、还在靠收尾硬拦（方案明确要它退回兜底位）。
+    if (t.gateRetries > 0) {
+      const gateColor: Color = t.gateRetries >= 3 ? "red" : "yellow";
+      L.push(
+        c(gateColor, `  ⚠ end_turn 兜底续命 ${t.gateRetries} 次`) +
+          c("gray", "（该值越低越好：高说明实时化未生效，仍靠收尾硬拦）"),
+      );
+    } else if (t.advances > 0) {
+      L.push(c("green", "  ✓ end_turn 兜底未触发") + c("gray", "（gate 已退回兜底位）"));
     }
   }
 
@@ -1901,6 +2019,68 @@ export function aggregateJitStats(
     elapsedP50: percentile(sortedElapsed, 0.5),
     elapsedP95: percentile(sortedElapsed, 0.95),
     topFiles,
+  };
+}
+
+/**
+ * 聚合 todo 实时性度量（2026-08-02，方案 §8.3）。
+ *
+ * 读三个来源，对应三层防御各自的"有没有生效"（详见 `TodoDigestStats` 注释）：
+ *   - `TodoProgressAdvanced`                → 清单推进次数 + 终态
+ *   - `NoProgressNagInjected` (kind=todo)   → 回注次数 + 停滞深度
+ *   - `LoopTransition` (type=todo_gate_retry) → 收尾兜底触发次数（越低越好）
+ *
+ * 三者全无 → 返回 null（老会话 / 整场没用过清单），调用方据此整节不渲染。
+ * 只要有其中任一类事件就出这一节：只有 gate_retry 没有 advance 本身就是**最坏信号**
+ * （从没推进过、全靠收尾硬拦），不能因为缺 advance 就把它藏起来。
+ */
+export function aggregateTodoStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): TodoDigestStats | null {
+  const advanced = events.filter((e) => e.event === "TodoProgressAdvanced" && e.data);
+  const todoNags = events.filter(
+    (e) => e.event === "NoProgressNagInjected" && e.data && e.data.kind === "todo",
+  );
+  const gateRetries = events.filter(
+    (e) => e.event === "LoopTransition" && e.data && e.data.type === "todo_gate_retry",
+  );
+  if (advanced.length === 0 && todoNags.length === 0 && gateRetries.length === 0) return null;
+
+  // 终态取**最后一条** advance 事件：它携带的 total/completed/unfinished 就是会话结束时
+  // 清单的样子（每次 writeVersion 变化都会重新落一条，末条最新）。
+  const lastAdvance = advanced.length > 0 ? advanced[advanced.length - 1]!.data! : undefined;
+  const total = lastAdvance ? num(lastAdvance.total) : 0;
+  const completed = lastAdvance ? num(lastAdvance.completed) : 0;
+  const unfinished = lastAdvance ? num(lastAdvance.unfinished) : 0;
+
+  // 相邻推进间隔：按 absoluteTurn 差。缺 absoluteTurn 的老事件跳过，不用 turn 兜底——
+  // turn 每条用户消息回绕（会算出负数间隔），混算比不算更糟。
+  const advanceTurns = advanced
+    .map((e) => e.data!.absoluteTurn)
+    .filter((v): v is number => typeof v === "number");
+  const advanceGaps: number[] = [];
+  for (let i = 1; i < advanceTurns.length; i++) {
+    advanceGaps.push(advanceTurns[i]! - advanceTurns[i - 1]!);
+  }
+
+  // 停滞深度：回注时"距上次 todo_write"的最大值。埋点里 Infinity 被写成 -1
+  // （"从未写过清单"），那不是距离，要排除掉才不会把最大值算成 -1。
+  const sinceWrites = todoNags
+    .map((e) => num(e.data!.turnsSinceLastTodoWrite))
+    .filter((n) => n >= 0);
+
+  return {
+    advances: advanced.length,
+    total,
+    completed,
+    unfinished,
+    // total=0 时留 undefined：见接口注释，"没建清单"与"建了没推进"必须可区分
+    advanceRatio: total > 0 ? advanced.length / total : undefined,
+    advanceGaps,
+    reminders: todoNags.length,
+    remindersAfterCompact: todoNags.filter((e) => e.data!.afterCompact === true).length,
+    maxTurnsSinceWrite: sinceWrites.length > 0 ? Math.max(...sinceWrites) : undefined,
+    gateRetries: gateRetries.length,
   };
 }
 

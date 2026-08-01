@@ -64,6 +64,8 @@ interface InputAreaProps {
    * 空闲态（非流式）时优先级无意义，App 层直送不入队。
    */
   onSubmit: (text: string, priority?: "now" | "next" | "later") => void;
+  /** 直接执行 Shell 命令，不经过斜杠命令路由。 */
+  onShellCommand: (command: string) => void;
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
@@ -168,7 +170,7 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0, queuedByPriority, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
+export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, queuedCount = 0, queuedByPriority, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
   const log = getLogger();
@@ -477,7 +479,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
       const shellCmd = text.slice(1).trim();
       if (shellCmd) {
         log.info("UI:INPUT", `Shell 模式执行: "${shellCmd}"`);
-        onSubmit(`/bash ${shellCmd}`);
+        onShellCommand(shellCmd);
       }
       setShellModeActive(false);
       lastSubmittedRef.current = text;
@@ -494,7 +496,7 @@ export function InputArea({ onSubmit, isLoading, commands, cwd, queuedCount = 0,
     onSubmit(text, priority);
 
     setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-  }, [tb, onSubmit, shellModeActive, addHistoryEntry]);
+  }, [tb, onSubmit, onShellCommand, shellModeActive, addHistoryEntry]);
 
   // 从补全列表直接提交一条命令文本（无需经过 tb.submit()——避免"插入后同帧提交"读到
   // reducer 旧 state）。仅用于「无参命令回车直接执行」路径：清空输入框 + 走历史/去重 + 提交。

@@ -28,6 +28,7 @@ import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, emitTimerDrift, TIMER_DRIFT_RATIO, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
+import { getSleepLedger, describeSleep } from "../utils/sleep-detect.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";
@@ -36,7 +37,7 @@ import {
   checkMessageHistoryIntegrity,
   finalizeMessagesForSend,
 } from "../agent/message-invariants.ts";
-import { isAbortError, isInternalTimeoutAbortReason, RequestAbortedError } from "../llm/errors.ts";
+import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason, RequestAbortedError } from "../llm/errors.ts";
 import {
   resolveEffortCapability,
   resolveAppliedEffort,
@@ -85,6 +86,7 @@ import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
   LAST_TODO_REMINDER_TURN_KEY,
+  LAST_TODO_WRITE_VERSION_KEY,
 } from "./todo-reminder-scan.ts";
 import {
   PROGRESS_REMINDER_INTERVAL,
@@ -1046,7 +1048,9 @@ export async function* queryLoop(
 
     // P0-2：todo 每隔 N 轮回注完整清单（对标 claude-code attachments.ts）。
     // 根因 1 修复——todo 写完即沉没、只喂 TUI、从不回注 LLM，弱模型靠工作记忆追踪必然遗漏。
-    // 触发条件：有未完成项 + (距上次 todo_write ≥ TURNS_SINCE_WRITE 轮，或距上次回注 ≥ TURNS_BETWEEN_REMINDERS 轮)。
+    // 触发条件：有未完成项 + 距上次 todo_write ≥ TURNS_SINCE_WRITE 轮 **且** 距上次回注
+    // ≥ TURNS_BETWEEN_REMINDERS 轮（两个条件是 AND，见 shouldInjectTodoReminder）。
+    // 压缩后另有一条独立旁路（todoReminderPendingAfterCompact）不受这两个阈值管辖。
     if (deps.getTodoState) {
       const todoState = deps.getTodoState();
       // ─── 2026-08-01 修复 5：进度快照必须覆盖**终态** ───
@@ -1068,8 +1072,15 @@ export async function* queryLoop(
       // 不能各自现算：基线 `lastSeenTodoWriteVersion` 一旦被前者写掉，后者就永远读到 false
       // （gate 预算再也不会复位）；反之若只在后者里写，全部完成时前者被跳过 → 基线不推进 →
       // 每轮重复落盘同一份终态。一次判定 + 末尾统一推进基线，两个坑一起避掉。
-      const todoAdvanced =
-        !!todoFactState && state.lastSeenTodoWriteVersion !== todoFactState.writeVersion;
+      //
+      // 基线读 SessionState 而非 LoopState（2026-08-02 修复）：LoopState 每条用户消息重建，
+      // 基线会归零成 undefined，于是 writeVersion 没变也判 true —— 实测 writeVersion 恒定 3
+      // 的会话，第二条用户消息后 TodoProgressAdvanced 从 1 虚增到 2，progress 也重复落盘。
+      // "清单有没有推进"是跨用户消息的会话级事实，放不进每消息重建的 LoopState。
+      const lastSeenWriteVersion = sessionState.get(LAST_TODO_WRITE_VERSION_KEY) as
+        | number
+        | undefined;
+      const todoAdvanced = !!todoFactState && lastSeenWriteVersion !== todoFactState.writeVersion;
       if (todoFactState && todoFactState.todos.length > 0) {
         if (todoAdvanced) {
           const snap = snapshotFromTodos(sessionState.sessionId, todoFactState.todos);
@@ -1166,6 +1177,26 @@ export async function* queryLoop(
           // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与 todo 回注同机制。P2-2 摘要在
           // todo 长期停滞时内容几乎逐字节相同（idx 41/87/112 就是这样的三连重复），
           // 是造"幻影用户消息"的重灾区，必须去重 + 封顶。
+          //
+          // ─── 2026-08-02：方案 §9.1「work-log 是否同病」核验结论 = 同现象、不同结论，刻意保留 ───
+          //
+          // 实测本通道与 todo 通道**症状完全一样**：60 轮停滞只注入 1 次、cap=2 从未用上
+          // （去重先锁死）。但 todo 那边的修法（删去重+封顶）**不能照搬到这里**，判据是
+          // 「这条通道停滞时还有没有独立价值」：
+          //
+          //   两份文案都由同一份 todo 清单派生，信息量高度重叠——todo 报"[completed] 甲 /
+          //   [in_progress] 乙 + 仍有 N 项未完成"，work-log 报"已完成 1 项：甲 / 仍待办 2 项：
+          //   乙；丙 / 当前进行中：乙"，连"别臆造新工作"那句收尾都近乎同义复述。
+          //
+          // todo 通道现在已是无去重无封顶、每 8 轮必达（实测停滞时在轮 1/9/17/25/33 稳定注入）。
+          // 停滞场景下 work-log 能提供的增量信息≈0，把它也放开只会让同一份清单在同一段停滞里
+          // 被复述两遍——那正是 `reminder-throttle.ts` 顶部记录的"弱模型把重复注入误判成用户又
+          // 发了半句话"的成因，且这次是**双通道**互相加重。
+          //
+          // 即：todo 那边去重是「防线过度生效害死主功能」（催更通道被锁死 = 没有替代品）；
+          // 这边去重是「防线正好挡住纯冗余」（主功能已由 todo 通道承担）。同一机制在两条通道
+          // 上一留一删不是不一致，是因为**主功能归属不同**。若日后 todo 通道再次被削弱，
+          // 这条判据随之失效，需重新评估。
           // 封顶预算用**专属**的 progressNagCount，与 todo 回注彼此独立——原先共用时，
           // todo 先注满 2 次即让本通道"首次注入就被抑制"（它一次都没注过就没额度了）。
           const decision = decideNagInjection({
@@ -1199,7 +1230,7 @@ export async function* queryLoop(
       // 全部完成时上面那个 `countUnfinished > 0` 块整体跳过，若基线跟着写在块内，
       // 就永远追不上 writeVersion → 终态快照每轮重复落盘。
       if (todoAdvanced && todoFactState) {
-        state.lastSeenTodoWriteVersion = todoFactState.writeVersion;
+        sessionState.set(LAST_TODO_WRITE_VERSION_KEY, todoFactState.writeVersion);
       }
     }
 
@@ -1836,6 +1867,15 @@ export async function* queryLoop(
       let humanInputPauseAccumMs = 0;                 // 已结束的等待段累计总时长
       const turnStartedAt = Date.now();
 
+      // ─── 休眠时长累计（事故 20260801-175042-699f69f8）───
+      // 与 humanInputPauseAccumMs 完全同构、同理由：**非业务时长不该计入业务预算**。
+      // 系统休眠期间进程被整体冻结，两个 setInterval 都不 tick，醒来一起补 fire
+      // （实测预期 5000ms、实际 926241ms）。若不剔除，休眠时长会被当成"流 hang"
+      // 直接判超时并吃掉一次重试配额——那次事故三段休眠吃掉了 3/10 次重试预算。
+      // 两个定时器共享此变量（同 humanInputPause*）：先 tick 的那个负责记账，
+      // 后 tick 的看到间隔已恢复正常自然不再记，天然去重、且两条防线口径一致。
+      let sleepPauseAccumMs = 0;
+
       let turnTimer: ReturnType<typeof setInterval> | null = null;
       // 缺口 2 进阶：turn_hard 超时 fire 后武装「未生效」检查；race settle 时 disarm。
       // 若 5s 内未 disarm，说明超时 fire 了却没让 Promise.race settle（本次事故指纹）。
@@ -1862,12 +1902,25 @@ export async function* queryLoop(
               const now = Date.now();
               const actual = now - turnLastTickAt;
               turnLastTickAt = now;
+              // 休眠剔除：跳跃幅度达阈值即认定系统被挂起，把超出正常 tick 的部分
+              // 计入 sleepPauseAccumMs，从下方 businessElapsedMs 里整体扣掉。
+              // 放在 drift 埋点旁边而非之后：drift 与休眠判据用的是同一个 actual，
+              // 分开算会出现"埋点说迟到了、判据却没扣"的口径分裂。
+              const slept = getSleepLedger().record(actual, TURN_HARD_CHECK_INTERVAL_MS);
+              if (slept > 0) {
+                sleepPauseAccumMs += slept;
+                log.warn(
+                  "QUERY_LOOP",
+                  `检测到系统休眠约 ${(slept / 1000).toFixed(0)}s（turn_hard tick 迟到 ${(actual / 1000).toFixed(0)}s），已从单轮耗时中剔除`,
+                );
+              }
               if (actual > TURN_HARD_CHECK_INTERVAL_MS * TIMER_DRIFT_RATIO) {
                 emitTimerDrift(state.turnCount, {
                   timer: "turn_hard",
                   expected_ms: TURN_HARD_CHECK_INTERVAL_MS,
                   actual_ms: actual,
                   drift_ms: actual - TURN_HARD_CHECK_INTERVAL_MS,
+                  sleep_ms: slept > 0 ? slept : undefined,
                   // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                   absoluteTurn: sessionState.getAbsoluteTurn(),
                   promptSeq,
@@ -1886,11 +1939,13 @@ export async function* queryLoop(
               humanInputPauseAccumMs += Date.now() - humanInputPausedAt;
               humanInputPausedAt = null;
             }
-            // 非等待业务耗时 = 墙钟总耗时 - 累计等待时长。达阈值才判硬超时。
-            const businessElapsedMs = Date.now() - turnStartedAt - humanInputPauseAccumMs;
+            // 非等待业务耗时 = 墙钟总耗时 - 累计等待时长 - 累计休眠时长。
+            // 两项扣减同理：都是"进程没在为用户干活"的时段，不该消耗业务预算。
+            const businessElapsedMs =
+              Date.now() - turnStartedAt - humanInputPauseAccumMs - sleepPauseAccumMs;
             if (businessElapsedMs < MAX_TURN_DURATION_MS) return;
 
-            log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s（已扣除 ${(humanInputPauseAccumMs / 1000).toFixed(0)}s 等待），强制让出控制权`);
+            log.error("QUERY_LOOP", `单轮硬超时 ${MAX_TURN_DURATION_MS / 1000}s（已扣除 ${(humanInputPauseAccumMs / 1000).toFixed(0)}s 等待 + ${(sleepPauseAccumMs / 1000).toFixed(0)}s 休眠），强制让出控制权`);
             // 缺口 2：记录单轮硬超时触发
             emitTimeoutFired(state.turnCount, "turn_hard_timeout", {
               threshold_ms: MAX_TURN_DURATION_MS,
@@ -1942,6 +1997,8 @@ export async function* queryLoop(
       // 累计；共享还保证两条防线对「已扣除多少等待」看法一致，不会一个扣了另一个没扣而口径打架。
       // 定时器迟到实测（见 turn_hard 处同名注释与 stream-observer.ts emitTimerDrift）。
       let watchdogLastTickAt = Date.now();
+      // P2：静默期半程告警只报一次的门闩（每轮独立，随本轮 watchdog 生命周期）。
+      let streamIdleWarned = false;
       const watchdogPromise = new Promise<never>((_resolve, reject) => {
         watchdogTimer = setInterval(() => {
           try {
@@ -1952,12 +2009,24 @@ export async function* queryLoop(
               const now = Date.now();
               const actual = now - watchdogLastTickAt;
               watchdogLastTickAt = now;
+              // 休眠剔除（同 turn_hard 处理，共享 sleepPauseAccumMs 天然去重）。
+              // 对 watchdog 尤其关键：本次事故三次强杀全部由 watchdog 判出，
+              // 而三段"无进展"其实全是休眠——剔除后它们不再构成杀流理由。
+              const sleptW = getSleepLedger().record(actual, WATCHDOG_CHECK_INTERVAL_MS);
+              if (sleptW > 0) {
+                sleepPauseAccumMs += sleptW;
+                log.warn(
+                  "QUERY_LOOP",
+                  `检测到系统休眠约 ${(sleptW / 1000).toFixed(0)}s（watchdog tick 迟到 ${(actual / 1000).toFixed(0)}s），已从无进展判据中剔除`,
+                );
+              }
               if (actual > WATCHDOG_CHECK_INTERVAL_MS * TIMER_DRIFT_RATIO) {
                 emitTimerDrift(state.turnCount, {
                   timer: "watchdog",
                   expected_ms: WATCHDOG_CHECK_INTERVAL_MS,
                   actual_ms: actual,
                   drift_ms: actual - WATCHDOG_CHECK_INTERVAL_MS,
+                  sleep_ms: sleptW > 0 ? sleptW : undefined,
                   // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                   absoluteTurn: sessionState.getAbsoluteTurn(),
                   promptSeq,
@@ -1990,8 +2059,26 @@ export async function* queryLoop(
               : netTimeouts.headerTimeoutMs + WATCHDOG_HEADER_GRACE_MS;
             // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
             const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
-            // 扣除累计的用户等待时段，避免弹窗答完后残留的等待时长把无进展判超。
-            const noProgressMs = Date.now() - lastProgressAt - humanInputPauseAccumMs;
+            // 扣除累计的用户等待时段 + 累计休眠时长，两者都不是"流 hang"。
+            // 休眠这项是本次事故的根治点：三次强杀的"无进展"全部是系统休眠，
+            // 剔除后它们不再构成杀流理由，也不再冤枉重试配额。
+            const noProgressMs =
+              Date.now() - lastProgressAt - humanInputPauseAccumMs - sleepPauseAccumMs;
+            // ─── P2：静默期半程告警（借鉴 claude-code STREAM_IDLE_WARNING_MS）───
+            // 阈值本身不动（保活优先，见 network-profile.ts:58-62 的多 provider 立场），
+            // 但 300s 全程零信号会让用户以为"卡死了/自己停了"。半程先落一条 warn +
+            // 给 UI 一个可见提示，把"还在等"与"已经死"区分开。只报一次，避免刷屏。
+            if (
+              !streamIdleWarned &&
+              noProgressMs >= effectiveThresholdMs / 2 &&
+              noProgressMs < effectiveThresholdMs
+            ) {
+              streamIdleWarned = true;
+              log.warn(
+                "QUERY_LOOP",
+                `流静默 ${(noProgressMs / 1000).toFixed(0)}s（阈值 ${(effectiveThresholdMs / 1000).toFixed(0)}s），仍在等待上游响应`,
+              );
+            }
             if (noProgressMs < effectiveThresholdMs) return;
 
             log.error(
@@ -2149,8 +2236,31 @@ export async function* queryLoop(
               "QUERY_LOOP",
               `退避期间会话被中断（reason=${String(r ?? "unknown")}），放弃本次重试并收尾`,
             );
-            // 不 yield 额外文案：会话级硬顶/用户取消的专属提示由 app.ts catch 分支统一给出，
-            // 这里再 yield 一条就是第二个说法（正是本次要根治的「两个状态机各说各话」）。
+            // ─── P0-b 根治：本分支必须自己给用户一句话（事故 20260801-175042-699f69f8）───
+            //
+            // 原注释写的是"专属提示由 app.ts catch 分支统一给出"，但这个前提是错的：
+            // 本分支走的是 `yield done; return`——**正常返回，不抛异常**。链路是
+            //   loop.ts(yield done) → engine.ts:399(收到 done 即 return，不抛)
+            //   → app.ts:6041 case "done" → completedNormally = true
+            // app.ts 里那段为 session-timeout 精心准备的文案（app.ts:6283）和持久
+            // hint 全在 **catch 块**里，永远不会被执行；completedNormally=true 还顺带
+            // 跳过了 app.ts:6129 的"⚠️ 任务异常中断"兜底。
+            // 结果就是那次事故的现象：任务停了，TUI 上一个字都没有。
+            //
+            // 两个状态机各说各话的正解不是"让其中一个闭嘴"，而是"谁真正执行到就由谁说"。
+            // 此处 yield 的是唯一会被用户看到的说明，不存在重复风险（catch 分支这条
+            // 路径根本进不去）。
+            const sleepNote = describeSleep();
+            const reasonText = isSessionTimeoutAbortReason(r)
+              ? `本轮连续执行超过 ${Math.round(netTimeouts.maxSessionDurationMs / 60000)} 分钟上限，已自动收尾。直接输入指令即可接着做（会话未结束，上下文保留）。`
+              : r === "user-cancel"
+                ? "已取消当前响应。"
+                : `请求重试期间会话被中断（${String(r ?? "unknown")}），本轮已收尾。直接输入指令即可接着做。`;
+            yield {
+              kind: "system",
+              level: isSessionTimeoutAbortReason(r) || r === "user-cancel" ? "info" : "error",
+              text: sleepNote ? `${reasonText}\n${sleepNote}。` : reasonText,
+            };
             yield { kind: "done", turns: state.turnCount };
             return;
           }

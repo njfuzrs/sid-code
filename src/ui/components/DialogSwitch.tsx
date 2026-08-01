@@ -286,6 +286,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   return (
     <Composer
       onSubmit={onSubmit}
+      onShellCommand={callbacks.onShellCommand}
       isLoading={isLoading}
       commands={commands}
       cwd={cwd}

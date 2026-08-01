@@ -186,14 +186,24 @@ export interface LoopState {
   // （键名 todo-reminder-scan.ts 的 LAST_TODO_REMINDER_TURN_KEY，按 getAbsoluteTurn 计），
   // 与 lastSeenContextPressureLevel / lastSeenPermissionMode 同构（审计第 9 条）。
   // "距上次 todo_write 多少轮"则改为从消息历史现算，不再存任何快照。
-  /**
-   * P0-2：上次观察到的 todo writeVersion 快照。
-   *
-   * 现在**只**用于"本轮 todo 是否有推进"这一个判断（推进 → 刷新 end_turn gate 预算 +
-   * 落进度快照 + 落 TodoProgressAdvanced 埋点）。它不再参与回注节流——节流已改为
-   * 无状态消息扫描（见 todo-reminder-scan.ts 文件头的实测数据）。
-   */
-  lastSeenTodoWriteVersion?: number;
+  // ─── 2026-08-02：`lastSeenTodoWriteVersion` 已上移到 SessionState ───
+  //
+  // 它是"上次观察到的 writeVersion"基线，用于判定"本轮 todo 是否有推进"。挂在 LoopState 上
+  // 就等于**每条用户消息归零成 undefined**，于是 `lastSeenTodoWriteVersion !== writeVersion`
+  // 在 writeVersion 根本没变时也判 true。实测（writeVersion 恒定 3、零真实推进）：
+  //
+  //   第一条用户消息后 TodoProgressAdvanced 埋点数=1; 第二条后=2
+  //
+  // 两处后果都打在这次改动自己的目标上：① `TodoProgressAdvanced` 是「唯一能直接量 todo
+  // 实时性」的指标，每条用户消息虚增一次 → 长会话里越用越虚高，尺子本身有系统性偏差；
+  // ② `persistProgress` 每条用户消息重复落盘同一份快照。
+  //
+  // 这与同一个块里 reminder 锚点的病完全同源（都是"状态位置错了"，见本项目既有结论
+  // memory `resilience-layer-state-locality-cc-alignment`）——当时锚点正确上移了，
+  // 这个基线漏了没跟着走。键名见 todo-reminder-scan.ts 的 LAST_TODO_WRITE_VERSION_KEY。
+  //
+  // ⚠️ 不要因为"它只是个埋点基线"就把它搬回 LoopState：埋点虚高会直接误导
+  // 「是否真的在朝北极星走」的判断，而这是本次整轮修复的验收依据。
   /** P0-3：end_turn 完成度硬校验已软续命的次数 */
   todoGateRetryCount?: number;
   /**

@@ -139,3 +139,18 @@ export function shouldInjectTodoReminder(
 
 /** SessionState 键名：上次注入 todo reminder 时的会话累计轮次（跨用户消息持久）。 */
 export const LAST_TODO_REMINDER_TURN_KEY = "lastTodoReminderAbsoluteTurn";
+
+/**
+ * SessionState 键名：上次观察到的 todo `writeVersion` 基线（跨用户消息持久）。
+ *
+ * 与上面那个锚点**同因上移**（2026-08-02）：它原先挂在 `LoopState` 上，而 `LoopState` 由
+ * `createInitialLoopState()` 在每条用户消息重建，于是基线每条消息归零成 `undefined`，
+ * `lastSeen !== writeVersion` 在清单**根本没动**时也判 true。实测 writeVersion 恒定 3、
+ * 零真实推进的会话，第二条用户消息后 `TodoProgressAdvanced` 埋点从 1 变 2。
+ *
+ * 后果不是"多一条日志"：这条事件是方案 §8.3 里唯一能直接量 todo 实时性的指标，
+ * 虚增会让「改动到底有没有效」这个判断建在偏差尺子上；`persistProgress` 也会跟着
+ * 重复落盘同一份快照。判定"清单是否推进"属于**跨用户消息的会话级事实**，
+ * 只能放在会话级状态里。
+ */
+export const LAST_TODO_WRITE_VERSION_KEY = "lastSeenTodoWriteVersion";

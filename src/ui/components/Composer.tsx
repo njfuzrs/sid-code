@@ -165,6 +165,8 @@ const ToolResultIndicator: React.FC<{
 
 interface ComposerProps {
   onSubmit: (text: string) => void;
+  /** 直接执行交互式 Shell 命令。 */
+  onShellCommand: (command: string) => void;
   isLoading: boolean;
   commands: CommandInfo[];
   cwd: string;
@@ -184,6 +186,7 @@ interface ComposerProps {
 
 export const Composer: React.FC<ComposerProps> = ({
   onSubmit,
+  onShellCommand,
   isLoading,
   commands,
   cwd,
@@ -340,6 +343,7 @@ export const Composer: React.FC<ComposerProps> = ({
       {/* 输入框 */}
       <InputArea
         onSubmit={onSubmit}
+        onShellCommand={onShellCommand}
         isLoading={isLoading}
         commands={commands}
         cwd={cwd}

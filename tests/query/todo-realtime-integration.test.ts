@@ -212,6 +212,115 @@ describe("不变量 3 仍成立：回注产物不落 ctxMgr 历史", () => {
   });
 });
 
+describe("状态位置：writeVersion 基线必须跨用户消息持久（2026-08-02 修复）", () => {
+  /**
+   * 这条测的是**度量本身的准确性**，不是功能。
+   *
+   * 基线原先挂在 `LoopState` 上，而它由 `createInitialLoopState()` 在每条用户消息重建 →
+   * 基线归零成 undefined → `lastSeen !== writeVersion` 在清单**根本没动**时也判 true。
+   * 实测（writeVersion 恒定 3、零真实推进）：第一条消息后埋点 1 次，第二条后 2 次。
+   *
+   * 为什么必须有这条哨兵：`TodoProgressAdvanced` 是方案 §8.3 里唯一能直接量 todo 实时性的
+   * 指标。它虚高会让「改动到底有没有效」建在偏差尺子上——比功能 bug 更难发现，因为
+   * 它伪装成"数据变好了"。既有那条「同一 writeVersion 不重复埋点」只跑单次 queryLoop，
+   * 天然覆盖不到跨消息路径，所以漏了。
+   */
+  test("同一 writeVersion 跨两条用户消息只埋点一次（progress 不重复落盘）", async () => {
+    const ctxMgr = new ContextManager({ maxTokens: 200000 });
+    ctxMgr.setSystemPrompt("sys");
+    const traceEvents: Array<{ event: string; data: any }> = [];
+    const stalled = [todo("甲", "in_progress"), todo("乙", "pending")];
+    const deps: QueryDeps = {
+      sendWithRetry: () => emptyStream(),
+      processStream: async () => finalResp(),
+      executeTools: async () => ({ results: [] }),
+      autoCompact: async () => {},
+      handleContextOverflow: () => null,
+      getAbortSignal: () => undefined,
+      uuid: () => "u",
+      // writeVersion 恒定 = 模型全程没碰过清单 = 真实推进次数 0
+      getTodoState: () => ({ todos: stalled, writeVersion: 3 }),
+      getTodoTerminalState: () => ({ todos: stalled, writeVersion: 3 }),
+      traceAppendEvent: (e: any) => traceEvents.push({ event: e.event, data: e.data }),
+    } as unknown as QueryDeps;
+
+    // ★ 关键：同一个 SessionState 跨两次 queryLoop 复用（真实 engine 就是这么做的）
+    const sessionState = new SessionState("test-session-todo-locality");
+    const mk = (): QueryLoopConfig => ({
+      config: {
+        model: "deepseek-v4-pro",
+        provider: "openai",
+        maxTurns: 5,
+        toolSearch: false,
+      } as unknown as Config,
+      ctxMgr,
+      toolRegistry: new ToolRegistry(),
+      sessionState,
+      fallback: new ModelFallback(),
+      deps,
+    });
+
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "第一条" }] });
+    for await (const _ of queryLoop(mk())) { /* drain */ }
+    const afterFirst = traceEvents.filter((e) => e.event === "TodoProgressAdvanced").length;
+
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "第二条" }] });
+    for await (const _ of queryLoop(mk())) { /* drain */ }
+    const afterSecond = traceEvents.filter((e) => e.event === "TodoProgressAdvanced").length;
+
+    // 首次观察到 writeVersion=3 时埋一次是对的（基线从无到有）
+    expect(afterFirst).toBe(1);
+    // 第二条用户消息不该再埋：writeVersion 没变，清单零推进。修复前这里是 2。
+    expect(afterSecond).toBe(1);
+  });
+
+  test("跨用户消息后 writeVersion 真变化仍能埋点（不是把基线焊死）", async () => {
+    const ctxMgr = new ContextManager({ maxTokens: 200000 });
+    ctxMgr.setSystemPrompt("sys");
+    const traceEvents: Array<{ event: string; data: any }> = [];
+    const stalled = [todo("甲", "in_progress"), todo("乙", "pending")];
+    let version = 3;
+    const deps: QueryDeps = {
+      sendWithRetry: () => emptyStream(),
+      processStream: async () => finalResp(),
+      executeTools: async () => ({ results: [] }),
+      autoCompact: async () => {},
+      handleContextOverflow: () => null,
+      getAbortSignal: () => undefined,
+      uuid: () => "u",
+      getTodoState: () => ({ todos: stalled, writeVersion: version }),
+      getTodoTerminalState: () => ({ todos: stalled, writeVersion: version }),
+      traceAppendEvent: (e: any) => traceEvents.push({ event: e.event, data: e.data }),
+    } as unknown as QueryDeps;
+
+    const sessionState = new SessionState("test-session-todo-locality-2");
+    const mk = (): QueryLoopConfig => ({
+      config: {
+        model: "deepseek-v4-pro",
+        provider: "openai",
+        maxTurns: 5,
+        toolSearch: false,
+      } as unknown as Config,
+      ctxMgr,
+      toolRegistry: new ToolRegistry(),
+      sessionState,
+      fallback: new ModelFallback(),
+      deps,
+    });
+
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "第一条" }] });
+    for await (const _ of queryLoop(mk())) { /* drain */ }
+    // 模型在第二条消息期间真的更新了清单
+    version = 4;
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "第二条" }] });
+    for await (const _ of queryLoop(mk())) { /* drain */ }
+
+    const advanced = traceEvents.filter((e) => e.event === "TodoProgressAdvanced");
+    expect(advanced.length).toBe(2);
+    expect(advanced.map((e) => e.data.writeVersion)).toEqual([3, 4]);
+  });
+});
+
 describe("修复 5 + 发现 4a：终态可观测", () => {
   test("全部完成时仍落 TodoProgressAdvanced 埋点（取终态 dep）", async () => {
     // 展示语义：全完成 → TodoWriteTool 清空 → getTodoState 返空清单

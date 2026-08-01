@@ -479,6 +479,15 @@ export function emitTimerDrift(
     timer: string;
     /** 预期 tick 间隔 */
     expected_ms: number;
+    /**
+     * 本次迟到中被判定为「系统休眠」的时长（未达休眠阈值则不带此字段）。
+     *
+     * 有了它，离线分析可直接区分本模块文档里提的两类迟到：
+     *   - 带 sleep_ms → 机器睡了（进程被冻结，非故障，时长已从超时判据剔除）；
+     *   - 无 sleep_ms 但 drift 很大 → 事件循环真被占满（是需要修的性能问题）。
+     * 事故 20260801-175042-699f69f8 属前者：actual_ms=926241 全部是 Idle Sleep。
+     */
+    sleep_ms?: number;
     /** 实测 tick 间隔 */
     actual_ms: number;
     /** 迟到量 = actual - expected */

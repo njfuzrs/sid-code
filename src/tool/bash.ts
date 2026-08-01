@@ -630,11 +630,43 @@ export class BashTool implements Tool {
       // 不再玩"两个同延时定时器 + backgrounded 标志"的竞态把戏——旧实现里
       // timeoutId 先把 backgrounded 置 true，导致 timeoutPromise 的 resolve 永不触发，
       // Promise.race 只能等命令自然结束，超时保护形同虚设（实测 timeout=60s 命令跑满 87.5s）。
-      const timeoutId = setTimeout(() => {
+      // 复用上方已有的 spawnedAt（真实起跑时刻，见其定义处注释）——挂钟兜底要的
+      // 正是"从起跑到现在过了多久"，与它语义完全一致，不另立一个变量以免二者漂移。
+      const killForTimeout = () => {
+        if (timedOut || detachedTaskHandle) return; // 已超时处理过 / 已转后台则不管
         timedOut = true;
         killProcessTree(proc.pid, "SIGKILL", () => proc.kill());
         log.info("BASH", `命令超时（${timeout / 1000}秒），已终止 PID ${proc.pid} 及其进程树`);
-      }, timeout);
+      };
+      const timeoutId = setTimeout(killForTimeout, timeout);
+
+      // ─── 挂钟兜底检查（事故 20260801-175042-699f69f8）───
+      //
+      // 单靠上面的 setTimeout 挡不住系统休眠：进程被冻结期间定时器不 fire，
+      // 醒来才补 fire。那次事故里 timeout=120s 的命令**实际跑了 926 秒**
+      // （PostToolUse duration_ms=926323），超时保护完全失效。
+      //
+      // 注意这不是"改用 setInterval 就好"——TimerDrift 实测证明 setInterval 在
+      // 休眠下同样冻结（预期 5000ms / 实际 926241ms）。所以判据必须是**挂钟差值**
+      // 而非"定时器有没有 fire"：即使 tick 迟到 900 秒，醒来第一次 tick 就能从
+      // Date.now() - spawnedAt 立刻看出早已超时并补杀。
+      //
+      // 这一点上我们比 claude-code 更强：CC 的 ShellCommand.ts:275 也是裸
+      // setTimeout(#timeout)，同样的失效模式，它没有挂钟兜底。
+      const WALL_CLOCK_CHECK_MS = Math.max(1_000, Math.min(5_000, timeout));
+      const wallClockTimer = setInterval(() => {
+        if (timedOut || detachedTaskHandle) return;
+        if (Date.now() - spawnedAt < timeout) return;
+        log.warn(
+          "BASH",
+          `挂钟检查发现命令已超时（设定 ${timeout / 1000}s，实际已 ${((Date.now() - spawnedAt) / 1000).toFixed(0)}s，`
+          + `定时器未按时 fire，通常是系统休眠），补杀进程树`,
+        );
+        killForTimeout();
+      }, WALL_CLOCK_CHECK_MS);
+      // unref：兜底检查绝不能成为进程退不掉的原因（命令正常结束时会 clearInterval，
+      // 此处只防"极端情况下 timer 仍在挂着"）。
+      wallClockTimer.unref?.();
 
       // AbortSignal 监听：用户 ESC / 上游取消 → 同样杀进程树
       const abortHandler = () => {
@@ -651,6 +683,9 @@ export class BashTool implements Tool {
       foregroundDetachHandlers.set(detachHandlerId, () => {
         if (detachedTaskHandle || timedOut || aborted) return false;
         clearTimeout(timeoutId);
+        // 转后台后前台超时语义消失，挂钟兜底也必须停（否则它会在后台任务跑到
+        // timeout 时把已经"归任务系统管"的进程杀掉）。
+        clearInterval(wallClockTimer);
         signal?.removeEventListener("abort", abortHandler);
         // 后台任务不追踪 cwd（对齐 executeWithTaskSystem 的既有语义）：cd 发生的时间点已经
         // 脱离"用户仍在等待这条命令"的因果链，异步写回全局 cwd 会与用户后续操作产生竞态。
@@ -781,8 +816,18 @@ export class BashTool implements Tool {
             // 超时（缺口 1/2 修复）：杀掉进程树后给出明确的 kill 语义，
             // 并引导模型改用 run_in_background 而非无谓重试。
             if (timedOut) {
+              // 实际墙钟耗时远超设定值 → 说明中途被系统挂起（休眠）。必须说清楚：
+              // 否则模型会把"睡了 15 分钟"当成"这条命令真的要跑 15 分钟"，从而
+              // 错误地拆分命令或放弃一条本来很快的操作。
+              const actualMs = Date.now() - spawnedAt;
+              const overshoot = actualMs - timeout;
+              const sleepHint =
+                overshoot > 30_000
+                  ? `\n注意：实际墙钟耗时 ${(actualMs / 1000).toFixed(0)}s 远超设定的 ${timeout / 1000}s，`
+                    + `期间系统很可能进入过休眠（命令本身未必慢）。`
+                  : "";
               return {
-                output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
+                output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。${sleepHint}\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
                 isError: true,
               };
             }
@@ -848,6 +893,7 @@ export class BashTool implements Tool {
         // clearTimeout/removeEventListener 对已经清理过的 timer/listener 是安全的空操作，
         // 双重清理不会出错，无需额外按 detachedTaskHandle 分支。
         clearTimeout(timeoutId);
+        clearInterval(wallClockTimer);
         signal?.removeEventListener("abort", abortHandler);
       }
     } catch (err: any) {

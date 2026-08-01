@@ -148,6 +148,27 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
 
 const VALID_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
+/**
+ * 从持久化快照里挑出合法 todo 项（脏项跳过，不抛错）。
+ *
+ * 抽成共用函数是因为 `hydrate()` 现在要清洗**两份**数组（展示清单 `todos` + 事实清单
+ * `lastWritten`）。两份各写一遍循环，早晚会漂移出"一份校验严一份松"的不一致。
+ *
+ * 容错原则：绝不因脏快照阻断恢复——恢复失败的代价（用户丢清单）远大于少恢复几项。
+ */
+function sanitizeTodoSnapshot(raw: unknown[]): TodoItem[] {
+  const out: TodoItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const t = item as Partial<TodoItem>;
+    if (typeof t.content !== "string" || !t.content.trim()) continue;
+    if (typeof t.activeForm !== "string" || !t.activeForm.trim()) continue;
+    if (typeof t.status !== "string" || !VALID_STATUSES.has(t.status)) continue;
+    out.push({ content: t.content, activeForm: t.activeForm, status: t.status });
+  }
+  return out;
+}
+
 export class TodoWriteTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = todoWriteSchema();
@@ -413,9 +434,30 @@ print("Hello World")
    *
    * 只存清单本体（content/activeForm/status）。writeVersion 是 queryLoop 回注判定的全局时序
    * 基准、单调递增，不跨会话保留——恢复后从 0 起不影响回注逻辑（首次比较即视为"有更新"）。
+   *
+   * ─── 2026-08-02：补 `lastWritten`，堵住"全部完成后 resume 丢终态"（方案 §9-5）───
+   *
+   * `todos` 取 `currentTodos`，而它在全部完成时被刻意清空（面板收起）。于是**恰好在任务
+   * 全做完这个最该留痕的时刻**，快照是 `{todos: []}`：resume 后 `getLastWrittenTodos()`
+   * 返空 → `getTodoTerminalState()` 返 null → 终态进度快照（修复 5）在续接会话里静默失效，
+   * 跨会话也看不到"上次到底做完了什么"。
+   *
+   * 修法是**把事实语义一并落盘**，而不是让 `todos` 改读 `lastWrittenTodos`——后者会让
+   * resume 后 TUI 挂着一张全绿清单不消失，是明确的行为回退（见 `getLastWrittenTodos` 注释）。
+   * 两个语义在快照里也分两个字段，与内存里的分工一一对应。
+   *
+   * 只在**确实会丢信息**时才写这个字段（`currentTodos` 空而 `lastWrittenTodos` 非空，即
+   * allDone 分支）。其余情况两者等价，省掉它可让绝大多数快照与旧格式逐字节一致，
+   * 不给持久化格式添无谓 churn。
    */
-  serialize(): { todos: TodoItem[] } {
-    return { todos: this.currentTodos.map((t) => ({ ...t })) };
+  serialize(): { todos: TodoItem[]; lastWritten?: TodoItem[] } {
+    const snap: { todos: TodoItem[]; lastWritten?: TodoItem[] } = {
+      todos: this.currentTodos.map((t) => ({ ...t })),
+    };
+    if (this.currentTodos.length === 0 && this.lastWrittenTodos.length > 0) {
+      snap.lastWritten = this.lastWrittenTodos.map((t) => ({ ...t }));
+    }
+    return snap;
   }
 
   /**
@@ -424,21 +466,27 @@ print("Hello World")
    * 容错：快照缺字段/类型不符/status 非法时，跳过该项而非抛错——绝不因脏快照阻断恢复。
    * 直接覆盖 currentTodos（resume 时本就是空实例，覆盖等价于"继续之前的清单"）。
    * 不触碰 writeVersion（保持从 0 起的时序基准语义）。
+   *
+   * ─── 2026-08-02：一并回灌事实快照 ───
+   *
+   * 此前只写 `currentTodos`，与 `reset()`（两个都清）不对称：resume 后 `lastWrittenTodos`
+   * 恒为空，`getTodoTerminalState()` 返 null，续接会话落不了终态进度快照。
+   *
+   * 兼容旧快照（无 `lastWritten` 字段）：回退到 `todos`。这对非 allDone 的快照本就等价
+   * （两者内容相同），对旧的 allDone 空快照则维持现状——信息在写盘时就已经丢了，
+   * 读侧变不出来。
    */
-  hydrate(snapshot: { todos?: unknown } | undefined | null): void {
+  hydrate(snapshot: { todos?: unknown; lastWritten?: unknown } | undefined | null): void {
     if (!snapshot || typeof snapshot !== "object") return;
     const raw = (snapshot as { todos?: unknown }).todos;
     if (!Array.isArray(raw)) return;
-    const restored: TodoItem[] = [];
-    for (const item of raw) {
-      if (!item || typeof item !== "object") continue;
-      const t = item as Partial<TodoItem>;
-      if (typeof t.content !== "string" || !t.content.trim()) continue;
-      if (typeof t.activeForm !== "string" || !t.activeForm.trim()) continue;
-      if (typeof t.status !== "string" || !VALID_STATUSES.has(t.status)) continue;
-      restored.push({ content: t.content, activeForm: t.activeForm, status: t.status });
-    }
-    this.currentTodos = restored;
+    this.currentTodos = sanitizeTodoSnapshot(raw);
+    // 事实语义：优先取 lastWritten（allDone 时它才是"清单最后长什么样"），
+    // 缺失则回退到展示清单。两者都脏 → 保持空，与 reset() 后的状态一致。
+    const rawLast = (snapshot as { lastWritten?: unknown }).lastWritten;
+    this.lastWrittenTodos = Array.isArray(rawLast)
+      ? sanitizeTodoSnapshot(rawLast)
+      : [...this.currentTodos];
   }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
