@@ -45,20 +45,90 @@ function formatTodoList(todos: TodoItem[]): string {
   return todos.map((t, i) => formatTodoItem(t, i)).join("\n");
 }
 
+/**
+ * 按 `content` 建索引比对新旧状态（**不能按数组下标**）。
+ *
+ * 根因（2026-08-01 实测复现）：`todos` 是**全量替换**语义，模型可以插入 / 删除 / 重排项。
+ * 旧实现拿 `oldTodos[i]` 与 `newTodos[i]` 逐位比，下标一错位就双向错报：
+ *   - **假报完成**：`[A(done), B, C]` 最前面插入新项 → 报「✅ 已完成: A」，可本轮无一项新完成；
+ *   - **漏报完成**：`[X, Y]` 删掉 `X` 且 `Y` 真完成 → 一句「已完成」都不报。
+ * 这是模型从 `tool_result` 能拿到的**唯一进度反馈信号**，假报让它以为已勾（于是不再去勾），
+ * 漏报让它拿不到「你刚完成了一项」的正反馈——两者都直接加重「非实时更新」缺陷。
+ *
+ * 用「按 content 分桶的状态队列」而非 `Map<content, status>`：content 允许重复（模型偶尔
+ * 会提交同名项），单值 Map 会让后者覆盖前者、又退化成一种错位。消费时 `shift()` 逐个配对。
+ */
+function buildOldStatusIndex(oldTodos: TodoItem[]): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const t of oldTodos) {
+    const bucket = index.get(t.content);
+    if (bucket) bucket.push(t.status);
+    else index.set(t.content, [t.status]);
+  }
+  return index;
+}
+
+/**
+ * 本轮**新**变为 completed 的项（按 content 配对，非下标）。
+ * 在旧清单里找不到同名项的一律不报——那是模型新插入的条目，它的完成不是"本轮翻的状态位"，
+ * 报出来就是假报（宁可少报，不可假报：假报会让模型误判某项已勾而不再去勾）。
+ */
+function newlyCompleted(oldTodos: TodoItem[], newTodos: TodoItem[]): TodoItem[] {
+  const index = buildOldStatusIndex(oldTodos);
+  const done: TodoItem[] = [];
+  for (const n of newTodos) {
+    const bucket = index.get(n.content);
+    if (!bucket || bucket.length === 0) continue; // 旧清单里没有 → 新插入项，不报
+    const oldStatus = bucket.shift()!;
+    if (oldStatus !== "completed" && n.status === "completed") done.push(n);
+  }
+  return done;
+}
+
+/**
+ * L1 前向推进指令（对标 claude-code `TodoWriteTool.ts:105`，并做得更细）。
+ *
+ * 为什么这是实时化的**主力通道**：它必达（不受任何节流 / 去重 / 封顶管辖，每次调用 100%
+ * 送达）、零边际 token 成本（复用本就要回传的 `tool_result`）、零幻觉风险（它是工具返回值，
+ * 弱模型不可能误判成"用户又发了半句话"）。我们原先把实时化全押在"每 8 轮回注一次 reminder"
+ * 那条最脆弱的通道上（实测 60 轮只注入 1 次），却空着这条最稳的。
+ *
+ * 比对标做得更细的地方：对标是一句**不看清单内容的无状态套话**（"Ensure that you continue
+ * to use the todo list…"），我们按清单实际状态分流、把"下一个动作"点名到具体项。依据是
+ * 弱模型（本缺陷现场是 `glm-5.2`）记忆更短、对具体指令的执行率显著高于泛化提醒——同一理由
+ * 下 `TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE` 也定得比对标的 10 更低（8）。
+ *
+ * ⚠️ 红线：**只加前向压力，绝不加拦截**。见 execute() 里 statusAdvisories 上方那段注释记录的
+ * 硬拦截代价（模型白等 105.4 秒重交一份逐字相同的清单，纯自伤）。
+ */
+function buildForwardDirective(todos: TodoItem[]): string | null {
+  if (todos.length === 0) return null;
+
+  const current = todos.find(t => t.status === "in_progress");
+  if (current) {
+    return `下一步：当前进行中的是「${current.content}」。做完它后**立即**用 todo_write 把它标为 completed，` +
+      `并把下一项置为 in_progress——不要攒到最后一起标记。`;
+  }
+
+  const nextPending = todos.find(t => t.status === "pending");
+  if (nextPending) {
+    // "没有 in_progress" 这条状态判断由 statusAdvisories 点名承载（见 execute()），
+    // 此处不重复那句话，只强调实时流转纪律，避免同一轮返回里出现两段近义文本。
+    return `请继续用 todo_write **实时**流转状态：每完成一项立即标记 completed，不要攒到最后一起标记。`;
+  }
+
+  return `请继续用 todo_write 追踪进度；若清单已全部推进完毕，如实收尾即可。`;
+}
+
 function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
   const lines: string[] = [];
   lines.push("任务清单已更新:\n");
   lines.push("更新后:");
   lines.push(formatTodoList(newTodos));
 
-  // 检测状态变更
-  for (let i = 0; i < newTodos.length; i++) {
-    const n = newTodos[i];
-    const o = oldTodos[i];
-    if (!o) continue;
-    if (o.status !== n.status && n.status === "completed") {
-      lines.push(`\n✅ 已完成: ${n.content}`);
-    }
+  // 检测状态变更（按 content 配对，非下标——见 newlyCompleted 注释）
+  for (const t of newlyCompleted(oldTodos, newTodos)) {
+    lines.push(`\n✅ 已完成: ${t.content}`);
   }
 
   // 统计
@@ -68,6 +138,10 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
   lines.push(`\n进度: ${completed}/${newTodos.length} 已完成` +
     (inProgress > 0 ? `, ${inProgress} 进行中` : "") +
     (pending > 0 ? `, ${pending} 待开始` : ""));
+
+  // L1：前向推进指令（每次调用必达）
+  const directive = buildForwardDirective(newTodos);
+  if (directive) lines.push(`\n${directive}`);
 
   return lines.join("\n");
 }
@@ -81,7 +155,33 @@ export class TodoWriteTool implements Tool {
   /** P2-3：状态管理类工具，清单内容随进展自然变化、连续更新是正当行为，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
 
+  /**
+   * 短描述层（对标 claude-code 的**双层工具描述**：`PROMPT` 9114 字符送 API，
+   * `DESCRIPTION` 269 字符供工具列表 / 搜索场景）。
+   *
+   * 关键不在于"多一个搜索字段"，而在于**那句最重要的纪律必须在每一层都出现**：对标那份
+   * 269 字符的短描述里专门留了一句 `Make sure that at least one task is in_progress at all
+   * times.`——它把"必须有一项 in_progress"做成了**在任何呈现层级都不会被裁掉**的核心纪律。
+   * 我们原先只有单层 `description()`（3000+ 字符），那句话埋在 `## 任务状态` 小节里，
+   * 上下文压力大或走 ToolSearch 摘要路径时容易被稀释。
+   */
+  readonly searchHint =
+    "todo task list progress tracking 任务 清单 进度 追踪 实时 更新 状态 流转 " +
+    "始终保持至少一项 in_progress；每完成一项立即标记 completed，不要攒到最后一起标记";
+
   private currentTodos: TodoItem[] = [];
+  /**
+   * 最近一次成功写入的**原始**清单（全量，不受"全部完成即清空"影响）。
+   *
+   * 为什么需要它（发现 4a → 修复 5 的前置）：`execute()` 在全部完成时把 `currentTodos`
+   * 置空（那是 TUI 面板"任务做完就收起来"的设计），于是三处连锁：
+   *   `getTodos()` 返 `[]` → `app.ts` 的 `getTodoState()` 返 `null` → queryLoop 拿不到终态。
+   * 后果是 `~/.sid-code/progress/<id>.md` **永久停在最后一次未完成态**——本次排查就吃了这个亏：
+   * 残留文件写着 `0 已完成 / 18 待办`，它无法自证是"真没推进"还是"推进了但终态没落盘"。
+   *
+   * 故独立留一份快照：清空是**展示语义**，而进度落盘要的是**事实语义**，两者不该共用一个字段。
+   */
+  private lastWrittenTodos: TodoItem[] = [];
   /**
    * todo_write 被成功调用的次数（单调递增）。
    * P0-2 用它判断"距上次 todo_write 多少轮"：queryLoop 在每轮记录该值的快照，
@@ -228,6 +328,8 @@ print("Hello World")
 - completed: 已完成
 
 ## 任务管理规则
+- **任何时刻都应保持至少一项 in_progress**（清单未全部完成时）—— 没有"当前项"就没有实时进度，
+  也就没有"做完当前项要翻状态位"的触发时机。首次建完清单就要立刻把第 1 项置为 in_progress。
 - 实时更新状态
 - 完成后立即标记（不要攒到最后一起标记）
 - **同一时刻理想情况下只有一个 in_progress** —— 这是让进度展示清晰的建议，不是硬性校验：
@@ -268,6 +370,20 @@ print("Hello World")
   }
 
   /**
+   * 获取最近一次成功写入的**原始**清单（深拷贝），**不受"全部完成即清空"影响**。
+   *
+   * 与 `getTodos()` 的分工是**展示语义 vs 事实语义**（见 `lastWrittenTodos` 字段注释）：
+   * - `getTodos()`：TUI 面板用。全部完成时返 `[]`，面板收起来，这是刻意的。
+   * - 本方法：进度落盘 / 可观测性用。要的是"清单最后长什么样"，含全部完成的终态。
+   *
+   * ⚠️ 不要图省事把 `getTodos()` 改成返回这一份——那会让 TUI 在任务全完成后仍挂着
+   * 一张全绿清单不消失，是行为回退。两个语义分两个入口是**结论**，不是重复代码。
+   */
+  getLastWrittenTodos(): TodoItem[] {
+    return this.lastWrittenTodos.map(t => ({ ...t }));
+  }
+
+  /**
    * 重置内部清单状态（/clear 时调用）。
    * 仅清 UI 层 todos 不够：本工具内部的 currentTodos 是模块级私有状态，
    * /clear 后若不重置，下次只看 TodoPanel 不提交新 todo 会看到旧清单"幽灵"。
@@ -276,6 +392,8 @@ print("Hello World")
    */
   reset(): void {
     this.currentTodos = [];
+    // 事实快照同样要清：否则 /clear 后新会话的进度落盘会取到上一个任务的终态清单。
+    this.lastWrittenTodos = [];
   }
 
   /**
@@ -385,17 +503,29 @@ print("Hello World")
     // 现在的处理：**接受写入**，把规范作为提示附在成功输出里。模型能看到纠正建议，
     // 但已经做的工作不会被丢掉。同理适用于「有非 pending 却无 in_progress」——
     // 例如 [completed, pending, pending] 是刚做完一项、正要挑下一项的正常中间态。
+    //
+    // ─── 2026-08-01 修复：去掉 `hasNonPending` 前置，补上「全 pending 首建」这个入口态 ───
+    //
+    // 旧条件是 `hasNonPending && inProgressCount === 0`，于是**全 pending** 的清单
+    // （`hasNonPending === false`）两条分支都不触发、零提示。守卫方向正好反了：
+    // 「全 pending、无 in_progress」恰恰是**保证不会有实时更新的那个形态**——没有"当前项"
+    // 这个锚点，就没有"做完当前项要翻状态位"的触发时机。旧守卫只在**已经开工**后才管，
+    // 正好漏掉了最需要管的入口态。本缺陷现场就是这样：18 项全 pending 首建后再没碰过清单。
     const statusAdvisories: string[] = [];
     if (!allDone) {
       const inProgressCount = todos.filter(t => t.status === "in_progress").length;
-      const hasNonPending = todos.some(t => t.status !== "pending");
       if (inProgressCount > 1) {
         statusAdvisories.push(
           `提示：当前有 ${inProgressCount} 个 in_progress。清单已按你提交的内容保存，但建议同一时刻只保留 1 个 in_progress、其余置 pending——这样进度展示更清晰，也更容易发现自己是否在并行摊开太多任务。`,
         );
-      } else if (hasNonPending && inProgressCount === 0) {
+      } else if (inProgressCount === 0 && todos.length > 0) {
+        // 点名下一项（而非泛泛说"把下一项置为 in_progress"）：弱模型对具体指令的执行率
+        // 显著高于泛化提醒，与 buildForwardDirective 的分流同源、可共用同一锚点。
+        const nextPending = todos.find(t => t.status === "pending");
+        const named = nextPending ? `（建议是「${nextPending.content}」）` : "";
         statusAdvisories.push(
-          "提示：当前没有 in_progress 任务。清单已保存，但若你正要继续推进，记得把下一项置为 in_progress。",
+          `提示：当前没有 in_progress 任务。清单已保存，但若你正要继续推进，` +
+            `请先把下一项${named}置为 in_progress 再开始工作——这样进度才是实时可见的。`,
         );
       }
     }
@@ -408,6 +538,8 @@ print("Hello World")
 
     // 更新为新状态（全量替换）
     this.currentTodos = allDone ? [] : todos;
+    // 事实语义快照：不受 allDone 清空影响，供进度落盘取终态（见字段注释 / 发现 4a）
+    this.lastWrittenTodos = todos;
 
     // 空列表检测（全部完成 → 清空清单）
     //

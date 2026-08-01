@@ -1,0 +1,282 @@
+/**
+ * todo 实时化 —— queryLoop 集成验证
+ *
+ * 方案：docs/bugfixes/todo/20260801-todolist非实时更新-对标CC架构根治方案.md
+ *
+ * 单测（todo-reminder-scan.test.ts / todo-write.test.ts）验的是各函数算得对；
+ * 本文件验的是**接线真的通了**——纯函数正确但没接进主循环，是这个缺陷的原始形态之一
+ * （`TURNS_SINCE_WRITE` 定义了却从未被引用，整场会话只注入 1 次）。
+ *
+ * 三条性质：
+ *   1. 长任务停滞时 todo 清单被**反复**回注（不再是一次性）；
+ *   2. 回注产物**不落历史**（`reminder-inject.ts` 不变量 3，与修复 1 同时成立）；
+ *   3. 全部完成的**终态**能落进度快照（修复 5 + 发现 4a 连锁）。
+ */
+
+import { describe, test, expect } from "bun:test";
+import { queryLoop } from "../../src/query/loop.ts";
+import type { QueryLoopConfig } from "../../src/query/loop.ts";
+import type { QueryDeps } from "../../src/query/types.ts";
+import { Manager as ContextManager } from "../../src/context/manager.ts";
+import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+import { ModelFallback } from "../../src/llm/fallback.ts";
+import { SessionState } from "../../src/session/state.ts";
+import type { Config } from "../../src/config/config.ts";
+import type { StreamEvent, AccumulatedResponse } from "../../src/llm/types.ts";
+import type { TodoItem } from "../../src/tool/todo-write.ts";
+
+async function* emptyStream(): AsyncIterable<StreamEvent> {}
+
+function toolUseResp(id: string, name = "read"): AccumulatedResponse {
+  return {
+    role: "assistant",
+    content: [{ type: "tool_use", id, name, input: { file_path: "/tmp/x" } }],
+    stopReason: "tool_use",
+    usage: { inputTokens: 100, outputTokens: 5 },
+  } as AccumulatedResponse;
+}
+
+function finalResp(text = "已完成"): AccumulatedResponse {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    stopReason: "end_turn",
+    usage: { inputTokens: 100, outputTokens: 5 },
+  } as AccumulatedResponse;
+}
+
+function todo(content: string, status: TodoItem["status"]): TodoItem {
+  return { content, activeForm: `正在${content}`, status };
+}
+
+/**
+ * 造一个"模型长期不碰清单"的会话：前 N 轮都是工具调用，最后一轮 end_turn。
+ * todoState 恒定不变（writeVersion 不动）= 完全停滞，正是缺陷现场的形态。
+ */
+function makeHarness(opts: {
+  turns: number;
+  todos: TodoItem[];
+  /** 终态 dep：不传则不提供（验证向后兼容回退） */
+  terminalTodos?: TodoItem[];
+  writeVersion?: number;
+}) {
+  const ctxMgr = new ContextManager({ maxTokens: 200000 });
+  ctxMgr.setSystemPrompt("test system prompt");
+  ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "干个长活" }] });
+
+  /** 每轮发送副本里最后一条 user 消息的全部 text block 拼接 */
+  const sentWire: string[] = [];
+  const progressWrites: Array<{ completed: number; total: number }> = [];
+  const traceEvents: Array<{ event: string; data: any }> = [];
+
+  const responses: AccumulatedResponse[] = [
+    ...Array.from({ length: opts.turns }, (_, i) => toolUseResp(`t${i}`)),
+    finalResp(),
+  ];
+  let call = 0;
+
+  const deps: QueryDeps = {
+    sendWithRetry: (params: any) => {
+      const msgs = params?.messages ?? [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role !== "user" || !Array.isArray(m.content)) continue;
+        sentWire.push(
+          m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"),
+        );
+        break;
+      }
+      return emptyStream();
+    },
+    processStream: async () => responses[call++] ?? finalResp(),
+    executeTools: async (content: any[]) => ({
+      results: content
+        .filter((b: any) => b.type === "tool_use")
+        .map((b: any) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
+    }),
+    autoCompact: async () => {},
+    handleContextOverflow: () => null,
+    getAbortSignal: () => undefined,
+    uuid: () => "uuid-test",
+    getTodoState: () => ({
+      todos: opts.todos,
+      writeVersion: opts.writeVersion ?? 1,
+    }),
+    ...(opts.terminalTodos
+      ? {
+          getTodoTerminalState: () => ({
+            todos: opts.terminalTodos!,
+            writeVersion: opts.writeVersion ?? 1,
+          }),
+        }
+      : {}),
+    traceAppendEvent: (e: any) => {
+      traceEvents.push({ event: e.event, data: e.data });
+    },
+  };
+
+  const loopConfig: QueryLoopConfig = {
+    config: {
+      model: "deepseek-v4-pro",
+      provider: "openai",
+      maxTurns: opts.turns + 5,
+      toolSearch: false,
+    } as unknown as Config,
+    ctxMgr,
+    toolRegistry: new ToolRegistry(),
+    sessionState: new SessionState("test-session-todo"),
+    fallback: new ModelFallback(),
+    deps,
+  };
+  return { loopConfig, ctxMgr, sentWire, progressWrites, traceEvents };
+}
+
+/**
+ * buildTodoReminder 的标志性措辞（与 src/query/todo-reminder.ts:111 保持同步）。
+ * 单独提成常量：文案若改动，这里一处改完全文件生效，不会留下"半数断言静默失效"的假绿灯。
+ */
+const TODO_REMINDER_MARKER = "这是你当前的任务清单";
+
+/** 发送副本里出现 todo 回注的轮次下标 */
+function injectionTurns(sentWire: string[]): number[] {
+  const out: number[] = [];
+  sentWire.forEach((wire, i) => {
+    if (wire.includes(TODO_REMINDER_MARKER)) out.push(i);
+  });
+  return out;
+}
+
+describe("修复 1 接线：长任务停滞时 todo 被反复回注", () => {
+  test("40 轮停滞会话里，回注次数 ≥ 3（旧实现全程只 1 次）", async () => {
+    const { loopConfig, sentWire } = makeHarness({
+      turns: 40,
+      todos: [todo("甲", "in_progress"), todo("乙", "pending"), todo("丙", "pending")],
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const turns = injectionTurns(sentWire);
+    // 阈值 8 轮一次 → 40 轮理论上约 4-5 次。断言 ≥3 留边界余量，
+    // 但足以钉死"退回一次性注入"（旧实现在这个场景下恒为 1）。
+    expect(turns.length).toBeGreaterThanOrEqual(3);
+    // 且必须延续到会话后段，不是前几轮挤完就哑火
+    expect(turns[turns.length - 1]).toBeGreaterThan(20);
+  });
+
+  test("回注携带完整清单内容（模型能看到每一项，而非只看到一句催促）", async () => {
+    const { loopConfig, sentWire } = makeHarness({
+      turns: 20,
+      todos: [todo("独特任务甲", "in_progress"), todo("独特任务乙", "pending")],
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const injected = sentWire.filter((w) => w.includes(TODO_REMINDER_MARKER));
+    expect(injected.length).toBeGreaterThan(0);
+    expect(injected[0]).toContain("独特任务甲");
+    expect(injected[0]).toContain("独特任务乙");
+  });
+
+  test("每次回注都带 <system-reminder> 围栏（不变量 1，防「幻影用户消息」）", async () => {
+    const { loopConfig, sentWire } = makeHarness({
+      turns: 20,
+      todos: [todo("甲", "in_progress"), todo("乙", "pending")],
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    for (const wire of sentWire.filter((w) => w.includes(TODO_REMINDER_MARKER))) {
+      const idx = wire.indexOf(TODO_REMINDER_MARKER);
+      const before = wire.slice(0, idx);
+      // 清单前必须有围栏开标签（弱模型靠它区分"系统提醒"与"用户又发了半句话"）
+      expect(before).toContain("<system-reminder>");
+    }
+  });
+});
+
+describe("不变量 3 仍成立：回注产物不落 ctxMgr 历史", () => {
+  test("跑完 20 轮，历史里没有任何 todo 回注文本", async () => {
+    const { loopConfig, ctxMgr } = makeHarness({
+      turns: 20,
+      todos: [todo("甲", "in_progress"), todo("乙", "pending")],
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const historyUserText = ctxMgr
+      .getMessages()
+      .filter((m) => m.role === "user" && Array.isArray(m.content))
+      .flatMap((m) => (m.content as any[]).filter((b) => b.type === "text").map((b) => b.text))
+      .join("\n");
+
+    // 回注只进发送副本。落历史会同时引发 TUI 泄漏 / 压缩误取 / 逐轮累积三处故障。
+    expect(historyUserText).not.toContain(TODO_REMINDER_MARKER);
+    // 用户原始指令完好
+    expect(historyUserText).toContain("干个长活");
+  });
+});
+
+describe("修复 5 + 发现 4a：终态可观测", () => {
+  test("全部完成时仍落 TodoProgressAdvanced 埋点（取终态 dep）", async () => {
+    // 展示语义：全完成 → TodoWriteTool 清空 → getTodoState 返空清单
+    // 事实语义：getTodoTerminalState 仍给出全 completed 的终态
+    const { loopConfig, traceEvents } = makeHarness({
+      turns: 3,
+      todos: [], // 展示层已清空（模拟 allDone 后的 getTodos()）
+      terminalTodos: [todo("甲", "completed"), todo("乙", "completed")],
+      writeVersion: 7,
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const advanced = traceEvents.filter((e) => e.event === "TodoProgressAdvanced");
+    // 旧实现：countUnfinished > 0 前置 + getTodoState 返 null → 终态永远不落盘/不埋点
+    expect(advanced.length).toBeGreaterThan(0);
+    expect(advanced[0].data.completed).toBe(2);
+    expect(advanced[0].data.unfinished).toBe(0);
+    expect(advanced[0].data.writeVersion).toBe(7);
+  });
+
+  test("同一 writeVersion 不重复埋点（基线统一推进，防每轮重复落盘）", async () => {
+    const { loopConfig, traceEvents } = makeHarness({
+      turns: 12,
+      todos: [],
+      terminalTodos: [todo("甲", "completed")],
+      writeVersion: 3,
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    // writeVersion 全程不变 → 只应埋点一次。若基线没统一推进，这里会等于轮数。
+    const advanced = traceEvents.filter((e) => e.event === "TodoProgressAdvanced");
+    expect(advanced.length).toBe(1);
+  });
+
+  test("未提供终态 dep 时回退到 getTodoState（向后兼容，不崩）", async () => {
+    const { loopConfig, traceEvents } = makeHarness({
+      turns: 5,
+      todos: [todo("甲", "in_progress"), todo("乙", "pending")],
+      writeVersion: 2,
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const advanced = traceEvents.filter((e) => e.event === "TodoProgressAdvanced");
+    expect(advanced.length).toBe(1);
+    expect(advanced[0].data.unfinished).toBe(2);
+  });
+});
+
+describe("埋点语义：todo 通道不再上报 nagCount/cap", () => {
+  test("NoProgressNagInjected 的 todo 事件带扫描距离，不带封顶字段", async () => {
+    const { loopConfig, traceEvents } = makeHarness({
+      turns: 20,
+      todos: [todo("甲", "in_progress"), todo("乙", "pending")],
+    });
+    for await (const _ of queryLoop(loopConfig)) { /* drain */ }
+
+    const todoNags = traceEvents.filter(
+      (e) => e.event === "NoProgressNagInjected" && e.data?.kind === "todo",
+    );
+    expect(todoNags.length).toBeGreaterThan(0);
+    // 新字段在
+    expect(todoNags[0].data).toHaveProperty("turnsSinceLastTodoWrite");
+    expect(todoNags[0].data).toHaveProperty("turnsSinceLastReminder");
+    // 旧封顶语义已不适用于本通道（留着会让离线分析以为还有封顶行为）
+    expect(todoNags[0].data.nagCount).toBeUndefined();
+    expect(todoNags[0].data.cap).toBeUndefined();
+  });
+});

@@ -61,48 +61,53 @@ describe("发现 2：RL-006 合法例外出口", () => {
 // ────────────────────────────────────────────────────────────────────────────
 // 发现 3 / 批次 B：两条催促通道的封顶预算必须彼此独立
 // ────────────────────────────────────────────────────────────────────────────
-describe("发现 3：todo / work-log 封顶计数器互不饿死", () => {
-  test("一方注满 cap 后，另一方首次注入仍必须放行", () => {
-    // 模拟修复后的调用形态：两条通道各读自己的计数器。
-    const todoNagCount = MAX_NO_PROGRESS_NAGS; // todo 已注满
-    const progressNagCount = 0; // work-log 一次都没注过
-
+// 2026-08-01 更新：本组原先守卫"todo / work-log 两个封顶计数器彼此独立"。
+// todo 那一半的封顶与去重此时已**整体删除**——因为实测证明它不是"额度被抢"的问题，
+// 而是这道防线本身把主功能治死了（60 轮停滞会话只注入 1 次，nagCount 停在 1/2，
+// 说明**封顶连触发机会都没有、去重先锁死了通道**）。
+// 详见 docs/bugfixes/todo/20260801-todolist非实时更新-对标CC架构根治方案.md 根因 1。
+//
+// 所以本组的守卫对象随之变更，但**两条历史教训都不能丢**：
+//   ① 饿死教训 → 降级为对 decideNagInjection 的纯函数断言（work-log 仍在用这套预算）；
+//   ② 新教训（本轮）→ todo 通道不得再长回去重/封顶，否则又是 60 轮响 1 次。
+describe("发现 3：封顶预算语义（todo 通道已退出这套机制）", () => {
+  test("decideNagInjection 的预算是按传入计数判定的，不存在跨通道串台", () => {
+    // work-log 读自己的计数器（0）→ 首次注入必须放行。
     const workLog = decideNagInjection({
       candidate: "工作日志摘要（首次）",
       lastInjectedText: undefined, // 从未注入过 → 绝无重复可能
-      noProgressNagCount: progressNagCount,
+      noProgressNagCount: 0,
     });
-
-    // 若这条失败 = 计数器又被合并成一个共享字段：work-log 首次注入就被抑制，
-    // 它一次都没注过就已经没额度了（审计发现 3 的饿死复现）。
     expect(workLog.inject).toBe(true);
 
-    // 反面对照：读到被占满的那个计数器时确实应当抑制——证明抑制逻辑本身没坏，
-    // 问题只在"读谁的计数器"。
+    // 反面对照：若读到一个已被占满的计数器（历史上共享字段就是这样），确实会被抑制。
+    // 这条证明抑制逻辑本身没坏，当年的问题只在"读谁的计数器"。
     const wrongBudget = decideNagInjection({
       candidate: "工作日志摘要（首次）",
       lastInjectedText: undefined,
-      noProgressNagCount: todoNagCount,
+      noProgressNagCount: MAX_NO_PROGRESS_NAGS,
     });
     expect(wrongBudget.inject).toBe(false);
   });
 
-  test("LoopState 暴露两个独立字段，且不再保留共享的 noProgressNagCount", () => {
-    // 用源码文本做结构哨兵：类型字段无法在运行时反射，但字段名被改回去时这条会红。
+  test("LoopState 保留 work-log 的 progressNagCount，且无共享的 noProgressNagCount", () => {
     const typesSrc = readFileSync(join(REPO_ROOT, "src/query/types.ts"), "utf8");
-    expect(typesSrc).toMatch(/^\s*todoNagCount\?:/m);
     expect(typesSrc).toMatch(/^\s*progressNagCount\?:/m);
     // 旧的共享字段声明必须消失（注释里作为历史说明提到它是允许的，故只查声明行）。
     expect(typesSrc).not.toMatch(/^\s*noProgressNagCount\?:/m);
   });
 
-  test("loop.ts 两条通道各读各的计数器，且有进展时同时清零", () => {
+  test("todo 通道不得再接入去重/封顶（回归哨兵：接回去就是 60 轮响 1 次）", () => {
+    const typesSrc = readFileSync(join(REPO_ROOT, "src/query/types.ts"), "utf8");
     const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
-    // 各自读自己的预算
-    expect(loopSrc).toContain("noProgressNagCount: state.todoNagCount ?? 0");
+    // 字段声明必须不存在（注释提及不算）
+    expect(typesSrc).not.toMatch(/^\s*todoNagCount\?:/m);
+    expect(typesSrc).not.toMatch(/^\s*lastInjectedTodoReminderText\?:/m);
+    // loop.ts 不得再把 todo 候选喂给 decideNagInjection
+    expect(loopSrc).not.toContain("noProgressNagCount: state.todoNagCount");
+    expect(loopSrc).not.toContain("state.lastInjectedTodoReminderText");
+    // work-log 那条仍在用（证明上面不是因为整段被删而假绿）
     expect(loopSrc).toContain("noProgressNagCount: state.progressNagCount ?? 0");
-    // writeVersion 变化（有进展）时两个都要清零——漏清任何一个会让那条通道提前哑掉。
-    expect(loopSrc).toContain("state.todoNagCount = 0");
     expect(loopSrc).toContain("state.progressNagCount = 0");
   });
 });

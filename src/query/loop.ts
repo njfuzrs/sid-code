@@ -82,6 +82,11 @@ import {
   countUnfinished,
 } from "./todo-reminder.ts";
 import {
+  getTodoReminderTurnCounts,
+  shouldInjectTodoReminder,
+  LAST_TODO_REMINDER_TURN_KEY,
+} from "./todo-reminder-scan.ts";
+import {
   PROGRESS_REMINDER_INTERVAL,
   snapshotFromTodos,
   persistProgress,
@@ -394,16 +399,61 @@ function emitNagInjectedEvent(
     absoluteTurn?: number;
     /** 缺口7：第几条用户消息，让 turn 的回绕可还原。 */
     promptSeq?: number;
-    nagCount: number;
-    cap: number;
-    countedAsNoProgress: boolean;
-    afterCompact: boolean;
+    // ─── work-log 通道字段（仍走去重+封顶，见 reminder-throttle.ts）───
+    nagCount?: number;
+    cap?: number;
+    countedAsNoProgress?: boolean;
+    afterCompact?: boolean;
+    // ─── todo 通道字段（2026-08-01 改无状态扫描后，nagCount/cap 概念已不存在）───
+    // 记两个扫描出来的"距今多少轮"，供事后核对阈值是否过紧/过松。
+    // `Infinity` 不是合法 JSON，故由调用方归一化为 -1（= 从未发生过）。
+    turnsSinceLastTodoWrite?: number;
+    turnsSinceLastReminder?: number;
   },
 ): void {
   if (!deps.traceAppendEvent) return;
   try {
     deps.traceAppendEvent({
       event: "NoProgressNagInjected",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
+}
+
+/**
+ * 把一次 todo 清单推进（`writeVersion` 增长）落成结构化 trace 事件。
+ *
+ * 为什么必须补这个埋点（方案 §8.3）：`writeVersion` 的增长节奏是**唯一能直接量"todo 实时性"
+ * 的指标**——"清单更新了几次、分布在哪些轮次"就是本缺陷的定义本身。而此前它完全无埋点，
+ * 定性只能靠间接证据：本次排查是靠 `~/.sid-code/progress/<id>.md` 只被写过一次反推
+ * "整场会话 todo_write 只成功调用过 1 次"，而那个文件本身还有"全完成时不落盘"的缺口
+ * （见修复 5），两个不确定性叠在一起，差点把结论建在流沙上。
+ *
+ * 有了这条事件，改动效果可被 trace-digest 直接统计：每会话 todo 推进次数、
+ * 相邻两次推进间隔多少轮。这是判断"是否真的在朝北极星走"的尺子，不是可选装饰。
+ */
+function emitTodoProgressEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  data: {
+    turn: number;
+    absoluteTurn?: number;
+    promptSeq?: number;
+    /** 单调递增的成功写入次数（= 模型碰过清单几次）。 */
+    writeVersion: number;
+    total: number;
+    completed: number;
+    unfinished: number;
+  },
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "TodoProgressAdvanced",
       session_id: sessionId,
       timestamp: new Date().toISOString(),
       data,
@@ -999,80 +1049,111 @@ export async function* queryLoop(
     // 触发条件：有未完成项 + (距上次 todo_write ≥ TURNS_SINCE_WRITE 轮，或距上次回注 ≥ TURNS_BETWEEN_REMINDERS 轮)。
     if (deps.getTodoState) {
       const todoState = deps.getTodoState();
-      if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
-        // P2-2：todo 状态变化（writeVersion 变化）即把进度快照落盘到 ~/.sid-code/progress/<sessionId>.md，
-        // 形成抗压缩、抗清理、可跨会话的外部记忆（CLAUDE.md §0.1 Context 层）。
-        if (state.lastSeenTodoWriteVersion !== todoState.writeVersion) {
-          const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
+      // ─── 2026-08-01 修复 5：进度快照必须覆盖**终态** ───
+      //
+      // 旧实现把落盘整块放在 `countUnfinished(todos) > 0` 里面，于是**全部完成时跳过落盘**，
+      // `~/.sid-code/progress/<id>.md` 永久停在最后一次未完成态。这次排查就吃了这个亏：
+      // 残留文件写着 `0 已完成 / 18 待办`，而它无法自证是"真没推进"还是"推进了但终态没落盘"
+      // （本例只能靠 writeVersion 语义交叉验证才敢定性）。快照是北极星「底座·可度量」的
+      // 一部分——量不准就等于拿有系统误差的尺子量自己的改动效果。
+      //
+      // 故把落盘提到 unfinished 判定**之外**：只要 writeVersion 变了就落盘，无论是否已全完成。
+      //
+      // 且必须读 `getTodoTerminalState`（事实语义）而非 `getTodoState`（展示语义）——发现 4a：
+      // TodoWriteTool 在全部完成时清空 `currentTodos`（TUI 面板收起是刻意设计），于是
+      // `getTodoState()` 返 null，光把落盘提到外面**仍然拿不到终态**，修复 5 会静默失效。
+      // 未提供该 dep 时回退到 getTodoState（向后兼容，只是拿不到全完成终态）。
+      const todoFactState = deps.getTodoTerminalState?.() ?? todoState;
+      // 「本轮清单有推进」只判定**一次**，两个消费方（落盘/埋点 + 下方 gate 预算复位）共用。
+      // 不能各自现算：基线 `lastSeenTodoWriteVersion` 一旦被前者写掉，后者就永远读到 false
+      // （gate 预算再也不会复位）；反之若只在后者里写，全部完成时前者被跳过 → 基线不推进 →
+      // 每轮重复落盘同一份终态。一次判定 + 末尾统一推进基线，两个坑一起避掉。
+      const todoAdvanced =
+        !!todoFactState && state.lastSeenTodoWriteVersion !== todoFactState.writeVersion;
+      if (todoFactState && todoFactState.todos.length > 0) {
+        if (todoAdvanced) {
+          const snap = snapshotFromTodos(sessionState.sessionId, todoFactState.todos);
           persistProgress(snap);
+          // 可观测性（§8.3）：writeVersion 增长是**唯一能直接量"实时性"的指标**，此前完全无埋点。
+          // 缺陷现场只能靠"progress 文件只写过 1 次"反推清单只更新过 1 次——那是间接证据。
+          // 有了这条事件，"清单更新了几次 / 分布在哪些轮次"可被 trace-digest 直接统计。
+          emitTodoProgressEvent(deps, sessionState.sessionId, {
+            ...turnMetrics(state, sessionState, promptSeq),
+            writeVersion: todoFactState.writeVersion,
+            total: todoFactState.todos.length,
+            completed: todoFactState.todos.filter((t) => t.status === "completed").length,
+            unfinished: countUnfinished(todoFactState.todos),
+          });
         }
-
-        // writeVersion 变化 → 模型刚更新过清单，刷新基线、本轮不重复回注
-        if (state.lastSeenTodoWriteVersion !== todoState.writeVersion) {
-          state.lastSeenTodoWriteVersion = todoState.writeVersion;
-          state.lastTodoReminderTurn = state.turnCount;
-          state.todoReminderPendingAfterCompact = false;
-          // 对话重播幻觉修复（Fix 2/3）：writeVersion 变化 = 模型确实更新了清单 = 有进展。
-          // 清零"无进展催促"计数（恢复注入能力），并刷新 end_turn todo gate 预算——
-          // 同一条用户消息内模型完成部分项后，gate 不该继续消耗上一段停滞攒下的续命额度。
-          // 两个计数器都要清：它们各自独立封顶（见 types.ts todoNagCount 注释里的饿死复现），
-          // 但"有进展"这个信号对两者同等有效，漏清任何一个都会让那条通道提前哑掉。
-          state.todoNagCount = 0;
+      }
+      if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
+        // writeVersion 变化 → 模型刚更新过清单，刷新 gate 预算、本轮不重复回注。
+        //
+        // 注意这里**不再**刷新回注 cadence：cadence 的基准已改为"距上次 todo_write 多少轮"，
+        // 由 getTodoReminderTurnCounts 从消息历史现算（下方），不需要也不该在这里手工记基线。
+        if (todoAdvanced) {
+          // 有进展 → 刷新 end_turn todo gate 预算：同一条用户消息内模型完成部分项后，
+          // gate 不该继续消耗上一段停滞攒下的续命额度。
           state.progressNagCount = 0;
           state.todoGateRetryCount = 0;
           // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
           // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
           state.todoGateProductiveNoUpdateCount = 0;
         } else {
-          const turnsSinceReminder = state.turnCount - (state.lastTodoReminderTurn ?? 0);
-          // 压缩后强制回注（与 goalReminderPendingAfterCompact 同机制）
+          // ─── 2026-08-01 修复 1：改为无状态消息扫描（对标 attachments.ts:3212-3291）───
+          //
+          // 旧实现：`LoopState` 计数器 + 逐字节去重 + 封顶 2 次。实测 60 轮停滞会话**只注入 1 次**，
+          // 且封顶（cap=2）连触发机会都没有——去重先把通道锁死了（`buildTodoReminder` 的文本只随
+          // 清单内容变化，模型一停滞文本就恒定 → 从第 2 次起永久静音）。而"模型停滞"恰恰是最需要
+          // 催更的时刻：这道防线把催更与"无需催更"判反了，属**防线过度生效导致主功能失效**。
+          //
+          // 现在：两个条件都从消息历史现算，纯节流、无去重、无封顶。两处收益——
+          //   1. 跨用户消息不失忆（LoopState 每条用户消息重建，计数器会归零，历史不会）；
+          //   2. `TURNS_SINCE_WRITE` 这个**死常量**（旧实现从未引用它，只在注释里提）真正参与判定。
+          //
+          // ⚠️ 与对标的偏离，以及 `todoReminderPendingAfterCompact` 为什么**必须保留**：
+          // 对标把 reminder 本身作为 attachment 消息写进历史，于是"上次注入是哪轮"也记在历史里，
+          // 压缩连带删除 → 自动重注，不需要任何补丁位。本项目不能那么做（`reminder-inject.ts`
+          // 不变量 3 有三处实测事故背书 + 哨兵测试：注入产物写回 ctxMgr 会同时引发 TUI 泄漏、
+          // 压缩把工具列表当"用户最初的请求"、reminder 逐轮累积）。
+          // 我们把注入锚点放在 SessionState，它**不会**被压缩清掉——所以"压缩后自动重注"这个
+          // 属性拿不到，仍需那 8 处显式置位兜住：压缩把 todo 清单从上下文里抹掉后，
+          // `turnsSinceLastReminder` 可能还没到期，此时不强制重注，清单就在模型视野里永久消失。
+          const counts = getTodoReminderTurnCounts(cleanedMessages, {
+            absoluteTurn: sessionState.getAbsoluteTurn(),
+            lastReminderAbsoluteTurn: sessionState.get(LAST_TODO_REMINDER_TURN_KEY) as
+              | number
+              | undefined,
+          });
           const afterCompact = state.todoReminderPendingAfterCompact === true;
-          const shouldInjectTodo = turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS
-            || afterCompact;
-          if (shouldInjectTodo) {
-            // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与上次注入内容逐字节相同（无进展）
-            // 或连续催促已达上限时跳过——避免把"内容近似、无新用户指令"的提醒反复注入成
-            // 幻影用户消息，正是弱模型误判"消息被截断/上一轮重播"的根因。
-            // 例外：compact 后强制回注（afterCompact）必须绕过去重 + 封顶——历史被压缩后，
-            // 模型上下文里的 todo 清单已丢失，必须恢复一次，否则任务列表永久消失（违背
-            // todoReminderPendingAfterCompact 的设计意图）；且不计入封顶（真实上下文事件，非无进展催促）。
-            const candidate = buildTodoReminder(todoState.todos);
-            // 封顶预算用**专属**的 todoNagCount（原先与 work-log 共用一个字段，先到的
-            // 一方会吃掉另一方全部额度 → 互相饿死。见 types.ts todoNagCount 注释）。
-            const decision = afterCompact
-              ? { inject: true, countedAsNoProgress: false }
-              : decideNagInjection({
-                  candidate,
-                  lastInjectedText: state.lastInjectedTodoReminderText,
-                  noProgressNagCount: state.todoNagCount ?? 0,
-                });
-            if (decision.inject) {
-              reminderParts.push(candidate);
-              state.lastTodoReminderTurn = state.turnCount;
-              state.todoReminderPendingAfterCompact = false;
-              state.lastInjectedTodoReminderText = candidate;
-              // 本轮 writeVersion 未变化（进入 else 分支即代表无进展），计入封顶计数
-              if (decision.countedAsNoProgress) {
-                state.todoNagCount = (state.todoNagCount ?? 0) + 1;
-              }
-              log.info("QUERY_LOOP", `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，无进展催促 ${state.todoNagCount}/${MAX_NO_PROGRESS_NAGS}）`);
-              // 可观测性（负收益防线审计 发现 3 的验证前置条件）：把催促注入落成结构化
-              // trace 事件。原先只有 log.info，而 log.info 不落盘——`~/.sid-code/` 下搜不到
-              // "无进展催促"字样，导致"计数器串台是否真的饿死了某条通道"在现网无法验证。
-              // 与 HypothesisGuideInjected 同机制，try/catch 兜底不阻断主循环。
-              emitNagInjectedEvent(deps, sessionState.sessionId, {
-                kind: "todo",
-                ...turnMetrics(state, sessionState, promptSeq),
-                nagCount: state.todoNagCount ?? 0,
-                cap: MAX_NO_PROGRESS_NAGS,
-                countedAsNoProgress: decision.countedAsNoProgress,
-                afterCompact,
-              });
-            } else {
-              // 仍推进 cadence，避免下一轮立刻又算"到期"反复重算
-              state.lastTodoReminderTurn = state.turnCount;
-              state.todoReminderPendingAfterCompact = false;
-            }
+          const throttleSaysYes = shouldInjectTodoReminder(counts, {
+            turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
+            turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
+          });
+          if (throttleSaysYes || afterCompact) {
+            reminderParts.push(buildTodoReminder(todoState.todos));
+            state.todoReminderPendingAfterCompact = false;
+            // 锚点存 SessionState（跨用户消息持久），与 lastSeenContextPressureLevel /
+            // lastSeenPermissionMode 同构（审计第 9 条：LoopState 每消息重建，放不住跨消息事实）。
+            sessionState.set(LAST_TODO_REMINDER_TURN_KEY, sessionState.getAbsoluteTurn());
+            log.info(
+              "QUERY_LOOP",
+              `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，` +
+                `距上次 todo_write ${counts.turnsSinceLastTodoWrite} 轮）`,
+            );
+            // 埋点语义随之改变（方案 §8.3 已点破）：不再有 nagCount/cap 概念，
+            // 改记两个扫描出来的距离，用于事后核对阈值是否过紧/过松。
+            emitNagInjectedEvent(deps, sessionState.sessionId, {
+              kind: "todo",
+              ...turnMetrics(state, sessionState, promptSeq),
+              afterCompact,
+              turnsSinceLastTodoWrite: Number.isFinite(counts.turnsSinceLastTodoWrite)
+                ? counts.turnsSinceLastTodoWrite
+                : -1,
+              turnsSinceLastReminder: Number.isFinite(counts.turnsSinceLastReminder)
+                ? counts.turnsSinceLastReminder
+                : -1,
+            });
           }
         }
 
@@ -1113,6 +1194,12 @@ export async function* queryLoop(
             state.lastProgressReminderTurn = state.turnCount;
           }
         }
+      }
+      // 基线在此**统一**推进（两个消费方都读完之后）。放在最外层是刻意的：
+      // 全部完成时上面那个 `countUnfinished > 0` 块整体跳过，若基线跟着写在块内，
+      // 就永远追不上 writeVersion → 终态快照每轮重复落盘。
+      if (todoAdvanced && todoFactState) {
+        state.lastSeenTodoWriteVersion = todoFactState.writeVersion;
       }
     }
 

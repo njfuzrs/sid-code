@@ -892,6 +892,21 @@ export class App {
         if (todos.length === 0) return null;
         return { todos, writeVersion: todoTool.getWriteVersion() };
       },
+      // 修复 5 / 发现 4a：进度落盘要的是**事实语义**的终态清单。
+      // 上面的 getTodoState 走展示语义——全部完成时 TodoWriteTool 会清空 currentTodos
+      // （面板收起），于是 `todos.length === 0` → 返 null → 终态永远落不了盘，
+      // `~/.sid-code/progress/<id>.md` 永久停在最后一次未完成态。
+      // 刻意做成独立 getter 而不是改上面那个：改它会让 TUI 在任务全完成后仍挂着一张
+      // 全绿清单不消失（行为回退）。两个语义分两个入口，见 getLastWrittenTodos 注释。
+      getTodoTerminalState: () => {
+        const todoTool = this.toolRegistry.get("todo_write") as
+          | import("./tool/todo-write.ts").TodoWriteTool
+          | undefined;
+        if (!todoTool) return null;
+        const todos = todoTool.getLastWrittenTodos();
+        if (todos.length === 0) return null;
+        return { todos, writeVersion: todoTool.getWriteVersion() };
+      },
       getHypothesisLedger: () => {
         // 环节③：把假设登记表暴露给 queryLoop，用于矛盾中断（机制2）+ 交付门禁（机制3）。
         // 登记表实例由 hypothesis_register 工具持有（与 TodoWriteTool 同构）。

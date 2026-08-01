@@ -268,4 +268,177 @@ describe("TodoWriteTool", () => {
     await tool.execute({ todos: "not-an-array" });
     expect(tool.getWriteVersion()).toBe(1);
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 2026-08-01 步骤 0：formatTodoDiff 按 content 配对，不按数组下标
+  //
+  // todos 是**全量替换**语义，模型可以插入/删除/重排。按下标比对会双向错报，
+  // 而这是模型从 tool_result 能拿到的**唯一进度反馈**：假报让它以为已勾（于是不再去勾），
+  // 漏报让它拿不到正反馈——两者都直接加重"非实时更新"缺陷。
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("formatTodoDiff 按 key 比对（防假报/漏报）", () => {
+    it("插入新项不假报已完成（旧实现按下标必假报）", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({
+        todos: [makeTodo("A", "completed"), makeTodo("B", "pending"), makeTodo("C", "pending")],
+      });
+      // 最前面插入一个新项 → 下标全体右移
+      const r = await tool.execute({
+        todos: [
+          makeTodo("新任务", "in_progress"),
+          makeTodo("A", "completed"),
+          makeTodo("B", "pending"),
+          makeTodo("C", "pending"),
+        ],
+      });
+      // 本轮无一项**新**完成（A 上一轮就完成了）→ 不该出现任何"已完成"播报
+      expect(r.output).not.toContain("✅ 已完成:");
+    });
+
+    it("删除项不漏报真实完成（旧实现按下标必漏报）", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({
+        todos: [makeTodo("X", "pending"), makeTodo("Y", "in_progress"), makeTodo("Z", "pending")],
+      });
+      // 删掉 X（下标全体左移），且 Y 真的完成了。留一项 pending 以免走"全完成清空"分支。
+      // 旧实现按下标比：新[0]=Y(completed) 对旧[0]=X(pending) → content 不同却仍比 status，
+      // 而真正该配对的旧 Y 在下标 1 上，于是这条真实完成被漏掉。
+      const r = await tool.execute({ todos: [makeTodo("Y", "completed"), makeTodo("Z", "pending")] });
+      expect(r.output).toContain("✅ 已完成: Y");
+    });
+
+    it("纯重排不报任何完成", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({
+        todos: [makeTodo("P", "completed"), makeTodo("Q", "in_progress"), makeTodo("R", "pending")],
+      });
+      const r = await tool.execute({
+        todos: [makeTodo("R", "pending"), makeTodo("Q", "in_progress"), makeTodo("P", "completed")],
+      });
+      expect(r.output).not.toContain("✅ 已完成:");
+    });
+
+    it("真实完成一项时正常播报", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("M", "in_progress"), makeTodo("N", "pending")] });
+      const r = await tool.execute({ todos: [makeTodo("M", "completed"), makeTodo("N", "in_progress")] });
+      expect(r.output).toContain("✅ 已完成: M");
+    });
+
+    it("同名重复项不会互相覆盖（按桶逐个配对）", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("同名", "in_progress"), makeTodo("同名", "pending")] });
+      // 第一个完成、第二个仍 pending → 只报一次
+      const r = await tool.execute({ todos: [makeTodo("同名", "completed"), makeTodo("同名", "pending")] });
+      expect(r.output.match(/✅ 已完成:/g)?.length).toBe(1);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 2026-08-01 修复 3：tool_result 前向推进指令（L1 必达通道）
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("tool_result 前向推进指令（三分流）", () => {
+    it("有 in_progress → 点名当前项，要求做完立即标记", async () => {
+      const tool = new TodoWriteTool();
+      const r = await tool.execute({
+        todos: [makeTodo("写代码", "in_progress"), makeTodo("跑测试", "pending")],
+      });
+      expect(r.output).toContain("下一步");
+      expect(r.output).toContain("写代码"); // 点名到具体项，而非泛化提醒
+      expect(r.output).toContain("不要攒到最后一起标记");
+    });
+
+    it("无 in_progress 但有 pending → 强调实时流转", async () => {
+      const tool = new TodoWriteTool();
+      const r = await tool.execute({
+        todos: [makeTodo("甲", "completed"), makeTodo("乙", "pending")],
+      });
+      expect(r.output).toContain("不要攒到最后一起标记");
+    });
+
+    it("全部完成 → 走清空分支，保持旧收尾文案（不得被指令覆盖）", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("唯一项", "in_progress")] });
+      const r = await tool.execute({ todos: [makeTodo("唯一项", "completed")] });
+      // 全完成走的是"清单已清空"分支，那段文案是重复输出缺陷的修复成果，不能被改动
+      expect(r.output).toContain("所有任务已完成，清单已清空");
+      expect(r.output).toContain("不要重复输出");
+    });
+
+    it("每次调用都必达（不受任何节流/去重影响）", async () => {
+      const tool = new TodoWriteTool();
+      // 连续三次提交**逐字相同**的清单：指令必须每次都在
+      for (let i = 0; i < 3; i++) {
+        const r = await tool.execute({
+          todos: [makeTodo("恒定项", "in_progress"), makeTodo("另一项", "pending")],
+        });
+        expect(r.output).toContain("下一步");
+      }
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 2026-08-01 修复 4：全 pending 首建必须有 advisory（旧守卫方向反了）
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("全 pending 守卫", () => {
+    it("全 pending 首建 → 必须提示置 in_progress 并点名首项", async () => {
+      const tool = new TodoWriteTool();
+      const r = await tool.execute({
+        todos: [makeTodo("第一步"), makeTodo("第二步"), makeTodo("第三步")],
+      });
+      // 旧实现：hasNonPending===false → 两条分支都不触发 → 零提示（正是缺陷现场的形态）
+      expect(r.output).toContain("没有 in_progress 任务");
+      expect(r.output).toContain("第一步"); // 点名建议项
+    });
+
+    it("单个 in_progress 仍然不产生 advisory（不新增噪音）", async () => {
+      const tool = new TodoWriteTool();
+      const r = await tool.execute({
+        todos: [makeTodo("干活", "in_progress"), makeTodo("待办", "pending")],
+      });
+      expect(r.output).not.toContain("没有 in_progress 任务");
+      expect(r.output).not.toContain("建议同一时刻只保留");
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 2026-08-01 修复 5 / 发现 4a：终态清单必须可读（否则进度快照永久缺终态）
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("getLastWrittenTodos：事实语义 vs 展示语义", () => {
+    it("全部完成时 getTodos 清空，但 getLastWrittenTodos 保留终态", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("活儿", "in_progress")] });
+      await tool.execute({ todos: [makeTodo("活儿", "completed")] });
+
+      // 展示语义：面板收起（这是刻意设计，不能改）
+      expect(tool.getTodos()).toHaveLength(0);
+      // 事实语义：终态仍可读，且状态是 completed —— 进度落盘靠它拿终态
+      const terminal = tool.getLastWrittenTodos();
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0].status).toBe("completed");
+    });
+
+    it("未全完成时两者一致", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("甲", "completed"), makeTodo("乙", "in_progress")] });
+      expect(tool.getTodos()).toHaveLength(2);
+      expect(tool.getLastWrittenTodos()).toHaveLength(2);
+    });
+
+    it("reset() 同时清掉事实快照（防 /clear 后取到上个任务的终态）", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("旧活", "completed")] });
+      expect(tool.getLastWrittenTodos()).toHaveLength(1);
+      tool.reset();
+      expect(tool.getLastWrittenTodos()).toHaveLength(0);
+    });
+
+    it("返回深拷贝，外部修改不污染内部状态", async () => {
+      const tool = new TodoWriteTool();
+      await tool.execute({ todos: [makeTodo("活儿", "in_progress")] });
+      const snap = tool.getLastWrittenTodos();
+      snap[0].content = "被篡改";
+      expect(tool.getLastWrittenTodos()[0].content).toBe("活儿");
+    });
+  });
 });

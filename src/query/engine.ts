@@ -81,6 +81,8 @@ export interface QueryEngineDeps {
   getThinkingSetting?: () => import("../llm/effort.ts").ThinkingSetting;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  /** 修复 5 / 发现 4a：读取**终态**清单（含全部完成态），专供进度落盘 + 埋点。见 types.ts 同名字段。 */
+  getTodoTerminalState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
   /** 环节③：读取假设登记表实例（矛盾中断 + 交付门禁用） */
   getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
   /** §3.1/§3.3：轨迹采集器（用于异常路径持久化 errors.jsonl + TurnError 事件） */
@@ -304,6 +306,7 @@ export class QueryEngine {
       getEffortSetting: this.deps.getEffortSetting,
       getThinkingSetting: this.deps.getThinkingSetting,
       getTodoState: this.deps.getTodoState,
+      getTodoTerminalState: this.deps.getTodoTerminalState,
       getHypothesisLedger: this.deps.getHypothesisLedger,
       sessionStore: this.deps.sessionStore,
       // G2：cachedMicrocompact 状态机 + provider 名称（缓存友好压缩产出 cache_edits）

@@ -180,14 +180,18 @@ export interface LoopState {
    * 保证当前请求的重试计数正确递增、且不会"一次超时永久丧失后续轮次的重试能力"。
    */
   timeoutRetryCount: number;
+  // ─── 2026-08-01：`lastTodoReminderTurn` 已删除 ───
+  // 它是"上次回注是哪轮"的锚点，但挂在 LoopState 上就等于**每条用户消息归零**，
+  // 于是每条新消息的前 8 轮永远算不出"到期"。锚点已上移到 SessionState
+  // （键名 todo-reminder-scan.ts 的 LAST_TODO_REMINDER_TURN_KEY，按 getAbsoluteTurn 计），
+  // 与 lastSeenContextPressureLevel / lastSeenPermissionMode 同构（审计第 9 条）。
+  // "距上次 todo_write 多少轮"则改为从消息历史现算，不再存任何快照。
   /**
-   * P0-2：上次回注 todo system-reminder 时的轮次（两次回注间隔节流用）。
-   * 0/undefined 表示尚未回注过。
-   */
-  lastTodoReminderTurn?: number;
-  /**
-   * P0-2：上次回注时观察到的 todo writeVersion 快照。
-   * writeVersion 变化说明模型更新过清单，回注计时随之刷新。
+   * P0-2：上次观察到的 todo writeVersion 快照。
+   *
+   * 现在**只**用于"本轮 todo 是否有推进"这一个判断（推进 → 刷新 end_turn gate 预算 +
+   * 落进度快照 + 落 TodoProgressAdvanced 埋点）。它不再参与回注节流——节流已改为
+   * 无状态消息扫描（见 todo-reminder-scan.ts 文件头的实测数据）。
    */
   lastSeenTodoWriteVersion?: number;
   /** P0-3：end_turn 完成度硬校验已软续命的次数 */
@@ -240,36 +244,37 @@ export interface LoopState {
   pendingOutputStallReminder?: boolean;
   /** P2-2：上次回注工作日志摘要时的轮次（每 N 轮回注一次） */
   lastProgressReminderTurn?: number;
+  // ─── 2026-08-01：todo 通道的去重（lastInjectedTodoReminderText）与封顶（todoNagCount）
+  // 双双删除 ───
+  //
+  // 这两道闸是"防线过度生效导致主功能失效"的直接成因，实测数据（60 轮停滞会话）：
+  //   注入轮次 [11]，共 1 次；nagCount 最终 1 / cap 2 —— **封顶连触发机会都没有，
+  //   去重先把通道锁死了**。全网遥测同向：todo 通道累计只注入过 3 次 / 4 个会话。
+  //
+  // 机理：`buildTodoReminder(todos)` 的文本只随清单内容变化，模型一停滞清单就不变 →
+  // 文本恒定 → 从第 2 次起永久静音。而"模型停滞"恰恰是**最需要催更**的时刻——
+  // 这道去重把"该催"和"不该催"判反了。对标实现在这里没有任何去重和封顶
+  // （`attachments.ts:3288`，每 10 轮无条件重注、永不停手）。
+  //
+  // 保留的对照：work-log 通道（下方 progressNagCount / lastInjectedProgressReminderText）
+  // **仍走去重 + 封顶**，因为它的病理不同——它是"内容几乎逐字节相同的摘要连注三次"
+  // （实测 idx 41/87/112 三连重复），去重对它真实有效。同一机制在两条通道上一个该留
+  // 一个该删，判据是"文案是否在无进展时恒定"：todo 恒定→去重误伤主功能；work-log
+  // 恒定→去重正好挡住纯重复。
   /**
-   * 去重（对话重播幻觉修复）：上次注入的 todo 回注 reminder 文本。
+   * 去重（对话重播幻觉修复）：上次注入的工作日志摘要 reminder 文本。
    * 本轮候选与之逐字节相同 → 期间无进展 → 跳过注入，避免造"幻影用户消息"。
    * 见 reminder-throttle.ts decideNagInjection。
    */
-  lastInjectedTodoReminderText?: string;
-  /**
-   * 去重（对话重播幻觉修复）：上次注入的工作日志摘要 reminder 文本。
-   * 语义同 lastInjectedTodoReminderText，针对 P2-2 progress 摘要通道。
-   */
   lastInjectedProgressReminderText?: string;
   /**
-   * 封顶（对话重播幻觉修复）：连续注入 **todo 回注**催促而 todo 无进展
-   * （writeVersion 未变化）的累计次数。达 MAX_NO_PROGRESS_NAGS 后本条用户消息
-   * 剩余轮次停止注入该催促——模型显然不会再改 todo，继续催只会造更多幻影。
+   * 封顶：连续注入 **work-log 摘要**催促而 todo 无进展（writeVersion 未变化）的累计次数。
+   * 达 MAX_NO_PROGRESS_NAGS 后本条用户消息剩余轮次停止注入该催促。
    * writeVersion 变化（模型确实更新了清单=有进展）时清零。
    *
-   * ★为什么与 progressNagCount 分成两个字段（负收益防线审计 发现 3，2026-07-30）：
-   * 二者原先共用一个 `noProgressNagCount`，而 cap 只有 2——先到的一方会**静默吃掉
-   * 另一方的全部额度**。极端情形已用真实 decideNagInjection 复现：todo 连注 2 次耗尽
-   * cap 后，work-log 摘要**首次**尝试注入（lastInjectedText=undefined，绝无重复可能）
-   * 就被抑制，它一次都没注过就已经没额度了（互相饿死，D 类反向失效）。
-   * 而两者各自本就有独立的逐字节去重字段（lastInjectedTodoReminderText /
-   * lastInjectedProgressReminderText），说明设计意图一直是彼此独立——共享封顶是实现疏漏。
-   * 注意修法是**拆计数器、不是提高 cap**：cap=2 本身经实证是合理的，串台才是问题。
-   */
-  todoNagCount?: number;
-  /**
-   * 封顶：连续注入 **work-log 摘要**催促而 todo 无进展的累计次数。
-   * 语义与预算均与 todoNagCount 完全对称、彼此独立（见该字段注释里的饿死复现）。
+   * 注：原先还有一个对称的 `todoNagCount`，二者更早期共用同一个字段导致互相饿死
+   * （负收益防线审计 发现 3，2026-07-30）。拆开后 todo 那一半在 2026-08-01 被整体删除
+   * （见上方注释块的实测数据），只剩本字段。
    */
   progressNagCount?: number;
   // 审计第 9 条：lastSeenContextPressureLevel 已上移到 SessionState（跨消息持久），
@@ -523,6 +528,17 @@ export interface QueryDeps {
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
    */
   getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  /**
+   * 修复 5 / 发现 4a：读取**终态**清单快照（含"全部完成"这一态），专供进度落盘 + 埋点。
+   *
+   * 与 `getTodoState` 的分工是**事实语义 vs 展示语义**：TodoWriteTool 在全部完成时会清空
+   * `currentTodos`（TUI 面板收起），于是 `getTodoState()` 返 null，终态永远落不了盘——
+   * `~/.sid-code/progress/<id>.md` 永久停在最后一次未完成态（本缺陷排查踩过这个坑：
+   * 残留文件写 `0 已完成 / 18 待办`，无法自证是"真没推进"还是"推进了但终态没落盘"）。
+   *
+   * 未提供时 queryLoop 回退到 `getTodoState`（向后兼容，只是拿不到全完成终态）。可 mock。
+   */
+  getTodoTerminalState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
   /**
    * 环节③ 假设登记表(Hypothesis Ledger)接入。返回 harness 持有的登记表实例,
    * queryLoop 每轮工具结果回流后用它做"新证据 vs open 假设证伪条件"匹配(机制2 矛盾中断),
