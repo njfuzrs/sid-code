@@ -16,6 +16,7 @@ LLM 配置:
   --fallback-model <name>     主模型失败时的降级模型（须在 available_models 中）
   --max-tokens <n>            响应最大 token 数
   --effort <level>            推理强度档位 (low/medium/high/xhigh/max/auto)
+  --language <lang>          输出语言偏好 (zh/en/auto/unset)；也可用 SID_LANGUAGE 环境变量
 
 权限配置:
   --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk)

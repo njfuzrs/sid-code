@@ -57,7 +57,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/init` | 分析代码库并生成 CLAUDE.md（--dirs-only 仅初始化 .sid-code/ 目录） | — | — |
 | `/insights` | 生成会话分析报告（模型/成本/token/工具/异常概览） | `/analyze` | `[session-id\|latest]` |
 | `/keybindings` | 查看键位绑定 / 创建 keybindings.json 模板 | `/keys` | `[init]` |
-| `/language` | 显示或切换输出语言偏好（-p 持久化） | `/lang` | `[zh\|en\|auto] [-p]` |
+| `/language` | 显示或切换输出语言偏好（-p 持久化） | `/lang` | `[zh\|en\|auto\|unset] [-p]` |
 | `/loop` | 按间隔重复运行 prompt：/loop 5m &lt;任务>（固定节奏）或 /loop &lt;任务>（自适应轮询） | — | `[间隔如 5m] <要重复的任务>` |
 | `/mcp` | MCP 服务器管理 | — | — |
 | `/memory` | 管理记忆（auto/external/set/get/delete/list/search/show/reload） | `/mem` | — |

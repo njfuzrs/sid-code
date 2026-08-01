@@ -28,6 +28,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { LoopDetector } from "./loop-detection.ts";
+import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
 import { JitContextManager } from "../config/jit-context.ts";
@@ -171,23 +172,46 @@ function getSystemPrompt(type: string): string {
  */
 async function enhanceSubAgentPrompt(
   basePrompt: string,
-  preferredLanguage?: "zh" | "en",
+  preferredLanguage?: LanguagePref,
   workingDir?: string,
   agentType?: string,
   skills?: string[],
 ): Promise<string> {
   const notes: string[] = [];
 
-  // 语言铁律（对标 Claude Code getLanguageSection）
-  if (preferredLanguage === "zh" || preferredLanguage === undefined) {
+  // 子代理的语言必须**二选一**落定，不能留 auto：
+  // auto 的语义是"跟随用户输入语言"，而子代理根本看不到用户的原始消息——它收到的是
+  // 主代理下发的任务描述。让它自己"跟随"等于让它猜，结果是同一次任务里几个子代理
+  // 各写一种语言，主代理再把中英混杂的报告拼给用户。所以这里用 resolveEffectiveLanguage
+  // 把 auto 解析成具体语言（按系统 locale，兜底 zh），子代理拿到的永远是确定值。
+  const lang = resolveEffectiveLanguage(preferredLanguage);
+  const isEn = lang === "en";
+
+  // 语言约束。措辞与主代理身份段保持同一取向：强约束 + 保留用户显式要求的穿透口
+  // （子代理虽不直接面对用户，但任务描述里可能转述了"用英文写这份文档"这类要求，
+  // 一句不留余地的铁律会让它硬拒那个要求，重演主代理曾经的硬拒事故）。
+  if (isEn) {
     notes.push(
-      "【最高优先级铁律】你的所有输出和思考必须使用中文。" +
-        "代码和路径可保持原文，但解释和推理必须用中文。",
+      "[TOP PRIORITY] Write all output and reasoning in English. " +
+        "Keep code and paths verbatim, but explanations and reasoning must be in English. " +
+        "Exception: if the task description explicitly asks for another language, honour that request.",
     );
-  } else if (preferredLanguage === "en") {
+    // 显式压过 base prompt 里的中文小节标题。
+    //
+    // 内置 agent 的 systemPrompt 仍以中文写就（它们是 agent 的身份契约，55%–79% 中文），
+    // 其中包含「以 "## 发现" 开头」这类**具体到字面量**的格式要求。en 模式下不点破它，
+    // 模型面临两个都不好的选项：照做（在英文报告里插中文标题，污染 en 输出）或不照做
+    // （悄悄违反格式约束，主代理按标题解析结论时可能拿不到）。这里把二选一变成明确指令。
     notes.push(
-      "【最高优先级铁律】你的所有输出和思考必须使用英文。" +
-        "代码和路径可保持原文，但解释和推理必须用英文。",
+      "[FORMAT OVERRIDE] The instructions above may specify Chinese section headings " +
+        '(e.g. \'start with "## 发现"\' or \'"## 结论"\'). In English mode, use the English equivalent instead ' +
+        '("## Findings", "## Conclusion", "## Result", "## Problem"). Keep the required structure; only the heading language changes.',
+    );
+  } else {
+    notes.push(
+      "【最高优先级】你的所有输出和思考必须使用中文。" +
+        "代码和路径可保持原文，但解释和推理必须用中文。" +
+        "例外：任务描述里明确要求用其它语言时，按任务描述的要求执行。",
     );
   }
 
@@ -195,10 +219,17 @@ async function enhanceSubAgentPrompt(
   // 对标 CC：Anthropic 模型 thinking 有独立 block type 自然被过滤，
   // 但第三方模型（DeepSeek 等）reasoning 混在 text block 中无法靠 type 过滤，
   // 必须在 prompt 层面预防性约束。
+  //
+  // 标题必须跟着语言走：en 模式下要求模型"以「## 结论」开头"，等于逼它在英文报告里
+  // 插一个中文标题——要么它照做（污染 en 输出），要么它不照做（这条约束失效）。
   notes.push(
-    "【关键约束】你的最后一条消息必须是结构化总结/结论，不能是规划或思考过程。" +
-      "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
-      "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
+    isEn
+      ? "[CRITICAL] Your final message must be a structured summary/conclusion, not planning or reasoning. " +
+        "If you sense you are close to the turn limit, stop exploring immediately and output the conclusions you already have. " +
+        'Format: start with "## Conclusion" or "## Findings" and organise findings as a table or list.'
+      : "【关键约束】你的最后一条消息必须是结构化总结/结论，不能是规划或思考过程。" +
+        "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
+        "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
   );
 
   // 环境信息
@@ -206,17 +237,28 @@ async function enhanceSubAgentPrompt(
   const home = homedir();
   const os = platform();
   const date = new Date().toISOString().split("T")[0];
-  notes.push(`当前工作目录: ${dir}`);
-  notes.push(`用户主目录: ${home}`);
-  notes.push(`操作系统: ${os}`);
-  notes.push(`当前日期: ${date}`);
+  if (isEn) {
+    notes.push(`Working directory: ${dir}`);
+    notes.push(`Home directory: ${home}`);
+    notes.push(`Platform: ${os}`);
+    notes.push(`Today's date: ${date}`);
+  } else {
+    notes.push(`当前工作目录: ${dir}`);
+    notes.push(`用户主目录: ${home}`);
+    notes.push(`操作系统: ${os}`);
+    notes.push(`当前日期: ${date}`);
+  }
 
   // D13：若工作目录落在隔离 worktree 内，明确告知子代理，避免它输出主仓路径或误判仓库状态。
   if (dir.includes(`${sep}.sid-code${sep}worktrees${sep}`)) {
     notes.push(
-      "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中（独立工作区，与主仓共享对象库）。" +
-        "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
-        "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
+      isEn
+        ? "[ISOLATED ENVIRONMENT] You are running inside an isolated Git worktree (a separate working tree sharing the main repo's object store). " +
+          "Your file changes affect only this working tree and will not pollute the main repo. Use the working directory above as the project root; " +
+          "do not assume you are in the main repository directory, and do not reference the main repo's absolute paths."
+        : "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中（独立工作区，与主仓共享对象库）。" +
+          "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
+          "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
     );
   }
 
@@ -282,7 +324,8 @@ export class SubAgent {
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
   private modelOverride?: string;
   /** 输出语言偏好（L4，从主代理配置继承） */
-  private language?: "zh" | "en";
+  /** 语言偏好（继承主代理）。含 auto 档，落到 enhanceSubAgentPrompt 时才归一化成具体语言。 */
+  private language?: LanguagePref;
 
   /** P2-10：父会话 id（用于给子代理开 sidechain JSONL）。由 SubAgentTool 注入；
    *  未注入时 sidechain 持久化静默禁用（不影响子代理执行）。 */

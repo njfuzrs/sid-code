@@ -18,9 +18,9 @@ sid-code 的全部命令行参数与子命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **64** 个参数条目、**6** 个子命令。
+> 共 **65** 个参数条目、**6** 个子命令。
 > 描述取自 `sid-code --help`，并与 `src/cli.ts` 的 `parseArgs` 声明
-> （**参数能不能用的唯一权威**，共 64 个 flag）交叉对账：
+> （**参数能不能用的唯一权威**，共 65 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
 
 ## 子命令
@@ -43,6 +43,7 @@ sid-code 的全部命令行参数与子命令。
 | `--fallback-model <name>` | 主模型失败时的降级模型（须在 available_models 中） |
 | `--max-tokens <n>` | 响应最大 token 数 |
 | `--effort <level>` | 推理强度档位 (low/medium/high/xhigh/max/auto) |
+| `--language <lang>` | 输出语言偏好 (zh/en/auto/unset)；也可用 SID_LANGUAGE 环境变量 |
 
 ## 权限配置
 

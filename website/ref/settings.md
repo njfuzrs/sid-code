@@ -55,7 +55,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `hooks` | object | — | Hook 和 MCP |
 | `ide` ⚠ | object | — | IDE 集成配置 |
 | `jitContext` | boolean | — | JIT 上下文发现 是否启用 JIT 上下文发现（默认 true） |
-| `language` | enum | `zh` / `en` | 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 |
+| `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。 不设置时… |
 | `maxThinkingTokens` | number | 整数 ≥0 | §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。 env SID_CODE_MAX_THINKING_TOKENS / M… |
 | `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
 | `mcpServers` | object | — | MCP 服务器 |

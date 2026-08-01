@@ -374,11 +374,13 @@ export function generateDiagnosticsAttachment(diagnostics: string): Attachment {
  *
  * @param date YYYY-MM-DD 格式日期字符串（由调用方传入，便于测试与避免本模块直接读时钟）。
  */
-export function generateDateAttachment(date: string): Attachment {
+export function generateDateAttachment(date: string, language?: "zh" | "en" | "auto"): Attachment {
   // G6：日期每天变化，放进静态区会跨天击穿缓存。用 DANGEROUS_ 工厂标记为动态。
+  // 标签跟随语言：en 模式下这是仅剩的几处中文之一，留着就是在提示模型"中文也行"。
+  const label = language === "en" ? "Today's date" : "当前日期";
   return DANGEROUS_dynamicAttachment(
     "date",
-    `<current-date>\n当前日期: ${date}\n</current-date>`,
+    `<current-date>\n${label}: ${date}\n</current-date>`,
     PRIORITY.DATE_CONTEXT,
     "日期每天变化，放入静态区会击穿 prompt cache 前缀",
   );

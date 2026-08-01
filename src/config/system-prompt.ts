@@ -39,6 +39,14 @@ import {
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DYNAMIC_BOUNDARY } from "../api/cache-strategy.ts";
+import type { LanguagePref } from "./prompt-lang.ts";
+import {
+  buildConstraintsSectionEn,
+  buildContextManagementSectionEn,
+  buildSubagentResultBoundarySectionEn,
+  buildSchedulingSectionEn,
+  buildToolGuideSectionEn,
+} from "./prompt-sections-en.ts";
 
 /** 系统提示词构建上下文 */
 export interface SystemPromptContext {
@@ -101,8 +109,13 @@ export interface SystemPromptContext {
   denyRulesSummary?: string;
 
   // 语言偏好
-  /** 首选输出语言: "zh" 中文优先, "en" 英文优先。不设置时默认中文 */
-  preferredLanguage?: "zh" | "en";
+  /**
+   * 首选输出语言：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。
+   *
+   * 三档语义不可互相折叠——尤其 `auto` **不是** `zh` 的别名（旧实现如此，已修正）：
+   * zh/en 是「强制某语言」，auto 是「不预设、按用户当轮语言应答」。详见 prompt-lang.ts。
+   */
+  preferredLanguage?: LanguagePref;
 
   // 模型标识（用于 DeepSeek 等模型的语言策略差异化处理）
   /** 当前使用的模型名（如 "deepseek-chat"、"claude-sonnet-4-20250514"） */
@@ -333,28 +346,28 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 1. 构建核心部分（固定模板，必须保留）
   const coreParts: string[] = [
     buildIdentitySection(ctx.preferredLanguage, ctx.model),
-    buildEnvironmentSection(ctx.workingDir),
+    buildEnvironmentSection(ctx.workingDir, ctx.preferredLanguage),
   ];
 
   if (ctx.tools.length > 0) {
-    coreParts.push(buildToolGuideSection(ctx.tools, { excludeMcp: true }));
+    coreParts.push(buildToolGuideSection(ctx.tools, { excludeMcp: true, language: ctx.preferredLanguage }));
   }
 
   coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
 
   // 上下文管理静态告知（增强 5.3）：放静态核心区确保被 prompt cache 稳定缓存、弱模型每轮可见。
-  coreParts.push(buildContextManagementSection());
+  coreParts.push(buildContextManagementSection(ctx.preferredLanguage));
 
   // 子代理结果安全边界（缺口 2 阶段 1）：仅在子代理工具可用时注入，
   // 避免无 sub_agent 工具的精简模式平白多一段 prompt。
   if (ctx.tools.some((t) => t.name() === "sub_agent")) {
-    coreParts.push(buildSubagentResultBoundarySection());
+    coreParts.push(buildSubagentResultBoundarySection(ctx.preferredLanguage));
   }
 
   // 调度能力引导（缺口 A）：仅在 cron 调度工具可用时注入，
   // 让模型把自然语言时间请求映射到 cron_create / schedule_wakeup。
   if (ctx.tools.some((t) => t.name() === "cron_create")) {
-    coreParts.push(buildSchedulingSection());
+    coreParts.push(buildSchedulingSection(ctx.preferredLanguage));
   }
 
   // Coordinator 模式（子 Agent 生态）：开启后把主循环角色从"执行者"切为"协调者"，
@@ -378,7 +391,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 当前日期（P0：易变值移出静态区，消除跨天缓存击穿）。
   // priority=DATE_CONTEXT(2) 让它稳定处于动态区最前部，紧跟静态前缀。
-  attachments.push(generateDateAttachment(new Date().toISOString().split("T")[0]));
+  attachments.push(generateDateAttachment(new Date().toISOString().split("T")[0], ctx.preferredLanguage));
 
   // G11：MCP 工具列表（动态区）。MCP 工具随 server 连接/断开动态变化，
   // 放入静态区会击穿 prompt cache 前缀，单独作为动态附件注入。
@@ -483,6 +496,23 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   if (ctx.sessionMemoryContent) {
     const smAttachment = generateSessionMemoryAttachment(ctx.sessionMemoryContent);
     if (smAttachment) attachments.push(smAttachment);
+  }
+
+  // 语言优先级裁决（P0-4）：仅在**显式**设置了语言偏好且存在项目规则时注入。
+  //
+  // 位置是这段的关键设计：它必须排在 CLAUDE.md 附件（PRIORITY.CLAUDE_MD=10）**之后**。
+  // CLAUDE.md 附件自带「这些指令覆盖任何默认行为」声明，而 LLM 对同一维度的冲突指令
+  // 普遍取"后者胜"——只在前面的身份段声称"语言偏好优先"压不住后面那句覆盖声明。
+  // 文字裁决 + 排在后面的位置，两者叠加才稳。
+  //
+  // 只在 projectRules 存在时注入：没有项目规则就没有冲突方，这段纯属白占 token。
+  if (ctx.preferredLanguage && ctx.projectRules) {
+    attachments.push({
+      type: "languagePrecedence",
+      label: "语言优先级裁决",
+      content: buildLanguagePrecedenceSection(ctx.preferredLanguage),
+      priority: PRIORITY.CLAUDE_MD + 1,
+    });
   }
 
   // 追加提示词
@@ -658,8 +688,49 @@ function reportSectionTokens(
   ctx.onSectionTokens({ memory });
 }
 
+/**
+ * 语言切换的逃生口条款——三档语言模式**共用同一份**，这是本节的核心不变量。
+ *
+ * 背景（真实事故）：早先只有「标准」措辞带这句例外条款，`reasoningLanguageDrift`
+ * 模型走的「铁律级」分支漏了它。结果模型忠实执行铁律，把用户「切成英文模式」
+ * 「用英文介绍这个项目」的显式请求**直接硬拒**，还引用系统提示词说「我无权更改」。
+ * 那不是模型失控，是提示词真没给它留口子——治漂移的强措辞把用户意愿一起封死了。
+ *
+ * 所以：任何语言约束分支都必须拼上这段。「中文优先」是**缺省**，不是**牢笼**。
+ */
+function buildLanguageEscapeHatch(lang: "zh" | "en"): string {
+  if (lang === "en") {
+    return `
+**Switching languages is always allowed.** The rule above is a default preference, not a hard lock:
+- If the user asks for another language (e.g. "用中文回答", "reply in Chinese"), switch immediately for that reply. Never refuse such a request, and never claim you are forbidden from switching.
+- If the user asks you to switch for the rest of the session, tell them about the \`/language\` command (\`/language zh\` for Chinese-first, \`/language auto\` to follow their language, add \`-p\` to persist across sessions) and honour their request in the meantime.
+- A request to *write* something in another language (docs, a README, a commit message, release notes for an English-speaking audience) is a normal task, not a violation. Just do it.`;
+  }
+  return `
+**允许切换语言——这一点没有例外。** 上面的规则是缺省偏好，不是硬锁：
+- 用户要求用其它语言回答时（如"用英文回答"、"respond in English"、"switch to English"），**当轮立即照办**。绝不以"系统约束/铁律/我无权更改"为由拒绝——你有权，而且这就是用户说了算的事。
+- 用户想在整个会话里换语言时，告诉他 \`/language\` 命令（\`/language en\` 英文优先、\`/language auto\` 跟随用户输入语言，加 \`-p\` 跨会话保留），同时**本轮先按他的要求答**，不要让他先去改配置。
+- 用户要你**写**外语内容（英文文档 / README / commit message / 面向英文读者的发布说明）属于正常任务，不算违规，直接写。`;
+}
+
+/** 身份段的能力清单（三档共用，只有语言不同） */
+function buildIdentityIntro(lang: "zh" | "en"): string {
+  if (lang === "en") {
+    return `You are sid-code, an AI coding assistant. You can:
+- Help the user write, modify, and debug code
+- Run shell commands and read/write files
+- Explain technical concepts and recommend best practices
+- Use tools to complete complex tasks`;
+  }
+  return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
+- 帮助用户编写、修改、调试代码
+- 执行 shell 命令、读写文件
+- 解释技术概念、提供最佳实践建议
+- 使用工具完成复杂任务`;
+}
+
 /** 构建身份指令部分 */
-function buildIdentitySection(language?: "zh" | "en", model?: string): string {
+function buildIdentitySection(language?: LanguagePref, model?: string): string {
   // 必删-4：是否走「铁律级」语言约束措辞，改由注册表能力标志 reasoningLanguageDrift 驱动，
   // 而非 model.includes("deepseek") 字符串匹配（违反"不按模型名硬编码分档"原则，模型改名/
   // 新版/同类新模型都会漂移；见 memory feedback-no-hardcoded-model-tier-rules.md）。
@@ -669,41 +740,51 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
     ? lookupCatalog(model)?.reasoningLanguageDrift === true
     : false;
 
-  // 英文模式（标准措辞，对标 Claude Code getLanguageSection）
-  if (language === "en") {
-    let section = `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
-- 帮助用户编写、修改、调试代码
-- 执行 shell 命令、读写文件
-- 解释技术概念、提供最佳实践建议
-- 使用工具完成复杂任务
+  // auto 档：不预设语言，按用户当轮语言应答。
+  // 这一档**不能**被压成 zh/en（旧实现把 auto 当 zh 别名，导致三个取值只有两种行为）。
+  // 提示词本体用中文写，因为「中文优先」是产品缺省：即使 auto 判定不出来也应落到中文。
+  if (language === "auto") {
+    return `${buildIdentityIntro("zh")}
 
 ⚠️ 语言规则（最高优先级）:
-- 你的思考过程（reasoning/thinking）必须使用英文
-- 你的所有回复、代码注释、文档均使用英文
-- 代码标识符、技术术语（API 名/函数名/变量名）保持原文
-- 只有当用户在提示词中明确要求使用中文时（如"用中文回答"），才切换到中文
+- **跟随用户的语言**：用户用中文提问就用中文答，用英文提问就用英文答（English question → English answer）。以用户**最近一条消息**的自然语言为准。
+- 判断不出用户语言时（例如只发了一段代码、一个路径、一个报错堆栈），默认用中文。
+- 你的思考过程（reasoning/thinking）与回复用同一种语言。
+- 代码标识符、技术术语（API 名/函数名/变量名）、命令输出、错误日志一律保持原文，不要翻译。
+- 用户显式指定语言时（"用英文回答"/"reply in Chinese"），显式指定优先于上面的跟随规则。
+- 用户想把整个会话**固定**成某种语言（而不是每轮跟随）时，告诉他 \`/language\` 命令（\`/language zh\` 中文优先、\`/language en\` 英文优先，加 \`-p\` 跨会话保留），同时本轮先按他的要求答。
 
 你的回复应该简洁、专业、可操作。`;
-    return section;
+  }
+
+  // 英文模式
+  if (language === "en") {
+    return `${buildIdentityIntro("en")}
+
+⚠️ LANGUAGE RULES (highest priority):
+- Think (reasoning/thinking) in English.
+- Write all replies, code comments, and documentation in English.
+- Keep code identifiers and technical terms (API/function/variable names) as-is.
+- Keep command output, error logs, and file contents verbatim — never translate them.
+${buildLanguageEscapeHatch("en")}
+
+Keep your replies concise, professional, and actionable.`;
   }
 
   // 推理语言易漂移的模型中文模式：铁律级措辞（L1）
   if (needsStrongLanguageGuard) {
-    return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
-- 帮助用户编写、修改、调试代码
-- 执行 shell 命令、读写文件
-- 解释技术概念、提供最佳实践建议
-- 使用工具完成复杂任务
+    return `${buildIdentityIntro("zh")}
 
-【不可违反的铁律】你的所有思考（reasoning/thinking）和回复，必须使用纯正的中文。
+【最高优先级】你的所有思考（reasoning/thinking）和回复，必须使用纯正的中文。
 技术术语和代码标识符（API 名/函数名/变量名）保持原文。
-即使在思考推理过程中，也不得输出英文自然语言句子。
+即使在思考推理过程中，也不要输出英文自然语言句子。
 只有代码块中的代码、命令输出、错误日志可保持原文，但解释性文字必须使用中文。
+${buildLanguageEscapeHatch("zh")}
 
-# 思考语言疏导（实验性方案，适用于推理易漂移到英文的模型）
+# 思考语言疏导（适用于推理易漂移到英文的模型）
 
 如果你的技术思考（reasoning/thinking）自然倾向于使用英文，
-你可以将其包裹在 <internal_en> 和 </internal_en> 标签中。
+你可以将其包裹在 <internal_en> 和 </internal_en> 标签中——标签内的内容不会展示给用户。
 
 但所有在 <internal_en> 标签之外的输出，必须是纯正的中文，
 不可夹杂英文自然语言句子。
@@ -711,18 +792,15 @@ function buildIdentitySection(language?: "zh" | "en", model?: string): string {
 技术代码、API 名称可保持原文，但解释和推理必须用中文。`;
   }
 
-  // 标准中文模式（无推理语言漂移倾向的模型，当前默认行为）
-  return `你是 sid-code AI 编程助手，一个专业的代码辅助工具。你可以：
-- 帮助用户编写、修改、调试代码
-- 执行 shell 命令、读写文件
-- 解释技术概念、提供最佳实践建议
-- 使用工具完成复杂任务
+  // 标准中文模式（无推理语言漂移倾向的模型，缺省行为）
+  return `${buildIdentityIntro("zh")}
 
 ⚠️ 语言规则（最高优先级）:
 - 你的思考过程（reasoning/thinking）必须使用中文
 - 你的所有回复、代码注释、文档均使用中文
 - 代码标识符、技术术语（API 名/函数名/变量名）保持原文
-- 只有当用户在提示词中明确要求使用其他语言时（如"用英文回答"、"respond in English"），才切换到该语言
+- 命令输出、错误日志、文件内容一律保持原文，不要翻译
+${buildLanguageEscapeHatch("zh")}
 
 你的回复应该简洁、专业、可操作。`;
 }
@@ -758,7 +836,11 @@ function isInsideGitRepo(startDir: string): boolean {
  *
  * 取向与 context-pressure.ts 保持一致：告知机制存在 + 引导落盘按需拉取，不催赶、不制造矛盾指令。
  */
-function buildContextManagementSection(): string {
+function buildContextManagementSection(language?: LanguagePref): string {
+  // en 档走英文版（见 prompt-sections-en.ts 顶部注释：只翻语言规则、留 3000 字中文正文，
+  // 等于用中文让模型说英文，语言压力方向是反的）。auto 档保持中文——auto 的语义是
+  // "跟随用户"，此时我们不知道用户会用哪种语言，产品缺省中文即最佳猜测。
+  if (language === "en") return buildContextManagementSectionEn();
   return `
 <context-management>
 ## 上下文与记忆管理（机制告知）
@@ -771,7 +853,7 @@ function buildContextManagementSection(): string {
 }
 
 /** 构建环境信息部分 */
-function buildEnvironmentSection(workingDir?: string): string {
+function buildEnvironmentSection(workingDir?: string, language?: LanguagePref): string {
   const workDir = workingDir || cwd();
   const homeDir = homedir();
   const os = platform();
@@ -781,6 +863,22 @@ function buildEnvironmentSection(workingDir?: string): string {
   const isGitRepo = isInsideGitRepo(workDir);
   // 注意：当前日期【刻意不在此处】注入。日期每天变化，若放进静态核心区会跨天击穿
   // 静态前缀缓存。日期改由 generateDateAttachment 注入到 DYNAMIC_BOUNDARY 之后的动态区。
+
+  // 字段值（路径 / OS 名）本身与语言无关，但标签和那条路径提示要跟随语言：
+  // en 模式下混进中文标签，等于在告诉模型"这里可以用中文"，削弱语言约束的一致性。
+  if (language === "en") {
+    return `
+<environment>
+## Environment
+- Working directory: ${workDir}
+- Home directory: ${homeDir}
+- Is directory a git repo: ${isGitRepo ? "Yes" : "No"}
+- Platform: ${os}
+- OS Version: ${osVersion}
+- Shell: ${shell}
+- Path hint: if reading a file reports "file not found", first check the path is absolute and consistent with the working/home directory above, then retry. Do not assume the file was deleted.
+</environment>`;
+  }
 
   return `
 <environment>
@@ -796,7 +894,10 @@ function buildEnvironmentSection(workingDir?: string): string {
 }
 
 /** 构建工具使用指南部分 */
-function buildToolGuideSection(tools: Tool[], options?: { excludeMcp?: boolean }): string {
+function buildToolGuideSection(
+  tools: Tool[],
+  options?: { excludeMcp?: boolean; language?: LanguagePref },
+): string {
   // P1a：工具列表只保留首句摘要（一行简介），完整 description 已在 tools 数组里。
   // 消除"system prompt toolList + tools 数组"的双重注入（实测省 ~12k 字符 / ~4k token）。
   const filtered = options?.excludeMcp
@@ -811,13 +912,19 @@ function buildToolGuideSection(tools: Tool[], options?: { excludeMcp?: boolean }
     return `  - ${t.name()}: ${brief}`;
   }).join("\n");
 
-  // 收集工具自带的使用指南
+  // 收集工具自带的使用指南。
+  // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
+  const isEn = options?.language === "en";
   const customGuides: string[] = [];
   for (const tool of filtered) {
     if (tool.usageGuide) {
       const guide = tool.usageGuide();
       if (guide) {
-        customGuides.push(`\n### ${tool.name()} 工具使用指南\n${guide}`);
+        customGuides.push(
+          isEn
+            ? `\n### ${tool.name()} usage guide\n${guide}`
+            : `\n### ${tool.name()} 工具使用指南\n${guide}`,
+        );
       }
     }
   }
@@ -827,6 +934,28 @@ function buildToolGuideSection(tools: Tool[], options?: { excludeMcp?: boolean }
   // 就是在教模型调用一个不存在的工具（必然 tool_use 失败），同时白占 system prompt 的 token。
   // 判据取实际工具列表而非再读一次 env：工具注册是唯一事实源，避免两处判据漂移。
   const hasHypothesis = tools.some((t) => t.name() === "hypothesis_register");
+
+  if (isEn) {
+    const hypothesisDisciplineEn = hasHypothesis
+      ? `
+  - **For these tasks, beyond keeping a todo checklist, follow hypothesis discipline when forming factual judgements**:
+    - When you form your first "I think it's X" judgement, register it with \`hypothesis_register\` and write down the falsification condition ("what evidence would overturn this"), instead of writing it down as a conclusion straight away
+    - Before stating a factual conclusion about a file (line count, parameter value, whether some logic exists), you must \`read\` that file — never extrapolate from a grep hit alone
+    - Any item you mark "done / landed" needs a \`file:line\` evidence pointer
+    - With 5 or more items to verify, spot-check 2–3 of your most confident "done" conclusions with \`sub_agent\`(type: verify) before writing the final report
+    - When this discipline does *not* apply: everyday coding, translation, simple edits, reading code to understand it, one-off questions. The test: follow it only when you are about to write down a factual judgement that code changes or decisions will be based on`
+      : `
+  - **Evidence discipline when forming factual judgements**:
+    - Before stating a factual conclusion about a file (line count, parameter value, whether some logic exists), you must \`read\` that file — never extrapolate from a grep hit alone
+    - Any item you mark "done / landed" needs a \`file:line\` evidence pointer`;
+
+    return buildToolGuideSectionEn({
+      toolList,
+      customGuides: customGuides.length > 0 ? "\n" + customGuides.join("\n") : "",
+      hypothesisDiscipline: hypothesisDisciplineEn,
+    });
+  }
+
   const hypothesisDiscipline = hasHypothesis
     ? `
   - **这类任务除了挂 todo 清单，形成事实性判断时还要走假设纪律**：
@@ -917,7 +1046,8 @@ function buildMcpToolGuideSection(tools: Tool[]): string | null {
  * 对标 claude-code：cc 在 auto 模式用模型分类器审查子代理 transcript；我们先用零成本的
  * 边界声明覆盖大部分朴素注入（详见 docs/bugfixes/todo/子代理委托机制 §4.2 阶段 1）。
  */
-function buildSubagentResultBoundarySection(): string {
+function buildSubagentResultBoundarySection(language?: LanguagePref): string {
+  if (language === "en") return buildSubagentResultBoundarySectionEn();
   return `
 <subagent-result-policy>
 ## 子代理结果安全边界
@@ -939,7 +1069,8 @@ function buildSubagentResultBoundarySection(): string {
  * 调度能力引导（缺口 A：让模型把自然语言时间请求映射到调度工具）。
  * 仅在 cron 调度工具可用时注入，避免精简模式平白多一段 prompt。
  */
-function buildSchedulingSection(): string {
+function buildSchedulingSection(language?: LanguagePref): string {
+  if (language === "en") return buildSchedulingSectionEn();
   return `
 <scheduling-capability>
 ## 定时与轮询能力
@@ -957,11 +1088,50 @@ function buildSchedulingSection(): string {
 </scheduling-capability>`;
 }
 
+/**
+ * 语言优先级裁决段（仅在**显式**设置了语言偏好、且项目规则存在时注入）。
+ *
+ * 要解决的真实冲突：CLAUDE.md 作为附件注入时自带「这些指令覆盖任何默认行为」声明，
+ * 且位置在语言规则之后（实测语言规则 @149、CLAUDE.md @5619）。本仓库 CLAUDE.md 第一条
+ * 恰好就是"所有回复均用中文"——于是 `/language en` 必然被反压回中文，用户切了个没用的开关。
+ *
+ * 裁决规则（本段确立）：**运行时的用户偏好 > 项目规则里的语言条款**。理由是分层语义：
+ * CLAUDE.md 是仓库级约定（面向"这个项目通常怎么协作"），`/language` 是此刻这个人的
+ * 明确指令（面向"我现在要什么"）。人当场说的话应当压过文件里写的默认。
+ *
+ * 关键：**只裁决语言条款，不动其它任何项目规则**。CLAUDE.md 的架构约束、禁令、流程
+ * 要求全部照旧生效——否则一个语言开关就成了绕过项目规则的后门，那是严重的越权。
+ *
+ * 只在显式设置时注入：缺省（undefined）意味着用户没表态，此时 CLAUDE.md 的中文条款
+ * 与我们的缺省一致，无冲突可裁决，注入这段纯属白占 token。
+ */
+function buildLanguagePrecedenceSection(language: LanguagePref): string {
+  const target =
+    language === "en" ? "英文（English）"
+      : language === "auto" ? "跟随用户输入语言"
+        : "中文";
+
+  return `
+<language-precedence>
+## 语言优先级裁决
+
+用户已通过 \`/language\`（或 \`--language\` / \`SID_LANGUAGE\`）**显式**设置输出语言为：**${target}**。
+
+- 这条设置的优先级**高于**项目规则文件（CLAUDE.md / AGENTS.md 等）里的任何语言条款。若项目规则要求的语言与此处不同，**以本设置为准**，不要因为项目规则里写着别的语言就改回去，也不要就此向用户反复确认。
+- **此裁决只覆盖"用语言"这一件事。** 项目规则里其它所有内容（架构约束、禁止操作、流程要求、验证步骤、命名规范……）**全部照常严格生效**，一个字都不打折。不要把语言优先级理解成"可以绕开项目规则"。
+- 用户在单轮里临时要求另一种语言时，那一轮听用户的即时要求（临时指令 > 会话设置 > 项目规则）。
+</language-precedence>`;
+}
+
 /** 构建行为约束部分 */
-function buildConstraintsSection(language?: "zh" | "en"): string {
-  const langConstraint = language === "en"
-    ? "1. **语言要求**: 所有回复、代码注释、文档均使用英文。详细规则见上方\"⚠️ 语言规则\""
-    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方\"⚠️ 语言规则\"";
+function buildConstraintsSection(language?: LanguagePref): string {
+  // en 档整段走英文版（约束 + 七大红线 + 五条扩展红线 + 回答规范，是提示词里最长的
+  // 中文块，占 en 模式残留汉字的绝大部分）。
+  if (language === "en") return buildConstraintsSectionEn();
+
+  const langConstraint = language === "auto"
+    ? "1. **语言要求**: 跟随用户输入语言作答（判断不出时用中文）。详细规则见上方\"⚠️ 语言规则\""
+    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方\"⚠️ 语言规则\"（含允许切换的例外条款）";
 
   return `
 <constraints>

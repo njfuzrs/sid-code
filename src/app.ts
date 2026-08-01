@@ -46,6 +46,7 @@ import { cleanup as cleanupSettingsWatcher } from "./config/settings/change-dete
 import { stopAppConfigWatcher } from "./config/app-config.ts";
 import type { ProjectRules } from "./config/rules.ts";
 import { clearPromptCache } from "./config/system-prompt.ts";
+import type { LanguagePref } from "./config/prompt-lang.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
 import { QueryEngine } from "./query/engine.ts";
 import { resetCacheDetection, clearCacheBreaks } from "./api/cache-detection.ts";
@@ -3145,9 +3146,13 @@ export class App {
    * 切换输出语言运行时态（/language 用）。
    * - 更新 config.language，立即重建系统提示词（下一轮 LLM 调用即用新语言）；
    * - persist=true 时写 settings.json language（跨会话）。
-   * lang=undefined 表示回退默认（删除字段，系统提示词默认中文）。
+   * lang=undefined 表示清除偏好（删除字段，回落缺省中文优先）；lang="auto" 是**有偏好**
+   * 的一档（跟随用户输入语言），与 undefined 语义不同，不要混用。
+   *
+   * 子代理无需额外通知：ProviderRegistry 持有的是**同一个 config 对象引用**，
+   * 改 this.config.language 后新建子代理经 registry.getLanguage() 即读到新值。
    */
-  async setLanguageRuntime(lang: "zh" | "en" | undefined, persist?: boolean): Promise<void> {
+  async setLanguageRuntime(lang: LanguagePref | undefined, persist?: boolean): Promise<void> {
     const log = getLogger();
     log.info("TUI:CMD", `切换输出语言: ${this.config.language ?? "(默认)"} → ${lang ?? "(默认)"}${persist ? "（持久化）" : ""}`);
     this.config.language = lang;

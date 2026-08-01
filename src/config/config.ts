@@ -10,6 +10,7 @@ import { getLogger } from "../debug/logger.ts";
 import { getSidHome } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings } from "./network-profile.ts";
+import type { LanguagePref } from "./prompt-lang.ts";
 
 /**
  * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
@@ -134,8 +135,14 @@ export interface Config {
   availableModels: ModelConfig[];
   /** 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） */
   network?: NetworkTimeoutSettings;
-  /** 输出语言偏好: "zh" 中文优先（默认）, "en" 英文优先。不设置时系统提示词默认中文 */
-  language?: "zh" | "en";
+  /**
+   * 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。
+   *
+   * 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。
+   * 不设置时系统提示词默认中文——「中文优先」是产品定位，不要改成 auto。
+   * 详见 config/prompt-lang.ts。
+   */
+  language?: LanguagePref;
   /**
    * G12：输出风格名（settings.json outputStyle）。
    * 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。

@@ -229,7 +229,16 @@ describe("buildSystemPrompt", () => {
   // 必删-4：身份指令的"铁律级"语言约束措辞改由能力标志 reasoningLanguageDrift 驱动，
   // 而非 model.includes("deepseek") 字符串匹配。
   describe("身份指令语言约束（必删-4：能力标志驱动，非模型名硬编码）", () => {
-    const IRON_LAW = "【不可违反的铁律】";
+    // 锚点从措辞字面量（曾是"【不可违反的铁律】"）换成**该分支独有的结构标记**。
+    //
+    // 换锚点的原因：那句措辞已被刻意删除。它缺少"用户显式要求可穿透"的例外条款，
+    // 导致模型把用户"切成英文模式"的请求硬拒并援引系统提示词说"我无权更改"
+    //（见 tests/config/language-preference.test.ts 的 P0-1 组）。现在强约束仍在
+    //（"最高优先级" + "必须使用纯正的中文"），但补了逃生口。
+    //
+    // 本组要验的是「能力标志是否正确选中强约束分支」，与具体措辞无关，所以锚点取
+    // 「思考语言疏导」——只有 reasoningLanguageDrift 分支才注入这一段，是稳定判据。
+    const IRON_LAW = "# 思考语言疏导";
 
     test("reasoningLanguageDrift=true 的模型走铁律级措辞", () => {
       // deepseek-v4-pro / deepseek-reasoner 在注册表声明了 reasoningLanguageDrift:true

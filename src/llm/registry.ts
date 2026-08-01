@@ -10,6 +10,7 @@ import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { resolvePricing } from "../api/cost-tracker.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
+import type { LanguagePref } from "../config/prompt-lang.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
@@ -112,8 +113,15 @@ export class ProviderRegistry {
     return new TokenEstimator().getContextLimit(this.config.model, this.config.availableModels);
   }
 
-  /** 获取输出语言偏好 */
-  getLanguage(): "zh" | "en" | undefined {
+  /**
+   * 获取输出语言偏好（含 auto 档；子代理侧由 resolveEffectiveLanguage 归一化）。
+   *
+   * 读的是 `this.config`——与 App 共享**同一个对象引用**，所以 `/language` 运行时
+   * 切换（`setLanguageRuntime` 改 `config.language`）无需通知 registry 即对新建子代理生效。
+   * 这个引用共享是刻意的，不要改成构造时快照拷贝，否则运行时切换只作用于主代理，
+   * 子代理仍按旧语言输出。
+   */
+  getLanguage(): LanguagePref | undefined {
     return this.config.language;
   }
 

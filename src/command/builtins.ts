@@ -120,14 +120,23 @@ export class HelpCommand implements Command {
       "language": `输出语言偏好
 
 用法:
-  /language           - 显示当前语言偏好
-  /language zh [-p]   - 中文优先
-  /language en [-p]   - 英文优先
-  /language auto [-p] - 回退默认（系统提示词默认中文）
+  /language            - 显示当前语言偏好
+  /language zh [-p]    - 中文优先
+  /language en [-p]    - 英文优先
+  /language auto [-p]  - 跟随用户输入语言（每轮按用户所用语言应答）
+  /language unset [-p] - 清除偏好，回落缺省（中文优先）
+
+注意: auto 与 unset 不同。auto 是"有偏好，内容是跟随用户"；unset 是"没有偏好，
+回落产品缺省（中文优先）"。
 
 别名: /lang
 持久化: 默认仅当会话生效；加 -p 才写入 settings.json 跨会话保留。
-切换后立即重建系统提示词，下一轮对话即用新语言。`,
+切换后立即重建系统提示词，下一轮对话即用新语言（子代理同步生效）。
+也可用启动参数 --language 或环境变量 SID_LANGUAGE。
+优先级: --language > SID_LANGUAGE > settings.json > 缺省(中文优先)。
+
+语言只是偏好，不是硬锁: 你随时可以在单轮里要求"用英文回答"，
+模型会当轮照办，不会以"系统约束"为由拒绝。`,
 
       "hooks": `Hook 管理
 

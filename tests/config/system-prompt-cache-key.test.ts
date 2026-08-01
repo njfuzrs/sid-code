@@ -39,7 +39,9 @@ describe("缓存键 — 第 7 条：preferredLanguage", () => {
 
     expect(zh).not.toBe(en);
     expect(zh).toContain("均使用中文");
-    expect(en).toContain("均使用英文");
+    // en 档的语言约束现在**用英文写**（早先是"均使用英文"这句中文——那时 en 模式
+    // 仍有 54.7% 汉字，等于用中文语境命令模型说英文，压力方向是反的）。
+    expect(en).toContain("in English");
     // 关键断言：切到 en 后不应再残留中文约束（缺陷表现就是这里为 true）
     expect(en).not.toContain("均使用中文");
   });

@@ -222,8 +222,9 @@ export const SettingsSchema = lazySchema(() =>
       maxTokens: z.number().min(1000).optional(),
       availableModels: z.array(ModelConfigSchema()).optional(),
 
-      // 输出语言偏好（对标 Claude Code language 配置）
-      language: z.enum(["zh", "en"]).optional(),
+      // 输出语言偏好。auto = 跟随用户输入语言（不是 zh 的别名，见 config/prompt-lang.ts）。
+      // 缺省（不设置）等价 zh —— 「中文优先」是产品定位。
+      language: z.enum(["zh", "en", "auto"]).optional(),
 
       // UI 主题偏好（/theme 持久化端；缺省 = 内置默认暗色主题）
       theme: z.string().optional(),

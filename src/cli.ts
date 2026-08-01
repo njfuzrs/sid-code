@@ -21,6 +21,7 @@ import { runMigrations } from "./migrations/runner.ts";
 import { getVersion } from "./version.ts";
 import { isAbortError } from "./llm/errors.ts";
 import { EFFORT_LEVELS, isEffortLevel } from "./llm/effort.ts";
+import { LANGUAGE_PREFS, normalizeLanguagePref, resolveLanguageFromEnv } from "./config/prompt-lang.ts";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
@@ -171,6 +172,9 @@ function parseCLIArgs(): CLIArgs {
         "max-tokens": { type: "string" },
         // 推理强度档位（P0-3）：low/medium/high/xhigh/max/auto。映射到 config.effortLevel。
         effort: { type: "string" },
+        // 输出语言偏好：zh / en / auto / unset。映射到 config.language。
+        // 无头模式（-p）此前只能改 settings.json（全局生效），无法单次调用指定语言。
+        language: { type: "string" },
         // 主模型失败时的降级模型（P0-4）：映射到 config.fallbackModel，须在 availableModels 中存在。
         "fallback-model": { type: "string" },
 
@@ -346,6 +350,31 @@ function parseCLIArgs(): CLIArgs {
         "错误: --session-id 与 --continue/--resume 同用时必须同时指定 --fork-session（否则无法确定是复用还是分叉会话）。",
       );
       process.exit(1);
+    }
+  }
+
+  // 输出语言偏好：zh / en / auto（或 unset 回退默认）。非法值报错退出。
+  //
+  // 显式传参写错必须**报错**而非静默忽略：用户敲了 `--language jp` 却拿到中文输出，
+  // 会以为"这个参数没用"。环境变量走另一条路（静默忽略）——残留的 env 不该打断启动。
+  let languagePref: Config["language"] | undefined;
+  let languageExplicitlyUnset = false;
+  if (values.language !== undefined) {
+    const raw = String(values.language).trim().toLowerCase();
+    if (raw === "unset" || raw === "default" || raw === "none") {
+      // 显式回退默认：不设值（缺省即中文优先）。用 languageExplicitlyUnset 记住
+      // "用户显式表达了要默认"，避免下面被 env 的旧值重新填上。
+      languagePref = undefined;
+      languageExplicitlyUnset = true;
+    } else {
+      const norm = normalizeLanguagePref(raw);
+      if (!norm) {
+        console.error(
+          `错误: --language 无效值 "${values.language}"，可选: ${LANGUAGE_PREFS.join(" / ")} / unset`,
+        );
+        process.exit(1);
+      }
+      languagePref = norm;
     }
   }
 
@@ -542,6 +571,14 @@ function parseCLIArgs(): CLIArgs {
     // 注意：mergeConfig 跳过 undefined，故 auto 态不会覆盖 settings.json 的 effortLevel；
     // 若需 CLI 显式压过 settings/env 的 auto 语义，由 app.ts 运行时初值处理。
     effortLevel: effortLevel,
+    // 输出语言偏好（已校验）。优先级 --language > SID_LANGUAGE > settings.json > 缺省(zh)。
+    //
+    // mergeConfig 跳过 undefined，所以这里的三态要分清：
+    //   ① 传了合法值 → languagePref 有值，压过 settings/env；
+    //   ② 传了 unset  → languageExplicitlyUnset=true，此时**不能**回落 env，
+    //      否则"我明确要默认"会被残留的 SID_LANGUAGE 顶掉（用户视角就是 unset 失灵）；
+    //   ③ 没传       → 回落 env；env 也没有时留 undefined 交给 settings.json。
+    language: languagePref ?? (languageExplicitlyUnset ? undefined : resolveLanguageFromEnv()),
     // P0-4 降级模型。
     fallbackModel: values["fallback-model"],
     // P0-1 显式会话 UUID（已校验格式 + 组合约束）。

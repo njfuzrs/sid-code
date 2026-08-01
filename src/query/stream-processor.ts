@@ -18,6 +18,7 @@ import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
+import { extractInternalEnTags } from "../config/prompt-lang.ts";
 
 /** 流式处理器配置 */
 export interface StreamProcessorOptions {
@@ -377,9 +378,29 @@ export async function processStream(
 
   // 思考块已原地转型为 ThinkingBlock 保留在 content 中，不再需要过滤移除
 
+  // <internal_en> 归位（与上面的内联 <think> 同一取向：**归位，不是删除**）。
+  //
+  // 中文铁律模式的提示词允许推理易漂移的模型（deepseek 全系）把英文技术思考包进
+  // <internal_en>（见 system-prompt.ts「思考语言疏导」段）。旧实现只定义了这个协议，
+  // 却没有任何剥离路径——模型一照做，裸标签就连同英文推理直接渲染进 TUI 正文，
+  // 恰好破坏了这个模式想达成的"用户只看到纯中文"。
+  //
+  // 这里把标签内容转成 thinking 块：思考区照常可见、可回放给下一轮，正文保持纯中文。
+  // 与 <think> 的差异是 internal_en 可能出现多次且在中间位置，故全局匹配（见 prompt-lang.ts）。
+  for (let i = response.content.length - 1; i >= 0; i--) {
+    const block = response.content[i];
+    if (block?.type !== "text" || !block.text.toLowerCase().includes("internal_en")) continue;
+    const { thinking, text } = extractInternalEnTags(block.text);
+    if (!thinking) continue;
+    const newBlocks: ContentBlock[] = [{ type: "thinking", thinking }];
+    if (text) newBlocks.push({ type: "text", text });
+    response.content.splice(i, 1, ...newBlocks);
+  }
+
   // 「未答复的 end_turn」统一识别（方案①/②，deepseek-reasoning-leak 修复）。
   // 抽到 unanswered-end-turn.ts 纯函数，与非流式降级路径共用，避免行为漂移。
-  // 放在 <think> 拆分之后——先让内联 <think> 答复归位，再判是否真答复，避免误判。
+  // 放在 <think> / <internal_en> 拆分之后——先让内联思考归位，再判是否真答复，避免误判
+  //（整段回复都包在 <internal_en> 里时，剥离后 text 为空，此时才该判为"未答复"）。
   detectUnansweredEndTurn(response, rawOutputTokensZero);
 
   // P0-1（9bc92c2c 根因修复最终防线）：过滤掉可能残余的 undefined 空洞。
