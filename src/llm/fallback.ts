@@ -47,20 +47,45 @@ import { disableKeepAlive } from "./keepalive.ts";
 // 查询来源分类（从 retry-engine.ts 吸收）
 // ═══════════════════════════════════════════════════════════════════
 
-/** 查询来源分类 */
+/** 查询来源分类。
+ *
+ *  B2：细分出全部 agent 源。原先只有笼统的 `"agent"`，而事故里六个并行子代理、
+ *  强制总结轮、fork 子代理、无头子进程走的是**四条不同代码路径**——用同一个标签
+ *  既无法在遥测里区分「哪条路径在重试」，也无法给它们各自的 529 前后台语义。
+ *  对照 CC `withRetry.ts` 的 `FOREGROUND_529_RETRY_SOURCES`：它把全部 agent 源
+ *  都算前台（子代理是用户等待链路的一环，不是可丢弃的后台 side-call）。 */
 export type QuerySource =
-  | "main_thread"   // 用户主对话（前台）
-  | "agent"         // 子代理（前台）
-  | "compact"       // 上下文压缩（前台）
-  | "summary"       // 摘要生成（后台）
-  | "title"         // 标题生成（后台）
-  | "classifier";   // 分类器（后台）
+  | "main_thread"     // 用户主对话（前台）
+  | "agent"           // 子代理（前台）——保留为兼容旧调用方的笼统标签
+  | "agent:builtin"   // 内置子代理主流（前台）
+  | "agent:custom"    // 自定义子代理主流（前台）
+  | "agent:summary"   // 子代理强制总结轮（前台，B2 首次获得韧性）
+  | "agent:fork"      // fork 子代理（前台）
+  | "headless"        // 无头子进程主循环（前台，绝不阻塞）
+  | "compact"         // 上下文压缩（前台）
+  | "goal_eval"       // 目标评估（B3 接线）
+  | "hook_agent"      // hook 触发的 agent（B3 接线）
+  | "memory_recall"   // 记忆召回（B3 接线）
+  | "summary"         // 摘要生成（后台）
+  | "title"           // 标题生成（后台）
+  | "classifier";     // 分类器（后台）
 
-/** 前台查询源 — 用户正在等待结果，529 时重试 */
+/** 前台查询源 — 用户正在等待结果，529 时重试。
+ *
+ *  B2：全部 agent 源纳入前台（对照 CC `FOREGROUND_529_RETRY_SOURCES`）。
+ *  子代理失败会直接让父代理的任务失败，属于用户等待链路，不是可丢弃的后台调用——
+ *  事故 20260730-183103 里两个子代理失败即导致整轮审计残缺，正是把它们当"可丢"的代价。 */
 export const FOREGROUND_SOURCES = new Set<QuerySource>([
   "main_thread",
   "agent",
+  "agent:builtin",
+  "agent:custom",
+  "agent:summary",
+  "agent:fork",
+  "headless",
   "compact",
+  "goal_eval",
+  "hook_agent",
 ]);
 
 /** 后台查询遇到 529 时是否仍重试 */
@@ -279,6 +304,15 @@ interface RetryContext {
   /** 不确定-2/3：本次 executeWithFallback 调用内累计的重试次数（连接阶段 + 流式阶段共享）。
    *  达到 maxRetriesPerCall 上界后不再重试，防两阶段独立计数叠加成退避风暴。 */
   totalRetriesThisCall: number;
+  /** B2（缺口 D）：最近一次被重试消化掉的错误原文与分类。
+   *
+   *  重试耗尽后 `tryFallback` 原先只报「已达最大重试次数且无可用 fallback」——
+   *  **真实根因（429 限流 / 529 过载 / ECONNRESET）被整句吞掉**。用户看到的是一句
+   *  没有信息量的"重试次数用尽"，排查方向会跑偏到超时/网络配置，而非限流。
+   *  在此留档，供三条耗尽出口拼进文案。 */
+  lastRetryError?: string;
+  /** B2（缺口 D）：最近一次重试错误的分类 reason（rate_limit / overloaded / …）。 */
+  lastRetryReason?: string;
   /** B1-a：本次调用内是否已降级过（二次降级短路判据）。
    *
    *  原为实例字段 `this.hasFallenBack`，而 `app.ts` 是全进程单实例 → 6 个并行子代理
@@ -635,7 +669,21 @@ export class ModelFallback {
               return;
             }
 
-            if (event.type === "content_block_delta") {
+            // B2：`content_block_start` 也算"有内容"。
+            //
+            // 原判据只认 `content_block_delta`，于是**无参数工具调用被误判为空响应**：
+            // 一个 `tool_use` 块若 input 为 `{}`（无 `input_json_delta`），整条流只有
+            // start + stop 两个事件，零 delta → 下方 `!hasYieldedContent` 触发
+            // StreamValidationError("响应为空") → 白重试 N 次后转 fallback。
+            //
+            // 这在主路径长期未暴露，是因为主对话模型几乎总先输出一段文本再调工具；
+            // 而子代理**第一个动作就是调工具**（explore 直接 grep/glob），无参数工具
+            // （如 noop / 无参 MCP 工具）恰好命中。B2 把子代理接进漏斗才让它显形——
+            // 这类"接线后才暴露的既存缺陷"正是收敛成唯一漏斗的收益：一处修好，四条路径同得。
+            //
+            // 判据仍然有效：伪装成功的空流（网关回 text/html 错误页被解析成 0 事件）
+            // 连 `content_block_start` 都没有，照旧被拦住。
+            if (event.type === "content_block_delta" || event.type === "content_block_start") {
               hasYieldedContent = true;
             }
 
@@ -742,6 +790,26 @@ export class ModelFallback {
             return;
           }
 
+          // B2：**无法分类**的错误不重试（fail-fast），直接转 fallback。
+          //
+          // `classifyError` 的契约是「分类不出来就原样返回入参」（其第 4 分支注释写明
+          // "无法分类，返回原始错误"）——即既非 RetryableError 也非 TerminalError。
+          // 此前这类错误落进下方重试路径，等于把「我不知道这是什么」当成「值得重试」：
+          // 最坏烧掉 maxRetries × 退避（默认 10 × 5s+）才放弃，而它们典型是**确定性
+          // 故障**（provider 实现抛错、参数拼装 bug、SDK 版本不兼容），重试必然再失败。
+          //
+          // 判据取自本文档 §0.4：能力应由分类器**显式授予**，而非"没被否决就放行"。
+          // 被删的 R1 循环在这点上是对的（`canRetry = !!retryable && …`），收敛进漏斗时
+          // 必须把这条语义一并带过来——否则"删掉平行实现"会顺手弄丢一个正确行为。
+          if (!(classified instanceof RetryableError)) {
+            log.warn("FALLBACK", `错误无法分类为可重试，不重试直接转 fallback: ${classified.message}`);
+            // 根因留档（缺口 D）：本路径没走重试，需在此显式记一笔，否则耗尽文案会丢掉它。
+            ctx.lastRetryError = classified.message;
+            ctx.lastRetryReason = "unclassified";
+            yield* this.tryFallback(params, signal, ctx);
+            return;
+          }
+
           if (attempt >= streamMaxRetries) {
             log.warn("FALLBACK", `流式阶段重试 ${streamMaxRetries} 次后仍失败`);
             this.availability.markRetryOnce(params.model, "流式传输失败");
@@ -782,6 +850,13 @@ export class ModelFallback {
             break;
           }
           ctx.totalRetriesThisCall++;
+
+          // B2（缺口 D）：留档真实根因。每次重试都覆盖，故耗尽时留下的是**最后一次**
+          // 失败原因——正是用户最需要看到的那个。
+          ctx.lastRetryError = classified.message;
+          ctx.lastRetryReason = classified instanceof RetryableError
+            ? classified.reason
+            : undefined;
 
           // 流式重试：重新发起完整请求
           const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);
@@ -882,6 +957,18 @@ export class ModelFallback {
       throw new RequestAbortedError("Request aborted");
     }
 
+    // B2（缺口 D）：把真实根因拼进耗尽文案。
+    //
+    // 修前三条耗尽出口都只报「已达最大重试次数…」——**根因整句丢失**。子代理侧尤其致命：
+    // `sub-agent.ts` 再按 timeoutCtrl.aborted 包一层"子代理执行超时"，最终用户看到的是
+    // 「超时」，而真相是「限流重试 N 次仍失败」，排查方向被彻底带偏。
+    // 已重试次数一并透出（回答"到底试了几次"，也让缺口 C 的"10 次是幻觉"可被实测观察）。
+    const rootCause = ((): string => {
+      if (!ctx?.lastRetryError) return "";
+      const reason = ctx.lastRetryReason ? `${ctx.lastRetryReason}: ` : "";
+      return `（重试 ${ctx.totalRetriesThisCall} 次，最后一次失败原因 — ${reason}${ctx.lastRetryError}）`;
+    })();
+
     // 已经用过 fallback（二次降级）→ 不再重复切换，直接报错。
     // B1-a：判据取 per-call 上下文（并发安全）；ctx 缺省时（理论上不发生，仅防御
     // 未来新增调用路径漏传）回落实例上报位，保持旧行为而非静默放开二次降级。
@@ -889,7 +976,7 @@ export class ModelFallback {
       log.error("FALLBACK", "主 Provider 失败且 fallback 已用尽");
       yield {
         type: "error",
-        error: { message: "模型请求失败，已达最大重试次数且 fallback 已用尽" },
+        error: { message: `模型请求失败，已达最大重试次数且 fallback 已用尽${rootCause}` },
       };
       return;
     }
@@ -907,7 +994,7 @@ export class ModelFallback {
       log.warn("FALLBACK", "fallbackSwitchMode=off，不降级，直接终止本轮");
       yield {
         type: "error",
-        error: { message: "模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）" },
+        error: { message: `模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）${rootCause}` },
       };
       return;
     }
@@ -958,7 +1045,7 @@ export class ModelFallback {
       log.error("FALLBACK", "主 Provider 失败且无可用 fallback");
       yield {
         type: "error",
-        error: { message: "模型请求失败，已达最大重试次数且无可用 fallback" },
+        error: { message: `模型请求失败，已达最大重试次数且无可用 fallback${rootCause}` },
       };
       return;
     }

@@ -32,6 +32,7 @@ import { accumulateUsage } from "../llm/types.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { getLogger } from "../debug/index.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { streamWithResilience } from "../llm/resilient-stream.ts";
 
 // ============================================================
 // 主线
@@ -191,17 +192,35 @@ async function runAgentLoop(
           }))
         : undefined;
 
-      const stream = provider.sendMessageStream({
-        model: init.model,
-        // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
-        messages: ctxMgr.getCleanedMessages(),
-        system: ctxMgr.getSystemPrompt(),
-        maxTokens: 4096,
-        tools: toolDefs,
-        // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
-        // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
-        thinking: SIDE_CALL_NO_THINK,
-      });
+      // B2（D4）：走唯一漏斗，不再直连。
+      //
+      // 无头子进程是韧性最差的一条路径：它没有 TUI、没有父进程的重试兜底，
+      // 一次 429 就整进程失败退出，父进程只收到一句 result{success:false}。
+      // switchMode 必须 auto——**绝不阻塞**：ask 会去调一个此进程里根本不存在的
+      // TUI 钩子，把子进程永久挂死，比失败更糟。
+      const stream = streamWithResilience(
+        provider,
+        {
+          model: init.model,
+          // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
+          messages: ctxMgr.getCleanedMessages(),
+          system: ctxMgr.getSystemPrompt(),
+          maxTokens: 4096,
+          tools: toolDefs,
+          // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
+          // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
+          thinking: SIDE_CALL_NO_THINK,
+        },
+        undefined,
+        {
+          querySource: "headless",
+          switchMode: "auto",
+          // 父进程用 init.timeout 做 wall-clock 硬顶（`sub-agent.ts` 超时即 kill 子进程），
+          // 故此处上界压到 3 次，避免退避把父进程那份预算烧穿后被硬 kill——
+          // 那样重试反而**降低**成功率（连收尾的 result 消息都发不出去）。
+          maxRetries: 3,
+        },
+      );
 
       // 处理流式响应
       const response = await processStream(stream);

@@ -20,6 +20,8 @@ import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
+import { streamWithResilience } from "../llm/resilient-stream.ts";
+import type { ModelAvailabilityService } from "../llm/availability.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -34,6 +36,12 @@ export interface ForkedAgentContext {
   provider: Provider;
   toolRegistry: ToolRegistry;
   model: string;
+  /**
+   * B2：模型可用性服务。**应注入与主路径同一实例**，让 terminal 类错误（认证失败 /
+   * 模型不存在 / 内容策略）跨路径共享拉黑——fork 撞到坏模型后，主路径与其它子代理
+   * 下次不必各自再撞一次。缺省时漏斗自建独立实例（拉黑只在本次调用内有效）。
+   */
+  availability?: ModelAvailabilityService;
   /**
    * 注入的有状态工具（read / edit / read_many）——FileReadTracker 隔离用。
    *
@@ -200,7 +208,14 @@ export async function runForkedAgent(
       if (signal.aborted) break;
       turns++;
 
-      const stream = mainContext.provider.sendMessageStream(
+      // B2（D3）：走唯一漏斗，不再直连。
+      //
+      // fork agent 跑的是后台记忆提取 / session memory 更新——用户不可见，因此一次
+      // 429 静默失败**没有任何人会注意到**，只会表现为"记忆偶尔不更新"这类查不出根因的
+      // 玄学问题。恰恰是这种无人盯着的路径最需要自动重试。
+      // switchMode 固定 auto：fork 无 TUI，ask 会挂死在等不到答案的 Promise 上。
+      const stream = streamWithResilience(
+        mainContext.provider,
         {
           model: mainContext.model,
           system: mainContext.systemPrompt,
@@ -212,6 +227,14 @@ export async function runForkedAgent(
           thinking: SIDE_CALL_NO_THINK,
         },
         signal,
+        {
+          querySource: "agent:fork",
+          switchMode: "auto",
+          availability: mainContext.availability,
+          // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
+          // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
+          maxRetries: 2,
+        },
       );
 
       const { content, stopReason, usage } = await accumulate(stream, signal);

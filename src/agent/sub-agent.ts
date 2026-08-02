@@ -1253,6 +1253,12 @@ export class SubAgent {
         // H9：透传共享的 availability（与主 fallback 引擎同一实例），子代理 terminal 类错误
         // 跨路径拉黑。registry 缺省（旧测试）时为 undefined，runAgentLoop 内做空值保护。
         availability: this.registry?.availability,
+        // B2（D1）：内置子代理走漏斗时的来源标签。与自定义路径（agent:custom）区分，
+        // 让遥测能回答"哪类子代理在重试"——两条路径共用一个标签就丧失了这个分辨力。
+        querySource: "agent:builtin",
+        // 复用 masking 用的派生 sessionId：它已含 parentSessionId + taskId，
+        // 天然唯一，B4 做 per-agent 状态隔离时可直接当快照 key 的身份维度。
+        agentId: this.deriveSubAgentSessionId(taskId),
         // P2-1：子代理 JIT 上下文发现（**独立**实例，不共享父代理去重集，见
         // createJitDiscoverer 注释——共享会让父加载过的规则子代理永远拿不到）。
         discoverJitContext: this.createJitDiscoverer(ctxMgr),
@@ -1510,6 +1516,13 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         hookSystem: this.hookSystem,
+        // B2（D1）：自定义子代理的来源标签。与内置路径（agent:builtin）区分——
+        // 两条 runAgentLoop 路径都要接，只接一条就会让"自定义 agent 的重试在遥测里
+        // 伪装成内置 agent"，与 P2-1 注释记录的同型隐形差异。
+        querySource: "agent:custom",
+        agentId: this.deriveSubAgentSessionId(task.type),
+        // H9 对齐：自定义路径此前漏传 availability，terminal 类错误无法跨路径拉黑。
+        availability: this.registry?.availability,
         // P2-1：自定义子代理同样走 JIT（独立实例）。两条 runAgentLoop 路径都要接，
         // 只接一条会让"用了自定义 agent 就没有目录规则"成为隐形差异。
         discoverJitContext: this.createJitDiscoverer(ctxMgr),
