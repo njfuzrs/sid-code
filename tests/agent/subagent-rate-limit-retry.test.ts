@@ -27,6 +27,12 @@ import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
 import { LoopDetector } from "../../src/agent/loop-detection.ts";
 import type { Provider } from "../../src/llm/provider.ts";
 import type { StreamEvent, SendParams } from "../../src/llm/types.ts";
+import {
+  initStreamObserver,
+  resetStreamObserver,
+  getActiveStreamSnapshots,
+} from "../../src/trace/stream-observer.ts";
+import { setRetryTelemetryObserver } from "../../src/llm/retry-telemetry.ts";
 
 /** 事故现场的真实 429 报文（取自 warn.log:61） */
 const REAL_429_BODY =
@@ -309,6 +315,205 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
     const msgs = ctxMgr.getMessages();
     for (let i = 1; i < msgs.length; i++) {
       expect(msgs[i].role).not.toBe(msgs[i - 1].role);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// B4 — per-agent 状态隔离：**集成层**并发场景（§七 F5 的落点）
+//
+// 为什么必须在这个文件里加：F5 记的就是本文件的教训——上面 8 个 R1 场景全绿、
+// `bun test` 7524 全绿，**却全是单子代理**，于是 R1-e 引入的并发副作用（缺口 A：
+// `clearStreamSnapshot` 误删并行子代理的活快照）是靠事后独立审计才发现的。
+// "测了组件、没测装配"。故本段直接驱动 6 个并发 runAgentLoop（走真实漏斗），
+// 断言的是装配后的可观测状态，而不是 stream-observer 自己的返回值。
+// ═══════════════════════════════════════════════════════════════════════
+describe("B4 — 并发子代理状态隔离（集成层，F5）", () => {
+  const PARALLEL = 6;
+
+  test("6 路并发子代理各自重试 → 快照互不误删，且每路都重试到成功", async () => {
+    initStreamObserver("b4-concurrent", "/tmp/b4-concurrent", () => {});
+    try {
+      // 每路都是「先 429，重试后成功」。改造前 6 路共用 `${loopId}:10001` 一把 key：
+      // 任一路重试时 clearStreamSnapshot 会把其余 5 路还在跑的活快照一并删掉。
+      const providers = Array.from({ length: PARALLEL }, () =>
+        makeProvider([
+          () => rateLimitErrorStream(),
+          () => successStream("并发核查完成"),
+        ]),
+      );
+
+      // 观察窗口：任一路在跑（尚未 teardown）时，活跃快照数的峰值。
+      // 隔离生效 → 峰值应达到 6；碰撞状态下恒为 1。
+      let peakActive = 0;
+      const sampler = setInterval(() => {
+        peakActive = Math.max(peakActive, getActiveStreamSnapshots().length);
+      }, 1);
+
+      const results = await Promise.all(
+        providers.map((p, i) =>
+          runAgentLoop(baseConfig(p.provider, {
+            maxStreamRetries: 3,
+            // 生产同源：内置路径 agentId = `subagent-${type}-${taskId}`
+            agentId: `subagent-explore-task_${i}`,
+          })),
+        ),
+      );
+      clearInterval(sampler);
+
+      // 1) 每路都重试到成功——若快照被别人误删，看门狗/重开归因都会跑偏
+      for (const [i, r] of results.entries()) {
+        expect(r.success).toBe(true);
+        expect(providers[i].calls.length).toBe(2);   // 首次 429 + 重试成功
+      }
+
+      // 2) 隔离生效的直接证据：并发峰值 > 1（碰撞时恒为 1）
+      expect(peakActive).toBeGreaterThan(1);
+
+      // 3) teardown 生效：全部结束后归零（A5 判据「全部结束 teardown 后 = 0」）
+      expect(getActiveStreamSnapshots().length).toBe(0);
+    } finally {
+      resetStreamObserver();
+    }
+  });
+
+  test("并发下 StreamPhase 事件按 agentId 成对可归因（缺口 B：事件不成对）", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    initStreamObserver("b4-pairing", "/tmp/b4-pairing", (ev) => {
+      if (ev.event === "StreamPhase") events.push(ev.data);
+    });
+    try {
+      const providers = Array.from({ length: PARALLEL }, () =>
+        makeProvider([() => rateLimitErrorStream(), () => successStream("ok")]),
+      );
+
+      await Promise.all(
+        providers.map((p, i) =>
+          runAgentLoop(baseConfig(p.provider, {
+            maxStreamRetries: 3,
+            agentId: `subagent-explore-task_${i}`,
+          })),
+        ),
+      );
+
+      // 每一路都应有自己完整的一组事件，且带得上身份标签。
+      // 改造前 6 路事件全落在同一 index 上、无身份字段，无法拆开归因。
+      for (let i = 0; i < PARALLEL; i++) {
+        const mine = events.filter(e => e.agent_id === `subagent-explore-task_${i}`);
+        const fetchSent = mine.filter(e => e.phase === "fetch_sent");
+        const completed = mine.filter(e => e.phase === "completed");
+        const errored = mine.filter(e => e.phase === "error");
+
+        // 首次 + 重试各一次 fetch_sent；1 次 error（429）；1 次 completed（重试成功）
+        expect(fetchSent.length).toBe(2);
+        expect(errored.length).toBe(1);
+        expect(completed.length).toBe(1);
+      }
+
+      // 全部事件都带身份——没有"无主"事件混在并发批次里
+      expect(events.every(e => typeof e.agent_id === "string")).toBe(true);
+    } finally {
+      resetStreamObserver();
+    }
+  });
+
+  test("不传 agentId → 行为与改造前一致（旧调用方零改动）", async () => {
+    initStreamObserver("b4-legacy", "/tmp/b4-legacy", () => {});
+    try {
+      const { provider, calls } = makeProvider([
+        () => rateLimitErrorStream(),
+        () => successStream("ok"),
+      ]);
+      // baseConfig 不含 agentId：走无身份 key，与改造前逐字节相同
+      const result = await runAgentLoop(baseConfig(provider, { maxStreamRetries: 3 }));
+
+      expect(result.success).toBe(true);
+      expect(calls.length).toBe(2);
+      // 无身份路径由 R1-e 原逻辑在重试前 clear、成功后不残留
+      const leftovers = getActiveStreamSnapshots().filter(s => s.agentId === undefined);
+      expect(leftovers.every(s => s.phase === "completed")).toBe(true);
+    } finally {
+      resetStreamObserver();
+    }
+  });
+
+  test("agentId 进遥测：能回答「哪个子代理重试了几次」（阶段 2 判据）", async () => {
+    const retries: Array<{ agentId?: string }> = [];
+    // 每路重试次数不同：第 i 路连续 i+1 次 429 后成功。
+    // 若遥测不带 agentId，只能得到"一共重试了 21 次"，无法拆到每一路。
+    const providers = Array.from({ length: 3 }, (_, i) => {
+      const failures = Array.from({ length: i + 1 }, () => () => rateLimitErrorStream());
+      return makeProvider([...failures, () => successStream("ok")]);
+    });
+
+    await Promise.all(
+      providers.map((p, i) =>
+        runAgentLoop(baseConfig(p.provider, {
+          maxStreamRetries: 5,
+          agentId: `subagent-explore-task_${i}`,
+          onTelemetry: (ev: { type: string; agentId?: string }) => {
+            if (ev.type === "retry") retries.push({ agentId: ev.agentId });
+          },
+        })),
+      ),
+    );
+
+    for (let i = 0; i < 3; i++) {
+      const mine = retries.filter(r => r.agentId === `subagent-explore-task_${i}`);
+      expect(mine.length).toBe(i + 1);
+    }
+  });
+
+  // §七 F7：「能力已实现」≠「能力已生效」。上一条测试用 config.onTelemetry 断言了
+  // 字段带得上，但生产路径的子代理**不传** onTelemetry —— 若只有上一条，
+  // 「给遥测加 agentId」会变成第 4 个 F7 型死能力（字段有、无消费方、落不到轨迹）。
+  // 本条钉住生产实际走的那条通道：全局观察者。
+  test("生产通道断言：不传 onTelemetry 时事件仍经全局观察者落地（F7）", async () => {
+    const seen: Array<{ type: string; agentId?: string }> = [];
+    setRetryTelemetryObserver((ev) => seen.push({ type: ev.type, agentId: ev.agentId }));
+    try {
+      const { provider } = makeProvider([
+        () => rateLimitErrorStream(),
+        () => successStream("ok"),
+      ]);
+
+      // 刻意不传 onTelemetry —— 与 sub-agent.ts 生产调用形态一致
+      const result = await runAgentLoop(baseConfig(provider, {
+        maxStreamRetries: 3,
+        agentId: "subagent-explore-task_prod",
+      }));
+
+      expect(result.success).toBe(true);
+      const retryEvents = seen.filter(e => e.type === "retry");
+      expect(retryEvents.length).toBe(1);
+      expect(retryEvents[0].agentId).toBe("subagent-explore-task_prod");
+    } finally {
+      setRetryTelemetryObserver(null);
+    }
+  });
+
+  test("有 per-instance 回调时不重复派发（主循环不写两遍）", async () => {
+    const viaObserver: string[] = [];
+    const viaCallback: string[] = [];
+    setRetryTelemetryObserver((ev) => viaObserver.push(ev.type));
+    try {
+      const { provider } = makeProvider([
+        () => rateLimitErrorStream(),
+        () => successStream("ok"),
+      ]);
+
+      await runAgentLoop(baseConfig(provider, {
+        maxStreamRetries: 3,
+        agentId: "subagent-explore-task_dup",
+        onTelemetry: (ev: { type: string }) => viaCallback.push(ev.type),
+      }));
+
+      expect(viaCallback.filter(t => t === "retry").length).toBe(1);
+      // 关键：全局观察者不得再收到同一条（否则 events.jsonl 里重试次数翻倍，
+      // 直接把"重试了几次"这个度量做废）
+      expect(viaObserver.filter(t => t === "retry").length).toBe(0);
+    } finally {
+      setRetryTelemetryObserver(null);
     }
   });
 });

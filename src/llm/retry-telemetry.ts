@@ -55,6 +55,17 @@ export interface RetryTelemetryEvent {
   fallbackModel?: string;
   /** 查询来源（后台 529 丢弃时） */
   querySource?: string;
+  /**
+   * B4：发起方 agent 标识（子代理隔离与归因）。
+   *
+   * 为什么 querySource 不够：它只到"类别"粒度（`agent:builtin` / `agent:custom`），
+   * 6 个并行子代理的 querySource 完全相同。于是"哪个子代理重试了几次"这个问题
+   * 只能得到"内置子代理一共重试了 37 次"——无法区分是一路撞限流撞了 37 次，
+   * 还是 6 路各撞 6 次。前者该查那个模型/那个任务，后者是全局限流，修法完全不同。
+   *
+   * 主循环调用不带此字段（保持事件形状不变）。
+   */
+  agentId?: string;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */
@@ -70,6 +81,45 @@ export interface RetryTelemetryEvent {
   elapsedMs?: number;
   /** 首 token 延迟（毫秒） */
   ttftMs?: number;
+}
+
+// ─── 全局遥测观察者（B4：让子代理侧的重试事件真正落轨迹） ───
+
+let _observer: ((event: RetryTelemetryEvent) => void) | null = null;
+
+/**
+ * 注册全局重试遥测观察者（由 app.ts 在启动时注入，写入 events.jsonl）。
+ *
+ * B4 / §七 F7：为什么需要它。`FallbackConfig.onTelemetry` 只在 `app.ts:745` 那一个
+ * ModelFallback 实例上接线，而子代理走 `streamWithResilience` **每次调用新建**漏斗实例，
+ * 从不传 onTelemetry —— 于是"给遥测加 agentId"这件事本身会变成一个 F7 型死能力：
+ * 字段加了、埋点带上了，但子代理的事件根本没有消费方，落不到 events.jsonl。
+ *
+ * 采用模块级观察者而非逐层透传回调，是沿用本仓既有形态
+ * （`side-call-sink.ts` 的 `setSideCostObserver` / `gateway-pricing.ts` 的
+ * `setGatewayPricingObserver`）：避免 llm 层反向依赖 trace 层，也避免在
+ * agentic-loop → sub-agent → app 这条链上逐层加参数。
+ */
+export function setRetryTelemetryObserver(
+  fn: ((event: RetryTelemetryEvent) => void) | null,
+): void {
+  _observer = fn;
+}
+
+/**
+ * 分发一条重试遥测事件到全局观察者。
+ *
+ * 由 `fallback.ts` 的 `emitTelemetry` 在调用 per-instance 回调之外**额外**调用：
+ * per-instance 回调保留（主循环靠它），全局观察者补上所有未接线的漏斗实例。
+ * 主循环因此会经由两条路径各发一次 —— `emitTelemetry` 侧已做去重（见其注释）。
+ */
+export function dispatchRetryTelemetry(event: RetryTelemetryEvent): void {
+  if (!_observer) return;
+  try {
+    _observer(event);
+  } catch {
+    // 遥测不应影响主流程
+  }
 }
 
 /**

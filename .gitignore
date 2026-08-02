@@ -29,8 +29,10 @@ Thumbs.db
 *.env
 
 # 会话和配置（用户数据）
-.sid-code/sessions/
-.sid-code/config.yaml
+# .sid-code/ 是运行时本地数据目录（sessions / config / tool-results / worktrees /
+# scheduled_tasks.lock），整体不入库。原先写成三条精确子路径，漏掉了 worktrees/
+# 和 *.lock 等新增运行时产物 → git status 每次 都列 .sid-code/。
+.sid-code/
 
 # 历史对话 dump（含 holdout 元数据风险，禁止入库；F-H2 修复）
 chat_session*.json

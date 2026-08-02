@@ -44,9 +44,30 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** trajectories 内 session 目录的过期阈值：30 天 */
 const TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** 需要在全局 gitignore 中隐藏的运行时文件（非配置、非用户创建） */
+/**
+ * 需要在全局 gitignore 中隐藏的运行时产物（非配置、非用户创建）。
+ *
+ * 判定标准——只列**纯运行时、可安全重建、绝不该入库**的东西：
+ * - worktrees/：隔离工作区（几十 MB/个，git 二次工作树，重建即得）
+ * - scheduled_tasks.lock：进程锁
+ * - session-config.json：本进程 worktree session 状态
+ * - swarm/、tasks/：Swarm 团队运行时邮箱与任务态
+ * - tool-results/：历史遗留污染目录（新代码已改写 ~/.sid-code/，此处兜底老仓库）
+ *
+ * 刻意**不**列入（团队可共享，允许提交）：
+ * settings.json / scheduled_tasks.json / commands/ / skills/ / agents/ / output-styles/
+ *
+ * 为什么必须有这一层：用户仓库的 .gitignore 是**用户的文件**，我们无权擅自修改；
+ * 但也不能假设用户已经配好了忽略规则。写全局 gitignore（~/.config/git/ignore）
+ * 让这些产物在该用户的所有仓库里默认隐身——既不碰用户文件，又不依赖用户先做配置。
+ */
 const RUNTIME_FILES_TO_GITIGNORE = [
+  ".sid-code/worktrees/",
   ".sid-code/scheduled_tasks.lock",
+  ".sid-code/session-config.json",
+  ".sid-code/swarm/",
+  ".sid-code/tasks/",
+  ".sid-code/tool-results/",
 ];
 
 /**

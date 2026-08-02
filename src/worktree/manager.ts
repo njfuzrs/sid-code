@@ -21,6 +21,7 @@ import {
   copyFileSync,
   writeFileSync,
   chmodSync,
+  lstatSync,
 } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
@@ -97,6 +98,16 @@ function resolveDefaultBranch(gitRoot: string): string {
 }
 
 export class WorktreeManager {
+  /**
+   * 由本进程创建的 symlink 名单：worktreePath → symlink 目录名[]。
+   *
+   * 仅作 countRealChanges 的**辅助提示**，不是判定依据——真正的判定是
+   * lstat 出的 symlink 事实，因此跨进程（上次运行留下的 worktree）同样有效。
+   * 静态而非实例字段：同一 worktree 可能被不同 WorktreeManager 实例操作。
+   * remove() 时清理条目，避免长会话里无界增长。
+   */
+  private static readonly managedSymlinks = new Map<string, string[]>();
+
   private readonly worktreeDir: string;
 
   constructor(private gitRoot: string) {
@@ -317,8 +328,15 @@ export class WorktreeManager {
    * 统计 Worktree 变更。
    * 返回 null 表示无法确定状态 —— 调用方必须视为"不安全"（fail-closed）。
    *
-   * @param opts.fast 清理场景用 `-uno` 跳过 untracked 扫描（大仓性能优化，D16）；
-   *                  并统计未推送 commit（HEAD --not --remotes，D17）而非仅相对 original HEAD。
+   * @param opts.fast 清理场景：统计**未推送** commit（HEAD --not --remotes，D17）
+   *                  而非仅相对 original HEAD（后者对 GC 无意义——GC 拿不到原始 HEAD）。
+   *
+   * ⚠️ fast 模式**不再**跳过 untracked 扫描（2026-08-02 修复真实数据丢失风险）：
+   * 原实现用 `-uno`，导致用户新建但尚未 `git add` 的文件对 GC **完全不可见** →
+   * GC 判定「无改动」→ 删除 worktree → 用户工作永久丢失。这与 remove() 的
+   * fail-closed 承诺直接矛盾。`-uno` 的初衷是省掉大仓 untracked 全量扫描，但
+   * 未 add 的新文件恰恰是最容易丢、最该保护的一类工作，这个性能换安全的交易
+   * 不成立。symlink 噪音已由 countRealChanges 按 lstat 事实排除，无需再靠 -uno 绕。
    */
   countChanges(
     worktreePath: string,
@@ -326,16 +344,15 @@ export class WorktreeManager {
     opts: { fast?: boolean } = {},
   ): WorktreeChanges | null {
     try {
-      // 未提交文件。fast 模式用 -uno 跳过 untracked 全量扫描（D16）
-      const statusArgs = opts.fast
-        ? ["status", "--porcelain", "-uno"]
-        : ["status", "--porcelain"];
+      // 用 -z（NUL 分隔）而非按 \n split：文件名可能含换行，按行切会虚报计数。
+      // 两种模式都扫 untracked（-unormal 是 git 默认行为，显式写出以表明这是刻意选择）。
+      const statusArgs = ["status", "--porcelain", "-z", "-unormal"];
       const statusOutput = execFileSync("git", statusArgs, {
         cwd: worktreePath,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
-      const changedFiles = statusOutput ? statusOutput.split("\n").length : 0;
+      });
+      const changedFiles = this.countRealChanges(statusOutput, worktreePath);
 
       let commits = 0;
       if (opts.fast) {
@@ -368,6 +385,43 @@ export class WorktreeManager {
       // Git 命令失败 → 返回 null（fail-closed）
       return null;
     }
+  }
+
+  /**
+   * 解析 `git status --porcelain -z` 输出，统计**真实**改动数。
+   *
+   * 排除项：untracked（`??`）且实际是 symlink 的条目。这类条目是我们自己在
+   * postCreationSetup 里建的（node_modules 等），不是用户工作。正常情况下
+   * .git/info/exclude 已让它们不出现在 status 里；本函数是**第二道防线**，
+   * 覆盖 exclude 写入失败、或 worktree 由旧版本 sid-code 创建的情形。
+   *
+   * 只排除 symlink，不排除普通 untracked 文件——用户新建的文件必须照常算改动，
+   * 否则会误删真实工作（fail-closed 底线不能破）。
+   */
+  private countRealChanges(statusOutput: string, worktreePath: string): number {
+    // -z 输出：每条记录形如 "XY <path>\0"。rename/copy（R/C）会多跟一个
+    // "<origPath>\0"，需跳过，否则把原路径误当成独立一条改动。
+    const records = statusOutput.split("\0").filter((r) => r.length > 0);
+    let count = 0;
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i]!;
+      if (rec.length < 4) continue; // 形如 "XY p"，短于此即畸形，跳过
+      const xy = rec.slice(0, 2);
+      const path = rec.slice(3);
+      // rename/copy 的下一条记录是原路径，消费掉不计数
+      if (xy[0] === "R" || xy[0] === "C") i++;
+
+      if (xy === "??") {
+        try {
+          // lstat 不跟随符号链接——正是要判断"它本身是不是 symlink"
+          if (lstatSync(join(worktreePath, path)).isSymbolicLink()) continue;
+        } catch {
+          /* stat 失败按真实改动计（fail-closed） */
+        }
+      }
+      count++;
+    }
+    return count;
   }
 
   /** 安全删除 Worktree */
@@ -438,6 +492,9 @@ export class WorktreeManager {
       /* 忽略 */
     }
 
+    // 释放 symlink 记录，防长会话里 Map 无界增长
+    WorktreeManager.managedSymlinks.delete(session.worktreePath);
+
     return true;
   }
 
@@ -451,6 +508,7 @@ export class WorktreeManager {
 
     // 1. symlink 可配置目录（P1-6，默认 node_modules）
     let symlinkedNodeModules = false;
+    const symlinkedDirs: string[] = [];
     for (const dir of cfg.symlinkDirectories) {
       const src = join(this.gitRoot, dir);
       const dest = join(worktreePath, dir);
@@ -458,12 +516,33 @@ export class WorktreeManager {
       if (existsSync(src) && !existsSync(dest)) {
         try {
           symlinkSync(src, dest, "dir");
+          symlinkedDirs.push(dir);
           if (dir === "node_modules") symlinkedNodeModules = true;
         } catch (err: any) {
           // B4：失败不阻断，但记录 warning
           log.warn("WORKTREE", `symlink ${dir} 失败（非关键）: ${err.message}`);
         }
       }
+    }
+
+    // 1b. 记下本 worktree 里由我们创建的 symlink 名单。
+    //
+    // 背景（2026-08-02 修复，361MB 孤儿 worktree 事故根因）：
+    // 主仓 .gitignore 通常写作 `node_modules/`——**带尾斜杠只匹配目录**。
+    // 我们建的是 symlink（不是目录），规则不命中 → worktree 内 `git status`
+    // 永久报一行 `?? node_modules` → countChanges 得出 changedFiles=1 →
+    // remove(force=false) 判定"有未保存工作"而 fail-closed 拒删 → 每个隔离
+    // 子代理留下一个几十 MB 的孤儿目录，永久累积。
+    //
+    // ⚠️ 为什么**不**写 .git/info/exclude（实测否决，别再尝试）：
+    // exclude 只有主仓一份，git 不支持 per-worktree exclude——
+    // `rev-parse --git-path info/exclude` 在 worktree 里解析到的就是主仓
+    // `.git/info/exclude`（写它 = 污染主仓，正是要避免的）；而写进
+    // `.git/worktrees/<name>/info/exclude` 则被 git 完全忽略（实测无效）。
+    // 因此改为纯进程内记录 + countChanges 侧按 symlink 事实排除，
+    // **不触碰任何 git 状态、不写任何用户文件**，副作用为零。
+    if (symlinkedDirs.length > 0) {
+      WorktreeManager.managedSymlinks.set(worktreePath, symlinkedDirs);
     }
 
     // 2. 配置 core.hooksPath（共享主仓库 hooks，幂等：已正确则跳过，D22）

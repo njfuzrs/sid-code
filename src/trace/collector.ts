@@ -462,17 +462,35 @@ export class TraceCollector {
           try {
             const lagMs = Math.round(performance.now() - lagStart);
             // 从 stream-observer 获取活跃请求快照
+            //
+            // B4：并行子代理隔离后，这里可能同时有多份活快照（改造前 6 路子代理
+            // 碰撞成 1 份，恒定只有一个候选）。选取规则必须显式：
+            //   1. 优先主循环那份（无 agentId）—— 心跳的首要用途是诊断"主进程卡在哪"，
+            //      随手取 [0] 会在 Map 插入顺序变化时随机报某个子代理，比没有更误导；
+            //   2. 主循环无活跃流（如正在跑工具）时退到最早开始的子代理那份，
+            //      并带上 agent_id 说明这是谁 —— 否则读心跳的人会以为主循环在流式阶段。
+            // 并发数一并落盘，让"6 路并行时卡住"与"单路卡住"在心跳里可分辨。
             const activeSnapshots = getActiveStreamSnapshots();
-            const activeRequest = activeSnapshots.length > 0
+            const mainSnapshot = activeSnapshots.find((s) => s.agentId === undefined);
+            const oldestAgent = activeSnapshots
+              .filter((s) => s.agentId !== undefined)
+              .reduce<typeof activeSnapshots[number] | undefined>(
+                (acc, s) => (!acc || s.startedAt < acc.startedAt ? s : acc),
+                undefined,
+              );
+            const picked = mainSnapshot ?? oldestAgent;
+            const activeRequest = picked
               ? {
-                  index: activeSnapshots[0].index,
-                  model: activeSnapshots[0].model,
-                  phase: activeSnapshots[0].phase,
-                  elapsed_ms: Date.now() - activeSnapshots[0].startedAt,
-                  last_progress_ms: Date.now() - activeSnapshots[0].lastContentProgressAt,
-                  chunks: activeSnapshots[0].chunksReceived,
-                  empty_chunks: activeSnapshots[0].emptyChunks,
-                  timeouts_fired: activeSnapshots[0].timeoutsFired,
+                  index: picked.index,
+                  model: picked.model,
+                  phase: picked.phase,
+                  elapsed_ms: Date.now() - picked.startedAt,
+                  last_progress_ms: Date.now() - picked.lastContentProgressAt,
+                  chunks: picked.chunksReceived,
+                  empty_chunks: picked.emptyChunks,
+                  timeouts_fired: picked.timeoutsFired,
+                  ...(picked.agentId ? { agent_id: picked.agentId } : {}),
+                  ...(activeSnapshots.length > 1 ? { active_count: activeSnapshots.length } : {}),
                 }
               : null;
             // 优化 3：stream-observer 快照仅覆盖流式阶段；工具执行/后处理等非流式阶段

@@ -2539,6 +2539,16 @@ export class App {
       this._retryTelemetryWriter = (event) => {
         traceCollectorInstance.writeRetryTelemetry(event as unknown as Record<string, unknown>);
       };
+      // B4 / F7：子代理的漏斗实例是**每次调用新建**的，拿不到上面这个 per-instance
+      // 回调（它只绑在主循环那一个 ModelFallback 上）。注册全局观察者后，
+      // 子代理的 retry / fallback 事件（带 agentId）才真正落到 events.jsonl ——
+      // 否则"哪个子代理重试了几次"在生产里依然测不出来，只是多了个没人读的字段。
+      try {
+        const { setRetryTelemetryObserver } = require("./llm/retry-telemetry.ts");
+        setRetryTelemetryObserver((event: Record<string, unknown>) => {
+          traceCollectorInstance.writeRetryTelemetry(event);
+        });
+      } catch { /* 采集不可用不影响启动 */ }
       // 阶段 2.5：网关定价采集观察者 → 一条 GatewayPricingSync trace 事件。
       // 观察者模式（对齐 setSideCostObserver）避免 gateway-pricing.ts 反向依赖 collector。
       try {

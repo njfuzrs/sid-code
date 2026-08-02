@@ -69,6 +69,19 @@ const HEADLESS_ENTRY = join(__dirname, "..", "entrypoints", "headless.ts");
 const HEADLESS_AVAILABLE = existsSync(HEADLESS_ENTRY);
 
 /**
+ * B4：自定义子代理的调用序号，用于给观测身份补一个「每次调用唯一」的后缀。
+ *
+ * 内置路径的 agentId 派生自 taskId（`generateTaskId` 随机生成，天然唯一），但
+ * 自定义路径没有 taskId —— `executeCustomInner` 一直用 `task.type` 派生。若观测身份
+ * 也只用 task.type，两个**同类型**自定义子代理并发跑就仍然共用一把快照 key，B4 的
+ * 隔离在这条路径上等于没做（这是并发场景里最常见的形态：同一个 skill 被并发触发两次）。
+ *
+ * 用进程内自增计数而非随机串：调试时序号可读（`-c1` / `-c2` 一眼看出是第几次调用），
+ * 且同一进程内不会重复。跨进程重复无所谓 —— 快照 Map 是进程内状态。
+ */
+let _customAgentSeq = 0;
+
+/**
  * 子代理类型（已废弃硬编码枚举，改为开放字符串）。
  *
  * 原先 SubAgentType 是硬编码联合类型，新增 Agent（如 general-purpose、自定义/插件 Agent）
@@ -1456,6 +1469,11 @@ export class SubAgent {
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
 
+    // B4：观测身份必须「每次调用唯一」，而 masking 的 sessionId 刻意按 task.type
+    // 复用（同类型自定义代理共用一个临时目录，见下方注释）。两者目的不同，故分开派生：
+    // 复用 sessionId 当观测 id 会让两个同类型并发实例共用快照 key，隔离形同虚设。
+    const observerAgentId = `${this.deriveSubAgentSessionId(task.type)}-c${++_customAgentSeq}`;
+
     try {
       const ctxMgr = new ContextManager({
         maxTokens: this.resolveSubAgentWindow(task),
@@ -1520,7 +1538,8 @@ export class SubAgent {
         // 两条 runAgentLoop 路径都要接，只接一条就会让"自定义 agent 的重试在遥测里
         // 伪装成内置 agent"，与 P2-1 注释记录的同型隐形差异。
         querySource: "agent:custom",
-        agentId: this.deriveSubAgentSessionId(task.type),
+        // B4：带调用序号的唯一观测身份（见上方 observerAgentId 定义处注释）。
+        agentId: observerAgentId,
         // H9 对齐：自定义路径此前漏传 availability，terminal 类错误无法跨路径拉黑。
         availability: this.registry?.availability,
         // P2-1：自定义子代理同样走 JIT（独立实例）。两条 runAgentLoop 路径都要接，

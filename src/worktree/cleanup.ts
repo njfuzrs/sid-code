@@ -39,6 +39,16 @@ export function isEphemeralWorktree(dirName: string): boolean {
 }
 
 /**
+ * 临时 worktree 的宽限期（6 小时）。
+ *
+ * 取值理由：临时 worktree 正常寿命是分钟级，6h 远超任何单次子代理任务，
+ * 足以避开"另一进程正在跑长任务"的误判；同时又远短于 30 天，让崩溃遗留的
+ * 孤儿在下次启动时就被回收而不是占盘一个月。
+ * 仍受锁检查 / 改动检查 / 活跃 session 三重保护，不会误删有工作的目录。
+ */
+export const EPHEMERAL_GRACE_MS = 6 * 60 * 60 * 1000;
+
+/**
  * 检查 worktree 是否被 git 锁定（B9）。
  * git worktree lock 会在 .git/worktrees/<name>/locked 留标记；
  * 锁定通常意味着另一进程正在使用，不应清理。
@@ -121,8 +131,17 @@ export async function cleanupStaleWorktrees(
       continue;
     }
 
-    // 30 天内不碰
-    if (mtimeMs >= cutoffMs) {
+    // 年龄门槛未到则不碰。
+    //
+    // 为什么临时 worktree 用比 cutoffDays 短得多的阈值（2026-08-02）：
+    // 子代理 / workflow 的 worktree 正常寿命是**分钟级**，任务结束即由
+    // agent/tool.ts 的 isolationCleanup 删除。能活到启动期还在的，基本都是
+    // 上次进程崩溃 / 被 kill 留下的孤儿。让它们再多占 30 天磁盘（每个几十 MB，
+    // 隔离子代理跑得频繁时轻松堆到几百 MB）没有任何收益。
+    // EPHEMERAL_GRACE_MS 给足"另一进程刚创建、正在用"的余量，配合下方
+    // 锁检查 + 改动检查 + 活跃 session skipPath，三重保护后才动手。
+    const ageCutoff = Math.max(cutoffMs, Date.now() - EPHEMERAL_GRACE_MS);
+    if (mtimeMs >= ageCutoff) {
       skipped++;
       continue;
     }

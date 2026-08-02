@@ -13,7 +13,7 @@ import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase, clearStreamSnapshot } from "../trace/stream-observer.ts";
+import { emitStreamPhase, clearStreamSnapshot, cleanupAgentSnapshots } from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
@@ -21,6 +21,7 @@ import { processStream, type StreamProcessResult } from "./stream-processor.ts";
 // 本文件不再直接依赖它们（原 R1 循环的 import 随之删除）。
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { QuerySource } from "../llm/fallback.ts";
+import type { RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { executeTools } from "./tool-executor.ts";
 import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
@@ -117,8 +118,18 @@ export interface AgentLoopConfig {
    * 可分辨，是"哪类子代理在重试"这个问题能被回答的前提。
    */
   querySource?: QuerySource;
-  /** B2：发起方标识（遥测归因；B4 per-agent 状态隔离将复用同一标识）。 */
+  /** B2：发起方标识（遥测归因；B4 per-agent 状态隔离复用同一标识）。 */
   agentId?: string;
+  /**
+   * B4：重试遥测回调（可选）。
+   *
+   * 生产路径**不需要**传：`fallback.ts` 的 `emitTelemetry` 在无 per-instance 回调时
+   * 走全局观察者（`setRetryTelemetryObserver`，由 app.ts 注册），子代理事件照样落
+   * events.jsonl。此参数存在的意义是让"重试遥测确实带上了 agentId"可以被**测试
+   * 直接断言**，而不必依赖全局单例状态——对应 §七 F7 的要求：新增韧性能力必须附一条
+   * 证明它被执行的断言。
+   */
+  onTelemetry?: (event: RetryTelemetryEvent) => void;
   /**
    * B2：跨重试的兜底超时（毫秒），传给 `processStream`。
    *
@@ -163,6 +174,26 @@ export interface AgentLoopResult {
  * 对标 claude-code runAgent()，一个函数同时服务于主 Agent 和子 Agent。
  */
 export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopResult> {
+  // ══════════════════════════════════════════════════════════════════
+  // B4：teardown 包壳（对标 CC `promptCacheBreakDetection.ts:700` 的
+  // `cleanupAgentTracking(agentId)`）。
+  //
+  // 为什么是 try/finally 包壳而不是在各出口逐个调用：`runAgentLoopInner` 有 6 个
+  // return 点 + 若干 throw 路径，逐个手写清理必然漏——而"漏一个出口"的表现是
+  // `_snapshots` 慢慢涨，不会有任何报错，正是最难发现的那类缺陷。包壳让"新增一条
+  // return 路径"不需要记得补清理。
+  //
+  // 无 agentId 时 `cleanupAgentSnapshots("")` 直接 return（它自己做了空值保护），
+  // 不会误伤主循环那把无身份 key。
+  // ══════════════════════════════════════════════════════════════════
+  try {
+    return await runAgentLoopInner(config);
+  } finally {
+    if (config.agentId) cleanupAgentSnapshots(config.agentId);
+  }
+}
+
+async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResult> {
   const log = getLogger();
   const {
     provider, model, ctxMgr, tools, maxTurns, signal, loopDetector,
@@ -196,6 +227,19 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   // 那就成了「看起来接了统一配置，实际只有主路径生效」的半接线状态。
   // 在轮次循环外解析一次即可（同一子代理生命周期内配置不变）。
   const netTimeouts = resolveLoopTimeouts({});
+
+  // ══════════════════════════════════════════════════════════════════
+  // B4：本次循环的快照身份维度。
+  //
+  // 有 agentId → 所有 StreamPhase / 快照读写都带上它，与其它并行子代理隔离；
+  // 无 agentId（旧测试、未接线调用方）→ 退化为 undefined，key 与改造前逐字节相同，
+  // 即"没传身份就沿用旧行为"，不会因为漏传而静默换语义。
+  //
+  // 为什么不在这里造一个兜底 id（如随机串）：那会让"漏传 agentId"变得不可见——
+  // 隔离看起来生效了，但遥测里的 agentId 是个无法与任何子代理对应的随机值，
+  // 排查时更误导。漏传就该退化成旧行为，由 §5 的一致性哨兵去发现。
+  // ══════════════════════════════════════════════════════════════════
+  const observerAgentId = config.agentId;
 
   while (turns < maxTurns) {
     turns++;
@@ -248,6 +292,11 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     };
 
     // T13.1：子代理 LLM 调用 StreamPhase 事件（fetch_sent）
+    //
+    // B4（per-agent 状态隔离）：index 只含轮次，身份维度由 `observerAgentId` 单独提供。
+    // 不把 agentId 哈希进 index 是刻意的——index 落在 events.jsonl 里要能读出"第几轮"，
+    // 掺进去就成了不可解释的大整数，离线分析拿不回轮次。身份走 key 的独立段（见
+    // `stream-observer.ts` 的 `makeSnapshotKey`）。
     const agentStreamIndex = 10000 + turns;
     const turnStartTime = Date.now();
 
@@ -270,7 +319,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     //   processStream idle/overall = 跨重试兜底 → 触发即结束本轮；
     //   sub-agent.ts 的 timeoutCtrl = wall-clock 总预算硬顶。
     // ══════════════════════════════════════════════════════════════════
-    emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt: 0 });
+    emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt: 0 }, observerAgentId);
 
     const stream = streamWithResilience(provider, sendParams, signal, {
       querySource: config.querySource ?? "agent:builtin",
@@ -280,16 +329,21 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       retryBackoffMaxMs: config.retryBackoffMaxMs,
       availability,
       agentId: config.agentId,
+      onTelemetry: config.onTelemetry,
       // 新发现 1②：快照清理必须在**退避之前**。原 R1 是 sleep 完才 clear，
       // 整个退避期（最长 120s）那份已死流的旧快照仍然活着、lastContentProgressAt
       // 停在两分钟前——正是 collector.ts 的 still_progressing 判据最容易误判的输入。
+      //
+      // B4：clear 必须带 observerAgentId，否则删的是「无身份」那把 key ——
+      // 自己的活快照留着不动（still_progressing 误判照旧），反而把主循环那份删了。
+      // 这正是缺口 A 的镜像：改造前是删别人的，漏传 id 就变成删错人的。
       onRetry: (attempt: number, error: string) => {
-        clearStreamSnapshot(agentStreamIndex);
+        clearStreamSnapshot(agentStreamIndex, undefined, observerAgentId);
         emitStreamPhase(agentStreamIndex, "error", {
           caller: "sub-agent", model, error, attempt,
           elapsed_ms: Date.now() - turnStartTime,
-        });
-        emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt });
+        }, observerAgentId);
+        emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt }, observerAgentId);
       },
     });
 
@@ -306,7 +360,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       emitStreamPhase(agentStreamIndex, "error", {
         caller: "sub-agent", model, error: errMessage,
         elapsed_ms: Date.now() - turnStartTime,
-      });
+      }, observerAgentId);
       return {
         success: false,
         turns,
@@ -321,7 +375,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     if (response.stopReason !== "error") {
       emitStreamPhase(agentStreamIndex, "completed", {
         caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime,
-      });
+      }, observerAgentId);
     }
 
 
@@ -579,7 +633,9 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     // 用独立命名空间 20000+turns，与主循环轮 10000+turns 区分，避免 index 撞车。
     const summaryStreamIndex = 20000 + turns;
     const summaryStartTime = Date.now();
-    emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model });
+    // B4：总结轮同样带 observerAgentId —— 20000 命名空间只避开了「同一子代理内主流
+    // 与总结流」的撞车，避不开「多个并行子代理的总结轮」互相撞车（它们 turns 常常相同）。
+    emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model }, observerAgentId);
 
     try {
       // B2（D2）：总结轮同样走漏斗，**首次获得韧性**。
@@ -606,13 +662,14 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
           retryBackoffMaxMs: config.retryBackoffMaxMs,
           availability,
           agentId: config.agentId,
+          onTelemetry: config.onTelemetry,
           onRetry: (attempt: number, error: string) => {
-            clearStreamSnapshot(summaryStreamIndex);
+            clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
             emitStreamPhase(summaryStreamIndex, "error", {
               caller: "sub-agent-summary", model, error, attempt,
               elapsed_ms: Date.now() - summaryStartTime,
-            });
-            emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model, attempt });
+            }, observerAgentId);
+            emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model, attempt }, observerAgentId);
           },
         },
       );
@@ -623,7 +680,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
         overallTimeoutMs: config.streamOverallTimeoutMs,
       });
       accumulateUsage(totalUsage, summaryResponse.usage);
-      emitStreamPhase(summaryStreamIndex, "completed", { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime });
+      emitStreamPhase(summaryStreamIndex, "completed", { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime }, observerAgentId);
 
       // 提取总结文本
       const summaryTexts = summaryResponse.content.filter(b => b.type === "text");
@@ -638,7 +695,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       config.onTurnEnd?.({ turn: turns + 1, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
     } catch (err: any) {
       // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
-      emitStreamPhase(summaryStreamIndex, "error", { caller: "sub-agent-summary", model, error: err.message, elapsed_ms: Date.now() - summaryStartTime });
+      emitStreamPhase(summaryStreamIndex, "error", { caller: "sub-agent-summary", model, error: err.message, elapsed_ms: Date.now() - summaryStartTime }, observerAgentId);
       log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
     }
   }

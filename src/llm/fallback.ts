@@ -38,7 +38,7 @@ import {
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { lookupRegistry } from "./model-registry.ts";
-import type { RetryTelemetryEvent } from "./retry-telemetry.ts";
+import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { calculateRetryDelay as calculateSharedRetryDelay } from "./retry-backoff.ts";
 import { disableKeepAlive } from "./keepalive.ts";
@@ -426,7 +426,10 @@ export class ModelFallback {
       ...params,
       onStreamTelemetry: (sig) => {
         try { upstreamStreamTelemetry?.(sig); } catch { /* ignore */ }
-        this.emitTelemetry({ ...sig, model: params.model });
+        // B4：流内诊断事件（stream_stall / stream_*_timeout / stream_completed）同样带
+        // agentId。它们是 per-attempt 的耗时/停顿数据——并行子代理下若不带身份，
+        // digest 的 gen 耗时分位数会把 6 路混在一起算，看不出是哪一路在卡。
+        this.emitTelemetry({ ...sig, model: params.model }, perCall.agentId);
       },
     };
 
@@ -452,10 +455,13 @@ export class ModelFallback {
       streamTimeoutId = setTimeout(() => {
         log.warn("FALLBACK", `流式整体超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
         // 缺口 2：记录 fallback 流式整体超时触发
+        // B4：带 agentId —— 漏斗这层用的是 ambient `turnIndex`（主循环轮次），子代理调用
+        // 也会拿到同一个 turnIndex。不带身份时，子代理的 fallback 超时会被写进**主循环那份
+        // 快照**的 timeoutsFired，污染主循环的重开成因归因（并行子代理越多污染越重）。
         emitTimeoutFired(currentSseDumpContext().turnIndex, "fallback_stream_timeout", {
           threshold_ms: streamTimeoutMs,
           model: params.model,
-        });
+        }, perCall.agentId);
         // 缺口 2 进阶：武装未生效检查（abort 后若流循环 5s 内未抛出 → TimeoutIneffective）
         disarmStreamIneffective = armIneffectiveCheck(
           currentSseDumpContext().turnIndex,
@@ -598,7 +604,7 @@ export class ModelFallback {
                   model: params.model,
                   originalTokens: original,
                   adjustedTokens: adjusted,
-                });
+                }, perCall.agentId);
                 // 跳出当前流，进入流式重试（会使用新的 maxTokens）
                 throw new RetryableError(event.error.message, "server_error");
               }
@@ -638,7 +644,7 @@ export class ModelFallback {
                   type: "529_dropped",
                   model: params.model,
                   querySource: perCall.querySource ?? "unknown",
-                });
+                }, perCall.agentId);
                 yield* this.tryFallback(params, signal, ctx);
                 return;
               }
@@ -655,7 +661,7 @@ export class ModelFallback {
                   model: params.model,
                   fallbackModel: perCall.fallbackModel,
                   error: "连续 529 错误",
-                });
+                }, perCall.agentId);
                 yield* this.tryFallback(params, signal, ctx);
                 return;
               }
@@ -736,7 +742,7 @@ export class ModelFallback {
           if (!isTimeoutAbort && is401Error(err) && !ctx.needsAuthRefresh) {
             log.info("FALLBACK", "401 认证错误，触发 retry-once 闸门并重试（暂无凭据刷新钩子，不退避）");
             ctx.needsAuthRefresh = true;
-            this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) });
+            this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) }, perCall.agentId);
             resetStreamTimeout();
             try {
               const retryParams = ctx.maxTokensOverride
@@ -822,7 +828,7 @@ export class ModelFallback {
                 type: "persistent_retry_wait",
                 model: params.model,
                 delayMs,
-              });
+              }, perCall.agentId);
               yield* this.sleepWithProgress(
                 delayMs,
                 attempt + 1,
@@ -876,11 +882,17 @@ export class ModelFallback {
           }
           try {
             const { turnIndex, loopId } = currentSseDumpContext();
-            const snapshot = getStreamSnapshot(turnIndex, loopId);
+            // B4：读快照与上面 emitTimeoutFired 必须用**同一把 key**（含 agentId），
+            // 否则子代理读到的是主循环的 timeoutsFired —— reopenReason 会把主循环的
+            // 超时层安到子代理头上，是比"没有归因"更坏的错误归因。
+            const snapshot = getStreamSnapshot(turnIndex, loopId, perCall.agentId);
             if (snapshot && snapshot.timeoutsFired.length > 0) {
               reopenReason = snapshot.timeoutsFired[snapshot.timeoutsFired.length - 1];
             }
           } catch { /* 可观测性不影响重试 */ }
+          // B4：这条是"哪个子代理重试了几次"的**主数据源**——按 agentId 聚合
+          // type=retry 事件即可回答。缺了它只能聚合到 querySource 类别，
+          // 分不清"一路撞 N 次"和"N 路各撞一次"（修法完全不同）。
           this.emitTelemetry({
             type: "retry",
             model: params.model,
@@ -889,7 +901,7 @@ export class ModelFallback {
             error: classified.message,
             phase: "stream",
             reopenReason,
-          });
+          }, perCall.agentId);
 
           yield* this.sleepWithProgress(
             delayMs,
@@ -1057,12 +1069,14 @@ export class ModelFallback {
     this.lastCallFellBack = true;
     log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
     this.listener?.onFallback?.("主模型失败", targetModel);
+    // B4：agentId 从 ctx.perCall 取（tryFallback 无 perCall 局部变量）。
+    // ctx 缺省时（防御性，仅未来新增路径漏传 ctx）退化为不带身份，与旧行为一致。
     this.emitTelemetry({
       type: "fallback",
       model: params.model,
       fallbackModel: targetModel,
       error: "主模型失败",
-    });
+    }, ctx?.perCall.agentId);
 
     yield* this.streamFromFallback(params, targetModel, targetProvider, signal);
   }
@@ -1262,14 +1276,29 @@ export class ModelFallback {
   // Telemetry 埋点
   // ═══════════════════════════════════════════════════════════════
 
-  private emitTelemetry(event: RetryTelemetryEvent): void {
+  /**
+   * B4：`agentId` 走**显式入参**，绝不缓存到实例字段。
+   *
+   * `app.ts` 是全进程单实例 ModelFallback，6 个并行子代理共用它——把 agentId 存成
+   * `this._currentAgentId` 会重演 B1-a 修掉的那个缺陷：后进入的调用覆盖前一个，
+   * 遥测里的 agentId 随机指向某个并发子代理，比没有这个字段更误导。
+   *
+   * 未传时不写该字段（不是写 undefined）：让主循环事件的 JSON 形状逐字节不变。
+   */
+  private emitTelemetry(event: RetryTelemetryEvent, agentId?: string): void {
+    const stamped = agentId ? { ...event, agentId } : event;
     if (this.config.onTelemetry) {
       try {
-        this.config.onTelemetry(event);
+        this.config.onTelemetry(stamped);
       } catch {
         // telemetry 不应影响主流程
       }
+      // 已有 per-instance 消费方（主循环）→ 不再走全局观察者，避免同一事件写两遍。
+      return;
     }
+    // B4 / F7：没有 per-instance 回调的漏斗实例（子代理每次调用新建的那些）
+    // 走全局观察者，否则它们的重试事件根本没有消费方——"加了 agentId 但落不到轨迹"。
+    dispatchRetryTelemetry(stamped);
   }
 
   // ═══════════════════════════════════════════════════════════════
