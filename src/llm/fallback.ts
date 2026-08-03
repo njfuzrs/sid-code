@@ -173,6 +173,49 @@ const NON_STREAMING_MAX_TOKENS = 16_384;
  *  外层 abort"这个明确错误的现状。 */
 const MIN_USEFUL_ATTEMPT_MS = 5_000;
 
+/**
+ * S2：共享冷却对齐时的错峰槽位数。
+ *
+ * ── 为什么必须错峰（实测，不是推论）──
+ *
+ * 第一版只做"对齐到同一个冷却截止时刻"，实测**完全没有收益**：
+ * 6 路并发、1.2s 窗口只放行 2 个请求的配额网关下，对齐前后
+ * 「总请求 16 / 被拒 10」一模一样。原因是把 6 路对齐到同一时刻 = **惊群**：
+ * 大家一起睡、一起醒、一起再撞一次，只是把撞击时刻整齐地推后了一点。
+ *
+ * 加上错峰后（同一实验）：总请求 15→9、被拒 9→3。
+ * 「冷却」提供的是"该等多久"，「错峰」提供的是"别一起醒"——两者缺一不可。
+ *
+ * 槽位数取 6：与典型并发子代理规模（本仓 Task 并发上限量级）同阶。槽位多于实际
+ * 并发数只会让错峰更细、不会变坏；少于并发数则退化为部分惊群。
+ */
+const COOLDOWN_STAGGER_SLOTS = 6;
+
+/**
+ * S2：把调用方身份映射成稳定的错峰槽位。
+ *
+ * 用 `agentId` 的哈希而非随机数：**同一个 agent 每次重试落在同一槽位**，
+ * 于是"谁在什么时刻发请求"可复现、可在轨迹里对照。随机错峰同样能减少碰撞，
+ * 但会让同一条轨迹两次回放的时序不同——排查限流问题时这是很贵的代价。
+ *
+ * 无 agentId（主循环）→ 槽位 0，即不错峰：主循环只有一路，错峰无意义。
+ */
+/** S2：每个错峰槽位的间隔（毫秒）。
+ *
+ *  取 300ms 的依据：它要比"网关放行一个请求所需的时间"稍大，才能让相邻槽位真的
+ *  落进不同的放行时机；又要足够小，使最坏错峰（槽位 5）只多等 1.5s——相对 429
+ *  典型的秒级窗口是可接受的代价。这是**方向正确的粗参数**，不是精调值。 */
+const COOLDOWN_STAGGER_MS = 300;
+
+function cooldownStaggerSlot(agentId?: string): number {
+  if (!agentId) return 0;
+  let h = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    h = (h * 31 + agentId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h) % COOLDOWN_STAGGER_SLOTS;
+}
+
 // B1-b：原 PERSISTENT_HEARTBEAT_MS（30s）已删除。它只用于「重连同步抛错后 persistent
 // 模式的心跳等待」——该分支随重连 try/catch 一并删除（重连现走 openStream 归一化，
 // 同步抛错会回到统一的流式 catch，persistent 无限重试由
@@ -572,29 +615,33 @@ export class ModelFallback {
     if (this.config.respectSharedCooldown !== false) {
       const cd = this.availability.getCooldownInfo(params.model);
       if (cd) {
+        // 同重试侧一样要错峰——入口处更需要：并发子代理往往是被同一个 Task 批次
+        // **同时**拉起的，不错峰就是整批一起醒、一起撞。
+        const slot = cooldownStaggerSlot(perCall.agentId);
+        const waitMs = cd.remainingMs + slot * COOLDOWN_STAGGER_MS;
         const budgetOk =
           perCall.deadlineAt === undefined ||
-          perCall.deadlineAt - Date.now() > cd.remainingMs + MIN_USEFUL_ATTEMPT_MS;
+          perCall.deadlineAt - Date.now() > waitMs + MIN_USEFUL_ATTEMPT_MS;
         if (budgetOk) {
           log.info(
             "FALLBACK",
             `S2：模型 ${params.model} 处于共享限流冷却（剩余 ${cd.remainingMs}ms，` +
-            `已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
+            `错峰槽位 ${slot} → 等 ${waitMs}ms，已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
           );
           this.emitTelemetry({
             type: "shared_cooldown_wait",
             model: params.model,
-            delayMs: cd.remainingMs,
+            delayMs: waitMs,
             remainingMs: cd.remainingMs,
             error: cd.reason,
           }, perCall.agentId);
-          await this.sleep(cd.remainingMs, signal);
+          await this.sleep(waitMs, signal);
           if (signal?.aborted) throw new RequestAbortedError("Request aborted");
         } else {
           // 预算不够等 → 不等。记一笔，否则"为什么这一路没遵守冷却"无从解释。
           log.info(
             "FALLBACK",
-            `S2：冷却剩余 ${cd.remainingMs}ms 但时间预算不足，跳过等待直接发起`,
+            `S2：冷却剩余 ${cd.remainingMs}ms（错峰后 ${waitMs}ms）但时间预算不足，跳过等待直接发起`,
           );
         }
       }
@@ -1115,16 +1162,22 @@ export class ModelFallback {
           let effectiveDelayMs = delayMs;
           if (this.config.respectSharedCooldown !== false) {
             const cdRemaining = this.availability.getCooldownRemaining(params.model);
-            if (cdRemaining > effectiveDelayMs) {
-              this.emitTelemetry({
-                type: "shared_cooldown_wait",
-                model: params.model,
-                attempt: attempt + 1,
-                delayMs: cdRemaining,
-                remainingMs: cdRemaining,
-                error: "retry aligned to shared cooldown",
-              }, perCall.agentId);
-              effectiveDelayMs = cdRemaining;
+            if (cdRemaining > 0) {
+              // 错峰：冷却给"等多久"，槽位给"别和别人同时醒"。缺了错峰就是惊群，
+              // 实测零收益（见 COOLDOWN_STAGGER_SLOTS 注释里的前后数据）。
+              const slot = cooldownStaggerSlot(perCall.agentId);
+              const staggered = cdRemaining + slot * COOLDOWN_STAGGER_MS;
+              if (staggered > effectiveDelayMs) {
+                this.emitTelemetry({
+                  type: "shared_cooldown_wait",
+                  model: params.model,
+                  attempt: attempt + 1,
+                  delayMs: staggered,
+                  remainingMs: cdRemaining,
+                  error: `retry aligned to shared cooldown (slot ${slot})`,
+                }, perCall.agentId);
+                effectiveDelayMs = staggered;
+              }
             }
           }
 
