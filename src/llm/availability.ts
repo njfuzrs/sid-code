@@ -29,6 +29,21 @@ interface RateLimitCooldown {
  */
 export const MAX_COOLDOWN_WAIT_MS = 30_000;
 
+/**
+ * S2 冷却的**下限**（毫秒）。
+ *
+ * 为什么需要下限（由门槛断言逼出来的真问题）：冷却时长取自调用方的退避估计
+ * （`delayMs`），而退避在某些配置下会非常小。实测一个 1ms 的冷却等于**没有冷却**——
+ * 写进去的瞬间就过期，别的并发路径根本读不到，S2 静默退化成 CC 语义。
+ *
+ * 500ms 的依据：它要大于"另一路从写入到读取之间的调度间隔"，冷却才算是一个能被
+ * 观察到的信号；又足够小，不给正常路径添可感知的延迟。
+ *
+ * 注意这个下限只影响"冷却存在多久"，不影响任何一路**实际等多久**——后者仍由
+ * 各自的退避与错峰决定。
+ */
+export const MIN_COOLDOWN_MS = 500;
+
 export class ModelAvailabilityService {
   private states = new Map<string, HealthState>();
   /** S2：模型 → 共享限流冷却。与 `states` 分开存，因为语义正交：
@@ -124,8 +139,11 @@ export class ModelAvailabilityService {
    * @param reason 归因文本，进日志与遥测。
    */
   markRateLimited(model: string, retryAfterMs?: number, reason = "rate_limit"): void {
+    // 双向钳制：下限保证冷却是个**能被别人读到**的信号（1ms 冷却等于没有冷却，
+    // 见 MIN_COOLDOWN_MS 注释）；上限防止服务端一个超长 Retry-After 让全部并发
+    // 路径集体长睡。
     const wait = Math.min(
-      Math.max(retryAfterMs ?? 2_000, 0),
+      Math.max(retryAfterMs ?? 2_000, MIN_COOLDOWN_MS),
       MAX_COOLDOWN_WAIT_MS,
     );
     const until = Date.now() + wait;
