@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-07-31",
-  "currentVersion": "0.1.597",
-  "totalVersions": 16,
-  "totalCommits": 232,
+  "generatedAt": "2026-08-03",
+  "currentVersion": "0.1.598",
+  "totalVersions": 17,
+  "totalCommits": 257,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,339 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.598",
+      "date": "2026-08-03",
+      "isGenesis": false,
+      "count": 25,
+      "groups": [
+        {
+          "key": "feat",
+          "title": "新功能",
+          "commits": [
+            {
+              "scope": "llm/agent",
+              "desc": "子代理重试循环收敛到唯一韧性漏斗 streamWithResilience",
+              "hash": "913a8372",
+              "details": [
+                "新增 src/llm/resilient-stream.ts：封装「漏斗 + 退避心跳 + 快照清理」的入口",
+                "agentic-loop.ts：删除 sleepWithAbort/turnAbort/独立超时，声明 querySource + switchMode=auto + availability 三项，韧性能力由漏斗统一提供",
+                "forked-agent.ts / headless.ts：接线 streamWithResilience（headless 上界压 3）",
+                "sub-agent.ts：内置/自定义/总结轮传递细分 querySource（agent:builtin/ agent:custom/agent:summary），遥测可归因到路径",
+                "fallback.ts：content_block_start 也算\"有内容\"，修复无参工具调用被误判空响应 → 白重试 N 次后转 fallback",
+                "fallback.ts：无法分类错误不重试直接转 fallback（fail-fast），避免确定性 故障烧掉 maxRetries × 退避才放弃",
+                "fallback.ts：重试耗尽文案补回真实根因（lastRetryError/reason），不再只报 \"已达最大重试次数\"——子代理侧尤其致命，会被包成\"超时\"带偏排查方向",
+                "agentic-loop.ts：快照清理移到退避之前，避免最长 120s 退避期旧快照存活 误导 collector 的 still_progressing 判据"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "LLM 韧性 per-call 化 + 工具增量翻卡 + JIT 博客重写",
+              "hash": "e117f6c3",
+              "details": [
+                "新增 keepalive fetch 包装器，fallback 开关动态注入 fetch 选项",
+                "降级状态从实例字段搬到 per-call context，修复并发子代理互相干扰 （单实例 hasFallenBack 置位后静默拒绝其它代理降级）",
+                "新增 PerCallOptions per-call 覆盖，未传字段回落 config",
+                "删除生产不可达死代码（CONNECTION_RETRY 循环、PERSISTENT_HEARTBEAT_MS）",
+                "新增 liveToolSettledSink 侧信道，并行批次内工具完成即翻卡， 不等同批次最慢的兄弟",
+                "history-adapter 导出 buildCompletedToolCall 供侧信道与权威路径 共用，消除两套渲染导致的视觉跳变",
+                "JIT 上下文博客重写：补实测基线、中文标点吞 @import 缺陷、 追加式注入收口下沉到 setSystemPrompt"
+              ]
+            },
+            {
+              "scope": "language",
+              "desc": "重构语言偏好系统，区分 auto/unset 并支持 CLI/环境变量",
+              "hash": "18ba5990",
+              "details": [
+                "新增 prompt-lang.ts 收口语言类型与归一化：auto（跟随用户输入语言） 与 unset（回落缺省中文）语义分离；normalizeLanguagePref 兼容 zh-CN/ English 等写法；resolveLanguageFromEnv 兼容 SID_LANGUAGE 与 SID_CODE_LANGUAGE。",
+                "新增 --language CLI 参数与 SID_LANGUAGE 环境变量，优先级 --language > SID_LANGUAGE > settings.json > 缺省(中文)；--language 非法值报错退出，环境变量非法值静默忽略（残留 env 不该打断启动）。",
+                "子代理语言归一化：resolveEffectiveLanguage 把 auto 解析成具体语言， 子代理拿到的永远是确定值（不再各猜各的语言）。",
+                "en 模式语言约束改用英文撰写（旧版\"均使用英文\"是中文语境命令模型 说英文，压力方向反了），并加 FORMAT OVERRIDE 处理内置 agent prompt 里的中文小节标题，避免英文报告里插入中文标题。",
+                "internal_en 标签剥离：把模型夹在正文里的英文 thinking 剥出来， 防止污染输出语言。",
+                "同步重写 /language 帮助、官网参考页（cli/settings/slash-commands） 与配套测试。"
+              ]
+            },
+            {
+              "scope": "ui",
+              "desc": "think 工具展示思考正文，header 补用途标签",
+              "hash": "1160cc37",
+              "details": [
+                "ui-utils.ts 新增 getThinkThought 提取思考正文；getToolSummary 补 think 分支给出首句摘要，按 stringWidth 列宽截断（中文占 2 列， 沿用码点数上限会撑爆 header）；getResultSummary 对 think 返回空串， 避免兜底算出「6 字符」这种描述确认语本身的假指标",
+                "ToolMessage 结果区改渲思考正文，走 SlicingMaxSizedBox 同步折叠 （Static 安全），折叠档 8 行并复用 ctrl+o 阶梯展开；header 改用 「思考记录」用途标签，与下方正文分工不重复",
+                "空思考仍走既有 isError 渲染路径，错误可见"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "补齐重试自愈与发布流程门禁",
+              "hash": "71c0ecd9",
+              "details": [
+                "为子代理流式调用增加可重试错误处理、指数退避和可中断等待，",
+                "并与主路径共享退避计算逻辑。",
+                "收敛上下文超限判定，接通模型能力缓存、未知模型 effort 自愈、",
+                "非流式能力自愈和 `/model discover` 的缓存查询。",
+                "完善发布脚本的失败回滚、工作区洁净门禁、上传原子性和版本 tag",
+                "对齐校验，补充编译产物自检与跨平台 ripgrep 状态清理。",
+                "新增全量 CI 门禁及重试、能力接线、发布流程回归测试，更新修复",
+                "记录和环境变量参考页。"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "fix",
+          "title": "修复",
+          "commits": [
+            {
+              "scope": "build",
+              "desc": "自检成功输出从 stderr 改走 stdout + 绿色，消除红色误导",
+              "hash": "5e6194e6",
+              "details": [
+                "self-check.ts: 全部通过时走 stdout + 绿色 ✓，失败才走 stderr + 红色 ✗ 非 TTY（管道/CI）不输出 ANSI 转义码，避免日志残留 [0m 乱码",
+                "self-check.ts: 去掉内部编号（方向 1、方向 2/4/6），精简面向用户的措辞",
+                "Makefile: 删掉与自检重复的 echo 标题行",
+                "embed-builtin-skills.ts: 去掉 per-skill 列表噪音，只留总结行"
+              ]
+            },
+            {
+              "scope": "tool",
+              "desc": "统一工具 schema 参数命名为 snake_case，根治跨工具类比死循环",
+              "hash": "c3824c42",
+              "details": [
+                "lsp 工具用 filePath，write/read/edit 用 file_path，模型在两者同时可见时发生",
+                "跨工具类比错位，写计划文件连续 13 次参数名写错陷入死循环（轨迹",
+                "20260803-142835-b8c52ec4）。全仓库普查发现命名不一致覆盖 11 个文件 16 处",
+                "字段，全部统一为 snake_case；协议边界之外的内部数据模型（TodoItem 持久化",
+                "快照、CronTask 磁盘格式、TeammateSpec swarm 内部字段）保持不变，仅在",
+                "execute() 入口做桥接，避免级联到下游 UI/持久化消费者。",
+                "新增 tests/tool/schema-naming-convention.test.ts：动态发现全部工具文件、",
+                "括号平衡定位 schema 字面量、零例外白名单断言 snake_case，防止新工具再引入"
+              ]
+            },
+            {
+              "scope": "agent/llm",
+              "desc": "韧性层 B0-B6 对齐 —— 权限 P0 缺口修复 + side-call 韧性统一",
+              "hash": "a3bebf4d",
+              "details": [
+                "permissionChecker 从 AgentLoopConfig 可选字段改为必填，漏传变编译错误",
+                "抽取 buildBaseLoopConfig 工厂收敛两条 runAgentLoop 路径公共字段， 修复自定义子代理路径漏传 permissionChecker 导致权限层整体绕过的 P0",
+                "tool-executor 分级 fail-closed：无检查器时只读放行、写类操作拒绝",
+                "6 条 side-call 路径统一走 streamWithResilience，与主 fallback 引擎共享 terminal 错误拉黑，429/523 不再 1ms 即失败 路径：goal/evaluator、hook/runner、memory/recall、auto-compact、 context-collapse、partial-compact",
+                "新增 permission-fail-closed 回归 + 分类器调用方安全边界钉点",
+                "修 withMockSpawn 异步范围（await fn() 再还原 mock）",
+                "修 B6 gates wall-clock flaky（断言 slot 分量非完整 delayMs）",
+                "app.ts 401 认证刷新比较逻辑修复（分别比较两 key，不再 ^@ 拼接）"
+              ]
+            },
+            {
+              "scope": "ui/agent",
+              "desc": "子代理进度内嵌工具卡片，后台任务驱逐体验对齐 CC",
+              "hash": "39f0d24f",
+              "details": [
+                "解除 isShell 门槛改为按事件类型路由（ui/tool-progress-route.ts）， 避免\"按工具名注册\"这种一改就漏的耦合",
+                "sub-agent.ts 增 _onProgress 回灌通道，把子代理每轮进度实时推给 父工具卡片（前台）；registry 仍供后台任务面板消费，两路并列不冲突",
+                "三档降级渲染（ui/agent-progress-view.ts）：逐条活动 / 一行计数 / 多代理每行一条，按屏幕高度和并行数自适应",
+                "recentActivities 滑动窗口补齐（MAX_RECENT_ACTIVITIES=3），填掉 此前恒为空数组的死字段",
+                "按帧合并重渲，避免并行多子代理逐条触发重绘",
+                "EVICT_GRACE_MS 60s → 30s，对齐 CC PANEL_GRACE_MS",
+                "新增显式 dismissed 字段 + Ctrl+X 手动批量划掉终态任务",
+                "killed 状态独立 3s 展示窗口，8 处终态写入统一走 graceDeadlineFor(status) 消除硬编码漂移"
+              ]
+            },
+            {
+              "scope": "agent/task",
+              "desc": "消除前台子代理重复渲染并补齐翻卡测试",
+              "hash": "c3f3ccec",
+              "details": [
+                "为前台 sub_agent 增加显式面板可见性，统一后台任务过滤口径。",
+                "抽取侧信道翻卡逻辑并补齐面板闸门、实时翻卡回归测试。",
+                "更新 TUI 子代理问题排查文档，记录问题二的二次校验闭环。"
+              ]
+            },
+            {
+              "scope": "llm",
+              "desc": "补齐 B6 韧性门槛并记录测试隔离缺口",
+              "hash": "df1aed76",
+              "details": [
+                "增加共享限流冷却下限，补齐 B6 的 S1–S4 门槛测试",
+                "更新韧性层方案文档，记录落地证据、实测数据与边界",
+                "记录缓存遥测测试污染的根因及隔离治理方案",
+                "移除已完成验证的临时探针脚本"
+              ]
+            },
+            {
+              "scope": "permission",
+              "desc": "键盘循环跳过逻辑提取共享，修正漂移的测试与文档",
+              "hash": "58651ff7",
+              "details": [
+                "提取 getNextKeyboardPermissionMode 到 permission/mode.ts，app.ts 与测试共用。 企业策略门控作为参数注入，保持纯函数可直接单测。",
+                "测试改为调生产函数，序列断言更正为 default→acceptEdits→auto→default （bypass 可用时多一档 always-allow）；补一条反向断言钉住「acceptEdits 下一档 必须是 auto」——少了它，未来把 auto 加回跳过列表时旧断言依然全绿； 另补企业策略禁用某档时的跳过用例。",
+                "permissions.md 更正顺序，并写明 plan 是独立状态机、always-allow 只在启动时 开了 -y/--yes 才进循环（启动快照，不随会话漂移）。plan-mode.md 原本就是对的，未改。"
+              ]
+            },
+            {
+              "scope": "hook/docs",
+              "desc": "消除 hook 配置的三处假信号",
+              "hash": "d8579b24",
+              "details": [
+                "src/config/schema.ts 的 VALID_HOOK_EVENTS 是一份手写的 12 条 snake_case 清单，而 registry.resolveEventName 对 PascalCase 与 snake_case 都认 （37 个枚举成员 + 25 条 LEGACY_EVENT_MAP 别名）。用户按 ref/hooks.md （从枚举生成，全 PascalCase）…",
+                "registry.initializeFromLegacy 对形状不合法的 hook 是裸 continue—— 静默丢弃，加载不报错不打日志，配置看着没问题 hook 就是不触发， 是最难自查的一类错。最常见的错法是照抄 agent frontmatter 的嵌套形状 {matcher, hooks:[...]}（settings.json 要平铺）。现在会点名缺哪个字段， 嵌套时直接说破。",
+                "ref/hooks.md 的「预留」判据是注释关键词匹配，漏标 6 个：注释还有 「先占位」这类同义写法。改为按「hook 层外有无 fire<Event>Event 调用方」 判定，17 接线 / 15 未接线（与源码实测一致，此前 23/9）。 表头新增「配置里写」列（snake_case，可直接抄进 settings.json）与 「会触发」列——「名字合不合法」和「配了会不会触发」是两个…"
+              ]
+            },
+            {
+              "scope": "llm/agent",
+              "desc": "B5 归因与门槛修正 —— 消除 7 处排查误导",
+              "hash": "51b3caa9",
+              "details": [
+                "B5-1 agentic-loop 补 model_context_window_exceeded 分支：撞上下文上限 此前穿透到「未知停止原因」误报「模型不可用」（模型是好的，是上下文顶满）。 改为与主循环同源的压缩后续写，压不动即如实失败，续写有 2 次上界防空转。",
+                "B5-2 classifyError 收纳截断类错误：unexpected end of JSON input / Premature close 等归到 network_error。注意是修分类器本体而非放宽子代理 门槛——后者会把主路径「裸 Error 也重试」的缺陷扩散过去。",
+                "B5-3 parseXShouldRetry 改三态（boolean | undefined）：此前「服务端说别 重试」与「header 不存在」压成同一个 false。网关用它表达「这个 key 就是 错的」时我们照样打满 10 次退避，最坏白烧 ~20 分钟。",
+                "B5-4 AgentLoopResult 加 retryAttempts / lastRetryReason：超时路径此前 整句丢弃 errorMessage，限流重试耗尽会被报成「超时」，排查方向被带去查 网络配置而非限流。",
+                "B5-5 frontmatter timeout 钳制到 [10s, 600s]：此前无上限，写个超大值就 能把单个子代理最坏墙钟拉到 11 天（「有界」这个安全性质由外层超时提供）。",
+                "B5-6 具名 SUBAGENT_DEFAULT_MAX_TOKENS：保留 4096 并给出依据——注册表 非零 maxOutputTokens 的最小值恰为 4096，故不会触发 max_tokens 越界。",
+                "B5-7 FallbackConfig.onAuthRefresh + app.ts 注入：401 从「用旧凭据重试 一次」升级为「重读凭据源 + 清 provider 缓存」。凭据未变则返回 false， 绝不谎报刷新成功。needsAuthRefresh 闸门保留（防无限刷新循环）。",
+                "ModelFallback 构造函数逐字段手抄，漏了 onAuthRefresh —— 钩子注了但永不 被调用，正是本批次要消除的「看着有能力、实际没有」形态。"
+              ]
+            },
+            {
+              "scope": "agent/worktree",
+              "desc": "修复并发隔离与孤儿 worktree 清理",
+              "hash": "08bd6917",
+              "details": [
+                "隔离并行子代理的流快照与重试遥测，补齐 teardown 和事件消费。",
+                "修复 symlink 被误判为用户改动、未跟踪文件被 GC 忽略的问题。",
+                "增加并发隔离、遥测、symlink 防污染与启动期回收回归测试。"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "补齐任务追踪与跨平台运行能力",
+              "hash": "989a3040",
+              "details": [
+                "补齐 todo 清单实时提醒、终态持久化和进度追踪埋点，避免跨用户消息重复记录。",
+                "修复重试退避的中断响应，补充 grep 类型别名与 shell 输入处理能力。",
+                "增加 Linux、Windows 防休眠和睡眠检测，完善相关测试及修复文档归档。"
+              ]
+            },
+            {
+              "scope": "harness",
+              "desc": "修复模型契约、假设机制与工具输入校验",
+              "hash": "0613a3de",
+              "details": [
+                "补齐 strict JSON Schema 对 record 字典的兼容性降级，并将 strict",
+                "契约中的 optional null 归一为未提供，避免工具参数校验失败或被",
+                "coerce 静默污染。",
+                "为 sub_agent 增加模型白名单校验，明确 Responses API 协议优先级，",
+                "修复假设机制的默认开关、复核水位和空转裁决，并放行只读假设工具",
+                "的无头权限。同步更新工具描述、环境变量帮助、依赖锁文件和回归测试。"
+              ]
+            },
+            {
+              "scope": "todo",
+              "desc": "修复清单实时提醒与终态进度追踪",
+              "hash": "afbf5956",
+              "details": [
+                "按任务内容配对清单差异，避免插入、删除、重排导致误报或漏报",
+                "改用消息历史扫描提醒节流，跨用户消息保持提醒能力并补齐可观测性",
+                "保存全部完成后的终态清单，确保进度快照与推进事件完整落盘",
+                "补充 todo 工具、提醒扫描和实时集成测试"
+              ]
+            },
+            {
+              "scope": "ui",
+              "desc": "输入框边框色改用 mixToContrast 派生，修复层次反转",
+              "hash": "3cef176b",
+              "details": [
+                "新增 mixToContrast(color, bg, targetRatio)（color-utils.ts）， 二分求解 + 缓存，每帧调用不重复算；6 套主题实测收敛 2.58~2.59",
+                "边框与 > 提示符统一的是色相不是色值：提示符满强度点睛（7.79）， 边框弱化到结构层（~2.6），构成同族递进",
+                "反向搜索框走 modeBorderColor() 压到 2.6，保留模式色相",
+                "CLAUDE.md 补\"弱化档从 token 派生\"规范 + 反例正例",
+                "回归测试锁上下界、层次不反转、色相同族"
+              ]
+            },
+            {
+              "scope": "todo",
+              "desc": "防止完成清单后重复输出报告",
+              "hash": "b3cec7c4",
+              "details": [
+                "将 producedSubstantialText 传入完成度提醒，明确禁止重述已交付内容。",
+                "调整 TodoWrite 全部完成提示为条件分流，避免无条件要求汇总。",
+                "增加重复输出回归测试，并同步相关缺陷清单。"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "docs",
+          "title": "文档",
+          "commits": [
+            {
+              "scope": "website",
+              "desc": "首页补 sc 全放行警示，worktree 清理写明数据保护",
+              "hash": "e4e7ea88",
+              "details": [
+                "安装脚本会往 rc 文件写 `alias sc='sid-code --dangerously-skip-permissions'` （dist/release/install.sh:242），即改文件、跑命令一律不问。安装页第 80 行 有这条警示，但**首页**把 `sc` 当推荐启动方式且完全不提权限——首页是绝大多数人 唯一会看的一页，等于默认让新手在自己仓库里全放行。首页现在并列给出…",
+                "`/worktree clean` 原文只说「你命名的不碰」「锁住的跳过」，读者最担心的 「临时 worktree 里我还没提交的改动会不会一起没了」没有答案——而列表里恰好有个 「✎未提交」标记，更让人悬着。现在正面写出四条保护（阈值 + 6 小时宽限期 / 无未提交改动（含未 git add 的新文件）/ 无未推送 commit / 未锁定且非活跃会话）， 并说明判定失败时保守跳过。"
+              ]
+            },
+            {
+              "scope": "website",
+              "desc": "排障页补症状索引与「卡住不动」条目",
+              "hash": "7bfd3dff",
+              "details": [
+                "来排障页的人正卡着，没耐心顺序读 240 行，而 sidebar 只能看到 5 个小节名",
+                "（「行为不对」看不出覆盖了什么）。在 /doctor 之后加一层症状级索引，",
+                "把 17 条症状按「你遇到的」映射到小节。",
+                "补「它卡住不动了」这条——此前全站只在日志开关那一段提过一次「卡住」，",
+                "而这是最常见的求助场景。给了一张「真卡住 vs 在等你」的分辨表",
+                "（有确认框 / token 在涨 / 完全静止 / 反复重试，四种现象四种处置）。",
+                "Hook 不触发那条从一句「/hooks list 看是不是被禁用了」扩成四步排查，",
+                "把最常见的根因（写成嵌套形状）放在第一位，并接上刚加的加载告警。"
+              ]
+            },
+            {
+              "scope": "website",
+              "desc": "博客升为独立顶层入口 + 导航结构对齐",
+              "hash": "9b675085",
+              "details": [
+                "博客独立成 Tab 与独立 sidebar：它与文档是两类内容（文档讲怎么做， 博客讲为什么这么设计 + 实测数据），不是难度递进关系。折进「指南」 下拉会少一层曝光，且顶栏高亮归到「指南」，读者在文章页会以为还在文档里。",
+                "文档 → 博客的引流改走正文「相关」段（use/context、use/memory、 start/next、首页），带一句「为什么值得读」，比 sidebar 里一个光秃秃 的标题更能让人点进去。",
+                "「指南」下拉 8 条与 GUIDE_SIDEBAR 8 个分组一一对应、同序（原先漏掉 「出问题时」，等于顶栏声称的目录比实际内容少一块）。",
+                "llms.txt 章节顺序改为与顶栏同序（原按目录名字母序，「开始」排第 4， 模型会把入门内容当成靠后的补充材料）；blog 单独成章节不并进「指南」。",
+                "extend/index.md 选择表补 Workflow / IDE 集成两行（原先它自称是这一层 的路由器却漏了这两页，两页正文入链数为 0～1）；同时删掉「五条扩展路径」 这个会随表格增删漂移的数字，改按「教它新本事 / 接进现有环境」两类描述。",
+                "404 文案不再写死 Tab 名（曾写「从入门页开始找」，Tab 改名后就在指路到 一个站上不存在的地方），改指顶栏搜索框。"
+              ]
+            },
+            {
+              "scope": "bugfixes",
+              "desc": "旧方案标记作废 + 新增两个韧性能力根治方案",
+              "hash": "db22fcd0",
+              "details": [
+                "韧性层架构对齐 CC：以 withRetry 无实例状态函数为核心重设计",
+                "todolist 非实时更新：对标 CC 架构的根治方案"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "other",
+          "title": "其他",
+          "commits": [
+            {
+              "scope": "ui",
+              "desc": "输入框只画上下横线，避免复制带入竖线",
+              "hash": "117eb940",
+              "details": [
+                "InputArea 三处边框统一走 INPUT_BORDER_PROPS（single + 去左右边框）， 可用宽度相应从 termWidth-4 改为 -2（不再扣竖线，只扣 paddingX）",
+                "边框色改 theme.text.primary，与 footer 当前模型名同色：品牌色 ui.active 在通宽下抢走输入内容的视觉重心，border.default 又糊进背景。 取色走 inputBorderColor() 惰性求值，否则模块级常量会让 /theme 切换暗亮后边框仍是旧色",
+                "src/ui/CLAUDE.md L2.2 补两条规则：用户会复制的区域不画竖线； 通宽横线的字形与颜色取值边界"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.597",
       "date": "2026-07-31",
