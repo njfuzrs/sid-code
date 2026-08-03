@@ -66,6 +66,16 @@ export interface RetryTelemetryEvent {
    * 主循环调用不带此字段（保持事件形状不变）。
    */
   agentId?: string;
+  /**
+   * B5-7：`type:"auth_refresh"` 事件专用——本次 401 是否**真刷新过凭据**。
+   *
+   * `true` = `onAuthRefresh` 钩子返回成功，用新凭据重试；
+   * `false` = 未注入钩子 / 刷新失败，退化为「用旧凭据重试一次」。
+   *
+   * 为什么要这个字段：两种情况此前在遥测里完全同形，于是"401 之后我们到底刷新了没有"
+   * 无法回答——而这正是 §5 新发现 3 的核心（闸门看着像刷新触发器，实际不是）。
+   */
+  authRefreshed?: boolean;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */

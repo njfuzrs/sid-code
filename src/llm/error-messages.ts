@@ -38,6 +38,12 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
     title: "请求参数错误",
     suggestion: "请检查模型配置参数是否有效（如 maxTokens、temperature 范围）",
   },
+  // B5-3：服务端通过 x-should-retry: false 明确要求停止重试。
+  // 这个文案要点在于把"我们主动放弃了"说清楚——否则用户看到失败会以为是重试不够。
+  server_declined_retry: {
+    title: "服务端明确要求停止重试",
+    suggestion: "上游返回 x-should-retry: false（常见于网关判定 API Key 无效或线路不可用），已停止重试以免浪费配额。请检查 apiKey 与 baseURL 配置，或切换 provider / fallbackModel",
+  },
 
   // ─── RetryableReason（系统已自动重试，持续失败才展示）───
   rate_limit: {

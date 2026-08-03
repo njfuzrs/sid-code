@@ -64,6 +64,59 @@ export function parseListField(raw: unknown): string[] {
   return [];
 }
 
+/**
+ * frontmatter `timeout` 的合法区间（毫秒）。
+ *
+ * B5-5（§5 缺口 C）：此前 `timeout` **完全无上限**——frontmatter 写
+ * `timeout: 999999999` 就能把单个子代理的最坏墙钟拉到 11 天。这不是理论风险：
+ * 缺口 C 已算清退避累计（base 5s / cap 120s）第 7 次就到 395s，超时越大 = 越多次
+ * 退避真的被跑完，"有界"这个安全性质是**靠外层超时提供的**，把它放开就一起没了。
+ *
+ * 上限取 600s：内置 agent 最长 360s（`agent-definition.ts`），留出约 1.7× 余量给
+ * 自定义 agent 声明更重的任务，同时保证最坏耗时仍在"人能等"的量级。
+ * 下限取 10s：比一次退避（cap 120s）还短的 timeout 会让子代理在第一次限流退避中途
+ * 就被 abort，永远等不到重试结果——写这种值几乎总是笔误，钳到 10s 并 warn 比默默接受好。
+ *
+ * 越界不报错、不 spawn 失败，而是**钳制到边界 + warn**：与本文件其它 frontmatter
+ * 字段（permissionMode / isolation 非法值 warn 跳过）的既有口径一致。
+ */
+export const CUSTOM_AGENT_TIMEOUT_MIN_MS = 10_000;
+export const CUSTOM_AGENT_TIMEOUT_MAX_MS = 600_000;
+
+/**
+ * 解析并钳制 frontmatter `timeout`（B5-5）。
+ *
+ * @returns 钳制后的毫秒值；非数字 / NaN / 非正数 → `undefined`（由调用方回落默认 300s）。
+ */
+export function parseAgentTimeout(raw: unknown, agentName: string): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    // 非数字（含 NaN / Infinity）：静默回落默认值。frontmatter 未声明是常态，不该 warn。
+    if (raw !== undefined && raw !== null) {
+      getLogger().warn("CUSTOM_AGENT", `Agent ${agentName} 的 timeout=${String(raw)} 非有效数字，已忽略（回落默认 300s）`);
+    }
+    return undefined;
+  }
+  if (raw <= 0) {
+    getLogger().warn("CUSTOM_AGENT", `Agent ${agentName} 的 timeout=${raw} 非正数，已忽略（回落默认 300s）`);
+    return undefined;
+  }
+  if (raw < CUSTOM_AGENT_TIMEOUT_MIN_MS) {
+    getLogger().warn(
+      "CUSTOM_AGENT",
+      `Agent ${agentName} 的 timeout=${raw}ms 小于下限，已钳制到 ${CUSTOM_AGENT_TIMEOUT_MIN_MS}ms`,
+    );
+    return CUSTOM_AGENT_TIMEOUT_MIN_MS;
+  }
+  if (raw > CUSTOM_AGENT_TIMEOUT_MAX_MS) {
+    getLogger().warn(
+      "CUSTOM_AGENT",
+      `Agent ${agentName} 的 timeout=${raw}ms 超过上限，已钳制到 ${CUSTOM_AGENT_TIMEOUT_MAX_MS}ms`,
+    );
+    return CUSTOM_AGENT_TIMEOUT_MAX_MS;
+  }
+  return raw;
+}
+
 /** 合法权限模式名（P2-1 校验，对齐 src/permission/mode.ts PermissionMode）。 */
 const VALID_PERMISSION_MODES = new Set([
   "default", "always-allow", "deny-write", "acceptEdits",
@@ -145,7 +198,8 @@ export class CustomAgentLoader {
         prompt: file.body,
         source: file.source,
         filePath: file.filePath,
-        timeout: typeof fm.timeout === "number" ? fm.timeout : undefined,
+        // B5-5：钳制到 [10s, 600s]。此前是裸 `typeof === "number"` 直通，无任何上限。
+        timeout: parseAgentTimeout(fm.timeout, agentName),
         // P0-2/P1-1/P1-2/P2-1：消费扩展 frontmatter 字段（model/skills/color/permissionMode/hooks/background/isolation）。
         ...parseAgentExtendedFrontmatter(fm, agentName),
       });

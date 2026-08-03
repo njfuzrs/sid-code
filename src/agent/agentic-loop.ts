@@ -21,10 +21,15 @@ import { processStream, type StreamProcessResult } from "./stream-processor.ts";
 // 本文件不再直接依赖它们（原 R1 循环的 import 随之删除）。
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { QuerySource } from "../llm/fallback.ts";
-import type { RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
+// B5-4：dispatchRetryTelemetry 不是可选的便利导入——见 onTelemetryTap 里的说明，
+// 少了它生产路径（不传 onTelemetry 的子代理）的重试遥测会整条消失。
+import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { executeTools } from "./tool-executor.ts";
 import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
+// B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
+// 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
+import { reactiveCompact } from "../query/reactive-compact.ts";
 
 // ============================================================
 // 配置接口
@@ -141,6 +146,30 @@ export interface AgentLoopConfig {
   streamOverallTimeoutMs?: number;
 }
 
+/**
+ * 子代理单次请求的输出 token 上限（B5-6，§5 新发现 4：给原本的裸魔数定性）。
+ *
+ * ── 为什么是"保留固定值"而不是"交给 resolveMaxOutputTokens 按模型解析" ──
+ *
+ * 两个选项都评估过，选前者，理由是二者解决的**不是同一个问题**：
+ * `resolveMaxOutputTokens` 回答"模型最多能输出多少"（物理上限，用于**钳制**，防 400
+ * `max_tokens out of range`）；这里要回答的是"子代理**应该**被允许输出多少"（预算选择）。
+ * 把预算直接设成物理上限是错的——注册表里多数模型上限为 64K–128K，子代理产出的是给
+ * 父代理消费的结论，不是给人读的长文；真按 128K 发，一次跑偏就能吃掉父代理的上下文。
+ *
+ * 那为什么 4096 这个具体数字是安全的（而非又一个臆测）：查注册表全部条目，
+ * **非零 maxOutputTokens 的最小值恰好是 4096**，无任何模型低于它。所以固定 4096
+ * 不会触发"超过模型物理上限"这类 400 —— 这正是原先缺失的那半句依据。
+ *
+ * 同时它不构成"输出被截断就丢结果"的风险：`max_tokens` / `length` 停止原因在本循环里
+ * 会走**自动续写**分支（见下方 `stopReason === "max_tokens"`），撞上限只是多跑一轮。
+ *
+ * 需要更大预算的调用方可用 `config.sendParamsExtra.maxTokens` 覆盖（它在 `sendParams`
+ * 里位于本常量之后展开，故覆盖生效）；漏斗降级到别的模型时还会按目标模型上限再钳一次
+ * （`fallback.ts` 的 fbCeiling）。两层机制已覆盖"不够用"和"超上限"两端。
+ */
+export const SUBAGENT_DEFAULT_MAX_TOKENS = 4096;
+
 /** Agent 循环结果 */
 export interface AgentLoopResult {
   success: boolean;
@@ -153,6 +182,23 @@ export interface AgentLoopResult {
   messages: Array<{ role: string; content: ContentBlock[] }>;
   /** 失败时携带的错误消息 */
   errorMessage?: string;
+  /**
+   * B5-4（§5 缺口 D）：本次循环累计的 LLM 重试次数（跨所有轮次，含总结轮）。
+   *
+   * 为什么必须单独透出、而不是靠 `errorMessage` 里的文字：超时路径**根本不看**
+   * `errorMessage`。`sub-agent.ts` 判 `timeoutCtrl.signal.aborted` 为真就一律拼
+   * 「子代理执行超时」，errorMessage 整句丢弃 —— 于是用户看到"超时"，真相是
+   * 「限流重试 6 次仍失败」，排查方向被带去查网络/超时配置，而非限流。
+   * 漏斗的 onRetry 本就会回调，这里只是把它数出来并如实带回给调用方。
+   */
+  retryAttempts?: number;
+  /**
+   * B5-4：最后一次重试的失败原因（漏斗 `classified.reason`，如 rate_limit / overloaded）。
+   *
+   * 取"最后一次"而非全部：它是用户最需要看到的那个（前面几次多为同因），
+   * 与漏斗 `tryFallback` 里 rootCause 的取值口径保持一致。
+   */
+  lastRetryReason?: string;
 }
 
 // B2：原 `sleepWithAbort`（R1 退避专用）已删除。退避现由漏斗的
@@ -185,15 +231,39 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   //
   // 无 agentId 时 `cleanupAgentSnapshots("")` 直接 return（它自己做了空值保护），
   // 不会误伤主循环那把无身份 key。
+  //
+  // ── B5-4：重试统计同样在这一层统一回填 ──
+  //
+  // 与上面同一个理由：`runAgentLoopInner` 有 8+ 个 return 点，逐个手写
+  // `retryAttempts / lastRetryReason` 必然漏一个，而漏掉的表现是"这条失败路径
+  // 恰好不显示重试次数"——缺口 D 又在那条路径上复活，且没有任何报错提示。
+  // 用共享 holder 让内部只管累加、出口统一回填，新增 return 路径不需要记得补。
   // ══════════════════════════════════════════════════════════════════
+  const retryStats: RetryStats = { attempts: 0 };
   try {
-    return await runAgentLoopInner(config);
+    const result = await runAgentLoopInner(config, retryStats);
+    // 0 次重试时不写字段：保持"顺利跑完"的结果形状与改造前逐字节一致，
+    // 也让下游可以用 `retryAttempts ?? 0` 之外的存在性判断区分"没重试"与"未接线"。
+    if (retryStats.attempts > 0) {
+      result.retryAttempts = retryStats.attempts;
+      result.lastRetryReason = retryStats.lastReason;
+    }
+    return result;
   } finally {
     if (config.agentId) cleanupAgentSnapshots(config.agentId);
   }
 }
 
-async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResult> {
+/** B5-4：跨 return 点共享的重试统计（见 runAgentLoop 内注释说明为何用 holder）。 */
+interface RetryStats {
+  attempts: number;
+  lastReason?: string;
+}
+
+async function runAgentLoopInner(
+  config: AgentLoopConfig,
+  retryStats: RetryStats,
+): Promise<AgentLoopResult> {
   const log = getLogger();
   const {
     provider, model, ctxMgr, tools, maxTurns, signal, loopDetector,
@@ -205,6 +275,44 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
   let toolUseCount = 0;
   let lastTextOutput = "";
   let unknownStopWarning: string | undefined;
+  // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
+  // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
+  let ctxWindowRecoveryCount = 0;
+  // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
+  // 在所有出口统一回填）。累计而非每轮重置——用户问的是"这个子代理一共重试了多少次"，
+  // 而"第 3 轮重试了 2 次"这种粒度已经在遥测（type=retry + agentId）里了。
+
+  /**
+   * B5-4：遥测旁路（tap）——数重试次数并记下最后一次原因，然后原样转发给调用方。
+   *
+   * 为什么搭在 onTelemetry 而不是 onRetry 上：`onRetry(attempt, error, delayMs)` 只给
+   * 消息文本，拿不到分类结果；而 `type:"retry"` 事件带 `reopenReason`（就是漏斗的
+   * `classified.reason`，或最近触发的超时层），正是"为什么重试"这个问题的结构化答案。
+   * 搭在这里也不必改漏斗的 listener 签名 —— 不为一个观测需求去动最热路径的接口。
+   *
+   * 只认 `type:"retry"`：`fallback` / `529_dropped` 等是别的语义，混进来会让"重试了几次"
+   * 变成"发生了几件事"。
+   */
+  const onTelemetryTap = (event: RetryTelemetryEvent): void => {
+    if (event.type === "retry") {
+      retryStats.attempts++;
+      retryStats.lastReason = event.reopenReason ?? retryStats.lastReason;
+    }
+    if (config.onTelemetry) {
+      config.onTelemetry(event);
+      return;
+    }
+    // ⚠️ 这条 else 分支不可删（否则生产遥测整条消失）。
+    //
+    // 漏斗的 `emitTelemetry` 有一条二选一：**有** per-instance `onTelemetry` 就只走它
+    // 并 return，**没有**才走全局观察者 `dispatchRetryTelemetry`（避免同一事件写两遍）。
+    // 而生产路径的子代理恰恰**不传** onTelemetry，靠的就是全局观察者那条腿。
+    //
+    // 于是本 tap 一旦无条件传给漏斗，漏斗就永远走"有回调"分支 → 全局观察者再也收不到
+    // 事件 → 子代理重试在轨迹里彻底消失。这正是 §七 F7 记的那类"能力已实现 ≠ 能力已
+    // 生效"，且没有任何报错提示。所以调用方没给回调时，由我们**代替漏斗**补这次派发。
+    dispatchRetryTelemetry(event);
+  };
 
   // LSP 诊断注入所需状态（子代理侧补齐，对标主循环 G1）。
   // hasEditCapability：能力对齐门控——只有具备 edit/write 工具的子代理才注入诊断。
@@ -286,7 +394,9 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
       model,
       messages: ctxMgr.getCleanedMessages(),
       system: ctxMgr.getSystemPrompt(),
-      maxTokens: 4096,
+      // B5-6：依据见 SUBAGENT_DEFAULT_MAX_TOKENS 注释（预算选择，非物理上限；
+      // 4096 是注册表全部模型的最小上限，故不会触发 max_tokens out of range）。
+      maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
       tools: toolDefs,
       ...config.sendParamsExtra,
     };
@@ -329,7 +439,8 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
       retryBackoffMaxMs: config.retryBackoffMaxMs,
       availability,
       agentId: config.agentId,
-      onTelemetry: config.onTelemetry,
+      // B5-4：经 tap 转发（数重试次数），行为对调用方不变。
+      onTelemetry: onTelemetryTap,
       // 新发现 1②：快照清理必须在**退避之前**。原 R1 是 sleep 完才 clear，
       // 整个退避期（最长 120s）那份已死流的旧快照仍然活着、lastContentProgressAt
       // 停在两分钟前——正是 collector.ts 的 still_progressing 判据最容易误判的输入。
@@ -409,8 +520,20 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
     // processStream 会给出「stopReason 非 error、但 content 为空」的伪成功——子代理若直接透传，
     // 会误判「完成但无输出」返回空结果给主代理（事故 session 20260708-102143 同型）。
     // 判据：本轮既无任何 content block、又非因 max_tokens 截断（截断是合法的「有产出但被切」）。
+    //
+    // B5-1：`model_context_window_exceeded` 与 max_tokens 同样豁免。它是**服务端明确
+    // 告知"输入+输出撞到模型硬上限"**，与"网关回错误页"是完全不同的故障。不豁免的话，
+    // 这条路径会在下面的 stopReason 分支之前就被截走、报成"疑似模型不可用"——
+    // 正是本项要消除的错误归因。
+    //
+    // 边界（实测，勿高估这条豁免的作用范围）：**零** content block 撞上限时，漏斗层的
+    // `hasYieldedContent` 校验（fallback.ts:732）先判"响应为空"并重试→降级，压根走不到
+    // 这里，故那条路径的归因仍不精确。修它要动漏斗的空响应语义，属另案；
+    // 现状已由 tests/agent/resilience-b5-gates.test.ts 钉住。
     const hasAnyContent = response.content.length > 0;
-    if (!hasAnyContent && response.stopReason !== "max_tokens") {
+    if (!hasAnyContent &&
+        response.stopReason !== "max_tokens" &&
+        response.stopReason !== "model_context_window_exceeded") {
       log.error("AGENT_LOOP", `子代理收到空响应（0 内容块，stopReason=${response.stopReason}），判定失败`);
       return {
         success: false,
@@ -586,6 +709,76 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
       continue;
     }
 
+    // ─── model_context_window_exceeded（撞模型 context window 上限，Claude 4.5+ 新增）───
+    //
+    // B5-1（§5 新发现 2）：此前子代理**没有这个分支**，会一路穿透落到下方"其他未知
+    // 停止原因"，报成「模型返回空响应，疑似模型不可用或网关返回非流式错误页」——
+    // 归因完全错误：模型是好的、网关是好的，是这个子代理的上下文顶满了。而子代理恰好
+    // 是 token 消耗大户（大量 read/grep/bash 输出堆在历史里），是最容易撞上限的一方。
+    // 错误归因的排查成本远高于修复成本：照那句提示去查模型配置/网关可用性，查不出问题。
+    //
+    // 区别于 max_tokens（我们主动设的输出上限）：这是**输入+输出总和**撞到模型硬上限，
+    // 服务端明确拒绝，是"真溢出"的确凿证据。[来源: anthropic-api.md:553,559]
+    //
+    // 与主循环（`query/loop.ts` 的同名分支）的处理策略一致：压缩上下文后续写。
+    // 但**上界更严**——主循环有用户在场可以看着横幅决定要不要 ESC，子代理无人值守，
+    // 必须自己保证不空转：
+    //   ① 压缩没压动（success=false）→ 立即如实失败，不再续写。压不动意味着已无可裁剪
+    //      空间，再来一轮必然撞同一个上限，纯烧 token；
+    //   ② 压得动也只给 MAX 次机会 → 防"压一点点、又撞上限"的慢速空转。
+    if (response.stopReason === "model_context_window_exceeded") {
+      const MAX_CTX_WINDOW_RECOVERY = 2;
+      const compactResult = reactiveCompact(ctxMgr);
+
+      if (!compactResult.success) {
+        log.error(
+          "AGENT_LOOP",
+          `撞模型 context window 上限且压缩未生效（${compactResult.messageCountBefore} 条未变），子代理终止`,
+        );
+        return {
+          success: false,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+          errorMessage:
+            `子代理上下文撞到模型 context window 上限（stopReason: model_context_window_exceeded），` +
+            `且已无可压缩空间（${compactResult.messageCountBefore} 条消息未变）。` +
+            `建议缩小子代理任务范围，或减少单次读入的文件量`,
+        };
+      }
+
+      ctxWindowRecoveryCount++;
+
+      // 上界检查必须在"压缩后续写"那条 info 之前：否则耗尽时会先打出
+      // 「第 3/2 次续写」——一句自相矛盾且承诺了一次并不会发生的续写的日志。
+      // 日志是排查的第一手材料，这种矛盾会直接把人带偏。
+      if (ctxWindowRecoveryCount > MAX_CTX_WINDOW_RECOVERY) {
+        log.error("AGENT_LOOP", `context window 压缩续写已达 ${MAX_CTX_WINDOW_RECOVERY} 次上限，子代理终止`);
+        return {
+          success: false,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+          errorMessage:
+            `子代理反复撞到模型 context window 上限（已压缩续写 ${MAX_CTX_WINDOW_RECOVERY} 次仍未脱离）。` +
+            `建议缩小子代理任务范围，或减少单次读入的文件量`,
+        };
+      }
+
+      log.info(
+        "AGENT_LOOP",
+        `撞模型 context window 上限，压缩后续写（第 ${ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERY} 次）：` +
+          `${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
+      );
+
+      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      continue;
+    }
+
     // 其他未知停止原因（含 null）
     // 背景（事故复盘 session 20260708-102143）：伪装成功的空流（网关对不可用模型
     // 回 200 + text/html 错误页，被解析成 0 事件）会让 stopReason=null 且 content 为空。
@@ -649,7 +842,9 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
           model,
           messages: ctxMgr.getCleanedMessages(),
           system: ctxMgr.getSystemPrompt(),
-          maxTokens: 4096,
+          // B5-6：与主流同一常量。总结轮产出比主流更短（只是收尾陈述），
+          // 用同一个值是保守但安全的选择；分成两个常量只会多一个需要解释的数字。
+          maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
           // 不传 tools，禁止模型继续调工具
           ...config.sendParamsExtra,
         },
@@ -662,7 +857,9 @@ async function runAgentLoopInner(config: AgentLoopConfig): Promise<AgentLoopResu
           retryBackoffMaxMs: config.retryBackoffMaxMs,
           availability,
           agentId: config.agentId,
-          onTelemetry: config.onTelemetry,
+          // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
+          // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
+          onTelemetry: onTelemetryTap,
           onRetry: (attempt: number, error: string) => {
             clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
             emitStreamPhase(summaryStreamIndex, "error", {

@@ -23,7 +23,8 @@ export type TerminalReason =
   | "model_not_found"      // 模型不存在
   | "quota_exhausted"      // 配额永久耗尽
   | "content_policy"       // 内容策略拒绝
-  | "invalid_request";     // 请求参数错误
+  | "invalid_request"      // 请求参数错误
+  | "server_declined_retry"; // 服务端明确要求不要重试（x-should-retry: false）
 
 /** 可重试的瞬态错误（限流、过载、网络抖动、请求超时、锁超时） */
 export class RetryableError extends Error {
@@ -232,6 +233,26 @@ const RETRYABLE_CONNECTION_MESSAGES = [
   "network error",
   "failed to fetch",
   "terminated",
+  // ─── B5-2：流被中途截断（响应体没读完就断） ───
+  //
+  // 这类故障与上面的"连接被对端关闭"同源、同为瞬态，但表现在**更上层**：连接确实
+  // 关了，可我们拿到的错误是解析器抱怨"数据不完整"而非 socket 层的 RST，于是既命不中
+  // RETRYABLE_NETWORK_CODES（无 .code），也命不中上面那批 socket 文案。
+  // 实测（本方案附录 A1）：`unexpected end of JSON input` / `Premature close` 落到
+  // classifyError 的"无法分类"分支 → **不重试**，而它们恰恰是最该重试的一类。
+  //
+  // 为什么修分类器本体、而不是"放宽子代理门槛到与主路径一致"（旧方案的方向）：
+  // 主路径对裸 Error 也重试，那是主路径自身的缺陷（一个 TypeError 会被重试满次、
+  // 每次退避最长 120s）。把子代理"对齐"到那个语义是扩散缺陷；修这里则两条路径同时
+  // 受益，且门槛不放宽——只有明确是截断的才重试。
+  //
+  // 文案来源与 `api/stream-handler.ts` 的 isStreamingTransportError 同源（那里已把
+  // 这批判为"传输层错误 → 该走非流式降级"）。同一批文案在一处判该降级、在另一处判
+  // 不可分类不重试，本身就是两份实现漂移的证据。
+  "unexpected end of json",       // "Unexpected end of JSON input"（SSE 帧被截断）
+  "unexpected end of input",      // 同类的另一种措辞
+  "premature close",              // undici/node stream 提前关闭
+  "incomplete chunked encoding",  // chunked 传输未收到结束块
 ];
 
 // ─── Cause 链遍历工具 ───
@@ -285,10 +306,23 @@ export function extractResponseHeaders(
 /**
  * 从 response headers 中检查 x-should-retry。
  * 服务端通过此 header 明确告知客户端是否应该重试。
+ *
+ * B5-3（§五之二 漏斗-3）：返回 `boolean | undefined`——`undefined` 表示 **header 不存在**
+ * （服务端没表态），`false` 表示服务端**明确说别重试**。
+ *
+ * 旧签名是 `boolean`，把这两种情况压成同一个 `false`，于是 `classifyError` 只消费得了
+ * "该重试"这一半，服务端明确要求停止时我们照样重试到上界。
+ *
+ * **这条对我们比对 CC 更要紧**：`x-should-retry` 不是标准 header，公司网关 / 中转层
+ * 常用它表达"这个 key 就是错的、别打了"。忽略它 = 对着已知必然失败的请求打满 10 次
+ * 退避（最坏 ~20 分钟纯烧配额），直接违背北极星的"更省"。
+ *
+ * 对照 CC `withRetry.ts:746-751`：显式处理 `'false'`，仅"内部用户 + 5xx"一个例外
+ * （对应它自己的灰度需求，我们无此概念，故不照搬）。
  */
-export function parseXShouldRetry(error: unknown): boolean {
+export function parseXShouldRetry(error: unknown): boolean | undefined {
   const headers = extractResponseHeaders(error);
-  if (!headers) return false;
+  if (!headers) return undefined;
 
   let value: string | null = null;
 
@@ -304,11 +338,15 @@ export function parseXShouldRetry(error: unknown): boolean {
     }
   }
 
-  if (value !== null) {
-    const lowered = value.toLowerCase().trim();
-    return lowered === "true" || lowered === "yes" || lowered === "1";
-  }
-  return false;
+  // header 键不存在（headers 对象在、但没这个键）→ 与"整个 headers 缺失"同义：服务端没表态。
+  if (value === null) return undefined;
+
+  const lowered = (value as string).toLowerCase().trim();
+  if (lowered === "true" || lowered === "yes" || lowered === "1") return true;
+  if (lowered === "false" || lowered === "no" || lowered === "0") return false;
+  // 值存在但无法解读（如 "maybe"）→ 不当作任何一方的表态，交回下游按状态码判定。
+  // 判成 false 会让一个畸形 header 值把可重试错误变成 terminal——比忽略它更糟。
+  return undefined;
 }
 
 /**
@@ -533,13 +571,20 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   // 结构化状态码只算一次，供下面所有 matchesHttpStatus 调用复用。
   const structuredStatus = getHTTPStatus(error);
 
-  // 0. 服务端 x-should-retry header 优先
-  if (parseXShouldRetry(error)) {
+  // 0. 服务端 x-should-retry header 优先（B5-3：现在能区分三态，见 parseXShouldRetry）
+  const serverRetryHint = parseXShouldRetry(error);
+  if (serverRetryHint === true) {
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "server_error", retryAfter, true);
   }
 
   // 1. 终端错误
+  //
+  // B5-3 的放置理由：服务端明确 `x-should-retry: false` 的判定放在**下面**（终端分支之后），
+  // 不与 `=== true` 并列在这里。因为 401/404/400 这些分支给出的 reason 更具体
+  // （auth_failed / model_not_found / invalid_request），是用户能照着动手修的信息；
+  // 提前返回 server_declined_retry 只会把它们统一糊成一句"服务端要求停止重试"，
+  // 归因精度反而下降。两者对"是否重试"的结论完全一致（都不重试），所以只有归因差别。
   if (is401Error(error)) {
     return new TerminalError(msg, "auth_failed");
   }
@@ -556,6 +601,21 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   }
   if (matchesHttpStatus(structuredStatus, lowerMsg, "400") || lowerMsg.includes("invalid_request")) {
     return new TerminalError(msg, "invalid_request");
+  }
+
+  // ─── B5-3：服务端明确 `x-should-retry: false` → 不重试 ───
+  //
+  // 位置是刻意的：**在终端分支之后、可重试分支之前**。
+  //  · 放终端之后 → 401/404/400 保住各自更精确的 reason（见上方注释）；
+  //  · 放可重试之前 → 这才是它真正改变行为的地方。下面 429/529/5xx 会无条件判成
+  //    RetryableError，网关说"别打了"也照打满 10 次退避（最坏 ~20 分钟）——正是本项要修的。
+  //
+  // 与 CC 的一处刻意差异：CC 对"内部用户 + 5xx"开了 `x-should-retry: false` 的豁免
+  // （`withRetry.ts:744-751`），依据是它自家 5xx 常为可自愈抖动。我们不照搬：我们默认
+  // 走公司网关，网关的 5xx + `false` 更可能是"这条线路/这个 key 不通"的确定性故障，
+  // 豁免它就等于把最该省的那 20 分钟又烧回去。
+  if (serverRetryHint === false) {
+    return new TerminalError(msg, "server_declined_retry");
   }
 
   // 2. 可重试错误 — 新增 408、409

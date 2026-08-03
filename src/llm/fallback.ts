@@ -229,6 +229,35 @@ export interface FallbackConfig {
   fastMode?: boolean;
   /** Telemetry 埋点回调 */
   onTelemetry?: (event: RetryTelemetryEvent) => void;
+  /**
+   * B5-7（§5 新发现 3）：凭据刷新钩子。401 时调用，返回 true 表示**已刷新凭据、可重试**。
+   *
+   * ── 为什么需要它 ──
+   *
+   * 在它落地前，401 的处理是「用**同一份旧凭据**重试一次，再失败就 `TerminalError`
+   * → `markTerminal` 拉黑该模型」。这是个**错误归因**：模型是好的，过期的是凭据。
+   * 而 `markTerminal` 是进程内永久态（`availability.ts`：terminal 默认不可被自动流程
+   * 恢复），于是一次凭据过期能让一个健康模型在整个会话里不可用。
+   *
+   * 对照 CC `withRetry.ts:234-251`——它在认证失败时做**真刷新**并重建 client，覆盖
+   * OAuth / OAuth-revoked / Bedrock / Vertex / stale-conn 五类。**这条对我们比对 CC
+   * 更重要**：CC 那几类都是它自家凭据体系，而我们是多 provider，每接一家就多一套凭据
+   * 过期语义，此前一套刷新都没有。
+   *
+   * ── 契约 ──
+   *
+   * - 返回 `true`：凭据已刷新 → 漏斗**不退避、立即重试一次**（新凭据值得马上试）；
+   * - 返回 `false` / 抛异常 / 未注入：退化为原有的 retry-once 语义（用旧凭据重试一次），
+   *   即**行为与改造前逐字节一致**。未注入不该让 401 变得更糟，这是接线安全的底线。
+   * - 抛异常不向上传播（刷新失败是预期内的一种结果，不是 bug），只记日志。
+   *
+   * 注意 `needsAuthRefresh` 闸门必须保留（防无限刷新循环）：无论刷新成功与否，
+   * 一次调用后即置位，第二个 401 落 `classifyError` → terminal，不会反复刷新。
+   *
+   * @param provider 发生 401 的 provider 名（`provider.name()`），用于分派到对应的凭据体系
+   * @param error 原始 401 错误，供实现方判别子类型（如 OAuth revoked vs 普通过期）
+   */
+  onAuthRefresh?: (provider: string, error: unknown) => Promise<boolean>;
 }
 
 /** 回退事件监听器 */
@@ -365,6 +394,9 @@ export class ModelFallback {
       persistent: config.persistent,
       fastMode: config.fastMode,
       onTelemetry: config.onTelemetry,
+      // B5-7：漏字段就是"钩子注了但永不被调用"的半接线状态——本构造函数逐字段
+      // 手抄，新增配置极易漏在这里，且漏了不会有任何报错（只是能力静默消失）。
+      onAuthRefresh: config.onAuthRefresh,
     };
     this.listener = listener ?? null;
     this.availability = config.availability ?? new ModelAvailabilityService();
@@ -737,12 +769,42 @@ export class ModelFallback {
           // 语义（沿用 RetryContext.needsAuthRefresh 注释）：首个 401 置位并**不退避**
           // 立即重试一次——覆盖凭据瞬时失效/网关抖动；第二个 401 因已置位而落到
           // classifyError → TerminalError → 拉黑 + fallback，不会无限重试。
-          // N1（另案）：暂无凭据刷新钩子，重试用的仍是旧凭据，故它只是「retry-once
-          // 闸门」而非「刷新触发器」。
+          //
+          // B5-7：`onAuthRefresh` 注入后，这里不再只是「retry-once 闸门」，而是
+          // **先真刷新、再重试**（原 N1 另案的落地点，注释随之更新）。未注入钩子时
+          // 完全退化为原语义（旧凭据重试一次），行为逐字节不变。
           if (!isTimeoutAbort && is401Error(err) && !ctx.needsAuthRefresh) {
-            log.info("FALLBACK", "401 认证错误，触发 retry-once 闸门并重试（暂无凭据刷新钩子，不退避）");
+            // 闸门先置位、再刷新：即便刷新实现里自己抛错或卡住，也不会因为"没走到置位"
+            // 而让下一个 401 再刷一次 —— 防无限刷新循环的责任在闸门，不在刷新实现。
             ctx.needsAuthRefresh = true;
-            this.emitTelemetry({ type: "auth_refresh", model: params.model, error: String(err) }, perCall.agentId);
+
+            // B5-7：真刷新。失败/未注入都不致命——退化成"用旧凭据重试一次"的原行为。
+            let refreshed = false;
+            if (this.config.onAuthRefresh) {
+              try {
+                refreshed = await this.config.onAuthRefresh(primaryProvider.name(), err);
+              } catch (refreshErr) {
+                // 刷新失败是预期内结果之一（refresh token 也过期了 / 刷新端点不可达），
+                // 不是 bug，故不向上传播：继续走"旧凭据重试一次"，再失败自然落 terminal。
+                log.warn("FALLBACK", `凭据刷新钩子抛错，退化为旧凭据重试一次: ${refreshErr}`);
+              }
+            }
+
+            log.info(
+              "FALLBACK",
+              refreshed
+                ? "401 认证错误，凭据已刷新，立即重试（不退避）"
+                : `401 认证错误，触发 retry-once 闸门并重试（${this.config.onAuthRefresh ? "凭据刷新未成功" : "未注入凭据刷新钩子"}，不退避）`,
+            );
+            this.emitTelemetry({
+              type: "auth_refresh",
+              model: params.model,
+              error: String(err),
+              provider: primaryProvider.name(),
+              // B5-7：区分"真刷新过"与"只是重试一次"。缺了它，遥测里两种语义
+              // 完全同形——正是本项要消除的那类"看着有能力、实际没有"的盲区。
+              authRefreshed: refreshed,
+            }, perCall.agentId);
             resetStreamTimeout();
             try {
               const retryParams = ctx.maxTokensOverride

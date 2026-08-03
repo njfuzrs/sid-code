@@ -325,6 +325,36 @@ export interface CustomSubAgentTask {
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
+/**
+ * B5-4（§5 缺口 D）：把"已重试 N 次 / 最后一次因为什么"拼进子代理失败文案。
+ *
+ * 修的是一处**错误归因**：超时路径按 `timeoutCtrl.signal.aborted` 判定后，一律报
+ * 「子代理执行超时」并**整句丢弃** `loopResult.errorMessage`。于是限流打满退避耗尽
+ * 预算这种最常见的失败，用户看到的是"超时"——排查方向被带去查网络配置 / 调大 timeout，
+ * 而真正该做的是降并发或换模型。缺口 C 又说明"超时"本身也常常是重试退避累计撞上
+ * wall-clock 的结果，两件事叠加：**最该看到的那个数字（重试了几次）恰好一个都看不到。**
+ *
+ * 抽成共享函数而非在两个 return 点各写一遍：`execute` 与 `executeCustom` 的失败文案
+ * 本就是逐字重复的两份，再各加一段拼接必然漂移（改一处忘一处 = 自定义子代理又看不到
+ * 重试信息，且不会有任何报错）。
+ *
+ * 无重试时返回空串——顺利跑完却拼一句"重试 0 次"是噪音。
+ *
+ * **覆盖边界（诚实声明，勿当已全覆盖）**：本函数只覆盖 `runAgentLoop` **正常返回**
+ * `success:false` 的两条路径（`execute` / `executeCustom`）。仍未覆盖 3 处，都是拿不到
+ * `loopResult` 的结构性原因，不是漏改：
+ *   ① 两处 `catch (err)` 超时分支 —— runAgentLoop 抛异常而非返回，结果对象不存在
+ *      （它内部会消化 abort 后正常返回，故这条路径罕见）；
+ *   ② spawn 子进程模式 —— 重试发生在**另一个进程**里，父进程只拿到退出码，
+ *      要透出得先给子进程加结构化结果回传通道，属独立工单。
+ */
+function formatRetryHint(result: { retryAttempts?: number; lastRetryReason?: string }): string {
+  const attempts = result.retryAttempts ?? 0;
+  if (attempts <= 0) return "";
+  const reason = result.lastRetryReason ? `，最后一次原因 ${result.lastRetryReason}` : "";
+  return `，其间 LLM 重试 ${attempts} 次${reason}`;
+}
+
 export class SubAgent {
   private provider: Provider;
   private model: string;
@@ -1410,8 +1440,11 @@ export class SubAgent {
         const donePart = loopResult.turns > 0
           ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
           : "";
+        // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
+        // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
+        // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
         const output = isTimeout
-          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart})`
+          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
           : (loopResult.errorMessage || "子代理执行未成功");
         return {
           success: false,
@@ -1573,8 +1606,11 @@ export class SubAgent {
         const donePart = loopResult.turns > 0
           ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
           : "";
+        // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
+        // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
+        // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
         const output = isTimeout
-          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart})`
+          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
           : (loopResult.errorMessage || "子代理执行未成功");
         return {
           success: false,

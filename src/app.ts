@@ -738,6 +738,50 @@ export class App {
           return undefined;
         }
       },
+      // ══════════════════════════════════════════════════════════════
+      // B5-7：401 凭据刷新钩子（§5 新发现 3）
+      //
+      // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
+      // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
+      // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
+      //
+      // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
+      //
+      // CC 刷的是 OAuth access token（有 refresh_token + token 端点可换新）。
+      // 我们的凭据来自 settings.json / 环境变量，**没有可调用的刷新端点**，所以这里
+      // 能做且只能做的是「**重新读取凭据源**，若确实变了就让 provider 用新值重建」。
+      // 典型受益场景：用户在另一个终端 `export` 了新 key 或改了 settings.json —— 此前
+      // 必须重启进程才能生效，现在下一次 401 就能自动接上。
+      //
+      // 关键纪律：**凭据没变就返回 false**，绝不谎报刷新成功。谎报的代价是白烧一次
+      // 请求配额，并且把"我们已经处理过认证问题了"这个错误印象写进日志与遥测——
+      // 那比没有刷新更糟（排查时会绕过这条线索）。
+      onAuthRefresh: async (providerName: string) => {
+        const log = getLogger();
+        try {
+          const before = this.config.anthropicKey + " " + this.config.openaiKey;
+          // 只重读凭据字段，不整体替换 this.config：整体替换会把用户本会话内用 /model
+          // 等命令做的运行时改动一起冲掉（那是比 401 更严重的副作用）。
+          const { loadConfig } = require("./config/config.ts");
+          const fresh = await loadConfig({});
+          const after = (fresh.anthropicKey ?? "") + " " + (fresh.openaiKey ?? "");
+          if (before === after) {
+            log.info("APP", `401 凭据刷新：${providerName} 凭据源未变化，不谎报成功`);
+            return false;
+          }
+          this.config.anthropicKey = fresh.anthropicKey;
+          this.config.openaiKey = fresh.openaiKey;
+          // provider 按 `providerName:baseURL` 缓存、apiKey 在构造时被捕获，
+          // 故必须清缓存才能让新凭据真正生效——只改 config 不清缓存 = 假刷新。
+          this.providerRegistry?.clearCache();
+          log.info("APP", `401 凭据刷新：${providerName} 凭据已更新，provider 缓存已清除`);
+          return true;
+        } catch (err) {
+          // 读盘失败不上抛：漏斗会退化成"旧凭据重试一次"的原行为。
+          log.warn("APP", `401 凭据刷新失败，退化为旧凭据重试: ${err}`);
+          return false;
+        }
+      },
       // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
       fallbackSwitchMode: opts.config.fallbackSwitchMode ?? "ask",
       // 降级决策钩子（ask 模式生效）：弹选择题让用户决定切哪个模型 / 不切。
