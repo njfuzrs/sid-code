@@ -167,6 +167,3 @@ writeFileSync(outPath, `${header}${body};\n`, "utf-8");
 console.log(
   `已嵌入 ${entries.length} 个 builtin Skill、共 ${totalFiles} 个文件（hash=${contentHash}）→ src/skill/builtin-embedded.generated.ts`,
 );
-for (const e of entries) {
-  console.log(`  - ${e.name}（${e.files.length} 个文件）`);
-}

@@ -31,7 +31,6 @@ build:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
-	@echo "── 编译产物自检（方向 0：确认关键修复已内联）──"
 	@./$(BINARY) --self-check
 
 # 兼容旧习惯与历史文档里的 `make rebuild`：与 `make build` 完全等价。

@@ -50,7 +50,7 @@ const GIT_STATUS_ANCHOR_MARKERS = [
  * 非 git 仓库时返回 null——此时跳过（视为通过），因为无法构造输出，且构建机通常在 git 仓库内。
  */
 async function checkGitStatusAnchor(): Promise<CheckResult> {
-  const name = "git-status 防死锁根治（方向 1）";
+  const name = "git-status 快照锚点";
   try {
     const { generateGitStatusAttachment } = await import("../config/attachments.ts");
     const att = generateGitStatusAttachment(process.cwd());
@@ -64,7 +64,7 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
         ok: false,
         detail:
           `git-status 块缺少锚点文案：${missing.map((m) => `"${m}"`).join("、")}。` +
-          `这几乎可以断定二进制编译自方向 1 修复之前——请重新 make build。`,
+          `这几乎可以断定二进制编译自修复之前——请重新 make build。`,
       };
     }
     // ★关键回归护栏：volatile `Status:` 块必须已被物理移除。
@@ -74,7 +74,7 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
         ok: false,
         detail:
           `git-status 块仍含会过期的 "Status:" 文件状态列表——这是死循环矛盾源，` +
-          `必须移除(只留 branch/commits)。若二进制含此块，说明编译自根治修复之前，请重新 make build。`,
+          `必须移除(只留 branch/commits)。若二进制含此块，说明编译自修复之前，请重新 make build。`,
       };
     }
     return { name, ok: true, detail: "锚点齐全且 volatile Status 块已移除" };
@@ -91,7 +91,7 @@ async function checkGitStatusAnchor(): Promise<CheckResult> {
  *   - 连续相同 (命令,输出) 达阈值后判定 stuck 并给出 remind 动作。
  */
 async function checkStuckGuard(): Promise<CheckResult> {
-  const name = "无进展止损阀（方向 2/4/6）";
+  const name = "无进展止损阀";
   try {
     const {
       isReadonlyProbeCommand,
@@ -261,7 +261,11 @@ async function checkEmbeddedRipgrep(): Promise<CheckResult> {
 
 /**
  * 运行全部自检。返回 true=全部通过，false=至少一条失败。
- * 结果逐条打印到 stderr（便于 CI 日志抓取），不污染 stdout。
+ *
+ * 输出渠道与配色：
+ *   - 全部通过 → stdout + 绿色 ✓。成功就是成功，不能伪装成错误。
+ *   - 有失败   → stderr + 红色 ✗。失败才该红，CI 日志也走 stderr 抓取。
+ *   - 非 TTY（管道/重定向/部分 CI）→ 不输出 ANSI 转义码，避免日志里 `[0m[31m` 乱码。
  */
 export async function runSelfCheck(): Promise<boolean> {
   const results = await Promise.all([
@@ -270,17 +274,32 @@ export async function runSelfCheck(): Promise<boolean> {
     checkEmbeddedSkills(),
     checkEmbeddedRipgrep(),
   ]);
-  let allOk = true;
-  console.error("── sid-code 编译产物自检 ──");
-  for (const r of results) {
-    const mark = r.ok ? "✓" : "✗";
-    console.error(`  ${mark} ${r.name}：${r.detail}`);
-    if (!r.ok) allOk = false;
-  }
+  const allOk = results.every((r) => r.ok);
+
+  // TTY 检测：成功走 stdout、失败走 stderr，各自看对应流是否 TTY。
+  // 非 TTY（管道/重定向/部分 CI）→ 颜色与 reset 都置空，避免日志里残留 `[0m` 乱码。
+  const useColorOk = process.stdout.isTTY === true;
+  const useColorFail = process.stderr.isTTY === true;
+  const green = useColorOk ? "\x1b[32m" : "";
+  const greenReset = useColorOk ? "\x1b[0m" : "";
+  const red = useColorFail ? "\x1b[31m" : "";
+  const redReset = useColorFail ? "\x1b[0m" : "";
+
   if (allOk) {
-    console.error("自检通过：关键修复已内联进二进制。");
+    console.log(`${green}── sid-code 编译产物自检 ──${greenReset}`);
+    for (const r of results) {
+      console.log(`${green}  ✓${greenReset} ${r.name}：${r.detail}`);
+    }
+    console.log(`${green}自检通过：关键修复已内联进二进制。${greenReset}`);
   } else {
-    console.error("自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 `make build`。");
+    console.error(`${red}── sid-code 编译产物自检 ──${redReset}`);
+    for (const r of results) {
+      const mark = r.ok ? "✓" : "✗";
+      const color = r.ok ? "" : red;
+      const colorReset = r.ok ? "" : redReset;
+      console.error(`  ${color}${mark}${colorReset} ${r.name}：${r.detail}`);
+    }
+    console.error(`${red}自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 \`make build\`。${redReset}`);
   }
   return allOk;
 }
