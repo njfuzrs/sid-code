@@ -153,7 +153,10 @@ export async function cleanupStaleWorktrees(
       continue;
     }
 
-    // 有未提交修改或未推送 commit 不碰（fast 模式：-uno + 未推送检查，D16/D17；fail-closed：null 也跳过）
+    // 有未提交修改或未推送 commit 不碰（D16/D17；fail-closed：countChanges 返回 null 也跳过）。
+    // ⚠ 这里曾写「fast 模式：-uno」——已过期且方向相反：fast 模式 2026-08-02 起
+    // 改用 -unormal，**会**扫 untracked。旧的 -uno 让未 git add 的新文件对 GC 不可见，
+    // 判定「无改动」后直接删掉 worktree，用户工作永久丢失。见 manager.countChanges 的注释。
     const changes = manager.countChanges(fullPath, "", { fast: true });
     if (changes === null || changes.changedFiles > 0 || changes.commits > 0) {
       skipped++;
