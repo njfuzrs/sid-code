@@ -42,6 +42,13 @@ import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-teleme
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { calculateRetryDelay as calculateSharedRetryDelay } from "./retry-backoff.ts";
 import { disableKeepAlive } from "./keepalive.ts";
+// S4：非流式降级。`src/api/stream-handler.ts` 早就写好了这套（含 SSE 事件重放），
+// 但生产零消费——只有测试在驱动它（§2.3 / §七 F7 记的三处"死能力"之一）。
+// 这里把它接进漏斗，成为空响应/传输错误的最后一道兜底。
+import {
+  convertToStreamEvents,
+  isStreamingTransportError,
+} from "../api/stream-handler.ts";
 
 // ═══════════════════════════════════════════════════════════════════
 // 查询来源分类（从 retry-engine.ts 吸收）
@@ -148,6 +155,23 @@ const MAX_529_CONSECUTIVE = 3;
 
 /** persistent retry 最大退避（5 分钟） */
 const PERSISTENT_MAX_DELAY_MS = 300_000;
+
+/** S4：非流式降级的 maxTokens 上限。
+ *
+ *  非流式响应没有增量、要等整段生成完才返回，maxTokens 越大越容易整体超时。
+ *  与 `api/stream-handler.ts` 的 `DEFAULT_NON_STREAMING_MAX_TOKENS` 同值——
+ *  刻意不 import 那个常量：它是 stream-handler 自己的默认值（可被其 config 覆盖），
+ *  这里是漏斗侧的独立决策，两者同值是巧合而非依赖，绑在一起反而制造隐式耦合。 */
+const NON_STREAMING_MAX_TOKENS = 16_384;
+
+/** S3：一次重试要「有意义」所需的最小剩余时间（毫秒）。
+ *
+ *  含义：退避睡完之后，至少还得留这么多时间给那次请求，重试才不是白等。
+ *  取 5s 的依据——它要盖住「建连 + 首字节」这段：本仓 TTFT 观测（trace-digest 的
+ *  gen 分位数）典型在 1–3s，5s 给慢网关留了余量，又不至于把"其实还来得及"的重试
+ *  提前砍掉。这个值不需要精确：它是**方向正确的粗钳制**，用来替换"睡满 120s 再被
+ *  外层 abort"这个明确错误的现状。 */
+const MIN_USEFUL_ATTEMPT_MS = 5_000;
 
 // B1-b：原 PERSISTENT_HEARTBEAT_MS（30s）已删除。它只用于「重连同步抛错后 persistent
 // 模式的心跳等待」——该分支随重连 try/catch 一并删除（重连现走 openStream 归一化，
@@ -258,6 +282,27 @@ export interface FallbackConfig {
    * @param error 原始 401 错误，供实现方判别子类型（如 OAuth revoked vs 普通过期）
    */
   onAuthRefresh?: (provider: string, error: unknown) => Promise<boolean>;
+  /**
+   * S4（§2.3 / §七 F7）：是否允许**非流式降级**。默认 `true`。
+   *
+   * ── 为什么这是"接线"而不是"新功能" ──
+   *
+   * `src/api/stream-handler.ts` 的 `streamWithFallback` 早就实现了完整的
+   * 「流式失败 → 非流式请求 → 把结果重放成 SSE 事件」，与 CC `claude.ts:2465`
+   * 的非流式降级同型。但实测**生产零消费**：`grep -rn "streamWithFallback" src/`
+   * 只命中它自己的定义，驱动它的全是测试。这是本方案 §七 F7 记录的三处"死能力"
+   * 之一——写好了、有注释、有单测，唯独没有生产调用方。
+   *
+   * ── 它兜住的是哪一类失败 ──
+   *
+   * 重试解决的是"再试一次可能就好了"，而这里兜的是**重试必然无效**的一类：
+   * 网关/中转层不支持 SSE（回 `text/html` 错误页、回空 body、chunked 编码被
+   * 截断）。这类故障对同一个流式请求是确定性的，重试 N 次得到 N 次同样的空——
+   * 正是北极星"更省"最讨厌的形态。换成非流式请求反而能穿过去。
+   *
+   * 关闭它只会退回"重试耗尽 → 换模型/报错"，不会更糟；故默认开。
+   */
+  allowNonStreamingFallback?: boolean;
 }
 
 /** 回退事件监听器 */
@@ -313,6 +358,27 @@ export interface PerCallOptions {
   maxRetries?: number;
   /** 发起方 agent 标识（遥测归因与 B4 per-agent 状态隔离用）。 */
   agentId?: string;
+  /**
+   * S3（§5 缺口 C）：本次调用的 **wall-clock 截止时刻**（`Date.now()` 同轴的毫秒时间戳）。
+   *
+   * ── 它修的是什么 ──
+   *
+   * `maxRetries` 是**次数**上界，但子代理真正的硬约束是**时间**（`sub-agent.ts` 的
+   * `timeoutCtrl`，180–360s）。两者不换算，于是"重试 10 次"是个幻觉：实测退避累计
+   * （base 5s、cap 120s）第 7 次就到 395s，早已超过 300s 预算——外层 abort 一到，
+   * **最后一次退避连等完都等不到**，那次重试的等待时间纯属白烧。
+   *
+   * CC 不需要这个，因为它的子代理没有 wall-clock 超时；我们有，所以必须做。
+   *
+   * ── 语义 ──
+   *
+   * 传了就在每次退避**前**检查："这次退避 + 一次最小请求耗时"是否还塞得进剩余预算。
+   * 塞不进就**立即停止重试**（转降级/换模型），而不是先睡满 120s 再被外层砍断。
+   * 好处是把本会白等的时间还给"至少留个能落地的结论"。
+   *
+   * 不传则完全退化为原有的纯次数上界（行为逐字节不变）。
+   */
+  deadlineAt?: number;
 }
 
 /** 内部重试上下文 */
@@ -397,6 +463,8 @@ export class ModelFallback {
       // B5-7：漏字段就是"钩子注了但永不被调用"的半接线状态——本构造函数逐字段
       // 手抄，新增配置极易漏在这里，且漏了不会有任何报错（只是能力静默消失）。
       onAuthRefresh: config.onAuthRefresh,
+      // S4：同上，漏抄即"降级能力又变回死代码"。`??` 而非直接赋值——默认开。
+      allowNonStreamingFallback: config.allowNonStreamingFallback ?? true,
     };
     this.listener = listener ?? null;
     this.availability = config.availability ?? new ModelAvailabilityService();
@@ -448,6 +516,10 @@ export class ModelFallback {
       fallbackProvider: perCallOptions?.fallbackProvider ?? this.config.fallbackProvider,
       maxRetries: perCallOptions?.maxRetries ?? this.config.maxRetries,
       agentId: perCallOptions?.agentId,
+      // S3：无实例级回落——deadline 是**单次调用**的属性（每个子代理各自的剩余预算），
+      // 放进 this.config 会让全进程单实例的漏斗把一个子代理的截止时刻套到别人头上，
+      // 正是 B1-a 修掉的那类状态共享缺陷。
+      deadlineAt: perCallOptions?.deadlineAt,
     };
 
     // § 注入流内遥测转发：把 provider 产出的协议无关 StreamTelemetrySignal
@@ -873,7 +945,29 @@ export class ModelFallback {
             log.warn("FALLBACK", `错误无法分类为可重试，不重试直接转 fallback: ${classified.message}`);
             // 根因留档（缺口 D）：本路径没走重试，需在此显式记一笔，否则耗尽文案会丢掉它。
             ctx.lastRetryError = classified.message;
-            ctx.lastRetryReason = "unclassified";
+            // S4：**保留精确 reason**，不要一律压成 "unclassified"。
+            //
+            // `StreamValidationError("响应为空", "empty_response")` 也走这条 fail-fast 分支
+            // （它不是 RetryableError），压成 "unclassified" 会丢掉"这是空响应"这个关键信息：
+            // 空响应恰好是非流式降级唯一能治的那一类（网关回 text/html 错误页 / 空 body），
+            // 而 "unclassified"（provider 实现 bug、参数拼装错）恰好是**不该**降级的一类。
+            // 两者压成同一个标签，S4 就只能"要么都降级、要么都不降级"——前者浪费一次请求，
+            // 后者让 S4 在它最该生效的场景上永久失效。
+            ctx.lastRetryReason =
+              classified instanceof StreamValidationError ? classified.reason : "unclassified";
+
+            // S4：fail-fast 不代表"不许换传输方式"。
+            //
+            // 这条分支的语义是「**重试**必然无效」，而非流式降级不是重试——它是同一个
+            // 模型换一条传输通道，恰好能穿过"重试多少次都一样空"的网关故障。
+            // 门槛未被放宽：内部 transportish 白名单只放行 empty_response / network /
+            // timeout，provider 代码 bug（unclassified）照旧直接转 fallback。
+            const degradeOutcome = { degraded: false };
+            yield* this.tryNonStreamingDegrade(
+              primaryProvider, params, ctx, hasYieldedContent, signal, degradeOutcome,
+            );
+            if (degradeOutcome.degraded) return;
+
             yield* this.tryFallback(params, signal, ctx);
             return;
           }
@@ -928,6 +1022,40 @@ export class ModelFallback {
 
           // 流式重试：重新发起完整请求
           const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);
+
+          // ═══════════════════════════════════════════════════════════
+          // S3（§5 缺口 C）：按 wall-clock 剩余预算钳制
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 判据不是"还有没有剩余时间"，而是"**这次退避睡完之后还来得及发一次请求吗**"。
+          // 只判前者会退化成"睡到被外层 abort"——那正是现状：最后一次退避等不完就被砍，
+          // 白烧最长 120s，且用户拿不到任何结论。
+          //
+          // persistent（无人值守）豁免：它的语义就是"等多久都行"，与截止时刻互斥。
+          if (!this.config.persistent && perCall.deadlineAt !== undefined) {
+            const remaining = perCall.deadlineAt - Date.now();
+            if (remaining <= delayMs + MIN_USEFUL_ATTEMPT_MS) {
+              log.warn(
+                "FALLBACK",
+                `S3：剩余预算 ${Math.max(0, remaining)}ms 不足以「退避 ${delayMs}ms + 一次请求」，` +
+                `停止重试（已重试 ${ctx.totalRetriesThisCall} 次）`,
+              );
+              this.emitTelemetry({
+                type: "retry_budget_exhausted",
+                model: params.model,
+                attempt: attempt + 1,
+                delayMs,
+                remainingMs: Math.max(0, remaining),
+                error: classified.message,
+              }, perCall.agentId);
+              // 留档：让耗尽文案说得出"是时间不够，不是次数用尽"——两者修法完全不同
+              // （前者调 timeout / 降退避，后者查限流），归因混淆会把排查带偏。
+              ctx.lastRetryError =
+                `${classified.message}（剩余时间预算不足，已重试 ${ctx.totalRetriesThisCall} 次后停止）`;
+              this.availability.markRetryOnce(params.model, "时间预算不足");
+              break;
+            }
+          }
 
           log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
           this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
@@ -1002,6 +1130,27 @@ export class ModelFallback {
       // 缺口 2 进阶：流式阶段收尾（正常/异常/fallback）→ disarm 未生效检查兜底。
       (disarmStreamIneffective as (() => void) | null)?.();
       disarmStreamIneffective = null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // S4：重试耗尽 → **先**试同模型非流式降级，再考虑换模型
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 次序刻意如此：非流式降级是「同模型换传输方式」，而 tryFallback 是「换模型」。
+    // 前者代价更小、语义更保守（模型能力/价格/上下文窗口全不变），且它兜住的那类
+    // 故障（网关不支持 SSE）换模型往往**根本治不了**——同一个网关的另一个模型
+    // 一样不支持流式。反过来把换模型放前面，会用一次无谓的模型切换掩盖真实成因。
+    {
+      const degradeOutcome = { degraded: false };
+      yield* this.tryNonStreamingDegrade(
+        primaryProvider,
+        params,
+        ctx,
+        hasYieldedContent,
+        signal,
+        degradeOutcome,
+      );
+      if (degradeOutcome.degraded) return;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1173,6 +1322,98 @@ export class ModelFallback {
         throw thrown;
       })();
     }
+  }
+
+  /**
+   * S4：尝试非流式降级。**成功产出内容才算降级成功**（返回 true）。
+   *
+   * 调用时机：流式阶段重试预算耗尽、即将转 `tryFallback`（换模型）之前。
+   * 这个次序是刻意的——非流式降级是**同一个模型换个传输方式**，比换模型
+   * 代价更小、语义更保守；只有它也不行才该动模型。
+   *
+   * 三条不降级的前提（任一不满足即返回 false，调用方照原路走 tryFallback）：
+   *   ① 配置关闭；
+   *   ② provider 不支持 `sendMessageNonStreaming`（可选方法）；
+   *   ③ 下游已经收到过内容块 —— 重放会产出重复内容，宁可不降级。
+   *
+   * 失败不抛错：降级本身是兜底，它失败了不该盖掉真实根因（原始限流/超时错误
+   * 才是用户要看的）。故内部 catch 后返回 false，让调用方继续原有的失败路径。
+   */
+  private async *tryNonStreamingDegrade(
+    provider: Provider,
+    params: SendParams,
+    ctx: RetryContext,
+    hasYieldedContent: boolean,
+    signal: AbortSignal | undefined,
+    outcome: { degraded: boolean },
+  ): AsyncGenerator<StreamEvent> {
+    const log = getLogger();
+
+    if (this.config.allowNonStreamingFallback === false) return;
+    if (!provider.sendMessageNonStreaming) return;
+    // 已经流出去过内容 → 重放必然重复，直接放弃降级。
+    if (hasYieldedContent) return;
+    if (signal?.aborted) return;
+
+    // 只对"传输层/空响应"类失败降级。限流(429)/过载(529)换成非流式一样会被限，
+    // 白烧一次配额还多等一轮——那类该走的是重试与换模型，不是换传输方式。
+    const lastReason = ctx.lastRetryReason ?? "";
+    const transportish =
+      lastReason === "empty_response" ||
+      lastReason === "network_error" ||
+      lastReason === "timeout" ||
+      isStreamingTransportError(new Error(ctx.lastRetryError ?? ""));
+    if (!transportish) return;
+
+    const ceiling =
+      this.config.resolveMaxOutputTokens?.(params.model) ??
+      lookupRegistry(params.model)?.maxOutputTokens;
+    const nonStreamMaxTokens = Math.min(
+      ctx.maxTokensOverride ?? params.maxTokens,
+      // 非流式无增量，过大容易整体超时；与 stream-handler 的默认上限同源。
+      NON_STREAMING_MAX_TOKENS,
+      ...(ceiling ? [ceiling] : []),
+    );
+
+    log.warn(
+      "FALLBACK",
+      `S4：流式失败（${lastReason || "transport"}），同模型降级为非流式重试（maxTokens=${nonStreamMaxTokens}）`,
+    );
+    this.emitTelemetry({
+      type: "non_streaming_degrade",
+      model: params.model,
+      error: ctx.lastRetryError,
+      reopenReason: lastReason || undefined,
+      provider: provider.name(),
+    }, ctx.perCall.agentId);
+
+    let result;
+    try {
+      result = await provider.sendMessageNonStreaming(
+        { ...params, maxTokens: nonStreamMaxTokens },
+        signal,
+      );
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) throw toAbortError(err);
+      // 降级失败：不抛，让调用方继续 tryFallback。原始根因已在 ctx.lastRetryError 里。
+      log.warn("FALLBACK", `S4：非流式降级也失败，回到换模型路径: ${err}`);
+      return;
+    }
+
+    // 空响应的降级又空 → 判定失败，交回原路径（否则会把"空"当成功收尾）。
+    const hasContent = result.content.some(
+      (b) => (b.type === "text" && b.text) || b.type === "tool_use",
+    );
+    if (!hasContent) {
+      log.warn("FALLBACK", "S4：非流式降级仍返回空内容，回到换模型路径");
+      return;
+    }
+
+    for (const ev of convertToStreamEvents(result)) yield ev;
+    // 同模型非流式成功 → 该模型是好的（是 SSE 通道不通），清除可能残留的拉黑态。
+    this.availability.markHealthy(params.model, true);
+    outcome.degraded = true;
+    log.info("FALLBACK", "S4：非流式降级成功产出内容");
   }
 
   /**

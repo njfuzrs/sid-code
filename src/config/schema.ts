@@ -6,6 +6,8 @@
 import type { Config } from "./config.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { normalizeBaseURL } from "../llm/endpoint-key.ts";
+// VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
+import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -45,20 +47,26 @@ const VALID_PERMISSION_MODES = new Set([
   "dangerously-skip-permissions",
 ]);
 
-/** 有效的 Hook 事件名 */
-const VALID_HOOK_EVENTS = new Set([
-  "pre_tool_use",
-  "post_tool_use",
-  "post_tool_use_failure",
-  "user_prompt_submit",
-  "session_start",
-  "session_end",
-  "pre_compact",
-  "subagent_stop",
-  "permission_request",
-  "notification",
-  "instructions_loaded",
-  "teammate_idle",
+/**
+ * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。
+ *
+ * 为什么必须派生：这里曾是一份手写的 12 条 snake_case 清单，而 registry 真正认的是
+ * `HookEventName` 枚举（37 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
+ * ——`resolveEventName()` 对两种写法都返回有效事件。两边一漂移就产生**假告警**：
+ * 用户按 `ref/hooks.md`（从枚举生成的权威参考页）写 `"PreToolUse"`，hook 实际能正常触发，
+ * 却会收到一条 `未知的事件名 "PreToolUse"` 的警告，然后去怀疑自己配错了。
+ * 反过来，枚举里新增事件时也不会有人记得回来同步这份清单。
+ *
+ * 校验的语义是「这个名字 registry 认不认」，而 registry 认什么由 hook 层定义，
+ * 所以这里唯一正确的做法是引用它，而不是抄它。
+ *
+ * 注意：能通过校验 ≠ 该事件有调用点会触发。枚举里有一批标注「预留：有 fire 方法但无调用点」
+ * 的事件，配了不会被触发——那是 `ref/hooks.md` 的「会不会触发」列要回答的问题，
+ * 与本校验（名字合不合法）是两个独立维度，别混为一谈。
+ */
+const VALID_HOOK_EVENTS = new Set<string>([
+  ...Object.values(HookEventName),
+  ...Object.keys(LEGACY_EVENT_MAP),
 ]);
 
 /** 有效的子代理类型：从活跃 agent registry 派生（含 built-in + custom + plugin）。

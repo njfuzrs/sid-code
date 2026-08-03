@@ -224,7 +224,7 @@ Todo 不只是给你看的进度条，它是模型自己的工作记忆。长任
 
 ## 相关
 
-- [权限与人工确认](/use/permissions) —— plan 是六种权限模式之一，其余五种在这
+- [权限与人工确认](/use/permissions) —— plan 只是其中一种模式，其余几种在这
 - [上下文与压缩](/use/context) —— 长任务为什么会变慢
 - [子代理](/extend/subagents) —— 把探索隔离出主上下文
 - [斜杠命令](/ref/slash-commands) —— `/plan`、`/todos`、`/goal`、`/loop` 的完整参数

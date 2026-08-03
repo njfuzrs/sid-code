@@ -12,13 +12,34 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
 [Hook 事件](/ref/hooks)，字段类型在[settings.json 字段](/ref/settings)——
 这页只讲怎么写出一个能跑起来的 hook。
 
-::: danger 先记住这条，否则你的 hook 不会生效
-配置里的事件名要写 **snake_case**（`pre_tool_use`），
-且 hook 对象是**平铺**的，`matcher` 和 `command` 同级。
+::: danger 先记住这条，否则你的 hook 静默不生效
+settings.json 里的 hook 对象必须是**平铺**的——`matcher` / `command` 与 `type` 同级：
 
-写 PascalCase（`PreToolUse`）会被配置校验器判为未知事件名并给出提示；
-写成嵌套的 `{matcher, hooks:[...]}` 会报「必须指定 command 字段」。
-两种写法在 hook 注册层其实都认，但**过不了 settings 校验**这一关。
+```json
+{ "type": "command", "matcher": "edit|write", "command": "..." }   // ✓ 生效
+{ "matcher": "edit|write", "hooks": [{ "type": "command", "command": "..." }] }   // ✗ 不生效
+```
+
+写成嵌套的 `{matcher, hooks:[...]}` 会被**静默丢弃**（加载时不报错、不打日志，
+只有跑 `/doctor` 或看 settings 校验才会看到「command 类型的 Hook 必须指定 command 字段」）。
+这是最难自查的一种错：配置看着没问题，hook 就是不触发。
+
+事件名两种写法都认：`pre_tool_use` 与 `PreToolUse` 等价（内部会归一化）。
+本页统一用 snake_case，与[Hook 事件](/ref/hooks)参考页的「配置里写」列一致。
+
+<!--
+  ⚠ 这个框曾经还写着「写 PascalCase 会被配置校验器判为未知事件名」——那条已经不成立。
+  当时 src/config/schema.ts 的 VALID_HOOK_EVENTS 是一份手写的 12 条 snake_case 清单，
+  而 registry 的 resolveEventName 对 PascalCase 和 snake_case 都认，于是用户按参考页
+  （从 HookEventName 枚举生成，全 PascalCase）写完，hook 能正常触发却收到一条
+  「未知的事件名」告警。2026-08-03 已把该清单改成从枚举 + LEGACY_EVENT_MAP 派生，
+  假告警消除。别再把「PascalCase 不合法」写回来。
+
+  嵌套形状不生效这条**是真的**，实测过：settings.json 走的是
+  app.ts:836 → registry.initializeFromLegacy（认平铺），
+  而认嵌套的 initializeFromNew 在生产里没有任何调用方。
+  注意 agent frontmatter 里的 hooks 用的是嵌套形状，两者不通用，别互相照抄。
+-->
 :::
 
 ## 最小可用示例
@@ -222,10 +243,21 @@ echo '{}' | sh -c '你的 command'
 
 按顺序查这四个：
 
-1. **事件名写成 PascalCase 了**——改成 `pre_tool_use` 这种 snake_case
-2. **写成嵌套格式了**——`matcher` 要和 `command` 平级，不要套 `hooks: [...]`
-3. **事件本身是「预留」的**——[Hook 事件](/ref/hooks)里标了「预留」的 12 个事件枚举已定义但没有触发点，配了也不会调。这是实现现状
-4. **`matcher` 正则没匹配上**——先把 `matcher` 整个删掉试，能触发就是正则的问题
+<!--
+  ⚠ 第 1 条曾是「事件名写成 PascalCase 了」——已删，那不是失效原因（两种写法运行时等价）。
+  第 3 条曾写「标了『预留』的 12 个事件」，两处错：个数是 15 不是 12，且判据不该是
+  注释里的「预留」二字（注释还有「先占位」这种同义写法，漏标了 6 个）。
+  现在参考页的「会触发」列按**实际有没有调用方**生成，这里只需指过去，不再自己数。
+-->
+
+1. **写成嵌套格式了**——`matcher` 要和 `command` 平级，不要套 `hooks: [...]`。
+   这是最常见的一条，因为 agent frontmatter 里的 hooks 恰好是嵌套形状，容易照抄过来。
+   现在加载时会打一条明确告警（`用了嵌套形状…本条已跳过`），看日志能直接确认
+2. **`matcher` 没匹配上**——先把 `matcher` 整个删掉试，能触发就是它的问题。
+   注意纯字母数字加竖线（`edit|write`）是**精确匹配**而非正则，且大小写敏感：
+   工具名都是小写，写 `Edit|Write` 匹配不上
+3. **事件本身还没接线**——[Hook 事件](/ref/hooks)的「会触发」列标 ✗ 的那些，
+   枚举已定义但当前没有触发点，配了也不会调。这是实现现状，不是你配错了
 
 ### hook 跑了但模型不知道
 

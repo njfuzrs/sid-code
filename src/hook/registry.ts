@@ -62,7 +62,27 @@ export class HookRegistry {
 
       for (const legacyHook of hookList) {
         const config = this.convertLegacyHook(legacyHook);
-        if (!config) continue;
+        if (!config) {
+          // 这里曾经是裸 `continue`，形状写错的 hook 被**静默丢弃**：加载不报错、不打日志，
+          // 配置看着没问题、hook 就是不触发，是最难自查的一类错。
+          // 最常见的错法是照抄 agent frontmatter 的嵌套形状 `{matcher, hooks:[{...}]}`
+          // ——settings.json 走的是平铺形状（matcher/command 与 type 同级），
+          // 嵌套时同级 command 缺失，convertLegacyHook 返回 null。
+          // 所以这条日志必须点名缺了哪个字段，并在嵌套形状时直接说破。
+          const type = (legacyHook as { type?: string })?.type || "command";
+          const missing =
+            type === "url" ? "url" : type === "prompt" || type === "agent" ? "prompt" : "command";
+          const looksNested =
+            legacyHook && typeof legacyHook === "object" && Array.isArray((legacyHook as { hooks?: unknown }).hooks);
+          log.warn(
+            "HOOK",
+            looksNested
+              ? `${eventKey} 的 hook 用了嵌套形状 {matcher, hooks:[...]}，settings.json 需要平铺形状` +
+                  `（把 type/command 提到与 matcher 同级）——本条已跳过，不会触发`
+              : `${eventKey} 的 hook 缺少 "${missing}" 字段（type=${type}），已跳过，不会触发`,
+          );
+          continue;
+        }
 
         if (!this.validateHookConfig(config, eventName)) continue;
 

@@ -23,6 +23,18 @@ export interface StreamHandlerConfig {
   allowNonStreamingFallback?: boolean;
   /** 非流式 max_tokens 上限（默认 16384，比流式小） */
   nonStreamingMaxTokens?: number;
+  /**
+   * S4：流式**正常结束但零内容**时是否也降级（默认 false，保持旧语义）。
+   *
+   * 场景（§5 缺口 5）：网关把非 SSE 的错误页 / 空 body 回成 200，provider 解析出
+   * 0 个事件、不抛错也不产出 error 事件。此时"流式"这条路是通的、只是没内容，
+   * 传输错误判据（`isStreamingTransportError`）永远命中不了，于是漏斗只能判
+   * "响应为空" → 白重试 N 次 → 每次都同样空。非流式请求恰好能穿过这类网关。
+   *
+   * 安全性：仅在**下游一个块都没收到**时才降级（见 `yieldedAnyBlock`），
+   * 所以重放不可能产生重复内容。
+   */
+  degradeOnEmptyStream?: boolean;
 }
 
 const DEFAULT_NON_STREAMING_MAX_TOKENS = 16_384;
@@ -110,7 +122,18 @@ export async function* streamWithFallback(
 
   // 已 yield 过内容则不能降级（会导致重复内容）；记录是否已开始输出
   let yieldedContent = false;
+  /**
+   * S4：是否向下游 yield 过**任何** content block（含 `content_block_start`）。
+   *
+   * 与 `yieldedContent` 的分工：后者只认 delta，是"传输错误能否降级"的判据
+   * （已有文本流出去了，重放会重复）；本标志更严，用于空流降级的安全闸门——
+   * 无参数工具调用只有 start+stop、零 delta，若拿 `yieldedContent` 判空流降级，
+   * 会把一次**成功的**无参工具调用重放一遍（漏斗 B2 修过同型误判）。
+   */
+  let yieldedAnyBlock = false;
   let transportError: unknown | undefined;
+  /** S4：流式正常结束却零内容（网关回非 SSE 错误页/空 body 的典型形态）。 */
+  let emptyStream = false;
 
   try {
     for await (const event of provider.sendMessageStream(params, signal)) {
@@ -124,7 +147,15 @@ export async function* streamWithFallback(
         return;
       }
       if (event.type === "content_block_delta") yieldedContent = true;
+      if (event.type === "content_block_delta" || event.type === "content_block_start") {
+        yieldedAnyBlock = true;
+      }
       yield event;
+    }
+    // S4：流跑完了、没抛错、也没有 error 事件，但一个内容块都没有。
+    // 只在开关显式打开且确实零块时才降级——否则保持旧语义原样返回。
+    if (!yieldedAnyBlock && allowFallback && config.degradeOnEmptyStream) {
+      emptyStream = true;
     }
   } catch (streamError) {
     if (signal?.aborted) throw streamError;
@@ -134,14 +165,19 @@ export async function* streamWithFallback(
     transportError = streamError;
   }
 
-  if (transportError === undefined) return; // 流式正常完成
+  if (transportError === undefined && !emptyStream) return; // 流式正常完成
 
   // ── 降级到非流式 ──
+  /** 降级成因，供日志与"无非流式能力"时的兜底抛错使用。 */
+  const trigger = emptyStream ? "流式正常结束但零内容块" : getErrorMessage(transportError);
+
   if (!provider.sendMessageNonStreaming) {
-    log.warn("STREAM", "流式传输失败且 Provider 不支持非流式降级", {
-      error: getErrorMessage(transportError),
-    });
-    throw transportError;
+    log.warn("STREAM", "流式传输失败且 Provider 不支持非流式降级", { error: trigger });
+    // 空流路径没有 transportError（`throw undefined` 会把 catch 方的 err 变成 undefined，
+    // 上游一切按 message 取值的代码全部拿到 undefined —— 比不降级更难排查）。
+    throw emptyStream
+      ? new Error("流式响应为空且 Provider 不支持非流式降级")
+      : transportError;
   }
 
   const nonStreamMaxTokens = Math.min(
@@ -149,7 +185,7 @@ export async function* streamWithFallback(
     config.nonStreamingMaxTokens ?? DEFAULT_NON_STREAMING_MAX_TOKENS,
   );
   log.warn("STREAM", "流式请求失败，降级到非流式", {
-    error: getErrorMessage(transportError),
+    error: trigger,
     maxTokens: nonStreamMaxTokens,
   });
 

@@ -9,8 +9,31 @@ type HealthState =
   | { status: "retry_once"; reason: string; consumed: boolean }  // 本轮只允许重试一次
   | { status: "terminal"; reason: string };                       // 永久不可用
 
+/** S2：共享限流冷却记录。 */
+interface RateLimitCooldown {
+  /** 冷却截止时刻（`Date.now()` 轴毫秒）。 */
+  until: number;
+  /** 触发冷却的模型侧原因（写进日志/遥测，便于回答"谁先撞的"）。 */
+  reason: string;
+  /** 本模型累计被标记限流的次数（仅用于观测，不参与决策）。 */
+  hits: number;
+}
+
+/**
+ * S2 冷却等待的硬上限（毫秒）。
+ *
+ * 为什么必须有上限：冷却是**别人**告诉我们的信息，而 `Retry-After` 由服务端控制。
+ * 若网关回一个 `Retry-After: 3600`，无上限就会让所有并发子代理集体睡一小时——
+ * 那比"各自撞一次限流"糟得多。上限取 30s：够盖住绝大多数瞬时限流窗口，
+ * 又不至于让任何一路把自己的时间预算睡穿。超过上限的部分交回各自的重试退避处理。
+ */
+export const MAX_COOLDOWN_WAIT_MS = 30_000;
+
 export class ModelAvailabilityService {
   private states = new Map<string, HealthState>();
+  /** S2：模型 → 共享限流冷却。与 `states` 分开存，因为语义正交：
+   *  `states` 答"这模型还能不能用"，本表答"现在该不该缓一缓再发"。 */
+  private cooldowns = new Map<string, RateLimitCooldown>();
 
   /** 标记模型为永久不可用（认证失败、模型不存在） */
   markTerminal(model: string, reason: string): void {

@@ -121,13 +121,22 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   }, 30_000);
 
   test("ref/hooks 的行数 == HookEventName 枚举成员数", async () => {
-    const { HookEventName } = await import("../../src/hook/types.ts");
+    const { HookEventName, LEGACY_EVENT_MAP } = await import("../../src/hook/types.ts");
     const members = Object.keys(HookEventName);
     expect(members.length).toBeGreaterThan(0);
 
+    // 首列是**配置里实际写的键名**（有 snake_case 别名就用别名，没有才回落枚举名），
+    // 不再是枚举名——参考页的首列必须能直接抄进 settings.json。
+    // 所以这里按同样规则算出期望集合，而不是拿枚举名直接比。
+    const toSnake = new Map<string, string>();
+    for (const [snake, pascal] of Object.entries(LEGACY_EVENT_MAP)) toSnake.set(pascal, snake);
+    const expected = members.map(
+      (m) => toSnake.get((HookEventName as Record<string, string>)[m]) ?? m,
+    );
+
     const keys = tableRowKeys(autoGenBody("hooks"));
     expect(keys.length).toBe(members.length);
-    expect(new Set(keys)).toEqual(new Set(members));
+    expect(new Set(keys)).toEqual(new Set(expected));
   });
 
   test("ref/settings 的行数 == SettingsSchema 字段数 + passthrough 补录数", async () => {
@@ -175,14 +184,31 @@ describe("参考页生成器 · 抽样断言（读对了没有，不只是读到
 
   test("hooks 表把「未接线」事件如实标注，不谎称可用", () => {
     const rows = tableRows(autoGenBody("hooks"));
-    const byName = new Map(rows.map((r) => [r[0].replace(/`/g, ""), r[1]]));
-    // PreToolUse 是已接线且可 block 的代表
-    expect(byName.get("PreToolUse")).toContain("block");
-    // 这批事件有 fire 方法但 hook 子系统外无调用者（已 grep 确认），
-    // 文档必须说明「配了不会被触发」——参考页谎称有此能力比不写更糟
-    for (const unwired of ["Setup", "ConfigChange", "FileChanged", "TaskCreated"]) {
-      expect(byName.get(unwired), `hooks 表缺 ${unwired}`).toBeDefined();
-      expect(byName.get(unwired), `${unwired} 未标注「预留」`).toContain("预留");
+    // 列序：配置名 | 会触发 | 枚举名 | 触发时机
+    const fires = new Map(rows.map((r) => [r[0].replace(/`/g, ""), r[1].trim()]));
+    const desc = new Map(rows.map((r) => [r[0].replace(/`/g, ""), r[3]]));
+
+    // pre_tool_use 是已接线且可 block 的代表（首列是配置名，故用 snake_case 查）
+    expect(fires.get("pre_tool_use")).toBe("✓");
+    expect(desc.get("pre_tool_use")).toContain("block");
+
+    // 这批事件有 fire 方法但 hook 子系统外无调用者，必须标 ✗——
+    // 参考页谎称有此能力比不写更糟：读者会配上去然后等一个永远不来的回调。
+    //
+    // 判据从「注释里有『预留』二字」换成了「实际有没有调用方」，因此这里补进
+    // 当初漏标的那批：注释用「先占位」等同义写法、或压根没写，关键词匹配抓不到，
+    // 它们一度在表里显示成「会触发 ✓」。
+    for (const unwired of [
+      "setup",
+      "config_change",
+      "file_changed",
+      "task_created",
+      "BeforePermissionCheck",
+      "AfterHookExecution",
+      "elicitation",
+    ]) {
+      expect(fires.get(unwired), `hooks 表缺 ${unwired}`).toBeDefined();
+      expect(fires.get(unwired), `${unwired} 未标注为未接线`).toBe("✗");
     }
   });
 

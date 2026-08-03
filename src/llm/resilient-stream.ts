@@ -72,6 +72,17 @@ export interface ResilientStreamOptions {
   fallbackProvider?: Provider;
   /** 发起方标识，进遥测便于回答"哪个子代理重试了几次"。 */
   agentId?: string;
+  /**
+   * S3（§5 缺口 C）：wall-clock 截止时刻（`Date.now()` 轴上的毫秒时间戳）。
+   *
+   * 传它的路径能获得「按剩余预算钳制重试」：退避睡完还来不及发请求时**提前停手**，
+   * 而不是睡满最长 120s 再被外层 `timeoutCtrl` 硬砍——后者那段等待纯属白烧，
+   * 且换来的是"什么结论都没有"。
+   *
+   * 谁该传：外层有 wall-clock 硬顶的路径（子代理 / fork / 无头）。
+   * 谁不该传：主循环——它没有总超时，用户可以一直等，钳制反而会误砍。
+   */
+  deadlineAt?: number;
   /** 遥测回调（重试 / 降级 / 529 丢弃 / max_tokens 调整）。 */
   onTelemetry?: (event: RetryTelemetryEvent) => void;
   /**
@@ -116,6 +127,7 @@ export function streamWithResilience(
     fallbackProvider: opts.fallbackProvider,
     maxRetries: opts.maxRetries,
     agentId: opts.agentId,
+    deadlineAt: opts.deadlineAt,
   };
 
   if (opts.fallback) {

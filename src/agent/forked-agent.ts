@@ -173,6 +173,12 @@ export async function runForkedAgent(
   // 组合超时与外部 signal
   const timeoutController = new AbortController();
   const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+  /** S3（§5 缺口 C）：与上面 timer 同源的截止时刻，透给漏斗做重试钳制。
+   *
+   *  fork 是最需要它的一条路径：预算只有 60s，而单次退避 cap 就是 120s——
+   *  一次限流退避就足以把整个预算烧穿，且必然等不完就被 abort。有了它，漏斗会在
+   *  "睡完也来不及发请求"时直接收手，把时间留给至少产出一个结论。 */
+  const deadlineAt = Date.now() + timeoutMs;
   const signal = options.signal
     ? AbortSignal.any([options.signal, timeoutController.signal])
     : timeoutController.signal;
@@ -234,6 +240,9 @@ export async function runForkedAgent(
           // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
           // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
           maxRetries: 2,
+          // S3：次数上界（上面那行）是**静态猜测**，这个是**动态实测**——退避真到了
+          // 塞不进剩余预算时提前收手。两者并存不冗余：前者防退避风暴，后者防白等。
+          deadlineAt,
         },
       );
 

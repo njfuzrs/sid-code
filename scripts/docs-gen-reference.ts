@@ -220,27 +220,113 @@ function extractEnumComments(file: string, enumName: string): Map<string, string
 
 interface HookEvent {
   name: string;
+  /** settings.json 里实际要写的键名（LEGACY_EVENT_MAP 的 snake_case 别名，没有别名时回落枚举名） */
+  configName: string;
+  /** 枚举注释标了「预留」= 有 fire 方法但无调用点，配了不会触发 */
+  reserved: boolean;
   description: string;
 }
 
+/**
+ * 读两个事实源，不只读枚举。
+ *
+ * 只读 `HookEventName` 枚举的话，生成出来的表全是 PascalCase，而本项目的示例、
+ * 指南页、以及绝大多数真实配置用的是 snake_case 别名（`LEGACY_EVENT_MAP`）。
+ * 两种写法运行时等价（registry 的 resolveEventName 都认），但参考页只给一种
+ * 会让读者以为另一种非法——所以两列都出。
+ */
 async function loadHookEvents(): Promise<HookEvent[]> {
   const mod = await import(join(ROOT, "src/hook/types.ts"));
   const enumObj = mod.HookEventName as Record<string, string>;
+  const legacyMap = mod.LEGACY_EVENT_MAP as Record<string, string>;
+  // 反转成 PascalCase → snake_case：LEGACY_EVENT_MAP 是 snake→Pascal 方向。
+  const toSnake = new Map<string, string>();
+  for (const [snake, pascal] of Object.entries(legacyMap)) toSnake.set(pascal, snake);
+
   const comments = extractEnumComments(join(ROOT, "src/hook/types.ts"), "HookEventName");
-  return Object.keys(enumObj).map((k) => ({
-    name: k,
-    description: comments.get(k) ?? "",
-  }));
+  const wired = await loadWiredHookEvents();
+  return Object.keys(enumObj).map((k) => {
+    const description = comments.get(k) ?? "";
+    return {
+      name: k,
+      configName: toSnake.get(enumObj[k]) ?? k,
+      reserved: !wired.has(k),
+      description,
+    };
+  });
+}
+
+/**
+ * 哪些事件**真的会被触发**：按「hook 层之外存在 `fire<Event>Event` 调用方」判定。
+ *
+ * 为什么不按枚举注释里的「预留」二字判：那是人工标注，会漏。实测枚举里 15 个事件
+ * 没有任何 hook 层外调用方，而注释只标了 9 个「预留」——差出来的 6 个
+ * （BeforePermissionCheck / AfterPermissionCheck / BeforeHookExecution /
+ * AfterHookExecution / Elicitation / ElicitationResult）会在表里显示成「会触发 ✓」，
+ * 读者配上去等着它响，永远等不到。注释还用了「先占位」这种同义不同词的写法，
+ * 关键词匹配天生抓不全。
+ *
+ * 调用方计数排除 `src/hook/` 自身：那里面是 fire 方法的定义与转发，不是触发点。
+ */
+async function loadWiredHookEvents(): Promise<Set<string>> {
+  const mod = await import(join(ROOT, "src/hook/types.ts"));
+  const names = Object.keys(mod.HookEventName as Record<string, string>);
+  const wired = new Set<string>();
+  // 一次性把 src/ 下所有 fire*Event 调用点抓出来，避免每个事件各起一个子进程。
+  // -a：src/app.ts 含非 UTF-8 字节，grep 默认会把它当二进制**整个跳过**，
+  //      而 app.ts 恰好是最主要的触发点所在文件——漏了它会把大批事件误判为未接线。
+  const { execFileSync } = await import("node:child_process");
+  let haystack = "";
+  try {
+    haystack = execFileSync(
+      "grep",
+      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", "--include=*.tsx", join(ROOT, "src")],
+      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+    );
+  } catch {
+    // grep 无匹配时退出码非 0。宁可全标未接线也不要假装接线了。
+    return wired;
+  }
+  // 排除 hook 层自身的定义/转发：单独再抓一次它们，从总数里减掉。
+  let selfOnly = "";
+  try {
+    selfOnly = execFileSync(
+      "grep",
+      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", join(ROOT, "src/hook")],
+      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+    );
+  } catch {
+    /* hook 层没有匹配也无妨 */
+  }
+  const count = (text: string, token: string) =>
+    text.split("\n").filter((l) => l.trim() === token).length;
+  for (const n of names) {
+    const token = `fire${n}Event`;
+    if (count(haystack, token) - count(selfOnly, token) > 0) wired.add(n);
+  }
+  return wired;
 }
 
 function renderHookEvents(events: HookEvent[]): string {
-  let out = `> 共 **${events.length}** 类 Hook 事件，从 \`HookEventName\` 枚举导出。\n`;
-  out += `> 配置写在 \`settings.json\` 的 \`hooks\` 段，键名用下表的事件名\n`;
-  out += `> （旧的 snake_case 写法仍兼容）。标「预留」的事件枚举已定义但当前无触发点，\n`;
-  out += `> 配了不会被调用——这是实现现状，不是文档遗漏。\n\n`;
-  out += `| 事件名 | 触发时机 |\n|---|---|\n`;
+  const fireable = events.filter((e) => !e.reserved).length;
+  let out = `> 共 **${events.length}** 类 Hook 事件（从 \`HookEventName\` 枚举导出），\n`;
+  out += `> 其中 **${fireable}** 类当前有真实触发点。\n`;
+  out += `>\n`;
+  out += `> **第一列就是你写进 \`settings.json\` 的键名。** 两种写法运行时等价\n`;
+  out += `> （\`pre_tool_use\` 与 \`PreToolUse\` 都认，内部会归一化），本表优先给 snake_case——\n`;
+  out += `> 与[配置 Hook](/extend/hooks) 的示例保持一致，少一处需要读者自己换算的地方。\n`;
+  out += `>\n`;
+  out += `> 「会触发」列标 ✗ 的事件枚举已定义但**当前无调用点，配了不会被调用**——\n`;
+  out += `> 这是实现现状，不是文档遗漏。它与「名字合不合法」是两个独立维度：\n`;
+  out += `> 这些名字都能通过配置校验，只是不会有东西来触发它们。\n\n`;
+  out += `| 配置里写 | 会触发 | 枚举名（源码内部） | 触发时机 |\n|---|---|---|---|\n`;
   for (const e of events) {
-    out += `| \`${cell(e.name)}\` | ${clip(e.description, 160)} |\n`;
+    const fires = e.reserved ? "✗" : "✓";
+    // 预留事件的说明文字统一是那句「预留：有 fire 方法但无调用点」，已由「会触发」列表达，
+    // 正文里再重复一遍纯占宽度，所以剥掉。
+    const desc = e.reserved ? "（枚举已定义，等接线）" : clip(e.description, 160);
+    const enumCol = e.configName === e.name ? "—" : `\`${cell(e.name)}\``;
+    out += `| \`${cell(e.configName)}\` | ${fires} | ${enumCol} | ${desc} |\n`;
   }
   return out;
 }

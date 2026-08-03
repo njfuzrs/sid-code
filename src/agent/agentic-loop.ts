@@ -126,6 +126,18 @@ export interface AgentLoopConfig {
   /** B2：发起方标识（遥测归因；B4 per-agent 状态隔离复用同一标识）。 */
   agentId?: string;
   /**
+   * S3（§5 缺口 C）：本次子代理的 **wall-clock 截止时刻**（`Date.now()` 轴毫秒）。
+   *
+   * 由 `sub-agent.ts` 按 `startTime + timeout` 算出并传入——它是 `timeoutCtrl` 那个
+   * 硬顶的**同一个时刻**，只是从"到点 abort"换成"到点前主动收手"。
+   *
+   * 为什么不在这里自己 `Date.now() + timeout`：超时钟表必须与真正会 abort 的那个
+   * 控制器同源，各算一份必然漂移（本方案反复在消除的正是这类平行实现）。
+   *
+   * 缺省不传 → 漏斗退化为纯次数上界，行为与 S3 之前逐字节一致。
+   */
+  deadlineAt?: number;
+  /**
    * B4：重试遥测回调（可选）。
    *
    * 生产路径**不需要**传：`fallback.ts` 的 `emitTelemetry` 在无 per-instance 回调时
@@ -439,6 +451,8 @@ async function runAgentLoopInner(
       retryBackoffMaxMs: config.retryBackoffMaxMs,
       availability,
       agentId: config.agentId,
+      // S3：把外层 wall-clock 硬顶透进漏斗，让它在"退避完也来不及发请求"时提前收手。
+      deadlineAt: config.deadlineAt,
       // B5-4：经 tap 转发（数重试次数），行为对调用方不变。
       onTelemetry: onTelemetryTap,
       // 新发现 1②：快照清理必须在**退避之前**。原 R1 是 sleep 完才 clear，
@@ -857,6 +871,10 @@ async function runAgentLoopInner(
           retryBackoffMaxMs: config.retryBackoffMaxMs,
           availability,
           agentId: config.agentId,
+          // S3：总结轮同样受时间预算约束——而且它比主流更需要。它是**最后一次**机会
+          // 把前面 maxTurns 轮的产出落地成结论，在这里睡满 120s 再被外层砍掉，
+          // 等于整个子代理白跑。提前收手至少还能把已有内容交出去。
+          deadlineAt: config.deadlineAt,
           // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
           // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
           onTelemetry: onTelemetryTap,

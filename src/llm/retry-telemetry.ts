@@ -20,6 +20,23 @@ export interface RetryTelemetryEvent {
     | "max_tokens_adjust"
     | "persistent_retry_wait"
     | "auth_refresh"
+    /**
+     * S4：同模型「流式 → 非流式」降级已触发。
+     *
+     * 单独一个事件类型而不复用 `fallback`：两者语义完全不同——`fallback` 是**换模型**
+     * （归因指向"这个模型/这条链路不行"），本事件是**换传输方式、模型不变**
+     * （归因指向"SSE 通道不通，网关不支持流式"）。压成同一个类型会让轨迹里
+     * 「网关不支持 SSE」被读成「模型不可用」，正是本方案反复在修的那类错误归因。
+     */
+    | "non_streaming_degrade"
+    /**
+     * S3：因**时间预算**不足而停止重试（区别于因次数用尽）。
+     *
+     * 两者必须可分辨：次数用尽指向"限流/故障持续"（该查网关），时间不足指向
+     * "退避配置与外层 timeout 不匹配"（该调 timeout 或降退避 cap）。压成一个
+     * 事件就回答不了"这个子代理到底是被限流打死的，还是被自己的退避耗死的"。
+     */
+    | "retry_budget_exhausted"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
@@ -76,6 +93,14 @@ export interface RetryTelemetryEvent {
    * 无法回答——而这正是 §5 新发现 3 的核心（闸门看着像刷新触发器，实际不是）。
    */
   authRefreshed?: boolean;
+  /**
+   * S3：`retry_budget_exhausted` 专用——停止重试那一刻的剩余 wall-clock 预算（毫秒）。
+   *
+   * 与 `delayMs`（本该睡的退避）配合读：`delayMs` 远大于 `remainingMs` 说明退避
+   * cap 相对该 agent 的 timeout 配得过大，是可调参数而非故障。这是让"10 次重试是
+   * 幻觉"这件事从推论变成**可实测**的字段。
+   */
+  remainingMs?: number;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */
@@ -162,6 +187,14 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
     case "auth_refresh":
       log.info("TELEMETRY", `[auth_refresh] ${event.model} error=${event.error}`);
+      break;
+
+    case "non_streaming_degrade":
+      log.warn("TELEMETRY", `[non_streaming_degrade] ${event.model} provider=${event.provider} reason=${event.reopenReason ?? "N/A"} error=${event.error}`);
+      break;
+
+    case "retry_budget_exhausted":
+      log.warn("TELEMETRY", `[retry_budget_exhausted] ${event.model} attempt=${event.attempt} needDelay=${event.delayMs}ms remaining=${event.remainingMs}ms error=${event.error}`);
       break;
 
     case "stream_stall":
