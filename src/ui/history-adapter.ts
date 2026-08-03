@@ -561,6 +561,38 @@ export function injectSettledToolCalls(
   return flipped;
 }
 
+/**
+ * 把子代理进度快照注入 historyItems 里仍在执行的 `sub_agent` 工具卡片。
+ *
+ * **就地修改**传入的 historyItems（与 injectSettledToolCalls 同一约定：这些 item 是
+ * assignIds 刚 new 出来的，非共享引用）。返回注入条数，供调用方判断有无变化。
+ *
+ * 只改 `status === Executing` 的项。已完成的 `sub_agent` 卡片不注入——它的位置该让给
+ * 真实结果（`<subagent-result>`），继续挂着"7 工具 · 12.4k token"就是把进行中的语言
+ * 贴到已完成的东西上。
+ *
+ * 与 injectSettledToolCalls 一样从 app.ts 闭包里提出来，只为**可被测试**：写在
+ * setupTUICallbacks 闭包内的逻辑，测试只能照抄一遍，生产代码漂移时照样绿。
+ */
+export function injectAgentProgress(
+  historyItems: HistoryItem[],
+  progressById: Map<string, { recentActivities: string[]; agentType: string; toolUseCount: number; tokenCount: number; elapsedMs?: number }>,
+): number {
+  if (progressById.size === 0) return 0;
+  let injected = 0;
+  for (const item of historyItems) {
+    if (item.type !== "tool_group") continue;
+    for (const tool of item.tools) {
+      if (tool.status !== ToolCallStatus.Executing) continue;
+      const progress = progressById.get(tool.callId);
+      if (!progress) continue;
+      tool.agentProgress = progress;
+      injected++;
+    }
+  }
+  return injected;
+}
+
 // ── 内部转换函数 ──
 
 function convertUserMessage(

@@ -32,6 +32,10 @@ import { theme } from "../../semantic-colors.ts";
 import { TREE_BRANCH } from "../../constants/figures.ts";
 import { useUIState, useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
 import { truncateShellCommand } from "../../constants/collapse.ts";
+import { useTerminalDimensionsOptional } from "../../contexts/TerminalContext.tsx";
+import { selectAgentProgressTier, formatAgentProgressLine } from "../../agent-progress-view.ts";
+import { formatLargeNumber } from "../../utils/format-number.ts";
+import { formatDuration } from "../../utils/format-duration.ts";
 
 /**
  * think 思考正文的折叠基线（视觉行）。
@@ -69,6 +73,13 @@ export interface ToolMessageProps {
   structuredPatch?: import("diff").StructuredPatchHunk[];
   renderOutputAsMarkdown?: boolean;
   progressMessage?: string;
+  /**
+   * 子代理实时进度（仅执行中的 `sub_agent` 有值）。
+   * 治"子代理过程黑盒"：跑 1m35s 主消息流一个字都没有，末尾一把吐出。
+   */
+  agentProgress?: import("../../../agent/progress.ts").AgentProgressSnapshot;
+  /** 同组内并行的子代理数（决定进度呈现档位，见 agent-progress-view.ts） */
+  concurrentAgentCount?: number;
   progress?: number;
   progressTotal?: number;
   resultSummary?: string;
@@ -91,6 +102,8 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   structuredPatch,
   renderOutputAsMarkdown = false,
   progressMessage,
+  agentProgress,
+  concurrentAgentCount = 1,
   progress,
   progressTotal,
   resultSummary,
@@ -99,6 +112,10 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   thinkThought,
 }) => {
   const { expandLevel } = useUIState();
+  // 终端高度决定子代理进度是展开活动明细还是压成一行（见 selectAgentProgressTier）。
+  // 用 Optional 版：高度只是排版提示，拿不到照样正确渲染（档位按"充裕"处理），
+  // 不该为此逼所有渲染 ToolMessage 的地方都套 TerminalProvider。
+  const terminalHeight = useTerminalDimensionsOptional()?.height;
   // 思考正文折叠档：与工具结果/命令输出共用同一套 ctrl+o 阶梯展开语义
   // （全展开档返回 undefined = 不截断）。
   const thinkMaxLines = useExpandedMaxLines(THINK_COLLAPSE_MAX_LINES);
@@ -223,8 +240,59 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
     </Box>
   ) : null;
 
+  // 子代理实时进度区：治"过程黑盒"（子代理跑 1m35s，主消息流一个字都没有）。
+  //
+  // 三档降级对标 cc tools/AgentTool/UI.tsx，但**不嵌套真工具卡片**——那需要把子代理的
+  // 每个 content block 永久累积进 messages（cc 的做法），而本项目的进度走轮末即清的
+  // 侧信道。档位判定与文案拼装都在 agent-progress-view.ts 的纯函数里（可单测），
+  // 这里只负责把结果摆成 Ink 元素。
+  const hasAgentProgress = status === "executing" && !!agentProgress;
+  const agentTier = hasAgentProgress
+    ? selectAgentProgressTier(
+        concurrentAgentCount,
+        agentProgress!.recentActivities.length,
+        terminalHeight,
+      )
+    : null;
+  // 统计行不带任务描述：header 已是 `⏺ sub_agent 核查空壳清理`，进度行再带一遍就是
+  // 同一段文字在相邻两行重复（src/ui/CLAUDE.md 禁止）。cc 那边需要带描述是因为它把
+  // 多代理进度汇总在一处渲染，本项目每个子代理有自己的卡片，不存在"分不清谁是谁"。
+  const agentStatsLine = hasAgentProgress
+    ? formatAgentProgressLine(
+        {
+          agentType: agentProgress!.agentType,
+          toolUseCount: agentProgress!.toolUseCount,
+          tokenCount: agentProgress!.tokenCount,
+          elapsedMs: agentProgress!.elapsedMs,
+        },
+        formatLargeNumber,
+        formatDuration,
+      )
+    : "";
+  // detail 档：统计行 + 逐条最近活动；count / perAgent 档：只有统计行（一行）。
+  const agentProgressSection = hasAgentProgress ? (
+    <Box flexDirection="row">
+      <Box flexShrink={0}>
+        <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        <Text color={theme.text.secondary} dimColor wrap="truncate-end">
+          {agentStatsLine}
+        </Text>
+        {agentTier === "detail"
+          ? agentProgress!.recentActivities.map((act, i) => (
+              <Text key={i} color={theme.text.secondary} dimColor wrap="truncate-end">
+                {act}
+              </Text>
+            ))
+          : null}
+      </Box>
+    </Box>
+  ) : null;
+
   // 无结果、无 shell 命令、无实时输出：紧凑模式只有 header
-  if (!shouldExpandContent && !hasShellCommand) {
+  // 子代理进度也算"有内容"——否则执行中的 sub_agent 又退回只有一行 header 的黑盒。
+  if (!shouldExpandContent && !hasShellCommand && !hasAgentProgress) {
     return header;
   }
 
@@ -234,6 +302,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       {header}
       {shellCommandSection}
       {shellLiveOutputSection}
+      {agentProgressSection}
       {shouldExpandContent && (
         <Box flexDirection="row">
           <Box flexShrink={0}>

@@ -34,7 +34,7 @@ import { runAgentLoop } from "./agentic-loop.ts";
 import { JitContextManager } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
-import { describeToolActivity } from "./progress.ts";
+import { describeToolActivity, pushRecentActivity } from "./progress.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -145,6 +145,15 @@ export interface SubAgentTask {
    *  drain 出来，实现真正的双向通信。与 message-queue 的 drainAgentMessages 并列消费，
    *  互不干扰。缺省时不影响任何行为（向后兼容）。 */
   drainInbox?: () => string[];
+  /** 进度回灌通道（内部使用）：每轮把进度快照推给**父工具卡片**，治"过程黑盒"。
+   *
+   *  与 `updateAgentProgress`（写 registry → 后台任务面板）并列而非替代，两者受众不同：
+   *  - 这条 → 前台 `sub_agent` 的工具卡片下方（用户正在看的地方）；
+   *  - registry → 后台任务面板（前台子代理经 `_showInPanel:false` 已不上面板）。
+   *
+   *  由 tool.ts runSync 把工具执行器的 onProgress 接进来；后台/swarm/workflow 路径不传，
+   *  行为与改造前完全一致。 */
+  _onProgress?: (snapshot: import("./progress.ts").AgentProgressSnapshot) => void;
 }
 
 /** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
@@ -824,7 +833,9 @@ export class SubAgent {
       base_url: baseURL,
     };
 
-    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal, taskId);
+    // C4b：spawn 路径同样要把进度回灌父工具卡片，不只是进程内路径。task._onProgress
+    // 由 tool.ts runSync 接进来（前台子代理），后台/swarm/workflow 路径不传，穿透即可。
+    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal, taskId, task._onProgress);
   }
 
   /** Spawn 自定义子代理 */
@@ -870,10 +881,16 @@ export class SubAgent {
     tools: ToolRegistry,
     signal?: AbortSignal,
     taskId?: string,
+    onProgress?: (snapshot: import("./progress.ts").AgentProgressSnapshot) => void,
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
     const timeout = initMsg.timeout;
+    // 最近活动滑动窗口（跨轮累积，容量 MAX_RECENT_ACTIVITIES）：子进程每轮只报
+    // **单条** lastActivity（headless.ts 的 progress 消息），窗口状态必须在父进程这层攒。
+    // 与进程内路径（executeInner 的 onTurnEnd）同一形态，只是数据来源是跨进程消息而非
+    // 直接的 info.tools。
+    let recentActivities: string[] = [];
 
     // 构建启动参数——使用绝对路径，避免用户项目 cwd 下找不到 headless.ts
     const spawnArgs = ["run", HEADLESS_ENTRY];
@@ -991,16 +1008,35 @@ export class SubAgent {
               }
 
               case "progress":
-                // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案，
-                // 写进任务注册表 → 触发 onTaskChanged → TUI 面板刷新。
-                if (taskId && (msg.tokenCount != null || msg.toolUseCount != null)) {
-                  updateAgentProgress(taskId, {
+                // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案。
+                // 两路消费，同一份窗口数据：
+                //   - registry（updateAgentProgress）→ 后台任务面板；
+                //   - onProgress（C4b）→ 前台 sub_agent 自己的工具卡片，治过程黑盒。
+                if (msg.tokenCount != null || msg.toolUseCount != null) {
+                  if (msg.lastActivity) {
+                    recentActivities = pushRecentActivity(recentActivities, msg.lastActivity);
+                  }
+                  if (taskId) {
+                    updateAgentProgress(taskId, {
+                      toolUseCount: msg.toolUseCount ?? 0,
+                      tokenCount: msg.tokenCount ?? 0,
+                      lastActivity: msg.lastActivity
+                        ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
+                        : undefined,
+                      // 与卡片同一份窗口（此前恒 []，面板 verbose 分支形同虚设）
+                      recentActivities: recentActivities.map((d) => ({
+                        toolName: "",
+                        input: {},
+                        activityDescription: d,
+                      })),
+                    });
+                  }
+                  onProgress?.({
+                    agentType: initMsg.task_type,
                     toolUseCount: msg.toolUseCount ?? 0,
                     tokenCount: msg.tokenCount ?? 0,
-                    lastActivity: msg.lastActivity
-                      ? { toolName: "", input: {}, activityDescription: msg.lastActivity }
-                      : undefined,
-                    recentActivities: [],
+                    elapsedMs: Date.now() - startTime,
+                    recentActivities,
                   });
                 }
                 break;
@@ -1277,6 +1313,9 @@ export class SubAgent {
       let lastTextOutput = "";
       let toolUseCount = 0;
       let tokenCount = 0;
+      /** 最近活动滑动窗口（跨轮累积，容量 MAX_RECENT_ACTIVITIES）。
+       *  onTurnEnd 拿到的 info.tools 只是**本轮**的工具，所以窗口状态必须挂在这一层。 */
+      let recentActivities: string[] = [];
 
       // M4(Dynamic Workflows): effort → provider reasoningEffort（仅 high|max 两档）。
       // low/medium/high → "high"；xhigh/max → "max"（对齐 SendParams.reasoningEffort 契约）。
@@ -1389,6 +1428,28 @@ export class SubAgent {
             appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.textOutput}\n`);
           }
 
+          // 最近活动滑动窗口：info.tools 是**本轮**的工具（agentic-loop.ts:710 的
+          // turnToolInfo），不是累计——所以窗口必须在这里跨轮累积，不能每轮拿 info.tools
+          // 当全量。此前 recentActivities 恒传 `[]`（死字段，方案附2），面板的 verbose
+          // 展开分支因此永远走不到。
+          for (const t of info.tools) {
+            recentActivities = pushRecentActivity(
+              recentActivities,
+              describeToolActivity(t.name, t.input),
+            );
+          }
+
+          // 进度回灌父工具卡片（治问题三"过程黑盒"）：与下面写 registry 并列，受众不同
+          // （见 SubAgentTask._onProgress 注释）。每轮一次，不额外节流——轮次本身就是
+          // 天然的时间闸门（一轮至少一次 LLM 往返），比按毫秒节流更贴合"有实质进展才刷新"。
+          task._onProgress?.({
+            agentType: task.type,
+            toolUseCount,
+            tokenCount,
+            elapsedMs: Date.now() - startTime,
+            recentActivities,
+          });
+
           // 更新任务进度（供 pollTasks / TUI 实时读取）。每轮都更新——
           // 即便本轮无工具调用，token 与耗时也在推进，面板需要随之刷新。
           if (taskId) {
@@ -1401,7 +1462,12 @@ export class SubAgent {
                 input: lastToolEntry.input,
                 activityDescription: describeToolActivity(lastToolEntry.name, lastToolEntry.input),
               } : undefined,
-              recentActivities: [],
+              // 与卡片同一份窗口数据（此前恒 []，面板 verbose 分支形同虚设）
+              recentActivities: recentActivities.map((d) => ({
+                toolName: "",
+                input: {},
+                activityDescription: d,
+              })),
             });
 
             // M5 opt-in: 周期性进度摘要（每 5 轮生成一次）

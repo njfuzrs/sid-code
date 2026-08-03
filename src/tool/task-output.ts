@@ -11,7 +11,7 @@ import {
   getTaskOutputDelta,
   isShellTask,
   isAgentTask,
-  EVICT_GRACE_MS,
+  graceDeadlineFor,
 } from "../task/index.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -98,8 +98,13 @@ export class TaskOutputTool implements Tool {
     // 60s 后必被驱逐、无内存泄漏。
     // 说明：这是消除罕见边界竞态的廉价保险（3 行、无副作用），非业界通用做法——
     // claude-code 靠 UI holding / 用户 retain 决定生命周期，并不做「读一次续期」。
+    //
+    // 续期只延长**任务本体**的存活窗口，**不清 dismissed**：用户手动从面板划掉的条目，
+    // 不能因为模型顺手读了一次输出就重新冒回面板上——那正是"划不掉"的另一种形态。
+    // 划掉与存活是两件事（见 types.ts 的 dismissed 说明）：面板不显示它，task_output 照常读得到。
+    // 缓冲期按终态分档（killed 3s / 其余 30s），与终态写入点同口径，不再硬编码单一常量。
     if (isTerminalStatus(currentTask.status)) {
-      updateTask(currentTask.id, (t) => ({ ...t, evictAfter: Date.now() + EVICT_GRACE_MS }));
+      updateTask(currentTask.id, (t) => ({ ...t, evictAfter: graceDeadlineFor(t.status) }));
     }
 
     // 增量读取：从上次已读的 outputOffset 起读，最多 MAX_OUTPUT_BYTES 字节，

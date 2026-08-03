@@ -13,7 +13,7 @@ import {
   type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
+import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 
@@ -91,7 +91,7 @@ export async function completeWorkflowTask(
     status: "completed",
     result,
     endTime: Date.now(),
-    evictAfter: Date.now() + EVICT_GRACE_MS,
+    evictAfter: graceDeadlineFor("completed"),
     notified: true,
   }));
 
@@ -119,7 +119,7 @@ export async function failWorkflowTask(taskId: string, error: string): Promise<v
     status: "failed",
     error,
     endTime: Date.now(),
-    evictAfter: Date.now() + EVICT_GRACE_MS,
+    evictAfter: graceDeadlineFor("failed"),
     notified: true,
   }));
 
@@ -147,7 +147,8 @@ export function killWorkflowTask(taskId: string): boolean {
     ...t,
     status: "killed",
     endTime: Date.now(),
-    evictAfter: Date.now() + EVICT_GRACE_MS,
+    // killed 走短档（3s，对齐 CC STOPPED_DISPLAY_MS）。见 graceDeadlineFor。
+    evictAfter: graceDeadlineFor("killed"),
     notified: true,
   }));
 

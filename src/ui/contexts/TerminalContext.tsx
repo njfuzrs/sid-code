@@ -48,6 +48,18 @@ export function useTerminalDimensions(): TerminalDimensions {
   return useTerminalContext().dimensions;
 }
 
+/**
+ * 便捷 hook：获取终端尺寸，**无 Provider 时返回 undefined 而非抛错**。
+ *
+ * 给"尺寸只是优化输入、拿不到也能正确渲染"的消费方用（如子代理进度的档位降级：
+ * 高度未知就按充裕处理）。这类组件不该因为一个可选的排版提示就要求调用方套
+ * TerminalProvider——组件级测试直接渲染子树是常态（tests/ui/components/ 全都这么写），
+ * 用会抛错的 useTerminalDimensions 会把它们全部打红。
+ */
+export function useTerminalDimensionsOptional(): TerminalDimensions | undefined {
+  return useContext(TerminalCtx)?.dimensions;
+}
+
 export function TerminalProvider({ children }: { children: React.ReactNode }) {
   const { stdin } = useStdin();
   const { stdout } = useStdout();

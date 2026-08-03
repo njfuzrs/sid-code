@@ -5,8 +5,10 @@
 
 import {
   type TaskState,
+  type TaskStatus,
   isTerminalStatus,
   isPanelTask,
+  isPanelVisible,
   isAgentTask,
 } from "./types.ts";
 import { getTaskOutputTail, evictTaskOutput } from "./disk-output.ts";
@@ -70,10 +72,34 @@ export function getAllTasks(): TaskState[] {
   return [...tasks.values()];
 }
 
-/** 驱逐缓冲期（对标 CC PANEL_GRACE_MS = 30_000）。
+/** 驱逐缓冲期（对齐 CC `framework.ts:28` PANEL_GRACE_MS = 30_000）。
  *  任务完成后必须等待此时长才能被驱逐，给主循环模型留足通过 task_output 查询结果的窗口。
- *  设为 60s（比 CC 的 30s 更保守），覆盖模型多轮决策 + 网络延迟场景。 */
-const EVICT_GRACE_MS = 60_000;
+ *
+ *  曾设为 60s，注释自称"比 CC 更保守"——但保守参数不是免费的，代价是用户反复报
+ *  「后台任务面板不立即消失」（同一现象三次复发）。缓冲期本就有 task_output 的
+ *  访问续期（`tool/task-output.ts` 的 LRU touch）兜底：模型真在轮询就会不断顺延，
+ *  加倍基础窗口对"模型多轮决策"没有额外收益，只是让没人再看的条目多驻留 30s。 */
+const EVICT_GRACE_MS = 30_000;
+
+/** 被终止（killed）任务的驻留时长（对齐 CC `framework.ts:25` STOPPED_DISPLAY_MS = 3_000）。
+ *
+ *  为什么 killed 要单独一档、不跟 completed/failed 共用 30s：kill 是**用户自己刚下的指令**，
+ *  他已经知道结果，条目留着只是确认"确实停了"，3s 足够；completed/failed 是任务自己到达的
+ *  终态，用户可能没在看屏幕，需要更长窗口回看。`TaskRow` 早已给四种终态不同字形/配色
+ *  （运行◐ / 完成● / 失败✘ / 终止⊘），驻留时长却一刀切 30s —— 视觉分级与生命周期分级
+ *  不一致，这里补齐。 */
+const KILLED_DISPLAY_MS = 3_000;
+
+/**
+ * 按终态选驱逐缓冲期：killed 用 3s，其余（completed/failed）用 30s。
+ *
+ * 所有设置 `evictAfter` 的终态写入点都该走这个函数，别在各自的 `updateTask` 里
+ * 直接写 `Date.now() + EVICT_GRACE_MS`——那正是"字形上区分了四态、时长上没区分"的来源，
+ * 且散落 8 处（agent / shell / workflow × complete/fail/kill），漏一处就是行为漂移。
+ */
+export function graceDeadlineFor(status: TaskStatus): number {
+  return Date.now() + (status === "killed" ? KILLED_DISPLAY_MS : EVICT_GRACE_MS);
+}
 
 /** 驱逐已完成且已通知且缓冲期已过的任务。
  *  终止态（completed/failed/killed）任务一旦其完成通知已入队（notified=true）
@@ -104,7 +130,81 @@ export function evictTerminalTasks(force = false): void {
 }
 
 /** 获取驱逐缓冲期常量（供外部使用） */
-export { EVICT_GRACE_MS };
+export { EVICT_GRACE_MS, KILLED_DISPLAY_MS };
+
+/**
+ * 手动把一条**终态**任务从面板划掉（Ctrl+X），面板立即不再显示它。
+ *
+ * 对标 cc `stopOrDismissAgent`（`state/teammateViewHelpers.ts:116`）的 dismiss 分支。
+ *
+ * 三条设计约束：
+ * 1. **只对终态任务生效**。运行中任务的 Ctrl+X 语义是"终止"（由调用方 App.tsx 分派到
+ *    kill，与 cc 的 context-sensitive x 一致），不是"划掉"——把还在跑的任务从面板划掉
+ *    会造成"任务不见了却还在烧 token"的黑盒，比不消失更糟。
+ * 2. **不立刻删任务**，只置 `dismissed` 让面板不显示。任务本体与磁盘输出留给正常驱逐路径
+ *    （`evictTerminalTasks`）按缓冲期回收——用户划掉的是"屏幕上这一行"，不是
+ *    "task_output 还能不能查到它"。主循环模型可能正要读这个 taskId 的结果。
+ * 3. **幂等**：已 dismissed 再调用不重复 notify（`updateTask` 靠引用相等短路）。
+ *
+ * @returns 是否真的划掉了（非终态 / 任务不存在 / 已划掉 → false，调用方可据此决定是否提示）
+ */
+export function dismissTask(taskId: string): boolean {
+  const task = tasks.get(taskId);
+  if (!task) return false;
+  if (!isTerminalStatus(task.status)) return false;
+  if (task.dismissed) return false;
+  updateTask(taskId, (t) => ({ ...t, dismissed: true }));
+  return true;
+}
+
+/**
+ * 把当前面板上**所有终态任务**一次划掉，返回划掉的条数。
+ *
+ * 这是 Ctrl+X 无选中态时的批量出口：本项目的面板是**只读列表**（没有 cc 那套
+ * 面板内光标 / `viewingAgentTaskId` 选中态），逐条 dismiss 无从指定"哪一条"。
+ * 语义上等价于"这些我都看过了，清掉"——因此只清终态、绝不碰 running（约束 1 同款）。
+ */
+export function dismissTerminalTasks(): number {
+  let n = 0;
+  for (const [id, task] of tasks) {
+    if (isTerminalStatus(task.status) && !task.dismissed && isPanelTask(task)) {
+      updateTask(id, (t) => ({ ...t, dismissed: true }));
+      n++;
+    }
+  }
+  return n;
+}
+
+/** 面板当前是否有可划掉的终态条目（供 Ctrl+X 判断是否 no-op、放行给输入框）。
+ *  与 dismissTerminalTasks 同口径，否则会出现"提示划掉了 N 条、实际 0 条"的不一致。 */
+export function hasDismissableTasks(): boolean {
+  for (const task of tasks.values()) {
+    if (isTerminalStatus(task.status) && !task.dismissed && isPanelTask(task)) return true;
+  }
+  return false;
+}
+
+/** 面板可见任务（经 isPanelVisible：后台任务 && 未被用户划掉）。TUI state-bridge 的唯一入口。 */
+export function getPanelVisibleTasks(): TaskState[] {
+  return [...tasks.values()].filter(isPanelVisible);
+}
+
+/**
+ * registry 里是否还有**等待驱逐**的终态任务（供 TUI 的 1s 驱逐 tick 判断是否要开定时器）。
+ *
+ * 为什么不能用「面板上有没有终态条目」来判断（这曾是个真实的资源泄漏）：
+ * 被 Ctrl+X 划掉的任务立即离开面板，但**仍在 registry 里**等缓冲期到点回收。若定时器的
+ * 开关条件读的是面板列表，划完最后一条 → 面板空 → 定时器停 → 这些任务的 registry 条目
+ * 与磁盘 `.output` 文件再没人回收，直到会话结束。所以开关必须问 registry，不是问 UI。
+ *
+ * 同理也包含 dismissed 任务：它们照样要被 evictTerminalTasks 清掉，只是用户看不见了。
+ */
+export function hasPendingEviction(): boolean {
+  for (const task of tasks.values()) {
+    if (isTerminalStatus(task.status) && task.notified) return true;
+  }
+  return false;
+}
 
 /** 清理所有任务（会话结束时调用）。
  *  连带清 outputs 内存条目 + 磁盘 .output 文件，并通知监听器刷新面板——

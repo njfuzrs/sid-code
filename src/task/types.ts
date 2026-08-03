@@ -61,6 +61,20 @@ export interface TaskStateBase {
    *  evictTerminalTasks 只在 Date.now() > evictAfter 时才清除任务，
    *  给主循环模型留足窗口通过 task_output 再次查询结果。 */
   evictAfter?: number;
+  /**
+   * 用户已手动从面板划掉这条终态条目（Ctrl+X），面板**立即**不再显示它。
+   *
+   * 为什么要独立字段、而不是像 cc 那样把 `evictAfter` 设成 0 当哨兵
+   * （`teammateViewHelpers.ts:126` 的 `evictAfter === 0` + 面板过滤器 `evictAfter !== 0`）：
+   * cc 让一个字段背了三种语义（`undefined`=无期限 / `0`=立即隐藏 / 时间戳=到点隐藏），
+   * 读代码时 `evictAfter !== 0` 完全看不出是在判断"用户手动划掉了"。这里拆成显式布尔，
+   * 语义自明；`evictAfter` 回归单一含义"缓冲期截止时间戳"。
+   *
+   * 边界：这是**纯 UI 可见性**标记，只有面板消费它（见 `isPanelVisible`）。
+   * `bg_task_list` / `/ps` 仍照常报这条任务——用户把条目从面板划掉，不代表
+   * "这个任务不曾存在"，模型该查得到。
+   */
+  dismissed?: boolean;
 }
 
 /** Shell 任务状态 */
@@ -131,6 +145,22 @@ export type TaskState = LocalShellTaskState | LocalAgentTaskState | LocalWorkflo
  */
 export function isPanelTask(task: TaskState): boolean {
   return task.isBackgrounded === true;
+}
+
+/**
+ * 面板**当前该不该渲染**这条任务 = 是后台任务（`isPanelTask`）且用户没手动划掉它。
+ *
+ * 与 `isPanelTask` 的分工（两者都要，别合并成一个）：
+ * - `isPanelTask` 回答**归属**——"这是一个后台任务吗"。稳定属性，
+ *   `bg_task_list` / `/ps` / `<task-statuses>` / Ctrl+F 全都问这个，它们不关心用户划没划。
+ * - `isPanelVisible` 回答**此刻可见性**——只有 TUI 面板（state-bridge）问这个。
+ *
+ * 对标 cc `CoordinatorAgentStatus.tsx:32` 的 `isPanelAgentTask(t) && t.evictAfter !== 0`：
+ * 同样是"归属谓词 && 未被划掉"两段，只是把 cc 的 `evictAfter !== 0` 哨兵换成显式
+ * `!dismissed`（见 `TaskStateBase.dismissed` 的说明）。
+ */
+export function isPanelVisible(task: TaskState): boolean {
+  return isPanelTask(task) && task.dismissed !== true;
 }
 
 /** 类型守卫 */

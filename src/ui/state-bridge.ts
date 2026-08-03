@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getAllTasks, isPanelTask, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
+import { getPanelVisibleTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
@@ -37,12 +37,16 @@ export class StateBridge extends EventEmitter {
 
   /** 从 Task 注册表拉取最新任务列表并更新 TUI 状态。
    *
-   *  经 isPanelTask 单一闸门过滤（见 task/types.ts）：前台子代理已由 tool_result 渲染成
-   *  `⏺ sub_agent explore` 工具卡片，不能再上后台任务面板（否则同一子代理渲染两遍）。
-   *  这里是**渲染端兜底**——源头 sub-agent.ts 已标 isBackgrounded=false，但将来若新增一条
-   *  子代理注册路径又忘记标，这层过滤仍然拦得住。 */
+   *  经 isPanelVisible 过滤（见 task/types.ts）＝ 两段：
+   *  ① `isPanelTask`（后台任务闸门）：前台子代理已由 tool_result 渲染成
+   *     `⏺ sub_agent explore` 工具卡片，不能再上后台任务面板（否则同一子代理渲染两遍）。
+   *     这里是**渲染端兜底**——源头 sub-agent.ts 已标 isBackgrounded=false，但将来若新增
+   *     一条子代理注册路径又忘记标，这层过滤仍然拦得住。
+   *  ② `!dismissed`（用户手动划掉）：Ctrl+X 划掉的终态条目立即从面板消失，
+   *     不必等驱逐缓冲期——这是"面板不立即消失"的手动出口。任务本体仍在 registry，
+   *     `bg_task_list` / `task_output` 照常查得到。 */
   updateTasks(): void {
-    const all = getAllTasks().filter(isPanelTask);
+    const all = getPanelVisibleTasks();
     const taskInfos: TaskDisplayInfo[] = all.map(t => {
       const info: TaskDisplayInfo = {
         id: t.id,

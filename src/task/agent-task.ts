@@ -10,7 +10,7 @@ import {
   type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask, EVICT_GRACE_MS } from "./registry.ts";
+import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import {
   enqueueTaskNotification,
@@ -98,7 +98,7 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult,
     status: "completed",
     result,
     endTime: Date.now(),
-    evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
+    evictAfter: graceDeadlineFor("completed"),  // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
   }));
 
@@ -140,7 +140,7 @@ export async function failAgentTask(taskId: string, error: string, notify: boole
     status: "failed",
     error,
     endTime: Date.now(),
-    evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
+    evictAfter: graceDeadlineFor("failed"),  // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
   }));
 
@@ -174,7 +174,9 @@ export function killAgentTask(taskId: string): void {
       ...t,
       status: "killed",
       endTime: Date.now(),
-      evictAfter: Date.now() + EVICT_GRACE_MS,  // 对标 CC: 60s 缓冲期后才允许驱逐
+      // killed 走短档（3s，对齐 CC STOPPED_DISPLAY_MS）：kill 是用户刚下的指令，
+      // 他已知结果，条目留 3s 确认"确实停了"即可，不必占 30s。见 graceDeadlineFor。
+      evictAfter: graceDeadlineFor("killed"),
       notified: true,
     };
   });

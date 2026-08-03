@@ -21,10 +21,12 @@
  * fix_type: behavior_change（视觉重构 + 实时性修复，§0.3）
  */
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
+import { useKeybindings } from "../contexts/KeybindingContext.tsx";
+import { shouldShowHint, markHintShown } from "../../config/app-config.ts";
 import type { TodoItem } from "../../tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
@@ -45,6 +47,11 @@ import {
   TASK_SPINNER_FRAMES,
   TASK_KILLED_MARK,
 } from "../constants/figures.ts";
+
+/** 「Ctrl+X 划掉已完成」提示的 hint 计数键（app-config 通用衰减计数）。 */
+const DISMISS_HINT_KEY = "taskPanelDismiss";
+/** 该提示的显示次数上限，超过后不再打扰（L4.C 渐进衰减，与 ErrorPanel/InputArea 同档）。 */
+const DISMISS_HINT_MAX_SHOWS = 3;
 
 interface TodoPanelProps {
   todos: TodoItem[];
@@ -268,6 +275,30 @@ export const TodoPanel = React.memo(function TodoPanel({
   const hasTodos = todos && todos.length > 0;
   // Ctrl+T 隐藏后台任务面板：任务仍在跑，只是不占屏。
   const hasTasks = !tasksHidden && tasks && tasks.length > 0;
+
+  // 「Ctrl+X 划掉已完成」提示的渐进衰减（L4.C）：新用户不知道有这个出口，
+  // 教 DISMISS_HINT_MAX_SHOWS 次就该收敛，否则每次任务跑完都唠叨一句。
+  // 计数在「面板从非全终态 → 全终态」的上升沿 +1（每批任务完成记一次，而非每帧），
+  // 用 ref 锁定本次形态防抖动——套路对齐 InputArea 的 queueHint / shellHint。
+  // 键位展示走 keybindings 运行时表，用户在 keybindings.json 重绑后此处同步更新。
+  const { bindingFor } = useKeybindings();
+  const dismissDisplay = bindingFor("app:dismissTasks")?.display ?? "Ctrl+X";
+  const allTerminalNow = hasTasks && tasks.every((t) => t.status !== "running");
+  const dismissHintRef = useRef(false);
+  const prevAllTerminalRef = useRef(false);
+  useEffect(() => {
+    if (!prevAllTerminalRef.current && allTerminalNow) {
+      dismissHintRef.current = shouldShowHint(DISMISS_HINT_KEY, DISMISS_HINT_MAX_SHOWS);
+      if (dismissHintRef.current) markHintShown(DISMISS_HINT_KEY);
+    } else if (!allTerminalNow) {
+      dismissHintRef.current = false;
+    }
+    prevAllTerminalRef.current = allTerminalNow;
+  }, [allTerminalNow]);
+  const showDismissHint = dismissHintRef.current;
+
+  // 提前 return 必须在所有 Hook 之后——否则 hasTasks=false 的帧会少调 Hook，
+  // 违反 React Hook 顺序规则（报 "Rendered fewer hooks than expected"）。
   if (!hasTodos && !hasTasks) return null;
 
   const compactMode = termWidth < 60 || maxDisplay === 0;
@@ -325,7 +356,13 @@ export const TodoPanel = React.memo(function TodoPanel({
   if (hasTasks) {
     const running = tasks.filter((t) => t.status === "running");
     const terminal = tasks.filter((t) => t.status !== "running");
-    const visibleTasks = [...running, ...terminal.slice(-3)];
+    // 终态只留最近 3 条 + 总渲染上限 5 条：面板是常驻区，不能被历史任务挤满。
+    // 但截断必须**可见**（本仓库「无静默截断」原则，L3.3 折叠规范）——此前两处 slice
+    // 都不给任何提示，用户看到的是"任务凭空少了"，与问题四「面板不消失」叠加后更困惑：
+    // 分不清一条任务是被驱逐了、被划掉了，还是仅仅被挤出可视窗口。
+    const windowed = [...running, ...terminal.slice(-3)];
+    const visibleTasks = windowed.slice(0, 5);
+    const hiddenTaskCount = tasks.length - visibleTasks.length;
 
     const allTerminal = running.length === 0 && tasks.length > 0;
 
@@ -341,11 +378,21 @@ export const TodoPanel = React.memo(function TodoPanel({
           {allTerminal && (
             <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>
           )}
+          {/* 截断提示：与任务清单区的 `…+N` 同格式，用户一眼看出"还有 N 条没显示" */}
+          {hiddenTaskCount > 0 && <Text dimColor>{`  …+${hiddenTaskCount}`}</Text>}
         </Box>
         {!compactMode &&
-          visibleTasks.slice(0, 5).map((task) => (
+          visibleTasks.map((task) => (
             <TaskRow key={task.id} task={task} maxContentLen={maxContentLen} />
           ))}
+        {/* 划掉提示（渐进衰减）：面板全是终态条目时，告知用户有手动出口，
+            不必干等驱逐缓冲期。只在 allTerminal 时提示——还有任务在跑时
+            Ctrl+X 也只清终态，但此刻用户的注意力在"还在跑的那条"上，提示是噪音。 */}
+        {!compactMode && allTerminal && showDismissHint && (
+          <Box marginTop={1}>
+            <Text dimColor>{`${dismissDisplay} 划掉已完成`}</Text>
+          </Box>
+        )}
       </Box>
     );
   }

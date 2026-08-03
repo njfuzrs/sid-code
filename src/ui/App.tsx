@@ -12,7 +12,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import useApp from "../ink/hooks/use-app.js";
 import inkInstances from "../ink/instances.js";
-import { killAllRunningTasks, hasRunningTasks } from "../task/index.ts";
+import { killAllRunningTasks, hasRunningTasks, dismissTerminalTasks, hasDismissableTasks, hasPendingEviction } from "../task/index.ts";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { AccessibilityProvider } from "./accessibility/AccessibilityContext.tsx";
@@ -494,7 +494,15 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // evictTerminalTasks()（非 force，尊重 60s 缓冲期），驱逐发生时 registry 的
   // notifyTaskChanged → bridge.updateTasks 自动刷新面板。无终止态任务时不启动定时器
   //（避免空转）。这样"缓冲期到点"与"面板消失"之间的延迟被压到 ≤1s，且不依赖主循环。
-  const hasTerminalTask = state.tasks.some(t => t.status !== "running");
+  //
+  // 开关条件问 **registry**（hasPendingEviction）而不是问面板列表（state.tasks）：
+  // Ctrl+X 划掉的任务立即离开面板，却仍在 registry 里等缓冲期回收。若按面板判断，
+  // 划完最后一条 → 面板空 → 定时器停 → 那些任务的 registry 条目与磁盘 .output
+  // 再没人回收，直到会话结束（资源泄漏）。这里读 state.tasks 只是为了**取重算时机**：
+  // 任何任务变更都会经 notifyTaskChanged → bridge.updateTasks 刷新 state.tasks，
+  // 从而让本次 render 重新问一次 registry。
+  void state.tasks;
+  const hasTerminalTask = hasPendingEviction();
   useEffect(() => {
     if (!hasTerminalTask) return;
     const timer = setInterval(() => {
@@ -722,6 +730,28 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   useEffect(() => () => {
     if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
   }, []);
+
+  // Ctrl+X 从面板划掉已完成的后台任务（对标 cc stopOrDismissAgent 的 dismiss 分支）：
+  // 缓冲期（30s）的意义是"任务刚完成后留个窗口让用户回看"，但用户已经看完时它就是纯等待。
+  // 这是问题四缺的**手动出口**——此前只有"等缓冲期到点"一条路，用户对面板毫无控制权。
+  //
+  // 三点设计取舍：
+  // ① 只清终态、不碰 running。把还在跑的任务从面板划掉 = "条目不见了却还在烧 token"的黑盒,
+  //    比不消失更糟。终止运行中任务的出口是 Ctrl+F（全部）或 task_stop（单个）。
+  // ② 无可划掉条目时 return false 放行给输入框（Ctrl+X 在 emacs 里是前缀键），
+  //    与 Ctrl+F / Ctrl+B 的上下文分层同款——全局任务键只在真有任务时抢占。
+  // ③ 不双击确认。dismiss 是纯 UI 操作、完全可逆意义上无损（任务本体与磁盘输出都还在，
+  //    bg_task_list / task_output 照常查得到），误触的代价仅是少看一眼；Ctrl+F 要确认是因为
+  //    它真的杀进程、不可逆。给可逆操作加确认只是徒增摩擦。
+  useKeypress(KeypressPriority.High, (key: Key) => {
+    const b = matchBinding(key);
+    if (b?.action !== "app:dismissTasks") return false;
+    if (!hasDismissableTasks()) return false;
+    const n = dismissTerminalTasks();
+    log.info("UI:APP", `Ctrl+X：已从面板划掉 ${n} 条已完成任务`);
+    showTransientMessage(`已划掉 ${n} 条已完成任务`, TransientMessageType.Info);
+    return true;
+  });
 
   // Ctrl+B 把当前前台执行转入后台（对标 cc）。tmux 下 Ctrl+B 是 prefix，可能吞首击——
   // 帮助文案已注明冲突。转移逻辑交 app.ts 的 onBackgroundCurrent（受主循环 detach 能力限制，

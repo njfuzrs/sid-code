@@ -144,6 +144,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         isError: t.resultDisplay?.isError,
         renderOutputAsMarkdown: t.renderOutputAsMarkdown,
         progressMessage: t.progressMessage,
+        // 子代理实时进度（仅 executing 态的 sub_agent 有值），治过程黑盒
+        agentProgress: t.agentProgress,
         resultSummary: t.resultSummary,
         // 结构化 diff + 文件名透传(否则在此拍扁丢失,UI 拿不到结构化 patch)
         structuredPatch: t.resultDisplay?.structuredPatch,

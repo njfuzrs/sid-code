@@ -13,6 +13,8 @@ import type {
 import type { Config } from "./config/config.ts";
 import type { Checker } from "./permission/types.ts";
 import { isBypassDisabledByPolicy, isModeDisabledByPolicy } from "./permission/mode-policy.ts";
+// 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
+import { routeToolProgress } from "./ui/tool-progress-route.ts";
 import type { ProviderRegistry } from "./llm/registry.ts";
 import type { MCPManager } from "./mcp/manager.ts";
 import type { PlanModeManager } from "./plan/state.ts";
@@ -3904,9 +3906,26 @@ export class App {
         const msg = typeof (event as any).message === "string"
           ? (event as any).message
           : (typeof (event as any).text === "string" ? (event as any).text : event.type);
-        const isShell = toolName === "bash" || toolName === "shell" || toolName === "execute_command";
-        if (isShell && this.liveToolProgressSink && typeof (event as any).text === "string") {
-          this.liveToolProgressSink(toolUseId, (event as any).text);
+        // 路由判定收在 ui/tool-progress-route.ts 的纯函数里（可单测）。
+        //
+        // 这里曾是一道 inline 的 `isShell` 白名单——只有 bash/shell/execute_command 的进度
+        // 能进工具卡片，子代理不在名单里 → 降级成状态栏 2s 一闪的提示 → 用户眼中就是
+        // "跑了 1m35s，屏幕上一个字都没有"（根治方案 §3.3）。病根不是漏了某个名字，而是
+        // **按工具名分派**：新增长跑工具必须记得回来登记，忘了就静默降级。改成按事件
+        // 类型分派后，工具自己声明产出什么进度，加新工具不需要动这里。
+        const route = routeToolProgress({
+          toolName,
+          eventType: event.type,
+          hasText: typeof (event as any).text === "string",
+          agentSinkReady: !!this.liveAgentProgressSink,
+          shellSinkReady: !!this.liveToolProgressSink,
+        });
+        if (route === "agentCard") {
+          this.liveAgentProgressSink!(toolUseId, event as any);
+          return;
+        }
+        if (route === "shellCard") {
+          this.liveToolProgressSink!(toolUseId, (event as any).text);
           return;
         }
         this.statusNotifier?.(`tool_progress_${toolUseId}`, `${toolName}: ${msg}`, 2000);
@@ -4262,6 +4281,20 @@ export class App {
    */
   private liveToolSettledSink:
     | ((toolUseId: string, settled: { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }) => void)
+    | null = null;
+
+  /**
+   * 子代理进度接收器（子代理每轮的快照 → 它自己的 `⏺ sub_agent` 工具卡片下方）。
+   *
+   * 与 liveToolProgressSink 并列而非复用：shell 的进度是**多行 stdout 尾部快照**（渲染成
+   * 灰色实时输出区），子代理的进度是**结构化统计 + 活动列表**（渲染成三档降级形态，
+   * 见 ui/agent-progress-view.ts）。塞进同一个 string 字段就得在渲染层反向解析，
+   * 那正是"两处口径漂移"的温床。
+   *
+   * TUI 未就绪（无头模式 / 子代理内部）时为 null，安全跳过——此时行为与改造前一致。
+   */
+  private liveAgentProgressSink:
+    | ((toolUseId: string, event: import("./agent/progress.ts").AgentProgressEvent) => void)
     | null = null;
 
   /**
@@ -5551,7 +5584,7 @@ export class App {
     // 实现，否则两套渲染的 diff 判定/摘要文案会不一致，卡片完成后又变一次。
     // injectSettledToolCalls / buildSettledToolCallIfReady 是那份实现的两个入口
     // （全量重建 / 单卡判定），逻辑在 history-adapter 里可被单测直接驱动。
-    const { messagesToHistoryItems, injectSettledToolCalls, buildSettledToolCallIfReady } =
+    const { messagesToHistoryItems, injectSettledToolCalls, buildSettledToolCallIfReady, injectAgentProgress } =
       await import("./ui/history-adapter.ts");
     // ToolCallStatus 是运行时枚举（非纯类型），实时进度注入需按值比较 Executing 态，故动态引入。
     const { ToolCallStatus } = await import("./ui/types.ts");
@@ -5592,6 +5625,15 @@ export class App {
     //     所以不存在"增量卡"与"最终卡"两套渲染导致的视觉跳变。
     const liveToolSettled = new Map<string, { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }>();
 
+    // ── 子代理进度侧信道（治问题三：过程黑盒）──
+    //
+    // 键：`sub_agent` 工具自己的 tool_use_id；值：该子代理最近一次的进度快照。
+    // 与 liveToolProgress 同构（同一套 inject + 轻量重渲），区别只在值是结构化快照
+    // 而非文本，渲染时按"并行几个 agent + 终端多高"选呈现档位。
+    // 生命周期同样挂轮末 clear，不跨轮累积（这是相对 cc 的结构优势，见
+    // ui/agent-progress-view.ts 头部注释）。
+    const liveAgentProgress = new Map<string, import("./agent/progress.ts").AgentProgressEvent>();
+
     /**
      * 把侧信道里已完成的工具结果注入到仍是 executing 态的工具项，就地翻成 success/error。
      *
@@ -5620,6 +5662,19 @@ export class App {
           if (progress) tool.progressMessage = progress;
         }
       }
+    };
+
+    /**
+     * 把侧信道里的子代理进度注入 executing 态的 `sub_agent` 工具项。
+     *
+     * 与 injectLiveToolProgress 同一形态（只改 executing 项、就地改刚 new 出来的 item），
+     * 但写的是 agentProgress 结构化字段。判定收在 injectAgentProgress 纯函数里，与轻量
+     * 重渲路径共用——两处各写一遍就是 buildSettledToolCallIfReady 那次教训的复刻。
+     */
+    const injectLiveAgentProgress = (
+      historyItems: import("./ui/types.ts").HistoryItem[],
+    ): void => {
+      injectAgentProgress(historyItems, liveAgentProgress);
     };
 
     /**
@@ -5654,6 +5709,13 @@ export class App {
           if (settledCall) {
             groupChanged = true;
             return settledCall;
+          }
+          // 子代理进度：与 shell 的文本进度并列（互斥——一个工具不可能同时是两者）。
+          // 比引用而非深比：sink 每轮写入的是全新对象，引用相同即"这一帧没新进度"。
+          const agentProgress = liveAgentProgress.get(tool.callId);
+          if (agentProgress && agentProgress !== tool.agentProgress) {
+            groupChanged = true;
+            return { ...tool, agentProgress };
           }
           const progress = liveToolProgress.get(tool.callId);
           if (progress === undefined || progress === tool.progressMessage) return tool;
@@ -5691,6 +5753,9 @@ export class App {
       // 会被贴到刚翻好的完成态卡片上。
       injectLiveToolSettled(historyItems);
       injectLiveToolProgress(historyItems);
+      // 子代理进度同理排在 settled 之后：已完成的 sub_agent 卡片该显示真实结果，
+      // 不该再挂"7 工具 · 12.4k token"这种进行中的语言。
+      injectLiveAgentProgress(historyItems);
 
       lastSyncedCount = allMsgs.length;
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
@@ -5740,7 +5805,34 @@ export class App {
       liveToolSettled.set(toolUseId, settled);
       // 该工具已完成，它的中途进度文本就是噪音，顺手清掉，避免轮末前一直挂着。
       liveToolProgress.delete(toolUseId);
+      // 子代理同理：sub_agent 一 settle，"7 工具 · 12.4k token · 22s" 就该让位给
+      // `<subagent-result>` 真实结论。注入函数虽只认 executing 态（留着也不会显示），
+      // 但这里清掉是与 shell 对称的显式收尾——两个侧信道对"工具完成"的反应必须一致，
+      // 否则将来谁改了其中一条，另一条就成了静默的例外。
+      liveAgentProgress.delete(toolUseId);
       if (!refreshLiveProgressInPlace()) syncDisplay({});
+    };
+
+    // ── 子代理进度接收器（治问题三：过程黑盒）──
+    //
+    // 每个前台子代理每轮回灌一次快照（见 agent/sub-agent.ts onTurnEnd），写侧信道 + 重渲。
+    //
+    // **按帧合并**（相对 cc 的改进）：cc 那边子代理的每个 content block 都直接触发一次
+    // setState，N 个并行子代理同时推进就是 N 次重渲。这里把同一 tick 内的多次写入合并成
+    // 一帧——并行 5 个 explore 时重渲次数从 5 降到 1。
+    //
+    // 为什么不用毫秒节流（如 shell 那样的 120ms）：进度回灌本就以**轮次**为闸门（一轮至少
+    // 一次 LLM 往返，秒级），再叠时间节流只会平白增加延迟；真正要治的是"同一瞬间多个
+    // agent 各推一次"这种**同帧扇入**，microtask 合并恰好只治这个，不引入任何额外延迟。
+    let agentProgressFrameScheduled = false;
+    this.liveAgentProgressSink = (toolUseId, event) => {
+      liveAgentProgress.set(toolUseId, event);
+      if (agentProgressFrameScheduled) return; // 本帧已排重渲，合并进去
+      agentProgressFrameScheduled = true;
+      queueMicrotask(() => {
+        agentProgressFrameScheduled = false;
+        if (!refreshLiveProgressInPlace()) syncDisplay({});
+      });
     };
 
     /** 重建（/compact 后消息被压缩，需要完整重建） */
@@ -5755,6 +5847,8 @@ export class App {
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
       injectLiveToolSettled(historyItems);
       injectLiveToolProgress(historyItems);
+      // 与 syncDisplay 同一组注入：漏了这里，/compact 之后仍在跑的子代理进度会凭空消失。
+      injectLiveAgentProgress(historyItems);
       updateState({ messages: allMsgs, displayItems, historyItems, ...extraPatch });
       // 每次重建时刷新后台任务面板
       bridge.updateTasks();
@@ -6329,6 +6423,11 @@ export class App {
       // messagesToHistoryItems + buildCompletedToolCall）渲染出的卡片与侧信道注入的完全一致，
       // 条目已无作用。必须清——否则下一轮若出现相同 tool_use_id（重试场景）会命中陈旧结果。
       liveToolSettled.clear();
+      // 子代理进度侧信道同批清空。这是相对 cc 的结构优势：cc 把子代理的每个 content block
+      // 作为独立消息永久累积（它的 UI 靠那条 trail 重建），这里进度只活在当轮侧信道里，
+      // 轮末即清、零累积。已完成的 sub_agent 卡片本就不再被注入（只注 executing 态），
+      // 此处仅回收内存。
+      liveAgentProgress.clear();
 
       // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
       this.busy = false;

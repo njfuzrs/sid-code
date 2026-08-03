@@ -354,7 +354,11 @@ ${typeLines}
     return z.toJSONSchema(subAgentSchema()) as Record<string, unknown>;
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(
+    input: unknown,
+    signal?: AbortSignal,
+    onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void,
+  ): Promise<ToolResult> {
     const params = input as {
       type: string;
       description: string;
@@ -431,8 +435,9 @@ ${typeLines}
       return this.runAsync(params, signal);
     }
 
-    // 同步执行模式
-    return this.runSync(params, signal);
+    // 同步执行模式。onProgress 只给这条路径：后台子代理的可见性靠任务面板
+    // （它有自己的面板行），前台子代理的工具卡片才是用户唯一的观察窗口。
+    return this.runSync(params, signal, onProgress);
   }
 
   /**
@@ -489,7 +494,7 @@ ${typeLines}
     isolation?: "worktree";
     model?: string;
     cwd?: string;
-  }, signal?: AbortSignal): Promise<ToolResult> {
+  }, signal?: AbortSignal, onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void): Promise<ToolResult> {
     const log = getLogger();
 
     // 并发控制（G1/G5 修复）：超上限时排队等待 slot 而非拒绝；占位在 worktree 创建等
@@ -567,6 +572,15 @@ ${typeLines}
           // 两遍（用户报的问题一：工具卡片与面板 `◓ [AG explore]` 完全重合）。
           // 仅摘可见性，taskId / 磁盘输出 / task_output 查询不受影响。
           _showInPanel: false,
+          // 治问题三（过程黑盒）：把子代理每轮的进度快照经工具 onProgress 通道回灌到
+          // **本工具自己的卡片**下方。问题一摘掉面板行之后，这里是前台子代理唯一的
+          // 实时可见性——不接就等于用户在这 1m35s 里什么都看不到。
+          //
+          // 包一层 type 标签而不是直接透传：onProgress 是所有工具共用的通道（bash 发
+          // {type:"output"}），app.ts 侧靠 type 分辨该走哪条渲染路径，不靠工具名猜。
+          _onProgress: onProgress
+            ? (snapshot) => onProgress({ type: "agent_progress", ...snapshot })
+            : undefined,
         },
         signal,
       );

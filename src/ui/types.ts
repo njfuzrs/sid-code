@@ -77,6 +77,17 @@ export interface IndividualToolCallDisplay {
   renderOutputAsMarkdown?: boolean;
   /** 进度消息（MCP 工具） */
   progressMessage?: string;
+  /**
+   * 子代理实时进度（仅执行中的 `sub_agent` 工具卡片有值）。
+   *
+   * 单独一个字段而不复用 progressMessage：后者是 shell 的多行 stdout 尾部快照（纯文本），
+   * 这里是结构化统计 + 活动列表，渲染成三档降级形态（见 ui/agent-progress-view.ts）。
+   * 塞进同一个 string 就得在渲染层反向解析文本，那是口径漂移的温床。
+   *
+   * 由 app.ts 的 liveAgentProgress 侧信道注入，轮末随侧信道 clear 退场——工具一旦完成，
+   * 权威路径渲染的完成态卡片不带此字段，进度自然让位给真实结果。
+   */
+  agentProgress?: import("../agent/progress.ts").AgentProgressSnapshot;
   /** 结果摘要（一行文字，如 "862 字符"、"替换完成"） */
   resultSummary?: string;
   /** 工具执行耗时（毫秒），完成态时由后端填入。缺省时不显示 */

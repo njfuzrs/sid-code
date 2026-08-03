@@ -17,6 +17,7 @@ import {
   registerTask,
   getTask,
   clearAllTasks,
+  EVICT_GRACE_MS,
 } from "../../src/task/index.ts";
 import { TaskOutputTool } from "../../src/tool/task-output.ts";
 import type { LocalShellTaskState } from "../../src/task/types.ts";
@@ -67,9 +68,12 @@ describe("TaskOutputTool 访问续期（evictAfter touch）", () => {
 
     const task = getTask("done");
     expect(task).toBeDefined();
-    // 续期后 evictAfter 应被推到远未来（约 now + 60s），远大于原来的 near-expiry
+    // 续期后 evictAfter 应被推到远未来（约 now + EVICT_GRACE_MS），远大于原来的 near-expiry。
+    // 断言绑常量而非硬编码毫秒数：缓冲期时长是会被调的产品参数（2026-08-03 由 60s 收到
+    // 30s 对齐 CC PANEL_GRACE_MS，见 tests/task/panel-dismiss.test.ts），本测试要看住的是
+    // "续期把窗口推满一个完整缓冲期"这个行为，不是那个具体数字。
     expect(task!.evictAfter!).toBeGreaterThan(nearExpiry);
-    expect(task!.evictAfter!).toBeGreaterThanOrEqual(before + 59_000);
+    expect(task!.evictAfter!).toBeGreaterThanOrEqual(before + EVICT_GRACE_MS - 1_000);
   });
 
   test("多次读取幂等续期：evictAfter 单调前进", async () => {

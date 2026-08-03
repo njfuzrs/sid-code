@@ -27,6 +27,8 @@ export interface ToolCallDisplay {
   renderOutputAsMarkdown?: boolean;
   /** MCP 进度消息 */
   progressMessage?: string;
+  /** 子代理实时进度（仅执行中的 sub_agent 有值） */
+  agentProgress?: import("../../../agent/progress.ts").AgentProgressSnapshot;
   /** MCP 进度值 */
   progress?: number;
   /** MCP 进度总量 */
@@ -76,6 +78,11 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
 
   if (visibleTools.length === 0) return null;
 
+  // 本组内**同时在跑**的子代理数。同批 fan-out 的 sub_agent 天然落在同一个 tool_group
+  // （同一条 assistant 消息里的多个 tool_use），所以组内计数就是并行度，无需外部传入。
+  // 决定呈现档位：1 个 → 展开活动明细；多个 → 每 agent 一行（见 agent-progress-view.ts）。
+  const concurrentAgentCount = visibleTools.filter((t) => !!t.agentProgress).length;
+
   const contentWidth = terminalWidth - TOOL_MESSAGE_HORIZONTAL_MARGIN;
 
   return (
@@ -115,6 +122,11 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             structuredPatch={tool.structuredPatch}
             renderOutputAsMarkdown={tool.renderOutputAsMarkdown}
             progressMessage={tool.progressMessage}
+            agentProgress={tool.agentProgress}
+            // 并行子代理数从**本组**统计：同批 fan-out 的 sub_agent 天然在同一个
+            // tool_group（同一条 assistant 消息里的多个 tool_use）。据此选呈现档位——
+            // 1 个就展开活动明细，多个就每 agent 压成一行（见 agent-progress-view.ts）。
+            concurrentAgentCount={concurrentAgentCount}
             progress={tool.progress}
             progressTotal={tool.progressTotal}
             resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}

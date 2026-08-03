@@ -53,6 +53,11 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
   { action: "app:clearScreen",     stroke: { ctrl: true, name: "l" }, display: "Ctrl+L",     description: "清屏（保留历史）",   showInHelp: true },
   { action: "app:toggleTaskPanel", stroke: { ctrl: true, name: "t" }, display: "Ctrl+T",     description: "切换后台任务面板",   showInHelp: true },
   { action: "app:killAllTasks",    stroke: { ctrl: true, name: "f" }, display: "Ctrl+F",     description: "终止全部后台任务（双击确认）", showInHelp: true },
+  // 对标 cc 的 context-sensitive x（stopOrDismissAgent）：面板有已完成条目时按它立即划掉，
+  // 不必等驱逐缓冲期到点。只清终态、绝不碰 running——把还在跑的任务从面板划掉会造成
+  // "条目不见了却还在烧 token"的黑盒（终止运行中任务的出口是 Ctrl+F / ESC）。
+  // 无可划掉条目时不抢占按键，放行给输入框（同 Ctrl+F / Ctrl+B 的上下文分层）。
+  { action: "app:dismissTasks",    stroke: { ctrl: true, name: "x" }, display: "Ctrl+X",     description: "从面板划掉已完成的后台任务", showInHelp: true },
   { action: "app:backgroundTask",  stroke: { ctrl: true, name: "b" }, display: "Ctrl+B",     description: "转后台（tmux 下与 prefix 冲突）", showInHelp: true },
   { action: "app:toggleHeight",    stroke: { ctrl: true, name: "o" }, display: "Ctrl+O",     description: "展开/收起折叠内容（工具结果 + 思考）", showInHelp: true },
   { action: "input:historyUpDown", stroke: { name: "up" },           display: "↑/↓",         description: "输入历史",           showInHelp: true },
