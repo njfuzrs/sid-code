@@ -183,6 +183,7 @@ export async function findRelevantMemories(
 export function makeSideQuery(
   provider: { sendMessageStream: (params: any, signal?: AbortSignal) => AsyncIterable<any> },
   model: string,
+  availability?: import("../llm/availability.ts").ModelAvailabilityService,
 ): SideQueryFn {
   return async ({ system, user, maxTokens, signal }) => {
     // T3.4：记忆召回是轻量初筛（≤256 tokens），15s 硬超时足够。超时后 throw
@@ -194,7 +195,11 @@ export function makeSideQuery(
       "memory-recall",
       RECALL_TIMEOUT_MS,
       async (mergedSignal) => {
-        const stream = provider.sendMessageStream(
+        // B3（D10，C级）：改走漏斗而非直连。收紧参数：记忆召回是轻量初筛，只值得
+        // 轻量重试，deadlineAt 与本函数 15s 硬超时同源，退避睡不完就提前收手。
+        const { streamWithResilience } = await import("../llm/resilient-stream.ts");
+        const stream = streamWithResilience(
+          provider as any,
           {
             model,
             system,
@@ -204,6 +209,16 @@ export function makeSideQuery(
             thinking: SIDE_CALL_NO_THINK,
           },
           mergedSignal,
+          {
+            querySource: "memory_recall",
+            switchMode: "auto",
+            maxRetries: 2,
+            retryBackoffBaseMs: 1000,
+            retryBackoffMaxMs: 5000,
+            streamTimeoutMs: RECALL_TIMEOUT_MS,
+            deadlineAt: Date.now() + RECALL_TIMEOUT_MS,
+            availability,
+          },
         );
         let t = "";
         let usage: any = null;
@@ -213,6 +228,11 @@ export function makeSideQuery(
           // 与主路径 reason 白名单口径一致，不再裸 "Request aborted"。
           if (mergedSignal.aborted) {
             throw new Error(String((mergedSignal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
+          }
+          // B3：streamWithResilience 重试耗尽/无法降级时通过 yield {type:"error"} 通知失败
+          // （而非直接 throw），改走漏斗后必须显式接住（见 goal/evaluator.ts 同类修复）。
+          if (event.type === "error") {
+            throw new Error(event.error.message);
           }
           if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
             t += event.delta.text;

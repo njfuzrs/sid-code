@@ -411,10 +411,19 @@ describe("S2：availability 上的共享限流冷却", () => {
       });
       const { provider } = makeProvider(errStream("rate limit exceeded", "rate_limit_error", 429, 400));
       await drain(fb, provider, { agentId });
-      return seen.filter((e) => e.type === "shared_cooldown_wait").map((e) => e.delayMs);
+      // 取 slot 分量（delayMs - remainingMs）而非完整 delayMs：
+      // delayMs = remainingMs + slot*300，其中 remainingMs 是 wall-clock 敏感的
+      // 整数毫秒（cd.until - Date.now()），两次调用读取时刻不同会差 1ms → toEqual 偶发失败。
+      // slot 分量 = slot*300 是确定性哈希的产物，不受 wall-clock 影响——
+      // 这正是本条要验证的不变量"同一 agentId 每次落同一槽"。
+      return seen
+        .filter((e) => e.type === "shared_cooldown_wait")
+        .map((e) => (e.delayMs ?? 0) - (e.remainingMs ?? 0));
     };
 
-    // 同一 agentId 两次 → 同样的等待时长（随机错峰会让这条失败）。
+    // 同一 agentId 两次 → 同一错峰槽位（slot*300 相等）。
+    // 注：断言 slot 分量而非完整 delayMs，因 delayMs 含 wall-clock 敏感的 remainingMs，
+    // 慢机器下两次跨毫秒边界会差 1ms 导致偶发失败（实现本身确定性，无 bug）。
     const first = await slotsOf("agent-stable");
     const second = await slotsOf("agent-stable");
     expect(first).toEqual(second);

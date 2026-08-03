@@ -42,7 +42,9 @@ export type SubAgentToolProgress = (
  *
  * @param hookSystem 透传的 hook 系统；存在时在每个工具前后触发 Pre/PostToolUse hook
  *                   （驱动 execute_tool span / 可观测性）。缺省时退化为纯执行（兼容旧测试）。
- * @param permissionChecker 权限检查器（子代理用 dontAsk 语义）。缺省时不做权限检查。
+ * @param permissionChecker 权限检查器（子代理用 dontAsk 语义）。B0：缺省时改为**分级
+ *                          fail-closed**——只读工具放行，写类工具（非 isConcurrencySafe/
+ *                          readOnly）直接拒绝，不再是"缺省即不检查"的静默放过。
  */
 export async function executeTools(
   content: ContentBlock[],
@@ -207,6 +209,29 @@ async function executeSingleTool(
         type: "tool_result",
         tool_use_id: block.id,
         content: `权限拒绝: ${reason}`,
+        is_error: true,
+      };
+    }
+  } else {
+    // B0（分级 fail-closed）：未配置权限检查器时，只读工具放行，写类工具直接拒绝。
+    //
+    // 为什么不是"未传检查器就全部拒绝"：大量合法场景本就不需要权限检查器
+    // （纯只读子代理如 explore/summarize、旧测试），完全 fail-closed 会误伤这些场景。
+    // 真正的安全缺口是"没配置检查器却放过了写操作"——自定义子代理路径此前正是
+    // 这样漏传 permissionChecker，导致走 agents/*.md 自定义子代理执行 edit/bash 时
+    // 权限层被整体绕过（本次修复的 P0 缺口）。分级方案精确命中这一点：
+    // 能改代码/执行命令的操作必须有人把关，纯读取操作不受影响。
+    //
+    // 判定复用与上方"只读/写入分类"同一套逻辑（isConcurrencySafe 优先，回退 readOnly()）。
+    const isSafe = tool.isConcurrencySafe
+      ? tool.isConcurrencySafe(effectiveInput)
+      : (tool.readOnly?.() ?? false);
+    if (!isSafe) {
+      log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: 未配置权限检查器，写类操作默认拒绝（fail-closed）`);
+      return {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: "权限拒绝: 未配置权限检查器，写类操作默认拒绝（fail-closed）",
         is_error: true,
       };
     }

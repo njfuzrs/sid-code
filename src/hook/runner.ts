@@ -667,7 +667,7 @@ export class HookRunner {
           maxTokens: 1024,
           // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
           thinking: SIDE_CALL_NO_THINK,
-        }, controller.signal);
+        }, controller.signal, timeout, registry.availability);
 
         const parsed = this.parseJsonOutput(text);
 
@@ -775,7 +775,7 @@ export class HookRunner {
           maxTokens: 2048,
           // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
           thinking: SIDE_CALL_NO_THINK,
-        }, controller.signal);
+        }, controller.signal, timeout, registry.availability);
 
         const parsed = this.parseJsonOutput(text);
 
@@ -817,19 +817,46 @@ export class HookRunner {
     provider: any,
     params: any,
     signal?: AbortSignal,
+    timeoutMs?: number,
+    availability?: import("../llm/availability.ts").ModelAvailabilityService,
   ): Promise<string> {
     let text = "";
     let streamUsage: any = null;
-    for await (const event of provider.sendMessageStream(params, signal)) {
+    // B3（D9）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败。
+    // 收紧参数：hook agent 验证是轻量分类任务，只值得轻量重试，deadlineAt 与调用方
+    // 传入的 timeoutMs（hookConfig.timeout，缺省 60s）同源，退避睡不完就提前收手。
+    const { streamWithResilience } = await import("../llm/resilient-stream.ts");
+    const stream = streamWithResilience(
+      provider,
+      params,
+      signal,
+      {
+        querySource: "hook_agent",
+        switchMode: "auto",
+        maxRetries: 2,
+        retryBackoffBaseMs: 1000,
+        retryBackoffMaxMs: 5000,
+        streamTimeoutMs: timeoutMs,
+        deadlineAt: timeoutMs ? Date.now() + timeoutMs : undefined,
+        availability,
+      },
+    );
+    for await (const event of stream) {
       // 纵深防御:hook-runner side-call 检查 signal,防止 provider 层超时失效时挂死
       // H10：抛出携带 abort reason 的错误，与主路径 reason 白名单口径一致。
       if (signal?.aborted) {
         throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON));
       }
+      // B3：streamWithResilience 重试耗尽/无法降级时通过 yield {type:"error"} 通知失败
+      // （而非直接 throw），改走漏斗后必须显式接住，否则错误被当作"流正常结束但无
+      // 内容"吞掉（见 goal/evaluator.ts 同类修复）。
+      if (event.type === "error") {
+        throw new Error(event.error.message);
+      }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         text += event.delta.text;
-      } else if (event.type === "message_stop" && event.usage) {
-        streamUsage = event.usage;
+      } else if (event.type === "message_stop" && (event as any).usage) {
+        streamUsage = (event as any).usage;
       }
     }
     // 记录辅助调用用量

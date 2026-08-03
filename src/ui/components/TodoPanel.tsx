@@ -142,6 +142,17 @@ const TodoRow = React.memo(function TodoRow({
 });
 
 /**
+ * compactMode 摘要用的极简任务标签（附4）：不带 TaskRow 那种 `AG `/`SH `/`WF ` 前缀，
+ * 只取最省宽度的核心信息（agentType / 固定短词），供窄终端下的单行摘要拼接。
+ */
+function compactTaskLabel(task: TaskDisplayInfo): string {
+  if (task.type === "local_agent") return task.agentType || "agent";
+  if (task.type === "local_shell") return "shell";
+  if (task.type === "local_workflow") return task.agentType?.replace(/^workflow:/, "") || "workflow";
+  return task.type;
+}
+
+/**
  * 单条后台任务渲染。
  *
  * 运行中任务订阅共享时钟（useAnimationFrame，keepAlive）：
@@ -365,6 +376,11 @@ export const TodoPanel = React.memo(function TodoPanel({
     const hiddenTaskCount = tasks.length - visibleTasks.length;
 
     const allTerminal = running.length === 0 && tasks.length > 0;
+    // compactMode 摘要（附4）：此前 `!compactMode` 直接砍掉全部任务行，窄终端下用户
+    // 只看到一个数字（"有计数、无内容"），不知道具体是什么任务在跑。退化成一行摘要
+    // 而不是整区消失——与 cc 的降级哲学一致（屏幕不够时 collapse 成一行计数，
+    // 而不是整块隐藏，见 `UI.tsx:469-503`）。
+    const compactSummaryText = compactMode ? visibleTasks.map(compactTaskLabel).join(", ") : "";
 
     taskSection = (
       <Box flexDirection="column">
@@ -385,6 +401,12 @@ export const TodoPanel = React.memo(function TodoPanel({
           visibleTasks.map((task) => (
             <TaskRow key={task.id} task={task} maxContentLen={maxContentLen} />
           ))}
+        {compactMode && compactSummaryText && (
+          <Box flexDirection="row" paddingLeft={2}>
+            <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary} dimColor>{truncate(compactSummaryText, maxContentLen)}</Text>
+          </Box>
+        )}
         {/* 划掉提示（渐进衰减）：面板全是终态条目时，告知用户有手动出口，
             不必干等驱逐缓冲期。只在 allTerminal 时提示——还有任务在跑时
             Ctrl+X 也只清终态，但此刻用户的注意力在"还在跑的那条"上，提示是噪音。 */}

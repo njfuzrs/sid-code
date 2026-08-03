@@ -101,6 +101,9 @@ function baseConfig(provider: Provider, overrides: Record<string, unknown> = {})
     loopDetector: new LoopDetector(),
     // 退避基数压到 1ms，让测试跑得快（生产默认 5s 走 network-profile）
     retryBackoffBaseMs: 1,
+    // B0：permissionChecker 从 AgentLoopConfig 的必填字段，显式声明本测试场景
+    // 不需要权限检查（工具集为空 ToolRegistry，无写类工具可测）。
+    permissionChecker: undefined,
     ...overrides,
   } as any;
 }

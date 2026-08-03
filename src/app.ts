@@ -761,13 +761,15 @@ export class App {
       onAuthRefresh: async (providerName: string) => {
         const log = getLogger();
         try {
-          const before = this.config.anthropicKey + " " + this.config.openaiKey;
+          const beforeAnthropic = this.config.anthropicKey ?? "";
+          const beforeOpenai = this.config.openaiKey ?? "";
           // 只重读凭据字段，不整体替换 this.config：整体替换会把用户本会话内用 /model
           // 等命令做的运行时改动一起冲掉（那是比 401 更严重的副作用）。
           const { loadConfig } = require("./config/config.ts");
           const fresh = await loadConfig({});
-          const after = (fresh.anthropicKey ?? "") + " " + (fresh.openaiKey ?? "");
-          if (before === after) {
+          const afterAnthropic = fresh.anthropicKey ?? "";
+          const afterOpenai = fresh.openaiKey ?? "";
+          if (beforeAnthropic === afterAnthropic && beforeOpenai === afterOpenai) {
             log.info("APP", `401 凭据刷新：${providerName} 凭据源未变化，不谎报成功`);
             return false;
           }

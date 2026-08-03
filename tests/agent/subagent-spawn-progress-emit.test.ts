@@ -63,12 +63,23 @@ function fakeSpawnedProcess(messages: object[]) {
   };
 }
 
-/** monkey-patch 全局 Bun.spawn，测试结束后必须还原——它是进程级共享状态。 */
-function withMockSpawn<T>(mock: (...args: any[]) => any, fn: () => T): T {
+/**
+ * monkey-patch 全局 Bun.spawn，测试结束后必须还原——它是进程级共享状态。
+ *
+ * 必须 `await fn()` 再还原，不能 `return fn()`：`agent.execute()` 是 async 函数，
+ * 调用它只会同步跑到第一个真正挂起的 await（`executeSpawned` 里的
+ * `enhanceSubAgentPrompt`），此时才刚把 pending Promise 一路回传到这里——
+ * `Bun.spawn(...)` 真正被调用的那一行还在几个 await 之后。若不 await 就在 finally
+ * 里还原，mock 会在生产代码真正调用 `Bun.spawn` 之前就被换回真实实现，导致
+ * `executeSpawnedInternal` 悄悄拉起一个真实 `bun run headless.ts` 子进程
+ * （测试环境无可用 LLM 凭据，必然失败），而不是走假子进程——外部表现是
+ * `result.success` 变 false，看似生产 bug，实则是这个 test helper 的异步范围没扣对。
+ */
+async function withMockSpawn<T>(mock: (...args: any[]) => any, fn: () => Promise<T>): Promise<T> {
   const original = Bun.spawn;
   (Bun as any).spawn = mock;
   try {
-    return fn();
+    return await fn();
   } finally {
     (Bun as any).spawn = original;
   }

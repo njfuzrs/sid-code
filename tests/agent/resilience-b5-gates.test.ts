@@ -107,6 +107,9 @@ function baseConfig(provider: Provider, overrides: Record<string, unknown> = {})
     signal: new AbortController().signal,
     loopDetector: new LoopDetector(),
     retryBackoffBaseMs: 1,
+    // B0：permissionChecker 从 AgentLoopConfig 的必填字段，显式声明本测试场景
+    // 不需要权限检查（工具集为空 ToolRegistry，无写类工具可测）。
+    permissionChecker: undefined,
     ...overrides,
   } as any;
 }

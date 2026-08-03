@@ -40,6 +40,11 @@ export interface EvalConfig {
   minTurnsBeforeEval: number;
   /** 评估器上下文最大字符数（P0-3，默认 12000） */
   contextMaxChars?: number;
+  /**
+   * B3：模型可用性服务（与主 fallback 引擎共享同一实例）。传入后目标评估请求走
+   * streamWithResilience 时能与主路径共享 terminal 拉黑状态。缺省不影响行为。
+   */
+  availability?: import("../llm/availability.ts").ModelAvailabilityService;
 }
 
 /** fast-path 所需的最后一轮信号（P1-1 报告型任务放行用） */
@@ -268,7 +273,12 @@ async function callEvaluatorModel(
   try {
     let responseText = "";
     let tokensUsed = 0;
-    const stream = provider.sendMessageStream(
+    const { streamWithResilience } = await import("../llm/resilient-stream.ts");
+    // B3（D8）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败。
+    // 收紧参数：目标评估是轻量分类任务，只值得轻量重试，deadlineAt 与本函数的
+    // controller 超时（timeout）同源，退避睡不完就提前收手，不吃满 timeout。
+    const stream = streamWithResilience(
+      provider,
       {
         model,
         messages,
@@ -279,6 +289,16 @@ async function callEvaluatorModel(
         thinking: SIDE_CALL_NO_THINK,
       },
       controller.signal,
+      {
+        querySource: "goal_eval",
+        switchMode: "auto",
+        maxRetries: 2,
+        retryBackoffBaseMs: 1000,
+        retryBackoffMaxMs: 5000,
+        streamTimeoutMs: timeout,
+        deadlineAt: Date.now() + timeout,
+        availability: config.availability,
+      },
     );
 
     for await (const event of stream) {
@@ -286,6 +306,13 @@ async function callEvaluatorModel(
       // H10：抛出携带 abort reason 的错误（而非裸 "Request aborted"），与主路径 reason 白名单口径一致。
       if (controller.signal.aborted) {
         throw new Error(String(controller.signal.reason ?? SIDE_CALL_TIMEOUT_REASON));
+      }
+      // B3：streamWithResilience 重试耗尽/无法降级时通过 yield {type:"error"} 通知失败
+      // （而非直接 throw），直连 provider 时不存在这个事件类型。改走漏斗后必须显式接住，
+      // 否则错误被当作"正常流结束、responseText 为空"吞掉，上层看到的是"评估器返回非 JSON"
+      // 而非真实的网络/限流失败原因。
+      if (event.type === "error") {
+        throw new Error(event.error.message);
       }
       if (event.type === "content_block_delta" && "text" in event.delta) {
         responseText += event.delta.text;

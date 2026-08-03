@@ -503,6 +503,41 @@ export class SubAgent {
     };
   }
 
+  /**
+   * B0：两条 runAgentLoop 路径（`executeInner` 内置子代理 / `executeCustomInner` 自定义子代理）
+   * 共有字段的工厂函数。
+   *
+   * 为什么要抽这个：此前两条路径各自手写完整 config 字面量，`availability`/`deadlineAt`/
+   * `discoverJitContext` 等字段靠人工在两处同步“记得传”——`sub-agent.ts:1471` 附近的注释
+   * 早就写过“两条路径都要接，只接一条就会成为隐形差异”，结果自定义路径依然漏传了
+   * `permissionChecker`（本次修复的 P0 缺口）。把公共字段收进一个工厂，两处只需
+   * `...this.buildBaseLoopConfig(...)`，新增公共字段时天然同步，不会再靠人记。
+   *
+   * 差异项（querySource / agentId / sendParamsExtra / onBeforeTurn / onTurnEnd）仍由
+   * 调用处显式传，保持两条路径的差异清晰可读，不被工厂吞掉。
+   */
+  private buildBaseLoopConfig(
+    ctxMgr: ContextManager,
+    startTime: number,
+    timeout: number,
+  ): Pick<
+    Parameters<typeof runAgentLoop>[0],
+    "hookSystem" | "permissionChecker" | "availability" | "deadlineAt" | "discoverJitContext"
+  > {
+    return {
+      hookSystem: this.hookSystem,
+      // B0：permissionChecker 从 AgentLoopConfig 的必填字段——此处必须显式传值
+      // （可以是 undefined），漏传在类型层就会报错，不再是静默降级。
+      permissionChecker: this.permissionChecker ?? undefined,
+      // H9：透传共享的 availability（与主 fallback 引擎同一实例），terminal 类错误跨路径拉黑。
+      availability: this.registry?.availability,
+      // S3：与调用方 timeoutCtrl 同源的截止时刻，缺省不传则漏斗退化为纯次数上界。
+      deadlineAt: startTime + timeout,
+      // P2-1：子代理 JIT 上下文发现（每次调用独立实例，见 createJitDiscoverer 注释）。
+      discoverJitContext: this.createJitDiscoverer(ctxMgr),
+    };
+  }
+
   /** 从 ProviderRegistry 创建（子代理类型决定 model/provider） */
   static fromRegistry(
     registry: ProviderRegistry,
@@ -1360,24 +1395,15 @@ export class SubAgent {
         signal: mergedSignal,
         loopDetector,
         sendParamsExtra,
-        // H9：透传共享的 availability（与主 fallback 引擎同一实例），子代理 terminal 类错误
-        // 跨路径拉黑。registry 缺省（旧测试）时为 undefined，runAgentLoop 内做空值保护。
-        availability: this.registry?.availability,
+        // B0：两条 runAgentLoop 路径共有字段收进工厂（hookSystem / permissionChecker /
+        // availability / deadlineAt / discoverJitContext），见 buildBaseLoopConfig 注释。
+        ...this.buildBaseLoopConfig(ctxMgr, startTime, timeout),
         // B2（D1）：内置子代理走漏斗时的来源标签。与自定义路径（agent:custom）区分，
         // 让遥测能回答"哪类子代理在重试"——两条路径共用一个标签就丧失了这个分辨力。
         querySource: "agent:builtin",
         // 复用 masking 用的派生 sessionId：它已含 parentSessionId + taskId，
         // 天然唯一，B4 做 per-agent 状态隔离时可直接当快照 key 的身份维度。
         agentId: this.deriveSubAgentSessionId(taskId),
-        // S3（§5 缺口 C）：与下面 timeoutCtrl 同源的截止时刻。
-        // 同一个 `startTime + timeout`，只是把"到点硬 abort"提前成"到点前主动收手"——
-        // 否则最后一次退避（最长 120s）必然等不完就被砍，白烧且拿不到任何结论。
-        deadlineAt: startTime + timeout,
-        // P2-1：子代理 JIT 上下文发现（**独立**实例，不共享父代理去重集，见
-        // createJitDiscoverer 注释——共享会让父加载过的规则子代理永远拿不到）。
-        discoverJitContext: this.createJitDiscoverer(ctxMgr),
-        hookSystem: this.hookSystem,
-        permissionChecker: this.permissionChecker ?? undefined,
         onBeforeTurn: (turn) => {
           // 消费 SendMessage 注入的消息（从第 2 轮开始检查）
           if (taskId && turn > 1) {
@@ -1671,15 +1697,10 @@ export class SubAgent {
         querySource: "agent:custom",
         // B4：带调用序号的唯一观测身份（见上方 observerAgentId 定义处注释）。
         agentId: observerAgentId,
-        // H9 对齐：自定义路径此前漏传 availability，terminal 类错误无法跨路径拉黑。
-        availability: this.registry?.availability,
-        // S3：与内置路径同源的截止时刻（本函数的 timeoutCtrl 用的同一对 startTime/timeout）。
-        // 两条 runAgentLoop 路径都要传——只传一条就是"自定义子代理没有时间预算钳制"
-        // 这种隐形差异，与上面 querySource / availability 漏传是同一类缺陷。
-        deadlineAt: startTime + timeout,
-        // P2-1：自定义子代理同样走 JIT（独立实例）。两条 runAgentLoop 路径都要接，
-        // 只接一条会让"用了自定义 agent 就没有目录规则"成为隐形差异。
-        discoverJitContext: this.createJitDiscoverer(ctxMgr),
+        // B0：两条 runAgentLoop 路径共有字段收进工厂。此前这条自定义路径唯独漏传
+        // permissionChecker——权限层被整体绕过（自定义子代理调 edit/bash 不经检查），
+        // 是本次修复的 P0 安全缺口。现在用工厂统一收敛，不再靠人工在两处分别记住传参。
+        ...this.buildBaseLoopConfig(ctxMgr, startTime, timeout),
         sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;

@@ -450,4 +450,88 @@ describe("PermissionChecker", () => {
       expect(result.decisionReason?.type === "rule" && (result.decisionReason as any).behavior === "deny").toBe(false);
     });
   });
+
+  /**
+   * §五之三：分类器调用方测试盲区（P2 差异回归钉点）。
+   *
+   * 背景：分类器自身（bash-classifier.ts/tool-classifier.ts）对"不可用"场景已经
+   * fail-closed 得很干净——任何异常/超时/解析失败都归一化为 `classifierUnavailable: true`，
+   * 从不静默放行。但调用方（checker.ts）此前有一处窄口 fail-open 差异：`--yes` 模式 +
+   * 分类器不可用 + 硬编码层未命中危险模式 → 落到"普通 ask"分支被 yesMode 自动批准。
+   * 该差异已在 checker.ts:979-998（isSafetyConfirmation 判断）修复，但从未有回归测试
+   * 钉住，属于纯文档描述、代码里随时可能被无意改回去的状态。本组补齐三条端到端断言。
+   */
+  describe("分类器调用方（checker.ts）安全边界回归", () => {
+    test("分类器抛异常时，check() 结果不是 { allowed: true }（不静默放行）", async () => {
+      // bash-classifier.ts 的 classify() 本身把所有异常都 catch 成
+      // classifierUnavailable:true（不会真的抛出）；这里直接注入一个"裸抛异常"的
+      // 分类器模拟"调用方没有正确处理分类器异常"的回归场景——若 checker.ts 未来
+      // 新增了不带 try/catch 的分类器调用路径，这条测试会失败提醒。
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        permissionMode: "auto",
+      });
+      checker.setToolClassifier({
+        isAvailable: () => true,
+        classify: async () => { throw new Error("分类器网络异常"); },
+      } as any);
+      // auto 模式下分类器路径已用 try/catch 包裹（checker.ts:1035），异常应被
+      // 捕获后回退人工确认，而不是让异常穿透 / 被误判为 allowed:true。
+      const result = await checker.check({
+        toolName: "edit",
+        input: { file_path: "/tmp/test-classifier-throw.ts" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("dontAsk 语义下分类器不可用 → 明确 deny（不因分类器缺失而放行）", async () => {
+      // dontAsk 模式：ask → deny 是既有硬语义（checker.ts:1043），分类器不可用只是
+      // "回退到人工确认判定"的输入之一，不应绕过这条硬语义变成放行。
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        permissionMode: "dontAsk",
+      });
+      checker.setBashClassifier({
+        isAvailable: () => true,
+        classify: async () => ({
+          safe: false,
+          risk: "none" as const,
+          reason: "分类器不可用",
+          classifierUnavailable: true,
+        }),
+      } as any);
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "some-non-hardcoded-but-sensitive-command --force" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("--yes + 分类器不可用 + 硬编码命中危险模式 → 不得自动批准（钉住 P2 修复，防回归）", async () => {
+      // 回归钉点：checker.ts:979-998 的 isSafetyConfirmation 判断——yesMode 只自动
+      // 批准"普通 ask"，dangerousCommand/safetyCheck 来源的确认不放行。用一个会命中
+      // 硬编码危险模式的命令（如 chmod 777），验证即便分类器不可用，yesMode 也不会
+      // 把这类确认自动批准掉。
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        yesMode: true,
+      });
+      checker.setBashClassifier({
+        isAvailable: () => true,
+        classify: async () => ({
+          safe: false,
+          risk: "none" as const,
+          reason: "分类器超时",
+          classifierUnavailable: true,
+        }),
+      } as any);
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "chmod -R 777 /" },
+      });
+      // 硬编码兜底命中 → dangerousCommand 来源确认 → yesMode 不应自动批准
+      expect(result.allowed).toBe(false);
+      expect(result.decisionReason?.type).toBe("dangerousCommand");
+    });
+  });
 });

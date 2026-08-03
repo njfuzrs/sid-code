@@ -74,9 +74,19 @@ export interface AgentLoopConfig {
   /** Hook 系统（透传给工具执行，驱动子代理工具的 Pre/PostToolUse hook 与 execute_tool span）。
    *  缺省时工具执行不触发 hook（兼容无 hook 环境/测试）。 */
   hookSystem?: HookSystem;
-  /** 权限检查器（子代理用 dontAsk 语义：危险命令拦截 + safetyCheck 照常生效，ask→deny）。
-   *  缺省时不做权限检查（兼容旧测试 / 纯只读子代理）。 */
-  permissionChecker?: import("../permission/types.ts").Checker;
+  /**
+   * 权限检查器（子代理用 dontAsk 语义：危险命令拦截 + safetyCheck 照常生效，ask→deny）。
+   *
+   * B0：改为**必填**（值可以是 `undefined`，但字段本身不能漏写）。此前是 `?:` 可选，
+   * 漏传只是静默降级为"不做权限检查"——`sub-agent.ts` 的自定义子代理路径正是这样
+   * 漏掉了它，权限层被整体绕过却没有任何报错。改成必填后，调用方必须显式写出
+   * `permissionChecker: xxx ?? undefined`，漏写变成编译错误。
+   *
+   * 显式传 `undefined` 时，`tool-executor.ts` 的 fail-closed 分级生效：只读工具放行，
+   * 写类工具（非 `isConcurrencySafe`/`readOnly`）直接拒绝——即"没有检查器"不再等价于
+   * "不检查"，而是"写操作默认拒绝"。
+   */
+  permissionChecker: import("../permission/types.ts").Checker | undefined;
   /** GAP-07（子代理侧）：长跑工具中间进度回调。缺省时工具执行无进度上报（无副作用）。 */
   onToolProgress?: import("./tool-executor.ts").SubAgentToolProgress;
   /** H9：模型可用性服务（与主 fallback 引擎共享同一实例，来自 ProviderRegistry.availability）。

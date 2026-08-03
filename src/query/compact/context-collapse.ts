@@ -45,6 +45,11 @@ export interface ContextCollapseOptions {
   signal?: AbortSignal;
   /** 最多压缩最老的几段（默认 2） */
   maxSegments?: number;
+  /**
+   * B3：模型可用性服务（与主 fallback 引擎共享同一实例）。传入后段摘要请求走
+   * streamWithResilience 时能与主路径共享 terminal 拉黑状态。缺省不影响行为。
+   */
+  availability?: import("../../llm/availability.ts").ModelAvailabilityService;
 }
 
 /** collapse 结果 */
@@ -121,7 +126,11 @@ async function summarizeSegment(
     "context-collapse",
     SEGMENT_TIMEOUT_MS,
     async (signal) => {
-      const stream = opts.provider.sendMessageStream(
+      const { streamWithResilience } = await import("../../llm/resilient-stream.ts");
+      // B3（D7）：改走漏斗，收紧参数（同 auto-compact/partial-compact，轻量重试、
+      // deadlineAt 与本段 45s 硬超时同源，不追求"重试到成功"）。
+      const stream = streamWithResilience(
+        opts.provider,
         {
           model: opts.model,
           messages: [{ role: "user", content: [{ type: "text", text: user }] }],
@@ -131,6 +140,16 @@ async function summarizeSegment(
           thinking: SIDE_CALL_NO_THINK,
         },
         signal,
+        {
+          querySource: "compact",
+          switchMode: "auto",
+          maxRetries: 2,
+          retryBackoffBaseMs: 1000,
+          retryBackoffMaxMs: 5000,
+          streamTimeoutMs: SEGMENT_TIMEOUT_MS,
+          deadlineAt: Date.now() + SEGMENT_TIMEOUT_MS,
+          availability: opts.availability,
+        },
       );
       let s = "";
       let usage: any = null;

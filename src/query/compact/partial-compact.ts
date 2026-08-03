@@ -45,6 +45,11 @@ export interface PartialCompactOptions {
   customInstructions?: string;
   /** 摘要请求超时（毫秒）；不传走 network-profile 的 compact 子表默认值 */
   timeoutMs?: number;
+  /**
+   * B3：模型可用性服务（与主 fallback 引擎共享同一实例）。传入后摘要请求走
+   * streamWithResilience 时能与主路径共享 terminal 拉黑状态。缺省不影响行为。
+   */
+  availability?: import("../../llm/availability.ts").ModelAvailabilityService;
 }
 
 /** partialCompact 结果 */
@@ -252,11 +257,14 @@ async function runPartialSummaryRequest(
   summaryPrompt: string,
   timeoutMs: number,
 ): Promise<string> {
+  const { streamWithResilience } = await import("../../llm/resilient-stream.ts");
   const { summary, streamUsage } = await withSideCallDeadline(
     "partial-compact",
     timeoutMs,
     async (signal) => {
-      const stream = options.provider.sendMessageStream(
+      // B3（D6）：改走漏斗，收紧参数（同 auto-compact 的 runSummaryRequest 说明）。
+      const stream = streamWithResilience(
+        options.provider,
         {
           model: options.model,
           messages: [{ role: "user", content: [{ type: "text", text: summaryPrompt }] }],
@@ -266,6 +274,16 @@ async function runPartialSummaryRequest(
           thinking: SIDE_CALL_NO_THINK,
         },
         signal,
+        {
+          querySource: "compact",
+          switchMode: "auto",
+          maxRetries: 2,
+          retryBackoffBaseMs: 1000,
+          retryBackoffMaxMs: 5000,
+          streamTimeoutMs: timeoutMs,
+          deadlineAt: Date.now() + timeoutMs,
+          availability: options.availability,
+        },
       );
       let s = "";
       let usage: any = null;

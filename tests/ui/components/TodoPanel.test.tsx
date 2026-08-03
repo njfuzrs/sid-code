@@ -111,6 +111,83 @@ describe("TodoPanel — 终态字形区分（双通道，非仅靠颜色）", ()
   });
 });
 
+describe("TodoPanel — compactMode 单行摘要（附4：窄终端不整区隐藏）", () => {
+  const NARROW_WIDTH = 59; // < 60 触发 compactMode；maxContentLen = max(20, 59-16) = 43
+
+  test("窄终端不再整区消失：至少能看到是什么任务在跑", () => {
+    const { lastFrame } = render(
+      <TodoPanel todos={[]} tasks={[runningTask()]} termWidth={NARROW_WIDTH} />,
+    );
+    const frame = lastFrame() ?? "";
+    // 标题行计数此前就有，摘要是新增的
+    expect(frame).toContain("1 运行中");
+    expect(frame).toContain("explore"); // 此前 compactMode 下这里应为空
+  });
+
+  test("多任务并行时摘要逐个列出，而非只给一个数字", () => {
+    const { lastFrame } = render(
+      <TodoPanel
+        todos={[]}
+        tasks={[
+          runningTask({ id: "t1", agentType: "explore" }),
+          runningTask({ id: "t2", agentType: "verify" }),
+        ]}
+        termWidth={NARROW_WIDTH}
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("explore");
+    expect(frame).toContain("verify");
+  });
+
+  test("摘要只用极简标签，不带完整描述（保持单行、不拖出长文本）", () => {
+    const { lastFrame } = render(
+      <TodoPanel todos={[]} tasks={[runningTask()]} termWidth={NARROW_WIDTH} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("explore");
+    expect(frame).not.toContain("验证缺口1 FileReadTracker隔离"); // 完整 description 不应出现
+  });
+
+  test("摘要与 …+N 截断提示视口一致：只反映 visibleTasks，被截断的不出现在摘要里", () => {
+    // 6 个全部 running：windowed = running.slice 无效（无 terminal），visibleTasks = 前 5 个
+    const many = Array.from({ length: 6 }, (_, i) =>
+      runningTask({ id: `t${i}`, agentType: `a${i}` }),
+    );
+    const { lastFrame } = render(
+      <TodoPanel todos={[]} tasks={many} termWidth={NARROW_WIDTH} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("a0");
+    expect(frame).toContain("a4");
+    expect(frame).not.toContain("a5"); // 第 6 个被视口截断，不应出现在摘要里
+    expect(frame).toContain("…+1"); // 附1 的截断提示不受本次改动影响
+  });
+
+  test("shell / workflow 任务类型的摘要标签", () => {
+    const shellTask: TaskDisplayInfo = {
+      id: "s1",
+      type: "local_shell",
+      status: "running",
+      description: "运行中的 shell 命令",
+      command: "grep -rn foo src/",
+      startTime: Date.now() - 5_000,
+      durationMs: 1_000,
+    };
+    const { lastFrame } = render(
+      <TodoPanel todos={[]} tasks={[shellTask]} termWidth={NARROW_WIDTH} />,
+    );
+    expect(lastFrame() ?? "").toContain("shell");
+  });
+
+  test("宽终端不受影响：仍逐行渲染 TaskRow 完整描述（回归）", () => {
+    const { lastFrame } = render(
+      <TodoPanel todos={[]} tasks={[runningTask()]} termWidth={TERM_WIDTH} />,
+    );
+    expect(lastFrame() ?? "").toContain("验证缺口1 FileReadTracker隔离");
+  });
+});
+
 describe("TodoPanel — 空态", () => {
   test("无 todo 无任务时不渲染", () => {
     const { lastFrame } = render(

@@ -80,6 +80,12 @@ export interface AutoCompactDeps {
    * 会话级临时目录（§4.1 质量报告 / §4.3 决策外化落盘）。不传则跳过落盘。
    */
   sessionDir?: string;
+  /**
+   * B3：模型可用性服务（与主 fallback 引擎共享同一实例）。传入后 auto-compact 的摘要
+   * 请求走 streamWithResilience 时能与主路径共享 terminal 拉黑状态。缺省不影响行为
+   * （旁路请求仍会发出，只是不参与跨路径拉黑）。
+   */
+  availability?: import("../llm/availability.ts").ModelAvailabilityService;
 }
 
 /**
@@ -300,11 +306,17 @@ async function runSummaryRequest(
   timeoutMs: number,
 ): Promise<{ summary: string; streamUsage: any }> {
   const { COMPACT_SYSTEM_PROMPT } = await import("./compact/auto-compact-prompt.ts");
+  const { streamWithResilience } = await import("../llm/resilient-stream.ts");
   return withSideCallDeadline(
     "auto-compact",
     timeoutMs,
     async (signal) => {
-      const stream = deps.provider.sendMessageStream(
+      // B3（D5）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败，
+      // 与"压缩失败会导致上下文溢出"这个高后果场景不匹配。收紧参数：side-call 只值得
+      // 轻量重试，不追求"重试到成功"（那是子代理档位），且 deadlineAt 与外层
+      // withSideCallDeadline 的 timeoutMs 同源，退避睡不完就提前收手，不吃满 timeoutMs。
+      const stream = streamWithResilience(
+        deps.provider,
         {
           // §12.3：摘要走低成本模型（未指定则跟主模型）
           model: deps.compactModel || deps.config.model,
@@ -320,6 +332,16 @@ async function runSummaryRequest(
             : {}),
         },
         signal,
+        {
+          querySource: "compact",
+          switchMode: "auto",
+          maxRetries: 2,
+          retryBackoffBaseMs: 1000,
+          retryBackoffMaxMs: 5000,
+          streamTimeoutMs: timeoutMs,
+          deadlineAt: Date.now() + timeoutMs,
+          availability: deps.availability,
+        },
       );
       let s = "";
       let usage: any = null;
