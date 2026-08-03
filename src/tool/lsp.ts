@@ -67,7 +67,7 @@ type LSPOperation = (typeof LSP_OPERATIONS)[number];
 
 interface LSPToolInput {
   operation: LSPOperation;
-  filePath: string;
+  file_path: string;
   line?: number;
   character?: number;
   query?: string;
@@ -78,7 +78,7 @@ const lspSchema = lazySchema(() =>
     operation: z
       .enum(LSP_OPERATIONS)
       .describe("要执行的 LSP 操作"),
-    filePath: z
+    file_path: z
       .string()
       .describe("文件的绝对路径。所有操作都需要（workspaceSymbol 用它定位语言服务器）"),
     line: z
@@ -164,7 +164,7 @@ export class LSPTool implements Tool {
 
   /** P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths） */
   jitAffectedPaths(input: unknown): string[] {
-    return pickPaths(input, "filePath");
+    return pickPaths(input, "file_path");
   }
   readonly searchHint = "code intelligence definition references hover symbols";
 
@@ -196,11 +196,11 @@ export class LSPTool implements Tool {
 
   usageGuide(): string {
     return `- 行号/列号均为 1-based（与编辑器显示一致）
-- 位置相关操作（goToDefinition/findReferences/hover/goToImplementation/prepareCallHierarchy/incomingCalls/outgoingCalls）必须提供 filePath + line + character，光标应落在目标符号上
-- documentSymbol 只需 filePath（列出文件内所有符号）
-- workspaceSymbol 用 query 搜索符号名（filePath 仅用于定位语言服务器，可传项目内任意文件）
+- 位置相关操作（goToDefinition/findReferences/hover/goToImplementation/prepareCallHierarchy/incomingCalls/outgoingCalls）必须提供 file_path + line + character，光标应落在目标符号上
+- documentSymbol 只需 file_path（列出文件内所有符号）
+- workspaceSymbol 用 query 搜索符号名（file_path 仅用于定位语言服务器，可传项目内任意文件）
 - 调用层级两步走：先 prepareCallHierarchy 获取层级项，确认位置有效后再 incomingCalls（谁调用我）/ outgoingCalls（我调用谁）
-- codeAction 拿语言服务器算好的确定性修复（quickfix）：补缺失 import、删未用变量等。给 filePath 查整文件的修复建议，或加 line/character 只查光标处那条诊断的修复。返回的是"改哪里 → 改成什么"，你据此用 edit 工具落地（本操作只读、不自动改文件）。修复类错误时优先查它，省去自行推理
+- codeAction 拿语言服务器算好的确定性修复（quickfix）：补缺失 import、删未用变量等。给 file_path 查整文件的修复建议，或加 line/character 只查光标处那条诊断的修复。返回的是"改哪里 → 改成什么"，你据此用 edit 工具落地（本操作只读、不自动改文件）。修复类错误时优先查它，省去自行推理
 - 内置支持 TypeScript/JavaScript/Vue/Python/Go/Rust/JSON/YAML/HTML/CSS/Shell：装好对应 language server 即自动生效；未安装时工具会返回精准安装引导。长尾语言可在 ~/.sid-code/lsp.json 自行配置
 - 优先用它而非 grep 做符号级导航：grep 只匹配文本，lsp 理解语义`;
   }
@@ -233,8 +233,8 @@ export class LSPTool implements Tool {
     const params = input as LSPToolInput;
 
     // ── 参数校验 ──
-    if (!params.operation || !params.filePath) {
-      return { output: "错误: 缺少 operation 或 filePath 参数", isError: true };
+    if (!params.operation || !params.file_path) {
+      return { output: "错误: 缺少 operation 或 file_path 参数", isError: true };
     }
     if (POSITION_OPS.has(params.operation)) {
       if (params.line == null || params.character == null) {
@@ -263,14 +263,14 @@ export class LSPTool implements Tool {
     }
 
     // ── 路由检查：该文件有无对应服务器 ──
-    const server = manager.getServerForFile(params.filePath);
+    const server = manager.getServerForFile(params.file_path);
     if (!server) {
       // 路由未命中：给出精准引导（内置支持则告知装什么、怎么装；长尾语言则引导配置），
       // 而非笼统的"未配置"。参见 builtin-servers.describeMissingServer。
       const { describeMissingServer } = await import("../lsp/builtin-servers.ts");
       const { sidPaths } = await import("../config/paths.ts");
       return {
-        output: describeMissingServer(params.filePath, sidPaths.lspConfig()),
+        output: describeMissingServer(params.file_path, sidPaths.lspConfig()),
         isError: true,
       };
     }
@@ -279,23 +279,23 @@ export class LSPTool implements Tool {
     let content: string;
     try {
       const { stat, readFile } = await import("fs/promises");
-      const st = await stat(params.filePath);
+      const st = await stat(params.file_path);
       if (st.size > MAX_LSP_FILE_SIZE) {
         return {
           output: `文件过大 (${(st.size / 1024 / 1024).toFixed(1)}MB)，超过 LSP 处理限制 (10MB)`,
           isError: true,
         };
       }
-      content = await readFile(params.filePath, "utf-8");
+      content = await readFile(params.file_path, "utf-8");
     } catch (err: any) {
-      return { output: `无法读取文件 ${params.filePath}: ${err.message}`, isError: true };
+      return { output: `无法读取文件 ${params.file_path}: ${err.message}`, isError: true };
     }
 
     // ── 确保文件已在 LSP 服务器侧打开 ──
     try {
-      await manager.openFile(params.filePath, content);
+      await manager.openFile(params.file_path, content);
     } catch (err: any) {
-      log.debug("LSP", `openFile 失败 ${params.filePath}: ${err.message}`);
+      log.debug("LSP", `openFile 失败 ${params.file_path}: ${err.message}`);
     }
 
     // workspaceFolder 用于结果路径展示与 gitignore 过滤（取服务器配置，回退 cwd）
@@ -317,7 +317,7 @@ export class LSPTool implements Tool {
     signal?: AbortSignal,
   ): Promise<ToolResult> {
     const { pathToFileURL } = await import("url");
-    const uri = pathToFileURL(params.filePath).href;
+    const uri = pathToFileURL(params.file_path).href;
     // LSP 协议用 0-based 行列，工具输入是 1-based，这里转换
     const position =
       params.line != null && params.character != null
@@ -327,7 +327,7 @@ export class LSPTool implements Tool {
 
     switch (params.operation) {
       case "goToDefinition": {
-        const result = await manager.sendRequest(params.filePath, "textDocument/definition", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/definition", {
           textDocument,
           position,
         });
@@ -335,7 +335,7 @@ export class LSPTool implements Tool {
         return { output: formatLocations(filtered, workspaceFolder, "未找到定义") };
       }
       case "goToImplementation": {
-        const result = await manager.sendRequest(params.filePath, "textDocument/implementation", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/implementation", {
           textDocument,
           position,
         });
@@ -343,7 +343,7 @@ export class LSPTool implements Tool {
         return { output: formatLocations(filtered, workspaceFolder, "未找到实现") };
       }
       case "findReferences": {
-        const result = await manager.sendRequest(params.filePath, "textDocument/references", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/references", {
           textDocument,
           position,
           context: { includeDeclaration: true },
@@ -352,27 +352,27 @@ export class LSPTool implements Tool {
         return { output: formatLocations(filtered, workspaceFolder, "未找到引用") };
       }
       case "hover": {
-        const result = await manager.sendRequest(params.filePath, "textDocument/hover", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/hover", {
           textDocument,
           position,
         });
         return { output: formatHover(result) };
       }
       case "documentSymbol": {
-        const result = await manager.sendRequest(params.filePath, "textDocument/documentSymbol", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/documentSymbol", {
           textDocument,
         });
         return { output: formatDocumentSymbols(result, workspaceFolder) };
       }
       case "workspaceSymbol": {
-        const result = await manager.sendRequest(params.filePath, "workspace/symbol", {
+        const result = await manager.sendRequest(params.file_path, "workspace/symbol", {
           query: params.query,
         });
         return { output: formatWorkspaceSymbols(result, workspaceFolder) };
       }
       case "prepareCallHierarchy": {
         const result = await manager.sendRequest(
-          params.filePath,
+          params.file_path,
           "textDocument/prepareCallHierarchy",
           { textDocument, position },
         );
@@ -382,7 +382,7 @@ export class LSPTool implements Tool {
       case "outgoingCalls": {
         // 调用层级需先 prepare 拿到 item，再用 item 查 incoming/outgoing。
         const items = (await manager.sendRequest(
-          params.filePath,
+          params.file_path,
           "textDocument/prepareCallHierarchy",
           { textDocument, position },
         )) as unknown[];
@@ -394,12 +394,12 @@ export class LSPTool implements Tool {
         }
         const item = items[0];
         if (params.operation === "incomingCalls") {
-          const result = await manager.sendRequest(params.filePath, "callHierarchy/incomingCalls", {
+          const result = await manager.sendRequest(params.file_path, "callHierarchy/incomingCalls", {
             item,
           });
           return { output: formatIncomingCalls(result, workspaceFolder) };
         } else {
-          const result = await manager.sendRequest(params.filePath, "callHierarchy/outgoingCalls", {
+          const result = await manager.sendRequest(params.file_path, "callHierarchy/outgoingCalls", {
             item,
           });
           return { output: formatOutgoingCalls(result, workspaceFolder) };
@@ -439,7 +439,7 @@ export class LSPTool implements Tool {
           message: d.message,
         }));
 
-        const result = await manager.sendRequest(params.filePath, "textDocument/codeAction", {
+        const result = await manager.sendRequest(params.file_path, "textDocument/codeAction", {
           textDocument,
           range,
           context: { diagnostics: lspDiagnostics, only: ["quickfix"] },

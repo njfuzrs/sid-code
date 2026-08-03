@@ -139,7 +139,7 @@ describe("AskUserQuestionTool", () => {
         {
           question: "需要启用哪些可观测性能力?",
           header: "可观测性",
-          multiSelect: true,
+          multi_select: true,
           options: [
             { label: "结构化日志" },
             { label: "分布式追踪" },
@@ -175,7 +175,7 @@ describe("AskUserQuestionTool", () => {
         {
           question: "需要启用哪些能力?",
           header: "能力",
-          multiSelect: true,
+          multi_select: true,
           options: [
             { label: "日志" },
             { label: "追踪" },
@@ -218,7 +218,7 @@ describe("AskUserQuestionTool", () => {
         {
           question: "选哪些缓存方案?",
           header: "缓存",
-          multiSelect: true,
+          multi_select: true,
           options: [
             { label: "Redis" },
             { label: "Memcached" },
@@ -243,7 +243,7 @@ describe("AskUserQuestionTool", () => {
         {
           question: "全部功能?",
           header: "全选",
-          multiSelect: true,
+          multi_select: true,
           options: [
             { label: "日志" },
             { label: "追踪" },

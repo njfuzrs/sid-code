@@ -86,13 +86,13 @@ describe("P1-2：独立 TodoWriteTool 实例互不污染", () => {
 
     await mainTool.execute({
       todos: [
-        { content: "主任务", activeForm: "正在做主任务", status: "in_progress" },
+        { content: "主任务", active_form: "正在做主任务", status: "in_progress" },
       ],
     });
     await subTool.execute({
       todos: [
-        { content: "子任务A", activeForm: "正在做子任务A", status: "completed" },
-        { content: "子任务B", activeForm: "正在做子任务B", status: "in_progress" },
+        { content: "子任务A", active_form: "正在做子任务A", status: "completed" },
+        { content: "子任务B", active_form: "正在做子任务B", status: "in_progress" },
       ],
     });
 

@@ -2,7 +2,7 @@
  * Dynamic Workflows M6 — Workflow 工具(注册给模型)
  *
  * 模型调用此工具来跑一段确定性多 agent 编排脚本。职责:
- *  1. 接收 inline script / scriptPath / 已存 workflow name + args + resumeFromRunId;
+ *  1. 接收 inline script / script_path / 已存 workflow name + args + resume_from_run_id;
  *  2. 解析校验 meta(sandbox.parseAndValidateMeta);
  *  3. 注册 local_workflow 后台 task(TUI 可见);
  *  4. 组装 WorkflowRuntime + SubAgentRunner + Journal,跑 sandbox;
@@ -55,23 +55,23 @@ const workflowSchema = lazySchema(() =>
         .describe(
           "自包含的 workflow JS 脚本。必须以 `export const meta = { name, description, phases }` 开头(纯字面量),随后用 agent()/parallel()/pipeline()/phase()/log()/args/budget 编写。纯 JavaScript,不能含 TypeScript 类型标注。",
         ),
-      scriptPath: z
+      script_path: z
         .string()
         .optional()
-        .describe("磁盘上的 workflow 脚本路径。优先于 script。用于迭代:编辑该文件后用同一 scriptPath 重跑。"),
+        .describe("磁盘上的 workflow 脚本路径。优先于 script。用于迭代:编辑该文件后用同一 script_path 重跑。"),
       name: z
         .string()
         .optional()
-        .describe("已保存 workflow 的名字(从 ~/.sid-code/workflows/scripts/ 加载)。script/scriptPath 都没给时用它。"),
+        .describe("已保存 workflow 的名字(从 ~/.sid-code/workflows/scripts/ 加载)。script/script_path 都没给时用它。"),
       args: z
         .unknown()
         .optional()
         .describe("传给脚本的 args(脚本里以全局 `args` 逐字可见)。传数组/对象用真正的 JSON 值,不要传 JSON 字符串。"),
-      resumeFromRunId: z
+      resume_from_run_id: z
         .string()
         .optional()
         .describe("从先前某次 run 的 journal 恢复:未改动的 agent() 调用直接返回缓存,只重跑改动及其之后的。"),
-      budgetTotal: z
+      budget_total: z
         .number()
         .optional()
         .describe("本次 run 的 token 目标(硬上限)。达上限后 agent() 抛错。省略=不限。"),
@@ -167,27 +167,27 @@ export class WorkflowTool implements Tool {
 - 原语:agent(prompt, opts?) 开子代理;parallel(thunks) 并发屏障;pipeline(items, ...stages) 无屏障逐项;phase(title) 进度组;log(msg) 叙述;args 入参;budget 预算。
 - agent({schema}) 强制结构化输出,返回校验后的对象;agent({model}) 选模型;agent({isolation:'worktree'}) 并行改文件隔离。${agentTypesLine}
 - 默认 pipeline 而非 parallel:无屏障逐项推进墙钟更短。仅当 stage N 需要全部 stage N-1 结果时才用 parallel 屏障。
-- 迭代:返回的 scriptPath 可编辑后用 {scriptPath, resumeFromRunId} 重跑,已完成的 agent 走缓存。`;
+- 迭代:返回的 script_path 可编辑后用 {script_path, resume_from_run_id} 重跑,已完成的 agent 走缓存。`;
   }
 
   inputSchema(): Record<string, unknown> {
     return z.toJSONSchema(workflowSchema()) as Record<string, unknown>;
   }
 
-  /** 解析脚本来源:script > scriptPath > name */
+  /** 解析脚本来源:script > script_path > name */
   private resolveScript(params: {
     script?: string;
-    scriptPath?: string;
+    script_path?: string;
     name?: string;
   }): { src: string; source: string } | { error: string } {
-    if (params.scriptPath) {
-      if (!existsSync(params.scriptPath)) {
-        return { error: `scriptPath 不存在: ${params.scriptPath}` };
+    if (params.script_path) {
+      if (!existsSync(params.script_path)) {
+        return { error: `script_path 不存在: ${params.script_path}` };
       }
       try {
-        return { src: readFileSync(params.scriptPath, "utf-8"), source: `scriptPath:${params.scriptPath}` };
+        return { src: readFileSync(params.script_path, "utf-8"), source: `scriptPath:${params.script_path}` };
       } catch (err) {
-        return { error: `读取 scriptPath 失败: ${(err as Error).message}` };
+        return { error: `读取 script_path 失败: ${(err as Error).message}` };
       }
     }
     if (params.script) {
@@ -204,7 +204,7 @@ export class WorkflowTool implements Tool {
         return { error: `读取 workflow ${params.name} 失败: ${(err as Error).message}` };
       }
     }
-    return { error: "必须提供 script / scriptPath / name 之一" };
+    return { error: "必须提供 script / script_path / name 之一" };
   }
 
   /** 持久化脚本到 ~/.sid-code/workflows/scripts/<name>-<runId>.js,返回落盘路径 */
@@ -226,11 +226,11 @@ export class WorkflowTool implements Tool {
     const log = getLogger();
     const params = input as {
       script?: string;
-      scriptPath?: string;
+      script_path?: string;
       name?: string;
       args?: unknown;
-      resumeFromRunId?: string;
-      budgetTotal?: number;
+      resume_from_run_id?: string;
+      budget_total?: number;
     };
 
     // 1) 解析脚本来源
@@ -248,7 +248,7 @@ export class WorkflowTool implements Tool {
     const meta = metaResult.meta;
 
     // 3) runId:resume 复用旧 id,否则新建
-    const runId = params.resumeFromRunId ?? newRunId();
+    const runId = params.resume_from_run_id ?? newRunId();
 
     // 4) 注册后台 task(TUI 可见)。abortController 由 killWorkflowTask 触发,
     //    下面 §合并 signal 时接进 runtime,确保 task_stop 能真正中止运行中的子代理。
@@ -262,7 +262,7 @@ export class WorkflowTool implements Tool {
 
     // 5) 组装 journal(resume 时回放)
     const journal = new Journal(journalPath(runId));
-    if (params.resumeFromRunId) journal.load();
+    if (params.resume_from_run_id) journal.load();
 
     // 6) 持久化脚本(支持迭代/分享)
     const savedPath = this.persistScript(meta.name, runId, src);
@@ -306,7 +306,7 @@ export class WorkflowTool implements Tool {
     const runtime = new WorkflowRuntime({
       runner,
       args: params.args,
-      budgetTotal: params.budgetTotal ?? null,
+      budgetTotal: params.budget_total ?? null,
       spentReader: () => outputTokens,
       journal,
       signal: mergedSignal,
@@ -363,7 +363,7 @@ export class WorkflowTool implements Tool {
       const outputObj = {
         workflow: meta.name,
         runId,
-        scriptPath: savedPath,
+        script_path: savedPath,
         agentCount: runtime.agentCallCount,
         result: value,
       };
@@ -379,7 +379,7 @@ export class WorkflowTool implements Tool {
       log.info("WORKFLOW", `✓ workflow "${meta.name}" 完成,共 ${runtime.agentCallCount} 个 agent 调用`);
 
       const resumeHint = savedPath
-        ? `\n\n可迭代:编辑 ${savedPath} 后用 {scriptPath:"${savedPath}", resumeFromRunId:"${runId}"} 重跑(已完成的 agent 走缓存)。`
+        ? `\n\n可迭代:编辑 ${savedPath} 后用 {script_path:"${savedPath}", resume_from_run_id:"${runId}"} 重跑(已完成的 agent 走缓存)。`
         : "";
       return { output: outputText + resumeHint, isError: false };
     } catch (err) {

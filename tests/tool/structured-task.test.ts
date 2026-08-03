@@ -130,14 +130,14 @@ describe("task_create / task_update / task_get / task_list 工具", () => {
     const create = new TaskCreateTool();
     const c = JSON.parse((await create.execute({ subject: "s", description: "d" })).output);
     const update = new TaskUpdateTool();
-    const r = await update.execute({ taskId: c.id, status: "in_progress" });
+    const r = await update.execute({ task_id: c.id, status: "in_progress" });
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(r.output).status).toBe("in_progress");
   });
 
   test("task_update 不存在的任务报错", async () => {
     const update = new TaskUpdateTool();
-    const r = await update.execute({ taskId: "999", status: "completed" });
+    const r = await update.execute({ task_id: "999", status: "completed" });
     expect(r.isError).toBe(true);
   });
 
@@ -145,7 +145,7 @@ describe("task_create / task_update / task_get / task_list 工具", () => {
     const create = new TaskCreateTool();
     const c = JSON.parse((await create.execute({ subject: "s", description: "d" })).output);
     const update = new TaskUpdateTool();
-    const r = await update.execute({ taskId: c.id, status: "deleted" });
+    const r = await update.execute({ task_id: c.id, status: "deleted" });
     expect(JSON.parse(r.output).deleted).toBe(true);
   });
 
@@ -153,7 +153,7 @@ describe("task_create / task_update / task_get / task_list 工具", () => {
     const create = new TaskCreateTool();
     const c = JSON.parse((await create.execute({ subject: "s", description: "d" })).output);
     const get = new StructuredTaskGetTool();
-    const r = await get.execute({ taskId: c.id });
+    const r = await get.execute({ task_id: c.id });
     expect(r.isError).toBeFalsy();
     const parsed = JSON.parse(r.output);
     expect(parsed.subject).toBe("s");
@@ -162,7 +162,7 @@ describe("task_create / task_update / task_get / task_list 工具", () => {
 
   test("task_get 不存在报错", async () => {
     const get = new StructuredTaskGetTool();
-    const r = await get.execute({ taskId: "999" });
+    const r = await get.execute({ task_id: "999" });
     expect(r.isError).toBe(true);
   });
 
@@ -177,7 +177,7 @@ describe("task_create / task_update / task_get / task_list 工具", () => {
     const c1 = JSON.parse((await create.execute({ subject: "A", description: "d" })).output);
     await create.execute({ subject: "B", description: "d" });
     const update = new TaskUpdateTool();
-    await update.execute({ taskId: c1.id, status: "in_progress" });
+    await update.execute({ task_id: c1.id, status: "in_progress" });
 
     const list = new StructuredTaskListTool();
     const all = JSON.parse((await list.execute({ status: "all" })).output);

@@ -13,7 +13,7 @@ const taskCreateSchema = lazySchema(() =>
   z.object({
     subject: z.string().describe("任务标题（简短、祈使句，如「修复登录流程的鉴权 bug」）"),
     description: z.string().describe("任务的详细说明：需要做什么、上下文与验收标准"),
-    activeForm: z
+    active_form: z
       .string()
       .optional()
       .describe("in_progress 时 spinner 展示的进行时描述（如「Running tests」），省略则展示 subject"),
@@ -42,7 +42,7 @@ export class TaskCreateTool implements Tool {
   usageGuide(): string {
     return `- 复杂多步任务（≥3 步）建议先建清单再逐项推进
 - subject 用祈使句概括结果；description 写清做什么和验收标准
-- 建完后用 task_update 设置依赖（addBlocks/addBlockedBy）和 owner 归属
+- 建完后用 task_update 设置依赖（add_blocks/add_blocked_by）和 owner 归属
 - 单条查询用 task_get，列全部用 task_list`;
   }
 
@@ -58,7 +58,7 @@ export class TaskCreateTool implements Tool {
     const params = input as {
       subject?: string;
       description?: string;
-      activeForm?: string;
+      active_form?: string;
       metadata?: Record<string, unknown>;
     };
 
@@ -72,7 +72,7 @@ export class TaskCreateTool implements Tool {
     const task = createStructuredTask({
       subject: params.subject.trim(),
       description: params.description.trim(),
-      activeForm: params.activeForm?.trim() || undefined,
+      activeForm: params.active_form?.trim() || undefined,
       metadata: params.metadata,
     });
 

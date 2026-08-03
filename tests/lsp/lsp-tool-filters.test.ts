@@ -123,7 +123,7 @@ describe("G10：文件大小保护", () => {
     const tool = new LSPTool();
     const result = await tool.execute({
       operation: "hover",
-      filePath: bigFile,
+      file_path: bigFile,
       line: 1,
       character: 1,
     });
@@ -137,7 +137,7 @@ describe("G10：文件大小保护", () => {
     const tool = new LSPTool();
     const result = await tool.execute({
       operation: "hover",
-      filePath: join(dir, "nonexistent.g10x"),
+      file_path: join(dir, "nonexistent.g10x"),
       line: 1,
       character: 1,
     });

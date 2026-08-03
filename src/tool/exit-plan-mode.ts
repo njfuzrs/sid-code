@@ -12,7 +12,7 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 const exitPlanModeSchema = lazySchema(() =>
   z.object({
     summary: z.string().optional().describe("计划的简短摘要（1-2 句话）"),
-    allowedPrompts: z
+    allowed_prompts: z
       .array(
         z.object({
           tool: z.enum(["bash"]).optional(),
@@ -92,12 +92,12 @@ export class ExitPlanModeTool implements Tool {
 
     const params = (input ?? {}) as {
       summary?: string;
-      allowedPrompts?: Array<{ tool?: string; prompt: string }>;
+      allowed_prompts?: Array<{ tool?: string; prompt: string }>;
     };
 
     // 记录执行阶段所需权限（用户审批计划时一并审批）
-    const allowedPrompts = Array.isArray(params.allowedPrompts)
-      ? params.allowedPrompts.filter((p) => p && typeof p.prompt === "string")
+    const allowedPrompts = Array.isArray(params.allowed_prompts)
+      ? params.allowed_prompts.filter((p) => p && typeof p.prompt === "string")
       : [];
     this.planManager.setAllowedPrompts(allowedPrompts);
 

@@ -10,24 +10,24 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const taskUpdateSchema = lazySchema(() =>
   z.object({
-    taskId: z.string().describe("要更新的任务 ID"),
+    task_id: z.string().describe("要更新的任务 ID"),
     status: z
       .enum(["pending", "in_progress", "completed", "deleted"])
       .optional()
       .describe("新状态。deleted 表示删除该任务（并摘除其依赖边）"),
     subject: z.string().optional().describe("新标题（祈使句）"),
     description: z.string().optional().describe("新描述"),
-    activeForm: z.string().optional().describe("in_progress 时 spinner 展示的进行时描述"),
+    active_form: z.string().optional().describe("in_progress 时 spinner 展示的进行时描述"),
     owner: z.string().optional().describe("认领者 agent 名（teams 派活用）"),
     metadata: z
       .record(z.string(), z.unknown())
       .optional()
       .describe("合并进 metadata 的键；值设为 null 表示删除该键"),
-    addBlocks: z
+    add_blocks: z
       .array(z.string())
       .optional()
       .describe("本任务完成后才能开始的下游任务 ID（本任务 blocks 它们）"),
-    addBlockedBy: z
+    add_blocked_by: z
       .array(z.string())
       .optional()
       .describe("必须先完成、否则本任务不能开始的上游任务 ID"),
@@ -45,13 +45,13 @@ export class TaskUpdateTool implements Tool {
   }
 
   description(): string {
-    return "更新结构化任务清单中的一个任务：改 status（含 deleted 删除）/subject/description/owner，或用 addBlocks/addBlockedBy 建立依赖关系。开始工作时置 in_progress，完成后置 completed。";
+    return "更新结构化任务清单中的一个任务：改 status（含 deleted 删除）/subject/description/owner，或用 add_blocks/add_blocked_by 建立依赖关系。开始工作时置 in_progress，完成后置 completed。";
   }
 
   usageGuide(): string {
     return `- 开始某任务前把 status 置为 in_progress，完成后置 completed
 - 只有在完全完成时才置 completed（测试通过、无遗留错误）；受阻则保持 in_progress
-- addBlockedBy 引用的上游任务全部 completed 后，本任务才算解锁
+- add_blocked_by 引用的上游任务全部 completed 后，本任务才算解锁
 - status=deleted 删除任务（会自动摘除相关依赖边）`;
   }
 
@@ -65,30 +65,30 @@ export class TaskUpdateTool implements Tool {
 
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
-      taskId?: string;
+      task_id?: string;
       status?: "pending" | "in_progress" | "completed" | "deleted";
       subject?: string;
       description?: string;
-      activeForm?: string;
+      active_form?: string;
       owner?: string;
       metadata?: Record<string, unknown>;
-      addBlocks?: string[];
-      addBlockedBy?: string[];
+      add_blocks?: string[];
+      add_blocked_by?: string[];
     };
 
-    if (!params.taskId) {
-      return { output: "错误: 缺少 taskId 参数", isError: true };
+    if (!params.task_id) {
+      return { output: "错误: 缺少 task_id 参数", isError: true };
     }
 
-    const result = updateStructuredTask(params.taskId, {
+    const result = updateStructuredTask(params.task_id, {
       status: params.status,
       subject: params.subject,
       description: params.description,
-      activeForm: params.activeForm,
+      activeForm: params.active_form,
       owner: params.owner,
       metadata: params.metadata,
-      addBlocks: params.addBlocks,
-      addBlockedBy: params.addBlockedBy,
+      addBlocks: params.add_blocks,
+      addBlockedBy: params.add_blocked_by,
     });
 
     if (!result.ok) {
@@ -97,7 +97,7 @@ export class TaskUpdateTool implements Tool {
 
     if (result.deleted) {
       return {
-        output: JSON.stringify({ taskId: params.taskId, deleted: true, message: `任务 #${params.taskId} 已删除` }),
+        output: JSON.stringify({ taskId: params.task_id, deleted: true, message: `任务 #${params.task_id} 已删除` }),
       };
     }
 

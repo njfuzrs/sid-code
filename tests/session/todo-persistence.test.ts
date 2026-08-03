@@ -10,6 +10,10 @@
  *  2. app.persistTodoState() 每轮 done 后 appendMetadata("todo_state", …)
  *  3. app.restoreSession 读取 metadata["todo_state"] 回灌
  * 这里覆盖 1（round-trip + 容错）+ 2 的落盘/读回（通过 SessionStore 端到端）。
+ *
+ * 命名说明：传给 execute() 的对象走 tool_use 协议层，字段是 active_form；
+ * 直接传给 hydrate() 的字面量是持久化快照格式，字段是内部结构 TodoItem.activeForm
+ * （两者不是同一层，字段名刻意不同，见 src/tool/todo-write.ts 的桥接注释）。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -20,7 +24,9 @@ import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 
 /** 构造一个已注入若干 todo 的工具实例（直接走 execute 更贴近真实写入路径） */
-async function toolWithTodos(todos: TodoItem[]): Promise<TodoWriteTool> {
+async function toolWithTodos(
+  todos: Array<{ content: string; active_form: string; status: TodoItem["status"] }>,
+): Promise<TodoWriteTool> {
   const tool = new TodoWriteTool();
   await tool.execute({ todos } as any, {} as any);
   return tool;
@@ -29,9 +35,9 @@ async function toolWithTodos(todos: TodoItem[]): Promise<TodoWriteTool> {
 describe("todo 清单 serialize/hydrate round-trip", () => {
   test("执行若干 todo 后，snapshot 回灌到新实例，清单完全一致", async () => {
     const orig = await toolWithTodos([
-      { content: "新增 crash-marker.ts", activeForm: "正在新增 crash-marker.ts", status: "completed" },
-      { content: "接线 restoreSession", activeForm: "正在接线 restoreSession", status: "in_progress" },
-      { content: "写单测", activeForm: "正在写单测", status: "pending" },
+      { content: "新增 crash-marker.ts", active_form: "正在新增 crash-marker.ts", status: "completed" },
+      { content: "接线 restoreSession", active_form: "正在接线 restoreSession", status: "in_progress" },
+      { content: "写单测", active_form: "正在写单测", status: "pending" },
     ]);
 
     const snap = orig.serialize();
@@ -49,8 +55,8 @@ describe("todo 清单 serialize/hydrate round-trip", () => {
 
   test("回灌后 serialize 再次 round-trip 仍等价（多次 resume 不失真）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
-      { content: "任务B", activeForm: "正在做B", status: "pending" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
+      { content: "任务B", active_form: "正在做B", status: "pending" },
     ]);
     const restored = new TodoWriteTool();
     restored.hydrate(orig.serialize());
@@ -61,8 +67,8 @@ describe("todo 清单 serialize/hydrate round-trip", () => {
 
   test("回灌后继续 execute 全量替换（续做不断档，可在恢复的清单上更新）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "in_progress" },
-      { content: "任务B", activeForm: "正在做B", status: "pending" },
+      { content: "任务A", active_form: "正在做A", status: "in_progress" },
+      { content: "任务B", active_form: "正在做B", status: "pending" },
     ]);
     const restored = new TodoWriteTool();
     restored.hydrate(orig.serialize());
@@ -70,8 +76,8 @@ describe("todo 清单 serialize/hydrate round-trip", () => {
     // resume 后把 A 标完成、B 进行中
     await restored.execute({
       todos: [
-        { content: "任务A", activeForm: "正在做A", status: "completed" },
-        { content: "任务B", activeForm: "正在做B", status: "in_progress" },
+        { content: "任务A", active_form: "正在做A", status: "completed" },
+        { content: "任务B", active_form: "正在做B", status: "in_progress" },
       ],
     } as any, {} as any);
 
@@ -81,7 +87,7 @@ describe("todo 清单 serialize/hydrate round-trip", () => {
 
   test("serialize 返回深拷贝，修改快照不影响工具内部状态", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "pending" },
+      { content: "任务A", active_form: "正在做A", status: "pending" },
     ]);
     const snap = orig.serialize();
     snap.todos[0].status = "completed";
@@ -103,8 +109,8 @@ describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）",
    */
   test("全部完成 → resume 后仍能取回完整 completed 清单", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
-      { content: "任务B", activeForm: "正在做B", status: "completed" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
+      { content: "任务B", active_form: "正在做B", status: "completed" },
     ]);
     // 展示语义已清空（面板收起），事实语义仍在
     expect(orig.getTodos()).toEqual([]);
@@ -120,7 +126,7 @@ describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）",
 
   test("resume 后 TUI 展示清单仍为空（不复活全绿面板，防行为回退）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
     ]);
     const restored = new TodoWriteTool();
     restored.hydrate(orig.serialize());
@@ -130,8 +136,8 @@ describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）",
 
   test("未全完成时两份语义一致，且快照不带多余字段（格式不 churn）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "in_progress" },
-      { content: "任务B", activeForm: "正在做B", status: "pending" },
+      { content: "任务A", active_form: "正在做A", status: "in_progress" },
+      { content: "任务B", active_form: "正在做B", status: "pending" },
     ]);
     const snap = orig.serialize();
     // 非 allDone 时两者等价，无需额外字段 → 与旧格式逐字节一致
@@ -171,7 +177,7 @@ describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）",
 
   test("多次 resume 不失真（终态快照可反复 round-trip）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
     ]);
     const r1 = new TodoWriteTool();
     r1.hydrate(orig.serialize());
@@ -183,7 +189,7 @@ describe("全部完成后的终态穿越 resume（2026-08-02，方案 §9-5）",
 
   test("/clear 后落空快照 → 恢复后两份语义都为空（不复活幽灵终态）", async () => {
     const orig = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
     ]);
     orig.reset();
     const restored = new TodoWriteTool();
@@ -232,7 +238,7 @@ describe("hydrate 对脏/空快照容错，不抛错", () => {
   test("全脏快照回灌后为空清单（等价于无历史），不污染", async () => {
     // 先注入合法清单，再用全脏快照回灌 → 覆盖为空（脏项全过滤），不抛错
     const tool = await toolWithTodos([
-      { content: "旧任务", activeForm: "正在做旧任务", status: "pending" },
+      { content: "旧任务", active_form: "正在做旧任务", status: "pending" },
     ]);
     expect(() => tool.hydrate({ todos: [{ bad: 1 }, "x", null] } as any)).not.toThrow();
     expect(tool.getTodos()).toEqual([]);
@@ -258,9 +264,9 @@ describe("todo_state metadata 落盘 + 读回（SessionStore 端到端）", () =
 
   test("serialize → appendMetadata → load 后可回灌，端到端等价", async () => {
     const tool = await toolWithTodos([
-      { content: "排查根因", activeForm: "正在排查根因", status: "completed" },
-      { content: "落地修复", activeForm: "正在落地修复", status: "in_progress" },
-      { content: "跑测试", activeForm: "正在跑测试", status: "pending" },
+      { content: "排查根因", active_form: "正在排查根因", status: "completed" },
+      { content: "落地修复", active_form: "正在落地修复", status: "in_progress" },
+      { content: "跑测试", active_form: "正在跑测试", status: "pending" },
     ]);
 
     const store = new SessionStore();
@@ -288,15 +294,15 @@ describe("todo_state metadata 落盘 + 读回（SessionStore 端到端）", () =
 
     // 第一轮：2 项
     const t1 = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "in_progress" },
-      { content: "任务B", activeForm: "正在做B", status: "pending" },
+      { content: "任务A", active_form: "正在做A", status: "in_progress" },
+      { content: "任务B", active_form: "正在做B", status: "pending" },
     ]);
     store.appendMetadata("todo_state", t1.serialize());
 
     // 第二轮：A 完成、B 进行中（全量替换后再落盘）
     const t2 = await toolWithTodos([
-      { content: "任务A", activeForm: "正在做A", status: "completed" },
-      { content: "任务B", activeForm: "正在做B", status: "in_progress" },
+      { content: "任务A", active_form: "正在做A", status: "completed" },
+      { content: "任务B", active_form: "正在做B", status: "in_progress" },
     ]);
     store.appendMetadata("todo_state", t2.serialize());
     SessionStore.flushPendingWrites();
@@ -317,7 +323,7 @@ describe("todo_state metadata 落盘 + 读回（SessionStore 端到端）", () =
 
     // 先落一条非空（模拟 clear 前）
     const before = await toolWithTodos([
-      { content: "旧清单", activeForm: "正在做旧清单", status: "pending" },
+      { content: "旧清单", active_form: "正在做旧清单", status: "pending" },
     ]);
     store.appendMetadata("todo_state", before.serialize());
 

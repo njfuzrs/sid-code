@@ -18,7 +18,7 @@ const todoWriteSchema = lazySchema(() =>
       .array(
         z.object({
           content: z.string().describe("任务描述（祈使形式），如 '新增 crash-marker.ts'"),
-          activeForm: z.string().describe("进行时形式，如 '正在新增 crash-marker.ts'"),
+          active_form: z.string().describe("进行时形式，如 '正在新增 crash-marker.ts'"),
           status: z.enum(["pending", "in_progress", "completed"]).describe("任务状态"),
         }),
       )
@@ -495,35 +495,49 @@ print("Hello World")
     // 校验 todos 是数组
     if (!Array.isArray(params?.todos)) {
       return {
-        output: "todos 必须是数组。格式: { todos: [{ content, activeForm, status }] }",
+        output: "todos 必须是数组。格式: { todos: [{ content, active_form, status }] }",
         isError: true,
       };
     }
 
-    const todos = params.todos as TodoItem[];
+    // 协议层字段名是 active_form（tool_use 输入边界）；内部 TodoItem 仍用 activeForm——
+    // 后者是被 TodoPanel/todos 命令/持久化快照广泛引用的内部数据模型，不是 schema 边界本身，
+    // 不级联重命名（见 lsp.ts 等文件的同一原则）。
+    const rawTodos = params.todos as Array<{
+      content?: unknown;
+      active_form?: unknown;
+      status?: unknown;
+    }>;
 
-    // 校验每个 todo 项
-    for (let i = 0; i < todos.length; i++) {
-      const t = todos[i];
+    // 校验每个 todo 项（读取的是协议字段名 active_form）
+    for (let i = 0; i < rawTodos.length; i++) {
+      const t = rawTodos[i];
       if (!t || typeof t.content !== "string" || !t.content.trim()) {
         return {
           output: `第 ${i + 1} 个 todo 项缺少有效的 content 字段`,
           isError: true,
         };
       }
-      if (typeof t.activeForm !== "string" || !t.activeForm.trim()) {
+      if (typeof t.active_form !== "string" || !t.active_form.trim()) {
         return {
-          output: `第 ${i + 1} 个 todo 项缺少有效的 activeForm 字段`,
+          output: `第 ${i + 1} 个 todo 项缺少有效的 active_form 字段`,
           isError: true,
         };
       }
-      if (!VALID_STATUSES.has(t.status)) {
+      if (!VALID_STATUSES.has(t.status as string)) {
         return {
           output: `第 ${i + 1} 个 todo 项的 status 无效: "${t.status}"。有效值: pending, in_progress, completed`,
           isError: true,
         };
       }
     }
+
+    // 桥接为内部 TodoItem 结构（字段名 activeForm，供下游 UI/持久化复用，见上方注释）
+    const todos: TodoItem[] = rawTodos.map((t) => ({
+      content: t.content as string,
+      activeForm: t.active_form as string,
+      status: t.status as TodoItem["status"],
+    }));
 
     // 检查全部完成（必须在 in_progress 校验之前，否则 [{completed}, {completed}] 会被误杀）
     const allDone = todos.length > 0 && todos.every(t => t.status === "completed");

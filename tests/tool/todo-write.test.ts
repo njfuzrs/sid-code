@@ -14,7 +14,7 @@ describe("TodoWriteTool", () => {
     content: string,
     status: "pending" | "in_progress" | "completed" = "pending",
   ) {
-    return { content, activeForm: `正在${content}`, status };
+    return { content, active_form: `正在${content}`, status };
   }
 
   it("name 返回 todo_write", () => {
@@ -112,7 +112,7 @@ describe("TodoWriteTool", () => {
   it("拒绝无效 status", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({
-      todos: [{ content: "任务1", activeForm: "执行1", status: "unknown" }],
+      todos: [{ content: "任务1", active_form: "执行1", status: "unknown" }],
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("status 无效");
@@ -128,19 +128,19 @@ describe("TodoWriteTool", () => {
   it("拒绝缺少 content 的项", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({
-      todos: [{ content: "", activeForm: "执行", status: "pending" }],
+      todos: [{ content: "", active_form: "执行", status: "pending" }],
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("content");
   });
 
-  it("拒绝缺少 activeForm 的项", async () => {
+  it("拒绝缺少 active_form 的项", async () => {
     const tool = new TodoWriteTool();
     const result = await tool.execute({
-      todos: [{ content: "任务1", activeForm: "", status: "pending" }],
+      todos: [{ content: "任务1", active_form: "", status: "pending" }],
     });
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("activeForm");
+    expect(result.output).toContain("active_form");
   });
 
   it("全部完成时清空列表并提示汇总", async () => {

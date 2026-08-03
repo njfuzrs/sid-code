@@ -11,7 +11,7 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const taskGetSchema = lazySchema(() =>
   z.object({
-    taskId: z.string().describe("要查询的任务 ID"),
+    task_id: z.string().describe("要查询的任务 ID"),
   }),
 );
 
@@ -38,15 +38,15 @@ export class StructuredTaskGetTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
-    const params = input as { taskId?: string };
+    const params = input as { task_id?: string };
 
-    if (!params.taskId) {
-      return { output: "错误: 缺少 taskId 参数", isError: true };
+    if (!params.task_id) {
+      return { output: "错误: 缺少 task_id 参数", isError: true };
     }
 
-    const task = getStructuredTask(params.taskId);
+    const task = getStructuredTask(params.task_id);
     if (!task) {
-      return { output: `任务 "${params.taskId}" 不存在`, isError: true };
+      return { output: `任务 "${params.task_id}" 不存在`, isError: true };
     }
 
     return {

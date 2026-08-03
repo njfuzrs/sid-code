@@ -4,10 +4,10 @@
  * 对标 claude-code 的 ScheduleWakeup：让模型在动态轮询场景（如「跑到 CI 过为止」）
  * 自行决定下次唤醒的延迟，而不必手写 cron 表达式。
  *
- * 内部转为 recurring=false 的一次性任务，用绝对触发时刻 fireAt（now + delaySeconds）
+ * 内部转为 recurring=false 的一次性任务，用绝对触发时刻 fireAt（now + delay_seconds）
  * 直接调度，绕过 cron 解析。触发后任务自删（见 scheduler.check 的一次性分支）。
  *
- * delaySeconds 钳制到 [60, 3600]：
+ * delay_seconds 钳制到 [60, 3600]：
  * - 下限 60s：避免高频空转。
  * - 上限 3600s：单次唤醒最长 1 小时，更久的周期任务应走 cron_create。
  * 取舍提示（与 cc 一致）：prompt 缓存 TTL 约 5 分钟，睡过 300s 会付一次缓存 miss，
@@ -31,7 +31,7 @@ const MAX_DELAY_S = 3600;
 
 const scheduleWakeupSchema = lazySchema(() =>
   z.object({
-    delaySeconds: z
+    delay_seconds: z
       .number()
       .describe("距现在多少秒后唤醒一次。会被钳制到 [60, 3600]。"),
     prompt: z.string().describe("唤醒时执行的 prompt"),
@@ -58,7 +58,7 @@ export class ScheduleWakeupTool implements Tool {
 用于不定期轮询场景：模型自己决定下次检查的延迟，而不必手写 cron。
 典型用法：「跑到 CI 过为止」——每次唤醒检查状态，没过就再调一次本工具。
 
-- delaySeconds 会被钳制到 [60, 3600]（1 分钟 ~ 1 小时）。
+- delay_seconds 会被钳制到 [60, 3600]（1 分钟 ~ 1 小时）。
 - 触发一次后自动删除；要继续轮询请在唤醒后再次调用。
 - 固定节奏的循环任务请改用 cron_create。
 
@@ -72,26 +72,26 @@ export class ScheduleWakeupTool implements Tool {
 
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
-      delaySeconds?: number;
+      delay_seconds?: number;
       prompt?: string;
       reason?: string;
     };
 
-    if (typeof params.delaySeconds !== "number" || !params.prompt) {
+    if (typeof params.delay_seconds !== "number" || !params.prompt) {
       return {
-        output: "错误: 缺少必需参数 (delaySeconds, prompt)",
+        output: "错误: 缺少必需参数 (delay_seconds, prompt)",
         isError: true,
       };
     }
 
-    if (Number.isNaN(params.delaySeconds) || !Number.isFinite(params.delaySeconds)) {
-      return { output: "错误: delaySeconds 必须是有限数字", isError: true };
+    if (Number.isNaN(params.delay_seconds) || !Number.isFinite(params.delay_seconds)) {
+      return { output: "错误: delay_seconds 必须是有限数字", isError: true };
     }
 
     // 钳制延迟到 [60, 3600]
     const clamped = Math.min(
       MAX_DELAY_S,
-      Math.max(MIN_DELAY_S, Math.round(params.delaySeconds)),
+      Math.max(MIN_DELAY_S, Math.round(params.delay_seconds)),
     );
 
     const now = Date.now();
@@ -108,8 +108,8 @@ export class ScheduleWakeupTool implements Tool {
     getScheduler().addSessionTask(task);
 
     const clampNote =
-      clamped !== Math.round(params.delaySeconds)
-        ? `（已从 ${Math.round(params.delaySeconds)}s 钳制到 ${clamped}s）`
+      clamped !== Math.round(params.delay_seconds)
+        ? `（已从 ${Math.round(params.delay_seconds)}s 钳制到 ${clamped}s）`
         : "";
     const reasonNote = params.reason ? `\n理由: ${params.reason}` : "";
     return {

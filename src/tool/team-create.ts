@@ -23,7 +23,7 @@ const teamCreateSchema = lazySchema(() =>
           type: z.string().describe("子代理类型（见 sub_agent 工具描述中列出的可用类型）"),
           task: z.string().describe("分配给该成员的任务"),
           isolated: z.boolean().optional().describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
-          dependsOn: z
+          depends_on: z
             .array(z.string())
             .optional()
             .describe("依赖的其他成员名列表：这些成员完成后本成员才开始（用于有序编排，如测试成员依赖实现成员）。不填=无依赖，立即并发"),
@@ -116,7 +116,7 @@ export class TeamCreateTool implements Tool {
     const log = getLogger();
     const params = input as {
       team_name?: string;
-      members?: TeammateSpec[];
+      members?: Array<Omit<TeammateSpec, "dependsOn"> & { depends_on?: string[] }>;
       shared_tasks?: Array<{ subject: string; description: string }>;
     };
 
@@ -152,10 +152,10 @@ export class TeamCreateTool implements Tool {
       names.add(m.name);
     }
 
-    // P2-2：校验 dependsOn 引用的成员名都存在（引用不存在的成员是明显的编排错误，早失败）。
+    // P2-2：校验 depends_on 引用的成员名都存在（引用不存在的成员是明显的编排错误，早失败）。
     for (const m of params.members) {
-      if (!m.dependsOn) continue;
-      for (const dep of m.dependsOn) {
+      if (!m.depends_on) continue;
+      for (const dep of m.depends_on) {
         if (!names.has(dep)) {
           return { output: `错误: 成员 "${m.name}" 的依赖 "${dep}" 不是有效成员名`, isError: true };
         }
@@ -166,9 +166,17 @@ export class TeamCreateTool implements Tool {
     }
 
     try {
+      // 协议层字段名是 depends_on；TeammateSpec.dependsOn 是 swarm 内部数据模型（team.ts 多处
+      // 消费），不跟着改。此处做一次桥接——漏掉它会让依赖编排静默失效（dependsOn 恒 undefined，
+      // 所有成员退化成无依赖并发），而不是报错，属于最难发现的一类缺陷。
+      const members: TeammateSpec[] = params.members.map(({ depends_on, ...rest }) => ({
+        ...rest,
+        ...(depends_on ? { dependsOn: depends_on } : {}),
+      }));
+
       const team = new TeamManager({
         teamName: params.team_name,
-        members: params.members,
+        members,
         providerRegistry: this.providerRegistry,
         toolRegistry: this.toolRegistry,
         subAgentChecker: this.permissionChecker,

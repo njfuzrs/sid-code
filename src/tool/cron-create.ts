@@ -21,7 +21,7 @@ const cronCreateSchema = lazySchema(() =>
     prompt: z.string().describe("触发时执行的 prompt"),
     recurring: z.boolean().optional().describe("是否循环（默认 true）"),
     durable: z.boolean().optional().describe("是否持久化（默认 false）"),
-    allowedTools: z
+    allowed_tools: z
       .array(z.string())
       .optional()
       .describe(
@@ -51,7 +51,7 @@ export class CronCreateTool implements Tool {
 recurring: true（默认）= 循环触发，7 天后自动过期
 recurring: false = 触发一次后自动删除
 durable: true = 持久化到磁盘，跨会话存活（默认 false）
-allowedTools: 无头执行时预授权的工具白名单（仅 durable 任务有意义，缺省默认只读）`;
+allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务有意义，缺省默认只读）`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -64,7 +64,7 @@ allowedTools: 无头执行时预授权的工具白名单（仅 durable 任务有
       prompt?: string;
       recurring?: boolean;
       durable?: boolean;
-      allowedTools?: string[];
+      allowed_tools?: string[];
     };
 
     if (!params.cron || !params.prompt) {
@@ -79,9 +79,11 @@ allowedTools: 无头执行时预授权的工具白名单（仅 durable 任务有
     }
 
     // 任务级预授权白名单（§5.3）：仅 durable 任务无头执行时有意义，去重去空。
+    // 协议层字段名是 allowed_tools；CronTask.allowedTools 是持久化到 scheduled_tasks.json
+    // 的磁盘格式，不跟着改——改了会让已存在的 durable 任务读不出白名单。
     const allowedTools =
-      Array.isArray(params.allowedTools) && params.allowedTools.length > 0
-        ? [...new Set(params.allowedTools.map((s) => String(s).trim()).filter(Boolean))]
+      Array.isArray(params.allowed_tools) && params.allowed_tools.length > 0
+        ? [...new Set(params.allowed_tools.map((s) => String(s).trim()).filter(Boolean))]
         : undefined;
 
     const task: CronTask = {

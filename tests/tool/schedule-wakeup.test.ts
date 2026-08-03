@@ -15,7 +15,7 @@ describe("ScheduleWakeupTool", () => {
   it("正常延迟创建一次性 fireAt 任务", async () => {
     const tool = new ScheduleWakeupTool();
     const before = Date.now();
-    const res = await tool.execute({ delaySeconds: 120, prompt: "检查 CI" });
+    const res = await tool.execute({ delay_seconds: 120, prompt: "检查 CI" });
     expect(res.isError).toBeFalsy();
     expect(res.output).toContain("120s");
 
@@ -32,7 +32,7 @@ describe("ScheduleWakeupTool", () => {
 
   it("延迟下钳到 60s", async () => {
     const tool = new ScheduleWakeupTool();
-    const res = await tool.execute({ delaySeconds: 5, prompt: "x" });
+    const res = await tool.execute({ delay_seconds: 5, prompt: "x" });
     expect(res.output).toContain("60s");
     expect(res.output).toContain("钳制");
     const t = getScheduler().listTasks()[0];
@@ -42,7 +42,7 @@ describe("ScheduleWakeupTool", () => {
 
   it("延迟上钳到 3600s", async () => {
     const tool = new ScheduleWakeupTool();
-    const res = await tool.execute({ delaySeconds: 99999, prompt: "x" });
+    const res = await tool.execute({ delay_seconds: 99999, prompt: "x" });
     expect(res.output).toContain("3600s");
     const t = getScheduler().listTasks()[0];
     const delta = t.fireAt! - t.createdAt;
@@ -53,20 +53,20 @@ describe("ScheduleWakeupTool", () => {
     const tool = new ScheduleWakeupTool();
     const r1 = await tool.execute({ prompt: "x" });
     expect(r1.isError).toBe(true);
-    const r2 = await tool.execute({ delaySeconds: 100 });
+    const r2 = await tool.execute({ delay_seconds: 100 });
     expect(r2.isError).toBe(true);
   });
 
   it("拒绝非有限数字", async () => {
     const tool = new ScheduleWakeupTool();
-    const r = await tool.execute({ delaySeconds: Infinity, prompt: "x" });
+    const r = await tool.execute({ delay_seconds: Infinity, prompt: "x" });
     expect(r.isError).toBe(true);
   });
 
   it("reason 写入输出", async () => {
     const tool = new ScheduleWakeupTool();
     const res = await tool.execute({
-      delaySeconds: 200,
+      delay_seconds: 200,
       prompt: "x",
       reason: "等构建约 3 分钟",
     });

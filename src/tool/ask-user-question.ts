@@ -57,7 +57,7 @@ const askUserQuestionSchema = lazySchema(() =>
             .min(MIN_OPTIONS)
             .max(MAX_OPTIONS)
             .describe(`${MIN_OPTIONS}-${MAX_OPTIONS} 个候选项。无需提供"其他"选项——UI 会自动追加，允许用户自定义输入`),
-          multiSelect: z
+          multi_select: z
             .boolean()
             .optional()
             .describe("是否允许多选（选项之间不互斥时设为 true，默认 false）"),
@@ -112,13 +112,13 @@ export class AskUserQuestionTool implements Tool {
 - 一次可提 1-4 个问题，每题 2-4 个候选项。
 - 每个选项给简短 label + 可选 description（解释这个选项意味着什么、有何权衡）。
 - 若推荐某个选项，把它放在第一个，并在 label 末尾标注"(推荐)"。
-- 选项之间不互斥时设 multiSelect: true（允许用户多选）。
+- 选项之间不互斥时设 multi_select: true（允许用户多选）。
 - 无需提供"其他"选项——UI 会自动追加，允许用户自定义输入。
 - 用户可以给选择附加自由备注（notes），备注会连同答案一起回灌给你。
 
 ## preview 预览功能
 当选项代表用户需要**看到实物才能对比**的具体产物时（如两种 UI 布局 ASCII mockup、两段代码实现、两种配置方案），给 option 的 \`preview\` 字段填入 markdown 内容。UI 会切换为左右分栏：左侧选项列表，右侧渲染当前聚焦选项的 preview。
-- 仅单选题（非 multiSelect）生效。
+- 仅单选题（非 multi_select）生效。
 - 多行文本和换行符正常渲染。
 - 不要为简单偏好题使用 preview——label + description 足矣时别浪费屏幕空间。
 
@@ -148,7 +148,7 @@ export class AskUserQuestionTool implements Tool {
     if (!Array.isArray(params?.questions) || params.questions.length === 0) {
       return {
         output:
-          "questions 必须是非空数组。格式: { questions: [{ question, header, options: [{ label, description? }], multiSelect? }] }",
+          "questions 必须是非空数组。格式: { questions: [{ question, header, options: [{ label, description? }], multi_select? }] }",
         isError: true,
       };
     }
