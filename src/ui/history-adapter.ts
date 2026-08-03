@@ -500,6 +500,67 @@ export function buildCompletedToolCall(
   };
 }
 
+/**
+ * 侧信道翻卡的判定与构造（增量呈现的**语义单点**）。
+ *
+ * 语义：给定一个仍在执行中的工具卡片与侧信道里的已完成结果，返回翻好的完成态卡片；
+ * 不该翻时返回 null（调用方保持原卡片引用不动）。
+ *
+ * 不该翻的两种情况，都必须留在这里、不许调用方各自判断：
+ *   1. 侧信道里没有这个 callId —— 该工具还没跑完；
+ *   2. 侧信道条目不是 tool_result —— 防御性：非结果块不能当完成态渲染。
+ *
+ * 为什么要把这三行提成函数：app.ts 有**两个**调用点（全量重建的 injectLiveToolSettled
+ * 与轻量重渲的 refreshLiveProgressInPlace），两处必须逐字同判定。此前两处各写一遍
+ * `if (!settled || settled.block.type !== "tool_result") continue;`，改一处漏一处就会
+ * 出现「全量重建翻了、轻量路径没翻」这类只在特定时序下复现的漂移。收成单点后，
+ * 判定漂移在类型层面就不可能发生。
+ *
+ * 调用方仍需自己守 `status === Executing`：那是「要不要考虑翻」的前置门（已完成卡片
+ * 由权威路径渲染，不许被侧信道二次覆盖），与「能不能翻」是两件事。
+ */
+export function buildSettledToolCallIfReady(
+  tool: IndividualToolCallDisplay,
+  settled: { block: ContentBlock; elapsedMs?: number } | undefined,
+): IndividualToolCallDisplay | null {
+  if (!settled) return null;
+  if (settled.block.type !== "tool_result") return null;
+  return buildCompletedToolCall(settled.block, tool.name, tool, settled.elapsedMs);
+}
+
+/**
+ * 把侧信道里已完成的工具结果注入 historyItems，把仍是 executing 的卡片就地翻成完成态。
+ *
+ * **就地修改**传入的 historyItems（这些 item 是 assignIds 刚 new 出来的，非共享引用，
+ * 改它不影响 Static 已缓存的已完成项）。返回翻掉的卡片数，供调用方判断有无变化。
+ *
+ * 只改 `status === Executing` 的项：tool_result 已入 ctxMgr 的项本就是完成态（由权威
+ * 路径渲染），不需要也不应该被侧信道二次覆盖。
+ *
+ * 从 app.ts 的闭包里提出来，只为一件事：**让它可被测试**。原先这段逻辑写在
+ * setupTUICallbacks 的闭包内，外部拿不到引用，测试只能"照抄一遍逻辑"——那种测试在
+ * 生产代码漂移时照样绿，等于没测。
+ */
+export function injectSettledToolCalls(
+  historyItems: HistoryItem[],
+  settledById: Map<string, { block: ContentBlock; elapsedMs?: number }>,
+): number {
+  if (settledById.size === 0) return 0;
+  let flipped = 0;
+  for (const item of historyItems) {
+    if (item.type !== "tool_group") continue;
+    for (let i = 0; i < item.tools.length; i++) {
+      const tool = item.tools[i];
+      if (tool.status !== ToolCallStatus.Executing) continue;
+      const next = buildSettledToolCallIfReady(tool, settledById.get(tool.callId));
+      if (!next) continue;
+      item.tools[i] = next;
+      flipped++;
+    }
+  }
+  return flipped;
+}
+
 // ── 内部转换函数 ──
 
 function convertUserMessage(

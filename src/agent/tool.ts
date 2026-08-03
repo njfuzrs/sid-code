@@ -562,6 +562,11 @@ ${typeLines}
           forkMessages,
           cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
           model: params.model, // P2-15: 每次调用可覆盖模型
+          // 前台子代理不上「后台任务」面板：它的结果已由下方 return 作为 tool_result 返回、
+          // 渲染成 `⏺ sub_agent <type>` 工具卡片。再上一次面板 → 同一个子代理在屏幕上出现
+          // 两遍（用户报的问题一：工具卡片与面板 `◓ [AG explore]` 完全重合）。
+          // 仅摘可见性，taskId / 磁盘输出 / task_output 查询不受影响。
+          _showInPanel: false,
         },
         signal,
       );

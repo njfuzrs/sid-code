@@ -26,6 +26,12 @@ export function createAgentTask(opts: {
   description: string;
   toolUseId?: string;
   model?: string;
+  /** 是否算「后台任务」（面板 / bg_task_list / `<task-statuses>` 附件可见）。
+   *  默认 true。传 false 用于**前台子代理**——它的执行结果由 runSync 作为 tool_result
+   *  返回并渲染成 `⏺ sub_agent explore` 工具卡片，再上一次面板就是同一个子代理渲染两遍
+   *  （用户报的问题一）。仍然注册进 registry（taskId / 磁盘输出 / task_output 查询都依赖它），
+   *  只摘掉「上面板」这一个属性。判据收敛在 `isPanelTask()`。 */
+  isBackgrounded?: boolean;
 }): { taskState: LocalAgentTaskState; abortController: AbortController } {
   const taskId = generateTaskId("local_agent");
   const output = initTaskOutput(taskId);
@@ -45,7 +51,7 @@ export function createAgentTask(opts: {
     agentType: opts.agentType,
     prompt: opts.prompt,
     model: opts.model,
-    isBackgrounded: true,
+    isBackgrounded: opts.isBackgrounded ?? true,
     progress: { toolUseCount: 0, tokenCount: 0, recentActivities: [] },
   };
 

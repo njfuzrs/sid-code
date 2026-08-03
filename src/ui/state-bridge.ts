@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getAllTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
+import { getAllTasks, isPanelTask, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
@@ -35,9 +35,14 @@ export class StateBridge extends EventEmitter {
     this.emit("change", this.current);
   }
 
-  /** 从 Task 注册表拉取最新任务列表并更新 TUI 状态 */
+  /** 从 Task 注册表拉取最新任务列表并更新 TUI 状态。
+   *
+   *  经 isPanelTask 单一闸门过滤（见 task/types.ts）：前台子代理已由 tool_result 渲染成
+   *  `⏺ sub_agent explore` 工具卡片，不能再上后台任务面板（否则同一子代理渲染两遍）。
+   *  这里是**渲染端兜底**——源头 sub-agent.ts 已标 isBackgrounded=false，但将来若新增一条
+   *  子代理注册路径又忘记标，这层过滤仍然拦得住。 */
   updateTasks(): void {
-    const all = getAllTasks();
+    const all = getAllTasks().filter(isPanelTask);
     const taskInfos: TaskDisplayInfo[] = all.map(t => {
       const info: TaskDisplayInfo = {
         id: t.id,

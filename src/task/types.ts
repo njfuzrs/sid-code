@@ -111,6 +111,28 @@ export interface LocalWorkflowTaskState extends TaskStateBase {
 /** 联合类型 */
 export type TaskState = LocalShellTaskState | LocalAgentTaskState | LocalWorkflowTaskState;
 
+/**
+ * 面板/后台可见性的**唯一闸门**（对标 claude-code `isPanelAgentTask`）。
+ *
+ * 所有「后台任务面板 / pill / 计数 / 模型可见的后台任务清单」消费端**必须**走这个谓词，
+ * 各自另写 filter 就会漂移——问题一（前台子代理同时渲染成 `⏺ sub_agent explore` 工具卡片
+ * 与面板 `[AG explore]` 行）正是漂移的产物：源头把前台子代理也标成 `isBackgrounded: true`，
+ * 而渲染端从不问"这个任务该不该上面板"。**要改闸门，只改这里。**
+ *
+ * 判据用显式布尔字段 `isBackgrounded`，不用 cc 的 `agentType !== 'main-session'`
+ * 字符串魔法值：语义自明，且不依赖 agentType 命名约定。
+ *
+ * 边界（哪些消费端该走、哪些不该）：
+ * - **该走**：面板（state-bridge）、`bg_task_list` 工具、`/ps` 的后台任务区、
+ *   Ctrl+F 终止全部后台任务、注入系统提示词的 `<task-statuses>` 附件。
+ *   共同点是它们都在回答"当前有哪些**后台**任务在跑"。
+ * - **不该走**：领域专用清单，如 `/workflows` 按 `isWorkflowTask` 列 workflow 运行态——
+ *   它问的是"有哪些 workflow"，不是"有哪些后台任务"，套面板闸门是张冠李戴。
+ */
+export function isPanelTask(task: TaskState): boolean {
+  return task.isBackgrounded === true;
+}
+
 /** 类型守卫 */
 export function isShellTask(task: TaskState): task is LocalShellTaskState {
   return task.type === "local_shell";

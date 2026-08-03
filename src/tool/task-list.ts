@@ -6,6 +6,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import {
   getAllTasks,
+  isPanelTask,
   isAgentTask,
   isShellTask,
 } from "../task/index.ts";
@@ -49,7 +50,10 @@ export class TaskListTool implements Tool {
     const params = input as { status?: string };
     const statusFilter = params.status || "all";
 
-    const allTasks = getAllTasks();
+    // 经 isPanelTask 单一闸门（见 task/types.ts）：只报**后台**任务。
+    // 前台子代理虽也在 registry（taskId / task_output 依赖它），但它是当前这一轮的同步工具调用，
+    // 结果就在模型自己的 tool_result 里——报进来会让模型误以为"另有一个后台任务在跑"。
+    const allTasks = getAllTasks().filter(isPanelTask);
     const filtered = statusFilter === "all"
       ? allTasks
       : allTasks.filter(t => t.status === statusFilter);

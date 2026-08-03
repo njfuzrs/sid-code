@@ -5547,9 +5547,12 @@ export class App {
 
     // HistoryItem 同步：追踪上次同步的 ctxMgr 消息数
     const { messagesToDisplayItems } = await import("./ui/App.tsx");
-    // buildCompletedToolCall 与 messagesToHistoryItems 同源：增量翻卡与批次末重建必须
-    // 用同一份合并实现，否则两套渲染的 diff 判定/摘要文案会不一致，卡片完成后又变一次。
-    const { messagesToHistoryItems, buildCompletedToolCall } = await import("./ui/history-adapter.ts");
+    // 侧信道翻卡与 messagesToHistoryItems 同源：增量翻卡与批次末重建必须用同一份合并
+    // 实现，否则两套渲染的 diff 判定/摘要文案会不一致，卡片完成后又变一次。
+    // injectSettledToolCalls / buildSettledToolCallIfReady 是那份实现的两个入口
+    // （全量重建 / 单卡判定），逻辑在 history-adapter 里可被单测直接驱动。
+    const { messagesToHistoryItems, injectSettledToolCalls, buildSettledToolCallIfReady } =
+      await import("./ui/history-adapter.ts");
     // ToolCallStatus 是运行时枚举（非纯类型），实时进度注入需按值比较 Executing 态，故动态引入。
     const { ToolCallStatus } = await import("./ui/types.ts");
     let lastSyncedCount = 0;
@@ -5598,22 +5601,7 @@ export class App {
     const injectLiveToolSettled = (
       historyItems: import("./ui/types.ts").HistoryItem[],
     ): void => {
-      if (liveToolSettled.size === 0) return;
-      for (const item of historyItems) {
-        if (item.type !== "tool_group") continue;
-        for (let i = 0; i < item.tools.length; i++) {
-          const tool = item.tools[i];
-          if (tool.status !== ToolCallStatus.Executing) continue;
-          const settled = liveToolSettled.get(tool.callId);
-          if (!settled || (settled.block as any).type !== "tool_result") continue;
-          item.tools[i] = buildCompletedToolCall(
-            settled.block as any,
-            tool.name,
-            tool,
-            settled.elapsedMs,
-          );
-        }
-      }
+      injectSettledToolCalls(historyItems, liveToolSettled);
     };
 
     /**
@@ -5661,10 +5649,11 @@ export class App {
           if (tool.status !== ToolCallStatus.Executing) return tool;
           // 完成态优先于进度：工具已 settle 就直接翻成 success/error 整卡，
           // 不再理它的中途进度文本（进度是"执行中"的产物，完成后就是噪音）。
-          const settled = liveToolSettled.get(tool.callId);
-          if (settled && (settled.block as any).type === "tool_result") {
+          // 判定与全量重建路径共用 buildSettledToolCallIfReady，杜绝两处口径漂移。
+          const settledCall = buildSettledToolCallIfReady(tool, liveToolSettled.get(tool.callId));
+          if (settledCall) {
             groupChanged = true;
-            return buildCompletedToolCall(settled.block as any, tool.name, tool, settled.elapsedMs);
+            return settledCall;
           }
           const progress = liveToolProgress.get(tool.callId);
           if (progress === undefined || progress === tool.progressMessage) return tool;

@@ -6,6 +6,7 @@
 import {
   type TaskState,
   isTerminalStatus,
+  isPanelTask,
   isAgentTask,
 } from "./types.ts";
 import { getTaskOutputTail, evictTaskOutput } from "./disk-output.ts";
@@ -133,9 +134,14 @@ export function clearInactiveTasks(): void {
   if (cleared) notifyTaskChanged();
 }
 
-/** 生成任务状态附件（注入系统提示词，包含运行中 Agent 的增量输出） */
+/** 生成任务状态附件（注入系统提示词，包含运行中 Agent 的增量输出）。
+ *
+ *  经 isPanelTask 单一闸门（见 types.ts）：只报**后台**任务。前台子代理也在 registry
+ *  （taskId / 磁盘输出 / task_output 依赖它），但它是模型当前这一轮自己发起的同步工具调用，
+ *  结果会作为 tool_result 回到上下文——再以 `<task-statuses>` 报一遍，模型会误以为
+ *  "另有一个后台任务在跑"，进而去 task_output 轮询一个根本不需要轮询的任务。 */
 export async function generateTaskStatusAttachment(): Promise<string | null> {
-  const running = getRunningTasks();
+  const running = getRunningTasks().filter(isPanelTask);
   if (running.length === 0) return null;
 
   const lines = ["<task-statuses>"];

@@ -22,13 +22,13 @@ export class PsCommand implements Command {
   description() { return "列出后台任务和活跃会话"; }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getAllTasks, isShellTask, isAgentTask } = await import("../task/index.ts");
+    const { getAllTasks, isPanelTask, isShellTask, isAgentTask } = await import("../task/index.ts");
     const { listActiveSessions } = await import("../session/concurrent.ts");
 
     const lines: string[] = [];
 
-    // 后台任务
-    const tasks = getAllTasks();
+    // 后台任务（经 isPanelTask 单一闸门，见 task/types.ts：前台子代理不算后台任务）
+    const tasks = getAllTasks().filter(isPanelTask);
     lines.push("后台任务:");
     if (tasks.length === 0) {
       lines.push("  (无)");

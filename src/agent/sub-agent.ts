@@ -113,6 +113,17 @@ export interface SubAgentTask {
   /** 后台异步执行标记（内部使用）。为 true 时工具过滤额外套用 Layer 4 异步白名单，
    *  把后台子代理可用工具收敛到安全子集（对标 claude-code ASYNC_AGENT_ALLOWED_TOOLS）。 */
   _isAsync?: boolean;
+  /** 是否让本子代理出现在「后台任务」面板 / bg_task_list / `<task-statuses>` 附件里
+   *  （内部使用）。默认 true。
+   *
+   *  判据是**「这个子代理有没有自己的工具卡片」**，不是「同步还是异步」：
+   *  - `false` —— 前台 `sub_agent`（tool.ts runSync）：结果已由 tool_result 渲染成
+   *    `⏺ sub_agent explore` 工具卡片，再上面板就是同一个子代理渲染两遍（问题一）。
+   *  - 默认 `true` —— swarm 团队成员、workflow 子代理：父层只有一张 team_create /
+   *    Workflow 卡片，成员/子代理各自**没有**卡片，面板行是它们唯一的进度可见性。
+   *
+   *  只影响可见性，不影响注册：taskId、磁盘输出、task_output 查询一律照常。 */
+  _showInPanel?: boolean;
   /** M2(Dynamic Workflows): 结构化输出 JSON Schema。存在时给子代理挂 StructuredOutput 工具，
    *  强制其按 schema 返回；执行结果旁路 extractFinalText，直接用工具捕获的 JSON。 */
   schema?: Record<string, unknown>;
@@ -542,10 +553,27 @@ export class SubAgent {
       taskId = task._taskId;
       abortController = task._abortController;
     } else {
+      // 面板可见性由调用方声明（_showInPanel），不由"有没有预建任务"推断——
+      // 这个 else 分支同时容纳三类调用方，它们的正确取值并不一致：
+      //   · tool.ts runSync（前台子代理）：自己就有 `⏺ sub_agent explore` 工具卡片
+      //     → _showInPanel=false，否则同一个子代理渲染两遍（用户报的问题一：
+      //     工具卡片与面板 `◓ [AG explore]` 完全重合）。
+      //   · team.ts in-process 成员 / workflow sub-agent-runner：**没有**各自的工具卡片
+      //     （父层 team_create / Workflow 只有一张卡），面板行是它们唯一的进度可见性
+      //     → 保持默认 true，不能一起摘掉。
+      // 故默认 true（保持既有行为），只有显式声明 false 的才摘下面板。
+      //
+      // 关键：不论取值如何，任务**始终注册**进 registry——taskId 被 appendAgentOutput /
+      // updateAgentProgress / task_output 工具依赖，磁盘输出照常落盘。摘掉的只是
+      // 「上面板」这一个属性，判据收敛在 isPanelTask()。
+      //
+      // 上一轮只修了通知层（notify=false，见下方 `const notify`），没回头问"同一个错误
+      // 还有没有别的出口"——registry 这条出口就是漏的那个。
       const created = createAgentTask({
         agentType: task.type,
         prompt: task.prompt,
         description: task.description,
+        isBackgrounded: task._showInPanel !== false,
       });
       taskId = created.taskState.id;
       abortController = created.abortController;
