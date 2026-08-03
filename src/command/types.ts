@@ -148,6 +148,7 @@ export type DialogType =
   | "mcp"
   | "effort"
   | "think"
+  | "language"
   | "permissions"
   | "memory"
   | "config"

@@ -855,10 +855,50 @@ function buildToolChoiceParam(params: SendParams): Record<string, unknown> {
   return { tool_choice: { type: "tool" as const, name: tc.name } };
 }
 
-/** 判断模型是否支持 strict tool use（Constrained Decoding） */
-function modelSupportsStrict(model: string): boolean {
-  // 仅 Claude 4.x 系列支持（opus-4, sonnet-4, haiku-4）
-  return /claude-(sonnet|opus|haiku)-4/.test(model);
+/**
+ * 判断模型是否支持 strict tool use（Constrained Decoding）。
+ *
+ * ## 判定方向：排除法，不是枚举法
+ *
+ * 原实现是 `/claude-(sonnet|opus|haiku)-4/`——**枚举已知支持的版本号**。它在写下的
+ * 那一刻是对的，但 Claude 5 系列发布后立刻失效：`claude-sonnet-5` / `claude-opus-5` /
+ * `claude-fable-5` 全部不匹配，于是 `registry.ts:79` 给内置工具打的 `strict: true`
+ * 被 `anthropic.ts` 的门控在发线前静默剥掉，**整个 Claude 5 系列失去 Constrained
+ * Decoding**，且无任何日志。
+ *
+ * 后果不是"少个优化"。strict 是从协议层杜绝「required 字段漏发」的机制；关掉它，
+ * 模型漏字段就只能靠工具层 zod 事后报错 + 模型自己重试一轮。实测事故
+ * （会话 20260803-135816-8c8619e7，`ask_user_question` 漏 `question` 字段、
+ * `header`/`options` 完好、`stop_reason: tool_use` 非截断）正是这个缺口的产物：
+ * 开着 strict 时该错误在物理上不可能发生。
+ *
+ * 所以判定方向必须反转：**默认认为支持，只排除已知不支持的**。新模型发布时
+ * 默认享受 strict（发错了会 400，是响亮失败、当场可见），而不是默认静默失去
+ * 保护（无声退化，要靠一次线上事故 + 一次轨迹考古才能发现）。
+ *
+ * 这也是本仓库的既有约定：开关类默认值禁止写死模型名单判断，否则必随模型迭代漂移。
+ *
+ * ## 为什么只排除 claude-3 及更早
+ *
+ * strict / Constrained Decoding 自 Claude 4 起提供，Claude 3.x 及 instant/2.x 不支持。
+ * 这些是**已冻结的历史版本号**，不会再新增，因此枚举它们不会漂移——与枚举"未来还会
+ * 不断新增的支持版本"有本质区别。
+ *
+ * 非 Claude 模型（走 Anthropic 兼容端点的第三方模型）一律不发 strict：它们的兼容层
+ * 通常只实现 Messages API 的公共子集，发未知字段风险不对称（收益是省一次重试，
+ * 代价可能是整条链路 400）。
+ *
+ * 兜底逃生阀仍是 `SID_DISABLE_STRICT_TOOLS=1`（在两处调用点判定）。
+ */
+export function modelSupportsStrict(model: string): boolean {
+  // 非 Claude 模型（第三方兼容端点）：不发 strict，避免未知字段打挂兼容层
+  if (!/claude/i.test(model)) return false;
+  // Claude 3.x / 2.x / instant / v1：strict 于 Claude 4 才引入。
+  // 这些是**已冻结**的历史版本号（不会再新增），枚举它们不产生漂移。
+  // 版本号后可紧跟 `-` / `.` / 串尾，故三种边界都要认（claude-3-opus / claude-3.5 / claude-3）。
+  if (/claude-(?:3|2|instant|v?1)(?:[.\-]|$)/i.test(model)) return false;
+  // 其余 Claude（4.x / 5.x / 以及未来版本）默认支持——新模型不再静默失去保护
+  return true;
 }
 
 /** 判断是否为 Anthropic 直连（非代理/非 Bedrock/非 Vertex） */

@@ -6,14 +6,26 @@
 
 import { ELLIPSIS } from "./constants/collapse.ts";
 import { stringWidth } from "../ink/stringWidth.js";
+import { shortenPathForDisplay, stripPathNoiseInText } from "./utils/path-display.ts";
 
 /** 助手消息右侧留白（用于视觉区分） */
 export const ASSISTANT_PADDING_RIGHT = 10;
 
-/** header 摘要的最大显示宽度（超出截断 + ELLIPSIS，避免 header 行被长路径/命令撑爆）。 */
-const SUMMARY_MAX_CHARS = 50;
-/** subagent prompt 摘要的最大显示宽度（比文件/命令更短，header 只给个意向）。 */
-const PROMPT_MAX_CHARS = 30;
+/**
+ * header 摘要的**上限**（码点数），只作为防御性护栏，不再是常规截断点。
+ *
+ * 历史问题（本次修复）：这里曾是 50，且是唯一的截断关口——不看终端宽度就把摘要砍到 50 码点，
+ * 于是 120 列的终端上右侧一大片空白闲着，被砍掉的却是关键信息：
+ *   `⏺ read /Users/dev/Code/person/sid-code/docs/bugf…`
+ * 真正该按终端宽度收缩的职责已移交视图层（`ToolShared.tsx` 的 `ToolInfo` → `fitPathToWidth`），
+ * 数据层只负责去掉 cwd/home 噪音前缀（`shortenPathForDisplay`）。
+ *
+ * 这个上限保留的意义：命令/prompt 可能是几 KB 的巨串，直接塞进 React 树没必要——
+ * 先砍到一个「任何终端都用不完」的量级（240 列 ≈ 超宽屏），再交给视图层按真实宽度精修。
+ */
+const SUMMARY_MAX_CHARS = 240;
+/** subagent prompt 摘要的上限（同为护栏，实际收缩在视图层按列宽做）。 */
+const PROMPT_MAX_CHARS = 240;
 /**
  * think 思考摘要的最大显示**列宽**（不是码点数）。
  *
@@ -116,11 +128,12 @@ export function getToolSummary(name: string, input: unknown): string {
     let suffix = "";
     if (offset && limit) suffix = ` (行 ${offset}-${offset + limit})`;
     else if (limit) suffix = ` (前 ${limit} 行)`;
-    // 文件路径可能很长：对齐 bash 分支做显式截断（含 ELLIPSIS），不依赖 header 终端级硬截断。
-    return `${truncateSummary(fp, SUMMARY_MAX_CHARS)}${suffix}`;
+    // 只去 cwd/home 噪音前缀，**不截断**：按终端宽度收缩是视图层的事（ToolInfo → fitPathToWidth）。
+    // 此前这里按 50 码点尾截断，砍掉的恰是唯一有区分度的文件名，保留的是每行都一样的前缀。
+    return `${shortenPathForDisplay(fp)}${suffix}`;
   }
-  if (lower === "edit") return inp?.file_path || inp?.filePath || "";
-  if (lower === "write") return inp?.file_path || inp?.filePath || "";
+  if (lower === "edit") return shortenPathForDisplay(inp?.file_path || inp?.filePath || "");
+  if (lower === "write") return shortenPathForDisplay(inp?.file_path || inp?.filePath || "");
   if (lower === "bash") {
     const cmd = inp?.command || "";
     return truncateSummary(cmd, SUMMARY_MAX_CHARS);
@@ -143,13 +156,55 @@ export function getToolSummary(name: string, input: unknown): string {
     if (!skillName) return "";
     return short ? `${skillName} "${short}"` : skillName;
   }
+  // lsp：header 必须回答"在查什么"——操作名 + 文件 + 位置。
+  //
+  // 此前无此分支 → 返回 "" → header 恒为光秃秃的 `⏺ lsp`。而 LSP 的等待是**隐形的长**：
+  // waitForLSPReady 默认等 10s（lsp/manager.ts）、语言服务器冷启动、单请求超时 30s
+  // （lsp/client.ts），期间屏幕上只有 `⏺ lsp` 三个字，用户完全不知道在查哪个文件的什么符号
+  // （见 docs/_template/执行lsp过程空白.txt）。这是本文件同一病灶的第三次发作
+  // （前两次：sub_agent 名字没匹配上、think 没有分支）。
+  if (lower === "lsp") return lspSummary(inp);
   if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
-    const short = truncateSummary(prompt, PROMPT_MAX_CHARS);
+    // 先剥掉 prompt 里内嵌的 cwd/home 绝对路径再上限护栏：这段路径对同批 fan-out 的每个
+    // 子代理都一模一样，会把 header 列宽吃光，导致 5 个并行子代理的卡片截断后长得一样、
+    // 完全分不清谁在干什么（截图里的第二个症状）。
+    const short = truncateSummary(
+      stripPathNoiseInText(flattenWhitespace(prompt)),
+      PROMPT_MAX_CHARS,
+    );
     return agentType ? `${agentType} "${short}"` : short;
   }
   return "";
+}
+
+/**
+ * lsp header 摘要：`operation 相对路径:行:列`。
+ *
+ * 两个取舍：
+ *
+ *   1. **operation 放最前面**，且 lsp **不进** `isPathDescriptionTool` 名单（即按"文本"从
+ *      尾部收缩，不按"路径"从头部收缩）。因为 lsp 的 description 是**混合形态**
+ *      （操作名 + 路径），若按路径处理，`fitPathToWidth` 会按 `/` 切段只保尾部，
+ *      把最关键的 operation 整个砍掉，收缩出 `…/lsp.ts:100:5` 这种看不出在干什么的结果。
+ *      操作名是 LSP 卡片的信息重心（"跳定义"还是"查引用"决定了用户在看什么），必须保住。
+ *   2. 路径走 `shortenPathForDisplay` 转相对路径（与 read/edit/write 一致），不在数据层
+ *      截断——截断是视图层按真实列宽的事。相对化之后路径本身已经很短
+ *      （`src/tool/lsp.ts`），混合形态在常规终端宽度下放得下。
+ */
+function lspSummary(inp: any): string {
+  const op = inp?.operation || "";
+  // workspaceSymbol 的信息重心是搜索词，不是文件（file_path 只用于定位语言服务器）
+  if (op === "workspaceSymbol") {
+    const q = inp?.query || "";
+    return q ? `${op} "${truncateSummary(q, PROMPT_MAX_CHARS)}"` : op;
+  }
+  const fp = shortenPathForDisplay(inp?.file_path || inp?.filePath || "");
+  const pos = inp?.line != null && inp?.character != null ? `:${inp.line}:${inp.character}` : "";
+  if (!op) return fp ? `${fp}${pos}` : "";
+  if (!fp) return op;
+  return `${op} ${fp}${pos}`;
 }
 
 /**
@@ -177,6 +232,20 @@ export function getToolDetailFull(name: string, input: unknown): string {
   if (lower === "glob") return inp?.pattern || "";
   // think：完整思考正文（保留换行，由展示端 wrap 呈现），不截断
   if (lower === "think") return (inp?.thought || "").trim();
+  // lsp：权限框要看清**完整绝对路径**（授权决策依据），不能用相对化/截断后的形式。
+  // 与 getToolSummary 的 lsp 分支成对——此前两个函数都缺 lsp，是同一个漏登记的两面。
+  if (lower === "lsp") {
+    const op = inp?.operation || "";
+    if (op === "workspaceSymbol") {
+      const q = inp?.query || "";
+      return q ? `${op} "${q}"` : op;
+    }
+    const fp = inp?.file_path || inp?.filePath || "";
+    const pos = inp?.line != null && inp?.character != null ? `:${inp.line}:${inp.character}` : "";
+    if (!op) return fp ? `${fp}${pos}` : "";
+    if (!fp) return op;
+    return `${op} ${fp}${pos}`;
+  }
   if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
@@ -200,7 +269,37 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   // 描述确认语本身、与思考内容无关的假指标。think 的真实内容在 input 里，由
   // header 摘要 + 结果区正文（getThinkThought）承担展示，此处不给冗余摘要。
   if (lower === "think") return "";
+  // lsp：兜底的"N 字符"对代码智能结果毫无意义（用户关心"找到几处"，不关心输出多长）。
+  // LSP 各 formatter（tool/lsp-formatters.ts）的成功输出都是「一行一条结果」，
+  // 空结果则是「未找到…」/「无可用…」这类整句话。按此分流。
+  if (lower === "lsp") return lspResultSummary(content);
   return `${content.length} 字符`;
+}
+
+/**
+ * lsp 结果摘要：把"输出多长"换成"找到几处"。
+ *
+ * 判空不靠"内容里有没有某个关键词"（formatter 的文案会漂移，一改就静默失效），
+ * 而是靠**结构特征**：LSP 的结果行统一形如 `path:line:col` 或以列表符号开头，
+ * 空结果则是单句自然语言。故只要"首行不含 `:数字`"就按空结果处理。
+ */
+function lspResultSummary(content: string): string {
+  const lines = content
+    .trim()
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return "";
+
+  // 「共 N 处，仅显示前 50 处」这类统计尾注：直接采信它给的真实总数
+  const totalMatch = content.match(/共\s*(\d+)\s*处/);
+  if (totalMatch) return `${totalMatch[1]} 处`;
+
+  // 空结果整句（「未找到定义」/「无可用的代码修复建议（…）」/「此位置无可用的调用层级项（…）」）：
+  // 结构上不含 `:行号`，原样透出这句话本身——它已经是最准确的摘要。
+  const hasPositionRef = /:\d+/.test(lines[0]!);
+  if (!hasPositionRef && lines.length === 1) return truncateSummary(lines[0]!, 40);
+
+  return `${lines.length} 处`;
 }
 
 /** 检测工具结果是否为 diff 格式 */

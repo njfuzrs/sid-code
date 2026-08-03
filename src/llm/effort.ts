@@ -595,6 +595,64 @@ export function previewWireEffort(cap: EffortCapability, level: EffortLevel): Ef
 }
 
 /**
+ * 该模型**真实可选**的档位集合（/effort 面板列表 + /model 面板左右键循环的唯一依据）。
+ *
+ * 为什么需要它：`EffortCapability` 此前只暴露 `supportsEffort` / `supportsMaxEffort` 两个布尔，
+ * 表达不了「o-series 无 max 与 xhigh」「DeepSeek 只认 high/max」这类**档位子集**。
+ * 于是 UI 只能拿全量 5 档硬编码列举，用户选了实际会被静默钳制的档（选 low 实发 high），
+ * 面板显示的档位与真正下发的档位不一致——「档位应该跟模型配对」缺的就是这一层。
+ *
+ * 实现刻意**不新建映射表**：复用 {@link previewWireEffort} 对每档做一次真实映射预演，
+ * 凡「映射后 ≠ 自己」的档位说明会被钳制到别的档，即对该模型不是独立可选档，剔除。
+ * 这样能力矩阵（APPLIERS / 动态能力缓存）怎么变，这里自动跟随，不会漂移出第二份真相。
+ *
+ * 两个特例：
+ * - 走 budget_tokens 的原生 Claude 无 `reasoningEffort` 下发，previewWireEffort 一律返回原档，
+ *   故 5 档全保留——这是对的，它们确实各自对应不同 budget（2K/10K/20K/32K/50K）。
+ * - `supportsEffort=false`（unknown / 用户声明不支持思考）→ 返回空数组，UI 据此禁用切换。
+ *
+ * @returns 按 low→max 升序的可选档位；空数组表示该模型不支持档位切换。
+ */
+export function getSelectableEfforts(cap: EffortCapability): EffortLevel[] {
+  if (!cap.supportsEffort) return [];
+  const usable = EFFORT_LEVELS.filter((lv) => {
+    // max 单独由 supportsMaxEffort 把关（resolveAppliedEffort 会 max→high 钳制）
+    if (lv === "max" && !cap.supportsMaxEffort) return false;
+    return previewWireEffort(cap, lv) === lv;
+  });
+  // 兜底：若映射预演把所有档都判为被钳制（理论上不该发生，如 applier 恒定返回同一档），
+  // 退回「至少给出默认档」，不要给 UI 一个空列表导致面板看起来像不支持。
+  return usable.length > 0 ? usable : [cap.defaultEffort];
+}
+
+/**
+ * 在该模型可选档位内循环切换（/model 面板 ←/→ 用）。
+ *
+ * 与「在全量 5 档里循环再钳制」的区别：钳制会把多个统一档折叠到同一线格式档，
+ * 于是用户连按方向键时面板出现「按了没反应」的停顿（如 o-series 上 xhigh/max 都显示 high）。
+ * 这里直接在**该模型真实可选**的档位数组里走，每一步都必然是可见的变化。
+ *
+ * @param cap     当前模型能力
+ * @param current 当前生效档位（auto 态传入解析后的实际档位）
+ * @param dir     1=增强（右），-1=减弱（左）
+ * @returns 下一档；模型不支持切换时返回 undefined（调用方应忽略本次按键）
+ */
+export function cycleEffortForModel(
+  cap: EffortCapability,
+  current: EffortLevel | undefined,
+  dir: 1 | -1,
+): EffortLevel | undefined {
+  const levels = getSelectableEfforts(cap);
+  if (levels.length === 0) return undefined;
+  // 当前档不在可选集内（如刚切模型、旧档位已失效）→ 从默认档所在位置起步，
+  // 仍不在则落到首档，保证方向键永远有响应。
+  let idx = current ? levels.indexOf(current) : -1;
+  if (idx < 0) idx = levels.indexOf(cap.defaultEffort);
+  if (idx < 0) return levels[dir === 1 ? 0 : levels.length - 1];
+  return levels[(idx + dir + levels.length) % levels.length];
+}
+
+/**
  * thinking 是否实际开启（优先级 env > runtime > cap.thinkingDefaultOn）。
  * @param envOverride getThinkingEnvOverride() 的返回值：null=env 未设；true/false=env 强制。
  */

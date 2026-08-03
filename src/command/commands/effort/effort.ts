@@ -3,6 +3,7 @@ import {
   EFFORT_LEVELS,
   isEffortLevel,
   previewWireEffort,
+  getSelectableEfforts,
   getEffortEnvOverride,
   type EffortCapability,
   type EffortLevel,
@@ -58,9 +59,12 @@ const mod: LocalCommandModule = {
     }
 
     if (!isEffortLevel(norm)) {
+      // 可选档位按**当前模型**列举（拿不到能力时退回全量标度）——报错信息里列出模型
+      // 压根不支持的档，只会引导用户去选一个随后被静默钳制的值。
+      const usable = state ? getSelectableEfforts(state.capability) : EFFORT_LEVELS;
       return {
         type: "text",
-        value: `错误: 无效档位 "${levelArg}"\n可选: ${EFFORT_LEVELS.join(" / ")} / auto`,
+        value: `错误: 无效档位 "${levelArg}"\n当前模型可选: ${usable.join(" / ")} / auto`,
       };
     }
 

@@ -132,6 +132,44 @@ export async function executeTools(
   return results;
 }
 
+/**
+ * 「工具未执行成功」的收尾统一出口：补 fire PostToolUseFailure（子代理侧）。
+ *
+ * 与主循环 `query/tool-executor.ts` 的同名 helper 同源同语义：PreToolUse 已 fire 之后
+ * 的所有早退分支（hook 阻止 / 权限拒绝 / 参数校验失败）都必须补一次 Failure 收尾，
+ * 否则 Pre/Post 不成对——依赖配对的用户 hook 永久悬空，且 `execute_tool` span 是在
+ * PostToolUse* 事件里创建的，这些失败在可观测性里完全不存在。
+ *
+ * 子代理侧尤其不能漏：子代理的失败本来就更难排查（无 UI、结论经父代理转述），
+ * 若 trace 里连"这次工具调用失败了"都查不到，只能靠读子代理原始 transcript 考古。
+ *
+ * fire-and-forget + 全程 catch：这一层是可观测性补齐，绝不能成为新的失败源。
+ */
+function firePostToolUseFailure(
+  hookSystem: HookSystem | undefined,
+  block: ContentBlock & { type: "tool_use" },
+  reason: string,
+  toolInput?: Record<string, unknown>,
+  /** 调度器视角墙钟耗时；缺它则失败工具的 span 无耗时属性（见主循环同名 helper 注释） */
+  durationMs?: number,
+): void {
+  if (!hookSystem) return;
+  const log = getLogger();
+  try {
+    void hookSystem.firePostToolUseFailureEvent?.(
+      block.name,
+      (toolInput ?? block.input) as Record<string, unknown>,
+      reason,
+      block.id,
+      durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+    )?.catch?.((e: any) =>
+      log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
+    );
+  } catch (e: any) {
+    log.error("SUBAGENT:HOOK", `post_tool_use_failure 触发异常（忽略）: ${e?.message ?? e}`);
+  }
+}
+
 /** 执行单个工具 */
 async function executeSingleTool(
   block: ContentBlock & { type: "tool_use" },
@@ -153,6 +191,11 @@ async function executeSingleTool(
     };
   }
 
+  // 计时锚点：供各早退分支给 PostToolUseFailure 带上 duration_ms。
+  // 下方 startTime 只在 tool.execute 前设，覆盖不到 hook/权限/校验这些早退分支，
+  // 故这里另立一个调度器视角的墙钟锚点（与主循环 toolStartedAt 同口径）。
+  const toolStartedAt = Date.now();
+
   // pre_tool_use hook（子代理工具执行接入 hook 链）。
   // 与主循环一致：尊重 blocking 决策与输入修改。hook 失败不阻断执行（catch 兜底）。
   let effectiveInput: Record<string, unknown> = block.input as Record<string, unknown>;
@@ -171,6 +214,14 @@ async function executeSingleTool(
       const interp = interpretPreToolUse(preToolResult, block.input);
       if (interp.blocked) {
         log.info("SUBAGENT:HOOK", `工具 ${block.name} 被 hook 阻止: ${interp.blockReason}`);
+        // Pre/Post 配对：本分支上方刚 fire 过 PreToolUse，必须补 Failure 收尾。
+        firePostToolUseFailure(
+          hookSystem,
+          block,
+          `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+          effectiveInput,
+          Date.now() - toolStartedAt,
+        );
         return {
           type: "tool_result",
           tool_use_id: block.id,
@@ -205,6 +256,14 @@ async function executeSingleTool(
       // 子代理无 UI 通道，needsConfirmation 也直接 deny（dontAsk 语义）
       const reason = decision.reason || "子代理不允许此操作";
       log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: ${reason}`);
+      // Pre/Post 配对：权限拒绝也要补 Failure 收尾。
+      firePostToolUseFailure(
+        hookSystem,
+        block,
+        `权限拒绝: ${reason}`,
+        effectiveInput,
+        Date.now() - toolStartedAt,
+      );
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -228,6 +287,14 @@ async function executeSingleTool(
       : (tool.readOnly?.() ?? false);
     if (!isSafe) {
       log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: 未配置权限检查器，写类操作默认拒绝（fail-closed）`);
+      // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
+      firePostToolUseFailure(
+        hookSystem,
+        block,
+        "权限拒绝: 未配置权限检查器，写类操作默认拒绝（fail-closed）",
+        effectiveInput,
+        Date.now() - toolStartedAt,
+      );
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -243,6 +310,15 @@ async function executeSingleTool(
   const validation = validateToolInput(tool, effectiveInput);
   if (!validation.ok) {
     log.info("SUBAGENT:TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}`);
+    // Pre/Post 配对：与主循环同源——模型漏 required 字段是最高频的真实失败，
+    // 不补这一次 fire，它在 trace 与失败率统计里就完全不存在。
+    firePostToolUseFailure(
+      hookSystem,
+      block,
+      validation.message,
+      effectiveInput,
+      Date.now() - toolStartedAt,
+    );
     return {
       type: "tool_result",
       tool_use_id: block.id,
@@ -313,6 +389,9 @@ async function executeSingleTool(
         effectiveInput,
         err.message,
         block.id,
+        // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
+        // 慢工具卡很久才抛，正是要看的那个数。
+        { duration_ms: Date.now() - startTime },
       ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
     }
     return {

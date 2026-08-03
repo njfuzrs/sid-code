@@ -14,6 +14,51 @@ export interface ErrorUserMessage {
 }
 
 /**
+ * 瞬态错误码集合：系统会自动重试，请求恢复后提示**必须**自动消失。
+ *
+ * 根因（本文件此前缺这一层）：ERROR_USER_MESSAGES 在注释里已把错误分成
+ * 「TerminalReason 不重试、需用户干预」与「RetryableReason 系统已自动重试」两组，
+ * 但消费方 app.ts 的 pushErrorPanel 完全不区分——一律按"常驻直到用户 Ctrl+E"处理。
+ * 于是 429 限流恢复后，红色卡片仍挂在界面上，而它自己的建议文案写着"系统正在自动
+ * 重试退避"，呈现与文案自相矛盾，用户以为还在故障中。
+ *
+ * 集合边界（与 errors.ts 的枚举严格对齐，改这里先看那边）：
+ * - RetryableReason 全员：限流/过载/网络/超时/5xx/408/409；
+ * - StreamValidationReason 全员：流被截断/工具 JSON 坏/空响应——都由系统重试；
+ * - TerminalReason 一个都不进（auth_failed/quota_exhausted 等必须留在界面上等用户处理）。
+ *
+ * 反向不变量：不在此集合中的错误码 = 终态错误 = 只能手动关闭。新增错误码时，
+ * 若它属于"系统会自动重试"，必须同步加进这里，否则又会退化成永久残留。
+ * tests/llm/error-transient-classification.test.ts 用 errors.ts 的枚举做双向对账，
+ * 漏加会红。
+ */
+export const TRANSIENT_ERROR_CODES = new Set<string>([
+  // RetryableReason（errors.ts:43）
+  "rate_limit",
+  "overloaded",
+  "network_error",
+  "timeout",
+  "server_error",
+  "request_timeout",
+  "lock_timeout",
+  // StreamValidationReason（errors.ts:63）
+  "no_finish_reason",
+  "malformed_tool_call",
+  "empty_response",
+]);
+
+/**
+ * 判断错误码是否为"系统自动重试中"的瞬态错误。
+ *
+ * 无 code（推断失败）时返回 false —— fail-closed 取向：宁可让一条无法归类的错误
+ * 多留在界面上等用户手动关闭，也不要把真正需要干预的故障静默清掉。
+ */
+export function isTransientErrorCode(code?: string): boolean {
+  if (!code) return false;
+  return TRANSIENT_ERROR_CODES.has(code);
+}
+
+/**
  * 错误码 → 用户文案映射。键为 TerminalReason | RetryableReason | StreamValidationReason | 自定义扩展码。
  */
 export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {

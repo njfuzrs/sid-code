@@ -18,6 +18,7 @@ import { OnboardingDialog } from "./OnboardingDialog.tsx";
 import { McpDialog } from "./McpDialog.tsx";
 import { EffortDialog } from "./EffortDialog.tsx";
 import { ThinkDialog } from "./ThinkDialog.tsx";
+import { LanguageDialog } from "./LanguageDialog.tsx";
 import { PermissionsDialog } from "./PermissionsDialog.tsx";
 import { MemoryDialog } from "./MemoryDialog.tsx";
 import { ConfigDialog } from "./ConfigDialog.tsx";
@@ -60,6 +61,8 @@ export interface DialogSwitchProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** /language 面板：选定语言偏好（"unset" 表示清除偏好）。 */
+  onLanguageSelect: (choice: import("./LanguageDialog.tsx").LanguageChoice) => void;
   onCompleteOnboarding?: (result: OnboardingResult) => void;
   model: string;
 
@@ -105,6 +108,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   availableThemes,
   currentTheme,
   onThemeSelect,
+  onLanguageSelect,
   onCompleteOnboarding,
   model,
   mcpManager,
@@ -199,6 +203,15 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         onClose={onDialogClose}
         getThinkingState={callbacks.getThinkingState}
         setThinking={callbacks.setThinking}
+      />
+    );
+  }
+  if (activeDialog === "language") {
+    return (
+      <LanguageDialog
+        onClose={onDialogClose}
+        currentLanguage={callbacks.config?.language}
+        onLanguageSelect={onLanguageSelect}
       />
     );
   }

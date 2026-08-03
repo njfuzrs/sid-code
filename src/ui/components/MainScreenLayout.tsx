@@ -115,6 +115,8 @@ interface MainScreenLayoutProps {
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
   onThemeSelect: (themeName: string) => void;
+  /** /language 面板：选定语言偏好（"unset" 表示清除偏好） */
+  onLanguageSelect: (choice: import("./LanguageDialog.tsx").LanguageChoice) => void;
   /** 首次启动引导完成回调 */
   onCompleteOnboarding?: (result: OnboardingResult) => void;
   /** MCP 管理器引用（/mcp 面板用） */
@@ -180,6 +182,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   availableThemes,
   currentTheme,
   onThemeSelect,
+  onLanguageSelect,
   onCompleteOnboarding,
   mcpManager,
   sessionState,
@@ -284,6 +287,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             availableThemes={availableThemes}
             currentTheme={currentTheme}
             onThemeSelect={onThemeSelect}
+            onLanguageSelect={onLanguageSelect}
             onCompleteOnboarding={onCompleteOnboarding}
             model={model}
             mcpManager={mcpManager}

@@ -21,6 +21,7 @@ import type {
   ToolUseContext,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { basename } from "path";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
@@ -38,6 +39,26 @@ import {
 
 /** LSP 工具处理的文件大小上限（G10，对标 CC 的 10MB） */
 const MAX_LSP_FILE_SIZE = 10 * 1024 * 1024;
+
+/**
+ * codeAction 前等待诊断沉降的上限（ms）。
+ *
+ * 由来见 dispatch 的 codeAction 分支：诊断由服务器推送，didOpen 不等响应，不等就 peek 必然空。
+ * 1.5s 的取值权衡：本地语言服务器分析单文件通常几百毫秒内推出诊断；干净文件可能压根不推，
+ * 那时必然等满这个时间，所以不能设太长（它是 codeAction 的固定下限成本）。
+ */
+const CODE_ACTION_DIAGNOSTIC_WAIT_MS = 1500;
+
+/**
+ * 整文件范围 codeAction 的请求超时（ms）。
+ *
+ * 为什么单独给一个、且比默认的 30s 短得多：无 position 时我们发的是 `line 0 → 999999`
+ * 的整文件范围（见 dispatch），这是最贵的请求形态，某些服务器会在上面卡到吐不出结果。
+ * 之前它与所有请求共用 client.ts 的 30s 默认值，于是用户要盯着一个光秃秃的 `⏺ lsp`
+ * 等满 30 秒才看到「LSP 请求超时」（见 docs/_template/执行lsp过程空白.txt 截图第一条）。
+ * 失败要快——8s 拿不到就告诉用户换带 line/character 的精确查法，比干等 30s 有用。
+ */
+const CODE_ACTION_FULL_FILE_TIMEOUT_MS = 8000;
 
 /** 需要 line/character 定位的操作（workspaceSymbol 例外，它用 query） */
 const POSITION_OPS = new Set([
@@ -228,7 +249,22 @@ export class LSPTool implements Tool {
     }
   }
 
-  async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
+  /**
+   * @param onProgress 阶段进度上报（G5 接线）。
+   *
+   * LSP 的等待是**隐形的长**，且全都发生在拿到结果之前：`waitForLSPReady` 默认等 10s、
+   * 语言服务器冷启动（首次调用要拉起进程并索引工程）、单请求 30s 超时。此前 execute
+   * 连这个参数都没声明，结构上就没有上报能力 → TUI 上 12 秒里只有一个光秃秃的 `⏺ lsp`，
+   * 用户无从判断是在等服务器、在查询，还是已经卡死（见 docs/_template/执行lsp过程空白.txt）。
+   *
+   * 上报的是**阶段文案**而非流式输出（LSP 是一次性 JSON-RPC 响应，没有中间产物可流），
+   * 所以事件用 `{type:"output"}` 携带单行文本，由 UI 显示在卡片 header 下方。
+   */
+  async execute(
+    input: unknown,
+    _signal?: AbortSignal,
+    onProgress?: (event: import("./types.ts").ToolProgressData) => void,
+  ): Promise<ToolResult> {
     const log = getLogger();
     const params = input as LSPToolInput;
 
@@ -249,6 +285,9 @@ export class LSPTool implements Tool {
     }
 
     // ── LSP 就绪等待（G5）──
+    // 这里最长等 10s（waitForLSPReady 默认值）。首次调用（语言服务器尚未拉起）几乎必然
+    // 走到这个分支上等一会儿，必须先把话说出来，否则用户看到的就是纯粹的卡住。
+    onProgress?.({ type: "output", text: "等待语言服务器就绪…" });
     const { waitForLSPReady, getLSPManager } = await import("../lsp/manager.ts");
     const ready = await waitForLSPReady();
     if (!ready) {
@@ -292,6 +331,9 @@ export class LSPTool implements Tool {
     }
 
     // ── 确保文件已在 LSP 服务器侧打开 ──
+    // 首次打开会触发服务器解析该文件（大工程上可能是秒级），且 openFile 内部要 ensureStarted
+    // （冷启动整个语言服务器进程）。这是"12s 无反馈"里占比最大的一段。
+    onProgress?.({ type: "output", text: `打开 ${basename(params.file_path)}…` });
     try {
       await manager.openFile(params.file_path, content);
     } catch (err: any) {
@@ -301,8 +343,9 @@ export class LSPTool implements Tool {
     // workspaceFolder 用于结果路径展示与 gitignore 过滤（取服务器配置，回退 cwd）
     const workspaceFolder = server.config.workspaceFolder ?? process.cwd();
 
+    onProgress?.({ type: "output", text: `查询 ${params.operation}…` });
     try {
-      return await this.dispatch(params, manager, workspaceFolder, _signal);
+      return await this.dispatch(params, manager, workspaceFolder, _signal, onProgress);
     } catch (err: any) {
       log.warn("LSP", `${params.operation} 执行失败: ${err.message}`);
       return { output: `LSP ${params.operation} 失败: ${err.message}`, isError: true };
@@ -315,6 +358,7 @@ export class LSPTool implements Tool {
     manager: import("../lsp/server-manager.ts").LSPServerManager,
     workspaceFolder: string,
     signal?: AbortSignal,
+    onProgress?: (event: import("./types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
     const { pathToFileURL } = await import("url");
     const uri = pathToFileURL(params.file_path).href;
@@ -411,6 +455,22 @@ export class LSPTool implements Tool {
         // 当前诊断填充 context，绝不消费 pending（否则 G1 每轮诊断注入链断掉）。
         const { getDiagnosticRegistry } = await import("../lsp/manager.ts");
         const registry = getDiagnosticRegistry();
+
+        // ── 诊断沉降等待（本次修复）──
+        //
+        // 上面那段注释识别了"context 空 → 回空列表"这个陷阱，却漏了**时序**：诊断是服务器
+        // 主动推的（publishDiagnostics），而 openFile 走的是 fire-and-forget 通知
+        // （server-manager.ts didOpen 用 sendNotification，不等响应）。文件此前未打开时，
+        // 我们刚发出 didOpen 就 peek，服务器根本还没来得及分析 → 恒空 → 恒回
+        // 「无可用的代码修复建议」，而文件里明明有错（见 docs/_template/执行lsp过程空白.txt
+        // 截图里连续两次都是这个结果）。
+        //
+        // 超时返回 false 不算故障：干净文件有些服务器压根不推诊断，等到超时是正常路径，
+        // 照常带空 context 发请求（语义见 DiagnosticRegistry.waitForDiagnostics）。
+        if (registry) {
+          onProgress?.({ type: "output", text: "等待诊断沉降…" });
+          await registry.waitForDiagnostics(uri, CODE_ACTION_DIAGNOSTIC_WAIT_MS);
+        }
         const allDiags = registry ? registry.peekDiagnosticsForFile(uri) : [];
 
         // 有 position：把范围收窄到光标所在行，只查该行诊断的修复（更聚焦、结果更少）；
@@ -439,12 +499,34 @@ export class LSPTool implements Tool {
           message: d.message,
         }));
 
-        const result = await manager.sendRequest(params.file_path, "textDocument/codeAction", {
-          textDocument,
-          range,
-          context: { diagnostics: lspDiagnostics, only: ["quickfix"] },
-        });
-        return { output: formatCodeActions(result, workspaceFolder) };
+        // 整文件范围（无 position）用更短的超时快速失败：它是最贵的请求形态，
+        // 干等 30s 才报超时对用户毫无价值。带 position 的精确查询走默认超时。
+        try {
+          const result = await manager.sendRequest(
+            params.file_path,
+            "textDocument/codeAction",
+            {
+              textDocument,
+              range,
+              context: { diagnostics: lspDiagnostics, only: ["quickfix"] },
+            },
+            position ? undefined : CODE_ACTION_FULL_FILE_TIMEOUT_MS,
+          );
+          return { output: formatCodeActions(result, workspaceFolder) };
+        } catch (err: any) {
+          // 超时是整文件范围查询的**可预期**结果（服务器在大范围上算不动），不是内部故障。
+          // 给出可操作的下一步，而不是把裸错误抛给上层拼成 `LSP codeAction 失败: …`
+          // ——那句话用户看完也不知道该怎么办（截图第一条就是这个体验）。
+          if (!position && /超时/.test(err?.message ?? "")) {
+            return {
+              output:
+                "整文件范围的 codeAction 查询超时（语言服务器在大范围上未能及时返回）。" +
+                "请补上 line/character 参数改查光标处那条诊断的修复——精确查询快得多，也更聚焦。",
+              isError: true,
+            };
+          }
+          throw err;
+        }
       }
       default: {
         // 类型上 LSP_OPERATIONS 已穷举，这里兜底未知操作

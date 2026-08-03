@@ -640,7 +640,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
   );
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
       {/* 标题行 */}
       <Box>
         <Text bold color={theme.text.accent}>Skills</Text>
@@ -649,8 +649,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         </Text>
       </Box>
 
-      {/* 搜索框（常驻，带圆角边框，一眼就知道能打字——对标 resume 选择器） */}
-      <Box borderStyle="round" borderColor={theme.ui.active} paddingX={1} marginTop={0}>
+      {/* 搜索行（常驻）：可输入的信号靠 ⌕ 字形 + 光标块传达，不再套第二层边框——
+          面板本身已有 round 容器，再包一层就是 L2.2 禁止的「盒子套盒子」。 */}
+      <Box marginTop={1}>
         <Text color={theme.ui.symbol}>{SEARCH_MARK} </Text>
         {query ? (
           <Text color={theme.text.primary}>{query}</Text>

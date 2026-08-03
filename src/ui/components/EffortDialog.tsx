@@ -23,7 +23,7 @@ import {
   EFFORT_AUTO,
 } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import type { EffortSetting } from "../../llm/effort.ts";
+import { getSelectableEfforts, type EffortLevel, type EffortSetting } from "../../llm/effort.ts";
 
 interface EffortState {
   runtime: EffortSetting;
@@ -45,14 +45,33 @@ interface EffortItem extends SelectionListItem<string> {
   desc: string;
 }
 
-const OPTIONS: EffortItem[] = [
-  { value: "low", key: "low", glyph: EFFORT_LOW, label: "low", desc: "快速响应，跳过深度推理" },
-  { value: "medium", key: "medium", glyph: EFFORT_MEDIUM, label: "medium", desc: "平衡模式" },
-  { value: "high", key: "high", glyph: EFFORT_HIGH, label: "high", desc: "深度推理（多数模型默认）" },
-  { value: "xhigh", key: "xhigh", glyph: EFFORT_XHIGH, label: "xhigh", desc: "更深推理（介于 high 与 max）" },
-  { value: "max", key: "max", glyph: EFFORT_MAX, label: "max", desc: "最大推理深度" },
-  { value: "auto", key: "auto", glyph: EFFORT_AUTO, label: "auto", desc: "跟随模型默认" },
-];
+/** 全量档位元数据（展示文案 + 字形）。实际列出哪几档由模型能力决定，见 buildOptions。 */
+const LEVEL_META: Record<EffortLevel, { glyph: string; desc: string }> = {
+  low: { glyph: EFFORT_LOW, desc: "快速响应，跳过深度推理" },
+  medium: { glyph: EFFORT_MEDIUM, desc: "平衡模式" },
+  high: { glyph: EFFORT_HIGH, desc: "深度推理（多数模型默认）" },
+  xhigh: { glyph: EFFORT_XHIGH, desc: "更深推理（介于 high 与 max）" },
+  max: { glyph: EFFORT_MAX, desc: "最大推理深度" },
+};
+
+/**
+ * 按当前模型**真实可选**的档位构建选项（+ 末尾固定的 auto）。
+ *
+ * 此前这里是写死的 5 档常量，与模型无关——于是 o-series 上会列出它压根没有的 xhigh/max，
+ * 用户选了被静默钳制成 high（面板显示 max、实发 high）。改为读 getSelectableEfforts，
+ * 档位列表与模型一一配对；auto 始终保留（它是"不下发、跟随模型默认"，任何模型都成立）。
+ */
+export function buildOptions(levels: EffortLevel[]): EffortItem[] {
+  const items: EffortItem[] = levels.map((lv) => ({
+    value: lv,
+    key: lv,
+    glyph: LEVEL_META[lv].glyph,
+    label: lv,
+    desc: LEVEL_META[lv].desc,
+  }));
+  items.push({ value: "auto", key: "auto", glyph: EFFORT_AUTO, label: "auto", desc: "跟随模型默认" });
+  return items;
+}
 
 export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortState, setEffort }) => {
   useKeypress(KeypressPriority.Critical, (key: Key) => {
@@ -82,9 +101,15 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortSt
     );
   }
 
+  // 档位列表按当前模型能力生成（不再是写死的 5 档）。state 缺失时给全量，保持旧兜底行为。
+  const levels: EffortLevel[] = state
+    ? getSelectableEfforts(state.capability)
+    : ["low", "medium", "high", "xhigh", "max"];
+  const options = buildOptions(levels);
+
   // 当前生效档位（auto 时用 "auto"）
   const currentValue = state?.runtime ?? "auto";
-  const initialIndex = Math.max(0, OPTIONS.findIndex((o) => o.value === currentValue));
+  const initialIndex = Math.max(0, options.findIndex((o) => o.value === currentValue));
 
   // 当前状态描述行
   let statusLine = "";
@@ -96,7 +121,9 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortSt
       statusLine = `当前: ${runtimeText}`;
     }
   }
-  const maxSupport = state ? (state.capability.supportsMaxEffort ? "是" : "否（max 将降为 high）") : "";
+  // 直接告知「本模型支持哪几档」，比原来的「支持 max: 是/否」信息量更大：
+  // 用户一眼能看出列表为何只有 3 档，而不是怀疑面板少了东西。
+  const levelsLine = state ? `本模型可选档位: ${levels.join(" / ")} / auto` : "";
 
   const handleSelect = (value: string) => {
     const setting: EffortSetting = value === "auto" ? undefined : (value as EffortSetting);
@@ -108,10 +135,10 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortSt
     <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
       <Text bold color={theme.ui.active}>推理强度</Text>
       {statusLine && <Text color={theme.text.secondary}>{statusLine}</Text>}
-      {maxSupport && <Text color={theme.text.secondary}>模型支持 max: {maxSupport}</Text>}
+      {levelsLine && <Text color={theme.text.secondary}>{levelsLine}</Text>}
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<string, EffortItem>
-          items={OPTIONS}
+          items={options}
           initialIndex={initialIndex}
           onSelect={handleSelect}
           isFocused={true}

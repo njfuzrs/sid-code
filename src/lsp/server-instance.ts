@@ -136,14 +136,21 @@ export class LSPServerInstance {
     this._state = "stopped";
   }
 
-  /** 请求：带 ContentModified 重试（指数退避 500ms/1s/2s） */
-  async sendRequest<T = unknown>(method: string, params?: unknown): Promise<T> {
+  /**
+   * 请求：带 ContentModified 重试（指数退避 500ms/1s/2s）
+   *
+   * @param timeoutMs 单次请求超时。**必须透传**给 client——此前这里不接这个参数，
+   *   所有请求一律吃 client.ts 的 30s 默认值，于是"最贵的请求形态"（整文件范围
+   *   codeAction）配上"最长的超时"，用户要盯着光秃秃的 `⏺ lsp` 干等 30 秒才看到
+   *   「LSP 请求超时」。省略时仍走 client 默认值，行为与改造前一致。
+   */
+  async sendRequest<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     await this.ensureStarted();
 
     let lastErr: Error | undefined;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
       try {
-        return await this.client.sendRequest<T>(method, params);
+        return await this.client.sendRequest<T>(method, params, timeoutMs);
       } catch (err: any) {
         lastErr = err;
         // 仅对 ContentModified 重试

@@ -45,6 +45,14 @@ export class DiagnosticRegistry {
    */
   private latest = new Map<string, Diagnostic[]>();
 
+  /**
+   * 等待某个 uri 的 publishDiagnostics 到达的等待者（uri → resolve 回调集合）。
+   *
+   * 存在的理由见 `waitForDiagnostics`：LSP 的诊断是**服务器推**的，`didOpen` 是不等响应的
+   * 通知，所以"文件刚打开就查诊断"必然拿到空。
+   */
+  private waiters = new Map<string, Set<() => void>>();
+
   /** 注册待投递的诊断（由 LSP 通知处理器调用） */
   registerPending(serverName: string, files: DiagnosticFile[]): void {
     const id = `${serverName}-${++this.pendingSeq}`;
@@ -54,6 +62,77 @@ export class DiagnosticRegistry {
     for (const file of files) {
       this.latest.set(file.uri, file.diagnostics);
     }
+    // 唤醒等待这些 uri 的 waitForDiagnostics（在覆盖 latest **之后**，确保被唤醒者
+    // 立刻 peek 就能拿到刚到的诊断）
+    for (const file of files) {
+      const set = this.waiters.get(file.uri);
+      if (!set) continue;
+      this.waiters.delete(file.uri);
+      for (const resolve of set) {
+        try {
+          resolve();
+        } catch {
+          /* 等待者自身异常不影响诊断注册 */
+        }
+      }
+    }
+  }
+
+  /** 该 uri 是否**曾经**收到过 publishDiagnostics（空数组也算，表示"服务器说这文件没问题"） */
+  hasPublishedFor(uri: string): boolean {
+    return this.latest.has(uri);
+  }
+
+  /**
+   * 等待某个 uri 的诊断首次到达（已到达则立即返回）。
+   *
+   * ## 为什么需要它
+   *
+   * `codeAction` 要把当前诊断填进 LSP `context.diagnostics`——多数语言服务器在 context
+   * 为空时返回空 quickfix 列表（它不知道要修什么）。但诊断是**服务器主动推**的
+   * （`textDocument/publishDiagnostics`），而 `didOpen` 是 fire-and-forget 通知
+   * （server-manager.ts 用 sendNotification，不等响应）。于是"打开文件后立刻查 codeAction"
+   * 必然 peek 到空数组 → context 空 → 服务器回空列表 → 用户看到
+   * 「无可用的代码修复建议」，而文件里明明有错。
+   *
+   * ## 语义边界（重要）
+   *
+   * 返回 `true` 只表示"服务器**已就该文件表过态**"，**不表示有诊断**——空数组是合法且
+   * 常见的表态（文件确实没错）。调用方拿到 true 后仍要 peek 才知道有没有内容。
+   *
+   * 超时返回 `false` 时调用方应当**照常继续**（用空 context 发请求），而不是报错：
+   * 有些服务器对干净文件根本不推 publishDiagnostics，等到超时是正常路径，不是故障。
+   *
+   * @param uri 目标文件的 file:// URI
+   * @param timeoutMs 最长等待，默认 1500ms（够本地语言服务器分析单文件，又不至于让
+   *   一次 codeAction 卡住太久；调用方另有更长的请求级超时兜底）
+   */
+  waitForDiagnostics(uri: string, timeoutMs = 1500): Promise<boolean> {
+    if (this.latest.has(uri)) return Promise.resolve(true);
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const done = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // 从等待集合里摘除自己，避免超时后仍被 registerPending 唤醒（无害但留垃圾）
+        const set = this.waiters.get(uri);
+        if (set) {
+          set.delete(onPublish);
+          if (set.size === 0) this.waiters.delete(uri);
+        }
+        resolve(value);
+      };
+      const onPublish = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      // 定时器不应把进程钉在事件循环里（CLI 退出时不因它多等）
+      (timer as any).unref?.();
+
+      const set = this.waiters.get(uri) ?? new Set<() => void>();
+      set.add(onPublish);
+      this.waiters.set(uri, set);
+    });
   }
 
   /**
@@ -140,6 +219,19 @@ export class DiagnosticRegistry {
     this.delivered.clear();
     this.deliveredOrder = [];
     this.latest.clear();
+    // 唤醒所有在等的 waitForDiagnostics，否则它们只能挂到各自超时——registry 已被重置，
+    // 再等下去等不到任何东西了。唤醒后调用方 peek 到空、照常继续（语义见 waitForDiagnostics）。
+    const pendingWaiters = [...this.waiters.values()];
+    this.waiters.clear();
+    for (const set of pendingWaiters) {
+      for (const resolve of set) {
+        try {
+          resolve();
+        } catch {
+          /* 等待者自身异常不影响清理 */
+        }
+      }
+    }
   }
 
   /**

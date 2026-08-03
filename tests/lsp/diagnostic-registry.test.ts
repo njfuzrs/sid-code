@@ -274,6 +274,88 @@ describe("peekDiagnosticsForFile（非消费式只读快照）", () => {
   });
 });
 
+/**
+ * waitForDiagnostics —— 治 codeAction 的**时序**竞态
+ *
+ * 病根：诊断是服务器主动推的（publishDiagnostics），而 openFile 走 fire-and-forget 通知
+ * （server-manager didOpen 用 sendNotification，不等响应）。文件此前未打开时，工具刚发出
+ * didOpen 就 peek，服务器根本还没分析完 → 恒空 → codeAction 的 context.diagnostics 为空
+ * → 多数语言服务器回空 quickfix 列表 → 用户看到「无可用的代码修复建议」，而文件里明明有错。
+ * （docs/_template/执行lsp过程空白.txt 截图里连续两次都是这个结果。）
+ */
+describe("waitForDiagnostics（codeAction 的诊断沉降等待）", () => {
+  test("诊断已在快照里 → 立即返回 true（不白等）", async () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    // 给一个极短超时：若实现没走"已有则立即返回"的快路径，这里会超时返回 false
+    expect(await reg.waitForDiagnostics("file:///a.ts", 5)).toBe(true);
+  });
+
+  test("诊断稍后到达 → 被唤醒返回 true，且醒来即可 peek 到内容", async () => {
+    const reg = new DiagnosticRegistry();
+    const waiting = reg.waitForDiagnostics("file:///a.ts", 1000);
+    // 模拟服务器在 didOpen 之后才推诊断
+    setTimeout(() => {
+      reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    }, 20);
+
+    expect(await waiting).toBe(true);
+    // 关键：唤醒必须发生在 latest 覆盖**之后**，否则调用方醒来 peek 仍是空，
+    // 等待就白做了（这正是原 bug 的形状，只是换了个地方复现）。
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(1);
+  });
+
+  test("空数组也算「服务器已表态」→ 唤醒返回 true（干净文件的正常路径）", async () => {
+    const reg = new DiagnosticRegistry();
+    const waiting = reg.waitForDiagnostics("file:///clean.ts", 1000);
+    setTimeout(() => {
+      reg.registerPending("ts", [{ uri: "file:///clean.ts", diagnostics: [] }]);
+    }, 10);
+    expect(await waiting).toBe(true);
+    expect(reg.peekDiagnosticsForFile("file:///clean.ts")).toEqual([]);
+  });
+
+  test("超时 → 返回 false（调用方应照常继续，不当故障处理）", async () => {
+    const reg = new DiagnosticRegistry();
+    expect(await reg.waitForDiagnostics("file:///never.ts", 30)).toBe(false);
+  });
+
+  test("只被自己那个 uri 的诊断唤醒，不被别的文件串味", async () => {
+    const reg = new DiagnosticRegistry();
+    const waiting = reg.waitForDiagnostics("file:///a.ts", 60);
+    // 推的是**另一个**文件的诊断，不该唤醒 a.ts 的等待者
+    reg.registerPending("ts", [{ uri: "file:///b.ts", diagnostics: [diag("err-b")] }]);
+    expect(await waiting).toBe(false);
+  });
+
+  test("clear() 唤醒所有等待者，不把它们挂到超时", async () => {
+    const reg = new DiagnosticRegistry();
+    // 超时给得很长：如果 clear 不唤醒，这个测试会跑满 5s（远超单测耐心）而不是立刻结束
+    const waiting = reg.waitForDiagnostics("file:///a.ts", 5000);
+    reg.clear();
+    // registry 已重置，等下去也等不到东西了；唤醒后调用方 peek 到空、照常继续
+    expect(await waiting).toBe(true);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts")).toEqual([]);
+  });
+
+  test("多个等待者等同一 uri → 一次推送全部唤醒", async () => {
+    const reg = new DiagnosticRegistry();
+    const a = reg.waitForDiagnostics("file:///a.ts", 1000);
+    const b = reg.waitForDiagnostics("file:///a.ts", 1000);
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
+    expect(await Promise.all([a, b])).toEqual([true, true]);
+  });
+
+  test("hasPublishedFor 区分「服务器说没问题」与「服务器还没表态」", () => {
+    const reg = new DiagnosticRegistry();
+    expect(reg.hasPublishedFor("file:///a.ts")).toBe(false);
+    // 空数组＝已表态（文件确实没错），与"从未推送"必须可区分——
+    // 二者 peek 都返回 []，只靠 peek 无法分辨。
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [] }]);
+    expect(reg.hasPublishedFor("file:///a.ts")).toBe(true);
+  });
+});
+
 describe("formatDiagnostics", () => {
   test("格式化为人类可读文本（1-based 行号）", () => {
     const text = formatDiagnostics([{

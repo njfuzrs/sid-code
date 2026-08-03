@@ -22,6 +22,7 @@ import {
   McpProgressIndicator,
   FocusHint,
   isShellTool,
+  isPathDescriptionTool,
   type ToolCallStatus,
   type TextEmphasis,
 } from "./ToolShared.tsx";
@@ -126,6 +127,10 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const isShell = isShellTool(name);
   const hasShellCommand = isShell && !!shellCommand;
 
+  // description 是文件路径的工具：收缩时要从**头部**省略目录以保住文件名
+  // （`…/todo/x.md`），而不是砍掉尾部只留下每行都一样的 `/Users/…/sid-code/` 前缀。
+  const descriptionIsPath = isPathDescriptionTool(name);
+
   // think 工具：结果区改展示思考正文，而不是那句无信息的「已记录思考。」。
   // 出错时（空思考，工具自身回 isError）仍走原结果渲染路径，让错误可见。
   const hasThinkThought = !!thinkThought && !isError;
@@ -161,6 +166,14 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         progressMessage={hasShellCommand ? undefined : progressMessage}
         resultSummary={shouldExpandContent ? undefined : resultSummary}
         elapsedMs={elapsedMs}
+        // 把真实可用列宽交给 ToolInfo，让 description 按剩余空间收缩，而不是数据层
+        // 拍一个与终端无关的固定长度（本次修复的关键穿线：右侧留白得以被利用）。
+        // emphasis=high 时 header 尾部还有 TrailingIndicator（` ←`，2 列），要扣掉。
+        availableWidth={Math.max(
+          0,
+          terminalWidth - (emphasis === "high" && !hasShellCommand ? 2 : 0),
+        )}
+        descriptionIsPath={descriptionIsPath}
       />
       {emphasis === "high" && !hasShellCommand && <TrailingIndicator />}
       <FocusHint name={name} status={status} />

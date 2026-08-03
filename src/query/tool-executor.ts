@@ -747,6 +747,71 @@ export async function executeTools(
 }
 
 /**
+ * 「工具未执行成功」的收尾统一出口：补 fire PostToolUseFailure。
+ *
+ * ## 为什么需要它
+ *
+ * `executeSingleTool` 在 PreToolUse 之后有多条**早退**分支（hook 阻止 / 权限拒绝 /
+ * 参数校验失败），它们直接 `return` error tool_result，从不 fire 任何 Post* 事件。
+ * 后果是 Pre/Post **不成对**：
+ *
+ *   - 实测证据（会话 20260803-135816-8c8619e7）：`toolu_01QcH2merrmxvKAWoLzMruwJ`
+ *     在 events.jsonl 里只有 `PreToolUse`（05:59:43.051），**没有** PostToolUse。
+ *   - 依赖配对的用户 hook（计时、审计、配额记账）会永久悬空——它拿到"开始"却
+ *     永远等不到"结束"，只能靠超时自行清理，或干脆漏记。
+ *   - `execute_tool` span 在 `hook-probe.handlePostToolUse` 里创建，因此这些失败
+ *     **在可观测性里完全不存在**：trace 树上看不到、失败率统计不计入。
+ *     排查时表现为"模型报错了但轨迹里查不到这次工具调用"。
+ *
+ * ## 为什么用 PostToolUseFailure 而不是 PostToolUse
+ *
+ * 语义上这些工具**确实没执行**（没产生副作用），把它们当 PostToolUse 上报会污染
+ * "工具执行成功率"口径，也会让 `edit_meta` 之类"执行后才有"的字段无处安放。
+ * PostToolUseFailure 的既有语义就是「这次工具调用以失败告终」（原本只覆盖
+ * tool.execute 抛异常一种），把 hook 阻止 / 权限拒绝 / 校验失败纳入同一出口，
+ * 三者与"执行抛异常"在 hook 消费者眼里是同一件事：这次调用没有成功结果。
+ *
+ * ## 失败绝不影响主流程
+ *
+ * 与既有的 PostToolUseFailure 调用点一致：`.catch()` 吞掉 hook 自身异常并只打日志。
+ * 这一层是可观测性补齐，不能成为新的失败源——工具本来就已经失败了，不该再叠一个。
+ */
+function firePostToolUseFailure(
+  deps: ToolExecutorDeps,
+  block: ToolUseBlock,
+  reason: string,
+  toolInput?: unknown,
+  /**
+   * 该次调用在调度器视角的墙钟耗时（hook/权限/校验开销），由调用方传入起始锚点算差。
+   *
+   * 这些分支**工具根本没执行**，所以耗时口径只能是"从进入调度到被拒的墙钟"，
+   * 而不是成功路径的"纯执行耗时"——两者语义不同，但都答同一个排查问题：
+   * 这次调用卡了多久。缺它则失败工具的 span 一律无耗时属性，
+   * 无法区分"秒拒"与"等用户确认等了 30s 才拒"（权限拒绝尤其常见）。
+   */
+  durationMs?: number,
+): void {
+  const log = getLogger();
+  try {
+    // hookSystem 在类型上必填，但子代理/旧测试可能传入残缺 deps——防御到底，
+    // 这条补丁绝不能因为自己 undefined 报错而掩盖真正的工具失败原因。
+    const fired = deps.hookSystem?.firePostToolUseFailureEvent?.(
+      block.name,
+      (toolInput ?? block.input) as Record<string, unknown>,
+      reason,
+      block.id,
+      durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+    );
+    // 不 await：与既有调用点同策略，hook 耗时不进工具关键路径。
+    void fired?.catch?.((e: any) =>
+      log.error("HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
+    );
+  } catch (e: any) {
+    log.error("HOOK", `post_tool_use_failure 触发异常（忽略）: ${e?.message ?? e}`);
+  }
+}
+
+/**
  * GAP-01：单工具权限门（从 executeTools 的权限预检循环提取，批量/流式路径共享）。
  *
  * 对已确认存在的工具做权限检查。返回值：
@@ -762,6 +827,11 @@ export async function resolveToolPermission(
 ): Promise<ContentBlock | null> {
   const log = getLogger();
   if (!deps.permissionChecker) return null;
+
+  // 计时锚点：供拒绝分支给 PostToolUseFailure 带上 duration_ms。
+  // 这里的耗时主要由「等用户确认」主导（可达数十秒），是排查"卡在哪"的关键信号——
+  // 缺它则权限拒绝的 span 无耗时，"秒拒"与"等了 30s 才拒"在 trace 里长得一样。
+  const permStartedAt = Date.now();
 
   // G14：观测输入回填——权限/hook 看到展开后的规范化视图（如 ~ → 绝对路径），
   // 工具实际执行仍用原始 input（保持 prompt cache 前缀稳定）。
@@ -789,6 +859,15 @@ export async function resolveToolPermission(
       // 阻塞 → 直接返回 error（不再走权限检查）
       if (interp.blocked) {
         log.info("HOOK", `工具 ${block.name} 被 PreToolUse hook 阻止: ${interp.blockReason}`);
+        // Pre/Post 配对：本分支已 fire 过 PreToolUse，必须补 Failure 收尾（见
+        // firePostToolUseFailure 注释），否则用户 hook 与 execute_tool span 双双悬空。
+        firePostToolUseFailure(
+          deps,
+          block,
+          `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+          observableInput,
+          Date.now() - permStartedAt,
+        );
         return {
           type: "tool_result",
           tool_use_id: block.id,
@@ -907,10 +986,14 @@ export async function resolveToolPermission(
       } catch (e) {
         log.warn("PERMISSION", `记录用户拒绝失败（忽略）: ${(e as Error)?.message}`);
       }
+      const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
+      // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
+      // 耗时含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
+      firePostToolUseFailure(deps, block, denyContent, observableInput, Date.now() - permStartedAt);
       return {
         type: "tool_result",
         tool_use_id: block.id,
-        content: `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`,
+        content: denyContent,
         is_error: true,
       };
     }
@@ -922,6 +1005,14 @@ export async function resolveToolPermission(
   const { explainDecision } = await import("../permission/explainer.ts");
   const explanation = explainDecision(decision);
   log.warn("PERMISSION", `权限拒绝: ${block.name} - ${explanation}`);
+  // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
+  firePostToolUseFailure(
+    deps,
+    block,
+    `权限拒绝: ${explanation}`,
+    observableInput,
+    Date.now() - permStartedAt,
+  );
   return {
     type: "tool_result",
     tool_use_id: block.id,
@@ -976,6 +1067,17 @@ export async function executeSingleTool(
   if (interp.blocked) {
     const reason = interp.blockReason ?? "无原因";
     log.info("HOOK", `工具 ${block.name} 被 hook 阻止: ${reason}`);
+    // Pre/Post 配对：PreToolUse 已 fire（本函数自行 fire 或复用 resolveToolPermission
+    // 的缓存），被阻止同样要补 Failure 收尾。
+    // toolStartedAt = 调度器视角墙钟锚点（含 hook/权限/校验开销），与本分支返回的
+    // elapsedMs 同源，保证 span 属性与 UI 展示的耗时口径一致。
+    firePostToolUseFailure(
+      deps,
+      block,
+      `Hook 阻止执行: ${reason}`,
+      undefined,
+      Date.now() - toolStartedAt,
+    );
     return {
       block: {
         type: "tool_result",
@@ -1019,6 +1121,17 @@ export async function executeSingleTool(
     });
     const content = schemaHint ? validation.message + schemaHint : validation.message;
     log.info("TOOL", `工具 ${block.name} 参数校验失败: ${validation.message}${schemaHint ? "（附 schema 未发送引导）" : ""}`);
+    // Pre/Post 配对：这条正是事故现场——ask_user_question 校验失败那次
+    // （toolu_01QcH2merrmxvKAWoLzMruwJ）在 events.jsonl 里只有 Pre 没有 Post，
+    // 使得"模型漏字段"这类高频真实失败在 trace 与失败率统计里彻底隐身。
+    // 用 effectiveInput（hook 改参后的实际入参）上报，与鉴权口径一致。
+    firePostToolUseFailure(
+      deps,
+      block,
+      validation.message,
+      effectiveInput,
+      Date.now() - toolStartedAt,
+    );
     return {
       block: {
         type: "tool_result",
@@ -1163,6 +1276,9 @@ export async function executeSingleTool(
       block.input as Record<string, unknown>,
       err.message,
       block.id,
+      // elapsed = 纯执行耗时（与成功路径 addToolDuration 同口径）。
+      // 慢工具超时失败恰是最需要耗时的场景：区分"秒失败"与"卡 30s 才失败"。
+      { duration_ms: elapsed },
     ).catch((e: any) => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
 
     return {

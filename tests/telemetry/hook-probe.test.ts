@@ -208,6 +208,50 @@ describe("TelemetryHookProbe", () => {
     expect(toolSpan!.error).toBeDefined();
   });
 
+  /**
+   * PostToolUseFailure 也必须产 execute_tool span。
+   *
+   * 此前 registerHooks 只订阅 PostToolUse，于是所有"工具没执行成功"的失败
+   * （tool.execute 抛异常 / hook 阻止 / 权限拒绝 / 参数校验失败）在 trace 树上
+   * **完全不存在**，失败率统计也不计入。排查时表现为"模型明明报错了，但轨迹里
+   * 查不到这次工具调用"——会话 20260803-135816-8c8619e7 的 ask_user_question
+   * 校验失败即如此。
+   */
+  test("handlePostToolUse 覆盖 PostToolUseFailure（失败工具不得在 trace 里隐身）", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "claude-sonnet-4" });
+    await hookSystem.firePostToolUseFailureEvent(
+      "ask_user_question",
+      { questions: [{ header: "确认提交" }] },
+      "参数校验失败（工具 ask_user_question）:\n- questions.0.question: 期望 string，实际收到 undefined",
+      "toolu_01QcH2merrmxvKAWoLzMruwJ",
+      { duration_ms: 1234 },
+    );
+    await hookSystem.fireSessionEndEvent("exit");
+    await bus.flush();
+
+    const toolSpan = spans.find(s => s.kind === "execute_tool");
+    expect(
+      toolSpan,
+      "PostToolUseFailure 未产生 execute_tool span —— 失败工具在可观测性里隐身",
+    ).toBeDefined();
+    expect(toolSpan!.name).toContain("execute_tool ask_user_question");
+    expect(toolSpan!.attributes[ATTR.TOOL_CALL_ID]).toBe("toolu_01QcH2merrmxvKAWoLzMruwJ");
+    // 必须计为失败，否则污染"工具执行成功率"口径
+    expect(toolSpan!.attributes[ATTR.SUCCESS]).toBe(false);
+    expect(toolSpan!.status).toBe("error");
+    expect(toolSpan!.error).toBeDefined();
+    // span 本身在事件里创建即结束（durationMs ≈ 0），真实耗时只能靠属性承载。
+    // 缺它则"成功工具有耗时、失败工具没耗时"，而慢工具超时失败恰恰最需要看耗时
+    // （区分"秒失败"与"卡 30s 才失败"）。
+    expect(
+      toolSpan!.attributes["sidcode.tool.duration_ms"],
+      "失败工具的 span 必须带真实耗时，否则无法区分秒失败与卡很久才失败",
+    ).toBe(1234);
+  });
+
   test("handleSessionEnd 结束 invoke_agent span 并附加统计", async () => {
     const hookSystem = new HookSystem();
     probe.registerHooks(hookSystem);

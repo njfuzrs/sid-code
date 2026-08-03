@@ -2,7 +2,8 @@
  * /language 命令 — 切换输出语言偏好
  *
  * 用法：
- *   /language              — 显示当前语言偏好
+ *   /language              — 打开交互式语言选择面板（键盘 ↑↓ + Enter）
+ *   /language status       — 以纯文本显示当前语言偏好 + 用法（别名 list / ls / show）
  *   /language zh           — 切换为中文优先（仅当前会话）
  *   /language en           — 切换为英文优先（仅当前会话）
  *   /language auto         — 跟随用户输入语言（**不是**"回退默认"，见下）
@@ -16,6 +17,8 @@
  * 状态显示还把"未设置"回显成 `auto`，让用户以为自己已经在自动模式了。
  *
  * 持久化语义与 /model、/effort、/theme 对齐：默认仅当会话生效，加 -p 才写盘。
+ * 无参打开的**交互面板**里选定视为用户主动选择，自动带 -p（见 App.tsx handleLanguageSelect），
+ * 与 /model、/theme 面板同构——这正是"切了却重开回退"痛点的正解。
  * 切换后立即重建系统提示词，下一轮 LLM 调用即用新语言（不必等重开会话）。
  * 别名 /lang。
  */
@@ -32,23 +35,33 @@ import {
 /** 显式回退缺省的说法（与 auto 区分开） */
 const UNSET_TOKENS = new Set(["unset", "default", "none"]);
 
+/** 纯文本状态输出的说法（无参已改为开面板，文本视图需显式索取；对齐 /theme list） */
+const STATUS_TOKENS = new Set(["status", "list", "ls", "show"]);
+
 export class LanguageCommand implements Command {
   name() { return "language"; }
   aliases() { return ["lang"]; }
   description() { return "显示或切换输出语言偏好（-p 持久化）"; }
-  argumentHint() { return "[zh|en|auto|unset] [-p]"; }
+  argumentHint() { return "[zh|en|auto|unset|status] [-p]"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const tokens = args.trim().split(/\s+/).filter(Boolean);
     const persist = tokens.some((t) => t === "-p" || t === "--persist" || t === "save");
     const langArg = tokens.find((t) => t !== "-p" && t !== "--persist" && t !== "save");
 
-    // 无参数 → 显示当前语言 + 用法。
+    // 无参数 → 打开交互式语言面板（对齐 /model、/theme、/effort、/think）。
+    // 纯文本状态视图仍可用 /language status 取——脚本化 / 无头场景以及"只想看当前值
+    // 不想触发面板"的用法都还在，只是不再占用无参这个最高频入口。
     if (!langArg) {
-      return { kind: "message", message: this.buildStatus(ctx) };
+      return { kind: "dialog", dialog: "language" };
     }
 
     const raw = langArg.toLowerCase();
+
+    // status / list / ls / show → 纯文本状态 + 用法（面板之外的逃生口）。
+    if (STATUS_TOKENS.has(raw)) {
+      return { kind: "message", message: this.buildStatus(ctx) };
+    }
 
     // unset / default / none → 删除偏好字段，回落缺省（中文优先）。
     if (UNSET_TOKENS.has(raw)) {
@@ -104,6 +117,7 @@ export class LanguageCommand implements Command {
       "  unset  — 清除偏好，回落缺省（中文优先）",
       "",
       "用法: /language <zh|en|auto|unset> [-p]（-p 持久化到 settings.json）",
+      "      /language          打开交互式选择面板（↑↓ 导航 · Enter 切换，选定即持久化）",
       "也可用 --language 启动参数或 SID_LANGUAGE 环境变量（优先级：参数 > 环境变量 > settings.json）",
     ].join("\n");
   }
@@ -119,6 +133,7 @@ export class LanguageCommand implements Command {
       "  unset  — 清除偏好，回落缺省（中文优先）",
       "",
       `用法: /language <${LANGUAGE_PREFS.join("|")}|unset> [-p]`,
+      "      /language 无参可打开交互式选择面板",
     ].join("\n");
   }
 }

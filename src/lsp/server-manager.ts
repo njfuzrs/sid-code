@@ -147,10 +147,15 @@ export class LSPServerManager {
    * 路由到 getServerForFile 命中的实例并转发请求（带 ContentModified 重试）。
    * 无对应服务器时抛错，由调用方（LSP 工具）转为友好错误信息。
    */
-  async sendRequest<T = unknown>(filePath: string, method: string, params?: unknown): Promise<T> {
+  async sendRequest<T = unknown>(
+    filePath: string,
+    method: string,
+    params?: unknown,
+    timeoutMs?: number,
+  ): Promise<T> {
     const instance = this.getServerForFile(filePath);
     if (!instance) throw new Error(`无对应 LSP 服务器: ${filePath}`);
-    return instance.sendRequest<T>(method, params);
+    return instance.sendRequest<T>(method, params, timeoutMs);
   }
 
   /** 关闭所有服务器 */

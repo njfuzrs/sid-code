@@ -22,7 +22,7 @@ function input(over: Partial<ToolProgressRouteInput> = {}): ToolProgressRouteInp
     eventType: "agent_progress",
     hasText: false,
     agentSinkReady: true,
-    shellSinkReady: true,
+    toolCardSinkReady: true,
     ...over,
   };
 }
@@ -44,26 +44,37 @@ describe("routeToolProgress — 子代理进度（治过程黑盒）", () => {
   });
 });
 
-describe("routeToolProgress — shell 实时输出（既有行为不许回归）", () => {
-  test("bash/shell/execute_command 带 text → shellCard", () => {
+describe("routeToolProgress — 工具卡片实时进度（既有行为不许回归）", () => {
+  test("bash/shell/execute_command 带 text → toolCard", () => {
     for (const name of ["bash", "shell", "execute_command"]) {
-      expect(routeToolProgress(input({ toolName: name, eventType: "output", hasText: true }))).toBe("shellCard");
+      expect(routeToolProgress(input({ toolName: name, eventType: "output", hasText: true }))).toBe("toolCard");
     }
   });
 
-  test("shell 但事件不带 text → 状态栏（没有尾部快照可渲染）", () => {
+  test("事件不带 text → 状态栏（没有文本可渲染）", () => {
     expect(routeToolProgress(input({ toolName: "bash", eventType: "output", hasText: false }))).toBe("statusBar");
   });
 
-  test("shell sink 未就绪 → 回落状态栏", () => {
+  test("工具卡片 sink 未就绪 → 回落状态栏", () => {
     expect(
-      routeToolProgress(input({ toolName: "bash", eventType: "output", hasText: true, shellSinkReady: false })),
+      routeToolProgress(input({ toolName: "bash", eventType: "output", hasText: true, toolCardSinkReady: false })),
     ).toBe("statusBar");
   });
 
-  test("非 shell 工具即使带 text 也不占用 shell 实时输出区", () => {
-    // 这条是原白名单**唯一正确**的部分：多行 stdout 尾部快照的渲染形态只适用 shell。
-    expect(routeToolProgress(input({ toolName: "web_fetch", eventType: "output", hasText: true }))).toBe("statusBar");
+  /**
+   * 这条断言**被本次修复反转**（原为 `web_fetch → statusBar`，注释称"白名单唯一正确的部分"）。
+   *
+   * 反转的理由：那条断言把「去哪」与「长什么样」混为一谈了。它担心的事（非 shell 工具的
+   * 文本挤进 shell 的多行 stdout 输出区）实际由**渲染层**拦着——ToolMessage.tsx 的多行块
+   * 以 `hasShellCommand` 为闸门，非 shell 工具的文本只会走 header 下方的单行 progressMessage。
+   * 所以名字门槛没有守住任何东西，只是把所有非 shell 工具的进度打进状态栏 2s 一闪。
+   *
+   * 代价是真实的：LSP 接了 onProgress、阶段文案照发，却因为不在名单里而落不到卡片上，
+   * 用户仍旧只看到光秃秃的 `⏺ lsp`（docs/_template/执行lsp过程空白.txt）。
+   */
+  test("非 shell 工具带 text 也进卡片（呈现形态由渲染层分流，不由路由决定）", () => {
+    expect(routeToolProgress(input({ toolName: "web_fetch", eventType: "output", hasText: true }))).toBe("toolCard");
+    expect(routeToolProgress(input({ toolName: "lsp", eventType: "output", hasText: true }))).toBe("toolCard");
   });
 });
 

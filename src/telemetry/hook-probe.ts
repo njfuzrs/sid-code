@@ -77,13 +77,19 @@ export class TelemetryHookProbe {
     return attrs;
   }
 
-  /** 注册为 runtime hook，监听 5 种事件 */
+  /** 注册为 runtime hook，监听下列事件（数量以 events 数组为准，勿在注释里写死） */
   registerHooks(hookSystem: HookSystem): void {
     const events = [
       HookEventName.SessionStart,
       HookEventName.BeforeModel,
       HookEventName.AfterModel,
       HookEventName.PostToolUse,
+      // 失败工具同样要产 execute_tool span：此前只订阅 PostToolUse，导致
+      // ① tool.execute 抛异常、② hook 阻止、③ 权限拒绝、④ 参数校验失败
+      // 这四类失败在 trace 树上**完全不存在**（span 是在 handlePostToolUse 里创建的），
+      // 失败率统计也不计入。排查时表现为"模型报错了但轨迹里查不到这次工具调用"
+      // （会话 20260803-135816-8c8619e7 的 ask_user_question 校验失败即如此）。
+      HookEventName.PostToolUseFailure,
       HookEventName.SessionEnd,
       // spec 17 §6.1.3 增强追踪树：权限等待 + Hook 执行 span
       HookEventName.BeforePermissionCheck,
@@ -122,6 +128,10 @@ export class TelemetryHookProbe {
         this.handleAfterModel(input as AfterModelInput);
         break;
       case HookEventName.PostToolUse:
+      // PostToolUseFailure 复用同一 handler：它的 input 也是 PostToolUseInput
+      // （event-handler 构造时带 is_error:true + tool_response:{error}），
+      // handlePostToolUse 已按 is_error 分流（success 属性 + recordError），无需另写分支。
+      case HookEventName.PostToolUseFailure:
         this.handlePostToolUse(input as PostToolUseInput);
         break;
       case HookEventName.SessionEnd:

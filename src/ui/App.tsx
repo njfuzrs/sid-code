@@ -67,6 +67,16 @@ export interface TUICallbacks {
   /** 直接执行交互式 Shell 命令，不经过斜杠命令注册表。 */
   onShellCommand: (command: string) => Promise<void>;
   onInterrupt: () => void;
+  /**
+   * 推一条瞬态状态栏提示（自动超时消失）。接 app.ts 的 addTransientStatusMessage。
+   *
+   * UI 侧**必须**走这个通道，不要直接 `bridge.update({ statusMessage })`——后者绕过
+   * app.ts 的 activeStatusMessages Map，会造成双向不一致：① 直写瞬间把底部已有的
+   * sticky 警告顶掉（Map 里还在、屏幕上没了）；② 超时后写 `statusMessage: ""` 清空整行；
+   * ③ 之后任意一次 add/removeStatusMessage 都会从 Map 重新 join，于是早已"消失"的警告
+   * 突然复活。用户视角就是一条提示消失几分钟后自己又回来了。
+   */
+  onNotify?: (id: string, text: string, delayMs: number) => void;
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
   onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
   /** MCP 管理器引用（/mcp 交互面板用；稳定引用，非响应式状态） */
@@ -245,6 +255,16 @@ export interface ErrorPanelItem {
   suggestion: string;
   /** 出现时间戳 */
   timestamp: number;
+  /**
+   * 瞬态错误标记：true = 系统正在自动重试，请求恢复后应自动清除（不等用户按键）。
+   *
+   * 由 error-messages.ts 的 isTransientErrorCode 从 code 派生（限流/过载/网络/超时等）。
+   * false / undefined = 终态错误（认证失败、配额耗尽等需用户干预），常驻直到手动关闭。
+   *
+   * 不加这个区分的后果：限流恢复后红色卡片永久悬在界面上，而卡片自己的建议写着
+   * "系统正在自动重试退避"——用户以为仍在故障中。见 app.ts clearTransientErrorPanel。
+   */
+  transient?: boolean;
 }
 
 /** TUI 状态（由外部 App 驱动） */
@@ -649,8 +669,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const st = getState?.();
     if (st && !st.capability.supportsThinkingToggle) {
       log.info("UI:APP", "Alt+T：当前模型不支持思考开关，忽略");
-      bridge.update({ statusMessage: "当前模型不支持显式思考开关（思考由模型自身决定）" });
-      setTimeout(() => bridge.update({ statusMessage: "" }), 2500);
+      // 走 onNotify（app.ts 的 Map 通道），不直写 statusMessage——详见 TUICallbacks.onNotify 注释。
+      callbacks.onNotify?.("thinking_toggle", "当前模型不支持显式思考开关（思考由模型自身决定）", 2500);
       return true;
     }
 
@@ -658,8 +678,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const next: import("../llm/effort.ts").ThinkingSetting = st?.applied ? "off" : "on";
     setThinking(next, /* persist */ true);
     log.info("UI:APP", `Alt+T：切换扩展思考 → ${next}`);
-    bridge.update({ statusMessage: next === "on" ? "已开启扩展思考" : "已关闭扩展思考" });
-    setTimeout(() => bridge.update({ statusMessage: "" }), 2000);
+    callbacks.onNotify?.("thinking_toggle", next === "on" ? "已开启扩展思考" : "已关闭扩展思考", 2000);
     return true;
   });
 
@@ -1084,6 +1103,17 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ activeDialog: null });
   }, [callbacks, bridge]);
 
+  const handleLanguageSelect = useCallback(
+    (choice: import("./components/LanguageDialog.tsx").LanguageChoice) => {
+      // 同 handleThemeSelect / handleModelSelect：面板选择是用户主动的偏好表达，附 -p 持久化。
+      // "unset" 直接原样透传——/language 命令认这个 token（UNSET_TOKENS），语义是删字段回落缺省，
+      // **不能**替换成 auto（auto 是"跟随用户输入语言"这一档有效偏好，两者行为不同）。
+      callbacks.onSlashCommand("language", `${choice} -p`);
+      bridge.update({ activeDialog: null });
+    },
+    [callbacks, bridge],
+  );
+
   // Shift+Tab 权限模式循环切换：转交 app.ts 的 cyclePermissionMode（切模式 + 刷状态栏 + 提示）。
   const handleCyclePermissionMode = useCallback(() => {
     callbacks.onCyclePermissionMode?.();
@@ -1210,6 +1240,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          onLanguageSelect={handleLanguageSelect}
           onCompleteOnboarding={handleCompleteOnboarding}
           mcpManager={callbacks.mcpManager}
           sessionState={callbacks.sessionState}
@@ -1267,6 +1298,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
           availableThemes={availableThemes}
           currentTheme={currentTheme}
           onThemeSelect={handleThemeSelect}
+          onLanguageSelect={handleLanguageSelect}
           onCompleteOnboarding={handleCompleteOnboarding}
           mcpManager={callbacks.mcpManager}
           sessionState={callbacks.sessionState}
@@ -1286,22 +1318,19 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
-  const selectionWarningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 节流仍留在本地（2s 内重复触发不重复提示）；超时消失已交给 onNotify 的 Map 通道，
+  // 故不再需要自持 setTimeout 句柄。
   const lastSelectionWarning = useRef(0);
   const handleSelectionWarning = useCallback(() => {
     const now = Date.now();
     if (now - lastSelectionWarning.current < 2000) return;
     lastSelectionWarning.current = now;
 
-    props.bridge.update({
-      statusMessage: "按 Ctrl+S 进入 Copy Mode 以选择和复制文本",
-    });
-    if (selectionWarningTimer.current) clearTimeout(selectionWarningTimer.current);
-    selectionWarningTimer.current = setTimeout(() => {
-      props.bridge.update({ statusMessage: "" });
-      selectionWarningTimer.current = null;
-    }, 3000);
-  }, [props.bridge]);
+    // 走 onNotify（app.ts 的 Map 通道）：直写 statusMessage 会顶掉底部 sticky 警告，
+    // 且 3s 后写 "" 清空整行，之后 Map 重新 join 时那些警告会突然复活。
+    // 超时也交给 addTransientStatusMessage 管理，这里不再自持定时器。
+    props.callbacks.onNotify?.("copy_mode_hint", "按 Ctrl+S 进入 Copy Mode 以选择和复制文本", 3000);
+  }, [props.callbacks]);
 
   return (
     <TerminalProvider>

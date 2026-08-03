@@ -138,12 +138,25 @@ export class HookEventHandler {
     return this.executeHooks(HookEventName.PostToolUse, input, { toolName, toolInput });
   }
 
-  /** PostToolUseFailure 事件 */
+  /**
+   * PostToolUseFailure 事件
+   *
+   * `options.duration_ms`：与 firePostToolUseEvent 同字段同语义。缺它会让**失败工具的
+   * `execute_tool` span 不带真实耗时**——span 本身在 PostToolUse* 里创建即结束
+   * （durationMs ≈ 0），真实耗时只能靠 `sidcode.tool.duration_ms` 属性承载。
+   * 于是"成功工具有耗时、失败工具没耗时"，而慢工具超时失败恰恰是最需要看耗时的场景
+   * （区分"秒失败"与"卡 30s 才失败"）。options 形态与成功路径保持一致，
+   * 便于后续补 harness_context 等字段时不用再改签名。
+   */
   async firePostToolUseFailureEvent(
     toolName: string,
     toolInput: Record<string, unknown>,
     error: string,
     toolUseId?: string,
+    options?: {
+      duration_ms?: number;
+      harness_context?: import("./types.ts").HarnessHookContext;
+    },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
@@ -152,6 +165,8 @@ export class HookEventHandler {
       tool_response: { error },
       is_error: true,
       tool_use_id: toolUseId,
+      duration_ms: options?.duration_ms,
+      harness_context: options?.harness_context,
     };
     return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName, toolInput });
   }

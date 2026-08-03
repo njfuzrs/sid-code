@@ -145,4 +145,51 @@ describe("G10：文件大小保护", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain("无法读取文件");
   });
+
+  /**
+   * 进度上报接线 —— 治「12 秒里只有一个光秃秃的 ⏺ lsp」
+   *
+   * 病根：`LSPTool.execute` 此前签名是 `(input, _signal?)`——**第三个参数根本没声明**，
+   * 结构上就没有上报能力。而 LSP 的等待全都发生在拿到结果之前且都很长：
+   * waitForLSPReady 默认 10s、语言服务器冷启动、单请求超时 30s。
+   * （docs/_template/执行lsp过程空白.txt 截图：已执行 12s，屏幕上零反馈。）
+   *
+   * 这里用 mock 路由 + 懒启动的特性：openFile 会尝试 ensureStarted（command 是 `true`，
+   * 立即退出 → 请求失败），所以走不到真实结果，但**就绪 / 打开 / 查询三个阶段的上报
+   * 已经发生**，正好覆盖本次接线。
+   */
+  test("execute 接受 onProgress 并按阶段上报（就绪 → 打开 → 查询）", async () => {
+    const file = join(dir, "progress.g10x");
+    writeFileSync(file, "hello\n");
+
+    const events: string[] = [];
+    const tool = new LSPTool();
+    await tool.execute(
+      { operation: "hover", file_path: file, line: 1, character: 1 },
+      undefined,
+      (e) => {
+        // 只收集带文本的进度（就是会显示到卡片上的那些）
+        if (typeof (e as any).text === "string") events.push((e as any).text);
+      },
+    );
+
+    // 关键断言：**有**进度（此前恒为 0 条——参数都没声明，回调永远不会被调用）
+    expect(events.length).toBeGreaterThan(0);
+    // 三个阶段各自可辨识，且顺序符合执行流
+    expect(events.some((t) => t.includes("语言服务器"))).toBe(true);
+    expect(events.some((t) => t.includes("progress.g10x"))).toBe(true);
+    expect(events.some((t) => t.includes("hover"))).toBe(true);
+    const openIdx = events.findIndex((t) => t.includes("progress.g10x"));
+    const queryIdx = events.findIndex((t) => t.includes("hover"));
+    expect(openIdx).toBeLessThan(queryIdx);
+  });
+
+  test("不传 onProgress 时不炸（无头模式 / 旧调用方）", async () => {
+    const file = join(dir, "noprogress.g10x");
+    writeFileSync(file, "hello\n");
+    const tool = new LSPTool();
+    // 只要不抛就算过（结果本身必然是失败——mock 服务器起不来）
+    const result = await tool.execute({ operation: "hover", file_path: file, line: 1, character: 1 });
+    expect(result).toBeDefined();
+  });
 });

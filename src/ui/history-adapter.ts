@@ -485,7 +485,16 @@ export function buildCompletedToolCall(
   return {
     callId: block.tool_use_id,
     name: pending?.name ?? toolName,
-    description: pending?.description ?? getToolSummary(toolName, {}),
+    // 摘要：优先用 pending 上算好的，**空串也要重算**（故用 `||` 而非 `??`）。
+    //
+    // 此前是 `pending?.description ?? getToolSummary(toolName, {})`，两处都不对：
+    //   1. `??` 只兜 null/undefined——pending 里存着空串（工具此前没有摘要分支时的产物）
+    //      会被原样沿用，重算的机会被跳过；
+    //   2. 兜底喂的是**空对象**，任何工具都只能返回 ""。真正可用的 input 就在 `pending.input`
+    //      里（下一行正在用它），拿它重算才有意义。
+    // pending 整个缺失时确实无 input 可依（那是流式中断的残缺数据），此时退回 "" 是正确的
+    // ——没有输入就编不出摘要，这一路只能靠工具名本身。
+    description: pending?.description || getToolSummary(toolName, pending?.input ?? {}),
     input: pending?.input ?? {},
     status: isError ? ToolCallStatus.Error : ToolCallStatus.Success,
     resultDisplay,

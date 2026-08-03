@@ -286,13 +286,24 @@ export class HookSystem {
     return this.eventHandler.firePostToolUseEvent(toolName, toolInput, toolResponse, isError, toolUseId, options);
   }
 
+  /** options.duration_ms：让失败工具的 execute_tool span 也带真实耗时（见 event-handler 同名方法） */
   async firePostToolUseFailureEvent(
     toolName: string,
     toolInput: Record<string, unknown>,
     error: string,
     toolUseId?: string,
+    options?: {
+      duration_ms?: number;
+      harness_context?: import("./types.ts").HarnessHookContext;
+    },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePostToolUseFailureEvent(toolName, toolInput, error, toolUseId);
+    return this.eventHandler.firePostToolUseFailureEvent(
+      toolName,
+      toolInput,
+      error,
+      toolUseId,
+      options,
+    );
   }
 
   async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {

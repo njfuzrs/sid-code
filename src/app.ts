@@ -27,7 +27,7 @@ import type { FallbackDecision } from "./llm/fallback.ts";
 import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
 import { TokenEstimator } from "./llm/token-estimator.ts";
 import { ThinkingManager } from "./llm/thinking.ts";
-import { lookupErrorMessage, inferErrorCode, stableErrorId } from "./llm/error-messages.ts";
+import { lookupErrorMessage, inferErrorCode, stableErrorId, isTransientErrorCode } from "./llm/error-messages.ts";
 import { SessionState } from "./session/state.ts";
 import { SessionStore } from "./session/store.ts";
 import { generateSessionId } from "./session/id.ts";
@@ -3900,9 +3900,10 @@ export class App {
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
       discoverJitContext: (toolBlocks) => this.discoverJitContext(toolBlocks),
       // G5 接线：长跑工具的中间进度。
-      // - bash/shell 工具的 output 事件（执行中的 stdout/stderr 尾部）→ 路由到执行中的工具卡片，
-      //   在 header 下方以 progressMessage 实时展示，让 `bun test` 这类长命令不再"卡在无输出"。
-      // - 其它工具的 MCP 进度 → 仍走状态栏 2s 临时提示（保持原行为）。
+      // - 任何**带文本**的进度事件 → 路由到执行中的工具卡片（bash 的 stdout 尾部快照走
+      //   命令区下方的多行块，LSP/MCP 这类单行阶段文案走 header 下方的 progressMessage），
+      //   让长命令与"隐形长等待"（LSP 等服务器就绪最长 10s）都不再"卡在无输出"。
+      // - 无文本的事件（纯类型信号）→ 状态栏 2s 临时提示。
       // 无头模式下 statusNotifier / liveToolProgressSink 均为 null，安全跳过。
       onToolProgress: (toolName, toolUseId, event) => {
         const msg = typeof (event as any).message === "string"
@@ -3920,13 +3921,13 @@ export class App {
           eventType: event.type,
           hasText: typeof (event as any).text === "string",
           agentSinkReady: !!this.liveAgentProgressSink,
-          shellSinkReady: !!this.liveToolProgressSink,
+          toolCardSinkReady: !!this.liveToolProgressSink,
         });
         if (route === "agentCard") {
           this.liveAgentProgressSink!(toolUseId, event as any);
           return;
         }
-        if (route === "shellCard") {
+        if (route === "toolCard") {
           this.liveToolProgressSink!(toolUseId, (event as any).text);
           return;
         }
@@ -5536,12 +5537,49 @@ export class App {
     // 回填实例通道：让实例方法（cyclePermissionMode 等）也能推送一次性状态栏提示。
     this.statusNotifier = addTransientStatusMessage;
 
-    /** 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条 */
+    /**
+     * 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条。
+     *
+     * transient 标记由 code 自动派生（调用方无需关心）：限流/过载/网络/超时这类
+     * "系统正在自动重试"的错误标为瞬态，请求一恢复就由 clearTransientErrorPanel
+     * 清掉；认证失败/配额耗尽等终态错误不标，常驻直到用户手动关闭。
+     * 调用方可显式传 transient 覆盖（目前无此需要，保留给特殊路径）。
+     */
     function pushErrorPanel(item: import("./ui/App.tsx").ErrorPanelItem): void {
       const current = bridge.current.errorPanel;
       const filtered = current.filter(e => e.id !== item.id);
-      const next = [...filtered, item].slice(-5);
+      const resolved: import("./ui/App.tsx").ErrorPanelItem = {
+        ...item,
+        transient: item.transient ?? isTransientErrorCode(item.code),
+      };
+      const next = [...filtered, resolved].slice(-5);
       bridge.update({ errorPanel: next });
+    }
+
+    /**
+     * 请求已恢复 → 清除所有瞬态错误卡片，保留终态错误。
+     *
+     * 挂在四个"请求确证恢复"信号点上：正文首帧 / 思考首帧 / tool_start（这三个与
+     * retryStatus 的清除点重合）+ 新一轮开头。此前 errorPanel 全局只有"手动 Ctrl+E
+     * 清空"一个出口，是限流提示永久残留的直接原因——retryStatus 那条倒计时有清除、
+     * 会正常消失，错误卡片一处都没有，于是倒计时没了红卡还在。
+     *
+     * 刻意**不**挂 done 路径：done 走 finally，含"重试耗尽导致本轮失败"，那张卡片正是
+     * 在解释失败原因，清掉等于抹掉唯一线索。改挂下一轮开头，两个诉求都满足。
+     *
+     * 只清 transient：终态错误（API Key 无效、配额耗尽）即便后续请求成功也仍需用户
+     * 处理，不能被"来了个成功请求"顺手抹掉。
+     *
+     * 引用稳定性：无瞬态项时直接 return，不写 bridge——避免每帧 new 数组触发
+     * 无意义重渲（错误面板在 Static 之外的常驻区，重渲成本虽低但没必要）。
+     */
+    function clearTransientErrorPanel(): void {
+      const current = bridge.current.errorPanel;
+      if (current.length === 0) return;
+      const remaining = current.filter(e => !e.transient);
+      if (remaining.length === current.length) return;
+      log.info("TUI", `请求已恢复，自动清除 ${current.length - remaining.length} 条瞬态错误提示`);
+      bridge.update({ errorPanel: remaining });
     }
 
     // 接线：子代理错误回调 → 统一错误面板
@@ -5549,6 +5587,48 @@ export class App {
 
     function removeStatusMessage(id: string): void {
       activeStatusMessages.delete(id);
+      const joined = [...activeStatusMessages.values()].join(" | ") || "";
+      updateState({ statusMessage: joined });
+    }
+
+    /**
+     * 上一轮遗留的 sticky 状态提示 key —— 新一轮开始时统一清掉。
+     *
+     * 根因：addStatusMessage 写入的 key 只有三个出口（同 key 覆盖 / removeStatusMessage /
+     * `/clear` 时整体 clear）。下列 key 三者中前两个都没有，于是一旦写入就**跨轮永久累积**，
+     * 只有 `/clear` 能消。且它们会被 `" | "` 拼接（见 addStatusMessage），跑久了底部变成
+     * `⚠ 上下文剩余 12%… | 达到最大轮次限制: 50 | 🔄 循环恢复尝试 3/3` 一长串陈旧信息。
+     * 比 errorPanel 更隐蔽——错误面板至少有 Ctrl+E，状态栏这行用户根本无从清除。
+     *
+     * 为什么可以在轮次开头无条件清：这些提示的产生条件**每轮都会重新判定**——
+     * - context_warning：loop.ts:838 每轮算 remaining，压力仍在就再 yield 一次；
+     * - system（预算/配额类）：loop.ts:2477/2502 的检查在 per-turn while 循环（loop.ts:633）
+     *   内，条件仍成立就每轮重报；
+     * - max_turns / loop_detected / loop_recovery / hook_blocked：都是"上一轮发生过的事件"，
+     *   用户已经在发下一条指令了，它们对当前轮次无任何指示意义。
+     * 所以清掉不会掩盖仍然存在的问题，只会移除已经过时的那份。语义等价于 rate_limit
+     * 的 resetsAt 窗口过期自清（syncRateLimitStatus），只是触发时机换成"新一轮开始"。
+     *
+     * 刻意不含 rate_limit（有自己更精确的 resetsAt 过期判定，别抢它的活）与
+     * interactive-bash（finally 里成对清除，且代表"当前正在进行"而非历史事件）。
+     */
+    const STALE_STICKY_STATUS_KEYS = [
+      "context_warning",
+      "max_turns",
+      "loop_detected",
+      "loop_recovery",
+      "hook_blocked",
+      "system",
+      "system:transient",
+    ] as const;
+
+    /** 清除上一轮遗留的 sticky 状态提示（新一轮开头调用）。只写一次 state，避免逐个 remove 触发多次重渲。 */
+    function clearStaleStickyStatus(): void {
+      let changed = false;
+      for (const key of STALE_STICKY_STATUS_KEYS) {
+        if (activeStatusMessages.delete(key)) changed = true;
+      }
+      if (!changed) return;
       const joined = [...activeStatusMessages.values()].join(" | ") || "";
       updateState({ statusMessage: joined });
     }
@@ -6062,6 +6142,19 @@ export class App {
       let streamSynced = false;
       let completedNormally = false;
 
+      // 新一轮开始 = 上一轮遗留的 sticky 状态提示已过时（上下文警告/轮次上限/循环检测/
+      // 循环恢复/hook 阻止/预算配额），统一清一次。这些提示的产生条件每轮都会重新判定，
+      // 仍然成立就会再报一遍，所以清掉不掩盖真问题，只移除陈旧那份。详见函数注释。
+      clearStaleStickyStatus();
+
+      // 新一轮开始 = 上一轮遗留的瞬态错误必然已过时（用户都在发下一条指令了），先清一次。
+      //
+      // 为什么这里清、而不是在 done 路径清：done 走 finally，**包含"重试耗尽导致本轮失败"**
+      // 的情况——那张卡片正是在解释本轮为何失败，此时清掉等于把唯一的失败原因抹了。
+      // 放到下一轮开头，既保证用户看得到上一轮的失败原因，又保证它不会跨轮误导。
+      // 终态错误（API Key 无效等）不受影响，仍需用户手动关闭。
+      clearTransientErrorPanel();
+
       // 设置流式文本回调（桥接 processStream 内部的 onText）
       this.queryEngine.setStreamTextCallback((text: string) => {
         // 重试进度消息（stream-processor 的 system_api_error → onText(`[重试中] …`)）走状态栏，
@@ -6084,6 +6177,9 @@ export class App {
           // 清除 transient system 警告（空参数重试成功 / 超时重试成功等）。
           // 使用独立 key "system:transient"，不会误清预算/配额等 sticky 警告。
           removeStatusMessage("system:transient");
+          // 同一个"请求已恢复"信号也要清瞬态错误卡片——此前只清了 retryStatus，
+          // 导致倒计时消失但 429 红卡永久残留（本次修复的核心现象）。
+          clearTransientErrorPanel();
         }
         streamingFullText += text;
         updateState({ streamingText: streamingFullText, streamingThinking: streamingThinkingFull, streamingThinkingStartMs: undefined, isStreaming: true });
@@ -6104,6 +6200,10 @@ export class App {
           updateState({ retryStatus: null });
           removeStatusMessage("system:transient");
         }
+        // 瞬态错误卡片的清除**不能**放进上面的 if：retryStatus 为 null 时
+        // （限流走 stream-processor throw → fatal_error 路径，未必经过 onRetry 回调写
+        // retryStatus）红卡依然可能存在。无条件调用，函数内部自己判空。
+        clearTransientErrorPanel();
         // P2-2：首帧记录起点时间戳，与 stream-processor 的 block_start 对齐，
         // 避免流式计时器与历史项 durationSeconds 因起点不同而数字跳变。
         const startMsPatch = isFirst ? { streamingThinkingStartMs: Date.now() } : {};
@@ -6143,6 +6243,10 @@ export class App {
               // `bridge.current.retryStatus` 恒为 false，清除逻辑永不触发。这里无条件清
               //（与 done 路径 line 4241 一致，system:transient 是重试专用 key，清它零副作用）。
               removeStatusMessage("system:transient");
+              // 同上：tool_start 是"请求成功"的确证信号，瞬态错误卡片在此一并清除。
+              // 覆盖的场景与 retryStatus 完全相同——重试成功后模型先发工具调用而非文本，
+              // 文本/思考首帧的清除路径走不到，只剩这里能清。
+              clearTransientErrorPanel();
               syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined, isStreaming: false, streamingLine: "", retryStatus: null });
               break;
             case "tool_end":
@@ -6403,39 +6507,55 @@ export class App {
             displayItems: warningDisplay,
             statusMessage: "任务异常中断" });
         }
+
+      // ─────────────────────────────────────────────────────────────────
+      // 轮末清理：**必须在 finally 内**（此前整段在 finally 之外，是真缺陷）
+      //
+      // 根因：上面 catch 的 else 分支对「内部超时泄漏 / 会话硬顶超时 / 真异常」执行
+      // `throw err`，直接跳过 finally 之后的所有代码。后果实测四项：
+      //   ① retryStatus 不清 → 带倒计时的 `⟳ 请求失败，第 N 次重试…` 卡片永久残留，
+      //      且倒计时归零后定格在一个早已过期的时刻；
+      //   ② removeStatusMessage("system:transient") 不执行 → 重试提示残留跨轮；
+      //   ③ this.busy 永久卡 true（全仓只有本轮开头与此处两处赋值）→ flushScheduledPrompts
+      //      从此再不冲刷，Cron 调度提示词静默积压到会话结束；
+      //   ④ syncRateLimitStatus 不执行 → 限流状态停止刷新。
+      // 外层 onUserInput 的 catch 虽有大量清理，但字段清单里没有 retryStatus、没有
+      // removeStatusMessage、更没有 this.busy = false，这条路径此前完全无人兜底。
+      //
+      // 移进 finally 后顺序不变（原本也是紧跟 finally 之后执行），但异常路径同样覆盖。
+      // ─────────────────────────────────────────────────────────────────
+        syncDisplay({
+          isLoading: false,
+          usage: { ...this.sessionState.getTotalUsage() },
+          stockInputTokens: this.sessionState.getStockPromptTokens(),
+          costUSD: this.sessionState.getEffectiveTotalCostUSD(),
+          cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+          ...this.contextDisplayState(),
+          // CM3：本轮结束，清除残留的重试/限流提示。
+          retryStatus: null,
+        });
+        // 本轮结束兜底清除重试进度消息：重试后若直接进 tool（不走文本/思考流式的清除路径），
+        // sticky 的 "system:transient" 重试提示会残留到下一轮、与新状态串台。done 路径统一清一次。
+        removeStatusMessage("system:transient");
+        // 本轮所有工具已完成，清空实时进度侧信道，防 Map 跨轮累积。已完成工具在 injectLiveToolProgress
+        // 里本就不再被注入（只注入 executing 态），此处仅回收内存。
+        liveToolProgress.clear();
+        // 同理清空「已完成」侧信道：此时全部 tool_result 都已入 ctxMgr，权威路径（
+        // messagesToHistoryItems + buildCompletedToolCall）渲染出的卡片与侧信道注入的完全一致，
+        // 条目已无作用。必须清——否则下一轮若出现相同 tool_use_id（重试场景）会命中陈旧结果。
+        liveToolSettled.clear();
+        // 子代理进度侧信道同批清空。这是相对 cc 的结构优势：cc 把子代理的每个 content block
+        // 作为独立消息永久累积（它的 UI 靠那条 trail 重建），这里进度只活在当轮侧信道里，
+        // 轮末即清、零累积。已完成的 sub_agent 卡片本就不再被注入（只注 executing 态），
+        // 此处仅回收内存。
+        liveAgentProgress.clear();
+
+        // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
+        this.busy = false;
+        // P1-3：刷新限流状态到状态栏（warning/exceeded 显示，ok 清除）。
+        void syncRateLimitStatus();
+        void this.flushScheduledPrompts();
       }
-
-      syncDisplay({
-        isLoading: false,
-        usage: { ...this.sessionState.getTotalUsage() },
-        stockInputTokens: this.sessionState.getStockPromptTokens(),
-        costUSD: this.sessionState.getEffectiveTotalCostUSD(),
-        cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
-        ...this.contextDisplayState(),
-        // CM3：本轮结束，清除残留的重试/限流提示。
-        retryStatus: null,
-      });
-      // 本轮结束兜底清除重试进度消息：重试后若直接进 tool（不走文本/思考流式的清除路径），
-      // sticky 的 "system:transient" 重试提示会残留到下一轮、与新状态串台。done 路径统一清一次。
-      removeStatusMessage("system:transient");
-      // 本轮所有工具已完成，清空实时进度侧信道，防 Map 跨轮累积。已完成工具在 injectLiveToolProgress
-      // 里本就不再被注入（只注入 executing 态），此处仅回收内存。
-      liveToolProgress.clear();
-      // 同理清空「已完成」侧信道：此时全部 tool_result 都已入 ctxMgr，权威路径（
-      // messagesToHistoryItems + buildCompletedToolCall）渲染出的卡片与侧信道注入的完全一致，
-      // 条目已无作用。必须清——否则下一轮若出现相同 tool_use_id（重试场景）会命中陈旧结果。
-      liveToolSettled.clear();
-      // 子代理进度侧信道同批清空。这是相对 cc 的结构优势：cc 把子代理的每个 content block
-      // 作为独立消息永久累积（它的 UI 靠那条 trail 重建），这里进度只活在当轮侧信道里，
-      // 轮末即清、零累积。已完成的 sub_agent 卡片本就不再被注入（只注 executing 态），
-      // 此处仅回收内存。
-      liveAgentProgress.clear();
-
-      // 本轮结束 → 标记空闲并冲刷 Cron 忙时积压的提示词
-      this.busy = false;
-      // P1-3：刷新限流状态到状态栏（warning/exceeded 显示，ok 清除）。
-      void syncRateLimitStatus();
-      void this.flushScheduledPrompts();
     };
 
     // 注册提示词注入器：Cron 触发时，把调度 prompt 当作一次用户输入跑完整循环
@@ -6969,13 +7089,20 @@ export class App {
             break;
         }
       },
+      // UI 侧瞬态提示统一入口：让 App.tsx 的键位提示（Alt+T / Copy Mode 等）也走
+      // activeStatusMessages Map，不再直写 statusMessage 覆盖 sticky 警告。
+      onNotify: (id: string, text: string, delayMs: number) => {
+        addTransientStatusMessage(id, text, delayMs);
+      },
       onInterrupt: () => {
         if (!this.abortController || this.abortController.signal.aborted) {
           return;
         }
 
         log.info("TUI:CB", "收到中断请求，取消当前响应");
-        updateState({ statusMessage: "正在取消当前响应..." });
+        // 走 Map 通道而非直写 statusMessage：直写会把底部已有的 sticky 警告顶掉，
+        // 且之后任意一次 add/remove 从 Map 重新 join 时那些警告会"复活"。
+        addTransientStatusMessage("interrupt", "正在取消当前响应...", 2000);
         // A6：带 reason 区分中断场景。对标 claude-code 的 signal.reason === 'user-cancel'：
         // 仅"用户主动 ESC 取消"这一场景才触发 A4 的输入框自动回填；超时/信号等不回填。
         this.abortController.abort("user-cancel");

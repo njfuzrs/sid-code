@@ -1218,6 +1218,18 @@ export class SubAgent {
       // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
       const validation = validateToolInput(tool, effectiveInput);
       if (!validation.ok) {
+        // 与主循环/子代理 tool-executor 同源：校验失败也要 fire Failure 收尾，
+        // 否则这条路径的失败（模型漏 required 字段，最高频的真实失败）
+        // 既不进 hook 链也不产 execute_tool span，在 trace 里完全隐身。
+        if (this.hookSystem) {
+          this.hookSystem.firePostToolUseFailureEvent(
+            name,
+            effectiveInput,
+            validation.message,
+            undefined,
+            { duration_ms: Date.now() - startTime },
+          ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+        }
         return { content: validation.message, is_error: true };
       }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
@@ -1238,8 +1250,14 @@ export class SubAgent {
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {
       if (this.hookSystem) {
-        this.hookSystem.firePostToolUseFailureEvent(name, effectiveInput, err.message, undefined)
-          .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+        this.hookSystem.firePostToolUseFailureEvent(
+          name,
+          effectiveInput,
+          err.message,
+          undefined,
+          // 与上方成功路径 duration_ms 同口径（纯执行耗时）
+          { duration_ms: Date.now() - startTime },
+        ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
       }
       return { content: `工具执行异常: ${err.message}`, is_error: true };
     }
