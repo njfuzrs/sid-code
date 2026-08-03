@@ -37,6 +37,13 @@ export interface RetryTelemetryEvent {
      * 事件就回答不了"这个子代理到底是被限流打死的，还是被自己的退避耗死的"。
      */
     | "retry_budget_exhausted"
+    /**
+     * S2（超越 CC）：因**别的**并发路径撞了限流，本路径主动延迟起跑。
+     *
+     * 这个事件是 S2 收益的度量入口：它的计数 = 被拦下来的、本会白撞限流的请求数。
+     * 没有它就只能说"应该更好"，有它才能给出"限流级联下少发了 N 发"。
+     */
+    | "shared_cooldown_wait"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
@@ -195,6 +202,10 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
     case "retry_budget_exhausted":
       log.warn("TELEMETRY", `[retry_budget_exhausted] ${event.model} attempt=${event.attempt} needDelay=${event.delayMs}ms remaining=${event.remainingMs}ms error=${event.error}`);
+      break;
+
+    case "shared_cooldown_wait":
+      log.info("TELEMETRY", `[shared_cooldown_wait] ${event.model} wait=${event.delayMs}ms reason=${event.error}`);
       break;
 
     case "stream_stall":

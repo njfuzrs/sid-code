@@ -4267,10 +4267,11 @@ export class App {
   /**
    * Shift+Tab 权限模式循环切换（对齐 claude-code）。
    *
-   * 复用 getNextPermissionMode 纯函数，但**跳过 plan 档**：plan 是独立状态机
-   * （planManager + 审批流 + plan 文件 + 每轮工作流提醒），只能经 enter_plan_mode 工具
-   * 或 /plan 进入；键盘只改 config.permissionMode 会造出「假 plan 态」（约束提醒不触发）。
-   * auto 档现已接线（cli.ts 注入 ToolClassifier），键盘循环放开 auto。
+   * 落点计算在 permission/mode.ts 的 getNextKeyboardPermissionMode（纯函数，单测直接覆盖）。
+   * 它**跳过 plan 档**：plan 是独立状态机（planManager + 审批流 + plan 文件 + 每轮工作流提醒），
+   * 只能经 enter_plan_mode 工具或 /plan 进入；键盘只改 config.permissionMode 会造出
+   * 「假 plan 态」（约束提醒不触发）。auto 档现已接线（cli.ts 注入 ToolClassifier），
+   * 键盘循环放开 auto。
    * 等价循环：无 bypass 时 default↔acceptEdits↔auto；有 bypass 时 …→always-allow→default。
    *
    * bypass（always-allow）是否纳入循环由「启动时」是否开 skip-perms 门控——只有显式开了
@@ -4287,22 +4288,18 @@ export class App {
       return;
     }
 
-    const { getNextPermissionMode, getModeName } = require("./permission/mode.ts");
+    const { getNextKeyboardPermissionMode, getModeName } = require("./permission/mode.ts");
     const ctx = {
       mode: this.config.permissionMode,
       prePlanMode: this._originalPermissionMode || undefined,
       // bypass 用启动快照,不用实时 config.skipPermissions(下方会被本方法改写)。
       isBypassAvailable: this.bypassAvailableAtLaunch,
     };
-    // 仅跳过 plan 档：plan 是独立状态机（见上），键盘只改字符串会造假 plan 态。
-    // auto 档已接线 ToolClassifier（cli.ts），可正常进入键盘循环。
-    // P2-2：企业策略禁用的模式（disabledModes / bypass killswitch）也跳过。
-    // 最多绕一整圈（模式数上限）防死循环；全被禁时保持当前模式不变。
-    let next = getNextPermissionMode(ctx);
-    for (let i = 0; i < 8 && (next === "plan" || isModeDisabledByPolicy(next)); i++) {
-      if (next === this.config.permissionMode) break; // 绕回原点，无可切换的模式
-      next = getNextPermissionMode({ ...ctx, mode: next });
-    }
+    // 跳过逻辑（只跳 plan + 企业策略禁用的档）已提取到 permission/mode.ts，
+    // 因为这里内联时测试手抄了一份并漂移了：测试那份连 auto 一起跳，
+    // 而 auto 早已接线 ToolClassifier（cli.ts），生产会正常切进去。
+    // 两边现在调同一个函数，不会再各自演化。
+    const next = getNextKeyboardPermissionMode(ctx, isModeDisabledByPolicy);
 
     if (next === this.config.permissionMode) return; // 无变化不刷屏
     // 兜底：绕圈后仍落在被禁模式（极端配置），拒绝切换

@@ -88,6 +88,88 @@ export class ModelAvailabilityService {
     return { available: false, reason: state.reason };
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // S2：跨调用方共享的限流冷却信号（明确超越 claude-code）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // ── 我们在解决 CC 承认但没解决的问题 ──
+  //
+  // CC 的重试是**逐调用独立**的：N 个并发 agent 撞同一个限流，就各自独立退避、
+  // 各自重试。它自己的注释承认这点（"each retry is 3-10x gateway amplification"），
+  // 但跨 agent 零协调——因为它没有一个天然的共享位置。
+  //
+  // 我们有：`ModelAvailabilityService` 本来就是**刻意跨路径共享**的那一个对象
+  // （`resilient-stream.ts` 注释写明"共享该共享的，隔离该隔离的"，availability
+  // 正是那个"该共享的"）。所以这不是新盖一层基础设施，是给既有共享层加一个字段。
+  //
+  // ── 机制 ──
+  //
+  // 一路撞 429 → `markRateLimited(model, retryAfterMs)` 写下冷却截止时刻；
+  // 其余并发路径**发请求前**读 `getCooldownRemaining(model)`，有剩余就先等这段。
+  // 效果：从"6 路并发各自撞一次限流、各自退避"变成"1 路撞、其余延迟起跑"。
+  //
+  // ── 代价（诚实记账，对应北极星的内部张力）──
+  //
+  // 这是**用延迟换限流级联下的成功率**：没有限流时零影响（冷却表空），
+  // 有限流时其余路径会多等最多 30s。代价记在"更快"上，收益在"更省"
+  // （少发注定被拒的请求）与"更稳"。判据是我们**测得出来**（见 S2 门槛对比实验）。
+
+  /**
+   * S2：标记模型正在被限流，写下共享冷却截止时刻。
+   *
+   * @param model 被限流的模型
+   * @param retryAfterMs 服务端建议的等待时长（`Retry-After` / `rate-limit-reset` 解析结果）。
+   *   缺省时用一个保守的短冷却（2s）——**宁可短也不要没有**：我们不知道窗口多长，
+   *   但"别在同一毫秒再打一发"这件事本身就有价值。
+   * @param reason 归因文本，进日志与遥测。
+   */
+  markRateLimited(model: string, retryAfterMs?: number, reason = "rate_limit"): void {
+    const wait = Math.min(
+      Math.max(retryAfterMs ?? 2_000, 0),
+      MAX_COOLDOWN_WAIT_MS,
+    );
+    const until = Date.now() + wait;
+    const prev = this.cooldowns.get(model);
+    // 取**更晚**的截止时刻：多路先后撞限流时，冷却应该只延长不缩短——
+    // 否则后撞的那一路（可能拿到更短的 Retry-After）会把前面更长的冷却抹掉。
+    this.cooldowns.set(model, {
+      until: prev && prev.until > until ? prev.until : until,
+      reason,
+      hits: (prev?.hits ?? 0) + 1,
+    });
+  }
+
+  /**
+   * S2：查询模型还需冷却多久（毫秒）。0 表示无需等待。
+   *
+   * 顺带清理已过期的记录：冷却是短时信号，过期即无意义，留着只会让这张表随
+   * 长会话单调增长（模型数量有限，但没必要留垃圾）。
+   */
+  getCooldownRemaining(model: string): number {
+    const cd = this.cooldowns.get(model);
+    if (!cd) return 0;
+    const remaining = cd.until - Date.now();
+    if (remaining <= 0) {
+      this.cooldowns.delete(model);
+      return 0;
+    }
+    return remaining;
+  }
+
+  /** S2：读冷却归因（供日志/遥测说明"为什么在等"）。无冷却返回 undefined。 */
+  getCooldownInfo(model: string): { remainingMs: number; reason: string; hits: number } | undefined {
+    const cd = this.cooldowns.get(model);
+    if (!cd) return undefined;
+    const remainingMs = cd.until - Date.now();
+    if (remainingMs <= 0) return undefined;
+    return { remainingMs, reason: cd.reason, hits: cd.hits };
+  }
+
+  /** S2：清除某模型的冷却（该模型成功产出内容时调用——限流窗口已过的最强信号）。 */
+  clearCooldown(model: string): void {
+    this.cooldowns.delete(model);
+  }
+
   /** 新一轮对话开始时重置 retry_once 的 consumed 标记 */
   resetTurn(): void {
     for (const state of this.states.values()) {

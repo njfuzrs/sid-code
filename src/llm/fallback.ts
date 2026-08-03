@@ -303,6 +303,19 @@ export interface FallbackConfig {
    * 关闭它只会退回"重试耗尽 → 换模型/报错"，不会更糟；故默认开。
    */
   allowNonStreamingFallback?: boolean;
+  /**
+   * S2（超越 CC）：是否参与**共享限流冷却**。默认 `true`。
+   *
+   * 一路撞 429 就在共享的 `availability` 上写下冷却截止时刻，其余并发路径发请求前
+   * 先等这段——把"6 路各撞一次限流"变成"1 路撞、其余延迟起跑"。
+   *
+   * CC 没有这层：它的重试逐调用独立，自己的注释承认"each retry is 3-10x gateway
+   * amplification"却无跨 agent 协调。我们能做是因为 `availability` 本就是刻意共享的
+   * 那个对象（见 `availability.ts` 的 S2 段注释）。
+   *
+   * 关掉它只会退回 CC 的语义（各自撞、各自退避），不会更糟。
+   */
+  respectSharedCooldown?: boolean;
 }
 
 /** 回退事件监听器 */
@@ -465,6 +478,8 @@ export class ModelFallback {
       onAuthRefresh: config.onAuthRefresh,
       // S4：同上，漏抄即"降级能力又变回死代码"。`??` 而非直接赋值——默认开。
       allowNonStreamingFallback: config.allowNonStreamingFallback ?? true,
+      // S2：同上。默认开——无限流时冷却表恒空，零影响。
+      respectSharedCooldown: config.respectSharedCooldown ?? true,
     };
     this.listener = listener ?? null;
     this.availability = config.availability ?? new ModelAvailabilityService();
@@ -543,6 +558,46 @@ export class ModelFallback {
       log.warn("FALLBACK", `模型 ${params.model} 不可用: ${availCheck.reason}`);
       yield* this.tryFallback(params, signal);
       return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // S2：共享限流冷却 —— 别人刚撞了限流，我先缓一缓再发
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 位置刻意在**首次建流之前**：整个 S2 的价值就在于"这一发根本不该发出去"。
+    // 放到重试里就晚了——那时限流请求已经打出去、已经被网关计数、已经放大了级联。
+    //
+    // 与 S3 的关系：冷却等待也要受时间预算约束。若等完冷却就没时间发请求了，
+    // 那等待毫无意义（还不如立刻发，赌限流窗口已过），故此处直接跳过冷却。
+    if (this.config.respectSharedCooldown !== false) {
+      const cd = this.availability.getCooldownInfo(params.model);
+      if (cd) {
+        const budgetOk =
+          perCall.deadlineAt === undefined ||
+          perCall.deadlineAt - Date.now() > cd.remainingMs + MIN_USEFUL_ATTEMPT_MS;
+        if (budgetOk) {
+          log.info(
+            "FALLBACK",
+            `S2：模型 ${params.model} 处于共享限流冷却（剩余 ${cd.remainingMs}ms，` +
+            `已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
+          );
+          this.emitTelemetry({
+            type: "shared_cooldown_wait",
+            model: params.model,
+            delayMs: cd.remainingMs,
+            remainingMs: cd.remainingMs,
+            error: cd.reason,
+          }, perCall.agentId);
+          await this.sleep(cd.remainingMs, signal);
+          if (signal?.aborted) throw new RequestAbortedError("Request aborted");
+        } else {
+          // 预算不够等 → 不等。记一笔，否则"为什么这一路没遵守冷却"无从解释。
+          log.info(
+            "FALLBACK",
+            `S2：冷却剩余 ${cd.remainingMs}ms 但时间预算不足，跳过等待直接发起`,
+          );
+        }
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -807,6 +862,9 @@ export class ModelFallback {
 
           // 成功完成，标记模型健康
           this.availability.markHealthy(params.model);
+          // S2：成功产出是"限流窗口已过"的**最强信号**——比任何 Retry-After 估计都可靠。
+          // 不清的话，后续并发路径会守着一段已经作废的冷却白等（把 S2 从"省"变成纯"慢"）。
+          this.availability.clearCooldown(params.model);
           return;
 
         } catch (err) {
@@ -1024,6 +1082,53 @@ export class ModelFallback {
           const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);
 
           // ═══════════════════════════════════════════════════════════
+          // S2（写侧）：撞到限流 → 在共享 availability 上写下冷却截止时刻
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 只对 `rate_limit` 写，不对 `overloaded`(529) 写：529 是服务端**容量**问题，
+          // 各路退避重试本身就是正确应对（换个时刻可能就有容量了）；而 429 是**配额**
+          // 问题，配额是全局的——别人替我撞出来的那条信息，对我同样有效。
+          //
+          // 写的是"退避时长"而非固定值：`delayMs` 已经融合了服务端 Retry-After /
+          // rate-limit-reset（见 retry-backoff.ts 的优先级），是我们手上关于"这个限流
+          // 窗口多长"的**最好估计**。冷却上限由 markRateLimited 内部钳制。
+          if (
+            this.config.respectSharedCooldown !== false &&
+            classified instanceof RetryableError &&
+            classified.reason === "rate_limit"
+          ) {
+            this.availability.markRateLimited(params.model, delayMs, classified.message);
+          }
+
+          // ═══════════════════════════════════════════════════════════
+          // S2（读侧之二）：退避时长向共享冷却对齐
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 为什么入口那个读点不够（实测，非推论）：6 路并发子代理**几乎同时**发起，
+          // 全部在任何人撞限流之前就通过了入口检查 —— 冷却表那时还是空的。真正的
+          // 放大发生在**重试循环**里：6 路各自按自己的退避节奏重试，彼此不知道
+          // 别人刚刚才撞了一次。第一版只写不在此处读，实测 `shared_cooldown_wait`
+          // 事件为 0，即"能力已接线但从未生效"——正是 §七 F7 要求用断言钉住的形态。
+          //
+          // 取 max 而非相加：冷却与退避是对**同一个**限流窗口的两个估计，不是两段
+          // 独立等待。相加会让 6 路一起过度退避，把 S2 从"更省"做成纯"更慢"。
+          let effectiveDelayMs = delayMs;
+          if (this.config.respectSharedCooldown !== false) {
+            const cdRemaining = this.availability.getCooldownRemaining(params.model);
+            if (cdRemaining > effectiveDelayMs) {
+              this.emitTelemetry({
+                type: "shared_cooldown_wait",
+                model: params.model,
+                attempt: attempt + 1,
+                delayMs: cdRemaining,
+                remainingMs: cdRemaining,
+                error: "retry aligned to shared cooldown",
+              }, perCall.agentId);
+              effectiveDelayMs = cdRemaining;
+            }
+          }
+
+          // ═══════════════════════════════════════════════════════════
           // S3（§5 缺口 C）：按 wall-clock 剩余预算钳制
           // ═══════════════════════════════════════════════════════════
           //
@@ -1032,19 +1137,22 @@ export class ModelFallback {
           // 白烧最长 120s，且用户拿不到任何结论。
           //
           // persistent（无人值守）豁免：它的语义就是"等多久都行"，与截止时刻互斥。
+          // 注意判的是 `effectiveDelayMs`（已含 S2 冷却对齐）而不是原始 `delayMs`：
+          // 顺序上 S2 先抬高等待、S3 再裁决，否则会"按短的批准、按长的睡"——
+          // 批准了一个其实塞不进预算的等待，S3 就等于没做。
           if (!this.config.persistent && perCall.deadlineAt !== undefined) {
             const remaining = perCall.deadlineAt - Date.now();
-            if (remaining <= delayMs + MIN_USEFUL_ATTEMPT_MS) {
+            if (remaining <= effectiveDelayMs + MIN_USEFUL_ATTEMPT_MS) {
               log.warn(
                 "FALLBACK",
-                `S3：剩余预算 ${Math.max(0, remaining)}ms 不足以「退避 ${delayMs}ms + 一次请求」，` +
+                `S3：剩余预算 ${Math.max(0, remaining)}ms 不足以「退避 ${effectiveDelayMs}ms + 一次请求」，` +
                 `停止重试（已重试 ${ctx.totalRetriesThisCall} 次）`,
               );
               this.emitTelemetry({
                 type: "retry_budget_exhausted",
                 model: params.model,
                 attempt: attempt + 1,
-                delayMs,
+                delayMs: effectiveDelayMs,
                 remainingMs: Math.max(0, remaining),
                 error: classified.message,
               }, perCall.agentId);
@@ -1057,8 +1165,10 @@ export class ModelFallback {
             }
           }
 
-          log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${delayMs}ms`);
-          this.listener?.onRetry?.(attempt + 1, classified.message, delayMs);
+          // 日志/监听器/遥测统一报 effectiveDelayMs——报 delayMs 会让"日志说等 400ms、
+          // 实际等了 2s"，是排查时最耗时间的那种不一致。
+          log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${effectiveDelayMs}ms`);
+          this.listener?.onRetry?.(attempt + 1, classified.message, effectiveDelayMs);
           // §6.3 重复开流成因遥测：推导本次"重新获取流"的结构化原因。
           // 优先取 stream-observer snapshot 里最近触发的超时层（idle_timeout /
           // content_progress_timeout / fallback_stream_timeout——这些是导致重开的精确信号），
@@ -1087,14 +1197,16 @@ export class ModelFallback {
             type: "retry",
             model: params.model,
             attempt: attempt + 1,
-            delayMs,
+            delayMs: effectiveDelayMs,
             error: classified.message,
             phase: "stream",
             reopenReason,
           }, perCall.agentId);
 
+          // S2：睡 `effectiveDelayMs`（已向共享冷却对齐），不是原始 delayMs。
+          // 这一行是 S2 从"写了个字段"变成"真的少发一发请求"的落点。
           yield* this.sleepWithProgress(
-            delayMs,
+            effectiveDelayMs,
             attempt + 1,
             streamMaxRetries + 1,
             "retry",

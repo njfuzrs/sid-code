@@ -77,12 +77,29 @@ sid-code --dangerously-skip-permissions
 <kbd>Shift+Tab</kbd> 在会话里循环切换，实测顺序：
 
 ```text
-default → acceptEdits → plan → auto → always-allow → default → …
+default → acceptEdits → auto → default → …           # 常规
+default → acceptEdits → auto → always-allow → default # 启动时开了 -y/--yes
 ```
 
-`deny-write` / `dontAsk` 不在这个循环里，只能用参数或配置指定。
-企业策略禁用 bypass 时（`disableBypassPermissionsMode`），循环会跳过 `always-allow`
-直接回到 `default`——实测 `auto → default`。
+<!--
+  ⚠ **plan 不在这个循环里**，别再把它写回去（原先写的是
+  `default → acceptEdits → plan → auto → always-allow`）。
+  src/permission/mode.ts 的纯函数 getNextPermissionMode 顺序里确实有 plan，
+  但键盘入口 app.ts:4301-4305 在外面套了一层跳过循环，只跳 plan（和被企业策略禁用的模式）；
+  且 app.ts:4285-4288 在 plan 态直接拒绝按键、提示走 exit_plan_mode。
+  原因：plan 是独立状态机，键盘只改这个字符串会造出一个假的 plan 态。
+  照错顺序按键的人会以为自己按漏了一档。
+  另注：tests/permission/mode.test.ts 复刻的跳过逻辑同时跳 plan 和 auto，
+  与 app.ts 现状不一致（auto 已接线），是个已知的测试漂移。
+-->
+
+**plan 不在这个循环里**——它是独立状态机，进出要用 `/plan` 或让它自己
+`exit_plan_mode`；已经在 plan 态时按 <kbd>Shift+Tab</kbd> 会提示你走那条路。
+`deny-write` / `dontAsk` 也不在循环里，只能用参数或配置指定。
+
+`always-allow` 只在**启动时就开了** `-y` / `--yes` 时才进循环（这是启动瞬间的快照，
+不随会话中途切换漂移）。企业策略禁用 bypass 时（`disableBypassPermissionsMode`）
+它也会被跳过，`auto` 直接回到 `default`。
 
 ::: tip plan 模式的读写边界
 plan 模式下 `read` / `grep` 放行，`edit` / `write` / `bash` 一律拒绝，
