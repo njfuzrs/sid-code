@@ -176,4 +176,5 @@ describe("ModelCommand", () => {
 
     expect(ctx.setModel).toHaveBeenCalledWith("qwen-plus");
   });
+
 });

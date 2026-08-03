@@ -19,14 +19,32 @@ import { normalizeBaseURL } from "../../../llm/endpoint-key.ts";
  *   /model <name> -p                - 切换主模型并持久化到 settings.json（跨会话）
  *   /model fallback <name> [-p]     - 切换 fallback 降级模型
  *   /model fallback clear [-p]      - 清除 fallback（回退到"无降级"）
- *   /model sub <type> <name> [-p]   - 切换子代理模型（type: default/explore/task/plan/summarize/verify）
+ *   /model sub <type> <name> [-p]   - 切换子代理模型（type 取自活跃 agent registry：default
+ *                                     + explore/task/plan/summarize/verify/general-purpose
+ *                                     + 用户自定义 / plugin agent，见 subagentTypes()）
  *   /model sub clear <type> [-p]    - 清除某类型子代理映射（回退 default/主模型）
  *
  * 持久化语义与 /effort 对齐：默认仅当会话生效，加 -p（别名 --persist / save）才写盘。
  */
 
-/** 合法的子代理类型键（default 是 subAgentModels 的兜底键）。 */
-const SUBAGENT_TYPES = ["default", "explore", "task", "plan", "summarize", "verify"] as const;
+/**
+ * 合法的子代理类型键（default 是 subAgentModels 的兜底键）。
+ *
+ * 从**活跃 agent registry** 派生，与 config/schema.ts 的 getValidSubagentTypes() 同源。
+ * 此前是模块级硬编码数组，已与 registry 漂移：registry 里有 `general-purpose`（以及用户
+ * 自定义 / plugin agent），schema 校验也认，但 `/model sub general-purpose <model>` 会被
+ * 这里拦成「无效类型」——手改 settings.json 能生效、命令却设不了也清不掉。
+ *
+ * 改为函数：动态 agent 在启动后期才注册，模块级常量求值太早拿不到（与 schema.ts 同一理由）。
+ */
+function subagentTypes(): string[] {
+  try {
+    const { getActiveAgentTypes } = require("../../../agent/agent-definition.ts");
+    const active = getActiveAgentTypes() as string[];
+    if (active.length > 0) return ["default", ...active];
+  } catch { /* registry 未就绪时退回静态兜底，保证命令仍可用 */ }
+  return ["default", "explore", "task", "plan", "summarize", "verify"];
+}
 
 /** 从 token 列表中剥离持久化标志，返回 {persist, rest}。 */
 function stripPersist(tokens: string[]): { persist: boolean; rest: string[] } {
@@ -102,6 +120,17 @@ function validateModelName(modelName: string, ctx: CommandContext): string | nul
   if (ctx.config.availableModels.length === 0) return null; // 未配置列表时不校验
   const found = ctx.config.availableModels.some((m) => m.name === modelName);
   if (found) return null;
+
+  // 仅大小写不同时直接点出正确写法。模型名匹配刻意保持大小写敏感（网关按原样透传模型名，
+  // 擅自纠正可能切到另一个真实存在的条目），但「只差大小写」是高频手误，
+  // 让报错自己给出可直接复制的正确名字，比让用户在十几行列表里目扫更省事。
+  const caseHit = ctx.config.availableModels.find(
+    (m) => m.name.toLowerCase() === modelName.toLowerCase(),
+  );
+  if (caseHit) {
+    return `错误: 模型 "${modelName}" 不在可用模型列表中\n\n模型名区分大小写，你要找的可能是: ${caseHit.name}\n\n使用 /model list 查看详细信息`;
+  }
+
   const available = ctx.config.availableModels.map((m) => `  - ${m.name}`).join("\n");
   return `错误: 模型 "${modelName}" 不在可用模型列表中\n\n可用模型:\n${available}\n\n使用 /model list 查看详细信息`;
 }
@@ -149,10 +178,19 @@ function switchFallback(rawArgs: string[], ctx: CommandContext): LocalCommandRes
       ? "\n⚠ 该模型在 availableModels 中缺少 provider，运行时降级将被禁用（仅记录配置值）。"
       : "";
 
+  // fallback == 主模型：降级等于"换成同一个模型再试一次"，零降级覆盖。
+  // 不阻断（用户可能刻意用它做一次重试），但必须告警——否则用户以为配了保险，
+  // 实际主模型挂掉时降级目标同样挂掉，只是多烧一次尝试后报"fallback 已用尽"。
+  // 对比：ask 模式的降级候选会显式排除失败模型，唯独这条配置路径没有任何提示。
+  const samePrimaryNote =
+    modelName === ctx.config.model
+      ? `\n⚠ fallback 与当前主模型相同（${modelName}），主模型故障时降级到同一模型不会有降级效果（多烧一次尝试后报「fallback 已用尽」）。建议选一个不同的模型或不同端点的同族模型。`
+      : "";
+
   ctx.setFallbackModel?.(modelName, persist);
   return {
     type: "text",
-    value: `fallback 模型已切换为: ${modelName}${persist ? "，并已保存到 settings.json" : "（仅当前会话，加 -p 可持久化）"}${providerNote}`,
+    value: `fallback 模型已切换为: ${modelName}${persist ? "，并已保存到 settings.json" : "（仅当前会话，加 -p 可持久化）"}${providerNote}${samePrimaryNote}`,
   };
 }
 
@@ -168,7 +206,7 @@ function switchSubAgent(rawArgs: string[], ctx: CommandContext): LocalCommandRes
   if (rest[0] === "clear" || rest[0] === "none") {
     const type = rest[1];
     if (!type) {
-      return { type: "text", value: `错误: 缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${SUBAGENT_TYPES.join(" / ")}` };
+      return { type: "text", value: `错误: 缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${subagentTypes().join(" / ")}` };
     }
     if (!isValidSubAgentType(type)) {
       return { type: "text", value: buildInvalidTypeError(type) };
@@ -203,11 +241,14 @@ function switchSubAgent(rawArgs: string[], ctx: CommandContext): LocalCommandRes
 }
 
 function isValidSubAgentType(type: string): boolean {
-  return (SUBAGENT_TYPES as readonly string[]).includes(type);
+  return subagentTypes().includes(type);
 }
 
 function buildInvalidTypeError(type: string): string {
-  return `错误: 无效的子代理类型 "${type}"\n合法类型: ${SUBAGENT_TYPES.join(" / ")}\n\n说明:\n  · default —— 兜底，所有未单独指定的子代理类型都用它\n  · explore/task/plan/summarize/verify —— 按职责单独指定`;
+  // 「按职责单独指定」那行从实际类型列表派生（去掉 default），不再写死 5 个内置名——
+  // 否则用户自定义 agent 出现在「合法类型」里却不出现在说明里，看起来像半支持。
+  const others = subagentTypes().filter((t) => t !== "default");
+  return `错误: 无效的子代理类型 "${type}"\n合法类型: ${subagentTypes().join(" / ")}\n\n说明:\n  · default —— 兜底，所有未单独指定的子代理类型都用它\n  · ${others.join("/")} —— 按职责单独指定`;
 }
 
 /**
@@ -288,7 +329,7 @@ function buildSubAgentUsage(ctx: CommandContext): string {
   const lines = ["/model sub —— 切换子代理模型", ""];
   lines.push("当前映射:");
   if (sub && Object.keys(sub).length > 0) {
-    for (const type of SUBAGENT_TYPES) {
+    for (const type of subagentTypes()) {
       if (sub[type]) lines.push(`   ${type} → ${sub[type]}`);
     }
   } else {
@@ -296,7 +337,7 @@ function buildSubAgentUsage(ctx: CommandContext): string {
   }
   lines.push("");
   lines.push("用法:");
-  lines.push(`  /model sub <type> <name> [-p]   切换（type: ${SUBAGENT_TYPES.join(" / ")}）`);
+  lines.push(`  /model sub <type> <name> [-p]   切换（type: ${subagentTypes().join(" / ")}）`);
   lines.push("  /model sub clear <type> [-p]    清除该类型映射");
   lines.push("");
   lines.push("说明: default 是兜底键，未单独指定的类型都用它；未配则跟主模型。");
@@ -313,7 +354,7 @@ function buildHelp(): string {
     "  /model <name> [-p]              切换主模型（-p 持久化到 settings.json）",
     "  /model fallback <name> [-p]     切换 fallback 降级模型",
     "  /model fallback clear [-p]      清除 fallback",
-    `  /model sub <type> <name> [-p]   切换子代理模型（type: ${SUBAGENT_TYPES.join(" / ")}）`,
+    `  /model sub <type> <name> [-p]   切换子代理模型（type: ${subagentTypes().join(" / ")}）`,
     "  /model sub clear <type> [-p]    清除某类型子代理映射",
     "  /model discover [--apply]       自动发现模型参数",
     "",

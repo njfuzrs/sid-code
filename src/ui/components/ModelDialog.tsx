@@ -25,13 +25,15 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import stringWidth from "string-width";
 import { theme } from '../semantic-colors.ts';
-import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS, SEARCH_MARK } from '../constants/figures.ts';
+import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS, SEARCH_MARK, WARNING_MARK } from '../constants/figures.ts';
 import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';
 import {
   cycleEffortForModel,
   getSelectableEfforts,
+  isEffortGatedByThinking,
   type EffortLevel,
   type EffortSetting,
+  type ThinkingSetting,
 } from '../../llm/effort.ts';
 import {
   buildModelRows,
@@ -59,6 +61,11 @@ interface ModelDialogProps {
   getEffortState?: () => EffortState;
   /** effort setter（P2-1 左右键实时调整）。persist 语义同 /effort。 */
   setEffort?: (level: EffortSetting, persist?: boolean) => void;
+  /**
+   * 读取 thinking 运行时态。仅用于判断「思考已关 → 档位不生效」并提示（GLM/DeepSeek
+   * 的 effort 下发被 thinking 门控）。缺省则不显示该提示，不影响其它功能。
+   */
+  getThinkingState?: () => { runtime: ThinkingSetting; applied: boolean };
 }
 
 /** 列表可视行数（含分组标题行，故比旧值放宽） */
@@ -98,6 +105,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
   onModelSelect,
   getEffortState,
   setEffort,
+  getThinkingState,
 }) => {
   // effort 状态自持一份 state，按键后主动重读 —— 这是 ←/→ 只能在两档间跳的根因修复。
   //
@@ -119,6 +127,15 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
   const effortEnabled = !!(effortState?.capability.supportsEffort && setEffort);
   // 该模型真实可选的档位（用于面板展示「3/5 档」这类提示，与循环逻辑同源）。
   const selectableEfforts = effortState ? getSelectableEfforts(effortState.capability) : [];
+
+  // 「思考已关 → 档位不生效」提示：GLM/DeepSeek 的 effort 挂在 thinking 分支内，
+  // /think off 之后 ←/→ 仍能切档但没有任何档位会发出去，面板等于空转。诚实告知而非静默。
+  const effortInert = !!(
+    effortState &&
+    isEffortGatedByThinking(effortState.capability) &&
+    getThinkingState &&
+    getThinkingState().applied === false
+  );
 
   const [query, setQuery] = useState("");
   // 分组后的扁平行序列（含分组标题），随查询实时重算
@@ -271,9 +288,16 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
           <Text dimColor> · {selectableEfforts.join("/")} · ←/→ 调整</Text>
         </Text>
       )}
+      {effortInert && (
+        <Text color={theme.status.warning}>
+          {WARNING_MARK} 当前思考已关，本模型的档位不会下发（/think on 后生效）
+        </Text>
+      )}
 
-      {/* 搜索框（常驻，带圆角边框，一眼就知道能打字——对标 resume 选择器 / /skills） */}
-      <Box borderStyle="round" borderColor={theme.ui.active} paddingX={1} marginTop={0}>
+      {/* 搜索框（常驻）：不套边框——外层面板已有一层 round 容器，内层再框就是
+          盒子套盒子（src/ui/CLAUDE.md L2.2）。"能打字"靠 ⌕ 字形 + 闪烁光标 +
+          上方一行留白表达，比画框更轻，也与标题/当前模型等行对齐成列（L2.3）。 */}
+      <Box marginTop={1}>
         <Text color={theme.ui.symbol}>{SEARCH_MARK} </Text>
         {query ? (
           <Text color={theme.text.primary}>{query}</Text>
@@ -355,6 +379,10 @@ const ModelRowView: React.FC<{
       )}
       {row.isCurrent && (
         <Text color={theme.ui.active}>  {TODO_COMPLETED} 当前</Text>
+      )}
+      {row.shadowed && (
+        // 同名条目按名切换命中不到，诚实告知而不是让它看着能选（选了会静默切到第一条）
+        <Text color={theme.status.warning}>  {WARNING_MARK} 同名被遮蔽</Text>
       )}
     </Box>
   );

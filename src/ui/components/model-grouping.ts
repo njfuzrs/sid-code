@@ -43,6 +43,15 @@ export interface ModelEntryRow {
   /** 非标准 description（用户自定义文案）原样透传，与 endpoint 互斥 */
   note?: string;
   isCurrent: boolean;
+  /**
+   * 同名条目被前序条目「遮蔽」：按名切换永远命中第一条，本条选不到。
+   *
+   * 同名不同端点是**刻意支持**的多渠道配置（计价按 (model, endpoint) 复合键，见
+   * config/schema.ts 的判重注释），但 `/model <name>` 与 resolveCurrentModelConfig 都是
+   * `find(m => m.name === model)`——只认名字、命中第一条。于是第二条在面板里看着能选、
+   * 选了却切到第一条（端点不对）。这里显式标出来，不假装它可选。
+   */
+  shadowed?: boolean;
 }
 
 export type ModelRow = ModelHeaderRow | ModelEntryRow;
@@ -151,9 +160,17 @@ export function buildModelRows(
 ): ModelRow[] {
   const q = query.trim().toLowerCase();
 
+  // 同名遮蔽判定：只有**首次**出现的那条能被按名选中，后续同名条目标记 shadowed。
+  // 与 resolveCurrentModelConfig / `/model <name>` 的 find-first 语义严格对齐。
+  const firstSeenAt = new Map<string, number>();
+  models.forEach((m, i) => {
+    if (!firstSeenAt.has(m.name)) firstSeenAt.set(m.name, i);
+  });
+
   const entries: DecoratedEntry[] = models.map((m, i) => {
     const family = inferModelFamily(m.name, m.provider);
     const { endpoint, note } = parseModelDescription(m.description, m.provider);
+    const shadowed = firstSeenAt.get(m.name) !== i;
     return {
       kind: "model",
       // key 带下标：同名不同端点的模型（如两个 claude-sonnet-5）不会撞 React key
@@ -163,7 +180,10 @@ export function buildModelRows(
       family: family.label,
       endpoint,
       note,
-      isCurrent: m.name === currentModel,
+      // 「当前」只标可达的那条：同名被遮蔽的条目即使名字相同也不是当前生效的那个端点，
+      // 否则两行同时显示 ● 当前，用户无法判断实际在用哪个渠道。
+      isCurrent: m.name === currentModel && !shadowed,
+      shadowed: shadowed || undefined,
       familyKey: family.key,
     };
   });

@@ -44,7 +44,10 @@ describe("Config Validation", () => {
   });
 
   describe("availableModels 同名多端点", () => {
-    test("同名 + 不同端点 = 合法多渠道配置，不告警", () => {
+    test("同名 + 不同端点：不报「重复」，但报「按名只命中第一条」", () => {
+      // 计价侧确实按 (model, endpoint) 复合键区分，所以这不是「重复冲突」；
+      // 但选择侧（/model、fallback、子代理）全是按名 find-first，第二条端点永远切不过去，
+      // 其 base_url / api_key 是死配置 —— 必须告警并给出「改名」这个具体动作。
       const config = {
         ...baseConfig,
         availableModels: [
@@ -53,7 +56,42 @@ describe("Config Validation", () => {
         ],
       } as Config;
       const result = validateConfig(config);
-      expect(result.warnings.some(w => w.path === "availableModels" && w.message.includes("重复"))).toBe(false);
+      // 不是「同端点重复」那条
+      expect(result.warnings.some(w => w.path === "availableModels" && w.message.includes("重复出现"))).toBe(false);
+      // 是「按名匹配第一条」那条
+      const w = result.warnings.find(w => w.path === "availableModels" && w.message.includes("按名匹配第一条"));
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("2 个不同端点");
+      expect(w!.message).toContain("请给它们取不同的 name");
+    });
+
+    test("同名 + 三个不同端点：告警里报出端点数量", () => {
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "m", baseURL: "https://a.com" },
+          { name: "m", baseURL: "https://b.com" },
+          { name: "m", baseURL: "https://c.com" },
+        ],
+      } as Config;
+      const result = validateConfig(config);
+      expect(
+        result.warnings.some(w => w.path === "availableModels" && w.message.includes("3 个不同端点")),
+      ).toBe(true);
+    });
+
+    test("不同名 + 不同端点 = 正确的多渠道写法，无端点告警", () => {
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "deepseek-v4-pro-gateway", baseURL: "https://gateway.example.com/v1" },
+          { name: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
+        ],
+      } as Config;
+      const result = validateConfig(config);
+      expect(
+        result.warnings.some(w => w.path === "availableModels" && w.message.includes("不同端点")),
+      ).toBe(false);
     });
 
     test("同名 + 同端点 = 真冲突，告警", () => {

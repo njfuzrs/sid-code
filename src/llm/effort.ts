@@ -653,6 +653,56 @@ export function cycleEffortForModel(
 }
 
 /**
+ * 该模型的 effort 下发是否被 thinking 开关「门控」——即关掉思考后档位完全不下发。
+ *
+ * DeepSeek / GLM 的 applier 把 reasoning_effort 挂在 thinking 分支内（思考关了就不带该字段），
+ * 而 o-series / GPT-5.x / Grok 的推理内置、不受 thinking 影响。这个差异对用户是**可见的**：
+ * 在 GLM 上 `/think off` 之后，`/effort` 面板与 `/model` 面板的 ←/→ 仍在切档，但没有任何
+ * 档位会真的发出去——面板在"空转"。判定方式同 previewWireEffort：跑一次真实映射对比有无
+ * effort 字段，不写死任何 provider 名，applier 改了自动跟随。
+ *
+ * @returns true = 关掉思考后档位不下发（UI 应提示"当前思考已关，档位不生效"）
+ */
+export function isEffortGatedByThinking(cap: EffortCapability): boolean {
+  if (!cap.supportsEffort) return false;
+  const probe = (thinking: boolean): string | undefined => {
+    const p: SendParams = { model: "", messages: [], maxTokens: 0 };
+    cap.applyToSendParams(p, cap.defaultEffort, thinking);
+    return p.reasoningEffort ?? p.outputConfig?.effort;
+  };
+  // 思考开时会下发、关时不下发 → 被门控。
+  return probe(true) !== undefined && probe(false) === undefined;
+}
+
+/**
+ * 换模型后把 runtime 档位「归正」到新模型真实可选的档位上。
+ *
+ * 为什么必须做：档位是**跨模型共享的运行时态**（`runtimeEffort`），而可选档位集合是
+ * **每模型不同**的。在 claude（支持 xhigh）上调到 xhigh 再切到 GLM（xhigh 会被钳成 max），
+ * runtimeEffort 仍是 xhigh：状态栏与 /model 面板显示 xhigh，实际下发 max，且面板 hint
+ * 列出的可选档位里根本没有 xhigh —— 显示、提示、实发三者互相矛盾。
+ *
+ * 归正规则（诚实优先，不猜用户意图）：
+ * - auto（undefined）不动：它本就是"跟随新模型默认"，换模型后语义天然正确。
+ * - 档位已在新模型可选集内：不动（绝不因换模型悄悄改用户显式选过的档）。
+ * - 否则映射到该档**实际会被下发**的那一档（previewWireEffort），使显示 == 实发；
+ *   若映射结果仍不在可选集内（理论上不该发生），退到新模型默认档。
+ *
+ * @returns 归正后的档位；与入参相同表示无需变更（调用方可据此决定是否提示用户）。
+ */
+export function reconcileEffortForModel(
+  cap: EffortCapability,
+  runtimeEffort: EffortSetting,
+): EffortSetting {
+  if (runtimeEffort === undefined) return undefined; // auto 天然跟随新模型
+  if (!cap.supportsEffort) return runtimeEffort; // 不支持档位的模型不下发，留着旧值无害
+  const levels = getSelectableEfforts(cap);
+  if (levels.includes(runtimeEffort)) return runtimeEffort;
+  const wire = previewWireEffort(cap, runtimeEffort);
+  return levels.includes(wire) ? wire : cap.defaultEffort;
+}
+
+/**
  * thinking 是否实际开启（优先级 env > runtime > cap.thinkingDefaultOn）。
  * @param envOverride getThinkingEnvOverride() 的返回值：null=env 未设；true/false=env 强制。
  */

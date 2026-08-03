@@ -410,7 +410,31 @@ export function validateConfig(config: Config): ValidationResult {
       if (count > 1) {
         warnings.push({
           path: "availableModels",
-          message: `模型 "${name}" 在同一端点下重复出现 ${count} 次，按名查找只命中第一条，其余同名同端点条目的配置永远不会被使用（同名不同端点是合法的多渠道配置，不在此列）`,
+          message: `模型 "${name}" 在同一端点下重复出现 ${count} 次，按名查找只命中第一条，其余同名同端点条目的配置永远不会被使用（同名不同端点见下条告警）`,
+        });
+      }
+    }
+
+    // 「同名 + 不同端点」：计价侧确实按 (model, endpoint) 复合键区分（resolvePricing），
+    // 但**选择侧全是按名 find-first**——resolveCurrentModelConfig(config.ts)、`/model <name>`
+    // 校验、fallback / 子代理 provider 解析，全都只认名字。于是第二条永远切不过去，
+    // 它自带的 base_url / api_key 是死配置（用户以为配了双渠道，实际只有第一条生效）。
+    // 这不是"合法多渠道"，而是**无法通过任何 UI 或命令选中**的配置，必须告警。
+    // 修复建议给具体动作：改名后两条都可达（如 xxx-gateway / xxx-official）。
+    const byName = new Map<string, Set<string>>();
+    for (const m of config.availableModels) {
+      if (!m.name) continue;
+      const ep = normalizeBaseURL(m.baseURL);
+      const set = byName.get(m.name) ?? new Set<string>();
+      set.add(ep);
+      byName.set(m.name, set);
+    }
+    for (const [name, endpoints] of byName) {
+      if (endpoints.size > 1) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型 "${name}" 配了 ${endpoints.size} 个不同端点，但模型选择（/model、fallback、子代理）一律按名匹配第一条，` +
+            `其余端点条目及其 base_url / api_key 永远不会生效。如需同时使用多个渠道，请给它们取不同的 name（如 ${name}-gateway / ${name}-official）`,
         });
       }
     }

@@ -120,6 +120,42 @@ describe("buildModelRows 分组", () => {
     expect(nameAt(current, 0)).toBe("glm-5.2");
   });
 
+  test("同名条目：只有首条可达，后续标记 shadowed", () => {
+    // 同名不同端点是刻意支持的多渠道配置，但 `/model <name>` 与 resolveCurrentModelConfig
+    // 都是 find-first 语义——第二条按名切不到。面板必须标出来，不能假装可选。
+    const dup: ModelOption[] = [
+      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gateway.example.com)" },
+      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://code.ppchat.vip)" },
+    ];
+    const entries = buildModelRows(dup, "claude-sonnet-5").filter(r => r.kind === "model");
+    expect(entries[0].kind === "model" && entries[0].shadowed).toBeUndefined();
+    expect(entries[1].kind === "model" && entries[1].shadowed).toBe(true);
+  });
+
+  test("同名时「当前」只标可达的那条（避免两行都显示 ● 当前）", () => {
+    const dup: ModelOption[] = [
+      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://a.com)" },
+      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://b.com)" },
+    ];
+    const current = buildModelRows(dup, "claude-sonnet-5")
+      .filter(r => r.kind === "model" && r.isCurrent);
+    expect(current).toHaveLength(1);
+    expect(current[0].kind === "model" && current[0].endpoint).toBe("a.com");
+  });
+
+  test("不同名模型不会被误标 shadowed", () => {
+    const rows = buildModelRows(MODELS, "glm-5.2");
+    expect(rows.filter(r => r.kind === "model" && r.shadowed)).toHaveLength(0);
+  });
+
+  test("三个同名条目：仅首条可达，后两条均 shadowed", () => {
+    const trip: ModelOption[] = ["a.com", "b.com", "c.com"].map(h => ({
+      name: "dup-model", provider: "openai", description: `openai (https://${h})`,
+    }));
+    const entries = buildModelRows(trip, "dup-model").filter(r => r.kind === "model");
+    expect(entries.map(e => e.kind === "model" && !!e.shadowed)).toEqual([false, true, true]);
+  });
+
   test("同名不同端点的模型 key 不冲突", () => {
     const dup: ModelOption[] = [
       { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://a.com)" },

@@ -169,6 +169,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         onModelSelect={onModelSelect}
         getEffortState={callbacks.getEffortState}
         setEffort={callbacks.setEffort}
+        getThinkingState={callbacks.getThinkingState}
       />
     );
   }
@@ -194,6 +195,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         onClose={onDialogClose}
         getEffortState={callbacks.getEffortState}
         setEffort={callbacks.setEffort}
+        getThinkingState={callbacks.getThinkingState}
       />
     );
   }

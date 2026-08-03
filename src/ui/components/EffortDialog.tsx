@@ -21,9 +21,15 @@ import {
   EFFORT_XHIGH,
   EFFORT_MAX,
   EFFORT_AUTO,
+  WARNING_MARK,
 } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import { getSelectableEfforts, type EffortLevel, type EffortSetting } from "../../llm/effort.ts";
+import {
+  getSelectableEfforts,
+  isEffortGatedByThinking,
+  type EffortLevel,
+  type EffortSetting,
+} from "../../llm/effort.ts";
 
 interface EffortState {
   runtime: EffortSetting;
@@ -36,6 +42,8 @@ interface EffortDialogProps {
   onClose: () => void;
   getEffortState?: () => EffortState;
   setEffort?: (level: EffortSetting, persist?: boolean) => void;
+  /** 读取 thinking 态：仅用于「思考已关 → 档位不下发」提示（GLM/DeepSeek 门控），缺省不显示。 */
+  getThinkingState?: () => { runtime: import("../../llm/effort.ts").ThinkingSetting; applied: boolean };
 }
 
 // value: "auto" 代表 undefined（跟随默认）
@@ -73,7 +81,12 @@ export function buildOptions(levels: EffortLevel[]): EffortItem[] {
   return items;
 }
 
-export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortState, setEffort }) => {
+export const EffortDialog: React.FC<EffortDialogProps> = ({
+  onClose,
+  getEffortState,
+  setEffort,
+  getThinkingState,
+}) => {
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
       onClose();
@@ -125,6 +138,15 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortSt
   // 用户一眼能看出列表为何只有 3 档，而不是怀疑面板少了东西。
   const levelsLine = state ? `本模型可选档位: ${levels.join(" / ")} / auto` : "";
 
+  // 「思考已关 → 档位不下发」提示（与 /model 面板同源判定）：GLM/DeepSeek 把 effort 挂在
+  // thinking 分支内，/think off 之后这个面板选任何档都不会真的发出去，必须诚实告知。
+  const effortInert = !!(
+    state &&
+    isEffortGatedByThinking(state.capability) &&
+    getThinkingState &&
+    getThinkingState().applied === false
+  );
+
   const handleSelect = (value: string) => {
     const setting: EffortSetting = value === "auto" ? undefined : (value as EffortSetting);
     setEffort?.(setting);
@@ -136,6 +158,11 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({ onClose, getEffortSt
       <Text bold color={theme.ui.active}>推理强度</Text>
       {statusLine && <Text color={theme.text.secondary}>{statusLine}</Text>}
       {levelsLine && <Text color={theme.text.secondary}>{levelsLine}</Text>}
+      {effortInert && (
+        <Text color={theme.status.warning}>
+          {WARNING_MARK} 当前思考已关，本模型的档位不会下发（/think on 后生效）
+        </Text>
+      )}
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<string, EffortItem>
           items={options}

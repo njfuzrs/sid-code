@@ -1484,6 +1484,19 @@ export class App {
       );
     } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
     this.tuiStateUpdater?.({ model });
+    // 档位归正：runtimeEffort 是跨模型共享的运行时态，可选档位却每模型不同。
+    // 不归正则出现「状态栏显示 xhigh、GLM 实际下发 max、面板 hint 又不含 xhigh」的三方矛盾
+    // （在 claude 上调到 xhigh 再切 GLM 即可复现）。归正只在档位对新模型无效时发生，
+    // 且映射到该档实际会被下发的那一档，使「显示 == 实发」。auto 不动。
+    try {
+      const effMod = require("./llm/effort.ts");
+      const before = this.runtimeEffort;
+      const after = effMod.reconcileEffortForModel(this.resolveEffortCap(), before);
+      if (after !== before) {
+        this.runtimeEffort = after;
+        log.info("TUI:CMD", `模型 ${model} 不支持档位 ${before}，已归正为 ${after}（显示与实际下发一致）`);
+      }
+    } catch { /* 归正失败不阻断切换，沿用旧档位（原行为） */ }
     // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
     this.pushKnobDisplay();
     // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
@@ -3415,6 +3428,18 @@ export class App {
         // effort：env 未设(null) 才用快照。快照存的 null 表示 auto(undefined)。
         if (getEffortEnvOverride() === null && setting.effortLevel !== undefined) {
           this.runtimeEffort = setting.effortLevel ?? undefined;
+          // 档位归正：本分支直接赋值 config.model 与 runtimeEffort（不走 applyPrimaryModelSwitch，
+          // 因为 provider 尚未在 TUI 上下文注入），所以拿不到那里的归正。若快照里的档位对
+          // 当前模型无效（如快照记于 claude 时段的 xhigh、现模型是 GLM），恢复后就会复现
+          // 「状态栏显示 xhigh、实际下发 max」的矛盾——入口不同，症状与换模型时一致。
+          try {
+            const { reconcileEffortForModel } = await import("./llm/effort.ts");
+            const fixed = reconcileEffortForModel(this.resolveEffortCap(), this.runtimeEffort);
+            if (fixed !== this.runtimeEffort) {
+              log.info("APP", `恢复的档位 ${this.runtimeEffort} 对模型 ${this.config.model} 无效，已归正为 ${fixed}`);
+              this.runtimeEffort = fixed;
+            }
+          } catch { /* 归正失败不阻断恢复，沿用快照值（原行为） */ }
           log.info("APP", `恢复 agent effort: ${this.runtimeEffort ?? "auto"}`);
         }
 

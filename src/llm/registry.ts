@@ -22,6 +22,15 @@ export interface SubAgentModelMap {
   plan?: string;       // 规划分析（默认跟 default / 主模型）
   summarize?: string;  // 摘要总结（默认跟 default / 主模型）
   verify?: string;     // 对抗式验证（默认跟 default / 主模型）
+  /**
+   * 其它 agent 类型（`general-purpose` 及用户自定义 / plugin agent）。
+   *
+   * 上面几个内置键保留显式声明以获得补全与拼写检查；但 agent registry 是**可扩展**的
+   * （getActiveAgentTypes 含 general-purpose 与 .claude/agents 下的自定义 agent），
+   * 读取侧 getModelForSubAgent 本就按 string 索引、schema 也按 registry 校验，
+   * 唯独这个接口的固定键集偏窄，导致给自定义类型赋值时类型报错。索引签名对齐可扩展现实。
+   */
+  [agentType: string]: string | undefined;
 }
 
 export class ProviderRegistry {
