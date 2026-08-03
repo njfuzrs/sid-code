@@ -731,13 +731,26 @@ interface SitePage {
   section: string;
 }
 
+/**
+ * 目录 → llms.txt 里的章节标题。与官网顶栏保持同一套说法
+ * （`website/.vitepress/config.ts` 的 `nav`）：人看到的分区和模型读到的分区
+ * 不一致时，模型会照着一个站上根本不存在的「进阶定制」Tab 指路。
+ *
+ * `use` / `extend` 两个目录**刻意映射到同一个「指南」标题**——顶栏就是把它们合成
+ * 一个 Tab 的。`renderLlmsTxt` 按标题值分桶（`Map<string, SitePage[]>`），同名会合并成
+ * 一个章节而不是产生两个重名标题，所以这里可以放心复用同一个字符串。
+ *
+ * `blog` **单独一个章节**，不要并进「指南」：它在顶栏是独立 Tab，且内容体裁不同
+ * （文档讲怎么做，博客讲为什么这么设计 + 实测数据）。并进去会让模型把机制解析长文
+ * 当成操作指南来引用。
+ */
 const SECTION_NAMES: Record<string, string> = {
-  start: "入门",
-  use: "使用",
-  extend: "进阶定制",
+  start: "开始",
+  use: "指南",
+  extend: "指南",
   ref: "参考（脚本生成）",
-  team: "企业与团队",
-  blog: "文章",
+  blog: "博客",
+  team: "团队部署",
   "": "站点",
 };
 
@@ -771,7 +784,26 @@ function renderLlmsTxt(pages: SitePage[]): string {
     if (!bySection.has(p.section)) bySection.set(p.section, []);
     bySection.get(p.section)!.push(p);
   }
-  for (const [section, ps] of bySection) {
+
+  /**
+   * 章节输出顺序 = 官网顶栏从左到右的顺序，而不是目录名字母序。
+   *
+   * `collectSitePages` 按 url 排序，Map 于是按目录名字母序建桶
+   * （blog → extend/use → ref → start → team），输出成 llms.txt 就是
+   * 「博客 / 指南 / 参考 / 开始 / 团队部署」——**开始排在第 4**。
+   * 模型照这个顺序理解站点结构，会把入门内容当成靠后的补充材料。
+   *
+   * 这里显式排一次，与 `config.ts` 的 `nav` 同序。不在表里的章节（新增目录忘了
+   * 登记时）沉到末尾而不是被丢掉——顺序不理想好过页面在索引里消失。
+   */
+  const SECTION_ORDER = ["站点", "开始", "指南", "参考（脚本生成）", "博客", "团队部署"];
+  const ordered = [...bySection.entries()].sort((a, b) => {
+    const ia = SECTION_ORDER.indexOf(a[0]);
+    const ib = SECTION_ORDER.indexOf(b[0]);
+    return (ia < 0 ? SECTION_ORDER.length : ia) - (ib < 0 ? SECTION_ORDER.length : ib);
+  });
+
+  for (const [section, ps] of ordered) {
     out += `## ${section}\n\n`;
     for (const p of ps) {
       out += `- [${p.title}](${p.url})${p.description ? `: ${p.description}` : ""}\n`;

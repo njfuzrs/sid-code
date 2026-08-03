@@ -218,7 +218,7 @@ SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
 ```
 
 推荐写进 settings 的 `teamMemory` 段而不是每次带环境变量。
-团队场景的完整做法见[企业与团队](/team/defaults)。
+团队场景的完整做法见[团队默认配置分发](/team/defaults)。
 
 ## 常见问题
 
@@ -254,3 +254,6 @@ worktree 是不是同一个仓库的（`git rev-parse --show-toplevel` 对比一
 - [Skill](/extend/skills) —— 比 CLAUDE.md 更重的复用单位：把一套流程打包
 - [团队默认配置分发](/team/defaults) —— 团队记忆与配置怎么发
 - [settings.json 字段](/ref/settings) —— `autoMemory` / `teamMemory` 字段
+
+**写了 CLAUDE.md 却没被遵守？** 多半不是模型不听话，而是那条规则当时根本不在上下文里。
+[JIT 上下文](/blog/jit-context)讲清了规则在什么时刻、按什么条件进入上下文，附实测基线。

@@ -174,3 +174,7 @@ SID_CODE_AUTOCOMPACT_PCT=0.6 sid-code
 - [记忆与 CLAUDE.md](/use/memory) —— 什么该写进永久上下文
 - [子代理](/extend/subagents) —— 把探索过程隔离出主上下文
 - [环境变量](/ref/env) —— `SID_CODE_AUTOCOMPACT_PCT` 等
+
+想知道「规则到底有没有进上下文」是怎么被决定的，读
+[JIT 上下文：让规则在正确的时刻进入上下文](/blog/jit-context)——
+拆开两条注入路径，附 19 个会话的实测基线和一条至今没修的边界。

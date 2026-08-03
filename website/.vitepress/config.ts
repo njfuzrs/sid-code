@@ -14,6 +14,173 @@ import { loadBlogPosts } from "./blog-meta";
 const blogPosts = loadBlogPosts();
 
 /**
+ * 「指南」这一层的**唯一**侧边栏，同时绑给 `/use/` 与 `/extend/` 两个前缀。
+ *
+ * ## 分组依据：读者要解决的问题，不是文件放在哪个目录
+ *
+ * 旧结构按目录分 Tab（use = 使用 / extend = 进阶定制），于是回答同一个问题的页面被
+ * 拆到两个 Tab 里。最刺眼的一处：读者想「让它懂我这个项目的规矩」，
+ * 最省力的做法是写 `CLAUDE.md`（在 use/），进一步是 Skill / Hook（在 extend/）——
+ * 这是**同一条路径上难度递增的三级台阶**，却要跨 Tab 才能走完。
+ *
+ * 现在按主题成组，一组内部就是一条从轻到重的台阶，读者不用换 Tab 就能往下走：
+ *
+ *   上下文与记忆：  上下文压缩 → CLAUDE.md
+ *   扩展能力：      总览选择表 → Skill → Hook → MCP → 插件
+ *
+ * ## 组的顺序 = 读者遇到问题的先后
+ *
+ * 装完第一天就会撞上的排在前（日常操作 → 权限），用熟了才关心的排在后
+ * （扩展能力 → 集成），排障永远垫底——它是出问题时才翻的，不是学习路径的一环。
+ * 难度递进由这个顺序承担，不再需要一条切错位置的 Tab 边界。
+ *
+ * ## 博客为什么**不在**这份 sidebar 里
+ *
+ * 曾经把 `/blog/` 也绑到这份 sidebar 上，还在「上下文与记忆」组里插了一条
+ * `/blog/jit-context`。那是错的，两个层面都错：
+ *
+ *   · 产品上——博客是本站接下来要重点投入的一层，把它折进「指南」的一个分组里，
+ *     等于宣布它是文档的附属读物。它不是，它是和文档并列的一层，有自己的顶栏入口。
+ *   · 机制上——sidebar 绑到 `/blog/` 后，读者在文章间跳转时左栏显示的是**指南目录**，
+ *     当前文章却不在其中任何一组里，于是左栏无法回答「我在哪、这里还有什么」。
+ *
+ * 文档 → 文章的引流改走**页面正文的「相关」段**（如 `use/context.md` 末尾指向 JIT 那篇）。
+ * 正文链接会带一句「为什么值得读」，比 sidebar 里一个光秃秃的标题更能让人点进去；
+ * 而且跨层跳转时 sidebar 整体换掉是符合预期的，不会出现「左栏和当前页对不上」。
+ *
+ * ## collapsed 的取值不是随手写的
+ *
+ * 前 4 组加「成本与用量」那个单页条目保持常展开（`collapsed: false`）：这是绝大多数人
+ * 真正会读的部分，折起来就等于把它藏了。后 3 组（扩展 / 集成 / 排障）`collapsed: true`，
+ * 把默认可见的条目压到 10 条上下——**扫得完**才叫目录，扫不完就只是一堵墙。
+ *
+ * ⚠ 折叠不会挡住深链：VitePress 的 `useSidebarControl` 里
+ * `(isActiveLink || hasActiveLink) && (collapsed = false)`（实测 1.6.4），
+ * 命中当前页的组会自动展开。所以搜索或外部链接直接跳进 `/extend/mcp`，
+ * 左栏是展开状态，读者不会「进来看不到自己在哪」。
+ */
+const GUIDE_SIDEBAR = [
+  {
+    text: "日常操作",
+    collapsed: false,
+    items: [
+      { text: "交互模式与键位", link: "/use/interactive" },
+      { text: "会话管理", link: "/use/sessions" },
+    ],
+  },
+  {
+    text: "权限与安全",
+    collapsed: false,
+    items: [
+      { text: "权限与人工确认", link: "/use/permissions" },
+      { text: "Worktree 隔离", link: "/use/worktree" },
+    ],
+  },
+  {
+    /**
+     * 上下文与记忆放在一组：两者是同一件事的两面——
+     * 「这一轮模型看得到什么」。压缩管临时的，CLAUDE.md 管长期的。
+     */
+    text: "上下文与记忆",
+    collapsed: false,
+    items: [
+      { text: "上下文与压缩", link: "/use/context" },
+      { text: "记忆与 CLAUDE.md", link: "/use/memory" },
+    ],
+  },
+  {
+    text: "任务编排",
+    collapsed: false,
+    items: [
+      { text: "Plan Mode 与 Todo", link: "/use/plan-mode" },
+      { text: "子代理", link: "/extend/subagents" },
+      { text: "Dynamic Workflows", link: "/extend/workflows" },
+    ],
+  },
+  {
+    /**
+     * 只有一页，所以刻意**不包一层组**——写成 `{ text, items: [同名的一条] }`
+     * 会在左栏渲染出「成本与用量 › 成本与用量」这种同名嵌套，是纯视觉噪音。
+     * 顶级条目带 link 会渲染成可点的分区标题，视觉重量与其它组标题一致。
+     */
+    text: "成本与用量",
+    link: "/use/cost",
+  },
+  {
+    /**
+     * 「扩展能力」组内顺序 = 上手成本从低到高，与 `/extend/` 总览页那张选择表同序。
+     * 总览页固定排第一条：它是这一组的路由器，读者该先看表再挑一个。
+     */
+    text: "扩展能力",
+    collapsed: true,
+    items: [
+      { text: "扩展方式总览", link: "/extend/" },
+      { text: "Skill", link: "/extend/skills" },
+      { text: "Hook 指南", link: "/extend/hooks" },
+      { text: "MCP", link: "/extend/mcp" },
+      { text: "插件与 Bridge", link: "/extend/plugins" },
+    ],
+  },
+  {
+    /**
+     * 「开发环境集成」= 让 sid-code 接上你已有的工具链（编辑器 / 语言服务 / CI）。
+     * 与「扩展能力」的区别：扩展是教它新本事，集成是把它接到现有环境里。
+     */
+    text: "开发环境集成",
+    collapsed: true,
+    items: [
+      { text: "IDE 集成", link: "/extend/ide" },
+      { text: "代码智能（LSP）", link: "/extend/lsp" },
+      { text: "无头模式与脚本化", link: "/extend/headless" },
+    ],
+  },
+  {
+    text: "出问题时",
+    collapsed: true,
+    items: [
+      { text: "排障", link: "/use/troubleshooting" },
+      { text: "术语表", link: "/ref/glossary" },
+    ],
+  },
+];
+
+/**
+ * 「博客」这一层的侧边栏，绑给 `/blog/`。
+ *
+ * ## 为什么博客有自己独立的一份，而不是复用 GUIDE_SIDEBAR
+ *
+ * 博客是本站接下来重点投入的一层，需要**独立的顶栏入口 + 独立的左栏目录**。
+ * 复用指南目录会让读者在文章页看到一份「当前页不在其中任何一组」的目录——
+ * 左栏本该回答「我在哪、这一层还有什么」，对不上就等于没有左栏。
+ *
+ * ## 「全部文章」为什么是独立的顶级条目
+ *
+ * 读者从首页或顶栏点进某篇文章后，必须有一条明确的路回到列表去挑下一篇——
+ * 浏览器后退键不算：搜索或外链直达时后退会离站。
+ *
+ * 它刻意**不包进下面那个组**：包进去会渲染成「博客 › 全部文章」，而「博客」正是
+ * 当前 Tab 名，等于用一层同名嵌套换来零信息（`成本与用量` 那条同理，见 GUIDE_SIDEBAR）。
+ * 顶级条目带 link 会渲染成可点的分区标题，视觉重量与组标题一致。
+ *
+ * ## 清单不手写
+ *
+ * `blogPosts` 扫 `website/blog/*.md` 得到（`blog-meta.ts`，与列表页 `BlogIndex.vue`
+ * 同源），所以新增一篇文章只需要新增 md 文件，sidebar 与列表页自动同步、顺序一致。
+ * 手写清单必然漂移成「站内有页面但左栏点不到」。
+ *
+ * 组名用「最新文章」而不是「文章」：`loadBlogPosts` 返回的就是**日期倒序**，
+ * 组名把这个顺序说出来，读者才知道第一条是最新的而不是随机排的。
+ */
+const BLOG_SIDEBAR = [
+  { text: "全部文章", link: "/blog/" },
+  {
+    text: "最新文章",
+    collapsed: false,
+    items: blogPosts.map((p) => ({ text: p.title, link: p.url })),
+  },
+];
+
+/**
  * sid-code 官网与官方文档站配置。
  *
  * 关键决策（详见 docs/reference/官网与文档站设计方案.md §4.4）：
@@ -42,22 +209,105 @@ export default defineConfig({
     logo: "/favicon.svg",
     outline: { level: [2, 3], label: "本页内容" },
 
-    /* ── 5 个顶层 Tab（§4.3.1）：读者一次只面对 ≤9 个选项 ── */
+    /**
+     * ── 顶层导航：5 个入口 + 更新日志 ──
+     *
+     * ## 为什么从 7 个平铺 Tab 收到现在这套
+     *
+     * 旧结构是「入门 / 使用 / 进阶定制 / 参考 / 企业与团队 / 文章 / 更新日志」，
+     * 7 个 Tab 看似都在 ≤9 的预算内，真正的问题不是**个数**而是它们**不在同一根轴上**：
+     *
+     *   · 入门 / 使用 / 进阶定制  → 按「读者熟练度」分（时间线轴）
+     *   · 参考                    → 按「内容体裁」分（查 vs 学）
+     *   · 企业与团队              → 按「读者角色」分（个人 vs 管理者）
+     *   · 文章 / 更新日志         → 又是按体裁分
+     *
+     * 三根轴混在一层，就没有任何一个问题能被顶栏回答，读者只能逐个点开试
+     * ——「一开始根本找不到相关内容在哪里」的直接成因。
+     *
+     * 现在顶栏的主干（前 4 个）只回答一个问题：**你现在处于哪个阶段**，
+     * 左到右就是真实时间线：
+     *
+     *   开始 → 指南 → 参考 → 团队部署
+     *   评估安装  日常用与定制  查确切写法  推广给团队
+     *
+     * ## 「使用」与「进阶定制」为什么必须合并
+     *
+     * 那条线是假的：`use/memory`（CLAUDE.md）和 `extend/skills` 都在回答「怎么把我的
+     * 规矩教给它」，却被分在两个 Tab；而 `extend/` 总览页自己那张选择表里，CLAUDE.md
+     * 和 Skill/Hook/MCP 就是并列的候选项——**总览页跨过了它所在 Tab 的边界**，这本身
+     * 就是分界线画错的证据。合并后按「主题」分组（见上方 GUIDE_SIDEBAR），
+     * 难度递进改由**组的排列顺序**承担，而不是靠一条切错位置的 Tab 边界。
+     *
+     * ## 「博客」为什么是独立 Tab，而不是「指南」下拉里的一条
+     *
+     * 中途曾把它折进「指南」下拉（并把 JIT 那篇塞进「上下文与记忆」组），已推翻。
+     * 博客与文档是**两类不同的内容**，不是难度上的递进关系：
+     *
+     *   文档回答「怎么做」——任务导向，读者带着具体目的来，读完就走；
+     *   博客回答「为什么这么设计、实测数据长什么样」——它是唯一能体现
+     *   「这东西真在跑、真被度量过」的一层，也是本站接下来重点投入的方向。
+     *
+     * 折进下拉有两个直接代价：① 少一层曝光（要先点开「指南」才看得见），
+     * ② 顶栏高亮归到「指南」，读者在文章页会以为自己还在文档里。
+     * 一个要重点做的内容层，必须有自己的顶栏位置和自己的高亮。
+     *
+     * 排序刻意放在「参考」之后、「团队部署」之前：它不属于那条上手时间线，
+     * 但比团队部署更贴近个人读者，不该沉到最右。
+     *
+     * ## 「指南」为什么做成下拉而不是直接跳页
+     *
+     * 旧的「使用」Tab 直接跳 `/use/interactive`，等于把读者空投到一个具体页面，
+     * 看不到这一层还有什么。下拉把 7 个主题摊在顶栏上——**点开之前**就知道
+     * 权限、成本、上下文各自在哪，导航本身成了目录。
+     */
     nav: [
-      { text: "入门", link: "/start/", activeMatch: "^/start/" },
-      { text: "使用", link: "/use/interactive", activeMatch: "^/use/" },
-      { text: "进阶定制", link: "/extend/", activeMatch: "^/extend/" },
+      { text: "开始", link: "/start/", activeMatch: "^/start/" },
+      {
+        text: "指南",
+        // /use/ 与 /extend/ 两个目录共用同一份 sidebar，高亮也必须一起算
+        activeMatch: "^/(use|extend)/",
+        items: [
+          { text: "日常操作", link: "/use/interactive" },
+          { text: "权限与安全", link: "/use/permissions" },
+          { text: "上下文与记忆", link: "/use/context" },
+          { text: "任务编排", link: "/use/plan-mode" },
+          { text: "成本与用量", link: "/use/cost" },
+          { text: "扩展能力", link: "/extend/" },
+          { text: "开发环境集成", link: "/extend/ide" },
+          // ⚠ 这 8 条必须与 GUIDE_SIDEBAR 的 8 个分组一一对应、同序。
+          // 少一条（曾漏掉「出问题时」）就意味着顶栏声称的目录比实际内容少一块，
+          // 而排障恰好是最需要被一眼看见的一块——用户翻它的时候正卡着。
+          { text: "出问题时", link: "/use/troubleshooting" },
+        ],
+      },
       { text: "参考", link: "/ref/cli", activeMatch: "^/ref/" },
-      { text: "企业与团队", link: "/team/defaults", activeMatch: "^/team/" },
-      { text: "文章", link: "/blog/", activeMatch: "^/blog/" },
+      { text: "博客", link: "/blog/", activeMatch: "^/blog/" },
+      { text: "团队部署", link: "/team/defaults", activeMatch: "^/team/" },
       { text: "更新日志", link: "/changelog" },
     ],
 
-    /* ── 按路径分组的多 sidebar：进哪个 Tab 只看到该 Tab 的页面 ── */
+    /**
+     * ── 按路径分组的多 sidebar：进哪个 Tab 只看到该 Tab 的页面 ──
+     *
+     * ⚠ 两处 `GUIDE_SIDEBAR`（`/use/` `/extend/`）刻意共用同一个数组引用，
+     * 别拆成两份各自维护的副本。VitePress 按 key 的**路径深度倒序**取第一个前缀命中项
+     * （`support/sidebar.js` 的 `getSidebar`，实测 1.6.4），所以同一份数组绑到两个前缀上，
+     * 读者在这两个目录间跳转时左栏**结构完全不动、位置不丢**——这正是「合并成一个指南 Tab」
+     * 在视觉上成立的实现基础。拆成副本就会漂移成两套不一样的目录。
+     *
+     * `/blog/` 用自己的 `BLOG_SIDEBAR`（理由见其定义处）：博客是独立的一层，
+     * 不是指南的一个分组，左栏也该是它自己的文章目录。
+     */
     sidebar: {
+      /**
+       * 「开始」是全站唯一**有序**的一层：五篇按先后读完就能跑通，不是任你挑的清单。
+       * 所以刻意不分组、不折叠——线性列表本身就在表达「照这个顺序走」。
+       * 末篇 `next` 是这一层到「指南」的交接口。
+       */
       "/start/": [
         {
-          text: "入门",
+          text: "开始",
           items: [
             { text: "sid-code 是什么", link: "/start/" },
             { text: "安装", link: "/start/install" },
@@ -67,79 +317,70 @@ export default defineConfig({
           ],
         },
       ],
-      "/use/": [
-        {
-          text: "使用",
-          items: [
-            { text: "交互模式与键位", link: "/use/interactive" },
-            { text: "权限与人工确认", link: "/use/permissions" },
-            { text: "会话管理", link: "/use/sessions" },
-            { text: "上下文与压缩", link: "/use/context" },
-            { text: "Plan Mode 与 Todo", link: "/use/plan-mode" },
-            { text: "记忆与 CLAUDE.md", link: "/use/memory" },
-            { text: "成本与用量", link: "/use/cost" },
-            { text: "Worktree 隔离", link: "/use/worktree" },
-            { text: "排障", link: "/use/troubleshooting" },
-          ],
-        },
-      ],
-      "/extend/": [
-        {
-          text: "进阶定制",
-          items: [
-            { text: "扩展方式总览", link: "/extend/" },
-            { text: "Skill", link: "/extend/skills" },
-            { text: "Hook 指南", link: "/extend/hooks" },
-            { text: "子代理", link: "/extend/subagents" },
-            { text: "Dynamic Workflows", link: "/extend/workflows" },
-            { text: "MCP", link: "/extend/mcp" },
-            { text: "代码智能（LSP）", link: "/extend/lsp" },
-            { text: "IDE 集成", link: "/extend/ide" },
-            { text: "无头模式与脚本化", link: "/extend/headless" },
-            { text: "插件与 Bridge", link: "/extend/plugins" },
-          ],
-        },
-      ],
+      // 两个前缀共用同一份 GUIDE_SIDEBAR（同一个数组引用，别拆副本，理由见其定义处）
+      "/use/": GUIDE_SIDEBAR,
+      "/extend/": GUIDE_SIDEBAR,
+      // 博客是独立一层，用自己的目录（别改回 GUIDE_SIDEBAR，理由见 BLOG_SIDEBAR 定义处）
+      "/blog/": BLOG_SIDEBAR,
+      /**
+       * 「参考」按**你手里拿的是什么**分两组，而不是平铺 7 条：
+       * 上组是你在终端里敲的（命令行 / 会话里），下组是你在文件里写的（配置 / hook）。
+       * 读者来这一层时心里已经有目标，两组把候选面从 7 条砍到 3~4 条。
+       * 术语表在「指南 › 出问题时」也挂了一份——它既是查询项也是排障入口，两处都该有。
+       */
       "/ref/": [
         {
-          text: "参考",
+          text: "你敲的命令",
+          collapsed: false,
           items: [
             { text: "CLI 参数与子命令", link: "/ref/cli" },
             { text: "斜杠命令", link: "/ref/slash-commands" },
             { text: "内置工具", link: "/ref/tools" },
+          ],
+        },
+        {
+          text: "你写的配置",
+          collapsed: false,
+          items: [
             { text: "settings.json 字段", link: "/ref/settings" },
             { text: "环境变量", link: "/ref/env" },
             { text: "Hook 事件", link: "/ref/hooks" },
           ],
         },
         {
-          text: "术语",
+          text: "术语表",
+          collapsed: false,
           items: [{ text: "术语表", link: "/ref/glossary" }],
         },
       ],
       /**
-       * 文章 sidebar：第一条固定是列表页（读者点进某篇后要能回到列表），
-       * 其后是全部文章，顺序与列表页一致（同一份 blogPosts，日期倒序）。
+       * 「团队部署」按推广的真实时序排：先让人装上（迁移 / 分发），
+       * 再管住（配额 / policy），最后看效果（可观测 / 定时）。
+       * `migrate` 从末位提到首位：团队里已有 cc 用户时，它是第一道门槛而不是补充读物。
        */
-      "/blog/": [
-        {
-          text: "文章",
-          items: [
-            { text: "全部文章", link: "/blog/" },
-            ...blogPosts.map((p) => ({ text: p.title, link: p.url })),
-          ],
-        },
-      ],
       "/team/": [
         {
-          text: "企业与团队",
+          text: "落地到团队",
+          collapsed: false,
           items: [
+            { text: "从 Claude Code 迁移", link: "/team/migrate" },
             { text: "团队默认配置分发", link: "/team/defaults" },
+          ],
+        },
+        {
+          text: "管住成本与边界",
+          collapsed: false,
+          items: [
             { text: "配额与成本控制", link: "/team/quota" },
             { text: "企业 policy 与安全边界", link: "/team/policy" },
+          ],
+        },
+        {
+          text: "看清实际用得怎么样",
+          collapsed: false,
+          items: [
             { text: "轨迹采集与可观测", link: "/team/observability" },
             { text: "定时与无人值守", link: "/team/scheduled" },
-            { text: "从 Claude Code 迁移", link: "/team/migrate" },
           ],
         },
       ],
@@ -222,7 +463,9 @@ export default defineConfig({
       code: "404",
       title: "页面不存在",
       quote:
-        "这个地址没有对应的页面。可能是链接过期，或者路径拼错了——从入门页开始找通常更快。",
+        // ⚠ 别在这句里写死 Tab 名（曾写「从入门页开始找」，Tab 改名后这句就在指路到
+        // 一个站上不存在的地方）。改用顶栏搜索框——它不随导航结构变化而失效。
+        "这个地址没有对应的页面。可能是链接过期，或者路径拼错了——用顶栏的搜索框找通常最快。",
       linkLabel: "回到首页",
       linkText: "回到首页",
     },

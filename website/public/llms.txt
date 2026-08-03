@@ -10,14 +10,17 @@
 - [sid-code](/)
 - [更新日志](/changelog): 每个版本的变更记录，从 git 历史自动生成，带独立搜索与分类筛选。
 
-## 文章
+## 开始
 
-- [文章](/blog/): sid-code 的机制解析与工程实践：把内部踩过的坑、对标结论与实测数据写成能读、能分享的长文。
-- [JIT 上下文：让规则在正确的时刻进入上下文](/blog/jit-context): 规则写了却不被遵守，多半不是模型不听话，而是那条规则当时根本不在上下文里。这篇拆开 sid-code 的两条注入路径，附 19 个会话的实测基线、几个只能靠实测发现的缺陷，以及一条至今没修的边界。
+- [sid-code 是什么](/start/): 一句话定位、它能替你做什么的具体例子，以及和 Claude Code 的关系与差异。
+- [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
+- [跑通第一个任务](/start/first-task): 一个真实小任务的全过程：改一个函数并跑测试，逐屏解说。
+- [安装](/start/install): 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构识别三类常见失败的处理。
+- [接下来读什么](/start/next): 按你的目标给出四条阅读路径，每条带一句为什么。
 
-## 进阶定制
+## 指南
 
-- [扩展方式总览](/extend/): Skill / Hook / 子代理 / MCP / 插件 五条扩展路径的选择表：什么场景用哪个。
+- [扩展方式总览](/extend/): 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow / MCP / 插件）与接进现有环境（LSP / IDE / 无头）的选择表：什么场景用哪个。
 - [无头模式与脚本化](/extend/headless): 在 CI / 脚本里非交互地跑 sid-code：三种输出格式怎么选、stdout 什么时候会被污染、结构化输出的坑。
 - [Hook 指南](/extend/hooks): 用三个可直接粘的真实场景讲清 Hook 怎么写、怎么调、怎么排错。
 - [IDE 集成](/extend/ide): 在 VS Code / Cursor / Windsurf 里用 sid-code：选区同步、@提及、diff 视图、自动发现。
@@ -27,6 +30,15 @@
 - [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill：8 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
 - [子代理](/extend/subagents): 把任务派给子代理，用自定义 agent 固化职责，并按类型分级模型省钱。
 - [Dynamic Workflows](/extend/workflows): 什么时候该用多 agent 编排、pipeline 和 parallel 怎么选、跑挂了怎么 resume。
+- [上下文与压缩](/use/context): 上下文窗口如何管理、auto-compact 何时触发、怎么少花 token。
+- [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
+- [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
+- [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
+- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
+- [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
+- [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
+- [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
+- [Worktree 隔离](/use/worktree): 在独立 worktree 里干活，含 symlink node_modules 的跨分支 lockfile 风险。
 
 ## 参考（脚本生成）
 
@@ -38,15 +50,12 @@
 - [斜杠命令](/ref/slash-commands): 交互模式里可用的全部斜杠命令。
 - [内置工具](/ref/tools): 全部内置工具的名称、用途与入参。表里的名称就是你在权限规则、子代理工具清单、hook matcher 里要写的字符串。
 
-## 入门
+## 博客
 
-- [sid-code 是什么](/start/): 一句话定位、它能替你做什么的具体例子，以及和 Claude Code 的关系与差异。
-- [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
-- [跑通第一个任务](/start/first-task): 一个真实小任务的全过程：改一个函数并跑测试，逐屏解说。
-- [安装](/start/install): 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构识别三类常见失败的处理。
-- [接下来读什么](/start/next): 按你的目标给出四条阅读路径，每条带一句为什么。
+- [博客](/blog/): sid-code 的机制解析与工程实测：一个机制为什么这么设计、实现里踩了哪些坑、实测数据是多少、当前边界在哪。带 file 级证据，不写"据说"。
+- [JIT 上下文：让规则在正确的时刻进入上下文](/blog/jit-context): 规则写了却不被遵守，多半不是模型不听话，而是那条规则当时根本不在上下文里。这篇拆开 sid-code 的两条注入路径，附 19 个会话的实测基线、几个只能靠实测发现的缺陷，以及一条至今没修的边界。
 
-## 企业与团队
+## 团队部署
 
 - [团队默认配置分发](/team/defaults): 用 team-defaults.json 给全团队统一 provider 与默认配置，新人装完即可用。
 - [从 Claude Code 迁移](/team/migrate): 哪些配置不用动就能用、哪些必须改结构、以及用内置 skill 半自动迁移。
@@ -54,16 +63,4 @@
 - [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为、哪些约束用户绕不过去，以及当前的能力边界在哪。
 - [配额与成本控制](/team/quota): 给会话、给团队设花费上限；四级预警、按周期的预算规则、超限自动停止。
 - [定时与无人值守](/team/scheduled): 会话内 /loop、跨会话 durable 定时任务、daemon 常驻守护、GitHub webhook 触发——整条无人值守链路。
-
-## 使用
-
-- [上下文与压缩](/use/context): 上下文窗口如何管理、auto-compact 何时触发、怎么少花 token。
-- [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
-- [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
-- [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
-- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
-- [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
-- [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
-- [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
-- [Worktree 隔离](/use/worktree): 在独立 worktree 里干活，含 symlink node_modules 的跨分支 lockfile 风险。
 
