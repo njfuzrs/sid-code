@@ -11,6 +11,7 @@ import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
+import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
 import { emitTimeoutFired } from "../trace/stream-observer.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 
@@ -136,6 +137,22 @@ export async function processStream(
       case "message_start":
         accumulateUsage(usage, event.message.usage);
         break;
+
+      // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
+      //
+      // 子代理路径的错乱形态与主循环**不同但同源**：这里用 `content[event.index]`
+      // 直接按 index 落位（不是 push + 映射表），重开后 index 从 0 重新开始，低位块
+      // 会被覆盖，但**上一次尝试的高位块原样残留**——拼出「新响应 + 旧尾巴」。
+      // 主循环是「旧头 + 新响应」，子代理是「新头 + 旧尾」，都必须清。
+      //
+      // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
+      case "stream_restart": {
+        const outcome = resetOnStreamRestart({ content, jsonAccumulators });
+        if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
+          getLogger().warn("AGENT_STREAM", describeStreamRestart(event, outcome));
+        }
+        break;
+      }
 
       case "content_block_start":
         if (event.content_block.type === "text") {

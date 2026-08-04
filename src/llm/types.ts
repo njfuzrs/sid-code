@@ -239,6 +239,34 @@ export interface InputJsonDelta {
 /** 流式事件类型 */
 export type StreamEvent =
   | { type: "message_start"; message: { usage: Usage } }
+  /**
+   * 流被**重开**：上一次尝试已产出的所有内容块**全部作废**，消费方必须清空累加状态。
+   *
+   * 为什么必须有这个事件（2026-08-04 事故根因，别删）：`fallback.ts` 在流中途失败时
+   * 重开的是一个**全新请求**（不是断点续传），语义上「前一次的部分响应作废」。但这个
+   * 作废语义此前从未传递给消费方——消费方的累加器（content / jsonAccumulators /
+   * indexToPosition）声明在事件循环之外，跨重试存活，且 `content_block_start` 用
+   * `content.length` 追加位置。于是第一次尝试的残骸被**焊死在**第二次完整响应前面，
+   * 产出一条协议合法、语义错乱的 assistant 消息：
+   *
+   *   [thinking, text, tool_use(edit, input={}), thinking, text, tool_use(read, 完整)]
+   *    └────── 第一次尝试（socket 关闭截断）──────┘ └────── 第二次尝试（完整）──────┘
+   *
+   * 那个 `input={}` 不是模型退化，是 `input_json_delta` 被 socket 关闭截断、
+   * `content_block_stop` 从未到达，`block.input` 停在初始化的 `{}`。下游 F1 空参数
+   * 检测器把它误判成模型退化，连带把同响应里健康的 `read` 变成孤儿 tool_use。
+   *
+   * 判据取**真实信号**（provider 层显式发出），不做「index 回退到 0」这类启发式推断——
+   * 后者是用粗糙代理替代真实信号（本仓库已记录的归因反模式），且 provider 一改 index
+   * 策略就失效。
+   *
+   * 消费方契约（四处消费者必须一致，见 stream-restart-contract.test.ts）：
+   *   1. 清空已累积的 content 块、JSON 分片累加器、index→position 映射、thinking 标记
+   *   2. **不回退** usage：作废尝试的 token 是**真实计费**的，回退会让 cost 少采
+   *      （与「更省」方向的度量诉求冲突）。改为累加计入，并单独记 restart 次数
+   *   3. 通知 UI 撤回已流出的文本（否则用户屏幕上留着作废那半段叙述）
+   */
+  | { type: "stream_restart"; reason: string; attempt?: number }
   | { type: "content_block_start"; index: number; content_block: ContentBlock; _raw_block?: unknown }
   | { type: "content_block_delta"; index: number; delta: TextDelta | InputJsonDelta }
   | { type: "content_block_stop"; index: number }

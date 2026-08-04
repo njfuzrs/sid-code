@@ -856,7 +856,10 @@ export async function* queryLoop(
           log.error(
             "QUERY_LOOP",
             `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（已修复，避免 OpenAI 400）：${detail}。` +
-              `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode）。`,
+              // 成因清单必须与真实产生端同步（2026-08-04 教训）：旧清单漏了 F1
+              // 空参数重试，而它恰好是实测触发这条日志的产生端，照旧清单去查
+              // 「循环恢复/中断」会白费功夫。新增任何绕过工具执行的分支都要补进来。
+              `孤儿来源应在产生端排查（循环恢复/中断/followup/plan-mode/F1 空参数重试）。`,
           );
         }
         if (backfill.stripped.length > 0) {

@@ -90,17 +90,52 @@ describe("empty-param — replaceEmptyParamToolUses", () => {
     expect(out.some((b) => b.type === "tool_use")).toBe(false);
   });
 
-  it("混合场景：非空 tool_use 原样保留，仅替换空参数", () => {
+  // 契约变更（2026-08-04 事故第二根因）：本用例此前断言「非空 tool_use 原样保留」，
+  // 那正是 bug 本体——F1 分支替换后即 continue，被保留的健康 tool_use 永不执行，
+  // 成为孤儿并触发「此工具调用未被执行」占位。现契约为「连坐」：一旦有退化命中，
+  // 同一 content 里所有 tool_use 一并降为 text，输出保证零 tool_use。
+  it("混合场景：有退化命中时，健康 tool_use 一并连坐降为 text（消除孤儿）", () => {
     const content: ContentBlock[] = [
       { type: "tool_use", id: "t1", name: "grep", input: { pattern: "x" } },
       { type: "tool_use", id: "t2", name: "write", input: {} },
     ];
     const out = replaceEmptyParamToolUses(content);
-    // 非空 grep 保留
-    expect(out[0].type).toBe("tool_use");
-    expect(out[0].type === "tool_use" && out[0].id).toBe("t1");
-    // 空参 write 被替换
+    // 核心断言：输出里一个 tool_use 都不许剩，否则必然产生孤儿
+    expect(out.some((b) => b.type === "tool_use")).toBe(false);
+    // 健康 grep 被连坐，且文案如实说明"未被执行"
+    expect(out[0].type).toBe("text");
+    expect(out[0].type === "text" && out[0].text).toContain("grep");
+    expect(out[0].type === "text" && out[0].text).toContain("未被执行");
+    // 空参 write 走退化文案
     expect(out[1].type).toBe("text");
+    expect(out[1].type === "text" && out[1].text).toContain("参数为空");
+  });
+
+  it("无退化命中时不连坐：正常轮次的 tool_use 一个都不动", () => {
+    const content: ContentBlock[] = [
+      { type: "text", text: "开始检索" },
+      { type: "tool_use", id: "t1", name: "grep", input: { pattern: "x" } },
+      { type: "tool_use", id: "t2", name: "read", input: { file_path: "/a.ts" } },
+    ];
+    const out = replaceEmptyParamToolUses(content);
+    expect(out[1].type).toBe("tool_use");
+    expect(out[2].type).toBe("tool_use");
+    expect(out.filter((b) => b.type === "tool_use").length).toBe(2);
+  });
+
+  it("连坐不误伤：仅含 enter_plan_mode 合法空参数时不算退化，不触发连坐", () => {
+    const getSchema = (name: string) =>
+      name === "enter_plan_mode"
+        ? { type: "object", properties: {} }
+        : { type: "object", properties: { p: {} }, required: ["p"] };
+    const content: ContentBlock[] = [
+      { type: "tool_use", id: "t1", name: "enter_plan_mode", input: {} },
+      { type: "tool_use", id: "t2", name: "grep", input: { pattern: "x" } },
+    ];
+    const out = replaceEmptyParamToolUses(content, getSchema);
+    // 无真退化 → 两个 tool_use 都保留（plan mode 仍进得去）
+    expect(out[0].type).toBe("tool_use");
+    expect(out[1].type).toBe("tool_use");
   });
 
   it("不修改入参（返回新数组）", () => {
@@ -280,14 +315,23 @@ describe("empty-param — replaceEmptyParamToolUses + getSchema", () => {
     expect(out[0].type).toBe("text");
   });
 
-  it("混合：enter_plan_mode 保留、write 替换", () => {
+  // 契约变更（2026-08-04）：此前断言 enter_plan_mode 在混合场景下也保留 tool_use。
+  // 但该场景里 write **是**真退化 → F1 分支触发 → 替换后 `continue` 重开一轮，
+  // enter_plan_mode **根本没有机会执行**。保留它为 tool_use 只会让它变成孤儿，
+  // 被补一个「此工具调用未被执行」占位——即事故里观察到的第二条报错。
+  //
+  // 这**不会**重新引入 b168a817 死循环：那个死循环的形态是「响应里只有
+  // enter_plan_mode」，此时 hasDegraded=false，连坐不启动，它照旧原样保留
+  // （由上面 :301 用例与「连坐不误伤」用例共同钉住）。两者场景不重叠。
+  it("混合：write 真退化 → 本轮整体作废，enter_plan_mode 亦连坐（否则成孤儿）", () => {
     const content: ContentBlock[] = [
       { type: "tool_use", id: "t1", name: "enter_plan_mode", input: {} },
       { type: "tool_use", id: "t2", name: "write", input: {} },
     ];
     const out = replaceEmptyParamToolUses(content, getSchema);
-    expect(out[0].type).toBe("tool_use");
-    expect(out[1].type).toBe("text");
+    expect(out.some((b) => b.type === "tool_use")).toBe(false);
+    expect(out[0].type === "text" && out[0].text).toContain("未被执行");
+    expect(out[1].type === "text" && out[1].text).toContain("参数为空");
   });
 });
 

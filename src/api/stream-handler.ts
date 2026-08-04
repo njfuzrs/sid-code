@@ -193,5 +193,18 @@ export async function* streamWithFallback(
     { ...params, maxTokens: nonStreamMaxTokens },
     signal,
   );
+  // 作废语义广播（2026-08-04 事故根因修复的第五个重开点）。
+  //
+  // 这里**确实会**残留：降级闸门 `yieldedContent` 只认 `content_block_delta`，
+  // 而 `content_block_start` 已经透传给下游了（上面 `yieldedAnyBlock` 就是为了区分
+  // 这两者才引入的）。于是「start 已流出、delta 未到就断」这一形态——正是被 socket
+  // 截断的 tool_use 的形态——会通过闸门，下游累加器里留着一个 `input={}` 的半块，
+  // 紧接着非流式重放的完整内容被拼在它后面。与 fallback.ts 那条路径同构。
+  //
+  // 空流降级（emptyStream）路径下累加器本就是空的，清空是 no-op，无需分叉。
+  yield {
+    type: "stream_restart",
+    reason: emptyStream ? "empty_stream_degrade" : "transport_error_degrade",
+  };
   yield* convertToStreamEvents(result);
 }

@@ -983,6 +983,11 @@ export class ModelFallback {
               authRefreshed: refreshed,
             }, perCall.agentId);
             resetStreamTimeout();
+            // 作废语义广播（与下方重试路径同理）：401 重试同样是**全新请求**。
+            // 401 通常在建流阶段就抛、尚未产出内容块，但「通常」不是「必然」——
+            // 网关可能先回 200 + 部分 SSE 再插一个 401 错误事件。少这一行就留下
+            // 一条能绕过作废广播的路径，事故会以更低频率复发（更难查）。
+            yield { type: "stream_restart", reason: "auth_refresh", attempt: attempt + 1 };
             try {
               const retryParams = ctx.maxTokensOverride
                 ? { ...params, maxTokens: ctx.maxTokensOverride }
@@ -1269,6 +1274,20 @@ export class ModelFallback {
           // 重置超时计时器
           resetStreamTimeout();
 
+          // ═══════════════════════════════════════════════════════════
+          // 作废语义广播：重开前告知消费方「上一次尝试的内容块全部作废」
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 2026-08-04 事故根因修复。下面重开的是**全新请求**（不是断点续传），
+          // 但此前没有任何信号把这件事告诉消费方：消费方累加器跨重试存活，于是
+          // 第一次尝试的残骸（含被 socket 截断成 `input={}` 的 tool_use）被焊死在
+          // 第二次完整响应前面 → F1 误判为模型退化 + 健康 tool_use 变孤儿。
+          //
+          // 必须在 openStream **之前** yield：openStream 同步抛错时会被归一化成
+          // 「首次 next() 即抛」的流并回到本 catch 继续重试，若放在其后，那条路径上
+          // 的重开就不会广播作废（正是「看着有能力、实际有路径绕过」那类缺陷）。
+          yield { type: "stream_restart", reason: reopenReason, attempt: attempt + 1 };
+
           // 重新获取流
           // B1-b：与首次建流走**同一个** openStream —— 同步抛错被归一化成「首次
           // next() 即抛」的流，于是下一轮迭代照常进入本 catch 继续退避重试。
@@ -1454,6 +1473,15 @@ export class ModelFallback {
       error: "主模型失败",
     }, ctx?.perCall.agentId);
 
+    // 作废语义广播（第三个重开点）：降级换的是**另一个模型**的全新请求，
+    // 主模型此前流出的部分内容块同样全部作废。
+    //
+    // 这条路径比重试路径更容易漏：tryFallback 的多数入口是「建流即失败」，看着不会
+    // 有残留内容；但 executeWithFallback 里存在**流中途**转降级的分支（连续 529、
+    // 重试次数耗尽、`!hasYieldedContent` 校验失败等），那时主模型的块已经在消费方
+    // 累加器里了。少这一行，事故就换成「主模型半截 + fallback 模型完整」的形态复发。
+    yield { type: "stream_restart", reason: "fallback_switch" };
+
     yield* this.streamFromFallback(params, targetModel, targetProvider, signal);
   }
 
@@ -1573,6 +1601,15 @@ export class ModelFallback {
       log.warn("FALLBACK", "S4：非流式降级仍返回空内容，回到换模型路径");
       return;
     }
+
+    // 作废语义广播（第四个重开点，纵深防御）。
+    //
+    // 这里**当前**推理上是安全的：上面守卫 ③ 已挡掉「本次尝试流出过内容」，而更早尝试
+    // 的内容块已被重试路径的 stream_restart 清空。但那份安全依赖「守卫 ③ 的 flag 是
+    // per-attempt、且每次重试都广播过作废」这条跨函数的隐式链——链上任一环日后被改动
+    // （比如把 flag 提成 per-call、或新增一条不广播的重开路径），这里就会静默开始重复
+    // 拼接。清空一个本就为空的累加器是 no-op，代价为零，故显式广播把安全性变成局部可验。
+    yield { type: "stream_restart", reason: "non_streaming_degrade" };
 
     for (const ev of convertToStreamEvents(result)) yield ev;
     // 同模型非流式成功 → 该模型是好的（是 SSE 通道不通），清除可能残留的拉黑态。

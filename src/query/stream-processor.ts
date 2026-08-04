@@ -15,6 +15,7 @@ import type {
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
+import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
@@ -37,6 +38,20 @@ export interface StreamProcessorOptions {
    * 回调抛错被吞（绝不影响流处理主流程）。
    */
   onToolUseComplete?: (block: ToolUseBlock) => void;
+  /**
+   * 流被重开、已流出的内容全部作废时回调，供 UI **撤回**已渲染的那半段文本。
+   *
+   * 少了它的后果（2026-08-04 事故的用户可见面）：作废尝试的文本已经通过 onText
+   * 流到屏幕上了，重置只清了内部累加器，屏幕上那段孤立叙述留在原地——用户看到
+   * 「§六已完成…」紧跟「§7.5 已更新…」两段互不衔接的话，正是这个观感的来源。
+   * 不设置时行为退化为「只清内部状态、不撤回 UI」，与修复前一致。
+   */
+  onStreamRestart?: (info: {
+    reason: string;
+    attempt?: number;
+    discardedBlocks: number;
+    discardedTextLength: number;
+  }) => void;
 }
 
 /**
@@ -182,7 +197,51 @@ export async function processStream(
           accumulateUsage(response.usage, event.message.usage);
           break;
 
+        // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
+        // usage 刻意不回退：作废尝试的 token 是真实计费的，回退会让 cost 少采。
+        case "stream_restart": {
+          const outcome = resetOnStreamRestart({
+            content: response.content,
+            indexToPosition,
+            jsonAccumulators,
+            thinkingIndexes,
+            thinkingStartMs,
+            thinkingBlocks,
+          });
+          // reasoning 也要清：它累加的是**已作废**那次尝试的思考文本，留着会经
+          // _meta.reasoning_content 回传给模型，让模型看到自己"说过"但实际作废的话。
+          accumulatedReasoning = "";
+          // rawOutputTokensZero 复位：它是"本次响应 output 为 0"的结构信号，
+          // 由作废尝试置位后若不清，会让下一次完整响应被误判成"未答复 end_turn"。
+          rawOutputTokensZero = false;
+          if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
+            log.warn("STREAM", describeStreamRestart(event, outcome));
+          }
+          try {
+            options?.onStreamRestart?.({
+              reason: event.reason,
+              attempt: event.attempt,
+              ...outcome,
+            });
+          } catch (e) {
+            // UI 撤回失败绝不影响流处理主流程（与 onToolUseComplete 同取向）。
+            log.warn("STREAM", `onStreamRestart 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          break;
+        }
+
         case "content_block_start": {
+          // 纵深防御：正常情况下同一 index 不该重复 start。命中说明有一条重开路径
+          // 绕过了 stream_restart 广播（新增 provider / 新增重试分支时的典型漏点）——
+          // 打 warn 让它显形，而不是静默拼接出语义错乱的响应。
+          // 这里只告警不阻断：真实信号仍以 stream_restart 为准，本检查是哨兵而非判据。
+          if (indexToPosition.has(event.index)) {
+            log.warn(
+              "STREAM",
+              `content_block_start 收到重复 index=${event.index}（已存在映射）：` +
+                `疑有重开路径未广播 stream_restart，可能拼接出错乱响应`,
+            );
+          }
           const pos = response.content.length; // push 到末尾，保证数组密集
           indexToPosition.set(event.index, pos);
           if (event.content_block.type === "text") {
@@ -402,6 +461,47 @@ export async function processStream(
   // 放在 <think> / <internal_en> 拆分之后——先让内联思考归位，再判是否真答复，避免误判
   //（整段回复都包在 <internal_en> 里时，剥离后 text 为空，此时才该判为"未答复"）。
   detectUnansweredEndTurn(response, rawOutputTokensZero);
+
+  // ── 未收尾的 tool_use 块 → 标记「被截断」，让下游能与"模型真退化"区分开 ──
+  //
+  // 2026-08-04 事故的第三个面：`input={}` 有两种完全不同的成因，而下游 F1 此前
+  // 无法区分，一律按"模型生成了空参数"归因：
+  //   ① 模型真退化：正常收到 content_block_stop，但 input 确实是 {}
+  //   ② 流被截断：input_json_delta 传了一半，socket 关闭，**stop 事件从未到达**
+  // 事故里是 ②（`warn.log` 无"JSON 解析失败"，说明压根没收到收尾），却被报成 ①。
+  //
+  // 判据是**结构事实**而非猜测：`jsonAccumulators` 里还留着 key，就证明该 index 的
+  // content_block_stop 没来过（stop 分支会 delete）。这是本地可判、无需依赖上游信号的
+  // 硬信号——即便某条重开路径漏了 stream_restart 广播，这里仍能如实标注。
+  if (jsonAccumulators.size > 0) {
+    for (const [index, partial] of jsonAccumulators) {
+      const pos = indexToPosition.get(index);
+      if (pos === undefined) continue;
+      const block = response.content[pos];
+      if (block?.type !== "tool_use") continue;
+      // 半截 JSON 尽力一解：能解出对象就用（可能刚好停在合法边界），
+      // 解不出就维持 {} 并打上截断标记，交由 F1 走"未落地、请重发"路径。
+      let recovered = false;
+      if (partial) {
+        try {
+          const parsed = JSON.parse(partial);
+          if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
+            block.input = normalizeToolInput(parsed);
+            recovered = true;
+          }
+        } catch {
+          // 半截 JSON 解不开是预期情形，不是异常
+        }
+      }
+      (block as ToolUseBlock & { _truncated?: boolean })._truncated = !recovered;
+      log.warn(
+        "STREAM",
+        `工具 ${block.name} 的 content_block_stop 未到达（流被截断）：` +
+          `已累积 ${partial.length} 字符参数 JSON，${recovered ? "半截 JSON 解析成功" : "无法解析，input 保持 {}"}`,
+      );
+    }
+    jsonAccumulators.clear();
+  }
 
   // P0-1（9bc92c2c 根因修复最终防线）：过滤掉可能残余的 undefined 空洞。
   // 正常情况下 P1 的 push + indexToPosition 已保证数组密集，此处为纵深防御。

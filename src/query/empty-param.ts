@@ -14,7 +14,10 @@
  * 本模块提供纯函数（无副作用、易单测）：
  * - 判断工具 schema 是否声明了必填参数（toolHasRequiredParams）
  * - 检测一组 content 块中哪些 tool_use 是"真退化"（结合 schema）
- * - 把真退化的 tool_use 块原地替换为 text 块（消除孤儿风险：替换后不含 tool_use，无需 tool_result 配对）
+ * - 把 tool_use 块替换为 text 块，消除孤儿：**本轮一旦有退化命中，同一 content 里的
+ *   所有 tool_use 一并降为 text**。因为 F1 分支替换后即 `continue` 重开一轮，
+ *   被"保留"的健康 tool_use 永不执行 → 必成孤儿（2026-08-04 事故第二根因，
+ *   详见 replaceEmptyParamToolUses 的注释）
  * - 构造给模型的"参数为空请重试"提示
  *
  * 重试策略（在 loop.ts 中编排）：每次重试前先压缩上下文（reactiveCompact），
@@ -112,13 +115,45 @@ export function detectEmptyParamToolUses(
 }
 
 /**
- * 把 content 中的"真退化"空参数 tool_use 块原地替换为 text 块。
+ * 把 content 中的空参数 tool_use 替换为 text 块——并且，**一旦本轮存在退化块，
+ * 就把同一 content 里的所有 tool_use 一并替换**。
  *
- * 替换后返回的 content：
- * - 不再含任何真退化空参数 tool_use（消除孤儿 → 不会触发 OpenAI 400）
- * - 非空参数 tool_use 块、以及本就无必填参数工具的合法空 tool_use（如 enter_plan_mode）
- *   **原样保留**（混合场景下不误伤——这些块由 loop.ts 的 fall-through 逻辑在后续正常执行）
- * - 其余块（text / thinking）原样保留
+ * 替换后返回的 content 保证：**不含任何 tool_use**（当有退化命中时），
+ * 因此绝不需要 tool_result 配对，从根上消除孤儿。
+ *
+ * ── 为什么必须"连坐"，而不是只替换退化的那一个（2026-08-04 事故第二根因）──
+ *
+ * 旧实现只替换退化块、保留健康 tool_use，注释里写的理由是「这些块由 loop.ts 的
+ * fall-through 逻辑在后续正常执行」。**这句话是错的**，而错误的注释比没有注释更坏：
+ * 它让人以为有一条兜底路径，于是没人去核对。真实控制流是——
+ *
+ *   loop.ts F1 分支：检测到退化 → 替换 → addMessage(sanitized) → `continue`
+ *                                                                  └─ 直接重开下一轮
+ *
+ * `continue` 之后**永不执行**任何工具。于是那个被"保留"的健康 tool_use 进了历史却
+ * 没有配对的 tool_result，成为孤儿；下一次发送时撞上 loop.ts 的发送前孤儿兜底关卡，
+ * 被补一个「此工具调用未被执行」的占位结果。实测轨迹（session 20260804-100825）：
+ *
+ *   02:25:35.603  F1：检测到空参数 tool_use「edit」，替换为 text 并重试 1/3
+ *   02:25:35.605  发送前孤儿兜底关卡触发：补齐 1 个孤儿 tool_use ... read(id=call_f35fffe0…)
+ *                 └─ 相隔 2ms，孤儿正是同一响应里被"保留"的那个 read
+ *
+ * 只要一条响应同时含退化块和健康 tool_use，这个缺陷**必现**，与网络、与模型都无关。
+ *
+ * ── 为什么"连坐"是正确解，而不是"先执行健康工具再重试" ──
+ *
+ * F1 的语义就是**整轮作废重来**：注入「参数为空请重新调用」提示 + 压缩上下文后让模型
+ * 重新规划。留半个已执行的工具结果在上下文里，与"重新规划"自相矛盾——模型会看到一份
+ * 半套结果，更难推理，且那个 read 的结果对重来后的新计划未必还有用。宁可让模型在
+ * 干净上下文里重发这两个调用（成本是一次 read，代价可接受）。
+ *
+ * 保留下来的信息不丢：每个被连坐的健康 tool_use 都会替换成一句说明它「未执行、
+ * 需要时请重新发起」的 text，模型据此知道自己刚才想做什么。
+ *
+ * ── 无退化命中时：一个块都不动 ──
+ *
+ * 连坐只在"本轮确实有退化"时启动。没有退化命中（含只有 enter_plan_mode 这类
+ * 合法空参数的情形）时原样返回，绝不误伤正常的工具调用轮次。
  *
  * 返回新数组（不修改入参），符合 loop.ts 中 addMessage 前不可变更新的约定。
  *
@@ -129,17 +164,35 @@ export function replaceEmptyParamToolUses(
   content: ContentBlock[],
   getSchema?: SchemaLookup,
 ): ContentBlock[] {
+  // 先判定本轮是否存在真退化：决定要不要启动"连坐"。
+  const hasDegraded = content.some(
+    (b) => b.type === "tool_use" && isDegradedToolUse(b, getSchema),
+  );
+  if (!hasDegraded) return content.map((block) => block);
+
   return content.map((block) => {
-    if (block.type === "tool_use" && isDegradedToolUse(block, getSchema)) {
+    if (block.type !== "tool_use") return block;
+    if (isDegradedToolUse(block, getSchema)) {
+      // 归因分叉（2026-08-04）：`input={}` 有两种成因，措辞必须跟着**结构事实**走，
+      // 不能一律说成"模型生成了空参数"。`_truncated` 由 stream-processor 依据
+      // "content_block_stop 未到达"这一硬信号打上——那证明是传输被截断，
+      // 模型侧完全可能生成了完整参数。事故里报错的正是这一支，却被写成模型退化。
+      const truncated = (block as { _truncated?: boolean })._truncated === true;
       return {
         type: "text" as const,
-        // 归因脱节修复：不再无条件断言"大上下文退化"——空参数的成因不止一种
-        // （小/新上下文下模型偶发生成空 tool_use、provider 序列化丢参等）。只陈述
-        // 可观测事实（参数为空、调用作废），不臆造未经证实的根因。
-        text: `[系统检测] 工具 ${block.name} 生成了工具调用声明但参数为空（input={}），该次调用已作废。`,
+        text: truncated
+          ? `[系统检测] 工具 ${block.name} 的调用参数在传输中被截断（未收到结束标记），该次调用已作废。`
+          : `[系统检测] 工具 ${block.name} 生成了工具调用声明但参数为空（input={}），该次调用已作废。`,
       };
     }
-    return block;
+    // 连坐：健康 tool_use 同样降为 text。它**不会**被执行（F1 分支随后 continue），
+    // 保留成 tool_use 就是制造孤儿。文案如实说明「未执行」，并提示可重新发起。
+    return {
+      type: "text" as const,
+      text:
+        `[系统检测] 同一轮中的工具 ${block.name} 调用未被执行` +
+        `（本轮因存在空参数调用而整体作废）。如仍需要，请重新发起该调用。`,
+    };
   });
 }
 

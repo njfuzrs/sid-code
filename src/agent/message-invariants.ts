@@ -186,9 +186,20 @@ export function assertMessageHistoryIntact(messages: Message[], context = ""): v
   }
 }
 
-/** backfill 占位 tool_result 的默认文案（统一事实源，便于测试断言 & 诊断检索） */
+/**
+ * backfill 占位 tool_result 的默认文案（统一事实源，便于测试断言 & 诊断检索）。
+ *
+ * 成因清单必须与**真实产生端**保持同步（2026-08-04 教训）：旧文案只列了
+ * 「循环检测/中断/时序切断」三类，而实测触发这条占位的产生端是 F1 空参数重试
+ * （loop.ts 替换退化块后 `continue`，同响应里未执行的 tool_use 成孤儿）——
+ * 它不在三类之中。用户与排查者据此清单去查中断/时序，方向被直接带偏。
+ *
+ * 现清单已含 F1；F1 本身的孤儿源头已在 empty-param.ts 修掉（连坐替换），
+ * 故这里保留它的意义是**兜底可归因**，而非常态路径。日后新增任何会绕过工具执行的
+ * 分支，都必须同步这份清单——否则重演同一类误导。
+ */
 export const ORPHAN_BACKFILL_CONTENT =
-  "[系统] 此工具调用未被执行（被循环检测/中断/时序切断），自动补占位结果以维持 tool_use/tool_result 协议配对。";
+  "[系统] 此工具调用未被执行（被循环检测/中断/时序切断/空参数重试作废），自动补占位结果以维持 tool_use/tool_result 协议配对。";
 
 /** backfill 结果 */
 export interface BackfillResult {

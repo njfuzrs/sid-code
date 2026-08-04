@@ -380,6 +380,18 @@ export class App {
    * 仅在 SID_ENABLE_STREAMING_TOOL_EXEC=1 时激活。
    */
   private _streamingToolResults: Map<string, import("./query/tool-executor.ts").SingleToolOutcome> | null = null;
+  /**
+   * 流被重开、已流出内容作废时的回调（2026-08-04 事故根因修复）。
+   *
+   * 由 TUI 层通过 {@link setStreamRestartCallback} 注入，用于**撤回**屏幕上那段
+   * 已经渲染但已作废的文本。未注入时（headless / 测试）只清内部状态，不影响正确性。
+   */
+  private onStreamRestartCallback?: (info: {
+    reason: string;
+    attempt?: number;
+    discardedBlocks: number;
+    discardedTextLength: number;
+  }) => void;
   private queryEngine: QueryEngine;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
@@ -3776,11 +3788,40 @@ export class App {
         // 出生即死 → 整条消息误报已取消」的回归（与 loop.ts finally 的 race-settled 同源）。
         getAbortController: () => turnAbortController ?? this.abortController,
         onToolUseComplete,
+        // 流重开 → 上一次尝试的产出全部作废（2026-08-04 事故根因修复的用户可见面）。
+        //
+        // 必须在这一层接线，否则 stream-processor 只清了内部累加器，**屏幕上**那半段
+        // 已经通过 onText 流出去的叙述仍留在原地——用户看到的就是事故截图里那两段
+        // 互不衔接的话（「§六已完成…」紧跟「§7.5 已更新…」）。
+        onStreamRestart: (info) => {
+          // GAP-01 抢跑缓存同样要作废：作废尝试里抢跑的工具结果按 tool_use id 缓存，
+          // 而重开后的新响应会带**全新的** id。留着这些条目虽不会被误命中（id 不同），
+          // 但会让 executeTools 读到一份属于已作废轮次的残留，且随重试次数累积。
+          this._streamingToolResults?.clear();
+          this.onStreamRestartCallback?.(info);
+        },
       });
     } finally {
       // 注意：不在此清空 _streamingToolResults——executeTools 在流结束后才读它。
       // 由下一轮 processStream 开始时重建覆盖（每轮新建一个 cache），天然隔离跨轮。
     }
+  }
+
+  /**
+   * 设置「流重开、已流出内容作废」的回调，供 TUI 撤回屏幕上那段作废文本。
+   *
+   * 不注入也不影响正确性（内部累加器照样会清），只是用户会在屏幕上留着一段
+   * 与后文不衔接的孤立叙述——即 2026-08-04 事故截图呈现的形态。
+   */
+  setStreamRestartCallback(
+    cb: (info: {
+      reason: string;
+      attempt?: number;
+      discardedBlocks: number;
+      discardedTextLength: number;
+    }) => void,
+  ): void {
+    this.onStreamRestartCallback = cb;
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
