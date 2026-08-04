@@ -3,7 +3,7 @@
  * 两阶段检测 / 双重阈值 / 归因（模型/system/工具增删改/TTL）
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import {
   CacheBreakDetector,
   formatCacheBreakReport,
@@ -14,6 +14,34 @@ import {
   type CacheCheckParams,
   type CacheBreakRecord,
 } from "../../src/api/cache-detection.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// ─── 遥测隔离：recordCacheBreak 会同步落盘，必须重定向到 tmp ───
+//
+// recordCacheBreak 除了推内存环形缓冲（本文件真正要断言的东西），还会
+// emitCacheBreakTelemetryFireAndForget 落盘（src/api/cache-detection.ts:428）。
+// 不重定向就会写进用户真实的 ~/.sid-code/cache-breaks.jsonl —— 历史上已污染
+// 6 万余行假数据，把 `/cache --history` 冲成"一条真记录都看不到"。
+// 与 tests/telemetry/cache-telemetry-rotation.test.ts:38 同构。
+let tmpDir: string;
+let savedEnv: string | undefined;
+
+beforeAll(() => {
+  savedEnv = process.env.SID_CODE_CACHE_BREAKS;
+  tmpDir = mkdtempSync(join(tmpdir(), "cache-detection-"));
+  process.env.SID_CODE_CACHE_BREAKS = join(tmpDir, "cache-breaks.jsonl");
+});
+
+afterAll(async () => {
+  // 落盘走 dynamic import().then()（cache-detection.ts:451-457），是待处理微任务。
+  // 同步恢复 env 会与它赛跑，让最后几条漏写到真实路径 —— 先让微任务队列跑干。
+  await new Promise((r) => setTimeout(r, 0));
+  if (savedEnv === undefined) delete process.env.SID_CODE_CACHE_BREAKS;
+  else process.env.SID_CODE_CACHE_BREAKS = savedEnv;
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 const TOOLS = [
   { name: "read", description: "read file" },

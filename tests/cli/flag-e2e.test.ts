@@ -9,8 +9,10 @@
  *   - --agent 指向不存在代理时 exit=1 且列出候选
  */
 
-import { describe, test, expect } from "bun:test";
-import { resolve } from "node:path";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { resolve, join } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const BOOTSTRAP = resolve(import.meta.dir, "../../src/entrypoints/bootstrap.ts");
 
@@ -20,13 +22,55 @@ interface RunResult {
   stderr: string;
 }
 
+/**
+ * 自带最小可用配置的隔离配置目录。
+ *
+ * 原实现让子进程继承环境直接读**用户真实的 ~/.sid-code/settings.json**，
+ * 于是这些用例只在"本机恰好配好了模型"时才通过——换 CI、换新机器，
+ * `loadConfig` 会先抛"未配置任何模型"，断言拿到的 stderr 根本不是被测的那条报错。
+ * 这里给一份最小 availableModels，让配置加载能过，测试真正测的是 flag 解析行为。
+ */
+let CONFIG_DIR: string;
+
+beforeAll(() => {
+  CONFIG_DIR = mkdtempSync(join(tmpdir(), "sid-flag-e2e-"));
+  writeFileSync(
+    join(CONFIG_DIR, "settings.json"),
+    JSON.stringify({
+      model: "test-model",
+      availableModels: [
+        {
+          name: "test-model",
+          provider: "openai",
+          api_key: "sk-test-not-a-real-key",
+          base_url: "https://example.invalid/v1",
+        },
+      ],
+      // debugLogFile 的默认值是**字面量** "~/.sid-code/debug.log"
+      // （src/config/config.ts:757、app-config.ts:134），不走 getSidHome()，
+      // 所以 SID_CONFIG_DIR 管不到它——子进程会去截断用户真实的 debug.log
+      // （实测每跑一次本文件，真实 debug.log 缩小 56 字节）。显式改指隔离目录。
+      debug_log_file: join(CONFIG_DIR, "debug.log"),
+    }),
+  );
+});
+
+afterAll(() => {
+  try { rmSync(CONFIG_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 /** spawn bootstrap.ts，喂空 stdin 避免无头模式挂起等待输入。 */
 async function run(args: string[]): Promise<RunResult> {
   const proc = Bun.spawn(["bun", BOOTSTRAP, ...args], {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, SID_CODE_DISABLE_PROJECT_RULES: "1" },
+    env: {
+      ...process.env,
+      SID_CODE_DISABLE_PROJECT_RULES: "1",
+      // 显式隔离：不读用户真实配置，也不写用户真实 ~/.sid-code
+      SID_CONFIG_DIR: CONFIG_DIR,
+    },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),

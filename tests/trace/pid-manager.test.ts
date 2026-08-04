@@ -2,12 +2,15 @@
  * pid-manager 单测
  */
 import { describe, test, expect, afterEach } from "bun:test";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import * as PidManager from "../../src/trace/pid-manager.ts";
+import { getSidHome } from "../../src/config/paths.ts";
 
-const BASE_DIR = join(homedir(), ".sid-code", "trajectories");
+// 从 getSidHome() 派生而非硬编码 join(homedir(), ".sid-code")：
+// 后者会让本测试**真的往用户家目录写** PID 文件，且在隔离生效时期望路径失配。
+// getSidHome() 尊重 SID_CONFIG_DIR（含 tests/preload-isolate-sid-home.ts 设的兜底）。
+const BASE_DIR = join(getSidHome(), "trajectories");
 const PIDS_DIR = join(BASE_DIR, ".pids");
 
 /** 清理测试数据 */

@@ -16,6 +16,8 @@ import { join } from "path";
 // 用 SID_CONFIG_DIR 隔离测试，不碰真实用户配置
 const TEST_HOME = join("/tmp", `sid-code-patch-test-${process.pid}`);
 const SETTINGS_PATH = join(TEST_HOME, "settings.json");
+/** 进程原有的 SID_CONFIG_DIR（可能是 preload 设的隔离兜底），afterEach 要还回去 */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
 
 // 含 snake_case 密钥的典型配置（用户常见写法）
 const ORIGINAL_SETTINGS = {
@@ -48,7 +50,10 @@ describe("patchSettingsFile", () => {
   });
 
   afterEach(() => {
-    delete process.env.SID_CONFIG_DIR;
+    // 恢复原值而非无条件 delete（见 tests/preload-isolate-sid-home.ts）：
+    // 同进程后续测试文件会依赖 preload 设的隔离兜底，删了就写进真实 HOME。
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
     rmSync(TEST_HOME, { recursive: true, force: true });
   });
 

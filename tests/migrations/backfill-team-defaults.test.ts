@@ -33,6 +33,9 @@ const LEGACY_SETTINGS = {
   language: "en",
 };
 
+/** 进程原有的 SID_CONFIG_DIR（可能是 preload 设的隔离兜底），afterEach 要还回去 */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
+
 describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   beforeEach(() => {
     process.env.SID_CONFIG_DIR = TEST_HOME;
@@ -41,7 +44,11 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   });
 
   afterEach(() => {
-    delete process.env.SID_CONFIG_DIR;
+    // 恢复原值而非无条件 delete：bun test 同进程跑多文件，直接删会把
+    // preload 设的隔离兜底（tests/preload-isolate-sid-home.ts）一起抹掉，
+    // 导致后续测试文件写进用户真实 ~/.sid-code。实测曾因此泄漏 84 行审计日志。
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
     rmSync(TEST_HOME, { recursive: true, force: true });
   });
 
@@ -146,7 +153,11 @@ describe("runMigrations 水位线（只补一次）", () => {
   });
 
   afterEach(() => {
-    delete process.env.SID_CONFIG_DIR;
+    // 恢复原值而非无条件 delete：bun test 同进程跑多文件，直接删会把
+    // preload 设的隔离兜底（tests/preload-isolate-sid-home.ts）一起抹掉，
+    // 导致后续测试文件写进用户真实 ~/.sid-code。实测曾因此泄漏 84 行审计日志。
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
     rmSync(TEST_HOME, { recursive: true, force: true });
   });
 

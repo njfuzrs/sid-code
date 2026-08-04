@@ -12,8 +12,10 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   emitCacheBreakTelemetry,
   queryCacheBreakHistory,
+  summarizeCacheBreakHistory,
   cacheBreaksPath,
 } from "../../src/telemetry/cache-telemetry.ts";
+import { CacheBreakDetector, type CacheCheckParams } from "../../src/api/cache-detection.ts";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -151,5 +153,79 @@ describe("cache-breaks 尾部读取", () => {
   test("文件不存在返回空数组", () => {
     process.env.SID_CODE_CACHE_BREAKS = join(dir, "nonexistent.jsonl");
     expect(queryCacheBreakHistory(10)).toEqual([]);
+  });
+});
+
+/**
+ * 归因聚合与检测器实际产出的文案对账。
+ *
+ * 缺陷背景：summarizeCacheBreakHistory 的分类分支是照"模型/工具/TTL"这类归因写的，
+ * 而 P2-1 新增的两条前缀 hash 归因（cache-detection.ts:264-268）没有对应分支，
+ * 全部落进 unknown。清理污染数据后实测：632 条真实记录里 631 条是"服务端缓存波动"，
+ * 聚合却报 unknown —— 这个命令的聚合视图等于失效，且因为假数据长期霸占读取窗口而没被发现。
+ *
+ * 本测试不手抄文案常量，而是让**真实检测器**产出归因再喂给聚合器，
+ * 这样任一侧改文案都会被抓到（手抄两份必然漂移，见 CLAUDE.md 六点五 d 项的同类教训）。
+ */
+describe("归因聚合 ↔ 检测器文案对账", () => {
+  function detectorParams(over: Partial<CacheCheckParams> = {}): CacheCheckParams {
+    return {
+      cacheReadTokens: 50000,
+      systemPrompt: "you are helpful",
+      toolSchemas: [{ name: "read", description: "read file" }],
+      model: "test-model",
+      ...over,
+    };
+  }
+
+  test("前缀未变的服务端波动归入 server_fluctuation，不落 unknown", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(detectorParams());
+    // 只降命中、不动 prompt/tools → 前缀 hash 不变 → 检测器输出"服务端缓存波动"
+    const report = d.checkResponse(detectorParams({ cacheReadTokens: 5000 }))!;
+    expect(report).not.toBeNull();
+    emitCacheBreakTelemetry({ ...report, ts: 1_700_000_100, model: "test-model" });
+
+    const s = summarizeCacheBreakHistory(10);
+    expect(s.byCategory.server_fluctuation).toBe(1);
+    expect(s.byCategory.unknown).toBeUndefined();
+  });
+
+  test("前缀变化的本地断裂归入已有类别，同样不落 unknown", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(detectorParams());
+    // 改 systemPrompt → 前缀 hash 变化，检测器会给出 System prompt 归因
+    const report = d.checkResponse(
+      detectorParams({ cacheReadTokens: 5000, systemPrompt: "CHANGED" }),
+    )!;
+    emitCacheBreakTelemetry({ ...report, ts: 1_700_000_200, model: "test-model" });
+
+    const s = summarizeCacheBreakHistory(10);
+    expect(s.byCategory.unknown).toBeUndefined();
+    expect(s.total).toBe(1);
+  });
+
+  test("检测器产出的每一种归因都有对应分类分支（防新增归因漏配）", () => {
+    // 覆盖检测器的主要归因路径，逐条落盘后断言零 unknown
+    const cases: Array<[string, Partial<CacheCheckParams>]> = [
+      ["模型变化", { model: "other-model" }],
+      ["System prompt", { systemPrompt: "DIFFERENT" }],
+      ["工具变化", { toolSchemas: [{ name: "read" }, { name: "bash" }] }],
+      ["Beta headers", { betaHeaders: ["token-efficient-tools-2025-02-19"] }],
+      ["服务端波动", {}],
+    ];
+    let ts = 1_700_001_000;
+    for (const [, over] of cases) {
+      const d = new CacheBreakDetector();
+      d.checkResponse(detectorParams({ betaHeaders: [] }));
+      const report = d.checkResponse(detectorParams({ cacheReadTokens: 5000, betaHeaders: [], ...over }));
+      if (!report) continue;
+      emitCacheBreakTelemetry({ ...report, ts: ts++, model: "test-model" });
+    }
+
+    const s = summarizeCacheBreakHistory(100);
+    expect(s.total).toBeGreaterThanOrEqual(cases.length);
+    // 任一归因文案没有分类分支 → unknown 非空 → 本测试失败并暴露漏配
+    expect(s.byCategory.unknown ?? 0).toBe(0);
   });
 });

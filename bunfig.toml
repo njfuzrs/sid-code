@@ -1,1 +1,6 @@
 # Bun 配置文件
+
+[test]
+# 测试全局隔离兜底：把 SID_CONFIG_DIR 默认指向临时目录，避免测试写用户真实的 ~/.sid-code。
+# 理由与安全性见 tests/preload-isolate-sid-home.ts 的文件头注释。
+preload = ["./tests/preload-isolate-sid-home.ts"]

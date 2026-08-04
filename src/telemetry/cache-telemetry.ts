@@ -177,6 +177,11 @@ export function summarizeCacheBreakHistory(
       else if (change.includes("Beta headers")) bump("beta_headers");
       else if (change.includes("消息数量骤减")) bump("compact");
       else if (change.includes("TTL")) bump("ttl_expiry");
+      // P2-1 的两类前缀 hash 归因（cache-detection.ts:264-268）此前无对应分支，
+      // 全部落进 unknown —— 实测真实数据 500 条里 499 条如此，聚合等于失效。
+      // 这两类恰恰是最有价值的区分：服务端波动本地不可控，前缀断裂才是能优化的。
+      else if (change.includes("服务端缓存波动")) bump("server_fluctuation");
+      else if (change.includes("本地前缀 hash 变化")) bump("prefix_break");
       else bump("unknown");
     }
   }

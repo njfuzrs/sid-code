@@ -9,13 +9,16 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import * as CrashMarker from "../../src/trace/crash-marker.ts";
+import { getSidHome } from "../../src/config/paths.ts";
 
 const TEST_SESSION_ID = `test-crash-${Date.now()}`;
-const BASE_DIR = join(homedir(), ".sid-code", "trajectories");
+// 从 getSidHome() 派生而非硬编码 join(homedir(), ".sid-code")：
+// 后者会让本测试**真的往用户家目录写** crash.json，且在隔离生效时期望路径失配。
+// getSidHome() 尊重 SID_CONFIG_DIR（含 tests/preload-isolate-sid-home.ts 设的兜底）。
+const BASE_DIR = join(getSidHome(), "trajectories");
 const TEST_SESSION_DIR = join(BASE_DIR, "sessions", TEST_SESSION_ID);
 const TEST_CRASH_FILE = join(TEST_SESSION_DIR, "crash.json");
 

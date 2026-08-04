@@ -8,7 +8,7 @@
  * app.ts 中两处 case "clear" 已补调这三个函数——构建通过即证明调用链完整。
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import {
   resetCacheDetection,
   clearCacheBreaks,
@@ -18,6 +18,31 @@ import {
 } from "../../src/api/cache-detection.ts";
 import { resetCircuitBreaker } from "../../src/query/auto-compact.ts";
 import { AutoCompactCircuitBreaker } from "../../src/query/circuit-breaker.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// ─── 遥测隔离：recordCacheBreak 会同步落盘，必须重定向到 tmp ───
+//
+// 见 src/api/cache-detection.ts:428 —— recordCacheBreak 除推内存缓冲外还落盘遥测。
+// 不重定向就会污染用户真实的 ~/.sid-code/cache-breaks.jsonl。
+// 与 tests/telemetry/cache-telemetry-rotation.test.ts:38 同构。
+let tmpDir: string;
+let savedEnv: string | undefined;
+
+beforeAll(() => {
+  savedEnv = process.env.SID_CODE_CACHE_BREAKS;
+  tmpDir = mkdtempSync(join(tmpdir(), "clear-resets-cache-"));
+  process.env.SID_CODE_CACHE_BREAKS = join(tmpDir, "cache-breaks.jsonl");
+});
+
+afterAll(async () => {
+  // 落盘走 dynamic import().then()，是待处理微任务；同步恢复 env 会与它赛跑。
+  await new Promise((r) => setTimeout(r, 0));
+  if (savedEnv === undefined) delete process.env.SID_CODE_CACHE_BREAKS;
+  else process.env.SID_CODE_CACHE_BREAKS = savedEnv;
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 describe("resetCacheDetection — 缓存检测基线清除", () => {
   beforeEach(() => {

@@ -38,6 +38,49 @@
   pre-commit 会跑 `--check` 拦住这种漂移（未装 hook 先跑 `bun run install-hooks`）。
   设计与验收见 `docs/reference/官网与文档站设计方案.md` §4.5。
 
+### 测试约定：有落盘副作用的函数，测试必须显式隔离
+
+**判据：只要一个函数除返回值外还有「写 `~/.sid-code/`」这种进程外副作用，
+调它的测试就必须把落盘目标重定向到 tmpdir。**
+
+两种隔离手段任选（都是每次调用重新读 env，`beforeAll` 里设即生效）：
+
+- 专用重定向变量，如 `SID_CODE_CACHE_BREAKS`（`src/telemetry/cache-telemetry.ts:41`）
+- `SID_CONFIG_DIR` —— 改写整个配置根目录（`src/config/paths.ts:27`）
+
+另有一道**兜底**：`tests/preload-isolate-sid-home.ts`（`bunfig.toml` 的 `[test].preload`）
+在进程启动时把 `SID_CONFIG_DIR` 默认指向临时目录。因为很多落盘组件是在调用链深处被
+**无参构造**的（如 `PermissionChecker` 里 `new AuditLogger()`，`src/permission/checker.ts:360`），
+测试作者根本看不见它——这类污染靠"记得隔离"防不住，得让隔离成为默认值。
+兜底不替代显式隔离：要断言落盘内容的测试仍应自己设专用变量。
+
+四个易错点（都是实测踩到的）：
+
+- **必须存/恢复原值，不要无条件 `delete`**。`bun test` 同一批多文件跑在**同一个进程**，
+  直接删会把 preload 的兜底一起抹掉。实测 `bun test tests/permission` 单跑泄漏 0 行，
+  而 `tests/migrations tests/permission` 同批跑泄漏 84 行——就是 migrations 里无条件删掉了它。
+- **落盘走 `import().then()` 的要先让微任务跑干**再恢复 env（`await new Promise(r => setTimeout(r, 0))`），
+  否则同步恢复会与待处理的写赛跑，让最后几条漏写到真实路径。
+- **不要硬编码 `join(homedir(), ".sid-code", ...)` 算期望路径**，用 `getSidHome()` 派生。
+  硬编码等于"真的往用户家目录写，再断言它写成功了"——隔离一生效立刻失配。
+  已修：`tests/trace/crash-marker.test.ts`、`tests/trace/pid-manager.test.ts`。
+- **spawn 子进程的 e2e 测试要显式传 `SID_CONFIG_DIR`**，子进程不继承进程内的 env 改动。
+  更隐蔽的是 `debugLogFile` 默认值是**字面量** `"~/.sid-code/debug.log"`
+  （`src/config/config.ts:757`、`app-config.ts:134`），不走 `getSidHome()`，
+  `SID_CONFIG_DIR` 管不到——`tests/cli/flag-e2e.test.ts` 曾因此每跑一次就**截断**用户真实的
+  `debug.log`（缩小 56 字节，是破坏不只是污染），得在测试配置里显式写 `debug_log_file`。
+  这个测试还顺带暴露：它原本读用户真实 `settings.json`，只在"本机恰好配好模型"时才通过。
+
+**2026-08-03 真实污染（本条约定的来源）**：`recordCacheBreak()` 除推内存环形缓冲外还落盘遥测
+（`src/api/cache-detection.ts:428`），两个测试没设隔离，把 `~/.sid-code/cache-breaks.jsonl`
+灌进 6 万余行假数据（`ts=1700000000` 等测试字面量），`/cache --history` 的读取窗口里
+**一条真记录都看不到**。三个条件让它成为静默故障：落盘 fire-and-forget 吞异常、
+测试只断言内存缓冲、10MB 才轮转所以污染静静堆积。
+
+**光跑 `bun test` 看绿是验证不了这件事的**——污染时它也全绿。验证手法是
+「记录文件行数 → 跑测试 → 再记录 → 必须一致」。防复发门禁见
+`tests/telemetry/no-real-path-writes.test.ts`（静态扫描 tests/ 下所有落盘调用方）。
+
 ### ⛔ 铁律：不删与本次任务无关的文件和代码（多任务并行前提）
 
 **这个仓库里随时可能有多个任务并行执行**——人在写文档、另一个 agent 在改代码、测试在跑。

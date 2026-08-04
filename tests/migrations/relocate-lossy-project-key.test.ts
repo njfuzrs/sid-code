@@ -24,6 +24,8 @@ const PROJ_A = join(TEST_ROOT, "工作", "app");
 const PROJ_B = join(TEST_ROOT, "文档", "app");
 
 let originalCwd: string;
+/** 进程原有的 SID_CONFIG_DIR（可能是 preload 设的隔离兜底），afterEach 要还回去 */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
 
 function initRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
@@ -41,7 +43,10 @@ beforeEach(() => {
 
 afterEach(() => {
   process.chdir(originalCwd);
-  delete process.env.SID_CONFIG_DIR;
+  // 恢复原值而非无条件 delete（见 tests/preload-isolate-sid-home.ts）：
+  // 同进程后续测试文件会依赖 preload 设的隔离兜底，删了就写进真实 HOME。
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
   rmSync(TEST_ROOT, { recursive: true, force: true });
 });
 

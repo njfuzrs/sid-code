@@ -18,6 +18,8 @@ const TEST_HOME = join("/tmp", `sid-code-migration-fs-fail-${process.pid}-${Date
 const STATE_DIR = join(TEST_HOME, "state");
 const SETTINGS_PATH = join(TEST_HOME, "settings.json");
 const MIGRATION_STATE_PATH = join(STATE_DIR, "migrations.json");
+/** 进程原有的 SID_CONFIG_DIR（可能是 preload 设的隔离兜底），afterEach 要还回去 */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
 
 describe("runMigrations 失败不阻塞（建议2 门禁）", () => {
   beforeEach(() => {
@@ -35,7 +37,10 @@ describe("runMigrations 失败不阻塞（建议2 门禁）", () => {
     try { chmodSync(STATE_DIR, 0o755); } catch { /* ignore */ }
     try { chmodSync(TEST_HOME, 0o755); } catch { /* ignore */ }
     try { rmSync(TEST_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
-    delete process.env.SID_CONFIG_DIR;
+    // 恢复原值而非无条件 delete（见 tests/preload-isolate-sid-home.ts）：
+    // 同进程后续测试文件会依赖 preload 设的隔离兜底，删了就写进真实 HOME。
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
   });
 
   test("state 目录只读时 runMigrations 不抛、不 exit(1)", async () => {
