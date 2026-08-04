@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-08-03",
-  "currentVersion": "0.1.598",
-  "totalVersions": 17,
-  "totalCommits": 257,
+  "generatedAt": "2026-08-04",
+  "currentVersion": "0.1.599",
+  "totalVersions": 18,
+  "totalCommits": 266,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,129 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.599",
+      "date": "2026-08-04",
+      "isGenesis": false,
+      "count": 9,
+      "groups": [
+        {
+          "key": "fix",
+          "title": "修复",
+          "commits": [
+            {
+              "scope": null,
+              "desc": "参考页重新生成，llms.txt 页数更正为 43 页（新增博客系列规划页）",
+              "hash": "06d1d261",
+              "details": []
+            },
+            {
+              "scope": null,
+              "desc": "修复 TUI 刷屏并调整构建与会话限时默认值",
+              "hash": "ea413da9",
+              "details": [
+                "将编译产物固定为 React production build，避免 development build",
+                "输出 Maximum update depth 错误刷屏。",
+                "解耦 Ink 的 stderr 拦截与 console patch，补充 TUI console 护栏、",
+                "alternate-buffer 判定可观测性及相关回归测试。",
+                "默认关闭会话级总时长硬顶，保留显式配置入口和既有进度超时防线，",
+                "并同步发布脚本、headless 文档与排查记录。"
+              ]
+            },
+            {
+              "scope": "test",
+              "desc": "单测污染用户遥测数据隔离根治 + cache 聚合修复",
+              "hash": "45865af0",
+              "details": [
+                "全局 preload 兜底（tests/preload-isolate-sid-home.ts + bunfig.toml）",
+                "进程启动时把 SID_CONFIG_DIR 默认指向临时目录",
+                "针对调用链深处无参构造（如 PermissionChecker 里 new AuditLogger()） 这类测试作者看不见的污染，让隔离成为默认值",
+                "显式隔离补齐",
+                "cache-detection / clear-resets-cache-state 补 SID_CODE_CACHE_BREAKS + 微任务 flush（落盘走 import().then()，同步恢复 env 会赛跑）",
+                "crash-marker / pid-manager 改 getSidHome() 派生，不再硬编码 homedir()",
+                "flag-e2e 显式传 SID_CONFIG_DIR + debug_log_file（子进程不继承 env， 且 debugLogFile 默认值是字面量不走 getSidHome()，曾每跑截断用户 debug.log）",
+                "6 个无条件 delete SID_CONFIG_DIR 改存/恢复（同批多文件共享进程， 直接删会抹掉 preload 兜底）"
+              ]
+            },
+            {
+              "scope": "stream",
+              "desc": "流重开事故根因修复——stream_restart 作废广播 + empty-param 连坐",
+              "hash": "230d11f1",
+              "details": [
+                "stream_restart 事件 + 四处消费者清空累加器",
+                "新增 StreamEvent.stream_restart（types.ts），判据取 provider 显式信号",
+                "fallback.ts 五个重开点（重试/401/降级/非流式/纵深防御）广播作废",
+                "stream-handler.ts 降级路径广播作废",
+                "四处消费者一致清空：query/stream-processor、agent/stream-processor、 forked-agent、headless，usage 不回退（作废 token 真实计费）",
+                "stream-processor 末尾标记未收尾 tool_use 为 _truncated，区分传输截断与模型退化",
+                "app.ts 接线 onStreamRestart 撤回屏幕已渲染文本 + 清抢跑缓存",
+                "empty-param 连坐替换：本轮一旦有退化块，同响应所有 tool_use 一并降为 text"
+              ]
+            },
+            {
+              "scope": "model",
+              "desc": "完善模型切换与 effort 档位治理",
+              "hash": "9a654f6b",
+              "details": [
+                "切换或恢复模型时归正无效 effort 档位，保持显示与实际下发一致",
+                "根据 thinking 状态提示 effort 是否生效，并同步可扩展 agent registry",
+                "增加模型名大小写提示、fallback 自降级及重复端点告警",
+                "标记同名模型不可达条目并补齐相关回归测试"
+              ]
+            },
+            {
+              "scope": "core",
+              "desc": "补齐工具失败闭环与交互状态治理",
+              "hash": "c53c006b",
+              "details": [
+                "为主循环和子代理补齐工具失败的 PostToolUseFailure 收尾及耗时追踪",
+                "接入失败工具 telemetry span，覆盖 hook 阻止、权限拒绝和参数校验失败",
+                "增加瞬态错误与粘滞状态的自动清理，完善重试恢复提示",
+                "为 LSP 等工具接入阶段进度，并统一工具卡片进度路由",
+                "完善模型分组、严格模型门禁、语言与 effort 对话框及路径显示",
+                "补充诊断、hook 配对、模型、UI 与工具进度测试并更新参考文档"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "docs",
+          "title": "文档",
+          "commits": [
+            {
+              "scope": "blog",
+              "desc": "新增博客系列规划文档",
+              "hash": "d7a9a056",
+              "details": [
+                "六个系列 23 篇选题，按北极星方向组织：上下文工程（2 篇已发 + 3 篇）、",
+                "数据与度量（3 篇）、Agent 架构（3 篇）、安全与权限（3 篇）、TUI（2 篇）、",
+                "工程踩坑（5 篇）。附带三档优先级排序和从已发布文章提炼的写法约定。"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "落地记录 + 开源准备 P0-1 复评 + prompt-cache 博客",
+              "hash": "e858bded",
+              "details": [
+                "单测污染方案 todo→done：追加 2026-08-04 落地记录，六项清单全部 ☑， 含与原方案的 5 处偏差（基线漂移、微任务 flush、聚合 bug、preload 兜底、 flag-e2e 截断 debug.log）及第 6 项排查结果",
+                "开源准备 P0-1 复评：纠正 ink 来源判定（cc 的 src/ink 是 MIT 上游 ink 的 fork，非 Anthropic 自研），暴露面从 21000+ 行下调到 4000~5000 行， 问题性质从「照搬专有代码」下调为「MIT fork 归属声明有瑕疵」， 新增路径 D（归属化 + 依赖替换 + 删死码），路径 A/B/C 标注已否决/降级",
+                "prompt-cache 博客：283 个会话 4.2 亿输入 token 的命中率账本， 含 Anthropic/OpenAI 两族协议分叉实现与实测数据",
+                "llms.txt 索引更新（41→42 页）"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "归档韧性层与 TUI 子代理治理方案",
+              "hash": "710c6036",
+              "details": [
+                "将已完成的韧性层架构对齐方案移入 done 目录",
+                "将已完成的 TUI 子代理呈现方案移入 done 目录"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.598",
       "date": "2026-08-03",
