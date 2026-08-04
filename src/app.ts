@@ -5041,17 +5041,21 @@ export class App {
     let aborted = false;
     // 不确定-1②：headless（-p print）路径此前无会话硬顶——挂死时会无限等待。补齐与 TUI 同源的
     // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
+    // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 说明）。
+    // 0 时必须**完全不挂定时器**——setTimeout(fn, 0) 会立刻 fire，等于开局就 abort。
     const { resolveLoopTimeouts: resolveHeadlessTimeouts } = require("./config/network-profile.ts");
     const sessionTimeoutMs = resolveHeadlessTimeouts({ network: this.config.network }).maxSessionDurationMs;
     let sessionTimedOut = false;
-    const sessionTimer = setTimeout(() => {
-      sessionTimedOut = true;
-      process.stderr.write(
-        `\n[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
-      );
-      this.abortController?.abort("session-timeout");
-    }, sessionTimeoutMs);
-    if (sessionTimer.unref) sessionTimer.unref();
+    const sessionTimer = sessionTimeoutMs > 0
+      ? setTimeout(() => {
+          sessionTimedOut = true;
+          process.stderr.write(
+            `\n[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+          );
+          this.abortController?.abort("session-timeout");
+        }, sessionTimeoutMs)
+      : null;
+    if (sessionTimer?.unref) sessionTimer.unref();
     // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
     // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
     this.planManager?.endExecution();
@@ -5094,7 +5098,7 @@ export class App {
         process.stderr.write(`\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`);
       }
     } finally {
-      clearTimeout(sessionTimer);
+      if (sessionTimer) clearTimeout(sessionTimer);
       this.abortController = null;
       this.queryEngine.setStreamTextCallback(null);
     }
@@ -5279,17 +5283,20 @@ export class App {
     );
 
     // 不确定-1②：SDK stream-json 路径同样补齐会话级硬顶（与 TUI/runHeadless 同源配置）。
+    // 2026-08-04：默认值已改为 0（关闭）；0 时不挂定时器，否则 setTimeout(fn, 0) 立刻 fire。
     const { resolveLoopTimeouts: resolveSdkTimeouts } = require("./config/network-profile.ts");
     const sdkSessionTimeoutMs = resolveSdkTimeouts({ network: this.config.network }).maxSessionDurationMs;
     let sdkSessionTimedOut = false;
-    const sdkSessionTimer = setTimeout(() => {
-      sdkSessionTimedOut = true;
-      process.stderr.write(
-        `\n[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
-      );
-      this.abortController?.abort("session-timeout");
-    }, sdkSessionTimeoutMs);
-    if (sdkSessionTimer.unref) sdkSessionTimer.unref();
+    const sdkSessionTimer = sdkSessionTimeoutMs > 0
+      ? setTimeout(() => {
+          sdkSessionTimedOut = true;
+          process.stderr.write(
+            `\n[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+          );
+          this.abortController?.abort("session-timeout");
+        }, sdkSessionTimeoutMs)
+      : null;
+    if (sdkSessionTimer?.unref) sdkSessionTimer.unref();
 
     let runError: Error | null = null;
     let aborted = false;
@@ -5317,7 +5324,7 @@ export class App {
         process.stderr.write(`\n[runHeadlessSDK] 异常: ${runError.message}\n`);
       }
     } finally {
-      clearTimeout(sdkSessionTimer);
+      if (sdkSessionTimer) clearTimeout(sdkSessionTimer);
       this.abortController = null;
     }
 
@@ -6159,23 +6166,28 @@ export class App {
       // 修法与 loop.ts 的 turn_hard 同构（那里已经为"等用户输入"做过同样的改造）：
       // 一次性 setTimeout → 周期 setInterval 比对"业务耗时"，休眠时长整体剔除。
       // 判据口径与 loop.ts 共用 sleep-detect 的同一个全局账本，不会两处各算一套。
+      //
+      // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 的说明）——
+      // 长任务/无人值守场景下这个闸门是唯一会掐断健康任务的东西。0 时**完全不挂定时器**：
+      // 若照挂，第一次 tick 就满足 `businessElapsed >= 0` 立刻 abort，等于开局自杀。
       const sessionStartedAt = Date.now();
-      const SESSION_CHECK_INTERVAL_MS = Math.max(1_000, Math.min(5_000, SESSION_TIMEOUT_MS));
       const sleepAtSessionStart = getSleepLedger().getTotalMs();
-      const sessionTimer = setInterval(() => {
-        // 本轮期间新增的休眠时长（账本是会话级累计，需减去本轮起点的基线）。
-        const sleptThisTurn = getSleepLedger().getTotalMs() - sleepAtSessionStart;
-        const businessElapsed = Date.now() - sessionStartedAt - sleptThisTurn;
-        if (businessElapsed < SESSION_TIMEOUT_MS) return;
-        log.warn(
-          "TUI",
-          `Session 业务耗时超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限（已剔除 ${Math.round(sleptThisTurn / 1000)}s 休眠），触发 abort`,
-        );
-        // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
-        // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
-        // 而非笼统的"已取消当前响应"，且不触发输入框回填。
-        this.abortController?.abort("session-timeout");
-      }, SESSION_CHECK_INTERVAL_MS);
+      const sessionTimer = SESSION_TIMEOUT_MS > 0
+        ? setInterval(() => {
+            // 本轮期间新增的休眠时长（账本是会话级累计，需减去本轮起点的基线）。
+            const sleptThisTurn = getSleepLedger().getTotalMs() - sleepAtSessionStart;
+            const businessElapsed = Date.now() - sessionStartedAt - sleptThisTurn;
+            if (businessElapsed < SESSION_TIMEOUT_MS) return;
+            log.warn(
+              "TUI",
+              `Session 业务耗时超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限（已剔除 ${Math.round(sleptThisTurn / 1000)}s 休眠），触发 abort`,
+            );
+            // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
+            // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
+            // 而非笼统的"已取消当前响应"，且不触发输入框回填。
+            this.abortController?.abort("session-timeout");
+          }, Math.max(1_000, Math.min(5_000, SESSION_TIMEOUT_MS)))
+        : null;
 
       this.busy = true;
       // ─── 任务保活：干活期间阻止系统空闲休眠 ───
@@ -6548,8 +6560,9 @@ export class App {
           throw err;
         }
       } finally {
-        // 清理 session 超时定时器（现为 setInterval，见上方周期检查改造说明）
-        clearInterval(sessionTimer);
+        // 清理 session 超时定时器（现为 setInterval，见上方周期检查改造说明）。
+        // 硬顶关闭（默认）时压根没挂定时器，此处为 null。
+        if (sessionTimer) clearInterval(sessionTimer);
         // 与本轮开头的 startPreventSleep() 配对：本轮干完就放开休眠。
         // 放在 finally 而非 done 分支——异常/中断路径同样必须放开，否则计数泄漏会
         // 让机器在任务早已结束后仍被钉醒（refCount 永不归零）。

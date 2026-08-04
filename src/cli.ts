@@ -61,6 +61,57 @@ type CLIArgs = Partial<Config> & {
 };
 
 /**
+ * 解析 TUI 渲染模式（alt-screen 全屏 / 主屏），**同时给出判定依据**。
+ *
+ * 优先级（高 → 低）：
+ *   1. `--inline`            → false（逃生舱，最高优先级）
+ *   2. `--alternate-buffer`  → true （显式覆盖自动回退）
+ *   3. TERM_PROGRAM === "Apple_Terminal" → false（自动回退，见下）
+ *   4. 其余                  → undefined（交由 config 默认值，当前为 true）
+ *
+ * 为什么 Apple_Terminal 要自动回退：Terminal.app 在 alt screen 下对 SGR 1006 鼠标
+ * 追踪兼容性差，滚轮/触控板滚不动；主屏模式靠终端原生 scrollback 滚动，任何终端都支持。
+ *
+ * ## 为什么要单独抽成函数并返回 reason（2026-08-04 排查教训）
+ *
+ * 原实现是内联的四层三元表达式，只算出值、不留依据。于是排查 TUI 刷屏问题时卡在
+ * 一个本可秒答的问题上：同事确认"我用的就是 Terminal.app"，但按预期该走主屏模式的
+ * 会话依然复现报错 —— 而**没有任何手段能验证这次判定到底是 true 还是 false、依据是什么**
+ * （TERM_PROGRAM 可能被 tmux/screen 改写或清空，`--alternate-buffer` 可能藏在 alias 里）。
+ * 整轮排查因此建立在一个未经验证的前提上。
+ *
+ * 返回 reason 后，`--debug` 会打出一行「本次 alternateBuffer=X，依据=Y」，用户可自证；
+ * 这个价值独立于本次 bug 的最终归因是否正确。
+ */
+export function resolveAlternateBufferDecision(env: {
+  inline: boolean;
+  alternateBufferFlag: boolean;
+  termProgram: string | undefined;
+}): {
+  /** 传给 config 的值；undefined = 不覆盖，走 config 默认 */
+  value: boolean | undefined;
+  /** 人类可读的判定依据（写进日志用） */
+  reason: string;
+} {
+  if (env.inline) {
+    return { value: false, reason: "CLI --inline（显式强制主屏模式）" };
+  }
+  if (env.alternateBufferFlag) {
+    return { value: true, reason: "CLI --alternate-buffer（显式强制 alt-screen）" };
+  }
+  if (env.termProgram === "Apple_Terminal") {
+    return {
+      value: false,
+      reason: 'TERM_PROGRAM="Apple_Terminal" 自动回退主屏（其 alt-screen 鼠标追踪兼容性差；可用 --alternate-buffer 覆盖）',
+    };
+  }
+  return {
+    value: undefined,
+    reason: `未指定，走配置默认值（TERM_PROGRAM=${env.termProgram ?? "<未设置>"}）`,
+  };
+}
+
+/**
  * 校验 UUID v4 格式（--session-id 用）。CC 要求 --session-id 必须是合法 UUID。
  * 宽松匹配 8-4-4-4-12 十六进制形态（不强制 version/variant 位，兼容外部编排生成的 uuid）。
  */
@@ -525,14 +576,12 @@ function parseCLIArgs(): CLIArgs {
     // 两者都不给 → undefined → 走 config 默认（true），但对 macOS Terminal.app 自动回退 false
     // （其 alt screen 下 SGR 1006 鼠标追踪兼容性差，滚轮/触控板滚不动；主屏模式靠终端原生
     // scrollback 滚动，任何终端都支持。用户可用 --alternate-buffer 显式覆盖此回退）。
-    alternateBuffer:
-      values["inline"] === true
-        ? false
-        : values["alternate-buffer"] === true
-          ? true
-          : process.env.TERM_PROGRAM === "Apple_Terminal"
-            ? false
-            : undefined,
+    // 判定与理由由 resolveAlternateBuffer 统一给出（可观测性见该函数注释）。
+    alternateBuffer: resolveAlternateBufferDecision({
+      inline: values["inline"] === true,
+      alternateBufferFlag: values["alternate-buffer"] === true,
+      termProgram: process.env.TERM_PROGRAM,
+    }).value,
     // 轨迹采集配置。
     // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
     // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。
@@ -1053,6 +1102,33 @@ export async function main(): Promise<void> {
         fileOnly: true,
         append: true,
       });
+    }
+
+    // TUI 渲染模式判定留痕（2026-08-04 排查教训，见 resolveAlternateBufferDecision 注释）。
+    // 必须放在 logger 就绪之后：判定本身发生在 parseCLIArgs（logger 尚未初始化），
+    // 此处重算一次拿 reason 落日志。重算是纯函数、无副作用，不存在与实际生效值漂移的风险。
+    // 走 info 级（不是 debug）：这条线的**唯一用途**就是"让用户开 --debug 后能自证
+    // 本次判定"，而 debug 级会被 --debug-level INFO/WARN 静默丢掉——实测 level=INFO
+    // 时这行直接消失，等于诊断手段在最需要它的时候失效。一次进程启动只打一行，
+    // 量极小；且与紧邻的 fullscreen.ts `ink 实例已创建（X 模式）`（同为 TUI:RENDER
+    // 的 info）保持一致：那条给出「值」，这条补上「依据」。
+    // 未开 --debug 时走 audit 配置（level=WARN），本行不落盘，不污染 audit.log。
+    {
+      const decision = resolveAlternateBufferDecision({
+        inline: process.argv.includes("--inline"),
+        alternateBufferFlag: process.argv.includes("--alternate-buffer"),
+        termProgram: process.env.TERM_PROGRAM,
+      });
+      getLogger().info(
+        "TUI:RENDER",
+        `渲染模式判定: alternateBuffer=${config.alternateBuffer}（CLI 层判定=${decision.value ?? "未覆盖"}，依据=${decision.reason}）`,
+        {
+          TERM_PROGRAM: process.env.TERM_PROGRAM ?? "<未设置>",
+          TERM: process.env.TERM ?? "<未设置>",
+          TMUX: process.env.TMUX ? "<在 tmux 中>" : "<不在 tmux>",
+          最终生效值: config.alternateBuffer,
+        },
+      );
     }
 
     // logger 就绪后，统一输出配置校验诊断（loadConfig 阶段暂存的）。

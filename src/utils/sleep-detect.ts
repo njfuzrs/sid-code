@@ -66,11 +66,15 @@ export function sleepGapMs(actualMs: number, expectedMs: number): number {
 /**
  * 会话级休眠累计器。
  *
- * 为什么需要"会话级"而不只是"单轮级"：会话硬顶（maxSessionDurationMs，默认
- * 60min）是一个裸 setTimeout，休眠时长照算。事故轨迹里三次休眠共吃掉约 47
- * 分钟，用户"本轮连续执行"的额度被睡觉消耗光了——这与"扣除等待用户输入时长"
- * （loop.ts 的 humanInputPauseAccumMs）是同一类问题、同一种修法：
+ * 为什么需要"会话级"而不只是"单轮级"：会话硬顶（maxSessionDurationMs）原是一个裸
+ * setTimeout，休眠时长照算。事故轨迹里三次休眠共吃掉约 47 分钟，用户"本轮连续执行"
+ * 的额度被睡觉消耗光了——这与"扣除等待用户输入时长"（loop.ts 的
+ * humanInputPauseAccumMs）是同一类问题、同一种修法：
  * **非业务时长不该计入业务预算**。
+ *
+ * 注（2026-08-04）：会话硬顶默认已改为 0（关闭），本累计器不再是它的必需配套；
+ * 但仍被 loop.ts 的单轮硬顶 turn_hard / watchdog 消费（那两层始终开启），
+ * 且会话硬顶显式重开时立即复用——不是死代码。
  *
  * 单例而非注入：休眠是进程级物理事件，任何一处观测到都对全局成立，各自维护
  * 反而会因"只有某个定时器在跑"而漏记。

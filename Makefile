@@ -1,6 +1,37 @@
 BINARY=sid-code
 BUN=bun
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 编译期必须把 NODE_ENV 定死为 production（别删，删了会让 React 报错刷用户的屏）
+#
+# `bun build --compile` **不会**自动设置 NODE_ENV，产物运行时 process.env.NODE_ENV
+# 恒为 Bun 的默认值 "development"。而 react-reconciler/index.js 是按运行时
+# NODE_ENV 分支加载 build 的：
+#
+#   NODE_ENV === 'production' ? react-reconciler.production.js
+#                             : react-reconciler.development.js
+#
+# 于是发布出去的二进制一直跑的是 React **development build**。其中
+# getRootForUpdatedFiber() 有一句 console.error("Maximum update depth exceeded.
+# ...setState inside useEffect...")——嵌套 passive update 超 50 次就打一次，且是
+# console.error（不是 throw），所以：错误边界抓不到、进程不崩、agent 主循环照跑、
+# debug.log 里也没有记录，只有终端被反复刷屏。这正是 2026-08-04 同事机器上报的现象
+# （慢机器一帧渲染久、更容易把嵌套 update 堆到 50）。该文案**只存在于 development
+# build**，production build 里一次都没有——这是定性根因的决定性证据。
+#
+# 实测（bun build --compile 后 strings 二进制）：
+#   不加 --define：'Maximum update depth' 命中 2 次，DEV-only 符号命中 3 次
+#   加了 --define：两者都归零，产物还小 ~280KB
+#
+# 另外 src/ink/reconciler.ts:33 的 `NODE_ENV === 'development'` 分支会去 import
+# react-devtools-core，其注释原文就写着「DCE'd in production」——本就假设构建期会
+# define NODE_ENV，此前一直没接上。
+#
+# 新增构建入口（新 target / 新脚本）必须带上这个变量，否则那条产物又会退回
+# development build。防漂移门禁见 tests/build/node-env-define.test.ts。
+# ─────────────────────────────────────────────────────────────────────────────
+BUILD_DEFINES=--define process.env.NODE_ENV='"production"'
+
 .PHONY: help build rebuild build-bump release run test test-providers clean deps lint canary stability-test stress-test provider-health
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +61,7 @@ help:
 build:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
-	$(BUN) build --compile --outfile $(BINARY) src/entrypoints/bootstrap.ts
+	$(BUN) build --compile $(BUILD_DEFINES) --outfile $(BINARY) src/entrypoints/bootstrap.ts
 	@./$(BINARY) --self-check
 
 # 兼容旧习惯与历史文档里的 `make rebuild`：与 `make build` 完全等价。

@@ -503,7 +503,13 @@ for entry in "${TARGETS[@]}"; do
         warn "未找到 vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
     fi
 
+    # --define process.env.NODE_ENV：必须带，别删（与 Makefile 的 BUILD_DEFINES 同源同理由）。
+    # bun --compile 不会自动设 NODE_ENV，产物运行时恒为 "development"，
+    # react-reconciler 会因此加载 development build，其 console.error(
+    # "Maximum update depth exceeded ... setState inside useEffect ...") 会直接刷用户的屏
+    # （不 throw → 错误边界抓不到、进程不崩、日志无痕）。详见 Makefile 中 BUILD_DEFINES 的注释。
     bun build --compile --target="$BUN_TARGET" \
+        --define process.env.NODE_ENV='"production"' \
         --outfile "$OUT_DIR/sid-code" \
         src/entrypoints/bootstrap.ts
 

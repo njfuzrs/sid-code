@@ -364,13 +364,38 @@ CI 里要用得显式打开信任（`~/.sid-code/app.json`）：
 
 ### 会不会挂死
 
-有会话级硬顶，超时自动结束并往 stderr 写：
+不会，但兜底的**不是**一个总时长闸门。挂起类根因由几层按「有没有进展」判定的防线覆盖：
+
+| 防线 | 默认值 | 覆盖什么 |
+| --- | --- | --- |
+| `network.headerTimeoutMs` | 300s | 请求发出后拿不到首字节 |
+| `network.watchdogNoProgressMs` | 300s | 已建连但中途静默（半开连接、网关卡住） |
+| `network.maxTurnDurationMs` | 30min | 单轮硬顶，兜任何单次挂起根因 |
+| `network.maxTimeoutRetries` | 10 次 | 上面几层判超时后的重试上限（指数退避） |
+
+**会话级硬顶默认关闭**（`network.maxSessionDurationMs = 0`）。它按挂钟计「一次输入触发的连续
+自动执行」总时长，跑满即中断本轮、要人再敲一句才继续——这与无人值守跑长任务直接冲突，而且它
+无法区分「卡死一小时」和「顺利干了一小时」。经网关转发时模型响应偏慢，多轮叠加很容易撞线。
+
+要为 CI / 批处理设一个总时长兜底，显式开启即可（毫秒）：
+
+```bash
+SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
+```
+
+或写进 settings.json：
+
+```json
+{ "network": { "maxSessionDurationMs": 7200000 } }
+```
+
+开启后超时会正常收尾（退出码走成功路径），并往 stderr 写：
 
 ```text
 [runHeadless] 会话超过 N 分钟上限，自动结束
 ```
 
-想更早收口就用 `--max-turns`。
+按轮次而非时长收口用 `--max-turns`。
 
 ### 怎么拿到这次跑的成本
 

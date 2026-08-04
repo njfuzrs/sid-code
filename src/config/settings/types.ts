@@ -142,7 +142,9 @@ const NetworkTimeoutsSchema = lazySchema(() =>
     watchdogCheckIntervalMs: z.number().positive().optional(),
     watchdogHeaderGraceMs: z.number().nonnegative().optional(),
     maxTurnDurationMs: z.number().positive().optional(),
-    maxSessionDurationMs: z.number().positive().optional(),
+    // nonnegative 而非 positive：0 = 关闭会话级硬顶（默认值即 0，见 network-profile.ts
+    // DEFAULTS.maxSessionDurationMs 的说明）。用 positive 会让显式写 0 的配置被 Zod 拒掉。
+    maxSessionDurationMs: z.number().nonnegative().optional(),
     maxTimeoutRetries: z.number().nonnegative().optional(),
     maxRetriesPerCall: z.number().nonnegative().optional(),
     retryBackoffBaseMs: z.number().nonnegative().optional(),

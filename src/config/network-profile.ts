@@ -77,13 +77,31 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   watchdogCheckIntervalMs: 5_000,
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 30 * 60_000,
-  // 会话级硬顶（不确定-1）：单次 TUI 会话（tuiAgentLoop 内一整轮 onUserInput）的总上限，
-  // 是 maxTurnDurationMs（单轮 30min）之上的更粗一层兜底——多轮工具循环叠加可能远超单轮。
-  // 取单轮的 2 倍（60min），确保会话级真正比单轮级更晚触发、作为兜底而非与单轮同时到期
-  // （若两者相等，单轮跑满时二者几乎同时触发，会话级兜不到额外东西）。
-  // 此前硬编码在 app.ts 内且无 env/settings 覆盖；纳入统一配置后可经
-  // SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 调整。
-  maxSessionDurationMs: 60 * 60_000,
+  // ─── 会话级硬顶：默认关闭（0 = 不限时）───
+  //
+  // 语义：单次用户输入触发的**连续自动执行**总时长上限（tuiAgentLoop 内一整轮
+  // onUserInput / headless 一次 -p / SDK 一次 run），不是整场会话。跑满即 abort
+  // 本轮，用户必须再敲一句"继续"才能接着做。
+  //
+  // 为什么默认关掉（2026-08-04，与用户对齐）：
+  //   1. **它与"无人值守跑长任务"直接冲突**。这个硬顶唯一的作用是"逼人回到键盘前"，
+  //      而长任务恰恰要求人不在场也能一路跑完。人在场时本就有 ESC 可随时掐，
+  //      不需要定时器代劳；人不在场时它反而是唯一会无理由掐断任务的东西。
+  //   2. **它兜的底早已被更精准的防线兜住**，不是唯一的"挂死保险"：
+  //      - maxTurnDurationMs（单轮 30min 硬顶）覆盖任何单次挂起根因；
+  //      - watchdogNoProgressMs / headerTimeoutMs（各 300s）覆盖连接与流层静默；
+  //      - maxTimeoutRetries / maxRetriesPerCall 给重试封顶，退避风暴打不起来。
+  //      真正卡死的连接由上面这几层判定并重试，全程在 TUI 可见。会话硬顶按**挂钟**
+  //      掐掉的，反而多半是"正在正常干活、只是干得久"的健康任务——尤其经公司网关
+  //      转发时模型响应本就慢，多轮叠加很容易撞线。
+  //   3. 按本文件顶部"保活优先"原则（宁可多等，也不无声杀死任务），一个只看总时长、
+  //      不看有无进展的闸门与该原则相悖：它无法区分"卡死 60 分钟"与"顺利干了 60 分钟"。
+  //
+  // 保留代码、只翻默认值（同 loop-detection / hypothesis / bare-ellipsis 的既有范式）：
+  // 需要为 CI / 批处理设兜底时，`SID_CODE_MAX_SESSION_DURATION_MS=7200000` 或
+  // settings.json 的 `network.maxSessionDurationMs` 即可重开，三条执行路径同时生效。
+  // 注意 0 是显式合法值（走 readEnvNonNegative），不是"未设置"。
+  maxSessionDurationMs: 0,
   maxTimeoutRetries: 10,
   // 单次 LLM 调用（executeWithFallback 一次）内"连接阶段重试 + 流式阶段重试"的共享总上界
   // （不确定-2/3）。此前两阶段各自独立计数（各 maxRetries 次），最坏可叠加成
@@ -251,8 +269,10 @@ export function resolveLoopTimeouts(input: LoopTimeoutInputs): ResolvedLoopTimeo
       readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ?? n?.watchdogHeaderGraceMs ?? DEFAULTS.watchdogHeaderGraceMs,
     maxTurnDurationMs:
       readEnvMs("SID_CODE_MAX_TURN_DURATION_MS") ?? n?.maxTurnDurationMs ?? DEFAULTS.maxTurnDurationMs,
+    // 用 nonNegative 而非 readEnvMs：0 是「关闭会话硬顶」的显式合法值（默认即 0），
+    // 走 readEnvMs 会把 0 当非法值静默回退到默认，导致 `=0` 无法表达关闭意图。
     maxSessionDurationMs:
-      readEnvMs("SID_CODE_MAX_SESSION_DURATION_MS") ?? n?.maxSessionDurationMs ?? DEFAULTS.maxSessionDurationMs,
+      readEnvNonNegative("SID_CODE_MAX_SESSION_DURATION_MS") ?? n?.maxSessionDurationMs ?? DEFAULTS.maxSessionDurationMs,
     maxTimeoutRetries:
       readEnvNonNegative("SID_CODE_MAX_TIMEOUT_RETRIES") ?? n?.maxTimeoutRetries ?? DEFAULTS.maxTimeoutRetries,
     maxRetriesPerCall:

@@ -105,11 +105,29 @@ describe("resolveLoopTimeouts — 层级优先级", () => {
     expect(byEnv.maxRetriesPerCall).toBe(3);
   });
 
-  test("会话级硬顶严格大于单轮硬顶（作为更粗一层兜底，避免同时到期）", () => {
-    // 不确定-1 副作用修复：maxSessionDurationMs 若与 maxTurnDurationMs 相等，
-    // 单轮跑满时二者几乎同时触发，会话级兜不到额外东西。默认应更晚触发。
+  test("会话级硬顶默认关闭（0 = 不限时，为无人值守长任务让路）", () => {
+    // 2026-08-04：默认从 60min 改为 0。这个闸门只看挂钟总时长、不看有无进展，
+    // 无法区分"卡死 60 分钟"与"顺利干了 60 分钟"，与无人值守长任务直接冲突。
+    // 挂起类根因由更精准的几层兜住（单轮 30min 硬顶 / 看门狗无进展 300s / 重试封顶）。
     const t = resolveLoopTimeouts({});
+    expect(t.maxSessionDurationMs).toBe(0);
+    // 单轮硬顶必须保留——它是关掉会话硬顶后真正的挂死兜底。
+    expect(t.maxTurnDurationMs).toBeGreaterThan(0);
+  });
+
+  test("会话级硬顶一旦显式开启，仍须严格大于单轮硬顶（避免同时到期）", () => {
+    // 原「不确定-1 副作用修复」的约束在"显式开启"语境下依然成立：会话级若与单轮级相等，
+    // 单轮跑满时二者几乎同时触发，会话级兜不到额外东西。故重开时应取更大值。
+    const t = resolveLoopTimeouts({ network: { maxSessionDurationMs: 2 * 60 * 60_000 } });
     expect(t.maxSessionDurationMs).toBeGreaterThan(t.maxTurnDurationMs);
+  });
+
+  test("maxSessionDurationMs=0 是合法值（nonNegative），不被当作未设置回退默认", () => {
+    // 关键回归：这一项若走 readEnvMs（>0 校验），显式写 0 会被静默丢弃回退默认值，
+    // 用户就无法用 env 表达"关闭会话硬顶"。settings 侧同理（Zod 须为 nonnegative）。
+    process.env.SID_CODE_MAX_SESSION_DURATION_MS = "0";
+    const t = resolveLoopTimeouts({ network: { maxSessionDurationMs: 45 * 60_000 } });
+    expect(t.maxSessionDurationMs).toBe(0);
   });
 
   test("maxRetriesPerCall=0 是合法值（nonNegative），不被当作未设置", () => {
