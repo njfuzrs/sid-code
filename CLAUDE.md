@@ -6,13 +6,15 @@
 
 这四个方向是**长期北极星，不是短期验收标准**。每一个都很难，甚至现在有未达成、未接线的部分——这不是缺陷，恰恰是它值得当方向的理由。
 
-四个方向 + 一个底座（现状标注为 2026-07 快照，实时数据以 `bun scripts/trace-digest.ts` 为准）：
+四个方向 + 一个底座（现状标注为 **2026-08-05** 快照，实时数据以 `bun scripts/trace-digest.ts` 为准）：
 
-- **更快**：降低首字延迟（TTFT）与端到端耗时。现状：几乎无 latency 基线，属于「要补的度量」。
-- **更省**：降低单位任务 token / 成本。现状：Prompt cache（deepseek 受控 0→83.2%、anthropic 族 99.5%）已验证有闭环，是四个词里唯一有硬数据的；但 cost 采集尚不全（影子调用绕过埋点），「省了多少」暂测不准。
+- **更快**：降低首字延迟（TTFT）与端到端耗时。现状：**TTFT 已有纯净埋点并可查**——`src/llm/stream-lifecycle.ts` 在 lifecycle 层按 `StreamPhase("first_content")` 计算，谓词覆盖 thinking + text、每次 fetch 独立计基准（不受重试与「仅可视文本才触发」双重污染）；两个消费方 `/trace`（`src/trace/digest.ts`）与 `/trace --health`（`src/telemetry/provider-health.ts`）都已迁移到这个纯净源，提供 p50/p95/p99。实测本地 1032 个样本：**TTFT p50 ≈ 4.7s、p95 ≈ 23.0s**。**缺的不再是"能不能测"，而是端到端耗时（用户回车→最终答复）仍无独立埋点，以及没有 release-over-release 趋势。**
+- **更省**：降低单位任务 token / 成本。现状：Prompt cache（deepseek 受控 0→83.2%、anthropic 族 99.5%）已验证有闭环；cost 采集覆盖面仍是短板——影子调用已接埋点，但实测 **47/70 会话没有 `session.traj`**（`SessionStart` 70 : `SessionEnd` 8），有效 cost 覆盖约 24%，「省了多少」在多数会话上仍测不准。
 - **更安全**：从静态防护延伸到 HITL / 权限规则 / 企业 policy。现状：静态防护层（path-validator / bash-security / 危险命令拦截）对标 CC 极高甚至超越；但权限规则层仍有未修 P0（Bash `*` 不跨 `/`、Read/Edit 路径前缀未实现等）。
 - **深度融合企业级**：团队记忆、企业 policy、企业系统接入。现状：网关计费 / 飞书 / MCP / vibe-bugfix 已跑通几个企业系统；企业 policy 层仍是未接线的脚手架，团队记忆刚从「半黑洞」修出。
-- **底座 · 可度量 / 数据飞轮**：events.jsonl（1481+ 会话）、trace-digest、eval-session、四环防线触发率脚本。**这不是隐含前提，是宗旨的一部分。** 度量的作用不是「验收目标达没达成」，而是「确认每一步是不是在朝北极星走」——「这次改动让 cost 采得更全 / cache 命中又涨几个点 / 又一个权限 P0 接线了」这种朝向感必须能量出来。
+- **底座 · 可度量 / 数据飞轮**：events.jsonl（1481+ 会话，23 类事件）、trace-digest、eval-session、四环防线触发率脚本。**这不是隐含前提，是宗旨的一部分。** 度量的作用不是「验收目标达没达成」，而是「确认每一步是不是在朝北极星走」——「这次改动让 cost 采得更全 / cache 命中又涨几个点 / 又一个权限 P0 接线了」这种朝向感必须能量出来。**当前底座自身最大的债是"建好未接线"**：`src/analytics/` 1113 行事件管道只挂了 1 个埋点（`logEvent` 全仓仅 `app.ts` 一处），OTel span/metric 的 exporter 白名单硬编码只允许 `console`/`jsonl`（企业要的 OTLP 出口不通）。清单见 `docs/bugfixes/todo/20260805-可观测性缺陷清单-埋点接线与OTLP出口.md`。
+
+> **「更快」这条的更新是一次方法论教训，值得记住。** 上一版这里写「几乎无 latency 基线」，实际 TTFT 早在 2026-07-14 那轮就治理完毕（见 `docs/bugfixes/done/AI Agent 核心可观测性指标体系 & sid-code 覆盖缺口分析/`）。**沿用文档里的"现状"描述而不回源码核验，会把已修的问题当成缺口继续上报。** 本文的现状标注同样会漂移——引用前先跑一次 `bun scripts/trace-digest.ts`，或去 `docs/bugfixes/done/` 查是否已闭环。
 
 **方向内部有张力，落地时要正视而非回避：** 更安全（更多 HITL / 权限校验）天然拖慢速度、增加动态内容，而动态内容又伤 cache 命中率=伤省。真实工程演进就是在这几个约束间找平衡，不是四个指标同时拉满。遇到「弹权限确认 vs 少打扰」这类摇摆时，回到这里，明确本次改动在为哪个方向让路。
 

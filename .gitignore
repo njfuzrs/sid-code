@@ -47,9 +47,6 @@ chat_session*.json
 
 # 临时文件
 _template
-
-# summary 文档（本地笔记，不入库）
-docs/summary
 scheduled_tasks.lock
 
 # ripgrep 二进制：vendor/ripgrep/<version>/ 是入库的规范存放位置（离线可用，见
