@@ -14,26 +14,35 @@ import type { Theme } from "vitepress";
 import CopyPage from "./CopyPage.vue";
 import Changelog from "./Changelog.vue";
 import BlogIndex from "./BlogIndex.vue";
-import BlogMeta from "./BlogMeta.vue";
-import BlogRelated from "./BlogRelated.vue";
+import BlogPostFooter from "./BlogPostFooter.vue";
 import "./brand.css";
 
 export default {
   extends: DefaultTheme,
   Layout() {
     /**
-     * doc-before 里挂两个组件，顺序即视觉顺序：
-     *   BlogMeta（文章元信息行，仅 /blog/ 下的文章页渲染，自带 v-if 判路径）
-     *   CopyPage（复制整页按钮，全站）
-     * 元信息行在按钮上方——它是文章的一部分（日期/时长/标签），
-     * 而按钮是工具栏。工具栏压在署名之上会让文章头部读起来像先看到一个控件。
+     * doc-before 只挂 CopyPage（复制整页按钮，全站）。文章标题下方**不放任何元信息**：
+     * 日期/阅读时长/引证数/标签在 /blog/ 列表页卡片上已经出现过，读者是看过卡片
+     * 才点进来的，再压在正文之前只会分散注意力。
      *
-     * doc-after 挂「相关文章」：正文结束之后、默认主题的上一页/下一页之前。
-     * 两个组件都自带 v-if 判路径，非 /blog/ 的文章页什么都不渲染。
+     * doc-after 只挂 BlogPostFooter —— 文章底部**只有这一块**：
+     * 一行元信息 + 最多两条「继续读」。它自带 v-if 判路径，非 /blog/ 文章页不渲染。
+     * 2026-08-05：原先这里是 BlogSeriesNav + BlogRelated 两个组件、加上默认主题的
+     * 「最后更新」和「上一页/下一页」共五块，且三条链接指向同一篇文章。
+     * 合并与去重的完整理由写在 BlogPostFooter.vue 顶部，默认主题那两块在
+     * config.ts 的 transformPageData 里按路径关掉。
+     *
+     * ⚠️ 必须是 doc-after，不能是 doc-footer-before：后者在 VPDocFooter **内部**，
+     * 而 VPDocFooter 整个挂在 `v-if="showFooter"` 上
+     * （= editLink || lastUpdated || prev || next，见其源码）。
+     * transformPageData 关掉「最后更新」与 pager 之后这四项在文章页全为假，
+     * footer 连带插槽一起不渲染——实测挂 doc-footer-before 时文章底部整块消失。
+     * doc-after 在 VPDocFooter 之外、无条件渲染；文章页既然已经没有 pager，
+     * "doc-after 会掉到页脚导航下面"这个顾虑也就不存在了。
      */
     return h(DefaultTheme.Layout, null, {
-      "doc-before": () => [h(BlogMeta), h(CopyPage)],
-      "doc-after": () => h(BlogRelated),
+      "doc-before": () => h(CopyPage),
+      "doc-after": () => h(BlogPostFooter),
     });
   },
   /**

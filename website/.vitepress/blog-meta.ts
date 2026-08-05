@@ -5,7 +5,7 @@
  *
  * 文章列表需要在多个地方出现：
  *   1. `config.ts` 的 sidebar（进 /blog/ 后左侧那条目录）
- *   2. `theme/blog.data.ts` → `BlogIndex.vue`（列表页卡片）/ `BlogMeta.vue`（文章页元信息与系列导航）
+ *   2. `theme/blog.data.ts` → `BlogIndex.vue`（列表页卡片）/ `BlogPostFooter.vue`（文章页脚）
  *   3. `scripts/docs-gen-reference.ts` 生成的 llms.txt（给大模型读的全站索引）
  *   4. `config.ts` 的 buildEnd → RSS/Atom feed（域名到位后自动启用，见 site.ts）
  *
@@ -352,6 +352,8 @@ export function loadBlogPosts(): BlogPost[] {
  * 唯一消费者是列表页顶部那条四格统计条。统计条已删（理由见 BlogIndex.vue 里的
  * 那段注释：全站聚合数字不参与"挑哪一篇读"这个决定），于是它成了死代码，一并删掉。
  *
- * 逐篇的 readingMinutes / evidenceFiles **仍然保留**在 BlogPost 上并照常渲染在
- * 卡片与文章页元信息行里 —— 删掉的只是"把它们加总成一个全站数字"这一层。
+ * 逐篇的 readingMinutes 仍然渲染在卡片与文章页脚（BlogPostFooter）里，
+ * evidenceFiles 现在只出现在**列表页卡片**上（挑文章时的可信度信号；读完之后
+ * 它已由正文本身兑现，故 2026-08-05 精简页脚时移除）。
+ * 删掉的只是"把它们加总成一个全站数字"这一层。
  */

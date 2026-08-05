@@ -572,6 +572,9 @@ export default defineConfig({
    *
    * 刻意复制 markdown 源文而非渲染后的 HTML/innerText：用户复制整页的真实目的
    * 是**贴给 agent**，markdown 才是 agent 友好的形态（表格结构完整、无样式噪音）。
+   *
+   * 顺带承担第二件事：关掉 /blog/ 文章页默认主题的「最后更新」与「上一页/下一页」，
+   * 详见下方注释。两件事都要按页改 pageData，合在一个钩子里比拆两处更省。
    */
   transformPageData(pageData, ctx) {
     // 虚拟页（404 等）的 filePath 是空串，跳过
@@ -581,6 +584,35 @@ export default defineConfig({
       pageData.frontmatter.rawMarkdown = stripFrontmatter(readFileSync(abs, "utf-8"));
     } catch {
       // 读不到就不给按钮数据（按钮自身会隐藏），不因此让整站构建失败
+    }
+
+    /**
+     * ── /blog/ 文章页：关掉默认主题的「最后更新」与「上一页/下一页」──
+     *
+     * 文章底部由 theme/BlogPostFooter.vue 统一负责（一行元信息 + 最多两条继续读）。
+     * 默认主题这两块与它重复甚至矛盾：
+     *
+     *   · 「最后更新」取 git 提交时间，和文章的**发布日期**是同一件事的两种口径。
+     *     并列显示只会让读者疑惑"哪个才算这篇文章的时间"，而改一个错别字就会让
+     *     "最后更新"跳到今天，对读者没有信息量。
+     *   · 「上一页/下一页」走 sidebar 顺序，而 blog 的 sidebar 是**日期倒序**
+     *     （见上面的 BLOG_SIDEBAR）。也就是说它的"下一页"其实是**更旧的一篇**，
+     *     与 BlogPostFooter 里按阅读顺序算的"系列下一篇"方向相反——
+     *     两者并存必然有一个在骗人。
+     *
+     * 只对文章页生效：列表页 /blog/ 自身与文档页照旧（文档页的 pager 是按阅读
+     * 顺序排的 sidebar，那里它是对的）。
+     *
+     * 实现细节：`lastUpdated = undefined` 而不是 `false`——VPDocFooter 判的是
+     * `page.lastUpdated` 的真值，而 pageData.lastUpdated 的类型是 `number | undefined`。
+     * pager 则走 frontmatter 的 prev/next === false，这是默认主题 prev-next.js
+     * 支持的官方开关（见 hidePrev / hideNext）。
+     */
+    const rel = pageData.relativePath;
+    if (rel.startsWith("blog/") && rel.endsWith(".md") && rel !== "blog/index.md") {
+      pageData.lastUpdated = undefined;
+      pageData.frontmatter.prev = false;
+      pageData.frontmatter.next = false;
     }
   },
 
