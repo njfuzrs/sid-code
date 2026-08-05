@@ -64,6 +64,46 @@
   --vp-c-warning-1: #b7791f;
 }
 
+/*
+ * 永久预留纵向滚动条槽位 —— 修「短页 → 长页 跳转时左栏被往左挤一下」。
+ *
+ * ## 现象
+ *
+ * /blog/ 列表页很短（不足一屏，无滚动条），点进任一篇文章后页面变长（出现滚动条），
+ * 此刻左侧 sidebar 的左内边距与宽度会**同时缩掉 7.5px**，肉眼就是"左栏被挤了一下"。
+ * 反向（文章 → 列表）再弹回来。窗口越宽也不会缓解，位移恒为滚动条宽度的一半。
+ *
+ * ## 根因：VitePress 自己的 CSS 在 ≥1440px 混用了两套宽度基准
+ *
+ *   .VPContent.has-sidebar  padding-left: calc((100vw - 1440px)/2 + 272px)   ← 100vw，**含**滚动条
+ *   .VPSidebar              padding-left: max(32px, calc((100% - 1376px)/2)) ← 100%，**不含**滚动条
+ *                           width:        calc((100% - 1376px)/2 + 240px)
+ *
+ * `.VPSidebar` 是 position:fixed，它的百分比基准是**视口去掉滚动条**后的宽度；
+ * 而 `100vw` 按规范始终包含滚动条。于是滚动条一出现，`100%` 少 15px、`100vw` 不变，
+ * 两个盒子的对齐就错开 15/2 = 7.5px。
+ *
+ * 这是上游默认主题的问题，不是本站配置造成的 —— 任何"短页与长页相邻"的站点都会撞到。
+ * 本站之所以特别明显，是因为 /blog/ 列表页与它的文章页正好是这样一对邻居。
+ *
+ * ## 为什么用 scrollbar-gutter: stable 而不是去改那几条 calc
+ *
+ * 改 calc 要把 `100%` 与 `100vw` 统一，涉及 sidebar / content / navbar / local-nav
+ * 四处、每处还各有 ≥960px 与 ≥1440px 两个断点，且必须跟着上游版本变化维护 ——
+ * 漏一处就是一条新的错位。scrollbar-gutter 从根上消除"滚动条出现/消失"这个变量：
+ * 槽位一直预留，`100%` 与 `100vw` 的差恒定，四处 calc 一个都不用动。
+ *
+ * 副作用是不滚动的短页右侧也常驻一条空白滚动条槽（约 15px）。这是有意接受的代价：
+ * 一条固定的空槽不会被注意到，而跳转时整个左栏抖一下会。
+ *
+ * 覆盖面是**全站**而不是只有博客：同样的短页/长页相邻在 /ref/、/use/ 之间也存在，
+ * 只给博客加等于把同一个 bug 留在别处。Firefox 63+ / Chrome 94+ / Safari 18.2+ 支持；
+ * 更老的浏览器忽略这条声明，退回原来的行为，不会更糟。
+ */
+html {
+  scrollbar-gutter: stable;
+}
+
 /* 首页 hero 渐变光斑：与 CHANGELOG.html 的 body 背景同款 */
 .VPHome {
   background:
@@ -74,47 +114,49 @@
 }
 
 /*
- * 博客列表页背板：复用首页那套渐变光斑。
+ * ⛔ 博客列表页刻意**不做**任何页面级覆盖（背景色、栏宽、aside 显隐都不改）。
  *
- * ## 为什么必须给列表页一层背板
+ * 这里曾经有过两组 .blog-index 覆盖，两组都制造了肉眼可见的缺陷，删除即修复。
+ * 留这段注释是为了别人（和以后的我）不要再加回来。
  *
- * 卡片要"是卡片"，前提是它和身后的东西有色差。改造前卡片底色是 --vp-c-bg，
- * 而文档页的页面底色也是 --vp-c-bg —— 同一个变量，于是整页只剩几条 1px 淡灰描边，
- * 默认态是最弱的态（只有 hover 才切到 soft 底）。这就是"样式丑"最直接的物理原因。
+ * ## 一、别改列表页的背景色
  *
- * 复用 .VPHome 的渐变而不是新造一套：博客与首页是同一个产品的两个页面，
- * 新造第二套背景色是"官网和某个页面像两个产品"的起点（brand.css 顶部那条纪律）。
+ * 曾把 `.blog-index .VPContent` 涂成 --sid-bg（浅蓝灰），动机是"卡片要有色差
+ * 才像卡片"。后果是整站背景规律被破坏：全站每个文档页都是**左侧 sidebar 灰
+ * （--vp-c-bg-alt）+ 内容区白（--vp-c-bg）**，唯独列表页左右全灰，看起来像
+ * 另一个站的页面。
  *
- * 挂载靠 frontmatter 的 pageClass: blog-index（VitePress 默认主题把它加在 .Layout 上，
- * 且是 SSR 渲染的，所以首屏就有底色，不会闪一下白底）。
- * 只给列表页加、不给文章页：正文需要安静的纯色底，渐变会干扰长文阅读。
+ * 而且这个改动一旦做了就收不住口：顶栏右半边（.VPNavBar.has-sidebar .content-body）
+ * 与移动端局部导航（.VPLocalNav）由默认主题各自涂 --vp-nav-bg-color（= 白），
+ * 顶栏左半边则是透明、透出下方 fixed sidebar 的灰。内容区一换色，顶部立刻横着
+ * 一条对不上的白带 —— 于是又得追加规则去同步顶栏和局部导航。
+ * 顶栏 / 局部导航 / 内容区是**三个各自涂底的盒子**，逐个追平的路走不通：
+ * 漏一处就是一条新色带，VitePress 升级动了任一处的涂法就再裂一次。
+ *
+ * 正确做法是**根本不碰页面底色**，让卡片自己产生色差 —— 卡片用
+ * --vp-c-bg-soft 填充 + 1px 描边 + 一点阴影浮在白底上。这也正是 /changelog
+ * 与文章页「相关文章」已经在用的同一套做法，三处天然一致。见 BlogIndex.vue。
+ *
+ * ## 二、别改列表页的栏宽，也别隐藏它的 aside
+ *
+ * 曾以为 frontmatter 的 `outline: false` 会让右侧 aside 不渲染，于是那条 256px
+ * 是白占的，就补了 `.aside { display: none }` + 内容区放宽到 900px。
+ *
+ * 前提是错的：默认主题的 `hasAside` 只看 `frontmatter.aside` 与
+ * `theme.aside`，**从不看 `outline`**（见 composables/sidebar.js）。也就是说
+ * 列表页和文章页一样都带 `.VPDoc.has-aside`，aside 那一列照样存在。
+ * `outline: false` 只让大纲**内容**为空，而空大纲本身就是 `display: none`
+ * （.VPDocAsideOutline 默认不显示，只有 has-outline 才显示），本来就不占视觉。
+ *
+ * 所以那两条覆盖的真实效果是：列表页 = 无 aside + 900px 正文，
+ * 文章页 = 256px aside + 688px 正文。而 .container 在 ≥1280px 是
+ * `display:flex; justify-content:center` —— 两套几何一撞，列表页跳到文章页时
+ * 整个内容列的宽度和位置都会横移一下。
+ *
+ * 现在列表页与全站任何文档页几何完全一致（256px aside + 688px 正文），
+ * 跳转零位移。代价是列表页右侧那 256px 是空的 —— 这是有意付的代价：
+ * 它换来的是"同一层级的页面之间切换不动版"，比多出 256px 排卡片重要。
  */
-.blog-index .VPContent {
-  background:
-    radial-gradient(1200px 620px at 82% -12%, var(--sid-bg-grad-1), transparent 60%),
-    radial-gradient(900px 520px at -12% 8%, var(--sid-bg-grad-2), transparent 55%),
-    var(--sid-bg);
-  background-attachment: fixed;
-}
-
-/*
- * 博客列表页收回右侧那条空的 aside 栏宽度。
- *
- * 默认主题给每个文档页留一条 256px 的 aside（放大纲），并把正文压到 688px。
- * 列表页 frontmatter 里是 `outline: false`（页面主体是卡片列表，没有 h2/h3 章节，
- * 大纲天然是空的），于是那 256px 是**一条空白列**，而特色大卡在 688px 里施展不开。
- *
- * 只收回 aside，**不动左侧 sidebar**：左栏回答"我在这一层还能读什么"，
- * 是跨页一致的导航，去掉它换来的宽度不值得破坏一致性。
- *
- * 作用域靠 .blog-index（只有列表页有这个 pageClass），所以文章页的大纲不受影响。
- */
-.blog-index .VPDoc.has-aside .content-container {
-  max-width: 900px;
-}
-.blog-index .VPDoc .aside {
-  display: none;
-}
 
 /* hero 主标题走品牌渐变，避免纯色单调 */
 .VPHero .name {

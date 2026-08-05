@@ -28,7 +28,6 @@ import { computed, ref } from "vue";
 import { data as blog } from "./blog.data";
 
 const posts = computed(() => blog.posts);
-const stats = computed(() => blog.stats);
 const seriesList = computed(() => blog.series);
 
 /** 当前只看某个系列（null = 全部）。点一下筛选，再点取消。 */
@@ -103,34 +102,23 @@ function formatDate(iso: string): string {
   return `${m[1]} 年 ${Number(m[2])} 月 ${Number(m[3])} 日`;
 }
 
-/** 累计阅读时长：超过 60 分钟显示成「N 小时」更好读 */
-function formatMinutes(n: number): string {
-  if (n < 60) return `${n}`;
-  const h = Math.floor(n / 60);
-  const m = n % 60;
-  return m ? `${h}h${m}` : `${h}h`;
-}
 </script>
 
 <template>
   <div class="bi">
-    <!-- ── 统计条：与 /changelog 的 cl-stats 同一套视觉，让两页看起来是同一个产品 ── -->
-    <div v-if="posts.length" class="bi-stats">
-      <div class="bi-stat">
-        <b>{{ stats.posts }}</b><span>篇文章</span>
-      </div>
-      <div class="bi-stat">
-        <b>{{ formatMinutes(stats.minutes) }}</b><span>分钟读完全部</span>
-      </div>
-      <div class="bi-stat">
-        <b>{{ stats.series }}</b><span>个系列</span>
-      </div>
-      <!-- 引证数：全站唯一能量化「带 file:line 证据」这条主张的指标。
-           只数真实存在于仓库的路径，口径见 blog-meta.ts 的 countEvidenceFiles。 -->
-      <div class="bi-stat" title="文章正文里引用、且经存在性校验的源码文件数（去重）">
-        <b>{{ stats.evidence }}</b><span>处源码引证</span>
-      </div>
-    </div>
+    <!--
+      这里曾有一条四格统计条（篇文章 / 分钟读完全部 / 个系列 / 处源码引证）。删掉了。
+
+      删的理由是它服务的是作者的自豪感，不是读者的下一步动作。读者进这一页只有
+      一个目的：挑一篇文章读。而"2 篇文章""1 个系列"这种量级下的聚合数字不参与
+      这个决定 —— 站内只有 2 篇时"2 篇文章"是句废话，"33 分钟读完全部"更是把
+      一个没人会执行的动作（一次读完全站）摆成了主要指标。
+
+      每篇文章自己的时长与引证数仍然在**卡片上**（.bi-foot 那一行）。那里有用：
+      它回答"这一篇现在值不值得点"，是逐篇的决策依据，不是全站的规模炫耀。
+
+      量级上来后想再加，判据不是"数字变大了"，而是"这个数字能改变读者点哪一篇"。
+    -->
 
     <!-- ── 筛选区：系列按钮 + 可选搜索框；门槛不到不渲染，避免留一条无用工具栏 ── -->
     <div v-if="showFilter || showSearch" class="bi-filter">
@@ -262,35 +250,6 @@ function formatMinutes(n: number): string {
   margin-top: 8px;
 }
 
-/* ── 统计条（与 Changelog.vue 的 .cl-stats 同规格：10px 间距 / 10px 圆角 / mono 数字）── */
-.bi-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-.bi-stat {
-  flex: 1 1 120px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 16px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  background: var(--vp-c-bg-soft);
-}
-.bi-stat b {
-  font-family: var(--vp-font-family-mono);
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--vp-c-brand-1);
-  line-height: 1.4;
-}
-.bi-stat span {
-  font-size: 12px;
-  color: var(--vp-c-text-3);
-}
-
 /* ── 筛选区 ── */
 .bi-filter {
   margin-bottom: 22px;
@@ -394,30 +353,62 @@ function formatMinutes(n: number): string {
   border: 0;
 }
 
-/* ── 卡片通用：浮起而不是靠一条淡线描边 ──
-   卡片底色用 --sid-panel（纯白/深色面板），页面背板由 .blog-index 的渐变承担
-   （见 brand.css）。原实现卡片与页面同为 --vp-c-bg，等于没有卡片。 */
+/*
+  ── 卡片通用：色差由卡片自己产生，不靠给页面换底色 ──
+
+  卡片填充用 --vp-c-bg-soft，比页面的 --vp-c-bg 深一档。这是**全站已有**的
+  "浮层比底色深一档"约定：/changelog 的版本卡、文章页的「相关文章」条目、
+  本页的筛选药丸与标签，用的都是同一个变量。所以博客列表页和它们天然同款。
+
+  曾经反过来做：卡片涂纯白 --sid-panel、把页面底色换成灰。那等于为了一个组件
+  改掉整页的背景规律，结果是全站每页都「灰 sidebar + 白内容区」，只有这一页
+  左右全灰，像另一个站。完整复盘见 brand.css 里那段注释。
+
+  层次靠三样东西叠出来，而不是靠一个大色块：
+    · 深一档的填充   —— 与白底分离
+    · 1px 描边       —— 给出确定的边界
+    · 极淡的投影     —— 让它读起来是"浮在纸上"
+
+  hover 时填充反而变**浅**（切到 --vp-c-bg，即页面白底），这是有意的：
+  被指向的那张卡浮得更高、离页面更远，配合 translateY 与品牌色描边，
+  方向感是一致的（越靠近鼠标越亮、越浮）。
+*/
 .bi-hero,
 .bi-card {
   position: relative;
   border: 1px solid var(--vp-c-divider);
   border-radius: 12px;
-  background: var(--sid-panel);
-  box-shadow: 0 1px 2px rgba(15, 20, 32, 0.04);
+  background: var(--vp-c-bg-soft);
+  /*
+    投影必须自己撑住卡片形状，不能指望填充。
+    浅色下 --vp-c-bg-soft(#fbfcfe) 与页面 --vp-c-bg(#fff) 只差约 1.5%，
+    肉眼近乎无差 —— 这正是上一版忍不住去改页面底色的起因。
+    两层阴影分工：1px 那层压出边缘、10px 那层给出离纸高度。
+  */
+  box-shadow:
+    0 1px 2px rgba(15, 20, 32, 0.06),
+    0 4px 10px rgba(15, 20, 32, 0.04);
   transition:
     border-color 0.2s,
+    background 0.2s,
     box-shadow 0.2s,
     transform 0.2s;
 }
 .bi-hero:hover,
 .bi-card:hover {
   border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg);
   box-shadow: 0 6px 20px var(--sid-brand-glow);
   transform: translateY(-2px);
 }
+/*
+  深色模式反过来：填充够用，投影不够用。
+  --vp-c-bg-soft(#1a2130) 对页面 #151b28 是肉眼可辨的一档，卡片本身立得住；
+  而黑色投影打在深底上几乎不可见，所以压深、只保留一层贴边的。
+*/
 .dark .bi-hero,
 .dark .bi-card {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 /*
@@ -567,22 +558,31 @@ function formatMinutes(n: number): string {
   gap: 6px;
   margin-left: auto;
 }
-/* 标签是可点的搜索快捷方式，圆角 8px（不是筛选器那种 999px 药丸）*/
+/*
+  标签是可点的搜索快捷方式，圆角 8px（不是筛选器那种 999px 药丸）。
+
+  填充刻意用 transparent 而不是 --vp-c-bg-soft：标签在**卡片里面**，而卡片
+  自身就是 --vp-c-bg-soft，两者同色的话标签只剩一圈描边、看着像渲染残留。
+  透明底让它在默认态与 hover 态（卡片切到白底）下都始终与卡片有一档差，
+  靠描边界定形状，不跟着卡片底色一起漂。
+*/
 .bi-tag {
   padding: 1px 9px;
   border-radius: 8px;
   border: 1px solid var(--vp-c-divider);
-  background: var(--vp-c-bg-soft);
+  background: transparent;
   color: var(--vp-c-text-3);
   font-size: 11.5px;
   cursor: pointer;
   transition:
     color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    background 0.15s;
 }
 .bi-tag:hover {
   color: var(--vp-c-brand-1);
   border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
 }
 
 .bi-empty {
@@ -632,9 +632,6 @@ function formatMinutes(n: number): string {
   }
   .bi-tags {
     margin-left: 0;
-  }
-  .bi-stat {
-    flex: 1 1 calc(50% - 10px);
   }
 }
 </style>

@@ -142,19 +142,6 @@ export interface BlogPost {
   related: { url: string; title: string; reason: string }[];
 }
 
-/** 列表页顶部统计条用的聚合值，构建期算好，前端不重算 */
-export interface BlogStats {
-  posts: number;
-  /** 全部文章预估阅读时长之和（分钟） */
-  minutes: number;
-  /** 已有文章的系列数（不是 SERIES 的长度——那是规划，这是已发布事实） */
-  series: number;
-  /** 全部文章去重后的真实源码引用数之和 */
-  evidence: number;
-  /** 最新一篇的日期（ISO 串），没有文章时为空串 */
-  latest: string;
-}
-
 /**
  * 极简 frontmatter 解析：只认 `key: value` 与 `key: [a, b]` 两种形态。
  *
@@ -360,13 +347,11 @@ export function loadBlogPosts(): BlogPost[] {
   return posts;
 }
 
-/** 聚合统计，供列表页顶部统计条使用。与 loadBlogPosts 同源，不另解析一遍。 */
-export function computeBlogStats(posts: BlogPost[]): BlogStats {
-  return {
-    posts: posts.length,
-    minutes: posts.reduce((n, p) => n + p.readingMinutes, 0),
-    series: new Set(posts.map((p) => p.series).filter(Boolean)).size,
-    evidence: posts.reduce((n, p) => n + p.evidenceFiles, 0),
-    latest: posts.find((p) => p.date)?.date ?? "",
-  };
-}
+/*
+ * 这里曾有一个 computeBlogStats（全站文章数 / 累计时长 / 系列数 / 引证数之和），
+ * 唯一消费者是列表页顶部那条四格统计条。统计条已删（理由见 BlogIndex.vue 里的
+ * 那段注释：全站聚合数字不参与"挑哪一篇读"这个决定），于是它成了死代码，一并删掉。
+ *
+ * 逐篇的 readingMinutes / evidenceFiles **仍然保留**在 BlogPost 上并照常渲染在
+ * 卡片与文章页元信息行里 —— 删掉的只是"把它们加总成一个全站数字"这一层。
+ */
