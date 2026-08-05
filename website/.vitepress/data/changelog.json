@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-08-04",
-  "currentVersion": "0.1.599",
-  "totalVersions": 18,
-  "totalCommits": 266,
+  "generatedAt": "2026-08-05",
+  "currentVersion": "0.1.600",
+  "totalVersions": 19,
+  "totalCommits": 276,
   "groupMeta": [
     {
       "key": "feat",
@@ -30,6 +30,149 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.600",
+      "date": "2026-08-05",
+      "isGenesis": false,
+      "count": 10,
+      "groups": [
+        {
+          "key": "feat",
+          "title": "新功能",
+          "commits": [
+            {
+              "scope": "release",
+              "desc": "发布/文档地址切到 https://www.sid-code.cc 并补存量配置迁移",
+              "hash": "0800dee7",
+              "details": [
+                "update.ts 的 DEFAULT_RELEASE_HOST 升为 DEFAULT_RELEASE_ORIGIN（host → origin， 因为本次要害是 https；env 覆盖传裸 host 默认补 https，带 scheme 则原样用）",
+                "install-template.sh 的 RELEASE_BASE、team-defaults 模板的 searxng/traj 地址",
+                "拆开 DEPLOY_SSH_HOST 与新增的 PUBLIC_BASE_URL：前者仅 scp/ssh（走 IP 更稳）， 后者派生所有对外 URL（必须域名+证书）。原先一个变量兼两职，取值天然冲突。 release.sh 生成 install.sh 的 sed 目标随之改为 origin —— 这是安全边界， 保证 SSH 目标不会泄进用户 curl 的脚本",
+                "fetch-ripgrep.ts 下载根不再从 SSH host 派生"
+              ]
+            },
+            {
+              "scope": "tool",
+              "desc": "增加工具结果展示档位并补齐文档说明",
+              "hash": "71ab476a",
+              "details": [
+                "为工具结果新增 hidden/summary 两档 TUI 展示策略，",
+                "避免把仅供模型消费的提示词与内部状态直接泄漏到消息流。",
+                "补齐主执行器、子代理执行器、history/UI 适配链路，",
+                "并为 todo_write、tool_search、plan mode、task 工具等",
+                "声明合适的展示档位。",
+                "新增展示档位审计测试，并更新 prompt cache、JIT 上下文、",
+                "成本与术语相关文档，补充最新实测数据与交叉引用。"
+              ]
+            },
+            {
+              "scope": "website",
+              "desc": "博客列表页与元信息改版",
+              "hash": "b60b355e",
+              "details": [
+                "BlogIndex 卡片列表重做，新增渐变背板与源码引证计数（构建期统计）",
+                "新增 BlogRelated.vue 相关文章推荐、feed.ts RSS、site.ts 站点常量",
+                "BlogMeta 元信息展示扩充，brand.css 补配套样式变量",
+                "blog/index.md 三条自我约束从 bullet 列表改为并排卡片带，文字未改"
+              ]
+            },
+            {
+              "scope": "model",
+              "desc": "拆分本地别名与厂商真名，同一模型可接多渠道",
+              "hash": "d69e0d9a",
+              "details": [
+                "别名侧（问「哪一条配置」）：模型选择、/model 显示、fallback、计价、审计",
+                "真名侧（问「这到底是什么模型」）：HTTP 请求体、thinking/effort 能力判定、 内置注册表兜底、探针请求与去重"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "fix",
+          "title": "修复",
+          "commits": [
+            {
+              "scope": "stream",
+              "desc": "分离首字节与心跳超时并接通网络配置",
+              "hash": "3b8b752b",
+              "details": [
+                "为流式处理增加首字节专用超时，避免网关排队期被心跳阈值误杀",
+                "从 network profile 派生主循环与子代理默认超时，并透传 settings 配置",
+                "修正超时重试遥测的真实耗时，并补充首字节与心跳超时回归测试"
+              ]
+            },
+            {
+              "scope": "website",
+              "desc": "修复博客页面布局跳动并简化列表信息",
+              "hash": "0cb960c7",
+              "details": [
+                "移除博客列表页无决策价值的全站统计、宣言和页脚导航",
+                "保留逐篇文章的阅读时长与源码引证信息",
+                "使用 scrollbar-gutter: stable 消除短页与长页切换时的侧栏位移",
+                "统一博客卡片与标签的视觉层次，并删除无用统计聚合代码"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "refactor",
+          "title": "重构",
+          "commits": [
+            {
+              "scope": "website",
+              "desc": "合并博客文章页底部导航并精简信息",
+              "hash": "b774a041",
+              "details": [
+                "合并文章页元信息、系列导航和相关文章为统一页脚，按 URL 去重并保留最多两条继续读链接。",
+                "关闭文章页重复的最后更新与默认翻页，避免与系列阅读顺序冲突。",
+                "补充 prompt cache 相关文章链接。"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "docs",
+          "title": "文档",
+          "commits": [
+            {
+              "scope": null,
+              "desc": "summary 笔记入库，北极星现状刷新至 2026-08-05",
+              "hash": "bebffbe1",
+              "details": [
+                ".gitignore 解禁 docs/summary，本地笔记转为入库追踪",
+                "CLAUDE.md 北极星现状更新：TTFT 已有纯净埋点（p50 4.7s / p95 23.0s， 1032 样本），此前「几乎无 latency 基线」的描述已过期；补记「沿用文档 现状而不回源码核验会把已修问题当缺口重复上报」的方法论教训",
+                "新增 3 份 todo 清单：可观测性缺陷（埋点接线与 OTLP 出口）、 可观测性接线率门禁、模型别名与真名分离实施记录"
+              ]
+            },
+            {
+              "scope": null,
+              "desc": "文档目录重组——todo 已结项归档、reference 研究类重归类、blog 规划页删除",
+              "hash": "0ae33d1e",
+              "details": [
+                "bugfixes/todo → done: 归档 9 个已完成项（可观测性指标体系、一键迁移研究、 审计 3 篇、官网覆盖度核对报告）",
+                "reference → research: opensource-browser-automation-tools-comparison.md 重归类为研究类文档",
+                "reference → bugfixes/todo: 官网与文档站设计方案（仍在进行中）",
+                "security-audit → bugfixes/todo: prompt 注入审计（仍在进行中）",
+                "删除 website/blog/series-plan.md（已发布为博客，规划文档不再需要）",
+                "docs/reference/install-guide.md 删除（已过时）"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "other",
+          "title": "其他",
+          "commits": [
+            {
+              "scope": null,
+              "desc": "doc: 更新llms.txt",
+              "hash": "e83fec8e",
+              "details": []
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.599",
       "date": "2026-08-04",
