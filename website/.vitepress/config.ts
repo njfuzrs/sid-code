@@ -5,7 +5,7 @@ import { tokenizeCJK } from "./tokenize";
 import { stripFrontmatter } from "./raw-markdown";
 import { SERIES, loadBlogPosts } from "./blog-meta";
 import { writeFeed } from "./feed";
-import { FEED_PATH, SITE_TITLE, canUseAbsoluteUrls } from "./site";
+import { FEED_PATH, SITE_TITLE, canUseAbsoluteUrls, siteHostname } from "./site";
 
 /**
  * /blog/ 的 sidebar 从磁盘扫出来，**不手写清单**。
@@ -239,9 +239,12 @@ const BLOG_SIDEBAR = [
  * - base '/'          根路径部署，IP → 域名切换时无需改动，全站内链不用重算
  * - cleanUrls true    URL 无 .html，nginx 侧配 `try_files $uri $uri.html`
  * - ignoreDeadLinks   保持默认 false，把死链检测当门禁（构建即失败），不另造断链检查
- * - sitemap           本轮不配，备案通过上域名后再加（IP 阶段填 hostname 会返工）
+ * - sitemap           2026-08-06 域名到位后启用，hostname 走 site.ts 同一个闸门
+ *                     （未配域名则整个 sitemap 字段不出现，而不是生成一份带 IP 的错的）
  */
 export default defineConfig({
+  // sitemap 与 feed 共用 site.ts 的闸门：域名是唯一事实源，两个产物不会各写一份而漂移
+  ...(canUseAbsoluteUrls() ? { sitemap: { hostname: `${siteHostname()}/` } } : {}),
   lang: "zh-CN",
   title: "sid-code",
   description: "跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主",

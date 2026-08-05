@@ -18,11 +18,20 @@ import { execFileSync } from "node:child_process";
  * 换服务器时改这一处即可；也可用环境变量覆盖：
  *   - SID_CODE_RELEASE_HOST  仅覆盖 host（推荐，路径结构不变）
  *   - SID_CODE_INSTALL_URL   覆盖完整 install.sh URL（需要非标准路径时用）
+ *
+ * ⚠️ 必须走 https + 域名，不能退回 IP 直连：服务器已签 sid-code.cc 证书并对 80 端口做
+ * 301 → https，用 IP 请求会被重定向到 `https://<ip>/`，而证书 CN 不含 IP → TLS 校验失败
+ * （curl exit 60），更新链路直接断。SID_CODE_RELEASE_HOST 传裸 host 时默认补 https；
+ * 需要 http（如内网自建镜像）就带上完整 scheme，例如 `http://10.0.0.2`。
  */
-const DEFAULT_RELEASE_HOST = "121.196.144.227";
-const RELEASE_HOST = process.env.SID_CODE_RELEASE_HOST || DEFAULT_RELEASE_HOST;
+const DEFAULT_RELEASE_ORIGIN = "https://www.sid-code.cc";
+const RELEASE_ORIGIN = (() => {
+  const override = process.env.SID_CODE_RELEASE_HOST?.trim();
+  if (!override) return DEFAULT_RELEASE_ORIGIN;
+  return /^https?:\/\//.test(override) ? override.replace(/\/+$/, "") : `https://${override}`;
+})();
 const INSTALL_URL =
-  process.env.SID_CODE_INSTALL_URL || `http://${RELEASE_HOST}/releases/sid-code/install.sh`;
+  process.env.SID_CODE_INSTALL_URL || `${RELEASE_ORIGIN}/releases/sid-code/install.sh`;
 
 function printHelp(): void {
   console.log(`sid-code update — 更新到最新版本

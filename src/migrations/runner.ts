@@ -14,6 +14,7 @@ import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
+import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-host.ts";
 
 interface Migration {
   version: number;
@@ -32,6 +33,11 @@ const migrations: Migration[] = [
     version: 2,
     name: "relocate-lossy-project-key",
     migrate: relocateLossyProjectKey,
+  },
+  {
+    version: 3,
+    name: "rewrite-legacy-release-host",
+    migrate: rewriteLegacyReleaseHost,
   },
 ];
 

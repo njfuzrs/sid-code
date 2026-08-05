@@ -178,7 +178,7 @@ allowedDirectories, blockedDirectories, trace, effortLevel
 
 ```bash
 # 1. 服务器上文件真的在吗（这个 URL 就是安装脚本 curl 的那个）
-curl -fsS http://121.196.144.227/releases/sid-code/team-defaults.json | head -5
+curl -fsS https://www.sid-code.cc/releases/sid-code/team-defaults.json | head -5
 
 # 2. 新人机器上是不是已经有 settings.json 了
 ls -l ~/.sid-code/settings.json

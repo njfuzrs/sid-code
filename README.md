@@ -6,15 +6,15 @@
 TypeScript + Bun + Ink 自研，编译成单文件二进制分发——下载一个文件就能跑，
 不需要装 Node、不需要 `npm install`。
 
-- 📖 **官方文档：** http://121.196.144.227/
-- 📄 **更新日志：** http://121.196.144.227/changelog
+- 📖 **官方文档：** https://www.sid-code.cc/
+- 📄 **更新日志：** https://www.sid-code.cc/changelog
 
 ---
 
 ## 安装
 
 ```bash
-curl -fsSL http://121.196.144.227/releases/sid-code/install.sh | bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 ```
 
 装完直接用：
@@ -25,7 +25,7 @@ sid-code --version    # 确认版本
 sid-code update       # 以后升级到最新版
 ```
 
-装不上或 PATH 没生效，见[安装文档](http://121.196.144.227/start/install)。
+装不上或 PATH 没生效，见[安装文档](https://www.sid-code.cc/start/install)。
 
 ## 30 秒示例
 
@@ -59,7 +59,7 @@ $ sc
 | **深度贴合企业环境** | 内部网关计费、内网 GitLab、MCP 接入、团队默认配置分发，按真实企业内网基建做的适配 |
 | **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里。既是合规前提，也是持续优化的燃料 |
 
-用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](http://121.196.144.227/team/migrate)。
+用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
 
 ## 现状
 

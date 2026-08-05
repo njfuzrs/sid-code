@@ -1,0 +1,14 @@
+# sid-code 官网 robots.txt
+#
+# 域名到位后才建这个文件（见 docs/bugfixes/todo/官网与文档站设计方案.md §7.4 第 6 项）：
+# Sitemap 指令必须写绝对 URL，IP 阶段填了届时要返工，且 IP 阶段做 SEO 本身无意义。
+#
+# 这里刻意只放两条真正需要的指令，不写一堆 Disallow：
+# 站上没有需要藏的路径，凭空写 Disallow 只会在改目录结构时变成过期噪音。
+
+User-agent: *
+Allow: /
+
+# 绝对 URL 与站点 hostname 同一事实源（website/.vitepress/site.ts）。
+# 换域名时这里要跟着改——它不由构建生成，没有门禁能提醒你。
+Sitemap: https://www.sid-code.cc/sitemap.xml

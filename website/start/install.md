@@ -15,7 +15,7 @@ description: 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构�
 ## 快速上手
 
 ```bash
-curl -fsSL http://121.196.144.227/releases/sid-code/install.sh | bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 sid-code --version    # 确认装上了
 ```
 
@@ -94,7 +94,7 @@ sid-code **不带模型**。装完只是有了这个壳，还得告诉它去哪�
 
 ```bash
 # 锁定某个版本（回滚场景）
-curl -fsSL http://121.196.144.227/releases/sid-code/install.sh | SID_CODE_VERSION=0.1.590 bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSION=0.1.590 bash
 ```
 
 | 环境变量 | 作用 |
@@ -186,13 +186,13 @@ uname -m    # Apple Silicon 原生应该输出 arm64
 ### 失败三：下载失败，或权限不对
 
 ```text
-  ❌ 下载失败: http://121.196.144.227/releases/sid-code/0.1.592/sid-code-0.1.592-darwin-arm64.tar.gz
+  ❌ 下载失败: https://www.sid-code.cc/releases/sid-code/0.1.592/sid-code-0.1.592-darwin-arm64.tar.gz
 ```
 
 看到这个**大概率不是权限，而是连不上服务器**（服务器在团队内网，需要公司网络或 VPN）。先单独试一下：
 
 ```bash
-curl -I http://121.196.144.227/releases/sid-code/latest.txt
+curl -I https://www.sid-code.cc/releases/sid-code/latest.txt
 ```
 
 真正的权限问题长这样，通常是家目录下某个目录属主不对（历史上用过 `sudo` 装东西留下的）：

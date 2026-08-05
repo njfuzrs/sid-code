@@ -64,7 +64,7 @@ features:
 -->
 
 ```bash
-curl -fsSL http://121.196.144.227/releases/sid-code/install.sh | bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 sid-code --version    # 确认装上了
 ```
 

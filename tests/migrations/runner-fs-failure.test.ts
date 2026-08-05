@@ -59,11 +59,14 @@ describe("runMigrations 失败不阻塞（建议2 门禁）", () => {
 
   test("正常路径迁移后版本号正确写入", async () => {
     // 对照组：不注入 fs 失败，验证迁移正常完成
-    const { runMigrations } = await import("../../src/migrations/runner.ts");
+    const { runMigrations, getTotalMigrations } = await import("../../src/migrations/runner.ts");
     runMigrations();
 
-    // 版本号应已更新为 CURRENT_VERSION（migrations.length = 2）
+    // 版本号应已更新为 CURRENT_VERSION。
+    // 从 getTotalMigrations() 取而非硬编码字面量：这个断言的意图是「水位线推到了最新」，
+    // 不是「恰好有 N 个迁移」。写死数字的话，每加一个迁移这个无关的测试就会红一次
+    // （实测加 v3 时就红了），而红的原因与它要守的性质毫无关系。
     const state = JSON.parse(readFileSync(MIGRATION_STATE_PATH, "utf-8"));
-    expect(state.migrationVersion).toBe(2);
+    expect(state.migrationVersion).toBe(getTotalMigrations());
   });
 });

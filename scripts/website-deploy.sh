@@ -36,14 +36,21 @@ if [ -f "$ENV_FILE" ]; then
     _pre_host="${DEPLOY_SSH_HOST:-}"
     _pre_user="${DEPLOY_SSH_USER:-}"
     _pre_pass="${DEPLOY_SSH_PASSWORD:-}"
+    _pre_public="${PUBLIC_BASE_URL:-}"
     # shellcheck disable=SC1090
     set -a; . "$ENV_FILE"; set +a
     [ -n "$_pre_host" ] && DEPLOY_SSH_HOST="$_pre_host"
     [ -n "$_pre_user" ] && DEPLOY_SSH_USER="$_pre_user"
     [ -n "$_pre_pass" ] && DEPLOY_SSH_PASSWORD="$_pre_pass"
+    [ -n "$_pre_public" ] && PUBLIC_BASE_URL="$_pre_public"
 fi
 
 DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-121.196.144.227}"
+# 对外访问地址（与 release.sh 同一套语义）。冒烟校验必须打域名 https：
+# 服务器 80 端口整段 301 → https 且证书只签 sid-code.cc，用 IP 校验会 TLS 失败，
+# 把一次本已成功的发布判成失败（历史上这类假失败会引导 --rollback 白退好版本）。
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://www.sid-code.cc}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
 DEPLOY_SSH_USER="${DEPLOY_SSH_USER:-}"
 DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 WEBSITE_DEPLOY_PATH="${WEBSITE_DEPLOY_PATH:-/var/www/sid-code-site}"
@@ -118,7 +125,7 @@ smoke_test() {
     local rc=0
     info "冒烟校验 ..."
     local home_body="" home_rc=0
-    home_body="$(curl -fsS --max-time 15 "http://${DEPLOY_SSH_HOST}/")" || home_rc=$?
+    home_body="$(curl -fsS --max-time 15 "${PUBLIC_BASE_URL}/")" || home_rc=$?
     if [ "$home_rc" -ne 0 ]; then
         warn "首页请求失败（curl exit ${home_rc}）"
         rc=1
@@ -130,7 +137,7 @@ smoke_test() {
     fi
     local code
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-        "http://${DEPLOY_SSH_HOST}/releases/sid-code/install.sh")"
+        "${PUBLIC_BASE_URL}/releases/sid-code/install.sh")"
     if [ "$code" = "200" ]; then
         ok "install.sh 200（用户安装/更新链路完好）"
     else
@@ -142,7 +149,7 @@ smoke_test() {
     # 校验渲染出了真内容而不是空壳——组件挂载失败/数据缺失时页面结构仍在，只有
     # 内容为空，光看状态码是 200 看不出来。用同款「先收响应体再匹配」写法（见上方注释）。
     local cl_body="" cl_rc=0
-    cl_body="$(curl -fsS --max-time 15 "http://${DEPLOY_SSH_HOST}/changelog")" || cl_rc=$?
+    cl_body="$(curl -fsS --max-time 15 "${PUBLIC_BASE_URL}/changelog")" || cl_rc=$?
     if [ "$cl_rc" -ne 0 ]; then
         warn "/changelog 请求失败（curl exit ${cl_rc}）"
         rc=1
@@ -174,7 +181,7 @@ ln -sfn \"${WEBSITE_DEPLOY_PATH}/releases/\$prev\" '${WEBSITE_DEPLOY_PATH}/curre
 echo \"已切回 \$prev\""
     run_ssh "$REMOTE" "$ROLLBACK_CMD" || fail "回滚失败（可能只有一个版本，或 releases 目录不存在）"
     smoke_test || warn "回滚后冒烟未全绿，请人工确认"
-    ok "回滚完成：http://${DEPLOY_SSH_HOST}/"
+    ok "回滚完成：${PUBLIC_BASE_URL}/"
     exit 0
 fi
 
@@ -331,8 +338,8 @@ fi
 
 echo ""
 ok "文档站发布完成（版本 ${VER}）"
-echo "    🌐 站点：      http://${DEPLOY_SSH_HOST}/"
-echo "    📘 快速开始：  http://${DEPLOY_SSH_HOST}/start/"
-echo "    📄 更新日志：  http://${DEPLOY_SSH_HOST}/changelog"
+echo "    🌐 站点：      ${PUBLIC_BASE_URL}/"
+echo "    📘 快速开始：  ${PUBLIC_BASE_URL}/start/"
+echo "    📄 更新日志：  ${PUBLIC_BASE_URL}/changelog"
 echo ""
 echo "    回滚：./scripts/website-deploy.sh --rollback"

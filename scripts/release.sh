@@ -58,7 +58,12 @@
 #   所以失败不再消耗版本号。已成功创建的本地 tag 刻意不删（创建是幂等的），重跑会复用。
 #
 # 环境变量（--upload 时使用）：
-#   DEPLOY_SSH_HOST         服务器地址（分发 host 的唯一权威，install.sh 的下载地址由它派生）
+#   DEPLOY_SSH_HOST         SSH 上传目标（IP 或域名均可，只用于 scp/ssh，不进任何对外 URL）
+#   PUBLIC_BASE_URL         对外访问地址（默认 https://www.sid-code.cc，install.sh 的下载
+#                           地址与冒烟校验都由它派生）。⚠️ 与 DEPLOY_SSH_HOST 是两件事，
+#                           不要合并：SSH 走 IP 没问题，但对外 URL 必须是带证书的域名 ——
+#                           服务器 80 端口整段 301 → https，证书只签 sid-code.cc，
+#                           用 IP 走 https 会 TLS 校验失败（curl exit 60）。
 #   DEPLOY_SSH_USER         SSH 用户（必填，无默认值）
 #   DEPLOY_SSH_PASSWORD     SSH 密码（可选，配置后用 sshpass 免交互上传；留空则交互式输入）
 #   DEPLOY_PATH             服务器上的发布目录（默认 /var/www/html/releases/sid-code，
@@ -75,7 +80,7 @@
 #   - bump-version.ts / embed-builtin-skills.ts 全程只各跑一次，4 个目标复用同一份
 #     版本号与内嵌 skill 产物，避免 4 个二进制的 --version 互不一致
 #   - 每个目标独立输出路径（bun build --outfile 不会自动按 target 加后缀）
-#   - install.sh 的 RELEASE_BASE 由 DEPLOY_SSH_HOST 在拷贝时注入，服务器地址只需改一处
+#   - install.sh 的 RELEASE_BASE 由 PUBLIC_BASE_URL 在拷贝时注入，对外地址只需改一处
 #   - team-defaults.json 不随常规发布上传，避免用仓库里的占位模板覆盖服务器上的真实配置；
 #     只能通过 --upload-team-defaults 显式单独推送
 #   - vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库随仓库版本化，常规发布无需联网；
@@ -100,6 +105,7 @@ if [ -f "$ENV_FILE" ]; then
     _pre_pass="${DEPLOY_SSH_PASSWORD:-}"
     _pre_path="${DEPLOY_PATH:-}"
     _pre_rg_path="${DEPLOY_RG_PATH:-}"
+    _pre_public="${PUBLIC_BASE_URL:-}"
     # shellcheck disable=SC1090
     set -a; . "$ENV_FILE"; set +a
     # 恢复调用方显式导出的值（环境变量优先级更高）
@@ -108,9 +114,13 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$_pre_pass" ] && DEPLOY_SSH_PASSWORD="$_pre_pass"
     [ -n "$_pre_path" ] && DEPLOY_PATH="$_pre_path"
     [ -n "$_pre_rg_path" ] && DEPLOY_RG_PATH="$_pre_rg_path"
+    [ -n "$_pre_public" ] && PUBLIC_BASE_URL="$_pre_public"
 fi
 
 DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-121.196.144.227}"
+# 对外访问地址（唯一权威）。与 DEPLOY_SSH_HOST 分离：SSH 可以走 IP，对外 URL 必须是域名。
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://www.sid-code.cc}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
 DEPLOY_SSH_USER="${DEPLOY_SSH_USER:-}"
 DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
@@ -638,9 +648,13 @@ else
 fi
 echo ""
 
-# ─── 生成 install.sh：把 DEPLOY_SSH_HOST 注入为下载地址，服务器地址只需在 deploy.env 改一处 ───
+# ─── 生成 install.sh：把 PUBLIC_BASE_URL 注入为下载地址，对外地址只需在 deploy.env 改一处 ───
+#
+# 替换目标是模板里的 origin（https://www.sid-code.cc），不是 DEPLOY_SSH_HOST：
+# install.sh 是给用户 curl 的，必须用带证书的对外域名；SSH 上传目标（可能是 IP）
+# 绝不能泄进这份脚本，否则用户走 IP → 301 https → 证书不匹配 → 安装失败。
 
-sed "s#121\.196\.144\.227#${DEPLOY_SSH_HOST}#g" \
+sed "s#https://www\.sid-code\.cc#${PUBLIC_BASE_URL}#g" \
     "$SCRIPT_DIR/install-template.sh" > "$RELEASE_DIR/install.sh"
 chmod +x "$RELEASE_DIR/install.sh"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
@@ -789,10 +803,10 @@ done"
 
     echo ""
     ok "发布完成！安装命令："
-    echo "    curl -fsSL http://${DEPLOY_SSH_HOST}/releases/sid-code/install.sh | bash"
+    echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/install.sh | bash"
     echo ""
-    echo "  📄 更新日志（官网）: http://${DEPLOY_SSH_HOST}/changelog"
-    echo "  📄 更新日志（文本）: http://${DEPLOY_SSH_HOST}/releases/sid-code/CHANGELOG.md"
+    echo "  📄 更新日志（官网）: ${PUBLIC_BASE_URL}/changelog"
+    echo "  📄 更新日志（文本）: ${PUBLIC_BASE_URL}/releases/sid-code/CHANGELOG.md"
     echo ""
     echo "  ⚠️  官网 /changelog 是站点构建期快照，本次发布还没上线到站点。"
     echo "      按铁律补完 bump 提交后，再跑一次："

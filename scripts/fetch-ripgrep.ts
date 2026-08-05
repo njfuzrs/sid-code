@@ -12,8 +12,8 @@
  *
  * 平台标识与 release.sh 的打包后缀对齐：darwin-arm64 / darwin-x64 / linux-x64 / linux-arm64。
  * 服务器布局（nginx root=/var/www/html，仅作为仓库内文件缺失时的回退/首次填充来源）：
- *   http://<host>/vendor-bin/ripgrep/<version>/rg-<platform>
- *   http://<host>/vendor-bin/ripgrep/<version>/rg-<platform>.sha256
+ *   https://www.sid-code.cc/vendor-bin/ripgrep/<version>/rg-<platform>
+ *   https://www.sid-code.cc/vendor-bin/ripgrep/<version>/rg-<platform>.sha256
  * 与 releases 版本目录隔离，不被 release.sh 的旧版本清理逻辑误删。
  *
  * 用法：
@@ -24,9 +24,10 @@
  *   bun run scripts/fetch-ripgrep.ts --print-version # 仅打印解析后的版本号（供 shell 脚本读取，避免版本号硬编码漂移）
  *
  * 环境变量：
- *   SID_RG_BASE_URL   下载根地址（默认 http://<DEPLOY_SSH_HOST>/vendor-bin/ripgrep）
+ *   SID_RG_BASE_URL   下载根地址（默认 <PUBLIC_BASE_URL>/vendor-bin/ripgrep）
  *   SID_RG_VERSION    ripgrep 版本（默认见 DEFAULT_RG_VERSION）
- *   DEPLOY_SSH_HOST   服务器地址（与 deploy.env 一致，默认 121.196.144.227）
+ *   PUBLIC_BASE_URL   对外访问地址（与 release.sh 同名同义，默认 https://www.sid-code.cc）。
+ *                     注意不是 DEPLOY_SSH_HOST —— 后者是 SSH 上传目标，不能用于 HTTP 下载。
  *
  * 升级 ripgrep 版本时：改下面的 DEFAULT_RG_VERSION → 跑 `--all`（联网下载新版本到规范路径）
  * → `git add vendor/ripgrep/<新版本>/` 提交（可选 `git rm` 旧版本目录避免仓库无限膨胀）
@@ -60,11 +61,19 @@ function repoPath(platform: Platform, version: string): string {
   return join(VENDOR_DIR, "ripgrep", version, `rg-${platform}`);
 }
 
+const DEFAULT_PUBLIC_BASE_URL = "https://www.sid-code.cc";
+
+/**
+ * 下载根地址。刻意**不再**从 DEPLOY_SSH_HOST 派生：那是 SSH 上传目标（可能是 IP），
+ * 而下载走的是对外 HTTP —— 服务器 80 端口整段 301 → https 且证书只签 sid-code.cc，
+ * 用 IP 请求会 TLS 校验失败。对外地址统一由 PUBLIC_BASE_URL 提供（与 release.sh 同名同义）。
+ */
 function getBaseUrl(): string {
   const explicit = process.env.SID_RG_BASE_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
-  const host = process.env.DEPLOY_SSH_HOST?.trim() || "121.196.144.227";
-  return `http://${host}/vendor-bin/ripgrep`;
+  const raw = process.env.PUBLIC_BASE_URL?.trim() || DEFAULT_PUBLIC_BASE_URL;
+  const origin = (/^https?:\/\//.test(raw) ? raw : `https://${raw}`).replace(/\/+$/, "");
+  return `${origin}/vendor-bin/ripgrep`;
 }
 
 /** 当前机器对应的平台标识 */

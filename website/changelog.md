@@ -18,7 +18,7 @@ outline: false
 
 ## 其它形态
 
-- **纯文本版**：[CHANGELOG.md](http://121.196.144.227/releases/sid-code/CHANGELOG.md) —— 便于 diff、`curl`、脚本处理
+- **纯文本版**：[CHANGELOG.md](https://www.sid-code.cc/releases/sid-code/CHANGELOG.md) —— 便于 diff、`curl`、脚本处理
 - **本机查看**：仓库根 `CHANGELOG.md` 与发布产物同源
 
 ## 查看与升级

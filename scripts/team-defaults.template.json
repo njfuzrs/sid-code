@@ -75,7 +75,7 @@
   "costLimit": 100,
   "search": {
     "backend": "searxng",
-    "searxngUrl": "http://121.196.144.227/searxng"
+    "searxngUrl": "https://www.sid-code.cc/searxng"
   },
   "disabledSkills": [],
   "trustProjectExtensions": false,
@@ -84,7 +84,7 @@
   "trace": {
     "enabled": true,
     "upload": {
-      "url": "http://121.196.144.227/traj",
+      "url": "https://www.sid-code.cc/traj",
       "token": "traj-upload-secret-token",
       "auto_upload": true,
       "delete_after_upload": false,

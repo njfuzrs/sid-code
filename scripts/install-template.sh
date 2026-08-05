@@ -3,7 +3,7 @@
 #
 # release.sh 会把这份模板原样拷贝为发布产物 install.sh 一起上传，
 # 团队同事的实际安装命令：
-#   curl -fsSL http://121.196.144.227/releases/sid-code/install.sh | bash
+#   curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 #
 # 全程非交互，不依赖 jq/python3：
 #   - 版本默认取服务器 latest.txt，可用 SID_CODE_VERSION=x.y.z 锁定版本
@@ -16,7 +16,10 @@
 
 set -euo pipefail
 
-RELEASE_BASE="${RELEASE_BASE:-http://121.196.144.227/releases/sid-code}"
+# ⚠️ 必须是 https + 域名。服务器 80 端口整段 301 → https，且证书只签了 sid-code.cc：
+# 用 IP 直连会被重定向到 https://<ip>/ 而证书不匹配 → TLS 校验失败（curl exit 60），
+# 安装/更新链路直接断。换自建镜像时同样要给完整 scheme。
+RELEASE_BASE="${RELEASE_BASE:-https://www.sid-code.cc/releases/sid-code}"
 # 文档站地址由 RELEASE_BASE 去掉 /releases/sid-code 后缀派生——服务器地址仍只有
 # RELEASE_BASE 一处事实源（release.sh 用 DEPLOY_SSH_HOST 注入它），换域名不会漏改这里。
 # 本地 file:// 测试时派生结果无意义，故下面只在 http(s) 前缀时才打印文档链接。
