@@ -1851,6 +1851,11 @@ export async function* queryLoop(
     // src/config/network-profile.ts 的优先级链说明。声明在 try 之外，
     // 使下方 catch 块（超时重试分支）也能读到同一份解析结果。
     const netTimeouts = resolveLoopTimeouts({ network: config.network });
+    // 本轮耗时基准与两类「非业务时长」扣除量。同 netTimeouts 声明在 try 之外，
+    // 让 catch 的超时重试分支也能算出真实已耗时（见 emitTimeoutRetry 处说明）。
+    const turnStartedAt = Date.now();
+    let humanInputPauseAccumMs = 0;  // 已结束的「等用户输入」段累计总时长
+    let sleepPauseAccumMs = 0;       // 系统休眠累计时长（进程被冻结，定时器不 tick）
     try {
       // ─── L1：单轮硬超时兜底（治本，对所有挂起根因成立）───
       // 根因：底层 generator 链（processStream → fallback for-await → openai parseSSE）
@@ -1876,8 +1881,6 @@ export async function* queryLoop(
       // 等人输入的时段整体从「已耗时」里剔除，只有真正的非等待业务耗时累计达 30min 才 fire。
       // 两个计时器共享同一套等待累计变量，避免各自维护导致重复扣除或状态漂移。
       let humanInputPausedAt: number | null = null;  // 当前等待段起点（null=未在等待）
-      let humanInputPauseAccumMs = 0;                 // 已结束的等待段累计总时长
-      const turnStartedAt = Date.now();
 
       // ─── 休眠时长累计（事故 20260801-175042-699f69f8）───
       // 与 humanInputPauseAccumMs 完全同构、同理由：**非业务时长不该计入业务预算**。
@@ -1886,7 +1889,9 @@ export async function* queryLoop(
       // 直接判超时并吃掉一次重试配额——那次事故三段休眠吃掉了 3/10 次重试预算。
       // 两个定时器共享此变量（同 humanInputPause*）：先 tick 的那个负责记账，
       // 后 tick 的看到间隔已恢复正常自然不再记，天然去重、且两条防线口径一致。
-      let sleepPauseAccumMs = 0;
+      // 注意：turnStartedAt / humanInputPauseAccumMs / sleepPauseAccumMs 三者声明在
+      // try 之外（同 netTimeouts 的理由），使 catch 里的超时重试分支能算出**真实**已耗时
+      // 上报遥测，而不是像修复前那样填一个配置常量。
 
       let turnTimer: ReturnType<typeof setInterval> | null = null;
       // 缺口 2 进阶：turn_hard 超时 fire 后武装「未生效」检查；race settle 时 disarm。
@@ -2214,7 +2219,15 @@ export async function* queryLoop(
             index: state.turnCount,
             attempt: timeoutRetryCount + 1,
             max: maxRetries,
-            elapsed_ms: netTimeouts.maxTurnDurationMs,
+            // 排查可用性修复（2026-08-05）：此前这里填的是 `netTimeouts.maxTurnDurationMs`
+            // ——一个**配置常量**（默认 1800000），不是真实耗时。轨迹里于是出现"第 1 次尝试、
+            // 开始才几秒，却报 elapsed_ms=1800000（30 分钟）"这种自相矛盾的记录，把排查
+            // 直接引向"单轮硬顶超时"的错误方向（真凶是 60s 心跳，差了 30 倍）。
+            // 改填本轮真实已耗时——扣除人工等待/退避睡眠，与 turn_hard 判定同一口径。
+            elapsed_ms: Math.max(
+              0,
+              Date.now() - turnStartedAt - humanInputPauseAccumMs - sleepPauseAccumMs,
+            ),
             model: config.model,
           });
           // 指数退避 + jitter，避免零延迟重试恶化网关排队

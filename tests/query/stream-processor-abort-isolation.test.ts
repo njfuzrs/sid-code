@@ -46,6 +46,39 @@ function hangingStream(signal: AbortSignal): AsyncIterable<StreamEvent> {
   };
 }
 
+/**
+ * 先产出一个事件、随后静默的流（响应 abort）——这才是「心跳超时」的真实场景。
+ *
+ * 2026-08-05 起首字节与心跳**分开计时**（见 stream-processor.ts 的超时配置说明）：
+ * 「一个事件都没到」走 firstByteTimeoutMs，「已建流后中途静默」才走 heartbeatTimeoutMs。
+ * 因此验证心跳的用例必须先让流吐出至少一个事件，否则测的是首字节那条路径。
+ */
+function stallAfterFirstEventStream(signal: AbortSignal): AsyncIterable<StreamEvent> {
+  let emitted = false;
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          if (!emitted) {
+            emitted = true;
+            return Promise.resolve({
+              done: false,
+              value: { type: "message_start", message: { usage: { inputTokens: 1, outputTokens: 0 } } } as any,
+            });
+          }
+          return new Promise<IteratorResult<StreamEvent>>((_resolve, reject) => {
+            if (signal.aborted) {
+              reject(new Error("aborted"));
+              return;
+            }
+            signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        },
+      };
+    },
+  };
+}
+
 /** 正常产出一个文本块后结束的流 */
 async function* okStream(): AsyncIterable<StreamEvent> {
   yield { type: "message_start", message: { usage: { inputTokens: 1, outputTokens: 0 } } } as any;
@@ -63,8 +96,9 @@ describe("回归：stream-processor 心跳超时只 abort turn 级，不污染�
 
     let thrown: Error | null = null;
     try {
-      await processStream(hangingStream(turnController.signal), undefined, undefined, {
-        heartbeatTimeoutMs: 30,      // 30ms 无数据即心跳超时
+      await processStream(stallAfterFirstEventStream(turnController.signal), undefined, undefined, {
+        heartbeatTimeoutMs: 30,      // 首字节后 30ms 无数据即心跳超时
+        firstByteTimeoutMs: 10_000,  // 首字节阈值给足，确保命中的是心跳分支
         heartbeatCheckIntervalMs: 10, // 10ms 检查一次（快速触发）
         // 正确接线：超时应 abort turn 级 controller
         getAbortController: () => turnController,
@@ -129,8 +163,9 @@ describe("回归：stream-processor 超时 abort 携带具体 reason（根治静
   test("心跳超时 → signal.reason === 'stream-heartbeat-timeout' 且属内部超时白名单", async () => {
     const turnController = new AbortController();
     try {
-      await processStream(hangingStream(turnController.signal), undefined, undefined, {
+      await processStream(stallAfterFirstEventStream(turnController.signal), undefined, undefined, {
         heartbeatTimeoutMs: 30,
+        firstByteTimeoutMs: 10_000, // 首字节阈值给足，确保命中的是心跳分支
         heartbeatCheckIntervalMs: 10,
         getAbortController: () => turnController,
       });
@@ -166,7 +201,10 @@ describe("回归：stream-processor 超时 abort 携带具体 reason（根治静
     let thrown: unknown = null;
     try {
       await processStream(trulyHangingStream(), undefined, undefined, {
+        // 一个事件都不会到达 → 命中首字节分支。两个阈值都设短，使本用例不依赖
+        // 「哪一层先开枪」：它验证的是 abort-race 错误必须携带 abortReason。
         heartbeatTimeoutMs: 30,
+        firstByteTimeoutMs: 30,
         overallTimeoutMs: 60_000,
         heartbeatCheckIntervalMs: 10,
         getAbortController: () => turnController,

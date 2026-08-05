@@ -47,6 +47,19 @@ export interface StreamLifecycleOptions<T = unknown> {
    */
   contentProgressTimeoutMs?: number;
   /**
+   * Layer 1b：**首字节**超时（毫秒）——从流开始到收到第一个事件之间的专用上限。
+   *
+   * 为什么需要与 idleTimeoutMs 分开（2026-08-05 事故根因，主循环侧同型缺陷）：
+   * idle timer 在 `resetIdle()` 首次调用时就已启动，因此「等首个事件」这段等待
+   * 也被 idleTimeoutMs 管着。但这段等待的性质与「已建流后中途静默」完全不同——
+   * 经网关转发时它要经历鉴权 + 排队 + 模型冷启动，实测可达 50-60s；而 idle 阈值
+   * 是按「流已建立后还多久没动静才算卡死」校准的（子代理档默认仅 60s）。
+   * 用同一个阈值卡两种等待，必然把「网关还在正常排队」误杀成「流已卡死」。
+   *
+   * 不传则退化为 idleTimeoutMs（**向后兼容**：已接入的 provider 行为完全不变）。
+   */
+  firstByteTimeoutMs?: number;
+  /**
    * Layer 3：请求级整体超时（毫秒）。从流开始计时，**不因任何事件重置**（绝对上限）。
    * 对齐官方 SDK 的 request-level timeout，覆盖"持续吐 keep-alive 或缓慢有效内容但永不结束"
    * 的盲区。不传则不启用此层。
@@ -215,6 +228,7 @@ async function* streamLifecycleImpl<T>(
 ): AsyncGenerator<T> {
   const {
     idleTimeoutMs,
+    firstByteTimeoutMs,
     contentProgressTimeoutMs,
     overallTimeoutMs,
     isContentProgress,
@@ -257,15 +271,28 @@ async function* streamLifecycleImpl<T>(
     return true;
   };
 
+  // 首字节阈值：未显式指定时退化为 idleTimeoutMs（向后兼容，已接入 provider 行为不变）。
+  const effectiveFirstByteMs =
+    typeof firstByteTimeoutMs === "number" && firstByteTimeoutMs > 0
+      ? firstByteTimeoutMs
+      : idleTimeoutMs;
+
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     snapshot.lastEventAt = Date.now();
+    // 首个事件尚未到达 → 用（通常更宽的）首字节阈值；到达后各次 reset 用 idle 阈值。
+    // 判据取 snapshot.firstEventAt：它在主循环收到首个事件时置值，是本层唯一的结构事实。
+    const limit = snapshot.firstEventAt === null ? effectiveFirstByteMs : idleTimeoutMs;
     idleTimer = setTimeout(() => {
       if (!fireTimeout("idle")) return;
-      log.warn(`LLM:${label}`, `流式空闲超时 ${idleTimeoutMs / 1000}s，中断`, { totalEvents: snapshot.totalEvents });
-      onTelemetry?.({ type: "stream_idle_timeout", provider: providerTag, timeoutMs: idleTimeoutMs, totalEvents: snapshot.totalEvents });
+      log.warn(
+        `LLM:${label}`,
+        `流式${snapshot.firstEventAt === null ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
+        { totalEvents: snapshot.totalEvents },
+      );
+      onTelemetry?.({ type: "stream_idle_timeout", provider: providerTag, timeoutMs: limit, totalEvents: snapshot.totalEvents });
       onTimeout?.("idle");
-    }, idleTimeoutMs);
+    }, limit);
   };
 
   // content progress timer——独立于 idle timer，只在业务内容到达时重置。

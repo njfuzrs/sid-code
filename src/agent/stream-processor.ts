@@ -14,6 +14,7 @@ import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
 import { emitTimeoutFired } from "../trace/stream-observer.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
+import { resolveHeaderTimeoutMs } from "../config/network-profile.ts";
 
 /** 流式处理结果 */
 export interface StreamProcessResult {
@@ -43,8 +44,14 @@ export interface AgentStreamOptions {
    * 与主循环 query/stream-processor 的 getAbortController 同义。
    */
   getAbortController?: () => AbortController | null | undefined;
-  /** 心跳超时（毫秒，默认 60000 = 60s 无数据 → abort） */
+  /** 心跳超时（毫秒，默认 60000 = 60s 无数据 → abort）——**已收到首个事件之后**才用此阈值 */
   heartbeatTimeoutMs?: number;
+  /**
+   * 首字节超时（毫秒）——尚未收到任何事件时的上限，与心跳分开计。
+   * 默认 headerTimeoutMs（300s）。见 2026-08-05 事故：网关排队期的慢首字节
+   * 被 60s idle 阈值误杀成"流卡死"，重试又重新排队，形成不停重试。
+   */
+  firstByteTimeoutMs?: number;
   /** 整体超时（毫秒，默认 180000 = 3min，子代理应比主循环 300s 更短） */
   overallTimeoutMs?: number;
   /** 心跳检查间隔（毫秒，默认 5000） */
@@ -83,10 +90,17 @@ export async function processStream(
   // 行为与迁移前 setInterval 版等价：超时触发 → abort 上游 + 返回 stopReason="error"（不抛异常）。
   const HEARTBEAT_TIMEOUT = options.heartbeatTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.idleTimeoutMs;
   const OVERALL_TIMEOUT = options.overallTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;
+  // 首字节超时（2026-08-05 事故根因，与主循环 query/stream-processor 同型修复）：
+  // 「等首个事件」这段等待是网关鉴权 + 排队 + 模型冷启动，实测可达 50-60s，而子代理
+  // idle 档默认仅 60s（BASE*0.2）——用 idle 阈值卡它会把正常排队误杀成流卡死。
+  // 默认取 headerTimeoutMs（300s，与主循环同源），可经 options 覆盖。
+  const FIRST_BYTE_TIMEOUT =
+    options.firstByteTimeoutMs ?? resolveHeaderTimeoutMs();
   let timeoutError: Error | null = null;
 
   const lifecycle = createStreamLifecycle<StreamEvent>({
     idleTimeoutMs: HEARTBEAT_TIMEOUT,
+    firstByteTimeoutMs: FIRST_BYTE_TIMEOUT,
     overallTimeoutMs: OVERALL_TIMEOUT,
     // stall 告警阈值——不小于心跳超时，避免超时前的噪音告警（测试短超时下亦不误报）。
     stallWarnMs: Math.max(HEARTBEAT_TIMEOUT, 30_000),

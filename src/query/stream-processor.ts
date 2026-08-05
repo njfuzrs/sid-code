@@ -18,17 +18,42 @@ import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
+import {
+  resolveLoopTimeouts,
+  resolveProviderStreamTimeouts,
+} from "../config/network-profile.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
 
 /** 流式处理器配置 */
 export interface StreamProcessorOptions {
-  /** 心跳超时（毫秒，默认 60000） */
+  /**
+   * 心跳超时（毫秒）——**已建流后**中途无数据的上限。
+   * 默认取 network-profile 的 `watchdogNoProgressMs`（300s），与 loop.ts 外层看门狗同阈值。
+   */
   heartbeatTimeoutMs?: number;
   /** 心跳检查间隔（毫秒，默认 5000） */
   heartbeatCheckIntervalMs?: number;
-  /** 整体超时（毫秒，默认 300000 = 5 分钟） */
+  /**
+   * 首字节超时（毫秒）——**尚未收到任何事件**时的上限，与心跳分开计。
+   * 默认取 network-profile 的 `headerTimeoutMs`（300s）。
+   *
+   * 为什么必须与心跳分开（2026-08-05 事故根因）：请求发出到首个 SSE 事件到达之间，
+   * 经网关转发时要经历鉴权 + 排队 + 模型冷启动，实测 p95 已达 56s、最大 59.8s。
+   * 用同一个心跳阈值去卡这段等待，等于把"网关还在正常排队"判成"流已卡死"。
+   */
+  firstByteTimeoutMs?: number;
+  /**
+   * 整体超时（毫秒）——单次流的绝对上限。
+   * 默认取 provider 层 `overallTimeoutMs`（600s），比单轮 30min 硬顶更严一档。
+   */
   overallTimeoutMs?: number;
+  /**
+   * settings.json 的 `network.*` 覆盖块，用于派生上面三个超时的默认值。
+   * 由 app.ts 透传 `config.network`——让用户在 settings 里放宽阈值能真正作用到这一层
+   * （2026-08-05 事故前，本层读不到任何配置，用户改什么都不生效）。
+   */
+  network?: import("../config/network-profile.ts").NetworkTimeoutSettings;
   /** 获取 AbortController（用于超时时中断上游） */
   getAbortController?: () => AbortController | null;
   /**
@@ -93,15 +118,40 @@ export async function processStream(
   // 改为 push 到末尾 + 映射表查找，保证 content 数组始终密集。
   const indexToPosition = new Map<number, number>();
 
-  // 超时配置（心跳 + 整体超时共用一个定时器）
-  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? 60_000;
-  const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? 300_000;
+  // ── 超时配置（首字节 / 心跳 / 整体，共用一个定时器）──
+  //
+  // 2026-08-05 事故根因：这三个值此前是**就地硬编码字面量** 60_000 / 300_000，
+  // 与 network-profile.ts 那套"保活优先"统一默认值（headerTimeoutMs 300s /
+  // watchdogNoProgressMs 300s）完全脱节，且没有任何调用方传入覆盖——声明了
+  // heartbeatTimeoutMs 选项，生产链路（app.ts → engine.ts → loop.ts）却一路不传，
+  // 于是 60s 成了实际生效的**最紧**一层，把外层所有放宽配置全部架空：
+  //   loop.ts 看门狗 300s、provider idle 300s、headerTimeout 300s 都还没到，
+  //   这里 60s 先开枪 → abort("stream-heartbeat-timeout") → 上层认成可重试超时 → 重发。
+  // 实测轨迹 20260805-193713-ecb68bbd：31 次中断的「发请求→被杀」间隔全部是 60.0s，
+  // 而成功样本的首字节耗时 p95 已达 56s、最大 59.8s——阈值正好压在真实分布的右尾上，
+  // 于是慢一点的请求 100% 必死，且每次重试都重新排队、再次撞线，形成用户看到的
+  // 「不停重试、永不结束」。改配置也没用（这里读不到），只能改代码。
+  //
+  // 修法有三点，缺一不可：
+  //   ① 默认值改为从 network-profile 派生（单一真相源，用户改 settings 即刻生效）；
+  //   ② 首字节与心跳**分开计时**——等首字节（网关鉴权+排队+冷启动）和已建流后中途静默
+  //      是两种性质完全不同的等待，用同一个阈值卡必然误杀慢的那种；
+  //   ③ 由 app.ts 显式把 resolveLoopTimeouts 的结果传进来（见 app.ts processStream），
+  //      避免"选项声明了但没人传"这类死配置再次发生。
+  const netTimeouts = resolveLoopTimeouts({ network: options?.network });
+  const providerTimeouts = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
+  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? netTimeouts.watchdogNoProgressMs;
+  const FIRST_BYTE_TIMEOUT = options?.firstByteTimeoutMs ?? netTimeouts.headerTimeoutMs;
+  const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? providerTimeouts.overallTimeoutMs;
   // 检查间隔：此前硬编码 5s，heartbeatCheckIntervalMs 声明了却未接线（死选项）。
   // 接上它——生产默认仍 5s，测试可注入短值快速触发心跳/整体超时路径。
   const CHECK_INTERVAL = options?.heartbeatCheckIntervalMs ?? 5_000;
   const startTime = Date.now();
   let lastActivityTime = Date.now();
   let timeoutError: Error | null = null;
+  // 首字节是否已到达：决定用 FIRST_BYTE_TIMEOUT 还是 HEARTBEAT_TIMEOUT 判定静默。
+  // 在流的第一个事件到达时置真（见下方主循环）。
+  let firstEventReceived = false;
 
   // 记录"等待用户输入"累计时长：弹窗阻塞期间不应计入心跳/整体超时，否则等人答题
   // 会被误判成流 hang（事故复盘 20260721-142757）。用累加"扣除量"的方式把等待时段
@@ -142,13 +192,27 @@ export async function processStream(
       return;
     }
 
-    // 心跳超时检测
-    if (now - lastActivityTime > HEARTBEAT_TIMEOUT) {
+    // ── 静默超时检测：首字节前后用不同阈值（2026-08-05 事故根因修复）──
+    //
+    // 首字节前（firstEventReceived=false）：这段等待是"网关鉴权 + 排队 + 模型冷启动"，
+    // 慢是常态而非故障，用 FIRST_BYTE_TIMEOUT（= headerTimeoutMs，默认 300s）。
+    // 首字节后：流已建立还中途静默才是真可疑，用 HEARTBEAT_TIMEOUT（默认 300s，
+    // 与 loop.ts 外层看门狗 watchdogNoProgressMs 同源）。
+    //
+    // 两者共用 lastActivityTime 作基准是刻意的：首字节前它就是请求发出时刻，
+    // 首字节后它是最近一个事件时刻——语义都是"距上次有动静多久"，只是容忍度不同。
+    const silenceLimit = firstEventReceived ? HEARTBEAT_TIMEOUT : FIRST_BYTE_TIMEOUT;
+    if (now - lastActivityTime > silenceLimit) {
+      const label = firstEventReceived ? "心跳" : "首字节";
       timeoutError = new Error(
-        `Stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
+        `Stream ${firstEventReceived ? "heartbeat" : "first-byte"} timeout: ` +
+          `${silenceLimit / 1000}s 无数据`,
       );
-      log.warn("STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
+      log.warn("STREAM", `${label}超时: ${silenceLimit / 1000}s 无数据`);
       // 根治（2026-07）：同上，abort 时携带 reason（心跳超时）。
+      // 首字节超时刻意复用同一个 reason：它同样是"内部超时、应重试"，下游 loop.ts /
+      // errors.ts 的 ABORT_REASONS 判定逻辑无需改动即可正确识别（新增 reason 必须
+      // 同步登记白名单，见 memory esc-abort-reason-crash-coupling）。
       options?.getAbortController?.()?.abort("stream-heartbeat-timeout");
       clearInterval(checkInterval);
     }
@@ -186,6 +250,8 @@ export async function processStream(
       const event = iterResult.value;
 
       lastActivityTime = Date.now();
+      // 首个事件到达 → 后续静默改用（更严的）心跳阈值判定。
+      firstEventReceived = true;
 
       // 关键修复：每次事件前检查超时标志，一旦超时就抛错主动退出循环
       if (timeoutError) {

@@ -3803,6 +3803,13 @@ export class App {
         // 不再污染会话级共享 signal——杜绝「60-90s 流卡顿 → 会话 signal 被毒化 → 后续 turn
         // 出生即死 → 整条消息误报已取消」的回归（与 loop.ts finally 的 race-settled 同源）。
         getAbortController: () => turnAbortController ?? this.abortController,
+        // 2026-08-05 事故根因修复：把 settings 的 network 覆盖块透传下去。
+        // 此前 stream-processor 的心跳/整体超时是就地硬编码 60s/300s，读不到任何配置，
+        // 于是 60s 心跳成了全链路最紧的一层，把 loop 看门狗/provider/headerTimeout 三处
+        // 300s 的放宽配置全部架空——用户在 settings.json 里怎么改都不生效（因为改的是
+        // 另外三层），只能改代码。透传后 network.watchdogNoProgressMs /
+        // network.headerTimeoutMs 对这一层同样生效，配置终于成为唯一入口。
+        network: this.config.network,
         onToolUseComplete,
         // 流重开 → 上一次尝试的产出全部作废（2026-08-04 事故根因修复的用户可见面）。
         //
