@@ -2,6 +2,8 @@
 title: Prompt Cache：两族协议的分叉，和 4.2 亿 token 的实测账
 description: 同一套缓存策略，在 Anthropic 协议和 OpenAI 协议上必须写成两种形状。这篇拆开 sid-code 的实现分叉，交出 283 个会话 4.2 亿输入 token 的命中率账本，以及几个只有实测才能发现的坑——包括一个把我自己骗了两天的假数据。
 date: "2026-08-04"
+series: 上下文工程
+highlight: 283 会话 · 4.2 亿输入 token 账本 · 命中率 0 → 83.2%
 tags: [prompt cache, 成本优化, 机制解析, 实测]
 ---
 

@@ -73,6 +73,49 @@
   background-attachment: fixed;
 }
 
+/*
+ * 博客列表页背板：复用首页那套渐变光斑。
+ *
+ * ## 为什么必须给列表页一层背板
+ *
+ * 卡片要"是卡片"，前提是它和身后的东西有色差。改造前卡片底色是 --vp-c-bg，
+ * 而文档页的页面底色也是 --vp-c-bg —— 同一个变量，于是整页只剩几条 1px 淡灰描边，
+ * 默认态是最弱的态（只有 hover 才切到 soft 底）。这就是"样式丑"最直接的物理原因。
+ *
+ * 复用 .VPHome 的渐变而不是新造一套：博客与首页是同一个产品的两个页面，
+ * 新造第二套背景色是"官网和某个页面像两个产品"的起点（brand.css 顶部那条纪律）。
+ *
+ * 挂载靠 frontmatter 的 pageClass: blog-index（VitePress 默认主题把它加在 .Layout 上，
+ * 且是 SSR 渲染的，所以首屏就有底色，不会闪一下白底）。
+ * 只给列表页加、不给文章页：正文需要安静的纯色底，渐变会干扰长文阅读。
+ */
+.blog-index .VPContent {
+  background:
+    radial-gradient(1200px 620px at 82% -12%, var(--sid-bg-grad-1), transparent 60%),
+    radial-gradient(900px 520px at -12% 8%, var(--sid-bg-grad-2), transparent 55%),
+    var(--sid-bg);
+  background-attachment: fixed;
+}
+
+/*
+ * 博客列表页收回右侧那条空的 aside 栏宽度。
+ *
+ * 默认主题给每个文档页留一条 256px 的 aside（放大纲），并把正文压到 688px。
+ * 列表页 frontmatter 里是 `outline: false`（页面主体是卡片列表，没有 h2/h3 章节，
+ * 大纲天然是空的），于是那 256px 是**一条空白列**，而特色大卡在 688px 里施展不开。
+ *
+ * 只收回 aside，**不动左侧 sidebar**：左栏回答"我在这一层还能读什么"，
+ * 是跨页一致的导航，去掉它换来的宽度不值得破坏一致性。
+ *
+ * 作用域靠 .blog-index（只有列表页有这个 pageClass），所以文章页的大纲不受影响。
+ */
+.blog-index .VPDoc.has-aside .content-container {
+  max-width: 900px;
+}
+.blog-index .VPDoc .aside {
+  display: none;
+}
+
 /* hero 主标题走品牌渐变，避免纯色单调 */
 .VPHero .name {
   background: linear-gradient(

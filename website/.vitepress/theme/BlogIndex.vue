@@ -10,33 +10,90 @@
  *   数据来自 blog.data.ts（构建期 load），烧进产物。浏览器零请求、无白屏。
  *   代价是新增文章要重新构建站点——而文章本来就是随站点一起发布的，没有额外负担。
  *
- * ── 标签筛选为什么不做成路由 ──
- *   标签是纯客户端的轻量收窄（当前文章量级下就是几条），做成 /blog/tag/xxx 需要
- *   为每个标签生成一个静态页，且标签改名会留下死链。ref 内存态足够，且不产生 URL 垃圾。
+ * ── 筛选为什么按 series 而不按 tags ──
+ *   tags 是自由词，做筛选器会随文章数膨胀（实测 2 篇文章已产出 5 个标签，其中
+ *   没有一个能有效收窄：3 个只对应 1 篇、2 个对应全部）。series 是受控词表，
+ *   个数由内容规划决定而不是由文章数决定。完整论证在 blog-meta.ts 的 SERIES 注释里。
+ *
+ * ── 筛选为什么不做成路由 ──
+ *   做成 /blog/series/xxx 需要为每个系列生成一个静态页，且系列改名会留下死链。
+ *   ref 内存态足够，且不产生 URL 垃圾。
+ *
+ * ── 布局为什么分「特色大卡 + 紧凑列表」两层 ──
+ *   平铺等宽卡片在文章数上去后会变成一堵没有重点的墙。第一篇（最新，或人工标
+ *   featured）用大卡承载更多信息，其余用紧凑条目。文章数 ≤2 时不分层——
+ *   2 篇里挑 1 篇当"特色"，剩下那 1 篇会显得像被降级了。
  */
 import { computed, ref } from "vue";
-import { data as posts } from "./blog.data";
+import { data as blog } from "./blog.data";
 
-/** 当前只看某个标签（null = 全部）。点一下筛选，再点取消。 */
-const activeTag = ref<string | null>(null);
+const posts = computed(() => blog.posts);
+const stats = computed(() => blog.stats);
+const seriesList = computed(() => blog.series);
 
-/** 全部标签及其文章数，按文章数倒序（多的在前，更可能是读者想找的主题） */
-const tags = computed(() => {
-  const m = new Map<string, number>();
-  for (const p of posts) {
-    for (const t of p.tags) m.set(t, (m.get(t) ?? 0) + 1);
-  }
-  return [...m.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+/** 当前只看某个系列（null = 全部）。点一下筛选，再点取消。 */
+const activeSeries = ref<string | null>(null);
+
+/** 本页搜索关键词（只搜标题/摘要/系列/标签/highlight，不搜正文——正文由全站搜索负责） */
+const query = ref("");
+
+/**
+ * 筛选器是否显示。
+ *
+ * 门槛：至少 2 个系列、至少 4 篇文章。任一不满足就整条不渲染。
+ * 理由：只有 1 个系列时那个按钮等价于「全部」；文章太少时任何收窄都等于直接点文章。
+ * 用门槛而不是"等以后想起来再加"——量级到了自动出现，不需要回来改代码。
+ */
+const showFilter = computed(() => seriesList.value.length >= 2 && posts.value.length >= 4);
+
+/** 搜索框是否显示：文章少于 6 篇时肉眼扫比打字快 */
+const showSearch = computed(() => posts.value.length >= 6);
+
+/** 是否启用「特色大卡 + 紧凑列表」双层结构，见顶部说明 */
+const useFeatured = computed(() => posts.value.length >= 3);
+
+function haystack(p: (typeof blog.posts)[number]): string {
+  return [p.title, p.description, p.highlight, p.series, ...p.tags].join(" ").toLowerCase();
+}
+
+const filtered = computed(() => {
+  const terms = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const s = activeSeries.value;
+  return posts.value.filter((p) => {
+    if (s && p.series !== s) return false;
+    if (!terms.length) return true;
+    const hay = haystack(p);
+    // 多词之间是 AND：搜「cache 实测」应当两个词都命中，而不是命中任一
+    return terms.every((t) => hay.includes(t));
+  });
 });
 
-const filtered = computed(() =>
-  activeTag.value ? posts.filter((p) => p.tags.includes(activeTag.value!)) : posts,
+const isFiltering = computed(() => !!activeSeries.value || !!query.value.trim());
+
+/** 特色文章：只在未筛选且文章数够时启用，筛选结果里不该有"特色"这个概念 */
+const featured = computed(() =>
+  useFeatured.value && !isFiltering.value
+    ? (filtered.value.find((p) => p.featured) ?? filtered.value[0] ?? null)
+    : null,
 );
 
-function toggleTag(t: string) {
-  activeTag.value = activeTag.value === t ? null : t;
+/** 除特色文章之外的其余条目 */
+const rest = computed(() =>
+  featured.value ? filtered.value.filter((p) => p.url !== featured.value!.url) : filtered.value,
+);
+
+/** 当前选中系列的一句话说明，筛选后显示 */
+const activeBlurb = computed(
+  () => seriesList.value.find((s) => s.name === activeSeries.value)?.blurb ?? "",
+);
+
+function toggleSeries(name: string) {
+  activeSeries.value = activeSeries.value === name ? null : name;
+}
+
+function reset() {
+  activeSeries.value = null;
+  query.value = "";
 }
 
 /** 2026-07-31 → 2026 年 7 月 31 日；无日期则不显示日期块 */
@@ -45,55 +102,156 @@ function formatDate(iso: string): string {
   if (!m) return iso;
   return `${m[1]} 年 ${Number(m[2])} 月 ${Number(m[3])} 日`;
 }
+
+/** 累计阅读时长：超过 60 分钟显示成「N 小时」更好读 */
+function formatMinutes(n: number): string {
+  if (n < 60) return `${n}`;
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return m ? `${h}h${m}` : `${h}h`;
+}
 </script>
 
 <template>
   <div class="bi">
-    <!-- 标签筛选：只有存在标签时才渲染，避免留一条空工具栏 -->
-    <div v-if="tags.length" class="bi-tags" role="group" aria-label="按标签筛选文章">
-      <button
-        type="button"
-        class="bi-tag"
-        :class="{ 'is-active': activeTag === null }"
-        :aria-pressed="activeTag === null"
-        @click="activeTag = null"
-      >
-        全部<i>{{ posts.length }}</i>
-      </button>
-      <button
-        v-for="t in tags"
-        :key="t.name"
-        type="button"
-        class="bi-tag"
-        :class="{ 'is-active': activeTag === t.name }"
-        :aria-pressed="activeTag === t.name"
-        @click="toggleTag(t.name)"
-      >
-        {{ t.name }}<i>{{ t.count }}</i>
-      </button>
+    <!-- ── 统计条：与 /changelog 的 cl-stats 同一套视觉，让两页看起来是同一个产品 ── -->
+    <div v-if="posts.length" class="bi-stats">
+      <div class="bi-stat">
+        <b>{{ stats.posts }}</b><span>篇文章</span>
+      </div>
+      <div class="bi-stat">
+        <b>{{ formatMinutes(stats.minutes) }}</b><span>分钟读完全部</span>
+      </div>
+      <div class="bi-stat">
+        <b>{{ stats.series }}</b><span>个系列</span>
+      </div>
+      <!-- 引证数：全站唯一能量化「带 file:line 证据」这条主张的指标。
+           只数真实存在于仓库的路径，口径见 blog-meta.ts 的 countEvidenceFiles。 -->
+      <div class="bi-stat" title="文章正文里引用、且经存在性校验的源码文件数（去重）">
+        <b>{{ stats.evidence }}</b><span>处源码引证</span>
+      </div>
     </div>
+
+    <!-- ── 筛选区：系列按钮 + 可选搜索框；门槛不到不渲染，避免留一条无用工具栏 ── -->
+    <div v-if="showFilter || showSearch" class="bi-filter">
+      <div v-if="showSearch" class="bi-search">
+        <input
+          v-model="query"
+          type="search"
+          class="bi-input"
+          placeholder="在文章标题、摘要、标签里搜索…"
+          aria-label="在博客文章里搜索"
+          autocomplete="off"
+        />
+      </div>
+
+      <div v-if="showFilter" class="bi-chips" role="group" aria-label="按系列筛选文章">
+        <button
+          type="button"
+          class="bi-chip"
+          :class="{ 'is-active': activeSeries === null }"
+          :aria-pressed="activeSeries === null"
+          @click="activeSeries = null"
+        >
+          全部<span class="bi-n">{{ posts.length }}</span>
+        </button>
+        <button
+          v-for="s in seriesList"
+          :key="s.name"
+          type="button"
+          class="bi-chip"
+          :class="{ 'is-active': activeSeries === s.name }"
+          :aria-pressed="activeSeries === s.name"
+          @click="toggleSeries(s.name)"
+        >
+          {{ s.name }}<span class="bi-n">{{ s.count }}</span>
+        </button>
+        <button v-if="isFiltering" type="button" class="bi-clear" @click="reset">清除</button>
+      </div>
+
+      <p v-if="activeBlurb" class="bi-blurb">{{ activeBlurb }}</p>
+    </div>
+
+    <!--
+      筛选结果播报：aria-live 让屏幕阅读器用户知道点了按钮之后剩几条。
+      纯视觉用户从列表本身就能看出来，所以这一行对他们隐藏（sr-only），
+      不占版面也不重复信息。
+    -->
+    <p class="bi-sr" role="status" aria-live="polite">
+      {{ isFiltering ? `筛选后共 ${filtered.length} 篇文章` : `共 ${posts.length} 篇文章` }}
+    </p>
 
     <p v-if="!posts.length" class="bi-empty">还没有文章。</p>
     <p v-else-if="!filtered.length" class="bi-empty">
-      没有带这个标签的文章。
-      <button type="button" class="bi-link" @click="activeTag = null">看全部</button>
+      没有匹配的文章。
+      <button type="button" class="bi-link" @click="reset">清除筛选</button>
     </p>
 
-    <!-- 文章卡片：整块可点（a 包住全部内容），不做"标题是链接、卡片其余部分不是"那种半可点 -->
-    <ul class="bi-list">
-      <li v-for="p in filtered" :key="p.url" class="bi-item">
-        <a class="bi-card" :href="p.url">
-          <h2 class="bi-title">{{ p.title }}</h2>
-          <p v-if="p.description" class="bi-desc">{{ p.description }}</p>
+    <!-- ── 特色文章：大卡，摘要给足，硬数据摆在标题下方 ── -->
+    <article v-if="featured" class="bi-hero">
+      <a class="bi-hero-link" :href="featured.url">
+        <span class="bi-kicker">
+          <span v-if="featured.series" class="bi-badge">{{ featured.series }}</span>
+          <span class="bi-kicker-tip">最新</span>
+        </span>
+        <h2 class="bi-hero-title">{{ featured.title }}</h2>
+        <p v-if="featured.highlight" class="bi-hl">{{ featured.highlight }}</p>
+        <p v-if="featured.description" class="bi-hero-desc">{{ featured.description }}</p>
+      </a>
+      <div class="bi-foot">
+        <time v-if="featured.date" class="bi-date" :datetime="featured.date">
+          {{ formatDate(featured.date) }}
+        </time>
+        <span class="bi-dot" aria-hidden="true">·</span>
+        <span class="bi-read">约 {{ featured.readingMinutes }} 分钟</span>
+        <template v-if="featured.evidenceFiles">
+          <span class="bi-dot" aria-hidden="true">·</span>
+          <span class="bi-ev">{{ featured.evidenceFiles }} 处源码引证</span>
+        </template>
+        <span v-if="featured.tags.length" class="bi-tags">
+          <!--
+            标签在链接**外面**：它们是筛选控件（button），不是导航。
+            放进 <a> 里会变成"看起来能筛、点了跳走"——同形不同行为的 affordance 说谎。
+            整卡可点由 .bi-hero-link::after 铺满卡片实现，见样式区说明。
+          -->
+          <button
+            v-for="t in featured.tags"
+            :key="t"
+            type="button"
+            class="bi-tag"
+            @click="query = t"
+          >
+            {{ t }}
+          </button>
+        </span>
+      </div>
+    </article>
+
+    <!-- ── 其余文章：紧凑条目 ── -->
+    <ul v-if="rest.length" class="bi-list">
+      <li v-for="p in rest" :key="p.url" class="bi-item">
+        <div class="bi-card">
+          <a class="bi-card-link" :href="p.url">
+            <span v-if="p.series" class="bi-badge">{{ p.series }}</span>
+            <h2 class="bi-title">{{ p.title }}</h2>
+            <p v-if="p.highlight" class="bi-hl">{{ p.highlight }}</p>
+            <p v-if="p.description" class="bi-desc">{{ p.description }}</p>
+          </a>
           <div class="bi-foot">
             <time v-if="p.date" class="bi-date" :datetime="p.date">{{ formatDate(p.date) }}</time>
             <span class="bi-dot" aria-hidden="true">·</span>
             <span class="bi-read">约 {{ p.readingMinutes }} 分钟</span>
-            <span v-if="p.tags.length" class="bi-chips">
-              <span v-for="t in p.tags" :key="t" class="bi-chip">{{ t }}</span>
+            <template v-if="p.evidenceFiles">
+              <span class="bi-dot" aria-hidden="true">·</span>
+              <span class="bi-ev">{{ p.evidenceFiles }} 处源码引证</span>
+            </template>
+            <span v-if="p.tags.length" class="bi-tags">
+              <button v-for="t in p.tags" :key="t" type="button" class="bi-tag" @click="query = t">
+                {{ t }}
+              </button>
             </span>
           </div>
-        </a>
+        </div>
       </li>
     </ul>
   </div>
@@ -104,14 +262,63 @@ function formatDate(iso: string): string {
   margin-top: 8px;
 }
 
-/* ── 标签筛选 ── */
-.bi-tags {
+/* ── 统计条（与 Changelog.vue 的 .cl-stats 同规格：10px 间距 / 10px 圆角 / mono 数字）── */
+.bi-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.bi-stat {
+  flex: 1 1 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  background: var(--vp-c-bg-soft);
+}
+.bi-stat b {
+  font-family: var(--vp-font-family-mono);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--vp-c-brand-1);
+  line-height: 1.4;
+}
+.bi-stat span {
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+}
+
+/* ── 筛选区 ── */
+.bi-filter {
+  margin-bottom: 22px;
+}
+.bi-search {
+  margin-bottom: 10px;
+}
+.bi-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+  font-size: 14px;
+  transition: border-color 0.15s;
+}
+.bi-input:focus {
+  outline: none;
+  border-color: var(--vp-c-brand-1);
+}
+.bi-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  margin-bottom: 26px;
 }
-.bi-tag {
+/* 系列筛选按钮做成药丸形：形状差异标记"这是开关"，与卡片上的圆角矩形标签区分开 */
+.bi-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -127,66 +334,169 @@ function formatDate(iso: string): string {
     border-color 0.15s,
     background 0.15s;
 }
-.bi-tag i {
+.bi-n {
   font-family: var(--vp-font-family-mono);
-  font-style: normal;
   font-size: 11px;
   color: var(--vp-c-text-3);
 }
-.bi-tag:hover {
+.bi-chip:hover {
   border-color: var(--vp-c-brand-1);
   color: var(--vp-c-brand-1);
 }
 /* 选中态不只靠颜色：加粗 + 实心底，色觉障碍用户也能分辨 */
-.bi-tag.is-active {
+.bi-chip.is-active {
   background: var(--vp-c-brand-soft);
   border-color: var(--vp-c-brand-1);
   color: var(--vp-c-brand-1);
   font-weight: 600;
 }
-.bi-tag.is-active i {
+.bi-chip.is-active .bi-n {
   color: var(--vp-c-brand-1);
 }
+.bi-clear {
+  padding: 3px 12px;
+  border: 1px dashed var(--vp-c-divider);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--vp-c-text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.bi-clear:hover {
+  color: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
+}
+.bi-blurb {
+  margin: 10px 0 0 !important;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--vp-c-text-3);
+}
+
+.bi-chip:focus-visible,
+.bi-clear:focus-visible,
 .bi-tag:focus-visible,
 .bi-link:focus-visible {
   outline: 2px solid var(--vp-c-brand-1);
   outline-offset: 2px;
 }
 
-/* ── 文章列表 ── */
+/* 筛选结果播报：对屏幕阅读器可见，视觉上隐藏（不能用 display:none——那样读屏也读不到） */
+.bi-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── 卡片通用：浮起而不是靠一条淡线描边 ──
+   卡片底色用 --sid-panel（纯白/深色面板），页面背板由 .blog-index 的渐变承担
+   （见 brand.css）。原实现卡片与页面同为 --vp-c-bg，等于没有卡片。 */
+.bi-hero,
+.bi-card {
+  position: relative;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--sid-panel);
+  box-shadow: 0 1px 2px rgba(15, 20, 32, 0.04);
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    transform 0.2s;
+}
+.bi-hero:hover,
+.bi-card:hover {
+  border-color: var(--vp-c-brand-1);
+  box-shadow: 0 6px 20px var(--sid-brand-glow);
+  transform: translateY(-2px);
+}
+.dark .bi-hero,
+.dark .bi-card {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/*
+  整卡可点：<a> 用 ::after 铺满整张卡当点击区，而不是把所有内容包进 <a>。
+  这样卡片底部的标签能是真正的 <button>（点了筛选，不跳转），同时整卡依然可点。
+  原实现把标签包在 <a> 里，视觉上和筛选按钮同形却行为不同。
+  ::after 的 z-index 低于标签的 z-index，所以点标签不会穿透到链接。
+*/
+.bi-hero-link,
+.bi-card-link {
+  display: block;
+  text-decoration: none !important;
+  color: inherit;
+}
+.bi-hero-link::after,
+.bi-card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  z-index: 0;
+}
+.bi-hero-link:focus-visible::after,
+.bi-card-link:focus-visible::after {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+/* ── 特色大卡 ── */
+.bi-hero {
+  padding: 26px 26px 18px;
+  margin-bottom: 16px;
+}
+.bi-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.bi-kicker-tip {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--vp-c-text-3);
+}
+.bi-hero-title {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--vp-c-text-1);
+  transition: color 0.2s;
+}
+.bi-hero:hover .bi-hero-title {
+  color: var(--vp-c-brand-1);
+}
+.bi-hero-desc {
+  margin: 10px 0 0 !important;
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--vp-c-text-2);
+}
+
+/* ── 紧凑卡片 ── */
 .bi-list {
   list-style: none;
   margin: 0 !important;
   padding: 0 !important;
 }
 .bi-item {
-  margin: 0 0 14px !important;
+  margin: 0 0 12px !important;
   padding: 0 !important;
 }
-
 .bi-card {
-  display: block;
-  padding: 20px 22px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 12px;
-  background: var(--vp-c-bg);
-  text-decoration: none !important;
-  transition:
-    border-color 0.2s,
-    background 0.2s,
-    transform 0.2s;
+  padding: 18px 22px 14px;
 }
-.bi-card:hover {
-  border-color: var(--vp-c-brand-1);
-  background: var(--vp-c-bg-soft);
-  transform: translateY(-1px);
-}
-.bi-card:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: 2px;
-}
-
-/* 覆盖 vp-doc 给 h2 的上边距与下分隔线：这里的 h2 是卡片标题，不是章节标题 */
 .bi-title {
   margin: 0 !important;
   padding: 0 !important;
@@ -200,15 +510,41 @@ function formatDate(iso: string): string {
 .bi-card:hover .bi-title {
   color: var(--vp-c-brand-1);
 }
-
 .bi-desc {
-  margin: 9px 0 0 !important;
+  margin: 8px 0 0 !important;
   font-size: 14px;
   line-height: 1.7;
   color: var(--vp-c-text-2);
 }
 
+/* 系列徽章：实心 soft 底，和标签（描边）区分，标记"这是分类归属"不是可点标签 */
+.bi-badge {
+  display: inline-block;
+  padding: 1px 9px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.bi-hero .bi-badge {
+  margin-bottom: 0;
+}
+
+/* 硬数据行：mono + 品牌色，是这些文章最强的点击理由，视觉重量排在摘要之上 */
+.bi-hl {
+  margin: 8px 0 0 !important;
+  font-family: var(--vp-font-family-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--vp-c-brand-1);
+}
+
+/* ── 卡片底部元信息 ── */
 .bi-foot {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -218,25 +554,35 @@ function formatDate(iso: string): string {
   color: var(--vp-c-text-3);
 }
 .bi-date,
-.bi-read {
+.bi-read,
+.bi-ev {
   font-family: var(--vp-font-family-mono);
 }
 .bi-dot {
   color: var(--vp-c-divider);
 }
-.bi-chips {
+.bi-tags {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-left: auto;
 }
-.bi-chip {
+/* 标签是可点的搜索快捷方式，圆角 8px（不是筛选器那种 999px 药丸）*/
+.bi-tag {
   padding: 1px 9px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-3);
   font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.bi-tag:hover {
+  color: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
 }
 
 .bi-empty {
@@ -247,7 +593,7 @@ function formatDate(iso: string): string {
 .bi-link {
   padding: 1px 8px;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-2);
   font-size: inherit;
@@ -259,22 +605,36 @@ function formatDate(iso: string): string {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .bi-hero,
   .bi-card,
   .bi-title,
-  .bi-tag {
+  .bi-hero-title,
+  .bi-chip,
+  .bi-tag,
+  .bi-input {
     transition: none;
   }
+  .bi-hero:hover,
   .bi-card:hover {
     transform: none;
   }
 }
 
 @media (max-width: 640px) {
-  .bi-card {
-    padding: 16px 16px;
+  .bi-hero {
+    padding: 20px 18px 14px;
   }
-  .bi-chips {
+  .bi-hero-title {
+    font-size: 21px;
+  }
+  .bi-card {
+    padding: 16px 16px 12px;
+  }
+  .bi-tags {
     margin-left: 0;
+  }
+  .bi-stat {
+    flex: 1 1 calc(50% - 10px);
   }
 }
 </style>

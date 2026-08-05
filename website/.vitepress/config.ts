@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tokenizeCJK } from "./tokenize";
 import { stripFrontmatter } from "./raw-markdown";
-import { loadBlogPosts } from "./blog-meta";
+import { SERIES, loadBlogPosts } from "./blog-meta";
+import { writeFeed } from "./feed";
+import { FEED_PATH, SITE_TITLE, canUseAbsoluteUrls } from "./site";
 
 /**
  * /blog/ 的 sidebar 从磁盘扫出来，**不手写清单**。
@@ -173,11 +175,61 @@ const GUIDE_SIDEBAR = [
  */
 const BLOG_SIDEBAR = [
   { text: "全部文章", link: "/blog/" },
-  {
-    text: "最新文章",
-    collapsed: false,
-    items: blogPosts.map((p) => ({ text: p.title, link: p.url })),
-  },
+  /**
+   * 按系列分组。
+   *
+   * ## 为什么按系列而不是一律「最新文章」倒序
+   *
+   * 系列是有**阅读顺序**的（前置知识在前），而"最新在前"正好把顺序倒过来：
+   * 读者从左栏自上而下点，读到的是先结论后前提。所以系列组内按日期**升序**排。
+   *
+   * ## 为什么只在系列数 ≥2 时才分组
+   *
+   * 只有一个系列时，分组等于在「博客」和文章之间插一层同名嵌套，零信息
+   * （与「全部文章」为什么不包进组是同一条理由）。此时退化成单组「最新文章」倒序，
+   * 与改造前的行为一致。判据是**系列数**而不是文章数：三篇文章分属三个系列时，
+   * 分组仍然有意义。
+   *
+   * ## 未归入任何系列的文章
+   *
+   * 单独归到末尾的「其他」组，而不是静默从左栏消失——那会变成
+   * 「站内有页面但左栏点不到」，正是本文件反复要防的那种静默缺陷。
+   */
+  ...(() => {
+    const grouped = SERIES.map((s) => ({
+      text: s.name,
+      collapsed: false,
+      items: blogPosts
+        .filter((p) => p.series === s.name)
+        // 系列内按阅读顺序（日期升序）；blogPosts 本身是倒序，这里要反过来
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map((p) => ({ text: p.title, link: p.url })),
+    })).filter((g) => g.items.length > 0);
+
+    const orphans = blogPosts.filter((p) => !p.series);
+
+    // 系列不足 2 个时不分组，退化成单组倒序（理由见上）
+    if (grouped.length < 2) {
+      return [
+        {
+          text: "最新文章",
+          collapsed: false,
+          items: blogPosts.map((p) => ({ text: p.title, link: p.url })),
+        },
+      ];
+    }
+
+    return orphans.length
+      ? [
+          ...grouped,
+          {
+            text: "其他",
+            collapsed: false,
+            items: orphans.map((p) => ({ text: p.title, link: p.url })),
+          },
+        ]
+      : grouped;
+  })(),
 ];
 
 /**
@@ -203,6 +255,26 @@ export default defineConfig({
   head: [
     ["link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }],
     ["meta", { name: "color-scheme", content: "light dark" }],
+    /**
+     * feed 自动发现（阅读器/浏览器扩展靠这条找到订阅地址）。
+     *
+     * 与 feed 文件本身同一个闸门：没配域名时 feed 不生成，这条也不能出现
+     * ——留着它等于告诉阅读器"这里有 feed"，然后给一个 404，
+     * 那比没有 feed 更糟（用户会以为是自己的阅读器坏了）。
+     */
+    ...(canUseAbsoluteUrls()
+      ? [
+          [
+            "link",
+            {
+              rel: "alternate",
+              type: "application/atom+xml",
+              title: SITE_TITLE,
+              href: FEED_PATH,
+            },
+          ] as [string, Record<string, string>],
+        ]
+      : []),
   ],
 
   themeConfig: {
@@ -510,5 +582,18 @@ export default defineConfig({
     } catch {
       // 读不到就不给按钮数据（按钮自身会隐藏），不因此让整站构建失败
     }
+  },
+
+  /**
+   * 构建收尾：生成博客的 Atom feed。
+   *
+   * 未配置站点域名时**跳过并打印原因**（不是生成一份带 IP 的错 feed）——
+   * feed 的 `<id>` 是订阅端去重主键，用 IP 发布过再换域名会让所有历史文章
+   * 重新推送一遍。完整论证与启用方式写在 .vitepress/site.ts 里。
+   *
+   * 数据源仍是 blog-meta.ts 那一份（与 sidebar / 列表页同源），不另解析一遍 md。
+   */
+  buildEnd(siteConfig) {
+    writeFeed(loadBlogPosts(), siteConfig.outDir);
   },
 });

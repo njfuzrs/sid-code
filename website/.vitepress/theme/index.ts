@@ -15,6 +15,7 @@ import CopyPage from "./CopyPage.vue";
 import Changelog from "./Changelog.vue";
 import BlogIndex from "./BlogIndex.vue";
 import BlogMeta from "./BlogMeta.vue";
+import BlogRelated from "./BlogRelated.vue";
 import "./brand.css";
 
 export default {
@@ -26,9 +27,13 @@ export default {
      *   CopyPage（复制整页按钮，全站）
      * 元信息行在按钮上方——它是文章的一部分（日期/时长/标签），
      * 而按钮是工具栏。工具栏压在署名之上会让文章头部读起来像先看到一个控件。
+     *
+     * doc-after 挂「相关文章」：正文结束之后、默认主题的上一页/下一页之前。
+     * 两个组件都自带 v-if 判路径，非 /blog/ 的文章页什么都不渲染。
      */
     return h(DefaultTheme.Layout, null, {
       "doc-before": () => [h(BlogMeta), h(CopyPage)],
+      "doc-after": () => h(BlogRelated),
     });
   },
   /**
