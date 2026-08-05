@@ -18,6 +18,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..", "..");
@@ -98,6 +99,86 @@ describe("changelog.json · 站点数据源形态", () => {
   test("最新版本排在最前（组件不做排序，直接按数组顺序渲染时间线）", () => {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
     expect(d.versions[0].version).toBe(d.currentVersion);
+  });
+});
+
+describe("changelog.json · 版本区间不漏提交（回归：补跑会清空当前版本）", () => {
+  /**
+   * 2026-08-06 实测的静默数据丢失：`buildModel` 一边用 `tags[0]..HEAD` 算「正在发布」
+   * 区间，一边在历史循环里以 `version === currentVersion` 跳过同名 tag。当该 tag
+   * **已存在**（tag 打完后补跑、或 --no-bump 复用版本号）时，tags[0] 就是它自己，
+   * 于是它真正的提交两头都不认，彻底消失——changelog 从 276 条掉到 267 条，
+   * 且**没有任何报错**（产物只是站点数据源，少几条无人察觉）。
+   *
+   * 这里不重跑生成脚本（那要动仓库产物），而是对**已入库的产物**验一条不变式：
+   * 每个非 genesis 版本的 commit 数，应与该 tag 区间的真实提交数吻合。
+   * 这条不变式对上面那个 bug 是敏感的：bug 会让当前版本的 count 变成
+   * 「tag 之后的提交数」，与真实区间对不上。
+   */
+  test("每个版本的 commit 数与其 tag 区间的真实提交数吻合", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const tags: string[] = execFileSync("git", ["tag", "-l", "v*", "--sort=-v:refname"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let checked = 0;
+    for (const v of d.versions) {
+      if (v.isGenesis) continue; // genesis 块刻意截断回溯条数，不适用此不变式
+      const tag = `v${v.version}`;
+      const idx = tags.indexOf(tag);
+      if (idx < 0) continue; // 尚未打 tag 的「正在发布」版本，无法比对
+      const prevTag = tags[idx + 1];
+      if (!prevTag) continue;
+
+      // 真实区间提交数，扣掉生成器刻意过滤的噪声（bump / Merge / dashboard 刷盘）
+      const subjects = execFileSync(
+        "git",
+        ["log", "--format=%s", `${prevTag}..${tag}`],
+        { cwd: ROOT, encoding: "utf8" },
+      )
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const real = subjects.filter(
+        (s) =>
+          !/^bump\s+v?\d/i.test(s) &&
+          !/^Merge\s/i.test(s) &&
+          !/^ci(?:\([^)]*\))?\s*[:：]\s*refresh dashboard/i.test(s),
+      ).length;
+
+      expect(v.count).toBe(real);
+      checked++;
+    }
+    // 防止不变式因为 continue 全部跳过而变成空断言（那就成了假绿）
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  test("版本日期与其 tag 的提交日一致（不受生成时机/时区影响）", () => {
+    // today() 走 toISOString()（UTC），本地 +0800 的凌晨会算成前一天。
+    // 版本日期必须锚在 tag 的提交日上，否则同一个版本在不同时刻生成会得到不同日期。
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    let checked = 0;
+    for (const v of d.versions) {
+      const tag = `v${v.version}`;
+      let tagDay: string;
+      try {
+        tagDay = execFileSync(
+          "git",
+          ["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d", tag],
+          { cwd: ROOT, encoding: "utf8" },
+        ).trim();
+      } catch {
+        continue; // 尚未打 tag
+      }
+      if (!tagDay) continue;
+      expect(v.date).toBe(tagDay);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
 

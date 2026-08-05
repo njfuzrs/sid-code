@@ -160,6 +160,31 @@ interface VersionModel {
   isGenesis: boolean;
 }
 
+/**
+ * 从 commit 文本里抹掉 URL —— changelog.json 会随站点发布到公网。
+ *
+ * 为什么必须在**生成期**做，而不是靠 review 或测试兜：
+ * commit message 是**开发者随手写**的自由文本，作者当时想的是"把改动说清楚"，
+ * 不是"这段字会被发到公网"。链路（commit → generate-changelog → changelog.json →
+ * 站点构建 → 公网）足够长，没有任何一步会自然提醒作者这件事。
+ * `tests/website/changelog-integration.test.ts` 的两条断言是**事后闸门**（能发现，
+ * 但发现时脏数据已经进了仓库）；这里是**源头预防**。两者都要有，职责不同。
+ *
+ * 实际踩过：2026-08-06 那次域名切换，commit 标题里写了新官网地址，
+ * 于是 `https://www.sid-code.cc` 被原样搬进 changelog.json，测试报红。
+ * 那次泄的恰好是公开地址所以无害，但同一条通路搬的若是内网 gitlab / 私网 IP，
+ * 就是真的把内部坐标发到公网了 —— 判定标准只能是"URL 形态"，不能靠"看起来是否敏感"。
+ *
+ * 处理方式是替换成占位符而非整段删除：把 "地址切到 https://x" 变成
+ * "地址切到 <链接已省略>" 仍读得通，直接删会留下悬空的"切到"。
+ */
+export function stripUrls(text: string): string {
+  // 正则写在函数内而非模块级：带 /g 的正则有 lastIndex 状态，模块级共享一个实例，
+  // 以后若有人改用 .test()/.exec() 就会踩到"隔次匹配失败"的经典坑。
+  // （当前 .replace() 会自动重置 lastIndex，所以现在是安全的——但别留这个雷。）
+  return text.replace(/https?:\/\/[^\s"'）)\]]+/g, "<链接已省略>");
+}
+
 /** 从 commit body 抽取「子条目」：优先 bullet/编号列表，无则退化为散文段落 */
 function extractDetails(body: string): string[] {
   const lines = body.split("\n").map((l) => l.replace(/\s+$/, ""));
@@ -265,9 +290,10 @@ function collectCommits(range: string | null): ParsedCommit[] {
     commits.push({
       group,
       scope,
-      desc,
+      // desc 与 details 都要抹 URL：两者都会进 changelog.json 并发到公网（见 stripUrls）
+      desc: stripUrls(desc),
       shortHash: shortHash.trim(),
-      details: extractDetails(body),
+      details: extractDetails(body).map(stripUrls),
     });
   }
   return commits;
@@ -278,16 +304,47 @@ function buildModel(currentVersion: string): VersionModel[] {
   const tags = listSemverTags(); // 降序
   const models: VersionModel[] = [];
 
-  // 正在发布的版本（此刻还没 tag）：区间 = 最新 tag..HEAD；无 tag 则全历史
-  const newestTag = tags[0] ?? null;
-  const currentRange = newestTag ? `${newestTag}..HEAD` : null;
+  // ── 目标版本的提交区间 ──
+  //
+  // 两种情形，必须分开算（合并处理会丢提交，实测踩过，见下）：
+  //
+  // A. 正常发布：release.sh 在 bump 之后、打 tag **之前**调用，此刻 currentVersion
+  //    还没有对应 tag → 区间 = 最新 tag..HEAD。
+  //
+  // B. currentVersion 的 tag **已存在**：事后补跑（`bun run scripts/generate-changelog.ts
+  //    0.1.600`）、或 --no-bump 复用版本号。此时若仍用 `tags[0]..HEAD`，而 tags[0]
+  //    恰好就是 currentVersion 那个 tag，算出来的是「tag 之后新加的提交」——
+  //    真正属于该版本的提交全被漏掉，而下面的历史循环又因 `version === currentVersion`
+  //    跳过了它，于是这些提交**两头都不认，彻底消失**。
+  //
+  //    实测：v0.1.600 打完 tag 后补跑一次，changelog 从 276 条掉到 267 条
+  //    （该版本真实 11 条提交被换成 tag 之后的 1 条），且历史块也拿不回来。
+  //    产物是站点数据源，静默少 9 条不会有任何报错。
+  const currentTag = tags.find((t) => t.replace(/^v/, "") === currentVersion) ?? null;
+  let currentRange: string | null;
+  let currentDate: string;
+  let currentIsGenesis: boolean;
+  if (currentTag) {
+    // 情形 B：区间 = 更老的那个 tag..currentTag（与历史块算法一致）
+    const idx = tags.indexOf(currentTag);
+    const prevTag = tags[idx + 1] ?? null;
+    currentRange = prevTag ? `${prevTag}..${currentTag}` : currentTag;
+    currentDate = tagDate(currentTag);
+    currentIsGenesis = !prevTag;
+  } else {
+    // 情形 A：尚未打 tag，区间 = 最新 tag..HEAD
+    const newestTag = tags[0] ?? null;
+    currentRange = newestTag ? `${newestTag}..HEAD` : null;
+    currentDate = today();
+    currentIsGenesis = !newestTag;
+  }
   const currentCommits = collectCommits(currentRange);
   models.push({
     version: currentVersion,
-    date: today(),
+    date: currentDate,
     commits: currentCommits,
-    detailed: currentCommits.length <= MAX_DETAILED_COMMITS,
-    isGenesis: !newestTag,
+    detailed: !currentIsGenesis && currentCommits.length <= MAX_DETAILED_COMMITS,
+    isGenesis: currentIsGenesis,
   });
 
   // 历史 tag（降序遍历，逐个还原 prevTag..thisTag）
@@ -502,4 +559,6 @@ function main(): void {
   );
 }
 
-main();
+// 只在被直接执行时跑；被 import 时（如单测 import stripUrls）不能有副作用——
+// 否则一次 import 就会真的重写 CHANGELOG.md / changelog.json，把测试变成写盘操作。
+if (import.meta.main) main();

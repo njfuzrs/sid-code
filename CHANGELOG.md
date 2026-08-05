@@ -2,10 +2,10 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
-## v0.1.600 (2026-08-05)
+## v0.1.600 (2026-08-06)
 
 ### 新功能
-- **release** · 发布/文档地址切到 https://www.sid-code.cc 并补存量配置迁移 `0800dee7`
+- **release** · 发布/文档地址切到 <链接已省略> 并补存量配置迁移 `0800dee7`
   - update.ts 的 DEFAULT_RELEASE_HOST 升为 DEFAULT_RELEASE_ORIGIN（host → origin， 因为本次要害是 https；env 覆盖传裸 host 默认补 https，带 scheme 则原样用）
   - install-template.sh 的 RELEASE_BASE、team-defaults 模板的 searxng/traj 地址
   - 拆开 DEPLOY_SSH_HOST 与新增的 PUBLIC_BASE_URL：前者仅 scp/ssh（走 IP 更稳）， 后者派生所有对外 URL（必须域名+证书）。原先一个变量兼两职，取值天然冲突。 release.sh 生成 install.sh 的 sed 目标随之改为 origin —— 这是安全边界， 保证 SSH 目标不会泄进用户 curl 的脚本

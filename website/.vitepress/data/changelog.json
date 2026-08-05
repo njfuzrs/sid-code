@@ -32,7 +32,7 @@
   "versions": [
     {
       "version": "0.1.600",
-      "date": "2026-08-05",
+      "date": "2026-08-06",
       "isGenesis": false,
       "count": 10,
       "groups": [
@@ -42,7 +42,7 @@
           "commits": [
             {
               "scope": "release",
-              "desc": "发布/文档地址切到 https://www.sid-code.cc 并补存量配置迁移",
+              "desc": "发布/文档地址切到 <链接已省略> 并补存量配置迁移",
               "hash": "0800dee7",
               "details": [
                 "update.ts 的 DEFAULT_RELEASE_HOST 升为 DEFAULT_RELEASE_ORIGIN（host → origin， 因为本次要害是 https；env 覆盖传裸 host 默认补 https，带 scheme 则原样用）",
