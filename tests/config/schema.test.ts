@@ -47,7 +47,7 @@ describe("Config Validation", () => {
     test("同名 + 不同端点：不报「重复」，但报「按名只命中第一条」", () => {
       // 计价侧确实按 (model, endpoint) 复合键区分，所以这不是「重复冲突」；
       // 但选择侧（/model、fallback、子代理）全是按名 find-first，第二条端点永远切不过去，
-      // 其 base_url / api_key 是死配置 —— 必须告警并给出「改名」这个具体动作。
+      // 其 base_url / api_key 是死配置 —— 必须告警并给出具体动作。
       const config = {
         ...baseConfig,
         availableModels: [
@@ -62,7 +62,54 @@ describe("Config Validation", () => {
       const w = result.warnings.find(w => w.path === "availableModels" && w.message.includes("按名匹配第一条"));
       expect(w).toBeDefined();
       expect(w!.message).toContain("2 个不同端点");
-      expect(w!.message).toContain("请给它们取不同的 name");
+      expect(w!.message).toContain("不同的 name");
+    });
+
+    test("建议文案必须同时给出 model_id —— 光改名会把别名发给厂商吃 400", () => {
+      // 防回退：`name` 既是本地查找键、又直接进请求体 model 字段。旧文案只说「取不同的
+      // name」，用户照做后厂商收到 "xxx-gateway" → 400/404，等于把一个坑换成另一个坑。
+      // 完整建议 = 不同 name（本地可选中）+ 相同 model_id（厂商真名）。
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "claude-sonnet-5", baseURL: "https://gateway.internal/v1" },
+          { name: "claude-sonnet-5", baseURL: "https://api.anthropic.com" },
+        ],
+      } as Config;
+      const w = validateConfig(config).warnings.find(
+        w => w.path === "availableModels" && w.message.includes("按名匹配第一条"),
+      );
+      expect(w).toBeDefined();
+      expect(w!.message).toContain("model_id");
+      // 真名要原样出现在建议里，用户能直接复制
+      expect(w!.message).toContain('"model_id": "claude-sonnet-5"');
+    });
+
+    test("model_id 与 name 相同：提示等价于不配（纯降噪，不影响 valid）", () => {
+      const config = {
+        ...baseConfig,
+        availableModels: [
+          { name: "glm-5", modelId: "glm-5", baseURL: "https://a.com" },
+        ],
+      } as unknown as Config;
+      const result = validateConfig(config);
+      expect(
+        result.warnings.some(w => w.message.includes("与 name 完全相同")),
+      ).toBe(true);
+    });
+
+    test("正确的双渠道写法（不同 name + 相同 model_id）不产生任何 availableModels 告警", () => {
+      // 这是本次改造要让用户走到的终点状态：两条都可被 /model 选中，且都发出正确真名。
+      const config = {
+        ...baseConfig,
+        model: "claude-sonnet-5-gateway",
+        availableModels: [
+          { name: "claude-sonnet-5-gateway", modelId: "claude-sonnet-5", baseURL: "https://gateway.internal/v1" },
+          { name: "claude-sonnet-5-official", modelId: "claude-sonnet-5", baseURL: "https://api.anthropic.com" },
+        ],
+      } as unknown as Config;
+      const result = validateConfig(config);
+      expect(result.warnings.filter(w => w.path === "availableModels")).toHaveLength(0);
     });
 
     test("同名 + 三个不同端点：告警里报出端点数量", () => {

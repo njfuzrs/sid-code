@@ -367,7 +367,8 @@ export interface TUIState {
   /** 当前打开的对话框类型，null 表示无对话框 */
   activeDialog: import("../command/types.ts").DialogType | null;
   /** 可用模型列表（对话框用） */
-  availableModels: Array<{ name: string; provider: string; description?: string }>;
+  /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
+  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
   /** 当前 todo 列表（来自 TodoWrite 工具，供 TUI 面板显示） */
   todos: import("../tool/todo-write.ts").TodoItem[];
   /** 当前后台任务列表（Shell/Agent，供 TUI 面板实时显示） */

@@ -843,6 +843,9 @@ export class SubAgent {
     // 缺省（registry 未实现）回退主模型 + 主 spawn 配置。
     const sc = this.registry?.getSpawnConfigForSubAgent?.(task.type);
     const model = sc?.model ?? this.model;
+    // 真名必须显式过管道：子进程是独立 OS 进程，不读配置、别名表恒空，
+    // 只给别名会让它把 "xxx-gateway" 当模型名发给厂商（见 sub-agent-protocol wire_model）。
+    const wireModel = sc?.wireModel;
     const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
     const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
     const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
@@ -856,6 +859,7 @@ export class SubAgent {
       allowed_tools: toolDefs.map(t => t.name),
       tool_defs: toolDefs,
       model,
+      wire_model: wireModel,
       // P2-2：与 executeInner 的常规子代理默认对齐为 30（旧值 10 过于保守）。
       // 注：ParentInitMessage 协议不透传 task.forkMessages（跨进程边界），fork 模式
       // 走 spawn 时上下文本就无法继承，不适用 fork=200 的档位，统一按非 fork 默认处理。
@@ -884,6 +888,12 @@ export class SubAgent {
     // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
     const sc = this.registry?.getSpawnConfigForSubAgent?.("task");
     const model = this.modelOverride ?? sc?.model ?? this.model;
+    // 真名要按**最终生效的 model** 重新解析：modelOverride 会绕过 sc.model，
+    // 此时 sc.wireModel 是 "task" 类型模型的真名，与实际要发的模型不是一回事。
+    // 直接用会把 A 模型的别名配上 B 模型的真名发出去——比不翻译更糟。
+    const wireModel = this.modelOverride
+      ? this.registry?.resolveWireModelForAlias?.(model)
+      : sc?.wireModel;
     const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
     const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
     const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
@@ -897,6 +907,7 @@ export class SubAgent {
       allowed_tools: task.allowedTools,
       tool_defs: toolDefs,
       model,
+      wire_model: wireModel,
       // P2-2：与 executeCustomInner 对齐为 30（旧值 10 过于保守，CustomSubAgentTask 无 fork 概念）。
       max_turns: task.maxTurns ?? 30,
       max_tokens: task.maxTokens ?? 50000,

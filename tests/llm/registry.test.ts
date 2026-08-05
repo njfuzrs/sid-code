@@ -242,3 +242,58 @@ describe("ProviderRegistry", () => {
     expect(threw).toBe(true);
   });
 });
+
+describe("跨进程 wireModel（spawn 子代理别名泄漏防回退）", () => {
+  /**
+   * 核心风险：spawn 出的子代理是**独立 OS 进程**，不读 settings.json、不跑 loadConfig，
+   * 因此 wire-model.ts 的进程级别名表在子进程里恒为空。父进程必须把真名解析好，
+   * 随 init 消息（ParentInitMessage.wire_model）传过去，否则子代理会把别名当模型名
+   * 发给厂商吃 400 —— 而父进程一切正常，故障只在「子代理 + 配了 model_id」这一格出现。
+   */
+  const DUAL = testConfig({
+    model: "main-gw",
+    availableModels: [
+      { name: "main-gw", modelId: "deepseek-v4-pro", provider: "openai", baseURL: "https://gw/v1" },
+      { name: "cheap-gw", modelId: "glm-5", provider: "openai", baseURL: "https://gw2/v1" },
+    ],
+  } as any);
+
+  test("getSpawnConfigForSubAgent 同时返回别名与真名", () => {
+    const registry = new ProviderRegistry(DUAL, { explore: "cheap-gw" });
+    const sc = registry.getSpawnConfigForSubAgent("explore");
+    // 别名用于归因/计价（两条渠道要能分开统计）
+    expect(sc.model).toBe("cheap-gw");
+    // 真名用于发线上
+    expect(sc.wireModel).toBe("glm-5");
+  });
+
+  test("子代理模型 = 主模型时也要带真名（复用主 spawn 配置的分支）", () => {
+    const registry = new ProviderRegistry(DUAL);
+    const sc = registry.getSpawnConfigForSubAgent("task");
+    expect(sc.model).toBe("main-gw");
+    expect(sc.wireModel).toBe("deepseek-v4-pro");
+  });
+
+  test("未配 modelId 时 wireModel 等于别名（存量行为不变）", () => {
+    const registry = new ProviderRegistry(testConfig({ model: "test-model" }), { explore: "cheap-model" });
+    const sc = registry.getSpawnConfigForSubAgent("explore");
+    expect(sc.wireModel).toBe("cheap-model");
+    expect(sc.wireModel).toBe(sc.model);
+  });
+
+  test("子代理模型不在 availableModels 里 → 真名回落别名，不臆测", () => {
+    const registry = new ProviderRegistry(DUAL, { explore: "not-configured" });
+    const sc = registry.getSpawnConfigForSubAgent("explore");
+    expect(sc.model).toBe("not-configured");
+    expect(sc.wireModel).toBe("not-configured");
+  });
+
+  test("resolveWireModelForAlias：供 modelOverride 场景按最终模型重新解析", () => {
+    // modelOverride 会绕过 sc.model，此时不能沿用 sc.wireModel
+    // （那是另一个模型的真名，配错比不翻译更糟）。
+    const registry = new ProviderRegistry(DUAL, { task: "main-gw" });
+    expect(registry.resolveWireModelForAlias("cheap-gw")).toBe("glm-5");
+    expect(registry.resolveWireModelForAlias("main-gw")).toBe("deepseek-v4-pro");
+    expect(registry.resolveWireModelForAlias("unknown")).toBe("unknown");
+  });
+});

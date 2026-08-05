@@ -21,6 +21,7 @@ import type { LocalCommandResult, CommandContext } from "../../types.ts";
 import type { ModelConfig } from "../../../config/config.ts";
 import { lookupCatalog } from "../../../llm/model-params-catalog.ts";
 import { lookupCapability } from "../../../llm/model-capabilities.ts";
+import { resolveWireModel } from "../../../llm/wire-model.ts";
 import {
   getSettingsForSource,
   patchSettingsFile,
@@ -156,7 +157,12 @@ async function discoverSingle(
   //    对其直接返回 null）——一路落到「失败」，而准确数值其实就躺在
   //    ~/.sid-code/model-capabilities.json 里（实测 2920 条）。用户看到的是
   //    「⚠ 失败」，工具却明明知道答案。
-  const cached = lookupCapability(model.name);
+  //    ⚠ 查询键必须是**厂商真名**（model_id，缺省回落 name）：能力缓存由探针/自愈按真名
+  //    写入，且 lookupCapability/lookupCatalog 都是前缀与家族匹配。喂本地别名
+  //    （claude-sonnet-5-gateway）会静默 miss，答案明明在缓存里却报「⚠ 失败」——
+  //    正是这段注释描述的那个缺口，别名会让它重新出现。
+  const wireName = resolveWireModel(model.name, [model]);
+  const cached = lookupCapability(wireName);
   if (cached && (cached.contextWindow || cached.maxOutputTokens)) {
     return {
       model,
@@ -166,8 +172,8 @@ async function discoverSingle(
     };
   }
 
-  // 3. 内置速查表兜底
-  const catalogEntry = lookupCatalog(model.name);
+  // 3. 内置速查表兜底（同样按真名查，理由见上）
+  const catalogEntry = lookupCatalog(wireName);
   if (catalogEntry) {
     return {
       model,
@@ -192,12 +198,16 @@ async function queryProviderAPI(
 
   if (!apiKey || !provider) return null;
 
+  // 真名（model_id，缺省回落 name）：这两个查询都把模型名拼进 URL 路径
+  // （GET /v1/models/{id}），厂商只认自己的模型 id，传本地别名必然 404。
+  const wireName = resolveWireModel(model.name, [model]);
+
   switch (provider) {
     case "anthropic":
-      return queryAnthropic(model.name, apiKey, baseURL);
+      return queryAnthropic(wireName, apiKey, baseURL);
     case "gemini":
     case "google":
-      return queryGemini(model.name, apiKey, baseURL);
+      return queryGemini(wireName, apiKey, baseURL);
     case "openai":
     default:
       // OpenAI 兼容类 API（OpenAI/DeepSeek/Qwen/Moonshot）不返回参数

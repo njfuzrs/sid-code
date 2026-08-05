@@ -652,8 +652,11 @@ export class App {
     // （见 memory feedback-no-hardcoded-model-tier-rules.md）
     const { resolveEffortCapability } = require("./llm/effort.ts");
     const thinkingModelConfig = opts.config.availableModels?.find(m => m.name === opts.config.model);
+    const { resolveWireModel: resolveWireModelForThinking } = require("./llm/wire-model.ts");
     const thinkingCap = resolveEffortCapability({
-      model: opts.config.model,
+      // 能力判定吃**真名**（与 query/loop.ts 的 cap 解析同口径）：内部按模型名做
+      // catalog/家族/前缀匹配，喂本地别名会静默 miss → thinking 开关被无声关闭。
+      model: resolveWireModelForThinking(opts.config.model, opts.config.availableModels),
       provider: opts.config.provider,
       baseURL: thinkingModelConfig?.baseURL ?? opts.config.baseURL,
       modelConfig: thinkingModelConfig ? { supportsThinking: thinkingModelConfig.supportsThinking } : undefined,
@@ -1263,9 +1266,12 @@ export class App {
   /** 解析当前模型的 effort 能力描述符（/effort、/think 状态读取 + setter 共用）。 */
   private resolveEffortCap(): import("./llm/effort.ts").EffortCapability {
     const { resolveEffortCapability } = require("./llm/effort.ts");
+    const { resolveWireModel } = require("./llm/wire-model.ts");
     const mc = this.config.availableModels?.find(m => m.name === this.config.model);
     return resolveEffortCapability({
-      model: this.config.model,
+      // 真名（与 query/loop.ts、构造期 thinkingCap 三处同口径）。若这里用别名而
+      // loop.ts 用真名，会出现「状态栏显示不支持 thinking，实际请求却发了 thinking」的分裂。
+      model: resolveWireModel(this.config.model, this.config.availableModels),
       provider: this.config.provider,
       baseURL: mc?.baseURL ?? this.config.baseURL,
       modelConfig: mc ? { supportsThinking: mc.supportsThinking } : undefined,
@@ -1538,18 +1544,28 @@ export class App {
     const apiKey = this.config.openaiKey;
     const baseURL = this.config.baseURL;
     if (!apiKey || !baseURL) return;
-    if (this.probedModels.has(model)) return;
+    // 全流程按**真名**：本函数的三件事都以模型名为键，别名会同时破坏三处。
+    //   ① 门禁 lookupRegistry / lookupCapability —— 别名必然 miss，已知模型被误判未知、
+    //      每次启动都白探一次真实请求；
+    //   ② 探针请求体的 model 字段 —— 别名会被厂商 400，探针永远学不到东西；
+    //   ③ 能力缓存**写入键**（model-capabilities.ts mergeEntry 按传入名小写做键），
+    //      而读取侧（token-estimator / openai.ts 自愈）已统一按真名读 —— 键不一致的话
+    //      写进去的永远读不出来，缓存等于失效，且不报错。
+    // probedModels 去重也按真名：同一真名的两个渠道别名只需探一次。
+    const { resolveWireModel } = require("./llm/wire-model.ts");
+    const wireModel: string = resolveWireModel(model, this.config.availableModels);
+    if (this.probedModels.has(wireModel)) return;
     try {
       const { lookupRegistry } = require("./llm/model-registry.ts");
-      if (lookupRegistry(model)) return;
+      if (lookupRegistry(wireModel)) return;
       const { lookupCapability } = require("./llm/model-capabilities.ts");
-      if (lookupCapability(model)) return;
+      if (lookupCapability(wireModel)) return;
     } catch {
       return; // 判断本身失败就不冒险探，探针是纯优化项
     }
-    this.probedModels.add(model);
+    this.probedModels.add(wireModel);
     void import("./llm/openai.ts")
-      .then((m) => m.probeOpenAICompatModel(model, baseURL, apiKey))
+      .then((m) => m.probeOpenAICompatModel(wireModel, baseURL, apiKey))
       .catch(() => { /* 纯优化项：探针失败不影响模型正常使用，下次真实请求走自愈兜底 */ });
   }
 
@@ -5454,6 +5470,9 @@ export class App {
         : null,
       availableModels: this.config.availableModels.map(m => ({
         name: m.name,
+        // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
+        // 展示与选中仍用 name，见 model-grouping.ts ModelOption.modelId 注释。
+        modelId: m.modelId,
         provider: m.provider || this.config.provider,
         description: m.baseURL ? `${m.provider || this.config.provider} (${m.baseURL})` : undefined,
       })),

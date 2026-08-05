@@ -9,6 +9,7 @@ import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { resolvePricing } from "../api/cost-tracker.ts";
+import { resolveWireModel } from "./wire-model.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
 import type { LanguagePref } from "../config/prompt-lang.ts";
 
@@ -238,15 +239,19 @@ export class ProviderRegistry {
    */
   getSpawnConfigForSubAgent(type: string): {
     model: string;
+    /** 厂商真名，随 init 过管道给子进程（子进程别名表为空，必须由父进程解析）*/
+    wireModel: string;
     providerName: string;
     apiKey: string;
     baseURL?: string;
   } {
     const model = this.getModelForSubAgent(type);
+    // 别名 → 真名：spawn 出的子进程不读配置、别名表为空，只能靠父进程在这里解析后传过去。
+    const wireModel = resolveWireModel(model, this.config.availableModels);
     // 子代理模型与主模型相同 → 复用主 spawn 配置
     if (model === this.config.model) {
       const base = this.getSpawnConfig();
-      return { model, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+      return { model, wireModel, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
     }
     // 子代理模型在 availableModels 中有独立配置 → 用其 provider/apiKey/baseURL
     const modelConfig = this.findModelConfig(model);
@@ -255,11 +260,11 @@ export class ProviderRegistry {
       const apiKey = modelConfig.apiKey || this.getApiKey(providerName);
       const baseURL = modelConfig.baseURL
         || (providerName === this.config.provider ? this.config.baseURL : undefined);
-      return { model, providerName, apiKey, baseURL: baseURL || undefined };
+      return { model, wireModel, providerName, apiKey, baseURL: baseURL || undefined };
     }
     // 未找到独立配置 → 沿用主 provider 配置，仅模型名不同（与 getProviderForSubAgent 末路径一致）
     const base = this.getSpawnConfig();
-    return { model, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+    return { model, wireModel, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
   }
 
   /** 获取子代理 Provider（根据模型在 availableModels 中的配置自动选择） */
@@ -294,6 +299,18 @@ export class ProviderRegistry {
   /** 在 availableModels 中查找模型配置 */
   private findModelConfig(modelName: string): ModelConfig | undefined {
     return this.config.availableModels?.find(m => m.name === modelName);
+  }
+
+  /**
+   * 把任意本地别名解析成厂商真名（缺省回落别名本身）。
+   *
+   * 存在意义：**跨进程**场景需要父进程代为解析。spawn 出的子代理是独立 OS 进程，
+   * 不读 settings.json、不跑 loadConfig，其进程级别名表恒为空，只能由父进程把真名
+   * 随 init 消息传过去（见 sub-agent-protocol.ts 的 wire_model）。
+   * 进程内路径不需要调它 —— provider 侧的 pickWireModel 会自动走别名表。
+   */
+  resolveWireModelForAlias(alias: string): string {
+    return resolveWireModel(alias, this.config.availableModels);
   }
 
   /** 根据 provider 名称获取对应的 API Key（优先从当前模型配置取） */

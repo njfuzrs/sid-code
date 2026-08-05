@@ -79,6 +79,8 @@ const ModelPricingSchema = lazySchema(() =>
 const ModelConfigSchema = lazySchema(() =>
   z.object({
     name: z.string().min(1),
+    /** 发往厂商的真实模型 id（wire model），缺省 = name。同名多端点靠它区分别名与真名 */
+    modelId: z.string().min(1).optional(),
     provider: z.string().optional(),
     baseURL: z.string().optional(),
     apiKey: z.string().optional(),

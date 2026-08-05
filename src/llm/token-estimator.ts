@@ -6,6 +6,7 @@
 import type { Message, ToolDefinition } from "./types.ts";
 import { lookupRegistry } from "./model-registry.ts";
 import { lookupCapability } from "./model-capabilities.ts";
+import { resolveWireModel } from "./wire-model.ts";
 // 审计第 21 条：收敛到 context/token.ts 的统一块估算（补全 thinking/redacted_thinking/mediaBlocks）。
 import { estimateBlockTokens } from "../context/token.ts";
 
@@ -105,7 +106,7 @@ export class TokenEstimator {
    */
   getContextLimit(
     model: string,
-    availableModels?: Array<{ name?: string; contextWindow?: number }>,
+    availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>,
   ): number {
     // 1. 用户配置优先：availableModels 里同名模型声明的 contextWindow 是权威值，
     //    避免内置静态表与用户真实部署（自建/代理/新版本）漂移。
@@ -120,8 +121,13 @@ export class TokenEstimator {
       return userModel.contextWindow;
     }
 
+    // 别名 → 厂商真名：下面的注册表 / 动态能力缓存全是按模型名做前缀与家族匹配，
+    // 喂本地别名（claude-sonnet-5-gateway）会 miss 到 1M 兜底 —— 窗口高估直接导致
+    // 塞太多 token 吃 400，且不报错。用户配了 contextWindow 时上面已返回，走不到这里。
+    const wire = resolveWireModel(model, availableModels);
+
     // 2. 从统一注册表查找（替代旧的 MODEL_CONTEXT_LIMITS 静态表）
-    const entry = lookupRegistry(model);
+    const entry = lookupRegistry(wire);
     if (entry) return entry.contextWindow;
 
     // 2.5 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得）。
@@ -135,7 +141,7 @@ export class TokenEstimator {
     //     但曾经因为 loadCapabilityCache 漏做校验，`{"contextWindow":1e400}`（JSON 解析后
     //     变成 Infinity）能一路传到这里——`Infinity > 0` 为 true，旧检查完全放行，
     //     导致「上下文永远没满」的静默失效（不报错，比报错更难发现）。两道关卡都要拦。
-    const dynamic = lookupCapability(model)?.contextWindow;
+    const dynamic = lookupCapability(wire)?.contextWindow;
     if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
 
     // 兜底：未知模型回退到可配置的默认值（1M）。
@@ -152,7 +158,7 @@ export class TokenEstimator {
    */
   getMaxOutputTokens(
     model: string,
-    availableModels?: Array<{ name?: string; maxOutputTokens?: number }>,
+    availableModels?: Array<{ name?: string; modelId?: string; maxOutputTokens?: number }>,
   ): number | undefined {
     const userModel = availableModels?.find(m => m.name === model);
     if (
@@ -162,13 +168,15 @@ export class TokenEstimator {
     ) {
       return userModel.maxOutputTokens;
     }
-    const entry = lookupRegistry(model);
+    // 与 getContextLimit 同源：注册表 / 动态缓存按真名查，别名会静默 miss。
+    const wire = resolveWireModel(model, availableModels);
+    const entry = lookupRegistry(wire);
     if (entry && Number.isFinite(entry.maxOutputTokens) && entry.maxOutputTokens > 0) {
       return entry.maxOutputTokens;
     }
     // 动态能力缓存兜底（与 getContextLimit 的优先级 2.5 同源）。仍拿不到才返回 undefined
     // ——由 ContextManager 用默认预留兜底，而不是在这里编一个数字。
-    const dynamic = lookupCapability(model)?.maxOutputTokens;
+    const dynamic = lookupCapability(wire)?.maxOutputTokens;
     if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
     return undefined;
   }

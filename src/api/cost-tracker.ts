@@ -45,6 +45,15 @@ const FALLBACK_PRICING: ModelPricing = {
 /** availableModels 中一项的简化类型（仅 resolvePricing / inferProvider 需要的字段） */
 export interface PricingModelEntry {
   name?: string;
+  /**
+   * 厂商真实模型 id（缺省 = name）。
+   *
+   * 计价本身**不用**它（`resolvePricing` 刻意按 (name, endpoint) 复合键算，两个渠道
+   * 该有各自的价）；但按名做**启发式推断**的地方必须用它 —— 见 inferPricingProvider /
+   * SessionState.inferProvider：别名带渠道前缀（gw-claude-sonnet-5）时 `/^claude/i`
+   * 会判错 provider，缓存三段拆分（hit/write/未命中）随之算错。
+   */
+  modelId?: string;
   provider?: string;
   baseURL?: string;
   pricing?: ModelPricing;
@@ -111,7 +120,13 @@ export function inferPricingProvider(
 ): string {
   const mc = availableModels?.find(m => m.name === model);
   if (mc?.provider) return mc.provider;
-  return /^claude/i.test(model) ? "anthropic" : "openai";
+  // 兜底启发式必须按**真名**判：别名带渠道前缀时（gw-claude-sonnet-5）`/^claude/i`
+  // 判成 openai，normalizeCacheUsage 的三段拆分口径随之反了（Anthropic 的
+  // inputTokens 是未命中余量，OpenAI 的含命中），成本静默算错、不报错。
+  // 用户显式配了 provider 时上面已返回，走不到这里。
+  const { resolveWireModel } = require("../llm/wire-model.ts");
+  const wire: string = resolveWireModel(model, availableModels);
+  return /^claude/i.test(wire) ? "anthropic" : "openai";
 }
 
 /**

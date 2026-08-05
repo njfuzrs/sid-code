@@ -16,6 +16,14 @@
 
 export interface ModelOption {
   name: string;
+  /**
+   * 厂商真实模型 id（availableModels[].modelId），缺省 = name。
+   *
+   * 只用于**族识别**：别名可能带渠道后缀/前缀（claude-sonnet-5-gateway、gw-glm-5），
+   * 用它分组才能让同一模型的两个渠道落进同一族、而不是掉进「其他 · provider」兜底。
+   * 展示与选中仍一律用 name（那才是用户输入 `/model <name>` 的键）。
+   */
+  modelId?: string;
   provider: string;
   description?: string;
 }
@@ -46,10 +54,13 @@ export interface ModelEntryRow {
   /**
    * 同名条目被前序条目「遮蔽」：按名切换永远命中第一条，本条选不到。
    *
-   * 同名不同端点是**刻意支持**的多渠道配置（计价按 (model, endpoint) 复合键，见
-   * config/schema.ts 的判重注释），但 `/model <name>` 与 resolveCurrentModelConfig 都是
-   * `find(m => m.name === model)`——只认名字、命中第一条。于是第二条在面板里看着能选、
-   * 选了却切到第一条（端点不对）。这里显式标出来，不假装它可选。
+   * `/model <name>` 与 resolveCurrentModelConfig 都是 `find(m => m.name === model)`
+   * ——只认名字、命中第一条。于是第二条在面板里看着能选、选了却切到第一条（端点不对）。
+   * 这里显式标出来，不假装它可选。
+   *
+   * 正确的多渠道配法是**给两条取不同 name**，再各自用 `modelId` 指回同一个厂商真名
+   * （见 llm/wire-model.ts）。别名唯一 → 两条都可达；真名相同 → 请求体发出去仍是
+   * 厂商认识的那个名字。此前建议「同名不同端点」是错的：那样第二条永远选不中。
    */
   shadowed?: boolean;
 }
@@ -168,7 +179,9 @@ export function buildModelRows(
   });
 
   const entries: DecoratedEntry[] = models.map((m, i) => {
-    const family = inferModelFamily(m.name, m.provider);
+    // 族识别按真名（缺省回落 name）：别名带渠道前缀时（gw-glm-5）按名匹配会 miss
+    // 到「其他 · provider」，同一模型的两个渠道被拆到两个族，面板看着像两个模型。
+    const family = inferModelFamily(m.modelId || m.name, m.provider);
     const { endpoint, note } = parseModelDescription(m.description, m.provider);
     const shadowed = firstSeenAt.get(m.name) !== i;
     return {

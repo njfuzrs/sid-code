@@ -23,6 +23,7 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
+import { pickWireModel } from "./wire-model.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import {
   learnFromError,
@@ -660,7 +661,10 @@ export class OpenAIProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
-    const model = params.model || this._model;
+    // 能力自愈缓存按**真名**记账：400 是端点针对真实模型报的，学到的「不支持 effort」
+    // 属于那个真模型，不属于某条本地别名。用别名当 key 会让同一真模型的两个渠道各自
+    // 重新踩一遍 400（学不到彼此的经验），也会污染 lookupCapability 的前缀/家族匹配。
+    const model = pickWireModel(params, this._model);
     let healed = false;
 
     for (const attempt of [0, 1]) {
@@ -718,7 +722,17 @@ export class OpenAIProvider implements Provider {
     // D1-1：发送前协议完整性关卡（只读校验 + 告警 + 落盘，不修数据，尊重 ADR-039）
     guardOutgoingMessages(params.messages, { providerName: this.name() });
 
-    const effectiveModel = params.model || this._model;
+    // 真名（wire model）：既进请求体，也是**协议分派与参数过滤**的判据。
+    // 这里尤其不能用本地别名——shouldUseResponsesAPI / isReasoningModel /
+    // filterParamsForModel / lookupCatalog 全是按模型名做正则与前缀匹配，
+    // 别名一旦不是「真名 + 后缀」形状（如 gw-gpt-5.3），就会走错协议或漏过参数过滤。
+    const effectiveModel = pickWireModel(params, this._model);
+    // 别名（attribution model）：**结构化可观测性**字段用它，与 anthropic.ts 的
+    // this._model 口径一致。两条渠道指向同一真名，telemetry 若打真名就会被聚合成一条，
+    // 分渠道的延迟/停顿/失败率统计直接失效——而分渠道正是配 model_id 的目的。
+    // 注意 AUDIT:API 的报错字符串刻意保留真名：排查 400 "model not found" 时，
+    // 需要看到实际发出去的那个名字，那是诊断信息而非归因维度。
+    const attrModel = params.model || this._model;
 
     // A3：Responses API 分派——GPT-5.x 系列走新协议
     if (this.shouldUseResponsesAPI(effectiveModel)) {
@@ -801,7 +815,7 @@ export class OpenAIProvider implements Provider {
           `响应头超时 ${headerTimeoutMs / 1000}s 未收到响应头，主动中断 fetch（model=${this._model}）`,
         );
         // 缺口 2：记录响应头超时触发
-        emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: effectiveModel });
+        emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: attrModel });
         // 缺口 2 进阶：武装未生效检查（abort 后若 fetch 未在 5s 内 settle → TimeoutIneffective）
         disarmHeaderIneffective = armIneffectiveCheck(
           obsIndex,
@@ -828,7 +842,7 @@ export class OpenAIProvider implements Provider {
 
       let response: Response;
       // 缺口 1：记录 fetch 发出阶段
-      emitStreamPhase(obsIndex, "fetch_sent", { model: effectiveModel });
+      emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel });
       try {
         response = await fetch(`${this.baseURL}/chat/completions`, {
           method: "POST",
@@ -870,7 +884,7 @@ export class OpenAIProvider implements Provider {
         const error = await response.text();
         log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
         // 缺口 1：HTTP 错误也记录阶段（含状态码）
-        emitStreamPhase(obsIndex, "error", { http_status: response.status, model: effectiveModel });
+        emitStreamPhase(obsIndex, "error", { http_status: response.status, model: attrModel });
         // 接入审计日志(WARN 级,fileOnly 不刷屏):API 层错误是排查会话异常的关键信号,
         // 原先只进 LLM:OPENAI 普通日志,audit.log 拿不到 HTTP 码 → 异常时定位慢。
         getLogger().warn(
@@ -976,7 +990,7 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: effectiveModel });
+            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: attrModel });
           }
         },
         // § 行为等价（T7）：abort 由 parseSSE（内部 abortPromise race）+ 下方消费循环
@@ -1001,7 +1015,7 @@ export class OpenAIProvider implements Provider {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
           // 缺口 1：用户中断记录 aborted 阶段
-          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: effectiveModel });
+          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: attrModel });
           throw new Error("Request aborted");
         }
         // T14.1/T14.6：首 token 延迟（TTFT）已收敛到 lifecycle 的 onFirstContentProgress 回调，
@@ -1145,6 +1159,9 @@ export class OpenAIProvider implements Provider {
     const log = getLogger();
     const requestStartTime = Date.now();
     let firstTokenTime: number | null = null;
+    // 归因用别名（与 Chat Completions 路径同口径）：telemetry 打别名，否则同一真名的
+    // 两个渠道会被聚合成一条，分渠道统计失效。请求体用 effectiveModel（真名）。
+    const attrModel = params.model || this._model;
 
     // 构造 Responses API 请求体
     const requestBody = buildResponsesRequest(params, effectiveModel);
@@ -1167,7 +1184,7 @@ export class OpenAIProvider implements Provider {
         "LLM:OPENAI:RESPONSES",
         `响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`,
       );
-      emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: effectiveModel });
+      emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: attrModel });
       disarmHeaderIneffective = armIneffectiveCheck(obsIndex, "header_timeout", "fetch_not_settled_after_5s");
       headerTimeoutCtl.abort();
     }, headerTimeoutMs);
@@ -1180,7 +1197,7 @@ export class OpenAIProvider implements Provider {
       : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
 
     let response: Response;
-    emitStreamPhase(obsIndex, "fetch_sent", { model: effectiveModel });
+    emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel });
     try {
       // Responses API 端点：/responses（baseURL 已含 /v1）
       response = await fetch(`${this.baseURL}/responses`, {
@@ -1247,7 +1264,7 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI:RESPONSES", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: effectiveModel });
+            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: attrModel });
           }
         },
         onTimeout: (layer) => {
@@ -1270,7 +1287,7 @@ export class OpenAIProvider implements Provider {
       for await (const event of lifecycle.guard(parseResponsesStream(response.body, signal))) {
         // 纵深防御：signal abort 检查
         if (signal?.aborted) {
-          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: effectiveModel });
+          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: attrModel });
           throw new Error("Request aborted");
         }
 
@@ -1323,7 +1340,8 @@ export class OpenAIProvider implements Provider {
     params: SendParams,
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
-    const model = params.model || this._model;
+    // 与流式自愈同源：能力记账按真名，见 withCapabilityHealing 注释。
+    const model = pickWireModel(params, this._model);
     try {
       return await this.sendMessageNonStreamingInner(params, signal);
     } catch (err) {
@@ -1361,7 +1379,9 @@ export class OpenAIProvider implements Provider {
   ): Promise<AccumulatedResponse> {
     // D1-1：发送前协议完整性关卡（非流式路径同样校验）
     guardOutgoingMessages(params.messages, { providerName: this.name() });
-    const effectiveModel = params.model || this._model;
+    // 真名：与流式 sendMessageStreamInner 严格同源（进请求体 + 做协议/参数判据）。
+    // 两条路径必须同口径，否则「降级到非流式」会顺带换掉发出去的模型名。
+    const effectiveModel = pickWireModel(params, this._model);
     const messages = this.convertMessages(params.messages, effectiveModel);
     const tools = params.tools?.map((t) => ({
       type: "function",

@@ -288,7 +288,23 @@ export interface ToolDefinition {
 
 /** 发送消息参数 */
 export interface SendParams {
+  /**
+   * 模型**本地别名**（availableModels[].name）。可观测性、hook、成本归因、日志全读它，
+   * 语义是「用户选的是哪一条配置」——刻意保持不变，不要改成真名。
+   *
+   * 真正发往厂商的模型 id 见 `wireModel`。
+   */
   model: string;
+  /**
+   * 发往厂商的**真实模型 id**（wire model）。缺省时 provider 回落 `model`。
+   *
+   * 只有一个消费点：provider 内部拼 HTTP 请求体的 `model` 字段。别的地方一律用 `model`，
+   * 否则同名多端点（两条别名指向同一真名）在归因、计价、日志里会被合并成一条，
+   * 分渠道统计直接失效。
+   *
+   * 由 resolveWireModel(alias, availableModels) 解析后填入，见 llm/wire-model.ts。
+   */
+  wireModel?: string;
   messages: Message[];
   system?: string;
   maxTokens: number;

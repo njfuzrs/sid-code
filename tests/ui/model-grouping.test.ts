@@ -287,3 +287,43 @@ describe("computeScrollStart", () => {
     expect(computeScrollStart(30, 12, 5, 14)).toBe(5);
   });
 });
+
+describe("modelId（厂商真名）参与族识别", () => {
+  // 双渠道正确配法是「不同 name + 相同 modelId」。别名可能带渠道前缀，
+  // 按 name 分族会掉进「其他 · provider」兜底，同一模型的两条渠道被拆成两族，
+  // 面板看着像两个不相干的模型。族识别改吃 modelId 后两条并列在同一族下。
+  const DUAL: ModelOption[] = [
+    { name: "gw-claude-sonnet-5", modelId: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gateway.internal)" },
+    { name: "official-claude-sonnet-5", modelId: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://api.anthropic.com)" },
+  ];
+
+  test("前缀式别名按 modelId 落进 Claude 族，而不是「其他」兜底", () => {
+    const rows = buildModelRows(DUAL, "gw-claude-sonnet-5");
+    const headers = rows.filter(r => r.kind === "header");
+    expect(headers).toHaveLength(1);
+    expect(headers[0]!.kind === "header" && headers[0]!.label).toBe("Claude");
+  });
+
+  test("两条不同 name 都可选中，不产生 shadowed", () => {
+    const rows = buildModelRows(DUAL, "gw-claude-sonnet-5");
+    const models = rows.filter(r => r.kind === "model");
+    expect(models).toHaveLength(2);
+    expect(models.every(m => m.kind === "model" && !m.shadowed)).toBe(true);
+  });
+
+  test("当前项只标中选中的那条别名（不因真名相同而两行同时标当前）", () => {
+    const rows = buildModelRows(DUAL, "official-claude-sonnet-5");
+    const current = rows.filter(r => r.kind === "model" && r.isCurrent);
+    expect(current).toHaveLength(1);
+    expect(current[0]!.kind === "model" && current[0]!.name).toBe("official-claude-sonnet-5");
+  });
+
+  test("未配 modelId 时仍按 name 分族（存量行为不变）", () => {
+    const rows = buildModelRows(
+      [{ name: "claude-sonnet-5", provider: "anthropic" }],
+      "claude-sonnet-5",
+    );
+    const headers = rows.filter(r => r.kind === "header");
+    expect(headers[0]!.kind === "header" && headers[0]!.label).toBe("Claude");
+  });
+});

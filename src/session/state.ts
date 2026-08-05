@@ -421,8 +421,11 @@ export class SessionState {
       const mc = availableModels.find(m => m.name === model);
       if (mc?.provider) return mc.provider;
     }
-    // 兜底启发式
-    return /^claude/i.test(model) ? "anthropic" : "openai";
+    // 兜底启发式按**真名**判（与 inferPricingProvider 同口径）：别名带渠道前缀时
+    // （gw-claude-sonnet-5）按别名判会落成 openai，缓存三段归一化口径反掉。
+    const { resolveWireModel } = require("../llm/wire-model.ts");
+    const wire: string = resolveWireModel(model, availableModels);
+    return /^claude/i.test(wire) ? "anthropic" : "openai";
   }
 
   /**

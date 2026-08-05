@@ -34,7 +34,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `analytics` ⚠ | object | — | 分析/事件系统配置（spec 17 — analytics 通道） |
 | `anthropicKey` | string | — | Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） |
 | `askUserQuestionTimeout` | string | — | AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应， 按 can… |
-| `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围） |
+| `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
 | `checkpoint` ⚠ | object | — | Checkpoint 配置 |

@@ -34,6 +34,7 @@ import type { StreamTelemetrySignal } from "./types.ts";
 import { emitTimeoutFired, emitStreamPhase, emitHttpConnected } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
+import { pickWireModel } from "./wire-model.ts";
 import { buildSystemBlocks, assertCacheBreakpointBudget, markLastToolCacheBreakpoint } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
@@ -182,7 +183,10 @@ export class AnthropicProvider implements Provider {
     // P1-3: strict 模式（Constrained Decoding）— 仅 Claude 4.x 模型支持
     // P1-4: FGTS（eager_input_streaming）— 仅 Anthropic 直连时启用
     // P2-4: Token Efficient Tools 与 strict 互斥
-    const model = params.model || this._model;
+    // 能力判定必须按**真名**：modelSupportsStrict 是前缀/正则匹配，喂本地别名
+    // （如 claude-sonnet-5-gateway 的兄弟条目 gw-claude-sonnet-5）会静默判 false，
+    // strict 工具无声降级——不报错，只是行为变差，比报错更难发现。
+    const model = pickWireModel(params, this._model);
     const enableStrict = !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(model);
     const enableFGTS = isDirectAnthropicEndpoint(this.client.baseURL)
       && !process.env.SID_DISABLE_FGTS;
@@ -228,8 +232,12 @@ export class AnthropicProvider implements Provider {
       // 注入客户端请求 ID，用于与服务端日志关联排查（请求超时时仍可追踪）
       const clientRequestId = generateClientRequestId();
 
+      // 发往线上的真名（同名多端点时 ≠ params.model 别名，见 wire-model.ts）。
+      // 日志刻意打真名：排查 400 "model not found" 时要看到实际发出去的值。
+      const wireModel = pickWireModel(params, this._model);
+
       log.debug("LLM:ANTHROPIC", `发送请求（Prompt Caching 已启用，raw stream 模式）`, {
-        model: params.model || this._model,
+        model: wireModel,
         messageCount: messages.length,
         toolCount: tools?.length ?? 0,
         maxTokens: params.maxTokens,
@@ -237,7 +245,7 @@ export class AnthropicProvider implements Provider {
       });
 
       const requestParams = {
-        model: params.model || this._model,
+        model: wireModel,
         max_tokens: params.maxTokens,
         messages: messages as any,
         system: system as any,
@@ -670,9 +678,10 @@ export class AnthropicProvider implements Provider {
       name: t.name,
       description: t.description,
       input_schema: t.input_schema,
-      // 非流式路径同样支持 strict（对齐流式路径门控逻辑）
+      // 非流式路径同样支持 strict（对齐流式路径门控逻辑）。
+      // 同流式路径：能力判定吃真名，别名会静默判 false。
       ...(t.strict && !process.env.SID_DISABLE_STRICT_TOOLS
-        && modelSupportsStrict(params.model || this._model) && { strict: true }),
+        && modelSupportsStrict(pickWireModel(params, this._model)) && { strict: true }),
     }));
 
     // G8: 非流式路径缓存标记对齐流式路径——
@@ -703,14 +712,16 @@ export class AnthropicProvider implements Provider {
     assertCacheBreakpointBudget(system, messages as any, getLogger(), tools as any);
 
     const log = getLogger();
+    // 与流式路径同源：发线上的是真名，不是本地别名（见 wire-model.ts）
+    const wireModel = pickWireModel(params, this._model);
     log.debug("LLM:ANTHROPIC", "非流式请求", {
-      model: params.model || this._model,
+      model: wireModel,
       maxTokens: params.maxTokens,
     });
 
     const message = await this.client.messages.create(
       {
-        model: params.model || this._model,
+        model: wireModel,
         max_tokens: params.maxTokens,
         messages: messages as any,
         system: system as any,

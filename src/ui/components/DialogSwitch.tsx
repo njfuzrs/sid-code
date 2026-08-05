@@ -56,7 +56,8 @@ export interface DialogSwitchProps {
   // 通用对话框系统
   activeDialog: DialogType | null;
   onDialogClose: () => void;
-  availableModels: Array<{ name: string; provider: string; description?: string }>;
+  /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
+  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
   onModelSelect: (modelName: string) => void;
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;

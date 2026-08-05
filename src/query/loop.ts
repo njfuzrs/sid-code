@@ -26,6 +26,7 @@ import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
+import { resolveWireModel } from "../llm/wire-model.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, emitTimerDrift, TIMER_DRIFT_RATIO, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
 import { getSleepLedger, describeSleep } from "../utils/sleep-detect.ts";
@@ -1558,7 +1559,11 @@ export async function* queryLoop(
     }
 
     const sendParams: SendParams = {
+      // 别名：可观测性 / hook / 成本归因全读它，语义是「用户选的哪一条配置」。
       model: config.model,
+      // 真名：只有 provider 拼 HTTP 请求体时用。主循环显式解析（快路径，不依赖
+      // wire-model 的进程级兜底表），同名多端点靠它把两条别名分别发成同一个真名。
+      wireModel: resolveWireModel(config.model, config.availableModels),
       messages: finalMessages,
       system: ctxMgr.getSystemPrompt(),
       maxTokens: state.maxOutputTokensOverride ?? config.maxTokens,
@@ -1574,7 +1579,11 @@ export async function* queryLoop(
     if (deps.getEffortSetting || deps.getThinkingSetting) {
       const modelConfig = config.availableModels?.find(m => m.name === config.model);
       const cap = resolveEffortCapability({
-        model: config.model,
+        // 能力判定吃**真名**：resolveEffortCapability 内部按模型名做家族/前缀匹配，
+        // 喂本地别名（如 gw-deepseek-v4-pro）会静默 miss → thinking/effort 能力丢失。
+        // 注意 supportsThinking 仍从 modelConfig 取（那是用户对**这条渠道**的显式声明，
+        // 权威度高于按名推导，且同一真名的两个渠道支持度确实可能不同）。
+        model: sendParams.wireModel ?? config.model,
         provider: config.provider,
         baseURL: modelConfig?.baseURL ?? config.baseURL,
         modelConfig: modelConfig ? { supportsThinking: modelConfig.supportsThinking } : undefined,

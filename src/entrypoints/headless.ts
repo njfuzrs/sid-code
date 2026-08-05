@@ -74,6 +74,16 @@ async function main(): Promise<void> {
     // 发送就绪信号
     writeChildMsg({ type: "ready" });
 
+    // 别名表播种（纵深防御）：本进程不读 settings.json、不跑 loadConfig，别名表恒为空。
+    // 逐个调用点传 wireModel 只能覆盖**当前已知**的发送点；这里把父进程传来的
+    // (别名 → 真名) 单条映射注册进表，本进程内任何路径（含日后新增的、以及
+    // ModelFallback 一旦被接上 fallbackProvider 后的重试/降级路径）都自动拿到真名。
+    // init.wire_model 缺省或与别名相同时 setWireModelAliases 不入表，行为完全不变。
+    if (init.wire_model) {
+      const { setWireModelAliases } = require("../llm/wire-model.ts");
+      setWireModelAliases([{ name: init.model, modelId: init.wire_model }]);
+    }
+
     // 2. 创建 Provider
     const provider = createProvider(
       init.provider_name,
@@ -202,7 +212,11 @@ async function runAgentLoop(
       const stream = streamWithResilience(
         provider,
         {
+          // 别名（归因/日志口径，与父进程一致）
           model: init.model,
+          // 真名：本进程不读配置、别名表恒空，只能用父进程随 init 传来的值。
+          // 缺省（老版本父进程 / 无 model_id 配置）时 provider 回落 model，行为不变。
+          wireModel: init.wire_model,
           // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
           messages: ctxMgr.getCleanedMessages(),
           system: ctxMgr.getSystemPrompt(),

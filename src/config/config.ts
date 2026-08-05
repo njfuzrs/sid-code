@@ -98,7 +98,26 @@ export type { ModelPricing };
 
 /** 可用模型配置 */
 export interface ModelConfig {
+  /**
+   * 本地别名（唯一）——`/model` 选择、fallback、子代理、计价、审计全按它匹配。
+   *
+   * 想让同一个模型同时接两个渠道（如公司网关 + 官方端点），就给两条取不同的 `name`
+   * （如 xxx-gateway / xxx-official），再各自用 `modelId` 指回同一个厂商真名。
+   * 光改 name 不配 modelId 会把别名当模型名发给厂商 → 400/404，见 modelId 注释。
+   */
   name: string;
+  /**
+   * 发往厂商的**真实模型 id**（wire model）。缺省 = `name`。
+   *
+   * 存在的唯一理由：`name` 要在本地唯一（否则第二条永远选不中），但厂商只认它自己的模型名。
+   * 两者拆开后，「哪一条配置」用 `name`，「这到底是什么模型」用 `modelId`：
+   *   - 用 name（别名）：模型选择 / `/model` 显示 / fallback / 子代理 / 计价（(name,endpoint) 复合键）/ 审计
+   *   - 用 modelId（真名）：HTTP 请求体 model 字段 / 能力判定（thinking、effort）/ 内置注册表兜底
+   *     （上下文窗口、输出上限）——注册表靠前缀与家族匹配，喂别名会静默 miss 退化到兜底值
+   *
+   * 解析入口统一走 `resolveWireModel()`，不要在消费点各自写 `mc.modelId || mc.name`。
+   */
+  modelId?: string;
   provider?: string;
   baseURL?: string;
   apiKey?: string;
@@ -131,7 +150,7 @@ export interface Config {
   baseURL: string;
   /** 单次响应最大输出 token 数（≥1000） */
   maxTokens: number;
-  /** 可选模型清单（/model 切换、--fallback-model 校验都以此为范围） */
+  /** 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 */
   availableModels: ModelConfig[];
   /** 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） */
   network?: NetworkTimeoutSettings;
@@ -878,6 +897,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     if (configKey === "availableModels" && Array.isArray(value)) {
       result[configKey] = value.map((m: any) => ({
         name: m.name,
+        // 别名→真名映射（缺省时 resolveWireModel 回落 name）。这里漏一个字段就等于
+        // 用户配了 model_id 却被静默丢弃 → 别名当模型名发给厂商 400（pricing 有前科）。
+        modelId: m.model_id || m.modelId,
         provider: m.provider,
         baseURL: m.base_url || m.baseURL,
         apiKey: m.api_key || m.apiKey,
@@ -1436,7 +1458,20 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
  * 两者取值不同时给一条 warn，让优先级链可发现。envBaseURL 由调用方传入（合并前 env 的原值）。
  */
 export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): void {
+  // 别名表刷新（alias → modelId）。放在这里而不是只在启动时注册，是因为本函数是
+  // 「启动解析」与「/model 运行时切换」的**共同咽喉**（app.ts 切模型后必调本函数），
+  // 挂在这里就不存在「切了模型但别名表还是旧的」窗口。
+  //
+  // ⚠ 必须在**所有** early-return 之前，含下面「availableModels 为空」这条：
+  //   - availableModels 为空 → 必须把表**清空**，否则上一份配置的映射残留，
+  //     会把别名错翻成旧真名（切到无 modelId 配置后仍发旧真名，且不报错）；
+  //   - mc 未命中（config.model 写了个不存在的名字）→ 表也要与当前列表一致。
+  // setWireModelAliases(空/undefined) 即清空，所以这里无条件调用是安全的。
+  const { setWireModelAliases } = require("../llm/wire-model.ts");
+  setWireModelAliases(config.availableModels);
+
   if (!config.availableModels?.length) return;
+
   const mc = config.availableModels.find(m => m.name === config.model);
   if (!mc) return;
 
@@ -1501,12 +1536,18 @@ export function resolveMaxOutputTokensForModel(
   availableModels?: Config["availableModels"],
 ): number | undefined {
   if (availableModels?.length) {
+    // 第一优先仍按**别名**查：maxOutputTokens 是用户对「这条渠道」的显式声明，
+    // 同一真名的两个端点上限确实可能不同（网关常比官方更紧），必须各自取各自的。
     const modelConfig = availableModels.find(m => m.name === model);
     if (modelConfig?.maxOutputTokens) return modelConfig.maxOutputTokens;
   }
-  // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）
+  // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）。
+  // 这一步必须换成**真名**——lookupRegistry 是精确/前缀/家族匹配，喂本地别名
+  // （claude-sonnet-5-gateway）会 miss 到 undefined → 不钳制 → 把主模型的高 maxTokens
+  // 原样发出去吃 400。别名与真名相同时 resolveWireModel 原样返回，行为不变。
   const { lookupRegistry } = require("../llm/model-registry.ts");
-  const entry = lookupRegistry(model);
+  const { resolveWireModel } = require("../llm/wire-model.ts");
+  const entry = lookupRegistry(resolveWireModel(model, availableModels));
   return entry?.maxOutputTokens || undefined;
 }
 

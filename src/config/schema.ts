@@ -394,9 +394,9 @@ export function validateConfig(config: Config): ValidationResult {
   }
 
   // availableModels 重复检查：判重键 = (name + 归一化端点)。
-  // 「同名 + 同端点」= 真冲突（resolveCurrentModelConfig 的 find 只命中第一条，其余配置永不生效）→ 告警。
-  // 「同名 + 不同端点」= 合法的多端点配置（如同一模型同时配官方端点与公司网关，各自计价）→ 不告警。
-  //   计费按 (model, endpoint) 复合键精确匹配（resolvePricing），故同名多端点是刻意支持的用法。
+  // 「同名 + 同端点」= 纯冗余（resolveCurrentModelConfig 的 find 只命中第一条，其余配置永不生效）。
+  // 「同名 + 不同端点」= 用户想配双渠道但配法不对（第二条无法通过任何 UI 选中），需引导到
+  //   「不同 name + 相同 modelId」的正确写法，见下方第二块与 llm/wire-model.ts。
   if (config.availableModels?.length) {
     const keyCount = new Map<string, { name: string; count: number }>();
     for (const m of config.availableModels) {
@@ -420,7 +420,11 @@ export function validateConfig(config: Config): ValidationResult {
     // 校验、fallback / 子代理 provider 解析，全都只认名字。于是第二条永远切不过去，
     // 它自带的 base_url / api_key 是死配置（用户以为配了双渠道，实际只有第一条生效）。
     // 这不是"合法多渠道"，而是**无法通过任何 UI 或命令选中**的配置，必须告警。
-    // 修复建议给具体动作：改名后两条都可达（如 xxx-gateway / xxx-official）。
+    //
+    // ⚠ 建议文案必须同时给出 modelId，否则用户照做会撞下一个坑：`name` 既是本地查找键、
+    // 又被直接当作请求体的 model 字段发给厂商，光改名 → 厂商收到 "xxx-gateway" → 400/404。
+    // 正确配法是「不同 name（本地唯一，可被选中）+ 相同 modelId（厂商真名，发到线上）」，
+    // 解析入口见 llm/wire-model.ts。此前只建议改名，是**不完整的建议**，已修正。
     const byName = new Map<string, Set<string>>();
     for (const m of config.availableModels) {
       if (!m.name) continue;
@@ -434,7 +438,73 @@ export function validateConfig(config: Config): ValidationResult {
         warnings.push({
           path: "availableModels",
           message: `模型 "${name}" 配了 ${endpoints.size} 个不同端点，但模型选择（/model、fallback、子代理）一律按名匹配第一条，` +
-            `其余端点条目及其 base_url / api_key 永远不会生效。如需同时使用多个渠道，请给它们取不同的 name（如 ${name}-gateway / ${name}-official）`,
+            `其余端点条目及其 base_url / api_key 永远不会生效。正确配法：给每条取**不同的 name**（如 ` +
+            `${name}-gateway / ${name}-official）让两条都能被选中，再各自加 "model_id": "${name}" ` +
+            `指回厂商真实模型名——只改 name 不加 model_id 会把别名当模型名发给厂商，导致请求报错`,
+        });
+      }
+    }
+
+    // model_id 自检。注意取值一律先判类型再 trim：settings.json 是用户手写的，
+    // `"model_id": 123` 完全可能出现，而 Zod 的 .passthrough() 不校验 snake_case 原始键
+    // （归一化在它之后），脏值能一路到这里。直接 .trim() 会抛 TypeError，而本函数在
+    // loadConfig 链上 —— 抛出即整个进程起不来。故就地容错 + 出可读告警。
+    for (const m of config.availableModels) {
+      const rawWire: unknown = (m as { modelId?: unknown }).modelId;
+      const alias = typeof m.name === "string" ? m.name.trim() : "";
+
+      // ① 类型错：明确告知该字段被忽略（否则用户以为配了却毫无效果，还找不到原因）
+      if (rawWire !== undefined && typeof rawWire !== "string") {
+        warnings.push({
+          path: "availableModels",
+          message: `模型 "${alias || "(未命名)"}" 的 model_id 必须是字符串，当前是 ${typeof rawWire}，该字段已被忽略（回退用 name 发请求）`,
+        });
+        continue;
+      }
+
+      const wire = typeof rawWire === "string" ? rawWire.trim() : "";
+
+      // ② 空串/纯空白：等价于没配，明说一声免得以为生效了
+      if (typeof rawWire === "string" && !wire) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型 "${alias || "(未命名)"}" 的 model_id 是空字符串，等价于未配置（回退用 name 发请求），建议删掉该字段`,
+        });
+        continue;
+      }
+
+      // ③ 与 name 完全相同 = 白配（等价于不配）。纯降噪：有人会以为「配了 model_id
+      //    就等于配了双渠道」，而真正的双渠道前提是 name 不同。把注意力拉回 name。
+      if (alias && wire && alias === wire) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型 "${alias}" 的 model_id 与 name 完全相同，等价于不配（model_id 缺省即取 name），可以删掉。` +
+            `注意：多渠道靠「name 各不相同」区分，只加 model_id 不改 name 仍然只有第一条生效`,
+        });
+      }
+    }
+
+    // 同名多条却给了**不同** model_id：矛盾配置。选择侧 find-first 只认第一条，
+    // 于是第二条的 model_id 永远不生效——用户以为「同名+不同 model_id」能区分两个渠道，
+    // 实际只有第一条在跑。这比单纯同名更值得单独提示（他确实动过 model_id，说明是刻意配的）。
+    const wireByName = new Map<string, Set<string>>();
+    for (const m of config.availableModels) {
+      const alias = typeof m.name === "string" ? m.name.trim() : "";
+      const rawWire: unknown = (m as { modelId?: unknown }).modelId;
+      if (!alias || typeof rawWire !== "string") continue;
+      const wire = rawWire.trim();
+      if (!wire) continue;
+      const set = wireByName.get(alias) ?? new Set<string>();
+      set.add(wire);
+      wireByName.set(alias, set);
+    }
+    for (const [alias, wires] of wireByName) {
+      if (wires.size > 1) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型名 "${alias}" 重复出现且各条的 model_id 不同（${Array.from(wires).join(" / ")}），` +
+            `但按名查找只命中第一条，其余条目的 model_id 永远不生效。多渠道必须让 **name 各不相同**` +
+            `（如 ${alias}-a / ${alias}-b），再各自配自己的 model_id`,
         });
       }
     }

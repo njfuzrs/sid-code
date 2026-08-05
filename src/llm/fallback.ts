@@ -38,6 +38,7 @@ import {
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { lookupRegistry } from "./model-registry.ts";
+import { lookupWireModelAlias } from "./wire-model.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { calculateRetryDelay as calculateSharedRetryDelay } from "./retry-backoff.ts";
@@ -1558,9 +1559,10 @@ export class ModelFallback {
       isStreamingTransportError(new Error(ctx.lastRetryError ?? ""));
     if (!transportish) return;
 
+    // 与下方 fbCeiling 同口径：注册表兜底必须按真名查（别名会 miss → 不钳制 → 400）。
     const ceiling =
       this.config.resolveMaxOutputTokens?.(params.model) ??
-      lookupRegistry(params.model)?.maxOutputTokens;
+      lookupRegistry(params.wireModel ?? lookupWireModelAlias(params.model) ?? params.model)?.maxOutputTokens;
     const nonStreamMaxTokens = Math.min(
       ctx.maxTokensOverride ?? params.maxTokens,
       // 非流式无增量，过大容易整体超时；与 stream-handler 的默认上限同源。
@@ -1640,13 +1642,24 @@ export class ModelFallback {
     // 模型的物理输出上限（如主模型 deepseek 384K 降级到 glm 128K），触发网关 400
     // "max_tokens out of range"——与主模型「切模型不重算 maxTokens」是同一类 bug。
     // 用内置注册表解析 fallback 模型上限并钳制（拿不到上限的未知模型不臆测、保持原值）。
-    const fallbackParams = { ...params, model: fallbackModel };
+    // wireModel 必须跟着 model 一起换：`{...params}` 会把**主模型的**真名原样带过来，
+    // 而 provider 的 pickWireModel 优先级里 wireModel 高于 model —— 不重算就等于
+    // 「切了 fallback 别名，却仍把主模型的真名发出去」，降级静默失效（发的还是刚失败的模型）。
+    // 这里传 undefined 让 provider 侧走别名表兜底翻译 fallbackModel：ModelFallback 拿不到
+    // availableModels（构造时只有回调，没有模型列表），交给进程级别名表是唯一正确的解析口。
+    const fallbackParams = { ...params, model: fallbackModel, wireModel: undefined };
     // H4：钳制上限优先走 resolveMaxOutputTokens 回调（availableModels > 注册表，与主路径
     // resolveModelMaxOutputTokens 同源），回调缺失才回退到「只查内置注册表」。修前只查注册表，
     // fallback 目标若是注册表外的自定义模型 → fbCeiling=undefined → 不钳制 → 主模型高 maxTokens
     // 原样发给 fallback → 400 → markTerminal 拉黑 fallback 目标。
+    // 注：第一分支（resolveMaxOutputTokens 回调，app.ts 注入）内部已走
+    // resolveMaxOutputTokensForModel —— 它「先按别名查用户显式声明、注册表兜底按真名查」，
+    // 口径正确。第二分支是回调缺失时的兜底（直接 new ModelFallback 的测试路径），
+    // 必须自己把别名翻成真名：lookupRegistry 是精确/前缀/家族匹配，喂别名必然 miss
+    // → fbCeiling=undefined → 不钳制 → 把主模型的高 maxTokens 原样发给 fallback 吃 400。
+    // 这里拿不到 availableModels（ModelFallback 只持有回调），故走进程级别名表。
     const fbCeiling = this.config.resolveMaxOutputTokens?.(fallbackModel)
-      ?? lookupRegistry(fallbackModel)?.maxOutputTokens;
+      ?? lookupRegistry(lookupWireModelAlias(fallbackModel) ?? fallbackModel)?.maxOutputTokens;
     if (fbCeiling && fallbackParams.maxTokens && fallbackParams.maxTokens > fbCeiling) {
       log.info(
         "FALLBACK",

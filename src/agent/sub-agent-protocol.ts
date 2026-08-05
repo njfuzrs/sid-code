@@ -44,7 +44,18 @@ export interface ParentInitMessage {
   allowed_tools: string[];
   /** 工具定义（子进程传给 LLM 用） */
   tool_defs: ToolDef[];
+  /** 模型**本地别名**（availableModels[].name）。日志/归因用；发线上的真名见 wire_model */
   model: string;
+  /**
+   * 发往厂商的**真实模型 id**（wire model）。缺省时子进程按 model 原样发。
+   *
+   * 为什么必须跨进程传：spawn 出的子代理是**独立 OS 进程**，它不读 settings.json、
+   * 不跑 loadConfig，因此 llm/wire-model.ts 的进程级别名表在子进程里恒为空 ——
+   * 只传 model（别名）会让子代理把 "xxx-gateway" 当模型名发给厂商吃 400/404，
+   * 而父进程一切正常，故障只在「子代理 + 配了 model_id」这一格里出现，极难归因。
+   * 父进程已解析好真名，直接随 init 传过来是最省的做法（无需把整份 availableModels 过管道）。
+   */
+  wire_model?: string;
   max_turns: number;
   max_tokens: number;
   timeout: number;
