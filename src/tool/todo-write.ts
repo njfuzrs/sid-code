@@ -177,6 +177,25 @@ export class TodoWriteTool implements Tool {
   readonly exemptFromLoopDetection = true;
 
   /**
+   * 整条卡片不渲染（对标 cc `TodoWriteTool.ts:48` 的 `userFacingName() { return '' }`
+   * + `renderToolUseMessage() { return null }` + 不实现 `renderToolResultMessage`）。
+   *
+   * 满足 hidden 的两条判据（见 `types.ts` 的 `resultDisplayMode`）：
+   *   1. 本工具 `output` 是**专门写给模型的**——清单 diff 之后紧跟前向推进指令
+   *      （`buildForwardDirective`）与状态建议（`statusAdvisories`）。用户读到
+   *      「请继续用 todo_write **实时**流转状态」只会困惑：那是对模型说的。
+   *   2. 清单的权威呈现是 **TodoPanel**（输入框上方常驻面板，`app.ts:6365` 每次执行后同步）。
+   *      `⎿` 里那份是第二遍，且是拼成给模型读的形态。cc 的注释正是拿本工具举例：
+   *      「TodoWrite updates the todo panel, not the transcript」。
+   *
+   * ⚠️ 全部完成时 `currentTodos` 被清空、TodoPanel 随之收起（见 execute 的 allDone 分支），
+   * 那一刻屏幕上确实没有「任务全做完了」的痕迹。这是**刻意接受**的：完成结论由模型的
+   * 正文收尾承担（工具返回值里那句分流提示就是为此而写），而不是靠一张残留的全绿清单。
+   * 不要为此把本字段降级为 "summary" —— 那会让每次 todo_write 都留一行噪音卡片。
+   */
+  readonly resultDisplayMode = "hidden" as const;
+
+  /**
    * 短描述层（对标 claude-code 的**双层工具描述**：`PROMPT` 9114 字符送 API，
    * `DESCRIPTION` 269 字符供工具列表 / 搜索场景）。
    *

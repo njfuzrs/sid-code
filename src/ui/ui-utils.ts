@@ -164,6 +164,40 @@ export function getToolSummary(name: string, input: unknown): string {
   // （见 docs/_template/执行lsp过程空白.txt）。这是本文件同一病灶的第三次发作
   // （前两次：sub_agent 名字没匹配上、think 没有分支）。
   if (lower === "lsp") return lspSummary(inp);
+  // ── 以下是 resultDisplayMode="summary" 档工具的 header 摘要 ──
+  //
+  // 这一档的 `⎿` 正文被丢弃（那是给模型读的提示词），header 行必须自己把话说完整，
+  // 否则剩下光秃秃一个 `⏺ enter_plan_mode`——那正是本文件已发作过三次的同一病灶
+  // （`sub_agent` 名字没匹配上、`think` 没分支、`lsp` 没分支，见上方注释）。
+  // 对标 cc 的做法：它给这些工具写专用 `renderToolResultMessage`，用**用户语言**说明
+  // 发生了什么（`● Entered plan mode` + 一行灰色说明），而不是把提示词打到屏幕上。
+  //
+  // 文案原则：回答"这一步发生了什么"，不回答"模型收到了什么指令"。
+  if (lower === "enter_plan_mode") return "进入计划模式 · 先探索并设计方案，不做改动";
+  if (lower === "exit_plan_mode") {
+    // summary 是模型自填的一句话计划摘要（可选）。有就用它——它比任何固定文案都具体。
+    const s = flattenWhitespace(inp?.summary || "");
+    return s
+      ? `提交计划待审批 · ${truncateSummaryByWidth(s, THINK_SUMMARY_MAX_COLS)}`
+      : "提交计划待审批";
+  }
+  if (lower === "task_create") {
+    const subject = flattenWhitespace(inp?.subject || "");
+    return subject
+      ? `新建任务 · ${truncateSummaryByWidth(subject, THINK_SUMMARY_MAX_COLS)}`
+      : "新建任务";
+  }
+  if (lower === "task_update") {
+    // 更新语义多样（改状态 / 认领 / 加依赖 / 删除），header 点名**本次改了什么**，
+    // 而不是笼统一句"已更新"——后者与光秃秃的工具名信息量相同。
+    const id = inp?.task_id ? `#${inp.task_id}` : "";
+    const parts: string[] = [];
+    if (inp?.status) parts.push(String(inp.status));
+    if (inp?.owner) parts.push(`归属 ${inp.owner}`);
+    if (inp?.add_blocks?.length || inp?.add_blocked_by?.length) parts.push("依赖");
+    const detail = parts.length > 0 ? ` → ${parts.join(" / ")}` : "";
+    return id ? `更新任务 ${id}${detail}` : "更新任务";
+  }
   if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";

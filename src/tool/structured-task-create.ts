@@ -30,6 +30,24 @@ export class TaskCreateTool implements Tool {
   readonly searchHint = "structured task list create 结构化 任务 清单 新建 create todo 依赖";
   /** 任务清单维护类工具，连续 create 是正当行为，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
+  /**
+   * 保留卡片、丢弃 `⎿` 正文（header 摘要用用户语言说"建了什么任务"）。
+   *
+   * `output` 是裸 `JSON.stringify({id, subject, status, message})`——它会命中
+   * `ToolResultDisplay.tsx` 的 JSON 分支被 pretty-print 成多行 JSON 块糊在消息流里。
+   * 给模型的是机器可读 JSON，给用户的应该是一句话。
+   *
+   * ⚠️ **刻意不用 hidden，尽管 cc 对 `TaskCreateTool` 用的是 hidden**
+   * （`TaskCreateTool.ts:77` `renderToolUseMessage() { return null }` + 不实现
+   * `renderToolResultMessage`）。cc 能隐藏是因为它有 `TaskListV2` 面板读 `appState.tasks`
+   * 常驻展示结构化任务；而本仓库的 `structured-task-store` 在 `src/ui/` 与 `app.ts` 里
+   * **零消费者**（实测），TodoPanel 的「后台任务」区读的是 shell/agent/workflow 任务
+   * （`ui/state-bridge.ts`），与结构化清单无关。
+   *
+   * 所以这里 hidden 会让"新建了一个任务"这件事在界面上**彻底无痕**——把啰嗦换成静默丢失。
+   * 若将来把结构化清单接进某个常驻面板，再改回 hidden 才成立。
+   */
+  readonly resultDisplayMode = "summary" as const;
 
   name(): string {
     return "task_create";

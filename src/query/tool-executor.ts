@@ -18,6 +18,7 @@ import { processToolResult } from "../tool/result-storage.ts";
 import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "../agent/tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
+import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
@@ -1241,6 +1242,10 @@ export async function executeSingleTool(
       void notifyLSPFileChange(block.input as Record<string, unknown>);
     }
 
+    // TUI 呈现档位（见下方 block 构造处的注释）。用 effectiveInput 而非 block.input：
+    // hook 改参后的实际入参才是本次执行的真相，与鉴权 / PostToolUse 上报同口径。
+    const displayMode = resolveResultDisplayMode(tool, effectiveInput);
+
     return {
       block: {
         type: "tool_result",
@@ -1252,6 +1257,10 @@ export async function executeSingleTool(
         ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
         // G6：富媒体块透传(仅 Read 读图片/PDF 填充)。支持 vision 的 provider 据此拼多部件 content。
         ...(result.mediaBlocks?.length ? { mediaBlocks: result.mediaBlocks } : {}),
+        // TUI 呈现档位：在执行现场按本次 input 解析（skill 等按 input 分档的工具必须在此时判），
+        // 随 block 落盘供 resume 重放。不回传给 LLM——content 始终是完整 output。
+        // 错误结果不带此字段：错误必须照常显示（见 tool/types.ts 的硬约束 ②）。
+        ...(!result.isError && displayMode ? { resultDisplayMode: displayMode } : {}),
       },
       // GAP-06：透传工具的 contextModifier，由 executeTools 在结果收集后按原始顺序应用。
       contextModifier: result.contextModifier,

@@ -150,6 +150,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         // 结构化 diff + 文件名透传(否则在此拍扁丢失,UI 拿不到结构化 patch)
         structuredPatch: t.resultDisplay?.structuredPatch,
         filename: t.resultDisplay?.filename,
+        // 呈现档位透传：hidden 由 ToolGroupMessage 整条过滤，summary 只渲染 header。
+        // 与 structuredPatch 同理——不透传就在此拍扁丢失，泄漏的提示词会照旧渲染出来。
+        displayMode: t.resultDisplay?.displayMode,
         // bash/shell 工具：从 input 提取完整命令行
         shellCommand: isShellTool(t.name) ? (t.input as any)?.command || "" : undefined,
       }));

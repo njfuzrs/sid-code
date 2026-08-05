@@ -39,6 +39,12 @@ export class TaskUpdateTool implements Tool {
   readonly shouldDefer = true;
   readonly searchHint = "structured task list update status owner blocks 结构化 任务 清单 更新 状态 依赖 删除";
   readonly exemptFromLoopDetection = true;
+  /**
+   * 同 task_create：output 是裸 JSON（会被 pretty-print 成多行糊在消息流里），
+   * 但结构化清单在本仓库没有任何常驻面板呈现，故用 summary 而非 hidden
+   * ——理由与对标差异见 `structured-task-create.ts` 同名字段的注释。
+   */
+  readonly resultDisplayMode = "summary" as const;
 
   name(): string {
     return "task_update";

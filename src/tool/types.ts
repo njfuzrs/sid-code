@@ -31,6 +31,14 @@ export interface ToolDescriptionContext {
 }
 
 /**
+ * 工具结果在 TUI 的呈现档位（见 `ToolCapabilityFields.resultDisplayMode` 的完整说明）。
+ *
+ * - `"hidden"` —— 整条卡片不渲染（连 `⏺ 工具名` 都没有）。
+ * - `"summary"` —— 保留卡片、丢弃 `⎿` 正文，由 header 摘要用用户语言说明发生了什么。
+ */
+export type ToolResultDisplayMode = "hidden" | "summary";
+
+/**
  * ToolSearch 协议字段 + 中断行为 —— 新旧两版接口共享的"能力声明"。
  *
  * 字段先行：`searchHint` / `shouldDefer` / `alwaysLoad` 由 registry 的
@@ -147,6 +155,96 @@ export interface ToolCapabilityFields<Input = unknown> {
    *   清单双向对账，变成 CI 可见的硬错误，而不是运行时的静默失效。
    */
   jitAffectedPaths?(input: Input): string[];
+
+  /**
+   * 工具自报「本工具的执行结果该怎么在 TUI 呈现」。
+   *
+   * ## 病灶：一个 `output: string` 兼了两个互不相容的职责
+   *
+   * 本仓库的 `LegacyToolResult.output` 同时是**模型侧 tool_result 正文**与**用户侧展示内容**
+   * ——`history-adapter.ts` 把它原样塞进 `resultDisplay.content`，`ToolMessage` 再渲染到 `⎿`
+   * 树枝区。于是凡是「输出专门写给模型读」的工具，它的提示词就**直接泄漏到用户屏幕上**：
+   *
+   *   ⏺ todo_write
+   *     ⎿ 所有任务已完成，清单已清空。
+   *       若执行结果**尚未**告知用户，请汇总后告知；若你在本轮/上一轮**已经完整输出过**
+   *       结论（这次只是回头补标记），则**不要重复输出**，一句话收尾即可。
+   *
+   * 这段是**下给模型的指令**，用户读到只会困惑（实测轨迹 20260805-134415-685f911e：
+   * 一次 /commit 里 5 次 todo_write 共泄漏 1053 字符纯提示词，占该会话工具结果的可观比例）。
+   *
+   * ## 对标 claude-code：它从数据结构层就把两侧分开了
+   *
+   * cc 的 `Tool` 接口有**两个独立出口**（`Tool.ts:557` / `:566`）：
+   *   - `mapToolResultToToolResultBlockParam(data)` → 模型侧文本；
+   *   - `renderToolResultMessage(data)` → 用户侧 React 节点，**可以不实现**。
+   * `call()` 只返回结构化 `data`。所以 `TodoWriteTool` 那句
+   * `Todos have been modified successfully. Ensure that you continue to use the todo list…`
+   * **从来没有机会**流到 UI —— 它只存在于模型侧那个出口里。
+   *
+   * cc 的注释把判据写得很直白（`Tool.ts:563`）：
+   *   > Omit for tools whose results are surfaced elsewhere
+   *   > (e.g., TodoWrite updates the todo panel, not the transcript).
+   *
+   * 我们不做 cc 那种「双出口 + 结构化 data」的接口重构（那要改所有 25 个 LegacyTool 与
+   * 两个执行器，收益不成比例）。改用**同等效果的最小手术**：`output` 继续单份走模型侧，
+   * 由工具自报 UI 该怎么处理它。模型侧行为**零改动** —— 这是本字段的硬约束。
+   *
+   * ## 两档语义
+   *
+   * - `"hidden"` —— **整条卡片不渲染**（连 `⏺ 工具名` 那行都没有）。
+   *   对标 cc 的三重叠加：`userFacingName()` 返 `''`（`AssistantToolUseMessage.tsx:158`
+   *   据此 `return null`）+ `renderToolUseMessage()` 返 `null` + 不实现
+   *   `renderToolResultMessage`。cc 对 `todo_write` / `tool_search` / `task_*` 全用这一档。
+   *
+   *   判据：① 输出对用户零信息量（纯提示词 / harness 内部管线状态），**且** ②a 或 ②b 之一：
+   *     - **②a 效果另有权威呈现** —— 如 `todo_write` → TodoPanel。卡片消失了，但"发生了什么"
+   *       用户在别处看得见。
+   *     - **②b 从用户视角没有发生任何事** —— 如 `tool_search`：模型只是把一个工具定义加载进
+   *       上下文，真正的动作是紧接着那次工具调用，而**那张卡片是可见的**。效果在下游显形。
+   *
+   *   只满足 ① 而 ②a/②b 都不成立的，**必须用 `"summary"`**：那意味着确实发生了一件用户该知道
+   *   的事（如 `task_create` 真的建了一个任务），而屏幕上再没有别的地方会提到它 ——
+   *   此时 hidden 会把"啰嗦"换成"静默丢失"，是更严重的缺陷。
+   *
+   *   ⚠️ 判 ②a 前**必须实际核对那个"别处"存在**，不能照抄对标实现的结论。实例：cc 对
+   *   `task_*` 用 hidden 是成立的，因为它有 `TaskListV2`（读 `appState.tasks`）撑着；
+   *   而本仓库的 `structured-task-store` 在 `src/ui/` 与 `app.ts` 里**零消费者**（实测），
+   *   同一个工具在这里就只能是 summary。判据要对着自己的代码验，不是对着 cc 的代码验。
+   *
+   * - `"summary"` —— **保留卡片、丢弃 `⎿` 正文**，由 header 摘要用**用户语言**说明发生了什么。
+   *   对标 cc 对 `enter_plan_mode`（渲染 `● Entered plan mode` + 一行灰色说明，而**不是**
+   *   把 183 行计划模式引导打到屏幕上）、`ask_user_question`（渲染
+   *   `● User answered Claude's questions:` + 逐题 `· 问 → 答`）、`exit_plan_mode` 的做法。
+   *   适用于「这一步用户该知道，但模型侧正文不适合直接展示」的模式切换 / 交互类工具。
+   *
+   * 未声明（`undefined`）= 原样展示 `output`，是绝大多数读写/搜索类工具的正确默认。
+   *
+   * ## 两条硬约束（破了就是新缺陷）
+   *
+   * 1. **只影响展示，绝不影响模型**。`ToolResultBlock.content` 照旧是完整 `output`，
+   *    provider 序列化不读本字段。若哪天有人图省事改成「hidden 就不回传给模型」，
+   *    `todo_write` 的前向推进指令（L1 主力通道）会当场失效。
+   * 2. **错误路径必须照常显示**。消费侧以 `!isError` 为门 —— `todo_write` 的 schema 校验
+   *    失败、`enter_plan_mode` 的「子代理不能进入 plan mode」都是用户该看到的真故障。
+   *    隐藏错误 = 把可见故障变成静默故障，比啰嗦严重得多。
+   *
+   * 与 `exemptFromLoopDetection` / `jitAffectedPaths` 同一范式：**工具在自身定义处自报**，
+   * 由 `tests/ui/tool-result-display-mode-audit.test.ts` 与期望名单双向对账，
+   * 「新增工具时忘记评估呈现方式」变成 CI 可见的硬错误而非屏幕上的静默噪音。
+   *
+   * ## 函数形态：同一个工具按入参分档
+   *
+   * 少数工具的输出性质**随本次调用而变**，静态常量表达不了。唯一实例是 `skill`：
+   *   - `activate` 模式 —— `output` 是整份 skill prompt（注入上下文用）→ 必须 `"summary"`；
+   *   - `delegate` 模式 —— `output` 是子代理跑完的**真实工作成果** → 必须原样展示。
+   * 一刀切成 summary 会把用户要的交付内容丢掉，一刀切成 undefined 则继续泄漏 prompt。
+   * 故本字段允许函数形态（与 `isConcurrencySafe(input)` / `interruptBehavior()` 同风格），
+   * 返回 `undefined` 表示"本次调用按默认原样展示"。
+   */
+  resultDisplayMode?:
+    | ToolResultDisplayMode
+    | ((input: Input) => ToolResultDisplayMode | undefined);
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====

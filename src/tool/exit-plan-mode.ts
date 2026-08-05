@@ -32,6 +32,22 @@ export class ExitPlanModeTool implements Tool {
   /** P2-3：模式切换类工具，退出计划模式是一次性状态跃迁，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
 
+  /**
+   * 保留卡片、丢弃 `⎿` 正文（header 摘要说明"计划已提交待审批"）。
+   *
+   * 本工具的 `output` 把**整份计划正文**又带一遍（`计划已提交，等待用户审批。…\n---\n${planContent}\n---`），
+   * 而计划的权威呈现是 `app.ts:6096` 建的 `plan_review` 历史项 + `PlanReviewMessage` 组件
+   * ——同一份计划在屏幕上出现两次，第二份还裹着给模型看的分隔符。
+   *
+   * 对标 cc 同样在 `ExitPlanModeTool/UI.tsx` 里把 `renderToolUseMessage()` 返 `null`、
+   * `renderToolResultMessage()` 只渲染路径与状态摘要，不重复 plan 正文。
+   *
+   * 不用 hidden 的理由与 enter_plan_mode 一致：提交审批是用户必须知道的状态变化。
+   * （计划正文本身有 PlanReviewMessage 承担，符合判据 ②a；但"提交了"这个动作本身
+   * 仍需要一行痕迹，故取 summary 而非 hidden。）
+   */
+  readonly resultDisplayMode = "summary" as const;
+
   constructor(private planManager: PlanModeManager) {}
 
   name(): string { return "exit_plan_mode"; }

@@ -59,6 +59,21 @@ export interface ToolResultBlock {
    * 其余 provider 忽略。不进磁盘压缩（压缩只替换 content 文本）。
    */
   mediaBlocks?: ToolResultMediaBlock[];
+  /**
+   * 本次结果在 TUI 的呈现档位（由执行器在工具执行后解析并透传，见
+   * `tool/result-display-mode.ts` 与 `tool/types.ts` 的 `resultDisplayMode`）。
+   *
+   * 为什么记在 block 上而不是在 UI 层按工具名查表：
+   *   1. **函数形态需要 input**。`skill` 按 activate/delegate 分档，判定依赖本次调用的
+   *      input；UI 重建路径（`messagesToHistoryItems`）拿到的是历史 Message，
+   *      而 skill 的 mode 取决于**当时**那个 skill 的定义，事后查可能已经变了。
+   *      在执行现场解析一次、随 block 落盘，resume 重放才能得到与当时一致的呈现。
+   *   2. 与 `structuredPatch` 同一范式：**不回传给 LLM**（provider 序列化 tool_result 时
+   *      逐字段读取 content/is_error，不含此字段），但随 Message 持久化、可重放回 UI。
+   *
+   * 缺省（`undefined`）= 原样展示 content，是绝大多数工具的行为，字段不出现、零破坏。
+   */
+  resultDisplayMode?: "hidden" | "summary";
 }
 
 /** 思考块（对标 Claude Code ThinkingBlock） */

@@ -97,6 +97,30 @@ export class SkillMetaTool implements Tool {
     this.invokedSkillSink = sink;
   }
 
+  /**
+   * 按 skill 的 mode 分档（本仓库唯一需要函数形态的工具，见 `tool/types.ts` 的说明）。
+   *
+   * - `activate` 模式：`output` 是 `${header}${skill.prompt}${resources}${inputSection}`
+   *   ——**整份 skill 提示词** + 资源清单，注入当前对话上下文用（`executeActivate`）。
+   *   动辄数千字符的工作流指令，打到屏幕上纯属噪音 → `"summary"`。
+   * - `delegate` 模式：`output` 是子代理跑完后的**真实工作成果**（`executeDelegate` 返回
+   *   `result.output`）——那是用户要的交付内容，必须原样展示 → 返回 `undefined` 走默认。
+   *
+   * 一刀切任何一档都是错的：全 summary 会吞掉 delegate 的交付物，全默认则继续泄漏
+   * activate 的提示词。故按 `input.skill` 查 manager 的实际 mode 判定。
+   *
+   * 容错：skill 查不到 / 未指定时返 `undefined`（原样展示）。那些路径下 `execute` 会走
+   * `isError: true` 的错误分支，而消费侧以 `!isError` 为门，本就不受本字段管辖。
+   */
+  resultDisplayMode(input: unknown): "summary" | undefined {
+    const skillName = (input as { skill?: unknown } | undefined)?.skill;
+    if (typeof skillName !== "string" || !skillName) return undefined;
+    const skill = this.manager.getSkill(skillName);
+    if (!skill) return undefined;
+    // mode 缺省是 delegate（与 execute() 里 `skill.mode || "delegate"` 保持一致）
+    return (skill.mode || "delegate") === "activate" ? "summary" : undefined;
+  }
+
   name(): string {
     return SKILL_TOOL_NAME;
   }

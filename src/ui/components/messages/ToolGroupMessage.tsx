@@ -43,6 +43,11 @@ export interface ToolCallDisplay {
   elapsedMs?: number;
   /** bash/shell 工具的完整命令行文本 */
   shellCommand?: string;
+  /**
+   * 呈现档位（源自工具自报的 `resultDisplayMode`，见 `tool/types.ts`）。
+   * `"hidden"` 的完成态工具整条不渲染；`"summary"` 只渲染 header 行。
+   */
+  displayMode?: "hidden" | "summary";
 }
 
 interface ToolGroupMessageProps {
@@ -63,9 +68,28 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   terminalWidth,
   isExpandable = false,
 }) => {
-  // 历史区直接渲染全部工具：此前会过滤 confirming 态（在独立确认队列渲染），
-  // 但确认体系已统一走 PermissionPrompt，confirming 态及其队列组件已移除。
-  const visibleTools = tools;
+  // 历史区渲染全部工具，但滤掉自报 hidden 的**已完成**卡片。
+  //
+  // 对标 cc：`userFacingName()` 返 `''` 的工具在 `AssistantToolUseMessage.tsx:158`
+  // 直接 `return null`，连 `⏺ 工具名` 那行都不画（`todo_write` / `tool_search` 即如此）。
+  // 我们等价地在组内过滤——去掉的是整条卡片，不只是 `⎿` 正文。
+  //
+  // ⚠️ **只滤完成态（有 result 的），executing 态必须留着。** 两个理由：
+  //   1. 长跑工具（如 delegate skill、workflow）执行期间若卡片不可见，用户看到的是
+  //      「界面卡住、什么都没发生」——这正是本仓库反复治过的"过程黑盒"缺陷，
+  //      比啰嗦严重得多（见 src/ui/CLAUDE.md L3.2「状态即时可见」）。
+  //   2. hidden 的语义是「结果对用户零信息量」，不是「这一步不存在」。
+  //  执行中卡片没有结果正文可泄漏，本就无害；它一完成就整条退场，屏幕自然收干净。
+  //
+  // 错误结果同样保留：执行器不给错误 block 打标记，`buildCompletedToolCall` 再守一道，
+  // 所以带 isError 的卡片拿不到 displayMode，不会走到这里被滤掉。
+  // 判定写成 `status === "success"` 而非 `!== "executing"`：状态共 5 档
+  // （pending / executing / success / error / cancelled），只有 success 才该退场。
+  //   - pending（排队等权限）与 executing 都还没有结果，留着表达"这一步在进行"；
+  //   - error / cancelled 是用户必须看到的异常收尾，绝不隐藏。
+  const visibleTools = tools.filter(
+    (t) => !(t.displayMode === "hidden" && t.status === "success"),
+  );
 
   // 检查是否有溢出内容（通过 OverflowContext）
   const overflowState = useOverflowState();
@@ -129,7 +153,16 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
             concurrentAgentCount={concurrentAgentCount}
             progress={tool.progress}
             progressTotal={tool.progressTotal}
-            resultSummary={tool.resultSummary || (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)}
+            // summary 档不重算摘要：`resultSummary` 与 `result` 都已被置空，
+            // 若沿用 `||` 兜底链去重算，`getResultSummary` 会用 `N 字符` 量**那份提示词**
+            // 的长度（实测 todo_write 曾报 "258 字符"，描述的是前向推进指令本身）。
+            // 该档的信息重心在 header 的 description，摘要留空正是想要的。
+            resultSummary={
+              tool.displayMode
+                ? undefined
+                : tool.resultSummary ||
+                  (tool.result ? getResultSummary(tool.name, tool.result, tool.isError) : undefined)
+            }
             elapsedMs={tool.elapsedMs}
             shellCommand={shellCommand}
             thinkThought={thinkThought}

@@ -19,6 +19,23 @@ export class EnterPlanModeTool implements Tool {
   /** P2-3：模式切换类工具，进入计划模式是一次性状态跃迁，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
 
+  /**
+   * 保留卡片、丢弃 `⎿` 正文（header 摘要用一句用户语言说明"进入了计划模式"）。
+   *
+   * 本工具的 `output` 是 `buildPlanModePrompt()` 的**整份 183 行计划模式引导**
+   * （`## 计划模式已激活` / `### 阶段 1：理解需求` / `**决策记录（跨会话防漂移，重要）**` …）。
+   * 按体积这是全仓库泄漏最严重的一处：一次模式切换在屏幕上打出上百行提示词。
+   *
+   * 对标 cc 的处理完全一致：`EnterPlanModeTool/UI.tsx` 的 `renderToolUseMessage()` 返 `null`、
+   * `renderToolResultMessage()` **不渲染 prompt 正文**，只画两行用户语言：
+   *   `● Entered plan mode` + 灰色 `Claude is now exploring and designing an implementation approach.`
+   * 提示词本体只走 `mapToolResultToToolResultBlockParam` 那条模型侧出口。
+   *
+   * 不用 hidden：模式切换是**用户必须知道**的状态变化（它改变了后续所有写操作的可行性），
+   * 且没有别处呈现，隐藏就是丢信息。
+   */
+  readonly resultDisplayMode = "summary" as const;
+
   constructor(private planManager: PlanModeManager) {}
 
   name(): string { return "enter_plan_mode"; }

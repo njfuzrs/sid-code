@@ -137,7 +137,23 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
 
   // 有结果或进度就展开（结果默认通过 ToolResultDisplay 的 maxLines=3 折叠）
   const hasProgress = status === "executing" && progress !== undefined;
-  const shouldExpandContent = !!resultDisplay || hasProgress || hasThinkThought;
+  /**
+   * 结果区**有东西可渲染**才算"有结果"（`resultDisplay` 是结果正文字符串）。
+   *
+   * 不能只判 `!!resultDisplay`：`resultDisplayMode="summary"` 档的正文被置空成 `""`
+   * ——那份内容是给模型读的提示词，见 `tool/types.ts` 的 `resultDisplayMode`。
+   * 空串是 falsy，所以 `!!""` 恰好为 false、行为看似正确；但**只是巧合**：
+   * 一旦上游哪天改成传 `" "` 或 `"\n"`（如未来某工具的正文只剩空白），
+   * `!!` 就会判成有结果，画出一条空树枝 `⎿ ` 后面什么都没有——比泄漏提示词更像 bug，
+   * 同时 header 的 `resultSummary` 被 `shouldExpandContent ? undefined : ...` 吃掉，
+   * 正文与摘要同时消失、卡片彻底失语。
+   *
+   * 故显式按 `.trim()` 判空，把"看似正确"钉成"确实正确"。
+   * hidden 档整条卡片已被 ToolGroupMessage 过滤，走不到这里；
+   * summary 档在此退化为"只有 header"的紧凑形态，正是想要的效果。
+   */
+  const hasResultBody = !!resultDisplay && resultDisplay.trim() !== "";
+  const shouldExpandContent = hasResultBody || hasProgress || hasThinkThought;
 
   // Header 行：bash 工具不显示长命令（移到下方独立区域展示），header 保持简洁。
   // shell 工具 executing 时 header 已有 ToolStatusIndicator 的状态点流转，

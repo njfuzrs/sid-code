@@ -65,6 +65,21 @@ export class ToolSearchTool implements Tool {
 
   readonly searchHint = "search discover deferred tools 搜索 工具 发现";
 
+  /**
+   * 整条卡片不渲染（对标 cc `ToolSearchTool.ts:435-438` 的
+   * `renderToolUseMessage() { return null }` + `userFacingName: () => ''`
+   * + 不实现 `renderToolResultMessage`）。
+   *
+   * 判据 ①：`output` 是 harness 内部管线状态——「已激活 N 个工具，将在下一轮出现在可用工具
+   * 列表中」外加每个工具描述的首行。这是**延迟加载机制的实现细节**，用户不关心哪个工具定义
+   * 被载入了上下文。
+   *
+   * 判据 ②b（从用户视角没有发生任何事）：本工具唯一效果是把工具定义加载进上下文，真正的动作
+   * 是紧接着的那次工具调用，**而那张卡片是可见的**。所以隐藏它不丢任何信息，只是省掉了
+   * 「模型为了能用 X 先去把 X 找出来」这段与用户无关的前戏。
+   */
+  readonly resultDisplayMode = "hidden" as const;
+
   constructor(registry: ToolRegistry) {
     this.registry = registry;
   }

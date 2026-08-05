@@ -57,6 +57,15 @@ export interface ToolResultDisplay {
    * 缺失时 DiffRenderer 降级到从 content 正则解析。
    */
   structuredPatch?: import("diff").StructuredPatchHunk[];
+  /**
+   * 呈现档位（源自 `ToolResultBlock.resultDisplayMode`，由执行器在现场解析）。
+   *
+   * - `"hidden"` —— 整条卡片不渲染（`ToolGroupMessage` 过滤掉）。
+   * - `"summary"` —— 只渲染 header 行，`content` 已在 `buildCompletedToolCall` 里置空。
+   *
+   * 缺省 = 原样展示。完整设计见 `tool/types.ts` 的 `resultDisplayMode`。
+   */
+  displayMode?: "hidden" | "summary";
 }
 
 /** 单个工具调用的展示数据 */

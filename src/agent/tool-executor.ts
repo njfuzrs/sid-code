@@ -25,6 +25,7 @@ import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
+import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 
 /**
  * GAP-07（子代理侧补齐）：子代理工具进度回调。
@@ -360,6 +361,10 @@ async function executeSingleTool(
     // 截断超大输出
     const truncated = ContextManager.truncateToolOutput(result.output);
 
+    // TUI 呈现档位（见下方 return 处的注释）。解析一次存起来，不在 return 里调两遍
+    // ——函数形态的实现（skill）会查 SkillManager，重复调用是白花的开销。
+    const displayMode = resolveResultDisplayMode(tool, effectiveInput);
+
     // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）
     if (hookSystem) {
       hookSystem.firePostToolUseEvent(
@@ -379,6 +384,10 @@ async function executeSingleTool(
       is_error: result.isError,
       // 结构化 diff 透传(edit/write):与主路径一致,供子代理结果在 UI 渲染高亮
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
+      // TUI 呈现档位：与主路径同解析单点（tool/result-display-mode.ts）。
+      // 子代理也必须接——否则会出现「主循环隐藏了、子代理没隐藏」的路径不一致。
+      // 错误结果不带此字段：错误照常显示（见 tool/types.ts 的硬约束 ②）。
+      ...(!result.isError && displayMode ? { resultDisplayMode: displayMode } : {}),
     };
   } catch (err: any) {
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });

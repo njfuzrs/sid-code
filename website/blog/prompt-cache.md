@@ -1,23 +1,36 @@
 ---
-title: Prompt Cache：两族协议的分叉，和 4.2 亿 token 的实测账
-description: 同一套缓存策略，在 Anthropic 协议和 OpenAI 协议上必须写成两种形状。这篇拆开 sid-code 的实现分叉，交出 283 个会话 4.2 亿输入 token 的命中率账本，以及几个只有实测才能发现的坑——包括一个把我自己骗了两天的假数据。
+title: Prompt Cache：两族协议的分叉，和 4.3 亿 token 的实测账
+description: 同一套缓存策略，在 Anthropic 协议和 OpenAI 协议上必须写成两种形状——差异会一直渗透到你怎么摆一条日期字符串。这篇拆开 sid-code 的实现分叉，交出 294 个会话 4.3 亿输入 token 的命中率账本，以及几个只有实测才能发现的坑。
 date: "2026-08-04"
 series: 上下文工程
-highlight: 283 会话 · 4.2 亿输入 token 账本 · 命中率 0 → 83.2%
+audience: engineer
+highlight: 294 会话 · 4.3 亿输入 token 账本 · 整体命中率 65.5%
 tags: [prompt cache, 成本优化, 机制解析, 实测]
 ---
 
-# Prompt Cache：两族协议的分叉，和 4.2 亿 token 的实测账
+# Prompt Cache：两族协议的分叉，和 4.3 亿 token 的实测账
 
-一个 coding agent 每轮请求都要重发整段系统提示词、全部工具定义、以及到目前为止的所有历史消息。
-在这个仓库里那是几万个 token 起步，而一次任务动辄几十轮。不复用缓存，成本和延迟都不成立。
+同一套缓存策略，在 Anthropic 协议和 OpenAI 协议上**必须写成两种形状**。
+不是风格差异——写错一边，静态前缀会被一个字节的日期整体作废。
 
-prompt cache 的原理简单到一句话：**服务端认前缀，前缀没变就按折扣价重算**。
-难的地方在"没变"这三个字——它在两族协议里的含义不一样，
+prompt cache 的原理简单到一句话：服务端认前缀，前缀没变就按折扣价重算。
+难的地方全在"没变"这三个字：它在两族协议里的含义不一样，
 而这个差异会一直渗透到你怎么摆放一条日期字符串。
 
-sid-code 同时接 Anthropic 协议和 OpenAI 协议（含 deepseek / glm / kimi / qwen 等经网关的后端）。
-这篇拆开两族的实现分叉、交出实测账本，并照实写下当前还没做到的部分。
+sid-code 同时接这两族（OpenAI 族含 deepseek / glm / kimi / qwen 等经网关的后端）。
+这篇拆开实现分叉、交出实测账本，并照实写下当前还没做到的部分。
+
+::: tip 结论先放这里
+- **两族的动态内容处置方式相反**：Anthropic 族分段打断点、动态区留在 system；
+  OpenAI 族无法分段，必须把动态区**搬出 system、挪到消息序列末尾**。
+- **实测账本**（2026-08-04，294 个会话 / 4.33 亿输入 token）：整体命中率 **65.5%**，
+  anthropic 族 81.4%、openai 族 61.3%。
+- **`gpt-5.6-luna` 的 2.2% 不是我们漏采**：同代码路径的 glm 对照组 178/195 次命中，
+  luna 66/66 次响应都有该字段、值恒 0 —— 是网关后端不支持。
+- **99.8% 的缓存中断本地不可控**：632 条真实中断里 631 条是"本地前缀 hash 未变而命中掉了"。
+- **一个必须点破的口径缺陷**：同一行账本里，成本含影子调用、token 不含，
+  两个数不同源，**不能相除** —— 所以"缓存省了百分之多少钱"用现在的账本算不出来。
+:::
 
 ## 为什么"把动态内容放哪"是个成本问题
 
@@ -78,33 +91,67 @@ OpenAI 族是从 token 0 开始的严格前缀匹配。如果把整段 system（
 （`src/llm/openai.ts:82-87`）：
 
 ```text
-prompt_cache_hit_tokens                  ← DeepSeek 官方直连的顶层专有字段
+prompt_cache_hit_tokens
+  ← DeepSeek 官方直连的顶层专有字段
   ↓
-prompt_tokens_details.cached_tokens      ← OpenAI 标准字段（公司网关统一归一到这里）
+prompt_tokens_details.cached_tokens
+  ← OpenAI 标准字段（公司网关统一归一到这里）
   ↓
-cached_tokens                            ← Kimi 官方直连的顶层扩展字段
+cached_tokens
+  ← Kimi 官方直连的顶层扩展字段
 ```
 
 顺序不是随便排的：Kimi 那个 `cached_tokens` 放在末位，因为标准端点顶层没有这个字段，
 放最后不会误伤其它家。
 
-## 实测账本：283 个会话，4.2 亿输入 token
+## 实测账本：294 个会话，4.3 亿输入 token
 
 先说口径，否则数字没有意义：
 
-- 数据源 `~/.sid-code/usage-ledger.jsonl`，指标为 `cacheHit / promptTotal`。
+- 数据源 `~/.sid-code/usage-ledger.jsonl`，指标为 `cacheHit / promptTotal`，
+  **2026-08-04 实测**。
 - 这个账本是**每会话一行聚合**，不是每次调用一行（`upsertUsageLedger` 按 `sessionId` 覆盖，
   `src/telemetry/usage-ledger.ts:85`）。所以下表的"会话数"是会话数，
-  且每行的命中率**已经把该会话的冷启动首轮混在里面**——首轮必然无缓存可命中。
+  且每行的命中率已经把该会话的冷启动首轮混在里面——首轮必然无缓存可命中。
 - 因此这批数字是**偏保守**的下界，不是稳态命中率。
+- 下表按输入 token 降序**取前 10**（另有 3 个小样本组合未列：
+  `origin-deepseek-v4-pro` 4 会话、`claude-sonnet-4-6` 3 会话、`claude-opus-4-8` 1 会话）。
+  合计行与两族汇总统计的是**全部 13 个组合、294 个会话**，与前 10 行加不出来的差额就在这里。
 
-复现命令：
+| provider / model | 会话数 | 命中率 | 输入 token |
+| --- | --- | --- | --- |
+| openai / glm-5.2 | 126 | 79.4% | 194,855,171 |
+| openai / gpt-5.6-luna | 34 | **2.2%** ⚠ | 85,239,639 |
+| anthropic / claude-sonnet-5 | 3 | 82.2% | 84,439,779 |
+| openai / deepseek-v4-pro | 48 | 94.4% | 32,925,960 |
+| openai / kimi-k3 | 17 | 76.1% | 12,628,450 |
+| openai / ali-deepseek-v4-pro | 24 | 78.7% | 7,923,954 |
+| openai / ali-deepseek-v4-flash | 22 | 70.7% | 5,859,280 |
+| anthropic / claude-opus-5 | 4 | 73.8% | 5,257,306 |
+| openai / kimi-k2.6 | 3 | 75.0% | 497,414 |
+| openai / gpt-5.4 | 5 | **18.4%** ⚠ | 460,191 |
+
+全部 13 个组合合计 4.33 亿输入 token，其中 2.83 亿命中缓存，整体命中率 65.5%。
+
+两族分开看，差异很清楚：
+
+| 族 | 会话数 | 命中率 | cacheWrite |
+| --- | --- | --- | --- |
+| anthropic | 11 | 81.4% | 15,784,943 |
+| openai | 283 | 61.3% | 0 |
+
+::: details 复现命令（你跑出来的数会和这里不同）
+`~/.sid-code/` 下的轨迹是滚动窗口，旧会话会被清理，新会话不断追加。
+所以这份账本是**某一天的切片**，不是一个能被复现的固定值——
+下面的命令能复现的是**口径**，不是数字。
 
 ```bash
 bun -e '
-const fs=require("fs");const p=process.env.HOME+"/.sid-code/usage-ledger.jsonl";
+const fs=require("fs");
+const p=process.env.HOME+"/.sid-code/usage-ledger.jsonl";
 const l=fs.readFileSync(p,"utf8").trim().split("\n").filter(Boolean)
-  .map(x=>{try{return JSON.parse(x)}catch{return null}}).filter(Boolean);
+  .map(x=>{try{return JSON.parse(x)}catch{return null}})
+  .filter(Boolean);
 const agg={};
 for(const o of l){
   const k=(o.provider||"?")+" / "+(o.model||"?");
@@ -112,33 +159,12 @@ for(const o of l){
   a.n++;a.hit+=o.cacheHit||0;a.tot+=o.promptTotal||0;
 }
 for(const[k,a]of Object.entries(agg).sort((x,y)=>y[1].tot-x[1].tot))
-  console.log(k.padEnd(34),String(a.n).padStart(4),((a.tot?a.hit/a.tot*100:0).toFixed(1)+"%").padStart(7),String(a.tot).padStart(13));
+  console.log(k.padEnd(34),String(a.n).padStart(4),
+    ((a.tot?a.hit/a.tot*100:0).toFixed(1)+"%").padStart(7),
+    String(a.tot).padStart(13));
 '
 ```
-
-2026-08-04 实测：
-
-| provider / model | 会话数 | 命中率 | 输入 token |
-| --- | --- | --- | --- |
-| openai / glm-5.2 | 123 | 79.4% | 187,260,820 |
-| anthropic / claude-sonnet-5 | 3 | 82.2% | 84,439,779 |
-| openai / gpt-5.6-luna | 31 | **2.2%** ⚠ | 83,511,933 |
-| openai / deepseek-v4-pro | 48 | 94.4% | 32,925,960 |
-| openai / kimi-k3 | 17 | 76.1% | 12,628,450 |
-| openai / ali-deepseek-v4-pro | 24 | 78.7% | 7,923,954 |
-| openai / ali-deepseek-v4-flash | 22 | 70.7% | 5,859,280 |
-| anthropic / claude-opus-5 | 3 | 73.8% | 4,277,140 |
-| openai / kimi-k2.6 | 3 | 75.0% | 497,414 |
-| openai / gpt-5.4 | 5 | **18.4%** ⚠ | 460,191 |
-
-合计 4.2 亿输入 token，其中 2.75 亿命中缓存，整体命中率 65.4%。
-
-两族分开看，差异很清楚：
-
-| 族 | 会话数 | 命中率 | cacheWrite |
-| --- | --- | --- | --- |
-| anthropic | 10 | 81.5% | 15,537,507 |
-| openai | 273 | 61.0% | 0 |
+:::
 
 `cacheWrite` 那一列恰好印证了前面的机制差异：OpenAI 族没有缓存写入计费概念，恒为 0。
 
@@ -260,7 +286,7 @@ hash 没变而命中掉了，就只能归给服务端。没有这个字段，
 
 ## 张力：JIT 上下文与 prompt cache 是互相拉扯的
 
-[上一篇](/blog/jit-context)讲的 JIT 注入——工具访问了 `src/ui/Footer.tsx`，
+[JIT 上下文](/blog/jit-context)那篇讲的按需注入——工具访问了 `src/ui/Footer.tsx`，
 就把 `src/ui/CLAUDE.md` 注入进去——和 prompt cache 有直接冲突。
 
 因为 OpenAI 族的动态区在**消息序列末尾**，而 JIT 注入正是往那个位置追加内容。
@@ -280,13 +306,13 @@ Anthropic 族因为有分段断点，受影响小得多。所以"JIT 注入是�
 
 照实写没做到的部分。
 
-**1. 同一行账本里，成本和 token 不是同一个population。** 这是本轮排查最要紧的一条，
+**1. 同一行账本里，成本和 token 不是同一个 population。** 这是本轮排查最要紧的一条，
 也解释了项目自己说的"影子调用绕过埋点"到底指什么。
 
 账本每一行的字段有两条不同的来源（`src/app.ts:4894` `buildLedgerEntry`）：
 
 - `promptTotal` / `cacheHit` / `cacheWrite` 来自 `sessionState.updateUsage()`，
-  全仓**只有两个调用点**——主循环（`src/query/loop.ts:2430`）和子代理 sink（`src/app.ts:1102`）。
+  全仓只有两个调用点——主循环（`src/query/loop.ts:2430`）和子代理 sink（`src/app.ts:1102`）。
 - `costUSD` 来自 `getEffectiveTotalCostUSD()`，它是 `totalCostUSD + sideCostUSD`
   （`src/session/state.ts:329`）。而 `sideCostUSD` 由 `recordSideCall()` 累加，
   调用方遍布十几个模块：auto-compact、partial-compact、context-collapse、
@@ -294,23 +320,30 @@ Anthropic 族因为有分段断点，受影响小得多。所以"JIT 注入是�
 
 也就是说：**这些辅助调用的「钱」进了账本，「token」没进**。
 后果是这一行里的命中率分母不含影子调用的 token，而成本分子含影子调用的钱——
-两个数不同源，**不能相除**。所以"缓存帮我省了百分之多少成本"这个问题，
+两个数不同源，不能相除。所以"缓存帮我省了百分之多少成本"这个问题，
 用现在的账本算不出来。
 
-上面那个 `savingsUSD` 合计 240.73 美元同理只能当量级参考：
-283 个会话里有 71 个该字段为 0。
+账本里还有一个 `savingsUSD` 字段（按未命中原价与实付价的差额估算缓存省下的钱），
+同样只能当量级参考：294 个会话合计 246.47 美元，但其中 76 个会话该字段为 0——
+四分之一的样本没有有效值，均值没有意义。
 
 要修的话方向是清楚的：让影子调用也走 `updateUsage` 那条路把 token 记进来，
 或者在账本里把两类分栏、明确标注各自口径。但这属于"要补的度量"，本轮没做。
 
-**2. 延迟没有基线。** 四个北极星方向里"更快"几乎没有度量。
-命中率上去了，TTFT 到底降了多少，**没数**。这篇通篇讲的是"省"，不是"快"。
+**2. 缓存与延迟的关系没测。** 这条要说准确：TTFT 本身**是有埋点的**——
+`src/llm/stream-lifecycle.ts` 在 lifecycle 层统一 emit `first_content`，
+`bun scripts/trace-digest.ts --health` 能直接看到分位数（本机 1032 个样本
+实测 p50 ≈ 4.7s、p95 ≈ 23.0s）。
+
+缺的是这两件事之间的因果：没有"命中 / 未命中"分组的 TTFT 对照，
+所以"缓存让首字快了多少"仍然没数。也没有端到端耗时（用户回车 → 最终答复）的独立埋点。
+这篇通篇讲的是"省"，不是"快"——**但原因是没做对照实验，不是没有基线**。
 
 **3. `gpt-5.4` 的 18.4% 没查清。** 样本只有 5 个会话，
 不足以像 luna 那样用对照组下结论。
 
-**4. Anthropic 族样本太少。** 10 个会话，其中 sonnet-5 只有 3 个。
-81.5% 这个数字的置信度远低于 openai 族的 273 个会话。
+**4. Anthropic 族样本太少。** 11 个会话，其中 sonnet-5 只有 3 个。
+81.4% 这个数字的置信度远低于 openai 族的 283 个会话。
 
 **5. 一处可收口的技术债。** Anthropic 族"最后一条 user 消息打断点"
 走的是手写倒序循环（`anthropic.ts:171-179`），

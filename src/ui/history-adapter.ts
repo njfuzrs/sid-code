@@ -474,12 +474,28 @@ export function buildCompletedToolCall(
   // 结构化 diff 优先(edit/write):有 patch 即判定为 diff,UI 直接渲染;
   // 缺失时(旧会话重放/其它工具)降级到对 content 的正则检测。
   const hasPatch = !!block.structuredPatch?.length;
+
+  // 呈现档位（执行器解析后随 block 落盘，见 llm/types.ts 的 resultDisplayMode）：
+  //   - hidden  → 整条卡片不渲染，由 ToolGroupMessage 过滤（此处仍照常构造，
+  //               因为「隐藏」是渲染层决定，数据层保留完整信息供 /export、轨迹回放使用）；
+  //   - summary → 丢弃 ⎿ 正文（content 置空），header 摘要承担说明职责。
+  // 错误结果不受管辖：执行器不会给错误 block 打这个标记，此处再守一道，
+  // 防御未来有人手工构造 block（错误必须可见，见 tool/types.ts 硬约束 ②）。
+  const displayMode = isError ? undefined : block.resultDisplayMode;
+  const suppressBody = displayMode === "summary" || displayMode === "hidden";
+
   const resultDisplay: ToolResultDisplay = {
-    content: block.content,
+    // summary/hidden 档把正文置空：那份 content 是给模型读的提示词，不是给用户看的。
+    // 保留 isError/filename 等元信息不变——只吃正文，不动语义。
+    content: suppressBody ? "" : block.content,
     isError,
+    // isDiff 判定喂原始 content：置空后再判会恒为 false，但 summary 档的工具本就不产 diff，
+    // 这里保持用原文判定是为了「档位与 diff 判定解耦」——将来若有产 diff 的 summary 工具，
+    // 不会因为顺序耦合出一个隐性 bug。
     isDiff: hasPatch || isDiffContent(toolName, block.content),
     filename: getFilenameFromInput(toolName, pending?.input ?? {}),
     ...(hasPatch ? { structuredPatch: block.structuredPatch } : {}),
+    ...(displayMode ? { displayMode } : {}),
   };
 
   return {
@@ -498,7 +514,20 @@ export function buildCompletedToolCall(
     input: pending?.input ?? {},
     status: isError ? ToolCallStatus.Error : ToolCallStatus.Success,
     resultDisplay,
-    resultSummary: getResultSummary(toolName, block.content, isError),
+    // 结果摘要：summary/hidden 档不给。
+    //
+    // 兜底摘要是 `${content.length} 字符`，而这两档的 content 是**给模型读的提示词**
+    // ——量它的长度会产出彻头彻尾的假指标（实测 todo_write 会报"258 字符"，
+    // 描述的是前向推进指令本身，与任务进度毫无关系）。同 think/lsp 已修过的同型坑。
+    //
+    // 判据用 `displayMode` 而不是工具名白名单：`skill` 按 mode 分档（activate=summary、
+    // delegate=原样展示），只有工具自己在执行现场才知道本次是哪一档。白名单在这里
+    // 既表达不了 skill，又会与工具侧自报形成第二个事实源、早晚漂移。
+    //
+    // 注意必须喂 `displayMode` 判定、不能改喂置空后的 `resultDisplay.content`：
+    // 本函数拿到的 `block.content` 始终是**原始完整正文**（置空只发生在 resultDisplay 里），
+    // 所以"content 为空所以自然算出 0 字符"是不成立的——那正是这里必须显式分流的原因。
+    resultSummary: suppressBody ? "" : getResultSummary(toolName, block.content, isError),
     // 真实耗时：增量路径由执行器透传；重建路径（tool_result 已入历史）没有这个信息，
     // 沿用 pending 上已有的值（若有），保证卡片完成后耗时不会凭空消失。
     ...(elapsedMs !== undefined
