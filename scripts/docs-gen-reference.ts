@@ -882,7 +882,7 @@ function renderLlmsTxt(pages: SitePage[]): string {
    * 这里显式排一次，与 `config.ts` 的 `nav` 同序。不在表里的章节（新增目录忘了
    * 登记时）沉到末尾而不是被丢掉——顺序不理想好过页面在索引里消失。
    */
-  const SECTION_ORDER = ["站点", "开始", "指南", "参考（脚本生成）", "博客", "团队部署"];
+  const SECTION_ORDER = ["站点", "开始", "指南", "参考（脚本生成）", "团队部署", "博客"];
   const ordered = [...bySection.entries()].sort((a, b) => {
     const ia = SECTION_ORDER.indexOf(a[0]);
     const ib = SECTION_ORDER.indexOf(b[0]);

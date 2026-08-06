@@ -197,22 +197,13 @@ onMounted(() => void revealHashTarget(route.hash));
 <template>
   <div class="cl">
     <!--
-      ── 统计条 ──
-      刻意**不放**「N 个版本」：左栏时间线按月列出全部版本、组标题自带条数，
-      总数在那儿一眼可得。这里再放一遍就是同一事实的第二个显示位，
-      而两个显示位迟早对不上（谁改了过滤逻辑忘了改另一处）。
+      ⚠ 这里曾有一条统计条（最新版本 / 项变更 / 生成于），已移除，别加回来。
+      三项都是**读者已经能从别处一眼看到**的事实：最新版本号和日期就写在下面
+      第一个版本卡片的标题行上，版本总数与条数由左栏时间线的月份分组承担。
+      放在正文最上方的结果是：真正的内容（第一个版本的变更）被挤到首屏之下，
+      读者进来第一眼看到的是三个自己已经知道的数字。
+      要展示元信息，先回答「它比紧邻的内容更值得占第一屏吗」。
     -->
-    <div class="cl-stats">
-      <div class="cl-stat">
-        <b>v{{ changelog.currentVersion }}</b><span>最新版本</span>
-      </div>
-      <div class="cl-stat">
-        <b>{{ changelog.totalItems }}</b><span>项变更</span>
-      </div>
-      <div class="cl-stat">
-        <b>{{ changelog.generatedAt }}</b><span>生成于</span>
-      </div>
-    </div>
 
     <!-- ── 独立搜索：只搜更新日志，与全站搜索互不干扰 ── -->
     <div class="cl-filter">
@@ -313,34 +304,7 @@ onMounted(() => void revealHashTarget(route.hash));
   margin-top: 8px;
 }
 
-/* ── 统计条 ── */
-.cl-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-.cl-stat {
-  flex: 1 1 120px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 16px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  background: var(--vp-c-bg-soft);
-}
-.cl-stat b {
-  font-family: var(--vp-font-family-mono);
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--vp-c-brand-1);
-  line-height: 1.4;
-}
-.cl-stat span {
-  font-size: 12px;
-  color: var(--vp-c-text-3);
-}
+/* 统计条（.cl-stats / .cl-stat）的样式随模板一起删除，理由见模板处注释。 */
 
 /* ── 筛选区 ── */
 .cl-filter {
