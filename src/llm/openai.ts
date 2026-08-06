@@ -911,14 +911,14 @@ export class OpenAIProvider implements Provider {
         http_status: response.status,
         content_type: contentType,
         ttfb_ms: ttfbMs,
-        model: effectiveModel,
+        model: attrModel,
       });
       // 缺口 6：独立 HttpConnected 事件（按 `HttpConnected` 检索一致性；确认网络层状态）
       emitHttpConnected(obsIndex, {
         status: response.status,
         content_type: contentType,
         ttfb_ms: ttfbMs,
-        model: effectiveModel,
+        model: attrModel,
       });
 
       // ─── Content-Type 守卫（fail-fast 伪装成功的错误页）───
@@ -941,7 +941,8 @@ export class OpenAIProvider implements Provider {
         emitStreamPhase(obsIndex, "error", {
           http_status: response.status,
           content_type: contentType,
-          model: effectiveModel,
+          // 归因维度用别名（AUDIT 日志里仍打真名做诊断，见下方 warn）
+          model: attrModel,
         });
         getLogger().warn(
           "AUDIT:API",
@@ -1000,7 +1001,7 @@ export class OpenAIProvider implements Provider {
           try {
             emitTimeoutFired(obsIndex, layer === "overall" ? "turn_hard_timeout" : "idle_timeout", {
               threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
-              model: effectiveModel,
+              model: attrModel,
             });
           } catch { /* 可观测性不影响主流程 */ }
         },
@@ -1222,8 +1223,8 @@ export class OpenAIProvider implements Provider {
       (disarmHeaderIneffective as (() => void) | null)?.();
     }
 
-    // 响应头已到达
-    emitHttpConnected(obsIndex, { status: response.status, model: effectiveModel });
+    // 响应头已到达。归因用别名（与 Chat Completions 路径同口径）
+    emitHttpConnected(obsIndex, { status: response.status, model: attrModel });
     // G8：Responses API 路径同样提取 rate-limit header
     updateRateLimitStatus(response.headers);
 
@@ -1271,7 +1272,7 @@ export class OpenAIProvider implements Provider {
           try {
             emitTimeoutFired(obsIndex, layer === "overall" ? "turn_hard_timeout" : "idle_timeout", {
               threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
-              model: effectiveModel,
+              model: attrModel,
             });
           } catch { /* 可观测性不影响主流程 */ }
         },

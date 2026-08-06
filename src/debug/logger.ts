@@ -181,7 +181,11 @@ class Logger {
     const catColor = CAT_COLOR[category] ?? C.dim;
 
     // 格式: [HH:MM:SS] ● [CATEGORY] 消息
-    let line = `${C.gray}[${time}]${C.reset} ${style.color}${style.icon}${C.reset} ${catColor}[${category}]${C.reset} ${message}`;
+    //
+    // message 也要脱敏（SEC-AUDIT-2026-07-19 P2）：此前只有 data 过 maskSensitiveData，
+    // 而大量调用点是 `log.info("LLM", \`请求头 ${JSON.stringify(headers)}\`)` 这种把内容
+    // 拼进 message 字符串的写法——凭证从这条缝里原样落盘。只守 data 等于只守了一半。
+    let line = `${C.gray}[${time}]${C.reset} ${style.color}${style.icon}${C.reset} ${catColor}[${category}]${C.reset} ${maskSensitiveData(message)}`;
 
     if (data !== undefined) {
       const dataStr = this.formatData(data);
@@ -354,7 +358,8 @@ class Logger {
       ts: new Date().toISOString(),
       level: LogLevel[level],
       cat: category,
-      msg: message,
+      // 与 formatMessage 同口径：message 里拼进来的凭证同样要脱敏（见那里的注释）
+      msg: maskSensitiveData(message),
     };
 
     if (data !== undefined) {

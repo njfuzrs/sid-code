@@ -152,3 +152,57 @@ describe("patchSettingsFile", () => {
     expect(after.availableModels[0].api_key).toBe("${DEEPSEEK_API_KEY}");
   });
 });
+
+// ─── SEC-AUDIT-2026-07-19 P2：writeSettingsFile 运行时护栏 ───────────────────
+//
+// 背景：writeSettingsFile 的 JSDoc 长期写着"绝大多数场景应改用 patchSettingsFile"，
+// 但那只是注释——没读过文档的调用方照样能把 resolveEnvVars 展开后的明文密钥落盘。
+// 现在改为运行时 fail-closed：检测到明文凭证直接抛错。
+describe("writeSettingsFile 明文凭证护栏", () => {
+  beforeEach(() => {
+    process.env.SID_CONFIG_DIR = TEST_HOME;
+    if (!existsSync(TEST_HOME)) mkdirSync(TEST_HOME, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    if (existsSync(TEST_HOME)) rmSync(TEST_HOME, { recursive: true, force: true });
+  });
+
+  test("含明文 API key 时抛错且不落盘", async () => {
+    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    const withPlaintext = {
+      model: "gpt-5.4",
+      availableModels: [
+        { name: "gpt-5.4", provider: "openai", api_key: "sk-abcdefghij0123456789xyz" },
+      ],
+    } as any;
+
+    expect(() => writeSettingsFile("userSettings", withPlaintext)).toThrow(/明文凭证/);
+    // 关键：抛错发生在写盘之前，文件不该被创建
+    expect(existsSync(SETTINGS_PATH)).toBe(false);
+  });
+
+  test("占位符形态正常写入（这是我们希望的写法）", async () => {
+    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    const withPlaceholder = {
+      model: "deepseek-v4-pro",
+      availableModels: [
+        { name: "deepseek-v4-pro", provider: "openai", api_key: "${DEEPSEEK_API_KEY}" },
+      ],
+    } as any;
+
+    expect(() => writeSettingsFile("userSettings", withPlaceholder)).not.toThrow();
+    const written = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
+    expect(written.availableModels[0].api_key).toBe("${DEEPSEEK_API_KEY}");
+  });
+
+  test("无凭证的普通配置正常写入", async () => {
+    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    expect(() =>
+      writeSettingsFile("userSettings", { model: "claude-opus", theme: "dark" } as any),
+    ).not.toThrow();
+    expect(JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")).model).toBe("claude-opus");
+  });
+});

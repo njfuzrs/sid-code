@@ -87,7 +87,16 @@ export class WebSearchTool implements Tool {
     return true;
   }
 
-  /** 只读工具：无权限意见，交给权限系统决定 */
+  /**
+   * 权限检查（SEC-AUDIT-2026-07-19 P1-2）：passthrough，交给权限系统按
+   * `WebSearch` / `WebSearch(查询词模式)` 规则匹配；无匹配规则时落到 checker 默认 ask。
+   *
+   * 契约：网络出站需人类把关。web_search 不在 checker READ_ONLY_TOOLS，也不在
+   * tool-classifier AUTO_ALLOW_TOOLS —— 两条自动放行路径都已摘除，故此处 passthrough
+   * 的净效果是「默认询问」，而非上一轮审计时的「静默放行」。
+   *
+   * 与 web_fetch 的区别：搜索无具体 URL，无法做 domain: 粒度授权，故不设预授权白名单。
+   */
   async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     return { behavior: "passthrough" };
   }

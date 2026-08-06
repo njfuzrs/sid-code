@@ -84,6 +84,66 @@ export function lookupWireModelAlias(alias: string): string | undefined {
   return _aliasMap?.get(alias);
 }
 
+/**
+ * 直接从模型列表构造「别名 → 真名」表，**不读也不写**进程级全局表。
+ *
+ * 与 exportWireModelAliases 的分工：后者导出当前全局表（依赖
+ * resolveCurrentModelConfig 已跑过）；本函数从配置现算，不依赖任何调用时序，
+ * 适合 registry 这类「可能在任何时机被调」的地方。两者口径一致（同一套过滤 + 容错）。
+ *
+ * 只收录 `modelId !== name` 的条目；空表返回 undefined，便于直接塞进可选协议字段。
+ */
+export function buildWireModelAliasMap(
+  models?: readonly WireModelEntry[],
+): Record<string, string> | undefined {
+  if (!models?.length) return undefined;
+  const out: Record<string, string> = {};
+  for (const m of models) {
+    // 与 setWireModelAliases 同一套容错：name/modelId 都可能是用户手写的脏值。
+    const alias = normalizeWire(m?.name);
+    const wire = normalizeWire(m?.modelId);
+    // 同名多条保留第一条，与选择侧 find-first 严格同语义。
+    if (alias && wire && alias !== wire && !(alias in out)) out[alias] = wire;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * 导出整张别名表，用于**跨进程**播种（spawn 子代理）。
+ *
+ * 空表返回 undefined 而不是 `{}`：让调用方能直接把结果塞进可选协议字段，
+ * 绝大多数用户（没配 model_id）此字段整个缺省，管道上零多余字节。
+ *
+ * 为什么子进程需要整张表而不是单条 wire_model：子进程里存在**换模型**的路径
+ * （ModelFallback 降级时把 wireModel 置 undefined、靠别名表翻译新目标）。
+ * 只播种主模型那一条的话，fallback 目标查不到 → 原样发别名 → 400，
+ * 而降级恰恰是主模型已出问题时的最后一道防线。见 sub-agent-protocol.ts。
+ */
+export function exportWireModelAliases(): Record<string, string> | undefined {
+  if (!_aliasMap || _aliasMap.size === 0) return undefined;
+  return Object.fromEntries(_aliasMap);
+}
+
+/**
+ * 用「别名 → 真名」的普通对象播种别名表（跨进程解码侧，与 exportWireModelAliases 对偶）。
+ *
+ * 单独开一个入口而不是让调用方自己拼 `WireModelEntry[]`：子进程收到的是 JSON
+ * 反序列化的结果，键值都可能是脏的（老版本父进程、手工构造的 init 消息），
+ * 统一在这里过 normalizeWire，与 setWireModelAliases 同一套容错口径。
+ */
+export function setWireModelAliasesFromMap(map?: Record<string, unknown>): void {
+  if (!map || typeof map !== "object") {
+    setWireModelAliases();
+    return;
+  }
+  setWireModelAliases(
+    Object.entries(map).map(([name, modelId]) => ({
+      name,
+      modelId: typeof modelId === "string" ? modelId : undefined,
+    })),
+  );
+}
+
 /** 仅供测试：清空别名表，避免跨用例串味 */
 export function resetWireModelAliases(): void {
   _aliasMap = null;

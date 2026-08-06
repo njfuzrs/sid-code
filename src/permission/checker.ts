@@ -690,6 +690,34 @@ export class PermissionChecker implements Checker {
       const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
       const pathResult = this.pathValidator.validateAccess(filePath, operation);
       if (!pathResult.allowed) {
+        // SEC-AUDIT-2026-07-19 P2：敏感文件（凭证类）现在是**硬 deny**，但保留一个
+        // 逃生舱——用户在 settings.json 的 permissions.allow 里显式写了
+        // `Read(.env)` / `Read(secrets/**)` 这类规则时放行。
+        //
+        // 为什么只对敏感文件开这个口子，不对系统目录/symlink 逃逸开：
+        // 前者是"用户明确知道自己要读哪个凭证文件"的正当场景（部署脚本、配置排查），
+        // 后者要么是路径穿越攻击、要么是配置错误，没有"用户本意如此"的合理解释。
+        //
+        // 关键点：逃生舱是**配置文件里的决定**，不是对话中的一次点击。这正是收紧
+        // needsConfirmation → deny 想要的效果（详见 path-validator.ts 第 6 步注释）。
+        if (pathResult.sensitiveFile && this.rules) {
+          const allowDecision = this.checkAllowRules(req);
+          if (allowDecision?.allowed) {
+            log.info(
+              "PERMISSION",
+              `${req.toolName}(${filePath.slice(0, 80)}) → 允许(敏感文件，但命中用户显式 allow 规则)`,
+            );
+            this.auditLogger.log({
+              timestamp: new Date().toISOString(),
+              type: "tool_use",
+              tool: req.toolName,
+              resource,
+              decision: "allow",
+              reason: `敏感文件经用户显式 allow 规则放行: ${pathResult.reason}`,
+            });
+            return { ...allowDecision, decisionReason: { type: "rule", rule: "allow", behavior: "allow" } };
+          }
+        }
         log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
         return {
           allowed: false,

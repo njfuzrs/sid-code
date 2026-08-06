@@ -161,7 +161,9 @@ export type DialogType =
   | "export"
   | "context"
   | "rewind"
-  | "claude-md-external-imports";
+  | "claude-md-external-imports"
+  // SEC-AUDIT-2026-07-19 P1：首次打开含危险配置的代码库时的信任门控
+  | "trust";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =

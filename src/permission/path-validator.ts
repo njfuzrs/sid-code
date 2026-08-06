@@ -19,6 +19,14 @@ export interface PathValidationResult {
   needsConfirmation?: boolean;
   /** symlink 解析后的真实路径 */
   resolvedPath: string;
+  /**
+   * true 表示命中敏感文件（凭证类）规则（SEC-AUDIT-2026-07-19 P2）。
+   *
+   * checker 据此判断「这条硬 deny 是否允许被用户显式 allow 规则解除」——
+   * 敏感文件 deny 可解除（用户在 settings.json 里写 `Read(.env)`），
+   * 而系统目录/symlink 逃逸那类 deny 不可解除。
+   */
+  sensitiveFile?: boolean;
 }
 
 /**
@@ -61,7 +69,15 @@ const SENSITIVE_FILES = [
   /password/i,
   /secret/i,
   /\.aws\/config/,
+  // .aws/credentials 单列（SEC-AUDIT-2026-07-19 P2）：虽然通用 /credentials/i 已能覆盖，
+  // 但显式列出让「云厂商凭证」这条意图在清单里可见，也防后续有人收窄通用模式时误伤。
+  /\.aws\/credentials/,
   /\.kube\/config/,
+  /\.docker\/config\.json/,
+  /\.npmrc$/,
+  /\.pypirc$/,
+  /\.netrc$/,
+  /\.git-credentials/,
   /token\.json/i,
 ];
 
@@ -284,6 +300,18 @@ export class PathValidator {
     }
 
     // 6. 敏感文件检测（大小写归一化比较，防 .ENV / .Pem 绕过）
+    //
+    // SEC-AUDIT-2026-07-19 P2：命中即**硬 deny**（needsConfirmation: false），
+    // 对齐 CC 推荐的 `deny Read(.env / *.pem / *.key)` 强度。
+    //
+    // 为什么从"需确认"收紧到"拒绝"：凭证文件被读走是**不可撤销**的损害，而弹窗确认
+    // 恰恰是最容易被点穿的一环——模型给出的理由往往看着合理（"我需要看下 .env 里的
+    // 数据库配置来修这个 bug"），用户在连续若干次确认后极易习惯性放行。对这类
+    // 「一旦泄露无法回收」的目标，正确的默认值是不给这个选择。
+    //
+    // 逃生舱：确实需要访问时，在 settings.json 的 permissions.allow 里显式写
+    // `Read(.env)` 这类规则——那是用户**离开对话、在配置文件里**做的决定，
+    // 不受当轮对话的话术影响。见 checker.ts Step 4 的 allow 前置检查。
     for (const pattern of SENSITIVE_FILES) {
       // 不区分大小写的正则（带 i flag）直接用原路径；其余用归一化路径兜底大小写绕过
       const target = pattern.flags.includes("i") ? realPath : realPathLower;
@@ -291,9 +319,10 @@ export class PathValidator {
       if (pattern.test(target) || (fallback !== null && pattern.test(fallback))) {
         return {
           allowed: false,
-          reason: `敏感文件: ${realPath}`,
-          needsConfirmation: true,
+          reason: `敏感文件（凭证类，默认拒绝）: ${realPath}`,
+          needsConfirmation: false,
           resolvedPath: realPath,
+          sensitiveFile: true,
         };
       }
     }

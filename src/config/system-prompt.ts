@@ -118,10 +118,17 @@ export interface SystemPromptContext {
   preferredLanguage?: LanguagePref;
 
   // 模型标识（用于 DeepSeek 等模型的语言策略差异化处理）
-  /** 当前使用的模型名（如 "deepseek-chat"、"claude-sonnet-4-20250514"） */
+  /**
+   * 当前使用的模型**本地别名**（availableModels[].name，如 "deepseek-chat"、
+   * "claude-sonnet-4-20250514"）。按名做能力查表前需先经 resolveWireModel 翻成真名，
+   * 见 buildIdentitySection 里 reasoningLanguageDrift 的处理。
+   */
   model?: string;
-  /** 用户配置的模型列表（携带权威 contextWindow），用于动态推导系统提示词预算 */
-  availableModels?: Array<{ name?: string; contextWindow?: number }>;
+  /**
+   * 用户配置的模型列表（携带权威 contextWindow + 别名→真名映射 modelId），
+   * 用于动态推导系统提示词预算，以及把 `model` 别名翻成厂商真名做能力查表。
+   */
+  availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>;
 
   // 限制
   /** 系统提示词最大 token 数。
@@ -345,7 +352,8 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 1. 构建核心部分（固定模板，必须保留）
   const coreParts: string[] = [
-    buildIdentitySection(ctx.preferredLanguage, ctx.model),
+    // availableModels 透传：让 buildIdentitySection 能把 model 别名翻成厂商真名后查能力表
+    buildIdentitySection(ctx.preferredLanguage, ctx.model, ctx.availableModels),
     buildEnvironmentSection(ctx.workingDir, ctx.preferredLanguage),
   ];
 
@@ -730,14 +738,24 @@ function buildIdentityIntro(lang: "zh" | "en"): string {
 }
 
 /** 构建身份指令部分 */
-function buildIdentitySection(language?: LanguagePref, model?: string): string {
+function buildIdentitySection(
+  language?: LanguagePref,
+  model?: string,
+  availableModels?: Array<{ name?: string; modelId?: string }>,
+): string {
   // 必删-4：是否走「铁律级」语言约束措辞，改由注册表能力标志 reasoningLanguageDrift 驱动，
   // 而非 model.includes("deepseek") 字符串匹配（违反"不按模型名硬编码分档"原则，模型改名/
   // 新版/同类新模型都会漂移；见 memory feedback-no-hardcoded-model-tier-rules.md）。
   // 新增同类"中文语境思考易漂移到英文"的模型，只需在 model-registry 声明该标志即可享受此措辞。
+  //
+  // ⚠ 查表必须用**真名**：`model` 是本地别名，lookupCatalog 按模型名做前缀/家族匹配，
+  // 喂前缀式别名（gw-deepseek-reasoner）会静默判 false → 铁律措辞被降级成普通措辞，
+  // 中文语境下思考漂移到英文的老问题复现。实测：deepseek-reasoner 真名 true、
+  // gw-deepseek-reasoner undefined。别名与真名相同时 resolveWireModel 原样返回。
   const { lookupCatalog } = require("../llm/model-params-catalog.ts");
+  const { resolveWireModel } = require("../llm/wire-model.ts");
   const needsStrongLanguageGuard = model
-    ? lookupCatalog(model)?.reasoningLanguageDrift === true
+    ? lookupCatalog(resolveWireModel(model, availableModels))?.reasoningLanguageDrift === true
     : false;
 
   // auto 档：不预设语言，按用户当轮语言应答。

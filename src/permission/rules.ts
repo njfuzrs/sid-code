@@ -20,11 +20,13 @@ const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
  * 规则名归一：把 CC 风格的规则名映射到 sid 内部工具名。
  * - Agent ↔ sub_agent
  * - WebFetch ↔ web_fetch
+ * - WebSearch ↔ web_search
  * 大小写不敏感。
  */
 const RULE_NAME_ALIASES: Record<string, string> = {
   agent: "sub_agent",
   webfetch: "web_fetch",
+  websearch: "web_search",
 };
 
 /** 把规则里的工具名归一到内部工具名（小写） */
@@ -39,6 +41,7 @@ function normalizeRuleToolName(toolName: string): string {
  * - 文件类：file_path
  * - sub_agent：subagent_type / type（供 Agent(type) 规则匹配）
  * - web_fetch：domain:hostname（供 WebFetch(domain:x) 规则匹配）
+ * - web_search：query（供 WebSearch(pattern) 规则匹配）
  * - 其它：pattern
  */
 function extractMatchValue(req: PermissionRequest): string {
@@ -56,6 +59,10 @@ function extractMatchValue(req: PermissionRequest): string {
     } catch {
       return "";
     }
+  }
+  // web_search 无 URL 可归一，按查询词匹配（`WebSearch` 裸规则不走到这里，仍匹配全部搜索）
+  if (tool === "web_search") {
+    return input?.query || "";
   }
   return input?.file_path || input?.command || input?.pattern || "";
 }

@@ -75,13 +75,24 @@ async function main(): Promise<void> {
     writeChildMsg({ type: "ready" });
 
     // 别名表播种（纵深防御）：本进程不读 settings.json、不跑 loadConfig，别名表恒为空。
-    // 逐个调用点传 wireModel 只能覆盖**当前已知**的发送点；这里把父进程传来的
-    // (别名 → 真名) 单条映射注册进表，本进程内任何路径（含日后新增的、以及
-    // ModelFallback 一旦被接上 fallbackProvider 后的重试/降级路径）都自动拿到真名。
-    // init.wire_model 缺省或与别名相同时 setWireModelAliases 不入表，行为完全不变。
-    if (init.wire_model) {
-      const { setWireModelAliases } = require("../llm/wire-model.ts");
-      setWireModelAliases([{ name: init.model, modelId: init.wire_model }]);
+    // 逐个调用点传 wireModel 只能覆盖**当前已知**的发送点；播种进表后，本进程内任何路径
+    // （含日后新增的发送点、以及 ModelFallback 的重试/降级路径）都自动拿到真名。
+    //
+    // 优先用父进程传来的**整张表**：单条 wire_model 只覆盖「本次要发的模型」，而
+    // ModelFallback 降级时会**换模型**并靠这张表翻译新目标（fallback.ts 刻意把
+    // wireModel 置 undefined）。只播种主模型一条 → fallback 目标查不到 → 原样发别名
+    // → 400，而降级恰恰是主模型已经出问题时才跑的最后一道防线。
+    // 老版本父进程只发 wire_model 时退回单条播种（向后兼容）；两者都缺省时表为空、行为不变。
+    {
+      const {
+        setWireModelAliasesFromMap,
+        setWireModelAliases,
+      } = require("../llm/wire-model.ts");
+      if (init.wire_model_aliases) {
+        setWireModelAliasesFromMap(init.wire_model_aliases);
+      } else if (init.wire_model) {
+        setWireModelAliases([{ name: init.model, modelId: init.wire_model }]);
+      }
     }
 
     // 2. 创建 Provider

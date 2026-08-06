@@ -86,3 +86,61 @@ export function setApproveAll(value: boolean): void {
   approvals.approveAll = value;
   saveApprovals(approvals);
 }
+
+// ─── 待审批快照（SEC-AUDIT-2026-07-19 P1）────────────────────────────────────
+//
+// loadConfig 在合并 MCP 配置时把 pending 的项目级 server **排除出生效列表**，
+// 并登记到这里。/mcp 面板读它来展示"有 N 个待审批 server"，用户批准后写入
+// approved 列表，下次启动即加载。
+//
+// 为什么用模块级单例而不挂在 Config 上：Config 会被序列化进会话快照、被 Zod
+// 校验、被项目级 settings 合并——把"本次启动的临时审批状态"塞进去会污染这些
+// 通路（早先的 `_pendingApproval` 就是塞在 serverConfig 里，结果既被透传到
+// 生效列表又无人读取）。审批状态是进程内的一次性信息，不该进配置结构。
+
+/** 待审批的项目级 server 名 → 其配置（仅本进程内有效） */
+let pendingApproval: Record<string, unknown> = {};
+/** 待审批 server 所属的项目路径 */
+let pendingApprovalProject = "";
+
+/** 登记待审批快照（loadConfig 调用） */
+export function setPendingApprovalServers(
+  servers: Record<string, unknown>,
+  projectPath: string,
+): void {
+  pendingApproval = servers;
+  pendingApprovalProject = projectPath;
+}
+
+/** 读取待审批 server 名单（/mcp 面板调用） */
+export function getPendingApprovalServers(): { names: string[]; projectPath: string } {
+  return { names: Object.keys(pendingApproval), projectPath: pendingApprovalProject };
+}
+
+/**
+ * 批准一个待审批 server 并从快照中移除。
+ * 返回 true 表示确实批准了（名字在快照里）。
+ *
+ * 注意：批准只写持久化状态，**不热连接** —— MCP connectAll 在 cli.ts 启动早期
+ * 就跑完了，运行中没有"补连一个 server"的入口。调用方需提示用户重启生效。
+ */
+export function approvePendingServer(serverName: string): boolean {
+  if (!(serverName in pendingApproval)) return false;
+  approveProjectServer(serverName, pendingApprovalProject);
+  delete pendingApproval[serverName];
+  return true;
+}
+
+/** 拒绝一个待审批 server 并从快照中移除（后续启动直接跳过，不再询问）。 */
+export function rejectPendingServer(serverName: string): boolean {
+  if (!(serverName in pendingApproval)) return false;
+  rejectProjectServer(serverName, pendingApprovalProject);
+  delete pendingApproval[serverName];
+  return true;
+}
+
+/** 测试辅助：重置模块级快照 */
+export function __resetPendingApproval(): void {
+  pendingApproval = {};
+  pendingApprovalProject = "";
+}

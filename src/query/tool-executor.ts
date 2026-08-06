@@ -22,6 +22,7 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
+import { detectSensitiveData } from "../permission/sensitive.ts";
 
 /**
  * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
@@ -465,6 +466,34 @@ export async function executeTools(
   const settle = (idx: number, block: ContentBlock, elapsedMs?: number): void => {
     resultMap.set(idx, block);
     const id = (block as any).tool_use_id;
+
+    // 凭证外泄可观测性（SEC-AUDIT-2026-07-19 P2）：工具输出里出现凭证时留痕告警。
+    //
+    // 这里刻意**只检测、不改写**。工具输出是给模型看的工作材料——用户让模型
+    // "看看 .env 里配的 base_url 对不对"（已过 allow 规则逃生舱）时，把值抹成
+    // `sk-***1234` 会让模型无法完成任务，还会编造一个"看起来对"的答案。
+    // 真正的闸门在上游（敏感文件硬 deny + allow 规则），不在这里。
+    //
+    // 告警的价值是可观测性：日志里出现这条，就意味着有凭证进了上下文——
+    // 而上下文会进 trace、进 session、进压缩摘要。运维据此判断是否需要轮换密钥。
+    // 日志本身已过 maskSensitiveData（logger.ts），故这条告警不会二次泄露。
+    try {
+      const content = (block as any)?.content;
+      if (typeof content === "string" && content.length > 0) {
+        const hits = detectSensitiveData(content);
+        if (hits.length > 0) {
+          const kinds = [...new Set(hits.map((h) => h.type))].join(", ");
+          getLogger().warn(
+            "SECURITY",
+            `工具输出含 ${hits.length} 处凭证形态数据（${kinds}），已进入上下文。` +
+              `若为真实凭证，建议轮换；检查是否有工具在回读密钥文件。`,
+          );
+        }
+      }
+    } catch {
+      /* 检测异常绝不影响工具执行与协议组装 */
+    }
+
     // 耗时表与增量回调解耦：无头模式没注入 onToolSettled，但 tool_end 的真实耗时仍要正确。
     if (typeof id === "string" && elapsedMs !== undefined) durations.set(id, elapsedMs);
     if (!deps.onToolSettled) return;

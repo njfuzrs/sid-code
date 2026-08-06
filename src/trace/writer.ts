@@ -7,11 +7,24 @@
  * - 所有写入操作 try-catch，失败时仅记录警告不抛异常（采集不影响正常使用）
  * - session.traj 使用原子覆盖写入（每次 AfterModel 后重建）
  * - raw.jsonl / events.jsonl 使用追加写入（崩溃安全）
+ * - **所有落盘内容统一经 maskSensitiveData 脱敏**（见下）
+ *
+ * 脱敏（SEC-AUDIT-2026-07-19 P2）：
+ *   轨迹是本仓的核心资产——它会被 /trace 读、被 uploader 上传、被贴进 issue 和 PR。
+ *   而它记录的恰好是「完整请求/响应对」，包含 Authorization 头、模型吐出的 key、
+ *   用户粘贴的凭证。此前这里**零脱敏**，凭证随轨迹一起落盘并可能出境。
+ *
+ *   本文件的 5 个写入方法是全部落盘路径的收口点，统一在这里过一遍 maskSensitiveData，
+ *   而不是让每个调用方自己记得脱敏——"每个调用方都要记得"这种约定必然会漏。
+ *
+ *   masked 值形如 `Bearer abc********2345`：保留头尾便于对照排查（"是不是我那个 key"），
+ *   中间抹掉。替换只产生 `*`，不破坏 JSON 转义，落盘后仍可 JSON.parse / jq。
  */
 
 import { join } from "node:path";
 import { mkdirSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { getLogger } from "../debug/logger.ts";
+import { maskSensitiveData } from "../permission/sensitive.ts";
 
 /** hook 事件记录（写入 events.jsonl 的行格式） */
 export interface HookEvent {
@@ -115,7 +128,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "session.traj");
-      await Bun.write(filePath, content);
+      await Bun.write(filePath, maskSensitiveData(content));
     } catch (err) {
       getLogger().warn("TRACE", `写入 session.traj 失败: ${err}`);
     }
@@ -129,7 +142,8 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "raw.jsonl");
-      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+      const safe = maskSensitiveData(line);
+      appendFileSync(filePath, safe.endsWith("\n") ? safe : safe + "\n");
     } catch (err) {
       getLogger().warn("TRACE", `追加 raw.jsonl 失败: ${err}`);
     }
@@ -143,7 +157,8 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "events.jsonl");
-      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+      const safe = maskSensitiveData(line);
+      appendFileSync(filePath, safe.endsWith("\n") ? safe : safe + "\n");
     } catch (err) {
       getLogger().warn("TRACE", `追加 events.jsonl 失败: ${err}`);
     }
@@ -213,7 +228,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "messages.json");
-      writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+      writeFileSync(filePath, maskSensitiveData(JSON.stringify(snapshot, null, 2)));
     } catch (err) {
       getLogger().warn("TRACE", `写入 messages.json 失败: ${err}`);
     }
@@ -232,7 +247,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "session-summary.json");
-      writeFileSync(filePath, JSON.stringify(summary, null, 2));
+      writeFileSync(filePath, maskSensitiveData(JSON.stringify(summary, null, 2)));
     } catch (err) {
       getLogger().warn("TRACE", `写入 session-summary.json 失败: ${err}`);
     }

@@ -32,6 +32,7 @@ import { ExportDialog } from "./ExportDialog.tsx";
 import { ContextDialog } from "./ContextDialog.tsx";
 import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
+import { TrustDialog } from "./TrustDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -234,6 +235,25 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
           onDialogClose();
         }}
         onClose={onDialogClose}
+      />
+    );
+  }
+  // SEC-AUDIT-2026-07-19 P1：工作区信任门控。Esc（onClose）走 onTrustDecision(false)
+  // 而非静默关闭——不确认就等于不信任，必须让 app 侧知道以跳过危险配置加载。
+  if (activeDialog === "trust") {
+    const items = callbacks.getPendingTrustItems?.() ?? [];
+    return (
+      <TrustDialog
+        items={items}
+        workspacePath={cwd}
+        onDecision={async (trusted) => {
+          await callbacks.onTrustDecision?.(trusted);
+          onDialogClose();
+        }}
+        onClose={async () => {
+          await callbacks.onTrustDecision?.(false);
+          onDialogClose();
+        }}
       />
     );
   }

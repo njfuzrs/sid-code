@@ -535,3 +535,40 @@ describe("PermissionChecker", () => {
     });
   });
 });
+
+// ─── SEC-AUDIT-2026-07-19 P2：敏感文件默认 deny + 显式 allow 逃生舱 ──────────
+describe("PermissionChecker - 敏感文件硬 deny", () => {
+  test("默认硬拒绝且不给确认选项", async () => {
+    const checker = new PermissionChecker(defaultConfig());
+    const result = await checker.check({
+      toolName: "read",
+      input: { file_path: "/tmp/proj/.env" },
+    });
+    expect(result.allowed).toBe(false);
+    // 关键：不是 needsConfirmation。凭证泄露不可撤销，不给"点确认即放行"的口子。
+    expect(result.needsConfirmation).toBeFalsy();
+  });
+
+  // 注意规则语法：`//abs` 才是"文件系统绝对路径"，单前导 `/` 是**项目根相对**
+  // （见 path-rule-matching.ts 的四种前缀）。写成 `Read(/tmp/...)` 匹配不上。
+  test("settings.json 里显式 allow 规则可作为逃生舱放行", async () => {
+    const checker = new PermissionChecker(defaultConfig());
+    checker.setRules({ allow: ["Read(//tmp/proj/.env)"], deny: [], ask: [] });
+    const result = await checker.check({
+      toolName: "read",
+      input: { file_path: "/tmp/proj/.env" },
+    });
+    expect(result.allowed).toBe(true);
+  });
+
+  test("无匹配的 allow 规则时仍然拒绝（逃生舱不是万能门）", async () => {
+    const checker = new PermissionChecker(defaultConfig());
+    // 规则指向别的文件，不该顺带放行 .env
+    checker.setRules({ allow: ["Read(//tmp/proj/README.md)"], deny: [], ask: [] });
+    const result = await checker.check({
+      toolName: "read",
+      input: { file_path: "/tmp/proj/.env" },
+    });
+    expect(result.allowed).toBe(false);
+  });
+});

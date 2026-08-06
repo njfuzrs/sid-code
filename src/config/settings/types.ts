@@ -285,6 +285,10 @@ export const SettingsSchema = lazySchema(() =>
       // LLM 命令风险分类器（P0-3 迭代 II）
       enableLLMClassifier: z.boolean().optional(),
       classifierModel: z.string().optional(),
+      // WebFetch 隔离提炼（SEC-AUDIT-2026-07-19 P0）：抓取正文经独立小模型提炼后再进主上下文。
+      // webFetchIsolate 是安全开关，已登记 SECURITY_SENSITIVE_FIELDS（项目级不可关闭）。
+      webFetchIsolate: z.boolean().optional(),
+      webFetchExtractModel: z.string().optional(),
 
       // 推理强度 / 思考开关旋钮（/effort、/think 持久化端；缺省 = auto 跟随模型默认）
       effortLevel: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),

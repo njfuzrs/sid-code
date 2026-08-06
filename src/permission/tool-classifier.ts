@@ -65,10 +65,20 @@ export interface ToolClassifierConfig {
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_TOKENS = 512;
 
-/** 三级快速路径：这些工具在工作区内操作时无需调 API */
+/** 三级快速路径：这些工具在工作区内操作时无需调 API
+ *
+ * ⚠️ 判据是「**工作区内**无外部副作用」——网络出站工具不满足此条，**不得**加入本表。
+ * 2026-08-07（SEC-AUDIT-2026-07-19 P1-2 收尾）：`web_fetch` / `web_search` 曾在此表内，
+ * 与 checker 的 READ_ONLY_TOOLS 构成两条并行的自动放行路径。当时 ToolClassifier 尚未接线
+ * （`setToolClassifier` 无生产调用方），本表形同死代码，故上一轮只摘了 checker 一侧；
+ * 此后 `cli.ts:1939-1945` 接线生效，本表复活成**绕过 P1-2 修复的活路径**——
+ * `permissionMode === "auto"` 下 web_fetch 会在 Level 1 拿到 `safe: true` 直接放行，
+ * 让「网络出站需人类把关」的契约在 auto 模式下静默失效。
+ * 教训：**摘除自动放行必须把所有并行路径一次摘干净**，"那条现在是死代码"不是留它的理由。
+ */
 const AUTO_ALLOW_TOOLS = new Set([
   "read", "read_many", "glob", "grep", "ls", "ripgrep",
-  "bg_task_list", "bg_task_get", "web_search", "web_fetch",
+  "bg_task_list", "bg_task_get",
   // 结构化任务清单：纯内存态清单读写，无外部副作用，工作区内自动放行
   "task_list", "task_get", "task_create", "task_update",
 ]);

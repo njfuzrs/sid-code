@@ -86,34 +86,50 @@ describe("PathValidator - 系统目录保护", () => {
   });
 });
 
-describe("PathValidator - 敏感文件检测", () => {
-  test(".env 文件需确认", () => {
+// SEC-AUDIT-2026-07-19 P2：敏感文件从「需确认」收紧为「硬 deny」。
+// needsConfirmation 现在必须是 false —— 凭证泄露不可撤销，不给"点确认就放行"这个选项。
+// 逃生舱是 settings.json 里的显式 allow 规则（在 checker 层，见 checker.test.ts）。
+describe("PathValidator - 敏感文件检测（默认硬 deny）", () => {
+  test(".env 文件硬拒绝", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess(path.join(workspaceDir, ".env"), "write");
     expect(result.allowed).toBe(false);
-    expect(result.needsConfirmation).toBe(true);
+    expect(result.needsConfirmation).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
     expect(result.reason).toContain("敏感文件");
   });
 
-  test(".env.local 文件需确认", () => {
+  test(".env.local 文件硬拒绝", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess(path.join(workspaceDir, ".env.local"), "write");
     expect(result.allowed).toBe(false);
-    expect(result.needsConfirmation).toBe(true);
+    expect(result.needsConfirmation).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
   });
 
-  test("credentials 文件需确认", () => {
+  test("credentials 文件硬拒绝", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess(path.join(workspaceDir, "credentials.json"), "read");
     expect(result.allowed).toBe(false);
-    expect(result.needsConfirmation).toBe(true);
+    expect(result.needsConfirmation).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
   });
 
-  test(".pem 文件需确认", () => {
+  test(".pem 文件硬拒绝", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess(path.join(workspaceDir, "server.pem"), "read");
     expect(result.allowed).toBe(false);
-    expect(result.needsConfirmation).toBe(true);
+    expect(result.needsConfirmation).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
+  });
+
+  // 非敏感类的路径 deny（系统目录 / symlink 逃逸）**不带** sensitiveFile 标记，
+  // 因此不享有 allow 规则逃生舱——这条断言防止后续改动把标记误加到别的分支上。
+  test("系统目录拒绝不带 sensitiveFile 标记（无逃生舱）", () => {
+    const v = new PathValidator(workspaceDir);
+    const result = v.validateAccess("/etc/passwd", "write");
+    expect(result.allowed).toBe(false);
+    expect(result.sensitiveFile).toBeFalsy();
   });
 
   test("普通 .ts 文件允许", () => {

@@ -53,9 +53,23 @@ export interface ParentInitMessage {
    * 不跑 loadConfig，因此 llm/wire-model.ts 的进程级别名表在子进程里恒为空 ——
    * 只传 model（别名）会让子代理把 "xxx-gateway" 当模型名发给厂商吃 400/404，
    * 而父进程一切正常，故障只在「子代理 + 配了 model_id」这一格里出现，极难归因。
-   * 父进程已解析好真名，直接随 init 传过来是最省的做法（无需把整份 availableModels 过管道）。
+   * 父进程已解析好真名，直接随 init 传过来是最省的做法。
    */
   wire_model?: string;
+  /**
+   * **完整**别名表（alias → wire model），仅含 `modelId !== name` 的条目。
+   *
+   * 为什么 `wire_model` 单条不够：它只覆盖「本次要发的那个模型」。子进程里还有
+   * **换模型**的路径——`ModelFallback` 降级到 fallback 目标时（fallback.ts 刻意把
+   * `wireModel` 置 undefined、交给进程级别名表兜底翻译新目标），若表里只播种了主模型
+   * 那一条，fallback 目标别名查不到 → 原样发别名 → 400。于是「降级」本身失败，
+   * 而它恰恰是在主模型已经出问题时才跑的最后一道防线。
+   *
+   * 传整张表而不是逐个补：与 wire-model.ts 里「兜底表把必须记得做的事变成默认成立」
+   * 同一思路——子进程内任何路径（含日后新增的发送点）都自动拿到真名。
+   * 表通常只有 0-2 条，跨进程开销可忽略；绝大多数用户没配 model_id，此字段整个缺省。
+   */
+  wire_model_aliases?: Record<string, string>;
   max_turns: number;
   max_tokens: number;
   timeout: number;

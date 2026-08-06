@@ -10,6 +10,9 @@
  *   mcp get <name>                          查看单个服务器详情
  *   mcp add <name> <command|url> [args...]  添加服务器（--scope user|project，--transport stdio|http|sse）
  *   mcp remove <name> [--scope ...]         移除服务器
+ *   mcp pending                             列出待审批的项目级服务器（未加载）
+ *   mcp approve <name> | --all              批准项目级服务器（下次启动生效）
+ *   mcp reject <name> | --all               拒绝项目级服务器（后续不再询问）
  *   mcp serve [--allow-write]               把 sid-code 自身工具暴露为 MCP server（stdio）
  *
  * 写入语义与 /mcp 一致：user 作用域外科式补丁 settings.json 的 mcpServers（不整体覆盖，
@@ -191,6 +194,116 @@ async function cmdRemove(args: string[]): Promise<void> {
   console.log(`MCP 服务器 "${name}" 已移除。重启会话后生效。`);
 }
 
+/**
+ * 列出待审批的项目级 MCP 服务器（SEC-AUDIT-2026-07-19 P1）。
+ *
+ * 待审批 = 项目 .mcp.json 声明了、但用户从未批准/拒绝过的 server。这类 server
+ * **不会被加载**（fail-closed），需显式 approve 后下次启动才生效。
+ *
+ * 实现要点：loadConfig() 会在合并阶段登记待审批快照（模块级单例），所以必须先
+ * 跑一次 loadConfig 再读快照——不能只读 .mcp.json，那样拿不到"哪些已批准过"。
+ */
+async function cmdPending(asJson: boolean): Promise<void> {
+  const { loadConfig } = await import("../config/config.ts");
+  await loadConfig({});
+  const { getPendingApprovalServers } = await import("../mcp/approval.ts");
+  const { names, projectPath } = getPendingApprovalServers();
+
+  if (asJson) {
+    console.log(JSON.stringify({ pending: names, projectPath }, null, 2));
+    return;
+  }
+  if (names.length === 0) {
+    console.log("没有待审批的项目级 MCP 服务器。");
+    return;
+  }
+  console.log(`待审批的项目级 MCP 服务器（共 ${names.length} 个，当前**未加载**）:\n`);
+  for (const name of names) {
+    console.log(`  ${name}`);
+  }
+  console.log(
+    `\n项目: ${projectPath}\n` +
+      `批准: sid-code mcp approve <name>   （或 --all 批准全部）\n` +
+      `拒绝: sid-code mcp reject <name>\n` +
+      `批准后需重启会话才会连接。`,
+  );
+}
+
+/** 读取项目 .mcp.json 里声明的所有 server 名（不论审批状态）。 */
+function projectDeclaredServerNames(): string[] {
+  const mcpJsonPath = resolve(process.cwd(), ".mcp.json");
+  if (!existsSync(mcpJsonPath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    return Object.keys(parsed?.mcpServers ?? {});
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 批准 / 拒绝项目级 MCP 服务器。
+ *
+ * 作用域刻意是「.mcp.json 里声明的所有 server」，**不是**只有 pending 的那些——
+ * 否则 approve 之后该 server 就离开了 pending 快照，reject 会报"不在待审批列表中"，
+ * 用户**永远无法撤销一个已批准的 server**。审批是可反复改的决定，不是一次性闸门。
+ * （--all 仍只作用于 pending，避免手滑把已明确拒绝的 server 一并批准。）
+ */
+async function cmdApproveReject(args: string[], approve: boolean): Promise<void> {
+  const verb = approve ? "approve" : "reject";
+  const all = args.includes("--all");
+  const name = args.find((a) => !a.startsWith("--"));
+
+  if (!name && !all) {
+    console.error(`用法: sid-code mcp ${verb} <name> | --all`);
+    process.exit(1);
+  }
+
+  // 先加载配置填充待审批快照（同 cmdPending 的理由）
+  const { loadConfig } = await import("../config/config.ts");
+  await loadConfig({});
+  const approval = await import("../mcp/approval.ts");
+  const { names: pendingNames, projectPath } = approval.getPendingApprovalServers();
+  const declared = projectDeclaredServerNames();
+
+  if (declared.length === 0) {
+    console.log("当前目录没有 .mcp.json，或其中未声明任何 MCP 服务器。");
+    return;
+  }
+
+  // --all 只批量处理 pending；指名则可作用于任何已声明的 server（含改判已批准的）
+  const targets = all ? [...pendingNames] : [name!];
+  if (targets.length === 0) {
+    console.log("没有待审批的项目级 MCP 服务器。");
+    return;
+  }
+
+  const cwd = projectPath || process.cwd();
+  const done: string[] = [];
+  for (const t of targets) {
+    if (!declared.includes(t)) {
+      console.error(`警告: "${t}" 未在项目 .mcp.json 中声明，已跳过。`);
+      continue;
+    }
+    // 直接写持久化状态（approveProjectServer/rejectProjectServer 是幂等的互斥写），
+    // 再顺手把它从 pending 快照里摘掉（若在）。
+    if (approve) approval.approveProjectServer(t, cwd);
+    else approval.rejectProjectServer(t, cwd);
+    if (approve) approval.approvePendingServer(t);
+    else approval.rejectPendingServer(t);
+    done.push(t);
+  }
+
+  if (done.length === 0) {
+    process.exit(1);
+  }
+  console.log(
+    approve
+      ? `已批准 ${done.length} 个 MCP 服务器: ${done.join(", ")}。重启会话后连接。`
+      : `已拒绝 ${done.length} 个 MCP 服务器: ${done.join(", ")}。后续启动不再询问。`,
+  );
+}
+
 export async function handleMcpCommand(args: string[]): Promise<void> {
   const asJson = args.includes("--json");
   const sub = args[0];
@@ -218,9 +331,20 @@ export async function handleMcpCommand(args: string[]): Promise<void> {
     case "delete":
       await cmdRemove(rest);
       return;
+    // SEC-AUDIT-2026-07-19 P1：项目级 MCP 审批入口
+    case "pending":
+      await cmdPending(asJson);
+      return;
+    case "approve":
+      await cmdApproveReject(rest, true);
+      return;
+    case "reject":
+      await cmdApproveReject(rest, false);
+      return;
     default:
       console.error(
-        `错误: 未知 mcp 子命令 "${sub}"。可用: list / get <name> / add <name> <command|url> / remove <name> / serve [--allow-write]`,
+        `错误: 未知 mcp 子命令 "${sub}"。可用: list / get <name> / add <name> <command|url> / remove <name> / ` +
+          `pending / approve <name>|--all / reject <name>|--all / serve [--allow-write]`,
       );
       process.exit(1);
   }

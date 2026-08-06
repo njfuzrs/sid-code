@@ -3878,7 +3878,15 @@ export async function* queryLoop(
 
       // Stage 1：首次截断且当前上限低于模型硬上限 → 提升上限重试，不注入续写提示
       // 当用户显式设了较低 maxTokens 或 effort 模式压低输出时，直接提升上限通常一步解决
-      const modelMax = lookupRegistry(config.model)?.maxOutputTokens;
+      //
+      // ⚠ 必须按**真名**查：lookupRegistry 是精确/前缀/家族匹配，喂本地别名
+      // （前缀式如 gw-claude-sonnet-4-6）必然 miss → modelMax=undefined → 下面
+      // `if (modelMax && ...)` 直接短路 → **Stage 1 整块永久跳过**，本该一步解决的
+      // 截断退化成反复走 Stage 2 续写。与 fallback.ts 两处 lookupRegistry 同一类错误，
+      // 别名与真名相同时 resolveWireModel 原样返回，行为不变。
+      const modelMax = lookupRegistry(
+        resolveWireModel(config.model, config.availableModels),
+      )?.maxOutputTokens;
       const currentCeiling = state.maxOutputTokensOverride ?? config.maxTokens;
       if (modelMax && currentCeiling < modelMax && state.maxOutputTokensRecoveryCount === 0) {
         state.maxOutputTokensOverride = modelMax;

@@ -20,6 +20,37 @@ export interface TrustCheckItem {
   details?: string;     // 具体内容（脱敏后）
 }
 
+/**
+ * 待信任确认的快照（SEC-AUDIT-2026-07-19 P1）。
+ *
+ * 由 cli.ts 在**配置生效之前**填充（strip 掉危险配置时），由 app.ts 在 TUI 就绪后读取
+ * 并弹 TrustDialog。用模块级单例传递而非穿参，是因为 cli→App 的构造参数链很长，
+ * 且 App 构造器（hooks 初始化在里面）本身就在消费已 strip 过的 config。
+ */
+export interface PendingTrust {
+  /** 被 strip 掉的危险配置项（供对话框展示） */
+  items: TrustCheckItem[];
+  /** 工作区路径 */
+  workspacePath: string;
+}
+
+let pendingTrust: PendingTrust | null = null;
+
+/** 登记待确认的信任快照（cli.ts strip 危险配置后调用） */
+export function setPendingTrust(value: PendingTrust | null): void {
+  pendingTrust = value;
+}
+
+/** 读取待确认的信任快照（app.ts 决定是否弹对话框） */
+export function getPendingTrust(): PendingTrust | null {
+  return pendingTrust;
+}
+
+/** 清空待确认快照（用户已做决定后调用） */
+export function clearPendingTrust(): void {
+  pendingTrust = null;
+}
+
 /** 信任状态 */
 export interface TrustState {
   accepted: boolean;

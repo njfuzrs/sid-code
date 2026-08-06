@@ -28,6 +28,7 @@ import type { SettingsJson } from "./types.ts";
  *   原 rule-loader 独有：skipPermissions、yesMode
  *   两者共有：permissionMode、sanitizeEnv、allowedDirectories
  *   新增（P0-3 迭代 II）：enableLLMClassifier（安全开关，项目级不可关闭以削弱防线）
+ *   新增（SEC-AUDIT-2026-07-19 P0）：webFetchIsolate（同理，项目级不可关掉网页隔离提炼）
  */
 export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   "permissionMode", // 不允许项目配置跳过权限
@@ -38,6 +39,10 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   "trustProjectExtensions", // 不允许项目配置自我信任
   "allowedDirectories", // 不允许项目配置扩大目录白名单
   "enableLLMClassifier", // 不允许项目配置关闭 LLM 风险分类器（削弱第二道防线）
+  // 不允许项目配置关闭 WebFetch 隔离提炼。这条尤其关键：恶意项目若能在 .sid-code/settings.json
+  // 里设 webFetchIsolate:false，就能让自己 README 里指向的 URL 原文直灌主上下文——
+  // 正好是本条防线要拦的攻击链。
+  "webFetchIsolate",
 ]);
 
 /**

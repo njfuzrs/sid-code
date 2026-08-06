@@ -965,6 +965,70 @@ export async function main(): Promise<void> {
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
 
+    // ── 工作区信任门控（SEC-AUDIT-2026-07-19 P1）─────────────────────────────
+    //
+    // 位置极其关键：必须在**配置生效之前**。此前这段逻辑在 app.ts 的 doInit（行 ~2248），
+    // 而那里已经太晚了——按 cli.ts 的真实时序：
+    //   loadConfig(965) → MCP connectAll(1825) → new App(2011，构造器里初始化 hooks)
+    //   → app.init() → doInit 的信任检查
+    // 也就是说：**危险配置早就生效了**，信任检查跑在它们后面。当时那段代码不仅"交互模式
+    // 自动 trust() 从不询问"，连注释里"非交互模式下危险配置不会被加载"也是假的——
+    // TrustManager 的信任状态全仓**没有任何消费者**（只有 app.ts 读它，读完什么也不做）。
+    // 这是典型的「后端已实现 + 前端 TODO + 状态无人消费」三重空转。
+    //
+    // 现在改为 fail-closed：未信任 → **当场从 config 里 strip 掉危险配置**，再把快照
+    // 交给 TUI 弹对话框。用户确认信任后持久化，下次启动 isTrusted() 为真即完整加载。
+    // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
+    if (!config.skipPermissions && !config.yesMode) {
+      try {
+        const { TrustManager, setPendingTrust } = await import("./permission/trust.ts");
+        const trustMgr = new TrustManager(process.cwd());
+        const dangerousItems = await trustMgr.scanDangerousConfigs();
+        if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
+          const log = getLogger();
+          // fail-closed：先摘掉危险配置，无论后续是否有 UI 来问
+          const stripped: string[] = [];
+          for (const item of dangerousItems) {
+            // hooks / mcpServers 是**非可选**字段（默认 {}，见 config.ts:319-320、795-796），
+            // 所以清空成 {} 而不是 delete——delete 会让下游 `Object.keys(config.hooks)`
+            // 这类无防护访问炸在 undefined 上。env 是可选字段，delete 安全。
+            if (item.type === "hooks" && Object.keys(config.hooks ?? {}).length > 0) {
+              config.hooks = {};
+              stripped.push("hooks");
+            } else if (item.type === "mcp_servers" && Object.keys(config.mcpServers ?? {}).length > 0) {
+              config.mcpServers = {};
+              stripped.push("mcpServers");
+            }
+            // env_vars / bash_permissions 不在此 strip，各有原因：
+            // - env_vars：Config 上**没有**顶层 env 字段（env 只存在于 MCPServerConfig
+            //   内部，见 config.ts:36）。settings.json 的 env 段目前不会进 Config，
+            //   摘 mcpServers 时其内嵌 env 已一并失效。仍在 items 里上报，让用户看到
+            //   项目声明了环境变量这个事实。
+            // - bash_permissions：权限规则由 rule-loader 的 SECURITY_SENSITIVE_FIELDS
+            //   走独立通道过滤，在此重复删会连带破坏 user 级规则。
+          }
+          log.warn(
+            "TRUST",
+            `未信任工作区：已跳过 ${stripped.join(" / ") || "（无可摘项）"}，共 ${dangerousItems.length} 项危险配置待确认`,
+          );
+
+          const interactive = !config.print && !(config.maxTurns !== undefined && config.maxTurns > 0);
+          if (interactive) {
+            // 交互模式：登记快照，待 TUI 就绪后弹 TrustDialog（app.ts 消费）
+            setPendingTrust({ items: dangerousItems, workspacePath: process.cwd() });
+          } else {
+            // 非交互（-p / maxTurns）：无处可问，保持 strip 后的降级配置继续跑。
+            // 这才真正兑现了原注释声称的"危险配置不会被加载"。
+            log.warn("TRUST", "非交互模式：不询问信任，危险配置保持未加载");
+          }
+        }
+      } catch (err: any) {
+        // 信任检查本身失败不阻断启动，但要留痕（fail-closed 的例外：扫描失败时
+        // 不 strip，因为无法区分"没有危险配置"与"读取失败"，强行 strip 会误伤正常项目）
+        getLogger().warn("TRUST", `工作区信任检查失败（不阻断启动）: ${err?.message ?? err}`);
+      }
+    }
+
     // P2-1 item5 + P2-2：实例化企业策略管理器，读 managed settings，
     // 把功能开关（policy-limits）与模式管控（mode-policy: disabledModes / disableBypassPermissionsMode）注入全局。
     try {
@@ -1943,6 +2007,18 @@ export async function main(): Promise<void> {
       });
       toolClassifier.setProvider(providerRegistry.getProvider(), config.classifierModel || config.model);
       permissionChecker.setToolClassifier(toolClassifier);
+    }
+
+    // SEC-AUDIT-2026-07-19 P0：注入 WebFetch 隔离提炼器。
+    // 抓取的网页正文不再直返主上下文，先由独立小模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。
+    // 未注入 provider 时 WebFetch 走降级路径（截断 + 不可信标注），不会退回"原文直返"。
+    // webFetchIsolate 显式设 false 才跳过注入（默认启用）。
+    if (config.webFetchIsolate !== false) {
+      const { getSharedWebFetchExtractor } = await import("./tool/web-fetch-extract.ts");
+      getSharedWebFetchExtractor().setProvider(
+        providerRegistry.getProvider(),
+        config.webFetchExtractModel || config.model,
+      );
     }
 
     if (config.debug && permissionRules) {

@@ -465,6 +465,21 @@ export interface Config {
   /** LLM 分类器使用的模型（默认复用主循环模型 config.model） */
   classifierModel?: string;
   /**
+   * WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。
+   *
+   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。
+   * 配一个便宜的小模型能显著降本——提炼输入可达 6 万字符，用主模型跑并不划算。
+   */
+  webFetchExtractModel?: string;
+  /**
+   * 是否启用 WebFetch 隔离提炼（默认 true）。
+   *
+   * 关掉会让网页原文直接进主上下文，等于放弃 §17.5「隔离上下文窗口」这道防线——
+   * 仅在明确接受注入风险（如全离线、无辅助模型可用）时才关。关闭后 WebFetch 仍会走
+   * 降级路径（截断 + 不可信标注），不会退回"整篇原文直返"。
+   */
+  webFetchIsolate?: boolean;
+  /**
    * GAP-04：分类器并行预启动（推测执行）。默认 false。
    * 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行，
    * 分类器判定安全时提前跳过弹窗（省 1-2s）。
@@ -866,6 +881,9 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     sanitize_env: "sanitizeEnv",
     enable_llm_classifier: "enableLLMClassifier",
     classifier_model: "classifierModel",
+    // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
+    web_fetch_extract_model: "webFetchExtractModel",
+    web_fetch_isolate: "webFetchIsolate",
     // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
     // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
     max_thinking_tokens: "maxThinkingTokens",
@@ -1276,6 +1294,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     // 项目级 .mcp.json 走审批：rejected 剔除、pending 标记（合并时经 ...config 透传保留）
     const mcpJsonServers = await loadMCPJson();
     const projectServers: Record<string, MCPServerConfig> = {};
+    /** 待审批的项目级 server（不进生效列表，仅供 /mcp 面板展示与审批） */
+    const pendingApprovalServers: Record<string, MCPServerConfig> = {};
     if (Object.keys(mcpJsonServers).length > 0) {
       const { getProjectServerApproval } = await import("../mcp/approval.ts");
       const projectPath = process.cwd();
@@ -1286,10 +1306,25 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
           continue;
         }
         if (status === "pending") {
-          // pending 状态的服务器标记为需审批（由 App 启动后交互确认）
-          (serverConfig as any)._pendingApproval = true;
+          // SEC-AUDIT-2026-07-19 P1：pending **不加入生效列表**（fail-closed）。
+          //
+          // 此前这里只打一个 `_pendingApproval = true` 标记就照常 `projectServers[name] = …`,
+          // 而那个标记全仓**没有任何读取者**——注释说"由 App 启动后交互确认"，但那段交互
+          // 确认代码从来不存在。净效果：项目级 .mcp.json 声明的外部进程无门控直接连接，
+          // 审批状态机（approved/rejected/pending）里只有 rejected 真正生效，
+          // 而又没有任何入口能把 server 置为 rejected。
+          //
+          // 现在改为：pending → 不加入，登记到待审批快照，由 /mcp 面板审批后下次启动生效。
+          pendingApprovalServers[name] = serverConfig;
+          getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 待审批，本次不加载（用 /mcp 审批）`);
+          continue;
         }
         projectServers[name] = serverConfig;
+      }
+      // 登记待审批快照，供 /mcp 面板展示与审批
+      if (Object.keys(pendingApprovalServers).length > 0) {
+        const { setPendingApprovalServers } = await import("../mcp/approval.ts");
+        setPendingApprovalServers(pendingApprovalServers, projectPath);
       }
     }
 

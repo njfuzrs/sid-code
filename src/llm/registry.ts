@@ -9,7 +9,7 @@ import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { resolvePricing } from "../api/cost-tracker.ts";
-import { resolveWireModel } from "./wire-model.ts";
+import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
 import type { LanguagePref } from "../config/prompt-lang.ts";
 
@@ -241,6 +241,15 @@ export class ProviderRegistry {
     model: string;
     /** 厂商真名，随 init 过管道给子进程（子进程别名表为空，必须由父进程解析）*/
     wireModel: string;
+    /**
+     * **完整**别名表，随 init 过管道播种进子进程。
+     *
+     * 单条 wireModel 只覆盖「本次要发的模型」；子进程里 ModelFallback 降级会**换模型**，
+     * 那条路径靠进程级别名表翻译新目标（fallback.ts 刻意置 wireModel=undefined）。
+     * 只播种主模型一条 → fallback 目标查不到 → 原样发别名 → 400，而降级正是
+     * 主模型已出问题时的最后一道防线。见 sub-agent-protocol.ts 的 wire_model_aliases。
+     */
+    wireModelAliases?: Record<string, string>;
     providerName: string;
     apiKey: string;
     baseURL?: string;
@@ -248,10 +257,14 @@ export class ProviderRegistry {
     const model = this.getModelForSubAgent(type);
     // 别名 → 真名：spawn 出的子进程不读配置、别名表为空，只能靠父进程在这里解析后传过去。
     const wireModel = resolveWireModel(model, this.config.availableModels);
+    // 整张表（含 fallback 目标等「本次不发但子进程内可能切过去」的别名）。
+    // 直接从 availableModels 构造，不读父进程的全局表——后者依赖 resolveCurrentModelConfig
+    // 已跑过，而本方法可能在任何时机被调；从配置现算是唯一不依赖调用时序的口径。
+    const wireModelAliases = buildWireModelAliasMap(this.config.availableModels);
     // 子代理模型与主模型相同 → 复用主 spawn 配置
     if (model === this.config.model) {
       const base = this.getSpawnConfig();
-      return { model, wireModel, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+      return { model, wireModel, wireModelAliases, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
     }
     // 子代理模型在 availableModels 中有独立配置 → 用其 provider/apiKey/baseURL
     const modelConfig = this.findModelConfig(model);
@@ -260,11 +273,11 @@ export class ProviderRegistry {
       const apiKey = modelConfig.apiKey || this.getApiKey(providerName);
       const baseURL = modelConfig.baseURL
         || (providerName === this.config.provider ? this.config.baseURL : undefined);
-      return { model, wireModel, providerName, apiKey, baseURL: baseURL || undefined };
+      return { model, wireModel, wireModelAliases, providerName, apiKey, baseURL: baseURL || undefined };
     }
     // 未找到独立配置 → 沿用主 provider 配置，仅模型名不同（与 getProviderForSubAgent 末路径一致）
     const base = this.getSpawnConfig();
-    return { model, wireModel, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+    return { model, wireModel, wireModelAliases, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
   }
 
   /** 获取子代理 Provider（根据模型在 availableModels 中的配置自动选择） */

@@ -27,6 +27,7 @@ import {
   type ValidationError,
 } from "./validation.ts";
 import { filterProjectSettings } from "./security.ts";
+import { detectSensitiveData } from "../../permission/sensitive.ts";
 import { mergeSettingsRead } from "./merge.ts";
 import {
   getSessionCache,
@@ -227,6 +228,32 @@ export function writeSettingsFile(
 ): void {
   const path = getSettingsFilePath(source, workspacePath);
   if (!path) return; // flagSettings 等内存来源无文件
+
+  // ── 运行时护栏（SEC-AUDIT-2026-07-19 P2）─────────────────────────────────
+  //
+  // 上面那一大段"绝大多数场景应改用 patchSettingsFile"此前**只是注释**——
+  // 纪律靠人读文档维持，一个没读过的调用方就能把 resolveEnvVars 展开后的明文密钥
+  // 落盘，而且落盘后毫无痕迹（文件权限 0o600 只防其他用户，不防这次覆盖本身）。
+  //
+  // 现在把纪律变成运行时强制：检测入参里是否含**已展开的明文凭证**，命中即抛错。
+  // fail-closed 的理由——写明文密钥是不可撤销的（文件一旦落盘，密钥就该视为已泄露，
+  // 需要轮换）；相比之下抛错只是让调用方改用 patchSettingsFile，代价极小。
+  //
+  // 注意只拦"明文值"，不拦 `"${API_KEY}"` 占位符形态：后者正是我们希望的写法。
+  {
+    const serialized = JSON.stringify(settings);
+    const hits = detectSensitiveData(serialized);
+    if (hits.length > 0) {
+      const kinds = [...new Set(hits.map((h) => h.type))].join(", ");
+      throw new Error(
+        `writeSettingsFile 拒绝写入：检测到 ${hits.length} 处明文凭证（${kinds}）。\n` +
+          `这通常意味着入参来自 getSettingsForSource()——它经 resolveEnvVars 把 "\${VAR}" ` +
+          `占位符展开成了明文，整体覆盖会把密钥落盘。\n` +
+          `请改用 patchSettingsFile(source, field, value) 做外科式补丁（不经 Zod round-trip、` +
+          `不展开占位符），或在写入前把凭证字段还原为 "\${VAR}" 形态。`,
+      );
+    }
+  }
 
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

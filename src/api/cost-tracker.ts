@@ -101,7 +101,17 @@ export function resolvePricing(
   if (gateway) return gateway;
 
   // 4. 从统一注册表查找（前缀剥离在此仅作「查无此模型」的最后兜底）。
-  const entry = lookupRegistry(model);
+  //
+  // ⚠ 只有**这一步**按真名查，步骤 1-3 一律按别名 —— 两者不矛盾，是分工：
+  //   - 步骤 1/2（用户手写 pricing）与步骤 3（网关采集价）是「这条渠道的价」，
+  //     必须按别名，否则两个渠道的差价被抹平（§2.1「计价留在别名侧」正是指这几步）；
+  //   - 本步是「这到底是什么模型」的注册表兜底，按 §2.1 就该用真名。喂前缀式别名
+  //     （gw-claude-sonnet-4-6）必然 miss → 返回 null → 调用方落 FALLBACK_PRICING，
+  //     实测 1M in / 200K out 从 $6.00 算成 $4.00（0.67x），静默少算且不报错，
+  //     直接污染「更省」方向的度量底座。
+  // 别名与真名相同时 resolveWireModel 原样返回，行为不变。
+  const { resolveWireModel } = require("../llm/wire-model.ts");
+  const entry = lookupRegistry(resolveWireModel(model, availableModels));
   return entry?.pricing ?? null;
 }
 

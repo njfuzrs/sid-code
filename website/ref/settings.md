@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **57** 个顶层字段。其中 43 个由
+> 共 **59** 个顶层字段。其中 45 个由
 > `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），14 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
@@ -83,6 +83,8 @@ settings.json 的全部可配字段、类型与默认值。
 | `trace` ⚠ | object | — | 轨迹采集配置 |
 | `trustProjectExtensions` | boolean | — | 扩展安全配置 是否信任项目级扩展（跳过信任检查，默认 false） |
 | `vimMode` | boolean | — | Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false |
+| `webFetchExtractModel` | string | — | WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。 配一个便宜的小模型能显著… |
+| `webFetchIsolate` | boolean | — | 是否启用 WebFetch 隔离提炼（默认 true）。 关掉会让网页原文直接进主上下文，等于放弃 §17.5「隔离上下文窗口」这道防线—— 仅在明确接受注入风险（如全离线、无辅助模型可用）时才关。关闭后 WebFetch 仍会走 降级路… |
 | `worktree` | object | — | Worktree 隔离配置 |
 
 <!-- AUTO-GEN:END -->

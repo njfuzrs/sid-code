@@ -456,6 +456,11 @@ export class App {
   /** M4：待审批的外部 @import 路径快照（启动加载 CLAUDE.md 时收集，供审批对话框展示）。 */
   private pendingExternalImportPaths: string[] = [];
   /**
+   * SEC-AUDIT-2026-07-19 P1：待信任确认的危险配置项快照（供 TrustDialog 展示）。
+   * 由 cli.ts strip 危险配置时登记，doInit 取出。非空 → 首屏弹信任对话框。
+   */
+  private pendingTrustItems: import("./permission/trust.ts").TrustCheckItem[] = [];
+  /**
    * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
    * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
    * 初值在构造函数解析：env > config.effortLevel(settings) > undefined。
@@ -2245,22 +2250,21 @@ export class App {
       log.warn("APP", `插件 Hooks 加载失败: ${err.message}`);
     }
 
-    // 工作区信任检查（在加载项目级配置之前）
-    if (!this.config.skipPermissions && !this.config.yesMode) {
-      const { TrustManager } = await import("./permission/trust.ts");
-      const trustMgr = new TrustManager(process.cwd());
-      const dangerousItems = await trustMgr.scanDangerousConfigs();
-      if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
-        log.warn("APP", `检测到 ${dangerousItems.length} 项危险配置，需要用户信任确认`);
-        // 在非交互模式下自动拒绝
-        if (this.config.print || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)) {
-          log.warn("APP", "非交互模式下跳过信任检查，项目级危险配置不会被加载");
-        } else {
-          // 交互模式：自动信任（后续可替换为 TUI 对话框）
-          // TODO: 实现 TUI TrustDialog 组件
-          await trustMgr.trust();
-          log.info("APP", "工作区已信任");
-        }
+    // 工作区信任门控（SEC-AUDIT-2026-07-19 P1）——**真正的门控在 cli.ts**。
+    //
+    // 这里只负责"取待确认快照，待 TUI 就绪后弹对话框"。危险配置的 strip 已经在
+    // cli.ts loadConfig 之后立刻做完了（那是唯一还来得及的时点：MCP connectAll 与
+    // App 构造器的 hooks 初始化都在其后）。
+    //
+    // 历史教训：这段位置上原本是「扫描 → 交互模式直接 trust() → log 一行」，
+    // 既从不询问用户，也拦不住任何东西（配置早生效了，且 TrustManager 的信任状态
+    // 全仓无消费者）。别把门控逻辑搬回这里——doInit 太晚了。
+    {
+      const { getPendingTrust } = await import("./permission/trust.ts");
+      const pending = getPendingTrust();
+      if (pending && pending.items.length > 0) {
+        this.pendingTrustItems = pending.items;
+        log.info("APP", `${pending.items.length} 项危险配置待信任确认，已跳过加载，待 TUI 询问`);
       }
     }
 
@@ -3016,6 +3020,48 @@ export class App {
       }
     } else {
       log.info("APP", "外部导入已拒绝，后续静默跳过");
+    }
+  }
+
+  /**
+   * 应用工作区信任决定（SEC-AUDIT-2026-07-19 P1）。
+   *
+   * trusted=true：持久化信任（TrustManager.trust() + markTrustDialogAccepted），
+   *   并提示需重启才能加载被跳过的配置。
+   * trusted=false：不持久化，本会话继续跑 strip 后的降级配置，下次启动仍会询问。
+   *
+   * 为什么信任后**不热加载**被跳过的配置：hooks 在 App 构造器就初始化完了、MCP 在
+   * cli.ts 阶段已 connectAll，这两条链路都没有"运行中重新注入"的入口。硬做热加载
+   * 等于在 App 生命周期中段重跑构造逻辑，风险远大于让用户重启一次。这个取舍要点破，
+   * 不能让用户点了"信任"却发现 hook 没生效还不知道为什么。
+   */
+  async applyTrustDecision(trusted: boolean): Promise<void> {
+    const log = getLogger();
+    const itemCount = this.pendingTrustItems.length;
+
+    // 清空快照 + 模块级 pending（无论信任与否，本次询问已结束）
+    this.pendingTrustItems = [];
+    try {
+      const { clearPendingTrust } = await import("./permission/trust.ts");
+      clearPendingTrust();
+    } catch { /* 忽略 */ }
+
+    if (!trusted) {
+      log.info("APP", `工作区未被信任：${itemCount} 项危险配置本会话保持未加载`);
+      return;
+    }
+
+    try {
+      const { TrustManager } = await import("./permission/trust.ts");
+      await new TrustManager(process.cwd()).trust();
+      const { markTrustDialogAccepted } = await import("./config/app-config.ts");
+      markTrustDialogAccepted(process.cwd());
+      log.info(
+        "APP",
+        `工作区已信任并持久化: ${process.cwd()}（${itemCount} 项配置将在下次启动时加载）`,
+      );
+    } catch (e) {
+      log.warn("APP", `持久化工作区信任失败: ${(e as Error)?.message}`);
     }
   }
 
@@ -5039,6 +5085,14 @@ export class App {
   async runHeadless(input: string): Promise<string> {
     await this.init();
 
+    // SEC-AUDIT-2026-07-19 P2：无头模式的用户输入同样是 URL 来源的信任起点。
+    // 漏掉这里会让 `-p "读一下 https://x.com/doc"` 的 URL 被判成"模型自造"，
+    // 而无头模式下默认 ask 等于 deny —— 正常用法会直接失败。
+    try {
+      const { recordUserMentionedUrls } = await import("./tool/url-provenance.ts");
+      recordUserMentionedUrls(input);
+    } catch { /* 不阻断 */ }
+
     // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）。
     // P2-1 --input-format stream-json：输入侧走流式 JSON（stdin 逐条消息）也进 SDK 路径，
     // 与 --output-format stream-json 任一命中即启用双向流（对齐 CC：input/output 格式相互独立）。
@@ -5471,10 +5525,16 @@ export class App {
       vimMode: !!this.config.vimMode,
       commands: initialCommands,
       cwd: process.cwd(),
-      // M4：启动若有待审批的外部 @import 且无需 onboarding，首屏直接弹审批对话框。
-      activeDialog: (!this.config._needsOnboarding && this.pendingExternalImportPaths.length > 0)
-        ? "claude-md-external-imports" as const
-        : null,
+      // 首屏对话框优先级：onboarding > 信任门控 > 外部 @import 审批。
+      // 信任排在 @import 之前——信任是"这个项目能不能执行东西"的前置问题，
+      // 比"要不要展开某个 import"更根本（SEC-AUDIT-2026-07-19 P1）。
+      activeDialog: this.config._needsOnboarding
+        ? null
+        : this.pendingTrustItems.length > 0
+          ? ("trust" as const)
+          : this.pendingExternalImportPaths.length > 0
+            ? ("claude-md-external-imports" as const)
+            : null,
       availableModels: this.config.availableModels.map(m => ({
         name: m.name,
         // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
@@ -6747,6 +6807,15 @@ export class App {
         // A4：暂存本轮原始输入,供"中断后自动回填"使用（仅暂存,是否回填由 ESC 取消时决定）。
         // 命令展开的提示词不回填输入框（用户没敲过它），故 displayCommand 时跳过暂存。
         if (!opts?.displayCommand) stashPendingInput(text, false);
+        // SEC-AUDIT-2026-07-19 P2：登记用户提及的 URL origin，供 web_fetch 判来源。
+        // 这里是**唯一**的信任来源——只能喂用户原始输入，绝不能喂工具结果/网页内容，
+        // 否则注入内容就能自己给自己授权。详见 url-provenance.ts。
+        try {
+          const { recordUserMentionedUrls } = await import("./tool/url-provenance.ts");
+          recordUserMentionedUrls(text);
+        } catch (e) {
+          log.warn("APP", `登记用户 URL 来源失败（不阻断）: ${(e as Error)?.message}`);
+        }
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
@@ -7345,6 +7414,11 @@ export class App {
       getSkippedExternalImports: () => this.pendingExternalImportPaths,
       onClaudeMdExternalImportDecision: async (approved) => {
         await this.applyExternalImportDecision(approved);
+      },
+      // SEC-AUDIT-2026-07-19 P1：工作区信任门控。
+      getPendingTrustItems: () => this.pendingTrustItems,
+      onTrustDecision: async (trusted) => {
+        await this.applyTrustDecision(trusted);
       },
     };
 
