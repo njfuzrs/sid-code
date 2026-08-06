@@ -327,3 +327,105 @@ describe("组件与数据的耦合点", () => {
     expect(gen).toContain('"changelog.json"');
   });
 });
+
+/**
+ * 左栏「版本时间线」（website/.vitepress/changelog-meta.ts）。
+ *
+ * 这一层的故障**全都是静默的** —— 左栏少一个版本、锚点对不上、sidebar key 被删掉，
+ * 页面都照旧渲染、构建照旧成功、状态码照旧 200。所以必须靠断言钉住。
+ */
+describe("左栏版本时间线", () => {
+  // 静态 import 会让本文件依赖构建期 JSON 的存在性，与上面的用例一致（同一份数据源）
+  const { CHANGELOG_SIDEBAR, buildTimeline, versionAnchor } = require(
+    resolve(ROOT, "website/.vitepress/changelog-meta.ts"),
+  );
+  const data = () => JSON.parse(readFileSync(DATA_PATH, "utf8"));
+
+  test("分组条数之和等于版本总数（漏版本是静默缺陷：左栏少一条没人会发现）", () => {
+    const total = CHANGELOG_SIDEBAR.reduce(
+      (n: number, g: any) => n + g.items.length,
+      0,
+    );
+    expect(total).toBe(data().versions.length);
+  });
+
+  test("只有第一组（最新月）展开，其余折叠", () => {
+    expect(CHANGELOG_SIDEBAR.length).toBeGreaterThan(0);
+    expect(CHANGELOG_SIDEBAR[0].collapsed).toBe(false);
+    for (const g of CHANGELOG_SIDEBAR.slice(1)) {
+      expect(g.collapsed).toBe(true);
+    }
+  });
+
+  test("组标题带条数，且与该组实际条目数一致", () => {
+    for (const g of CHANGELOG_SIDEBAR) {
+      expect(g.text).toMatch(/^\d{4} 年 \d{1,2} 月（\d+）$/);
+      const declared = Number(/（(\d+)）$/.exec(g.text)![1]);
+      expect(declared).toBe(g.items.length);
+    }
+  });
+
+  test("组顺序与组内顺序都是最新在前（左栏顺序必须与正文一致）", () => {
+    const flat = CHANGELOG_SIDEBAR.flatMap((g: any) => g.items).map(
+      (i: any) => i.link.replace("/changelog#v", ""),
+    );
+    expect(flat).toEqual(data().versions.map((v: any) => v.version));
+  });
+
+  test("每条 link 形如 /changelog#v<semver>", () => {
+    for (const g of CHANGELOG_SIDEBAR) {
+      for (const item of g.items) {
+        expect(item.link).toMatch(/^\/changelog#v\d+\.\d+\.\d+$/);
+      }
+    }
+  });
+
+  /**
+   * 锚点对不上是这个设计**唯一的致命故障**：左栏能点、URL 会变、页面不动，
+   * 而且不报任何错。两侧必须同源 —— 组件用 versionAnchor() 生成 :id，
+   * changelog-meta.ts 用同一个函数生成 link 的 hash 部分。
+   */
+  test("组件的 :id 与左栏 link 的 hash 同源（都走 versionAnchor）", () => {
+    const vue = readFileSync(COMPONENT_PATH, "utf8");
+    expect(vue).toContain('versionAnchor } from "../changelog-meta"');
+    expect(vue).toContain(':id="versionAnchor(v.version)"');
+    // 禁止退回手拼字符串（曾经是 :id="`v${v.version}`"）——那样两侧就各拼一套了
+    expect(vue).not.toContain(":id=\"`v${v.version}`\"");
+    expect(versionAnchor("0.1.600")).toBe("v0.1.600");
+  });
+
+  test("sidebar 里配了 /changelog 这个 key，且不带尾斜杠", () => {
+    // 这条 key 被删掉就退回到本次改造前的原始缺陷：getSidebar 前缀匹配失败 →
+    // hasSidebar=false → 全站唯一一页没有左栏、宽度也与别的页不同。
+    // 症状只是「看起来窄了点」，不会有任何报错，所以必须有回归防线。
+    const src = readFileSync(CONFIG_PATH, "utf8");
+    expect(src).toMatch(/"\/changelog":\s*CHANGELOG_SIDEBAR/);
+    // 尾斜杠版本永远匹配不上：这一页的 relativePath 是 changelog.md，不是目录
+    expect(src).not.toMatch(/"\/changelog\/":/);
+    expect(src).toContain('from "./changelog-meta"');
+  });
+
+  test("容器页显式关掉 pager（否则会渲染出指向本页自己的「下一页」）", () => {
+    // 实测：prev-next.js 的 uniqBy 把 19 条锚点去重成 1 个候选，但 isActive 对带
+    // hash 的 link 要比对 location.hash，SSR 期没有 location → findIndex 返回 -1
+    // → candidates[index + 1] 正好取到第 0 个候选，于是「下一页 → v0.1.600」
+    // 指回本页。必须在 frontmatter 显式关。
+    const src = readFileSync(PAGE_PATH, "utf8");
+    const fm = src.slice(0, src.indexOf("\n---", 3));
+    expect(fm).toMatch(/^prev:\s*false\s*$/m);
+    expect(fm).toMatch(/^next:\s*false\s*$/m);
+  });
+
+  test("buildTimeline 用字符串切片分月，不受时区影响", () => {
+    // 用 new Date() 解析 YYYY-MM-DD 在 UTC+8 会把月初退回上个月。
+    // 这里直接验边界：8 月 1 日必须归到 8 月。
+    const groups = buildTimeline([
+      { version: "9.9.9", date: "2026-08-01" },
+      { version: "9.9.8", date: "2026-07-31" },
+    ]);
+    expect(groups.map((g: any) => g.text)).toEqual([
+      "2026 年 8 月（1）",
+      "2026 年 7 月（1）",
+    ]);
+  });
+});

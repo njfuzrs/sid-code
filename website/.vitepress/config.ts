@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { tokenizeCJK } from "./tokenize";
 import { stripFrontmatter } from "./raw-markdown";
 import { SERIES, loadBlogPosts } from "./blog-meta";
+import { CHANGELOG_SIDEBAR } from "./changelog-meta";
 import { writeFeed } from "./feed";
 import { FEED_PATH, SITE_TITLE, canUseAbsoluteUrls, siteHostname } from "./site";
 
@@ -459,6 +460,23 @@ export default defineConfig({
           ],
         },
       ],
+      /**
+       * ── /changelog：全站唯一一条**时间线**左栏 ──
+       *
+       * ⚠ key 刻意**不带尾斜杠**。`getSidebar` 判的是
+       * `path.startsWith(ensureStartingSlash(dir))`，而这一页的 relativePath 是
+       * `changelog.md`（它是单页，不是目录）。写成 `"/changelog/"` 永远匹配不上，
+       * 症状是「配了 sidebar 但左栏还是不出现」——和改造前一模一样，且不报错。
+       *
+       * 少了这条 key 会发生什么，是这次改造的起因：VitePress 找不到前缀命中项就
+       * 返回 `[]`，`hasSidebar` 为 false，于是 /changelog 成了全站唯一没有左栏、
+       * 且内容宽度与所有其它页都不同的一页（实测构建产物里它只有 `has-aside`，
+       * 别的文档页有 `has-sidebar`）。
+       *
+       * 内容为什么是版本时间线而不是主题目录、按月分组与 collapsed 的取值依据，
+       * 全部写在 `changelog-meta.ts` 顶部——那里是这份数据的产地，不在这里重复。
+       */
+      "/changelog": CHANGELOG_SIDEBAR,
     },
 
     /* ── 本地搜索：构建期建 minisearch 索引，浏览器内检索，不依赖外部服务 ── */

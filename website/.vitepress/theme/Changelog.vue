@@ -20,8 +20,10 @@
  *   刻意不内联任何十六进制色值——旧 CHANGELOG.html 自带一整套 :root 调色板，
  *   那正是「看起来像两个站」的根因。
  */
-import { computed, ref } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute } from "vitepress";
 import data from "../data/changelog.json";
+import { versionAnchor } from "../changelog-meta";
 
 interface Commit {
   scope: string | null;
@@ -139,17 +141,71 @@ function reset() {
  * 折着等于搜到了看不见。用 :open 绑定而不是 JS 操作 DOM。
  */
 const autoOpen = computed(() => !!query.value.trim());
+
+/* ────────────────── 左栏时间线锚点 × 筛选态的冲突处理 ────────────────── */
+
+/**
+ * 左栏（`.vitepress/changelog-meta.ts` 的 CHANGELOG_SIDEBAR）每条版本都是
+ * `/changelog#v0.1.598` 这样的**页内锚点**。它和本组件的筛选态有一个真实冲突：
+ *
+ *   筛选生效时 `filtered` 会把不匹配的版本**整个移出 DOM**（这是刻意的，见 filtered
+ *   的注释：比渲染出来再 display:none 干净）。此时点左栏一个被过滤掉的版本，
+ *   浏览器要滚到的 `#vX` 元素根本不存在 —— URL 变了、左栏高亮了、正文毫无反应。
+ *   对读者来说这就是**坏了**，而且不会有任何报错。
+ *
+ * 处理：目标版本不在当前 `filtered` 里就先清筛选，等 DOM 重新渲染出来再滚过去。
+ * 「点导航 → 看到那个版本」这个预期优先于「保住我刚输的关键词」——
+ * 后者一个 `reset` 按钮就能重来，前者失效则整条左栏形同虚设。
+ *
+ * 用 `useRoute()` 的 hash 而不是 window.onhashchange：VitePress 是 SPA，
+ * 站内点击走的是路由跳转，原生 hashchange 在**同页锚点间**跳转时能触发，
+ * 但从别的页面带 hash 进来时不会。监听路由值两种情形都覆盖。
+ */
+const route = useRoute();
+
+function versionInDom(version: string): boolean {
+  return filtered.value.some((v) => v.version === version);
+}
+
+/** `#v0.1.598` → `0.1.598`；不是版本锚点则返回 null */
+function parseVersionHash(hash: string): string | null {
+  const m = /^#v(\d+\.\d+\.\d+)$/.exec(hash);
+  if (!m) return null;
+  return changelog.versions.some((v) => v.version === m[1]) ? m[1] : null;
+}
+
+async function revealHashTarget(hash: string) {
+  const version = parseVersionHash(hash);
+  if (!version) return;
+
+  // 被筛掉了 → 先清筛选，让它回到 DOM。已经可见则什么都不做，
+  // 交给浏览器/VitePress 自己的锚点滚动，避免和它抢滚动位置。
+  if (!versionInDom(version)) {
+    reset();
+    await nextTick();
+    document.getElementById(versionAnchor(version))?.scrollIntoView();
+  }
+}
+
+watch(
+  () => route.hash,
+  (hash) => void revealHashTarget(hash),
+);
+// 首次挂载：带 hash 直接进来（外部深链、刷新、新标签页打开）时 watch 不会触发
+onMounted(() => void revealHashTarget(route.hash));
 </script>
 
 <template>
   <div class="cl">
-    <!-- ── 统计条：版本数 / 变更数 / 最新版本 ── -->
+    <!--
+      ── 统计条 ──
+      刻意**不放**「N 个版本」：左栏时间线按月列出全部版本、组标题自带条数，
+      总数在那儿一眼可得。这里再放一遍就是同一事实的第二个显示位，
+      而两个显示位迟早对不上（谁改了过滤逻辑忘了改另一处）。
+    -->
     <div class="cl-stats">
       <div class="cl-stat">
         <b>v{{ changelog.currentVersion }}</b><span>最新版本</span>
-      </div>
-      <div class="cl-stat">
-        <b>{{ changelog.totalVersions }}</b><span>个版本</span>
       </div>
       <div class="cl-stat">
         <b>{{ changelog.totalCommits }}</b><span>项变更</span>
@@ -204,10 +260,15 @@ const autoOpen = computed(() => !!query.value.trim());
       <button type="button" class="cl-link" @click="reset">清除筛选</button>。
     </p>
 
+    <!--
+      :id 走 versionAnchor()，与左栏时间线的 link hash **同源**。
+      左栏在 changelog-meta.ts 里用同一个函数生成 `/changelog#v0.1.598`；
+      两边各自拼字符串的话，锚点对不上是静默故障（能点、URL 变、页面不动）。
+    -->
     <article
       v-for="v in filtered"
       :key="v.version"
-      :id="`v${v.version}`"
+      :id="versionAnchor(v.version)"
       class="cl-version"
     >
       <div class="cl-vhead">

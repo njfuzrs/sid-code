@@ -5,14 +5,23 @@ description: 每个版本的变更记录，从 git 历史自动生成，带独�
 # 会把「搜 hook」「搜权限」这类正常查询冲成一片版本噪音。
 # 执行方在 .vitepress/config.ts 的 search.options._render 钩子。
 search: false
-# 版本号是 h2，几十个版本会生成一条几十项的大纲，不如页内搜索好用
+# 版本号是 h2，几十个版本会生成一条几十项的大纲，不如页内搜索好用。
+# 而「有哪些版本、各在什么时候」现在由左侧时间线回答（.vitepress/changelog-meta.ts），
+# 右侧大纲会是它的重复项。
 outline: false
+# 关掉页脚的上一页/下一页 —— 必须显式关，实测不关会渲染出一条**指向本页自己**的
+# 「下一页 → v0.1.600」。成因：pager 的候选来自 sidebar（prev-next.js），
+# 它虽然用 uniqBy 按 `link.replace(/[?#].*$/, '')` 把 19 条锚点去重成 1 个候选，
+# 但 `isActive` 对带 hash 的 link 要比对 location.hash —— SSR 期没有 location、
+# 落地时 hash 也为空，于是 findIndex 返回 -1，`candidates[index + 1]` 正好取到
+# 第 0 个候选。左栏时间线本身就是这一页的导航，页脚 pager 在这里没有意义。
+prev: false
+next: false
 ---
 
 # 更新日志
 
-变更记录由发布流程（`scripts/release.sh`）在每次发版时从 git 历史重新生成，
-按新功能 / 修复 / 重构 / 性能 / 文档分组。git 历史是唯一事实源，本页是它的渲染视图。
+左侧按月列出全部版本，右侧是每个版本改了什么。
 
 <Changelog />
 
