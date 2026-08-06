@@ -1,0 +1,36 @@
+{
+  "version": "0.1.584",
+  "highlight": "新增 /export 和 /debug 命令，对话导出与调试信息一键可得",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "新功能",
+      "items": [
+        "新增 /export 命令，支持导出对话到剪贴板或文件，可选 Markdown 或 JSON 格式",
+        "新增 /debug 命令，一键查看 Session ID、Token 用量、费用和轨迹上传状态"
+      ]
+    },
+    {
+      "title": "修复",
+      "items": [
+        "修复 macOS bash 环境下安装后，新终端找不到 sid-code 命令的问题",
+        "修复 settings.json 中配置的轨迹上传地址会被忽略的问题"
+      ]
+    }
+  ],
+  "commits": [
+    "64926652",
+    "eeac94f4",
+    "03d7beec",
+    "b683fc44"
+  ],
+  "discarded": [
+    "6ad242b9",
+    "b5de2692",
+    "23d61dc6",
+    "78982a78",
+    "ce2c2402"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

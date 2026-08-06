@@ -1,0 +1,29 @@
+{
+  "version": "0.1.597",
+  "highlight": "GPT-5.x 系列模型支持 /effort 推理强度切换",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "新功能",
+      "items": [
+        "GPT-5.x 系列模型支持 /effort 切换推理强度（之前会硬报「不支持」）"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "只配了模型名、地址和密钥的未知模型，现在能自动获取准确的上下文窗口和推理强度能力，不用再手动配置",
+        "首次使用未知模型时，如果推理强度参数不被支持，会自动重试一次（无需干预），之后自动记住"
+      ]
+    }
+  ],
+  "commits": [
+    "ba7a16a6"
+  ],
+  "discarded": [
+    "0902b048",
+    "79f71392"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

@@ -1,0 +1,22 @@
+{
+  "version": "0.1.585",
+  "highlight": "安装体验优化：不再无谓提示 source，更新日志入口更清晰",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "改进",
+      "items": [
+        "安装后不再无谓提示 source——当 PATH 已含安装目录时跳过，避免噪音",
+        "安装完成提示同时展示更新日志的网页版和文本版链接"
+      ]
+    }
+  ],
+  "commits": [
+    "b27e6bb0"
+  ],
+  "discarded": [
+    "abe5613a"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

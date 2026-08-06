@@ -27,6 +27,7 @@ const PAGE_PATH = resolve(ROOT, "website/changelog.md");
 const CONFIG_PATH = resolve(ROOT, "website/.vitepress/config.ts");
 const COMPONENT_PATH = resolve(ROOT, "website/.vitepress/theme/Changelog.vue");
 const HTML_PATH = resolve(ROOT, "CHANGELOG.html");
+const MD_PATH = resolve(ROOT, "CHANGELOG.md");
 
 describe("changelog.json · 站点数据源形态", () => {
   test("文件存在（缺失会让 /changelog 构建失败）", () => {
@@ -40,10 +41,20 @@ describe("changelog.json · 站点数据源形态", () => {
     expect(typeof d.currentVersion).toBe("string");
     expect(d.currentVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(typeof d.totalVersions).toBe("number");
-    expect(typeof d.totalCommits).toBe("number");
-    expect(Array.isArray(d.groupMeta)).toBe(true);
+    expect(typeof d.totalItems).toBe("number");
+    expect(Array.isArray(d.sectionMeta)).toBe(true);
     expect(Array.isArray(d.versions)).toBe(true);
     expect(d.versions.length).toBeGreaterThan(0);
+  });
+
+  test("旧键名彻底消失（同名不同义是最坏的一种漂移）", () => {
+    // curated 改造把两个键连名带义一起改了：groupMeta→sectionMeta（词表 6 组→4 组）、
+    // totalCommits→totalItems（commit 数→curated 条目数）。**必须改名**：留着旧名
+    // 装新语义的话，任何读它的代码都会静默拿到错的东西（组件页顶会显示一个
+    // 看起来合理但含义完全不同的数字）。
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    expect(d.groupMeta).toBeUndefined();
+    expect(d.totalCommits).toBeUndefined();
   });
 
   test("统计字段与实际数组一致（组件页顶直接显示这些数字）", () => {
@@ -51,48 +62,89 @@ describe("changelog.json · 站点数据源形态", () => {
     expect(d.totalVersions).toBe(d.versions.length);
     const actual = d.versions.reduce(
       (n: number, v: any) =>
-        n + v.groups.reduce((m: number, g: any) => m + g.commits.length, 0),
+        n + v.sections.reduce((m: number, s: any) => m + s.items.length, 0),
       0,
     );
-    expect(d.totalCommits).toBe(actual);
+    expect(d.totalItems).toBe(actual);
   });
 
-  test("每个版本的 count 等于其分组下提交数之和", () => {
+  test("每个版本的 count 等于其分组下条目数之和", () => {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
     for (const v of d.versions) {
-      const sum = v.groups.reduce((m: number, g: any) => m + g.commits.length, 0);
+      const sum = v.sections.reduce((m: number, s: any) => m + s.items.length, 0);
       expect(v.count).toBe(sum);
     }
   });
 
-  test("提交条目字段与组件读取的键名一致", () => {
+  test("版本条目字段与组件读取的键名一致", () => {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
     for (const v of d.versions) {
       expect(typeof v.version).toBe("string");
       expect(v.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(typeof v.isGenesis).toBe("boolean");
-      for (const g of v.groups) {
+      expect(typeof v.userFacing).toBe("boolean");
+      // highlight 允许为 null，但不能是 undefined（组件用 v-if 判空）
+      expect(v.highlight === null || typeof v.highlight === "string").toBe(true);
+      expect(Array.isArray(v.sections)).toBe(true);
+      for (const s of v.sections) {
         // 空分组不该被产出——组件不做空分组过滤，会渲染出一个只有徽章的空壳
-        expect(g.commits.length).toBeGreaterThan(0);
-        for (const c of g.commits) {
-          expect(typeof c.desc).toBe("string");
-          expect(c.desc.length).toBeGreaterThan(0);
-          expect(typeof c.hash).toBe("string");
-          expect(Array.isArray(c.details)).toBe(true);
-          // scope 允许为 null，但不能是 undefined（组件用 v-if 判空）
-          expect(c.scope === null || typeof c.scope === "string").toBe(true);
+        expect(s.items.length).toBeGreaterThan(0);
+        expect(typeof s.key).toBe("string");
+        expect(typeof s.title).toBe("string");
+        for (const it of s.items) {
+          expect(typeof it).toBe("string");
+          expect(it.length).toBeGreaterThan(0);
         }
       }
     }
   });
 
-  test("分组 key 都在 groupMeta 里声明过（否则徽章拿不到中文标题与配色）", () => {
-    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
-    const known = new Set(d.groupMeta.map((g: any) => g.key));
+  test("per-commit 字段已从站点数据源移除（它们只留在 CHANGELOG.md）", () => {
+    // hash / scope / details / isGenesis 都是**开发者视角**的坐标，而这份 JSON
+    // 唯一的消费者是官网 /changelog，那一页的读者是用户。移除不是"简化"而是分受众。
+    const raw = readFileSync(DATA_PATH, "utf8");
+    const d = JSON.parse(raw);
     for (const v of d.versions) {
-      for (const g of v.groups) {
-        expect(known.has(g.key)).toBe(true);
+      expect(v.isGenesis).toBeUndefined();
+      expect(v.groups).toBeUndefined();
+    }
+    // 整份 JSON 里不该再出现这几个键名（嵌套任意深度都不该有）
+    expect(raw).not.toMatch(/"hash"\s*:/);
+    expect(raw).not.toMatch(/"scope"\s*:/);
+    expect(raw).not.toMatch(/"details"\s*:/);
+  });
+
+  test("userFacing 与 sections 自洽（矛盾会渲染出只有标题的空版本块）", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    for (const v of d.versions) {
+      if (v.userFacing) {
+        expect(v.sections.length).toBeGreaterThan(0);
+      } else {
+        expect(v.sections.length).toBe(0);
       }
+    }
+  });
+
+  test("分组 key 都在 sectionMeta 里声明过（否则徽章拿不到中文标题与配色）", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const known = new Set(d.sectionMeta.map((s: any) => s.key));
+    for (const v of d.versions) {
+      for (const s of v.sections) {
+        expect(known.has(s.key)).toBe(true);
+      }
+    }
+  });
+
+  test("分组顺序遵循 sectionMeta（破坏性变更必须排在最前）", () => {
+    // 顺序不是审美问题：破坏性变更是用户升级前最该先看到的一类，
+    // 人工编辑 curated JSON 时很容易把它放到最后，那样它就排在最不显眼的位置。
+    // 生成器的 toRenderSections 按受控词表重排，这条断言把它钉住。
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const order = d.sectionMeta.map((s: any) => s.key);
+    expect(order[0]).toBe("breaking");
+    for (const v of d.versions) {
+      const idx = v.sections.map((s: any) => order.indexOf(s.key));
+      const sorted = [...idx].sort((a, b) => a - b);
+      expect(idx).toEqual(sorted);
     }
   });
 
@@ -102,42 +154,57 @@ describe("changelog.json · 站点数据源形态", () => {
   });
 });
 
-describe("changelog.json · 版本区间不漏提交（回归：补跑会清空当前版本）", () => {
+describe("CHANGELOG.md · 版本区间不漏提交（回归：补跑会清空当前版本）", () => {
   /**
    * 2026-08-06 实测的静默数据丢失：`buildModel` 一边用 `tags[0]..HEAD` 算「正在发布」
    * 区间，一边在历史循环里以 `version === currentVersion` 跳过同名 tag。当该 tag
    * **已存在**（tag 打完后补跑、或 --no-bump 复用版本号）时，tags[0] 就是它自己，
    * 于是它真正的提交两头都不认，彻底消失——changelog 从 276 条掉到 267 条，
-   * 且**没有任何报错**（产物只是站点数据源，少几条无人察觉）。
+   * 且**没有任何报错**。
    *
-   * 这里不重跑生成脚本（那要动仓库产物），而是对**已入库的产物**验一条不变式：
-   * 每个非 genesis 版本的 commit 数，应与该 tag 区间的真实提交数吻合。
-   * 这条不变式对上面那个 bug 是敏感的：bug 会让当前版本的 count 变成
-   * 「tag 之后的提交数」，与真实区间对不上。
+   * ⚠ 这条不变式在 curated 改造后**换了检查对象**：站点 JSON 的 `count` 现在是
+   * curated **条目**数（人工筛过的用户可见变更），与区间提交数没有对应关系了 ——
+   * 继续拿它比对只会得到一条必然失败的断言。但**不变式本身仍然必要**：那个
+   * 区间 bug 一点没被修掉，只是症状换了位置。全量原始提交现在只在 CHANGELOG.md 里，
+   * 所以改为数 md 里的版本块条目。
+   *
+   * 判据：`## vX.Y.Z (date)` 到下一个 `## ` 之间的**顶层** `- ` 条目数
+   *（`  - ` 缩进的是 body 细节，不算一条提交）。
    */
-  test("每个版本的 commit 数与其 tag 区间的真实提交数吻合", () => {
-    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+  function countMdCommits(md: string, version: string): number | null {
+    const start = md.indexOf(`## v${version} (`);
+    if (start < 0) return null;
+    const rest = md.slice(start + 3);
+    const nextAt = rest.indexOf("\n## ");
+    const block = nextAt < 0 ? rest : rest.slice(0, nextAt);
+    // 顶层条目以行首 "- " 开头；body 细节是 "  - " 两空格缩进
+    return (block.match(/^- /gm) ?? []).length;
+  }
+
+  test("CHANGELOG.md 每个版本块的提交数与其 tag 区间的真实提交数吻合", () => {
+    const md = readFileSync(MD_PATH, "utf8");
     const tags: string[] = execFileSync("git", ["tag", "-l", "v*", "--sort=-v:refname"], {
       cwd: ROOT,
       encoding: "utf8",
     })
       .split("\n")
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((t) => /^v\d+\.\d+\.\d+$/.test(t));
 
     let checked = 0;
-    for (const v of d.versions) {
-      if (v.isGenesis) continue; // genesis 块刻意截断回溯条数，不适用此不变式
-      const tag = `v${v.version}`;
-      const idx = tags.indexOf(tag);
-      if (idx < 0) continue; // 尚未打 tag 的「正在发布」版本，无法比对
-      const prevTag = tags[idx + 1];
-      if (!prevTag) continue;
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      const prevTag = tags[i + 1];
+      if (!prevTag) continue; // 最老的 tag 是 genesis 块，刻意截断回溯条数，不适用
+
+      const version = tag.replace(/^v/, "");
+      const got = countMdCommits(md, version);
+      if (got === null) continue;
 
       // 真实区间提交数，扣掉生成器刻意过滤的噪声（bump / Merge / dashboard 刷盘）
       const subjects = execFileSync(
         "git",
-        ["log", "--format=%s", `${prevTag}..${tag}`],
+        ["log", "--no-merges", "--format=%s", `${prevTag}..${tag}`],
         { cwd: ROOT, encoding: "utf8" },
       )
         .split("\n")
@@ -150,11 +217,23 @@ describe("changelog.json · 版本区间不漏提交（回归：补跑会清空�
           !/^ci(?:\([^)]*\))?\s*[:：]\s*refresh dashboard/i.test(s),
       ).length;
 
-      expect(v.count).toBe(real);
+      // 无提交的版本会渲染成「- 无显著变更」一条占位，此时 got=1 而 real=0
+      expect(got).toBe(real === 0 ? 1 : real);
       checked++;
     }
     // 防止不变式因为 continue 全部跳过而变成空断言（那就成了假绿）
     expect(checked).toBeGreaterThan(0);
+  });
+
+  test("CHANGELOG.md 仍是全量原始提交（curated 漏了东西时唯一的回溯途径）", () => {
+    // 官网只显示人工筛过的用户可见变更。若哪天有人"顺手"让 md 也只渲染 curated，
+    // 就再没有任何地方能回答「这个版本到底改了哪些提交」了。
+    const md = readFileSync(MD_PATH, "utf8");
+    // 开发者视角的分组标题必须还在（官网那 4 组受控词里没有它们）
+    expect(md).toContain("### 文档");
+    expect(md).toContain("### 其他");
+    // commit hash 必须还在（站点 JSON 已经不带了）
+    expect(md).toMatch(/`[0-9a-f]{7,10}`/);
   });
 
   test("版本日期与其 tag 的提交日一致（不受生成时机/时区影响）", () => {
@@ -257,61 +336,70 @@ describe("CHANGELOG.html · 跳转页而非自建 mini 站", () => {
 });
 
 describe("独立搜索的匹配语义", () => {
-  // 复刻组件里的匹配逻辑（Changelog.vue 的 haystack + commitMatches）。
+  // 复刻组件里的匹配逻辑（Changelog.vue 的 itemMatches）。
   // 组件是 .vue 单文件、无法在 bun test 里直接 import 其内部函数，
   // 所以这里锁的是**语义契约**：改组件逻辑时两边要一起改，否则这些断言会红。
-  const hay = (c: any) =>
-    [c.scope ?? "", c.desc, c.hash, ...c.details].join(" ").toLowerCase();
-  const matches = (c: any, terms: string[]) =>
-    terms.length === 0 || terms.every((t) => hay(c).includes(t));
+  //
+  // ⚠ curated 改造后搜索范围变成**条目文本**（外加 highlight）。hash 与 scope
+  // 已从数据源移除，所以「拿 hash 搜」这个用法没有了 —— 那是开发者用法，
+  // 要按 hash 查请用 git 或看 CHANGELOG.md。
+  const matches = (text: string, terms: string[]) =>
+    terms.length === 0 || terms.every((t) => text.toLowerCase().includes(t));
   const parse = (q: string) => q.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
-  function allCommits() {
+  function allItems(): string[] {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
-    const out: any[] = [];
-    for (const v of d.versions) for (const g of v.groups) out.push(...g.commits);
+    const out: string[] = [];
+    for (const v of d.versions) for (const s of v.sections) out.push(...s.items);
     return out;
   }
 
   test("多词是 AND 而非整串子串匹配", () => {
     // 这是改造中真实踩到的缺陷：整串匹配要求两个词在原文里紧邻，
-    // 而 changelog 的词通常散落在描述与细节的不同位置，用户输两个词一条不中。
-    const commits = allCommits();
-    const term1 = "缓存";
-    const term2 = "命中";
-    const andHits = commits.filter((c) => matches(c, [term1, term2])).length;
-    const substringHits = commits.filter((c) =>
-      hay(c).includes(`${term1} ${term2}`),
-    ).length;
-    expect(andHits).toBeGreaterThan(0);
-    expect(andHits).toBeGreaterThan(substringHits);
+    // 而变更描述里的词通常散落在一句话的不同位置，用户输两个词一条不中。
+    // 用「不再」+「超时」这类分散词对：AND 能中，紧邻匹配不能。
+    const items = allItems();
+    expect(items.length).toBeGreaterThan(0);
+
+    // 找一条真的含两个不相邻词的条目，避免把断言写成"恰好这批数据成立"
+    let found = false;
+    for (const it of items) {
+      const words = it.match(/[一-龥]{2}/g) ?? [];
+      if (words.length < 4) continue;
+      const a = String(words[0]).toLowerCase();
+      const b = String(words[words.length - 1]).toLowerCase();
+      if (a === b || it.toLowerCase().includes(`${a} ${b}`)) continue;
+      expect(matches(it, [a, b])).toBe(true);
+      expect(it.toLowerCase().includes(`${a} ${b}`)).toBe(false);
+      found = true;
+      break;
+    }
+    expect(found).toBe(true);
   });
 
   test("空查询与纯空白查询返回全部", () => {
-    const commits = allCommits();
-    expect(commits.filter((c) => matches(c, parse(""))).length).toBe(commits.length);
-    expect(commits.filter((c) => matches(c, parse("   "))).length).toBe(commits.length);
-  });
-
-  test("搜 hash 能命中（提交条目显示 hash，用户会拿它搜）", () => {
-    const commits = allCommits();
-    const withHash = commits.find((c) => c.hash);
-    expect(withHash).toBeDefined();
-    expect(matches(withHash, parse(withHash.hash))).toBe(true);
-  });
-
-  test("搜 scope 能命中，且跨字段与描述词组合有效", () => {
-    const commits = allCommits();
-    const withScope = commits.find((c) => c.scope && c.desc.length > 4);
-    expect(withScope).toBeDefined();
-    expect(matches(withScope, parse(withScope.scope))).toBe(true);
-    // scope 与描述里的词组合 —— 这是拼成整段 haystack 才能支持的场景
-    const firstWord = withScope.desc.slice(0, 2);
-    expect(matches(withScope, [withScope.scope.toLowerCase(), firstWord.toLowerCase()])).toBe(true);
+    const items = allItems();
+    expect(items.filter((i) => matches(i, parse(""))).length).toBe(items.length);
+    expect(items.filter((i) => matches(i, parse("   "))).length).toBe(items.length);
   });
 
   test("不存在的词返回 0（无结果态有兜底 UI）", () => {
-    expect(allCommits().filter((c) => matches(c, parse("zzz-不存在-zzz"))).length).toBe(0);
+    expect(allItems().filter((i) => matches(i, parse("zzz-不存在-zzz"))).length).toBe(0);
+  });
+
+  test("组件搜索的是条目文本，不再读 hash/scope（数据源已无这些字段）", () => {
+    const vue = readFileSync(COMPONENT_PATH, "utf8");
+    expect(vue).toContain("function itemMatches");
+    // 旧实现把 scope/hash/details 拼成 haystack，字段已不存在，留着就是读 undefined
+    expect(vue).not.toContain("function haystack");
+    expect(vue).not.toMatch(/c\.hash/);
+    expect(vue).not.toMatch(/c\.scope/);
+  });
+
+  test("highlight 纳入搜索（它常是一个版本最核心的那句话）", () => {
+    const vue = readFileSync(COMPONENT_PATH, "utf8");
+    expect(vue).toContain("v.highlight");
+    expect(vue).toContain("highlightHit");
   });
 });
 

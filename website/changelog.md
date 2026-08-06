@@ -1,7 +1,7 @@
 ---
 title: 更新日志
-description: 每个版本的变更记录，从 git 历史自动生成，带独立搜索与分类筛选。
-# 本页有自己的搜索框（只搜版本变更），不进全站索引 —— 否则几百条 commit 描述
+description: 每个版本对用户有什么变化，按新功能/改进/修复/破坏性变更分类，带独立搜索。
+# 本页有自己的搜索框（只搜版本变更），不进全站索引 —— 否则几百条变更描述
 # 会把「搜 hook」「搜权限」这类正常查询冲成一片版本噪音。
 # 执行方在 .vitepress/config.ts 的 search.options._render 钩子。
 search: false
@@ -21,13 +21,19 @@ next: false
 
 # 更新日志
 
-左侧按月列出全部版本，右侧是每个版本改了什么。
+左侧按月列出全部版本，右侧是每个版本**对你有什么变化**。
+
+只写用户能感知到的改动，内部重构、CI、测试、文档不在这里。
+要看完整的原始提交列表，见下方「其它形态」。
 
 <Changelog />
 
 ## 其它形态
 
-- **纯文本版**：[CHANGELOG.md](https://www.sid-code.cc/releases/sid-code/CHANGELOG.md) —— 便于 diff、`curl`、脚本处理
+这一页是**用户视角**的摘要。想看开发者视角的全量提交（含 commit hash、模块 scope、
+改动细节）请用下面两个入口 —— 它们是同一份 git 历史的另一种呈现，不是另一份数据：
+
+- **纯文本版**：[CHANGELOG.md](https://www.sid-code.cc/releases/sid-code/CHANGELOG.md) —— 全量原始提交，便于 diff、`curl`、脚本处理
 - **本机查看**：仓库根 `CHANGELOG.md` 与发布产物同源
 
 ## 查看与升级

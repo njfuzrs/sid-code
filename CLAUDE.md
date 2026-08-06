@@ -175,19 +175,32 @@ git push
 >
 > `--no-bump` 现在只用于一个场景：你显式跑过 `make build-bump` 已经 bump 过，不想再 +1。
 >
-> **Changelog + Tag**：release.sh 在 bump 后从 git 历史（上个 semver tag → HEAD，按 feat/fix/… 分组）重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。**git 历史是唯一事实源**，每次运行完整重建，确定性且幂等。三份产物各有唯一职责：
+> **Changelog + Tag**：release.sh 在 bump 后重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。每次运行完整重建，确定性且幂等。三份产物各有唯一职责：
 >
-> | 产物 | 职责 |
-> | --- | --- |
-> | `CHANGELOG.md` | 文本事实源（累积追踪、不删除），给 diff / `curl` / 脚本 |
-> | `website/.vitepress/data/changelog.json` | 官网 `/changelog` 页的数据源，由 `theme/Changelog.vue` 渲染 |
-> | `CHANGELOG.html` | 跳转页 → `/changelog`，只为保住散落各处的老链接不 404 |
+> | 产物 | 职责 | 内容来源 |
+> | --- | --- | --- |
+> | `CHANGELOG.md` | 文本事实源，给 diff / `curl` / 脚本 | git 历史（**全量原始提交**，按 feat/fix/docs/… 6 组） |
+> | `website/.vitepress/data/changelog.json` | 官网 `/changelog` 页的数据源，由 `theme/Changelog.vue` 渲染 | `changelog/curated/*.json`（**用户视角文案**，4 组受控词） |
+> | `CHANGELOG.html` | 跳转页 → `/changelog`，只为保住散落各处的老链接不 404 | — |
 >
-> **用户看更新日志的唯一入口是官网 `http://<host>/changelog`**（2026-07-28 起）。它和文档站同站同配色，自带只搜版本变更的独立搜索框，且**不进全站搜索索引**（否则几百条 commit 描述会把正常查询冲成噪音）。实现见 `website/.vitepress/config.ts` 的 `search.options._render`。
+> **两个受众，两条渲染路径**（2026-08-06 curated 改造）：commit message 的读者是未来的自己，changelog 的读者是用户，靠正则做不了这个转换（实测 276 条提交里 24% 是用户完全不关心的文档/杂项）。所以官网正文来自**人工过目过的** curated 文案：
 >
-> ⚠ **两条禁令**，破了就是数据错乱或每次 commit 都红：
+> ```bash
+> bun run changelog:curate            # 为下一个版本起草（spawn sid-code 自己读 diff 改写）
+> bun run changelog:curate 0.1.601    # 指定版本 / 补跑
+> bun run changelog:check             # 不调 LLM，只校验已入库的全部文案
+> ```
+>
+> 产出 `changelog/curated/v<version>.json` → **读一遍**（脚本会把条目打印到终端）→ 需要就直接改 JSON → commit。发版前 release.sh 会检查该文件是否存在，缺了会交互确认一次（放在构建**之前**，此刻补还来得及）。
+>
+> ⚠ **四条禁令**，破了就是数据错乱、内容失真或每次 commit 都红：
+> - `release.sh` / `generate-changelog.ts` **绝不调 LLM**，只读已入库的 curated 文件 —— 发布路径必须确定性 + 离线 + 幂等，把一次 LLM 调用塞进发布链会同时破掉这三条。
+> - curated 文件**必须人工过目**才提交。校验器只拦形态（词表、长度、URL、字段自洽），拦不住「把内部重构写成用户特性」「漏掉一个真实的破坏性变更」—— 这两类只有人能拦。
+> - `CHANGELOG.md` **必须保持全量原始提交**（含 hash、docs/其他 分组）。curated 漏了东西时它是唯一的回溯途径。
 > - `website-deploy.sh` **不得**重跑 `generate-changelog.ts` —— 会把 HEAD 上尚未发版的提交归到已发布的版本号名下。只有 `release.sh` 有资格生成这份数据。
 > - changelog 产物**不纳入** `docs-gen-reference --check` 那类反漂移门禁 —— `website/ref/` 能立门禁是因为源是源码；changelog 的源是 git 历史，每提交一次就变。
+>
+> **用户看更新日志的唯一入口是官网 `http://<host>/changelog`**（2026-07-28 起）。它和文档站同站同配色，自带只搜版本变更的独立搜索框，且**不进全站搜索索引**（否则几百条变更描述会把正常查询冲成噪音）。实现见 `website/.vitepress/config.ts` 的 `search.options._render`。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：

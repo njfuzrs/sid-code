@@ -25,6 +25,11 @@
 #   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
 # Changelog + Git Commit + Git Tag（顺序在 2026-08-01 调整，见下方 ★）：
+#   ⓪ bump 之后先检查 changelog/curated/v<version>.json 是否存在（用户视角文案，
+#      LLM 起草 + 人工过目 + 已入库）。缺了会**交互确认**一次 —— 刻意放在构建之前，
+#      因为此刻跑一次 `bun run changelog:curate <version>` 就能补上；等到发布结束才
+#      发现，补救就得重新发一版。本脚本从不调 LLM，只读这份缓存
+#      （发布路径必须确定性 + 离线 + 幂等）。
 #   ① bump 版本号之后，跑 scripts/generate-changelog.ts 从 git 历史生成三份产物：
 #      · CHANGELOG.md                          文本事实源（仓库根，累积追踪）
 #      · website/.vitepress/data/changelog.json 官网 /changelog 页的数据源
@@ -436,6 +441,42 @@ echo ""
 
 # ─── 生成 changelog（bump 之后；tag 推迟到构建通过之后，见下方"提交 bump + 打 tag"）───
 TAG="v$VERSION"
+
+# ─── curated 文案前置检查（在生成 changelog 之前，此刻改还来得及）───
+#
+# 官网 /changelog 的正文来自 changelog/curated/v<version>.json（LLM 起草 + 人工过目、
+# 已入库）。本脚本**只读**它，绝不调 LLM —— 发布路径必须确定性 + 离线 + 幂等。
+#
+# 为什么提示放在这里而不是靠 generate-changelog.ts 的 warn：那条 warn 出现在
+# 构建、冒烟、提交、打 tag **全都跑完之后**的日志里，人看到时版本已经发出去了，
+# 补救要重新发一版。放在 bump 之后、构建之前，此刻只花了几秒钟，跑一次 curate 就能补上。
+#
+# 刻意**只提示不阻断**：curate 要跑一次 LLM（分钟级）+ 人工过目，把它做成硬门禁
+# 等于「想发个紧急修复必须先等模型写文案」。缺文案的后果是官网那一版显示
+# 「本版没有用户可见的变更」—— 不好，但不该拦住发布。
+_CURATED_FILE="changelog/curated/v${VERSION}.json"
+if [ ! -f "$ROOT/$_CURATED_FILE" ]; then
+    warn "缺少用户视角文案：$_CURATED_FILE"
+    warn "官网 /changelog 的 v$VERSION 将显示「本版没有用户可见的变更」。"
+    info "现在补（推荐，几分钟）："
+    info "    bun run changelog:curate $VERSION   # 生成后过目，需要就直接改 JSON"
+    info "    git add $_CURATED_FILE && git commit"
+    info "然后重跑本脚本（加 --no-bump 复用已 bump 的 v${VERSION}）。"
+    if [ -t 0 ] && [ -e /dev/tty ]; then
+        printf "  不写文案，继续发布？(y/N) "
+        read -r _ans </dev/tty || _ans=""
+        case "$_ans" in
+            y|Y|yes|YES) info "已确认，继续（v$VERSION 在官网无变更说明）" ;;
+            *) fail "已取消。补完 curated 文案后重跑（--no-bump 复用 v${VERSION}）。" ;;
+        esac
+    else
+        # 非交互（CI / 管道）下不能卡住等输入，降级为 warn 继续
+        warn "非交互环境，跳过确认，继续发布"
+    fi
+    echo ""
+else
+    ok "已有用户视角文案：$_CURATED_FILE"
+fi
 
 echo ">>> 生成 changelog (v$VERSION) ..."
 for _f in CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json; do

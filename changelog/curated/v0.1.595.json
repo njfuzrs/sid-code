@@ -1,0 +1,27 @@
+{
+  "version": "0.1.595",
+  "highlight": "macOS 终端下鼠标滚轮/触控板无法滚动的问题已修复",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "修复",
+      "items": [
+        "macOS 终端下鼠标滚轮/触控板无法滚动的问题（自动回退到兼容模式）",
+        "只读子代理（探索/规划/验证）在只读任务中越权调用浏览器等外部工具的问题"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "减少模型回复中的内部指令噪音，MCP 服务器长指令自动截断"
+      ]
+    }
+  ],
+  "commits": [
+    "90da5aed",
+    "c9c87db5"
+  ],
+  "discarded": [],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

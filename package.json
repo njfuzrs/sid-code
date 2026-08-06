@@ -24,6 +24,8 @@
     "docs:gen-reference-stale": "bun run scripts/docs-gen-reference.ts --stale",
     "docs:coverage": "bun run scripts/docs-gen-reference.ts --coverage",
     "docs:coverage-strict": "bun run scripts/docs-gen-reference.ts --coverage-strict",
+    "changelog:curate": "bun run scripts/changelog-curate.ts",
+    "changelog:check": "bun run scripts/changelog-curate.ts --check",
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "lint": "echo 'TODO: add linter'",
     "eval:run": "bun run node_modules/eval-framework/core/runner.ts",

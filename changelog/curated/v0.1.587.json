@@ -1,0 +1,74 @@
+{
+  "version": "0.1.587",
+  "highlight": "read 支持图片和 PDF，新增 /add-dir、/diff 等实用命令",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "新功能",
+      "items": [
+        "新增 /add-dir 命令，运行时为当前会话授权目录访问",
+        "新增 /diff 命令，查看工作区 git diff",
+        "新增 /doctor 命令，一键诊断环境配置",
+        "/compact 支持指定比例或下标，只压缩前半段对话，保留后半段原文",
+        "新增 think 工具，让模型在复杂任务中先写思考再动手",
+        "read 支持读取图片、PDF、Jupyter Notebook",
+        "新增 notebook_edit 工具，编辑 Jupyter Notebook",
+        "LSP 新增 codeAction 操作，获取语言服务器的修复建议",
+        "输出风格可插拔，自定义 markdown 文件定义 AI 回复风格",
+        "统计面板新增模型单价显示",
+        "settings.autoDream 开启后，会话结束自动整理巩固记忆",
+        "工具延迟加载支持豁免名单，高频工具首轮可见",
+        "新连接 MCP server 自动注入使用说明"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "流式工具执行：模型输出时同步执行已完成的工具调用，多工具场景更快",
+        "连续编辑失败时自动提醒模型换策略",
+        "上下文压力提醒更智能，同档位不会重复刷屏",
+        "工具搜索能搜到参数名，找工具更准确",
+        "Worktree 创建时提示依赖不一致等潜在问题",
+        "子代理能感知 LSP 诊断信息，代码问题定位更准",
+        "被拒绝访问的文件路径在错误消息中隐藏"
+      ]
+    },
+    {
+      "title": "修复",
+      "items": [
+        "修复网关错误消息中数字串被误判为终端错误，导致重试提前放弃",
+        "修复 OpenAI strict schema 兼容性，带可选字段的工具调用 GPT-5.x 不再 400",
+        "修复多个后台任务通知聚合时前面的通知丢失",
+        "修复 Anthropic provider 中 tool_choice 漏传，导致自动压缩模式失效",
+        "修复第三方 Anthropic 兼容代理 SSE 流被静默丢弃",
+        "修复 auto 权限模式从未生效",
+        "修复 cache_creation 写入 token 成本未被计入"
+      ]
+    }
+  ],
+  "commits": [
+    "ccec09df",
+    "a985fd37",
+    "2eea82dd",
+    "f6c29696",
+    "e6dd3a82",
+    "efab10cc",
+    "4ea9855d",
+    "86872426",
+    "8690e9ea",
+    "e7819d81",
+    "13d45349",
+    "a2d95058",
+    "ba7420c4",
+    "3a637438"
+  ],
+  "discarded": [
+    "e902b904",
+    "e487c2bd",
+    "d13b186f",
+    "9aaba54b",
+    "9b04cd67"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

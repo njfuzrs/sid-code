@@ -1,0 +1,80 @@
+{
+  "version": "0.1.592",
+  "highlight": "新增大量斜杠命令和 Vim 模式，补齐与 Claude Code 的功能差距",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "破坏性变更",
+      "items": [
+        "默认启用全屏模式，如需回退旧的内联模式，启动时加 --inline"
+      ]
+    },
+    {
+      "title": "新功能",
+      "items": [
+        "新增 /batch、/bug、/color、/fast、/fork、/vim、/workflows、/pr 等大量命令",
+        "Vim 模式引擎，支持 hjkl 导航和常用编辑操作",
+        "结构化任务清单工具（task_create / task_get / task_list / task_update）",
+        "sub_agent 支持逐次指定模型（model）和工作目录（cwd）",
+        "claude-code-migration 技能：从 Claude Code 迁移配置到 sid-code",
+        "SID_MAX_TURNS 环境变量，超过 N 轮后提醒模型收尾",
+        "web_fetch 支持 prompt 参数，可指定关注点",
+        "bash 超时可通过 BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS 环境变量覆盖",
+        "read 工具支持 PDF 页码范围（pages 参数）",
+        "--disable-slash-commands 和 --fork-session CLI 选项",
+        "/compact 支持 focus 指令，压缩时侧重特定主题"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "状态栏重构为两行分层布局，运行态和环境信息分开显示",
+        "web_fetch 抓取网页保留标题、链接、列表、表格等结构",
+        "web_fetch 结果支持缓存，重复抓取更快",
+        "cron 列表输出人类可读描述，如「每天 09:00」",
+        "diff 行底色加深，增删行更易辨识",
+        "子代理默认关闭思考，仅在明确需要时开启，节省 token 成本"
+      ]
+    },
+    {
+      "title": "修复",
+      "items": [
+        "长驻会话的用量实时可见于 /cache，不再等到退出才显示",
+        "修复 fallback 切换模型后 maxTokens 残留旧值导致 400 错误",
+        "修复 /model 切换到曾被拉黑的模型后仍无法使用",
+        "修复 git 状态快照中文件状态与实时 git status 矛盾",
+        "修复子代理超时误杀弹窗",
+        "修复只读工具（read/ls/glob/grep）交替空转无法被检测",
+        "修复子代理收到空响应被误判为成功"
+      ]
+    }
+  ],
+  "commits": [
+    "e8b5c6de",
+    "509d93d7",
+    "60f4c8b2",
+    "681f7231",
+    "0bf9bae0",
+    "e4eee675",
+    "dac6cbc5",
+    "2d12bfc9",
+    "c5a67324",
+    "1c90ca9c",
+    "6420a7c1",
+    "21a3cd2c",
+    "a943c6e9",
+    "3a2a03ab",
+    "d82a5e0c",
+    "161fc280",
+    "17123e5f"
+  ],
+  "discarded": [
+    "240efac8",
+    "e92aafc0",
+    "1ebaf645",
+    "1394f629",
+    "20a9bd66"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

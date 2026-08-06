@@ -1,0 +1,44 @@
+{
+  "version": "0.1.600",
+  "highlight": "同一模型可配多个渠道（如公司网关 + 官方端点）",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "新功能",
+      "items": [
+        "同一模型可配多个渠道（如公司网关 + 官方端点），新增 model_id 配置字段"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "下载地址切换到新域名，sid-code update 将自动使用新地址",
+        "历史配置中旧服务地址自动迁移，恢复之前静默失效的联网搜索和轨迹上传",
+        "todo_write 等工具结果不再显示啰嗦的内部提示词，屏幕更干净"
+      ]
+    },
+    {
+      "title": "修复",
+      "items": [
+        "修复慢网络下流首字节被误判为卡死、导致不停重试的问题",
+        "settings.json 的网络超时配置现在对 LLM 流也生效"
+      ]
+    }
+  ],
+  "commits": [
+    "0800dee7",
+    "3b8b752b",
+    "71ab476a",
+    "d69e0d9a"
+  ],
+  "discarded": [
+    "b774a041",
+    "0cb960c7",
+    "bebffbe1",
+    "b60b355e",
+    "e83fec8e",
+    "0ae33d1e"
+  ],
+  "generatedBy": "sid-code",
+  "reviewedBy": "pending"
+}

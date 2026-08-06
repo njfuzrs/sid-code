@@ -17,6 +17,12 @@
 
 import { describe, test, expect } from "bun:test";
 import { stripUrls } from "../../scripts/generate-changelog.ts";
+import {
+  stripUrls as stripUrlsFromLib,
+  hasUrl,
+  findUrls,
+  URL_PLACEHOLDER,
+} from "../../scripts/lib/changelog-text.ts";
 
 describe("stripUrls（changelog 生成期抹 URL）", () => {
   test("抹掉 http/https URL，替换为占位符", () => {
@@ -77,5 +83,81 @@ describe("stripUrls（changelog 生成期抹 URL）", () => {
   test("幂等：已抹过的文本再抹一次不变", () => {
     const once = stripUrls("切到 https://x.com");
     expect(stripUrls(once)).toBe(once);
+  });
+});
+
+/**
+ * 2026-08-06 curated 改造把 stripUrls 的实现搬到了 scripts/lib/changelog-text.ts。
+ * 搬家的理由是有了第三个消费方（curated 校验器），三处各写一套正则就是三套判定标准，
+ * 而它们分叉的症状是「某一条通路漏了个内网地址」—— 静默，直到有人肉眼看见。
+ *
+ * generate-changelog.ts 仍 re-export 它，所以上面那些用例（从生成器 import）
+ * 一行没改就继续有效。下面这组锁的是「搬家没搬出两个实现」。
+ */
+describe("stripUrls 的实现只有一份（搬到 lib 之后的同源性）", () => {
+  test("从生成器 import 的与从 lib import 的是同一个函数", () => {
+    // 不是"行为相同"而是**同一个引用**：行为相同可以是两份代码碰巧一致，
+    // 同一引用才排除了"有人复制了一份"。
+    expect(stripUrls).toBe(stripUrlsFromLib);
+  });
+
+  test("占位符是共享常量，不是各处硬编码的字面量", () => {
+    expect(stripUrls("见 https://x.com")).toBe(`见 ${URL_PLACEHOLDER}`);
+  });
+});
+
+/**
+ * hasUrl / findUrls 是 curated 校验器用的**拦截**接口，与 stripUrls 的**改写**
+ * 语义刻意不同：
+ *
+ *   · curated 文件入库前用 hasUrl **拒绝**（让人看见并改掉文案）
+ *   · 渲染期用 stripUrls **静默改写**（兜底）
+ *
+ * 只有后者的话，一条含内网地址的文案会被悄悄改成占位符然后照常发布 ——
+ * 没人会发现这句话本来想说什么。所以两个语义都要有，且判定标准必须同源。
+ */
+describe("hasUrl / findUrls（curated 校验器的入库前拦截）", () => {
+  test("判定标准与 stripUrls 同源：能抹的就能测出来", () => {
+    for (const s of [
+      "地址切到 https://www.sid-code.cc 并补迁移",
+      "推到 http://gitlab.example.com/foo/bar.git",
+      "代理 http://192.168.1.50/searxng",
+      "上传到 http://10.0.0.8:9100/mcp 完成",
+    ]) {
+      expect(hasUrl(s)).toBe(true);
+      // 同源判据：hasUrl 为真 ⇔ stripUrls 真的改动了文本
+      expect(stripUrls(s)).not.toBe(s);
+    }
+  });
+
+  test("不含 URL 的文本两边都放行（绝大多数文案走这条路，不能误伤）", () => {
+    for (const s of [
+      "修复 Bash 工具的超时判定",
+      "迁移到 gitlab 上托管", // 光出现这个词无害
+      "www.sid-code.cc 已备案", // 裸域名不是 URL 形态，刻意不管
+      "",
+    ]) {
+      expect(hasUrl(s)).toBe(false);
+      expect(stripUrls(s)).toBe(s);
+    }
+  });
+
+  test("findUrls 列出具体是哪些（报错只说「含 URL」的话没法改）", () => {
+    expect(findUrls("从 http://a.com 迁到 https://b.com/x")).toEqual([
+      "http://a.com",
+      "https://b.com/x",
+    ]);
+    expect(findUrls("没有链接")).toEqual([]);
+  });
+
+  test("连续调用结果稳定（/g 正则的 lastIndex 不残留）", () => {
+    // hasUrl 内部用的是 .test()，这正是 lastIndex 残留会导致"隔次失败"的用法。
+    // 每次调用新建正则实例把这个退化钉住 —— 这条断言在共享模块级实例时必然红。
+    for (let i = 0; i < 4; i++) {
+      expect(hasUrl("a https://x.com b")).toBe(true);
+    }
+    for (let i = 0; i < 4; i++) {
+      expect(findUrls("a https://x.com b")).toEqual(["https://x.com"]);
+    }
   });
 });

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 官网 /changelog 页的渲染组件（2026-07-28：changelog 并入站点，不再是外链占位）。
+ * 官网 /changelog 页的渲染组件。
  *
  * ── 为什么是组件 + JSON，不是生成 markdown ──
- *   生成 markdown 更省事，但会被 minisearch 纳入**全站**索引：几百条 commit 描述
+ *   生成 markdown 更省事，但会被 minisearch 纳入**全站**索引：几百条变更描述
  *   会把「搜 hook」「搜权限」这类正常查询冲成一片版本噪音。changelog 要的是
  *   **自己的**搜索框（只搜版本变更），所以走「构建期 JSON + 组件内过滤」，
  *   容器页 frontmatter 标 `search: false` 从全站索引里摘出去（config.ts 的
@@ -11,9 +11,19 @@
  *
  * ── 数据来源 ──
  *   `website/.vitepress/data/changelog.json`，由 scripts/generate-changelog.ts 在
- *   release.sh 发版时从 git 历史重建。这里是**静态 import**：数据在构建期烧进产物，
- *   浏览器零请求、无白屏、无 loading 态。代价是发版后要重发站点才更新
- *   （website-deploy.sh 有版本一致性 warn 兜住这条纪律）。
+ *   release.sh 发版时生成。内容来自 `changelog/curated/*.json`（LLM 起草、人工过目、
+ *   已入库的**用户视角**文案），不是 commit message。这里是**静态 import**：
+ *   数据在构建期烧进产物，浏览器零请求、无白屏、无 loading 态。代价是发版后要
+ *   重发站点才更新（website-deploy.sh 有版本一致性 warn 兜住这条纪律）。
+ *
+ * ── 2026-08-06 curated 改造：这一页不再显示 commit ──
+ *   移除了 per-commit 的 hash / scope / 折叠展开的 body 细节。原因不是"简化"，
+ *   而是**受众**：commit message 的读者是未来的自己，changelog 的读者是用户。
+ *   hash 与 scope 是开发者坐标，body 细节讲的是实现过程 —— 三者对用户都是噪音。
+ *   要回溯原始提交请看仓库根 `CHANGELOG.md`（它仍是全量的）。
+ *
+ *   连带移除的还有 `<details>` 折叠：curated 条目本身已经是结论，没有"展开看细节"
+ *   这一层了。于是搜索时"自动展开"（autoOpen）也随之消失 —— 那是为折叠态服务的补丁。
  *
  * ── 视觉 ──
  *   全部颜色走 brand.css 的 --sid-* / --vp-* 变量，深浅色自动跟随站点主题。
@@ -25,58 +35,47 @@ import { useRoute } from "vitepress";
 import data from "../data/changelog.json";
 import { versionAnchor } from "../changelog-meta";
 
-interface Commit {
-  scope: string | null;
-  desc: string;
-  hash: string;
-  details: string[];
-}
-interface Group {
+interface Section {
   key: string;
   title: string;
-  commits: Commit[];
+  items: string[];
 }
 interface Version {
   version: string;
   date: string;
-  isGenesis: boolean;
+  highlight: string | null;
+  userFacing: boolean;
   count: number;
-  groups: Group[];
+  sections: Section[];
 }
 
 const changelog = data as unknown as {
   generatedAt: string;
   currentVersion: string;
   totalVersions: number;
-  totalCommits: number;
-  groupMeta: Array<{ key: string; title: string }>;
+  /** ⚠ curated **条目**数，不是 commit 数（键名与语义在生成器里一起改的） */
+  totalItems: number;
+  sectionMeta: Array<{ key: string; title: string }>;
   versions: Version[];
 };
 
 const query = ref("");
 /** 当前只看某一类变更（null = 全部）。点徽章切换，再点取消。 */
-const activeGroup = ref<string | null>(null);
-
-/**
- * 一条提交的可搜索文本：scope + 描述 + 全部细节 + hash 拼成一段。
- * 拼成整体而不是逐字段比，是为了让多词查询能跨字段命中
- * （例如 scope 是 `perf`、描述里有 `缓存`，搜「perf 缓存」应该中）。
- */
-function haystack(c: Commit): string {
-  return [c.scope ?? "", c.desc, c.hash, ...c.details].join(" ").toLowerCase();
-}
+const activeSection = ref<string | null>(null);
 
 /**
  * 多词 AND 匹配：按空白拆词，每个词都要出现才算命中。
  *
  * 刻意不做整串子串匹配 —— 那样搜「prompt cache」要求这两个词在原文里**紧邻**，
- * 而 changelog 里它们通常分散在描述和细节的不同位置（实测：prompt 9 条、
- * cache 6 条、"prompt cache" 0 条），用户输两个词却一条不中，看着像坏了。
+ * 而 changelog 里它们通常分散在不同条目/位置，用户输两个词却一条不中，看着像坏了。
  * 中文不分词，单个 token 仍是子串匹配，所以「缓存」这类查询照常工作。
+ *
+ * ⚠ 搜索范围现在是**条目文本**（curated items）。hash 与 scope 已从数据源移除，
+ * 所以「拿 hash 搜」这个用法没有了 —— 那是开发者用法，要按 hash 查请用 git。
  */
-function commitMatches(c: Commit, terms: string[]): boolean {
+function itemMatches(text: string, terms: string[]): boolean {
   if (terms.length === 0) return true;
-  const hay = haystack(c);
+  const hay = text.toLowerCase();
   return terms.every((t) => hay.includes(t));
 }
 
@@ -84,63 +83,63 @@ function commitMatches(c: Commit, terms: string[]): boolean {
  * 过滤后的版本列表。搜索与分组筛选在同一处做，避免两套过滤路径。
  * 空分组、空版本直接不产出——比渲染出来再 display:none 干净，
  * 也让「没有匹配」这个状态只有一个判断点（filtered.length === 0）。
+ *
+ * ⚠ `highlight` 也纳入匹配：它常常是一个版本最核心的那句话，
+ * 搜不到它会让「明明记得有这么一版」的查询落空。命中 highlight 时保留整个版本。
  */
 const filtered = computed<Version[]>(() => {
   const terms = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const g = activeGroup.value;
-  if (terms.length === 0 && !g) return changelog.versions;
+  const k = activeSection.value;
+  if (terms.length === 0 && !k) return changelog.versions;
 
   const out: Version[] = [];
   for (const v of changelog.versions) {
-    const groups: Group[] = [];
-    for (const grp of v.groups) {
-      if (g && grp.key !== g) continue;
-      const commits = grp.commits.filter((c) => commitMatches(c, terms));
-      if (commits.length > 0) groups.push({ ...grp, commits });
+    const highlightHit =
+      !k && terms.length > 0 && !!v.highlight && itemMatches(v.highlight, terms);
+
+    const sections: Section[] = [];
+    for (const sec of v.sections) {
+      if (k && sec.key !== k) continue;
+      const items = highlightHit
+        ? [...sec.items]
+        : sec.items.filter((it) => itemMatches(it, terms));
+      if (items.length > 0) sections.push({ ...sec, items });
     }
-    if (groups.length > 0) {
+    if (sections.length > 0) {
       out.push({
         ...v,
-        groups,
-        count: groups.reduce((n, x) => n + x.commits.length, 0),
+        sections,
+        count: sections.reduce((n, s) => n + s.items.length, 0),
       });
     }
   }
   return out;
 });
 
-const matchCount = computed(() =>
-  filtered.value.reduce((n, v) => n + v.count, 0),
-);
-const isFiltering = computed(() => !!query.value.trim() || !!activeGroup.value);
+const matchCount = computed(() => filtered.value.reduce((n, v) => n + v.count, 0));
+const isFiltering = computed(() => !!query.value.trim() || !!activeSection.value);
 
 /** 每类变更的全量条数，供筛选徽章显示（不随过滤变化，否则筛完就归零没法切回） */
-const groupTotals = computed(() => {
+const sectionTotals = computed(() => {
   const m = new Map<string, number>();
   for (const v of changelog.versions) {
-    for (const g of v.groups) {
-      m.set(g.key, (m.get(g.key) ?? 0) + g.commits.length);
+    for (const s of v.sections) {
+      m.set(s.key, (m.get(s.key) ?? 0) + s.items.length);
     }
   }
-  return changelog.groupMeta
-    .map((g) => ({ ...g, total: m.get(g.key) ?? 0 }))
-    .filter((g) => g.total > 0);
+  return changelog.sectionMeta
+    .map((s) => ({ ...s, total: m.get(s.key) ?? 0 }))
+    .filter((s) => s.total > 0);
 });
 
-function toggleGroup(key: string) {
-  activeGroup.value = activeGroup.value === key ? null : key;
+function toggleSection(key: string) {
+  activeSection.value = activeSection.value === key ? null : key;
 }
 
 function reset() {
   query.value = "";
-  activeGroup.value = null;
+  activeSection.value = null;
 }
-
-/**
- * 搜索时自动展开细节：用户搜到的关键词可能就在折叠的 body 细节里，
- * 折着等于搜到了看不见。用 :open 绑定而不是 JS 操作 DOM。
- */
-const autoOpen = computed(() => !!query.value.trim());
 
 /* ────────────────── 左栏时间线锚点 × 筛选态的冲突处理 ────────────────── */
 
@@ -208,7 +207,7 @@ onMounted(() => void revealHashTarget(route.hash));
         <b>v{{ changelog.currentVersion }}</b><span>最新版本</span>
       </div>
       <div class="cl-stat">
-        <b>{{ changelog.totalCommits }}</b><span>项变更</span>
+        <b>{{ changelog.totalItems }}</b><span>项变更</span>
       </div>
       <div class="cl-stat">
         <b>{{ changelog.generatedAt }}</b><span>生成于</span>
@@ -222,7 +221,7 @@ onMounted(() => void revealHashTarget(route.hash));
           v-model="query"
           type="search"
           class="cl-input"
-          placeholder="在更新日志里搜索：描述、scope、提交 hash…"
+          placeholder="在更新日志里搜索，例如：权限、缓存、超时…"
           aria-label="搜索更新日志"
           autocomplete="off"
         />
@@ -238,15 +237,15 @@ onMounted(() => void revealHashTarget(route.hash));
       </div>
       <div class="cl-chips" role="group" aria-label="按变更类型筛选">
         <button
-          v-for="g in groupTotals"
-          :key="g.key"
+          v-for="s in sectionTotals"
+          :key="s.key"
           type="button"
           class="cl-chip"
-          :class="[`cl-chip-${g.key}`, { 'is-active': activeGroup === g.key }]"
-          :aria-pressed="activeGroup === g.key"
-          @click="toggleGroup(g.key)"
+          :class="[`cl-chip-${s.key}`, { 'is-active': activeSection === s.key }]"
+          :aria-pressed="activeSection === s.key"
+          @click="toggleSection(s.key)"
         >
-          {{ g.title }}<i>{{ g.total }}</i>
+          {{ s.title }}<i>{{ s.total }}</i>
         </button>
       </div>
       <p v-if="isFiltering" class="cl-hint">
@@ -274,41 +273,32 @@ onMounted(() => void revealHashTarget(route.hash));
       <div class="cl-vhead">
         <span class="cl-dot" aria-hidden="true"></span>
         <h2 class="cl-vtitle">v{{ v.version }}</h2>
-        <span v-if="v.isGenesis" class="cl-genesis" title="最初版本，汇总早期历史提交（仅列标题）">
-          初始汇总
-        </span>
         <time class="cl-date">{{ v.date }}</time>
-        <span class="cl-vcount">{{ v.count }} 项</span>
+        <span v-if="v.count" class="cl-vcount">{{ v.count }} 项</span>
       </div>
 
-      <div class="cl-vbody">
-        <section v-for="g in v.groups" :key="g.key" class="cl-group">
+      <!--
+        highlight：本版最值得说的一件事。放在版本卡外、正文之上，
+        让扫读的人不点开也能知道这一版是干什么的。
+      -->
+      <p v-if="v.highlight" class="cl-highlight">{{ v.highlight }}</p>
+
+      <!--
+        userFacing=false 是一个**合法结论**（纯内部版本），不是数据缺失。
+        必须显式说出来 —— 否则一个空白的版本块看起来就是「坏了」或「漏了」。
+      -->
+      <p v-if="!v.userFacing && v.sections.length === 0" class="cl-internal">
+        本版没有用户可见的变更（内部改动、构建或文档）。
+      </p>
+
+      <div v-else class="cl-vbody">
+        <section v-for="s in v.sections" :key="s.key" class="cl-group">
           <h3 class="cl-ghead">
-            <span class="cl-badge" :class="`cl-badge-${g.key}`">{{ g.title }}</span>
-            <span class="cl-gcount">{{ g.commits.length }}</span>
+            <span class="cl-badge" :class="`cl-badge-${s.key}`">{{ s.title }}</span>
+            <span class="cl-gcount">{{ s.items.length }}</span>
           </h3>
-          <ul class="cl-commits">
-            <li v-for="(c, i) in g.commits" :key="`${c.hash}-${i}`" class="cl-commit">
-              <!-- 有细节 → 可折叠；无细节 → 平铺，不给一个点了没反应的箭头 -->
-              <details v-if="c.details.length" :open="autoOpen">
-                <summary>
-                  <span class="cl-chev" aria-hidden="true">▸</span>
-                  <span class="cl-head">
-                    <span v-if="c.scope" class="cl-scope">{{ c.scope }}</span>
-                    <span class="cl-desc">{{ c.desc }}</span>
-                    <span v-if="c.hash" class="cl-hash">{{ c.hash }}</span>
-                  </span>
-                </summary>
-                <ul class="cl-details">
-                  <li v-for="(d, j) in c.details" :key="j">{{ d }}</li>
-                </ul>
-              </details>
-              <span v-else class="cl-head cl-head-flat">
-                <span v-if="c.scope" class="cl-scope">{{ c.scope }}</span>
-                <span class="cl-desc">{{ c.desc }}</span>
-                <span v-if="c.hash" class="cl-hash">{{ c.hash }}</span>
-              </span>
-            </li>
+          <ul class="cl-items">
+            <li v-for="(it, i) in s.items" :key="i" class="cl-item">{{ it }}</li>
           </ul>
         </section>
       </div>
@@ -368,8 +358,7 @@ onMounted(() => void revealHashTarget(route.hash));
   border-radius: 9px;
   background: var(--vp-c-bg);
   color: var(--vp-c-text-1);
-  font-family: var(--vp-font-family-mono);
-  font-size: 13px;
+  font-size: 13.5px;
   outline: none;
   transition:
     border-color 0.2s,
@@ -475,7 +464,7 @@ onMounted(() => void revealHashTarget(route.hash));
   display: flex;
   align-items: center;
   gap: 11px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 .cl-dot {
@@ -503,13 +492,6 @@ onMounted(() => void revealHashTarget(route.hash));
   font-size: 12px;
   color: var(--vp-c-text-3);
 }
-.cl-genesis {
-  font-size: 11px;
-  color: var(--vp-c-text-3);
-  border: 1px dashed var(--vp-c-divider);
-  padding: 1px 8px;
-  border-radius: 999px;
-}
 .cl-vcount {
   margin-left: auto;
   font-family: var(--vp-font-family-mono);
@@ -520,6 +502,26 @@ onMounted(() => void revealHashTarget(route.hash));
   padding: 2px 10px;
   border-radius: 999px;
 }
+
+/* highlight：一句话说清这一版。左侧竖线是唯一的装饰，不用底色抢焦点 */
+.cl-highlight {
+  margin: 0 0 12px !important;
+  padding-left: 12px;
+  border-left: 3px solid var(--vp-c-brand-2);
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+/* 纯内部版本：淡色一行，明确说出「不是漏了」 */
+.cl-internal {
+  margin: 0 !important;
+  padding: 10px 0 4px;
+  color: var(--vp-c-text-3);
+  font-size: 13.5px;
+}
+
 .cl-vbody {
   border: 1px solid var(--vp-c-divider);
   border-radius: 12px;
@@ -553,31 +555,32 @@ onMounted(() => void revealHashTarget(route.hash));
   background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-2);
 }
-/* 分组语义色：与 TUI/品牌变量同源（brand.css 的 --sid-feat 等） */
+/* 分组语义色：与 TUI/品牌变量同源（brand.css 的 --sid-feat 等），
+   对比度已实测达 AA（浅色 5.25–6.38 / 深色 6.73–9.24）。 */
+.cl-badge-breaking,
+.cl-chip-breaking.is-active {
+  color: var(--sid-breaking);
+  border-color: var(--sid-breaking);
+}
 .cl-badge-feat,
 .cl-chip-feat.is-active {
   color: var(--sid-feat);
   border-color: var(--sid-feat);
+}
+.cl-badge-improve,
+.cl-chip-improve.is-active {
+  color: var(--sid-perf);
+  border-color: var(--sid-perf);
 }
 .cl-badge-fix,
 .cl-chip-fix.is-active {
   color: var(--sid-fix);
   border-color: var(--sid-fix);
 }
-.cl-badge-refactor,
-.cl-chip-refactor.is-active {
-  color: var(--sid-brand-strong);
-  border-color: var(--sid-brand-strong);
-}
-.cl-badge-perf,
-.cl-chip-perf.is-active {
-  color: var(--sid-perf);
-  border-color: var(--sid-perf);
-}
-.cl-badge-docs,
-.cl-chip-docs.is-active {
-  color: var(--sid-docs);
-  border-color: var(--sid-docs);
+/* 破坏性变更的徽章额外给一层底色：它是用户升级前最该先看到的一类，
+   只靠边框色在一屏多个徽章里不够显眼。 */
+.cl-badge-breaking {
+  background: var(--sid-breaking-soft);
 }
 .cl-gcount {
   font-family: var(--vp-font-family-mono);
@@ -585,100 +588,24 @@ onMounted(() => void revealHashTarget(route.hash));
   color: var(--vp-c-text-3);
 }
 
-/* ── 提交条目 ── */
-.cl-commits {
+/* ── 条目 ── */
+.cl-items {
   list-style: none;
   margin: 0 !important;
   padding: 0 !important;
 }
-.cl-commit {
+.cl-item {
   margin: 0 !important;
-  padding: 3px 0;
-}
-.cl-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.cl-scope {
-  font-family: var(--vp-font-family-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--vp-c-brand-1);
-  background: var(--vp-c-brand-soft);
-  padding: 1px 8px;
-  border-radius: 6px;
-}
-.cl-desc {
+  padding: 3px 0 3px 15px;
+  position: relative;
   color: var(--vp-c-text-1);
   font-size: 14.5px;
+  line-height: 1.75;
 }
-.cl-hash {
-  font-family: var(--vp-font-family-mono);
-  font-size: 11px;
-  color: var(--vp-c-text-3);
-  background: var(--vp-c-bg-soft);
-  border: 1px solid var(--vp-c-divider);
-  padding: 0 6px;
-  border-radius: 5px;
-}
-
-.cl-commit details summary {
-  list-style: none;
-  cursor: pointer;
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 2px 4px 2px 0;
-  border-radius: 6px;
-  transition: background 0.15s;
-}
-.cl-commit details summary:hover {
-  background: var(--vp-c-bg-soft);
-}
-.cl-commit details summary::-webkit-details-marker {
-  display: none;
-}
-.cl-commit details summary:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: 2px;
-}
-.cl-chev {
-  color: var(--vp-c-text-3);
-  font-size: 11px;
-  transition: transform 0.15s;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.cl-commit details[open] .cl-chev {
-  transform: rotate(90deg);
-  color: var(--vp-c-brand-1);
-}
-.cl-head-flat {
-  padding-left: 16px; /* 与有箭头的条目左端对齐 */
-}
-
-.cl-details {
-  list-style: none;
-  margin: 4px 0 8px 6px !important;
-  padding: 8px 14px !important;
-  border-left: 2px solid var(--vp-c-brand-soft);
-  background: var(--vp-c-bg-soft);
-  border-radius: 0 8px 8px 0;
-}
-.cl-details li {
-  margin: 0 !important;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  padding: 2px 0 2px 14px;
-  position: relative;
-  line-height: 1.6;
-}
-.cl-details li::before {
-  content: "›";
+.cl-item::before {
+  content: "·";
   position: absolute;
-  left: 0;
+  left: 2px;
   color: var(--vp-c-brand-2);
   font-weight: 700;
 }
@@ -694,9 +621,7 @@ onMounted(() => void revealHashTarget(route.hash));
   .cl-input,
   .cl-chip,
   .cl-reset,
-  .cl-link,
-  .cl-chev,
-  .cl-commit details summary {
+  .cl-link {
     transition: none;
   }
 }

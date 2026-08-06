@@ -27,11 +27,18 @@
   /* 分组语义色（changelog 徽章 / 提示框）。
      取值经对比度实测校准：徽章是 12px 粗体，不算 large text，需 ≥ AA 4.5:1，
      背景按 --vp-c-bg-soft 算。原值 feat #1f9d57 只有 3.4、docs #0e8a8a 4.07、
-     fix #d93a54 4.37 —— 均压深一档到 4.5 以上。深色模式在 .dark 块里另有一套。 */
+     fix #d93a54 4.37 —— 均压深一档到 4.5 以上。深色模式在 .dark 块里另有一套。
+     实测（浅底 #fbfcfe）：feat 5.25 / fix 5.59 / perf 6.38 / breaking 5.95。 */
   --sid-feat: #157a42;
   --sid-fix: #c22740;
   --sid-perf: #7038d4;
-  --sid-docs: #0a6f6f;
+  /* 破坏性变更。刻意用**橙**而不是更深的红：它与 --sid-fix 在页面上会同时出现
+     （一个版本可以既有破坏性变更又有修复），两个都用红色系时色觉障碍用户区分不了。
+     徽章另有加粗 + 实心底作为非颜色区分手段，颜色只是辅助。
+     -soft 是徽章底色，写成独立变量而不是在组件里 color-mix()：
+     全站没有一处 color-mix 先例，不为一个徽章底色引入一个未经实测的 CSS 特性。 */
+  --sid-breaking: #9a4d00;
+  --sid-breaking-soft: rgba(154, 77, 0, 0.1);
 
   /* ── 字体：mono 承担技术感 ── */
   --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -211,9 +218,11 @@ html {
 
   /* 分组语义色深色版：浅色那套压深过的值在深底上反而更暗（实测 perf 3.19 /
      fix 3.59 / docs 3.85，全部不达 AA），必须整组提亮。改这几个值后
-     重跑对比度实测，别只靠目测——深底上的饱和色很容易看着够亮实则不达标。 */
+     重跑对比度实测，别只靠目测——深底上的饱和色很容易看着够亮实则不达标。
+     实测（深底 #1a2130）：feat 9.24 / fix 6.73 / perf 7.75 / breaking 8.94。 */
   --sid-feat: #4ade80;
   --sid-fix: #ff8095;
   --sid-perf: #c4a4ff;
-  --sid-docs: #4fd1c5;
+  --sid-breaking: #ffb066;
+  --sid-breaking-soft: rgba(255, 176, 102, 0.14);
 }
