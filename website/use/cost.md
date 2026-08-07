@@ -344,8 +344,17 @@ grep -A3 '"quota"' ~/.sid-code/settings.json
 `/insights` 看聚合视图，`/trace --health` 看 provider 维度的成功率与延迟。
 团队维度的采集见[轨迹采集与可观测](/team/observability)。
 
+### 这些数字能证明"AI 提效了"吗
+
+不能，它们只回答"花了多少"。省下的 token 与省下的工程时间不是一回事——
+成本降了，验证侧的负担可能同时在涨，而这一侧本页一个字段都没有覆盖。
+为什么会这样、该换成什么指标去看，见
+[AI 提效的熵账本](/blog/entropy-accounting)。
+
 ## 相关
 
+- [AI 提效的熵账本](/blog/entropy-accounting) —— 为什么"省了多少钱"不等于"提效了"，
+  以及四条筛掉伪指标的判据
 - [上下文与压缩](/use/context) —— 上下文体积怎么控，什么时候 `/compact`
 - [子代理](/extend/subagents) —— 按类型给子代理分级模型，最直接的省钱手段
 - [配额与成本控制](/team/quota) —— 团队级 `costLimit` / RPM / TPM / 预算规则
