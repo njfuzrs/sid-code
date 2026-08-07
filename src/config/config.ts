@@ -991,13 +991,23 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     // 特殊处理 telemetry：转换字段名
     } else if (configKey === "telemetry" && typeof value === "object" && value !== null) {
       const v = value as any;
-      result[configKey] = {
+      // ⚠️ 三个数值字段必须「只在有值时才写入」。
+      // 无条件写出会产出**显式存在的 undefined 键**，在 TelemetryBus 的
+      // `{ ...DEFAULT_CONFIG, ...config }` 里会覆盖掉 512/5000/2048 默认值，
+      // 进而让 splice(0, undefined) 恒返回空数组、setInterval(fn, undefined)
+      // 退化成 0ms —— 曾导致遥测落盘 190MB 纯换行字节、span/metric 一条未出。
+      // 见 docs/bugfixes/done/20260807-遥测落盘恒空-配置undefined覆盖默认值.md
+      const telemetry: Record<string, unknown> = {
         enabled: v.enabled ?? false,
         exporters: Array.isArray(v.exporters) ? v.exporters : [],
-        batchSize: v.batch_size || v.batchSize,
-        flushIntervalMs: v.flush_interval_ms || v.flushIntervalMs,
-        maxQueueSize: v.max_queue_size || v.maxQueueSize,
       };
+      const batchSize = v.batch_size ?? v.batchSize;
+      const flushIntervalMs = v.flush_interval_ms ?? v.flushIntervalMs;
+      const maxQueueSize = v.max_queue_size ?? v.maxQueueSize;
+      if (batchSize !== undefined) telemetry.batchSize = batchSize;
+      if (flushIntervalMs !== undefined) telemetry.flushIntervalMs = flushIntervalMs;
+      if (maxQueueSize !== undefined) telemetry.maxQueueSize = maxQueueSize;
+      result[configKey] = telemetry;
     // 特殊处理 analytics：转换字段名（snake_case → camelCase），解析后端列表（spec 17）
     } else if (configKey === "analytics" && typeof value === "object" && value !== null) {
       const v = value as any;

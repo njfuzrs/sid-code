@@ -41,6 +41,9 @@ export class JsonlExporter implements TelemetryExporter {
   }
 
   async exportSpans(spans: SpanData[]): Promise<void> {
+    // 空批次直接返回（与 otlp.ts 对齐）：`[].join("\n") + "\n"` 会写下一个裸换行符，
+    // 上游一旦出空批次就会静默堆积垃圾字节（曾累积 190MB 纯 \n）。
+    if (spans.length === 0) return;
     await this.ensureDir();
     const lines = spans.map(s => JSON.stringify(s)).join("\n") + "\n";
     await appendFile(this.spanFile, lines, "utf-8");
@@ -48,6 +51,7 @@ export class JsonlExporter implements TelemetryExporter {
   }
 
   async exportMetrics(metrics: MetricPoint[]): Promise<void> {
+    if (metrics.length === 0) return;
     await this.ensureDir();
     const lines = metrics.map(m => JSON.stringify(m)).join("\n") + "\n";
     await appendFile(this.metricFile, lines, "utf-8");

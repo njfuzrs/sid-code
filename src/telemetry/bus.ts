@@ -125,7 +125,24 @@ export class TelemetryBus {
   private metricHistory: MetricPoint[] = [];
 
   constructor(config?: Partial<TelemetryConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    // ⚠️ 双保险：对象展开时**显式存在的 undefined 键**会覆盖掉 DEFAULT_CONFIG 的值，
+    // 所以三个数值字段必须再用 ?? 兜一次。只在 config.ts 侧剔除 undefined 治不了
+    // 别的调用方直接 `new TelemetryBus({ batchSize: undefined })`。
+    // 曾因此 splice(0, undefined) 恒空 + setInterval(fn, undefined) 退化 0ms，
+    // 落盘 190MB 纯换行字节。见
+    // docs/bugfixes/done/20260807-遥测落盘恒空-配置undefined覆盖默认值.md
+    const merged = { ...DEFAULT_CONFIG, ...config };
+    this.config = {
+      ...merged,
+      batchSize: merged.batchSize ?? DEFAULT_CONFIG.batchSize,
+      flushIntervalMs: merged.flushIntervalMs ?? DEFAULT_CONFIG.flushIntervalMs,
+      maxQueueSize: merged.maxQueueSize ?? DEFAULT_CONFIG.maxQueueSize,
+    };
+  }
+
+  /** 只读快照——供门禁测试断言合并后的数值字段（不暴露可变引用） */
+  getConfigSnapshot(): Readonly<TelemetryConfig> {
+    return { ...this.config };
   }
 
   /** 是否启用 */
