@@ -67,6 +67,22 @@ export interface Series {
   name: string;
   order: number;
   blurb: string;
+  /**
+   * 这个系列解析的是**外部代码**，不是 sid-code 自己的实现。
+   *
+   * 唯一作用：关掉「N 处源码引证」这个指标（见 `countEvidenceFiles` 与
+   * `BlogPost.evidenceFiles`）。那个指标的语义是「本文引证了 N 个 **sid-code**
+   * 源文件」，用来支撑「带 file 级证据」的主张。解析别人代码的文章套用它是
+   * **归属错误**——而且实测真的会误报：sid-code 的 `src/ink/` 与 Claude Code
+   * 那份快照同源，于是 CC 的路径在本仓库里真实存在、`existsSync` 会通过，
+   * 21 篇里有 23 处碰撞（`src/ink/reconciler.ts` 这类），最多的一篇会显示
+   * 「15 处源码引证」。一个用来支撑可信度的数字本身不实，比不显示更糟。
+   *
+   * 刻意不在 `countEvidenceFiles` 里加「排除 src/ink/」白名单：治不了根
+   * （`src/bridge/types.ts` 这类同名巧合会继续漏），且每加一个 vendor 目录
+   * 都要回来改。按系列关掉是**数据驱动**的——新增外部解析系列只需加这个字段。
+   */
+  external?: boolean;
 }
 
 export const SERIES: Series[] = [
@@ -99,6 +115,28 @@ export const SERIES: Series[] = [
     name: "工程踩坑",
     order: 6,
     blurb: "切口更小，但坑够深 —— 单篇讲透一个事故或一个设计的演进。",
+  },
+  {
+    /**
+     * 唯一一个**不是**自家实测的系列：解析别人的代码。
+     *
+     * 前 6 个系列的共同点是「我们测过」（`博客写作标准.md` §0 的立意）；这一个的价值
+     * 来源不同——「我们读透了一份 51 万行的参考实现」。两者都成立，但依据不同，
+     * 所以 blurb 里**明说是读源码得出、不是实测**：读者要能分清哪层是哪层。
+     *
+     * 刻意不给它单独一套机制（独立顶栏入口 / 独立列表页 / 独立 sidebar）。
+     * 那样会把博客切成两个入口、分散注意力，且同一件事有两套实现必然漂移。
+     * 它就是博客的一个系列：同一个列表页、同一个 feed、同一份 sidebar 分组。
+     *
+     * 排在最后（order 7）：21 篇会在数量上压过其它系列，放前面等于让一个
+     * 「解析别人代码」的系列占据入口最显眼的位置。
+     */
+    name: "Claude Code 源码解析",
+    order: 7,
+    blurb:
+      "逐章拆一份 51 万行的 agent harness 参考实现（2026-03-31 源码快照）—— " +
+      "结论来自读源码，不是实测数据，与其它系列不是同一种依据。共 21 篇，按顺序读。",
+    external: true,
   },
 ];
 
@@ -294,6 +332,7 @@ export function loadBlogPosts(): BlogPost[] {
     const { data, body } = parseFrontmatter(raw);
     const slug = file.replace(/\.md$/, "");
     const h1 = body.match(/^#\s+(.+)$/m);
+    const series = normalizeSeries(data.series, file);
     posts.push({
       url: `/blog/${slug}`,
       title: (data.title as string) || (h1 ? h1[1].trim() : slug),
@@ -301,10 +340,12 @@ export function loadBlogPosts(): BlogPost[] {
       date: (data.date as string) || "",
       tags: Array.isArray(data.tags) ? data.tags : [],
       readingMinutes: estimateReadingMinutes(body),
-      series: normalizeSeries(data.series, file),
+      series,
       highlight: (data.highlight as string) || "",
       featured: parseBool(data.featured),
-      evidenceFiles: countEvidenceFiles(body),
+      // 解析外部代码的系列不数引证：那个指标的语义绑定的是 sid-code 源码，
+      // 且实测会因 src/ink/ 同源而误报（完整理由见 Series.external）。
+      evidenceFiles: SERIES_BY_NAME.get(series)?.external ? 0 : countEvidenceFiles(body),
       // 下面四个字段需要全量文章才能算，先占位，扫完再回填
       seriesIndex: 0,
       seriesTotal: 0,
@@ -314,19 +355,35 @@ export function loadBlogPosts(): BlogPost[] {
     });
   }
 
-  // 日期倒序（新的在前）；无日期的沉到最后，而不是靠字符串比较随机插在中间
+  /**
+   * 日期倒序（新的在前）；无日期的沉到最后，而不是靠字符串比较随机插在中间。
+   *
+   * ## 同一天多篇时的次级键：url
+   *
+   * `date` 只到天，一天发多篇时它给不出顺序，而 `readdirSync` 的返回顺序是
+   * **文件系统决定的**（实测在 macOS 上既不是字典序也不是创建序）。少数几篇时
+   * 这只是「同一天内部顺序随机」，不痛；但一次并入一个 21 篇的系列时它会
+   * 明确出错——实测「引言」那篇被排到系列第 7 位，读者从左栏自上而下点，
+   * 第一篇读到的是 MCP 集成，引言在中间。
+   *
+   * 用 url 作次级键（升序）就稳定了：文件名带序号前缀（`cc-00-` … `cc-20-`）时，
+   * 字典序恰好是阅读顺序。这也是为什么系列文章的文件名值得带零填充的数字前缀
+   * ——`cc-9-` 会排在 `cc-10-` 后面。
+   */
   posts.sort((a, b) => {
     if (!a.date) return 1;
     if (!b.date) return -1;
-    return b.date.localeCompare(a.date);
+    return b.date.localeCompare(a.date) || a.url.localeCompare(b.url);
   });
 
   // ── 回填系列内序号与前后篇 ──
   // 系列内按日期**升序**（= 阅读顺序：先发的是前置知识），与列表页的倒序无关。
+  // 同日多篇时次级键同样是 url 升序（理由见上方排序说明：日期只到天，
+  // 一天发多篇时它给不出顺序，而 readdirSync 的顺序由文件系统决定）。
   for (const s of SERIES) {
     const inSeries = posts
       .filter((p) => p.series === s.name)
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .sort((a, b) => a.date.localeCompare(b.date) || a.url.localeCompare(b.url));
     inSeries.forEach((p, i) => {
       p.seriesIndex = i + 1;
       p.seriesTotal = inSeries.length;

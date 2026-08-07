@@ -2,7 +2,7 @@
 
 > 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
 
-本文件是给大模型读的全站索引（共 43 页）。
+本文件是给大模型读的全站索引（共 64 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -62,6 +62,27 @@
 ## 博客
 
 - [博客](/blog/): sid-code 的机制解析与工程实测：一个机制为什么这么设计、实现里踩了哪些坑、实测数据是多少、当前边界在哪。带 file 级证据，不写"据说"。
+- [Claude Code 源码解析（零）· 引言](/blog/cc-00-introduction): 一份意外泄露的 Harness Engineering 教材：51 万行 TS、1902 个文件。这个系列拆什么、适合谁读、以及一份快照解析的局限在哪。
+- [Claude Code 源码解析（一）· 启动与引导](/blog/cc-01-bootstrap): 一个功能复杂的 CLI 工具如何做到启动不卡顿？如何在毫秒级完成快速路径分发，同时延迟加载重量级运行时？
+- [Claude Code 源码解析（二）· 核心对话循环](/blog/cc-02-query-loop): LLM 的单次 API 调用如何变成持续的"对话-执行-反馈"循环？上下文窗口有限，长对话如何不丢失关键信息？
+- [Claude Code 源码解析（三）· 工具系统](/blog/cc-03-tool-system): 如何让 LLM 从"只会聊天"变成"能读写文件、执行命令、搜索代码"？30+ 工具如何统一管理，又如何安全地并发执行？
+- [Claude Code 源码解析（四）· 权限与安全](/blog/cc-04-permission-security): LLM 拥有执行 Shell 命令和修改文件的能力，如何确保用户始终拥有控制权？如何在"自动化效率"和"安全可控"之间找到平衡？
+- [Claude Code 源码解析（五）· Agent 与多任务](/blog/cc-05-agent-task-system): 单个 Agent 处理复杂任务力不从心，如何派生子代理并行工作？多个 Agent 之间如何隔离状态、共享基础设施、协调分工？
+- [Claude Code 源码解析（六）· MCP 集成](/blog/cc-06-mcp-integration): Claude Code 不可能内置所有工具，如何通过标准化协议让外部服务（GitHub、数据库、Slack 等）无缝接入 LLM 工具链？
+- [Claude Code 源码解析（七）· Hooks 系统](/blog/cc-07-hooks): "Hook"在 Claude Code 中有双重含义——用户如何通过配置实现"每次执行前自动检查"的自动化？React Hooks 又如何驱动 UI 与生命周期？
+- [Claude Code 源码解析（八）· 状态管理](/blog/cc-08-state-management): 对话消息、后台任务、权限配置、MCP 连接、UI 状态……一个终端应用如何管理如此复杂的全局状态而不失控？
+- [Claude Code 源码解析（九）· 命令系统](/blog/cc-09-command-system): 80+ 斜杠命令如何做到按需加载而不拖慢启动？命令如何注册、发现、解析参数并执行？
+- [Claude Code 源码解析（十）· 插件系统](/blog/cc-10-plugin-system): 第三方开发者如何扩展 Claude Code 的能力？插件如何加载、隔离、热重载，又如何确保不破坏宿主安全？
+- [Claude Code 源码解析（十一）· Skills 系统](/blog/cc-11-skills-system): 通用 Agent 在垂直领域（PDF 处理、前端设计、API 开发）表现平平，如何通过预打包的 prompt + 工具组合让它变成领域专家？
+- [Claude Code 源码解析（十二）· 终端 UI 渲染](/blog/cc-12-terminal-ui): 如何在终端这个"原始"环境中实现权限弹窗、Diff 高亮、代码着色、虚拟滚动等富交互体验？React + Ink 如何驱动 TTY 渲染？
+- [Claude Code 源码解析（十三）· API 与网络层](/blog/cc-13-api-networking): 与 Anthropic API 的通信远不止发个请求——流式响应如何实时解析？网络抖动如何优雅重试？Prompt Cache 如何节省 token 开销？
+- [Claude Code 源码解析（十四）· 记忆与上下文持久化](/blog/cc-14-memory-context-persistence): 每次新会话都要重新介绍项目背景？Claude Code 如何跨会话积累知识——记住你的编码偏好、项目约定和团队规范？
+- [Claude Code 源码解析（十五）· 设置与配置系统](/blog/cc-15-settings-configuration): 全局默认、用户偏好、项目约定、企业管控——四层配置来源如何合并？Feature Flags 如何实现灰度发布和运行时切换？
+- [Claude Code 源码解析（十六）· IDE 集成与 Bridge](/blog/cc-16-ide-integration-bridge): Claude Code 不只是终端工具——它如何与 VS Code 等 IDE 双向通信，实现选区同步、Diff 预览、诊断信息获取？
+- [Claude Code 源码解析（十七）· 遥测与分析](/blog/cc-17-telemetry-analytics): 如何在充分尊重用户隐私的前提下收集产品使用数据？事件日志、诊断追踪、Opt-out 机制如何工程化落地？
+- [Claude Code 源码解析（十八）· 高级特性](/blog/cc-18-advanced-features): Plan 模式如何让 LLM "先想后做"？Worktree 如何实现零风险的代码实验？语音输入、Swarm 协作、Computer Use 等前沿能力如何实现？
+- [Claude Code 源码解析（十九）· SDK 与编程接口](/blog/cc-19-sdk-programmatic-api): 不想用 CLI 交互，想把 Claude Code 嵌入自己的工具链？SDK 入口、非交互式会话、HTTP Server 模式如何满足编程式调用需求？
+- [Claude Code 源码解析（二十）· 工程模式总结](/blog/cc-20-engineering-patterns): 51 万行 TypeScript 代码库中反复出现的架构智慧——延迟加载、注册表模式、Zod 运行时校验、最小权限、分层错误处理……这些模式为何被选择，又如何协同工作？
 - [AI 提效的熵账本：熵不会减少，它只会搬家](/blog/entropy-accounting): 「花钱买负熵」是个很吸引人的说法，但把 Landauer 和 Bennett 的原话读准，它推出的结论是反的——AI 压缩的是生成，不是擦除，于是熵必然堆到你没装仪表的那一侧。这篇把熵拆成可信度递减的三层，淘汰掉四个直觉上的「熵减指标」、换上五个能过筛的角度，最后给出明天就能动手的四步。
 - [JIT 上下文：让规则在正确的时刻进入上下文](/blog/jit-context): 规则写了却不被遵守，多半不是模型不听话，而是那条规则当时根本不在上下文里。这篇从"为什么不能全塞进去"这个约束推出 JIT 的形状，交出实测基线，并交代三个只能靠实测发现的静默缺陷、五条至今未修的边界，以及一次自己的数据四天后漂移 52 倍的教训。
 - [Prompt Cache：两族协议的分叉，和 4.48 亿 token 的实测账](/blog/prompt-cache): OpenAI 族没有分段缓存能力，这一个协议事实逼出了一个反直觉的做法——把动态内容搬出 system、挪到消息序列末尾。这篇从约束推到唯一解，再用 303 个会话 4.48 亿输入 token 的账本验证它，最后交出一个把自己骗过去的污染事故。

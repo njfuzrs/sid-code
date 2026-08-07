@@ -197,15 +197,37 @@ const BLOG_SIDEBAR = [
    * 「站内有页面但左栏点不到」，正是本文件反复要防的那种静默缺陷。
    */
   ...(() => {
-    const grouped = SERIES.map((s) => ({
-      text: s.name,
-      collapsed: false,
-      items: blogPosts
+    const grouped = SERIES.map((s) => {
+      const items = blogPosts
         .filter((p) => p.series === s.name)
-        // 系列内按阅读顺序（日期升序）；blogPosts 本身是倒序，这里要反过来
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .map((p) => ({ text: p.title, link: p.url })),
-    })).filter((g) => g.items.length > 0);
+        // 系列内按阅读顺序（日期升序）；blogPosts 本身是倒序，这里要反过来。
+        // 同日多篇时次级键是 url 升序，与 blog-meta.ts 的 seriesIndex 同一套口径
+        // ——两处若不一致，左栏顺序会和文章页脚的「上一篇/下一篇」对不上。
+        .sort((a, b) => a.date.localeCompare(b.date) || a.url.localeCompare(b.url))
+        .map((p) => ({ text: p.title, link: p.url }));
+      return {
+        text: s.name,
+        /**
+         * 超过 8 篇的系列默认折起来。
+         *
+         * 判据与 GUIDE_SIDEBAR 那条一致：「把默认可见的条目压到 10 条上下——
+         * **扫得完**才叫目录，扫不完就只是一堵墙。」实测「Claude Code 源码解析」
+         * 有 21 篇，全展开时左栏一屏装不下，把它上面那几个小系列顶出视野——
+         * 结果是**为了显示一个系列的全部章节，读者反而看不到还有别的系列**。
+         *
+         * 阈值 8 而不是"给这个系列特判"：判据是长度，任何系列长到这个量级
+         * 都该折起来，不需要回来改代码（与 BlogIndex.vue 用阈值控制筛选器
+         * 显隐是同一套纪律）。
+         *
+         * ⚠ 折叠不挡深链：VitePress 的 `useSidebarControl` 里
+         * `(isActiveLink || hasActiveLink) && (collapsed = false)`（实测 1.6.4，
+         * node_modules/vitepress/dist/client/theme-default/composables/sidebar.js:120），
+         * 命中当前页的组会自动展开。所以点进任一章，左栏都是展开且定位到该章的。
+         */
+        collapsed: items.length > 8,
+        items,
+      };
+    }).filter((g) => g.items.length > 0);
 
     const orphans = blogPosts.filter((p) => !p.series);
 
@@ -609,11 +631,30 @@ export default defineConfig({
   transformPageData(pageData, ctx) {
     // 虚拟页（404 等）的 filePath 是空串，跳过
     if (!pageData.filePath) return;
-    try {
-      const abs = resolve(ctx.siteConfig.srcDir, pageData.filePath);
-      pageData.frontmatter.rawMarkdown = stripFrontmatter(readFileSync(abs, "utf-8"));
-    } catch {
-      // 读不到就不给按钮数据（按钮自身会隐藏），不因此让整站构建失败
+    /**
+     * /blog/ 列表页**不注入** rawMarkdown —— 于是「复制整页」按钮在那一页不渲染。
+     *
+     * 为什么这一页不该有这个按钮：按钮的用途是「把整页 markdown 贴给 agent」
+     * （见 CopyPage.vue）。列表页的 markdown 源只有 frontmatter + 一个
+     * `<BlogIndex />` 标签——真正的内容（24 张卡片）是组件在构建期从
+     * blog-meta.ts 渲染出来的，**不在 md 源文里**。也就是说这一页的按钮
+     * 复制出来的是一段对 agent 毫无用处的壳，点了不报错、但拿到的是空壳，
+     * 比按钮不存在更糟（"点了没反应"是最难自证的那类缺陷）。
+     *
+     * 用「不给数据」而不是在组件里加路径判断：CopyPage.vue 已有
+     * `v-if="raw"` —— 没有数据就整个按钮不渲染，这是它既有的契约。
+     * 在组件里再写一条 `route.path === '/blog/'` 等于同一件事有两处判据，
+     * 且那处判据看不见"为什么"。同理也适用于将来任何"内容不在 md 源里"的页面：
+     * 它们只要不注入数据，按钮自然消失，不需要回来改组件。
+     */
+    const isBlogIndex = pageData.relativePath === "blog/index.md";
+    if (!isBlogIndex) {
+      try {
+        const abs = resolve(ctx.siteConfig.srcDir, pageData.filePath);
+        pageData.frontmatter.rawMarkdown = stripFrontmatter(readFileSync(abs, "utf-8"));
+      } catch {
+        // 读不到就不给按钮数据（按钮自身会隐藏），不因此让整站构建失败
+      }
     }
 
     /**
@@ -639,7 +680,7 @@ export default defineConfig({
      * 支持的官方开关（见 hidePrev / hideNext）。
      */
     const rel = pageData.relativePath;
-    if (rel.startsWith("blog/") && rel.endsWith(".md") && rel !== "blog/index.md") {
+    if (rel.startsWith("blog/") && rel.endsWith(".md") && !isBlogIndex) {
       pageData.lastUpdated = undefined;
       pageData.frontmatter.prev = false;
       pageData.frontmatter.next = false;
