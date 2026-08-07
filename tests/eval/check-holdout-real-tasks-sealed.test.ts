@@ -54,9 +54,21 @@ describe("B7-3 holdout-real-tasks 永封校验", () => {
         .filter(Boolean),
     );
     const lines = readFileSync(CASES_MD, "utf-8").split("\n");
-    const cleanLines = lines.filter((line) => !holdoutSids.has(line.trim()));
+    // ⚠ 必须用「包含」而非「整行相等」：下面的泄露测试写入的是
+    // `${sid} leaked here`，整行 !== sid，所以 has(line.trim()) 永远匹配不上——
+    // 这道防御网原本有个洞，一旦残留就再也清不掉，导致「永封完整 → exit 0」
+    // 在后续每次运行里都失败，且脏数据留在**已被 git 追踪**的 evals/CASES.md 里。
+    const cleanLines = lines.filter(
+      (line) => !Array.from(holdoutSids).some((sid) => line.includes(sid)),
+    );
     if (lines.length !== cleanLines.length) {
-      writeFileSync(CASES_MD, cleanLines.join("\n"));
+      // 归一化行尾：split("\n") 后原文件末尾的换行会产生一个空元素，
+      // 直接 join 回去会比原文件多一个空行——脏 1 个字节同样会让 git diff 变红，
+      // 而这是个**被追踪**的文件，不能留痕。
+      while (cleanLines.length > 0 && cleanLines[cleanLines.length - 1] === "") {
+        cleanLines.pop();
+      }
+      writeFileSync(CASES_MD, cleanLines.join("\n") + "\n");
     }
   });
 

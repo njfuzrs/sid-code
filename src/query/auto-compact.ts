@@ -17,6 +17,9 @@ import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeo
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 import { isPromptTooLongError } from "./reactive-compact.ts";
+// P0-1 漏斗 3：上下文压缩埋点。tokens_before/after 是「更省」这条北极星唯一
+// 能直接量出来的信号之一；skip 分型让「触发了但没压成」不再藏进正常路径。
+import { logContextCompact, logContextCompactSkipped } from "../analytics/events.ts";
 
 /** G17：摘要请求 PTL 截头重试的最大次数（每次截掉更多最早消息，达到上限后降级简单截断） */
 const MAX_PTL_RETRIES = 4;
@@ -116,12 +119,17 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactOut
 
   if (messages.length <= 4) {
     log.debug("COMPACT", "消息太少，跳过压缩");
+    // 漏斗 3 · 上下文（P0-1）：skip 必须分型上报。「触发了但没压成」与「压成了」
+    // 是两回事，混成一个 compact 计数会让「更省」的效果读不出来——尤其 lock_held
+    // 与 circuit_open 是真实故障信号，静默 skip 掉等于把故障藏进正常路径。
+    logContextCompactSkipped("too_few_messages");
     return "skipped";
   }
 
   // §6 压缩互斥锁：已有压缩在进行 → 跳过，避免同一消息历史被两条压缩路径竞态改写
   if (!deps.ctxMgr.acquireCompactLock()) {
     log.warn("COMPACT", "已有压缩流程在进行中，跳过本次 autoCompact");
+    logContextCompactSkipped("lock_held");
     return "skipped";
   }
 
@@ -151,6 +159,15 @@ async function doAutoCompact(
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
     deps.ctxMgr.compactWithSummary(simpleSummary);
     await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+    // 熔断降级：结果是 truncated（确实压了，但是靠粗暴截断而非摘要）。
+    // 这一档单独可见很重要——"压缩成功率" 里混入截断会掩盖摘要链路已经在连续失败。
+    logContextCompact({
+      outcome: "truncated",
+      trigger: "auto",
+      messagesBefore,
+      tokensBefore,
+      tokensAfter: deps.ctxMgr.estimateTokens(),
+    });
     return "truncated";
   }
 
@@ -158,6 +175,7 @@ async function doAutoCompact(
   const preCompactResult = await deps.hookSystem.firePreCompactEvent("auto");
   if (preCompactResult.finalOutput?.isBlockingDecision()) {
     log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
+    logContextCompactSkipped("hook_blocked");
     return "skipped";
   }
   // §12 P1-3：PreCompact hook 返回的 additionalContext 作为「额外指令」注入摘要 prompt
@@ -176,6 +194,13 @@ async function doAutoCompact(
           log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
           await postCompactReattachAndNotify(deps, messages, smResult.summary, messagesBefore, tokensBefore, false);
           // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
+          logContextCompact({
+            outcome: "summarized",
+            trigger: "auto",
+            messagesBefore,
+            tokensBefore,
+            tokensAfter: deps.ctxMgr.estimateTokens(),
+          });
           return "summarized";
         }
         // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
@@ -264,6 +289,15 @@ async function doAutoCompact(
       recordSuccess();
       log.info("COMPACT", `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
       await postCompactReattachAndNotify(deps, toSummarize, formattedSummary, messagesBefore, tokensBefore, true);
+      // 主路径成功：LLM 摘要压缩。tokens_before/after 是「更省」这条北极星
+      // 唯一能直接量出来的信号之一——省了多少 token 就在这两个数的差里。
+      logContextCompact({
+        outcome: "summarized",
+        trigger: "auto",
+        messagesBefore,
+        tokensBefore,
+        tokensAfter: deps.ctxMgr.estimateTokens(),
+      });
       return "summarized";
     }
 
@@ -292,6 +326,16 @@ async function doAutoCompact(
   deps.ctxMgr.compactWithSummary(simpleSummary);
   log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
   await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+  // 摘要链路失败后的有损降级。上报为 failed 而非 truncated：从"是否省到"的角度它确实
+  // 压了，但从"压缩质量"角度这是一次失败——把它记成 truncated 会与熔断降级混同，
+  // 掩盖「摘要请求正在连续报错」这个需要立刻看见的信号。
+  logContextCompact({
+    outcome: "failed",
+    trigger: "auto",
+    messagesBefore,
+    tokensBefore,
+    tokensAfter: deps.ctxMgr.estimateTokens(),
+  });
   return "truncated";
 }
 

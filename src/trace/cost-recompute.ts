@@ -232,7 +232,32 @@ export function backfillTrajCost(
   try {
     obj = JSON.parse(readFileSync(trajPath, "utf-8"));
   } catch (err) {
-    return { backfilled: false, reason: `解析 traj 失败: ${err}` };
+    // ★ 情形 A'：traj 存在但**已损坏**（2026-08-07 事故：落盘脱敏把 JSON 小数改写成
+    // `0.4428********0257`，整份文件不可解析）。此前这里直接放弃，于是损坏的 traj
+    // 永久损坏——而 events.jsonl 是 append 语义、并未受损，cost 完全可以重算。
+    // 损坏文件没有任何可保留的权威值，等价于「不存在」，按情形 A 重建。
+    // 原文件另存为 .corrupt 备份：万一里面有 events 无法复原的内容（history 等），
+    // 用户仍可手工抢救——删掉用户数据的代价远高于留一个备份文件。
+    try {
+      const backupPath = `${trajPath}.corrupt`;
+      if (!existsSync(backupPath)) {
+        Bun.write(backupPath, readFileSync(trajPath));
+      }
+      const minimalTraj = buildMinimalTrajFromRecompute(sessionDir, recomputed);
+      Bun.write(trajPath, JSON.stringify(minimalTraj, null, 2));
+      log.warn(
+        "TRACE",
+        `session.traj 损坏（${err}），已据 events.jsonl 重建；` +
+          `原文件备份至 ${backupPath}，cost=$${recomputed.totalCostUSD.toFixed(4)}`,
+      );
+      return {
+        backfilled: true,
+        reason: "traj 损坏（不可解析），据 events 重算重建（原文件已备份 .corrupt）",
+        recomputedCost: recomputed.totalCostUSD,
+      };
+    } catch (err2) {
+      return { backfilled: false, reason: `traj 损坏且重建失败: ${err2}` };
+    }
   }
 
   const md = obj?.metadata;

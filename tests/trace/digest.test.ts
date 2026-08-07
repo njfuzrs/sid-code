@@ -256,12 +256,18 @@ describe("buildDigest 异常检测", () => {
     expect(d.anomalies.some((a) => a.kind === "schema_missing_core_keys" && a.severity === "high")).toBe(true);
   });
 
-  it("损坏 JSON → buildDigest 返回 null", () => {
+  // 契约变更（2026-08-07）：本测试原本断言「损坏 JSON → buildDigest 返回 null」，
+  // 那正是把 /trace 整体打死的行为——一个坏文件让所有会话都看不了，且零 anomaly。
+  // 现在损坏降级为「high anomaly + 尽力而为的 digest」，故断言反转。
+  // 保留这条记录而非删掉：它记着我们曾把「静默失败」当成正确行为固化进测试。
+  it("损坏 JSON → 不返回 null，而是报 traj_file_corrupt", () => {
     const dir = join(root, "trajectories", "sessions", "broken01");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "session.traj"), "{ not valid json ");
     const all = listSessions(paths);
-    expect(buildDigest(all[0], false, paths)).toBeNull();
+    const d = buildDigest(all[0], false, paths);
+    expect(d).not.toBeNull();
+    expect(d!.anomalies.some((a) => a.kind === "traj_file_corrupt" && a.severity === "high")).toBe(true);
   });
 });
 
@@ -474,5 +480,79 @@ describe("渲染", () => {
     const out = renderList(all, { noColor: true, invocation: "/trace" });
     expect(out).toContain("listr001");
     expect(out).toContain("/trace");
+  });
+});
+
+/**
+ * 回归：损坏的 session.traj 曾让 buildDigest 直接返回 null，调用方只能打一句
+ * "文件损坏?" 并 rc=1 —— 一个坏文件让整个 /trace 与 trace-digest 不可用，
+ * 且不产生任何 anomaly。可观测性工具把自己的诊断入口打死了（2026-08-07 事故）。
+ *
+ * 新契约：损坏 = 一条 high anomaly + 尽力而为的 digest，绝不返回 null。
+ */
+describe("损坏的 session.traj 必须可见且不致命", () => {
+  /** 写一个被脱敏 bug 破坏的 traj（真实形态：JSON 小数里夹 `*`） */
+  function writeCorruptSession(id: string) {
+    const dir = join(root, "trajectories", "sessions", id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "session.traj"),
+      '{"metadata":{"total_cost_usd": 0.4428********0257}}',
+    );
+    return dir;
+  }
+
+  it("buildDigest 不返回 null，而是给出 traj_file_corrupt 异常", () => {
+    writeCorruptSession("corrupt1");
+    const all = listSessions(paths);
+    const d = buildDigest(all[0]!, false, paths);
+    expect(d).not.toBeNull();
+    expect(d!.anomalies.some(a => a.kind === "traj_file_corrupt")).toBe(true);
+    const a = d!.anomalies.find(x => x.kind === "traj_file_corrupt")!;
+    expect(a.severity).toBe("high");
+    expect(a.layer).toBe("L0");
+    // 必须带出处，指向具体文件
+    expect(a.provenance?.[0]?.sourceFile).toContain("session.traj");
+  });
+
+  it("损坏不再重复报 schema 缺键（同一根因只报一条）", () => {
+    writeCorruptSession("corrupt2");
+    const all = listSessions(paths);
+    const d = buildDigest(all[0]!, false, paths)!;
+    expect(d.anomalies.some(a => a.kind === "schema_missing_core_keys")).toBe(false);
+  });
+
+  it("renderHuman 能渲染损坏会话而不抛异常", () => {
+    writeCorruptSession("corrupt3");
+    const all = listSessions(paths);
+    const d = buildDigest(all[0]!, false, paths)!;
+    const out = renderHuman(d, { noColor: true });
+    expect(out).toContain("traj_file_corrupt");
+  });
+
+  it("renderList 把损坏会话标成 corrupt（不与正常会话混成 ?）", () => {
+    writeCorruptSession("corrupt4");
+    const all = listSessions(paths);
+    const out = renderList(all, { noColor: true });
+    expect(out).toContain("corrupt");
+    expect(out).toContain("无法解析");
+  });
+
+  it("一个坏文件不影响其它会话（不是全量失败）", () => {
+    writeCorruptSession("corrupt5");
+    writeSession("healthy1", normalSession());
+    const all = listSessions(paths);
+    expect(all.length).toBe(2);
+    // 每个会话都能出 digest，没有任何一个是 null
+    for (const ref of all) {
+      expect(buildDigest(ref, false, paths)).not.toBeNull();
+    }
+  });
+
+  it("traj 文件不存在仍返回 null（与损坏区分开）", () => {
+    const dir = join(root, "trajectories", "sessions", "nofile1");
+    mkdirSync(dir, { recursive: true });
+    const ref = { id: "nofile1", dir, trajPath: join(dir, "session.traj"), mtimeMs: Date.now() };
+    expect(buildDigest(ref, false, paths)).toBeNull();
   });
 });

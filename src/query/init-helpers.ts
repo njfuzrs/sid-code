@@ -22,7 +22,23 @@ export async function initTraceCollector(
     const traceConfig = config.trace;
     let uploader: import("../trace/collector.ts").TraceUploaderInterface | null = null;
 
-    if (traceConfig.upload?.url && traceConfig.upload?.token) {
+    // P1-8：essential-traffic 门控。轨迹上传是**非必要外发**（把本机 traj/raw/events
+    // 整份传到远端平台），必须受最严格隐私级别约束。
+    //
+    // ⚠️ 这里的缺陷与清单文档描述的位置**不同**，别照文档改错地方：文档说
+    // 「essential-traffic 静默无效、行为与 default 完全一致」，实测不成立——
+    // privacy-level.ts:43 的 isTelemetryDisabled() 判的是 `!== "default"`，已覆盖
+    // essential-traffic，sink.ts 的事件通道早就被拦住了。真正漏的是**不走 sink 的
+    // 那两条外发通道**：轨迹上传（本处）与告警 webhook（provider-health.ts）。
+    // 它们只看自己的开关，从不问隐私级别——配了 essential-traffic 的用户以为
+    // 限制了数据外发，实际整份轨迹照传。这类缺陷比崩溃危险，因为它静默。
+    const { isEssentialTrafficOnly } = await import("../analytics/privacy-level.ts");
+    if (traceConfig.upload?.url && traceConfig.upload?.token && isEssentialTrafficOnly()) {
+      log.info(
+        "TRACE",
+        "隐私级别为 essential-traffic，轨迹上传已禁用（仅本地留存）",
+      );
+    } else if (traceConfig.upload?.url && traceConfig.upload?.token) {
       const { UploadManager } = await import("../trace/uploader.ts");
       const uploadMgr = new UploadManager({
         baseUrl: traceConfig.upload.url,
@@ -183,12 +199,15 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
       log.debug("TELEMETRY", `本地事件后端跳过: ${lbErr?.message}`);
     }
 
-    // 远程 HTTP 后端(spec 17 §4.2):非特权,脱敏数据
+    // 远程后端(spec 17 §4.2):非特权,脱敏数据。
+    // 两种 type 走不同 exporter,但共用磁盘缓存与跨会话恢复能力:
+    //   http → HttpExporter(自定义 JSON 批量端点)
+    //   otlp → OtlpExporter(标准 OTLP/HTTP logs 协议)
+    // 新增 type 必须同步 config.ts 的 AnalyticsBackendConfig 与 schema.ts 的校验白名单。
     if (analyticsCfg?.backends && shouldLoadRemoteConfig()) {
       for (const backendCfg of analyticsCfg.backends) {
-        if (backendCfg.type !== "http") continue;
+        if (backendCfg.type !== "http" && backendCfg.type !== "otlp") continue;
         try {
-          const { HttpExporter } = await import("../analytics/exporters/http.ts");
           const { EventDiskCache } = await import("../analytics/disk-cache.ts");
           const { sidPaths } = await import("../config/paths.ts");
           const diskCache = new EventDiskCache({
@@ -196,23 +215,49 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
             sessionId,
             maxRetries: 8,
           });
-          // 跨会话恢复:重试上次未发送成功的事件
-          const exporter = new HttpExporter({
-            name: backendCfg.name,
-            endpoint: backendCfg.endpoint,
-            authHeader: backendCfg.authHeader,
-            batchSize: backendCfg.batchSize,
-            flushIntervalMs: backendCfg.flushIntervalMs,
-            networkTimeoutMs: backendCfg.networkTimeoutMs,
-            stripProtected: backendCfg.stripProtected ?? true,
-            allowedEvents: backendCfg.allowedEvents
-              ? new Set(backendCfg.allowedEvents)
-              : undefined,
-            diskCache,
-          });
+          const allowedEvents = backendCfg.allowedEvents
+            ? new Set(backendCfg.allowedEvents)
+            : undefined;
+
+          let exporter: import("../analytics/sink.ts").SinkBackend & {
+            recoverFromDisk(): Promise<void>;
+          };
+          if (backendCfg.type === "otlp") {
+            const { OtlpExporter } = await import("../analytics/exporters/otlp.ts");
+            exporter = new OtlpExporter({
+              name: backendCfg.name,
+              // 省略时由 OtlpExporter 回退到 OTEL_EXPORTER_OTLP_ENDPOINT
+              endpoint: backendCfg.endpoint || undefined,
+              authHeader: backendCfg.authHeader,
+              batchSize: backendCfg.batchSize,
+              flushIntervalMs: backendCfg.flushIntervalMs,
+              networkTimeoutMs: backendCfg.networkTimeoutMs,
+              stripProtected: backendCfg.stripProtected ?? true,
+              allowedEvents,
+              diskCache,
+            });
+          } else {
+            const { HttpExporter } = await import("../analytics/exporters/http.ts");
+            exporter = new HttpExporter({
+              name: backendCfg.name,
+              endpoint: backendCfg.endpoint,
+              authHeader: backendCfg.authHeader,
+              batchSize: backendCfg.batchSize,
+              flushIntervalMs: backendCfg.flushIntervalMs,
+              networkTimeoutMs: backendCfg.networkTimeoutMs,
+              stripProtected: backendCfg.stripProtected ?? true,
+              allowedEvents,
+              diskCache,
+            });
+          }
+
           registerBackend(exporter);
+          // 跨会话恢复:重试上次未发送成功的事件
           void exporter.recoverFromDisk();
-          log.info("TELEMETRY", `远程事件后端已注册: ${backendCfg.name}`);
+          log.info(
+            "TELEMETRY",
+            `远程事件后端已注册: ${backendCfg.name} (type=${backendCfg.type})`,
+          );
         } catch (hbErr: any) {
           log.warn("TELEMETRY", `远程事件后端 ${backendCfg.name} 初始化失败: ${hbErr?.message}`);
         }

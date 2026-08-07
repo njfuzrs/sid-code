@@ -7,6 +7,8 @@ export { TelemetryBus, SpanHandle } from "./bus.ts";
 export { TraceContext, generateTraceId, generateSpanId } from "./context.ts";
 export { ConsoleExporter } from "./exporters/console.ts";
 export { JsonlExporter } from "./exporters/jsonl.ts";
+export { OtlpTelemetryExporter } from "./exporters/otlp.ts";
+export type { OtlpTelemetryExporterOptions } from "./exporters/otlp.ts";
 export { TokenMeter } from "./metrics/token-meter.ts";
 export type { TokenUsageRecord, TokenRecordParams, CostCalculator } from "./metrics/token-meter.ts";
 export { BudgetTracker } from "./metrics/budget-tracker.ts";
@@ -23,6 +25,7 @@ export { ATTR } from "./types.ts";
 import { TelemetryBus } from "./bus.ts";
 import { ConsoleExporter } from "./exporters/console.ts";
 import { JsonlExporter } from "./exporters/jsonl.ts";
+import { OtlpTelemetryExporter } from "./exporters/otlp.ts";
 import type { TelemetryConfig, TelemetryExporterConfig } from "./types.ts";
 
 /** 全局单例 */
@@ -55,13 +58,21 @@ export function initTelemetry(config: Partial<TelemetryConfig>): TelemetryBus {
   return bus;
 }
 
-/** 根据配置创建导出器 */
+/**
+ * 根据配置创建导出器。
+ *
+ * 新增 case 时记得同步 `types.ts` 的 TelemetryExporterConfig、
+ * `config/config.ts` 的同名类型、以及 `config/schema.ts` 的 VALID_EXPORTER_TYPES
+ * —— 少改一处就会退化成「配了但被静默跳过」。
+ */
 function createExporter(config: TelemetryExporterConfig) {
   switch (config.type) {
     case "console":
       return new ConsoleExporter(config.options as any);
     case "jsonl":
       return new JsonlExporter(config.options as any);
+    case "otlp":
+      return new OtlpTelemetryExporter(config.options as any);
     default:
       return null;
   }

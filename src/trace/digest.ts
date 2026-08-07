@@ -397,6 +397,32 @@ function readJsonSafe<T>(path: string): T | null {
   }
 }
 
+/**
+ * 区分「文件不存在」与「文件存在但解析失败」——两者修法完全不同，不能都返回 null。
+ *
+ * 背景（2026-08-07 事故）：脱敏 bug 把 session.traj 写坏后，readJsonSafe 返回 null，
+ * buildDigest 直接 `return null`，调用方只能打一句"文件损坏?"然后整体 rc=1。结果是
+ * **一个坏文件让整个 /trace 与 trace-digest 不可用，且不产生任何 anomaly**——可观测性
+ * 工具把自己的诊断入口打死了，这比原始 bug 更致命。
+ *
+ * 现在损坏被降级为「一条 high anomaly + 尽力而为的 digest」：traj 读不出来，
+ * 但 events.jsonl / raw.jsonl 仍可读，仍能出有用结论。
+ */
+function readTrajFile<T>(path: string): { data: T | null; corrupt: boolean; error?: string } {
+  if (!existsSync(path)) return { data: null, corrupt: false };
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    return { data: null, corrupt: true, error: `读取失败: ${err}` };
+  }
+  try {
+    return { data: JSON.parse(raw) as T, corrupt: false };
+  } catch (err) {
+    return { data: null, corrupt: true, error: String(err) };
+  }
+}
+
 /** 逐行读 jsonl,损坏行跳过 */
 function readJsonl<T>(path: string, maxLines = Infinity): T[] {
   if (!existsSync(path)) return [];
@@ -755,12 +781,37 @@ function buildSubAgentSummary(
 }
 
 export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths): Digest | null {
-  const traj = readJsonSafe<TrajFile>(ref.trajPath);
-  if (!traj) return null;
+  const trajRead = readTrajFile<TrajFile>(ref.trajPath);
+  // 文件不存在 → 无从下手，仍返回 null（调用方据此提示"换个会话"）。
+  // 文件存在但损坏 → **不再返回 null**：降级为空 traj + 一条 high anomaly，
+  // 让损坏本身成为可见结论，且 events/raw 侧的分析照常进行（见 readTrajFile 注释）。
+  if (!trajRead.data && !trajRead.corrupt) return null;
+  const traj: TrajFile = trajRead.data ?? ({} as TrajFile);
 
   const meta = traj.metadata || {};
   const steps = traj.trajectory || [];
   const anomalies: Anomaly[] = [];
+
+  if (trajRead.corrupt) {
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "traj_file_corrupt",
+      detail:
+        `session.traj 存在但无法 JSON.parse——文件已损坏。` +
+        `本会话的 cost / 用量 / 时长等指标全部不可用（events.jsonl 侧结论仍有效）。` +
+        `历史成因：落盘脱敏把 JSON 小数改写成 0.4428********0257（已修，见 permission/sensitive.ts）。`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: "整个文件",
+          rawValue: trajRead.error ?? "解析失败",
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
+      pointer: join(ref.dir, "session.traj"),
+    });
+  }
 
   // ── Schema 健全性校验(防静默失效)──
   // 本模块与 src/trace/builder.ts 的输出 schema 强耦合:依赖 trajectory[] / metadata 结构。
@@ -768,7 +819,8 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 导致"假装无异常"骗过 AI。这里显式检测:解析成功但两个核心键都缺 = 格式不符预期。
   const hasTrajArray = Array.isArray(traj.trajectory);
   const hasMetadata = traj.metadata != null && typeof traj.metadata === "object";
-  if (!hasTrajArray && !hasMetadata) {
+  // 损坏文件已在上面报过 traj_file_corrupt，不再重复报 schema 缺键（同一根因两条噪音）
+  if (!trajRead.corrupt && !hasTrajArray && !hasMetadata) {
     anomalies.push({
       layer: "L0",
       severity: "high",
@@ -1795,12 +1847,17 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
   const invocation = opts.invocation || "<id前缀>";
   const L: string[] = [c("bold", `最近 ${Math.min(20, all.length)} 个会话 (共 ${all.length}):`)];
   for (const ref of all.slice(0, 20)) {
-    const traj = readJsonSafe<TrajFile>(ref.trajPath);
+    const read = readTrajFile<TrajFile>(ref.trajPath);
+    const traj = read.data;
     const meta = traj?.metadata || {};
-    const exit = meta.exit_status || traj?.info?.exit_status || "?";
-    const abnormal = ["error", "abort", "user_interrupt"].includes(exit);
+    // 损坏文件要在列表里就能看出来，否则与"正常但缺 exit_status"混成同一个 `?`，
+    // 用户会一直挑到它、一直看不出问题在文件本身。
+    const exit = read.corrupt ? "corrupt" : meta.exit_status || traj?.info?.exit_status || "?";
+    const abnormal = read.corrupt || ["error", "abort", "user_interrupt"].includes(exit);
     const when = new Date(ref.mtimeMs).toISOString().slice(5, 16).replace("T", " ");
-    const prompt = truncate(String((meta.user_prompts || [])[0] || ""), 50);
+    const prompt = read.corrupt
+      ? c("gray", "session.traj 无法解析（文件损坏）")
+      : truncate(String((meta.user_prompts || [])[0] || ""), 50);
     const exitTag = abnormal ? c("red", exit.padEnd(14)) : c("green", exit.padEnd(14));
     L.push(`  ${c("cyan", ref.id)}  ${c("gray", when)}  ${exitTag} ${prompt}`);
   }

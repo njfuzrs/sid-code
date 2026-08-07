@@ -190,6 +190,8 @@ export class TraceCollector {
     this.uploader = uploader;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
+    // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
+    this.pruneStaleBlankSessions();
     // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
     // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
@@ -242,6 +244,102 @@ export class TraceCollector {
       }
     } catch (err) {
       getLogger().warn("TRACE", `LRU 清理失败（不影响采集）: ${err}`);
+    }
+  }
+
+  /**
+   * 启动时清理「历史遗留空壳会话」——打开即退、从未发生任何 LLM 调用的空目录。
+   *
+   * 为什么需要它（2026-08-07 实测）：空壳本该在 SessionEnd 由 `cleanupIfBlankSession()`
+   * 删掉，但实测 `SessionStart` 75 次 : `SessionEnd` 9 次 —— **绝大多数进程根本走不到
+   * SessionEnd**（Ctrl-C / kill / 终端直接关掉都不会触发）。于是清理逻辑虽然正确，
+   * 却几乎从不执行，盘上堆了 42 个只含 SessionStart 的空目录。
+   *
+   * 这些空壳造成的真实伤害不是占磁盘，而是**污染度量口径**：按目录数算
+   * 「session.traj 覆盖率」得到 33%，看起来像个 P0 采集缺陷；按「有真实 LLM 调用的
+   * 会话」算则是 100%。分母被空壳灌水，一个健康指标就长得像故障。
+   *
+   * ⚠ 删除判据必须极度保守——删错等于毁掉用户的排查现场。四个条件全部满足才删：
+   *   1. 有 events.jsonl（否则可能是正在初始化的新会话，交给 LRU 管）
+   *   2. events.jsonl 里**只有** SessionStart / GatewayPricingSync 这类"未开工"事件；
+   *      出现任何一条工作类事件（BeforeModel / PreToolUse / UserPromptSubmit …）即保留
+   *   3. 目录里没有任何数据文件（session.traj / raw.jsonl / messages.json / crash.json …）
+   *   4. 目录 mtime 超过 STALE_BLANK_AGE_MS（默认 1 小时）——避免误删**当前正在运行**
+   *      的其它 sid-code 进程刚建的目录（多开终端是常态）
+   *
+   * 条件 2 用**白名单**而非黑名单：新增事件类型时，未知事件默认被当作"有活动"从而
+   * 保留目录。判据宁可漏删，绝不能误删。
+   */
+  private pruneStaleBlankSessions(): void {
+    /** "未开工"事件白名单：只出现这些 = 会话从未真正开始工作 */
+    const IDLE_ONLY_EVENTS = new Set([
+      "SessionStart",
+      "SessionEnd",
+      "GatewayPricingSync",
+    ]);
+    /** 除 events.jsonl / warn.log / heartbeat.txt 外，任何文件存在即视为有数据，保留 */
+    const IGNORABLE_FILES = new Set(["events.jsonl", "warn.log", "heartbeat.txt"]);
+    /** 目录至少静置这么久才考虑删除（防误删其它进程正在用的目录） */
+    const STALE_BLANK_AGE_MS = 60 * 60 * 1000;
+
+    try {
+      const sessionsDir = join(this.outputDir, "sessions");
+      if (!existsSync(sessionsDir)) return;
+
+      const now = Date.now();
+      let removed = 0;
+
+      for (const e of readdirSync(sessionsDir, { withFileTypes: true })) {
+        if (!e.isDirectory() || e.name.startsWith(".")) continue;
+        const dir = join(sessionsDir, e.name);
+        try {
+          // 条件 4：太新的目录不动（可能是别的进程正在跑）
+          if (now - statSync(dir).mtimeMs < STALE_BLANK_AGE_MS) continue;
+
+          // 条件 3：除 events/warn/heartbeat 外有任何文件 → 有数据，保留
+          const files = readdirSync(dir, { withFileTypes: true });
+          if (files.some((f) => !IGNORABLE_FILES.has(f.name))) continue;
+
+          // 条件 1：必须有 events.jsonl
+          const eventsPath = join(dir, "events.jsonl");
+          if (!existsSync(eventsPath)) continue;
+
+          // 条件 2：只含"未开工"事件（白名单外的任何事件 → 保留）
+          const raw = readFileSync(eventsPath, "utf-8");
+          let hasWork = false;
+          let hasAny = false;
+          for (const line of raw.split("\n")) {
+            if (!line.trim()) continue;
+            hasAny = true;
+            let name: unknown;
+            try {
+              name = (JSON.parse(line) as { event?: unknown }).event;
+            } catch {
+              // 坏行无法判定 → 按"有活动"处理，保留目录
+              hasWork = true;
+              break;
+            }
+            if (typeof name !== "string" || !IDLE_ONLY_EVENTS.has(name)) {
+              hasWork = true;
+              break;
+            }
+          }
+          if (hasWork || !hasAny) continue;
+
+          rmSync(dir, { recursive: true, force: true });
+          removed++;
+        } catch { /* 单个目录失败不影响其余 */ }
+      }
+
+      if (removed > 0) {
+        getLogger().info(
+          "TRACE",
+          `清理历史空壳会话 ${removed} 个（只含 SessionStart、无任何 LLM 调用）——` +
+            `它们会把"traj 覆盖率"这类指标的分母灌水`,
+        );
+      }
+    } catch (err) {
+      getLogger().warn("TRACE", `空壳会话清理失败（不影响采集）: ${err}`);
     }
   }
 

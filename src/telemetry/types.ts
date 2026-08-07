@@ -81,7 +81,12 @@ export interface TelemetryConfig {
 }
 
 export interface TelemetryExporterConfig {
-  type: "console" | "jsonl";
+  /**
+   * 导出器类型。新增类型时必须同步四处，否则会被 createExporter 静默跳过：
+   * `src/telemetry/index.ts` 的 createExporter、`src/config/config.ts` 的
+   * TelemetryExporterConfig、`src/config/schema.ts` 的 VALID_EXPORTER_TYPES。
+   */
+  type: "console" | "jsonl" | "otlp";
   options?: Record<string, unknown>;
 }
 

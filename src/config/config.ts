@@ -623,7 +623,8 @@ export interface TraceConfig {
 
 /** 遥测导出器配置 */
 export interface TelemetryExporterConfig {
-  type: "console" | "jsonl";
+  /** 导出器类型（otlp 走 OTLP/HTTP + JSON，端点读标准 OTEL_EXPORTER_OTLP_* 环境变量） */
+  type: "console" | "jsonl" | "otlp";
   options?: Record<string, unknown>;
 }
 
@@ -648,9 +649,17 @@ export type PrivacyLevel = "default" | "no-telemetry" | "essential-traffic";
 export interface AnalyticsBackendConfig {
   /** 后端名称（用于日志与 killswitch） */
   name: string;
-  /** 后端类型，目前支持 http */
-  type: "http";
-  /** 远程端点 URL */
+  /**
+   * 后端类型：
+   * - `http`：自定义 JSON 批量端点（HttpExporter）
+   * - `otlp`：标准 OTLP/HTTP logs 协议（OtlpExporter），endpoint 可省略，
+   *   缺省时回退到 OTEL_EXPORTER_OTLP_ENDPOINT + /v1/logs
+   *
+   * 新增类型必须同步 `query/init-helpers.ts` 的后端注册分派与
+   * `config/schema.ts` 的校验，否则配了会被静默跳过。
+   */
+  type: "http" | "otlp";
+  /** 远程端点 URL（type=otlp 时可省略，由 OTEL_EXPORTER_OTLP_ENDPOINT 兜底） */
   endpoint: string;
   /** 认证头（可选） */
   authHeader?: string;

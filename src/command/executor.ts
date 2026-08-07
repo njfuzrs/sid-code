@@ -23,6 +23,9 @@ import type {
 } from "./types.ts";
 import { parseSlashCommand, looksLikeCommand } from "./parser.ts";
 import { getLogger } from "../debug/logger.ts";
+// P0-1 漏斗 4：斜杠命令使用分布，回答「哪些功能是死功能」。
+// 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
+import { logCommandInvoke, logCommandRejected } from "../analytics/events.ts";
 
 /** 应用层注入的副作用回调 */
 export interface ExecutorCallbacks {
@@ -43,6 +46,7 @@ export class CommandExecutor {
   ): Promise<CommandExecutionResult> {
     const parsed = parseSlashCommand(input);
     if (!parsed) {
+      logCommandRejected("parse_error");
       return { type: "error", message: "命令格式: /command [args]" };
     }
 
@@ -50,6 +54,10 @@ export class CommandExecutor {
     if (!cmd) {
       // 像命令名（仅字母数字连字符）→ 报未知命令；否则当作普通文本
       if (looksLikeCommand(parsed.commandName)) {
+        // unknown_command 的分布能直接看出「用户以为存在但其实没有」的功能——
+        // 这是功能缺口的一手信号。刻意**不上报用户输入的那个名字**：它是自由文本，
+        // 可能含路径或私有名称。要看具体名字请查本地日志。
+        logCommandRejected("unknown_command");
         return { type: "error", message: `未知命令: /${parsed.commandName}` };
       }
       return { type: "passthrough", value: input };
@@ -57,6 +65,7 @@ export class CommandExecutor {
 
     // 用户可调用性检查
     if (cmd.userInvocable === false) {
+      logCommandRejected("not_user_invocable");
       return {
         type: "error",
         message: "此命令只能由模型调用，不支持手动触发",
@@ -68,6 +77,7 @@ export class CommandExecutor {
     // 对 skill 来说 isEnabled 承载两件事：/skills 禁用态，以及 P1-2 条件激活 gate
     //（未触发的条件 skill 不可调用）——漏掉这层就能按名直呼绕过条件。
     if (cmd.isEnabled && !cmd.isEnabled()) {
+      logCommandRejected("disabled");
       return {
         type: "error",
         message: `/${cmd.name} 当前不可用（已禁用，或为尚未触发的条件激活 Skill）`,
@@ -117,6 +127,21 @@ export class CommandExecutor {
     cmd: UnifiedCommand,
     args: string,
   ): Promise<CommandExecutionResult> {
+    // 漏斗 4 · 命令（P0-1）：斜杠命令使用分布，回答「哪些功能是死功能」。
+    //
+    // 埋在 dispatch 而非 executeSlashCommand，是为了同时覆盖 executeImmediate
+    // （模型运行时插队执行）这条路径——只埋前者会漏掉插队调用，让统计偏低且偏得静默。
+    //
+    // 命令名脱敏规则见 logCommandInvoke：内置命令名是固定枚举（/model、/compact…），
+    // 不含用户数据，可明文；自定义 / skill / plugin 命令名由用户定义，**可能含项目或
+    // 客户名**，只上报 "custom" 占位，真名进 _PROTECTED_ 通道仅特权后端可见。
+    logCommandInvoke({
+      commandName: cmd.name,
+      isBuiltin: (cmd.source ?? "builtin") === "builtin",
+      commandType: cmd.type,
+      hasArgs: args.trim().length > 0,
+    });
+
     switch (cmd.type) {
       case "local":
         return this.executeLocal(cmd, args);

@@ -9,6 +9,8 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import { percentile } from "../trace/digest.ts";
+// P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
+import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
 // ─── 接口定义 ───
 
@@ -306,6 +308,16 @@ export async function sendHealthAlerts(
   const webhookUrl = opts?.webhookUrl ?? process.env.SID_CODE_ALERT_WEBHOOK_URL;
   if (!webhookUrl) return { sent: false };
   if (report.alerts.length === 0) return { sent: false };
+
+  // P1-8：essential-traffic 门控。告警 webhook 是**非必要外发**——把本机 provider
+  // 健康数据（含模型名、错误分型、延迟分位）推到第三方 IM 机器人，必须受最严格
+  // 隐私级别约束。此前它只看 URL 配没配，从不问隐私级别，是两条绕过 sink 的
+  // 外发通道之一（另一条是 trace 上传，见 query/init-helpers.ts 同批修复）。
+  //
+  // 同步 import：本模块已在遥测链路内，且 privacy-level.ts 零依赖、无副作用。
+  if (isEssentialTrafficOnly()) {
+    return { sent: false, error: "essential-traffic 隐私级别禁止非必要外发" };
+  }
 
   const text = formatAlertText(report);
 

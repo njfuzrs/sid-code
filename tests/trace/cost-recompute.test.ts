@@ -258,3 +258,87 @@ describe("backfillTrajCost 幂等与不覆盖", () => {
     expect(readTrajCost(sessionDir)!).toBeCloseTo(higherCost, 6);
   });
 });
+
+/**
+ * 情形 A'：traj 存在但已损坏（2026-08-07 事故）。
+ *
+ * 落盘脱敏的信用卡号规则把 `"total_cost_usd": 0.4428123456780257` 的 16 位尾数
+ * 当成卡号，改写成 `0.4428********0257` —— `*` 是真实字节，整份 session.traj
+ * 不可 JSON.parse。此前 backfillTrajCost 在这里直接放弃（"解析 traj 失败"），
+ * 于是损坏永久化；而 events.jsonl 是 append 语义并未受损，cost 本可重算。
+ */
+describe("backfillTrajCost 情形 A'：traj 损坏 → 据 events 重建", () => {
+  /** 写一份被脱敏 bug 破坏的 traj（真实损坏形态） */
+  function writeCorruptTraj(): string {
+    const p = join(sessionDir, "session.traj");
+    writeFileSync(
+      p,
+      '{\n  "metadata": {\n    "session_id": "x",\n' +
+        '    "total_cost_usd": 0.4428********0257\n  }\n}',
+    );
+    return p;
+  }
+
+  beforeEach(() => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      [
+        afterModelRaw(1, "deepseek-v4-pro", 27424, 74),
+        afterModelRaw(2, "deepseek-v4-pro", 27909, 68),
+      ].join("\n") + "\n",
+    );
+  });
+
+  test("损坏的 traj 被重建为可解析，且 cost 非零", () => {
+    const p = writeCorruptTraj();
+    expect(() => JSON.parse(readFileSync(p, "utf-8"))).toThrow();
+
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(true);
+    expect(result.reason).toContain("损坏");
+
+    // 重建后必须可解析
+    const obj = JSON.parse(readFileSync(p, "utf-8"));
+    expect(obj.metadata.total_cost_usd).toBeGreaterThan(0);
+    expect(obj.metadata.cost_recomputed_from_events).toBe(true);
+    // 产物里不能再有星号
+    expect(readFileSync(p, "utf-8")).not.toContain("*");
+  });
+
+  test("原损坏文件被备份为 .corrupt（不静默丢用户数据）", () => {
+    writeCorruptTraj();
+    backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+
+    const backup = join(sessionDir, "session.traj.corrupt");
+    expect(existsSync(backup)).toBe(true);
+    // 备份保留原始损坏内容，供人工抢救
+    expect(readFileSync(backup, "utf-8")).toContain("*");
+  });
+
+  test("幂等：重建后再跑不重复处理，且不覆盖已有备份", () => {
+    writeCorruptTraj();
+    backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    const backup = join(sessionDir, "session.traj.corrupt");
+    const firstBackup = readFileSync(backup, "utf-8");
+    const firstTraj = readFileSync(join(sessionDir, "session.traj"), "utf-8");
+
+    const second = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(second.backfilled).toBe(false);
+    expect(second.reason).toContain("幂等");
+    // 备份与重建产物都不被二次改写
+    expect(readFileSync(backup, "utf-8")).toBe(firstBackup);
+    expect(readFileSync(join(sessionDir, "session.traj"), "utf-8")).toBe(firstTraj);
+  });
+
+  test("损坏且 events 也无可重算数据 → 不动文件（不制造更差的状态）", () => {
+    writeFileSync(join(sessionDir, "events.jsonl"), "");
+    const p = writeCorruptTraj();
+    const before = readFileSync(p, "utf-8");
+
+    const result = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(result.backfilled).toBe(false);
+    // 原文件保持原样，不留半成品
+    expect(readFileSync(p, "utf-8")).toBe(before);
+    expect(existsSync(join(sessionDir, "session.traj.corrupt"))).toBe(false);
+  });
+});

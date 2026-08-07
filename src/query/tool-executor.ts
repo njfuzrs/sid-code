@@ -23,6 +23,18 @@ import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
+// P0-1 漏斗 1/2：工具与权限埋点。必须走 analytics/events.ts 门面，不直接调 logEvent——
+// 门面强制脱敏工具名与文件路径，业务侧拿不到裸传接口（见该文件顶部的三条硬约束）。
+import {
+  logToolCall,
+  logToolSuccess,
+  logToolFailure,
+  logPermissionPrompt,
+  logPermissionAllow,
+  logPermissionDeny,
+  structuredErrorCode,
+  type PermissionSource,
+} from "../analytics/events.ts";
 
 /**
  * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
@@ -926,11 +938,20 @@ export async function resolveToolPermission(
   };
   const decision = await deps.permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
 
-  if (decision.allowed) return null;
+  if (decision.allowed) {
+    // 漏斗 2 · 权限（P0-1）：规则直接放行，未打扰用户。needsPrompt=false 是关键区分——
+    // 「静默放行」与「弹窗后批准」在「HITL 打扰了多少次」这个问题上是相反的证据。
+    logPermissionAllow(block.name, { source: "rule", needsPrompt: false });
+    return null;
+  }
 
   if (decision.needsConfirmation) {
     const desc = decision.reason || `工具 "${block.name}" 需要用户确认`;
     log.info("PERMISSION", `请求权限决策(三路竞争): ${desc}`);
+
+    // 弹确认。这条直接服务北极星里「更安全 ↔ 更快」的 trade-off 判断：
+    // 没有它，「HITL 是不是太吵」只能靠感觉争论，改不改默认值也没有依据。
+    logPermissionPrompt(block.name);
 
     // 三路竞争：hook / classifier / 用户交互
     const { resolvePermission } = await import("../permission/async-decision.ts");
@@ -1016,6 +1037,14 @@ export async function resolveToolPermission(
       } catch (e) {
         log.warn("PERMISSION", `记录用户拒绝失败（忽略）: ${(e as Error)?.message}`);
       }
+      // 拒绝来源直接取三路竞争的 result.source（结构化，非猜测）。
+      // duration 含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数：
+      // 缺它则「秒拒」与「等了 30s 才拒」在统计里长得一样。
+      logPermissionDeny(block.name, {
+        source: normalizePermissionSource(result.source),
+        needsPrompt: true,
+        durationMs: Date.now() - permStartedAt,
+      });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
       // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
       // 耗时含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
@@ -1028,6 +1057,13 @@ export async function resolveToolPermission(
       };
     }
     log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
+    // needsPrompt=true：走到这里说明确实弹过窗（或分类器/hook 在弹窗期间抢先赢了）。
+    // source 区分三路竞争谁胜出——classifier 放行占比是「更快」这条方向的直接指标。
+    logPermissionAllow(block.name, {
+      source: normalizePermissionSource(result.source),
+      needsPrompt: true,
+      durationMs: Date.now() - permStartedAt,
+    });
     return null;
   }
 
@@ -1035,6 +1071,14 @@ export async function resolveToolPermission(
   const { explainDecision } = await import("../permission/explainer.ts");
   const explanation = explainDecision(decision);
   log.warn("PERMISSION", `权限拒绝: ${block.name} - ${explanation}`);
+  // 规则直接拒绝（deny 规则命中，无需确认）。与上面「弹窗后被拒」分开记：
+  // 前者是配置生效，后者是用户被打扰后说不，两类信号的含义完全不同。
+  // 不上报 explanation 文本——它含规则内容与入参片段。
+  logPermissionDeny(block.name, {
+    source: "rule",
+    needsPrompt: false,
+    durationMs: Date.now() - permStartedAt,
+  });
   // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
   firePostToolUseFailure(
     deps,
@@ -1065,6 +1109,16 @@ export async function executeSingleTool(
   const log = getLogger();
 
   log.toolStart(block.name, block.input);
+
+  // 漏斗 1 · 工具（P0-1）：调用 / 成功 / 失败 + 失败分型。
+  // 走 analytics/events.ts 门面而非直接 logEvent —— 工具名与文件路径在门面里强制脱敏
+  // （MCP 工具名含用户私有服务名、路径含用户目录结构），业务侧拿不到裸传的接口。
+  // 每条失败分支各自给出结构化 kind，不做事后字符串猜测：调用点自己知道它是 hook 阻止
+  // 还是 zod 校验失败，这比任何 message 正则都强的信号，扔掉才是错。
+  const efFilePath = typeof (block.input as any)?.file_path === "string"
+    ? (block.input as any).file_path as string
+    : undefined;
+  logToolCall(block.name, efFilePath);
 
   // 函数级计时锚点：覆盖**所有**返回路径，包含 hook 阻止 / 参数校验失败这类
   // 在 startTime（tool.execute 前那个锚点）之前就 return 的早退分支。
@@ -1108,6 +1162,11 @@ export async function executeSingleTool(
       undefined,
       Date.now() - toolStartedAt,
     );
+    logToolFailure(block.name, {
+      kind: "hook_blocked",
+      durationMs: Date.now() - toolStartedAt,
+      filePath: efFilePath,
+    });
     return {
       block: {
         type: "tool_result",
@@ -1162,6 +1221,14 @@ export async function executeSingleTool(
       effectiveInput,
       Date.now() - toolStartedAt,
     );
+    // 这条正是事故现场（见上方注释）：ask_user_question 校验失败在 events.jsonl 里
+    // 只有 Pre 没有 Post，使「模型漏字段」这类高频真实失败在失败率统计里彻底隐身。
+    // 独立事件补上后，"哪个工具最不可靠" 才包含参数校验这一大类。
+    logToolFailure(block.name, {
+      kind: "invalid_input",
+      durationMs: Date.now() - toolStartedAt,
+      filePath: efFilePath,
+    });
     return {
       block: {
         type: "tool_result",
@@ -1271,6 +1338,23 @@ export async function executeSingleTool(
       void notifyLSPFileChange(block.input as Record<string, unknown>);
     }
 
+    // 漏斗 1 收尾：工具「正常返回」也分成功与 isError 两种。二者混记会让失败率失真——
+    // 工具返回 isError=true（如 bash 非零退出、文件不存在）是最高频的真实失败类型，
+    // 它不抛异常，不进下面的 catch，只在这里能被记到。
+    if (result.isError) {
+      logToolFailure(block.name, {
+        kind: "tool_error",
+        durationMs: elapsed,
+        filePath: efFilePath,
+      });
+    } else {
+      logToolSuccess(block.name, {
+        durationMs: elapsed,
+        outputSize: result.output?.length ?? 0,
+        filePath: efFilePath,
+      });
+    }
+
     // TUI 呈现档位（见下方 block 构造处的注释）。用 effectiveInput 而非 block.input：
     // hook 改参后的实际入参才是本次执行的真相，与鉴权 / PostToolUse 上报同口径。
     const displayMode = resolveResultDisplayMode(tool, effectiveInput);
@@ -1301,12 +1385,30 @@ export async function executeSingleTool(
 
     if (isAbortError(err)) {
       log.info("TOOL", `工具 ${block.name} 被用户取消 (${elapsed}ms)`);
+      // 取消单独分型：它不是「工具不可靠」的证据，混进 exception 会污染失败率。
+      // 注意 isAbortError 同时涵盖真用户 ESC 与内部超时 abort（见记忆「流式内部超时
+      // 被误判为用户取消」），此处只记 aborted 不细分——细分要看 abort reason 白名单，
+      // 而这一层拿不到 reason，硬猜就是重演那个反模式。
+      logToolFailure(block.name, {
+        kind: "aborted",
+        durationMs: elapsed,
+        filePath: efFilePath,
+      });
       throw err;
     }
 
     log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
       error: err.message,
       stack: err.stack,
+    });
+
+    // error_code 只取结构化字段（err.code / err.status / err.errno），不解析 message 文本——
+    // 错误消息里常带文件路径、命令行、甚至密钥片段，进不得遥测。
+    logToolFailure(block.name, {
+      kind: "exception",
+      durationMs: elapsed,
+      filePath: efFilePath,
+      errorCode: structuredErrorCode(err),
     });
 
     deps.hookSystem.firePostToolUseFailureEvent(
@@ -1328,6 +1430,35 @@ export async function executeSingleTool(
       },
       elapsedMs: Date.now() - toolStartedAt,
     };
+  }
+}
+
+/**
+ * 把三路竞争的 DecisionSource 映射到埋点的 PermissionSource。
+ *
+ * 为什么要显式映射而不是直接透传：两个类型**不等价**——DecisionSource 有 "auto"
+ * （非交互/子代理场景的自动决策），PermissionSource 有 "rule"（规则直接放行/拒绝，
+ * 不经三路竞争）。直接 as 转换会在未来任一侧加成员时静默产出一个下游聚合脚本
+ * 不认识的值，而遥测字段的错值是静默的：聚合出来的图看着正常，只是少了一类。
+ *
+ * switch 穷举 + 兜底 "other"：新增来源时要么这里显式接上，要么落到 other 被看见。
+ */
+function normalizePermissionSource(
+  source: import("../permission/async-decision.ts").DecisionSource,
+): PermissionSource {
+  switch (source) {
+    case "user":
+      return "user";
+    case "hook":
+      return "hook";
+    case "classifier":
+      return "classifier";
+    case "timeout":
+      return "timeout";
+    case "auto":
+      return "other";
+    default:
+      return "other";
   }
 }
 

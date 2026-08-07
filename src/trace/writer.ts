@@ -14,17 +14,30 @@
  *   而它记录的恰好是「完整请求/响应对」，包含 Authorization 头、模型吐出的 key、
  *   用户粘贴的凭证。此前这里**零脱敏**，凭证随轨迹一起落盘并可能出境。
  *
- *   本文件的 5 个写入方法是全部落盘路径的收口点，统一在这里过一遍 maskSensitiveData，
+ *   本文件的 6 个写入方法（traj / raw.jsonl / events.jsonl / errors.jsonl /
+ *   messages.json / session-summary.json）是全部落盘路径的收口点，统一在这里过一遍脱敏，
  *   而不是让每个调用方自己记得脱敏——"每个调用方都要记得"这种约定必然会漏。
+ *   （注释原本写"5 个"却有 6 个方法，errors.jsonl 因此长期漏脱敏。数量写进注释就要与代码对账。）
  *
  *   masked 值形如 `Bearer abc********2345`：保留头尾便于对照排查（"是不是我那个 key"），
  *   中间抹掉。替换只产生 `*`，不破坏 JSON 转义，落盘后仍可 JSON.parse / jq。
+ *
+ * 脱敏必须结构化（2026-08-07 事故修复）：
+ *   上面那句「落盘后仍可 JSON.parse」曾经是**假的**。纯文本脱敏对「当前位置是 JSON
+ *   数字还是字符串」一无所知，信用卡号规则命中了 `"total_cost_usd": 0.4428123456780257`
+ *   的 16 位尾数，把它改写成 `0.4428********0257`——`*` 是真实字节，整份 session.traj
+ *   `JSON.parse` 失败，`/trace` 与 `trace-digest` 单文件损坏即整体 rc=1。
+ *
+ *   所以本文件所有 JSON 落盘一律走 `maskSensitiveJson`（只脱敏字符串值/键名，
+ *   数字字面量绝不触碰），再叠一道 `assertParsable` 自校验：脱敏产物解析不了就
+ *   **落原始内容 + 告警**，绝不把损坏数据写进盘。宁可少脱一次敏，也不能毁掉轨迹本身
+ *   ——轨迹损坏是静默的、不可逆的，且会连带打死诊断入口。
  */
 
 import { join } from "node:path";
 import { mkdirSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { getLogger } from "../debug/logger.ts";
-import { maskSensitiveData } from "../permission/sensitive.ts";
+import { maskSensitiveJson } from "../permission/sensitive.ts";
 
 /** hook 事件记录（写入 events.jsonl 的行格式） */
 export interface HookEvent {
@@ -92,6 +105,39 @@ export interface RawJsonlEntry {
   };
 }
 
+/**
+ * 脱敏 + 落盘前自校验：脱敏产物必须仍是合法 JSON，否则退回原文并告警。
+ *
+ * 这是最后一道闸门。上游 `maskSensitiveJson` 已从结构上保证不碰数字，本函数防的是
+ * 「未来又有人加了个纯文本规则、或结构化路径出了别的意外」——落盘损坏的代价远高于
+ * 少脱一次敏（损坏是静默且不可逆的，还会打死 /trace 与 trace-digest）。
+ *
+ * @param content 原始 JSON 文本
+ * @param indent 原始序列化缩进（需与调用方 JSON.stringify 一致）
+ * @param what 文件名，仅用于告警文案
+ */
+function maskJsonSafe(content: string, indent: number, what: string): string {
+  let masked: string;
+  try {
+    masked = maskSensitiveJson(content, indent);
+  } catch (err) {
+    getLogger().warn("TRACE", `${what} 脱敏异常，落原始内容: ${err}`);
+    return content;
+  }
+  try {
+    JSON.parse(masked);
+    return masked;
+  } catch (err) {
+    // 脱敏把 JSON 弄坏了 —— 这是 bug，必须响，不能静默降级
+    getLogger().warn(
+      "TRACE",
+      `${what} 脱敏后 JSON 不可解析（脱敏逻辑有 bug，已回退为原始内容，` +
+        `可能包含未脱敏凭证）: ${err}`,
+    );
+    return content;
+  }
+}
+
 export class TraceWriter {
   private sessionDir: string;
   private initialized = false;
@@ -128,7 +174,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "session.traj");
-      await Bun.write(filePath, maskSensitiveData(content));
+      await Bun.write(filePath, maskJsonSafe(content, 2, "session.traj"));
     } catch (err) {
       getLogger().warn("TRACE", `写入 session.traj 失败: ${err}`);
     }
@@ -142,7 +188,8 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "raw.jsonl");
-      const safe = maskSensitiveData(line);
+      // jsonl 每行独立 JSON，indent=0 保持单行
+      const safe = maskJsonSafe(line, 0, "raw.jsonl");
       appendFileSync(filePath, safe.endsWith("\n") ? safe : safe + "\n");
     } catch (err) {
       getLogger().warn("TRACE", `追加 raw.jsonl 失败: ${err}`);
@@ -157,7 +204,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "events.jsonl");
-      const safe = maskSensitiveData(line);
+      const safe = maskJsonSafe(line, 0, "events.jsonl");
       appendFileSync(filePath, safe.endsWith("\n") ? safe : safe + "\n");
     } catch (err) {
       getLogger().warn("TRACE", `追加 events.jsonl 失败: ${err}`);
@@ -196,12 +243,17 @@ export class TraceWriter {
   /**
    * 追加一行到 errors.jsonl
    * 任何被 engine/queryLoop/fallback catch 的异常都应落盘于此
+   *
+   * 脱敏（2026-08-07 补漏）：本方法此前是 6 个落盘路径里**唯一没过脱敏的**，
+   * 而文件头注释却写着「本文件的 5 个写入方法是全部落盘路径的收口点」——数错了一个，
+   * 于是它被漏掉。错误对象最容易带凭证（异常消息常把请求头/URL 原样拼进去）。
    */
   appendErrorsJsonl(line: string): void {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "errors.jsonl");
-      appendFileSync(filePath, line.endsWith("\n") ? line : line + "\n");
+      const safe = maskJsonSafe(line, 0, "errors.jsonl");
+      appendFileSync(filePath, safe.endsWith("\n") ? safe : safe + "\n");
     } catch (err) {
       getLogger().warn("TRACE", `追加 errors.jsonl 失败: ${err}`);
     }
@@ -228,7 +280,10 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "messages.json");
-      writeFileSync(filePath, maskSensitiveData(JSON.stringify(snapshot, null, 2)));
+      writeFileSync(
+        filePath,
+        maskJsonSafe(JSON.stringify(snapshot, null, 2), 2, "messages.json"),
+      );
     } catch (err) {
       getLogger().warn("TRACE", `写入 messages.json 失败: ${err}`);
     }
@@ -247,7 +302,10 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "session-summary.json");
-      writeFileSync(filePath, maskSensitiveData(JSON.stringify(summary, null, 2)));
+      writeFileSync(
+        filePath,
+        maskJsonSafe(JSON.stringify(summary, null, 2), 2, "session-summary.json"),
+      );
     } catch (err) {
       getLogger().warn("TRACE", `写入 session-summary.json 失败: ${err}`);
     }

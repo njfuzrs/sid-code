@@ -31,6 +31,8 @@ import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import { queryLoop } from "./loop.ts";
 import { isAbortError } from "../llm/errors.ts";
 import type { QueryDeps, QueryEngineEvent } from "./types.ts";
+// P0-1 漏斗 5：错误分型埋点。分类走既有 classifyAPIError（动态 import，见调用点注释）。
+import { logError } from "../analytics/events.ts";
 
 /** QueryEngine 依赖 */
 export interface QueryEngineDeps {
@@ -414,6 +416,28 @@ export class QueryEngine {
       // turn index 从 traceCollector 的 pairs 长度推断（pairs.length + 1 = 当前正在处理的 index）
       const currentIndex = (this.deps.traceCollector?.getPairs().length ?? 0) + 1;
       const stackLines = e?.stack?.split("\n").slice(0, 5).join("\n");
+
+      // 漏斗 5 · 错误（P0-1）：回答「哪类错误最高频」。
+      //
+      // 分型走既有的 classifyAPIError，**不自己用裸子串猜**——那正是记忆里
+      // 「归因与真实信号脱节」记的反模式（判据优先级：状态码 / reason 白名单 > 数字边界
+      // > 裸子串）。classifyAPIError 内部按 isAbortError / HTTP 状态码 / 结构化字段判定，
+      // 已经是这条链上最权威的分类器，另起一套只会分叉。
+      //
+      // 埋在这里而不是 collector.recordError：后者收到的 error 已被拍平成 string，
+      // 分类器需要的结构化字段（status / code / headers）在那一层已经丢了。
+      // 这是「归因要贴着真实信号」的一个具体落点——离信号越近，判据越强。
+      //
+      // 只上报分型与轮次，**不上报 message / stack**：错误文本里常带文件路径、
+      // 命令行、甚至密钥片段。要看具体错误去 errors.jsonl（本地，已有上面那份记录）。
+      try {
+        const { classifyAPIError } = await import("../api/errors.ts");
+        logError({
+          category: classifyAPIError(err),
+          source: "engine",
+          extra: { turn: currentIndex },
+        });
+      } catch { /* 埋点绝不影响错误处理主路径 */ }
       if (this.deps.traceCollector) {
         this.deps.traceCollector.recordError({
           phase: "engine",

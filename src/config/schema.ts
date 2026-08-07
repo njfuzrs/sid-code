@@ -802,8 +802,9 @@ export function validateConfig(config: Config): ValidationResult {
   }
 
   // 验证 telemetry 导出器：类型不匹配实现分支时会被静默跳过（createExporter 返回 null）
+  // 这个集合必须与 telemetry/index.ts 的 createExporter switch 分支保持一致。
   if (config.telemetry?.exporters?.length) {
-    const VALID_EXPORTER_TYPES = new Set(["console", "jsonl"]);
+    const VALID_EXPORTER_TYPES = new Set(["console", "jsonl", "otlp"]);
     config.telemetry.exporters.forEach((exp, index) => {
       if (!VALID_EXPORTER_TYPES.has(exp.type)) {
         warnings.push({
@@ -814,15 +815,31 @@ export function validateConfig(config: Config): ValidationResult {
     });
   }
 
-  // 验证 analytics 后端：type 目前只支持 "http"，其它值或缺失 endpoint 都会被静默跳过
+  // 验证 analytics 后端：type 不在实现分支里、或缺失 endpoint 都会被静默跳过。
+  // 这个集合必须与 query/init-helpers.ts 的后端注册分派保持一致。
   if (config.analytics?.backends?.length) {
+    const VALID_BACKEND_TYPES = new Set(["http", "otlp"]);
     config.analytics.backends.forEach((b, index) => {
       const prefix = `analytics.backends[${index}]`;
-      if (b.type !== "http") {
-        warnings.push({ path: `${prefix}.type`, message: `无效值 "${b.type}"，目前仅支持 "http"，该后端会被静默跳过` });
+      if (!VALID_BACKEND_TYPES.has(b.type)) {
+        warnings.push({
+          path: `${prefix}.type`,
+          message: `无效值 "${b.type}"，有效值为 ${Array.from(VALID_BACKEND_TYPES).join("/")}，该后端会被静默跳过`,
+        });
       }
+      // type=otlp 时 endpoint 可省略：OtlpExporter 会回退到
+      // OTEL_EXPORTER_OTLP_ENDPOINT（默认 http://localhost:4318）+ /v1/logs。
       if (!b.endpoint || b.endpoint.trim() === "") {
-        warnings.push({ path: `${prefix}.endpoint`, message: "不能为空，否则该后端初始化会失败" });
+        if (b.type === "otlp") {
+          if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+            warnings.push({
+              path: `${prefix}.endpoint`,
+              message: "未设置且环境变量 OTEL_EXPORTER_OTLP_ENDPOINT 也未配置，会回退到 http://localhost:4318/v1/logs",
+            });
+          }
+        } else {
+          warnings.push({ path: `${prefix}.endpoint`, message: "不能为空，否则该后端初始化会失败" });
+        }
       }
       if (!b.name || b.name.trim() === "") {
         warnings.push({ path: `${prefix}.name`, message: "不能为空" });
