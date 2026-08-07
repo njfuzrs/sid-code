@@ -99,11 +99,24 @@ export function searchToolPaths(input: unknown, patternField = "pattern"): strin
  *   - `> path` / `>> path`（含 `1>` `2>` 等 fd 前缀）
  *   - `tee path` / `tee -a path`
  *   - `sed -i ... path` / `sed --in-place ... path`
+ *   - `cp` / `mv` / `install` 的**目标**（最后一个非选项 token）
+ *   - `touch` / `mkdir` 的每个非选项参数
  *
- * 刻意**不**支持的形态及理由：
- *   - `mv` / `cp` / `install`：目标可能是目录、可能带多个源，语义判定复杂；
- *     且这类操作通常紧跟真实的文件类工具调用，靠那条也能触发。
+ * ⚠ 关于 `cp`/`mv`：这里原先写的不支持理由是「**目标可能是目录**、可能带多个源，
+ * 语义判定复杂」。**「目标可能是目录」这条已被实测推翻** —— JIT 侧根本不需要区分：
+ * 下游 `discoverDetailed` 有 `targetIsDir` 分支（`jit-context.ts:207`），传目录 /
+ * 传尾斜杠 / 传不存在的路径三种形态全部安全（都能正确加载该路径的规则链）。
+ * 那条注释是**按静态提取的难点写理由，而没有回头看下游能不能消化** —— 下游早就能了，
+ * 上游还在因为一个不存在的约束拒绝提取。**注释里的理由也会过期，留着它下一个人会照着
+ * 它继续拒绝正确的改动。**
+ *
+ * 刻意**不**支持的形态及理由（这些是设计取舍，不是待办；`tests/tool/bash-write-targets.test.ts`
+ * 里有对应的显式断言，免得未来有人「顺手」加上而没有任何东西变红）：
+ *   - `rm path`：删掉之后那个目录的规则**不再适用于任何后续操作**，注入是纯浪费。
+ *   - `python gen.py` 这类**程序自己写文件**：任意程序可写任意路径，要支持等于要
+ *     静态分析任意程序。不是「难」而是「不可能」。
  *   - 变量与命令替换（`> $OUT`、`> $(mktemp)`）：值在运行时才知道，静态提取必错。
+ *   - `cp a*.ts dst`：源含通配不影响提取（只取目标）；但**目标**含通配一律放弃。
  *   - 进程替换 `>(cmd)`、fd 复制 `>&2`：不是文件路径。
  *   - `/dev/*`、`/tmp/*`：不是项目内业务文件，报了只会白扫。
  *
@@ -152,6 +165,39 @@ export function bashWriteTargets(command: unknown): string[] {
     const last = toks[toks.length - 1];
     // 最后一个 token 是脚本本体（`'s/a/b/'`）而非文件时不报
     if (last && !/^-/.test(last) && !/^['"]?s[/|,]/.test(last)) push(last);
+  }
+
+  // ④ 文件搬运/创建：`cp` / `mv` / `install` 取**目标**（最后一个非选项 token），
+  //    `touch` / `mkdir` 的每个非选项参数都是目标。
+  //    目标是目录（`src/ui/`）或尚不存在的路径都没问题 —— 下游 discoverDetailed 能消化
+  //    （见函数头注释里被推翻的那条理由）。过滤全部复用 push()，所以 `$VAR` / 通配 /
+  //    `/tmp` / `-` 前缀这些形态与 ①②③ 保持同一套判据，不会因为新增动词而绕过。
+  for (const seg of cmd.split(/[;|&\n]+/)) {
+    const trimmed = seg.trim();
+    const m = trimmed.match(/^(cp|mv|install|touch|mkdir)\s+(.*)$/);
+    if (!m) continue;
+    const verb = m[1];
+    // 选项与其自带的值都要滤掉。`install -m 644 a b` 里的 `644` 不是路径，
+    // 但它也不是最后一个 token，所以对 cp/mv/install 无害；对 touch/mkdir
+    // 逐个 push 的分支则需要它 —— `mkdir -m 755 dir` 会把 `755` 当目标。
+    const raw = m[2].split(/\s+/).filter(Boolean);
+    const toks: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const t = raw[i];
+      if (t.startsWith("-")) {
+        // 带值的短选项（`-m 644` / `-t dir`）：跳过它后面那个 token
+        if (/^-[mtoglS]$/.test(t)) i++;
+        continue;
+      }
+      toks.push(t);
+    }
+    if (toks.length === 0) continue;
+    if (verb === "touch" || verb === "mkdir") {
+      for (const t of toks) push(t);
+    } else {
+      // cp/mv/install：只取目标。多源形态（`cp a b dst/`）下这正是唯一正确的选择。
+      push(toks[toks.length - 1]);
+    }
   }
 
   return out;

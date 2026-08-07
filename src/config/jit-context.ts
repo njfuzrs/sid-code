@@ -47,6 +47,33 @@ const JIT_CANDIDATE_FILES: readonly string[] = [
   ...CLAUDE_LOCAL_FILES,
 ];
 
+/**
+ * JIT 上下文发现的默认值 —— **唯一事实源**。
+ *
+ * 为什么需要它：`jitContext?: boolean` 的 optional 语义下，「未设置=开启」这个事实
+ * 无法由类型系统承载。靠各消费点各写 `=== false` 维持它是**调用约定**，而新增消费点
+ * 写成 `if (config.jitContext)` 会静默把默认值反转成 false —— 且只在「用户没配」
+ * 这条最常见的路径上反转：配了 `true` 的用户测不出来，没配的用户静默失去整套机制。
+ *
+ * 配套门禁：`tests/config/jit-context-default-single-source.test.ts` 静态扫描 `src/`，
+ * 裸比较会在 CI 上变红。**靠纪律维持的约定必然漏网。**
+ *
+ * 另：**不要**给 `settings/types.ts` 的 Zod schema 加 `.default(true)` —— settings.json
+ * 的 round-trip 是有损的，给 optional 字段加默认值会让「用户没写这个字段」和
+ * 「用户写了 true」在写回时无法区分，把一个读取侧问题换成一个写入侧问题。
+ */
+export const JIT_CONTEXT_DEFAULT = true;
+
+/**
+ * 判定 JIT 上下文发现是否启用。**所有消费点必须走这里**，不要自己写 `=== false`。
+ *
+ * 入参刻意收窄成结构类型而非完整 `Config`，这样测试与子模块（如 `ProviderRegistry`）
+ * 都能直接传，不必构造整份配置。
+ */
+export function isJitContextEnabled(config: { jitContext?: boolean }): boolean {
+  return config.jitContext ?? JIT_CONTEXT_DEFAULT;
+}
+
 /** 一次 JIT 发现的结构化结果（供埋点与记账使用） */
 export interface JitDiscovery {
   /** 注入文本（已格式化，含静默条款）。无新发现时为 null */

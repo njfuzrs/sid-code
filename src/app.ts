@@ -66,7 +66,7 @@ import {
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "./sdk/index.ts";
-import { JitContextManager, type JitDiscovery } from "./config/jit-context.ts";
+import { JitContextManager, isJitContextEnabled, type JitDiscovery } from "./config/jit-context.ts";
 import {
   collectJitAccessedPaths,
   resolveJitPathExtractor,
@@ -852,7 +852,7 @@ export class App {
     // （含 /memory reload 这类拿着 ctxMgr 的外部调用方）都自动带上已加载的子目录规则。
     // jitContext 配置关闭时提供空列表 → 行为等同未注入。
     this.ctxMgr.setJitBlocksProvider(() =>
-      this.config.jitContext === false ? [] : this.jitContextMgr.getLoadedBlocks(),
+      isJitContextEnabled(this.config) ? this.jitContextMgr.getLoadedBlocks() : [],
     );
 
     // 初始化 Hook 系统
@@ -4591,8 +4591,8 @@ export class App {
    * CC 同样是 fire-and-forget（attachments 在下一轮 assembly 时读 `readFileState`）。
    */
   private discoverJitContext(toolBlocks: ToolUseBlock[]): void {
-    // 配置开关（默认开启）
-    if (this.config.jitContext === false) return;
+    // 配置开关（默认开启，见 JIT_CONTEXT_DEFAULT）
+    if (!isJitContextEnabled(this.config)) return;
 
     const paths = collectJitAccessedPaths(toolBlocks, process.cwd(), (name) =>
       resolveJitPathExtractor(this.toolRegistry, name),
@@ -4674,7 +4674,7 @@ export class App {
    */
   private refreshMemoryTokenAccounting(): void {
     try {
-      const jitBytes = this.config.jitContext === false ? 0 : this.jitContextMgr.getLoadedBytes();
+      const jitBytes = isJitContextEnabled(this.config) ? this.jitContextMgr.getLoadedBytes() : 0;
       // 与 ctxMgr 内部同一套启发式估算器，保证分类量与总量口径一致
       const jitTokens = jitBytes > 0 ? estimateTextTokens(this.jitContextMgr.getLoadedContexts() ?? "") : 0;
       this.ctxMgr.setMemoryTokens(this.baseMemoryTokens + jitTokens);

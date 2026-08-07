@@ -99,21 +99,58 @@ function isInsideDir(absolutePath: string, dir: string): boolean {
 }
 
 /**
+ * CJK 标点与全角括号引号 —— 提取 `@token` 时的**终止符**。
+ *
+ * 为什么必须在提取时终止，而不是事后剥离：原实现的字符类是 `[^\s\\]+`，
+ * 只把空白当终止符，于是 `见 @NOTE.md，然后继续` 会把「，然后继续」一起吞进路径；
+ * 事后那句 `replace(/[…]+$/g, "")` 只能剥「结尾连续的标点」，而真实形态是
+ * `（已脱离 @NOTE.md）。**后续` —— 标点后面还有非标点字符，`$` 锚定的正则**永远匹配不上**。
+ *
+ * 通用教训：**清洗输出治不了输入端的过度接纳。**
+ *
+ * 实测 8 种中文标点形态里 6 种失效（顿号、全角引号、感叹号是博客未列的）。
+ * CC 有同一个缺陷（`claudemd.ts:459` 用的是同一个正则思路，且没有任何标点剥离），
+ * 所以这是共同上限而非「我们落后」—— 它是英文语境产品，这个形态在它那里几乎不发生。
+ */
+const CJK_PUNCT = "，。、；：！？（）【】「」『』〈〉《》〔〕“”‘’…—～·";
+
+/** 用于正则字符类的转义（`-` `]` `\` `^` 在字符类里有特殊含义） */
+const CJK_PUNCT_CLASS = CJK_PUNCT.replace(/[\\\]\-^]/g, "\\$&");
+
+/**
  * 从一行文本中提取 @import 引用（跳过行内代码 `...`）。
  * 支持行首独占（@path）与行内（See @path for ...）两种形态。
- * 返回引用路径数组（去掉尾随标点如句号/逗号）。
+ * 返回引用路径数组（去掉尾随标点、`#fragment`）。
+ *
+ * 三条不可退化的判定，各自对应一个真实的错误修法（见 `tests/config/import-punctuation.test.ts`）：
+ *
+ * 1. **前导字符类也要放开 CJK 标点**，不只是终止符集合 —— 否则 `见「@NOTE.md」后续`
+ *    这种「@ 前面紧贴全角引号」的形态根本匹配不到开头，只改结尾会漏掉一半形态。
+ * 2. **不照抄 CC 的 `isValidPath` 首字符白名单**（`claudemd.ts:477` 要求 `^[a-zA-Z0-9._-]`）——
+ *    它的副作用是纯中文路径直接不认，而这个仓库的规则文件全中文，`@文档/说明.md` 是合法形态。
+ *    **对标不是照抄，要看清对方的取舍前提是不是也是你的前提。**
+ * 3. **英文句读不进终止符集合**，仍靠事后剥离 —— 因为英文路径本身可以含 `.`（`@a.b.md`），
+ *    把 `.` 当终止符会把 `a.b.md` 截成 `a`。事后剥离在这里是对的（`$` 锚定足够），
+ *    错的是拿它去治 CJK 那种「标点后还有字」的形态。
  */
 function extractImportsFromLine(line: string): string[] {
   // 先剔除行内代码 span（`...`），避免误抓代码里的 @token
   const withoutCode = line.replace(/`[^`]*`/g, " ");
   const imports: string[] = [];
-  // 行首或空白后的 @token；token 允许 \  转义空格（对齐 CC 正则思路，简化）
-  const re = /(?:^|\s)@((?:[^\s\\]|\\ )+)/g;
+  // 行首 / 空白 / CJK 标点之后的 @token；token 允许 `\ ` 转义空格，遇 CJK 标点即终止
+  const re = new RegExp(
+    `(?:^|[\\s${CJK_PUNCT_CLASS}])@((?:[^\\s\\\\${CJK_PUNCT_CLASS}]|\\\\ )+)`,
+    "g",
+  );
   let m: RegExpExecArray | null;
   while ((m = re.exec(withoutCode)) !== null) {
     let path = m[1].replace(/\\ /g, " ").trim();
-    // 剥掉常见尾随标点（英文/中文），避免把句末标点当路径一部分
-    path = path.replace(/[.,;:)\]，。；：）】]+$/g, "");
+    // 借鉴 CC（claudemd.ts:466）：剥掉 `#fragment`（`@NOTE.md#标题` → `NOTE.md`）。
+    // 这条此前 sid 没有、CC 有，是明确的落后项。
+    const hash = path.indexOf("#");
+    if (hash !== -1) path = path.slice(0, hash);
+    // 英文句读不在终止符集合里（路径可含 `.`），仍需事后剥离结尾标点
+    path = path.replace(/[.,;:)\]!?]+$/g, "");
     if (path) imports.push(path);
   }
   return imports;

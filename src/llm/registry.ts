@@ -12,6 +12,7 @@ import { resolvePricing } from "../api/cost-tracker.ts";
 import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
 import type { LanguagePref } from "../config/prompt-lang.ts";
+import { isJitContextEnabled } from "../config/jit-context.ts";
 
 /** 子代理模型映射 */
 export interface SubAgentModelMap {
@@ -133,6 +134,22 @@ export class ProviderRegistry {
    */
   getLanguage(): LanguagePref | undefined {
     return this.config.language;
+  }
+
+  /**
+   * JIT 上下文发现是否启用（默认开启，见 `JIT_CONTEXT_DEFAULT`）。
+   *
+   * 存在的理由：`SubAgent` 完全不持有 config（`this.config` 全文 0 命中），只持有
+   * registry。而 `createJitDiscoverer` 的 `jitDisabled` 参数此前**从无调用点传值**，
+   * 于是 `jitContext: false` 对子代理完全无效 —— 「做了但没接到底」。开关必须可信：
+   * 一个半失效的开关比没有开关更糟（用户会转而怀疑整套机制）。
+   *
+   * 与 `getLanguage()` 同构：读的是 `this.config` —— 与 App 共享**同一个对象引用**，
+   * 所以运行时改 `config.jitContext` 无需通知 registry 即对新建子代理生效。
+   * 这个引用共享是刻意的，**不要改成构造时快照拷贝**，否则运行时切换只作用于主代理。
+   */
+  getJitContextEnabled(): boolean {
+    return isJitContextEnabled(this.config);
   }
 
   /** 获取用于子进程 spawn 的 Provider 配置（含 API Key — 仅调用方通过管道传递） */

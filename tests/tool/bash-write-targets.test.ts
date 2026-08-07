@@ -61,6 +61,95 @@ describe("bashWriteTargets · 该报的高确定性形态", () => {
   });
 });
 
+/**
+ * B4 · `cp`/`mv`/`install`/`touch`/`mkdir`（2026-08-08 新增）
+ *
+ * 这五个动词此前被刻意排除，理由写在 `jit-affected-paths.ts` 的函数头注释里：
+ * 「目标可能是目录、可能带多个源，语义判定复杂」。**「目标可能是目录」这条已被实测推翻** ——
+ * JIT 下游 `discoverDetailed` 有 `targetIsDir` 分支，传目录 / 传尾斜杠 / 传不存在的路径
+ * 三种形态全部安全。上游因为一个不存在的约束拒绝提取了很久。
+ */
+describe("bashWriteTargets · B4 文件搬运/创建动词", () => {
+  it("cp / mv 取目标（最后一个非选项 token）", () => {
+    expect(bashWriteTargets("cp src/a.ts src/ui/b.ts")).toEqual(["src/ui/b.ts"]);
+    expect(bashWriteTargets("mv src/a.ts src/ui/b.ts")).toEqual(["src/ui/b.ts"]);
+  });
+
+  it("目标是目录（含尾斜杠）也报 —— 下游能消化，这正是原注释里被推翻的那条理由", () => {
+    expect(bashWriteTargets("cp -r src/a src/ui/")).toEqual(["src/ui/"]);
+    expect(bashWriteTargets("mv src/a.ts src/ui")).toEqual(["src/ui"]);
+  });
+
+  it("多源形态只取目标（`cp a b dst/` 里 a、b 是源不是写目标）", () => {
+    expect(bashWriteTargets("cp a.ts b.ts src/ui/")).toEqual(["src/ui/"]);
+    expect(bashWriteTargets("mv a.ts b.ts c.ts src/ui/")).toEqual(["src/ui/"]);
+  });
+
+  it("touch / mkdir 的每个非选项参数都是目标", () => {
+    expect(bashWriteTargets("touch src/ui/New.tsx")).toEqual(["src/ui/New.tsx"]);
+    expect(bashWriteTargets("touch src/a.ts src/ui/b.tsx")).toEqual(["src/a.ts", "src/ui/b.tsx"]);
+    expect(bashWriteTargets("mkdir -p src/ui/sub")).toEqual(["src/ui/sub"]);
+  });
+
+  it("install 带值选项（`-m 644`）的值不被当成路径", () => {
+    expect(bashWriteTargets("install -m 644 a.conf src/etc/a.conf")).toEqual(["src/etc/a.conf"]);
+    // touch/mkdir 走逐个 push 分支，带值选项的值必须被吃掉，否则 `755` 会变成目标
+    expect(bashWriteTargets("mkdir -m 755 src/ui/sub")).toEqual(["src/ui/sub"]);
+  });
+
+  it("源含通配不影响提取（只取目标），但目标含通配一律放弃", () => {
+    expect(bashWriteTargets("cp src/*.ts src/ui/")).toEqual(["src/ui/"]);
+    expect(bashWriteTargets("cp src/a.ts src/*/")).toEqual([]);
+  });
+
+  it("过滤链继续生效：变量 / tmp / dev（新增动词不得绕过 push 的判据）", () => {
+    expect(bashWriteTargets("cp src/a.ts $DEST")).toEqual([]);
+    expect(bashWriteTargets("mv a /tmp/x")).toEqual([]);
+    expect(bashWriteTargets("cp a.ts /dev/null")).toEqual([]);
+    expect(bashWriteTargets("touch $F")).toEqual([]);
+  });
+
+  it("动词必须在片段开头（不误抓 `git mv` 之外的 prose 与子串）", () => {
+    // `xcp` / `mvx` 这类子串不是这五个动词
+    expect(bashWriteTargets("xcp a b")).toEqual([]);
+    expect(bashWriteTargets("echo cp a.ts b.ts")).toEqual([]);
+  });
+
+  it("与重定向形态共存时两边都报", () => {
+    expect(bashWriteTargets("cp src/a.ts src/ui/b.ts && echo done > src/log.txt")).toEqual([
+      "src/log.txt",
+      "src/ui/b.ts",
+    ]);
+  });
+
+  it("只有动词没有参数时安全返回", () => {
+    for (const c of ["cp", "mv ", "touch", "mkdir -p", "install -m 644"]) {
+      expect(() => bashWriteTargets(c)).not.toThrow();
+      expect(bashWriteTargets(c)).toEqual([]);
+    }
+  });
+});
+
+/**
+ * **刻意永久不支持**的形态（设计取舍，不是待办）。
+ *
+ * 这一组是**显式断言**而非遗漏：不写的话，未来有人「顺手」给 `rm` 加上支持
+ * 不会有任何东西变红，而那条裁决就静默失效了。
+ * **设计取舍也需要测试来固定，不然它和缺口区分不开。**
+ */
+describe("bashWriteTargets · 刻意不支持（断言，不是遗漏）", () => {
+  it("rm 不报 —— 删掉之后那个目录的规则不再适用于任何后续操作，注入是纯浪费", () => {
+    expect(bashWriteTargets("rm src/ui/Old.tsx")).toEqual([]);
+    expect(bashWriteTargets("rm -rf src/ui/legacy")).toEqual([]);
+  });
+
+  it("程序自己写文件不报 —— 要支持等于要静态分析任意程序，不是难而是不可能", () => {
+    expect(bashWriteTargets("python src/ui/gen.py")).toEqual([]);
+    expect(bashWriteTargets("bun scripts/codegen.ts")).toEqual([]);
+    expect(bashWriteTargets("make build")).toEqual([]);
+  });
+});
+
 describe("bashWriteTargets · 不该报的形态（误报比漏报更贵）", () => {
   it("纯读命令不报", () => {
     expect(bashWriteTargets("cat src/a.ts")).toEqual([]);

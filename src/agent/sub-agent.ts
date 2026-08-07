@@ -31,7 +31,7 @@ import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
-import { JitContextManager } from "../config/jit-context.ts";
+import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
 import { describeToolActivity, pushRecentActivity } from "./progress.ts";
@@ -534,7 +534,21 @@ export class SubAgent {
       // S3：与调用方 timeoutCtrl 同源的截止时刻，缺省不传则漏斗退化为纯次数上界。
       deadlineAt: startTime + timeout,
       // P2-1：子代理 JIT 上下文发现（每次调用独立实例，见 createJitDiscoverer 注释）。
-      discoverJitContext: this.createJitDiscoverer(ctxMgr),
+      // B2：`jitContext: false` 必须对子代理也生效 —— 这个第二参此前从不传值，
+      // 于是开关只关得住主代理（`createJitDiscoverer` 的 `jitDisabled` 逻辑一直是对的，
+      // 只是没人传）。**一个半失效的开关比没有开关更糟**：用户配了 false 却照样看到
+      // 规则注入，下次会去怀疑整套机制而不是这一条穿线。
+      //
+      // 两种降级都**保持 JIT 开启**（与落地前行为一致，不引入回归）：
+      //   - `registry` 缺失：`new SubAgent(...)` 直接构造的路径。
+      //   - `registry` 存在但没有这个方法：`ProviderRegistry` 常被 `as unknown as`
+      //     强转的替身对象充当（如 tests/agent/sub-agent.test.ts:81），类型层拦不住。
+      //     同一文件里 `getSpawnConfig?.()` 已有同样的先例 —— 这不是给测试让路，
+      //     是承认「registry 是个接口位而非保证完整的实现」。
+      discoverJitContext: this.createJitDiscoverer(
+        ctxMgr,
+        !(this.registry?.getJitContextEnabled?.() ?? JIT_CONTEXT_DEFAULT),
+      ),
     };
   }
 
