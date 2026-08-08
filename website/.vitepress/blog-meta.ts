@@ -162,7 +162,7 @@ export const SERIES: Series[] = [
     name: "深入研究",
     order: 8,
     blurb:
-      "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex，2026-07 快照）—— " +
+      "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex / opencode，2026-08 快照）—— " +
       "按目录跳章查阅。结论来自公开信息交叉核验，不是我们自己的实测数据。",
     external: true,
   },

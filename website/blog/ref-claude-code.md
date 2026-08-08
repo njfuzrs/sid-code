@@ -1,28 +1,43 @@
 ---
-title: Claude Code 深入研究（2026-07 快照）
-description: 20 章逐节成册，按目录跳章查阅——把 Claude Code 的功能、架构与实现细节交叉核验到版本号级别：20 个内置工具、6 种权限模式、18+ Hook 事件、MCP 三大原语、Auto Mode 分类器、OS 沙箱。这是一份手册，不是读完就走的文章。
+title: Claude Code 深入研究（2026-08 快照）
+description: 20 章逐节成册，按目录跳章查阅——把 Claude Code 的功能、架构与实现细节交叉核验到版本号级别：20+ 内置工具、6 种权限模式、20+ Hook 事件、MCP 三大原语、Auto Mode 分类器、OS 沙箱、Dynamic Workflows。这是一份手册，不是读完就走的文章。
 date: "2026-08-08"
 series: 深入研究
 audience: engineer
-highlight: 20 章逐节可查 · 核验至 v2.1.207 · 截至 2026-07-15 快照
+highlight: 20 章逐节可查 · 核验至 v2.1.224 · 截至 2026-08-08 快照
 tags: [Claude Code, 深入研究, 权限, Hook, MCP, 参考]
 outline: [2, 3]
 ---
 
-# Claude Code 深入研究（2026-07 快照）
+# Claude Code 深入研究（2026-08 快照）
 
 ::: warning 先说清这份东西是什么
 **这是一份逐章查阅的手册，不是一篇文章。** 它按章节组织，供你按目录跳到需要的那一节查，
 而不是从头读到尾——所以它没有主线，也没有结论。
 
-- **调研日期**：2026-07-15（本轮联网二次校验 2026-07，覆盖至 v2.1.207）
-- **被调研版本**：Claude Code v2.1.207+（2026 年 7 月）
+- **调研日期**：2026-08-08（本轮联网校验覆盖至 v2.1.224，2026-08-07 发布）
+- **被调研版本**：Claude Code v2.1.224+（2026 年 8 月）
 - **证据形态**：公开信息交叉核验（官方文档 / changelog / 发布说明 / 社区逆向分析），
   **不是我们自己的实测数据**。章节内的版本号与日期是它的证据，请连带一起读。
-- **时效边界**：Claude Code 每周发版。**这是 2026-07 的快照，不是最新状态。**
+- **时效边界**：Claude Code 每周发版（7 月中到 8 月初的 24 天里发了 15 个版本）。
+  **这是 2026-08-08 的快照，不是最新状态。**
   任何与当前行为不一致的地方，以[官方文档](https://docs.anthropic.com/en/docs/claude-code/overview)为准。
 
 一份标清日期的快照不会变成假话，只会变成史料——但前提是你知道它的日期。
+:::
+
+::: tip 相比上一版（2026-07 快照）变了什么
+如果你读过上一版，只看这几处就够：
+
+- **Claude Opus 5 发布（2026-07-24）** 并成为默认 Opus 模型，Opus 4.8 降为 fallback；
+  **thinking 默认开启**是它最容易踩的行为变更（§1）
+- **`/review` 变成 `/code-review` 的别名**（v2.1.223），`/verify` 与 `/code-review` 不再自动触发（v2.1.215）；
+  **`ultraplan` 已移除**（v2.1.222）（§4）
+- 新增 **Artifact**（发布会话产物为网页）与 **EndConversation** 两个内置工具（§3）
+- 新增 **`DirectoryAdded`** hook（v2.1.219）（§8）
+- 嵌套子代理从"默认禁用"改回**默认深度 3**，并新增**并发上限 20**（§11）
+- 沙箱新增 **`network.strictAllowlist`**（v2.1.219）与 **`filesystem.disabled`**（v2.1.216）（§17）
+- **跨会话 `SendMessage` / `ListAgents`** 与 **`claude self-hosted-runner`**（v2.1.224）（§20）
 :::
 
 ---
@@ -53,48 +68,65 @@ brew install --cask claude-code
 winget install Anthropic.ClaudeCode
 ```
 
-**支持模型（2026-07 现状，Claude 5 家族 + Opus 4.8）：**
+**支持模型（2026-08 现状，Claude 5 家族）：**
 
 | 模型 | Model ID | 定位 | 上下文 / 最大输出 | 定价（$/M 输入·输出） | 发布 |
 |------|----------|------|-------------------|----------------------|------|
-| **Claude Fable 5** | `claude-fable-5` | Mythos 级最高层，位于 Opus 之上，最强通用模型 | 1M / 128K | $10 / $50 | 2026-06-09 |
-| **Claude Opus 4.8** | `claude-opus-4-8` | 前沿 Opus 级主力，唯一支持 fast mode | 1M / 128K | $5 / $25（fast $10/$50） | 2026-05-28 |
+| **Claude Fable 5** | `claude-fable-5` | Mythos 级最高层，面向长跑代理的下一代智能 | 1M / 128K | $10 / $50 | 2026-06-09 |
+| **Claude Opus 5** | `claude-opus-5` | ⭐ **当前 Opus 主力**，复杂 agentic 编码与企业工作；多数领域追平 Fable 5 而只要一半价格 | 1M / 128K | $5 / $25（fast $10/$50） | 2026-07-24 |
+| **Claude Opus 4.8** | `claude-opus-4-8` | 上一代 Opus，仍全平台可用，现为 fallback 而非旗舰 | 1M / 128K | $5 / $25（fast $10/$50） | 2026-05-28 |
 | **Claude Sonnet 5** | `claude-sonnet-5` | 日常编码平衡默认；Free/Pro 默认模型 | 1M / 128K | 导入价 $2/$10（至 2026-08-31）→ 标准 $3/$15 | 2026-06-30 |
 | **Claude Haiku 4.5** | `claude-haiku-4-5-20251001` | 快速低延迟，适合子代理 / fan-out | 200K / 64K | $1 / $5 | 2025-10 |
 
-- **默认模型因平台/订阅而异**：Anthropic API `opus` 别名 → Opus 4.8、`sonnet` → Sonnet 5；**Free/Pro 默认 Sonnet 5**，**Max/Team/Enterprise 默认 Opus 4.8**；Bedrock/Vertex/Foundry 自 v2.1.207 起 `opus` 默认解析为 Opus 4.8（Foundry 曾停留在 Opus 4.6）。
+**Opus 5 的四处关键变化（2026-07-24，v2.1.219 起在 CC 内为默认 Opus 模型）：**
+
+| 变化 | 说明 |
+|------|------|
+| **同价升级** | $5/$25 与 Opus 4.8 **完全一致**，一分没涨。但配合 effort 分级，两个团队在同一张价目表下可以跑出差异极大的账单——省与贵现在取决于你怎么设 effort，不再取决于你选哪个模型 |
+| ⚠️ **thinking 默认开启** | Opus 4.8 上不显式设 `thinking: {"type": "adaptive"}` 就不思考；**Opus 5 上同样的请求默认带思考**，由模型自行决定何时思考多深，`effort` 成为思考深度的控制旋钮。wire 值不变，显式传 adaptive 仍等价于默认 |
+| **禁用 thinking 有约束** | 关掉 thinking 时 effort **被封顶在 `high`**（不能再要 `xhigh`/`max`） |
+| **安全分流** | Opus 5 刻意**不追求** offensive cybersecurity 等高危 dual-use 能力的 SOTA。被安全分类器拦下的请求在 Claude / Claude Code / Claude Cowork 中**自动回落到 Opus 4.8**；Fable 5 上被拦的生物学请求现在改路由到 Opus 5 |
+
+同批发布的两个 beta（API 侧）：**会话中途更换工具**（改 Claude 可用的工具集**不会**让 prompt cache 失效）、
+**API 自动 fallback**（被安全分类器拦下的 Opus 5 / Fable 5 请求自动改路由到别的模型，而不是直接被拒）。
+
+- **默认模型因平台/订阅而异**：Anthropic API `opus` 别名 → **Opus 5**、`sonnet` → Sonnet 5；**Free/Pro 默认 Sonnet 5**（Pro 上 Opus 5 是可用的最强模型），**Max 默认 Opus 5**。Bedrock ID `anthropic.claude-opus-5`（也可走 `global.anthropic.claude-opus-5` 的 `InvokeModel`），Google Cloud / Microsoft Foundry 同名 `claude-opus-5`。
 - **Sonnet 5 计费提醒**：使用了**新 tokenizer**，同样输入约映射为 1.0–1.35× token 数；导入价刻意设为与 Sonnet 4.6 近似成本中性，9/1 转标准价后实际账单可能上升约 50%。
-- **1M 上下文别名**：`/model opus[1m]` / `/model sonnet[1m]`，或全名追加 `[1m]`（如 `claude-opus-4-8[1m]`）；`CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 可关闭。Max/Team/Enterprise 计划含 Opus 1M，Pro 需 usage credits。
+- **1M 上下文别名**：`/model opus[1m]` / `/model sonnet[1m]`，或全名追加 `[1m]`（如 `claude-opus-5[1m]`）。
+  ⚠️ **v2.1.223 扩大了 `CLAUDE_CODE_DISABLE_1M_CONTEXT` 的作用域**：过去只约束一份固定模型清单，现在**所有原生 1M 窗口的 Claude 模型**都会被自动压缩按住在 200K；当 auto-compaction 没能把会话压在 200K 内时会有启动告警。同版本还让 auto-compact 对**未知 model ID** 也按假定窗口约束（`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` 恢复旧行为）。
 - 可通过 `/model` 切换（无参调出交互选择器），或 `claude --model <name>` 启动时指定；`availableModels` / `enforceAvailableModels` 可限制可选模型。
 - 支持最多 **3 个 fallback models**（`fallbackModel` 设置 + `--fallback-model`，v2.1.167 起也作用于交互式会话；v2026.6 GA）在过载时按序降级。
-- **Effort 分级**：`/effort` 支持 `low`/`medium`/`high`/`xhigh`/`max`（v2.1.171+ 新增 `xhigh`= API 的 "extra"，介于 high 与 max 之间；无参调出交互滑块）。Opus 4.8 全平台默认 `high`（官方推荐困难任务/长异步工作流用 "extra"）。
-- **Fast Mode**（Research Preview，仅 Opus 系列）：输出速度最高提升 2.5×，API 通过 `speed:"fast"` + `fast-mode-2026-02-01` beta header 启用；CC 内以 `/fast` 切换。Opus 4.8 fast 定价 $10/$50。
-- **Claude Mythos**：Project Glasswing 门控的网络安全研究预览（受限访问、独立定价），非 GA。
+- **Effort 分级**：`/effort` 支持 `low`/`medium`/`high`/`xhigh`/`max`（v2.1.171+ 新增 `xhigh`= API 的 "extra"，介于 high 与 max 之间；无参调出交互滑块），另有 `ultracode` 档同时给 `xhigh` 推理与自动工作流编排（见 §20.6）。Opus 系列全平台默认 `high`。
+- **Fast Mode**（Research Preview，仅 Opus 系列）：输出速度约 2.5×，API 通过 `speed:"fast"` + `fast-mode-2026-02-01` beta header 启用；CC 内以 `/fast` 切换。⚠️ **v2.1.219 起 `/fast` 覆盖 Opus 5 与 Opus 4.8，Opus 4.7 已从 fast mode 移除**。Opus 5 fast 仅在 Claude API 可用（Bedrock / Google Cloud / Foundry 暫不支持），定价 $10/$50。
+- **Claude Mythos 5**（`claude-mythos-5`）：与 Fable 5 同规格同定价，属 Project Glasswing 门控的邀请制预览（另有 `claude-mythos-preview`），非 GA。
 
-> **模型迭代提示**：本文所列模型 ID 会随版本演进（旧版曾以 Opus 4.6/4.7 / Sonnet 4.6 为主力）。实际以 `/model` 列表与官方 [models overview](https://platform.claude.com/docs/en/about-claude/models) 为准。
+> **模型迭代提示**：本文所列模型 ID 会随版本演进（旧版曾以 Opus 4.6/4.7/4.8 / Sonnet 4.6 为主力）。实际以 `/model` 列表与官方 [models overview](https://platform.claude.com/docs/en/about-claude/models) 为准。
 
 **2026 年关键能力升级：**
 
 | 能力 | 说明 |
 |------|------|
-| 1M 上下文窗口 | Opus 4.8 / Sonnet 5 / Fable 5 默认支持，标准定价无长上下文附加费 |
-| 128K 最大输出 | Opus 4.8 支持最大 128K tokens 输出 |
-| Adaptive Thinking | 自适应思考（不再支持手动扩展思考预算） |
-| Fast Mode | 输出速度最高 2.5×（Research Preview，Opus 系列，`/fast`） |
-| Mid-conversation system messages | Opus 4.8 新增：会话中途插入 system 消息（API 能力） |
+| 1M 上下文窗口 | Opus 5 / Opus 4.8 / Sonnet 5 / Fable 5 默认支持，标准定价无长上下文附加费 |
+| 128K 最大输出 | Opus 5 支持最大 128K tokens 输出（Batch API 带 beta header 可到 300K） |
+| Adaptive Thinking | 自适应思考（不再支持手动扩展思考预算）；**Opus 5 起默认开启**，effort 即思考深度旋钮 |
+| Fast Mode | 输出速度约 2.5×（Research Preview，Opus 5 / Opus 4.8，`/fast`；仅 Claude API） |
+| Mid-conversation 工具变更 | Opus 5 新增 beta：会话中途改工具集**不失效 prompt cache**（API 能力） |
+| API 自动 fallback | Opus 5 / Fable 5 被安全分类器拦下的请求自动改路由到别的模型，而非直接拒绝（beta） |
 | Manual 默认权限模式 | v2.1.200 起 `default` 显示为 "Manual"，人类批准为出厂基线；`auto` 不再默认 |
-| Auto Mode | AI 权限分类器，减少权限疲劳；v2.1.207 起 Bedrock/Vertex/Foundry **默认开启**（`disableAutoMode` 关闭） |
+| Auto Mode | AI 权限分类器，减少权限疲劳；v2.1.207 起 Bedrock/Vertex/Foundry **默认开启**（`disableAutoMode` 关闭）；v2.1.210 起外部会话的分类器默认 Sonnet 5 |
 | Scheduled Tasks / Routines | 保存 prompt 定时/GitHub/API 触发；Desktop 本地任务 + 云端 Routines（`/schedule`，2026-04 研究预览） |
-| Agent Teams / Agent View | 多代理协作 + 统一会话列表（`claude agents`，Research Preview） |
-| Dynamic Workflows | 让 Claude 自建工作流编排多子代理（v2.1.154 起 Research Preview；v2.1.202 加 `/config` 大小档位设置） |
+| Agent Teams / Agent View | 多代理协作 + 统一会话列表（`claude agents`，Research Preview）；v2.1.224 起 `SendMessage` / `ListAgents` **可跨会话**（macOS/Linux） |
+| Dynamic Workflows | 让 Claude 自建 JS 编排脚本调度数十至数百子代理（v2.1.154 Research Preview；`ultracode` 触发；v2.1.219 起默认"少于 15 个 agent"的中档规模指引） |
+| Artifacts | 把会话产物发布成 claude.ai 上的私有实时网页（2026-06-18 beta，CLI ≥ v2.1.183） |
 | `/loop` 定时任务 | Cron 式后台循环执行（会话内，CronCreate/List/Delete） |
 | Agent Checkpointing | 保存/恢复整棵代理树中间状态（Beta） |
 | Computer Use | 远程桌面控制（GA，OSWorld 84%） |
 | Voice Mode | 语音输入编程 |
-| Remote Control | 从 claude.ai/手机控制本地 Claude Code |
-| Plugin Marketplace | 插件市场，捆绑 skills/agents/hooks/MCP；`.claude/skills` 下插件免市场自动加载 |
-| Auto Memory | 自动记录和回忆工作上下文（`/memory` 管理） |
-| VS Code 深度集成 | Activity bar 会话列表、原生插件管理、远程会话浏览、计划渲染为 markdown |
+| Remote Control | 从 claude.ai/手机控制本地 Claude Code；v2.1.224 起可见压缩进度与边界、`/clear` 会传播 |
+| Self-hosted runner | `claude self-hosted-runner` 自建执行环境（v2.1.224，Team/Enterprise） |
+| Plugin Marketplace | 插件市场，捆绑 skills/agents/hooks/MCP；`.claude/skills` 下插件免市场自动加载；v2.1.224 起支持 `archive` 源（HTTPS zip + SHA-256 pin，无需 git/npm） |
+| Auto Memory | 自动记录和回忆工作上下文（`/memory` 管理）；v2.1.214 起 frontmatter 带 ISO `modified` 时间戳 |
+| VS Code 深度集成 | Activity bar 会话列表、原生插件管理、远程会话浏览、计划渲染为 markdown；v2.1.221 加 **Focus view**（`Ctrl+Alt+F`，把工具活动折叠进逐轮摘要） |
 
 **产品定位演进：**
 
@@ -188,7 +220,9 @@ Claude Code 内部使用 `BatchTool` 将多个工具调用打包为一次操作�
 **Adaptive Thinking（自适应思考）：**
 
 Claude 4.6+（含 Opus 4.8 / Claude 5 家族）支持自适应思考模式，在 agentic 工作流中自动决定是否使用扩展思考（Opus 4.8 起不再支持手动扩展思考预算）：
-- 使用 `thinking: { type: "adaptive" }` 配置
+- 使用 `thinking: { type: "adaptive" }` 配置。
+  ⚠️ **Opus 5 起这是默认值**——不显式配置也带思考，`effort` 成为思考深度的旋钮；
+  要真正关掉 thinking，effort 必须在 `high` 及以下
 - 收到工具结果后，模型会在 `thinking` block 中反思结果质量并规划下一步
 - 可通过 prompt 引导思考行为的触发频率
 - `Alt+T` 快捷键可手动切换扩展思考开关
@@ -327,8 +361,38 @@ Claude Code 约有 **20+ 内置工具**，每个工具定义包含 `name`、`des
 | **CronList** | 列出所有定时任务 |
 | **Skill** | 调用 skill（自定义命令） |
 | **TaskCreate/TaskUpdate/TaskGet/TaskList** | 结构化任务管理 |
+| **SendMessage** | 向其他 agent / 主会话发消息（Agent Teams 通信通道；v2.1.224 起可跨会话） |
+| **Workflow** | 执行 Dynamic Workflow 编排脚本（见 §20.6） |
+| **LSP** | 语言服务器查询（定义跳转、引用查找、hover、符号、调用层级等） |
+| **Monitor** | 后台监视长跑脚本的 stdout，以聊天通知形式流式回报事件 |
+| **Artifact** | 把 HTML / Markdown 页面发布到 claude.ai（默认私有，见 §3.10） |
+| **EndConversation** | 面对高度辱骂性用户或越狱尝试时结束会话（v2.1.214 新增，对齐 claude.ai 2025 年起的行为） |
 
-### 3.9 工具优先级规则
+### 3.9 Artifact 工具（2026-06-18 beta）
+
+把一次 Claude Code 会话的产物**发布成 claude.ai 上的一个实时网页**，会话继续时页面**原地更新**、
+每次发布留一版历史。典型用途是 PR 走查、调查时间线、发布检查单、架构图、会话数据看板。
+
+它与 claude.ai 聊天里的 Artifacts 同名但不同物——区别在**上下文来源**：Claude Code 的 artifact
+由本地代码库 + MCP 连接器 + 会话历史三者共同构建，所以一个调试页面可以把失败的测试、
+相关函数、监控里的错误尖峰和推理链条汇到一处。
+
+**没有 `/artifact` 命令**，用自然语言让它做（"做个 artifact 展示…"），Claude 写好页面、
+请求发布许可、然后打印 URL。
+
+**可用条件（限制不少，逐条核对）：**
+
+| 要求 | 条件 |
+|------|------|
+| 计划 | Pro / Max / Team / Enterprise。Pro/Max 上默认私有且无管理面；Team 默认开启；Enterprise 需 Owner 在 claude.ai 管理设置里开 |
+| 认证 | 会话必须由 claude.ai 账号支撑（CLI 里 `/login`）。**用 API key、gateway token 或云厂商凭据的会话不能发布** |
+| 模型供应商 | 仅 Anthropic API。**Bedrock / Google Cloud Agent Platform / Microsoft Foundry 不可用** |
+| 组织策略 | CMEK、HIPAA、Zero Data Retention 任一开启即不可用 |
+| 载体 | CLI ≥ v2.1.183 或桌面应用 ≥ 1.13576.0。Agent SDK / GitHub Action / MCP-server 上下文默认关闭，设了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 亦关闭 |
+
+默认只有创建者可见，可选择分享给组织内成员；**不能公开分享**（组织策略层面）。
+
+### 3.10 工具优先级规则
 
 Claude Code 的 system prompt 中明确规定了工具使用优先级：
 - 读文件用 **Read** 而非 `cat/head/tail`
@@ -383,17 +447,26 @@ Claude Code 的 system prompt 中明确规定了工具使用优先级：
 
 | 命令 | 功能 | 说明 |
 |------|------|------|
-| `/review` | 快速单遍代码审查 | v2.1.202（2026-07-06）**改回快速单遍、只读**审查 git diff |
-| `/code-review [--fix]` | 多代理深度审查 | 多个并行代理按类别审查 + 置信度阈值 + 严重度标注；`--fix` 应用发现到工作树；`/simplify` 内部调用它 |
+| `/code-review [level] [PR]` | 代码审查（**统一入口**） | 多代理按类别审查 + 置信度阈值 + 严重度标注；`--fix` 应用发现到工作树。v2.1.218 起**作为后台子代理运行**（不再占满对话）；v2.1.223 起**不带 effort 级别时复用你上次输入的级别**，显式写 `/code-review high` 才改 |
+| `/review` | → `/code-review` 的**别名** | ⚠️ **v2.1.223 破坏性变更**：命令名仍可用，但执行内容改成了 `/code-review`（审查当前 diff）。原先"快速单遍只读"的语义已消失 |
+| `/code-review ultra` | 云端深度审查 | `/ultrareview` 仍作为别名保留，但推荐形式是这个 |
+| `/verify` | 跑起应用确认改动真的生效 | 内置 skill（v2.1.145）。⚠️ **v2.1.215 起只能手动调用**，Claude 不再自行触发 |
 | `/commit` | 创建 git commit | 语义分析变更，生成 commit message |
 | `/pr` | 创建 Pull Request | 分析所有 commit，生成 PR 描述 |
-| `/diff` | 交互式 diff 查看器 | 左右箭头切换 git diff 和单次 turn diff，上下浏览文件 |
+| `/diff` | 交互式 diff 查看器 | 左右箭头切换 git diff 和单次 turn diff，上下浏览文件。v2.1.222 起用**原始 git blob 内容**，忽略工作区配的 diff driver 与 textconv |
 | `/plan [description]` | 进入计划模式 | 可选描述立即开始规划 |
-| `/rewind` | 回退变更 | 使用 checkpoint 系统恢复代码和/或对话 |
+| `/rewind` | 回退变更 | 使用 checkpoint 系统恢复代码和/或对话（v2.1.216 起拒绝还原符号链接 / 硬链接） |
 | `/simplify` | 简化代码（内置 skill） | 现内部调用 `/code-review --fix`，检查复用/质量/效率并修复 |
 | `/batch <instruction>` | 批量并行处理 | 分解为 5-30 个独立单元，每个在独立 worktree 中执行 |
 | `/security-review` | 安全审查 | 专项安全漏洞扫描（v2.1.70） |
 | `/debug [description]` | 调试当前会话 | 读取会话 debug 日志进行分析 |
+| `/run` | 启动应用并验证改动 | 内置 skill（v2.1.145） |
+| `/cd <path>` | 移动会话工作目录 | **不破坏 prompt cache**（v2.1.170） |
+| ~~`/ultraplan`~~ | ~~浏览器支撑的规划会话~~ | ⚠️ **v2.1.222 已移除** |
+
+> **一条容易踩的行为线（v2.1.215 / v2.1.218 两次收紧）**：`/verify`、`/code-review`、`/deep-research`
+> 现在**都只在你显式调用时才跑**。过去 Claude 会在会话中途自行决定"你这段活该做次验证/审查"，
+> 加轮次、也加账单。这类单行改动比多特性发布更值得留意——它挪的是**谁决定何时跑**。
 
 ### 4.5 诊断与账户
 
@@ -416,7 +489,12 @@ Claude Code 的 system prompt 中明确规定了工具使用优先级：
 | `/loop [interval] <prompt>` | 定时循环执行 | 如 `/loop 5m check the deploy`，默认 10 分钟间隔；无间隔时 Claude 自定节奏 |
 | `/schedule <spec>` | 创建定时任务 / 云端 Routine | 如 `/schedule daily PR review at 9am`；v2026-04 起在 CLI 创建**云端 Routine**（详见 §20） |
 | `/goal <description>` | 目标驱动持续执行 | 围绕目标自主推进长任务，带预算/轮次约束 |
-| `/workflows` | 查看/管理动态工作流 | 观察 Dynamic Workflows 实时进度（v2.1.154+） |
+| `/workflows` | 查看/管理动态工作流 | 观察、暂停、恢复、保存 Dynamic Workflows（v2.1.154+） |
+| `/deep-research` | 多源联网研究报告 | 内置研究 workflow（v2.1.154）。⚠️ **v2.1.218 起只能手动调用** |
+| `/background [prompt]` | 会话转后台代理 | 释放终端，任务在后台继续（v2.1.154） |
+| `/reload-skills` | 会话中途刷新 skills | 配套 `SessionStart` hook 的 `reloadSkills: true`（v2.1.152） |
+| `/teleport [id]` | 恢复远程会话到本地 | v2.1.223 起云端会话会直接提示 `claude --teleport <session id>` |
+| `/release-notes` | 查看版本更新说明 | v2.1.212 修掉了"Show all 会把整份 changelog 灌进后续每次请求上下文"的问题 |
 | `/powerup` | 交互式功能教程 | 带动画演示，讲解 Claude Code 特性（v2.1.90+） |
 | `/team-onboarding` | 生成团队上手指南 | 从本地使用记录生成 ramp-up 指南（v2.1.101+） |
 | `/tui` | 全屏 TUI 模式 | 切换全屏终端界面（v2.1.171+） |
@@ -485,7 +563,7 @@ Claude Code 的 system prompt 中明确规定了工具使用优先级：
 
 | 参数 | 功能 | 示例 |
 |------|------|------|
-| `--model` | 设置模型 | `claude --model claude-opus-4-8`（或 `claude-sonnet-5`） |
+| `--model` | 设置模型 | `claude --model claude-opus-5`（或 `claude-sonnet-5`、`claude-fable-5`） |
 | `--effort` | 设置推理努力级别 | `claude --effort xhigh`（low/medium/high/xhigh/max） |
 | `--agent` | 指定代理 | `claude --agent my-custom-agent` |
 | `--agents` | 动态定义子代理（JSON） | `claude --agents '{"reviewer":{...}}'` |
@@ -773,32 +851,61 @@ Claude Code 使用分层权限系统平衡功能与安全：
 
 Hooks 是用户定义的 shell 命令、HTTP 端点或 LLM prompt，在 Claude Code 生命周期的特定点自动执行。与 CLAUDE.md 指令不同（Claude 可能选择忽略），Hooks 是**确定性的**——条件满足时必定执行。
 
-### 8.1 Hook 事件（18+ 个）
+### 8.1 Hook 事件（20+ 个）
 
 > 注：Hook 事件数量随版本持续增加，以官方 [hooks reference](https://code.claude.com/docs/en/hooks) 为准。下表为当前已知事件。
 
+官方按**触发节律**把事件分三类，配置前先想清楚你要的是哪一档：
+
+| 节律 | 事件 |
+|------|------|
+| 每会话一次 | `SessionStart`、`SessionEnd` |
+| 每轮一次 | `UserPromptSubmit`、`Stop`、`StopFailure` |
+| 每次工具调用 | `PreToolUse`、`PostToolUse` |
+
 | 事件 | 触发时机 | 可否阻止操作 |
 |------|----------|-------------|
-| `SessionStart` | 会话开始或恢复时 | 否 |
+| `SessionStart` | 会话开始或恢复时（v2.1.214 起 fork 起始的会话上报 source 为 `"fork"` 而非 `"resume"`） | 否 |
+| `Setup` | 仓库初始化 / 维护操作（配合 `--init` / `--maintenance`） | — |
 | `InstructionsLoaded` | CLAUDE.md 或 rules 文件加载到上下文时 | 否 |
+| `DirectoryAdded` | **v2.1.219 新增**：`/add-dir`（或 SDK 的 `register_repo_root` 控制请求）在会话中途注册新工作目录后 | 否 |
 | `UserPromptSubmit` | 用户提交 prompt 后，Claude 处理前 | 是 |
 | `PreToolUse` | 工具调用执行前 | 是（可 block） |
-| `PermissionRequest` | 权限对话框出现时 | 是（可自动决策） |
+| `PermissionRequest` | 权限对话框将要出现、或本该自动拒绝一个无法提示的调用时 | 是（可自动决策） |
 | `PostToolUse` | 工具调用成功后 | 否 |
 | `PostToolUseFailure` | 工具调用失败后 | 否 |
+| `MessageDisplay` | 助手文本渲染前（可改写或隐藏，v2.1.152+） | — |
 | `Notification` | Claude Code 发送通知时 | 否 |
 | `SubagentStart` | 子代理启动时 | 否 |
 | `SubagentStop` | 子代理完成时 | 否 |
 | `Stop` | Claude 完成响应时 | 是 |
+| `StopFailure` | 一轮以失败收尾时 | — |
 | `TeammateIdle` | 团队代理空闲时 | 是 |
 | `TaskCompleted` | 任务标记完成时 | 是 |
 | `ConfigChange` | 配置文件变更时 | 是 |
 | `WorktreeCreate` | 创建 worktree 时 | 替换默认 git 行为 |
 | `WorktreeRemove` | 移除 worktree 时 | — |
 | `PreCompact` | 上下文压缩前 | 是（exit code 2 或 `{"decision":"block"}` 可阻止压缩，v2.1.105+） |
+| `PostCompact` | 上下文压缩后（v2.1.76+） | — |
 | `SessionEnd` | 会话终止时 | — |
 
+**三个容易踩空的边界（都是官方明写的）：**
+
+- **`@` 引用的文件不触发任何 hook。** 你在 prompt 里写 `@src/foo.ts`，Claude Code 是在
+  **构造 prompt 时直接把内容插进去**的，没有工具调用发生——所以连匹配 `Read` 的 `PreToolUse`
+  也不会响。要挡住特定路径被 `@` 读到，只能用 `Read` 的 **deny 权限规则**，不能靠 hook。
+- **`EndConversation` 完全绕开 hook 层**：`PreToolUse`、`PostToolUse`、`PermissionRequest` 三者对它都不触发。
+- **`PreToolUse` 与 `PermissionRequest` 的触发面不同**：前者在**每次**工具调用前跑（不管要不要权限），
+  后者只在真要问你、或本该自动拒绝时跑。
+
 > **v2.1.141+ 新增 `terminalSequence` 输出字段**：Hook JSON 输出可携带 `terminalSequence`，让 hook 在无控制终端时也能发出桌面通知、窗口标题、响铃等终端转义序列。
+>
+> ⚠️ **v2.1.214 破坏性变更（`if:` 条件的路径匹配）**：单段的 `dir/` 形式现在**只匹配 `<cwd>/dir`**，
+> 要任意深度匹配得写成 `/dir/`。注意 `deny` / `ask` **权限规则**保持原来的任意深度语义——
+> 两套匹配规则从此不再一致，混着用容易以为自己挡住了其实没挡住。
+>
+> **v2.1.218 安全加固**：agent frontmatter 里定义的 hooks 现在要求**该 agent 文件自身所在目录**
+> 已接受 workspace trust，防止从不受信目录带进来的 agent 文件顺手执行 hook。
 
 ### 8.2 Hook 配置格式
 
@@ -1382,7 +1489,23 @@ claude mcp add-from-claude-desktop  # 从 Claude Desktop 导入
 
 **Explore 子代理：** 调用时指定彻底程度 `quick`/`medium`/`very thorough`，保持探索结果不污染主对话上下文。
 
-**嵌套子代理（v2026.6 GA）：** 早期版本禁止子代理再启动子代理；自 2026.6 release train 起**嵌套子代理已 GA**，支持子代理进一步分解任务（配套 fallback models、marketplace 同批 GA）。深度仍有上限以防失控嵌套。
+**嵌套子代理——这条在一个月里翻了两次，按时间读才不会搞错：**
+
+| 时间 | 版本 | 状态 |
+|------|------|------|
+| 早期 | — | 禁止：子代理不能再启动子代理 |
+| 2026.6 release train | — | GA：支持嵌套（配套 fallback models、marketplace 同批 GA） |
+| 2026-07-21 | v2.1.217 | ⚠️ **破坏性回退**：默认**又不再**嵌套，要靠 `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` 显式放开 |
+| 2026-07-24 | v2.1.219 | **恢复默认深度 3**；`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` 可关掉嵌套 |
+
+**并发与总量上限（v2.1.217 / v2.1.224）：**
+
+- **并发上限 20**（v2.1.217 新增），`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 覆盖。
+  目的是防"一条消息就 fan out 出无界后台代理"。
+- **每会话 200 个子代理的启动总量上限已移除**（v2.1.224），并发与深度上限仍在。
+- **stream-json 转发**（v2.1.211 / v2.1.219）：`--forward-subagent-text` 或
+  `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT` 可把子代理的正文与 thinking 一并输出；
+  v2.1.219 起 depth-2+ 的嵌套子代理也会出现，按其 spawning Agent 的 `tool_use` id 归组。
 
 ### 11.3 自定义子代理
 
@@ -1444,7 +1567,11 @@ You are a code review specialist. When reviewing code:
 | 协调 | 主代理管理所有工作 | 共享任务列表 + 自协调 |
 | 适用场景 | 聚焦任务，只需要结果 | 需要讨论和协作的复杂工作 |
 | Token 成本 | 较低：结果摘要返回主上下文 | 较高：每个队友是独立的 Claude 实例 |
-| 嵌套 | 不能嵌套（子代理不能再启动子代理） | 队友之间可以互相通信 |
+| 嵌套 | 默认深度 3（v2.1.219 起，见上表） | 队友之间可以互相通信 |
+
+> **三者别混为一谈（Anthropic 自己也强调过这点）**：**子代理**是执行形态，
+> **Agent Teams** 是协调模型，**ultracode / Dynamic Workflows** 是会话级策略 + 确定性编排壳。
+> 详见 §20.6 的三方对比。
 
 ### 11.6 Agent Teams（实验性功能）
 
@@ -1475,6 +1602,15 @@ Agent Teams 是 2026 年 2 月发布的实验性多代理协作功能，允许�
 ~/.claude/teams/{team-name}/config.json    # 团队配置
 ~/.claude/tasks/{team-name}/               # 任务列表
 ```
+
+**跨会话消息（v2.1.224 新增，macOS / Linux）：**
+
+`SendMessage` 与新增的 `ListAgents`（用于发现收件人）现在**可以跨会话**工作，
+不再局限于同一个 team 内。两个配套设置：`crossSessionInbound`（是否接收外部会话来信）、
+`dialogExpiry`。
+
+⚠️ 安全上有一道闸：**v2.1.222 起 `SendMessage` 在派发到其他 agent 会话前会先跑一次权限分类器**。
+另外 v2.1.224 修掉了"写入收件人 inbox 失败却仍报 Message sent"的假成功——投递失败现在如实报错。
 
 **使用示例：**
 
@@ -1621,8 +1757,13 @@ skills:
 
 | 模型 | 上下文窗口 |
 |------|-----------|
-| 标准 | 200,000 tokens（~150,000 词） |
-| Opus 4.8 / Sonnet 5 / Fable 5 (1M) | 1,000,000 tokens（标准定价，无长上下文附加费） |
+| 标准（Haiku 4.5 等） | 200,000 tokens（~150,000 词） |
+| Opus 5 / Opus 4.8 / Sonnet 5 / Fable 5 | 1,000,000 tokens（标准定价，无长上下文附加费） |
+
+> Opus 5 的 1M **既是默认也是上限**，官方称在整个窗口内指令遵循、工具调用与推理质量保持一致。
+>
+> ⚠️ **v2.1.223 起 `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` 会把所有原生 1M 模型按住在 200K**
+> （靠 auto-compaction 实现，压不住时有启动告警），不再只约束一份固定清单。
 
 ### 12.2 上下文消耗
 
@@ -1739,6 +1880,13 @@ System prompt:    ~32.9K tokens（基线开销，用户输入前已消耗）
 | `MAX_THINKING_TOKENS` | 无限制 | 10000 | 减少思考 token 消耗 |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | ~75% | 50% | 更早压缩，节省 token |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | 继承主模型 | haiku | 子代理使用更便宜的模型 |
+| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 20（v2.1.217 起） | 视预算下调 | 封住"一条消息 fan out 出一片后台代理"的账单 |
+| `/effort` 档位 | Opus 系列 `high` | 简单任务降到 `low`/`medium` | ⭐ **Opus 5 上这是最主要的成本旋钮** |
+
+> ⚠️ **Opus 5 上省钱的着力点换了地方。** 它与 Opus 4.8 同价（$5/$25），
+> 但 **thinking 默认开启、effort 即思考深度**——同一张价目表下，两个团队的账单可以差出很远，
+> 差别全在 effort 怎么设。以前"选便宜的模型"是主要杠杆，现在**"给合适的任务配合适的 effort"**才是。
+> 另外 v2.1.221 起 auto-mode 权限检查会复用缓存的对话前缀，分类器本身的 prompt-cache 成本已下降。
 
 **1M 上下文（API/Max 计划）的优势：**
 
@@ -1849,6 +1997,26 @@ Claude Code Review（2026 年 3 月发布）是专用的多代理代码审查系
 - worktree 是完整的独立工作副本：可编辑文件、运行测试、安装包
 - 所有 worktree 共享相同的仓库历史和远程连接
 - 子代理也支持 worktree 进行并行代码迁移和批量变更
+- **v2.1.221 起 `/fork` 出的会话会开自己的 worktree**，不再在原会话的 checkout 里干活
+
+**关键配置（`settings.json`）：**
+
+| 键 | 说明 | 默认 |
+|----|------|------|
+| `worktree.baseRef` | 新 worktree 从哪个 ref 分叉。`"fresh"` 从 `origin/<default-branch>`（干净、对齐远端）；`"head"` 从当前本地 HEAD（带上未推送的提交与特性分支状态） | `"fresh"` |
+| `worktree.symlinkDirectories` | 从主仓库软链进每个 worktree 的目录，避免大目录重复占盘 | 无 |
+| `worktree.bgIsolation` | 后台会话的隔离模式。`"worktree"` 会在调用 `EnterWorktree` 前**封住主 checkout 的 Edit/Write** | `"none"` |
+
+⚠️ **worktree 隔离曾三次漏水，都是同一类问题——隔离只盖住了一部分动作：**
+
+| 版本 | 漏点 |
+|------|------|
+| v2.1.210 | worktree 隔离的子代理能对**主仓库 checkout** 跑改动 git 状态的命令 |
+| v2.1.216 | 同类漏点：子代理可用 `git -C` / `GIT_DIR` 把 git 重定向回共享 checkout |
+| v2.1.222 | 收口：**隔离现在覆盖所有会话类型的文件编辑与 Bash**，破坏性 git 命令打不到主 checkout |
+
+同批还修了 `PreToolUse` 的 auto-allow hook 在后台代理任务（摘要、压缩、重命名）里**绕过工具限制**的问题。
+如果你依赖 worktree 隔离做并行开发，v2.1.222 是值得升上去的最低版本。
 
 ### 13.7 Checkpoint 系统
 
@@ -1955,7 +2123,7 @@ Claude Code Review（2026 年 3 月发布）是专用的多代理代码审查系
   "message": {
     "content": [{"text": "...", "type": "text"}],
     "id": "msg_xxx",
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5",
     "role": "assistant",
     "stop_reason": "end_turn",
     "usage": {
@@ -2371,11 +2539,33 @@ Auto Mode 在代理和执行之间插入一个后台 AI 分类器：
 {
   "sandbox": {
     "network": {
-      "allowedDomains": ["registry.npmjs.org", "api.github.com"]
+      "allowedDomains": ["registry.npmjs.org", "api.github.com"],
+      "strictAllowlist": true
     }
   }
 }
 ```
+
+**`network.strictAllowlist`（v2.1.219 新增）**：不在 allowlist 里的主机**直接拒绝，不弹提示**。
+默认行为是拦下后问你，这个开关把"问"变成"拒"——无人值守场景下这才是你要的那个语义。
+
+**`filesystem.disabled`（v2.1.216 新增）——只关文件系统隔离，保留网络出口管控：**
+
+```json
+{
+  "sandbox": {
+    "filesystem": { "disabled": true },
+    "network": { "allowedDomains": ["registry.npmjs.org"] }
+  }
+}
+```
+
+沙箱命令拿到对宿主文件系统的完整读写权，但网络出口仍被 `network.allowedDomains` 圈住。
+⚠️ **只从 user / managed / CLI `--settings` 三个来源读取**——刻意不认项目级设置，
+避免仓库里塞一行配置就把文件系统隔离关掉。适用于"构建脚本要到处写盘，但绝不能外传"的场景。
+
+**凭据遮蔽（v2.1.224）**：新增 `extract` / `onExtractNoMatch` / `decode: "jwt"` 与
+`maskClaims`、`awsPairs`、`sigv4` 等选项，用于在沙箱文件里遮蔽凭据。
 
 **平台支持：**
 - macOS：使用 `sandbox-exec` 原生沙箱，开箱即用
@@ -2555,7 +2745,7 @@ disable-model-invocation: true
 
 同名 skill 优先级：enterprise > personal > project。插件 skill 使用 `plugin-name:skill-name` 命名空间，不冲突。
 
-### 18.6 内置 Skills
+### 18.7 内置 Skills
 
 | Skill | 功能 |
 |-------|------|
@@ -2564,8 +2754,17 @@ disable-model-invocation: true
 | `/debug [description]` | 读取会话 debug 日志进行故障排查 |
 | `/loop [interval] <prompt>` | 定时循环执行 prompt。如 `/loop 5m check the deploy` |
 | `/claude-api` | 加载 Claude API 参考材料。代码导入 anthropic SDK 时自动触发 |
+| `/run` / `/verify` | 启动应用并确认改动真的生效（v2.1.145）。⚠️ `/verify` 自 v2.1.215 起仅手动调用 |
+| `/deep-research` | 多源联网研究报告（v2.1.154）。⚠️ 自 v2.1.218 起仅手动调用 |
+| `/code-review` | 多代理代码审查。v2.1.218 起作为后台子代理运行；自 v2.1.215 起仅手动调用 |
 
-### 18.7 动态上下文注入
+> `disableBundledSkills` 设置 / `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` 环境变量可整体关掉内置 skills（v2.1.170）。
+>
+> ⚠️ **v2.1.222 起 Claude 遇到带 `disable-model-invocation` 的 skill 时会被明确告知
+> "请用户自己去跑这个 skill"**，而不是自作主张把 skill 的流程复现一遍——这堵住了
+> "禁止自动调用"被绕过的一条缝。
+
+### 18.8 动态上下文注入
 
 Skill 可以通过 `@path/to/file` 语法引用支持文件，在 skill 激活时自动加载到上下文。
 
@@ -2679,7 +2878,7 @@ Claude Code 2.1+ 支持在 skill frontmatter 中直接定义 hooks（`PreToolUse
   },
   "defaultMode": "default",
   "autoCompact": true,
-  "model": "claude-opus-4-8"
+  "model": "claude-opus-5"
 }
 ```
 
@@ -2747,11 +2946,22 @@ Claude Code 2.1+ 支持在 skill frontmatter 中直接定义 hooks（`PreToolUse
 | `ANTHROPIC_API_KEY` | Anthropic API 密钥 |
 | `CLAUDE_CODE_USE_BEDROCK` | 使用 AWS Bedrock |
 | `CLAUDE_CODE_USE_VERTEX` | 使用 Google Vertex AI |
+| `ANTHROPIC_BEDROCK_REGION_PREFIX` | Bedrock 区域前缀（v2.1.224 新增） |
 | `ANTHROPIC_MODEL` | 默认模型 |
-| `MCP_TIMEOUT` | MCP 服务器超时 |
+| `MCP_TIMEOUT` | MCP 服务器启动超时 |
 | `MAX_MCP_OUTPUT_TOKENS` | MCP 输出 token 限制 |
+| `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` | 长跑 MCP 工具调用自动转后台的阈值（v2.1.212 起默认 2 分钟，可调或禁用） |
 | `ENABLE_TOOL_SEARCH` | 工具搜索控制 |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | 最大输出 token |
+| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` | 子代理嵌套深度（v2.1.219 起默认 3，设 1 关闭嵌套） |
+| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 并发子代理上限（v2.1.217 起默认 20） |
+| `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT` | stream-json 中包含子代理正文与 thinking（v2.1.211） |
+| `CLAUDE_CODE_DISABLE_1M_CONTEXT` | 把 1M 模型按住在 200K（⚠️ v2.1.223 起作用于**所有**原生 1M 模型） |
+| `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT` | 关掉对未知 model ID 的窗口约束（v2.1.223） |
+| `CLAUDE_CODE_SAFE_MODE` | 禁用所有自定义配置以排障（配套 `--safe-mode`，v2.1.170） |
+| `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | 禁用内置 skills（配套 `disableBundledSkills` 设置） |
+| `CLAUDE_AX_SCREEN_READER` | 屏幕阅读器纯文本模式（配套 `--ax-screen-reader` / `axScreenReader`，v2.1.208） |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | 关闭非必要出网流量（同时会禁用 Artifacts 发布） |
 
 ---
 
@@ -2759,7 +2969,11 @@ Claude Code 2.1+ 支持在 skill frontmatter 中直接定义 hooks（`PreToolUse
 
 ### 20.1 版本迭代速度
 
-Claude Code 保持极高的迭代频率，几乎每天/每周发布更新。2026 年 1-3 月从 v2.1.63 迭代到 v2.1.76+；到 2026 年 7 月已至 **v2.1.207+**。这半年间的重大节点：
+Claude Code 保持极高的迭代频率，几乎每天/每周发布更新。2026 年 1-3 月从 v2.1.63 迭代到 v2.1.76+；到 2026 年 8 月已至 **v2.1.224+**。
+
+节奏有个直观的数字：**7 月 14 日的 v2.1.210 到 8 月 7 日的 v2.1.224，24 天里 15 个版本**，
+其中 v2.1.214 一个版本就含 47 条变更、v2.1.216 含 40 条、v2.1.221 含 39 条。
+**引用本文任何一节前，先确认它标注的版本号是否还在你的射程内。**
 
 | 时间 | 版本 | 关键更新 |
 |------|------|----------|
@@ -2767,11 +2981,25 @@ Claude Code 保持极高的迭代频率，几乎每天/每周发布更新。2026
 | 2026-02 | v2.1.51~59 | `remote-control` 子命令、Auto Memory（`/memory`）、`/copy` |
 | 2026-03 | v2.1.76+ | Voice Mode、Remote Control、Agent Teams、Auto Mode、Plugin Marketplace、Scheduled Tasks（Desktop/云端起步） |
 | 2026-04 | v2.1.90~105 | `/powerup`、Opus 4.7 + `xhigh` effort、Auto Mode 免 flag、`EnterWorktree` path、PreCompact 可阻止、**Routines 云端定时任务**（`/schedule`，研究预览，2026-04-14） |
-| 2026-05 | v2.1.138~157 | **Opus 4.8（05-28）**、**Fable 5（05 底预热）**、**Dynamic Workflows**（`/workflows`）、Agent View（`claude agents`）、`.claude/skills` 插件自动加载、`claude plugin init`、`/code-review --fix` |
-| 2026-06 | v2.1.167~193, v2026.6 | 嵌套子代理 / fallback models / marketplace **GA**、Agent Checkpointing（Beta）、**Fable 5（06-09）**、**Sonnet 5（06-30）**、`[1m]` 别名、后台会话 `claude --bg` / `claude agents` 强化、`autoMode.classifyAllShell` |
-| 2026-07 | v2.1.196~207 | ⭐ **Manual 默认权限模式（07-03, v2.1.200）**、**AskUserQuestion 不再自动 continue**、`/review` 改回单遍 + `/code-review` 多代理分离（v2.1.202）、Dynamic workflow size 设置、`/doctor` 完整体检 + `/checkup`（v2.1.205）、**Bedrock/Vertex/Foundry auto mode 默认开 + Opus 4.8 默认（v2.1.207）**、插件 hook shell 注入加固 |
+| 2026-05 | v2.1.138~157 | **Opus 4.8（05-28）**、**Dynamic Workflows**（`/workflows`，v2.1.154）、Agent View（`claude agents`）、`.claude/skills` 插件自动加载、`claude plugin init`、`/code-review --fix`、`MessageDisplay` hook、`/reload-skills` |
+| 2026-06 | v2.1.160~193, v2026.6 | 嵌套子代理 / fallback models / marketplace **GA**、Agent Checkpointing（Beta）、**Fable 5（06-09）**、**Sonnet 5（06-30）**、**Artifacts beta（06-18）**、`[1m]` 别名、workflow 触发词改名 `ultracode`（v2.1.160）、`/cd`、`--safe-mode`、`autoMode.classifyAllShell` |
+| 2026-07 上半 | v2.1.196~212 | ⭐ **Manual 默认权限模式（07-03, v2.1.200）**、**AskUserQuestion 不再自动 continue**、`/doctor` 完整体检 + `/checkup`（v2.1.205）、**Bedrock/Vertex/Foundry auto mode 默认开（v2.1.207）**、screen reader 模式（v2.1.208）、Agent 工具间接注入加固 + worktree 隔离修补（v2.1.210）、`--forward-subagent-text`（v2.1.211）、MCP 工具调用 2 分钟自动转后台（v2.1.212） |
+| 2026-07 下半 | v2.1.214~220 | **EndConversation 工具（v2.1.214）**、⚠️ `if:` 路径匹配语义变更（v2.1.214）、**`/verify` + `/code-review` 不再自动触发（v2.1.215）**、`sandbox.filesystem.disabled`（v2.1.216）、子代理并发上限 20 + 嵌套先禁后复（v2.1.217/219）、`/code-review` 转后台子代理 + `/deep-research` 仅手动（v2.1.218）、⭐ **Opus 5 成为默认 Opus 模型（07-24, v2.1.219）**、`sandbox.network.strictAllowlist`、**`DirectoryAdded` hook**、`workflowSizeGuideline` |
+| 2026-08 | v2.1.221~224 | VS Code **Focus view**（v2.1.221）、⚠️ **移除 `ultraplan`** + worktree 隔离覆盖全会话类型 + `SendMessage` 过权限分类器（v2.1.222）、⚠️ **`/review` 变 `/code-review` 别名** + `CLAUDE_CODE_DISABLE_1M_CONTEXT` 作用域扩大 + workflow 沙箱 `import()` 逃逸修复（v2.1.223）、**跨会话 `SendMessage`/`ListAgents`** + `claude self-hosted-runner` + 插件 `archive` 源（v2.1.224） |
 
-> **7 月两处破坏性默认变更再强调**：① v2.1.200 默认权限模式 "Manual"（headless/CI 会卡批准提示）；② AskUserQuestion 默认不自动推进（无人值守会阻塞）。迁移无人值守流程前务必核对（见 §7.2 / §3.6）。
+> **五处破坏性变更清单（迁移前逐条核对）：**
+>
+> | 变更 | 版本 | 谁会被打到 |
+> |------|------|-----------|
+> | 默认权限模式改 "Manual" | v2.1.200 | headless / CI 会卡在无人应答的批准提示（§7.2） |
+> | AskUserQuestion 不再自动推进 | v2.1.200 | 无人值守下任何澄清提问都会无限期阻塞（§3.6） |
+> | `if:` 单段 `dir/` 只匹配 `<cwd>/dir` | v2.1.214 | 依赖任意深度匹配的 hook 条件会静默失配（§8.1） |
+> | 移除 `ultraplan` | v2.1.222 | 脚本 / 文档里还在调它的地方 |
+> | `/review` 变成 `/code-review` 的别名 | v2.1.223 | 期待"快速单遍只读"的自动化流程，现在跑的是完整审查（§4.4） |
+>
+> 另有一条不算破坏但很容易反向踩坑的：**`CLAUDE_CODE_DISABLE_1M_CONTEXT` 作用域扩大**（v2.1.223）——
+> 过去只按固定清单约束，现在**所有**原生 1M 模型都会被压到 200K。原本靠"不在清单里"意外拿到
+> 1M 窗口的配置，升级后会突然开始被自动压缩。
 
 ### 20.2 定时任务体系（三条并存的路径）
 
@@ -2828,28 +3056,77 @@ claude remote-control              # 启动远程控制会话
 
 ### 20.6 Dynamic Workflows（动态工作流，v2.1.154+）
 
-2026 年 5 月随 Opus 4.8 一同推出的 Research Preview：可让 Claude **自己创建工作流脚本**来确定性地编排多个子代理（fan-out / pipeline / 对抗验证 / 循环直到收敛等），而非模型逐步临时决策。
+2026 年 5 月随 Opus 4.8 一同推出的 Research Preview。它的核心不是"再多一层子代理"，
+而是**把编排从模型上下文里搬出来，变成一段真实的 JavaScript**：
 
-- 通过 `/workflows` 观察实时进度树
-- 适合大规模迁移、审计、广度扫描等一次上下文装不下的任务
-- 面向符合条件的 Claude Code 计划开放
+> Claude 现场写一个编排脚本 → JS 运行时执行它 → 脚本把工作 fan out 到数十至数百个并行子代理。
+> **中间结果活在脚本变量里，不在 Claude 的上下文窗口里**——这才是它能跑过单次对话协调上限的原因。
+> 模型做判断，代码做协调；协调那部分**花零个 model token**。
+
+**两个入口（同名不同物，容易混）：**
+
+| 入口 | 效果 | 作用域 |
+|------|------|--------|
+| prompt 里写 `ultracode` 关键词 | 这**一个任务**跑成 dynamic workflow，不改会话设置 | 单次 |
+| `/effort ultracode` | 推理 effort 设为 `xhigh`，**且**此后每个实质任务都自动编排 workflow | 整个会话，新会话重置 |
+
+> 关键词从 v2.1.160 起由 `workflow` 改名为 `ultracode`——所以更早的教程里
+> "输入 workflow 就触发"现在不成立了。
+
+**生命周期六段**：规划（Claude 生成 JS 脚本）→ 审批（你看到 phase 列表，可批准/拒绝/查看脚本）
+→ fan-out（并发上限 16，单次运行总量上限 1000）→ 验证 → 收敛 → 迭代。
+中断可续跑：同脚本 + 同 args 从缓存恢复已完成的 agent 调用，只重跑改过的部分。
+
+**规模指引（v2.1.219 起有默认值了）**：默认 medium 档——**建议单个 workflow 少于 15 个 agent**。
+v2.1.202 加了 `/config` 里的档位设置；v2.1.219 新增 `workflowSizeGuideline` 设置键，
+让这个建议值可从任意设置文件配置（配了之后 `/config` 那一行会隐藏）。
+
+**可用性**：Max / Team / 符合条件的 Enterprise 计划，以及 Claude API、Bedrock、Vertex AI、Foundry。
+⚠️ **Enterprise 默认关闭**，需管理员开启。workflow 内的子代理跑在 `acceptEdits` 模式（内部不再逐次审批）。
+
+⚠️ **v2.1.223 安全修复**：workflow 脚本曾能用动态 `import()` 跑出 workflow 沙箱之外的代码。
+
+**它跟子代理、Agent Teams 的分工（这三个真不是一回事）：**
+
+| | 子代理 | Agent Teams | Dynamic Workflows |
+|---|--------|-------------|-------------------|
+| 本质 | 执行形态 | 协调模型 | 确定性编排壳 |
+| 结构何时定 | 主代理临场决定 | 队友之间实时协商 | **运行前就固定在代码里** |
+| 代理间通信 | 不通信，只回报主代理 | 直接互发消息 | **不通信**（结构由脚本决定） |
+| 中断后 | — | 会话死了团队就没了 | **可续跑**（进度存盘） |
+| 规模 | 一轮 fan-out | 实际 3-5 个队友 | 数十至数百 |
+| 何时该用它 | 单次 fan-out 就够 | 需要来回讨论 | **一个阶段的产出决定下一阶段**做什么 |
+
+> 判据一句话：**只要单次 fan-out 就够，就不需要 workflow。**
+> 需要它的信号是 fan-out **之后**——上一阶段的结果要决定下一阶段干什么。
+
+**成本提醒**：workflow 的 token 消耗显著高于普通会话（有实测报告 113 个 agent 烧掉 1.95M token）。
+先用一个小范围任务标定用量再放大，是官方和社区一致的建议。
 
 ### 20.7 Fast Mode（快速模式，Research Preview）
 
-仅 Opus 系列（4.8 / 4.7 / 4.6）支持的低延迟模式：
+仅 Opus 系列支持的低延迟模式：
 
-- 输出速度最高提升 **2.5×**，牺牲部分质量换取延迟
+- 输出速度约 **2.5×**，牺牲部分质量换取延迟
 - CC 内以 `/fast` 切换；API 通过 `speed:"fast"` + `fast-mode-2026-02-01` beta header 启用
-- Opus 4.8 fast 定价 $10/$50 每百万 token（标准价 2 倍）；旧 Opus 4.6/4.7 fast 更贵（$30/$150）
+- ⚠️ **v2.1.219 起覆盖 Opus 5 与 Opus 4.8，Opus 4.7 已被移除**
+- Opus 5 / Opus 4.8 fast 定价 $10/$50 每百万 token（标准价 2 倍）
+- Opus 5 的 fast mode **仅在 Claude API 可用**——Bedrock / Google Cloud / Microsoft Foundry 暂不支持
+- v2.1.212 起 usage credits 中途用尽会**在流上如实报告**，不再静默失败
 - 适合实时聊天、快速摘要等延迟优先场景
 
 ### 20.8 Agent Checkpointing（代理检查点，Beta）
 
 区别于会话持久化（只存对话历史），Agent Checkpointing 额外保存**整棵代理树的状态**——每个子代理的进度、中间产物、待处理任务队列，使多小时的迁移任务可暂停后从断点恢复，无需从头重启。Beta 阶段 schema 可能变动，生产使用需 pin CLI 版本。
 
-### 20.9 Opus 4.8 会话中途系统消息（Mid-conversation system messages）
+### 20.9 会话中途的 system 消息与工具变更
 
-Opus 4.8 新增 API 能力：可在会话进行中插入 system 消息，动态调整模型行为。配合 effort 分级（含新增 `xhigh`），实现更细粒度的运行时控制。
+**Opus 4.8**：可在会话进行中插入 system 消息，动态调整模型行为。配合 effort 分级（含 `xhigh`），实现更细粒度的运行时控制。
+
+**Opus 5 新增（beta）**：**会话中途更换工具集不会让 prompt cache 失效**。这对 harness 是实打实的省——
+过去 MCP 服务器连上/断开、skill 改变可用工具，都要付一次完整的 cache 重建；现在不用了。
+另一个同批 beta 是 **API 层自动 fallback**：Opus 5 / Fable 5 上被安全分类器拦下的请求
+自动改路由到别的模型（通常是 Opus 4.8），而不是直接返回拒绝。
 
 > **v2.1.201（2026-07-03）调整**：Claude Sonnet 5 会话**不再**用 mid-conversation system role 承载 harness 提醒（CC 内部对 Sonnet 5 改回常规注入方式）——说明该能力在 harness 层按模型差异化启用，并非所有模型都走同一路径。也就是说，实现这类机制时不能假设所有模型都支持会话中途 system 消息，需要按 provider / 模型能力分支。
 
@@ -2896,9 +3173,26 @@ Claude Code 的生态定位已从"AI 编程助手"演进为完整的 Agent 平�
 安全层
 ├── 权限系统（deny/allow/ask）
 ├── Auto Mode（AI 分类器）
-├── 沙箱（OS 级隔离）
-└── 信任验证（代码库/MCP 首次运行）
+├── 沙箱（OS 级隔离 + 网络 allowlist）
+├── Worktree 隔离（文件编辑与 Bash，v2.1.222 起覆盖全会话类型）
+└── 信任验证（代码库/MCP/agent 文件首次运行）
 ```
+
+**2026 年 7-8 月这批版本透出的三条走向**（不是官方表述，是从 changelog 里读出来的）：
+
+1. **控制权在往用户手里挪。** `/verify`、`/code-review`、`/deep-research` 三个都从"Claude 自己判断该跑"
+   改成"只在你调用时跑"；默认权限模式从 `auto` 改回 Manual。这类单行变更改的不是能力，
+   而是**谁决定何时花钱**。
+2. **隔离层在补漏，而且补的都是同一类漏。** worktree 隔离连续三个版本被修（v2.1.210 / 216 / 222），
+   每次都是"隔离盖住了一部分动作，另一部分绕过去了"——文件编辑挡住了但 Bash 没挡、
+   Bash 挡住了但 `git -C` / `GIT_DIR` 能重定向。到 v2.1.222 才收口为"覆盖所有会话类型的编辑与 Bash"。
+   同期还修了 `PreToolUse` auto-allow hook 在后台任务里绕过工具限制、workflow 脚本用
+   `import()` 逃出沙箱、权限提示被不可见 Unicode 遮蔽命令。
+   **纵深防御的每一层都要单独验证，"某一层有了"不等于"这条路封了"。**
+3. **企业治理的键在收紧读取来源。** `disableAutoMode`、`autoMode` 分类器规则、
+   `sandbox.filesystem.disabled`、Remote Control 自动启动——这些键**都刻意不从项目级设置读取**，
+   只认用户级或 managed settings。逻辑是一致的：**仓库内的一行配置不该能改写治理决策**
+   （项目设置仍可用来*关闭*某些能力，只是不能*打开*）。
 
 
 ---
@@ -2956,12 +3250,32 @@ Claude Code 的生态定位已从"AI 编程助手"演进为完整的 Agent 平�
 - [How to Optimize Claude Code Token Usage (ClaudeLog)](https://www.claudelog.com/faqs/how-to-optimize-claude-code-token-usage/)
 
 ### 2026 新功能
+- [What's new in Claude Opus 5（官方）](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5)
 - [What's new in Claude Opus 4.8（官方）](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
 - [Claude Agent SDK Migration Guide（官方）](https://platform.claude.com/docs/en/agent-sdk/migration-guide)
 - [Introducing Claude Sonnet 5（官方）](https://www.anthropic.com/news/claude-sonnet-5)
 - [Context windows（官方，1M 上下文模型清单）](https://platform.claude.com/docs/en/build-with-claude/context-windows)
 
-### 本轮联网二次校验来源（2026-07）
+### 本轮联网校验来源（2026-08，覆盖 v2.1.208~224 与 Opus 5）
+- [Models overview（官方，模型 ID / 平台 ID 对照表）](https://platform.claude.com/docs/en/about-claude/models/overview)
+- [Share session output as artifacts（官方 Artifacts 文档）](https://code.claude.com/docs/en/artifacts)
+- [Hooks reference（官方，事件节律与 `EndConversation` / `@` 引用边界）](https://code.claude.com/docs/en/hooks)
+- [Claude Code settings（官方，`worktree.*` / `sandbox.filesystem.disabled`）](https://code.claude.com/docs/en/settings)
+- [Claude Code changelog（官方）](https://code.claude.com/docs/en/changelog)
+- [Releases · anthropics/claude-code（GitHub 逐版本条目）](https://github.com/anthropics/claude-code/releases)
+- [changelogs.directory / claude-code（逐版本分类计数，v2.1.214~224）](https://changelogs.directory/tools/claude-code)
+- [Introducing Claude Opus 5 on AWS（AWS，Bedrock model ID）](https://aws.amazon.com/blogs/machine-learning/introducing-claude-opus-5-on-aws-anthropics-most-capable-opus-model)
+- [Anthropic's Claude Opus 5 rivals Fable 5 and is cheaper（CNBC，07-24 发布）](https://www.cnbc.com/2026/07/24/anthropic-claude-opus-5-ai-fable-5-cost.html)
+- [Claude Opus 5 pricing: same sticker, different bill（CloudZero，effort 与账单）](https://www.cloudzero.com/blog/claude-opus-5-pricing)
+- [Claude Code v2.1.223 Major Updates（DevelopersIO，`/review` 别名化）](https://dev.classmethod.jp/en/articles/20260806-cc-updates-v2-1-223)
+- [Claude Code v2.1.224 Major Updates（DevelopersIO，跨会话消息 / self-hosted runner）](https://dev.classmethod.jp/en/articles/20260807-cc-updates-v2-1-224)
+- [Claude Code v2.1.215: who controls the agent's checklist（Augment Code）](https://www.augmentcode.com/learn/claude-code-v2-1-215)
+- [Ultracode: Multi-Agent Orchestration Mode Explained（Developers Digest）](https://www.developersdigest.tech/blog/ultracode-effort-level-explained)
+- [Dynamic Workflows vs Agent Teams（claudefa.st，三方对比）](https://claudefa.st/blog/guide/development/ultracode-dynamic-workflows-agent-teams)
+- [Claude Code Adds Dynamic Workflows（InfoQ）](https://www.infoq.com/news/2026/06/dynamic-workflows-claude-code)
+- [Claude Code Artifacts: Ship a Coding Session as a Page（Digital Applied）](https://www.digitalapplied.com/blog/claude-code-shareable-artifacts-live-web-pages-2026)
+
+### 上一轮联网校验来源（2026-07）
 - [Claude Code v2.1.200：Manual 默认权限模式（The Agent Report）](https://the-agent-report.com/2026/07/claude-code-2-1-200-manual-permission)
 - [Claude Code Defaults to Human Approval（TechTimes，Manual 默认与 CI 影响）](https://www.techtimes.com/articles/319874/20260707/claude-code-defaults-human-approval-auto-mode-requires-explicit-opt.htm)
 - [Claude Code v2.1.207：Auto Mode 云平台默认开启（TechTimes）](https://www.techtimes.com/articles/320233/20260712/claude-code-removes-enterprise-opt-auto-mode-now-default-major-cloud-platforms.htm)
