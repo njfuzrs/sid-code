@@ -33,15 +33,39 @@ import { getSidHome } from "../../src/config/paths.ts";
  *
  * - recordCacheBreak：内存缓冲 + 落盘（cache-detection.ts:421-432）
  * - emitCacheBreakTelemetry：直接落盘（cache-telemetry.ts:50）
+ * - appendUsageLedger / upsertUsageLedger / pruneUsageLedger：直接写
+ *   ~/.sid-code/usage-ledger.jsonl（P3-1，2026-08-08 补齐）。此前门禁只覆盖
+ *   cache-breaks，而账本是"缓存命中率/成本"的唯一跨会话事实源，被污染的后果
+ *   更严重：cache-breaks 被灌假数据只是让归因视图失效，账本被灌假会让
+ *   `/cache`、trace-digest、博客里所有百分比全部失真。
  *
  * 注：checkResponseForCacheBreak 刻意**不在**此列——它只做检测与归因，
  * 落盘由主循环（query/loop.ts:2453）另行调 recordCacheBreak 完成，
  * 实测调它不写盘。把它加进来会制造假阳性。
+ * 同理 readUsageLedger / dedupeBySession 是纯读，不在此列。
  */
-const WRITING_EXPORTS = ["recordCacheBreak", "emitCacheBreakTelemetry"] as const;
+const WRITING_EXPORTS = [
+  "recordCacheBreak",
+  "emitCacheBreakTelemetry",
+  "appendUsageLedger",
+  "upsertUsageLedger",
+  "pruneUsageLedger",
+] as const;
 
-/** 认可的隔离手段：专用重定向，或整体改写配置根目录 */
-const ISOLATION_MARKERS = ["SID_CODE_CACHE_BREAKS", "SID_CONFIG_DIR"] as const;
+/**
+ * 认可的隔离手段：专用重定向，或整体改写配置根目录。
+ *
+ * 注意这里是**按标记名扫描**而非按 sink 精确配对：一个测试若用了 usage-ledger
+ * 的写入导出、却只设了 SID_CODE_CACHE_BREAKS，本门禁会放过它。做精确配对需要
+ * 把"哪个导出对应哪个环境变量"再写一份映射，而 SID_CONFIG_DIR 同时覆盖两者，
+ * 映射会立刻变成三态。当前取舍：宽判据 + preload 兜底
+ *（tests/preload-isolate-sid-home.ts 把 SID_CONFIG_DIR 默认指向临时目录）。
+ */
+const ISOLATION_MARKERS = [
+  "SID_CODE_CACHE_BREAKS",
+  "SID_CODE_USAGE_LEDGER",
+  "SID_CONFIG_DIR",
+] as const;
 
 describe("cacheBreaksPath 隔离契约", () => {
   const saved = process.env.SID_CODE_CACHE_BREAKS;
@@ -96,25 +120,40 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
       const used = WRITING_EXPORTS.find((name) => new RegExp(`\\b${name}\\b`).test(text));
       if (!used) continue;
       scanned++;
-      const isolated = ISOLATION_MARKERS.some((marker) => text.includes(marker));
+      // 判据必须是「真的碰了 process.env.<MARKER>」，不能是「文本里出现过这个名字」。
+      // 反向验证实测：把某文件的隔离赋值全部改名后，本门禁**仍然通过** —— 因为该文件
+      // 的注释里提到了变量名，`text.includes(marker)` 就命中了。注释不隔离任何东西，
+      // 而恰恰是"讲解隔离规则"的文件最容易在注释里写下变量名，形成系统性假阴性。
+      const isolated = ISOLATION_MARKERS.some((marker) =>
+        new RegExp(`process\\.env\\.${marker}\\b`).test(text),
+      );
       if (!isolated) {
         violations.push({ file: file.replace(testsRoot, "tests"), usedExport: used });
       }
     }
 
-    // 已知调用方至少 3 个（cache-detection / clear-resets-cache-state / cache-telemetry-rotation）。
-    // 若正则或导出名漂移导致一个都匹配不上，这条会先失败，而不是让门禁空转成绿灯。
-    expect(scanned).toBeGreaterThanOrEqual(3);
+    // 已知调用方至少 4 个（cache-detection / clear-resets-cache-state /
+    // cache-telemetry-rotation / usage-ledger）。若正则或导出名漂移导致一个都匹配不上，
+    // 这条会先失败，而不是让门禁空转成绿灯。
+    expect(scanned).toBeGreaterThanOrEqual(4);
 
     if (violations.length > 0) {
       const detail = violations
-        .map((v) => `  - ${v.file}（用了 ${v.usedExport}，未设 ${ISOLATION_MARKERS.join(" / ")}）`)
+        .map((v) => {
+          // 按用到的导出指出**对应的**落盘文件与环境变量。写死 cache-breaks 会让
+          // 账本类违规拿到一条误导的修复指引（改错变量名，门禁照样红）。
+          const ledger = v.usedExport.includes("UsageLedger");
+          const sink = ledger ? "usage-ledger.jsonl" : "cache-breaks.jsonl";
+          const marker = ledger ? "SID_CODE_USAGE_LEDGER" : "SID_CODE_CACHE_BREAKS";
+          return `  - ${v.file}（用了 ${v.usedExport} → 写 ~/.sid-code/${sink}，需设 ${marker} 或 SID_CONFIG_DIR）`;
+        })
         .join("\n");
       throw new Error(
-        `以下测试会往用户真实的 ~/.sid-code/cache-breaks.jsonl 写数据：\n${detail}\n\n` +
-          `修法：在 beforeAll 里把 SID_CODE_CACHE_BREAKS 指向 mkdtempSync 的临时目录，` +
-          `afterAll 恢复原值（不要无条件 delete——bun test 同进程跑多文件）。\n` +
-          `参考 tests/telemetry/cache-telemetry-rotation.test.ts:38。`,
+        `以下测试会往用户真实的 ~/.sid-code/ 遥测文件写数据：\n${detail}\n\n` +
+          `修法：在 beforeEach/beforeAll 里把对应环境变量指向 mkdtempSync 的临时目录，` +
+          `afterEach/afterAll **存/恢复原值**（不要无条件 delete——bun test 同进程跑多文件，` +
+          `delete 会把别的文件或 preload 的兜底一起抹掉）。\n` +
+          `参考 tests/telemetry/cache-telemetry-rotation.test.ts:38 与 usage-ledger.test.ts。`,
       );
     }
   });

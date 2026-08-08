@@ -21,6 +21,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -31,13 +32,19 @@ export interface DigestPaths {
   violationsDir: string;
 }
 
-/** 解析所有数据路径。root 缺省时按 SID_CODE_HOME → ~/.sid-code 推导。 */
+/**
+ * 解析所有数据路径。root 缺省时按 SID_CODE_HOME → ~/.sid-code 推导。
+ *
+ * 账本路径的环境变量覆盖走 `applyLedgerPathOverride`（写侧同一个函数，P3-3）——
+ * 此处曾自己写第二份 `process.env.SID_CODE_USAGE_LEDGER || ...`，与写侧语义不一致
+ *（写侧把空串视为未设置，这边不做 trim 判断），会造成"写进去了却读不到"。
+ */
 export function resolvePaths(root?: string): DigestPaths {
   const r = root || process.env.SID_CODE_HOME || join(homedir(), ".sid-code");
   return {
     root: r,
     sessionsDir: join(r, "trajectories", "sessions"),
-    ledgerPath: process.env.SID_CODE_USAGE_LEDGER || join(r, "usage-ledger.jsonl"),
+    ledgerPath: applyLedgerPathOverride(join(r, "usage-ledger.jsonl")),
     violationsDir: join(r, "protocol-violations"),
   };
 }

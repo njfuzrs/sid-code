@@ -41,11 +41,27 @@ export interface UsageLedgerEntry {
   durationMs: number;
 }
 
-/** 账本文件路径（测试可经环境变量重定向） */
-export function ledgerPath(): string {
+/**
+ * 应用 `SID_CODE_USAGE_LEDGER` 重定向 —— 账本路径解析的**单一事实源**（P3-3）。
+ *
+ * 为什么要独立出来：读侧（`src/trace/digest.ts` 的 `resolvePaths`）此前自己写了
+ * 第二份 `process.env.SID_CODE_USAGE_LEDGER || join(root, "usage-ledger.jsonl")`。
+ * 两份实现语义并不完全一致 —— 这边把空串/纯空白视为未设置（避免误重定向到空路径），
+ * 那边不做 trim 判断，于是 `SID_CODE_USAGE_LEDGER=""` 时写侧回落默认路径、读侧读空串，
+ * 表现为"明明写进去了却读不到"。
+ *
+ * 读侧要保留自己的 root 注入能力（digest 支持传 root 分析任意目录），所以这里
+ * 收口的是**覆盖语义**而非整个路径推导：调用方给出默认值，本函数决定是否被环境变量取代。
+ */
+export function applyLedgerPathOverride(defaultPath: string): string {
   const override = process.env.SID_CODE_USAGE_LEDGER;
   if (override && override.trim() !== "") return override;
-  return sidPaths.usageLedger();
+  return defaultPath;
+}
+
+/** 账本文件路径（测试可经环境变量重定向） */
+export function ledgerPath(): string {
+  return applyLedgerPathOverride(sidPaths.usageLedger());
 }
 
 /**

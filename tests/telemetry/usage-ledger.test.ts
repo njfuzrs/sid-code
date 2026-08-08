@@ -42,13 +42,28 @@ function entry(over: Partial<UsageLedgerEntry>): UsageLedgerEntry {
   };
 }
 
+/**
+ * P3-2：必须存/恢复原值，不能无条件 delete。
+ *
+ * `bun test` 同一批多文件跑在**同一个进程**里，无条件 delete 会把别的文件
+ *（或 preload 兜底 tests/preload-isolate-sid-home.ts）设的隔离一起抹掉，
+ * 于是后续文件静默写进用户真实路径。实测同类问题：`bun test tests/permission`
+ * 单跑泄漏 0 行，而 `tests/migrations tests/permission` 同批跑泄漏 84 行 ——
+ * 就是 migrations 里无条件删掉了隔离变量。
+ *
+ * 这条规则本文件自己曾违反，而 no-real-path-writes.test.ts 的报错文案里
+ * 正写着"不要无条件 delete" —— 门禁只扫"有没有设隔离"，扫不出"恢复方式错了"。
+ */
+const savedLedgerEnv = process.env.SID_CODE_USAGE_LEDGER;
+
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "sid-ledger-"));
   process.env.SID_CODE_USAGE_LEDGER = join(tmpDir, "usage-ledger.jsonl");
 });
 
 afterEach(() => {
-  delete process.env.SID_CODE_USAGE_LEDGER;
+  if (savedLedgerEnv === undefined) delete process.env.SID_CODE_USAGE_LEDGER;
+  else process.env.SID_CODE_USAGE_LEDGER = savedLedgerEnv;
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
