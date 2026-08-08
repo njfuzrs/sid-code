@@ -162,8 +162,9 @@ export const SERIES: Series[] = [
     name: "深入研究",
     order: 8,
     blurb:
-      "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex / opencode，2026-08 快照）—— " +
-      "按目录跳章查阅。结论来自公开信息交叉核验，不是我们自己的实测数据。",
+      "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex / opencode / OpenClaw / " +
+      "Reasonix / Kimi Code，2026-08 快照）—— 按目录跳章查阅。证据是公开信息交叉核验" +
+      "（OpenClaw / Reasonix / Kimi Code 三篇另有本地源码实查），不是我们自己跑起来的实测数据。",
     external: true,
   },
 ];
