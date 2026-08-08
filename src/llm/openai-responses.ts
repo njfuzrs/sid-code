@@ -114,6 +114,8 @@ interface OutputItem {
   call_id?: string;
   name?: string;
   arguments?: string;
+  /** reasoning item 的摘要（流式对应 response.reasoning_summary_text.delta） */
+  summary?: { type?: string; text?: string }[];
 }
 
 interface ContentPart {
@@ -448,4 +450,111 @@ function parseSSEBlock(block: string): ResponsesStreamEvent | null {
   } catch {
     return null;
   }
+}
+
+// ─── 非流式响应解析（P0-5） ───
+
+/** 非流式 Responses 响应体（`stream: false` 时 POST /responses 的 JSON） */
+export interface ResponsesNonStreamingBody {
+  id?: string;
+  status?: string;
+  usage?: ResponsesUsage;
+  output?: OutputItem[];
+  error?: { message?: string; code?: string };
+  incomplete_details?: { reason?: string };
+}
+
+/** 非流式解析结果（与 AccumulatedResponse 的三个字段同形，由 provider 组装成完整对象） */
+export interface ParsedResponsesBody {
+  /** thinking 块在前、text 块在后、tool_use 最后（与流式路径同序） */
+  content: Array<
+    | { type: "thinking"; thinking: string }
+    | { type: "text"; text: string }
+    | { type: "tool_use"; id: string; name: string; input: unknown }
+  >;
+  /** 映射后的统一 stopReason（end_turn / tool_use / max_tokens / content_filter） */
+  stopReason: string;
+  usage: Usage;
+}
+
+/**
+ * 解析非流式 Responses 响应体（P0-5）。
+ *
+ * 为什么必须有这个函数：`sendMessageNonStreamingInner` 此前**无条件**打
+ * `/chat/completions`，只有流式入口做 `shouldUseResponsesAPI` 分派。于是 GPT-5.x
+ * 在三条降级路径（流式传输错误降级 / 空流降级 / ModelFallback）上会静默换协议，
+ * 后果之一正是**缓存口径分裂**：同一个模型，流式走 Responses（命中在
+ * `input_tokens_details`）、降级走 Chat（命中在 `prompt_tokens_details`），
+ * 命中率取决于当时是否降级 —— 无法解释也无法复现。
+ *
+ * usage 提取与流式路径共用 `applyResponsesUsage`（同一个函数，不是同一份逻辑的两份拷贝），
+ * 所以两条路径的口径**不可能**再分裂。
+ */
+export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedResponsesBody {
+  const content: ParsedResponsesBody["content"] = [];
+  let sawToolCall = false;
+
+  for (const item of body.output ?? []) {
+    if (item.type === "reasoning") {
+      // 推理摘要（流式对应 reasoning_summary_text.delta）→ thinking 块
+      const text = (item.summary ?? [])
+        .map((s) => s.text ?? "")
+        .filter((t) => t !== "")
+        .join("");
+      if (text !== "") content.push({ type: "thinking", thinking: text });
+      continue;
+    }
+
+    if (item.type === "function_call") {
+      sawToolCall = true;
+      let input: unknown = {};
+      try {
+        input = item.arguments ? JSON.parse(item.arguments) : {};
+      } catch {
+        // 参数不是合法 JSON：与 Chat 路径同处理（落空对象，交由上层工具校验报错），
+        // 不在协议层抛错 —— 抛了会把"模型参数写错"变成"请求失败"，丢掉可恢复性。
+        input = {};
+      }
+      content.push({
+        type: "tool_use",
+        id: item.call_id ?? item.id ?? "",
+        name: item.name ?? "",
+        input,
+      });
+      continue;
+    }
+
+    // type === "message"：output_text 部分是正文，reasoning 部分是思考
+    for (const part of item.content ?? []) {
+      if (part.type === "output_text" && part.text) {
+        content.push({ type: "text", text: part.text });
+      } else if (part.type === "reasoning" && part.text) {
+        content.push({ type: "thinking", thinking: part.text });
+      } else if (part.type === "refusal" && part.text) {
+        // 与 Chat 路径对齐：refusal 兜底为可见文本，否则表现为"模型莫名没回复"
+        content.push({ type: "text", text: `[模型拒绝] ${part.text}` });
+      }
+    }
+  }
+
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  applyResponsesUsage(usage, body.usage);
+
+  return { content, stopReason: mapResponsesStatus(body, sawToolCall), usage };
+}
+
+/**
+ * 把 Responses 的 status / incomplete_details 映射成统一 stopReason。
+ *
+ * 有工具调用时优先 `tool_use`：Responses 的 status 在带工具调用时仍是 `completed`，
+ * 若照搬会把"要继续跑工具"报成"回合结束"，主循环就此停摆。
+ */
+function mapResponsesStatus(body: ResponsesNonStreamingBody, sawToolCall: boolean): string {
+  if (sawToolCall) return "tool_use";
+  if (body.status === "incomplete") {
+    return body.incomplete_details?.reason === "content_filter"
+      ? "content_filter"
+      : "max_tokens";
+  }
+  return "end_turn";
 }

@@ -120,10 +120,12 @@ describe("P0 未知协议族 effort 必须真的下发（自愈闭环入口）",
 
   /**
    * 判据必须是「protocolKind 缺失 **且** 四族正则不匹配」，不能是「不属于这四族」。
-   * openai-responses 有专属 applier 与专属线格式（当前唯一原生认 xhigh 的族），
-   * 且 sendMessageNonStreaming **不做** Responses 分派——用「不属于四族」会让 GPT-5.x
-   * 在「流式失败降级到非流式」时把 xhigh 当普通 reasoning_effort 发到 Chat Completions
-   * 线上（其它端点不认这一档）。
+   * openai-responses 有专属 applier 与专属线格式（当前唯一原生认 xhigh 的族）。
+   *
+   * 2026-08-08 更新：此前这条排除还兼任一个补丁——非流式路径不做 Responses 分派，
+   * GPT-5.x 走「流式失败降级到非流式」时会把 xhigh 当普通 reasoning_effort 发到
+   * Chat Completions 线上。P0-5 已在非流式补齐分派，所以现在断言的是**协议本身正确**
+   *（见下面 P0-5 那组），而不再只是「effort 字段没漏出去」。
    */
   test("已声明为其它已知族的模型不得被当成未知族", () => {
     for (const m of ["gpt-5.6-luna", "glm-5.2", "o3", "grok-4", "deepseek-v4-pro"]) {
@@ -131,9 +133,155 @@ describe("P0 未知协议族 effort 必须真的下发（自愈闭环入口）",
     }
   });
 
-  test("openai-responses 族走非流式时不得把 xhigh 发到 Chat Completions 线上", async () => {
+  test("openai-responses 族走非流式时不得把 xhigh 发到 Chat Completions 的顶层字段", async () => {
     const body = await captureWireBody("gpt-5.6-luna", { reasoningEffort: "xhigh" });
+    // Responses 线用嵌套 reasoning.effort，顶层 reasoning_effort 恒不存在
     expect(body.reasoning_effort).toBeUndefined();
+    expect(body.reasoning).toEqual({ effort: "xhigh" });
+  });
+});
+
+/**
+ * P0-5：非流式路径的协议分派必须与流式同源。
+ *
+ * 缺陷背景（2026-08-08 实测）：`shouldUseResponsesAPI` 只在流式入口
+ * `sendMessageStreamInner` 被调用，`sendMessageNonStreamingInner` **无条件**打
+ * `/chat/completions`。三条真实降级路径会踩到它：流式传输错误降级
+ *（stream-handler.ts）、空流降级（degradeOnEmptyStream）、ModelFallback。
+ *
+ * 后果里最隐蔽的一层是**缓存口径分裂**：同一个模型，流式走 Responses（命中在
+ * `input_tokens_details.cached_tokens`）、降级走 Chat（命中在
+ * `prompt_tokens_details.cached_tokens`）。命中率取决于当时是否降级，
+ * 无法解释也无法复现 —— 这正是本仓库注释里批评过的那类"行为取决于走了哪条路"。
+ *
+ * 所以本组既断言**端点**正确，也断言**两条路径的 usage 口径一致**。
+ */
+describe("P0-5 非流式 Responses 协议分派", () => {
+  /** 捕获非流式请求的 URL + body，并按调用方给的响应体返回 */
+  async function captureNonStreaming(
+    model: string,
+    responseBody: unknown,
+    params: Record<string, unknown> = {},
+  ): Promise<{ url: string; body: any; result: any }> {
+    const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+    let url = "";
+    let body: any = null;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init: any) => {
+      url = String(u);
+      body = JSON.parse(init.body);
+      return new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as any;
+    try {
+      const provider = new OpenAIProvider("k", model, "https://example.invalid/v1");
+      const result = await provider.sendMessageNonStreaming({
+        model,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        maxTokens: 16,
+        ...params,
+      } as any);
+      return { url, body, result };
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  const RESPONSES_OK = {
+    id: "resp_1",
+    status: "completed",
+    output: [
+      { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+    ],
+    usage: {
+      input_tokens: 18017,
+      input_tokens_details: { cached_tokens: 17152 },
+      output_tokens: 64,
+    },
+  };
+
+  test("GPT-5.x 非流式打 /responses，不再打 /chat/completions", async () => {
+    const { url, body } = await captureNonStreaming("gpt-5.6-luna", RESPONSES_OK);
+    expect(url).toBe("https://example.invalid/v1/responses");
+    expect(body.stream).toBe(false);
+    // Responses 线形状：instructions/input，而非 messages
+    expect(Array.isArray(body.input)).toBe(true);
+    expect(body.messages).toBeUndefined();
+  });
+
+  test("非 Responses 族仍走 /chat/completions（分派没有过度匹配）", async () => {
+    const { url, body } = await captureNonStreaming("glm-5.2", {
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    expect(url).toBe("https://example.invalid/v1/chat/completions");
+    expect(Array.isArray(body.messages)).toBe(true);
+  });
+
+  test("非流式 Responses 的缓存/reasoning 口径与流式一致（这才是口径分裂的修复点）", async () => {
+    const { result } = await captureNonStreaming("gpt-5.6-luna", {
+      ...RESPONSES_OK,
+      usage: { ...RESPONSES_OK.usage, output_tokens_details: { reasoning_tokens: 448 } },
+    });
+    expect(result.usage.inputTokens).toBe(18017);
+    expect(result.usage.cacheReadInputTokens).toBe(17152);
+    expect(result.usage.reasoningTokens).toBe(448);
+  });
+
+  test("工具调用：status=completed 但有 function_call → stopReason=tool_use", async () => {
+    const { result } = await captureNonStreaming("gpt-5.6-luna", {
+      id: "resp_2",
+      status: "completed",
+      output: [
+        { id: "fc_1", type: "function_call", call_id: "call_abc", name: "read", arguments: '{"path":"a.ts"}' },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    // 照搬 status 会把"要继续跑工具"报成"回合结束"，主循环就此停摆
+    expect(result.stopReason).toBe("tool_use");
+    expect(result.content[0].type).toBe("tool_use");
+    expect(result.content[0].input).toEqual({ path: "a.ts" });
+  });
+
+  test("status=incomplete → max_tokens；status=failed → 抛错（不静默截断）", async () => {
+    const { result } = await captureNonStreaming("gpt-5.6-luna", {
+      id: "resp_3",
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [],
+      usage: { input_tokens: 10, output_tokens: 128 },
+    });
+    expect(result.stopReason).toBe("max_tokens");
+
+    let failedErr: unknown;
+    try {
+      await captureNonStreaming("gpt-5.6-luna", {
+        id: "resp_4",
+        status: "failed",
+        error: { message: "upstream exploded" },
+      });
+    } catch (e) {
+      failedErr = e;
+    }
+    expect(String(failedErr)).toMatch(/failed/);
+    expect(String(failedErr)).toMatch(/upstream exploded/);
+  });
+
+  test("reasoning item 的 summary → thinking 块（与流式 reasoning_summary_text 同口径）", async () => {
+    const { result } = await captureNonStreaming("gpt-5.6-luna", {
+      id: "resp_5",
+      status: "completed",
+      output: [
+        { id: "rs_1", type: "reasoning", summary: [{ type: "summary_text", text: "先读文件" }] },
+        { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "答复" }] },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    // 思考块在正文之前（与流式路径同序）
+    expect(result.content[0]).toEqual({ type: "thinking", thinking: "先读文件" });
+    expect(result.content[1]).toEqual({ type: "text", text: "答复" });
   });
 });
 

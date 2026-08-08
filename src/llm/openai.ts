@@ -41,7 +41,7 @@ import { serializeToolResultContentForOpenAI } from "./openai-tool-result-conten
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
-import { parseResponsesStream } from "./openai-responses.ts";
+import { parseResponsesStream, parseResponsesBody, type ResponsesNonStreamingBody } from "./openai-responses.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
 import { extractOpenAICacheHit, extractOpenAIReasoningTokens } from "./openai-usage.ts";
 
@@ -336,11 +336,15 @@ export class OpenAIProvider implements Provider {
      *
      * ⚠ 判据是「`protocolKind` 缺失**且**四族正则都不匹配」，不是「不属于这四族」。
      * 差别在 catalog 里已声明为**其它已知族**的模型（如 `openai-responses`）：它们各有
-     * 专属 applier 与专属线格式，不该被当成未知族。这里必须排除掉，否则会踩到一个真实
-     * 路径——`sendMessageNonStreaming` 不做 Responses 分派（只有流式 sendMessageStreamInner
-     * 分派），GPT-5.x 走「流式失败降级到非流式」时会落进本函数，把 Responses 专属的
-     * `xhigh`/`max` 档位当普通 `reasoning_effort` 发到 Chat Completions 线上（该协议族是
-     * 当前唯一原生认 xhigh 的，其它端点不认）。
+     * 专属 applier 与专属线格式，不该被当成未知族。
+     *
+     * 历史（2026-08-08 前）：这道排除还兼任一个补丁——`sendMessageNonStreamingInner`
+     * 当时不做 Responses 分派，GPT-5.x 走「流式失败降级到非流式」时会落进本函数，
+     * 把 Responses 专属的 `xhigh`/`max` 档位当普通 `reasoning_effort` 发到
+     * Chat Completions 线上。**该补丁只挡住了 effort 字段，没解决协议错配本身**
+     *（还导致缓存口径分裂：命中键 Chat 在 prompt_tokens_details、Responses 在
+     * input_tokens_details）。现在非流式已同样做 `shouldUseResponsesAPI` 分派（P0-5），
+     * openai-responses 族根本不会走到这里，本条排除退回它原本的语义职责。
      */
     const isUnknownFamily = kind === undefined && !isDeepSeek && !isGLM && !isGrok && !isOSeries;
 
@@ -1355,6 +1359,17 @@ export class OpenAIProvider implements Provider {
     // 真名：与流式 sendMessageStreamInner 严格同源（进请求体 + 做协议/参数判据）。
     // 两条路径必须同口径，否则「降级到非流式」会顺带换掉发出去的模型名。
     const effectiveModel = pickWireModel(params, this._model);
+
+    // P0-5：协议分派必须与流式路径同源。此前本函数**无条件**打 /chat/completions，
+    // 只有 sendMessageStreamInner 做分派 —— 于是 GPT-5.x 走三条降级路径
+    //（流式传输错误降级 / 空流降级 / ModelFallback）时静默换协议：请求以 Chat 线格式
+    // 发出、丢掉 Responses 专属能力，网关若不提供 Chat 端点还会二次失败（而降级恰好
+    // 发生在网关已经异常的时刻），更关键的是缓存与用量口径分裂（命中键 Chat 在
+    // prompt_tokens_details、Responses 在 input_tokens_details）。
+    if (this.shouldUseResponsesAPI(effectiveModel)) {
+      return await this.sendNonStreamingViaResponsesAPI(params, effectiveModel, signal);
+    }
+
     const messages = this.convertMessages(params.messages, effectiveModel);
     const tools = params.tools?.map((t) => ({
       type: "function",
@@ -1524,6 +1539,74 @@ export class OpenAIProvider implements Provider {
       ...(reasoningContent.length > 0
         ? { _meta: { reasoning_content: reasoningContent } }
         : {}),
+    };
+  }
+
+  /**
+   * 非流式 Responses API 请求（P0-5）。
+   *
+   * 与流式 {@link sendViaResponsesAPI} 共用请求构造（`buildResponsesRequest`）与 usage
+   * 提取（`parseResponsesBody` → `applyResponsesUsage`），只把 `stream` 翻成 false —— 刻意
+   * 不写第二份提取逻辑，否则两条路径的缓存口径会再次分裂（正是本次要修的病）。
+   *
+   * 请求形状差异只有一处：Responses 的 `stream` 字段在类型上声明为字面量 `true`
+   *（流式是唯一原本的用法），这里覆盖成 false 后 cast，避免为一个布尔值放宽公共类型。
+   */
+  private async sendNonStreamingViaResponsesAPI(
+    params: SendParams,
+    effectiveModel: string,
+    signal?: AbortSignal,
+  ): Promise<AccumulatedResponse> {
+    const log = getLogger();
+    const streamingBody = buildResponsesRequest(params, effectiveModel);
+    const requestBody = { ...streamingBody, stream: false };
+
+    log.debug("LLM:OPENAI:RESPONSES", "非流式请求", {
+      model: requestBody.model,
+      inputCount: requestBody.input.length,
+      toolCount: requestBody.tools?.length ?? 0,
+    });
+
+    const response = await fetch(`${this.baseURL}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(sanitizeStrings(requestBody)),
+      signal,
+      // 与 Chat 非流式路径同口径：降级路径若复用死 socket，降级会跟着一起失败。
+      ...getKeepAliveFetchOptions(),
+    });
+
+    // G8：与 Chat 路径一致地提取 rate-limit header
+    updateRateLimitStatus(response.headers);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      const err = new Error(`OpenAI Responses API 错误: ${response.status} ${errText}`);
+      // 挂状态码：能力自愈的结构判据看 HTTP 码而非措辞（见 sendMessageNonStreaming）
+      (err as any).statusCode = response.status;
+      (err as any).status = response.status;
+      throw err;
+    }
+
+    const body = (await response.json()) as ResponsesNonStreamingBody;
+
+    // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
+    // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
+    if (body.status === "failed") {
+      throw new Error(
+        `OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`,
+      );
+    }
+
+    const parsed = parseResponsesBody(body);
+    return {
+      role: "assistant",
+      content: parsed.content as ContentBlock[],
+      stopReason: parsed.stopReason,
+      usage: parsed.usage,
     };
   }
 
