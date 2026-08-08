@@ -37,6 +37,8 @@ import { normalizeCacheUsage } from "../llm/types.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
+import { PrefixBreakTracker, fingerprintPrefix } from "./prefix-break-probe.ts";
+import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import {
   initStreamObserver,
   resetStreamObserver,
@@ -119,6 +121,14 @@ export class TraceCollector {
   private metadata!: TraceMetadata;
   private currentPair: Partial<RequestResponsePair> | null = null;
   private prevMessageCount: number = 0;
+  /**
+   * P1-2：前缀断裂定位追踪器。
+   *
+   * 必须在这里做（而非离线分析 raw.jsonl）：raw.jsonl 只在 index==1 存完整
+   * system/messages，后续轮次只存尾部增量 —— 离线无从判断历史是否被原地改写。
+   * 而这一刻完整请求就在内存里，算完只落一条结论（不落内容，守住隐私契约）。
+   */
+  private prefixTracker = new PrefixBreakTracker();
   /** 修复问题一：resume 续接时，已存在 raw.jsonl 的历史轮次数；新轮 index 在此基础上接续。 */
   private resumedPairOffset: number = 0;
   private writer!: TraceWriter;
@@ -472,6 +482,8 @@ export class TraceCollector {
   private async handleSessionStart(input: SessionStartInput): Promise<void> {
     this.pairs = [];
     this.prevMessageCount = 0;
+    // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
+    this.prefixTracker.reset();
     this.currentPair = null;
 
     // 重置辅助调用统计（避免跨会话污染）
@@ -730,6 +742,9 @@ export class TraceCollector {
       cwd: input.cwd,
       data: { model: req.model, index, msg_count: rawMessages.length },
     });
+
+    // P1-2：前缀断裂定位（只落结论，不落内容）
+    this.emitPrefixBreakDiagnosis(req, rawMessages, index);
 
     // §3.6：更新 last_known_state → before_model
     this.metadata.last_known_state = {
@@ -1214,6 +1229,10 @@ export class TraceCollector {
 
     // 重置增量计数器：压缩后 messages 数组会被截断重组
     this.prevMessageCount = 0;
+    // P1-2：**刻意不**重置 prefixTracker —— compact 造成的前缀作废是真实成本，
+    // 应当被记成一次断裂并计入浪费比例。重置会把它藏起来，让"断裂从哪来"的分布
+    // 少掉一个真实且量级很大的来源（与 cache-detection 的 notifyCompaction 抑制
+    // 不同：那里抑制的是"告警"，这里统计的是"成本归因"，两者目的相反）。
 
     this.writer.appendEvent({
       event: HookEventName.PreCompact,
@@ -1778,6 +1797,53 @@ export class TraceCollector {
    * 计算本次请求相对于上次请求新增的 messages
    * 处理压缩边界（压缩后 messages 数组截断重组）
    */
+  /**
+   * P1-2：算出本轮前缀相对上一轮的第一个变化段，落一条 `prefix_break` 事件。
+   *
+   * 只落结论（断在哪类段 / 第几条消息 / 浪费比例），**不落任何内容** —— 与本文件
+   * 其它遥测同一条隐私契约。首轮无可比对象，不落事件（落一条"未断裂"会让
+   * 分母虚高，把"首轮"混进"健康轮次"）。
+   *
+   * 整个过程包在 try 里：可观测性绝不能影响主流程。
+   */
+  private emitPrefixBreakDiagnosis(req: any, rawMessages: unknown[], index: number): void {
+    try {
+      const fp = fingerprintPrefix(
+        typeof req.system === "string" ? req.system : req.system ? JSON.stringify(req.system) : undefined,
+        JSON.stringify(req.tools ?? []),
+        rawMessages,
+        splitSystemByDynamicBoundary,
+      );
+      const d = this.prefixTracker.observe(fp);
+      if (!d) return; // 首轮
+
+      this.writer.appendEvent({
+        event: "prefix_break" as any,
+        session_id: this.metadata.session_id,
+        timestamp: new Date().toISOString(),
+        data: {
+          index,
+          broken: d.broken,
+          // 未断裂时这些字段缺失（而非落 null）——"没断裂"与"断在第 0 段"是两回事
+          ...(d.broken
+            ? {
+                first_changed_kind: d.firstChangedKind,
+                first_changed_index: d.firstChangedIndex,
+                ...(d.firstChangedMessageIndex !== undefined
+                  ? { first_changed_message_index: d.firstChangedMessageIndex }
+                  : {}),
+                wasted_ratio: Number((d.wastedRatio ?? 0).toFixed(4)),
+              }
+            : {}),
+          prev_segments: d.prevSegmentCount,
+          curr_segments: d.currSegmentCount,
+        },
+      });
+    } catch {
+      /* 可观测性不影响主流程 */
+    }
+  }
+
   computeNewMessages(messages: unknown[]): unknown[] {
     if (this.pairs.length === 0 && this.prevMessageCount === 0) {
       // 首次请求，全部都是新的

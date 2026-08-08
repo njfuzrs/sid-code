@@ -397,6 +397,8 @@ export interface Digest {
   subAgents?: SubAgentSummary;
   /** 第 5 批：JIT 上下文度量。无 `jit_context` 事件时 undefined（老会话/JIT 关闭）。 */
   jit?: JitDigestStats;
+  /** P1-2：前缀断裂定位分布。无 `prefix_break` 事件时 undefined（老会话，埋点上线前）。 */
+  prefixBreaks?: PrefixBreakDigestStats;
   /**
    * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
    * （老会话 / 整场没建过清单）。
@@ -1532,6 +1534,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
   const jit = aggregateJitStats(events);
 
+  // ── P1-2：前缀断裂定位分布（断在哪类段 / 浪费多少）──
+  const prefixBreaks = aggregatePrefixBreakStats(events);
+
   // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
   const todo = aggregateTodoStats(events);
@@ -1560,6 +1565,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     providerStats: providerStats.length > 0 ? providerStats : undefined,
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
+    prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
   };
 }
@@ -1830,6 +1836,35 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       );
     } else if (t.advances > 0) {
       L.push(c("green", "  ✓ end_turn 兜底未触发") + c("gray", "（gate 已退回兜底位）"));
+    }
+  }
+
+  // ── P1-2：前缀断裂定位（"命中率为什么不是 95%"的直接答案）──
+  if (d.prefixBreaks) {
+    const p = d.prefixBreaks;
+    L.push("");
+    const rateColor: Color = p.brokenRate >= 0.5 ? "red" : p.brokenRate >= 0.2 ? "yellow" : "green";
+    L.push(
+      c("bold", "前缀断裂:") +
+        " " +
+        c(rateColor, `${p.brokenTurns}/${p.comparedTurns} 轮 (${(p.brokenRate * 100).toFixed(0)}%)`) +
+        c("gray", `  平均作废前缀 ${(p.avgWastedRatio * 100).toFixed(1)}%`),
+    );
+    // 按**平均浪费比例**降序而非按次数：断在第 2 条与第 200 条都算 1 次，
+    // 但作废的前缀量差两个数量级，只看次数会把优化力气用错地方。
+    const kinds = Object.entries(p.byKind).sort((a, b) => b[1].avgWastedRatio - a[1].avgWastedRatio);
+    for (const [kind, v] of kinds) {
+      L.push(
+        `  ${kind.padEnd(16)} ${String(v.count).padStart(3)} 次  ` +
+          `平均作废 ${(v.avgWastedRatio * 100).toFixed(1)}%  最差 ${(v.maxWastedRatio * 100).toFixed(1)}%` +
+          prefixKindHint(kind),
+      );
+    }
+    if (p.earliestBrokenMessageIndex !== undefined) {
+      L.push(c("gray", `  最早断点: 第 ${p.earliestBrokenMessageIndex} 条消息（越靠前浪费越大）`));
+    }
+    if (p.brokenTurns === 0) {
+      L.push(c("green", "  ✓ 全部为尾部追加，前缀未被打断"));
     }
   }
 
@@ -2117,6 +2152,27 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
   return result;
 }
 
+/**
+ * P1-2：给断裂段类型标注"该不该修" —— 分布本身不说明行动方向。
+ *
+ * 特别是 `system_dynamic`：动态区**本来就该变**，占比高是设计使然而非缺陷。
+ * 不标注的话容易被读成"这里断得最多，先修它"，白费力气。
+ */
+function prefixKindHint(kind: string): string {
+  switch (kind) {
+    case "system_static":
+      return "  ← 静态区本该跨轮稳定，变了说明有动态内容漏进静态段（最该修）";
+    case "system_dynamic":
+      return "  ← 动态区按设计就会变，看的是它有多大而非断了几次";
+    case "tools":
+      return "  ← 工具集合/顺序不稳定，可优化（同内容不同序也会断）";
+    case "message":
+      return "  ← 历史被原地改写/中部插入（JIT/reminder/todo 回注的典型形态）";
+    default:
+      return "";
+  }
+}
+
 /** P2-3：单桶的样本数 + 分位数（桶为空时只给 count，不给假分位数） */
 function bucketStats(samples: number[]): { count: number; p50?: number; p95?: number } {
   if (samples.length === 0) return { count: 0 };
@@ -2137,6 +2193,69 @@ function bucketStats(samples: number[]): { count: number; p50?: number; p95?: nu
  * 「这个会话根本没有 JIT 数据」（老轨迹 / 配置关闭 / 全程没碰文件类工具）。
  * 渲染层据此决定整节是否显示 —— 显示一堆 0 会让人误以为 JIT 坏了。
  */
+/**
+ * P1-2：前缀断裂定位分布 —— 回答"打断到底来自哪里"，这是 P1-3 定点优化的输入。
+ *
+ * 关键设计：**按浪费比例排序而非按次数**。断在第 2 条消息与断在第 200 条，
+ * 次数都是 1 次，但作废的前缀量差两个数量级 —— 只看次数会把优化力气用错地方。
+ */
+export interface PrefixBreakDigestStats {
+  /** 有可比对象的轮次数（首轮不计入：无从比较 ≠ 健康） */
+  comparedTurns: number;
+  /** 其中发生非尾部追加变化的轮次数 */
+  brokenTurns: number;
+  /** 断裂率 = brokenTurns / comparedTurns */
+  brokenRate: number;
+  /** 按段类型分组：次数 + 累计浪费比例 + 平均浪费比例 */
+  byKind: Record<string, { count: number; avgWastedRatio: number; maxWastedRatio: number }>;
+  /** 所有断裂轮次的平均浪费比例（0~1） */
+  avgWastedRatio: number;
+  /** 断在消息段时，第一个变化消息的最小序号（越小越贵，是最值得修的那次） */
+  earliestBrokenMessageIndex?: number;
+}
+
+/** 从 events.jsonl 聚合前缀断裂分布（P1-2） */
+export function aggregatePrefixBreakStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PrefixBreakDigestStats | null {
+  const rows = events.filter((e) => e.event === "prefix_break" && e.data);
+  if (rows.length === 0) return null;
+
+  const byKind: Record<string, { count: number; sum: number; max: number }> = {};
+  let broken = 0;
+  let wastedSum = 0;
+  let earliest: number | undefined;
+
+  for (const e of rows) {
+    if (e.data!.broken !== true) continue;
+    broken++;
+    const w = (e.data!.wasted_ratio as number) ?? 0;
+    wastedSum += w;
+    const kind = (e.data!.first_changed_kind as string) ?? "unknown";
+    byKind[kind] ??= { count: 0, sum: 0, max: 0 };
+    byKind[kind].count++;
+    byKind[kind].sum += w;
+    byKind[kind].max = Math.max(byKind[kind].max, w);
+
+    const mi = e.data!.first_changed_message_index as number | undefined;
+    if (mi !== undefined && (earliest === undefined || mi < earliest)) earliest = mi;
+  }
+
+  return {
+    comparedTurns: rows.length,
+    brokenTurns: broken,
+    brokenRate: rows.length > 0 ? broken / rows.length : 0,
+    byKind: Object.fromEntries(
+      Object.entries(byKind).map(([k, v]) => [
+        k,
+        { count: v.count, avgWastedRatio: v.count > 0 ? v.sum / v.count : 0, maxWastedRatio: v.max },
+      ]),
+    ),
+    avgWastedRatio: broken > 0 ? wastedSum / broken : 0,
+    ...(earliest !== undefined ? { earliestBrokenMessageIndex: earliest } : {}),
+  };
+}
+
 export function aggregateJitStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
 ): JitDigestStats | null {
