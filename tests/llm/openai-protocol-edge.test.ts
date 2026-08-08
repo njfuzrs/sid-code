@@ -307,16 +307,32 @@ describe("extractOpenAICacheHit：各家缓存命中字段兜底链（依据 api
     })).toBe(10);
   });
 
-  test("优先级：prompt_cache_hit_tokens > prompt_tokens_details.cached_tokens > cached_tokens", () => {
+  test("④ Responses API：input_tokens_details.cached_tokens（P0-1，整族 11 个模型曾漏采）", () => {
+    // 键名与 Chat Completions 的 prompt_tokens_details **不同** —— 旧兜底链不含此项，
+    // 导致 gpt-5.2/5.4系/5.5系/5.6系(含 luna/sol/terra) 命中恒 0（luna 账本 2.2% vs 实测 95.2%）
+    expect(extractOpenAICacheHit({
+      input_tokens: 18017,
+      input_tokens_details: { cached_tokens: 17152 },
+      output_tokens: 64,
+    })).toBe(17152);
+  });
+
+  test("优先级：prompt_cache_hit_tokens > prompt_tokens_details > input_tokens_details > cached_tokens", () => {
     expect(extractOpenAICacheHit({
       prompt_cache_hit_tokens: 1,
       prompt_tokens_details: { cached_tokens: 2 },
-      cached_tokens: 3,
+      input_tokens_details: { cached_tokens: 3 },
+      cached_tokens: 4,
     })).toBe(1);
     expect(extractOpenAICacheHit({
       prompt_tokens_details: { cached_tokens: 2 },
-      cached_tokens: 3,
+      input_tokens_details: { cached_tokens: 3 },
+      cached_tokens: 4,
     })).toBe(2);
+    expect(extractOpenAICacheHit({
+      input_tokens_details: { cached_tokens: 3 },
+      cached_tokens: 4,
+    })).toBe(3);
   });
 
   test("无任何缓存字段 → 0（无缓存模型 / ollama 不误报）", () => {

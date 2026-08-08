@@ -38,6 +38,7 @@
 
 import type { StreamEvent, Usage } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { applyResponsesUsage } from "./openai-usage.ts";
 
 // ─── Responses API 事件类型定义 ───
 
@@ -75,12 +76,32 @@ export interface ResponsesStreamEvent {
 interface ResponseObject {
   id: string;
   status: string;
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-  };
+  usage?: ResponsesUsage;
   output?: OutputItem[];
+}
+
+/**
+ * Responses API 的 usage 形状 —— 与 Chat Completions **键名不同**，这是第三种形态。
+ *
+ * | 维度 | Chat Completions | Responses |
+ * | --- | --- | --- |
+ * | 输入 | `prompt_tokens` | `input_tokens` |
+ * | 缓存命中 | `prompt_tokens_details.cached_tokens` | `input_tokens_details.cached_tokens` |
+ * | 推理 | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.reasoning_tokens` |
+ *
+ * 历史坑（2026-08-08 修复）：本类型此前只声明 `input_tokens/output_tokens/total_tokens`
+ * 三个字段，映射处也只读这三个 —— 导致**整个 openai-responses 族 11 个模型**
+ * （gpt-5.2 / 5.4 系 / 5.5 系 / 5.6 系含 luna/sol/terra）的缓存命中与 reasoning
+ * token 全部漏采。漏采表现为账本命中率恒接近 0（luna 实测记成 2.2%，真实 95.2%），
+ * 曾被误判为"网关后端不支持前缀缓存"。判断"同代码路径"必须核实协议分派，
+ * 不能只看 provider 与 base_url 相同。
+ */
+export interface ResponsesUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens?: number;
+  input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
 }
 
 interface OutputItem {
@@ -302,8 +323,7 @@ function mapResponseEvent(
     case "response.completed": {
       const usage = raw.response?.usage;
       if (usage) {
-        state.usage.inputTokens = usage.input_tokens;
-        state.usage.outputTokens = usage.output_tokens;
+        applyResponsesUsage(state.usage, usage);
       }
       results.push({
         type: "message_delta",

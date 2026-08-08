@@ -43,6 +43,7 @@ import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config
 import { buildResponsesRequest } from "./openai-responses-request.ts";
 import { parseResponsesStream } from "./openai-responses.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
+import { extractOpenAICacheHit, extractOpenAIReasoningTokens } from "./openai-usage.ts";
 
 /**
  * 从纯文本中提取内联 <think>...</think> 标签为独立的 thinking 内容。
@@ -66,42 +67,13 @@ function extractInlineThinkTags(content: string): { thinking: string; text: stri
 }
 
 /**
- * 从 OpenAI 兼容响应的 usage 提取"缓存命中(读)token 数"——流式/非流式共用的单一事实源。
+ * usage 提取器已抽到 `openai-usage.ts`（单一事实源），此处 re-export 保持既有导入面。
  *
- * 各家字段差异（依据 api-reference 各家文档实测）按优先级兜底：
- *   ① `prompt_cache_hit_tokens` —— DeepSeek 官方直连的顶层专有字段；
- *   ② `prompt_tokens_details.cached_tokens` —— OpenAI 标准字段。公司网关(uni-api)
- *      对所有 OpenAI 族后端(deepseek/glm/gemini/qwen 隐式/grok/kimi)统一归一化到此
- *      （实测 curl 各家均返回此形状，官方顶层扩展字段被网关吃掉）；
- *   ③ `cached_tokens` —— Kimi 官方直连的顶层扩展字段(标准端点顶层无此字段，
- *      放兜底链末尾不会误伤其它家)。
- *
- * 缓存写入(cacheCreationInputTokens)：OpenAI 族均无自动写入计费概念(恒 0)；
- * Qwen 显式缓存的 `cache_creation_input_tokens` 需客户端主动打 cache_control 标记，
- * 当前 openai 协议路径不发该标记，不会产生，故不映射。
+ * 抽走的原因：`openai-responses.ts` 也要用同一套提取器，而本文件已 import 它，
+ * 反向 import 会成环 —— 于是 Responses 路径长期自己只映射 input/output 两个字段，
+ * 缓存命中与 reasoning 全族漏采（详见 `openai-usage.ts` 头注释）。
  */
-export function extractOpenAICacheHit(usage: any): number {
-  return usage?.prompt_cache_hit_tokens
-    ?? usage?.prompt_tokens_details?.cached_tokens
-    ?? usage?.cached_tokens
-    ?? 0;
-}
-
-/**
- * 从 OpenAI 兼容响应的 usage 提取"推理(思考)token 数"——流式/非流式共用的单一事实源。
- *
- * 标准字段 `completion_tokens_details.reasoning_tokens`（OpenAI o-series / GLM / DeepSeek
- * 经网关归一化后均落此形状）。该值是 completion_tokens 的**子集**（reasoning 已计入输出），
- * 单独暴露供成本拆解（缺口分析二类），调用方勿再叠加进 outputTokens。
- * 兜底链末尾放 DeepSeek 官方直连可能出现的顶层 `reasoning_tokens`。
- * 无该字段（非思考模型 / 网关未透传）时返回 0，由上层决定是否落 undefined。
- */
-export function extractOpenAIReasoningTokens(usage: any): number {
-  return usage?.completion_tokens_details?.reasoning_tokens
-    ?? usage?.output_tokens_details?.reasoning_tokens
-    ?? usage?.reasoning_tokens
-    ?? 0;
-}
+export { extractOpenAICacheHit, extractOpenAIReasoningTokens } from "./openai-usage.ts";
 
 /** 工具调用追踪状态（用于 SSE 流中多工具并行解析） */
 interface ToolCallState {

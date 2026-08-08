@@ -258,4 +258,85 @@ describe("T11 Responses API 解析器", () => {
       expect(events.every((e) => e.type !== "error")).toBe(true);
     });
   });
+
+  /**
+   * P0-1 回归：Responses API 的缓存命中与 reasoning token 必须被提取。
+   *
+   * 历史缺陷（2026-08-08 修复）：`ResponseObject.usage` 只声明了
+   * input/output/total 三个字段，映射处也只读这三个 —— 整个 openai-responses 族
+   * 11 个模型的 `input_tokens_details.cached_tokens` 与
+   * `output_tokens_details.reasoning_tokens` 全部漏采。luna 账本记 2.2%，
+   * 而同一渠道实测真实命中 95.2%（17152/18017），差距全部来自采集缺陷。
+   *
+   * 断言用**真实实测形状**（uniapi 网关 POST /responses 的原始 usage），
+   * 不手抄一个理想化的 mock。
+   */
+  describe("P0-1 usage 提取：缓存命中 + reasoning（Responses 形状）", () => {
+    /** 构造一个只含 created + completed 的最小流，usage 由调用方给全 */
+    function usageOnlyStream(usage: Record<string, unknown>): ReadableStream<Uint8Array> {
+      return buildStream([
+        { data: `event: response.created\ndata: {"type":"response.created","response":{"id":"resp_u","status":"in_progress"},"sequence_number":0}\n\n`, delayMs: 0 },
+        { data: `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_u", status: "completed", usage }, sequence_number: 1 })}\n\n`, delayMs: 1 },
+      ]);
+    }
+
+    async function finalUsage(usage: Record<string, unknown>): Promise<any> {
+      const events = await collectEvents(usageOnlyStream(usage));
+      const delta = events.find((e) => e.type === "message_delta") as any;
+      expect(delta).toBeDefined();
+      return delta.usage;
+    }
+
+    test("input_tokens_details.cached_tokens → cacheReadInputTokens（luna 实测形状）", async () => {
+      const u = await finalUsage({
+        input_tokens: 18017,
+        input_tokens_details: { cached_tokens: 17152 },
+        output_tokens: 64,
+        total_tokens: 18081,
+      });
+      expect(u.inputTokens).toBe(18017);
+      expect(u.outputTokens).toBe(64);
+      expect(u.cacheReadInputTokens).toBe(17152);
+    });
+
+    test("output_tokens_details.reasoning_tokens → reasoningTokens", async () => {
+      const u = await finalUsage({
+        input_tokens: 100,
+        output_tokens: 500,
+        output_tokens_details: { reasoning_tokens: 448 },
+      });
+      expect(u.reasoningTokens).toBe(448);
+      // reasoning 是 output 的子集，不得叠加进 outputTokens
+      expect(u.outputTokens).toBe(500);
+    });
+
+    test("两个维度同时出现时都被提取", async () => {
+      const u = await finalUsage({
+        input_tokens: 18017,
+        input_tokens_details: { cached_tokens: 17152 },
+        output_tokens: 500,
+        output_tokens_details: { reasoning_tokens: 448 },
+      });
+      expect(u.cacheReadInputTokens).toBe(17152);
+      expect(u.reasoningTokens).toBe(448);
+    });
+
+    test("cached=0（r1 冷启动）不落误导值，字段保持 undefined", async () => {
+      const u = await finalUsage({
+        input_tokens: 18017,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: 64,
+      });
+      // 0 与"网关未透传"无法区分，故不落 0；命中率计算侧按 undefined→0 处理
+      expect(u.cacheReadInputTokens).toBeUndefined();
+      expect(u.inputTokens).toBe(18017);
+    });
+
+    test("缺 details 字段（老网关/非思考模型）不抛错", async () => {
+      const u = await finalUsage({ input_tokens: 8, output_tokens: 4, total_tokens: 12 });
+      expect(u.inputTokens).toBe(8);
+      expect(u.cacheReadInputTokens).toBeUndefined();
+      expect(u.reasoningTokens).toBeUndefined();
+    });
+  });
 });
