@@ -68,27 +68,10 @@ if (values.help) {
   process.exit(0);
 }
 
-interface RoundResult {
-  round: number;
-  promptTotal: number;
-  cacheHit: number;
-  /** 本轮命中率 = cacheHit / promptTotal */
-  hitRate: number;
-  costUSD: number;
-}
-
-interface ModelBench {
-  model: string;
-  provider: string;
-  host?: string;
-  rounds: RoundResult[];
-  /** 稳态命中率：**排除 r1**（冷启动必然 0）后的加权命中率 —— 这才是"缓存生效后能到多少" */
-  steadyStateHitRate: number | null;
-  /** 全轮加权命中率（含 r1，与账本口径一致，便于对照） */
-  overallHitRate: number | null;
-  spentUSD: number;
-  aborted?: string;
-}
+// 类型从 core 引入而**不在这里重新声明**：第一版两边各写了一份 RoundResult，
+// core 加 cacheWrite 字段后本文件的副本没跟上，渲染代码就访问了一个"类型上不存在"的字段。
+// 手写的平行类型声明必然漂移（同病：记忆 message-fidelity-silent-block-drop）。
+type ModelBench = import("../src/telemetry/cache-bench-core.ts").ModelBench;
 
 /** 固定静态前缀：模拟真实 system prompt（跨轮完全不变，这是可缓存的部分） */
 function staticPrefix(): string {
@@ -175,12 +158,17 @@ async function main(): Promise<void> {
 function printHuman(results: ModelBench[], spentTotal: number): void {
   for (const r of results) {
     console.log(`\n━━━ ${r.model} @ ${r.host ?? "(默认端点)"}（${r.provider}）━━━`);
-    console.log("  轮次  完整输入   命中    命中率");
+    console.log("  轮次  完整输入   命中     写入    命中率");
     for (const x of r.rounds) {
       console.log(
         `  r${String(x.round).padEnd(4)} ${String(x.promptTotal).padStart(8)} ${String(x.cacheHit).padStart(8)}` +
-          `   ${(x.hitRate * 100).toFixed(1)}%`,
+          ` ${String(x.cacheWrite).padStart(8)}   ${(x.hitRate * 100).toFixed(1)}%`,
       );
+    }
+    // 写入列不是装饰：hit 恒 0 有两种相反成因（什么都没缓存 / 每轮重新写入），
+    // 只看命中列会把后者误判成"渠道不支持缓存"（实跑 anthropic 通道踩过）。
+    if (r.rounds.length >= 2 && r.rounds.slice(1).every((x) => x.cacheHit === 0 && x.cacheWrite > 0)) {
+      console.log("  ⚠ 命中恒 0 但每轮都在写入 → 缓存可用，但前缀每轮都变（查断点位置/尾部增量是否进了缓存键）");
     }
     // r1 必然 0（服务端没见过前缀），把它算进去会系统性拉低结论 ——
     // 所以稳态口径排除 r1，同时也给全轮口径便于与账本对照。

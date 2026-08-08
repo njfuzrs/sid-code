@@ -18,10 +18,11 @@ import {
   type RoundResult,
 } from "../../src/telemetry/cache-bench-core.ts";
 
-const r = (round: number, promptTotal: number, cacheHit: number): RoundResult => ({
+const r = (round: number, promptTotal: number, cacheHit: number, cacheWrite = 0): RoundResult => ({
   round,
   promptTotal,
   cacheHit,
+  cacheWrite,
   hitRate: roundHitRate(cacheHit, promptTotal),
   costUSD: 0,
 });
@@ -106,6 +107,7 @@ describe("benchModel 驱动", () => {
         // 第一轮 0 命中，之后稳定命中
         promptTotal: 1000,
         cacheHit: messages.length > 0 && (messages[0]!.content !== "q1") ? 950 : 0,
+        cacheWrite: 0,
         costUSD: 0.001,
       }),
     });
@@ -121,7 +123,7 @@ describe("benchModel 驱动", () => {
       ...baseDeps,
       rounds: 100,
       costCeilingUSD: 0.0025, // 每轮 0.001，第 3 轮前应停
-      sendOnce: async () => ({ promptTotal: 1000, cacheHit: 900, costUSD: 0.001 }),
+      sendOnce: async () => ({ promptTotal: 1000, cacheHit: 900, cacheWrite: 0, costUSD: 0.001 }),
     });
     expect(res.rounds.length).toBeLessThan(100);
     expect(res.aborted).toContain("预算耗尽");
@@ -137,7 +139,7 @@ describe("benchModel 驱动", () => {
       sendOnce: async () => {
         n++;
         if (n === 3) throw new Error("502 bad gateway");
-        return { promptTotal: 1000, cacheHit: 900, costUSD: 0.0001 };
+        return { promptTotal: 1000, cacheHit: 900, cacheWrite: 0, costUSD: 0.0001 };
       },
     });
     // 失败的那轮不该作为"0 命中"记进去
@@ -160,6 +162,21 @@ describe("benchModel 驱动", () => {
     expect(res.aborted).toContain("ECONNREFUSED");
   });
 
+  test("★hit 恒 0 但 write 每轮非零 → 记下 write 才能区分「没缓存」与「反复重写」", async () => {
+    // 实跑 uniapi 的 anthropic 通道时踩到的：6 轮 hit 全 0，第一反应是"网关不支持"，
+    // 但探针用**完全相同**的请求却稳定命中 → 说明缓存是好的，是每轮都在重新写入。
+    // 只记 hit 的仪器无法区分这两种成因，而它们的修法相反。
+    const res = await benchModel({
+      ...baseDeps,
+      provider: "anthropic",
+      rounds: 3,
+      sendOnce: async () => ({ promptTotal: 4000, cacheHit: 0, cacheWrite: 2584, costUSD: 0.0001 }),
+    });
+    expect(res.overallHitRate).toBe(0);
+    // 关键断言：write 非零证明"缓存在工作，只是每轮都重写"
+    expect(res.rounds.every((x) => x.cacheWrite > 0)).toBe(true);
+  });
+
   test("前缀跨轮恒定，增量只出现在消息里", async () => {
     // 这是本脚本与探针的根本差异：前缀必须**不变**，否则测的是冷启动而非缓存
     const seenPrefixes = new Set<string>();
@@ -172,7 +189,7 @@ describe("benchModel 驱动", () => {
       sendOnce: async ({ prefix, messages }) => {
         seenPrefixes.add(prefix);
         seenMsgCounts.push(messages.length);
-        return { promptTotal: 1000, cacheHit: 900, costUSD: 0.0001 };
+        return { promptTotal: 1000, cacheHit: 900, cacheWrite: 0, costUSD: 0.0001 };
       },
     });
     expect(seenPrefixes.size).toBe(1);

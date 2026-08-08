@@ -22,6 +22,15 @@ export interface RoundResult {
   /** 完整输入 = 命中 + 写入 + 未命中（取 normalizeCacheUsage 的 promptTotal） */
   promptTotal: number;
   cacheHit: number;
+  /**
+   * 写入缓存 token 数。
+   *
+   * **必须单独记，不能只记命中**（实跑踩到的）：命中恒 0 有两种完全不同的成因 ——
+   * ①什么都没缓存（断点没生效 / 前缀太短）；②每轮都在**重新写入**（缓存键把变化的
+   * 尾部也算进去了，于是永远写、永远读不到）。只看 hit=0 两者无法区分，
+   * 而它们的修法相反。Anthropic 族有此字段，OpenAI 族恒 0。
+   */
+  cacheWrite: number;
   /** 本轮命中率 = cacheHit / promptTotal；promptTotal 为 0 时记 0 而非 NaN */
   hitRate: number;
   costUSD: number;
@@ -98,7 +107,7 @@ export interface BenchDeps {
   sendOnce?: (opts: {
     prefix: string;
     messages: Array<{ role: string; content: string }>;
-  }) => Promise<{ promptTotal: number; cacheHit: number; costUSD: number }>;
+  }) => Promise<{ promptTotal: number; cacheHit: number; cacheWrite: number; costUSD: number }>;
 }
 
 /**
@@ -125,8 +134,17 @@ export async function benchModel(deps: BenchDeps): Promise<ModelBench> {
       const r = await send({ prefix: deps.prefix, messages: deps.turnMessages(i) });
       spent += r.costUSD;
       const hitRate = roundHitRate(r.cacheHit, r.promptTotal);
-      rounds.push({ round: i, promptTotal: r.promptTotal, cacheHit: r.cacheHit, hitRate, costUSD: r.costUSD });
-      deps.log(`  r${i}: in=${r.promptTotal} hit=${r.cacheHit} (${(hitRate * 100).toFixed(1)}%)`);
+      rounds.push({
+        round: i,
+        promptTotal: r.promptTotal,
+        cacheHit: r.cacheHit,
+        cacheWrite: r.cacheWrite,
+        hitRate,
+        costUSD: r.costUSD,
+      });
+      deps.log(
+        `  r${i}: in=${r.promptTotal} hit=${r.cacheHit} write=${r.cacheWrite} (${(hitRate * 100).toFixed(1)}%)`,
+      );
     } catch (e) {
       // 请求失败不等于"缓存不生效"——记为中止，不要把它掺进命中率
       aborted = `第 ${i} 轮请求失败：${(e as Error)?.message ?? String(e)}`;
@@ -188,6 +206,7 @@ function makeRealSender(deps: BenchDeps): NonNullable<BenchDeps["sendOnce"]> {
     return {
       promptTotal: n.promptTotal,
       cacheHit: n.cacheHitTokens,
+      cacheWrite: n.cacheWriteTokens,
       // 成本只用于预算护栏，不写进任何账本
       costUSD: estimateCost(n.promptTotal, n.outputTokens),
     };
