@@ -29,8 +29,22 @@ export interface ValidationResult {
   warnings: ValidationWarning[];
 }
 
-/** 有效的 provider 值 */
-const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama"]);
+/**
+ * 有效的 provider 值。
+ *
+ * ⚠️ 新增值必须同步 `src/llm/registry.ts` 的 `createProvider()` 分派——**少改一处的两个
+ * 方向都是静默故障**：这里放开而 registry 不认 → 启动后抛「未知的 Provider」；
+ * registry 认而这里不放开 → 配置校验阶段就被拦死，registry 的分支永远走不到。
+ *
+ * 后者刚刚真实发生过（2026-08-08）：`replay` 在 registry 里接好了、31 个单测全绿，
+ * 但跑真实 CLI 直接报「无效值 "replay"」——因为单测是自己 new ProviderRegistry，
+ * **绕过了配置校验层**。这与本仓库缺陷清单 P0-3（OtlpExporter 写完但配置层不可达）
+ * 是同一个形态，也是「光看测试全绿不等于功能可用」的又一个实例。
+ *
+ * `replay`（缺陷清单 P2-11 录制回放）不发任何网络请求，只读本地 raw.jsonl 重放，
+ * 因此不需要 apiKey / baseURL 校验。
+ */
+const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama", "replay"]);
 
 /** 有效的权限模式
  *  - "manual"：CC 别名，等价 "default"（在 config.ts 归一层映射为 default）

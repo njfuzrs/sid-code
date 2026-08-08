@@ -84,6 +84,19 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     notifyCompaction("main");
   } catch { /* 忽略 */ }
 
+  // 3.5 内容级 tracing（缺陷清单 P1-5 设计点 4）：压缩把历史消息换成了摘要，
+  // 此前「已发过全文」的内容 hash 与压缩后的上下文再无对应关系。不清的话，压缩后
+  // 重建的 system prompt 若与旧值同 hash，全文就永远不会再发一次，span 上只剩一个
+  // 指向已失效事件的 hash——排查时看到 hash 却找不到内容，比没有内容更费时间。
+  //
+  // 放在 runPostCompact 而非 auto-compact 的三个出口：这里是 auto 与手动 /compact
+  // **共同**的收尾单一事实源（第 2 步重置 microcompact 映射同理）。挂在三个出口上
+  // 会漏掉手动路径，而「只有手动压缩之后 hash 不失效」这种缺陷极难被想到去查。
+  try {
+    const { clearContentTracingState } = await import("../../telemetry/content-tracing.ts");
+    clearContentTracingState();
+  } catch { /* 忽略 */ }
+
   // 4. §4.1：质量校验（覆盖率）
   let coverage = 1;
   try {

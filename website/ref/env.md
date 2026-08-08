@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **69** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 81 个）交叉核对。
+> 共 **72** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 83 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -87,6 +87,9 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_DEBUG_SSE` | 设为 1 启用 SSE 诊断日志 |
 | `SID_CODE_PERFETTO_TRACE` | 启用 Perfetto 追踪输出（性能分析） |
 | `SID_CODE_DIAGNOSTICS_FILE` | 诊断结果输出文件路径 |
+| `SID_CODE_CONTENT_TRACING` | 设为 1 启用内容级 tracing（span 携带 prompt/响应/工具输出原文；默认关闭，隐私敏感） |
+| `SID_CODE_REPLAY_FILE` | 录制回放：指向一个 raw.jsonl，配合 --provider replay 重放该会话 |
+| `SID_CODE_REPLAY_ON_EXHAUSTED` | 录制耗尽后的行为 (end-turn/repeat-last/throw，缺省 end-turn) |
 
 ## 子代理/工作流
 

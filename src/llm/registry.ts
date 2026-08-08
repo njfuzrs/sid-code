@@ -355,6 +355,31 @@ export class ProviderRegistry {
 
   /** 创建 Provider 实例（同步，使用 require 避免顶层 await） */
   private createProvider(providerName: string, apiKey: string, baseURL?: string): Provider {
+    // 缺陷清单 P2-11 录制回放（VCR）：provider 名 "replay" + 环境变量指定录制文件。
+    //
+    // 为什么要让它从 registry 走通，而不是只做一个测试里 new 出来的类：
+    // 本清单 7/11 条缺陷是同一个病——「代码完整、测试通过、调用点为零」。回放器若只能
+    // 在单测里手动 new，它对**主循环全链路**的复现能力就是零（而那才是它的价值），
+    // 形态与 P0-3（OtlpExporter 写完但配置层不可达）完全一致。所以这里接上入口：
+    //
+    //   SID_CODE_REPLAY_FILE=~/.sid-code/trajectories/sessions/<id>/raw.jsonl \
+    //     sid-code --provider replay
+    //
+    // 注意它**只读本地文件、不发任何网络请求**，所以没有 apiKey 校验。
+    if (providerName === "replay") {
+      const file = process.env.SID_CODE_REPLAY_FILE;
+      if (!file) {
+        throw new Error(
+          "provider=replay 需要环境变量 SID_CODE_REPLAY_FILE 指向一个 raw.jsonl 录制文件",
+        );
+      }
+      const { ReplayProvider } = require("./mocks/replay-provider.ts");
+      // 耗尽行为默认 end-turn：从 CLI 跑回放时，录制放完就让主循环自然收尾，
+      // 比抛错更符合"重放一次会话看看"的直觉。测试里需要严格轮数断言的自己 new。
+      const onExhausted = process.env.SID_CODE_REPLAY_ON_EXHAUSTED ?? "end-turn";
+      return ReplayProvider.fromFileSync(file, { onExhausted });
+    }
+
     // ADR-021 §4.4: mock-* 系列名走 MockProvider 工厂
     // 仅 router capability eval 用 (例如 mock-503 / mock-rate-limit / mock-timeout / mock-ok)
     if (providerName.startsWith("mock-")) {

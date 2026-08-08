@@ -11,6 +11,11 @@ import type { SpanHandle } from "./bus.ts";
 import type { TokenMeter } from "./metrics/token-meter.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
+import {
+  addRequestContent,
+  addResponseContent,
+  addToolContent,
+} from "./content-tracing.ts";
 import { HookEventName } from "../hook/types.ts";
 import type {
   HookInput,
@@ -180,9 +185,29 @@ export class TelemetryHookProbe {
       [ATTR.TURN_NUMBER]: this.turns,
       ...this.collectEnrichedAttributes("chat", input) as Attributes,
     });
+
+    // 内容级 tracing（P1-5）：默认关闭，四道闸门见 content-tracing.ts。
+    // 挂在这里而不是 loop.ts：BeforeModel 载荷已经带齐 system / tools / raw_messages，
+    // 无需为了采内容去改 LLM 调用链——采集器不该侵入被采集的链路。
+    addRequestContent(this.llmSpan, {
+      system: input.llm_request.system,
+      tools: input.llm_request.tools,
+      messages: input.llm_request.raw_messages ?? input.llm_request.messages,
+    });
   }
 
   private handleAfterModel(input: AfterModelInput): void {
+    // 内容级 tracing（P1-5）放在 usage 守卫**之前**：下面那句 `if (!usage) return`
+    // 会在「响应没带 usage」时提前退出，而那恰恰是最需要看内容的场景之一
+    // （截断响应 / provider 异常返回往往就是没 usage）。放在守卫后面等于
+    // 「越是出问题的那一轮，越采不到内容」。
+    if (this.llmSpan) {
+      addResponseContent(this.llmSpan, {
+        text: input.llm_response.text,
+        thinkingBlocks: input.llm_response.thinking_blocks,
+      });
+    }
+
     const usage = input.llm_response.usage;
     if (!usage) return;
 
@@ -240,6 +265,12 @@ export class TelemetryHookProbe {
     if (input.duration_ms !== undefined) {
       toolSpan.setAttribute("sidcode.tool.duration_ms", input.duration_ms);
     }
+    // 内容级 tracing（P1-5）：工具入参 + 返回值。默认关闭。
+    // 这两样是「模型这一步为什么做错」最直接的证据：模型给了什么参数、工具回了什么。
+    addToolContent(toolSpan, {
+      toolInput: input.tool_input,
+      toolResponse: input.tool_response,
+    });
     if (input.is_error) {
       toolSpan.recordError(new Error(JSON.stringify(input.tool_response).slice(0, 200)));
     }

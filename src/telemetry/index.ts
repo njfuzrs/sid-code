@@ -15,6 +15,16 @@ export { BudgetTracker } from "./metrics/budget-tracker.ts";
 export type { BudgetRule, BudgetAlert, BudgetRuleStatus } from "./metrics/budget-tracker.ts";
 export { TelemetryHookProbe } from "./hook-probe.ts";
 export type { SpanEnricher } from "./hook-probe.ts";
+export {
+  isContentTracingEnabled,
+  clearContentTracingState,
+  truncateToBytes,
+  addRequestContent,
+  addResponseContent,
+  addToolContent,
+  MAX_CONTENT_BYTES,
+  CONTENT_TRACING_FLAG,
+} from "./content-tracing.ts";
 export type {
   SpanData, SpanEvent, SpanKind, SpanStatus,
   Attributes, AttributeValue, MetricPoint,
