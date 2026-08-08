@@ -3,14 +3,31 @@
  *
  * 职责（对标 Claude Code 的 addCacheBreakpoints）：
  * - 在 system / tools / 消息序列上精确放置 cache_control 标记
- * - skipCacheWrite 模式：fire-and-forget 请求只读缓存不写新缓存（避免子代理污染缓存）
  * - G4 Global Scope：静态区可标记 scope=global，让所有用户共享同一份 KV Cache（SaaS 规模命中率远超 org 级）
  * - G12 四块精细分区：attribution（不缓存）/ corePrefix（global）/ staticExtensions（org）/ dynamic（会话内）
  *
  * 设计为纯函数，操作"已转换为 API 格式的载荷"（带 content 数组的对象），
  * 不耦合 SDK 类型 —— Provider 在转换完消息后调用本模块统一打标。
  *
- * ⚠️ 断点数量约束（对标 Claude Code claude.ts:3078-3089，G14 审计确认）：
+ * ## ⚠️ 哪些导出在生产路径上（2026-08-09 实测核验，别凭函数名猜）
+ *
+ * **生产在用**（`anthropic.ts` 流式 :180 + 非流式 :723 两处）：
+ *   `buildSystemBlocks` / `markLastUserMessageCacheBreakpoint` /
+ *   `markLastToolCacheBreakpoint` / `assertCacheBreakpointBudget` /
+ *   `splitSystemByDynamicBoundary`（后者还被 `trace/prefix-break-probe.ts` 用于分段）
+ *
+ * **仅测试可达**（生产 0 调用点）：
+ *   `addCacheBreakpoints` → 内部调用 `clearCacheBreakpoints` + `addMessageCacheBreakpoint`。
+ *   这三个构成一条**独立于生产的链**。刻意保留而非删除，理由见
+ *   {@link addMessageCacheBreakpoint} 与 {@link addCacheBreakpoints} 各自的注释 ——
+ *   简言之：`addMessageCacheBreakpoint` 是 P1-4 那条"语义分叉"回归用例的**对照方**，
+ *   删了它，"生产用的函数和这个现成函数落点不同"这个事实就失去了可执行的证据。
+ *
+ * `skipCacheWrite` 选项同样**生产不可达**：`warmup.ts:14` 的注释写着
+ * "子代理用 skipCacheWrite 模式"，实测子代理侧从未传过这个选项 —— 那句描述的是
+ * 一个设计意图，不是现状。见 {@link CacheStrategyOptions}。
+ *
+ * ## ⚠️ 断点数量约束（对标 Claude Code claude.ts:3078-3089，G14 审计确认）
  *
  * - **System blocks**：可以有多个 cache_control（每个 block 独立标记）—— OK。
  *   system 总在请求最前面，服务端按序处理，多个 block 边界是合法的前缀缓存分层。
@@ -18,9 +35,13 @@
  *   原因：服务端 KV 驱逐策略下，messages 上多断点会导致中间位置的 KV pages 无法被及时释放，
  *   降低服务端内存效率。
  *
- * 不要在 messages 上标记多个断点！本模块的 addMessageCacheBreakpoint 已保证只标记 1 条；
- * 若未来新增标记路径，必须维持"messages 仅 1 个 cache_control"这一不变量
- * （clearCacheBreakpoints 先清场即为此服务）。
+ * 这个不变量在生产上由**两件事**共同保证，`clearCacheBreakpoints` 不在其中：
+ *   ① `markLastUserMessageCacheBreakpoint` 只打一个点就 return；
+ *   ② `anthropic.ts` 两条路径都对 `params.messages.map(...)` 的**新数组**打标
+ *      （:143 与 :671），每轮从零开始，跨轮不会累积。
+ * 上一版这里写的是"clearCacheBreakpoints 先清场即为此服务" —— 那描述的是
+ * `addCacheBreakpoints` 那条测试链，生产从不经过它。**记着：清场之所以在生产上
+ * 不必要，是因为每轮数组是新建的；哪天改成复用同一份 messages，就必须重新引入清场。**
  */
 
 /** 缓存作用域（G4）。global 让所有用户共享 KV Cache，org 为组织级（默认）。 */
@@ -53,7 +74,17 @@ export interface SystemBlock {
 }
 
 export interface CacheStrategyOptions {
-  /** 是否跳过缓存写入（子代理 fire-and-forget 请求） */
+  /**
+   * 是否跳过缓存写入（打倒数第二条而非最后一条，从而只读缓存不写新缓存）。
+   *
+   * ⚠️ **生产不可达**（2026-08-09 实测）：全仓库唯一提到它的生产代码是
+   * `warmup.ts:14` 的注释"非子代理（子代理用 skipCacheWrite 模式，预热无意义）"，
+   * 但子代理侧从未传过这个选项 —— 那句话描述的是**设计意图，不是现状**。
+   *
+   * 保留原因：语义本身正确且有测试覆盖，将来接线时不必重新设计。
+   * 但**不要**把上面那句注释当成"已经这样做了"的依据 —— 想确认子代理是否真的
+   * 不写缓存，得看子代理侧有没有把这个选项传进来（当前没有）。
+   */
   skipCacheWrite?: boolean;
 }
 
@@ -156,7 +187,15 @@ export function markLastContentBlock(message: CacheableMessage | undefined): boo
   return false;
 }
 
-/** 清除所有消息上已有的 cache_control（重新打标前清场，避免标记叠加超过 4 个断点上限） */
+/**
+ * 清除所有消息上已有的 cache_control（重新打标前清场，避免标记叠加超过 4 个断点上限）。
+ *
+ * ⚠️ **仅测试可达**：唯一调用方是 {@link addCacheBreakpoints}，而后者生产 0 调用点。
+ *
+ * 生产路径不需要清场 —— `anthropic.ts` 两条路径都对 `params.messages.map(...)` 的
+ * **新数组**打标（:143 / :671），每轮从零开始，标记不会跨轮累积。
+ * **哪天改成复用同一份 messages 数组，就必须把清场重新引入生产路径。**
+ */
 export function clearCacheBreakpoints(messages: CacheableMessage[]): void {
   for (const msg of messages) {
     if (Array.isArray(msg.content)) {
@@ -198,8 +237,19 @@ export function markLastUserMessageCacheBreakpoint(messages: CacheableMessage[])
  * 1. 正常模式：标记最后一条消息（确保整个前缀被缓存）
  * 2. skipCacheWrite 模式：标记倒数第二条（读缓存但不写入新缓存）
  *
- * ⚠️ 与 {@link markLastUserMessageCacheBreakpoint} 语义不同（见那边的注释）：
- * 本函数不看 role。anthropic 生产路径用的是那个，不是这个。
+ * ⚠️ **仅测试可达**（生产 0 调用点，2026-08-09 实测）。**但刻意保留，别当死代码删掉。**
+ *
+ * 它与 {@link markLastUserMessageCacheBreakpoint} 语义不同：本函数不看 role、
+ * 打最后一条；那个函数倒序找最后一条 `role === "user"`。**assistant 或
+ * `role: "tool"` 结尾时两者落点不同** —— 而生产用的是那一个。
+ *
+ * 保留的理由是这个分叉需要**可执行的证据**：`tests/api/cache-strategy.test.ts`
+ * 的第一条用例（★）就是拿本函数与生产函数对照，钉死"两者落点不同"。
+ * 删掉本函数，那条用例也就没了，于是"能不能把生产代码换成这个现成函数"
+ * 又会退回成一个凭直觉回答的问题 —— P1-4 之前的博客正是凭直觉答错了，
+ * 把这处描述成"功能上没错、只是三种写法"。
+ *
+ * 换句话说：它在生产里是死的，在**防止一类具体误判**上是活的。
  *
  * 返回被打标的消息索引（-1 表示未打标）。
  */
@@ -223,8 +273,18 @@ export function addMessageCacheBreakpoint(
 }
 
 /**
- * 一站式打标：system blocks + 消息 breakpoint。
- * 先清场再打标，保证幂等。
+ * 一站式打标：system blocks + 消息 breakpoint。先清场再打标，保证幂等。
+ *
+ * ⚠️ **仅测试可达**（生产 0 调用点，2026-08-09 实测）。本函数是对标 Claude Code
+ * `addCacheBreakpoints` 的等价物，但 sid-code 的 anthropic provider 走的是
+ * 拆开的两步：`buildSystemBlocks` + `markLastUserMessageCacheBreakpoint`
+ *（因为消息侧要的是"最后一条 user"语义，不是本函数用的"最后一条"）。
+ *
+ * 它连带撑起了 {@link clearCacheBreakpoints} 与 {@link addMessageCacheBreakpoint}
+ * 的唯一非测试调用点 —— 这三个构成一条独立于生产的链。保留理由见
+ * `addMessageCacheBreakpoint` 的注释（它是语义分叉回归用例的对照方）。
+ *
+ * **别把"生产没调用"直接读成"可以删"**：这条链的价值在测试面，不在生产面。
  */
 export function addCacheBreakpoints(params: {
   messages: CacheableMessage[];

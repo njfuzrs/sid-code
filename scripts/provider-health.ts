@@ -9,6 +9,8 @@
  */
 
 import { aggregateProviderHealth, sendHealthAlerts, type HealthReport } from "../src/telemetry/provider-health.ts";
+// P2-3：分桶行文案与命令面板共用（避免同一份数据在三个入口有三种说法）
+import { formatTtftBucketLine } from "../src/trace/ttft-cache-buckets.ts";
 
 // ─── 参数解析 ───
 
@@ -108,6 +110,16 @@ function renderReport(report: HealthReport): void {
       `${ttftP95.padStart(10)} ` +
       `${totalP95.padStart(10)}`
     );
+
+    // P2-3：命中/未命中分桶 TTFT。文案与 /trace、/trace --health 共用同一函数
+    // （formatTtftBucketLine），三个入口逐字一致 —— 同一份数据不该有三种说法。
+    if (p.latency.ttftByCache) {
+      const line = formatTtftBucketLine(p.latency.ttftByCache, p.latency.ttftBucketDropped, {
+        colorize: (kind, text) => c(kind, text),
+        noDimension: p.latency.ttftNoDimension,
+      });
+      if (line) console.log(`${"".padStart(18)}└ ${line}`);
+    }
 
     // 超时分布详情
     if (Object.keys(p.timeouts.byLayer).length > 0) {

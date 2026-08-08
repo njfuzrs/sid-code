@@ -9,6 +9,12 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import { percentile } from "../trace/digest.ts";
+// P2-3：TTFT×缓存分桶与 digest.ts 共用同一实现（方案要求"两处刻意同口径"）
+import {
+  TtftCacheBucketer,
+  bucketStats,
+  formatTtftBucketLine,
+} from "../trace/ttft-cache-buckets.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -30,6 +36,29 @@ export interface ProviderHealthMetrics {
     ttft_p99?: number;
     total_p50?: number;
     total_p95?: number;
+    /**
+     * P2-3：按"本次请求是否命中前缀缓存"分桶的 TTFT 分位数。
+     *
+     * 与 `digest.ts` 的 `ProviderDigestStats.ttftByCache` **同口径同构**（都由
+     * `ttft-cache-buckets.ts` 产出）—— 方案 §P2-3 原话"两处必须同步改（刻意同口径）"。
+     * 第一版只改了 digest，本字段缺失导致 `/trace --health` 与
+     * `scripts/provider-health.ts` 都没有分桶，而验收表与博客写着
+     * "`trace-digest --health` 输出 hit/miss 两组分位数" —— 指了个不存在的入口。
+     *
+     * 两桶都无样本时整个字段不落（老轨迹没有 cache_hit 维度）：落 count 全 0
+     * 会让"数据还没采到"读起来像"命中与未命中一样快"。
+     */
+    ttftByCache?: {
+      hit: { count: number; p50?: number; p95?: number };
+      miss: { count: number; p50?: number; p95?: number };
+    };
+    /** P2-3：有维度但配对数量不等而弃用的 TTFT 样本数（不落=无此情况） */
+    ttftBucketDropped?: number;
+    /**
+     * P2-3：因轨迹早于 `cache_hit` 维度上线（2026-08-08）而未进桶的样本数。
+     * 与 `ttftBucketDropped` 分开：前者是历史空档（预期），后者才是异常信号。
+     */
+    ttftNoDimension?: number;
   };
   timeouts: {
     byLayer: Record<string, number>;
@@ -59,6 +88,12 @@ export interface HealthAlert {
 interface RawEvent {
   event?: string;
   timestamp?: string;
+  /**
+   * P2-3：分桶配对的分组键需要它。本聚合器**跨多个会话**读 events.jsonl，
+   * 不带 session_id 会把 A 会话的 ttft 配到 B 会话的命中状态上
+   *（events.jsonl 每行本就带该字段，此前只是类型没声明）。
+   */
+  session_id?: string;
   data?: Record<string, unknown>;
 }
 
@@ -94,6 +129,10 @@ export function aggregateProviderHealth(options: {
 
   // 收集所有符合时间范围的 session 目录
   const events = collectEvents(trajDir, cutoffTs);
+
+  // P2-3：TTFT×缓存分桶。与 digest.aggregateProviderStats 共用 TtftCacheBucketer ——
+  // 同一份 events.jsonl 在两个入口必须得出同一个结论，抄第二遍必然漂移。
+  const bucketer = new TtftCacheBucketer();
 
   // 按 provider 聚合
   const accumulators = new Map<string, ProviderAccumulator>();
@@ -148,7 +187,19 @@ export function aggregateProviderHealth(options: {
       const prov = resolveProvider(model);
       if (filterProvider && prov !== filterProvider) continue;
       const ttft = e.data.ttft_ms as number | undefined;
-      if (ttft && ttft > 0) ensure(prov).ttfts.push(ttft);
+      if (ttft && ttft > 0) {
+        ensure(prov).ttfts.push(ttft);
+        // P2-3：Anthropic 事件自带 cache_hit 直接分桶；OpenAI 族暂存待与 completed 配对
+        bucketer.observeFirstContent(e, prov, ttft);
+      }
+    }
+
+    // P2-3：completed 携带的缓存维度（OpenAI 族 usage 在流尾部才到，配对用）。
+    // 刻意不做 filterProvider 过滤：这里只是喂配对表，provider 归属在
+    // observeFirstContent 时已定；按 provider 过滤 completed 会让被过滤掉的组
+    // 数量对不上，整组进 dropped —— 明明有数据却报"无法判定"。
+    if (e.event === "StreamPhase" && e.data && e.data.phase === "completed") {
+      bucketer.observeCompleted(e);
     }
 
     if (e.event === "RetryTelemetry" && e.data) {
@@ -173,6 +224,9 @@ export function aggregateProviderHealth(options: {
       acc.timedOut++;
     }
   }
+
+  // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
+  const buckets = bucketer.finalize();
 
   // 生成报告
   const providers: ProviderHealthMetrics[] = [];
@@ -201,6 +255,26 @@ export function aggregateProviderHealth(options: {
         ttft_p99: percentile(sortedTtfts, 0.99),
         total_p50: percentile(sortedLatencies, 0.5),
         total_p95: percentile(sortedLatencies, 0.95),
+        // P2-3：分桶字段与 digest 同构。两桶皆空 / dropped=0 时不落该键
+        // （见 ttft-cache-buckets.ts：落 count 全 0 会把"未采到"读成"一样快"）。
+        ...(() => {
+          const b = buckets.get(prov);
+          if (!b) return {};
+          const out: {
+            ttftByCache?: { hit: ReturnType<typeof bucketStats>; miss: ReturnType<typeof bucketStats> };
+            ttftBucketDropped?: number;
+            ttftNoDimension?: number;
+          } = {};
+          if (b.hit.length + b.miss.length > 0) {
+            out.ttftByCache = {
+              hit: bucketStats(b.hit, percentile),
+              miss: bucketStats(b.miss, percentile),
+            };
+          }
+          if (b.dropped > 0) out.ttftBucketDropped = b.dropped;
+          if (b.noDimension > 0) out.ttftNoDimension = b.noDimension;
+          return out;
+        })(),
       },
       timeouts: { byLayer: acc.timeoutsByLayer },
       retries: {
@@ -402,6 +476,14 @@ export function renderHealthText(report: HealthReport): string {
       `${s(p.latency.ttft_p95).padStart(9)} ` +
       `${s(p.latency.total_p95).padStart(9)}`,
     );
+    // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
+    // 文案走 formatTtftBucketLine，与 /trace 单会话视图逐字一致（同一函数）。
+    if (p.latency.ttftByCache) {
+      const line = formatTtftBucketLine(p.latency.ttftByCache, p.latency.ttftBucketDropped, {
+        noDimension: p.latency.ttftNoDimension,
+      });
+      if (line) out.push(`    └ ${line}`);
+    }
     if (Object.keys(p.timeouts.byLayer).length > 0) {
       const layers = Object.entries(p.timeouts.byLayer).map(([k, v]) => `${k}:${v}`).join(" ");
       out.push(`    超时分布: ${layers}`);

@@ -13,6 +13,10 @@
  *   bun scripts/trace-digest.ts <id> --json      # 机器可读 JSON(给上层程序用)
  *   bun scripts/trace-digest.ts <id> --full      # 附带更多思维链/工具参数细节
  *   bun scripts/trace-digest.ts --cache          # 跨会话缓存命中率/省钱/断裂归因(P2-4)
+ *   bun scripts/trace-digest.ts --cache --days 7 # 同上,只看最近 N 天
+ *
+ * 注:--cache 与 --health 在产品内也可达(/trace --cache、/trace --health),
+ * 不必为看这两个视图回到仓库跑脚本。
  */
 
 import {
@@ -50,7 +54,12 @@ function main() {
   // 所以放在 "no sessions" 早退之前 —— trajectories 被 LRU 清掉后账本仍在，
   // 此时最需要的正是这个视图。
   if (flags.has("--cache")) {
-    const report = renderCacheSection({ noColor, json });
+    // --days N 限定窗口。`CacheReportOptions.sinceDays` 早就定义了，但两个入口
+    // （本脚本与 /trace --cache）此前都没接 —— 字段可达性为零等于没这个功能。
+    const daysIdx = args.indexOf("--days");
+    const daysRaw = daysIdx >= 0 ? args[daysIdx + 1] : undefined;
+    const sinceDays = daysRaw && /^\d+$/.test(daysRaw) ? parseInt(daysRaw, 10) : undefined;
+    const report = renderCacheSection({ noColor, json, sinceDays });
     process.stdout.write(report + "\n");
     return;
   }

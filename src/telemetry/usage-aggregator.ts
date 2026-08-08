@@ -8,6 +8,8 @@
 
 import type { UsageLedgerEntry } from "./usage-ledger.ts";
 import { readUsageLedger, dedupeBySession } from "./usage-ledger.ts";
+import { readChannelTrust, lookupChannelTrust } from "./channel-trust.ts";
+import type { ChannelTrustRegistry } from "./channel-trust.ts";
 
 /** 聚合粒度 */
 export type Granularity = "day" | "week" | "month";
@@ -22,6 +24,18 @@ export interface ModelCacheStats {
   costUSD: number;
   savingsUSD: number;
   sessions: number;
+  /**
+   * P0-4：本模型的用量来自哪些端点 host（去重，按首次出现顺序）。
+   *
+   * 为什么模型统计要带渠道：同一模型名经不同网关，usage 可信度**完全不同**
+   *（实测某月卡网关的 Anthropic usage 是编造的）。`/cache` 只按模型聚合时，
+   * 一个数字背后可能混了两个渠道，而"这个数能不能信"取决于渠道 ——
+   * 数字与它的可信前提必须一起出现，分开放会让人只抄走数字。
+   *
+   * 旧账本行（2026-08-08 前）无 `endpointHost` 字段，不产生条目 ——
+   * 所以空数组表示"该模型的样本全部来自记录渠道之前"，不是"没有渠道"。
+   */
+  hosts: string[];
 }
 
 /** 单周期聚合输出 */
@@ -37,6 +51,32 @@ export interface PeriodCacheStats {
   totalCostUSD: number;
   /** 周期内会话数 */
   totalSessions: number;
+  /**
+   * P0-4：因渠道 usage 不可信而**排除出本统计**的账本行数（0 = 无排除）。
+   *
+   * 必须暴露给渲染层并显式写出来：静默排除读起来像"全部数据都在这儿"。
+   * 与 `src/trace/cache-report.ts` 的 `excludedUntrustedRows` 同语义同口径。
+   */
+  excludedUntrustedRows: number;
+  /**
+   * P0-4：被排除的渠道 host → 理由。供渲染层给出"排除了谁、为什么"。
+   *
+   * 只放 host 与 reason，不放被排除的数字 —— 把假数字打印出来，
+   * 迟早有人把它当真数字抄走（博客那次错误结论就是这么来的）。
+   */
+  untrustedHosts: Array<{ host: string; reason?: string }>;
+  /**
+   * P0-4 **覆盖盲区**：无 `endpointHost` 因而无法参与可信度判定的会话数。
+   *
+   * 这些行按 unknown（= 可信）计入，但那不是"已确认可信"，是"判不了"。
+   * `endpointHost` 2026-08-08 才随 P0-4 落地，之前的账本行全部落在这里 ——
+   * 实测本机 358 行只有 8 行带 host，于是 ppchat 虽判为 untrusted 却排除了 0 行。
+   *
+   * ⚠️ 渲染层必须在 `excludedUntrustedRows === 0` 时也说出这个数：
+   * 否则"没排除任何行"会被读成"总计里没有脏数据"，而真相是脏数据没带标签、排不掉。
+   * **机制上线 ≠ 数据被治理**，中间隔着一段只有新数据才有字段的过渡期。
+   */
+  sessionsWithoutHost: number;
 }
 
 /**
@@ -88,21 +128,59 @@ function isoWeekNumber(date: Date): { isoYear: number; isoWeek: number } {
 function emptyModelStats(): ModelCacheStats {
   return {
     promptTotal: 0, cacheHit: 0, cacheWrite: 0, uncachedInput: 0,
-    output: 0, costUSD: 0, savingsUSD: 0, sessions: 0,
+    output: 0, costUSD: 0, savingsUSD: 0, sessions: 0, hosts: [],
   };
 }
 
 /**
  * 把一组账本行聚合成单个 PeriodCacheStats（不分周期，调用方自行筛选）。
+ *
+ * P0-4：**不可信渠道的行不进任何统计**（既不进 byModel 也不进总计），
+ * 只在 `excludedUntrustedRows` / `untrustedHosts` 里留痕。
+ *
+ * 为什么必须在这里排除而不是在渲染层：`/cache` 的总命中率与"累计省钱"是
+ * 对外可引用的数字。实测某月卡网关的 Anthropic usage 是编造的（全新前缀 r1 就报
+ * 大量 cache_read），把它混进分子会**凭空抬高**整体命中率 ——
+ * "我们缓存做得很好"这个结论就建立在假数据上。
+ *
+ * `unknown` 渠道（含旧账本行无 `endpointHost`）按**可信**处理：把没探测过的
+ * 一律排除会让 `/cache` 在探针跑之前显示空表，比不排除更糟。
+ * 判据链见 `channel-trust.ts` 头注释。
+ *
+ * @param registry 可注入的登记表（测试用；不传则每次调用读一次文件）
  */
-export function aggregateEntries(entries: UsageLedgerEntry[], period: string): PeriodCacheStats {
+export function aggregateEntries(
+  entries: UsageLedgerEntry[],
+  period: string,
+  registry?: ChannelTrustRegistry,
+): PeriodCacheStats {
   const byModel: Record<string, ModelCacheStats> = {};
   let totalHit = 0;
   let totalPrompt = 0;
   let totalSavings = 0;
   let totalCost = 0;
+  let countedSessions = 0;
+  let excludedUntrustedRows = 0;
+  let sessionsWithoutHost = 0;
+  // host → reason，去重（同一渠道多行只报一次）
+  const untrusted = new Map<string, string | undefined>();
+
+  const reg = registry ?? readChannelTrust();
 
   for (const e of entries) {
+    // P0-4：不可信渠道整行排除。放在累加之前 —— 一旦加进去就再也分不出来了
+    const verdict = lookupChannelTrust(e.endpointHost, reg);
+    if (verdict.verdict === "untrusted") {
+      excludedUntrustedRows++;
+      if (e.endpointHost && !untrusted.has(e.endpointHost)) {
+        untrusted.set(e.endpointHost, verdict.reason);
+      }
+      continue;
+    }
+
+    // P0-4 覆盖盲区：无 host 的行进不了可信度判定（见 sessionsWithoutHost 注释）
+    if (!e.endpointHost) sessionsWithoutHost++;
+
     if (!byModel[e.model]) byModel[e.model] = emptyModelStats();
     const m = byModel[e.model];
     m.promptTotal += e.promptTotal;
@@ -113,11 +191,13 @@ export function aggregateEntries(entries: UsageLedgerEntry[], period: string): P
     m.costUSD += e.costUSD;
     m.savingsUSD += e.savingsUSD;
     m.sessions += 1;
+    if (e.endpointHost && !m.hosts.includes(e.endpointHost)) m.hosts.push(e.endpointHost);
 
     totalHit += e.cacheHit;
     totalPrompt += e.promptTotal;
     totalSavings += e.savingsUSD;
     totalCost += e.costUSD;
+    countedSessions++;
   }
 
   return {
@@ -126,7 +206,12 @@ export function aggregateEntries(entries: UsageLedgerEntry[], period: string): P
     totalHitRate: totalPrompt > 0 ? totalHit / totalPrompt : 0,
     totalSavingsUSD: totalSavings,
     totalCostUSD: totalCost,
-    totalSessions: entries.length,
+    // 会话数与上面三个总量同口径：都只数**计入统计**的行。
+    // 用 entries.length 会让"355 会话"配上"排除 3 行后的命中率"，分母对不上。
+    totalSessions: countedSessions,
+    excludedUntrustedRows,
+    untrustedHosts: [...untrusted].map(([host, reason]) => ({ host, reason })),
+    sessionsWithoutHost,
   };
 }
 
@@ -141,6 +226,13 @@ export interface AggregateOptions {
   nowSeconds?: number;
   /** 只读账本最近 N 行（大文件优化） */
   maxEntries?: number;
+  /**
+   * P0-4：可注入的渠道可信度登记表（测试用）。
+   * 不传则读一次 `~/.sid-code/channel-trust.json`；**在这一层读一次然后传给所有
+   * 分组**，而不是让 aggregateEntries 每组各读一次文件 —— 后者在按天分组时
+   * 会把同一个文件读几十遍。
+   */
+  trustRegistry?: ChannelTrustRegistry;
 }
 
 /**
@@ -171,9 +263,13 @@ export function aggregateUsage(opts: AggregateOptions = {}): PeriodCacheStats[] 
     groups.get(key)!.push(e);
   }
 
+  // P0-4：登记表在这里读**一次**，传给所有分组。按天分组时组数可达几十，
+  // 让每组各读一次文件是无谓的重复 IO。
+  const reg = opts.trustRegistry ?? readChannelTrust();
+
   const result: PeriodCacheStats[] = [];
   for (const [key, group] of groups) {
-    result.push(aggregateEntries(group, key));
+    result.push(aggregateEntries(group, key, reg));
   }
   // 按周期键升序
   result.sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
@@ -194,5 +290,5 @@ export function aggregateOverall(opts: AggregateOptions = {}): PeriodCacheStats 
     const cutoff = now - opts.sinceDays * 24 * 60 * 60;
     entries = entries.filter((e) => e.ts >= cutoff);
   }
-  return aggregateEntries(entries, "overall");
+  return aggregateEntries(entries, "overall", opts.trustRegistry ?? readChannelTrust());
 }

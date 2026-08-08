@@ -186,8 +186,10 @@ export class HelpCommand implements Command {
   /trace <id>            指定会话,支持前缀(如 /trace c857)
   /trace --list          列出最近 20 个会话(异常会话一眼可见)
   /trace --full          附带更多思维链/工具参数细节
-  /trace --health        Provider 健康度看板(成功率/超时/TTFT,跨会话聚合)
+  /trace --health        Provider 健康度看板(成功率/超时/TTFT 含缓存命中分桶,跨会话聚合)
   /trace --health 1h     指定聚合周期(1h|24h|7d,默认 24h)
+  /trace --cache         跨会话缓存视图(命中率/省钱/中断归因/渠道可信度)
+  /trace --cache --days 7  只看最近 N 天(不传=全部历史)
   /digest                /trace 的别名
 
 输出内容:
@@ -1544,6 +1546,26 @@ export class CacheCommand implements Command {
     lines.push(`  累计省钱:   $${overall.totalSavingsUSD.toFixed(4)}`);
     lines.push(`  累计成本:   $${overall.totalCostUSD.toFixed(4)}   (${overall.totalSessions} 会话)`);
 
+    // P0-4：排除了多少行必须显式写出来 —— 静默排除读起来像"全部数据都在这儿"。
+    // 不打印被排除的数字本身：把假数字印出来，迟早有人当真数字抄走。
+    if (overall.excludedUntrustedRows > 0) {
+      lines.push(
+        `  ⚠ 已排除 ${overall.excludedUntrustedRows} 个会话（渠道 usage 不可信，未计入以上数字）:`,
+      );
+      for (const h of overall.untrustedHosts) {
+        lines.push(`      ${h.host}${h.reason ? `：${h.reason}` : ""}`);
+      }
+      lines.push(`      判定来自 cache-trust-probe 实测，见 ~/.sid-code/channel-trust.json`);
+    }
+    // P0-4 覆盖盲区：**排除数为 0 时也要说**。否则"没排除"读起来像"总计干净"，
+    // 而实际是这些行没带 endpointHost、根本没进可信度判定（机制上线 ≠ 数据被治理）。
+    if (overall.sessionsWithoutHost > 0) {
+      lines.push(
+        `  ⚠ ${overall.sessionsWithoutHost} 个会话无渠道标记（账本 2026-08-08 前不记 endpointHost），`,
+      );
+      lines.push(`      未参与可信度判定 —— 以上总计里可能仍混有不可信渠道的数字`);
+    }
+
     // Usage by model（按命中 token 降序）
     const models = Object.entries(overall.byModel);
     if (models.length > 0) {
@@ -1551,7 +1573,18 @@ export class CacheCommand implements Command {
       models.sort(([, a], [, b]) => b.cacheHit - a.cacheHit);
       for (const [name, m] of models) {
         const rate = m.promptTotal > 0 ? Math.round((m.cacheHit / m.promptTotal) * 100) : 0;
-        lines.push(`    ${name}:  命中 ${rate}%  省 $${m.savingsUSD.toFixed(4)}  (${m.sessions} 会话)`);
+        // P0-4：渠道与数字同行出现 —— 同一模型经不同网关可信度不同，
+        // 数字与"这个数的前提"分开放会让人只抄走数字。
+        // 多渠道时全列出来：合并成一个百分比恰恰掩盖了渠道差异。
+        const host =
+          m.hosts.length === 0 ? "" :
+          m.hosts.length === 1 ? `  @${m.hosts[0]}` :
+          `  @${m.hosts.join(",")}`;
+        lines.push(`    ${name}:  命中 ${rate}%  省 $${m.savingsUSD.toFixed(4)}  (${m.sessions} 会话)${host}`);
+      }
+      // hosts 为空不是"没有渠道"，是"这些行早于渠道字段上线"——不点破会被读成前者
+      if (models.some(([, m]) => m.hosts.length === 0)) {
+        lines.push(`    （无 @渠道 标注的行来自 2026-08-08 之前的账本，那时还没记端点）`);
       }
     }
 
@@ -1579,7 +1612,7 @@ export class CacheCommand implements Command {
 export class TraceCommand implements Command {
   name() { return "trace"; }
   aliases() { return ["digest"]; }
-  description() { return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细)"; }
+  description() { return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图)"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { resolvePaths, listSessions, resolveSession, buildDigest, renderHuman, renderList } =
@@ -1606,6 +1639,27 @@ export class TraceCommand implements Command {
       const provTok = positional.find((t) => t !== periodTok);
       const report = aggregateProviderHealth({ periodMs, provider: provTok });
       return { kind: "message", message: renderHealthText(report) };
+    }
+
+    // P2-4：跨会话缓存视图（命中率 / 省钱 / 中断归因 / 渠道可信度）。
+    //
+    // 此前 renderCacheSection 的唯一调用方是 scripts/trace-digest.ts —— 能力做完了
+    // 却只能在仓库里跑脚本才看得到，产品内不可达。用户手上只有二进制，没有仓库。
+    //
+    // 必须放在下面 "no sessions" 早退**之前**：账本与 cache-breaks 是独立数据源
+    //（~/.sid-code/usage-ledger.jsonl），trajectories 被 LRU 清掉后账本仍在，
+    // 而那恰恰是最需要这个视图的时刻。与脚本侧的分支顺序刻意一致。
+    if (flags.has("--cache")) {
+      const { renderCacheSection } = await import("../trace/cache-report.ts");
+      // --days N 限定窗口（不传 = 全部历史）
+      const daysIdx = tokens.indexOf("--days");
+      const daysRaw = daysIdx >= 0 ? tokens[daysIdx + 1] : undefined;
+      const days = daysRaw && /^\d+$/.test(daysRaw) ? parseInt(daysRaw, 10) : undefined;
+      // 命令面板固定纯文本（renderOpts.noColor 同源），避免 ANSI 码污染
+      return {
+        kind: "message",
+        message: renderCacheSection({ noColor: true, sinceDays: days }),
+      };
     }
 
     const paths = resolvePaths();

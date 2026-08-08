@@ -11,7 +11,13 @@
  * - 仅 Anthropic provider（其它 provider 无 prompt cache 机制）
  * - 仅 resume 恢复会话或明确 opt-in（SID_WARMUP_CACHE=1）
  * - SID_DISABLE_CACHE_WARMUP=1 一键关闭
- * - 非子代理（子代理用 skipCacheWrite 模式，预热无意义）
+ * - 非子代理（子代理生命周期短、预热的 cache_creation 成本回不来）
+ *
+ * ⚠️ 上一版这里写的是"子代理用 skipCacheWrite 模式，预热无意义"。**该说法失真**
+ *（2026-08-09 实测）：`CacheStrategyOptions.skipCacheWrite` 生产从未被传入，
+ * 子代理侧一处调用点都没有 —— 那是设计意图而非现状。门控成立的真实理由是上面那条
+ * （成本回不来），与 skipCacheWrite 无关。留着错理由比没理由更糟：
+ * 下次有人想验证"子代理到底写不写缓存"，会以为这里已经回答了。
  */
 
 import type { Provider } from "../llm/provider.ts";

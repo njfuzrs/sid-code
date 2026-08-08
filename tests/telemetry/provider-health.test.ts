@@ -150,4 +150,193 @@ describe("T15: Provider 健康度聚合", () => {
     const text = renderHealthText(report);
     expect(text).toContain("无数据");
   });
+
+  /**
+   * P2-3：TTFT × 缓存命中分桶。
+   *
+   * ⚠️ 这组用例是**补的回归网**：方案 §P2-3 明写"消费侧 digest.ts 与
+   * provider-health.ts 两处必须同步改（刻意同口径）"，但第一版只改了 digest，
+   * 本文件此前对 `ttftByCache` **零断言** —— 于是漏改在两个入口都不可见地存在了一天，
+   * 而验收表与博客都写着"`trace-digest --health` 输出 hit/miss 两组分位数"。
+   *
+   * **教训："两处必须同口径"这种约束只靠注释是拦不住的，得有一条测试站在两边。**
+   * 下面最后一个用例就是那条对账测试。
+   */
+  describe("P2-3 TTFT 缓存分桶", () => {
+    const now = new Date().toISOString();
+
+    it("Anthropic 族：first_content 自带 cache_hit → 直接分桶，零配对风险", () => {
+      writeSession("s-anthropic", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "anthropic", model: "claude", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-anthropic", data: { phase: "first_content", index: 1, model: "claude", ttft_ms: 800, cache_hit: true, cache_read: 4096 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-anthropic", data: { phase: "first_content", index: 2, model: "claude", ttft_ms: 2400, cache_hit: false, cache_read: 0 } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const anthropic = report.providers.find((p) => p.provider === "anthropic")!;
+      expect(anthropic.latency.ttftByCache).toBeDefined();
+      expect(anthropic.latency.ttftByCache!.hit.count).toBe(1);
+      expect(anthropic.latency.ttftByCache!.hit.p50).toBe(800);
+      expect(anthropic.latency.ttftByCache!.miss.count).toBe(1);
+      expect(anthropic.latency.ttftByCache!.miss.p50).toBe(2400);
+      // 自带维度 → 不该有任何弃用/空档
+      expect(anthropic.latency.ttftBucketDropped).toBeUndefined();
+      expect(anthropic.latency.ttftNoDimension).toBeUndefined();
+    });
+
+    it("OpenAI 族：维度在 completed 上，同组数量相等时按顺序配对", () => {
+      writeSession("s-openai", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-openai", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1200 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-openai", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true, cache_read: 8192 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-openai", data: { phase: "first_content", index: 2, model: "deepseek", ttft_ms: 3600 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-openai", data: { phase: "completed", index: 2, model: "deepseek", cache_hit: false, cache_read: 0 } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+      expect(openai.latency.ttftByCache!.hit.p50).toBe(1200);
+      expect(openai.latency.ttftByCache!.miss.p50).toBe(3600);
+      expect(openai.latency.ttftBucketDropped).toBeUndefined();
+    });
+
+    it("★ 数量不等 → 整组弃用而不是猜（猜错会反转\"缓存是否更快\"的结论）", () => {
+      // 同一 (session,index) 里 2 条 first_content 只有 1 条 completed：
+      // 说明有一次 fetch 没走到 completed（超时/abort/error）。
+      // 任何配法都可能把 A 次的 ttft 配到 B 次的命中状态上 → 宁可整组丢。
+      writeSession("s-mismatch", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-mismatch", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-mismatch", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 9000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-mismatch", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true, cache_read: 4096 } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+      // 两桶都空 → 整个字段不落（不是落一个 count 全 0 的结构）
+      expect(openai.latency.ttftByCache).toBeUndefined();
+      expect(openai.latency.ttftBucketDropped).toBe(2);
+      // 有带维度的 completed，所以这是真的配对失败，不是历史空档
+      expect(openai.latency.ttftNoDimension).toBeUndefined();
+    });
+
+    it("★ 老轨迹（completed 不带 cache_hit）记入 noDimension，不混进 dropped", () => {
+      // cache_hit 维度 2026-08-08 才上线。之前的轨迹一条都没有这个字段。
+      // 把它算进 dropped 会让"这批数据还没有这个维度"显示成"命中状态无法判定"，
+      // 读起来像埋点坏了 —— 实测本机 7 天窗口 512 个样本全属此类。
+      writeSession("s-legacy", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-legacy", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1500 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-legacy", data: { phase: "completed", index: 1, model: "deepseek", chunks: 42 } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+      expect(openai.latency.ttftNoDimension).toBe(1);
+      expect(openai.latency.ttftBucketDropped).toBeUndefined();
+      // 总 TTFT 仍照常统计 —— 分桶失败不该让样本从 p50 里消失
+      expect(openai.latency.ttft_p50).toBe(1500);
+    });
+
+    it("跨会话不串味：同 index 不同 session 不得互相配对", () => {
+      // 本聚合器跨多个会话读 events.jsonl。分组键不含 session_id 时，
+      // A 会话 index=1 的 ttft 会配到 B 会话 index=1 的命中状态上。
+      writeSession("s-a", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-a", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 500 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-a", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true } },
+      ]);
+      writeSession("s-b", [
+        { event: "StreamPhase", timestamp: now, session_id: "s-b", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 7000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-b", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: false } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+      // 正确：500 进命中桶、7000 进未命中桶。串味则会得到相反结论（"缓存更慢"）
+      expect(openai.latency.ttftByCache!.hit.p50).toBe(500);
+      expect(openai.latency.ttftByCache!.miss.p50).toBe(7000);
+      expect(openai.latency.ttftBucketDropped).toBeUndefined();
+    });
+
+    it("子代理不串味：同 session 同 index 但 agent_id 不同要分开配对", () => {
+      // stream-observer.ts 的 B4 注释：子代理与主循环共享 index 空间。
+      writeSession("s-agent", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-agent", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 600 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-agent", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-agent", data: { phase: "first_content", index: 1, agent_id: "sub-1", model: "deepseek", ttft_ms: 8000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-agent", data: { phase: "completed", index: 1, agent_id: "sub-1", model: "deepseek", cache_hit: false } },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+      expect(openai.latency.ttftByCache!.hit.p50).toBe(600);
+      expect(openai.latency.ttftByCache!.miss.p50).toBe(8000);
+      // 不分 agent 会让这两条落进同一组 → 数量对得上但配错（2 vs 2），
+      // 得到"命中 600/8000 混在一起"的假分桶。分开后各组 1:1 且无弃用。
+      expect(openai.latency.ttftBucketDropped).toBeUndefined();
+    });
+
+    it("renderHealthText: 分桶行渲染，且两桶都有样本才给差值", () => {
+      writeSession("s-render-bucket", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "anthropic", model: "claude", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-render-bucket", data: { phase: "first_content", index: 1, model: "claude", ttft_ms: 1000, cache_hit: true } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-render-bucket", data: { phase: "first_content", index: 2, model: "claude", ttft_ms: 3000, cache_hit: false } },
+      ]);
+
+      const text = renderHealthText(aggregateProviderHealth({ periodMs: 3600_000, sessionsDir }));
+      expect(text).toContain("TTFT 命中:1.0s(n=1)");
+      expect(text).toContain("未命中:3.0s(n=1)");
+      expect(text).toContain("提速 2.0s");
+      // 命令面板固定纯文本
+      expect(/\x1b\[/.test(text)).toBe(false);
+    });
+
+    it("renderHealthText: 单侧无样本时明确说\"不给差值\"，不拿空气做对照", () => {
+      writeSession("s-one-side", [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "anthropic", model: "claude", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-one-side", data: { phase: "first_content", index: 1, model: "claude", ttft_ms: 1000, cache_hit: true } },
+      ]);
+
+      const text = renderHealthText(aggregateProviderHealth({ periodMs: 3600_000, sessionsDir }));
+      expect(text).toContain("未命中:无样本");
+      expect(text).toContain("不给差值");
+      expect(text).not.toContain("提速");
+    });
+
+    /**
+     * 对账测试：`provider-health` 与 `digest` 必须对同一份事件给出同一个分桶结论。
+     *
+     * 这条测试的存在本身就是修复的一部分：两处"刻意同口径"此前只写在注释里，
+     * 没有任何机制保证。现在两边都走 `ttft-cache-buckets.ts`，这里再站一道 ——
+     * 将来谁把其中一处的逻辑改成第二份实现，这条会红。
+     */
+    it("★ 与 digest.aggregateProviderStats 同口径（对账，防止再次只改一处）", async () => {
+      const { aggregateProviderStats } = await import("../../src/trace/digest.ts");
+      const events = [
+        { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1100 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "first_content", index: 2, model: "deepseek", ttft_ms: 4200 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "completed", index: 2, model: "deepseek", cache_hit: false } },
+        // 一组数量不等的，确保 dropped 也参与对账
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "first_content", index: 3, model: "deepseek", ttft_ms: 2000 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "first_content", index: 3, model: "deepseek", ttft_ms: 2100 } },
+        { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "completed", index: 3, model: "deepseek", cache_hit: true } },
+      ];
+      writeSession("s-x", events);
+
+      const health = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir })
+        .providers.find((p) => p.provider === "openai")!;
+      const dig = aggregateProviderStats(events).find((p) => p.provider === "openai")!;
+
+      expect(health.latency.ttftByCache).toEqual(dig.ttftByCache);
+      expect(health.latency.ttftBucketDropped).toBe(dig.ttftBucketDropped);
+      expect(health.latency.ttftNoDimension).toBe(dig.ttftNoDimension);
+      // 断言这次对账不是"两边都是 undefined"的空对账
+      expect(dig.ttftByCache).toBeDefined();
+      expect(dig.ttftBucketDropped).toBe(2);
+    });
+  });
 });

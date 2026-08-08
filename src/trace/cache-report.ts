@@ -73,6 +73,18 @@ export interface CacheReport {
   totalSessions: number;
   /** P0-4：被排除出总计的不可信渠道行数（>0 时渲染层必须说明） */
   excludedUntrustedRows: number;
+  /**
+   * P0-4 覆盖盲区：没有 `endpointHost` 因而**无法参与可信度判定**的行数。
+   *
+   * 这些行按 unknown（= 可信）计入总计，但那不是"已确认可信"，而是"判不了"。
+   * `endpointHost` 2026-08-08 才落地，之前的账本行全部落在这里。
+   *
+   * ⚠️ 渲染层必须在 `excludedUntrustedRows === 0` 时也把这个数说出来，
+   * 否则"已排除 0 行"读起来像"总计干净"，而真相是脏数据没带标签所以排不掉。
+   */
+  rowsWithoutHost: number;
+  /** 同上，按会话数计（行是"模型×渠道"分组，会话数才是用户能对上的量级） */
+  sessionsWithoutHost: number;
   breaks: {
     total: number;
     byCategory: Record<string, number>;
@@ -132,6 +144,21 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
   const totalPrompt = counted.reduce((s, m) => s + m.promptTotal, 0);
   const totalHit = counted.reduce((s, m) => s + m.cacheHit, 0);
 
+  // P0-4 的**覆盖盲区**：排除只能作用于带 endpointHost 的行。
+  //
+  // `endpointHost` 2026-08-08 才随 P0-4 落地，之前的账本行一条都没有 host，
+  // 于是全部按 unknown（= 可信）计入 —— 包括那些真的来自不可信渠道的行。
+  // 实测本机：358 行里只有 8 行带 host，ppchat 判为 untrusted 却排除了 **0 行**。
+  //
+  // ⚠️ 不把这个盲区写出来，"已排除 0 个不可信渠道行"会被读成"总计里没有脏数据"，
+  // 而真相是"脏数据还在里面，只是它没带渠道标签所以排不掉"。
+  // 这正是本仓库反复栽的那个跟头：**机制上线 ≠ 数据被治理**，中间隔着一段
+  // 只有新数据才有字段的过渡期。同病见记忆 `proxy-metric-rewards-relabeling-waste`。
+  const rowsWithoutHost = models.filter((m) => !m.endpointHost).length;
+  const sessionsWithoutHost = models
+    .filter((m) => !m.endpointHost)
+    .reduce((s, m) => s + m.sessions, 0);
+
   return {
     models,
     // 分母为 0 时给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"
@@ -140,6 +167,8 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
     totalSavingsUSD: counted.reduce((s, m) => s + m.savingsUSD, 0),
     totalSessions: counted.reduce((s, m) => s + m.sessions, 0),
     excludedUntrustedRows: models.length - counted.length,
+    rowsWithoutHost,
+    sessionsWithoutHost,
     breaks,
   };
 }
@@ -206,6 +235,14 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
   // 排除了多少行必须写出来：静默排除读起来像"全部数据都在这儿"
   if (r.excludedUntrustedRows > 0) {
     L.push(`        （已排除 ${r.excludedUntrustedRows} 个不可信渠道行，见下方 ⚠）`);
+  }
+  // P0-4 覆盖盲区：**排除数为 0 时也要说**。否则"没排除"会被读成"总计干净"，
+  // 而实际是这些行没带 endpointHost、根本没进可信度判定。
+  if (r.sessionsWithoutHost > 0) {
+    L.push(
+      `        ⚠ 其中 ${r.sessionsWithoutHost} 个会话无渠道标记（账本 2026-08-08 前不记 endpointHost），` +
+        `未参与可信度判定 —— 上面的总计里可能仍混有不可信渠道的数字`,
+    );
   }
   L.push("");
   L.push("  按模型 × 渠道（按输入量降序，命中率分母是 promptTotal 而非请求数）:");

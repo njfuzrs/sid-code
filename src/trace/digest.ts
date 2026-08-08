@@ -22,6 +22,13 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
+// P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
+import {
+  TtftCacheBucketer,
+  bucketStats,
+  formatTtftBucketLine,
+  type TtftCacheBucket,
+} from "./ttft-cache-buckets.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -212,8 +219,13 @@ export interface ProviderDigestStats {
     hit: { count: number; p50?: number; p95?: number };
     miss: { count: number; p50?: number; p95?: number };
   };
-  /** P2-3：因无法判定命中状态而未进分桶的 TTFT 样本数（0 表示全覆盖） */
+  /** P2-3：有维度但配对数量不等而弃用的 TTFT 样本数（不落=无此情况） */
   ttftBucketDropped?: number;
+  /**
+   * P2-3：因轨迹早于 `cache_hit` 维度上线（2026-08-08）而未进桶的样本数。
+   * 与 `ttftBucketDropped` 分开：前者是历史空档（预期），后者才是异常信号。
+   */
+  ttftNoDimension?: number;
   /** 超时率 > 10% 时标记 warning */
   warning?: string;
 }
@@ -1705,19 +1717,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
       L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`);
       // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
-      // 两桶都有样本才给差值：只有一桶时给差值等于拿空气做对照。
-      const bc = ps.ttftByCache;
-      if (bc && (bc.hit.count > 0 || bc.miss.count > 0)) {
-        const fmt = (b: { count: number; p50?: number }) =>
-          b.count > 0 ? `${(b.p50! / 1000).toFixed(1)}s(n=${b.count})` : `无样本`;
-        const delta =
-          bc.hit.count > 0 && bc.miss.count > 0
-            ? c("green", `  提速 ${((bc.miss.p50! - bc.hit.p50!) / 1000).toFixed(1)}s`)
-            : c("gray", "  （单侧无样本，不给差值）");
-        const dropped = ps.ttftBucketDropped
-          ? c("gray", `  丢弃 ${ps.ttftBucketDropped} 样本(命中状态无法判定)`)
-          : "";
-        L.push(`  ${" ".repeat(12)} └ TTFT 命中:${fmt(bc.hit)} 未命中:${fmt(bc.miss)}${delta}${dropped}`);
+      // 文案由 formatTtftBucketLine 统一（四个入口共用，避免措辞各写一遍后漂移）。
+      if (ps.ttftByCache) {
+        const line = formatTtftBucketLine(ps.ttftByCache, ps.ttftBucketDropped, {
+          colorize: (kind, text) => c(kind, text),
+          noDimension: ps.ttftNoDimension,
+        });
+        if (line) L.push(`  ${" ".repeat(12)} └ ${line}`);
       }
     }
   }
@@ -1866,6 +1872,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (p.brokenTurns === 0) {
       L.push(c("green", "  ✓ 全部为尾部追加，前缀未被打断"));
     }
+
+    // ── 字符级判据（P1-3 解锁条件）──
+    // 与上面的 message 级并排显示，并显式标注两者口径不同 ——
+    // 不标注的话读者会拿两个百分比直接比大小，而它们量的根本不是同一件事。
+    const hasCharJudge = p.comparedTurns > p.charJudgeMissingTurns;
+    if (hasCharJudge) {
+      L.push(
+        c("gray", "  字符级（贴近计费口径，全轮平均）: ") +
+          `作废 ${(p.avgCharWastedRatio * 100).toFixed(1)}%  最差 ${(p.maxCharWastedRatio * 100).toFixed(1)}%`,
+      );
+      // 这条是本轮补埋点的**核心目的**：让"下标变了、字节没变"的假收益自己现形。
+      if (p.disagreementTurns > 0) {
+        L.push(
+          c("red", `  ⚠ ${p.disagreementTurns}/${p.comparedTurns} 轮两层判据矛盾`) +
+            c("gray", " —— 这些轮次的 message 级数字不能用来评估优化收益，以字符级为准"),
+        );
+        L.push(
+          c("gray", "     （2026-08-09 的 P1-3 回滚正是此形态：msg 断裂归零而共同前缀分毫未动）"),
+        );
+      }
+    }
+    if (p.charJudgeMissingTurns > 0) {
+      // 与"判据矛盾"分开说：这是历史空档，不是冲突
+      L.push(
+        c("gray", `  （${p.charJudgeMissingTurns} 轮无字符级数据：埋点上线前的轨迹）`),
+      );
+    }
   }
 
   // §9.6：子代理执行 section（几成几败 + 串行/并行 + 每个 span 明细）
@@ -1963,57 +1996,27 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
   const map = new Map<string, {
     requests: number; failed: number; timedOut: number; retried: number;
     totalLatencyMs: number; ttfts: number[]; gens: number[];
-    /** P2-3：命中桶 / 未命中桶的 TTFT 样本 */
-    ttftHit: number[]; ttftMiss: number[];
-    /** P2-3：无法判定命中状态而丢弃的 TTFT 样本数 */
-    ttftDropped: number;
   }>();
 
   const ensure = (p: string) => {
     if (!map.has(p)) {
       map.set(p, {
         requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0,
-        ttfts: [], gens: [], ttftHit: [], ttftMiss: [], ttftDropped: 0,
+        ttfts: [], gens: [],
       });
     }
     return map.get(p)!;
   };
 
   /**
-   * P2-3：TTFT 的缓存分桶配对。
+   * P2-3：TTFT 的缓存分桶配对，逻辑收口在 {@link TtftCacheBucketer}。
    *
-   * 两家 provider 的 emit 时机不同，这里必须两条都吃：
-   * - **Anthropic**：usage 在 `message_start` 就到，所以 `first_content` 事件**自带**
-   *   `cache_hit` —— 直接分桶，零配对风险。
-   * - **OpenAI 族**：usage 只在流尾部下发，`first_content` 时刻不知道命中数，
-   *   维度挂在同一次 fetch 的 `completed` 事件上 —— 需要配对。
-   *
-   * 配对规则刻意保守：只在**同一 (session, index) 内 first_content 与 completed 数量相等**时
-   * 按出现顺序一对一配。数量不等说明这轮有 fetch 没走到 completed（超时/abort/error），
-   * 此时任何配法都可能把 A 次的 ttft 配到 B 次的命中状态上 —— 宁可整组丢弃并计入
-   * `ttftDropped`。这正是方案里点破的坑：index 与 usage 是 1:N，按 index 硬关联会把
-   * 一次命中的 usage 摊给同轮所有 fetch，得出的"命中组 TTFT"是假的。
+   * 这里刻意**不**内联那段配对代码：`provider-health.ts` 需要一模一样的口径
+   *（方案 §P2-3 原话"两处必须同步改（刻意同口径）"），而它的正确性依赖三个易错约定
+   *（分组键含 agentId / 数量不等整组丢弃 / 两族 emit 时机不同），抄第二遍必然漂移。
+   * 第一版就是只改了本文件、漏了 provider-health，导致 `--health` 入口没有分桶。
    */
-  /** key = `${session_id}|${index}|${agent_id}`，value 按事件出现顺序累积 */
-  const pendingTtft = new Map<string, number[]>();
-  const pendingHit = new Map<string, boolean[]>();
-  const pendingProvider = new Map<string, string>();
-  const push = <T,>(m: Map<string, T[]>, k: string, v: T) => {
-    const arr = m.get(k);
-    if (arr) arr.push(v);
-    else m.set(k, [v]);
-  };
-  /**
-   * 配对分组键。必须含 agent_id：子代理与主循环的事件共享 index 空间
-   *（stream-observer.ts 的 B4 注释即为此加了 agentId），不分开会把子代理的
-   * ttft 配到主循环的命中状态上。
-   */
-  const bucketKey = (e: { session_id?: string; data?: Record<string, unknown> }): string => {
-    const sid = (e as any).session_id ?? e.data?.session_id ?? "";
-    const idx = e.data?.index ?? "";
-    const agent = e.data?.agent_id ?? "main";
-    return `${sid}|${idx}|${agent}`;
-  };
+  const bucketer = new TtftCacheBucketer();
 
   // 按 model 名启发式推断 provider（映射兜底：first_content 无 provider、AfterModelRaw 未覆盖该 model 时用）
   const inferProviderFromModel = (model: string): string =>
@@ -2047,25 +2050,14 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       const provider = resolveProvider(model);
       const ttft = e.data.ttft_ms as number | undefined;
       if (ttft && ttft > 0) {
-        const stats = ensure(provider);
-        stats.ttfts.push(ttft);
-        // P2-3 分桶
-        if (typeof e.data.cache_hit === "boolean") {
-          // Anthropic：事件自带命中维度，直接分桶（无配对风险）
-          (e.data.cache_hit ? stats.ttftHit : stats.ttftMiss).push(ttft);
-        } else {
-          // OpenAI 族：维度在同次 fetch 的 completed 事件上，暂存待配对
-          const key = `${bucketKey(e)}`;
-          push(pendingTtft, key, ttft);
-          pendingProvider.set(key, provider);
-        }
+        ensure(provider).ttfts.push(ttft);
+        // P2-3 分桶（Anthropic 直接分 / OpenAI 族暂存待配对，见 TtftCacheBucketer）
+        bucketer.observeFirstContent(e, provider, ttft);
       }
     }
     // P2-3：收集 completed 携带的缓存维度，供上面暂存的 TTFT 配对（OpenAI 族路径）
     if (e.event === "StreamPhase" && e.data && e.data.phase === "completed") {
-      if (typeof e.data.cache_hit === "boolean") {
-        push(pendingHit, bucketKey(e), e.data.cache_hit as boolean);
-      }
+      bucketer.observeCompleted(e);
     }
     // 从 RetryTelemetry 事件统计重试/超时 + 生成耗时（stream_completed.elapsedMs）
     if (e.event === "RetryTelemetry" && e.data) {
@@ -2095,21 +2087,8 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
     }
   }
 
-  // P2-3：把暂存的 (ttft, cache_hit) 按分组配对。数量不等的组整组丢弃并计数——
-  // 数量不等意味着有 fetch 没走到 completed（超时/abort/error），任何配法都可能
-  // 把 A 次的 ttft 配到 B 次的命中状态上，而错配会直接反转"缓存是否更快"的结论。
-  for (const [key, ttfts] of pendingTtft) {
-    const provider = pendingProvider.get(key) ?? "unknown";
-    const stats = ensure(provider);
-    const hits = pendingHit.get(key) ?? [];
-    if (hits.length !== ttfts.length) {
-      stats.ttftDropped += ttfts.length;
-      continue;
-    }
-    for (let i = 0; i < ttfts.length; i++) {
-      (hits[i] ? stats.ttftHit : stats.ttftMiss).push(ttfts[i]!);
-    }
-  }
+  // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
+  const buckets = bucketer.finalize();
 
   const result: ProviderDigestStats[] = [];
   for (const [provider, stats] of map) {
@@ -2137,15 +2116,7 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       gen_p99: percentile(sortedGens, 0.99),
       // P2-3：两桶都为空时整个字段不落（老轨迹没有 cache_hit 维度）——
       // 落一个 count 全 0 的结构会让"数据还没采到"看起来像"命中与未命中一样快"。
-      ...(stats.ttftHit.length + stats.ttftMiss.length > 0
-        ? {
-            ttftByCache: {
-              hit: bucketStats(stats.ttftHit),
-              miss: bucketStats(stats.ttftMiss),
-            },
-          }
-        : {}),
-      ...(stats.ttftDropped > 0 ? { ttftBucketDropped: stats.ttftDropped } : {}),
+      ...ttftByCacheFields(buckets.get(provider)),
       warning,
     });
   }
@@ -2173,11 +2144,29 @@ function prefixKindHint(kind: string): string {
   }
 }
 
-/** P2-3：单桶的样本数 + 分位数（桶为空时只给 count，不给假分位数） */
-function bucketStats(samples: number[]): { count: number; p50?: number; p95?: number } {
-  if (samples.length === 0) return { count: 0 };
-  const sorted = [...samples].sort((a, b) => a - b);
-  return { count: sorted.length, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+/**
+ * P2-3：把一个 provider 的分桶结果转成 {@link ProviderDigestStats} 的可选字段。
+ *
+ * 两桶都空 → 返回空对象（整个字段不落）。区分"数据还没采到"与"命中与未命中一样快"：
+ * 落一个 count 全 0 的结构会让前者读起来像后者。`dropped` 同理，0 时不落。
+ *
+ * 导出供 `provider-health.ts` 共用 —— 两处的字段构造规则必须一致，否则同一份
+ * events.jsonl 在两个入口给出不同结论。
+ */
+export function ttftByCacheFields(
+  bucket: TtftCacheBucket | undefined,
+): Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> {
+  if (!bucket) return {};
+  const out: Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> = {};
+  if (bucket.hit.length + bucket.miss.length > 0) {
+    out.ttftByCache = {
+      hit: bucketStats(bucket.hit, percentile),
+      miss: bucketStats(bucket.miss, percentile),
+    };
+  }
+  if (bucket.dropped > 0) out.ttftBucketDropped = bucket.dropped;
+  if (bucket.noDimension > 0) out.ttftNoDimension = bucket.noDimension;
+  return out;
 }
 
 // ─────────────────────── 第 5 批：JIT 上下文度量聚合 ───────────────────────
@@ -2212,6 +2201,37 @@ export interface PrefixBreakDigestStats {
   avgWastedRatio: number;
   /** 断在消息段时，第一个变化消息的最小序号（越小越贵，是最值得修的那次） */
   earliestBrokenMessageIndex?: number;
+
+  // ─── 字符级判据（P1-3 解锁条件，与上面的 message 级并排）───
+
+  /**
+   * 字符级平均作废比例，分母是**全部比较轮次**（不只是 broken 的）。
+   *
+   * 与 `avgWastedRatio` 刻意不同口径，别把两个数放一起比大小：
+   * · `avgWastedRatio` —— 只在 broken 轮次上平均，按 message 对象算，回答"断的时候多贵"；
+   * · 本字段 —— 全轮平均，按字符算，回答"整体上有多少字节被重复送"。
+   *
+   * 为什么全轮：字符级的价值就在于能抓住"段级说没断、字节却变了"的轮次。
+   * 只在 broken 轮平均会把这些轮次排除掉，正好丢掉它唯一的增量信息。
+   */
+  avgCharWastedRatio: number;
+  /** 字符级作废比例的最坏单轮值 */
+  maxCharWastedRatio: number;
+  /**
+   * 两层判据给出矛盾结论的轮次数。**> 0 时该会话的 message 级数字不可用于评估优化收益。**
+   *
+   * 2026-08-09 的 P1-3 翻车就是这种情况全程发生却没有任何指标记录它：
+   * 段级报"msg[0] 断裂 4→0"（看着是巨大改进），字符级共同前缀长度前后都是 15 ——
+   * 理论收益为零，实测命中率反降 11.2pp。
+   */
+  disagreementTurns: number;
+  /**
+   * 没有字符级字段的轮次数（埋点上线前的老轨迹）。
+   *
+   * 与 `disagreementTurns` 分开：前者是"这批数据没有这个维度"，后者是"有维度且矛盾"。
+   * 合并会让历史空档读起来像判据冲突。
+   */
+  charJudgeMissingTurns: number;
 }
 
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */
@@ -2225,8 +2245,26 @@ export function aggregatePrefixBreakStats(
   let broken = 0;
   let wastedSum = 0;
   let earliest: number | undefined;
+  // 字符级判据：在**全部轮次**上累计（见 avgCharWastedRatio 注释里的口径说明）
+  let charSum = 0;
+  let charCount = 0;
+  let charMax = 0;
+  let disagreements = 0;
+  let charMissing = 0;
 
   for (const e of rows) {
+    // 字符级先统计：它对 broken 与否都有意义，放在 continue 之后就只剩 broken 轮，
+    // 恰好丢掉"段级说没断、字节却变了"这一类它唯一能抓到的情况。
+    const cw = e.data!.char_wasted_ratio;
+    if (typeof cw === "number") {
+      charSum += cw;
+      charCount++;
+      charMax = Math.max(charMax, cw);
+    } else {
+      charMissing++;
+    }
+    if (e.data!.judge_disagreement === true) disagreements++;
+
     if (e.data!.broken !== true) continue;
     broken++;
     const w = (e.data!.wasted_ratio as number) ?? 0;
@@ -2253,6 +2291,12 @@ export function aggregatePrefixBreakStats(
     ),
     avgWastedRatio: broken > 0 ? wastedSum / broken : 0,
     ...(earliest !== undefined ? { earliestBrokenMessageIndex: earliest } : {}),
+    // 分母用 charCount（有该字段的轮次）而非 rows.length：老轨迹没有这个维度，
+    // 拿它们当分母会把平均值凭空拉低，读成"字节浪费很小"。
+    avgCharWastedRatio: charCount > 0 ? charSum / charCount : 0,
+    maxCharWastedRatio: charMax,
+    disagreementTurns: disagreements,
+    charJudgeMissingTurns: charMissing,
   };
 }
 

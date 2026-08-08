@@ -79,7 +79,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/theme` | 显示或切换主题（-p 持久化） | — | `[name\|list] [-p]` |
 | `/think` | 显示或切换思考开关（on/off/auto） | — | `on\|off\|auto` |
 | `/todos` | 列出当前会话的待办清单（TodoWrite 维护） | `/todo` | — |
-| `/trace` | 排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, &lt;id> 指定, --full 详细) | `/digest` | — |
+| `/trace` | 排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, &lt;id> 指定, --full 详细, --health 健康看板, --cache 缓存视图) | `/digest` | — |
 | `/tui` | 切换全屏 TUI（Alternate Buffer）模式偏好（重启生效） | `/fullscreen` | `[on\|off]` |
 | `/undo` | 撤销最近一次文件修改（回滚到上一个 checkpoint） | — | — |
 | `/vim` | 切换 Vim 输入模式（无参 toggle；on/off；-p 持久化） | — | `[on\|off] [-p]` |

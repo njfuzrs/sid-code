@@ -1837,6 +1837,20 @@ export class TraceCollector {
             : {}),
           prev_segments: d.prevSegmentCount,
           curr_segments: d.currSegmentCount,
+          // P1-3 解锁条件：字符级判据与上面的 message 级判据**并排落盘**。
+          //
+          // 无条件落（不像上面那组只在 broken 时落）：字符级的价值恰恰在于
+          // 能暴露"段级说没断、字节却变了"这一类段判据看不见的情况。
+          // 只在 broken 时落等于把它降级成段判据的附属品。
+          //
+          // 只落**长度数字**，不落 flat 原文 —— 后者含用户代码与对话内容。
+          common_prefix_chars: d.commonPrefixChars,
+          prev_total_chars: d.prevTotalChars,
+          curr_total_chars: d.currTotalChars,
+          char_wasted_ratio: Number(d.charWastedRatio.toFixed(4)),
+          // 两层判据矛盾 → 该轮的 message 级数字不可用于评估优化收益。
+          // 只在 true 时落：false 是常态，每轮落一个 false 是噪声。
+          ...(d.judgeDisagreement ? { judge_disagreement: true } : {}),
         },
       });
     } catch {

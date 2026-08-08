@@ -209,3 +209,233 @@ describe("P1-2 健壮性：埋点绝不因异常数据抛错", () => {
     expect(d.broken).toBe(false);
   });
 });
+
+/**
+ * P1-3 解锁条件：字符级判据。
+ *
+ * ## 为什么必须有这一层
+ *
+ * 上面那套段判据是 **message 级**的，而**服务端按 token 前缀匹配，不按 message 对象匹配**。
+ * 判据与目标不在同一层，这道缝隙让 P1-3 的第一次尝试整体翻车（2026-08-09）：
+ * 候选方案 A 把 ambient reminder 改走独立尾部消息，探针报 `msg[0]` 断裂 4→0、
+ * 26 个测试全绿、机理讲得通 —— 真实命中率却降了最多 11.2pp，已整体回滚。
+ * 根因是 OpenAI 族把多 text block `join("\n")` 成单 string，"独立 block"与
+ * "独立 message"在 wire 上塌缩成同一串字节，理论收益为零；`msg[0]→0` 只是
+ * 所有下标平移一位造成的**度量假象**。
+ *
+ * 所以这组用例的职责不是"覆盖新字段"，而是**锚死两层判据的分歧方向**：
+ * 哪些形态下 message 级会高估、哪些会低估。下面两个 ★ 就是实测出的那两处。
+ */
+describe("P1-3 字符级判据（贴近计费口径）", () => {
+  const SYS = "S".repeat(1000);
+
+  test("分母是上一轮长度：纯尾部追加作废 0%（第一版把分母写成本轮，健康形态误报 2.91%）", () => {
+    // 用本轮长度做分母会把新增内容算成"浪费"，而新增内容从未被缓存过。
+    // 后果是每一轮正常请求都被标成"判据矛盾"，噪声淹没真信号。
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [{ r: "u", t: "AAAA" }]),
+      fp(SYS, TOOLS, [{ r: "u", t: "AAAA" }, { r: "a", t: "BBBB" }]),
+    );
+    expect(d.broken).toBe(false);
+    expect(d.charWastedRatio).toBe(0);
+    expect(d.judgeDisagreement).toBe(false);
+    // 共同前缀 == 上一轮全长，即"上轮建立的前缀全部仍可用"
+    expect(d.commonPrefixChars).toBe(d.prevTotalChars);
+  });
+
+  test("完全不变 → 共同前缀 = 全长，作废 0%", () => {
+    const msgs = [{ r: "u", t: "1" }];
+    const d = diagnosePrefixBreak(fp(SYS, TOOLS, msgs), fp(SYS, TOOLS, msgs));
+    expect(d.commonPrefixChars).toBe(d.prevTotalChars);
+    expect(d.charWastedRatio).toBe(0);
+  });
+
+  test("首条改写 → 字符级与 message 级都报接近一半作废（两层一致）", () => {
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [{ r: "u", t: "AAAA" }, { r: "u", t: "B".repeat(900) }]),
+      fp(SYS, TOOLS, [{ r: "u", t: "ZZZZ" }, { r: "u", t: "B".repeat(900) }]),
+    );
+    expect(d.broken).toBe(true);
+    expect(d.charWastedRatio).toBeGreaterThan(0.4);
+    // 两层判据方向一致 → 不算矛盾。这类形态下 message 级数字是可信的
+    expect(d.judgeDisagreement).toBe(false);
+  });
+
+  test("★ reminder 滚动迁移：message 级高估约 4 倍（T4 那份分布就建在被高估的数上）", () => {
+    // T4 实测的真实病灶：reminder 挂在"最后一条 user 消息"，而 tool_result 也是
+    // role:"user"，于是锚点每轮后移 —— 上一轮加的 reminder 这一轮没了。
+    // message 级把整条 msg[0] 之后全算作废；字符级只算真正变了的那几十字节。
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [
+        { role: "user", content: [{ type: "text", text: "指令" }, { type: "text", text: "<reminder>" }] },
+      ]),
+      fp(SYS, TOOLS, [
+        { role: "user", content: [{ type: "text", text: "指令" }] },
+        { role: "assistant", content: "答" },
+        { role: "user", content: [{ type: "text", text: "tr" }, { type: "text", text: "<reminder>" }] },
+      ]),
+    );
+    expect(d.broken).toBe(true);
+    // 两个数都不为 0，但差着数倍 —— 这就是"该修哪里"与"改了省多少"的口径差
+    expect(d.wastedRatio!).toBeGreaterThan(d.charWastedRatio * 2);
+    // 断言具体量级，防止将来某次改动悄悄把这个差距抹平却没人注意
+    expect(d.charWastedRatio).toBeLessThan(0.1);
+    expect(d.wastedRatio!).toBeGreaterThan(0.1);
+  });
+
+  test("★ compact 截短：message 级严重低估（2.9% vs 60.2%），字符级才反映真实作废", () => {
+    // 历史被压缩成一条摘要。段级只看到"段数变少了"，wastedRatio 恒落 0 附近；
+    // 而实际上整条前缀几乎全废 —— 这是段判据的盲区，且方向与上一条相反。
+    // 两个方向都得有用例，只防上次踩过的那一个不够。
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [
+        { r: "u", t: "A".repeat(500) },
+        { r: "a", t: "B".repeat(500) },
+        { r: "u", t: "C".repeat(500) },
+      ]),
+      fp(SYS, TOOLS, [{ r: "u", t: "摘要" }]),
+    );
+    expect(d.broken).toBe(true);
+    expect(d.charWastedRatio).toBeGreaterThan(0.5);
+    // message 级在这个形态下几乎无信息量（截短分支 wastedRatio 恒为 0）
+    expect(d.wastedRatio!).toBeLessThan(0.1);
+  });
+
+  /**
+   * ★★ 这是整组用例里最重要的一条：**离线复现 2026-08-09 回滚的那次假收益**，
+   * 并断言字符级判据能把它标出来。
+   *
+   * 方案 A 做的事：把 ambient reminder 从"msg[0] 的第二个 text block"改成
+   * "一条独立的尾部 message"。OpenAI 族把多 block `join("\n")` 成单 string，
+   * 所以这两种形态在 wire 上**是同一串字节**，真实收益为零 —— 实测命中率反降 11.2pp。
+   *
+   * 但 message 级判据看到的是"content 数组从 2 元素变 1 元素、多出一个 message"，
+   * 于是报出一个巨大的"改善"。这条用例锚死：**字符级必须看穿这个结构变化。**
+   *
+   * ⚠️ 也正因如此，`flattenTextForWire` 绝不能用 `JSON.stringify` ——
+   * 那样字符级就只是把段判据的假象换个单位重演，这一层白加。
+   */
+  test("★★ 复现 P1-3 假收益：block 拆成独立 message → 字节没变，判据矛盾=true", () => {
+    const long = "A".repeat(2000);
+    // 修复前：reminder 是 msg[0] 的第二个 block
+    const asBlocks = [
+      { role: "user", content: [{ type: "text", text: long }, { type: "text", text: "<reminder>R</reminder>" }] },
+    ];
+    // 方案 A（已回滚）：reminder 改走独立尾部消息
+    const asMsgs = [
+      { role: "user", content: [{ type: "text", text: long }] },
+      { role: "user", content: [{ type: "text", text: "<reminder>R</reminder>" }] },
+    ];
+    const d = diagnosePrefixBreak(fp(SYS, TOOLS, asBlocks), fp(SYS, TOOLS, asMsgs));
+
+    // 段级：报大幅断裂（这就是当初被当成"改善"的那个数）
+    expect(d.broken).toBe(true);
+    expect(d.wastedRatio!).toBeGreaterThan(0.5);
+    // 字符级：wire 字节几乎没动 —— 真实收益接近零
+    expect(d.charWastedRatio).toBeLessThan(0.01);
+    // 两层判据矛盾 → 该轮 message 级数字不可用于评估优化收益
+    expect(d.judgeDisagreement).toBe(true);
+    // 差距至少 50 倍：断言量级而非仅方向，防止将来某次改动把这个差距悄悄抹平
+    expect(d.wastedRatio!).toBeGreaterThan(d.charWastedRatio * 50);
+  });
+
+  test("对照组：真实的中部插入（有实际字节）不该被标成矛盾", () => {
+    // 与上一条形成对照 —— 判据矛盾必须是"结构变而字节未变"的专属信号，
+    // 不能变成"只要段级报断裂就标矛盾"的噪声。
+    const long = "A".repeat(2000);
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [{ role: "u", content: "x" }, { role: "u", content: long }]),
+      fp(SYS, TOOLS, [
+        { role: "u", content: "x" },
+        { role: "y", content: "B".repeat(1000) },
+        { role: "u", content: long },
+      ]),
+    );
+    expect(d.broken).toBe(true);
+    expect(d.charWastedRatio).toBeGreaterThan(0.01);
+    expect(d.judgeDisagreement).toBe(false);
+  });
+
+  test("flattenTextForWire：block 拆分与不拆分产出同一串（复刻 OpenAI join 行为）", () => {
+    // 直接锚死塌缩语义本身，而不只是通过 diagnose 间接验证。
+    // 这条挂了说明 flattenTextForWire 被改回结构序列化了。
+    const a = fp(SYS, TOOLS, [
+      { role: "user", content: [{ type: "text", text: "前半" }, { type: "text", text: "后半" }] },
+    ]);
+    const b = fp(SYS, TOOLS, [
+      { role: "user", content: [{ type: "text", text: "前半\n后半" }] },
+    ]);
+    // 段判据能区分（结构不同），字符级判据看不出差别（wire 相同）—— 这正是设计意图
+    expect(diagnosePrefixBreak(a, b).broken).toBe(true);
+    expect(diagnosePrefixBreak(a, b).charWastedRatio).toBe(0);
+  });
+
+  test("tool_result 形状（content 为字符串的块）也计入 wire 文本", () => {
+    // 漏掉这类块会让共同前缀被高估 —— tool_result 在真实会话里占大头
+    const a = fp(SYS, TOOLS, [{ role: "user", content: [{ type: "tool_result", content: "结果A".repeat(200) }] }]);
+    const b = fp(SYS, TOOLS, [{ role: "user", content: [{ type: "tool_result", content: "结果B".repeat(200) }] }]);
+    const d = diagnosePrefixBreak(a, b);
+    // 内容真的变了 → 字符级必须察觉（若 tool_result 被跳过，这里会是 0）
+    expect(d.charWastedRatio).toBeGreaterThan(0.1);
+  });
+
+  test("非常规形状退回结构序列化，不静默返回空串", () => {
+    // 返回空串会让这条消息在字符级判据里"消失"，共同前缀凭空变长 → 假的零作废
+    const a = fp(SYS, TOOLS, [{ role: "user" } as unknown]);
+    const b = fp(SYS, TOOLS, [{ role: "assistant" } as unknown]);
+    const d = diagnosePrefixBreak(a, b);
+    expect(d.commonPrefixChars).toBeLessThan(d.prevTotalChars);
+  });
+
+  test("空前缀不产生除零 NaN", () => {
+    const d = diagnosePrefixBreak(fp(undefined, "", []), fp(undefined, "", []));
+    expect(Number.isNaN(d.charWastedRatio)).toBe(false);
+    expect(d.charWastedRatio).toBe(0);
+  });
+
+  test("flat 不落盘契约：diagnosis 里没有任何原文字段", () => {
+    // flat 含用户代码与对话内容。它只在内存里活到比较完，落盘的只能是长度数字。
+    // 这条测试站在这里是因为"顺手把 flat 也 emit 出去"是极容易犯的错。
+    const d = diagnosePrefixBreak(
+      fp(SYS, TOOLS, [{ r: "u", t: "秘密内容" }]),
+      fp(SYS, TOOLS, [{ r: "u", t: "秘密内容2" }]),
+    );
+    const serialized = JSON.stringify(d);
+    expect(serialized).not.toContain("秘密内容");
+    expect(Object.keys(d)).not.toContain("flat");
+  });
+});
+
+describe("P1-3 字符级判据在 digest 聚合层", () => {
+  test("字符级按全轮平均（含未断裂轮），与 avgWastedRatio 口径不同", () => {
+    const stats = aggregatePrefixBreakStats([
+      { event: "prefix_break", data: { broken: false, char_wasted_ratio: 0 } },
+      { event: "prefix_break", data: { broken: false, char_wasted_ratio: 0 } },
+      { event: "prefix_break", data: { broken: true, wasted_ratio: 0.4, first_changed_kind: "message", char_wasted_ratio: 0.2 } },
+    ])!;
+    // message 级只在 broken 轮平均 → 0.4
+    expect(stats.avgWastedRatio).toBeCloseTo(0.4, 6);
+    // 字符级在全部 3 轮平均 → 0.2/3
+    expect(stats.avgCharWastedRatio).toBeCloseTo(0.2 / 3, 6);
+    expect(stats.maxCharWastedRatio).toBeCloseTo(0.2, 6);
+  });
+
+  test("矛盾轮次可计数（> 0 时整会话的 message 级数字都不该用来评估收益）", () => {
+    const stats = aggregatePrefixBreakStats([
+      { event: "prefix_break", data: { broken: true, wasted_ratio: 0.5, first_changed_kind: "message", char_wasted_ratio: 0.001, judge_disagreement: true } },
+      { event: "prefix_break", data: { broken: true, wasted_ratio: 0.5, first_changed_kind: "message", char_wasted_ratio: 0.4 } },
+    ])!;
+    expect(stats.disagreementTurns).toBe(1);
+  });
+
+  test("老轨迹（无字符级字段）记入 charJudgeMissingTurns，不拉低平均值", () => {
+    // 把无该字段的轮次当分母会把平均值凭空拉低，读成"字节浪费很小"
+    const stats = aggregatePrefixBreakStats([
+      { event: "prefix_break", data: { broken: true, wasted_ratio: 0.3, first_changed_kind: "message" } },
+      { event: "prefix_break", data: { broken: true, wasted_ratio: 0.3, first_changed_kind: "message", char_wasted_ratio: 0.6 } },
+    ])!;
+    expect(stats.charJudgeMissingTurns).toBe(1);
+    // 分母是 1（只有一轮有数据），不是 2
+    expect(stats.avgCharWastedRatio).toBeCloseTo(0.6, 6);
+  });
+});
