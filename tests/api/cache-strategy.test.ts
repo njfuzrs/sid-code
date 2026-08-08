@@ -10,6 +10,7 @@ import {
   markLastToolCacheBreakpoint,
   clearCacheBreakpoints,
   addMessageCacheBreakpoint,
+  markLastUserMessageCacheBreakpoint,
   addCacheBreakpoints,
   splitSystemByDynamicBoundary,
   DYNAMIC_BOUNDARY,
@@ -74,6 +75,71 @@ describe("markLastContentBlock", () => {
   });
   test("undefined 返回 false", () => {
     expect(markLastContentBlock(undefined)).toBe(false);
+  });
+});
+
+/**
+ * P1-4：anthropic 生产路径（流式 + 非流式）用的是这个，不是 addMessageCacheBreakpoint。
+ *
+ * 两者的差别是**语义**：本函数倒序找最后一条 user 消息，那个打最后一条消息（不论 role）。
+ * 下面第一组用例就是"两者落点不同"的反例 —— 收口时若图省事直接换成
+ * addMessageCacheBreakpoint，assistant 结尾的会话断点位置就变了，是行为变更而非重构。
+ */
+describe("markLastUserMessageCacheBreakpoint（P1-4 收口）", () => {
+  test("★assistant 结尾时与 addMessageCacheBreakpoint 落点不同（语义分叉的证据）", () => {
+    const a = [msg("user", "1"), msg("assistant", "2")];
+    const b = [msg("user", "1"), msg("assistant", "2")];
+    // 本函数跳过 assistant，回到 user
+    expect(markLastUserMessageCacheBreakpoint(a)).toBe(0);
+    // 那个函数打最后一条，即 assistant
+    expect(addMessageCacheBreakpoint(b)).toBe(1);
+  });
+
+  test("user 结尾时两者落点一致（所以只测 user 结尾会漏掉分叉）", () => {
+    const a = [msg("assistant", "1"), msg("user", "2")];
+    const b = [msg("assistant", "1"), msg("user", "2")];
+    expect(markLastUserMessageCacheBreakpoint(a)).toBe(1);
+    expect(addMessageCacheBreakpoint(b)).toBe(1);
+  });
+
+  test("打在该 user 消息的最后一个 content block 上", () => {
+    const messages: CacheableMessage[] = [
+      { role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
+    ];
+    expect(markLastUserMessageCacheBreakpoint(messages)).toBe(0);
+    const blocks = messages[0].content as any[];
+    expect(blocks[0].cache_control).toBeUndefined();
+    expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  test("role: tool 结尾也跳过（工具结果不是 user 消息）", () => {
+    // 真实会话里 tool_result 会以 role:"tool" 出现，手写循环同样跳过它
+    const messages = [msg("user", "1"), msg("tool", "result")];
+    expect(markLastUserMessageCacheBreakpoint(messages)).toBe(0);
+  });
+
+  test("空 content 的 user 消息继续往前找（保留手写循环的 length > 0 判据）", () => {
+    const messages: CacheableMessage[] = [
+      { role: "user", content: [{ type: "text", text: "早先" }] },
+      { role: "user", content: [] },
+    ];
+    expect(markLastUserMessageCacheBreakpoint(messages)).toBe(0);
+  });
+
+  test("没有任何 user 消息时返回 -1，不打标", () => {
+    const messages = [msg("assistant", "1")];
+    expect(markLastUserMessageCacheBreakpoint(messages)).toBe(-1);
+    expect((messages[0].content as any[])[0].cache_control).toBeUndefined();
+  });
+
+  test("空数组返回 -1", () => {
+    expect(markLastUserMessageCacheBreakpoint([])).toBe(-1);
+  });
+
+  test("只打一个断点（守住 messages 仅 1 个 cache_control 的不变量）", () => {
+    const messages = [msg("user", "1"), msg("assistant", "2"), msg("user", "3")];
+    markLastUserMessageCacheBreakpoint(messages);
+    expect(countCacheBreakpoints(undefined, messages)).toBe(1);
   });
 });
 

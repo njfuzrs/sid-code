@@ -116,61 +116,6 @@ export function buildSystemBlocks(
   return [{ type: "text", text: staticContent, cache_control: staticControl }];
 }
 
-/**
- * G12：System Prompt 四块精细分区。
- *
- * 比 2 块（静态/动态）更细，对齐 CC 的缓存分层：
- * - attribution：归因/版权声明等，**不缓存**（每请求可能不同且极短，缓存无收益）
- * - corePrefix：核心身份+约束+工具描述模板，**global scope**（条件门控，跨用户一致）
- * - staticExtensions：项目级稳定扩展（CLAUDE.md 等），**org scope**
- * - dynamicContent：易变内容（git/时间戳/memory），ephemeral（仅会话内复用）
- *
- * 任一段为空则跳过该 block。corePrefix 是否用 global 由 globalScopeEnabled 控制。
- */
-export interface SystemPromptPartitions {
-  /** 归因/声明（不缓存） */
-  attribution?: string;
-  /** 核心前缀（global scope 候选） */
-  corePrefix: string;
-  /** 静态扩展（org scope） */
-  staticExtensions?: string;
-  /** 动态内容（会话内 ephemeral） */
-  dynamicContent?: string;
-}
-
-export function buildSystemBlocksV2(
-  partitions: SystemPromptPartitions,
-  options?: BuildSystemBlocksOptions,
-): SystemBlock[] {
-  const blocks: SystemBlock[] = [];
-
-  // 1. Attribution（不缓存）—— 不带 cache_control
-  if (partitions.attribution && partitions.attribution.trim()) {
-    blocks.push({ type: "text", text: partitions.attribution });
-  }
-
-  // 2. Core prefix（global scope 候选）
-  if (partitions.corePrefix && partitions.corePrefix.trim()) {
-    blocks.push({
-      type: "text",
-      text: partitions.corePrefix,
-      cache_control: options?.globalScopeEnabled ? EPHEMERAL_GLOBAL : EPHEMERAL,
-    });
-  }
-
-  // 3. Static extensions（org scope）
-  if (partitions.staticExtensions && partitions.staticExtensions.trim()) {
-    blocks.push({ type: "text", text: partitions.staticExtensions, cache_control: EPHEMERAL });
-  }
-
-  // 4. Dynamic content（会话内 ephemeral）
-  if (partitions.dynamicContent && partitions.dynamicContent.trim()) {
-    blocks.push({ type: "text", text: partitions.dynamicContent, cache_control: EPHEMERAL });
-  }
-
-  return blocks;
-}
-
 /** 可被打标的工具定义（鸭子类型；只关心 cache_control 字段是否可挂） */
 export interface CacheableTool {
   name: string;
@@ -223,11 +168,38 @@ export function clearCacheBreakpoints(messages: CacheableMessage[]): void {
 }
 
 /**
+ * 在**最后一条 `role === "user"` 的消息**末块放 cache breakpoint（P1-4 收口）。
+ *
+ * 与 {@link addMessageCacheBreakpoint} 的区别是**语义而非实现**，别把两者合并：
+ * 那个函数打的是最后一条消息（不论 role），本函数倒序找最后一条 user 消息。
+ * **assistant / `role: "tool"` 结尾时两者落点不同。**
+ *
+ * 这是 anthropic 生产路径（流式 + 非流式）此前各自手写倒序循环的行为，
+ * 收口时刻意**保留**它而不是换成 `addMessageCacheBreakpoint` —— 后者是行为变更。
+ * 上一版博客把这处重复描述为"功能上没错、只是三种写法"，实测是语义分叉。
+ *
+ * @returns 被打标的消息索引（-1 表示未打标）
+ */
+export function markLastUserMessageCacheBreakpoint(messages: CacheableMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== "user") continue;
+    // 空 content 的 user 消息跳过继续往前找 —— 与手写循环一致
+    // （它要求 content.length > 0 才打标并 break）
+    if (markLastContentBlock(msg)) return i;
+  }
+  return -1;
+}
+
+/**
  * 在消息序列中放置 cache breakpoint。
  *
  * 规则（G14：messages 仅 1 个断点）：
  * 1. 正常模式：标记最后一条消息（确保整个前缀被缓存）
  * 2. skipCacheWrite 模式：标记倒数第二条（读缓存但不写入新缓存）
+ *
+ * ⚠️ 与 {@link markLastUserMessageCacheBreakpoint} 语义不同（见那边的注释）：
+ * 本函数不看 role。anthropic 生产路径用的是那个，不是这个。
  *
  * 返回被打标的消息索引（-1 表示未打标）。
  */

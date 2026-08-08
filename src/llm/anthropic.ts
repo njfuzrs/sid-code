@@ -35,7 +35,12 @@ import { emitTimeoutFired, emitStreamPhase, emitHttpConnected, cacheDimsFor } fr
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
-import { buildSystemBlocks, assertCacheBreakpointBudget, markLastToolCacheBreakpoint } from "../api/cache-strategy.ts";
+import {
+  buildSystemBlocks,
+  assertCacheBreakpointBudget,
+  markLastToolCacheBreakpoint,
+  markLastUserMessageCacheBreakpoint,
+} from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
 
@@ -171,13 +176,8 @@ export class AnthropicProvider implements Provider {
 
     // Prompt Caching：在最后一条用户消息的最后一个 content block 上标记 cache_control
     // 这样 system prompt + 工具定义 + 历史消息都能被缓存，只有新增部分需要计算
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user" && messages[i].content.length > 0) {
-        const lastBlock = messages[i].content[messages[i].content.length - 1];
-        (lastBlock as any).cache_control = { type: "ephemeral" };
-        break;
-      }
-    }
+    // P1-4：与非流式路径共用同一函数（此前两处各手写一遍倒序循环）
+    markLastUserMessageCacheBreakpoint(messages);
 
     // 转换工具定义
     // P1-3: strict 模式（Constrained Decoding）— 仅 Claude 4.x 模型支持
@@ -719,13 +719,8 @@ export class AnthropicProvider implements Provider {
     const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
     // 在最后一条 user 消息的最后一个 content block 上标记 cache_control（与流式路径一致）
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user" && messages[i].content.length > 0) {
-        const lastBlock = messages[i].content[messages[i].content.length - 1];
-        (lastBlock as any).cache_control = { type: "ephemeral" };
-        break;
-      }
-    }
+    // P1-4：与流式路径共用同一函数，消除"同一件事两处手写"的漂移面
+    markLastUserMessageCacheBreakpoint(messages);
 
     // 增强 5.1：工具区缓存断点（与流式路径同策略，仅直连 Anthropic 且未禁用时打）。
     const enableToolCache = isDirectAnthropicEndpoint(this.client.baseURL)
