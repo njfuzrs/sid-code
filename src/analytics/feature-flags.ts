@@ -95,6 +95,12 @@ export function initFeatureFlags(config: FeatureFlagConfig): void {
 
 /**
  * 注册刷新监听器。远程配置更新后触发。返回取消订阅函数。
+ *
+ * **当前零消费者，且这是正确状态,不是接线缺口。** 两个 flag 消费方
+ * (sampling.ts / killswitch.ts) 都在每次调用时现读 getFeatureValue_*,不缓存任何
+ * 派生状态,因此没有「配置变了要重算」的东西需要被通知。
+ * 保留它是为了将来出现「读一次就缓存」的消费方时有现成的失效通道——若一直没有,
+ * 应连同 refreshListeners 一并删除,而不是留着假装有订阅机制。
  */
 export function onFeatureFlagRefresh(listener: () => void): () => void {
   refreshListeners.push(listener);

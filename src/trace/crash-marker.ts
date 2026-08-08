@@ -62,12 +62,6 @@ function crashPath(sessionId: string): string {
   return join(baseDir(), "sessions", sessionId, "crash.json");
 }
 
-/** 获取最后一层目录（提取 sessionId） */
-function extractSessionId(pathStr: string): string {
-  const parts = pathStr.replace(/\/$/, "").split("/");
-  return parts[parts.length - 1];
-}
-
 /**
  * 扫描 trajectories/sessions/ 目录，查找有 crash.json 残留的会话。
  * 按文件修改时间升序返回（最早在先），只返回最近 10 个。
@@ -159,7 +153,13 @@ export function cleanup(sessionId: string): void {
 
 /**
  * 清理所有残留 crash.json（历史遗留清理，批量操作）。
- * 通常由 `--cleanup-crash-markers` 命令触发。
+ *
+ * ⚠️ 注释原写「通常由 `--cleanup-crash-markers` 命令触发」——**该命令不存在**，全仓
+ * 只有这行注释提到它。实际清理靠 `cleanup(sessionId)`：每条正常退出路径都会调
+ * （app.ts 有 6 处），所以 crash.json 只在真崩溃后残留一个，由下次启动的
+ * `readPrevious()` 读走做诊断，不会堆积（实测本机残留 1 个）。
+ * 结论：本函数没有真实消费者，也不解决真实问题。保留只为手工排障时能一次扫干净；
+ * 若要接线，该做的是加那个 CLI 参数，而不是让注释继续骗人。
  */
 export function cleanupAll(): { cleaned: number; errors: number } {
   let cleaned = 0;

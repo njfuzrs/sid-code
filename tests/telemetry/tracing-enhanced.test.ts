@@ -1,21 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import {
-  runInInteractionContext,
-  runInToolContext,
-  getCurrentInteractionContext,
-  getCurrentToolContext,
-  getCurrentSpanContext,
-  type SpanContext,
-} from "../../src/telemetry/als-context.ts";
-import {
-  registerSpan,
-  unregisterSpan,
-  getActiveSpan,
-  findActiveSpan,
-  getActiveSpanCount,
-  sweepOrphanSpans,
-  shutdownSpanManager,
-} from "../../src/telemetry/span-manager.ts";
+import { describe, expect, test, afterEach } from "bun:test";
 import {
   spanToPerfettoEvent,
   buildPerfettoTrace,
@@ -23,78 +6,23 @@ import {
 } from "../../src/telemetry/perfetto.ts";
 import type { SpanData } from "../../src/telemetry/types.ts";
 
-function ctx(id: string, kind = "chat", startTime = Date.now()): SpanContext {
-  return { traceId: "t1", spanId: id, kind, name: `${kind} ${id}`, startTime, ended: false };
-}
-
-describe("AsyncLocalStorage 上下文传播（spec 17 §6.1.1）", () => {
-  test("交互上下文自动传播到内部函数", () => {
-    const c = ctx("span-1", "invoke_agent");
-    runInInteractionContext(c, () => {
-      expect(getCurrentInteractionContext()?.spanId).toBe("span-1");
-    });
-    // 退出后上下文清空
-    expect(getCurrentInteractionContext()).toBeUndefined();
-  });
-
-  test("工具上下文嵌套在交互上下文内", () => {
-    runInInteractionContext(ctx("i1", "invoke_agent"), () => {
-      runInToolContext(ctx("t1", "execute_tool"), () => {
-        expect(getCurrentInteractionContext()?.spanId).toBe("i1");
-        expect(getCurrentToolContext()?.spanId).toBe("t1");
-        // 当前 span 优先取工具级
-        expect(getCurrentSpanContext()?.spanId).toBe("t1");
-      });
-      // 工具退出后回到交互级
-      expect(getCurrentSpanContext()?.spanId).toBe("i1");
-    });
-  });
-
-  test("异步函数内上下文保持", async () => {
-    await runInInteractionContext(ctx("async-1"), async () => {
-      await new Promise((r) => setTimeout(r, 5));
-      expect(getCurrentInteractionContext()?.spanId).toBe("async-1");
-    });
-  });
-});
-
-describe("Span 生命周期管理（spec 17 §6.1.2）", () => {
-  beforeEach(() => shutdownSpanManager());
-  afterEach(() => shutdownSpanManager());
-
-  test("注册与查询强引用 Span", () => {
-    const c = ctx("s1");
-    registerSpan("s1", c, true);
-    expect(getActiveSpan("s1")?.spanId).toBe("s1");
-    expect(getActiveSpanCount()).toBe(1);
-  });
-
-  test("注销移除 Span", () => {
-    registerSpan("s1", ctx("s1"), true);
-    unregisterSpan("s1");
-    expect(getActiveSpan("s1")).toBeUndefined();
-  });
-
-  test("findActiveSpan 按 kind+name 查找", () => {
-    registerSpan("s1", ctx("s1", "blocked_on_user"), true);
-    const found = findActiveSpan("blocked_on_user", "blocked_on_user s1");
-    expect(found?.spanId).toBe("s1");
-  });
-
-  test("sweepOrphanSpans 回收超时未结束的 Span", () => {
-    const old = ctx("old", "chat", Date.now() - 31 * 60 * 1000); // 31 分钟前
-    registerSpan("old", old, true);
-    const reaped = sweepOrphanSpans();
-    expect(reaped).toContain("old");
-    expect(getActiveSpan("old")).toBeUndefined();
-  });
-
-  test("sweepOrphanSpans 保留未超时的 Span", () => {
-    registerSpan("fresh", ctx("fresh"), true);
-    sweepOrphanSpans();
-    expect(getActiveSpan("fresh")?.spanId).toBe("fresh");
-  });
-});
+// 本文件原先还覆盖 als-context.ts（AsyncLocalStorage 上下文传播）与 span-manager.ts
+// （WeakRef + TTL 的 Span 生命周期管理）两个模块，spec 17 §6.1.1 / §6.1.2。
+//
+// 两个模块已于 2026-08-08 删除：它们是**能力已被取代后的残留**，不是接线缺口。
+// 生产追踪链路走 bus.ts + context.ts 的 TraceContext：
+//   - 父子关系由 TraceContext 的 spanStack 维护（pushSpan / popSpan），不用 ALS；
+//   - 生命周期由 SpanHandle.end() 负责，每条 trace 一个新 TraceContext，栈随之回收，
+//     没有 span-manager 的 WeakRef + 30 分钟 TTL 要防的那种孤儿泄漏。
+// bus.ts 对两个模块是零引用，唯一消费者就是本文件——即"测试是唯一消费者"那类债。
+//
+// hook-probe.ts 里三个 pending span Map 曾被怀疑需要 TTL 兜底，已逐条核过：
+//   - permissionSpans / hookSpans：对应的 4 个 hook 事件
+//     （Before/AfterPermissionCheck、Before/AfterHookExecution）在生产中**从不 emit**，
+//     两个 Map 恒空，无从泄漏；
+//   - subagentSpans：SubagentStop 在 sub-agent.ts 两处调用点都在 finally 里，配对有保证。
+// 若将来那 4 个事件真的接线，需要重新评估兜底清理——但那时该在 hook-probe 内解决，
+// 不是复活一个平行的 span 注册表。
 
 describe("Perfetto 追踪（spec 17 §6.2）", () => {
   afterEach(() => {

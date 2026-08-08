@@ -66,7 +66,13 @@ export function registerBackend(backend: SinkBackend): void {
   backends.push(backend);
 }
 
-/** 获取已注册后端(测试与关闭流程用) */
+/**
+ * 获取已注册后端。
+ *
+ * 注释原写「测试与关闭流程用」,但两处都不用它:关闭流程直接读模块内的 backends
+ * (见 shutdownBackends),测试用 __clearBackendsForTest 重置。属实际零消费者,
+ * 保留仅作调试断点用——若下次清理时仍无消费者,直接删。
+ */
 export function getBackends(): readonly SinkBackend[] {
   return backends;
 }
@@ -127,12 +133,22 @@ export function createAnalyticsSink(): AnalyticsSink {
   };
 }
 
-/** 更新静态采样配置 */
+/**
+ * 更新静态采样配置(不经 Feature Flag 的兜底路径)。
+ *
+ * 生产零调用点,但静态路径**本身是可达的**:`init-helpers.ts` 只在
+ * `shouldLoadRemoteConfig()` 为真时才 setSamplingHook 覆盖默认实现,而
+ * essential-traffic 隐私级别下它返回 false —— 此时生效的就是读 staticSamplingConfig
+ * 的默认 hook。既然没人填这个表,它恒为空 = "不采样,全量发送"。
+ * 这个 fail-open 默认对隐私级别而言是安全的(essential-traffic 已在
+ * createAnalyticsSink 开头由 isTelemetryDisabled 整体拦掉),所以不是缺陷。
+ * 保留二者是为了给"不接远程配置但想本地压采样"留一个入口。
+ */
 export function updateSamplingConfig(config: Record<string, number>): void {
   staticSamplingConfig = config;
 }
 
-/** 更新静态 killswitch */
+/** 更新静态 killswitch。生产零调用点,理由同 {@link updateSamplingConfig}。 */
 export function updateKilledSinks(sinks: Set<string>): void {
   staticKilledSinks = sinks;
 }

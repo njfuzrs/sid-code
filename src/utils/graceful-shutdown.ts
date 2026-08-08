@@ -5,8 +5,9 @@
 // 设计原则:丢失遥测可接受,进程挂起不可接受。
 //   1. 终端模式同步清理(最高优先级,即使后续失败也能恢复终端)
 //   2. 运行注册的清理函数(会话持久化、MCP 关闭等)
-//   3. 刷新遥测缓冲区(500ms 硬超时)
-//   4. Failsafe 定时器(5s 强制退出,防止关闭流程本身挂起)
+//   3. 停掉 Feature Flag 远程刷新定时器(避免关闭期间再外发)
+//   4. 刷新遥测缓冲区(500ms 硬超时)
+//   5. Failsafe 定时器(5s 强制退出,防止关闭流程本身挂起)
 
 import { shutdownTelemetry } from "../telemetry/index.ts";
 import { shutdownBackends } from "../analytics/sink.ts";
@@ -58,7 +59,20 @@ export async function runShutdownSequence(): Promise<void> {
     }
   }
 
-  // 3. 刷新遥测缓冲区(硬超时)
+  // 3. 停掉 Feature Flag 远程刷新定时器。
+  //
+  // 放在刷新遥测之前:定时器一旦触发就会发起远程 fetch 并回写磁盘缓存,关闭期间没有
+  // 任何理由再拉一次远程配置。此前 shutdownFeatureFlags 从未被调用过——生产影响有限
+  // (定时器 unref 过,且四条生产退出路径最终都 process.exit),但 runShutdownSequence
+  // 本身就是为"软关闭"设计的复用入口,那条路径下定时器会一直存活并继续外发。
+  try {
+    const { shutdownFeatureFlags } = await import("../analytics/feature-flags.ts");
+    shutdownFeatureFlags();
+  } catch {
+    // analytics 未初始化时模块可能不可用,不阻塞关闭
+  }
+
+  // 4. 刷新遥测缓冲区(硬超时)
   try {
     await Promise.race([
       Promise.allSettled([shutdownTelemetry(), shutdownBackends()]),

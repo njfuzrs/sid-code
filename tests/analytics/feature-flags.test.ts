@@ -13,6 +13,7 @@ import { getUserBucket, __resetUserBucketForTest } from "../../src/analytics/use
 import {
   primeMetadata,
   getEventMetadataFields,
+  refreshMetadata,
   __resetMetadataForTest,
 } from "../../src/analytics/metadata.ts";
 
@@ -161,5 +162,27 @@ describe("事件元数据富化（spec 17 §5.3）", () => {
     primeMetadata({ sessionId: "sess-2" });
     const fields = getEventMetadataFields();
     expect(typeof fields._ctx_user_bucket).toBe("number");
+  });
+
+  // 接线回归：refreshMetadata 曾是零调用点的死代码，运行时 /model 切换后 _ctx_model
+  // 一直是会话初始化时缓存的旧模型名——事件全部归因到错误的模型上，而切模型的典型
+  // 动机恰恰是对比两个模型，这是最不能错的场景。生产接线点见 app.ts
+  // applyPrimaryModelSwitch（/model 与 fallback 降级共用的单一真相源）。
+  test("refreshMetadata 刷新可变字段——切模型后 _ctx_model 跟着变", () => {
+    primeMetadata({ sessionId: "sess-3", model: "model-old", provider: "prov-old" });
+    expect(getEventMetadataFields()._ctx_model).toBe("model-old" as any);
+
+    refreshMetadata({ model: "model-new", provider: "prov-new" });
+    const after = getEventMetadataFields();
+    expect(after._ctx_model).toBe("model-new" as any);
+    expect(after._ctx_provider).toBe("prov-new" as any);
+    // 不可变字段不受影响
+    expect(after._ctx_session_id).toBe("sess-3" as any);
+  });
+
+  test("refreshMetadata 在未 prime 时是 no-op，不抛错", () => {
+    // 未 prime（cachedContext 为 null）时不应崩，也不应凭空建出上下文——
+    // app.ts 里它在 analytics 可能未初始化的情况下被调用。
+    expect(() => refreshMetadata({ model: "m" })).not.toThrow();
   });
 });

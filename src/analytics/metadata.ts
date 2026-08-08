@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import type { EventMetadata, VerifiedNotCodeOrFilepaths } from "./index.ts";
+import { asVerified } from "./types.ts";
 import { getUserBucket } from "./user-bucket.ts";
 
 interface EventMetadataContext {
@@ -28,9 +29,13 @@ interface EventMetadataContext {
 
 let cachedContext: EventMetadataContext | null = null;
 
-/** 标记字符串为已确认安全(内部辅助) */
+/**
+ * 标记字符串为已确认安全(内部辅助)。
+ *
+ * 委托给 types.ts 的 asVerified,不再手写 cast——见 events.ts 同名函数的说明。
+ */
 function v(s: string): VerifiedNotCodeOrFilepaths {
-  return s as VerifiedNotCodeOrFilepaths;
+  return asVerified(s);
 }
 
 /**

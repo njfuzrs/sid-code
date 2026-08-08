@@ -31,6 +31,7 @@ import type {
   VerifiedNotCodeOrFilepaths,
 } from "./index.ts";
 import { PROTECTED_PREFIX } from "./privacy.ts";
+import { asVerified } from "./types.ts";
 import {
   sanitizeToolName,
   safeFileExtension,
@@ -74,9 +75,14 @@ export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
 // 内部：脱敏字段构造
 // ─────────────────────────────────────────────────────────────
 
-/** 标记为「已确认不含代码/文件路径」。仅供本文件内部在脱敏之后使用。 */
+/**
+ * 标记为「已确认不含代码/文件路径」。仅供本文件内部在脱敏之后使用。
+ *
+ * 委托给 types.ts 的 asVerified：该函数原本零调用点，而本文件与 metadata.ts 各自
+ * 手写了一份一模一样的 cast。同一个语义契约有三份实现，改其中一处不会波及另两处。
+ */
 function v(s: string): VerifiedNotCodeOrFilepaths {
-  return s as VerifiedNotCodeOrFilepaths;
+  return asVerified(s);
 }
 
 /**
