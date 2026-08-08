@@ -1507,6 +1507,14 @@ export class App {
       );
     } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
     this.tuiStateUpdater?.({ model });
+    // 事件元数据同步：_ctx_model / _ctx_provider 是 primeMetadata 在会话初始化时一次性
+    // 缓存的，运行时切模型不刷新则此后所有事件都带着旧模型名上报——归因直接错到另一个
+    // 模型头上（切模型往往正是为了对比两个模型，这恰好是最需要归因准确的场景）。
+    // refreshMetadata 只在已 primed 时生效，analytics 未初始化则是 no-op。
+    try {
+      const { refreshMetadata } = require("./analytics/metadata.ts");
+      refreshMetadata({ model, provider: this.config.provider });
+    } catch { /* analytics 未就绪不阻断切换 */ }
     // 档位归正：runtimeEffort 是跨模型共享的运行时态，可选档位却每模型不同。
     // 不归正则出现「状态栏显示 xhigh、GLM 实际下发 max、面板 hint 又不含 xhigh」的三方矛盾
     // （在 claude 上调到 xhigh 再切 GLM 即可复现）。归正只在档位对新模型无效时发生，
@@ -4981,7 +4989,37 @@ export class App {
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       savingsUSD: this.sessionState.getTotalCacheSavings(),
       durationMs: this.sessionState.getElapsedMs(),
+      // P2-1：影子调用 token 接线。costUSD 走 getEffectiveTotalCostUSD() 已含
+      // sideCostUSD，而上面的 token 三段只遍历 modelUsage（不含影子调用）——
+      // 同一行里成本与 token 口径不同，"成本 ÷ token"就算不出来。影子调用的
+      // token 早在 side-call-sink 采集，这里只是接上，不是新建埋点。
+      ...this.buildLedgerSideUsage(),
     };
+  }
+
+  /**
+   * 取影子调用的聚合用量供账本使用；无影子调用时返回空对象（不落三个恒零字段）。
+   *
+   * 落 0 与"旧数据没有这个字段"在读侧无法区分，而账本要长期回溯 —— 字段缺失
+   * 明确表示"本会话没有影子调用"，比一个 0 更诚实。
+   */
+  private buildLedgerSideUsage(): {
+    sideInputTokens?: number;
+    sideOutputTokens?: number;
+    sideCostUSD?: number;
+  } {
+    try {
+      const s = getSideStats();
+      if (s.apiCalls <= 0) return {};
+      return {
+        sideInputTokens: s.tokensSent,
+        sideOutputTokens: s.tokensReceived,
+        sideCostUSD: s.costUSD,
+      };
+    } catch {
+      // 影子调用统计不可用绝不影响账本主体落盘
+      return {};
+    }
   }
 
   /**

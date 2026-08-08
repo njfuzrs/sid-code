@@ -243,3 +243,93 @@ describe("T14.5: digest TTFT P50/P95/P99 聚合", () => {
     expect(openai!.gen_p99).toBeGreaterThanOrEqual(openai!.gen_p95!);
   });
 });
+
+/**
+ * P2-3：TTFT 按缓存命中分桶。
+ *
+ * 为什么需要分桶：总体 ttft_p50 把命中与未命中混在一起平均，"缓存让首字快了多少"
+ * 在里面看不出来 —— 而这正是博客要引用的核心数字。
+ *
+ * 为什么配对必须保守：TTFT 是 per-fetch、usage 是 per-turn，共享的 index 是 1:N
+ *（实测同会话 index=3 有 6 条 first_content 但只有 1 条 AfterModelRaw）。
+ * 按 index 硬关联会把一次命中的 usage 摊给同轮所有 fetch，得出的"命中组 TTFT"是假的。
+ */
+describe("P2-3 TTFT 缓存分桶", () => {
+  const afterModel = (provider: string, model: string) =>
+    ({ event: "AfterModelRaw", data: { provider, model, elapsed_ms: 1000 } });
+
+  test("Anthropic：first_content 自带 cache_hit，直接分桶（无需配对）", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      afterModel("anthropic", "claude-opus-5"),
+      // 命中组明显更快
+      { event: "StreamPhase", data: { phase: "first_content", model: "claude-opus-5", ttft_ms: 800, cache_hit: true, cache_read: 17152 } },
+      { event: "StreamPhase", data: { phase: "first_content", model: "claude-opus-5", ttft_ms: 900, cache_hit: true, cache_read: 17000 } },
+      // 未命中组慢
+      { event: "StreamPhase", data: { phase: "first_content", model: "claude-opus-5", ttft_ms: 4000, cache_hit: false, cache_read: 0 } },
+    ];
+    const s = aggregateProviderStats(events).find((x) => x.provider === "anthropic")!;
+    expect(s.ttftByCache).toBeDefined();
+    expect(s.ttftByCache!.hit.count).toBe(2);
+    expect(s.ttftByCache!.miss.count).toBe(1);
+    expect(s.ttftByCache!.hit.p50!).toBeLessThan(s.ttftByCache!.miss.p50!);
+    expect(s.ttftBucketDropped).toBeUndefined();
+  });
+
+  test("OpenAI 族：ttft 在 first_content、cache_hit 在 completed，同组按序配对", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      afterModel("openai", "gpt-5.6-luna"),
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 700, index: 3, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "completed", model: "gpt-5.6-luna", index: 3, session_id: "s1", cache_hit: true, cache_read: 17152 } },
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 5000, index: 4, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "completed", model: "gpt-5.6-luna", index: 4, session_id: "s1", cache_hit: false, cache_read: 0 } },
+    ];
+    const s = aggregateProviderStats(events).find((x) => x.provider === "openai")!;
+    expect(s.ttftByCache!.hit).toEqual({ count: 1, p50: 700, p95: 700 });
+    expect(s.ttftByCache!.miss).toEqual({ count: 1, p50: 5000, p95: 5000 });
+  });
+
+  test("数量不等的组整组丢弃并计数，绝不猜配（错配会反转结论）", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      afterModel("openai", "gpt-5.6-luna"),
+      // 同一 (session,index) 下 3 次 first_content 但只有 1 次 completed
+      //（另两次超时/abort，没走到 completed）
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 700, index: 3, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 6000, index: 3, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 9000, index: 3, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "completed", model: "gpt-5.6-luna", index: 3, session_id: "s1", cache_hit: true } },
+    ];
+    const s = aggregateProviderStats(events).find((x) => x.provider === "openai")!;
+    // 一条都不进桶：若按序取首条会把 700ms 记成"命中"，凭空造出一个漂亮的提速数字
+    expect(s.ttftByCache).toBeUndefined();
+    expect(s.ttftBucketDropped).toBe(3);
+    // 总体 TTFT 不受影响（分桶失败不该丢掉总体口径）
+    expect(s.ttft_p50).toBeGreaterThan(0);
+  });
+
+  test("子代理与主循环不混配（分组键含 agent_id）", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      afterModel("openai", "gpt-5.6-luna"),
+      // 主循环与子代理共享 index=3，但命中状态相反
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 700, index: 3, session_id: "s1" } },
+      { event: "StreamPhase", data: { phase: "completed", model: "gpt-5.6-luna", index: 3, session_id: "s1", cache_hit: true } },
+      { event: "StreamPhase", data: { phase: "first_content", model: "gpt-5.6-luna", ttft_ms: 5000, index: 3, session_id: "s1", agent_id: "sub-1" } },
+      { event: "StreamPhase", data: { phase: "completed", model: "gpt-5.6-luna", index: 3, session_id: "s1", agent_id: "sub-1", cache_hit: false } },
+    ];
+    const s = aggregateProviderStats(events).find((x) => x.provider === "openai")!;
+    // 不分 agent 的话两组会被合成一个 4 事件的组，配对结果随出现顺序漂移
+    expect(s.ttftByCache!.hit).toEqual({ count: 1, p50: 700, p95: 700 });
+    expect(s.ttftByCache!.miss).toEqual({ count: 1, p50: 5000, p95: 5000 });
+    expect(s.ttftBucketDropped).toBeUndefined();
+  });
+
+  test("老轨迹（无 cache_hit 维度）不落空桶结构", () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [
+      afterModel("openai", "glm-5.2"),
+      { event: "StreamPhase", data: { phase: "first_content", model: "glm-5.2", ttft_ms: 3000 } },
+    ];
+    const s = aggregateProviderStats(events).find((x) => x.provider === "openai")!;
+    // 落一个 count 全 0 的结构会让"数据还没采到"看起来像"命中与未命中一样快"
+    expect(s.ttftByCache).toBeUndefined();
+    expect(s.ttft_p50).toBe(3000);
+  });
+});

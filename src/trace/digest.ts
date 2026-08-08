@@ -197,6 +197,23 @@ export interface ProviderDigestStats {
   gen_p50?: number;
   gen_p95?: number;
   gen_p99?: number;
+  /**
+   * P2-3：按"本次请求是否命中前缀缓存"分桶的 TTFT 分位数。
+   *
+   * 这是"缓存到底有没有让首字更快"的**唯一对照口径** —— 总体 ttft_p50 把命中与未命中
+   * 混在一起平均，缓存提速多少在里面看不出来。分桶后 `hit.p50` 与 `miss.p50` 之差
+   * 才是可引用的提速数字。
+   *
+   * 样本可能少于总 TTFT 数：只有能确定命中状态的 fetch 才进桶（见
+   * {@link aggregateProviderStats} 的配对逻辑），无法判定的宁可丢弃也不猜 ——
+   * 猜错会直接反转结论。`ttftBucketDropped` 记下丢了多少，避免"静默截断读起来像全覆盖"。
+   */
+  ttftByCache?: {
+    hit: { count: number; p50?: number; p95?: number };
+    miss: { count: number; p50?: number; p95?: number };
+  };
+  /** P2-3：因无法判定命中状态而未进分桶的 TTFT 样本数（0 表示全覆盖） */
+  ttftBucketDropped?: number;
   /** 超时率 > 10% 时标记 warning */
   warning?: string;
 }
@@ -1681,6 +1698,21 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
       L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`);
+      // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
+      // 两桶都有样本才给差值：只有一桶时给差值等于拿空气做对照。
+      const bc = ps.ttftByCache;
+      if (bc && (bc.hit.count > 0 || bc.miss.count > 0)) {
+        const fmt = (b: { count: number; p50?: number }) =>
+          b.count > 0 ? `${(b.p50! / 1000).toFixed(1)}s(n=${b.count})` : `无样本`;
+        const delta =
+          bc.hit.count > 0 && bc.miss.count > 0
+            ? c("green", `  提速 ${((bc.miss.p50! - bc.hit.p50!) / 1000).toFixed(1)}s`)
+            : c("gray", "  （单侧无样本，不给差值）");
+        const dropped = ps.ttftBucketDropped
+          ? c("gray", `  丢弃 ${ps.ttftBucketDropped} 样本(命中状态无法判定)`)
+          : "";
+        L.push(`  ${" ".repeat(12)} └ TTFT 命中:${fmt(bc.hit)} 未命中:${fmt(bc.miss)}${delta}${dropped}`);
+      }
     }
   }
 
@@ -1893,11 +1925,59 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
  * 再用它把 first_content 的 ttft 归因到正确 provider（映射缺失时回退按 model 名启发式推断）。
  */
 export function aggregateProviderStats(events: Array<{ event?: string; data?: Record<string, unknown> }>): ProviderDigestStats[] {
-  const map = new Map<string, { requests: number; failed: number; timedOut: number; retried: number; totalLatencyMs: number; ttfts: number[]; gens: number[] }>();
+  const map = new Map<string, {
+    requests: number; failed: number; timedOut: number; retried: number;
+    totalLatencyMs: number; ttfts: number[]; gens: number[];
+    /** P2-3：命中桶 / 未命中桶的 TTFT 样本 */
+    ttftHit: number[]; ttftMiss: number[];
+    /** P2-3：无法判定命中状态而丢弃的 TTFT 样本数 */
+    ttftDropped: number;
+  }>();
 
   const ensure = (p: string) => {
-    if (!map.has(p)) map.set(p, { requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0, ttfts: [], gens: [] });
+    if (!map.has(p)) {
+      map.set(p, {
+        requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0,
+        ttfts: [], gens: [], ttftHit: [], ttftMiss: [], ttftDropped: 0,
+      });
+    }
     return map.get(p)!;
+  };
+
+  /**
+   * P2-3：TTFT 的缓存分桶配对。
+   *
+   * 两家 provider 的 emit 时机不同，这里必须两条都吃：
+   * - **Anthropic**：usage 在 `message_start` 就到，所以 `first_content` 事件**自带**
+   *   `cache_hit` —— 直接分桶，零配对风险。
+   * - **OpenAI 族**：usage 只在流尾部下发，`first_content` 时刻不知道命中数，
+   *   维度挂在同一次 fetch 的 `completed` 事件上 —— 需要配对。
+   *
+   * 配对规则刻意保守：只在**同一 (session, index) 内 first_content 与 completed 数量相等**时
+   * 按出现顺序一对一配。数量不等说明这轮有 fetch 没走到 completed（超时/abort/error），
+   * 此时任何配法都可能把 A 次的 ttft 配到 B 次的命中状态上 —— 宁可整组丢弃并计入
+   * `ttftDropped`。这正是方案里点破的坑：index 与 usage 是 1:N，按 index 硬关联会把
+   * 一次命中的 usage 摊给同轮所有 fetch，得出的"命中组 TTFT"是假的。
+   */
+  /** key = `${session_id}|${index}|${agent_id}`，value 按事件出现顺序累积 */
+  const pendingTtft = new Map<string, number[]>();
+  const pendingHit = new Map<string, boolean[]>();
+  const pendingProvider = new Map<string, string>();
+  const push = <T,>(m: Map<string, T[]>, k: string, v: T) => {
+    const arr = m.get(k);
+    if (arr) arr.push(v);
+    else m.set(k, [v]);
+  };
+  /**
+   * 配对分组键。必须含 agent_id：子代理与主循环的事件共享 index 空间
+   *（stream-observer.ts 的 B4 注释即为此加了 agentId），不分开会把子代理的
+   * ttft 配到主循环的命中状态上。
+   */
+  const bucketKey = (e: { session_id?: string; data?: Record<string, unknown> }): string => {
+    const sid = (e as any).session_id ?? e.data?.session_id ?? "";
+    const idx = e.data?.index ?? "";
+    const agent = e.data?.agent_id ?? "main";
+    return `${sid}|${idx}|${agent}`;
   };
 
   // 按 model 名启发式推断 provider（映射兜底：first_content 无 provider、AfterModelRaw 未覆盖该 model 时用）
@@ -1931,7 +2011,26 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       const model = (e.data.model as string) || "";
       const provider = resolveProvider(model);
       const ttft = e.data.ttft_ms as number | undefined;
-      if (ttft && ttft > 0) ensure(provider).ttfts.push(ttft);
+      if (ttft && ttft > 0) {
+        const stats = ensure(provider);
+        stats.ttfts.push(ttft);
+        // P2-3 分桶
+        if (typeof e.data.cache_hit === "boolean") {
+          // Anthropic：事件自带命中维度，直接分桶（无配对风险）
+          (e.data.cache_hit ? stats.ttftHit : stats.ttftMiss).push(ttft);
+        } else {
+          // OpenAI 族：维度在同次 fetch 的 completed 事件上，暂存待配对
+          const key = `${bucketKey(e)}`;
+          push(pendingTtft, key, ttft);
+          pendingProvider.set(key, provider);
+        }
+      }
+    }
+    // P2-3：收集 completed 携带的缓存维度，供上面暂存的 TTFT 配对（OpenAI 族路径）
+    if (e.event === "StreamPhase" && e.data && e.data.phase === "completed") {
+      if (typeof e.data.cache_hit === "boolean") {
+        push(pendingHit, bucketKey(e), e.data.cache_hit as boolean);
+      }
     }
     // 从 RetryTelemetry 事件统计重试/超时 + 生成耗时（stream_completed.elapsedMs）
     if (e.event === "RetryTelemetry" && e.data) {
@@ -1961,6 +2060,22 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
     }
   }
 
+  // P2-3：把暂存的 (ttft, cache_hit) 按分组配对。数量不等的组整组丢弃并计数——
+  // 数量不等意味着有 fetch 没走到 completed（超时/abort/error），任何配法都可能
+  // 把 A 次的 ttft 配到 B 次的命中状态上，而错配会直接反转"缓存是否更快"的结论。
+  for (const [key, ttfts] of pendingTtft) {
+    const provider = pendingProvider.get(key) ?? "unknown";
+    const stats = ensure(provider);
+    const hits = pendingHit.get(key) ?? [];
+    if (hits.length !== ttfts.length) {
+      stats.ttftDropped += ttfts.length;
+      continue;
+    }
+    for (let i = 0; i < ttfts.length; i++) {
+      (hits[i] ? stats.ttftHit : stats.ttftMiss).push(ttfts[i]!);
+    }
+  }
+
   const result: ProviderDigestStats[] = [];
   for (const [provider, stats] of map) {
     const timeoutRate = stats.requests > 0 ? stats.timedOut / stats.requests : 0;
@@ -1985,10 +2100,28 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       gen_p50: percentile(sortedGens, 0.5),
       gen_p95: percentile(sortedGens, 0.95),
       gen_p99: percentile(sortedGens, 0.99),
+      // P2-3：两桶都为空时整个字段不落（老轨迹没有 cache_hit 维度）——
+      // 落一个 count 全 0 的结构会让"数据还没采到"看起来像"命中与未命中一样快"。
+      ...(stats.ttftHit.length + stats.ttftMiss.length > 0
+        ? {
+            ttftByCache: {
+              hit: bucketStats(stats.ttftHit),
+              miss: bucketStats(stats.ttftMiss),
+            },
+          }
+        : {}),
+      ...(stats.ttftDropped > 0 ? { ttftBucketDropped: stats.ttftDropped } : {}),
       warning,
     });
   }
   return result;
+}
+
+/** P2-3：单桶的样本数 + 分位数（桶为空时只给 count，不给假分位数） */
+function bucketStats(samples: number[]): { count: number; p50?: number; p95?: number } {
+  if (samples.length === 0) return { count: 0 };
+  const sorted = [...samples].sort((a, b) => a - b);
+  return { count: sorted.length, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
 }
 
 // ─────────────────────── 第 5 批：JIT 上下文度量聚合 ───────────────────────

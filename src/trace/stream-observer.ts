@@ -25,6 +25,26 @@ export type StreamPhase =
   | "aborted"
   | "error";
 
+/**
+ * P2-3：把"本次请求是否命中缓存"编码成 StreamPhase 的附加维度。
+ *
+ * 为什么是"维度"而不是事后 join：TTFT 是 per-fetch、usage 是 per-turn，两者共享的
+ * `index` 是 1:N（实测同会话 index=3 有 6 条 first_content 却只有 1 条 AfterModelRaw、
+ * 另一会话 index=4 有 18 条）——按 index 关联会把一次命中的 usage 摊给同轮所有 fetch，
+ * 得出的"命中组 TTFT"是假的。所以维度必须在 emit 时就随事件写下。
+ *
+ * `cache_hit` 是布尔分桶键（消费侧按它分 hit/miss 两桶）；`cache_read` 是原始命中
+ * token 数，留给"命中量与 TTFT 是否相关"这类后续分析。两者都只在**已知**命中数时才写：
+ * 不知道（OpenAI 族在首内容时刻拿不到 usage）与知道且为 0 是两件事，
+ * 落一个假的 `cache_hit: false` 会把"未知"算进 miss 桶，直接污染对照结论。
+ */
+export function cacheDimsFor(
+  cacheReadTokens: number | undefined,
+): { cache_hit?: boolean; cache_read?: number } {
+  if (cacheReadTokens === undefined) return {};
+  return { cache_hit: cacheReadTokens > 0, cache_read: cacheReadTokens };
+}
+
 // ─── 超时层枚举 ───
 
 export type TimeoutLayer =

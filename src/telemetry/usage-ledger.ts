@@ -39,6 +39,23 @@ export interface UsageLedgerEntry {
   savingsUSD: number;
   /** 会话时长（毫秒） */
   durationMs: number;
+
+  /**
+   * P2-1：影子调用（标题生成 / 子代理 / 分类器等辅助 LLM 调用）的用量。旧数据无这三个字段。
+   *
+   * 为什么必须单独记：`costUSD` 走 `getEffectiveTotalCostUSD()` =
+   * totalCostUSD + sideCostUSD，**含**影子调用；而上面 promptTotal/cacheHit 等 token
+   * 只遍历 modelUsage（主循环），**不含**影子调用。同一行里成本与 token 口径不同，
+   * 于是"平均每 token 成本"算不出来，"省了多少"在含影子调用的会话上永远测不准。
+   *
+   * 影子调用的 token **早已在采集**（src/trace/side-call-sink.ts），只是没进账本 ——
+   * 所以这是接线而非新建埋点。三个字段都记下来，消费侧就能自由选口径：
+   * 主循环口径（promptTotal）、整体口径（promptTotal + sideInputTokens）、
+   * 以及"成本 ÷ token"这类必须同源的派生量。
+   */
+  sideInputTokens?: number;
+  sideOutputTokens?: number;
+  sideCostUSD?: number;
 }
 
 /**
@@ -67,6 +84,12 @@ export function ledgerPath(): string {
 /**
  * 追加一行会话汇总到账本（append-only）。
  * 失败静默忽略（不阻断 SessionEnd 退出）。
+ *
+ * @deprecated 生产写侧已全部改走 {@link upsertUsageLedger}（`app.ts` 落账本的唯一入口）。
+ * **新代码不要调用它**：裸 append 会让一个 30 轮会话写 30 行，而 `aggregateEntries`
+ * 对每行 costUSD 累加、sessions += 1 —— 成本与会话数直接翻 30 倍（详见 upsert 的注释）。
+ * 保留它仅因 `readUsageLedger` / `dedupeBySession` 的测试需要构造"append 时代的多行历史"
+ * 来验证读侧去重防御，删掉就没法再测那条兼容路径。
  */
 export function appendUsageLedger(entry: UsageLedgerEntry): void {
   try {

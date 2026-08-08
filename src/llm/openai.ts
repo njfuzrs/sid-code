@@ -18,7 +18,7 @@ import type {
   ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, armIneffectiveCheck, emitHttpConnected } from "../trace/stream-observer.ts";
+import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, armIneffectiveCheck, emitHttpConnected, cacheDimsFor } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
@@ -1767,6 +1767,11 @@ export class OpenAIProvider implements Provider {
               empty_chunks: emptyChunks,
               duration_ms: Date.now() - requestStartAt,
               model: this._model,
+              // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
+              // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
+              // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
+              // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
+              ...cacheDimsFor(usage.cacheReadInputTokens ?? 0),
             });
             updateStreamStats(parseObsIndex, { chunksReceived: totalChunks, emptyChunks, lastContentProgressAt });
             // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）

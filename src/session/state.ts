@@ -391,18 +391,28 @@ export class SessionState {
   /**
    * 计算单次调用的缓存节省金额（美元）= 假设全部按未命中全价 − 实际成本。
    * 全价假设：把 promptTotal 全部当未命中输入计价。
+   *
+   * P2-2（2026-08-08）：pricing 缺失时**不再返回 0**，改用与 {@link calculateCost}
+   * 同源的 FALLBACK_PRICING 估算。旧行为造成一个必然出现的自相矛盾状态：
+   * calculateCost 在 pricing=null 时用兜底价估出**非零成本**，而这里直接 return 0
+   * ——于是账本里出现"成本非零、节省恒零"的行，看起来像"缓存完全没省钱"，
+   * 实际只是两个函数对同一个未知模型给了不同答案。实测 349 会话里 81 个
+   * savingsUSD=0，这是其中一条独立成因（另外三条：本地 provider、无命中时数学恒 0、
+   * Math.max 钳位，都是正确行为，只有这条是缺陷）。
    */
   calculateSavings(model: string, usage: Usage, provider?: string, baseURL?: string): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 本地 provider 无费用 → 无"节省"概念，恒 0
     if (SessionState.isLocalProvider(prov)) return 0;
     const pricing = resolvePricing(model, this.availableModels, baseURL);
-    if (!pricing) return 0;
     const n = normalizeCacheUsage(usage, prov);
+    // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）
+    const inputPrice = pricing?.input ?? SessionState.FALLBACK_PRICING.input;
+    const outputPrice = pricing?.output ?? SessionState.FALLBACK_PRICING.output;
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
-      (n.promptTotal / 1_000_000) * pricing.input +
-      (n.outputTokens / 1_000_000) * pricing.output;
+      (n.promptTotal / 1_000_000) * inputPrice +
+      (n.outputTokens / 1_000_000) * outputPrice;
     const actual = this.calculateCost(model, usage, prov, baseURL);
     return Math.max(0, hypothetical - actual);
   }

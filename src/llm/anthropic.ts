@@ -31,7 +31,7 @@ import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import { wrapFetchWithKeepAlive } from "./keepalive.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
-import { emitTimeoutFired, emitStreamPhase, emitHttpConnected } from "../trace/stream-observer.ts";
+import { emitTimeoutFired, emitStreamPhase, emitHttpConnected, cacheDimsFor } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
@@ -228,6 +228,14 @@ export class AnthropicProvider implements Provider {
     try {
       const requestStartTime = Date.now();
       let firstTokenTime: number | null = null;
+      /**
+       * P2-3：供 first_content 事件携带的缓存命中数（undefined = 尚未知）。
+       *
+       * Anthropic 在 `message_start` 就下发完整 usage，而 first content 必然晚于它，
+       * 所以这里能在 emit 时刻拿到真值。保持 undefined 而非预置 0：
+       * "还不知道"与"知道且为 0"必须可区分，否则 miss 桶会被未知样本污染。
+       */
+      let ttftCacheRead: number | undefined;
 
       // 注入客户端请求 ID，用于与服务端日志关联排查（请求超时时仍可追踪）
       const clientRequestId = generateClientRequestId();
@@ -354,7 +362,21 @@ export class AnthropicProvider implements Provider {
             firstTokenTime = Date.now();
             log.debug("LLM:ANTHROPIC", `首 token 延迟: ${ttftMs}ms`);
             try {
-              emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", { ttft_ms: ttftMs, model: this._model });
+              // P2-3：first_content 带上缓存维度，让"命中是否真的更快"可分桶统计。
+              //
+              // 为什么不做事后 join：TTFT 是 per-fetch、usage 是 per-turn，两者共享的
+              // index 是 1:N（实测同会话 index=3 有 6 条 first_content 但只有 1 条
+              // AfterModelRaw，另一会话 index=4 有 18 条）——按 index 关联会把一次命中的
+              // usage 摊给同轮所有 fetch。所以必须在 emit 时就把维度带上。
+              //
+              // Anthropic 可以在此刻拿到命中数：usage 在 message_start 就下发了
+              //（见下方 case "message_start"），而 first_content 必然晚于它。
+              // OpenAI 族做不到（usage 在流尾部），只能在 completed 阶段补 emit。
+              emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", {
+                ttft_ms: ttftMs,
+                model: this._model,
+                ...cacheDimsFor(ttftCacheRead),
+              });
             } catch { /* 可观测性不影响主流程 */ }
           }
         },
@@ -449,6 +471,10 @@ export class AnthropicProvider implements Provider {
             case "message_start": {
               const msg = (event as any).message;
               accumulatedUsage = this.convertUsage(msg.usage);
+              // P2-3：命中数在此刻已知，记给随后的 first_content 事件做分桶维度。
+              // 落 0 而非 undefined 是对的：message_start 已到达即"已知"，
+              // 只是这次没命中（冷启动），它应当计入 miss 桶。
+              ttftCacheRead = accumulatedUsage.cacheReadInputTokens ?? 0;
               // message_start 的 output_tokens 会被下游累加，计入"已发出累积"基线
               emittedOutputTokens = accumulatedUsage.outputTokens;
               yield {

@@ -12,6 +12,7 @@
  *   bun scripts/trace-digest.ts --list           # 列出最近 20 个会话(供挑选)
  *   bun scripts/trace-digest.ts <id> --json      # 机器可读 JSON(给上层程序用)
  *   bun scripts/trace-digest.ts <id> --full      # 附带更多思维链/工具参数细节
+ *   bun scripts/trace-digest.ts --cache          # 跨会话缓存命中率/省钱/断裂归因(P2-4)
  */
 
 import {
@@ -22,6 +23,7 @@ import {
   renderHuman,
   renderList,
 } from "../src/trace/digest.ts";
+import { renderCacheSection } from "../src/trace/cache-report.ts";
 
 function main() {
   const args = process.argv.slice(2);
@@ -41,6 +43,15 @@ function main() {
       return;
     }
     process.stdout.write(renderList(all, { noColor, invocation }) + "\n");
+    return;
+  }
+
+  // P2-4：跨会话缓存视图。不依赖 trajectories（账本与 cache-breaks 是独立数据源），
+  // 所以放在 "no sessions" 早退之前 —— trajectories 被 LRU 清掉后账本仍在，
+  // 此时最需要的正是这个视图。
+  if (flags.has("--cache")) {
+    const report = renderCacheSection({ noColor, json });
+    process.stdout.write(report + "\n");
     return;
   }
 
