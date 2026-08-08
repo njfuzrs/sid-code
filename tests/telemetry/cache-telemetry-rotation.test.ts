@@ -14,8 +14,9 @@ import {
   queryCacheBreakHistory,
   summarizeCacheBreakHistory,
   cacheBreaksPath,
+  buildTelemetryEntry,
 } from "../../src/telemetry/cache-telemetry.ts";
-import { CacheBreakDetector, type CacheCheckParams } from "../../src/api/cache-detection.ts";
+import { CacheBreakDetector, type CacheCheckParams, type CacheBreakCategory } from "../../src/api/cache-detection.ts";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -32,6 +33,7 @@ function makeRecord(i: number) {
     dropTokens: i,
     dropPercent: 50,
     changes: [`change-${i}`],
+    categories: [] as CacheBreakCategory[],
     previousCacheReadTokens: 100,
     currentCacheReadTokens: 0,
   };
@@ -227,5 +229,105 @@ describe("归因聚合 ↔ 检测器文案对账", () => {
     expect(s.total).toBeGreaterThanOrEqual(cases.length);
     // 任一归因文案没有分类分支 → unknown 非空 → 本测试失败并暴露漏配
     expect(s.byCategory.unknown ?? 0).toBe(0);
+  });
+
+  test("新记录走结构化 categories，不再依赖文案匹配", () => {
+    const d = new CacheBreakDetector();
+    d.checkResponse(detectorParams());
+    const report = d.checkResponse(detectorParams({ cacheReadTokens: 5000 }))!;
+    emitCacheBreakTelemetry({ ...report, ts: 1_700_002_000, model: "test-model" });
+
+    const s = summarizeCacheBreakHistory(10);
+    expect(s.structuredCount).toBe(1);
+    expect(s.legacyCount).toBe(0);
+  });
+
+  test("旧记录（无 categories）仍能按文案兜底聚合", () => {
+    // 模拟 2026-08-08 之前落盘的行：只有 changes，没有 categories
+    appendFileSync(
+      cacheBreaksPath(),
+      JSON.stringify({
+        ts: 1_700_003_000,
+        model: "legacy-model",
+        dropTokens: 9000,
+        dropPercent: 90,
+        changes: ["本地前缀 hash 未变（abc），命中下降疑为服务端缓存波动"],
+        previousCacheReadTokens: 10000,
+        currentCacheReadTokens: 1000,
+      }) + "\n",
+      "utf-8",
+    );
+
+    const s = summarizeCacheBreakHistory(10);
+    expect(s.legacyCount).toBe(1);
+    expect(s.structuredCount).toBe(0);
+    expect(s.byCategory.server_fluctuation).toBe(1);
+  });
+});
+
+/**
+ * P0-3 门禁：落盘不得静默丢字段。
+ *
+ * 缺陷背景（2026-08-08 实测）：`emitCacheBreakTelemetry` 手写字段拷贝列表，
+ * 漏了 `previousPrefixHash` / `currentPrefixHash` —— 检测器算出来了、落盘时被丢掉，
+ * 676 条历史记录里带 hash 判据的是 **0 条**。于是"服务端波动占 99.5%"这个结论
+ * 只能靠对中文文案做子串匹配得出，文案一改统计就断。
+ *
+ * 手写白名单的失败模式是**静默**：新增字段忘了拷，代码照跑、测试照绿、数据永久缺失。
+ * 所以修法不是"补两个字段"，而是改成默认透传 + 显式剔除，并用本测试锁住这个不变量。
+ */
+describe("P0-3 落盘保真度门禁（默认透传 + 显式剔除）", () => {
+  function realReport() {
+    const d = new CacheBreakDetector();
+    const params: CacheCheckParams = {
+      cacheReadTokens: 50000,
+      systemPrompt: "you are helpful",
+      toolSchemas: [{ name: "read", description: "read file" }],
+      model: "test-model",
+      precededByRetry: true,
+    };
+    d.checkResponse(params);
+    return d.checkResponse({ ...params, cacheReadTokens: 5000 })!;
+  }
+
+  test("record 的所有键都进落盘 entry（新增字段忘了拷 → 本测试红）", () => {
+    const record = { ...realReport(), ts: 1_700_004_000, model: "test-model" };
+    const entry = buildTelemetryEntry(record);
+
+    // 不手抄期望字段列表：直接拿 record 的键集合做全覆盖断言。
+    // 这样任何新增字段都被自动纳入门禁，无需记得更新测试。
+    const landed = entry as unknown as Record<string, unknown>;
+    const missing = Object.entries(record)
+      .filter(([, v]) => v !== undefined)
+      .map(([k]) => k)
+      .filter((k) => !(k in landed));
+    expect(missing).toEqual([]);
+  });
+
+  test("hash 判据与 categories 真的落到磁盘并能读回（端到端）", () => {
+    const report = realReport();
+    // 前置断言：检测器确实算出了 hash（否则下面的断言是空转）
+    expect(report.previousPrefixHash).toBeTruthy();
+    expect(report.categories.length).toBeGreaterThan(0);
+
+    emitCacheBreakTelemetry({ ...report, ts: 1_700_004_100, model: "test-model" });
+
+    const [readBack] = queryCacheBreakHistory(1);
+    expect(readBack).toBeDefined();
+    expect(readBack!.previousPrefixHash).toBe(report.previousPrefixHash);
+    expect(readBack!.currentPrefixHash).toBe(report.currentPrefixHash);
+    expect(readBack!.categories).toEqual(report.categories);
+    expect(readBack!.precededByRetry).toBe(true);
+  });
+
+  test("undefined 值不落成键（门禁断言的是键不存在，而非值为 undefined）", () => {
+    const record = {
+      ...realReport(),
+      ts: 1_700_004_200,
+      model: "test-model",
+      precededByRetry: undefined,
+    };
+    const entry = buildTelemetryEntry(record) as unknown as Record<string, unknown>;
+    expect("precededByRetry" in entry).toBe(false);
   });
 });

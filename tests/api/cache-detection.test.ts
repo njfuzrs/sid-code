@@ -229,6 +229,7 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
       dropTokens: 3000,
       dropPercent: 60,
       changes: ["System prompt 变化"],
+      categories: ["system_prompt"],
       previousCacheReadTokens: 5000,
       currentCacheReadTokens: 2000,
       ts: 1_700_000_000,

@@ -18,7 +18,7 @@
 import { existsSync, appendFileSync, mkdirSync, statSync, renameSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 import { sidPaths } from "../config/paths.ts";
-import type { CacheBreakRecord } from "../api/cache-detection.ts";
+import type { CacheBreakRecord, CacheBreakCategory } from "../api/cache-detection.ts";
 
 /** 落盘的单条中断遥测行 */
 export interface CacheBreakTelemetryEntry {
@@ -31,11 +31,38 @@ export interface CacheBreakTelemetryEntry {
   dropPercent: number;
   /** 归因列表（人类可读） */
   changes: string[];
+  /**
+   * P0-2：结构化归因类别，与 changes 一一对应。**聚合统计的唯一合法判据。**
+   * 旧数据（2026-08-08 之前）无此字段 → 聚合时回退到 changes 文案匹配。
+   */
+  categories?: CacheBreakCategory[];
   previousCacheReadTokens: number;
   currentCacheReadTokens: number;
+  /**
+   * P0-2：前缀 hash 判据。检测器早就算出来了（cache-detection.ts 的 combinePrefixHash），
+   * 但落盘时被手写字段拷贝列表丢掉 —— 实测 676 条历史记录里带此字段的是 **0 条**，
+   * 导致"服务端波动占 99.5%"这个结论只能靠对中文文案 grep 得出。
+   */
+  previousPrefixHash?: string;
+  currentPrefixHash?: string;
   /** P1-2：本轮响应前是否发生过重试（分离重试触发脱落 vs 纯服务端波动）。旧数据无此字段。 */
   precededByRetry?: boolean;
 }
+
+/**
+ * 落盘时**显式剔除**的键（P0-3）。
+ *
+ * 落盘策略从"手写白名单拷贝"改为"默认透传 + 显式剔除"：
+ * 手写白名单的失败模式是**静默丢字段** —— 新增一个诊断字段、忘了加进拷贝列表，
+ * 代码照跑、测试照绿，只是数据永久缺失（`previousPrefixHash` 就这样丢了 676 条）。
+ * 同病见记忆 `message-fidelity-silent-block-drop`：手写字段列表与手写分派链同病，
+ * 根治都是"默认透传 + 兜底告警"。
+ *
+ * 当前为空：`CacheBreakRecord` 的所有字段都是聚合归因，不含消息内容，全部可落盘。
+ * 将来若新增**含用户内容**的字段（例如 diff 片段），必须加进这里 ——
+ * 本文件的隐私契约是"只存聚合归因，绝不存消息内容"。
+ */
+const EXCLUDED_KEYS = new Set<string>([]);
 
 /** 遥测文件路径（测试可经环境变量重定向） */
 export function cacheBreaksPath(): string {
@@ -49,16 +76,7 @@ export function cacheBreaksPath(): string {
  */
 export function emitCacheBreakTelemetry(record: CacheBreakRecord): void {
   try {
-    const entry: CacheBreakTelemetryEntry = {
-      ts: record.ts,
-      model: record.model,
-      dropTokens: record.dropTokens,
-      dropPercent: record.dropPercent,
-      changes: record.changes,
-      previousCacheReadTokens: record.previousCacheReadTokens,
-      currentCacheReadTokens: record.currentCacheReadTokens,
-      precededByRetry: record.precededByRetry,
-    };
+    const entry = buildTelemetryEntry(record);
     const path = cacheBreaksPath();
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -67,6 +85,26 @@ export function emitCacheBreakTelemetry(record: CacheBreakRecord): void {
   } catch {
     // 写盘失败静默忽略
   }
+}
+
+/**
+ * 把检测器产出的 record 转成落盘行：**默认透传所有键**，只剔除 {@link EXCLUDED_KEYS}。
+ *
+ * 导出是为了让门禁测试能直接断言"record 的键集合 − 剔除集合 ⊆ 落盘 entry 的键集合"，
+ * 而不必去解析文件（见 tests/telemetry/cache-break-telemetry-fidelity.test.ts）。
+ *
+ * 显式 undefined 的键会被剔掉：`JSON.stringify` 本就会丢它们，但留在对象里会让
+ * "键存在 / 值为 undefined" 这两种状态在门禁断言里混淆（同病见记忆
+ * `explicit-undefined-punches-through-defaults`：门禁要断言"键不存在"而非"值 undefined"）。
+ */
+export function buildTelemetryEntry(record: CacheBreakRecord): CacheBreakTelemetryEntry {
+  const entry: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (EXCLUDED_KEYS.has(key)) continue;
+    if (value === undefined) continue;
+    entry[key] = value;
+  }
+  return entry as unknown as CacheBreakTelemetryEntry;
 }
 
 /** 单文件大小上限（10MB），与 permission/audit.ts 对齐 */
@@ -161,13 +199,23 @@ export function queryCacheBreakHistory(limit = 100): CacheBreakTelemetryEntry[] 
  */
 export function summarizeCacheBreakHistory(
   limit = 500,
-): { total: number; byCategory: Record<string, number> } {
+): { total: number; byCategory: Record<string, number>; structuredCount: number; legacyCount: number } {
   const entries = queryCacheBreakHistory(limit);
   const byCategory: Record<string, number> = {};
+  let structuredCount = 0;
+  let legacyCount = 0;
   const bump = (k: string) => {
     byCategory[k] = (byCategory[k] ?? 0) + 1;
   };
   for (const e of entries) {
+    // P0-2：优先读结构化 categories。文案匹配只是**旧数据兼容路径**，
+    // 不是主判据 —— 新记录一律走上面这条，改文案不会再让统计断裂。
+    if (e.categories && e.categories.length > 0) {
+      structuredCount++;
+      for (const c of e.categories) bump(c);
+      continue;
+    }
+    legacyCount++;
     for (const change of e.changes) {
       if (change.includes("模型变化")) bump("model");
       else if (change.includes("System prompt")) bump("system_prompt");
@@ -185,5 +233,5 @@ export function summarizeCacheBreakHistory(
       else bump("unknown");
     }
   }
-  return { total: entries.length, byCategory };
+  return { total: entries.length, byCategory, structuredCount, legacyCount };
 }

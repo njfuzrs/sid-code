@@ -62,6 +62,37 @@ interface PromptState {
   agentId: string;
 }
 
+/**
+ * 结构化归因类别（P0-2）——跨会话聚合的**唯一合法判据**。
+ *
+ * 为什么必须有这个字段：`changes[]` 是给人看的中文文案，早期聚合靠对它做子串匹配
+ * （`summarizeCacheBreakHistory` 里一长串 `change.includes("服务端缓存波动")`）。
+ * 文案改一个字，所有历史统计就断 —— 这正是"归因与真实信号脱节"反模式。
+ * 现在文案与类别在**同一处**产出（见 `note()`），两者不会漂移。
+ *
+ * - `model`：模型变化（换模型必然全量重算）
+ * - `system_prompt`：system prompt 内容变化
+ * - `tools`：工具集合/schema 变化
+ * - `tool_order`：工具内容不变但顺序变化
+ * - `cache_policy`：cache_control 配置（scope/TTL）变化
+ * - `beta_headers`：beta headers 变化
+ * - `compact`：消息数量骤减（compact 未走 notifyCompaction 时的兜底归因）
+ * - `ttl_expiry`：距上次请求间隔超过 TTL 告警阈值
+ * - `prefix_break`：前缀 hash 变化，但上面各项都没匹配到（本地断裂，可优化）
+ * - `server_fluctuation`：前缀 hash 未变（服务端缓存波动，本地不可控，只能监测）
+ */
+export type CacheBreakCategory =
+  | "model"
+  | "system_prompt"
+  | "tools"
+  | "tool_order"
+  | "cache_policy"
+  | "beta_headers"
+  | "compact"
+  | "ttl_expiry"
+  | "prefix_break"
+  | "server_fluctuation";
+
 /** cache break 归因报告 */
 export interface CacheBreakReport {
   /** 命中下降的 token 数 */
@@ -70,6 +101,11 @@ export interface CacheBreakReport {
   dropPercent: number;
   /** 归因列表（人类可读） */
   changes: string[];
+  /**
+   * P0-2：结构化归因类别，与 `changes` 一一对应且同处产出。
+   * 聚合统计**只应读这个字段**，不要对 changes 文案做子串匹配。
+   */
+  categories: CacheBreakCategory[];
   /** 上次的 cache_read tokens */
   previousCacheReadTokens: number;
   /** 本次的 cache_read tokens */
@@ -213,12 +249,24 @@ export class CacheBreakDetector {
     const prev = this.previousState;
     const curr = this.snapshot(params);
     const changes: string[] = [];
+    const categories: CacheBreakCategory[] = [];
+
+    /**
+     * 同时记一条人类可读文案与它的结构化类别（P0-2）。
+     *
+     * 刻意做成同一个函数：文案与类别在同一处产出，就不可能出现
+     * "改了文案忘了改聚合正则"。聚合统计只读 categories。
+     */
+    const note = (category: CacheBreakCategory, text: string): void => {
+      changes.push(text);
+      categories.push(category);
+    };
 
     if (curr.model !== prev.model) {
-      changes.push(`模型变化: ${prev.model} → ${curr.model}`);
+      note("model", `模型变化: ${prev.model} → ${curr.model}`);
     }
     if (curr.systemPromptHash !== prev.systemPromptHash) {
-      changes.push("System prompt 变化");
+      note("system_prompt", "System prompt 变化");
     }
     if (curr.toolSchemasHash !== prev.toolSchemasHash) {
       const prevTools = new Set(prev.perToolHashes.keys());
@@ -232,25 +280,25 @@ export class CacheBreakDetector {
       if (added.length) parts.push(`新增: ${added.join(", ")}`);
       if (removed.length) parts.push(`移除: ${removed.join(", ")}`);
       if (changed.length) parts.push(`修改: ${changed.join(", ")}`);
-      changes.push(`工具变化 (${parts.join("; ")})`);
+      note("tools", `工具变化 (${parts.join("; ")})`);
     } else if (curr.toolOrderHash !== prev.toolOrderHash) {
       // 内容不变但顺序改变（G3）：工具 schema 哈希一致，但顺序破坏了缓存前缀
-      changes.push("工具顺序变化（内容不变但顺序改变）");
+      note("tool_order", "工具顺序变化（内容不变但顺序改变）");
     }
     if (curr.cacheControlHash !== prev.cacheControlHash) {
-      changes.push("缓存策略变化（scope/TTL 配置变更）");
+      note("cache_policy", "缓存策略变化（scope/TTL 配置变更）");
     }
     if (curr.betaHeadersHash !== prev.betaHeadersHash) {
-      changes.push("Beta headers 变化");
+      note("beta_headers", "Beta headers 变化");
     }
     // 消息数量骤减（compact 未走 notifyCompaction 时的兜底归因，G3）
     if (curr.messageCount > 0 && curr.messageCount < prev.messageCount - 1) {
-      changes.push(`消息数量骤减 (${prev.messageCount} → ${curr.messageCount})，可能是 compact`);
+      note("compact", `消息数量骤减 (${prev.messageCount} → ${curr.messageCount})，可能是 compact`);
     }
 
     const gapMs = curr.timestamp - prev.timestamp;
     if (gapMs > TTL_WARN_MS) {
-      changes.push(`TTL 可能已过期 (间隔 ${Math.round(gapMs / 60000)} 分钟)`);
+      note("ttl_expiry", `TTL 可能已过期 (间隔 ${Math.round(gapMs / 60000)} 分钟)`);
     }
 
     // P2-1 诊断：计算 system prompt + tools 组合前缀 hash（下次复现即可判本地断裂 vs 服务端波动）
@@ -261,17 +309,24 @@ export class CacheBreakDetector {
       // P2-1：把前缀 hash 是否变化写进归因——hash 变=本地前缀断裂；hash 未变=服务端波动。
       // 此前一律归"未知原因"，缺的正是这个判据字段。
       const prefixChanged = prevPrefixHash !== currPrefixHash;
-      changes.push(
-        prefixChanged
-          ? `本地前缀 hash 变化（${prevPrefixHash} → ${currPrefixHash}），命中下降由本地 prompt 前缀断裂导致`
-          : `本地前缀 hash 未变（${currPrefixHash}），命中下降疑为服务端缓存波动`,
-      );
+      if (prefixChanged) {
+        note(
+          "prefix_break",
+          `本地前缀 hash 变化（${prevPrefixHash} → ${currPrefixHash}），命中下降由本地 prompt 前缀断裂导致`,
+        );
+      } else {
+        note(
+          "server_fluctuation",
+          `本地前缀 hash 未变（${currPrefixHash}），命中下降疑为服务端缓存波动`,
+        );
+      }
     }
 
     const report: CacheBreakReport = {
       dropTokens,
       dropPercent: Math.round(dropPercent * 100),
       changes,
+      categories,
       previousCacheReadTokens: prevTokens,
       currentCacheReadTokens: params.cacheReadTokens,
       previousPrefixHash: prevPrefixHash,
