@@ -118,6 +118,30 @@ export const SERIES: Series[] = [
   },
   {
     /**
+     * 概念谱系类文章（`博客写作标准.md` §4 的第九种形状「概念谱系」）。
+     *
+     * 为什么装不进「上下文工程」：那个系列的范围是「什么内容在什么时刻进入上下文」，
+     * 而这一类要横跨 prompt / context / harness / loop / graph 五层——
+     * 塞进去会让「上下文工程」这个受控词失去收窄能力（它变成了「所有跟提示词
+     * 沾边的东西」），而受控词表存在的唯一理由就是能有效收窄（见本文件上方论证）。
+     *
+     * ⚠ **不标 `external: true`。** 判据是「证据来自哪里」而不是「讲的是不是自家」：
+     * 这一类的边界由**本站实测文**划出（标准 §1.2 入场条件 2 的替代路径），
+     * 文章里引的 `src/` 路径是真的 sid-code 源文件，
+     * 所以「N 处源码引证」这个指标在这里是**成立**的，不该关掉。
+     *
+     * 排在 6 之后、两个 external 系列之前：它是自家内容（该在前半段），
+     * 但没有实测数据当主体（该排在有数据的六个之后）。
+     */
+    name: "概念谱系",
+    order: 7,
+    blurb:
+      "prompt / context / harness / loop / graph —— 一串在往上爬的抽象层，" +
+      "每层解决上一层解决不了的什么、又自己解决不了什么。边界由本站实测文划出，" +
+      "不是术语综述。",
+  },
+  {
+    /**
      * 唯一一个**不是**自家实测的系列：解析别人的代码。
      *
      * 前 6 个系列的共同点是「我们测过」（`博客写作标准.md` §0 的立意）；这一个的价值
@@ -128,11 +152,11 @@ export const SERIES: Series[] = [
      * 那样会把博客切成两个入口、分散注意力，且同一件事有两套实现必然漂移。
      * 它就是博客的一个系列：同一个列表页、同一个 feed、同一份 sidebar 分组。
      *
-     * 排在最后（order 7）：21 篇会在数量上压过其它系列，放前面等于让一个
+     * 排在自家系列之后（order 8）：21 篇会在数量上压过其它系列，放前面等于让一个
      * 「解析别人代码」的系列占据入口最显眼的位置。
      */
     name: "Claude Code 源码解析",
-    order: 7,
+    order: 8,
     blurb:
       "逐章拆一份 51 万行的 agent harness 参考实现（2026-03-31 源码快照）—— " +
       "结论来自读源码，不是实测数据，与其它系列不是同一种依据。共 21 篇，按顺序读。",
@@ -160,11 +184,11 @@ export const SERIES: Series[] = [
      * 每一处都在替内容定调，所以它得说准。
      */
     name: "深入研究",
-    order: 8,
+    order: 9,
     blurb:
       "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex / opencode / OpenClaw / " +
-      "Reasonix / Kimi Code，2026-08 快照）—— 按目录跳章查阅。证据是公开信息交叉核验" +
-      "（OpenClaw / Reasonix / Kimi Code 三篇另有本地源码实查），不是我们自己跑起来的实测数据。",
+      "Reasonix / Kimi Code / Gemini CLI / Hermes Agent / promptfoo / LiteLLM / CC Switch，2026-08 快照）—— 按目录跳章查阅。证据是公开信息交叉核验" +
+      "（OpenClaw / Reasonix / Kimi Code / Gemini CLI / Hermes Agent / promptfoo / LiteLLM / CC Switch 八篇另有本地源码实查，LiteLLM 那篇还有发布物实测），不是我们自己跑起来的实测数据。",
     external: true,
   },
 ];
