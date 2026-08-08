@@ -19,6 +19,7 @@ let dir: string;
 // 存/恢复原值，不无条件 delete —— bun test 同进程跑多文件，delete 会抹掉别人的隔离
 const savedLedger = process.env.SID_CODE_USAGE_LEDGER;
 const savedBreaks = process.env.SID_CODE_CACHE_BREAKS;
+const savedTrust = process.env.SID_CODE_CHANNEL_TRUST;
 
 function entry(over: Partial<UsageLedgerEntry> & { sessionId: string }): UsageLedgerEntry {
   return {
@@ -49,6 +50,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "sid-cache-report-"));
   process.env.SID_CODE_USAGE_LEDGER = join(dir, "usage-ledger.jsonl");
   process.env.SID_CODE_CACHE_BREAKS = join(dir, "cache-breaks.jsonl");
+  process.env.SID_CODE_CHANNEL_TRUST = join(dir, "channel-trust.json");
 });
 
 afterEach(() => {
@@ -56,6 +58,8 @@ afterEach(() => {
   else process.env.SID_CODE_USAGE_LEDGER = savedLedger;
   if (savedBreaks === undefined) delete process.env.SID_CODE_CACHE_BREAKS;
   else process.env.SID_CODE_CACHE_BREAKS = savedBreaks;
+  if (savedTrust === undefined) delete process.env.SID_CODE_CHANNEL_TRUST;
+  else process.env.SID_CODE_CHANNEL_TRUST = savedTrust;
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
@@ -138,6 +142,98 @@ describe("P2-4 可信度标注（本模块的核心职责）", () => {
     expect(idx).toBeGreaterThanOrEqual(0);
     // 下一行就是 ⚠：分开放会让人只抄走数字
     expect(lines[idx + 1]).toContain("⚠");
+  });
+});
+
+/**
+ * P0-4：不可信渠道必须打 ⚠ 且**不混入总命中率**。
+ *
+ * 实测某月卡网关的 Anthropic usage 是编造的（全新前缀 r1 就报命中、三段随机跳动
+ * 而总和恒定）。把它的"命中"加进总计会凭空抬高整体数字，让"缓存做得好"这个结论
+ * 建立在假数据上 —— 而这恰恰是本轮要根治的病。
+ */
+describe("P0-4 不可信渠道排除", () => {
+  function writeTrust(hosts: Record<string, "trusted" | "untrusted">): void {
+    writeFileSync(
+      process.env.SID_CODE_CHANNEL_TRUST!,
+      JSON.stringify({
+        channels: Object.fromEntries(
+          Object.entries(hosts).map(([host, verdict]) => [
+            host,
+            { host, verdict, failedCriteria: verdict === "untrusted" ? ["A", "C"] : undefined, reason: verdict === "untrusted" ? "全新前缀首发即报命中" : undefined },
+          ]),
+        ),
+      }) + "\n",
+      "utf-8",
+    );
+  }
+
+  test("untrusted 渠道不进总命中率（假高命中不得抬高总计）", () => {
+    writeTrust({ "code.ppchat.vip": "untrusted", "api.uniapi.io": "trusted" });
+    writeLedger([
+      // 可信渠道：真实命中 50%
+      entry({ sessionId: "t1", model: "claude-sonnet-5", endpointHost: "api.uniapi.io", promptTotal: 10000, cacheHit: 5000 }),
+      // 不可信渠道：伪造的 99% 命中
+      entry({ sessionId: "u1", model: "claude-sonnet-5", endpointHost: "code.ppchat.vip", promptTotal: 10000, cacheHit: 9900 }),
+    ]);
+
+    const r = buildCacheReport();
+    // 总计只算可信渠道 → 50%，不是把两者平均后的 74.5%
+    expect(r.totalHitRate).toBeCloseTo(0.5, 6);
+    expect(r.excludedUntrustedRows).toBe(1);
+    // 但不可信渠道的行仍然可见（丢弃会让人以为这个渠道没被用过）
+    expect(r.models.some((m) => m.endpointHost === "code.ppchat.vip")).toBe(true);
+  });
+
+  test("同模型不同渠道分开成行（按模型聚合会让真假数字永久混合）", () => {
+    writeTrust({ "code.ppchat.vip": "untrusted", "api.uniapi.io": "trusted" });
+    writeLedger([
+      entry({ sessionId: "a", model: "claude-sonnet-5", endpointHost: "api.uniapi.io" }),
+      entry({ sessionId: "b", model: "claude-sonnet-5", endpointHost: "code.ppchat.vip" }),
+    ]);
+    const rows = buildCacheReport().models.filter((m) => m.model === "claude-sonnet-5");
+    expect(rows).toHaveLength(2);
+    expect(rows.map((x) => x.trust).sort()).toEqual(["trusted", "untrusted"]);
+  });
+
+  test("不可信行带 ⚠ 且说明已排除，总计行说明排除了几行", () => {
+    writeTrust({ "code.ppchat.vip": "untrusted" });
+    writeLedger([
+      entry({ sessionId: "a", model: "claude-sonnet-5", endpointHost: "api.uniapi.io" }),
+      entry({ sessionId: "b", model: "claude-sonnet-5", endpointHost: "code.ppchat.vip" }),
+    ]);
+    const out = renderCacheSection({ noColor: true });
+    expect(out).toContain("⚠不可信");
+    expect(out).toContain("已排除出总计");
+    // 静默排除读起来像"全部数据都在这儿"
+    expect(out).toContain("已排除 1 个不可信渠道行");
+  });
+
+  test("未探测过的渠道按 unknown 计入总计（警示不该变成噪声）", () => {
+    // 空登记表：什么都没探测过
+    writeFileSync(process.env.SID_CODE_CHANNEL_TRUST!, JSON.stringify({ channels: {} }) + "\n", "utf-8");
+    writeLedger([entry({ sessionId: "a", endpointHost: "some.host", promptTotal: 10000, cacheHit: 8000 })]);
+    const r = buildCacheReport();
+    expect(r.models[0]!.trust).toBe("unknown");
+    // 把没探测过的渠道一律打警示会让警示被忽略，反而掩盖真正不可信的那个
+    expect(r.totalHitRate).toBeCloseTo(0.8, 6);
+    expect(r.excludedUntrustedRows).toBe(0);
+  });
+
+  test("登记表缺失/损坏不影响报告（度量绝不因此中断）", () => {
+    writeFileSync(process.env.SID_CODE_CHANNEL_TRUST!, "{ 这不是 JSON", "utf-8");
+    writeLedger([entry({ sessionId: "a", endpointHost: "h", promptTotal: 1000, cacheHit: 500 })]);
+    const r = buildCacheReport();
+    expect(r.models[0]!.trust).toBe("unknown");
+    expect(r.totalHitRate).toBeCloseTo(0.5, 6);
+  });
+
+  test("旧账本行（无 endpointHost）显示为未知渠道且计入总计", () => {
+    writeFileSync(process.env.SID_CODE_CHANNEL_TRUST!, JSON.stringify({ channels: {} }) + "\n", "utf-8");
+    writeLedger([entry({ sessionId: "old", promptTotal: 1000, cacheHit: 700 })]);
+    const out = renderCacheSection({ noColor: true });
+    expect(out).toContain("未知渠道");
+    expect(buildCacheReport().totalHitRate).toBeCloseTo(0.7, 6);
   });
 });
 

@@ -17,9 +17,10 @@
  *   ~/.sid-code/cache-breaks.jsonl    缓存中断归因历史
  */
 
-import { aggregateOverall } from "../telemetry/usage-aggregator.ts";
 import { summarizeCacheBreakHistory } from "../telemetry/cache-telemetry.ts";
-import type { ModelCacheStats } from "../telemetry/usage-aggregator.ts";
+import { readUsageLedger, dedupeBySession } from "../telemetry/usage-ledger.ts";
+import { readChannelTrust, lookupChannelTrust } from "../telemetry/channel-trust.ts";
+import type { ChannelTrustRegistry } from "../telemetry/channel-trust.ts";
 
 /** 样本量下限：低于此值只列数字不做判断（避免拿 2 个会话下结论） */
 const MIN_SESSIONS_FOR_VERDICT = 5;
@@ -39,9 +40,17 @@ export interface CacheReportOptions {
   sinceDays?: number;
 }
 
-/** 单模型的报告行（json 模式直接输出这个结构） */
+/**
+ * 单行的分组键：模型 × 端点 host（P0-4）。
+ *
+ * 为什么不按模型聚合：同一模型名经不同网关，usage 可信度**完全不同**
+ *（实测某月卡网关的 Anthropic usage 是编造的）。按模型聚合会把假数字和真数字
+ * 加在一起，从此不可分离。
+ */
 export interface CacheModelRow {
   model: string;
+  /** 端点 host；旧账本行无此字段时为 undefined（显示为"未知渠道"） */
+  endpointHost?: string;
   sessions: number;
   promptTotal: number;
   cacheHit: number;
@@ -49,16 +58,21 @@ export interface CacheModelRow {
   hitRate: number | null;
   costUSD: number;
   savingsUSD: number;
-  /** 样本不足 / 命中率异常低等需要人看一眼的原因；为空表示无异常 */
+  /** P0-4：该渠道的 usage 可信度判定 */
+  trust: "trusted" | "untrusted" | "unknown";
+  /** 样本不足 / 命中率异常低 / 渠道不可信等需要人看一眼的原因；为空表示无异常 */
   caveats: string[];
 }
 
 export interface CacheReport {
   models: CacheModelRow[];
+  /** 总命中率 —— **已排除 untrusted 渠道**（见 P0-4） */
   totalHitRate: number | null;
   totalCostUSD: number;
   totalSavingsUSD: number;
   totalSessions: number;
+  /** P0-4：被排除出总计的不可信渠道行数（>0 时渲染层必须说明） */
+  excludedUntrustedRows: number;
   breaks: {
     total: number;
     byCategory: Record<string, number>;
@@ -69,33 +83,77 @@ export interface CacheReport {
   };
 }
 
+/** 内部累加器：模型 × host */
+interface Bucket {
+  model: string;
+  endpointHost?: string;
+  sessions: number;
+  promptTotal: number;
+  cacheHit: number;
+  costUSD: number;
+  savingsUSD: number;
+}
+
 /** 构造报告数据（纯函数，便于测试；渲染在 renderCacheSection） */
 export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
-  const agg = aggregateOverall({ sinceDays: opts.sinceDays });
   const breaks = summarizeCacheBreakHistory(500);
+  const registry = readChannelTrust();
 
-  const models: CacheModelRow[] = Object.entries(agg.byModel)
-    .map(([model, s]) => toRow(model, s))
+  // 自己读账本而不复用 aggregateOverall：后者按模型聚合，会把不同渠道的数字
+  // 合成一行，之后再也分不开可信与不可信（P0-4 的核心要求就是分得开）。
+  let entries = dedupeBySession(readUsageLedger());
+  if (opts.sinceDays !== undefined) {
+    const cutoff = Math.floor(Date.now() / 1000) - opts.sinceDays * 24 * 60 * 60;
+    entries = entries.filter((e) => e.ts >= cutoff);
+  }
+
+  const buckets = new Map<string, Bucket>();
+  for (const e of entries) {
+    const key = `${e.model}|${e.endpointHost ?? ""}`;
+    let b = buckets.get(key);
+    if (!b) {
+      b = { model: e.model, endpointHost: e.endpointHost, sessions: 0, promptTotal: 0, cacheHit: 0, costUSD: 0, savingsUSD: 0 };
+      buckets.set(key, b);
+    }
+    b.sessions++;
+    b.promptTotal += e.promptTotal;
+    b.cacheHit += e.cacheHit;
+    b.costUSD += e.costUSD;
+    b.savingsUSD += e.savingsUSD;
+  }
+
+  const models = [...buckets.values()]
+    .map((b) => toRow(b, registry))
     .sort((a, b) => b.promptTotal - a.promptTotal);
+
+  // 总计只累加可信（含 unknown）渠道：把伪造的"命中"混进去会凭空抬高整体数字，
+  // 让"缓存做得好"这个结论建立在假数据上。
+  const counted = models.filter((m) => m.trust !== "untrusted");
+  const totalPrompt = counted.reduce((s, m) => s + m.promptTotal, 0);
+  const totalHit = counted.reduce((s, m) => s + m.cacheHit, 0);
 
   return {
     models,
-    // promptTotal=0 时给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"
-    totalHitRate: agg.totalSessions > 0 && hasPrompt(models) ? agg.totalHitRate : null,
-    totalCostUSD: agg.totalCostUSD,
-    totalSavingsUSD: agg.totalSavingsUSD,
-    totalSessions: agg.totalSessions,
+    // 分母为 0 时给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"
+    totalHitRate: totalPrompt > 0 ? totalHit / totalPrompt : null,
+    totalCostUSD: counted.reduce((s, m) => s + m.costUSD, 0),
+    totalSavingsUSD: counted.reduce((s, m) => s + m.savingsUSD, 0),
+    totalSessions: counted.reduce((s, m) => s + m.sessions, 0),
+    excludedUntrustedRows: models.length - counted.length,
     breaks,
   };
 }
 
-function hasPrompt(models: CacheModelRow[]): boolean {
-  return models.some((m) => m.promptTotal > 0);
-}
-
-function toRow(model: string, s: ModelCacheStats): CacheModelRow {
+function toRow(s: Bucket, registry: ChannelTrustRegistry): CacheModelRow {
   const hitRate = s.promptTotal > 0 ? s.cacheHit / s.promptTotal : null;
   const caveats: string[] = [];
+  const verdict = lookupChannelTrust(s.endpointHost, registry);
+
+  // 不可信渠道的警示放**最前面**：它决定后面所有数字是否值得读
+  if (verdict.verdict === "untrusted") {
+    const why = verdict.reason ?? `判据 ${(verdict.failedCriteria ?? []).join("/")} 命中`;
+    caveats.push(`渠道 usage 不可信（${why}），已排除出总计`);
+  }
 
   if (s.sessions < MIN_SESSIONS_FOR_VERDICT) {
     caveats.push(`样本仅 ${s.sessions} 会话，不足以下结论`);
@@ -111,13 +169,15 @@ function toRow(model: string, s: ModelCacheStats): CacheModelRow {
   }
 
   return {
-    model,
+    model: s.model,
+    endpointHost: s.endpointHost,
     sessions: s.sessions,
     promptTotal: s.promptTotal,
     cacheHit: s.cacheHit,
     hitRate,
     costUSD: s.costUSD,
     savingsUSD: s.savingsUSD,
+    trust: verdict.verdict,
     caveats,
   };
 }
@@ -143,12 +203,19 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
   L.push("");
   L.push(`  总计  命中率 ${r.totalHitRate === null ? "N/A" : pct(r.totalHitRate)}` +
     `   成本 $${r.totalCostUSD.toFixed(4)}   省下 $${r.totalSavingsUSD.toFixed(4)}`);
+  // 排除了多少行必须写出来：静默排除读起来像"全部数据都在这儿"
+  if (r.excludedUntrustedRows > 0) {
+    L.push(`        （已排除 ${r.excludedUntrustedRows} 个不可信渠道行，见下方 ⚠）`);
+  }
   L.push("");
-  L.push("  按模型（按输入量降序，命中率分母是 promptTotal 而非请求数）:");
+  L.push("  按模型 × 渠道（按输入量降序，命中率分母是 promptTotal 而非请求数）:");
   for (const m of r.models) {
     const rate = m.hitRate === null ? "N/A" : pct(m.hitRate);
+    // 同模型经不同网关可信度不同，所以渠道必须显式出现在行上
+    const host = m.endpointHost ?? "未知渠道";
+    const mark = m.trust === "untrusted" ? " ⚠不可信" : "";
     L.push(
-      `    ${m.model.padEnd(22)} 命中率 ${rate.padStart(6)}  ` +
+      `    ${m.model.padEnd(22)} @${host.padEnd(20)}${mark} 命中率 ${rate.padStart(6)}  ` +
         `输入 ${m.promptTotal}  命中 ${m.cacheHit}  ` +
         `${m.sessions} 会话  省 $${m.savingsUSD.toFixed(4)}`,
     );

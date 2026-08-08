@@ -47,6 +47,18 @@ export interface ModelUsageStats {
   cacheSavingsUSD: number;
   /** 该模型对应的 provider（"anthropic"/"openai"/...），用于归一化口径区分 */
   provider: string;
+  /**
+   * P0-4：末次请求的端点 host（如 `api.uniapi.io`、`code.ppchat.vip`）。
+   *
+   * 为什么必须记到 host 粒度：同一个模型名（claude-sonnet-5）经不同网关的 usage
+   * **可信度完全不同** —— 实测某月卡网关的 Anthropic usage 是编造的（三段随机跳动
+   * 而总和恒定），把它的"命中"混进总命中率会直接抬高整体数字。只有 provider
+   * （都是 "anthropic"）分不开这两者，必须落 host。
+   *
+   * 只存 host 不存完整 URL：path 与 query 可能带 key 之类的敏感串，而归因只需要 host。
+   * 旧数据无此字段（undefined = 未知渠道，按可信处理，避免把历史数据一律打上警示）。
+   */
+  endpointHost?: string;
 }
 
 /**
@@ -187,6 +199,9 @@ export class SessionState {
 
     const stats = this.modelUsage[model];
     stats.provider = prov; // 末次 provider 覆盖（同模型 provider 稳定，覆盖无害）
+    // P0-4：记末次端点 host，供账本按渠道标注可信度（只取 host，不留 path/query）
+    const host = SessionState.hostOf(baseURL);
+    if (host) stats.endpointHost = host;
 
     // 累加 token
     // ⚠️ usage.inputTokens 是"本次 API 调用时的 prompt 总长度"（含全部历史），
@@ -425,6 +440,21 @@ export class SessionState {
    *   2. 内置启发式：模型名 claude* → "anthropic"；其余 → "openai"
    *   注：ollama 无缓存字段，归一化后 hit/write 恒 0，归到哪类都不影响结果。
    */
+  /**
+   * 从 baseURL 提取 host（P0-4）。非法/空 URL 返回 undefined。
+   *
+   * 只取 host：path 与 query 可能带 key 之类的敏感串，而渠道归因只需要 host。
+   * 不抛错 —— 用量记账绝不能因为一个畸形 URL 而中断。
+   */
+  static hostOf(baseURL?: string): string | undefined {
+    if (!baseURL || baseURL.trim() === "") return undefined;
+    try {
+      return new URL(baseURL).host || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   static inferProvider(model: string, availableModels?: PricingModelEntry[]): string {
     // 优先从用户配置的 availableModels 中查找
     if (availableModels?.length) {

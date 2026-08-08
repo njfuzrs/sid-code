@@ -56,6 +56,19 @@ export interface UsageLedgerEntry {
   sideInputTokens?: number;
   sideOutputTokens?: number;
   sideCostUSD?: number;
+
+  /**
+   * P0-4：主模型末次请求的端点 host（如 `api.uniapi.io`）。旧数据无此字段。
+   *
+   * 存在的理由：同一模型名经不同网关，usage 的**可信度完全不同**。实测某月卡网关的
+   * Anthropic usage 是编造的（三段随机跳动而总和恒定、全新前缀 r1 就报大量命中、
+   * 不打 cache_control 也报命中），把它的"命中"混进总命中率会直接抬高整体数字。
+   * provider 字段分不开（都是 "anthropic"），必须记到 host 粒度。
+   *
+   * 消费侧据此对不可信渠道打 ⚠ 且排除出总计 —— 见 src/trace/cache-report.ts。
+   * 只落 host 不落完整 URL：path/query 可能含敏感串，归因只需要 host。
+   */
+  endpointHost?: string;
 }
 
 /**

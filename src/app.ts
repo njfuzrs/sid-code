@@ -4994,6 +4994,10 @@ export class App {
       // 同一行里成本与 token 口径不同，"成本 ÷ token"就算不出来。影子调用的
       // token 早在 side-call-sink 采集，这里只是接上，不是新建埋点。
       ...this.buildLedgerSideUsage(),
+      // P0-4：主模型的端点 host，供缓存视图按渠道标注可信度（不可信渠道不进总计）。
+      // 取主模型而非 config.baseURL：多模型会话里账本行标注的是主导模型，
+      // 端点必须与之对应，否则会把 A 渠道的可信度贴到 B 渠道的数字上。
+      ...(primary?.[1]?.endpointHost ? { endpointHost: primary[1].endpointHost } : {}),
     };
   }
 
