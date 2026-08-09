@@ -2,7 +2,7 @@
 title: promptfoo 深入研究（2026-08 快照）
 description: 22 章逐节成册，按目录跳章查阅——把 promptfoo 的产品形态、架构与实现细节交叉核验到版本号级别：66 类断言、155 个红队插件（其中 117 个需托管推理）、37 种攻击策略、89 个 provider 前缀、9 种配置文件扩展名、14 个 MCP 工具、31 个模型扫描器。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 22 章逐节可查 · 核验至 v0.122.0 / HEAD 49c0f6d7 · 截至 2026-08-09 快照
 tags: [promptfoo, LLM 评估, 红队, 深入研究, 断言, 参考]

@@ -183,12 +183,11 @@ export const SERIES: Series[] = [
      * 不是来看我们跟谁比。系列名会出现在筛选器、sidebar、feed 分类里，
      * 每一处都在替内容定调，所以它得说准。
      */
-    name: "深入研究",
+    name: "热点开源项目研究",
     order: 9,
     blurb:
-      "把一个工具逐章拆完、核验到版本号级别（Claude Code / Codex / opencode / OpenClaw / " +
-      "Reasonix / Kimi Code / Gemini CLI / Hermes Agent / promptfoo / LiteLLM / CC Switch，2026-08 快照）—— 按目录跳章查阅。证据是公开信息交叉核验" +
-      "（OpenClaw / Reasonix / Kimi Code / Gemini CLI / Hermes Agent / promptfoo / LiteLLM / CC Switch 八篇另有本地源码实查，LiteLLM 那篇还有发布物实测），不是我们自己跑起来的实测数据。",
+      "逐章拆完一个热门开源工具或框架、核验到版本号级别 —— " +
+      "证据是公开信息交叉核验，多篇另有本地源码或发布物实查，不是我们自己跑起来的实测数据。",
     external: true,
   },
 ];

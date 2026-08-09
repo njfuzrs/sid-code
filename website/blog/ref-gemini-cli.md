@@ -2,7 +2,7 @@
 title: Gemini CLI 深入研究（2026-08 快照）
 description: 20 章逐节成册，按目录跳章查阅——把 Gemini CLI 的产品形态、架构与实现细节交叉核验到版本号级别：7 包 monorepo、5 层策略优先级、11 类 Hook 事件、5 种沙箱后端（含 567 行 C# 原生实现）、27 个内置工具名、4 个内置子代理、Conseca 上下文感知安全层。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 20 章逐节可查 · 核验至 v0.54.4 / nightly 0.56.0 · 截至 2026-08-09 快照
 tags: [Gemini CLI, Google, 深入研究, 权限, 沙箱, Hook, MCP, 参考]

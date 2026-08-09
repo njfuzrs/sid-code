@@ -2,7 +2,7 @@
 title: OpenClaw 深入研究（2026-08 快照）
 description: 22 章逐节成册，按目录跳章查阅——把 OpenClaw 的产品形态、架构与实现细节交叉核验到版本号级别：五次改名的沿革、Gateway 单进程控制面、27 个内置聊天渠道、51 个核心工具 / 13 个工具组 / 4 档 profile、16 个内部 Hook 事件 + 17 个插件 Hook、155 个 extensions、4 种沙箱后端、npm stable 停在 21 天前。这是一份手册，不是读完就走的文章。
 date: "2026-08-08"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 22 章逐节可查 · 核验至 2026.8.1 / npm 2026.7.1-2 · 截至 2026-08-08 快照
 tags: [OpenClaw, 深入研究, 渠道, 沙箱, 插件, 参考]

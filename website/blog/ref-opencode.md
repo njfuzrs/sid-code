@@ -2,7 +2,7 @@
 title: opencode 深入研究（2026-08 快照）
 description: 26 章逐节成册，按目录跳章查阅——把 opencode 的产品形态、架构与实现细节交叉核验到版本号级别：客户端/服务器分离、TUI 从 Go 重写为 TypeScript+Solid、13 类权限键、8 层配置优先级、28 类插件事件、75+ Provider、Zen/Go 两套自营网关。这是一份手册，不是读完就走的文章。
 date: "2026-08-08"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 26 章逐节可查 · 核验至 v1.18.15 · 截至 2026-08-08 快照
 tags: [opencode, 深入研究, 权限, 插件, MCP, 参考]

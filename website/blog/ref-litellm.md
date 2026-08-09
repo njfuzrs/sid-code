@@ -2,7 +2,7 @@
 title: LiteLLM 深入研究（2026-08 快照）
 description: 26 章逐节成册，按目录跳章查阅——把 LiteLLM 的产品形态、架构与实现细节交叉核验到版本号级别：Rust 核心已装进每个 wheel（占体积 84%）却默认关闭、五个数据源给出五个不同的 provider 数、9 种缓存后端、51 个回调白名单、49 个 guardrail、925 个环境变量、616 条代理路由。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 26 章逐节可查 · 核验至 v1.95.0 / 本地源码 v1.97.0-dev.2 · 截至 2026-08-09 快照
 tags: [LiteLLM, AI Gateway, 深入研究, Router, 可观测性, Guardrails, MCP, 参考]
@@ -1932,6 +1932,12 @@ agent 自带 provider 层时，key 在开发者机器上；
   [Reasonix](/blog/ref-reasonix)、[Kimi Code](/blog/ref-kimi-code)、
   [Gemini CLI](/blog/ref-gemini-cli)、[promptfoo](/blog/ref-promptfoo)
   —— §25.2 的对照维度来自这几篇
+- [LangGraph 深入研究（2026-08 快照）](/blog/ref-langgraph)——
+  **系列里第一篇「框架」而非「产品」**。它和本篇共享同一个计数难题的另一面：
+  LiteLLM 这边是「五个数据源给出五个 provider 数」，
+  LangGraph 那边是「同一个『有多少公共 API』问题有五个合理口径，从 39 到 202」。
+  另一处可对照的是**发行边界**：LiteLLM 是单包多形态（SDK / Proxy / CLI），
+  LangGraph 是一个仓库 8 个独立版本号的包 + 2 个不在仓库里的 Elastic-2.0 运行时包。
 
 ---
 

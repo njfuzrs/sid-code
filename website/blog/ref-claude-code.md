@@ -2,7 +2,7 @@
 title: Claude Code 深入研究（2026-08 快照）
 description: 20 章逐节成册，按目录跳章查阅——把 Claude Code 的功能、架构与实现细节交叉核验到版本号级别：20+ 内置工具、6 种权限模式、20+ Hook 事件、MCP 三大原语、Auto Mode 分类器、OS 沙箱、Dynamic Workflows。这是一份手册，不是读完就走的文章。
 date: "2026-08-08"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 20 章逐节可查 · 核验至 v2.1.224 · 截至 2026-08-08 快照
 tags: [Claude Code, 深入研究, 权限, Hook, MCP, 参考]

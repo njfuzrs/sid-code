@@ -2,7 +2,7 @@
 title: Hermes Agent 深入研究（2026-08 快照）
 description: 20 章逐节成册，按目录跳章查阅——把 Nous Research 的 Hermes Agent 交叉核验到版本号级别：三套版本号并存且 PyPI 上有官方包却被文档判为不支持、83 个内置工具 / 59 个 toolset、24 个渠道平台、7 个终端后端、24 个插件 Hook、95 条斜杠命令、27 个 LSP server、单文件 27814 行的 gateway、以及一条真的接线了的学习闭环。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 20 章逐节可查 · 核验至 HEAD 372b3b7bb / PyPI 0.19.0 / tag v2026.8.3 · 截至 2026-08-09 快照
 tags: [Hermes Agent, Nous Research, 深入研究, 学习闭环, 渠道, 参考]

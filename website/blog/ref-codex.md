@@ -2,7 +2,7 @@
 title: OpenAI Codex 深入研究（2026-08 快照）
 description: 26 章逐节成册，按目录跳章查阅——把 Codex 的产品形态、架构与实现细节交叉核验到版本号级别：96% Rust 重写、App Server 双向协议、三平台内核沙箱（Seatbelt / Landlock+seccomp / restricted tokens）、Shell-Centric 工具设计、11 类 Hook 事件、Auto-review 事前审查、Codex Cloud 与 Security。这是一份手册，不是读完就走的文章。
 date: "2026-08-08"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 26 章逐节可查 · 核验至 CLI v0.147.0 · 截至 2026-08-08 快照
 tags: [Codex, OpenAI, 深入研究, 沙箱, Rust, 参考]

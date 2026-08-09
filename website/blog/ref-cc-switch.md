@@ -2,7 +2,7 @@
 title: CC Switch 深入研究（2026-08 快照）
 description: 26 章逐节成册，按目录跳章查阅——把 CC Switch 的产品形态、架构与实现细节交叉核验到版本号级别：名字是「配置切换器」而实体是 16.9 万行 Rust 的本地 API 网关、8 个被管理的工具与两种写入模式、25 条代理路由、7 个协议转换器、448 条预设背后的 86 家厂商、rquickjs 用量脚本沙箱。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 深入研究
+series: 热点开源项目研究
 audience: engineer
 highlight: 26 章逐节可查 · 核验至 v3.19.2 / commit 413c09e0 · 截至 2026-08-09 快照
 tags: [cc-switch, Tauri, Rust, 深入研究, 代理, 供应商管理, 参考]
