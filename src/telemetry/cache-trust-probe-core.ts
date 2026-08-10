@@ -104,7 +104,7 @@ export function judgeSamples(
    * ⚠ 关键前提（实跑对照抓出来的）：B 必须用**自己的全新前缀**，不能复用判据 A 的。
    * Anthropic 的 `cache_control` 只决定"写不写缓存"，**读是自动的** —— A 已经把前缀
    * 写进缓存后，B 复用同一前缀即便不打标记也会正常命中。第一版就是这么排的，
-   * 结果把行为完全正确的公司网关（uniapi：A 冷启动 create=1970、后续稳定 read=1970）
+   * 结果把行为完全正确的自建网关（对照组：A 冷启动 create=1970、后续稳定 read=1970）
    * 判成了"不可信"。
    *
    * 换成独立前缀后，B 的语义才回到"逻辑上不可能"：服务端没见过它、也没被要求缓存它。
@@ -198,7 +198,7 @@ export interface ProbeDeps {
    *
    * 必须与 `prefix` 不同：Anthropic 的 cache_control 只控制"写"，读是自动的 ——
    * 判据 A 已经把 `prefix` 写进缓存，B 复用它就会读到那份缓存，于是行为完全正确的
-   * 网关也会被判成造数（实跑对照 uniapi 时踩过：A 冷启动 create=1970、
+   * 网关也会被判成造数（实跑自建网关对照组时踩过：A 冷启动 create=1970、
    * B 复用同前缀 read=1970 被误判 untrusted）。
    */
   prefixForB?: string;

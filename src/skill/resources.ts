@@ -4,7 +4,7 @@
  */
 
 import { readdirSync, statSync } from "node:fs";
-import { join, basename, sep } from "node:path";
+import { join, sep } from "node:path";
 
 /** 最大文件数限制 */
 const MAX_FILES = 200;

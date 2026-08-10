@@ -4,12 +4,30 @@
  */
 
 import { appendFile, mkdir, stat, open, unlink } from "fs/promises";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
 
 /** 输出目录 */
 function getOutputDir(): string {
   return sidPaths.tasks();
+}
+
+/**
+ * 同步确保输出目录存在。
+ *
+ * 为什么必须是**同步**的：`filePath` 一旦交给调用方，就可能被立刻用于同步打开文件
+ * （`shell-task.ts` 的 `openSync(output.filePath, "w")` 是拿到路径后的下一句），
+ * 而 `openSync` 不会创建父目录。原先建目录只发生在异步 `#drain()` 里，于是
+ * 「目录存在」纯靠**别的任务恰好先跑过一次 drain**——全量 `bun test` 时目录早被
+ * 前面的测试建好，所以一直看不出问题；单跑 `tests/tool/bash-stability.test.ts`
+ * 就稳定 ENOENT（每次 3 个用例失败）。这是顺序依赖，不是偶发 flaky。
+ *
+ * 用 recursive:true 所以幂等；EEXIST 也不会抛。刻意不吞其他异常：真的建不出目录
+ * （权限/磁盘满）应当当场炸，而不是留到写入时报一个看不出根因的 ENOENT。
+ */
+function ensureOutputDir(): void {
+  mkdirSync(getOutputDir(), { recursive: true });
 }
 
 /** 磁盘上限：1GB */
@@ -26,6 +44,10 @@ export class DiskTaskOutput {
   #filePath: string;
 
   constructor(taskId: string) {
+    // 建目录必须与算路径在同一处、同步完成：调用方拿到 filePath 后随时可能
+    // openSync 它（见 ensureOutputDir 的注释）。放在这里而不是 append()/drain() 里，
+    // 是因为「路径可用」应当是 filePath 交出去时就成立的不变量。
+    ensureOutputDir();
     this.#filePath = join(getOutputDir(), `${taskId}.output`);
   }
 
@@ -55,6 +77,10 @@ export class DiskTaskOutput {
   }
 
   async #drain(): Promise<void> {
+    // 与构造函数里的 ensureOutputDir() 看似重复，但**两处都要保留**：构造函数保证
+    // 「拿到 filePath 时目录已存在」，这里保证「真正写入时目录仍然存在」。
+    // 任务生命周期可以很长（后台任务跑几十分钟），期间 ~/.sid-code/tasks/ 可能被
+    // 用户清理、被 /clear 之类的命令删掉。两次 mkdir 都是 recursive 幂等的，代价可忽略。
     await mkdir(getOutputDir(), { recursive: true });
     while (this.#queue.length > 0) {
       const chunks = this.#queue.splice(0);

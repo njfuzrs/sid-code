@@ -8,7 +8,7 @@
  * - 服务端可达性检测
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { UploadManager } from "../../src/trace/uploader.ts";
 import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";

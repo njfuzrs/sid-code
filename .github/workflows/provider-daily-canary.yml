@@ -27,6 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # fork 里不跑 cron：fork 继承 cron 但拿不到 secrets。这条是**每日**触发，
+    # 不加 gate 的话每个 fork 每天收一封失败邮件，噪音在几条里最大。
+    # 后半段保留 workflow_dispatch 手动触发。
+    # 判据选型与 fail-open 取舍见 eval-weekly.yml 同位注释。
+    if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
+
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

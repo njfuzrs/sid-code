@@ -11,11 +11,11 @@
  * 阶段 3：resolvePermission — 交互式决策（由上层 agent loop 处理）
  */
 
-import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionDecisionReason, PermissionCheckOptions } from "./types.ts";
+import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionCheckOptions } from "./types.ts";
 import type { Config } from "../config/config.ts";
 import type { PermissionMode } from "./mode.ts";
 import type { PlanModeManager } from "../plan/state.ts";
-import type { Tool, PermissionResult, ToolUseContext } from "../tool/types.ts";
+import type { Tool, ToolUseContext } from "../tool/types.ts";
 import { checkRules } from "./rules.ts";
 import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";

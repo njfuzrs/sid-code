@@ -1,0 +1,106 @@
+name: 🐛 Bug 报告
+description: 报告一个可复现的问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。**版本号与复现步骤是最关键的两项**——缺了它们，多数问题查不下去。
+
+        安全漏洞请**不要**在这里提，按 [SECURITY.md](../blob/master/SECURITY.md) 私下上报。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 跑 `sid-code --version` 贴原始输出。
+      placeholder: "0.1.600"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / x64)
+        - Linux (arm64)
+        - Linux (x64)
+        - Windows（注：兼容性仍在补齐中）
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 你跑的是哪个二进制
+      description: |
+        这一项经常是问题本身：`sc` 指向线上下载版，`sc-dev` 是本地构建产物。
+        版本号是编译期内联的，源码更新后没重新 `make build` 的话跑的还是旧代码。
+      options:
+        - 线上版（install.sh 装的 / `sc` / `sid-code`）
+        - 本地构建版（`make build` 产物 / `sc-dev`）
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 实际现象。报错信息、异常输出请一并贴上（贴文本，不要只贴截图——文本能搜索）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望的行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: |
+        越具体越好。如果能给一个最小复现（一个小仓库 + 一句 prompt）会大幅加快定位。
+      placeholder: |
+        1. 在一个 xxx 项目里跑 `sc-dev`
+        2. 输入「...」
+        3. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: |
+        用的 provider / 模型，以及相关的 `settings.json` 片段。
+
+        ⚠️ **请先删掉 API key、token、内网地址等敏感信息再贴。**
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        `~/.sid-code/debug.log` 里的相关片段（同样注意脱敏）。
+        崩溃类问题这段通常是决定性的。
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜过已有 issue，没有重复的
+          required: true
+        - label: 我用的是最新版（跑过 `sid-code update`），或已确认最新版仍有此问题
+          required: true
+        - label: 我已从贴出的配置与日志里删除了密钥等敏感信息
+          required: true

@@ -39,7 +39,7 @@ export type EffortSetting = EffortLevel | undefined;
  * ⚠ 历史注释曾断言「没有任何 provider 的线格式认 xhigh」——GPT-5.6 族起该断言不再成立：
  * `reasoning.effort` 原生接受 none/low/medium/high/xhigh/max（`minimal` 反而被拒）。
  * 故 xhigh 进入本类型，由各 applier 自行决定钳制或原样透传。
- * [实测: uniapi 网关 /v1/responses，luna xhigh→reasoning_tokens=9、max→18；
+ * [实测: 自建网关 /v1/responses，luna xhigh→reasoning_tokens=9、max→18；
  *  官方: developers.openai.com/api/docs/models/gpt-5.6-sol]
  */
 type WireEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -276,7 +276,7 @@ function applyGrokOpenAI(params: SendParams, effort: EffortSetting, _thinking: b
  * GPT-5.x 硬报「不支持推理强度档位切换」——但服务端实际会校验该字段（传非法值返回 400
  * `param: reasoning.effort`），证明能力真实存在，是我们没接线。
  *
- * [实测: uniapi 网关 /v1/responses — low/medium/high→reasoning_tokens=0、xhigh→9、max→18、
+ * [实测: 自建网关 /v1/responses — low/medium/high→reasoning_tokens=0、xhigh→9、max→18、
  *  minimal→400「not supported with this model」；不传时服务端回显默认 effort=medium]
  * [官方: developers.openai.com/api/docs/models/gpt-5.6-sol、/guides/reasoning]
  */

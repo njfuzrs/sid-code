@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { mkdtemp, writeFile, mkdir, rm, readFile } from "fs/promises";
+import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { loadManifest, loadPluginFromDirectory } from "../../src/plugin/manifest.ts";

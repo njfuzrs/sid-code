@@ -108,7 +108,7 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
           </Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -187,7 +187,7 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 切换 · Esc 取消（持久化用 /effort &lt;档位&gt; -p）</Text>
+        <Text italic>↑↓ 导航 · Enter 切换 · Esc 取消（持久化用 /effort &lt;档位&gt; -p）</Text>
       </Box>
     </Box>
   );

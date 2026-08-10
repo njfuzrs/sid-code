@@ -86,19 +86,19 @@ describe("resolvePricing", () => {
 
 describe("resolvePricing — 模型名 + 端点复合键", () => {
   const models = [
-    { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1", pricing: { input: 1.64, output: 3.29 } },
+    { name: "deepseek-v4-pro", baseURL: "https://gw.example.com/v1", pricing: { input: 1.64, output: 3.29 } },
     { name: "deepseek-v4-pro", baseURL: "https://api.deepseek.com", pricing: { input: 0.435, output: 0.87 } },
   ];
 
   test("同名不同端点 → 各自返回不同价（精确复合键）", () => {
-    const gw = resolvePricing("deepseek-v4-pro", models, "https://gateway.example.com/v1");
+    const gw = resolvePricing("deepseek-v4-pro", models, "https://gw.example.com/v1");
     expect(gw!.input).toBe(1.64);
     const official = resolvePricing("deepseek-v4-pro", models, "https://api.deepseek.com");
     expect(official!.input).toBe(0.435);
   });
 
   test("端点归一化：带末尾斜杠仍精确命中", () => {
-    const gw = resolvePricing("deepseek-v4-pro", models, "https://gateway.example.com/v1/");
+    const gw = resolvePricing("deepseek-v4-pro", models, "https://gw.example.com/v1/");
     expect(gw!.input).toBe(1.64);
   });
 

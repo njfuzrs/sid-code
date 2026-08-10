@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { Manager, type TruncationResult } from "../../src/context/manager.ts";
+import { Manager } from "../../src/context/manager.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

@@ -3,7 +3,7 @@
  */
 import { describe, test, expect, afterEach } from "bun:test";
 import { join } from "node:path";
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import * as PidManager from "../../src/trace/pid-manager.ts";
 import { getSidHome } from "../../src/config/paths.ts";
 
@@ -16,7 +16,7 @@ const PIDS_DIR = join(BASE_DIR, ".pids");
 /** 清理测试数据 */
 function cleanupTestFiles() {
   try {
-    const files = PidManager["findOrphanPids"]; // 仅引用确保模块加载
+    void PidManager["findOrphanPids"]; // 仅引用确保模块加载
   } catch { /* ignore */ }
 
   // 删除当前 PID 文件
@@ -146,9 +146,9 @@ describe("pid-manager", () => {
     const pidPath = join(PIDS_DIR, `${process.pid}.json`);
     const firstRaw = readFileSync(pidPath, "utf-8");
     const firstEntry = JSON.parse(firstRaw);
-
-    // 等待一小段时间确保时间戳变化
-    const startSecond = firstEntry.start_time;
+    // 先钉住覆盖前的值，否则「覆盖」无从谈起：原先这里读出 firstEntry 却从不断言，
+    // 真正被验证的只有第二次写的结果，第一次写即使根本没落盘测试也照样绿。
+    expect(firstEntry.session_id).toBe("test-session-001");
 
     // 第二次写
     PidManager.write("test-session-002"); // 不同 session_id

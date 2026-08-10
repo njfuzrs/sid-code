@@ -14,12 +14,12 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.800Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: 修复 ${REPO_ROOT}/iam-studio-fe/anka-app/packages/ontology-studio/src/views/PilotVerify.vue 中的图谱渲染问题。getTryrunPreview 接口返回的数据（参考 ${REPO_ROOT}/iam-studio-fe/anka-app/packages/ontology-studio/src/views/a.json）无法正确渲染，浏览器报错：G6 v5.0.51 未注册的节点元素类型（Post、Label、OrganizationGroup、Personnel）和边类型（relation）。定位问题根源并修复，使图谱数据能正常渲染。
+  user_query: 修复 ${REPO_ROOT}/webapp/packages/graph-studio/src/views/GraphVerify.vue 中的图谱渲染问题。getTryrunPreview 接口返回的数据（参考 ${REPO_ROOT}/webapp/packages/graph-studio/src/views/a.json）无法正确渲染，浏览器报错：G6 v5.0.51 未注册的节点元素类型（Post、Label、OrganizationGroup、Personnel）和边类型（relation）。定位问题根源并修复，使图谱数据能正常渲染。
   repo: null
   repo_commit: null
   attachments: []
 expected:
-  outcome: 注册缺失的 G6 节点和边元素类型，使 PilotVerify.vue 中的图谱数据正常渲染，消除浏览器控制台的注册错误。
+  outcome: 注册缺失的 G6 节点和边元素类型，使 GraphVerify.vue 中的图谱数据正常渲染，消除浏览器控制台的注册错误。
   must_include_any_of: []
   must_not_include: []
   must_call_tools:

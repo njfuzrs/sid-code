@@ -27,17 +27,17 @@ function nameAt(rows: ModelRow[], idx: number): string | undefined {
 
 /** 复刻用户实际配置（问题单里那 12 行平铺列表） */
 const MODELS: ModelOption[] = [
-  { name: "gpt-5.4", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "ali-deepseek-v4-pro", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "ali-deepseek-v4-flash", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "claude-sonnet-4-6", provider: "anthropic", description: "anthropic (https://gateway.example.com)" },
-  { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gateway.example.com)" },
+  { name: "gpt-5.4", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "ali-deepseek-v4-pro", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "ali-deepseek-v4-flash", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "claude-sonnet-4-6", provider: "anthropic", description: "anthropic (https://gw.example.com)" },
+  { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gw.example.com)" },
   { name: "claude-opus-4-8", provider: "anthropic", description: "anthropic (https://code.ppchat.vip)" },
   { name: "claude-opus-5", provider: "anthropic", description: "anthropic (https://code.ppchat.vip)" },
-  { name: "glm-5.2", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "gpt-5.6-luna", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "gemini-3.5-flash", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
-  { name: "kimi-k2.6", provider: "openai", description: "openai (https://gateway.example.com/v1)" },
+  { name: "glm-5.2", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "gpt-5.6-luna", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "gemini-3.5-flash", provider: "openai", description: "openai (https://gw.example.com/v1)" },
+  { name: "kimi-k2.6", provider: "openai", description: "openai (https://gw.example.com/v1)" },
 ];
 
 describe("inferModelFamily", () => {
@@ -64,8 +64,8 @@ describe("inferModelFamily", () => {
 
 describe("parseModelDescription", () => {
   test("`provider (baseURL)` 形态只取端点主机名，不重复印 provider", () => {
-    expect(parseModelDescription("openai (https://gateway.example.com/v1)", "openai"))
-      .toEqual({ endpoint: "gateway.example.com" });
+    expect(parseModelDescription("openai (https://gw.example.com/v1)", "openai"))
+      .toEqual({ endpoint: "gw.example.com" });
   });
 
   test("自定义 description 原样透传", () => {
@@ -124,7 +124,7 @@ describe("buildModelRows 分组", () => {
     // 同名不同端点是刻意支持的多渠道配置，但 `/model <name>` 与 resolveCurrentModelConfig
     // 都是 find-first 语义——第二条按名切不到。面板必须标出来，不能假装可选。
     const dup: ModelOption[] = [
-      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gateway.example.com)" },
+      { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://gw.example.com)" },
       { name: "claude-sonnet-5", provider: "anthropic", description: "anthropic (https://code.ppchat.vip)" },
     ];
     const entries = buildModelRows(dup, "claude-sonnet-5").filter(r => r.kind === "model");

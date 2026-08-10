@@ -16,7 +16,7 @@ source_meta:
 input:
   user_query: |-
     [用户问题]
-    Pinia store 在 anka-app 的 packages/base 里有哪些？每个 store 的职责是什么？分别在哪些组件中被使用？
+    Pinia store 在 webapp 的 packages/base 里有哪些？每个 store 的职责是什么？分别在哪些组件中被使用？
 
     [Agent 回答]
     packages/base 下的 Pinia store 清单(packages/base/src/stores/ 共 5 个 defineStore):
@@ -37,7 +37,7 @@ input:
 
     **边界**:本次问的是 packages/base 的 stores。另一个范围 packages/ontology-studio/src/stores/ 有 2 个 store(ontology.ts + ruleChatComposer.ts),不在本次答案范围。
 
-    **precision**:anka-app 不存在 useDatasourceStore / usePortraitStore / useGlobalStore(这些不是 base 的 store,可能是用户凭印象提的)。图谱里没有这 3 个 defineStore 节点。
+    **precision**:webapp 不存在 useDatasourceStore / usePortraitStore / useGlobalStore(这些不是 base 的 store,可能是用户凭印象提的)。图谱里没有这 3 个 defineStore 节点。
 
     **scale 数据**:base 共 5 个 defineStore 调用,图谱 UA Layer 把它们归在同一个 stores Layer 下,置信度 0.7(UA 推断)。
 

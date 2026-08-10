@@ -1,0 +1,29 @@
+{
+  "//": "项目级 MCP 服务器配置模板。用法：cp .mcp.json.example .mcp.json 后填入真实值。",
+  "//1": "⚠️ .mcp.json 已被 .gitignore 忽略，不要把真实 key 写回本模板文件。",
+  "//2": "⚠️ env 的值不做 ${VAR} 展开（只有 command/args/url/headers 会展开，见 src/mcp/env-expansion.ts）。",
+  "//3": "推荐做法：删掉下面的 env 块，改在 shell 里 export TAVILY_API_KEY=...；",
+  "//4": "stdio 子进程会继承父进程环境变量（src/mcp/transport.ts:59），照样能拿到。",
+
+  "mcpServers": {
+    "tavily": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@latest"],
+      "env": {
+        "TAVILY_API_KEY": "tvly-dev-REPLACE_WITH_YOUR_KEY"
+      }
+    },
+
+    "//example-http": "远程服务器示例（transport 可选 stdio | http | sse）。headers 支持 ${VAR} 展开，",
+    "//example-http2": "所以远程凭据用 ${VAR} 更安全 —— 不必把 token 落到磁盘上。",
+    "example-remote": {
+      "transport": "http",
+      "url": "https://mcp.example.com/v1",
+      "headers": {
+        "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}"
+      },
+      "disabled": true
+    }
+  }
+}

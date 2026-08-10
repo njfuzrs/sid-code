@@ -147,8 +147,9 @@ evals/inspect/
 ## 怎么再跑一次?
 
 ```bash
-source /Users/dev/Code/person/trajectory-platform/backend/venv/bin/activate
-cd /Users/dev/Code/person/sid-code
+# trajectory-platform 默认为与本仓同级的兄弟目录，放在别处自行替换路径
+source ../trajectory-platform/backend/venv/bin/activate
+cd "$(git rev-parse --show-toplevel)"
 
 # 跑分(后台 + 写 .eval)
 python evals/inspect/run_spike.py

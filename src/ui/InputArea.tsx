@@ -830,7 +830,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
         </Box>
         {match ? (
           <Box>
-            <Text dimColor>匹配: </Text>
+            <Text>匹配: </Text>
             <Text>{match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}</Text>
           </Box>
         ) : query ? (
@@ -915,7 +915,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   // Shell 模式提示：进入 shell 模式且未看够次数时，输入框上方一行引导退出方式。
   const shellHint = shellModeActive && shellHintRef.current ? (
     <Box paddingLeft={1}>
-      <Text color={theme.text.secondary} dimColor>
+      <Text color={theme.text.secondary}>
         {`${ARROW_PROMPT} Shell 模式：命令将直接在终端执行，删除行首 ! 可退出`}
       </Text>
     </Box>
@@ -938,7 +938,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
           <Text>
             <Text color={theme.ui.active} bold>{currentPrompt}</Text>
             <Text inverse> </Text>
-            <Text dimColor>{currentPlaceholder}</Text>
+            <Text>{currentPlaceholder}</Text>
           </Text>
         </Box>
       </Box>

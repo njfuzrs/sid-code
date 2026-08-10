@@ -13,8 +13,15 @@ import { getVersion } from "../../../version.ts";
  *   /bug 描述问题的一句话 — 把参数填进「问题描述」段
  */
 
-/** 从 git remote 推导 GitLab issue 新建页 URL。拿不到则回退到仓库主页占位。 */
-function deriveIssueUrl(): string {
+/**
+ * 从 git remote 推导 issue 新建页 URL。拿不到则返回 null。
+ *
+ * 刻意**不**内置某个具体仓库地址作为兜底：此前硬编码了自建 GitLab 的地址，
+ * 那等于把内部代码托管地址写进公开仓库，且任何人在非 git 目录下跑 `/bug`
+ * 都会被引导去一个他访问不到的站点提单——比不给地址更糟。
+ * 拿不到就如实说「没推导出来」，让用户自己去项目主页提。
+ */
+function deriveIssueUrl(): string | null {
   try {
     // 同步读 git remote，避免引入异步 spawn 复杂度（命令是 immediate 短流程）。
     const { execSync } = require("child_process") as typeof import("child_process");
@@ -28,9 +35,9 @@ function deriveIssueUrl(): string {
     if (sshMatch) base = `http://${sshMatch[1]}/${sshMatch[2]}`;
     if (/^https?:\/\//.test(base)) return `${base}/-/issues/new`;
   } catch {
-    // 非 git 仓库 / 无 origin / git 不可用 —— 回退。
+    // 非 git 仓库 / 无 origin / git 不可用 —— 落到下面的 null。
   }
-  return "http://gitlab.example.com/zhourusheng/sid-code/-/issues/new";
+  return null;
 }
 
 const mod: LocalCommandModule = {
@@ -75,7 +82,9 @@ const mod: LocalCommandModule = {
         ? "✓ 已生成 bug 报告模板并复制到剪贴板。"
         : "已生成 bug 报告模板（剪贴板写入失败，可手动复制下方内容）。",
       "",
-      `提交地址: ${issueUrl}`,
+      issueUrl
+        ? `提交地址: ${issueUrl}`
+        : "提交地址: 未能从 git remote 推导出来，请到项目主页提交 issue。",
       "",
       "── 报告内容 ──",
       report,

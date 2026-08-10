@@ -231,9 +231,9 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>未配置可用模型</Text>
         </Box>
-        <Text dimColor>在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型</Text>
+        <Text>在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型</Text>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -285,7 +285,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
           {effortState?.isAuto ? " (auto)" : ""}
           {/* 把「本模型有哪几档」摆出来：用户能自己确认档位是否齐全，
               而不是看到 ←/→ 跳过某档时怀疑面板有 bug（本次问题的直接诱因）。 */}
-          <Text dimColor> · {selectableEfforts.join("/")} · ←/→ 调整</Text>
+          <Text> · {selectableEfforts.join("/")} · ←/→ 调整</Text>
         </Text>
       )}
       {effortInert && (
@@ -331,7 +331,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor italic>
+        <Text italic>
           输入过滤 · ↑↓ 导航 · Enter 切换{effortEnabled ? " · ←/→ 调 effort" : ""} · Esc {query ? "清除" : "取消"}
         </Text>
       </Box>
@@ -353,7 +353,7 @@ const ModelRowView: React.FC<{
     return (
       <Box>
         <Text bold color={theme.text.secondary}>{row.label}</Text>
-        <Text color={theme.text.secondary} dimColor> · {row.count}</Text>
+        <Text color={theme.text.secondary}> · {row.count}</Text>
       </Box>
     );
   }
@@ -372,7 +372,7 @@ const ModelRowView: React.FC<{
       </Text>
       <Text color={theme.text.secondary}>{namePad}{row.provider}</Text>
       {row.endpoint && (
-        <Text color={theme.text.secondary} dimColor>{providerPad}{row.endpoint}</Text>
+        <Text color={theme.text.secondary}>{providerPad}{row.endpoint}</Text>
       )}
       {row.note && (
         <Text color={theme.text.secondary}>{providerPad}— {row.note}</Text>

@@ -171,7 +171,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       })}
       {showExpandHint && (
         <Box paddingLeft={2}>
-          <Text dimColor color={theme.text.secondary}>
+          <Text color={theme.text.secondary}>
             ctrl+o 展开完整输出
           </Text>
         </Box>

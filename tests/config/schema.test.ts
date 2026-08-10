@@ -51,7 +51,7 @@ describe("Config Validation", () => {
       const config = {
         ...baseConfig,
         availableModels: [
-          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1" },
+          { name: "deepseek-v4-pro", baseURL: "https://gw.example.com/v1" },
           { name: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
         ],
       } as Config;
@@ -131,7 +131,7 @@ describe("Config Validation", () => {
       const config = {
         ...baseConfig,
         availableModels: [
-          { name: "deepseek-v4-pro-gateway", baseURL: "https://gateway.example.com/v1" },
+          { name: "deepseek-v4-pro-gateway", baseURL: "https://gw.example.com/v1" },
           { name: "deepseek-v4-pro", baseURL: "https://api.deepseek.com" },
         ],
       } as Config;
@@ -145,8 +145,8 @@ describe("Config Validation", () => {
       const config = {
         ...baseConfig,
         availableModels: [
-          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1" },
-          { name: "deepseek-v4-pro", baseURL: "https://gateway.example.com/v1/" }, // 归一化后同端点
+          { name: "deepseek-v4-pro", baseURL: "https://gw.example.com/v1" },
+          { name: "deepseek-v4-pro", baseURL: "https://gw.example.com/v1/" }, // 归一化后同端点
         ],
       } as Config;
       const result = validateConfig(config);

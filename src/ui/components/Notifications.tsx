@@ -97,7 +97,7 @@ export const Notifications: React.FC<NotificationsProps> = ({
               </Box>
             </Box>
           ))}
-          <Text dimColor>按任意键关闭</Text>
+          <Text>按任意键关闭</Text>
         </Box>
       )}
       {showInitError && (

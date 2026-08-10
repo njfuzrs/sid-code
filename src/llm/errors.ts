@@ -357,22 +357,22 @@ export function parseRetryAfterFromHeaders(error: unknown): number | undefined {
   const headers = extractResponseHeaders(error);
   if (!headers) return undefined;
 
-  let value: string | null = null;
-
-  const extractFrom = (h: Headers | Record<string, string>) => {
+  // 用返回值而不是闭包写外层变量：闭包内的赋值不参与控制流收窄，
+  // TS 会把外层 `value` 一路当成初始化时的 `null`，于是 `value !== null` 之后
+  // 类型收窄成 `never`，`.trim()` 直接报错。
+  const extractFrom = (h: Headers | Record<string, string>): string | null => {
     if (h instanceof Headers) {
-      value = h.get("retry-after");
-      return;
+      return h.get("retry-after");
     }
     const keys = Object.keys(h);
     for (const k of keys) {
       if (k.toLowerCase() === "retry-after") {
-        value = String(h[k]);
-        return;
+        return String(h[k]);
       }
     }
+    return null;
   };
-  extractFrom(headers);
+  const value = extractFrom(headers);
 
   if (value !== null && value.trim()) {
     const seconds = parseInt(value.trim(), 10);

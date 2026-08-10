@@ -139,7 +139,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
       {showSlowHint && (
         <>
           <Text> </Text>
-          <Text color={theme.text.secondary} dimColor>· {slowHint}</Text>
+          <Text color={theme.text.secondary}>· {slowHint}</Text>
         </>
       )}
     </>

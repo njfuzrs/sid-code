@@ -84,7 +84,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
           <Text color={theme.text.secondary}>暂无可回退的历史轮次。</Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -113,7 +113,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -175,7 +175,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
           />
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>{busy ? "回退中…" : "↑↓ 导航 · Enter 确认 · Esc 返回"}</Text>
+          <Text italic>{busy ? "回退中…" : "↑↓ 导航 · Enter 确认 · Esc 返回"}</Text>
         </Box>
       </Box>
     );
@@ -219,7 +219,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 选择 · Esc 取消</Text>
+        <Text italic>↑↓ 导航 · Enter 选择 · Esc 取消</Text>
       </Box>
     </Box>
   );

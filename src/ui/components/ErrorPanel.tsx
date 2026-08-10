@@ -86,7 +86,7 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
       {/* 关闭提示（渐进衰减） */}
       {showDismissHint && (
         <Box marginTop={1}>
-          <Text dimColor>{`按 ${dismissDisplay} 关闭`}</Text>
+          <Text>{`按 ${dismissDisplay} 关闭`}</Text>
         </Box>
       )}
     </Box>

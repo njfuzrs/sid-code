@@ -23,10 +23,25 @@ export const UsageSchema = lazySchema(() =>
   }),
 );
 
-/** 内容块：对齐 src/llm/types.ts 的 ContentBlock（text / tool_use / tool_result） */
+/**
+ * 内容块：对齐 src/llm/types.ts 的 ContentBlock
+ * （text / tool_use / tool_result / thinking / redacted_thinking）
+ *
+ * ⚠️ 这里必须与 `ContentBlock` 的成员保持一致。少一个成员就是静默丢块：
+ * `assistant_message` 事件透传的是内核 `response.content`（`query/loop.ts:2852`），
+ * 思考块原样在内；schema 漏掉 thinking 会让 SDK 消费方 safeParse 直接判非法消息。
+ * thinking 的 `signature` 在多轮回传中缺失/被改会导致 Anthropic 400，所以一并保留。
+ */
 export const ContentBlockSchema = lazySchema(() =>
   z.discriminatedUnion("type", [
     z.object({ type: z.literal("text"), text: z.string() }),
+    z.object({
+      type: z.literal("thinking"),
+      thinking: z.string(),
+      signature: z.string().optional(),
+      durationMs: z.number().optional(),
+    }),
+    z.object({ type: z.literal("redacted_thinking"), data: z.string() }),
     z.object({
       type: z.literal("tool_use"),
       id: z.string(),

@@ -35,7 +35,7 @@ describe("MCPManager", () => {
 
     // connectAll 会尝试连接，但 echo 不是有效的 MCP 服务器，会失败
     // 关键是验证 disabled 的服务器不会被尝试连接
-    const tools = await manager.connectAll(servers);
+    await manager.connectAll(servers);
 
     // 获取状态，disabled 不应该出现
     const statuses = manager.getStatus();

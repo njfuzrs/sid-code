@@ -40,7 +40,6 @@ import { parseShellInput } from "./shell-input.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
 import { getLogger } from "../debug/logger.ts";
-import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 
 // ── 向后兼容导出（供 app.ts 过渡期使用） ──
 

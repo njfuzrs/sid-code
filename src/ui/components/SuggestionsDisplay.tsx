@@ -89,7 +89,7 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
             {/* 行尾标签列：不收缩，始终可见 */}
             {tagText ? (
               <Box flexShrink={0} paddingLeft={2}>
-                <Text dimColor>{tagText}</Text>
+                <Text>{tagText}</Text>
               </Box>
             ) : null}
           </Box>
@@ -97,7 +97,7 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
       })}
       {total > MAX_VISIBLE && (
         <Box>
-          <Text dimColor> ({total} 条结果，显示 {startIdx + 1}-{endIdx})</Text>
+          <Text> ({total} 条结果，显示 {startIdx + 1}-{endIdx})</Text>
         </Box>
       )}
     </Box>

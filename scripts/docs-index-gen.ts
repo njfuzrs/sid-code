@@ -11,7 +11,7 @@
  * 用法: bun run scripts/docs-index-gen.ts            # 写入
  *       bun run scripts/docs-index-gen.ts --check     # CI: 检查 INDEX 是否最新,不一致退出 1
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
 
@@ -20,6 +20,26 @@ const INDEX = join(DOCS, "INDEX.md");
 const CHECK = process.argv.includes("--check");
 const START = "<!-- AUTO-GEN:START 由 scripts/docs-index-gen.ts 生成,勿手工编辑 -->";
 const END = "<!-- AUTO-GEN:END -->";
+
+/**
+ * 从零重建 INDEX.md 时写在 AUTO-GEN 区之前的人工区。
+ *
+ * 必须带 frontmatter:INDEX.md 自己也在 docs-lint 的 R3 扫描范围内(它只在
+ * R1「位置==状态」上被 isNav 豁免,frontmatter 该有还得有),少了就是自产自销一条 lint 错。
+ * 内容保持极简且静态 —— 这块是「人工置顶区」,后续有人往里写东西会被原样保留。
+ */
+const HEADER = `---
+status: active
+era: timeless
+last_verified: 2026-08-10
+---
+
+# docs 索引
+
+本页的状态表由 \`scripts/docs-index-gen.ts\` 从各文档 frontmatter 生成,
+本行以上属人工区,重新生成时保留。
+
+`;
 
 function parseFm(body: string): Record<string, string> | null {
   if (!body.startsWith("---\n") && !body.startsWith("---\r\n")) return null;
@@ -100,12 +120,20 @@ for (const [dir, drows] of [...byDir.entries()].sort((a, b) => a[0].localeCompar
 out += `${END}\n`;
 
 // 读现有 INDEX,替换 AUTO-GEN 区(保留人工置顶)
-const cur = readFileSync(INDEX, "utf8");
+//
+// ⚠️ 必须容忍文件不存在:INDEX.md 曾被 commit 0fc608df「清理过时文档」连带删除,
+// 而这里原先无条件 readFileSync → ENOENT 直接崩栈,把 `docs:index-check` 门禁
+// (以及串了它的 `docs:check` 与 docs-lint.yml)变成永久失败。下面那个「首次:追加自动区」
+// 分支本就是为这种情况写的,只是读文件这一步先崩了,永远走不到。
+const cur = existsSync(INDEX) ? readFileSync(INDEX, "utf8") : "";
 let next: string;
 const s = cur.indexOf(START);
 const e = cur.indexOf(END);
 if (s >= 0 && e >= 0) {
   next = cur.slice(0, s) + out + cur.slice(e + END.length);
+} else if (cur.trim() === "") {
+  // 文件不存在或为空:整份就是自动区,别在开头留一个孤立的 `---` 分隔符
+  next = HEADER + out;
 } else {
   // 首次:在文件末尾追加自动区
   next = cur.trimEnd() + "\n\n---\n\n" + out;
@@ -114,7 +142,8 @@ next = next.trimEnd() + "\n"; // 规范化尾部,保证幂等
 
 if (CHECK) {
   if (next !== cur) {
-    console.log("✗ INDEX.md 与 frontmatter 不一致,请运行: bun run scripts/docs-index-gen.ts");
+    const why = existsSync(INDEX) ? "与 frontmatter 不一致" : "不存在";
+    console.log(`✗ INDEX.md ${why},请运行: bun run scripts/docs-index-gen.ts`);
     process.exit(1);
   }
   console.log("✅ INDEX.md 是最新的");

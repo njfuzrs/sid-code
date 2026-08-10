@@ -106,7 +106,13 @@ function lcsBasedDiff(oldLines: string[], newLines: string[]): DiffResult {
  * Myers diff 算法（用于大文件）
  * 时间复杂度：O((M+N)D)，其中 D 是编辑距离
  * 空间复杂度：O(M+N)
+ *
+ * ⚠️ 当前**未接线**：`computeDiff` 对 1000~10000 行的中等文件仍走 `lcsBasedDiff`，
+ * 注释写着「Myers diff 需要更多调试」（见上方分派处）。这是**未完成的在建实现**，
+ * 不是失效的死代码 —— 所以 lint 在这里显式豁免而不是删掉它。
+ * 接线时把 `lcsBasedDiff` 那条分支换成 `myersDiff` 并补上大文件用例即可。
  */
+// oxlint-disable-next-line no-unused-vars -- 在建实现，待接线（见上方 doc 注释）
 function myersDiff(oldLines: string[], newLines: string[]): DiffResult {
   const m = oldLines.length;
   const n = newLines.length;
@@ -172,7 +178,6 @@ function backtrackMyersDiff(
   const rawOps: { type: "keep" | "add" | "remove"; line: string }[] = [];
 
   for (let depth = d; depth > 0; depth--) {
-    const v = trace[depth];
     const vPrev = trace[depth - 1];
     const k = x - y;
 

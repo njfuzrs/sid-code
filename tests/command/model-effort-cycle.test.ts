@@ -36,7 +36,7 @@ describe("getSelectableEfforts：档位集合与模型配对", () => {
   });
 
   test("GPT-5.x Responses 原生支持 5 档（含 xhigh）", () => {
-    const cap = capFor("gpt-5.4", "openai", "https://gateway.example.com/v1");
+    const cap = capFor("gpt-5.4", "openai", "https://gw.example.com/v1");
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
@@ -46,12 +46,12 @@ describe("getSelectableEfforts：档位集合与模型配对", () => {
   });
 
   test("DeepSeek 线格式仅认 high/max，low/medium 会被钳制故不列出", () => {
-    const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gateway.example.com/v1");
+    const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
     expect(getSelectableEfforts(cap)).toEqual(["high", "max"]);
   });
 
   test("GLM 支持 max 但 xhigh 被钳制，故为 4 档", () => {
-    const cap = capFor("glm-5.2", "openai", "https://gateway.example.com/v1");
+    const cap = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "max"]);
   });
 
@@ -67,7 +67,7 @@ describe("getSelectableEfforts：档位集合与模型配对", () => {
   test("档位集合恒为 low→max 升序（面板列表顺序稳定）", () => {
     const order: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
     for (const model of ["claude-opus-5", "gpt-5.4", "o3-mini", "glm-5.2"]) {
-      const levels = getSelectableEfforts(capFor(model, "openai", "https://gateway.example.com/v1"));
+      const levels = getSelectableEfforts(capFor(model, "openai", "https://gw.example.com/v1"));
       const idx = levels.map(l => order.indexOf(l));
       expect(idx).toEqual([...idx].sort((a, b) => a - b));
     }
@@ -80,8 +80,8 @@ describe("cycleEffortForModel：在模型可选档位内循环", () => {
     // o-series 上 xhigh/max 都塌成 high，用户连按方向键看起来「没反应」。
     for (const [model, provider, baseURL] of [
       ["o3-mini", "openai", "https://api.openai.com/v1"],
-      ["glm-5.2", "openai", "https://gateway.example.com/v1"],
-      ["ali-deepseek-v4-pro", "openai", "https://gateway.example.com/v1"],
+      ["glm-5.2", "openai", "https://gw.example.com/v1"],
+      ["ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1"],
       ["claude-opus-5", "anthropic", "https://code.ppchat.vip"],
     ] as const) {
       const cap = capFor(model, provider, baseURL);
@@ -110,7 +110,7 @@ describe("cycleEffortForModel：在模型可选档位内循环", () => {
   });
 
   test("左移是右移的逆操作", () => {
-    const cap = capFor("glm-5.2", "openai", "https://gateway.example.com/v1");
+    const cap = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
     for (const lv of getSelectableEfforts(cap)) {
       const right = cycleEffortForModel(cap, lv, 1);
       expect(cycleEffortForModel(cap, right, -1)).toBe(lv);
@@ -118,7 +118,7 @@ describe("cycleEffortForModel：在模型可选档位内循环", () => {
   });
 
   test("永不返回模型不支持的档位", () => {
-    const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gateway.example.com/v1");
+    const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
     // 从一个「不在可选集内」的档位起步（如刚从别的模型切过来，runtime 还是 low）
     let cur: EffortLevel | undefined = "low";
     for (let i = 0; i < 6; i++) {
@@ -166,13 +166,13 @@ describe("cycleEffortForModel：在模型可选档位内循环", () => {
 
 describe("isEffortGatedByThinking：思考关掉后档位是否失效", () => {
   test("GLM / DeepSeek 的 effort 挂在 thinking 分支内 → 被门控", () => {
-    expect(isEffortGatedByThinking(capFor("glm-5.2", "openai", "https://gateway.example.com/v1"))).toBe(true);
-    expect(isEffortGatedByThinking(capFor("ali-deepseek-v4-pro", "openai", "https://gateway.example.com/v1"))).toBe(true);
+    expect(isEffortGatedByThinking(capFor("glm-5.2", "openai", "https://gw.example.com/v1"))).toBe(true);
+    expect(isEffortGatedByThinking(capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1"))).toBe(true);
   });
 
   test("o-series / GPT-5.x 推理内置，不受 thinking 影响 → 不被门控", () => {
     expect(isEffortGatedByThinking(capFor("o3-mini", "openai", "https://api.openai.com/v1"))).toBe(false);
-    expect(isEffortGatedByThinking(capFor("gpt-5.4", "openai", "https://gateway.example.com/v1"))).toBe(false);
+    expect(isEffortGatedByThinking(capFor("gpt-5.4", "openai", "https://gw.example.com/v1"))).toBe(false);
   });
 
   test("原生 Claude 走 budget_tokens、无 reasoning_effort 下发 → 不报门控", () => {
@@ -191,9 +191,9 @@ describe("isEffortGatedByThinking：思考关掉后档位是否失效", () => {
 
 describe("reconcileEffortForModel：换模型后档位归正", () => {
   const A = capFor("claude-opus-5", "anthropic", "https://code.ppchat.vip");
-  const GLM = capFor("glm-5.2", "openai", "https://gateway.example.com/v1");
+  const GLM = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
   const O3 = capFor("o3-mini", "openai", "https://api.openai.com/v1");
-  const DS = capFor("ali-deepseek-v4-pro", "openai", "https://gateway.example.com/v1");
+  const DS = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
 
   test("档位已被新模型支持时不动（不擅自改用户显式选过的档）", () => {
     expect(reconcileEffortForModel(A, "high")).toBe("high");

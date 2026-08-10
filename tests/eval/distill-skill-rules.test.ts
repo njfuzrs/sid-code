@@ -30,7 +30,7 @@ describe("B7-6 classifyTaskSourceRepo", () => {
   test("text 含绝对路径 sid-code → sid-code", () => {
     const r = classifyTaskSourceRepo({
       task_id: "T0049",
-      instruction: { working_directory: "", text: "在 /Users/dev/Code/person/sid-code 项目中..." },
+      instruction: { working_directory: "", text: "在 /Users/x/Code/person/sid-code 项目中..." },
     });
     expect(r.source).toBe("sid-code");
   });
@@ -46,7 +46,7 @@ describe("B7-6 classifyTaskSourceRepo", () => {
   test("text 含 /Users/.../prd/ → external（用户私人 prd 项目）", () => {
     const r = classifyTaskSourceRepo({
       task_id: "T0107",
-      instruction: { working_directory: "", text: "'/Users/dev/Code/prd/季度汇报.md' 缺一点内容" },
+      instruction: { working_directory: "", text: "'/Users/x/Code/prd/季度汇报.md' 缺一点内容" },
     });
     expect(r.source).toBe("external");
   });

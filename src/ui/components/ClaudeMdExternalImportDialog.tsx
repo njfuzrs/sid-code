@@ -64,7 +64,7 @@ export const ClaudeMdExternalImportDialog: React.FC<Props> = ({ paths, onDecisio
         {shown.map((p) => (
           <Text key={p} color={theme.text.secondary}>  · {p}</Text>
         ))}
-        {extra > 0 && <Text dimColor>  …等共 {paths.length} 个</Text>}
+        {extra > 0 && <Text>  …等共 {paths.length} 个</Text>}
       </Box>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<boolean, ChoiceItem>
@@ -84,7 +84,7 @@ export const ClaudeMdExternalImportDialog: React.FC<Props> = ({ paths, onDecisio
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>Esc 暂不决定（本会话保持跳过）</Text>
+        <Text italic>Esc 暂不决定（本会话保持跳过）</Text>
       </Box>
     </Box>
   );

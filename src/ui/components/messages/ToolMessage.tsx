@@ -237,7 +237,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
               <Text> </Text>
             </Box>
             <Box flexGrow={1}>
-              <Text color={theme.text.secondary} dimColor>
+              <Text color={theme.text.secondary}>
                 {commandDisplay.summary}
               </Text>
             </Box>
@@ -257,11 +257,11 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const shellLiveOutputSection = hasShellLiveOutput ? (
     <Box flexDirection="row">
       <Box flexShrink={0}>
-        <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+        <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1}>
         {shellLiveLines.map((line, i) => (
-          <Text key={i} color={theme.text.secondary} dimColor wrap="truncate-end">
+          <Text key={i} color={theme.text.secondary} wrap="truncate-end">
             {line || " "}
           </Text>
         ))}
@@ -302,15 +302,15 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const agentProgressSection = hasAgentProgress ? (
     <Box flexDirection="row">
       <Box flexShrink={0}>
-        <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+        <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        <Text color={theme.text.secondary} dimColor wrap="truncate-end">
+        <Text color={theme.text.secondary} wrap="truncate-end">
           {agentStatsLine}
         </Text>
         {agentTier === "detail"
           ? agentProgress!.recentActivities.map((act, i) => (
-              <Text key={i} color={theme.text.secondary} dimColor wrap="truncate-end">
+              <Text key={i} color={theme.text.secondary} wrap="truncate-end">
                 {act}
               </Text>
             ))
@@ -335,7 +335,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       {shouldExpandContent && (
         <Box flexDirection="row">
           <Box flexShrink={0}>
-            <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             {hasProgress && (

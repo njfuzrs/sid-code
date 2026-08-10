@@ -5,6 +5,8 @@
  * 基于 agentId 哈希取色，保证同一 agent 颜色稳定。
  */
 
+import type { Color } from "../ink/styles.ts";
+
 /** 可用的子代理颜色（ANSI 命名色 + 对应 256 色码） */
 export interface AgentColor {
   name: string;
@@ -95,11 +97,11 @@ export function colorize(text: string, color: AgentColor): string {
  * TUI 组件不该自己拼 ANSI 转义（会被 ink 的宽度计算当成可见字符），
  * 统一走这个入口把 AgentColor 交给 ink 渲染。
  */
-export function toInkColor(color: AgentColor): string {
+export function toInkColor(color: AgentColor): Color {
   return `ansi256(${color.code})`;
 }
 
 /** agentType → Ink 颜色字符串的直达入口（TUI 渲染取色统一走这里）。 */
-export function getAgentInkColor(agentType: string): string {
+export function getAgentInkColor(agentType: string): Color {
   return toInkColor(getAgentColor(agentType));
 }

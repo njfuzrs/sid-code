@@ -20,7 +20,7 @@ import { Manager as ContextManager } from "../../src/context/manager.ts";
 import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
 import { LoopDetector } from "../../src/agent/loop-detection.ts";
 import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent, SendParams } from "../../src/llm/types.ts";
+import type { StreamEvent } from "../../src/llm/types.ts";
 import type { LegacyTool, LegacyToolResult } from "../../src/tool/types.ts";
 
 /** 一次工具调用后立即结束的 mock 流：先吐 tool_use，第二轮吐 end_turn */

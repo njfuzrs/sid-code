@@ -23,14 +23,14 @@ input:
     ---
     [Tool reported NOT_FOUND] 未找到名为 useChatCore 的 Function
     ---
-    file_uid: File:anka-app:libs/chat-core/index.ts
+    file_uid: File:webapp:libs/chat-core/index.ts
 
     [评审维度]
     - completeness: 是否列出所有直接 import libs/chat-core 的 package，遗漏哪个扣分
     - precision: 有没有把不相关的包误报为受影响（例如 risk-query-studio 如果不用 chat-core 就不应列出）
     - transitivity: 有没有追到传递性影响（A import B，B import libs/chat-core）
     - helpfulness: 是否给出了具体的文件路径和行号，能不能一键跳转
-    - workspace_awareness: 有没有正确理解 pnpm workspace catalog: 协议（这是 anka-app 的核心用法）
+    - workspace_awareness: 有没有正确理解 pnpm workspace catalog: 协议（这是 webapp 的核心用法）
 
     [参考答案]
     (P2 实现完成后填入 ground truth)

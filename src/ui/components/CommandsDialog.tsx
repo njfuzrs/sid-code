@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -32,7 +33,7 @@ function sourceLabel(source: string | undefined): string {
 }
 
 /** 来源标签的颜色 */
-function sourceColor(source: string | undefined): string {
+function sourceColor(source: string | undefined): Color {
   switch (source) {
     case "builtin": return theme.text.secondary;
     case "user": return theme.status.success;
@@ -112,7 +113,7 @@ export const CommandsDialog: React.FC<CommandsDialogProps> = ({ onClose, registr
             <Text><Text bold>参数：</Text><Text color={theme.text.secondary}>{selectedCmd.argumentHint}</Text></Text>
           )}
         </Box>
-        <Box marginTop={1}><Text dimColor italic>Esc 返回列表</Text></Box>
+        <Box marginTop={1}><Text italic>Esc 返回列表</Text></Box>
       </Box>
     );
   }
@@ -143,7 +144,7 @@ export const CommandsDialog: React.FC<CommandsDialogProps> = ({ onClose, registr
           />
         </Box>
       )}
-      <Box marginTop={1}><Text dimColor italic>↑↓ 选择 · Enter 查看详情 · Esc 关闭</Text></Box>
+      <Box marginTop={1}><Text italic>↑↓ 选择 · Enter 查看详情 · Esc 关闭</Text></Box>
     </Box>
   );
 };

@@ -36,7 +36,7 @@ export const ToolStatusIndicator: React.FC<{
   return (
     <Box minWidth={STATUS_INDICATOR_WIDTH}>
       {status === "pending" && (
-        <Text color={theme.text.secondary} dimColor>{BULLET}</Text>
+        <Text color={theme.text.secondary}>{BULLET}</Text>
       )}
       {status === "executing" && (
         <Text color={theme.ui.active}>{BULLET}</Text>
@@ -45,7 +45,7 @@ export const ToolStatusIndicator: React.FC<{
         <Text color={theme.status.success}>{BULLET}</Text>
       )}
       {status === "cancelled" && (
-        <Text color={theme.text.secondary} dimColor strikethrough>{BULLET}</Text>
+        <Text color={theme.text.secondary} strikethrough>{BULLET}</Text>
       )}
       {status === "error" && (
         <Text color={theme.status.error} bold>{BULLET}</Text>
@@ -151,8 +151,8 @@ export const ToolInfo: React.FC<{
             <Text color={theme.text.secondary}>{fittedDescription}</Text>
           </>
         ) : null}
-        {durationText ? <Text dimColor>{durationText}</Text> : null}
-        {summaryText ? <Text dimColor>{summaryText}</Text> : null}
+        {durationText ? <Text>{durationText}</Text> : null}
+        {summaryText ? <Text>{summaryText}</Text> : null}
         {progressText ? (
           <Text color={theme.text.accent} italic>{progressText}</Text>
         ) : null}
@@ -244,7 +244,7 @@ export const FocusHint: React.FC<{
 
   return (
     <Box marginLeft={1} flexShrink={0}>
-      <Text color={theme.ui.active} dimColor>
+      <Text color={theme.ui.active}>
         (执行中…)
       </Text>
     </Box>

@@ -47,7 +47,7 @@ export const AlternateBufferQuittingDisplay = React.memo(
           <Text color={theme.ui.active} bold>
             sid-code v{version}
           </Text>
-          <Text dimColor> · AI-Powered Coding Assistant</Text>
+          <Text> · AI-Powered Coding Assistant</Text>
         </Box>
 
         {/* 完整对话历史 */}
@@ -56,13 +56,13 @@ export const AlternateBufferQuittingDisplay = React.memo(
         {/* 如果退出时正在流式输出，显示未完成的文本 */}
         {streamingText ? (
           <Box paddingRight={4}>
-            <Text dimColor>{streamingText}</Text>
+            <Text>{streamingText}</Text>
           </Box>
         ) : null}
 
         {/* 退出提示 */}
         <Box marginTop={1}>
-          <Text dimColor>── 会话结束 ──</Text>
+          <Text>── 会话结束 ──</Text>
         </Box>
       </Box>
     );

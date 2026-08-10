@@ -119,7 +119,7 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 返回</Text>
+          <Text italic>Esc 返回</Text>
         </Box>
       </Box>
     );
@@ -133,9 +133,9 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>当前没有注册任何 Hook</Text>
         </Box>
-        <Text dimColor>可在 .sid-code/settings.json 或 ~/.sid-code/settings.json 的 hooks 配置中添加</Text>
+        <Text>可在 .sid-code/settings.json 或 ~/.sid-code/settings.json 的 hooks 配置中添加</Text>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -185,7 +185,7 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 查看详情 · Esc 关闭</Text>
+        <Text italic>↑↓ 导航 · Enter 查看详情 · Esc 关闭</Text>
       </Box>
     </Box>
   );

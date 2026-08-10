@@ -40,7 +40,10 @@ import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
-const TRAJ_ROOT = "/Users/dev/Code/person/trajectory-platform/bench";
+// trajectory-platform 默认按「与本仓同级的兄弟目录」定位（与 scripts/eval/paired-trajectory-diff.ts
+// 的约定一致），放在别处用 SID_CODE_TRAJ_BENCH 覆盖。不要写死绝对路径——那只在一台机器上成立。
+const TRAJ_ROOT =
+  process.env.SID_CODE_TRAJ_BENCH ?? resolve(REPO_ROOT, "../trajectory-platform/bench");
 const REAL_TASKS_ROOT = join(REPO_ROOT, "evals/real-tasks");
 const REPORT_DIR = join(REPO_ROOT, "_reports");
 

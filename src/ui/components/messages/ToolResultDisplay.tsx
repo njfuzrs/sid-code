@@ -82,8 +82,8 @@ function parseAnsiString(str: string): AnsiOutput {
     underline: false,
     dim: false,
     inverse: false,
-    fg: '',
-    bg: '',
+    fg: undefined,
+    bg: undefined,
   }]);
 }
 

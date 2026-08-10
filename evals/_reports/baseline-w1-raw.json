@@ -19,7 +19,7 @@
       ],
       "must_include_misses": [],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_001_1778870733141.jsonl",
+      "transcript_path": "evals/raw-outputs/case_001_1778870733141.jsonl",
       "error": null,
       "started_at": "2026-05-15T18:45:33.141Z",
       "ended_at": "2026-05-15T18:48:53.152Z"
@@ -41,7 +41,7 @@
       ],
       "must_include_misses": [],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_002_1778870933153.jsonl",
+      "transcript_path": "evals/raw-outputs/case_002_1778870933153.jsonl",
       "error": null,
       "started_at": "2026-05-15T18:48:53.153Z",
       "ended_at": "2026-05-15T18:52:13.166Z"
@@ -60,7 +60,7 @@
       ],
       "must_include_misses": [],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_003_1778871133167.jsonl",
+      "transcript_path": "evals/raw-outputs/case_003_1778871133167.jsonl",
       "error": null,
       "started_at": "2026-05-15T18:52:13.167Z",
       "ended_at": "2026-05-15T18:55:33.175Z"
@@ -80,7 +80,7 @@
         "cpMgr"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_005_1778871333176.jsonl",
+      "transcript_path": "evals/raw-outputs/case_005_1778871333176.jsonl",
       "error": null,
       "started_at": "2026-05-15T18:55:33.176Z",
       "ended_at": "2026-05-15T18:58:53.186Z"
@@ -101,7 +101,7 @@
         "FallbackListener"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_006_1778871533187.jsonl",
+      "transcript_path": "evals/raw-outputs/case_006_1778871533187.jsonl",
       "error": null,
       "started_at": "2026-05-15T18:58:53.187Z",
       "ended_at": "2026-05-15T19:02:13.199Z"
@@ -122,7 +122,7 @@
         "AlertLevel"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_007_1778871733200.jsonl",
+      "transcript_path": "evals/raw-outputs/case_007_1778871733200.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:02:13.200Z",
       "ended_at": "2026-05-15T19:05:33.209Z"
@@ -143,7 +143,7 @@
         "parseArgs"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_008_1778871933210.jsonl",
+      "transcript_path": "evals/raw-outputs/case_008_1778871933210.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:05:33.210Z",
       "ended_at": "2026-05-15T19:08:53.224Z"
@@ -165,7 +165,7 @@
         "src/command/types.ts"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_009_1778872133224.jsonl",
+      "transcript_path": "evals/raw-outputs/case_009_1778872133224.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:08:53.224Z",
       "ended_at": "2026-05-15T19:12:13.235Z"
@@ -185,7 +185,7 @@
         "src/llm/quota.ts"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_020_1778872333236.jsonl",
+      "transcript_path": "evals/raw-outputs/case_020_1778872333236.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:12:13.236Z",
       "ended_at": "2026-05-15T19:15:33.254Z"
@@ -205,7 +205,7 @@
         "src/agent/loop-detection.ts"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_021_1778872533255.jsonl",
+      "transcript_path": "evals/raw-outputs/case_021_1778872533255.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:15:33.255Z",
       "ended_at": "2026-05-15T19:32:14.240Z"
@@ -227,7 +227,7 @@
         "不清楚"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_022_1778873534240.jsonl",
+      "transcript_path": "evals/raw-outputs/case_022_1778873534240.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:32:14.240Z",
       "ended_at": "2026-05-15T19:35:34.250Z"
@@ -247,7 +247,7 @@
         "src/"
       ],
       "must_not_include_violations": [],
-      "transcript_path": "/Users/dev/Code/person/sid-code/evals/raw-outputs/case_024_1778873734251.jsonl",
+      "transcript_path": "evals/raw-outputs/case_024_1778873734251.jsonl",
       "error": null,
       "started_at": "2026-05-15T19:35:34.251Z",
       "ended_at": "2026-05-15T19:38:54.264Z"

@@ -3,7 +3,7 @@
  * 基于 LLM Judge 做语义级评分（调用 prompt-v1.md）
  */
 
-import type { GradeResult, TaskExpected, AgentOutput } from "./outcome-grader.ts";
+import type { GradeResult, TaskExpected } from "./outcome-grader.ts";
 
 export interface JudgeConfig {
   apiKey: string;

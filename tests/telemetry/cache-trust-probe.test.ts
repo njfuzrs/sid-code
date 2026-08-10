@@ -6,7 +6,7 @@
  *
  * 样本用 2026-08-08 实测的真实数字（方案 §1.3），不手编理想化数据：
  *   ppchat（不可信）：全新前缀 r1 就 read=13860；同前缀 ×5 三段跳动而 sum 恒定 13159
- *   uniapi（可信）：同款判据下行为完全正确
+ *   自建网关对照组（可信）：同款判据下行为完全正确
  */
 
 import { describe, test, expect } from "bun:test";
@@ -37,7 +37,7 @@ describe("判据 A：全新前缀首发不应命中", () => {
     expect(v.reason).toContain("13860");
   });
 
-  test("r1 命中 0 → 该判据通过（实测 uniapi 形状）", () => {
+  test("r1 命中 0 → 该判据通过（实测可信渠道形状）", () => {
     const v = judgeSamples("api.uniapi.io", "claude-sonnet-5", [s("A", "A", u(18017, 0, 17152))], NOW);
     expect(v.failedCriteria ?? []).not.toContain("A");
     expect(v.verdict).toBe("trusted");
@@ -63,7 +63,7 @@ describe("判据 B：不打 cache_control 不应命中", () => {
    *
    * Anthropic 的 cache_control 只决定"写不写缓存"，**读是自动的** —— 判据 A 已经把
    * 前缀写进缓存后，B 复用同一前缀即便不打标记也会正常命中。第一版就是这么排的，
-   * 把行为完全正确的公司网关（uniapi：A 冷启动 create=1970、后续稳定 read=1970）
+   * 把行为完全正确的自建网关对照组（A 冷启动 create=1970、后续稳定 read=1970）
    * 判成了 untrusted。
    */
   test("B 用独立前缀：驱动层不得把 A 的前缀复用给 B", async () => {
@@ -93,8 +93,8 @@ describe("判据 B：不打 cache_control 不应命中", () => {
   });
 
   test("真实网关形状（A 冷写入 + 后续稳定命中）判 trusted，不误伤", () => {
-    // uniapi 实测形状：A 冷启动 read=0/create=1970，repeat 稳定 read=1970
-    const v = judgeSamples("gateway.example.com", "claude-sonnet-4-6", [
+    // 自建网关对照组实测形状：A 冷启动 read=0/create=1970，repeat 稳定 read=1970
+    const v = judgeSamples("gw.example.com", "claude-sonnet-4-6", [
       s("A", "A", u(10, 0, 1970)),
       // B 用独立前缀 → 同样冷启动、无命中
       s("B", "B", u(10, 0, 1970)),

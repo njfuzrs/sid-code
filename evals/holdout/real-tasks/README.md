@@ -1,6 +1,6 @@
 # trajectory-platform Holdout 永封名单（B7-3）
 
-> 来源：`/Users/dev/Code/person/trajectory-platform/bench/splits/holdout.txt`
+> 来源：`<trajectory-platform>/bench/splits/holdout.txt`（trajectory-platform 默认为与本仓同级的兄弟目录）
 > 永封时间：2026-05-31
 > SHA-256：`11f400c32b2ce262bf24a4b972ce66bb97c5f4f61268247610d6c6a4200d7bcc`
 > 条数：200

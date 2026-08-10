@@ -6,13 +6,14 @@
  */
 
 import type { Theme } from './theme.ts';
+import type { Color } from '../../ink/styles.ts';
 import { DefaultDark } from './builtin/dark/default-dark.ts';
 import { GitHubDark } from './builtin/dark/github-dark.ts';
 import { DaltonizedDark } from './builtin/dark/daltonized-dark.ts';
 import { DefaultLight } from './builtin/light/default-light.ts';
 import { GitHubLight } from './builtin/light/github-light.ts';
 import { DaltonizedLight } from './builtin/light/daltonized-light.ts';
-import { getThemeTypeFromBackgroundColor } from './color-utils.ts';
+import { getThemeTypeFromBackgroundColor, isValidColor, resolveColor } from './color-utils.ts';
 
 export const DEFAULT_THEME: Theme = DefaultDark;
 
@@ -27,7 +28,7 @@ class ThemeManager {
   private activeTheme: Theme;
   private terminalBackground: string | undefined;
   /** /color 强调色覆盖（hex）。非空时覆盖活动主题的品牌色 ui.active + text.accent/link。 */
-  private accentOverride: string | undefined;
+  private accentOverride: Color | undefined;
 
   constructor() {
     this.availableThemes = [
@@ -44,13 +45,27 @@ class ThemeManager {
   /**
    * 设置/清除 UI 强调色覆盖（/color 用）。hex=undefined 表示清除，回退主题原品牌色。
    * 因 semantic-colors.ts 的 `theme` 是 getter 代理，覆盖后组件下次读值即生效（配合重渲）。
+   *
+   * 内部再校验一次：调用方主要是 /color 命令（已校验+归一化），但也有 app.ts 从
+   * settings.json 恢复的路径——配置文件是外部输入，可能被手改成非法值。不校验会让
+   * 非法字符串一路传到 ink 的 <Text color>，色值在 colorize.ts 里静默 fallthrough
+   * 不显色（实测过 bare 颜色名的同类静默失效），界面只是「颜色不对」却不报错。
    */
   setAccentOverride(hex: string | undefined): void {
-    this.accentOverride = hex;
+    if (hex === undefined) {
+      this.accentOverride = undefined;
+      return;
+    }
+    if (!isValidColor(hex)) {
+      this.accentOverride = undefined;
+      return;
+    }
+    const resolved = resolveColor(hex) ?? hex;
+    this.accentOverride = resolved as Color;
   }
 
   /** 当前强调色覆盖（/color 展示用）。 */
-  getAccentOverride(): string | undefined {
+  getAccentOverride(): Color | undefined {
     return this.accentOverride;
   }
 

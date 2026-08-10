@@ -23,6 +23,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
+    # fork 里不跑 cron：开源后 fork 会连 cron 一起继承，而 fork 拿不到 secrets ——
+    # 结果是每个 fork 每周一收到一封无从修复的失败邮件。
+    #
+    # 判据选型（三种都见过，这里选第三种）：
+    #   · `pull_request.head.repo.full_name == github.repository`（eval-pr-smoke.yml 用的）
+    #     —— 本 workflow 无 pull_request 触发，该表达式恒 null，用不了
+    #   · `github.repository == 'owner/repo'` —— 要写死 slug。本仓库当前 remote 是内网
+    #     GitLab，GitHub slug 尚不存在，写死就是猜；且换 owner 就失效
+    #   · `github.event.repository.fork == false` —— 不写死任何名字，换 owner 仍成立
+    #
+    # 后半段 `|| github.event_name != 'schedule'` 不能省：只拦定时触发，
+    # 保留 workflow_dispatch 手动触发（fork 维护者配了自己的 secrets 应该能手动跑）。
+    # 另注：`github.event.repository` 在 schedule 事件下曾被报告缺失
+    # （community discussion #12269）。缺失时表达式取 null → 判据失效但**fail-open**
+    # （上游照跑，不会把自己锁死），代价只是 fork 噪音回归，可接受。
+    if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
+
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

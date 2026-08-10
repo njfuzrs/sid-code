@@ -14,17 +14,17 @@ describe("normalizeBaseURL", () => {
   });
 
   test("去末尾斜杠", () => {
-    expect(normalizeBaseURL("https://gateway.example.com/v1/")).toBe("https://gateway.example.com/v1");
-    expect(normalizeBaseURL("https://gateway.example.com/")).toBe("https://gateway.example.com");
+    expect(normalizeBaseURL("https://gw.example.com/v1/")).toBe("https://gw.example.com/v1");
+    expect(normalizeBaseURL("https://gw.example.com/")).toBe("https://gw.example.com");
   });
 
   test("协议与 host 小写", () => {
-    expect(normalizeBaseURL("HTTPS://UniAPI.Ruijie.COM.cn/v1")).toBe("https://gateway.example.com/v1");
+    expect(normalizeBaseURL("HTTPS://GW.Example.COM/v1")).toBe("https://gw.example.com/v1");
   });
 
   test("不剥 /v1：anthropic(不带) 与 openai(带) 同 host 是不同端点", () => {
-    const anthropic = normalizeBaseURL("https://gateway.example.com");
-    const openai = normalizeBaseURL("https://gateway.example.com/v1");
+    const anthropic = normalizeBaseURL("https://gw.example.com");
+    const openai = normalizeBaseURL("https://gw.example.com/v1");
     expect(anthropic).not.toBe(openai);
   });
 

@@ -483,7 +483,7 @@ function useSessionBrowserInput(
 }
 
 /** 加载中组件 */
-function SessionBrowserLoading(): JSX.Element {
+function SessionBrowserLoading(): React.JSX.Element {
   return (
     <Box flexDirection="column" padding={1}>
       <Text>加载会话中...</Text>
@@ -492,21 +492,21 @@ function SessionBrowserLoading(): JSX.Element {
 }
 
 /** 错误组件 */
-function SessionBrowserError({ error }: { error: string }): JSX.Element {
+function SessionBrowserError({ error }: { error: string }): React.JSX.Element {
   return (
     <Box flexDirection="column" padding={1}>
-      <Text color="red">错误: {error}</Text>
-      <Text dimColor>按 q 退出</Text>
+      <Text color={theme.status.error}>错误: {error}</Text>
+      <Text>按 q 退出</Text>
     </Box>
   );
 }
 
 /** 空会话组件 */
-function SessionBrowserEmpty(): JSX.Element {
+function SessionBrowserEmpty(): React.JSX.Element {
   return (
     <Box flexDirection="column" padding={1}>
       <Text>未找到任何会话</Text>
-      <Text dimColor>按 q 退出</Text>
+      <Text>按 q 退出</Text>
     </Box>
   );
 }
@@ -519,7 +519,7 @@ function SearchHeader({
   state,
 }: {
   state: SessionBrowserState;
-}): JSX.Element {
+}): React.JSX.Element {
   const hasQuery = Boolean(state.searchQuery);
   const scopeLabel = state.projectOnly ? "仅当前项目" : "全部项目";
   return (
@@ -550,7 +550,7 @@ function SearchHeader({
 }
 
 /** 无结果显示组件 */
-function NoResultsDisplay(): JSX.Element {
+function NoResultsDisplay(): React.JSX.Element {
   return (
     <Box paddingX={1} paddingY={0}>
       <Text color={theme.text.secondary}>未找到匹配的会话</Text>
@@ -568,7 +568,7 @@ function MatchSnippetLine({
 }: {
   session: SessionInfo;
   isActive: boolean;
-}): JSX.Element | null {
+}): React.JSX.Element | null {
   if (!session.matchSnippets || session.matchSnippets.length === 0) {
     return null;
   }
@@ -597,7 +597,7 @@ function SessionItem({
 }: {
   session: SessionInfo;
   state: SessionBrowserState;
-}): JSX.Element {
+}): React.JSX.Element {
   const originalIndex = state.startIndex + state.visibleSessions.indexOf(session);
   const isActive = originalIndex === state.activeIndex;
   const isDisabled = session.isCurrentSession;
@@ -658,7 +658,7 @@ function SessionItem({
       {showMatch ? (
         <MatchSnippetLine session={session} isActive={isActive} />
       ) : (
-        <Text wrap="truncate-end" color={metaColor} dimColor={!isActive}>
+        <Text wrap="truncate-end" color={metaColor}>
           {"    " + metaParts.join("  ·  ")}
         </Text>
       )}
@@ -667,7 +667,7 @@ function SessionItem({
 }
 
 /** 会话列表组件（滚动窗口 + 上下溢出指示） */
-function SessionList({ state }: { state: SessionBrowserState }): JSX.Element {
+function SessionList({ state }: { state: SessionBrowserState }): React.JSX.Element {
   return (
     <Box flexDirection="column" marginTop={1}>
       {state.scrollOffset > 0 && (
@@ -695,7 +695,7 @@ function FooterHints({
   state: SessionBrowserState;
   searchFirst?: boolean;
   projectFilterEnabled?: boolean;
-}): JSX.Element {
+}): React.JSX.Element {
   // 关键：提示只列**当前模式下真正生效**的键，避免误导。
   // 搜索模式里 s/x/q 都是往查询里打字，不能当快捷键宣传——那里只留导航/恢复/退出/项目切换。
   // Ctrl+P 两种模式下都生效（在 useInput 顶部处理），故都列出（前提是启用了项目筛选）。
@@ -739,7 +739,7 @@ function SessionBrowserView({
   state: SessionBrowserState;
   searchFirst?: boolean;
   projectFilterEnabled?: boolean;
-}): JSX.Element {
+}): React.JSX.Element {
   if (state.loading) {
     return <SessionBrowserLoading />;
   }
@@ -779,7 +779,7 @@ export function SessionBrowser({
   searchFirst = false,
   initialSearchQuery = "",
   projectRoot,
-}: SessionBrowserProps): JSX.Element {
+}: SessionBrowserProps): React.JSX.Element {
   // 按终端高度动态算一屏能放几条会话——防止选择器整体高于终端行数,
   // 否则终端自身出滚动条,方向键下翻会把顶部信息顶出视口(用户反馈的 bug)。
   // useStdout 的 rows 是响应式的(随终端 resize 更新),窗口拉高/缩小会自动重算。

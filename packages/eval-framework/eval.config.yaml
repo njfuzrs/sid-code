@@ -1,0 +1,37 @@
+# eval-framework 配置文件
+# Provider 注册表：新 agent 只需加一段配置 + 对应 wrapper 脚本即可接入评测
+#
+# 字段说明：
+#   script:        Provider wrapper 脚本路径（相对于 evals/ 目录）
+#   default_model: 不传 --model 时使用的默认模型
+#   timeout_ms:    单 case 超时毫秒数（默认 480000）
+#   max_turns:     最大对话轮次（默认 30）
+#   constraints:   可选约束
+#     model_prefix: 模型名必须以此前缀开头（不匹配则报错退出）
+
+providers:
+  sid-code:
+    script: ./providers/sid-code-live.ts
+    default_model: deepseek-v4-pro
+    timeout_ms: 480000
+    max_turns: 30
+
+  claude-code:
+    script: ./providers/claude-code.ts
+    default_model: claude-opus-4-7
+    timeout_ms: 480000
+    max_turns: 30
+    constraints:
+      model_prefix: "claude-"
+
+  mock-echo:
+    script: ./providers/mock-echo.ts
+    default_model: echo
+    timeout_ms: 10000
+    max_turns: 1
+
+  aider:
+    script: ./providers/aider.ts
+    default_model: gpt-4o
+    timeout_ms: 600000
+    max_turns: 50

@@ -1,0 +1,19 @@
+{
+  "name": "eval-framework",
+  "version": "0.1.0",
+  "description": "通用 Agent 评测框架 — 任意 Agent 可接入的评分引擎",
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "eval:run": "bun run core/runner.ts",
+    "eval:dashboard": "bun run scripts/dashboard.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  }
+}

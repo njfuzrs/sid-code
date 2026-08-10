@@ -154,7 +154,7 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
 
   const lines = displayText.split("\n");
   const indicator = hiddenCount > 0
-    ? <Text dimColor color={theme.status.warning}>{formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}</Text>
+    ? <Text color={theme.status.warning}>{formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}</Text>
     : null;
 
   return (

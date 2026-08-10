@@ -14,6 +14,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import stringWidth from "string-width";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -46,7 +47,7 @@ interface ConfigListItem extends SelectionListItem<string> {
 }
 
 /** 来源标记颜色。 */
-function sourceColor(source: ConfigSource): string {
+function sourceColor(source: ConfigSource): Color {
   switch (source) {
     case "default":
       return theme.text.secondary;
@@ -108,7 +109,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 返回</Text>
+          <Text italic>Esc 返回</Text>
         </Box>
       </Box>
     );
@@ -182,7 +183,7 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 查看详情 · Esc 关闭</Text>
+        <Text italic>↑↓ 导航 · Enter 查看详情 · Esc 关闭</Text>
       </Box>
     </Box>
   );

@@ -8,8 +8,8 @@ import { AnthropicProvider } from "../../src/llm/anthropic.ts";
 import { OpenAIProvider } from "../../src/llm/openai.ts";
 import { OllamaProvider } from "../../src/llm/ollama.ts";
 import { getCapabilities, DEFAULT_CAPABILITIES } from "../../src/llm/provider.ts";
-import type { Provider, ProviderCapabilities } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import type { Provider } from "../../src/llm/provider.ts";
+import type { StreamEvent } from "../../src/llm/types.ts";
 
 describe("Provider capabilities", () => {
   describe("AnthropicProvider", () => {

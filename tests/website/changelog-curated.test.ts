@@ -198,7 +198,7 @@ describe("validateCurated · URL 拦截（这份文案会发布到公网）", ()
 
   test("内网地址与私网 IP 同样被拒（这才是真正有害的那类）", () => {
     for (const bad of [
-      "推到 http://gitlab.example.com/foo.git",
+      "推到 http://git.internal.example.com/foo.git",
       "代理 http://192.168.1.50/searxng",
       "上传到 http://10.0.0.8:9100/mcp",
     ]) {

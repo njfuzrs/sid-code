@@ -45,6 +45,9 @@ chat_session*.json
 # 团队默认配置真实值（含共享 API key，只保留占位模板 team-defaults.template.json 入库）
 /scripts/team-defaults.json
 
+# 历史清洗用的密钥替换清单（含真实密钥明文，供 scripts/scrub-history.sh 读取，用完即删）
+/.scrub-secrets.txt
+
 # 临时文件
 _template
 scheduled_tasks.lock
@@ -57,3 +60,24 @@ scheduled_tasks.lock
 
 # eval 评估目录（本地调试数据，不入库）
 docs/bugfixes/todo/eval/
+
+# eval 真实会话原始输出（P0-4 开源脱敏）
+#
+# 这三类是**跑评测时产生的运行时产物**，内容是真实用户会话的逐字转储：本机绝对路径、
+# 公司业务仓库路径、内部业务 URL、客户名、公司网关地址与凭据都在里面（`sample-50.jsonl`
+# 曾经就躺着一个可用的公司网关 key）。它们不是评测体系的定义，删掉不影响任何 case 能不能跑——
+# `scripts/eval/*.ts` 只往这两个目录**写**，没有任何脚本或测试**读**它们。
+#
+# 判据（拿它区分"该出库的产物"与"该入库的资产"）：
+#   出库 = 单次运行的原始转储，含真实会话正文，可重新跑出来；
+#   入库 = 人工编写/审校过的 case 定义、判分体系、聚合报告（如 _reports/*.md 分析报告、
+#          _reports/capability-*.json 与 skill-*.json 这类只有分数没有正文的小聚合文件）。
+# 所以下面是**精确形态**而不是整个目录：`_reports/` 里除 promptfoo 原始输出外全是资产，
+# 一刀切 `_reports/` 会连人写的横向对比报告一起丢掉。
+#
+# 两个目录仍靠 .gitkeep 保留骨架（脚本直接往里写，目录不存在会报错）。
+/evals/_reports/promptfoo-*
+/evals/raw-outputs/*
+!/evals/raw-outputs/.gitkeep
+/evals/sample-50.jsonl
+/evals/sample-50.txt

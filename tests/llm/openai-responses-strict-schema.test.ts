@@ -359,7 +359,7 @@ describe("OpenAI Responses API strict 模式工具 schema 改造", () => {
  * 字段名与层级都不同。buildResponsesRequest 此前完全没有 reasoning 字段，导致 effort.ts
  * 即使解析出档位也发不出去（/effort 看着生效、线上其实静默丢弃）。
  *
- * [实测: uniapi 网关 /v1/responses — xhigh→reasoning_tokens=9、max→18、minimal→400]
+ * [实测: 自建网关 /v1/responses — xhigh→reasoning_tokens=9、max→18、minimal→400]
  */
 describe("Responses API 推理强度下发（reasoning.effort）", () => {
   function paramsWithEffort(effort: SendParams["reasoningEffort"]): SendParams {

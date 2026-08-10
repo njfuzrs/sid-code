@@ -10,10 +10,8 @@ import {
   cleanupPersistedOutputs,
   PERSISTED_OUTPUT_PREFIX,
 } from "../../src/context/tool-result-storage.ts";
-import { existsSync, unlinkSync, rmdirSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 // 注：enforceToolResultBudget 及其单测已删除（2026-07-11 决策：不接入，见 docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md）
-import { homedir } from "node:os";
 
 const testSessionId = "test-storage-session-001";
 
@@ -50,8 +48,10 @@ describe("persistLargeOutput", () => {
   });
 
   afterAll(() => {
-    // 清理测试文件
-    const dir = join(homedir(), ".sid-code", "trajectories", "sessions", testSessionId, "tool-outputs");
+    // 清理测试文件。
+    // 原先这里还算了一个 `dir`（join(homedir(), ".sid-code", ...)）却从没用过 ——
+    // 既是死变量，也正是 CLAUDE.md「测试约定」点名禁止的硬编码家目录写法
+    // （SID_CONFIG_DIR 重定向后它必然失配）。清理本就由下面这个函数负责。
     try {
       cleanupPersistedOutputs(testSessionId, 0);
     } catch {}

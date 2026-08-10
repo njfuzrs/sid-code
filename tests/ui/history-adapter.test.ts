@@ -14,7 +14,6 @@ import {
   isHiddenFromDisplay,
 } from "../../src/ui/history-adapter.ts";
 import type { Message } from "../../src/llm/types.ts";
-import type { HistoryItem } from "../../src/ui/types.ts";
 import { REATTACH_ORIGIN } from "../../src/query/compact/reattach-markers.ts";
 import { ToolCallStatus } from "../../src/ui/types.ts";
 

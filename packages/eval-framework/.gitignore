@@ -1,0 +1,7 @@
+node_modules/
+dist/
+_runs/
+_scores/
+_reports/
+*.log
+.DS_Store

@@ -175,9 +175,9 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>未配置 MCP 服务器</Text>
         </Box>
-        <Text dimColor>在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置</Text>
+        <Text>在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置</Text>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -229,7 +229,7 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 选择 · Esc 关闭</Text>
+        <Text italic>↑↓ 导航 · Enter 选择 · Esc 关闭</Text>
       </Box>
     </Box>
   );
@@ -393,7 +393,7 @@ const McpServerMenu: React.FC<McpServerMenuProps> = ({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 选择 · Esc 返回</Text>
+        <Text italic>↑↓ 导航 · Enter 选择 · Esc 返回</Text>
       </Box>
     </Box>
   );
@@ -425,7 +425,7 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
           <Text color={theme.text.secondary}>该服务器没有可用工具</Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 返回</Text>
+          <Text italic>Esc 返回</Text>
         </Box>
       </Box>
     );
@@ -461,7 +461,7 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 查看详情 · Esc 返回</Text>
+        <Text italic>↑↓ 导航 · Enter 查看详情 · Esc 返回</Text>
       </Box>
     </Box>
   );
@@ -521,7 +521,7 @@ const McpToolDetail: React.FC<McpToolDetailProps> = ({ server, tool, onBack }) =
       )}
 
       <Box marginTop={1}>
-        <Text dimColor italic>Esc 返回</Text>
+        <Text italic>Esc 返回</Text>
       </Box>
     </Box>
   );

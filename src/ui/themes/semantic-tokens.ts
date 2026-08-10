@@ -1,42 +1,55 @@
 // 语义颜色接口定义
 // 参考 gemini-cli/packages/cli/src/ui/themes/semantic-tokens.ts
 
+import type { Color } from '../../ink/styles.js';
+
+/**
+ * 语义色 token 的值类型 = ink 的 `Color`（`#hex` / `rgb()` / `ansi256()` / `ansi:*`），
+ * 不是宽松的 `string`。
+ *
+ * 为什么必须收紧：这些值最终喂给 `<Text color=…>` / `<Box borderColor=…>`，而 ink 的
+ * `Styles.color` 就是 `Color`。声明成 `string` 时，「拼错的颜色」在编译期完全无声
+ * —— ink 的 colorize 认不出的值会静默回退终端默认色，界面只是「颜色不对」，不报错。
+ * 收紧后写错的颜色字面量当场 TS2322。
+ *
+ * 实测本文件 6 套主题共 132 个颜色字面量全部是合法 `#hex`，收紧不改变任何现有取值。
+ */
 export interface SemanticColors {
   text: {
-    primary: string;
-    secondary: string;
-    link: string;
-    accent: string;
-    response: string;
+    primary: Color;
+    secondary: Color;
+    link: Color;
+    accent: Color;
+    response: Color;
   };
   background: {
-    primary: string;
-    message: string;
-    input: string;
-    focus: string;
+    primary: Color;
+    message: Color;
+    input: Color;
+    focus: Color;
     diff: {
-      added: string;
-      removed: string;
+      added: Color;
+      removed: Color;
       /** 词级 diff 中「变化词」的强调底色（比整行底色更深） */
-      addedEmphasis: string;
-      removedEmphasis: string;
+      addedEmphasis: Color;
+      removedEmphasis: Color;
     };
   };
   border: {
-    default: string;
+    default: Color;
   };
   ui: {
-    comment: string;
-    symbol: string;
-    active: string;
-    dark: string;
-    focus: string;
-    gradient: string[] | undefined;
+    comment: Color;
+    symbol: Color;
+    active: Color;
+    dark: Color;
+    focus: Color;
+    gradient: Color[] | undefined;
   };
   status: {
-    error: string;
-    success: string;
-    warning: string;
+    error: Color;
+    success: Color;
+    warning: Color;
   };
 }
 

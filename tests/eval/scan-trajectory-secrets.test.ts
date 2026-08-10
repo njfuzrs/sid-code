@@ -152,7 +152,7 @@ describe("scanTask - 单 task 扫描", () => {
     mkdirSync(join(root, "bench", "tasks", "T0003"), { recursive: true });
     writeFileSync(
       join(root, "bench", "tasks", "T0003", "task.yaml"),
-      "id: T0003\ninstruction:\n  text: 连 121.196.144.227 验证服务\n",
+      "id: T0003\ninstruction:\n  text: 连 203.0.113.7 验证服务\n",
       "utf-8",
     );
     const r = scanTask(root, "T0003", "regression")!;

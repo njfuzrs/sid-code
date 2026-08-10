@@ -63,7 +63,10 @@
 #   所以失败不再消耗版本号。已成功创建的本地 tag 刻意不删（创建是幂等的），重跑会复用。
 #
 # 环境变量（--upload 时使用）：
-#   DEPLOY_SSH_HOST         SSH 上传目标（IP 或域名均可，只用于 scp/ssh，不进任何对外 URL）
+#   DEPLOY_SSH_HOST         SSH 上传目标（必填，无默认值；IP 或域名均可，只用于 scp/ssh，
+#                           不进任何对外 URL）。刻意不内置默认值 —— 早期硬编码了发布机地址，
+#                           等于把自建基建拓扑写进公开仓库，且任何人 clone 后误跑 --upload
+#                           都会打到那台机器。缺失时与 DEPLOY_SSH_USER 一同报错提示配置。
 #   PUBLIC_BASE_URL         对外访问地址（默认 https://www.sid-code.cc，install.sh 的下载
 #                           地址与冒烟校验都由它派生）。⚠️ 与 DEPLOY_SSH_HOST 是两件事，
 #                           不要合并：SSH 走 IP 没问题，但对外 URL 必须是带证书的域名 ——
@@ -122,7 +125,7 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$_pre_public" ] && PUBLIC_BASE_URL="$_pre_public"
 fi
 
-DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-121.196.144.227}"
+DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-}"
 # 对外访问地址（唯一权威）。与 DEPLOY_SSH_HOST 分离：SSH 可以走 IP，对外 URL 必须是域名。
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://www.sid-code.cc}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
@@ -211,6 +214,9 @@ self_platform() {
 }
 
 require_ssh_user() {
+    # 先校验 host：它没有内置默认值（不把自建基建地址写进公开仓库），
+    # 缺失时如果不显式拦住，scp 目标会拼成 "user@:/path" 这种残缺形态，报错很难懂。
+    [ -n "$DEPLOY_SSH_HOST" ] || fail "需要设置 DEPLOY_SSH_HOST（在 scripts/deploy.env 或环境变量中，上传到哪台服务器）"
     [ -n "$DEPLOY_SSH_USER" ] || fail "需要设置 DEPLOY_SSH_USER（在 scripts/deploy.env 或环境变量中，SSH 到 $DEPLOY_SSH_HOST 用哪个账号）"
 }
 

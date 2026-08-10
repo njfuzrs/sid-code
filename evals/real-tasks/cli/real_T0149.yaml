@@ -14,7 +14,7 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.038Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: "'/Users/dev/Code/person/docs-research/interview-notes/03-模型（llm）/大纲.md' 请你认真阅读大纲中：07-生成控制（Decoding & Sampling） 00-采样策略 这个章节的内容，这个章节有 9 道面试题，注意：每一题需要你调用 '/Users/dev/Code/person/docs-research/interview-notes/.claude/commands/add-question.md' ，使用 add-question 命令一题一题去添加答案，将生成的答案添加到对应的章节的目录中去，直到该章节所有题目都回答完毕"
+  user_query: "'${REPO_ROOT}/docs-research/interview-notes/03-模型（llm）/大纲.md' 请你认真阅读大纲中：07-生成控制（Decoding & Sampling） 00-采样策略 这个章节的内容，这个章节有 9 道面试题，注意：每一题需要你调用 '${REPO_ROOT}/docs-research/interview-notes/.claude/commands/add-question.md' ，使用 add-question 命令一题一题去添加答案，将生成的答案添加到对应的章节的目录中去，直到该章节所有题目都回答完毕"
   repo: null
   repo_commit: null
   attachments: []

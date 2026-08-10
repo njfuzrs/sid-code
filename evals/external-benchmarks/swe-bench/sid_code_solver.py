@@ -37,7 +37,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 
 THIS_DIR = Path(__file__).resolve().parent
 SUBSET_YAML = THIS_DIR / "verified-subset.yaml"
-SID_CODE_ROOT = THIS_DIR.parent.parent.parent  # /Users/dev/Code/person/sid-code
+SID_CODE_ROOT = THIS_DIR.parent.parent.parent  # 仓库根（evals/external-benchmarks/swe-bench 往上三级）
 SID_CODE_BOOTSTRAP = SID_CODE_ROOT / "src" / "entrypoints" / "bootstrap.ts"
 
 

@@ -25,6 +25,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import useStdout from "../../ink/_vendor/use-stdout.js";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import {
   POINTER,
@@ -125,7 +126,7 @@ function sourceLabel(key: string): string {
   }
 }
 
-function sourceColor(key: string): string {
+function sourceColor(key: string): Color {
   switch (key) {
     case "user":
       return theme.status.success;
@@ -586,18 +587,18 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
           <Box marginTop={1} flexDirection="column">
             <Text bold color={theme.text.secondary}>
               提示词预览
-              <Text dimColor>
+              <Text>
                 {"  "}（共 {selected.promptLines ?? promptAllLines.length} 行）
               </Text>
             </Text>
             <Box paddingLeft={2} flexDirection="column">
               {promptPreview.map((line, i) => (
-                <Text key={i} color={theme.text.secondary} dimColor wrap="truncate-end">
+                <Text key={i} color={theme.text.secondary} wrap="truncate-end">
                   {line || " "}
                 </Text>
               ))}
               {promptRemaining > 0 && (
-                <Text dimColor italic>… 还有 {promptRemaining} 行（见文件）</Text>
+                <Text italic>… 还有 {promptRemaining} 行（见文件）</Text>
               )}
             </Box>
           </Box>
@@ -608,13 +609,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
           <Box marginTop={1} flexDirection="column">
             <Text bold color={theme.text.secondary}>路径</Text>
             <Box paddingLeft={2}>
-              <Text dimColor wrap="truncate-middle">{selected.filePath}</Text>
+              <Text wrap="truncate-middle">{selected.filePath}</Text>
             </Box>
           </Box>
         )}
 
         <Box marginTop={1}>
-          <Text dimColor italic>Tab / Esc 返回列表</Text>
+          <Text italic>Tab / Esc 返回列表</Text>
         </Box>
       </Box>
     );
@@ -716,7 +717,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
 
       {/* 底部 hint（常驻，对标 resume：输入即过滤，动作在非字母键） */}
       <Box marginTop={1}>
-        <Text dimColor italic>
+        <Text italic>
           输入过滤 · ↑↓ 选择 · Enter 启/禁 · Tab 详情 · Ctrl+S 排序 · Ctrl+T 作用范围 · Esc {query ? "清除" : "关闭"}
         </Text>
       </Box>

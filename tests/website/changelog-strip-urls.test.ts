@@ -40,7 +40,7 @@ describe("stripUrls（changelog 生成期抹 URL）", () => {
   });
 
   test("内网主机名与私网 IP 同样被抹（这才是真正有害的那类）", () => {
-    expect(stripUrls("推到 http://gitlab.example.com/foo/bar.git")).toBe("推到 <链接已省略>");
+    expect(stripUrls("推到 http://git.internal.example.com/foo/bar.git")).toBe("推到 <链接已省略>");
     expect(stripUrls("代理 http://192.168.1.50/searxng")).toBe("代理 <链接已省略>");
     expect(stripUrls("上传到 http://10.0.0.8:9100/mcp 完成")).toBe("上传到 <链接已省略> 完成");
   });
@@ -120,7 +120,7 @@ describe("hasUrl / findUrls（curated 校验器的入库前拦截）", () => {
   test("判定标准与 stripUrls 同源：能抹的就能测出来", () => {
     for (const s of [
       "地址切到 https://www.sid-code.cc 并补迁移",
-      "推到 http://gitlab.example.com/foo/bar.git",
+      "推到 http://git.internal.example.com/foo/bar.git",
       "代理 http://192.168.1.50/searxng",
       "上传到 http://10.0.0.8:9100/mcp 完成",
     ]) {

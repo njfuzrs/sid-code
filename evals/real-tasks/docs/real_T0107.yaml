@@ -14,7 +14,7 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.251Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: "'/Users/dev/Code/prd/季度汇报.md' 文档中## Slide 4 - 岗位职责及岗位认知 缺少一点，ai赋能相关的"
+  user_query: "'${REPO_ROOT}/prd/季度汇报.md' 文档中## Slide 4 - 岗位职责及岗位认知 缺少一点，ai赋能相关的"
   repo: null
   repo_commit: null
   attachments: []

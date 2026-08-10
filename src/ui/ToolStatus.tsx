@@ -97,7 +97,7 @@ export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting
       <Box>
         <Text color={color}>{icon} </Text>
         <Text bold>{lastResult.toolName}</Text>
-        <Text dimColor> ({formatDuration(lastResult.elapsedMs)})</Text>
+        <Text> ({formatDuration(lastResult.elapsedMs)})</Text>
       </Box>
     );
   }

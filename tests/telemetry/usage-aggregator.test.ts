@@ -73,8 +73,8 @@ function registry(): ChannelTrustRegistry {
         reason: "全新前缀首次请求即报命中（服务端从未见过该前缀）",
         probedAt: 1786177861,
       },
-      "gateway.example.com": {
-        host: "gateway.example.com",
+      "gw.example.com": {
+        host: "gw.example.com",
         verdict: "trusted",
         probedAt: 1786177883,
       },
@@ -128,7 +128,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
     const r = aggregateEntries(
       [
         entry({ model: "claude-sonnet-5", endpointHost: "code.ppchat.vip", promptTotal: 100000, cacheHit: 99000, costUSD: 5, savingsUSD: 9 }),
-        entry({ model: "glm-5.2", endpointHost: "gateway.example.com", promptTotal: 10000, cacheHit: 5000, costUSD: 1, savingsUSD: 2 }),
+        entry({ model: "glm-5.2", endpointHost: "gw.example.com", promptTotal: 10000, cacheHit: 5000, costUSD: 1, savingsUSD: 2 }),
       ],
       "p",
       registry(),
@@ -150,7 +150,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
       [
         entry({ endpointHost: undefined }),
         entry({ endpointHost: undefined }),
-        entry({ endpointHost: "gateway.example.com" }),
+        entry({ endpointHost: "gw.example.com" }),
       ],
       "p",
       registry(),
@@ -162,7 +162,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
 
   test("全部带 host 且可信时，盲区计数为 0（不误报）", () => {
     const r = aggregateEntries(
-      [entry({ endpointHost: "gateway.example.com" })],
+      [entry({ endpointHost: "gw.example.com" })],
       "p",
       registry(),
     );
@@ -174,7 +174,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
       [
         entry({ endpointHost: "code.ppchat.vip" }),
         entry({ endpointHost: "code.ppchat.vip" }),
-        entry({ endpointHost: "gateway.example.com" }),
+        entry({ endpointHost: "gw.example.com" }),
       ],
       "p",
       registry(),
@@ -192,7 +192,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
       [
         entry({ endpointHost: "code.ppchat.vip" }),
         entry({ endpointHost: "code.ppchat.vip" }),
-        entry({ endpointHost: "gateway.example.com" }),
+        entry({ endpointHost: "gw.example.com" }),
       ],
       "p",
       registry(),
@@ -218,7 +218,7 @@ describe("P0-4：不可信渠道排除出统计", () => {
 
   test("trusted 渠道正常计入（判据是 untrusted，不是「有 endpointHost 就排除」）", () => {
     const r = aggregateEntries(
-      [entry({ endpointHost: "gateway.example.com" })],
+      [entry({ endpointHost: "gw.example.com" })],
       "p",
       registry(),
     );
@@ -240,26 +240,26 @@ describe("P0-4：不可信渠道排除出统计", () => {
 describe("P0-4：模型行带渠道标注", () => {
   test("单渠道模型记一个 host", () => {
     const r = aggregateEntries(
-      [entry({ model: "glm-5.2", endpointHost: "gateway.example.com" })],
+      [entry({ model: "glm-5.2", endpointHost: "gw.example.com" })],
       "p",
       registry(),
     );
-    expect(r.byModel["glm-5.2"]!.hosts).toEqual(["gateway.example.com"]);
+    expect(r.byModel["glm-5.2"]!.hosts).toEqual(["gw.example.com"]);
   });
 
   test("★ 同模型跨渠道：两个 host 都保留，不合并", () => {
     // 合并成一个百分比恰恰掩盖了渠道差异 —— 而"这个数能不能信"取决于渠道
     const r = aggregateEntries(
       [
-        entry({ model: "glm-5.2", endpointHost: "gateway.example.com" }),
+        entry({ model: "glm-5.2", endpointHost: "gw.example.com" }),
         entry({ model: "glm-5.2", endpointHost: "gw-b.example.com" }),
-        entry({ model: "glm-5.2", endpointHost: "gateway.example.com" }),
+        entry({ model: "glm-5.2", endpointHost: "gw.example.com" }),
       ],
       "p",
       registry(),
     );
     // 去重且保持首次出现顺序
-    expect(r.byModel["glm-5.2"]!.hosts).toEqual(["gateway.example.com", "gw-b.example.com"]);
+    expect(r.byModel["glm-5.2"]!.hosts).toEqual(["gw.example.com", "gw-b.example.com"]);
     expect(r.byModel["glm-5.2"]!.sessions).toBe(3);
   });
 
@@ -284,7 +284,7 @@ describe("aggregateUsage / aggregateOverall：从账本读", () => {
     writeTrust(registry());
     writeLedger([
       entry({ sessionId: "s1", model: "claude-sonnet-5", endpointHost: "code.ppchat.vip", promptTotal: 100000, cacheHit: 99000 }),
-      entry({ sessionId: "s2", model: "glm-5.2", endpointHost: "gateway.example.com", promptTotal: 10000, cacheHit: 5000 }),
+      entry({ sessionId: "s2", model: "glm-5.2", endpointHost: "gw.example.com", promptTotal: 10000, cacheHit: 5000 }),
     ]);
 
     const overall = aggregateOverall();
@@ -299,8 +299,8 @@ describe("aggregateUsage / aggregateOverall：从账本读", () => {
     const day2 = day1 + 86400 * 2;
     writeLedger([
       entry({ sessionId: "a1", ts: day1, endpointHost: "code.ppchat.vip" }),
-      entry({ sessionId: "a2", ts: day1, endpointHost: "gateway.example.com" }),
-      entry({ sessionId: "b1", ts: day2, endpointHost: "gateway.example.com" }),
+      entry({ sessionId: "a2", ts: day1, endpointHost: "gw.example.com" }),
+      entry({ sessionId: "b1", ts: day2, endpointHost: "gw.example.com" }),
     ]);
 
     const periods = aggregateUsage({ granularity: "day" });

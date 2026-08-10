@@ -31,10 +31,7 @@ import {
   toAbortError,
   RequestAbortedError,
   getNetworkErrorCode,
-  parseXShouldRetry,
   is401Error,
-  is408Error,
-  is409Error,
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { lookupRegistry } from "./model-registry.ts";

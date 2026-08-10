@@ -163,9 +163,16 @@ export type ChildMessage =
 // 辅助函数
 // ============================================================
 
-/** 父进程写消息到子进程 stdin */
+/**
+ * 父进程写消息到子进程 stdin。
+ *
+ * 返回值声明为 `number | Promise<number>`：Bun 的 `FileSink.write` 在写入 pending 时
+ * 返回 Promise（见 bun-types `FileSink`），只写 `number` 会让唯一的生产调用方
+ * （sub-agent.ts 传 `subprocess.stdin`）类型不兼容。这里不 await —— 与原行为一致，
+ * fire-and-forget 写一行 JSON。
+ */
 export function writeParentMsg(
-  writer: { write(data: Uint8Array): number },
+  writer: { write(data: Uint8Array): number | Promise<number> },
   msg: ParentMessage,
 ): void {
   const line = JSON.stringify(msg) + "\n";

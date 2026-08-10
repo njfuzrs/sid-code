@@ -210,7 +210,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
           ))}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>e 编辑器打开 · Esc 返回</Text>
+          <Text italic>e 编辑器打开 · Esc 返回</Text>
         </Box>
       </Box>
     );
@@ -259,13 +259,13 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
             </Text>
           ))}
           {truncated && (
-            <Text dimColor italic>
+            <Text italic>
               … 还有 {allLines.length - MAX_PREVIEW_LINES} 行（完整内容请用编辑器打开）
             </Text>
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 返回列表</Text>
+          <Text italic>Esc 返回列表</Text>
         </Box>
       </Box>
     );
@@ -280,9 +280,9 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
           <Box marginTop={1}>
             <Text color={theme.text.secondary}>未发现任何 CLAUDE.md 文件</Text>
           </Box>
-          <Text dimColor>可在项目根创建 CLAUDE.md，或 ~/.claude/CLAUDE.md（用户级）</Text>
+          <Text>可在项目根创建 CLAUDE.md，或 ~/.claude/CLAUDE.md（用户级）</Text>
           <Box marginTop={1}>
-            <Text dimColor italic>f 返回记忆条目 · Esc 返回</Text>
+            <Text italic>f 返回记忆条目 · Esc 返回</Text>
           </Box>
         </Box>
       );
@@ -321,7 +321,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
           />
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>↑↓ 导航 · Enter 查看 · f 返回记忆条目 · Esc 返回</Text>
+          <Text italic>↑↓ 导航 · Enter 查看 · f 返回记忆条目 · Esc 返回</Text>
         </Box>
       </Box>
     );
@@ -344,9 +344,9 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>暂无 auto-memory 记忆条目</Text>
         </Box>
-        <Text dimColor>对话中自动提取，或用 /memory set &lt;key&gt; &lt;value&gt; 手动添加</Text>
+        <Text>对话中自动提取，或用 /memory set &lt;key&gt; &lt;value&gt; 手动添加</Text>
         <Box marginTop={1}>
-          <Text dimColor italic>f 查看 CLAUDE.md 文件 · Esc 关闭</Text>
+          <Text italic>f 查看 CLAUDE.md 文件 · Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -392,7 +392,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
       </Box>
       {statusMsg && <Box marginTop={1}><Text color={theme.text.secondary}>{statusMsg}</Text></Box>}
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 查看 · e 编辑 · d 删除 · f CLAUDE.md · Esc 关闭</Text>
+        <Text italic>↑↓ 导航 · Enter 查看 · e 编辑 · d 删除 · f CLAUDE.md · Esc 关闭</Text>
       </Box>
     </Box>
   );

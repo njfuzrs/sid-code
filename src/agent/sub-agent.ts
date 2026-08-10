@@ -606,10 +606,13 @@ export class SubAgent {
 
     // 创建或获取 task 状态（后台执行时由 runAsync 预先创建）
     let taskId: string;
-    let abortController: AbortController;
+    // 只为满足下面 if/else 两支的赋值对称性而声明——两支各自的 abortController
+    // 实际消费者是 activeAgentControllers 这个模块级 Map（按 taskId 查）与
+    // executeInBackground 传入的 abortController.signal，都不经这个局部变量。
+    let _abortController: AbortController;
     if (task._taskId && task._abortController) {
       taskId = task._taskId;
-      abortController = task._abortController;
+      _abortController = task._abortController;
     } else {
       // 面板可见性由调用方声明（_showInPanel），不由"有没有预建任务"推断——
       // 这个 else 分支同时容纳三类调用方，它们的正确取值并不一致：
@@ -634,7 +637,7 @@ export class SubAgent {
         isBackgrounded: task._showInPanel !== false,
       });
       taskId = created.taskState.id;
-      abortController = created.abortController;
+      _abortController = created.abortController;
     }
 
     let result: SubAgentResult;

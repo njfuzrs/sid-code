@@ -61,7 +61,7 @@ export const ThemeDialog: React.FC<ThemeDialogProps> = ({
       paddingY={1}
     >
       <Text bold color={theme.ui.active}>选择主题</Text>
-      <Text dimColor>使用 ↑↓ 导航，Enter 选择，Esc 取消</Text>
+      <Text>使用 ↑↓ 导航，Enter 选择，Esc 取消</Text>
       <Box marginTop={1}>
         <RadioButtonSelect
           items={items}

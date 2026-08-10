@@ -16,7 +16,7 @@ source_meta:
 input:
   user_query: |-
     [用户问题]
-    anka-app 的 packages/base/src/views/config/PortraitPage 目录下有哪些子模块？它们之间是怎么依赖的？请列出对外入口组件和内部组件。
+    webapp 的 packages/base/src/views/config/PortraitPage 目录下有哪些子模块？它们之间是怎么依赖的？请列出对外入口组件和内部组件。
 
     [Agent 回答]
     packages/base/src/views/config/PortraitPage 的目录结构和依赖关系:

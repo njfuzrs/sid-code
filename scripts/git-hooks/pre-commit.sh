@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-commit hook —— B6-10 数据污染防护 + B7-7 SKILL holdout 回归护栏
+# pre-commit hook —— B6-10 数据污染防护 + B7-7 SKILL holdout 回归护栏 + P1-4 lint 门禁
 #
 # 行为：
 #   1. 扫 staged 的 evals/real-tasks/**.yaml 是否含 §9.1.1 黑名单关键词
@@ -8,6 +8,7 @@
 #   2. 扫 staged 的 SKILL.md（src/skill/builtin/**/SKILL.md 或 .sid-code/skills/**/*.md）
 #      调用 holdout 回归扫描器：holdout 暂无 execution case → INFO skip；有则提示应跑回归
 #      （B7-7 §13.4.4 蒸馏护栏 2，holdout case 入库后会自动激活）
+#   3. oxlint 检查 staged 的 .ts/.tsx（P1-4）
 #
 # 安装：
 #   bun run install-hooks
@@ -154,6 +155,31 @@ if [ -n "$STAGED_SKILLS" ]; then
 
   # shellcheck disable=SC2086
   bun run "$REPO_ROOT/scripts/eval/check-skill-holdout-regression.ts" $ABS_FILES
+fi
+
+# ============================================================================
+# P1-4: oxlint（只对 staged 的 .ts/.tsx 跑，全仓也就 65ms，但限定 staged
+# 更能精确定位是本次改动引入的问题，而不是让人对着一堆存量报错发懵）
+#
+# .oxlintrc.json 的 ignorePatterns 对显式传入的文件同样生效（已实测），
+# 所以直接把 staged 路径喂给 oxlint 不会漏用 src/ink/ 等排除规则。
+# ============================================================================
+STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
+
+if [ -n "$STAGED_TS" ]; then
+  echo "[pre-commit] oxlint 检查 staged 文件 ($(echo "$STAGED_TS" | wc -l | tr -d ' ') 个)..."
+
+  ABS_FILES=""
+  for f in $STAGED_TS; do
+    ABS_FILES="$ABS_FILES $REPO_ROOT/$f"
+  done
+
+  # shellcheck disable=SC2086
+  if ! (cd "$REPO_ROOT" && ./node_modules/.bin/oxlint $ABS_FILES); then
+    echo "[pre-commit] ❌ oxlint 检查失败，commit 中止"
+    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+    exit 1
+  fi
 fi
 
 exit 0

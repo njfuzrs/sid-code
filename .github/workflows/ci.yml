@@ -1,4 +1,4 @@
-# CI 门禁：全量单测 + 构建（2026-08-01 补齐）
+# CI 门禁：全量单测 + 构建 + lint（2026-08-01 补齐，2026-08-10 补多平台矩阵、eval-framework 兜底与 lint 门禁）
 #
 # 为什么需要：在此之前仓库有 5 个 workflow，但**没有一个跑全量 bun test**
 #   · docs-lint.yml            只在 docs/ 改动时跑文档规则
@@ -11,8 +11,16 @@
 #
 # 把同一道关卡前移到 PR：让失败发生在写代码的时候，而不是发版的时候。
 #
-# 刻意**不含**类型检查（`tsc --noEmit`）：仓库当前有存量类型错误，按项目决定暂不纳入门禁。
-# 将来要加就在这里加一个 step，别另开 workflow。
+# 刻意**不含**类型检查（`tsc --noEmit`）：当前有 187 个存量错误（P1-3），接了就是永久红灯。
+# 清零后再在这里加一个 step，别另开 workflow。
+#
+# lint 门禁（P1-4，2026-08-10 接入）见下方独立的 `lint` job —— `.oxlintrc.json` 只开
+# correctness 档、关掉 style/pedantic 等风格类噪音，接入前已把存量 61 处 no-unused-vars
+# 清零，理由与逐条豁免规则见 `.oxlintrc.json` 顶部注释，不在这里重复。
+#
+# ⚠️ 本仓库当前的 remote 是内网 GitLab，没有 GitHub remote ——
+# 也就是说这个 workflow **从未真正在 CI 上跑过**，它是为开源切换预置的。
+# 首次接上 GitHub 后请以实际 run 为准复核本文件的假设。
 
 name: CI
 
@@ -29,9 +37,76 @@ concurrency:
 
 jobs:
   test:
+    # 多平台矩阵：三家对标项目（codex / opencode / gemini-cli）都至少覆盖 ubuntu + macOS。
+    # 内嵌 rg 这两个平台都已入库（vendor/ripgrep/15.1.0/rg-linux-x64 与 rg-darwin-arm64），
+    # 所以 make build 的 fetch-ripgrep 步骤不需要联网。
+    # Windows 未纳入：见 docs/bugfixes/todo/高级能力/Windows系统兼容性能力补齐/
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不掩盖另一个平台的结果——平台相关的 bug 正是矩阵要抓的东西
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    # 本地全量约 200s（9177 test / 649 文件）；给足余量覆盖 CI 冷启动与依赖安装
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # ⚠️ 这一步能成功的前提是 `packages/eval-framework/` 已入库。
+      # 它曾是 `file:../eval-framework` 仓库外依赖（P1-5），那时 fresh clone 上
+      # `bun install --frozen-lockfile` 直接 EXIT=1（`ENOENT: ... package eval-framework`），
+      # ci.yml 第一步就断、根本走不到 bun test。2026-08-10 已 vendor 成 Bun workspace
+      # （`"eval-framework": "workspace:*"`），实测 fresh clone EXIT=0 / 222 包。
+      # 若哪天这步又报 eval-framework 找不到，先确认 packages/ 是否还在版本控制里。
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      # 与 release.sh 发布前门禁同源（同一条 `bun test`），前移到 PR 阶段。
+      # 不做任何文件排除：5 个依赖 eval-framework 的测试文件
+      # （tests/eval/ 下 agent-trace / raw-jsonl-to-trace / baseline-sync-holdout /
+      # eval-runner-e2e，加间接经 evals/providers/sid-code-live.ts 的
+      # eval-runner-trajectory-meta）在 vendor 成 workspace 后已能正常解析。
+      - name: 全量单测
+        run: bun test
+
+      # 测试不得改动被 git 追踪的文件。这不是洁癖：`evals/holdout/real-tasks/holdout-sids.txt`
+      # 是「永封」文件，实测被测试写脏过（残留 fixture 字面量 `tampered-extra-line`，
+      # 来自 tests/eval/check-holdout-real-tasks-sealed.test.ts 的 withSealedBackup 未能恢复），
+      # 而 pre-push hook 会拿 sha256 校验它 —— 脏了就推不上去，且脏数据会被误当真实数据提交。
+      # 同类事故已有前科（2026-08-03 遥测落盘污染，见 CLAUDE.md「测试约定」）。
+      # 放在测试**之后**跑，才能抓到测试自己的副作用。
+      #
+      # 只看**已追踪**文件（--porcelain 的前两列非 `??`）：测试产生的临时文件属于
+      # untracked，不该让 CI 变红 —— 那会把这道门禁变成噪音源，最后被人加 `|| true` 绕过。
+      - name: 单测未污染工作区
+        run: |
+          dirty="$(git status --porcelain --untracked-files=no)"
+          if [ -n "$dirty" ]; then
+            echo "::error::单测改动了被 git 追踪的文件（测试缺少落盘隔离，见 CLAUDE.md「测试约定」）"
+            echo "$dirty"
+            git diff --stat
+            exit 1
+          fi
+          echo "✅ 已追踪文件无改动，单测无落盘副作用"
+
+      # make build 不动版本号，CI 里跑它不会让 package.json 变脏。
+      # 末尾的 ./sid-code --self-check 会断言关键修复已内联 + 内置 skill 已嵌入
+      # + 内嵌 rg 平台匹配，等于顺带验证了构建产物可用。
+      - name: 构建 + 产物自检
+        run: make build
+
+  # lint 门禁独立成 job：oxlint 65ms 跑完全仓，没必要占矩阵里两个平台的 slot，
+  # 也不该被 9000+ 单测的时长拖着一起等。规则集与豁免理由见 .oxlintrc.json。
+  lint:
     runs-on: ubuntu-latest
-    # 本地全量约 105s；给足余量覆盖 CI 冷启动与依赖安装
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -43,12 +118,24 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
-      # 与 release.sh 发布前门禁同源（同一条 `bun test`），前移到 PR 阶段
-      - name: 全量单测
-        run: bun test
+      - name: oxlint
+        run: bun run lint
 
-      # make build 不动版本号，CI 里跑它不会让 package.json 变脏。
-      # 末尾的 ./sid-code --self-check 会断言关键修复已内联 + 内置 skill 已嵌入
-      # + 内嵌 rg 平台匹配，等于顺带验证了构建产物可用。
-      - name: 构建 + 产物自检
-        run: make build
+  # 文档门禁独立成 job：只需一个平台，且失败原因与代码无关，分开看更省诊断时间。
+  # 注意 docs-lint.yml 已经在 PR 改 docs/ 时跑同样的规则，这里刻意**不**重复它，
+  # 只跑那个 workflow 没覆盖的 INDEX 一致性（它只在 docs/ 路径变动时触发，
+  # 而新增 .md 会改变 INDEX 内容却可能不落在它的 paths 过滤里）。
+  docs-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # 不需要依赖：docs-index-gen.ts 只用 node:fs 与 Bun 内置 Glob
+      - name: INDEX.md 与 frontmatter 一致
+        run: bun run scripts/docs-index-gen.ts --check

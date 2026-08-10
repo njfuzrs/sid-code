@@ -1,0 +1,44 @@
+# EditorConfig —— 编辑器层的最低共识：缩进、换行、编码。
+# https://editorconfig.org
+#
+# 这些值不是新定的规范，是从现有代码实测出来的（src/ 下 876 个文件用 2 空格缩进、
+# 零 tab 缩进文件）。仓库有 oxlint（P1-4，见 .oxlintrc.json），但它只管正确性
+# （未用变量等真问题），不管排版——所以格式化这一层，这份文件仍是唯一的自动化兜底，
+# 别把它当成可有可无的装饰。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc,css,html,vue}]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Markdown 里行尾两个空格是硬换行语法，裁掉会改变渲染结果。
+trim_trailing_whitespace = false
+
+[*.{sh,bash}]
+indent_size = 2
+
+[Makefile]
+# Makefile 的配方行**必须**用 tab 开头，这是 make 的语法要求，不是风格偏好。
+# 换成空格会直接报 "missing separator"。
+indent_style = tab
+
+[*.toml]
+indent_size = 2
+
+[{*.snap,vendor/**,src/ink/_vendor/**}]
+# 快照与 vendor 进来的第三方代码不套本仓风格：
+# 快照文件由测试生成，vendor 代码要保持与上游可比对（见 NOTICE）。
+trim_trailing_whitespace = false
+insert_final_newline = false

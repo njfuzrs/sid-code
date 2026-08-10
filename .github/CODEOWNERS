@@ -1,0 +1,34 @@
+# 代码所有者 —— PR 会自动请求这里匹配到的人 review。
+#
+# 语法与 .gitignore 类似，**后匹配的规则覆盖先匹配的**，所以兜底规则放在最前面。
+# 注意：GitHub 上生效需要这些用户对仓库有写权限；内网 GitLab 上此文件不生效
+# （GitLab 的等价机制是 CODEOWNERS + Owner approval，且需要 Premium 版）。
+
+# 兜底：所有文件
+*                           @zhourusheng
+
+# ─── 需要格外谨慎的路径 ───
+
+# 第三方归属声明：改动这里等于改动版权事实陈述，必须维护者过目。
+# 尤其不要以「清理痕迹 / 统一措辞 / 看着不专业」为由删掉来源事实。
+/NOTICE                     @zhourusheng
+/src/ink/README.md          @zhourusheng
+
+# 未获授权的第三方代码，正在重构移除。改动前先读 NOTICE 第 1 节。
+/src/ink/                   @zhourusheng
+
+# 发布链路：脚本改错会污染版本号、打错 tag、或让线上二进制对不上 commit。
+/scripts/release.sh         @zhourusheng
+/scripts/website-deploy.sh  @zhourusheng
+/scripts/generate-changelog.ts  @zhourusheng
+/Makefile                   @zhourusheng
+
+# 安全与权限：绕过一条规则就是一个漏洞。
+# path-validator.ts 与 bash-security.ts 都在这个目录下，无需单列。
+/src/permission/            @zhourusheng
+
+# CI 门禁与治理文件
+/.github/                   @zhourusheng
+/CONTRIBUTING.md            @zhourusheng
+/SECURITY.md                @zhourusheng
+/CODE_OF_CONDUCT.md         @zhourusheng

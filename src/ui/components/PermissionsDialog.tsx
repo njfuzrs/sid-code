@@ -73,7 +73,7 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
         )}
         {allowedTools.length > 10 && (
           <Box paddingLeft={2}>
-            <Text dimColor>… 还有 {allowedTools.length - 10} 条</Text>
+            <Text>… 还有 {allowedTools.length - 10} 条</Text>
           </Box>
         )}
       </Box>
@@ -95,7 +95,7 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
         )}
         {disallowedTools.length > 10 && (
           <Box paddingLeft={2}>
-            <Text dimColor>… 还有 {disallowedTools.length - 10} 条</Text>
+            <Text>… 还有 {disallowedTools.length - 10} 条</Text>
           </Box>
         )}
       </Box>
@@ -111,7 +111,7 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor italic>Esc 关闭</Text>
+        <Text italic>Esc 关闭</Text>
       </Box>
     </Box>
   );

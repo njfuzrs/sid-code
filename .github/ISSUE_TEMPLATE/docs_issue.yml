@@ -1,0 +1,56 @@
+name: 📖 文档问题
+description: 文档写错了、过时了、或者缺内容
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **文档骗人比没文档更糟**——照着文档写一个不存在的参数，
+        比查不到而去读源码浪费更多时间。所以文档错误请照报。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 问题类型
+      options:
+        - 写错了（与实际行为不符）
+        - 过时了（曾经对，现在不对）
+        - 缺内容（该写的没写）
+        - 讲不清楚（看不懂 / 有歧义）
+        - 死链 / 排版问题
+    validations:
+      required: true
+
+  - type: input
+    id: where
+    attributes:
+      label: 在哪里
+      description: 官网 URL，或仓库内的文件路径（带行号更好）。
+      placeholder: "https://www.sid-code.cc/ref/tools 或 README.md:68"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 文档怎么说的，实际是怎样的
+      description: |
+        两边都贴上：文档原文 + 你实测到的实际行为（带命令与输出最好）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 你建议怎么改
+      description: 有具体措辞就直接写，我们可以直接用。
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        **如果问题在 `website/ref/` 下的 6 个参考页**（CLI 参数 / 工具 / 斜杠命令 /
+        Hook 事件 / settings 字段 / 环境变量）：这些页面是**从源码生成**的，
+        不要直接改页面文件——改了会被下次 `bun run docs:gen-reference` 覆盖掉。
+        根因通常在源码里的定义或注释，请在 issue 里说明，或直接改源码提 PR。

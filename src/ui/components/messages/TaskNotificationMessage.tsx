@@ -87,7 +87,7 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
       {result ? (
         <Box flexDirection="row">
           <Box flexShrink={0}>
-            <Text color={theme.text.secondary} dimColor>{`  ${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             <SlicingMaxSizedBox

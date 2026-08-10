@@ -17,7 +17,51 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
 
-const SERVICE_LABEL = "cc.ruishan.sid-code.daemon";
+/**
+ * launchd 服务标签（同时是 plist 文件名）。
+ *
+ * 反向 DNS 取项目自己的公开域名 `sid-code.cc`。此前用的是内部域名派生的
+ * `cc.ruishan.sid-code.daemon`，那会把内部域名写进每台机器的
+ * `~/Library/LaunchAgents/` 文件名里，也写进公开仓库。
+ */
+const SERVICE_LABEL = "cc.sid-code.daemon";
+
+/**
+ * 改名前用过的标签。**只用于卸载**，绝不用于安装。
+ *
+ * 必须保留：`uninstallLaunchd` 认的是 `plistPath()`，改名后它只会去找新文件，
+ * 旧 plist 会永久留在 `~/Library/LaunchAgents/` 里继续被 launchd 拉起 ——
+ * 用户执行 `daemon uninstall` 看到"已卸载"，实际还有一个守护进程在跑，
+ * 而且再也没有任何代码路径能删掉它。
+ */
+const LEGACY_SERVICE_LABELS = ["cc.ruishan.sid-code.daemon"] as const;
+
+function legacyPlistPaths(): string[] {
+  return LEGACY_SERVICE_LABELS.map((label) =>
+    join(homedir(), "Library", "LaunchAgents", `${label}.plist`),
+  );
+}
+
+/**
+ * 卸载/顶掉改名前安装的旧服务。安装与卸载路径都要调：
+ * 安装时不清旧的，会出现新旧两个 agent 同时开机自启（两个守护进程抢同一份状态）。
+ */
+function removeLegacyLaunchd(): void {
+  for (const path of legacyPlistPaths()) {
+    if (!existsSync(path)) continue;
+    try {
+      execFileSync("launchctl", ["unload", path], { stdio: "ignore" });
+    } catch {
+      /* 没加载过，忽略 */
+    }
+    try {
+      unlinkSync(path);
+      console.log(`已移除旧标签的 launchd 服务: ${path}`);
+    } catch {
+      /* 删不掉（权限/竞态）不阻塞主流程 */
+    }
+  }
+}
 
 interface ServiceInstallOptions {
   webhook?: boolean;
@@ -94,6 +138,8 @@ function escapeXml(s: string): string {
 }
 
 function installLaunchd(opts: ServiceInstallOptions): void {
+  // 先清掉改名前的旧 agent，否则新旧两个都会开机自启（两个守护进程抢同一份状态）。
+  removeLegacyLaunchd();
   mkdirSync(dirname(plistPath()), { recursive: true });
   mkdirSync(logDir(), { recursive: true });
   writeFileSync(plistPath(), buildPlist(opts));
@@ -116,6 +162,9 @@ function installLaunchd(opts: ServiceInstallOptions): void {
 }
 
 function uninstallLaunchd(): void {
+  // 旧标签的 plist 必须一并清掉，否则"已卸载"是假的：旧 agent 还在被 launchd 拉起。
+  // 放在 existsSync 判断**之前** —— 只装过旧版的用户，新 plist 根本不存在。
+  removeLegacyLaunchd();
   if (!existsSync(plistPath())) {
     console.log("launchd 服务未安装");
     return;

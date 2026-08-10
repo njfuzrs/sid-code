@@ -14,10 +14,6 @@ import { tmpdir } from "node:os";
 
 // ─── 测试辅助 ───
 
-function makeBaseInput(_sessionId = "sess-001", _cwd = "/tmp/test") {
-  return { session_id: _sessionId, cwd: _cwd, timestamp: new Date().toISOString(), permission_mode: "default" };
-}
-
 /** 触发 SessionStart */
 async function fireSessionStart(hookSystem: HookSystem, sessionId = "sess-001") {
   await hookSystem.fireSessionStartEvent("startup", { model: "claude-test" });

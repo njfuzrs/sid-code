@@ -41,7 +41,7 @@ async function loadInstalledPlugins(errors: PluginError[]): Promise<LoadedPlugin
   const registry = await readInstalledPlugins();
   const plugins: LoadedPlugin[] = [];
 
-  for (const [name, entry] of Object.entries(registry.plugins)) {
+  for (const [, entry] of Object.entries(registry.plugins)) {
     if (!existsSync(entry.path)) {
       errors.push({
         type: "path-not-found",

@@ -1,0 +1,83 @@
+# Dependabot 版本更新配置。
+#
+# 关于 bun 生态：Dependabot 自 2025-02 起 GA 支持 bun（读文本格式的 `bun.lock`，
+# 不支持已废弃的二进制 `bun.lockb`）。本仓库用的正是 `bun.lock`，所以
+# package-ecosystem 写 "bun" 而不是 "npm"。
+#
+# `eval-framework` 现在是仓内 workspace 包（`packages/eval-framework/`，P1-5 已修）。
+# 它以 `"eval-framework": "workspace:*"` 声明，Dependabot 不会去外部注册表找它，
+# 原先「指向仓库外 file: 路径解析不到」的坑已消失。⚠️ 别把它改回仓库外路径。
+#
+# 注意 workspace 子包**自己的** dependencies（@anthropic-ai/sdk / yaml / typescript）
+# 不被上面 directory: "/" 这一条覆盖 —— 见文件末尾单独为它加的那条配置。
+#
+# open-pull-requests-limit 刻意压低：依赖更新 PR 必须人工过目
+# （CI 只跑 bun test + make build，测不出上游的行为变更），一次来 10 个没人看得完。
+
+version: 2
+updates:
+  # ─── 主包依赖 ───
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      # 避开整点，也避开周一上班第一件事
+      time: "10:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    commit-message:
+      # 与仓库的 Conventional Commits 约定对齐：chore 会被 changelog 归入「其他」组，
+      # 不会污染用户视角的 feat/fix 分组。
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # React 三件套必须同版本升级：package.json 的 overrides 把
+      # react-reconciler / scheduler 锁死了，分开升会立刻不兼容。
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "react-reconciler"
+          - "react-devtools-core"
+          - "scheduler"
+          - "@types/react*"
+      types:
+        patterns:
+          - "@types/*"
+        exclude-patterns:
+          - "@types/react*"
+    ignore:
+      # 这三个被 package.json 的 overrides 显式锁在精确版本上（0.33.0 / 0.27.0），
+      # 让 Dependabot 提 PR 只会制造需要手工关掉的噪音。要升就手工连带 overrides 一起改。
+      - dependency-name: "react-reconciler"
+      - dependency-name: "scheduler"
+
+  # ─── workspace 子包：packages/eval-framework ───
+  #
+  # 为什么要单独一条：Dependabot 的 `directory` 不递归 —— 上面 directory: "/" 只读根
+  # package.json，读不到 workspace 子包自己声明的 dependencies。不加这条，子包的
+  # @anthropic-ai/sdk / yaml / typescript 就永远收不到安全更新（静默失守，不会报错）。
+  - package-ecosystem: "bun"
+    directory: "/packages/eval-framework"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "10:30"
+      timezone: "Asia/Shanghai"
+    # 评测框架不在发行二进制里，升级风险比主包低，但仍要人工过目
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  # ─── GitHub Actions ───
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      time: "10:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"

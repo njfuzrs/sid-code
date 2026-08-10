@@ -14,7 +14,7 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.315Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: 修改 @anka-app/packages/base/src/layouts/WorkspaceConfigLayout.vue，将菜单从硬编码的 aside 标签改为从 getWorkspaceMenuTree 接口动态获取。接口返回的 router 字段对应当前硬编码的 key 字段。
+  user_query: 修改 @webapp/packages/base/src/layouts/WorkspaceConfigLayout.vue，将菜单从硬编码的 aside 标签改为从 getWorkspaceMenuTree 接口动态获取。接口返回的 router 字段对应当前硬编码的 key 字段。
   repo: null
   repo_commit: null
   attachments: []

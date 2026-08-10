@@ -149,7 +149,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
         : `${THINKING_MARK} 思考过程 · ${formatLargeNumber(text.length)} 字符`;
     return (
       <Box width={width}>
-        <Text color={theme.text.secondary} dimColor italic>
+        <Text color={theme.text.secondary} italic>
           {summary}
           {/* 仅在 ctrl+o 真能展开时给提示；流式中不提示（无需打扰） */}
           {!streaming && showExpandHint ? " · ctrl+o 展开" : ""}
@@ -204,7 +204,7 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
         ))}
         {/* 流式时在末尾附一个光标提示，暗示仍在输出 */}
         {streaming && (
-          <Text color={theme.ui.dark} dimColor>
+          <Text color={theme.ui.dark}>
             {CURSOR}
           </Text>
         )}

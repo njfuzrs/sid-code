@@ -14,7 +14,7 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.413Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: "'/Users/dev/Code/ruijie/iam-studio-fe/anka-app/packages/base/src/views/config/ExpertArbitration/ObjectConflictPreview.vue' 这个页面中 后续将标记以下 ${store.objectGroups.length} 个合并对象 中间这个数字不对，请你按照：专家仲裁中的选择有4个重复对象进行标记为多个对象，其中两个合并成1个，最后可以处理为3个对象，界面展示的处理后标记为1个，应该为3个，这个方案来修改，现在只算了被合并组的对象数量，没有算上没合并的对象数量"
+  user_query: "'${REPO_ROOT}/webapp/packages/base/src/views/config/ExpertArbitration/ObjectConflictPreview.vue' 这个页面中 后续将标记以下 ${store.objectGroups.length} 个合并对象 中间这个数字不对，请你按照：专家仲裁中的选择有4个重复对象进行标记为多个对象，其中两个合并成1个，最后可以处理为3个对象，界面展示的处理后标记为1个，应该为3个，这个方案来修改，现在只算了被合并组的对象数量，没有算上没合并的对象数量"
   repo: null
   repo_commit: null
   attachments: []

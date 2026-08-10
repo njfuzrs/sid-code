@@ -330,7 +330,7 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
       lines.push("");
 
       // 有维度数据的 provider 展开详情
-      const detailProviders = providers.filter(
+      const _detailProviders = providers.filter(
         ([_, v]) => v.dimensions || v.notes?.trim() || v.transcript_path
       );
 

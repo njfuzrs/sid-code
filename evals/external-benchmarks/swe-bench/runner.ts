@@ -25,9 +25,11 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 const SWE_BENCH_DIR = resolve(__dirname);
 const RESULTS_DIR = join(SWE_BENCH_DIR, "results");
 const EXTERNAL_REPORT_DIR = join(REPO_ROOT, "_reports/external");
+// trajectory-platform 默认按「与本仓同级的兄弟目录」定位（与 scripts/eval/paired-trajectory-diff.ts
+// 的约定一致），放在别处用 SID_CODE_INSPECT_VENV 覆盖。不要写死绝对路径——那只在一台机器上成立。
 const TRAJECTORY_PLATFORM_VENV =
 	process.env.SID_CODE_INSPECT_VENV ??
-	"/Users/dev/Code/person/trajectory-platform/backend/venv";
+	resolve(REPO_ROOT, "../trajectory-platform/backend/venv");
 
 function parseArgs(argv: string[]): { limit?: number; model: string } {
 	let limit: number | undefined;

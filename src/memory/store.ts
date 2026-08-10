@@ -79,7 +79,7 @@ const MEMORY_DESC_MAX_LEN = 150;
  * 但**合法公网 IP 与四段版本号在字面上无法区分**（`8.8.8.8` 既是 DNS 也可以是版本号），
  * 所以正则只是必要条件，是否脱敏还要看语境信号 —— 见 `INFRA_CONTEXT_RE`。
  *
- * 刻意**不做**主机名/域名匹配：`example.com`、`gitlab.example.com` 在记忆摘要里是正常
+ * 刻意**不做**主机名/域名匹配：`example.com`、`git.internal.example.com` 在记忆摘要里是正常
  * 且必要的指路信息，抹掉会让索引失去价值。这与 secret-redact.ts `db_conn_string`
  * 那条注释的取舍**方向相反**且都成立："误把真 conn string 放过去比让 example.com 误报
  * 更危险"是**拒绝写入**场景的权衡；索引脱敏是**有损改写**，宁可漏，不可误伤可读性。

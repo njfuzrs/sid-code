@@ -268,7 +268,7 @@ describe("T11 Responses API 解析器", () => {
    * `output_tokens_details.reasoning_tokens` 全部漏采。luna 账本记 2.2%，
    * 而同一渠道实测真实命中 95.2%（17152/18017），差距全部来自采集缺陷。
    *
-   * 断言用**真实实测形状**（uniapi 网关 POST /responses 的原始 usage），
+   * 断言用**真实实测形状**（自建网关 POST /responses 的原始 usage），
    * 不手抄一个理想化的 mock。
    */
   describe("P0-1 usage 提取：缓存命中 + reasoning（Responses 形状）", () => {

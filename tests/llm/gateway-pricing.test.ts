@@ -80,8 +80,8 @@ describe("convertRawEntry — 换算公式", () => {
 
 describe("derivePricingURL", () => {
   test("剥路径取 origin + /api/pricing", () => {
-    expect(derivePricingURL("https://gateway.example.com/v1")).toBe("https://gateway.example.com/api/pricing");
-    expect(derivePricingURL("https://gateway.example.com")).toBe("https://gateway.example.com/api/pricing");
+    expect(derivePricingURL("https://gw.example.com/v1")).toBe("https://gw.example.com/api/pricing");
+    expect(derivePricingURL("https://gw.example.com")).toBe("https://gw.example.com/api/pricing");
   });
 });
 

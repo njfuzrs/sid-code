@@ -73,7 +73,6 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
           <Box paddingLeft={2} marginTop={1}>
             <Text
               color={isError ? theme.status.error : undefined}
-              dimColor={!isError}
               wrap="wrap"
             >
               {output}
@@ -113,7 +112,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
               <Text> </Text>
             </Box>
             <Box flexGrow={1}>
-              <Text color={theme.text.secondary} dimColor>
+              <Text color={theme.text.secondary}>
                 {command.summary}
               </Text>
             </Box>

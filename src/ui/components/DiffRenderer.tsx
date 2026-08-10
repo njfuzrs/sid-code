@@ -361,7 +361,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
           borderColor={semanticTheme.border.default}
           paddingX={1}
         >
-          <Text dimColor>未检测到变化。</Text>
+          <Text>未检测到变化。</Text>
         </Box>
       );
     }
@@ -399,7 +399,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
         return (
           <Box flexDirection="column" width={terminalWidth}>
             {colorized}
-            <Text color={semanticTheme.text.secondary} dimColor>
+            <Text color={semanticTheme.text.secondary}>
               {formatCollapsedSummary(hiddenCount, { hint: 'ctrl+o' })}
             </Text>
           </Box>
@@ -454,7 +454,7 @@ const renderDiffContent = (
         borderColor={semanticTheme.border.default}
         paddingX={1}
       >
-        <Text dimColor>未检测到变化。</Text>
+        <Text>未检测到变化。</Text>
       </Box>
     );
   }
@@ -513,7 +513,7 @@ const renderDiffContent = (
   const { plan: renderPlan, foldedLineCount } = foldRenderPlan(fullPlan, maxLines);
   const foldFooter =
     foldedLineCount > 0 ? (
-      <Text color={semanticTheme.text.secondary} dimColor>
+      <Text color={semanticTheme.text.secondary}>
         {formatCollapsedSummary(foldedLineCount, { hint: 'ctrl+o' })}
       </Text>
     ) : null;
@@ -555,7 +555,7 @@ const renderDiffContent = (
       if (item.kind === 'collapsed') {
         acc.push(
           <Box key={`collapse-${planIdx}`} paddingLeft={gutterWidth + 2}>
-            <Text color={semanticTheme.text.secondary} dimColor>
+            <Text color={semanticTheme.text.secondary}>
               {`${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`}
             </Text>
           </Box>,

@@ -82,7 +82,7 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
                 <Text color={s.severity === "blocked" ? theme.status.warning : theme.text.secondary}>
                   {s.rule}
                 </Text>
-                <Text color={theme.text.secondary} dimColor>
+                <Text color={theme.text.secondary}>
                   {`被 ${s.bySource} 的 ${s.byBehavior} 规则`}
                   {s.severity === "blocked" ? "完全拦截" : "遮蔽（仍会弹窗）"}
                 </Text>
@@ -134,7 +134,7 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
       <Text color={accentColor} bold>{title}</Text>
-      <Text dimColor>自定义命令将执行以下 Shell 命令：</Text>
+      <Text>自定义命令将执行以下 Shell 命令：</Text>
       {request.commands.map((cmd, i) => (
         <Box key={i} marginLeft={2}>
           <Text color={verdicts[i].isDangerous ? theme.status.error : theme.ui.active}>$ </Text>
@@ -253,7 +253,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
       <Text color={accent} bold>{PLAN_REVIEW} 计划审批</Text>
-      <Text dimColor>文件: {request.planFilePath} ({lineCount} 行)</Text>
+      <Text>文件: {request.planFilePath} ({lineCount} 行)</Text>
       <Box flexDirection="column" marginTop={1}>
         {options.map((opt, i) => {
           const focused = cursor === i && !editingFeedback && !editingOther;
@@ -294,7 +294,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         </Box>
       )}
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text>
           {editingFeedback || editingOther
             ? "Enter 提交 · Esc 返回"
             : "↑↓ 移动 · Enter 选择 · y 批准 · n 拒绝 · Esc 取消"}
@@ -676,7 +676,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
             {displayPreview ? (
               <Ansi>{displayPreview}</Ansi>
             ) : (
-              <Text color={theme.text.secondary} dimColor>无预览</Text>
+              <Text color={theme.text.secondary}>无预览</Text>
             )}
           </Box>
         </Box>

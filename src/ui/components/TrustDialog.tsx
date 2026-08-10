@@ -93,11 +93,11 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
               <Text color={theme.text.secondary}>{item.description}</Text>
             </Box>
             {item.details ? (
-              <Text dimColor>    {item.details.slice(0, 120)}</Text>
+              <Text>    {item.details.slice(0, 120)}</Text>
             ) : null}
           </Box>
         ))}
-        {extra > 0 && <Text dimColor>  …等共 {items.length} 项</Text>}
+        {extra > 0 && <Text>  …等共 {items.length} 项</Text>}
       </Box>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<boolean, ChoiceItem>
@@ -120,8 +120,8 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
       <Box marginTop={1} flexDirection="column">
         {/* 点破取舍：hooks/MCP 在启动早期就初始化完了，本次会话不热加载。
             不说清会让用户点了"信任"却发现 hook 没生效，还不知道为什么。 */}
-        <Text dimColor>这些配置已在本次启动时跳过；选择信任后于下次启动生效。</Text>
-        <Text dimColor italic>Esc 视作不信任</Text>
+        <Text>这些配置已在本次启动时跳过；选择信任后于下次启动生效。</Text>
+        <Text italic>Esc 视作不信任</Text>
       </Box>
     </Box>
   );

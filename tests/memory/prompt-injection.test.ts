@@ -219,14 +219,21 @@ describe("buildSystemPrompt — 记忆注入集成", () => {
  *      误伤可读性比漏一条更糟（模型据 `<地址已省略>` 的版本号会做出错误判断）。
  */
 describe("索引摘要脱敏：基础设施坐标", () => {
-  /** 复刻事故里那条真实记忆的 description */
+  /**
+   * 复刻事故里那条真实记忆的 description。
+   *
+   * IP 用 RFC 5737 文档保留段 `203.0.113.0/24`，不写真实服务器地址：
+   * 这个测试的语义是「公网 IP 形态会被抹掉」，被抹的是**形态**不是某个具体地址，
+   * 用文档段一样能验证（实测占位符与 root 标注行为完全一致），
+   * 而写真地址等于把基建坐标留在公开仓库里 —— 恰好是本测试要防的那件事。
+   */
   const ACCIDENT_DESC =
-    "sid-code 生产发布服务器：121.196.144.227（root），制品路径 " +
-    "/var/www/html/releases/sid-code/，nginx 对外暴露 http://121.196.144.227/releases/";
+    "sid-code 生产发布服务器：203.0.113.7（root），制品路径 " +
+    "/var/www/html/releases/sid-code/，nginx 对外暴露 http://203.0.113.7/releases/";
 
   test("写入端：公网 IP 与特权账号标注被抹，其余信息保留", () => {
     const desc = normalizeMemoryDesc(ACCIDENT_DESC, "");
-    expect(desc).not.toContain("121.196.144.227");
+    expect(desc).not.toContain("203.0.113.7");
     expect(desc).not.toContain("（root）");
     expect(desc).toContain("<地址已省略>");
     // 抹的是坐标，不是这条记忆的用途——路径等指路信息必须留着
@@ -239,17 +246,17 @@ describe("索引摘要脱敏：基础设施坐标", () => {
     // 注入路径必须自己兜住，否则"已修复"只对新写入的记忆成立。
     const staleIndex = `# Memory Index\n- [production-deploy-server](reference_production-deploy-server.md) — ${ACCIDENT_DESC}`;
     const prompt = buildMemorySystemPrompt(staleIndex);
-    expect(prompt).not.toContain("121.196.144.227");
+    expect(prompt).not.toContain("203.0.113.7");
     expect(prompt).not.toContain("（root）");
     expect(prompt).toContain("<地址已省略>");
     expect(prompt).toContain("production-deploy-server");
   });
 
   test("脱敏发生在 150 字符截断之前（不留半截 IP）", () => {
-    // 截断先行会把 IP 切成 `121.196.14` 这种残留：既没抹干净又匹配不上。
-    const padded = "生产服务器部署说明。".repeat(12) + "地址 121.196.144.227（root）";
+    // 截断先行会把 IP 切成 `203.0.11` 这种残留：既没抹干净又匹配不上。
+    const padded = "生产服务器部署说明。".repeat(12) + "地址 203.0.113.7（root）";
     const desc = normalizeMemoryDesc(padded, "");
-    expect(desc).not.toContain("121.196");
+    expect(desc).not.toContain("203.0.113");
   });
 
   test.each([
@@ -258,7 +265,7 @@ describe("索引摘要脱敏：基础设施坐标", () => {
     ["带前缀的版本号", "发布时 app@1.2.3.4 与 v2.0.1.3 都是版本"],
     ["环回地址", "本地起服务在 127.0.0.1:3000，用 curl 验证"],
     ["私网地址", "内网 gitlab 部署在 192.168.1.50，走 172.16.3.9 跳板"],
-    ["域名", "网关地址 gitlab.example.com，服务器不带 /v1"],
+    ["域名", "网关地址 git.internal.example.com，服务器不带 /v1"],
     ["超范围八位组", "部署机 10.15.2.300 不是合法 IP"],
     ["无语境词的裸数字", "四段数字 203.0.113.9 没有任何基础设施语境"],
     ["孤立的账号标注", "服务器上单独出现 (root) 不该被抹"],

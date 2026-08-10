@@ -66,7 +66,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       paddingY={1}
     >
       <Text bold color={theme.ui.active}>设置</Text>
-      <Text dimColor>使用 ↑↓ 导航，Enter 切换，Esc 关闭</Text>
+      <Text>使用 ↑↓ 导航，Enter 切换，Esc 关闭</Text>
       <Box marginTop={1}>
         <RadioButtonSelect
           items={items}

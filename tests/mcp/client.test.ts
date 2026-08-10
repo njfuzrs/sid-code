@@ -3,7 +3,7 @@
  * 测试重试机制、通知处理、initialized 通知格式
  */
 
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { MCPClient } from "../../src/mcp/client.ts";
 import type { Transport, JsonRpcNotification } from "../../src/mcp/transport.ts";
 import type { JsonRpcRequest, JsonRpcResponse } from "../../src/mcp/types.ts";

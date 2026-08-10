@@ -13,6 +13,7 @@ import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
 import type { ContextTokenBreakdown } from "../../context/manager.ts";
@@ -31,8 +32,8 @@ function fmtNum(n: number): string {
  * 每个分类分配一个 theme 语义色（循环取用）。
  * 全部取自 theme.*，跟随主题切换，绝不硬编码 hex。
  */
-function categoryColor(key: string): string {
-  const map: Record<string, string> = {
+function categoryColor(key: string): Color {
+  const map: Record<string, Color> = {
     systemPrompt: theme.ui.active,
     toolSchemas: theme.text.accent,
     // §12 P0-1 完整版新增细分类：沿用既有语义色池，不引入新色相（L1 元原则「克制点睛」）

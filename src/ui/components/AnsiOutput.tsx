@@ -57,20 +57,30 @@ export const AnsiOutputText: React.FC<AnsiOutputProps> = ({
 export const AnsiLineText: React.FC<{ line: AnsiLine }> = ({ line }) => (
   <Text>
     {line.length > 0
-      ? line.map((token: AnsiToken, tokenIndex: number) => (
-          <Text
-            key={tokenIndex}
-            color={token.fg}
-            backgroundColor={token.bg}
-            inverse={token.inverse}
-            dimColor={token.dim}
-            bold={token.bold}
-            italic={token.italic}
-            underline={token.underline}
-          >
-            {token.text}
-          </Text>
-        ))
+      ? line.map((token: AnsiToken, tokenIndex: number) => {
+          // ink Text 的 bold/dim 互斥（同一术语见 src/ink/components/Text.tsx 的
+          // WeightProps），不能像 AnsiToken 这样各自独立的布尔值一样同时传。
+          // ANSI 序列里 bold+dim 同时置位是罕见的病态输入，取 bold 优先
+          // （视觉权重更高，丢 dim 比丢 bold 更不显眼）。
+          const weight = token.bold
+            ? { bold: true as const }
+            : token.dim
+              ? { dim: true as const }
+              : {};
+          return (
+            <Text
+              key={tokenIndex}
+              color={token.fg}
+              backgroundColor={token.bg}
+              inverse={token.inverse}
+              italic={token.italic}
+              underline={token.underline}
+              {...weight}
+            >
+              {token.text}
+            </Text>
+          );
+        })
       : null}
   </Text>
 );

@@ -5,14 +5,11 @@
  * 集成测试（真实 spawn）另行手动执行。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { SubAgent } from "../../src/agent/sub-agent.ts";
-import type { SubAgentType } from "../../src/agent/sub-agent.ts";
 import { Registry } from "../../src/tool/registry.ts";
-import { SubAgentTool } from "../../src/agent/tool.ts";
 import type { Tool, ToolResult } from "../../src/tool/types.ts";
 import type { Provider } from "../../src/llm/provider.ts";
-import type { ProviderRegistry } from "../../src/llm/registry.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 import {
   type ParentInitMessage,

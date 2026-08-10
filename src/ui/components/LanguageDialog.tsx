@@ -124,7 +124,7 @@ export const LanguageDialog: React.FC<LanguageDialogProps> = ({
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 切换（自动持久化）· Esc 取消</Text>
+        <Text italic>↑↓ 导航 · Enter 切换（自动持久化）· Esc 取消</Text>
       </Box>
     </Box>
   );

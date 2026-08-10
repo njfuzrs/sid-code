@@ -34,7 +34,10 @@ export interface Transport {
 
 /** Stdio 传输 - 通过子进程的 stdin/stdout 通信 */
 export class StdioTransport implements Transport {
-  private proc: Subprocess;
+  // 三路都显式声明为 "pipe"：不带泛型的 Subprocess 会把 stdin/stdout 退化成
+  // `number | FileSink` / `number | ReadableStream` 联合类型（对应 inherit/fd 的情形），
+  // 于是 .getReader() / .write() 全部报错。构造时传的就是 pipe，这里把它写进类型。
+  private proc: Subprocess<"pipe", "pipe", "pipe">;
   private pendingRequests = new Map<number | string, {
     resolve: (resp: JsonRpcResponse) => void;
     reject: (err: Error) => void;

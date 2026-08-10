@@ -19,6 +19,7 @@
 #
 # 环境变量（读自 scripts/deploy.env，环境变量优先级更高）：
 #   DEPLOY_SSH_HOST / DEPLOY_SSH_USER / DEPLOY_SSH_PASSWORD   与 release.sh 同源
+#                            （host 与 user 均必填、无默认值：不把自建基建地址写进公开仓库）
 #   WEBSITE_DEPLOY_PATH      站点根（默认 /var/www/sid-code-site）
 #   WEBSITE_KEEP_VERSIONS    服务器保留的历史版本目录数（默认 3）
 #   WEBSITE_MIN_FREE_MB      发布前要求的服务器最小可用内存 MB（默认 300，低于即中止）
@@ -45,7 +46,7 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$_pre_public" ] && PUBLIC_BASE_URL="$_pre_public"
 fi
 
-DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-121.196.144.227}"
+DEPLOY_SSH_HOST="${DEPLOY_SSH_HOST:-}"
 # 对外访问地址（与 release.sh 同一套语义）。冒烟校验必须打域名 https：
 # 服务器 80 端口整段 301 → https 且证书只签 sid-code.cc，用 IP 校验会 TLS 失败，
 # 把一次本已成功的发布判成失败（历史上这类假失败会引导 --rollback 白退好版本）。
@@ -103,6 +104,8 @@ run_rsync() {
 
 REMOTE="" # 上传/回滚路径才需要，dry-run 下不校验凭据
 require_remote() {
+    # host 先校验：无内置默认值，缺失时 REMOTE 会拼成 "user@" 这种残缺形态，rsync 报错难懂。
+    [ -n "$DEPLOY_SSH_HOST" ] || fail "需要设置 DEPLOY_SSH_HOST（scripts/deploy.env 或环境变量）"
     [ -n "$DEPLOY_SSH_USER" ] || fail "需要设置 DEPLOY_SSH_USER（scripts/deploy.env 或环境变量）"
     if [ -n "$DEPLOY_SSH_PASSWORD" ]; then
         command -v sshpass >/dev/null 2>&1 || fail "已配置 DEPLOY_SSH_PASSWORD 但未安装 sshpass（macOS: brew install sshpass）"

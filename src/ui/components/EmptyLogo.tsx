@@ -118,7 +118,7 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }:
         ) : SESSION_TIP ? (
           <Box marginTop={1}>
             <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-            <Text color={theme.text.secondary} dimColor>{SESSION_TIP}</Text>
+            <Text color={theme.text.secondary}>{SESSION_TIP}</Text>
           </Box>
         ) : null}
       </Box>
@@ -164,7 +164,7 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }:
           ) : SESSION_TIP ? (
             <>
               <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-              <Text color={theme.text.secondary} dimColor>{SESSION_TIP}</Text>
+              <Text color={theme.text.secondary}>{SESSION_TIP}</Text>
             </>
           ) : null}
         </Box>

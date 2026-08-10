@@ -1,5 +1,4 @@
 import { describe, test, expect } from "bun:test";
-import { loadConfig } from "../../src/config/config.ts";
 import { validateConfig } from "../../src/config/schema.ts";
 import { resolveEnvVars } from "../../src/config/env-interpolation.ts";
 import { sanitizeEnv } from "../../src/config/env-sanitizer.ts";

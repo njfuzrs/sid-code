@@ -240,7 +240,7 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
       )}
 
       <Box marginTop={1}>
-        <Text dimColor italic>Esc 关闭</Text>
+        <Text italic>Esc 关闭</Text>
       </Box>
     </Box>
   );

@@ -12,7 +12,6 @@
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import {
-  readInstalledPlugins,
   loadAllPlugins,
   installPlugin,
   uninstallPlugin,

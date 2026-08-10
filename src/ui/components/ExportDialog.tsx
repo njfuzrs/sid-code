@@ -87,7 +87,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({ onClose, onExport })
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 确认 · Esc 取消</Text>
+        <Text italic>↑↓ 导航 · Enter 确认 · Esc 取消</Text>
       </Box>
     </Box>
   );

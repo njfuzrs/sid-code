@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, chmodSync, existsSync, writeFileSync, readFileSync } from "fs";
+import { mkdirSync, rmSync, chmodSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 
 const TEST_HOME = join("/tmp", `sid-code-migration-fs-fail-${process.pid}-${Date.now()}`);

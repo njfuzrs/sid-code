@@ -156,7 +156,7 @@ const ToolResultIndicator: React.FC<{
     <Box>
       <Text color={color}>{icon} </Text>
       <Text bold>{lastResult.toolName}</Text>
-      <Text dimColor> ({elapsed})</Text>
+      <Text> ({elapsed})</Text>
     </Box>
   );
 };

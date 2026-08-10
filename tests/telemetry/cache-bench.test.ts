@@ -163,7 +163,7 @@ describe("benchModel 驱动", () => {
   });
 
   test("★hit 恒 0 但 write 每轮非零 → 记下 write 才能区分「没缓存」与「反复重写」", async () => {
-    // 实跑 uniapi 的 anthropic 通道时踩到的：6 轮 hit 全 0，第一反应是"网关不支持"，
+    // 实跑自建网关的 anthropic 通道时踩到的：6 轮 hit 全 0，第一反应是"网关不支持"，
     // 但探针用**完全相同**的请求却稳定命中 → 说明缓存是好的，是每轮都在重新写入。
     // 只记 hit 的仪器无法区分这两种成因，而它们的修法相反。
     const res = await benchModel({

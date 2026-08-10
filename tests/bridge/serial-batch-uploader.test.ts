@@ -85,6 +85,10 @@ describe("SerialBatchUploader", () => {
     await uploader.enqueue([2, 3]); // stop 后不应入队
 
     expect(uploader.pendingCount).toBe(0);
+    // 只有 stop() 之前那一批真的投递了；之后的 [2,3] 被丢弃。
+    // 原先这里只断言 pendingCount，`delivered` 计了数却没人看 ——
+    // 那样即使 stop() 后仍在投递（真正要防的回归）测试照样绿。
+    expect(delivered).toBe(1);
   });
 
   test("pendingCount 反映待处理数量", async () => {

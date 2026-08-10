@@ -62,7 +62,7 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
           </Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor italic>Esc 关闭</Text>
+          <Text italic>Esc 关闭</Text>
         </Box>
       </Box>
     );
@@ -115,7 +115,7 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
         />
       </Box>
       <Box marginTop={1}>
-        <Text dimColor italic>↑↓ 导航 · Enter 切换 · Esc 取消</Text>
+        <Text italic>↑↓ 导航 · Enter 切换 · Esc 取消</Text>
       </Box>
     </Box>
   );

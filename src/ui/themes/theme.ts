@@ -165,7 +165,16 @@ export class Theme {
     readonly colors: ColorsTheme,
     semanticColors?: SemanticColors,
   ) {
-    this.semanticColors = semanticColors ?? {
+    // 兜底分支实测未被任何内置主题触发——6 套 builtin 主题（default/github/daltonized
+    // 的 dark+light）在 new Theme(...) 时都显式传了 semanticColors（各自的
+    // *SemanticColors 字面量，已是 SemanticColors 类型）。这里存在只是为了让
+    // `semanticColors` 参数可选时仍有合法默认值。
+    // 断言为 SemanticColors 而非放宽字段类型：ColorsTheme 的字段本身都是合法 Color
+    // 十六进制字符串，但 interpolateColor()/resolveColor() 走 tinygradient 等库，
+    // 返回值签名是通用 string，TS 无法静态收窄回 Color。字段类型收紧到 Color 的价值
+    // 在于「拦住手写错的颜色字面量」——这条兜底路径没有手写字面量，只是转发已知合法值，
+    // 收紧不到这里。
+    this.semanticColors = semanticColors ?? ({
       text: {
         primary: this.colors.Foreground,
         secondary: this.colors.Gray,
@@ -229,7 +238,7 @@ export class Theme {
         success: this.colors.AccentGreen,
         warning: this.colors.AccentYellow,
       },
-    };
+    } as SemanticColors);
     this._colorMap = Object.freeze(this._buildColorMap(rawMappings));
 
     // 确定默认前景色

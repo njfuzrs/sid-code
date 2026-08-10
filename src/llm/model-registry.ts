@@ -116,7 +116,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ⚠ contextWindow=1_050_000 但官方另有 **max input 922_000** 的独立限制——超过即返回
   // "input exceeds the context window"（实测 900k 过、990k 拒）。sid-code 目前无「输入上限」
   // 字段来表达这个差异，故此处如实填窗口值；真正的输入裁剪由 auto-compact 的完成缓冲区兜底。
-  // [官方: developers.openai.com/api/docs/models/gpt-5.6-sol；实测: uniapi 网关夹逼]
+  // [官方: developers.openai.com/api/docs/models/gpt-5.6-sol；实测: 自建网关夹逼]
   //
   // pricing 为**官方标准价**（USD/1M）。网关渠道价（luna 实采 0.17/1.02）由 gateway-pricing.ts
   // 按渠道名精确命中并优先于此——此处仅作渠道 miss 时的兜底，勿用渠道价覆盖。

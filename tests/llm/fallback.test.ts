@@ -12,9 +12,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelFallback, type QuerySource, FOREGROUND_SOURCES } from "../../src/llm/fallback.ts";
+import { ModelFallback, FOREGROUND_SOURCES } from "../../src/llm/fallback.ts";
 import { ModelAvailabilityService } from "../../src/llm/availability.ts";
-import { RequestAbortedError, RetryableError } from "../../src/llm/errors.ts";
+import { RequestAbortedError } from "../../src/llm/errors.ts";
 import type { Provider } from "../../src/llm/provider.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
@@ -45,35 +45,6 @@ function errorEventProvider(errorMsg: string): Provider {
     defaultModel: () => "mock-model",
     async *sendMessageStream(): AsyncIterable<StreamEvent> {
       yield { type: "error", error: { message: errorMsg } };
-    },
-  };
-}
-
-/** 创建一个抛出异常的 Mock Provider（模拟连接失败） */
-function throwProvider(error: Error): Provider {
-  return {
-    name: () => "mock",
-    defaultModel: () => "mock-model",
-    sendMessageStream(): AsyncIterable<StreamEvent> {
-      throw error;
-    },
-  };
-}
-
-/** 创建一个先失败 N 次再成功的 Provider */
-function failThenSuccessProvider(failCount: number, error: Error): Provider {
-  let attempts = 0;
-  return {
-    name: () => "mock",
-    defaultModel: () => "mock-model",
-    async *sendMessageStream(): AsyncIterable<StreamEvent> {
-      attempts++;
-      if (attempts <= failCount) {
-        throw error;
-      }
-      yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } };
-      yield { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { inputTokens: 1, outputTokens: 1 } };
-      yield { type: "message_stop" };
     },
   };
 }
@@ -420,7 +391,6 @@ describe("ModelFallback", () => {
 describe("ModelFallback 增强", () => {
   // ─── 401 认证刷新重试 ───
   test("401 连接阶段触发认证刷新并重试一次", async () => {
-    let authRefreshed = false;
     const telemetryEvents: RetryTelemetryEvent[] = [];
 
     // Provider 第一次抛 401，第二次成功

@@ -2,7 +2,10 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "lib": ["ES2022"],
+    // lib 比 target 高一档：运行时是 Bun，ES2024 的 String.prototype.toWellFormed /
+    // isWellFormed 早已可用（src/llm/sanitize-unicode.ts 依赖它做孤立 surrogate 清理），
+    // 但 target 保持 ES2022 以免降级编译行为变化。
+    "lib": ["ES2024"],
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "noEmit": true,
@@ -11,7 +14,12 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "jsx": "react",
-    "types": ["bun-types"]
+    // 用 "bun"（→ @types/bun，本仓库直接声明的 devDependency）而不是裸 "bun-types"：
+    // bun-types 只是 @types/bun 的传递依赖，workspace 布局下不保证被提升到
+    // node_modules/ 顶层，一旦没提升 tsc 就报 TS2688「Cannot find type definition
+    // file for 'bun-types'」，整次类型检查一条业务错误都跑不出来。
+    // @types/bun/index.d.ts 内部就是 `/// <reference types="bun-types" />`，等价且稳定。
+    "types": ["bun"]
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "internal", "cmd"]

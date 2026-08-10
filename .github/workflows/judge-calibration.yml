@@ -25,6 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # fork 里不跑 cron：fork 继承 cron 但拿不到 secrets，否则每月 1 号给每个 fork
+    # 发一封无从修复的失败邮件。后半段保留 workflow_dispatch 手动触发。
+    # 判据选型与 fail-open 取舍见 eval-weekly.yml 同位注释。
+    if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
+
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 

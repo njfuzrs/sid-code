@@ -103,20 +103,23 @@ sc            # 全放行（= --dangerously-skip-permissions），确认过风�
 <!--
   数字口径（§4.7 决策：不做自动生成，发版前人工核对一次，写约数不写精确值）：
     自研代码行数  find src -name '*.ts' -o -name '*.tsx' | grep -v '/ink/' | xargs wc -l
-                  （2026-07-27 实测 176,887 行，不含 vendor 进来的 ink fork）
+                  （2026-08-10 实测 203,178 行，不含 vendor 进来的 ink fork；2026-07-27 曾为 176,887）
     单测          grep -rhoE '\b(it|test)\(' tests src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                  （实测 6,583 个用例 / 520 个测试文件）
+                  （2026-08-10 实测 8,562 个用例 / 641 个测试文件；2026-07-27 曾为 6,583 / 520）
     Hook 事件数   src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
     内置工具数    sid-code --dump-tools | bun -e '...' 数组长度（2026-07-27 实测 44，与
                   脚本生成的 ref/tools.md 同源同值。此前写"60+"与运行时真值不符，已改）
     eval case     bun run eval:list 的汇总行（2026-07-27 实测 P0=10 holdout=5 P1=9 P2=6 = 30）
   改这组数字前先跑上面的命令，不要凭记忆改。
+  三处须一致：本文、README.md、README.en.md —— 改一处要改三处。
+  ⚠️ 2026-08-10 教训：工具数从"60+"改成 44 时只改了本文，README.md 漏改，
+     两份对外文档不一致挂了两周多。改这张表时把三处一起 grep 一遍。
 -->
 
 | 项 | 现状 |
 | --- | --- |
-| 自研代码 | `src/` 下 17 万行以上 TypeScript（不含 vendor 的 ink fork） |
-| 工程闭环 | 500+ 测试文件、6000+ 单测用例；每次改代码跑全量，全绿才提交 |
+| 自研代码 | `src/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
+| 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
 | 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
 

@@ -78,7 +78,7 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
         </Text>
       </Box>
 
-      <Box marginTop={1}><Text dimColor italic>Esc 关闭</Text></Box>
+      <Box marginTop={1}><Text italic>Esc 关闭</Text></Box>
     </Box>
   );
 };

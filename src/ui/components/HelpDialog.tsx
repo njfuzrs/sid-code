@@ -76,7 +76,7 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
         </Box>
       </Box>
 
-      <Box marginTop={1}><Text dimColor italic>输入 /commands 查看全部命令 · Esc 关闭</Text></Box>
+      <Box marginTop={1}><Text italic>输入 /commands 查看全部命令 · Esc 关闭</Text></Box>
     </Box>
   );
 };

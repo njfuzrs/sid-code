@@ -10,7 +10,7 @@
  * 防止解释逻辑与类型定义漂移。
  */
 
-import type { Decision, PermissionDecisionReason, PermissionRuleSource } from "./types.ts";
+import type { Decision, PermissionDecisionReason } from "./types.ts";
 
 /** 权限模式的中文名（与 permission/mode.ts 展示口径一致，缺省回退原值） */
 const MODE_LABELS: Record<string, string> = {
@@ -25,17 +25,13 @@ const MODE_LABELS: Record<string, string> = {
   "plan+bypass": "计划模式·继承 bypass 放行",
 };
 
-/** 规则来源的中文名（对标 types.ts PermissionRuleSource 八来源） */
-const SOURCE_LABELS: Record<PermissionRuleSource, string> = {
-  session: "运行时会话（弹窗 Always Allow / 命令临时）",
-  command: "斜杠命令（/allow、/deny）",
-  cliArg: "CLI 参数（--allow-tool / --deny-tool）",
-  userSettings: "用户设置（~/.sid-code/settings.json）",
-  projectSettings: "项目设置（.sid-code/settings.json，不可信来源）",
-  localSettings: "本地设置（.sid-code/settings.local.json）",
-  flagSettings: "SDK 内联设置",
-  policySettings: "企业策略（最高优先级）",
-};
+// 注：本文件曾有一张 SOURCE_LABELS（八个 PermissionRuleSource 的中文名），
+// 但没有任何调用点 —— 顶部 docstring 承诺解释「来自哪个来源」，而
+// `PermissionDecisionReason` 的 rule 变体只带 `rule` 与 `behavior` 两个字段
+// （见 types.ts:10），压根拿不到 source，所以那张表从建起来就无法接线。
+// 2026-08-10 接 lint 门禁（P1-4）时删除。要补回「来源」这句解释，得先给
+// types.ts 的 rule 变体加上 source 字段，再由 checker.ts 的构造处逐一填上，
+// 那是一次独立改动，不属于 lint 清理范围。
 
 /** 把权限模式字符串翻译成中文名 */
 function modeLabel(mode: string): string {

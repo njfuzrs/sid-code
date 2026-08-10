@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
 import { theme } from '../../semantic-colors.ts';
+import type { Color } from '../../../ink/styles.ts';
 import { useKeypress, KeypressPriority, type Key } from '../../contexts/KeypressContext.tsx';
 import { BULLET } from '../../constants/figures.ts';
 
@@ -18,8 +19,8 @@ export interface SelectionListItem<T> {
 
 export interface RenderItemContext {
   isSelected: boolean;
-  titleColor: string;
-  numberColor: string;
+  titleColor: Color;
+  numberColor: Color;
 }
 
 export interface BaseSelectionListProps<

@@ -133,7 +133,6 @@ const TodoRow = React.memo(function TodoRow({
         color={isInProgress ? theme.text.primary : theme.text.secondary}
         bold={isInProgress}
         strikethrough={isCompleted}
-        dimColor={isCompleted}
       >
         {truncate(label, maxContentLen)}
       </Text>
@@ -249,27 +248,27 @@ const TaskRow = React.memo(function TaskRow({
         </Box>
         <Box flexGrow={1}>
           <Text>
-            <Text color={theme.ui.active} dimColor>{`[${label}] `}</Text>
-            <Text color={isRunning ? theme.text.primary : theme.text.secondary} dimColor={!isRunning}>
+            <Text color={theme.ui.active}>{`[${label}] `}</Text>
+            <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
               {truncate(desc, Math.max(10, maxContentLen - 24))}
             </Text>
           </Text>
         </Box>
-        <Text color={theme.text.secondary} dimColor>{statsText}</Text>
+        <Text color={theme.text.secondary}>{statsText}</Text>
       </Box>
       {/* verbose（Ctrl+O expandLevel≥1）且有工具活动序列：逐行展开最近活动。
           否则折叠为单行 activityLine。 */}
       {verbose && task.recentActivities && task.recentActivities.length > 0 ? (
         task.recentActivities.map((act, i) => (
           <Box key={i} flexDirection="row" paddingLeft={2}>
-            <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
-            <Text color={theme.text.secondary} dimColor>{truncate(act, maxContentLen - 6)}</Text>
+            <Text color={theme.text.secondary}>{`${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary}>{truncate(act, maxContentLen - 6)}</Text>
           </Box>
         ))
       ) : activityLine ? (
         <Box flexDirection="row" paddingLeft={2}>
-          <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
-          <Text color={theme.text.secondary} dimColor>{truncate(activityLine, maxContentLen - 6)}</Text>
+          <Text color={theme.text.secondary}>{`${TREE_BRANCH} `}</Text>
+          <Text color={theme.text.secondary}>{truncate(activityLine, maxContentLen - 6)}</Text>
         </Box>
       ) : null}
     </Box>
@@ -352,7 +351,7 @@ export const TodoPanel = React.memo(function TodoPanel({
           <Box flexGrow={1} />
           <ProgressBar completed={completed} total={total} />
           <Text color={allDone ? theme.status.success : theme.text.secondary}>{`  ${completed}/${total}`}</Text>
-          {hiddenCount > 0 && <Text dimColor>{`  …+${hiddenCount}`}</Text>}
+          {hiddenCount > 0 && <Text>{`  …+${hiddenCount}`}</Text>}
         </Box>
         {!compactMode &&
           visibleTodos.map((item, i) => (
@@ -395,7 +394,7 @@ export const TodoPanel = React.memo(function TodoPanel({
             <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>
           )}
           {/* 截断提示：与任务清单区的 `…+N` 同格式，用户一眼看出"还有 N 条没显示" */}
-          {hiddenTaskCount > 0 && <Text dimColor>{`  …+${hiddenTaskCount}`}</Text>}
+          {hiddenTaskCount > 0 && <Text>{`  …+${hiddenTaskCount}`}</Text>}
         </Box>
         {!compactMode &&
           visibleTasks.map((task) => (
@@ -403,8 +402,8 @@ export const TodoPanel = React.memo(function TodoPanel({
           ))}
         {compactMode && compactSummaryText && (
           <Box flexDirection="row" paddingLeft={2}>
-            <Text color={theme.text.secondary} dimColor>{`${TREE_BRANCH} `}</Text>
-            <Text color={theme.text.secondary} dimColor>{truncate(compactSummaryText, maxContentLen)}</Text>
+            <Text color={theme.text.secondary}>{`${TREE_BRANCH} `}</Text>
+            <Text color={theme.text.secondary}>{truncate(compactSummaryText, maxContentLen)}</Text>
           </Box>
         )}
         {/* 划掉提示（渐进衰减）：面板全是终态条目时，告知用户有手动出口，
@@ -412,7 +411,7 @@ export const TodoPanel = React.memo(function TodoPanel({
             Ctrl+X 也只清终态，但此刻用户的注意力在"还在跑的那条"上，提示是噪音。 */}
         {!compactMode && allTerminal && showDismissHint && (
           <Box marginTop={1}>
-            <Text dimColor>{`${dismissDisplay} 划掉已完成`}</Text>
+            <Text>{`${dismissDisplay} 划掉已完成`}</Text>
           </Box>
         )}
       </Box>

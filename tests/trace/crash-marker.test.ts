@@ -10,7 +10,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import * as CrashMarker from "../../src/trace/crash-marker.ts";
 import { getSidHome } from "../../src/config/paths.ts";
 

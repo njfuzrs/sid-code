@@ -12,7 +12,7 @@
 
 import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
-import { join, relative, sep, basename } from "path";
+import { join, relative, sep } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { memoize } from "../utils/memoize.ts";
 import { parseFrontmatter } from "../extension/frontmatter.ts";

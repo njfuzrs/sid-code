@@ -1,8 +1,9 @@
 // 新逻辑：前5轮每轮写，之后30s节流。模拟190轮快速连续（无真实等待）→ 应远少于190次写
-let writes = 0, dirty = false, timer = false;
+// _dirty 只为如实复刻生产代码里的那个标志位（本脚本不读它，故带 _ 前缀）
+let writes = 0, _dirty = false, timer = false;
 const pairs: number[] = [];
 function rebuildTraj() {
-  pairs.length <= 5 ? (writes++, void 0) : (dirty = true, timer ||= (writes++, true)); // 节流窗口内只首次写
+  pairs.length <= 5 ? (writes++, void 0) : (_dirty = true, timer ||= (writes++, true)); // 节流窗口内只首次写
 }
 for (let n = 1; n <= 190; n++) { pairs.push(n); rebuildTraj(); }
 // session end 强制刷一次

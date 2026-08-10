@@ -1,5 +1,5 @@
 /**
- * 网关定价自动采集 — 从 new-api 类网关（如公司中转站 gateway.example.com）的
+ * 网关定价自动采集 — 从 new-api 类网关（企业自建的 LLM 中转站常用这类实现）的
  * `/api/pricing` 接口采集**价格**，与官方注册表（model-registry.ts）的**能力字段**互补。
  *
  * 职责边界（严格）：

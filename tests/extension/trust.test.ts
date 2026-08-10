@@ -10,13 +10,11 @@ import { TrustManager } from "../../src/extension/trust.ts";
 
 describe("TrustManager", () => {
   let testDir: string;
-  let trustFile: string;
   let manager: TrustManager;
 
   beforeEach(() => {
     testDir = join(tmpdir(), `trust-test-${Date.now()}`);
     mkdirSync(testDir, { recursive: true });
-    trustFile = join(testDir, "trusted-extensions.json");
     manager = new TrustManager();
   });
 

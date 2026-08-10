@@ -1103,11 +1103,11 @@ export class OpenAIProvider implements Provider {
    * `protocolKind: "openai-responses"` 声明在它**之前**短路返回 true。
    *
    * 也就是说：注册在 model-registry 里声明了 openai-responses 的模型（如 gpt-5.6 族），
-   * 即便跑在企业网关（uniapi 等兼容端点）上也会走 Responses API。这是**有意的**——
+   * 即便跑在企业自建网关（各类 OpenAI 兼容端点）上也会走 Responses API。这是**有意的**——
    * 声明式配置的权威性高于端点启发式，否则同一模型换个网关就静默降级到
    * Chat Completions，丢掉 reasoning.effort 等 Responses 专有能力。
    *
-   * 前提是网关自身实现了 `/responses`。实测 uniapi 网关支持（返回标准 OpenAI 形状的
+   * 前提是网关自身实现了 `/responses`。实测自建 new-api 类网关支持（返回标准 OpenAI 形状的
    * 响应与错误体）。若某网关不支持，用 `SID_CODE_OPENAI_PROTOCOL=chat`（优先级 1）
    * 强制降级，不要改这里的判断。
    *

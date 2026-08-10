@@ -1,0 +1,102 @@
+{
+  // oxlint 配置 —— 见 P1-4（docs/bugfixes/todo/开源准备-项目工程化差距全量清单.md）。
+  //
+  // 选 oxlint 而非 eslint：Rust 实现，全仓 1771 文件实测 65ms，快到可以进 pre-commit
+  // 而不会被人用 --no-verify 绕过。这一点是刻意的 —— 慢的门禁最终都会被绕开。
+  //
+  // ⚠️ 版本与平台二进制都钉死在 package.json 的 devDependencies 里，不是笔误。
+  // oxlint 的原生二进制走 optionalDependencies 分发，而 CI 的 install 带
+  // `--omit=optional`（为了绕开 eval-framework 这个仓库外 file: 依赖，见 P1-5）。
+  // 实测：只写 "oxlint" 时 `--omit=optional` 装完 exit=0，但一跑就
+  // 「Cannot find native binding」exit=1。把当前 4 个目标平台的 @oxlint/binding-*
+  // 显式写成直接 devDependency 才能同时满足两边。加平台请一并加到那里。
+  //
+  // ──────────────────────────────────────────────────────────────────────
+  // 规则集哲学：**只拦真错，不拦风格**
+  //
+  // 起点是「跑一次默认规则集看看有多少」：251 warnings。但默认配置下 oxlint
+  // 对 warning **返回 exit 0** —— 直接接进 CI 等于又一个永远绿的占位符，
+  // 和 `echo 'TODO: add linter'` 没有本质区别。所以本配置做两件事：
+  //   1. 只开 correctness 这一档，其余（style / pedantic / perf / suspicious /
+  //      restriction）全关；
+  //   2. 命中即 error（exit 1），基线清到 0。
+  //
+  // 之所以不开 style/pedantic：这是个 20 万行的存量仓库，那些档位的告警绝大多数
+  // 是「换个写法更时髦」，不是错。实测 unicorn 一族 60 条里没有一条是真缺陷
+  // （`{ ...(x ?? {}) }` 是防御性写法、`new Array(n)` 在 TUI 热路径上是刻意的）。
+  // 拿这些去挡外部 PR，只会让贡献者改一堆与他本意无关的代码。
+  //
+  // 门槛要涨请单独提，别顺手在这里加档位 —— 每加一条都得先把存量清零，
+  // 否则新贡献者第一次跑 lint 就看到一屏红，那道门禁的可信度当场归零。
+  // ──────────────────────────────────────────────────────────────────────
+
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+
+  "plugins": ["typescript", "oxc"],
+
+  "categories": {
+    "correctness": "error",
+    "perf": "off",
+    "style": "off",
+    "pedantic": "off",
+    "suspicious": "off",
+    "restriction": "off"
+  },
+
+  "rules": {
+    // 唯一真正在拦东西的规则。收敛口径见下面 4 个选项，都是实测调出来的：
+    //   · args: "none"          —— 不管未用形参。TS 里为了满足接口签名而留着
+    //                              不用的参数是常态（工具 handler 的 ctx、
+    //                              String.replace 回调的捕获组），逐个加 `_`
+    //                              前缀是纯噪音。
+    //   · caughtErrors: "none"  —— `catch {}` 已是 ES2019 语法，仓库里 `catch (_e)`
+    //                              与 `catch {}` 混用，不值得为此改一遍。
+    //   · varsIgnorePattern     —— `_` 前缀是「我知道它没用」的公认标记，放行。
+    //   · ignoreRestSiblings    —— `const { a, ...rest } = obj` 这种刻意解构丢弃。
+    "no-unused-vars": [
+      "error",
+      {
+        "args": "none",
+        "caughtErrors": "none",
+        "varsIgnorePattern": "^_",
+        "argsIgnorePattern": "^_",
+        "ignoreRestSiblings": true
+      }
+    ],
+
+    // 以下 4 条属 correctness 档但对本仓是系统性误报，逐条关闭并留证据：
+
+    // 终端程序的正常工作内容就是 ESC / CSI 序列，正则里出现 \x1b 是**本职**不是笔误。
+    // 实测 31 处命中全在 markdown 渲染、ANSI 解析、日志脱敏这类地方。
+    "no-control-regex": "off",
+
+    // 39 处命中集中在正则字面量里的 `\-`、`\/` 这类「多余但无害」的转义。
+    // 保留转义常常是为了让字符类的意图更显眼（如 pii-scan.ts 里 13 处），
+    // 机械删掉反而增加读错的风险。
+    "no-useless-escape": "off",
+
+    // 15 处命中全是**刻意**的 no-yield async generator：用来把一个错误延迟到
+    // 流被消费时才抛（见 src/llm/fallback.ts:1515），是 provider 层的既定手法。
+    "require-yield": "off",
+
+    // 3 处命中都是 `cond ? f() : g()` 这种「三元当语句用」的副作用调用
+    // （src/tool/bash.ts:153/163 的 kill 回退路径）。函数确实被调用了，不是死代码。
+    "no-unused-expressions": "off"
+  },
+
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "dist/**",
+
+    // 第三方产物 / vendor 代码：跟上游保持可比对，不套本仓规则（同 .editorconfig 口径）。
+    "vendor/**",
+
+    // src/ink/ 是 fork 进来的渲染底座，许可状态特殊 —— 见仓库根 NOTICE 第 1 节
+    // 与 src/ink/README.md。那份 README 明确要求「不要以清理/统一措辞为由改写」，
+    // 且这块代码正在被逐步重构掉。lint 它只会制造与上游的无谓分叉，
+    // 所以整目录排除（实测排除后少 10 条告警，全是未用的 type import）。
+    "src/ink/**",
+
+    "**/*.snap"
+  ]
+}

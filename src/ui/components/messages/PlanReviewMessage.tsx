@@ -41,7 +41,7 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
         <Box>
           <Text color={borderColor} bold>{`${BULLET} 计划审阅`}</Text>
         </Box>
-        <Text dimColor>{lineCount} 行</Text>
+        <Text>{lineCount} 行</Text>
       </Box>
       <Box marginBottom={1}>
         <Text color={theme.text.link}>{planFilePath}</Text>

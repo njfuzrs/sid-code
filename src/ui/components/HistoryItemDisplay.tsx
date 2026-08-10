@@ -113,7 +113,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             {item.icon ? `${item.icon} ` : "· "}{item.text}
           </Text>
           {item.secondaryText && (
-            <Text dimColor>{" "}{item.secondaryText}</Text>
+            <Text>{" "}{item.secondaryText}</Text>
           )}
         </Box>
       );
@@ -178,7 +178,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       return (
         <Box paddingLeft={2} gap={1} marginBottom={1}>
           <Text color={theme.text.accent}>{THINKING_MARK}</Text>
-          <Text dimColor>
+          <Text>
             {"对话已压缩"}
             {evidence ? ` (${evidence})` : ""}
           </Text>
@@ -199,8 +199,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         <Box flexDirection="column" paddingX={1} marginBottom={1}>
           <Text color={theme.text.accent} bold>sid-code {item.cliVersion}</Text>
           <Box paddingLeft={2} flexDirection="column">
-            <Text dimColor>模型: {item.model}</Text>
-            <Text dimColor>提供商: {item.provider}</Text>
+            <Text>模型: {item.model}</Text>
+            <Text>提供商: {item.provider}</Text>
           </Box>
         </Box>
       );
@@ -214,10 +214,10 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
               <Box>
                 <Text color={theme.text.primary} bold>{"/"}{cmd.name}</Text>
                 {cmd.aliases.length > 0 && (
-                  <Text dimColor>{" ("}{cmd.aliases.map(a => `/${a}`).join(", ")}{")"}</Text>
+                  <Text>{" ("}{cmd.aliases.map(a => `/${a}`).join(", ")}{")"}</Text>
                 )}
               </Box>
-              <Text dimColor>{cmd.description}</Text>
+              <Text>{cmd.description}</Text>
             </Box>
           ))}
         </Box>
@@ -228,10 +228,10 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
         <Box flexDirection="column" paddingX={1} marginBottom={1}>
           <Text color={theme.text.accent} bold>会话统计</Text>
           <Box paddingLeft={2}>
-            <Text dimColor>时长: {item.duration}</Text>
-            <Text dimColor>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
-            <Text dimColor>输出 tokens: {formatLargeNumber(item.outputTokens)}</Text>
-            <Text dimColor>费用: ${item.costUSD.toFixed(4)}</Text>
+            <Text>时长: {item.duration}</Text>
+            <Text>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
+            <Text>输出 tokens: {formatLargeNumber(item.outputTokens)}</Text>
+            <Text>费用: ${item.costUSD.toFixed(4)}</Text>
           </Box>
         </Box>
       );
@@ -239,7 +239,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "quit":
       return (
         <Box paddingX={1} marginBottom={1}>
-          <Text dimColor>{"── 会话结束 (时长: "}{item.duration}{") ──"}</Text>
+          <Text>{"── 会话结束 (时长: "}{item.duration}{") ──"}</Text>
         </Box>
       );
 

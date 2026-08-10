@@ -247,7 +247,11 @@ export class UploadManager implements TraceUploaderInterface {
     for (let attempt = 0; attempt < this.opts.maxRetries; attempt++) {
       try {
         // 读取 + 压缩 + 计算 SHA256（对齐 claude-trace 的 compress_and_hash）
-        let content: Uint8Array = await readFile(filePath);
+        // 用 Bun.file().bytes() 而不是 node 的 readFile：后者返回 Buffer
+        // （`Uint8Array<ArrayBufferLike>`），而 Bun.gzipSync 与 Blob 都只接受
+        // `Uint8Array<ArrayBuffer>`，类型不兼容。本文件下一行就在用 Bun.gzipSync，
+        // 读侧也走 Bun API 更一致，且省掉一次 ArrayBuffer 拷贝。
+        let content: Uint8Array<ArrayBuffer> = await Bun.file(filePath).bytes();
         if (this.opts.compress) {
           content = Bun.gzipSync(content, { level: 6 });
         }

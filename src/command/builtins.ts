@@ -1139,8 +1139,6 @@ export class PlanCommand implements Command {
   description() { return "进入计划模式（先规划后执行）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const { PlanModeManager } = await import("../plan/state.ts");
-
     // 从 App 获取 planManager（通过 sendToLLM 间接触发）
     // /plan 命令的实现方式：注入提示词让 LLM 调用 enter_plan_mode 工具
     const trimmed = args.trim();

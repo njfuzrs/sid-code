@@ -14,19 +14,19 @@ source_meta:
   imported_at: 2026-05-30T19:40:39.672Z
   imported_by: import-trajectory-platform.ts
 input:
-  user_query: "修复 ${REPO_ROOT}/anka-app/packages/ontology-studio/src/components/PilotGraphSearchPanel.vue 中搜索弹窗的显示问题。具体需要：1) 修正弹窗位置计算逻辑，解决 left: -199px 的偏移问题，确保弹窗正确显示在触发元素下方；2) 清理并优化 v-if 和 v-show 的条件判断，移除空注释；3) 检查 popover/trigger 组件的 z-index 和 pointer-events 配置是否正确；4) 如需调整 DOM 结构，使用 insertBefore 等方法确保元素顺序正确。"
+  user_query: "修复 ${REPO_ROOT}/webapp/packages/graph-studio/src/components/GraphSearchPanel.vue 中搜索弹窗的显示问题。具体需要：1) 修正弹窗位置计算逻辑，解决 left: -199px 的偏移问题，确保弹窗正确显示在触发元素下方；2) 清理并优化 v-if 和 v-show 的条件判断，移除空注释；3) 检查 popover/trigger 组件的 z-index 和 pointer-events 配置是否正确；4) 如需调整 DOM 结构，使用 insertBefore 等方法确保元素顺序正确。"
   repo: null
   repo_commit: null
   attachments: []
 expected:
-  outcome: PilotGraphSearchPanel 弹窗位置计算正确，v-if/v-show 条件清晰，popover 组件样式和事件配置完善，弹窗在搜索时正确显示在触发元素下方。
+  outcome: GraphSearchPanel 弹窗位置计算正确，v-if/v-show 条件清晰，popover 组件样式和事件配置完善，弹窗在搜索时正确显示在触发元素下方。
   must_include_any_of: []
   must_not_include: []
   must_call_tools: []
   must_not_call_tools:
     - Agent
   must_modify_files_in:
-    - /Users/dev/Code/ruijie/iam-studio-fe/anka-app/packages/ontology-studio/src/components/PilotGraphSearchPanel.vue
+    - ${REPO_ROOT}/webapp/packages/graph-studio/src/components/GraphSearchPanel.vue
   must_not_modify_files: []
   max_steps: 45
   reference_answer: null

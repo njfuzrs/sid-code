@@ -93,7 +93,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   if (item.kind === "system") {
     return (
       <Box justifyContent="center" paddingX={1}>
-        <Text dimColor>{"── "}{item.text}{" ──"}</Text>
+        <Text>{"── "}{item.text}{" ──"}</Text>
       </Box>
     );
   }
@@ -105,7 +105,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
         <UserMessage text={item.input} width={termWidth} />
         {item.output ? (
           <Box paddingLeft={2}>
-            <Text dimColor>{item.output}</Text>
+            <Text>{item.output}</Text>
           </Box>
         ) : null}
       </Box>

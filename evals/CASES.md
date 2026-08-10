@@ -1,7 +1,7 @@
 # Eval Cases 详情手册
 
 > 自动生成，请勿手动编辑。运行 `bun run evals/gen-cases-md.ts` 刷新。
-> 生成时间: 2026-06-01T19:15:58.305Z
+> 生成时间: 2026-08-10T08:29:31.955Z
 > 数据源: case YAML + `_reports/promptfoo-latest.json`
 
 ## 总览
@@ -4082,3 +4082,5 @@ Agent 应该先尝试查找该文件，发现 src/agent/auto-retry.ts 不存在�
 
 > 🔒 **holdout** — 题面 / 锚点 / 反例 / 参考答案 / rubric 已隔离，不在 CASES.md 渲染。
 > 详情仅可在私有路径 `evals/holdout/` 直接 cat yaml 查看；跑分见 `evals/_meta/_private/`（如有）。
+
+---

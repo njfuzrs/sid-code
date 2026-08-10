@@ -3,7 +3,7 @@
  * 基于 trajectory 质量特征评分（效率、工具使用模式、错误恢复）
  */
 
-import type { AgentOutput, GradeResult } from "./outcome-grader.ts";
+import type { GradeResult } from "./outcome-grader.ts";
 
 export interface TrajectoryMetrics {
   steps: number;
