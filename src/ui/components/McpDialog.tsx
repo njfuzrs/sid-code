@@ -13,6 +13,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.js";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { SUCCESS_MARK, ERROR_MARK, TODO_PENDING, WARNING_MARK, ARROW_PROMPT } from "../constants/figures.ts";
@@ -48,7 +49,7 @@ interface MenuAction {
 
 // ─── 辅助函数 ───
 
-function getStatusIcon(status: MCPConnectionStatus | string): { icon: string; color: string } {
+function getStatusIcon(status: MCPConnectionStatus | string): { icon: string; color: Color } {
   switch (status) {
     case "connected":
       return { icon: SUCCESS_MARK, color: theme.status.success };

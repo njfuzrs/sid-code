@@ -14,12 +14,14 @@ import { AsyncHookRegistry } from "../../src/hook/async-registry.ts";
 import { HookEventName, type CommandHookConfig, type HookInput } from "../../src/hook/types.ts";
 
 function baseInput(): HookInput {
+  // 去掉了 transcript_path（该字段在 src/hook/ 下已全无踪迹，是早期形态的遗留），
+  // 补上必填的 timestamp。字段齐全后不再需要 `as HookInput` 断言。
   return {
     session_id: "test",
-    transcript_path: "",
     cwd: process.cwd(),
     hook_event_name: HookEventName.PostToolUse,
-  } as HookInput;
+    timestamp: new Date().toISOString(),
+  };
 }
 
 /** 轮询等待条件成立（后台进程异步完成） */

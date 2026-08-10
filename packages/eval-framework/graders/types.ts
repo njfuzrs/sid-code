@@ -21,9 +21,9 @@
  *     —— 5d-v2 不区分 mandatory/optional，新设计在 task-specific-v1 起生效
  */
 
-import type { CaseYaml } from "../_types";
-import type { ProviderResult } from "../eval-runner";
-import type { DimScore } from "../eval-judge";
+import type { CaseYaml } from "../core/types";
+import type { ProviderResult } from "../core/runner";
+import type { DimScore } from "../core/judge";
 
 export interface GraderContext {
   /** case yaml 文档 */

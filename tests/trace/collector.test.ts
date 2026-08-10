@@ -1121,7 +1121,7 @@ describe("TraceCollector", () => {
     expect(existsSync(dir)).toBe(true);
 
     // 退出：handleSessionEnd 会把在途 pair 冲成 partial/interrupted 空壳,随后判空壳清理。
-    await hookSystem.fireSessionEndEvent("user_interrupt");
+    await hookSystem.fireSessionEndEvent("abort");
 
     // 该类噪音会话（全天 18 条）应被清理，不再残留供上传。
     expect(existsSync(dir)).toBe(false);
@@ -1135,7 +1135,7 @@ describe("TraceCollector", () => {
       messages: [{ role: "user", content: "hi" }],
       contentBlocks: [{ type: "text", text: "部分回答" }],
     });
-    await hookSystem.fireSessionEndEvent("user_interrupt");
+    await hookSystem.fireSessionEndEvent("abort");
 
     // 有真实响应内容 → 非空壳，必须保留。
     expect(existsSync(dir)).toBe(true);

@@ -6,36 +6,20 @@ import { describe, test, expect, mock } from "bun:test";
 import { ModelCommand } from "../../src/command/builtins.ts";
 import type { AppContext } from "../../src/command/types.ts";
 import type { Config, ModelConfig } from "../../src/config/config.ts";
-import { resolveCurrentModelConfig } from "../../src/config/config.ts";
+import { defaultConfig, resolveCurrentModelConfig } from "../../src/config/config.ts";
 
 function createMockContext(config: Partial<Config> = {}): AppContext {
+  // 基线用 defaultConfig() 而不是手抄一份必填字段清单：原先那 30 行手抄版每次
+  // Config 新增必填字段就会漂移成 tsc 报错（这次就是 hooks 被写成 [] 而非 {}、
+  // 且缺 fallbackModel 而暴露的）。defaultConfig() 是生产默认值的唯一来源，
+  // 只覆盖本测试真正关心的几项。
   const fullConfig: Config = {
+    ...defaultConfig(),
     provider: "openai",
     model: "qwen3.5-plus",
-    anthropicKey: "",
     openaiKey: "test-key",
     baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     maxTokens: 8192,
-    availableModels: [],
-    permissionMode: "default",
-    skipPermissions: false,
-    allowedTools: [],
-    disallowedTools: [],
-    yesMode: false,
-    sessionId: "",
-    continue: false,
-    resume: "",
-    print: false,
-    outputFormat: "text",
-    maxTurns: 0,
-    systemPrompt: "",
-    appendSystemPrompt: "",
-    systemPromptFile: "",
-    debug: false,
-    debugLevel: "INFO",
-    debugLogFile: "~/.sid-code/debug.log",
-    hooks: [],
-    mcpServers: {},
     ...config,
   };
 

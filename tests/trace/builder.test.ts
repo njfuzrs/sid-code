@@ -62,6 +62,16 @@ function makeMetadata(overrides: Partial<TraceMetadata> = {}): TraceMetadata {
     side_cost_usd: 0,
     side_tokens_sent: 0,
     side_tokens_received: 0,
+    // 「缺口分析补全」那批必填的派生/采集指标。取值与 collector 的初始化块一致
+    // （src/trace/collector.ts:525 起），即一次调用都还没发生时的零态。
+    total_reasoning_tokens: 0,
+    total_gen_elapsed_ms: 0,
+    gen_samples: 0,
+    total_tool_duration_ms: 0,
+    tool_duration_samples: 0,
+    context_usage_trend: [],
+    discarded_streams: 0,
+    model_retry_count: 0,
     ...overrides,
   };
 }

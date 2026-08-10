@@ -38,7 +38,9 @@ class TestableOpenAIProvider extends OpenAIProvider {
   }
 }
 
-const provider = new TestableOpenAIProvider("test-key");
+// model 是构造函数的必填第二参（src/llm/openai.ts:119）。与同款 mock
+// tests/llm/openai.test.ts:16 取同一个模型名，便于两处对照。
+const provider = new TestableOpenAIProvider("test-key", "gpt-4o-mini");
 
 describe("§2.2 tool_use.input 兜底为合法 JSON", () => {
   test("input 为 undefined → arguments = '{}'", () => {

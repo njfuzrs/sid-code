@@ -14,6 +14,7 @@ import stringWidth from "string-width";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../semantic-colors.ts";
+import type { Color } from "../../ink/styles.js";
 import { formatCollapsedSummary } from "../constants/collapse.ts";
 
 interface SlicingMaxSizedBoxProps {
@@ -32,9 +33,11 @@ interface SlicingMaxSizedBoxProps {
    */
   maxColumnWidth?: number;
   /** 正文颜色（走 theme.* 语义 token，不传则用终端默认色）。 */
-  color?: string;
-  /** 是否暗淡正文（stdout 等次要输出）。 */
-  dimColor?: boolean;
+  color?: Color;
+  // 原有的 `dimColor?: boolean` 已删除：它既不是 ink Text 的 prop（fork 里叫 `dim`，
+  // 且与 `bold` 互斥），也没有任何调用方传过它 —— 四个调用点（ToolMessage /
+  // ToolResultDisplay / ErrorMessage / CommandMessage / TaskNotificationMessage）
+  // 只传 color。次要文本的暗淡应走 theme.text.secondary 灰色 token，见 src/ui/CLAUDE.md L1.3。
 }
 
 /** 统计字符串中的换行数（不需要 split 创建数组） */
@@ -84,7 +87,6 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   text,
   maxColumnWidth,
   color,
-  dimColor,
 }: SlicingMaxSizedBoxProps) {
   let displayText = text;
   let hiddenCount = 0;
@@ -161,7 +163,7 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
     <Box flexDirection="column">
       {truncated && overflowDirection === "top" && indicator}
       {lines.map((line, idx) => (
-        <Text key={idx} color={color} dimColor={dimColor}>{line}</Text>
+        <Text key={idx} color={color}>{line}</Text>
       ))}
       {truncated && overflowDirection === "bottom" && indicator}
     </Box>

@@ -11,6 +11,7 @@
  */
 
 import type { ThoughtSummary } from "./history-adapter.ts";
+import type { Color } from "../ink/styles.js";
 
 // ── 流式状态 ──
 
@@ -147,7 +148,8 @@ export type HistoryItemInfo = HistoryItemBase & {
   text: string;
   secondaryText?: string;
   icon?: string;
-  color?: string;
+  /** 走 theme.* 语义 token；类型是 ink 的 Color 因为它直接进 <Text color=…>。 */
+  color?: Color;
 };
 
 /** 警告消息 */

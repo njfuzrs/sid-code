@@ -22,6 +22,7 @@ import Text from "../ink/components/Text.js";
 import useStdout from "../ink/_vendor/use-stdout.js";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
+import type { Color } from "../ink/styles.js";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";
@@ -141,7 +142,7 @@ const inputBorderColor = () =>
  * 但它仍是边框，同样压到 {@link BORDER_TARGET_CONTRAST}——模式信号靠框内的
  * "反向搜索:" 文字满强度传达，不靠通宽横线嚷嚷。
  */
-const modeBorderColor = (color: string) =>
+const modeBorderColor = (color: Color) =>
   mixToContrast(color, theme.background.primary, BORDER_TARGET_CONTRAST);
 
 /**

@@ -15,6 +15,7 @@ import {
   getSafeLowColorBackground,
 } from "../../themes/color-utils.ts";
 import { isLowColorDepth, isITerm2 } from "../../utils/terminalUtils.ts";
+import type { Color } from "../../../ink/styles.js";
 import useStdout from "../../../ink/_vendor/use-stdout.js";
 import { DEFAULT_TERM_WIDTH } from "../../markdown.ts";
 
@@ -56,11 +57,15 @@ const HalfLinePaddedBoxInternal: React.FC<HalfLinePaddedBoxProps> = ({
 }) => {
   const { stdout } = useStdout();
   const terminalWidth = stdout.columns || DEFAULT_TERM_WIDTH;
-  const terminalBg = theme.background.primary || "black";
+  // 兜底用 'ansi:black' 而不是裸 "black"：terminalBg 会直接进 <Text color=…>（下方
+  // 半行块字符用它当前景色），而 ink 的 colorize() 只认 `#hex` / `rgb()` / `ansi256()` /
+  // `ansi:*` 四种形态，裸 "black" 会走到函数末尾 `return str` —— 静默不上色。
+  // （theme.background.primary 的类型已是 Color 非空，这个 || 分支实际是防空串兜底。）
+  const terminalBg: Color = theme.background.primary || "ansi:black";
 
   const isLowColor = isLowColorDepth();
 
-  const backgroundColor = useMemo(() => {
+  const backgroundColor = useMemo((): Color | undefined => {
     // 插值背景色在 256 色终端中通常效果不佳
     if (isLowColor) {
       return getSafeLowColorBackground(terminalBg);
@@ -70,11 +75,16 @@ const HalfLinePaddedBoxInternal: React.FC<HalfLinePaddedBoxProps> = ({
       resolveColor(backgroundBaseColor) || backgroundBaseColor;
     const resolvedTerminalBg = resolveColor(terminalBg) || terminalBg;
 
+    // interpolateColor 的返回类型是宽 string（它同时服务于 ColorsTheme 的构造，那边
+    // 字段就是 string），但两个输入都已过 resolveColor 规范化，tinygradient 的输出是
+    // `#rrggbb`。唯一的非 Color 返回路径是「任一入参为空 → 返回 ""」，而空串被下面的
+    // `if (!backgroundColor)` 挡住（该分支直接渲染 children，不带背景），所以这里
+    // 断言成 Color 是安全的。
     return interpolateColor(
       resolvedTerminalBg,
       resolvedBase,
       backgroundOpacity,
-    );
+    ) as Color;
   }, [backgroundBaseColor, backgroundOpacity, terminalBg, isLowColor]);
 
   if (!backgroundColor) {

@@ -18,6 +18,7 @@ import { common, createLowlight } from "lowlight";
 import type { Root, Element, Text as HastText, RootContent, ElementContent } from "hast";
 import { themeManager } from "../themes/theme-manager.ts";
 import type { Theme } from "../themes/theme.ts";
+import type { Color } from "../../ink/styles.js";
 
 // 顶层同步加载 lowlight（带常用语言）
 const lowlight = createLowlight(common);
@@ -69,7 +70,7 @@ export function clearLineHighlightCache(): void {
 function renderHastNode(
   node: Root | Element | HastText | RootContent,
   activeTheme: Theme,
-  inheritedColor: string | undefined,
+  inheritedColor: Color | undefined,
 ): React.ReactNode {
   if (node.type === "text") {
     const color = inheritedColor || activeTheme.defaultColor;
@@ -79,7 +80,7 @@ function renderHastNode(
   if (node.type === "element") {
     const el = node as Element;
     const classNames = (el.properties?.["className"] as string[]) || [];
-    let elementColor: string | undefined;
+    let elementColor: Color | undefined;
 
     // 从后往前查找，优先使用更具体的类名
     for (let i = classNames.length - 1; i >= 0; i--) {

@@ -61,7 +61,10 @@ describe("LY1 — derivePermission", () => {
 
 describe("LY1 — deriveContextColor", () => {
   test("对齐 cc：≤60 默认 / 61-80 黄 / 81%+ 红", () => {
-    const def = "x";
+    // 用合法的 hex（Color 类型）而不是 "x"：deriveContextColor 的默认色参数会被原样
+    // 透传到 <Text color=…>，"x" 这种值真进渲染会静默回退终端默认色。这里只需要一个
+    // "与三个 status token 都不相等"的哨兵值，#010101 同样满足，且是真能上屏的颜色。
+    const def = "#010101" as const;
     // 81%+ 红
     expect(deriveContextColor(81, def)).toBe(theme.status.error);
     expect(deriveContextColor(95, def)).toBe(theme.status.error);

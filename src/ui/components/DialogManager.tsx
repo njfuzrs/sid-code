@@ -10,6 +10,7 @@ import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { Ansi } from "../../ink/Ansi.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import type { Color } from "../../ink/styles.js";
 import { useTerminalDimensions } from "../contexts/TerminalContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
 import { getToolDetailFull } from "../ui-utils.ts";
@@ -305,7 +306,7 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
 }
 
 /** "其他…"行（选中后进入自定义文本输入）。preview 视图与列表视图共用。 */
-function OtherRow({ focused, editing, text, accent, showConfirmHint }: { focused: boolean; editing: boolean; text: string; accent: string; showConfirmHint?: boolean }) {
+function OtherRow({ focused, editing, text, accent, showConfirmHint }: { focused: boolean; editing: boolean; text: string; accent: Color; showConfirmHint?: boolean }) {
   return (
     <Box flexDirection="column">
       <Box>
@@ -338,7 +339,7 @@ function ConfirmRow({ focused, enabled, summary, isMulti, selectedCount, accent 
   summary: string;
   isMulti: boolean;
   selectedCount: number;
-  accent: string;
+  accent: Color;
 }) {
   const label = "确认提交";
   const suffix = !enabled
@@ -352,7 +353,11 @@ function ConfirmRow({ focused, enabled, summary, isMulti, selectedCount, accent 
       <Box width={2} flexShrink={0}>
         <Text color={focused && enabled ? accent : theme.text.secondary}>{focused ? POINTER : " "}</Text>
       </Box>
-      <Text color={color} bold={focused && enabled} dimColor={!enabled}>
+      {/* 置灰不用 ANSI dim：dim 与 bold 在终端互斥（见 src/ui/CLAUDE.md L1.3），
+          且上面的 `color` 在 !enabled 时已是 theme.text.secondary，灰色 token 已把
+          禁用态表达完整。原先多传的 dimColor 既不是 Text 的 prop（fork 里叫 dim）
+          也是冗余的。 */}
+      <Text color={color} bold={focused && enabled}>
         {SUCCESS_MARK} {label} {suffix}
       </Text>
     </Box>

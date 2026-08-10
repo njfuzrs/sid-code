@@ -38,11 +38,16 @@ describe("/color 命令", () => {
     expect(override).toMatch(/^#/); // 已归一化为 hex
   });
 
-  test("Ink 原生命名色按原样保留（cyan 等 Ink 直接支持）", async () => {
+  test("Ink 命名色归一化为 ansi: 前缀形态（裸名在 ink fork 下不上色）", async () => {
     const mod = await loadColor();
     await mod.call("cyan", ctx);
-    // Ink 原生色无需转 hex，直接可用，保留原名。
-    expect(themeManager.getAccentOverride()).toBe("cyan");
+    // 原断言是 toBe("cyan")，即「原样保留」——那是个把缺陷当规格的断言。
+    // ink fork 的 colorize()（src/ink/colorize.ts）只识别 `ansi:*` / `#hex` /
+    // `rgb()` / `ansi256()` 四种形态，裸 "cyan" 会落到函数末尾的 `return str`，
+    // **静默不上色**（实测 FORCE_COLOR=3：`ansi:cyan` → `\e[36m`，裸 `cyan` → 原样）。
+    // 也就是说 `/color cyan` 以前等于设了个不生效的强调色。resolveColor 现在统一
+    // 把 ink 命名色映射到 `ansi:` 形态，故此处断言归一化后的值。
+    expect(themeManager.getAccentOverride()).toBe("ansi:cyan");
   });
 
   test("非法颜色被拒绝，不改 override", async () => {

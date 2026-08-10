@@ -8,7 +8,8 @@
 import { describe, test, expect } from "bun:test";
 import { SubAgent } from "../../src/agent/sub-agent.ts";
 import { Registry } from "../../src/tool/registry.ts";
-import type { Tool, ToolResult } from "../../src/tool/types.ts";
+// 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
 import type { Provider } from "../../src/llm/provider.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
 import {
@@ -139,6 +140,7 @@ describe("子代理通信协议", () => {
       output: "完成",
       usage: { inputTokens: 100, outputTokens: 50 },
       turns: 3,
+      toolUseCount: 2,
     };
     const json2 = JSON.stringify(resultMsg);
     const parsed2 = JSON.parse(json2) as ChildMessage;

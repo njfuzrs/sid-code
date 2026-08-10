@@ -103,13 +103,15 @@ describe("MCPManager 动态增删", () => {
     await mgr.addServer("mock", config);
     expect(mgr.isConnected("mock")).toBe(true);
 
-    let refreshedTools: number | null = null;
-    mgr.onToolsRefresh = (_name, tools) => { refreshedTools = tools.length; };
+    // 用对象持有而非裸 let：TS 的控制流分析看不进 onToolsRefresh 回调，
+    // 只看到「声明为 null 后再没赋值」，于是把下面断言处的类型收窄成 null。
+    const refreshed: { tools: number | null } = { tools: null };
+    mgr.onToolsRefresh = (_name, tools) => { refreshed.tools = tools.length; };
     await mgr.removeServer("mock");
 
     expect(mgr.isConnected("mock")).toBe(false);
     expect(mgr.getClient("mock")).toBeUndefined();
-    expect(refreshedTools).toBe(0); // 通知外部清空工具
+    expect(refreshed.tools).toBe(0); // 通知外部清空工具
   });
 
   test("addServer 幂等：重复添加同名 server 先清理旧连接", async () => {

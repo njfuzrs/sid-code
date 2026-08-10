@@ -266,7 +266,10 @@ describe("UploadManager", () => {
   });
 
   test("uploadFileWithRetry: gzip 压缩时文件名带 .gz 后缀", async () => {
-    let capturedFormData: FormData | null = null;
+    // 用对象持有而非裸 let：TS 的控制流分析看不进 fetch mock 那个异步闭包，
+    // 只看到「声明为 null 后再没赋值」，于是在下面 .get() 处把类型收窄成 never。
+    // 包一层属性访问就不受该收窄影响。
+    const captured: { formData: FormData | null } = { formData: null };
     const mgr = new UploadManager({
       baseUrl: "http://localhost",
       token: "tok",
@@ -277,7 +280,7 @@ describe("UploadManager", () => {
 
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      capturedFormData = init?.body as FormData;
+      captured.formData = init?.body as FormData;
       return new Response(JSON.stringify({ status: "saved" }), { status: 200 });
     }) as any;
 
@@ -288,7 +291,7 @@ describe("UploadManager", () => {
 
     // 验证 FormData 中文件名带 .gz
     // 注意：在 Bun 中 FormData.get 返回 File 对象，其 name 属性包含文件名
-    const fileField = capturedFormData?.get("file") as File | null;
+    const fileField = captured.formData?.get("file") as File | null;
     expect(fileField?.name).toBe("session.traj.gz");
   });
 
@@ -658,7 +661,9 @@ describe("UploadManager", () => {
     mgr.setServerReachable(false);
 
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response("{}", { status: 200 });
+    // as any：Bun 的 typeof fetch 带 preconnect 属性，裸函数 mock 无法实现它。
+    // 与仓库既有 fetch mock 写法一致（见 tests/llm/gateway-pricing.test.ts）。
+    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as any;
 
     // 调用私有 checkHealth
     await (mgr as any).checkHealth();
@@ -677,9 +682,9 @@ describe("UploadManager", () => {
     expect(mgr.isServerReachable()).toBe(true);
 
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => {
+    globalThis.fetch = (async () => {
       throw new Error("Connection refused");
-    };
+    }) as any;
 
     await (mgr as any).checkHealth();
 
@@ -696,7 +701,7 @@ describe("UploadManager", () => {
     });
 
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response("Not Found", { status: 404 });
+    globalThis.fetch = (async () => new Response("Not Found", { status: 404 })) as any;
 
     await (mgr as any).checkHealth();
 

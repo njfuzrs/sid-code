@@ -6,8 +6,17 @@
  * - 外部 estimatedItemHeight 回调
  * - anchor-based 定位 + sticky-to-bottom
  * - 双 ResizeObserver（容器 + 项目）
- * - Ink fork 的 overflowY="scroll" + scrollTop + scrollbarThumbColor
+ * - Ink fork 的 overflowY="scroll"（滚动位置由 spacer 高度 + copyMode 的 marginTop 表达）
  * - useBatchedScroll 批量滚动
+ *
+ * ⚠️ 曾经这里还写着 `+ scrollTop + scrollbarThumbColor`，并真的往 <Box> 上传了这两个
+ * prop —— 但它们是 gemini-cli 旧 Box 的遗留，在当前 ink fork 下**完全无效**：
+ *   - 渲染器读的是 `node.scrollTop`（DOMElement 字段，只由 ScrollBox 组件命令式写入，
+ *     见 render-node-to-output.ts `let cur = node.scrollTop ?? 0`），从不读 style.scrollTop；
+ *     applyStyles() 也没有处理这个 key。
+ *   - `scrollbarThumbColor` 在整个 src/ink/ 里零命中，fork 不画滚动条。
+ * 传了等于没传，所以移除它们是行为等价的（tsc 报错正是这么暴露出来的）。真正生效的
+ * 滚动位置表达是下面的 topSpacerHeight / bottomSpacerHeight 与 copyMode 的 marginTop。
  */
 
 import {
@@ -24,7 +33,6 @@ import React from "react";
 import Box from "../../ink/components/Box.js";
 import type { DOMElement } from "../../ink/dom.js";
 import { ResizeObserver } from "../../ink/_vendor/resize-observer.js";
-import { theme } from "../semantic-colors.ts";
 import { useBatchedScroll } from "../hooks/useBatchedScroll.ts";
 import { quantize, SCROLL_QUANTUM } from "../utils/scroll-quantum.ts";
 
@@ -577,8 +585,6 @@ function VirtualizedList<T>(
       ref={containerRefCallback}
       overflowY={copyMode ? "hidden" : "scroll"}
       overflowX="hidden"
-      scrollTop={copyMode ? 0 : scrollTop}
-      scrollbarThumbColor={props.scrollbarThumbColor ?? theme.text.secondary}
       width="100%"
       height="100%"
       flexDirection="column"

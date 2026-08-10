@@ -6,31 +6,32 @@
 
 import type { CSSProperties } from 'react';
 import type { SemanticColors } from './semantic-tokens.ts';
+import type { Color } from '../../ink/styles.js';
 import { interpolateColor, resolveColor } from './color-utils.ts';
 
 export type ThemeType = 'light' | 'dark' | 'ansi' | 'custom';
 
 export interface ColorsTheme {
   type: ThemeType;
-  Background: string;
-  Foreground: string;
-  LightBlue: string;
-  AccentBlue: string;
-  AccentPurple: string;
-  AccentCyan: string;
-  AccentGreen: string;
-  AccentYellow: string;
-  AccentRed: string;
-  DiffAdded: string;
-  DiffRemoved: string;
-  Comment: string;
-  Gray: string;
-  DarkGray: string;
-  InputBackground?: string;
-  MessageBackground?: string;
-  FocusBackground?: string;
-  FocusColor?: string;
-  GradientColors?: string[];
+  Background: Color;
+  Foreground: Color;
+  LightBlue: Color;
+  AccentBlue: Color;
+  AccentPurple: Color;
+  AccentCyan: Color;
+  AccentGreen: Color;
+  AccentYellow: Color;
+  AccentRed: Color;
+  DiffAdded: Color;
+  DiffRemoved: Color;
+  Comment: Color;
+  Gray: Color;
+  DarkGray: Color;
+  InputBackground?: Color;
+  MessageBackground?: Color;
+  FocusBackground?: Color;
+  FocusColor?: Color;
+  GradientColors?: Color[];
 }
 
 // 默认不透明度常量
@@ -139,15 +140,20 @@ export const daltonizedLightTheme: ColorsTheme = {
 
 export class Theme {
   /**
-   * 默认前景色，当没有特定高亮规则时使用
-   * 这是 Ink 兼容的颜色字符串（hex 或名称）
+   * 默认前景色，当没有特定高亮规则时使用。
+   *
+   * 类型是 `Color | undefined` 而非 `string`：这个值唯一的去处就是 `<Text color=…>`
+   * （见 CodeColorizer），而 ink 的 `Text.color` 就是 `Color`。`undefined` 正是 ink
+   * 表达「不指定颜色、用终端默认前景」的方式 —— 语义与旧实现的 `?? ''` 兜底一致
+   * （消费侧 `inheritedColor || activeTheme.defaultColor` 本来就把空串当 falsy 处理），
+   * 但用 undefined 表达"无值"比空串更准确，也不用再靠 falsy 巧合。
    */
-  readonly defaultColor: string;
+  readonly defaultColor: Color | undefined;
 
   /**
    * 存储从 highlight.js 类名（例如 'hljs-keyword'）到 Ink 兼容颜色字符串的映射
    */
-  protected readonly _colorMap: Readonly<Record<string, string>>;
+  protected readonly _colorMap: Readonly<Record<string, Color>>;
   readonly semanticColors: SemanticColors;
 
   /**
@@ -241,11 +247,12 @@ export class Theme {
     } as SemanticColors);
     this._colorMap = Object.freeze(this._buildColorMap(rawMappings));
 
-    // 确定默认前景色
+    // 确定默认前景色。解析不出（主题未定义 hljs.color / 值非法）时保持 undefined，
+    // 由 ink 回落终端默认前景色。
     const rawDefaultColor = rawMappings['hljs']?.color;
-    this.defaultColor =
-      (rawDefaultColor ? Theme._resolveColor(rawDefaultColor) : undefined) ??
-      '';
+    this.defaultColor = rawDefaultColor
+      ? Theme._resolveColor(rawDefaultColor)
+      : undefined;
   }
 
   /**
@@ -253,14 +260,14 @@ export class Theme {
    * @param hljsClass highlight.js 类名（例如 'hljs-keyword', 'hljs-string'）
    * @returns 对应的 Ink 颜色字符串（hex 或名称），如果不存在则返回 undefined
    */
-  getInkColor(hljsClass: string): string | undefined {
+  getInkColor(hljsClass: string): Color | undefined {
     return this._colorMap[hljsClass];
   }
 
   /**
    * 解析 CSS 颜色值为 Ink 兼容的颜色字符串
    */
-  private static _resolveColor(colorValue: string): string | undefined {
+  private static _resolveColor(colorValue: string): Color | undefined {
     return resolveColor(colorValue);
   }
 
@@ -269,8 +276,8 @@ export class Theme {
    */
   protected _buildColorMap(
     hljsTheme: Record<string, CSSProperties>,
-  ): Record<string, string> {
-    const inkTheme: Record<string, string> = {};
+  ): Record<string, Color> {
+    const inkTheme: Record<string, Color> = {};
     for (const key in hljsTheme) {
       // 确保 key 以 'hljs-' 开头或是 'hljs'（基础样式）
       if (!key.startsWith('hljs-') && key !== 'hljs') {

@@ -39,6 +39,9 @@ describe("SessionStore", () => {
   test("保存和加载会话", async () => {
     const store = new SessionStore();
     const session: SessionData = {
+      // version 必填。传什么值都会被 store.save() 用 CURRENT_VERSION 覆写
+      // （src/session/store.ts:568），这里给当前值只是为了让固件类型合法。
+      version: "3.0",
       id: "test-001",
       model: "claude-sonnet-4-20250514",
       provider: "anthropic",
@@ -75,6 +78,7 @@ describe("SessionStore", () => {
     const store = new SessionStore();
 
     await store.save({
+      version: "3.0",
       id: "s1",
       model: "test",
       provider: "test",
@@ -83,6 +87,7 @@ describe("SessionStore", () => {
       updatedAt: new Date().toISOString(),
     });
     await store.save({
+      version: "3.0",
       id: "s2",
       model: "test",
       provider: "test",

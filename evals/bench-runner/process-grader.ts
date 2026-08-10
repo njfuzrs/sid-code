@@ -76,18 +76,25 @@ ${input.agentResponse.slice(0, 3000)}`;
       };
     }
 
+    // 诊断字符串走 reasoning 而不是 details：GradeResult.details 的契约是
+    // Record<string, boolean | number>（outcome-grader.ts:9），字符串塞不进去 ——
+    // capability-grader.ts:289 还专门把非 number/boolean 项过滤掉，说明这个窄契约
+    // 是刻意的（details 是给聚合统计读的数值维度，不是自由文本槽）。
+    // 原先两处都往 details 塞字符串，其中 raw_response 那处只是因为 text 源自
+    // `data: any` 才没被 tsc 抓到，error 那处就报了错。
     return {
       score: Math.min(5, Math.max(0, judgment.score ?? 3)),
       layer: "process",
-      details: { raw_response: text.slice(0, 200) },
-      reasoning: judgment.reasoning || "LLM Judge evaluation",
+      details: {},
+      reasoning: judgment.reasoning
+        || `LLM Judge evaluation (raw: ${String(text).slice(0, 200)})`,
     };
   } catch (error) {
     return {
       score: 3, // 默认中间分
       layer: "process",
-      details: { error: String(error).slice(0, 200) },
-      reasoning: "LLM Judge call failed, using default score",
+      details: {},
+      reasoning: `LLM Judge call failed, using default score: ${String(error).slice(0, 200)}`,
     };
   }
 }

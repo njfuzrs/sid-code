@@ -83,7 +83,13 @@ describe("convertToSDKMessage", () => {
   });
 
   test("compact → compact_boundary", () => {
-    const out = convertToSDKMessage({ kind: "compact" }, ctx);
+    // compact 事件必须携带压缩实据（messageCountBefore/After 均为必填，且
+    // after < before 是不变式）——零字段的 `{ kind: "compact" }` 正是 2026-07-29
+    // 假压缩误报事故的写法，字段设为必填就是为了让它编译不过。见 src/query/types.ts:69。
+    const out = convertToSDKMessage(
+      { kind: "compact", messageCountBefore: 20, messageCountAfter: 6 },
+      ctx,
+    );
     expect(out).toMatchObject({ type: "system", subtype: "compact_boundary" });
   });
 

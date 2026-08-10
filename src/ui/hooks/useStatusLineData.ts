@@ -15,6 +15,12 @@ import type { Usage } from "../../llm/types.ts";
 import { normalizeCacheUsage } from "../../llm/types.ts";
 import { SessionState } from "../../session/state.ts";
 import { theme } from "../semantic-colors.ts";
+// 颜色一律用 ink 的 Color（`#hex` / `rgb()` / `ansi256()` / `ansi:*`）而不是 string：
+// 本 hook 派生出的每个 color 最终都直接喂给 Footer 的 <Text color=…>，而 Text.color
+// 的类型就是 Color。声明成 string 时，Footer 那 6 个消费点全部编译不过（这批 tsc
+// 报错的来源），而在消费点撒 `as Color` 只是把类型漏洞下推——真正的收口在这里：
+// 所有 color 的源头都是 theme.* 语义 token，本身已经是合法 Color。
+import type { Color } from "../../ink/styles.js";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
@@ -64,7 +70,7 @@ export function deriveWorktree(cwd: string): string {
 /** 权限模式 → 显示文本 + 语义色。纯函数，可单测。 */
 export function derivePermission(permissionMode: string): {
   display: string;
-  color: string;
+  color: Color;
   isDanger: boolean;
 } {
   const isDanger =
@@ -114,9 +120,9 @@ export function derivePermission(permissionMode: string): {
  */
 export function deriveContextColor(
   contextPercent: number,
-  defaultColor: string,
+  defaultColor: Color,
   level?: "none" | "soft" | "hard" | "emergency",
-): string {
+): Color {
   if (level) {
     if (level === "hard" || level === "emergency") return theme.status.error;
     if (level === "soft") return theme.status.warning;
@@ -132,7 +138,7 @@ export function deriveCost(
   costUSD: number,
   costLimit: number,
   model: string,
-): { text: string; color: string | undefined } {
+): { text: string; color: Color | undefined } {
   const isExchangeRateConverted = /deepseek/i.test(model);
   const prefix = isExchangeRateConverted ? "≈$" : "$";
   const text = costUSD > 0 ? `${prefix}${costUSD.toFixed(4)}` : `${prefix}0`;
@@ -151,7 +157,7 @@ export function deriveCacheMetrics(
   usage: Usage,
   model: string,
   availableModels?: PricingModelEntry[],
-): { rate: number; text: string; color: string } | null {
+): { rate: number; text: string; color: Color } | null {
   const n = normalizeCacheUsage(usage, SessionState.inferProvider(model, availableModels));
   if (n.cacheHitTokens > 0 && n.promptTotal > 0) {
     const rate = Math.round((n.cacheHitTokens / Math.max(1, n.promptTotal)) * 100);
@@ -171,7 +177,7 @@ export function deriveCacheMetrics(
  */
 export function deriveCacheSavings(
   cacheSavingsUSD: number,
-): { text: string; color: string } | null {
+): { text: string; color: Color } | null {
   if (cacheSavingsUSD <= 0) return null;
   // 格式化：< $0.01 不显示（避免精度误导），>= $1 只保留 2 位小数
   if (cacheSavingsUSD < 0.01) return null;
@@ -192,8 +198,8 @@ export function deriveCacheSavings(
  */
 export function deriveEffort(
   effortDisplay: { level: import("../../llm/effort.ts").EffortLevel; isAuto: boolean } | null,
-  defaultColor: string,
-): { glyph: string; text: string; color: string } | null {
+  defaultColor: Color,
+): { glyph: string; text: string; color: Color } | null {
   if (!effortDisplay) return null;
   const { level, isAuto } = effortDisplay;
   if (isAuto) {
@@ -213,8 +219,8 @@ export function deriveEffort(
  */
 export function deriveThinking(
   thinkingDisplay: { on: boolean; isAuto: boolean } | null,
-  defaultColor: string,
-): { glyph: string; text: string; color: string } | null {
+  defaultColor: Color,
+): { glyph: string; text: string; color: Color } | null {
   if (!thinkingDisplay) return null;
   const { on, isAuto } = thinkingDisplay;
   // 去掉 (auto) 文字后缀：字形已自解释(✻ 开 / ✧ 关)，Footer 旋钮区只渲染 glyph。
@@ -238,8 +244,8 @@ export function deriveThinking(
  */
 function deriveGoal(
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null,
-  defaultColor: string,
-): { text: string; color: string } | null {
+  defaultColor: Color,
+): { text: string; color: Color } | null {
   if (!goalDisplay) return null;
   const { turnsUsed, maxTurns, status } = goalDisplay;
   if (status !== "active" && status !== "paused") return null;
@@ -253,9 +259,9 @@ function deriveGoal(
 
 /** 状态栏聚合数据（纯数据，无 React 元素）。 */
 export interface StatusLineData {
-  itemColor: string;
+  itemColor: Color;
   cwdDisplay: string;
-  permission: { display: string; color: string; isDanger: boolean };
+  permission: { display: string; color: Color; isDanger: boolean };
   isPlanMode: boolean;
   gitBranch: string;
   /** P3-3：仓库名（主仓 git 根目录名）。空串 = 非 git 目录，不显示该列。 */
@@ -267,19 +273,19 @@ export interface StatusLineData {
   isVim: boolean;
   /** token 计量（null = 会话尚无输入/输出，隐藏该列，避免 ↑0 ↓0 噪音） */
   tokens: { text: string } | null;
-  cache: { rate: number; text: string; color: string } | null;
+  cache: { rate: number; text: string; color: Color } | null;
   /** 10.3：缓存节省金额（null = 节省为 0 或不足阈值，不渲染该列） */
-  cacheSavings: { text: string; color: string } | null;
-  cost: { text: string; color: string | undefined };
-  context: { text: string; color: string } | null;
+  cacheSavings: { text: string; color: Color } | null;
+  cost: { text: string; color: Color | undefined };
+  context: { text: string; color: Color } | null;
   model: string;
   scroll: { text: string } | null;
   /** effort 列派生（null = 模型不支持档位，不渲染该列） */
-  effort: { glyph: string; text: string; color: string } | null;
+  effort: { glyph: string; text: string; color: Color } | null;
   /** thinking 列派生（null = 模型不支持思考开关，不渲染该列） */
-  thinking: { glyph: string; text: string; color: string } | null;
+  thinking: { glyph: string; text: string; color: Color } | null;
   /** /goal 列派生（null = 无活跃目标，不渲染该列） */
-  goal: { text: string; color: string } | null;
+  goal: { text: string; color: Color } | null;
 }
 
 export interface StatusLineInput {

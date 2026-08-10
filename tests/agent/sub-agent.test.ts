@@ -6,7 +6,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { Registry } from "../../src/tool/registry.ts";
 import { SubAgent, resolveSubAgentMaxTurns } from "../../src/agent/sub-agent.ts";
 import { SubAgentTool } from "../../src/agent/tool.ts";
-import type { Tool, ToolResult } from "../../src/tool/types.ts";
+// 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
 import type { Provider } from "../../src/llm/provider.ts";
 import type { ProviderRegistry } from "../../src/llm/registry.ts";
 import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
@@ -89,9 +90,11 @@ function mockProviderRegistry(provider: Provider, model: string = "test-model"):
   } as unknown as ProviderRegistry;
 }
 
-// 每个测试后重置静态计数器
+// 每个测试后重置静态计数器。
+// 只剩 SubAgentTool.running 一个：原 SubAgent.depth 静态计数器已被
+// depth-context.ts 的 AsyncLocalStorage 方案取代（见本文件 L205 附近说明），
+// 深度随异步上下文自动出栈，无需手工重置。
 afterEach(() => {
-  SubAgent.depth = 0;
   SubAgentTool.running = 0;
 });
 
