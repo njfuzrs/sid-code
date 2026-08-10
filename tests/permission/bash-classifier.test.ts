@@ -18,7 +18,6 @@ import type { AccumulatedResponse, SendParams, StreamEvent } from "../../src/llm
 function mockProvider(responseText: string, opts?: { throwErr?: boolean; delayMs?: number }): Provider {
   return {
     name: () => "mock",
-    defaultModel: () => "mock-model",
     // eslint-disable-next-line require-yield
     async *sendMessageStream(): AsyncIterable<StreamEvent> {
       // 流式路径：发一个 text_delta

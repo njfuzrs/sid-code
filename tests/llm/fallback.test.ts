@@ -23,7 +23,7 @@ import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
 function successProvider(events?: StreamEvent[]): Provider {
   return {
     name: () => "mock",
-    defaultModel: () => "mock-model",
+
     async *sendMessageStream(): AsyncIterable<StreamEvent> {
       const defaultEvents: StreamEvent[] = events ?? [
         { type: "message_start", message: { usage: { inputTokens: 10, outputTokens: 0 } } },
@@ -42,7 +42,7 @@ function successProvider(events?: StreamEvent[]): Provider {
 function errorEventProvider(errorMsg: string): Provider {
   return {
     name: () => "mock",
-    defaultModel: () => "mock-model",
+
     async *sendMessageStream(): AsyncIterable<StreamEvent> {
       yield { type: "error", error: { message: errorMsg } };
     },
@@ -139,7 +139,7 @@ describe("ModelFallback", () => {
     // Provider 返回空流（无 content_block_delta）
     const emptyProvider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         yield { type: "message_stop" };
       },
@@ -169,7 +169,7 @@ describe("ModelFallback", () => {
     // fallback provider 返回空流（只有 message_stop，无任何内容/工具/error 事件）
     const emptyFallback: Provider = {
       name: () => "mock-fallback",
-      defaultModel: () => "fallback-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         yield { type: "message_stop" };
       },
@@ -319,7 +319,7 @@ describe("ModelFallback", () => {
     let fallbackCalled = false;
     const fallbackProv: Provider = {
       name: () => "fallback",
-      defaultModel: () => "backup-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         fallbackCalled = true;
         yield* successProvider().sendMessageStream(defaultParams);
@@ -397,7 +397,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       sendMessageStream(): AsyncIterable<StreamEvent> {
         callCount++;
         if (callCount === 1) {
@@ -431,7 +431,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       sendMessageStream(): AsyncIterable<StreamEvent> {
         callCount++;
         const err = new Error("401 Unauthorized") as any;
@@ -458,7 +458,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       sendMessageStream(): AsyncIterable<StreamEvent> {
         callCount++;
         if (callCount === 1) {
@@ -490,7 +490,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
         callCount++;
         if (callCount === 1) {
@@ -542,7 +542,7 @@ describe("ModelFallback 增强", () => {
     let maxTokensAdjusted = false;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         yield {
           type: "error",
@@ -572,7 +572,7 @@ describe("ModelFallback 增强", () => {
       const adjustedValues: number[] = [];
       const provider: Provider = {
         name: () => "mock",
-        defaultModel: () => "mock-model",
+    
         sendMessageStream(params: SendParams): AsyncIterable<StreamEvent> {
           callCount++;
           if (callCount === 1) {
@@ -610,7 +610,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         callCount++;
         yield { type: "error", error: { message: "529 overloaded" } };
@@ -640,7 +640,7 @@ describe("ModelFallback 增强", () => {
     let callCount = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         callCount++;
         yield { type: "error", error: { message: "529 overloaded" } };
@@ -832,7 +832,7 @@ describe("ModelFallback 增强", () => {
     // SDK 风格的 abort 错误；signal 不 abort 则永远不产出任何事件（卡死）。
     const hangProvider: Provider = {
       name: () => "mock-hang",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(_p: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
         await new Promise<void>((resolve, reject) => {
           if (signal?.aborted) return reject(new Error("Request was aborted."));
@@ -868,7 +868,7 @@ describe("ModelFallback 增强", () => {
   test("用户 abort（外部 signal）立即传播 RequestAbortedError", async () => {
     const hangProvider: Provider = {
       name: () => "mock-hang",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(_p: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
         await new Promise<void>((resolve, reject) => {
           signal?.addEventListener(
@@ -904,7 +904,7 @@ describe("ModelFallback 增强", () => {
     let neverSettles: () => void = () => {};
     const hangProvider: Provider = {
       name: () => "mock-real-hang",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } };
         // 挂起：不监听 signal，不 resolve，不 reject —— 唯一能救出来的只有外层 race。
@@ -940,7 +940,7 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     let attempts = 0;
     return {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         attempts++;
         if (attempts === 1) {
@@ -970,7 +970,7 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     let attempts = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         attempts++;
         if (attempts === 1) {
@@ -994,7 +994,7 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     let attempts = 0;
     const provider: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         attempts++;
         yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } };
@@ -1012,7 +1012,7 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     const availability = new ModelAvailabilityService();
     const failing: Provider = {
       name: () => "mock",
-      defaultModel: () => "mock-model",
+  
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
         yield { type: "error", error: { message: "凭证无效", type: "authentication_error", streamLevel: true } } as StreamEvent;
       },

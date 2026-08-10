@@ -10,6 +10,7 @@
 import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
+import type { Color } from "../../ink/styles.js";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../constants/figures.ts";
@@ -22,7 +23,7 @@ interface PermissionsDialogProps {
   sessionState?: SessionState;
 }
 
-const MODE_LABELS: Record<string, { label: string; color: string; desc: string }> = {
+const MODE_LABELS: Record<string, { label: string; color: Color; desc: string }> = {
   default: { label: "default (ask)", color: theme.status.warning, desc: "每次工具调用弹窗确认" },
   "skip-perms": { label: "skip-perms", color: theme.status.success, desc: "跳过所有权限确认" },
   plan: { label: "plan", color: theme.ui.active, desc: "仅 plan 模式批准后执行" },

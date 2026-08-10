@@ -14,6 +14,7 @@ import Text from "../../ink/components/Text.js";
 import type { Props as TextProps } from "../../ink/components/Text.js";
 import tinycolor from "tinycolor2";
 import tinygradient from "tinygradient";
+import type { Color } from "../../ink/styles.js";
 import { theme } from "../semantic-colors.ts";
 
 /**
@@ -41,9 +42,9 @@ function applyGradient(text: string, colors: string[]): React.ReactNode {
   const gradientColors = gradient.rgb(Math.max(chars.length, 2));
 
   // 为每个可见字符分配颜色
-  const colorMap = new Map<string, string>();
+  const colorMap = new Map<string, Color>();
   chars.forEach((ch, i) => {
-    colorMap.set(`${ch.line}-${ch.col}`, gradientColors[i].toHexString());
+    colorMap.set(`${ch.line}-${ch.col}`, gradientColors[i].toHexString() as Color);
   });
 
   // 渲染每行

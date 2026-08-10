@@ -15,6 +15,7 @@ import React, { useRef } from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import type { Color } from "../../ink/styles.js";
 import { theme } from "../semantic-colors.ts";
 import { BULLET, WARNING_MARK } from "../constants/figures.ts";
 import { isDestructiveCommand } from "../../tool/bash/read-only-validation.ts";
@@ -36,7 +37,7 @@ export interface PermissionPromptRequest {
 }
 
 /** 单个操作项：高亮按键 + 说明 */
-const ActionKey: React.FC<{ keyLabel: string; desc: string; color: string }> = ({
+const ActionKey: React.FC<{ keyLabel: string; desc: string; color: Color }> = ({
   keyLabel,
   desc,
   color,

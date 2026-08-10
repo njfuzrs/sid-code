@@ -14,6 +14,7 @@
 import React from "react";
 import Box from "../../../ink/components/Box.js";
 import Text from "../../../ink/components/Text.js";
+import type { Color } from "../../../ink/styles.js";
 import { theme } from "../../semantic-colors.ts";
 import { getAgentInkColor } from "../../../agent/color.ts";
 import { BULLET, TREE_BRANCH } from "../../constants/figures.ts";
@@ -42,7 +43,7 @@ const DEFAULT_MAX_LINES = 3;
 const WRAP_WIDTH_PADDING = 8;
 
 /** 终态 → bullet 颜色（仅换颜色不换字形，对标工具状态点流转 L3.2）。 */
-function statusColor(status: string): string {
+function statusColor(status: string): Color {
   switch (status) {
     case "completed":
       return theme.status.success;

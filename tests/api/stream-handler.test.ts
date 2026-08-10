@@ -72,7 +72,6 @@ function makeProvider(opts: {
 }): Provider {
   return {
     name: () => "mock",
-    defaultModel: () => "m",
     sendMessageStream: () => opts.stream(),
     ...(opts.nonStreaming ? { sendMessageNonStreaming: (p: SendParams) => opts.nonStreaming!(p) } : {}),
   };
