@@ -2,8 +2,8 @@
  * 自动生成文件 —— 请勿手动编辑。
  *
  * 由 scripts/embed-builtin-skills.ts 在 make build 时生成。
- * 内容是 src/skill/builtin/<name>/ 下所有文件的原文，被 import 后会随 bun build --compile
- * 打进二进制。运行时由 src/skill/ensure-builtin.ts 按原目录结构释放到 ~/.sid-code/builtin-skills/。
+ * 内容是 packages/core/src/skill/builtin/<name>/ 下所有文件的原文，被 import 后会随 bun build --compile
+ * 打进二进制。运行时由 packages/core/src/skill/ensure-builtin.ts 按原目录结构释放到 ~/.sid-code/builtin-skills/。
  */
 
 export interface EmbeddedBuiltinFile {

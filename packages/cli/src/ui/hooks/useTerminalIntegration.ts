@@ -20,11 +20,11 @@
 
 import { useContext, useEffect, useRef, useState } from "react";
 import { StreamingState } from "../types.ts";
-import { useTerminalTitle } from "../../ink/hooks/use-terminal-title.ts";
-import { useTabStatus, type TabStatusKind } from "../../ink/hooks/use-tab-status.ts";
-import { TerminalWriteContext } from "../../ink/useTerminalNotification.ts";
-import { BEL } from "../../ink/termio/ansi.ts";
-import { OSC, osc, wrapForMultiplexer } from "../../ink/termio/osc.ts";
+import { useTerminalTitle } from "@sid-code/tui-renderer/hooks/use-terminal-title.ts";
+import { useTabStatus, type TabStatusKind } from "@sid-code/tui-renderer/hooks/use-tab-status.ts";
+import { TerminalWriteContext } from "@sid-code/tui-renderer/useTerminalNotification.ts";
+import { BEL } from "@sid-code/tui-renderer/termio/ansi.ts";
+import { OSC, osc, wrapForMultiplexer } from "@sid-code/tui-renderer/termio/osc.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "../constants/figures.ts";
 

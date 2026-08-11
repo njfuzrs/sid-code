@@ -8,8 +8,8 @@
  * 只做本地枚举 + 打印，供脚本/CI 快速查看代理清单。支持 --setting-sources 限定加载源。
  */
 
-import { getBuiltInAgentDefinitions } from "../agent/agent-definition.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getBuiltInAgentDefinitions } from "@sid-code/core/agent/agent-definition.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 interface AgentRow {
   name: string;
@@ -43,7 +43,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
   // --setting-sources：极早期注入，限定后续磁盘设置加载范围（与 cli.ts 主流程同源）。
   if (settingSources) {
     try {
-      const { setEnabledSettingSources } = await import("../config/settings/settings.ts");
+      const { setEnabledSettingSources } = await import("@sid-code/core/config/settings/settings.ts");
       setEnabledSettingSources(settingSources);
     } catch {
       /* 忽略：设置源过滤失败不应阻塞列举 */
@@ -65,7 +65,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
 
   // 2) 用户/项目自定义代理（.sid-code/agents）
   try {
-    const { CustomAgentLoader } = await import("../agent/custom.ts");
+    const { CustomAgentLoader } = await import("@sid-code/core/agent/custom.ts");
     const custom = await new CustomAgentLoader().loadAll();
     for (const def of custom) {
       rows.push({

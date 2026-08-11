@@ -21,7 +21,7 @@
 
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
-import { sidPaths } from "../config/paths.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 interface DaemonCliOptions {
   webhook: boolean;
@@ -112,7 +112,7 @@ function daemonLogFile(): string {
 
 /** 初始化 daemon 专用 logger：console + 文件追加 */
 async function initDaemonLogger(): Promise<void> {
-  const { initLogger, LogLevel } = await import("../debug/index.ts");
+  const { initLogger, LogLevel } = await import("@sid-code/core/debug/index.ts");
   initLogger({
     enabled: true,
     level: LogLevel.INFO,
@@ -126,7 +126,7 @@ async function initDaemonLogger(): Promise<void> {
 /** 前台启动守护进程 */
 async function runStart(opts: DaemonCliOptions): Promise<void> {
   await initDaemonLogger();
-  const { Daemon } = await import("../daemon/daemon.ts");
+  const { Daemon } = await import("@sid-code/core/daemon/daemon.ts");
   const daemon = new Daemon({
     webhookEnabled: opts.webhook,
     scheduleCheckIntervalMs: opts.interval,
@@ -145,7 +145,7 @@ async function runStart(opts: DaemonCliOptions): Promise<void> {
 
 /** 查看状态 */
 async function runStatus(): Promise<void> {
-  const { readDaemonLock, isDaemonRunning } = await import("../daemon/lock.ts");
+  const { readDaemonLock, isDaemonRunning } = await import("@sid-code/core/daemon/lock.ts");
   const lock = readDaemonLock();
   if (!lock) {
     console.log("守护进程: 未运行（无锁文件）");
@@ -162,7 +162,7 @@ async function runStatus(): Promise<void> {
 
 /** 停止运行中的守护进程 */
 async function runStop(): Promise<void> {
-  const { readDaemonLock, isDaemonRunning, releaseDaemonLock } = await import("../daemon/lock.ts");
+  const { readDaemonLock, isDaemonRunning, releaseDaemonLock } = await import("@sid-code/core/daemon/lock.ts");
   const lock = readDaemonLock();
   if (!lock || !isDaemonRunning()) {
     console.log("守护进程未运行，无需停止");
@@ -220,7 +220,7 @@ export async function handleDaemonCommand(args: string[]): Promise<void> {
       break;
     case "install":
     case "uninstall": {
-      const { handleServiceCommand } = await import("../daemon/service.ts");
+      const { handleServiceCommand } = await import("@sid-code/core/daemon/service.ts");
       await handleServiceCommand(sub, opts);
       break;
     }

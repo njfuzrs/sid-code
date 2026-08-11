@@ -14,7 +14,7 @@ import { mkdir, open } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join, normalize, isAbsolute, sep, dirname } from "node:path";
 import { getLogger } from "../../debug/logger.ts";
-import { getSidTempDir } from "../../utils/temp-dir.ts";
+import { getSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 
 // 进程级 nonce，防止路径预测
 const PROCESS_NONCE = randomBytes(8).toString("hex");

@@ -12,7 +12,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import type { MCPManager } from "../mcp/manager.ts";
 import { z } from "zod/v4";
 import { join } from "path";
-import { ensureSidTempDir } from "../utils/temp-dir.ts";
+import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { enforceMcpOutputTokenLimit } from "../mcp/mcp-output-limit.ts";
 
 /** manager 惰性获取器（cli.ts 里 mcpManager 是 let + 异步连接，注册工具时可能尚未就绪） */

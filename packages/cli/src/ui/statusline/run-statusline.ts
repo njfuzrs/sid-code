@@ -12,8 +12,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { getLogger } from "../../debug/logger.ts";
-import type { StatusLineConfig } from "../../config/statusline-types.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import type { StatusLineConfig } from "@sid-code/core/config/statusline-types.ts";
 
 /** 传给用户脚本的会话数据（stdin JSON）。字段对标 cc statusLine 输入。 */
 export interface StatusLineSessionData {
@@ -50,7 +50,7 @@ export interface StatusLineSessionData {
  * 因为 `Config.statusLine` 与 `CommandContext.setStatusLine` 都要用它，而两者都在 core；
  * 本文件（cli）只保留跑脚本的实现。此处 re-export 供既有导入方沿用。
  */
-export type { StatusLineConfig } from "../../config/statusline-types.ts";
+export type { StatusLineConfig } from "@sid-code/core/config/statusline-types.ts";
 
 /** 默认脚本超时（ms）。坏脚本超时即回退，绝不卡 UI。 */
 export const STATUSLINE_TIMEOUT_MS = 1000;

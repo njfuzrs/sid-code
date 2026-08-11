@@ -15,7 +15,7 @@ import {
 } from "../agent/message-invariants.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ensureSidTempDir } from "../utils/temp-dir.ts";
+import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { REATTACH_PLAN_PREFIX, REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */

@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /fast 命令实现（按需加载）。对齐 claude-code §4.3。
@@ -50,7 +50,7 @@ const mod: LocalCommandModule = {
     if (ctx.config) ctx.config.fastMode = target;
     if (persist) {
       try {
-        const { patchSettingsFile } = await import("../../../config/settings/index.ts");
+        const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "fastMode", target);
       } catch (e) {
         getLogger().warn("FAST", `持久化 fastMode 失败: ${(e as Error)?.message}`);

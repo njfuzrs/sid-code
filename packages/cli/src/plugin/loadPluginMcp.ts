@@ -13,9 +13,9 @@
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { isAbsolute, join } from "path";
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
-import type { MCPServerConfig } from "../config/config.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import { addPluginScopeToServers } from "./scope.ts";

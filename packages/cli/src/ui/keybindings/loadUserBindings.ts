@@ -14,8 +14,8 @@
  */
 
 import { existsSync } from "fs";
-import { getLogger } from "../../debug/logger.ts";
-import { sidHomePath } from "../../config/paths.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { sidHomePath } from "@sid-code/core/config/paths.ts";
 import { DEFAULT_BINDINGS, type KeyBinding } from "./defaultBindings.ts";
 import { strokeSignature } from "./reservedShortcuts.ts";
 import { validateUserBindings, type BindingIssue } from "./validate.ts";

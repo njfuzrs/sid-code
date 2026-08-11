@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import type { Message } from "../../../llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 从一条消息里拼出纯文本（只取 text 块，忽略 thinking/tool_use/tool_result）。 */
 export function extractText(msg: Message): string {
@@ -60,7 +60,7 @@ const mod: LocalCommandModule = {
     }
 
     try {
-      const { setClipboard } = await import("../../../ink/termio/osc.ts");
+      const { setClipboard } = await import("@sid-code/tui-renderer/termio/osc.ts");
       const oscSeq = await setClipboard(payload);
       if (oscSeq) process.stdout.write(oscSeq);
     } catch {

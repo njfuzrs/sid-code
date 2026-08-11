@@ -6,8 +6,8 @@
  */
 
 import React, { useMemo } from "react";
-import Box from "../../../ink/components/Box.tsx";
-import Text from "../../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../../semantic-colors.ts";
 import {
   interpolateColor,
@@ -15,8 +15,8 @@ import {
   getSafeLowColorBackground,
 } from "../../themes/color-utils.ts";
 import { isLowColorDepth, isITerm2 } from "../../utils/terminalUtils.ts";
-import type { Color } from "../../../ink/styles.ts";
-import useStdout from "../../../ink/_vendor/use-stdout.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import { DEFAULT_TERM_WIDTH } from "../../markdown.ts";
 
 export interface HalfLinePaddedBoxProps {

@@ -5,9 +5,9 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
-import { ExtensionLoader } from "../extension/loader.ts";
-import type { ScanOptions } from "../extension/types.ts";
-import { getLogger } from "../debug/logger.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import type { ScanOptions } from "@sid-code/core/extension/types.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import { resolve } from "path";
@@ -230,7 +230,7 @@ export class CustomCommand implements Command {
       return { kind: "submit_prompt", prompt };
     }
     try {
-      const { SubAgent } = await import("../agent/sub-agent.ts");
+      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
       const subAgent = SubAgent.fromRegistry(
         ctx.providerRegistry,
         ctx.registry, // AppContext 的 ToolRegistry 字段名为 registry

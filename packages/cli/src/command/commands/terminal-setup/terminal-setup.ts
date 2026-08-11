@@ -2,7 +2,7 @@ import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../
 import { homedir, platform } from "os";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from "fs";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /terminal-setup 命令实现（按需加载）。P2-3。

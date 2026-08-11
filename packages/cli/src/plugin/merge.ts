@@ -5,7 +5,7 @@
  * 把"从插件加载"与"注册到现有系统"两步串起来，供 cli.ts / refresh.ts 调用。
  */
 
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import type { Registry as CommandRegistry } from "../command/registry.ts";
 import type { Command } from "../command/types.ts";
 import { getPluginCommands } from "./loadPluginCommands.ts";

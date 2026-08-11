@@ -5,7 +5,7 @@
 
 import type { AppState } from "./app-state.ts";
 import type { Store } from "./store.ts";
-import { createChildAbortController } from "../utils/abort-controller.ts";
+import { createChildAbortController } from "@sid-code/shared/utils/abort-controller.ts";
 
 /** 子代理上下文选项 */
 export interface SubagentContextOptions {

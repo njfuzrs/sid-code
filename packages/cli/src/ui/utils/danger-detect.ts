@@ -8,8 +8,8 @@
  * 仅做「展示差异化」用途，不替代权限系统的实际拦截决策（那在 src/permission/checker.ts）。
  */
 
-import { isDestructiveCommand } from "../../tool/bash/read-only-validation.ts";
-import { GIT_DANGER_DISPLAY } from "../../permission/git-danger-patterns.ts";
+import { isDestructiveCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
+import { GIT_DANGER_DISPLAY } from "@sid-code/core/permission/git-danger-patterns.ts";
 
 /**
  * UI 侧补充的破坏性命令模式（核心 isDestructiveCommand 未覆盖的日常高频项）。

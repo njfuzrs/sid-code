@@ -37,7 +37,7 @@ import { ConsoleExporter } from "./exporters/console.ts";
 import { JsonlExporter } from "./exporters/jsonl.ts";
 import { OtlpTelemetryExporter } from "./exporters/otlp.ts";
 import type { TelemetryConfig, TelemetryExporterConfig } from "./types.ts";
-import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
+import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 
 /** 全局单例 */
 let globalBus: TelemetryBus | null = null;

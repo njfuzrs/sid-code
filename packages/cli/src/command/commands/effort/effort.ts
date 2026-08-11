@@ -7,7 +7,7 @@ import {
   getEffortEnvOverride,
   type EffortCapability,
   type EffortLevel,
-} from "../../../llm/effort.ts";
+} from "@sid-code/core/llm/effort.ts";
 
 /**
  * /effort 命令实现（按需加载）

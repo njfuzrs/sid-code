@@ -14,9 +14,9 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
-import type { SkillDefinition } from "../skill/types.ts";
-import { processSkillPrompt } from "../skill/prompt-processor.ts";
-import { getLogger } from "../debug/logger.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
+import { processSkillPrompt } from "@sid-code/core/skill/prompt-processor.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export class SkillCommand implements Command {
   private skill: SkillDefinition;
@@ -57,9 +57,9 @@ export class SkillCommand implements Command {
     }
 
     // ── P0-3：权限判定（用户路径可用主会话弹窗做 ask）──
-    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import("../skill/executor.ts");
+    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import("@sid-code/core/skill/executor.ts");
     const rawRules = ctx.permissionChecker && typeof (ctx.permissionChecker as { getRules?: () => unknown }).getRules === "function"
-      ? (ctx.permissionChecker as unknown as { getRules: () => import("../permission/types.ts").PermissionRule | null }).getRules()
+      ? (ctx.permissionChecker as unknown as { getRules: () => import("@sid-code/core/permission/types.ts").PermissionRule | null }).getRules()
       : null;
     const auth = authorizeSkill(this.skill, { permissionRules: rawRules ?? undefined });
     if (auth.decision === "deny") {
@@ -122,8 +122,8 @@ export class SkillCommand implements Command {
     }
 
     try {
-      const { SubAgent } = await import("../agent/sub-agent.ts");
-      const { normalizeSkillEffort, resolveSkillAgentType } = await import("../skill/executor.ts");
+      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
+      const { normalizeSkillEffort, resolveSkillAgentType } = await import("@sid-code/core/skill/executor.ts");
       const subAgent = SubAgent.fromRegistry(
         ctx.providerRegistry,
         ctx.registry,

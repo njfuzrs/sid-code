@@ -33,7 +33,7 @@
  * 常驻留痕），下次同类问题有据可查。
  */
 
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** stderr 类 console 方法：只拦这三个 + assert，刻意不碰 stdout 类方法。 */
 const STDERR_METHODS = ["error", "warn", "trace"] as const;

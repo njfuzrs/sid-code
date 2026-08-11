@@ -9,7 +9,7 @@
  */
 
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from "react";
-import useStdin from "../../ink/hooks/use-stdin.ts";
+import useStdin from "@sid-code/tui-renderer/hooks/use-stdin.ts";
 import { ESC } from "../utils/input.ts";
 import {
   parseMouseEvent,

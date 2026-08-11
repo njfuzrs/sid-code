@@ -8,11 +8,11 @@
 import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
 import { join, relative, sep } from "path";
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
-import { parseFrontmatter } from "../extension/frontmatter.ts";
-import type { CustomAgentDefinition } from "../agent/custom.ts";
-import { parseListField, parseAgentExtendedFrontmatter } from "../agent/custom.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
+import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
+import type { CustomAgentDefinition } from "@sid-code/core/agent/custom.ts";
+import { parseListField, parseAgentExtendedFrontmatter } from "@sid-code/core/agent/custom.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";

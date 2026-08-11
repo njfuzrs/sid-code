@@ -6,8 +6,8 @@
  */
 
 import type { Command, CommandResult, AppContext } from "./types.ts";
-import type { PermissionChecker } from "../permission/checker.ts";
-import { detectShadowedRules } from "../permission/shadowed-rules.ts";
+import type { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { detectShadowedRules } from "@sid-code/core/permission/shadowed-rules.ts";
 
 /** 解析 /allow /deny 的参数：剥离 -p/--persist/save 与 --scope，剩余拼回规则文本。 */
 function parseRuleArgs(args: string): {
@@ -54,7 +54,7 @@ function persistPermissionRule(
 ): string {
   try {
     const source = scope === "project" ? "projectSettings" : "userSettings";
-    const { getSettingsForSource, patchSettingsFile } = require("../config/settings/index.ts");
+    const { getSettingsForSource, patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
     const { settings } = getSettingsForSource(source);
     // 保留用户已有的 allow/deny/ask/defaultMode，仅在对应数组里增量追加。
     const perms: Record<string, unknown> = { ...(settings?.permissions ?? {}) };

@@ -10,13 +10,13 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
-import type { ContextTokenBreakdown } from "../../context/manager.ts";
+import type { ContextTokenBreakdown } from "@sid-code/core/context/manager.ts";
 
 interface ContextDialogProps {
   onClose: () => void;

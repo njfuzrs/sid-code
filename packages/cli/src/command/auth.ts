@@ -11,7 +11,7 @@
  * 只读，不发起真实网络请求（避免误扣费/长等待）；连通性判断基于配置推断 + 可选轻量探测。
  */
 
-import { isMissingApiKey } from "../config/config.ts";
+import { isMissingApiKey } from "@sid-code/core/config/config.ts";
 
 /** 从 baseURL 粗判是否经由网关（非 api.anthropic.com / api.openai.com 等官方直连域名）。 */
 function looksLikeGateway(baseURL?: string): boolean {
@@ -38,7 +38,7 @@ function maskKey(key?: string): string {
 }
 
 async function cmdStatus(asJson: boolean): Promise<void> {
-  const { loadConfig } = await import("../config/config.ts");
+  const { loadConfig } = await import("@sid-code/core/config/config.ts");
   const config = await loadConfig({});
 
   const activeModel = config.availableModels.find((m) => m.name === config.model);

@@ -13,7 +13,7 @@
  * - 不传输任何项目数据：只是对已配置的 API 端点做连接预热
  */
 
-import { profileCheckpoint } from "../utils/startup-profiler.ts";
+import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
 
 /** 默认 Anthropic API 端点 */
 const DEFAULT_ANTHROPIC_BASE = "https://api.anthropic.com";

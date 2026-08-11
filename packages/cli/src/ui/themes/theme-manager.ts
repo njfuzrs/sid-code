@@ -6,7 +6,7 @@
  */
 
 import type { Theme } from './theme.ts';
-import type { Color } from '../../ink/styles.ts';
+import type { Color } from '@sid-code/tui-renderer/styles.ts';
 import { DefaultDark } from './builtin/dark/default-dark.ts';
 import { GitHubDark } from './builtin/dark/github-dark.ts';
 import { DaltonizedDark } from './builtin/dark/daltonized-dark.ts';

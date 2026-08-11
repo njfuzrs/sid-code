@@ -22,7 +22,7 @@ import { mkdirSync, unlinkSync, existsSync } from "fs";
 import { homedir, platform } from "os";
 import { join } from "path";
 import { sidPaths } from "../../config/paths.ts";
-import { registerCleanup } from "../../utils/graceful-shutdown.ts";
+import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { getLogger } from "../../debug/logger.ts";
 
 /** 快照创建超时（对标 claude-code 的 10 秒） */

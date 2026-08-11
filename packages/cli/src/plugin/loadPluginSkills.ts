@@ -13,11 +13,11 @@
  * 绕开 sanitizeName 会把 `:` 替成 `-`、validateName 会拒 `:` 的问题。
  */
 
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
-import { ExtensionLoader } from "../extension/loader.ts";
-import { SkillLoader } from "../skill/loader.ts";
-import type { SkillDefinition } from "../skill/types.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import { SkillLoader } from "@sid-code/core/skill/loader.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";

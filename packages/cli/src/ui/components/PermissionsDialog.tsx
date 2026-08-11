@@ -8,14 +8,14 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import type { Color } from "../../ink/styles.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../constants/figures.ts";
-import type { Config } from "../../config/config.ts";
-import type { SessionState } from "../../session/state.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { SessionState } from "@sid-code/core/session/state.ts";
 
 interface PermissionsDialogProps {
   onClose: () => void;

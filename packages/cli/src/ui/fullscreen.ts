@@ -7,11 +7,11 @@
  * 退出时 src/ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
-import render from "../ink/root.ts";
-import { AlternateScreen } from "../ink/components/AlternateScreen.tsx";
+import render from "@sid-code/tui-renderer/root.ts";
+import { AlternateScreen } from "@sid-code/tui-renderer/components/AlternateScreen.tsx";
 import React, { type ReactElement } from "react";
-import { getLogger } from "../debug/logger.ts";
-import { registerProcessOutputErrorHandlers } from "../utils/process.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { registerProcessOutputErrorHandlers } from "@sid-code/shared/utils/process.ts";
 import { installTUIConsoleGuard, uninstallTUIConsoleGuard } from "./console-guard.ts";
 
 /** 禁用终端行自动换行（防止长行折行导致布局溢出） */

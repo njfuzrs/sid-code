@@ -20,8 +20,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { getBoundingBox } from "../../ink/_vendor/get-bounding-box.ts";
-import type { DOMElement } from "../../ink/dom.ts";
+import { getBoundingBox } from "@sid-code/tui-renderer/_vendor/get-bounding-box.ts";
+import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
 import { useMouse, type MouseEvent } from "./MouseContext.tsx";
 
 export interface ScrollState {

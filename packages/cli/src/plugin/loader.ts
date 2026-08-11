@@ -12,8 +12,8 @@
 
 import { existsSync } from "fs";
 import { resolve } from "path";
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { registerPluginCache } from "./caches.ts";
 import type { LoadedPlugin, PluginError, PluginLoadResult } from "./types.ts";
 import { readInstalledPlugins } from "./installed.ts";

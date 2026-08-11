@@ -1,5 +1,5 @@
 import type { LocalCommandModule } from "../../types.ts";
-import type { TodoItem } from "../../../tool/todo-write.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "../../../ui/constants/figures.ts";
 
 /**

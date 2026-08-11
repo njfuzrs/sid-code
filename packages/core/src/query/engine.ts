@@ -254,7 +254,7 @@ export class QueryEngine {
       let ctxMeta: { cwd?: string; gitBranch?: string; permissionMode?: string } | undefined;
       try {
         const { getCwd } = await import("../bootstrap/state.ts");
-        const { getCurrentGitBranch } = await import("../util/git-branch.ts");
+        const { getCurrentGitBranch } = await import("@sid-code/shared/util/git-branch.ts");
         const cwd = getCwd();
         const gitBranch = await getCurrentGitBranch(cwd, Date.now());
         ctxMeta = {

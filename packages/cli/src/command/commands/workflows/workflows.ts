@@ -36,8 +36,8 @@ function statusLabel(status: string): string {
  */
 const mod: LocalCommandModule = {
   async call(args: string): Promise<LocalCommandResult> {
-    const { getAllTasks } = await import("../../../task/registry.ts");
-    const { isWorkflowTask } = await import("../../../task/types.ts");
+    const { getAllTasks } = await import("@sid-code/core/task/registry.ts");
+    const { isWorkflowTask } = await import("@sid-code/core/task/types.ts");
 
     const workflows = getAllTasks().filter(isWorkflowTask);
     const target = args.trim();
@@ -98,8 +98,8 @@ const mod: LocalCommandModule = {
 
       // journal 回放：列出各 agent() 调用的结果快照（截断展示，避免刷屏）。
       try {
-        const { Journal } = await import("../../../workflow/journal.ts");
-        const { sidHomePath } = await import("../../../config/paths.ts");
+        const { Journal } = await import("@sid-code/core/workflow/journal.ts");
+        const { sidHomePath } = await import("@sid-code/core/config/paths.ts");
         const path = sidHomePath("workflows", "journals", `${w.runId}.jsonl`);
         const journal = new Journal(path);
         journal.load();

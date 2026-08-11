@@ -11,7 +11,7 @@
 
 import { useState, useRef, useCallback, useMemo } from "react";
 import type { HistoryItem, HistoryItemWithoutId } from "../types.ts";
-import type { Message } from "../../llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import { messagesToHistoryItems } from "../history-adapter.ts";
 
 /** updater 函数类型 */

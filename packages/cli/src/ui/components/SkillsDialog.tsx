@@ -21,11 +21,11 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import stringWidth from "string-width";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import useStdout from "../../ink/_vendor/use-stdout.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import {
   POINTER,
@@ -33,14 +33,14 @@ import {
   ERROR_MARK,
   SEARCH_MARK,
 } from "../constants/figures.ts";
-import { SkillManager } from "../../skill/manager.ts";
-import { loadBundledSkills } from "../../skill/bundled/index.ts";
-import { estimateSkillListingTokens } from "../../skill/budget.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { loadBundledSkills } from "@sid-code/core/skill/bundled/index.ts";
+import { estimateSkillListingTokens } from "@sid-code/core/skill/budget.ts";
 import {
   getSettings,
   getSettingsForSource,
   patchSettingsFile,
-} from "../../config/settings/index.ts";
+} from "@sid-code/core/config/settings/index.ts";
 import type { UnifiedCommandRegistry } from "../../command/unified-registry.ts";
 
 interface SkillsDialogProps {

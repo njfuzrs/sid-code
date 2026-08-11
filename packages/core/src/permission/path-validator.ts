@@ -10,7 +10,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { hasDangerousUnicode } from "../utils/sanitization.ts";
+import { hasDangerousUnicode } from "@sid-code/shared/utils/sanitization.ts";
 
 /** 路径验证结果 */
 export interface PathValidationResult {

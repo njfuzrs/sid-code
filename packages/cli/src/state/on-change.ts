@@ -5,7 +5,7 @@
 
 import type { AppState } from "./app-state.ts";
 import { setMainLoopModelOverride } from "./bootstrap.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export function onChangeAppState({
   newState,

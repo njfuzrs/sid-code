@@ -11,9 +11,9 @@
  */
 
 import React, { memo } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import Static from "../../ink/_vendor/Static.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import Static from "@sid-code/tui-renderer/_vendor/Static.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogSwitch } from "./DialogSwitch.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
@@ -29,10 +29,10 @@ import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo, TUICallbacks } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
-import type { MCPManager } from "../../mcp/manager.ts";
-import type { SessionState } from "../../session/state.ts";
-import type { Usage } from "../../llm/types.ts";
-import type { TodoItem } from "../../tool/todo-write.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { SessionState } from "@sid-code/core/session/state.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { TodoPanel } from "./TodoPanel.tsx";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { theme } from "../semantic-colors.ts";

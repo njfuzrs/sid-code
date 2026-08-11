@@ -12,15 +12,15 @@
  * 错误隔离：任一组件刷新失败不影响其他组件。
  */
 
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import type { Registry as CommandRegistry } from "../command/registry.ts";
-import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { HookSystem } from "../hook/system.ts";
-import type { MCPManager } from "../mcp/manager.ts";
+import type { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import type { HookSystem } from "@sid-code/core/hook/system.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 // 用结构化契约而非 cli 的 class：本文件的 ctx 来自 AppContext/CommandContext 桥接，
 // 两侧字段类型必须一致（见 command-contract/types.ts 的 UnifiedCommandRegistryContract）。
 // 实际注入的仍是 cli 的 UnifiedCommandRegistry 实例。
-import type { UnifiedCommandRegistryContract } from "../command-contract/types.ts";
+import type { UnifiedCommandRegistryContract } from "@sid-code/core/command-contract/types.ts";
 import { clearAllPluginCaches } from "./caches.ts";
 import { loadAllPlugins } from "./loader.ts";
 import { mergePluginCommands } from "./merge.ts";
@@ -46,7 +46,7 @@ export interface RefreshContext {
    * Skill 管理器。插件带的 skills（§18.10）此前不参与刷新——装了新插件要重启才能用它的
    * skill，卸载插件后它的 skill 还留着。传入后走 replacePluginSkills 原子替换。
    */
-  skillManager?: import("../skill/manager.ts").SkillManager;
+  skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
 }
 
 /** 刷新结果摘要 */

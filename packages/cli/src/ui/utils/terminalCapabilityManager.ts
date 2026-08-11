@@ -13,7 +13,7 @@
  */
 
 import * as fs from 'node:fs';
-import { getLogger } from '../../debug/logger.ts';
+import { getLogger } from '@sid-code/core/debug/logger.ts';
 
 export type TerminalBackgroundColor = string | undefined;
 

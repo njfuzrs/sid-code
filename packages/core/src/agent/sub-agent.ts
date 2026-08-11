@@ -60,11 +60,18 @@ import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
 import { withIncrementedDepth } from "./depth-context.ts";
 
-/** sid-code 源码根目录（src/）的绝对路径，用于 spawn 子进程时定位 headless.ts。
+/** spawn 子进程时定位 headless.ts 入口的绝对路径。
  *  编译二进制中 import.meta.url 指向 /$bunfs/root/...（虚拟路径），此时 headless.ts
- *  不存在于磁盘——shouldUseSpawn 检测到后自动回退进程内模式。 */
+ *  不存在于磁盘——shouldUseSpawn 检测到后自动回退进程内模式。
+ *
+ *  ⚠️ P2-2 分包：本文件在 **core**，`entrypoints/` 在 **cli**，跨包 ——
+ *  packages/core/src/agent/ → ../../../cli/src/entrypoints/headless.ts。
+ *  写成同包的 `../entrypoints/` 会让 HEADLESS_AVAILABLE 恒为 false，
+ *  spawn 路径在 dev 下被静默停用（进度回灌、跨进程累积等行为一起消失）。 */
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HEADLESS_ENTRY = join(__dirname, "..", "entrypoints", "headless.ts");
+const HEADLESS_ENTRY = join(
+  __dirname, "..", "..", "..", "cli", "src", "entrypoints", "headless.ts",
+);
 /** headless 入口是否存在于磁盘（编译二进制中为 false） */
 const HEADLESS_AVAILABLE = existsSync(HEADLESS_ENTRY);
 

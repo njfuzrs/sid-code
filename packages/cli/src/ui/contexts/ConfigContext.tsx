@@ -6,7 +6,7 @@
  */
 
 import React, { createContext, useContext, useMemo } from "react";
-import type { PricingModelEntry } from "../../api/cost-tracker.ts";
+import type { PricingModelEntry } from "@sid-code/core/api/cost-tracker.ts";
 
 export interface ConfigContextValue {
   /** 当前模型 */
@@ -28,7 +28,7 @@ export interface ConfigContextValue {
   /** 可用模型列表（含 provider 信息，供 inferProvider 优先使用） */
   availableModels: PricingModelEntry[];
   /** 推理强度展示态（状态栏 effort 列）。null = 模型不支持档位切换 */
-  effortDisplay: { level: import("../../llm/effort.ts").EffortLevel; isAuto: boolean } | null;
+  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null;
   /** 思考开关展示态（状态栏 thinking 列）。null = 模型不支持思考开关 */
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */

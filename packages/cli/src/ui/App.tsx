@@ -10,9 +10,9 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import useApp from "../ink/hooks/use-app.ts";
-import inkInstances from "../ink/instances.ts";
-import { killAllRunningTasks, hasRunningTasks, dismissTerminalTasks, hasDismissableTasks, hasPendingEviction } from "../task/index.ts";
+import useApp from "@sid-code/tui-renderer/hooks/use-app.ts";
+import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { killAllRunningTasks, hasRunningTasks, dismissTerminalTasks, hasDismissableTasks, hasPendingEviction } from "@sid-code/core/task/index.ts";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { AccessibilityProvider } from "./accessibility/AccessibilityContext.tsx";
@@ -30,7 +30,7 @@ import { DefaultAppLayout } from "./components/DefaultAppLayout.tsx";
 import { MainScreenLayout } from "./components/MainScreenLayout.tsx";
 import type { StartupWarning } from "./components/Notifications.tsx";
 import type { StateBridge } from "./state-bridge.ts";
-import type { Message, Usage } from "../llm/types.ts";
+import type { Message, Usage } from "@sid-code/core/llm/types.ts";
 import type { HistoryItem } from "./types.ts";
 import { StreamingState } from "./types.ts";
 import { deriveStreamingState } from "./derive-streaming-state.ts";
@@ -39,7 +39,7 @@ import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { parseShellInput } from "./shell-input.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 // ── 向后兼容导出（供 app.ts 过渡期使用） ──
 
@@ -79,13 +79,13 @@ export interface TUICallbacks {
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
   onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
   /** MCP 管理器引用（/mcp 交互面板用；稳定引用，非响应式状态） */
-  mcpManager?: import("../mcp/manager.ts").MCPManager;
+  mcpManager?: import("@sid-code/core/mcp/manager.ts").MCPManager;
   /** 会话状态引用（/mcp 面板启用/禁用用；稳定引用） */
-  sessionState?: import("../session/state.ts").SessionState;
+  sessionState?: import("@sid-code/core/session/state.ts").SessionState;
   /** 推理强度旋钮 setter（/effort 面板用） */
-  setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  setEffort?: (level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean) => void;
   /** 思考开关旋钮 setter（/think 面板用） */
-  setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  setThinking?: (setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
   /** Vim 输入模式 setter（/vim 命令用）。persist=true 时写 settings.json vimMode。 */
   setVimMode?: (enabled: boolean, persist?: boolean) => void;
   /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
@@ -94,21 +94,21 @@ export interface TUICallbacks {
   renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort 运行时态 + 能力（/effort 面板展示用） */
   getEffortState?: () => {
-    runtime: import("../llm/effort.ts").EffortSetting;
-    applied: import("../llm/effort.ts").EffortLevel | undefined;
+    runtime: import("@sid-code/core/llm/effort.ts").EffortSetting;
+    applied: import("@sid-code/core/llm/effort.ts").EffortLevel | undefined;
     isAuto: boolean;
-    capability: import("../llm/effort.ts").EffortCapability;
+    capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
   };
   /** 读取当前 thinking 运行时态 + 能力（/think 面板展示用） */
   getThinkingState?: () => {
-    runtime: import("../llm/effort.ts").ThinkingSetting;
+    runtime: import("@sid-code/core/llm/effort.ts").ThinkingSetting;
     applied: boolean;
-    capability: import("../llm/effort.ts").EffortCapability;
+    capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
   };
   /** Hook 系统引用（/hooks 面板用；稳定引用） */
-  hookSystem?: import("../hook/system.ts").HookSystem;
+  hookSystem?: import("@sid-code/core/hook/system.ts").HookSystem;
   /** 应用配置引用（/config 面板用；稳定引用） */
-  config?: import("../config/config.ts").Config;
+  config?: import("@sid-code/core/config/config.ts").Config;
   /** 统一命令注册表引用（/commands、/help 面板用；稳定引用） */
   unifiedRegistry?: import("../command/unified-registry.ts").UnifiedCommandRegistry;
   /** Shift+Tab 权限模式循环切换（切 config.permissionMode + 刷状态栏 + 瞬时提示） */
@@ -123,7 +123,7 @@ export interface TUICallbacks {
   /** /export 面板选择后执行导出 */
   onExportConversation?: (target: "clipboard" | "file", format: "md" | "json" | "both") => void;
   /** /context 面板：读取当前上下文分类 token 拆解（稳定引用，调用时实时计算） */
-  getContextBreakdown?: () => import("../context/manager.ts").ContextTokenBreakdown;
+  getContextBreakdown?: () => import("@sid-code/core/context/manager.ts").ContextTokenBreakdown;
   /**
    * P2-1：Esc+Esc 回退选择器读取回退点列表（最新在前）。
    * 投影为 UI 展示结构，不直接暴露 RewindPoint 内部字段。
@@ -152,7 +152,7 @@ export interface TUICallbacks {
    * SEC-AUDIT-2026-07-19 P1：读取待信任确认的危险配置项（供信任对话框展示）。
    * 空数组表示无待确认项（已信任 / 无危险配置）。
    */
-  getPendingTrustItems?: () => import("../permission/trust.ts").TrustCheckItem[];
+  getPendingTrustItems?: () => import("@sid-code/core/permission/trust.ts").TrustCheckItem[];
   /**
    * SEC-AUDIT-2026-07-19 P1：信任决定回调。trusted=true 授予信任（持久化 +
    * 加载危险配置），false 拒绝（本会话不加载，下次仍询问）。
@@ -322,7 +322,7 @@ export interface TUIState {
    * level = 解析后的展示档位；isAuto = 是否 auto 态（未显式设档，跟随模型默认）。
    * 由 App.setEffortRuntime / setModel 经 tuiStateUpdater 推送，派生到 ConfigContext。
    */
-  effortDisplay: { level: import("../llm/effort.ts").EffortLevel; isAuto: boolean } | null;
+  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null;
   /**
    * 思考开关展示态（状态栏 thinking 列）。null = 当前模型不支持思考开关（不显示该列）。
    * on = 实际是否开启；isAuto = 是否 auto 态（跟随 provider 默认）。
@@ -379,7 +379,7 @@ export interface TUIState {
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
   availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
   /** 当前 todo 列表（来自 TodoWrite 工具，供 TUI 面板显示） */
-  todos: import("../tool/todo-write.ts").TodoItem[];
+  todos: import("@sid-code/core/tool/todo-write.ts").TodoItem[];
   /** 当前后台任务列表（Shell/Agent，供 TUI 面板实时显示） */
   tasks: TaskDisplayInfo[];
   /** CM3/CM4：LLM 重试/限流状态（null = 无重试）。 */
@@ -497,7 +497,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     }).catch(() => { /* 静默失败 */ });
 
     // 标记首屏渲染完成
-    import("../utils/startup-profiler.ts").then(({ profileCheckpoint }) => {
+    import("@sid-code/shared/utils/startup-profiler.ts").then(({ profileCheckpoint }) => {
       profileCheckpoint("render_complete");
     }).catch(() => { /* 静默失败 */ });
 
@@ -536,7 +536,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   useEffect(() => {
     if (!hasTerminalTask) return;
     const timer = setInterval(() => {
-      import("../task/index.ts")
+      import("@sid-code/core/task/index.ts")
         .then(({ evictTerminalTasks }) => evictTerminalTasks())
         .catch(() => { /* 驱逐兜底失败不影响 UI */ });
     }, 1000);
@@ -685,7 +685,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     }
 
     // applied=当前是否真的在思考（auto 已解析后的结果）；据此翻转到相反态。
-    const next: import("../llm/effort.ts").ThinkingSetting = st?.applied ? "off" : "on";
+    const next: import("@sid-code/core/llm/effort.ts").ThinkingSetting = st?.applied ? "off" : "on";
     setThinking(next, /* persist */ true);
     log.info("UI:APP", `Alt+T：切换扩展思考 → ${next}`);
     callbacks.onNotify?.("thinking_toggle", next === "on" ? "已开启扩展思考" : "已关闭扩展思考", 2000);

@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getPanelVisibleTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "../task/index.ts";
+import { getPanelVisibleTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "@sid-code/core/task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;

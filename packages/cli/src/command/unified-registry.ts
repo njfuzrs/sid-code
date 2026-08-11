@@ -20,8 +20,8 @@ import {
   loadBuiltinCommands,
   loadPluginCommands,
 } from "./loaders.ts";
-import type { ScanOptions } from "../extension/types.ts";
-import { getLogger } from "../debug/logger.ts";
+import type { ScanOptions } from "@sid-code/core/extension/types.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export interface UnifiedRegistryLoadOptions {
   scanOptions?: ScanOptions;
@@ -36,7 +36,7 @@ export interface UnifiedRegistryLoadOptions {
    * 由 cli.ts 注入启动时创建的那一个 manager，使模型路径（SkillMetaTool）与
    * 用户斜杠路径（UnifiedCommandRegistry）共用同一份 skill 真源。
    */
-  skillManager?: import("../skill/manager.ts").SkillManager;
+  skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
 }
 
 export class UnifiedCommandRegistry {

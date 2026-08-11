@@ -13,9 +13,9 @@
 import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
 import { join, relative, sep } from "path";
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
-import { parseFrontmatter } from "../extension/frontmatter.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
+import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
 import { CustomCommand } from "../command/custom.ts";
 import type { Command } from "../command/types.ts";
 import { registerPluginCache } from "./caches.ts";

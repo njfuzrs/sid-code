@@ -21,11 +21,11 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { MCPServerConfig } from "../config/config.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 /** 读取合并后的全部 MCP 服务器（settings.json + 项目 .mcp.json）。 */
 async function loadAllServers(): Promise<Record<string, MCPServerConfig>> {
-  const { loadConfig } = await import("../config/config.ts");
+  const { loadConfig } = await import("@sid-code/core/config/config.ts");
   const config = await loadConfig({});
   return (config.mcpServers ?? {}) as Record<string, MCPServerConfig>;
 }
@@ -76,7 +76,7 @@ async function cmdGet(name: string, asJson: boolean): Promise<void> {
 
 /** 外科式写入 user settings 的 mcpServers（复用 /mcp add 的安全写入路径）。 */
 async function saveUserServer(name: string, cfg: MCPServerConfig): Promise<void> {
-  const { getSettingsForSource, patchSettingsFile } = await import("../config/settings/settings.ts");
+  const { getSettingsForSource, patchSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
   const { settings } = getSettingsForSource("userSettings");
   const servers = { ...((settings?.mcpServers as Record<string, MCPServerConfig>) ?? {}) };
   servers[name] = cfg;
@@ -84,7 +84,7 @@ async function saveUserServer(name: string, cfg: MCPServerConfig): Promise<void>
 }
 
 async function removeUserServer(name: string): Promise<boolean> {
-  const { getSettingsForSource, patchSettingsFile } = await import("../config/settings/settings.ts");
+  const { getSettingsForSource, patchSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
   const { settings } = getSettingsForSource("userSettings");
   const servers = { ...((settings?.mcpServers as Record<string, MCPServerConfig>) ?? {}) };
   if (!servers[name]) return false;
@@ -204,9 +204,9 @@ async function cmdRemove(args: string[]): Promise<void> {
  * 跑一次 loadConfig 再读快照——不能只读 .mcp.json，那样拿不到"哪些已批准过"。
  */
 async function cmdPending(asJson: boolean): Promise<void> {
-  const { loadConfig } = await import("../config/config.ts");
+  const { loadConfig } = await import("@sid-code/core/config/config.ts");
   await loadConfig({});
-  const { getPendingApprovalServers } = await import("../mcp/approval.ts");
+  const { getPendingApprovalServers } = await import("@sid-code/core/mcp/approval.ts");
   const { names, projectPath } = getPendingApprovalServers();
 
   if (asJson) {
@@ -260,9 +260,9 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
   }
 
   // 先加载配置填充待审批快照（同 cmdPending 的理由）
-  const { loadConfig } = await import("../config/config.ts");
+  const { loadConfig } = await import("@sid-code/core/config/config.ts");
   await loadConfig({});
-  const approval = await import("../mcp/approval.ts");
+  const approval = await import("@sid-code/core/mcp/approval.ts");
   const { names: pendingNames, projectPath } = approval.getPendingApprovalServers();
   const declared = projectDeclaredServerNames();
 

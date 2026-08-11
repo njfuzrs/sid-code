@@ -5,13 +5,13 @@
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import { ArgParser } from "./args.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import {
   getSettingsForSource,
   patchSettingsFile,
-} from "../config/settings/index.ts";
+} from "@sid-code/core/config/settings/index.ts";
 
 /** MCP 服务器配置 */
 interface MCPServerConfig {

@@ -16,7 +16,7 @@
 import type { AnalyticsSink, EventMetadata } from "./index.ts";
 import { stripProtectedFields } from "./privacy.ts";
 import { isTelemetryDisabled } from "./privacy-level.ts";
-import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
+import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 
 export interface SinkBackend {
   name: string;

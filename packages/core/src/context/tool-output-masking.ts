@@ -5,7 +5,7 @@
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureSessionTempDir } from "../utils/temp-dir.ts";
+import { ensureSessionTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { estimateTextTokens } from "./token.ts";
 import { isPersistedReference } from "./tool-result-storage.ts";
 import type { Message } from "../llm/types.ts";

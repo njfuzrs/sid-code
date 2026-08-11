@@ -14,8 +14,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import inkInstances from "../../ink/instances.ts";
-import { getLogger } from "../../debug/logger.ts";
+import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * 解析要使用的编辑器命令。优先 $VISUAL（全屏编辑器），其次 $EDITOR，

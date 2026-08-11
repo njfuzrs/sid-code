@@ -6,8 +6,8 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.tsx";
-import Text from "../../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { ToolMessage } from "./ToolMessage.tsx";
 import { isShellTool, type ToolCallStatus } from "./ToolShared.tsx";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput, getThinkThought } from "../../ui-utils.ts";
@@ -28,7 +28,7 @@ export interface ToolCallDisplay {
   /** MCP 进度消息 */
   progressMessage?: string;
   /** 子代理实时进度（仅执行中的 sub_agent 有值） */
-  agentProgress?: import("../../../agent/progress.ts").AgentProgressSnapshot;
+  agentProgress?: import("@sid-code/core/agent/progress.ts").AgentProgressSnapshot;
   /** MCP 进度值 */
   progress?: number;
   /** MCP 进度总量 */

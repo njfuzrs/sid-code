@@ -10,9 +10,9 @@
 
 import type { UnifiedCommand, CommandSource } from "./types.ts";
 import { adaptLegacyCommand } from "./adapter.ts";
-import { skillToCommand } from "../skill/command-adapter.ts";
-import type { ScanOptions } from "../extension/types.ts";
-import { getLogger } from "../debug/logger.ts";
+import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
+import type { ScanOptions } from "@sid-code/core/extension/types.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** 加载自定义命令（.sid-code/commands/），适配为 UnifiedCommand */
 export async function loadCustomCommands(
@@ -40,11 +40,11 @@ export async function loadSkillCommands(
   cwd: string,
   scanOptions?: ScanOptions,
   disabledSkills?: string[],
-  sharedManager?: import("../skill/manager.ts").SkillManager,
+  sharedManager?: import("@sid-code/core/skill/manager.ts").SkillManager,
 ): Promise<UnifiedCommand[]> {
   let manager = sharedManager;
   if (!manager) {
-    const { SkillManager } = await import("../skill/manager.ts");
+    const { SkillManager } = await import("@sid-code/core/skill/manager.ts");
     manager = new SkillManager();
     await manager.discover(cwd, scanOptions);
     if (disabledSkills && disabledSkills.length > 0) {
@@ -60,7 +60,7 @@ export async function loadSkillCommands(
   // 合并 Bundled Skill（编译时内置，优先级高于磁盘同名 Skill）
   let bundled: UnifiedCommand[] = [];
   try {
-    const { loadBundledSkills } = await import("../skill/bundled/index.ts");
+    const { loadBundledSkills } = await import("@sid-code/core/skill/bundled/index.ts");
     bundled = loadBundledSkills();
     // 与磁盘 Skill 同口径：bundled 也要 honor disabledSkills，否则禁用
     // /simplify /verify /commit /pr* 等 bundled skill 是空操作（面板/命令仍在）。

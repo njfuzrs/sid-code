@@ -15,10 +15,10 @@
  * stdout 协议独占：JSON-RPC 消息只走 stdout，所有日志/诊断必须走 stderr，否则污染协议流。
  */
 
-import type { JsonRpcRequest, JsonRpcResponse, MCPToolDefinition } from "../mcp/types.ts";
-import { CLIENT_PROTOCOL_VERSION } from "../mcp/client.ts";
-import { getRawVersion } from "../version.ts";
-import type { LegacyTool } from "../tool/types.ts";
+import type { JsonRpcRequest, JsonRpcResponse, MCPToolDefinition } from "@sid-code/core/mcp/types.ts";
+import { CLIENT_PROTOCOL_VERSION } from "@sid-code/core/mcp/client.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 
 /** 只读工具白名单（默认对外暴露的工具名）。 */
 const READ_ONLY_TOOL_NAMES = new Set<string>([
@@ -56,16 +56,16 @@ function logStderr(msg: string): void {
  * 排除 mcp__ 前缀工具（避免把上游 MCP server 的工具二次转发，语义混乱）与需要交互 UI 的工具。
  */
 async function buildServeTools(allowWrite: boolean): Promise<LegacyTool[]> {
-  const { FileReadTracker } = await import("../tool/file-read-tracker.ts");
-  const { createStatefulTools } = await import("../tool/stateful-tools.ts");
-  const { BashTool } = await import("../tool/bash.ts");
-  const { GrepTool } = await import("../tool/grep.ts");
-  const { GlobTool } = await import("../tool/glob.ts");
-  const { LsTool } = await import("../tool/ls.ts");
-  const { WebFetchTool } = await import("../tool/web-fetch.ts");
-  const { LSPTool } = await import("../tool/lsp.ts");
-  const { createSearchBackend } = await import("../tool/search-backends/factory.ts");
-  const { WebSearchTool } = await import("../tool/web-search.ts");
+  const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+  const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+  const { BashTool } = await import("@sid-code/core/tool/bash.ts");
+  const { GrepTool } = await import("@sid-code/core/tool/grep.ts");
+  const { GlobTool } = await import("@sid-code/core/tool/glob.ts");
+  const { LsTool } = await import("@sid-code/core/tool/ls.ts");
+  const { WebFetchTool } = await import("@sid-code/core/tool/web-fetch.ts");
+  const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
+  const { createSearchBackend } = await import("@sid-code/core/tool/search-backends/factory.ts");
+  const { WebSearchTool } = await import("@sid-code/core/tool/web-search.ts");
 
   const tracker = new FileReadTracker();
   const all: LegacyTool[] = [
@@ -115,7 +115,7 @@ export async function runMcpServe(args: string[]): Promise<void> {
       tools.map((t) => t.name()).join(", "),
   );
 
-  const { StdioServerTransport } = await import("../mcp/server-transport.ts");
+  const { StdioServerTransport } = await import("@sid-code/core/mcp/server-transport.ts");
 
   const transport = new StdioServerTransport({
     onRequest: handler,

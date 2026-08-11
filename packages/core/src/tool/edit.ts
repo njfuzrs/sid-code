@@ -9,7 +9,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResu
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
-import { coerceSemanticBoolean } from "../utils/semantic-boolean.ts";
+import { coerceSemanticBoolean } from "@sid-code/shared/utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";

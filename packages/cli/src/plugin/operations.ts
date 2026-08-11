@@ -11,7 +11,7 @@
 import { existsSync } from "fs";
 import { cp, rm } from "fs/promises";
 import { join, resolve } from "path";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { loadManifest } from "./manifest.ts";
 import {
   readInstalledPlugins,

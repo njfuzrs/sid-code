@@ -22,10 +22,10 @@ import type {
   UnifiedCommand,
 } from "./types.ts";
 import { parseSlashCommand, looksLikeCommand } from "./parser.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 // P0-1 漏斗 4：斜杠命令使用分布，回答「哪些功能是死功能」。
 // 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
-import { logCommandInvoke, logCommandRejected } from "../analytics/events.ts";
+import { logCommandInvoke, logCommandRejected } from "@sid-code/core/analytics/events.ts";
 
 /** 应用层注入的副作用回调 */
 export interface ExecutorCallbacks {
@@ -248,7 +248,7 @@ export class CommandExecutor {
 
     if (skill) {
       const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import(
-        "../skill/executor.ts"
+        "@sid-code/core/skill/executor.ts"
       );
       const auth = authorizeSkill(skill, { permissionRules: this.ctx.permissionRules });
       if (auth.decision === "deny") {
@@ -314,7 +314,7 @@ export class CommandExecutor {
   ): Promise<CommandExecutionResult> {
     const log = getLogger();
     try {
-      const { SubAgent } = await import("../agent/sub-agent.ts");
+      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
 
       if (!this.ctx.providerRegistry) {
         // 无 ProviderRegistry 时退回 inline 注入，避免命令不可用
@@ -329,7 +329,7 @@ export class CommandExecutor {
       let agentType: string | undefined;
       if (skill) {
         const { normalizeSkillEffort, resolveSkillAgentType } = await import(
-          "../skill/executor.ts"
+          "@sid-code/core/skill/executor.ts"
         );
         effort = normalizeSkillEffort(skill.effort);
         agentType = await resolveSkillAgentType(skill.agent, skill.name);

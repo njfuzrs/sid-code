@@ -15,12 +15,12 @@
  */
 
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from "react";
-import useStdin from "../../ink/hooks/use-stdin.ts";
+import useStdin from "@sid-code/tui-renderer/hooks/use-stdin.ts";
 import { MultiMap } from "mnemonist";
 import { ESC } from "../utils/input.ts";
 import { parseMouseEvent } from "../utils/mouse.ts";
 import { terminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
-import { getLogger } from "../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 // ── 常量 ──
 

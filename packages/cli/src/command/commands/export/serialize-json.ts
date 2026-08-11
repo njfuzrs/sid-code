@@ -6,7 +6,7 @@
  * 支持 maxBytes 截断保护（剪贴板场景）。
  */
 
-import type { Message, ContentBlock } from "../../../llm/types.ts";
+import type { Message, ContentBlock } from "@sid-code/core/llm/types.ts";
 
 export interface SerializeJsonOptions {
   sessionId: string;

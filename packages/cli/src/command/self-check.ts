@@ -52,7 +52,7 @@ const GIT_STATUS_ANCHOR_MARKERS = [
 async function checkGitStatusAnchor(): Promise<CheckResult> {
   const name = "git-status 快照锚点";
   try {
-    const { generateGitStatusAttachment } = await import("../config/attachments.ts");
+    const { generateGitStatusAttachment } = await import("@sid-code/core/config/attachments.ts");
     const att = generateGitStatusAttachment(process.cwd());
     if (!att) {
       return { name, ok: true, detail: "跳过（当前目录非 git 仓库，无法构造输出）" };
@@ -98,7 +98,7 @@ async function checkStuckGuard(): Promise<CheckResult> {
       processObservation,
       createRepeatedReadonlyState,
       STUCK_REPEAT_THRESHOLD,
-    } = await import("../query/repeated-readonly-guard.ts");
+    } = await import("@sid-code/core/query/repeated-readonly-guard.ts");
 
     if (!isReadonlyProbeCommand("git status --short")) {
       return { name, ok: false, detail: "git status 未被识别为只读探查命令" };
@@ -143,7 +143,7 @@ async function checkEmbeddedSkills(): Promise<CheckResult> {
   const name = "内置 skill 已嵌入";
   try {
     const { EMBEDDED_BUILTIN_SKILLS, EMBEDDED_BUILTIN_SKILLS_HASH } = await import(
-      "../skill/builtin-embedded.generated.ts"
+      "@sid-code/core/skill/builtin-embedded.generated.ts"
     );
 
     if (!Array.isArray(EMBEDDED_BUILTIN_SKILLS) || EMBEDDED_BUILTIN_SKILLS.length === 0) {
@@ -198,12 +198,12 @@ async function checkEmbeddedSkills(): Promise<CheckResult> {
 async function checkEmbeddedRipgrep(): Promise<CheckResult> {
   const name = "内嵌 ripgrep 平台匹配";
   try {
-    const { IS_DEV_MODE } = await import("../bootstrap/resolve-executable.ts");
+    const { IS_DEV_MODE } = await import("@sid-code/core/bootstrap/resolve-executable.ts");
     if (IS_DEV_MODE) {
       return { name, ok: true, detail: "dev 模式跳过（不加载嵌入 rg，运行时用系统 rg）" };
     }
 
-    const { rgEmbeddedPath } = await import("../tool/rg-embedded.ts");
+    const { rgEmbeddedPath } = await import("@sid-code/core/tool/rg-embedded.ts");
     const bytes = await Bun.file(rgEmbeddedPath).arrayBuffer();
     if (bytes.byteLength === 0) {
       return {

@@ -1,11 +1,11 @@
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
-import { getActiveAgentDefinitions, type AgentDefinition } from "../../agent/agent-definition.ts";
-import { getAgentInkColor } from "../../agent/color.ts";
+import { getActiveAgentDefinitions, type AgentDefinition } from "@sid-code/core/agent/agent-definition.ts";
+import { getAgentInkColor } from "@sid-code/core/agent/color.ts";
 
 interface AgentsDialogProps {
   onClose: () => void;

@@ -8,10 +8,10 @@
  */
 
 import { useEffect } from "react";
-import measureElement from "../../ink/measure-element.ts";
-import type { DOMElement } from "../../ink/dom.ts";
+import measureElement from "@sid-code/tui-renderer/measure-element.ts";
+import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
-import { getLogger } from "../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** 闪烁统计 */
 let flickerCount = 0;

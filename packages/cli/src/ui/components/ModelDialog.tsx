@@ -21,8 +21,8 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import stringWidth from "string-width";
 import { theme } from '../semantic-colors.ts';
 import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS, SEARCH_MARK, WARNING_MARK } from '../constants/figures.ts';
@@ -34,7 +34,7 @@ import {
   type EffortLevel,
   type EffortSetting,
   type ThinkingSetting,
-} from '../../llm/effort.ts';
+} from '@sid-code/core/llm/effort.ts';
 import {
   buildModelRows,
   countModelRows,
@@ -49,7 +49,7 @@ interface EffortState {
   runtime: EffortSetting;
   applied: EffortLevel | undefined;
   isAuto: boolean;
-  capability: import("../../llm/effort.ts").EffortCapability;
+  capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
 }
 
 interface ModelDialogProps {

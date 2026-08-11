@@ -5,8 +5,8 @@
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join, isAbsolute } from "path";
-import { getLogger } from "../debug/logger.ts";
-import type { HooksConfig } from "../config/config.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import type { HooksConfig } from "@sid-code/core/config/config.ts";
 import type {
   PluginManifest,
   LoadedPlugin,

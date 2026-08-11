@@ -1,5 +1,5 @@
 import type { LocalCommandModule, CommandContext } from "../../types.ts";
-import { mergeInstructions } from "../../../query/compact/merge-instructions.ts";
+import { mergeInstructions } from "@sid-code/core/query/compact/merge-instructions.ts";
 
 /**
  * /compact 命令实现（按需加载）
@@ -135,7 +135,7 @@ async function runPartial(
     fallbackOnFailure?: boolean;
   },
 ): Promise<{ type: "text"; value: string }> {
-  const { partialCompact } = await import("../../../query/compact/index.ts");
+  const { partialCompact } = await import("@sid-code/core/query/compact/index.ts");
   // 摘要用低成本模型优先（子代理 summarize 档），否则回退主模型
   const compactModel =
     ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
@@ -185,7 +185,7 @@ async function runPartial(
 async function runManualPostCompact(
   ctx: CommandContext,
   args: {
-    originalMessages: import("../../../llm/types.ts").Message[];
+    originalMessages: import("@sid-code/core/llm/types.ts").Message[];
     summary: string;
     messagesBefore: number;
     tokensBefore: number;
@@ -193,7 +193,7 @@ async function runManualPostCompact(
   },
 ): Promise<void> {
   try {
-    const { runPostCompact } = await import("../../../query/compact/post-compact.ts");
+    const { runPostCompact } = await import("@sid-code/core/query/compact/post-compact.ts");
     await runPostCompact({
       trigger: "manual",
       ctxMgr: ctx.ctxMgr,

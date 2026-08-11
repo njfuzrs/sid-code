@@ -30,7 +30,7 @@ import {
   describeLanguagePref,
   detectSystemLanguage,
   normalizeLanguagePref,
-} from "../config/prompt-lang.ts";
+} from "@sid-code/core/config/prompt-lang.ts";
 
 /** 显式回退缺省的说法（与 auto 区分开） */
 const UNSET_TOKENS = new Set(["unset", "default", "none"]);

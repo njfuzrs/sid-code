@@ -29,7 +29,7 @@ import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { resolveWireModel } from "../llm/wire-model.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import { emitTimeoutFired, emitTimeoutRetry, emitTimeoutRetryExhausted, armIneffectiveCheck, emitWatchdogKill, emitTimerDrift, TIMER_DRIFT_RATIO, getStreamSnapshot, clearStreamSnapshot, clearAllSnapshots } from "../trace/stream-observer.ts";
-import { getSleepLedger, describeSleep } from "../utils/sleep-detect.ts";
+import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT, LOOP_RECOVERY_FINAL_PROMPT } from "../agent/loop-detection.ts";

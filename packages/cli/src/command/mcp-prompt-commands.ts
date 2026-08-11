@@ -11,8 +11,8 @@
  */
 
 import type { UnifiedCommand } from "./types.ts";
-import type { MCPManager } from "../mcp/manager.ts";
-import { normalizeMcpName } from "../mcp/normalization.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import { normalizeMcpName } from "@sid-code/core/mcp/normalization.ts";
 
 /**
  * 按当前 MCP 连接状态构建 prompt slash 命令列表。

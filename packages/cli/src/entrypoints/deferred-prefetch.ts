@@ -8,7 +8,7 @@
  * 后续 buildSystemPrompt 调用时直接命中缓存，零延迟
  */
 
-import { profileCheckpoint } from "../utils/startup-profiler.ts";
+import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
 import { preconnectApi } from "./preconnect.ts";
 
 /**
@@ -31,7 +31,7 @@ export function startDeferredPrefetches(isInteractive: boolean): void {
 async function prefetchGitStatus(): Promise<void> {
   try {
     // 走真实的附件生成路径，结果写入模块级缓存
-    const { generateGitStatusAttachment } = await import("../config/attachments.ts");
+    const { generateGitStatusAttachment } = await import("@sid-code/core/config/attachments.ts");
     generateGitStatusAttachment(process.cwd());
   } catch {
     // 静默失败——预取失败不影响正常流程
@@ -41,7 +41,7 @@ async function prefetchGitStatus(): Promise<void> {
 async function prefetchMemory(): Promise<void> {
   try {
     // 走真实的 MemoryStore 路径，结果写入模块级缓存
-    const { MemoryStore } = await import("../memory/store.ts");
+    const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
     const memStore = new MemoryStore(process.cwd());
     await memStore.generateSummary();
   } catch {

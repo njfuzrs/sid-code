@@ -22,8 +22,8 @@ export class PsCommand implements Command {
   description() { return "列出后台任务和活跃会话"; }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getAllTasks, isPanelTask, isShellTask, isAgentTask } = await import("../task/index.ts");
-    const { listActiveSessions } = await import("../session/concurrent.ts");
+    const { getAllTasks, isPanelTask, isShellTask, isAgentTask } = await import("@sid-code/core/task/index.ts");
+    const { listActiveSessions } = await import("@sid-code/core/session/concurrent.ts");
 
     const lines: string[] = [];
 
@@ -72,7 +72,7 @@ export class WorktreeCommand implements Command {
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const trimmed = args.trim();
-    const { findGitRoot, getCurrentWorktreeSession } = await import("../worktree/manager.ts");
+    const { findGitRoot, getCurrentWorktreeSession } = await import("@sid-code/core/worktree/manager.ts");
 
     const gitRoot = findGitRoot(process.cwd());
     if (!gitRoot) {
@@ -80,7 +80,7 @@ export class WorktreeCommand implements Command {
     }
 
     if (trimmed === "clean") {
-      const { cleanupStaleWorktrees } = await import("../worktree/cleanup.ts");
+      const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
       const current = getCurrentWorktreeSession();
       const n = await cleanupStaleWorktrees(gitRoot, 30, current?.worktreePath);
       return { kind: "message", message: `已清理 ${n} 个过期临时 Worktree` };
@@ -90,7 +90,7 @@ export class WorktreeCommand implements Command {
     const { readdirSync, existsSync, statSync } = await import("fs");
     const { join } = await import("path");
     const { execFileSync } = await import("child_process");
-    const { isEphemeralWorktree } = await import("../worktree/cleanup.ts");
+    const { isEphemeralWorktree } = await import("@sid-code/core/worktree/cleanup.ts");
     const wtDir = join(gitRoot, ".sid-code", "worktrees");
     const lines: string[] = ["Worktrees:"];
 
@@ -155,7 +155,7 @@ export class CronCommand implements Command {
   description() { return "管理定时任务 (list/delete)"; }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getScheduler } = await import("../cron/scheduler.ts");
+    const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");
     const scheduler = getScheduler();
     const parts = args.trim().split(/\s+/).filter(Boolean);
     const sub = parts[0] || "list";

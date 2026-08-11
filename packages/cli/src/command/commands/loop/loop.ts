@@ -33,7 +33,7 @@ const mod: LocalCommandModule = {
   async call(args, _ctx) {
     const trimmed = args.trim();
 
-    const { getScheduler } = await import("../../../cron/scheduler.ts");
+    const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");
     const scheduler = getScheduler();
 
     // 用法 3：空跑 → 列出当前定时任务
@@ -62,7 +62,7 @@ const mod: LocalCommandModule = {
     // 用法 1：固定间隔 → 转 cron 直接建任务
     const leading = extractLeadingInterval(trimmed);
     if (leading && leading.rest) {
-      const { intervalToCron } = await import("../../../cron/interval.ts");
+      const { intervalToCron } = await import("@sid-code/core/cron/interval.ts");
       const result = intervalToCron(leading.interval);
       if (!result) {
         return {

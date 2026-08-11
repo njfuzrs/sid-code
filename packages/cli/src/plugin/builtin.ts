@@ -5,8 +5,8 @@
  * 内置插件随 CLI 分发，path 为 "builtin" 哨兵值，标识符为 name@builtin。
  */
 
-import type { SkillDefinition } from "../skill/types.ts";
-import type { MCPServerConfig, HooksConfig } from "../config/config.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
+import type { MCPServerConfig, HooksConfig } from "@sid-code/core/config/config.ts";
 import type { LoadedPlugin } from "./types.ts";
 import { buildPluginId } from "./identifier.ts";
 import { addPluginScopeToServers } from "./scope.ts";

@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /color（别名 /accent）命令实现（按需加载）。对齐 claude-code §4.3。
@@ -42,7 +42,7 @@ const mod: LocalCommandModule = {
       themeManager.setAccentOverride(undefined);
       if (persist) {
         try {
-          const { patchSettingsFile } = await import("../../../config/settings/index.ts");
+          const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
           // 置 undefined 让 patch 删除该键，回退主题默认。
           patchSettingsFile("userSettings", "accentColor", undefined);
         } catch (e) {
@@ -68,7 +68,7 @@ const mod: LocalCommandModule = {
     themeManager.setAccentOverride(hex);
     if (persist) {
       try {
-        const { patchSettingsFile } = await import("../../../config/settings/index.ts");
+        const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "accentColor", hex);
       } catch (e) {
         getLogger().warn("COLOR", `持久化 accentColor 失败: ${(e as Error)?.message}`);

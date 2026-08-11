@@ -9,10 +9,10 @@
 import * as path from "path";
 import { writeFileSync } from "fs";
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { setClipboard } from "../../../ink/termio/osc.ts";
+import { setClipboard } from "@sid-code/tui-renderer/termio/osc.ts";
 import { serializeToMarkdown } from "./serialize-md.ts";
 import { serializeToJson } from "./serialize-json.ts";
-import { getVersion } from "../../../version.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
 
 /** 剪贴板大小保护阈值 */
 const CLIPBOARD_MD_MAX_BYTES = 256 * 1024;   // 256 KB
@@ -108,7 +108,7 @@ const mod: LocalCommandModule = {
 /** 序列化单一格式的内容 */
 function serialize(
   format: SingleFormat,
-  messages: import("../../../llm/types.ts").Message[],
+  messages: import("@sid-code/core/llm/types.ts").Message[],
   serializeOpts: {
     sessionId: string;
     model: string;

@@ -8,7 +8,7 @@
 import { statSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import { sidHomePath } from "../../config/paths.ts";
+import { sidHomePath } from "@sid-code/core/config/paths.ts";
 
 export type MemoryScope = "project" | "user";
 

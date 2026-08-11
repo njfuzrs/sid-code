@@ -20,7 +20,7 @@ import {
 } from "fs";
 import { dirname } from "path";
 import { sidPaths } from "../config/paths.ts";
-import { getVersion } from "../version.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
 
 export interface DaemonLockContent {
   pid: number;

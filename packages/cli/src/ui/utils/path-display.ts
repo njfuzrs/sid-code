@@ -22,7 +22,7 @@
 
 import { homedir } from "node:os";
 import { ELLIPSIS } from "../constants/collapse.ts";
-import { stringWidth } from "../../ink/stringWidth.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
 
 /** 路径省略时至少保留的尾部段数（`…/todo/foo.md` 这样至少能看出所在目录）。 */
 const MIN_TAIL_SEGMENTS = 1;

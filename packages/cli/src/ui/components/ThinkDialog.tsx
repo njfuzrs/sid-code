@@ -7,18 +7,18 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT, TODO_COMPLETED, THINKING_ON, THINKING_OFF, EFFORT_AUTO } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import type { ThinkingSetting } from "../../llm/effort.ts";
+import type { ThinkingSetting } from "@sid-code/core/llm/effort.ts";
 
 interface ThinkingState {
   runtime: ThinkingSetting;
   applied: boolean;
-  capability: import("../../llm/effort.ts").EffortCapability;
+  capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
 }
 
 interface ThinkDialogProps {

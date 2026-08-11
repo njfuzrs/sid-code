@@ -4,9 +4,9 @@
  */
 
 import React, { useEffect, useState } from "react";
-import Box from "../ink/components/Box.tsx";
-import Text from "../ink/components/Text.tsx";
-import { getLogger } from "../debug/logger.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { SUCCESS_MARK, ERROR_MARK, RETRY_MARK } from "./constants/figures.ts";
 import { formatDuration } from "./utils/format-duration.ts";

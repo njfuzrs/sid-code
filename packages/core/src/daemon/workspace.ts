@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { WorkspaceProvider } from "./types.ts";
-import { sidTempPath } from "../utils/temp-dir.ts";
+import { sidTempPath } from "@sid-code/shared/utils/temp-dir.ts";
 
 export class LocalWorkspaceProvider implements WorkspaceProvider {
   private workdir: string;

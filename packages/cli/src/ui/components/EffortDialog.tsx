@@ -8,8 +8,8 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import {
@@ -29,13 +29,13 @@ import {
   isEffortGatedByThinking,
   type EffortLevel,
   type EffortSetting,
-} from "../../llm/effort.ts";
+} from "@sid-code/core/llm/effort.ts";
 
 interface EffortState {
   runtime: EffortSetting;
-  applied: import("../../llm/effort.ts").EffortLevel | undefined;
+  applied: import("@sid-code/core/llm/effort.ts").EffortLevel | undefined;
   isAuto: boolean;
-  capability: import("../../llm/effort.ts").EffortCapability;
+  capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
 }
 
 interface EffortDialogProps {
@@ -43,7 +43,7 @@ interface EffortDialogProps {
   getEffortState?: () => EffortState;
   setEffort?: (level: EffortSetting, persist?: boolean) => void;
   /** 读取 thinking 态：仅用于「思考已关 → 档位不下发」提示（GLM/DeepSeek 门控），缺省不显示。 */
-  getThinkingState?: () => { runtime: import("../../llm/effort.ts").ThinkingSetting; applied: boolean };
+  getThinkingState?: () => { runtime: import("@sid-code/core/llm/effort.ts").ThinkingSetting; applied: boolean };
 }
 
 // value: "auto" 代表 undefined（跟随默认）

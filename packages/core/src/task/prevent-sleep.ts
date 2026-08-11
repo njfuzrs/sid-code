@@ -36,7 +36,7 @@
 // 都是"引入依赖换取小众收益"，留作后续按需扩展（保持 no-op 不影响正确性，因为
 // 第二/三层纵深与平台无关）。
 
-import { registerCleanup } from "../utils/graceful-shutdown.ts";
+import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**

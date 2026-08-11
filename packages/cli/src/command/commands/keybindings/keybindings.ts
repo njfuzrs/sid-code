@@ -1,6 +1,6 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { existsSync, writeFileSync } from "fs";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /keybindings（别名 /keys）命令实现（按需加载）。对齐 claude-code §4.3。

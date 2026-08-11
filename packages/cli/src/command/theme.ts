@@ -77,7 +77,7 @@ export class ThemeCommand implements Command {
     // 见 settings 有损 round-trip 陷阱）。启动时 App 构造函数会从 config.theme 恢复。
     if (persist) {
       try {
-        const { patchSettingsFile } = require("../config/settings/index.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "theme", themeName);
       } catch (e) {
         // 持久化失败不阻断运行时切换，仅提示。

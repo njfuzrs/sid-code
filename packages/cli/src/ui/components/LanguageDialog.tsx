@@ -12,8 +12,8 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import {
@@ -27,7 +27,7 @@ import {
   describeLanguagePref,
   detectSystemLanguage,
   type LanguagePref,
-} from "../../config/prompt-lang.ts";
+} from "@sid-code/core/config/prompt-lang.ts";
 
 /** 面板选项 value：真实偏好值 + "unset" 哨兵（代表 undefined，即清除偏好）。 */
 export type LanguageChoice = LanguagePref | "unset";

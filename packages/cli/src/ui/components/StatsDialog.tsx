@@ -7,15 +7,15 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
-import type { Usage } from "../../llm/types.ts";
-import { SessionState } from "../../session/state.ts";
-import type { ModelPricing } from "../../api/cost-tracker.ts";
-import { getGitOperationStats, type GitOperationKind } from "../../tool/git-operation-tracking.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import type { ModelPricing } from "@sid-code/core/api/cost-tracker.ts";
+import { getGitOperationStats, type GitOperationKind } from "@sid-code/core/tool/git-operation-tracking.ts";
 
 /** git 操作类型的中文标签（面板展示用）。 */
 const GIT_KIND_LABELS: Record<string, string> = {

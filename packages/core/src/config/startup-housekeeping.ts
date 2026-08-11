@@ -36,7 +36,7 @@ import { sidPaths } from "./paths.ts";
 import { ensureConfigGitignore } from "./ensure-gitignore.ts";
 import { addFileGlobRuleToGitignore } from "./gitignore.ts";
 import { cleanupPersistedOutputs } from "../context/tool-result-storage.ts";
-import { getSidTempDir } from "../utils/temp-dir.ts";
+import { getSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 
 /** 清理触发间隔：24 小时 */
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;

@@ -15,7 +15,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { sidPaths } from "../config/paths.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 const HALF_LIFE_DAYS = 7;
 const MIN_DECAY_FACTOR = 0.1;

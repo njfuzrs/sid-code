@@ -16,8 +16,8 @@
  */
 
 import React, { useState, useMemo, useEffect, useCallback } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import stringWidth from "string-width";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
@@ -31,7 +31,7 @@ import {
   formatMtime,
   type MemoryFileInfo,
 } from "../utils/memory-files.ts";
-import type { MemoryEntry } from "../../memory/store.ts";
+import type { MemoryEntry } from "@sid-code/core/memory/store.ts";
 
 interface MemoryDialogProps {
   onClose: () => void;
@@ -92,7 +92,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   // 加载 auto-memory 条目（异步）
   const reloadEntries = useCallback(async () => {
     try {
-      const { MemoryStore } = await import("../../memory/store.ts");
+      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
       const store = new MemoryStore(cwd);
       const list = await store.list();
       setEntries(list);
@@ -108,7 +108,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   // 用编辑器打开某条记忆
   const openEntryInEditor = useCallback(async (entry: MemoryEntry) => {
     try {
-      const { MemoryStore } = await import("../../memory/store.ts");
+      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
       const store = new MemoryStore(cwd);
       const path = await store.resolveEntryPath(entry.key, entry.scope);
       if (!path) {
@@ -130,7 +130,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   // 删除某条记忆
   const deleteEntry = useCallback(async (entry: MemoryEntry) => {
     try {
-      const { MemoryStore } = await import("../../memory/store.ts");
+      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
       const store = new MemoryStore(cwd);
       const ok = await store.delete(entry.key, entry.scope);
       setStatusMsg(ok ? `已删除: ${entry.key}` : `删除失败: ${entry.key}`);

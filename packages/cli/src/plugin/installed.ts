@@ -8,8 +8,8 @@
 import { existsSync } from "fs";
 import { readFile, writeFile, rename, mkdir } from "fs/promises";
 import { join } from "path";
-import { getLogger } from "../debug/logger.ts";
-import { sidPaths } from "../config/paths.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import type { InstalledPluginEntry } from "./types.ts";
 
 /** installed.json 格式 */

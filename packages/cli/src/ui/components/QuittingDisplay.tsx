@@ -8,8 +8,8 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import useStdout from "../../ink/_vendor/use-stdout.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import type { HistoryItem } from "../types.ts";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";

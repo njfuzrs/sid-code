@@ -17,7 +17,7 @@ import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../
 const mod: LocalCommandModule = {
   async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { resolvePaths, listSessions, resolveSession, buildDigest, renderHuman } = await import(
-      "../../../trace/digest.ts"
+      "@sid-code/core/trace/digest.ts"
     );
 
     const paths = resolvePaths();

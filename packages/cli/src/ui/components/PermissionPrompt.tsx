@@ -12,13 +12,13 @@
  */
 
 import React, { useRef } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { theme } from "../semantic-colors.ts";
 import { BULLET, WARNING_MARK } from "../constants/figures.ts";
-import { isDestructiveCommand } from "../../tool/bash/read-only-validation.ts";
+import { isDestructiveCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
 
 /** 权限确认请求信息 */
 export interface PermissionPromptRequest {

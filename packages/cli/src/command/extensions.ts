@@ -5,13 +5,13 @@
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import { ArgParser } from "./args.ts";
-import { ExtensionLoader } from "../extension/loader.ts";
-import { getLogger } from "../debug/logger.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import {
   getSettings,
   getSettingsForSource,
   patchSettingsFile,
-} from "../config/settings/index.ts";
+} from "@sid-code/core/config/settings/index.ts";
 
 /** /skills 命令 */
 export class SkillsCommand implements Command {
@@ -50,7 +50,7 @@ class SkillsListCommand implements Command {
 
     // 走 SkillManager（含 builtin 释放+加载），与运行时实际加载链一致，
     // 否则会漏掉 builtin skill（旧实现自建 ExtensionLoader.scan 只扫 user/project）。
-    const { SkillManager } = await import("../skill/manager.ts");
+    const { SkillManager } = await import("@sid-code/core/skill/manager.ts");
     const manager = new SkillManager();
     await manager.discover(process.cwd());
     const skills = manager.getAllSkills();

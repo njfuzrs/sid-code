@@ -17,8 +17,8 @@ import chalk from "chalk";
 import { marked, type Token } from "marked";
 import { highlight as cliHighlight, supportsLanguage } from "cli-highlight";
 import stringWidth from "string-width";
-import { supportsHyperlinks } from "../ink/supports-hyperlinks.ts";
-import { getLogger } from "../debug/logger.ts";
+import { supportsHyperlinks } from "@sid-code/tui-renderer/supports-hyperlinks.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
 import { themeManager } from "./themes/theme-manager.ts";
 

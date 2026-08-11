@@ -14,9 +14,20 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 
-/** 通过 import.meta.url 定位 bootstrap.ts 绝对路径 */
+/**
+ * 通过 import.meta.url 定位 bootstrap.ts 绝对路径。
+ *
+ * ⚠️ P2-2 分包：本文件在 **core**，而 `entrypoints/` 在 **cli** —— 不是同包，
+ * 所以要先跳出 core 的 src、再进 cli 的 src：
+ *   packages/core/src/bootstrap/ → ../../../cli/src/entrypoints/bootstrap.ts
+ * 写成同包的 `../entrypoints/` 会永远算出一个不存在的路径，让 IS_DEV_MODE 恒为 false，
+ * 于是 dev 模式下：ensure-ripgrep 不再回退系统 rg、resolveExecutable 拿 process.execPath
+ * （在 `bun run` 下就是 bun 自己）去 spawn —— 两处都静默走错分支。
+ */
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const BOOTSTRAP_PATH = join(__dirname, "..", "entrypoints", "bootstrap.ts");
+const BOOTSTRAP_PATH = join(
+  __dirname, "..", "..", "..", "cli", "src", "entrypoints", "bootstrap.ts",
+);
 
 /** 是否为开发模式（bootstrap.ts 存在于磁盘） */
 const IS_DEV_MODE = existsSync(BOOTSTRAP_PATH);

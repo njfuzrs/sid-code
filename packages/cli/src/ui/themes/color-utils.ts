@@ -7,7 +7,7 @@
 
 import tinycolor from "tinycolor2";
 import tinygradient from "tinygradient";
-import type { AnsiColor, Color } from "../../ink/styles.ts";
+import type { AnsiColor, Color } from "@sid-code/tui-renderer/styles.ts";
 
 // Ink 支持的命名颜色集合
 export const INK_SUPPORTED_NAMES = new Set([

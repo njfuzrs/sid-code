@@ -4,7 +4,7 @@
  */
 
 // ⚠️ 启动性能打点必须在所有其他 import 之前
-import { profileCheckpoint } from "./utils/startup-profiler.ts";
+import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
 profileCheckpoint("full_cli_entry");
 
 // 强制启用终端颜色（必须在业务 import 之前）
@@ -13,15 +13,15 @@ if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
 }
 
 import { parseArgs } from "node:util";
-import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "./config/config.ts";
-import type { Config } from "./config/config.ts";
-import { initLogger, getLogger, LogLevel, getPerfTimer } from "./debug/index.ts";
+import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core/config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import { initLogger, getLogger, LogLevel, getPerfTimer } from "@sid-code/core/debug/index.ts";
 import { printHelp } from "./help.ts";
-import { runMigrations } from "./migrations/runner.ts";
-import { getVersion } from "./version.ts";
-import { isAbortError } from "./llm/errors.ts";
-import { EFFORT_LEVELS, isEffortLevel } from "./llm/effort.ts";
-import { LANGUAGE_PREFS, normalizeLanguagePref, resolveLanguageFromEnv } from "./config/prompt-lang.ts";
+import { runMigrations } from "@sid-code/core/migrations/runner.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
+import { isAbortError } from "@sid-code/core/llm/errors.ts";
+import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
+import { LANGUAGE_PREFS, normalizeLanguagePref, resolveLanguageFromEnv } from "@sid-code/core/config/prompt-lang.ts";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
@@ -692,13 +692,13 @@ async function runSessionPicker(
   opts: { searchFirst?: boolean; initialSearchQuery?: string } = {}
 ): Promise<string | null> {
   const React = await import("react");
-  const { default: render } = await import("./ink/root.ts");
+  const { default: render } = await import("@sid-code/tui-renderer/root.ts");
   const { SessionBrowser } = await import("./ui/SessionBrowser.tsx");
-  const { sidPaths } = await import("./config/paths.ts");
+  const { sidPaths } = await import("@sid-code/core/config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
-  const { drainStdin } = await import("./ink/ink.tsx");
-  const { setSuppressTerminalProbe } = await import("./ink/terminal.ts");
-  const { resolveProjectRoot } = await import("./memory/paths.ts");
+  const { drainStdin } = await import("@sid-code/tui-renderer/ink.tsx");
+  const { setSuppressTerminalProbe } = await import("@sid-code/tui-renderer/terminal.ts");
+  const { resolveProjectRoot } = await import("@sid-code/core/memory/paths.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
 
@@ -778,7 +778,7 @@ async function handleBrowseSessions(config: Config): Promise<void> {
 
 /** 处理清理会话命令 */
 async function handleCleanupSessions(config: Config): Promise<void> {
-  const { cleanupExpiredSessions, getRetentionSettings } = await import("./session/cleanup.ts");
+  const { cleanupExpiredSessions, getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
 
   try {
     const retentionSettings = getRetentionSettings(config);
@@ -820,8 +820,8 @@ async function handleUploadTraces(config: Config): Promise<void> {
     process.exit(1);
   }
 
-  const { UploadManager } = await import("./trace/uploader.ts");
-  const { sidPaths } = await import("./config/paths.ts");
+  const { UploadManager } = await import("@sid-code/core/trace/uploader.ts");
+  const { sidPaths } = await import("@sid-code/core/config/paths.ts");
 
   const outputDir = config.trace?.outputDir ?? sidPaths.trajectories();
   const mgr = new UploadManager({
@@ -865,7 +865,7 @@ function registerGlobalErrorHandlers(): void {
     const msg = reason instanceof Error ? reason.message : String(reason);
     const stack = reason instanceof Error ? reason.stack : undefined;
     try {
-      const { getLogger } = require("./debug/logger.ts");
+      const { getLogger } = require("@sid-code/core/debug/logger.ts");
       getLogger().error("GLOBAL", `unhandledRejection: ${msg}`, { stack });
     } catch { /* logger 可能未初始化 */ }
 
@@ -888,7 +888,7 @@ function registerGlobalErrorHandlers(): void {
 
   process.on("uncaughtException", (err: Error) => {
     try {
-      const { getLogger } = require("./debug/logger.ts");
+      const { getLogger } = require("@sid-code/core/debug/logger.ts");
       getLogger().error("GLOBAL", `uncaughtException: ${err.message}`, { stack: err.stack });
     } catch { /* logger 可能未初始化 */ }
 
@@ -927,7 +927,7 @@ export async function main(): Promise<void> {
     // P1-5 / P1-6：在 loadConfig 之前注入 settings 源过滤与 --settings 覆盖源，
     // 使后续 loadConfigFile → getSettings 合并时即生效（settings 是 config 的上游数据源之一）。
     {
-      const { setFlagSettings, setEnabledSettingSources } = await import("./config/settings/index.ts");
+      const { setFlagSettings, setEnabledSettingSources } = await import("@sid-code/core/config/settings/index.ts");
       // --setting-sources：限定磁盘来源子集（flag/policy 始终保留）。
       setEnabledSettingSources(cliArgs.settingSources ?? null);
       // --settings：文件路径或内联 JSON，作为 flagSettings 内存源注入（优先级最高的磁盘外覆盖）。
@@ -981,7 +981,7 @@ export async function main(): Promise<void> {
     // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
     if (!config.skipPermissions && !config.yesMode) {
       try {
-        const { TrustManager, setPendingTrust } = await import("./permission/trust.ts");
+        const { TrustManager, setPendingTrust } = await import("@sid-code/core/permission/trust.ts");
         const trustMgr = new TrustManager(process.cwd());
         const dangerousItems = await trustMgr.scanDangerousConfigs();
         if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
@@ -1032,23 +1032,23 @@ export async function main(): Promise<void> {
     // P2-1 item5 + P2-2：实例化企业策略管理器，读 managed settings，
     // 把功能开关（policy-limits）与模式管控（mode-policy: disabledModes / disableBypassPermissionsMode）注入全局。
     try {
-      const { PolicyManager } = await import("./config/policy.ts");
+      const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
       const policyManager = new PolicyManager();
       const policy = await policyManager.load();
       if (policy) {
         // 功能级开关
         if (policy.policyLimits) {
-          const { setPolicyLimits } = await import("./config/policy-limits.ts");
+          const { setPolicyLimits } = await import("@sid-code/core/config/policy-limits.ts");
           setPolicyLimits(policy.policyLimits);
         }
         // 定制化来源锁定（strictPluginOnlyCustomization）：屏蔽用户/项目级自带 skill 等，
         // 只保留 managed/plugin/builtin。必须在扩展扫描之前注入。
         {
-          const { setPluginOnlyPolicy } = await import("./config/plugin-only-policy.ts");
+          const { setPluginOnlyPolicy } = await import("@sid-code/core/config/plugin-only-policy.ts");
           setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
         }
         // 模式级管控（P2-2）
-        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } = await import("./permission/mode-policy.ts");
+        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } = await import("@sid-code/core/permission/mode-policy.ts");
         setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
 
         // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
@@ -1087,12 +1087,12 @@ export async function main(): Promise<void> {
 
     // Coordinator 模式：检查环境变量 SID_CODE_COORDINATOR_MODE=1
     // 设为 coordinator 后主循环角色切换为"编排者"，注入编排工作流提示词
-    const { checkCoordinatorEnv } = await import("./coordinator/mode.ts");
+    const { checkCoordinatorEnv } = await import("@sid-code/core/coordinator/mode.ts");
     checkCoordinatorEnv();
 
     // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
     try {
-      const { runStartupHousekeeping } = await import("./config/startup-housekeeping.ts");
+      const { runStartupHousekeeping } = await import("@sid-code/core/config/startup-housekeeping.ts");
       runStartupHousekeeping();
     } catch (err) {
       getLogger().debug("CONFIG", `启动管家任务跳过: ${err}`);
@@ -1102,7 +1102,7 @@ export async function main(): Promise<void> {
     // 旧 safe-env.ts 从未被调用——此处首次接入两阶段环境变量应用。
     try {
       const { applySafeConfigEnvironmentVariables } = await import(
-        "./config/settings/managed-env.ts"
+        "@sid-code/core/config/settings/managed-env.ts"
       );
       applySafeConfigEnvironmentVariables();
     } catch (err) {
@@ -1113,7 +1113,7 @@ export async function main(): Promise<void> {
     // AppConfig：加载内部应用状态 + 递增启动计数（write-through，后台 watchFile）
     try {
       const { getAppConfig, incrementStartupCount } = await import(
-        "./config/app-config.ts"
+        "@sid-code/core/config/app-config.ts"
       );
       getAppConfig();
       incrementStartupCount();
@@ -1218,7 +1218,7 @@ export async function main(): Promise<void> {
     // P2-3 --betas：把用户指定的 anthropic-beta 头值注册为 sticky（会话期恒携带）。
     // 复用 G7 beta-header-latch 机制：只增不减，避免中途抖动废掉 prompt cache。放在 logger 就绪后。
     if (config.betas && config.betas.length > 0) {
-      const { stickyBetaHeader } = await import("./api/beta-header-latch.ts");
+      const { stickyBetaHeader } = await import("@sid-code/core/api/beta-header-latch.ts");
       for (const b of config.betas) {
         if (b && b.trim()) stickyBetaHeader(b.trim());
       }
@@ -1247,7 +1247,7 @@ export async function main(): Promise<void> {
 
     // 处理会话管理命令（不需要 API Key）
     if (cliArgs["list-sessions"]) {
-      const { handleListSessions } = await import("./session/commands.ts");
+      const { handleListSessions } = await import("@sid-code/core/session/commands.ts");
       await handleListSessions();
       return;
     }
@@ -1256,7 +1256,7 @@ export async function main(): Promise<void> {
       return;
     }
     if (cliArgs["delete-session"]) {
-      const { handleDeleteSession } = await import("./session/commands.ts");
+      const { handleDeleteSession } = await import("@sid-code/core/session/commands.ts");
       await handleDeleteSession(cliArgs["delete-session"]);
       return;
     }
@@ -1303,15 +1303,15 @@ export async function main(): Promise<void> {
     if (!config.print) {
       try {
         const { applyAllConfigEnvironmentVariables } = await import(
-          "./config/settings/managed-env.ts"
+          "@sid-code/core/config/settings/managed-env.ts"
         );
         applyAllConfigEnvironmentVariables();
 
         const { initializeChangeDetector } = await import(
-          "./config/settings/change-detector.ts"
+          "@sid-code/core/config/settings/change-detector.ts"
         );
         const { getSettingsFilePaths } = await import(
-          "./config/settings/constants.ts"
+          "@sid-code/core/config/settings/constants.ts"
         );
         initializeChangeDetector(getSettingsFilePaths());
       } catch (err) {
@@ -1322,7 +1322,7 @@ export async function main(): Promise<void> {
     profileCheckpoint("init_start");
 
     // 创建 ProviderRegistry（Provider 工厂 + 缓存 + 子代理模型映射）
-    const { ProviderRegistry } = await import("./llm/registry.ts");
+    const { ProviderRegistry } = await import("@sid-code/core/llm/registry.ts");
     // _needsOnboarding 时 provider 可能为空，给兜底名使 registry 可构造占位 Provider
     // （registry 仅对未知 provider 名 throw；空 model/key 构造 OpenAIProvider 无碍）。
     // 该 Provider 永不实际发起 LLM 调用（TUI 弹 OnboardingDialog 收集配置前不进查询循环）。
@@ -1330,13 +1330,13 @@ export async function main(): Promise<void> {
       config.provider = "openai";
     }
     const providerRegistry = new ProviderRegistry(config, config.subAgentModels);
-    let provider: import("./llm/provider.ts").Provider;
+    let provider: import("@sid-code/core/llm/provider.ts").Provider;
     try {
       provider = providerRegistry.getProvider();
     } catch (err: any) {
       if (config._needsOnboarding) {
         // 兜底：构造失败也不退出，创建一个最简 OpenAI Provider 占位
-        const { OpenAIProvider } = await import("./llm/openai.ts");
+        const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
         provider = new OpenAIProvider("", config.model || "placeholder");
       } else {
         console.error(`创建 Provider 失败: ${err.message}`);
@@ -1346,15 +1346,15 @@ export async function main(): Promise<void> {
 
     // 记录 Provider 信息
     if (config.debug) {
-      const { getLogger } = await import("./debug/logger.ts");
+      const { getLogger } = await import("@sid-code/core/debug/logger.ts");
       getLogger().info("CONFIG", `Provider: ${config.provider} model=${config.model} baseURL=${config.baseURL || "(默认)"}`);
     }
 
     // 注册内置工具（共享 FileReadTracker 实例）
     profileCheckpoint("tool_reg_start");
-    const { Registry: ToolRegistry } = await import("./tool/registry.ts");
-    const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
-    const { MemoryStore } = await import("./memory/store.ts");
+    const { Registry: ToolRegistry } = await import("@sid-code/core/tool/registry.ts");
+    const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+    const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
     const toolRegistry = new ToolRegistry();
     // P0-2：延迟加载豁免名单（高频工具强制首轮可见，省每会话 tool_search 往返）。
     // 在注册任何工具前设置即可——isToolDeferred 每次调用时实时读该名单。
@@ -1362,13 +1362,13 @@ export async function main(): Promise<void> {
     const fileReadTracker = new FileReadTracker();
     const memoryStore = new MemoryStore(process.cwd());
 
-    const { BashTool } = await import("./tool/bash.ts");
-    const { GrepTool } = await import("./tool/grep.ts");
-    const { GlobTool } = await import("./tool/glob.ts");
-    const { LsTool } = await import("./tool/ls.ts");
-    const { WebFetchTool } = await import("./tool/web-fetch.ts");
-    const { MemoryTool } = await import("./tool/memory.ts");
-    const { createStatefulTools } = await import("./tool/stateful-tools.ts");
+    const { BashTool } = await import("@sid-code/core/tool/bash.ts");
+    const { GrepTool } = await import("@sid-code/core/tool/grep.ts");
+    const { GlobTool } = await import("@sid-code/core/tool/glob.ts");
+    const { LsTool } = await import("@sid-code/core/tool/ls.ts");
+    const { WebFetchTool } = await import("@sid-code/core/tool/web-fetch.ts");
+    const { MemoryTool } = await import("@sid-code/core/tool/memory.ts");
+    const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
 
     // 有状态工具（read/edit/read_many/write）经工厂用同一 tracker 构造，
     // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移。
@@ -1387,42 +1387,42 @@ export async function main(): Promise<void> {
 
     // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
     // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
-    const { LSPTool } = await import("./tool/lsp.ts");
+    const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
     toolRegistry.register(new LSPTool());
 
     // 注册 web_search 工具（始终可用，DuckDuckGo 兜底）
-    const { createSearchBackend } = await import("./tool/search-backends/factory.ts");
-    const { WebSearchTool } = await import("./tool/web-search.ts");
+    const { createSearchBackend } = await import("@sid-code/core/tool/search-backends/factory.ts");
+    const { WebSearchTool } = await import("@sid-code/core/tool/web-search.ts");
     const searchBackend = createSearchBackend(config.search);
     toolRegistry.register(new WebSearchTool(searchBackend));
 
     // 创建 Plan Mode 管理器 + 注册 Plan Mode 工具
-    const { PlanModeManager } = await import("./plan/state.ts");
-    const { EnterPlanModeTool } = await import("./tool/enter-plan-mode.ts");
-    const { ExitPlanModeTool } = await import("./tool/exit-plan-mode.ts");
+    const { PlanModeManager } = await import("@sid-code/core/plan/state.ts");
+    const { EnterPlanModeTool } = await import("@sid-code/core/tool/enter-plan-mode.ts");
+    const { ExitPlanModeTool } = await import("@sid-code/core/tool/exit-plan-mode.ts");
     const planManager = new PlanModeManager();
     toolRegistry.register(new EnterPlanModeTool(planManager));
     toolRegistry.register(new ExitPlanModeTool(planManager));
 
     // 注册 TodoWrite 工具（执行阶段进度追踪，防 Plan Mode 套娃）
-    const { TodoWriteTool } = await import("./tool/todo-write.ts");
+    const { TodoWriteTool } = await import("@sid-code/core/tool/todo-write.ts");
     toolRegistry.register(new TodoWriteTool());
 
     // 注册结构化提问工具（对标 cc AskUserQuestion）：模型遇关键岔路口时向用户抛
     // 选择题、收集决策。alwaysLoad 首轮常驻可见（内置流程如 /commit 刚需，避免模型
     // 没看到 schema 就凭记忆猜参数盲调）；TUI 模式弹交互对话框，headless 模式自动
     // 降级为"无法提问"提示（见 ask-user-question-bridge.ts）。
-    const { AskUserQuestionTool } = await import("./tool/ask-user-question.ts");
+    const { AskUserQuestionTool } = await import("@sid-code/core/tool/ask-user-question.ts");
     toolRegistry.register(new AskUserQuestionTool());
 
     // G11：注册 NotebookEdit 工具（cell 级 .ipynb 编辑，与 Read 的 notebook 支持配套）。
     // shouldDefer，由 tool_search 按需调出——多数会话不涉及 notebook。
-    const { NotebookEditTool } = await import("./tool/notebook-edit.ts");
+    const { NotebookEditTool } = await import("@sid-code/core/tool/notebook-edit.ts");
     toolRegistry.register(new NotebookEditTool());
 
     // G19：注册 think 工具——全仓首个用新泛型 buildTool() 定义、经 toLegacyTool() bridge
     // 适配到产线 registry 的工具，验证新接口 → bridge → registry 链路真实可用。
-    const { createThinkTool } = await import("./tool/think.ts");
+    const { createThinkTool } = await import("@sid-code/core/tool/think.ts");
     toolRegistry.register(createThinkTool());
 
     // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
@@ -1432,29 +1432,29 @@ export async function main(): Promise<void> {
     // 需 SID_ENABLE_HYPOTHESIS=1 显式开启。依据是受控 A/B：ON/OFF 准确率同为 5.00/5，
     // 而 ON 多花 +75% input、+61% 墙钟（详见 hypothesis-ledger.ts 的开关注释）。
     // 不注册工具时 deps.getHypothesisLedger 也拿不到 ledger，矛盾中断/交付门禁一并静默。
-    const { isHypothesisEnabled } = await import("./query/hypothesis-ledger.ts");
+    const { isHypothesisEnabled } = await import("@sid-code/core/query/hypothesis-ledger.ts");
     if (isHypothesisEnabled()) {
-      const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("./tool/hypothesis.ts");
+      const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("@sid-code/core/tool/hypothesis.ts");
       const hypothesisRegisterTool = new HypothesisRegisterTool();
       toolRegistry.register(hypothesisRegisterTool);
       toolRegistry.register(new HypothesisChallengeTool(hypothesisRegisterTool.getLedger()));
     }
 
     // 注册子代理工具
-    const { SubAgentTool } = await import("./agent/tool.ts");
+    const { SubAgentTool } = await import("@sid-code/core/agent/tool.ts");
     toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
 
     // 注册工具搜索工具（延迟加载机制的调出入口，alwaysLoad 强制首轮可见）
-    const { ToolSearchTool } = await import("./tool/tool-search.ts");
+    const { ToolSearchTool } = await import("@sid-code/core/tool/tool-search.ts");
     const toolSearchTool = new ToolSearchTool(toolRegistry);
     toolRegistry.register(toolSearchTool);
 
     // 注册后台任务工具（运行态 shell/agent/workflow：bg_task_get/bg_task_list/task_output/task_stop）
-    const { TaskOutputTool } = await import("./tool/task-output.ts");
-    const { TaskStopTool } = await import("./tool/task-stop.ts");
-    const { TaskListTool } = await import("./tool/task-list.ts");
-    const { TaskGetTool } = await import("./tool/task-get.ts");
-    const { SendMessageTool } = await import("./tool/send-message.ts");
+    const { TaskOutputTool } = await import("@sid-code/core/tool/task-output.ts");
+    const { TaskStopTool } = await import("@sid-code/core/tool/task-stop.ts");
+    const { TaskListTool } = await import("@sid-code/core/tool/task-list.ts");
+    const { TaskGetTool } = await import("@sid-code/core/tool/task-get.ts");
+    const { SendMessageTool } = await import("@sid-code/core/tool/send-message.ts");
     toolRegistry.register(new TaskOutputTool());
     toolRegistry.register(new TaskStopTool());
     toolRegistry.register(new TaskListTool());
@@ -1463,10 +1463,10 @@ export async function main(): Promise<void> {
 
     // 注册结构化任务清单工具（带依赖/owner 的持久化 TODO：task_create/task_update/task_get/task_list）
     // 对标 claude-code TaskCreate/TaskUpdate/TaskGet/TaskList，服务多 agent 派活。
-    const { TaskCreateTool } = await import("./tool/structured-task-create.ts");
-    const { TaskUpdateTool } = await import("./tool/structured-task-update.ts");
-    const { StructuredTaskGetTool } = await import("./tool/structured-task-get.ts");
-    const { StructuredTaskListTool } = await import("./tool/structured-task-list.ts");
+    const { TaskCreateTool } = await import("@sid-code/core/tool/structured-task-create.ts");
+    const { TaskUpdateTool } = await import("@sid-code/core/tool/structured-task-update.ts");
+    const { StructuredTaskGetTool } = await import("@sid-code/core/tool/structured-task-get.ts");
+    const { StructuredTaskListTool } = await import("@sid-code/core/tool/structured-task-list.ts");
     toolRegistry.register(new TaskCreateTool());
     toolRegistry.register(new TaskUpdateTool());
     toolRegistry.register(new StructuredTaskGetTool());
@@ -1474,37 +1474,37 @@ export async function main(): Promise<void> {
 
     // 注册 Worktree 隔离工具（D27: 仅在 git 仓库或配置了 WorktreeCreate/Remove hook 时注册）
     {
-      const { findGitRoot } = await import("./worktree/manager.ts");
-      const { hasWorktreeCreateHook, hasWorktreeRemoveHook } = await import("./worktree/hooks.ts");
+      const { findGitRoot } = await import("@sid-code/core/worktree/manager.ts");
+      const { hasWorktreeCreateHook, hasWorktreeRemoveHook } = await import("@sid-code/core/worktree/hooks.ts");
       const gitRoot = findGitRoot(process.cwd());
       if (gitRoot || hasWorktreeCreateHook() || hasWorktreeRemoveHook()) {
-        const { EnterWorktreeTool } = await import("./tool/enter-worktree.ts");
-        const { ExitWorktreeTool } = await import("./tool/exit-worktree.ts");
+        const { EnterWorktreeTool } = await import("@sid-code/core/tool/enter-worktree.ts");
+        const { ExitWorktreeTool } = await import("@sid-code/core/tool/exit-worktree.ts");
         toolRegistry.register(new EnterWorktreeTool());
         toolRegistry.register(new ExitWorktreeTool());
       }
     }
 
     // 注册 Cron 调度工具
-    const { CronCreateTool } = await import("./tool/cron-create.ts");
-    const { CronDeleteTool } = await import("./tool/cron-delete.ts");
-    const { CronListTool } = await import("./tool/cron-list.ts");
-    const { ScheduleWakeupTool } = await import("./tool/schedule-wakeup.ts");
+    const { CronCreateTool } = await import("@sid-code/core/tool/cron-create.ts");
+    const { CronDeleteTool } = await import("@sid-code/core/tool/cron-delete.ts");
+    const { CronListTool } = await import("@sid-code/core/tool/cron-list.ts");
+    const { ScheduleWakeupTool } = await import("@sid-code/core/tool/schedule-wakeup.ts");
     toolRegistry.register(new CronCreateTool());
     toolRegistry.register(new CronDeleteTool());
     toolRegistry.register(new CronListTool());
     toolRegistry.register(new ScheduleWakeupTool());
 
     // 注册 Swarm 多代理协作工具
-    const { TeamCreateTool } = await import("./tool/team-create.ts");
+    const { TeamCreateTool } = await import("@sid-code/core/tool/team-create.ts");
     toolRegistry.register(new TeamCreateTool(providerRegistry, toolRegistry));
     // P1-3：团队成员之间/成员→leader 的消息投递（mailbox 写入口，补齐双向通信）。
     // 主代理调用会明确报错（不在团队上下文），只有团队成员执行链里可用。
-    const { TeamMessageTool } = await import("./tool/team-message.ts");
+    const { TeamMessageTool } = await import("@sid-code/core/tool/team-message.ts");
     toolRegistry.register(new TeamMessageTool());
 
     // 注册 Dynamic Workflows 编排工具(延迟工具,由 tool_search 在多 agent 编排场景按需调出)
-    const { WorkflowTool } = await import("./tool/workflow.ts");
+    const { WorkflowTool } = await import("@sid-code/core/tool/workflow.ts");
     toolRegistry.register(new WorkflowTool(providerRegistry, toolRegistry));
 
     // 注册内置命令
@@ -1519,7 +1519,7 @@ export async function main(): Promise<void> {
 
     // 加载自定义命令（带信任检查）
     const { CustomCommandLoader } = await import("./command/custom.ts");
-    const { TrustManager } = await import("./extension/trust.ts");
+    const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
     const scanOptions = {
       trustManager,
@@ -1539,8 +1539,8 @@ export async function main(): Promise<void> {
     for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
 
     // 加载 Skills（通过 SkillManager 统一管理）
-    const { SkillManager } = await import("./skill/manager.ts");
-    const { SkillMetaTool } = await import("./skill/meta-tool.ts");
+    const { SkillManager } = await import("@sid-code/core/skill/manager.ts");
+    const { SkillMetaTool } = await import("@sid-code/core/skill/meta-tool.ts");
     const { SkillCommand } = await import("./command/skill-command.ts");
     const skillManager = new SkillManager();
     await skillManager.discover(process.cwd(), scanOptions);
@@ -1568,7 +1568,7 @@ export async function main(): Promise<void> {
 
     // P1-2/P2-2/P3-2：Skill 运行时激活协调器。init() 延后到插件 skills 也加载完毕后调用
     // （下方插件块），以便条件激活门控覆盖插件 skill。
-    const { SkillActivationCoordinator } = await import("./skill/activation-coordinator.ts");
+    const { SkillActivationCoordinator } = await import("@sid-code/core/skill/activation-coordinator.ts");
     const skillActivationCoordinator = new SkillActivationCoordinator({
       manager: skillManager,
       cwd: process.cwd(),
@@ -1580,8 +1580,8 @@ export async function main(): Promise<void> {
     // 带强副作用的 skill（commit-push-pr / pr-workflow / pr-comments）已在各自定义里
     // 设 disableModelInvocation:true，仅 review(只读) 暴露给模型。
     try {
-      const { loadBundledSkills } = await import("./skill/bundled/index.ts");
-      const { BundledSkillTool } = await import("./skill/bundled/tool.ts");
+      const { loadBundledSkills } = await import("@sid-code/core/skill/bundled/index.ts");
+      const { BundledSkillTool } = await import("@sid-code/core/skill/bundled/tool.ts");
       for (const cmd of loadBundledSkills()) {
         if (cmd.type !== "prompt") continue;
         if (cmd.context !== "fork") continue; // inline 不可包装
@@ -1600,9 +1600,9 @@ export async function main(): Promise<void> {
     // 加载自定义 Agents（P2-4：只注册进统一聚合 registry，通过 sub_agent({type}) 访问；
     // 不再包装为 agent__xxx 独立工具——收敛到 CC 式单通道，自定义 agent 自动获得
     // sub_agent 的 run_in_background/isolation/fork/并发信号量能力）。
-    const { CustomAgentLoader } = await import("./agent/custom.ts");
-    const { registerDynamicAgents } = await import("./agent/agent-definition.ts");
-    const { setAgentColor } = await import("./agent/color.ts");
+    const { CustomAgentLoader } = await import("@sid-code/core/agent/custom.ts");
+    const { registerDynamicAgents } = await import("@sid-code/core/agent/agent-definition.ts");
+    const { setAgentColor } = await import("@sid-code/core/agent/color.ts");
     // P1-2：把 frontmatter 声明的 color 注册进颜色映射；非法色名 warn 跳过（回退哈希分配）。
     const registerAgentColor = (agentType: string, color: string | undefined) => {
       if (!color) return;
@@ -1654,7 +1654,7 @@ export async function main(): Promise<void> {
     }
 
     // 加载插件组件（命令 / Agent；Hooks 和 MCP 在下方各自的初始化点接入）
-    let pluginMcpServers: Record<string, import("./config/config.ts").MCPServerConfig> = {};
+    let pluginMcpServers: Record<string, import("@sid-code/core/config/config.ts").MCPServerConfig> = {};
     try {
       const {
         mergePluginCommands,
@@ -1745,7 +1745,7 @@ export async function main(): Promise<void> {
       // 不调 execute），dump 后立即 exit，不进正常启动路径、不污染运行时工具集。
       // 若 mcpManager 已存在并已注册（防御性，当前时序不会发生），先到先得会跳过。
       if (!toolRegistry.get("ListMcpResources")) {
-        const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("./tool/mcp-resources.ts");
+        const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("@sid-code/core/tool/mcp-resources.ts");
         const noop: () => undefined = () => undefined;
         toolRegistry.register(new ListMcpResourcesTool(noop));
         toolRegistry.register(new ReadMcpResourceTool(noop));
@@ -1785,7 +1785,7 @@ export async function main(): Promise<void> {
     // config.model 解析完毕，此处再改 config.model 已无法回传到已实例化的 provider。
     // 会话级模型切换应由 --model（更高优先级、在 provider 解析前生效）承担。
     if (config.topLevelAgent) {
-      const { resolveAgent, getActiveAgentTypes } = await import("./agent/agent-definition.ts");
+      const { resolveAgent, getActiveAgentTypes } = await import("@sid-code/core/agent/agent-definition.ts");
       const persona = resolveAgent(config.topLevelAgent);
       if (!persona) {
         console.error(
@@ -1810,7 +1810,7 @@ export async function main(): Promise<void> {
 
     // P1-7 --mcp-config：解析额外 MCP 配置源（文件路径或内联 JSON，可重复）。
     // 支持 { "mcpServers": {...} } 或直接 { "serverName": {...} } 两种形态（与 .mcp.json 一致）。
-    let mcpConfigServers: Record<string, import("./config/config.ts").MCPServerConfig> = {};
+    let mcpConfigServers: Record<string, import("@sid-code/core/config/config.ts").MCPServerConfig> = {};
     if (config.mcpConfigSources && config.mcpConfigSources.length > 0) {
       for (const src of config.mcpConfigSources) {
         const raw = String(src).trim();
@@ -1843,20 +1843,20 @@ export async function main(): Promise<void> {
     if (config.strictMcpConfig) {
       getLogger().info("MCP", `严格 MCP 配置模式（--strict-mcp-config）：仅加载 --mcp-config 指定的 ${Object.keys(mcpConfigServers).length} 个服务器。`);
     }
-    let mcpManager: import("./mcp/manager.ts").MCPManager | undefined;
+    let mcpManager: import("@sid-code/core/mcp/manager.ts").MCPManager | undefined;
 
     // IDE 自动连接需要 mcpManager（IDE 作为动态 MCP server 接入），
     // 因此即使没有配置 MCP 服务器，只要 IDE 自动连接生效也创建 manager
-    const { shouldAutoConnect } = await import("./ide/integration.ts");
+    const { shouldAutoConnect } = await import("@sid-code/core/ide/integration.ts");
     const ideAutoConnect = shouldAutoConnect(config.ide?.autoConnect);
 
     if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
-      const { MCPManager } = await import("./mcp/manager.ts");
+      const { MCPManager } = await import("@sid-code/core/mcp/manager.ts");
       mcpManager = new MCPManager();
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
-      const { MCPConnectionStatus } = await import("./mcp/types.ts");
+      const { MCPConnectionStatus } = await import("@sid-code/core/mcp/types.ts");
       const mgr = mcpManager;
       toolSearchTool.setPendingMcpServers(() =>
         mgr
@@ -1880,7 +1880,7 @@ export async function main(): Promise<void> {
       // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
       // App 就绪后可用 UI 版覆盖（见 App）；此处提供 CLI 版兜底，避免默认 cancel 一切。
       {
-        const { cliElicitationHandler } = await import("./mcp/elicitation.ts");
+        const { cliElicitationHandler } = await import("@sid-code/core/mcp/elicitation.ts");
         mcpManager.elicitationHandler = cliElicitationHandler;
       }
 
@@ -1897,7 +1897,7 @@ export async function main(): Promise<void> {
           // P2-4：连接完成后发现 MCP server 暴露的 skill:// 资源，转成 loadedFrom="mcp" 的 skill。
           // 安全隔离已就位（prompt-processor 禁内联 shell、executor 拒 hooks、permission 敏感属性强制 ask）。
           try {
-            const { discoverMcpSkills } = await import("./mcp/skill-discovery.ts");
+            const { discoverMcpSkills } = await import("@sid-code/core/mcp/skill-discovery.ts");
             const mcpSkills = await discoverMcpSkills(mgrForSkills);
             if (mcpSkills.length > 0) {
               skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
@@ -1927,7 +1927,7 @@ export async function main(): Promise<void> {
     // 仅在存在 mcpManager 时注册，避免无 MCP 场景给模型塞无用工具。
     if (mcpManager) {
       const mgrRef = mcpManager;
-      const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("./tool/mcp-resources.ts");
+      const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("@sid-code/core/tool/mcp-resources.ts");
       toolRegistry.register(new ListMcpResourcesTool(() => mgrRef));
       toolRegistry.register(new ReadMcpResourceTool(() => mgrRef));
     }
@@ -1935,7 +1935,7 @@ export async function main(): Promise<void> {
     // IDE 自动发现与连接（后台进行，不阻塞启动）
     // 复用 mcpManager 的 onToolsRefresh 同步工具，IDE 作为动态 MCP server 接入
     if (mcpManager && ideAutoConnect) {
-      const { getIDEIntegration } = await import("./ide/integration.ts");
+      const { getIDEIntegration } = await import("@sid-code/core/ide/integration.ts");
       const ideIntegration = getIDEIntegration(mcpManager, process.cwd(), {
         discoveryTimeout: config.ide?.discoveryTimeout,
       });
@@ -1947,7 +1947,7 @@ export async function main(): Promise<void> {
     // LSP 代码智能系统懒初始化（后台进行，不阻塞启动）
     // 无 LSP 配置或语言服务器不可用时自动降级为无操作
     try {
-      const { initializeLSP } = await import("./lsp/manager.ts");
+      const { initializeLSP } = await import("@sid-code/core/lsp/manager.ts");
       initializeLSP(process.cwd());
     } catch (err: any) {
       getLogger().debug("LSP", `LSP 初始化跳过: ${err.message}`);
@@ -1955,14 +1955,14 @@ export async function main(): Promise<void> {
 
     // 记录注册的工具
     if (config.debug) {
-      const { getLogger } = await import("./debug/logger.ts");
+      const { getLogger } = await import("@sid-code/core/debug/logger.ts");
       const toolNames = toolRegistry.all().map(t => t.name()).join(", ");
       getLogger().info("CONFIG", `注册工具: ${toolNames} (共${toolRegistry.size()}个)`);
     }
 
     // 创建权限检查器（加载五层权限规则）
-    const { PermissionChecker } = await import("./permission/checker.ts");
-    const { loadPermissionRules } = await import("./config/config.ts");
+    const { PermissionChecker } = await import("@sid-code/core/permission/checker.ts");
+    const { loadPermissionRules } = await import("@sid-code/core/config/config.ts");
     const permissionRules = await loadPermissionRules();
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
@@ -1979,7 +1979,7 @@ export async function main(): Promise<void> {
 
     // 注入 LLM 命令风险分类器（P0-3 迭代 II，第二道防线；默认关闭，enableLLMClassifier 开启）
     {
-      const { BashClassifier } = await import("./permission/bash-classifier.ts");
+      const { BashClassifier } = await import("@sid-code/core/permission/bash-classifier.ts");
       const classifier = new BashClassifier({
         enabled: config.enableLLMClassifier === true,
         model: config.classifierModel,
@@ -2000,7 +2000,7 @@ export async function main(): Promise<void> {
     // 非 auto 模式下不产生任何 API 成本，故默认 enabled=true 恒设 provider 无副作用。
     // 复用主 provider + 主循环模型（与 BashClassifier 一致的注入路径）。
     {
-      const { ToolClassifier } = await import("./permission/tool-classifier.ts");
+      const { ToolClassifier } = await import("@sid-code/core/permission/tool-classifier.ts");
       const toolClassifier = new ToolClassifier({
         enabled: true,
         model: config.classifierModel,
@@ -2014,7 +2014,7 @@ export async function main(): Promise<void> {
     // 未注入 provider 时 WebFetch 走降级路径（截断 + 不可信标注），不会退回"原文直返"。
     // webFetchIsolate 显式设 false 才跳过注入（默认启用）。
     if (config.webFetchIsolate !== false) {
-      const { getSharedWebFetchExtractor } = await import("./tool/web-fetch-extract.ts");
+      const { getSharedWebFetchExtractor } = await import("@sid-code/core/tool/web-fetch-extract.ts");
       getSharedWebFetchExtractor().setProvider(
         providerRegistry.getProvider(),
         config.webFetchExtractModel || config.model,
@@ -2022,7 +2022,7 @@ export async function main(): Promise<void> {
     }
 
     if (config.debug && permissionRules) {
-      const { getLogger } = await import("./debug/logger.ts");
+      const { getLogger } = await import("@sid-code/core/debug/logger.ts");
       const allowCount = permissionRules.allow?.length ?? 0;
       const denyCount = permissionRules.deny?.length ?? 0;
       const askCount = permissionRules.ask?.length ?? 0;
@@ -2031,7 +2031,7 @@ export async function main(): Promise<void> {
 
     // 沙箱初始化（macOS Seatbelt，默认关闭）
     if (config.enableSandbox) {
-      const { SandboxManager, defaultSandboxConfig } = await import("./permission/sandbox.ts");
+      const { SandboxManager, defaultSandboxConfig } = await import("@sid-code/core/permission/sandbox.ts");
       const sandboxConfig = { ...defaultSandboxConfig(), enabled: true };
       const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
       permissionChecker.setSandboxManager(sandboxManager);
@@ -2078,7 +2078,7 @@ export async function main(): Promise<void> {
 
     // 注册并发会话（Spec 18 §4）+ 启动 Cron 调度器（Spec 18 §5）
     {
-      const { registerSession, unregisterSession } = await import("./session/concurrent.ts");
+      const { registerSession, unregisterSession } = await import("@sid-code/core/session/concurrent.ts");
       const sessionEntry = {
         sessionId: config.sessionId,
         pid: process.pid,
@@ -2090,7 +2090,7 @@ export async function main(): Promise<void> {
       registerSession(sessionEntry);
 
       // Cron 调度器：onFire 把 prompt 注入 App 主循环；isLoading 避免 REPL 忙时触发
-      const { getScheduler } = await import("./cron/scheduler.ts");
+      const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");
       const scheduler = getScheduler({
         onFire: (prompt: string) => {
           void app.enqueueScheduledPrompt?.(prompt);
@@ -2117,7 +2117,7 @@ export async function main(): Promise<void> {
 
     // 启动时自动清理过期会话（后台静默执行）
     if (!config.print) {
-      const { cleanupExpiredSessions, getRetentionSettings } = await import("./session/cleanup.ts");
+      const { cleanupExpiredSessions, getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
       const retentionSettings = getRetentionSettings(config);
       if (retentionSettings.enabled) {
         cleanupExpiredSessions(config, retentionSettings, config.sessionId)
@@ -2138,7 +2138,7 @@ export async function main(): Promise<void> {
     if (!config.print) {
       try {
         const { findGitRoot, restoreWorktreeSession, setCurrentWorktreeSession } =
-          await import("./worktree/index.ts");
+          await import("@sid-code/core/worktree/index.ts");
         const gitRoot = findGitRoot(process.cwd());
         if (gitRoot) {
           let activeWtPath: string | undefined;
@@ -2146,11 +2146,11 @@ export async function main(): Promise<void> {
           // P1-2：--worktree [name] 启动即创建并进入（优先于 resume）
           if (cliArgs.worktree !== undefined) {
             try {
-              const { WorktreeManager } = await import("./worktree/manager.ts");
-              const { enterWorktreeCwd } = await import("./worktree/canonical.ts");
-              const { saveWorktreeState } = await import("./worktree/persistence.ts");
-              const { logWorktreeEvent } = await import("./worktree/analytics.ts");
-              const { generateWordSlug } = await import("./plan/slug.ts");
+              const { WorktreeManager } = await import("@sid-code/core/worktree/manager.ts");
+              const { enterWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
+              const { saveWorktreeState } = await import("@sid-code/core/worktree/persistence.ts");
+              const { logWorktreeEvent } = await import("@sid-code/core/worktree/analytics.ts");
+              const { generateWordSlug } = await import("@sid-code/core/plan/slug.ts");
               const { join } = await import("path");
               const worktreesDir = join(gitRoot, ".sid-code", "worktrees");
               const name =
@@ -2179,8 +2179,8 @@ export async function main(): Promise<void> {
             // P0-1：恢复上次会话的 worktree（进程重启/crash 后）
             const { session, cleared } = restoreWorktreeSession(gitRoot);
             if (session) {
-              const { enterWorktreeCwd } = await import("./worktree/canonical.ts");
-              const { logWorktreeEvent } = await import("./worktree/analytics.ts");
+              const { enterWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
+              const { logWorktreeEvent } = await import("@sid-code/core/worktree/analytics.ts");
               try {
                 await enterWorktreeCwd(session.worktreePath);
                 setCurrentWorktreeSession(session);
@@ -2196,7 +2196,7 @@ export async function main(): Promise<void> {
           }
 
           // D16：后台清理过期临时 worktree（跳过当前活跃 session）
-          const { cleanupStaleWorktrees } = await import("./worktree/cleanup.ts");
+          const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
           cleanupStaleWorktrees(gitRoot, 30, activeWtPath)
             .then((n) => {
               if (n > 0 && config.debug) {
@@ -2216,7 +2216,7 @@ export async function main(): Promise<void> {
     // gh 不可用 / PR 不存在 → 报错退出（PR 恢复失败用户需要知道，不静默降级为空会话）。
     if (cliArgs.fromPr) {
       try {
-        const { loadFromPr } = await import("./session/from-pr.ts");
+        const { loadFromPr } = await import("@sid-code/core/session/from-pr.ts");
         const result = await loadFromPr(cliArgs.fromPr, process.cwd());
         if (result.sessionId) {
           getLogger().info("CLI", `--from-pr ${result.prNumber}：内嵌会话 id ${result.sessionId}，转为 resume`);
@@ -2237,11 +2237,11 @@ export async function main(): Promise<void> {
 
     // 会话恢复：--continue / --resume <id> / --resume（无值开选择器，对标 CC）
     if (config.continue || config.resume || cliArgs.resumePicker) {
-      const { SessionStore } = await import("./session/store.ts");
-      const { SessionSelector } = await import("./session/utils.ts");
-      const { sidPaths } = await import("./config/paths.ts");
+      const { SessionStore } = await import("@sid-code/core/session/store.ts");
+      const { SessionSelector } = await import("@sid-code/core/session/utils.ts");
+      const { sidPaths } = await import("@sid-code/core/config/paths.ts");
       const store = new SessionStore();
-      let session: import("./session/store.ts").SessionData | null = null;
+      let session: import("@sid-code/core/session/store.ts").SessionData | null = null;
 
       // 无头模式（--print）不能弹交互选择器：缺 stdin 无法选择。
       if (cliArgs.resumePicker && config.print) {

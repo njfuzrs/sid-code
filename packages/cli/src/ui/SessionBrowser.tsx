@@ -11,12 +11,12 @@
  */
 
 import React, { useState, useCallback, useMemo, useEffect } from "react";
-import Box from "../ink/components/Box.tsx";
-import Text from "../ink/components/Text.tsx";
-import useInput from "../ink/hooks/use-input.ts";
-import useStdout from "../ink/_vendor/use-stdout.ts";
-import type { Config } from "../config/config.ts";
-import type { SessionInfo } from "../session/utils.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import useInput from "@sid-code/tui-renderer/hooks/use-input.ts";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { SessionInfo } from "@sid-code/core/session/utils.ts";
 import {
   getSessionFiles,
   formatRelativeTime,
@@ -24,10 +24,10 @@ import {
   shortenModel,
   filterSessions,
   sortSessions,
-} from "../session/utils.ts";
+} from "@sid-code/core/session/utils.ts";
 import { theme } from "./semantic-colors.ts";
 import { homedir } from "os";
-import { sidPaths } from "../config/paths.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 /** 把绝对路径中的 home 前缀缩成 ~，元信息行展示项目路径用 */
 function shortenPath(p: string | undefined): string {

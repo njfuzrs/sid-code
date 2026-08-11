@@ -3,60 +3,60 @@
  * 实现 Agentic While-Loop：用户输入 → LLM 流式响应 → 工具调用 → 循环
  */
 
-import type { Provider } from "./llm/provider.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type {
   ContentBlock,
   ToolUseBlock,
   StreamEvent,
   AccumulatedResponse,
-} from "./llm/types.ts";
-import type { Config } from "./config/config.ts";
-import type { Checker } from "./permission/types.ts";
-import { isBypassDisabledByPolicy, isModeDisabledByPolicy } from "./permission/mode-policy.ts";
+} from "@sid-code/core/llm/types.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { Checker } from "@sid-code/core/permission/types.ts";
+import { isBypassDisabledByPolicy, isModeDisabledByPolicy } from "@sid-code/core/permission/mode-policy.ts";
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
 import { routeToolProgress } from "./ui/tool-progress-route.ts";
-import type { ProviderRegistry } from "./llm/registry.ts";
-import type { MCPManager } from "./mcp/manager.ts";
-import type { PlanModeManager } from "./plan/state.ts";
-import { Manager as ContextManager } from "./context/manager.ts";
-import { resolveAutoCompactPctOverride } from "./context/auto-compact.ts";
-import { Registry as ToolRegistry } from "./tool/registry.ts";
+import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { resolveAutoCompactPctOverride } from "@sid-code/core/context/auto-compact.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { Registry as CommandRegistry } from "./command/registry.ts";
-import { ModelFallback } from "./llm/fallback.ts";
-import type { FallbackDecision } from "./llm/fallback.ts";
-import type { RetryTelemetryEvent } from "./llm/retry-telemetry.ts";
-import { TokenEstimator } from "./llm/token-estimator.ts";
-import { ThinkingManager } from "./llm/thinking.ts";
-import { lookupErrorMessage, inferErrorCode, stableErrorId, isTransientErrorCode } from "./llm/error-messages.ts";
-import { SessionState } from "./session/state.ts";
-import { SessionStore } from "./session/store.ts";
-import { generateSessionId } from "./session/id.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import type { FallbackDecision } from "@sid-code/core/llm/fallback.ts";
+import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
+import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
+import { ThinkingManager } from "@sid-code/core/llm/thinking.ts";
+import { lookupErrorMessage, inferErrorCode, stableErrorId, isTransientErrorCode } from "@sid-code/core/llm/error-messages.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
   markForRestore,
   clearPendingInput,
   canRestoreCanceledInput,
 } from "./ui/pending-input.ts";
-import { QuotaManager } from "./llm/quota.ts";
-import { TokenMeter } from "./telemetry/metrics/token-meter.ts";
-import { upsertUsageLedger } from "./telemetry/usage-ledger.ts";
-import { BudgetTracker } from "./telemetry/metrics/budget-tracker.ts";
-import type { BudgetRule } from "./telemetry/metrics/budget-tracker.ts";
-import type { BudgetRuleConfig } from "./config/config.ts";
-import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "./config/rules.ts";
-import { cleanup as cleanupSettingsWatcher } from "./config/settings/change-detector.ts";
-import { stopAppConfigWatcher } from "./config/app-config.ts";
-import type { ProjectRules } from "./config/rules.ts";
-import { clearPromptCache } from "./config/system-prompt.ts";
-import type { LanguagePref } from "./config/prompt-lang.ts";
-import { getLogger, getMemoryMonitor, getSessionMetrics } from "./debug/index.ts";
-import { QueryEngine } from "./query/engine.ts";
-import { resetCacheDetection, clearCacheBreaks } from "./api/cache-detection.ts";
-import { resetTTLLatch } from "./api/cache-ttl-latch.ts";
-import { resetBetaHeaders } from "./api/beta-header-latch.ts";
-import { resetCircuitBreaker } from "./query/auto-compact.ts";
-import { clearQueue as clearMessageQueue } from "./query/message-queue-manager.ts";
-import { HookSystem } from "./hook/system.ts";
+import { QuotaManager } from "@sid-code/core/llm/quota.ts";
+import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
+import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
+import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
+import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
+import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
+import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "@sid-code/core/config/rules.ts";
+import { cleanup as cleanupSettingsWatcher } from "@sid-code/core/config/settings/change-detector.ts";
+import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
+import type { ProjectRules } from "@sid-code/core/config/rules.ts";
+import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import type { LanguagePref } from "@sid-code/core/config/prompt-lang.ts";
+import { getLogger, getMemoryMonitor, getSessionMetrics } from "@sid-code/core/debug/index.ts";
+import { QueryEngine } from "@sid-code/core/query/engine.ts";
+import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
+import { resetTTLLatch } from "@sid-code/core/api/cache-ttl-latch.ts";
+import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
+import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
+import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
 import {
   SDKQueryEngine,
   type SDKQueryEngineDriver,
@@ -65,34 +65,34 @@ import {
   runHeadless as sdkRunHeadless,
   classifyHeadlessStreamText,
   formatHeadlessEvent,
-} from "./sdk/index.ts";
-import { JitContextManager, isJitContextEnabled, type JitDiscovery } from "./config/jit-context.ts";
+} from "@sid-code/core/sdk/index.ts";
+import { JitContextManager, isJitContextEnabled, type JitDiscovery } from "@sid-code/core/config/jit-context.ts";
 import {
   collectJitAccessedPaths,
   resolveJitPathExtractor,
-} from "./tool/jit-affected-paths.ts";
-import { estimateTextTokens } from "./context/token.ts";
-import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason } from "./llm/errors.ts";
-import * as CrashMarker from "./trace/crash-marker.ts";
-import * as PidManager from "./trace/pid-manager.ts";
+} from "@sid-code/core/tool/jit-affected-paths.ts";
+import { estimateTextTokens } from "@sid-code/core/context/token.ts";
+import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason } from "@sid-code/core/llm/errors.ts";
+import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
+import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 import { execSync } from "child_process";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
-import { sidPaths } from "./config/paths.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
-import { startPreventSleep, stopPreventSleep } from "./task/prevent-sleep.ts";
-import { getSleepLedger } from "./utils/sleep-detect.ts";
-import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
+import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
+import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
+import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "@sid-code/core/trace/side-call-sink.ts";
 import {
   buildJitEventData,
   emitJitEvent,
   setJitTraceSink,
   JIT_EVENT_NAME,
-} from "./trace/jit-telemetry.ts";
-import { setGitOperationObserver, resetGitOperationStats, type GitOperationEvent } from "./tool/git-operation-tracking.ts";
-import { withSideCallDeadline } from "./llm/side-call-timeout.ts";
-import { resolveSideCallTimeouts } from "./config/network-profile.ts";
+} from "@sid-code/core/trace/jit-telemetry.ts";
+import { setGitOperationObserver, resetGitOperationStats, type GitOperationEvent } from "@sid-code/core/tool/git-operation-tracking.ts";
+import { withSideCallDeadline } from "@sid-code/core/llm/side-call-timeout.ts";
+import { resolveSideCallTimeouts } from "@sid-code/core/config/network-profile.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -268,11 +268,11 @@ export interface AppOptions {
   mcpManager?: MCPManager;
   planManager?: PlanModeManager;
   /** 共享的 FileReadTracker 实例（§2.1 post-compact 文件恢复需要它取最近访问文件）。 */
-  fileReadTracker?: import("./tool/file-read-tracker.ts").FileReadTracker;
+  fileReadTracker?: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker;
   /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
-  skillActivationCoordinator?: import("./skill/activation-coordinator.ts").SkillActivationCoordinator;
+  skillActivationCoordinator?: import("@sid-code/core/skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** P2-3：Skill 管理器（热重载需调 reload() 重扫磁盘 skill）。可选。 */
-  skillManager?: import("./skill/manager.ts").SkillManager;
+  skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
 }
 
 /**
@@ -338,7 +338,7 @@ export class App {
   private mcpManager?: MCPManager;
   private ctxMgr: ContextManager;
   /** P2-1 会话回退管理器（Esc+Esc rewind）。每轮输入前登记回退点，UI 选中后截断对话/回滚文件。 */
-  private rewindManager: import("./session/rewind-manager.ts").RewindManager | null = null;
+  private rewindManager: import("@sid-code/core/session/rewind-manager.ts").RewindManager | null = null;
   /** P2-1：CheckpointManager 最近一次快照 id（回退点登记时记录文件锚点）。空串 = 尚无快照。 */
   private latestCheckpointSnapshotId = "";
   private toolRegistry: ToolRegistry;
@@ -363,7 +363,7 @@ export class App {
   private forkedFromSessionId: string | null = null;
   /** P1-G2a：分叉时源会话的完整消息历史，doInit 里 startSession 之后拷进新 jsonl。
    *  只在 --fork-session 路径设置；拷贝完即清空，避免长会话常驻一份历史副本。 */
-  private forkSourceMessages: import("./llm/types.ts").Message[] | null = null;
+  private forkSourceMessages: import("@sid-code/core/llm/types.ts").Message[] | null = null;
   /** P1-7：本会话累积改动过的文件集合（去重），供 recordFileChanges 落盘 file_changes 快照。
    *  resume 时从被恢复会话的 file_changes metadata 预填，续做时继续累积。 */
   private changedFiles: Set<string> = new Set();
@@ -379,7 +379,7 @@ export class App {
    * 经 getPrecomputedResult 命中复用。每个 turn 开始前重建，结束后清空，避免跨轮串味。
    * 仅在 SID_ENABLE_STREAMING_TOOL_EXEC=1 时激活。
    */
-  private _streamingToolResults: Map<string, import("./query/tool-executor.ts").SingleToolOutcome> | null = null;
+  private _streamingToolResults: Map<string, import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome> | null = null;
   /**
    * 流被重开、已流出内容作废时的回调（2026-08-04 事故根因修复）。
    *
@@ -409,23 +409,23 @@ export class App {
   /** P2-8：已向用户报告过的 JIT 失败（`path::code` 去重键），避免每轮重复刷屏 */
   private reportedJitFailures = new Set<string>();
   /** TelemetryHookProbe 引用（供 Harness 注册 enricher） */
-  private telemetryProbe?: import("./telemetry/hook-probe.ts").TelemetryHookProbe;
+  private telemetryProbe?: import("@sid-code/core/telemetry/hook-probe.ts").TelemetryHookProbe;
   /** Plan Mode 管理器 */
   private planManager: PlanModeManager | null = null;
   /** T12：RetryTelemetry 事件写入器（延迟绑定，doInit 后由 traceCollector 注入） */
   private _retryTelemetryWriter: ((event: RetryTelemetryEvent) => void) | null = null;
   /** /debug 命令用：轨迹采集器实例（doInit 后赋值） */
-  private traceCollector: import("./trace/collector.ts").TraceCollector | null = null;
+  private traceCollector: import("@sid-code/core/trace/collector.ts").TraceCollector | null = null;
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
-  private fileReadTracker: import("./tool/file-read-tracker.ts").FileReadTracker | null = null;
+  private fileReadTracker: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker | null = null;
   /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
-  private skillActivationCoordinator?: import("./skill/activation-coordinator.ts").SkillActivationCoordinator;
+  private skillActivationCoordinator?: import("@sid-code/core/skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** P2-3：Skill 管理器（热重载调 reload()）。可选。 */
-  private skillManager?: import("./skill/manager.ts").SkillManager;
+  private skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
   /** P2-3：Skill 文件热重载监听器（退出时 stop()）。 */
-  private skillChangeDetector?: import("./skill/change-detector.ts").SkillChangeDetector;
+  private skillChangeDetector?: import("@sid-code/core/skill/change-detector.ts").SkillChangeDetector;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
-  private cachedMicrocompactState: import("./query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
+  private cachedMicrocompactState: import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
   private announcedMcpServers = new Set<string>();
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
@@ -448,31 +448,31 @@ export class App {
    * Session Memory 句柄（Step 0）：在压缩前持续维护结构化会话笔记，
    * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
    */
-  private sessionMemory: import("./session-memory/session-memory.ts").SessionMemoryHandle | null = null;
+  private sessionMemory: import("@sid-code/core/session-memory/session-memory.ts").SessionMemoryHandle | null = null;
   /** 后台记忆提取句柄（每轮 end_turn 后 fire-and-forget 提取记忆，会话关闭前 drain）。 */
-  private extractMemories: import("./memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
+  private extractMemories: import("@sid-code/core/memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
   /** G10：autoDream 自主记忆巩固句柄（默认 null，仅 settings.autoDream 开启时接线） */
-  private autoDream: import("./memory/dream/dream.ts").AutoDreamHandle | null = null;
+  private autoDream: import("@sid-code/core/memory/dream/dream.ts").AutoDreamHandle | null = null;
   /** M4：待审批的外部 @import 路径快照（启动加载 CLAUDE.md 时收集，供审批对话框展示）。 */
   private pendingExternalImportPaths: string[] = [];
   /**
    * SEC-AUDIT-2026-07-19 P1：待信任确认的危险配置项快照（供 TrustDialog 展示）。
    * 由 cli.ts strip 危险配置时登记，doInit 取出。非空 → 首屏弹信任对话框。
    */
-  private pendingTrustItems: import("./permission/trust.ts").TrustCheckItem[] = [];
+  private pendingTrustItems: import("@sid-code/core/permission/trust.ts").TrustCheckItem[] = [];
   /**
    * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
    * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
    * 初值在构造函数解析：env > config.effortLevel(settings) > undefined。
    */
-  private runtimeEffort: import("./llm/effort.ts").EffortSetting;
+  private runtimeEffort: import("@sid-code/core/llm/effort.ts").EffortSetting;
   /**
    * 思考开关运行时态（/think 切换端）。undefined = auto（跟随模型/provider 默认）。
    * 初值：env > config.thinkingEnabled(settings) > undefined。
    */
-  private runtimeThinking: import("./llm/effort.ts").ThinkingSetting;
+  private runtimeThinking: import("@sid-code/core/llm/effort.ts").ThinkingSetting;
   /** /goal：目标驱动持续执行的运行时状态（由 /goal 命令设置，queryLoop Gate 链消费） */
-  private goalState: import("./goal/state.ts").GoalState | null = null;
+  private goalState: import("@sid-code/core/goal/state.ts").GoalState | null = null;
 
   constructor(opts: AppOptions) {
     this.config = opts.config;
@@ -516,14 +516,14 @@ export class App {
     // P2-1：会话回退管理器。注入 ctxMgr 取/设消息 + CheckpointManager 取最新快照/恢复，
     // 二者解耦于 RewindManager 内部逻辑（便于单测，且不与 ctxMgr/checkpoint 内部实现耦合）。
     {
-      const { RewindManager } = require("./session/rewind-manager.ts");
+      const { RewindManager } = require("@sid-code/core/session/rewind-manager.ts");
       this.rewindManager = new RewindManager({
         getMessages: () => this.ctxMgr.getMessages(),
-        setMessages: (msgs: unknown[]) => this.ctxMgr.setMessages(msgs as import("./llm/types.ts").Message[]),
+        setMessages: (msgs: unknown[]) => this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
         getLatestSnapshotId: () => this.latestCheckpointSnapshotId,
         restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
           try {
-            const { getCheckpointManager } = await import("./checkpoint/manager.ts");
+            const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
             const cpMgr = await getCheckpointManager(sessionId, this.config.checkpoint);
             const result = await cpMgr.restoreToSnapshot(snapshotId);
             if (!result) return null;
@@ -544,9 +544,9 @@ export class App {
     //   - 日常启动 → 按端点 TTL 惰性刷新。
     // 端点集合：availableModels 各 baseURL + 顶层 config.baseURL（resolveCurrentModelConfig 已回填）。
     try {
-      const { refreshGatewayPricingOnStartup } = require("./llm/gateway-pricing.ts");
-      const { getAppConfig, saveAppConfig } = require("./config/app-config.ts");
-      const { getVersion } = require("./version.ts");
+      const { refreshGatewayPricingOnStartup } = require("@sid-code/core/llm/gateway-pricing.ts");
+      const { getAppConfig, saveAppConfig } = require("@sid-code/core/config/app-config.ts");
+      const { getVersion } = require("@sid-code/shared/version.ts");
 
       const currentVersion: string = getVersion();
       const lastVersion: string | undefined = getAppConfig().lastPricingSyncVersion;
@@ -574,7 +574,7 @@ export class App {
     //
     // fire-and-forget + 7 天 TTL + 失败指数退避：不 await（不拖慢启动），失败静默保留旧缓存。
     try {
-      const capMod = require("./llm/model-capabilities.ts");
+      const capMod = require("@sid-code/core/llm/model-capabilities.ts");
       capMod.loadCapabilityCache(); // 同步载入，供本会话立即使用
       if (capMod.shouldSyncCatalogs()) {
         void capMod.syncExternalCatalogs().catch(() => {
@@ -655,9 +655,9 @@ export class App {
     // 判定，而非 /deepseek/i 正则——原正则把同样支持 thinking 的 GLM/Grok 静默排除，
     // 它们的思考能力被无声关闭。能力标志由 catalog(protocolKind) 精确驱动，不随模型改名漂移。
     // （见 memory feedback-no-hardcoded-model-tier-rules.md）
-    const { resolveEffortCapability } = require("./llm/effort.ts");
+    const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
     const thinkingModelConfig = opts.config.availableModels?.find(m => m.name === opts.config.model);
-    const { resolveWireModel: resolveWireModelForThinking } = require("./llm/wire-model.ts");
+    const { resolveWireModel: resolveWireModelForThinking } = require("@sid-code/core/llm/wire-model.ts");
     const thinkingCap = resolveEffortCapability({
       // 能力判定吃**真名**（与 query/loop.ts 的 cap 解析同口径）：内部按模型名做
       // catalog/家族/前缀匹配，喂本地别名会静默 miss → thinking 开关被无声关闭。
@@ -671,7 +671,7 @@ export class App {
     // Effort/Thinking 旋钮运行时态初值解析：env > settings(config) > undefined(auto)。
     // env 覆盖优先级最高且会被 queryLoop 每轮重新读取，这里仅解析 runtime 基线。
     {
-      const { getEffortEnvOverride, getThinkingEnvOverride } = require("./llm/effort.ts");
+      const { getEffortEnvOverride, getThinkingEnvOverride } = require("@sid-code/core/llm/effort.ts");
       const effortEnv = getEffortEnvOverride();
       // env 已设（含强制 auto=undefined）则以 env 为基线；未设(null)才用 settings。
       this.runtimeEffort = effortEnv !== null ? effortEnv : opts.config.effortLevel;
@@ -726,7 +726,7 @@ export class App {
     }
 
     // 配置-1：统一超时/重试解析（与 loop.ts 同一 resolveLoopTimeouts 入口，env > settings > 默认）。
-    const { resolveLoopTimeouts: resolveFallbackTimeouts } = require("./config/network-profile.ts");
+    const { resolveLoopTimeouts: resolveFallbackTimeouts } = require("@sid-code/core/config/network-profile.ts");
     const fallbackNetTimeouts = resolveFallbackTimeouts({ network: opts.config.network });
 
     this.fallback = new ModelFallback({
@@ -754,7 +754,7 @@ export class App {
       // maxTokens 时不再只查内置注册表——注册表外的自定义模型此前会漏钳制触发 400。
       resolveMaxOutputTokens: (model: string) => {
         try {
-          const { resolveMaxOutputTokensForModel } = require("./config/config.ts");
+          const { resolveMaxOutputTokensForModel } = require("@sid-code/core/config/config.ts");
           return resolveMaxOutputTokensForModel(model, this.config.availableModels);
         } catch {
           return undefined;
@@ -785,7 +785,7 @@ export class App {
           const beforeOpenai = this.config.openaiKey ?? "";
           // 只重读凭据字段，不整体替换 this.config：整体替换会把用户本会话内用 /model
           // 等命令做的运行时改动一起冲掉（那是比 401 更严重的副作用）。
-          const { loadConfig } = require("./config/config.ts");
+          const { loadConfig } = require("@sid-code/core/config/config.ts");
           const fresh = await loadConfig({});
           const afterAnthropic = fresh.anthropicKey ?? "";
           const afterOpenai = fresh.openaiKey ?? "";
@@ -868,7 +868,7 @@ export class App {
     // fire-and-forget：策略读取失败或缺失时不影响启动（无门控 = 全部 hook 照常执行）。
     void (async () => {
       try {
-        const { PolicyManager } = await import("./config/policy.ts");
+        const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
         const policy = await new PolicyManager().load();
         if (policy && (policy.disableAllHooks || policy.allowManagedHooksOnly)) {
           this.hookSystem.applyEnterprisePolicy({
@@ -887,7 +887,7 @@ export class App {
     // 而非退化为单轮 LLM 调用。无 providerRegistry（极简/测试）时不注入，runner 自动回退单轮。
     if (this.providerRegistry) {
       this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, timeoutMs, signal }) => {
-        const { SubAgent } = await import("./agent/sub-agent.ts");
+        const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
         // 防套娃：agent hook 的子代理默认只读工具集，且不再触发 agent hook（hookSystem 不透传）。
         const allowedTools = tools && tools.length > 0 ? tools : ["read", "grep", "glob"];
         const agent = SubAgent.fromRegistry(
@@ -957,7 +957,7 @@ export class App {
         // P0-2 / P0-3：把 TodoWriteTool 的内存状态暴露给 queryLoop，
         // 用于每轮回注完整清单（根因 1）+ end_turn 完成度硬校验（根因 1、2）。
         const todoTool = this.toolRegistry.get("todo_write") as
-          | import("./tool/todo-write.ts").TodoWriteTool
+          | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
           | undefined;
         if (!todoTool) return null;
         const todos = todoTool.getTodos();
@@ -972,7 +972,7 @@ export class App {
       // 全绿清单不消失（行为回退）。两个语义分两个入口，见 getLastWrittenTodos 注释。
       getTodoTerminalState: () => {
         const todoTool = this.toolRegistry.get("todo_write") as
-          | import("./tool/todo-write.ts").TodoWriteTool
+          | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
           | undefined;
         if (!todoTool) return null;
         const todos = todoTool.getLastWrittenTodos();
@@ -983,14 +983,14 @@ export class App {
         // 环节③：把假设登记表暴露给 queryLoop，用于矛盾中断（机制2）+ 交付门禁（机制3）。
         // 登记表实例由 hypothesis_register 工具持有（与 TodoWriteTool 同构）。
         const regTool = this.toolRegistry.get("hypothesis_register") as
-          | import("./tool/hypothesis.ts").HypothesisRegisterTool
+          | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
           | undefined;
         return regTool?.getLedger() ?? null;
       },
       // G2：暴露 cachedMicrocompact 状态机给 queryLoop，让主循环每轮可产出 cache_edits。
       getCachedMicrocompactState: () => {
         if (!this.cachedMicrocompactState) {
-          const { createCachedMicrocompactState } = require("./query/compact/cached-microcompact.ts");
+          const { createCachedMicrocompactState } = require("@sid-code/core/query/compact/cached-microcompact.ts");
           this.cachedMicrocompactState = createCachedMicrocompactState();
         }
         return this.cachedMicrocompactState ?? undefined;
@@ -1002,7 +1002,7 @@ export class App {
       getMcpInstructionsDelta: () => {
         if (!this.mcpManager) return null;
         try {
-          const { getMcpInstructionsDelta } = require("./mcp/instructions-delta.ts");
+          const { getMcpInstructionsDelta } = require("@sid-code/core/mcp/instructions-delta.ts");
           const delta = getMcpInstructionsDelta(
             this.mcpManager.getStatus(),
             this.announcedMcpServers,
@@ -1019,7 +1019,7 @@ export class App {
       // 走 reminderParts（user 消息）而非 system prompt 静态前缀，选区变化不击穿 prompt cache。
       drainIDEContextDelta: () => {
         try {
-          const { drainIDEContextDelta } = require("./ide/integration.ts");
+          const { drainIDEContextDelta } = require("@sid-code/core/ide/integration.ts");
           return drainIDEContextDelta();
         } catch {
           return null;
@@ -1088,7 +1088,7 @@ export class App {
       // /context 的「自定义代理」类别。它是工具定义总量的子集，不影响总量与压缩决策。
       // 文本由 agent/tool.ts 的 renderAgentTypeLines 提供（与 description 同源，不会漂移）。
       if (defs.some((d) => d.name === "sub_agent")) {
-        const { renderAgentTypeLines } = require("./agent/tool.ts");
+        const { renderAgentTypeLines } = require("@sid-code/core/agent/tool.ts");
         this.ctxMgr.setAgentDefinitionTokens(estimator.estimateText(renderAgentTypeLines()));
       } else {
         this.ctxMgr.setAgentDefinitionTokens(0);
@@ -1100,7 +1100,7 @@ export class App {
 
   /** 注入子代理 usage 归集 sink（P0-1）。遍历工具注册表，给所有带 setUsageSink 的工具接线。 */
   private wireSubAgentUsageSink(): void {
-    const sink = (result: import("./agent/sub-agent.ts").SubAgentResult): void => {
+    const sink = (result: import("@sid-code/core/agent/sub-agent.ts").SubAgentResult): void => {
       const usage = result.usage;
       if (!usage) return;
       // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
@@ -1122,8 +1122,8 @@ export class App {
    * 提供者返回主对话当前消息历史，buildForkMessages 截取尾部构建 fork 子代理初始上下文。
    */
   private wireSubAgentMainContext(): void {
-    const provider = (): { role: string; content: import("./llm/types.ts").ContentBlock[] }[] =>
-      this.ctxMgr.getMessages() as { role: string; content: import("./llm/types.ts").ContentBlock[] }[];
+    const provider = (): { role: string; content: import("@sid-code/core/llm/types.ts").ContentBlock[] }[] =>
+      this.ctxMgr.getMessages() as { role: string; content: import("@sid-code/core/llm/types.ts").ContentBlock[] }[];
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setMainContextProvider?: (p: typeof provider) => void };
       if (typeof maybe.setMainContextProvider === "function") {
@@ -1197,9 +1197,9 @@ export class App {
    * 必须是原始规则而非子代理 checker——后者 dontAsk 语义会把 ask 直接降级为 deny，
    * 导致「需确认」的 skill 在用户主动调用时被静默拒绝。
    */
-  private getRawPermissionRules(): import("./permission/types.ts").PermissionRule | undefined {
+  private getRawPermissionRules(): import("@sid-code/core/permission/types.ts").PermissionRule | undefined {
     const checkerWithRules = this.permissionChecker as unknown as {
-      getRules?: () => import("./permission/types.ts").PermissionRule | null;
+      getRules?: () => import("@sid-code/core/permission/types.ts").PermissionRule | null;
     } | null;
     if (!checkerWithRules || typeof checkerWithRules.getRules !== "function") return undefined;
     return checkerWithRules.getRules() ?? undefined;
@@ -1208,15 +1208,15 @@ export class App {
   private wireToolPermissionChecker(): void {
     if (!this.permissionChecker) return;
     // 延迟导入工厂函数（避免循环依赖）
-    const { createSubAgentChecker } = require("./permission/sub-agent-checker.ts");
+    const { createSubAgentChecker } = require("@sid-code/core/permission/sub-agent-checker.ts");
     const subChecker = createSubAgentChecker(this.permissionChecker);
     // P0-3：抽取合并后的权限规则，供 skill 元工具解析 Skill(name) 规则。
     const rawRules = this.getRawPermissionRules();
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as {
-        setPermissionChecker?: (c: import("./permission/types.ts").Checker) => void;
+        setPermissionChecker?: (c: import("@sid-code/core/permission/types.ts").Checker) => void;
         setPermissionConfirm?: (fn: (desc: string) => Promise<boolean>) => void;
-        setPermissionRules?: (r: import("./permission/types.ts").PermissionRule) => void;
+        setPermissionRules?: (r: import("@sid-code/core/permission/types.ts").PermissionRule) => void;
       };
       if (typeof maybe.setPermissionChecker === "function") {
         maybe.setPermissionChecker(subChecker);
@@ -1269,9 +1269,9 @@ export class App {
   }
 
   /** 解析当前模型的 effort 能力描述符（/effort、/think 状态读取 + setter 共用）。 */
-  private resolveEffortCap(): import("./llm/effort.ts").EffortCapability {
-    const { resolveEffortCapability } = require("./llm/effort.ts");
-    const { resolveWireModel } = require("./llm/wire-model.ts");
+  private resolveEffortCap(): import("@sid-code/core/llm/effort.ts").EffortCapability {
+    const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
+    const { resolveWireModel } = require("@sid-code/core/llm/wire-model.ts");
     const mc = this.config.availableModels?.find(m => m.name === this.config.model);
     return resolveEffortCapability({
       // 真名（与 query/loop.ts、构造期 thinkingCap 三处同口径）。若这里用别名而
@@ -1285,7 +1285,7 @@ export class App {
 
   /** 读取 effort 运行时态 + 展示档位（/effort 无参展示用）。 */
   private getEffortState() {
-    const eff = require("./llm/effort.ts");
+    const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     const envOverride = eff.getEffortEnvOverride();
     return {
@@ -1298,7 +1298,7 @@ export class App {
 
   /** 读取 thinking 运行时态 + 实际开关（/think 无参展示用）。 */
   private getThinkingState() {
-    const eff = require("./llm/effort.ts");
+    const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     return {
       runtime: this.runtimeThinking,
@@ -1313,7 +1313,7 @@ export class App {
    * - persist=true 时写 settings.json effortLevel（跨会话）；
    * - 推送展示态到状态栏（TUIState，对标 model 列经 updateState 流到 ConfigContext）。
    */
-  private setEffortRuntime(level: import("./llm/effort.ts").EffortSetting, persist?: boolean): void {
+  private setEffortRuntime(level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean): void {
     this.runtimeEffort = level;
     if (persist) this.persistKnob("effortLevel", level);
     this.persistAgentSetting(); // P1-4b：落会话级快照，供 resume 恢复本会话档位
@@ -1329,7 +1329,7 @@ export class App {
     this.config.vimMode = enabled;
     if (persist) {
       try {
-        const { patchSettingsFile } = require("./config/settings/index.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "vimMode", enabled);
       } catch (e) {
         getLogger().warn("VIM", `持久化 vimMode 失败（不阻断）: ${(e as Error)?.message}`);
@@ -1351,7 +1351,7 @@ export class App {
     this.config.statusLine = config;
     if (persist) {
       try {
-        const { patchSettingsFile } = require("./config/settings/index.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "statusLine", config);
       } catch (e) {
         getLogger().warn("STATUSLINE", `持久化 statusLine 失败（不阻断）: ${(e as Error)?.message}`);
@@ -1396,7 +1396,7 @@ export class App {
   }
 
   /** 设置 thinking 运行时态（/think 用）。语义同 setEffortRuntime。 */
-  private setThinkingRuntime(setting: import("./llm/effort.ts").ThinkingSetting, persist?: boolean): void {
+  private setThinkingRuntime(setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean): void {
     this.runtimeThinking = setting;
     if (persist) {
       // settings.json thinkingEnabled 是 boolean：on→true / off→false / auto→删除字段（回退默认）。
@@ -1409,7 +1409,7 @@ export class App {
   /** 写单个旋钮字段到用户 settings.json（value=undefined 表示删除该字段，回退 auto）。 */
   private persistKnob(key: "effortLevel" | "thinkingEnabled", value: unknown): void {
     try {
-      const { patchSettingsFile } = require("./config/settings/index.ts");
+      const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", key, value);
     } catch (e) {
       getLogger().warn("KNOB", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
@@ -1451,7 +1451,7 @@ export class App {
    */
   private persistModelField(key: "model" | "fallbackModel", value: string | undefined): void {
     try {
-      const { patchSettingsFile } = require("./config/settings/index.ts");
+      const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", key, value);
     } catch (e) {
       getLogger().warn("MODEL", `持久化 ${key} 失败（不阻断）: ${(e as Error)?.message}`);
@@ -1489,7 +1489,7 @@ export class App {
       } catch { /* availability 未就绪不阻断切换 */ }
     }
     this.config.model = model;
-    const { resolveCurrentModelConfig } = require("./config/config.ts");
+    const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
     resolveCurrentModelConfig(this.config);
     if (this.providerRegistry) {
       this.providerRegistry.clearCache();
@@ -1512,7 +1512,7 @@ export class App {
     // 模型头上（切模型往往正是为了对比两个模型，这恰好是最需要归因准确的场景）。
     // refreshMetadata 只在已 primed 时生效，analytics 未初始化则是 no-op。
     try {
-      const { refreshMetadata } = require("./analytics/metadata.ts");
+      const { refreshMetadata } = require("@sid-code/core/analytics/metadata.ts");
       refreshMetadata({ model, provider: this.config.provider });
     } catch { /* analytics 未就绪不阻断切换 */ }
     // 档位归正：runtimeEffort 是跨模型共享的运行时态，可选档位却每模型不同。
@@ -1520,7 +1520,7 @@ export class App {
     // （在 claude 上调到 xhigh 再切 GLM 即可复现）。归正只在档位对新模型无效时发生，
     // 且映射到该档实际会被下发的那一档，使「显示 == 实发」。auto 不动。
     try {
-      const effMod = require("./llm/effort.ts");
+      const effMod = require("@sid-code/core/llm/effort.ts");
       const before = this.runtimeEffort;
       const after = effMod.reconcileEffortForModel(this.resolveEffortCap(), before);
       if (after !== before) {
@@ -1565,19 +1565,19 @@ export class App {
     //      而读取侧（token-estimator / openai.ts 自愈）已统一按真名读 —— 键不一致的话
     //      写进去的永远读不出来，缓存等于失效，且不报错。
     // probedModels 去重也按真名：同一真名的两个渠道别名只需探一次。
-    const { resolveWireModel } = require("./llm/wire-model.ts");
+    const { resolveWireModel } = require("@sid-code/core/llm/wire-model.ts");
     const wireModel: string = resolveWireModel(model, this.config.availableModels);
     if (this.probedModels.has(wireModel)) return;
     try {
-      const { lookupRegistry } = require("./llm/model-registry.ts");
+      const { lookupRegistry } = require("@sid-code/core/llm/model-registry.ts");
       if (lookupRegistry(wireModel)) return;
-      const { lookupCapability } = require("./llm/model-capabilities.ts");
+      const { lookupCapability } = require("@sid-code/core/llm/model-capabilities.ts");
       if (lookupCapability(wireModel)) return;
     } catch {
       return; // 判断本身失败就不冒险探，探针是纯优化项
     }
     this.probedModels.add(wireModel);
-    void import("./llm/openai.ts")
+    void import("@sid-code/core/llm/openai.ts")
       .then((m) => m.probeOpenAICompatModel(wireModel, baseURL, apiKey))
       .catch(() => { /* 纯优化项：探针失败不影响模型正常使用，下次真实请求走自愈兜底 */ });
   }
@@ -1647,7 +1647,7 @@ export class App {
     signal?: AbortSignal;
   }): Promise<FallbackDecision> {
     const log = getLogger();
-    const { askUserQuestion, hasAskUserQuestionHandler } = await import("./tool/ask-user-question-bridge.ts");
+    const { askUserQuestion, hasAskUserQuestionHandler } = await import("@sid-code/core/tool/ask-user-question-bridge.ts");
 
     // 把降级目标提升为主模型（根因A修复）：切换不再只对当次调用生效，而是写回
     // config.model，让后续轮次也用新模型，避免下一轮又用回失败的主模型撞回 terminal 拉黑。
@@ -1710,7 +1710,7 @@ export class App {
       // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
       // loop 无进展）不要把这段静默误判成流 hang 而 abort 掉弹窗（根因B修复，
       // 事故 20260721-142757）。务必用 withHumanInputWait 包裹以保证异常安全闭合。
-      const { withHumanInputWait } = require("./query/human-input-gate.ts");
+      const { withHumanInputWait } = require("@sid-code/core/query/human-input-gate.ts");
       result = await withHumanInputWait(() => askUserQuestion(
         {
           questions: [
@@ -1777,7 +1777,7 @@ export class App {
 
     if (persist) {
       try {
-        const { patchSettingsFile } = require("./config/settings/index.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         // 写整个 record（patchSettingsFile 只操作顶层字段，子键增删都随 map 走）。
         patchSettingsFile("userSettings", "subAgentModels", { ...map });
       } catch (e) {
@@ -1793,7 +1793,7 @@ export class App {
    */
   private pushKnobDisplay(): void {
     if (!this.tuiStateUpdater) return;
-    const eff = require("./llm/effort.ts");
+    const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     const effortEnv = eff.getEffortEnvOverride();
     this.tuiStateUpdater({
@@ -1819,7 +1819,7 @@ export class App {
    */
   private resetTodoTool(): void {
     const todoTool = this.toolRegistry.get("todo_write") as
-      | import("./tool/todo-write.ts").TodoWriteTool
+      | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
       | undefined;
     todoTool?.reset?.();
   }
@@ -1836,14 +1836,14 @@ export class App {
    *      接的是**会话累计轮次**而非消息内 turnCount：后者每条用户消息归零，相减无意义。
    */
   private wireHypothesisTools(
-    collector: import("./trace/collector.ts").TraceCollector | null,
+    collector: import("@sid-code/core/trace/collector.ts").TraceCollector | null,
   ): void {
     try {
       const regTool = this.toolRegistry.get("hypothesis_register") as
-        | import("./tool/hypothesis.ts").HypothesisRegisterTool
+        | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
         | undefined;
       const chTool = this.toolRegistry.get("hypothesis_challenge") as
-        | import("./tool/hypothesis.ts").HypothesisChallengeTool
+        | import("@sid-code/core/tool/hypothesis.ts").HypothesisChallengeTool
         | undefined;
       const turnProvider = () => this.sessionState.getAbsoluteTurn();
       regTool?.setTurnProvider(turnProvider);
@@ -1869,13 +1869,13 @@ export class App {
   /** /clear 时重置假设登记表（环节③） */
   private resetHypothesisLedger(): void {
     const regTool = this.toolRegistry.get("hypothesis_register") as
-      | import("./tool/hypothesis.ts").HypothesisRegisterTool
+      | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
       | undefined;
     regTool?.getLedger()?.reset();
     // 缺口2 层次1：交付物文本缓冲与登记表同寿——ledger 清空后旧交付物文本已无对照
     // 依据（refuted 假设都没了），留着只会白占内存。
     // 动态 import 与本文件对 query/* 的既有引用风格一致（避免给 app.ts 顶部再加静态依赖）。
-    import("./query/deliverable-text.ts")
+    import("@sid-code/core/query/deliverable-text.ts")
       .then((m) => m.resetDeliverableText(this.sessionState))
       .catch(() => { /* 纯清理，异常不阻断 /clear */ });
   }
@@ -1888,7 +1888,7 @@ export class App {
    */
   private clearInactiveBackgroundTasks(): void {
     try {
-      const { clearInactiveTasks } = require("./task/index.ts");
+      const { clearInactiveTasks } = require("@sid-code/core/task/index.ts");
       clearInactiveTasks();
     } catch { /* task 模块未加载或清理失败不影响 /clear 主流程 */ }
   }
@@ -2089,7 +2089,7 @@ export class App {
 
   /** 处理上下文溢出错误，委托给 auto-compact 模块 */
   private handleContextOverflow(err: any, currentMaxTokens: number): number | null {
-    const { handleContextOverflow: impl } = require("./query/auto-compact.ts");
+    const { handleContextOverflow: impl } = require("@sid-code/core/query/auto-compact.ts");
     return impl(err, currentMaxTokens, this.ctxMgr, this.toolRegistry.size());
   }
 
@@ -2121,7 +2121,7 @@ export class App {
    */
   private resolveSessionDir(): string | undefined {
     try {
-      const { ensureSessionTempDir } = require("./utils/temp-dir.ts");
+      const { ensureSessionTempDir } = require("@sid-code/shared/utils/temp-dir.ts");
       return ensureSessionTempDir(this.sessionIdForCompact, "compact");
     } catch {
       return undefined;
@@ -2130,20 +2130,20 @@ export class App {
 
   /** 自动压缩，委托给 auto-compact 模块（返回压缩结果，静默-9：truncated=有损降级） */
   private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
-    const { autoCompact: impl } = await import("./query/auto-compact.ts");
+    const { autoCompact: impl } = await import("@sid-code/core/query/auto-compact.ts");
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
     const toolSchemas = this.toolRegistry.activeDefinitions();
     // §12.3：摘要走低成本模型（subAgentModels.summarize），未配则跟主模型。
     const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
     // §5：延迟创建共享 cached microcompact 状态机
     if (!this.cachedMicrocompactState) {
-      const { createCachedMicrocompactState } = await import("./query/compact/cached-microcompact.ts");
+      const { createCachedMicrocompactState } = await import("@sid-code/core/query/compact/cached-microcompact.ts");
       this.cachedMicrocompactState = createCachedMicrocompactState();
     }
     // §4.1/§4.3：会话级落盘目录
     let sessionDir: string | undefined;
     try {
-      const { ensureSessionTempDir } = await import("./utils/temp-dir.ts");
+      const { ensureSessionTempDir } = await import("@sid-code/shared/utils/temp-dir.ts");
       sessionDir = ensureSessionTempDir(this.sessionIdForCompact, "compact");
     } catch {
       sessionDir = undefined;
@@ -2207,7 +2207,7 @@ export class App {
       return false;
     }
     try {
-      const { contextCollapse: impl } = await import("./query/compact/context-collapse.ts");
+      const { contextCollapse: impl } = await import("@sid-code/core/query/compact/context-collapse.ts");
       const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default || this.config.model;
       const result = await impl(this.ctxMgr.getMessages(), {
         targetRatio: 0.7,
@@ -2245,7 +2245,7 @@ export class App {
     getMemoryMonitor().start();
 
     // 设置 bash 工具配置（用于环境变量清理）
-    const { setBashToolConfig } = await import("./tool/bash.ts");
+    const { setBashToolConfig } = await import("@sid-code/core/tool/bash.ts");
     setBashToolConfig(this.config);
 
     // 加载插件 Hooks（原子注册到 HookSystem，失败不阻塞启动）
@@ -2268,7 +2268,7 @@ export class App {
     // 既从不询问用户，也拦不住任何东西（配置早生效了，且 TrustManager 的信任状态
     // 全仓无消费者）。别把门控逻辑搬回这里——doInit 太晚了。
     {
-      const { getPendingTrust } = await import("./permission/trust.ts");
+      const { getPendingTrust } = await import("@sid-code/core/permission/trust.ts");
       const pending = getPendingTrust();
       if (pending && pending.items.length > 0) {
         this.pendingTrustItems = pending.items;
@@ -2318,8 +2318,8 @@ export class App {
         //    否则模型完全不知道这些指令缺失（M4-4：对齐团队记忆抑制态的可见性做法，
         //    避免静默降级）。
         try {
-          const { consumeSkippedExternalImports } = await import("./config/rules.ts");
-          const { getClaudeMdExternalImportsApproved } = await import("./config/app-config.ts");
+          const { consumeSkippedExternalImports } = await import("@sid-code/core/config/rules.ts");
+          const { getClaudeMdExternalImportsApproved } = await import("@sid-code/core/config/app-config.ts");
           const skipped = consumeSkippedExternalImports();
           const approval = getClaudeMdExternalImportsApproved(process.cwd());
           const decided = approval !== undefined;
@@ -2367,7 +2367,7 @@ export class App {
       }
 
       // 构建系统提示词（委托给 init-helpers）
-      const { buildInitialSystemPrompt } = await import("./query/init-helpers.ts");
+      const { buildInitialSystemPrompt } = await import("@sid-code/core/query/init-helpers.ts");
       systemPrompt = await buildInitialSystemPrompt(
         this.config,
         this.toolRegistry.all(),
@@ -2388,7 +2388,7 @@ export class App {
     // 不再依赖 buildStructuredOutputPrompt + extractStructuredOutput（文本提取），
     // 而是注入 StructuredOutput 工具 + system prompt suffix，模型可先调其他工具再输出结构化结果。
     if (this.config.jsonSchema) {
-      const { StructuredOutputTool, structuredOutputPromptSuffix } = await import("./tool/structured-output-tool.ts");
+      const { StructuredOutputTool, structuredOutputPromptSuffix } = await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
@@ -2446,7 +2446,7 @@ export class App {
         // 深拷贝索引，两会话此后独立演进；失败只告警，退化为空回退历史。
         if (this.forkedFromSessionId) {
           try {
-            const { getCheckpointManager } = await import("./checkpoint/manager.ts");
+            const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
             const cpMgr = await getCheckpointManager(this.getLogicalSessionId(), this.config.checkpoint);
             await cpMgr.inheritFrom(this.forkedFromSessionId);
           } catch (e) {
@@ -2492,11 +2492,11 @@ export class App {
     // 另两处接线在 query loop 每轮收尾（② updateSessionMemory ③ recordToolCall），见 query/loop.ts。
     // 失败不阻断启动：sessionMemory 保持 null，autoCompact 回退 LLM 摘要。
     try {
-      const { initSessionMemory } = await import("./session-memory/session-memory.ts");
-      const { createSessionMemoryPermissions } = await import("./memory/extract/permissions.ts");
-      const { getSessionMemoryPath } = await import("./memory/paths.ts");
-      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
-      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
+      const { initSessionMemory } = await import("@sid-code/core/session-memory/session-memory.ts");
+      const { createSessionMemoryPermissions } = await import("@sid-code/core/memory/extract/permissions.ts");
+      const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
+      const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
       const sessionMemoryFile = getSessionMemoryPath(process.cwd());
       this.sessionMemory = initSessionMemory({
         getMainContext: () => ({
@@ -2552,21 +2552,21 @@ export class App {
       if (newRules) {
         this.applyProjectRules(newRules);
         // 3. 重建系统提示词
-        const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-        const { collectSkillListingEntries } = await import("./skill/listing.ts");
+        const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
+        const { collectSkillListingEntries } = await import("@sid-code/core/skill/listing.ts");
         // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
         let memorySystemPrompt: string | undefined;
         try {
-          const { MemoryStore } = await import("./memory/store.ts");
-          const { buildMemorySystemPrompt } = await import("./memory/prompt.ts");
+          const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+          const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
           const memStore = new MemoryStore(process.cwd());
           await memStore.load();
           const indexContent = await memStore.getIndexContent();
           let teamIndexContent: string | null = null;
           try {
-            const { isTeamMemoryEnabled } = await import("./memory/team/paths.ts");
+            const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
             if (isTeamMemoryEnabled(this.config.teamMemory)) {
-              const { getTeamIndexContent } = await import("./memory/team/store.ts");
+              const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
               teamIndexContent = await getTeamIndexContent(process.cwd());
             }
           } catch { /* 团队索引注入失败不阻断 */ }
@@ -2576,7 +2576,7 @@ export class App {
         // G12：CLAUDE.md 重建路径同样刷新输出风格
         let outputStyleContent: string | undefined;
         try {
-          const { getActiveOutputStyleContent } = await import("./config/output-styles.ts");
+          const { getActiveOutputStyleContent } = await import("@sid-code/core/config/output-styles.ts");
           outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
         } catch { /* 静默降级 */ }
         const newPrompt = buildSystemPrompt({
@@ -2614,7 +2614,7 @@ export class App {
     await this.startSkillHotReload();
 
     // 轨迹采集初始化（委托给 init-helpers）
-    const { initTraceCollector, initTelemetrySystem } = await import("./query/init-helpers.ts");
+    const { initTraceCollector, initTelemetrySystem } = await import("@sid-code/core/query/init-helpers.ts");
     const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
     this.traceCollector = traceCollectorInstance;
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
@@ -2645,7 +2645,7 @@ export class App {
       // 子代理的 retry / fallback 事件（带 agentId）才真正落到 events.jsonl ——
       // 否则"哪个子代理重试了几次"在生产里依然测不出来，只是多了个没人读的字段。
       try {
-        const { setRetryTelemetryObserver } = require("./llm/retry-telemetry.ts");
+        const { setRetryTelemetryObserver } = require("@sid-code/core/llm/retry-telemetry.ts");
         setRetryTelemetryObserver((event: Record<string, unknown>) => {
           traceCollectorInstance.writeRetryTelemetry(event);
         });
@@ -2653,7 +2653,7 @@ export class App {
       // 阶段 2.5：网关定价采集观察者 → 一条 GatewayPricingSync trace 事件。
       // 观察者模式（对齐 setSideCostObserver）避免 gateway-pricing.ts 反向依赖 collector。
       try {
-        const { setGatewayPricingObserver } = require("./llm/gateway-pricing.ts");
+        const { setGatewayPricingObserver } = require("@sid-code/core/llm/gateway-pricing.ts");
         setGatewayPricingObserver((obs: Record<string, unknown>) => {
           traceCollectorInstance.writeGatewayPricingEvent(obs);
         });
@@ -2735,7 +2735,7 @@ export class App {
         // AfterModelRaw.usage 重算 cost 并补写 traj。SessionEnd 未触发时 traj 可能缺失或 cost=0，
         // 这里据最接近 provider 的原始 usage 做 best-effort 补偿（幂等：补写后打标记，下次跳过）。
         try {
-          const { backfillTrajCost } = await import("./trace/cost-recompute.ts");
+          const { backfillTrajCost } = await import("@sid-code/core/trace/cost-recompute.ts");
           const sessionsRoot = join(sidPaths.trajectories(), "sessions");
           let backfilledCount = 0;
           for (const s of stale) {
@@ -2756,7 +2756,7 @@ export class App {
 
     // 启动耗时事件（spec 17 §3.1 零依赖事件 API 埋点示例）
     try {
-      const { logEvent } = await import("./analytics/index.ts");
+      const { logEvent } = await import("@sid-code/core/analytics/index.ts");
       logEvent("startup_timing", { duration_ms: Date.now() - initStartMs });
     } catch { /* 遥测旁路，绝不影响启动 */ }
   }
@@ -2774,11 +2774,11 @@ export class App {
   private async wireTeamMemorySync(): Promise<void> {
     const log = getLogger();
     try {
-      const { setTeamMemoryOptions } = await import("./memory/team/runtime.ts");
+      const { setTeamMemoryOptions } = await import("@sid-code/core/memory/team/runtime.ts");
       setTeamMemoryOptions(this.config.teamMemory);
       if (this.config.teamMemory?.enabled) {
         const { startTeamMemoryWatcher, stopTeamMemoryWatcher, setTeamMemorySuppressionListener } =
-          await import("./memory/team/watcher.ts");
+          await import("@sid-code/core/memory/team/watcher.ts");
         // 抑制态一次性提示（比 claude-code 多做的一点）：同步进入永久抑制态（配置态
         // 错误 / 共享目录不可用）时，claude-code 纯静默；我们经主上下文注入一条
         // system-reminder，让模型/用户知道「团队记忆同步已暂停」，避免以为仍在正常同步。
@@ -2796,11 +2796,11 @@ export class App {
                 type: "text",
                 text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
               }],
-            } as import("./llm/types.ts").Message);
+            } as import("@sid-code/core/llm/types.ts").Message);
           } catch { /* 通知失败不阻断同步 */ }
         });
         await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
-        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
         registerCleanup(() => stopTeamMemoryWatcher());
         log.info("APP", "团队记忆同步已启动（共享目录模型）");
       }
@@ -2822,11 +2822,11 @@ export class App {
   private async wireExtractMemories(): Promise<void> {
     const log = getLogger();
     try {
-      const { initExtractMemories } = await import("./memory/extract/extractor.ts");
-      const { createExtractPermissions } = await import("./memory/extract/permissions.ts");
-      const { ensureAutoMemPath, isAutoMemoryEnabled } = await import("./memory/paths.ts");
-      const { createStatefulTools } = await import("./tool/stateful-tools.ts");
-      const { FileReadTracker } = await import("./tool/file-read-tracker.ts");
+      const { initExtractMemories } = await import("@sid-code/core/memory/extract/extractor.ts");
+      const { createExtractPermissions } = await import("@sid-code/core/memory/extract/permissions.ts");
+      const { ensureAutoMemPath, isAutoMemoryEnabled } = await import("@sid-code/core/memory/paths.ts");
+      const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
 
       if (!isAutoMemoryEnabled(this.config.autoMemory)) {
         // 断线：清空句柄并同步到 queryEngine，主循环收尾不再触发提取。
@@ -2855,7 +2855,7 @@ export class App {
         teamMemoryEnabled: !!this.config.teamMemory?.enabled,
         // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
         appendSystemMessage: (msg) => {
-          try { this.ctxMgr.addMessage(msg as import("./llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
+          try { this.ctxMgr.addMessage(msg as import("@sid-code/core/llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
         },
       });
       this.queryEngine.setExtractMemories(this.extractMemories);
@@ -2864,7 +2864,7 @@ export class App {
       if (!this.extractMemoriesCleanupRegistered) {
         this.extractMemoriesCleanupRegistered = true;
         try {
-          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+          const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
           registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
         } catch { /* drain 注册失败不阻断启动 */ }
       }
@@ -2876,7 +2876,7 @@ export class App {
       // 仅首次接线时启动（避免运行时 toggle 重复 recordSession/registerCleanup）。
       if (this.config.autoDream && !this.autoDream) {
         try {
-          const { initAutoDream } = await import("./memory/dream/dream.ts");
+          const { initAutoDream } = await import("@sid-code/core/memory/dream/dream.ts");
           this.autoDream = initAutoDream({
             getMainContext: () => ({
               systemPrompt: this.ctxMgr.getSystemPrompt(),
@@ -2891,7 +2891,7 @@ export class App {
             config: { enabled: true },
           });
           this.autoDream.recordSession();
-          const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+          const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
           registerCleanup(async () => {
             // 会话关闭时尝试触发一次 dream，并 drain 进行中的巩固
             await this.autoDream?.maybeDream();
@@ -2921,7 +2921,7 @@ export class App {
     this.config.autoMemory = enabled;
     if (persist) {
       try {
-        const { patchSettingsFile } = await import("./config/settings/settings.ts");
+        const { patchSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
         patchSettingsFile("userSettings", "autoMemory", enabled);
       } catch (e) {
         log.warn("APP", `写入 autoMemory settings 失败: ${(e as Error)?.message}`);
@@ -2971,7 +2971,7 @@ export class App {
           type: "text",
           text: `<system-reminder>项目 CLAUDE.md 通过 @import 引用了 ${skipped.length} 个项目根之外的文件，因外部导入未被批准而已跳过，其内容未加载到上下文：\n${list}\n若这些外部指令是需要的，可运行 /memory external allow 批准后重载；否则可忽略本提示。</system-reminder>`,
         }],
-      } as import("./llm/types.ts").Message);
+      } as import("@sid-code/core/llm/types.ts").Message);
     } catch { /* 注入失败不阻断启动 */ }
   }
 
@@ -2981,7 +2981,7 @@ export class App {
    */
   getExternalImportsState(): { approved: boolean | undefined } {
     try {
-      const { getClaudeMdExternalImportsApproved } = require("./config/app-config.ts");
+      const { getClaudeMdExternalImportsApproved } = require("@sid-code/core/config/app-config.ts");
       return { approved: getClaudeMdExternalImportsApproved(process.cwd()) };
     } catch {
       return { approved: undefined };
@@ -2997,7 +2997,7 @@ export class App {
   async applyExternalImportDecision(approved: boolean): Promise<void> {
     const log = getLogger();
     try {
-      const { setClaudeMdExternalImportsApproved } = await import("./config/app-config.ts");
+      const { setClaudeMdExternalImportsApproved } = await import("@sid-code/core/config/app-config.ts");
       setClaudeMdExternalImportsApproved(process.cwd(), approved);
     } catch (e) {
       log.warn("APP", `持久化外部导入批准位失败: ${(e as Error)?.message}`);
@@ -3005,15 +3005,15 @@ export class App {
     // 清空待审批快照 + 收集器
     this.pendingExternalImportPaths = [];
     try {
-      const { consumeSkippedExternalImports } = await import("./config/rules.ts");
+      const { consumeSkippedExternalImports } = await import("@sid-code/core/config/rules.ts");
       consumeSkippedExternalImports();
     } catch { /* 忽略 */ }
 
     if (approved) {
       // 重载规则：这次 externalApproved=true，外部导入会展开，随后重建系统提示词。
       try {
-        const { loadAllCLAUDEmd } = await import("./config/rules.ts");
-        const { clearPromptCache } = await import("./config/system-prompt.ts");
+        const { loadAllCLAUDEmd } = await import("@sid-code/core/config/rules.ts");
+        const { clearPromptCache } = await import("@sid-code/core/config/system-prompt.ts");
         // 清 prompt 缓存，确保重新读盘 + 重新展开导入。
         try { clearPromptCache(); } catch { /* 忽略 */ }
         const newRules = await loadAllCLAUDEmd(process.cwd());
@@ -3050,7 +3050,7 @@ export class App {
     // 清空快照 + 模块级 pending（无论信任与否，本次询问已结束）
     this.pendingTrustItems = [];
     try {
-      const { clearPendingTrust } = await import("./permission/trust.ts");
+      const { clearPendingTrust } = await import("@sid-code/core/permission/trust.ts");
       clearPendingTrust();
     } catch { /* 忽略 */ }
 
@@ -3060,9 +3060,9 @@ export class App {
     }
 
     try {
-      const { TrustManager } = await import("./permission/trust.ts");
+      const { TrustManager } = await import("@sid-code/core/permission/trust.ts");
       await new TrustManager(process.cwd()).trust();
-      const { markTrustDialogAccepted } = await import("./config/app-config.ts");
+      const { markTrustDialogAccepted } = await import("@sid-code/core/config/app-config.ts");
       markTrustDialogAccepted(process.cwd());
       log.info(
         "APP",
@@ -3130,21 +3130,21 @@ export class App {
   private async rebuildSystemPrompt(): Promise<void> {
     const log = getLogger();
     try {
-      const { buildSystemPrompt } = await import("./config/system-prompt.ts");
-      const { collectSkillListingEntries } = await import("./skill/listing.ts");
+      const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
+      const { collectSkillListingEntries } = await import("@sid-code/core/skill/listing.ts");
       // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
       let memorySystemPrompt: string | undefined;
       try {
-        const { MemoryStore } = await import("./memory/store.ts");
-        const { buildMemorySystemPrompt } = await import("./memory/prompt.ts");
+        const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+        const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
         const memStore = new MemoryStore(process.cwd());
         await memStore.load();
         const indexContent = await memStore.getIndexContent();
         let teamIndexContent: string | null = null;
         try {
-          const { isTeamMemoryEnabled } = await import("./memory/team/paths.ts");
+          const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
           if (isTeamMemoryEnabled(this.config.teamMemory)) {
-            const { getTeamIndexContent } = await import("./memory/team/store.ts");
+            const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
             teamIndexContent = await getTeamIndexContent(process.cwd());
           }
         } catch { /* 团队索引注入失败不阻断 */ }
@@ -3155,7 +3155,7 @@ export class App {
       // G12：重建时刷新输出风格（用户可能改了 settings.outputStyle 或风格文件）
       let outputStyleContent: string | undefined;
       try {
-        const { getActiveOutputStyleContent } = await import("./config/output-styles.ts");
+        const { getActiveOutputStyleContent } = await import("@sid-code/core/config/output-styles.ts");
         outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
       } catch { /* 静默降级 */ }
       const newPrompt = buildSystemPrompt({
@@ -3208,9 +3208,9 @@ export class App {
     }
 
     try {
-      const { SkillChangeDetector } = await import("./skill/change-detector.ts");
-      const { sidPaths } = await import("./config/paths.ts");
-      const { getClaudeHome } = await import("./config/paths.ts");
+      const { SkillChangeDetector } = await import("@sid-code/core/skill/change-detector.ts");
+      const { sidPaths } = await import("@sid-code/core/config/paths.ts");
+      const { getClaudeHome } = await import("@sid-code/core/config/paths.ts");
       const { join } = await import("node:path");
 
       const cwd = process.cwd();
@@ -3232,7 +3232,7 @@ export class App {
       this.skillChangeDetector = detector;
 
       if (detector.isWatching()) {
-        const { registerCleanup } = await import("./utils/graceful-shutdown.ts");
+        const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
         registerCleanup(() => {
           this.skillChangeDetector?.stop();
         });
@@ -3312,7 +3312,7 @@ export class App {
     await this.rebuildSystemPrompt();
     if (persist) {
       try {
-        const { patchSettingsFile } = require("./config/settings/index.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "language", lang);
       } catch (e) {
         log.warn("LANG", `持久化 language 失败（不阻断）: ${(e as Error)?.message}`);
@@ -3387,7 +3387,7 @@ export class App {
   private async applyProjectMemory(memory: Record<string, string>): Promise<void> {
     const log = getLogger();
     try {
-      const { MemoryStore } = await import("./memory/store.ts");
+      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
       const memStore = new MemoryStore(process.cwd());
       await memStore.load();
       for (const [key, value] of Object.entries(memory)) {
@@ -3403,12 +3403,12 @@ export class App {
    * 恢复会话：从 SessionData 恢复消息历史
    * 如果消息太多，注入摘要而非完整历史
    */
-  async restoreSession(sessionData: import("./session/store.ts").SessionData): Promise<void> {
+  async restoreSession(sessionData: import("@sid-code/core/session/store.ts").SessionData): Promise<void> {
     const log = getLogger();
-    const { SessionStore } = await import("./session/store.ts");
+    const { SessionStore } = await import("@sid-code/core/session/store.ts");
     // 安全尾部切片：保证切片起点不落在游离 tool_result 上（Session 0427d1bd 400 根因）。
     // slice(-N) 固定数量截断会切断 tool_use/tool_result 配对，留下游离 tool_result → 400。
-    const { safeSliceTail } = await import("./agent/message-invariants.ts");
+    const { safeSliceTail } = await import("@sid-code/core/agent/message-invariants.ts");
 
     log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
 
@@ -3420,7 +3420,7 @@ export class App {
     try {
       const sessCwd = sessionData.cwd;
       if (sessCwd) {
-        const { resolveProjectRoot } = await import("./memory/paths.ts");
+        const { resolveProjectRoot } = await import("@sid-code/core/memory/paths.ts");
         const sessRoot = resolveProjectRoot(sessCwd);
         const curRoot = resolveProjectRoot(process.cwd());
         if (sessRoot !== curRoot) {
@@ -3461,7 +3461,7 @@ export class App {
     // 边界：读到清除哨兵（/clear 落的）跳过恢复，不复活 clear 前的旧目标。
     if (sessionData.metadata?.["goal_state"] && sessionData.metadata["goal_state"] !== GOAL_STATE_CLEARED_MARKER) {
       try {
-        const { deserializeGoalState } = await import("./goal/state.ts");
+        const { deserializeGoalState } = await import("@sid-code/core/goal/state.ts");
         const restored = deserializeGoalState(sessionData.metadata["goal_state"] as string);
         // 仅恢复非终态目标（complete/impossible 不恢复，已无意义）
         if (restored.status !== "complete" && restored.status !== "impossible") {
@@ -3483,11 +3483,11 @@ export class App {
       try {
         const setting = sessionData.metadata["agent_setting"] as {
           model?: string;
-          effortLevel?: import("./llm/effort.ts").EffortSetting | null;
-          thinking?: import("./llm/effort.ts").ThinkingSetting | null;
+          effortLevel?: import("@sid-code/core/llm/effort.ts").EffortSetting | null;
+          thinking?: import("@sid-code/core/llm/effort.ts").ThinkingSetting | null;
           permissionMode?: string | null;
         };
-        const { getEffortEnvOverride, getThinkingEnvOverride } = await import("./llm/effort.ts");
+        const { getEffortEnvOverride, getThinkingEnvOverride } = await import("@sid-code/core/llm/effort.ts");
 
         // 模型：仅当当前 config.model 与快照不同才切换。不经过 setModel 回调（provider 尚未在
         // TUI 上下文注入），直接改 config + resolveCurrentModelConfig，让 doInit 采用。
@@ -3495,7 +3495,7 @@ export class App {
           const prev = this.config.model;
           this.config.model = setting.model;
           try {
-            const { resolveCurrentModelConfig } = require("./config/config.ts");
+            const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
             resolveCurrentModelConfig(this.config);
             const est = new TokenEstimator();
             // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
@@ -3515,7 +3515,7 @@ export class App {
           // 当前模型无效（如快照记于 claude 时段的 xhigh、现模型是 GLM），恢复后就会复现
           // 「状态栏显示 xhigh、实际下发 max」的矛盾——入口不同，症状与换模型时一致。
           try {
-            const { reconcileEffortForModel } = await import("./llm/effort.ts");
+            const { reconcileEffortForModel } = await import("@sid-code/core/llm/effort.ts");
             const fixed = reconcileEffortForModel(this.resolveEffortCap(), this.runtimeEffort);
             if (fixed !== this.runtimeEffort) {
               log.info("APP", `恢复的档位 ${this.runtimeEffort} 对模型 ${this.config.model} 无效，已归正为 ${fixed}`);
@@ -3551,7 +3551,7 @@ export class App {
     if (sessionData.metadata?.["usage_stats"]) {
       try {
         this.sessionState.hydrateUsage(
-          sessionData.metadata["usage_stats"] as import("./session/state.ts").UsageSnapshot,
+          sessionData.metadata["usage_stats"] as import("@sid-code/core/session/state.ts").UsageSnapshot,
         );
         log.info(
           "APP",
@@ -3606,7 +3606,7 @@ export class App {
     if (sessionData.metadata?.["todo_state"]) {
       try {
         const todoTool = this.toolRegistry.get("todo_write") as
-          | import("./tool/todo-write.ts").TodoWriteTool
+          | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
           | undefined;
         if (todoTool) {
           todoTool.hydrate(sessionData.metadata["todo_state"] as { todos?: unknown });
@@ -3625,7 +3625,7 @@ export class App {
     if (sessionData.metadata?.["hypothesis_ledger"]) {
       try {
         const regTool = this.toolRegistry.get("hypothesis_register") as
-          | import("./tool/hypothesis.ts").HypothesisRegisterTool
+          | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
           | undefined;
         const ledger = regTool?.getLedger();
         if (ledger) {
@@ -3643,7 +3643,7 @@ export class App {
     // 注意用 sessionData.id（被恢复会话）——sidechain 文件名按被恢复会话前缀归属。
     let sidechainNote: string | undefined;
     try {
-      const { scanUnfinishedSidechains } = await import("./session/sidechain.ts");
+      const { scanUnfinishedSidechains } = await import("@sid-code/core/session/sidechain.ts");
       const unfinished = scanUnfinishedSidechains(sessionData.id);
       if (unfinished.length > 0) {
         const lines = unfinished
@@ -3662,7 +3662,7 @@ export class App {
     // 跨会话续做时，这是抗压缩、抗清理的外部进度记忆，恢复时一并回注。失败不阻断。
     let progressNote: string | undefined;
     try {
-      const { loadProgressMarkdown } = await import("./query/work-log.ts");
+      const { loadProgressMarkdown } = await import("@sid-code/core/query/work-log.ts");
       progressNote = loadProgressMarkdown(sessionData.id) ?? undefined;
     } catch { /* 进度回注是增强，失败不阻断恢复 */ }
 
@@ -3685,7 +3685,7 @@ export class App {
     //         历史末尾让模型直接作答（用户自己的提问就是最强的续接信号，无需再叠加标记）；
     //       · none → 通用续接标记 buildResumeMarker。
     // ─────────────────────────────────────────────────────────────
-    const { deserializeMessagesWithInterruptDetection } = await import("./sdk/session-recovery.ts");
+    const { deserializeMessagesWithInterruptDetection } = await import("@sid-code/core/sdk/session-recovery.ts");
     const { messages: cleanedMessages, turnInterruptionState } =
       deserializeMessagesWithInterruptDetection(sessionData.messages);
     if (cleanedMessages.length !== sessionData.messages.length) {
@@ -3703,7 +3703,7 @@ export class App {
       turnInterruptionState.kind === "interrupted_prompt" ? turnInterruptionState.message : undefined;
 
     /** 依据中断态构造续接标记消息（interrupted_turn 用专用工具标记，其余用通用标记）。 */
-    const buildContinuationMarker = (): import("./llm/types.ts").Message => {
+    const buildContinuationMarker = (): import("@sid-code/core/llm/types.ts").Message => {
       const text =
         turnInterruptionState.kind === "interrupted_turn"
           ? SessionStore.buildToolInterruptMarker(turnInterruptionState.lastToolNames, combinedNote)
@@ -3800,18 +3800,18 @@ export class App {
     onThinking?: (text: string) => void,
     turnAbortController?: AbortController,
   ): Promise<AccumulatedResponse> {
-    const { processStream: processStreamImpl } = await import("./query/stream-processor.ts");
+    const { processStream: processStreamImpl } = await import("@sid-code/core/query/stream-processor.ts");
 
     // GAP-01：流式工具执行——模型仍在输出后续内容时，就对已完整到达的**并发安全**工具抢跑，
     // 使工具执行与模型输出时间重叠。默认关闭（SID_ENABLE_STREAMING_TOOL_EXEC=1 开启）。
     // 只抢跑并发安全工具：写类工具依赖执行顺序/checkpoint 快照/plan-mode 处理，仍留给 executeTools
     // 的批量编排统一处理（此处 precomputed 只对读类命中，写类不进缓存 → 走正常路径，零行为变化）。
-    let onToolUseComplete: ((block: import("./llm/types.ts").ToolUseBlock) => void) | undefined;
-    const { isStreamingToolExecEnabled } = await import("./query/streaming-tool-executor.ts");
+    let onToolUseComplete: ((block: import("@sid-code/core/llm/types.ts").ToolUseBlock) => void) | undefined;
+    const { isStreamingToolExecEnabled } = await import("@sid-code/core/query/streaming-tool-executor.ts");
     if (isStreamingToolExecEnabled()) {
-      const { executeSingleTool, resolveToolPermission } = await import("./query/tool-executor.ts");
+      const { executeSingleTool, resolveToolPermission } = await import("@sid-code/core/query/tool-executor.ts");
       const deps = this.buildToolExecutorDeps();
-      const cache = new Map<string, import("./query/tool-executor.ts").SingleToolOutcome>();
+      const cache = new Map<string, import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome>();
       this._streamingToolResults = cache;
       const inflight = new Set<string>();
       onToolUseComplete = (block) => {
@@ -3835,7 +3835,7 @@ export class App {
             // 弹窗同型，事故 20260721-142757）。用 withHumanInputWait 只包权限确认这一步（不包
             // 工具执行），期间置闸门通知所有看门狗剔除等待时段。异常安全：withHumanInputWait
             // 内部 finally 保证闸门闭合。
-            const { withHumanInputWait } = require("./query/human-input-gate.ts");
+            const { withHumanInputWait } = require("@sid-code/core/query/human-input-gate.ts");
             const reject = await withHumanInputWait(() => resolveToolPermission(block, tool, deps));
             if (reject) return; // 权限未过 → 不抢跑，交回批量路径
             const outcome = await executeSingleTool(block, tool, deps);
@@ -3909,7 +3909,7 @@ export class App {
   /** 请求用户确认（TUI 回调 或 headless 自动决策） */
   private async requestUserConfirmation(
     description: string,
-    req?: import("./permission/types.ts").PermissionRequest,
+    req?: import("@sid-code/core/permission/types.ts").PermissionRequest,
     toolName?: string,
     toolInput?: unknown,
     signal?: AbortSignal,
@@ -3946,7 +3946,7 @@ export class App {
    * 写盘后热更新当前 checker（addSessionRule 立即生效 + persistRule 落盘下次会话生效）。
    */
   private async persistBashAllowRule(
-    req: import("./permission/types.ts").PermissionRequest | undefined,
+    req: import("@sid-code/core/permission/types.ts").PermissionRequest | undefined,
     toolInput: unknown,
   ): Promise<void> {
     const log = getLogger();
@@ -3977,7 +3977,7 @@ export class App {
       }
 
       // ② 持久化到 project settings：下次会话仍生效
-      const { persistRule } = await import("./permission/rule-persistence.ts");
+      const { persistRule } = await import("@sid-code/core/permission/rule-persistence.ts");
       await persistRule("project", "allow", rule, process.cwd());
       this.statusNotifier?.("perm_persist", `已持久化允许规则: ${rule}`, 3000);
       log.info("PERMISSION", `Bash always(持久) → 写入 project settings: ${rule}`);
@@ -4013,7 +4013,7 @@ export class App {
 
   /** 执行工具调用，委托给 tool-executor */
   async executeTools(content: ContentBlock[]): Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }> {
-    const { executeTools: executeToolsImpl } = await import("./query/tool-executor.ts");
+    const { executeTools: executeToolsImpl } = await import("@sid-code/core/query/tool-executor.ts");
     return executeToolsImpl(content, this.buildToolExecutorDeps());
   }
 
@@ -4022,7 +4022,7 @@ export class App {
    * 提取为独立方法，使流式工具执行器（StreamingToolExecutor）能用**完全一致**的
    * 权限/hook/校验/执行/序列化管线抢跑并发安全工具，避免两套实现漂移。
    */
-  private buildToolExecutorDeps(): import("./query/tool-executor.ts").ToolExecutorDeps {
+  private buildToolExecutorDeps(): import("@sid-code/core/query/tool-executor.ts").ToolExecutorDeps {
     return {
       config: this.config,
       toolRegistry: this.toolRegistry,
@@ -4167,7 +4167,7 @@ export class App {
       // 现在追加 isExecuting()：approve 后进入执行阶段标志，按计划执行期间失败也能触发。
       const inPlanContext = this.planManager.isPlanning() || this.planManager.isExecuting();
       if (result && result.type === "tool_result" && result.is_error && inPlanContext) {
-        const { getSharedRecoveryHook, classifyRecoveryTrigger } = await import("./plan/recovery.ts");
+        const { getSharedRecoveryHook, classifyRecoveryTrigger } = await import("@sid-code/core/plan/recovery.ts");
         const hook = getSharedRecoveryHook();
         const planFilePath = this.planManager.getPlanFilePath() || "";
         // 执行阶段 plan 文件路径仍保留（approve/deactivate 不清空，仅 forceExit/下次 enter 清）。
@@ -4257,7 +4257,7 @@ export class App {
     const inPlanMode = this.planManager?.isPlanning() === true
       || this.config.permissionMode === "plan";
     if (!inPlanMode) return null;
-    const { buildPlanModeReminder } = await import("./plan/prompt.ts");
+    const { buildPlanModeReminder } = await import("@sid-code/core/plan/prompt.ts");
     // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
     return buildPlanModeReminder(this.planManager?.nextReminderIsFull() ?? true);
   }
@@ -4322,7 +4322,7 @@ export class App {
         // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
         // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
         // 用 <system-reminder> 包裹，阻止 TUI 渲染（isInternalOnlyText 识别）
-        const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
+        const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
         return [{
           type: "text",
           text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
@@ -4363,7 +4363,7 @@ export class App {
       this.planManager.approve();
       await this.deactivatePlanMode();
       log.info("PLAN", "非交互模式，自动批准计划");
-      const { buildPlanApprovedMessage } = await import("./plan/prompt.ts");
+      const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
       return [{
         type: "text",
         text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
@@ -4426,7 +4426,7 @@ export class App {
    * @param settled 该工具的 tool_result 块 + 它自身的真实耗时
    */
   private liveToolSettledSink:
-    | ((toolUseId: string, settled: { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }) => void)
+    | ((toolUseId: string, settled: { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number }) => void)
     | null = null;
 
   /**
@@ -4440,7 +4440,7 @@ export class App {
    * TUI 未就绪（无头模式 / 子代理内部）时为 null，安全跳过——此时行为与改造前一致。
    */
   private liveAgentProgressSink:
-    | ((toolUseId: string, event: import("./agent/progress.ts").AgentProgressEvent) => void)
+    | ((toolUseId: string, event: import("@sid-code/core/agent/progress.ts").AgentProgressEvent) => void)
     | null = null;
 
   /**
@@ -4467,7 +4467,7 @@ export class App {
       return;
     }
 
-    const { getNextKeyboardPermissionMode, getModeName } = require("./permission/mode.ts");
+    const { getNextKeyboardPermissionMode, getModeName } = require("@sid-code/core/permission/mode.ts");
     const ctx = {
       mode: this.config.permissionMode,
       prePlanMode: this._originalPermissionMode || undefined,
@@ -4814,7 +4814,7 @@ export class App {
         return;
       }
       if (!this.goalState) return;
-      const { serializeGoalState } = require("./goal/state.ts");
+      const { serializeGoalState } = require("@sid-code/core/goal/state.ts");
       this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
     } catch { /* 持久化失败不阻断 */ }
   }
@@ -4872,7 +4872,7 @@ export class App {
     if (!this.sessionStore) return;
     try {
       const todoTool = this.toolRegistry.get("todo_write") as
-        | import("./tool/todo-write.ts").TodoWriteTool
+        | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
         | undefined;
       if (!todoTool) return;
       this.sessionStore.appendMetadata("todo_state", todoTool.serialize());
@@ -4893,7 +4893,7 @@ export class App {
     if (!this.sessionStore) return;
     try {
       const regTool = this.toolRegistry.get("hypothesis_register") as
-        | import("./tool/hypothesis.ts").HypothesisRegisterTool
+        | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
         | undefined;
       const ledger = regTool?.getLedger();
       if (!ledger) return;
@@ -4968,7 +4968,7 @@ export class App {
    * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
    * - 只存聚合数字，绝不含消息内容——隐私安全。
    */
-  private buildLedgerEntry(): import("./telemetry/usage-ledger.ts").UsageLedgerEntry | null {
+  private buildLedgerEntry(): import("@sid-code/core/telemetry/usage-ledger.ts").UsageLedgerEntry | null {
     const n = this.sessionState.getNormalizedCacheUsage();
     if (n.promptTotal <= 0) return null; // 空会话不落行
     const models = Object.entries(this.sessionState.modelUsage);
@@ -5131,7 +5131,7 @@ export class App {
     // 漏掉这里会让 `-p "读一下 https://x.com/doc"` 的 URL 被判成"模型自造"，
     // 而无头模式下默认 ask 等于 deny —— 正常用法会直接失败。
     try {
-      const { recordUserMentionedUrls } = await import("./tool/url-provenance.ts");
+      const { recordUserMentionedUrls } = await import("@sid-code/core/tool/url-provenance.ts");
       recordUserMentionedUrls(input);
     } catch { /* 不阻断 */ }
 
@@ -5162,7 +5162,7 @@ export class App {
     // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
     // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 说明）。
     // 0 时必须**完全不挂定时器**——setTimeout(fn, 0) 会立刻 fire，等于开局就 abort。
-    const { resolveLoopTimeouts: resolveHeadlessTimeouts } = require("./config/network-profile.ts");
+    const { resolveLoopTimeouts: resolveHeadlessTimeouts } = require("@sid-code/core/config/network-profile.ts");
     const sessionTimeoutMs = resolveHeadlessTimeouts({ network: this.config.network }).maxSessionDurationMs;
     let sessionTimedOut = false;
     const sessionTimer = sessionTimeoutMs > 0
@@ -5290,7 +5290,7 @@ export class App {
     // headless 模式强制退出：init() 启动的 watcher/interval/telemetry 不会自行排空事件循环
     // 出错时 exit code 非 0，方便 wrapper 区分；trajectory 已在上面正确落盘
     // 优雅关闭：刷新遥测/事件缓冲区（500ms 硬超时）后再强制退出（spec 17 §3.4）
-    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
     await runShutdownSequence();
     process.exit(runError ? 1 : 0);
   }
@@ -5305,7 +5305,7 @@ export class App {
   async runBridge(options: { url: string; authToken?: string; permissionTimeoutMs?: number }): Promise<void> {
     await this.init();
 
-    const { BridgeRunner } = await import("./bridge/bridge-runner.ts");
+    const { BridgeRunner } = await import("@sid-code/core/bridge/bridge-runner.ts");
     const log = getLogger();
 
     const runner = new BridgeRunner(
@@ -5339,7 +5339,7 @@ export class App {
       await runner.stop().catch(() => {});
       this.abortController = null;
       this.mcpManager?.closeAll();
-      const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+      const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
       await runShutdownSequence();
     }
   }
@@ -5403,7 +5403,7 @@ export class App {
 
     // 不确定-1②：SDK stream-json 路径同样补齐会话级硬顶（与 TUI/runHeadless 同源配置）。
     // 2026-08-04：默认值已改为 0（关闭）；0 时不挂定时器，否则 setTimeout(fn, 0) 立刻 fire。
-    const { resolveLoopTimeouts: resolveSdkTimeouts } = require("./config/network-profile.ts");
+    const { resolveLoopTimeouts: resolveSdkTimeouts } = require("@sid-code/core/config/network-profile.ts");
     const sdkSessionTimeoutMs = resolveSdkTimeouts({ network: this.config.network }).maxSessionDurationMs;
     let sdkSessionTimedOut = false;
     const sdkSessionTimer = sdkSessionTimeoutMs > 0
@@ -5478,7 +5478,7 @@ export class App {
     getMemoryMonitor().stop();
     getLogger().close();
 
-    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
     await runShutdownSequence();
     process.exit(runError ? 1 : 0);
   }
@@ -5589,7 +5589,7 @@ export class App {
       // 恢复的清单首屏即出现在 TodoPanel(不再写死空数组)。新会话时工具为空、返回 []，行为不变。
       todos: (() => {
         const todoTool = this.toolRegistry.get("todo_write") as
-          | import("./tool/todo-write.ts").TodoWriteTool
+          | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
           | undefined;
         return todoTool?.getTodos() ?? [];
       })(),
@@ -5667,7 +5667,7 @@ export class App {
             });
           }
           const raw = resp.content
-            .filter((b): b is import("./llm/types.ts").TextBlock => b.type === "text")
+            .filter((b): b is import("@sid-code/core/llm/types.ts").TextBlock => b.type === "text")
             .map((b) => b.text)
             .join("")
             .trim();
@@ -5839,7 +5839,7 @@ export class App {
     // 每轮结束时读取最新状态：warning/exceeded 用 sticky 状态消息显示，回到 ok 则清除。
     const syncRateLimitStatus = async (): Promise<void> => {
       try {
-        const { getCurrentRateLimitStatus, formatRateLimitWarning, resetRateLimitStatus } = await import("./api/rate-limit.ts");
+        const { getCurrentRateLimitStatus, formatRateLimitWarning, resetRateLimitStatus } = await import("@sid-code/core/api/rate-limit.ts");
         let status = getCurrentRateLimitStatus();
         // 陈旧警告自清：配额重置时间（resetsAt）已过 → 旧的 warning/exceeded 已失效
         // （服务端配额窗口已滚动），强制重置回 ok，避免限流提示一直 sticky 误导用户。
@@ -5906,7 +5906,7 @@ export class App {
     //   - tool_result 正式入 ctxMgr 后，messagesToHistoryItems 会用**同一个**
     //     buildCompletedToolCall 重建出完全一致的卡片，侧信道条目随轮末 clear 退场——
     //     所以不存在"增量卡"与"最终卡"两套渲染导致的视觉跳变。
-    const liveToolSettled = new Map<string, { block: import("./llm/types.ts").ContentBlock; elapsedMs?: number }>();
+    const liveToolSettled = new Map<string, { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number }>();
 
     // ── 子代理进度侧信道（治问题三：过程黑盒）──
     //
@@ -5915,7 +5915,7 @@ export class App {
     // 而非文本，渲染时按"并行几个 agent + 终端多高"选呈现档位。
     // 生命周期同样挂轮末 clear，不跨轮累积（这是相对 cc 的结构优势，见
     // ui/agent-progress-view.ts 头部注释）。
-    const liveAgentProgress = new Map<string, import("./agent/progress.ts").AgentProgressEvent>();
+    const liveAgentProgress = new Map<string, import("@sid-code/core/agent/progress.ts").AgentProgressEvent>();
 
     /**
      * 把侧信道里已完成的工具结果注入到仍是 executing 态的工具项，就地翻成 success/error。
@@ -6223,7 +6223,7 @@ export class App {
 
     // 设置 TUI AskUserQuestion 提问回调（结构化选择题，对标 cc AskUserQuestion）
     {
-      const { setAskUserQuestionHandler, parseAskTimeoutMs } = await import("./tool/ask-user-question-bridge.ts");
+      const { setAskUserQuestionHandler, parseAskTimeoutMs } = await import("@sid-code/core/tool/ask-user-question-bridge.ts");
       setAskUserQuestionHandler(async (req, signal) => {
         return new Promise((resolve) => {
           log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
@@ -6283,7 +6283,7 @@ export class App {
     const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
       // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
       // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
-      const { resolveLoopTimeouts: resolveSessionTimeouts } = require("./config/network-profile.ts");
+      const { resolveLoopTimeouts: resolveSessionTimeouts } = require("@sid-code/core/config/network-profile.ts");
       const SESSION_TIMEOUT_MS = resolveSessionTimeouts({ network: this.config.network }).maxSessionDurationMs;
       // ─── 会话硬顶改为周期检查 + 剔除休眠时长（事故 20260801-175042-699f69f8）───
       //
@@ -6470,7 +6470,7 @@ export class App {
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
               if (event.toolName === "todo_write") {
-                const todoTool = this.toolRegistry.get("todo_write") as import("./tool/todo-write.ts").TodoWriteTool | undefined;
+                const todoTool = this.toolRegistry.get("todo_write") as import("@sid-code/core/tool/todo-write.ts").TodoWriteTool | undefined;
                 if (todoTool) {
                   updateState({ todos: todoTool.getTodos() });
                 }
@@ -6853,7 +6853,7 @@ export class App {
         // 这里是**唯一**的信任来源——只能喂用户原始输入，绝不能喂工具结果/网页内容，
         // 否则注入内容就能自己给自己授权。详见 url-provenance.ts。
         try {
-          const { recordUserMentionedUrls } = await import("./tool/url-provenance.ts");
+          const { recordUserMentionedUrls } = await import("@sid-code/core/tool/url-provenance.ts");
           recordUserMentionedUrls(text);
         } catch (e) {
           log.warn("APP", `登记用户 URL 来源失败（不阻断）: ${(e as Error)?.message}`);
@@ -6949,7 +6949,7 @@ export class App {
           }
 
           const sessionTimeoutMin = Math.round(
-            (require("./config/network-profile.ts").resolveLoopTimeouts({ network: this.config.network })
+            (require("@sid-code/core/config/network-profile.ts").resolveLoopTimeouts({ network: this.config.network })
               .maxSessionDurationMs) / 60000,
           );
           const message = aborted
@@ -7325,8 +7325,8 @@ export class App {
       },
       onCompleteOnboarding: (result) => {
         log.info("TUI:ONBOARD", `首次引导完成: provider=${result.provider} model=${result.model}`);
-        const { patchSettingsFile } = require("./config/settings/settings.ts");
-        const { resolveCurrentModelConfig } = require("./config/config.ts");
+        const { patchSettingsFile } = require("@sid-code/core/config/settings/settings.ts");
+        const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
 
         // 构造 ModelConfig 对象
         const modelEntry: Record<string, unknown> = {
@@ -7362,7 +7362,7 @@ export class App {
 
         // 4. 同步上下文窗口
         try {
-          const { TokenEstimator } = require("./llm/token-estimator.ts");
+          const { TokenEstimator } = require("@sid-code/core/llm/token-estimator.ts");
           const est = new TokenEstimator();
           // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
           this.ctxMgr.setMaxTokens(
@@ -7413,7 +7413,7 @@ export class App {
         if (!busy) {
           return "空闲状态无前台任务可转后台；长命令可用 bash run_in_background 起后台任务";
         }
-        const { requestDetachForegroundBash } = await import("./tool/bash.ts");
+        const { requestDetachForegroundBash } = await import("@sid-code/core/tool/bash.ts");
         const n = requestDetachForegroundBash();
         if (n > 0) {
           return n === 1
@@ -7544,7 +7544,7 @@ export class App {
 
     // 优雅关闭：刷新遥测/事件缓冲区（500ms 硬超时）+ failsafe（5s 强制退出）（spec 17 §3.4）
     // 正常退出（/exit 或 Ctrl+D）不触发 SIGINT/SIGTERM，必须显式刷新，否则缓冲数据丢失
-    const { runShutdownSequence } = await import("./utils/graceful-shutdown.ts");
+    const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
     await runShutdownSequence();
 
     // 显式退出：清理已完成,主动 process.exit(0) 而非依赖事件循环自然 drain。

@@ -8,10 +8,10 @@
  * 变量替换：hook command 中的 ${PLUGIN_ROOT} 替换为插件磁盘路径。
  */
 
-import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
-import type { HookSystem } from "../hook/system.ts";
-import type { HookConfig as LegacyHookConfig, HooksConfig } from "../config/config.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
+import type { HookSystem } from "@sid-code/core/hook/system.ts";
+import type { HookConfig as LegacyHookConfig, HooksConfig } from "@sid-code/core/config/config.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";

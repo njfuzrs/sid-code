@@ -12,13 +12,13 @@
  */
 
 import React from "react";
-import Text from "../../ink/components/Text.tsx";
-import Box from "../../ink/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import { common, createLowlight } from "lowlight";
 import type { Root, Element, Text as HastText, RootContent, ElementContent } from "hast";
 import { themeManager } from "../themes/theme-manager.ts";
 import type { Theme } from "../themes/theme.ts";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 
 // 顶层同步加载 lowlight（带常用语言）
 const lowlight = createLowlight(common);

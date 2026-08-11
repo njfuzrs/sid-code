@@ -17,7 +17,8 @@
  * 一次。因此用户补全后再主动删掉某个键，下次启动不会被加回来——这正是期望行为。
  */
 
-import teamDefaults from "../../scripts/team-defaults.template.json" with { type: "json" };
+// 指向**仓库根**的 scripts/（不是包内）。P2-2 分包后本文件深了两层，故 ../../../../。
+import teamDefaults from "../../../../scripts/team-defaults.template.json" with { type: "json" };
 import { mergeMissingTopLevelKeys } from "../config/settings/settings.ts";
 
 export function migrate(): void {

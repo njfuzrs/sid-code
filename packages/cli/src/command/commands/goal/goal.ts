@@ -7,11 +7,11 @@
 
 import type { LocalCommandModule, CommandContext } from "../../types.ts";
 import type { LocalCommandResult } from "../../types.ts";
-import { createGoal } from "../../../goal/state.ts";
-import type { GoalState, GoalStatus } from "../../../goal/state.ts";
-import { buildFirstTurnPrompt, buildResumeTurnPrompt } from "../../../goal/reminder.ts";
-import { DEFAULT_GOAL_CONFIG } from "../../../goal/config.ts";
-import { getLogger } from "../../../debug/logger.ts";
+import { createGoal } from "@sid-code/core/goal/state.ts";
+import type { GoalState, GoalStatus } from "@sid-code/core/goal/state.ts";
+import { buildFirstTurnPrompt, buildResumeTurnPrompt } from "@sid-code/core/goal/reminder.ts";
+import { DEFAULT_GOAL_CONFIG } from "@sid-code/core/goal/config.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 const log = getLogger();
 const MAX_OBJECTIVE_CHARS = 4000;

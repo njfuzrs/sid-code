@@ -18,15 +18,15 @@
  */
 
 import type { LocalCommandResult, CommandContext } from "../../types.ts";
-import type { ModelConfig } from "../../../config/config.ts";
-import { lookupCatalog } from "../../../llm/model-params-catalog.ts";
-import { lookupCapability } from "../../../llm/model-capabilities.ts";
-import { resolveWireModel } from "../../../llm/wire-model.ts";
+import type { ModelConfig } from "@sid-code/core/config/config.ts";
+import { lookupCatalog } from "@sid-code/core/llm/model-params-catalog.ts";
+import { lookupCapability } from "@sid-code/core/llm/model-capabilities.ts";
+import { resolveWireModel } from "@sid-code/core/llm/wire-model.ts";
 import {
   getSettingsForSource,
   patchSettingsFile,
-} from "../../../config/settings/index.ts";
-import { getLogger } from "../../../debug/logger.ts";
+} from "@sid-code/core/config/settings/index.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 // ─── 类型 ───────────────────────────────────────────────────────────
 

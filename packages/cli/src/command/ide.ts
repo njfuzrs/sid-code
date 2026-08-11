@@ -4,8 +4,8 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
-import { getIDEIntegration } from "../ide/integration.ts";
-import { detectIDEs } from "../ide/detect.ts";
+import { getIDEIntegration } from "@sid-code/core/ide/integration.ts";
+import { detectIDEs } from "@sid-code/core/ide/detect.ts";
 
 /** /ide 主命令 */
 export class IDECommand implements Command {
@@ -129,7 +129,7 @@ class IDEInstallCommand implements Command {
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     const { getTerminalIDEType, isExtensionInstalled, installExtension } =
-      await import("../ide/extension-install.ts");
+      await import("@sid-code/core/ide/extension-install.ts");
 
     const ideType = getTerminalIDEType();
     if (!ideType) {

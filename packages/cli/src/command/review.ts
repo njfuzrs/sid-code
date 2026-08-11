@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
+import { resolveExecutable } from "@sid-code/core/bootstrap/resolve-executable.ts";
 
 interface ReviewOptions {
   diffPath?: string;

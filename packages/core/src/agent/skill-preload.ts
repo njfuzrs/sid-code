@@ -10,7 +10,7 @@
  */
 
 import { getLogger } from "../debug/logger.ts";
-import { memoize } from "../utils/memoize.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
 
 /** name(lowercase) → prompt body 的内容表。 */
 type SkillContentMap = Map<string, { name: string; content: string }>;

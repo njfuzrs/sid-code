@@ -25,7 +25,7 @@ import {
   getQueueSnapshot,
   subscribeQueue,
   type CommandPriority,
-} from "../../query/message-queue-manager.ts";
+} from "@sid-code/core/query/message-queue-manager.ts";
 
 /** P1-G6：按优先级分组的排队条数（供 InputArea 分组提示）。 */
 export interface QueuedByPriority {

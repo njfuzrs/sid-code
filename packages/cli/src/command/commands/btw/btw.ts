@@ -1,5 +1,5 @@
 import type { LocalCommandModule } from "../../types.ts";
-import type { Message } from "../../../llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /**
  * /btw（Side Question）命令实现（按需加载）
@@ -24,9 +24,9 @@ const mod: LocalCommandModule = {
       };
     }
 
-    const { runForkedAgent } = await import("../../../agent/forked-agent.ts");
-    const { createStatefulTools } = await import("../../../tool/stateful-tools.ts");
-    const { FileReadTracker } = await import("../../../tool/file-read-tracker.ts");
+    const { runForkedAgent } = await import("@sid-code/core/agent/forked-agent.ts");
+    const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+    const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
 
     const messages = ctx.ctxMgr.getMessages();
     if (messages.length === 0) {

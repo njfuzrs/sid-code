@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import Text from "../../ink/components/Text.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from '../semantic-colors.ts';
 import { useUIState } from '../contexts/UIStateContext.tsx';
 import { TransientMessageType } from '../contexts/UIStateContext.tsx';

@@ -42,10 +42,10 @@ import type {
   TUICallbacks,
 } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
-import type { MCPManager } from "../../mcp/manager.ts";
-import type { SessionState } from "../../session/state.ts";
-import type { Usage } from "../../llm/types.ts";
-import { resolvePricing } from "../../api/cost-tracker.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { SessionState } from "@sid-code/core/session/state.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import { resolvePricing } from "@sid-code/core/api/cost-tracker.ts";
 
 export interface DialogSwitchProps {
   // 高优先级请求（覆盖 activeDialog）

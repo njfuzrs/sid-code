@@ -20,8 +20,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { platform } from "node:os";
 import { join } from "node:path";
-import { ensureSidTempSubdir } from "../../utils/temp-dir.ts";
-import { getLogger } from "../../debug/logger.ts";
+import { ensureSidTempSubdir } from "@sid-code/shared/utils/temp-dir.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** vision 支持的图片扩展名（严格对齐 read.ts / Anthropic vision 四种 + jpg 别名）。 */
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);

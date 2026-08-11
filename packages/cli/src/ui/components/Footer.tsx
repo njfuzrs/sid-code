@@ -27,16 +27,16 @@
 
 import React from "react";
 import stringWidth from "string-width";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import type { Usage } from "../../llm/types.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import type { Usage } from "@sid-code/core/llm/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK, TOKEN_IN, TOKEN_OUT } from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
-import { normalizeCacheUsage } from "../../llm/types.ts";
-import { SessionState } from "../../session/state.ts";
+import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
 import { formatLargeNumber } from "../utils/format-number.ts";
 
 // ── Footer 主组件 ──

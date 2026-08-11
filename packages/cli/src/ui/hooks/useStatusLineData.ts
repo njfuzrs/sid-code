@@ -11,21 +11,21 @@
 
 import { homedir } from "os";
 import { useMemo } from "react";
-import type { Usage } from "../../llm/types.ts";
-import { normalizeCacheUsage } from "../../llm/types.ts";
-import { SessionState } from "../../session/state.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
 import { theme } from "../semantic-colors.ts";
 // 颜色一律用 ink 的 Color（`#hex` / `rgb()` / `ansi256()` / `ansi:*`）而不是 string：
 // 本 hook 派生出的每个 color 最终都直接喂给 Footer 的 <Text color=…>，而 Text.color
 // 的类型就是 Color。声明成 string 时，Footer 那 6 个消费点全部编译不过（这批 tsc
 // 报错的来源），而在消费点撒 `as Color` 只是把类型漏洞下推——真正的收口在这里：
 // 所有 color 的源头都是 theme.* 语义 token，本身已经是合法 Color。
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF, GOAL_MARK, PAUSED_MARK } from "../constants/figures.ts";
-import type { PricingModelEntry } from "../../api/cost-tracker.ts";
+import type { PricingModelEntry } from "@sid-code/core/api/cost-tracker.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
 export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
@@ -47,7 +47,7 @@ export function shortenPath(p: string, maxLen = 25, home = homedir()): string {
  */
 export function deriveRepoName(cwd: string): string {
   try {
-    const { findCanonicalGitRoot } = require("../../worktree/canonical.ts");
+    const { findCanonicalGitRoot } = require("@sid-code/core/worktree/canonical.ts");
     const root = findCanonicalGitRoot(cwd) as string | null;
     if (!root) return "";
     const parts = root.split("/").filter(Boolean);
@@ -197,7 +197,7 @@ export function deriveCacheSavings(
  * - 显式档位 → 填充方块字形（▁▃▅█）+ 档位名；max 用品牌色点睛，其余用默认灰。
  */
 export function deriveEffort(
-  effortDisplay: { level: import("../../llm/effort.ts").EffortLevel; isAuto: boolean } | null,
+  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null,
   defaultColor: Color,
 ): { glyph: string; text: string; color: Color } | null {
   if (!effortDisplay) return null;

@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getVersion } from "../../../version.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
 
 /**
  * /bug（别名 /feedback）命令实现（按需加载）。对齐 claude-code §4.5。
@@ -69,7 +69,7 @@ const mod: LocalCommandModule = {
 
     let copied = false;
     try {
-      const { setClipboard } = await import("../../../ink/termio/osc.ts");
+      const { setClipboard } = await import("@sid-code/tui-renderer/termio/osc.ts");
       const oscSeq = await setClipboard(report);
       if (oscSeq) process.stdout.write(oscSeq);
       copied = true;

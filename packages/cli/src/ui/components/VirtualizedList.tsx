@@ -30,9 +30,9 @@ import {
   useCallback,
 } from "react";
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import type { DOMElement } from "../../ink/dom.ts";
-import { ResizeObserver } from "../../ink/_vendor/resize-observer.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
+import { ResizeObserver } from "@sid-code/tui-renderer/_vendor/resize-observer.ts";
 import { useBatchedScroll } from "../hooks/useBatchedScroll.ts";
 import { quantize, SCROLL_QUANTUM } from "../utils/scroll-quantum.ts";
 

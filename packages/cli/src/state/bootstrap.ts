@@ -4,7 +4,7 @@
  * 纯 getter/setter 函数访问，非响应式，任何模块可安全 import
  */
 
-import { generateSessionId } from "../session/id.ts";
+import { generateSessionId } from "@sid-code/core/session/id.ts";
 
 /** 模型用量统计 */
 export interface ModelUsage {

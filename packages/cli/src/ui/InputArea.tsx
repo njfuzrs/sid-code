@@ -17,12 +17,12 @@
  */
 
 import React, { useCallback, useRef, useEffect, useState } from "react";
-import Box from "../ink/components/Box.tsx";
-import Text from "../ink/components/Text.tsx";
-import useStdout from "../ink/_vendor/use-stdout.ts";
-import { getLogger } from "../debug/logger.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
-import type { Color } from "../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";
@@ -54,7 +54,7 @@ import { readClipboardImageToFile, detectDroppedImagePath } from "./utils/clipbo
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
-import { getAppConfig, shouldShowHint, markHintShown } from "../config/app-config.ts";
+import { getAppConfig, shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
 import { ARROW_PROMPT } from "./constants/figures.ts";
 import { mixToContrast } from "./themes/color-utils.ts";
 

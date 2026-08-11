@@ -3,7 +3,7 @@
  * 区分 ASCII 和非 ASCII 字符，提供更准确的 token 估算
  */
 
-import { memoizeWithLRU } from "../utils/memoize-lru.ts";
+import { memoizeWithLRU } from "@sid-code/shared/utils/memoize-lru.ts";
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高,取 0.20 折中 */
 const ASCII_TOKENS_PER_CHAR = 0.20;

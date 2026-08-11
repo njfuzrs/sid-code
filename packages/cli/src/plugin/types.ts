@@ -9,7 +9,7 @@
  * 设计哲学：能力通过协议暴露（Markdown / JSON / MCP），而非代码注入。
  */
 
-import type { MCPServerConfig, HooksConfig } from "../config/config.ts";
+import type { MCPServerConfig, HooksConfig } from "@sid-code/core/config/config.ts";
 
 /** 插件组件类型 */
 export type PluginComponent = "commands" | "skills" | "agents" | "hooks" | "mcp-servers";

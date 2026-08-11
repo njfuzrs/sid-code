@@ -18,7 +18,7 @@ import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-l
 import { getMcpTimeout } from "./mcp-timeout.ts";
 import { getLogger } from "../debug/logger.ts";
 import { join } from "path";
-import { ensureSidTempDir } from "../utils/temp-dir.ts";
+import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import {
   isOAuthEnabled,
   getValidAccessToken,

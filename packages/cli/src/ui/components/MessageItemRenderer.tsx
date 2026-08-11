@@ -12,11 +12,11 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import useStdout from "../../ink/_vendor/use-stdout.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import type { DisplayItem } from "../App.tsx";
-import type { Message } from "../../llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import { UserMessage } from "./messages/UserMessage.tsx";
 import { AssistantMessage } from "./messages/AssistantMessage.tsx";
 import { ToolGroupMessage, type ToolCallDisplay } from "./messages/ToolGroupMessage.tsx";

@@ -6,7 +6,7 @@
  * - 命令/Skill：deploy → my-plugin:deploy（在 loadPluginCommands 中处理）
  */
 
-import type { MCPServerConfig } from "../config/config.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 /** MCP 服务器作用域前缀 */
 export const PLUGIN_MCP_PREFIX = "plugin:";

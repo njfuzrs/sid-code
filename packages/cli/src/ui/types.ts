@@ -11,7 +11,7 @@
  */
 
 import type { ThoughtSummary } from "./history-adapter.ts";
-import type { Color } from "../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 
 // ── 流式状态 ──
 
@@ -97,7 +97,7 @@ export interface IndividualToolCallDisplay {
    * 由 app.ts 的 liveAgentProgress 侧信道注入，轮末随侧信道 clear 退场——工具一旦完成，
    * 权威路径渲染的完成态卡片不带此字段，进度自然让位给真实结果。
    */
-  agentProgress?: import("../agent/progress.ts").AgentProgressSnapshot;
+  agentProgress?: import("@sid-code/core/agent/progress.ts").AgentProgressSnapshot;
   /** 结果摘要（一行文字，如 "862 字符"、"替换完成"） */
   resultSummary?: string;
   /** 工具执行耗时（毫秒），完成态时由后端填入。缺省时不显示 */

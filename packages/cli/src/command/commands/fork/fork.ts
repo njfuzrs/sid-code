@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /fork 命令实现（按需加载）。对齐 claude-code §4.1。
@@ -20,7 +20,7 @@ const mod: LocalCommandModule = {
 
     // 确保当前历史已落盘，重启 resume 时能读到完整上下文。
     try {
-      const { flushPendingSessionWrites } = await import("../../../session/store.ts");
+      const { flushPendingSessionWrites } = await import("@sid-code/core/session/store.ts");
       flushPendingSessionWrites();
     } catch (e) {
       getLogger().warn("FORK", `flush 会话历史失败（不阻断）: ${(e as Error)?.message}`);

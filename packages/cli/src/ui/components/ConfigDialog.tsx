@@ -10,11 +10,11 @@
  */
 
 import React, { useState, useMemo } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import stringWidth from "string-width";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -24,12 +24,12 @@ import {
   type ConfigItemInfo,
   type ConfigSource,
 } from "../utils/config-items.ts";
-import type { Config } from "../../config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 
 interface ConfigDialogProps {
   onClose: () => void;
   config: Config;
-  sessionState?: import("../../session/state.ts").SessionState;
+  sessionState?: import("@sid-code/core/session/state.ts").SessionState;
   /** 运行时旋钮展示态（可选，来自 TUIState），用于 effort/think/permissionMode 当前值 */
   runtime?: {
     effortDisplay?: string;

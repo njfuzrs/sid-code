@@ -13,8 +13,8 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.tsx";
-import Text from "../../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import {
   ToolStatusIndicator,
   ToolInfo,
@@ -78,7 +78,7 @@ export interface ToolMessageProps {
    * 子代理实时进度（仅执行中的 `sub_agent` 有值）。
    * 治"子代理过程黑盒"：跑 1m35s 主消息流一个字都没有，末尾一把吐出。
    */
-  agentProgress?: import("../../../agent/progress.ts").AgentProgressSnapshot;
+  agentProgress?: import("@sid-code/core/agent/progress.ts").AgentProgressSnapshot;
   /** 同组内并行的子代理数（决定进度呈现档位，见 agent-progress-view.ts） */
   concurrentAgentCount?: number;
   progress?: number;

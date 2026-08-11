@@ -17,7 +17,9 @@
  *   因此 dev 运行不依赖 vendor/rg-embed 的实际内容。
  */
 
-import rgEmbeddedPath from "../../vendor/rg-embed" with { type: "file" };
+// 指向**仓库根**的 vendor/（由 scripts/fetch-ripgrep.ts 落成，不入库）。
+// P2-2 分包后本文件深了两层，故 ../../../../。
+import rgEmbeddedPath from "../../../../vendor/rg-embed" with { type: "file" };
 
 /** 嵌入 rg 二进制的运行时虚拟路径（`/$bunfs/...`），用 Bun.file() 读取 */
 export { rgEmbeddedPath };

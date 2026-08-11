@@ -13,7 +13,7 @@
  *   不臆测「用户 vs 项目」，避免误导（对标文档「不臆测来源」原则）。
  */
 
-import type { Config } from "../../config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 
 export type ConfigSource = "default" | "configured" | "session" | "env";
 

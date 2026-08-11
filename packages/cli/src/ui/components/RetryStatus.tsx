@@ -10,8 +10,8 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { WARNING_MARK, RETRY_MARK, FALLBACK_MARK } from "../constants/figures.ts";
 import type { RetryStatusInfo } from "../App.tsx";

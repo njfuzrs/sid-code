@@ -16,11 +16,11 @@ import {
   ToolCallStatus,
   type ToolResultDisplay,
 } from "./types.ts";
-import type { Message, ContentBlock } from "../llm/types.ts";
+import type { Message, ContentBlock } from "@sid-code/core/llm/types.ts";
 import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
-import { hasInternalOrigin as hasInternalOriginImpl } from "../context/internal-message.ts";
+import { hasInternalOrigin as hasInternalOriginImpl } from "@sid-code/core/context/internal-message.ts";
 
 /**
  * 构建主屏 Static 模式的历史项数组（ADR-040）。
@@ -102,7 +102,7 @@ function extractNotificationTag(block: string, tag: string): string | undefined 
  */
 function tryParseTaskNotifications(msg: Message): {
   notifications: HistoryItemWithoutId[];
-  remaining: import("../llm/types.ts").ContentBlock[] | null;
+  remaining: import("@sid-code/core/llm/types.ts").ContentBlock[] | null;
 } | null {
   if (msg.role !== "user") return null;
   if (msg.content.length === 0) return null;
@@ -167,7 +167,7 @@ function tryParseTaskNotifications(msg: Message): {
 
   // 通用路径：从 content blocks 中分离 notification text blocks 与其它 blocks
   const notifTexts: string[] = [];
-  const otherBlocks: import("../llm/types.ts").ContentBlock[] = [];
+  const otherBlocks: import("@sid-code/core/llm/types.ts").ContentBlock[] = [];
 
   for (const block of msg.content) {
     if (block.type === "text" && block.text.trimStart().startsWith(TASK_NOTIFICATION_OPEN)) {
@@ -310,7 +310,7 @@ function stripInternalTextBlocks(msg: Message): Message {
  */
 function pushRemainingBlocks(
   rawMsg: Message,
-  blocks: import("../llm/types.ts").ContentBlock[],
+  blocks: import("@sid-code/core/llm/types.ts").ContentBlock[],
   items: HistoryItemWithoutId[],
   toolNameMap: Map<string, string>,
   pendingToolCalls: Map<string, IndividualToolCallDisplay>,

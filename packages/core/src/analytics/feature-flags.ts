@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
+import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 
 // --- 类型 ---
 

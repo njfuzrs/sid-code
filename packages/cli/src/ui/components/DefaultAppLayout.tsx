@@ -9,9 +9,9 @@
  */
 
 import React, { useRef, useCallback, useEffect } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import type { DOMElement } from "../../ink/dom.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
 import { Footer } from "./Footer.tsx";
 import { DialogSwitch } from "./DialogSwitch.tsx";
 import { MainContent } from "./MainContent.tsx";
@@ -28,10 +28,10 @@ import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo, TUICallbacks } from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
-import type { MCPManager } from "../../mcp/manager.ts";
-import type { SessionState } from "../../session/state.ts";
-import type { Usage } from "../../llm/types.ts";
-import type { TodoItem } from "../../tool/todo-write.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { SessionState } from "@sid-code/core/session/state.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { theme } from "../semantic-colors.ts";
 import { PAUSED_MARK } from "../constants/figures.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";

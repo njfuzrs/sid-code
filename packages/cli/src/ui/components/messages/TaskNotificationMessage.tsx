@@ -12,11 +12,11 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.tsx";
-import Text from "../../../ink/components/Text.tsx";
-import type { Color } from "../../../ink/styles.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { theme } from "../../semantic-colors.ts";
-import { getAgentInkColor } from "../../../agent/color.ts";
+import { getAgentInkColor } from "@sid-code/core/agent/color.ts";
 import { BULLET, TREE_BRANCH } from "../../constants/figures.ts";
 import { SlicingMaxSizedBox } from "../SlicingMaxSizedBox.tsx";
 import { useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";

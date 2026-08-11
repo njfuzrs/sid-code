@@ -8,9 +8,9 @@
  */
 
 import React, { createContext, useContext, useCallback, useEffect, useRef, useMemo } from "react";
-import useStdin from "../../ink/hooks/use-stdin.ts";
-import useStdout from "../../ink/_vendor/use-stdout.ts";
-import { TerminalSizeContext } from "../../ink/components/TerminalSizeContext.tsx";
+import useStdin from "@sid-code/tui-renderer/hooks/use-stdin.ts";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { TerminalSizeContext } from "@sid-code/tui-renderer/components/TerminalSizeContext.tsx";
 import { TerminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 

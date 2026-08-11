@@ -6,8 +6,8 @@
  */
 
 import React from 'react';
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import type { AnsiLine, AnsiOutput, AnsiToken } from '../types/ansi.ts';
 
 const DEFAULT_HEIGHT = 24;

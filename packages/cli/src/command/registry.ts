@@ -5,7 +5,7 @@
  */
 
 import type { Command } from "./types.ts";
-import { getLogger } from "../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export type CommandSource = "builtin" | "user" | "project" | "plugin";
 

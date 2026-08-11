@@ -9,18 +9,18 @@
  *    对齐 Claude Code 命令系统架构，支持延迟加载、多来源聚合、命令队列
  */
 
-import type { Config } from "../config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 // 本文件内 CommandResult / CommandExecutionResult 要用 DialogType。
 // re-export 语句不产生本地绑定，所以除 re-export 外还需这条 import。
-import type { DialogType } from "../command-contract/types.ts";
-import type { Manager as ContextManager } from "../context/manager.ts";
-import type { Provider } from "../llm/provider.ts";
-import type { ProviderRegistry } from "../llm/registry.ts";
-import type { LanguagePref } from "../config/prompt-lang.ts";
-import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { SessionState } from "../session/state.ts";
-import type { MCPManager } from "../mcp/manager.ts";
-import type { HookSystem } from "../hook/system.ts";
+import type { DialogType } from "@sid-code/core/command-contract/types.ts";
+import type { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import type { LanguagePref } from "@sid-code/core/config/prompt-lang.ts";
+import type { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import type { SessionState } from "@sid-code/core/session/state.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { HookSystem } from "@sid-code/core/hook/system.ts";
 
 // ============================================================
 // 旧体系（deprecated，迁移期间保留）
@@ -50,9 +50,9 @@ export interface AppContext {
   /** 切换子代理模型（/model sub 用）。persist=true 时写 settings.json。 */
   setSubAgentModel?: (type: string, model: string | undefined, persist?: boolean) => void;
   /** 推理强度旋钮 setter（/effort 用）。persist=true 时写 settings.json。 */
-  setEffort?: (level: import("../llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  setEffort?: (level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean) => void;
   /** 思考开关旋钮 setter（/think 用）。persist=true 时写 settings.json。 */
-  setThinking?: (setting: import("../llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  setThinking?: (setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
   /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
   setLanguage?: (lang: LanguagePref | undefined, persist?: boolean) => void | Promise<void>;
   /** Vim 输入模式 setter（/vim 用）。persist=true 时写 settings.json vimMode。 */
@@ -74,23 +74,23 @@ export interface AppContext {
   /** M4-5：读取当前外部导入审批态（/memory external status 用）。undefined=尚未询问。 */
   getExternalImportsState?: () => { approved: boolean | undefined };
   /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
-  setStatusLine?: (config: import("../config/statusline-types.ts").StatusLineConfig | undefined, persist?: boolean) => void;
+  setStatusLine?: (config: import("@sid-code/core/config/statusline-types.ts").StatusLineConfig | undefined, persist?: boolean) => void;
   /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
-  getStatusLine?: () => import("../config/statusline-types.ts").StatusLineConfig | undefined;
+  getStatusLine?: () => import("@sid-code/core/config/statusline-types.ts").StatusLineConfig | undefined;
   /** 会话重命名（/rename 用）。name 为空时基于上下文生成。返回最终名字。 */
   renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort 运行时态 + 能力（/effort 展示用） */
   getEffortState?: () => {
-    runtime: import("../llm/effort.ts").EffortSetting;
-    applied: import("../llm/effort.ts").EffortLevel | undefined;
+    runtime: import("@sid-code/core/llm/effort.ts").EffortSetting;
+    applied: import("@sid-code/core/llm/effort.ts").EffortLevel | undefined;
     isAuto: boolean;
-    capability: import("../llm/effort.ts").EffortCapability;
+    capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
   };
   /** 读取当前 thinking 运行时态 + 能力（/think 展示用） */
   getThinkingState?: () => {
-    runtime: import("../llm/effort.ts").ThinkingSetting;
+    runtime: import("@sid-code/core/llm/effort.ts").ThinkingSetting;
     applied: boolean;
-    capability: import("../llm/effort.ts").EffortCapability;
+    capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
   };
   exitRequested: boolean;
   sessionState: SessionState;
@@ -109,14 +109,14 @@ export interface AppContext {
    * P0-3：原始权限规则（permissions.allow/deny/ask，含 `Skill(<name>)` 形态）。
    * 经 toCommandContext 桥接给新体系，供 skill 授权判定使用。
    */
-  permissionRules?: import("../permission/types.ts").PermissionRule;
+  permissionRules?: import("@sid-code/core/permission/types.ts").PermissionRule;
   /** Hook 系统引用（/hooks 命令用） */
   hookSystem?: HookSystem;
   /**
    * §12 P2-4 复审：最近访问文件追踪器（手动 /compact 压缩后重注入最近读过的文件）。
    * 经 toCommandContext 桥接到 CommandContext.fileReadTracker。
    */
-  fileReadTracker?: import("../tool/file-read-tracker.ts").FileReadTracker;
+  fileReadTracker?: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker;
   /** §12 P2-4 复审：会话级临时目录（手动压缩质量报告落盘）。经 toCommandContext 桥接。 */
   sessionDir?: string;
   /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
@@ -126,7 +126,7 @@ export interface AppContext {
    * §18.10：插件带的 skills 需随插件安装/卸载原子替换，否则装了新插件要重启才能用它的
    * skill、卸载后旧 skill 还留着。
    */
-  skillManager?: import("../skill/manager.ts").SkillManager;
+  skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
   /**
    * 统一命令注册表引用（新体系 /reload-plugins 刷新插件命令用，优先于 commandRegistry）。
    *
@@ -134,17 +134,17 @@ export interface AppContext {
    * 之间双向桥接这个字段，两侧类型必须一致；而 `CommandContext` 属 core，只能持契约。
    * 实际注入的仍是 cli 的 `UnifiedCommandRegistry` 实例（结构上满足契约）。
    */
-  unifiedRegistry?: import("../command-contract/types.ts").UnifiedCommandRegistryContract;
+  unifiedRegistry?: import("@sid-code/core/command-contract/types.ts").UnifiedCommandRegistryContract;
   /** /goal：读取当前目标状态 */
-  getGoalState?: () => import("../goal/state.ts").GoalState | null;
+  getGoalState?: () => import("@sid-code/core/goal/state.ts").GoalState | null;
   /** /goal：设置目标状态（null 表示清除） */
-  setGoalState?: (goal: import("../goal/state.ts").GoalState | null) => void;
+  setGoalState?: (goal: import("@sid-code/core/goal/state.ts").GoalState | null) => void;
   /** /goal：更新目标状态（原地修改） */
-  updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
+  updateGoalState?: (updater: (goal: import("@sid-code/core/goal/state.ts").GoalState) => void) => void;
   /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
-  traceCollector?: import("../trace/collector.ts").TraceCollector;
+  traceCollector?: import("@sid-code/core/trace/collector.ts").TraceCollector;
   /** 权限检查器实例（/allow /deny /add-dir /permissions 用；运行时注入，可能为 null） */
-  permissionChecker?: import("../permission/types.ts").Checker | null;
+  permissionChecker?: import("@sid-code/core/permission/types.ts").Checker | null;
 }
 
 /**
@@ -154,7 +154,7 @@ export interface AppContext {
  * 它在 `LocalCommandResult` 的闭包里（命令可返回「打开某对话框」），必须与契约同包。
  * 此处 re-export 供 cli 侧既有导入方沿用。
  */
-export type { DialogType } from "../command-contract/types.ts";
+export type { DialogType } from "@sid-code/core/command-contract/types.ts";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =
@@ -220,7 +220,7 @@ export type {
   PromptCommand,
   UnifiedCommand,
   UnifiedCommandRegistryContract,
-} from "../command-contract/types.ts";
+} from "@sid-code/core/command-contract/types.ts";
 
 
 // ============================================================

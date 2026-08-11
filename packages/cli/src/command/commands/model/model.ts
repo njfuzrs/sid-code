@@ -1,10 +1,10 @@
 import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
-import { resolvePricing } from "../../../api/cost-tracker.ts";
-import { lookupRegistry, getRegistryEntries } from "../../../llm/model-registry.ts";
-import { getGatewayCacheMeta, getAllGatewayEntries } from "../../../llm/gateway-pricing.ts";
-import { lookupGatewayPricing } from "../../../llm/gateway-pricing.ts";
-import { normalizeBaseURL } from "../../../llm/endpoint-key.ts";
+import { resolvePricing } from "@sid-code/core/api/cost-tracker.ts";
+import { lookupRegistry, getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
+import { getGatewayCacheMeta, getAllGatewayEntries } from "@sid-code/core/llm/gateway-pricing.ts";
+import { lookupGatewayPricing } from "@sid-code/core/llm/gateway-pricing.ts";
+import { normalizeBaseURL } from "@sid-code/core/llm/endpoint-key.ts";
 
 /**
  * /model 命令实现（按需加载）
@@ -39,7 +39,7 @@ import { normalizeBaseURL } from "../../../llm/endpoint-key.ts";
  */
 function subagentTypes(): string[] {
   try {
-    const { getActiveAgentTypes } = require("../../../agent/agent-definition.ts");
+    const { getActiveAgentTypes } = require("@sid-code/core/agent/agent-definition.ts");
     const active = getActiveAgentTypes() as string[];
     if (active.length > 0) return ["default", ...active];
   } catch { /* registry 未就绪时退回静态兜底，保证命令仍可用 */ }
@@ -369,7 +369,7 @@ function buildHelp(): string {
  * 缓存桶（按归一化端点分桶），不再互相覆盖——多渠道场景下所有端点的价格都得以保留。
  */
 async function syncGatewayPricingCmd(ctx: CommandContext, force: boolean): Promise<LocalCommandResult> {
-  const { syncGatewayPricing } = await import("../../../llm/gateway-pricing.ts");
+  const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
   // 去重端点：优先 availableModels 的 baseURL，回退顶层 config.baseURL。
   const endpoints = new Set<string>();
   for (const m of ctx.config.availableModels) {

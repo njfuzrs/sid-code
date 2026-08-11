@@ -4,7 +4,7 @@
  * 所有依赖通过 await import() 动态加载
  */
 
-import { profileCheckpoint, profileReport, isProfilingEnabled } from "../utils/startup-profiler.ts";
+import { profileCheckpoint, profileReport, isProfilingEnabled } from "@sid-code/shared/utils/startup-profiler.ts";
 profileCheckpoint("bootstrap_entry");
 
 // 启动性能剖析：进程退出时输出报告
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   // 快速路径 1: --version — 从 package.json 读取版本号
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
     profileCheckpoint("bootstrap_route_resolved");
-    const { getVersion } = await import("../version.ts");
+    const { getVersion } = await import("@sid-code/shared/version.ts");
     console.log(getVersion());
     return;
   }
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   // 快速路径 3: --list-sessions — 只加载会话模块
   if (args.includes("--list-sessions")) {
     profileCheckpoint("bootstrap_route_resolved");
-    const { handleListSessions } = await import("../session/commands.ts");
+    const { handleListSessions } = await import("@sid-code/core/session/commands.ts");
     await handleListSessions();
     return;
   }
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const deleteIdx = args.indexOf("--delete-session");
   if (deleteIdx !== -1 && args[deleteIdx + 1]) {
     profileCheckpoint("bootstrap_route_resolved");
-    const { handleDeleteSession } = await import("../session/commands.ts");
+    const { handleDeleteSession } = await import("@sid-code/core/session/commands.ts");
     await handleDeleteSession(args[deleteIdx + 1]);
     return;
   }

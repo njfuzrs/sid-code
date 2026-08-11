@@ -13,12 +13,12 @@
 import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { relative } from "path";
-import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from "../../../config/rules.ts";
+import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from "@sid-code/core/config/rules.ts";
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../../../ui/constants/figures.ts";
-import { getSidHome, sidPaths } from "../../../config/paths.ts";
-import { resolveRgCommand } from "../../../tool/ripgrep.ts";
-import { getVersion } from "../../../version.ts";
+import { getSidHome, sidPaths } from "@sid-code/core/config/paths.ts";
+import { resolveRgCommand } from "@sid-code/core/tool/ripgrep.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
 
 /** 诊断项状态：ok=✔ / warn=⚠ / fail=✘ */
 type CheckStatus = "ok" | "warn" | "fail";

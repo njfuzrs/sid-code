@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getLogger } from "../../../debug/logger.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
  * /tui（别名 /fullscreen）命令实现（按需加载）。对齐 claude-code §4.6。
@@ -39,7 +39,7 @@ const mod: LocalCommandModule = {
 
     // 持久化到 settings.json（禁 getSettings→改→write，用 patchSettingsFile）。
     try {
-      const { patchSettingsFile } = await import("../../../config/settings/index.ts");
+      const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", "alternateBuffer", target);
     } catch (e) {
       getLogger().warn("TUI", `持久化 alternateBuffer 失败: ${(e as Error)?.message}`);

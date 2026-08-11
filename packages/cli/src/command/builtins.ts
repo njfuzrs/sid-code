@@ -5,8 +5,8 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
-import { clearPromptCache } from "../config/system-prompt.ts";
-import { getLogger } from "../debug/logger.ts";
+import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** /help 命令 */
 export class HelpCommand implements Command {
@@ -295,7 +295,7 @@ export class CostCommand implements Command {
   description() { return "显示 token 用量和费用"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
-    const { SessionState } = await import("../session/state.ts");
+    const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
     const totalUsage = ss.getTotalUsage();
 
@@ -433,7 +433,7 @@ export class UndoCommand implements Command {
   description() { return "撤销最近一次文件修改（回滚到上一个 checkpoint）"; }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
       ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
@@ -478,7 +478,7 @@ export class CheckpointsCommand implements Command {
   description() { return "查看快照历史"; }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
-    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
       ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
@@ -536,7 +536,7 @@ export class RestoreCommand implements Command {
       return { kind: "error", message: "用法: /restore <快照ID>\n使用 /checkpoints 查看可用快照" };
     }
 
-    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
     const cpMgr = await getCheckpointManager(
       ctx.checkpointSessionId ?? ctx.sessionState.sessionId,
       ctx.config.checkpoint,
@@ -624,7 +624,7 @@ export class MemoryCommand implements Command {
       return { kind: "dialog", dialog: "memory" };
     }
 
-    const { MemoryStore } = await import("../memory/store.ts");
+    const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
     const store = new MemoryStore(process.cwd());
     await store.load();
 
@@ -792,15 +792,15 @@ export class MemoryCommand implements Command {
         // 不再用 memorySummary 全文摘要（已下线双轨注入）。
         const freshStore = new MemoryStore(process.cwd());
         await freshStore.load();
-        const { buildMemorySystemPrompt } = await import("../memory/prompt.ts");
+        const { buildMemorySystemPrompt } = await import("@sid-code/core/memory/prompt.ts");
         const indexContent = await freshStore.getIndexContent();
 
         // 团队记忆索引一并注入（若启用）
         let teamIndexContent: string | null = null;
         try {
-          const { isTeamMemoryEnabled } = await import("../memory/team/paths.ts");
+          const { isTeamMemoryEnabled } = await import("@sid-code/core/memory/team/paths.ts");
           if (isTeamMemoryEnabled(ctx.config.teamMemory)) {
-            const { getTeamIndexContent } = await import("../memory/team/store.ts");
+            const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
             teamIndexContent = await getTeamIndexContent(process.cwd());
           }
         } catch { /* 团队记忆索引注入失败不阻断 reload */ }
@@ -811,8 +811,8 @@ export class MemoryCommand implements Command {
         }
 
         // 重建系统提示词（索引指针进 core 区）
-        const { buildSystemPrompt } = await import("../config/system-prompt.ts");
-        const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+        const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
+        const { loadAllCLAUDEmd } = await import("@sid-code/core/config/rules.ts");
         const projectRules = await loadAllCLAUDEmd(process.cwd());
 
         const newPrompt = buildSystemPrompt({
@@ -901,7 +901,7 @@ export class StatsCommand implements Command {
     }
 
     // 有参数（如 /stats text）→ 文本模式（向后兼容脚本化场景）
-    const { SessionState } = await import("../session/state.ts");
+    const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
     const totalUsage = ss.getTotalUsage();
     const totalToolCalls = Object.values(ss.modelUsage).reduce((sum, m) => sum + m.requests, 0);
@@ -918,7 +918,7 @@ export class StatsCommand implements Command {
     ];
 
     // P2-3：git 操作度量（commit/push/PR 创建等），有计数才展示，避免空行噪音。
-    const { getGitOperationStats } = await import("../tool/git-operation-tracking.ts");
+    const { getGitOperationStats } = await import("@sid-code/core/tool/git-operation-tracking.ts");
     const git = getGitOperationStats();
     if (git.total > 0) {
       const detail = Object.entries(git.byKind)
@@ -1076,7 +1076,7 @@ export class HooksCommand implements Command {
    */
   private persistHookDisabled(hookName: string, disable: boolean): void {
     try {
-      const { getSettingsForSource, patchSettingsFile } = require("../config/settings/index.ts");
+      const { getSettingsForSource, patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       const { settings } = getSettingsForSource("userSettings");
       const set = new Set<string>(settings?.disabledHooks ?? []);
       if (disable) set.add(hookName);
@@ -1090,7 +1090,7 @@ export class HooksCommand implements Command {
   /** 清空 disabledHooks（/hooks enable-all -p）。 */
   private clearPersistedDisabled(): void {
     try {
-      const { patchSettingsFile } = require("../config/settings/index.ts");
+      const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", "disabledHooks", []);
     } catch (e) {
       getLogger().warn("HOOK", `清空 disabledHooks 失败（不阻断）: ${(e as Error)?.message}`);
@@ -1103,7 +1103,7 @@ export class HooksCommand implements Command {
       const names = ctx.hookSystem!.getAllHooks()
         .map((e) => ctx.hookSystem!.getHookName(e))
         .filter(Boolean);
-      const { patchSettingsFile } = require("../config/settings/index.ts");
+      const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", "disabledHooks", [...new Set(names)]);
     } catch (e) {
       getLogger().warn("HOOK", `持久化 disabledHooks（全部）失败（不阻断）: ${(e as Error)?.message}`);
@@ -1174,8 +1174,8 @@ export class TelemetryCommand implements Command {
   description() { return "显示当前会话遥测摘要（Span 树 + Metric 汇总）"; }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getTelemetryBus } = await import("../telemetry/index.ts");
-    const { ATTR } = await import("../telemetry/types.ts");
+    const { getTelemetryBus } = await import("@sid-code/core/telemetry/index.ts");
+    const { ATTR } = await import("@sid-code/core/telemetry/types.ts");
     const bus = getTelemetryBus();
 
     if (!bus.isEnabled()) {
@@ -1282,12 +1282,12 @@ const METRIC_LABELS: Record<string, string> = {
 };
 
 interface SpanTreeNode {
-  span: import("../telemetry/types.ts").SpanData;
+  span: import("@sid-code/core/telemetry/types.ts").SpanData;
   children: SpanTreeNode[];
 }
 
 /** 将扁平 span 列表构建为树 */
-function buildSpanTree(spans: readonly import("../telemetry/types.ts").SpanData[]): SpanTreeNode[] {
+function buildSpanTree(spans: readonly import("@sid-code/core/telemetry/types.ts").SpanData[]): SpanTreeNode[] {
   const nodeMap = new Map<string, SpanTreeNode>();
   const roots: SpanTreeNode[] = [];
 
@@ -1321,7 +1321,7 @@ function renderSpanNode(
   node: SpanTreeNode,
   lines: string[],
   prefix: string,
-  ATTR: typeof import("../telemetry/types.ts").ATTR,
+  ATTR: typeof import("@sid-code/core/telemetry/types.ts").ATTR,
   index?: number,
 ): void {
   const s = node.span;
@@ -1369,7 +1369,7 @@ function renderSpanNode(
 }
 
 /** 聚合 metric 数据 */
-function aggregateMetrics(metrics: readonly import("../telemetry/types.ts").MetricPoint[]): Record<string, {
+function aggregateMetrics(metrics: readonly import("@sid-code/core/telemetry/types.ts").MetricPoint[]): Record<string, {
   type: string; sum: number; count: number; max: number; last: number;
 }> {
   const agg: Record<string, { type: string; sum: number; count: number; max: number; last: number }> = {};
@@ -1421,10 +1421,10 @@ export class CacheCommand implements Command {
   description() { return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）"; }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { aggregateUsage, aggregateOverall } = await import("../telemetry/usage-aggregator.ts");
-    const { pruneUsageLedger } = await import("../telemetry/usage-ledger.ts");
+    const { aggregateUsage, aggregateOverall } = await import("@sid-code/core/telemetry/usage-aggregator.ts");
+    const { pruneUsageLedger } = await import("@sid-code/core/telemetry/usage-ledger.ts");
     const { getRecentCacheBreaks, getCacheHealthAdvice, formatCacheBreakReport } =
-      await import("../api/cache-detection.ts");
+      await import("@sid-code/core/api/cache-detection.ts");
 
     const tokens = args.trim().split(/\s+/).filter(Boolean);
 
@@ -1485,7 +1485,7 @@ export class CacheCommand implements Command {
     // ── --history：跨会话缓存中断遥测历史聚合（G13） ──
     if (showHistory) {
       const { queryCacheBreakHistory, summarizeCacheBreakHistory } =
-        await import("../telemetry/cache-telemetry.ts");
+        await import("@sid-code/core/telemetry/cache-telemetry.ts");
       const recent = queryCacheBreakHistory(20);
       const summary = summarizeCacheBreakHistory(500);
       const lines: string[] = ["缓存中断历史（跨会话，最近 20 条）:"];
@@ -1614,7 +1614,7 @@ export class TraceCommand implements Command {
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { resolvePaths, listSessions, resolveSession, buildDigest, renderHuman, renderList } =
-      await import("../trace/digest.ts");
+      await import("@sid-code/core/trace/digest.ts");
 
     const tokens = args.trim().split(/\s+/).filter(Boolean);
     const flags = new Set(tokens.filter((t) => t.startsWith("--")));
@@ -1627,7 +1627,7 @@ export class TraceCommand implements Command {
     // 支持 --period 1h|24h|7d（默认 24h）与 --provider NAME 过滤。
     if (flags.has("--health")) {
       const { aggregateProviderHealth, renderHealthText } =
-        await import("../telemetry/provider-health.ts");
+        await import("@sid-code/core/telemetry/provider-health.ts");
       const periodTok = positional.find((t) => /^(1h|24h|7d)$/.test(t));
       const periodMs =
         periodTok === "1h" ? 3600_000 :
@@ -1648,7 +1648,7 @@ export class TraceCommand implements Command {
     //（~/.sid-code/usage-ledger.jsonl），trajectories 被 LRU 清掉后账本仍在，
     // 而那恰恰是最需要这个视图的时刻。与脚本侧的分支顺序刻意一致。
     if (flags.has("--cache")) {
-      const { renderCacheSection } = await import("../trace/cache-report.ts");
+      const { renderCacheSection } = await import("@sid-code/core/trace/cache-report.ts");
       // --days N 限定窗口（不传 = 全部历史）
       const daysIdx = tokens.indexOf("--days");
       const daysRaw = daysIdx >= 0 ? tokens[daysIdx + 1] : undefined;

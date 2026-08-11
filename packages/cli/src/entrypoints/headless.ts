@@ -20,20 +20,20 @@ import {
   type ParentSignalMessage,
   writeChildMsg,
   readLineFromStream,
-} from "../agent/sub-agent-protocol.ts";
-import type { Provider } from "../llm/provider.ts";
-import { describeToolActivity } from "../agent/progress.ts";
+} from "@sid-code/core/agent/sub-agent-protocol.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import { describeToolActivity } from "@sid-code/core/agent/progress.ts";
 import type {
   ContentBlock,
   StreamEvent,
   Usage,
-} from "../llm/types.ts";
-import { accumulateUsage } from "../llm/types.ts";
-import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
-import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
-import { getLogger } from "../debug/index.ts";
-import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
-import { streamWithResilience } from "../llm/resilient-stream.ts";
+} from "@sid-code/core/llm/types.ts";
+import { accumulateUsage } from "@sid-code/core/llm/types.ts";
+import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
+import { resetOnStreamRestart, describeStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
+import { getLogger } from "@sid-code/core/debug/index.ts";
+import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
+import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
 
 // ============================================================
 // 主线
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
       const {
         setWireModelAliasesFromMap,
         setWireModelAliases,
-      } = require("../llm/wire-model.ts");
+      } = require("@sid-code/core/llm/wire-model.ts");
       if (init.wire_model_aliases) {
         setWireModelAliasesFromMap(init.wire_model_aliases);
       } else if (init.wire_model) {
@@ -146,7 +146,7 @@ async function runAgentLoop(
   buffer: { value: string },
   logError: (...args: unknown[]) => void,
 ): Promise<void> {
-  const { Manager: ContextManager } = await import("../context/manager.ts");
+  const { Manager: ContextManager } = await import("@sid-code/core/context/manager.ts");
 
   const ctxMgr = new ContextManager({
     maxTokens: init.max_tokens,
@@ -495,15 +495,15 @@ function createProvider(
   switch (name) {
     case "anthropic": {
       // 动态导入避免顶层阻塞
-      const { AnthropicProvider } = require("../llm/anthropic.ts");
+      const { AnthropicProvider } = require("@sid-code/core/llm/anthropic.ts");
       return new AnthropicProvider(apiKey, model, baseURL);
     }
     case "openai": {
-      const { OpenAIProvider } = require("../llm/openai.ts");
+      const { OpenAIProvider } = require("@sid-code/core/llm/openai.ts");
       return new OpenAIProvider(apiKey, model, baseURL);
     }
     case "ollama": {
-      const { OllamaProvider } = require("../llm/ollama.ts");
+      const { OllamaProvider } = require("@sid-code/core/llm/ollama.ts");
       return new OllamaProvider(model, baseURL);
     }
     default:

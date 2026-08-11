@@ -6,7 +6,7 @@
  */
 
 import React, { createContext, useContext, useMemo } from "react";
-import type { Usage } from "../../llm/types.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
 
 export interface SessionContextValue {
   /** Token 用量统计（会话累计） */

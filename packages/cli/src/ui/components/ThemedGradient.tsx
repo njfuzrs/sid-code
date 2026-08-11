@@ -10,11 +10,11 @@
  */
 
 import React from "react";
-import Text from "../../ink/components/Text.tsx";
-import type { Props as TextProps } from "../../ink/components/Text.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import type { Props as TextProps } from "@sid-code/tui-renderer/components/Text.tsx";
 import tinycolor from "tinycolor2";
 import tinygradient from "tinygradient";
-import type { Color } from "../../ink/styles.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { theme } from "../semantic-colors.ts";
 
 /**

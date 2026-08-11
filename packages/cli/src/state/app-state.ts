@@ -4,7 +4,7 @@
  * 纯数据部分用 DeepImmutable 包裹，包含函数/可变引用的部分排除在外
  */
 
-import type { Message, Usage } from "../llm/types.ts";
+import type { Message, Usage } from "@sid-code/core/llm/types.ts";
 import type { HistoryItem } from "../ui/types.ts";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../ui/App.tsx";
 import type { DialogType } from "../command/types.ts";

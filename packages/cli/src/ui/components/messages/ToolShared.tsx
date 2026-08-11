@@ -13,13 +13,13 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.tsx";
-import Text from "../../../ink/components/Text.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { BULLET, ARROW_TRAILING } from "../../constants/figures.ts";
 import { formatDuration } from "../../utils/format-duration.ts";
 import { fitPathToWidth, fitTextToWidth } from "../../utils/path-display.ts";
-import { stringWidth } from "../../../ink/stringWidth.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
 
 export const STATUS_INDICATOR_WIDTH = 2;
 

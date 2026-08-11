@@ -14,8 +14,8 @@ import {
   appendHistoryEntry,
   readHistoryDisplays,
   type HistoryEntry,
-} from "../../session/history-index.ts";
-import { getSessionId, getProjectRoot } from "../../bootstrap/state.ts";
+} from "@sid-code/core/session/history-index.ts";
+import { getSessionId, getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import { listPastes } from "../pasted-contents.ts";
 
 /** 内存展示上限（与 history-index 的读取上限一致即可） */

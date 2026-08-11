@@ -4,10 +4,10 @@
  */
 
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getVersion } from "../../../version.ts";
-import { getSessionMetrics } from "../../../debug/index.ts";
-import { setClipboard } from "../../../ink/termio/osc.ts";
-import { SessionState } from "../../../session/state.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
+import { getSessionMetrics } from "@sid-code/core/debug/index.ts";
+import { setClipboard } from "@sid-code/tui-renderer/termio/osc.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
 
 const mod: LocalCommandModule = {
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {

@@ -22,15 +22,15 @@
  */
 
 import React, { useEffect, useRef } from "react";
-import Box from "../../ink/components/Box.tsx";
-import Text from "../../ink/components/Text.tsx";
-import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.ts";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { useAnimationFrame } from "@sid-code/tui-renderer/hooks/use-animation-frame.ts";
 import { useKeybindings } from "../contexts/KeybindingContext.tsx";
-import { shouldShowHint, markHintShown } from "../../config/app-config.ts";
-import type { TodoItem } from "../../tool/todo-write.ts";
+import { shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
-import { stringWidth } from "../../ink/stringWidth.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { useExpandLevel } from "../contexts/UIStateContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";

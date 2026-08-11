@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getThinkingEnvOverride, type ThinkingSetting } from "../../../llm/effort.ts";
+import { getThinkingEnvOverride, type ThinkingSetting } from "@sid-code/core/llm/effort.ts";
 
 /**
  * /think 命令实现（按需加载）

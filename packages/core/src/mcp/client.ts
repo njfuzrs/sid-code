@@ -20,7 +20,7 @@ import type {
   GetPromptResult,
   MCPPrompt,
 } from "./types.ts";
-import { getRawVersion } from "../version.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 import { getLogger } from "../debug/logger.ts";
 import { basename } from "path";
 
