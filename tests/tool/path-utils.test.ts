@@ -143,20 +143,24 @@ describe("formatPathNotFoundError", () => {
 
   it("目录段拼错（父目录不存在）→ 向上回溯并给出正确目录段候选", () => {
     const cwd = process.cwd();
-    // src 写成 srcc（多一个 c），后续段全都不存在 → 父目录不存在分支
+    // packages 写成 packagess（多一个 s），后续段全都不存在 → 父目录不存在分支。
+    //
+    // ⚠️ 这条用例的前提是「拼错的那一段有一个**真实存在**的兄弟目录可供纠正」——
+    // 段级纠错要靠列出父目录（这里是仓库根）来找相似名。原先用的是 srcc → src，
+    // P2-2 分包把 src/ 搬空、目录整体删除后，仓库根再没有 src 可匹配，
+    // 于是纠错分支拿不到候选，只输出「父目录也不存在」而没有后半句提示。
+    // 换成仓库根真实存在的 packages/。
     const msg = formatPathNotFoundError(
-      resolve(cwd, "srcc/tool/path-utils.ts"),
+      resolve(cwd, "packagess/core/src/tool/path-utils.ts"),
       cwd,
       3,
     );
     expect(msg).toContain("也不存在");
-    expect(msg).toContain('路径段 "srcc" 疑似应为 "src"');
-    // 给出可尝试的完整路径（把正确段拼回去）。
-    // 注意这里**故意**是 `src/tool/...` 而非分包后的 packages/core/src/...：
-    // 被测函数只做「段级拼写纠错」（srcc → src），它纠正的是输入里那一段，
-    // 不会替你补出包路径。断言必须跟被测行为一致，不能跟着分包改。
+    expect(msg).toContain('路径段 "packagess" 疑似应为 "packages"');
+    // 给出可尝试的完整路径（把正确段拼回去）。被测函数只做**段级**拼写纠错，
+    // 纠正的是输入里那一段、其余段原样保留，不会替你重排路径结构。
     expect(msg).toContain("可尝试完整路径");
-    expect(msg).toContain(resolve(cwd, "src/tool/path-utils.ts"));
+    expect(msg).toContain(resolve(cwd, "packages/core/src/tool/path-utils.ts"));
   });
 
   it("目录段被吞掉分隔符（& 被终端吞掉的症状）→ 归一后精确命中", () => {
