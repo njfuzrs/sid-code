@@ -27,8 +27,8 @@ import {
 } from "./VirtualizedList.tsx";
 import { useScrollable, type ScrollableEntry } from "../contexts/ScrollProvider.tsx";
 type ScrollableEntryWithoutId = Omit<ScrollableEntry, "id">;
-import Box from "../../ink/components/Box.js";
-import type { DOMElement } from "../../ink/dom.js";
+import Box from "../../ink/components/Box.tsx";
+import type { DOMElement } from "../../ink/dom.ts";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import { theme } from "../semantic-colors.ts";
 

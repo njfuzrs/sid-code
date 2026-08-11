@@ -10,10 +10,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "../../ink/styles.js";
+import type { Color } from "../../ink/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { SUCCESS_MARK, ERROR_MARK, TODO_PENDING, WARNING_MARK, ARROW_PROMPT } from "../constants/figures.ts";

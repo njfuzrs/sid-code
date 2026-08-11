@@ -9,9 +9,9 @@
  */
 
 import React, { useRef, useCallback, useEffect } from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
-import type { DOMElement } from "../../ink/dom.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
+import type { DOMElement } from "../../ink/dom.ts";
 import { Footer } from "./Footer.tsx";
 import { DialogSwitch } from "./DialogSwitch.tsx";
 import { MainContent } from "./MainContent.tsx";

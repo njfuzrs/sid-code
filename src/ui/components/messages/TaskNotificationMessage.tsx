@@ -12,9 +12,9 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.js";
-import Text from "../../../ink/components/Text.js";
-import type { Color } from "../../../ink/styles.js";
+import Box from "../../../ink/components/Box.tsx";
+import Text from "../../../ink/components/Text.tsx";
+import type { Color } from "../../../ink/styles.ts";
 import { theme } from "../../semantic-colors.ts";
 import { getAgentInkColor } from "../../../agent/color.ts";
 import { BULLET, TREE_BRANCH } from "../../constants/figures.ts";

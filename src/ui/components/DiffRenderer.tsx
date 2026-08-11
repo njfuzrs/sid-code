@@ -1,14 +1,14 @@
 import React, { useMemo } from 'react';
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
-import { RawAnsi } from "../../ink/components/RawAnsi.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
+import { RawAnsi } from "../../ink/components/RawAnsi.tsx";
 import crypto from 'node:crypto';
 import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
 import { colorizeCode, colorizeLine } from './CodeColorizer.js';
 import { theme as semanticTheme } from '../semantic-colors.js';
 import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
 import { ELLIPSIS, formatCollapsedSummary } from '../constants/collapse.ts';
-import type { Color } from '../../ink/styles.js';
+import type { Color } from '../../ink/styles.ts';
 
 /**
  * DF3:超过此行数的 diff 走 RawAnsi 单 Yoga leaf 路径(预渲染 ANSI 字符串),

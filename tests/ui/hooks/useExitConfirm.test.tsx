@@ -12,7 +12,7 @@
 import { test, expect, describe, afterEach, jest } from "bun:test";
 import React, { useState } from "react";
 import { render } from "../../../src/ink/_vendor/testing.tsx";
-import Text from "../../../src/ink/components/Text.js";
+import Text from "../../../src/ink/components/Text.tsx";
 import { useExitConfirm, EXIT_CONFIRM_WINDOW_MS } from "../../../src/ui/hooks/useExitConfirm.ts";
 
 /**

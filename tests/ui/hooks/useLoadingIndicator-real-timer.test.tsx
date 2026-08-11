@@ -15,9 +15,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.js";
-import Box from "../../../src/ink/components/Box.js";
-import Text from "../../../src/ink/components/Text.js";
+import { render } from "../../../src/ink/_vendor/testing.tsx";
+import Box from "../../../src/ink/components/Box.tsx";
+import Text from "../../../src/ink/components/Text.tsx";
 import { useLoadingIndicator } from "../../../src/ui/hooks/useLoadingIndicator.ts";
 import { StreamingState } from "../../../src/ui/types.ts";
 

@@ -12,7 +12,7 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.js";
+import { render } from "../../../src/ink/_vendor/testing.tsx";
 import { DiffRenderer } from "../../../src/ui/components/DiffRenderer.tsx";
 import { LoadingIndicator } from "../../../src/ui/components/LoadingIndicator.tsx";
 import { CopyModeWarning } from "../../../src/ui/components/CopyModeWarning.tsx";

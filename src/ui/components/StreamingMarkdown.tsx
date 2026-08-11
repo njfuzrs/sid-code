@@ -28,7 +28,7 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.js";
+import Box from "../../ink/components/Box.tsx";
 import { MarkdownAnsi } from "./MarkdownAnsi.tsx";
 import { cachedLexer } from "../markdown.ts";
 

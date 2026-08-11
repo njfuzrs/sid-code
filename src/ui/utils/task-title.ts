@@ -13,7 +13,7 @@
  * - 去掉 @文件引用 / 前导 slash 命令 / 多余空白,保留语义主体。
  */
 
-import { stringWidth } from "../../ink/stringWidth.js";
+import { stringWidth } from "../../ink/stringWidth.ts";
 
 /** 标题最大显示宽度（列）。OSC 标题栏空间有限,过长会被终端自行截断。 */
 const MAX_TITLE_WIDTH = 24;

@@ -10,9 +10,9 @@
  */
 
 import React from "react";
-import Box from "../../../ink/components/Box.js";
-import Text from "../../../ink/components/Text.js";
-import { ClockContext } from "../../../ink/components/ClockContext.js";
+import Box from "../../../ink/components/Box.tsx";
+import Text from "../../../ink/components/Text.tsx";
+import { ClockContext } from "../../../ink/components/ClockContext.tsx";
 import { theme } from "../../semantic-colors.ts";
 import { THINKING_MARK, CURSOR } from "../../constants/figures.ts";
 import { formatLargeNumber } from "../../utils/format-number.ts";

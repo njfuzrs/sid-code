@@ -8,7 +8,7 @@
  */
 
 import React, { useCallback, memo } from "react";
-import Box from "../../ink/components/Box.js";
+import Box from "../../ink/components/Box.tsx";
 import { ScrollableList } from "./ScrollableList.tsx";
 import { SCROLL_TO_ITEM_END } from "./VirtualizedList.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";

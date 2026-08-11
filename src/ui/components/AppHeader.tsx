@@ -8,7 +8,7 @@
 import React from "react";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
-import useStdout from "../../ink/_vendor/use-stdout.js";
+import useStdout from "../../ink/_vendor/use-stdout.ts";
 
 interface AppHeaderProps {
   version: string;

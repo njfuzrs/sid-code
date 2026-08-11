@@ -10,8 +10,8 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import useApp from "../ink/hooks/use-app.js";
-import inkInstances from "../ink/instances.js";
+import useApp from "../ink/hooks/use-app.ts";
+import inkInstances from "../ink/instances.ts";
 import { killAllRunningTasks, hasRunningTasks, dismissTerminalTasks, hasDismissableTasks, hasPendingEviction } from "../task/index.ts";
 import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
 import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";

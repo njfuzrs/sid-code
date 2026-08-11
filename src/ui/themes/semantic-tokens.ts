@@ -1,7 +1,7 @@
 // 语义颜色接口定义
 // 参考 gemini-cli/packages/cli/src/ui/themes/semantic-tokens.ts
 
-import type { Color } from '../../ink/styles.js';
+import type { Color } from '../../ink/styles.ts';
 
 /**
  * 语义色 token 的值类型 = ink 的 `Color`（`#hex` / `rgb()` / `ansi256()` / `ansi:*`），

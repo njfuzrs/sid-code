@@ -21,8 +21,8 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import stringWidth from "string-width";
 import { theme } from '../semantic-colors.ts';
 import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS, SEARCH_MARK, WARNING_MARK } from '../constants/figures.ts';

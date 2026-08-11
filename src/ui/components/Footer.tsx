@@ -27,8 +27,8 @@
 
 import React from "react";
 import stringWidth from "string-width";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import type { Usage } from "../../llm/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK, TOKEN_IN, TOKEN_OUT } from "../constants/figures.ts";

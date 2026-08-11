@@ -8,9 +8,9 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
-import useStdout from "../../ink/_vendor/use-stdout.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
+import useStdout from "../../ink/_vendor/use-stdout.ts";
 import { theme } from "../semantic-colors.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { useKeybindings } from "../contexts/KeybindingContext.tsx";

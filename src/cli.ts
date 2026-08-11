@@ -692,7 +692,7 @@ async function runSessionPicker(
   opts: { searchFirst?: boolean; initialSearchQuery?: string } = {}
 ): Promise<string | null> {
   const React = await import("react");
-  const { default: render } = await import("./ink/root.js");
+  const { default: render } = await import("./ink/root.ts");
   const { SessionBrowser } = await import("./ui/SessionBrowser.tsx");
   const { sidPaths } = await import("./config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");

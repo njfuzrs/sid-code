@@ -16,10 +16,10 @@
  */
 
 import { diffWordsWithSpace } from 'diff';
-import { applyColor, colorize, applyTextStyles } from '../../ink/colorize.js';
-import { stringWidth } from '../../ink/stringWidth.js';
+import { applyColor, colorize, applyTextStyles } from '../../ink/colorize.ts';
+import { stringWidth } from '../../ink/stringWidth.ts';
 import { ELLIPSIS } from '../constants/collapse.ts';
-import type { Color } from '../../ink/styles.js';
+import type { Color } from '../../ink/styles.ts';
 import type { DiffLine, DiffRenderPlanItem } from './DiffRenderer.js';
 
 /** 生产 ANSI 行所需的颜色(从 semanticTheme 取实际色值,避免本模块依赖主题单例) */

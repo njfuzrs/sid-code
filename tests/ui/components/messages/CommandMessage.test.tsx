@@ -4,7 +4,7 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../../src/ink/_vendor/testing.js";
+import { render } from "../../../../src/ink/_vendor/testing.tsx";
 import {
   CommandMessage,
   isBashCommand,

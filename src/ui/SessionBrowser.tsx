@@ -11,10 +11,10 @@
  */
 
 import React, { useState, useCallback, useMemo, useEffect } from "react";
-import Box from "../ink/components/Box.js";
-import Text from "../ink/components/Text.js";
-import useInput from "../ink/hooks/use-input.js";
-import useStdout from "../ink/_vendor/use-stdout.js";
+import Box from "../ink/components/Box.tsx";
+import Text from "../ink/components/Text.tsx";
+import useInput from "../ink/hooks/use-input.ts";
+import useStdout from "../ink/_vendor/use-stdout.ts";
 import type { Config } from "../config/config.ts";
 import type { SessionInfo } from "../session/utils.ts";
 import {

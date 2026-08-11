@@ -20,7 +20,7 @@ import { theme } from "../semantic-colors.ts";
 // 的类型就是 Color。声明成 string 时，Footer 那 6 个消费点全部编译不过（这批 tsc
 // 报错的来源），而在消费点撒 `as Color` 只是把类型漏洞下推——真正的收口在这里：
 // 所有 color 的源头都是 theme.* 语义 token，本身已经是合法 Color。
-import type { Color } from "../../ink/styles.js";
+import type { Color } from "../../ink/styles.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";

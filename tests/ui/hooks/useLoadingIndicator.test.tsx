@@ -17,7 +17,7 @@ import { render } from "../../../src/ink/_vendor/testing.tsx";
 import { useLoadingIndicator } from "../../../src/ui/hooks/useLoadingIndicator.ts";
 import { StreamingState } from "../../../src/ui/types.ts";
 import { SLOW_RESPONSE_HINTS } from "../../../src/ui/constants/loading-phrases.ts";
-import Text from "../../../src/ink/components/Text.js";
+import Text from "../../../src/ink/components/Text.tsx";
 
 /** 极简宿主：把 hook 返回值渲染成 `E<秒>|<文案>|<慢提示>` 便于字节断言。 */
 function Harness({

@@ -7,8 +7,8 @@
  */
 
 import React from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT, TODO_COMPLETED, THINKING_ON, THINKING_OFF, EFFORT_AUTO } from "../constants/figures.ts";

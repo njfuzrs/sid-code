@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import inkInstances from "../../ink/instances.js";
+import inkInstances from "../../ink/instances.ts";
 import { getLogger } from "../../debug/logger.ts";
 
 /**

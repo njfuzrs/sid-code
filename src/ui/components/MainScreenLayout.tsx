@@ -11,9 +11,9 @@
  */
 
 import React, { memo } from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
-import Static from "../../ink/_vendor/Static.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
+import Static from "../../ink/_vendor/Static.tsx";
 import { Footer } from "./Footer.tsx";
 import { DialogSwitch } from "./DialogSwitch.tsx";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";

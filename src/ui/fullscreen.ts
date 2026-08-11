@@ -7,8 +7,8 @@
  * 退出时 src/ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
-import render from "../ink/root.js";
-import { AlternateScreen } from "../ink/components/AlternateScreen.js";
+import render from "../ink/root.ts";
+import { AlternateScreen } from "../ink/components/AlternateScreen.tsx";
 import React, { type ReactElement } from "react";
 import { getLogger } from "../debug/logger.ts";
 import { registerProcessOutputErrorHandlers } from "../utils/process.ts";

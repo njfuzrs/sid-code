@@ -6,11 +6,11 @@
  */
 
 import React, { useRef, useState } from "react";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
-import { Ansi } from "../../ink/Ansi.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
+import { Ansi } from "../../ink/Ansi.tsx";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import type { Color } from "../../ink/styles.js";
+import type { Color } from "../../ink/styles.ts";
 import { useTerminalDimensions } from "../contexts/TerminalContext.tsx";
 import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
 import { getToolDetailFull } from "../ui-utils.ts";

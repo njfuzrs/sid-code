@@ -11,10 +11,10 @@
 
 import React from "react";
 import stringWidth from "string-width";
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "../../ink/styles.js";
+import type { Color } from "../../ink/styles.ts";
 import { formatCollapsedSummary } from "../constants/collapse.ts";
 
 interface SlicingMaxSizedBoxProps {

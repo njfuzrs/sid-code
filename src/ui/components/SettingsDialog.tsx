@@ -4,8 +4,8 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import Box from "../../ink/components/Box.js";
-import Text from "../../ink/components/Text.js";
+import Box from "../../ink/components/Box.tsx";
+import Text from "../../ink/components/Text.tsx";
 import { theme } from '../semantic-colors.ts';
 import { RadioButtonSelect } from './shared/RadioButtonSelect.tsx';
 import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';

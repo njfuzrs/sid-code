@@ -16,7 +16,7 @@ import {
   fitPathToWidth,
   fitTextToWidth,
 } from "../../src/ui/utils/path-display.ts";
-import { stringWidth } from "../../src/ink/stringWidth.js";
+import { stringWidth } from "../../src/ink/stringWidth.ts";
 
 const CWD = "/Users/me/Code/person/sid-code";
 const HOME = "/Users/me";

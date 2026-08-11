@@ -11,7 +11,7 @@
  */
 
 import type { ThoughtSummary } from "./history-adapter.ts";
-import type { Color } from "../ink/styles.js";
+import type { Color } from "../ink/styles.ts";
 
 // ── 流式状态 ──
 

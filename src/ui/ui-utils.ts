@@ -5,7 +5,7 @@
  */
 
 import { ELLIPSIS } from "./constants/collapse.ts";
-import { stringWidth } from "../ink/stringWidth.js";
+import { stringWidth } from "../ink/stringWidth.ts";
 import { shortenPathForDisplay, stripPathNoiseInText } from "./utils/path-display.ts";
 
 /** 助手消息右侧留白（用于视觉区分） */

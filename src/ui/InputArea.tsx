@@ -17,12 +17,12 @@
  */
 
 import React, { useCallback, useRef, useEffect, useState } from "react";
-import Box from "../ink/components/Box.js";
-import Text from "../ink/components/Text.js";
-import useStdout from "../ink/_vendor/use-stdout.js";
+import Box from "../ink/components/Box.tsx";
+import Text from "../ink/components/Text.tsx";
+import useStdout from "../ink/_vendor/use-stdout.ts";
 import { getLogger } from "../debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
-import type { Color } from "../ink/styles.js";
+import type { Color } from "../ink/styles.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";

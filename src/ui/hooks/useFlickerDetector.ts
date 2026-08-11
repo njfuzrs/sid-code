@@ -8,8 +8,8 @@
  */
 
 import { useEffect } from "react";
-import measureElement from "../../ink/measure-element.js";
-import type { DOMElement } from "../../ink/dom.js";
+import measureElement from "../../ink/measure-element.ts";
+import type { DOMElement } from "../../ink/dom.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { getLogger } from "../../debug/logger.ts";
 

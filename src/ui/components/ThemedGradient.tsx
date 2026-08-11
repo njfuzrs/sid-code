@@ -10,11 +10,11 @@
  */
 
 import React from "react";
-import Text from "../../ink/components/Text.js";
-import type { Props as TextProps } from "../../ink/components/Text.js";
+import Text from "../../ink/components/Text.tsx";
+import type { Props as TextProps } from "../../ink/components/Text.tsx";
 import tinycolor from "tinycolor2";
 import tinygradient from "tinygradient";
-import type { Color } from "../../ink/styles.js";
+import type { Color } from "../../ink/styles.ts";
 import { theme } from "../semantic-colors.ts";
 
 /**
