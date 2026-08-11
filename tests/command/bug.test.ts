@@ -5,8 +5,8 @@
  * setClipboard 走真实 OSC 序列（返回字符串，不实际写系统剪贴板），测试只验报告内容。
  */
 import { describe, test, expect } from "bun:test";
-import bugCmd from "../../src/command/commands/bug/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import bugCmd from "@sid-code/cli/command/commands/bug/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 const loadBug = () => (bugCmd as LocalCommand).load();
 

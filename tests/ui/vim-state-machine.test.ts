@@ -6,13 +6,13 @@
  * text object(diw ci" da() / f/F/t/T + ;, 重复 / count 前缀 / y+p 粘贴 / J / >> << / visual。
  */
 import { describe, test, expect } from "bun:test";
-import { reduceVimEngine } from "../../src/ui/vim/transitions.ts";
+import { reduceVimEngine } from "@sid-code/cli/ui/vim/transitions.ts";
 import {
   INITIAL_ENGINE_STATE,
   type VimEngineState,
   type VimKey,
   type VimBuffer,
-} from "../../src/ui/vim/types.ts";
+} from "@sid-code/cli/ui/vim/types.ts";
 
 /** 造一个按键。单字符键 name 即字符；大写字母走 shift。 */
 function k(name: string, extra: Partial<VimKey> = {}): VimKey {

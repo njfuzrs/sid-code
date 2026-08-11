@@ -9,17 +9,17 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import type { Config } from "../../src/config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 import {
   resolveCurrentModelConfig,
   resolveMaxOutputTokensForModel,
   normalizeConfigKeysForTest,
-} from "../../src/config/config.ts";
+} from "@sid-code/core/config/config.ts";
 import {
   lookupWireModelAlias,
   resetWireModelAliases,
-} from "../../src/llm/wire-model.ts";
-import { TokenEstimator } from "../../src/llm/token-estimator.ts";
+} from "@sid-code/core/llm/wire-model.ts";
+import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
 
 function makeConfig(over: Partial<Config> = {}): Config {
   return {
@@ -183,7 +183,7 @@ describe("provider 启发式推断按真名（缓存三段归一化口径）", (
   // OpenAI/DeepSeek 的 inputTokens **含命中**。provider 判错 → 三段拆分口径反掉 →
   // 成本与缓存命中率静默算错，不报错。别名带渠道前缀时 `/^claude/i` 就会判错。
   test("inferPricingProvider：前缀式别名靠 modelId 判回 anthropic", async () => {
-    const { inferPricingProvider } = await import("../../src/api/cost-tracker.ts");
+    const { inferPricingProvider } = await import("@sid-code/core/api/cost-tracker.ts");
     const models = [{ name: "gw-claude-sonnet-5", modelId: "claude-sonnet-5" }];
     expect(inferPricingProvider("gw-claude-sonnet-5", models)).toBe("anthropic");
     // 没有 modelId 时按别名判 —— 会落 openai，正是修前的行为
@@ -191,14 +191,14 @@ describe("provider 启发式推断按真名（缓存三段归一化口径）", (
   });
 
   test("SessionState.inferProvider：同上口径", async () => {
-    const { SessionState } = await import("../../src/session/state.ts");
+    const { SessionState } = await import("@sid-code/core/session/state.ts");
     const models = [{ name: "gw-claude-sonnet-5", modelId: "claude-sonnet-5" }];
     expect(SessionState.inferProvider("gw-claude-sonnet-5", models)).toBe("anthropic");
   });
 
   test("用户显式配的 provider 永远最高优先（不被真名推断覆盖）", async () => {
-    const { inferPricingProvider } = await import("../../src/api/cost-tracker.ts");
-    const { SessionState } = await import("../../src/session/state.ts");
+    const { inferPricingProvider } = await import("@sid-code/core/api/cost-tracker.ts");
+    const { SessionState } = await import("@sid-code/core/session/state.ts");
     // 真名像 claude，但用户显式说这条渠道走 openai 协议 → 必须尊重用户
     const models = [{ name: "weird", modelId: "claude-sonnet-5", provider: "openai" }];
     expect(inferPricingProvider("weird", models)).toBe("openai");
@@ -206,7 +206,7 @@ describe("provider 启发式推断按真名（缓存三段归一化口径）", (
   });
 
   test("存量配置（无 modelId）行为完全不变", async () => {
-    const { inferPricingProvider } = await import("../../src/api/cost-tracker.ts");
+    const { inferPricingProvider } = await import("@sid-code/core/api/cost-tracker.ts");
     expect(inferPricingProvider("claude-sonnet-5", [{ name: "claude-sonnet-5" }])).toBe("anthropic");
     expect(inferPricingProvider("glm-5", [{ name: "glm-5" }])).toBe("openai");
   });
@@ -214,7 +214,7 @@ describe("provider 启发式推断按真名（缓存三段归一化口径）", (
 
 describe("计价仍按别名（两渠道差价不得被抹平）", () => {
   test("同一真名的两条渠道各自计价", async () => {
-    const { resolvePricing } = await import("../../src/api/cost-tracker.ts");
+    const { resolvePricing } = await import("@sid-code/core/api/cost-tracker.ts");
     const models = [
       { name: "gw", modelId: "claude-sonnet-5", baseURL: "https://gateway.internal/v1", pricing: { input: 1, output: 2 } },
       { name: "official", modelId: "claude-sonnet-5", baseURL: "https://api.anthropic.com", pricing: { input: 3, output: 6 } },

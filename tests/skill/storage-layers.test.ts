@@ -8,13 +8,13 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import {
   setPluginOnlyPolicy,
   isRestrictedToPluginOnly,
   isSourceAllowedUnderLock,
   __resetPluginOnlyPolicy,
-} from "../../src/config/plugin-only-policy.ts";
+} from "@sid-code/core/config/plugin-only-policy.ts";
 
 /** 在 <base>/<sub>/skills/<name>/SKILL.md 写一个最小 skill */
 function writeSkill(base: string, sub: string, name: string, description: string): void {

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { deriveEffort, deriveThinking } from "../../src/ui/hooks/useStatusLineData.ts";
+import { deriveEffort, deriveThinking } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
 import {
   EFFORT_LOW,
   EFFORT_MEDIUM,
@@ -13,7 +13,7 @@ import {
   EFFORT_AUTO,
   THINKING_ON,
   THINKING_OFF,
-} from "../../src/ui/constants/figures.ts";
+} from "@sid-code/cli/ui/constants/figures.ts";
 
 const GRAY = "#888";
 

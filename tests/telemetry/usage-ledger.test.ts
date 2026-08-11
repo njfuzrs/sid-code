@@ -14,13 +14,13 @@ import {
   readUsageLedger,
   pruneUsageLedger,
   dedupeBySession,
-} from "../../src/telemetry/usage-ledger.ts";
-import type { UsageLedgerEntry } from "../../src/telemetry/usage-ledger.ts";
+} from "@sid-code/core/telemetry/usage-ledger.ts";
+import type { UsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger.ts";
 import {
   periodKey,
   aggregateUsage,
   aggregateOverall,
-} from "../../src/telemetry/usage-aggregator.ts";
+} from "@sid-code/core/telemetry/usage-aggregator.ts";
 
 let tmpDir: string;
 

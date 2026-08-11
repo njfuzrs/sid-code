@@ -14,15 +14,15 @@ import {
   releaseDaemonLock,
   isDaemonRunning,
   readDaemonLock,
-} from "../../src/daemon/lock.ts";
+} from "@sid-code/core/daemon/lock.ts";
 import {
   registerDurableProject,
   listDurableProjects,
   unregisterDurableProject,
-} from "../../src/daemon/durable-projects.ts";
-import { extractFinalResponse } from "../../src/daemon/headless-executor.ts";
-import { Scheduler } from "../../src/cron/scheduler.ts";
-import type { CronTask } from "../../src/cron/types.ts";
+} from "@sid-code/core/daemon/durable-projects.ts";
+import { extractFinalResponse } from "@sid-code/core/daemon/headless-executor.ts";
+import { Scheduler } from "@sid-code/core/cron/scheduler.ts";
+import type { CronTask } from "@sid-code/core/cron/types.ts";
 
 let tmpHome: string;
 let prevConfigDir: string | undefined;
@@ -64,7 +64,7 @@ describe("守护进程单例锁", () => {
 
   it("stale 锁（已死 pid）被回收", () => {
     // 手动写一个不存在 pid 的锁
-    const { sidPaths } = require("../../src/config/paths.ts");
+    const { sidPaths } = require("@sid-code/core/config/paths.ts");
     mkdirSync(sidPaths.state(), { recursive: true });
     writeFileSync(
       sidPaths.stateFile("daemon.lock"),

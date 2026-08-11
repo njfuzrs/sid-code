@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { aggregateProviderHealth, renderHealthText } from "../../src/telemetry/provider-health.ts";
+import { aggregateProviderHealth, renderHealthText } from "@sid-code/core/telemetry/provider-health.ts";
 
 describe("T15: Provider 健康度聚合", () => {
   let tempDir: string;
@@ -313,7 +313,7 @@ describe("T15: Provider 健康度聚合", () => {
      * 将来谁把其中一处的逻辑改成第二份实现，这条会红。
      */
     it("★ 与 digest.aggregateProviderStats 同口径（对账，防止再次只改一处）", async () => {
-      const { aggregateProviderStats } = await import("../../src/trace/digest.ts");
+      const { aggregateProviderStats } = await import("@sid-code/core/trace/digest.ts");
       const events = [
         { event: "AfterModelRaw", timestamp: now, data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 } },
         { event: "StreamPhase", timestamp: now, session_id: "s-x", data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1100 } },

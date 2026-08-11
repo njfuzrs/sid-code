@@ -13,9 +13,9 @@ import {
   isAutoMemPath,
   memoryFilename,
   stripMemoryTypePrefix,
-} from "../../src/memory/paths.ts";
-import { scanMemoryFiles, formatMemoryManifest, parseFrontmatter, stripFrontmatter } from "../../src/memory/scan.ts";
-import { memoryAgeDays, memoryAge, buildFreshnessWarning } from "../../src/memory/freshness.ts";
+} from "@sid-code/core/memory/paths.ts";
+import { scanMemoryFiles, formatMemoryManifest, parseFrontmatter, stripFrontmatter } from "@sid-code/core/memory/scan.ts";
+import { memoryAgeDays, memoryAge, buildFreshnessWarning } from "@sid-code/core/memory/freshness.ts";
 
 describe("paths — 安全验证", () => {
   test("sanitizeProjectKey 去掉分隔符与特殊字符", () => {

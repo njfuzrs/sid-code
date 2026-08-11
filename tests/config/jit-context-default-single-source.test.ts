@@ -24,7 +24,7 @@ import { describe, test, expect } from "bun:test";
 import {
   JIT_CONTEXT_DEFAULT,
   isJitContextEnabled,
-} from "../../src/config/jit-context.ts";
+} from "@sid-code/core/config/jit-context.ts";
 
 /** 实现自身豁免 —— 常量与判定函数就住在这里 */
 const IMPLEMENTATION_FILE = "src/config/jit-context.ts";
@@ -43,9 +43,12 @@ describe("jitContext 默认值单一事实源", () => {
     expect(isJitContextEnabled({ jitContext: false })).toBe(false);
   });
 
-  test("src/ 下不得裸比较 config.jitContext（新增消费点必须走 isJitContextEnabled）", async () => {
+  test("生产源码下不得裸比较 config.jitContext（新增消费点必须走 isJitContextEnabled）", async () => {
+    // P2-2 分包：生产源码在 packages/*/src/ 下（4 个包），不再是单一 src/。
+    // 漏包 = 门禁少扫一片；下面的 files.length 断言就是防这种空转的
+    // （分包时它真的红了：src/ 搬空后只扫到 1 个文件）。
     const files = await Array.fromAsync(
-      new Bun.Glob("src/**/*.{ts,tsx}").scan("."),
+      new Bun.Glob("packages/{shared,tui-renderer,core,cli}/src/**/*.{ts,tsx}").scan("."),
     );
     // 门禁自身的有效性前提：真的扫到了文件。Glob 失效时应该红，不该静默通过。
     expect(files.length).toBeGreaterThan(100);

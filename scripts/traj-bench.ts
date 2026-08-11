@@ -1,4 +1,4 @@
-import { buildTrajectory } from "../src/trace/builder.ts";
+import { buildTrajectory } from "@sid-code/core/trace/builder.ts";
 function makePair(i: number) {
   return {
     timestamp: new Date(0).toISOString(), index: i, model: "test-model",

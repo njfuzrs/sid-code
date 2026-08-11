@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { Registry } from "../../src/tool/registry.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
 // 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "@sid-code/core/tool/types.ts";
 
 /** Mock 只读工具 */
 class MockReadOnlyTool implements Tool {

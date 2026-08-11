@@ -7,8 +7,8 @@
 
 import { test, expect, describe, beforeAll } from "bun:test";
 import chalk from "chalk";
-import { buildDiffAnsiLines, type DiffAnsiColors } from "../../src/ui/components/diffAnsiLines.ts";
-import { planDiffWithContextCollapse, type DiffLine } from "../../src/ui/components/DiffRenderer.tsx";
+import { buildDiffAnsiLines, type DiffAnsiColors } from "@sid-code/cli/ui/components/diffAnsiLines.ts";
+import { planDiffWithContextCollapse, type DiffLine } from "@sid-code/cli/ui/components/DiffRenderer.tsx";
 
 // colorize 用全局 chalk 单例;测试环境默认 level=0(无色),这里强制开色以验证 ANSI 转义。
 beforeAll(() => {

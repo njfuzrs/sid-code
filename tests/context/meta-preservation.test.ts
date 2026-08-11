@@ -15,9 +15,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager } from "../../src/context/manager.ts";
-import { ToolOutputMaskingService } from "../../src/context/tool-output-masking.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { Manager } from "@sid-code/core/context/manager.ts";
+import { ToolOutputMaskingService } from "@sid-code/core/context/tool-output-masking.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 一组 tool_use / tool_result 配对，assistant 侧带 _meta */
 function pushToolPair(mgr: Manager, id: string, output: string): void {

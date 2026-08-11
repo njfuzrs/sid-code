@@ -25,8 +25,8 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { cacheBreaksPath } from "../../src/telemetry/cache-telemetry.ts";
-import { getSidHome } from "../../src/config/paths.ts";
+import { cacheBreaksPath } from "@sid-code/core/telemetry/cache-telemetry.ts";
+import { getSidHome } from "@sid-code/core/config/paths.ts";
 
 /**
  * 会触发落盘的导出。import 了其中任意一个的测试文件都必须声明隔离。

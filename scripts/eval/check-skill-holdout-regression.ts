@@ -2,7 +2,7 @@
 /**
  * check-skill-holdout-regression.ts —— B7-7 Trace2Skill 蒸馏护栏 2
  *
- * 触发：pre-commit / pre-merge hook 检测到 staged 文件含 SKILL.md（路径形如 src/skill/builtin/<name>/SKILL.md
+ * 触发：pre-commit / pre-merge hook 检测到 staged 文件含 SKILL.md（路径形如 packages/core/src/skill/builtin/<name>/SKILL.md
  *      或 .sid-code/skills/**\/SKILL.md），即调用本扫描器。
  *
  * 行为：
@@ -98,7 +98,7 @@ export function surveyHoldout(holdoutDir: string = HOLDOUT_DIR): HoldoutSurvey {
 }
 
 function isSkillMd(path: string): boolean {
-  // src/skill/builtin/<name>/SKILL.md  或  .sid-code/skills/**/SKILL.md  或 .md 在 builtin 下
+  // packages/core/src/skill/builtin/<name>/SKILL.md  或  .sid-code/skills/**/SKILL.md  或 .md 在 builtin 下
   const norm = path.replace(/\\/g, "/");
   return /\/SKILL\.md$/.test(norm) || /\/skills\/.+\.md$/.test(norm);
 }
@@ -112,7 +112,10 @@ async function main(argv: string[]): Promise<number> {
     stagedSkills = args.filter(isSkillMd);
   } else {
     // 无参数 → pre-commit 之外的手动调用，扫所有 builtin SKILL.md
-    stagedSkills = walkYaml(join(SID_CODE_ROOT, "src", "skill", "builtin"))
+    // P2-2 分包：builtin Skill 归 core 包。walkYaml 对不存在的目录返回 []，
+    // 路径指错不会报错，只会「扫到 0 个 SKILL.md → 打印 skip → return 0」——
+    // 这道 holdout 泄露门禁就此静默失效。
+    stagedSkills = walkYaml(join(SID_CODE_ROOT, "packages", "core", "src", "skill", "builtin"))
       .filter((p) => p.endsWith("/SKILL.md") || p.endsWith("\\SKILL.md"));
   }
 

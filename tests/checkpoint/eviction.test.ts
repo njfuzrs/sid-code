@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { CheckpointManager } from "../../src/checkpoint/manager.ts";
+import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -168,7 +168,7 @@ describe("CheckpointManager 淘汰（P1-2）", () => {
   });
 
   test("cleanupOldSessions：总量超限真删最旧 session 目录（不只 warn）", async () => {
-    const { sidPaths } = await import("../../src/config/paths.ts");
+    const { sidPaths } = await import("@sid-code/core/config/paths.ts");
     const root = sidPaths.checkpointsRoot();
     mkdirSync(root, { recursive: true });
 

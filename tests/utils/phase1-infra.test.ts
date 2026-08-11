@@ -4,17 +4,17 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { toError, errorMessage, shortErrorStack } from "../../src/utils/errors-util.ts";
+import { toError, errorMessage, shortErrorStack } from "@sid-code/shared/utils/errors-util.ts";
 import {
   registerCleanup,
   runCleanupFunctions,
   cleanupCount,
   clearCleanupRegistry,
-} from "../../src/utils/cleanup-registry.ts";
-import { sequential } from "../../src/utils/sequential.ts";
-import { all, toArray } from "../../src/utils/generators.ts";
-import { memoizeWithTTL, memoizeWithTTLAsync } from "../../src/utils/memoize-ttl.ts";
-import { memoizeWithLRU } from "../../src/utils/memoize-lru.ts";
+} from "@sid-code/shared/utils/cleanup-registry.ts";
+import { sequential } from "@sid-code/shared/utils/sequential.ts";
+import { all, toArray } from "@sid-code/shared/utils/generators.ts";
+import { memoizeWithTTL, memoizeWithTTLAsync } from "@sid-code/shared/utils/memoize-ttl.ts";
+import { memoizeWithLRU } from "@sid-code/shared/utils/memoize-lru.ts";
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 

@@ -5,9 +5,9 @@
  * 覆盖：无参展示 / on|off 切换 / 非法参数 / 运行时 config 同步。
  */
 import { describe, test, expect } from "bun:test";
-import tuiCmd from "../../src/command/commands/tui/index.ts";
-import fastCmd from "../../src/command/commands/fast/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import tuiCmd from "@sid-code/cli/command/commands/tui/index.ts";
+import fastCmd from "@sid-code/cli/command/commands/fast/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 const loadTui = () => (tuiCmd as LocalCommand).load();
 const loadFast = () => (fastCmd as LocalCommand).load();

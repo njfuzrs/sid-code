@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { OpenAIProvider, extractOpenAICacheHit, extractOpenAIReasoningTokens } from "../../src/llm/openai.ts";
-import { DYNAMIC_BOUNDARY } from "../../src/api/cache-strategy.ts";
+import { OpenAIProvider, extractOpenAICacheHit, extractOpenAIReasoningTokens } from "@sid-code/core/llm/openai.ts";
+import { DYNAMIC_BOUNDARY } from "@sid-code/core/api/cache-strategy.ts";
 
 class TestableOpenAIProvider extends OpenAIProvider {
   testConvertMessages(messages: any[]) {

@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("PlanModeManager — parsePlanFromMarkdown (ADR-028 §3.1)", () => {
   test("空字符串解析为 0 步", () => {

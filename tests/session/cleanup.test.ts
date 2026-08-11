@@ -10,10 +10,10 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { SessionStore } from "../../src/session/store.ts";
-import { getAllSessionFiles } from "../../src/session/utils.ts";
-import { cleanupExpiredSessions } from "../../src/session/cleanup.ts";
-import { sidPaths } from "../../src/config/paths.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import { getAllSessionFiles } from "@sid-code/core/session/utils.ts";
+import { cleanupExpiredSessions } from "@sid-code/core/session/cleanup.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 describe("会话清理与 jsonl 列表", () => {
   let testDir: string;

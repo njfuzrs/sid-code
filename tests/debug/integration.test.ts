@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { getPerfTimer, getMemoryMonitor, getSessionMetrics } from '../../src/debug/index.ts';
+import { getPerfTimer, getMemoryMonitor, getSessionMetrics } from '@sid-code/core/debug/index.ts';
 
 describe('Debug 模块集成测试', () => {
   test('PerfTimer 基本功能', () => {

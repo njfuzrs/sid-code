@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { resolveEditorCommand } from "../../src/ui/utils/external-editor.ts";
+import { resolveEditorCommand } from "@sid-code/cli/ui/utils/external-editor.ts";
 
 describe("resolveEditorCommand", () => {
   test("优先 $VISUAL", () => {

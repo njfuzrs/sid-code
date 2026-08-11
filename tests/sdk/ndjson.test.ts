@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { Readable } from "node:stream";
-import { ndjsonStringify, ndjsonParse, ndjsonLines } from "../../src/sdk/ndjson.ts";
+import { ndjsonStringify, ndjsonParse, ndjsonLines } from "@sid-code/core/sdk/ndjson.ts";
 
 const LS = String.fromCharCode(0x2028);
 const PS = String.fromCharCode(0x2029);

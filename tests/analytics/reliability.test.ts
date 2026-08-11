@@ -2,14 +2,14 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventDiskCache, type FailedEvent } from "../../src/analytics/disk-cache.ts";
-import { QuadraticBackoff } from "../../src/analytics/backoff.ts";
+import { EventDiskCache, type FailedEvent } from "@sid-code/core/analytics/disk-cache.ts";
+import { QuadraticBackoff } from "@sid-code/core/analytics/backoff.ts";
 import {
   sanitizeToolName,
   mcpToolDetailsForAnalytics,
   safeFileExtension,
-} from "../../src/analytics/sanitize.ts";
-import { PROTECTED_PREFIX } from "../../src/analytics/privacy.ts";
+} from "@sid-code/core/analytics/sanitize.ts";
+import { PROTECTED_PREFIX } from "@sid-code/core/analytics/privacy.ts";
 
 describe("磁盘缓存与跨会话恢复（spec 17 §4.1.1）", () => {
   let dir: string;

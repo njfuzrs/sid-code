@@ -18,9 +18,9 @@ import {
   MAX_ITEMS_PER_CALL,
   type AgentRunner,
   type AgentCallContext,
-} from "../../src/workflow/runtime.ts";
-import { runInSandbox } from "../../src/workflow/sandbox.ts";
-import type { AgentOpts } from "../../src/workflow/types.ts";
+} from "@sid-code/core/workflow/runtime.ts";
+import { runInSandbox } from "@sid-code/core/workflow/sandbox.ts";
+import type { AgentOpts } from "@sid-code/core/workflow/types.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

@@ -9,7 +9,7 @@ import {
   normalizeToolPath,
   levenshteinDistance,
   formatPathNotFoundError,
-} from "../../src/tool/path-utils.ts";
+} from "@sid-code/core/tool/path-utils.ts";
 
 // ============================================================
 // normalizeToolPath
@@ -128,9 +128,12 @@ describe("formatPathNotFoundError", () => {
 
   it("文件名拼错（父目录存在）→ 给出相似文件名", () => {
     const cwd = process.cwd();
-    // path-util.ts 少一个 s，真实文件是 path-utils.ts
+    // path-util.ts 少一个 s，真实文件是 path-utils.ts。
+    // 这条用例的前提是「父目录**真的存在**」（才能列目录找相似文件），
+    // 所以目录部分必须跟着 P2-2 分包走到 packages/core/src/tool/；
+    // 而文件名 path-util.ts 是故意拼错的输入，保持不变。
     const msg = formatPathNotFoundError(
-      resolve(cwd, "src/tool/path-util.ts"),
+      resolve(cwd, "packages/core/src/tool/path-util.ts"),
       cwd,
       3,
     );
@@ -148,7 +151,10 @@ describe("formatPathNotFoundError", () => {
     );
     expect(msg).toContain("也不存在");
     expect(msg).toContain('路径段 "srcc" 疑似应为 "src"');
-    // 给出可尝试的完整路径（把正确段拼回去）
+    // 给出可尝试的完整路径（把正确段拼回去）。
+    // 注意这里**故意**是 `src/tool/...` 而非分包后的 packages/core/src/...：
+    // 被测函数只做「段级拼写纠错」（srcc → src），它纠正的是输入里那一段，
+    // 不会替你补出包路径。断言必须跟被测行为一致，不能跟着分包改。
     expect(msg).toContain("可尝试完整路径");
     expect(msg).toContain(resolve(cwd, "src/tool/path-utils.ts"));
   });

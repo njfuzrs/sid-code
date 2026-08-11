@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookSystem } from "../../src/hook/system.ts";
-import { HookEventName } from "../../src/hook/types.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { HookEventName } from "@sid-code/core/hook/types.ts";
 import type {
   HarnessHookContext,
   HarnessEditMeta,
@@ -15,7 +15,7 @@ import type {
   BeforeModelInput,
   SessionEndInput,
   HookInput,
-} from "../../src/hook/types.ts";
+} from "@sid-code/core/hook/types.ts";
 
 /** 辅助：创建空 HookSystem 并注册 runtime hook 捕获载荷 */
 function createSystemWithCapture(eventName: HookEventName) {

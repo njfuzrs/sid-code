@@ -37,7 +37,9 @@ indent_style = tab
 [*.toml]
 indent_size = 2
 
-[{*.snap,vendor/**,src/ink/_vendor/**}]
+# P2-2 分包：原 src/ink/_vendor/ → packages/tui-renderer/src/_vendor/。
+# 旧 glob 留着也不会报错，但它已永远匹配不到——vendor 代码会被静默套上本仓风格。
+[{*.snap,vendor/**,packages/tui-renderer/src/_vendor/**}]
 # 快照与 vendor 进来的第三方代码不套本仓风格：
 # 快照文件由测试生成，vendor 代码要保持与上游可比对（见 NOTICE）。
 trim_trailing_whitespace = false

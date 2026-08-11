@@ -22,16 +22,16 @@ sid-code —— 第三方代码来源与归属声明
 
 目录
 ----
-1. src/ink/ —— 终端渲染底座（最重要的一节，请完整阅读）
-2. src/ink/_vendor/yoga-layout/ —— Flexbox 布局引擎
+1. packages/tui-renderer/src/ —— 终端渲染底座（最重要的一节，请完整阅读）
+2. packages/tui-renderer/src/_vendor/yoga-layout/ —— Flexbox 布局引擎
 3. vendor/ripgrep/ —— 入库的 ripgrep 二进制
 4. npm 运行时依赖
-5. src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
+5. packages/cli/src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
 6. 完整许可条款原文
 
 
 ================================================================================
-1. src/ink/ —— 终端渲染底座
+1. packages/tui-renderer/src/ —— 终端渲染底座
 ================================================================================
 
 ### 1.1 血统（三层，按时间顺序）
@@ -40,7 +40,7 @@ sid-code —— 第三方代码来源与归属声明
         ↓ fork 并大幅改写
     Anthropic 在 Claude Code 内部维护的 ink 衍生版本
         ↓ 经由泄露快照引入（见 1.3）
-    sid-code 的 src/ink/
+    sid-code 的 packages/tui-renderer/src/
 
 **必须明确说清的一点：中间那一层没有向我们授予任何许可。**
 详见 1.3 与 1.5。
@@ -54,21 +54,21 @@ sid-code —— 第三方代码来源与归属声明
     仓库：https://github.com/vadimdemedes/ink
     许可：MIT（完整条款见本文件第 5 节）
 
-src/ink/ 的目录结构、模块划分与公开 API 形状（`render`、`Box`、`Text`、`useInput`、
+packages/tui-renderer/src/ 的目录结构、模块划分与公开 API 形状（`render`、`Box`、`Text`、`useInput`、
 reconciler 组织方式等）继承自这个上游项目。代码中至今保留着上游自己的指纹，
 我们**刻意没有清除**它们，因为它们是血统的直接证据：
 
-    src/ink/events/input-event.ts:50   TODO(vadimdemedes): consider removing this ...
-    src/ink/events/input-event.ts:95   TODO(vadimdemedes): remove this in the next major version.
-    src/ink/reconciler.ts:32           // See https://github.com/vadimdemedes/ink/issues/384
-    src/ink/components/App.tsx:215,217 报错文案含 vadimdemedes/ink#israwmodesupported
+    packages/tui-renderer/src/events/input-event.ts:50   TODO(vadimdemedes): consider removing this ...
+    packages/tui-renderer/src/events/input-event.ts:95   TODO(vadimdemedes): remove this in the next major version.
+    packages/tui-renderer/src/reconciler.ts:32           // See https://github.com/vadimdemedes/ink/issues/384
+    packages/tui-renderer/src/components/App.tsx:215,217 报错文案含 vadimdemedes/ink#israwmodesupported
 
 MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense 的权利，
 唯一义务是在所有副本中保留版权声明与许可声明 —— 本文件第 5 节即为履行该义务。
 
 ### 1.3 中间来源：Claude Code 的 ink 衍生版本（⚠️ 未获授权）
 
-**src/ink/ 并非我们直接从上游 ink fork 而来，而是引入自一份 Claude Code
+**packages/tui-renderer/src/ 并非我们直接从上游 ink fork 而来，而是引入自一份 Claude Code
 （Anthropic 的闭源产品）源码快照。** 该快照于 2026 年 3 月 31 日因 npm 发行包中
 包含 source map 而被公开暴露，并被第三方镜像。
 
@@ -82,43 +82,47 @@ MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense
 (a) 快照的公开源于 Anthropic 自身的构建配置失误，**但这不影响其版权** ——
     版权不因作品被意外公开而丧失。「它已经公开了」不构成使用授权。
 
-(b) 我们**没有**、也不打算主张 src/ink/ 中这部分代码属于本项目原创。
-    README 中「自研代码 17 万行以上」的口径明确排除了 src/ink/。
+(b) 我们**没有**、也不打算主张 packages/tui-renderer/src/ 中这部分代码属于本项目原创。
+    README 中「自研代码 17 万行以上」的口径明确排除了 packages/tui-renderer/src/。
 
 (c) 「上游是 MIT」这条事实**不是免罪符**，它只缩小范围、不消除问题。
     实测数据说明为什么：与上游同名的 32 个文件在本地共 12484 行，
     而**上游 ink 全部源码只有 3979 行**。骨架与 API 形状来自 MIT 上游，
     但当前的主体实现表达是在其之上新加的。举例：
 
-        ink.tsx                    上游约 440 行  →  本地 1759 行
-        render-node-to-output.ts   对上游 diff 约 1553 行
-        screen.ts / selection.ts   合计 2405 行，上游无对应文件（cell 级增量刷新、
+        ink.tsx                    上游约 440 行  →  本地 1788 行
+        render-node-to-output.ts   对上游 diff 约 1553 行（diff 量，非本地文件行数）
+        screen.ts / selection.ts   合计 2403 行，上游无对应文件（cell 级增量刷新、
                                    屏幕级选区引擎）
 
 ### 1.4 规模（实测）
 
-    src/ink/ 合计                       121 文件 / 23643 行
-      与上游 ink@6.6.0 同名             32 文件 / 12484 行（同名 ≠ 同内容，见 1.3(c)）
-      _vendor/（多为 npm 包薄封装+stub） 20 文件 / 3629 行
+    packages/tui-renderer/src/ 合计     122 文件 / 23760 行
+      _vendor/（多为 npm 包薄封装+stub） 20 文件 / 3640 行
       其余                              上游无对应文件
 
     对照：上游 ink@6.6.0 全部源码        3979 行
 
-复核方式：
+    与上游 ink@6.6.0 同名的部分：32 文件 / 12484 行（同名 ≠ 同内容，见 1.3(c)）。
+    ⚠️ 这一行是 2026-08-10 测得，**当时**上游 ink 还在 node_modules 里可供逐文件对账；
+    vendor 化之后该依赖已移除，本地无从复核，所以这里如实标注测量时点而不是当作现值重述。
+    要重新对账需先 `npm pack ink@6.6.0` 取回上游源码。其余各行均为下方命令的当次实测输出。
 
-    find src/ink -type f \( -name '*.ts' -o -name '*.tsx' \) | wc -l
-    find src/ink -type f \( -name '*.ts' -o -name '*.tsx' \) -exec cat {} \; | wc -l
+复核方式（本节除「与上游同名」一行外，其余数字均可由以下命令复现）：
+
+    find packages/tui-renderer/src -type f \( -name '*.ts' -o -name '*.tsx' \) | wc -l
+    find packages/tui-renderer/src -type f \( -name '*.ts' -o -name '*.tsx' \) -exec cat {} \; | wc -l
 
 ### 1.5 我们的立场与正在做的事
 
 1. **本项目非商业化**，不出售、不用于营利。我们无意侵犯任何人的版权。
 
-2. **src/ink/ 正在被重构掉。** 目标是移除对 Anthropic 增量表达的依赖，
+2. **packages/tui-renderer/src/ 正在被重构掉。** 目标是移除对 Anthropic 增量表达的依赖，
    路径按残余暴露面排序推进：
      - 换回 npm `yoga-layout`（MIT, Meta），去掉本地纯 TS port（见第 2 节）；
      - 能用 MIT 替代品或按公开规范（ECMA-48 / XTerm ctlseqs）自行实现的部分，
-       替换或重写 —— `src/ink/termio/` 属于此类；
-     - `screen.ts` + `selection.ts` 这两个真正的核心（2405 行）做 clean-room 重写。
+       替换或重写 —— `packages/tui-renderer/src/termio/` 属于此类；
+     - `screen.ts` + `selection.ts` 这两个真正的核心（2403 行）做 clean-room 重写。
    **这项工作正在进行中，尚未完成。** 进度以仓库实际代码为准，本文件会同步更新。
 
 3. **在重构完成前，本文件如实披露现状。** 我们选择披露而非掩盖：
@@ -131,10 +135,10 @@ MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense
 
 
 ================================================================================
-2. src/ink/_vendor/yoga-layout/ —— Flexbox 布局引擎
+2. packages/tui-renderer/src/_vendor/yoga-layout/ —— Flexbox 布局引擎
 ================================================================================
 
-    文件：src/ink/_vendor/yoga-layout/index.ts（2594 行）、enums.ts（134 行）
+    文件：packages/tui-renderer/src/_vendor/yoga-layout/index.ts（2594 行）、enums.ts（134 行）
     性质：Meta 的 Yoga Flexbox 引擎的纯 TypeScript 移植（非逐行翻译，是覆盖
           ink 实际用到的特性子集的重新实现），经由 1.3 所述的同一份快照引入
           （快照中的路径为 src/native-ts/yoga-layout/）
@@ -167,15 +171,15 @@ MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense
 
 
 ================================================================================
-5. src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
+5. packages/cli/src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
 ================================================================================
 
 本仓入库了两份 Anthropic API 参考资料，**许可条款尚未确认**，如实标注为待办：
 
-    src/command/commands/claude-api/reference/anthropic-api.md（34 KB）
+    packages/cli/src/command/commands/claude-api/reference/anthropic-api.md（34 KB）
         来源：Anthropic 官方 API 文档的摘录与整理   许可：⚠️ 待确认
 
-    src/command/commands/claude-api/reference/anthropic-messages-api.md（6.5 KB）
+    packages/cli/src/command/commands/claude-api/reference/anthropic-messages-api.md（6.5 KB）
         来源：同上（Messages API / 流式 SSE 部分）  许可：⚠️ 待确认
 
 它们不是普通参考资料，而是**编译期依赖**：`claude-api.ts` 用 Bun 的
@@ -195,7 +199,7 @@ MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense
 
 --------------------------------------------------------------------------------
 ink —— MIT License
-（适用于 src/ink/ 中继承自上游 ink 的部分；见第 1.2 节）
+（适用于 packages/tui-renderer/src/ 中继承自上游 ink 的部分；见第 1.2 节）
 --------------------------------------------------------------------------------
 
 MIT License
@@ -223,7 +227,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 Yoga —— MIT License
-（适用于 src/ink/_vendor/yoga-layout/；见第 2 节）
+（适用于 packages/tui-renderer/src/_vendor/yoga-layout/；见第 2 节）
 --------------------------------------------------------------------------------
 
 MIT License

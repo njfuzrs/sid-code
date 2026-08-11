@@ -18,10 +18,10 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { StreamEvent } from "../../src/llm/types.ts";
-import { resetOnStreamRestart } from "../../src/llm/stream-restart.ts";
-import { processStream as processStreamQuery } from "../../src/query/stream-processor.ts";
-import { processStream as processStreamAgent } from "../../src/agent/stream-processor.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
+import { resetOnStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
+import { processStream as processStreamQuery } from "@sid-code/core/query/stream-processor.ts";
+import { processStream as processStreamAgent } from "@sid-code/core/agent/stream-processor.ts";
 
 /** 把事件数组包装成异步流 */
 async function* toStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {

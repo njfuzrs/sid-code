@@ -10,7 +10,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectDroppedImagePath, readClipboardImageToFile, IMAGE_EXTS } from "../../src/ui/utils/clipboard-image.ts";
+import { detectDroppedImagePath, readClipboardImageToFile, IMAGE_EXTS } from "@sid-code/cli/ui/utils/clipboard-image.ts";
 
 const tmpDirs: string[] = [];
 function makeTmpImage(name: string): string {

@@ -8,8 +8,8 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { setInlinePluginDirs } from "../../src/plugin/loader.ts";
-import { clearAllPluginCaches } from "../../src/plugin/caches.ts";
+import { setInlinePluginDirs } from "@sid-code/cli/plugin/loader.ts";
+import { clearAllPluginCaches } from "@sid-code/cli/plugin/caches.ts";
 
 let tmpDirs: string[] = [];
 
@@ -52,7 +52,7 @@ description: 审查代码质量
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { getPluginSkills } = await import("../../src/plugin/loadPluginSkills.ts");
+    const { getPluginSkills } = await import("@sid-code/cli/plugin/loadPluginSkills.ts");
     const skills = await getPluginSkills();
 
     const found = skills.find((s) => s.name === "skill-plugin:code-review");
@@ -75,7 +75,7 @@ description: 审查代码质量
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { getPluginSkills } = await import("../../src/plugin/loadPluginSkills.ts");
+    const { getPluginSkills } = await import("@sid-code/cli/plugin/loadPluginSkills.ts");
     const names = (await getPluginSkills()).map((s) => s.name).sort();
     expect(names).toContain("multi:alpha");
     expect(names).toContain("multi:beta");
@@ -89,7 +89,7 @@ description: 审查代码质量
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { getPluginSkills } = await import("../../src/plugin/loadPluginSkills.ts");
+    const { getPluginSkills } = await import("@sid-code/cli/plugin/loadPluginSkills.ts");
     expect((await getPluginSkills()).length).toBeGreaterThan(0);
 
     // 卸载：清空 inline 目录 + 清缓存
@@ -114,7 +114,7 @@ allowed-tools: read, grep
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { getPluginSkills } = await import("../../src/plugin/loadPluginSkills.ts");
+    const { getPluginSkills } = await import("@sid-code/cli/plugin/loadPluginSkills.ts");
     const found = (await getPluginSkills()).find((s) => s.name === "rich:deep");
     expect(found).toBeDefined();
     expect(found!.effort).toBe("high");

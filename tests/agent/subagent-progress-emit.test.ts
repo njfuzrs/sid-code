@@ -14,11 +14,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { Registry } from "../../src/tool/registry.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-import { MAX_RECENT_ACTIVITIES, type AgentProgressSnapshot } from "../../src/agent/progress.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
+import { MAX_RECENT_ACTIVITIES, type AgentProgressSnapshot } from "@sid-code/core/agent/progress.ts";
 
 /**
  * 跑满 N 轮的 mock provider：前 N-1 轮各回一个 read 工具调用（每轮读**不同**文件，

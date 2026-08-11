@@ -6,16 +6,16 @@ import {
   initFeatureFlags,
   getFeatureValue_CACHED_MAY_BE_STALE,
   __resetFeatureFlagsForTest,
-} from "../../src/analytics/feature-flags.ts";
-import { shouldSampleEvent } from "../../src/analytics/sampling.ts";
-import { isSinkKilled } from "../../src/analytics/killswitch.ts";
-import { getUserBucket, __resetUserBucketForTest } from "../../src/analytics/user-bucket.ts";
+} from "@sid-code/core/analytics/feature-flags.ts";
+import { shouldSampleEvent } from "@sid-code/core/analytics/sampling.ts";
+import { isSinkKilled } from "@sid-code/core/analytics/killswitch.ts";
+import { getUserBucket, __resetUserBucketForTest } from "@sid-code/core/analytics/user-bucket.ts";
 import {
   primeMetadata,
   getEventMetadataFields,
   refreshMetadata,
   __resetMetadataForTest,
-} from "../../src/analytics/metadata.ts";
+} from "@sid-code/core/analytics/metadata.ts";
 
 describe("Feature Flag 系统（spec 17 §5.1）", () => {
   let dir: string;

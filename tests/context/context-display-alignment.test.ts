@@ -10,10 +10,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { deriveContextColor } from "../../src/ui/hooks/useStatusLineData.ts";
-import { theme } from "../../src/ui/semantic-colors.ts";
-import { buildEmptyParamRetryMessage } from "../../src/query/empty-param.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { deriveContextColor } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
+import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
+import { buildEmptyParamRetryMessage } from "@sid-code/core/query/empty-param.ts";
 
 describe("§八 #6 — 上下文占用率必须与压缩阈值同源", () => {
   test("getContextUsageForDisplay 的触发点与 getCompactionThresholds 完全一致", () => {

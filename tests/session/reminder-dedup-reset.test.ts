@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SessionState } from "../../src/session/state.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
 
 /** loop.ts 实际写入 sessionData 的三个 reminder 跨轮键 */
 const REMINDER_DEDUP_KEYS = [

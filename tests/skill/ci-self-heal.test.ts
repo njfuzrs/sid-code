@@ -12,12 +12,12 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { parseCILog } from "../../src/skill/builtin/ci-self-heal/scripts/parse-ci-log.ts";
-import { classifyFailure } from "../../src/skill/builtin/ci-self-heal/scripts/classify-failure.ts";
-import { generateFixSuggestions } from "../../src/skill/builtin/ci-self-heal/scripts/fix-suggestion-templates.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { parseCILog } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/parse-ci-log.ts";
+import { classifyFailure } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/classify-failure.ts";
+import { generateFixSuggestions } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/fix-suggestion-templates.ts";
 
-const SKILL_DIR = join(import.meta.dir, "..", "..", "src", "skill", "builtin", "ci-self-heal");
+const SKILL_DIR = join(import.meta.dir, "..", "..", "packages", "core", "src", "skill", "builtin", "ci-self-heal");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {

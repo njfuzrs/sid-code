@@ -21,9 +21,9 @@ import {
   messagesToHistoryItems,
   injectSettledToolCalls,
   buildSettledToolCallIfReady,
-} from "../../src/ui/history-adapter.ts";
-import { ToolCallStatus, type HistoryItem, type IndividualToolCallDisplay } from "../../src/ui/types.ts";
-import type { ContentBlock, Message } from "../../src/llm/types.ts";
+} from "@sid-code/cli/ui/history-adapter.ts";
+import { ToolCallStatus, type HistoryItem, type IndividualToolCallDisplay } from "@sid-code/cli/ui/types.ts";
+import type { ContentBlock, Message } from "@sid-code/core/llm/types.ts";
 
 /** 一轮 assistant 消息里发出 N 个 tool_use（tool_result 尚未入 ctxMgr → 全为 Executing 态） */
 function executingCards(

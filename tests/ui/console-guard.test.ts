@@ -16,7 +16,7 @@ import {
   installTUIConsoleGuard,
   uninstallTUIConsoleGuard,
   isTUIConsoleGuardInstalled,
-} from "../../src/ui/console-guard.ts";
+} from "@sid-code/cli/ui/console-guard.ts";
 
 afterEach(() => {
   uninstallTUIConsoleGuard();
@@ -78,7 +78,7 @@ describe("TUI console 护栏", () => {
   });
 
   test("内容转进 logger 而非静默丢弃（有留痕）", async () => {
-    const { getLogger } = await import("../../src/debug/logger.ts");
+    const { getLogger } = await import("@sid-code/core/debug/logger.ts");
     const logger = getLogger();
 
     const seen: { level: string; cat: string; msg: string }[] = [];
@@ -105,7 +105,7 @@ describe("TUI console 护栏", () => {
   });
 
   test("Error 实参被压成单行（保证日志可 grep）", async () => {
-    const { getLogger } = await import("../../src/debug/logger.ts");
+    const { getLogger } = await import("@sid-code/core/debug/logger.ts");
     const logger = getLogger();
     const seen: string[] = [];
     const orig = logger.error.bind(logger);
@@ -125,7 +125,7 @@ describe("TUI console 护栏", () => {
   });
 
   test("重复安装幂等，且 logger 内部再调 console 不会无限递归", async () => {
-    const { getLogger } = await import("../../src/debug/logger.ts");
+    const { getLogger } = await import("@sid-code/core/debug/logger.ts");
     const logger = getLogger();
     const orig = logger.error.bind(logger);
     let calls = 0;

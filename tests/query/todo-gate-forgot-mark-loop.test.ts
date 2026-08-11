@@ -15,20 +15,20 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { queryLoop } from "../../src/query/loop.ts";
-import type { QueryLoopConfig } from "../../src/query/loop.ts";
-import type { QueryDeps } from "../../src/query/types.ts";
+import { queryLoop } from "@sid-code/core/query/loop.ts";
+import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
+import type { QueryDeps } from "@sid-code/core/query/types.ts";
 import {
   MAX_TODO_GATE_RETRIES,
   TODO_GATE_PRODUCTIVE_TEXT_MIN,
-} from "../../src/query/todo-reminder.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { SessionState } from "../../src/session/state.ts";
-import type { Config } from "../../src/config/config.ts";
-import type { StreamEvent, AccumulatedResponse } from "../../src/llm/types.ts";
-import type { TodoItem } from "../../src/tool/todo-write.ts";
+} from "@sid-code/core/query/todo-reminder.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 
 function makeConfig(): Config {
   return { model: "glm-5.2", provider: "openai", maxTurns: 20 } as unknown as Config;

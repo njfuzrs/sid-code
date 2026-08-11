@@ -14,7 +14,7 @@ import {
   resolveOutputStyle,
   getActiveOutputStyleContent,
   loadAllOutputStyles,
-} from "../../src/config/output-styles.ts";
+} from "@sid-code/core/config/output-styles.ts";
 
 let tmpRoot: string;
 let originalCwd: string;

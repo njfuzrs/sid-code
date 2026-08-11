@@ -13,7 +13,7 @@ import {
   LOOP_RECOVERY_FINAL_PROMPT,
   resolveLoopConfig,
   isLoopDetectionEnabled,
-} from "../../src/agent/loop-detection.ts";
+} from "@sid-code/core/agent/loop-detection.ts";
 
 // P0-1：循环检测默认全局启用；此处显式设置为 "1" 只是为了与其他文件的用例隔离，
 // 防止某个用例把 env 设为 "0"（显式关闭）后残留影响本文件的测试顺序。

@@ -6,21 +6,21 @@
 
 import { describe, test, expect, beforeEach } from "bun:test";
 
-import { mergeSettingsRead, mergeSettingsWrite } from "../../src/config/settings/merge.ts";
+import { mergeSettingsRead, mergeSettingsWrite } from "@sid-code/core/config/settings/merge.ts";
 import {
   filterInvalidPermissionRules,
   formatZodErrors,
-} from "../../src/config/settings/validation.ts";
-import { SettingsSchema } from "../../src/config/settings/types.ts";
+} from "@sid-code/core/config/settings/validation.ts";
+import { SettingsSchema } from "@sid-code/core/config/settings/types.ts";
 import {
   filterProjectSettings,
   SECURITY_SENSITIVE_FIELDS,
-} from "../../src/config/settings/security.ts";
+} from "@sid-code/core/config/settings/security.ts";
 import {
   markInternalWrite,
   consumeInternalWrite,
   resetInternalWrites,
-} from "../../src/config/settings/internal-writes.ts";
+} from "@sid-code/core/config/settings/internal-writes.ts";
 
 describe("Settings 合并：读取语义（数组拼接去重）", () => {
   test("字符串数组拼接 + 去重", () => {

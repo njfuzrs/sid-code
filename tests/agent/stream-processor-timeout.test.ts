@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { processStream } from "../../src/agent/stream-processor.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
+import { processStream } from "@sid-code/core/agent/stream-processor.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** 发一个 text chunk 后永久 stall（不再发事件、也不结束） */
 async function* stallAfterOneChunk(signal: AbortSignal): AsyncIterable<StreamEvent> {

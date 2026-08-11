@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
 
 // 通过继承暴露 private 方法用于测试
 class TestableOpenAIProvider extends OpenAIProvider {

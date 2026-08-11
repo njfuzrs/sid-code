@@ -15,13 +15,13 @@
 
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
-import { runAgentLoop } from "../../src/agent/agentic-loop.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { LoopDetector } from "../../src/agent/loop-detection.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
-import type { LegacyTool, LegacyToolResult } from "../../src/tool/types.ts";
+import { runAgentLoop } from "@sid-code/core/agent/agentic-loop.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
+import type { LegacyTool, LegacyToolResult } from "@sid-code/core/tool/types.ts";
 
 /** 一次工具调用后立即结束的 mock 流：先吐 tool_use，第二轮吐 end_turn */
 function makeToolCallProvider(toolName: string, input: Record<string, unknown>): Provider {
@@ -154,7 +154,7 @@ describe("B0 — runAgentLoop 分级 fail-closed（无 permissionChecker 时）"
 
 describe("B0 — config key 一致性哨兵（两条 runAgentLoop 路径共用 buildBaseLoopConfig）", () => {
   const src = readFileSync(
-    new URL("../../src/agent/sub-agent.ts", import.meta.url),
+    new URL("../../packages/core/src/agent/sub-agent.ts", import.meta.url),
     "utf-8",
   );
 

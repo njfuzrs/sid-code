@@ -19,8 +19,8 @@ import {
   assignAgentColor,
   isValidAgentColorName,
   clearExplicitAgentColors,
-} from "../../src/agent/color.ts";
-import { formatNotification } from "../../src/task/notification.ts";
+} from "@sid-code/core/agent/color.ts";
+import { formatNotification } from "@sid-code/core/task/notification.ts";
 
 beforeEach(() => {
   clearExplicitAgentColors();

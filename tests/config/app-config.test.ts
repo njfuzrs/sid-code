@@ -38,7 +38,7 @@ describe("AppConfig 读写往返", () => {
 
   test("默认值合理", async () => {
     const { createDefaultAppConfig } = await import(
-      "../../src/config/app-config.ts"
+      "@sid-code/core/config/app-config.ts"
     );
     const def = createDefaultAppConfig();
     expect(def.showLineNumbers).toBe(true);
@@ -47,7 +47,7 @@ describe("AppConfig 读写往返", () => {
   });
 
   test("incrementStartupCount 持久化 + write-through 缓存", async () => {
-    const mod = await import("../../src/config/app-config.ts");
+    const mod = await import("@sid-code/core/config/app-config.ts");
     mod.resetAppConfigCache();
     mod.stopAppConfigWatcher();
 
@@ -71,7 +71,7 @@ describe("AppConfig 读写往返", () => {
   });
 
   test("项目信任状态读写", async () => {
-    const mod = await import("../../src/config/app-config.ts");
+    const mod = await import("@sid-code/core/config/app-config.ts");
     mod.resetAppConfigCache();
     mod.stopAppConfigWatcher();
 
@@ -84,7 +84,7 @@ describe("AppConfig 读写往返", () => {
   });
 
   test("损坏的 app.json 不致崩溃，回退默认值并备份", async () => {
-    const mod = await import("../../src/config/app-config.ts");
+    const mod = await import("@sid-code/core/config/app-config.ts");
     mod.resetAppConfigCache();
     mod.stopAppConfigWatcher();
 

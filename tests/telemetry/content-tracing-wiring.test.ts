@@ -13,13 +13,13 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { TelemetryBus } from "../../src/telemetry/bus.ts";
-import { TelemetryHookProbe } from "../../src/telemetry/hook-probe.ts";
-import { HookSystem } from "../../src/hook/system.ts";
-import { clearContentTracingState, CONTENT_TRACING_FLAG } from "../../src/telemetry/content-tracing.ts";
-import { __resetFeatureFlagsForTest } from "../../src/analytics/feature-flags.ts";
-import { setConfiguredPrivacyLevel } from "../../src/analytics/privacy-level.ts";
-import type { SpanData, TelemetryExporter } from "../../src/telemetry/types.ts";
+import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
+import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { clearContentTracingState, CONTENT_TRACING_FLAG } from "@sid-code/core/telemetry/content-tracing.ts";
+import { __resetFeatureFlagsForTest } from "@sid-code/core/analytics/feature-flags.ts";
+import { setConfiguredPrivacyLevel } from "@sid-code/core/analytics/privacy-level.ts";
+import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
 
 const ENV_SWITCH = "SID_CODE_CONTENT_TRACING";
 const FLAG_ENV = `SID_CODE_FLAG_${CONTENT_TRACING_FLAG.toUpperCase()}`;
@@ -201,7 +201,7 @@ describe("内容级 tracing · 接线哨兵（防退化成死代码）", () => {
   // （模块函数照样能被直接调用），这里会红。
 
   test("hook-probe 必须实际调用三个内容采集函数", async () => {
-    const src = await Bun.file("src/telemetry/hook-probe.ts").text();
+    const src = await Bun.file("packages/core/src/telemetry/hook-probe.ts").text();
     expect(src).toContain("addRequestContent(");
     expect(src).toContain("addResponseContent(");
     expect(src).toContain("addToolContent(");
@@ -211,17 +211,21 @@ describe("内容级 tracing · 接线哨兵（防退化成死代码）", () => {
     // P1-9 的原始缺陷：205 行 flag 系统「除了被初始化一次，没有任何业务代码读取任何 flag」。
     // 采样与 killswitch 虽然读 flag，但它们同属 analytics 内部、且远端无人配置，
     // 等于两个永远返回默认值的死开关。这里要求 analytics 目录**之外**至少有一个消费者。
+    // P2-2 分包：扫 4 个包的 src/，不再是单一 src/。
+    // `-a` 是必须的 —— app.ts 含 NUL 字节，否则 rg 会把它判成 binary 并静默跳过。
     const proc = Bun.spawnSync([
-      "rg", "-a", "-l", "getFeatureValue_CACHED_MAY_BE_STALE", "--type", "ts", "src/",
+      "rg", "-a", "-l", "getFeatureValue_CACHED_MAY_BE_STALE", "--type", "ts",
+      "packages/shared/src/", "packages/tui-renderer/src/", "packages/core/src/", "packages/cli/src/",
     ]);
     const files = new TextDecoder().decode(proc.stdout).trim().split("\n").filter(Boolean);
-    const outsideAnalytics = files.filter((f) => !f.includes("src/analytics/"));
+    // 防空转：路径写错时 rg 返回空，下面的 toBeGreaterThan(0) 会红而不是假绿。
+    const outsideAnalytics = files.filter((f) => !f.includes("/analytics/"));
     expect(outsideAnalytics.length).toBeGreaterThan(0);
-    expect(outsideAnalytics).toContain("src/telemetry/content-tracing.ts");
+    expect(outsideAnalytics).toContain("packages/core/src/telemetry/content-tracing.ts");
   });
 
   test("内容采集必须过脱敏——不许直接把原文塞进 span", async () => {
-    const src = await Bun.file("src/telemetry/content-tracing.ts").text();
+    const src = await Bun.file("packages/core/src/telemetry/content-tracing.ts").text();
     expect(src).toContain("maskSensitiveData");
   });
 });

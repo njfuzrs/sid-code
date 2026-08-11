@@ -22,9 +22,9 @@ import {
   setWireModelAliasesFromMap,
   lookupWireModelAlias,
   resetWireModelAliases,
-} from "../../src/llm/wire-model.ts";
-import { lookupRegistry } from "../../src/llm/model-registry.ts";
-import { resolvePricing, calculateUSDCost } from "../../src/api/cost-tracker.ts";
+} from "@sid-code/core/llm/wire-model.ts";
+import { lookupRegistry } from "@sid-code/core/llm/model-registry.ts";
+import { resolvePricing, calculateUSDCost } from "@sid-code/core/api/cost-tracker.ts";
 
 /** 注册表里确实存在的真名（若它被下线，本文件的前提就失效——断言会直接告诉你） */
 const REAL = "claude-sonnet-4-6";
@@ -89,7 +89,7 @@ describe("P1-2 cost-tracker resolvePricing —— 注册表兜底(步骤4)按真
 
 describe("P2-3 system-prompt —— reasoningLanguageDrift 铁律措辞按真名判定", () => {
   test("catalog 能力标志：真名命中、前缀别名 miss", () => {
-    const { lookupCatalog } = require("../../src/llm/model-params-catalog.ts");
+    const { lookupCatalog } = require("@sid-code/core/llm/model-params-catalog.ts");
     // 找一个确实声明了该标志的真名，避免把断言钉在恰好为 undefined 的模型上
     const drifty = "deepseek-reasoner";
     expect(lookupCatalog(drifty)?.reasoningLanguageDrift).toBe(true);
@@ -100,7 +100,7 @@ describe("P2-3 system-prompt —— reasoningLanguageDrift 铁律措辞按真名
   });
 
   test("buildSystemPrompt 端到端：别名 + availableModels 仍产出铁律措辞", () => {
-    const { buildSystemPrompt } = require("../../src/config/system-prompt.ts");
+    const { buildSystemPrompt } = require("@sid-code/core/config/system-prompt.ts");
     const drifty = "deepseek-reasoner";
     const base = { tools: [], workingDir: process.cwd(), preferredLanguage: "zh" as const };
     const byReal = buildSystemPrompt({ ...base, model: drifty });
@@ -194,7 +194,7 @@ describe("P2-5 跨进程 —— 必须播种整张表，fallback 目标才翻得
   });
 
   test("registry.getSpawnConfigForSubAgent 带出整张表", () => {
-    const { ProviderRegistry } = require("../../src/llm/registry.ts");
+    const { ProviderRegistry } = require("@sid-code/core/llm/registry.ts");
     const reg = new ProviderRegistry({
       provider: "anthropic",
       model: "gw-main",
@@ -214,7 +214,7 @@ describe("P2-5 跨进程 —— 必须播种整张表，fallback 目标才翻得
 describe("P2-4 telemetry 归因口径 —— openai.ts 的 emit 必须打别名", () => {
   test("静态断言：emit 调用点不得再出现 model: effectiveModel", async () => {
     const src = await Bun.file(
-      new URL("../../src/llm/openai.ts", import.meta.url).pathname,
+      new URL("../../packages/core/src/llm/openai.ts", import.meta.url).pathname,
     ).text();
     // 逐个 emit 调用块检查（跨行，故取调用点后 8 行窗口）
     const lines = src.split("\n");

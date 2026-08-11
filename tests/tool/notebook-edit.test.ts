@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { NotebookEditTool } from "../../src/tool/notebook-edit.ts";
+import { NotebookEditTool } from "@sid-code/core/tool/notebook-edit.ts";
 
 let tmpDir: string;
 let nbPath: string;

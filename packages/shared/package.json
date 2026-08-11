@@ -1,0 +1,10 @@
+{
+  "name": "@sid-code/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "纯叶子工具层：零内部依赖，被其余三包共用",
+  "exports": {
+    "./*": "./src/*"
+  }
+}

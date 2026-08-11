@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { GrepTool } from "../../src/tool/grep.ts";
+import { GrepTool } from "@sid-code/core/tool/grep.ts";
 import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 

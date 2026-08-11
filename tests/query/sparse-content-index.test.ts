@@ -9,8 +9,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { processStream } from "../../src/query/stream-processor.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
 
 async function* toStream(events: StreamEvent[]): AsyncIterable<StreamEvent> {
   for (const e of events) yield e;

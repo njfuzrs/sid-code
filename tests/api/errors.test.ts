@@ -17,7 +17,7 @@ import {
   isTimeoutError,
   isImageTooLarge,
   isConnectionError,
-} from "../../src/api/errors.ts";
+} from "@sid-code/core/api/errors.ts";
 
 describe("classifyAPIError", () => {
   test("用户中止", () => {

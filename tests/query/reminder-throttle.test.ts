@@ -10,7 +10,7 @@ import { describe, test, expect } from "bun:test";
 import {
   decideNagInjection,
   MAX_NO_PROGRESS_NAGS,
-} from "../../src/query/reminder-throttle.ts";
+} from "@sid-code/core/query/reminder-throttle.ts";
 
 describe("decideNagInjection — 去重", () => {
   test("首次注入（无上次记录）→ 注入且计入无进展", () => {

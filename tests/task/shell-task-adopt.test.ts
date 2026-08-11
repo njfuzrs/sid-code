@@ -25,9 +25,9 @@ import {
   adoptRunningProcessAsTask,
   flushTaskOutput,
   getTaskOutputTail,
-} from "../../src/task/index.ts";
-import { dequeuePendingNotifications } from "../../src/task/notification.ts";
-import type { LocalShellTaskState } from "../../src/task/types.ts";
+} from "@sid-code/core/task/index.ts";
+import { dequeuePendingNotifications } from "@sid-code/core/task/notification.ts";
+import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
 /** 最小可过继进程：只需满足 AdoptableProcess（pid? + kill()），不 spawn 真实进程。 */
 function makeFakeProc(pid?: number): { pid?: number; kill: (signal?: unknown) => void } {

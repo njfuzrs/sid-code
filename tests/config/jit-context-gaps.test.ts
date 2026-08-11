@@ -13,12 +13,12 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { setCwd, getCwd } from "../../src/bootstrap/state.ts";
-import { JitContextManager } from "../../src/config/jit-context.ts";
-import { MAX_MEMORY_CHARACTER_COUNT, getLargeMemoryFiles, resetLargeMemoryFiles } from "../../src/config/rules.ts";
-import { collectJitAccessedPaths } from "../../src/tool/jit-affected-paths.ts";
-import { mergeJitContextIntoPrompt } from "../../src/app.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
+import { setCwd, getCwd } from "@sid-code/core/bootstrap/state.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
+import { MAX_MEMORY_CHARACTER_COUNT, getLargeMemoryFiles, resetLargeMemoryFiles } from "@sid-code/core/config/rules.ts";
+import { collectJitAccessedPaths } from "@sid-code/core/tool/jit-affected-paths.ts";
+import { mergeJitContextIntoPrompt } from "@sid-code/cli/app.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 
 let base: string;
 let proj: string;

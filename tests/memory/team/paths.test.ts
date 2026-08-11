@@ -11,7 +11,7 @@ import {
   isTeamMemoryEnabled,
   getTeamMemPath,
   TEAM_MEMORY_DIRNAME,
-} from "../../../src/memory/team/paths.ts";
+} from "@sid-code/core/memory/team/paths.ts";
 
 describe("team paths — 目录解析", () => {
   test("getTeamMemPath 落在 projects/<key>/team-memory", () => {

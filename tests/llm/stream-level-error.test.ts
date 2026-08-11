@@ -18,10 +18,10 @@ import {
   StreamLevelError,
   RetryableError,
   TerminalError,
-} from "../../src/llm/errors.ts";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+} from "@sid-code/core/llm/errors.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 // ─── 端到端 helper：验证「首个事件即 error」经 fallback 的重试/降级路径 ───
 

@@ -96,7 +96,7 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   test("ref/tools 的行数 == --dump-tools 返回的工具数", () => {
     // 直连运行时真值，与生成器走的是同一个出口但独立一次调用
     const proc = Bun.spawnSync(
-      ["bun", "run", join(ROOT, "src/entrypoints/bootstrap.ts"), "--dump-tools"],
+      ["bun", "run", join(ROOT, "packages/cli/src/entrypoints/bootstrap.ts"), "--dump-tools"],
       { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
     );
     expect(proc.exitCode, `--dump-tools 应退 0，stderr: ${proc.stderr.toString()}`).toBe(0);
@@ -111,7 +111,7 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   }, 60_000);
 
   test("ref/slash-commands 的行数 == loadBuiltinCommands() 的命令数", async () => {
-    const { loadBuiltinCommands } = await import("../../src/command/loaders.ts");
+    const { loadBuiltinCommands } = await import("@sid-code/cli/command/loaders.ts");
     const cmds = await loadBuiltinCommands();
     expect(cmds.length).toBeGreaterThan(0);
 
@@ -121,7 +121,7 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   }, 30_000);
 
   test("ref/hooks 的行数 == HookEventName 枚举成员数", async () => {
-    const { HookEventName, LEGACY_EVENT_MAP } = await import("../../src/hook/types.ts");
+    const { HookEventName, LEGACY_EVENT_MAP } = await import("@sid-code/core/hook/types.ts");
     const members = Object.keys(HookEventName);
     expect(members.length).toBeGreaterThan(0);
 
@@ -140,7 +140,7 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   });
 
   test("ref/settings 的行数 == SettingsSchema 字段数 + passthrough 补录数", async () => {
-    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
     const schemaKeys = Object.keys(SettingsSchema().shape);
     expect(schemaKeys.length).toBeGreaterThan(0);
 
@@ -162,7 +162,7 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
   });
 
   test("ref/cli 的 parseArgs flag 计数与源码一致", () => {
-    const flags = extractParseArgsFlags(read("src/cli.ts"));
+    const flags = extractParseArgsFlags(read("packages/cli/src/cli.ts"));
     expect(flags.length).toBeGreaterThan(0);
     // 生成页在导语里写了 flag 总数，必须与实际提取值一致
     expect(autoGenBody("cli")).toContain(`共 ${flags.length} 个 flag`);
@@ -268,7 +268,7 @@ describe("参考页生成器 · 非空断言（提取路径静默失配时通常
 });
 
 describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
-  const rec = () => reconcileCli(read("src/cli.ts"), read("src/help.ts"));
+  const rec = () => reconcileCli(read("packages/cli/src/cli.ts"), read("packages/cli/src/help.ts"));
 
   test("能用但 help 没写：基线为 0（T-3.4b 已补 --allow-tool/--deny-tool）", () => {
     // 这一类是真缺陷：用户能用的参数没写进文档
@@ -281,7 +281,7 @@ describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
   });
 
   test("白名单每条都有理由，且仍然真实存在于 help 中（防白名单腐烂）", () => {
-    const helpFlags = new Set(extractHelpFlags(read("src/help.ts")));
+    const helpFlags = new Set(extractHelpFlags(read("packages/cli/src/help.ts")));
     for (const [flag, reason] of Object.entries(HELP_ONLY_WHITELIST)) {
       expect(reason.length, `白名单 ${flag} 缺理由`).toBeGreaterThan(4);
       // help 里已经删掉的 flag 不该继续挂在白名单上——那会掩盖后续真缺陷
@@ -290,7 +290,7 @@ describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
   });
 
   test("隐藏 flag 每条都有理由，且确实在 parseArgs 里声明", () => {
-    const cliFlags = new Set(extractParseArgsFlags(read("src/cli.ts")));
+    const cliFlags = new Set(extractParseArgsFlags(read("packages/cli/src/cli.ts")));
     for (const [flag, reason] of Object.entries(HIDDEN_FLAGS)) {
       expect(reason.length, `隐藏 flag ${flag} 缺理由`).toBeGreaterThan(4);
       expect(cliFlags.has(flag), `隐藏 flag ${flag} 已不在 parseArgs 中，应移除`).toBe(true);
@@ -298,8 +298,8 @@ describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
   });
 
   test("--dump-tools 属隐藏出口：声明了但刻意不进 help，不该被算作缺陷", () => {
-    expect(extractParseArgsFlags(read("src/cli.ts"))).toContain("dump-tools");
-    expect(extractHelpFlags(read("src/help.ts"))).not.toContain("dump-tools");
+    expect(extractParseArgsFlags(read("packages/cli/src/cli.ts"))).toContain("dump-tools");
+    expect(extractHelpFlags(read("packages/cli/src/help.ts"))).not.toContain("dump-tools");
     expect(rec().missingInHelp).not.toContain("dump-tools");
   });
 });

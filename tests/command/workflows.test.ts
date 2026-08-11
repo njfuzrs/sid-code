@@ -5,10 +5,10 @@
  * 数据源为 task 注册表（getAllTasks + isWorkflowTask）。
  */
 import { describe, test, expect, afterEach } from "bun:test";
-import workflowsCmd from "../../src/command/commands/workflows/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
-import { registerTask, clearAllTasks } from "../../src/task/registry.ts";
-import type { LocalWorkflowTaskState } from "../../src/task/types.ts";
+import workflowsCmd from "@sid-code/cli/command/commands/workflows/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
+import { registerTask, clearAllTasks } from "@sid-code/core/task/registry.ts";
+import type { LocalWorkflowTaskState } from "@sid-code/core/task/types.ts";
 
 const loadCmd = () => (workflowsCmd as LocalCommand).load();
 const EMPTY_CTX = {} as CommandContext;

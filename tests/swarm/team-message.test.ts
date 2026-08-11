@@ -14,10 +14,10 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { Mailbox } from "../../src/swarm/mailbox.ts";
-import { withTeamMember, getTeamMemberContext } from "../../src/swarm/team-context.ts";
-import { TeamMessageTool } from "../../src/tool/team-message.ts";
-import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
+import { Mailbox } from "@sid-code/core/swarm/mailbox.ts";
+import { withTeamMember, getTeamMemberContext } from "@sid-code/core/swarm/team-context.ts";
+import { TeamMessageTool } from "@sid-code/core/tool/team-message.ts";
+import { filterToolsForAgent } from "@sid-code/core/agent/tool-filter.ts";
 
 let dir: string;
 let mailbox: Mailbox;

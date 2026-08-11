@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { matchRule, checkRules, mergeRules } from "../../src/permission/rules.ts";
-import type { PermissionRule } from "../../src/permission/types.ts";
+import { matchRule, checkRules, mergeRules } from "@sid-code/core/permission/rules.ts";
+import type { PermissionRule } from "@sid-code/core/permission/types.ts";
 
 describe("matchRule", () => {
   test("工具级匹配", () => {

@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { initLogger, LogLevel } from "../../src/debug/logger.ts";
+import { initLogger, LogLevel } from "@sid-code/core/debug/logger.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

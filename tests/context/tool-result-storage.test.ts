@@ -9,7 +9,7 @@ import {
   ContentReplacementState,
   cleanupPersistedOutputs,
   PERSISTED_OUTPUT_PREFIX,
-} from "../../src/context/tool-result-storage.ts";
+} from "@sid-code/core/context/tool-result-storage.ts";
 import { existsSync } from "node:fs";
 // 注：enforceToolResultBudget 及其单测已删除（2026-07-11 决策：不接入，见 docs/bugfixes/todo/enforceToolResultBudget-待接入分析.md）
 

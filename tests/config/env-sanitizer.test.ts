@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { sanitizeEnv, isEnvVarSafe } from "../../src/config/env-sanitizer.ts";
+import { sanitizeEnv, isEnvVarSafe } from "@sid-code/core/config/env-sanitizer.ts";
 
 describe("Environment Variable Sanitizer", () => {
   const testEnv = {

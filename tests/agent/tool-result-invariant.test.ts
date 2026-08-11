@@ -15,8 +15,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { ContentBlock, ToolUseBlock } from "../../src/llm/types.ts";
-import { executeTools, type ToolExecutorDeps } from "../../src/query/tool-executor.ts";
+import type { ContentBlock, ToolUseBlock } from "@sid-code/core/llm/types.ts";
+import { executeTools, type ToolExecutorDeps } from "@sid-code/core/query/tool-executor.ts";
 
 /** 按真实 Tool 接口构造 mock：execute() + readOnly()/isConcurrencySafe() */
 function makeTool(opts: {

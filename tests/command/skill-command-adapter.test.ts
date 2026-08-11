@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { skillToCommand } from "../../src/skill/command-adapter.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
-import type { CommandContext } from "../../src/command/types.ts";
+import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
   return {

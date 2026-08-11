@@ -3,8 +3,8 @@ import {
   spanToPerfettoEvent,
   buildPerfettoTrace,
   isPerfettoEnabled,
-} from "../../src/telemetry/perfetto.ts";
-import type { SpanData } from "../../src/telemetry/types.ts";
+} from "@sid-code/core/telemetry/perfetto.ts";
+import type { SpanData } from "@sid-code/core/telemetry/types.ts";
 
 // 本文件原先还覆盖 als-context.ts（AsyncLocalStorage 上下文传播）与 span-manager.ts
 // （WeakRef + TTL 的 Span 生命周期管理）两个模块，spec 17 §6.1.1 / §6.1.2。

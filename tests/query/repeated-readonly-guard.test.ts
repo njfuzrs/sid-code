@@ -20,7 +20,7 @@ import {
   buildTerminateNotice,
   STUCK_REPEAT_THRESHOLD,
   MAX_STUCK_REMINDERS,
-} from "../../src/query/repeated-readonly-guard.ts";
+} from "@sid-code/core/query/repeated-readonly-guard.ts";
 
 describe("isReadonlyProbeCommand — 只读探查命令识别", () => {
   test("识别 git status / diff / log / branch / show", () => {

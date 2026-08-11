@@ -26,7 +26,7 @@
  *   本脚本的职责是：spawn agent → 等它结束 → **读磁盘上的文件并校验**。
  *   三条实测确认的理由（别改成解析 stdout）：
  *
- *   · `--json-schema` **不构成 stdout 契约**：它在 src/app.ts 只做两件事 ——
+ *   · `--json-schema` **不构成 stdout 契约**：它在 packages/cli/src/app.ts 只做两件事 ——
  *     注册一个 StructuredOutputTool 实例、给系统提示词追加 suffix。**CLI 路径从不回读
  *     捕获结果**（getCapturedOutput 的消费方只有 sub-agent.ts 与 sub-agent-runner.ts，
  *     app.ts 那个局部变量注册完就丢了）。它是「提示词层面的鼓励 + 校验重试」。
@@ -156,10 +156,10 @@ interface SpawnResult {
  * spawn sid-code 无头模式。形态照抄 scripts/eval/run-eval-baseline.ts
  * （仓库里唯一一处 dogfood sid-code 的先例）。四个已验证的约束：
  *
- * 1. **走 `bun run src/entrypoints/bootstrap.ts`，不用 `./sid-code` 二进制。**
+ * 1. **走 `bun run packages/cli/src/entrypoints/bootstrap.ts`，不用 `./sid-code` 二进制。**
  *    二进制可能是旧的（有人忘了 `make build`），那样跑的是上一次编译时的源码。
  *    同样的理由写在 scripts/docs-gen-reference.ts 的注释里。
- * 2. **提示词只能走 argv 位置参数。** src/cli.ts 把 positionals join 成 prompt；
+ * 2. **提示词只能走 argv 位置参数。** packages/cli/src/cli.ts 把 positionals join 成 prompt；
  *    无头模式下 prompt 为空会硬退出 1。print 模式**没有** stdin 兜底
  *    （只有 --input-format stream-json 才从 stdin 读 NDJSON）。
  * 3. **--permission-mode 用 acceptEdits。** curate 要写文件。⚠ 不用 always-allow /
@@ -176,7 +176,7 @@ function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
 
   const args = [
     "run",
-    "src/entrypoints/bootstrap.ts",
+    "packages/cli/src/entrypoints/bootstrap.ts",
     "--print",
     "--max-turns",
     String(MAX_TURNS),
@@ -232,7 +232,7 @@ export function verifyCuratedFile(version: string, realHashes?: string[]): Verif
     return { ok: false, entry: null, errors: [`读取失败：${err?.message ?? err}`], warnings: [] };
   }
   // 裸 NUL 字节：agent 落盘偶发产出，且它会让 grep 静默漏报整个文件
-  // （src/app.ts 曾因此让全仓搜索查不到内容）。这里当场拦住，不让它进仓库。
+  // （packages/cli/src/app.ts 曾因此让全仓搜索查不到内容）。这里当场拦住，不让它进仓库。
   if (raw.includes("\0")) {
     return { ok: false, entry: null, errors: ["文件含裸 NUL 字节（0x00）"], warnings: [] };
   }

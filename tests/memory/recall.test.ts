@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { findRelevantMemories, parseSelection, isMemoryRecallEnabled, type SideQueryFn } from "../../src/memory/recall.ts";
+import { findRelevantMemories, parseSelection, isMemoryRecallEnabled, type SideQueryFn } from "@sid-code/core/memory/recall.ts";
 
 let dir: string;
 

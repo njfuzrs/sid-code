@@ -8,7 +8,7 @@ import {
   splitCompoundCommand,
   detectRedirections,
   hasSensitiveRedirection,
-} from "../../src/permission/shell-parser.ts";
+} from "@sid-code/core/permission/shell-parser.ts";
 
 describe("splitCompoundCommand", () => {
   test("单条命令不拆分", () => {

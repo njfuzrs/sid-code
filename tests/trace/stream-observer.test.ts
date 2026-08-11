@@ -21,8 +21,8 @@ import {
   clearStreamSnapshot,
   clearAllSnapshots,
   cleanupAgentSnapshots,
-} from "../../src/trace/stream-observer.ts";
-import { currentSseDumpContext } from "../../src/llm/sse-chunk-dumper.ts";
+} from "@sid-code/core/trace/stream-observer.ts";
+import { currentSseDumpContext } from "@sid-code/core/llm/sse-chunk-dumper.ts";
 
 // 捕获所有写入的事件
 let captured: Array<{ event: string; data: Record<string, unknown> }>;

@@ -14,13 +14,13 @@ import {
   SDKToolProgressSchema,
   UsageSchema,
   ContentBlockSchema,
-} from "../../src/sdk/schemas.ts";
+} from "@sid-code/core/sdk/schemas.ts";
 import {
   SDKControlRequestSchema,
   SDKControlResponseSchema,
   SDKControlPermissionResponseSchema,
-} from "../../src/sdk/control-schemas.ts";
-import { lazySchema } from "../../src/sdk/lazy-schema.ts";
+} from "@sid-code/core/sdk/control-schemas.ts";
+import { lazySchema } from "@sid-code/core/sdk/lazy-schema.ts";
 import { z } from "zod";
 
 describe("lazySchema", () => {

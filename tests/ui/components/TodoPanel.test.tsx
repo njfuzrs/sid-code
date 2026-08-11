@@ -9,9 +9,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import { TodoPanel } from "../../../src/ui/components/TodoPanel.tsx";
-import type { TaskDisplayInfo } from "../../../src/ui/App.tsx";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { TodoPanel } from "@sid-code/cli/ui/components/TodoPanel.tsx";
+import type { TaskDisplayInfo } from "@sid-code/cli/ui/App.tsx";
 
 const TERM_WIDTH = 100;
 

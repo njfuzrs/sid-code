@@ -10,8 +10,8 @@ import {
   formatNotification,
   NOTIFICATION_OUTPUT_MAX_CHARS,
   NOTIFICATION_ERROR_MAX_CHARS,
-} from "../../src/task/notification.ts";
-import type { AgentTaskResult } from "../../src/task/types.ts";
+} from "@sid-code/core/task/notification.ts";
+import type { AgentTaskResult } from "@sid-code/core/task/types.ts";
 
 const buildResult = (output: string): AgentTaskResult => ({
   output,

@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildHookModifiedNotice, hookActuallyModifiedInput } from "../../src/query/tool-executor.ts";
+import { buildHookModifiedNotice, hookActuallyModifiedInput } from "@sid-code/core/query/tool-executor.ts";
 
 describe("buildHookModifiedNotice — hook 改参告知", () => {
   test("包含被改工具的名字", () => {

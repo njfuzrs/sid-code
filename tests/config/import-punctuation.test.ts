@@ -19,7 +19,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { processImports } from "../../src/config/import-processor.ts";
+import { processImports } from "@sid-code/core/config/import-processor.ts";
 
 /** 唯一哨兵串：出现在结果里 ⇔ 导入被展开 */
 const BODY = "NOTE_BODY_SENTINEL_7f3a";

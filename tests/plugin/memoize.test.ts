@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memoize } from "../../src/utils/memoize.ts";
+import { memoize } from "@sid-code/shared/utils/memoize.ts";
 
 describe("memoize 增强", () => {
   test("异步函数只执行一次", async () => {

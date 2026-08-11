@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { BlockedDetector } from "../../src/goal/blocked-detector.ts";
+import { BlockedDetector } from "@sid-code/core/goal/blocked-detector.ts";
 
 describe("BlockedDetector", () => {
   test("连续相同 blockerKey 达到 threshold 时判定 blocked", () => {

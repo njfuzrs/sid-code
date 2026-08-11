@@ -10,9 +10,9 @@ import { describe, it, expect } from "bun:test";
 import {
   parseAgentExtendedFrontmatter,
   parseListField,
-} from "../../src/agent/custom.ts";
-import { buildAgentHookSystem, registerAgentHooks } from "../../src/agent/agent-hooks.ts";
-import { HookSystem } from "../../src/hook/system.ts";
+} from "@sid-code/core/agent/custom.ts";
+import { buildAgentHookSystem, registerAgentHooks } from "@sid-code/core/agent/agent-hooks.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
 
 const parse = (fm: Record<string, unknown>) => parseAgentExtendedFrontmatter(fm, "test-agent");
 

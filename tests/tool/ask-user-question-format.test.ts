@@ -9,8 +9,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { formatAnsweredOutput } from "../../src/tool/ask-user-question.ts";
-import type { AskQuestion } from "../../src/tool/ask-user-question-bridge.ts";
+import { formatAnsweredOutput } from "@sid-code/core/tool/ask-user-question.ts";
+import type { AskQuestion } from "@sid-code/core/tool/ask-user-question-bridge.ts";
 
 const q = (question: string): AskQuestion => ({
   question,

@@ -4,8 +4,8 @@
  * 覆盖：无参打印用法 / 带任务转成 submit_prompt 编排指令（含 Workflow + worktree 隔离要点）。
  */
 import { describe, test, expect } from "bun:test";
-import batchCmd from "../../src/command/commands/batch/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import batchCmd from "@sid-code/cli/command/commands/batch/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 const loadBatch = () => (batchCmd as LocalCommand).load();
 const ctx = {} as unknown as CommandContext;

@@ -14,8 +14,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SessionStore } from "../../src/session/store.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
@@ -147,7 +147,7 @@ describe("会话分叉落盘（P1-G2a）", () => {
 
     // 重新盖戳：新文件里的 uuid 与源文件的 uuid 集合**零交集**（不复用源 uuid）。
     const srcFileRecords = readFileSync(
-      join((await import("../../src/session/store.ts")).currentProjectSessionDir(), "src-004.jsonl"),
+      join((await import("@sid-code/core/session/store.ts")).currentProjectSessionDir(), "src-004.jsonl"),
       "utf-8",
     ).split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const srcUuids = new Set<string>(srcFileRecords.map((r: any) => r.uuid));
@@ -229,7 +229,7 @@ describe("A1：schemaCompat 布局兼容标注", () => {
   test("旧文件无 schemaCompat 字段 → 解析为 undefined，不臆造值也不报错", async () => {
     // 手写一份不带 schemaCompat 的 v3 jsonl（模拟本次改动之前落的文件）
     const dir = join(testDir, ".sid-code", "sessions");
-    const { currentProjectSessionDir } = await import("../../src/session/store.ts");
+    const { currentProjectSessionDir } = await import("@sid-code/core/session/store.ts");
     const projDir = currentProjectSessionDir();
     mkdirSync(projDir, { recursive: true });
     void dir;

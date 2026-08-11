@@ -7,15 +7,15 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import {
   generateWordSlug,
   isWordSlug,
   formatPlanTime,
   sanitizeProjectName,
   sanitizePlanTopic,
-} from "../../src/plan/slug.ts";
-import { buildPlanModeReminder } from "../../src/plan/prompt.ts";
+} from "@sid-code/core/plan/slug.ts";
+import { buildPlanModeReminder } from "@sid-code/core/plan/prompt.ts";
 
 describe("plan slug（worktree 用）", () => {
   it("生成 adj-noun-NN 形态", () => {

@@ -9,9 +9,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { loadBuiltinCommands } from "../../src/command/loaders.ts";
-import { UnifiedCommandRegistry } from "../../src/command/unified-registry.ts";
-import type { UnifiedCommand } from "../../src/command/types.ts";
+import { loadBuiltinCommands } from "@sid-code/cli/command/loaders.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
+import type { UnifiedCommand } from "@sid-code/cli/command/types.ts";
 
 describe("P0-3 别名冲突自检", () => {
   test("内置顶层命令名 + 别名无碰撞", async () => {

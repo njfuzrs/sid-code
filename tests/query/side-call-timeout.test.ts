@@ -15,8 +15,8 @@ import {
   withSideCallDeadline,
   mergeTimeoutSignal,
   SideCallTimeoutError,
-} from "../../src/llm/side-call-timeout.ts";
-import { isAbortError, ABORT_REASONS } from "../../src/llm/errors.ts";
+} from "@sid-code/core/llm/side-call-timeout.ts";
+import { isAbortError, ABORT_REASONS } from "@sid-code/core/llm/errors.ts";
 
 describe("T3 — withSideCallDeadline 硬超时", () => {
   test("底层操作永久 hang → 硬超时 reject SideCallTimeoutError", async () => {

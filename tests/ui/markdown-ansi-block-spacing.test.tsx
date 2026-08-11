@@ -12,9 +12,9 @@
 import { describe, test, expect } from "bun:test";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { render } from "../../src/ink/_vendor/testing.tsx";
-import { MarkdownAnsi } from "../../src/ui/components/MarkdownAnsi.tsx";
-import { SettingsProvider } from "../../src/ui/contexts/SettingsContext.tsx";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { MarkdownAnsi } from "@sid-code/cli/ui/components/MarkdownAnsi.tsx";
+import { SettingsProvider } from "@sid-code/cli/ui/contexts/SettingsContext.tsx";
 
 function renderMd(text: string, width = 80): string {
   const { lastFrame, unmount } = render(

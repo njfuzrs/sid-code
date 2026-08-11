@@ -6,8 +6,8 @@ import { describe, test, expect } from "bun:test";
 import {
   extractStructuredOutput,
   buildStructuredOutputPrompt,
-} from "../../src/sdk/structured-output.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/sdk/structured-output.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 const objSchema = {
   type: "object",

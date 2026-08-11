@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe("G13 — saveAgentMemory 写入端", () => {
   test("写入后能立即读回索引内容", async () => {
-    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { saveAgentMemory, getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
     await saveAgentMemory("code-review", "prefer-early-return", "本仓偏好提前 return，避免深层嵌套");
 
     const idx = await getAgentIndexContent("code-review");
@@ -42,7 +42,7 @@ describe("G13 — saveAgentMemory 写入端", () => {
   });
 
   test("写入落到 ~/.sid-code/memory/agents/<type>/ 且含 .md 记忆文件", async () => {
-    const { saveAgentMemory } = await import("../../src/memory/agent-store.ts");
+    const { saveAgentMemory } = await import("@sid-code/core/memory/agent-store.ts");
     await saveAgentMemory("security-audit", "check-ssrf", "外呼 URL 必须校验 SSRF");
 
     const dir = join(tmpHome, "memory", "agents", "security-audit");
@@ -54,7 +54,7 @@ describe("G13 — saveAgentMemory 写入端", () => {
   });
 
   test("buildAgentMemoryInjection 注入片段带 system-reminder 包装", async () => {
-    const { saveAgentMemory, buildAgentMemoryInjection } = await import("../../src/memory/agent-store.ts");
+    const { saveAgentMemory, buildAgentMemoryInjection } = await import("@sid-code/core/memory/agent-store.ts");
     await saveAgentMemory("code-review", "k1", "v1");
 
     const injection = await buildAgentMemoryInjection("code-review");
@@ -64,7 +64,7 @@ describe("G13 — saveAgentMemory 写入端", () => {
   });
 
   test("同 key 覆盖写入不产生重复条目", async () => {
-    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { saveAgentMemory, getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
     await saveAgentMemory("code-review", "dup", "第一版");
     await saveAgentMemory("code-review", "dup", "第二版内容");
 
@@ -74,7 +74,7 @@ describe("G13 — saveAgentMemory 写入端", () => {
   });
 
   test("无记忆的 agent 类型读回 null（行为不变）", async () => {
-    const { getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
     const idx = await getAgentIndexContent("never-written");
     expect(idx).toBeNull();
   });
@@ -91,8 +91,8 @@ describe("G13 — saveAgentMemory 写入端", () => {
  */
 describe("agent 记忆索引可寻址性（2026-07-30 回归）", () => {
   test("索引带绝对目录，且「目录 + 链接文件名」能解析到真实文件", async () => {
-    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
-    const { getAgentMemPath } = await import("../../src/memory/paths.ts");
+    const { saveAgentMemory, getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
+    const { getAgentMemPath } = await import("@sid-code/core/memory/paths.ts");
     await saveAgentMemory("code-review", "prefer-early-return", "偏好提前 return");
 
     const idx = (await getAgentIndexContent("code-review"))!;
@@ -105,7 +105,7 @@ describe("agent 记忆索引可寻址性（2026-07-30 回归）", () => {
   });
 
   test("注入文案指明用「目录 + 链接文件名」拼路径，并警告不要用 key", async () => {
-    const { saveAgentMemory, buildAgentMemoryInjection } = await import("../../src/memory/agent-store.ts");
+    const { saveAgentMemory, buildAgentMemoryInjection } = await import("@sid-code/core/memory/agent-store.ts");
     await saveAgentMemory("code-review", "prefer-early-return", "偏好提前 return");
 
     const section = await buildAgentMemoryInjection("code-review");
@@ -114,8 +114,8 @@ describe("agent 记忆索引可寻址性（2026-07-30 回归）", () => {
   });
 
   test("key 自带类型前缀时不产生双前缀文件名，索引 key 也已归一化", async () => {
-    const { saveAgentMemory, getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
-    const { getAgentMemPath } = await import("../../src/memory/paths.ts");
+    const { saveAgentMemory, getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
+    const { getAgentMemPath } = await import("@sid-code/core/memory/paths.ts");
     await saveAgentMemory("code-review", "project_review-gotcha", "评审坑位");
 
     const dir = getAgentMemPath("code-review");
@@ -131,7 +131,7 @@ describe("agent 记忆索引可寻址性（2026-07-30 回归）", () => {
   });
 
   test("无记忆时仍返回空串（不注入空段）", async () => {
-    const { buildAgentMemoryInjection } = await import("../../src/memory/agent-store.ts");
+    const { buildAgentMemoryInjection } = await import("@sid-code/core/memory/agent-store.ts");
     expect(await buildAgentMemoryInjection("never-used")).toBe("");
   });
 });

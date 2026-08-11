@@ -16,8 +16,8 @@ import {
   emitJitEvent,
   setJitTraceSink,
   JIT_EVENT_NAME,
-} from "../../src/trace/jit-telemetry.ts";
-import { aggregateJitStats } from "../../src/trace/digest.ts";
+} from "@sid-code/core/trace/jit-telemetry.ts";
+import { aggregateJitStats } from "@sid-code/core/trace/digest.ts";
 
 afterEach(() => {
   setJitTraceSink(null); // 模块级单例，用完复位避免串味

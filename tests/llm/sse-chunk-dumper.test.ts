@@ -15,7 +15,7 @@ import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import { readFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SseChunkDumper } from "../../src/llm/sse-chunk-dumper.ts";
+import { SseChunkDumper } from "@sid-code/core/llm/sse-chunk-dumper.ts";
 
 let tmpHome: string;
 const saved: Record<string, string | undefined> = {};

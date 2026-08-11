@@ -3,14 +3,14 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookSystem } from "../../src/hook/system.ts";
-import { HookEventName } from "../../src/hook/types.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { HookEventName } from "@sid-code/core/hook/types.ts";
 import {
   registerSkillHooks,
   unregisterSkillHooks,
   isValidHookEvent,
-} from "../../src/skill/hooks.ts";
-import type { SkillHooksConfig } from "../../src/skill/types.ts";
+} from "@sid-code/core/skill/hooks.ts";
+import type { SkillHooksConfig } from "@sid-code/core/skill/types.ts";
 
 function countFor(sys: HookSystem, event: HookEventName): number {
   return sys.getAllHooks().filter((h) => h.eventName === event).length;

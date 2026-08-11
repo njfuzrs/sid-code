@@ -11,10 +11,10 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeCacheUsage, accumulateUsage } from "../../src/llm/types.ts";
-import type { Usage } from "../../src/llm/types.ts";
-import { SessionState } from "../../src/session/state.ts";
-import { __resetGatewayPricingForTest } from "../../src/llm/gateway-pricing.ts";
+import { normalizeCacheUsage, accumulateUsage } from "@sid-code/core/llm/types.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import { __resetGatewayPricingForTest } from "@sid-code/core/llm/gateway-pricing.ts";
 
 // 隔离：把配置目录指向空临时目录，避免 deepseek-v4-pro 计费断言读到本机真实网关缓存
 // （渠道价会覆盖注册表价，dev 机必挂）。gateway-pricing 有模块级内存缓存，需一并重置。

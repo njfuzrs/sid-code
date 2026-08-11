@@ -11,7 +11,7 @@ import {
   BUILTIN_LSP_SERVERS,
   EXTENSION_TO_BUILTIN,
   describeMissingServer,
-} from "../../src/lsp/builtin-servers.ts";
+} from "@sid-code/core/lsp/builtin-servers.ts";
 
 describe("内置 LSP 服务器目录", () => {
   test("每条登记项字段完整且格式合法", () => {

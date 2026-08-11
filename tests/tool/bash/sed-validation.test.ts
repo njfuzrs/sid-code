@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { detectSedWrite, detectDangerousSed } from "../../../src/tool/bash/sed-validation.ts";
+import { detectSedWrite, detectDangerousSed } from "@sid-code/core/tool/bash/sed-validation.ts";
 
 describe("detectSedWrite", () => {
   test("识别 sed -i 就地编辑并提取目标文件", () => {

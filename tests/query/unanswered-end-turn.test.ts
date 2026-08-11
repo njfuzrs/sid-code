@@ -9,8 +9,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { detectUnansweredEndTurn } from "../../src/query/unanswered-end-turn.ts";
-import type { AccumulatedResponse } from "../../src/llm/types.ts";
+import { detectUnansweredEndTurn } from "@sid-code/core/query/unanswered-end-turn.ts";
+import type { AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 
 function mkResp(partial: Partial<AccumulatedResponse>): AccumulatedResponse {
   return {

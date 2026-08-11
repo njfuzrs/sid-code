@@ -11,9 +11,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BashTool } from "../../src/tool/bash.ts";
-import { normalizeToolPath } from "../../src/tool/path-utils.ts";
-import { getCwd, setCwd, getOriginalCwd } from "../../src/bootstrap/state.ts";
+import { BashTool } from "@sid-code/core/tool/bash.ts";
+import { normalizeToolPath } from "@sid-code/core/tool/path-utils.ts";
+import { getCwd, setCwd, getOriginalCwd } from "@sid-code/core/bootstrap/state.ts";
 
 let tmpRoot: string;
 let originalGlobalCwd: string;

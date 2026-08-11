@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { BoundedUUIDSet } from "../../src/bridge/message-dedup.ts";
+import { BoundedUUIDSet } from "@sid-code/core/bridge/message-dedup.ts";
 
 describe("BoundedUUIDSet", () => {
   test("基本 add/has", () => {

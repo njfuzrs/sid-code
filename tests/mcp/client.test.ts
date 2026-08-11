@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { MCPClient } from "../../src/mcp/client.ts";
-import type { Transport, JsonRpcNotification } from "../../src/mcp/transport.ts";
-import type { JsonRpcRequest, JsonRpcResponse } from "../../src/mcp/types.ts";
+import { MCPClient } from "@sid-code/core/mcp/client.ts";
+import type { Transport, JsonRpcNotification } from "@sid-code/core/mcp/transport.ts";
+import type { JsonRpcRequest, JsonRpcResponse } from "@sid-code/core/mcp/types.ts";
 
 /** 创建 mock Transport */
 function createMockTransport(responses: Array<JsonRpcResponse | Error>): Transport & {

@@ -19,7 +19,7 @@ import {
   dequeueLastByKind,
   getQueueSnapshot,
   __resetForTest,
-} from "../../src/query/message-queue-manager.ts";
+} from "@sid-code/core/query/message-queue-manager.ts";
 
 /** 模拟 useMessageQueue 的入队（默认 next 级）。 */
 function enqueueUserInput(text: string, priority: "now" | "next" | "later" = "next") {

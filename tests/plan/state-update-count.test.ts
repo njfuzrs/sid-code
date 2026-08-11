@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("PlanModeManager — plan_recovery update count (W12.D2)", () => {
   test("recordPlanFileWrite 累加：调 3 次后 count = 3", () => {

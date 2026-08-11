@@ -3,13 +3,13 @@ import {
   dispatch,
   collectPath,
   addHandler,
-} from "../../src/ui/events/dispatcher.ts";
+} from "@sid-code/cli/ui/events/dispatcher.ts";
 import {
   createEventTarget,
   KeyboardEvent,
   TerminalEvent,
-} from "../../src/ui/events/terminal-event.ts";
-import type { Key } from "../../src/ui/contexts/KeypressContext.ts";
+} from "@sid-code/cli/ui/events/terminal-event.ts";
+import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 function key(name: string): Key {
   return {

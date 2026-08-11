@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { stripInternalFields, INTERNAL_FIELDS } from "../../src/tool/internal-fields.ts";
+import { stripInternalFields, INTERNAL_FIELDS } from "@sid-code/core/tool/internal-fields.ts";
 
 describe("stripInternalFields (GAP-08)", () => {
   test("剥离所有内部字段", () => {

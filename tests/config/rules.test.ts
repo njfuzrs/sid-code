@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { parseClaudeMd, mergeProjectRules } from "../../src/config/rules.ts";
-import type { ProjectRules } from "../../src/config/rules.ts";
+import { parseClaudeMd, mergeProjectRules } from "@sid-code/core/config/rules.ts";
+import type { ProjectRules } from "@sid-code/core/config/rules.ts";
 
 describe("parseClaudeMd", () => {
   test("解析 Instructions 段落", () => {

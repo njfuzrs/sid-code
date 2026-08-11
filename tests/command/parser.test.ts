@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   parseSlashCommand,
   looksLikeCommand,
-} from "../../src/command/parser.ts";
+} from "@sid-code/cli/command/parser.ts";
 
 describe("parseSlashCommand", () => {
   test("解析普通命令", () => {

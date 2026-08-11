@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { injectReminders } from "../../src/query/reminder-inject.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { injectReminders } from "@sid-code/core/query/reminder-inject.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 const REMINDER = "<system-reminder>[计划模式] 只允许只读操作。</system-reminder>";
 

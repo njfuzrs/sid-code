@@ -13,8 +13,8 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { OpenAIProvider } from "../../../src/llm/openai.ts";
-import type { SendParams, StreamEvent, ContentBlock } from "../../../src/llm/types.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import type { SendParams, StreamEvent, ContentBlock } from "@sid-code/core/llm/types.ts";
 import { loadFixture, installFetchFromFixture } from "./vcr.ts";
 
 const BASE_PARAMS: SendParams = {

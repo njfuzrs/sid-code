@@ -10,10 +10,10 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import { useTerminalIntegration } from "../../../src/ui/hooks/useTerminalIntegration.ts";
-import { StreamingState } from "../../../src/ui/types.ts";
-import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "../../../src/ui/constants/figures.ts";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { useTerminalIntegration } from "@sid-code/cli/ui/hooks/useTerminalIntegration.ts";
+import { StreamingState } from "@sid-code/cli/ui/types.ts";
+import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "@sid-code/cli/ui/constants/figures.ts";
 
 /** 极简宿主组件:只跑 hook,自身不渲染任何可见内容。 */
 function Harness({

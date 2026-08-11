@@ -18,9 +18,9 @@ import {
   getTask,
   clearAllTasks,
   EVICT_GRACE_MS,
-} from "../../src/task/index.ts";
-import { TaskOutputTool } from "../../src/tool/task-output.ts";
-import type { LocalShellTaskState } from "../../src/task/types.ts";
+} from "@sid-code/core/task/index.ts";
+import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
+import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
 function makeShellTask(id: string, overrides: Partial<LocalShellTaskState> = {}): LocalShellTaskState {
   return {

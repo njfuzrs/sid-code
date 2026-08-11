@@ -16,8 +16,8 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import type { SendParams } from "../../src/llm/types.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
 
 const realFetch = globalThis.fetch;
 const ENV_KEYS = ["SID_CODE_IDLE_TIMEOUT_MS", "SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS"] as const;

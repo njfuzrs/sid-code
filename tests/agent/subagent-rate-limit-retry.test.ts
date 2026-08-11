@@ -21,18 +21,18 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { runAgentLoop } from "../../src/agent/agentic-loop.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { LoopDetector } from "../../src/agent/loop-detection.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent, SendParams } from "../../src/llm/types.ts";
+import { runAgentLoop } from "@sid-code/core/agent/agentic-loop.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent, SendParams } from "@sid-code/core/llm/types.ts";
 import {
   initStreamObserver,
   resetStreamObserver,
   getActiveStreamSnapshots,
-} from "../../src/trace/stream-observer.ts";
-import { setRetryTelemetryObserver } from "../../src/llm/retry-telemetry.ts";
+} from "@sid-code/core/trace/stream-observer.ts";
+import { setRetryTelemetryObserver } from "@sid-code/core/llm/retry-telemetry.ts";
 
 /** 事故现场的真实 429 报文（取自 warn.log:61） */
 const REAL_429_BODY =

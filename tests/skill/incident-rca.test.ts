@@ -17,9 +17,9 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillManager } from "../../src/skill/manager.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
 
-const SKILL_DIR = join(import.meta.dir, "..", "..", "src", "skill", "builtin", "incident-rca");
+const SKILL_DIR = join(import.meta.dir, "..", "..", "packages", "core", "src", "skill", "builtin", "incident-rca");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {

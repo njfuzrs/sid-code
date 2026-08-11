@@ -7,8 +7,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { withAgentCwd, getAgentCwd } from "../../src/bootstrap/cwd-context.ts";
-import { getCwd, setCwd, getOriginalCwd } from "../../src/bootstrap/state.ts";
+import { withAgentCwd, getAgentCwd } from "@sid-code/core/bootstrap/cwd-context.ts";
+import { getCwd, setCwd, getOriginalCwd } from "@sid-code/core/bootstrap/state.ts";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

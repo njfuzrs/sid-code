@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
-import type { LegacyTool as Tool } from "../../src/tool/types.ts";
+import { filterToolsForAgent } from "@sid-code/core/agent/tool-filter.ts";
+import type { LegacyTool as Tool } from "@sid-code/core/tool/types.ts";
 
 /** 构造 mock 工具 */
 function mockTool(name: string): Tool {

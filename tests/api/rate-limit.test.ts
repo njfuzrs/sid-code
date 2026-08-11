@@ -10,7 +10,7 @@ import {
   getCurrentRateLimitStatus,
   resetRateLimitStatus,
   formatRateLimitWarning,
-} from "../../src/api/rate-limit.ts";
+} from "@sid-code/core/api/rate-limit.ts";
 
 describe("extractRateLimitFromHeaders", () => {
   test("Record 入参 + 正常利用率", () => {

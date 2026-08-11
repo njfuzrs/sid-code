@@ -13,7 +13,7 @@ import {
   ensureSessionTempDir,
   ensureSidTempSubdir,
   __resetSidTempDirCache,
-} from "../../src/utils/temp-dir.ts";
+} from "@sid-code/shared/utils/temp-dir.ts";
 
 const origEnv = process.env.SID_CODE_TMPDIR;
 

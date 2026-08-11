@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { BridgeCore } from "../../src/bridge/bridge-core.ts";
-import type { BridgeTransport, BridgeOutMessage } from "../../src/bridge/types.ts";
+import { BridgeCore } from "@sid-code/core/bridge/bridge-core.ts";
+import type { BridgeTransport, BridgeOutMessage } from "@sid-code/core/bridge/types.ts";
 
 /** 可注入入站数据的 mock 传输 */
 class MockTransport implements BridgeTransport {

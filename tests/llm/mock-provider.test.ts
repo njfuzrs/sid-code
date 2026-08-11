@@ -17,9 +17,9 @@ import {
   MockProvider,
   createMockProvider,
   type MockFailPattern,
-} from "../../src/llm/mocks/mock-provider.ts";
-import type { SendParams } from "../../src/llm/types.ts";
-import { RetryableError } from "../../src/llm/errors.ts";
+} from "@sid-code/core/llm/mocks/mock-provider.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
+import { RetryableError } from "@sid-code/core/llm/errors.ts";
 
 const PARAMS: SendParams = {
   model: "mock-model",

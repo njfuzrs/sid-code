@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { resolveGrepType } from "../../src/tool/grep-type-alias.ts";
+import { resolveGrepType } from "@sid-code/core/tool/grep-type-alias.ts";
 
 describe("合法 rg 类型原样透传", () => {
   test.each(["ts", "js", "py", "go", "rust", "typescript", "python", "cpp", "yaml", "sh", "md"])(

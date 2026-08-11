@@ -91,11 +91,13 @@
     // 第三方产物 / vendor 代码：跟上游保持可比对，不套本仓规则（同 .editorconfig 口径）。
     "vendor/**",
 
-    // src/ink/ 是 fork 进来的渲染底座，许可状态特殊 —— 见仓库根 NOTICE 第 1 节
-    // 与 src/ink/README.md。那份 README 明确要求「不要以清理/统一措辞为由改写」，
-    // 且这块代码正在被逐步重构掉。lint 它只会制造与上游的无谓分叉，
-    // 所以整目录排除（实测排除后少 10 条告警，全是未用的 type import）。
-    "src/ink/**",
+    // tui-renderer 包是 fork 进来的渲染底座（原 src/ink/），许可状态特殊 ——
+    // 见仓库根 NOTICE 第 1 节与 packages/tui-renderer/src/README.md。那份 README 明确
+    // 要求「不要以清理/统一措辞为由改写」，且这块代码正在被逐步重构掉。
+    // lint 它只会制造与上游的无谓分叉，所以整目录排除
+    //（实测排除后少 10 条告警，全是未用的 type import）。
+    // ⚠️ P2-2 分包后旧的 "src/ink/**" 已永远匹配不到，必须用新路径，否则排除静默失效。
+    "packages/tui-renderer/**",
 
     "**/*.snap"
   ]

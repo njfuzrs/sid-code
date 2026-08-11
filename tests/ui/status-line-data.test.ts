@@ -15,9 +15,9 @@ import {
   deriveCacheMetrics,
   deriveWorktree,
   deriveRepoName,
-} from "../../src/ui/hooks/useStatusLineData.ts";
-import { theme } from "../../src/ui/semantic-colors.ts";
-import type { Usage } from "../../src/llm/types.ts";
+} from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
+import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
 
 describe("LY1 — shortenPath", () => {
   test("home 前缀替换为 ~", () => {

@@ -2,8 +2,8 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { setInlinePluginDirs, getInlinePluginDirs } from "../../src/plugin/loader.ts";
-import { clearAllPluginCaches } from "../../src/plugin/caches.ts";
+import { setInlinePluginDirs, getInlinePluginDirs } from "@sid-code/cli/plugin/loader.ts";
+import { clearAllPluginCaches } from "@sid-code/cli/plugin/caches.ts";
 
 let tmpDirs: string[] = [];
 
@@ -39,7 +39,7 @@ describe("插件加载端到端", () => {
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { loadAllPlugins } = await import("../../src/plugin/loader.ts");
+    const { loadAllPlugins } = await import("@sid-code/cli/plugin/loader.ts");
     const result = await loadAllPlugins();
 
     const found = result.enabled.find((p) => p.name === "e2e-plugin");
@@ -61,7 +61,7 @@ describe("插件加载端到端", () => {
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { getPluginCommands } = await import("../../src/plugin/loadPluginCommands.ts");
+    const { getPluginCommands } = await import("@sid-code/cli/plugin/loadPluginCommands.ts");
     const commands = await getPluginCommands();
     const deploy = commands.find((c) => c.name() === "cmd-plugin:deploy");
     expect(deploy).toBeDefined();
@@ -78,7 +78,7 @@ describe("插件加载端到端", () => {
     setInlinePluginDirs([dir]);
     clearAllPluginCaches();
 
-    const { loadAllPlugins } = await import("../../src/plugin/loader.ts");
+    const { loadAllPlugins } = await import("@sid-code/cli/plugin/loader.ts");
     const result = await loadAllPlugins();
 
     expect(result.enabled.find((p) => p.name === "needs-dep")).toBeUndefined();
@@ -90,7 +90,7 @@ describe("插件加载端到端", () => {
     setInlinePluginDirs(["/nonexistent/plugin/path"]);
     clearAllPluginCaches();
 
-    const { loadAllPlugins } = await import("../../src/plugin/loader.ts");
+    const { loadAllPlugins } = await import("@sid-code/cli/plugin/loader.ts");
     const result = await loadAllPlugins();
     expect(result.errors.some((e) => e.type === "path-not-found")).toBe(true);
   });

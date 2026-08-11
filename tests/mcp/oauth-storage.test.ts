@@ -8,7 +8,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MCPServerConfig } from "../../src/config/config.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 let tmpDir: string;
 let prevConfigDir: string | undefined;
@@ -30,7 +30,7 @@ const httpConfig = (url: string): MCPServerConfig => ({ transport: "http", url, 
 
 describe("oauth-storage", () => {
   test("getServerKey 对同名但不同 URL 的服务器生成不同键", async () => {
-    const { getServerKey } = await import("../../src/mcp/oauth-storage.ts");
+    const { getServerKey } = await import("@sid-code/core/mcp/oauth-storage.ts");
     const k1 = getServerKey("srv", httpConfig("https://a.example.com/mcp"));
     const k2 = getServerKey("srv", httpConfig("https://b.example.com/mcp"));
     expect(k1).not.toBe(k2);
@@ -38,13 +38,13 @@ describe("oauth-storage", () => {
   });
 
   test("getServerKey 对相同配置稳定", async () => {
-    const { getServerKey } = await import("../../src/mcp/oauth-storage.ts");
+    const { getServerKey } = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://a.example.com/mcp");
     expect(getServerKey("srv", cfg)).toBe(getServerKey("srv", cfg));
   });
 
   test("saveTokens / getOAuthEntry 往返", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://x.example.com/mcp");
     store.saveTokens("x", cfg, { access_token: "AT", refresh_token: "RT", expires_in: 3600, scope: "read" });
 
@@ -56,7 +56,7 @@ describe("oauth-storage", () => {
   });
 
   test("expires_in 缺省按 1 小时", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://y.example.com/mcp");
     const before = Date.now();
     store.saveTokens("y", cfg, { access_token: "AT" });
@@ -66,7 +66,7 @@ describe("oauth-storage", () => {
   });
 
   test("clearOAuthEntry tokens 只清 token 保留 client", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://z.example.com/mcp");
     store.saveClientInformation("z", cfg, { client_id: "CID", client_secret: "CS" });
     store.saveTokens("z", cfg, { access_token: "AT", refresh_token: "RT", expires_in: 3600 });
@@ -80,7 +80,7 @@ describe("oauth-storage", () => {
   });
 
   test("clearOAuthEntry all 删除整个条目", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://w.example.com/mcp");
     store.saveTokens("w", cfg, { access_token: "AT" });
     store.clearOAuthEntry("w", cfg, "all");
@@ -88,7 +88,7 @@ describe("oauth-storage", () => {
   });
 
   test("hasDiscoveryButNoToken：有条目无 token 为 true", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://d.example.com/mcp");
     // 仅保存 discovery（无 token）
     store.saveDiscoveryState("d", cfg, { authorizationServerUrl: "https://as.example.com" });
@@ -100,12 +100,12 @@ describe("oauth-storage", () => {
   });
 
   test("无条目时 hasDiscoveryButNoToken 为 false", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     expect(store.hasDiscoveryButNoToken("none", httpConfig("https://n.example.com/mcp"))).toBe(false);
   });
 
   test("updateOAuthEntry 合并不丢失既有字段", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const cfg = httpConfig("https://m.example.com/mcp");
     store.saveClientInformation("m", cfg, { client_id: "CID" });
     store.saveTokens("m", cfg, { access_token: "AT", expires_in: 3600 });

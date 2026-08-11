@@ -3,7 +3,7 @@
  * 架构纪律 lint 脚本（E-14 / P-11）
  *
  * 2 个规则：
- *   E-14 每个 Skill 目录含 SKILL.md + Known Limitations 段（scope=src/skill/builtin/）
+ *   E-14 每个 Skill 目录含 SKILL.md + Known Limitations 段（scope=packages/core/src/skill/builtin/）
  *   P-11 core_code commit 拆分检查（scope=git 历史）
  *
  * 用法：
@@ -61,7 +61,7 @@ const ruleE14: LintRule = {
   description: "每个 Skill 目录含 SKILL.md + Known Limitations 段",
   run(): LintFinding[] {
     const findings: LintFinding[] = [];
-    const builtinDir = join(ROOT, "src/skill/builtin");
+    const builtinDir = join(ROOT, "packages/core/src/skill/builtin");
     if (!existsSync(builtinDir)) {
       // M0 阶段没有 Skill 也算 pass，但 M3 起必至少有 1 个
       return findings;
@@ -74,7 +74,7 @@ const ruleE14: LintRule = {
         findings.push({
           rule: this.id,
           severity: "error",
-          file: `src/skill/builtin/${skillName}/SKILL.md`,
+          file: `packages/core/src/skill/builtin/${skillName}/SKILL.md`,
           message: "Skill 目录缺 SKILL.md",
         });
         continue;
@@ -87,7 +87,7 @@ const ruleE14: LintRule = {
         findings.push({
           rule: this.id,
           severity: "warn",
-          file: `src/skill/builtin/${skillName}/SKILL.md`,
+          file: `packages/core/src/skill/builtin/${skillName}/SKILL.md`,
           message:
             'SKILL.md 缺 Known Limitations 段（M0 阶段允许 warn，S3+ 必须有）',
         });
@@ -105,7 +105,18 @@ const ruleP11: LintRule = {
   description: "core_code commit 拆分检查(≥ 3 个内核文件须带 Reviewed-by trailer)",
   run(): LintFinding[] {
     const findings: LintFinding[] = [];
-    const KERNEL_PREFIXES = ["src/agent/", "src/tool/", "src/llm/"];
+    // P2-2 分包：三个内核目录都归 core 包。**同时保留旧前缀**——本规则扫的是
+    // `git log -n 10` 的历史 commit，分包提交之前的那些 commit 里路径仍是 `src/agent/` 等。
+    // 只留新前缀会让规则在历史 commit 上静默失效（漏判），只留旧前缀则对新 commit 失效。
+    const KERNEL_PREFIXES = [
+      "packages/core/src/agent/",
+      "packages/core/src/tool/",
+      "packages/core/src/llm/",
+      // 分包前的历史路径（滚动窗口越过分包提交后可删）
+      "src/agent/",
+      "src/tool/",
+      "src/llm/",
+    ];
     let commits: string[] = [];
     try {
       const { execSync } = require("node:child_process") as typeof import("node:child_process");

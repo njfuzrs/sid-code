@@ -5,8 +5,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { deriveStreamingState, type StreamingStateInput } from "../../src/ui/derive-streaming-state.ts";
-import { StreamingState } from "../../src/ui/types.ts";
+import { deriveStreamingState, type StreamingStateInput } from "@sid-code/cli/ui/derive-streaming-state.ts";
+import { StreamingState } from "@sid-code/cli/ui/types.ts";
 
 const base: StreamingStateInput = {
   isLoading: false,

@@ -25,8 +25,8 @@
  */
 
 import { parseArgs } from "node:util";
-import type { Provider } from "../src/llm/provider.ts";
-import type { SendParams } from "../src/llm/types.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
 
 // ─── CLI 参数 ───
 
@@ -87,8 +87,8 @@ const DEFAULT_MODELS: Record<string, string> = {
 
 async function createProvider(): Promise<{ provider: Provider; model: string }> {
   const model = MODEL_OVERRIDE ?? DEFAULT_MODELS[PROVIDER_NAME] ?? "gpt-4o-mini";
-  const { OpenAIProvider } = await import("../src/llm/openai.ts");
-  const { AnthropicProvider } = await import("../src/llm/anthropic.ts");
+  const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
+  const { AnthropicProvider } = await import("@sid-code/core/llm/anthropic.ts");
 
   switch (PROVIDER_NAME) {
     case "openai": {

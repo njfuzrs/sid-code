@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { TraceWriter, type HookEvent, type RawJsonlEntry } from "../../src/trace/writer.ts";
+import { TraceWriter, type HookEvent, type RawJsonlEntry } from "@sid-code/core/trace/writer.ts";
 import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { estimateTokens, truncateToLimit } from "../../src/config/token-utils.ts";
-import { estimateTextTokens } from "../../src/context/token.ts";
-import type { Attachment } from "../../src/config/attachments.ts";
+import { estimateTokens, truncateToLimit } from "@sid-code/core/config/token-utils.ts";
+import { estimateTextTokens } from "@sid-code/core/context/token.ts";
+import type { Attachment } from "@sid-code/core/config/attachments.ts";
 
 describe("estimateTokens", () => {
   test("空字符串返回 0", () => {

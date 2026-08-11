@@ -4,8 +4,8 @@
  * 覆盖：无参 toggle / 显式 on|off / -p 持久化标志 / 非法参数 / 无 setVimMode 回退。
  */
 import { describe, test, expect } from "bun:test";
-import vimCmd from "../../src/command/commands/vim/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import vimCmd from "@sid-code/cli/command/commands/vim/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 /** 收窄到 local 命令的 load（vim 恒为 type:"local"）。 */
 const loadVim = () => (vimCmd as LocalCommand).load();

@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { sanitizeUnicode, hasDangerousUnicode } from "../../src/utils/sanitization.ts";
-import { PathValidator } from "../../src/permission/path-validator.ts";
+import { sanitizeUnicode, hasDangerousUnicode } from "@sid-code/shared/utils/sanitization.ts";
+import { PathValidator } from "@sid-code/core/permission/path-validator.ts";
 
 describe("sanitizeUnicode", () => {
   test("移除零宽非连接符 (U+200C)", () => {

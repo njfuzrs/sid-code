@@ -18,8 +18,8 @@ import {
   isNestedSubAgentEnabled,
   resolveMaxDepth,
   withIncrementedDepth,
-} from "../../src/agent/depth-context.ts";
-import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
+} from "@sid-code/core/agent/depth-context.ts";
+import { filterToolsForAgent } from "@sid-code/core/agent/tool-filter.ts";
 
 const ENV_KEY = "SID_ENABLE_NESTED_SUBAGENT";
 const DEPTH_KEY = "SID_SUBAGENT_MAX_DEPTH";

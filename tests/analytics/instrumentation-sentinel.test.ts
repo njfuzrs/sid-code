@@ -26,21 +26,32 @@
 import { describe, test, expect } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { EVENT_NAMES } from "../../src/analytics/events.ts";
+import { EVENT_NAMES } from "@sid-code/core/analytics/events.ts";
 
-const SRC_ROOT = join(import.meta.dir, "..", "..", "src");
+/**
+ * 生产源码根目录（P2-2 分包后是 4 个包，不再是单一 `src/`）。
+ *
+ * **tui-renderer 刻意不在列**：它是 vendor 进来的 ink fork（原 `src/ink`），
+ * 不参与埋点约定 —— 与分包前 `collectSourceFiles` 跳过 `ink` 目录等价。
+ *
+ * ⚠️ 这个清单漏一个包 = 门禁少扫一片代码，且**不会报错**。
+ * 下面 `expect(sources.length).toBeGreaterThan(200)` 就是为此存在的防空转断言：
+ * 分包时它真的红了一次（`src/` 被搬空后只剩 1 个文件），逼出了这处修正。
+ * 加包时记得同步这里。
+ */
+const PKG_SRC_ROOTS = ["shared", "core", "cli"].map((p) =>
+  join(import.meta.dir, "..", "..", "packages", p, "src"),
+);
 
 /** 门面模块自身——扫生产调用点时要排除，它是定义方不是消费方 */
 const FACADE_REL = join("analytics", "events.ts");
 
-/** 递归收集 src/ 下所有 .ts */
+/** 递归收集某个包 src/ 下所有 .ts */
 function collectSourceFiles(dir: string, acc: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory()) {
-      // src/ink 是 vendor 进来的渲染底座，不参与埋点约定
-      if (entry === "ink") continue;
       collectSourceFiles(full, acc);
     } else if (entry.endsWith(".ts")) {
       acc.push(full);
@@ -50,17 +61,22 @@ function collectSourceFiles(dir: string, acc: string[] = []): string[] {
 }
 
 /**
- * 读取 src/ 全量源码文本。
+ * 读取全部生产源码文本。
  *
- * ⚠️ 必须用 readFileSync 而非 grep/rg：src/app.ts 含 NUL 字节，会让 grep 把整个文件
+ * `rel` 相对**各包自己的 src/**（如 `analytics/events.ts`），与分包前口径一致 ——
+ * 这样 FACADE_REL / CONTRACTS.owner 这些「模块内相对路径」的比较无需改动。
+ *
+ * ⚠️ 必须用 readFileSync 而非 grep/rg：app.ts 含 NUL 字节，会让 grep 把整个文件
  * 判成 binary 并**静默跳过**（记忆「app.ts 含 NUL 字节致 grep 静默漏报」）。
  * 门禁若靠 shell grep 实现，会在这个文件上假阴性。
  */
 function readAllSources(): Array<{ rel: string; text: string }> {
-  return collectSourceFiles(SRC_ROOT).map((full) => ({
-    rel: full.slice(SRC_ROOT.length + 1),
-    text: readFileSync(full, "utf-8"),
-  }));
+  return PKG_SRC_ROOTS.flatMap((root) =>
+    collectSourceFiles(root).map((full) => ({
+      rel: full.slice(root.length + 1),
+      text: readFileSync(full, "utf-8"),
+    })),
+  );
 }
 
 /** 门面导出的 emit 函数名——生产埋点只允许经由它们 */
@@ -80,7 +96,11 @@ const FACADE_EMITTERS = [
 
 describe("埋点接线哨兵：事件名双向对账", () => {
   test("EVENT_NAMES 里每个事件名都有对应的门面 emit 函数（无孤立常量）", () => {
-    const facade = readFileSync(join(SRC_ROOT, FACADE_REL), "utf-8");
+    // 门面在 core 包（analytics 归 core）。走 readAllSources 取而不是拼绝对路径：
+    // 包归属将来若变动，这里自动跟着走，不会再指向一个不存在的目录。
+    const facadeEntry = readAllSources().find((s) => s.rel === FACADE_REL);
+    if (!facadeEntry) throw new Error(`未找到埋点门面模块 ${FACADE_REL}（分包路径是否变了？）`);
+    const facade = facadeEntry.text;
     const orphans: string[] = [];
     for (const [key, name] of Object.entries(EVENT_NAMES)) {
       // 常量必须在门面里被 emit(...) 消费，而不是只定义不用

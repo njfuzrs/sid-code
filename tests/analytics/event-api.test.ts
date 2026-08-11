@@ -7,7 +7,7 @@ import {
   __resetAnalyticsForTest,
   type AnalyticsSink,
   type EventMetadata,
-} from "../../src/analytics/index.ts";
+} from "@sid-code/core/analytics/index.ts";
 
 describe("analytics 零依赖事件 API（spec 17 §3.1）", () => {
   beforeEach(() => {

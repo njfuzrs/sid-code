@@ -8,11 +8,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { generateDenyRulesAttachment } from "../../src/config/attachments.ts";
-import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-prompt.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import type { Config } from "../../src/config/config.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { generateDenyRulesAttachment } from "@sid-code/core/config/attachments.ts";
+import { buildSystemPrompt, clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return { ...defaultConfig(), ...overrides } as Config;

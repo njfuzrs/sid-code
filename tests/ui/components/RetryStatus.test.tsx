@@ -4,9 +4,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import { RetryStatus, remainingSeconds } from "../../../src/ui/components/RetryStatus.tsx";
-import type { RetryStatusInfo } from "../../../src/ui/App.tsx";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { RetryStatus, remainingSeconds } from "@sid-code/cli/ui/components/RetryStatus.tsx";
+import type { RetryStatusInfo } from "@sid-code/cli/ui/App.tsx";
 
 const base: RetryStatusInfo = {
   kind: "retry",

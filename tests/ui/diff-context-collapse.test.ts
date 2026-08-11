@@ -6,7 +6,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { planDiffWithContextCollapse } from "../../src/ui/components/DiffRenderer.tsx";
+import { planDiffWithContextCollapse } from "@sid-code/cli/ui/components/DiffRenderer.tsx";
 
 type L = { type: "add" | "del" | "context" | "hunk" | "other"; content: string };
 

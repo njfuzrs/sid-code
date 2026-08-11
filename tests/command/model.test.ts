@@ -3,10 +3,10 @@
  */
 
 import { describe, test, expect, mock } from "bun:test";
-import { ModelCommand } from "../../src/command/builtins.ts";
-import type { AppContext } from "../../src/command/types.ts";
-import type { Config, ModelConfig } from "../../src/config/config.ts";
-import { defaultConfig, resolveCurrentModelConfig } from "../../src/config/config.ts";
+import { ModelCommand } from "@sid-code/cli/command/builtins.ts";
+import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { Config, ModelConfig } from "@sid-code/core/config/config.ts";
+import { defaultConfig, resolveCurrentModelConfig } from "@sid-code/core/config/config.ts";
 
 function createMockContext(config: Partial<Config> = {}): AppContext {
   // 基线用 defaultConfig() 而不是手抄一份必填字段清单：原先那 30 行手抄版每次

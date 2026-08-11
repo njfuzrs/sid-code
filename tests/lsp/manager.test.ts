@@ -18,9 +18,9 @@ import {
   getLSPHealthWarning,
   waitForLSPReady,
   getLSPInitState,
-} from "../../src/lsp/manager.ts";
+} from "@sid-code/core/lsp/manager.ts";
 import { pathToFileURL } from "url";
-import type { DiagnosticSeverity } from "../../src/lsp/types.ts";
+import type { DiagnosticSeverity } from "@sid-code/core/lsp/types.ts";
 
 function diag(message: string, severity: DiagnosticSeverity, line = 0) {
   return {

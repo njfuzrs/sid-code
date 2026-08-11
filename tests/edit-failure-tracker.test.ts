@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { recordEditOutcome, type EditFailureStore } from "../src/query/edit-failure-tracker.ts";
+import { recordEditOutcome, type EditFailureStore } from "@sid-code/core/query/edit-failure-tracker.ts";
 
 /** 轻量 store：满足 get/set 接口，复刻 SessionState.sessionData 语义。 */
 function makeStore(): EditFailureStore {

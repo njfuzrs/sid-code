@@ -13,17 +13,17 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { runAgentLoop } from "../../src/agent/agentic-loop.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { LoopDetector } from "../../src/agent/loop-detection.ts";
+import { runAgentLoop } from "@sid-code/core/agent/agentic-loop.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
 import {
   parseAgentTimeout,
   CUSTOM_AGENT_TIMEOUT_MIN_MS,
   CUSTOM_AGENT_TIMEOUT_MAX_MS,
-} from "../../src/agent/custom.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent, SendParams } from "../../src/llm/types.ts";
+} from "@sid-code/core/agent/custom.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent, SendParams } from "@sid-code/core/llm/types.ts";
 
 /** 正常完成的流（end_turn + 文本内容）。 */
 async function* successStream(text: string): AsyncIterable<StreamEvent> {
@@ -237,7 +237,7 @@ describe("B5-4 门槛：重试次数透出到 AgentLoopResult（§5 缺口 D）"
     // 就只走它并 return，没有才走全局观察者"。计数 tap 若无条件传给漏斗，漏斗就永远
     // 走"有回调"分支 → 全局观察者收不到事件 → 生产路径（子代理不传 onTelemetry）的
     // 重试遥测彻底消失，且无任何报错。属 §七 F7 型"能力实现了但没生效"。
-    const { setRetryTelemetryObserver } = await import("../../src/llm/retry-telemetry.ts");
+    const { setRetryTelemetryObserver } = await import("@sid-code/core/llm/retry-telemetry.ts");
     const seen: string[] = [];
     setRetryTelemetryObserver((ev) => seen.push(ev.type));
     try {
@@ -312,7 +312,7 @@ describe("B5-5 门槛：frontmatter timeout 有上限（§5 缺口 C）", () => 
 
   test("上限不低于内置 agent 的最长超时（否则自定义 agent 反而更受限）", async () => {
     const { readFileSync } = await import("node:fs");
-    const src = readFileSync("src/agent/agent-definition.ts", "utf-8");
+    const src = readFileSync("packages/core/src/agent/agent-definition.ts", "utf-8");
     const timeouts = [...src.matchAll(/timeout:\s*([0-9_]+)/g)]
       .map((m) => parseInt(m[1].replace(/_/g, ""), 10))
       .filter((n) => n > 0);

@@ -30,14 +30,14 @@ import {
   MAX_REOPEN_CHALLENGES,
   SESSION_CUE_FREQ_THRESHOLD,
   isHypothesisEnabled,
-} from "../../src/query/hypothesis-ledger.ts";
+} from "@sid-code/core/query/hypothesis-ledger.ts";
 import {
   buildJudgmentGuideReminder,
   buildMinimalGuideReminder,
   detectInvestigateToEditTransition,
   detectUnregisteredJudgment,
   hasReadOnlyProbe,
-} from "../../src/query/hypothesis-guide.ts";
+} from "@sid-code/core/query/hypothesis-guide.ts";
 import {
   appendDeliverableText,
   extractDeliverableText,
@@ -45,8 +45,8 @@ import {
   isDeliverableTool,
   resetDeliverableText,
   DELIVERABLE_BUFFER_LIMIT,
-} from "../../src/query/deliverable-text.ts";
-import { SessionState } from "../../src/session/state.ts";
+} from "@sid-code/core/query/deliverable-text.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
 
 /** 造一条 cue 足够长、可稳定命中的假设（长度须过 MIN_EN_CUE_LENGTH=8 门槛）。 */
 function registerWithCue(ledger: HypothesisLedger, cue: string, turn = 1) {

@@ -6,12 +6,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { Registry } from "../../src/tool/registry.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
 // 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "@sid-code/core/tool/types.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import {
   type ParentInitMessage,
   type ChildMessage,
@@ -19,7 +19,7 @@ import {
   type ChildResultMessage,
   type ChildCrashMessage,
   writeChildMsg,
-} from "../../src/agent/sub-agent-protocol.ts";
+} from "@sid-code/core/agent/sub-agent-protocol.ts";
 
 // ============================================================
 // Mock 工具
@@ -367,7 +367,7 @@ describe("Spawn 模式 fallback 到进程内", () => {
 describe("Headless 入口", () => {
   test("headless.ts 模块可以动态导入", async () => {
     // 不实际执行 main()，只验证模块可以加载
-    const mod = await import("../../src/entrypoints/headless.ts");
+    const mod = await import("@sid-code/cli/entrypoints/headless.ts");
     expect(mod).toBeDefined();
   });
 });

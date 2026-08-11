@@ -5,9 +5,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCollector } from "../../src/trace/collector.ts";
-import { TraceWriter } from "../../src/trace/writer.ts";
-import { aggregateProviderStats } from "../../src/trace/digest.ts";
+import { TraceCollector } from "@sid-code/core/trace/collector.ts";
+import { TraceWriter } from "@sid-code/core/trace/writer.ts";
+import { aggregateProviderStats } from "@sid-code/core/trace/digest.ts";
 
 describe("T12: RetryTelemetry 事件落盘", () => {
   let tempDir: string;

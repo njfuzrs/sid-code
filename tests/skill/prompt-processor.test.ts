@@ -7,7 +7,7 @@ import {
   processSkillPrompt,
   substituteArguments,
   executeShellCommandsInPrompt,
-} from "../../src/skill/prompt-processor.ts";
+} from "@sid-code/core/skill/prompt-processor.ts";
 
 const ctx = { cwd: process.cwd(), sessionId: "sess-123" };
 

@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { formatUnifiedDiff, buildStructuredPatch } from "../../src/tool/diff-output.ts";
+import { formatUnifiedDiff, buildStructuredPatch } from "@sid-code/core/tool/diff-output.ts";
 
 describe("formatUnifiedDiff", () => {
   test("修改文件:产出含 @@ hunk 头与 +/- 行", () => {

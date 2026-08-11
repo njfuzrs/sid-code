@@ -11,10 +11,10 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { initTelemetry, shutdownTelemetry } from "../../src/telemetry/index.ts";
-import { OtlpTelemetryExporter } from "../../src/telemetry/exporters/otlp.ts";
-import { OtlpExporter } from "../../src/analytics/exporters/otlp.ts";
-import { validateConfig } from "../../src/config/schema.ts";
+import { initTelemetry, shutdownTelemetry } from "@sid-code/core/telemetry/index.ts";
+import { OtlpTelemetryExporter } from "@sid-code/core/telemetry/exporters/otlp.ts";
+import { OtlpExporter } from "@sid-code/core/analytics/exporters/otlp.ts";
+import { validateConfig } from "@sid-code/core/config/schema.ts";
 
 afterEach(async () => {
   await shutdownTelemetry();

@@ -18,7 +18,7 @@ import {
   formatCodeActions,
   MAX_LOCATIONS,
   MAX_CODE_ACTIONS,
-} from "../../src/tool/lsp-formatters.ts";
+} from "@sid-code/core/tool/lsp-formatters.ts";
 import { pathToFileURL } from "url";
 import { join } from "path";
 

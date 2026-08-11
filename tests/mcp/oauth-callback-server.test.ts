@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import type { CallbackServerHandle } from "../../src/mcp/oauth-callback-server.ts";
+import type { CallbackServerHandle } from "@sid-code/core/mcp/oauth-callback-server.ts";
 
 let handle: CallbackServerHandle | null = null;
 
@@ -15,21 +15,21 @@ afterEach(() => {
 
 describe("oauth-callback-server", () => {
   test("startCallbackServer 成功绑定并返回 redirect URI", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
     expect(handle.port).toBeGreaterThan(0);
     expect(handle.redirectUri).toBe(`http://localhost:${handle.port}/callback`);
   });
 
   test("配置固定端口时使用该端口", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     // 用一个不太常用的高端口
     handle = await startCallbackServer(51234);
     expect(handle.port).toBe(51234);
   });
 
   test("正确授权码回调解析成功", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const codePromise = handle.waitForCode("test-state-123", 5000);
@@ -43,7 +43,7 @@ describe("oauth-callback-server", () => {
   });
 
   test("state 不匹配时拒绝", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const codePromise = handle.waitForCode("expected-state", 5000);
@@ -55,7 +55,7 @@ describe("oauth-callback-server", () => {
   });
 
   test("授权服务器返回错误时拒绝", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const codePromise = handle.waitForCode("s", 5000);
@@ -66,7 +66,7 @@ describe("oauth-callback-server", () => {
   });
 
   test("超时拒绝", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     // 100ms 超时
@@ -75,7 +75,7 @@ describe("oauth-callback-server", () => {
   });
 
   test("abort signal 取消", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const controller = new AbortController();
@@ -87,7 +87,7 @@ describe("oauth-callback-server", () => {
   });
 
   test("非 /callback 路径返回 404", async () => {
-    const { startCallbackServer } = await import("../../src/mcp/oauth-callback-server.ts");
+    const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const resp = await fetch(`http://localhost:${handle.port}/other`);

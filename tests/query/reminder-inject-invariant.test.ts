@@ -20,15 +20,15 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { queryLoop } from "../../src/query/loop.ts";
-import type { QueryLoopConfig } from "../../src/query/loop.ts";
-import type { QueryDeps } from "../../src/query/types.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { SessionState } from "../../src/session/state.ts";
-import type { Config } from "../../src/config/config.ts";
-import type { StreamEvent, AccumulatedResponse } from "../../src/llm/types.ts";
+import { queryLoop } from "@sid-code/core/query/loop.ts";
+import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
+import type { QueryDeps } from "@sid-code/core/query/types.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 
 /** 复刻事故轨迹的用户指令（/commit 展开，~1600 字符量级） */
 const USER_INSTRUCTION = "# Commit: 生成提交信息并提交\n\n基于当前 git 变更生成规范 commit message 并提交。"

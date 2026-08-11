@@ -28,16 +28,16 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { getToolSummary, getToolDetailFull } from "../../src/ui/ui-utils.ts";
-import { LSPTool } from "../../src/tool/lsp.ts";
-import { ReadTool } from "../../src/tool/read.ts";
-import { EditTool } from "../../src/tool/edit.ts";
-import { WriteTool } from "../../src/tool/write.ts";
-import { BashTool } from "../../src/tool/bash.ts";
-import { GrepTool } from "../../src/tool/grep.ts";
-import { GlobTool } from "../../src/tool/glob.ts";
+import { getToolSummary, getToolDetailFull } from "@sid-code/cli/ui/ui-utils.ts";
+import { LSPTool } from "@sid-code/core/tool/lsp.ts";
+import { ReadTool } from "@sid-code/core/tool/read.ts";
+import { EditTool } from "@sid-code/core/tool/edit.ts";
+import { WriteTool } from "@sid-code/core/tool/write.ts";
+import { BashTool } from "@sid-code/core/tool/bash.ts";
+import { GrepTool } from "@sid-code/core/tool/grep.ts";
+import { GlobTool } from "@sid-code/core/tool/glob.ts";
 // think 走的是现代 buildTool 形态（name 是属性，不是方法），故与上面的 class 工具取名方式不同
-import { thinkTool } from "../../src/tool/think.ts";
+import { thinkTool } from "@sid-code/core/tool/think.ts";
 
 /**
  * 需要 header 摘要的工具 × 一份典型入参。

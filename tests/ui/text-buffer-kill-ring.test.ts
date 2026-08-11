@@ -11,7 +11,7 @@ import {
   textBufferReducer as reduce,
   createInitialState,
   type TextBufferState,
-} from "../../src/ui/text-buffer.ts";
+} from "@sid-code/cli/ui/text-buffer.ts";
 
 /** 从文本 + 光标列构造 state（单行场景）。 */
 function stateAt(text: string, col: number): TextBufferState {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getConversationClearedPatch } from "../../src/ui/state-bridge.ts";
+import { getConversationClearedPatch } from "@sid-code/cli/ui/state-bridge.ts";
 
 describe("getConversationClearedPatch", () => {
   test("应重置会话视图相关状态，确保 /clear 后界面回到空白状态", () => {

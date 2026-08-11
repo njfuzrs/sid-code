@@ -16,7 +16,7 @@
 import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { processImports } from "../../src/config/import-processor.ts";
+import { processImports } from "@sid-code/core/config/import-processor.ts";
 
 const NOTE_BODY = "NOTE_BODY_SENTINEL_7f3a";
 

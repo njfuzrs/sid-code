@@ -18,8 +18,8 @@ import {
   clearAllTasks,
   onTaskChanged,
   offTaskChanged,
-} from "../../src/task/index.ts";
-import type { LocalShellTaskState } from "../../src/task/types.ts";
+} from "@sid-code/core/task/index.ts";
+import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
 function makeShellTask(id: string, overrides: Partial<LocalShellTaskState> = {}): LocalShellTaskState {
   return {

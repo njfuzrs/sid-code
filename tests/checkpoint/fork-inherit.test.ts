@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { CheckpointManager } from "../../src/checkpoint/manager.ts";
+import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";

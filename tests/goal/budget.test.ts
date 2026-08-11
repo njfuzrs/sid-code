@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { checkGoalBudget, buildBudgetLimitMessage, buildBudgetWarningMessage } from "../../src/goal/budget.ts";
-import { createGoal } from "../../src/goal/state.ts";
+import { checkGoalBudget, buildBudgetLimitMessage, buildBudgetWarningMessage } from "@sid-code/core/goal/budget.ts";
+import { createGoal } from "@sid-code/core/goal/state.ts";
 
 describe("checkGoalBudget", () => {
   test("无预算时始终返回 ok", () => {

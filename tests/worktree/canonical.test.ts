@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { realpathSync } from "fs";
-import { findCanonicalGitRoot } from "../../src/worktree/canonical.ts";
+import { findCanonicalGitRoot } from "@sid-code/core/worktree/canonical.ts";
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });

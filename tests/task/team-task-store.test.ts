@@ -26,8 +26,8 @@ import {
   claimNextUnblockedTask,
   hasUnfinishedTasks,
   __clearStructuredTasks,
-} from "../../src/task/structured-task-store.ts";
-import { persistTeamTasks, loadTeamTasks, teamTasksPath } from "../../src/task/team-task-store.ts";
+} from "@sid-code/core/task/structured-task-store.ts";
+import { persistTeamTasks, loadTeamTasks, teamTasksPath } from "@sid-code/core/task/team-task-store.ts";
 
 let dir: string;
 

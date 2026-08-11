@@ -12,10 +12,10 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillLoader } from "../../src/skill/loader.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
+import { SkillLoader } from "@sid-code/core/skill/loader.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 
-const SKILL_DIR = join(import.meta.dir, "..", "..", "src", "skill", "builtin", "code-review");
+const SKILL_DIR = join(import.meta.dir, "..", "..", "packages", "core", "src", "skill", "builtin", "code-review");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {
@@ -203,7 +203,7 @@ describe("code-review Skill - SkillLoader 集成（无 LLM 调用）", () => {
   // 直接扫 src/skill/builtin/<name>/SKILL.md,不再被当作 projectDir 处理。
 
   test("ADR-025: SkillManager.discover 把 code-review 标为 builtin（生产路径）", async () => {
-    const { SkillManager } = await import("../../src/skill/manager.ts");
+    const { SkillManager } = await import("@sid-code/core/skill/manager.ts");
     const manager = new SkillManager();
     await manager.discover();
     const skills = manager.getAllSkills();

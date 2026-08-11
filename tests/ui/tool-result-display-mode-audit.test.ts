@@ -35,25 +35,28 @@ import { describe, test, expect } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { resolveResultDisplayMode } from "../../src/tool/result-display-mode.ts";
-import { buildCompletedToolCall } from "../../src/ui/history-adapter.ts";
-import { getToolSummary } from "../../src/ui/ui-utils.ts";
+import { resolveResultDisplayMode } from "@sid-code/core/tool/result-display-mode.ts";
+import { buildCompletedToolCall } from "@sid-code/cli/ui/history-adapter.ts";
+import { getToolSummary } from "@sid-code/cli/ui/ui-utils.ts";
 
-import { TodoWriteTool } from "../../src/tool/todo-write.ts";
-import { ToolSearchTool } from "../../src/tool/tool-search.ts";
-import { TaskCreateTool } from "../../src/tool/structured-task-create.ts";
-import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
-import { EnterPlanModeTool } from "../../src/tool/enter-plan-mode.ts";
-import { ExitPlanModeTool } from "../../src/tool/exit-plan-mode.ts";
-import { PlanModeManager } from "../../src/plan/state.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
+import { ToolSearchTool } from "@sid-code/core/tool/tool-search.ts";
+import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
+import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
+import { EnterPlanModeTool } from "@sid-code/core/tool/enter-plan-mode.ts";
+import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
-/** 工具源码目录（与 loop-detection 审计同口径，另加 skill——Skill 元工具在那里）。 */
+/**
+ * 工具源码目录（与 loop-detection 审计同口径，另加 skill——Skill 元工具在那里）。
+ * 三者都归 core 包（P2-2 分包）。
+ */
 const TOOL_SRC_DIRS = [
-  join(REPO_ROOT, "src", "tool"),
-  join(REPO_ROOT, "src", "agent"),
-  join(REPO_ROOT, "src", "skill"),
+  join(REPO_ROOT, "packages", "core", "src", "tool"),
+  join(REPO_ROOT, "packages", "core", "src", "agent"),
+  join(REPO_ROOT, "packages", "core", "src", "skill"),
 ];
 
 /**

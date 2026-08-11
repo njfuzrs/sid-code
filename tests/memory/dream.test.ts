@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { shouldDream, initAutoDream, type DreamConfig } from "../../src/memory/dream/dream.ts";
+import { shouldDream, initAutoDream, type DreamConfig } from "@sid-code/core/memory/dream/dream.ts";
 
 const HOUR = 1000 * 60 * 60;
 

@@ -16,9 +16,9 @@ import {
   previewWireEffort,
   getMaxThinkingTokensOverride,
   mapThinkingCapToEffort,
-} from "../../src/llm/effort.ts";
-import type { SendParams } from "../../src/llm/types.ts";
-import { __resetCapabilityCacheForTest } from "../../src/llm/model-capabilities.ts";
+} from "@sid-code/core/llm/effort.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
+import { __resetCapabilityCacheForTest } from "@sid-code/core/llm/model-capabilities.ts";
 
 function baseParams(model: string): SendParams {
   return { model, messages: [], maxTokens: 1000 };

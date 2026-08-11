@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeAll } from "bun:test";
-import { GlobTool } from "../../src/tool/glob.ts";
+import { GlobTool } from "@sid-code/core/tool/glob.ts";
 import { mkdtempSync, writeFileSync, mkdirSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

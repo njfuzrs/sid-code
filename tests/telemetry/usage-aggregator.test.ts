@@ -18,14 +18,14 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { UsageLedgerEntry } from "../../src/telemetry/usage-ledger.ts";
-import type { ChannelTrustRegistry } from "../../src/telemetry/channel-trust.ts";
+import type { UsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger.ts";
+import type { ChannelTrustRegistry } from "@sid-code/core/telemetry/channel-trust.ts";
 import {
   aggregateEntries,
   aggregateOverall,
   aggregateUsage,
   periodKey,
-} from "../../src/telemetry/usage-aggregator.ts";
+} from "@sid-code/core/telemetry/usage-aggregator.ts";
 
 let tmpDir: string;
 const savedLedger = process.env.SID_CODE_USAGE_LEDGER;

@@ -8,8 +8,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-prompt.ts";
-import type { SkillListingEntry } from "../../src/skill/budget.ts";
+import { buildSystemPrompt, clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import type { SkillListingEntry } from "@sid-code/core/skill/budget.ts";
 
 const SKILLS: SkillListingEntry[] = [
   { name: "code-review", description: "审查代码改动", whenToUse: "提交前审查 diff", isBundled: true },

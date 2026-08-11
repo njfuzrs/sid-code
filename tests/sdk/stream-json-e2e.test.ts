@@ -9,14 +9,14 @@
 
 import { describe, test, expect } from "bun:test";
 import { PassThrough } from "node:stream";
-import { runHeadless, runHeadlessStreaming } from "../../src/sdk/headless-runner.ts";
-import { StructuredIO } from "../../src/sdk/structured-io.ts";
-import { CommandQueue } from "../../src/sdk/command-queue.ts";
-import { SDKQueryEngine, type SDKQueryEngineDriver } from "../../src/sdk/query-engine.ts";
-import { SDKMessageSchema } from "../../src/sdk/schemas.ts";
-import { ndjsonStringify } from "../../src/sdk/ndjson.ts";
-import type { QueryEngineEvent } from "../../src/query/types.ts";
-import type { Message, Usage } from "../../src/llm/types.ts";
+import { runHeadless, runHeadlessStreaming } from "@sid-code/core/sdk/headless-runner.ts";
+import { StructuredIO } from "@sid-code/core/sdk/structured-io.ts";
+import { CommandQueue } from "@sid-code/core/sdk/command-queue.ts";
+import { SDKQueryEngine, type SDKQueryEngineDriver } from "@sid-code/core/sdk/query-engine.ts";
+import { SDKMessageSchema } from "@sid-code/core/sdk/schemas.ts";
+import { ndjsonStringify } from "@sid-code/core/sdk/ndjson.ts";
+import type { QueryEngineEvent } from "@sid-code/core/query/types.ts";
+import type { Message, Usage } from "@sid-code/core/llm/types.ts";
 
 function simpleDriver(replyText: string): SDKQueryEngineDriver {
   const usage: Usage = { inputTokens: 5, outputTokens: 7 };

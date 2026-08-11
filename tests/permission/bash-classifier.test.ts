@@ -10,9 +10,9 @@ import {
   buildClassifierUserPrompt,
   parseClassifierResponse,
   type BashClassifyRequest,
-} from "../../src/permission/bash-classifier.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { AccumulatedResponse, SendParams, StreamEvent } from "../../src/llm/types.ts";
+} from "@sid-code/core/permission/bash-classifier.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { AccumulatedResponse, SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** 构造一个返回固定文本的 mock provider（非流式路径） */
 function mockProvider(responseText: string, opts?: { throwErr?: boolean; delayMs?: number }): Provider {

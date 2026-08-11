@@ -23,9 +23,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { processStream } from "../../src/query/stream-processor.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
-import { DEFAULTS } from "../../src/config/network-profile.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
+import { DEFAULTS } from "@sid-code/core/config/network-profile.ts";
 
 /** 静默 `silentMs` 后才吐出首个事件，然后正常收尾——模拟网关排队导致的慢首字节。 */
 function slowFirstByteStream(silentMs: number): AsyncIterable<StreamEvent> {

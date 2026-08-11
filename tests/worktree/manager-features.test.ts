@@ -7,7 +7,7 @@ import { execFileSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { WorktreeManager } from "../../src/worktree/manager.ts";
+import { WorktreeManager } from "@sid-code/core/worktree/manager.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();

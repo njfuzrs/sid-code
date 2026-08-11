@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { Message } from "../../src/llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   estimateMessagesTokens,
   hasToolCallsInLastAssistantTurn,
@@ -12,8 +12,8 @@ import {
   isSessionMemoryEmpty,
   truncateSessionMemory,
   initialSessionMemoryState,
-} from "../../src/session-memory/utils.ts";
-import { DEFAULT_SESSION_MEMORY_TEMPLATE } from "../../src/session-memory/prompts.ts";
+} from "@sid-code/core/session-memory/utils.ts";
+import { DEFAULT_SESSION_MEMORY_TEMPLATE } from "@sid-code/core/session-memory/prompts.ts";
 
 function userMsg(text: string): Message {
   return { role: "user", content: [{ type: "text", text }] };

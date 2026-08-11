@@ -28,7 +28,7 @@ import {
   collectEvidenceTexts,
   isEmptyResultText,
   CONSECUTIVE_REFUTATION_NAG_THRESHOLD,
-} from "../../src/query/hypothesis-ledger.ts";
+} from "@sid-code/core/query/hypothesis-ledger.ts";
 
 describe("extractCues（Top 5：收紧 cue 长度）", () => {
   test("中文只取 ≥4 连续汉字整段，短通用词不纳入", () => {

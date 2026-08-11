@@ -18,9 +18,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { processStream } from "../../src/query/stream-processor.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
-import { RequestAbortedError, isInternalTimeoutAbortReason } from "../../src/llm/errors.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
+import { RequestAbortedError, isInternalTimeoutAbortReason } from "@sid-code/core/llm/errors.ts";
 
 /**
  * 无数据的流，但**响应 abort**——模拟真实 fetch：turn controller 被 abort 时迭代器 reject，

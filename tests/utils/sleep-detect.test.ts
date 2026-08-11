@@ -14,7 +14,7 @@ import {
   __resetSleepLedgerForTest,
   SLEEP_DETECT_RATIO,
   SLEEP_DETECT_FLOOR_MS,
-} from "../../src/utils/sleep-detect.ts";
+} from "@sid-code/shared/utils/sleep-detect.ts";
 
 beforeEach(() => {
   __resetSleepLedgerForTest();

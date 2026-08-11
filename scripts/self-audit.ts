@@ -65,15 +65,15 @@ function readRepoFile(rel: string): string | null {
  * 任一缺失（被重构挪走而文档未同步）都会让自诊断走空。
  */
 const CORE_MODULES: Array<{ path: string; role: string }> = [
-  { path: "src/query/tool-executor.ts", role: "工具执行器：并发分区策略（isConcurrencySafe → 并行/串行）" },
-  { path: "src/agent/sub-agent.ts", role: "子代理执行引擎：超时/spawn/进程内三条路径" },
-  { path: "src/agent/tool.ts", role: "SubAgentTool：并发安全声明 + runSync/runAsync" },
-  { path: "src/agent/agent-definition.ts", role: "内置 agent 注册表：readOnly / timeout 按类型" },
-  { path: "src/trace/collector.ts", role: "可观测性采集：SubagentStart/Stop 事件落盘" },
-  { path: "src/trace/digest.ts", role: "轨迹嚼碎：子代理 section（串/并行 + 成败判定）" },
-  { path: "src/config/system-prompt.ts", role: "系统提示词：架构知识 + sub_agent 工具描述" },
-  { path: "src/query/loop.ts", role: "主循环 queryLoop：reminder 注入 + 压缩恢复" },
-  { path: "src/query/hypothesis-guide.ts", role: "假设纪律引导：调查性上下文检测" },
+  { path: "packages/core/src/query/tool-executor.ts", role: "工具执行器：并发分区策略（isConcurrencySafe → 并行/串行）" },
+  { path: "packages/core/src/agent/sub-agent.ts", role: "子代理执行引擎：超时/spawn/进程内三条路径" },
+  { path: "packages/core/src/agent/tool.ts", role: "SubAgentTool：并发安全声明 + runSync/runAsync" },
+  { path: "packages/core/src/agent/agent-definition.ts", role: "内置 agent 注册表：readOnly / timeout 按类型" },
+  { path: "packages/core/src/trace/collector.ts", role: "可观测性采集：SubagentStart/Stop 事件落盘" },
+  { path: "packages/core/src/trace/digest.ts", role: "轨迹嚼碎：子代理 section（串/并行 + 成败判定）" },
+  { path: "packages/core/src/config/system-prompt.ts", role: "系统提示词：架构知识 + sub_agent 工具描述" },
+  { path: "packages/core/src/query/loop.ts", role: "主循环 queryLoop：reminder 注入 + 压缩恢复" },
+  { path: "packages/core/src/query/hypothesis-guide.ts", role: "假设纪律引导：调查性上下文检测" },
   { path: "CLAUDE.md", role: "最高指令：战略定位 + 五层架构 + 三组不变量" },
 ];
 
@@ -105,49 +105,49 @@ const INVARIANTS: Array<{
 }> = [
   {
     id: "concurrency-partition",
-    file: "src/query/tool-executor.ts",
+    file: "packages/core/src/query/tool-executor.ts",
     pattern: /isConcurrencySafe/,
     semantic: "工具执行器仍按 isConcurrencySafe(input) 做并发分区（P0：修复子代理假并行真串行）",
     remedy: "并发分区逻辑被改动，只读子代理可能重新被串行执行。核对 tool-executor.ts 的 partition 段。",
   },
   {
     id: "subagent-concurrency-safe",
-    file: "src/agent/tool.ts",
+    file: "packages/core/src/agent/tool.ts",
     pattern: /isConcurrencySafe\s*\(\s*input/,
     semantic: "SubAgentTool 仍声明 isConcurrencySafe(input)，按类型 readOnly 决定可否并行",
     remedy: "SubAgentTool 不再声明 isConcurrencySafe → 回退到类级 readOnly()=false → 全部串行。补回该方法。",
   },
   {
     id: "runsync-iserror",
-    file: "src/agent/tool.ts",
+    file: "packages/core/src/agent/tool.ts",
     pattern: /isError:\s*!result\.success/,
     semantic: "runSync 成功路径按 result.success 设 isError（P0：TUI 区分子代理成败）",
     remedy: "runSync 正常路径不再设 isError，TUI 无法区分子代理成功/失败。补回 `isError: !result.success`。",
   },
   {
     id: "collector-stop-status",
-    file: "src/trace/collector.ts",
+    file: "packages/core/src/trace/collector.ts",
     pattern: /status:\s*stopInput\.success\s*===\s*true/,
     semantic: "SubagentStop 事件按 success 写 status（P0：消灭'全部 SUCCESS'误判的物理根因）",
     remedy: "SubagentStop 不再从 success 派生 status，events.jsonl 又变得无成败可读。补回 status 字段。",
   },
   {
     id: "digest-subagent-section",
-    file: "src/trace/digest.ts",
+    file: "packages/core/src/trace/digest.ts",
     pattern: /buildSubAgentSummary/,
     semantic: "trace-digest 仍构建子代理 section（P2 最高价值：自诊断数据无歧义）",
     remedy: "digest 不再产出子代理汇总，消费方需回 raw.jsonl 交叉验证。补回 buildSubAgentSummary。",
   },
   {
     id: "reactive-compact-anchor",
-    file: "src/query/reactive-compact.ts",
+    file: "packages/core/src/query/reactive-compact.ts",
     pattern: /extractTaskContext|原始任务/,
     semantic: "响应式压缩仍保留原始任务锚点（P1：防压缩后模型丢失目标）",
     remedy: "reactive-compact 不再提取原始任务语义，压缩后可能目标跑偏。补回 extractTaskContext。",
   },
   {
     id: "explore-timeout-by-type",
-    file: "src/agent/agent-definition.ts",
+    file: "packages/core/src/agent/agent-definition.ts",
     pattern: /readOnly:\s*true/,
     semantic: "内置 agent 仍按类型声明 readOnly（explore/plan/verify 只读可并行）",
     remedy: "只读 agent 不再声明 readOnly:true → isConcurrencySafe 判不出只读 → 被串行。核对 BUILTIN_AGENTS。",
@@ -183,13 +183,13 @@ for (const inv of INVARIANTS) {
  * 这是模型正确选择子代理类型（进而命中并发分区只读路径）的前提。表述丢失 → 模型可能
  * 一律派 task（可写→串行），假并行真串行的老问题会以另一种形式回归。
  */
-const promptContent = readRepoFile("src/config/system-prompt.ts");
+const promptContent = readRepoFile("packages/core/src/config/system-prompt.ts");
 if (promptContent === null) {
   record({
     id: "prompt-alignment:sub-agent-desc",
     category: "prompt-alignment",
     ok: false,
-    detail: "无法读取 src/config/system-prompt.ts，提示词对齐无法核验",
+    detail: "无法读取 packages/core/src/config/system-prompt.ts，提示词对齐无法核验",
     remedy: "确认 system-prompt.ts 是否被移动。",
   });
 } else {

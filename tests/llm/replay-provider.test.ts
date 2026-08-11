@@ -10,9 +10,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { validateConfig } from "../../src/config/schema.ts";
-import type { ValidationError } from "../../src/config/schema.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { validateConfig } from "@sid-code/core/config/schema.ts";
+import type { ValidationError } from "@sid-code/core/config/schema.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +22,9 @@ import {
   blocksToStreamEvents,
   createReplayProvider,
   type ReplayTurn,
-} from "../../src/llm/mocks/replay-provider.ts";
-import { processStream } from "../../src/query/stream-processor.ts";
-import type { SendParams, StreamEvent, ContentBlock } from "../../src/llm/types.ts";
+} from "@sid-code/core/llm/mocks/replay-provider.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import type { SendParams, StreamEvent, ContentBlock } from "@sid-code/core/llm/types.ts";
 
 const PARAMS: SendParams = { model: "test", messages: [], maxTokens: 1024 };
 

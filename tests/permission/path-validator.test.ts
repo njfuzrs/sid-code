@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { PathValidator, normalizeCaseForComparison } from "../../src/permission/path-validator.ts";
+import { PathValidator, normalizeCaseForComparison } from "@sid-code/core/permission/path-validator.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

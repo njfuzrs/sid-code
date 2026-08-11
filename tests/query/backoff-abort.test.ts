@@ -23,7 +23,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { sleepUnlessAborted } from "../../src/query/loop.ts";
+import { sleepUnlessAborted } from "@sid-code/core/query/loop.ts";
 
 describe("sleepUnlessAborted（退避可被中断）", () => {
   test("未 abort：正常睡满", async () => {

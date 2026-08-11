@@ -4,11 +4,11 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { WebFetchTool, __clearWebFetchCache } from "../../src/tool/web-fetch.ts";
+import { WebFetchTool, __clearWebFetchCache } from "@sid-code/core/tool/web-fetch.ts";
 import {
   getSharedWebFetchExtractor,
   __resetWebFetchExtractor,
-} from "../../src/tool/web-fetch-extract.ts";
+} from "@sid-code/core/tool/web-fetch-extract.ts";
 
 // 内容缓存、主机限流、提炼器单例均为模块级全局，会跨测试泄漏
 // （缓存串味 + 限流计数累积 + 提炼器 provider 残留）。

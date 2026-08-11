@@ -8,9 +8,9 @@ import {
   isStreamingTransportError,
   convertToStreamEvents,
   streamWithFallback,
-} from "../../src/api/stream-handler.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent, AccumulatedResponse } from "../../src/llm/types.ts";
+} from "@sid-code/core/api/stream-handler.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 
 const baseParams: SendParams = {
   model: "m",

@@ -9,8 +9,8 @@
  *     （用户问："遇到重复执行 git 命令这种我们应该是能检测出来吧"）
  */
 
-import { ToolShapeLoopDetector, ToolCallLoopDetector, DEFAULT_LOOP_CONFIG } from "../src/agent/loop-detection.ts";
-import { isReadOnlyCommand, isDestructiveCommand } from "../src/tool/bash/read-only-validation.ts";
+import { ToolShapeLoopDetector, ToolCallLoopDetector, DEFAULT_LOOP_CONFIG } from "@sid-code/core/agent/loop-detection.ts";
+import { isReadOnlyCommand, isDestructiveCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
 
 const L: string[] = [];
 function log(s = "") { L.push(s); }

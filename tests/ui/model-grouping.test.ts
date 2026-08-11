@@ -16,8 +16,8 @@ import {
   parseModelDescription,
   type ModelOption,
   type ModelRow,
-} from "../../src/ui/components/model-grouping.ts";
-import { computeScrollStart } from "../../src/ui/components/ModelDialog.tsx";
+} from "@sid-code/cli/ui/components/model-grouping.ts";
+import { computeScrollStart } from "@sid-code/cli/ui/components/ModelDialog.tsx";
 
 /** 取某行的模型名（非模型行返回 undefined），省去每处手写类型收窄 */
 function nameAt(rows: ModelRow[], idx: number): string | undefined {

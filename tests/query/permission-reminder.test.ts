@@ -9,8 +9,8 @@ import {
   buildPermissionModeReminder,
   isRuntimeModeSwitch,
   PERMISSION_MODE_REMINDER_INTERVAL,
-} from "../../src/query/permission-reminder.ts";
-import { PERMISSION_MODE_DESCRIPTIONS } from "../../src/config/attachments.ts";
+} from "@sid-code/core/query/permission-reminder.ts";
+import { PERMISSION_MODE_DESCRIPTIONS } from "@sid-code/core/config/attachments.ts";
 
 describe("buildPermissionModeReminder — 基础行为", () => {
   test("已知 mode 复用 PERMISSION_MODE_DESCRIPTIONS 文案", () => {

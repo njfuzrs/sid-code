@@ -17,11 +17,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { MessageValidator } from "../../src/context/validator.ts";
-import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
-import { reactiveCompact } from "../../src/query/reactive-compact.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { MessageValidator } from "@sid-code/core/context/validator.ts";
+import { checkMessageHistoryIntegrity } from "@sid-code/core/agent/message-invariants.ts";
+import { reactiveCompact } from "@sid-code/core/query/reactive-compact.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /**
  * 构造「agent 典型历史」：user 消息几乎全部承载 tool_result。

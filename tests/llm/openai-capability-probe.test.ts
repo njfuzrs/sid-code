@@ -14,8 +14,8 @@
  */
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { probeOpenAICompatModel } from "../../src/llm/openai.ts";
-import { lookupCapability, __resetCapabilityCacheForTest } from "../../src/llm/model-capabilities.ts";
+import { probeOpenAICompatModel } from "@sid-code/core/llm/openai.ts";
+import { lookupCapability, __resetCapabilityCacheForTest } from "@sid-code/core/llm/model-capabilities.ts";
 
 let origFetch: typeof globalThis.fetch;
 

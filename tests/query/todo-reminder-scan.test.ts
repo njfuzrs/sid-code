@@ -15,9 +15,9 @@ import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
   LAST_TODO_REMINDER_TURN_KEY,
-} from "../../src/query/todo-reminder-scan.ts";
-import { TODO_REMINDER_CONFIG } from "../../src/query/todo-reminder.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/query/todo-reminder-scan.ts";
+import { TODO_REMINDER_CONFIG } from "@sid-code/core/query/todo-reminder.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 const REPO_ROOT = join(import.meta.dir, "../..");
 
@@ -194,13 +194,13 @@ describe("回归哨兵：60 轮停滞必须持续回注（旧实现只注 1 次�
 // ────────────────────────────────────────────────────────────────────────────
 describe("结构哨兵：todo 通道保持无去重、无封顶", () => {
   test("todo-reminder-scan.ts 不引用 decideNagInjection", () => {
-    const src = readFileSync(join(REPO_ROOT, "src/query/todo-reminder-scan.ts"), "utf8");
+    const src = readFileSync(join(REPO_ROOT, "packages/core/src/query/todo-reminder-scan.ts"), "utf8");
     // 注释里提到"不加去重"是允许的，故只查是否真的 import 了那个模块
     expect(src).not.toContain('from "./reminder-throttle.ts"');
   });
 
   test("锚点键名走 SessionState（跨用户消息持久），不挂 LoopState", () => {
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     expect(LAST_TODO_REMINDER_TURN_KEY).toBe("lastTodoReminderAbsoluteTurn");
     // 必须是 sessionState.set 而非 state.xxx =
     expect(loopSrc).toContain("sessionState.set(LAST_TODO_REMINDER_TURN_KEY");

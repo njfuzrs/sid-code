@@ -7,6 +7,10 @@
       "dependencies": {
         "@alcalzone/ansi-tokenize": "^0.3.0",
         "@anthropic-ai/sdk": "^0.79.0",
+        "@sid-code/cli": "workspace:*",
+        "@sid-code/core": "workspace:*",
+        "@sid-code/shared": "workspace:*",
+        "@sid-code/tui-renderer": "workspace:*",
         "auto-bind": "^5.0.1",
         "bidi-js": "^1.0.3",
         "chalk": "5.6.2",
@@ -65,6 +69,22 @@
         "type-fest": "^5.8.0",
       },
     },
+    "packages/cli": {
+      "name": "@sid-code/cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@sid-code/core": "workspace:*",
+        "@sid-code/shared": "workspace:*",
+        "@sid-code/tui-renderer": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@sid-code/core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@sid-code/shared": "workspace:*",
+      },
+    },
     "packages/eval-framework": {
       "name": "eval-framework",
       "version": "0.1.0",
@@ -75,6 +95,17 @@
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "typescript": "^5.8.0",
+      },
+    },
+    "packages/shared": {
+      "name": "@sid-code/shared",
+      "version": "0.0.0",
+    },
+    "packages/tui-renderer": {
+      "name": "@sid-code/tui-renderer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@sid-code/shared": "workspace:*",
       },
     },
   },
@@ -126,6 +157,14 @@
     "@oxlint/binding-win32-ia32-msvc": ["@oxlint/binding-win32-ia32-msvc@1.77.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-zja5b7+6a7UsRFgAQSrnax5vrzliEyNPLCjfXONu/vTWswaIVZGFajJZptaeRvPE4LghtFdAzVFlexTm7MVTGA=="],
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.77.0", "", { "os": "win32", "cpu": "x64" }, "sha512-+teyvPDZ2RjUvo+SuCqS/UhaJl1QtdW5fWT5NJTV61V5MIuIS90Db9LixmtEGvXixyttiK62P96MSu3UlpviBw=="],
+
+    "@sid-code/cli": ["@sid-code/cli@workspace:packages/cli"],
+
+    "@sid-code/core": ["@sid-code/core@workspace:packages/core"],
+
+    "@sid-code/shared": ["@sid-code/shared@workspace:packages/shared"],
+
+    "@sid-code/tui-renderer": ["@sid-code/tui-renderer@workspace:packages/tui-renderer"],
 
     "@types/bun": ["@types/bun@1.3.10", "", { "dependencies": { "bun-types": "1.3.10" } }, "sha512-0+rlrUrOrTSskibryHbvQkDOWRJwJZqZlxrUs1u4oOoTln8+WIXBPmAuCF35SWB2z4Zl3E84Nl/D0P7803nigQ=="],
 

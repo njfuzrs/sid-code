@@ -8,8 +8,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SessionStore, parseSessionJsonl, parseSessionJsonlLines, currentProjectSessionDir } from "../../src/session/store.ts";
-import { SidechainWriter, scanUnfinishedSidechains, cleanupSidechains } from "../../src/session/sidechain.ts";
+import { SessionStore, parseSessionJsonl, parseSessionJsonlLines, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
+import { SidechainWriter, scanUnfinishedSidechains, cleanupSidechains } from "@sid-code/core/session/sidechain.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";

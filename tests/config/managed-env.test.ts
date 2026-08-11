@@ -12,8 +12,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { isProtectedEnvVar } from "../../src/config/settings/managed-env.ts";
-import { resetSettingsCache } from "../../src/config/settings/cache.ts";
+import { isProtectedEnvVar } from "@sid-code/core/config/settings/managed-env.ts";
+import { resetSettingsCache } from "@sid-code/core/config/settings/cache.ts";
 
 describe("受保护环境变量", () => {
   test("代码注入向量受保护", () => {
@@ -87,7 +87,7 @@ describe("两阶段环境变量应用", () => {
     writeUserSettings({ SID_TEST_UNSAFE: "from-user", EDITOR: "vim" });
 
     const { applySafeConfigEnvironmentVariables } = await import(
-      "../../src/config/settings/managed-env.ts"
+      "@sid-code/core/config/settings/managed-env.ts"
     );
     applySafeConfigEnvironmentVariables(workspace);
 
@@ -104,7 +104,7 @@ describe("两阶段环境变量应用", () => {
     });
 
     const { applySafeConfigEnvironmentVariables } = await import(
-      "../../src/config/settings/managed-env.ts"
+      "@sid-code/core/config/settings/managed-env.ts"
     );
     applySafeConfigEnvironmentVariables(workspace);
 
@@ -117,7 +117,7 @@ describe("两阶段环境变量应用", () => {
     writeProjectSettings({ SID_TEST_UNSAFE: "now-applied" });
 
     const { applyAllConfigEnvironmentVariables } = await import(
-      "../../src/config/settings/managed-env.ts"
+      "@sid-code/core/config/settings/managed-env.ts"
     );
     applyAllConfigEnvironmentVariables(workspace);
 
@@ -130,7 +130,7 @@ describe("两阶段环境变量应用", () => {
     writeUserSettings({ LD_PRELOAD: "/evil/lib.so" });
 
     const { applyAllConfigEnvironmentVariables } = await import(
-      "../../src/config/settings/managed-env.ts"
+      "@sid-code/core/config/settings/managed-env.ts"
     );
     applyAllConfigEnvironmentVariables(workspace);
 

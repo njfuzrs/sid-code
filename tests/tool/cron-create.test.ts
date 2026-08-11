@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
-import { CronCreateTool } from "../../src/tool/cron-create.ts";
-import { getScheduler, resetScheduler } from "../../src/cron/scheduler.ts";
+import { CronCreateTool } from "@sid-code/core/tool/cron-create.ts";
+import { getScheduler, resetScheduler } from "@sid-code/core/cron/scheduler.ts";
 
 describe("CronCreateTool — allowed_tools 预授权", () => {
   afterEach(() => {

@@ -29,7 +29,7 @@ import Yoga, {
   Wrap,
   Edge,
   type Node as YogaNode,
-} from "../../src/ink/_vendor/yoga-layout/index.ts";
+} from "@sid-code/tui-renderer/_vendor/yoga-layout/index.ts";
 
 /** 按根宽度重算布局（第二参显式传 undefined：vendored 签名要求 ≥2 参）。 */
 function layoutAt(root: YogaNode, width: number): void {

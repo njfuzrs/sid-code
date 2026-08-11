@@ -8,7 +8,7 @@ import {
   getMainLoopModelOverride, setMainLoopModelOverride,
   isInteractive, setIsInteractive,
   logError, getErrorLog,
-} from "../../src/state/bootstrap.ts";
+} from "@sid-code/cli/state/bootstrap.ts";
 
 describe("BootstrapState", () => {
   test("sessionId getter/setter", () => {

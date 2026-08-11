@@ -4,13 +4,13 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookSystem } from "../../src/hook/system.ts";
-import { HookRunner } from "../../src/hook/runner.ts";
-import { HookRegistry } from "../../src/hook/registry.ts";
-import { HookPlanner } from "../../src/hook/planner.ts";
-import { HookAggregator } from "../../src/hook/aggregator.ts";
-import { HookEventName } from "../../src/hook/types.ts";
-import type { HooksConfig } from "../../src/config/config.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { HookRunner } from "@sid-code/core/hook/runner.ts";
+import { HookRegistry } from "@sid-code/core/hook/registry.ts";
+import { HookPlanner } from "@sid-code/core/hook/planner.ts";
+import { HookAggregator } from "@sid-code/core/hook/aggregator.ts";
+import { HookEventName } from "@sid-code/core/hook/types.ts";
+import type { HooksConfig } from "@sid-code/core/config/config.ts";
 
 /** 辅助：从旧格式配置创建 HookSystem */
 function createSystem(legacyHooks: HooksConfig): HookSystem {

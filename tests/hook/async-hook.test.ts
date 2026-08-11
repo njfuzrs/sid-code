@@ -9,9 +9,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookRunner } from "../../src/hook/runner.ts";
-import { AsyncHookRegistry } from "../../src/hook/async-registry.ts";
-import { HookEventName, type CommandHookConfig, type HookInput } from "../../src/hook/types.ts";
+import { HookRunner } from "@sid-code/core/hook/runner.ts";
+import { AsyncHookRegistry } from "@sid-code/core/hook/async-registry.ts";
+import { HookEventName, type CommandHookConfig, type HookInput } from "@sid-code/core/hook/types.ts";
 
 function baseInput(): HookInput {
   // 去掉了 transcript_path（该字段在 src/hook/ 下已全无踪迹，是早期形态的遗留），

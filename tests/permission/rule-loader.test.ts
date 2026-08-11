@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { RuleLoader } from "../../src/permission/rule-loader.ts";
-import { SECURITY_SENSITIVE_FIELDS } from "../../src/config/settings/security.ts";
+import { RuleLoader } from "@sid-code/core/permission/rule-loader.ts";
+import { SECURITY_SENSITIVE_FIELDS } from "@sid-code/core/config/settings/security.ts";
 
 describe("RuleLoader - 权威清单统一", () => {
   test("isProjectSettingTrusted 复用 security.ts 权威清单", () => {

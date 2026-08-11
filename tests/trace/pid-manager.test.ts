@@ -4,8 +4,8 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { join } from "node:path";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import * as PidManager from "../../src/trace/pid-manager.ts";
-import { getSidHome } from "../../src/config/paths.ts";
+import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
+import { getSidHome } from "@sid-code/core/config/paths.ts";
 
 // 从 getSidHome() 派生而非硬编码 join(homedir(), ".sid-code")：
 // 后者会让本测试**真的往用户家目录写** PID 文件，且在隔离生效时期望路径失配。

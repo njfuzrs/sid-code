@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createStore } from "../../src/state/store.ts";
+import { createStore } from "@sid-code/cli/state/store.ts";
 
 describe("createStore", () => {
   test("getState 返回初始状态", () => {

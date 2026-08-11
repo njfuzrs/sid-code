@@ -14,7 +14,7 @@ import {
   OUTPUT_STALL_WINDOW,
   OUTPUT_STALL_VOLUME_THRESHOLD,
   isOutputStallDetectionEnabled,
-} from "../../src/query/output-stall.ts";
+} from "@sid-code/core/query/output-stall.ts";
 
 describe("measureTurnOutputVolume", () => {
   test("纯文本：等于 trim 后的字符长度", () => {

@@ -14,7 +14,7 @@ import {
   clearPastes,
   PASTE_LINE_THRESHOLD,
   PASTE_CHAR_THRESHOLD,
-} from "../../src/ui/pasted-contents.ts";
+} from "@sid-code/cli/ui/pasted-contents.ts";
 
 describe("pasted-contents 粘贴跟踪", () => {
   beforeEach(() => clearPastes());

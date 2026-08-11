@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { convertToSDKMessage, type ConvertContext } from "../../src/sdk/message-converter.ts";
-import type { QueryEngineEvent } from "../../src/query/types.ts";
+import { convertToSDKMessage, type ConvertContext } from "@sid-code/core/sdk/message-converter.ts";
+import type { QueryEngineEvent } from "@sid-code/core/query/types.ts";
 
 const ctx: ConvertContext = {
   sessionId: "s1",

@@ -5,8 +5,8 @@
  * 文档确实被内联（text import 非空）。
  */
 import { describe, test, expect } from "bun:test";
-import apiCmd from "../../src/command/commands/claude-api/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import apiCmd from "@sid-code/cli/command/commands/claude-api/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 const loadApi = () => (apiCmd as LocalCommand).load();
 const ctx = {} as unknown as CommandContext;

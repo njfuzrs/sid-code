@@ -17,7 +17,7 @@ describe("diagnostics", () => {
     const tmp = path.join(os.tmpdir(), `sid-diag-${Date.now()}.jsonl`);
     process.env.SID_CODE_DIAGNOSTICS_FILE = tmp;
 
-    const mod = await import("../../src/debug/diagnostics.ts");
+    const mod = await import("@sid-code/core/debug/diagnostics.ts");
     expect(mod.isDiagnosticsEnabled()).toBe(true);
 
     mod.logDiagnostics("api_request", { model: "test", duration_ms: 123 });
@@ -48,7 +48,7 @@ describe("diagnostics", () => {
   });
 
   test("logDiagnostics 永不抛错（诊断不影响主流程）", async () => {
-    const mod = await import("../../src/debug/diagnostics.ts");
+    const mod = await import("@sid-code/core/debug/diagnostics.ts");
     expect(() => mod.logDiagnostics("evt", { a: 1, b: "x", c: true })).not.toThrow();
     expect(() => mod.logDiagnostics("evt")).not.toThrow();
   });
@@ -56,13 +56,13 @@ describe("diagnostics", () => {
 
 describe("preconnect", () => {
   test("非法 URL 静默跳过，不抛错", async () => {
-    const { preconnectApi, resetPreconnectState } = await import("../../src/entrypoints/preconnect.ts");
+    const { preconnectApi, resetPreconnectState } = await import("@sid-code/cli/entrypoints/preconnect.ts");
     resetPreconnectState();
     expect(() => preconnectApi("not a url")).not.toThrow();
   });
 
   test("同一 origin 不重复预连接", async () => {
-    const { preconnectApi, resetPreconnectState } = await import("../../src/entrypoints/preconnect.ts");
+    const { preconnectApi, resetPreconnectState } = await import("@sid-code/cli/entrypoints/preconnect.ts");
     resetPreconnectState();
     // 两次调用同 origin，第二次应短路（无法直接观测 fetch 次数，
     // 这里仅验证不抛错且幂等）
@@ -73,7 +73,7 @@ describe("preconnect", () => {
   });
 
   test("空参数走默认端点不抛错", async () => {
-    const { preconnectApi, resetPreconnectState } = await import("../../src/entrypoints/preconnect.ts");
+    const { preconnectApi, resetPreconnectState } = await import("@sid-code/cli/entrypoints/preconnect.ts");
     resetPreconnectState();
     expect(() => preconnectApi(undefined)).not.toThrow();
     expect(() => preconnectApi("")).not.toThrow();

@@ -16,20 +16,20 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { messagesToHistoryItems, injectAgentProgress } from "../../src/ui/history-adapter.ts";
-import { ToolCallStatus, type HistoryItem, type IndividualToolCallDisplay } from "../../src/ui/types.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { messagesToHistoryItems, injectAgentProgress } from "@sid-code/cli/ui/history-adapter.ts";
+import { ToolCallStatus, type HistoryItem, type IndividualToolCallDisplay } from "@sid-code/cli/ui/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   pushRecentActivity,
   MAX_RECENT_ACTIVITIES,
   type AgentProgressSnapshot,
-} from "../../src/agent/progress.ts";
+} from "@sid-code/core/agent/progress.ts";
 import {
   selectAgentProgressTier,
   formatAgentProgressLine,
   ESTIMATED_LINES_PER_ACTIVITY,
   TERMINAL_BUFFER_LINES,
-} from "../../src/ui/agent-progress-view.ts";
+} from "@sid-code/cli/ui/agent-progress-view.ts";
 
 /** 一轮 assistant 消息发出 N 个 tool_use（tool_result 未入 ctxMgr → 全 Executing 态） */
 function executingCards(calls: Array<{ id: string; name: string }>): HistoryItem[] {

@@ -26,7 +26,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { loadAllCLAUDEmd } from "../../src/config/rules.ts";
+import { loadAllCLAUDEmd } from "@sid-code/core/config/rules.ts";
 
 // ─── mock os.homedir() ───
 // Bun 下 os.homedir() 不读 process.env.HOME，必须从模块层面 mock。

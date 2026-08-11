@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { validateConfig } from "../../src/config/schema.ts";
-import { resolveEnvVars } from "../../src/config/env-interpolation.ts";
-import { sanitizeEnv } from "../../src/config/env-sanitizer.ts";
+import { validateConfig } from "@sid-code/core/config/schema.ts";
+import { resolveEnvVars } from "@sid-code/core/config/env-interpolation.ts";
+import { sanitizeEnv } from "@sid-code/core/config/env-sanitizer.ts";
 
 describe("Config Integration Tests", () => {
   test("config loading pipeline works end-to-end", async () => {

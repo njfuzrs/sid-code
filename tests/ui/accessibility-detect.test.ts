@@ -3,7 +3,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { detectScreenReader } from "../../src/ui/accessibility/detect.ts";
+import { detectScreenReader } from "@sid-code/cli/ui/accessibility/detect.ts";
 
 describe("LY2 — detectScreenReader", () => {
   test("显式 SID_ACCESSIBILITY=1 开启", () => {

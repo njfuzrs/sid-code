@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelAvailabilityService } from "../../src/llm/availability.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 
 describe("ModelAvailabilityService", () => {
   // === 基本状态 ===

@@ -10,7 +10,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSkillCommands } from "../../src/command/loaders.ts";
+import { loadSkillCommands } from "@sid-code/cli/command/loaders.ts";
 
 // 空临时目录作 cwd：无磁盘 Skill 干扰，只看 bundled 合并/过滤行为。
 function emptyCwd(): string {

@@ -3,10 +3,10 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { TokenMeter } from "../../src/telemetry/metrics/token-meter.ts";
-import { BudgetTracker } from "../../src/telemetry/metrics/budget-tracker.ts";
-import type { BudgetRule, BudgetAlert } from "../../src/telemetry/metrics/budget-tracker.ts";
-import type { Usage } from "../../src/llm/types.ts";
+import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
+import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
+import type { BudgetRule, BudgetAlert } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
 
 // ============================================================
 // TokenMeter 测试

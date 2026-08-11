@@ -7,11 +7,11 @@ import {
   validateAgainstSchema,
   formatSchemaErrors,
   checkSchemaShape,
-} from "../../src/workflow/json-schema-validator.ts";
+} from "@sid-code/core/workflow/json-schema-validator.ts";
 import {
   StructuredOutputTool,
   STRUCTURED_OUTPUT_TOOL_NAME,
-} from "../../src/tool/structured-output-tool.ts";
+} from "@sid-code/core/tool/structured-output-tool.ts";
 
 describe("M2 validator — 基础类型", () => {
   test("string/number/boolean/integer 类型匹配", () => {

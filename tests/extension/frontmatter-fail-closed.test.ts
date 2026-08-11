@@ -16,9 +16,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CustomCommandLoader } from "../../src/command/custom.ts";
-import { loadAgentsForPlugin } from "../../src/plugin/loadPluginAgents.ts";
-import { loadCommandsForPlugin } from "../../src/plugin/loadPluginCommands.ts";
+import { CustomCommandLoader } from "@sid-code/cli/command/custom.ts";
+import { loadAgentsForPlugin } from "@sid-code/cli/plugin/loadPluginAgents.ts";
+import { loadCommandsForPlugin } from "@sid-code/cli/plugin/loadPluginCommands.ts";
 
 let root: string;
 

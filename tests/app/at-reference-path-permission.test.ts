@@ -14,9 +14,9 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expandAtReferences } from "../../src/app.ts";
-import { PathValidator } from "../../src/permission/path-validator.ts";
-import type { Checker } from "../../src/permission/types.ts";
+import { expandAtReferences } from "@sid-code/cli/app.ts";
+import { PathValidator } from "@sid-code/core/permission/path-validator.ts";
+import type { Checker } from "@sid-code/core/permission/types.ts";
 
 let root: string;
 let proj: string;

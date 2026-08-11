@@ -11,9 +11,9 @@
 
 import { test, expect, describe, afterEach, jest } from "bun:test";
 import React, { useState } from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import Text from "../../../src/ink/components/Text.tsx";
-import { useExitConfirm, EXIT_CONFIRM_WINDOW_MS } from "../../../src/ui/hooks/useExitConfirm.ts";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { useExitConfirm, EXIT_CONFIRM_WINDOW_MS } from "@sid-code/cli/ui/hooks/useExitConfirm.ts";
 
 /**
  * 宿主:自管 pressedOnce 状态(模拟 UIState),把 press/cancel 暴露到 ref 上供测试调用,

@@ -3,10 +3,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import type { Config } from "../../src/config/config.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** 创建测试用 Config */
 function testConfig(overrides: Partial<Config> = {}): Config {

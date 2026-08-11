@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { UploadManager } from "../../src/trace/uploader.ts";
+import { UploadManager } from "@sid-code/core/trace/uploader.ts";
 import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

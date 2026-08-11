@@ -8,8 +8,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookSystem } from "../../src/hook/system.ts";
-import { HookEventName, LEGACY_EVENT_MAP, ConfigSource } from "../../src/hook/types.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { HookEventName, LEGACY_EVENT_MAP, ConfigSource } from "@sid-code/core/hook/types.ts";
 
 describe("G11 新增事件枚举与 legacy 映射", () => {
   test("枚举包含 4 个新事件", () => {

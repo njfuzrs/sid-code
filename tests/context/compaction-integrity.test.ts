@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { checkMessageHistoryIntegrity } from "@sid-code/core/agent/message-invariants.ts";
 
 /** 构造一轮完整工具对话：user(text) → assistant(tool_use) → user(tool_result) */
 function pushToolRound(ctx: ContextManager, idBase: string, toolName: string, padding = "") {

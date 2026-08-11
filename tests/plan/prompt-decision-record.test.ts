@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildPlanModePrompt, buildPlanApprovedMessage } from "../../src/plan/prompt.ts";
+import { buildPlanModePrompt, buildPlanApprovedMessage } from "@sid-code/core/plan/prompt.ts";
 
 describe("buildPlanModePrompt — 决策记录指令（方案 3 / 根因 6）", () => {
   test("含'决策记录'小节 + 原因 / 替代方案 / 重新评估条件三要素", () => {

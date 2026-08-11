@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookRunner } from "../../src/hook/runner.ts";
-import { HookEventName, type AgentHookConfig, type HookInput } from "../../src/hook/types.ts";
+import { HookRunner } from "@sid-code/core/hook/runner.ts";
+import { HookEventName, type AgentHookConfig, type HookInput } from "@sid-code/core/hook/types.ts";
 
 function baseInput(): HookInput {
   return {

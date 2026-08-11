@@ -19,8 +19,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { openSync, closeSync, existsSync, rmSync, mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { initTaskOutput, flushTaskOutput, appendTaskOutput } from "../../src/task/disk-output.ts";
-import { sidPaths } from "../../src/config/paths.ts";
+import { initTaskOutput, flushTaskOutput, appendTaskOutput } from "@sid-code/core/task/disk-output.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 let tmpHome: string;
 let originalConfigDir: string | undefined;

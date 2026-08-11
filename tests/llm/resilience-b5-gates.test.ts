@@ -21,14 +21,14 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { classifyError, parseXShouldRetry, TerminalError, RetryableError } from "../../src/llm/errors.ts";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ModelAvailabilityService } from "../../src/llm/availability.ts";
-import { ERROR_USER_MESSAGES } from "../../src/llm/error-messages.ts";
-import { SUBAGENT_DEFAULT_MAX_TOKENS } from "../../src/agent/agentic-loop.ts";
-import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { classifyError, parseXShouldRetry, TerminalError, RetryableError } from "@sid-code/core/llm/errors.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
+import { ERROR_USER_MESSAGES } from "@sid-code/core/llm/error-messages.ts";
+import { SUBAGENT_DEFAULT_MAX_TOKENS } from "@sid-code/core/agent/agentic-loop.ts";
+import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 const BASE_PARAMS: SendParams = {
   model: "primary-model",
@@ -184,7 +184,7 @@ describe("B5-6 门槛：子代理 maxTokens 已具名且有依据", () => {
     // 恰好是 4096。若日后接入一个上限更低的模型，本断言会红 —— 那时就该改成
     // 按模型解析，而不是继续用固定值撞 400 max_tokens out of range。
     const { readFileSync } = await import("node:fs");
-    const src = readFileSync("src/llm/model-registry.ts", "utf-8");
+    const src = readFileSync("packages/core/src/llm/model-registry.ts", "utf-8");
     const ceilings = [...src.matchAll(/maxOutputTokens:\s*([0-9_]+)/g)]
       .map((m) => parseInt(m[1].replace(/_/g, ""), 10))
       .filter((n) => n > 0);

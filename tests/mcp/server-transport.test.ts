@@ -11,9 +11,9 @@
 
 import { describe, test, expect } from "bun:test";
 import { EventEmitter } from "node:events";
-import { StdioServerTransport } from "../../src/mcp/server-transport.ts";
-import type { JsonRpcRequest, JsonRpcResponse } from "../../src/mcp/types.ts";
-import type { JsonRpcNotification } from "../../src/mcp/transport.ts";
+import { StdioServerTransport } from "@sid-code/core/mcp/server-transport.ts";
+import type { JsonRpcRequest, JsonRpcResponse } from "@sid-code/core/mcp/types.ts";
+import type { JsonRpcNotification } from "@sid-code/core/mcp/transport.ts";
 
 /** 内存 stdin：EventEmitter + resume no-op。 */
 function makeStdin(): NodeJS.ReadStream & { push: (s: string) => void; end: () => void } {

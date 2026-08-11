@@ -23,9 +23,9 @@ import {
   hasInternalOrigin,
   markInternal,
   buildInternalMessage,
-} from "../../src/context/internal-message.ts";
-import { isHiddenFromDisplay } from "../../src/ui/history-adapter.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/context/internal-message.ts";
+import { isHiddenFromDisplay } from "@sid-code/cli/ui/history-adapter.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 describe("internal-message helper 契约", () => {
   test("buildInternalMessage 打的标记能被 hasInternalOrigin 识别", () => {
@@ -83,8 +83,13 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
   }
 
   test("所有手写 `_meta: { origin: \"…\" }` 的字面量 origin 都已登记到 INTERNAL_ORIGINS", () => {
-    const srcRoot = join(import.meta.dir, "..", "..", "src");
-    const files = collectSourceFiles(srcRoot);
+    // P2-2 分包：生产源码分布在 4 个包，全扫。只扫一个包会让哨兵半瞎且不报错。
+    const repoRoot = join(import.meta.dir, "..", "..");
+    const files = ["shared", "tui-renderer", "core", "cli"].flatMap((p) =>
+      collectSourceFiles(join(repoRoot, "packages", p, "src")),
+    );
+    // 防空转：路径指错时会扫到 0 个文件而假绿。
+    expect(files.length).toBeGreaterThan(500);
 
     // 匹配 `origin: "xxx"` / `origin: 'xxx'`（紧跟在 _meta 上下文里的内联来源标记）。
     // 只关心字符串字面量形式——REATTACH_ORIGIN 等常量引用由 helper/类型系统保证，不在扫描列。
@@ -98,7 +103,7 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
       for (const m of text.matchAll(ORIGIN_LITERAL)) {
         const origin = m[1];
         if (!whitelist.has(origin)) {
-          violations.push({ file: file.replace(srcRoot, "src"), origin });
+          violations.push({ file: file.replace(`${repoRoot}/`, ""), origin });
         }
       }
     }

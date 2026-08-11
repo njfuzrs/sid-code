@@ -17,8 +17,8 @@ import {
   fingerprintPrefix,
   diagnosePrefixBreak,
   PrefixBreakTracker,
-} from "../../src/trace/prefix-break-probe.ts";
-import { aggregatePrefixBreakStats } from "../../src/trace/digest.ts";
+} from "@sid-code/core/trace/prefix-break-probe.ts";
+import { aggregatePrefixBreakStats } from "@sid-code/core/trace/digest.ts";
 
 /** 简化的 system 拆分：以 "---DYN---" 为界（真实用 DYNAMIC_BOUNDARY） */
 const split = (s: string) => {

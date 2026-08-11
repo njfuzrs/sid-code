@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { processImports } from "../../src/config/import-processor.ts";
+import { processImports } from "@sid-code/core/config/import-processor.ts";
 import { writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 

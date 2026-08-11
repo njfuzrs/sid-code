@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import { installFetchFromFixture, type VcrFixture } from "./vcr/vcr.ts";
 
 const BASE_PARAMS: SendParams = {

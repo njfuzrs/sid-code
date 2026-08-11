@@ -6,9 +6,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SkillMetaTool, SKILL_TOOL_NAME } from "../../src/skill/meta-tool.ts";
-import { SkillManager } from "../../src/skill/manager.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+import { SkillMetaTool, SKILL_TOOL_NAME } from "@sid-code/core/skill/meta-tool.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition>): SkillDefinition {
   return {

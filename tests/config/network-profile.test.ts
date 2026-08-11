@@ -16,7 +16,7 @@ import {
   resolveProviderStreamTimeouts,
   resolveSideCallTimeouts,
   computeBackoffMs,
-} from "../../src/config/network-profile.ts";
+} from "@sid-code/core/config/network-profile.ts";
 
 const ENV_KEYS = [
   "SID_CODE_RESPONSE_HEADER_TIMEOUT_MS",

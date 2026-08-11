@@ -18,17 +18,17 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   getTask,
   clearAllTasks,
-} from "../../src/task/index.ts";
+} from "@sid-code/core/task/index.ts";
 import {
   createAgentTask,
   completeAgentTask,
   failAgentTask,
   killAgentTask,
-} from "../../src/task/agent-task.ts";
+} from "@sid-code/core/task/agent-task.ts";
 import {
   dequeuePendingNotifications,
-} from "../../src/task/notification.ts";
-import type { LocalAgentTaskState, AgentTaskResult } from "../../src/task/types.ts";
+} from "@sid-code/core/task/notification.ts";
+import type { LocalAgentTaskState, AgentTaskResult } from "@sid-code/core/task/types.ts";
 
 // 注册表与通知队列均为进程级全局单例 → 每例前后清空，避免串扰。
 beforeEach(() => {

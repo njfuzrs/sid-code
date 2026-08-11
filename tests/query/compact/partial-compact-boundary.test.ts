@@ -7,8 +7,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { resolvePartialSplitIndex } from "../../../src/query/compact/partial-compact.ts";
-import type { Message } from "../../../src/llm/types.ts";
+import { resolvePartialSplitIndex } from "@sid-code/core/query/compact/partial-compact.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 function userMsg(text: string): Message {
   return { role: "user", content: [{ type: "text", text }] };

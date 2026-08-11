@@ -6,13 +6,13 @@
  *  - digest TTFT P50/P95/P99 聚合 + >30s warning（T14.5）
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { streamLifecycle } from "../../src/llm/stream-lifecycle.ts";
+import { streamLifecycle } from "@sid-code/core/llm/stream-lifecycle.ts";
 import {
   initStreamObserver,
   resetStreamObserver,
   emitStreamPhase,
-} from "../../src/trace/stream-observer.ts";
-import { aggregateProviderStats } from "../../src/trace/digest.ts";
+} from "@sid-code/core/trace/stream-observer.ts";
+import { aggregateProviderStats } from "@sid-code/core/trace/digest.ts";
 
 // ─── 辅助：把数组转成异步流，可注入首事件延迟 ───
 async function* asyncFrom<T>(items: T[], delayMs = 0): AsyncGenerator<T> {

@@ -11,8 +11,8 @@ import { test, expect, describe } from "bun:test";
 import {
   detectShadowedRules,
   getShadowedRulesForTool,
-} from "../../src/permission/shadowed-rules.ts";
-import type { SourcedPermissionRule } from "../../src/permission/types.ts";
+} from "@sid-code/core/permission/shadowed-rules.ts";
+import type { SourcedPermissionRule } from "@sid-code/core/permission/types.ts";
 
 describe("shadowed-rules 严重度分档", () => {
   test("低优先级 allow 被高优先级 deny 覆盖 → blocked", () => {

@@ -7,8 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { Mailbox } from "../../src/swarm/mailbox.ts";
-import { PermissionSync } from "../../src/swarm/permission-sync.ts";
+import { Mailbox } from "@sid-code/core/swarm/mailbox.ts";
+import { PermissionSync } from "@sid-code/core/swarm/permission-sync.ts";
 
 let dir: string;
 

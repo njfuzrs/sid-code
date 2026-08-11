@@ -9,8 +9,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryTool } from "../../src/tool/memory.ts";
-import { MemoryStore } from "../../src/memory/store.ts";
+import { MemoryTool } from "@sid-code/core/tool/memory.ts";
+import { MemoryStore } from "@sid-code/core/memory/store.ts";
 
 let tmpRoot: string;
 
@@ -144,7 +144,7 @@ describe("MemoryTool save_memory — G13 agent scope", () => {
     expect(r.isError).toBeFalsy();
     expect(r.output).toContain("agent 范围");
 
-    const { getAgentIndexContent } = await import("../../src/memory/agent-store.ts");
+    const { getAgentIndexContent } = await import("@sid-code/core/memory/agent-store.ts");
     const idx = await getAgentIndexContent("code-review");
     expect(idx).toContain("review-habit");
   });

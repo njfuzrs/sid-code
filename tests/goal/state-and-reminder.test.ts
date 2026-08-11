@@ -9,8 +9,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { createGoal, serializeGoalState, deserializeGoalState } from "../../src/goal/state.ts";
-import { buildGoalReminder, buildFirstTurnPrompt, buildResumeTurnPrompt } from "../../src/goal/reminder.ts";
+import { createGoal, serializeGoalState, deserializeGoalState } from "@sid-code/core/goal/state.ts";
+import { buildGoalReminder, buildFirstTurnPrompt, buildResumeTurnPrompt } from "@sid-code/core/goal/reminder.ts";
 
 describe("createGoal", () => {
   test("使用默认值正确初始化", () => {

@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SkillChangeDetector } from "../../src/skill/change-detector.ts";
+import { SkillChangeDetector } from "@sid-code/core/skill/change-detector.ts";
 
 describe("SkillChangeDetector", () => {
   test("监听不存在的目录不报错且不启动", () => {

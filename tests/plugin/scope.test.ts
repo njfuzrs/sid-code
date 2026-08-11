@@ -3,8 +3,8 @@ import {
   addPluginScopeToServers,
   isPluginScopedServer,
   PLUGIN_MCP_PREFIX,
-} from "../../src/plugin/scope.ts";
-import type { MCPServerConfig } from "../../src/config/config.ts";
+} from "@sid-code/cli/plugin/scope.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 describe("插件 MCP 作用域前缀", () => {
   const servers: Record<string, MCPServerConfig> = {

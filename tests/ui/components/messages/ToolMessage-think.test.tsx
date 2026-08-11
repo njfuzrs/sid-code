@@ -18,9 +18,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../../src/ink/_vendor/testing.tsx";
-import { ToolGroupMessage, type ToolCallDisplay } from "../../../../src/ui/components/messages/ToolGroupMessage.tsx";
-import { UIStateProvider } from "../../../../src/ui/contexts/UIStateContext.tsx";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { ToolGroupMessage, type ToolCallDisplay } from "@sid-code/cli/ui/components/messages/ToolGroupMessage.tsx";
+import { UIStateProvider } from "@sid-code/cli/ui/contexts/UIStateContext.tsx";
 
 const THOUGHT =
   "先读 config.ts 确认默认值来源，再决定是改 schema 还是改运行时兜底。";

@@ -6,9 +6,9 @@ import { describe, test, expect } from "bun:test";
 import {
   checkSkillPermission,
   skillHasOnlySafeProperties,
-} from "../../src/skill/permission.ts";
-import { discoverMcpSkills } from "../../src/mcp/skill-discovery.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+} from "@sid-code/core/skill/permission.ts";
+import { discoverMcpSkills } from "@sid-code/core/mcp/skill-discovery.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
   return {

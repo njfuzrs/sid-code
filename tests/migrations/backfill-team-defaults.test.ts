@@ -53,7 +53,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   });
 
   test("补齐缺失顶层键，且不覆盖用户已有任何字段", async () => {
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     const defaults = {
       model: "ali-deepseek-v4-pro", // 用户已有 → 不覆盖
       language: "zh", // 用户已有 → 不覆盖
@@ -87,7 +87,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
     writeFileSync(SETTINGS_PATH, JSON.stringify(complete, null, 2));
     const before = readFileSync(SETTINGS_PATH, "utf-8");
 
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     const added = mergeMissingTopLevelKeys("userSettings", {
       subAgentModels: { default: "should-not-overwrite" },
       trace: { enabled: true },
@@ -102,7 +102,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
     const withEmpties = { ...LEGACY_SETTINGS, disabledSkills: [], mcpServers: {} };
     writeFileSync(SETTINGS_PATH, JSON.stringify(withEmpties, null, 2));
 
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     const added = mergeMissingTopLevelKeys("userSettings", {
       disabledSkills: ["some-skill"],
       mcpServers: { foo: {} },
@@ -117,7 +117,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   test("settings.json 不存在 → 直接返回，不创建文件（首装交给 install.sh）", async () => {
     rmSync(SETTINGS_PATH, { force: true });
 
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     const added = mergeMissingTopLevelKeys("userSettings", { trace: { enabled: true } });
 
     expect(added).toEqual([]);
@@ -127,7 +127,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   test("补全写回时 env 占位符不被展开成明文", async () => {
     process.env.MY_API_KEY = "sk-real-secret-should-not-leak";
 
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     mergeMissingTopLevelKeys("userSettings", { trace: { enabled: true } });
 
     const after = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
@@ -138,7 +138,7 @@ describe("mergeMissingTopLevelKeys（单次浅合并）", () => {
   test("文件损坏时抛错、不覆盖用户配置", async () => {
     writeFileSync(SETTINGS_PATH, "{ this is not valid json");
 
-    const { mergeMissingTopLevelKeys } = await import("../../src/config/settings/index.ts");
+    const { mergeMissingTopLevelKeys } = await import("@sid-code/core/config/settings/index.ts");
     expect(() => mergeMissingTopLevelKeys("userSettings", { trace: {} })).toThrow(/解析失败/);
     // 损坏内容原样保留，没被覆盖
     expect(readFileSync(SETTINGS_PATH, "utf-8")).toBe("{ this is not valid json");
@@ -162,7 +162,7 @@ describe("runMigrations 水位线（只补一次）", () => {
   });
 
   test("首次 runMigrations 补全并写水位线；用户删键后二次 runMigrations 不再补回", async () => {
-    const { runMigrations } = await import("../../src/migrations/runner.ts");
+    const { runMigrations } = await import("@sid-code/core/migrations/runner.ts");
 
     // 第一次：补全团队默认字段
     runMigrations();

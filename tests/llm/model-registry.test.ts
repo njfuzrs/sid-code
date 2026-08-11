@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { lookupRegistry } from "../../src/llm/model-registry.ts";
+import { lookupRegistry } from "@sid-code/core/llm/model-registry.ts";
 
 describe("lookupRegistry 匹配策略", () => {
   // ── 1. 精确匹配 ──────────────────────────────────────────────

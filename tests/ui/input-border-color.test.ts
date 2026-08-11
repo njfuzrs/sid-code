@@ -16,7 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import tinycolor from "tinycolor2";
-import { mixToContrast } from "../../src/ui/themes/color-utils.ts";
+import { mixToContrast } from "@sid-code/cli/ui/themes/color-utils.ts";
 import {
   darkSemanticColors,
   lightSemanticColors,
@@ -25,7 +25,7 @@ import {
   daltonizedDarkSemanticColors,
   daltonizedLightSemanticColors,
   type SemanticColors,
-} from "../../src/ui/themes/semantic-tokens.ts";
+} from "@sid-code/cli/ui/themes/semantic-tokens.ts";
 
 /** 与 `InputArea.tsx` 的 `BORDER_TARGET_CONTRAST` 保持一致。 */
 const TARGET = 2.6;

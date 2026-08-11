@@ -12,7 +12,7 @@ import { describe, test, expect } from "bun:test";
 import {
   ensureRipgrepReleased,
   __resetRipgrepReleaseCacheForTest,
-} from "../../src/tool/ensure-ripgrep.ts";
+} from "@sid-code/core/tool/ensure-ripgrep.ts";
 
 describe("ensureRipgrepReleased", () => {
   test("dev 模式下直接返回 null（不尝试释放，调用方回退系统 rg）", async () => {

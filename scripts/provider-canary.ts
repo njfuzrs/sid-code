@@ -156,10 +156,10 @@ async function runCanary(config: CanaryProviderConfig): Promise<CanaryResult> {
 
   try {
     // 动态导入 provider（避免启动时加载所有依赖）
-    const { OpenAIProvider } = await import("../src/llm/openai.ts");
-    const { AnthropicProvider } = await import("../src/llm/anthropic.ts");
+    const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
+    const { AnthropicProvider } = await import("@sid-code/core/llm/anthropic.ts");
 
-    let provider: import("../src/llm/provider.ts").Provider;
+    let provider: import("@sid-code/core/llm/provider.ts").Provider;
     switch (config.name) {
       case "openai":
       case "ollama":

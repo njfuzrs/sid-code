@@ -17,8 +17,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PlanModeManager } from "../../src/plan/state.ts";
-import { buildPlanModeReminder } from "../../src/plan/prompt.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { buildPlanModeReminder } from "@sid-code/core/plan/prompt.ts";
 
 /**
  * 复刻 App.buildPlanModeReminderIfActive 的门控（同步版，便于单测）。

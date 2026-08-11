@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HookSystem } from "../../src/hook/system.ts";
-import { ConfigSource } from "../../src/hook/types.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { ConfigSource } from "@sid-code/core/hook/types.ts";
 
 describe("HookSystem.replacePluginHooks - 插件 Hook 原子替换", () => {
   test("注册插件 hooks", () => {

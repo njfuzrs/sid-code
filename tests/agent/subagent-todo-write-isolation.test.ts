@@ -14,9 +14,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
-import type { LegacyTool as Tool } from "../../src/tool/types.ts";
-import { TodoWriteTool } from "../../src/tool/todo-write.ts";
+import { filterToolsForAgent } from "@sid-code/core/agent/tool-filter.ts";
+import type { LegacyTool as Tool } from "@sid-code/core/tool/types.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
 
 /** 极简假工具，仅需 name() 供过滤判断 */
 function fakeTool(name: string): Tool {

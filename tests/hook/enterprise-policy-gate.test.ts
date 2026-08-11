@@ -8,10 +8,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookRegistry } from "../../src/hook/registry.ts";
-import { HookSystem } from "../../src/hook/system.ts";
-import { EnterprisePolicyGate } from "../../src/hook/enterprise-policy.ts";
-import { HookEventName, ConfigSource } from "../../src/hook/types.ts";
+import { HookRegistry } from "@sid-code/core/hook/registry.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { EnterprisePolicyGate } from "@sid-code/core/hook/enterprise-policy.ts";
+import { HookEventName, ConfigSource } from "@sid-code/core/hook/types.ts";
 
 /** 注册一个带指定来源的 command hook */
 function addHook(registry: HookRegistry, source: ConfigSource, name: string): void {

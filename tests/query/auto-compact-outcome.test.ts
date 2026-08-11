@@ -8,10 +8,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { autoCompact } from "../../src/query/auto-compact.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import type { Message, StreamEvent } from "../../src/llm/types.ts";
-import type { Provider } from "../../src/llm/provider.ts";
+import { autoCompact } from "@sid-code/core/query/auto-compact.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import type { Message, StreamEvent } from "@sid-code/core/llm/types.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
 
 /** 最小 HookSystem 桩：pre/post compact 均不阻止 */
 const noopHookSystem: any = {

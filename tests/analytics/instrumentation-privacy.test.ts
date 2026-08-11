@@ -19,18 +19,18 @@ import {
   logCommandInvoke,
   structuredErrorCode,
   EVENT_NAMES,
-} from "../../src/analytics/events.ts";
+} from "@sid-code/core/analytics/events.ts";
 import {
   attachAnalyticsSink,
   __resetAnalyticsForTest,
   type EventMetadata,
-} from "../../src/analytics/index.ts";
-import { PROTECTED_PREFIX } from "../../src/analytics/privacy.ts";
+} from "@sid-code/core/analytics/index.ts";
+import { PROTECTED_PREFIX } from "@sid-code/core/analytics/privacy.ts";
 import {
   setConfiguredPrivacyLevel,
   isEssentialTrafficOnly,
-} from "../../src/analytics/privacy-level.ts";
-import { sendHealthAlerts } from "../../src/telemetry/provider-health.ts";
+} from "@sid-code/core/analytics/privacy-level.ts";
+import { sendHealthAlerts } from "@sid-code/core/telemetry/provider-health.ts";
 
 /** 收集型 Sink：把门面发出的事件截在内存里，不落盘 */
 function captureEvents(): Array<{ name: string; meta: EventMetadata }> {

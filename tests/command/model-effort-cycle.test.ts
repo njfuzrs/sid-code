@@ -7,7 +7,7 @@
  *   resolveDisplayedEffort —— 面板显示哪一档（auto 态取实际生效档）
  */
 import { describe, test, expect } from "bun:test";
-import { resolveDisplayedEffort } from "../../src/ui/components/ModelDialog.tsx";
+import { resolveDisplayedEffort } from "@sid-code/cli/ui/components/ModelDialog.tsx";
 import {
   getSelectableEfforts,
   cycleEffortForModel,
@@ -17,7 +17,7 @@ import {
   resolveEffortCapability,
   type EffortCapability,
   type EffortLevel,
-} from "../../src/llm/effort.ts";
+} from "@sid-code/core/llm/effort.ts";
 
 const CAP: EffortCapability = {
   supportsEffort: true,

@@ -6,11 +6,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { detectVulnerabilities } from "../../src/skill/builtin/security-audit/scripts/detect-vulnerabilities.ts";
+import { detectVulnerabilities } from "@sid-code/core/skill/builtin/security-audit/scripts/detect-vulnerabilities.ts";
 import {
   detectEcosystem,
   lookupCves,
-} from "../../src/skill/builtin/security-audit/scripts/cve-lookup.ts";
+} from "@sid-code/core/skill/builtin/security-audit/scripts/cve-lookup.ts";
 
 const wrapDiff = (file: string, content: string): string => {
   const lines = content.split("\n");
@@ -310,6 +310,8 @@ describe("security-audit scripts/references 文件结构", () => {
       import.meta.dir,
       "..",
       "..",
+      "packages",
+      "core",
       "src",
       "skill",
       "builtin",
@@ -336,6 +338,8 @@ describe("security-audit scripts/references 文件结构", () => {
       import.meta.dir,
       "..",
       "..",
+      "packages",
+      "core",
       "src",
       "skill",
       "builtin",
@@ -353,6 +357,8 @@ describe("security-audit scripts/references 文件结构", () => {
       import.meta.dir,
       "..",
       "..",
+      "packages",
+      "core",
       "src",
       "skill",
       "builtin",

@@ -11,7 +11,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import { normalizeStrictNulls } from "../../src/tool/nullish-normalize.ts";
+import { normalizeStrictNulls } from "@sid-code/core/tool/nullish-normalize.ts";
 
 describe("normalizeStrictNulls", () => {
   describe("optional 字段的 null → 摘掉（等价于未提供）", () => {

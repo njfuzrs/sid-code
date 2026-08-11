@@ -116,7 +116,7 @@ async function runCase(c: Case, timeoutMs: number): Promise<RunRecord> {
   };
 
   const args = [
-    "run", "src/entrypoints/bootstrap.ts",
+    "run", "packages/cli/src/entrypoints/bootstrap.ts",
     "--print",
     "--output-format", "json",
     "--max-turns", String(c.expected.max_steps ?? 15),

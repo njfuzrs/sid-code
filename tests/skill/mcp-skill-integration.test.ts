@@ -12,12 +12,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { discoverMcpSkills, type McpResourceProvider } from "../../src/mcp/skill-discovery.ts";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { checkSkillPermission } from "../../src/skill/permission.ts";
-import { registerSkillLifecycleHooks } from "../../src/skill/executor.ts";
-import { processSkillPrompt } from "../../src/skill/prompt-processor.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+import { discoverMcpSkills, type McpResourceProvider } from "@sid-code/core/mcp/skill-discovery.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { checkSkillPermission } from "@sid-code/core/skill/permission.ts";
+import { registerSkillLifecycleHooks } from "@sid-code/core/skill/executor.ts";
+import { processSkillPrompt } from "@sid-code/core/skill/prompt-processor.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 /** 构造一个内存 MCP 资源提供者 */
 function makeProvider(

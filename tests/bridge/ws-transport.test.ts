@@ -8,8 +8,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { createBridgeTransport } from "../../src/bridge/transport.ts";
-import { WebSocketBridgeTransport } from "../../src/bridge/ws-transport.ts";
+import { createBridgeTransport } from "@sid-code/core/bridge/transport.ts";
+import { WebSocketBridgeTransport } from "@sid-code/core/bridge/ws-transport.ts";
 import {
   nextMessageId,
   formatTextMessage,
@@ -17,7 +17,7 @@ import {
   formatToolResultMessage,
   formatStatusMessage,
   isEligibleForBridge,
-} from "../../src/bridge/bridge-messaging.ts";
+} from "@sid-code/core/bridge/bridge-messaging.ts";
 
 describe("createBridgeTransport", () => {
   test("ws:// 创建 WebSocketBridgeTransport", () => {

@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { detectTruncation } from "../../src/tool/truncation-detector.ts";
+import { detectTruncation } from "@sid-code/core/tool/truncation-detector.ts";
 
 describe("truncation-detector — 文档文件跳过", () => {
   it(".md 文件不检测", () => {

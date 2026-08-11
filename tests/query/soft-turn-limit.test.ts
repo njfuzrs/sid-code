@@ -11,7 +11,7 @@ import {
   parseSoftTurnLimit,
   shouldRemindSoftTurnLimit,
   buildSoftTurnLimitReminder,
-} from "../../src/query/soft-turn-limit.ts";
+} from "@sid-code/core/query/soft-turn-limit.ts";
 
 describe("parseSoftTurnLimit — 阈值解析", () => {
   test("未设置 / 空串 → undefined（不启用）", () => {

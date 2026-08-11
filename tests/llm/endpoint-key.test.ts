@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { normalizeBaseURL, sameEndpoint } from "../../src/llm/endpoint-key.ts";
+import { normalizeBaseURL, sameEndpoint } from "@sid-code/core/llm/endpoint-key.ts";
 
 describe("normalizeBaseURL", () => {
   test("空/undefined → 空串（= 官方默认端点）", () => {

@@ -10,8 +10,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const UPDATE_TS = join(__dirname, "..", "..", "src", "command", "update.ts");
-const BOOTSTRAP_TS = join(__dirname, "..", "..", "src", "entrypoints", "bootstrap.ts");
+const UPDATE_TS = join(__dirname, "..", "..", "packages", "cli", "src", "command", "update.ts");
+const BOOTSTRAP_TS = join(__dirname, "..", "..", "packages", "cli", "src", "entrypoints", "bootstrap.ts");
 
 describe("sid-code update 子命令 - 文件契约", () => {
   test("src/command/update.ts 存在", () => {
@@ -19,7 +19,7 @@ describe("sid-code update 子命令 - 文件契约", () => {
   });
 
   test("update.ts 导出 handleUpdateCommand", async () => {
-    const mod = await import("../../src/command/update.ts");
+    const mod = await import("@sid-code/cli/command/update.ts");
     expect(typeof mod.handleUpdateCommand).toBe("function");
   });
 
@@ -62,7 +62,7 @@ describe("sid-code update 子命令 - 行为契约", () => {
     const originalLog = console.log;
     console.log = (msg: string) => logs.push(String(msg));
     try {
-      const { handleUpdateCommand } = await import("../../src/command/update.ts");
+      const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
       await handleUpdateCommand(["--help"]);
     } finally {
       console.log = originalLog;

@@ -4,9 +4,9 @@
 
 import { describe, test, expect } from "bun:test";
 import { PassThrough } from "node:stream";
-import { StructuredIO } from "../../src/sdk/structured-io.ts";
-import { createSDKCanUseTool } from "../../src/sdk/permission-bridge.ts";
-import { ndjsonStringify } from "../../src/sdk/ndjson.ts";
+import { StructuredIO } from "@sid-code/core/sdk/structured-io.ts";
+import { createSDKCanUseTool } from "@sid-code/core/sdk/permission-bridge.ts";
+import { ndjsonStringify } from "@sid-code/core/sdk/ndjson.ts";
 
 /**
  * 构造一个 StructuredIO，并自动用给定 behavior 回复 can_use_tool 控制请求。

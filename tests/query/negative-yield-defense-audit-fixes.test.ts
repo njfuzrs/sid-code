@@ -18,15 +18,15 @@ import { join } from "node:path";
 import {
   decideNagInjection,
   MAX_NO_PROGRESS_NAGS,
-} from "../../src/query/reminder-throttle.ts";
+} from "@sid-code/core/query/reminder-throttle.ts";
 import {
   THINKING_DIVERGENCE_LEN,
   isThinkingDiverging,
   isThinkingDivergenceDetectionEnabled,
-} from "../../src/query/thinking-divergence.ts";
-import { makeSignature } from "../../src/query/repeated-readonly-guard.ts";
-import { buildPermissionModeReminder } from "../../src/query/permission-reminder.ts";
-import { buildSystemPrompt } from "../../src/config/system-prompt.ts";
+} from "@sid-code/core/query/thinking-divergence.ts";
+import { makeSignature } from "@sid-code/core/query/repeated-readonly-guard.ts";
+import { buildPermissionModeReminder } from "@sid-code/core/query/permission-reminder.ts";
+import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
 
 const REPO_ROOT = join(import.meta.dir, "../..");
 
@@ -91,15 +91,15 @@ describe("发现 3：封顶预算语义（todo 通道已退出这套机制）", 
   });
 
   test("LoopState 保留 work-log 的 progressNagCount，且无共享的 noProgressNagCount", () => {
-    const typesSrc = readFileSync(join(REPO_ROOT, "src/query/types.ts"), "utf8");
+    const typesSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/types.ts"), "utf8");
     expect(typesSrc).toMatch(/^\s*progressNagCount\?:/m);
     // 旧的共享字段声明必须消失（注释里作为历史说明提到它是允许的，故只查声明行）。
     expect(typesSrc).not.toMatch(/^\s*noProgressNagCount\?:/m);
   });
 
   test("todo 通道不得再接入去重/封顶（回归哨兵：接回去就是 60 轮响 1 次）", () => {
-    const typesSrc = readFileSync(join(REPO_ROOT, "src/query/types.ts"), "utf8");
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const typesSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/types.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     // 字段声明必须不存在（注释提及不算）
     expect(typesSrc).not.toMatch(/^\s*todoNagCount\?:/m);
     expect(typesSrc).not.toMatch(/^\s*lastInjectedTodoReminderText\?:/m);
@@ -117,7 +117,7 @@ describe("发现 3：封顶预算语义（todo 通道已退出这套机制）", 
 // ────────────────────────────────────────────────────────────────────────────
 describe("发现 3 附带：催促注入埋点", () => {
   test("两条通道都发 NoProgressNagInjected，且用 kind 区分", () => {
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     expect(loopSrc).toContain('event: "NoProgressNagInjected"');
     expect(loopSrc).toContain('kind: "todo"');
     expect(loopSrc).toContain('kind: "work-log"');
@@ -147,7 +147,7 @@ describe("发现 4：permission mode 提醒去重", () => {
   });
 
   test("loop.ts 对周期性重述做了逐字节去重，且 changed 时绕过", () => {
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     // 去重字段被写入与比较
     expect(loopSrc).toContain("state.lastInjectedPermissionModeText");
     // 判据必须含 !changed —— 缺了它会把"刚切换"也去重掉，丢失真实时机价值。
@@ -201,8 +201,9 @@ describe("发现 6：源码裸 NUL 字节", () => {
 
   test("两个历史命中文件已清干净", () => {
     for (const rel of [
-      "src/query/repeated-readonly-guard.ts",
-      "src/ui/components/CodeColorizer.tsx",
+      // P2-2 分包：query 归 core、ui 归 cli
+      "packages/core/src/query/repeated-readonly-guard.ts",
+      "packages/cli/src/ui/components/CodeColorizer.tsx",
     ]) {
       const src = readFileSync(join(REPO_ROOT, rel), "utf8");
       // 若这条失败 = 裸 \0 又被写回源码：grep 会把整个文件当二进制静默跳过
@@ -236,14 +237,14 @@ describe("发现 6：源码裸 NUL 字节", () => {
 // ────────────────────────────────────────────────────────────────────────────
 describe("发现 1：repeated-readonly-guard 触发埋点", () => {
   test("remind 与 terminate 两个分支都发事件并区分 action", () => {
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     expect(loopSrc).toContain('event: "RepeatedReadonlyGuardTriggered"');
     expect(loopSrc).toContain('action: "remind"');
     expect(loopSrc).toContain('action: "terminate"');
   });
 
   test("terminate 的埋点排在 yield done 之前（否则永远不会执行）", () => {
-    const loopSrc = readFileSync(join(REPO_ROOT, "src/query/loop.ts"), "utf8");
+    const loopSrc = readFileSync(join(REPO_ROOT, "packages/core/src/query/loop.ts"), "utf8");
     const emitIdx = loopSrc.indexOf('action: "terminate"');
     expect(emitIdx).toBeGreaterThan(-1);
     // 从埋点往后找最近的 yield done —— 必须存在，即埋点在它前面。

@@ -10,8 +10,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import compactMod from "../../src/command/commands/compact/compact.ts";
-import type { Message } from "../../src/llm/types.ts";
+import compactMod from "@sid-code/cli/command/commands/compact/compact.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 构造一段够长、round 边界干净的消息历史（user/assistant 交替，无工具往返） */
 function buildMessages(rounds: number): Message[] {

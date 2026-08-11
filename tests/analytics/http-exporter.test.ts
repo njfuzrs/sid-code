@@ -2,8 +2,8 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HttpExporter } from "../../src/analytics/exporters/http.ts";
-import { EventDiskCache } from "../../src/analytics/disk-cache.ts";
+import { HttpExporter } from "@sid-code/core/analytics/exporters/http.ts";
+import { EventDiskCache } from "@sid-code/core/analytics/disk-cache.ts";
 
 const realFetch = globalThis.fetch;
 

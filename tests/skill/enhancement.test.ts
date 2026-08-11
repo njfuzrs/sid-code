@@ -7,10 +7,10 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { SkillLoader } from "../../src/skill/loader.ts";
-import { scanSkillResources } from "../../src/skill/resources.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { SkillLoader } from "@sid-code/core/skill/loader.ts";
+import { scanSkillResources } from "@sid-code/core/skill/resources.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 
 describe("Skill System Enhancement", () => {
   let testDir: string;

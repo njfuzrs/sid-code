@@ -255,7 +255,7 @@ function renderMarkdown(diffs: DiffEntry[]): string {
 
   lines.push("## 7. 下一步");
   lines.push("");
-  lines.push("1. B0-4：从 Top 1 失败模式（上表 §2 第 1 行）选最高频的 fix_suggestion → 落到 `src/skill/builtin/<skill-name>/SKILL.md`，**走 L3 core_code 审批**");
+  lines.push("1. B0-4：从 Top 1 失败模式（上表 §2 第 1 行）选最高频的 fix_suggestion → 落到 `packages/core/src/skill/builtin/<skill-name>/SKILL.md`，**走 L3 core_code 审批**");
   lines.push("2. 跑 1507 单测确保 SKILL.md 增量无回归");
   lines.push("3. 下个 Sprint 重跑同样 10 条 paired comparison，看该 Top 失败模式占比是否下降（数据飞轮 v0）");
   lines.push("");

@@ -5,8 +5,8 @@
  * MarkdownAnsi 会用 cachedLexer(整个 prefix) 重新 lex + 对每个 token
  * formatTokenToAnsi + 每个代码块重新高亮 → 对 N 块响应是 O(N²)。
  */
-import { cachedLexer, formatTokenToAnsi } from "../src/ui/markdown.ts";
-import { computeStreamSplit } from "../src/ui/components/StreamingMarkdown.tsx";
+import { cachedLexer, formatTokenToAnsi } from "@sid-code/cli/ui/markdown.ts";
+import { computeStreamSplit } from "@sid-code/cli/ui/components/StreamingMarkdown.tsx";
 
 const TERM_WIDTH = 100;
 

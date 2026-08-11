@@ -19,7 +19,7 @@ import {
   is401Error,
   is408Error,
   is409Error,
-} from "../../src/llm/errors.ts";
+} from "@sid-code/core/llm/errors.ts";
 
 describe("classifyError", () => {
   // === Terminal 错误 ===
@@ -446,7 +446,12 @@ describe("isAbortError", () => {
     // 机械强约束。新增未登记 reason 时此测试立即失败，杜绝孤儿 rejection 崩溃隐患复发。
     const { readdirSync, readFileSync, statSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const srcRoot = join(import.meta.dir, "..", "..", "src");
+    // P2-2 分包：生产源码分布在 4 个包里，必须全扫 —— 只扫一个包等于门禁半瞎，
+    // 而且不会报错。下面的 `tsFiles.length` 断言就是防这种静默空转的。
+    const repoRoot = join(import.meta.dir, "..", "..");
+    const srcRoots = ["shared", "tui-renderer", "core", "cli"].map((p) =>
+      join(repoRoot, "packages", p, "src"),
+    );
 
     // 递归收集 .ts 文件
     const tsFiles: string[] = [];
@@ -458,7 +463,9 @@ describe("isAbortError", () => {
         else if (full.endsWith(".ts") && !full.endsWith(".d.ts")) tsFiles.push(full);
       }
     };
-    walk(srcRoot);
+    for (const root of srcRoots) walk(root);
+    // 防空转：源码根若指错（分包路径变动），扫到 0 个文件时本审计会假绿。
+    expect(tsFiles.length).toBeGreaterThan(500);
 
     const whitelist = new Set<string>(ABORT_REASONS.map(String));
     // errors.ts 注释里的示例串 "xxx"（`abortController.abort("xxx")`）不是真实调用点，排除。
@@ -478,7 +485,7 @@ describe("isAbortError", () => {
           const reason = lm[1];
           if (KNOWN_NON_CALLS.has(reason)) continue;
           if (!whitelist.has(reason)) {
-            offenders.push({ file: file.replace(srcRoot, "src"), reason });
+            offenders.push({ file: file.replace(`${repoRoot}/`, ""), reason });
           }
         }
       }

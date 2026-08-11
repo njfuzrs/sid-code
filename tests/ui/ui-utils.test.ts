@@ -12,8 +12,8 @@ import {
   getToolDetailFull,
   getResultSummary,
   getThinkThought,
-} from "../../src/ui/ui-utils.ts";
-import { stringWidth } from "../../src/ink/stringWidth.ts";
+} from "@sid-code/cli/ui/ui-utils.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
 
 describe("isDiffContent", () => {
   const editDiff = "文件已编辑: /tmp/foo.ts（替换了 1 处）\n\n@@ -1,3 +1,3 @@\n function foo() {\n-  return 1;\n+  return 42;\n }";

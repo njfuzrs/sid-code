@@ -36,11 +36,11 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { WorktreeManager } from "../../src/worktree/manager.ts";
+import { WorktreeManager } from "@sid-code/core/worktree/manager.ts";
 import {
   cleanupStaleWorktrees,
   EPHEMERAL_GRACE_MS,
-} from "../../src/worktree/cleanup.ts";
+} from "@sid-code/core/worktree/cleanup.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {

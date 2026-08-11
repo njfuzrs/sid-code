@@ -11,8 +11,8 @@ import { join } from "path";
 import {
   WorktreeManager,
   findGitRoot,
-} from "../../src/worktree/manager.ts";
-import { isEphemeralWorktree } from "../../src/worktree/cleanup.ts";
+} from "@sid-code/core/worktree/manager.ts";
+import { isEphemeralWorktree } from "@sid-code/core/worktree/cleanup.ts";
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });

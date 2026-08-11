@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { MemoryStore, clearMemorySummaryCache, inferMemoryType } from "../../src/memory/store.ts";
+import { MemoryStore, clearMemorySummaryCache, inferMemoryType } from "@sid-code/core/memory/store.ts";
 
 let tmpProject: string;
 let projDir: string;

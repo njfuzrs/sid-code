@@ -8,7 +8,7 @@ import {
   isModeDisabledByPolicy,
   isBypassDisabledByPolicy,
   __resetModePolicy,
-} from "../../src/permission/mode-policy.ts";
+} from "@sid-code/core/permission/mode-policy.ts";
 
 afterEach(() => __resetModePolicy());
 

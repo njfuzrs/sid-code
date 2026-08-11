@@ -13,13 +13,13 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SkillMetaTool } from "../../src/skill/meta-tool.ts";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { SkillCommand } from "../../src/command/skill-command.ts";
-import { CommandExecutor } from "../../src/command/executor.ts";
-import { skillToCommand } from "../../src/skill/command-adapter.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
-import type { AppContext, CommandContext } from "../../src/command/types.ts";
+import { SkillMetaTool } from "@sid-code/core/skill/meta-tool.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { SkillCommand } from "@sid-code/cli/command/skill-command.ts";
+import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
+import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
+import type { AppContext, CommandContext } from "@sid-code/cli/command/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
   return {
@@ -181,7 +181,7 @@ describe("斜杠路径：CommandExecutor inline 分支上报（审计第 19 条�
 describe("端到端：上报后压缩能重注入 skill 工作流", () => {
   test("addInvokedSkill 记录的内容出现在压缩后的消息里", async () => {
     // 用真实 Manager 验证「喂数据 → 保留机制」这条链真的通了
-    const { Manager } = await import("../../src/context/manager.ts");
+    const { Manager } = await import("@sid-code/core/context/manager.ts");
     const ctxMgr = new Manager({ maxTokens: 200_000 });
 
     const tool = new SkillMetaTool(
@@ -199,7 +199,7 @@ describe("端到端：上报后压缩能重注入 skill 工作流", () => {
   });
 
   test("同名 skill 重复调用只保留最新内容（不无限堆积）", async () => {
-    const { Manager } = await import("../../src/context/manager.ts");
+    const { Manager } = await import("@sid-code/core/context/manager.ts");
     const ctxMgr = new Manager({ maxTokens: 200_000 });
 
     const tool = new SkillMetaTool(

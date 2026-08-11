@@ -20,7 +20,7 @@
 import { mkdtempSync, writeFileSync, mkdirSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { JitContextManager } from "../../src/config/jit-context.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
 
 const V1 = "RULE_VERSION_ONE_a11c";
 const V2 = "RULE_VERSION_TWO_b22d";

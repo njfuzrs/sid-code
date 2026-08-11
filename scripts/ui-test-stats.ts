@@ -20,8 +20,11 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const JSON_ONLY = process.argv.includes("--json");
 
-// UI 测试分布在两处：tests/ui（多数）+ src/ui（就近放置的 .test.ts/.tsx）
-const UI_TEST_PATHS = ["tests/ui", "src/ui"];
+// UI 测试分布在两处：tests/ui（多数）+ 就近放在 UI 源码旁的 .test.ts/.tsx。
+// P2-2 分包：UI 源码从 src/ui/ 搬到 packages/cli/src/ui/。
+// 注：搬迁时实测 packages/cli/src/ui 下就近测试为 0 个，路径仍保留 ——
+// 这条路径的作用是「就近测试一旦新增就自动纳入统计」，删掉它会让以后新增的就近测试静默漏统计。
+const UI_TEST_PATHS = ["tests/ui", "packages/cli/src/ui"];
 
 function runUITests(): { stdout: string; stderr: string; code: number } {
   const res = spawnSync("bun", ["test", ...UI_TEST_PATHS], {

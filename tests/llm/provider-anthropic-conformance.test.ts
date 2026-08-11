@@ -16,9 +16,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { AnthropicProvider } from "../../src/llm/anthropic.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-import { initStreamObserver, resetStreamObserver } from "../../src/trace/stream-observer.ts";
+import { AnthropicProvider } from "@sid-code/core/llm/anthropic.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
+import { initStreamObserver, resetStreamObserver } from "@sid-code/core/trace/stream-observer.ts";
 
 // ─── 测试脚手架 ──────────────────────────────────────────────────────────
 

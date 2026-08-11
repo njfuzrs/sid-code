@@ -7,9 +7,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import { matchGitDanger, normalizeGitGlobalOptions } from "../../src/permission/git-danger-patterns.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import { matchGitDanger, normalizeGitGlobalOptions } from "@sid-code/core/permission/git-danger-patterns.ts";
 
 async function check(command: string, cfgOverride: Record<string, unknown> = {}) {
   const checker = new PermissionChecker({ ...defaultConfig(), ...cfgOverride });

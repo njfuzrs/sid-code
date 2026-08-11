@@ -10,8 +10,8 @@ import { z } from "zod/v4";
 import {
   validateToolInput,
   buildSchemaNotSentHint,
-} from "../../src/tool/input-validator.ts";
-import type { LegacyTool } from "../../src/tool/types.ts";
+} from "@sid-code/core/tool/input-validator.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 
 /** 构造一个最小 LegacyTool 桩，可选注入 zodSchema */
 function mkTool(name: string, zodSchema?: LegacyTool["zodSchema"]): LegacyTool {

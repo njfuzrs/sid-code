@@ -12,10 +12,10 @@ import {
   isPlaceholderMessage,
   isResumeMarkerMessage,
   isHiddenFromDisplay,
-} from "../../src/ui/history-adapter.ts";
-import type { Message } from "../../src/llm/types.ts";
-import { REATTACH_ORIGIN } from "../../src/query/compact/reattach-markers.ts";
-import { ToolCallStatus } from "../../src/ui/types.ts";
+} from "@sid-code/cli/ui/history-adapter.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
+import { REATTACH_ORIGIN } from "@sid-code/core/query/compact/reattach-markers.ts";
+import { ToolCallStatus } from "@sid-code/cli/ui/types.ts";
 
 describe("isPlaceholderMessage", () => {
   test("识别占位消息", () => {

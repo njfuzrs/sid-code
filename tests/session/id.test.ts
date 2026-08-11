@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { generateSessionId } from "../../src/session/id.ts";
+import { generateSessionId } from "@sid-code/core/session/id.ts";
 
 describe("generateSessionId", () => {
   test("格式为 YYYYMMDD-HHMMSS-<8位hex>", () => {

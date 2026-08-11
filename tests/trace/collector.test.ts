@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { TraceCollector } from "../../src/trace/collector.ts";
-import { HookSystem } from "../../src/hook/system.ts";
-import { initLogger, LogLevel } from "../../src/debug/logger.ts";
+import { TraceCollector } from "@sid-code/core/trace/collector.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { initLogger, LogLevel } from "@sid-code/core/debug/logger.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1425,7 +1425,7 @@ describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
 
     // 隔离：每个测试前清空累计用量，避免跨用例污染（成本计算器/观察者由
     // TraceCollector 构造函数重新注册，见 registerHooks 之前的 constructor）。
-    const { resetSideCallStats } = await import("../../src/trace/side-call-sink.ts");
+    const { resetSideCallStats } = await import("@sid-code/core/trace/side-call-sink.ts");
     resetSideCallStats();
   });
 
@@ -1447,7 +1447,7 @@ describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
     await fireSessionStart(hookSystem, "sess-side");
     await fireModelRound(hookSystem);
 
-    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    const { recordSideCall } = await import("@sid-code/core/trace/side-call-sink.ts");
     recordSideCall({
       label: "title-generation",
       model: "claude-test",
@@ -1469,7 +1469,7 @@ describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
     await fireSessionStart(hookSystem, "sess-side");
     await fireModelRound(hookSystem);
 
-    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    const { recordSideCall } = await import("@sid-code/core/trace/side-call-sink.ts");
     recordSideCall({
       label: "title-generation",
       model: "claude-test",
@@ -1492,7 +1492,7 @@ describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
     await fireSessionStart(hookSystem, "sess-side");
     await fireModelRound(hookSystem);
 
-    const { recordSideCall } = await import("../../src/trace/side-call-sink.ts");
+    const { recordSideCall } = await import("@sid-code/core/trace/side-call-sink.ts");
     recordSideCall({
       label: "title-generation",
       model: "claude-test",

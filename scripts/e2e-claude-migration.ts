@@ -23,7 +23,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 
 const REPO = dirname(import.meta.dir); // scripts/ 的上一级
-const INSPECTOR = join(REPO, "src/skill/builtin/claude-code-migration/scripts/inspect-migration.mjs");
+const INSPECTOR = join(REPO, "packages/core/src/skill/builtin/claude-code-migration/scripts/inspect-migration.mjs");
 
 // ─── 断言工具 ───
 let passed = 0;
@@ -387,7 +387,7 @@ async function validateWithRealLoaders(migrated: { userMcp: any; dstMem: string 
   process.env.HOME = HOME;
 
   // 1. SettingsSchema (Zod) 校验用户级 settings.json
-  const { SettingsSchema } = await import(join(REPO, "src/config/settings/types.ts"));
+  const { SettingsSchema } = await import(join(REPO, "packages/core/src/config/settings/types.ts"));
   const userSettings = JSON.parse(readFileSync(join(SID, "settings.json"), "utf8"));
   const parsed = SettingsSchema().safeParse(userSettings);
   check("真实 SettingsSchema 通过", parsed.success, parsed.success ? "" : JSON.stringify(parsed.error?.issues?.slice(0, 3)));
@@ -406,7 +406,7 @@ async function validateWithRealLoaders(migrated: { userMcp: any; dstMem: string 
   check("MCP 无残留 type 字段", mcpVals.every(s => s.type === undefined));
 
   // 2. mergeMcpConfigs：合并三源，签名去重后仍可用
-  const { mergeMcpConfigs } = await import(join(REPO, "src/mcp/config.ts"));
+  const { mergeMcpConfigs } = await import(join(REPO, "packages/core/src/mcp/config.ts"));
   const rootMcp = JSON.parse(readFileSync(join(PROJECT, ".mcp.json"), "utf8")).mcpServers;
   const localSettings = JSON.parse(readFileSync(join(PROJ_SID, "settings.local.json"), "utf8"));
   const merged = mergeMcpConfigs([
@@ -421,21 +421,21 @@ async function validateWithRealLoaders(migrated: { userMcp: any; dstMem: string 
   check("merged server 带 scope", Object.values<any>(merged).every(s => !!s.scope));
 
   // 3. SkillLoader：用户级 + 项目级 skill 都能加载
-  const { SkillLoader } = await import(join(REPO, "src/skill/loader.ts"));
+  const { SkillLoader } = await import(join(REPO, "packages/core/src/skill/loader.ts"));
   const skills = await new SkillLoader().loadAll(PROJECT, { trustProjectExtensions: true });
   const skillNames = skills.map((s: any) => s.name);
   check("真实 SkillLoader 加载 helper", skillNames.includes("helper"), JSON.stringify(skillNames));
   check("真实 SkillLoader 加载 proj-skill", skillNames.includes("proj-skill"));
 
   // 4. CustomCommandLoader
-  const { CustomCommandLoader } = await import(join(REPO, "src/command/custom.ts"));
+  const { CustomCommandLoader } = await import(join(REPO, "packages/cli/src/command/custom.ts"));
   const cmds = await new CustomCommandLoader().loadAll(PROJECT, { trustProjectExtensions: true });
   const cmdNames = cmds.map((c: any) => c.cmd.name());
   check("真实 CommandLoader 加载 greet", cmdNames.includes("greet"), JSON.stringify(cmdNames));
   check("真实 CommandLoader 加载 build", cmdNames.includes("build"));
 
   // 5. CustomAgentLoader
-  const { CustomAgentLoader } = await import(join(REPO, "src/agent/custom.ts"));
+  const { CustomAgentLoader } = await import(join(REPO, "packages/core/src/agent/custom.ts"));
   const agents = await new CustomAgentLoader().loadAll(PROJECT, { trustProjectExtensions: true });
   check("真实 AgentLoader 加载 reviewer", agents.map((a: any) => a.name).includes("reviewer"));
 
@@ -443,7 +443,7 @@ async function validateWithRealLoaders(migrated: { userMcp: any; dstMem: string 
   //    已缓存、不响应运行时 process.env.HOME 变更。故在子进程里预设 HOME 后再加载。
   const stylesOut = execFileSync(
     "bun",
-    ["-e", `import {loadAllOutputStyles} from ${JSON.stringify(join(REPO, "src/config/output-styles.ts"))}; console.log(JSON.stringify(loadAllOutputStyles().map(s=>s.name)))`],
+    ["-e", `import {loadAllOutputStyles} from ${JSON.stringify(join(REPO, "packages/core/src/config/output-styles.ts"))}; console.log(JSON.stringify(loadAllOutputStyles().map(s=>s.name)))`],
     { encoding: "utf8", env: { ...process.env, HOME, SID_CONFIG_DIR: SID } },
   ).trim().split("\n").pop() as string;
   const styleNames = JSON.parse(stylesOut);

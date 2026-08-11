@@ -19,10 +19,10 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, utimesSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
-import { WriteTool } from "../../src/tool/write.ts";
-import { EditTool } from "../../src/tool/edit.ts";
-import { ReadTool } from "../../src/tool/read.ts";
+import { FileReadTracker } from "@sid-code/core/tool/file-read-tracker.ts";
+import { WriteTool } from "@sid-code/core/tool/write.ts";
+import { EditTool } from "@sid-code/core/tool/edit.ts";
+import { ReadTool } from "@sid-code/core/tool/read.ts";
 
 const tmpDirs: string[] = [];
 

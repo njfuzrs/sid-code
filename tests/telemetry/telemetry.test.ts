@@ -3,13 +3,13 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { TelemetryBus } from "../../src/telemetry/bus.ts";
-import { TraceContext, generateTraceId, generateSpanId } from "../../src/telemetry/context.ts";
-import { ConsoleExporter } from "../../src/telemetry/exporters/console.ts";
-import { JsonlExporter } from "../../src/telemetry/exporters/jsonl.ts";
-import { ATTR } from "../../src/telemetry/types.ts";
-import type { SpanData, TelemetryExporter } from "../../src/telemetry/types.ts";
-import { initTelemetry, getTelemetryBus, shutdownTelemetry } from "../../src/telemetry/index.ts";
+import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
+import { TraceContext, generateTraceId, generateSpanId } from "@sid-code/core/telemetry/context.ts";
+import { ConsoleExporter } from "@sid-code/core/telemetry/exporters/console.ts";
+import { JsonlExporter } from "@sid-code/core/telemetry/exporters/jsonl.ts";
+import { ATTR } from "@sid-code/core/telemetry/types.ts";
+import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
+import { initTelemetry, getTelemetryBus, shutdownTelemetry } from "@sid-code/core/telemetry/index.ts";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readFile, rm } from "fs/promises";

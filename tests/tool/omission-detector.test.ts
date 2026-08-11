@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile, isPythonFile, isBareEllipsisCheckEnabled } from "../../src/tool/omission-detector.ts";
+import { detectOmissionPlaceholders, hasOmissionPlaceholders, isDocumentFile, isPythonFile, isBareEllipsisCheckEnabled } from "@sid-code/core/tool/omission-detector.ts";
 
 describe("detectOmissionPlaceholders - JavaScript/TypeScript", () => {
   test("检测 // ... rest of 注释", () => {

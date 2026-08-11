@@ -21,7 +21,7 @@ import {
   __resetCapabilityCacheForTest,
   __getCapabilityCacheForTest,
   __sanitizeEntryForTest,
-} from "../../src/llm/model-capabilities.ts";
+} from "@sid-code/core/llm/model-capabilities.ts";
 
 beforeEach(() => {
   __resetCapabilityCacheForTest({});

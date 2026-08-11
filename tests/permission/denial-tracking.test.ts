@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { defaultConfig } from "../../src/config/config.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 import {
   createDenialTrackingState,
   recordDenial,
@@ -20,7 +20,7 @@ import {
   shouldFuse,
   denialSignature,
   DENIAL_LIMITS,
-} from "../../src/permission/denial-tracking.ts";
+} from "@sid-code/core/permission/denial-tracking.ts";
 
 describe("denial-tracking 纯逻辑（新判据：按操作签名的连续拒绝）", () => {
   test("同一签名连续拒绝达阈值 → 熔断", () => {

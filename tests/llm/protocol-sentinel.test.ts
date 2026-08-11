@@ -13,15 +13,15 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Message } from "../../src/llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   guardOutgoingMessages,
   dumpProtocolViolation,
-} from "../../src/llm/protocol-sentinel.ts";
+} from "@sid-code/core/llm/protocol-sentinel.ts";
 import {
   checkMessageHistoryIntegrity,
   MessageHistoryViolationError,
-} from "../../src/agent/message-invariants.ts";
+} from "@sid-code/core/agent/message-invariants.ts";
 
 function asst(...tools: Array<[string, string]>): Message {
   return {

@@ -8,7 +8,7 @@ import {
   SdkControlServerTransport,
   createLinkedTransportPair,
   type JSONRPCMessage,
-} from "../../src/sdk/mcp-bridge.ts";
+} from "@sid-code/core/sdk/mcp-bridge.ts";
 
 describe("SdkControlClientTransport", () => {
   test("send 包装并把响应回投 onmessage", async () => {

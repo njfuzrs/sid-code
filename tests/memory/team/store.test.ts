@@ -6,9 +6,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { saveTeamMemory, getTeamIndexContent } from "../../../src/memory/team/store.ts";
-import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
-import { _resetWatcherStateForTesting } from "../../../src/memory/team/watcher.ts";
+import { saveTeamMemory, getTeamIndexContent } from "@sid-code/core/memory/team/store.ts";
+import { getTeamMemPath } from "@sid-code/core/memory/team/paths.ts";
+import { _resetWatcherStateForTesting } from "@sid-code/core/memory/team/watcher.ts";
 
 let tmpRoot: string;
 let prevConfigDir: string | undefined;

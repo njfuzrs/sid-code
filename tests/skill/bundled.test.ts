@@ -8,14 +8,14 @@ import {
   getBundledSkills,
   clearBundledSkills,
   hasBundledSkill,
-} from "../../src/skill/bundled/registry.ts";
+} from "@sid-code/core/skill/bundled/registry.ts";
 import {
   resolveSkillFilePath,
   getBundledSkillExtractDir,
   extractBundledSkillFiles,
-} from "../../src/skill/bundled/extract.ts";
-import { loadBundledSkills } from "../../src/skill/bundled/index.ts";
-import type { CommandContext } from "../../src/command/types.ts";
+} from "@sid-code/core/skill/bundled/extract.ts";
+import { loadBundledSkills } from "@sid-code/core/skill/bundled/index.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 import { rm, readFile } from "node:fs/promises";
 
 const fakeCtx = { cwd: process.cwd(), sessionId: "s" } as CommandContext;

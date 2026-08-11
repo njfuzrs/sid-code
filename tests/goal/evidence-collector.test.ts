@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { collectEvidence, collectEvidenceFromTurn } from "../../src/goal/evidence-collector.ts";
+import { collectEvidence, collectEvidenceFromTurn } from "@sid-code/core/goal/evidence-collector.ts";
 
 describe("collectEvidence", () => {
   test("从 bash 测试输出提取 test_result 证据", () => {

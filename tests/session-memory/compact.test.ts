@@ -6,8 +6,8 @@ import { describe, test, expect } from "bun:test";
 import {
   trySessionMemoryCompaction,
   type SessionMemoryProvider,
-} from "../../src/session-memory/compact.ts";
-import { DEFAULT_SESSION_MEMORY_TEMPLATE } from "../../src/session-memory/prompts.ts";
+} from "@sid-code/core/session-memory/compact.ts";
+import { DEFAULT_SESSION_MEMORY_TEMPLATE } from "@sid-code/core/session-memory/prompts.ts";
 
 describe("trySessionMemoryCompaction", () => {
   test("Session Memory 为空 → 返回 null（回退传统压缩）", async () => {

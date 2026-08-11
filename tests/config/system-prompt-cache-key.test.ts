@@ -16,7 +16,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { buildSystemPrompt, clearPromptCache, generateCacheKey } from "../../src/config/system-prompt.ts";
+import { buildSystemPrompt, clearPromptCache, generateCacheKey } from "@sid-code/core/config/system-prompt.ts";
 
 function makeTool(opts: { name: string; desc: string; guide?: string }) {
   return {

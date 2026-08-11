@@ -13,13 +13,13 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import { buildResponsesRequest } from "../../src/llm/openai-responses-request.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import { buildResponsesRequest } from "@sid-code/core/llm/openai-responses-request.ts";
 import {
   serializeToolResultContentForOpenAI,
   OPENAI_TOOL_ERROR_PREFIX,
-} from "../../src/llm/openai-tool-result-content.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/llm/openai-tool-result-content.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 class TestableProvider extends OpenAIProvider {
   convert(messages: Message[]): any[] {

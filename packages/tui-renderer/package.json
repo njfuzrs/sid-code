@@ -1,0 +1,13 @@
+{
+  "name": "@sid-code/tui-renderer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "终端渲染底座：fork 自 MIT ink（见 src/README.md 与仓库根 NOTICE）。单独成包让 vendor 血统在目录结构上可见",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@sid-code/shared": "workspace:*"
+  }
+}

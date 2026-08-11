@@ -17,10 +17,10 @@ import {
   appendTaskOutput,
   flushTaskOutput,
   getTaskOutputTail,
-} from "../../src/task/index.ts";
+} from "@sid-code/core/task/index.ts";
 // appendTaskOutput/flushTaskOutput 经 appendAndWait 间接使用
-import { TaskOutputTool } from "../../src/tool/task-output.ts";
-import type { LocalShellTaskState } from "../../src/task/types.ts";
+import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
+import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
 /** 追加内容后等磁盘真正落盘（drain 是异步的，flush 有竞态，靠轮询兜底）。 */
 async function appendAndWait(taskId: string, content: string, marker: string): Promise<void> {

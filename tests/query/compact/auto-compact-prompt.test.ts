@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { Message } from "../../../src/llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   COMPACT_SYSTEM_PROMPT,
   getCompactPrompt,
@@ -16,7 +16,7 @@ import {
   buildCompactUserPrompt,
   formatCompactSummary,
   getCompactUserSummaryMessage,
-} from "../../../src/query/compact/auto-compact-prompt.ts";
+} from "@sid-code/core/query/compact/auto-compact-prompt.ts";
 
 describe("getCompactPrompt", () => {
   it("包含 9 个结构化段落要求", () => {

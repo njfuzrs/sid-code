@@ -10,8 +10,8 @@ import { describe, test, expect } from "bun:test";
 import {
   deserializeMessagesWithInterruptDetection,
   TERMINAL_TOOL_NAMES,
-} from "../../src/sdk/session-recovery.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/sdk/session-recovery.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 describe("deserializeMessagesWithInterruptDetection", () => {
   test("空历史", () => {

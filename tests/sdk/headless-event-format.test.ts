@@ -11,8 +11,8 @@ import {
   classifyHeadlessStreamText,
   formatHeadlessEvent,
   RETRY_TEXT_PREFIX,
-} from "../../src/sdk/headless-event-format.ts";
-import type { QueryEngineEvent } from "../../src/query/types.ts";
+} from "@sid-code/core/sdk/headless-event-format.ts";
+import type { QueryEngineEvent } from "@sid-code/core/query/types.ts";
 
 describe("classifyHeadlessStreamText", () => {
   test("重试进度文案 → isRetryProgress，剥离前缀走 stderr", () => {

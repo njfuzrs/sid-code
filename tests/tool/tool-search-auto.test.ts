@@ -11,8 +11,8 @@ import {
   resolveToolSearchEnabled,
   parseToolSearchEnv,
   type AutoThresholdInput,
-} from "../../src/tool/tool-search-auto.ts";
-import type { ToolDefinition } from "../../src/llm/types.ts";
+} from "@sid-code/core/tool/tool-search-auto.ts";
+import type { ToolDefinition } from "@sid-code/core/llm/types.ts";
 
 describe("parseToolSearchConfig", () => {
   test("undefined → off", () => {

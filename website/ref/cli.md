@@ -19,7 +19,7 @@ sid-code 的全部命令行参数与子命令。
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
 > 共 **65** 个参数条目、**6** 个子命令。
-> 描述取自 `sid-code --help`，并与 `src/cli.ts` 的 `parseArgs` 声明
+> 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
 > （**参数能不能用的唯一权威**，共 65 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
 

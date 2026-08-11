@@ -29,7 +29,7 @@ import { parseArgs } from "node:util";
 import { parse as parseYaml } from "yaml";
 
 const ROOT = process.cwd();
-const SKILL_ROOT = join(ROOT, "src/skill/builtin/security-audit");
+const SKILL_ROOT = join(ROOT, "packages/core/src/skill/builtin/security-audit");
 const CASES_DIR = join(SKILL_ROOT, "evals");
 const SKILL_FILE = join(SKILL_ROOT, "SKILL.md");
 const RAW_DIR = join(ROOT, "evals/raw-outputs");

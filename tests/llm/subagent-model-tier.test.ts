@@ -13,10 +13,10 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import type { Config } from "../../src/config/config.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import { registerDynamicAgents, clearDynamicAgents } from "../../src/agent/agent-definition.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import { registerDynamicAgents, clearDynamicAgents } from "@sid-code/core/agent/agent-definition.ts";
 
 const CHEAP_KEY = "SID_CHEAP_MODEL";
 const STRONG_KEY = "SID_STRONG_MODEL";

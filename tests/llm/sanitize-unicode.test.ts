@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeStrings } from "../../src/llm/sanitize-unicode.ts";
+import { sanitizeStrings } from "@sid-code/core/llm/sanitize-unicode.ts";
 
 describe("sanitizeStrings", () => {
   test("空字符串不变", () => {

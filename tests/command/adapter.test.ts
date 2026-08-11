@@ -6,11 +6,11 @@ import { describe, test, expect } from "bun:test";
 import {
   adaptLegacyCommand,
   convertResult,
-} from "../../src/command/adapter.ts";
+} from "@sid-code/cli/command/adapter.ts";
 import type {
   Command as LegacyCommand,
   CommandContext,
-} from "../../src/command/types.ts";
+} from "@sid-code/cli/command/types.ts";
 
 // 最小可用的 CommandContext（仅适配器用到的字段）
 const fakeCtx = {

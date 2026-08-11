@@ -19,7 +19,7 @@
 #   vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，`fetch-ripgrep.ts --all`
 #   优先直接复用（全程不联网）；仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载。
 #   每个 target 编译前把对应平台的二进制放到 vendor/rg-embed（bun --compile 的固定嵌入
-#   import 路径，见 src/tool/rg-embedded.ts）。仓库内和服务器都没有对应二进制/版本时不
+#   import 路径，见 packages/core/src/tool/rg-embedded.ts）。仓库内和服务器都没有对应二进制/版本时不
 #   阻断发布，仅让该 target 的产物不含内嵌 rg（运行时透明回退系统 rg，与本功能上线前行为一致）。
 #   升级 rg 版本：改 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION → 跑 --all 下载新版本
 #   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
@@ -549,7 +549,7 @@ for entry in "${TARGETS[@]}"; do
     mkdir -p "$OUT_DIR"
 
     # ─── 切换嵌入的 rg 二进制为当前 target 对应平台 ───
-    # vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 src/tool/rg-embedded.ts）。
+    # vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 packages/core/src/tool/rg-embedded.ts）。
     # 明确置空（而非跳过）以避免复用上一个 target 残留的错误平台二进制。
     RG_VENDOR_FILE="$ROOT/vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}"
     if [ -f "$RG_VENDOR_FILE" ]; then
@@ -568,7 +568,7 @@ for entry in "${TARGETS[@]}"; do
     bun build --compile --target="$BUN_TARGET" \
         --define process.env.NODE_ENV='"production"' \
         --outfile "$OUT_DIR/sid-code" \
-        src/entrypoints/bootstrap.ts
+        packages/cli/src/entrypoints/bootstrap.ts
 
     [ -f "$OUT_DIR/sid-code" ] || fail "构建失败: 未找到 $OUT_DIR/sid-code"
     chmod +x "$OUT_DIR/sid-code"
@@ -640,7 +640,7 @@ RELEASE_COMMIT_FILES=(
     CHANGELOG.md
     CHANGELOG.html
     website/.vitepress/data/changelog.json
-    src/skill/builtin-embedded.generated.ts
+    packages/core/src/skill/builtin-embedded.generated.ts
 )
 
 if [ "$NO_COMMIT" = true ]; then

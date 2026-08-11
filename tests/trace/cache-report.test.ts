@@ -12,8 +12,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildCacheReport, renderCacheSection } from "../../src/trace/cache-report.ts";
-import type { UsageLedgerEntry } from "../../src/telemetry/usage-ledger.ts";
+import { buildCacheReport, renderCacheSection } from "@sid-code/core/trace/cache-report.ts";
+import type { UsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger.ts";
 
 let dir: string;
 // 存/恢复原值，不无条件 delete —— bun test 同进程跑多文件，delete 会抹掉别人的隔离

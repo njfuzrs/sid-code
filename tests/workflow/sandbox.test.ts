@@ -14,8 +14,8 @@ import {
   runInSandbox,
   parseAndValidateMeta,
   stripStringsAndComments,
-} from "../../src/workflow/sandbox.ts";
-import type { WorkflowApi } from "../../src/workflow/types.ts";
+} from "@sid-code/core/workflow/sandbox.ts";
+import type { WorkflowApi } from "@sid-code/core/workflow/types.ts";
 
 /** 构造一个最小可用的 WorkflowApi(测试用,agent 返回固定值) */
 function makeApi(overrides: Partial<WorkflowApi> = {}): { api: WorkflowApi; logs: string[] } {

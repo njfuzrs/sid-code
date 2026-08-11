@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildExtractPrompt } from "../../../src/memory/extract/prompts.ts";
+import { buildExtractPrompt } from "@sid-code/core/memory/extract/prompts.ts";
 
 const MANIFEST = "- [project] foo.md (2026-01-01): 示例";
 

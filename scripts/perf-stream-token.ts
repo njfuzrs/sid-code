@@ -1,6 +1,6 @@
 // 模拟真实流式：逐 token 增长 streamingText，每次都跑 StreamingMarkdown 的切分 + MarkdownAnsi 全量解析。
-import { computeStreamSplit } from "../src/ui/components/StreamingMarkdown.tsx";
-import { cachedLexer, formatTokenToAnsi } from "../src/ui/markdown.ts";
+import { computeStreamSplit } from "@sid-code/cli/ui/components/StreamingMarkdown.tsx";
+import { cachedLexer, formatTokenToAnsi } from "@sid-code/cli/ui/markdown.ts";
 const TW = 100;
 
 // 生成一段长回复文本

@@ -34,7 +34,7 @@ const benchTmp = mkdtempSync(join(tmpdir(), "cache-bench-"));
 process.env.SID_CODE_USAGE_LEDGER = join(benchTmp, "usage-ledger.jsonl");
 process.env.SID_CODE_CACHE_BREAKS = join(benchTmp, "cache-breaks.jsonl");
 
-const { loadConfig } = await import("../src/config/config.ts");
+const { loadConfig } = await import("@sid-code/core/config/config.ts");
 
 /** 单次运行硬上限（美元） */
 const COST_CEILING_USD = 0.5;
@@ -71,7 +71,7 @@ if (values.help) {
 // 类型从 core 引入而**不在这里重新声明**：第一版两边各写了一份 RoundResult，
 // core 加 cacheWrite 字段后本文件的副本没跟上，渲染代码就访问了一个"类型上不存在"的字段。
 // 手写的平行类型声明必然漂移（同病：记忆 message-fidelity-silent-block-drop）。
-type ModelBench = import("../src/telemetry/cache-bench-core.ts").ModelBench;
+type ModelBench = import("@sid-code/core/telemetry/cache-bench-core.ts").ModelBench;
 
 /** 固定静态前缀：模拟真实 system prompt（跨轮完全不变，这是可缓存的部分） */
 function staticPrefix(): string {
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
   const rounds = Math.max(2, Number(values.rounds) || DEFAULT_ROUNDS);
   const prefix = staticPrefix();
 
-  const { benchModel } = await import("../src/telemetry/cache-bench-core.ts");
+  const { benchModel } = await import("@sid-code/core/telemetry/cache-bench-core.ts");
   const results: ModelBench[] = [];
   let spentTotal = 0;
 

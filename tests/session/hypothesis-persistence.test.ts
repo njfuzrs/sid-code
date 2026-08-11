@@ -13,8 +13,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { HypothesisLedger } from "../../src/query/hypothesis-ledger.ts";
-import { SessionStore } from "../../src/session/store.ts";
+import { HypothesisLedger } from "@sid-code/core/query/hypothesis-ledger.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";

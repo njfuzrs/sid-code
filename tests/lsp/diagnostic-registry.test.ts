@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { DiagnosticRegistry } from "../../src/lsp/diagnostic-registry.ts";
-import { formatDiagnostics } from "../../src/lsp/passive-feedback.ts";
-import type { Diagnostic, DiagnosticSeverity } from "../../src/lsp/types.ts";
+import { DiagnosticRegistry } from "@sid-code/core/lsp/diagnostic-registry.ts";
+import { formatDiagnostics } from "@sid-code/core/lsp/passive-feedback.ts";
+import type { Diagnostic, DiagnosticSeverity } from "@sid-code/core/lsp/types.ts";
 
 /** 构造一个诊断 */
 function diag(

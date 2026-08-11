@@ -10,7 +10,7 @@ import {
   prAttributionInstruction,
   DEFAULT_COMMIT_ATTRIBUTION,
   DEFAULT_PR_ATTRIBUTION,
-} from "../../src/tool/git-attribution.ts";
+} from "@sid-code/core/tool/git-attribution.ts";
 
 describe("P3-1 resolveCommitAttribution", () => {
   test("默认启用返回默认文本", () => {
@@ -62,7 +62,7 @@ describe("P3-1 prompt 指令段", () => {
  */
 describe("P3-1 settings.git Schema 校验", () => {
   test("合法配置通过并保留字段", async () => {
-    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
     const r = SettingsSchema().safeParse({
       git: { commitAttribution: { enabled: false }, prAttribution: { text: "X" } },
     });
@@ -72,14 +72,14 @@ describe("P3-1 settings.git Schema 校验", () => {
   });
 
   test("类型错写被拦下（而非静默当 truthy）", async () => {
-    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
     const r = SettingsSchema().safeParse({ git: { commitAttribution: { enabled: "false" } } });
     expect(r.success).toBe(false);
     expect((r as any).error.issues[0].path).toEqual(["git", "commitAttribution", "enabled"]);
   });
 
   test("git 段缺省不报错（可选）", async () => {
-    const { SettingsSchema } = await import("../../src/config/settings/types.ts");
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
     expect(SettingsSchema().safeParse({}).success).toBe(true);
   });
 });
@@ -100,13 +100,13 @@ describe("P3-1 PR 归因覆盖所有 PR skill", () => {
    * 幂等标志约束），每个 case 独立注册，不受运行顺序影响。
    */
   async function getSkill(name: string) {
-    const { getBundledSkills } = await import("../../src/skill/bundled/registry.ts");
+    const { getBundledSkills } = await import("@sid-code/core/skill/bundled/registry.ts");
     const registrars: Record<string, () => Promise<() => void>> = {
       "commit-push-pr": async () =>
-        (await import("../../src/skill/bundled/commit-push-pr.ts")).registerCommitPushPrSkill,
+        (await import("@sid-code/core/skill/bundled/commit-push-pr.ts")).registerCommitPushPrSkill,
       "pr-workflow": async () =>
-        (await import("../../src/skill/bundled/pr-workflow.ts")).registerPrWorkflowSkill,
-      pr: async () => (await import("../../src/skill/bundled/pr.ts")).registerPrSkill,
+        (await import("@sid-code/core/skill/bundled/pr-workflow.ts")).registerPrWorkflowSkill,
+      pr: async () => (await import("@sid-code/core/skill/bundled/pr.ts")).registerPrSkill,
     };
     const register = await registrars[name]!();
     register(); // registerBundledSkill 内部同名覆盖，重复调用安全

@@ -13,11 +13,11 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import { OllamaProvider } from "../../src/llm/ollama.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, Message } from "../../src/llm/types.ts";
-import { MessageHistoryViolationError } from "../../src/agent/message-invariants.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import { OllamaProvider } from "@sid-code/core/llm/ollama.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, Message } from "@sid-code/core/llm/types.ts";
+import { MessageHistoryViolationError } from "@sid-code/core/agent/message-invariants.ts";
 
 /** 构造一条含孤儿 tool_use 的脏历史（c2 缺 tool_result） */
 function dirtyHistory(): Message[] {

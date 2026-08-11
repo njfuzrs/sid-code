@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ToolClassifier } from "../../src/permission/tool-classifier.ts";
+import { ToolClassifier } from "@sid-code/core/permission/tool-classifier.ts";
 
 describe("ToolClassifier fastPath", () => {
   const clf = new ToolClassifier({ enabled: true });

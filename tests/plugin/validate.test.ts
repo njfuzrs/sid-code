@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateManifest } from "../../src/plugin/validate.ts";
+import { validateManifest } from "@sid-code/cli/plugin/validate.ts";
 
 describe("插件 Manifest 验证", () => {
   const valid = {

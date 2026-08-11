@@ -6,21 +6,21 @@ import {
   updateKilledSinks,
   __clearBackendsForTest,
   type SinkBackend,
-} from "../../src/analytics/sink.ts";
+} from "@sid-code/core/analytics/sink.ts";
 import {
   setConfiguredPrivacyLevel,
   getPrivacyLevel,
   isTelemetryDisabled,
   isEssentialTrafficOnly,
   shouldLoadRemoteConfig,
-} from "../../src/analytics/privacy-level.ts";
+} from "@sid-code/core/analytics/privacy-level.ts";
 import {
   stripProtectedFields,
   extractProtectedFields,
   hasProtectedFields,
   PROTECTED_PREFIX,
-} from "../../src/analytics/privacy.ts";
-import type { EventMetadata } from "../../src/analytics/index.ts";
+} from "@sid-code/core/analytics/privacy.ts";
+import type { EventMetadata } from "@sid-code/core/analytics/index.ts";
 
 /** 收集型测试后端 */
 function makeBackend(name: string, stripProtected: boolean, accept = true): SinkBackend & {

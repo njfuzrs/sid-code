@@ -14,9 +14,9 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { matchBinding, bindingFor } from "../../src/ui/keybindings/defaultBindings.ts";
-import { ChordMachine, defaultChordBindings } from "../../src/ui/keybindings/chord.ts";
-import type { Key } from "../../src/ui/contexts/KeypressContext.tsx";
+import { matchBinding, bindingFor } from "@sid-code/cli/ui/keybindings/defaultBindings.ts";
+import { ChordMachine, defaultChordBindings } from "@sid-code/cli/ui/keybindings/chord.ts";
+import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 /** 构造一个 Key 事件（默认无修饰键） */
 function key(name: string, mods: Partial<Pick<Key, "ctrl" | "shift" | "alt" | "cmd">> = {}): Key {

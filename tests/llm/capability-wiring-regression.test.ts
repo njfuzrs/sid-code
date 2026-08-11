@@ -14,8 +14,8 @@
  */
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { resolveEffortCapability } from "../../src/llm/effort.ts";
-import { lookupCatalog } from "../../src/llm/model-params-catalog.ts";
+import { resolveEffortCapability } from "@sid-code/core/llm/effort.ts";
+import { lookupCatalog } from "@sid-code/core/llm/model-params-catalog.ts";
 import {
   learnFromError,
   shouldSyncCatalogs,
@@ -23,9 +23,9 @@ import {
   recordEffortRejected,
   lookupCapability,
   __resetCapabilityCacheForTest,
-} from "../../src/llm/model-capabilities.ts";
-import { isPromptTooLong } from "../../src/api/errors.ts";
-import { isPromptTooLongError } from "../../src/query/reactive-compact.ts";
+} from "@sid-code/core/llm/model-capabilities.ts";
+import { isPromptTooLong } from "@sid-code/core/api/errors.ts";
+import { isPromptTooLongError } from "@sid-code/core/query/reactive-compact.ts";
 
 /**
  * 判断模型是否属于「未知协议族」——即本次修复的目标人群。
@@ -50,7 +50,7 @@ async function captureWireBody(
   model: string,
   params: Record<string, unknown>,
 ): Promise<any> {
-  const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+  const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
   let captured: any = null;
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: any, init: any) => {
@@ -163,7 +163,7 @@ describe("P0-5 非流式 Responses 协议分派", () => {
     responseBody: unknown,
     params: Record<string, unknown> = {},
   ): Promise<{ url: string; body: any; result: any }> {
-    const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+    const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
     let url = "";
     let body: any = null;
     const origFetch = globalThis.fetch;
@@ -425,7 +425,7 @@ describe("自愈记账：避免永久 2 倍请求", () => {
    * 请求体里另一个字段不合法），却让 effort 背了锅，且这个误判会持久化到磁盘。
    */
   test("剥字段重试仍失败 → 不得记账（真因不是这个字段，别冤枉它）", async () => {
-    const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+    const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
     const origFetch = globalThis.fetch;
     let calls = 0;
     // 两轮都 400，且措辞不含字段名（靠结构兜底触发自愈，learnFromError 学不到东西）
@@ -473,7 +473,7 @@ describe("P2 非流式路径必须有能力自愈（与流式对称）", () => {
    * 可自愈失败的时刻。
    */
   test("首次因 reasoning_effort 400 → 剥字段重试并成功", async () => {
-    const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+    const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
     const bodies: any[] = [];
     globalThis.fetch = (async (_url: any, init: any) => {
       const body = JSON.parse(init.body);
@@ -512,7 +512,7 @@ describe("P2 非流式路径必须有能力自愈（与流式对称）", () => {
   });
 
   test("非能力类错误（401）原样抛出，不重试掩盖真问题", async () => {
-    const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+    const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;
@@ -549,7 +549,7 @@ describe("/model discover 必须消费能力缓存", () => {
       "cache-only-model": { contextWindow: 262_144, maxOutputTokens: 32_768, source: "catalog" },
     });
     const { __discoverSingleForTest } = await import(
-      "../../src/command/commands/model/discover.ts"
+      "@sid-code/cli/command/commands/model/discover.ts"
     );
     const r = await __discoverSingleForTest(
       { name: "cache-only-model", provider: "openai" } as any,
@@ -563,7 +563,7 @@ describe("/model discover 必须消费能力缓存", () => {
   test("既不在速查表也不在缓存 → 仍报 failed（不得凭空编造）", async () => {
     __resetCapabilityCacheForTest({});
     const { __discoverSingleForTest } = await import(
-      "../../src/command/commands/model/discover.ts"
+      "@sid-code/cli/command/commands/model/discover.ts"
     );
     const r = await __discoverSingleForTest(
       { name: "nobody-knows-this-model", provider: "openai" } as any,

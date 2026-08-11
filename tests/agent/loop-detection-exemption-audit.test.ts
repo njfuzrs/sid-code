@@ -22,30 +22,30 @@ import { describe, test, expect } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { EXEMPT_TOOLS } from "../../src/agent/loop-detection.ts";
+import { EXEMPT_TOOLS } from "@sid-code/core/agent/loop-detection.ts";
 
 // 豁免工具的真实实例（构造参数按各自签名给最小可用值——exemptFromLoopDetection 是类字段
 // 初始化子，不依赖构造参数的具体内容，仅需能 new 出实例即可读到该字段）。
-import { SubAgentTool } from "../../src/agent/tool.ts";
-import { TaskOutputTool } from "../../src/tool/task-output.ts";
-import { TaskStopTool } from "../../src/tool/task-stop.ts";
-import { TaskListTool } from "../../src/tool/task-list.ts";
-import { TaskGetTool } from "../../src/tool/task-get.ts";
-import { TaskCreateTool } from "../../src/tool/structured-task-create.ts";
-import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
-import { StructuredTaskGetTool } from "../../src/tool/structured-task-get.ts";
-import { StructuredTaskListTool } from "../../src/tool/structured-task-list.ts";
-import { SendMessageTool } from "../../src/tool/send-message.ts";
-import { TeamMessageTool } from "../../src/tool/team-message.ts";
-import { TodoWriteTool } from "../../src/tool/todo-write.ts";
-import { EnterPlanModeTool } from "../../src/tool/enter-plan-mode.ts";
-import { ExitPlanModeTool } from "../../src/tool/exit-plan-mode.ts";
-import { PlanModeManager } from "../../src/plan/state.ts";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
+import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
+import { TaskStopTool } from "@sid-code/core/tool/task-stop.ts";
+import { TaskListTool } from "@sid-code/core/tool/task-list.ts";
+import { TaskGetTool } from "@sid-code/core/tool/task-get.ts";
+import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
+import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
+import { StructuredTaskGetTool } from "@sid-code/core/tool/structured-task-get.ts";
+import { StructuredTaskListTool } from "@sid-code/core/tool/structured-task-list.ts";
+import { SendMessageTool } from "@sid-code/core/tool/send-message.ts";
+import { TeamMessageTool } from "@sid-code/core/tool/team-message.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
+import { EnterPlanModeTool } from "@sid-code/core/tool/enter-plan-mode.ts";
+import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
-const TOOL_SRC_DIRS = [join(REPO_ROOT, "src", "tool"), join(REPO_ROOT, "src", "agent")];
+const TOOL_SRC_DIRS = [join(REPO_ROOT, "packages", "core", "src", "tool"), join(REPO_ROOT, "packages", "core", "src", "agent")];
 
 /** 构造最小依赖，供需要构造参数的工具实例化。 */
 function makeExemptToolInstances(): { name: string; exempt: boolean }[] {

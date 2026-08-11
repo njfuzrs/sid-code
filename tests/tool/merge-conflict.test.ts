@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { detectMergeConflictHint } from "../../src/tool/bash/merge-conflict.ts";
+import { detectMergeConflictHint } from "@sid-code/core/tool/bash/merge-conflict.ts";
 
 describe("P1-3 合并冲突检测", () => {
   test("git merge 冲突命中", () => {

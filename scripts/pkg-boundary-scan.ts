@@ -8,6 +8,10 @@
  *
  * 为什么必须是脚本而不是目测：一个模块放错位置能让工作量翻数倍（实测 58 → 11），
  * 而试算一次只要几秒。见方案 §4.1。
+ *
+ * ⚠️ **分包已完成（2026-08-11），默认模式是 `--packages`。** `--src` 模式是试算工具，
+ * 旧的扁平 `src/` 已经不存在，跑它只会拿到「目录不存在」的报错 —— 保留它是为了
+ * 将来再做同类拆分时能复用，不是当前的门禁路径。
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -246,8 +250,140 @@ export function scanSrcMode(srcRoot: string): {
   return { violations, edges, sizes };
 }
 
+/** 参与边界校验的 4 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
+export const PACKAGES = ["shared", "tui-renderer", "core", "cli"] as const;
+
+/**
+ * 在真实 `packages/` 结构上校验包边界（拆包**后**的门禁路径）。
+ *
+ * 与 `--src` 试算模式的关键差异：这里判定「目标属于哪个包」不靠 MODULE_TO_PACKAGE 映射，
+ * 而是直接看导入说明符 ——
+ *
+ * - `@sid-code/<pkg>/...` → 跨包导入，按 rank 判越界；
+ * - 相对路径 → 解析后必须仍落在**本包**内，落到别的包里就是「绕过 bare specifier 偷渡」，
+ *   哪怕方向合法也算违规：它绕过了 package.json 的 exports 契约，让依赖关系在
+ *   `bun.lock` / dependencies 字段里查不到，未来单独发包时才会炸。
+ *
+ * 两类违规分开报（`kind`），因为修法不同：rank 违规要下移类型或反转依赖，
+ * cross-package-relative 只要改成 bare specifier。
+ */
+export interface PackageViolation extends Violation {
+  kind: "rank" | "cross-package-relative" | "self-bare-import";
+}
+
+export function scanPackagesMode(packagesRoot: string): {
+  violations: PackageViolation[];
+  edges: Map<string, number>;
+  sizes: Map<string, { files: number; lines: number }>;
+} {
+  const violations: PackageViolation[] = [];
+  const edges = new Map<string, number>();
+  const sizes = new Map<string, { files: number; lines: number }>();
+
+  for (const pkg of PACKAGES) {
+    const pkgSrc = join(packagesRoot, pkg, "src");
+    // 防空转：包目录必须存在。缺了就抛 —— 一个不存在的目录会让 collectSourceFiles
+    // 直接报错，但若哪天改成「静默跳过」，这道门禁就会在包被重命名后永远绿。
+    // 这与 lint-architecture.ts 记录的「`if (!existsSync) return []` 比没有门禁更糟」同族。
+    const files = collectSourceFiles(pkgSrc);
+    if (files.length === 0) {
+      throw new Error(`包 ${pkg} 的 src/ 下扫到 0 个 .ts/.tsx 文件（路径：${pkgSrc}）——` +
+        `要么包结构变了、要么这道门禁在空转。`);
+    }
+
+    for (const file of files) {
+      const relInPkg = relative(pkgSrc, file);
+      const content = readFileSync(file, "utf8");
+      const size = sizes.get(pkg) ?? { files: 0, lines: 0 };
+      size.files += 1;
+      size.lines += content.split("\n").length;
+      sizes.set(pkg, size);
+
+      for (const imp of extractImports(content)) {
+        const displayFile = `packages/${pkg}/src/${relInPkg}`;
+
+        // ---- 形态 A：bare specifier `@sid-code/<pkg>[/...]` ----
+        const bare = /^@sid-code\/([a-z-]+)(?:\/|$)/.exec(imp.spec);
+        if (bare) {
+          const toPkg = bare[1]!;
+          if (toPkg === pkg) {
+            // 自包不该走 bare specifier：绕一圈 node_modules symlink，
+            // 既拖慢解析又让「这文件属于哪个包」在阅读时失去局部性。
+            violations.push({
+              file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
+              spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "self-bare-import",
+            });
+            continue;
+          }
+          if (PACKAGE_RANK[toPkg] === undefined) continue; // 非 4 包之一，跳过
+          edges.set(`${pkg}→${toPkg}`, (edges.get(`${pkg}→${toPkg}`) ?? 0) + 1);
+          if (PACKAGE_RANK[pkg]! < PACKAGE_RANK[toPkg]!) {
+            violations.push({
+              file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
+              spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "rank",
+            });
+          }
+          continue;
+        }
+
+        // ---- 形态 B：相对路径，必须落在本包内 ----
+        if (!imp.spec.startsWith(".")) continue; // 外部 npm 依赖
+        const abs = resolve(file, "..", imp.spec);
+        const relToPkgSrc = relative(pkgSrc, abs);
+        if (!relToPkgSrc.startsWith("..")) continue; // 仍在本包内 → 合法
+
+        // 逃出了本包 src/。判断它落到哪个包（可能只是指向仓库根的 package.json 等，那不算）
+        const relToPackages = relative(packagesRoot, abs);
+        const hit = /^([a-z-]+)\//.exec(relToPackages);
+        const toPkg = hit && PACKAGE_RANK[hit[1]!] !== undefined ? hit[1]! : null;
+        if (!toPkg) continue; // 指向 packages/ 之外（仓库根文件等），不属边界问题
+
+        edges.set(`${pkg}→${toPkg}`, (edges.get(`${pkg}→${toPkg}`) ?? 0) + 1);
+        violations.push({
+          file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
+          spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "cross-package-relative",
+        });
+      }
+    }
+  }
+  return { violations, edges, sizes };
+}
+
 if (import.meta.main) {
-  const srcRoot = resolve(import.meta.dir, "..", "src");
+  // 默认 --packages（分包已完成）。--src 是拆包前的试算模式，需显式指定。
+  const useSrcMode = process.argv.includes("--src");
+  const root = resolve(import.meta.dir, "..");
+
+  if (!useSrcMode) {
+    const { violations, edges, sizes } = scanPackagesMode(join(root, "packages"));
+
+    console.log("=== 包规模 ===");
+    for (const pkg of PACKAGES) {
+      const s = sizes.get(pkg)!;
+      console.log(`  ${pkg.padEnd(14)} ${String(s.lines).padStart(7)} 行  ${String(s.files).padStart(4)} 文件`);
+    }
+
+    console.log("\n=== 包间边（引用数）===");
+    for (const [edge, n] of [...edges.entries()].sort((a, b) => b[1] - a[1])) {
+      const [from, to] = edge.split("→");
+      const bad = PACKAGE_RANK[from!]! < PACKAGE_RANK[to!]!;
+      console.log(`  ${bad ? "❌" : "✅"} ${edge.padEnd(28)} ${n}`);
+    }
+
+    console.log(`\n=== 越界依赖：${violations.length} 处 ===`);
+    for (const v of violations) {
+      console.log(
+        `  [${v.kind}] ${v.fromPkg}→${v.toPkg}  ${v.file}:${v.line}  ${v.spec}` +
+          `  ${v.isTypeOnly ? "[type]" : "[运行时]"}`,
+      );
+    }
+    if (violations.length === 0) {
+      console.log("  ✅ 包边界干净：低 rank 不导入高 rank、无跨包相对路径、无自包 bare 导入。");
+    }
+    process.exit(violations.length > 0 ? 1 : 0);
+  }
+
+  const srcRoot = join(root, "src");
   const { violations, edges, sizes } = scanSrcMode(srcRoot);
 
   console.log("=== 包规模 ===");

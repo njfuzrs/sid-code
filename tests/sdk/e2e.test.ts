@@ -10,10 +10,10 @@ import {
   SDKQueryEngine,
   type SDKQueryEngineDriver,
   type SDKQueryEngineConfig,
-} from "../../src/sdk/query-engine.ts";
-import type { QueryEngineEvent } from "../../src/query/types.ts";
-import type { Message, Usage } from "../../src/llm/types.ts";
-import { SDKMessageSchema } from "../../src/sdk/schemas.ts";
+} from "@sid-code/core/sdk/query-engine.ts";
+import type { QueryEngineEvent } from "@sid-code/core/query/types.ts";
+import type { Message, Usage } from "@sid-code/core/llm/types.ts";
+import { SDKMessageSchema } from "@sid-code/core/sdk/schemas.ts";
 
 function makeDriver(
   events: QueryEngineEvent[],

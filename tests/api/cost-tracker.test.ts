@@ -11,9 +11,9 @@ import {
   calculateUSDCost,
   resolvePricing,
   CostTracker,
-} from "../../src/api/cost-tracker.ts";
-import { __resetGatewayPricingForTest } from "../../src/llm/gateway-pricing.ts";
-import type { Usage } from "../../src/llm/types.ts";
+} from "@sid-code/core/api/cost-tracker.ts";
+import { __resetGatewayPricingForTest } from "@sid-code/core/llm/gateway-pricing.ts";
+import type { Usage } from "@sid-code/core/llm/types.ts";
 
 // 隔离：把配置目录指向空临时目录，避免读到本机真实 ~/.sid-code/gateway-pricing.json。
 // 否则 dev 机上 deepseek-v4-pro 会命中网关渠道价，覆盖注册表价，本文件的计费断言必挂

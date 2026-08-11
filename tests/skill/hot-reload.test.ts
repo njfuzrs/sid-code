@@ -13,12 +13,12 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { SkillLoader } from "../../src/skill/loader.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
-import { SkillActivationCoordinator } from "../../src/skill/activation-coordinator.ts";
-import { SkillChangeDetector } from "../../src/skill/change-detector.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { SkillLoader } from "@sid-code/core/skill/loader.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import { SkillActivationCoordinator } from "@sid-code/core/skill/activation-coordinator.ts";
+import { SkillChangeDetector } from "@sid-code/core/skill/change-detector.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 /** 在 projectDir/.sid-code/skills/<name>/SKILL.md 写一个 skill */
 async function writeSkill(

@@ -15,8 +15,8 @@ import {
   bindingFor,
   DEFAULT_BINDINGS,
   type KeyBinding,
-} from "../../src/ui/keybindings/defaultBindings.ts";
-import type { Key } from "../../src/ui/contexts/KeypressContext.tsx";
+} from "@sid-code/cli/ui/keybindings/defaultBindings.ts";
+import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 /** 由一条 binding 的 stroke 构造对应的真实 Key 事件 */
 function keyFromBinding(b: KeyBinding): Key {

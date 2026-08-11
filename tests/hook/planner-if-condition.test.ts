@@ -7,9 +7,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { HookRegistry } from "../../src/hook/registry.ts";
-import { HookPlanner } from "../../src/hook/planner.ts";
-import { HookEventName } from "../../src/hook/types.ts";
+import { HookRegistry } from "@sid-code/core/hook/registry.ts";
+import { HookPlanner } from "@sid-code/core/hook/planner.ts";
+import { HookEventName } from "@sid-code/core/hook/types.ts";
 
 /** 辅助：注册一个 PreToolUse hook（带 matcher + if），返回 planner */
 function makePlanner(matcher: string, ifCond?: string): HookPlanner {

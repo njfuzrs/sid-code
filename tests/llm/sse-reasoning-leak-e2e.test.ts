@@ -15,9 +15,9 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import { processStream } from "../../src/query/stream-processor.ts";
-import type { SendParams } from "../../src/llm/types.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

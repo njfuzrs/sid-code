@@ -10,10 +10,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { createMcpServeHandler } from "../../src/entrypoints/mcp-serve.ts";
-import { CLIENT_PROTOCOL_VERSION } from "../../src/mcp/client.ts";
-import { getRawVersion } from "../../src/version.ts";
-import type { JsonRpcRequest } from "../../src/mcp/types.ts";
+import { createMcpServeHandler } from "@sid-code/cli/entrypoints/mcp-serve.ts";
+import { CLIENT_PROTOCOL_VERSION } from "@sid-code/core/mcp/client.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
+import type { JsonRpcRequest } from "@sid-code/core/mcp/types.ts";
 
 let idSeq = 1;
 function req(method: string, params?: Record<string, unknown>): JsonRpcRequest {

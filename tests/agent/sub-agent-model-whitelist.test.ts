@@ -14,11 +14,11 @@
  * 否则会把所有用户合法配置的模型全部误拦——那比原缺陷更糟。
  */
 import { describe, test, expect } from "bun:test";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { SubAgentTool } from "../../src/agent/tool.ts";
-import { Registry } from "../../src/tool/registry.ts";
-import type { Config } from "../../src/config/config.ts";
-import { defaultConfig } from "../../src/config/config.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 
 /** 复刻事故当时的真实用户配置（settings.json 关键字段） */
 function incidentConfig(overrides: Partial<Config> = {}): Config {
@@ -181,7 +181,7 @@ describe("SubAgentTool.execute 的 model 拦截（真实修复面）", () => {
 describe("sub_agent 的 model 参数 schema 描述", () => {
   test("描述里明确要求用完整准确名、不要臆造", async () => {
     // 白名单是"事后拦截"，描述是"事前引导"——两者都要有，否则模型每次都得靠报错学习
-    const src = Bun.file(new URL("../../src/agent/tool.ts", import.meta.url).pathname);
+    const src = Bun.file(new URL("../../packages/core/src/agent/tool.ts", import.meta.url).pathname);
     const text = await src.text();
     const modelFieldBlock = text.slice(text.indexOf("model: z"), text.indexOf("cwd: z"));
     expect(modelFieldBlock).toMatch(/完整模型名|准确名称/);

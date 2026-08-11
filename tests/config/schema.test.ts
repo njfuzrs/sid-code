@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { validateConfig } from "../../src/config/schema.ts";
-import type { Config } from "../../src/config/config.ts";
+import { validateConfig } from "@sid-code/core/config/schema.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 
 describe("Config Validation", () => {
   const baseConfig: Config = {

@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { sanitizeName, validateName } from "../../src/extension/naming.ts";
+import { sanitizeName, validateName } from "@sid-code/core/extension/naming.ts";
 
 describe("sanitizeName", () => {
   test("替换非法字符为 -", () => {

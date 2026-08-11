@@ -9,8 +9,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { EnterPlanModeTool } from "../../src/tool/enter-plan-mode.ts";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { EnterPlanModeTool } from "@sid-code/core/tool/enter-plan-mode.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("EnterPlanModeTool — 防套娃(_agentId)硬拦截", () => {
   test("子代理上下文(_agentId=sub-agent)调用被拒绝，且不改变 plan 状态", async () => {

@@ -12,8 +12,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
-import { SidechainWriter, reconstructSidechainMessages } from "../../src/session/sidechain.ts";
-import type { ContentBlock } from "../../src/llm/types.ts";
+import { SidechainWriter, reconstructSidechainMessages } from "@sid-code/core/session/sidechain.ts";
+import type { ContentBlock } from "@sid-code/core/llm/types.ts";
 
 describe("P2-3 sidechain transcript 重建", () => {
   let testDir: string;

@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { Message } from "../../src/llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   checkMessageHistoryIntegrity,
   hasOrphanToolUse,
@@ -19,7 +19,7 @@ import {
   backfillOrphanToolResults,
   safeSliceTail,
   MessageHistoryViolationError,
-} from "../../src/agent/message-invariants.ts";
+} from "@sid-code/core/agent/message-invariants.ts";
 
 function asst(...tools: Array<[string, string]>): Message {
   return {

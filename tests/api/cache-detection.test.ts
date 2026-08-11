@@ -13,7 +13,7 @@ import {
   getCacheHealthAdvice,
   type CacheCheckParams,
   type CacheBreakRecord,
-} from "../../src/api/cache-detection.ts";
+} from "@sid-code/core/api/cache-detection.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

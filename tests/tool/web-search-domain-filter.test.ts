@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { WebSearchTool, filterResultsByDomain } from "../../src/tool/web-search.ts";
-import type { SearchBackend, SearchResponse, SearchOptions } from "../../src/tool/search-backends/types.ts";
+import { WebSearchTool, filterResultsByDomain } from "@sid-code/core/tool/web-search.ts";
+import type { SearchBackend, SearchResponse, SearchOptions } from "@sid-code/core/tool/search-backends/types.ts";
 
 /** 假后端：返回固定一组跨域名结果 */
 function fakeBackend(results: { title: string; url: string; snippet: string }[]): SearchBackend {

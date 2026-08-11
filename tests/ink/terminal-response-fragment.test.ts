@@ -21,7 +21,7 @@ import {
   parseMultipleKeypresses,
   INITIAL_STATE,
   type ParsedInput,
-} from "../../src/ink/parse-keypress.ts";
+} from "@sid-code/tui-renderer/parse-keypress.ts";
 
 /** 入力欄へ漏れる「ESC を含むのに名前の無いキー」が含まれるか(=漏洩判定) */
 function hasEscLeak(keys: ParsedInput[]): boolean {

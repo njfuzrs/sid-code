@@ -3,7 +3,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { classifyRetryKind } from "../src/app.ts";
+import { classifyRetryKind } from "@sid-code/cli/app.ts";
 
 describe("classifyRetryKind", () => {
   test("限流类错误 → rate_limit", () => {

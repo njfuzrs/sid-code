@@ -6,7 +6,7 @@
  * 是用 fs.readFile 读盘的纯数据文件，--compile 不会嵌入它们；
  * 且编译二进制运行时 import.meta.url=/$bunfs/root，无法用相对路径定位 builtin 目录。
  *
- * 解决：编译前递归扫描 src/skill/builtin/<name>/ 下的**所有文件**，把每个文件原文生成到一个
+ * 解决：编译前递归扫描 packages/core/src/skill/builtin/<name>/ 下的**所有文件**，把每个文件原文生成到一个
  * 真正被 import 的 TS 模块（builtin-embedded.generated.ts）。该模块会被 --compile 打进二进制。
  * 运行时由 ensure-builtin.ts 把这份清单**按原目录结构释放到磁盘**
  * ~/.sid-code/builtin-skills/<name>/...，之后 builtin / user / project 三类 skill 走同一条磁盘
@@ -23,7 +23,7 @@
  * 其它文件（二进制）以 base64 存储，释放时解码还原。
  *
  * 用法：make build 在 bun build --compile 之前执行本脚本（见 Makefile）。
- * 源码运行（bun run src/cli.ts）也走同一释放逻辑，保证两种形态行为一致。
+ * 源码运行（bun run packages/cli/src/cli.ts）也走同一释放逻辑，保证两种形态行为一致。
  */
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -31,8 +31,12 @@ import { resolve, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const builtinDir = resolve(__dirname, "..", "src", "skill", "builtin");
-const outPath = resolve(__dirname, "..", "src", "skill", "builtin-embedded.generated.ts");
+// P2-2 分包：builtin skill 随 core 包走。本脚本在 scripts/ 下，".." 即仓库根，
+// 所以要显式带上 packages/core 这一段（分段写法不会被路径字符串替换命中，需手工维护）。
+const builtinDir = resolve(__dirname, "..", "packages", "core", "src", "skill", "builtin");
+const outPath = resolve(
+  __dirname, "..", "packages", "core", "src", "skill", "builtin-embedded.generated.ts",
+);
 
 /** 以 utf-8 原文存储的文本文件扩展名（其余按二进制 base64 处理） */
 const TEXT_EXTENSIONS = new Set([
@@ -133,8 +137,8 @@ const header = `/**
  * 自动生成文件 —— 请勿手动编辑。
  *
  * 由 scripts/embed-builtin-skills.ts 在 make build 时生成。
- * 内容是 src/skill/builtin/<name>/ 下所有文件的原文，被 import 后会随 bun build --compile
- * 打进二进制。运行时由 src/skill/ensure-builtin.ts 按原目录结构释放到 ~/.sid-code/builtin-skills/。
+ * 内容是 packages/core/src/skill/builtin/<name>/ 下所有文件的原文，被 import 后会随 bun build --compile
+ * 打进二进制。运行时由 packages/core/src/skill/ensure-builtin.ts 按原目录结构释放到 ~/.sid-code/builtin-skills/。
  */
 
 export interface EmbeddedBuiltinFile {
@@ -165,5 +169,5 @@ const body = JSON.stringify(entries, null, 2);
 writeFileSync(outPath, `${header}${body};\n`, "utf-8");
 
 console.log(
-  `已嵌入 ${entries.length} 个 builtin Skill、共 ${totalFiles} 个文件（hash=${contentHash}）→ src/skill/builtin-embedded.generated.ts`,
+  `已嵌入 ${entries.length} 个 builtin Skill、共 ${totalFiles} 个文件（hash=${contentHash}）→ packages/core/src/skill/builtin-embedded.generated.ts`,
 );

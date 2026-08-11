@@ -7,7 +7,7 @@ import { describe, it, expect } from "bun:test";
 import {
   computeMissedRuns,
   computeLatestMissedRun,
-} from "../../src/cron/parser.ts";
+} from "@sid-code/core/cron/parser.ts";
 
 describe("computeMissedRuns", () => {
   it("枚举区间内每分钟任务的所有错过时刻", () => {

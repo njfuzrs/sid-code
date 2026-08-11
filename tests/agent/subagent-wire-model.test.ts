@@ -20,8 +20,8 @@ import {
   setWireModelAliases,
   resetWireModelAliases,
   pickWireModel,
-} from "../../src/llm/wire-model.ts";
-import type { ParentInitMessage } from "../../src/agent/sub-agent-protocol.ts";
+} from "@sid-code/core/llm/wire-model.ts";
+import type { ParentInitMessage } from "@sid-code/core/agent/sub-agent-protocol.ts";
 
 /** 复刻 headless.ts 收到 init 后的播种逻辑（与 src/entrypoints/headless.ts 保持同构） */
 function seedFromInit(init: Pick<ParentInitMessage, "model" | "wire_model">): void {

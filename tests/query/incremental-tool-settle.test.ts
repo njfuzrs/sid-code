@@ -18,8 +18,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { ContentBlock, ToolUseBlock } from "../../src/llm/types.ts";
-import { executeTools, type ToolExecutorDeps } from "../../src/query/tool-executor.ts";
+import type { ContentBlock, ToolUseBlock } from "@sid-code/core/llm/types.ts";
+import { executeTools, type ToolExecutorDeps } from "@sid-code/core/query/tool-executor.ts";
 
 /** 可控完成时机的 mock 工具：delayMs 控制快慢，behavior 控制结果形态 */
 function makeTool(opts: {

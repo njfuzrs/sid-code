@@ -7,7 +7,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { DiminishingReturnsDetector } from "../../src/query/reactive-compact.ts";
+import { DiminishingReturnsDetector } from "@sid-code/core/query/reactive-compact.ts";
 
 describe("DiminishingReturnsDetector — 默认配置（向后兼容）", () => {
   test("未达最大次数、增量正常 → 不应停止", () => {

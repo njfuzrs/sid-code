@@ -9,7 +9,7 @@ import {
   matchShellRulePattern,
   hasWildcards,
   extractLegacyPrefix,
-} from "../../src/permission/shell-rule-matching.ts";
+} from "@sid-code/core/permission/shell-rule-matching.ts";
 
 describe("matchWildcardPattern - 方案文档实测用例（修复后应全部正确）", () => {
   test("Bash(*) 哨兵：* 匹配任意命令（含含路径命令）", () => {

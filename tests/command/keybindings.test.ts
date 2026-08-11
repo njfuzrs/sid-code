@@ -5,8 +5,8 @@
  * 用 SID_CONFIG_DIR 指向临时目录，隔离真实 ~/.sid-code。
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import keysCmd from "../../src/command/commands/keybindings/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import keysCmd from "@sid-code/cli/command/commands/keybindings/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

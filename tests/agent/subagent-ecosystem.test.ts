@@ -17,7 +17,7 @@ import {
   getActiveAgentTypes,
   resolveAgent,
   type AgentDefinition,
-} from "../../src/agent/agent-definition.ts";
+} from "@sid-code/core/agent/agent-definition.ts";
 
 afterEach(() => {
   // 每个测试后清空动态注册，避免测试间污染

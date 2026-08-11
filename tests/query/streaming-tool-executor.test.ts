@@ -3,10 +3,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { StreamingToolExecutor } from "../../src/query/streaming-tool-executor.ts";
-import { partitionToolCalls } from "../../src/query/tool-orchestration.ts";
-import type { ToolUseBlock } from "../../src/llm/types.ts";
-import type { LegacyTool as Tool } from "../../src/tool/types.ts";
+import { StreamingToolExecutor } from "@sid-code/core/query/streaming-tool-executor.ts";
+import { partitionToolCalls } from "@sid-code/core/query/tool-orchestration.ts";
+import type { ToolUseBlock } from "@sid-code/core/llm/types.ts";
+import type { LegacyTool as Tool } from "@sid-code/core/tool/types.ts";
 
 /** 构造一个最小 mock 工具 */
 function mockTool(name: string, opts: { safe?: boolean; readOnly?: boolean } = {}): Tool {

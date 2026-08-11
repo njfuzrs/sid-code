@@ -17,10 +17,10 @@ import {
   tryFastPathEval,
   extractEvalContext,
   type EvalConfig,
-} from "../../src/goal/evaluator.ts";
-import { createGoal } from "../../src/goal/state.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent, Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/goal/evaluator.ts";
+import { createGoal } from "@sid-code/core/goal/state.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent, Message } from "@sid-code/core/llm/types.ts";
 
 // ─── Mock Provider ───
 

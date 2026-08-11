@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { defaultTelemetryHandler, type RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
-import type { StreamTelemetrySignal } from "../../src/llm/types.ts";
+import { defaultTelemetryHandler, type RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
+import type { StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
 
 /** RetryTelemetryEvent.type 的完整枚举（与 retry-telemetry.ts 的联合类型同步） */
 const ALL_EVENT_TYPES: RetryTelemetryEvent["type"][] = [

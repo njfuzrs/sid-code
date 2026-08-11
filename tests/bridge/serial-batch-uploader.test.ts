@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SerialBatchUploader } from "../../src/bridge/serial-batch-uploader.ts";
+import { SerialBatchUploader } from "@sid-code/core/bridge/serial-batch-uploader.ts";
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 

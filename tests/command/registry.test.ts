@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { Registry } from "../../src/command/registry.ts";
-import type { Command, AppContext, CommandResult } from "../../src/command/types.ts";
+import { Registry } from "@sid-code/cli/command/registry.ts";
+import type { Command, AppContext, CommandResult } from "@sid-code/cli/command/types.ts";
 
 /** 测试用的 mock 命令 */
 class MockCommand implements Command {

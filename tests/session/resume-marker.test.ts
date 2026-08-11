@@ -10,13 +10,13 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { SessionStore } from "../../src/session/store.ts";
-import type { SessionData } from "../../src/session/store.ts";
-import { App } from "../../src/app.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import type { Config } from "../../src/config/config.ts";
-import type { Message } from "../../src/llm/types.ts";
-import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import type { SessionData } from "@sid-code/core/session/store.ts";
+import { App } from "@sid-code/cli/app.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
+import { checkMessageHistoryIntegrity } from "@sid-code/core/agent/message-invariants.ts";
 
 describe("SessionStore.buildResumeMarker（缺口 B 纯函数）", () => {
   test("含续接说明 + 不向用户复述约束", () => {
@@ -184,7 +184,7 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
     expect(allText(restored)).toContain("续接");
     // 恢复阶段本身允许存在孤儿（发送前 backfillOrphanToolResults 兜底）；
     // 这里验证 backfill 后能消除孤儿、保留续接标记
-    const { backfillOrphanToolResults } = await import("../../src/agent/message-invariants.ts");
+    const { backfillOrphanToolResults } = await import("@sid-code/core/agent/message-invariants.ts");
     const fixed = backfillOrphanToolResults(restored);
     const finalMsgs = fixed.changed ? fixed.messages : restored;
     expect(checkMessageHistoryIntegrity(finalMsgs).orphans.length).toBe(0);

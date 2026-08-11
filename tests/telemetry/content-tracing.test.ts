@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { TelemetryBus } from "../../src/telemetry/bus.ts";
+import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
 import {
   isContentTracingEnabled,
   clearContentTracingState,
@@ -25,13 +25,13 @@ import {
   getSeenHashCount,
   MAX_CONTENT_BYTES,
   CONTENT_TRACING_FLAG,
-} from "../../src/telemetry/content-tracing.ts";
+} from "@sid-code/core/telemetry/content-tracing.ts";
 import {
   __resetFeatureFlagsForTest,
   initFeatureFlags,
-} from "../../src/analytics/feature-flags.ts";
-import { setConfiguredPrivacyLevel } from "../../src/analytics/privacy-level.ts";
-import type { SpanData, TelemetryExporter, SpanEvent } from "../../src/telemetry/types.ts";
+} from "@sid-code/core/analytics/feature-flags.ts";
+import { setConfiguredPrivacyLevel } from "@sid-code/core/analytics/privacy-level.ts";
+import type { SpanData, TelemetryExporter, SpanEvent } from "@sid-code/core/telemetry/types.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -443,7 +443,7 @@ describe("内容级 tracing · compact 后清 hash 状态（设计点 4）", () 
   test("runPostCompact 是 auto 与手动压缩共同的收尾点——清理挂在那里才不漏手动路径", async () => {
     // 这条是结构断言：防止后续维护把清理搬回 auto-compact 的三个出口，
     // 那样手动 /compact 就不清了，而「只有手动压缩后 hash 不失效」极难被想到去查。
-    const src = await Bun.file("src/query/compact/post-compact.ts").text();
+    const src = await Bun.file("packages/core/src/query/compact/post-compact.ts").text();
     expect(src).toContain("clearContentTracingState");
   });
 });

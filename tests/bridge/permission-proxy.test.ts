@@ -4,8 +4,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionProxy } from "../../src/bridge/permission-proxy.ts";
-import type { BridgeTransport, BridgeOutMessage, BridgeInMessage } from "../../src/bridge/types.ts";
+import { PermissionProxy } from "@sid-code/core/bridge/permission-proxy.ts";
+import type { BridgeTransport, BridgeOutMessage, BridgeInMessage } from "@sid-code/core/bridge/types.ts";
 
 /** 最小 mock 传输：记录写出的消息，可手动注入响应 */
 class MockTransport implements BridgeTransport {

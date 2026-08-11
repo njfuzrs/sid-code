@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ArgParser } from "../../src/command/args.ts";
+import { ArgParser } from "@sid-code/cli/command/args.ts";
 
 describe("ArgParser", () => {
   test("解析位置参数", () => {

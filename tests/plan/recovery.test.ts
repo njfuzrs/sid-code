@@ -16,7 +16,7 @@ import {
   classifyRecoveryTrigger,
   type RecoveryContext,
   type RecoveryTrigger,
-} from "../../src/plan/recovery.ts";
+} from "@sid-code/core/plan/recovery.ts";
 
 const baseCtx: RecoveryContext = {
   toolName: "read",

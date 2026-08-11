@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { normalizeToolInput } from "../../src/llm/normalize-tool-input.ts";
+import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
 
 describe("normalizeToolInput", () => {
   describe("原样字符串字段白名单（不得被 JSON 解析破坏）", () => {

@@ -14,7 +14,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import {
   wrapFetchWithEventLineShim,
   __test__,
-} from "../../src/llm/sse-event-line-shim.ts";
+} from "@sid-code/core/llm/sse-event-line-shim.ts";
 
 const { createEventLineTransform, extractTypeFromDataLine } = __test__;
 

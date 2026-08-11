@@ -4,12 +4,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { AnthropicProvider } from "../../src/llm/anthropic.ts";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import { OllamaProvider } from "../../src/llm/ollama.ts";
-import { getCapabilities, DEFAULT_CAPABILITIES } from "../../src/llm/provider.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
+import { AnthropicProvider } from "@sid-code/core/llm/anthropic.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import { OllamaProvider } from "@sid-code/core/llm/ollama.ts";
+import { getCapabilities, DEFAULT_CAPABILITIES } from "@sid-code/core/llm/provider.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
 
 describe("Provider capabilities", () => {
   describe("AnthropicProvider", () => {

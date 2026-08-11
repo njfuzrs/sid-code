@@ -9,11 +9,11 @@
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
-import { resolveTeammateMode } from "../../src/swarm/team.ts";
-import { generateTeamTmuxSessionName } from "../../src/worktree/tmux.ts";
-import { TeamCreateTool, isAgentTeamsEnabled } from "../../src/tool/team-create.ts";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+import { resolveTeammateMode } from "@sid-code/core/swarm/team.ts";
+import { generateTeamTmuxSessionName } from "@sid-code/core/worktree/tmux.ts";
+import { TeamCreateTool, isAgentTeamsEnabled } from "@sid-code/core/tool/team-create.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 
 const MODE_KEY = "SID_TEAMMATE_MODE";
 const TEAMS_KEY = "SID_ENABLE_AGENT_TEAMS";

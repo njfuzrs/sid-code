@@ -19,10 +19,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt } from "../../src/config/system-prompt.ts";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
-import { DYNAMIC_BOUNDARY, splitSystemByDynamicBoundary } from "../../src/api/cache-strategy.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
+import { DYNAMIC_BOUNDARY, splitSystemByDynamicBoundary } from "@sid-code/core/api/cache-strategy.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 class TestableOpenAIProvider extends OpenAIProvider {
   testPrependSystem(messages: any[], system: string, model: string) {

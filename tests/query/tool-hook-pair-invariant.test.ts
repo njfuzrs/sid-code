@@ -29,8 +29,8 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import type { ToolUseBlock } from "../../src/llm/types.ts";
-import { executeTools, type ToolExecutorDeps } from "../../src/query/tool-executor.ts";
+import type { ToolUseBlock } from "@sid-code/core/llm/types.ts";
+import { executeTools, type ToolExecutorDeps } from "@sid-code/core/query/tool-executor.ts";
 
 /** 记录 hook 触发序列，用于配对断言 */
 interface HookLog {

@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { LsTool } from "../../src/tool/ls.ts";
+import { LsTool } from "@sid-code/core/tool/ls.ts";
 import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from "fs";
 import { join } from "path";
 import os from "os";

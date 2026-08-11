@@ -2,7 +2,7 @@
 /**
  * trace-digest —— sid-code 可观测性"一键嚼碎"CLI 脚本
  *
- * 核心逻辑在 src/trace/digest.ts(与内置 /trace 命令共用同一份),本文件只做 CLI 包装:
+ * 核心逻辑在 packages/core/src/trace/digest.ts(与内置 /trace 命令共用同一份),本文件只做 CLI 包装:
  * 解析 argv、按 TTY 决定是否着色、把 digest 模块的提示打到 stderr、结果打到 stdout。
  *
  * 用法:
@@ -26,8 +26,8 @@ import {
   buildDigest,
   renderHuman,
   renderList,
-} from "../src/trace/digest.ts";
-import { renderCacheSection } from "../src/trace/cache-report.ts";
+} from "@sid-code/core/trace/digest.ts";
+import { renderCacheSection } from "@sid-code/core/trace/cache-report.ts";
 
 function main() {
   const args = process.argv.slice(2);

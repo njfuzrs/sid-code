@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { isAutoMemoryEnabled } from "../../src/memory/paths.ts";
+import { isAutoMemoryEnabled } from "@sid-code/core/memory/paths.ts";
 
 const ENV_KEY = "SID_CODE_AUTO_MEMORY";
 

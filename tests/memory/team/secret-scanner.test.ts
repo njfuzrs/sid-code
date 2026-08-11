@@ -9,7 +9,7 @@ import {
   scanForSecrets,
   redactSecrets,
   getSecretLabel,
-} from "../../../src/memory/team/secret-scanner.ts";
+} from "@sid-code/core/memory/team/secret-scanner.ts";
 
 describe("secret-scanner — 命中检测", () => {
   test("GitHub PAT 命中且 label 正确", () => {

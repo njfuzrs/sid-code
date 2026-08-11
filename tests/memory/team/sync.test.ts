@@ -10,8 +10,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { syncTeamMemory, hashContent } from "../../../src/memory/team/sync.ts";
-import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
+import { syncTeamMemory, hashContent } from "@sid-code/core/memory/team/sync.ts";
+import { getTeamMemPath } from "@sid-code/core/memory/team/paths.ts";
 
 let tmpRoot: string;
 let configDir: string;
@@ -228,7 +228,7 @@ describe("syncTeamMemory — pull 后重建本地 MEMORY.md 索引（审计第 1
     writeShared("project_x.md", entry("x-rule", "x 的说明", "正文"));
     await syncTeamMemory(opts(), cwd);
 
-    const { getTeamIndexContent } = await import("../../../src/memory/team/store.ts");
+    const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
     const content = await getTeamIndexContent(cwd);
     expect(content).not.toBeNull();
     expect(content!).toContain("x-rule");

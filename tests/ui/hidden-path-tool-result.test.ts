@@ -13,10 +13,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { messagesToHistoryItems, isHiddenFromDisplay } from "../../src/ui/history-adapter.ts";
-import { ToolCallStatus } from "../../src/ui/types.ts";
-import type { Message } from "../../src/llm/types.ts";
-import { REATTACH_ORIGIN } from "../../src/query/compact/reattach-markers.ts";
+import { messagesToHistoryItems, isHiddenFromDisplay } from "@sid-code/cli/ui/history-adapter.ts";
+import { ToolCallStatus } from "@sid-code/cli/ui/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
+import { REATTACH_ORIGIN } from "@sid-code/core/query/compact/reattach-markers.ts";
 
 /** assistant 侧发起一次工具调用 */
 function toolUseMsg(id: string, name: string): Message {

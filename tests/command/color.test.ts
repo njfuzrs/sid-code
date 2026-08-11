@@ -5,9 +5,9 @@
  * themeManager 是单例，测试后复位 accentOverride 避免污染其它用例。
  */
 import { describe, test, expect, afterEach } from "bun:test";
-import colorCmd from "../../src/command/commands/color/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
-import { themeManager } from "../../src/ui/themes/theme-manager.ts";
+import colorCmd from "@sid-code/cli/command/commands/color/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
+import { themeManager } from "@sid-code/cli/ui/themes/theme-manager.ts";
 
 const loadColor = () => (colorCmd as LocalCommand).load();
 const ctx = {} as unknown as CommandContext;

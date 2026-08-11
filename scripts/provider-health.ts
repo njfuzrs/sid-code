@@ -8,9 +8,9 @@
  * 从最近 N 个会话的 events.jsonl 聚合各 provider 的健康指标并输出格式化看板。
  */
 
-import { aggregateProviderHealth, sendHealthAlerts, type HealthReport } from "../src/telemetry/provider-health.ts";
+import { aggregateProviderHealth, sendHealthAlerts, type HealthReport } from "@sid-code/core/telemetry/provider-health.ts";
 // P2-3：分桶行文案与命令面板共用（避免同一份数据在三个入口有三种说法）
-import { formatTtftBucketLine } from "../src/trace/ttft-cache-buckets.ts";
+import { formatTtftBucketLine } from "@sid-code/core/trace/ttft-cache-buckets.ts";
 
 // ─── 参数解析 ───
 

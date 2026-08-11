@@ -1,0 +1,13 @@
+{
+  "name": "@sid-code/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "agent 运行时：llm / tool / query / config / skill / permission / trace 等。刻意不依赖 tui-renderer，将来可单独转 public 当库用",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@sid-code/shared": "workspace:*"
+  }
+}

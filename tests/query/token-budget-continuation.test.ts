@@ -12,7 +12,7 @@ import {
   buildBudgetDiminishingNotice,
   MIN_TOKEN_BUDGET,
   MAX_TOKEN_BUDGET,
-} from "../../src/query/token-budget-continuation.ts";
+} from "@sid-code/core/query/token-budget-continuation.ts";
 
 describe("parseTokenBudgetDirective", () => {
   test("+500k → 500000", () => {

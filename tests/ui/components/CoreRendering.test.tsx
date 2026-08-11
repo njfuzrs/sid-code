@@ -12,11 +12,11 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import { DiffRenderer } from "../../../src/ui/components/DiffRenderer.tsx";
-import { LoadingIndicator } from "../../../src/ui/components/LoadingIndicator.tsx";
-import { CopyModeWarning } from "../../../src/ui/components/CopyModeWarning.tsx";
-import { StreamingState } from "../../../src/ui/types.ts";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { DiffRenderer } from "@sid-code/cli/ui/components/DiffRenderer.tsx";
+import { LoadingIndicator } from "@sid-code/cli/ui/components/LoadingIndicator.tsx";
+import { CopyModeWarning } from "@sid-code/cli/ui/components/CopyModeWarning.tsx";
+import { StreamingState } from "@sid-code/cli/ui/types.ts";
 
 /**
  * 去除 ANSI 转义序列（含起始 ESC 字符 \x1b）。

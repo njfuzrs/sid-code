@@ -15,10 +15,10 @@
  */
 
 import { describe, test, expect, mock } from "bun:test";
-import { LanguageCommand } from "../../src/command/language.ts";
-import type { AppContext } from "../../src/command/types.ts";
-import type { Config } from "../../src/config/config.ts";
-import type { LanguagePref } from "../../src/config/prompt-lang.ts";
+import { LanguageCommand } from "@sid-code/cli/command/language.ts";
+import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { LanguagePref } from "@sid-code/core/config/prompt-lang.ts";
 
 interface Recorded {
   lang: LanguagePref | undefined;

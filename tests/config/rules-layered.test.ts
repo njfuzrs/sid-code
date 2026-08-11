@@ -12,7 +12,7 @@ import {
   parseClaudeMd,
   loadAllCLAUDEmd,
   mergeProjectRules,
-} from "../../src/config/rules.ts";
+} from "@sid-code/core/config/rules.ts";
 
 describe("parseRulesFrontmatter", () => {
   test("inline 数组写法", () => {

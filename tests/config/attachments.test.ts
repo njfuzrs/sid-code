@@ -11,7 +11,7 @@ import {
   PERMISSION_MODE_DESCRIPTIONS,
   generateDiagnosticsAttachment,
   generateTodoListAttachment,
-} from "../../src/config/attachments.ts";
+} from "@sid-code/core/config/attachments.ts";
 
 describe("PRIORITY", () => {
   test("优先级数值正确排序", () => {

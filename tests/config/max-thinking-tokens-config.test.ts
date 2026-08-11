@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { normalizeConfigKeysForTest } from "../../src/config/config.ts";
-import { SettingsSchema } from "../../src/config/settings/types.ts";
+import { normalizeConfigKeysForTest } from "@sid-code/core/config/config.ts";
+import { SettingsSchema } from "@sid-code/core/config/settings/types.ts";
 
 describe("§12 P2-1 maxThinkingTokens 字段归一化", () => {
   test("snake_case 别名 max_thinking_tokens 命中 Config.maxThinkingTokens", () => {

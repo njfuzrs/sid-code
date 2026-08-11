@@ -14,7 +14,7 @@ import {
   detectInvestigationContext,
   buildJudgmentGuideReminder,
   buildMinimalGuideReminder,
-} from "../../src/query/hypothesis-guide.ts";
+} from "@sid-code/core/query/hypothesis-guide.ts";
 
 // ─── Layer 1: AND 条件（路径 + 调查性动词） ───
 

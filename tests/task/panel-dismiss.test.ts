@@ -43,8 +43,8 @@ import {
   clearAllTasks,
   onTaskChanged,
   offTaskChanged,
-} from "../../src/task/index.ts";
-import type { LocalAgentTaskState, LocalShellTaskState, TaskState } from "../../src/task/types.ts";
+} from "@sid-code/core/task/index.ts";
+import type { LocalAgentTaskState, LocalShellTaskState, TaskState } from "@sid-code/core/task/types.ts";
 
 function makeShellTask(id: string, overrides: Partial<LocalShellTaskState> = {}): LocalShellTaskState {
   return {
@@ -141,7 +141,7 @@ describe("graceDeadlineFor（根因②：killed 与 completed 曾共用一档）
 
 describe("终态写入点统一走 graceDeadlineFor（防漂移）", () => {
   test("killAgentTask 设的是短档（3s），不是 30s", async () => {
-    const { createAgentTask, killAgentTask } = await import("../../src/task/index.ts");
+    const { createAgentTask, killAgentTask } = await import("@sid-code/core/task/index.ts");
     const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
 
     const before = Date.now();
@@ -155,7 +155,7 @@ describe("终态写入点统一走 graceDeadlineFor（防漂移）", () => {
   });
 
   test("completeAgentTask 设的是长档（30s）", async () => {
-    const { createAgentTask, completeAgentTask } = await import("../../src/task/index.ts");
+    const { createAgentTask, completeAgentTask } = await import("@sid-code/core/task/index.ts");
     const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
 
     const before = Date.now();
@@ -368,7 +368,7 @@ describe("dismissed 任务仍须被正常驱逐（防 registry / 磁盘泄漏）
 describe("task_output 访问续期不得复活已划掉的条目", () => {
   test("读取 dismissed 任务 → 顺延 evictAfter，但 dismissed 保持 true", async () => {
     // 否则模型顺手读一次输出就把用户划掉的条目冒回面板上——那是"划不掉"的另一种形态。
-    const { TaskOutputTool } = await import("../../src/tool/task-output.ts");
+    const { TaskOutputTool } = await import("@sid-code/core/tool/task-output.ts");
     registerTask(makeShellTask("done", {
       status: "completed", notified: true, endTime: Date.now(),
       evictAfter: Date.now() + 1_000,
@@ -385,7 +385,7 @@ describe("task_output 访问续期不得复活已划掉的条目", () => {
   });
 
   test("续期按终态分档：killed 任务续的是 3s 档，不是 30s", async () => {
-    const { TaskOutputTool } = await import("../../src/tool/task-output.ts");
+    const { TaskOutputTool } = await import("@sid-code/core/tool/task-output.ts");
     registerTask(makeShellTask("k", {
       status: "killed", notified: true, endTime: Date.now(),
       evictAfter: Date.now() + 500,
@@ -404,7 +404,7 @@ describe("task_output 访问续期不得复活已划掉的条目", () => {
 
 describe("state-bridge 走 isPanelVisible（面板唯一入口）", () => {
   test("划掉的条目不进 TUI 快照 tasks[]", async () => {
-    const { StateBridge } = await import("../../src/ui/state-bridge.ts");
+    const { StateBridge } = await import("@sid-code/cli/ui/state-bridge.ts");
     registerTask(makeCompletedTask("done"));
     registerTask(makeShellTask("live", { status: "running" }));
 

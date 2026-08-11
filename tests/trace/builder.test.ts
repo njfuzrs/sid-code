@@ -8,7 +8,7 @@ import {
   buildTrajectory,
   type RequestResponsePair,
   type TraceMetadata,
-} from "../../src/trace/builder.ts";
+} from "@sid-code/core/trace/builder.ts";
 
 // ─── 测试辅助函数 ───
 

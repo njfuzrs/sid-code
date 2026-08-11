@@ -3,14 +3,14 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { Registry } from "../../src/tool/registry.ts";
-import { SubAgent, resolveSubAgentMaxTurns } from "../../src/agent/sub-agent.ts";
-import { SubAgentTool } from "../../src/agent/tool.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import { SubAgent, resolveSubAgentMaxTurns } from "@sid-code/core/agent/sub-agent.ts";
+import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
 // 同 tests/tool/registry.test.ts：Registry 接受的是 LegacyTool 形态。
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { ProviderRegistry } from "../../src/llm/registry.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "@sid-code/core/tool/types.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** Mock 工具 */
 class MockTool implements Tool {

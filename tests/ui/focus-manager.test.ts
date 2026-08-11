@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   FocusManager,
   type FocusableElement,
-} from "../../src/ui/focus/focus-manager.ts";
+} from "@sid-code/cli/ui/focus/focus-manager.ts";
 
 function elem(id: string, log?: string[]): FocusableElement {
   return {

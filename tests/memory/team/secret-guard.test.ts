@@ -6,8 +6,8 @@
 
 import { describe, test, expect } from "bun:test";
 import { join } from "path";
-import { checkTeamMemSecrets } from "../../../src/memory/team/secret-guard.ts";
-import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
+import { checkTeamMemSecrets } from "@sid-code/core/memory/team/secret-guard.ts";
+import { getTeamMemPath } from "@sid-code/core/memory/team/paths.ts";
 
 const cwd = process.cwd();
 const teamFile = join(getTeamMemPath(cwd), "patterns.md");

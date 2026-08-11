@@ -11,9 +11,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { PlanModeManager } from "../../src/plan/state.ts";
-import { defaultConfig } from "../../src/config/config.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 
 function buildChecker(opts: {
   planMode?: boolean;

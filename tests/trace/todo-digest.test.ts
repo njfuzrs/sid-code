@@ -15,7 +15,7 @@
  *  5. 停滞深度要排除埋点里代表 Infinity 的 -1（否则最大值算成 -1）
  */
 import { describe, it, expect } from "bun:test";
-import { aggregateTodoStats } from "../../src/trace/digest.ts";
+import { aggregateTodoStats } from "@sid-code/core/trace/digest.ts";
 
 type Ev = { event?: string; data?: Record<string, unknown> };
 

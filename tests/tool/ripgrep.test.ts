@@ -10,7 +10,7 @@ import {
   RipgrepTimeoutError,
   resolveRgCommand,
   __resetRgCommandCacheForTest,
-} from "../../src/tool/ripgrep.ts";
+} from "@sid-code/core/tool/ripgrep.ts";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 

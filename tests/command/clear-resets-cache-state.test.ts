@@ -15,9 +15,9 @@ import {
   recordCacheBreak,
   getRecentCacheBreaks,
   checkResponseForCacheBreak,
-} from "../../src/api/cache-detection.ts";
-import { resetCircuitBreaker } from "../../src/query/auto-compact.ts";
-import { AutoCompactCircuitBreaker } from "../../src/query/circuit-breaker.ts";
+} from "@sid-code/core/api/cache-detection.ts";
+import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
+import { AutoCompactCircuitBreaker } from "@sid-code/core/query/circuit-breaker.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

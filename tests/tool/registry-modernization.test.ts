@@ -8,10 +8,10 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import { Registry } from "../../src/tool/registry.ts";
-import type { LegacyTool } from "../../src/tool/types.ts";
-import { buildTool } from "../../src/tool/types.ts";
-import { toLegacyTool } from "../../src/tool/bridge.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
+import { buildTool } from "@sid-code/core/tool/types.ts";
+import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
 
 function mkTool(name: string, extra: Partial<LegacyTool> = {}): LegacyTool {
   return {

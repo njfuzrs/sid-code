@@ -6,9 +6,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import statuslineCmd from "../../src/command/commands/statusline/index.ts";
-import type { CommandContext, LocalCommandModule } from "../../src/command/types.ts";
-import type { StatusLineConfig } from "../../src/ui/statusline/run-statusline.ts";
+import statuslineCmd from "@sid-code/cli/command/commands/statusline/index.ts";
+import type { CommandContext, LocalCommandModule } from "@sid-code/cli/command/types.ts";
+import type { StatusLineConfig } from "@sid-code/cli/ui/statusline/run-statusline.ts";
 
 /** 加载命令实现模块（延迟加载入口 → 实际 handler）。 */
 async function loadHandler(): Promise<LocalCommandModule> {

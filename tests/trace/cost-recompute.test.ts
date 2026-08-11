@@ -17,7 +17,7 @@ import {
   recomputeCostFromEvents,
   backfillTrajCost,
   readTrajCost,
-} from "../../src/trace/cost-recompute.ts";
+} from "@sid-code/core/trace/cost-recompute.ts";
 
 let tmpRoot: string;
 let sessionDir: string;

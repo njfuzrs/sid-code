@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Manager } from "../../src/context/manager.ts";
-import { LoopDetector } from "../../src/agent/loop-detection.ts";
+import { Manager } from "@sid-code/core/context/manager.ts";
+import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
 
 describe("findCompressSplitPoint", () => {
   test("在 user 消息处分割", () => {

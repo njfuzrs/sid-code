@@ -42,10 +42,10 @@ const probeTmp = mkdtempSync(join(tmpdir(), "cache-trust-probe-"));
 process.env.SID_CODE_USAGE_LEDGER = join(probeTmp, "usage-ledger.jsonl");
 process.env.SID_CODE_CACHE_BREAKS = join(probeTmp, "cache-breaks.jsonl");
 
-const { loadConfig } = await import("../src/config/config.ts");
-const { channelTrustPath } = await import("../src/telemetry/channel-trust.ts");
-type ChannelTrustVerdict = import("../src/telemetry/channel-trust.ts").ChannelTrustVerdict;
-type ChannelTrustRegistry = import("../src/telemetry/channel-trust.ts").ChannelTrustRegistry;
+const { loadConfig } = await import("@sid-code/core/config/config.ts");
+const { channelTrustPath } = await import("@sid-code/core/telemetry/channel-trust.ts");
+type ChannelTrustVerdict = import("@sid-code/core/telemetry/channel-trust.ts").ChannelTrustVerdict;
+type ChannelTrustRegistry = import("@sid-code/core/telemetry/channel-trust.ts").ChannelTrustRegistry;
 
 // ─── 成本护栏 ───
 
@@ -149,7 +149,7 @@ async function main(): Promise<void> {
   const provider = mc.provider ?? config.provider ?? "openai";
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const { runProbe } = await import("../src/telemetry/cache-trust-probe-core.ts");
+  const { runProbe } = await import("@sid-code/core/telemetry/cache-trust-probe-core.ts");
   const result = await runProbe({
     config,
     modelConfig: mc,

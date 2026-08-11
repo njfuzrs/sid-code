@@ -15,8 +15,8 @@ import {
   askUserQuestion,
   hasAskUserQuestionHandler,
   parseAskTimeoutMs,
-} from "../../src/tool/ask-user-question-bridge.ts";
-import { AskUserQuestionTool } from "../../src/tool/ask-user-question.ts";
+} from "@sid-code/core/tool/ask-user-question-bridge.ts";
+import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
 
 describe("ask-user-question-bridge", () => {
   beforeEach(() => {

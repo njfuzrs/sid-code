@@ -21,6 +21,10 @@
     // @types/bun/index.d.ts 内部就是 `/// <reference types="bun-types" />`，等价且稳定。
     "types": ["bun"]
   },
-  "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["node_modules", "internal", "cmd"]
+  // P2-2 分包：源码从 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
+  // 仍是**单个根 tsconfig 检查全仓**（不给每个包配独立 tsconfig + project references）——
+  // 4 个包共 1 个编译单元，Bun 下包不是编译单元，拆 tsconfig 只增加维护面。
+  // eval-framework 有自己的 tsconfig，不在此列。
+  "include": ["packages/shared/**/*", "packages/tui-renderer/**/*", "packages/core/**/*", "packages/cli/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "internal", "cmd", "**/node_modules"]
 }

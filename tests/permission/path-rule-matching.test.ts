@@ -9,7 +9,7 @@ import {
   resolvePathRulePattern,
   matchPathRule,
   type PathRuleContext,
-} from "../../src/permission/path-rule-matching.ts";
+} from "@sid-code/core/permission/path-rule-matching.ts";
 
 const WS = "/Users/tester/project";
 const HOME = "/Users/tester";

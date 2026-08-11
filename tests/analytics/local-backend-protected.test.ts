@@ -20,9 +20,9 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalEventBackend } from "../../src/analytics/exporters/local.ts";
-import { PROTECTED_PREFIX } from "../../src/analytics/privacy.ts";
-import type { EventMetadata } from "../../src/analytics/index.ts";
+import { LocalEventBackend } from "@sid-code/core/analytics/exporters/local.ts";
+import { PROTECTED_PREFIX } from "@sid-code/core/analytics/privacy.ts";
+import type { EventMetadata } from "@sid-code/core/analytics/index.ts";
 
 const created: string[] = [];
 

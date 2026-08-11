@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { defaultConfig } from "../../src/config/config.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 
 describe("PermissionChecker", () => {
   test("危险命令被拦截", async () => {

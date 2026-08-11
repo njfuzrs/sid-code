@@ -16,7 +16,7 @@ import {
   toInternalUsage,
   usesResponsesAPI,
   type RoundResult,
-} from "../../src/telemetry/cache-bench-core.ts";
+} from "@sid-code/core/telemetry/cache-bench-core.ts";
 
 const r = (round: number, promptTotal: number, cacheHit: number, cacheWrite = 0): RoundResult => ({
   round,

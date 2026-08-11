@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { resolvePaths, listSessions } from "../src/trace/digest.ts";
+import { resolvePaths, listSessions } from "@sid-code/core/trace/digest.ts";
 
 /** 防线相关工具名（sub_agent 的 verify 类型单独看 tool_input） */
 const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);

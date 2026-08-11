@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { SessionMetricsCollector } from "../../src/debug/session-metrics.ts";
-import { HookSystem } from "../../src/hook/system.ts";
+import { SessionMetricsCollector } from "@sid-code/core/debug/session-metrics.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
 
 // ============================================================
 // registerHooks — Hook 驱动指标采集

@@ -12,7 +12,7 @@ import {
   clearStatusLineCache,
   STATUSLINE_THROTTLE_MS,
   type StatusLineSessionData,
-} from "../../src/ui/statusline/run-statusline.ts";
+} from "@sid-code/cli/ui/statusline/run-statusline.ts";
 
 const DATA: StatusLineSessionData = {
   cwd: "/tmp/proj",

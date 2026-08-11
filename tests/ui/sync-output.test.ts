@@ -3,7 +3,7 @@ import {
   compareVersions,
   isSynchronizedOutputSupported,
   type SyncOutputEnv,
-} from "../../src/ui/utils/sync-output.ts";
+} from "@sid-code/cli/ui/utils/sync-output.ts";
 
 describe("compareVersions", () => {
   test("基本大小比较", () => {

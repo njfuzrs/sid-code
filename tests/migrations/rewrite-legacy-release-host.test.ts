@@ -38,7 +38,7 @@ function readSettings(): any {
 
 /** 每个用例独立 import，避免 settings 模块内缓存跨用例串味 */
 async function runMigrate(): Promise<void> {
-  const mod = await import("../../src/migrations/rewrite-legacy-release-host.ts");
+  const mod = await import("@sid-code/core/migrations/rewrite-legacy-release-host.ts");
   mod.migrate();
 }
 
@@ -185,7 +185,7 @@ describe("迁移 v3：runner 水位线", () => {
   test("runMigrations 跑完后 v3 已登记，用户改回旧 IP 不会被再次改写", async () => {
     writeSettings({ search: { searxngUrl: `${LEGACY_IP}/searxng` } });
 
-    const { runMigrations } = await import("../../src/migrations/runner.ts");
+    const { runMigrations } = await import("@sid-code/core/migrations/runner.ts");
     runMigrations();
     expect(readSettings().search.searxngUrl).toBe(`${NEW_ORIGIN}/searxng`);
 

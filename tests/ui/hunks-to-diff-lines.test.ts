@@ -8,8 +8,8 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { hunksToDiffLines } from "../../src/ui/components/DiffRenderer.tsx";
-import { buildStructuredPatch } from "../../src/tool/diff-output.ts";
+import { hunksToDiffLines } from "@sid-code/cli/ui/components/DiffRenderer.tsx";
+import { buildStructuredPatch } from "@sid-code/core/tool/diff-output.ts";
 
 describe("hunksToDiffLines", () => {
   test("修改场景:hunk 行 + add/del/context 类型与行号正确", () => {

@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildPlanModePrompt, buildPlanModeReminder } from "../../src/plan/prompt.ts";
+import { buildPlanModePrompt, buildPlanModeReminder } from "@sid-code/core/plan/prompt.ts";
 
 describe("buildPlanModePrompt — 阶段 5 失败处理段（W12.D2）", () => {
   test("planExists=false 时含阶段 5 + 失败处理关键词", () => {

@@ -12,8 +12,8 @@ import {
   restoreWorktreeSession,
   sessionConfigPath,
   removeSessionConfig,
-} from "../../src/worktree/persistence.ts";
-import type { WorktreeSession } from "../../src/worktree/types.ts";
+} from "@sid-code/core/worktree/persistence.ts";
+import type { WorktreeSession } from "@sid-code/core/worktree/types.ts";
 
 let root: string;
 

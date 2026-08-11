@@ -13,10 +13,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { Registry } from "../../src/tool/registry.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { Message, SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { Message, SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /**
  * 每轮记录收到的完整消息序列，跑满 N 轮后 end_turn。
@@ -249,8 +249,8 @@ describe("drainInbox 容错与向后兼容", () => {
 
 describe("drainInbox 与主代理消息队列并列消费", () => {
   test("两条通道同轮各自注入，互不吞掉（前缀区分来源）", async () => {
-    const { injectMessageToAgent } = await import("../../src/agent/message-queue.ts");
-    const { createAgentTask } = await import("../../src/task/agent-task.ts");
+    const { injectMessageToAgent } = await import("@sid-code/core/agent/message-queue.ts");
+    const { createAgentTask } = await import("@sid-code/core/task/agent-task.ts");
 
     // 预创建 task，拿到 taskId 后往主代理消息队列投一条
     const created = createAgentTask({

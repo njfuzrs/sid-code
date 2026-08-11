@@ -16,8 +16,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { ContentBlock } from "../../src/llm/types.ts";
-import { executeTools, type ToolExecutorDeps } from "../../src/query/tool-executor.ts";
+import type { ContentBlock } from "@sid-code/core/llm/types.ts";
+import { executeTools, type ToolExecutorDeps } from "@sid-code/core/query/tool-executor.ts";
 
 /**
  * 模拟 ctxMgr 仅用于记录 addMessage 序列

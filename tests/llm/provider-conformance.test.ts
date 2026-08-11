@@ -9,11 +9,11 @@
  */
 
 import { describe, expect, test, beforeEach } from "bun:test";
-import { __resetCapabilityCacheForTest } from "../../src/llm/model-capabilities.ts";
-import { guardedStream } from "../../src/llm/stream-guard.ts";
-import { filterParamsForModel } from "../../src/llm/model-capability-filter.ts";
-import { lookupCatalog } from "../../src/llm/model-params-catalog.ts";
-import { resolveEffortCapability } from "../../src/llm/effort.ts";
+import { __resetCapabilityCacheForTest } from "@sid-code/core/llm/model-capabilities.ts";
+import { guardedStream } from "@sid-code/core/llm/stream-guard.ts";
+import { filterParamsForModel } from "@sid-code/core/llm/model-capability-filter.ts";
+import { lookupCatalog } from "@sid-code/core/llm/model-params-catalog.ts";
+import { resolveEffortCapability } from "@sid-code/core/llm/effort.ts";
 
 // ─── stream-guard.ts 测试 ───────────────────────────────────────────────
 

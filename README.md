@@ -46,9 +46,9 @@ $ sc
 › 这个模块的超时配置不生效，查一下为什么
 
   搜索 timeout 相关实现…
-  读取 src/tool/bash.ts:55-80
+  读取 packages/core/src/tool/bash.ts:55-80
   定位到：parseEnv 读了环境变量但没传给 spawn 的 timeout 参数
-  修改 src/tool/bash.ts
+  修改 packages/core/src/tool/bash.ts
   运行 bun test tests/tool/bash.test.ts  → 12 pass 0 fail
 
   超时没生效的原因是 parseEnv 的返回值没接到 spawn 上。已修复并跑过单测。
@@ -74,19 +74,22 @@ $ sc
 
 | 项 | 现状 |
 | --- | --- |
-| 自研代码 | `src/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
+| 自研代码 | `packages/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
 | 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
 | 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
 
 <!--
   数字口径（发版前人工核对一次，写约数不写精确值）：
-    代码行数    find src -name '*.ts' -o -name '*.tsx' | grep -v '/ink/' | xargs wc -l
-                （2026-08-10 实测 203,178 行，不含 vendor 进来的 ink fork）
-    测试文件    find tests src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 641）
-    单测用例    grep -rhoE '\b(it|test)\(' tests src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                （实测 8,562）
-    Hook 事件   src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
+    ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
+       下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 —— 复核命令静默失效比数字过期更糟，
+       因为下一个人会以为自己核对过了。ink fork 现在自成一包，用排包代替原先的 grep -v '/ink/'。
+    代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
+                （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer）
+    测试文件    find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 642）
+    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                （实测 8,569）
+    Hook 事件   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
     内置工具    sid-code --dump-tools 数组长度（实测 44，与脚本生成的 ref/tools.md 同源同值。
                 ⚠️ 此处曾写"60+"，与运行时真值不符 —— website/index.md 早已改对而本文漏改，
                 2026-08-10 补齐。写数字前先跑命令，别照抄旧值）
@@ -129,14 +132,14 @@ bun run website:build    # 构建（死链检测在此生效）
 本项目采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
 
 > ⚠️ **MIT 只覆盖我们自己的代码。** 一份许可证不可能授予我们本来就不持有的权利 ——
-> `src/ink/` 里属于 Anthropic 的增量表达不在授权范围内（下方详述），
+> `packages/tui-renderer/` 里属于 Anthropic 的增量表达不在授权范围内（下方详述），
 > `vendor/` 与 `node_modules` 的第三方资产各依其自身许可。
 > 换句话说：`LICENSE` 说明**我们的代码**你可以怎么用，[NOTICE](./NOTICE) 说明**别人的代码**在这里的来源与条款。两份都要读。
 
 第三方代码的来源、许可条款与我们所做的修改，完整记录在 [NOTICE](./NOTICE)。其中一条需要在这里
 直接点明，不藏在附录里：
 
-> **`src/ink/`（终端渲染底座，121 文件 / 23643 行）不是本项目原创。**
+> **`packages/tui-renderer/`（终端渲染底座，122 文件 / 23,760 行）不是本项目原创。**
 > 它 fork 自 MIT 许可的上游 [`ink`](https://github.com/vadimdemedes/ink)，但**引入途径是一份
 > Claude Code（Anthropic 闭源产品）的泄露源码快照** —— Anthropic 在 MIT 骨架之上的增量修改
 > 属于 Anthropic，**我们未获授权**。「上游是 MIT」只缩小范围、不消除问题：上游全部源码仅
@@ -144,7 +147,7 @@ bun run website:build    # 构建（死链检测在此生效）
 >
 > **我们无意侵犯任何人的版权，这部分代码正在被重构掉，工作进行中**（`yoga-layout` 换回
 > npm 包 → `termio/*` 按公开规范重写 → `screen.ts` / `selection.ts` clean-room 重写）。
-> 详见 [NOTICE](./NOTICE) 第 1 节与 [`src/ink/README.md`](./src/ink/README.md)。
+> 详见 [NOTICE](./NOTICE) 第 1 节与 [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md)。
 > 如果权利人要求移除相关代码，我们会配合处理。
 
-上文「自研代码 20 万行以上」的口径**已排除 `src/ink/`** —— 我们不把这部分算作自研。
+上文「自研代码 20 万行以上」的口径**已排除 `packages/tui-renderer/`** —— 我们不把这部分算作自研。

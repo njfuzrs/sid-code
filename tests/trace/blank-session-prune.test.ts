@@ -16,7 +16,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCollector } from "../../src/trace/collector.ts";
+import { TraceCollector } from "@sid-code/core/trace/collector.ts";
 
 let root: string;
 let sessionsDir: string;

@@ -20,7 +20,7 @@ import {
   clearQueue,
   __resetForTest,
   type CommandKind,
-} from "../../src/query/message-queue-manager.ts";
+} from "@sid-code/core/query/message-queue-manager.ts";
 
 function enq(priority: "now" | "next" | "later", payload: string, kind: CommandKind = "user-input") {
   return enqueueCommand({ priority, kind, payload });

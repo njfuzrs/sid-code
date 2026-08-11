@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { resolveEnvVars } from "../../src/config/env-interpolation.ts";
+import { resolveEnvVars } from "@sid-code/core/config/env-interpolation.ts";
 
 describe("Environment Variable Interpolation", () => {
   const testEnv = {

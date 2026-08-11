@@ -9,7 +9,7 @@ import {
   unflattenSlug,
   branchNameForSlug,
   MAX_SLUG_LENGTH,
-} from "../../src/worktree/slug.ts";
+} from "@sid-code/core/worktree/slug.ts";
 
 describe("validateWorktreeSlug", () => {
   it("接受合法 slug", () => {

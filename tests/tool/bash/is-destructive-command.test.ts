@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { isDestructiveCommand } from "../../../src/tool/bash/read-only-validation.ts";
+import { isDestructiveCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
 
 describe("isDestructiveCommand（破坏性命令判定，驱动权限框标红 + 安全默认）", () => {
   test("递归删除根 / 家目录 → 危险", () => {

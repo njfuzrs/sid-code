@@ -16,7 +16,7 @@ import {
   setWireModelAliases,
   lookupWireModelAlias,
   resetWireModelAliases,
-} from "../../src/llm/wire-model.ts";
+} from "@sid-code/core/llm/wire-model.ts";
 
 const DUAL_CHANNEL = [
   { name: "claude-sonnet-5-gateway", modelId: "claude-sonnet-5" },

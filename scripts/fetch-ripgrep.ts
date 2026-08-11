@@ -2,7 +2,7 @@
 /**
  * fetch-ripgrep.ts — 构建时准备预编译 ripgrep 二进制到 vendor/
  *
- * 只在**构建时**运行；运行时二进制已嵌入产物、不联网（见 src/tool/rg-embedded.ts）。
+ * 只在**构建时**运行；运行时二进制已嵌入产物、不联网（见 packages/core/src/tool/rg-embedded.ts）。
  *
  * 查找优先级（每个平台独立判断）：
  *   1. 仓库内规范路径 vendor/ripgrep/<version>/rg-<platform>（已 git 提交，随 clone 直接可用）——

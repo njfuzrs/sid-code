@@ -11,9 +11,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BashTool, resolveTimeoutBounds } from "../../src/tool/bash.ts";
-import { interpretExitCode } from "../../src/tool/bash/command-semantics.ts";
-import { getCwd, setCwd } from "../../src/bootstrap/state.ts";
+import { BashTool, resolveTimeoutBounds } from "@sid-code/core/tool/bash.ts";
+import { interpretExitCode } from "@sid-code/core/tool/bash/command-semantics.ts";
+import { getCwd, setCwd } from "@sid-code/core/bootstrap/state.ts";
 
 let originalGlobalCwd: string;
 
@@ -204,7 +204,7 @@ describe("缺口6: 预先取消的 signal 守卫", () => {
 describe("缺口3-补: run_in_background(Task系统) 进程树清理", () => {
   it("killShellTask 清理 detached 后台任务的整棵进程树", async () => {
     if (process.platform === "win32") return;
-    const { spawnShellTask, killShellTask } = await import("../../src/task/shell-task.ts");
+    const { spawnShellTask, killShellTask } = await import("@sid-code/core/task/shell-task.ts");
     // 启动后台任务：父 shell 派生 sleep 子进程并打印其 PID
     const task = spawnShellTask({
       command: "sleep 30 & echo GRANDCHILD=$! > /tmp/sid-test-gc.txt; wait",
@@ -239,7 +239,7 @@ describe("缺口3-补: run_in_background(Task系统) 进程树清理", () => {
 // P2-10：is_background 与 run_in_background 统一走 Task 系统（返回 task_id，非旧 PID 格式）
 describe("P2-10: is_background 统一到 Task 系统", () => {
   it("run_in_background 返回 task_id", async () => {
-    const { clearAllTasks } = await import("../../src/task/index.ts");
+    const { clearAllTasks } = await import("@sid-code/core/task/index.ts");
     const bash = new BashTool();
     const result = await bash.execute({ command: "echo hi", run_in_background: true });
     const parsed = JSON.parse(result.output);
@@ -249,7 +249,7 @@ describe("P2-10: is_background 统一到 Task 系统", () => {
   });
 
   it("is_background（旧通道）也返回 task_id，不再是旧 PID 格式", async () => {
-    const { clearAllTasks } = await import("../../src/task/index.ts");
+    const { clearAllTasks } = await import("@sid-code/core/task/index.ts");
     const bash = new BashTool();
     const result = await bash.execute({ command: "echo hi", is_background: true });
     // 修复前 is_background 走 executeBackground → 返回 "命令已在后台运行 (PID: ...)"（非 JSON）

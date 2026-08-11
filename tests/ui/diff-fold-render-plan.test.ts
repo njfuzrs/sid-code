@@ -12,7 +12,7 @@ import { test, expect, describe } from "bun:test";
 import {
   foldRenderPlan,
   type DiffRenderPlanItem,
-} from "../../src/ui/components/DiffRenderer.tsx";
+} from "@sid-code/cli/ui/components/DiffRenderer.tsx";
 
 /** 造 N 个 line 计划项 */
 function lines(n: number): DiffRenderPlanItem[] {

@@ -10,13 +10,13 @@ import {
   ConditionalSkillStore,
   matchGlob,
   globToRegExp,
-} from "../../src/skill/conditional.ts";
+} from "@sid-code/core/skill/conditional.ts";
 import {
   extractAffectedPaths,
   discoverSkillDirsForPaths,
   DynamicSkillDiscovery,
-} from "../../src/skill/dynamic-discovery.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+} from "@sid-code/core/skill/dynamic-discovery.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(name: string, paths?: string[]): SkillDefinition {
   return {

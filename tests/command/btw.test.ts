@@ -6,9 +6,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import btwDef from "../../src/command/commands/btw/index.ts";
-import type { LocalCommand, LocalCommandModule } from "../../src/command/types.ts";
-import type { Message } from "../../src/llm/types.ts";
+import btwDef from "@sid-code/cli/command/commands/btw/index.ts";
+import type { LocalCommand, LocalCommandModule } from "@sid-code/cli/command/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 构造一个返回脚本化事件序列的 mock provider */
 function mockProvider(scripts: any[][]) {

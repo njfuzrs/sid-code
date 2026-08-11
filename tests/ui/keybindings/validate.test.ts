@@ -12,14 +12,14 @@ import {
   validateUserBindings,
   formatStroke,
   type BindingIssue,
-} from "../../../src/ui/keybindings/validate.ts";
+} from "@sid-code/cli/ui/keybindings/validate.ts";
 import {
   isReservedStroke,
   strokeSignature,
-} from "../../../src/ui/keybindings/reservedShortcuts.ts";
-import { mergeBindings } from "../../../src/ui/keybindings/loadUserBindings.ts";
-import { DEFAULT_BINDINGS, matchBinding, type KeyBinding } from "../../../src/ui/keybindings/defaultBindings.ts";
-import type { Key } from "../../../src/ui/contexts/KeypressContext.tsx";
+} from "@sid-code/cli/ui/keybindings/reservedShortcuts.ts";
+import { mergeBindings } from "@sid-code/cli/ui/keybindings/loadUserBindings.ts";
+import { DEFAULT_BINDINGS, matchBinding, type KeyBinding } from "@sid-code/cli/ui/keybindings/defaultBindings.ts";
+import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 function key(name: string, mods: Partial<Key> = {}): Key {
   return {

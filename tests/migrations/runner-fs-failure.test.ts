@@ -50,7 +50,7 @@ describe("runMigrations 失败不阻塞（建议2 门禁）", () => {
     chmodSync(STATE_DIR, 0o500);
 
     // 动态 import 确保拿到改后的代码
-    const { runMigrations } = await import("../../src/migrations/runner.ts");
+    const { runMigrations } = await import("@sid-code/core/migrations/runner.ts");
 
     // runMigrations 应内部自兜（setStoredMigrationVersion 包了 try/catch），
     // 不抛异常、不 exit(1)
@@ -59,7 +59,7 @@ describe("runMigrations 失败不阻塞（建议2 门禁）", () => {
 
   test("正常路径迁移后版本号正确写入", async () => {
     // 对照组：不注入 fs 失败，验证迁移正常完成
-    const { runMigrations, getTotalMigrations } = await import("../../src/migrations/runner.ts");
+    const { runMigrations, getTotalMigrations } = await import("@sid-code/core/migrations/runner.ts");
     runMigrations();
 
     // 版本号应已更新为 CURRENT_VERSION。

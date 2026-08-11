@@ -16,15 +16,15 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ModelAvailabilityService } from "../../src/llm/availability.ts";
-import { RequestAbortedError, RetryableError } from "../../src/llm/errors.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
+import { RequestAbortedError, RetryableError } from "@sid-code/core/llm/errors.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
+import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
 import {
   createStreamLifecycle,
-} from "../../src/llm/stream-lifecycle.ts";
+} from "@sid-code/core/llm/stream-lifecycle.ts";
 
 // ─── 辅助工具 ───
 

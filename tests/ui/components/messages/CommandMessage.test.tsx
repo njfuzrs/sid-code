@@ -4,12 +4,12 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../../src/ink/_vendor/testing.tsx";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
 import {
   CommandMessage,
   isBashCommand,
   extractBashCommand,
-} from "../../../../src/ui/components/messages/CommandMessage.tsx";
+} from "@sid-code/cli/ui/components/messages/CommandMessage.tsx";
 
 describe("CM2 — isBashCommand / extractBashCommand", () => {
   test("识别 /bash 前缀命令", () => {

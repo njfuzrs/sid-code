@@ -3,11 +3,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Registry } from "../../src/tool/registry.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
 // Registry 消费的是 LegacyTool（`name()` 方法形态 + `{ output }` 结果），
 // 不是新版泛型 Tool（`readonly name` 字段 + `{ data }` 结果）。mock 必须按 registry
 // 实际接受的接口写，否则 register() 传参处会类型不兼容。
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../src/tool/types.ts";
+import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "@sid-code/core/tool/types.ts";
 
 /** 测试用的 mock 工具 */
 class MockTool implements Tool {

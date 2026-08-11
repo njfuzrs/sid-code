@@ -2,7 +2,7 @@
 /**
  * loop-stats-probe —— 循环检测利弊·真实轨迹量化脚本（一次性调研用）
  *
- * 背景：sid-code 有两个循环检测器（默认全局关闭，见 src/agent/loop-detection.ts）：
+ * 背景：sid-code 有两个循环检测器（默认全局关闭，见 packages/core/src/agent/loop-detection.ts）：
  *   - ToolCallLoopDetector：只抓「完全相同」的连续重复调用（命令差一个字符就绕过）
  *   - ToolShapeLoopDetector：抓「同 shape」的反复探测；但对 bash 会退化——
  *     bash 的 command 值不进 shape key、又无 path/cwd 等 anchor 字段 → 所有 bash 调用
@@ -27,14 +27,14 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { resolvePaths, listSessions } from "../src/trace/digest.ts";
+import { resolvePaths, listSessions } from "@sid-code/core/trace/digest.ts";
 import {
   ToolShapeLoopDetector,
   ToolCallLoopDetector,
   DEFAULT_LOOP_CONFIG,
   EXEMPT_TOOLS,
-} from "../src/agent/loop-detection.ts";
-import { isReadOnlyCommand } from "../src/tool/bash/read-only-validation.ts";
+} from "@sid-code/core/agent/loop-detection.ts";
+import { isReadOnlyCommand } from "@sid-code/core/tool/bash/read-only-validation.ts";
 
 // ─────────────────────────── 数据结构 ───────────────────────────
 

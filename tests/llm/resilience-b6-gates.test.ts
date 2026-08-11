@@ -19,10 +19,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ModelAvailabilityService, MAX_COOLDOWN_WAIT_MS, MIN_COOLDOWN_MS } from "../../src/llm/availability.ts";
-import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { ModelAvailabilityService, MAX_COOLDOWN_WAIT_MS, MIN_COOLDOWN_MS } from "@sid-code/core/llm/availability.ts";
+import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 // ═══════════════════════════════════════════════════════════════════
 // 夹具

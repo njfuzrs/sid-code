@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SessionStore } from "../../src/session/store.ts";
-import { parseSessionJsonl, currentProjectSessionDir } from "../../src/session/store.ts";
-import type { SessionData } from "../../src/session/store.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import { parseSessionJsonl, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
+import type { SessionData } from "@sid-code/core/session/store.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";

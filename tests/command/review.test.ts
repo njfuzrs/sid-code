@@ -11,9 +11,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SKILL_FILE = join(__dirname, "..", "..", "src", "skill", "builtin", "code-review", "SKILL.md");
-const REVIEW_TS = join(__dirname, "..", "..", "src", "command", "review.ts");
-const BOOTSTRAP_TS = join(__dirname, "..", "..", "src", "entrypoints", "bootstrap.ts");
+const SKILL_FILE = join(__dirname, "..", "..", "packages", "core", "src", "skill", "builtin", "code-review", "SKILL.md");
+const REVIEW_TS = join(__dirname, "..", "..", "packages", "cli", "src", "command", "review.ts");
+const BOOTSTRAP_TS = join(__dirname, "..", "..", "packages", "cli", "src", "entrypoints", "bootstrap.ts");
 
 describe("sid-code review 子命令 - 文件契约", () => {
   test("src/command/review.ts 存在", () => {
@@ -21,7 +21,7 @@ describe("sid-code review 子命令 - 文件契约", () => {
   });
 
   test("review.ts 导出 handleReviewCommand", async () => {
-    const mod = await import("../../src/command/review.ts");
+    const mod = await import("@sid-code/cli/command/review.ts");
     expect(typeof mod.handleReviewCommand).toBe("function");
   });
 

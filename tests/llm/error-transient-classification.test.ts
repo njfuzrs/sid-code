@@ -18,12 +18,12 @@ import {
   isTransientErrorCode,
   inferErrorCode,
   ERROR_USER_MESSAGES,
-} from "../../src/llm/error-messages.ts";
+} from "@sid-code/core/llm/error-messages.ts";
 import type {
   TerminalReason,
   RetryableReason,
   StreamValidationReason,
-} from "../../src/llm/errors.ts";
+} from "@sid-code/core/llm/errors.ts";
 
 // ── 与 errors.ts 的枚举对账用的字面量清单 ──
 // 手写而非从类型反射（TS 类型在运行时不存在）。errors.ts 增删枚举成员时，

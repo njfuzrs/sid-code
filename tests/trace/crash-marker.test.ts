@@ -11,8 +11,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
-import * as CrashMarker from "../../src/trace/crash-marker.ts";
-import { getSidHome } from "../../src/config/paths.ts";
+import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
+import { getSidHome } from "@sid-code/core/config/paths.ts";
 
 const TEST_SESSION_ID = `test-crash-${Date.now()}`;
 // 从 getSidHome() 派生而非硬编码 join(homedir(), ".sid-code")：

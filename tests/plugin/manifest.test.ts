@@ -2,8 +2,8 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { loadManifest, loadPluginFromDirectory } from "../../src/plugin/manifest.ts";
-import type { PluginError } from "../../src/plugin/types.ts";
+import { loadManifest, loadPluginFromDirectory } from "@sid-code/cli/plugin/manifest.ts";
+import type { PluginError } from "@sid-code/cli/plugin/types.ts";
 
 let tmpDirs: string[] = [];
 

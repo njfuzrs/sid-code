@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { computeStreamSplit } from "../../src/ui/components/StreamingMarkdown.tsx";
+import { computeStreamSplit } from "@sid-code/cli/ui/components/StreamingMarkdown.tsx";
 
 describe("computeStreamSplit（流式稳定前缀切分）", () => {
   test("空串 → 全空", () => {

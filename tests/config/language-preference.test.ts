@@ -19,7 +19,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildSystemPrompt, clearPromptCache } from "../../src/config/system-prompt.ts";
+import { buildSystemPrompt, clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
 import {
   LANGUAGE_PREFS,
   describeLanguagePref,
@@ -30,7 +30,7 @@ import {
   resolveEffectiveLanguage,
   resolveLanguageFromEnv,
   stripInternalEnTags,
-} from "../../src/config/prompt-lang.ts";
+} from "@sid-code/core/config/prompt-lang.ts";
 
 /** 一个声明了 reasoningLanguageDrift 的模型，用于触发「铁律级」措辞分支 */
 const DRIFT_MODEL = "deepseek-v4-pro";

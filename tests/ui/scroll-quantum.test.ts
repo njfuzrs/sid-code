@@ -8,7 +8,7 @@ import {
   OVERSCAN_ROWS,
   SCROLL_QUANTUM,
   SLIDE_STEP,
-} from "../../src/ui/utils/scroll-quantum.ts";
+} from "@sid-code/cli/ui/utils/scroll-quantum.ts";
 
 describe("常量自洽", () => {
   test("SCROLL_QUANTUM 为 OVERSCAN 一半,保证量化误差落在 overscan 内", () => {

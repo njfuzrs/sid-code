@@ -16,8 +16,8 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { tmpdir } from "os";
-import { filterGitignored, LSPTool } from "../../src/tool/lsp.ts";
-import { initializeLSP, resetLSPForTest, getLSPInitState } from "../../src/lsp/manager.ts";
+import { filterGitignored, LSPTool } from "@sid-code/core/tool/lsp.ts";
+import { initializeLSP, resetLSPForTest, getLSPInitState } from "@sid-code/core/lsp/manager.ts";
 
 /** git 是否可用（不可用则跳过依赖 git 的用例，而非整体失败） */
 let hasGit = false;

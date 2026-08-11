@@ -14,7 +14,10 @@ on:
   pull_request:
     branches: [master]
     paths:
-      - "src/**"
+      # P2-2 分包：源码从 src/ 搬到 packages/*/src/。这里必须跟着改 ——
+      # 仍写 "src/**" 会永远匹配不到，于是这道 smoke 门禁**静默不再触发**：
+      # PR CI 一直显示绿（skipped 也算通过），比没有门禁更危险。
+      - "packages/**"
       - "evals/**"
       - "scripts/eval/**"
       - ".github/workflows/eval-pr-smoke.yml"

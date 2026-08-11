@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { mergeInstructions } from "../../../src/query/compact/merge-instructions.ts";
+import { mergeInstructions } from "@sid-code/core/query/compact/merge-instructions.ts";
 
 describe("mergeInstructions", () => {
   test("全空返回 undefined", () => {

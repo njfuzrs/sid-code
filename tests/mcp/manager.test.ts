@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { MCPManager } from "../../src/mcp/manager.ts";
-import { MCPConnectionStatus } from "../../src/mcp/types.ts";
-import type { MCPServerConfig } from "../../src/config/config.ts";
+import { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import { MCPConnectionStatus } from "@sid-code/core/mcp/types.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 describe("MCPManager", () => {
   test("connectAll 过滤 enabled === false 的服务器", async () => {

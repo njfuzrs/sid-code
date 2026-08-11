@@ -13,7 +13,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { routeToolProgress, type ToolProgressRouteInput } from "../../src/ui/tool-progress-route.ts";
+import { routeToolProgress, type ToolProgressRouteInput } from "@sid-code/cli/ui/tool-progress-route.ts";
 
 /** TUI 就绪（两个 sink 都在）的默认场景 */
 function input(over: Partial<ToolProgressRouteInput> = {}): ToolProgressRouteInput {

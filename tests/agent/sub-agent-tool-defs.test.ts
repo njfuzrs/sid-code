@@ -11,15 +11,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { Registry } from "../../src/tool/registry.ts";
-import type { LegacyTool, LegacyToolResult } from "../../src/tool/types.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { LegacyTool, LegacyToolResult } from "@sid-code/core/tool/types.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import {
   registerDynamicAgents,
   clearDynamicAgents,
-} from "../../src/agent/agent-definition.ts";
+} from "@sid-code/core/agent/agent-definition.ts";
 
 // ============================================================
 // Mock Provider（最小实现，仅满足 SubAgent 构造）

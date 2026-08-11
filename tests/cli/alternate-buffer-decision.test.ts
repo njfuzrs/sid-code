@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { resolveAlternateBufferDecision } from "../../src/cli.ts";
+import { resolveAlternateBufferDecision } from "@sid-code/cli/cli.ts";
 
 describe("resolveAlternateBufferDecision", () => {
   test("--inline 优先级最高，压过 --alternate-buffer 与 TERM_PROGRAM", () => {

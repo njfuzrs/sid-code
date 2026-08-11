@@ -13,11 +13,11 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
-import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../../src/tool/stateful-tools.ts";
-import { ReadTool } from "../../src/tool/read.ts";
-import { EditTool } from "../../src/tool/edit.ts";
-import { ReadManyTool } from "../../src/tool/read-many.ts";
+import { FileReadTracker } from "@sid-code/core/tool/file-read-tracker.ts";
+import { createStatefulTools, STATEFUL_TOOL_NAMES } from "@sid-code/core/tool/stateful-tools.ts";
+import { ReadTool } from "@sid-code/core/tool/read.ts";
+import { EditTool } from "@sid-code/core/tool/edit.ts";
+import { ReadManyTool } from "@sid-code/core/tool/read-many.ts";
 
 const tmpDirs: string[] = [];
 

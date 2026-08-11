@@ -12,8 +12,8 @@
  *   fallback —— fallback == 主模型时给出「零降级覆盖」告警（此前静默接受）。
  */
 import { describe, test, expect } from "bun:test";
-import mod from "../../src/command/commands/model/model.ts";
-import type { CommandContext } from "../../src/command/types.ts";
+import mod from "@sid-code/cli/command/commands/model/model.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 interface Calls {
   sub: Array<[string, string | undefined, boolean | undefined]>;

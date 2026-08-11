@@ -6,11 +6,11 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { SkillLoader } from "../../src/skill/loader.ts";
-import { SkillMetaTool } from "../../src/skill/meta-tool.ts";
-import { SkillManager } from "../../src/skill/manager.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+import { SkillLoader } from "@sid-code/core/skill/loader.ts";
+import { SkillMetaTool } from "@sid-code/core/skill/meta-tool.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 /** 构造只含指定 skills 的 manager（绕过磁盘扫描），与 meta-tool.test.ts 同口径 */
 function managerWith(skills: SkillDefinition[]): SkillManager {

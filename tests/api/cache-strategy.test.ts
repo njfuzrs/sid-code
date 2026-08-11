@@ -19,7 +19,7 @@ import {
   MAX_CACHE_BREAKPOINTS,
   type CacheableMessage,
   type CacheableTool,
-} from "../../src/api/cache-strategy.ts";
+} from "@sid-code/core/api/cache-strategy.ts";
 
 function msg(role: string, ...texts: string[]): CacheableMessage {
   return { role, content: texts.map((t) => ({ type: "text", text: t })) };

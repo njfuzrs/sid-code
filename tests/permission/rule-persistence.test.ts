@@ -6,8 +6,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { persistRule, removePersistedRule } from "../../src/permission/rule-persistence.ts";
-import { matchRule } from "../../src/permission/rules.ts";
+import { persistRule, removePersistedRule } from "@sid-code/core/permission/rule-persistence.ts";
+import { matchRule } from "@sid-code/core/permission/rules.ts";
 
 const dirs: string[] = [];
 function tmpWs(): string {

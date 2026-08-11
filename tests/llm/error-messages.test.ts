@@ -7,7 +7,7 @@ import {
   ERROR_USER_MESSAGES,
   inferErrorCode,
   lookupErrorMessage,
-} from "../../src/llm/error-messages.ts";
+} from "@sid-code/core/llm/error-messages.ts";
 
 describe("inferErrorCode", () => {
   test("空输入返回 undefined", () => {

@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { buildSystemPrompt, clearPromptCache, resolvePromptMaxTokens } from "../../src/config/system-prompt.ts";
+import { buildSystemPrompt, clearPromptCache, resolvePromptMaxTokens } from "@sid-code/core/config/system-prompt.ts";
 /**
  * 创建一个简单的测试工具。返回结构化对象（含 name()/description()/usageGuide()），
  * 不标注具体接口类型——buildSystemPrompt 只按结构消费 name/description/usageGuide，

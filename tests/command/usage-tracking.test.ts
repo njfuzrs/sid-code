@@ -13,7 +13,7 @@ import {
   getUsageScore,
   recordUsage,
   _resetUsageCache,
-} from "../../src/command/usage-tracking.ts";
+} from "@sid-code/cli/command/usage-tracking.ts";
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 

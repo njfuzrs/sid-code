@@ -13,7 +13,7 @@ import { join } from "path";
 import {
   checkDependencyConsistency,
   checkDatabaseUsage,
-} from "../../src/worktree/advisories.ts";
+} from "@sid-code/core/worktree/advisories.ts";
 
 let main: string;
 let wt: string;

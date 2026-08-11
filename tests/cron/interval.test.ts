@@ -6,7 +6,7 @@ import { describe, it, expect } from "bun:test";
 import {
   parseIntervalToSeconds,
   intervalToCron,
-} from "../../src/cron/interval.ts";
+} from "@sid-code/core/cron/interval.ts";
 
 describe("parseIntervalToSeconds", () => {
   it("纯数字按分钟", () => {

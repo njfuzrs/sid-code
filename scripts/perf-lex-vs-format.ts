@@ -1,4 +1,4 @@
-import { cachedLexer, formatTokenToAnsi } from "../src/ui/markdown.ts";
+import { cachedLexer, formatTokenToAnsi } from "@sid-code/cli/ui/markdown.ts";
 const TW = 100;
 function longText(blocks: number): string {
   const parts: string[] = [];

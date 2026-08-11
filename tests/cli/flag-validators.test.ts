@@ -7,8 +7,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { isValidUUID } from "../../src/cli.ts";
-import { EFFORT_LEVELS, isEffortLevel } from "../../src/llm/effort.ts";
+import { isValidUUID } from "@sid-code/cli/cli.ts";
+import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
 
 describe("isValidUUID（--session-id 校验）", () => {
   test("合法 UUID v4 → true", () => {

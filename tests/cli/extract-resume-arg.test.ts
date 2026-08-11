@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { extractResumeArg } from "../../src/cli.ts";
+import { extractResumeArg } from "@sid-code/cli/cli.ts";
 
 describe("extractResumeArg", () => {
   test("未出现 resume → present=false，rest 原样保留", () => {

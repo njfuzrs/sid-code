@@ -10,7 +10,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { pickSlowHint } from "../../../src/ui/constants/loading-phrases.ts";
+import { pickSlowHint } from "@sid-code/cli/ui/constants/loading-phrases.ts";
 
 describe("pickSlowHint — 慢提示阈值", () => {
   test("未达首档阈值 (silenceSec < 15) → null", () => {

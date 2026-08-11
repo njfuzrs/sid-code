@@ -22,7 +22,7 @@ import {
   renderHuman,
   aggregateJitStats,
   type DigestPaths,
-} from "../../src/trace/digest.ts";
+} from "@sid-code/core/trace/digest.ts";
 
 let root: string;
 let paths: DigestPaths;

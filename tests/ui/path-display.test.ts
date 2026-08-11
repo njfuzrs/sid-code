@@ -15,8 +15,8 @@ import {
   stripPathNoiseInText,
   fitPathToWidth,
   fitTextToWidth,
-} from "../../src/ui/utils/path-display.ts";
-import { stringWidth } from "../../src/ink/stringWidth.ts";
+} from "@sid-code/cli/ui/utils/path-display.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
 
 const CWD = "/Users/me/Code/person/sid-code";
 const HOME = "/Users/me";

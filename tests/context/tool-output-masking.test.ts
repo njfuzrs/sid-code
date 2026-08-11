@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ToolOutputMaskingService } from "../../src/context/tool-output-masking.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { ToolOutputMaskingService } from "@sid-code/core/context/tool-output-masking.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 function makeToolPair(toolName: string, toolId: string, output: string): Message[] {
   return [

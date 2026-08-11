@@ -10,7 +10,7 @@ import {
   estimateSkillListingTokens,
   DEFAULT_CHAR_BUDGET,
   type SkillListingEntry,
-} from "../../src/skill/budget.ts";
+} from "@sid-code/core/skill/budget.ts";
 
 function entry(name: string, description: string, isBundled = false): SkillListingEntry {
   return { name, description, isBundled };

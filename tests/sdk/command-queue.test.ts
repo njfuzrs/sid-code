@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { CommandQueue, type QueuedCommand } from "../../src/sdk/command-queue.ts";
+import { CommandQueue, type QueuedCommand } from "@sid-code/core/sdk/command-queue.ts";
 
 function prompt(value: string, extra: Partial<QueuedCommand> = {}): QueuedCommand {
   return { mode: "prompt", value, priority: "next", ...extra };

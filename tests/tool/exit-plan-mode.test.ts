@@ -9,8 +9,8 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { ExitPlanModeTool } from "../../src/tool/exit-plan-mode.ts";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("ExitPlanModeTool — P0-1 幂等成功", () => {
   it("inactive 状态调用返回成功提示（非 isError），引导进入执行阶段", async () => {

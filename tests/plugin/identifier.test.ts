@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parsePluginId, buildPluginId } from "../../src/plugin/identifier.ts";
+import { parsePluginId, buildPluginId } from "@sid-code/cli/plugin/identifier.ts";
 
 describe("插件标识符解析", () => {
   test("解析 name@source 格式", () => {

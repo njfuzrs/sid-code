@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { parseResponsesStream, isResponsesContentProgress } from "../../src/llm/openai-responses.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
+import { parseResponsesStream, isResponsesContentProgress } from "@sid-code/core/llm/openai-responses.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
 
 // ─── 辅助：从 VCR fixture 构建 ReadableStream ───
 

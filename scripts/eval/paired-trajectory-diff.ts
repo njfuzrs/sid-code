@@ -63,7 +63,7 @@ interface PairedDiff {
   }>;
   fix_suggestions: Array<{
     type: "skill_rule" | "tool_routing" | "prompt_template" | "infra";
-    target: string; // e.g. "src/skill/builtin/code-review/SKILL.md"
+    target: string; // e.g. "packages/core/src/skill/builtin/code-review/SKILL.md"
     content: string;
   }>;
   meta: {

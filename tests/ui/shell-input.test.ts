@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildInteractiveBashToolUse,
   parseShellInput,
-} from "../../src/ui/shell-input.ts";
+} from "@sid-code/cli/ui/shell-input.ts";
 
 describe("parseShellInput", () => {
   test("解析行首感叹号后的 shell 命令", () => {

@@ -2,7 +2,7 @@
  * cronToHuman 人类可读描述测试（P2-17）
  */
 import { describe, test, expect } from "bun:test";
-import { cronToHuman } from "../../src/cron/describe.ts";
+import { cronToHuman } from "@sid-code/core/cron/describe.ts";
 
 describe("cronToHuman", () => {
   test("每 N 分钟", () => {

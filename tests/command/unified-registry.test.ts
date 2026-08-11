@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { UnifiedCommandRegistry } from "../../src/command/unified-registry.ts";
-import type { UnifiedCommand } from "../../src/command/types.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
+import type { UnifiedCommand } from "@sid-code/cli/command/types.ts";
 
 function localCmd(
   name: string,

@@ -21,8 +21,8 @@ import {
   getAllGatewayEntries,
   getGatewayCacheMeta,
   __resetGatewayPricingForTest,
-} from "../../src/llm/gateway-pricing.ts";
-import { sidPaths } from "../../src/config/paths.ts";
+} from "@sid-code/core/llm/gateway-pricing.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 describe("convertRawEntry — 换算公式", () => {
   test("claude-opus-4-8（官方价核对：in $5 / out $25 / cacheRead $0.5）", () => {
@@ -266,7 +266,7 @@ describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略"
 
   test("force=true（刚 update）忽略 TTL，对全部端点强制刷新", async () => {
     writeFreshCache("https://a.example.com"); // 缓存很新，TTL 未过期
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     refreshGatewayPricingOnStartup(["https://a.example.com", "https://b.example.com"], true);
     await flush();
     // 两个端点都被采集（含 TTL 未过期的 a）。
@@ -276,7 +276,7 @@ describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略"
 
   test("force=false（日常）TTL 未过期端点跳过，不触发采集", async () => {
     writeFreshCache("https://a.example.com");
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     refreshGatewayPricingOnStartup(["https://a.example.com"], false);
     await flush();
     // a 缓存新鲜，TTL 未过期 → 跳过，不采集。
@@ -284,14 +284,14 @@ describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略"
   });
 
   test("force=false 但端点从未采集过 → 仍触发采集（首次填充）", async () => {
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     refreshGatewayPricingOnStartup(["https://new.example.com"], false);
     await flush();
     expect(fetchedURLs).toContain("https://new.example.com/api/pricing");
   });
 
   test("端点去重 + 过滤空串：同端点只采一次，空串忽略", async () => {
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     refreshGatewayPricingOnStartup(["https://x.example.com", "https://x.example.com", "", "  "], true);
     await flush();
     const xHits = fetchedURLs.filter((u) => u === "https://x.example.com/api/pricing");
@@ -299,7 +299,7 @@ describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略"
   });
 
   test("空端点集合 → 无采集、不抛", async () => {
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     expect(() => refreshGatewayPricingOnStartup([], true)).not.toThrow();
     await flush();
     expect(fetchedURLs.length).toBe(0);
@@ -341,7 +341,7 @@ describe("采集失败不泄漏到终端（回归）", () => {
   });
 
   test("initLogger 恒返回同一实例：早期 getLogger() 捕获不会被冻在兜底实例上", async () => {
-    const { getLogger, initLogger, LogLevel } = await import("../../src/debug/logger.ts");
+    const { getLogger, initLogger, LogLevel } = await import("@sid-code/core/debug/logger.ts");
     // 模拟静态导入链上的模块级捕获（发生在 initLogger 之前）
     const captured = getLogger();
     const after = initLogger({
@@ -356,7 +356,7 @@ describe("采集失败不泄漏到终端（回归）", () => {
   });
 
   test("超时失败：reason 说人话（含阈值），不再是裸 AbortError", async () => {
-    const { syncGatewayPricing } = await import("../../src/llm/gateway-pricing.ts");
+    const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
     // 永挂的 fetch，只响应 abort → 必然走超时分支
     globalThis.fetch = ((_url: any, init: any) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
@@ -375,7 +375,7 @@ describe("采集失败不泄漏到终端（回归）", () => {
   });
 
   test("采集失败只落 debug，不进 WARN 审计流（终端零输出的前提）", async () => {
-    const { initLogger, LogLevel } = await import("../../src/debug/logger.ts");
+    const { initLogger, LogLevel } = await import("@sid-code/core/debug/logger.ts");
     const auditFile = join(tmpDir, "audit.log");
     // 还原生产 audit logger：level=WARN + fileOnly，文件写所有级别
     initLogger({
@@ -384,7 +384,7 @@ describe("采集失败不泄漏到终端（回归）", () => {
     });
 
     globalThis.fetch = (async () => { throw new Error("ECONNREFUSED"); }) as any;
-    const { syncGatewayPricing } = await import("../../src/llm/gateway-pricing.ts");
+    const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
     const r = await syncGatewayPricing({ baseURL: "https://down.example.com", timeoutMs: 500 });
     expect(r.updated).toBe(false);
 
@@ -429,7 +429,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
   const OK_DATA = { data: [{ model_name: "m1", quota_type: 0, model_ratio: 1, completion_ratio: 2 }] };
 
   test("指数退避：5min→10min→20min…封顶 24h，0 次失败不退避", async () => {
-    const { computeFailureBackoffMs } = await import("../../src/llm/gateway-pricing.ts");
+    const { computeFailureBackoffMs } = await import("@sid-code/core/llm/gateway-pricing.ts");
     expect(computeFailureBackoffMs(0)).toBe(0);
     expect(computeFailureBackoffMs(1)).toBe(5 * 60_000);
     expect(computeFailureBackoffMs(2)).toBe(10 * 60_000);
@@ -438,7 +438,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
   });
 
   test("核心回归：连续 5 次启动只发 1 次请求（修复前 5 次）", async () => {
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     let hits = 0;
     globalThis.fetch = (async () => { hits++; throw new Error("ECONNREFUSED"); }) as any;
     for (let i = 0; i < 5; i++) {
@@ -450,7 +450,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
   });
 
   test("多端点各自独立退避：坏端点冷却不影响好端点采集", async () => {
-    const { refreshGatewayPricingOnStartup } = await import("../../src/llm/gateway-pricing.ts");
+    const { refreshGatewayPricingOnStartup } = await import("@sid-code/core/llm/gateway-pricing.ts");
     const seen: string[] = [];
     globalThis.fetch = (async (u: any) => {
       seen.push(String(u));
@@ -471,7 +471,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
   });
 
   test("失败不抹掉上次成功采到的价格（负缓存只加字段）", async () => {
-    const { syncGatewayPricing, lookupGatewayPricing } = await import("../../src/llm/gateway-pricing.ts");
+    const { syncGatewayPricing, lookupGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
     const EP = "https://flip.example.com";
     globalThis.fetch = (async () => ({ ok: true, json: async () => OK_DATA })) as any;
     await syncGatewayPricing({ baseURL: EP });
@@ -486,7 +486,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
 
   test("force=true 突破冷却（update / 手动 discover 的明确意图优先）", async () => {
     const { syncGatewayPricing, refreshGatewayPricingOnStartup, getFailureCooldownRemainingMs } =
-      await import("../../src/llm/gateway-pricing.ts");
+      await import("@sid-code/core/llm/gateway-pricing.ts");
     const EP = "https://recover.example.com";
     globalThis.fetch = (async () => { throw new Error("down"); }) as any;
     await syncGatewayPricing({ baseURL: EP, timeoutMs: 200 });
@@ -503,7 +503,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
 
   test("边界：恢复后价格恰好未变，也必须清掉失败态（否则永久锁死）", async () => {
     const { syncGatewayPricing, getFailureCooldownRemainingMs } =
-      await import("../../src/llm/gateway-pricing.ts");
+      await import("@sid-code/core/llm/gateway-pricing.ts");
     const EP = "https://same.example.com";
     globalThis.fetch = (async () => ({ ok: true, json: async () => OK_DATA })) as any;
     await syncGatewayPricing({ baseURL: EP });               // 成功，记下 version
@@ -518,7 +518,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
   });
 
   test("时钟回拨（failed_at 在未来）不永久锁死", async () => {
-    const { getFailureCooldownRemainingMs } = await import("../../src/llm/gateway-pricing.ts");
+    const { getFailureCooldownRemainingMs } = await import("@sid-code/core/llm/gateway-pricing.ts");
     mkdirSync(tmpDir, { recursive: true });
     writeFileSync(sidPaths.gatewayPricing(), JSON.stringify({
       schema_version: 2,
@@ -534,7 +534,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
 
   test("HTTP 非 2xx 与「解析后无有效条目」同样计入退避", async () => {
     const { syncGatewayPricing, getFailureCooldownRemainingMs } =
-      await import("../../src/llm/gateway-pricing.ts");
+      await import("@sid-code/core/llm/gateway-pricing.ts");
     globalThis.fetch = (async () => ({ ok: false, status: 502 })) as any;
     await syncGatewayPricing({ baseURL: "https://e502.example.com" });
     expect(getFailureCooldownRemainingMs("https://e502.example.com")).toBeGreaterThan(0);

@@ -9,9 +9,9 @@
  */
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { Journal, computeFingerprint } from "../../src/workflow/journal.ts";
-import { WorkflowRuntime, type AgentRunner } from "../../src/workflow/runtime.ts";
-import { runInSandbox } from "../../src/workflow/sandbox.ts";
+import { Journal, computeFingerprint } from "@sid-code/core/workflow/journal.ts";
+import { WorkflowRuntime, type AgentRunner } from "@sid-code/core/workflow/runtime.ts";
+import { runInSandbox } from "@sid-code/core/workflow/sandbox.ts";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

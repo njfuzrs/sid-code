@@ -9,8 +9,8 @@ import {
   escapeForShell,
   createAndSaveSnapshot,
   cleanupSnapshot,
-} from "../../src/tool/bash/shell-snapshot.ts";
-import { sidPaths } from "../../src/config/paths.ts";
+} from "@sid-code/core/tool/bash/shell-snapshot.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 
 // ============================================================
 // escapeForShell

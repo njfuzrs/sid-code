@@ -18,17 +18,17 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { ModelAvailabilityService } from "../../src/llm/availability.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 import {
   disableKeepAlive,
   isKeepAliveDisabled,
   getKeepAliveFetchOptions,
   wrapFetchWithKeepAlive,
   _resetKeepAliveForTesting,
-} from "../../src/llm/keepalive.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
+} from "@sid-code/core/llm/keepalive.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 const BASE_PARAMS: SendParams = {
   model: "primary-model",
@@ -186,7 +186,7 @@ describe("B1 门槛②：keepalive:false 真正进入 fetch 选项", () => {
   });
 
   test("provider 源码确有 keepalive 消费点（防接线被回退成空转）", () => {
-    const root = join(import.meta.dir, "..", "..", "src", "llm");
+    const root = join(import.meta.dir, "..", "..", "packages", "core", "src", "llm");
     const openai = readFileSync(join(root, "openai.ts"), "utf-8");
     const anthropic = readFileSync(join(root, "anthropic.ts"), "utf-8");
 
@@ -200,7 +200,7 @@ describe("B1 门槛②：keepalive:false 真正进入 fetch 选项", () => {
 
 describe("B1 门槛③：连接阶段重试循环已删除（防第二份平行实现复活）", () => {
   const source = readFileSync(
-    join(import.meta.dir, "..", "..", "src", "llm", "fallback.ts"),
+    join(import.meta.dir, "..", "..", "packages", "core", "src", "llm", "fallback.ts"),
     "utf-8",
   );
 

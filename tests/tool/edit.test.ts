@@ -3,9 +3,9 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { EditTool } from "../../src/tool/edit.ts";
-import { ReadTool } from "../../src/tool/read.ts";
-import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
+import { EditTool } from "@sid-code/core/tool/edit.ts";
+import { ReadTool } from "@sid-code/core/tool/read.ts";
+import { FileReadTracker } from "@sid-code/core/tool/file-read-tracker.ts";
 import { writeFileSync, unlinkSync, existsSync, mkdirSync, utimesSync } from "fs";
 import { join } from "path";
 import os from "os";

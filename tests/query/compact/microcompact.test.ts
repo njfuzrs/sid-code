@@ -10,8 +10,8 @@ import {
   microcompactMessages,
   isDiscardableTool,
   isNonDiscardableTool,
-} from "../../../src/query/compact/microcompact.ts";
-import type { Message } from "../../../src/llm/types.ts";
+} from "@sid-code/core/query/compact/microcompact.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 辅助：构建含 tool_result 的消息列表（assistant tool_use(bash) + user tool_result 交替） */
 function makeMessages(count: number, contentLength: number): Message[] {

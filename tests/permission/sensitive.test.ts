@@ -7,7 +7,7 @@ import {
   detectSensitiveData,
   maskSensitiveData,
   maskSensitiveJson,
-} from "../../src/permission/sensitive.ts";
+} from "@sid-code/core/permission/sensitive.ts";
 
 describe("detectSensitiveData", () => {
   test("检测 AWS Access Key", () => {

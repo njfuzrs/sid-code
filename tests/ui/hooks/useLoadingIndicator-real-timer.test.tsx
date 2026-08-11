@@ -15,11 +15,11 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import Box from "../../../src/ink/components/Box.tsx";
-import Text from "../../../src/ink/components/Text.tsx";
-import { useLoadingIndicator } from "../../../src/ui/hooks/useLoadingIndicator.ts";
-import { StreamingState } from "../../../src/ui/types.ts";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import Box from "@sid-code/tui-renderer/components/Box.tsx";
+import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { useLoadingIndicator } from "@sid-code/cli/ui/hooks/useLoadingIndicator.ts";
+import { StreamingState } from "@sid-code/cli/ui/types.ts";
 
 /** 测试附着组件：调用 useLoadingIndicator 并把返回值渲染为文本 */
 function TestHarness({

@@ -12,8 +12,8 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import type { ContentBlock } from "../../src/llm/types.ts";
-import { executeTools } from "../../src/agent/tool-executor.ts";
+import type { ContentBlock } from "@sid-code/core/llm/types.ts";
+import { executeTools } from "@sid-code/core/agent/tool-executor.ts";
 
 interface HookLog {
   pre: string[];

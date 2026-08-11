@@ -17,13 +17,13 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { TeamManager, type TeamOptions, type TeammateSpec } from "../../src/swarm/team.ts";
+import { TeamManager, type TeamOptions, type TeammateSpec } from "@sid-code/core/swarm/team.ts";
 import {
   createStructuredTask,
   getAllStructuredTasks,
   getTeamTasks,
   __clearStructuredTasks,
-} from "../../src/task/structured-task-store.ts";
+} from "@sid-code/core/task/structured-task-store.ts";
 
 const mockProviderRegistry = {} as any;
 const mockToolRegistry = {} as any;
@@ -81,7 +81,7 @@ function makeTeam(teamName: string, members: TeammateSpec[], extra?: Partial<Tea
 
 /** 用 RecordingSubAgent 替换 SubAgent.fromRegistry 跑一次 team.run */
 async function runWithRecording(team: TeamManager, signal?: AbortSignal) {
-  const mod = await import("../../src/agent/sub-agent.ts");
+  const mod = await import("@sid-code/core/agent/sub-agent.ts");
   const orig = mod.SubAgent.fromRegistry;
   mod.SubAgent.fromRegistry = RecordingSubAgent.fromRegistry as any;
   try {

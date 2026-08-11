@@ -7,9 +7,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Registry } from "../../src/tool/registry.ts";
-import { ToolSearchTool } from "../../src/tool/tool-search.ts";
-import type { LegacyTool } from "../../src/tool/types.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import { ToolSearchTool } from "@sid-code/core/tool/tool-search.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 
 function mkTool(name: string, extra: Partial<LegacyTool> = {}): LegacyTool {
   return {

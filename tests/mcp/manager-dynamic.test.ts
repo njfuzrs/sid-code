@@ -9,8 +9,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { MCPManager } from "../../src/mcp/manager.ts";
-import type { MCPServerConfig } from "../../src/config/config.ts";
+import { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 /** 写一个最小 MCP server 脚本（JSON-RPC over stdio）：支持 initialize/tools/list/tools/call */
 function writeMockServer(dir: string): string {

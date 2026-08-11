@@ -10,9 +10,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "../../../src/ink/_vendor/testing.tsx";
-import { LoadingIndicator } from "../../../src/ui/components/LoadingIndicator.tsx";
-import { StreamingState } from "../../../src/ui/types.ts";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { LoadingIndicator } from "@sid-code/cli/ui/components/LoadingIndicator.tsx";
+import { StreamingState } from "@sid-code/cli/ui/types.ts";
 
 describe("LoadingIndicator — Connecting 态渲染", () => {
   test("Connecting 显示「连接中…」且含 spinner 字符", () => {

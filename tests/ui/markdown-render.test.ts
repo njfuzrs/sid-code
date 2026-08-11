@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { renderMarkdown } from "../../src/ui/markdown.ts";
+import { renderMarkdown } from "@sid-code/cli/ui/markdown.ts";
 
 describe("Markdown 表格渲染", () => {
   test("简单表格应使用完整格式", () => {

@@ -11,7 +11,7 @@
  * 跑法：bun scripts/probe/jit-boundary-b4.ts
  */
 
-import { bashWriteTargets } from "../../src/tool/jit-affected-paths.ts";
+import { bashWriteTargets } from "@sid-code/core/tool/jit-affected-paths.ts";
 
 type Kind = "fix" | "keep" | "never";
 const CASES: Array<[Kind, string, string[]]> = [

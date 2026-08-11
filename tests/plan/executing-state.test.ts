@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PlanModeManager } from "../../src/plan/state.ts";
+import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("PlanModeManager — 执行阶段(executing)追踪", () => {
   test("初始 inactive 时 isExecuting=false", () => {

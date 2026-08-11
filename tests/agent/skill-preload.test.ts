@@ -15,7 +15,7 @@ import { join } from "path";
 import {
   buildSkillPreloadSection,
   __clearSkillPreloadCache,
-} from "../../src/agent/skill-preload.ts";
+} from "@sid-code/core/agent/skill-preload.ts";
 
 let dir: string;
 let prevCwd: string;

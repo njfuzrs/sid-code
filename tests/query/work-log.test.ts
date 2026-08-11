@@ -12,8 +12,8 @@ import {
   persistProgress,
   loadProgressMarkdown,
   progressFilePath,
-} from "../../src/query/work-log.ts";
-import type { TodoItem } from "../../src/tool/todo-write.ts";
+} from "@sid-code/core/query/work-log.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { existsSync, rmSync } from "fs";
 
 function todo(content: string, status: TodoItem["status"]): TodoItem {

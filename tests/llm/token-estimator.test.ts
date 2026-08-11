@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { TokenEstimator } from "../../src/llm/token-estimator.ts";
+import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
 
 const estimator = new TokenEstimator();
 

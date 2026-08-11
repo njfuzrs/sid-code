@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { CommandQueue } from "../../src/command/queue.ts";
+import { CommandQueue } from "@sid-code/cli/command/queue.ts";
 
 describe("CommandQueue", () => {
   test("默认 enqueue 为 next 优先级，FIFO 出队", () => {

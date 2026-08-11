@@ -6,15 +6,15 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { runForkedAgent, type ForkedAgentContext } from "../../src/agent/forked-agent.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+import { runForkedAgent, type ForkedAgentContext } from "@sid-code/core/agent/forked-agent.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import {
   createExtractPermissions,
   createSessionMemoryPermissions,
-} from "../../src/memory/extract/permissions.ts";
-import { hasMemoryWritesSince, extractWrittenPaths } from "../../src/memory/extract/extractor.ts";
-import type { Message } from "../../src/llm/types.ts";
-import type { PermissionResult } from "../../src/tool/types.ts";
+} from "@sid-code/core/memory/extract/permissions.ts";
+import { hasMemoryWritesSince, extractWrittenPaths } from "@sid-code/core/memory/extract/extractor.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
+import type { PermissionResult } from "@sid-code/core/tool/types.ts";
 
 /** 同步断言权限结果的 behavior（permissions 函数实际是同步的） */
 function behaviorOf(r: PermissionResult | Promise<PermissionResult>): string {

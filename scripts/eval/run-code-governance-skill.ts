@@ -31,7 +31,7 @@ import { parseArgs } from "node:util";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 const ROOT = process.cwd();
-const SKILL_ROOT = join(ROOT, "src/skill/builtin/code-governance");
+const SKILL_ROOT = join(ROOT, "packages/core/src/skill/builtin/code-governance");
 const CASES_DIR = join(SKILL_ROOT, "evals");
 const SKILL_FILE = join(SKILL_ROOT, "SKILL.md");
 const RAW_DIR = join(ROOT, "evals/raw-outputs");
@@ -396,7 +396,7 @@ function syncBaselineScores(
 async function main() {
   const cases = loadCases();
   if (cases.length === 0) {
-    console.error("✗ 未找到 code-governance case (期望 src/skill/builtin/code-governance/evals/case_gov_*.yaml)");
+    console.error("✗ 未找到 code-governance case (期望 packages/core/src/skill/builtin/code-governance/evals/case_gov_*.yaml)");
     process.exit(1);
   }
 

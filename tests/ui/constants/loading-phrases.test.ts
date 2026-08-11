@@ -13,7 +13,7 @@ import {
   CONTINUATION_PHRASE,
   formatToolElapsed,
   TOOL_TIMER_THRESHOLD_SEC,
-} from "../../../src/ui/constants/loading-phrases.ts";
+} from "@sid-code/cli/ui/constants/loading-phrases.ts";
 
 describe("pickSlowHint", () => {
   // 阈值不写死在断言里——从 SLOW_RESPONSE_HINTS 取，调阈值时测试自动跟随。

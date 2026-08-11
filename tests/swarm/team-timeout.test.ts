@@ -9,7 +9,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { TeamManager, type TeamOptions, type TeammateSpec } from "../../src/swarm/team.ts";
+import { TeamManager, type TeamOptions, type TeammateSpec } from "@sid-code/core/swarm/team.ts";
 
 // --- Mock 基础设施 ---
 
@@ -75,7 +75,7 @@ describe("T5-B2 team 级硬超时", () => {
     const team = new TeamManager(opts);
 
     // mock SubAgent.fromRegistry → 返回 HangingSubAgent
-    const origImport = (await import("../../src/agent/sub-agent.ts")).SubAgent;
+    const origImport = (await import("@sid-code/core/agent/sub-agent.ts")).SubAgent;
     const origFromRegistry = origImport.fromRegistry;
     origImport.fromRegistry = HangingSubAgent.fromRegistry as any;
 
@@ -125,7 +125,7 @@ describe("T5-B2 team 级硬超时", () => {
     };
     const team = new TeamManager(opts);
 
-    const origImport = (await import("../../src/agent/sub-agent.ts")).SubAgent;
+    const origImport = (await import("@sid-code/core/agent/sub-agent.ts")).SubAgent;
     const origFromRegistry = origImport.fromRegistry;
     origImport.fromRegistry = SignalCheckSubAgent.fromRegistry as any;
 
@@ -149,7 +149,7 @@ describe("T5-B2 team 级硬超时", () => {
     };
     const team = new TeamManager(opts);
 
-    const origImport = (await import("../../src/agent/sub-agent.ts")).SubAgent;
+    const origImport = (await import("@sid-code/core/agent/sub-agent.ts")).SubAgent;
     const origFromRegistry = origImport.fromRegistry;
     origImport.fromRegistry = NormalSubAgent.fromRegistry as any;
 

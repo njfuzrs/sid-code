@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { QuotaManager } from "../../src/llm/quota.ts";
+import { QuotaManager } from "@sid-code/core/llm/quota.ts";
 
 describe("QuotaManager", () => {
   // === 原有成本配额测试 ===

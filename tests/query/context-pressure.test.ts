@@ -11,7 +11,7 @@ import {
   contextPressureLevel,
   CONTEXT_PRESSURE_REMINDER_INTERVAL,
   CONTEXT_PRESSURE_THRESHOLDS,
-} from "../../src/query/context-pressure.ts";
+} from "@sid-code/core/query/context-pressure.ts";
 
 describe("buildContextPressureReminder — 阈值边界", () => {
   test("使用率低于 warn 阈值时返回 null（不刷屏）", () => {

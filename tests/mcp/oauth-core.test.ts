@@ -9,7 +9,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MCPServerConfig } from "../../src/config/config.ts";
+import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 
 let tmpDir: string;
 let prevConfigDir: string | undefined;
@@ -151,7 +151,7 @@ function startMockAuthServer(): Promise<void> {
 
 describe("oauth core", () => {
   test("discoverAuthServerMetadata 通过 RFC 8414 发现元数据", async () => {
-    const { discoverAuthServerMetadata } = await import("../../src/mcp/oauth.ts");
+    const { discoverAuthServerMetadata } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
     const meta = await discoverAuthServerMetadata("test", mockASUrl, cfg);
     expect(meta).toBeDefined();
@@ -162,7 +162,7 @@ describe("oauth core", () => {
   });
 
   test("discoverAuthServerMetadata 配置 authServerMetadataUrl 强制 https 校验", async () => {
-    const { discoverAuthServerMetadata } = await import("../../src/mcp/oauth.ts");
+    const { discoverAuthServerMetadata } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = {
       transport: "http",
       url: mockASUrl,
@@ -173,14 +173,14 @@ describe("oauth core", () => {
   });
 
   test("getValidAccessToken 无凭据时抛 NeedsAuthorizationError", async () => {
-    const { getValidAccessToken, NeedsAuthorizationError } = await import("../../src/mcp/oauth.ts");
+    const { getValidAccessToken, NeedsAuthorizationError } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
     await expect(getValidAccessToken("test", cfg)).rejects.toBeInstanceOf(NeedsAuthorizationError);
   });
 
   test("getValidAccessToken 有有效 token 时直接返回", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
-    const { getValidAccessToken } = await import("../../src/mcp/oauth.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
+    const { getValidAccessToken } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
     // 手动写入一个有效 token（过期时间在未来）
     store.saveTokens("test", cfg, { access_token: "valid-token", expires_in: 7200 });
@@ -189,8 +189,8 @@ describe("oauth core", () => {
   });
 
   test("getValidAccessToken token 过期+有 refresh_token 时自动刷新", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
-    const { getValidAccessToken } = await import("../../src/mcp/oauth.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
+    const { getValidAccessToken } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
 
     // 写入过期 token + refresh_token + discovery（指向 mock AS）
@@ -212,8 +212,8 @@ describe("oauth core", () => {
   });
 
   test("getValidAccessToken refresh_token 失效时抛 NeedsAuthorizationError 并清 token", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
-    const { getValidAccessToken, NeedsAuthorizationError } = await import("../../src/mcp/oauth.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
+    const { getValidAccessToken, NeedsAuthorizationError } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
 
     store.updateOAuthEntry("test", cfg, {
@@ -231,7 +231,7 @@ describe("oauth core", () => {
   });
 
   test("performOAuthFlow 完整授权码流程（discovery+注册+PKCE+token 交换）", async () => {
-    const { performOAuthFlow } = await import("../../src/mcp/oauth.ts");
+    const { performOAuthFlow } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
 
     let capturedAuthUrl: string | undefined;
@@ -268,15 +268,15 @@ describe("oauth core", () => {
     expect(tokens.refresh_token).toBe("refresh-token-001");
 
     // 验证持久化
-    const store = await import("../../src/mcp/oauth-storage.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
     const entry = store.getOAuthEntry("fulltest", cfg);
     expect(entry?.accessToken).toBe("access-token-001");
     expect(entry?.clientId).toBe("dyn-client-001");
   });
 
   test("token 刷新返回越权 scope 时拒绝（RFC 6749 §6）", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
-    const { getValidAccessToken } = await import("../../src/mcp/oauth.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
+    const { getValidAccessToken } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
 
     // 原始只授予 "read"，过期需刷新；mock AS 对 escalate-rt 返回 "read write admin"
@@ -296,8 +296,8 @@ describe("oauth core", () => {
   });
 
   test("performOAuthFlow 取消/失败时保留旧 token", async () => {
-    const store = await import("../../src/mcp/oauth-storage.ts");
-    const { performOAuthFlow } = await import("../../src/mcp/oauth.ts");
+    const store = await import("@sid-code/core/mcp/oauth-storage.ts");
+    const { performOAuthFlow } = await import("@sid-code/core/mcp/oauth.ts");
     const cfg: MCPServerConfig = { transport: "http", url: mockASUrl, oauth: {} };
 
     // 预置一个旧 token
@@ -317,7 +317,7 @@ describe("oauth core", () => {
   });
 
   test("discovery 拒绝非 loopback 的 http 端点（SSRF 防护）", async () => {
-    const { discoverAuthServerMetadata } = await import("../../src/mcp/oauth.ts");
+    const { discoverAuthServerMetadata } = await import("@sid-code/core/mcp/oauth.ts");
     // 配置直指一个会返回 http 内网端点的 metadata —— 这里用 authServerMetadataUrl 的 https 校验快速覆盖
     const cfg: MCPServerConfig = {
       transport: "http",
@@ -328,7 +328,7 @@ describe("oauth core", () => {
   });
 
   test("isOAuthEnabled 正确判定", async () => {
-    const { isOAuthEnabled } = await import("../../src/mcp/oauth.ts");
+    const { isOAuthEnabled } = await import("@sid-code/core/mcp/oauth.ts");
     expect(isOAuthEnabled({ transport: "http", url: "x" })).toBe(false);
     expect(isOAuthEnabled({ transport: "http", url: "x", oauth: {} })).toBe(true);
     expect(isOAuthEnabled({ transport: "stdio", command: "x", oauth: {} })).toBe(true);

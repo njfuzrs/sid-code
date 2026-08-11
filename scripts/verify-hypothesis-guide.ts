@@ -2,7 +2,7 @@
 /**
  * verify-hypothesis-guide —— 假设纪律首轮引导的「离线词表验证」脚本
  *
- * 用最终版三层 detectInvestigationContext（src/query/hypothesis-guide.ts）重跑本地
+ * 用最终版三层 detectInvestigationContext（packages/core/src/query/hypothesis-guide.ts）重跑本地
  * 历史会话的「首条用户原始输入」（metadata.user_prompts[0]），回答三个问题：
  *   1. 命中率：四象限分布 + 触发占比（对照文档第八章预估 ~17-18%）
  *   2. 漏判：高复杂度（traj 步数大）但未触发的会话 → 抽查是否真核查任务
@@ -26,7 +26,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { diagnoseInvestigationContext } from "../src/query/hypothesis-guide.ts";
+import { diagnoseInvestigationContext } from "@sid-code/core/query/hypothesis-guide.ts";
 
 interface SessionRow {
   id: string;

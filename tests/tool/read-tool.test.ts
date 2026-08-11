@@ -18,8 +18,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { ReadTool, stripReadEfficiencyHint } from "../../src/tool/read.ts";
-import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
+import { ReadTool, stripReadEfficiencyHint } from "@sid-code/core/tool/read.ts";
+import { FileReadTracker } from "@sid-code/core/tool/file-read-tracker.ts";
 
 const tmpDirs: string[] = [];
 

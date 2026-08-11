@@ -13,9 +13,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { SessionStore } from "../../src/session/store.ts";
-import { SessionState } from "../../src/session/state.ts";
-import type { Message, Usage } from "../../src/llm/types.ts";
+import { SessionStore } from "@sid-code/core/session/store.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import type { Message, Usage } from "@sid-code/core/llm/types.ts";
 import { join } from "path";
 import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";

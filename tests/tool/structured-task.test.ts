@@ -10,11 +10,11 @@ import {
   updateStructuredTask,
   isTaskUnblocked,
   __clearStructuredTasks,
-} from "../../src/task/structured-task-store.ts";
-import { TaskCreateTool } from "../../src/tool/structured-task-create.ts";
-import { TaskUpdateTool } from "../../src/tool/structured-task-update.ts";
-import { StructuredTaskGetTool } from "../../src/tool/structured-task-get.ts";
-import { StructuredTaskListTool } from "../../src/tool/structured-task-list.ts";
+} from "@sid-code/core/task/structured-task-store.ts";
+import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
+import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
+import { StructuredTaskGetTool } from "@sid-code/core/tool/structured-task-get.ts";
+import { StructuredTaskListTool } from "@sid-code/core/tool/structured-task-list.ts";
 
 beforeEach(() => {
   __clearStructuredTasks();

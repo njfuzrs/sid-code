@@ -13,9 +13,9 @@ import {
   // 这里刻意继续测它：只要还导出着就仍可能被接线，形态约束（围栏 / 不以 `#` 开头）
   // 必须由测试守住而不是靠注释提醒——见文件末尾那条事故防回归用例。
   buildMcpInstructionsSection,
-} from "../../src/mcp/instructions-delta.ts";
-import { MCPConnectionStatus } from "../../src/mcp/types.ts";
-import type { MCPServerStatusInfo } from "../../src/mcp/manager.ts";
+} from "@sid-code/core/mcp/instructions-delta.ts";
+import { MCPConnectionStatus } from "@sid-code/core/mcp/types.ts";
+import type { MCPServerStatusInfo } from "@sid-code/core/mcp/manager.ts";
 
 function status(over: Partial<MCPServerStatusInfo> = {}): MCPServerStatusInfo {
   return {

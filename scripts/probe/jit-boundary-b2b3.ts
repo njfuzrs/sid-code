@@ -12,11 +12,11 @@
  * 跑法：bun scripts/probe/jit-boundary-b2b3.ts
  */
 
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { isJitContextEnabled, JIT_CONTEXT_DEFAULT } from "../../src/config/jit-context.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { isJitContextEnabled, JIT_CONTEXT_DEFAULT } from "@sid-code/core/config/jit-context.ts";
 
 const stubProvider = {
   name: () => "mock",

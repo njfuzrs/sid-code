@@ -4,9 +4,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PermissionChecker } from "../../src/permission/checker.ts";
-import { defaultConfig } from "../../src/config/config.ts";
-import type { PermissionRule } from "../../src/permission/types.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
+import type { PermissionRule } from "@sid-code/core/permission/types.ts";
 
 describe("权限系统增强功能", () => {
   // === Task 1: 扩展权限模式（6 种） ===

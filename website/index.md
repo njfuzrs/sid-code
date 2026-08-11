@@ -102,11 +102,16 @@ sc            # 全放行（= --dangerously-skip-permissions），确认过风�
 
 <!--
   数字口径（§4.7 决策：不做自动生成，发版前人工核对一次，写约数不写精确值）：
-    自研代码行数  find src -name '*.ts' -o -name '*.tsx' | grep -v '/ink/' | xargs wc -l
-                  （2026-08-10 实测 203,178 行，不含 vendor 进来的 ink fork；2026-07-27 曾为 176,887）
-    单测          grep -rhoE '\b(it|test)\(' tests src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                  （2026-08-10 实测 8,562 个用例 / 641 个测试文件；2026-07-27 曾为 6,583 / 520）
-    Hook 事件数   src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
+    ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/，
+                  下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 ——
+                  复核命令静默失效比数字过期更糟，因为下一个人会以为自己核对过了。
+                  ink fork 现在自成一包，用排包代替原先的 grep -v '/ink/'。
+    自研代码行数  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
+                  （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer；
+                    2026-08-10 曾为 203,178，2026-07-27 曾为 176,887）
+    单测          grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                  （2026-08-11 实测 8,569 个用例 / 642 个测试文件；2026-07-27 曾为 6,583 / 520）
+    Hook 事件数   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
     内置工具数    sid-code --dump-tools | bun -e '...' 数组长度（2026-07-27 实测 44，与
                   脚本生成的 ref/tools.md 同源同值。此前写"60+"与运行时真值不符，已改）
     eval case     bun run eval:list 的汇总行（2026-07-27 实测 P0=10 holdout=5 P1=9 P2=6 = 30）
@@ -118,7 +123,7 @@ sc            # 全放行（= --dangerously-skip-permissions），确认过风�
 
 | 项 | 现状 |
 | --- | --- |
-| 自研代码 | `src/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
+| 自研代码 | `packages/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
 | 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
 | 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |

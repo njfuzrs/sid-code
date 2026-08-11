@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { computeDiff, applyDiff, reverseDiff } from "../../src/checkpoint/diff.ts";
+import { computeDiff, applyDiff, reverseDiff } from "@sid-code/core/checkpoint/diff.ts";
 
 describe("computeDiff", () => {
   test("相同内容返回 keep", () => {

@@ -14,7 +14,7 @@ import { resolve, join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
-const BOOTSTRAP = resolve(import.meta.dir, "../../src/entrypoints/bootstrap.ts");
+const BOOTSTRAP = resolve(import.meta.dir, "../../packages/cli/src/entrypoints/bootstrap.ts");
 
 interface RunResult {
   code: number;

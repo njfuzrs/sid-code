@@ -11,7 +11,7 @@ import {
   getErrorMessage,
   extractResponseHeaders,
   SSL_ERROR_HINTS,
-} from "../../src/api/error-utils.ts";
+} from "@sid-code/core/api/error-utils.ts";
 
 describe("extractConnectionErrorDetails", () => {
   test("顶层带 code", () => {

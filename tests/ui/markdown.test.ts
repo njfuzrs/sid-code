@@ -11,7 +11,7 @@ import {
   renderInlineMarkdown,
   isTableToken,
   extractTableData,
-} from "../../src/ui/markdown.ts";
+} from "@sid-code/cli/ui/markdown.ts";
 
 // 每个测试前清空渲染缓存（通过渲染一个不同宽度触发清空，再恢复）
 // renderMarkdown 内部会在宽度变化时清空缓存，这里利用这个机制

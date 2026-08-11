@@ -10,10 +10,10 @@ import { describe, test, expect } from "bun:test";
 import {
   getBuiltInAgentDefinitions,
   getBuiltInAgentTypes,
-} from "../../src/agent/agent-definition.ts";
-import { SubAgentTool } from "../../src/agent/tool.ts";
-import type { ProviderRegistry } from "../../src/llm/registry.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
+} from "@sid-code/core/agent/agent-definition.ts";
+import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
+import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 
 describe("getBuiltInAgentDefinitions", () => {
   test("返回完整定义（含 agentType / description / 可选 tools）", () => {

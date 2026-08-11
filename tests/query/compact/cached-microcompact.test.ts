@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { Message } from "../../../src/llm/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 import {
   isCompactableTool,
   createCachedMicrocompactState,
@@ -14,7 +14,7 @@ import {
   registerToolUses,
   createCacheEditsBlock,
   cachedMicrocompact,
-} from "../../../src/query/compact/cached-microcompact.ts";
+} from "@sid-code/core/query/compact/cached-microcompact.ts";
 
 /** 构造 N 轮（assistant tool_use + user tool_result）消息，工具结果内容很长 */
 function buildToolMessages(count: number, toolName = "read", contentLen = 2000): Message[] {

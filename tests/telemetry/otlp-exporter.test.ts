@@ -11,8 +11,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { OtlpTelemetryExporter } from "../../src/telemetry/exporters/otlp.ts";
-import type { SpanData, MetricPoint } from "../../src/telemetry/types.ts";
+import { OtlpTelemetryExporter } from "@sid-code/core/telemetry/exporters/otlp.ts";
+import type { SpanData, MetricPoint } from "@sid-code/core/telemetry/types.ts";
 
 /** 需要在测试里改写的 OTEL_* 变量 */
 const OTEL_KEYS = [

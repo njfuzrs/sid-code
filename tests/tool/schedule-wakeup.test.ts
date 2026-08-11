@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
-import { ScheduleWakeupTool } from "../../src/tool/schedule-wakeup.ts";
-import { getScheduler, resetScheduler } from "../../src/cron/scheduler.ts";
+import { ScheduleWakeupTool } from "@sid-code/core/tool/schedule-wakeup.ts";
+import { getScheduler, resetScheduler } from "@sid-code/core/cron/scheduler.ts";
 
 describe("ScheduleWakeupTool", () => {
   afterEach(() => {

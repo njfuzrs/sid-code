@@ -15,12 +15,12 @@
 
 import { existsSync } from "fs";
 import { resolve, dirname } from "path";
-import { processImports } from "../../src/config/import-processor.ts";
+import { processImports } from "@sid-code/core/config/import-processor.ts";
 
 const REPO = resolve(import.meta.dir, "../..");
 const FILES = [
   "CLAUDE.md",
-  "src/ui/CLAUDE.md",
+  "packages/cli/src/ui/CLAUDE.md",
   ...(await Array.fromAsync(new Bun.Glob("**/CLAUDE.md").scan({ cwd: REPO, onlyFiles: true }))),
 ];
 const uniq = [...new Set(FILES)].filter(

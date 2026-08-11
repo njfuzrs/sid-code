@@ -12,12 +12,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelFallback, FOREGROUND_SOURCES } from "../../src/llm/fallback.ts";
-import { ModelAvailabilityService } from "../../src/llm/availability.ts";
-import { RequestAbortedError } from "../../src/llm/errors.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-import type { RetryTelemetryEvent } from "../../src/llm/retry-telemetry.ts";
+import { ModelFallback, FOREGROUND_SOURCES } from "@sid-code/core/llm/fallback.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
+import { RequestAbortedError } from "@sid-code/core/llm/errors.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
+import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
 
 /** 创建一个成功的 Mock Provider */
 function successProvider(events?: StreamEvent[]): Provider {
@@ -771,7 +771,7 @@ describe("ModelFallback 增强", () => {
 
   // ─── QuerySource 工具函数 ───
   test("shouldRetry529: 前台 true, 后台 false", () => {
-    const { shouldRetry529 } = require("../../src/llm/fallback.ts");
+    const { shouldRetry529 } = require("@sid-code/core/llm/fallback.ts");
     expect(shouldRetry529("main_thread")).toBe(true);
     expect(shouldRetry529("agent")).toBe(true);
     expect(shouldRetry529("compact")).toBe(true);

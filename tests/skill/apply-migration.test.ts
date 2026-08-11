@@ -18,7 +18,7 @@ import path from "node:path";
 
 const SCRIPT = path.resolve(
   import.meta.dir,
-  "../../src/skill/builtin/claude-code-migration/scripts/apply-migration.mjs",
+  "../../packages/core/src/skill/builtin/claude-code-migration/scripts/apply-migration.mjs",
 );
 
 let tmpDir = "";

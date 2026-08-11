@@ -9,7 +9,7 @@ import {
   textBufferReducer as reduce,
   createInitialState,
   type TextBufferState,
-} from "../../src/ui/text-buffer.ts";
+} from "@sid-code/cli/ui/text-buffer.ts";
 
 /** 从多行文本 + 光标(row,col) 构造 state。 */
 function stateAt(text: string, row: number, col: number): TextBufferState {

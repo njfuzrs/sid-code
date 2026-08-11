@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { TraceWriter } from "../../src/trace/writer.ts";
+import { TraceWriter } from "@sid-code/core/trace/writer.ts";
 
 const BASE_DIR = join("/tmp", `sid-trace-redact-${process.pid}`);
 const OPENAI_KEY = "sk-abcdefghij0123456789xyz";

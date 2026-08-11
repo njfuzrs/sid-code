@@ -18,7 +18,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
 
-const SKILL_DIR = join(import.meta.dir, "..", "..", "src", "skill", "builtin", "code-review");
+const SKILL_DIR = join(import.meta.dir, "..", "..", "packages", "core", "src", "skill", "builtin", "code-review");
 const EVALS_DIR = join(SKILL_DIR, "evals");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 

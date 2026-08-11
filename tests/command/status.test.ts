@@ -5,8 +5,8 @@
  * 缺字段优雅降级不崩溃 / 上下文百分比计算。
  */
 import { describe, test, expect } from "bun:test";
-import statusCmd from "../../src/command/commands/status/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
+import statusCmd from "@sid-code/cli/command/commands/status/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 
 const loadStatus = () => (statusCmd as LocalCommand).load();
 

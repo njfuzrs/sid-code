@@ -28,9 +28,9 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { generateClaudeMdAttachment } from "../../src/config/attachments.ts";
-import { JitContextManager } from "../../src/config/jit-context.ts";
-import { buildSystemPrompt } from "../../src/config/system-prompt.ts";
+import { generateClaudeMdAttachment } from "@sid-code/core/config/attachments.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
+import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
 
 /** 静默语义的判据：出现「请勿…提及」+「复述」即算带条款 */
 function hasSilenceClause(text: string): boolean {

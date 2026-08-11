@@ -3,8 +3,8 @@ import {
   resolveDependencyClosure,
   verifyAndDemote,
   findReverseDependents,
-} from "../../src/plugin/dependency.ts";
-import type { LoadedPlugin } from "../../src/plugin/types.ts";
+} from "@sid-code/cli/plugin/dependency.ts";
+import type { LoadedPlugin } from "@sid-code/cli/plugin/types.ts";
 
 /** 构造一个最小 LoadedPlugin（用于依赖测试） */
 function mkPlugin(name: string, deps: string[] = [], enabled = true): LoadedPlugin {

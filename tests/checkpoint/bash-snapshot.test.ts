@@ -7,8 +7,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { getBashAffectedFiles } from "../../src/checkpoint/bash-affected-files.ts";
-import { CheckpointManager } from "../../src/checkpoint/manager.ts";
+import { getBashAffectedFiles } from "@sid-code/core/checkpoint/bash-affected-files.ts";
+import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
 import { mkdirSync, rmSync, existsSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";

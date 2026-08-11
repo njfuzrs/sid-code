@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SecretRedactHook, getSharedSecretRedactHook } from "../../src/llm/hooks/secret-redact.ts";
+import { SecretRedactHook, getSharedSecretRedactHook } from "@sid-code/core/llm/hooks/secret-redact.ts";
 
 describe("SecretRedactHook — 7 类 pattern 命中 (§3.1)", () => {
   test("GitHub Token (ghp_*) 被替换", () => {

@@ -13,7 +13,7 @@ import {
   isUserMentionedOrigin,
   getUserMentionedOrigins,
   __resetUrlProvenance,
-} from "../../src/tool/url-provenance.ts";
+} from "@sid-code/core/tool/url-provenance.ts";
 
 beforeEach(() => {
   __resetUrlProvenance();

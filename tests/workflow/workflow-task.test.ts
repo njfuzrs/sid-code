@@ -7,7 +7,7 @@
  */
 
 import { test, expect, describe, afterEach } from "bun:test";
-import { generateTaskId, isWorkflowTask, type LocalWorkflowTaskState } from "../../src/task/types.ts";
+import { generateTaskId, isWorkflowTask, type LocalWorkflowTaskState } from "@sid-code/core/task/types.ts";
 import {
   createWorkflowTask,
   completeWorkflowTask,
@@ -15,9 +15,9 @@ import {
   updateWorkflowProgress,
   killWorkflowTask,
   getWorkflowTaskSignal,
-} from "../../src/task/workflow-task.ts";
-import { getTask, clearAllTasks } from "../../src/task/registry.ts";
-import { dequeuePendingNotifications } from "../../src/task/notification.ts";
+} from "@sid-code/core/task/workflow-task.ts";
+import { getTask, clearAllTasks } from "@sid-code/core/task/registry.ts";
+import { dequeuePendingNotifications } from "@sid-code/core/task/notification.ts";
 
 afterEach(() => {
   clearAllTasks();

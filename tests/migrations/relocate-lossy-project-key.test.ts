@@ -53,7 +53,7 @@ afterEach(() => {
 describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
   test("旧键下的记忆被复制到新键，且旧目录保留", async () => {
     const { sanitizeProjectKey, findLegacyProjectKey, resolveProjectRoot } = await import(
-      "../../src/memory/paths.ts"
+      "@sid-code/core/memory/paths.ts"
     );
     process.chdir(PROJ_A);
     const root = resolveProjectRoot(PROJ_A);
@@ -67,7 +67,7 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
     mkdirSync(legacyMem, { recursive: true });
     writeFileSync(join(legacyMem, "MEMORY.md"), "# Memory Index\n- [A 的约定](a.md)\n");
 
-    const { migrate } = await import("../../src/migrations/relocate-lossy-project-key.ts");
+    const { migrate } = await import("@sid-code/core/migrations/relocate-lossy-project-key.ts");
     migrate();
 
     const newIndex = join(TEST_HOME, "projects", newKey, "memory", "MEMORY.md");
@@ -79,7 +79,7 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
 
   test("新键目录已有数据 → 不覆盖", async () => {
     const { sanitizeProjectKey, findLegacyProjectKey, resolveProjectRoot } = await import(
-      "../../src/memory/paths.ts"
+      "@sid-code/core/memory/paths.ts"
     );
     process.chdir(PROJ_A);
     const root = resolveProjectRoot(PROJ_A);
@@ -93,7 +93,7 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
     mkdirSync(newMem, { recursive: true });
     writeFileSync(join(newMem, "MEMORY.md"), "新数据（不该被覆盖）");
 
-    const { migrate } = await import("../../src/migrations/relocate-lossy-project-key.ts");
+    const { migrate } = await import("@sid-code/core/migrations/relocate-lossy-project-key.ts");
     migrate();
 
     expect(readFileSync(join(newMem, "MEMORY.md"), "utf-8")).toBe("新数据（不该被覆盖）");
@@ -104,17 +104,17 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
     initRepo(asciiProj);
     process.chdir(asciiProj);
 
-    const { findLegacyProjectKey, resolveProjectRoot } = await import("../../src/memory/paths.ts");
+    const { findLegacyProjectKey, resolveProjectRoot } = await import("@sid-code/core/memory/paths.ts");
     expect(findLegacyProjectKey(resolveProjectRoot(asciiProj))).toBeUndefined();
 
-    const { migrate } = await import("../../src/migrations/relocate-lossy-project-key.ts");
+    const { migrate } = await import("@sid-code/core/migrations/relocate-lossy-project-key.ts");
     // 无旧键 → 不应抛错、不应创建任何目录
     expect(() => migrate()).not.toThrow();
   });
 
   test("幂等：重复执行结果一致", async () => {
     const { sanitizeProjectKey, findLegacyProjectKey, resolveProjectRoot } = await import(
-      "../../src/memory/paths.ts"
+      "@sid-code/core/memory/paths.ts"
     );
     process.chdir(PROJ_A);
     const root = resolveProjectRoot(PROJ_A);
@@ -122,7 +122,7 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
     mkdirSync(legacyMem, { recursive: true });
     writeFileSync(join(legacyMem, "MEMORY.md"), "内容");
 
-    const { migrate } = await import("../../src/migrations/relocate-lossy-project-key.ts");
+    const { migrate } = await import("@sid-code/core/migrations/relocate-lossy-project-key.ts");
     migrate();
     migrate();
 
@@ -131,7 +131,7 @@ describe("迁移 v2：有损项目键搬迁（审计第 3 条）", () => {
   });
 
   test("两个撞键项目搬迁后互不可见（第 3 条隔离目标）", async () => {
-    const { getAutoMemPath } = await import("../../src/memory/paths.ts");
+    const { getAutoMemPath } = await import("@sid-code/core/memory/paths.ts");
     expect(getAutoMemPath(PROJ_A)).not.toBe(getAutoMemPath(PROJ_B));
   });
 });

@@ -21,9 +21,9 @@ import {
   collectIDEContext,
   drainIDEContextDelta,
   _resetIDEContextDeltaForTesting,
-} from "../../src/ide/integration.ts";
-import type { MCPManager } from "../../src/mcp/manager.ts";
-import type { MCPClient } from "../../src/mcp/client.ts";
+} from "@sid-code/core/ide/integration.ts";
+import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
+import type { MCPClient } from "@sid-code/core/mcp/client.ts";
 
 /** 通知回调表：method → handlers */
 type Handlers = Map<string, ((params: unknown) => void)[]>;

@@ -10,7 +10,7 @@ import {
   resetGitOperationStats,
   setGitOperationObserver,
   type GitOperationEvent,
-} from "../../src/tool/git-operation-tracking.ts";
+} from "@sid-code/core/tool/git-operation-tracking.ts";
 
 describe("P2-3 classifyGitOperation", () => {
   test("commit", () => {

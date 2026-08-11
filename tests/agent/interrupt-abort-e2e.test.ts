@@ -23,24 +23,24 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { queryLoop } from "../../src/query/loop.ts";
-import type { QueryLoopConfig } from "../../src/query/loop.ts";
-import type { QueryDeps } from "../../src/query/types.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import { ModelFallback } from "../../src/llm/fallback.ts";
-import { SessionState } from "../../src/session/state.ts";
-import { TraceWriter } from "../../src/trace/writer.ts";
-import { toAbortError } from "../../src/llm/errors.ts";
-import type { Config } from "../../src/config/config.ts";
+import { queryLoop } from "@sid-code/core/query/loop.ts";
+import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
+import type { QueryDeps } from "@sid-code/core/query/types.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
+import { SessionState } from "@sid-code/core/session/state.ts";
+import { TraceWriter } from "@sid-code/core/trace/writer.ts";
+import { toAbortError } from "@sid-code/core/llm/errors.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 import type {
   StreamEvent,
   AccumulatedResponse,
   ContentBlock,
   Message,
-} from "../../src/llm/types.ts";
-import { checkMessageHistoryIntegrity } from "../../src/agent/message-invariants.ts";
-import { guardOutgoingMessages } from "../../src/llm/protocol-sentinel.ts";
+} from "@sid-code/core/llm/types.ts";
+import { checkMessageHistoryIntegrity } from "@sid-code/core/agent/message-invariants.ts";
+import { guardOutgoingMessages } from "@sid-code/core/llm/protocol-sentinel.ts";
 
 let tmpDirs: string[] = [];
 afterEach(() => {

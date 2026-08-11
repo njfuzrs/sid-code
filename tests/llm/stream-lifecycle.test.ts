@@ -20,8 +20,8 @@ import {
   streamLifecycle,
   LIFECYCLE_PRESETS,
   type StreamTimeoutLayer,
-} from "../../src/llm/stream-lifecycle.ts";
-import type { StreamTelemetrySignal } from "../../src/llm/types.ts";
+} from "@sid-code/core/llm/stream-lifecycle.ts";
+import type { StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
 
 interface Evt {
   type: string;

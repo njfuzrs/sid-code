@@ -6,9 +6,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { SkillActivationCoordinator } from "../../src/skill/activation-coordinator.ts";
-import { SkillManager } from "../../src/skill/manager.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+import { SkillActivationCoordinator } from "@sid-code/core/skill/activation-coordinator.ts";
+import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition>): SkillDefinition {
   return {

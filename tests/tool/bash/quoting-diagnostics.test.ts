@@ -9,7 +9,7 @@ import { describe, test, expect } from "bun:test";
 import {
   looksLikeQuotingBreakage,
   quotingBreakageHint,
-} from "../../../src/tool/bash/quoting-diagnostics.ts";
+} from "@sid-code/core/tool/bash/quoting-diagnostics.ts";
 
 describe("looksLikeQuotingBreakage", () => {
   test("命中：真实事故命令（多行 + 内层双引号 + 退出码 127）", () => {

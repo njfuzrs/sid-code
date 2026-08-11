@@ -16,7 +16,7 @@ import {
   shouldFollowOnToken,
   INITIAL_STREAMING_SCROLL_STATE,
   type StreamingScrollState,
-} from "../../src/ui/hooks/streamingScroll.ts";
+} from "@sid-code/cli/ui/hooks/streamingScroll.ts";
 
 describe("streamingScrollReducer", () => {
   test("初始态为 following", () => {

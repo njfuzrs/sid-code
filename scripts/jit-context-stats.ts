@@ -26,7 +26,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { resolvePaths, listSessions, aggregateJitStats, percentile } from "../src/trace/digest.ts";
+import { resolvePaths, listSessions, aggregateJitStats, percentile } from "@sid-code/core/trace/digest.ts";
 
 interface SessionJit {
   id: string;

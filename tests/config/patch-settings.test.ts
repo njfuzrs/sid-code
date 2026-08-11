@@ -59,7 +59,7 @@ describe("patchSettingsFile", () => {
 
   test("写入新字段不丢失 snake_case 密钥（根因回归）", async () => {
     // 动态 import 以拿到 env 覆盖后的路径
-    const { patchSettingsFile } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
 
     patchSettingsFile("userSettings", "effortLevel", "max");
 
@@ -76,7 +76,7 @@ describe("patchSettingsFile", () => {
 
   test("env 占位符不被展开成明文写回", async () => {
     process.env.DEEPSEEK_API_KEY = "sk-real-secret-12345";
-    const { patchSettingsFile } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
 
     patchSettingsFile("userSettings", "thinkingEnabled", true);
 
@@ -91,7 +91,7 @@ describe("patchSettingsFile", () => {
     const withEffort = { ...ORIGINAL_SETTINGS, effortLevel: "max" };
     writeFileSync(SETTINGS_PATH, JSON.stringify(withEffort, null, 2));
 
-    const { patchSettingsFile } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
     patchSettingsFile("userSettings", "effortLevel", undefined);
 
     const after = JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
@@ -103,7 +103,7 @@ describe("patchSettingsFile", () => {
 
   test("文件不存在时正常创建", async () => {
     rmSync(SETTINGS_PATH, { force: true });
-    const { patchSettingsFile } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
 
     patchSettingsFile("userSettings", "effortLevel", "high");
 
@@ -113,7 +113,7 @@ describe("patchSettingsFile", () => {
   });
 
   test("schema 外的顶层自定义字段保留（.passthrough 语义）", async () => {
-    const { patchSettingsFile } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile } = await import("@sid-code/core/config/settings/index.ts");
 
     patchSettingsFile("userSettings", "effortLevel", "low");
 
@@ -126,7 +126,7 @@ describe("patchSettingsFile", () => {
     // 把 null 当作"已缓存且该来源无设置"命中返回。于是同会话第二次 read-then-patch 读到 null、
     // 从空对象起步，整体覆盖掉第一次写入的字段（/skills、/mcp、/allow、/hooks 等 read-then-patch
     // 命令连续两次 -p 就会丢数据）。修复：改用 clearCachedSource 删键，强制下次读盘。
-    const { patchSettingsFile, getSettingsForSource } = await import("../../src/config/settings/index.ts");
+    const { patchSettingsFile, getSettingsForSource } = await import("@sid-code/core/config/settings/index.ts");
 
     // 第一次：追加 skill-a
     {
@@ -171,7 +171,7 @@ describe("writeSettingsFile 明文凭证护栏", () => {
   });
 
   test("含明文 API key 时抛错且不落盘", async () => {
-    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    const { writeSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
     const withPlaintext = {
       model: "gpt-5.4",
       availableModels: [
@@ -185,7 +185,7 @@ describe("writeSettingsFile 明文凭证护栏", () => {
   });
 
   test("占位符形态正常写入（这是我们希望的写法）", async () => {
-    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    const { writeSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
     const withPlaceholder = {
       model: "deepseek-v4-pro",
       availableModels: [
@@ -199,7 +199,7 @@ describe("writeSettingsFile 明文凭证护栏", () => {
   });
 
   test("无凭证的普通配置正常写入", async () => {
-    const { writeSettingsFile } = await import("../../src/config/settings/settings.ts");
+    const { writeSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
     expect(() =>
       writeSettingsFile("userSettings", { model: "claude-opus", theme: "dark" } as any),
     ).not.toThrow();

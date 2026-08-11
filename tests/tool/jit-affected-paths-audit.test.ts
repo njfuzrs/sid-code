@@ -28,7 +28,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
-const TOOL_SRC_DIRS = [join(REPO_ROOT, "src", "tool"), join(REPO_ROOT, "src", "agent")];
+const TOOL_SRC_DIRS = [join(REPO_ROOT, "packages", "core", "src", "tool"), join(REPO_ROOT, "packages", "core", "src", "agent")];
 
 /**
  * schema 中被视为「文件语义路径」的字段名。命中其一即认为该工具触达文件系统，
@@ -155,13 +155,13 @@ describe("P2-9 契约：jitAffectedPaths 不得抛异常（畸形入参返回空
   ];
 
   test("各工具对畸形入参均返回数组且不抛", async () => {
-    const { ReadTool } = await import("../../src/tool/read.ts");
-    const { WriteTool } = await import("../../src/tool/write.ts");
-    const { EditTool } = await import("../../src/tool/edit.ts");
-    const { GrepTool } = await import("../../src/tool/grep.ts");
-    const { GlobTool } = await import("../../src/tool/glob.ts");
-    const { LsTool } = await import("../../src/tool/ls.ts");
-    const { BashTool } = await import("../../src/tool/bash.ts");
+    const { ReadTool } = await import("@sid-code/core/tool/read.ts");
+    const { WriteTool } = await import("@sid-code/core/tool/write.ts");
+    const { EditTool } = await import("@sid-code/core/tool/edit.ts");
+    const { GrepTool } = await import("@sid-code/core/tool/grep.ts");
+    const { GlobTool } = await import("@sid-code/core/tool/glob.ts");
+    const { LsTool } = await import("@sid-code/core/tool/ls.ts");
+    const { BashTool } = await import("@sid-code/core/tool/bash.ts");
 
     const instances: Array<{ name: string; fn: (i: unknown) => string[] }> = [];
     for (const Ctor of [ReadTool, WriteTool, EditTool, GrepTool, GlobTool, LsTool, BashTool] as any[]) {

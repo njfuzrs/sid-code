@@ -33,12 +33,12 @@ import { describe, test, expect } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod/v4";
-import { buildResponsesRequest } from "../../src/llm/openai-responses-request.ts";
-import { validateToolInput } from "../../src/tool/input-validator.ts";
-import type { SendParams, ToolDefinition } from "../../src/llm/types.ts";
-import type { LegacyTool } from "../../src/tool/types.ts";
+import { buildResponsesRequest } from "@sid-code/core/llm/openai-responses-request.ts";
+import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
+import type { SendParams, ToolDefinition } from "@sid-code/core/llm/types.ts";
+import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 
-const TOOL_DIR = join(import.meta.dir, "../../src/tool");
+const TOOL_DIR = join(import.meta.dir, "../../packages/core/src/tool");
 
 /** 按 JSON Schema 的类型给一个"最小合法值"，用于填必需字段 */
 function sampleForSchema(schema: unknown): unknown {

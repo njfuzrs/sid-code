@@ -6,8 +6,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
-import { parseFrontmatter } from "../../src/extension/frontmatter.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
+import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
 
 describe("parseFrontmatter", () => {
   test("解析标准 frontmatter", () => {

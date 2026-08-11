@@ -9,8 +9,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { thinkTool, createThinkTool } from "../../src/tool/think.ts";
-import { Registry } from "../../src/tool/registry.ts";
+import { thinkTool, createThinkTool } from "@sid-code/core/tool/think.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
 
 describe("G19 — think 新泛型工具", () => {
   test("thinkTool 是新泛型 Tool：name 为字符串属性、call 为方法", () => {

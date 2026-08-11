@@ -16,8 +16,8 @@ import {
   detectEmptyParamToolUses,
   replaceEmptyParamToolUses,
   buildEmptyParamRetryMessage,
-} from "../../src/query/empty-param.ts";
-import type { ContentBlock } from "../../src/llm/types.ts";
+} from "@sid-code/core/query/empty-param.ts";
+import type { ContentBlock } from "@sid-code/core/llm/types.ts";
 
 describe("empty-param — isEmptyToolInput", () => {
   it("空对象 {} → 空（DeepSeek 退化精确特征）", () => {

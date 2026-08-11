@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { assignAgentColor, colorize } from "../../src/agent/color.ts";
-import { buildForkMessages } from "../../src/agent/fork.ts";
-import { getBuiltInAgentDefinitions } from "../../src/agent/agent-definition.ts";
+import { assignAgentColor, colorize } from "@sid-code/core/agent/color.ts";
+import { buildForkMessages } from "@sid-code/core/agent/fork.ts";
+import { getBuiltInAgentDefinitions } from "@sid-code/core/agent/agent-definition.ts";
 
 describe("verify 内置 Agent 定义", () => {
   it("存在 verify 类型", () => {

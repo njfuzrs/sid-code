@@ -15,7 +15,7 @@ import {
   consumePendingRestore,
   clearPendingInput,
   canRestoreCanceledInput,
-} from "../../src/ui/pending-input.ts";
+} from "@sid-code/cli/ui/pending-input.ts";
 
 describe("A4 — pending-input 状态机", () => {
   beforeEach(() => {

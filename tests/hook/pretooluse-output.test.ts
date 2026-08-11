@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { PreToolUseHookOutput, DefaultHookOutput } from "../../src/hook/types.ts";
+import { PreToolUseHookOutput, DefaultHookOutput } from "@sid-code/core/hook/types.ts";
 
 describe("PreToolUseHookOutput（G1/G2/G9）", () => {
   // === G1：updatedInput 字段 ===

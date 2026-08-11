@@ -1,6 +1,6 @@
 // 验证修复：模拟真实流式，对比"每 token 全量重 lex"(旧) vs "增量渲染缓存"(新)
-import { computeStreamSplit } from "../src/ui/components/StreamingMarkdown.tsx";
-import { cachedLexer, formatTokenToAnsi } from "../src/ui/markdown.ts";
+import { computeStreamSplit } from "@sid-code/cli/ui/components/StreamingMarkdown.tsx";
+import { cachedLexer, formatTokenToAnsi } from "@sid-code/cli/ui/markdown.ts";
 const TW = 100;
 function longText(blocks: number): string {
   const parts: string[] = [];

@@ -16,8 +16,8 @@ import {
   buildTodoGateMessage,
   buildTodoGateExhaustedMessage,
   buildTodoGateForgotMarkMessage,
-} from "../../src/query/todo-reminder.ts";
-import type { TodoItem } from "../../src/tool/todo-write.ts";
+} from "@sid-code/core/query/todo-reminder.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 
 function todo(content: string, status: TodoItem["status"]): TodoItem {
   return { content, activeForm: `正在${content}`, status };

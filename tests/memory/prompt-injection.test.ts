@@ -3,14 +3,14 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildMemoryInstructions, buildMemorySystemPrompt } from "../../src/memory/prompt.ts";
-import { normalizeMemoryDesc } from "../../src/memory/store.ts";
+import { buildMemoryInstructions, buildMemorySystemPrompt } from "@sid-code/core/memory/prompt.ts";
+import { normalizeMemoryDesc } from "@sid-code/core/memory/store.ts";
 import {
   generateRecalledMemoryAttachment,
   generateSessionMemoryAttachment,
   PRIORITY,
-} from "../../src/config/attachments.ts";
-import { buildSystemPrompt } from "../../src/config/system-prompt.ts";
+} from "@sid-code/core/config/attachments.ts";
+import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
 
 describe("buildMemoryInstructions", () => {
   test("包含 4 类分类法", () => {

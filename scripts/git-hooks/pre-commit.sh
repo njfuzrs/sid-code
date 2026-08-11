@@ -5,7 +5,7 @@
 #   1. 扫 staged 的 evals/real-tasks/**.yaml 是否含 §9.1.1 黑名单关键词
 #      （tool_result_content / response_content / patch_content / observation_content / completion_text）
 #      命中即 reject commit（B6-10）
-#   2. 扫 staged 的 SKILL.md（src/skill/builtin/**/SKILL.md 或 .sid-code/skills/**/*.md）
+#   2. 扫 staged 的 SKILL.md（packages/core/src/skill/builtin/**/SKILL.md 或 .sid-code/skills/**/*.md）
 #      调用 holdout 回归扫描器：holdout 暂无 execution case → INFO skip；有则提示应跑回归
 #      （B7-7 §13.4.4 蒸馏护栏 2，holdout case 入库后会自动激活）
 #   3. oxlint 检查 staged 的 .ts/.tsx（P1-4）
@@ -55,7 +55,9 @@ fi
 # 注意只在数据源变动时才跑：--check 要起一次 bun 进程 dump 工具定义（约 1s），
 # 每次提交都跑会让无关提交也变慢，久了就会被 --no-verify 绕过。
 # ============================================================================
-STAGED_REF_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/(help\.ts|cli\.ts|tool/|command/|config/|hook/)' || true)
+# P2-2 分包：源码在 packages/{cli,core}/src/ 下。锚点必须跟着改 ——
+# 仍写 `^src/` 会永远匹配不到，于是这道对账**静默不再触发**（比没有门禁更糟）。
+STAGED_REF_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(cli|core)/src/(help\.ts|cli\.ts|tool/|command/|config/|hook/)' || true)
 STAGED_REF_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(ref/|public/llms\.txt)' || true)
 
 if [ -n "$STAGED_REF_SOURCES" ] || [ -n "$STAGED_REF_PAGES" ]; then
@@ -76,13 +78,14 @@ fi
 # 没进教程"：用户不会读一张 60 行的表来发现能力。2026-07 覆盖度核对实测
 # 62 个命令里 21 个处于这个状态（详见 docs/reference/官网文档覆盖度核对报告.md）。
 #
-# 触发条件复用命令注册表相关改动（src/command/），与 T-3.8 同源，不额外拖慢无关提交。
+# 触发条件复用命令注册表相关改动（packages/cli/src/command/），与 T-3.8 同源，不额外拖慢无关提交。
 #
 # ⚠ 当前是**告警模式**（--coverage，恒退 0），因为存量 18 个未清完；
 #    存量清零后把下面的 --coverage 改成 --coverage-strict 并去掉 `|| true`，
 #    "做了功能不写文档"就在物理上进不了仓库。
 # ============================================================================
-STAGED_CMD_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/command/' || true)
+# P2-2 分包：command/ 归 cli 包（`^src/command/` 锚点已失效，见上方同类注释）。
+STAGED_CMD_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/cli/src/command/' || true)
 STAGED_GUIDE_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(start|use|extend|team)/' || true)
 
 if [ -n "$STAGED_CMD_SOURCES" ] || [ -n "$STAGED_GUIDE_PAGES" ]; then
@@ -107,7 +110,7 @@ fi
 # ============================================================================
 STAGED_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR \
   | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|sh|json|md)$' \
-  | grep -v -E '^(vendor/|src/ink/_vendor/)' || true)
+  | grep -v -E '^(vendor/|packages/tui-renderer/src/_vendor/)' || true)
 
 if [ -n "$STAGED_SOURCES" ]; then
   NUL_HITS=""
@@ -135,7 +138,7 @@ if [ -n "$STAGED_SOURCES" ]; then
     printf '%s\n' "             后果：grep 会把整个文件当二进制静默跳过，全文件符号都搜不到"
     printf '%s\n' "                   （exit=1 与'真的没匹配'不可区分，排查时极易误判成死代码）。"
     printf '%s\n' '             修复：把字符串里的裸控制字节改成转义写法，如 \x1f（US，单元分隔符）'
-    printf '%s\n' "                   —— 运行时等价，源码字节干净。参考 src/query/repeated-readonly-guard.ts"
+    printf '%s\n' "                   —— 运行时等价，源码字节干净。参考 packages/core/src/query/repeated-readonly-guard.ts"
     printf '%s\n' '                   的 makeSignature。定位：perl -ne '"'"'print "line $.\n" if /\x00/'"'"' <文件>'
     echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
     exit 1
@@ -145,7 +148,7 @@ fi
 # ============================================================================
 # B7-7: SKILL.md 改动 → 提示 holdout execution 回归（§13.4.4 v1.3 蒸馏护栏 2）
 # ============================================================================
-STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^src/skill/builtin/.*/SKILL\.md$|^.*\.sid-code/skills/.*\.md$)' || true)
+STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^packages/core/src/skill/builtin/.*/SKILL\.md$|^.*\.sid-code/skills/.*\.md$)' || true)
 
 if [ -n "$STAGED_SKILLS" ]; then
   ABS_FILES=""
@@ -162,7 +165,7 @@ fi
 # 更能精确定位是本次改动引入的问题，而不是让人对着一堆存量报错发懵）
 #
 # .oxlintrc.json 的 ignorePatterns 对显式传入的文件同样生效（已实测），
-# 所以直接把 staged 路径喂给 oxlint 不会漏用 src/ink/ 等排除规则。
+# 所以直接把 staged 路径喂给 oxlint 不会漏用 packages/tui-renderer/src/ 等排除规则。
 # ============================================================================
 STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
 
@@ -178,6 +181,30 @@ if [ -n "$STAGED_TS" ]; then
   if ! (cd "$REPO_ROOT" && ./node_modules/.bin/oxlint $ABS_FILES); then
     echo "[pre-commit] ❌ oxlint 检查失败，commit 中止"
     echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+    exit 1
+  fi
+fi
+
+# ============================================================================
+# P2-2 步骤6：包边界门禁（shared(0) < tui-renderer(1) < core(2) < cli(3)）
+#
+# 只在 packages/*/src/ 下的 .ts/.tsx 有改动时跑（全仓扫一次约 0.2s，但限定 staged
+# 触发能避免改文档 / 改脚本时也等它）。注意**触发条件按 staged 判、扫描却是全仓**：
+# 越界是一对文件之间的关系，只扫 staged 那几个文件判不出方向。
+#
+# 为什么必须有这道门禁：类型越界（`import type`）编译后整行消失，运行时零征兆、
+# tsc 也照样绿 —— 没有专门的门禁，"core 不知道 TUI 存在"这条分包核心不变量
+# 会在几次「随手 import 一下」之后静默失效，而那时已经很难追责到具体某次提交。
+# ============================================================================
+STAGED_PKG_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(shared|tui-renderer|core|cli)/src/.*\.(ts|tsx)$' || true)
+
+if [ -n "$STAGED_PKG_TS" ]; then
+  echo "[pre-commit] 包边界扫描（packages/ 全仓）..."
+  if ! (cd "$REPO_ROOT" && bun run scripts/pkg-boundary-scan.ts); then
+    echo "[pre-commit] ❌ 包边界越界，commit 中止"
+    echo "             低 rank 包不得导入高 rank 包（shared < tui-renderer < core < cli）。"
+    echo "             修法：把共享类型下移到 shared，或反转依赖方向；改 rank 表让它变绿是最有害的修法。"
+    echo "             细节见 scripts/pkg-boundary-scan.ts 文件头与 tests/build/package-boundary.test.ts"
     exit 1
   fi
 fi

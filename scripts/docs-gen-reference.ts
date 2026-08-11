@@ -13,8 +13,8 @@
  *   ref/slash-commands  loadBuiltinCommands()（已迁移 BUILTIN_COMMANDS + legacy 桥接）
  *   ref/hooks           HookEventName 枚举 + 源码注释
  *   ref/settings        SettingsSchema().shape（骨架）× Config 接口（补 passthrough 漏项）
- *   ref/cli             src/cli.ts parseArgs（权威：能不能用）× src/help.ts（素材：怎么说人话）
- *   ref/env             src/help.ts 环境变量段 × 源码 process.env 扫描
+ *   ref/cli             packages/cli/src/cli.ts parseArgs（权威：能不能用）× packages/cli/src/help.ts（素材：怎么说人话）
+ *   ref/env             packages/cli/src/help.ts 环境变量段 × 源码 process.env 扫描
  *
  * 用法:
  *   bun run scripts/docs-gen-reference.ts            # 写入
@@ -30,6 +30,18 @@ import { Glob } from "bun";
 const ROOT = resolve(import.meta.dir, "..");
 const WEBSITE = join(ROOT, "website");
 const REF = join(WEBSITE, "ref");
+
+/**
+ * 生产源码目录（P2-2 分包后是 4 个包，不再是单一 `src/`）。
+ *
+ * 全仓源码扫描（env 读取点、fire*Event 触发点）都要走这个清单。
+ * ⚠️ 漏一个包不会报错，只会让统计数字变小、文档少列一批条目 ——
+ * 分包时实测 env 扫描一度归零、整段「未列入上表的读取点」被静默删掉。
+ * 新增包时同步这里。
+ */
+const PKG_SRC_DIRS = ["shared", "tui-renderer", "core", "cli"].map((p) =>
+  join(ROOT, "packages", p, "src"),
+);
 
 const CHECK = process.argv.includes("--check");
 const STALE = process.argv.includes("--stale");
@@ -87,13 +99,13 @@ interface ToolDef {
 }
 
 /**
- * 取工具定义。走 `bun run src/entrypoints/bootstrap.ts --dump-tools` 而非编译好的
+ * 取工具定义。走 `bun run packages/cli/src/entrypoints/bootstrap.ts --dump-tools` 而非编译好的
  * ./sid-code 二进制：二进制可能是旧版（忘了 make build），那样生成的文档会对应
  * 上一次编译时的源码——正是本生成器要防的漂移。从源码跑保证与工作区一致。
  */
 function loadTools(): ToolDef[] {
   const proc = Bun.spawnSync(
-    ["bun", "run", join(ROOT, "src/entrypoints/bootstrap.ts"), "--dump-tools"],
+    ["bun", "run", join(ROOT, "packages/cli/src/entrypoints/bootstrap.ts"), "--dump-tools"],
     { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
   );
   if (proc.exitCode !== 0) {
@@ -161,7 +173,7 @@ interface SlashCmd {
  * 文档就成了"能用的没写全"。故改用 loadBuiltinCommands() 拿全集。
  */
 async function loadSlashCommands(): Promise<SlashCmd[]> {
-  const { loadBuiltinCommands } = await import(join(ROOT, "src/command/loaders.ts"));
+  const { loadBuiltinCommands } = await import(join(ROOT, "packages/cli/src/command/loaders.ts"));
   const cmds = await loadBuiltinCommands();
   return cmds
     .map((c: any) => ({
@@ -236,14 +248,14 @@ interface HookEvent {
  * 会让读者以为另一种非法——所以两列都出。
  */
 async function loadHookEvents(): Promise<HookEvent[]> {
-  const mod = await import(join(ROOT, "src/hook/types.ts"));
+  const mod = await import(join(ROOT, "packages/core/src/hook/types.ts"));
   const enumObj = mod.HookEventName as Record<string, string>;
   const legacyMap = mod.LEGACY_EVENT_MAP as Record<string, string>;
   // 反转成 PascalCase → snake_case：LEGACY_EVENT_MAP 是 snake→Pascal 方向。
   const toSnake = new Map<string, string>();
   for (const [snake, pascal] of Object.entries(legacyMap)) toSnake.set(pascal, snake);
 
-  const comments = extractEnumComments(join(ROOT, "src/hook/types.ts"), "HookEventName");
+  const comments = extractEnumComments(join(ROOT, "packages/core/src/hook/types.ts"), "HookEventName");
   const wired = await loadWiredHookEvents();
   return Object.keys(enumObj).map((k) => {
     const description = comments.get(k) ?? "";
@@ -266,21 +278,21 @@ async function loadHookEvents(): Promise<HookEvent[]> {
  * 读者配上去等着它响，永远等不到。注释还用了「先占位」这种同义不同词的写法，
  * 关键词匹配天生抓不全。
  *
- * 调用方计数排除 `src/hook/` 自身：那里面是 fire 方法的定义与转发，不是触发点。
+ * 调用方计数排除 `packages/core/src/hook/` 自身：那里面是 fire 方法的定义与转发，不是触发点。
  */
 async function loadWiredHookEvents(): Promise<Set<string>> {
-  const mod = await import(join(ROOT, "src/hook/types.ts"));
+  const mod = await import(join(ROOT, "packages/core/src/hook/types.ts"));
   const names = Object.keys(mod.HookEventName as Record<string, string>);
   const wired = new Set<string>();
   // 一次性把 src/ 下所有 fire*Event 调用点抓出来，避免每个事件各起一个子进程。
-  // -a：src/app.ts 含非 UTF-8 字节，grep 默认会把它当二进制**整个跳过**，
+  // -a：packages/cli/src/app.ts 含非 UTF-8 字节，grep 默认会把它当二进制**整个跳过**，
   //      而 app.ts 恰好是最主要的触发点所在文件——漏了它会把大批事件误判为未接线。
   const { execFileSync } = await import("node:child_process");
   let haystack = "";
   try {
     haystack = execFileSync(
       "grep",
-      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", "--include=*.tsx", join(ROOT, "src")],
+      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", "--include=*.tsx", ...PKG_SRC_DIRS],
       { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
     );
   } catch {
@@ -292,7 +304,7 @@ async function loadWiredHookEvents(): Promise<Set<string>> {
   try {
     selfOnly = execFileSync(
       "grep",
-      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", join(ROOT, "src/hook")],
+      ["-rahoE", "fire[A-Za-z]+Event", "--include=*.ts", join(ROOT, "packages/core/src/hook")],
       { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
     );
   } catch {
@@ -456,16 +468,16 @@ const PASSTHROUGH_FIELDS: Array<[string, string]> = [
  *   描述 = 源码注释（`.describe()` 覆盖率实测 0，只能取注释；Config 的 JSDoc 更全，优先）
  */
 async function loadSettingFields(): Promise<SettingField[]> {
-  const mod = await import(join(ROOT, "src/config/settings/types.ts"));
+  const mod = await import(join(ROOT, "packages/core/src/config/settings/types.ts"));
   const shape = mod.SettingsSchema().shape as Record<string, any>;
 
   const schemaComments = extractFieldComments(
-    join(ROOT, "src/config/settings/types.ts"),
+    join(ROOT, "packages/core/src/config/settings/types.ts"),
     "export const SettingsSchema = lazySchema(",
     ".passthrough()",
   );
   const configComments = extractFieldComments(
-    join(ROOT, "src/config/config.ts"),
+    join(ROOT, "packages/core/src/config/config.ts"),
     "export interface Config {",
     "\n}\n",
   );
@@ -527,18 +539,18 @@ function renderSettingFields(fields: SettingField[]): string {
  */
 export const HELP_ONLY_WHITELIST: Record<string, string> = {
   // 可选值语义（`-r` 可不带值开选择器），parseArgs 的 type:"string" 表达不了，
-  // 走 src/cli.ts 的 extractResumeArg 预处理
+  // 走 packages/cli/src/cli.ts 的 extractResumeArg 预处理
   resume: "可选值语义，走 extractResumeArg 预处理",
   // 取反式 flag，由 allowNegative 生成，不单独声明
   "no-trace": "取反式 flag（allowNegative）",
   // 以下均为子命令级参数，由各子命令自己解析，不进顶层 parseArgs
-  diff: "review 子命令参数（src/command/review.ts）",
-  timeout: "review 子命令参数（src/command/review.ts）",
-  webhook: "daemon 子命令参数（src/command/daemon.ts）",
-  interval: "daemon 子命令参数（src/command/daemon.ts）",
-  "max-concurrent": "daemon 子命令参数（src/command/daemon.ts）",
+  diff: "review 子命令参数（packages/cli/src/command/review.ts）",
+  timeout: "review 子命令参数（packages/cli/src/command/review.ts）",
+  webhook: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
+  interval: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
+  "max-concurrent": "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   json: "agents / mcp / auth 子命令参数",
-  scope: "mcp 子命令参数（src/command/mcp-cli.ts）",
+  scope: "mcp 子命令参数（packages/cli/src/command/mcp-cli.ts）",
 };
 
 /** 顶层 parseArgs 声明了但刻意不写进 --help 的 flag —— 内部出口，不是用户功能 */
@@ -557,12 +569,12 @@ export interface CliReconcile {
   unknownInHelp: string[];
 }
 
-/** 从 src/cli.ts 的 parseArgs options 对象抽 flag 名。用花括号配平定位，不硬编码行号。 */
+/** 从 packages/cli/src/cli.ts 的 parseArgs options 对象抽 flag 名。用花括号配平定位，不硬编码行号。 */
 export function extractParseArgsFlags(cliSrc: string): string[] {
   const anchor = cliSrc.indexOf("const result = parseArgs({");
-  if (anchor < 0) throw new Error("src/cli.ts 里找不到 parseArgs({ ——源码结构变了，生成器需同步");
+  if (anchor < 0) throw new Error("packages/cli/src/cli.ts 里找不到 parseArgs({ ——源码结构变了，生成器需同步");
   const optIdx = cliSrc.indexOf("options: {", anchor);
-  if (optIdx < 0) throw new Error("src/cli.ts 的 parseArgs 里找不到 options: { ——生成器需同步");
+  if (optIdx < 0) throw new Error("packages/cli/src/cli.ts 的 parseArgs 里找不到 options: { ——生成器需同步");
   const open = cliSrc.indexOf("{", optIdx + "options:".length);
   let depth = 0;
   let close = -1;
@@ -576,7 +588,7 @@ export function extractParseArgsFlags(cliSrc: string): string[] {
       }
     }
   }
-  if (close < 0) throw new Error("src/cli.ts 的 parseArgs options 花括号不配平");
+  if (close < 0) throw new Error("packages/cli/src/cli.ts 的 parseArgs options 花括号不配平");
   const block = cliSrc.slice(open, close);
   const flags = [
     ...block.matchAll(/(?:^|\n)\s*"?([a-zA-Z][a-zA-Z0-9-]*)"?\s*:\s*\{\s*type:/g),
@@ -614,7 +626,7 @@ interface HelpEntry {
 function helpBody(helpSrc: string): string[] {
   const s = helpSrc.indexOf("console.log(`");
   const e = helpSrc.lastIndexOf("`);");
-  if (s < 0 || e < 0) throw new Error("src/help.ts 里找不到 printHelp 的模板字符串——生成器需同步");
+  if (s < 0 || e < 0) throw new Error("packages/cli/src/help.ts 里找不到 printHelp 的模板字符串——生成器需同步");
   return helpSrc.slice(s + "console.log(`".length, e).split("\n");
 }
 
@@ -678,7 +690,7 @@ function renderCli(helpSrc: string, rec: CliReconcile): string {
   const subs = parseHelpSubcommands(helpSrc);
 
   let out = `> 共 **${entries.length}** 个参数条目、**${subs.length}** 个子命令。\n`;
-  out += `> 描述取自 \`sid-code --help\`，并与 \`src/cli.ts\` 的 \`parseArgs\` 声明\n`;
+  out += `> 描述取自 \`sid-code --help\`，并与 \`packages/cli/src/cli.ts\` 的 \`parseArgs\` 声明\n`;
   out += `> （**参数能不能用的唯一权威**，共 ${rec.parseArgsFlags.length} 个 flag）交叉对账：\n`;
   out += `> "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。\n\n`;
 
@@ -749,14 +761,28 @@ function scanSourceEnvVars(): Set<string> {
   const found = new Set<string>();
   const glob = new Glob("**/*.ts");
   const PREFIX = /^(SID|CLAUDE_CODE|ANTHROPIC|OPENAI)/;
-  for (const file of glob.scanSync(join(ROOT, "src"))) {
-    const src = readFileSync(join(ROOT, "src", file), "utf8");
-    for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) {
-      if (PREFIX.test(m[1])) found.add(m[1]);
+  // P2-2 分包：生产源码在 4 个包里。漏一个包 = 页尾「未列入上表的读取点」少列一批，
+  // 且不会报错 —— 分包时实测扫到 0 个（原 84 个），整段被静默删掉。
+  let scanned = 0;
+  for (const dir of PKG_SRC_DIRS) {
+    for (const file of glob.scanSync(dir)) {
+      scanned++;
+      const src = readFileSync(join(dir, file), "utf8");
+      for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) {
+        if (PREFIX.test(m[1])) found.add(m[1]);
+      }
+      for (const m of src.matchAll(/process\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]/g)) {
+        if (PREFIX.test(m[1])) found.add(m[1]);
+      }
     }
-    for (const m of src.matchAll(/process\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]/g)) {
-      if (PREFIX.test(m[1])) found.add(m[1]);
-    }
+  }
+  // 防空转：源码根指错时 scanSync 返回空，env 扫描静默归零，
+  // 页尾整段消失却一切「正常」。宁可炸响也不要静默出一份缩水文档。
+  if (scanned < 500) {
+    throw new Error(
+      `扫源码 env 读取点时只遍历到 ${scanned} 个 .ts 文件（预期 >500）。\n` +
+        `PKG_SRC_DIRS 是否指错？当前：\n  ${PKG_SRC_DIRS.join("\n  ")}`,
+    );
   }
   return found;
 }
@@ -1159,8 +1185,8 @@ export function spliceAutoGen(current: string, generated: string, file: string):
 }
 
 async function build(): Promise<{ pages: Page[]; llms: Page; rec: CliReconcile }> {
-  const cliSrc = readFileSync(join(ROOT, "src/cli.ts"), "utf8");
-  const helpSrc = readFileSync(join(ROOT, "src/help.ts"), "utf8");
+  const cliSrc = readFileSync(join(ROOT, "packages/cli/src/cli.ts"), "utf8");
+  const helpSrc = readFileSync(join(ROOT, "packages/cli/src/help.ts"), "utf8");
 
   const tools = loadTools();
   const [slash, hooks, settings] = await Promise.all([
@@ -1209,13 +1235,13 @@ async function main(): Promise<void> {
   // ── 对账诊断：两类真缺陷（§4.5.5）。写入模式也报，让人当场看到。──
   if (rec.missingInHelp.length) {
     console.error(
-      `✘ 对账失败：以下 flag 在 src/cli.ts 的 parseArgs 里声明了（能用），` +
-        `但 src/help.ts 没写（文档漏写）：${rec.missingInHelp.map((f) => "--" + f).join(" ")}`,
+      `✘ 对账失败：以下 flag 在 packages/cli/src/cli.ts 的 parseArgs 里声明了（能用），` +
+        `但 packages/cli/src/help.ts 没写（文档漏写）：${rec.missingInHelp.map((f) => "--" + f).join(" ")}`,
     );
   }
   if (rec.unknownInHelp.length) {
     console.error(
-      `✘ 对账失败：以下 flag 在 src/help.ts 写了，但顶层 parseArgs 没声明、也不在白名单——` +
+      `✘ 对账失败：以下 flag 在 packages/cli/src/help.ts 写了，但顶层 parseArgs 没声明、也不在白名单——` +
         `用户照抄会报"未知选项"：${rec.unknownInHelp.map((f) => "--" + f).join(" ")}`,
     );
   }

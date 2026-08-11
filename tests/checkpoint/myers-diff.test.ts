@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { computeDiff, applyDiff } from "../../src/checkpoint/diff.ts";
+import { computeDiff, applyDiff } from "@sid-code/core/checkpoint/diff.ts";
 
 describe("大文件 diff", () => {
   test("小文件（<1000 行）使用 LCS", () => {

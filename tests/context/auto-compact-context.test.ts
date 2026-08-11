@@ -8,8 +8,8 @@ import {
   TokenFreedTracker,
   isCompactSourceMessage,
   resolveAutoCompactPctOverride,
-} from "../../src/context/auto-compact.ts";
-import type { Message } from "../../src/llm/types.ts";
+} from "@sid-code/core/context/auto-compact.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 // §12 P2-2：getAutoCompactLevel + autoCompact/warning/error 三档已删除（事实死代码，
 // 主循环只消费 blocking）。原 getAutoCompactLevel describe 一并移除。

@@ -15,8 +15,8 @@ import {
   summarizeCacheBreakHistory,
   cacheBreaksPath,
   buildTelemetryEntry,
-} from "../../src/telemetry/cache-telemetry.ts";
-import { CacheBreakDetector, type CacheCheckParams, type CacheBreakCategory } from "../../src/api/cache-detection.ts";
+} from "@sid-code/core/telemetry/cache-telemetry.ts";
+import { CacheBreakDetector, type CacheCheckParams, type CacheBreakCategory } from "@sid-code/core/api/cache-detection.ts";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

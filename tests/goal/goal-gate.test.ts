@@ -15,13 +15,13 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { handleGoalGate, type GoalGateContext } from "../../src/query/goal-gate.ts";
-import { createGoal } from "../../src/goal/state.ts";
-import { BlockedDetector } from "../../src/goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG } from "../../src/goal/config.ts";
-import type { EvalConfig } from "../../src/goal/evaluator.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent, Message } from "../../src/llm/types.ts";
+import { handleGoalGate, type GoalGateContext } from "@sid-code/core/query/goal-gate.ts";
+import { createGoal } from "@sid-code/core/goal/state.ts";
+import { BlockedDetector } from "@sid-code/core/goal/blocked-detector.ts";
+import { DEFAULT_GOAL_CONFIG } from "@sid-code/core/goal/config.ts";
+import type { EvalConfig } from "@sid-code/core/goal/evaluator.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent, Message } from "@sid-code/core/llm/types.ts";
 
 // ─── Mock ───
 
@@ -378,7 +378,7 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
 
 describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
   test("目标含'汇总/报告' + end_turn + 实质文本 → 快速满足（不调 LLM）", async () => {
-    const { evaluateGoal } = await import("../../src/goal/evaluator.ts");
+    const { evaluateGoal } = await import("@sid-code/core/goal/evaluator.ts");
     const goal = createGoal("检查文档一致性并汇总告诉我审计结果");
     goal.objective = "检查文档一致性并汇总告诉我审计结果";
     // provider 抛错——若命中 fast-path 就不会走到 LLM，故此处不应抛出
@@ -393,7 +393,7 @@ describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
   });
 
   test("报告型目标但 assistant 文本过短 → 不命中 fast-path", async () => {
-    const { evaluateGoal } = await import("../../src/goal/evaluator.ts");
+    const { evaluateGoal } = await import("@sid-code/core/goal/evaluator.ts");
     const goal = createGoal("汇总告诉我结果");
     goal.objective = "汇总告诉我结果";
     // 文本仅 100 字符 < 500 阈值 → 不命中 fast-path → 走 LLM（失败降级为未满足）

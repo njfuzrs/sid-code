@@ -10,7 +10,7 @@ import {
   isReadOnlyCommand,
   isReadOnlyGitConfig,
   stripSafeGitGlobalOptions,
-} from "../../src/tool/bash/read-only-validation.ts";
+} from "@sid-code/core/tool/bash/read-only-validation.ts";
 
 describe("P0-1 git config 只读细分", () => {
   test("读取形态判只读", () => {

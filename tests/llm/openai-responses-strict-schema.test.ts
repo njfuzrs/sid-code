@@ -18,8 +18,8 @@
  *   4. 递归处理 properties / items / anyOf|oneOf|allOf，覆盖任意深度嵌套
  */
 import { describe, test, expect } from "bun:test";
-import { buildResponsesRequest } from "../../src/llm/openai-responses-request.ts";
-import type { SendParams, ToolDefinition } from "../../src/llm/types.ts";
+import { buildResponsesRequest } from "@sid-code/core/llm/openai-responses-request.ts";
+import type { SendParams, ToolDefinition } from "@sid-code/core/llm/types.ts";
 
 /** 递归断言：每个 object 节点的 required 等于 properties 全集，且 additionalProperties=false */
 function collectStrictViolations(node: unknown, path: string): string[] {

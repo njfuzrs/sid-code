@@ -12,8 +12,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { guardedStream } from "../../src/llm/stream-guard.ts";
-import type { StreamGuardTelemetryEvent } from "../../src/llm/stream-guard.ts";
+import { guardedStream } from "@sid-code/core/llm/stream-guard.ts";
+import type { StreamGuardTelemetryEvent } from "@sid-code/core/llm/stream-guard.ts";
 
 interface AnthropicLikeEvent {
   type: string;

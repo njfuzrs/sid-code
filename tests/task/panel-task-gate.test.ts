@@ -29,8 +29,8 @@ import {
   isPanelTask,
   createAgentTask,
   hasRunningTasks,
-} from "../../src/task/index.ts";
-import type { LocalAgentTaskState, LocalShellTaskState, TaskState } from "../../src/task/types.ts";
+} from "@sid-code/core/task/index.ts";
+import type { LocalAgentTaskState, LocalShellTaskState, TaskState } from "@sid-code/core/task/types.ts";
 
 function makeAgentTask(id: string, overrides: Partial<LocalAgentTaskState> = {}): LocalAgentTaskState {
   return {
@@ -148,7 +148,7 @@ describe("消费端口径一致（问题一：前台子代理不得出现在任�
   });
 
   test("<task-statuses> 附件不报前台子代理（否则模型误以为另有后台任务、去轮询 task_output）", async () => {
-    const { generateTaskStatusAttachment } = await import("../../src/task/registry.ts");
+    const { generateTaskStatusAttachment } = await import("@sid-code/core/task/registry.ts");
 
     registerTask(makeAgentTask("fg", { isBackgrounded: false, description: "前台探索任务" }));
     // 只有前台子代理时，附件应为 null（等同"没有后台任务"）
@@ -166,12 +166,12 @@ describe("消费端口径一致（问题一：前台子代理不得出现在任�
     // 这条静态断言锁住接线本身：若将来有人删掉 tool.ts 里的 _showInPanel: false，
     // 前台子代理会重新出现在面板上（问题一复发），而纯行为测试很难覆盖到（runSync
     // 需要真跑一个 LLM 子代理）。故用源码断言兜住这一格。
-    const src = await Bun.file(new URL("../../src/agent/tool.ts", import.meta.url)).text();
+    const src = await Bun.file(new URL("../../packages/core/src/agent/tool.ts", import.meta.url)).text();
     expect(src).toContain("_showInPanel: false");
   });
 
   test("bg_task_list 工具不报前台子代理", async () => {
-    const { TaskListTool } = await import("../../src/tool/task-list.ts");
+    const { TaskListTool } = await import("@sid-code/core/tool/task-list.ts");
     const tool = new TaskListTool();
 
     registerTask(makeAgentTask("fg", { isBackgrounded: false, description: "前台探索任务" }));

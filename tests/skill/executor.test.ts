@@ -9,9 +9,9 @@ import {
   normalizeSkillEffort,
   resolveSkillAgentType,
   resolveSkillAsk,
-} from "../../src/skill/executor.ts";
-import { HookSystem } from "../../src/hook/system.ts";
-import type { SkillDefinition } from "../../src/skill/types.ts";
+} from "@sid-code/core/skill/executor.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition>): SkillDefinition {
   return {

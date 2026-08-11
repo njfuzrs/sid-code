@@ -9,7 +9,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { Scheduler, resolveWorkflowConcurrency } from "../../src/workflow/scheduler.ts";
+import { Scheduler, resolveWorkflowConcurrency } from "@sid-code/core/workflow/scheduler.ts";
 
 /** 受控延迟 */
 function delay(ms: number): Promise<void> {

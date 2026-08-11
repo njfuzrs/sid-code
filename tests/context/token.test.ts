@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { estimateTextTokens } from "../../src/context/token.ts";
+import { estimateTextTokens } from "@sid-code/core/context/token.ts";
 
 describe("estimateTextTokens", () => {
   test("空字符串返回 0", () => {

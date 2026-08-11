@@ -8,14 +8,14 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { platform } from "os";
 import { join } from "path";
-import terminalSetupCmd from "../../src/command/commands/terminal-setup/index.ts";
+import terminalSetupCmd from "@sid-code/cli/command/commands/terminal-setup/index.ts";
 import {
   parseJSONC,
   detectVSCodeVariant,
   getVSCodeKeybindingsPath,
   NATIVE_CSIU_TERMINALS,
-} from "../../src/command/commands/terminal-setup/terminal-setup.ts";
-import type { CommandContext, LocalCommandModule } from "../../src/command/types.ts";
+} from "@sid-code/cli/command/commands/terminal-setup/terminal-setup.ts";
+import type { CommandContext, LocalCommandModule } from "@sid-code/cli/command/types.ts";
 
 async function loadHandler(): Promise<LocalCommandModule> {
   const mod = await (terminalSetupCmd as any).load();

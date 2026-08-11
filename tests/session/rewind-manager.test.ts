@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { RewindManager, MAX_REWIND_POINTS, type RewindDeps } from "../../src/session/rewind-manager.ts";
+import { RewindManager, MAX_REWIND_POINTS, type RewindDeps } from "@sid-code/core/session/rewind-manager.ts";
 
 /** 构造一个内存 ctxMgr + checkpoint 假依赖。 */
 function makeDeps(initialMsgs: unknown[] = []) {

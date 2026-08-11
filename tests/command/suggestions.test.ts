@@ -6,7 +6,7 @@ import { describe, test, expect } from "bun:test";
 import {
   rankCommandInfos,
   type RankableCommandInfo,
-} from "../../src/command/suggestions.ts";
+} from "@sid-code/cli/command/suggestions.ts";
 
 const COMMANDS: RankableCommandInfo[] = [
   { name: "compact", aliases: [], description: "压缩对话历史" },

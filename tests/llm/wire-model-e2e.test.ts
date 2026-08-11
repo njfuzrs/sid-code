@@ -13,7 +13,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   setWireModelAliases,
   resetWireModelAliases,
-} from "../../src/llm/wire-model.ts";
+} from "@sid-code/core/llm/wire-model.ts";
 
 const GATEWAY = "claude-sonnet-5-gateway";
 const REAL = "claude-sonnet-5";
@@ -25,7 +25,7 @@ async function captureOpenAIBody(
   ctorModel: string,
   params: Record<string, unknown>,
 ): Promise<any> {
-  const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+  const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
   let captured: any = null;
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: any, init: any) => {
@@ -56,7 +56,7 @@ async function captureOpenAIStreamBody(
   ctorModel: string,
   params: Record<string, unknown>,
 ): Promise<any> {
-  const { OpenAIProvider } = await import("../../src/llm/openai.ts");
+  const { OpenAIProvider } = await import("@sid-code/core/llm/openai.ts");
   let captured: any = null;
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: any, init: any) => {
@@ -90,7 +90,7 @@ async function captureAnthropicStreamBody(
   ctorModel: string,
   params: Record<string, unknown>,
 ): Promise<any> {
-  const { AnthropicProvider } = await import("../../src/llm/anthropic.ts");
+  const { AnthropicProvider } = await import("@sid-code/core/llm/anthropic.ts");
   let captured: any = null;
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: any, init: any) => {

@@ -16,8 +16,8 @@ import {
   _resetWatcherStateForTesting,
   _getSuppressedReasonForTesting,
   setTeamMemorySuppressionListener,
-} from "../../../src/memory/team/watcher.ts";
-import { getTeamMemPath } from "../../../src/memory/team/paths.ts";
+} from "@sid-code/core/memory/team/watcher.ts";
+import { getTeamMemPath } from "@sid-code/core/memory/team/paths.ts";
 
 let tmpRoot: string;
 let configDir: string;

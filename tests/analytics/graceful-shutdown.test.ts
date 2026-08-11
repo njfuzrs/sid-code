@@ -5,7 +5,7 @@ import {
   getCleanupCount,
   __resetCleanupForTest,
   cleanupTerminalSync,
-} from "../../src/utils/graceful-shutdown.ts";
+} from "@sid-code/shared/utils/graceful-shutdown.ts";
 
 describe("优雅关闭（spec 17 §3.4）", () => {
   beforeEach(() => {
@@ -62,7 +62,7 @@ describe("优雅关闭（spec 17 §3.4）", () => {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { initFeatureFlags, __resetFeatureFlagsForTest } = await import(
-      "../../src/analytics/feature-flags.ts"
+      "@sid-code/core/analytics/feature-flags.ts"
     );
 
     const dir = mkdtempSync(join(tmpdir(), "sid-gs-ff-"));

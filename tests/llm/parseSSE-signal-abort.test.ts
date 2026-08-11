@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { OpenAIProvider } from "../../src/llm/openai.ts";
+import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
 
 // 继承暴露 parseSSE
 class TestableOpenAI extends OpenAIProvider {

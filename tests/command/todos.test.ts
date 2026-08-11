@@ -5,10 +5,10 @@
  * 单色字形（无彩色 emoji，遵守 src/ui/CLAUDE.md L1.1）。
  */
 import { describe, test, expect } from "bun:test";
-import todosCmd from "../../src/command/commands/todos/index.ts";
-import type { CommandContext, LocalCommand } from "../../src/command/types.ts";
-import type { TodoItem } from "../../src/tool/todo-write.ts";
-import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "../../src/ui/constants/figures.ts";
+import todosCmd from "@sid-code/cli/command/commands/todos/index.ts";
+import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
+import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
+import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "@sid-code/cli/ui/constants/figures.ts";
 
 const loadTodos = () => (todosCmd as LocalCommand).load();
 

@@ -17,11 +17,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { Registry } from "../../src/tool/registry.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { SendParams, StreamEvent } from "../../src/llm/types.ts";
-import { MAX_RECENT_ACTIVITIES, type AgentProgressSnapshot } from "../../src/agent/progress.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { Registry } from "@sid-code/core/tool/registry.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
+import { MAX_RECENT_ACTIVITIES, type AgentProgressSnapshot } from "@sid-code/core/agent/progress.ts";
 
 /** spawn 分支不会真的用到 provider（子进程自己发请求），随便给一个占位实现即可满足构造签名。 */
 class UnusedProvider implements Provider {

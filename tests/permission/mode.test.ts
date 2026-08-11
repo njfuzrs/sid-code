@@ -8,8 +8,8 @@ import {
   getNextPermissionMode,
   getNextKeyboardPermissionMode,
   getModeName,
-} from "../../src/permission/mode.ts";
-import type { PermissionMode } from "../../src/permission/mode.ts";
+} from "@sid-code/core/permission/mode.ts";
+import type { PermissionMode } from "@sid-code/core/permission/mode.ts";
 
 describe("getNextPermissionMode", () => {
   it("default → acceptEdits（基本循环首步）", () => {

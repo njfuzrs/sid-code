@@ -6,8 +6,8 @@ import {
   toKeystroke,
   defaultChordBindings,
   type ChordBinding,
-} from "../../src/ui/keybindings/chord.ts";
-import type { Key } from "../../src/ui/contexts/KeypressContext.ts";
+} from "@sid-code/cli/ui/keybindings/chord.ts";
+import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 /** 构造真实 Key 的测试工具 */
 function key(partial: Partial<Key> & { name: string }): Key {

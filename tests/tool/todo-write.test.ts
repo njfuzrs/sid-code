@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { TodoWriteTool } from "../../src/tool/todo-write.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
 
 describe("TodoWriteTool", () => {
   function makeTodo(

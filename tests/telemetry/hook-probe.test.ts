@@ -3,12 +3,12 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { TelemetryBus } from "../../src/telemetry/bus.ts";
-import { TelemetryHookProbe } from "../../src/telemetry/hook-probe.ts";
-import { TokenMeter } from "../../src/telemetry/metrics/token-meter.ts";
-import { HookSystem } from "../../src/hook/system.ts";
-import { ATTR } from "../../src/telemetry/types.ts";
-import type { SpanData, TelemetryExporter } from "../../src/telemetry/types.ts";
+import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
+import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
+import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
+import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { ATTR } from "@sid-code/core/telemetry/types.ts";
+import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
 /** 收集 span 的 mock 导出器 */
 function createMockExporter() {
   const spans: SpanData[] = [];

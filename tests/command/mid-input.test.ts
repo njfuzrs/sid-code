@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { findMidInputSlashCommand } from "../../src/command/mid-input.ts";
+import { findMidInputSlashCommand } from "@sid-code/cli/command/mid-input.ts";
 
 describe("findMidInputSlashCommand", () => {
   test("识别中间位置的斜杠命令", () => {

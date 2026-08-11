@@ -6,8 +6,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { buildStaticItems } from "../../src/ui/history-adapter.ts";
-import type { HistoryItem } from "../../src/ui/types.ts";
+import { buildStaticItems } from "@sid-code/cli/ui/history-adapter.ts";
+import type { HistoryItem } from "@sid-code/cli/ui/types.ts";
 
 const VERSION = "9.9.9";
 

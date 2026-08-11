@@ -18,7 +18,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { JitContextManager } from "../../src/config/jit-context.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
 
 /** 建一对同级目录：proj 与 proj-evil（后者是前者的字符串前缀延伸） */
 function makeSiblingProjects() {

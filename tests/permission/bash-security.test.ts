@@ -32,7 +32,7 @@ import {
   validateShellMetacharacters,
   validateBackslashEscapedWhitespace,
   validateDangerousVariablesAndIncomplete,
-} from "../../src/permission/bash-security.ts";
+} from "@sid-code/core/permission/bash-security.ts";
 
 describe("extractQuotedContent（引号上下文提取）", () => {
   test("剥离单引号内容", () => {

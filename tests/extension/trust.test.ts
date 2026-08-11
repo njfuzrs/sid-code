@@ -6,7 +6,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { TrustManager } from "../../src/extension/trust.ts";
+import { TrustManager } from "@sid-code/core/extension/trust.ts";
 
 describe("TrustManager", () => {
   let testDir: string;

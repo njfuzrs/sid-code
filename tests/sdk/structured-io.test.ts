@@ -5,9 +5,9 @@
 import { describe, test, expect } from "bun:test";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
-import { StructuredIO } from "../../src/sdk/structured-io.ts";
-import { ndjsonStringify } from "../../src/sdk/ndjson.ts";
-import type { SDKMessage } from "../../src/sdk/types.ts";
+import { StructuredIO } from "@sid-code/core/sdk/structured-io.ts";
+import { ndjsonStringify } from "@sid-code/core/sdk/ndjson.ts";
+import type { SDKMessage } from "@sid-code/core/sdk/types.ts";
 
 /** 读取 PassThrough 输出的所有 NDJSON 行（已解析） */
 function collectOutput(stream: PassThrough): Promise<unknown[]> {

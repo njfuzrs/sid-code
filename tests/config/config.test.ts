@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { defaultConfig, loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "../../src/config/config.ts";
+import { defaultConfig, loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core/config/config.ts";
 
 describe("config", () => {
   test("defaultConfig 返回合理的默认值（不绑定特定 Provider/模型）", () => {

@@ -55,9 +55,9 @@ $ sc
 › The timeout config in this module isn't taking effect, find out why
 
   Searching for timeout-related code…
-  Reading src/tool/bash.ts:55-80
+  Reading packages/core/src/tool/bash.ts:55-80
   Found it: parseEnv reads the env var but never passes it to spawn's timeout param
-  Editing src/tool/bash.ts
+  Editing packages/core/src/tool/bash.ts
   Running bun test tests/tool/bash.test.ts  → 12 pass 0 fail
 
   The timeout was ignored because parseEnv's return value was never wired into spawn.
@@ -87,7 +87,7 @@ Coming from Claude Code, migration is close to zero-cost — see the
 
 | Item | Status |
 | --- | --- |
-| First-party code | 200k+ lines of TypeScript under `src/` (excludes the vendored ink fork) |
+| First-party code | 200k+ lines of TypeScript under `packages/` (excludes the vendored ink fork) |
 | Engineering loop | 600+ test files, 8000+ unit tests; the full suite runs on every change and must be green before commit |
 | Surface area | 44 built-in tools, 32 hook event types, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | 30 eval cases (including a holdout set), run before each release to catch regressions |
@@ -95,12 +95,18 @@ Coming from Claude Code, migration is close to zero-cost — see the
 <!--
   How these numbers are counted (verified by hand before each release; write round
   numbers, not exact ones):
-    lines of code  find src -name '*.ts' -o -name '*.tsx' | grep -v '/ink/' | xargs wc -l
-                   (2026-08-10: 203,178 lines, excluding the vendored ink fork)
-    test files     find tests src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (641)
-    unit tests     grep -rhoE '\b(it|test)\(' tests src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                   (8,562)
-    hook events    member count of the HookEventName enum in src/hook/types.ts  (32)
+    NOTE (P2-2, 2026-08-11): sources moved from a flat src/ into
+                   packages/{shared,tui-renderer,core,cli}/src/, so the commands below were
+                   updated too. A stale `find src` does not error — it just counts 0, and a
+                   silently broken verification command is worse than a stale number, because
+                   the next person believes they verified it. The ink fork is now its own
+                   package, so we exclude a package instead of the previous grep -v '/ink/'.
+    lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
+                   (2026-08-11: 203,533 lines, excluding the vendored ink fork = packages/tui-renderer)
+    test files     find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (642)
+    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                   (8,569)
+    hook events    member count of the HookEventName enum in packages/core/src/hook/types.ts  (32)
     built-in tools length of the `sid-code --dump-tools` array (44 — same source as the
                    generated ref/tools.md). Do NOT write "60+"; that was wrong and is
                    contradicted by the runtime registry.
@@ -149,7 +155,7 @@ This project is released under the **[MIT License](./LICENSE)**. It is
 non-commercial: not sold, not operated for profit.
 
 > ⚠️ **MIT covers our own code only.** No license can grant rights we do not hold —
-> the Anthropic-authored additions inside `src/ink/` are outside the grant (detailed
+> the Anthropic-authored additions inside `packages/tui-renderer/` are outside the grant (detailed
 > below), and assets under `vendor/` and `node_modules` are governed by their own
 > licenses.
 > Put differently: `LICENSE` tells you what you may do with **our** code, and
@@ -159,8 +165,8 @@ non-commercial: not sold, not operated for profit.
 The origin, license terms, and our modifications for all third-party code are recorded in
 [NOTICE](./NOTICE). One item belongs here in the open rather than buried in an appendix:
 
-> **`src/ink/` (the terminal rendering layer, 121 files / 23,643 lines) is not original
-> to this project.**
+> **`packages/tui-renderer/` (the terminal rendering layer, 122 files / 23,760 lines) is not
+> original to this project.**
 > It is forked from the MIT-licensed upstream [`ink`](https://github.com/vadimdemedes/ink),
 > but **it entered this codebase via a leaked source snapshot of Claude Code**, a
 > closed-source Anthropic product. Anthropic's incremental modifications on top of the
@@ -172,8 +178,9 @@ The origin, license terms, and our modifications for all third-party code are re
 > and that work is in progress** (swap `yoga-layout` back to the npm package → rewrite
 > `termio/*` against the public specifications → clean-room rewrite of `screen.ts` and
 > `selection.ts`).
-> See [NOTICE](./NOTICE) §1 and [`src/ink/README.md`](./src/ink/README.md).
+> See [NOTICE](./NOTICE) §1 and
+> [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md).
 > If a rights holder asks us to remove the code in question, we will comply.
 
-The "200k+ lines of first-party code" figure above **excludes `src/ink/`** — we do not
+The "200k+ lines of first-party code" figure above **excludes `packages/tui-renderer/`** — we do not
 count that part as ours.

@@ -37,9 +37,9 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { modelSupportsStrict } from "../../src/llm/anthropic.ts";
+import { modelSupportsStrict } from "@sid-code/core/llm/anthropic.ts";
 
-const ANTHROPIC_SRC = join(import.meta.dir, "../../src/llm/anthropic.ts");
+const ANTHROPIC_SRC = join(import.meta.dir, "../../packages/core/src/llm/anthropic.ts");
 
 describe("strict 门控防漂移哨兵", () => {
   describe("行为层：当前在用的 Claude 模型必须命中 strict", () => {

@@ -6,7 +6,7 @@
  */
 
 import { test, expect, describe } from "bun:test";
-import { computeWordDiffPairs } from "../../src/ui/components/DiffRenderer.tsx";
+import { computeWordDiffPairs } from "@sid-code/cli/ui/components/DiffRenderer.tsx";
 
 describe("computeWordDiffPairs 词级 diff 配对", () => {
   test("1 del + 1 add 配对成功，互相指向对侧内容", () => {

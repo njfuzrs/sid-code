@@ -20,9 +20,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { execFileSync } from "child_process";
-import { loadAllCLAUDEmd, collectActiveScopeFiles } from "../../src/config/rules.ts";
-import { JitContextManager } from "../../src/config/jit-context.ts";
-import { mergeJitContextIntoPrompt } from "../../src/app.ts";
+import { loadAllCLAUDEmd, collectActiveScopeFiles } from "@sid-code/core/config/rules.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
+import { mergeJitContextIntoPrompt } from "@sid-code/cli/app.ts";
 
 /** 在 fixture 里初始化一个 git 仓库（collectActiveScopeFiles 的 git 信号需要它） */
 function initGitRepo(dir: string): void {

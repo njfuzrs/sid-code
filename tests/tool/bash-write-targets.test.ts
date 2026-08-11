@@ -9,7 +9,7 @@
  * 所以设计目标是"宁漏不误"，测试就得优先锁住不误报。
  */
 import { describe, it, expect } from "bun:test";
-import { bashWriteTargets } from "../../src/tool/jit-affected-paths.ts";
+import { bashWriteTargets } from "@sid-code/core/tool/jit-affected-paths.ts";
 
 describe("bashWriteTargets · 该报的高确定性形态", () => {
   it("覆盖写 `> path`", () => {

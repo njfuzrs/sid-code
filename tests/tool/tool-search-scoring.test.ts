@@ -12,7 +12,7 @@ import {
   searchToolsWithScoring,
   extractParamText,
   type SearchableTool,
-} from "../../src/tool/tool-search-scoring.ts";
+} from "@sid-code/core/tool/tool-search-scoring.ts";
 
 describe("parseToolName", () => {
   test("CamelCase 拆词", () => {

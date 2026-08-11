@@ -11,11 +11,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { runSelfCheck } from "../../src/command/self-check.ts";
+import { runSelfCheck } from "@sid-code/cli/command/self-check.ts";
 import {
   EMBEDDED_BUILTIN_SKILLS,
   EMBEDDED_BUILTIN_SKILLS_HASH,
-} from "../../src/skill/builtin-embedded.generated.ts";
+} from "@sid-code/core/skill/builtin-embedded.generated.ts";
 
 describe("runSelfCheck", () => {
   test("当前仓库（含全部修复）自检通过", async () => {
@@ -49,7 +49,7 @@ describe("内嵌 rg 校验在 dev 模式下的行为", () => {
   test("dev 模式（bun test 即 dev）不因缺内嵌 rg 而失败", async () => {
     // 单测跑在 bun run 语境下，IS_DEV_MODE 为 true，checkEmbeddedRipgrep 应直接跳过。
     // 这条锁住"dev 环境不误报"——否则每次本地跑单测都会被内嵌 rg 绊倒。
-    const { IS_DEV_MODE } = await import("../../src/bootstrap/resolve-executable.ts");
+    const { IS_DEV_MODE } = await import("@sid-code/core/bootstrap/resolve-executable.ts");
     expect(IS_DEV_MODE).toBe(true);
     expect(await runSelfCheck()).toBe(true);
   });

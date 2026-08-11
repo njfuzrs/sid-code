@@ -8,8 +8,8 @@ import {
   getSideStats,
   resetSideCallStats,
   setSideStatsObserver,
-} from "../../src/trace/side-call-sink.ts";
-import { aggregateProviderStats } from "../../src/trace/digest.ts";
+} from "@sid-code/core/trace/side-call-sink.ts";
+import { aggregateProviderStats } from "@sid-code/core/trace/digest.ts";
 
 describe("T13.2/T13.4: recordSideCall 失败字段与 getSideStats 聚合", () => {
   beforeEach(() => {

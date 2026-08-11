@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { isEphemeralWorktree } from "../../src/worktree/cleanup.ts";
+import { isEphemeralWorktree } from "@sid-code/core/worktree/cleanup.ts";
 
 describe("isEphemeralWorktree", () => {
   it("识别 agent 临时 worktree", () => {

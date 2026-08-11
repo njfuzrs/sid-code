@@ -6,8 +6,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { CustomAgentLoader, CustomAgentTool } from "../../src/agent/custom.ts";
-import { ExtensionLoader } from "../../src/extension/loader.ts";
+import { CustomAgentLoader, CustomAgentTool } from "@sid-code/core/agent/custom.ts";
+import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 
 describe("CustomAgentLoader", () => {
   let testDir: string;

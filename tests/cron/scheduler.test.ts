@@ -12,13 +12,13 @@ import {
   isValidCron,
   computeNextCronRun,
   jitteredNextFireMs,
-} from "../../src/cron/parser.ts";
+} from "@sid-code/core/cron/parser.ts";
 import {
   tryAcquireSchedulerLock,
   releaseSchedulerLock,
-} from "../../src/cron/lock.ts";
-import { Scheduler } from "../../src/cron/scheduler.ts";
-import type { CronTask } from "../../src/cron/types.ts";
+} from "@sid-code/core/cron/lock.ts";
+import { Scheduler } from "@sid-code/core/cron/scheduler.ts";
+import type { CronTask } from "@sid-code/core/cron/types.ts";
 
 describe("cron parser", () => {
   it("解析 5 字段表达式", () => {

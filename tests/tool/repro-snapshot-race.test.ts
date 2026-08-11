@@ -2,8 +2,8 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BashTool } from "../../src/tool/bash.ts";
-import { setCwd, getCwd } from "../../src/bootstrap/state.ts";
+import { BashTool } from "@sid-code/core/tool/bash.ts";
+import { setCwd, getCwd } from "@sid-code/core/bootstrap/state.ts";
 
 describe("快照竞态复现", () => {
   it("并发重建快照 + 执行命令，命令不应 isError", async () => {

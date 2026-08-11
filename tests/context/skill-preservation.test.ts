@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager } from "../../src/context/manager.ts";
-import type { Message } from "../../src/llm/types.ts";
+import { Manager } from "@sid-code/core/context/manager.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 function userMsg(text: string): Message {
   return { role: "user", content: [{ type: "text", text }] };

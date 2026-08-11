@@ -18,13 +18,13 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { SubAgent } from "../../src/agent/sub-agent.ts";
-import { ProviderRegistry } from "../../src/llm/registry.ts";
-import { Manager as ContextManager } from "../../src/context/manager.ts";
-import { Registry as ToolRegistry } from "../../src/tool/registry.ts";
-import type { Config } from "../../src/config/config.ts";
-import type { Provider } from "../../src/llm/provider.ts";
-import type { StreamEvent } from "../../src/llm/types.ts";
+import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
+import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
+import type { Provider } from "@sid-code/core/llm/provider.ts";
+import type { StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** 最小 provider —— 本测试只取 buildBaseLoopConfig 的字段，不真的跑 loop */
 const stubProvider: Provider = {

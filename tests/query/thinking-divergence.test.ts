@@ -14,7 +14,7 @@ import {
   THINKING_DIVERGENCE_WINDOW,
   THINKING_DIVERGENCE_LEN,
   isThinkingDivergenceDetectionEnabled,
-} from "../../src/query/thinking-divergence.ts";
+} from "@sid-code/core/query/thinking-divergence.ts";
 
 describe("measureThinkingLen", () => {
   test("累加所有 thinking 块字符数，忽略 text/tool_use", () => {

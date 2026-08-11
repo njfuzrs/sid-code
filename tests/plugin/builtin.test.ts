@@ -5,7 +5,7 @@ import {
   getBuiltinPlugins,
   getBuiltinPluginDefinition,
   listBuiltinPluginNames,
-} from "../../src/plugin/builtin.ts";
+} from "@sid-code/cli/plugin/builtin.ts";
 
 describe("内置插件注册表", () => {
   afterEach(() => {

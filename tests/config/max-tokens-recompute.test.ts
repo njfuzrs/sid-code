@@ -10,11 +10,11 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import type { Config } from "../../src/config/config.ts";
+import type { Config } from "@sid-code/core/config/config.ts";
 import {
   resolveCurrentModelConfig,
   clampMaxTokensToModelCeiling,
-} from "../../src/config/config.ts";
+} from "@sid-code/core/config/config.ts";
 
 function makeConfig(over: Partial<Config> = {}): Config {
   return {

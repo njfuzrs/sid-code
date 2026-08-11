@@ -7,7 +7,7 @@ import { execFileSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parseIncludeFile, applyWorktreeInclude } from "../../src/worktree/include-copy.ts";
+import { parseIncludeFile, applyWorktreeInclude } from "@sid-code/core/worktree/include-copy.ts";
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });

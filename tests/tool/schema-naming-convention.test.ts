@@ -30,7 +30,14 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
-const SRC_ROOT = join(REPO_ROOT, "src");
+/**
+ * 生产源码根（P2-2 分包后 4 个包）。工具实现集中在 core，但这里仍全扫 ——
+ * 「凡 implements Tool 的都要守 snake_case」这条约束不该因为文件搬到哪个包而放过。
+ * 下面「下限哨兵」用例会在扫到 0 个工具时炸响，防路径指错后静默假绿。
+ */
+const SRC_ROOTS = ["shared", "tui-renderer", "core", "cli"].map((p) =>
+  join(REPO_ROOT, "packages", p, "src"),
+);
 
 /** tool_use 协议层字段名规范：全小写 snake_case */
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
@@ -56,7 +63,7 @@ function walkTsFiles(dir: string, acc: string[] = []): string[] {
  * 约定，强行套 snake_case 属于误伤。
  */
 export function discoverToolFiles(): string[] {
-  return walkTsFiles(SRC_ROOT)
+  return SRC_ROOTS.flatMap((root) => walkTsFiles(root))
     .filter((p) => /implements\s+(?:Tool|LegacyTool)\b/.test(readFileSync(p, "utf8")))
     .sort();
 }

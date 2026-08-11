@@ -12,7 +12,7 @@ import {
   isAwaitingHumanInput,
   withHumanInputWait,
   __resetHumanInputGate,
-} from "../../src/query/human-input-gate.ts";
+} from "@sid-code/core/query/human-input-gate.ts";
 
 afterEach(() => __resetHumanInputGate());
 

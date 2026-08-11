@@ -16,10 +16,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { TelemetryBus } from "../../src/telemetry/bus.ts";
-import type { SpanData, MetricPoint, TelemetryExporter } from "../../src/telemetry/types.ts";
-import { JsonlExporter } from "../../src/telemetry/exporters/jsonl.ts";
-import { normalizeConfigKeysForTest } from "../../src/config/config.ts";
+import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
+import type { SpanData, MetricPoint, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
+import { JsonlExporter } from "@sid-code/core/telemetry/exporters/jsonl.ts";
+import { normalizeConfigKeysForTest } from "@sid-code/core/config/config.ts";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readFile, rm, mkdtemp } from "fs/promises";

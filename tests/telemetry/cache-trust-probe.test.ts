@@ -16,7 +16,7 @@ import {
   isExplicitCacheProtocol,
   type LabeledSample,
   type UsageSample,
-} from "../../src/telemetry/cache-trust-probe-core.ts";
+} from "@sid-code/core/telemetry/cache-trust-probe-core.ts";
 
 const NOW = 1_786_152_040;
 

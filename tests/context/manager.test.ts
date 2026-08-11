@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { Manager } from "../../src/context/manager.ts";
+import { Manager } from "@sid-code/core/context/manager.ts";
 
 describe("ContextManager", () => {
   test("添加和获取消息", () => {
