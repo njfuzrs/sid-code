@@ -16,6 +16,7 @@
 import type { AnalyticsSink, EventMetadata } from "./index.ts";
 import { stripProtectedFields } from "./privacy.ts";
 import { isTelemetryDisabled } from "./privacy-level.ts";
+import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
 
 export interface SinkBackend {
   name: string;
@@ -64,6 +65,16 @@ let metadataHook: () => EventMetadata = () => ({});
 /** 注册一个导出后端 */
 export function registerBackend(backend: SinkBackend): void {
   backends.push(backend);
+
+  // 自行向关闭编排器注册刷新（P2-2 分包：改注册制，见 utils/graceful-shutdown.ts）。
+  //
+  // 为什么挂在 registerBackend 而不是某个 init：本模块没有 init 函数，
+  // registerBackend 是「analytics 后端开始工作」的唯一入口。注册在这里保证
+  // 「凡是注册过后端的路径，关闭时都会刷新它们」。
+  //
+  // 固定 name 而非 per-backend name：shutdownBackends() 本来就是刷新**全部**后端，
+  // 注册 N 个后端只需要一个钩子；按 name 去重让第 2..N 次调用变成幂等覆盖。
+  registerShutdownHook("analytics/sink", "flush", () => shutdownBackends());
 }
 
 /**

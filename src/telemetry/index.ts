@@ -37,6 +37,7 @@ import { ConsoleExporter } from "./exporters/console.ts";
 import { JsonlExporter } from "./exporters/jsonl.ts";
 import { OtlpTelemetryExporter } from "./exporters/otlp.ts";
 import type { TelemetryConfig, TelemetryExporterConfig } from "./types.ts";
+import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
 
 /** 全局单例 */
 let globalBus: TelemetryBus | null = null;
@@ -65,6 +66,12 @@ export function initTelemetry(config: Partial<TelemetryConfig>): TelemetryBus {
   }
 
   globalBus = bus;
+
+  // 自行向关闭编排器注册刷新（P2-2 分包：改注册制，见 utils/graceful-shutdown.ts）。
+  // 注册在 init 内而非上游调用方：这样「凡是初始化过遥测的路径都会被刷新」，
+  // 包括直接调 initTelemetry 的测试路径。按 name 去重，反复 init 不堆积。
+  registerShutdownHook("telemetry", "flush", () => shutdownTelemetry());
+
   return bus;
 }
 

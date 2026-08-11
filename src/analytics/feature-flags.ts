@@ -7,6 +7,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { registerShutdownHook } from "../utils/graceful-shutdown.ts";
 
 // --- 类型 ---
 
@@ -91,6 +92,18 @@ export function initFeatureFlags(config: FeatureFlagConfig): void {
     refreshTimer = setInterval(() => void refreshFromRemote(endpoint), interval);
     refreshTimer.unref?.();
   }
+
+  // 自行向关闭编排器注册（P2-2 分包：改注册制，见 utils/graceful-shutdown.ts）。
+  //
+  // 为什么注册点在 init 内而不在 init-helpers：`initFeatureFlags` 是本子系统的
+  // **唯一入口**，注册在这里才能保证「凡是启动了远程刷新定时器的路径，都会被关掉」——
+  // 包括直接调 init 的测试路径。挂在上游调用方就会漏掉这些路径。
+  //
+  // phase 必须是 pre-flush：定时器在关闭期间触发会发起远程 fetch 并回写磁盘缓存。
+  // 按 name 去重，所以反复 init 不会堆积重复钩子。
+  registerShutdownHook("analytics/feature-flags", "pre-flush", () => {
+    shutdownFeatureFlags();
+  });
 }
 
 /**

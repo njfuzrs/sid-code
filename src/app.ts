@@ -81,7 +81,7 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "./config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
-import { startPreventSleep, stopPreventSleep } from "./utils/prevent-sleep.ts";
+import { startPreventSleep, stopPreventSleep } from "./task/prevent-sleep.ts";
 import { getSleepLedger } from "./utils/sleep-detect.ts";
 import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "./trace/side-call-sink.ts";
 import {

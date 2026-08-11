@@ -5,7 +5,8 @@
  * 基于 agentId 哈希取色，保证同一 agent 颜色稳定。
  */
 
-import type { Color } from "../ink/styles.ts";
+// 从 shared 导入而非 ink：让 core 不依赖 tui-renderer（P2-2 分包 §4.4）。
+import type { Color } from "../types/color.ts";
 
 /** 可用的子代理颜色（ANSI 命名色 + 对应 256 色码） */
 export interface AgentColor {

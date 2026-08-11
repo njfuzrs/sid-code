@@ -1,5 +1,12 @@
-// src/utils/prevent-sleep.ts
+// src/task/prevent-sleep.ts
 // 任务保活：干活期间阻止系统空闲休眠（消除"休眠导致任务静默中断"的触发源）
+//
+// ── 为什么在 task/ 而不在 utils/（P2-2 分包，修法⑥）──────────────────────
+// 它依赖 debug/logger.ts（core），而 utils/ 要成为 shared 包（纯叶子工具层，
+// 不许依赖业务层）——留在 utils 就是 shared → core 越界。
+// 判据不是"看起来像不像工具"，而是越界数：它是「任务执行期的保活能力」，
+// 不是通用工具，归 core 更正确且改动量为零（纯 git mv）。
+// 注意第二层 sleep-detect.ts 零导入，是真叶子，仍留在 utils/（将来的 shared）。
 //
 // ── 为什么需要（2026-08-01 真实事故）─────────────────────────────────────
 // 轨迹 20260801-175042-699f69f8：任务执行到一半自己停了，TUI 上没有任何报错。
@@ -29,7 +36,7 @@
 // 都是"引入依赖换取小众收益"，留作后续按需扩展（保持 no-op 不影响正确性，因为
 // 第二/三层纵深与平台无关）。
 
-import { registerCleanup } from "./graceful-shutdown.ts";
+import { registerCleanup } from "../utils/graceful-shutdown.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**

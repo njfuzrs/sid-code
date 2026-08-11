@@ -13,10 +13,26 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
-/** 包的层级 rank：低 rank 不得导入高 rank。 */
+/**
+ * 包的层级 rank：低 rank 不得导入高 rank。
+ *
+ * ⚠️ `shared` 是 rank 0（真叶子），`tui-renderer` 是 rank 1 —— 与方案 §6.1 写的
+ * 「tui-renderer(0) < shared(1)」相反。这是**方案内部两处自相矛盾**，落地时必须择一：
+ *
+ * - §2.1 说 tui-renderer「无内部依赖（叶子）」；
+ * - §4.4 却裁决「把 Color 类型下移到 shared，**tui-renderer 与 core 都从 shared 导入**，
+ *   让 core → tui-renderer 归零」。
+ *
+ * 两条不可能同时成立 —— 一旦 tui-renderer 从 shared 取 Color，它就不再是叶子。
+ * 采用 §4.4 的目标（core 完全不知道 TUI 的存在，这是「core 能当库用」的前提），
+ * 于是唯一自洽的顺序是 shared(0) < tui-renderer(1) < core(2) < cli(3)：
+ * shared 零内部依赖，是真正的叶子。
+ *
+ * 实测印证：`src/utils`、`src/util`、`src/types` 对 ink 的引用数为 0（反向为 2）。
+ */
 export const PACKAGE_RANK: Record<string, number> = {
-  "tui-renderer": 0,
-  shared: 1,
+  shared: 0,
+  "tui-renderer": 1,
   core: 2,
   cli: 3,
 };

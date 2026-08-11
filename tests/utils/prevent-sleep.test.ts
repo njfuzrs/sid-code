@@ -13,7 +13,7 @@ import {
   getPreventSleepRefCount,
   isPreventSleepActive,
   __resetPreventSleepForTest,
-} from "../../src/utils/prevent-sleep.ts";
+} from "../../src/task/prevent-sleep.ts";
 
 const isMac = process.platform === "darwin";
 
