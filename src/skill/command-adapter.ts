@@ -13,7 +13,7 @@
  * $ARGUMENTS / $1 / $arg_name / ${SKILL_DIR} / ${SESSION_ID} / !`shell`
  */
 
-import type { UnifiedCommand, CommandContext } from "../command/types.ts";
+import type { UnifiedCommand, CommandContext } from "../command-contract/types.ts";
 import type { SkillDefinition } from "./types.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
 

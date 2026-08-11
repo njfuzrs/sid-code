@@ -14,7 +14,7 @@
 import type {
   UnifiedCommand,
   CommandContext,
-} from "../../command/types.ts";
+} from "../../command-contract/types.ts";
 import { extractBundledSkillFiles } from "./extract.ts";
 import { getLogger } from "../../debug/logger.ts";
 

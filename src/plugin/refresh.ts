@@ -17,7 +17,10 @@ import type { Registry as CommandRegistry } from "../command/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { MCPManager } from "../mcp/manager.ts";
-import type { UnifiedCommandRegistry } from "../command/unified-registry.ts";
+// 用结构化契约而非 cli 的 class：本文件的 ctx 来自 AppContext/CommandContext 桥接，
+// 两侧字段类型必须一致（见 command-contract/types.ts 的 UnifiedCommandRegistryContract）。
+// 实际注入的仍是 cli 的 UnifiedCommandRegistry 实例。
+import type { UnifiedCommandRegistryContract } from "../command-contract/types.ts";
 import { clearAllPluginCaches } from "./caches.ts";
 import { loadAllPlugins } from "./loader.ts";
 import { mergePluginCommands } from "./merge.ts";
@@ -34,7 +37,7 @@ export interface RefreshContext {
    *   这里调 reloadPlugins 重新拉取插件命令快照）
    * - commandRegistry: 旧命令体系（bridge/headless 等仍用旧 Registry 的路径）
    */
-  unifiedRegistry?: UnifiedCommandRegistry;
+  unifiedRegistry?: UnifiedCommandRegistryContract;
   commandRegistry?: CommandRegistry;
   toolRegistry?: ToolRegistry;
   hookSystem?: HookSystem;

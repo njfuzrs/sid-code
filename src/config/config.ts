@@ -189,7 +189,7 @@ export interface Config {
    * { type: "command", command: "<脚本>", padding?: number }。缺省 = 走内置聚合状态栏。
    * 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。
    */
-  statusLine?: import("../ui/statusline/run-statusline.ts").StatusLineConfig;
+  statusLine?: import("./statusline-types.ts").StatusLineConfig;
 
   /**
    * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。

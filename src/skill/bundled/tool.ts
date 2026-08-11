@@ -22,7 +22,7 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../t
 import type { ProviderRegistry } from "../../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../../tool/registry.ts";
 import type { HookSystem } from "../../hook/system.ts";
-import type { UnifiedCommand, PromptCommand, CommandContext } from "../../command/types.ts";
+import type { UnifiedCommand, PromptCommand, CommandContext } from "../../command-contract/types.ts";
 import { SubAgent } from "../../agent/sub-agent.ts";
 import { getLogger } from "../../debug/logger.ts";
 import { z } from "zod/v4";
