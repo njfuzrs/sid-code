@@ -7,7 +7,7 @@
  *   1. **右侧大片留白没被利用** —— 截断长度与终端宽度无关，120 列终端也只显示 50 列；
  *   2. **被砍掉的恰好是关键信息** —— 尾截断保住了 `/Users/xxx/Code/person/sid-code/` 这段
  *      对每一行都一样的噪音前缀，反而把唯一有区分度的文件名丢了：
- *      `⏺ read /Users/dev/Code/person/sid-code/docs/bugf…`
+ *      `⏺ read /Users/me/Code/person/sid-code/src/telemetry/cache-tel…`
  *
  * 职责划分（本文件是「怎么收缩」，不决定「收缩到多少」）：
  *

@@ -58,9 +58,6 @@ scheduled_tasks.lock
 # 旧的扁平缓存路径 vendor/rg-<platform> 一并忽略（如本机残留不会被误加入库）。
 /vendor/rg-*
 
-# eval 评估目录（本地调试数据，不入库）
-docs/bugfixes/todo/eval/
-
 # eval 真实会话原始输出（P0-4 开源脱敏）
 #
 # 这三类是**跑评测时产生的运行时产物**，内容是真实用户会话的逐字转储：本机绝对路径、

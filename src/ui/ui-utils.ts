@@ -16,7 +16,7 @@ export const ASSISTANT_PADDING_RIGHT = 10;
  *
  * 历史问题（本次修复）：这里曾是 50，且是唯一的截断关口——不看终端宽度就把摘要砍到 50 码点，
  * 于是 120 列的终端上右侧一大片空白闲着，被砍掉的却是关键信息：
- *   `⏺ read /Users/dev/Code/person/sid-code/docs/bugf…`
+ *   `⏺ read /Users/me/Code/person/sid-code/src/telemetry/cache-tel…`
  * 真正该按终端宽度收缩的职责已移交视图层（`ToolShared.tsx` 的 `ToolInfo` → `fitPathToWidth`），
  * 数据层只负责去掉 cwd/home 噪音前缀（`shortenPathForDisplay`）。
  *

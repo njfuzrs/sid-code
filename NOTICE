@@ -26,7 +26,7 @@ sid-code —— 第三方代码来源与归属声明
 2. src/ink/_vendor/yoga-layout/ —— Flexbox 布局引擎
 3. vendor/ripgrep/ —— 入库的 ripgrep 二进制
 4. npm 运行时依赖
-5. api-reference/ —— 入库的第三方 API 参考资料（许可待确认）
+5. src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
 6. 完整许可条款原文
 
 
@@ -167,23 +167,26 @@ MIT 许可授予 use / copy / modify / merge / publish / distribute / sublicense
 
 
 ================================================================================
-5. api-reference/ —— 入库的第三方 API 参考资料（许可待确认）
+5. src/command/commands/claude-api/reference/ —— 入库的第三方 API 参考资料（许可待确认）
 ================================================================================
 
-`api-reference/` 目录入库了若干第三方厂商的 API 参考资料，供开发 provider 适配层时
-离线查阅。**这些文件的许可条款尚未逐个确认**，此处如实标注为待办：
+本仓入库了两份 Anthropic API 参考资料，**许可条款尚未确认**，如实标注为待办：
 
-    api-reference/deepseek/deepseek_v3_tokenizer/
-        tokenizer.json（7.8 MB）、tokenizer_config.json、deepseek_tokenizer.py
-        来源：DeepSeek 官方发布的 V3 tokenizer   许可：⚠️ 待确认
+    src/command/commands/claude-api/reference/anthropic-api.md（34 KB）
+        来源：Anthropic 官方 API 文档的摘录与整理   许可：⚠️ 待确认
 
-    api-reference/openai/openapi.yaml（2.8 MB）
-        来源：OpenAI 官方 OpenAPI 规范           许可：⚠️ 待确认
+    src/command/commands/claude-api/reference/anthropic-messages-api.md（6.5 KB）
+        来源：同上（Messages API / 流式 SSE 部分）  许可：⚠️ 待确认
 
-    api-reference/*/*.md
-        各厂商 API 文档的摘录与整理              许可：⚠️ 待确认
+它们不是普通参考资料，而是**编译期依赖**：`claude-api.ts` 用 Bun 的
+`with { type: "text" }` 文本 import 把原文内联进单文件二进制，作为 `/claude-api`
+命令注入对话的数据源。删掉就编译不过 —— 所以按「被源码消费的资产属于源码」
+放在 `src/` 下而不是仓库根。
 
-正式公开发布前应逐个确认许可，或改为构建时按需下载而不入库。
+正式公开发布前应确认许可，或改为运行时按需下载而不入库。
+
+本节范围只有上面两份文件。历史上本仓曾入库更多厂商的 API 规范与 tokenizer 产物，
+现已不在仓内 —— 保留本节是因为这两份仍在，且仍需确认许可。
 
 
 ================================================================================

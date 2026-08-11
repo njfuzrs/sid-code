@@ -1,7 +1,7 @@
 # CI 门禁：全量单测 + 构建 + lint（2026-08-01 补齐，2026-08-10 补多平台矩阵、eval-framework 兜底与 lint 门禁）
 #
 # 为什么需要：在此之前仓库有 5 个 workflow，但**没有一个跑全量 bun test**
-#   · docs-lint.yml            只在 docs/ 改动时跑文档规则
+#   · docs-lint.yml            只在 docs/ 改动时跑文档规则（现已删除）
 #   · provider-daily-canary.yml 定时任务，且只跑 tests/llm/vcr/ 子集
 #   · eval-pr-smoke.yml         只跑 5 个 P0 eval case
 #   · eval-weekly.yml / judge-calibration.yml  定时的评估任务
@@ -121,21 +121,5 @@ jobs:
       - name: oxlint
         run: bun run lint
 
-  # 文档门禁独立成 job：只需一个平台，且失败原因与代码无关，分开看更省诊断时间。
-  # 注意 docs-lint.yml 已经在 PR 改 docs/ 时跑同样的规则，这里刻意**不**重复它，
-  # 只跑那个 workflow 没覆盖的 INDEX 一致性（它只在 docs/ 路径变动时触发，
-  # 而新增 .md 会改变 INDEX 内容却可能不落在它的 paths 过滤里）。
-  docs-index:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      # 不需要依赖：docs-index-gen.ts 只用 node:fs 与 Bun 内置 Glob
-      - name: INDEX.md 与 frontmatter 一致
-        run: bun run scripts/docs-index-gen.ts --check
+  # 面向用户的文档门禁不在这里：那部分在 website/，由 pre-commit 的
+  # `docs-gen-reference.ts --check` 与 pre-push 的站点构建（死链检查）守着。

@@ -1,7 +1,11 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 // Bun text import：编译时把 md 原文内联进二进制，发布版无需运行时文件即可读到。
-import apiDoc from "../../../../api-reference/anthropic/anthropic-api.md" with { type: "text" };
-import messagesDoc from "../../../../api-reference/anthropic/anthropic-messages-api.md" with { type: "text" };
+//
+// 这两份 md 放在 `reference/`（紧贴使用方）而不是仓库根的 `api-reference/`：
+// 后者已随内部研发文档整体迁出仓库（开源准备 P2-1），而它们是**编译期依赖**
+// —— 删了就编译不过。所以按「被源码消费的资产属于源码」的判据留在 src/ 下。
+import apiDoc from "./reference/anthropic-api.md" with { type: "text" };
+import messagesDoc from "./reference/anthropic-messages-api.md" with { type: "text" };
 
 /**
  * /claude-api 命令实现（按需加载）。对齐 claude-code §4.6。

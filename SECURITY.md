@@ -63,10 +63,10 @@ sid-code 是一个**在你本机上读写文件、执行 shell 命令、访问�
 
 - **`src/ink/` 含未获授权的第三方代码**。这是版权/合规问题而非技术漏洞，
   已在 [NOTICE](./NOTICE) 第 1 节如实披露，正在重构移除。
-- **`api-reference/` 下若干入库的第三方资料许可未确认**（[NOTICE](./NOTICE) 第 5 节）。
+- **`src/command/commands/claude-api/reference/` 下两份入库的 Anthropic API 参考资料
+  许可未确认**（[NOTICE](./NOTICE) 第 5 节）。
 - **权限规则层有已知缺陷**，例如 Bash 规则的通配符匹配语义与预期不一致
-  （用 `minimatch`，`*` 不跨 `/`）。跟踪见
-  `docs/bugfixes/todo/` 下的权限系统相关清单。这类**已记录但未修**的缺陷，
+  （用 `minimatch`，`*` 不跨 `/`）。这类**已记录但未修**的缺陷，
   如果你有具体的绕过构造，仍然欢迎上报——具体构造比「有缺陷」这个结论有用得多。
 
 ## 你自己使用时的建议
