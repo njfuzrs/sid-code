@@ -121,5 +121,15 @@ jobs:
       - name: oxlint
         run: bun run lint
 
+      # P2-2 步骤6：包边界（shared(0) < tui-renderer(1) < core(2) < cli(3)）。
+      # 与 lint 同 job：都是几百毫秒的静态检查，没必要各起一次 checkout + bun install。
+      #
+      # 为什么不只依赖 pre-commit：hook 装在本地、可被 --no-verify 跳过，
+      # 而这条不变量（core 不知道 TUI 存在）是 core 能当库用的前提，得有一道跑在服务端、
+      # 绕不过去的检查。tests/build/package-boundary.test.ts 里还有一份带防假绿用例的版本，
+      # 两者共用同一个扫描器，职责不同：这里给出快速失败，那里守扫描器自身不空转。
+      - name: 包边界扫描
+        run: bun run lint:boundary
+
   # 面向用户的文档门禁不在这里：那部分在 website/，由 pre-commit 的
   # `docs-gen-reference.ts --check` 与 pre-push 的站点构建（死链检查）守着。
