@@ -129,27 +129,15 @@ bun run website:build    # 构建（死链检测在此生效）
 
 更多约定见 [CLAUDE.md](./CLAUDE.md)。
 
-## 许可与第三方代码
+## 许可
 
-本项目采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
+自研代码采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
 
-> ⚠️ **MIT 只覆盖我们自己的代码。** 一份许可证不可能授予我们本来就不持有的权利 ——
-> `packages/tui-renderer/` 里属于 Anthropic 的增量表达不在授权范围内（下方详述），
-> `vendor/` 与 `node_modules` 的第三方资产各依其自身许可。
-> 换句话说：`LICENSE` 说明**我们的代码**你可以怎么用，[NOTICE](./NOTICE) 说明**别人的代码**在这里的来源与条款。两份都要读。
+仓库内的第三方代码各依其自身条款，MIT 无法授予我们本来就不持有的权利。其中一条值得
+在这里直接说明：`packages/tui-renderer/`（终端渲染底座）**不是本项目原创** —— 它 fork 自
+MIT 许可的 [`ink`](https://github.com/vadimdemedes/ink)，但引入途径是一份第三方快照，
+其中携带的修改我们并未获得授权。这部分代码正在被重构掉，上文的代码行数口径已将其排除。
 
-第三方代码的来源、许可条款与我们所做的修改，完整记录在 [NOTICE](./NOTICE)。其中一条需要在这里
-直接点明，不藏在附录里：
-
-> **`packages/tui-renderer/`（终端渲染底座，122 文件 / 23,760 行）不是本项目原创。**
-> 它 fork 自 MIT 许可的上游 [`ink`](https://github.com/vadimdemedes/ink)，但**引入途径是一份
-> Claude Code（Anthropic 闭源产品）的泄露源码快照** —— Anthropic 在 MIT 骨架之上的增量修改
-> 属于 Anthropic，**我们未获授权**。「上游是 MIT」只缩小范围、不消除问题：上游全部源码仅
-> 3979 行，而本地与其同名的 32 个文件有 12484 行。
->
-> **我们无意侵犯任何人的版权，这部分代码正在被重构掉，工作进行中**（`yoga-layout` 换回
-> npm 包 → `termio/*` 按公开规范重写 → `screen.ts` / `selection.ts` clean-room 重写）。
-> 详见 [NOTICE](./NOTICE) 第 1 节与 [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md)。
-> 如果权利人要求移除相关代码，我们会配合处理。
-
-上文「自研代码 20 万行以上」的口径**已排除 `packages/tui-renderer/`** —— 我们不把这部分算作自研。
+每一个第三方组件的来源、许可条款与我们所做的修改，完整记录在 **[NOTICE](./NOTICE)** ——
+分发或再利用本仓代码前，请与 `LICENSE` 一并阅读。如果你是权利人、对本仓中的任何内容
+有疑虑，提一个 issue，我们会回应。

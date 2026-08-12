@@ -154,38 +154,18 @@ Contribution workflow, the gates your PR must pass, and repo conventions are in
 in [CLAUDE.md](./CLAUDE.md) — the single source of truth (there is deliberately no
 `AGENTS.md`; see the note at the top of `CLAUDE.md`).
 
-## License and third-party code
+## License
 
-This project is released under the **[MIT License](./LICENSE)**. It is
-non-commercial: not sold, not operated for profit.
+**[MIT](./LICENSE)** for our own code. Non-commercial: not sold, not operated for profit.
 
-> ⚠️ **MIT covers our own code only.** No license can grant rights we do not hold —
-> the Anthropic-authored additions inside `packages/tui-renderer/` are outside the grant (detailed
-> below), and assets under `vendor/` and `node_modules` are governed by their own
-> licenses.
-> Put differently: `LICENSE` tells you what you may do with **our** code, and
-> [NOTICE](./NOTICE) records where **other people's** code here came from and under what
-> terms. Read both.
+Third-party code in this repository is governed by its own terms, and MIT cannot grant
+rights we do not hold. One item is worth stating plainly here: `packages/tui-renderer/`
+(the terminal rendering layer) is **not original to this project** — it is a fork of the
+MIT-licensed [`ink`](https://github.com/vadimdemedes/ink) that reached us through a
+third-party snapshot carrying modifications we hold no rights to. It is being refactored
+out, and the line-count figures above exclude it.
 
-The origin, license terms, and our modifications for all third-party code are recorded in
-[NOTICE](./NOTICE). One item belongs here in the open rather than buried in an appendix:
-
-> **`packages/tui-renderer/` (the terminal rendering layer, 122 files / 23,760 lines) is not
-> original to this project.**
-> It is forked from the MIT-licensed upstream [`ink`](https://github.com/vadimdemedes/ink),
-> but **it entered this codebase via a leaked source snapshot of Claude Code**, a
-> closed-source Anthropic product. Anthropic's incremental modifications on top of the
-> MIT skeleton belong to Anthropic, and **we were never granted rights to them**.
-> "Upstream is MIT" narrows the problem, it does not remove it: upstream's entire source
-> is 3,979 lines, while the 32 local files sharing its filenames total 12,484 lines.
->
-> **We do not intend to infringe anyone's copyright. This code is being refactored out,
-> and that work is in progress** (swap `yoga-layout` back to the npm package → rewrite
-> `termio/*` against the public specifications → clean-room rewrite of `screen.ts` and
-> `selection.ts`).
-> See [NOTICE](./NOTICE) §1 and
-> [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md).
-> If a rights holder asks us to remove the code in question, we will comply.
-
-The "200k+ lines of first-party code" figure above **excludes `packages/tui-renderer/`** — we do not
-count that part as ours.
+Provenance, license terms, and our modifications for every third-party component are
+recorded in **[NOTICE](./NOTICE)** — read it alongside `LICENSE` before redistributing
+or reusing this code. If you are a rights holder with a concern about anything in this
+repository, open an issue and we will respond.
