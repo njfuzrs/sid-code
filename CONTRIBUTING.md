@@ -83,7 +83,7 @@ make build      # 构建 + 产物自检，必须成功
 ```
 
 这两条就是 CI 门禁的内容（见 `.github/workflows/ci.yml`），
-在 PR 与 push 到 `master` 时都会跑。本地跑绿了 CI 基本不会红。
+在 PR 与 push 到 `main` 时都会跑。本地跑绿了 CI 基本不会红。
 
 几个容易踩的点：
 

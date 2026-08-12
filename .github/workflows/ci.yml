@@ -26,9 +26,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
   push:
-    branches: [master]
+    branches: [main]
 
 # 同一分支的旧 run 自动取消，避免连续 push 时排队浪费 runner
 concurrency:

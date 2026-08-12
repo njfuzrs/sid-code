@@ -7,7 +7,7 @@ body:
       value: |
         感谢报告问题。**版本号与复现步骤是最关键的两项**——缺了它们，多数问题查不下去。
 
-        安全漏洞请**不要**在这里提，按 [SECURITY.md](../blob/master/SECURITY.md) 私下上报。
+        安全漏洞请**不要**在这里提，按 [SECURITY.md](../blob/main/SECURITY.md) 私下上报。
 
   - type: input
     id: version

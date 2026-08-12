@@ -4,11 +4,11 @@ blank_issues_enabled: false
 
 contact_links:
   - name: 🔒 安全漏洞（请勿开公开 issue）
-    url: https://github.com/rushengzhou/sid-code/blob/master/SECURITY.md
+    url: https://github.com/rushengzhou/sid-code/blob/main/SECURITY.md
     about: 安全问题请按 SECURITY.md 走 GitHub 私密上报（Security → Report a vulnerability），公开 issue 会在修复前暴露问题。
 
   - name: 📄 版权 / 归属问题
-    url: https://github.com/rushengzhou/sid-code/blob/master/NOTICE
+    url: https://github.com/rushengzhou/sid-code/blob/main/NOTICE
     about: 第三方代码来源与许可见 NOTICE。若发现其中描述与事实不符（低估外部来源比例、漏记来源），请指出，我们会更正。
 
   - name: 📖 使用文档

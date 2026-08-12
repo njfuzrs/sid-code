@@ -12,7 +12,7 @@ name: PR Smoke Eval
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       # P2-2 分包：源码从 src/ 搬到 packages/*/src/。这里必须跟着改 ——
       # 仍写 "src/**" 会永远匹配不到，于是这道 smoke 门禁**静默不再触发**：
