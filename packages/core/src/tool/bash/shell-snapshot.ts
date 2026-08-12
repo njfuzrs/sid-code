@@ -120,9 +120,16 @@ ${aliasesBlock}`;
 function getSidCodeSnapshotContent(): string {
   // PATH 用单引号转义，防止路径含空格/特殊字符破坏脚本
   const currentPath = process.env.PATH || "";
+  // ⚠️ 必须 `>> "$SNAPSHOT_FILE"` 写进快照文件，不能裸写。
+  // 这个片段被插进「生成快照的那个 shell」里执行（见 getSnapshotScript）：裸写的
+  // `export PATH=…` 只会改生成脚本自己的环境，进程一退就没了，快照文件里根本没有这行
+  // —— PATH 固化静默失效，而快照仍然生成成功、没有任何报错。上面每个用户块都带重定向，
+  // 唯独这里漏了。2026-08-12 首次在 CI 真跑时由 shell-snapshot.test.ts 抓到。
   return `
 # ── sid-code injected ──
-export PATH=${escapeForShell(currentPath)}`;
+echo "" >> "$SNAPSHOT_FILE"
+echo "# ── sid-code injected ──" >> "$SNAPSHOT_FILE"
+echo ${escapeForShell(`export PATH=${escapeForShell(currentPath)}`)} >> "$SNAPSHOT_FILE"`;
 }
 
 /**
