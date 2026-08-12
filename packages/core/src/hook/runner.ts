@@ -323,21 +323,27 @@ export class HookRunner {
 
     try {
       const exitCode = await proc.exited;
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      const duration = Date.now() - startTime;
 
+      // ⚠️ 超时路径不能读管道：命令若 fork 出孙进程（`sleep 10 &`、后台 daemon…），
+      // SIGTERM 只带走 sh 本身，孙进程继承并**持续持有 stdout/stderr 写端**——
+      // `new Response(proc.stdout).text()` 要等 EOF，会一直挂到孙进程自己退出。
+      // 于是「1s 超时」的 hook 实际阻塞主循环 10s+，超时保护形同失效。
+      // 这里直接返回，把 stdout/stderr 留空（两者在类型上都是可选字段）：
+      // 已超时的 hook 其输出按约定不被采纳（parseCommandOutput 也不会被调用）。
+      // 2026-08-12 首次在 CI（ubuntu，/bin/sh → dash）真跑时以 5000ms 卡死暴露。
       if (timedOut) {
         return {
           hookConfig,
           eventName,
           success: false,
           error: new Error(`Hook 超时 (${timeout / 1000}s)`),
-          stdout,
-          stderr,
-          duration,
+          duration: Date.now() - startTime,
         };
       }
+
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const duration = Date.now() - startTime;
 
       // 解析输出
       const output = this.parseCommandOutput(stdout, stderr, exitCode ?? 0);
