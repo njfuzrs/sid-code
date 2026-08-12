@@ -49,7 +49,9 @@ chat_session*.json
 # 团队默认配置真实值（含共享 API key，只保留占位模板 team-defaults.template.json 入库）
 /scripts/team-defaults.json
 
-# 历史清洗用的密钥替换清单（含真实密钥明文，供 scripts/scrub-history.sh 读取，用完即删）
+# 历史清洗用的密钥替换清单（含真实密钥明文，用完即删）
+# 2026-08-12 的一次性迁移已用 git filter-repo --replace-text 完成，脚本已删除；
+# 这条保留是兜底：万一将来再做一次清洗，别让清单意外入库。
 /.scrub-secrets.txt
 
 # 临时文件

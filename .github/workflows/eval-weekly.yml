@@ -29,8 +29,8 @@ jobs:
     # 判据选型（三种都见过，这里选第三种）：
     #   · `pull_request.head.repo.full_name == github.repository`（eval-pr-smoke.yml 用的）
     #     —— 本 workflow 无 pull_request 触发，该表达式恒 null，用不了
-    #   · `github.repository == 'owner/repo'` —— 要写死 slug。本仓库当前 remote 是内网
-    #     GitLab，GitHub slug 尚不存在，写死就是猜；且换 owner 就失效
+    #   · `github.repository == 'owner/repo'` —— 要写死 slug。2026-08-12 迁到 GitHub 后
+    #     slug 已确定（rushengzhou/sid-code），但仍**不选它**：换 owner 就失效
     #   · `github.event.repository.fork == false` —— 不写死任何名字，换 owner 仍成立
     #
     # 后半段 `|| github.event_name != 'schedule'` 不能省：只拦定时触发，

@@ -18,9 +18,9 @@
 # correctness 档、关掉 style/pedantic 等风格类噪音，接入前已把存量 61 处 no-unused-vars
 # 清零，理由与逐条豁免规则见 `.oxlintrc.json` 顶部注释，不在这里重复。
 #
-# ⚠️ 本仓库当前的 remote 是内网 GitLab，没有 GitHub remote ——
-# 也就是说这个 workflow **从未真正在 CI 上跑过**，它是为开源切换预置的。
-# 首次接上 GitHub 后请以实际 run 为准复核本文件的假设。
+# ⚠️ 本文件在 2026-08-12 迁到 GitHub 之前**从未真正在 CI 上跑过**（那时 remote 是
+# 内网 GitLab，不读 .github/workflows/），它是为开源切换预置的。首发后的前几次 run
+# 请以实际结果为准复核本文件的假设 —— 预置配置没跑过就等于没验证过。
 
 name: CI
 

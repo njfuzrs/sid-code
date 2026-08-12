@@ -1,7 +1,7 @@
 # sid-code
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![CI](https://github.com/zhourusheng/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/zhourusheng/sid-code/actions/workflows/ci.yml)
+[![CI](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml)
 [![文档](https://img.shields.io/badge/%E6%96%87%E6%A1%A3-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Linux-lightgrey)](#安装)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)

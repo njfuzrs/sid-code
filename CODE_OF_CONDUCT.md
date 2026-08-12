@@ -46,7 +46,9 @@
 
 ## 执行
 
-遭遇滥用、骚扰或其他不可接受的行为，请发邮件到 **<REDACTED_EMAIL>** 举报。
+遭遇滥用、骚扰或其他不可接受的行为，请用 GitHub 的私密上报通道举报：
+**[Security → Report a vulnerability](https://github.com/rushengzhou/sid-code/security/advisories/new)**
+（它虽然叫 security advisory，但草案只有你和维护者可见，是本仓唯一的私密上报入口）。
 所有投诉都会被审阅与调查，并作出必要且适合具体情况的回应。
 维护者有义务对事件举报者的信息保密。
 

@@ -1,5 +1,5 @@
 {
-  // oxfmt 配置 —— 见 P2-1（docs-research 的「仓库文件入库与目录规范」方案 §4）。
+  // oxfmt 配置 —— 出自 P2-1「仓库文件入库与目录规范」方案 §4（维护者私有文档库，不在本仓）。
   //
   // 为什么需要它：仓库原先只有 .editorconfig（编辑器级：缩进/行尾/末尾换行）与
   // .oxlintrc.json（**lint 不管 format**）。没有 formatter 意味着每个人的编辑器按

@@ -142,8 +142,7 @@ bun run eval:run --provider sid-code,claude-code
 
 ### 清理记录（2026-08-12）
 
-对应方案见本地文档库
-`docs-research/sid-code/bugfixes/todo/20260812-仓库文件入库与目录规范-对标开源项目全量改造方案.md` P0-2，
+对应方案是「仓库文件入库与目录规范」P0-2（维护者私有文档库，不在本仓），
 以及本文档上方两层的分层政策。执行细节：
 
 - **P0-2（63 个时间戳转储）**：`git rm --cached` → 改为直接 `git rm`（工作区文件本次判断为可删，非"只出库"）

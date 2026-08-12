@@ -25,10 +25,10 @@ vendor/ripgrep/**  binary
 # builtin-embedded.generated.ts 是 scripts/embed-builtin-skills.ts 的产物（568KB，
 # 已追踪文件里第 6 大），每次改内置 skill 都变，不折叠会占满 PR diff。
 #
-# ⚠️ `linguist-generated` 是 **GitHub Linguist** 专有属性，**GitLab 不识别它**。
-#    本仓当前 remote 是 gitlab.example.com，所以下面这几行**现在拿不到任何收益**，
-#    是为「开源首发落在 GitHub」预备的。写着零成本，但别指望现在就看到 diff 折叠 ——
-#    发现没折叠不是配错了，是平台不支持。
+# ⚠️ `linguist-generated` 是 **GitHub Linguist** 专有属性，别的托管平台不一定识别。
+#    2026-08-12 迁到 GitHub 后这几行开始真正生效（在此之前 remote 是内网 GitLab，
+#    它不识别该属性，所以这些规则曾长期是「写着零成本、但看不到效果」的预置项）。
+#    留着这段来历说明：如果哪天又搬到不支持 Linguist 的平台，diff 不折叠不是配错了。
 packages/core/src/skill/builtin-embedded.generated.ts  linguist-generated
 website/ref/**                                          linguist-generated
 website/public/llms.txt                                 linguist-generated

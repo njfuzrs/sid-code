@@ -1,8 +1,8 @@
 # 代码所有者 —— PR 会自动请求这里匹配到的人 review。
 #
 # 语法与 .gitignore 类似，**后匹配的规则覆盖先匹配的**，所以兜底规则放在最前面。
-# 注意：GitHub 上生效需要这些用户对仓库有写权限；内网 GitLab 上此文件不生效
-# （GitLab 的等价机制是 CODEOWNERS + Owner approval，且需要 Premium 版）。
+# 注意：生效需要这里匹配到的用户对仓库有写权限。2026-08-12 迁到 GitHub 后本文件
+# 才开始生效（此前 remote 是内网 GitLab，它不读这个文件）。
 
 # ⚠️ 路径必须与 packages/ 分包后的真实结构一致。P1-2/P2-2 分包后曾残留
 # /src/ink/ 与 /src/permission/ 这类**匹配不到任何文件**的规则（2026-08-12 P2-6 顺手修）——
@@ -10,34 +10,34 @@
 # 改动目录结构时，把这个文件一起 grep 一遍。
 
 # 兜底：所有文件
-*                           @zhourusheng
+*                           @rushengzhou
 
 # ─── 需要格外谨慎的路径 ───
 
 # 第三方归属声明：改动这里等于改动版权事实陈述，必须维护者过目。
 # 尤其不要以「清理痕迹 / 统一措辞 / 看着不专业」为由删掉来源事实。
-/NOTICE                     @zhourusheng
-/packages/tui-renderer/src/README.md    @zhourusheng
+/NOTICE                     @rushengzhou
+/packages/tui-renderer/src/README.md    @rushengzhou
 
 # 未获授权的第三方代码，正在重构移除。改动前先读 NOTICE 第 1 节。
-/packages/tui-renderer/src/             @zhourusheng
+/packages/tui-renderer/src/             @rushengzhou
 
 # 发布链路：脚本改错会污染版本号、打错 tag、或让线上二进制对不上 commit。
-/scripts/release.sh         @zhourusheng
-/scripts/website-deploy.sh  @zhourusheng
-/scripts/generate-changelog.ts  @zhourusheng
-/Makefile                   @zhourusheng
+/scripts/release.sh         @rushengzhou
+/scripts/website-deploy.sh  @rushengzhou
+/scripts/generate-changelog.ts  @rushengzhou
+/Makefile                   @rushengzhou
 
 # 安全与权限：绕过一条规则就是一个漏洞。
 # path-validator.ts 与 bash-security.ts 都在这个目录下，无需单列。
-/packages/core/src/permission/          @zhourusheng
+/packages/core/src/permission/          @rushengzhou
 
 # CI 门禁与治理文件
-/.github/                   @zhourusheng
-/CONTRIBUTING.md            @zhourusheng
+/.github/                   @rushengzhou
+/CONTRIBUTING.md            @rushengzhou
 # 对外第一入口：主 README 是英文（P2-6，2026-08-12），中文翻译在 README.zh-CN.md。
 # 两份都列，避免只改一份造成中英不一致（2026-08-10 就发生过工具数只改一处的事故）。
-/README.md                  @zhourusheng
-/README.zh-CN.md            @zhourusheng
-/SECURITY.md                @zhourusheng
-/CODE_OF_CONDUCT.md         @zhourusheng
+/README.md                  @rushengzhou
+/README.zh-CN.md            @rushengzhou
+/SECURITY.md                @rushengzhou
+/CODE_OF_CONDUCT.md         @rushengzhou

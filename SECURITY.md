@@ -4,9 +4,13 @@
 
 **请不要用公开 issue 上报安全漏洞。** 公开 issue 在修复发布前就把问题暴露给了所有人。
 
-请发邮件到：**<REDACTED_EMAIL>**
+请用 GitHub 的私密上报通道：
+**[Security → Report a vulnerability](https://github.com/rushengzhou/sid-code/security/advisories/new)**
 
-邮件里尽量包含：
+走这个入口而不是邮箱，是因为它对双方都更省事：上报内容在草案阶段只有你和维护者可见，
+修复过程、CVE 申请与最终公开都在同一个页面里，不需要交换任何邮箱地址。
+
+上报时尽量包含：
 
 - 漏洞类型与影响（能读到什么、能执行什么、需要什么前置条件）
 - 复现步骤，或一个最小复现用例
