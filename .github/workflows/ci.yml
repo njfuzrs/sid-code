@@ -52,7 +52,27 @@ jobs:
     timeout-minutes: 25
 
     steps:
+      # ⚠️ fetch-depth: 0 不是「顺手要全量」：tests/website/changelog-integration.test.ts
+      # 的两条断言要用 `git tag` 算版本区间的真实提交数，而 checkout 默认 depth=1 且不取
+      # tag —— 区间恒为空，`toBeGreaterThan(0)` 必失败。2026-08-12 首次真跑 CI 时实测到。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ⚠️ runner 默认**不带 ripgrep**，而 GrepTool / hasRipgrep / ripGrep 这些测试调的是
+      # PATH 上的系统 `rg`（不是 packages/core/vendor 里那份内嵌产物 —— 内嵌那份只在编译后
+      # 的二进制里用）。不装就是 `Executable not found in $PATH: "rg"`，同样是首次真跑才暴露。
+      - name: 安装 ripgrep（测试按 PATH 调系统 rg）
+        shell: bash
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            echo "已存在：$(rg --version | head -1)"
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+          else
+            brew install ripgrep
+          fi
+          rg --version | head -1
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
