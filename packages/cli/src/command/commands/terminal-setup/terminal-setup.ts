@@ -44,9 +44,7 @@ interface VSCodeKeybinding {
 /** 极简 JSONC 解析：剥离 // 行注释与 /* *​/ 块注释后 JSON.parse。用户 keybindings.json 常带注释。 */
 function parseJSONC(text: string): unknown {
   // 去掉块注释（非贪婪），再去行注释。字符串内的 // 场景极少见于 keybindings，容忍。
-  const stripped = text
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   const trimmed = stripped.trim();
   if (!trimmed) return [];
   return JSON.parse(trimmed);
@@ -75,7 +73,14 @@ function getVSCodeKeybindingsPath(variant: VSCodeVariant): string {
   const home = homedir();
   const plat = platform();
   if (plat === "darwin") {
-    return join(home, "Library", "Application Support", variant.configDir, "User", "keybindings.json");
+    return join(
+      home,
+      "Library",
+      "Application Support",
+      variant.configDir,
+      "User",
+      "keybindings.json",
+    );
   }
   if (plat === "win32") {
     const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
@@ -103,7 +108,8 @@ function installVSCodeKeybinding(variant: VSCodeVariant): string {
       const raw = readFileSync(path, "utf-8");
       const parsed = parseJSONC(raw);
       if (Array.isArray(parsed)) keybindings = parsed as VSCodeKeybinding[];
-      else return `解析 ${variant.label} keybindings.json 失败（非数组结构），已跳过以免破坏配置。\n路径: ${path}`;
+      else
+        return `解析 ${variant.label} keybindings.json 失败（非数组结构），已跳过以免破坏配置。\n路径: ${path}`;
     } catch (e) {
       return `解析 ${variant.label} keybindings.json 失败，已跳过以免破坏配置。\n路径: ${path}\n原因: ${(e as Error)?.message ?? e}`;
     }
@@ -136,7 +142,10 @@ function installVSCodeKeybinding(variant: VSCodeVariant): string {
       try {
         copyFileSync(path, backup);
       } catch (e) {
-        log.warn("TERMINAL_SETUP", `备份 keybindings.json 失败（继续写入）: ${(e as Error)?.message}`);
+        log.warn(
+          "TERMINAL_SETUP",
+          `备份 keybindings.json 失败（继续写入）: ${(e as Error)?.message}`,
+        );
       }
     }
     writeFileSync(path, JSON.stringify(keybindings, null, 2), "utf-8");

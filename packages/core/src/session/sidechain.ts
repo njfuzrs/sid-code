@@ -16,7 +16,15 @@
  *   只把「未见 sidechain_end」的视为中断、可恢复。
  */
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+} from "fs";
 import { join, dirname } from "path";
 import { currentProjectSessionDir, resolveSessionFileAcrossProjects } from "./store.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -24,8 +32,22 @@ import type { ContentBlock } from "../llm/types.ts";
 
 /** sidechain 记录类型（子代理视角，线性顺序，无链字段）。 */
 export type SidechainRecord =
-  | { type: "sidechain_start"; sessionId: string; agentId: string; agentType: string; description: string; model: string; timestamp: string }
-  | { type: "message"; role: "user" | "assistant" | "tool"; content: ContentBlock[]; turn: number; timestamp: string }
+  | {
+      type: "sidechain_start";
+      sessionId: string;
+      agentId: string;
+      agentType: string;
+      description: string;
+      model: string;
+      timestamp: string;
+    }
+  | {
+      type: "message";
+      role: "user" | "assistant" | "tool";
+      content: ContentBlock[];
+      turn: number;
+      timestamp: string;
+    }
   | { type: "sidechain_end"; status: "completed" | "failed" | "aborted"; timestamp: string };
 
 /** 恢复扫描时返回的未完成 sidechain 概要。 */
@@ -292,7 +314,9 @@ export function reconstructSidechainMessages(
   const cleaned = noOrphanThinking
     .map((m) => {
       if (m.role !== "assistant") return m;
-      const content = (m.content as any[]).filter((b) => b?.type !== "tool_use" || resolvedIds.has(b.id));
+      const content = (m.content as any[]).filter(
+        (b) => b?.type !== "tool_use" || resolvedIds.has(b.id),
+      );
       return { role: m.role, content };
     })
     // 清洗后可能出现空 content 的 assistant 消息，剔除。
@@ -302,7 +326,10 @@ export function reconstructSidechainMessages(
 
   // provider 契约：首条必须是 user。若清洗后以 assistant 开头，前置一条占位 user。
   if (cleaned[0]!.role !== "user") {
-    cleaned.unshift({ role: "user", content: [{ type: "text", text: "(接续之前的子代理任务)" } as ContentBlock] });
+    cleaned.unshift({
+      role: "user",
+      content: [{ type: "text", text: "(接续之前的子代理任务)" } as ContentBlock],
+    });
   }
 
   return { messages: cleaned, agentType, ended };
@@ -324,9 +351,13 @@ export function cleanupSidechainsInDir(dir: string, sessionId: string): number {
       try {
         unlinkSync(join(dir, name));
         removed++;
-      } catch { /* 单个删除失败不影响其余 */ }
+      } catch {
+        /* 单个删除失败不影响其余 */
+      }
     }
-  } catch { /* 目录读取失败返回已删除计数 */ }
+  } catch {
+    /* 目录读取失败返回已删除计数 */
+  }
   return removed;
 }
 

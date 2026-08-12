@@ -28,7 +28,10 @@ export interface ConfigContextValue {
   /** 可用模型列表（含 provider 信息，供 inferProvider 优先使用） */
   availableModels: PricingModelEntry[];
   /** 推理强度展示态（状态栏 effort 列）。null = 模型不支持档位切换 */
-  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null;
+  effortDisplay: {
+    level: import("@sid-code/core/llm/effort.ts").EffortLevel;
+    isAuto: boolean;
+  } | null;
   /** 思考开关展示态（状态栏 thinking 列）。null = 模型不支持思考开关 */
   thinkingDisplay: { on: boolean; isAuto: boolean } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
@@ -55,26 +58,25 @@ interface ConfigProviderProps {
 }
 
 export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children, value }) => {
-  const memoized = useMemo(() => value, [
-    value.model,
-    value.provider,
-    value.permissionMode,
-    value.isPlanMode,
-    value.gitBranch,
-    value.debug,
-    value.cwd,
-    value.commands,
-    value.availableModels,
-    value.effortDisplay,
-    value.thinkingDisplay,
-    value.goalDisplay,
-    value.vimMode,
-    value.statusLine,
-  ]);
-
-  return (
-    <ConfigCtx.Provider value={memoized}>
-      {children}
-    </ConfigCtx.Provider>
+  const memoized = useMemo(
+    () => value,
+    [
+      value.model,
+      value.provider,
+      value.permissionMode,
+      value.isPlanMode,
+      value.gitBranch,
+      value.debug,
+      value.cwd,
+      value.commands,
+      value.availableModels,
+      value.effortDisplay,
+      value.thinkingDisplay,
+      value.goalDisplay,
+      value.vimMode,
+      value.statusLine,
+    ],
   );
+
+  return <ConfigCtx.Provider value={memoized}>{children}</ConfigCtx.Provider>;
 };

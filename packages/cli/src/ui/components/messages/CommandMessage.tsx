@@ -71,10 +71,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
         <UserMessage text={input} width={width} />
         {output ? (
           <Box paddingLeft={2} marginTop={1}>
-            <Text
-              color={isError ? theme.status.error : undefined}
-              wrap="wrap"
-            >
+            <Text color={isError ? theme.status.error : undefined} wrap="wrap">
               {output}
             </Text>
           </Box>
@@ -98,10 +95,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
             </Text>
           </Box>
           <Box flexGrow={1}>
-            <Text
-              color={theme.status.success}
-              wrap={command.truncated ? "truncate-end" : "wrap"}
-            >
+            <Text color={theme.status.success} wrap={command.truncated ? "truncate-end" : "wrap"}>
               {command.text}
             </Text>
           </Box>
@@ -112,9 +106,7 @@ export const CommandMessage: React.FC<CommandMessageProps> = ({
               <Text> </Text>
             </Box>
             <Box flexGrow={1}>
-              <Text color={theme.text.secondary}>
-                {command.summary}
-              </Text>
+              <Text color={theme.text.secondary}>{command.summary}</Text>
             </Box>
           </Box>
         ) : null}

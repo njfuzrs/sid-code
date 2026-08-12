@@ -287,8 +287,10 @@ export function scanPackagesMode(packagesRoot: string): {
     // 这与 lint-architecture.ts 记录的「`if (!existsSync) return []` 比没有门禁更糟」同族。
     const files = collectSourceFiles(pkgSrc);
     if (files.length === 0) {
-      throw new Error(`包 ${pkg} 的 src/ 下扫到 0 个 .ts/.tsx 文件（路径：${pkgSrc}）——` +
-        `要么包结构变了、要么这道门禁在空转。`);
+      throw new Error(
+        `包 ${pkg} 的 src/ 下扫到 0 个 .ts/.tsx 文件（路径：${pkgSrc}）——` +
+          `要么包结构变了、要么这道门禁在空转。`,
+      );
     }
 
     for (const file of files) {
@@ -310,8 +312,13 @@ export function scanPackagesMode(packagesRoot: string): {
             // 自包不该走 bare specifier：绕一圈 node_modules symlink，
             // 既拖慢解析又让「这文件属于哪个包」在阅读时失去局部性。
             violations.push({
-              file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
-              spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "self-bare-import",
+              file: displayFile,
+              line: imp.line,
+              fromPkg: pkg,
+              toPkg,
+              spec: imp.spec,
+              isTypeOnly: imp.isTypeOnly,
+              kind: "self-bare-import",
             });
             continue;
           }
@@ -319,8 +326,13 @@ export function scanPackagesMode(packagesRoot: string): {
           edges.set(`${pkg}→${toPkg}`, (edges.get(`${pkg}→${toPkg}`) ?? 0) + 1);
           if (PACKAGE_RANK[pkg]! < PACKAGE_RANK[toPkg]!) {
             violations.push({
-              file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
-              spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "rank",
+              file: displayFile,
+              line: imp.line,
+              fromPkg: pkg,
+              toPkg,
+              spec: imp.spec,
+              isTypeOnly: imp.isTypeOnly,
+              kind: "rank",
             });
           }
           continue;
@@ -330,9 +342,22 @@ export function scanPackagesMode(packagesRoot: string): {
         if (!imp.spec.startsWith(".")) continue; // 外部 npm 依赖
         const abs = resolve(file, "..", imp.spec);
         const relToPkgSrc = relative(pkgSrc, abs);
-        if (!relToPkgSrc.startsWith("..")) continue; // 仍在本包内 → 合法
+        if (!relToPkgSrc.startsWith("..")) continue; // 仍在本包 src/ 内 → 合法
 
-        // 逃出了本包 src/。判断它落到哪个包（可能只是指向仓库根的 package.json 等，那不算）
+        // 逃出了 src/ 但仍在**本包目录内** → 合法。
+        //
+        // 判据是"同一个包"，不是"同一个 src/"：包的边界是 packages/<pkg>/，
+        // src/ 只是它的一个子目录。包内非 src 资产同样属于本包，引用它不跨任何边界。
+        //
+        // 实测触发者：packages/core/src/tool/rg-embedded.ts 引
+        // `../../vendor/rg-embed`（P2-3 把 vendor/ 从仓库根下沉到 packages/core/ 之后）。
+        // 迁移前那个 import 指向仓库根，落在 packages/ 之外，被下面的 `toPkg === null`
+        // 分支放过；下沉后它落进 packages/core/ 内，如果只比 src/ 就会被误报成
+        // "core→core 越界" —— 而它恰恰是**本包自己的**资产，比迁移前更内聚。
+        const relToPkgRoot = relative(join(packagesRoot, pkg), abs);
+        if (!relToPkgRoot.startsWith("..")) continue;
+
+        // 逃出了本包目录。判断它落到哪个包（可能只是指向仓库根的 package.json 等，那不算）
         const relToPackages = relative(packagesRoot, abs);
         const hit = /^([a-z-]+)\//.exec(relToPackages);
         const toPkg = hit && PACKAGE_RANK[hit[1]!] !== undefined ? hit[1]! : null;
@@ -340,13 +365,91 @@ export function scanPackagesMode(packagesRoot: string): {
 
         edges.set(`${pkg}→${toPkg}`, (edges.get(`${pkg}→${toPkg}`) ?? 0) + 1);
         violations.push({
-          file: displayFile, line: imp.line, fromPkg: pkg, toPkg,
-          spec: imp.spec, isTypeOnly: imp.isTypeOnly, kind: "cross-package-relative",
+          file: displayFile,
+          line: imp.line,
+          fromPkg: pkg,
+          toPkg,
+          spec: imp.spec,
+          isTypeOnly: imp.isTypeOnly,
+          kind: "cross-package-relative",
         });
       }
     }
   }
   return { violations, edges, sizes };
+}
+
+/**
+ * 校验 `packages/<pkg>/tests/` 的包边界（P1-2 测试迁进包之后新增的扫描面）。
+ *
+ * ## 为什么这里**不**套 rank 规则
+ *
+ * `scanPackagesMode` 对 `src/` 判两类事：rank 方向 + 相对路径越境。测试只判后者。
+ *
+ * rank 的意义是「低层不得知道高层的存在，否则单独发包时炸」——这约束的是**产物**。
+ * 测试不是产物、不进发布包，而且本仓大量测试**刻意**跨层：`packages/core/tests/` 下
+ * 有 13 个文件 import `@sid-code/cli`，比如 `context/context-display-alignment.test.ts`
+ * 同时取 core 的压缩阈值与 cli 的 Footer 显示逻辑，断言「展示口径与真实阈值同源」——
+ * 这正是 2026-07-29「Footer 显示 17% 却在 82% 压缩」事故的回归测试。
+ * 跨层是它的**目的**，套 rank 会把这类守卫判成违规，逼人把测试拆成两半、
+ * 从而失去"两层是否一致"这个唯一能钉住的断言。实测若套 rank：28 处立刻变红
+ * （core→cli 21 处、shared→core/cli 7 处），全是同类的层间一致性守卫。
+ *
+ * ## 那为什么相对路径越境仍要管
+ *
+ * `import "../../core/src/x.ts"` 绕过了 package.json 的 exports 契约，
+ * 让依赖在 `bun.lock` / dependencies 里查不到。这一条与"是不是产物"无关：
+ * 测试里这么写同样会在包被单独 checkout 时解析失败。修法也很轻——改成 bare specifier。
+ */
+export function scanPackageTestsMode(packagesRoot: string): {
+  violations: PackageViolation[];
+  files: number;
+} {
+  const violations: PackageViolation[] = [];
+  let total = 0;
+
+  for (const pkg of PACKAGES) {
+    const pkgTests = join(packagesRoot, pkg, "tests");
+    let files: string[];
+    try {
+      files = collectSourceFiles(pkgTests);
+    } catch {
+      continue; // 该包还没有 tests/ —— 不是错误（tui-renderer 之外都有，但不强制）
+    }
+    total += files.length;
+
+    for (const file of files) {
+      const relInPkg = relative(pkgTests, file);
+      const content = readFileSync(file, "utf8");
+
+      for (const imp of extractImports(content)) {
+        if (!imp.spec.startsWith(".")) continue; // bare specifier 或 npm 依赖 → 合法
+        const abs = resolve(file, "..", imp.spec);
+
+        // 仍在本包内（tests/ 或 src/ 都算）→ 合法
+        const relToPkg = relative(join(packagesRoot, pkg), abs);
+        if (!relToPkg.startsWith("..")) continue;
+
+        // 逃出了本包。落到别的 package 里才算违规；指向仓库根（tests/ 的预载、
+        // scripts/、evals/ 等）不属包边界问题 —— 那类测的是仓库级设施。
+        const relToPackages = relative(packagesRoot, abs);
+        const hit = /^([a-z-]+)\//.exec(relToPackages);
+        const toPkg = hit && PACKAGE_RANK[hit[1]!] !== undefined ? hit[1]! : null;
+        if (!toPkg) continue;
+
+        violations.push({
+          file: `packages/${pkg}/tests/${relInPkg}`,
+          line: imp.line,
+          fromPkg: pkg,
+          toPkg,
+          spec: imp.spec,
+          isTypeOnly: imp.isTypeOnly,
+          kind: "cross-package-relative",
+        });
+      }
+    }
+  }
+  return { violations, files: total };
 }
 
 if (import.meta.main) {
@@ -360,7 +463,9 @@ if (import.meta.main) {
     console.log("=== 包规模 ===");
     for (const pkg of PACKAGES) {
       const s = sizes.get(pkg)!;
-      console.log(`  ${pkg.padEnd(14)} ${String(s.lines).padStart(7)} 行  ${String(s.files).padStart(4)} 文件`);
+      console.log(
+        `  ${pkg.padEnd(14)} ${String(s.lines).padStart(7)} 行  ${String(s.files).padStart(4)} 文件`,
+      );
     }
 
     console.log("\n=== 包间边（引用数）===");
@@ -380,7 +485,19 @@ if (import.meta.main) {
     if (violations.length === 0) {
       console.log("  ✅ 包边界干净：低 rank 不导入高 rank、无跨包相对路径、无自包 bare 导入。");
     }
-    process.exit(violations.length > 0 ? 1 : 0);
+
+    // P1-2：测试迁进包后，测试也要扫。只查相对路径越境，不套 rank
+    // （层间一致性守卫刻意跨层，理由见 scanPackageTestsMode 文件注释）。
+    const t = scanPackageTestsMode(join(root, "packages"));
+    console.log(`\n=== 包内测试（${t.files} 文件）跨包相对路径：${t.violations.length} 处 ===`);
+    for (const v of t.violations) {
+      console.log(`  [${v.kind}] ${v.fromPkg}→${v.toPkg}  ${v.file}:${v.line}  ${v.spec}`);
+    }
+    if (t.violations.length === 0) {
+      console.log("  ✅ 测试无跨包相对路径（跨包一律走 @sid-code/* bare specifier）。");
+    }
+
+    process.exit(violations.length + t.violations.length > 0 ? 1 : 0);
   }
 
   const srcRoot = join(root, "src");
@@ -390,7 +507,9 @@ if (import.meta.main) {
   for (const [pkg, s] of [...sizes.entries()].sort(
     (a, b) => PACKAGE_RANK[a[0]]! - PACKAGE_RANK[b[0]]!,
   )) {
-    console.log(`  ${pkg.padEnd(14)} ${String(s.lines).padStart(7)} 行  ${String(s.files).padStart(4)} 文件`);
+    console.log(
+      `  ${pkg.padEnd(14)} ${String(s.lines).padStart(7)} 行  ${String(s.files).padStart(4)} 文件`,
+    );
   }
 
   console.log("\n=== 包间边（引用数）===");

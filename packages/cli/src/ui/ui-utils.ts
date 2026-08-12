@@ -297,8 +297,20 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   if (lower === "edit") return "替换完成";
   if (lower === "write") return `${content.length} 字符`;
   if (lower === "bash") return `${content.split("\n").length} 行输出`;
-  if (lower === "grep") return `${content.trim().split("\n").filter(l => l.length > 0).length} 个结果`;
-  if (lower === "glob") return `${content.trim().split("\n").filter(l => l.length > 0).length} 个文件`;
+  if (lower === "grep")
+    return `${
+      content
+        .trim()
+        .split("\n")
+        .filter((l) => l.length > 0).length
+    } 个结果`;
+  if (lower === "glob")
+    return `${
+      content
+        .trim()
+        .split("\n")
+        .filter((l) => l.length > 0).length
+    } 个文件`;
   // think：工具 content 是无信息确认语「已记录思考。」——兜底会算出"6 字符"这种
   // 描述确认语本身、与思考内容无关的假指标。think 的真实内容在 input 里，由
   // header 摘要 + 结果区正文（getThinkThought）承担展示，此处不给冗余摘要。

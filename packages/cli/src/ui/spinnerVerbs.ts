@@ -62,10 +62,7 @@ export function pickSpinnerVerb(
     return `${SPINNER_VERBS[0]}…`;
   }
 
-  const prevVerb =
-    previous && previous.endsWith("…")
-      ? previous.slice(0, -1)
-      : previous ?? null;
+  const prevVerb = previous && previous.endsWith("…") ? previous.slice(0, -1) : (previous ?? null);
 
   let verb = SPINNER_VERBS[Math.floor(random() * SPINNER_VERBS.length)];
   // 最多重试几次以避开与上一个相同；超出则接受，保证有界。

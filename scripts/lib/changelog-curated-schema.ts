@@ -163,7 +163,9 @@ export function validateCurated(obj: unknown, expectedVersion?: string): string[
     // userFacing 与 sections 必须自洽：两者矛盾说明 agent 没读懂规则，
     // 而矛盾的后果是页面上出现一个只有标题的空版本块。
     if (userFacing === true && sections.length === 0) {
-      errs.push("userFacing 为 true 但 sections 为空 —— 要么补上条目，要么把 userFacing 改成 false");
+      errs.push(
+        "userFacing 为 true 但 sections 为空 —— 要么补上条目，要么把 userFacing 改成 false",
+      );
     }
     if (userFacing === false && sections.length > 0) {
       errs.push(
@@ -212,9 +214,7 @@ export function validateCurated(obj: unknown, expectedVersion?: string): string[
           return;
         }
         if (item.length > MAX_ITEM_LEN) {
-          errs.push(
-            `${iat} 超长（${item.length} > ${MAX_ITEM_LEN} 字）：一条一句话，用户是扫读的`,
-          );
+          errs.push(`${iat} 超长（${item.length} > ${MAX_ITEM_LEN} 字）：一条一句话，用户是扫读的`);
         }
         if (hasUrl(item)) {
           errs.push(`${iat} 含 URL（${findUrls(item).join(", ")}）—— 这份文案会发布到公网`);
@@ -233,9 +233,7 @@ export function validateCurated(obj: unknown, expectedVersion?: string): string[
   if (obj.discarded !== undefined) {
     if (!Array.isArray(obj.discarded)) {
       errs.push("discarded 若存在必须是数组");
-    } else if (
-      obj.discarded.some((c) => typeof c !== "string" || !/^[0-9a-f]{7,40}$/i.test(c))
-    ) {
+    } else if (obj.discarded.some((c) => typeof c !== "string" || !/^[0-9a-f]{7,40}$/i.test(c))) {
       errs.push("discarded 每一项必须是 7-40 位十六进制的 commit hash");
     }
   }

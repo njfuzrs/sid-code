@@ -202,14 +202,16 @@ export class CheckpointManager {
           timestamp: entry.timestamp,
           toolName: "write", // 旧格式无法区分工具，默认 write
           toolSummary: filePath,
-          files: [{
-            filePath: entry.filePath,
-            existedBefore: entry.type === "diff" || (entry.content !== ""), // diff 或非空内容表示已存在
-            type: entry.type,
-            content: entry.content,
-            compressed: entry.compressed,
-            diff: entry.diff,
-          }],
+          files: [
+            {
+              filePath: entry.filePath,
+              existedBefore: entry.type === "diff" || entry.content !== "", // diff 或非空内容表示已存在
+              type: entry.type,
+              content: entry.content,
+              compressed: entry.compressed,
+              diff: entry.diff,
+            },
+          ],
         });
 
         // 更新 latestFullMap
@@ -402,7 +404,7 @@ export class CheckpointManager {
     // 找到最近修改该文件的快照
     for (let i = this.index.snapshots.length - 1; i >= 0; i--) {
       const snapshot = this.index.snapshots[i];
-      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+      const fileInSnapshot = snapshot.files.find((f) => f.filePath === filePath);
 
       if (fileInSnapshot) {
         if (!fileInSnapshot.existedBefore) {
@@ -433,7 +435,7 @@ export class CheckpointManager {
         }
 
         // 从快照中移除该文件
-        snapshot.files = snapshot.files.filter(f => f.filePath !== filePath);
+        snapshot.files = snapshot.files.filter((f) => f.filePath !== filePath);
 
         // 如果快照为空，移除整个快照
         if (snapshot.files.length === 0) {
@@ -444,10 +446,12 @@ export class CheckpointManager {
 
         return {
           snapshotId: snapshot.id,
-          files: [{
-            filePath,
-            action: fileInSnapshot.existedBefore ? "restored" : "deleted",
-          }],
+          files: [
+            {
+              filePath,
+              action: fileInSnapshot.existedBefore ? "restored" : "deleted",
+            },
+          ],
         };
       }
     }
@@ -464,7 +468,7 @@ export class CheckpointManager {
     }
 
     const log = getLogger();
-    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+    const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
 
     if (targetIndex === -1) {
       log.warn("CHECKPOINT", `快照不存在: ${snapshotId}`);
@@ -527,7 +531,7 @@ export class CheckpointManager {
    * 列出所有快照（用于 /checkpoints 命令）
    */
   listSnapshots(): SnapshotSummary[] {
-    return this.index.snapshots.map(s => ({
+    return this.index.snapshots.map((s) => ({
       id: s.id,
       timestamp: s.timestamp,
       toolName: s.toolName,
@@ -540,7 +544,7 @@ export class CheckpointManager {
    * 查看指定快照的详情
    */
   getSnapshotDetail(snapshotId: string): Snapshot | null {
-    return this.index.snapshots.find(s => s.id === snapshotId) || null;
+    return this.index.snapshots.find((s) => s.id === snapshotId) || null;
   }
 
   /**
@@ -550,7 +554,7 @@ export class CheckpointManager {
     // 从最新快照往前找，找到第一个包含该文件的快照
     for (let i = this.index.snapshots.length - 1; i >= 0; i--) {
       const snapshot = this.index.snapshots[i];
-      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+      const fileInSnapshot = snapshot.files.find((f) => f.filePath === filePath);
       if (fileInSnapshot) {
         return this.rebuildContentAtSnapshot(filePath, snapshot.id);
       }
@@ -561,8 +565,11 @@ export class CheckpointManager {
   /**
    * 重建指定文件在指定快照时的内容
    */
-  private async rebuildContentAtSnapshot(filePath: string, snapshotId: string): Promise<string | null> {
-    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+  private async rebuildContentAtSnapshot(
+    filePath: string,
+    snapshotId: string,
+  ): Promise<string | null> {
+    const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
     if (targetIndex === -1) return null;
 
     // 找到最近的 full 快照
@@ -571,7 +578,7 @@ export class CheckpointManager {
 
     for (let i = targetIndex; i >= 0; i--) {
       const snapshot = this.index.snapshots[i];
-      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+      const fileInSnapshot = snapshot.files.find((f) => f.filePath === filePath);
 
       if (fileInSnapshot && fileInSnapshot.type === "full") {
         if (fileInSnapshot.compressed && fileInSnapshot.content) {
@@ -596,7 +603,7 @@ export class CheckpointManager {
 
     for (let i = baseSnapshotIndex + 1; i <= targetIndex; i++) {
       const snapshot = this.index.snapshots[i];
-      const fileInSnapshot = snapshot.files.find(f => f.filePath === filePath);
+      const fileInSnapshot = snapshot.files.find((f) => f.filePath === filePath);
 
       if (fileInSnapshot && fileInSnapshot.type === "diff" && fileInSnapshot.diff) {
         content = applyDiff(content, fileInSnapshot.diff);
@@ -609,8 +616,11 @@ export class CheckpointManager {
   /**
    * 重建指定文件在指定快照之前的内容（用于 undo）
    */
-  private async rebuildContentBeforeSnapshot(filePath: string, snapshotId: string): Promise<string | null> {
-    const targetIndex = this.index.snapshots.findIndex(s => s.id === snapshotId);
+  private async rebuildContentBeforeSnapshot(
+    filePath: string,
+    snapshotId: string,
+  ): Promise<string | null> {
+    const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
     if (targetIndex === -1 || targetIndex === 0) return null;
 
     // 重建到前一个快照的内容
@@ -646,7 +656,9 @@ export class CheckpointManager {
   }
 
   /** 收集某文件在所有快照中的出现位置（按时间序，返回 {snapshotIndex, file}）。 */
-  private collectFileEntries(filePath: string): Array<{ snapshotIndex: number; file: SnapshotFile }> {
+  private collectFileEntries(
+    filePath: string,
+  ): Array<{ snapshotIndex: number; file: SnapshotFile }> {
     const entries: Array<{ snapshotIndex: number; file: SnapshotFile }> = [];
     for (let i = 0; i < this.index.snapshots.length; i++) {
       const f = this.index.snapshots[i].files.find((x) => x.filePath === filePath);
@@ -851,7 +863,10 @@ export class CheckpointManager {
     if (!srcSessionId || srcSessionId === this.sessionId) return 0;
     // 已有快照 → 不做插入式继承（防 id 冲突 / 时序错乱）
     if (this.index.snapshots.length > 0) {
-      log.warn("CHECKPOINT", `继承跳过：当前会话已有 ${this.index.snapshots.length} 个快照，不做插入式继承`);
+      log.warn(
+        "CHECKPOINT",
+        `继承跳过：当前会话已有 ${this.index.snapshots.length} 个快照，不做插入式继承`,
+      );
       return 0;
     }
 
@@ -863,9 +878,10 @@ export class CheckpointManager {
       }
       const parsed = JSON.parse(await Bun.file(srcIndexPath).text());
       // 源可能是旧格式（files 而非 snapshots）——复用既有迁移逻辑，继承后即为新格式。
-      const srcIndex: CheckpointIndex = parsed.files && !parsed.snapshots
-        ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
-        : (parsed as CheckpointIndex);
+      const srcIndex: CheckpointIndex =
+        parsed.files && !parsed.snapshots
+          ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
+          : (parsed as CheckpointIndex);
 
       const snapshots = Array.isArray(srcIndex.snapshots) ? srcIndex.snapshots : [];
       if (snapshots.length === 0) {
@@ -889,7 +905,10 @@ export class CheckpointManager {
       );
       return snapshots.length;
     } catch (e) {
-      log.warn("CHECKPOINT", `checkpoint 继承失败（新会话退化为空回退历史，不阻断）: ${(e as Error)?.message}`);
+      log.warn(
+        "CHECKPOINT",
+        `checkpoint 继承失败（新会话退化为空回退历史，不阻断）: ${(e as Error)?.message}`,
+      );
       return 0;
     }
   }
@@ -953,7 +972,10 @@ export class CheckpointManager {
           try {
             rmSync(s.dir, { recursive: true, force: true });
             totalSize -= s.size;
-            log.debug("CHECKPOINT", `总量超限清理最旧会话: ${s.name} (释放 ${(s.size / 1024 / 1024).toFixed(1)}MB)`);
+            log.debug(
+              "CHECKPOINT",
+              `总量超限清理最旧会话: ${s.name} (释放 ${(s.size / 1024 / 1024).toFixed(1)}MB)`,
+            );
           } catch {
             // 单个删除失败不影响其余
           }

@@ -24,7 +24,6 @@ evals/
 ├── eval-judge.test.ts         # judge 单测
 ├── gen-cases-md.ts            # 自动生成 CASES.md
 ├── verify-judge-stability.ts  # judge 稳定性自检
-├── DASHBOARD.md               # 自动生成（勿手编）
 ├── CASES.md                   # 自动生成（勿手编）
 │
 ├── p0-core/                   # P0 必过（10 条，target 4.0）
@@ -57,10 +56,16 @@ evals/
 │
 ├── _runs/<provider>.jsonl     # 时序数据（追加式，每次 run 一行）
 ├── _scores/wNN/case_NNN.yaml  # 周快照（按 ISO 周）
-├── _reports/                  # eval-latest.json + 历史报告（部分可清，见下文）
-├── raw-outputs/               # transcript（部分调试残留可清）
-└── _legacy/                   # 仅 README，promptfoo 决策档案（物理代码已删）
+├── _reports/                  # eval-latest.json + capability-plan-w{NN} 追踪资产（2026-08-12 已清沉没成本，见下文）
+└── raw-outputs/               # transcript（2026-08-12 已清调试残留，见下文）
 ```
+
+> ⚠️ **上面这张树是 2026-05-25 的快照，已有多处漂移**（列出的 `eval-runner.ts` /
+> `eval-judge.ts` / `_types.ts` 及其单测都已不在此处 —— runner 与 judge 已迁到
+> `packages/eval-framework/core/`，`p0-core/ p1-common/ p2-edge/` 也已挪到
+> `general/` 之下）。改动这张树前先跑一次 `git ls-files evals | head -50` 对账，
+> **不要照抄它当事实**。`_legacy/` 已于 2026-08-12（P2-4）删除，内容并入本文
+> 「历史：promptfoo 时期的实现」一节。
 
 > **入口约束**：runner 只扫 `p0-core/ p1-common/ p2-edge/ holdout/` 四个目录。S1 起新增的 `architecture/` 子目录需要扩展 runner 的 `CASE_DIRS`（这是 S1-T01 的范围）。
 
@@ -94,7 +99,7 @@ bun run eval:run --provider sid-code,claude-code
 | `eval-runner.ts` `eval-judge.ts` `_types.ts` `_template.yaml` | runner + grader + 模板，是评测引擎 |
 | `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | LLM Judge 校准成本极高（κ=0.921 重新校一次要数小时人工标注），删了等于推倒重来 |
 | `providers/*.ts` `gen-cases-md.ts` `verify-judge-stability.ts` | wrapper 和工具脚本 |
-| `DASHBOARD.md` `CASES.md` | 自动生成但被外部链接引用，不要手删（重跑 runner 会覆盖） |
+| `CASES.md` | 自动生成但被外部链接引用，不要手删（重跑 `gen-cases-md.ts` 会覆盖） |
 
 **这一层任何文件都不能删**。
 
@@ -112,21 +117,43 @@ bun run eval:run --provider sid-code,claude-code
 
 **用途**：M3 Go/No-Go 条件 6 "P0 每条 case 至少跑过 3 次" 的**唯一证据**——直接 grep `_runs/*.jsonl` 统计。删了到 M3 评审时拿不出证据。
 
-#### ⚠️ 第三层 沉没成本（可归档可删）
+#### ⚠️ 第三层 沉没成本（**2026-08-12 已清理**，见下方"清理记录"）
 
-- `_reports/promptfoo-*.{json,csv}` —— promptfoo 已废弃，git history 留着就够
-- `_reports/round1-5.json baseline-w1-raw.json eval-after-fix*.json` —— 早期手动调试
+以下均已 `git rm` 且工作区一并删除（git history 留着就够，溯源走 `git log -- <path>`）：
+
+- `_reports/promptfoo-*.{json,csv}` —— promptfoo 已废弃
+- `_reports/round1-5.json baseline-w1(-raw).md/json eval-after-fix*.json` —— 早期手动调试
 - `_reports/smoke-*-w9/w10.md horizontal-comparison-v1.md` —— 过渡期实验
-- 老周快照（被新周覆盖、且对应 provider 已不在主力序列）
+- `_reports/M5-gate-review-result-2026-05-31.md agent-eval-first-report-2026-05-31.md known-limitation-roster-2026-05-31.txt sprint-S5-eval-report.md` —— Sprint/Gate 阶段性评审记录，无代码/文档引用
+- 老周快照（被新周覆盖、且对应 provider 已不在主力序列）——本次未发现符合此项的文件，暂无操作
 
 **用途**：基本只用于"溯源 EDD 演进史"，对当前 Sprint 的 fix/verify 没用。
 
-#### 🗑️ 第四层 调试残留（可直接删）
+#### 🗑️ 第四层 调试残留（**2026-08-12 已清理**）
 
-- `raw-outputs/_single-T0001.txt`、`raw-outputs/bench-results-178*.jsonl` —— 单 case 调试残留
-- `_legacy/` 物理目录（README 留着，但 README 只指 git history，目录本身可空）
+以下均已从磁盘删除（未追踪文件，无需 `git rm`）：
+
+- `raw-outputs/` 下 76 个带毫秒时间戳的单次运行 jsonl/txt（`_single-T0001.txt`、`bench-results-*.jsonl`、`capability-*-<ts>.jsonl`、`skill-*-<ts>.jsonl` 等）
+- `_reports/promptfoo-*.{json,csv}` 磁盘残留（当时已不被 git 追踪，只是本机文件仍在）
+- `_legacy/` 当时未清（仍只有一个 README）。**2026-08-12 P2-4 已处理**：README 内容并入本文
+  「历史：promptfoo 时期的实现」一节，目录删除 —— 一个只含 README 的目录不该占顶层位置。
 
 **用途**：无。
+
+### 清理记录（2026-08-12）
+
+对应方案见本地文档库
+`docs-research/sid-code/bugfixes/todo/20260812-仓库文件入库与目录规范-对标开源项目全量改造方案.md` P0-2，
+以及本文档上方两层的分层政策。执行细节：
+
+- **P0-2（63 个时间戳转储）**：`git rm --cached` → 改为直接 `git rm`（工作区文件本次判断为可删，非"只出库"）
+- **第三层沉没成本（7 个 + 4 个 Sprint 评审记录，共 11 个已追踪文件）**：同样 `git rm`
+- **第四层调试残留（`raw-outputs/` 76 个 + `_reports/` 下 11 个未追踪 `promptfoo-*` 磁盘文件）**：直接 `rm`（本就不在 git 索引里）
+- **保留**（`_reports/` 现存 5 个 + `.gitkeep`）：`eval-latest.json`（`gen-cases-md.ts:20` 仍读取）、
+  `capability-plan-w11.md` / `-after.json` / `-baseline.json`（`capability/plan/README.md:64` 明确的持续追踪机制）、
+  `capability-plan-w12-d3-preview.md`（同一追踪机制的中期工件，尚无 w12 正式版取代它）
+- **`raw-outputs/` 保留 17 个**：`CASES.md` 引用的 12 个 `case_00N_<ts>.jsonl` transcript + `capability-plan-w11/w12` 系列 5 个（`_reports/capability-plan-w11.md`、`capability-plan-w12-d3-preview.md` 正文引用）
+- **文档同步**：`evals/inspect/README.md:121` 对 `horizontal-comparison-v1.md` 的引用已改为指向 git 历史，不再假装文件还在磁盘上
 
 ### 清理 trigger（什么时候动手）
 
@@ -160,6 +187,67 @@ bun run eval:list              # 验证识别
 bun run eval:run --cases case_NNN --provider sid-code   # 单跑验证
 ```
 
+## 目录边界：`evals/` 与 `scripts/eval/` 的分工
+
+这一节是 P2-4（2026-08-12）立的，治的是一个反复被问的问题：**为什么 `evals/` 里有代码？**
+
+先说结论：**`evals/` 是「评测这件事」的整体归属地，它可以有代码，这不是历史欠债。**
+实测本目录有 **25 个 `.ts`**（`bench-runner/` 10、`scripts/` 4、`providers/` 4、
+`_judge/` 2、根下 2、其余 3），`scripts/eval/` 有 **37 个文件**。两边各放什么，判据如下：
+
+| 目录 | 放什么 | 判据 |
+| --- | --- | --- |
+| **`evals/`** | 评测**体系本身**：case 数据（`general/` `architecture/` `capability/` `real-tasks/` `holdout/`）、judge 与诊断资产（`_judge/` `_diagnoses/` `_meta/`）、基线与报告（`_runs/` `_scores/` `_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
+| **`scripts/eval/`** | 评测的**工具与门禁**：跑批入口、聚合、泄漏检查、门禁脚本 | **与具体 case 无关、对整个评测集通用的，放这里** |
+
+根下两个 `.ts` 按此判据属前者，保持原位：`gen-cases-md.ts`（遍历全部 case 生成
+`CASES.md`）、`verify-judge-stability.ts`（拿 case 跑 judge 自检）。
+
+> ⚠️ **不要"顺手"把 `evals/` 下的代码迁去 `scripts/eval/`。**
+> 曾有一版方案提议只迁根下那 2 个文件、理由是「`evals/` 应该只放数据」。
+> 那条原则与现状冲突：迁完之后这里仍有 23 个代码文件，但**看起来像已经治理过了** ——
+> 把不一致从「明显」变成「隐蔽」，下一个人更难发现这里其实没有统一规则。
+> 而且 `tests/eval/` 有 6 处测试直接 `import ../../evals/...`（bench-runner 的
+> capability-grader / capability-shared / runner / adapters，providers/sid-code-live，
+> scripts/distill-skill-rules），迁移要连带改它们。
+>
+> 有先例：gemini-cli 的 `evals/` 里同样是 `.eval.ts` 代码 + helper，不是纯数据目录。
+>
+> 若哪天真要统一，那是一次**独立改造**（25 个文件 + 6 处测试 import +
+> `pkg-boundary-scan` 的扫描范围），不要塞进"入库与位置清理"这类任务里。
+
+## 历史：promptfoo 时期的实现（原 `_legacy/README.md`）
+
+**所有 promptfoo 相关代码已于 2026-05-24 删除。** 这一节保留回查线索 ——
+物理文件删了，但「怎么找回旧实现」这件事本身有价值，所以留档。
+（原先它是 `evals/_legacy/README.md`，一个只含 README 的目录不该占顶层位置，
+P2-4 把内容并到这里、目录删掉。）
+
+看旧的 promptfoo 实现（配置 / wrapper / yaml-to-tests 转换脚本 / promptfoo-sync）：
+
+```bash
+# 看最后一次完整状态（在删除 _legacy 物理文件之前）
+git log --oneline --all -- 'evals/promptfoo/**' 'evals/_legacy/promptfoo/**' | head
+
+# 恢复某个文件查看
+git show <commit>:evals/promptfoo/promptfooconfig.yaml
+git show <commit>:evals/promptfoo/lib/yaml-to-tests.ts
+git show <commit>:evals/promptfoo/providers/sid-code-live.ts
+git show <commit>:scripts/eval/promptfoo-sync.ts
+```
+
+关键 commit 参考：`43bd3d6 fix: 彻底清除promtfoo引用` —— 删除前最后一次完整快照；
+更早的 commit 在 master 历史里完整保留。
+
+**为什么不留着物理文件**：2026-05-24 明确指示删除 —— 保留只会让新人 grep
+`promptfoo` 撞到死代码、造成误导。git history 已经是足够的"博物馆"。
+
+**紧急回滚**（`runner` 完全不可用、必须临时回到 promptfoo 的极端情况）：
+按上面的 `git checkout <commit> -- evals/promptfoo/` 取回整个目录 + `promptfoo-sync.ts`
++ `package.json` 的 `eval:horizontal-*` 脚本。但更推荐直接修
+`packages/eval-framework/core/runner.ts` —— promptfoo 时代的双套 wrapper /
+黑盒并发 / 评分公式重复等问题不值得重启。
+
 ## 关键铁律
 
 来自 `docs/eval/_archive/06-风险预案与启动清单.md §9.5`，**违反 = 销毁证据**：
@@ -180,4 +268,4 @@ bun run eval:run --cases case_NNN --provider sid-code   # 单跑验证
 | `docs/eval/09-研发智能基座-eval详细清单.md` | 178 约束 → ~169 case 的逐条映射 |
 | `docs/eval/edd-iteration-playbook.md` | 5 步迭代循环（MEASURE → DIAGNOSE → PLAN → FIX → VERIFY） |
 | `_template.yaml` | case 模板（写新 case 必读） |
-| `_legacy/README.md` | promptfoo 废弃决策档案（紧急回滚指引） |
+| 本文「历史：promptfoo 时期的实现」 | promptfoo 废弃决策档案 + 紧急回滚指引（原 `_legacy/README.md`，2026-08-12 并入） |

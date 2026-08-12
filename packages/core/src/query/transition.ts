@@ -20,5 +20,7 @@ export function setTransition(
       timestamp: new Date().toISOString(),
       data: { type: reason.type, turn: state.turnCount },
     });
-  } catch { /* trace 写入失败不阻断主循环 */ }
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
 }

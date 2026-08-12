@@ -16,7 +16,13 @@ import { theme } from "../semantic-colors.ts";
 import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
-import { SUCCESS_MARK, ERROR_MARK, TODO_PENDING, WARNING_MARK, ARROW_PROMPT } from "../constants/figures.ts";
+import {
+  SUCCESS_MARK,
+  ERROR_MARK,
+  TODO_PENDING,
+  WARNING_MARK,
+  ARROW_PROMPT,
+} from "../constants/figures.ts";
 import type { MCPManager, MCPServerStatusInfo } from "@sid-code/core/mcp/manager.ts";
 import type { MCPToolDefinition } from "@sid-code/core/mcp/types.ts";
 import type { MCPConnectionStatus } from "@sid-code/core/mcp/types.ts";
@@ -36,7 +42,12 @@ type ViewState =
   | { type: "list" }
   | { type: "server-menu"; server: MCPServerStatusInfo }
   | { type: "tools"; server: MCPServerStatusInfo; tools: MCPToolDefinition[] }
-  | { type: "tool-detail"; server: MCPServerStatusInfo; tool: MCPToolDefinition; tools: MCPToolDefinition[] };
+  | {
+      type: "tool-detail";
+      server: MCPServerStatusInfo;
+      tool: MCPToolDefinition;
+      tools: MCPToolDefinition[];
+    };
 
 // ─── 服务器菜单项 ───
 
@@ -124,7 +135,7 @@ export const McpDialog: React.FC<McpDialogProps> = ({ onClose, mcpManager, sessi
           onRefresh={() => {
             refreshServers();
             // 同步更新 server-menu 中的 server 状态
-            const updated = mcpManager.getStatus().find(s => s.name === viewState.server.name);
+            const updated = mcpManager.getStatus().find((s) => s.name === viewState.server.name);
             if (updated) setViewState({ type: "server-menu", server: updated });
           }}
         />
@@ -135,7 +146,14 @@ export const McpDialog: React.FC<McpDialogProps> = ({ onClose, mcpManager, sessi
           server={viewState.server}
           tools={viewState.tools}
           onBack={() => setViewState({ type: "server-menu", server: viewState.server })}
-          onSelectTool={(tool) => setViewState({ type: "tool-detail", server: viewState.server, tool, tools: viewState.tools })}
+          onSelectTool={(tool) =>
+            setViewState({
+              type: "tool-detail",
+              server: viewState.server,
+              tool,
+              tools: viewState.tools,
+            })
+          }
         />
       );
     case "tool-detail":
@@ -171,8 +189,16 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
 
   if (servers.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>MCP 服务器管理</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          MCP 服务器管理
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>未配置 MCP 服务器</Text>
         </Box>
@@ -184,20 +210,33 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
     );
   }
 
-  const items: Array<SelectionListItem<MCPServerStatusInfo> & { label: string }> = servers.map((s) => ({
-    value: s,
-    key: s.name,
-    label: s.name,
-  }));
+  const items: Array<SelectionListItem<MCPServerStatusInfo> & { label: string }> = servers.map(
+    (s) => ({
+      value: s,
+      key: s.name,
+      label: s.name,
+    }),
+  );
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>MCP 服务器管理</Text>
+        <Text bold color={theme.ui.active}>
+          MCP 服务器管理
+        </Text>
         <Text color={theme.text.secondary}> · {servers.length} 个服务器</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <BaseSelectionList<MCPServerStatusInfo, SelectionListItem<MCPServerStatusInfo> & { label: string }>
+        <BaseSelectionList<
+          MCPServerStatusInfo,
+          SelectionListItem<MCPServerStatusInfo> & { label: string }
+        >
           items={items}
           onSelect={(server) => onSelectServer(server)}
           showNumbers={false}
@@ -357,16 +396,24 @@ const McpServerMenu: React.FC<McpServerMenuProps> = ({
   const { icon, color } = getStatusIcon(server.status);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>{server.name}</Text>
+        <Text bold color={theme.ui.active}>
+          {server.name}
+        </Text>
         <Text color={theme.text.secondary}> ({server.transport}) </Text>
-        <Text color={color}>{icon} {getStatusText(server)}</Text>
+        <Text color={color}>
+          {icon} {getStatusText(server)}
+        </Text>
       </Box>
 
-      {server.error && (
-        <Text color={theme.status.error}>  错误: {server.error}</Text>
-      )}
+      {server.error && <Text color={theme.status.error}> 错误: {server.error}</Text>}
 
       <Box marginTop={1} flexDirection="column">
         {loading ? (
@@ -379,9 +426,7 @@ const McpServerMenu: React.FC<McpServerMenuProps> = ({
             maxItemsToShow={8}
             selectedIndicator={ARROW_PROMPT}
             renderItem={(item, { isSelected }) => (
-              <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
-                {item.label}
-              </Text>
+              <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{item.label}</Text>
             )}
           />
         )}
@@ -420,8 +465,16 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
 
   if (tools.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>{server.name} · 工具</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          {server.name} · 工具
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>该服务器没有可用工具</Text>
         </Box>
@@ -432,20 +485,33 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
     );
   }
 
-  const items: Array<SelectionListItem<MCPToolDefinition> & { label: string }> = tools.map((t, i) => ({
-    value: t,
-    key: `tool-${i}`,
-    label: t.name,
-  }));
+  const items: Array<SelectionListItem<MCPToolDefinition> & { label: string }> = tools.map(
+    (t, i) => ({
+      value: t,
+      key: `tool-${i}`,
+      label: t.name,
+    }),
+  );
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>{server.name}</Text>
+        <Text bold color={theme.ui.active}>
+          {server.name}
+        </Text>
         <Text color={theme.text.secondary}> · {tools.length} 个工具</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <BaseSelectionList<MCPToolDefinition, SelectionListItem<MCPToolDefinition> & { label: string }>
+        <BaseSelectionList<
+          MCPToolDefinition,
+          SelectionListItem<MCPToolDefinition> & { label: string }
+        >
           items={items}
           onSelect={(tool) => onSelectTool(tool)}
           showNumbers={true}
@@ -455,7 +521,11 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
             <Box>
               <Text color={titleColor}>{item.value.name}</Text>
               {item.value.description && (
-                <Text color={theme.text.secondary}> — {item.value.description.slice(0, 60)}{item.value.description.length > 60 ? "…" : ""}</Text>
+                <Text color={theme.text.secondary}>
+                  {" "}
+                  — {item.value.description.slice(0, 60)}
+                  {item.value.description.length > 60 ? "…" : ""}
+                </Text>
               )}
             </Box>
           )}
@@ -497,9 +567,17 @@ const McpToolDetail: React.FC<McpToolDetailProps> = ({ server, tool, onBack }) =
   }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>{tool.name}</Text>
+        <Text bold color={theme.ui.active}>
+          {tool.name}
+        </Text>
         <Text color={theme.text.secondary}> — {server.name}</Text>
       </Box>
 
@@ -510,13 +588,17 @@ const McpToolDetail: React.FC<McpToolDetailProps> = ({ server, tool, onBack }) =
       )}
 
       <Box marginTop={1} flexDirection="column">
-        <Text bold color={theme.text.secondary}>Input Schema:</Text>
+        <Text bold color={theme.text.secondary}>
+          Input Schema:
+        </Text>
         <Text color={theme.text.secondary}>{schemaStr}</Text>
       </Box>
 
       {tool.annotations && (
         <Box marginTop={1} flexDirection="column">
-          <Text bold color={theme.text.secondary}>Annotations:</Text>
+          <Text bold color={theme.text.secondary}>
+            Annotations:
+          </Text>
           <Text color={theme.text.secondary}>{JSON.stringify(tool.annotations, null, 2)}</Text>
         </Box>
       )}

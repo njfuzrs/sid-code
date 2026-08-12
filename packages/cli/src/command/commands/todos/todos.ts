@@ -11,9 +11,7 @@ import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "../../../ui/cons
  */
 const mod: LocalCommandModule = {
   async call(_args, ctx) {
-    const tool = ctx.toolRegistry.get("todo_write") as
-      | { getTodos?: () => TodoItem[] }
-      | undefined;
+    const tool = ctx.toolRegistry.get("todo_write") as { getTodos?: () => TodoItem[] } | undefined;
 
     if (!tool?.getTodos) {
       return { type: "text", value: "当前没有可用的待办清单（TodoWrite 工具未加载）" };

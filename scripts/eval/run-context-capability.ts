@@ -22,10 +22,7 @@ import {
   type SidCodeLiveResult,
 } from "../../evals/bench-runner/adapters/sid-code-live.ts";
 import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process-grader.ts";
-import {
-  syncBaselineScores,
-  type BaselineResult,
-} from "eval-framework/core/baseline-sync.ts";
+import { syncBaselineScores, type BaselineResult } from "eval-framework/core/baseline-sync.ts";
 import {
   loadCapabilityCases,
   runSharedCheck,
@@ -95,7 +92,9 @@ function runContextCheck(rule: GraderRule, input: ContextGraderInput): CheckResu
         check,
         passed: ok,
         weight: rule.weight,
-        reason: ok ? `exit=${input.exitStatus}` : `expected ${list.join("|")},实际 ${input.exitStatus}`,
+        reason: ok
+          ? `exit=${input.exitStatus}`
+          : `expected ${list.join("|")},实际 ${input.exitStatus}`,
       };
     }
     case "final_response_min_length_ok": {
@@ -123,7 +122,12 @@ function runContextCheck(rule: GraderRule, input: ContextGraderInput): CheckResu
     case "tool_call_count_le_5": {
       const count = input.toolsCalled.length;
       const ok = count <= 5;
-      return { check, passed: ok, weight: rule.weight, reason: `tool_calls=${count} ${ok ? "≤" : ">"} 5` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `tool_calls=${count} ${ok ? "≤" : ">"} 5`,
+      };
     }
     case "execution_must_not_call_tools_overuse_grep_3plus_hit": {
       // 反向: grep 不应被调用 3 次以上
@@ -164,7 +168,9 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
-console.log(`Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`);
+console.log(
+  `Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`,
+);
 console.log(`Adapter   : sid-code-live`);
 console.log(`Model     : ${liveConfig.model}`);
 console.log(`Timeout   : ${liveConfig.timeoutMs}ms`);
@@ -227,7 +233,9 @@ for (let i = 0; i < cases.length; i++) {
     try {
       live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
     } catch (err) {
-      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`,
+      );
       sampleSnapshots.push({
         finalScore: 0,
         assertScore: 0,
@@ -435,10 +443,14 @@ await Bun.write(
 console.log("\n" + "=".repeat(60));
 console.log(`Context capability eval done`);
 console.log("=".repeat(60));
-console.log(`  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`);
+console.log(
+  `  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`,
+);
 console.log(`  By dimension:`);
 for (const [dim, s] of Object.entries(dimensionSummary)) {
-  console.log(`    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`);
+  console.log(
+    `    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`,
+  );
 }
 console.log(`\n  Raw  → ${rawOutputPath}`);
 console.log(`  Report → ${reportOutputPath}`);

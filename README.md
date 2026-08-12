@@ -2,152 +2,190 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/zhourusheng/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/zhourusheng/sid-code/actions/workflows/ci.yml)
-[![文档](https://img.shields.io/badge/%E6%96%87%E6%A1%A3-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
-[![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Linux-lightgrey)](#安装)
+[![Docs](https://img.shields.io/badge/docs-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#installation)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
 
-**中文** · [English](./README.en.md)
+[中文](./README.zh-CN.md) · **English**
 
-**跑在终端的 coding agent。** 你用中文说要干什么，它读你的代码、改文件、跑命令，
-然后用真实的编译和测试结果证明改对了没有。
+**A coding agent that runs in your terminal.** You describe what you want in plain
+language; it reads your code, edits files, runs commands, and then proves the change
+is correct with real compiler and test output.
 
-TypeScript + Bun + Ink 自研，编译成单文件二进制分发——下载一个文件就能跑，
-不需要装 Node、不需要 `npm install`。
+Built in-house on TypeScript + Bun + Ink, shipped as a single compiled binary — download
+one file and run it. No Node install, no `npm install`.
 
-- 📖 **官方文档：** https://www.sid-code.cc/
-- 📄 **更新日志：** https://www.sid-code.cc/changelog
-- 🤝 **参与贡献：** [CONTRIBUTING.md](./CONTRIBUTING.md) · 🔒 **安全上报：** [SECURITY.md](./SECURITY.md)
+- 📖 **Documentation:** https://www.sid-code.cc/ (Chinese)
+- 📄 **Changelog:** https://www.sid-code.cc/changelog
+- 🤝 **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · 🔒 **Security:** [SECURITY.md](./SECURITY.md)
+
+> **A note on language.** Chinese is this team's working language. The documentation site,
+> most source comments, and the primary README are in Chinese. The CLI itself handles
+> English prompts fine, but if you plan to contribute code you should expect to read
+> Chinese comments. We consider that a fair thing to state up front rather than have you
+> discover it after cloning. See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
 
-## 安装
+## Installation
 
 ```bash
 curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 ```
 
-装完直接用：
+Then:
 
 ```bash
-sc                    # 启动（推荐）
-sid-code --version    # 确认版本
-sid-code update       # 以后升级到最新版
+sc                    # start (recommended)
+sid-code --version    # confirm the version
+sid-code update       # upgrade later
 ```
 
-装不上或 PATH 没生效，见[安装文档](https://www.sid-code.cc/start/install)。
+Prebuilt binaries cover macOS (arm64 / x64) and Linux (x64 / arm64). If the install
+fails or `PATH` isn't picking it up, see the
+[install guide](https://www.sid-code.cc/start/install).
 
-## 30 秒示例
+## 30-second example
 
-启动后直接说人话，不需要记命令：
+Start it and just describe the problem — there are no commands to memorize:
 
 ```text
 $ sc
 
-› 这个模块的超时配置不生效，查一下为什么
+› The timeout config in this module isn't taking effect, find out why
 
-  搜索 timeout 相关实现…
-  读取 packages/core/src/tool/bash.ts:55-80
-  定位到：parseEnv 读了环境变量但没传给 spawn 的 timeout 参数
-  修改 packages/core/src/tool/bash.ts
-  运行 bun test tests/tool/bash.test.ts  → 12 pass 0 fail
+  Searching for timeout-related code…
+  Reading packages/core/src/tool/bash.ts:55-80
+  Found it: parseEnv reads the env var but never passes it to spawn's timeout param
+  Editing packages/core/src/tool/bash.ts
+  Running bun test tests/tool/bash.test.ts  → 12 pass 0 fail
 
-  超时没生效的原因是 parseEnv 的返回值没接到 spawn 上。已修复并跑过单测。
+  The timeout was ignored because parseEnv's return value was never wired into spawn.
+  Fixed, and the unit tests pass.
 ```
 
-每一步都在终端里可见，随时按 <kbd>Esc</kbd> 打断。
+Every step is visible in the terminal, and <kbd>Esc</kbd> interrupts at any point.
 
-## 四条差异化能力
+## Four things that set it apart
 
-功能面对标 Claude Code（agentic loop、工具调用、权限门控、Hook、Skill、MCP 都有对应实现），
-差别在下面四条 —— 它们不是"做得更好"，而是**闭源商业产品结构上给不了**：
+On features, this tracks Claude Code closely — agentic loop, tool calling, permission
+gating, hooks, skills, and MCP all have working counterparts. The differences below
+aren't claims of "we did it better"; they're things a **closed-source commercial product
+structurally cannot offer**:
 
-| 能力 | 说明 |
+| Capability | What it means |
 | --- | --- |
-| **多 provider 可插拔** | Anthropic / OpenAI / Ollama 三族协议。公司自建网关、Azure、本地离线模型都能接，换模型是改配置不是换工具 |
-| **功能自主可定制** | 44 个内置工具、32 类 Hook 事件、Skill 与子代理全部可改可扩。发现问题当天能补，不用等官方排期 |
-| **深度贴合企业环境** | 内部网关计费、内网 GitLab、MCP 接入、团队默认配置分发，按真实企业内网基建做的适配 |
-| **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里。既是合规前提，也是持续优化的燃料 |
+| **Pluggable providers** | Three protocol families: Anthropic / OpenAI / Ollama. Self-hosted gateways, Azure, and fully offline local models all work. Switching models is a config change, not a change of tool |
+| **Own the whole harness** | 44 built-in tools, 32 hook event types, skills and subagents — all readable and modifiable. Find a problem, fix it the same day, without waiting on a vendor roadmap |
+| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks |
+| **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure. That's a compliance prerequisite, and it's also the fuel for improving the agent |
 
-用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
+Coming from Claude Code, migration is close to zero-cost — see the
+[migration guide](https://www.sid-code.cc/team/migrate).
 
-## 现状
+## Where it stands today
 
-| 项 | 现状 |
+| Item | Status |
 | --- | --- |
-| 自研代码 | `packages/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
-| 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
-| 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
-| 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
+| First-party code | 200k+ lines of TypeScript under `packages/` (excludes the vendored ink fork) |
+| Engineering loop | 600+ test files, 8000+ unit tests; the full suite runs on every change and must be green before commit |
+| Surface area | 44 built-in tools, 32 hook event types, LSP code intelligence, permission gating, observable trajectories |
+| Evaluation | 30 eval cases (including a holdout set), run before each release to catch regressions |
 
 <!--
-  数字口径（发版前人工核对一次，写约数不写精确值）：
-    ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
-       下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 —— 复核命令静默失效比数字过期更糟，
-       因为下一个人会以为自己核对过了。ink fork 现在自成一包，用排包代替原先的 grep -v '/ink/'。
-    代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer）
-    测试文件    find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 642）
-    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                （实测 8,569）
-    Hook 事件   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
-    内置工具    sid-code --dump-tools 数组长度（实测 44，与脚本生成的 ref/tools.md 同源同值。
-                ⚠️ 此处曾写"60+"，与运行时真值不符 —— website/index.md 早已改对而本文漏改，
-                2026-08-10 补齐。写数字前先跑命令，别照抄旧值）
-    eval case   bun run eval:list 的汇总行（实测 P0=10 holdout=5 P1=9 P2=6 = 30）
-  与 website/index.md 的同一张表须一致，改一处要改两处；README.en.md 是第三处。
+  How these numbers are counted (verified by hand before each release; write round
+  numbers, not exact ones):
+    NOTE (P2-2, 2026-08-11): sources moved from a flat src/ into
+                   packages/{shared,tui-renderer,core,cli}/src/, so the commands below were
+                   updated too. A stale `find src` does not error — it just counts 0, and a
+                   silently broken verification command is worse than a stale number, because
+                   the next person believes they verified it. The ink fork is now its own
+                   package, so we exclude a package instead of the previous grep -v '/ink/'.
+    lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
+                   (2026-08-11: 203,533 lines, excluding the vendored ink fork = packages/tui-renderer)
+    test files     find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (642)
+    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                   (8,569)
+    hook events    member count of the HookEventName enum in packages/core/src/hook/types.ts  (32)
+    built-in tools length of the `sid-code --dump-tools` array (44 — same source as the
+                   generated ref/tools.md). Do NOT write "60+"; that was wrong and is
+                   contradicted by the runtime registry.
+    eval cases     the summary line of `bun run eval:list`  (P0=10 holdout=5 P1=9 P2=6 = 30)
+  This table must stay identical in three places: README.md (this file, English),
+  README.zh-CN.md, and website/index.md. Change one, change all three —
+  run the numbers first.
+  (Before 2026-08-12 the English copy lived in README.en.md; P2-6 made English the
+   main README and moved the Chinese copy to README.zh-CN.md. Same three places,
+   different filenames.)
 -->
 
-## 本地开发
+## Local development
 
-本地是**双版本并存**，两个不同的二进制名，不靠 PATH 优先级区分：
+Two binaries with **different names** coexist locally; they are not disambiguated by
+`PATH` order:
 
-| 命令 | 指向 | 用途 |
+| Command | Points to | Use for |
 | --- | --- | --- |
-| `sc` / `sid-code` | `~/.local/bin/sid-code`（线上下载版） | 对照线上行为 |
-| `sc-dev` / `sid-code-dev` | 仓库根构建产物 | **验证本地改动** |
+| `sc` / `sid-code` | `~/.local/bin/sid-code` (released build) | comparing against released behavior |
+| `sc-dev` / `sid-code-dev` | build output in the repo root | **verifying your local changes** |
 
 ```bash
-git clone <仓库地址>
+git clone <repository-url>
 cd sid-code
 bun install
-make build            # 构建开发版二进制（版本号不变，日常就用这个）
-sc-dev                # 启动开发版
-bun test              # 全量单测
+make build            # build the dev binary (does not bump the version — use this daily)
+sc-dev                # run the dev build
+bun test              # full unit test suite
 ```
 
-> ⚠️ 改了代码要验证，必须跑 `sc-dev`。`sc` 指向线上稳定版，跑它验证不到任何本地改动。
-> 拿不准时先 `which sid-code-dev sid-code` 确认指向。
+> ⚠️ To verify a code change you must run `sc-dev`. `sc` points at the released build and
+> will not reflect any local change. When in doubt, run
+> `which sid-code-dev sid-code` first.
 
-文档站（VitePress，产物纯静态）：
+Documentation site (VitePress, fully static output):
 
 ```bash
-bun run website:dev      # 本地预览 http://localhost:5173
-bun run website:build    # 构建（死链检测在此生效）
+bun run website:dev      # preview at http://localhost:5173
+bun run website:build    # build (dead-link checking runs here)
 ```
 
-更多约定见 [CLAUDE.md](./CLAUDE.md)。
+Contribution workflow, the gates your PR must pass, and repo conventions are in
+[CONTRIBUTING.md](./CONTRIBUTING.md); conventions for AI agents working in this repo are
+in [CLAUDE.md](./CLAUDE.md) — the single source of truth (there is deliberately no
+`AGENTS.md`; see the note at the top of `CLAUDE.md`).
 
-## 许可与第三方代码
+## License and third-party code
 
-本项目采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
+This project is released under the **[MIT License](./LICENSE)**. It is
+non-commercial: not sold, not operated for profit.
 
-> ⚠️ **MIT 只覆盖我们自己的代码。** 一份许可证不可能授予我们本来就不持有的权利 ——
-> `packages/tui-renderer/` 里属于 Anthropic 的增量表达不在授权范围内（下方详述），
-> `vendor/` 与 `node_modules` 的第三方资产各依其自身许可。
-> 换句话说：`LICENSE` 说明**我们的代码**你可以怎么用，[NOTICE](./NOTICE) 说明**别人的代码**在这里的来源与条款。两份都要读。
+> ⚠️ **MIT covers our own code only.** No license can grant rights we do not hold —
+> the Anthropic-authored additions inside `packages/tui-renderer/` are outside the grant (detailed
+> below), and assets under `vendor/` and `node_modules` are governed by their own
+> licenses.
+> Put differently: `LICENSE` tells you what you may do with **our** code, and
+> [NOTICE](./NOTICE) records where **other people's** code here came from and under what
+> terms. Read both.
 
-第三方代码的来源、许可条款与我们所做的修改，完整记录在 [NOTICE](./NOTICE)。其中一条需要在这里
-直接点明，不藏在附录里：
+The origin, license terms, and our modifications for all third-party code are recorded in
+[NOTICE](./NOTICE). One item belongs here in the open rather than buried in an appendix:
 
-> **`packages/tui-renderer/`（终端渲染底座，122 文件 / 23,760 行）不是本项目原创。**
-> 它 fork 自 MIT 许可的上游 [`ink`](https://github.com/vadimdemedes/ink)，但**引入途径是一份
-> Claude Code（Anthropic 闭源产品）的泄露源码快照** —— Anthropic 在 MIT 骨架之上的增量修改
-> 属于 Anthropic，**我们未获授权**。「上游是 MIT」只缩小范围、不消除问题：上游全部源码仅
-> 3979 行，而本地与其同名的 32 个文件有 12484 行。
+> **`packages/tui-renderer/` (the terminal rendering layer, 122 files / 23,760 lines) is not
+> original to this project.**
+> It is forked from the MIT-licensed upstream [`ink`](https://github.com/vadimdemedes/ink),
+> but **it entered this codebase via a leaked source snapshot of Claude Code**, a
+> closed-source Anthropic product. Anthropic's incremental modifications on top of the
+> MIT skeleton belong to Anthropic, and **we were never granted rights to them**.
+> "Upstream is MIT" narrows the problem, it does not remove it: upstream's entire source
+> is 3,979 lines, while the 32 local files sharing its filenames total 12,484 lines.
 >
-> **我们无意侵犯任何人的版权，这部分代码正在被重构掉，工作进行中**（`yoga-layout` 换回
-> npm 包 → `termio/*` 按公开规范重写 → `screen.ts` / `selection.ts` clean-room 重写）。
-> 详见 [NOTICE](./NOTICE) 第 1 节与 [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md)。
-> 如果权利人要求移除相关代码，我们会配合处理。
+> **We do not intend to infringe anyone's copyright. This code is being refactored out,
+> and that work is in progress** (swap `yoga-layout` back to the npm package → rewrite
+> `termio/*` against the public specifications → clean-room rewrite of `screen.ts` and
+> `selection.ts`).
+> See [NOTICE](./NOTICE) §1 and
+> [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md).
+> If a rights holder asks us to remove the code in question, we will comply.
 
-上文「自研代码 20 万行以上」的口径**已排除 `packages/tui-renderer/`** —— 我们不把这部分算作自研。
+The "200k+ lines of first-party code" figure above **excludes `packages/tui-renderer/`** — we do not
+count that part as ours.

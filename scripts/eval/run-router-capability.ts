@@ -17,10 +17,7 @@ import {
   type SidCodeLiveResult,
 } from "../../evals/bench-runner/adapters/sid-code-live.ts";
 import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process-grader.ts";
-import {
-  syncBaselineScores,
-  type BaselineResult,
-} from "eval-framework/core/baseline-sync.ts";
+import { syncBaselineScores, type BaselineResult } from "eval-framework/core/baseline-sync.ts";
 import {
   loadCapabilityCases,
   runSharedCheck,
@@ -83,13 +80,25 @@ function runRouterCheck(rule: GraderRule, input: RouterGraderInput): CheckResult
     case "exit_status_must_be_any_of_hit": {
       const list = expected.exit_status_must_be || [];
       const ok = list.includes(input.exitStatus);
-      return { check, passed: ok, weight: rule.weight, reason: ok ? `exit=${input.exitStatus}` : `expected ${list.join("|")},实际 ${input.exitStatus}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: ok
+          ? `exit=${input.exitStatus}`
+          : `expected ${list.join("|")},实际 ${input.exitStatus}`,
+      };
     }
     case "final_response_max_length_ok": {
       const max = expected.final_response_max_length ?? Infinity;
       const len = input.finalResponse.length;
       const ok = len <= max;
-      return { check, passed: ok, weight: rule.weight, reason: `length=${len} ${ok ? "≤" : ">"} ${max}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `length=${len} ${ok ? "≤" : ">"} ${max}`,
+      };
     }
     case "final_response_must_include_count_keywords_min_3_hit": {
       const list = expected.final_response_must_include_count_keywords_min_3 || [];
@@ -136,7 +145,9 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
-console.log(`Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`);
+console.log(
+  `Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`,
+);
 console.log(`Adapter   : sid-code-live`);
 console.log(`Model     : ${liveConfig.model}`);
 console.log(`Timeout   : ${liveConfig.timeoutMs}ms`);
@@ -202,7 +213,9 @@ for (let i = 0; i < cases.length; i++) {
     try {
       live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
     } catch (err) {
-      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`,
+      );
       sampleSnapshots.push({
         finalScore: 0,
         assertScore: 0,
@@ -377,8 +390,14 @@ for (const [dim, list] of Object.entries(byDimension)) {
 
 const overall = {
   total: results.length,
-  avgScore: results.length > 0 ? Math.round((results.reduce((s, r) => s + r.finalScore, 0) / results.length) * 100) / 100 : 0,
-  passRate: results.length > 0 ? Math.round((results.filter((r) => r.finalScore >= 4.0).length / results.length) * 100) / 100 : 0,
+  avgScore:
+    results.length > 0
+      ? Math.round((results.reduce((s, r) => s + r.finalScore, 0) / results.length) * 100) / 100
+      : 0,
+  passRate:
+    results.length > 0
+      ? Math.round((results.filter((r) => r.finalScore >= 4.0).length / results.length) * 100) / 100
+      : 0,
 };
 
 await Bun.write(
@@ -407,10 +426,14 @@ await Bun.write(
 console.log("\n" + "=".repeat(60));
 console.log(`Router capability eval done`);
 console.log("=".repeat(60));
-console.log(`  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`);
+console.log(
+  `  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`,
+);
 console.log(`  By dimension:`);
 for (const [dim, s] of Object.entries(dimensionSummary)) {
-  console.log(`    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`);
+  console.log(
+    `    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`,
+  );
 }
 console.log(`\n  Raw  → ${rawOutputPath}`);
 console.log(`  Report → ${reportOutputPath}`);

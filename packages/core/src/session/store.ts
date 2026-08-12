@@ -16,7 +16,17 @@
 
 import type { Message } from "../llm/types.ts";
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, appendFileSync, createReadStream } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  appendFileSync,
+  createReadStream,
+} from "fs";
 import { createInterface } from "readline";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -67,15 +77,45 @@ type SessionRecordInput =
   // A1：session_start 带 schemaCompat 标注，声明本文件的记录结构「CC 风格但非逐字节兼容」，
   // 供外部工具（转换器 / 分析脚本）在解析前就知道该按哪套字段映射读，而不必靠猜。
   // 值固定为 SCHEMA_COMPAT；已有旧文件无此字段，解析侧一律容忍缺失（视为 unknown）。
-  | { type: "session_start"; version: string; schemaCompat?: string; sessionId: string; model: string; provider: string; cwd: string; timestamp: string }
+  | {
+      type: "session_start";
+      version: string;
+      schemaCompat?: string;
+      sessionId: string;
+      model: string;
+      provider: string;
+      cwd: string;
+      timestamp: string;
+    }
   // P2-G7：user_message 可选携带 per-message 上下文（cwd/gitBranch/permissionMode）。
   // 仅在**相对上一条发生变化**时落盘（见 appendMessage），继承语义比 CC 每条都写更省空间。
-  | { type: "user_message"; message: Message; timestamp: string; cwd?: string; gitBranch?: string; permissionMode?: string }
+  | {
+      type: "user_message";
+      message: Message;
+      timestamp: string;
+      cwd?: string;
+      gitBranch?: string;
+      permissionMode?: string;
+    }
   // P1-G3：assistant_message 可选内嵌该次 API 调用的 usage 四字段 + model/stopReason/msgId，
   // 供按单条回复归因 token/成本（整会话聚合 usage_stats 快照仍并存，用于快速恢复总量）。
-  | { type: "assistant_message"; message: Message; timestamp: string; usage?: PerMessageUsage; model?: string; stopReason?: string; msgId?: string }
+  | {
+      type: "assistant_message";
+      message: Message;
+      timestamp: string;
+      usage?: PerMessageUsage;
+      model?: string;
+      stopReason?: string;
+      msgId?: string;
+    }
   | { type: "tool_result"; message: Message; timestamp: string }
-  | { type: "context_compact"; summary: string; removedCount: number; timestamp: string; isBoundary?: boolean }
+  | {
+      type: "context_compact";
+      summary: string;
+      removedCount: number;
+      timestamp: string;
+      isBoundary?: boolean;
+    }
   | { type: "metadata"; key: string; value: unknown; timestamp: string }
   | { type: "session_end"; totalCostUSD: number; totalMessages: number; timestamp: string };
 
@@ -317,7 +357,13 @@ export class SessionStore {
    * @param forkedFromSessionId P0-2 --fork-session：分叉来源会话 id。非空时写入 session_start.parentUuid，
    *   记录本会话是从哪个会话分叉出来的，便于溯源；不影响历史（历史已由 App 注入 ctxMgr）。
    */
-  startSession(sessionId: string, model: string, provider: string, cwd: string, forkedFromSessionId?: string): void {
+  startSession(
+    sessionId: string,
+    model: string,
+    provider: string,
+    cwd: string,
+    forkedFromSessionId?: string,
+  ): void {
     this.currentFile = join(this.sessionDir, `${sessionId}.jsonl`);
     this.materialized = false;
     const uuid = crypto.randomUUID();
@@ -384,7 +430,10 @@ export class SessionStore {
       log.info("SESSION", `会话分叉历史已落盘: ${srcSessionId} → ${written} 条消息拷入新会话`);
       return written;
     } catch (e) {
-      log.warn("SESSION", `会话分叉历史落盘失败（降级为仅内存上下文，不阻断）: ${(e as Error)?.message}`);
+      log.warn(
+        "SESSION",
+        `会话分叉历史落盘失败（降级为仅内存上下文，不阻断）: ${(e as Error)?.message}`,
+      );
       return 0;
     }
   }
@@ -427,9 +476,10 @@ export class SessionStore {
   ): void {
     // P0-1：跨项目解析旧 jsonl——恢复他项目会话时续写落回其原目录，不迁移、不碎片化。
     const resolved = resolveSessionFileAcrossProjects(sessionId);
-    const jsonlPath = resolved && resolved.endsWith(".jsonl")
-      ? resolved
-      : join(this.sessionDir, `${sessionId}.jsonl`);
+    const jsonlPath =
+      resolved && resolved.endsWith(".jsonl")
+        ? resolved
+        : join(this.sessionDir, `${sessionId}.jsonl`);
     if (existsSync(jsonlPath)) {
       this.currentFile = jsonlPath;
       this.materialized = true;
@@ -479,9 +529,12 @@ export class SessionStore {
     },
   ): void {
     if (!this.currentFile) return;
-    const type = message.role === "user" ? "user_message"
-      : message.role === "assistant" ? "assistant_message"
-      : "tool_result";
+    const type =
+      message.role === "user"
+        ? "user_message"
+        : message.role === "assistant"
+          ? "assistant_message"
+          : "tool_result";
 
     if (type === "assistant_message") {
       // P1-G3：内嵌该次调用的 usage / model / stopReason / msgId（有则带，无则退化为裸记录）。
@@ -501,8 +554,13 @@ export class SessionStore {
       // P2-G7：仅在 cwd/gitBranch/permissionMode 相对上一条**变化**时落盘，未变则省略（继承语义）。
       const rec: any = { type, message, timestamp: new Date().toISOString() };
       if (meta.cwd !== undefined && meta.cwd !== this.lastUserContext.cwd) rec.cwd = meta.cwd;
-      if (meta.gitBranch !== undefined && meta.gitBranch !== this.lastUserContext.gitBranch) rec.gitBranch = meta.gitBranch;
-      if (meta.permissionMode !== undefined && meta.permissionMode !== this.lastUserContext.permissionMode) rec.permissionMode = meta.permissionMode;
+      if (meta.gitBranch !== undefined && meta.gitBranch !== this.lastUserContext.gitBranch)
+        rec.gitBranch = meta.gitBranch;
+      if (
+        meta.permissionMode !== undefined &&
+        meta.permissionMode !== this.lastUserContext.permissionMode
+      )
+        rec.permissionMode = meta.permissionMode;
       // 记住本次上下文（即便未落盘也要更新基线，供下一条比较）
       this.lastUserContext = {
         cwd: meta.cwd ?? this.lastUserContext.cwd,
@@ -540,7 +598,12 @@ export class SessionStore {
   /** 记录元数据变更 */
   appendMetadata(key: string, value: unknown): void {
     if (!this.currentFile) return;
-    this.appendRecord({ type: "metadata", key, value, timestamp: new Date().toISOString() } as SessionRecordInput);
+    this.appendRecord({
+      type: "metadata",
+      key,
+      value,
+      timestamp: new Date().toISOString(),
+    } as SessionRecordInput);
   }
 
   /** 结束会话 */
@@ -578,9 +641,10 @@ export class SessionStore {
     const filePath = join(this.sessionDir, `${session.id}.json`);
     await Bun.write(filePath, JSON.stringify(session, null, 2));
     const fileSize = statSync(filePath).size;
-    const sizeStr = fileSize > 1024 * 1024
-      ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
-      : `${(fileSize / 1024).toFixed(1)}KB`;
+    const sizeStr =
+      fileSize > 1024 * 1024
+        ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
+        : `${(fileSize / 1024).toFixed(1)}KB`;
     log.info("SESSION", `会话已保存: ${session.id} (${session.messages.length}条消息, ${sizeStr})`);
   }
 
@@ -644,7 +708,9 @@ export class SessionStore {
   async list(): Promise<{ id: string; updatedAt: string; messageCount: number }[]> {
     if (!existsSync(this.sessionDir)) return [];
 
-    const files = readdirSync(this.sessionDir).filter((f) => f.endsWith(".json") || f.endsWith(".jsonl"));
+    const files = readdirSync(this.sessionDir).filter(
+      (f) => f.endsWith(".json") || f.endsWith(".jsonl"),
+    );
     const sessions: { id: string; updatedAt: string; messageCount: number }[] = [];
     const seen = new Set<string>();
 
@@ -727,9 +793,10 @@ ${summary}
    * @param progressNote 可选的落盘进度摘要（来自 ~/.sid-code/progress/<id>.md），附在标记后
    */
   static buildResumeMarker(progressNote?: string): string {
-    const note = progressNote && progressNote.trim()
-      ? `\n\n之前已落盘的进度记录如下，请据此继续、不要重复已完成的工作：\n${progressNote.trim()}`
-      : "";
+    const note =
+      progressNote && progressNote.trim()
+        ? `\n\n之前已落盘的进度记录如下，请据此继续、不要重复已完成的工作：\n${progressNote.trim()}`
+        : "";
     return `<system-reminder>
 本次会话是从之前的对话恢复的续接会话（上方消息为之前的历史上下文）。请直接从上次中断处继续，无需重新打招呼或重复询问已确认的信息。${note}
 （请勿向用户提及或复述本提醒）
@@ -747,9 +814,10 @@ ${summary}
    */
   static buildToolInterruptMarker(toolNames: string[], progressNote?: string): string {
     const toolsText = toolNames.length > 0 ? toolNames.join("、") : "上一步操作";
-    const note = progressNote && progressNote.trim()
-      ? `\n\n之前已落盘的进度记录如下，请据此继续、不要重复已完成的工作：\n${progressNote.trim()}`
-      : "";
+    const note =
+      progressNote && progressNote.trim()
+        ? `\n\n之前已落盘的进度记录如下，请据此继续、不要重复已完成的工作：\n${progressNote.trim()}`
+        : "";
     return `<system-reminder>
 本次会话是从之前的对话恢复的续接会话。你在上次运行中调用了「${toolsText}」，工具已执行完成（结果见上方历史），但进程在你回复之前被中断。请直接依据上方工具结果继续完成任务，不要重复调用相同工具，也无需重新打招呼。${note}
 （请勿向用户提及或复述本提醒）
@@ -783,7 +851,10 @@ ${summary}
         return parseSessionJsonl(content);
       }
       const lines = await readJsonlLinesStreaming(filePath);
-      getLogger().info("SESSION", `大会话流式读取: ${filePath}（${(size / 1024 / 1024).toFixed(1)}MB, ${lines.length} 行）`);
+      getLogger().info(
+        "SESSION",
+        `大会话流式读取: ${filePath}（${(size / 1024 / 1024).toFixed(1)}MB, ${lines.length} 行）`,
+      );
       return parseSessionJsonlLines(lines);
     } catch (e) {
       // statSync/流式读取任何环节失败都回退到一次性读取，保证鲁棒（不因优化引入新失败面）。
@@ -921,7 +992,15 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
         // P1-G3 / P2-G7：把 per-message 元数据（usage/model/stopReason/msgId、cwd/gitBranch/
         // permissionMode）挂到消息的 _meta，不进 content（不影响 LLM 请求体），供归因/诊断读取。
         const rec = record as any;
-        const metaKeys = ["usage", "model", "stopReason", "msgId", "cwd", "gitBranch", "permissionMode"] as const;
+        const metaKeys = [
+          "usage",
+          "model",
+          "stopReason",
+          "msgId",
+          "cwd",
+          "gitBranch",
+          "permissionMode",
+        ] as const;
         const extracted: Record<string, unknown> = {};
         for (const k of metaKeys) if (rec[k] !== undefined) extracted[k] = rec[k];
         if (Object.keys(extracted).length > 0) {
@@ -1094,7 +1173,7 @@ function readSessionCwd(filePath: string): string | undefined {
 function migrateOneSession(
   root: string,
   baseName: string, // 不含扩展名的会话 id
-  ext: string,       // ".jsonl" / ".json"
+  ext: string, // ".jsonl" / ".json"
   projectKey: string,
   allNames: string[],
 ): void {

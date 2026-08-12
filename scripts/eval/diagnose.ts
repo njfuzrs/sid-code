@@ -110,16 +110,20 @@ function loadGoldDiagnoses(): Array<{
   for (const f of readdirSync(DIAGNOSES_DIR)) {
     if (!f.endsWith(".yaml") || f === "dispatch-rules.yaml") continue;
     try {
-      const data = parseYaml(readFileSync(join(DIAGNOSES_DIR, f), "utf-8")) as Record<string, unknown>;
+      const data = parseYaml(readFileSync(join(DIAGNOSES_DIR, f), "utf-8")) as Record<
+        string,
+        unknown
+      >;
       if (data.diagnosis_id && data.case_id && data.expected_fix_type) {
         out.push({
           diagnosis_id: String(data.diagnosis_id),
           case_id: String(data.case_id),
           case_path: String(data.case_path ?? ""),
           expected_fix_type: String(data.expected_fix_type),
-          verified: typeof (data.post_fix_verification as { verified?: boolean })?.verified === "boolean"
-            ? (data.post_fix_verification as { verified: boolean }).verified
-            : null,
+          verified:
+            typeof (data.post_fix_verification as { verified?: boolean })?.verified === "boolean"
+              ? (data.post_fix_verification as { verified: boolean }).verified
+              : null,
           raw: data,
         });
       }
@@ -134,9 +138,11 @@ function loadGoldDiagnoses(): Array<{
  * 把 gold diagnosis 的 dimensions_snapshot + sideband_metadata 转换为 DiagnoseInput,
  * 用于 self-test (跑规则对历史快照,而不是当前 baseline)。
  */
-function buildInputFromGold(
-  gold: { case_id: string; case_path: string; raw: Record<string, unknown> },
-): DiagnoseInput | null {
+function buildInputFromGold(gold: {
+  case_id: string;
+  case_path: string;
+  raw: Record<string, unknown>;
+}): DiagnoseInput | null {
   const snap = (gold.raw.dimensions_snapshot as Record<string, number | null>) ?? {};
   const sb = (gold.raw.sideband_metadata as Record<string, unknown>) ?? {};
   const caseSnap = (gold.raw.case_snapshot as Record<string, unknown>) ?? {};
@@ -160,9 +166,7 @@ function buildInputFromGold(
     (caseSnap.must_include_any_of as string[] | undefined) ??
     (expected.must_include_any_of as string[] | undefined) ??
     [];
-  const userQuery =
-    (caseSnap.user_query as string | undefined) ??
-    String(input.user_query ?? "");
+  const userQuery = (caseSnap.user_query as string | undefined) ?? String(input.user_query ?? "");
   const mustNot =
     (caseSnap.must_not_include as string[] | undefined) ??
     (expected.must_not_include as string[] | undefined) ??
@@ -177,7 +181,10 @@ function buildInputFromGold(
     (caseSnap.grader_type as string | undefined) ??
     (typeof caseDoc.grader_type === "string" ? (caseDoc.grader_type as string) : undefined);
 
-  const cp = (extraSignals.cross_provider as { avg?: number; delta?: number; available?: boolean } | undefined) ?? undefined;
+  const cp =
+    (extraSignals.cross_provider as
+      | { avg?: number; delta?: number; available?: boolean }
+      | undefined) ?? undefined;
 
   return {
     caseId: gold.case_id,
@@ -223,7 +230,10 @@ function buildInputFromGold(
  *   - 字符串操作符: '>= 0.8' / '> 5' / '< 0.3' / '<= 0.5'
  *   - 数组操作符: '.length: 0' / '.contains_any: [a, b]'
  */
-function matchRule(rule: DispatchRule, input: DiagnoseInput): { matched: boolean; evidence: Array<{ field: string; value: unknown; rule: string }> } {
+function matchRule(
+  rule: DispatchRule,
+  input: DiagnoseInput,
+): { matched: boolean; evidence: Array<{ field: string; value: unknown; rule: string }> } {
   const evidence: Array<{ field: string; value: unknown; rule: string }> = [];
   for (const [path, expected] of Object.entries(rule.when)) {
     const got = resolveField(path, input);
@@ -298,7 +308,9 @@ function compareWith(got: unknown, expected: unknown): boolean {
     // case.task_type / case.grader_type 多选 / contains_any
     if (Array.isArray(got)) {
       // contains_any 语义: 任一 got 元素包含 任一 expected 关键词（子串匹配）
-      return got.some((g) => expected.some((e) => typeof g === "string" && typeof e === "string" && g.includes(e)));
+      return got.some((g) =>
+        expected.some((e) => typeof g === "string" && typeof e === "string" && g.includes(e)),
+      );
     }
     return expected.includes(got as never);
   }
@@ -323,16 +335,26 @@ function compareWith(got: unknown, expected: unknown): boolean {
   return false;
 }
 
-function diagnose(input: DiagnoseInput, rules: DispatchRule[], gold: ReturnType<typeof loadGoldDiagnoses>): DiagnoseOutput {
+function diagnose(
+  input: DiagnoseInput,
+  rules: DispatchRule[],
+  gold: ReturnType<typeof loadGoldDiagnoses>,
+): DiagnoseOutput {
   const lowDims: string[] = [];
   const dims = input.dimensions;
   if (typeof dims.anchor_hit === "number" && dims.anchor_hit < 0.5) lowDims.push("anchor_hit");
-  if (typeof dims.rubric_score === "number" && dims.rubric_score < 0.5) lowDims.push("rubric_score");
-  if (typeof dims.tool_compliance === "number" && dims.tool_compliance < 0.5) lowDims.push("tool_compliance");
+  if (typeof dims.rubric_score === "number" && dims.rubric_score < 0.5)
+    lowDims.push("rubric_score");
+  if (typeof dims.tool_compliance === "number" && dims.tool_compliance < 0.5)
+    lowDims.push("tool_compliance");
   if (dims.negative_anchor === 0) lowDims.push("negative_anchor");
-  if (dims.anchor_hit === null && dims.rubric_score === null && dims.tool_compliance === null) lowDims.push("all_null");
+  if (dims.anchor_hit === null && dims.rubric_score === null && dims.tool_compliance === null)
+    lowDims.push("all_null");
 
-  const matched: Array<{ rule: DispatchRule; evidence: Array<{ field: string; value: unknown; rule: string }> }> = [];
+  const matched: Array<{
+    rule: DispatchRule;
+    evidence: Array<{ field: string; value: unknown; rule: string }>;
+  }> = [];
   for (const r of rules) {
     const m = matchRule(r, input);
     if (m.matched) matched.push({ rule: r, evidence: m.evidence });
@@ -350,7 +372,9 @@ function diagnose(input: DiagnoseInput, rules: DispatchRule[], gold: ReturnType<
       confidence: 0,
       root_cause: "无规则匹配；建议人审或扩 dispatch-rules.yaml",
       evidence: [],
-      gold_match: goldHit ? { diagnosis_id: goldHit.diagnosis_id, verified: goldHit.verified, same_fix_type: false } : undefined,
+      gold_match: goldHit
+        ? { diagnosis_id: goldHit.diagnosis_id, verified: goldHit.verified, same_fix_type: false }
+        : undefined,
     };
   }
 
@@ -384,7 +408,9 @@ function buildInputFromCaseAndBaseline(
   caseFilePath: string,
   provider: string,
 ): DiagnoseInput {
-  const baseline = (((caseDoc.baseline_scores as Record<string, unknown>) ?? {}) as Record<string, unknown>)[provider] as
+  const baseline = (
+    ((caseDoc.baseline_scores as Record<string, unknown>) ?? {}) as Record<string, unknown>
+  )[provider] as
     | {
         score?: number;
         run_status?: string;
@@ -398,7 +424,9 @@ function buildInputFromCaseAndBaseline(
   const input = (caseDoc.input as Record<string, unknown>) ?? {};
   const dimensions = (baseline?.dimensions ?? {}) as Record<string, number | null>;
   const meta = (baseline?.meta ?? {}) as Record<string, unknown>;
-  const graderType = baseline?.grader_type ?? (typeof caseDoc.grader_type === "string" ? (caseDoc.grader_type as string) : undefined);
+  const graderType =
+    baseline?.grader_type ??
+    (typeof caseDoc.grader_type === "string" ? (caseDoc.grader_type as string) : undefined);
 
   return {
     caseId: String(caseDoc.id ?? "unknown"),
@@ -422,7 +450,10 @@ function buildInputFromCaseAndBaseline(
       total_tokens: typeof meta.total_tokens === "number" ? meta.total_tokens : null,
       tools_used: Array.isArray(meta.tools_used) ? (meta.tools_used as string[]) : [],
       errors: Array.isArray(meta.errors) ? (meta.errors as string[]) : [],
-      exit_status: typeof meta.exit_status === "string" ? meta.exit_status : (baseline?.run_status ?? "success"),
+      exit_status:
+        typeof meta.exit_status === "string"
+          ? meta.exit_status
+          : (baseline?.run_status ?? "success"),
     },
     totalScore: typeof baseline?.score === "number" ? baseline.score : null,
     crossProvider: { avg: 0, delta: 0, available: false },
@@ -444,7 +475,11 @@ function main() {
 
   const provider = values.provider as string;
   const scoreBelow = values["score-below"] ? Number(values["score-below"]) : null;
-  const targetCases = (values.cases as string | undefined)?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
+  const targetCases =
+    (values.cases as string | undefined)
+      ?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) ?? [];
   const selfTest = values["self-test"] as boolean;
 
   const rules = loadDispatchRules();
@@ -468,11 +503,17 @@ function main() {
     }
     const total = gold.length;
     const accuracy = total > 0 ? (correct / total) * 100 : 0;
-    console.log(`\n[diagnose:self-test] 准确率: ${correct}/${total} (${accuracy.toFixed(1)}%)  门槛 ≥ 80%: ${accuracy >= 80 ? "✅" : "❌"}`);
+    console.log(
+      `\n[diagnose:self-test] 准确率: ${correct}/${total} (${accuracy.toFixed(1)}%)  门槛 ≥ 80%: ${accuracy >= 80 ? "✅" : "❌"}`,
+    );
 
-    const outDir = (values["out-dir"] as string | undefined) ?? join(DIAGNOSES_DIR, "runs", "self-test");
+    const outDir =
+      (values["out-dir"] as string | undefined) ?? join(DIAGNOSES_DIR, "runs", "self-test");
     mkdirSync(outDir, { recursive: true });
-    writeFileSync(join(outDir, "output.json"), JSON.stringify({ mode: "self-test", accuracy, correct, total, results }, null, 2));
+    writeFileSync(
+      join(outDir, "output.json"),
+      JSON.stringify({ mode: "self-test", accuracy, correct, total, results }, null, 2),
+    );
     console.log(`[diagnose:self-test] 输出: ${resolve(outDir)}/output.json`);
 
     if (accuracy < 80) {
@@ -482,12 +523,18 @@ function main() {
   }
 
   const allCases = loadAllCases(EVALS_DIR);
-  console.log(`[diagnose] 加载 ${allCases.length} case, ${rules.length} dispatch rules, ${gold.length} gold diagnoses`);
+  console.log(
+    `[diagnose] 加载 ${allCases.length} case, ${rules.length} dispatch rules, ${gold.length} gold diagnoses`,
+  );
 
   const selected: typeof allCases = [];
   for (const c of allCases) {
     if (targetCases.length > 0 && !targetCases.includes(c.id)) continue;
-    const baseline = ((c as unknown as Record<string, unknown>).baseline_scores as Record<string, { score?: number }> | undefined)?.[provider];
+    const baseline = (
+      (c as unknown as Record<string, unknown>).baseline_scores as
+        | Record<string, { score?: number }>
+        | undefined
+    )?.[provider];
     if (scoreBelow !== null) {
       if (typeof baseline?.score !== "number" || baseline.score >= scoreBelow) continue;
     }
@@ -495,7 +542,9 @@ function main() {
   }
 
   if (selected.length === 0) {
-    console.error(`[diagnose] 未匹配任何 case (cases=${targetCases.join(",") || "<all>"} score-below=${scoreBelow ?? "<none>"})`);
+    console.error(
+      `[diagnose] 未匹配任何 case (cases=${targetCases.join(",") || "<all>"} score-below=${scoreBelow ?? "<none>"})`,
+    );
     process.exit(2);
   }
 
@@ -505,26 +554,39 @@ function main() {
 
   const results: DiagnoseOutput[] = [];
   for (const c of selected) {
-    const input = buildInputFromCaseAndBaseline(c as unknown as Record<string, unknown>, (c as { filePath: string }).filePath, provider);
+    const input = buildInputFromCaseAndBaseline(
+      c as unknown as Record<string, unknown>,
+      (c as { filePath: string }).filePath,
+      provider,
+    );
     const out = diagnose(input, rules, gold);
     results.push(out);
     console.log(
       `\n[diagnose] ${out.case_id}  fix_type=${out.fix_type}  confidence=${out.confidence}` +
         (out.matched_rule ? `  rule=${out.matched_rule}` : "") +
-        (out.gold_match ? `  gold=${out.gold_match.diagnosis_id} (same_fix=${out.gold_match.same_fix_type})` : "") +
+        (out.gold_match
+          ? `  gold=${out.gold_match.diagnosis_id} (same_fix=${out.gold_match.same_fix_type})`
+          : "") +
         `\n  root_cause: ${out.root_cause}` +
-        (out.low_dimensions.length > 0 ? `\n  low_dimensions: ${out.low_dimensions.join(", ")}` : ""),
+        (out.low_dimensions.length > 0
+          ? `\n  low_dimensions: ${out.low_dimensions.join(", ")}`
+          : ""),
     );
   }
 
-  writeFileSync(join(outDir, "output.json"), JSON.stringify({ provider, scoreBelow, results }, null, 2));
+  writeFileSync(
+    join(outDir, "output.json"),
+    JSON.stringify({ provider, scoreBelow, results }, null, 2),
+  );
   console.log(`\n[diagnose] 输出: ${resolve(outDir)}/output.json`);
 
   // gold accuracy
   const withGold = results.filter((r) => r.gold_match);
   if (withGold.length > 0) {
     const correct = withGold.filter((r) => r.gold_match!.same_fix_type).length;
-    console.log(`[diagnose] gold 命中率: ${correct}/${withGold.length} (${((correct / withGold.length) * 100).toFixed(1)}%)`);
+    console.log(
+      `[diagnose] gold 命中率: ${correct}/${withGold.length} (${((correct / withGold.length) * 100).toFixed(1)}%)`,
+    );
   }
 }
 

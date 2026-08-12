@@ -41,7 +41,7 @@ function makeFence(content: string): string {
   let level = 3;
   const matches = content.match(/`{3,}/g);
   if (matches) {
-    const max = Math.max(...matches.map(m => m.length));
+    const max = Math.max(...matches.map((m) => m.length));
     level = max + 1;
   }
   return "`".repeat(level);
@@ -63,12 +63,12 @@ function truncate(s: string, max: number): string {
 
 function stripMarkdown(s: string): string {
   return s
-    .replace(/^#{1,6}\s+/gm, "")         // ## 标题 → 纯文本
-    .replace(/^---+$/gm, "")              // --- 分割线
-    .replace(/\*\*([^*]+)\*\*/g, "$1")    // **加粗** → 纯文本
-    .replace(/^`{3,}.*$/gm, "")           // ```xxx 和 ``` 代码块标记全部去掉
-    .replace(/`([^`]+)`/g, "$1")          // `行内代码` → 纯文本
-    .replace(/\n{3,}/g, "\n\n");          // 多余空行
+    .replace(/^#{1,6}\s+/gm, "") // ## 标题 → 纯文本
+    .replace(/^---+$/gm, "") // --- 分割线
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **加粗** → 纯文本
+    .replace(/^`{3,}.*$/gm, "") // ```xxx 和 ``` 代码块标记全部去掉
+    .replace(/`([^`]+)`/g, "$1") // `行内代码` → 纯文本
+    .replace(/\n{3,}/g, "\n\n"); // 多余空行
 }
 
 function formatDuration(ms: number): string {
@@ -115,7 +115,8 @@ function renderProviderDetail(
   if (baseline.tested_at) metaParts.push(`🕐 ${baseline.tested_at}`);
   if (baseline.tested_by) metaParts.push(`评分方式: ${baseline.tested_by}`);
   if (pfResult?.latencyMs) metaParts.push(`耗时: ${formatDuration(pfResult.latencyMs)}`);
-  if (baseline.run_status && baseline.run_status !== "success") metaParts.push(`状态: ${baseline.run_status}`);
+  if (baseline.run_status && baseline.run_status !== "success")
+    metaParts.push(`状态: ${baseline.run_status}`);
   if (metaParts.length > 0) {
     lines.push(metaParts.join(" | "));
     lines.push("");
@@ -213,8 +214,12 @@ function renderHoldoutCaseSummary(c: CaseYaml, dir: string): string {
   lines.push(`| 类别 | ${c.category} |`);
   lines.push(`| 目录 | \`${basename(dir)}/\` |`);
   lines.push("");
-  lines.push(`> 🔒 **holdout** — 题面 / 锚点 / 反例 / 参考答案 / rubric 已隔离，不在 CASES.md 渲染。`);
-  lines.push(`> 详情仅可在私有路径 \`evals/holdout/\` 直接 cat yaml 查看；跑分见 \`evals/_meta/_private/\`（如有）。`);
+  lines.push(
+    `> 🔒 **holdout** — 题面 / 锚点 / 反例 / 参考答案 / rubric 已隔离，不在 CASES.md 渲染。`,
+  );
+  lines.push(
+    `> 详情仅可在私有路径 \`evals/holdout/\` 直接 cat yaml 查看；跑分见 \`evals/_meta/_private/\`（如有）。`,
+  );
   lines.push("");
   lines.push("---");
   lines.push("");
@@ -266,13 +271,17 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
     }
   }
   if (c.expected.must_call_tools?.length) {
-    lines.push(`- 必须调用工具: ${c.expected.must_call_tools.map(t => `\`${t}\``).join(", ")}`);
+    lines.push(`- 必须调用工具: ${c.expected.must_call_tools.map((t) => `\`${t}\``).join(", ")}`);
   }
   if (c.expected.must_not_call_tools?.length) {
-    lines.push(`- 禁止调用工具: ${c.expected.must_not_call_tools.map(t => `\`${t}\``).join(", ")}`);
+    lines.push(
+      `- 禁止调用工具: ${c.expected.must_not_call_tools.map((t) => `\`${t}\``).join(", ")}`,
+    );
   }
   if (c.expected.must_not_modify_files?.length) {
-    lines.push(`- 禁止修改文件: ${c.expected.must_not_modify_files.map(f => `\`${f}\``).join(", ")}`);
+    lines.push(
+      `- 禁止修改文件: ${c.expected.must_not_modify_files.map((f) => `\`${f}\``).join(", ")}`,
+    );
   }
   if (c.expected.max_steps) {
     lines.push(`- 最大步数: ${c.expected.max_steps}`);
@@ -308,13 +317,15 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
   // 评分权重说明
   lines.push(`**⚖️ 评分公式**`);
   lines.push("");
-  lines.push(`\`anchor_hit(×1.5) + rubric_score(×4.0) + tool_compliance(×1.5) + negative_anchor(×2.0) + efficiency(×0) + cost(×0) = 总权 9.0 → 归一化 5 分\` (grader 5d-v2)`);
+  lines.push(
+    `\`anchor_hit(×1.5) + rubric_score(×4.0) + tool_compliance(×1.5) + negative_anchor(×2.0) + efficiency(×0) + cost(×0) = 总权 9.0 → 归一化 5 分\` (grader 5d-v2)`,
+  );
   lines.push("");
 
   // 各 Provider 详细得分
   if (c.baseline_scores) {
     const providers = Object.entries(c.baseline_scores).filter(
-      ([_, v]) => v && (v.score != null || v.run_status !== "pending")
+      ([_, v]) => v && (v.score != null || v.run_status !== "pending"),
     );
     if (providers.length > 0) {
       lines.push(`**📊 各 Provider 评分详情**`);
@@ -331,7 +342,7 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
 
       // 有维度数据的 provider 展开详情
       const _detailProviders = providers.filter(
-        ([_, v]) => v.dimensions || v.notes?.trim() || v.transcript_path
+        ([_, v]) => v.dimensions || v.notes?.trim() || v.transcript_path,
       );
 
       // 也找 promptfoo 里有实际回答的
@@ -344,7 +355,13 @@ function renderCase(c: CaseYaml, dir: string, pfResults: PromptfooResult[]): str
       const expandProviders = providers.filter(([name, v]) => {
         // 有维度 or 有 promptfoo 回答
         const pfKey = name.replace(/_/g, "-");
-        return v.dimensions || pfProviderMap.has(pfKey) || pfProviderMap.has(name) || v.notes?.trim() || v.transcript_path;
+        return (
+          v.dimensions ||
+          pfProviderMap.has(pfKey) ||
+          pfProviderMap.has(name) ||
+          v.notes?.trim() ||
+          v.transcript_path
+        );
       });
 
       if (expandProviders.length > 0) {
@@ -414,13 +431,15 @@ async function main() {
       ? "🔒 题面已隔离"
       : c.input.user_query.slice(0, 50) + (c.input.user_query.length > 50 ? "…" : "");
     const anchor = `${c.id}--${c.category}`.toLowerCase().replace(/[^\w一-鿿-]/g, "-");
-    out.push(`| ${i + 1} | [${c.id}${lock}](#${anchor}) | ${c.category} | ${c.priority} | ${c.target_score} | ${summary} |`);
+    out.push(
+      `| ${i + 1} | [${c.id}${lock}](#${anchor}) | ${c.category} | ${c.priority} | ${c.target_score} | ${summary} |`,
+    );
   }
   out.push("");
 
   // 按层级分组输出详情
   for (const { dir, label } of CASE_DIRS) {
-    const groupCases = allCases.filter(x => x.dir === dir);
+    const groupCases = allCases.filter((x) => x.dir === dir);
     if (groupCases.length === 0) continue;
 
     out.push(`## ${label}（${basename(dir)}/）`);

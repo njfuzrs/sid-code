@@ -112,7 +112,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const names = values.model.split(",").map((s) => s.trim()).filter(Boolean);
+  const names = values.model
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const rounds = Math.max(2, Number(values.rounds) || DEFAULT_ROUNDS);
   const prefix = staticPrefix();
 
@@ -149,7 +152,9 @@ async function main(): Promise<void> {
   }
 
   if (values.json) {
-    console.log(JSON.stringify({ results, spentUSD: spentTotal, ceilingUSD: COST_CEILING_USD }, null, 2));
+    console.log(
+      JSON.stringify({ results, spentUSD: spentTotal, ceilingUSD: COST_CEILING_USD }, null, 2),
+    );
   } else {
     printHuman(results, spentTotal);
   }
@@ -167,8 +172,13 @@ function printHuman(results: ModelBench[], spentTotal: number): void {
     }
     // 写入列不是装饰：hit 恒 0 有两种相反成因（什么都没缓存 / 每轮重新写入），
     // 只看命中列会把后者误判成"渠道不支持缓存"（实跑 anthropic 通道踩过）。
-    if (r.rounds.length >= 2 && r.rounds.slice(1).every((x) => x.cacheHit === 0 && x.cacheWrite > 0)) {
-      console.log("  ⚠ 命中恒 0 但每轮都在写入 → 缓存可用，但前缀每轮都变（查断点位置/尾部增量是否进了缓存键）");
+    if (
+      r.rounds.length >= 2 &&
+      r.rounds.slice(1).every((x) => x.cacheHit === 0 && x.cacheWrite > 0)
+    ) {
+      console.log(
+        "  ⚠ 命中恒 0 但每轮都在写入 → 缓存可用，但前缀每轮都变（查断点位置/尾部增量是否进了缓存键）",
+      );
     }
     // r1 必然 0（服务端没见过前缀），把它算进去会系统性拉低结论 ——
     // 所以稳态口径排除 r1，同时也给全轮口径便于与账本对照。

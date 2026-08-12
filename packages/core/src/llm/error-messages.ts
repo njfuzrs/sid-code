@@ -65,7 +65,8 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
   // ─── TerminalReason（不重试，需用户干预）───
   auth_failed: {
     title: "API Key 无效或已过期",
-    suggestion: "请检查 ~/.sid-code/settings.json 中的 apiKey 配置，或确认环境变量 OPENAI_API_KEY / ANTHROPIC_API_KEY 是否正确设置",
+    suggestion:
+      "请检查 ~/.sid-code/settings.json 中的 apiKey 配置，或确认环境变量 OPENAI_API_KEY / ANTHROPIC_API_KEY 是否正确设置",
   },
   model_not_found: {
     title: "模型不存在或不可用",
@@ -87,7 +88,8 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
   // 这个文案要点在于把"我们主动放弃了"说清楚——否则用户看到失败会以为是重试不够。
   server_declined_retry: {
     title: "服务端明确要求停止重试",
-    suggestion: "上游返回 x-should-retry: false（常见于网关判定 API Key 无效或线路不可用），已停止重试以免浪费配额。请检查 apiKey 与 baseURL 配置，或切换 provider / fallbackModel",
+    suggestion:
+      "上游返回 x-should-retry: false（常见于网关判定 API Key 无效或线路不可用），已停止重试以免浪费配额。请检查 apiKey 与 baseURL 配置，或切换 provider / fallbackModel",
   },
 
   // ─── RetryableReason（系统已自动重试，持续失败才展示）───
@@ -141,7 +143,8 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
   },
   html_error_page: {
     title: "网关返回非流式错误页",
-    suggestion: "网关对当前模型/渠道返回了 HTML 错误页（而非 SSE 流）。请确认模型 ID 与网关配置一致",
+    suggestion:
+      "网关对当前模型/渠道返回了 HTML 错误页（而非 SSE 流）。请确认模型 ID 与网关配置一致",
   },
   unknown_stop_reason: {
     title: "模型以未识别的停止原因结束",
@@ -159,19 +162,39 @@ export function inferErrorCode(message: string): string | undefined {
   const lower = message.toLowerCase();
 
   // 优先级从高到低（越具体越靠前）
-  if (lower.includes("unauthorized") || lower.includes("invalid api key") || lower.includes("api key")) {
+  if (
+    lower.includes("unauthorized") ||
+    lower.includes("invalid api key") ||
+    lower.includes("api key")
+  ) {
     return "auth_failed";
   }
-  if (lower.includes("model_not_found") || lower.includes("model not found") || lower.includes("does not exist")) {
+  if (
+    lower.includes("model_not_found") ||
+    lower.includes("model not found") ||
+    lower.includes("does not exist")
+  ) {
     return "model_not_found";
   }
-  if (lower.includes("quota") || lower.includes("insufficient_quota") || lower.includes("billing")) {
+  if (
+    lower.includes("quota") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("billing")
+  ) {
     return "quota_exhausted";
   }
-  if (lower.includes("content_policy") || lower.includes("content filter") || lower.includes("safety")) {
+  if (
+    lower.includes("content_policy") ||
+    lower.includes("content filter") ||
+    lower.includes("safety")
+  ) {
     return "content_policy";
   }
-  if (lower.includes("invalid_request") || lower.includes("invalid request") || lower.includes("400")) {
+  if (
+    lower.includes("invalid_request") ||
+    lower.includes("invalid request") ||
+    lower.includes("400")
+  ) {
     return "invalid_request";
   }
   if (lower.includes("rate_limit") || lower.includes("rate limit") || lower.includes("429")) {
@@ -180,16 +203,29 @@ export function inferErrorCode(message: string): string | undefined {
   if (lower.includes("overloaded") || lower.includes("529") || lower.includes("503")) {
     return "overloaded";
   }
-  if (lower.includes("text/html") || lower.includes("错误页") || lower.includes("no available channel")) {
+  if (
+    lower.includes("text/html") ||
+    lower.includes("错误页") ||
+    lower.includes("no available channel")
+  ) {
     return "html_error_page";
   }
-  if (lower.includes("空响应") || lower.includes("empty_response") || lower.includes("0 内容事件")) {
+  if (
+    lower.includes("空响应") ||
+    lower.includes("empty_response") ||
+    lower.includes("0 内容事件")
+  ) {
     return "empty_response";
   }
   if (lower.includes("timeout") || lower.includes("超时") || lower.includes("timed out")) {
     return "timeout";
   }
-  if (lower.includes("network") || lower.includes("econnrefused") || lower.includes("enotfound") || lower.includes("fetch failed")) {
+  if (
+    lower.includes("network") ||
+    lower.includes("econnrefused") ||
+    lower.includes("enotfound") ||
+    lower.includes("fetch failed")
+  ) {
     return "network_error";
   }
   if (lower.includes("500") || lower.includes("502") || lower.includes("internal server error")) {

@@ -58,7 +58,9 @@ export async function runClaudeCode(
     timedOut = true;
     proc.kill("SIGTERM");
     setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch {}
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
     }, 3000);
   }, config.timeoutMs);
 
@@ -85,7 +87,10 @@ export async function runClaudeCode(
       // 有时输出是 JSON 数组（多条消息）
       const arr = JSON.parse(jsonStr) as Array<Record<string, unknown>>;
       rawJson = arr[arr.length - 1] || null;
-      result = arr.map((m) => extractResult(m)).filter(Boolean).join("\n");
+      result = arr
+        .map((m) => extractResult(m))
+        .filter(Boolean)
+        .join("\n");
       numTurns = arr.length;
     }
   } catch {
@@ -115,7 +120,16 @@ export async function runClaudeCode(
     backtrack_count: 0,
   };
 
-  return { output, metrics, rawJson, stdout: stdoutBuf, stderr: stderrBuf, exitCode, timedOut, costUsd };
+  return {
+    output,
+    metrics,
+    rawJson,
+    stdout: stdoutBuf,
+    stderr: stderrBuf,
+    exitCode,
+    timedOut,
+    costUsd,
+  };
 }
 
 function extractResult(obj: Record<string, unknown> | null): string {

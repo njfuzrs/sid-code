@@ -24,47 +24,40 @@ interface AlternateBufferQuittingDisplayProps {
   streamingText?: string;
 }
 
-export const AlternateBufferQuittingDisplay = React.memo(
-  function AlternateBufferQuittingDisplay({
-    historyItems,
-    streamingText,
-  }: AlternateBufferQuittingDisplayProps) {
-    const { stdout } = useStdout();
-    const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
+export const AlternateBufferQuittingDisplay = React.memo(function AlternateBufferQuittingDisplay({
+  historyItems,
+  streamingText,
+}: AlternateBufferQuittingDisplayProps) {
+  const { stdout } = useStdout();
+  const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
 
-    // 简单的 Header
-    const version = require("../../../package.json").version;
+  // 简单的 Header
+  const version = require("../../../package.json").version;
 
-    return (
-      <Box
-        flexDirection="column"
-        flexShrink={0}
-        flexGrow={0}
-        width={termWidth}
-      >
-        {/* Header */}
-        <Box marginBottom={1}>
-          <Text color={theme.ui.active} bold>
-            sid-code v{version}
-          </Text>
-          <Text> · AI-Powered Coding Assistant</Text>
-        </Box>
-
-        {/* 完整对话历史 */}
-        <QuittingDisplay items={historyItems} />
-
-        {/* 如果退出时正在流式输出，显示未完成的文本 */}
-        {streamingText ? (
-          <Box paddingRight={4}>
-            <Text>{streamingText}</Text>
-          </Box>
-        ) : null}
-
-        {/* 退出提示 */}
-        <Box marginTop={1}>
-          <Text>── 会话结束 ──</Text>
-        </Box>
+  return (
+    <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
+      {/* Header */}
+      <Box marginBottom={1}>
+        <Text color={theme.ui.active} bold>
+          sid-code v{version}
+        </Text>
+        <Text> · AI-Powered Coding Assistant</Text>
       </Box>
-    );
-  },
-);
+
+      {/* 完整对话历史 */}
+      <QuittingDisplay items={historyItems} />
+
+      {/* 如果退出时正在流式输出，显示未完成的文本 */}
+      {streamingText ? (
+        <Box paddingRight={4}>
+          <Text>{streamingText}</Text>
+        </Box>
+      ) : null}
+
+      {/* 退出提示 */}
+      <Box marginTop={1}>
+        <Text>── 会话结束 ──</Text>
+      </Box>
+    </Box>
+  );
+});

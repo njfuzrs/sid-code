@@ -71,8 +71,7 @@ export function registerCommitSkill(): void {
   registerBundledSkill({
     name: "commit",
     description: "读取 git diff，生成 conventional commits 规范的提交信息并提交",
-    whenToUse:
-      "当用户说 'commit'、'提交代码'、'生成提交信息'、'帮我 commit' 时",
+    whenToUse: "当用户说 'commit'、'提交代码'、'生成提交信息'、'帮我 commit' 时",
     argumentHint: "[额外要求，如 scope 或语言]",
     // inline 模式下以下白名单不生效，仅作意图声明（见文件头注释）
     allowedTools: ["bash", "read", "grep", "glob"],

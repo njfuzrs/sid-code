@@ -109,7 +109,7 @@ export class Turn {
    */
   updateToolCall(
     callId: string,
-    updates: Partial<Omit<ToolCallInfo, "callId" | "name" | "args" | "timestamp">>
+    updates: Partial<Omit<ToolCallInfo, "callId" | "name" | "args" | "timestamp">>,
   ): void {
     const toolCall = this.toolCalls.find((tc) => tc.callId === callId);
     if (toolCall) {
@@ -139,13 +139,8 @@ export class Turn {
     const now = Date.now();
     const durationMs = now - this.startTime;
     const apiDurationMs =
-      this.apiStartTime && this.apiEndTime
-        ? this.apiEndTime - this.apiStartTime
-        : undefined;
-    const toolDurationMs = this.toolCalls.reduce(
-      (sum, tc) => sum + (tc.durationMs || 0),
-      0
-    );
+      this.apiStartTime && this.apiEndTime ? this.apiEndTime - this.apiStartTime : undefined;
+    const toolDurationMs = this.toolCalls.reduce((sum, tc) => sum + (tc.durationMs || 0), 0);
 
     return {
       turnId: this.turnId,
@@ -348,19 +343,10 @@ export class TurnManager {
     return {
       totalTurns: turns.length,
       totalToolCalls: turns.reduce((sum, t) => sum + t.getToolCallCount(), 0),
-      successfulToolCalls: turns.reduce(
-        (sum, t) => sum + t.getSuccessfulToolCallCount(),
-        0
-      ),
-      failedToolCalls: turns.reduce(
-        (sum, t) => sum + t.getFailedToolCallCount(),
-        0
-      ),
+      successfulToolCalls: turns.reduce((sum, t) => sum + t.getSuccessfulToolCallCount(), 0),
+      failedToolCalls: turns.reduce((sum, t) => sum + t.getFailedToolCallCount(), 0),
       totalDurationMs: turns.reduce((sum, t) => sum + t.getDuration(), 0),
-      totalAPIDurationMs: turns.reduce(
-        (sum, t) => sum + (t.getAPIDuration() || 0),
-        0
-      ),
+      totalAPIDurationMs: turns.reduce((sum, t) => sum + (t.getAPIDuration() || 0), 0),
       totalToolDurationMs: turns.reduce((sum, t) => sum + t.getToolDuration(), 0),
     };
   }

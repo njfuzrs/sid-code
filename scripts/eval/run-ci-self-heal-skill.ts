@@ -110,7 +110,10 @@ function buildSystemPrompt(opts: { withSkill: boolean }): SkillPrompt {
 // 静态契约校验（不调 LLM）
 // ============================================================
 
-function staticContractCheck(cases: CshCase[], skillPrompt: SkillPrompt): {
+function staticContractCheck(
+  cases: CshCase[],
+  skillPrompt: SkillPrompt,
+): {
   results: Array<{
     id: string;
     contractIssues: string[];
@@ -172,7 +175,9 @@ function staticContractCheck(cases: CshCase[], skillPrompt: SkillPrompt): {
         estimatedNotes.push("Skill §1 触发不命中场景 / RL-007 防编造守护，false_positive 控制");
       } else if (category.includes("failure_classification")) {
         estimatedExecScore += 0.7;
-        estimatedNotes.push("Skill §3.2 9 类启发式分类 + classify-failure.ts pipeline 加强分类准确性");
+        estimatedNotes.push(
+          "Skill §3.2 9 类启发式分类 + classify-failure.ts pipeline 加强分类准确性",
+        );
       } else if (category.includes("fix_suggestion")) {
         estimatedExecScore += 0.5;
         estimatedNotes.push("Skill §3.4 hypothesis + Suggested Fix 模板加强建议可执行性");
@@ -268,7 +273,10 @@ async function executeCase(c: CshCase, skillPrompt: SkillPrompt): Promise<Execut
   }
 }
 
-function gradeExecuteResult(c: CshCase, r: ExecuteResult): {
+function gradeExecuteResult(
+  c: CshCase,
+  r: ExecuteResult,
+): {
   score: number;
   details: Record<string, string | number | boolean>;
 } {
@@ -277,7 +285,10 @@ function gradeExecuteResult(c: CshCase, r: ExecuteResult): {
   let dimScore = 5;
 
   if (r.error || r.timedOut) {
-    return { score: 0, details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus } };
+    return {
+      score: 0,
+      details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus },
+    };
   }
 
   // 1. must_include_any_of
@@ -338,8 +349,12 @@ async function main() {
   const skillPrompt = buildSystemPrompt({ withSkill: values.skill });
 
   console.log(`Cases       : ${cases.length} (${cases.map((c) => c.id).join(", ")})`);
-  console.log(`Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`);
-  console.log(`Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`);
+  console.log(
+    `Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`,
+  );
+  console.log(
+    `Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`,
+  );
   console.log("");
 
   const ts = Date.now();
@@ -387,14 +402,24 @@ async function main() {
   const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
   const allResults: Array<{
     caseId: string;
-    samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }>;
+    samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }>;
   }> = [];
 
   for (let i = 0; i < cases.length; i++) {
     const c = cases[i];
-    console.log(`[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`);
+    console.log(
+      `[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+    );
 
-    const samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> = [];
+    const samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }> = [];
     for (let s = 0; s < samplesN; s++) {
       const r = await executeCase(c, skillPrompt);
       const grade = gradeExecuteResult(c, r);

@@ -36,9 +36,15 @@ function parseArgs(args: string): { positionals: string[]; flags: Set<string> } 
 
 /** /plugin 命令 */
 export class PluginCommand implements Command {
-  name() { return "plugin"; }
-  aliases() { return ["plugins"]; }
-  description() { return "插件管理 (list/info/install/uninstall/enable/disable)"; }
+  name() {
+    return "plugin";
+  }
+  aliases() {
+    return ["plugins"];
+  }
+  description() {
+    return "插件管理 (list/info/install/uninstall/enable/disable)";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { positionals, flags } = parseArgs(args);
@@ -62,7 +68,10 @@ export class PluginCommand implements Command {
       case "disable":
         return this.toggle(positionals[1], false, flags, ctx);
       default:
-        return { kind: "error", message: `未知子命令: ${sub}\n用法: /plugin list|info|install|uninstall|enable|disable` };
+        return {
+          kind: "error",
+          message: `未知子命令: ${sub}\n用法: /plugin list|info|install|uninstall|enable|disable`,
+        };
     }
   }
 
@@ -127,7 +136,8 @@ export class PluginCommand implements Command {
   }
 
   private async install(path: string | undefined, flags: Set<string>): Promise<CommandResult> {
-    if (!path) return { kind: "error", message: "用法: /plugin install <本地目录路径> [--no-copy]" };
+    if (!path)
+      return { kind: "error", message: "用法: /plugin install <本地目录路径> [--no-copy]" };
     const result = await installPlugin(path, { copy: !flags.has("no-copy") });
     return result.ok
       ? { kind: "message", message: `${result.message}\n提示: 运行 /reload-plugins 使其生效` }
@@ -135,7 +145,8 @@ export class PluginCommand implements Command {
   }
 
   private async uninstall(name: string | undefined, flags: Set<string>): Promise<CommandResult> {
-    if (!name) return { kind: "error", message: "用法: /plugin uninstall <name> [--delete] [--force]" };
+    if (!name)
+      return { kind: "error", message: "用法: /plugin uninstall <name> [--delete] [--force]" };
     const result = await uninstallPlugin(name, {
       deleteFiles: flags.has("delete"),
       force: flags.has("force"),
@@ -151,7 +162,8 @@ export class PluginCommand implements Command {
     flags: Set<string>,
     _ctx: AppContext,
   ): Promise<CommandResult> {
-    if (!name) return { kind: "error", message: `用法: /plugin ${enable ? "enable" : "disable"} <name>` };
+    if (!name)
+      return { kind: "error", message: `用法: /plugin ${enable ? "enable" : "disable"} <name>` };
     const result = enable
       ? await enablePlugin(name)
       : await disablePlugin(name, { force: flags.has("force") });
@@ -163,9 +175,15 @@ export class PluginCommand implements Command {
 
 /** /reload-plugins 命令 */
 export class ReloadPluginsCommand implements Command {
-  name() { return "reload-plugins"; }
-  aliases() { return ["reload-plugin"]; }
-  description() { return "重新加载所有插件组件（命令/Skills/Hooks/MCP）"; }
+  name() {
+    return "reload-plugins";
+  }
+  aliases() {
+    return ["reload-plugin"];
+  }
+  description() {
+    return "重新加载所有插件组件（命令/Skills/Hooks/MCP）";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const result = await refreshActivePlugins({

@@ -33,9 +33,28 @@ const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);
 
 /** 审计核查类任务的关键词（命中即算，启发式口径） */
 const AUDIT_KEYWORDS = [
-  "检查", "核查", "审计", "是否落地", "落地实现", "是否实现", "对照", "对比检查",
-  "排查", "根因", "缺口", "验收", "复核", "核实", "有没有落地", "是否存在",
-  "audit", "verify", "review", "check whether", "double check", "double-check",
+  "检查",
+  "核查",
+  "审计",
+  "是否落地",
+  "落地实现",
+  "是否实现",
+  "对照",
+  "对比检查",
+  "排查",
+  "根因",
+  "缺口",
+  "验收",
+  "复核",
+  "核实",
+  "有没有落地",
+  "是否存在",
+  "audit",
+  "verify",
+  "review",
+  "check whether",
+  "double check",
+  "double-check",
 ];
 
 interface SessionStat {
@@ -93,7 +112,9 @@ function scanSession(dir: string, id: string): SessionStat | null {
         stat.promptHead = data.prompt.slice(0, 120).replace(/\s+/g, " ");
         const lower = data.prompt.toLowerCase();
         stat.isAudit = AUDIT_KEYWORDS.some((kw) =>
-          kw === kw.toLowerCase() && /[a-z]/.test(kw) ? lower.includes(kw) : data.prompt.includes(kw),
+          kw === kw.toLowerCase() && /[a-z]/.test(kw)
+            ? lower.includes(kw)
+            : data.prompt.includes(kw),
         );
       }
     } else if (kind === "PreToolUse") {
@@ -174,7 +195,12 @@ function main() {
     if (listAudit) {
       out.auditZeroTrigger = audit
         .filter((s) => s.hypRegister === 0 && s.subAgentVerify === 0)
-        .map((s) => ({ id: s.id, model: s.model, toolCalls: s.toolCalls, promptHead: s.promptHead }));
+        .map((s) => ({
+          id: s.id,
+          model: s.model,
+          toolCalls: s.toolCalls,
+          promptHead: s.promptHead,
+        }));
     }
     process.stdout.write(JSON.stringify(out, null, 2) + "\n");
     return;
@@ -185,25 +211,39 @@ function main() {
   L.push(`扫描会话：${summary.scannedSessions}  其中审计核查类：${summary.auditSessions}`);
   L.push("");
   L.push("审计核查类任务里的防线触发率（分母 = 审计类会话数）：");
-  L.push(`  hypothesis_register 被调用 ....... ${summary.triggerRate.hypothesisRegister_inAudit}  (${summary.counts.auditWithHypRegister}/${summary.auditSessions})`);
-  L.push(`  sub_agent(verify) 被调用 ......... ${summary.triggerRate.subAgentVerify_inAudit}  (${summary.counts.auditWithSubAgentVerify}/${summary.auditSessions})`);
-  L.push(`  任一防线被触发 ................... ${summary.triggerRate.anyDefense_inAudit}  (${summary.counts.auditWithAnyDefense}/${summary.auditSessions})`);
+  L.push(
+    `  hypothesis_register 被调用 ....... ${summary.triggerRate.hypothesisRegister_inAudit}  (${summary.counts.auditWithHypRegister}/${summary.auditSessions})`,
+  );
+  L.push(
+    `  sub_agent(verify) 被调用 ......... ${summary.triggerRate.subAgentVerify_inAudit}  (${summary.counts.auditWithSubAgentVerify}/${summary.auditSessions})`,
+  );
+  L.push(
+    `  任一防线被触发 ................... ${summary.triggerRate.anyDefense_inAudit}  (${summary.counts.auditWithAnyDefense}/${summary.auditSessions})`,
+  );
   L.push("");
-  L.push(`对照·全量任务 hypothesis_register 触发率：${summary.triggerRate.hypothesisRegister_allTasks}`);
+  L.push(
+    `对照·全量任务 hypothesis_register 触发率：${summary.triggerRate.hypothesisRegister_allTasks}`,
+  );
   L.push("");
   L.push("累计调用次数：");
-  L.push(`  hypothesis_register: ${summary.counts.totalHypRegisterCalls}   hypothesis_challenge: ${summary.counts.totalHypChallengeCalls}   sub_agent(verify): ${summary.counts.totalSubAgentVerifyCalls}`);
+  L.push(
+    `  hypothesis_register: ${summary.counts.totalHypRegisterCalls}   hypothesis_challenge: ${summary.counts.totalHypChallengeCalls}   sub_agent(verify): ${summary.counts.totalSubAgentVerifyCalls}`,
+  );
 
   // 判读提示：触发率是决定"要不要做后续重型改造"的闸门
   L.push("");
   if (summary.auditSessions === 0) {
     L.push("判读：样本里没有审计核查类任务，无法评估——换更大 --limit 或攒些真实核查会话再跑。");
   } else if (auditWithAny.length === 0) {
-    L.push("判读：审计类任务里防线【零触发】。印证文档 §0.5——防线是死功能，可见性边/触发域仍未接活。");
+    L.push(
+      "判读：审计类任务里防线【零触发】。印证文档 §0.5——防线是死功能，可见性边/触发域仍未接活。",
+    );
   } else if (auditWithAny.length / audit.length < 0.5) {
     L.push("判读：触发率偏低（<50%）。可见性边已部分接上但不稳，值得继续加强 nudge / 触发域。");
   } else {
-    L.push("判读：触发率已上来（≥50%）。文档担心的'防线空转'已缓解——后续重型改造（分类器/出口硬门禁）性价比存疑，先别做。");
+    L.push(
+      "判读：触发率已上来（≥50%）。文档担心的'防线空转'已缓解——后续重型改造（分类器/出口硬门禁）性价比存疑，先别做。",
+    );
   }
 
   if (listAudit) {

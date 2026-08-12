@@ -12,9 +12,7 @@ import { glob } from "glob";
 import { parse as parseYaml } from "yaml";
 
 const REPO_ROOT = process.cwd();
-const HOLDOUT_DIRS = [
-  "evals/holdout",
-];
+const HOLDOUT_DIRS = ["evals/holdout"];
 
 // 黑名单:这些是公共词/路径片段/目录名,出现在题面里也不算题面泄露
 // (它们出现在 CASES.md / DASHBOARD.md 主要是因为正常的 case 描述/链接,不是 holdout 题面)

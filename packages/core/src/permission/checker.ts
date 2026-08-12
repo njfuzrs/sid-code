@@ -11,7 +11,13 @@
  * 阶段 3：resolvePermission — 交互式决策（由上层 agent loop 处理）
  */
 
-import type { Checker, Decision, PermissionRequest, PermissionRule, PermissionCheckOptions } from "./types.ts";
+import type {
+  Checker,
+  Decision,
+  PermissionRequest,
+  PermissionRule,
+  PermissionCheckOptions,
+} from "./types.ts";
 import type { Config } from "../config/config.ts";
 import type { PermissionMode } from "./mode.ts";
 import type { PlanModeManager } from "../plan/state.ts";
@@ -53,32 +59,64 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "格式化磁盘", pattern: /mkfs\./, severity: "critical" },
   { name: "写入块设备", pattern: />\s*\/dev\/sd/, severity: "critical" },
   { name: "Fork 炸弹", pattern: /:()\s*\{.*:\|:.*&.*\}\s*;/, severity: "critical" },
-  { name: "下载并执行", pattern: /(curl|wget).*\|\s*(sh|bash|python|perl|ruby)/, severity: "critical" },
+  {
+    name: "下载并执行",
+    pattern: /(curl|wget).*\|\s*(sh|bash|python|perl|ruby)/,
+    severity: "critical",
+  },
 
   // high: 拒绝但允许用户确认
   { name: "sudo 命令", pattern: /sudo\s+/, severity: "high" },
   { name: "命令替换注入", pattern: /`[^`]*`|\$\([^)]*\)/, severity: "high" },
   { name: "递归权限修改", pattern: /chmod\s+-R\s+(777|666)/, severity: "high" },
   { name: "递归所有者修改", pattern: /chown\s+-R\s+/, severity: "high" },
-  { name: "环境变量覆盖", pattern: /export\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH)\s*=/, severity: "high" },
+  {
+    name: "环境变量覆盖",
+    pattern: /export\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH)\s*=/,
+    severity: "high",
+  },
 
   // critical: 编码绕过执行
-  { name: "base64 解码执行", pattern: /base64\s+(-d|--decode).*\|\s*(sh|bash|python|perl|ruby)/, severity: "critical" },
-  { name: "xxd 解码执行", pattern: /xxd\s+-r.*\|\s*(sh|bash|python|perl|ruby)/, severity: "critical" },
+  {
+    name: "base64 解码执行",
+    pattern: /base64\s+(-d|--decode).*\|\s*(sh|bash|python|perl|ruby)/,
+    severity: "critical",
+  },
+  {
+    name: "xxd 解码执行",
+    pattern: /xxd\s+-r.*\|\s*(sh|bash|python|perl|ruby)/,
+    severity: "critical",
+  },
   { name: "Python exec 执行", pattern: /python[23]?\s+-c\s+.*exec\s*\(/, severity: "critical" },
   { name: "Perl system 执行", pattern: /perl\s+-e\s+.*system\s*\(/, severity: "critical" },
 
   // high: 数据外传 + 敏感信息读取
-  { name: "curl POST 数据外传", pattern: /curl\s+.*(-X\s*POST|--data|--data-binary|-d\s)/, severity: "high" },
+  {
+    name: "curl POST 数据外传",
+    pattern: /curl\s+.*(-X\s*POST|--data|--data-binary|-d\s)/,
+    severity: "high",
+  },
   { name: "nc 管道外传", pattern: /\|\s*nc\s+/, severity: "high" },
-  { name: "读取 shell 历史", pattern: /cat\s+.*\.(bash_history|zsh_history|history)/, severity: "high" },
-  { name: "读取 SSH 密钥", pattern: /cat\s+.*\.ssh\/(id_rsa|id_ed25519|id_dsa|authorized_keys)/, severity: "high" },
+  {
+    name: "读取 shell 历史",
+    pattern: /cat\s+.*\.(bash_history|zsh_history|history)/,
+    severity: "high",
+  },
+  {
+    name: "读取 SSH 密钥",
+    pattern: /cat\s+.*\.ssh\/(id_rsa|id_ed25519|id_dsa|authorized_keys)/,
+    severity: "high",
+  },
 
   // medium: 需要用户确认
   { name: "路径遍历", pattern: /\.\.[\/\\]/, severity: "medium" },
   { name: "后台进程", pattern: /&\s*$/, severity: "medium" },
   { name: "管道到文件覆盖", pattern: />\s*\/etc\//, severity: "medium" },
-  { name: "清除命令历史", pattern: /history\s+-c|>\s*.*\.(bash_history|zsh_history)/, severity: "medium" },
+  {
+    name: "清除命令历史",
+    pattern: /history\s+-c|>\s*.*\.(bash_history|zsh_history)/,
+    severity: "medium",
+  },
   { name: "修改 crontab", pattern: /crontab\s+(-e|-r|-l)/, severity: "medium" },
 
   // Git —— 破坏性/难恢复（P0-2，对齐 CC destructiveCommandWarning）。
@@ -106,20 +144,52 @@ const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
   { pattern: ".husky/", classifierApprovable: false, reason: "Husky hooks 可执行任意代码" },
   // 斜杠命令目录：命令体可执行任意 shell，等同 hooks 风险，绝对禁止自动审批
   // （对标 claude-code isClaudeConfigFilePath 对 commands/agents/skills 的精细管控）
-  { pattern: ".sid-code/commands/", classifierApprovable: false, reason: "sid-code 斜杠命令可执行任意代码" },
-  { pattern: ".sid-code/agents/", classifierApprovable: false, reason: "sid-code 子代理定义影响执行" },
-  { pattern: ".sid-code/skills/", classifierApprovable: false, reason: "sid-code Skill 可执行任意代码" },
-  { pattern: ".claude/commands/", classifierApprovable: false, reason: "Claude 斜杠命令可执行任意代码" },
+  {
+    pattern: ".sid-code/commands/",
+    classifierApprovable: false,
+    reason: "sid-code 斜杠命令可执行任意代码",
+  },
+  {
+    pattern: ".sid-code/agents/",
+    classifierApprovable: false,
+    reason: "sid-code 子代理定义影响执行",
+  },
+  {
+    pattern: ".sid-code/skills/",
+    classifierApprovable: false,
+    reason: "sid-code Skill 可执行任意代码",
+  },
+  {
+    pattern: ".claude/commands/",
+    classifierApprovable: false,
+    reason: "Claude 斜杠命令可执行任意代码",
+  },
   { pattern: ".claude/agents/", classifierApprovable: false, reason: "Claude 子代理定义影响执行" },
-  { pattern: ".claude/skills/", classifierApprovable: false, reason: "Claude Skill 可执行任意代码" },
+  {
+    pattern: ".claude/skills/",
+    classifierApprovable: false,
+    reason: "Claude Skill 可执行任意代码",
+  },
   // 设置文件精细项：settings 可注入 permissionMode/skipPermissions/yesMode 等安全开关，
   // 风险等同上面的 commands/agents/skills，故 classifierApprovable 同样为 false（绝对禁止
   // 自动审批，必须人工确认）。⚠️ 该字段目前仅作语义标记，尚无运行时消费者；命中后无论
   // true/false 结果都是 needsConfirmation。改为 false 是为未来分类器审批接线做前置加固。
-  { pattern: ".sid-code/settings.json", classifierApprovable: false, reason: "sid-code 设置文件（可影响安全控制）" },
-  { pattern: ".sid-code/settings.local.json", classifierApprovable: false, reason: "sid-code 本地设置文件" },
+  {
+    pattern: ".sid-code/settings.json",
+    classifierApprovable: false,
+    reason: "sid-code 设置文件（可影响安全控制）",
+  },
+  {
+    pattern: ".sid-code/settings.local.json",
+    classifierApprovable: false,
+    reason: "sid-code 本地设置文件",
+  },
   { pattern: ".claude/settings.json", classifierApprovable: false, reason: "Claude 设置文件" },
-  { pattern: ".claude/settings.local.json", classifierApprovable: false, reason: "Claude 本地设置文件" },
+  {
+    pattern: ".claude/settings.local.json",
+    classifierApprovable: false,
+    reason: "Claude 本地设置文件",
+  },
   // ── classifierApprovable: true（分类器可根据上下文判断）——较宽泛的父目录，排后 ──
   { pattern: ".git/", classifierApprovable: true, reason: "Git 仓库内部文件" },
   { pattern: ".sid-code/", classifierApprovable: true, reason: "sid-code 配置目录" },
@@ -173,11 +243,7 @@ const MAX_SESSION_MEMORY = 1000;
 const ACCEPT_EDITS_FS_COMMANDS = new Set(["mkdir", "touch", "rm", "rmdir", "mv", "cp", "sed"]);
 
 /** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
-const PLAN_MODE_EXTRA_TOOLS = new Set([
-  "enter_plan_mode",
-  "exit_plan_mode",
-  "sub_agent",
-]);
+const PLAN_MODE_EXTRA_TOOLS = new Set(["enter_plan_mode", "exit_plan_mode", "sub_agent"]);
 
 export class PermissionChecker implements Checker {
   private config: Config;
@@ -207,21 +273,25 @@ export class PermissionChecker implements Checker {
   /** 工作区路径（供 auto 模式分类器使用） */
   private workspacePath: string;
   /** Bridge 远程权限代理（可选，Bridge 模式下注入；签名对齐 PermissionProxy.requestPermission） */
-  private bridgePermissionDelegate: ((req: {
-    toolName: string;
-    toolInput: unknown;
-    description: string;
-    dangerLevel: string;
-  }) => Promise<boolean>) | null = null;
+  private bridgePermissionDelegate:
+    | ((req: {
+        toolName: string;
+        toolInput: unknown;
+        description: string;
+        dangerLevel: string;
+      }) => Promise<boolean>)
+    | null = null;
 
   /** 设置 Bridge 远程权限代理（null 清除，回退到本地确认） */
   setBridgePermissionDelegate(
-    delegate: ((req: {
-      toolName: string;
-      toolInput: unknown;
-      description: string;
-      dangerLevel: string;
-    }) => Promise<boolean>) | null,
+    delegate:
+      | ((req: {
+          toolName: string;
+          toolInput: unknown;
+          description: string;
+          dangerLevel: string;
+        }) => Promise<boolean>)
+      | null,
   ): void {
     this.bridgePermissionDelegate = delegate;
   }
@@ -253,13 +323,18 @@ export class PermissionChecker implements Checker {
    */
   deriveWithPermissionMode(mode: PermissionMode): PermissionChecker {
     const derivedConfig: Config = { ...this.config, permissionMode: mode };
-    const derived = new PermissionChecker(derivedConfig, this.rules ?? undefined, this.workspacePath);
+    const derived = new PermissionChecker(
+      derivedConfig,
+      this.rules ?? undefined,
+      this.workspacePath,
+    );
     // 搬运运行期注入的协作者（构造函数不覆盖这些，需显式复制）。
     if (this.planManager) derived.setPlanManager(this.planManager);
     if (this.sandboxManager) derived.setSandboxManager(this.sandboxManager);
     if (this.bashClassifier) derived.setBashClassifier(this.bashClassifier);
     if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
-    if (this.bridgePermissionDelegate) derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
+    if (this.bridgePermissionDelegate)
+      derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
     // 运行时扩展的允许目录白名单也一并继承（用户 /add-dir 授权对子代理同样生效）。
     for (const dir of this.getAllowedDirectories()) derived.addAllowedDirectory(dir);
     return derived;
@@ -314,7 +389,12 @@ export class PermissionChecker implements Checker {
    */
   recordUserDenial(req: PermissionRequest, reason?: string): void {
     const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
-    this.denialTracking = recordDenial(this.denialTracking, req.toolName, reason || "用户拒绝", resource);
+    this.denialTracking = recordDenial(
+      this.denialTracking,
+      req.toolName,
+      reason || "用户拒绝",
+      resource,
+    );
   }
 
   /**
@@ -631,7 +711,11 @@ export class PermissionChecker implements Checker {
    *   → safetyCheck(bypass-immune) → bypass/always-allow模式
    *   → allow规则 → plan/acceptEdits/读操作 → passthrough→ask
    */
-  private async hasPermissionsInner(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext): Promise<Decision> {
+  private async hasPermissionsInner(
+    req: PermissionRequest,
+    tool?: Tool,
+    toolContext?: ToolUseContext,
+  ): Promise<Decision> {
     const log = getLogger();
     const filePath = (req.input as any)?.file_path || "";
     const resource = filePath || (req.input as any)?.command || "";
@@ -645,8 +729,14 @@ export class PermissionChecker implements Checker {
     if (this.rules) {
       const ruleDecision = this.checkDenyRules(req);
       if (ruleDecision && !ruleDecision.allowed) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny规则: ${ruleDecision.reason})`);
-        return { ...ruleDecision, decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "deny" } };
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny规则: ${ruleDecision.reason})`,
+        );
+        return {
+          ...ruleDecision,
+          decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "deny" },
+        };
       }
     }
 
@@ -681,13 +771,16 @@ export class PermissionChecker implements Checker {
       filePath &&
       this.planManager?.isPlanFile(filePath)
     ) {
-      log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件提前放行)`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件提前放行)`,
+      );
       return { allowed: true, decisionReason: { type: "mode", mode: "plan+plan-file" } };
     }
 
     // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
     if (filePath && FILE_TOOLS.has(req.toolName)) {
-      const operation = WRITE_TOOLS.has(req.toolName) ? "write" as const : "read" as const;
+      const operation = WRITE_TOOLS.has(req.toolName) ? ("write" as const) : ("read" as const);
       const pathResult = this.pathValidator.validateAccess(filePath, operation);
       if (!pathResult.allowed) {
         // SEC-AUDIT-2026-07-19 P2：敏感文件（凭证类）现在是**硬 deny**，但保留一个
@@ -715,10 +808,16 @@ export class PermissionChecker implements Checker {
               decision: "allow",
               reason: `敏感文件经用户显式 allow 规则放行: ${pathResult.reason}`,
             });
-            return { ...allowDecision, decisionReason: { type: "rule", rule: "allow", behavior: "allow" } };
+            return {
+              ...allowDecision,
+              decisionReason: { type: "rule", rule: "allow", behavior: "allow" },
+            };
           }
         }
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`,
+        );
         return {
           allowed: false,
           reason: pathResult.reason,
@@ -730,10 +829,20 @@ export class PermissionChecker implements Checker {
 
     // Step 5: ask 规则（工具级）
     if (this.rules) {
-      const askDecision = checkRules({ deny: [], allow: [], ask: this.rules.ask }, req, this.buildPathRuleContext(req));
+      const askDecision = checkRules(
+        { deny: [], allow: [], ask: this.rules.ask },
+        req,
+        this.buildPathRuleContext(req),
+      );
       if (askDecision && !askDecision.allowed && askDecision.needsConfirmation) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(ask规则: ${askDecision.reason})`);
-        return { ...askDecision, decisionReason: { type: "rule", rule: askDecision.reason || "", behavior: "ask" } };
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 需确认(ask规则: ${askDecision.reason})`,
+        );
+        return {
+          ...askDecision,
+          decisionReason: { type: "rule", rule: askDecision.reason || "", behavior: "ask" },
+        };
       }
     }
 
@@ -741,15 +850,24 @@ export class PermissionChecker implements Checker {
     if (tool?.checkPermissions) {
       const toolPermResult = await tool.checkPermissions(req.input, toolContext!);
       if (toolPermResult.behavior === "deny") {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具级checkPermissions: ${toolPermResult.message})`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具级checkPermissions: ${toolPermResult.message})`,
+        );
         return {
           allowed: false,
           reason: `工具拒绝: ${toolPermResult.message}`,
-          decisionReason: { type: "other", reason: `工具级checkPermissions: ${toolPermResult.message}` },
+          decisionReason: {
+            type: "other",
+            reason: `工具级checkPermissions: ${toolPermResult.message}`,
+          },
         };
       }
       if (toolPermResult.behavior === "ask") {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(工具级checkPermissions: ${toolPermResult.message})`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 需确认(工具级checkPermissions: ${toolPermResult.message})`,
+        );
         return {
           allowed: false,
           needsConfirmation: true,
@@ -757,7 +875,10 @@ export class PermissionChecker implements Checker {
         };
       }
       if (toolPermResult.behavior === "allow") {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具级checkPermissions)`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具级checkPermissions)`,
+        );
         return { allowed: true };
       }
       // passthrough: 工具没有意见，继续后续检查
@@ -767,23 +888,30 @@ export class PermissionChecker implements Checker {
     if (WRITE_TOOLS.has(req.toolName) && filePath) {
       const safetyResult = this.safetyCheck(filePath);
       if (!safetyResult.safe) {
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`,
+        );
         return {
           allowed: false,
           needsConfirmation: true,
           reason: `[安全检查] ${safetyResult.reason}`,
-          decisionReason: { type: "safetyCheck", reason: safetyResult.reason!, classifierApprovable: safetyResult.classifierApprovable },
+          decisionReason: {
+            type: "safetyCheck",
+            reason: safetyResult.reason!,
+            classifierApprovable: safetyResult.classifierApprovable,
+          },
           metadata: { classifierApprovable: safetyResult.classifierApprovable },
         };
       }
     }
 
     // Step 7: 沙箱自动放行（沙箱启用时 bash 命令可自动放行，减少弹窗）
-    if (
-      req.toolName === "bash" &&
-      this.sandboxManager?.shouldAutoAllowBash()
-    ) {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(沙箱保护下自动放行)`);
+    if (req.toolName === "bash" && this.sandboxManager?.shouldAutoAllowBash()) {
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 允许(沙箱保护下自动放行)`,
+      );
       return { allowed: true, decisionReason: { type: "other", reason: "沙箱保护下自动放行" } };
     }
 
@@ -798,7 +926,10 @@ export class PermissionChecker implements Checker {
       const allowDecision = this.checkAllowRules(req);
       if (allowDecision && allowDecision.allowed) {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(allow规则)`);
-        return { ...allowDecision, decisionReason: { type: "rule", rule: "allow", behavior: "allow" } };
+        return {
+          ...allowDecision,
+          decisionReason: { type: "rule", rule: "allow", behavior: "allow" },
+        };
       }
     }
 
@@ -824,7 +955,10 @@ export class PermissionChecker implements Checker {
       if (req.toolName === "bash") {
         const command = (req.input as { command?: string })?.command ?? "";
         if (command && this.canAutoAllowFsCommandInAcceptEdits(command)) {
-          log.info("PERMISSION", `bash(${command.slice(0, 80)}) → 允许(acceptEdits模式+cwd内fs命令)`);
+          log.info(
+            "PERMISSION",
+            `bash(${command.slice(0, 80)}) → 允许(acceptEdits模式+cwd内fs命令)`,
+          );
           return { allowed: true, decisionReason: { type: "mode", mode: "acceptEdits" } };
         }
       }
@@ -859,7 +993,12 @@ export class PermissionChecker implements Checker {
    * 阶段 2：后处理（含副作用：会话记忆、denial tracking、模式后处理）
    * 这是对外暴露的 check() 方法
    */
-  async check(req: PermissionRequest, tool?: Tool, toolContext?: ToolUseContext, options?: PermissionCheckOptions): Promise<Decision> {
+  async check(
+    req: PermissionRequest,
+    tool?: Tool,
+    toolContext?: ToolUseContext,
+    options?: PermissionCheckOptions,
+  ): Promise<Decision> {
     const log = getLogger();
     const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
 
@@ -885,7 +1024,10 @@ export class PermissionChecker implements Checker {
     const memKey = this.getMemoryKey(req);
     if (this.sessionMemory.has(memKey)) {
       const allowed = this.sessionMemory.get(memKey)!;
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → ${allowed ? "允许" : "拒绝"}(会话记忆)`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → ${allowed ? "允许" : "拒绝"}(会话记忆)`,
+      );
       // 记账（发现 1）：这条快速路径此前在任何计数之前就 return，导致
       //   - 记忆为 allow 时，该签名的连续拒绝计数不归零（墙已消失却仍算在撞墙）；
       //   - 记忆为 deny 时，反复撞同一面墙完全不被计数。
@@ -909,7 +1051,10 @@ export class PermissionChecker implements Checker {
       const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
       // 仅普通 ask（needsConfirmation 且非安全类确认）可被 hook allow 放行；硬 deny 不放行
       if (!result.allowed && result.needsConfirmation && !isSafetyConfirmation) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`,
+        );
         this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
@@ -920,23 +1065,35 @@ export class PermissionChecker implements Checker {
           reason: "PreToolUse hook allow",
           user_confirmed: false,
         });
-        return { allowed: true, decisionReason: { type: "other", reason: "PreToolUse hook allow" } };
+        return {
+          allowed: true,
+          decisionReason: { type: "other", reason: "PreToolUse hook allow" },
+        };
       }
       if (!result.allowed) {
-        log.info("PERMISSION", `${req.toolName} → PreToolUse hook allow 被安全护栏拦截(${dr})，不放行`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName} → PreToolUse hook allow 被安全护栏拦截(${dr})，不放行`,
+        );
       }
     } else if (options?.hookPermissionDecision === "ask" && result.allowed) {
       // hook 要求升级确认：把本会自动放行的操作强制转为 needsConfirmation。
       // 非交互/dontAsk 无 UI 通道 → 降级为 deny（对齐既有 ask→deny 语义）。
       if (this.config.permissionMode === "dontAsk" || this.isNonInteractive()) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(PreToolUse hook ask，但无交互通道)`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(PreToolUse hook ask，但无交互通道)`,
+        );
         return {
           allowed: false,
           reason: "PreToolUse hook 要求确认，但当前为非交互模式，自动拒绝",
           decisionReason: { type: "other", reason: "PreToolUse hook ask (non-interactive)" },
         };
       }
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 升级确认(PreToolUse hook permissionDecision:ask)`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 升级确认(PreToolUse hook permissionDecision:ask)`,
+      );
       return {
         allowed: false,
         needsConfirmation: true,
@@ -976,13 +1133,18 @@ export class PermissionChecker implements Checker {
       //
       // dontAsk / 非交互无 UI 通道，熔断成确认等于必然失败，故这两种情形维持原硬拒。
       if (
-        shouldFuse(this.denialTracking, req.toolName, resource)
-        && this.config.permissionMode !== "dontAsk"
-        && !this.isNonInteractive()
+        shouldFuse(this.denialTracking, req.toolName, resource) &&
+        this.config.permissionMode !== "dontAsk" &&
+        !this.isNonInteractive()
       ) {
         return this.fuseDecision(req, resource);
       }
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
+      this.denialTracking = recordDenial(
+        this.denialTracking,
+        req.toolName,
+        result.reason || "",
+        resource,
+      );
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
         type: "tool_use",
@@ -991,8 +1153,8 @@ export class PermissionChecker implements Checker {
         decision: "deny",
         reason: result.reason,
         decisionReason: result.decisionReason,
-        classifiedBy: result.metadata?.classifiedBy as ("hardcoded" | "llm" | "both" | undefined),
-        llmRisk: result.metadata?.llmRisk as (string | undefined),
+        classifiedBy: result.metadata?.classifiedBy as "hardcoded" | "llm" | "both" | undefined,
+        llmRisk: result.metadata?.llmRisk as string | undefined,
       });
       return result;
     }
@@ -1008,7 +1170,10 @@ export class PermissionChecker implements Checker {
       const dr = result.decisionReason?.type;
       const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
       if (!isSafetyConfirmation) {
-        log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`,
+        );
         this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
         this.auditLogger.log({
           timestamp: new Date().toISOString(),
@@ -1022,7 +1187,10 @@ export class PermissionChecker implements Checker {
         return { allowed: true, decisionReason: { type: "mode", mode: "yesMode" } };
       }
       // 危险来源的确认：yesMode 不放行，落到下方非交互/熔断/正常确认流程（高风险仍拦）
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → yesMode 不放行危险命令确认(${dr})`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → yesMode 不放行危险命令确认(${dr})`,
+      );
     }
 
     // auto 模式：分类器判安全则自动批准，否则落到交互确认（needsConfirmation）
@@ -1046,7 +1214,10 @@ export class PermissionChecker implements Checker {
             classifierInput,
           });
           if (!classifyResult.classifierUnavailable && classifyResult.safe) {
-            log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`);
+            log.info(
+              "PERMISSION",
+              `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`,
+            );
             this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
             this.auditLogger.log({
               timestamp: new Date().toISOString(),
@@ -1059,7 +1230,10 @@ export class PermissionChecker implements Checker {
             return { allowed: true, decisionReason: { type: "mode", mode: "auto" } };
           }
           // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
-          log.info("PERMISSION", `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`);
+          log.info(
+            "PERMISSION",
+            `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`,
+          );
         } catch (err: any) {
           log.warn("PERMISSION", `auto 模式分类器异常(${err.message})，回退人工确认`);
         }
@@ -1069,8 +1243,16 @@ export class PermissionChecker implements Checker {
 
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
     if (this.config.permissionMode === "dontAsk") {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(dontAsk模式下ask→deny)`);
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(dontAsk模式下ask→deny)`,
+      );
+      this.denialTracking = recordDenial(
+        this.denialTracking,
+        req.toolName,
+        result.reason || "",
+        resource,
+      );
       const dontAskDecision: Decision = {
         allowed: false,
         reason: `dontAsk 模式下自动拒绝: ${result.reason}`,
@@ -1091,7 +1273,12 @@ export class PermissionChecker implements Checker {
     // 非交互模式：ask → deny
     if (this.isNonInteractive()) {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(非交互模式)`);
-      this.denialTracking = recordDenial(this.denialTracking, req.toolName, result.reason || "", resource);
+      this.denialTracking = recordDenial(
+        this.denialTracking,
+        req.toolName,
+        result.reason || "",
+        resource,
+      );
       const nonInteractiveDecision: Decision = {
         allowed: false,
         reason: `非交互模式下自动拒绝: ${result.reason}`,
@@ -1126,7 +1313,11 @@ export class PermissionChecker implements Checker {
    * safetyCheck：bypass-immune 的关键路径保护
    * 即使在 always-allow 模式下也不可绕过
    */
-  private safetyCheck(filePath: string): { safe: boolean; reason?: string; classifierApprovable: boolean } {
+  private safetyCheck(filePath: string): {
+    safe: boolean;
+    reason?: string;
+    classifierApprovable: boolean;
+  } {
     const resolved = path.resolve(filePath);
     // 大小写归一化比较：macOS/Windows 大小写不敏感文件系统下，
     // ".ClAuDe/settings.json" 与 ".claude/settings.json" 指向同一文件，
@@ -1140,7 +1331,10 @@ export class PermissionChecker implements Checker {
       if (patternLower.endsWith("/")) {
         const dirName = patternLower.slice(0, -1); // 去掉尾部 /
         const sepLower = normalizeCaseForComparison(path.sep);
-        if (relativePath.includes(`/${dirName}/`) || relativePath.includes(`${sepLower}${dirName}${sepLower}`)) {
+        if (
+          relativePath.includes(`/${dirName}/`) ||
+          relativePath.includes(`${sepLower}${dirName}${sepLower}`)
+        ) {
           return { safe: false, reason: sp.reason, classifierApprovable: sp.classifierApprovable };
         }
       } else {
@@ -1183,12 +1377,19 @@ export class PermissionChecker implements Checker {
     // ── 第 1.5 道：结构性注入/混淆校验（纯逻辑、零成本，在 LLM 分类之前拦截 misparsing）──
     const injectionFinding = checkInjectionPatterns(cmd);
     if (injectionFinding) {
-      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(注入防护: ${injectionFinding.id})`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(注入防护: ${injectionFinding.id})`,
+      );
       return {
         allowed: false,
         reason: `[injection:${injectionFinding.id}] ${injectionFinding.message}: ${cmd.slice(0, 80)}`,
         needsConfirmation: true,
-        decisionReason: { type: "dangerousCommand", pattern: `injection:${injectionFinding.id}`, severity: "high" },
+        decisionReason: {
+          type: "dangerousCommand",
+          pattern: `injection:${injectionFinding.id}`,
+          severity: "high",
+        },
         metadata: { classifiedBy: "injection-validator", injectionId: injectionFinding.id },
       };
     }
@@ -1204,12 +1405,19 @@ export class PermissionChecker implements Checker {
       // 1) 危险 sed 标志：拒绝（严重性等同 critical/high 硬编码命令）
       const dangerousSed = detectDangerousSed(cmd);
       if (dangerousSed.dangerous) {
-        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险sed: ${dangerousSed.reason})`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险sed: ${dangerousSed.reason})`,
+        );
         return {
           allowed: false,
           reason: `[sed-danger] ${dangerousSed.reason}: ${cmd.slice(0, 80)}`,
           needsConfirmation: true,
-          decisionReason: { type: "dangerousCommand", pattern: `sed:${dangerousSed.reason}`, severity: "high" },
+          decisionReason: {
+            type: "dangerousCommand",
+            pattern: `sed:${dangerousSed.reason}`,
+            severity: "high",
+          },
           metadata: { classifiedBy: "sed-validator" },
         };
       }
@@ -1238,7 +1446,10 @@ export class PermissionChecker implements Checker {
           : resolve(baseCwd, sedWrite.targetFile);
         const pathResult = this.pathValidator.validateAccess(targetPath, "write");
         if (!pathResult.allowed) {
-          log.info("PERMISSION", `${req.toolName}(sed -i → ${targetPath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`);
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(sed -i → ${targetPath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`,
+          );
           return {
             allowed: false,
             reason: `sed -i 目标路径受限: ${pathResult.reason}`,
@@ -1259,7 +1470,11 @@ export class PermissionChecker implements Checker {
     //   代价（仅 opt-in 生效）：分类器对"硬编码判安全但 LLM 判危险"命令的升级拦截，在 speculative
     //   模式下让位给并行竞赛（该场景走弹窗/竞赛兜底）。默认关闭，保守用户行为不变。
     const speculativeMode = (this.config as any).speculativeClassifier === true;
-    if (!speculativeMode && this.config.permissionMode !== "plan" && this.bashClassifier?.isAvailable()) {
+    if (
+      !speculativeMode &&
+      this.config.permissionMode !== "plan" &&
+      this.bashClassifier?.isAvailable()
+    ) {
       const classifyResult = await this.bashClassifier.classify({
         command: cmd,
         cwd: process.cwd(),
@@ -1271,12 +1486,19 @@ export class PermissionChecker implements Checker {
       if (!classifyResult.classifierUnavailable) {
         if (!classifyResult.safe) {
           const isHard = classifyResult.risk === "critical" || classifyResult.risk === "high";
-          log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → ${isHard ? "拒绝" : "需确认"}(LLM风险分类: ${classifyResult.risk})`);
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(${cmd.slice(0, 80)}) → ${isHard ? "拒绝" : "需确认"}(LLM风险分类: ${classifyResult.risk})`,
+          );
           return {
             allowed: false,
             reason: `[LLM:${classifyResult.risk}] ${classifyResult.reason}`,
             needsConfirmation: !isHard, // critical/high → 直接拒绝；medium → 需确认
-            decisionReason: { type: "dangerousCommand", pattern: `LLM:${classifyResult.risk}`, severity: classifyResult.risk },
+            decisionReason: {
+              type: "dangerousCommand",
+              pattern: `LLM:${classifyResult.risk}`,
+              severity: classifyResult.risk,
+            },
             metadata: {
               classifiedBy: hard ? "both" : "llm",
               llmRisk: classifyResult.risk,
@@ -1287,14 +1509,20 @@ export class PermissionChecker implements Checker {
         }
         // 分类器判定安全：仍需让硬编码 high/medium 命中走兜底确认（安全底线由硬编码托底，
         // 避免 LLM 误把硬编码已知危险命令放过）→ 落到下方第三道
-        log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → LLM判定安全(risk=${classifyResult.risk})，继续硬编码兜底`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${cmd.slice(0, 80)}) → LLM判定安全(risk=${classifyResult.risk})，继续硬编码兜底`,
+        );
       }
       // classifierUnavailable=true → 静默回退第三道硬编码兜底
     }
 
     // ── 第三道：硬编码兜底（LLM 未启用/不可用，或 LLM 判安全但硬编码命中 high/medium）──
     if (hard) {
-      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险命令: ${hard.name})`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(危险命令: ${hard.name})`,
+      );
       return {
         allowed: false,
         reason: `[${hard.severity}] 危险命令需要确认 (${hard.name}): ${cmd.slice(0, 80)}`,
@@ -1307,7 +1535,10 @@ export class PermissionChecker implements Checker {
     // 重定向检测（独立于上述模式）
     const redirectCheck = hasSensitiveRedirection(cmd);
     if (redirectCheck.sensitive) {
-      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(敏感路径重定向: ${redirectCheck.targets.join(", ")})`,
+      );
       return {
         allowed: false,
         reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
@@ -1423,10 +1654,16 @@ export class PermissionChecker implements Checker {
    *   1b. 拆分复合命令，对每个子命令检查其余模式
    * 返回首个命中的模式（name + severity），未命中返回 null。重定向检测仍由调用方单独处理。
    */
-  private hardcodedDangerCheck(cmd: string): { name: string; severity: "critical" | "high" | "medium" } | null {
+  private hardcodedDangerCheck(
+    cmd: string,
+  ): { name: string; severity: "critical" | "high" | "medium" } | null {
     // 1a. 跨管道危险模式（对整条命令）
-    const pipelinePatterns = DANGEROUS_PATTERNS.filter(dp =>
-      dp.pattern.source.includes("\\|") || dp.name.includes("管道") || dp.name.includes("解码执行") || dp.name.includes("下载并执行")
+    const pipelinePatterns = DANGEROUS_PATTERNS.filter(
+      (dp) =>
+        dp.pattern.source.includes("\\|") ||
+        dp.name.includes("管道") ||
+        dp.name.includes("解码执行") ||
+        dp.name.includes("下载并执行"),
     );
     for (const dp of pipelinePatterns) {
       if (dp.pattern.test(cmd)) {
@@ -1442,12 +1679,12 @@ export class PermissionChecker implements Checker {
     // `\bgit\s+<子命令>` 形态的正则失配 → 危险命令在 acceptEdits/yesMode 下被静默放行。
     // 归一化后双重匹配即可覆盖该绕过（对齐 CC gitCmdRe 的全局选项容错）。
     const subCommands = splitCompoundCommand(cmd);
-    const nonPipelinePatterns = DANGEROUS_PATTERNS.filter(dp => !pipelinePatterns.includes(dp));
+    const nonPipelinePatterns = DANGEROUS_PATTERNS.filter((dp) => !pipelinePatterns.includes(dp));
     for (const subCmd of subCommands) {
       const normalized = normalizeGitGlobalOptions(subCmd);
       const variants = normalized === subCmd ? [subCmd] : [subCmd, normalized];
       for (const dp of nonPipelinePatterns) {
-        if (variants.some(v => dp.pattern.test(v))) {
+        if (variants.some((v) => dp.pattern.test(v))) {
           return { name: dp.name, severity: dp.severity };
         }
       }
@@ -1465,7 +1702,10 @@ export class PermissionChecker implements Checker {
 
     // plan 继承 bypass：如果 prePlanMode 是 always-allow，则自动放行（safetyCheck 已在上层拦截）
     if (this.prePlanMode === "always-allow") {
-      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan继承always-allow)`);
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan继承always-allow)`,
+      );
       return { allowed: true, decisionReason: { type: "mode", mode: "plan+bypass" } };
     }
 
@@ -1481,7 +1721,10 @@ export class PermissionChecker implements Checker {
         // 字段提取与 rules.ts extractMatchValue 对齐（subagent_type 优先，兼容旧 type）
         const subType = (req.input as any)?.subagent_type || (req.input as any)?.type;
         if (subType && subType !== "explore") {
-          log.info("PERMISSION", `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`);
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(type=${subType}) → 拒绝(plan模式只允许explore子代理)`,
+          );
           return { allowed: false, reason: "计划模式下只允许 explore 类型的子代理" };
         }
       }
@@ -1492,7 +1735,10 @@ export class PermissionChecker implements Checker {
     // 允许 write/edit 操作计划文件
     if ((req.toolName === "write" || req.toolName === "edit") && filePath && this.planManager) {
       if (this.planManager.isPlanFile(filePath)) {
-        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件)`);
+        log.info(
+          "PERMISSION",
+          `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件)`,
+        );
         return { allowed: true };
       }
     }
@@ -1508,16 +1754,21 @@ export class PermissionChecker implements Checker {
   /** 检测是否处于非交互模式 */
   private isNonInteractive(): boolean {
     // print 模式（单次输出）或 maxTurns > 0（批处理模式）视为非交互
-    return this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0);
+    return (
+      this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)
+    );
   }
 
   /** 请求用户确认（用于 REPL 模式，支持 a=always allow） */
-  async requestConfirmation(req: PermissionRequest): Promise<{ confirmed: boolean; remember: boolean }> {
+  async requestConfirmation(
+    req: PermissionRequest,
+  ): Promise<{ confirmed: boolean; remember: boolean }> {
     if (this.config.yesMode || this.config.skipPermissions) {
       return { confirmed: true, remember: false };
     }
 
-    const description = req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 100)}`;
+    const description =
+      req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 100)}`;
 
     // Bridge 模式：转发给远程客户端决策（远程不支持"始终允许"，故 remember=false）
     if (this.bridgePermissionDelegate) {

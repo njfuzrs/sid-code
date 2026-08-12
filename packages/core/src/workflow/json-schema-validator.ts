@@ -148,10 +148,7 @@ function validateNode(
       }
     }
     // additionalProperties 为子 schema:校验所有非 props 的值
-    if (
-      typeof schema.additionalProperties === "object" &&
-      schema.additionalProperties !== null
-    ) {
+    if (typeof schema.additionalProperties === "object" && schema.additionalProperties !== null) {
       const addSchema = schema.additionalProperties as Schema;
       for (const [key, v] of Object.entries(obj)) {
         if (!props || !(key in props)) {

@@ -18,7 +18,12 @@ import yaml from "yaml";
 import { LATEST_GRADER_VERSION } from "./lib/yaml-loader";
 
 const ROOT = process.cwd();
-const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
+const CASE_DIRS = [
+  "evals/general/p0-core",
+  "evals/general/p1-common",
+  "evals/general/p2-edge",
+  "evals/holdout",
+];
 const REPORTS_DIR = "evals/_reports";
 
 interface Case {
@@ -31,12 +36,13 @@ interface Case {
   related_subsystem?: string[];
   baseline_scores?: Record<
     string,
-    {
-      score: number | null;
-      run_status?: string;
-      notes?: string;
-      _formula_version?: { cost?: string; grader?: string };
-    } | undefined
+    | {
+        score: number | null;
+        run_status?: string;
+        notes?: string;
+        _formula_version?: { cost?: string; grader?: string };
+      }
+    | undefined
   >;
 }
 
@@ -75,9 +81,7 @@ function loadCases(): Case[] {
  * tally 用：取 sid-code 自家分（与原实现等价 —— sid_code_w0 / sid_code_default / sid_code_<modelSlug>）
  * 返回 first non-null score。
  */
-function firstSidCodeScore(
-  bs: Case["baseline_scores"] | undefined,
-): number | null {
+function firstSidCodeScore(bs: Case["baseline_scores"] | undefined): number | null {
   if (!bs) return null;
   for (const k of Object.keys(bs)) {
     if (!k.startsWith("sid_code")) continue;
@@ -138,9 +142,8 @@ function main(): void {
     const scores = group
       .map((c) => firstSidCodeScore(c.baseline_scores))
       .filter((s): s is number => typeof s === "number");
-    const avg = scores.length > 0
-      ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)
-      : "—";
+    const avg =
+      scores.length > 0 ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2) : "—";
     lines.push(`| ${k} | ${group.length} | ${ran} | ${rate} | ${avg} |`);
   }
   lines.push("");
@@ -157,7 +160,8 @@ function main(): void {
       const entry = bs[provider];
       if (!entry) continue;
       // 只统计实际跑过的 entry（pending / null score 不进分母 — 避免 5d-v4 占比被未跑的 case 拉低）
-      const ran = typeof entry.score === "number" || (entry.run_status && entry.run_status !== "pending");
+      const ran =
+        typeof entry.score === "number" || (entry.run_status && entry.run_status !== "pending");
       if (!ran) continue;
       const v = entry._formula_version?.grader ?? "<missing>";
       versionCounter.set(v, (versionCounter.get(v) ?? 0) + 1);
@@ -173,17 +177,24 @@ function main(): void {
     for (const [v, n] of sorted) {
       const pct = ((n / totalEntries) * 100).toFixed(1);
       const status =
-        v === LATEST_GRADER_VERSION ? "✅ 当前"
-        : v.startsWith("capability-") ? "🟢 capability runner（独立版本，不与 5d-v* 跨比较）"
-        : v === "<missing>" ? "🕰️ legacy（缺 _formula_version）"
-        : "🕰️ legacy（历史版本号）";
+        v === LATEST_GRADER_VERSION
+          ? "✅ 当前"
+          : v.startsWith("capability-")
+            ? "🟢 capability runner（独立版本，不与 5d-v* 跨比较）"
+            : v === "<missing>"
+              ? "🕰️ legacy（缺 _formula_version）"
+              : "🕰️ legacy（历史版本号）";
       lines.push(`| \`${v}\` | ${n} | ${pct}% | ${status} |`);
     }
     lines.push("");
     const latestN = versionCounter.get(LATEST_GRADER_VERSION) ?? 0;
     const latestPct = ((latestN / totalEntries) * 100).toFixed(1);
-    lines.push(`> 当前 \`${LATEST_GRADER_VERSION}\` 占比：**${latestPct}%**（${latestN}/${totalEntries}）`);
-    lines.push(`> 收敛标准 §6 #1：5d-v4 占比 ≥ 80%（当前${parseFloat(latestPct) >= 80 ? " ✅ 达标" : " ⏳ 未达标，需重跑刷新"}）`);
+    lines.push(
+      `> 当前 \`${LATEST_GRADER_VERSION}\` 占比：**${latestPct}%**（${latestN}/${totalEntries}）`,
+    );
+    lines.push(
+      `> 收敛标准 §6 #1：5d-v4 占比 ≥ 80%（当前${parseFloat(latestPct) >= 80 ? " ✅ 达标" : " ⏳ 未达标，需重跑刷新"}）`,
+    );
   }
   lines.push("");
 
@@ -211,7 +222,8 @@ function main(): void {
 
   // §3 失败 / error 列表
   const failed = raw.records.filter(
-    (r) => r.status === "error" || r.status === "timeout" || r.must_not_include_violations.length > 0,
+    (r) =>
+      r.status === "error" || r.status === "timeout" || r.must_not_include_violations.length > 0,
   );
   lines.push("## §3 异常 / 反向违规 case");
   lines.push("");
@@ -234,7 +246,9 @@ function main(): void {
   // §4 人工评分填表入口
   lines.push("## §4 人工评分入口");
   lines.push("");
-  lines.push("跑完 baseline 后，逐条打开 case yaml，按 1-5 锚点制填 `baseline_scores.sid_code_w0.score`：");
+  lines.push(
+    "跑完 baseline 后，逐条打开 case yaml，按 1-5 锚点制填 `baseline_scores.sid_code_w0.score`：",
+  );
   lines.push("");
   lines.push("- 5 = 完全达成 outcome + 锚点全命中 + 输出清晰");
   lines.push("- 4 = 达成 outcome 且 ≥ 2/3 锚点命中（P0 target）");

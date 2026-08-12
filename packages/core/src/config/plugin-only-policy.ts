@@ -22,12 +22,7 @@
 import { getLogger } from "../debug/logger.ts";
 
 /** 可被锁定的定制化面 */
-export type CustomizationSurface =
-  | "commands"
-  | "skills"
-  | "agents"
-  | "hooks"
-  | "mcp-servers";
+export type CustomizationSurface = "commands" | "skills" | "agents" | "hooks" | "mcp-servers";
 
 const ALL_SURFACES: readonly CustomizationSurface[] = [
   "commands",
@@ -57,9 +52,7 @@ let lockedSurfaces = new Set<CustomizationSurface>();
  * 注入锁定策略（cli 启动读 managed settings 后调用）。
  * @param policy true=锁全部；数组=只锁列出的；undefined=不锁
  */
-export function setPluginOnlyPolicy(
-  policy: boolean | CustomizationSurface[] | undefined,
-): void {
+export function setPluginOnlyPolicy(policy: boolean | CustomizationSurface[] | undefined): void {
   if (policy === true) {
     lockedSurfaces = new Set(ALL_SURFACES);
   } else if (Array.isArray(policy)) {

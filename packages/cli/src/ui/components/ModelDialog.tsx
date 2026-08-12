@@ -20,13 +20,19 @@
  * 且数字快捷键会吞掉搜索输入。这里自带一份跳过标题行的窗口滚动逻辑。
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import stringWidth from "string-width";
-import { theme } from '../semantic-colors.ts';
-import { TODO_COMPLETED, ARROW_PROMPT, EFFORT_GLYPHS, SEARCH_MARK, WARNING_MARK } from '../constants/figures.ts';
-import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';
+import { theme } from "../semantic-colors.ts";
+import {
+  TODO_COMPLETED,
+  ARROW_PROMPT,
+  EFFORT_GLYPHS,
+  SEARCH_MARK,
+  WARNING_MARK,
+} from "../constants/figures.ts";
+import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import {
   cycleEffortForModel,
   getSelectableEfforts,
@@ -34,7 +40,7 @@ import {
   type EffortLevel,
   type EffortSetting,
   type ThinkingSetting,
-} from '@sid-code/core/llm/effort.ts';
+} from "@sid-code/core/llm/effort.ts";
 import {
   buildModelRows,
   countModelRows,
@@ -43,7 +49,7 @@ import {
   firstSelectableIndex,
   type ModelOption,
   type ModelRow,
-} from './model-grouping.ts';
+} from "./model-grouping.ts";
 
 interface EffortState {
   runtime: EffortSetting;
@@ -159,9 +165,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
     }
   }, [rows, activeIndex]);
 
-  const safeIndex = rows[activeIndex]?.kind === "model"
-    ? activeIndex
-    : firstSelectableIndex(rows);
+  const safeIndex = rows[activeIndex]?.kind === "model" ? activeIndex : firstSelectableIndex(rows);
 
   const move = (dir: 1 | -1) => {
     const next = nextSelectableIndex(rows, safeIndex, dir);
@@ -170,7 +174,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     // Esc：有查询先清空，否则关闭（渐进退出，不丢状态）
-    if (key.name === 'escape') {
+    if (key.name === "escape") {
       if (query) {
         setQuery("");
       } else {
@@ -179,16 +183,16 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       return true;
     }
 
-    if (key.name === 'up' || (key.ctrl && key.name === 'p')) {
+    if (key.name === "up" || (key.ctrl && key.name === "p")) {
       move(-1);
       return true;
     }
-    if (key.name === 'down' || (key.ctrl && key.name === 'n')) {
+    if (key.name === "down" || (key.ctrl && key.name === "n")) {
       move(1);
       return true;
     }
 
-    if (key.name === 'return' || key.name === 'enter') {
+    if (key.name === "return" || key.name === "enter") {
       const row = rows[safeIndex];
       if (row?.kind === "model") {
         onModelSelect(row.name);
@@ -197,12 +201,16 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       return true;
     }
 
-    if (effortEnabled && (key.name === 'left' || key.name === 'right')) {
+    if (effortEnabled && (key.name === "left" || key.name === "right")) {
       // 以当前生效档位为基准（auto 态取 applied 实际档位），在**该模型可选档位**内循环。
       // 用 cycleEffortForModel 而非全量 5 档的 cycleEffort：后者会切到模型不支持的档
       // （如 o-series 的 xhigh/max），下发时被静默钳制成 high，面板显示与实发不一致。
       const current = resolveDisplayedEffort(effortState);
-      const next = cycleEffortForModel(effortState!.capability, current, key.name === 'right' ? 1 : -1);
+      const next = cycleEffortForModel(
+        effortState!.capability,
+        current,
+        key.name === "right" ? 1 : -1,
+      );
       if (next !== undefined) {
         setEffort?.(next);
         // 立即重读：getEffortState 是命令式回调，不重读则下一次按键仍以旧档位为基准。
@@ -212,12 +220,12 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
     }
 
     // 搜索框输入：backspace 删字，可打印字符入队，即时过滤
-    if (key.name === 'backspace' || key.name === 'delete') {
-      setQuery(q => q.slice(0, -1));
+    if (key.name === "backspace" || key.name === "delete") {
+      setQuery((q) => q.slice(0, -1));
       return true;
     }
     if (key.insertable && !key.ctrl && !key.alt && key.sequence) {
-      setQuery(q => q + key.sequence);
+      setQuery((q) => q + key.sequence);
       return true;
     }
 
@@ -226,8 +234,16 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
   if (availableModels.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>选择模型</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          选择模型
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>未配置可用模型</Text>
         </Box>
@@ -241,16 +257,13 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
   // 名称 / provider 列宽（用 stringWidth 处理 CJK/全角），让右侧各列对齐成列（L2.3）。
   // 按全量模型算而非当前过滤结果——否则打字过滤时列宽会跟着跳动。
-  const nameColWidth = availableModels.reduce(
-    (w, m) => Math.max(w, stringWidth(m.name)),
-    0,
-  );
+  const nameColWidth = availableModels.reduce((w, m) => Math.max(w, stringWidth(m.name)), 0);
   const providerColWidth = availableModels.reduce(
     (w, m) => Math.max(w, stringWidth(m.provider)),
     0,
   );
 
-  const currentOption = availableModels.find(m => m.name === currentModel);
+  const currentOption = availableModels.find((m) => m.name === currentModel);
 
   // effort 展示态：显示当前生效档位 + 字形；auto 态标注跟随默认。
   const effortDisplayLevel = resolveDisplayedEffort(effortState);
@@ -269,9 +282,15 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       paddingY={0}
     >
       <Box>
-        <Text bold color={theme.ui.active}>选择模型</Text>
+        <Text bold color={theme.ui.active}>
+          选择模型
+        </Text>
         <Text color={theme.text.secondary}>
-          {" "}· {query ? `${totalModels}/${availableModels.length} 项匹配` : `${availableModels.length} 个可用`}
+          {" "}
+          ·{" "}
+          {query
+            ? `${totalModels}/${availableModels.length} 项匹配`
+            : `${availableModels.length} 个可用`}
         </Text>
       </Box>
       {currentOption && (
@@ -281,7 +300,10 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
       )}
       {effortEnabled && effortDisplayLevel && (
         <Text color={theme.text.secondary}>
-          推理强度: <Text color={theme.ui.active}>{EFFORT_GLYPHS[effortDisplayLevel]} {effortDisplayLevel}</Text>
+          推理强度:{" "}
+          <Text color={theme.ui.active}>
+            {EFFORT_GLYPHS[effortDisplayLevel]} {effortDisplayLevel}
+          </Text>
           {effortState?.isAuto ? " (auto)" : ""}
           {/* 把「本模型有哪几档」摆出来：用户能自己确认档位是否齐全，
               而不是看到 ←/→ 跳过某档时怀疑面板有 bug（本次问题的直接诱因）。 */}
@@ -332,7 +354,8 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 
       <Box marginTop={1}>
         <Text italic>
-          输入过滤 · ↑↓ 导航 · Enter 切换{effortEnabled ? " · ←/→ 调 effort" : ""} · Esc {query ? "清除" : "取消"}
+          输入过滤 · ↑↓ 导航 · Enter 切换{effortEnabled ? " · ←/→ 调 effort" : ""} · Esc{" "}
+          {query ? "清除" : "取消"}
         </Text>
       </Box>
     </Box>
@@ -352,7 +375,9 @@ const ModelRowView: React.FC<{
   if (row.kind === "header") {
     return (
       <Box>
-        <Text bold color={theme.text.secondary}>{row.label}</Text>
+        <Text bold color={theme.text.secondary}>
+          {row.label}
+        </Text>
         <Text color={theme.text.secondary}> · {row.count}</Text>
       </Box>
     );
@@ -370,19 +395,25 @@ const ModelRowView: React.FC<{
       <Text color={isSelected ? theme.ui.focus : theme.text.primary} bold={isSelected}>
         {row.name}
       </Text>
-      <Text color={theme.text.secondary}>{namePad}{row.provider}</Text>
+      <Text color={theme.text.secondary}>
+        {namePad}
+        {row.provider}
+      </Text>
       {row.endpoint && (
-        <Text color={theme.text.secondary}>{providerPad}{row.endpoint}</Text>
+        <Text color={theme.text.secondary}>
+          {providerPad}
+          {row.endpoint}
+        </Text>
       )}
       {row.note && (
-        <Text color={theme.text.secondary}>{providerPad}— {row.note}</Text>
+        <Text color={theme.text.secondary}>
+          {providerPad}— {row.note}
+        </Text>
       )}
-      {row.isCurrent && (
-        <Text color={theme.ui.active}>  {TODO_COMPLETED} 当前</Text>
-      )}
+      {row.isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
       {row.shadowed && (
         // 同名条目按名切换命中不到，诚实告知而不是让它看着能选（选了会静默切到第一条）
-        <Text color={theme.status.warning}>  {WARNING_MARK} 同名被遮蔽</Text>
+        <Text color={theme.status.warning}> {WARNING_MARK} 同名被遮蔽</Text>
       )}
     </Box>
   );

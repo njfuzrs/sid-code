@@ -12,15 +12,31 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import useApp from "@sid-code/tui-renderer/hooks/use-app.ts";
 import inkInstances from "@sid-code/tui-renderer/instances.ts";
-import { killAllRunningTasks, hasRunningTasks, dismissTerminalTasks, hasDismissableTasks, hasPendingEviction } from "@sid-code/core/task/index.ts";
-import { KeypressProvider, useKeypress, KeypressPriority, type Key } from "./contexts/KeypressContext.tsx";
+import {
+  killAllRunningTasks,
+  hasRunningTasks,
+  dismissTerminalTasks,
+  hasDismissableTasks,
+  hasPendingEviction,
+} from "@sid-code/core/task/index.ts";
+import {
+  KeypressProvider,
+  useKeypress,
+  KeypressPriority,
+  type Key,
+} from "./contexts/KeypressContext.tsx";
 import { KeybindingProvider, useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { AccessibilityProvider } from "./accessibility/AccessibilityContext.tsx";
 import { ScrollProvider, useScrollState } from "./contexts/ScrollProvider.tsx";
 import { TerminalProvider, useTerminalDimensions } from "./contexts/TerminalContext.tsx";
 import { MouseProvider, enableMouseEvents, disableMouseEvents } from "./contexts/MouseContext.tsx";
 import { OverflowProvider } from "./contexts/OverflowContext.tsx";
-import { UIStateProvider, useUIActions, useUIState, TransientMessageType } from "./contexts/UIStateContext.tsx";
+import {
+  UIStateProvider,
+  useUIActions,
+  useUIState,
+  TransientMessageType,
+} from "./contexts/UIStateContext.tsx";
 import { StreamingProvider } from "./contexts/StreamingContext.tsx";
 import { ConfigProvider, type ConfigContextValue } from "./contexts/ConfigContext.tsx";
 import { SessionProvider, type SessionContextValue } from "./contexts/SessionContext.tsx";
@@ -38,7 +54,12 @@ import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { parseShellInput } from "./shell-input.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
-import { messagesToHistoryItems, isPlaceholderMessage, isHiddenFromDisplay, buildStaticItems } from "./history-adapter.ts";
+import {
+  messagesToHistoryItems,
+  isPlaceholderMessage,
+  isHiddenFromDisplay,
+  buildStaticItems,
+} from "./history-adapter.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 // ── 向后兼容导出（供 app.ts 过渡期使用） ──
@@ -52,8 +73,8 @@ export type DisplayItem =
 /** @deprecated 使用 messagesToHistoryItems 替代 */
 export function messagesToDisplayItems(msgs: Message[]): DisplayItem[] {
   return msgs
-    .filter(m => !isHiddenFromDisplay(m))
-    .map(m => ({ kind: "message" as const, message: m }));
+    .filter((m) => !isHiddenFromDisplay(m))
+    .map((m) => ({ kind: "message" as const, message: m }));
 }
 
 // 重新导出供外部使用
@@ -77,15 +98,23 @@ export interface TUICallbacks {
    */
   onNotify?: (id: string, text: string, delayMs: number) => void;
   /** 首次启动引导完成：写 settings.json + 热加载 Provider（见 app.ts） */
-  onCompleteOnboarding?: (result: import("./components/OnboardingDialog.tsx").OnboardingResult) => void;
+  onCompleteOnboarding?: (
+    result: import("./components/OnboardingDialog.tsx").OnboardingResult,
+  ) => void;
   /** MCP 管理器引用（/mcp 交互面板用；稳定引用，非响应式状态） */
   mcpManager?: import("@sid-code/core/mcp/manager.ts").MCPManager;
   /** 会话状态引用（/mcp 面板启用/禁用用；稳定引用） */
   sessionState?: import("@sid-code/core/session/state.ts").SessionState;
   /** 推理强度旋钮 setter（/effort 面板用） */
-  setEffort?: (level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  setEffort?: (
+    level: import("@sid-code/core/llm/effort.ts").EffortSetting,
+    persist?: boolean,
+  ) => void;
   /** 思考开关旋钮 setter（/think 面板用） */
-  setThinking?: (setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  setThinking?: (
+    setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting,
+    persist?: boolean,
+  ) => void;
   /** Vim 输入模式 setter（/vim 命令用）。persist=true 时写 settings.json vimMode。 */
   setVimMode?: (enabled: boolean, persist?: boolean) => void;
   /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
@@ -134,10 +163,7 @@ export interface TUICallbacks {
    * conversation 仅截断对话；code 仅回滚文件、保留对话；conversation-and-code 两者都做。
    * 返回结果供 UI 回显（null=点已失效）。
    */
-  onRewind?: (
-    id: number,
-    mode: RewindUIMode,
-  ) => Promise<RewindResultInfo | null>;
+  onRewind?: (id: number, mode: RewindUIMode) => Promise<RewindResultInfo | null>;
   /**
    * M4：读取当前被跳过的外部 @import 路径（供审批对话框展示）。
    * 空数组表示无待批准的外部导入。
@@ -322,7 +348,10 @@ export interface TUIState {
    * level = 解析后的展示档位；isAuto = 是否 auto 态（未显式设档，跟随模型默认）。
    * 由 App.setEffortRuntime / setModel 经 tuiStateUpdater 推送，派生到 ConfigContext。
    */
-  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null;
+  effortDisplay: {
+    level: import("@sid-code/core/llm/effort.ts").EffortLevel;
+    isAuto: boolean;
+  } | null;
   /**
    * 思考开关展示态（状态栏 thinking 列）。null = 当前模型不支持思考开关（不显示该列）。
    * on = 实际是否开启；isAuto = 是否 auto 态（跟随 provider 默认）。
@@ -377,7 +406,12 @@ export interface TUIState {
   activeDialog: import("../command/types.ts").DialogType | null;
   /** 可用模型列表（对话框用） */
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
-  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
+  availableModels: Array<{
+    name: string;
+    modelId?: string;
+    provider: string;
+    description?: string;
+  }>;
   /** 当前 todo 列表（来自 TodoWrite 工具，供 TUI 面板显示） */
   todos: import("@sid-code/core/tool/todo-write.ts").TodoItem[];
   /** 当前后台任务列表（Shell/Agent，供 TUI 面板实时显示） */
@@ -472,12 +506,27 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       planApprovalRequest: state.planApprovalRequest,
       askUserQuestionRequest: state.askUserQuestionRequest,
     });
-  }, [state.permissionRequest, state.shellConfirmRequest, state.planApprovalRequest, state.askUserQuestionRequest, state.isStreaming, state.isToolExecuting, state.isLoading]);
+  }, [
+    state.permissionRequest,
+    state.shellConfirmRequest,
+    state.planApprovalRequest,
+    state.askUserQuestionRequest,
+    state.isStreaming,
+    state.isToolExecuting,
+    state.isLoading,
+  ]);
   // 同步到 ref，供 handleSubmit 闭包读取最新流式态
   streamingStateRef.current = streamingState;
   const log = getLogger();
   const { getScrollState } = useScrollState();
-  const { toggleRenderMarkdown, cycleExpandLevel, setShowIsExpandableHint, setCtrlCPressedOnce, toggleTaskPanel, showTransientMessage } = useUIActions();
+  const {
+    toggleRenderMarkdown,
+    cycleExpandLevel,
+    setShowIsExpandableHint,
+    setCtrlCPressedOnce,
+    toggleTaskPanel,
+    showTransientMessage,
+  } = useUIActions();
   const { ctrlCPressedOnce, expandLevel } = useUIState();
   const { matchBinding } = useKeybindings();
 
@@ -492,16 +541,26 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     log.info("UI:APP", "TUIApp 组件已挂载（Alternate Buffer 模式）");
 
     // 启动延迟预取（首屏渲染完成后后台预热）
-    import("../entrypoints/deferred-prefetch.ts").then(({ startDeferredPrefetches }) => {
-      startDeferredPrefetches(true);
-    }).catch(() => { /* 静默失败 */ });
+    import("../entrypoints/deferred-prefetch.ts")
+      .then(({ startDeferredPrefetches }) => {
+        startDeferredPrefetches(true);
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
 
     // 标记首屏渲染完成
-    import("@sid-code/shared/utils/startup-profiler.ts").then(({ profileCheckpoint }) => {
-      profileCheckpoint("render_complete");
-    }).catch(() => { /* 静默失败 */ });
+    import("@sid-code/shared/utils/startup-profiler.ts")
+      .then(({ profileCheckpoint }) => {
+        profileCheckpoint("render_complete");
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
 
-    return () => { log.info("UI:APP", "TUIApp 组件已卸载"); };
+    return () => {
+      log.info("UI:APP", "TUIApp 组件已卸载");
+    };
   }, []);
 
   // 事件驱动状态同步
@@ -510,7 +569,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       setState(newState);
     };
     bridge.on("change", onChange);
-    return () => { bridge.off("change", onChange); };
+    return () => {
+      bridge.off("change", onChange);
+    };
   }, [bridge]);
 
   // 后台任务面板驱逐兜底：独立于主循环的 1s 定时器（对标 claude-code
@@ -538,7 +599,9 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const timer = setInterval(() => {
       import("@sid-code/core/task/index.ts")
         .then(({ evictTerminalTasks }) => evictTerminalTasks())
-        .catch(() => { /* 驱逐兜底失败不影响 UI */ });
+        .catch(() => {
+          /* 驱逐兜底失败不影响 UI */
+        });
     }, 1000);
     return () => clearInterval(timer);
   }, [hasTerminalTask]);
@@ -602,14 +665,20 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       abortResetTimerRef.current = null;
     }
 
-    log.info("UI:APP", ctrlCPressedOnce ? "用户二次按下 Ctrl+C，退出" : "用户按下 Ctrl+C，提示再按一次退出");
+    log.info(
+      "UI:APP",
+      ctrlCPressedOnce ? "用户二次按下 Ctrl+C，退出" : "用户按下 Ctrl+C，提示再按一次退出",
+    );
     pressCtrlC();
     return true;
   });
   // 卸载时清理 abort 重置定时器
-  useEffect(() => () => {
-    if (abortResetTimerRef.current) clearTimeout(abortResetTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (abortResetTimerRef.current) clearTimeout(abortResetTimerRef.current);
+    },
+    [],
+  );
 
   // 退出确认态下，用户按任意「非 Ctrl+C」可见字符键 → 立即取消退出意图（对标 ExitWarning「或继续输入以取消」）。
   // 放在 Critical 之后、其它 handler 之前；只取消、不消费按键（return false），让字符照常进输入框。
@@ -680,7 +749,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     if (st && !st.capability.supportsThinkingToggle) {
       log.info("UI:APP", "Alt+T：当前模型不支持思考开关，忽略");
       // 走 onNotify（app.ts 的 Map 通道），不直写 statusMessage——详见 TUICallbacks.onNotify 注释。
-      callbacks.onNotify?.("thinking_toggle", "当前模型不支持显式思考开关（思考由模型自身决定）", 2500);
+      callbacks.onNotify?.(
+        "thinking_toggle",
+        "当前模型不支持显式思考开关（思考由模型自身决定）",
+        2500,
+      );
       return true;
     }
 
@@ -688,7 +761,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const next: import("@sid-code/core/llm/effort.ts").ThinkingSetting = st?.applied ? "off" : "on";
     setThinking(next, /* persist */ true);
     log.info("UI:APP", `Alt+T：切换扩展思考 → ${next}`);
-    callbacks.onNotify?.("thinking_toggle", next === "on" ? "已开启扩展思考" : "已关闭扩展思考", 2000);
+    callbacks.onNotify?.(
+      "thinking_toggle",
+      next === "on" ? "已开启扩展思考" : "已关闭扩展思考",
+      2000,
+    );
     return true;
   });
 
@@ -739,7 +816,10 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     if (!hasRunningTasks()) return false;
     if (killAllConfirmRef.current) {
       // 二次确认：真正终止
-      if (killAllTimerRef.current) { clearTimeout(killAllTimerRef.current); killAllTimerRef.current = null; }
+      if (killAllTimerRef.current) {
+        clearTimeout(killAllTimerRef.current);
+        killAllTimerRef.current = null;
+      }
       killAllConfirmRef.current = false;
       const n = killAllRunningTasks();
       log.info("UI:APP", `Ctrl+F：已终止 ${n} 个后台任务`);
@@ -756,9 +836,12 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     }, 3000);
     return true;
   });
-  useEffect(() => () => {
-    if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
+    },
+    [],
+  );
 
   // Ctrl+X 从面板划掉已完成的后台任务（对标 cc stopOrDismissAgent 的 dismiss 分支）：
   // 缓冲期（30s）的意义是"任务刚完成后留个窗口让用户回看"，但用户已经看完时它就是纯等待。
@@ -795,12 +878,16 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     // onBackgroundCurrent 是 async（内部要动态 import bash.ts 拿 requestDetachForegroundBash），
     // 而 useKeypress handler 必须同步返回"本次按键是否已消费"——先返回 true（忙态下 Ctrl+B
     // 语义上已被本键接管，不再放行给输入框），转后台结果异步 then 回来后再展示提示。
-    callbacks.onBackgroundCurrent?.()
+    callbacks
+      .onBackgroundCurrent?.()
       .then((msg) => {
         if (msg) showTransientMessage(msg, TransientMessageType.Info);
       })
       .catch((err) => {
-        log.warn("UI:APP", `Ctrl+B 转后台失败: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(
+          "UI:APP",
+          `Ctrl+B 转后台失败: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     return true;
   });
@@ -828,9 +915,12 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return false;
   });
   // 卸载时清理定时器
-  useEffect(() => () => {
-    if (showHintTimerRef.current) clearTimeout(showHintTimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (showHintTimerRef.current) clearTimeout(showHintTimerRef.current);
+    },
+    [],
+  );
 
   // 思考块折叠状态跟随 expandLevel 同步：level=0 折叠，≥1 展开。
   // 用 useEffect 保证单一事实源，消除三值/二值周期不对齐问题。
@@ -893,21 +983,27 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
 
   // 底层分发：真正把一条输入送到 App 业务层（Shell / 斜杠命令 / 普通输入）。
   // 被 handleSubmit（直送）与消息队列（接续）共用。
-  const dispatchInput = useCallback(async (text: string) => {
-    log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
-    const shellCommand = parseShellInput(text);
-    if (shellCommand) {
-      await callbacks.onShellCommand(shellCommand);
-      return;
-    }
-    if (text.startsWith("/")) {
-      const [cmd, ...rest] = text.slice(1).split(" ");
-      if (cmd === "exit" || cmd === "quit") { triggerQuit(); return; }
-      await callbacks.onSlashCommand(cmd, rest.join(" "));
-    } else {
-      await callbacks.onUserInput(text);
-    }
-  }, [callbacks]);
+  const dispatchInput = useCallback(
+    async (text: string) => {
+      log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
+      const shellCommand = parseShellInput(text);
+      if (shellCommand) {
+        await callbacks.onShellCommand(shellCommand);
+        return;
+      }
+      if (text.startsWith("/")) {
+        const [cmd, ...rest] = text.slice(1).split(" ");
+        if (cmd === "exit" || cmd === "quit") {
+          triggerQuit();
+          return;
+        }
+        await callbacks.onSlashCommand(cmd, rest.join(" "));
+      } else {
+        await callbacks.onUserInput(text);
+      }
+    },
+    [callbacks],
+  );
 
   // 多条输入排队：流式响应中提交的普通输入入队，当前轮结束（Idle）后自动接续。
   // 对标 cc 的 now>next>later——这里实现 next（用户输入排队），系统通知不抢占。
@@ -920,33 +1016,33 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
    * 提交输入。P1-G6：priority 由 InputArea 透传（裸 Enter=next / Alt+N=now / Alt+L=later），
    * 仅在流式中入队时生效；空闲态直送不入队，优先级无意义。
    */
-  const handleSubmit = useCallback(async (
-    text: string,
-    priority: "now" | "next" | "later" = "next",
-  ) => {
-    log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
-    if (isSubmittingRef.current) return;
+  const handleSubmit = useCallback(
+    async (text: string, priority: "now" | "next" | "later" = "next") => {
+      log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
+      if (isSubmittingRef.current) return;
 
-    // 用户提交输入 → 取消任何待确认的 Ctrl+C 退出意图（对标 cc：继续操作即视为放弃退出）。
-    cancelCtrlCConfirm();
+      // 用户提交输入 → 取消任何待确认的 Ctrl+C 退出意图（对标 cc：继续操作即视为放弃退出）。
+      cancelCtrlCConfirm();
 
-    // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
-    const busy = streamingStateRef.current !== StreamingState.Idle;
-    if (busy && !text.startsWith("/")) {
-      log.info("UI:INPUT", `流式中，输入入队等待接续（${priority}）`);
-      enqueue(text, priority);
-      return;
-    }
+      // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
+      const busy = streamingStateRef.current !== StreamingState.Idle;
+      if (busy && !text.startsWith("/")) {
+        log.info("UI:INPUT", `流式中，输入入队等待接续（${priority}）`);
+        enqueue(text, priority);
+        return;
+      }
 
-    isSubmittingRef.current = true;
-    try {
-      await dispatchInput(text);
-    } catch (err: any) {
-      log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message });
-    } finally {
-      isSubmittingRef.current = false;
-    }
-  }, [dispatchInput, enqueue, cancelCtrlCConfirm]);
+      isSubmittingRef.current = true;
+      try {
+        await dispatchInput(text);
+      } catch (err: any) {
+        log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message });
+      } finally {
+        isSubmittingRef.current = false;
+      }
+    },
+    [dispatchInput, enqueue, cancelCtrlCConfirm],
+  );
 
   const isEmpty = state.historyItems.length === 0 && !state.isStreaming;
   // 使用响应式终端尺寸（resize 时自动触发重渲染）
@@ -963,33 +1059,62 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   useTerminalIntegration({ streamingState, titleHint });
 
   // 派生 ConfigContext 值
-  const configValue = useMemo((): ConfigContextValue => ({
-    model: state.model,
-    provider: state.provider,
-    permissionMode: state.permissionMode,
-    isPlanMode: state.isPlanMode,
-    gitBranch: state.gitBranch,
-    debug: state.debug,
-    cwd: state.cwd,
-    commands: state.commands,
-    availableModels: state.availableModels,
-    effortDisplay: state.effortDisplay,
-    thinkingDisplay: state.thinkingDisplay,
-    goalDisplay: state.goalDisplay,
-    vimMode: state.vimMode,
-    statusLine: state.statusLine,
-  }), [state.model, state.provider, state.permissionMode, state.isPlanMode, state.gitBranch, state.debug, state.cwd, state.commands, state.availableModels, state.effortDisplay, state.thinkingDisplay, state.goalDisplay, state.vimMode, state.statusLine]);
+  const configValue = useMemo(
+    (): ConfigContextValue => ({
+      model: state.model,
+      provider: state.provider,
+      permissionMode: state.permissionMode,
+      isPlanMode: state.isPlanMode,
+      gitBranch: state.gitBranch,
+      debug: state.debug,
+      cwd: state.cwd,
+      commands: state.commands,
+      availableModels: state.availableModels,
+      effortDisplay: state.effortDisplay,
+      thinkingDisplay: state.thinkingDisplay,
+      goalDisplay: state.goalDisplay,
+      vimMode: state.vimMode,
+      statusLine: state.statusLine,
+    }),
+    [
+      state.model,
+      state.provider,
+      state.permissionMode,
+      state.isPlanMode,
+      state.gitBranch,
+      state.debug,
+      state.cwd,
+      state.commands,
+      state.availableModels,
+      state.effortDisplay,
+      state.thinkingDisplay,
+      state.goalDisplay,
+      state.vimMode,
+      state.statusLine,
+    ],
+  );
 
   // 派生 SessionContext 值
-  const sessionValue = useMemo((): SessionContextValue => ({
-    usage: state.usage,
-    costUSD: state.costUSD,
-    costLimit: state.costLimit,
-    contextPercent: state.contextPercent,
-    contextTriggerPercent: state.contextTriggerPercent,
-    contextLevel: state.contextLevel,
-    turnStartOutputTokens: state.turnStartOutputTokens,
-  }), [state.usage, state.costUSD, state.costLimit, state.contextPercent, state.contextTriggerPercent, state.contextLevel, state.turnStartOutputTokens]);
+  const sessionValue = useMemo(
+    (): SessionContextValue => ({
+      usage: state.usage,
+      costUSD: state.costUSD,
+      costLimit: state.costLimit,
+      contextPercent: state.contextPercent,
+      contextTriggerPercent: state.contextTriggerPercent,
+      contextLevel: state.contextLevel,
+      turnStartOutputTokens: state.turnStartOutputTokens,
+    }),
+    [
+      state.usage,
+      state.costUSD,
+      state.costLimit,
+      state.contextPercent,
+      state.contextTriggerPercent,
+      state.contextLevel,
+      state.turnStartOutputTokens,
+    ],
+  );
 
   // 构建包含流式内容的完整 HistoryItem 数组
   const listData = useMemo((): HistoryItem[] => {
@@ -1045,7 +1170,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return state.historyItems;
   }, [state.historyItems]);
   const staticItems = useMemo(
-    (): HistoryItem[] => buildStaticItems(stableHistoryItems, require("../../package.json").version),
+    (): HistoryItem[] =>
+      buildStaticItems(stableHistoryItems, require("../../package.json").version),
     [stableHistoryItems],
   );
 
@@ -1056,34 +1182,37 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   }, []);
 
   // 高度估算
-  const estimatedItemHeight = useCallback((index: number): number => {
-    const item = listData[index];
-    if (!item) return 1;
+  const estimatedItemHeight = useCallback(
+    (index: number): number => {
+      const item = listData[index];
+      if (!item) return 1;
 
-    if (item.id === STREAMING_ITEM_ID) {
-      const effectiveWidth = Math.max(1, termWidth - 12);
-      return Math.max(1, Math.ceil((state.streamingText?.length || 0) / effectiveWidth));
-    }
-
-    switch (item.type) {
-      case "app_header":
-        return 10; // Logo + 版本 + Tip + margins
-      case "user":
-      case "command":
-        return Math.max(1, Math.ceil((item.text?.length || 0) / Math.max(1, termWidth - 12)));
-      case "assistant":
-      case "assistant_content": {
+      if (item.id === STREAMING_ITEM_ID) {
         const effectiveWidth = Math.max(1, termWidth - 12);
-        return Math.max(1, Math.ceil(((item.text?.length || 0) * 1.3) / effectiveWidth));
+        return Math.max(1, Math.ceil((state.streamingText?.length || 0) / effectiveWidth));
       }
-      case "tool_group":
-        return item.tools.length * 2;
-      case "thinking":
-        return Math.max(2, (item.thought.text?.split("\n").length || 0) + 1);
-      default:
-        return 1;
-    }
-  }, [listData, termWidth, state.streamingText]);
+
+      switch (item.type) {
+        case "app_header":
+          return 10; // Logo + 版本 + Tip + margins
+        case "user":
+        case "command":
+          return Math.max(1, Math.ceil((item.text?.length || 0) / Math.max(1, termWidth - 12)));
+        case "assistant":
+        case "assistant_content": {
+          const effectiveWidth = Math.max(1, termWidth - 12);
+          return Math.max(1, Math.ceil(((item.text?.length || 0) * 1.3) / effectiveWidth));
+        }
+        case "tool_group":
+          return item.tools.length * 2;
+        case "thinking":
+          return Math.max(2, (item.thought.text?.split("\n").length || 0) + 1);
+        default:
+          return 1;
+      }
+    },
+    [listData, termWidth, state.streamingText],
+  );
 
   // 获取滚动百分比
   const scrollState = getScrollState();
@@ -1098,20 +1227,26 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ errorPanel: [] });
   }, [bridge]);
 
-  const handleModelSelect = useCallback((modelName: string) => {
-    // 通过斜杠命令切换模型（复用已有逻辑）。附加 -p 持久化到 settings.json：
-    // 对话框选择是用户主动、有意的模型选择（区别于临时试用），理应跨会话保留——
-    // 这正是"切了模型重开却回退"痛点的正解。命令行快捷切换仍默认不持久化，需显式 -p。
-    callbacks.onSlashCommand("model", `${modelName} -p`);
-    bridge.update({ activeDialog: null });
-  }, [callbacks, bridge]);
+  const handleModelSelect = useCallback(
+    (modelName: string) => {
+      // 通过斜杠命令切换模型（复用已有逻辑）。附加 -p 持久化到 settings.json：
+      // 对话框选择是用户主动、有意的模型选择（区别于临时试用），理应跨会话保留——
+      // 这正是"切了模型重开却回退"痛点的正解。命令行快捷切换仍默认不持久化，需显式 -p。
+      callbacks.onSlashCommand("model", `${modelName} -p`);
+      bridge.update({ activeDialog: null });
+    },
+    [callbacks, bridge],
+  );
 
-  const handleThemeSelect = useCallback((themeName: string) => {
-    // 附加 -p 持久化：对话框选主题是用户主动、有意的偏好选择，理应跨会话保留
-    // （与 handleModelSelect 同构）。命令行 /theme <name> 仍默认不持久化，需显式 -p。
-    callbacks.onSlashCommand("theme", `${themeName} -p`);
-    bridge.update({ activeDialog: null });
-  }, [callbacks, bridge]);
+  const handleThemeSelect = useCallback(
+    (themeName: string) => {
+      // 附加 -p 持久化：对话框选主题是用户主动、有意的偏好选择，理应跨会话保留
+      // （与 handleModelSelect 同构）。命令行 /theme <name> 仍默认不持久化，需显式 -p。
+      callbacks.onSlashCommand("theme", `${themeName} -p`);
+      bridge.update({ activeDialog: null });
+    },
+    [callbacks, bridge],
+  );
 
   const handleLanguageSelect = useCallback(
     (choice: import("./components/LanguageDialog.tsx").LanguageChoice) => {
@@ -1187,144 +1322,143 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // ── 固定高度布局 ──
   return (
     <ConfigProvider value={configValue}>
-    <SessionProvider value={sessionValue}>
-    <StreamingProvider
-      streamingState={streamingState}
-      streamingText={state.streamingText}
-      streamingThinking={state.streamingThinking}
-      toolName={state.toolName}
-      toolInput={state.toolInput}
-      isToolExecuting={state.isToolExecuting}
-      lastToolResult={state.lastToolResult}
-      statusMessage={state.statusMessage}
-    >
-      {alternateBuffer ? (
-        <DefaultAppLayout
-          listData={listData}
+      <SessionProvider value={sessionValue}>
+        <StreamingProvider
+          streamingState={streamingState}
           streamingText={state.streamingText}
           streamingThinking={state.streamingThinking}
-          streamingThinkingStartMs={state.streamingThinkingStartMs}
-          thinkCollapsed={thinkCollapsed}
-          isStreaming={state.isStreaming}
-          isEmpty={isEmpty}
-          termWidth={termWidth}
-          rows={rows}
-          estimatedItemHeight={estimatedItemHeight}
-          keyExtractor={keyExtractor}
-          copyModeEnabled={state.copyModeEnabled}
+          toolName={state.toolName}
+          toolInput={state.toolInput}
+          isToolExecuting={state.isToolExecuting}
+          lastToolResult={state.lastToolResult}
           statusMessage={state.statusMessage}
-          retryStatus={state.retryStatus}
-          errorPanel={state.errorPanel}
-          onDismissErrorPanel={handleDismissErrorPanel}
-          permissionRequest={state.permissionRequest}
-          shellConfirmRequest={state.shellConfirmRequest}
-          planApprovalRequest={state.planApprovalRequest}
-          askUserQuestionRequest={state.askUserQuestionRequest}
-          isLoading={state.isLoading}
-          commands={state.commands}
-          cwd={state.cwd}
-          onSubmit={handleSubmit}
-          queuedCount={queueLength}
-          queuedByPriority={queuedByPriority}
-          onPopQueuedForEdit={popLastForEdit}
-          onExitRequest={triggerQuit}
-          onCyclePermissionMode={handleCyclePermissionMode}
-          permissionMode={state.permissionMode}
-          isPlanMode={state.isPlanMode}
-          gitBranch={state.gitBranch}
-          debug={state.debug}
-          usage={state.usage}
-          stockInputTokens={state.stockInputTokens}
-          costUSD={state.costUSD}
-          cacheSavingsUSD={state.cacheSavingsUSD}
-          costLimit={state.costLimit}
-          contextPercent={state.contextPercent}
-          contextTriggerPercent={state.contextTriggerPercent}
-          contextLevel={state.contextLevel}
-          model={state.model}
-          scrollPercent={scrollPercent}
-          activeDialog={state.activeDialog}
-          onDialogClose={handleDialogClose}
-          availableModels={availableModels}
-          onModelSelect={handleModelSelect}
-          availableThemes={availableThemes}
-          currentTheme={currentTheme}
-          onThemeSelect={handleThemeSelect}
-          onLanguageSelect={handleLanguageSelect}
-          onCompleteOnboarding={handleCompleteOnboarding}
-          mcpManager={callbacks.mcpManager}
-          sessionState={callbacks.sessionState}
-          callbacks={callbacks}
-          provider={state.provider}
-          todos={state.todos}
-          tasks={state.tasks}
-          startupWarnings={state.startupWarnings}
-        />
-      ) : (
-        <MainScreenLayout
-          staticItems={staticItems}
-          streamingText={state.streamingText}
-          streamingThinking={state.streamingThinking}
-          streamingThinkingStartMs={state.streamingThinkingStartMs}
-          thinkCollapsed={thinkCollapsed}
-          isStreaming={state.isStreaming}
-          isEmpty={isEmpty}
-          termWidth={termWidth}
-          keyExtractor={keyExtractor}
-          statusMessage={state.statusMessage}
-          retryStatus={state.retryStatus}
-          errorPanel={state.errorPanel}
-          onDismissErrorPanel={handleDismissErrorPanel}
-          permissionRequest={state.permissionRequest}
-          shellConfirmRequest={state.shellConfirmRequest}
-          planApprovalRequest={state.planApprovalRequest}
-          askUserQuestionRequest={state.askUserQuestionRequest}
-          isLoading={state.isLoading}
-          commands={state.commands}
-          cwd={state.cwd}
-          onSubmit={handleSubmit}
-          queuedCount={queueLength}
-          queuedByPriority={queuedByPriority}
-          onPopQueuedForEdit={popLastForEdit}
-          onExitRequest={triggerQuit}
-          onCyclePermissionMode={handleCyclePermissionMode}
-          permissionMode={state.permissionMode}
-          isPlanMode={state.isPlanMode}
-          gitBranch={state.gitBranch}
-          debug={state.debug}
-          usage={state.usage}
-          stockInputTokens={state.stockInputTokens}
-          costUSD={state.costUSD}
-          cacheSavingsUSD={state.cacheSavingsUSD}
-          costLimit={state.costLimit}
-          contextPercent={state.contextPercent}
-          contextTriggerPercent={state.contextTriggerPercent}
-          contextLevel={state.contextLevel}
-          model={state.model}
-          activeDialog={state.activeDialog}
-          onDialogClose={handleDialogClose}
-          availableModels={availableModels}
-          onModelSelect={handleModelSelect}
-          availableThemes={availableThemes}
-          currentTheme={currentTheme}
-          onThemeSelect={handleThemeSelect}
-          onLanguageSelect={handleLanguageSelect}
-          onCompleteOnboarding={handleCompleteOnboarding}
-          mcpManager={callbacks.mcpManager}
-          sessionState={callbacks.sessionState}
-          callbacks={callbacks}
-          provider={state.provider}
-          todos={state.todos}
-          tasks={state.tasks}
-          startupWarnings={state.startupWarnings}
-        />
-      )}
-    </StreamingProvider>
-    </SessionProvider>
+        >
+          {alternateBuffer ? (
+            <DefaultAppLayout
+              listData={listData}
+              streamingText={state.streamingText}
+              streamingThinking={state.streamingThinking}
+              streamingThinkingStartMs={state.streamingThinkingStartMs}
+              thinkCollapsed={thinkCollapsed}
+              isStreaming={state.isStreaming}
+              isEmpty={isEmpty}
+              termWidth={termWidth}
+              rows={rows}
+              estimatedItemHeight={estimatedItemHeight}
+              keyExtractor={keyExtractor}
+              copyModeEnabled={state.copyModeEnabled}
+              statusMessage={state.statusMessage}
+              retryStatus={state.retryStatus}
+              errorPanel={state.errorPanel}
+              onDismissErrorPanel={handleDismissErrorPanel}
+              permissionRequest={state.permissionRequest}
+              shellConfirmRequest={state.shellConfirmRequest}
+              planApprovalRequest={state.planApprovalRequest}
+              askUserQuestionRequest={state.askUserQuestionRequest}
+              isLoading={state.isLoading}
+              commands={state.commands}
+              cwd={state.cwd}
+              onSubmit={handleSubmit}
+              queuedCount={queueLength}
+              queuedByPriority={queuedByPriority}
+              onPopQueuedForEdit={popLastForEdit}
+              onExitRequest={triggerQuit}
+              onCyclePermissionMode={handleCyclePermissionMode}
+              permissionMode={state.permissionMode}
+              isPlanMode={state.isPlanMode}
+              gitBranch={state.gitBranch}
+              debug={state.debug}
+              usage={state.usage}
+              stockInputTokens={state.stockInputTokens}
+              costUSD={state.costUSD}
+              cacheSavingsUSD={state.cacheSavingsUSD}
+              costLimit={state.costLimit}
+              contextPercent={state.contextPercent}
+              contextTriggerPercent={state.contextTriggerPercent}
+              contextLevel={state.contextLevel}
+              model={state.model}
+              scrollPercent={scrollPercent}
+              activeDialog={state.activeDialog}
+              onDialogClose={handleDialogClose}
+              availableModels={availableModels}
+              onModelSelect={handleModelSelect}
+              availableThemes={availableThemes}
+              currentTheme={currentTheme}
+              onThemeSelect={handleThemeSelect}
+              onLanguageSelect={handleLanguageSelect}
+              onCompleteOnboarding={handleCompleteOnboarding}
+              mcpManager={callbacks.mcpManager}
+              sessionState={callbacks.sessionState}
+              callbacks={callbacks}
+              provider={state.provider}
+              todos={state.todos}
+              tasks={state.tasks}
+              startupWarnings={state.startupWarnings}
+            />
+          ) : (
+            <MainScreenLayout
+              staticItems={staticItems}
+              streamingText={state.streamingText}
+              streamingThinking={state.streamingThinking}
+              streamingThinkingStartMs={state.streamingThinkingStartMs}
+              thinkCollapsed={thinkCollapsed}
+              isStreaming={state.isStreaming}
+              isEmpty={isEmpty}
+              termWidth={termWidth}
+              keyExtractor={keyExtractor}
+              statusMessage={state.statusMessage}
+              retryStatus={state.retryStatus}
+              errorPanel={state.errorPanel}
+              onDismissErrorPanel={handleDismissErrorPanel}
+              permissionRequest={state.permissionRequest}
+              shellConfirmRequest={state.shellConfirmRequest}
+              planApprovalRequest={state.planApprovalRequest}
+              askUserQuestionRequest={state.askUserQuestionRequest}
+              isLoading={state.isLoading}
+              commands={state.commands}
+              cwd={state.cwd}
+              onSubmit={handleSubmit}
+              queuedCount={queueLength}
+              queuedByPriority={queuedByPriority}
+              onPopQueuedForEdit={popLastForEdit}
+              onExitRequest={triggerQuit}
+              onCyclePermissionMode={handleCyclePermissionMode}
+              permissionMode={state.permissionMode}
+              isPlanMode={state.isPlanMode}
+              gitBranch={state.gitBranch}
+              debug={state.debug}
+              usage={state.usage}
+              stockInputTokens={state.stockInputTokens}
+              costUSD={state.costUSD}
+              cacheSavingsUSD={state.cacheSavingsUSD}
+              costLimit={state.costLimit}
+              contextPercent={state.contextPercent}
+              contextTriggerPercent={state.contextTriggerPercent}
+              contextLevel={state.contextLevel}
+              model={state.model}
+              activeDialog={state.activeDialog}
+              onDialogClose={handleDialogClose}
+              availableModels={availableModels}
+              onModelSelect={handleModelSelect}
+              availableThemes={availableThemes}
+              currentTheme={currentTheme}
+              onThemeSelect={handleThemeSelect}
+              onLanguageSelect={handleLanguageSelect}
+              onCompleteOnboarding={handleCompleteOnboarding}
+              mcpManager={callbacks.mcpManager}
+              sessionState={callbacks.sessionState}
+              callbacks={callbacks}
+              provider={state.provider}
+              todos={state.todos}
+              tasks={state.tasks}
+              startupWarnings={state.startupWarnings}
+            />
+          )}
+        </StreamingProvider>
+      </SessionProvider>
     </ConfigProvider>
   );
 }
-
 
 /** 顶层 TUI 组件：包裹 Provider 层 */
 export function TUIApp(props: AppProps) {
@@ -1345,7 +1479,10 @@ export function TUIApp(props: AppProps) {
   return (
     <TerminalProvider>
       <KeypressProvider>
-        <MouseProvider mouseEventsEnabled={props.alternateBuffer === true} onSelectionWarning={handleSelectionWarning}>
+        <MouseProvider
+          mouseEventsEnabled={props.alternateBuffer === true}
+          onSelectionWarning={handleSelectionWarning}
+        >
           <ScrollProvider>
             <OverflowProvider>
               <SettingsProvider>

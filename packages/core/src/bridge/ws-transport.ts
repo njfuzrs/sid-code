@@ -44,9 +44,15 @@ export class WebSocketBridgeTransport implements BridgeTransport {
     });
   }
 
-  setOnData(callback: (data: string) => void): void { this.onDataCb = callback; }
-  setOnClose(callback: (code?: number) => void): void { this.onCloseCb = callback; }
-  setOnConnect(callback: () => void): void { this.onConnectCb = callback; }
+  setOnData(callback: (data: string) => void): void {
+    this.onDataCb = callback;
+  }
+  setOnClose(callback: (code?: number) => void): void {
+    this.onCloseCb = callback;
+  }
+  setOnConnect(callback: () => void): void {
+    this.onConnectCb = callback;
+  }
 
   async connect(): Promise<void> {
     this.closedByUser = false;
@@ -67,9 +73,7 @@ export class WebSocketBridgeTransport implements BridgeTransport {
       };
 
       this.ws.onmessage = (event: MessageEvent) => {
-        const data = typeof event.data === "string"
-          ? event.data
-          : String(event.data);
+        const data = typeof event.data === "string" ? event.data : String(event.data);
         this.onDataCb?.(data);
       };
 
@@ -104,11 +108,16 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   getStateLabel(): string {
     if (!this.ws) return "disconnected";
     switch (this.ws.readyState) {
-      case WebSocket.CONNECTING: return "connecting";
-      case WebSocket.OPEN: return "connected";
-      case WebSocket.CLOSING: return "closing";
-      case WebSocket.CLOSED: return "closed";
-      default: return "unknown";
+      case WebSocket.CONNECTING:
+        return "connecting";
+      case WebSocket.OPEN:
+        return "connected";
+      case WebSocket.CLOSING:
+        return "closing";
+      case WebSocket.CLOSED:
+        return "closed";
+      default:
+        return "unknown";
     }
   }
 
@@ -121,7 +130,9 @@ export class WebSocketBridgeTransport implements BridgeTransport {
     this.stopHeartbeat();
     this.stopFlushTimer();
     this.uploader.stop();
-    try { this.ws?.close(1000, "客户端主动关闭"); } catch {}
+    try {
+      this.ws?.close(1000, "客户端主动关闭");
+    } catch {}
     this.ws = undefined;
   }
 
@@ -141,14 +152,21 @@ export class WebSocketBridgeTransport implements BridgeTransport {
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
         try {
-          this.ws.send(JSON.stringify({ type: "status", data: { ping: true }, timestamp: Date.now() }));
-        } catch { /* 忽略 */ }
+          this.ws.send(
+            JSON.stringify({ type: "status", data: { ping: true }, timestamp: Date.now() }),
+          );
+        } catch {
+          /* 忽略 */
+        }
       }
     }, HEARTBEAT_INTERVAL_MS);
   }
 
   private stopHeartbeat(): void {
-    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = undefined; }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 
   private startFlushTimer(): void {
@@ -156,7 +174,10 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   }
 
   private stopFlushTimer(): void {
-    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = undefined; }
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = undefined;
+    }
   }
 
   private async attemptReconnect(): Promise<void> {
@@ -166,10 +187,9 @@ export class WebSocketBridgeTransport implements BridgeTransport {
     let attempt = 0;
     while (Date.now() - this.reconnectStartTime < RECONNECT_GIVE_UP_MS && !this.closedByUser) {
       attempt++;
-      const delay = Math.min(
-        RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1),
-        RECONNECT_MAX_DELAY_MS,
-      ) * (0.8 + Math.random() * 0.4); // 抖动避免惊群
+      const delay =
+        Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt - 1), RECONNECT_MAX_DELAY_MS) *
+        (0.8 + Math.random() * 0.4); // 抖动避免惊群
 
       getLogger().info("BRIDGE", `重连尝试 #${attempt}，等待 ${Math.round(delay)}ms`);
       await new Promise((r) => setTimeout(r, delay));

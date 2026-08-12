@@ -118,7 +118,10 @@ function buildSystemPrompt(opts: { withSkill: boolean }): SkillPrompt {
 // 静态契约校验（默认模式，不调 LLM）
 // ============================================================
 
-function staticContractCheck(cases: GovCase[], skillPrompt: SkillPrompt): {
+function staticContractCheck(
+  cases: GovCase[],
+  skillPrompt: SkillPrompt,
+): {
   results: Array<{
     id: string;
     contractIssues: string[];
@@ -303,7 +306,10 @@ async function executeCase(c: GovCase, skillPrompt: SkillPrompt): Promise<Execut
   }
 }
 
-function gradeExecuteResult(c: GovCase, r: ExecuteResult): {
+function gradeExecuteResult(
+  c: GovCase,
+  r: ExecuteResult,
+): {
   score: number;
   details: Record<string, string | number | boolean>;
 } {
@@ -312,7 +318,10 @@ function gradeExecuteResult(c: GovCase, r: ExecuteResult): {
   let dimScore = 5;
 
   if (r.error || r.timedOut) {
-    return { score: 0, details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus } };
+    return {
+      score: 0,
+      details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus },
+    };
   }
 
   // 1. must_include_any_of
@@ -385,7 +394,9 @@ function syncBaselineScores(
       [`_ts`]: Date.now(),
     };
     writeFileSync(filePath, stringifyYaml(doc, { lineWidth: 120 }));
-    console.log(`  [sync] ${c.id} → baseline_scores.rubric_5d_${values.skill ? "after" : "before"} = ${s.median}`);
+    console.log(
+      `  [sync] ${c.id} → baseline_scores.rubric_5d_${values.skill ? "after" : "before"} = ${s.median}`,
+    );
   }
 }
 
@@ -396,15 +407,21 @@ function syncBaselineScores(
 async function main() {
   const cases = loadCases();
   if (cases.length === 0) {
-    console.error("✗ 未找到 code-governance case (期望 packages/core/src/skill/builtin/code-governance/evals/case_gov_*.yaml)");
+    console.error(
+      "✗ 未找到 code-governance case (期望 packages/core/src/skill/builtin/code-governance/evals/case_gov_*.yaml)",
+    );
     process.exit(1);
   }
 
   const skillPrompt = buildSystemPrompt({ withSkill: values.skill });
 
   console.log(`Cases       : ${cases.length} (${cases.map((c) => c.id).join(", ")})`);
-  console.log(`Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`);
-  console.log(`Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`);
+  console.log(
+    `Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`,
+  );
+  console.log(
+    `Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`,
+  );
   if (values.execute) {
     console.log(`Samples     : ${values.samples}`);
     console.log(`Timeout     : ${values.timeout}ms`);
@@ -456,14 +473,24 @@ async function main() {
   const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
   const allResults: Array<{
     caseId: string;
-    samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }>;
+    samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }>;
   }> = [];
 
   for (let i = 0; i < cases.length; i++) {
     const c = cases[i];
-    console.log(`[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`);
+    console.log(
+      `[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+    );
 
-    const samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> = [];
+    const samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }> = [];
     for (let s = 0; s < samplesN; s++) {
       const r = await executeCase(c, skillPrompt);
       const grade = gradeExecuteResult(c, r);

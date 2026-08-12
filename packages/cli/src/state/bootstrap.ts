@@ -61,21 +61,41 @@ const STATE: BootstrapState = {
 };
 
 // ═══ Getter ═══
-export function getSessionId(): string { return STATE.sessionId; }
+export function getSessionId(): string {
+  return STATE.sessionId;
+}
 /**
  * @deprecated cwd 全局状态已收敛到 `bootstrap/state.ts`（持久 Shell 会话 P0-2）。
  * bash 工具写回、path-utils 读取的均为那一套。本套 cwd 无任何引用，保留仅为兼容，
  * 切勿在新代码中读写本套 cwd，否则与 `bootstrap/state.ts` 漂移。
  */
-export function getCwd(): string { return STATE.cwd; }
-export function getOriginalCwd(): string { return STATE.originalCwd; }
-export function getTotalCostUSD(): number { return STATE.totalCostUSD; }
-export function getTotalAPIDuration(): number { return STATE.totalAPIDuration; }
-export function getTotalToolDuration(): number { return STATE.totalToolDuration; }
-export function getModelUsage(): Record<string, ModelUsage> { return STATE.modelUsage; }
-export function getMainLoopModelOverride(): string | null { return STATE.mainLoopModelOverride; }
-export function isInteractive(): boolean { return STATE.isInteractive; }
-export function getStartTime(): number { return STATE.startTime; }
+export function getCwd(): string {
+  return STATE.cwd;
+}
+export function getOriginalCwd(): string {
+  return STATE.originalCwd;
+}
+export function getTotalCostUSD(): number {
+  return STATE.totalCostUSD;
+}
+export function getTotalAPIDuration(): number {
+  return STATE.totalAPIDuration;
+}
+export function getTotalToolDuration(): number {
+  return STATE.totalToolDuration;
+}
+export function getModelUsage(): Record<string, ModelUsage> {
+  return STATE.modelUsage;
+}
+export function getMainLoopModelOverride(): string | null {
+  return STATE.mainLoopModelOverride;
+}
+export function isInteractive(): boolean {
+  return STATE.isInteractive;
+}
+export function getStartTime(): number {
+  return STATE.startTime;
+}
 export function getTurnMetrics() {
   return {
     toolDurationMs: STATE.turnToolDurationMs,
@@ -86,11 +106,15 @@ export function getTurnMetrics() {
 }
 
 // ═══ Setter ═══
-export function setSessionId(id: string): void { STATE.sessionId = id; }
+export function setSessionId(id: string): void {
+  STATE.sessionId = id;
+}
 /**
  * @deprecated 见 getCwd 的弃用说明。cwd 真相源为 `bootstrap/state.ts`，本套勿写。
  */
-export function setCwd(cwd: string): void { STATE.cwd = cwd; }
+export function setCwd(cwd: string): void {
+  STATE.cwd = cwd;
+}
 export function setMainLoopModelOverride(model: string | null): void {
   STATE.mainLoopModelOverride = model;
 }
@@ -131,4 +155,6 @@ export function logError(message: string, stack?: string): void {
   STATE.errorLog.push({ timestamp: Date.now(), message, stack });
   if (STATE.errorLog.length > 100) STATE.errorLog.shift();
 }
-export function getErrorLog() { return STATE.errorLog; }
+export function getErrorLog() {
+  return STATE.errorLog;
+}

@@ -47,7 +47,12 @@ export async function readInstalledPlugins(): Promise<InstalledPluginsFile> {
   try {
     const raw = await readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<InstalledPluginsFile>;
-    if (!parsed || typeof parsed !== "object" || typeof parsed.plugins !== "object" || !parsed.plugins) {
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      typeof parsed.plugins !== "object" ||
+      !parsed.plugins
+    ) {
       getLogger().warn("PLUGIN", `installed.json 格式无效，使用空注册表`);
       return emptyRegistry();
     }

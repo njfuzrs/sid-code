@@ -43,28 +43,65 @@ export const GIT_DANGER_PATTERNS: readonly GitDangerPattern[] = [
   // 硬重置：丢弃工作区/暂存区改动，难恢复
   { name: "git 硬重置", pattern: /\bgit\s+reset\s+(--\S+\s+)*--hard\b/, severity: "high" },
   // 强制推送：覆盖远程历史
-  { name: "git 强制推送", pattern: /\bgit\s+push\b[^;&|\n]*[ \t](--force|--force-with-lease|-f)\b/, severity: "high" },
+  {
+    name: "git 强制推送",
+    pattern: /\bgit\s+push\b[^;&|\n]*[ \t](--force|--force-with-lease|-f)\b/,
+    severity: "high",
+  },
   // 强制推送 main/master：最危险的常见误操作（CC 专门警告）。保留 high 让用户能确认执行。
   // specific=true：与上面的通用「强制推送」同为 high 且会同时命中，标记为更具体使其在
   // matchGitDanger 里胜出，确认框才能显示"正在强推 main"这个关键信息。
-  { name: "git 强制推送 main/master", pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b[^;&|\n]*\b(main|master)\b/, severity: "high", specific: true },
+  {
+    name: "git 强制推送 main/master",
+    pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b[^;&|\n]*\b(main|master)\b/,
+    severity: "high",
+    specific: true,
+  },
   // 清理未跟踪文件（-f 强制，排除 -n/--dry-run 预演）
-  { name: "git 清理未跟踪文件", pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/, severity: "high" },
+  {
+    name: "git 清理未跟踪文件",
+    pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/,
+    severity: "high",
+  },
   // 丢弃工作区改动：git checkout . / git restore .
-  { name: "git 丢弃工作区改动", pattern: /\bgit\s+(checkout|restore)\s+(--\s+)?\.[ \t]*($|[;&|\n])/, severity: "high" },
+  {
+    name: "git 丢弃工作区改动",
+    pattern: /\bgit\s+(checkout|restore)\s+(--\s+)?\.[ \t]*($|[;&|\n])/,
+    severity: "high",
+  },
   // 删除/清空 stash
   { name: "git 删除 stash", pattern: /\bgit\s+stash\s+(drop|clear)\b/, severity: "high" },
   // 强制删分支（-D / --delete --force）
-  { name: "git 强制删分支", pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/, severity: "high" },
+  {
+    name: "git 强制删分支",
+    pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/,
+    severity: "high",
+  },
   // 跳过 hooks
-  { name: "git 跳过 hooks", pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/, severity: "high" },
+  {
+    name: "git 跳过 hooks",
+    pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/,
+    severity: "high",
+  },
   // 跳过签名
-  { name: "git 跳过签名", pattern: /\bgit\s+[^;&|\n]*(--no-gpg-sign|-c\s+commit\.gpgsign=false)\b/, severity: "high" },
+  {
+    name: "git 跳过签名",
+    pattern: /\bgit\s+[^;&|\n]*(--no-gpg-sign|-c\s+commit\.gpgsign=false)\b/,
+    severity: "high",
+  },
   // 劫持 git hooks 路径：改 core.hooksPath 指向攻击者目录 = 任意代码执行
   //（P0-1 额外加固：与 .git/hooks 目录写保护形成对称防护）
-  { name: "劫持 git hooks 路径", pattern: /\bgit\s+config\b[^;&|\n]*core\.hooksPath\b/i, severity: "high" },
+  {
+    name: "劫持 git hooks 路径",
+    pattern: /\bgit\s+config\b[^;&|\n]*core\.hooksPath\b/i,
+    severity: "high",
+  },
   // amend：改写上一个 commit（协议层，hook 失败时 --amend 会破坏历史工作），用 medium 兜底提醒
-  { name: "git amend 改写上一个提交", pattern: /\bgit\s+commit\b[^;&|\n]*--amend\b/, severity: "medium" },
+  {
+    name: "git amend 改写上一个提交",
+    pattern: /\bgit\s+commit\b[^;&|\n]*--amend\b/,
+    severity: "medium",
+  },
 ];
 
 /**
@@ -79,12 +116,30 @@ export interface GitDangerDisplay {
 
 export const GIT_DANGER_DISPLAY: readonly GitDangerDisplay[] = [
   { pattern: /\bgit\s+reset\s+(--\S+\s+)*--hard\b/i, label: "丢弃所有本地改动 (git reset --hard)" },
-  { pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b/i, label: "强制推送 (git push --force)" },
-  { pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/i, label: "删除未跟踪文件 (git clean -f)" },
-  { pattern: /\bgit\s+(checkout|restore)\s+(--\s+)?\.[ \t]*($|[;&|\n])/i, label: "丢弃工作区改动 (git checkout/restore .)" },
-  { pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/i, label: "强制删除分支 (git branch -D)" },
-  { pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/i, label: "跳过 hooks (--no-verify)" },
-  { pattern: /\bgit\s+config\b[^;&|\n]*core\.hooksPath\b/i, label: "劫持 git hooks 路径 (core.hooksPath)" },
+  {
+    pattern: /\bgit\s+push\b[^;&|\n]*(--force|--force-with-lease|-f)\b/i,
+    label: "强制推送 (git push --force)",
+  },
+  {
+    pattern: /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/i,
+    label: "删除未跟踪文件 (git clean -f)",
+  },
+  {
+    pattern: /\bgit\s+(checkout|restore)\s+(--\s+)?\.[ \t]*($|[;&|\n])/i,
+    label: "丢弃工作区改动 (git checkout/restore .)",
+  },
+  {
+    pattern: /\bgit\s+branch\s+(-D\b|--delete\s+--force|--force\s+--delete)/i,
+    label: "强制删除分支 (git branch -D)",
+  },
+  {
+    pattern: /\bgit\s+(commit|push|merge)\b[^;&|\n]*--no-verify\b/i,
+    label: "跳过 hooks (--no-verify)",
+  },
+  {
+    pattern: /\bgit\s+config\b[^;&|\n]*core\.hooksPath\b/i,
+    label: "劫持 git hooks 路径 (core.hooksPath)",
+  },
 ];
 
 /**
@@ -99,11 +154,28 @@ export const GIT_DANGER_DISPLAY: readonly GitDangerDisplay[] = [
  * ⚠️ 只剥离**子命令之前**的选项——一旦遇到第一个非选项 token（= 子命令），立即停止，
  * 绝不触碰子命令自身的参数（否则会把 `git commit --no-verify` 的 flag 也吃掉）。
  */
-const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set([
+  "-c",
+  "-C",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--exec-path",
+  "--config-env",
+]);
 const GIT_GLOBAL_BOOL_OPTS = new Set([
-  "-P", "--no-pager", "--paginate", "--bare", "--no-replace-objects",
-  "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
-  "--no-optional-locks", "--no-lazy-fetch", "--no-advice",
+  "-P",
+  "--no-pager",
+  "--paginate",
+  "--bare",
+  "--no-replace-objects",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+  "--no-optional-locks",
+  "--no-lazy-fetch",
+  "--no-advice",
 ]);
 
 /**
@@ -122,29 +194,35 @@ export function normalizeGitGlobalOptions(command: string): string {
   if (!command || !/\bgit\s+-/.test(command)) return command;
 
   // 逐个 `git` 词边界处理：匹配 `git` 后紧跟的连续全局选项段并删除。
-  return command.replace(/\bgit((?:[ \t]+-[^\s;&|]*(?:[ \t]+[^\s;&|-][^\s;&|]*)?)+)/g, (_full, optsPart: string) => {
-    // 把选项段按空白切成 token，逐个判断是否为「可剥离的全局选项」。
-    const tokens = optsPart.trim().split(/[ \t]+/).filter(Boolean);
-    const kept: string[] = [];
-    let i = 0;
-    for (; i < tokens.length; i++) {
-      const tok = tokens[i]!;
-      if (!tok.startsWith("-")) break; // 到达子命令（第一个非选项 token）→ 停止剥离
-      // `--opt=value` 形式：取 `=` 前的名字判断
-      const eq = tok.indexOf("=");
-      const name = eq > 0 ? tok.slice(0, eq) : tok;
-      if (GIT_GLOBAL_OPTS_WITH_VALUE.has(name)) {
-        if (eq < 0) i++; // 值在下一个 token（`-c k=v` / `-C dir`），一并跳过
-        continue;
+  return command.replace(
+    /\bgit((?:[ \t]+-[^\s;&|]*(?:[ \t]+[^\s;&|-][^\s;&|]*)?)+)/g,
+    (_full, optsPart: string) => {
+      // 把选项段按空白切成 token，逐个判断是否为「可剥离的全局选项」。
+      const tokens = optsPart
+        .trim()
+        .split(/[ \t]+/)
+        .filter(Boolean);
+      const kept: string[] = [];
+      let i = 0;
+      for (; i < tokens.length; i++) {
+        const tok = tokens[i]!;
+        if (!tok.startsWith("-")) break; // 到达子命令（第一个非选项 token）→ 停止剥离
+        // `--opt=value` 形式：取 `=` 前的名字判断
+        const eq = tok.indexOf("=");
+        const name = eq > 0 ? tok.slice(0, eq) : tok;
+        if (GIT_GLOBAL_OPTS_WITH_VALUE.has(name)) {
+          if (eq < 0) i++; // 值在下一个 token（`-c k=v` / `-C dir`），一并跳过
+          continue;
+        }
+        if (GIT_GLOBAL_BOOL_OPTS.has(name)) continue;
+        // 不是已知全局选项 → 说明已经进入子命令的 flag 区（如 `git --version`），保留其余全部
+        break;
       }
-      if (GIT_GLOBAL_BOOL_OPTS.has(name)) continue;
-      // 不是已知全局选项 → 说明已经进入子命令的 flag 区（如 `git --version`），保留其余全部
-      break;
-    }
-    // 剥离掉 [0, i) 的全局选项，保留 i 之后的所有 token
-    kept.push(...tokens.slice(i));
-    return kept.length > 0 ? `git ${kept.join(" ")}` : "git";
-  });
+      // 剥离掉 [0, i) 的全局选项，保留 i 之后的所有 token
+      kept.push(...tokens.slice(i));
+      return kept.length > 0 ? `git ${kept.join(" ")}` : "git";
+    },
+  );
 }
 
 /**

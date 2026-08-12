@@ -31,7 +31,7 @@
  *   不该被卡在发布流程里，但他应该看到一条明显的 warn。release.sh 另有一道**发布前**
  *   的交互提示（那时二进制还没构建，改还来得及）。
  *
- * ── 三份产物，各有唯一职责（2026-07-28 改造：changelog 并入官网，不再自建 mini 站）──
+ * ── 两份产物，各有唯一职责（2026-08-12 改造：CHANGELOG.html 跳转页彻底移除，不再生成）──
  *   1. CHANGELOG.md                            仓库根，文本事实源。给 diff / 脚本 / curl。
  *                                              **全量原始提交**——curated 漏了东西时
  *                                              这是唯一的回溯途径，不许精简。
@@ -41,12 +41,6 @@
  *                                              用户看到的是**同一个站**而不是两个产品。
  *                                              内容来自 curated 文案，**不含** per-commit
  *                                              的 hash / scope / body 细节。
- *   3. CHANGELOG.html                          退化为 20 行跳转页 → /changelog。
- *                                              老链接（README / install.sh 收尾提示 / 用户终端
- *                                              历史输出）散落各处，直接删就是一堆 404；
- *                                              留跳转页可以完全不碰 nginx——`/releases/` 那个
- *                                              location 的 alias 极脆（设计方案 §5.3 陷阱 3
- *                                              实证过一个正则 location 就能把它旁路掉致 404）。
  *
  *   ⚠ 刻意**不生成** website/changelog.md 正文：md 会被 minisearch 纳入全站索引，
  *     几百条 commit 描述会把全站搜索结果冲成噪音。changelog 需要的是**自己的**搜索框
@@ -97,12 +91,8 @@ import {
 export { stripUrls };
 
 const CHANGELOG_MD_PATH = resolve(ROOT, "CHANGELOG.md");
-const CHANGELOG_HTML_PATH = resolve(ROOT, "CHANGELOG.html");
 const SITE_DATA_DIR = resolve(ROOT, "website/.vitepress/data");
 const SITE_DATA_PATH = resolve(SITE_DATA_DIR, "changelog.json");
-
-/** 官网 changelog 页路径（跳转页与收尾提示都用它，只在这里写一次） */
-const SITE_CHANGELOG_PATH = "/changelog";
 
 const MD_FILE_HEADER =
   "# Changelog\n\n本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。\n";
@@ -244,9 +234,7 @@ function collectCommits(range: string | null): ParsedCommit[] {
   let raw = "";
   const pretty = `--pretty=format:%h${FS}%s${FS}%b${RS}`;
   try {
-    const args = range
-      ? ["log", range, "--no-merges", pretty]
-      : ["log", "--no-merges", pretty];
+    const args = range ? ["log", range, "--no-merges", pretty] : ["log", "--no-merges", pretty];
     raw = execFileSync("git", args, { cwd: ROOT, encoding: "utf-8" });
   } catch (err: any) {
     // git 命令真正损坏（非法 range 等）——抛出让 release.sh 的 || warn 接住
@@ -472,7 +460,9 @@ function loadCurated(version: string): CuratedEntry | null {
   try {
     obj = JSON.parse(readFileSync(p, "utf-8"));
   } catch (err: any) {
-    console.log(`  ⚠️  curated/v${version}.json 解析失败，按「无变更说明」渲染：${err?.message ?? err}`);
+    console.log(
+      `  ⚠️  curated/v${version}.json 解析失败，按「无变更说明」渲染：${err?.message ?? err}`,
+    );
     return null;
   }
   const errs = validateCurated(obj, version);
@@ -532,41 +522,6 @@ function buildSiteData(models: VersionModel[], currentVersion: string): SiteChan
   };
 }
 
-// ─────────── CHANGELOG.html：跳转页（保住散落各处的老链接不 404）───────────
-
-function renderRedirectHtml(): string {
-  // 用 /changelog 绝对路径：与 host 无关（老链接在同一站点下），域名切换时无需改。
-  // meta refresh + JS replace 双写：前者不依赖 JS，后者不留一条多余的历史记录。
-  return `<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta http-equiv="refresh" content="0; url=${SITE_CHANGELOG_PATH}" />
-<link rel="canonical" href="${SITE_CHANGELOG_PATH}" />
-<title>sid-code · 更新日志已迁移</title>
-<style>
-body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
-  color: #1a2236; background: #f5f7fb; line-height: 1.7; }
-.box { text-align: center; padding: 32px; }
-a { color: #2554e0; }
-code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
-  background: rgba(59,108,246,0.1); padding: 2px 7px; border-radius: 5px; }
-</style>
-</head>
-<body>
-<div class="box">
-  <p>更新日志已并入官网文档站。</p>
-  <p>正在跳转到 <a href="${SITE_CHANGELOG_PATH}">${SITE_CHANGELOG_PATH}</a> …</p>
-  <p>纯文本版仍在 <code>CHANGELOG.md</code>（与本页同目录）。</p>
-</div>
-<script>location.replace(${JSON.stringify(SITE_CHANGELOG_PATH)});</script>
-</body>
-</html>
-`;
-}
-
 // ─────────────────────── 主流程 ───────────────────────
 
 function main(): void {
@@ -580,9 +535,7 @@ function main(): void {
   const currentCommitCount = models[0]?.commits.length ?? 0;
 
   if (currentCommitCount === 0) {
-    console.log(
-      `  ⚠️  v${version} 区间无可归类提交，仍写入最小版本块（无显著变更）`,
-    );
+    console.log(`  ⚠️  v${version} 区间无可归类提交，仍写入最小版本块（无显著变更）`);
   }
 
   const siteData = buildSiteData(models, version);
@@ -591,16 +544,12 @@ function main(): void {
   mkdirSync(SITE_DATA_DIR, { recursive: true });
   // 尾随换行：让它像仓库里其它文本产物一样对 git diff 友好
   writeFileSync(SITE_DATA_PATH, JSON.stringify(siteData, null, 2) + "\n");
-  writeFileSync(CHANGELOG_HTML_PATH, renderRedirectHtml());
 
   console.log(
     `  ✅ CHANGELOG.md（v${version} ${currentCommitCount} 条原始提交）+ ` +
       `changelog.json（${siteData.totalVersions} 版本 / ${siteData.totalItems} 条 curated 文案）已生成`,
   );
-  console.log(`  ✅ CHANGELOG.html 已写为跳转页 → ${SITE_CHANGELOG_PATH}`);
-  console.log(
-    `  ⚠️  站点页是构建期快照：bump 提交后需跑 ./scripts/website-deploy.sh 才会上线`,
-  );
+  console.log(`  ⚠️  站点页是构建期快照：bump 提交后需跑 ./scripts/website-deploy.sh 才会上线`);
 }
 
 // 只在被直接执行时跑；被 import 时（如单测 import stripUrls）不能有副作用——

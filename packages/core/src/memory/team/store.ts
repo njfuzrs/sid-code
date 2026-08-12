@@ -33,7 +33,13 @@ export interface TeamMemoryWriteResult {
 }
 
 /** 序列化为 .md 文件内容（与 store.ts 的 serializeMemoryFile 同格式） */
-function serialize(key: string, value: string, description: string, type: MemoryType, now: number): string {
+function serialize(
+  key: string,
+  value: string,
+  description: string,
+  type: MemoryType,
+  now: number,
+): string {
   // 与私有索引同一根治点：desc 缺省回退取正文首行时，必须剥离 markdown 标题等结构
   // 标记，否则 `## 陈述句` 进索引后随 system prompt 注入，模型会误当成用户输入
   // （见 store.ts normalizeMemoryDesc 注释里的 2026-07-29 实测事故）。
@@ -155,7 +161,9 @@ export async function saveTeamMemory(
     try {
       const { notifyTeamMemoryWrite } = await import("./watcher.ts");
       await notifyTeamMemoryWrite();
-    } catch { /* watcher 未启动时忽略 */ }
+    } catch {
+      /* watcher 未启动时忽略 */
+    }
 
     return { success: true, filePath };
   } catch (err: any) {

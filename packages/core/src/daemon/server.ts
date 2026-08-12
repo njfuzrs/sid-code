@@ -100,10 +100,13 @@ export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG) {
           console.error(`[daemon] worker error: ${err}`);
         });
 
-        return Response.json({
-          status: "accepted",
-          pr: `${prEvent.owner}/${prEvent.repo}#${prEvent.number}`,
-        }, { status: 202 });
+        return Response.json(
+          {
+            status: "accepted",
+            pr: `${prEvent.owner}/${prEvent.repo}#${prEvent.number}`,
+          },
+          { status: 202 },
+        );
       }
 
       return Response.json({ error: "not found" }, { status: 404 });

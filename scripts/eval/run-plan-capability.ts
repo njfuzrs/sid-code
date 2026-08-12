@@ -30,10 +30,7 @@ import {
   type CapabilityGraderInput,
 } from "../../evals/bench-runner/capability-grader.ts";
 import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process-grader.ts";
-import {
-  syncBaselineScores,
-  type BaselineResult,
-} from "eval-framework/core/baseline-sync.ts";
+import { syncBaselineScores, type BaselineResult } from "eval-framework/core/baseline-sync.ts";
 import {
   classifyRunStatus,
   medianSuccessScore,
@@ -171,7 +168,9 @@ if (cases.length === 0) {
 
 const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
 
-console.log(`Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`);
+console.log(
+  `Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`,
+);
 console.log(`Adapter   : sid-code-live`);
 console.log(`Model     : ${liveConfig.model || "(用户 config 默认)"}`);
 console.log(`Timeout   : ${liveConfig.timeoutMs}ms`);
@@ -243,7 +242,9 @@ for (let i = 0; i < cases.length; i++) {
         permissionMode: c.input.trigger_plan_mode ? "plan" : undefined,
       });
     } catch (err) {
-      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`,
+      );
       sampleSnapshots.push({
         finalScore: 0,
         assertScore: 0,
@@ -423,7 +424,8 @@ for (const [dim, list] of Object.entries(byDimension)) {
 
 const overall = {
   total: results.length,
-  avgScore: Math.round((results.reduce((s, r) => s + r.finalScore, 0) / results.length) * 100) / 100,
+  avgScore:
+    Math.round((results.reduce((s, r) => s + r.finalScore, 0) / results.length) * 100) / 100,
   passRate:
     Math.round((results.filter((r) => r.finalScore >= 4.0).length / results.length) * 100) / 100,
 };
@@ -457,10 +459,14 @@ await Bun.write(
 console.log("\n" + "=".repeat(60));
 console.log(`Plan capability eval done`);
 console.log("=".repeat(60));
-console.log(`  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`);
+console.log(
+  `  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`,
+);
 console.log(`  By dimension:`);
 for (const [dim, s] of Object.entries(dimensionSummary)) {
-  console.log(`    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`);
+  console.log(
+    `    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`,
+  );
 }
 console.log(`\n  Raw  → ${rawOutputPath}`);
 console.log(`  Report → ${reportOutputPath}`);

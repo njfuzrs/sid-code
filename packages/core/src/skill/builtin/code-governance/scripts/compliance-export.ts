@@ -65,14 +65,7 @@ const PROHIBITED_KEYWORDS = [
   "subliminal_manipulation",
 ];
 
-const LIMITED_KEYWORDS = [
-  "chatgpt",
-  "claude",
-  "gpt-",
-  "llm_api",
-  "generative_ai",
-  "deepfake",
-];
+const LIMITED_KEYWORDS = ["chatgpt", "claude", "gpt-", "llm_api", "generative_ai", "deepfake"];
 
 function classifyRisk(text: string): { risk: EuRiskClass; triggers: string[] } {
   const triggers: string[] = [];
@@ -130,12 +123,11 @@ export function exportCompliance(
     china_aigc: {
       needs_filing: isLimitedOrAbove,
       needs_security_assessment: isHighOrProhibited,
-      suggested_template_section:
-        isHighOrProhibited
-          ? "《生成式 AI 服务管理办法》第 17 条 + 安全评估报告模板"
-          : isLimitedOrAbove
-            ? "《生成式 AI 服务管理办法》第 17 条 算法备案模板"
-            : "无备案要求",
+      suggested_template_section: isHighOrProhibited
+        ? "《生成式 AI 服务管理办法》第 17 条 + 安全评估报告模板"
+        : isLimitedOrAbove
+          ? "《生成式 AI 服务管理办法》第 17 条 算法备案模板"
+          : "无备案要求",
     },
     summary: { auto_inferred_risk_class: inferred, files_touched: countFiles(diff), triggers },
   };

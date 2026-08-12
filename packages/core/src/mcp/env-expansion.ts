@@ -6,7 +6,7 @@
 export function expandEnvVars(value: string): { expanded: string; missing: string[] } {
   const missing: string[] = [];
   const expanded = value.replace(/\$\{([^}]+)\}/g, (_match, content) => {
-    const [varName, defaultValue] = content.split(':-', 2);
+    const [varName, defaultValue] = content.split(":-", 2);
     const envValue = process.env[varName];
     if (envValue !== undefined) return envValue;
     if (defaultValue !== undefined) return defaultValue;
@@ -34,7 +34,7 @@ export function expandConfigEnvVars(config: {
   }
 
   if (config.args) {
-    config.args = config.args.map(arg => {
+    config.args = config.args.map((arg) => {
       const { expanded, missing } = expandEnvVars(arg);
       allMissing.push(...missing);
       return expanded;

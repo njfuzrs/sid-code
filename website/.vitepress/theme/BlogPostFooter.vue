@@ -66,10 +66,7 @@ const continueReading = computed(() => {
   if (!p) return [];
   const out: { url: string; title: string; label: string }[] = [];
   const seen = new Set<string>();
-  const push = (
-    item: { url: string; title: string } | null,
-    label: string,
-  ) => {
+  const push = (item: { url: string; title: string } | null, label: string) => {
     if (!item || seen.has(item.url)) return;
     seen.add(item.url);
     out.push({ url: item.url, title: item.title, label });

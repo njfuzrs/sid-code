@@ -34,14 +34,16 @@ export async function readIDELockfile(filePath: string): Promise<{
 }
 
 /** 获取所有 lockfile，按修改时间排序（最新优先） */
-export async function getSortedIDELockfiles(): Promise<Array<{
-  port: number;
-  content: IDELockfileContent;
-  mtime: number;
-}>> {
+export async function getSortedIDELockfiles(): Promise<
+  Array<{
+    port: number;
+    content: IDELockfileContent;
+    mtime: number;
+  }>
+> {
   try {
     const files = await readdir(getIDELockfileDir());
-    const lockfiles = files.filter(f => f.endsWith(".lock"));
+    const lockfiles = files.filter((f) => f.endsWith(".lock"));
 
     const results = await Promise.all(
       lockfiles.map(async (file) => {

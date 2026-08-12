@@ -80,24 +80,36 @@ export const LanguageDialog: React.FC<LanguageDialogProps> = ({
 
   // undefined（未设置）映射到 unset 档，而不是 auto——两者语义不同，见文件头注释。
   const currentValue: LanguageChoice = currentLanguage ?? "unset";
-  const initialIndex = Math.max(0, OPTIONS.findIndex((o) => o.value === currentValue));
+  const initialIndex = Math.max(
+    0,
+    OPTIONS.findIndex((o) => o.value === currentValue),
+  );
 
   const statusLine = currentLanguage
     ? `当前: ${currentLanguage} — ${describeLanguagePref(currentLanguage)}`
     : "当前: 未设置 — 默认（中文优先）";
 
   // auto 档额外说明"判断不出时落到哪"——否则用户切了 auto 却无从判断系统 locale 探测结果。
-  const autoFallback = currentLanguage === "auto"
-    ? `判断不出用户语言时回落: ${detectSystemLanguage() === "en" ? "英文" : "中文"}（按系统 locale）`
-    : "";
+  const autoFallback =
+    currentLanguage === "auto"
+      ? `判断不出用户语言时回落: ${detectSystemLanguage() === "en" ? "英文" : "中文"}（按系统 locale）`
+      : "";
 
   const handleSelect = (choice: LanguageChoice) => {
     onLanguageSelect(choice);
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>输出语言</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        输出语言
+      </Text>
       <Text color={theme.text.secondary}>{statusLine}</Text>
       {autoFallback && <Text color={theme.text.secondary}>{autoFallback}</Text>}
       <Box marginTop={1} flexDirection="column">
@@ -116,7 +128,7 @@ export const LanguageDialog: React.FC<LanguageDialogProps> = ({
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
                   {item.glyph} {item.label}
                 </Text>
-                <Text color={theme.text.secondary}>  {item.desc}</Text>
+                <Text color={theme.text.secondary}> {item.desc}</Text>
                 {isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
               </Box>
             );

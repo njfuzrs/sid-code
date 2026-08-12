@@ -302,8 +302,16 @@ export class CacheBreakDetector {
     }
 
     // P2-1 诊断：计算 system prompt + tools 组合前缀 hash（下次复现即可判本地断裂 vs 服务端波动）
-    const prevPrefixHash = combinePrefixHash(prev.systemPromptHash, prev.toolSchemasHash, prev.toolOrderHash);
-    const currPrefixHash = combinePrefixHash(curr.systemPromptHash, curr.toolSchemasHash, curr.toolOrderHash);
+    const prevPrefixHash = combinePrefixHash(
+      prev.systemPromptHash,
+      prev.toolSchemasHash,
+      prev.toolOrderHash,
+    );
+    const currPrefixHash = combinePrefixHash(
+      curr.systemPromptHash,
+      curr.toolSchemasHash,
+      curr.toolOrderHash,
+    );
 
     if (changes.length === 0) {
       // P2-1：把前缀 hash 是否变化写进归因——hash 变=本地前缀断裂；hash 未变=服务端波动。
@@ -520,13 +528,13 @@ export function getCacheHealthAdvice(): string[] {
   if (recentBreaks.length === 0) return advice;
 
   const systemBreaks = recentBreaks.filter((b) =>
-    b.changes.some((c) => c.includes("System prompt"))
+    b.changes.some((c) => c.includes("System prompt")),
   ).length;
   const toolBreaks = recentBreaks.filter((b) =>
-    b.changes.some((c) => c.includes("工具变化") || c.includes("工具顺序"))
+    b.changes.some((c) => c.includes("工具变化") || c.includes("工具顺序")),
   ).length;
   const modelBreaks = recentBreaks.filter((b) =>
-    b.changes.some((c) => c.includes("模型变化"))
+    b.changes.some((c) => c.includes("模型变化")),
   ).length;
 
   // 阈值：同类中断占比 ≥ 50% 且 ≥ 2 次 → 给出针对性建议

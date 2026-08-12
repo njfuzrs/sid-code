@@ -11,7 +11,13 @@ import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
-import { ARROW_PROMPT, TODO_COMPLETED, THINKING_ON, THINKING_OFF, EFFORT_AUTO } from "../constants/figures.ts";
+import {
+  ARROW_PROMPT,
+  TODO_COMPLETED,
+  THINKING_ON,
+  THINKING_OFF,
+  EFFORT_AUTO,
+} from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import type { ThinkingSetting } from "@sid-code/core/llm/effort.ts";
 
@@ -36,11 +42,21 @@ interface ThinkItem extends SelectionListItem<string> {
 
 const OPTIONS: ThinkItem[] = [
   { value: "on", key: "on", glyph: THINKING_ON, label: "on", desc: "强制开启扩展思考" },
-  { value: "auto", key: "auto", glyph: EFFORT_AUTO, label: "auto", desc: "跟随 effort 设置自动决定" },
+  {
+    value: "auto",
+    key: "auto",
+    glyph: EFFORT_AUTO,
+    label: "auto",
+    desc: "跟随 effort 设置自动决定",
+  },
   { value: "off", key: "off", glyph: THINKING_OFF, label: "off", desc: "关闭扩展思考" },
 ];
 
-export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingState, setThinking }) => {
+export const ThinkDialog: React.FC<ThinkDialogProps> = ({
+  onClose,
+  getThinkingState,
+  setThinking,
+}) => {
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
       onClose();
@@ -54,8 +70,16 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
   // 能力门控：模型不支持思考开关时直接说明
   if (state && !state.capability.supportsThinkingToggle) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>思考模式</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          思考模式
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>
             当前模型不支持显式思考开关（如内置推理模型）。思考行为由模型自身决定。
@@ -69,7 +93,10 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
   }
 
   const currentValue = state?.runtime ?? "auto";
-  const initialIndex = Math.max(0, OPTIONS.findIndex((o) => o.value === currentValue));
+  const initialIndex = Math.max(
+    0,
+    OPTIONS.findIndex((o) => o.value === currentValue),
+  );
 
   let statusLine = "";
   if (state) {
@@ -88,8 +115,16 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>思考模式</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        思考模式
+      </Text>
       {statusLine && <Text color={theme.text.secondary}>{statusLine}</Text>}
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<string, ThinkItem>
@@ -107,7 +142,7 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({ onClose, getThinkingSt
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
                   {item.glyph} {item.label}
                 </Text>
-                <Text color={theme.text.secondary}>  {item.desc}</Text>
+                <Text color={theme.text.secondary}> {item.desc}</Text>
                 {isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
               </Box>
             );

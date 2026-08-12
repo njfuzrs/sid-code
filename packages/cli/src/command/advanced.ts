@@ -17,12 +17,19 @@ function fmtAge(ms: number): string {
 
 /** /ps — 列出后台任务和并发会话 */
 export class PsCommand implements Command {
-  name() { return "ps"; }
-  aliases() { return ["tasks"]; }
-  description() { return "列出后台任务和活跃会话"; }
+  name() {
+    return "ps";
+  }
+  aliases() {
+    return ["tasks"];
+  }
+  description() {
+    return "列出后台任务和活跃会话";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getAllTasks, isPanelTask, isShellTask, isAgentTask } = await import("@sid-code/core/task/index.ts");
+    const { getAllTasks, isPanelTask, isShellTask, isAgentTask } =
+      await import("@sid-code/core/task/index.ts");
     const { listActiveSessions } = await import("@sid-code/core/session/concurrent.ts");
 
     const lines: string[] = [];
@@ -56,7 +63,9 @@ export class PsCommand implements Command {
         const team = s.team ? ` team=${s.team}` : "";
         // 完整展示 sessionId（新格式 YYYYMMDD-HHMMSS-<hex> 仅 24 字符，便于直接复制去 -r 恢复）。
         // 旧实现 slice(0,8) 在新格式下只剩日期串、无法区分同日会话。
-        lines.push(`  ${s.sessionId.padEnd(24)}  pid=${s.pid}  ${s.kind.padEnd(11)} ${age.padStart(4)}  ${s.cwd}${team}`);
+        lines.push(
+          `  ${s.sessionId.padEnd(24)}  pid=${s.pid}  ${s.kind.padEnd(11)} ${age.padStart(4)}  ${s.cwd}${team}`,
+        );
       }
     }
 
@@ -66,13 +75,20 @@ export class PsCommand implements Command {
 
 /** /worktree — 管理 Git Worktree */
 export class WorktreeCommand implements Command {
-  name() { return "worktree"; }
-  aliases() { return ["wt"]; }
-  description() { return "管理 Git Worktree (list/clean)"; }
+  name() {
+    return "worktree";
+  }
+  aliases() {
+    return ["wt"];
+  }
+  description() {
+    return "管理 Git Worktree (list/clean)";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const trimmed = args.trim();
-    const { findGitRoot, getCurrentWorktreeSession } = await import("@sid-code/core/worktree/manager.ts");
+    const { findGitRoot, getCurrentWorktreeSession } =
+      await import("@sid-code/core/worktree/manager.ts");
 
     const gitRoot = findGitRoot(process.cwd());
     if (!gitRoot) {
@@ -99,23 +115,34 @@ export class WorktreeCommand implements Command {
       let branch = "?";
       let dirty = false;
       try {
-        branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-          cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-        }).trim() || "?";
-      } catch { /* 忽略 */ }
+        branch =
+          execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd: path,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          }).trim() || "?";
+      } catch {
+        /* 忽略 */
+      }
       try {
         const status = execFileSync("git", ["status", "--porcelain"], {
-          cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+          cwd: path,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
         }).trim();
         dirty = status.length > 0;
-      } catch { /* 忽略 */ }
+      } catch {
+        /* 忽略 */
+      }
       return { branch, dirty };
     };
 
     const current = getCurrentWorktreeSession();
     if (current) {
       const d = describe(current.worktreePath);
-      lines.push(`  * ${current.worktreeName} (当前) [${d.branch}]${d.dirty ? " ✎未提交" : ""} → ${current.worktreePath}`);
+      lines.push(
+        `  * ${current.worktreeName} (当前) [${d.branch}]${d.dirty ? " ✎未提交" : ""} → ${current.worktreePath}`,
+      );
     }
 
     if (existsSync(wtDir)) {
@@ -131,7 +158,9 @@ export class WorktreeCommand implements Command {
         let age = "";
         try {
           age = fmtAge(Date.now() - statSync(full).mtimeMs);
-        } catch { /* 忽略 */ }
+        } catch {
+          /* 忽略 */
+        }
         const d = describe(full);
         const tag = isEphemeralWorktree(dirName) ? "临时" : "命名";
         lines.push(`    ${dirName} [${d.branch}] ${tag} ${age}${d.dirty ? " ✎未提交" : ""}`);
@@ -148,11 +177,17 @@ export class WorktreeCommand implements Command {
 
 /** /cron — 管理定时任务 */
 export class CronCommand implements Command {
-  name() { return "cron"; }
+  name() {
+    return "cron";
+  }
   // schedule：对齐 claude-code 命名（CC /schedule 做本地定时任务，我们用 /cron 覆盖同能力）。
   // 云端 Routine 部分不做（无云端基建，见方案 §6）。
-  aliases() { return ["schedule"]; }
-  description() { return "管理定时任务 (list/delete)"; }
+  aliases() {
+    return ["schedule"];
+  }
+  description() {
+    return "管理定时任务 (list/delete)";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");

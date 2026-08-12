@@ -3,7 +3,12 @@
  * 返回结构化的搜索结果（标题、URL、摘要），与 web_fetch 形成互补
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import type { SearchBackend, SearchResponse } from "./search-backends/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
@@ -22,7 +27,7 @@ const webSearchSchema = lazySchema(() =>
     allowed_domains: z
       .array(z.string())
       .optional()
-      .describe("仅保留这些域名的结果（如 [\"docs.python.org\"]）。与 blocked_domains 互斥"),
+      .describe('仅保留这些域名的结果（如 ["docs.python.org"]）。与 blocked_domains 互斥'),
     blocked_domains: z
       .array(z.string())
       .optional()
@@ -144,7 +149,7 @@ export class WebSearchTool implements Tool {
 
     // 2. 限流检查
     const now = Date.now();
-    const recent = searchHistory.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    const recent = searchHistory.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
     if (recent.length >= RATE_LIMIT) {
       return {
         output: `错误: 搜索过于频繁（每分钟最多 ${RATE_LIMIT} 次），请稍后重试`,
@@ -165,8 +170,11 @@ export class WebSearchTool implements Tool {
     // 4. 执行搜索
     const maxResults = Math.min(params.max_results ?? 5, 10);
     // 有域名过滤时多取一些候选，过滤后再截断到 maxResults，避免过滤后结果过少。
-    const fetchCount = (hasAllowed || hasBlocked) ? Math.min(maxResults * 3, 30) : maxResults;
-    log.info("TOOL", `▶ 搜索 "${params.query}" (后端: ${this.backend.name}, 最多 ${maxResults} 条)`);
+    const fetchCount = hasAllowed || hasBlocked ? Math.min(maxResults * 3, 30) : maxResults;
+    log.info(
+      "TOOL",
+      `▶ 搜索 "${params.query}" (后端: ${this.backend.name}, 最多 ${maxResults} 条)`,
+    );
 
     try {
       const response = await this.backend.search(params.query, {
@@ -175,18 +183,28 @@ export class WebSearchTool implements Tool {
       });
 
       // 4.5 域名过滤（后端无关）+ 截断到 maxResults
-      let results = filterResultsByDomain(response.results, params.allowed_domains, params.blocked_domains);
+      let results = filterResultsByDomain(
+        response.results,
+        params.allowed_domains,
+        params.blocked_domains,
+      );
       results = results.slice(0, maxResults);
       const filtered: SearchResponse = { ...response, results };
 
       // 5. 格式化输出
       if (filtered.results.length === 0) {
-        const hint = (hasAllowed || hasBlocked) ? "（域名过滤后无匹配结果，可调整 allowed/blocked_domains）" : "";
+        const hint =
+          hasAllowed || hasBlocked
+            ? "（域名过滤后无匹配结果，可调整 allowed/blocked_domains）"
+            : "";
         log.info("TOOL", `✓ 搜索完成，无结果`);
         return { output: `未找到与 "${params.query}" 相关的搜索结果。${hint}` };
       }
 
-      log.info("TOOL", `✓ 搜索完成，${filtered.results.length} 条结果，耗时 ${response.durationMs}ms`);
+      log.info(
+        "TOOL",
+        `✓ 搜索完成，${filtered.results.length} 条结果，耗时 ${response.durationMs}ms`,
+      );
       return { output: this.formatResults(params.query, filtered) };
     } catch (err: any) {
       if (err?.name === "AbortError") {

@@ -6,7 +6,7 @@ import React, {
   useMemo,
   useRef,
   useEffect,
-} from 'react';
+} from "react";
 
 export interface OverflowState {
   overflowingIds: ReadonlySet<string>;
@@ -18,23 +18,16 @@ export interface OverflowActions {
   reset: () => void;
 }
 
-const OverflowStateContext = createContext<OverflowState | undefined>(
-  undefined,
-);
+const OverflowStateContext = createContext<OverflowState | undefined>(undefined);
 
-const OverflowActionsContext = createContext<OverflowActions | undefined>(
-  undefined,
-);
+const OverflowActionsContext = createContext<OverflowActions | undefined>(undefined);
 
-export const useOverflowState = (): OverflowState | undefined =>
-  useContext(OverflowStateContext);
+export const useOverflowState = (): OverflowState | undefined => useContext(OverflowStateContext);
 
 export const useOverflowActions = (): OverflowActions | undefined =>
   useContext(OverflowActionsContext);
 
-export const OverflowProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
+export const OverflowProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [overflowingIds, setOverflowingIds] = useState(new Set<string>());
 
   /**

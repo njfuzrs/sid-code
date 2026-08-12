@@ -210,9 +210,10 @@ export function gradeNegativeAnchors(
   }
 
   const hits = effective.filter((kw) => matchesAnchor(output, kw));
-  const echoNote = echoExcluded.length > 0
-    ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}`
-    : "";
+  const echoNote =
+    echoExcluded.length > 0
+      ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}`
+      : "";
   if (hits.length === 0) {
     return {
       pass: true,
@@ -354,11 +355,7 @@ export const DEFAULT_WEIGHTS: Record<string, number> = {
  *      两者本就应当重合。这避免了 case_015 类副作用：用户 query 提供 path 锚点，
  *      被全部 echo 排除后只剩自然词，导致 agent 真实回答路径仍判 0 分。
  */
-export function gradeAnchorHit(
-  output: string,
-  anchors: string[],
-  userQuery?: string,
-): DimScore {
+export function gradeAnchorHit(output: string, anchors: string[], userQuery?: string): DimScore {
   if (anchors.length === 0) {
     return { pass: true, score: 1.0, reason: "无锚点，跳过" };
   }
@@ -412,7 +409,10 @@ export function gradeAnchorHit(
 
   const pass = hitCount >= 1;
   const missing = effective.filter((a) => !output.includes(a));
-  const echoNote = echoExcluded.length > 0 ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}` : "";
+  const echoNote =
+    echoExcluded.length > 0
+      ? `；echo 排除 ${echoExcluded.length} 项: ${echoExcluded.join(", ")}`
+      : "";
   const dedupNote = dedupedCount > 0 ? `；substring 去重 ${dedupedCount} 项` : "";
   const reason =
     hitCount === total
@@ -444,7 +444,9 @@ export function gradeAnchorHit(
  */
 const SCAN_TAIL_BYTES = 4096;
 
-export function extractJsonObject(text: string): { json: string; ok: true } | { json: null; ok: false; reason: string } {
+export function extractJsonObject(
+  text: string,
+): { json: string; ok: true } | { json: null; ok: false; reason: string } {
   if (!text || typeof text !== "string") return { json: null, ok: false, reason: "empty" };
   const trimmed = text.trim();
 
@@ -453,7 +455,9 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
     try {
       JSON.parse(trimmed);
       return { json: trimmed, ok: true };
-    } catch { /* 进入路径 2 */ }
+    } catch {
+      /* 进入路径 2 */
+    }
   }
 
   // 路径 2：剥离 markdown 代码块包裹（取最后一个 ```json``` 块，judge 答案通常在最末）
@@ -465,7 +469,9 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
       try {
         JSON.parse(inside);
         return { json: inside, ok: true };
-      } catch { continue; }
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -488,9 +494,18 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
       let balanced = false;
       for (let j = startCandidate; j <= endIdx; j++) {
         const ch = tail[j];
-        if (esc) { esc = false; continue; }
-        if (ch === "\\") { esc = true; continue; }
-        if (ch === '"') { inStr = !inStr; continue; }
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === "\\") {
+          esc = true;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = !inStr;
+          continue;
+        }
         if (inStr) continue;
         if (ch === "{") depth++;
         else if (ch === "}") {
@@ -511,7 +526,9 @@ export function extractJsonObject(text: string): { json: string; ok: true } | { 
       try {
         JSON.parse(candidate);
         return { json: candidate, ok: true };
-      } catch { /* 继续尝试下一个 endIdx */ }
+      } catch {
+        /* 继续尝试下一个 endIdx */
+      }
     }
   }
 
@@ -538,7 +555,10 @@ function snapToTier(score: number): number {
   for (const t of RUBRIC_TIERS) {
     const d = Math.abs(score - t);
     // LOW-2 fix: 用 <= 确保中点处一致向上吸附（遍历从低到高，等距时取后者即更高档）
-    if (d <= bestDist) { bestDist = d; best = t; }
+    if (d <= bestDist) {
+      bestDist = d;
+      best = t;
+    }
   }
   return best;
 }
@@ -638,7 +658,8 @@ export async function callJudgeRawJson(
       }
     } catch (err: unknown) {
       const status = (err as { status?: number }).status;
-      const retryable = status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
+      const retryable =
+        status === 429 || status === 503 || status === 500 || status === 502 || status === 504;
       if (!retryable || attempt === maxRetries) {
         return {
           error: err instanceof Error ? err.message : String(err),
@@ -646,8 +667,10 @@ export async function callJudgeRawJson(
         };
       }
       const delayMs = Math.min(30_000, 2_000 * Math.pow(2, attempt));
-      process.stderr.write(`[callJudgeRawJson] judge API ${status} 第 ${attempt + 1}/${maxRetries} 次失败，${delayMs}ms 后重试\n`);
-      await new Promise(r => setTimeout(r, delayMs));
+      process.stderr.write(
+        `[callJudgeRawJson] judge API ${status} 第 ${attempt + 1}/${maxRetries} 次失败，${delayMs}ms 后重试\n`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   return { error: "重试用尽" };
@@ -668,13 +691,17 @@ export async function callJudgeRawJson(
  * 但为了向后兼容（其他地方可能还传整段 prompt），这里做兼容拆分：
  * 如果传入是字符串（旧格式），就把整段塞进 user，system 用通用兜底。
  */
-function splitRubricPrompt(rubricPrompt: string | { system: string; user: string }): { system: string; user: string } {
+function splitRubricPrompt(rubricPrompt: string | { system: string; user: string }): {
+  system: string;
+  user: string;
+} {
   if (typeof rubricPrompt === "object" && rubricPrompt.system && rubricPrompt.user) {
     return rubricPrompt;
   }
   // 兼容旧字符串格式：整段当 user，system 用最小兜底
   return {
-    system: '你是一个 coding agent 评测裁判。请基于提供的 case 信息和 agent 输出严格打分。\n输出格式: {"pass": bool, "score": 0.0-1.0, "reason": "简要理由"}',
+    system:
+      '你是一个 coding agent 评测裁判。请基于提供的 case 信息和 agent 输出严格打分。\n输出格式: {"pass": bool, "score": 0.0-1.0, "reason": "简要理由"}',
     user: rubricPrompt as string,
   };
 }
@@ -740,7 +767,7 @@ export async function gradeRubric(
   const sortedResults = [...results].sort((a, b) => a.score - b.score);
   const medianIdx = Math.floor((sortedResults.length - 1) / 2);
   const chosen = sortedResults[medianIdx];
-  const allScores = results.map(r => r.score.toFixed(2)).join("/");
+  const allScores = results.map((r) => r.score.toFixed(2)).join("/");
   return {
     pass: chosen.pass,
     score: chosen.score,
@@ -840,7 +867,7 @@ export function gradeToolCompliance(
     /** 修改文件白名单：files_edited 必须全部以这些前缀之一开头（等于"必须只改这里面的"） */
     mustModifyFilesIn?: string[];
     mustNotModifyFiles?: string[];
-  }
+  },
 ): DimScore {
   const { tools_used, files_edited, total_steps } = meta;
   // 工具名归一化：claude-code wrapper 报 PascalCase（Read/Grep/Glob），
@@ -865,11 +892,7 @@ export function gradeToolCompliance(
   // sideband metadata 全空：trajectory 没落盘 / wrapper 失败 / case 真的没用工具。
   // 无法区分"用了但读不到"和"压根没用"，给 null 让 aggregate 跳过——
   // 旧实现给 1.0 会让挂掉的 case 在 tool 维度白拿满分。
-  if (
-    tools_used.length === 0 &&
-    files_edited.length === 0 &&
-    (total_steps ?? 0) === 0
-  ) {
+  if (tools_used.length === 0 && files_edited.length === 0 && (total_steps ?? 0) === 0) {
     return {
       pass: false,
       score: null,
@@ -881,8 +904,10 @@ export function gradeToolCompliance(
   const reasons: string[] = [];
 
   if (mustCallTools.length > 0) {
-    const hits = mustCallTools.filter((t) =>
-      toolsUsedLower.includes(t) || (TOOL_ALIASES[t] ?? []).some((alias) => toolsUsedLower.includes(alias))
+    const hits = mustCallTools.filter(
+      (t) =>
+        toolsUsedLower.includes(t) ||
+        (TOOL_ALIASES[t] ?? []).some((alias) => toolsUsedLower.includes(alias)),
     );
     if (mustCallMode === "any_of") {
       // any_of：命中任一即满分
@@ -895,7 +920,8 @@ export function gradeToolCompliance(
       if (hits.length < mustCallTools.length) {
         score -= 0.4 * (1 - hits.length / mustCallTools.length);
         reasons.push(
-          "未使用要求的工具: " + mustCallTools.filter((t) => !toolsUsedLower.includes(t)).join(", ")
+          "未使用要求的工具: " +
+            mustCallTools.filter((t) => !toolsUsedLower.includes(t)).join(", "),
         );
       }
     }
@@ -912,7 +938,7 @@ export function gradeToolCompliance(
   // 只在 must_modify_files_in 非空时检查（空数组语义 = 不限制，避免误伤无修改的 case）。
   if (mustModifyFilesIn.length > 0 && files_edited.length > 0) {
     const violations = files_edited.filter(
-      (f) => !mustModifyFilesIn.some((p) => f.startsWith(p) || f === p)
+      (f) => !mustModifyFilesIn.some((p) => f.startsWith(p) || f === p),
     );
     if (violations.length > 0) {
       score -= 0.4;
@@ -958,7 +984,11 @@ export function gradeToolCompliance(
  * @param maxSteps case yaml 里写的预期步数上限；F-12（2026-05-30 起）：传 null/undefined/0/NaN → score=null + reason 标记 case_yaml_missing_max_steps
  * @param rubricScore 可选；rubric 维度的分数（已抓 snapToTier，0~1.0），用于"答对就不罚步数"
  */
-export function gradeEfficiency(meta: AgentMeta, maxSteps: number | null | undefined, rubricScore: number | null = null): DimScore {
+export function gradeEfficiency(
+  meta: AgentMeta,
+  maxSteps: number | null | undefined,
+  rubricScore: number | null = null,
+): DimScore {
   const { total_steps } = meta;
 
   // F-12：max_steps 缺失（null/undefined/0/NaN）→ score=null，不静默兜底 15。
@@ -1079,15 +1109,18 @@ export const CACHE_READ_DISCOUNT = 0.1;
  */
 export function calcBillable(meta: AgentMeta): number | null {
   const { total_tokens, token_breakdown } = meta;
-  if (total_tokens === 0 && (!token_breakdown || token_breakdown.input + token_breakdown.output === 0)) {
+  if (
+    total_tokens === 0 &&
+    (!token_breakdown || token_breakdown.input + token_breakdown.output === 0)
+  ) {
     return null;
   }
   if (token_breakdown) {
     return Math.round(
-      token_breakdown.input
-      + token_breakdown.output
-      + token_breakdown.cache_creation
-      + token_breakdown.cache_read * CACHE_READ_DISCOUNT
+      token_breakdown.input +
+        token_breakdown.output +
+        token_breakdown.cache_creation +
+        token_breakdown.cache_read * CACHE_READ_DISCOUNT,
     );
   }
   return total_tokens;
@@ -1107,7 +1140,7 @@ export function gradeCost(meta: AgentMeta): DimScore {
   let reasonExtra: string;
   if (token_breakdown) {
     const crDiscounted = Math.round(token_breakdown.cache_read * CACHE_READ_DISCOUNT);
-    reasonExtra = ` [billable=i${Math.round(token_breakdown.input/1000)}k+o${Math.round(token_breakdown.output/1000)}k+cc${Math.round(token_breakdown.cache_creation/1000)}k+cr${Math.round(token_breakdown.cache_read/1000)}k×${CACHE_READ_DISCOUNT}=${Math.round(crDiscounted/1000)}k]`;
+    reasonExtra = ` [billable=i${Math.round(token_breakdown.input / 1000)}k+o${Math.round(token_breakdown.output / 1000)}k+cc${Math.round(token_breakdown.cache_creation / 1000)}k+cr${Math.round(token_breakdown.cache_read / 1000)}k×${CACHE_READ_DISCOUNT}=${Math.round(crDiscounted / 1000)}k]`;
   } else {
     reasonExtra = " [no breakdown，按 total_tokens 计]";
   }
@@ -1147,7 +1180,7 @@ export function gradeCost(meta: AgentMeta): DimScore {
  */
 export function aggregate(
   dims: Record<string, DimScore>,
-  weights?: Record<string, number>
+  weights?: Record<string, number>,
 ): { score: number | null; namedScores: Record<string, number | null> } {
   const w = { ...DEFAULT_WEIGHTS, ...weights };
   let weightedSum = 0;

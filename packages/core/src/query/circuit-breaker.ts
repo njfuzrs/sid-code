@@ -54,7 +54,10 @@ export class AutoCompactCircuitBreaker {
           this.state = "half-open";
           return true;
         }
-        log.debug("CIRCUIT_BREAKER", `熔断中，剩余 ${Math.ceil((this.options.recoveryTimeMs - elapsed) / 1000)}s`);
+        log.debug(
+          "CIRCUIT_BREAKER",
+          `熔断中，剩余 ${Math.ceil((this.options.recoveryTimeMs - elapsed) / 1000)}s`,
+        );
         return false;
       }
 

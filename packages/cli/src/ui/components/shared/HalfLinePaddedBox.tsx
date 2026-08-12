@@ -71,8 +71,7 @@ const HalfLinePaddedBoxInternal: React.FC<HalfLinePaddedBoxProps> = ({
       return getSafeLowColorBackground(terminalBg);
     }
 
-    const resolvedBase =
-      resolveColor(backgroundBaseColor) || backgroundBaseColor;
+    const resolvedBase = resolveColor(backgroundBaseColor) || backgroundBaseColor;
     const resolvedTerminalBg = resolveColor(terminalBg) || terminalBg;
 
     // interpolateColor 的返回类型是宽 string（它同时服务于 ColorsTheme 的构造，那边
@@ -80,11 +79,7 @@ const HalfLinePaddedBoxInternal: React.FC<HalfLinePaddedBoxProps> = ({
     // `#rrggbb`。唯一的非 Color 返回路径是「任一入参为空 → 返回 ""」，而空串被下面的
     // `if (!backgroundColor)` 挡住（该分支直接渲染 children，不带背景），所以这里
     // 断言成 Color 是安全的。
-    return interpolateColor(
-      resolvedTerminalBg,
-      resolvedBase,
-      backgroundOpacity,
-    ) as Color;
+    return interpolateColor(resolvedTerminalBg, resolvedBase, backgroundOpacity) as Color;
   }, [backgroundBaseColor, backgroundOpacity, terminalBg, isLowColor]);
 
   if (!backgroundColor) {

@@ -45,7 +45,7 @@ export class JsonlExporter implements TelemetryExporter {
     // 上游一旦出空批次就会静默堆积垃圾字节（曾累积 190MB 纯 \n）。
     if (spans.length === 0) return;
     await this.ensureDir();
-    const lines = spans.map(s => JSON.stringify(s)).join("\n") + "\n";
+    const lines = spans.map((s) => JSON.stringify(s)).join("\n") + "\n";
     await appendFile(this.spanFile, lines, "utf-8");
     await this.rotateIfNeeded(this.spanFile, "traces");
   }
@@ -53,7 +53,7 @@ export class JsonlExporter implements TelemetryExporter {
   async exportMetrics(metrics: MetricPoint[]): Promise<void> {
     if (metrics.length === 0) return;
     await this.ensureDir();
-    const lines = metrics.map(m => JSON.stringify(m)).join("\n") + "\n";
+    const lines = metrics.map((m) => JSON.stringify(m)).join("\n") + "\n";
     await appendFile(this.metricFile, lines, "utf-8");
     await this.rotateIfNeeded(this.metricFile, "metrics");
   }
@@ -85,17 +85,23 @@ export class JsonlExporter implements TelemetryExporter {
     // 轮转：traces.jsonl → traces.1.jsonl → traces.2.jsonl → ...
     // 删除最旧的
     const oldest = join(this.options.outputDir, `${prefix}.${this.options.maxFiles}.jsonl`);
-    try { await unlink(oldest); } catch {}
+    try {
+      await unlink(oldest);
+    } catch {}
 
     // 依次重命名
     for (let i = this.options.maxFiles - 1; i >= 1; i--) {
       const from = join(this.options.outputDir, `${prefix}.${i}.jsonl`);
       const to = join(this.options.outputDir, `${prefix}.${i + 1}.jsonl`);
-      try { await rename(from, to); } catch {}
+      try {
+        await rename(from, to);
+      } catch {}
     }
 
     // 当前文件 → .1
     const first = join(this.options.outputDir, `${prefix}.1.jsonl`);
-    try { await rename(filePath, first); } catch {}
+    try {
+      await rename(filePath, first);
+    } catch {}
   }
 }

@@ -10,14 +10,14 @@
  * - 按任意键关闭启动警告
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { theme } from '../semantic-colors.ts';
-import { useUIState } from '../contexts/UIStateContext.tsx';
-import { useStreamingState, StreamingState } from '../contexts/StreamingContext.tsx';
-import { useKeypress, KeypressPriority } from '../contexts/KeypressContext.tsx';
-import { WARNING_MARK } from '../constants/figures.ts';
+import { theme } from "../semantic-colors.ts";
+import { useUIState } from "../contexts/UIStateContext.tsx";
+import { useStreamingState, StreamingState } from "../contexts/StreamingContext.tsx";
+import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import { WARNING_MARK } from "../constants/figures.ts";
 
 /** 启动警告 */
 export interface StartupWarning {
@@ -30,12 +30,7 @@ interface UpdateNotificationProps {
 }
 
 const UpdateNotification: React.FC<UpdateNotificationProps> = ({ message }) => (
-  <Box
-    borderStyle="round"
-    borderColor={theme.status.warning}
-    paddingX={1}
-    marginY={1}
-  >
+  <Box borderStyle="round" borderColor={theme.status.warning} paddingX={1} marginY={1}>
     <Text color={theme.status.warning}>{message}</Text>
   </Box>
 );
@@ -70,13 +65,16 @@ export const Notifications: React.FC<NotificationsProps> = ({
   const showStartupWarnings = visibleWarnings.length > 0;
 
   // 按任意键关闭启动警告
-  useKeypress(KeypressPriority.Critical, useCallback(() => {
-    if (showStartupWarnings) {
-      setDismissed(true);
-      return true;
-    }
-    return false;
-  }, [showStartupWarnings]));
+  useKeypress(
+    KeypressPriority.Critical,
+    useCallback(() => {
+      if (showStartupWarnings) {
+        setDismissed(true);
+        return true;
+      }
+      return false;
+    }, [showStartupWarnings]),
+  );
 
   if (!showStartupWarnings && !showInitError && !updateInfo) {
     return null;
@@ -101,15 +99,8 @@ export const Notifications: React.FC<NotificationsProps> = ({
         </Box>
       )}
       {showInitError && (
-        <Box
-          borderStyle="round"
-          borderColor={theme.status.error}
-          paddingX={1}
-          marginBottom={1}
-        >
-          <Text color={theme.status.error}>
-            初始化错误: {initError}
-          </Text>
+        <Box borderStyle="round" borderColor={theme.status.error} paddingX={1} marginBottom={1}>
+          <Text color={theme.status.error}>初始化错误: {initError}</Text>
         </Box>
       )}
     </>

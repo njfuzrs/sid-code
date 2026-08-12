@@ -76,7 +76,8 @@ async function cmdGet(name: string, asJson: boolean): Promise<void> {
 
 /** 外科式写入 user settings 的 mcpServers（复用 /mcp add 的安全写入路径）。 */
 async function saveUserServer(name: string, cfg: MCPServerConfig): Promise<void> {
-  const { getSettingsForSource, patchSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
+  const { getSettingsForSource, patchSettingsFile } =
+    await import("@sid-code/core/config/settings/settings.ts");
   const { settings } = getSettingsForSource("userSettings");
   const servers = { ...((settings?.mcpServers as Record<string, MCPServerConfig>) ?? {}) };
   servers[name] = cfg;
@@ -84,7 +85,8 @@ async function saveUserServer(name: string, cfg: MCPServerConfig): Promise<void>
 }
 
 async function removeUserServer(name: string): Promise<boolean> {
-  const { getSettingsForSource, patchSettingsFile } = await import("@sid-code/core/config/settings/settings.ts");
+  const { getSettingsForSource, patchSettingsFile } =
+    await import("@sid-code/core/config/settings/settings.ts");
   const { settings } = getSettingsForSource("userSettings");
   const servers = { ...((settings?.mcpServers as Record<string, MCPServerConfig>) ?? {}) };
   if (!servers[name]) return false;
@@ -159,7 +161,9 @@ async function cmdAdd(args: string[]): Promise<void> {
   try {
     if (scope === "project") saveProjectServer(name, cfg);
     else await saveUserServer(name, cfg);
-    console.log(`MCP 服务器 "${name}" 已添加到 ${scope} 配置（${cfg.transport}）。重启会话后生效。`);
+    console.log(
+      `MCP 服务器 "${name}" 已添加到 ${scope} 配置（${cfg.transport}）。重启会话后生效。`,
+    );
   } catch (err: any) {
     console.error(`添加失败: ${err?.message ?? err}`);
     process.exit(1);

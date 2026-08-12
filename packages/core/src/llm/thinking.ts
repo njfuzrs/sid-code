@@ -10,9 +10,9 @@ export type Complexity = "simple" | "medium" | "complex";
 
 /** Thinking 预算配置 */
 const BUDGET_MAP: Record<Complexity, number> = {
-  simple: 2000,    // 简单问题：2K tokens
-  medium: 10000,   // 中等复杂度：10K tokens
-  complex: 50000,  // 复杂架构设计：50K tokens
+  simple: 2000, // 简单问题：2K tokens
+  medium: 10000, // 中等复杂度：10K tokens
+  complex: 50000, // 复杂架构设计：50K tokens
 };
 
 /** 复杂度关键词匹配 */
@@ -98,7 +98,10 @@ export class ThinkingManager {
    * 支持用户通过关键词手动控制思考深度
    * "think" → medium, "think hard" → complex, "ultrathink" → complex (最大预算)
    */
-  parseThinkingHint(input: string): { cleaned: string; config?: { enabled: boolean; budgetTokens: number } } {
+  parseThinkingHint(input: string): {
+    cleaned: string;
+    config?: { enabled: boolean; budgetTokens: number };
+  } {
     if (!this.enabled) {
       return { cleaned: input };
     }

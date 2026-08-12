@@ -71,7 +71,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
     if (a11y) return;
     if (streamingState === StreamingState.Idle) return;
     const timer = setInterval(() => {
-      setFrame(f => (f + 1) % SPINNER_FRAMES.length);
+      setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
     }, 50); // 对齐 cc 的 ~50ms 帧率（此前 80ms 略显迟滞）
     return () => clearInterval(timer);
   }, [streamingState, a11y]);
@@ -106,9 +106,7 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   let cancelAndTimer: string | null = null;
   if (showCancelAndTimer && !isWaiting) {
     if (termWidth >= 72) {
-      cancelAndTimer = tokenStr
-        ? `(esc 取消, ${elapsed} · ${tokenStr})`
-        : `(esc 取消, ${elapsed})`;
+      cancelAndTimer = tokenStr ? `(esc 取消, ${elapsed} · ${tokenStr})` : `(esc 取消, ${elapsed})`;
     } else if (termWidth >= 60) {
       cancelAndTimer = tokenStr ? `(${elapsed} · ${tokenStr})` : `(${elapsed})`;
     } else if (termWidth >= 40) {

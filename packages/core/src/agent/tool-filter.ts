@@ -16,11 +16,11 @@ import { BUILTIN_AGENTS } from "./agent-definition.ts";
 
 /** 所有子代理都不能使用的工具（硬性禁止） */
 const ALL_AGENT_DISALLOWED_TOOLS = new Set([
-  "enter_plan_mode",   // 计划模式是主代理的状态
-  "exit_plan_mode",    // 同上
-  "save_memory",       // 记忆管理是主代理的职责
-  "task_output",       // 子代理不应读取其他任务输出
-  "task_stop",         // 子代理不应终止其他任务
+  "enter_plan_mode", // 计划模式是主代理的状态
+  "exit_plan_mode", // 同上
+  "save_memory", // 记忆管理是主代理的职责
+  "task_output", // 子代理不应读取其他任务输出
+  "task_stop", // 子代理不应终止其他任务
   // 注: todo_write 曾因全局单实例并发写污染主会话被一律禁用; P1-2 已改为每个进程内子代理在
   // buildIsolatedToolRegistry 拿独立 TodoWriteTool 实例 (spawn 路径本就是独立子进程),
   // 污染根因消除, 恢复子代理 todo 追踪能力对齐 CC per-agent 命名空间, 故不再禁用。
@@ -47,10 +47,36 @@ const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set<string>([]);
 /** 内置子代理类型的工具白名单 */
 const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
   explore: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
-  task: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list", "task_get", "task_create", "task_update", "todo_write"],
+  task: [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "glob",
+    "ls",
+    "read_many",
+    "web_fetch",
+    "web_search",
+    "task_list",
+    "task_get",
+    "task_create",
+    "task_update",
+    "todo_write",
+  ],
   plan: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
-  verify: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get", "todo_write"],  // 对抗式验证：只读 + bash 核实
-  summarize: null,  // null = 不需要工具
+  verify: [
+    "read",
+    "grep",
+    "glob",
+    "ls",
+    "read_many",
+    "bash",
+    "task_list",
+    "task_get",
+    "todo_write",
+  ], // 对抗式验证：只读 + bash 核实
+  summarize: null, // null = 不需要工具
   "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };
 
@@ -66,10 +92,21 @@ const TEAM_COMMUNICATION_TOOLS = new Set(["team_message"]);
 
 /** 异步（后台）Agent 的工具白名单 */
 const ASYNC_ALLOWED_TOOLS = new Set([
-  "read", "read_many", "write", "edit",
-  "bash", "grep", "glob", "ls",
-  "web_search", "web_fetch",
-  "task_list", "task_get", "task_create", "task_update", "todo_write",
+  "read",
+  "read_many",
+  "write",
+  "edit",
+  "bash",
+  "grep",
+  "glob",
+  "ls",
+  "web_search",
+  "web_fetch",
+  "task_list",
+  "task_get",
+  "task_create",
+  "task_update",
+  "todo_write",
 ]);
 
 export interface ToolFilterOptions {
@@ -88,16 +125,13 @@ export interface ToolFilterOptions {
 /**
  * 子代理工具过滤
  */
-export function filterToolsForAgent(
-  allTools: Tool[],
-  options: ToolFilterOptions,
-): Tool[] {
+export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions): Tool[] {
   // 内置子代理 summarize 类型不需要工具
   if (options.isBuiltIn && options.builtInType === "summarize") {
     return [];
   }
 
-  return allTools.filter(tool => {
+  return allTools.filter((tool) => {
     const name = tool.name();
 
     // MCP 工具始终通过硬性过滤（用户显式配置的）
@@ -176,11 +210,15 @@ export function resolveAgentTools(
   // 检查无效的工具名
   const invalidToolSpecs: string[] = [];
   if (agentDef.tools && !agentDef.tools.includes("*")) {
-    const resolvedNames = new Set(resolvedTools.map(t => t.name()));
+    const resolvedNames = new Set(resolvedTools.map((t) => t.name()));
     for (const name of agentDef.tools) {
       // 被策略刻意裁掉的工具不算「无效工具名」——它存在，只是当前不给这个 agent 用。
       // 含硬禁名单 + P3-1 嵌套受控名单（后者在嵌套未开启时被裁掉，属预期而非配置错误）。
-      if (!resolvedNames.has(name) && !ALL_AGENT_DISALLOWED_TOOLS.has(name) && !NESTING_GATED_TOOLS.has(name)) {
+      if (
+        !resolvedNames.has(name) &&
+        !ALL_AGENT_DISALLOWED_TOOLS.has(name) &&
+        !NESTING_GATED_TOOLS.has(name)
+      ) {
         invalidToolSpecs.push(name);
       }
     }

@@ -68,20 +68,14 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "assistant":
       return (
         <Box marginBottom={1}>
-          <AssistantMessage
-            text={item.text}
-            width={width}
-          />
+          <AssistantMessage text={item.text} width={width} />
         </Box>
       );
 
     case "assistant_content":
       return (
         <Box marginBottom={1}>
-          <AssistantMessage
-            text={item.text}
-            width={width}
-          />
+          <AssistantMessage text={item.text} width={width} />
         </Box>
       );
 
@@ -102,7 +96,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       return (
         <Box paddingLeft={2} marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text color={theme.text.secondary} italic>{item.text}</Text>
+          <Text color={theme.text.secondary} italic>
+            {item.text}
+          </Text>
         </Box>
       );
 
@@ -110,18 +106,20 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       return (
         <Box paddingLeft={2} marginBottom={1}>
           <Text color={item.color || theme.text.secondary}>
-            {item.icon ? `${item.icon} ` : "· "}{item.text}
+            {item.icon ? `${item.icon} ` : "· "}
+            {item.text}
           </Text>
-          {item.secondaryText && (
-            <Text>{" "}{item.secondaryText}</Text>
-          )}
+          {item.secondaryText && <Text> {item.secondaryText}</Text>}
         </Box>
       );
 
     case "warning":
       return (
         <Box paddingLeft={2} marginBottom={1}>
-          <Text color={theme.status.warning}>{`${WARNING_MARK} `}{item.text}</Text>
+          <Text color={theme.status.warning}>
+            {`${WARNING_MARK} `}
+            {item.text}
+          </Text>
         </Box>
       );
 
@@ -134,7 +132,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 
     case "tool_group": {
       // 将 IndividualToolCallDisplay 转换为 ToolGroupMessage 需要的格式
-      const tools = item.tools.map(t => ({
+      const tools = item.tools.map((t) => ({
         id: t.callId,
         name: t.name,
         input: t.input,
@@ -158,10 +156,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       }));
       return (
         <Box marginBottom={1}>
-          <ToolGroupMessage
-            tools={tools}
-            terminalWidth={width}
-          />
+          <ToolGroupMessage tools={tools} terminalWidth={width} />
         </Box>
       );
     }
@@ -190,14 +185,19 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
       return (
         <Box paddingLeft={2} marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text color={theme.text.secondary}>{"模型已切换为 "}<Text color={theme.text.primary}>{item.model}</Text></Text>
+          <Text color={theme.text.secondary}>
+            {"模型已切换为 "}
+            <Text color={theme.text.primary}>{item.model}</Text>
+          </Text>
         </Box>
       );
 
     case "about":
       return (
         <Box flexDirection="column" paddingX={1} marginBottom={1}>
-          <Text color={theme.text.accent} bold>sid-code {item.cliVersion}</Text>
+          <Text color={theme.text.accent} bold>
+            sid-code {item.cliVersion}
+          </Text>
           <Box paddingLeft={2} flexDirection="column">
             <Text>模型: {item.model}</Text>
             <Text>提供商: {item.provider}</Text>
@@ -208,13 +208,22 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "help":
       return (
         <Box flexDirection="column" paddingX={1} marginBottom={1}>
-          <Text color={theme.text.accent} bold>可用命令：</Text>
-          {item.commands.map(cmd => (
+          <Text color={theme.text.accent} bold>
+            可用命令：
+          </Text>
+          {item.commands.map((cmd) => (
             <Box key={cmd.name} paddingLeft={2} flexDirection="column">
               <Box>
-                <Text color={theme.text.primary} bold>{"/"}{cmd.name}</Text>
+                <Text color={theme.text.primary} bold>
+                  {"/"}
+                  {cmd.name}
+                </Text>
                 {cmd.aliases.length > 0 && (
-                  <Text>{" ("}{cmd.aliases.map(a => `/${a}`).join(", ")}{")"}</Text>
+                  <Text>
+                    {" ("}
+                    {cmd.aliases.map((a) => `/${a}`).join(", ")}
+                    {")"}
+                  </Text>
                 )}
               </Box>
               <Text>{cmd.description}</Text>
@@ -226,7 +235,9 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "stats":
       return (
         <Box flexDirection="column" paddingX={1} marginBottom={1}>
-          <Text color={theme.text.accent} bold>会话统计</Text>
+          <Text color={theme.text.accent} bold>
+            会话统计
+          </Text>
           <Box paddingLeft={2}>
             <Text>时长: {item.duration}</Text>
             <Text>输入 tokens: {formatLargeNumber(item.inputTokens)}</Text>
@@ -239,7 +250,11 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
     case "quit":
       return (
         <Box paddingX={1} marginBottom={1}>
-          <Text>{"── 会话结束 (时长: "}{item.duration}{") ──"}</Text>
+          <Text>
+            {"── 会话结束 (时长: "}
+            {item.duration}
+            {") ──"}
+          </Text>
         </Box>
       );
 
@@ -285,13 +300,21 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
 };
 
 /** 将 types.ts 的 ToolCallStatus 枚举映射为 ToolShared 的字符串状态 */
-function mapToolCallStatus(status: ToolCallStatus): "pending" | "executing" | "success" | "error" | "cancelled" {
+function mapToolCallStatus(
+  status: ToolCallStatus,
+): "pending" | "executing" | "success" | "error" | "cancelled" {
   switch (status) {
-    case ToolCallStatus.Pending: return "pending";
-    case ToolCallStatus.Executing: return "executing";
-    case ToolCallStatus.Success: return "success";
-    case ToolCallStatus.Canceled: return "cancelled";
-    case ToolCallStatus.Error: return "error";
-    default: return "pending";
+    case ToolCallStatus.Pending:
+      return "pending";
+    case ToolCallStatus.Executing:
+      return "executing";
+    case ToolCallStatus.Success:
+      return "success";
+    case ToolCallStatus.Canceled:
+      return "cancelled";
+    case ToolCallStatus.Error:
+      return "error";
+    default:
+      return "pending";
   }
 }

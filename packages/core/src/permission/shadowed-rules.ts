@@ -138,4 +138,3 @@ export function getShadowedRulesForTool(
     return t != null && t.toLowerCase() === target;
   });
 }
-

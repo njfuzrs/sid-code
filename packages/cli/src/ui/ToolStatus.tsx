@@ -61,7 +61,12 @@ function getToolLabel(name: string, input: unknown): string {
 }
 
 /** @deprecated 使用 Composer 内置的 ToolResultIndicator 替代 */
-export const ToolStatus = React.memo(function ToolStatus({ toolName, isExecuting, toolInput, lastResult }: ToolStatusProps) {
+export const ToolStatus = React.memo(function ToolStatus({
+  toolName,
+  isExecuting,
+  toolInput,
+  lastResult,
+}: ToolStatusProps) {
   const log = getLogger();
   const [showResult, setShowResult] = useState(false);
 

@@ -65,8 +65,7 @@ export function registerPrCommentsSkill(): void {
     name: "pr-comments",
     aliases: ["pr_comments"],
     description: "读取 PR 上的 reviewer 评论，逐条处理(改代码 / 生成回复)",
-    whenToUse:
-      "当用户说 'pr comments'、'处理评审意见'、'回复 PR 评论'、'reviewer 提的意见' 时",
+    whenToUse: "当用户说 'pr comments'、'处理评审意见'、'回复 PR 评论'、'reviewer 提的意见' 时",
     argumentHint: "[PR 编号或 URL]",
     // fork 模式：白名单真实生效（含 edit/write 以便改代码）
     allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
@@ -77,10 +76,7 @@ export function registerPrCommentsSkill(): void {
     maxTurns: 30,
     timeoutMins: 15, // 多轮拉取评论 + 改代码 + 验证，2 分钟不够
     async getPromptForCommand(args) {
-      return (
-        PR_COMMENTS_PROMPT +
-        (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
-      );
+      return PR_COMMENTS_PROMPT + (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "");
     },
   });
 }

@@ -16,10 +16,10 @@
 
 /** Recovery 触发场景 (ADR-028 §3.2) */
 export type RecoveryTrigger =
-  | "tool_failure"          // 通用工具失败 (isError=true)
-  | "file_not_found"        // 特化 read/edit 路径不存在
-  | "permission_denied"     // 权限拒绝 (sandbox / acceptEdits 拒绝)
-  | "user_correction";      // 用户在 plan mode 中纠正方向
+  | "tool_failure" // 通用工具失败 (isError=true)
+  | "file_not_found" // 特化 read/edit 路径不存在
+  | "permission_denied" // 权限拒绝 (sandbox / acceptEdits 拒绝)
+  | "user_correction"; // 用户在 plan mode 中纠正方向
 
 /**
  * 按「实际错误消息内容」而非「工具名」判定 recovery 触发类型。
@@ -36,10 +36,7 @@ export type RecoveryTrigger =
  *      注意: "是一个目录 / 不是文件" **不算** file_not_found —— 路径存在, 只是类型不符
  *   3. tool_failure      —— 其余全部走通用分支, hint 会回显真实错误消息(不臆造原因)
  */
-export function classifyRecoveryTrigger(
-  _toolName: string,
-  errorMessage: string,
-): RecoveryTrigger {
+export function classifyRecoveryTrigger(_toolName: string, errorMessage: string): RecoveryTrigger {
   const msg = errorMessage || "";
 
   // 1) 权限拒绝: 无权限 / permission denied / EACCES / EPERM / 权限被拒
@@ -106,10 +103,8 @@ export class DefaultRecoveryHook implements RecoveryHook {
   }
 
   buildRecoveryHint(trigger: RecoveryTrigger, ctx: RecoveryContext): string {
-    const head =
-      `[plan-recovery] 上一步工具调用失败, 建议更新 plan 反映新策略后再继续:`;
-    const tail =
-      `提示: 不要无声忽略错误; 也不要 hallucinate 创建不存在的目录或文件. 如果失败的路径已经被改/删, 请在 plan 中显式承认.`;
+    const head = `[plan-recovery] 上一步工具调用失败, 建议更新 plan 反映新策略后再继续:`;
+    const tail = `提示: 不要无声忽略错误; 也不要 hallucinate 创建不存在的目录或文件. 如果失败的路径已经被改/删, 请在 plan 中显式承认.`;
 
     switch (trigger) {
       case "file_not_found":

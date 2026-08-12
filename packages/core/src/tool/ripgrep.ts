@@ -87,10 +87,9 @@ function getTimeoutMs(): number {
   if (envSeconds > 0) return envSeconds * 1000;
 
   // WSL 文件 I/O 比原生慢 3-5x
-  const isWsl = platform() === "linux" && (
-    process.env.WSL_DISTRO_NAME !== undefined ||
-    process.env.WSLENV !== undefined
-  );
+  const isWsl =
+    platform() === "linux" &&
+    (process.env.WSL_DISTRO_NAME !== undefined || process.env.WSLENV !== undefined);
   return isWsl ? 60_000 : 20_000;
 }
 
@@ -109,10 +108,7 @@ export class RipgrepTimeoutError extends Error {
  * 检查是否 EAGAIN 错误（资源暂时不可用）
  */
 function isEagainError(stderr: string): boolean {
-  return (
-    stderr.includes("os error 11") ||
-    stderr.includes("Resource temporarily unavailable")
-  );
+  return stderr.includes("os error 11") || stderr.includes("Resource temporarily unavailable");
 }
 
 /**
@@ -152,11 +148,22 @@ async function readStreamWithLimit(
  * Bun 的 spawn 返回 ReadableStream，不使用 Node.js EventEmitter API
  */
 function collectOutput(child: ReturnType<typeof spawn>): {
-  promise: Promise<{ stdout: string; stderr: string; truncatedStdout: boolean; truncatedStderr: boolean }>;
+  promise: Promise<{
+    stdout: string;
+    stderr: string;
+    truncatedStdout: boolean;
+    truncatedStderr: boolean;
+  }>;
   cleanup: () => void;
 } {
-  const stdoutPromise = readStreamWithLimit(child.stdout as ReadableStream<Uint8Array> | null, MAX_BUFFER_SIZE);
-  const stderrPromise = readStreamWithLimit(child.stderr as ReadableStream<Uint8Array> | null, MAX_BUFFER_SIZE);
+  const stdoutPromise = readStreamWithLimit(
+    child.stdout as ReadableStream<Uint8Array> | null,
+    MAX_BUFFER_SIZE,
+  );
+  const stderrPromise = readStreamWithLimit(
+    child.stderr as ReadableStream<Uint8Array> | null,
+    MAX_BUFFER_SIZE,
+  );
 
   const promise = Promise.all([stdoutPromise, stderrPromise]).then(([stdout, stderr]) => ({
     stdout: stdout.text,
@@ -252,9 +259,7 @@ async function ripGrepInternal(
     }
 
     // 其他错误（如 exit code 2: 无效参数/flag）
-    throw new Error(
-      `ripgrep 退出码 ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`,
-    );
+    throw new Error(`ripgrep 退出码 ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`);
   } catch (err: any) {
     cleanup();
     clearTimeout(timeoutId);

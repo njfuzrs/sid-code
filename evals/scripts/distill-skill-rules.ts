@@ -47,7 +47,7 @@ const TRAJ_ROOT =
 const REAL_TASKS_ROOT = join(REPO_ROOT, "evals/real-tasks");
 const REPORT_DIR = join(REPO_ROOT, "_reports");
 
-const THRESHOLD = 0.30;
+const THRESHOLD = 0.3;
 
 export type RepoSource = "sid-code" | "external" | "unknown";
 
@@ -76,9 +76,17 @@ export function classifyTaskSourceRepo(taskYaml: any): RepoClassification {
   // 规则 1：working_directory 非空
   if (wd) {
     if (/sid-code/i.test(wd)) {
-      return { taskId, source: "sid-code", evidence: `working_directory contains 'sid-code': ${wd.slice(0, 80)}` };
+      return {
+        taskId,
+        source: "sid-code",
+        evidence: `working_directory contains 'sid-code': ${wd.slice(0, 80)}`,
+      };
     }
-    return { taskId, source: "external", evidence: `working_directory points elsewhere: ${wd.slice(0, 80)}` };
+    return {
+      taskId,
+      source: "external",
+      evidence: `working_directory points elsewhere: ${wd.slice(0, 80)}`,
+    };
   }
 
   // 规则 2：text 中绝对路径线索
@@ -88,16 +96,30 @@ export function classifyTaskSourceRepo(taskYaml: any): RepoClassification {
   }
 
   // 外部项目路径
-  const externalPathRe = /\/project\/|\/Users\/[^\s'"`]+\/(prd|docs-research|claude-trace|trajectory-platform|Code\/[A-Za-z]+)\b|github\.com\/(?!.*sid-code)/i;
+  const externalPathRe =
+    /\/project\/|\/Users\/[^\s'"`]+\/(prd|docs-research|claude-trace|trajectory-platform|Code\/[A-Za-z]+)\b|github\.com\/(?!.*sid-code)/i;
   if (externalPathRe.test(text)) {
     return { taskId, source: "external", evidence: `text references external project path` };
   }
 
   // 规则 3：sid-code 子系统名混合（src/agent/ + src/debug/ 这种组合是强特征）
-  const sidSubsystems = ["src/agent/", "src/debug/", "src/trace/", "src/telemetry/", "src/skill/", "src/permission/", "src/ui/app", "src/entrypoints/"];
+  const sidSubsystems = [
+    "src/agent/",
+    "src/debug/",
+    "src/trace/",
+    "src/telemetry/",
+    "src/skill/",
+    "src/permission/",
+    "src/ui/app",
+    "src/entrypoints/",
+  ];
   const hits = sidSubsystems.filter((s) => lower.includes(s)).length;
   if (hits >= 2) {
-    return { taskId, source: "sid-code", evidence: `text mentions ${hits} sid-code-specific subsystems` };
+    return {
+      taskId,
+      source: "sid-code",
+      evidence: `text mentions ${hits} sid-code-specific subsystems`,
+    };
   }
 
   // 规则 4：字面 sid-code 关键词
@@ -106,7 +128,11 @@ export function classifyTaskSourceRepo(taskYaml: any): RepoClassification {
   }
 
   // 规则 5：unknown
-  return { taskId, source: "unknown", evidence: "no repo signal in working_directory or instruction.text" };
+  return {
+    taskId,
+    source: "unknown",
+    evidence: "no repo signal in working_directory or instruction.text",
+  };
 }
 
 export interface DistillCheckResult {
@@ -121,7 +147,10 @@ export interface DistillCheckResult {
   rejectReasons?: string[];
 }
 
-export function checkExternalRatio(items: RepoClassification[], threshold = THRESHOLD): DistillCheckResult {
+export function checkExternalRatio(
+  items: RepoClassification[],
+  threshold = THRESHOLD,
+): DistillCheckResult {
   const sidCount = items.filter((c) => c.source === "sid-code").length;
   const externalCount = items.filter((c) => c.source === "external").length;
   const unknownCount = items.filter((c) => c.source === "unknown").length;
@@ -131,7 +160,10 @@ export function checkExternalRatio(items: RepoClassification[], threshold = THRE
   const rejectReasons: string[] = [];
   if (!passed) {
     if (denominator === 0) rejectReasons.push("有效 task 数（sid+external）= 0，无法计算比例");
-    else if (externalRatio < threshold) rejectReasons.push(`external_ratio=${(externalRatio * 100).toFixed(1)}% < threshold=${(threshold * 100).toFixed(0)}%`);
+    else if (externalRatio < threshold)
+      rejectReasons.push(
+        `external_ratio=${(externalRatio * 100).toFixed(1)}% < threshold=${(threshold * 100).toFixed(0)}%`,
+      );
   }
   return {
     passed,
@@ -217,7 +249,10 @@ function parseCli(argv: string[]): CliArgs {
         out.sourceMode = (argv[++i] as CliArgs["sourceMode"]) ?? "real-tasks";
         break;
       case "--tasks":
-        out.taskIds = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+        out.taskIds = (argv[++i] ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
         break;
       case "--json":
         out.json = true;
@@ -245,7 +280,9 @@ function renderMd(r: DistillCheckResult, mode: string): string {
   lines.push(`## 1. 判定结果`);
   lines.push(``);
   lines.push(`- 状态：${r.passed ? "✅ PASS（蒸馏可继续）" : "❌ REJECT（蒸馏作废）"}`);
-  lines.push(`- external_ratio：**${(r.externalRatio * 100).toFixed(1)}%**（阈值 ${(r.threshold * 100).toFixed(0)}%）`);
+  lines.push(
+    `- external_ratio：**${(r.externalRatio * 100).toFixed(1)}%**（阈值 ${(r.threshold * 100).toFixed(0)}%）`,
+  );
   lines.push(`- 计入分母：${r.sidCount + r.externalCount}（sid-code + external，unknown 不计入）`);
   lines.push(`- 总条数：${r.total}（含 ${r.unknownCount} 条 unknown）`);
   if (!r.passed && r.rejectReasons) {
@@ -275,11 +312,17 @@ function renderMd(r: DistillCheckResult, mode: string): string {
   lines.push(``);
   lines.push(`## 4. 后续动作（路线 §13.4.4）`);
   if (r.passed) {
-    lines.push(`- ✅ 护栏 1 通过 → 蒸馏阶段可继续；下一步过 **护栏 2**（B7-7：holdout 200 条 execution 回归）`);
+    lines.push(
+      `- ✅ 护栏 1 通过 → 蒸馏阶段可继续；下一步过 **护栏 2**（B7-7：holdout 200 条 execution 回归）`,
+    );
     lines.push(`- 季度复检 **护栏 3**（B7-8：GitHub Top 100 paired comparison）失败模式占比`);
   } else {
-    lines.push(`- ❌ 护栏 1 拒绝 → 蒸馏作废；增加来自非 sid-code 仓库的轨迹（建议主动跑 claude-trace 在 React/Django/FastAPI/Next.js 等开源 repo 上采集 ≥ 100 条）`);
-    lines.push(`- 当前 unknown 占 ${r.unknownCount} 条 → 完善 task.yaml 的 working_directory 字段，避免被规则误归类`);
+    lines.push(
+      `- ❌ 护栏 1 拒绝 → 蒸馏作废；增加来自非 sid-code 仓库的轨迹（建议主动跑 claude-trace 在 React/Django/FastAPI/Next.js 等开源 repo 上采集 ≥ 100 条）`,
+    );
+    lines.push(
+      `- 当前 unknown 占 ${r.unknownCount} 条 → 完善 task.yaml 的 working_directory 字段，避免被规则误归类`,
+    );
   }
   return lines.join("\n");
 }
@@ -308,8 +351,12 @@ async function main() {
     process.stdout.write("\n");
   } else {
     console.log(`[B7-6 护栏 1] ${modeLabel}`);
-    console.log(`  external=${result.externalCount} sid-code=${result.sidCount} unknown=${result.unknownCount}`);
-    console.log(`  external_ratio=${(result.externalRatio * 100).toFixed(1)}% （阈值 ${(args.threshold * 100).toFixed(0)}%）`);
+    console.log(
+      `  external=${result.externalCount} sid-code=${result.sidCount} unknown=${result.unknownCount}`,
+    );
+    console.log(
+      `  external_ratio=${(result.externalRatio * 100).toFixed(1)}% （阈值 ${(args.threshold * 100).toFixed(0)}%）`,
+    );
     console.log(`  状态：${result.passed ? "✅ PASS" : "❌ REJECT"}`);
     if (!result.passed) {
       for (const r of result.rejectReasons ?? []) console.log(`  - ${r}`);
@@ -317,7 +364,8 @@ async function main() {
   }
 
   // 报告落盘（默认 _reports/distill-guardrail-1-<mode>.md）
-  const reportPath = args.reportPath ?? join(REPORT_DIR, `distill-guardrail-1-${args.sourceMode}.md`);
+  const reportPath =
+    args.reportPath ?? join(REPORT_DIR, `distill-guardrail-1-${args.sourceMode}.md`);
   mkdirSync(REPORT_DIR, { recursive: true });
   writeFileSync(reportPath, renderMd(result, modeLabel), "utf-8");
   if (!args.json) console.log(`  报告：${reportPath}`);

@@ -75,8 +75,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".py": "python",
       ".pyi": "python",
     },
-    installHint:
-      "Python 需 Pyright，安装：npm i -g pyright（或用 pip install pyright）",
+    installHint: "Python 需 Pyright，安装：npm i -g pyright（或用 pip install pyright）",
   },
   {
     name: "go",
@@ -105,8 +104,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".json": "json",
       ".jsonc": "jsonc",
     },
-    installHint:
-      "JSON 需 vscode-json-language-server，安装：npm i -g vscode-langservers-extracted",
+    installHint: "JSON 需 vscode-json-language-server，安装：npm i -g vscode-langservers-extracted",
   },
   {
     name: "yaml",
@@ -116,8 +114,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".yaml": "yaml",
       ".yml": "yaml",
     },
-    installHint:
-      "YAML 需 yaml-language-server，安装：npm i -g yaml-language-server",
+    installHint: "YAML 需 yaml-language-server，安装：npm i -g yaml-language-server",
   },
   {
     name: "html",
@@ -127,8 +124,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".html": "html",
       ".htm": "html",
     },
-    installHint:
-      "HTML 需 vscode-html-language-server，安装：npm i -g vscode-langservers-extracted",
+    installHint: "HTML 需 vscode-html-language-server，安装：npm i -g vscode-langservers-extracted",
   },
   {
     name: "css",
@@ -139,8 +135,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".scss": "scss",
       ".less": "less",
     },
-    installHint:
-      "CSS 需 vscode-css-language-server，安装：npm i -g vscode-langservers-extracted",
+    installHint: "CSS 需 vscode-css-language-server，安装：npm i -g vscode-langservers-extracted",
   },
   {
     name: "bash",
@@ -150,8 +145,7 @@ export const BUILTIN_LSP_SERVERS: readonly BuiltinLSPServer[] = [
       ".sh": "shellscript",
       ".bash": "shellscript",
     },
-    installHint:
-      "Shell 需 bash-language-server，安装：npm i -g bash-language-server",
+    installHint: "Shell 需 bash-language-server，安装：npm i -g bash-language-server",
   },
 ] as const;
 
@@ -190,10 +184,7 @@ function extOf(filePath: string): string {
  * @param filePath 触发路由未命中的文件绝对路径
  * @param globalConfigPath 全局 lsp.json 路径（由调用方注入，避免此模块依赖 paths.ts）
  */
-export function describeMissingServer(
-  filePath: string,
-  globalConfigPath: string,
-): string {
+export function describeMissingServer(filePath: string, globalConfigPath: string): string {
   const ext = extOf(filePath);
   const builtin = ext ? EXTENSION_TO_BUILTIN.get(ext) : undefined;
 

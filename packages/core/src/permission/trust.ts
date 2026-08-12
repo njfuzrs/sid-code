@@ -15,9 +15,9 @@ import { sidPaths } from "../config/paths.ts";
 /** 信任检查项 */
 export interface TrustCheckItem {
   type: "hooks" | "mcp_servers" | "env_vars" | "bash_permissions";
-  source: string;       // 来源文件路径
-  description: string;  // 人类可读描述
-  details?: string;     // 具体内容（脱敏后）
+  source: string; // 来源文件路径
+  description: string; // 人类可读描述
+  details?: string; // 具体内容（脱敏后）
 }
 
 /**
@@ -54,7 +54,7 @@ export function clearPendingTrust(): void {
 /** 信任状态 */
 export interface TrustState {
   accepted: boolean;
-  sessionOnly: boolean;  // 家目录 = true
+  sessionOnly: boolean; // 家目录 = true
   checkedItems: TrustCheckItem[];
 }
 
@@ -143,8 +143,8 @@ export class TrustManager {
       // 检查 Bash 权限规则
       const perms = settings.permissions;
       if (perms?.allow) {
-        const bashRules = (perms.allow as string[]).filter(r =>
-          r.toLowerCase().startsWith("bash")
+        const bashRules = (perms.allow as string[]).filter((r) =>
+          r.toLowerCase().startsWith("bash"),
         );
         if (bashRules.length > 0) {
           items.push({
@@ -177,7 +177,7 @@ export class TrustManager {
     const configHash = await this.getConfigHash();
     const trusted = await this.loadTrustedProjects();
 
-    const record = trusted.projects.find(p => p.pathHash === pathHash);
+    const record = trusted.projects.find((p) => p.pathHash === pathHash);
     if (!record) return false;
 
     // 配置变更后需要重新信任
@@ -208,7 +208,7 @@ export class TrustManager {
     const trusted = await this.loadTrustedProjects();
 
     // 更新或添加记录
-    const existing = trusted.projects.findIndex(p => p.pathHash === pathHash);
+    const existing = trusted.projects.findIndex((p) => p.pathHash === pathHash);
     const record: TrustedProject = {
       pathHash,
       trustedAt: new Date().toISOString(),
@@ -233,7 +233,7 @@ export class TrustManager {
     this.sessionTrust = false;
     const pathHash = this.getPathHash();
     const trusted = await this.loadTrustedProjects();
-    trusted.projects = trusted.projects.filter(p => p.pathHash !== pathHash);
+    trusted.projects = trusted.projects.filter((p) => p.pathHash !== pathHash);
     await this.saveTrustedProjects(trusted);
   }
 

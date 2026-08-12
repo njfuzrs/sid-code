@@ -28,14 +28,12 @@ export interface SedWriteInfo {
 export function detectSedWrite(command: string): SedWriteInfo {
   // 匹配 sed -i 或 sed --in-place
   const sedMatch = command.match(
-    /sed\s+(-i\S*|--in-place\S*)\s+(['"]?)s\/(.+?)\/(.+?)\/(g?)\2\s+(\S+)/
+    /sed\s+(-i\S*|--in-place\S*)\s+(['"]?)s\/(.+?)\/(.+?)\/(g?)\2\s+(\S+)/,
   );
 
   if (!sedMatch) {
     // 尝试更宽松的匹配（sed -i 后跟任意表达式）
-    const looseMatch = command.match(
-      /sed\s+(-i\S*|--in-place\S*)\s+.+?\s+(\S+)\s*$/
-    );
+    const looseMatch = command.match(/sed\s+(-i\S*|--in-place\S*)\s+.+?\s+(\S+)\s*$/);
     if (looseMatch) {
       return {
         isSedWrite: true,
@@ -125,6 +123,7 @@ export function detectDangerousSed(command: string): DangerousSedInfo {
  * 用于降低独立 e/w/r 命令检测的误报——只在明显是 sed 脚本时才拦。
  */
 function hasSedExprContext(command: string): boolean {
-  return /g?sed\s+(-[a-z]*e|--expression|['"])/i.test(command) ||
-    /g?sed\s+[^|;&]*['"]/.test(command);
+  return (
+    /g?sed\s+(-[a-z]*e|--expression|['"])/i.test(command) || /g?sed\s+[^|;&]*['"]/.test(command)
+  );
 }

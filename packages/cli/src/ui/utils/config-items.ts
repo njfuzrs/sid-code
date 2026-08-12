@@ -139,7 +139,10 @@ export function extractConfigItems(
   items.push({
     key: "permissionMode",
     value: runtime?.permissionMode ?? config.permissionMode,
-    source: runtime?.permissionMode && runtime.permissionMode !== config.permissionMode ? "session" : detectSource("permissionMode", config.permissionMode),
+    source:
+      runtime?.permissionMode && runtime.permissionMode !== config.permissionMode
+        ? "session"
+        : detectSource("permissionMode", config.permissionMode),
     group: "权限",
     description: "工具调用权限模式",
     relatedCommand: "/permissions 管理规则",

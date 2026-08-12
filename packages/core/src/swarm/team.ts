@@ -149,7 +149,8 @@ export class TeamManager {
   private async setupTeammateDisplay(): Promise<void> {
     if (this.teammateMode !== "tmux") return;
     try {
-      const { createTeamTmuxSession, generateTeamTmuxSessionName } = await import("../worktree/tmux.ts");
+      const { createTeamTmuxSession, generateTeamTmuxSessionName } =
+        await import("../worktree/tmux.ts");
       const name = generateTeamTmuxSessionName(this.teamName);
       this.tmuxSession = createTeamTmuxSession(name, this.opts.baseDir ?? process.cwd());
     } catch (err: any) {
@@ -159,12 +160,18 @@ export class TeamManager {
     if (!this.tmuxSession) {
       // 降级：把生效模式改回 in-process，后续不再尝试开 pane（避免每个成员各失败一次）。
       this.teammateMode = "in-process";
-      getLogger().warn("SWARM", "teammateMode=tmux 不可用，已降级为 in-process（成员输出仍汇总回主对话）");
+      getLogger().warn(
+        "SWARM",
+        "teammateMode=tmux 不可用，已降级为 in-process（成员输出仍汇总回主对话）",
+      );
     }
   }
 
   /** P3-2：给某成员开观察 pane（tail 其落盘输出）。非 tmux 模式直接跳过。 */
-  private async attachMemberPane(memberName: string, outputFile: string | undefined): Promise<void> {
+  private async attachMemberPane(
+    memberName: string,
+    outputFile: string | undefined,
+  ): Promise<void> {
     if (this.teammateMode !== "tmux" || !this.tmuxSession || !outputFile) return;
     try {
       const { createTeammatePane } = await import("../worktree/tmux.ts");
@@ -188,7 +195,11 @@ export class TeamManager {
   private createEscalateChecker(baseChecker: Checker, teammateName: string): Checker {
     const permSync = this.permissionSync;
     return {
-      async check(req: PermissionRequest, tool?: unknown, toolContext?: unknown): Promise<Decision> {
+      async check(
+        req: PermissionRequest,
+        tool?: unknown,
+        toolContext?: unknown,
+      ): Promise<Decision> {
         const decision = await baseChecker.check(req, tool, toolContext);
 
         // 直接允许或直接拒绝(非 ask) → 照常
@@ -199,7 +210,8 @@ export class TeamManager {
         const verdict = await permSync.requestPermission({
           teammate: teammateName,
           toolName: req.toolName,
-          description: req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 120)}`,
+          description:
+            req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 120)}`,
         });
 
         if (verdict === "allow" || verdict === "allow-always") {
@@ -293,7 +305,10 @@ export class TeamManager {
         }
         // 已完整复原全部成员映射时直接复用（不重建），保留历史完成态与依赖。
         if (this.memberTaskIds.size === this.opts.members.length) {
-          log.info("TEAM_TASKS", `团队 "${this.teamName}" 从历史任务文件恢复 ${this.memberTaskIds.size} 个任务`);
+          log.info(
+            "TEAM_TASKS",
+            `团队 "${this.teamName}" 从历史任务文件恢复 ${this.memberTaskIds.size} 个任务`,
+          );
           return;
         }
         // 映射不完整（成员集变更）→ 放弃复用，只清本团队分区后重建，避免半吊子状态。
@@ -345,7 +360,10 @@ export class TeamManager {
       this.sharedTaskIds.push(task.id);
     }
     if (this.sharedTaskIds.length > 0) {
-      log.info("TEAM_TASKS", `团队 "${this.teamName}" 共享任务池: ${this.sharedTaskIds.length} 个待认领任务`);
+      log.info(
+        "TEAM_TASKS",
+        `团队 "${this.teamName}" 共享任务池: ${this.sharedTaskIds.length} 个待认领任务`,
+      );
     }
 
     persistTeamTasks(this.teamName, this.opts.baseDir);
@@ -448,9 +466,7 @@ export class TeamManager {
     try {
       const results = await Promise.race([
         Promise.all(
-          this.opts.members.map((m) =>
-            this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal),
-          ),
+          this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal)),
         ),
         teamTimeoutPromise,
       ]);
@@ -540,24 +556,16 @@ export class TeamManager {
         isolatedCwd = worktreeSession.worktreePath;
       }
 
-      const sub = SubAgent.fromRegistry(
-        this.opts.providerRegistry,
-        this.opts.toolRegistry,
-      );
+      const sub = SubAgent.fromRegistry(this.opts.providerRegistry, this.opts.toolRegistry);
       // 注入权限检查器：基于主 checker 的 dontAsk 语义 + escalate 到 leader
       if (this.opts.subAgentChecker) {
-        const escalateChecker = this.createEscalateChecker(
-          this.opts.subAgentChecker,
-          member.name,
-        );
+        const escalateChecker = this.createEscalateChecker(this.opts.subAgentChecker, member.name);
         sub.setPermissionChecker(escalateChecker);
       }
       // T5-B2：合并成员自身 signal 与 team 级 signal——team 超时时 teamSignal abort，
       // 成员执行随之中断，不再留后台孤儿。任一 signal 缺省则退化为另一个。
       const memberSignal =
-        signal && teamSignal
-          ? AbortSignal.any([signal, teamSignal])
-          : (signal ?? teamSignal);
+        signal && teamSignal ? AbortSignal.any([signal, teamSignal]) : (signal ?? teamSignal);
 
       // P3-2：tmux 模式下预建任务，以便拿到 outputFile 并为该成员开观察 pane。
       // 预建同时把 taskId/abortController 交给子代理复用（_taskId 路径），避免重复建任务。
@@ -577,7 +585,10 @@ export class TeamManager {
           await this.attachMemberPane(member.name, created.taskState.outputFile);
         } catch (err: any) {
           // 预建/开窗失败不影响执行——回落到不带 _taskId 的常规路径。
-          log.debug("SWARM", `teammate 观察窗预建任务失败 (${member.name}): ${err?.message ?? err}`);
+          log.debug(
+            "SWARM",
+            `teammate 观察窗预建任务失败 (${member.name}): ${err?.message ?? err}`,
+          );
           preTaskId = undefined;
           preAbort = undefined;
         }
@@ -606,27 +617,28 @@ export class TeamManager {
             mailbox: this.mailbox,
             memberNames: this.opts.members.map((m) => m.name),
           },
-          () => sub.execute(
-          {
-            type: member.type,
-            description: `[${this.teamName}] ${label}`,
-            prompt,
-            cwd: isolatedCwd, // B7: withAgentCwd 隔离，并发安全
-            // P3-2：tmux 模式预建的任务只复用给第一段（成员自己的活）——观察 pane 正 tail
-            // 它的输出文件。后续认领任务各自建新任务（takePreTask 取一次即清空）。
-            ...takePreTask(),
-            // P1-3：双向通信——每轮开始时 drain 本成员收件箱里的未读消息
-            //（来自 leader 或其他 peer 成员），格式化后由子代理注入上下文。
-            drainInbox: () => {
-              const msgs = this.mailbox.drain(member.name);
-              return msgs.map((m) => {
-                const kind = m.kind ? `(${m.kind})` : "";
-                return `来自 ${m.from}${kind}：${m.content}`;
-              });
-            },
-          },
-          memberSignal,
-          ),
+          () =>
+            sub.execute(
+              {
+                type: member.type,
+                description: `[${this.teamName}] ${label}`,
+                prompt,
+                cwd: isolatedCwd, // B7: withAgentCwd 隔离，并发安全
+                // P3-2：tmux 模式预建的任务只复用给第一段（成员自己的活）——观察 pane 正 tail
+                // 它的输出文件。后续认领任务各自建新任务（takePreTask 取一次即清空）。
+                ...takePreTask(),
+                // P1-3：双向通信——每轮开始时 drain 本成员收件箱里的未读消息
+                //（来自 leader 或其他 peer 成员），格式化后由子代理注入上下文。
+                drainInbox: () => {
+                  const msgs = this.mailbox.drain(member.name);
+                  return msgs.map((m) => {
+                    const kind = m.kind ? `(${m.kind})` : "";
+                    return `来自 ${m.from}${kind}：${m.content}`;
+                  });
+                },
+              },
+              memberSignal,
+            ),
         );
         // 结果回写到 leader 邮箱
         this.mailbox.send({
@@ -656,7 +668,10 @@ export class TeamManager {
         });
         if (!claimed) break;
         persistTeamTasks(this.teamName, this.opts.baseDir);
-        log.info("TEAM_TASKS", `成员 "${member.name}" 认领共享任务 #${claimed.id}: ${claimed.subject}`);
+        log.info(
+          "TEAM_TASKS",
+          `成员 "${member.name}" 认领共享任务 #${claimed.id}: ${claimed.subject}`,
+        );
         try {
           const exec = await runOne(
             `${claimed.subject}\n\n${claimed.description}`,
@@ -672,8 +687,13 @@ export class TeamManager {
           });
         } catch (err: any) {
           // 单个认领任务失败不拖垮成员：标完成（记 failed）释放下游依赖后继续认领。
-          log.warn("TEAM_TASKS", `成员 "${member.name}" 执行认领任务 #${claimed.id} 失败: ${err?.message ?? err}`);
-          claimedOutputs.push(`\n\n--- 认领任务 #${claimed.id} 执行失败：${err?.message ?? err} ---`);
+          log.warn(
+            "TEAM_TASKS",
+            `成员 "${member.name}" 执行认领任务 #${claimed.id} 失败: ${err?.message ?? err}`,
+          );
+          claimedOutputs.push(
+            `\n\n--- 认领任务 #${claimed.id} 执行失败：${err?.message ?? err} ---`,
+          );
           result.success = false;
           updateStructuredTask(claimed.id, {
             status: "completed",

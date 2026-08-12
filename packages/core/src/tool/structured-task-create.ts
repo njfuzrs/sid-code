@@ -16,11 +16,10 @@ const taskCreateSchema = lazySchema(() =>
     active_form: z
       .string()
       .optional()
-      .describe("in_progress 时 spinner 展示的进行时描述（如「Running tests」），省略则展示 subject"),
-    metadata: z
-      .record(z.string(), z.unknown())
-      .optional()
-      .describe("附加到任务的任意元数据"),
+      .describe(
+        "in_progress 时 spinner 展示的进行时描述（如「Running tests」），省略则展示 subject",
+      ),
+    metadata: z.record(z.string(), z.unknown()).optional().describe("附加到任务的任意元数据"),
   }),
 );
 

@@ -31,10 +31,7 @@ export interface StreamingScrollController {
 }
 
 export function useStreamingScroll(): StreamingScrollController {
-  const [state, dispatch] = useReducer(
-    streamingScrollReducer,
-    INITIAL_STREAMING_SCROLL_STATE,
-  );
+  const [state, dispatch] = useReducer(streamingScrollReducer, INITIAL_STREAMING_SCROLL_STATE);
 
   const onStreamToken = useCallback(() => dispatch({ type: "stream_token" }), []);
   const onUserScrollUp = useCallback(() => dispatch({ type: "user_scroll_up" }), []);

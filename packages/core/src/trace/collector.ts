@@ -11,7 +11,16 @@
 
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  unlinkSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  rmSync,
+} from "node:fs";
 import {
   HookEventName,
   type HookInput,
@@ -70,8 +79,8 @@ function extractSystemPromptText(system: unknown): string {
   if (typeof system === "string") return system;
   if (Array.isArray(system)) {
     return (system as Array<Record<string, unknown>>)
-      .filter(b => b.type === "text")
-      .map(b => b.text as string)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text as string)
       .join("\n");
   }
   return "";
@@ -85,11 +94,7 @@ function extractSystemPromptText(system: unknown): string {
 // tools 定义（10-20k）才是大头，导致旧估算低估 ~380 倍。现把 system / tools 一并计入。
 //
 // 纯本地、无外部依赖；容错：任何异常返回当前累计值，绝不抛。
-function estimateMessagesTokens(
-  rawMessages: unknown[],
-  system?: unknown,
-  tools?: unknown,
-): number {
+function estimateMessagesTokens(rawMessages: unknown[], system?: unknown, tools?: unknown): number {
   let total = 0;
   try {
     for (const msg of rawMessages) {
@@ -194,8 +199,7 @@ export class TraceCollector {
   private readonly tokenEstimator = new TokenEstimator();
 
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
-    this.outputDir = options.outputDir
-      ?? sidPaths.trajectories();
+    this.outputDir = options.outputDir ?? sidPaths.trajectories();
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
     this.uploader = uploader;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
@@ -228,7 +232,11 @@ export class TraceCollector {
         .map((e) => {
           const dir = join(sessionsDir, e.name);
           let mtime = 0;
-          try { mtime = statSync(dir).mtimeMs; } catch { /* 忽略 */ }
+          try {
+            mtime = statSync(dir).mtimeMs;
+          } catch {
+            /* 忽略 */
+          }
           const uploaded = existsSync(join(dir, ".uploaded"));
           return { dir, mtime, uploaded };
         });
@@ -247,10 +255,15 @@ export class TraceCollector {
         try {
           rmSync(e.dir, { recursive: true, force: true });
           removed++;
-        } catch { /* 单个删除失败不影响其余 */ }
+        } catch {
+          /* 单个删除失败不影响其余 */
+        }
       }
       if (removed > 0) {
-        getLogger().info("TRACE", `LRU 清理：本地会话 ${entries.length} 个超过上限 ${this.maxSessionsRetained}，已删除最旧 ${removed} 个`);
+        getLogger().info(
+          "TRACE",
+          `LRU 清理：本地会话 ${entries.length} 个超过上限 ${this.maxSessionsRetained}，已删除最旧 ${removed} 个`,
+        );
       }
     } catch (err) {
       getLogger().warn("TRACE", `LRU 清理失败（不影响采集）: ${err}`);
@@ -282,11 +295,7 @@ export class TraceCollector {
    */
   private pruneStaleBlankSessions(): void {
     /** "未开工"事件白名单：只出现这些 = 会话从未真正开始工作 */
-    const IDLE_ONLY_EVENTS = new Set([
-      "SessionStart",
-      "SessionEnd",
-      "GatewayPricingSync",
-    ]);
+    const IDLE_ONLY_EVENTS = new Set(["SessionStart", "SessionEnd", "GatewayPricingSync"]);
     /** 除 events.jsonl / warn.log / heartbeat.txt 外，任何文件存在即视为有数据，保留 */
     const IGNORABLE_FILES = new Set(["events.jsonl", "warn.log", "heartbeat.txt"]);
     /** 目录至少静置这么久才考虑删除（防误删其它进程正在用的目录） */
@@ -338,7 +347,9 @@ export class TraceCollector {
 
           rmSync(dir, { recursive: true, force: true });
           removed++;
-        } catch { /* 单个目录失败不影响其余 */ }
+        } catch {
+          /* 单个目录失败不影响其余 */
+        }
       }
 
       if (removed > 0) {
@@ -378,10 +389,14 @@ export class TraceCollector {
             const rec = JSON.parse(trimmed) as { type?: string };
             // 完整 pair 行没有 type 字段；request_sent 预写行有 type，跳过。
             if (rec.type === undefined) count++;
-          } catch { /* 跳过损坏行 */ }
+          } catch {
+            /* 跳过损坏行 */
+          }
         }
         return count;
-      } catch { /* 读失败转下方 metadata 回退 */ }
+      } catch {
+        /* 读失败转下方 metadata 回退 */
+      }
     }
 
     // 回退：已上传清理场景，从 metadata snapshot 读历史轮次数
@@ -393,7 +408,9 @@ export class TraceCollector {
           return meta.total_api_calls;
         }
       }
-    } catch { /* 读失败视为全新会话 */ }
+    } catch {
+      /* 读失败视为全新会话 */
+    }
     return 0;
   }
 
@@ -555,7 +572,10 @@ export class TraceCollector {
         if (restored > 0) {
           this.prevMessageCount = 0; // 续接首个请求的 messages 视为全量基线
           this.resumedPairOffset = restored;
-          getLogger().info("TRACE", `resume 续接 trajectory 目录 ${traceSessionId}，已有 ${restored} 轮，index 从 ${restored + 1} 接续`);
+          getLogger().info(
+            "TRACE",
+            `resume 续接 trajectory 目录 ${traceSessionId}，已有 ${restored} 轮，index 从 ${restored + 1} 接续`,
+          );
         }
       } catch (err) {
         getLogger().warn("TRACE", `读取历史 pair 数失败（不影响续接）: ${err}`);
@@ -584,7 +604,7 @@ export class TraceCollector {
             const mainSnapshot = activeSnapshots.find((s) => s.agentId === undefined);
             const oldestAgent = activeSnapshots
               .filter((s) => s.agentId !== undefined)
-              .reduce<typeof activeSnapshots[number] | undefined>(
+              .reduce<(typeof activeSnapshots)[number] | undefined>(
                 (acc, s) => (!acc || s.startedAt < acc.startedAt ? s : acc),
                 undefined,
               );
@@ -607,7 +627,7 @@ export class TraceCollector {
             // activeRequest 为 null，此前心跳就只剩时间戳，进程 hang 时看不出卡在哪。
             // 兜底塞入 last_known_state（§3.6 已维护 phase/turn/model），让 tool_exec
             // 阶段的 hang 也能从最后一条心跳定位到「卡在第 N 轮工具执行」。
-            const lastState = !activeRequest ? this.metadata.last_known_state ?? null : null;
+            const lastState = !activeRequest ? (this.metadata.last_known_state ?? null) : null;
             const content = JSON.stringify({
               ts: new Date().toISOString(),
               session_id: traceSessionId,
@@ -616,9 +636,13 @@ export class TraceCollector {
               ...(lastState ? { last_known_state: lastState } : {}),
             });
             writeFileSync(this.heartbeatPath, content);
-          } catch { /* 心跳失败静默 */ }
+          } catch {
+            /* 心跳失败静默 */
+          }
         }, 0);
-      } catch { /* 心跳失败静默 */ }
+      } catch {
+        /* 心跳失败静默 */
+      }
     }, 10_000);
     // unref 确保心跳定时器不阻止进程退出
     this.heartbeatTimer.unref();
@@ -633,16 +657,20 @@ export class TraceCollector {
         model: input.model,
         permission_mode: input.permission_mode,
         // resume 续接时记录本进程真实 id，便于跨进程排查（trajectory 目录名=旧id，进程=新id）
-        ...(isResume ? { resumed_from: input.resumed_from, process_session_id: input.session_id } : {}),
+        ...(isResume
+          ? { resumed_from: input.resumed_from, process_session_id: input.session_id }
+          : {}),
       },
     });
 
     // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
-    initStreamObserver(
-      traceSessionId,
-      this.writer.getSessionDir(),
-      (event) => { try { this.writer.appendEvent(event); } catch { /* 静默 */ } },
-    );
+    initStreamObserver(traceSessionId, this.writer.getSessionDir(), (event) => {
+      try {
+        this.writer.appendEvent(event);
+      } catch {
+        /* 静默 */
+      }
+    });
 
     // 缺口 7：注入 per-session warn.log 路径（WARN/ERROR 级别日志追加到此，不被后续会话覆盖）
     const sessionWarnLogPath = join(this.writer.getSessionDir(), "warn.log");
@@ -657,7 +685,9 @@ export class TraceCollector {
         // （104MB 文件原实现 111ms / RSS 28→420MB，每会话 2 次）
         this.auditLogStartLine = statSync(logPath).size;
       }
-    } catch { /* 静默：索引是辅助功能 */ }
+    } catch {
+      /* 静默：索引是辅助功能 */
+    }
   }
 
   /**
@@ -673,7 +703,9 @@ export class TraceCollector {
         timestamp: new Date().toISOString(),
         data,
       });
-    } catch { /* 事件落盘失败静默，不影响主流程 */ }
+    } catch {
+      /* 事件落盘失败静默，不影响主流程 */
+    }
   }
 
   // ─── BeforeModel ───
@@ -788,14 +820,16 @@ export class TraceCollector {
     // 排查者看到 raw.jsonl 有 request_sent 但没有对应的完整记录，即可确认请求已发出。
     try {
       const totalTokensEst = estimateMessagesTokens(rawMessages, req.system, req.tools);
-      this.writer.appendRawJsonl(JSON.stringify({
-        timestamp: input.timestamp,
-        index,
-        type: "request_sent",
-        model: req.model,
-        msg_count: rawMessages.length,
-        estimated_input_tokens: totalTokensEst,
-      }));
+      this.writer.appendRawJsonl(
+        JSON.stringify({
+          timestamp: input.timestamp,
+          index,
+          type: "request_sent",
+          model: req.model,
+          msg_count: rawMessages.length,
+          estimated_input_tokens: totalTokensEst,
+        }),
+      );
     } catch {
       // 静默失败：预写不是关键路径
     }
@@ -824,22 +858,25 @@ export class TraceCollector {
         const lastProgressMs = snapshot?.lastContentProgressAt
           ? Date.now() - snapshot.lastContentProgressAt
           : null;
-        const stillProgressing = !!snapshot
-          && snapshot.chunksReceived > 0
-          && !snapshot.abortSignalAborted
-          && lastProgressMs !== null
-          && lastProgressMs < PROGRESS_FRESH_MS;
-        const streamDiag = snapshot ? {
-          last_known_phase: snapshot.phase,
-          http_status_received: snapshot.httpStatusReceived,
-          http_status: snapshot.httpStatus,
-          chunks_received: snapshot.chunksReceived,
-          empty_chunks: snapshot.emptyChunks,
-          last_content_progress_ms: lastProgressMs,
-          timeouts_fired: snapshot.timeoutsFired,
-          abort_signal_aborted: snapshot.abortSignalAborted,
-          still_progressing: stillProgressing,
-        } : null;
+        const stillProgressing =
+          !!snapshot &&
+          snapshot.chunksReceived > 0 &&
+          !snapshot.abortSignalAborted &&
+          lastProgressMs !== null &&
+          lastProgressMs < PROGRESS_FRESH_MS;
+        const streamDiag = snapshot
+          ? {
+              last_known_phase: snapshot.phase,
+              http_status_received: snapshot.httpStatusReceived,
+              http_status: snapshot.httpStatus,
+              chunks_received: snapshot.chunksReceived,
+              empty_chunks: snapshot.emptyChunks,
+              last_content_progress_ms: lastProgressMs,
+              timeouts_fired: snapshot.timeoutsFired,
+              abort_signal_aborted: snapshot.abortSignalAborted,
+              still_progressing: stillProgressing,
+            }
+          : null;
 
         this.writer.appendEvent({
           event: "ModelCallUnpaired",
@@ -856,7 +893,9 @@ export class TraceCollector {
             stream_snapshot: streamDiag,
           },
         });
-      } catch { /* 看门狗写入失败静默 */ }
+      } catch {
+        /* 看门狗写入失败静默 */
+      }
       this.pendingModelCalls.delete(index);
       this.streamSnapshotRefs.delete(index);
     }, this.PAIRING_TIMEOUT_MS);
@@ -900,7 +939,9 @@ export class TraceCollector {
     const reasoningTokens = usage.reasoningTokens ?? 0;
     const stopReason = resp.stop_reason ?? "end_turn";
     const contentBlocks = (resp.content_blocks ?? []) as unknown[];
-    const thinkingBlocks = resp.thinking_blocks as Array<{ type: "thinking"; thinking: string }> | undefined;
+    const thinkingBlocks = resp.thinking_blocks as
+      | Array<{ type: "thinking"; thinking: string }>
+      | undefined;
 
     // 缺口分析五类：上下文占用率。used=完整 prompt 规模（promptTotal，厂商无关），
     // window=模型上下文窗口（TokenEstimator SSOT）。窗口未知则不落（不猜一个误导比率）。
@@ -930,20 +971,22 @@ export class TraceCollector {
           },
           content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
           elapsed_ms: (resp as any).api_duration_ms,
-          provider: resp.provider,  // T12.4：Provider 维度标记
+          provider: resp.provider, // T12.4：Provider 维度标记
           // 端点维度：区分同模型不同渠道，供排查 + cost-recompute 按 (model, endpoint) 精确重算
           ...(resp.base_url ? { base_url: resp.base_url } : {}),
-          ttft_ms: (resp as any).ttft_ms,  // T14.4：TTFT 持久化
+          ttft_ms: (resp as any).ttft_ms, // T14.4：TTFT 持久化
           // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
           ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
           // 缺口分析五类：上下文占用率（used=完整 prompt 规模 / 模型上下文窗口）。
           // used 走 normalizeCacheUsage 的 promptTotal（厂商无关：Anthropic=未命中+命中+写入，
           // OpenAI=prompt_tokens 全量），避免因缓存字段口径差异误算占用。
-          ...(ctxUsage ? {
-            context_used_tokens: ctxUsage.usedTokens,
-            context_window: ctxUsage.window,
-            context_usage_ratio: ctxUsage.ratio,
-          } : {}),
+          ...(ctxUsage
+            ? {
+                context_used_tokens: ctxUsage.usedTokens,
+                context_window: ctxUsage.window,
+                context_usage_ratio: ctxUsage.ratio,
+              }
+            : {}),
         },
       });
     } catch {
@@ -1135,7 +1178,9 @@ export class TraceCollector {
     // duration_ms（= Pre→Post 墙钟），此前采集器丢弃，工具级耗时无从离线复盘。
     // 落盘到 PostToolUse 事件 + 会话级累计，供 digest 定位"慢在哪个工具"。
     const toolDurationMs =
-      typeof input.duration_ms === "number" && input.duration_ms >= 0 ? input.duration_ms : undefined;
+      typeof input.duration_ms === "number" && input.duration_ms >= 0
+        ? input.duration_ms
+        : undefined;
     if (toolDurationMs !== undefined) {
       this.metadata.total_tool_duration_ms += toolDurationMs;
       this.metadata.tool_duration_samples += 1;
@@ -1298,7 +1343,12 @@ export class TraceCollector {
         output_tokens: stopInput.usage?.outputTokens ?? null,
         input_tokens: stopInput.usage?.inputTokens ?? null,
         turns: stopInput.turns ?? null,
-        status: stopInput.success === true ? "completed" : stopInput.success === false ? "error" : "unknown",
+        status:
+          stopInput.success === true
+            ? "completed"
+            : stopInput.success === false
+              ? "error"
+              : "unknown",
       },
     });
   }
@@ -1320,9 +1370,19 @@ export class TraceCollector {
         response: {
           content: [],
           stop_reason: "interrupted",
-          usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
         },
-        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
         stop_reason: "interrupted",
         is_partial: true,
       };
@@ -1335,10 +1395,14 @@ export class TraceCollector {
       const s = input.stats;
       if (s.model) this.metadata.model = s.model;
       if (s.total_tokens_sent !== undefined) this.metadata.total_tokens_sent = s.total_tokens_sent;
-      if (s.total_tokens_received !== undefined) this.metadata.total_tokens_received = s.total_tokens_received;
-      if (s.total_cumulative_prompt_tokens !== undefined) this.metadata.total_cumulative_prompt_tokens = s.total_cumulative_prompt_tokens;
-      if (s.total_cache_read_tokens !== undefined) this.metadata.total_cache_read_tokens = s.total_cache_read_tokens;
-      if (s.total_cache_creation_tokens !== undefined) this.metadata.total_cache_creation_tokens = s.total_cache_creation_tokens;
+      if (s.total_tokens_received !== undefined)
+        this.metadata.total_tokens_received = s.total_tokens_received;
+      if (s.total_cumulative_prompt_tokens !== undefined)
+        this.metadata.total_cumulative_prompt_tokens = s.total_cumulative_prompt_tokens;
+      if (s.total_cache_read_tokens !== undefined)
+        this.metadata.total_cache_read_tokens = s.total_cache_read_tokens;
+      if (s.total_cache_creation_tokens !== undefined)
+        this.metadata.total_cache_creation_tokens = s.total_cache_creation_tokens;
       if (s.total_cost_usd !== undefined) this.metadata.total_cost_usd = s.total_cost_usd;
       if (s.total_api_calls !== undefined) this.metadata.total_api_calls = s.total_api_calls;
       if (s.tools_used) for (const t of s.tools_used) this.metadata.tools_used.add(t);
@@ -1385,9 +1449,8 @@ export class TraceCollector {
     //   error → runtime 抛出异常（流式中断 / API 错误 / 上下文溢出兜底失败）
     const lastPair = this.pairs[this.pairs.length - 1];
     if (input.reason === "exit" || input.reason === "other") {
-      this.metadata.exit_status = lastPair?.stop_reason === "end_turn"
-        ? "end_turn"
-        : "user_interrupt";
+      this.metadata.exit_status =
+        lastPair?.stop_reason === "end_turn" ? "end_turn" : "user_interrupt";
     } else {
       this.metadata.exit_status = input.reason;
     }
@@ -1429,13 +1492,16 @@ export class TraceCollector {
         reason: input.reason,
         exit_status: this.metadata.exit_status,
         // T13.4：side-call 失败统计
-        sideCallStats: sideStats.apiCalls > 0 ? {
-          total: sideStats.apiCalls,
-          succeeded: sideStats.apiCalls - sideStats.failed,
-          failed: sideStats.failed,
-          timedOut: sideStats.timedOut,
-          byLabel: sideStats.byLabel,
-        } : undefined,
+        sideCallStats:
+          sideStats.apiCalls > 0
+            ? {
+                total: sideStats.apiCalls,
+                succeeded: sideStats.apiCalls - sideStats.failed,
+                failed: sideStats.failed,
+                timedOut: sideStats.timedOut,
+                byLabel: sideStats.byLabel,
+              }
+            : undefined,
       },
     });
 
@@ -1473,7 +1539,7 @@ export class TraceCollector {
         // 最多等 10 秒，超时后上传继续在后台运行
         const result = await Promise.race([
           uploadPromise,
-          new Promise<null>(resolve => setTimeout(() => resolve(null), 10_000)),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
         ]);
 
         if (result === null) {
@@ -1497,7 +1563,9 @@ export class TraceCollector {
       if (this.heartbeatPath && existsSync(this.heartbeatPath)) {
         unlinkSync(this.heartbeatPath);
       }
-    } catch { /* 清理失败静默 */ }
+    } catch {
+      /* 清理失败静默 */
+    }
 
     // 缺口 1/2/3：重置流状态观测器
     resetStreamObserver();
@@ -1522,7 +1590,9 @@ export class TraceCollector {
           join(this.writer.getSessionDir(), "audit_range.json"),
           JSON.stringify(rangeData, null, 2),
         );
-      } catch { /* 索引写入失败静默 */ }
+      } catch {
+        /* 索引写入失败静默 */
+      }
     }
 
     // 修复问题二：空白轨迹已在上传前提前判定+清理（见函数前段 isBlankSession 分支），
@@ -1621,10 +1691,7 @@ export class TraceCollector {
       this.writer.writeMessagesSnapshot(snapshot);
 
       if (attribution.abnormal) {
-        getLogger().warn(
-          "TRACE",
-          `异常退出已落 messages.json 验尸: ${attribution.summary}`,
-        );
+        getLogger().warn("TRACE", `异常退出已落 messages.json 验尸: ${attribution.summary}`);
       }
     } catch (err: any) {
       getLogger().warn("TRACE", `落 messages.json 失败（不影响退出）: ${err?.message ?? err}`);
@@ -1672,12 +1739,12 @@ export class TraceCollector {
       //   - anomalies_count：high+medium 异常总数（旧 errors 语义，含假阳性），保留供参考。
       // `errors` 字段保留为 anomalies_count 的别名（向后兼容旧脚本），但注释标注已弃用。
       const REAL_ERROR_KINDS = new Set([
-        "exit_status_error",       // L0：退出状态为 error
-        "tool_result_is_error",    // L0：工具 tool_result 标记 is_error（如 LSP 超时）
-        "turn_error_in_events",    // L0：events.jsonl 有 TurnError
-        "errors_jsonl_has_entries",// L0：errors.jsonl 有条目
-        "side_call_failures",      // L0：侧调用（子代理等）失败
-        "schema_missing_core_keys",// L0：轨迹数据损坏
+        "exit_status_error", // L0：退出状态为 error
+        "tool_result_is_error", // L0：工具 tool_result 标记 is_error（如 LSP 超时）
+        "turn_error_in_events", // L0：events.jsonl 有 TurnError
+        "errors_jsonl_has_entries", // L0：errors.jsonl 有条目
+        "side_call_failures", // L0：侧调用（子代理等）失败
+        "schema_missing_core_keys", // L0：轨迹数据损坏
       ]);
       const anomaliesCount = digest.anomalies.filter(
         (a) => a.severity === "high" || a.severity === "medium",
@@ -1713,7 +1780,10 @@ export class TraceCollector {
       };
       this.writer.writeSessionSummary(summary);
     } catch (err: any) {
-      getLogger().warn("TRACE", `落 session-summary.json 失败（不影响退出）: ${err?.message ?? err}`);
+      getLogger().warn(
+        "TRACE",
+        `落 session-summary.json 失败（不影响退出）: ${err?.message ?? err}`,
+      );
     }
   }
 
@@ -1739,7 +1809,10 @@ export class TraceCollector {
   /**
    * D3-3：构建退出归因。abnormal 时给出错误类型 / 最后工具 / 步数 / 是否孤儿。
    */
-  private buildExitAttribution(input: SessionEndInput, messages: Message[]): {
+  private buildExitAttribution(
+    input: SessionEndInput,
+    messages: Message[],
+  ): {
     abnormal: boolean;
     summary: string;
     reason: string;
@@ -1764,7 +1837,10 @@ export class TraceCollector {
       if (!Array.isArray(c)) continue;
       for (let j = c.length - 1; j >= 0; j--) {
         const b = c[j];
-        if (b.type === "tool_use") { lastTool = b.name; break; }
+        if (b.type === "tool_use") {
+          lastTool = b.name;
+          break;
+        }
       }
     }
 
@@ -1809,7 +1885,11 @@ export class TraceCollector {
   private emitPrefixBreakDiagnosis(req: any, rawMessages: unknown[], index: number): void {
     try {
       const fp = fingerprintPrefix(
-        typeof req.system === "string" ? req.system : req.system ? JSON.stringify(req.system) : undefined,
+        typeof req.system === "string"
+          ? req.system
+          : req.system
+            ? JSON.stringify(req.system)
+            : undefined,
         JSON.stringify(req.tools ?? []),
         rawMessages,
         splitSystemByDynamicBoundary,
@@ -1936,7 +2016,8 @@ export class TraceCollector {
   private static readonly KEEP_RAW_WINDOW = 4; // maxLookahead(3) + 1 余量
   private pruneOldRawMessages(): void {
     const cutoff = this.pairs.length - TraceCollector.KEEP_RAW_WINDOW;
-    for (let i = 1; i < cutoff; i++) { // i=0 首轮始终保留
+    for (let i = 1; i < cutoff; i++) {
+      // i=0 首轮始终保留
       const req = this.pairs[i]?.request;
       if (req && req.raw_messages) {
         req.raw_messages = undefined;
@@ -1974,7 +2055,12 @@ export class TraceCollector {
    * best-effort：最多等 5 秒，超时或失败不影响调用方。
    * 会话结束时正常上传以相同 session_id + file_type 覆盖此快照（服务端幂等）。
    */
-  async uploadSnapshot(): Promise<{ uploaded: boolean; sessionId: string; sessionDir: string; error?: string }> {
+  async uploadSnapshot(): Promise<{
+    uploaded: boolean;
+    sessionId: string;
+    sessionDir: string;
+    error?: string;
+  }> {
     if (!this.initialized) {
       return { uploaded: false, sessionId: "", sessionDir: "", error: "轨迹采集尚未初始化" };
     }
@@ -1994,13 +2080,23 @@ export class TraceCollector {
       const uploadPromise = this.uploader.uploadSession(sessionDir, sessionId);
       const result = await Promise.race([
         uploadPromise,
-        new Promise<null>(resolve => setTimeout(() => resolve(null), 5_000)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
       ]);
 
       if (result === null) {
-        return { uploaded: false, sessionId, sessionDir, error: "上传超时（5s），将在会话结束后重试" };
+        return {
+          uploaded: false,
+          sessionId,
+          sessionDir,
+          error: "上传超时（5s），将在会话结束后重试",
+        };
       }
-      return { uploaded: result.allConfirmed, sessionId, sessionDir, error: result.allConfirmed ? undefined : "部分文件上传失败" };
+      return {
+        uploaded: result.allConfirmed,
+        sessionId,
+        sessionDir,
+        error: result.allConfirmed ? undefined : "部分文件上传失败",
+      };
     } catch (err: any) {
       return { uploaded: false, sessionId, sessionDir, error: err.message };
     }
@@ -2063,11 +2159,7 @@ export class TraceCollector {
    * 记录 TurnError 到 events.jsonl（§3.3）。
    * 当 engine.ts catch 到 queryLoop 异常并 yield fatal_error 时同步调用。
    */
-  recordTurnError(input: {
-    error: string;
-    stack?: string;
-    turn: number;
-  }): void {
+  recordTurnError(input: { error: string; stack?: string; turn: number }): void {
     if (!this.initialized) return;
     try {
       this.writer.appendEvent({
@@ -2111,7 +2203,12 @@ export class TraceCollector {
    */
   private computeContextUsage(
     model: string,
-    usage: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number },
+    usage: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+    },
     provider?: string,
   ): { usedTokens: number; window: number; ratio: number } | null {
     try {
@@ -2166,7 +2263,9 @@ export class TraceCollector {
       ) {
         this.metadata.discarded_streams += 1;
       }
-    } catch { /* 遥测写入失败不影响主流程 */ }
+    } catch {
+      /* 遥测写入失败不影响主流程 */
+    }
   }
 
   /**
@@ -2182,6 +2281,8 @@ export class TraceCollector {
         timestamp: new Date().toISOString(),
         data: event,
       });
-    } catch { /* 采集遥测写入失败不影响主流程 */ }
+    } catch {
+      /* 采集遥测写入失败不影响主流程 */
+    }
   }
 }

@@ -51,10 +51,7 @@ function writeSessionConfig(gitRoot: string, config: SessionConfigFile): void {
 }
 
 /** 把运行时 session 剥离为持久化态（去掉 ephemeral 字段，D10） */
-function toPersisted(
-  session: WorktreeSession,
-  savedAt: number,
-): PersistedWorktreeSession {
+function toPersisted(session: WorktreeSession, savedAt: number): PersistedWorktreeSession {
   return {
     originalCwd: session.originalCwd,
     worktreePath: session.worktreePath,
@@ -87,10 +84,7 @@ function fromPersisted(p: PersistedWorktreeSession): WorktreeSession {
  * 保存当前 session-level worktree 状态（enter / --worktree 创建后调用）。
  * @param savedAt 时间戳（ms），由调用方传入（便于测试 / 避免本模块直接 Date.now()）
  */
-export function saveWorktreeState(
-  session: WorktreeSession,
-  savedAt: number = Date.now(),
-): void {
+export function saveWorktreeState(session: WorktreeSession, savedAt: number = Date.now()): void {
   const log = getLogger();
   try {
     const gitRoot = session.originalCwd;
@@ -148,10 +142,7 @@ export function restoreWorktreeSession(gitRoot: string): RestoreResult {
   // P1-9：磁盘校验——worktree 目录及其 .git pointer 必须仍存在
   const gitPointer = join(persisted.worktreePath, ".git");
   if (!existsSync(persisted.worktreePath) || !existsSync(gitPointer)) {
-    log.warn(
-      "WORKTREE",
-      `持久化的 worktree 目录已被外部删除，清除状态: ${persisted.worktreePath}`,
-    );
+    log.warn("WORKTREE", `持久化的 worktree 目录已被外部删除，清除状态: ${persisted.worktreePath}`);
     clearWorktreeState(gitRoot);
     return { session: null, cleared: true };
   }

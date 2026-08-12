@@ -257,7 +257,9 @@ export class HookEventHandler {
   }
 
   /** PreCompact 事件 */
-  async firePreCompactEvent(trigger: PreCompactInput["trigger"] = "auto"): Promise<AggregatedHookResult> {
+  async firePreCompactEvent(
+    trigger: PreCompactInput["trigger"] = "auto",
+  ): Promise<AggregatedHookResult> {
     const input: PreCompactInput = {
       ...this.createBaseInput(HookEventName.PreCompact),
       trigger,
@@ -318,7 +320,10 @@ export class HookEventHandler {
   }
 
   /** StopFailure 事件：API 错误导致的非正常结束 */
-  async fireStopFailureEvent(error: string, errorType: StopFailureInput["error_type"]): Promise<AggregatedHookResult> {
+  async fireStopFailureEvent(
+    error: string,
+    errorType: StopFailureInput["error_type"],
+  ): Promise<AggregatedHookResult> {
     const input: StopFailureInput = {
       ...this.createBaseInput(HookEventName.StopFailure),
       error,
@@ -345,7 +350,10 @@ export class HookEventHandler {
   }
 
   /** Setup 事件：仓库初始化 */
-  async fireSetupEvent(trigger: SetupInput["trigger"], projectDir: string): Promise<AggregatedHookResult> {
+  async fireSetupEvent(
+    trigger: SetupInput["trigger"],
+    projectDir: string,
+  ): Promise<AggregatedHookResult> {
     const input: SetupInput = {
       ...this.createBaseInput(HookEventName.Setup),
       trigger,
@@ -387,7 +395,10 @@ export class HookEventHandler {
   }
 
   /** ConfigChange 事件 */
-  async fireConfigChangeEvent(changedKeys: string[], source: ConfigChangeInput["source"]): Promise<AggregatedHookResult> {
+  async fireConfigChangeEvent(
+    changedKeys: string[],
+    source: ConfigChangeInput["source"],
+  ): Promise<AggregatedHookResult> {
     const input: ConfigChangeInput = {
       ...this.createBaseInput(HookEventName.ConfigChange),
       changed_keys: changedKeys,
@@ -397,7 +408,10 @@ export class HookEventHandler {
   }
 
   /** FileChanged 事件 */
-  async fireFileChangedEvent(filePath: string, changeType: FileChangedInput["change_type"]): Promise<AggregatedHookResult> {
+  async fireFileChangedEvent(
+    filePath: string,
+    changeType: FileChangedInput["change_type"],
+  ): Promise<AggregatedHookResult> {
     const input: FileChangedInput = {
       ...this.createBaseInput(HookEventName.FileChanged),
       file_path: filePath,
@@ -417,7 +431,10 @@ export class HookEventHandler {
   }
 
   /** TaskCreated 事件 */
-  async fireTaskCreatedEvent(taskId: string, taskDescription: string): Promise<AggregatedHookResult> {
+  async fireTaskCreatedEvent(
+    taskId: string,
+    taskDescription: string,
+  ): Promise<AggregatedHookResult> {
     const input: TaskCreatedInput = {
       ...this.createBaseInput(HookEventName.TaskCreated),
       task_id: taskId,
@@ -427,7 +444,12 @@ export class HookEventHandler {
   }
 
   /** TaskCompleted 事件 */
-  async fireTaskCompletedEvent(taskId: string, taskDescription: string, success: boolean, result?: string): Promise<AggregatedHookResult> {
+  async fireTaskCompletedEvent(
+    taskId: string,
+    taskDescription: string,
+    success: boolean,
+    result?: string,
+  ): Promise<AggregatedHookResult> {
     const input: TaskCompletedInput = {
       ...this.createBaseInput(HookEventName.TaskCompleted),
       task_id: taskId,
@@ -439,7 +461,10 @@ export class HookEventHandler {
   }
 
   /** G11：InstructionsLoaded 事件——指令（CLAUDE.md / rules）加载到上下文时 */
-  async fireInstructionsLoadedEvent(sources: string[], totalChars?: number): Promise<AggregatedHookResult> {
+  async fireInstructionsLoadedEvent(
+    sources: string[],
+    totalChars?: number,
+  ): Promise<AggregatedHookResult> {
     const input: InstructionsLoadedInput = {
       ...this.createBaseInput(HookEventName.InstructionsLoaded),
       sources,
@@ -449,7 +474,11 @@ export class HookEventHandler {
   }
 
   /** G11：TeammateIdle 事件——团队代理空闲时（可 block） */
-  async fireTeammateIdleEvent(teammateId: string, teammateName?: string, idleMs?: number): Promise<AggregatedHookResult> {
+  async fireTeammateIdleEvent(
+    teammateId: string,
+    teammateName?: string,
+    idleMs?: number,
+  ): Promise<AggregatedHookResult> {
     const input: TeammateIdleInput = {
       ...this.createBaseInput(HookEventName.TeammateIdle),
       teammate_id: teammateId,
@@ -460,7 +489,10 @@ export class HookEventHandler {
   }
 
   /** G11：Elicitation 事件——hook 反向向用户提问（需配套 UI，先占位） */
-  async fireElicitationEvent(message: string, requestedSchema?: Record<string, unknown>): Promise<AggregatedHookResult> {
+  async fireElicitationEvent(
+    message: string,
+    requestedSchema?: Record<string, unknown>,
+  ): Promise<AggregatedHookResult> {
     const input: ElicitationInput = {
       ...this.createBaseInput(HookEventName.Elicitation),
       message,
@@ -502,7 +534,7 @@ export class HookEventHandler {
       }
 
       // ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销
-      const userHooks = plan.hookConfigs.filter(h => h.type !== "runtime");
+      const userHooks = plan.hookConfigs.filter((h) => h.type !== "runtime");
       if (userHooks.length === 0) {
         for (let i = 0; i < plan.hookConfigs.length; i++) {
           const config = plan.hookConfigs[i];
@@ -577,16 +609,22 @@ export class HookEventHandler {
     aggregated: AggregatedHookResult,
   ): void {
     const log = getLogger();
-    const failed = results.filter(r => !r.success);
+    const failed = results.filter((r) => !r.success);
     const successCount = results.length - failed.length;
 
     if (failed.length > 0) {
-      log.warn("HOOK", `[${eventName}] ${successCount} 成功, ${failed.length} 失败, 耗时 ${aggregated.totalDuration}ms`);
+      log.warn(
+        "HOOK",
+        `[${eventName}] ${successCount} 成功, ${failed.length} 失败, 耗时 ${aggregated.totalDuration}ms`,
+      );
       for (const err of aggregated.errors) {
         log.debug("HOOK", `  失败详情: ${err.message}`);
       }
     } else if (results.length > 0) {
-      log.debug("HOOK", `[${eventName}] ${successCount} 个 hook 执行成功, 耗时 ${aggregated.totalDuration}ms`);
+      log.debug(
+        "HOOK",
+        `[${eventName}] ${successCount} 个 hook 执行成功, 耗时 ${aggregated.totalDuration}ms`,
+      );
     }
   }
 }

@@ -98,11 +98,7 @@ export function extractFirstUserMessage(messages: Message[]): string {
   const userMessage = messages
     .filter((msg) => {
       const content = getMessageContent(msg);
-      return (
-        !content.startsWith("/") &&
-        !content.startsWith("?") &&
-        content.trim().length > 0
-      );
+      return !content.startsWith("/") && !content.startsWith("?") && content.trim().length > 0;
     })
     .find((msg) => msg.role === "user");
 
@@ -144,10 +140,7 @@ function getMessageContent(message: Message): string {
 /**
  * 格式化相对时间
  */
-export function formatRelativeTime(
-  timestamp: string,
-  style: "long" | "short" = "long"
-): string {
+export function formatRelativeTime(timestamp: string, style: "long" | "short" = "long"): string {
   const now = new Date();
   const time = new Date(timestamp);
   const diffMs = now.getTime() - time.getTime();
@@ -163,9 +156,7 @@ export function formatRelativeTime(
     if (diffHours < 24) return `${diffHours}h`;
     if (diffDays < 30) return `${diffDays}d`;
     const diffMonths = Math.floor(diffDays / 30);
-    return diffMonths < 12
-      ? `${diffMonths}mo`
-      : `${Math.floor(diffMonths / 12)}y`;
+    return diffMonths < 12 ? `${diffMonths}mo` : `${Math.floor(diffMonths / 12)}y`;
   } else {
     if (diffDays > 0) {
       return `${diffDays} 天前`;
@@ -196,8 +187,7 @@ export function formatAbsoluteTime(timestamp: string): string {
   const hour = pad(bj.getUTCHours());
   const minute = pad(bj.getUTCMinutes());
   const nowYear = new Date().getUTCFullYear();
-  const datePart =
-    year === nowYear ? `${month}-${day}` : `${year}-${month}-${day}`;
+  const datePart = year === nowYear ? `${month}-${day}` : `${year}-${month}-${day}`;
   return `${datePart} ${hour}:${minute}`;
 }
 
@@ -222,112 +212,104 @@ export function shortenModel(model: string | undefined): string {
 async function scanSessionDir(
   sessionDir: string,
   currentSessionId?: string,
-  options: GetSessionOptions = {}
+  options: GetSessionOptions = {},
 ): Promise<SessionFileEntry[]> {
   if (!existsSync(sessionDir)) return [];
 
   // 同时扫描旧 JSON 与新 JSONL 两种格式（Bug1：此前只扫 .json，
   // 导致已迁移到 jsonl 的会话在列表/清理中完全不可见）。
   const files = readdirSync(sessionDir)
-    .filter(
-      (f) => (f.endsWith(".json") || f.endsWith(".jsonl")) && !f.startsWith(".")
-    )
+    .filter((f) => (f.endsWith(".json") || f.endsWith(".jsonl")) && !f.startsWith("."))
     .sort();
 
-  const sessionPromises = files.map(
-    async (file): Promise<SessionFileEntry> => {
-      const filePath = join(sessionDir, file);
-      try {
-        // 目录项可能是子目录（如 summaries/ 已被上面过滤，但防御性再判一次）。
-        if (!statSync(filePath).isFile()) {
-          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
-        }
-        const content = await Bun.file(filePath).text();
-        // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
-        const data = file.endsWith(".jsonl")
-          ? parseSessionJsonl(content)
-          : (JSON.parse(content) as SessionData);
-
-        // 验证必需字段
-        if (
-          !data ||
-          !data.id ||
-          !data.messages ||
-          !Array.isArray(data.messages) ||
-          !data.createdAt ||
-          !data.updatedAt
-        ) {
-          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
-        }
-
-        // 跳过空会话（只有系统消息）
-        const hasUserOrAssistant = data.messages.some(
-          (msg) => msg.role === "user" || msg.role === "assistant"
-        );
-        if (!hasUserOrAssistant) {
-          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
-        }
-
-        // 跳过子代理会话
-        if (data.kind === "subagent") {
-          return { fileName: file, dirPath: sessionDir, sessionInfo: null };
-        }
-
-        const firstUserMessage = extractFirstUserMessage(data.messages);
-        // 是否当前会话：按解析出的 data.id 精确相等判断。
-        // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
-        // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
-        // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
-        const isCurrentSession = currentSessionId
-          ? data.id === currentSessionId
-          : false;
-
-        let fullContent: string | undefined;
-        let messages:
-          | Array<{ role: "user" | "assistant"; content: string }>
-          | undefined;
-
-        if (options.includeFullContent) {
-          fullContent = data.messages
-            .map((msg) => getMessageContent(msg))
-            .join(" ");
-          messages = data.messages.map((msg) => ({
-            role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
-            content: getMessageContent(msg),
-          }));
-        }
-
-        const sessionInfo: SessionInfo = {
-          id: data.id,
-          file: file.replace(/\.(json|jsonl)$/, ""),
-          fileName: file,
-          startTime: data.createdAt,
-          lastUpdated: data.updatedAt,
-          messageCount: data.messages.length,
-          // P2-5：用户经 --name/-n 指定的显示名（session_name 元数据）优先，其次摘要，最后首条用户消息。
-          displayName:
-            (typeof data.metadata?.session_name === "string" && data.metadata.session_name.trim()
-              ? data.metadata.session_name
-              : undefined) || data.summary || firstUserMessage,
-          firstUserMessage,
-          isCurrentSession,
-          index: 0, // 排序后设置
-          summary: data.summary,
-          fullContent,
-          messages,
-          // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
-          cwd: data.cwd || data.directories?.[0],
-          model: data.model || undefined,
-          dirPath: sessionDir,
-        };
-
-        return { fileName: file, dirPath: sessionDir, sessionInfo };
-      } catch {
-        // 文件损坏
+  const sessionPromises = files.map(async (file): Promise<SessionFileEntry> => {
+    const filePath = join(sessionDir, file);
+    try {
+      // 目录项可能是子目录（如 summaries/ 已被上面过滤，但防御性再判一次）。
+      if (!statSync(filePath).isFile()) {
         return { fileName: file, dirPath: sessionDir, sessionInfo: null };
       }
+      const content = await Bun.file(filePath).text();
+      // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
+      const data = file.endsWith(".jsonl")
+        ? parseSessionJsonl(content)
+        : (JSON.parse(content) as SessionData);
+
+      // 验证必需字段
+      if (
+        !data ||
+        !data.id ||
+        !data.messages ||
+        !Array.isArray(data.messages) ||
+        !data.createdAt ||
+        !data.updatedAt
+      ) {
+        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+      }
+
+      // 跳过空会话（只有系统消息）
+      const hasUserOrAssistant = data.messages.some(
+        (msg) => msg.role === "user" || msg.role === "assistant",
+      );
+      if (!hasUserOrAssistant) {
+        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+      }
+
+      // 跳过子代理会话
+      if (data.kind === "subagent") {
+        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+      }
+
+      const firstUserMessage = extractFirstUserMessage(data.messages);
+      // 是否当前会话：按解析出的 data.id 精确相等判断。
+      // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
+      // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
+      // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
+      const isCurrentSession = currentSessionId ? data.id === currentSessionId : false;
+
+      let fullContent: string | undefined;
+      let messages: Array<{ role: "user" | "assistant"; content: string }> | undefined;
+
+      if (options.includeFullContent) {
+        fullContent = data.messages.map((msg) => getMessageContent(msg)).join(" ");
+        messages = data.messages.map((msg) => ({
+          role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+          content: getMessageContent(msg),
+        }));
+      }
+
+      const sessionInfo: SessionInfo = {
+        id: data.id,
+        file: file.replace(/\.(json|jsonl)$/, ""),
+        fileName: file,
+        startTime: data.createdAt,
+        lastUpdated: data.updatedAt,
+        messageCount: data.messages.length,
+        // P2-5：用户经 --name/-n 指定的显示名（session_name 元数据）优先，其次摘要，最后首条用户消息。
+        displayName:
+          (typeof data.metadata?.session_name === "string" && data.metadata.session_name.trim()
+            ? data.metadata.session_name
+            : undefined) ||
+          data.summary ||
+          firstUserMessage,
+        firstUserMessage,
+        isCurrentSession,
+        index: 0, // 排序后设置
+        summary: data.summary,
+        fullContent,
+        messages,
+        // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
+        cwd: data.cwd || data.directories?.[0],
+        model: data.model || undefined,
+        dirPath: sessionDir,
+      };
+
+      return { fileName: file, dirPath: sessionDir, sessionInfo };
+    } catch {
+      // 文件损坏
+      return { fileName: file, dirPath: sessionDir, sessionInfo: null };
     }
-  );
+  });
 
   return Promise.all(sessionPromises);
 }
@@ -343,7 +325,7 @@ async function scanSessionDir(
 export async function getAllSessionFiles(
   sessionDir: string,
   currentSessionId?: string,
-  options: GetSessionOptions = {}
+  options: GetSessionOptions = {},
 ): Promise<SessionFileEntry[]> {
   try {
     // P0-3：SessionStore 写入已改为缓冲批量落盘（100ms 窗口），直接读文件系统可能
@@ -353,9 +335,7 @@ export async function getAllSessionFiles(
     const isGlobalRoot = sessionDir === sidPaths.sessions();
     const dirs = isGlobalRoot ? listAllSessionDirs() : [sessionDir];
 
-    const perDir = await Promise.all(
-      dirs.map((d) => scanSessionDir(d, currentSessionId, options))
-    );
+    const perDir = await Promise.all(dirs.map((d) => scanSessionDir(d, currentSessionId, options)));
     return perDir.flat();
   } catch (error: any) {
     if (error.code === "ENOENT") {
@@ -371,19 +351,15 @@ export async function getAllSessionFiles(
 export async function getSessionFiles(
   sessionDir: string,
   currentSessionId?: string,
-  options: GetSessionOptions = {}
+  options: GetSessionOptions = {},
 ): Promise<SessionInfo[]> {
-  const allFiles = await getAllSessionFiles(
-    sessionDir,
-    currentSessionId,
-    options
-  );
+  const allFiles = await getAllSessionFiles(sessionDir, currentSessionId, options);
 
   // 过滤损坏文件
   const validSessions = allFiles
     .filter(
       (entry): entry is SessionFileEntry & { sessionInfo: SessionInfo } =>
-        entry.sessionInfo !== null
+        entry.sessionInfo !== null,
     )
     .map((entry) => entry.sessionInfo);
 
@@ -401,10 +377,7 @@ export async function getSessionFiles(
   const uniqueSessions = Array.from(uniqueSessionsMap.values());
 
   // 按开始时间排序（最旧的在前）
-  uniqueSessions.sort(
-    (a, b) =>
-      new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
-  );
+  uniqueSessions.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
   // 设置索引（1-based）
   uniqueSessions.forEach((session, index) => {
@@ -419,7 +392,7 @@ export async function getSessionFiles(
  */
 export function findTextMatches(
   messages: Array<{ role: "user" | "assistant"; content: string }>,
-  query: string
+  query: string,
 ): TextMatch[] {
   const matches: TextMatch[] = [];
   const lowerQuery = query.toLowerCase();
@@ -435,14 +408,9 @@ export function findTextMatches(
       if (matchIndex === -1) break;
 
       const beforeStart = Math.max(0, matchIndex - contextLength);
-      const afterEnd = Math.min(
-        content.length,
-        matchIndex + query.length + contextLength
-      );
+      const afterEnd = Math.min(content.length, matchIndex + query.length + contextLength);
 
-      const before =
-        (beforeStart > 0 ? "..." : "") +
-        content.slice(beforeStart, matchIndex);
+      const before = (beforeStart > 0 ? "..." : "") + content.slice(beforeStart, matchIndex);
       const match = content.slice(matchIndex, matchIndex + query.length);
       const after =
         content.slice(matchIndex + query.length, afterEnd) +
@@ -465,10 +433,7 @@ export function findTextMatches(
 /**
  * 过滤会话
  */
-export function filterSessions(
-  sessions: SessionInfo[],
-  query: string
-): SessionInfo[] {
+export function filterSessions(sessions: SessionInfo[], query: string): SessionInfo[] {
   if (!query.trim()) {
     return sessions;
   }
@@ -478,11 +443,7 @@ export function filterSessions(
   return sessions
     .map((session) => {
       // 搜索范围：标题、ID、首条消息
-      const searchableText = [
-        session.displayName,
-        session.id,
-        session.firstUserMessage,
-      ]
+      const searchableText = [session.displayName, session.id, session.firstUserMessage]
         .join(" ")
         .toLowerCase();
 
@@ -510,17 +471,13 @@ export function filterSessions(
 export function sortSessions(
   sessions: SessionInfo[],
   sortOrder: "date" | "messages" | "name",
-  reverse: boolean
+  reverse: boolean,
 ): SessionInfo[] {
   const sorted = [...sessions];
 
   switch (sortOrder) {
     case "date":
-      sorted.sort(
-        (a, b) =>
-          new Date(a.lastUpdated).getTime() -
-          new Date(b.lastUpdated).getTime()
-      );
+      sorted.sort((a, b) => new Date(a.lastUpdated).getTime() - new Date(b.lastUpdated).getTime());
       break;
     case "messages":
       sorted.sort((a, b) => a.messageCount - b.messageCount);
@@ -559,8 +516,7 @@ export class SessionSelector {
 
     // 按开始时间排序
     const sorted = sessions.sort(
-      (a, b) =>
-        new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
     );
 
     // 尝试按 UUID 查找
@@ -569,12 +525,7 @@ export class SessionSelector {
 
     // 尝试按索引查找（1-based）
     const index = parseInt(trimmed, 10);
-    if (
-      !isNaN(index) &&
-      index.toString() === trimmed &&
-      index > 0 &&
-      index <= sorted.length
-    ) {
+    if (!isNaN(index) && index.toString() === trimmed && index > 0 && index <= sorted.length) {
       return sorted[index - 1];
     }
 
@@ -590,10 +541,7 @@ export class SessionSelector {
       if (sessions.length === 0) {
         throw new Error("未找到任何会话");
       }
-      sessions.sort(
-        (a, b) =>
-          new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
-      );
+      sessions.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
       return sessions[sessions.length - 1];
     }
 

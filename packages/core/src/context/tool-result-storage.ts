@@ -11,7 +11,15 @@
  * - 阈值通过环境变量 SID_OUTPUT_THRESHOLD 可配（默认 30000）
  */
 
-import { writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync, rmdirSync } from "node:fs";
+import {
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  rmdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../debug/index.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -19,10 +27,7 @@ import { sidPaths } from "../config/paths.ts";
 // ─── 配置 ───
 
 /** 默认输出阈值（字符数，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
-const DEFAULT_OUTPUT_THRESHOLD = parseInt(
-  process.env.SID_OUTPUT_THRESHOLD ?? "30000",
-  10,
-);
+const DEFAULT_OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
 
 // ─── 持久化输出引用格式 ───
 
@@ -98,12 +103,7 @@ export function persistLargeOutput(
   const log = getLogger();
 
   // 构建输出目录
-  const outputDir = join(
-    sidPaths.trajectories(),
-    "sessions",
-    sessionId,
-    "tool-outputs",
-  );
+  const outputDir = join(sidPaths.trajectories(), "sessions", sessionId, "tool-outputs");
 
   // 生成唯一文件名（避免碰撞）
   const timestamp = Date.now();
@@ -196,15 +196,13 @@ export class ContentReplacementState {
  * @param sessionId 会话 ID
  * @param maxAgeMs 最大保留时间（毫秒，默认 7 天——与会话恢复周期对齐，避免 -c 续接时引用变死链）
  */
-export function cleanupPersistedOutputs(sessionId: string, maxAgeMs: number = 7 * 24 * 3600_000): void {
+export function cleanupPersistedOutputs(
+  sessionId: string,
+  maxAgeMs: number = 7 * 24 * 3600_000,
+): void {
   const log = getLogger();
 
-  const dir = join(
-    sidPaths.trajectories(),
-    "sessions",
-    sessionId,
-    "tool-outputs",
-  );
+  const dir = join(sidPaths.trajectories(), "sessions", sessionId, "tool-outputs");
 
   if (!existsSync(dir)) return;
 

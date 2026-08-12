@@ -30,7 +30,10 @@ export function collectEvidence(
         summary: extractTestSummary(toolResult),
         raw: truncate(toolResult, 2000),
       };
-      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      log.debug(
+        "GOAL_EVIDENCE",
+        `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`,
+      );
       return entry;
     }
     // 构建结果模式
@@ -42,7 +45,10 @@ export function collectEvidence(
         summary: extractBuildSummary(toolResult),
         raw: truncate(toolResult, 2000),
       };
-      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      log.debug(
+        "GOAL_EVIDENCE",
+        `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`,
+      );
       return entry;
     }
     // 其他有内容的命令输出
@@ -55,7 +61,10 @@ export function collectEvidence(
         summary: lines.slice(-3).join(" | ").slice(0, 500),
         raw: truncate(toolResult, 2000),
       };
-      log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+      log.debug(
+        "GOAL_EVIDENCE",
+        `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`,
+      );
       return entry;
     }
   }
@@ -68,7 +77,10 @@ export function collectEvidence(
       type: "file_change",
       summary: `文件修改: ${extractFilePath(toolResult)}`,
     };
-    log.debug("GOAL_EVIDENCE", `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`);
+    log.debug(
+      "GOAL_EVIDENCE",
+      `提取证据: type=${entry.type}, tool=${toolName}, summary=${entry.summary.slice(0, 100)}`,
+    );
     return entry;
   }
 
@@ -94,8 +106,7 @@ export function collectEvidenceFromTurn(
 
 function hasTestPattern(output: string): boolean {
   return (
-    /\b(pass|fail|error|test|spec|assert)\b/i.test(output) &&
-    /\d+\s*(pass|fail|test)/i.test(output)
+    /\b(pass|fail|error|test|spec|assert)\b/i.test(output) && /\d+\s*(pass|fail|test)/i.test(output)
   );
 }
 

@@ -3,7 +3,12 @@
  * 对标 Claude Code：基于 ripgrep 构建，支持 output_mode、分页、mtime 排序
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
 import { resolveGrepType } from "./grep-type-alias.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -28,32 +33,76 @@ const grepSchema = lazySchema(() =>
       .string()
       .optional()
       .describe(
-        "要搜索的**单个**文件或目录路径，默认为当前目录。不支持传多个路径（不要用空格/逗号拼接）——"
-        + "要搜多个位置请分多次调用，或传它们的共同父目录并用 glob/type 收窄范围。",
+        "要搜索的**单个**文件或目录路径，默认为当前目录。不支持传多个路径（不要用空格/逗号拼接）——" +
+          "要搜多个位置请分多次调用，或传它们的共同父目录并用 glob/type 收窄范围。",
       ),
     output_mode: z
       .enum(["files_with_matches", "content", "count"])
       .optional()
-      .describe("输出模式：files_with_matches（默认，只返回文件路径）、content（显示匹配行）、count（显示匹配数）"),
+      .describe(
+        "输出模式：files_with_matches（默认，只返回文件路径）、content（显示匹配行）、count（显示匹配数）",
+      ),
     case_insensitive: z.boolean().optional().describe("是否忽略大小写，默认 false"),
-    glob: z.string().optional().describe("文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'），多个模式用空格分隔"),
+    glob: z
+      .string()
+      .optional()
+      .describe("文件名过滤模式（如 '*.ts'、'*.{ts,tsx}'），多个模式用空格分隔"),
     // 描述里点名 tsx/jsx 的坑：ripgrep 没有 tsx/jsx 类型（ts 已含 *.tsx，js 已含 *.jsx）。
     // 写错也不会失败（工具层会归一或降级），但直接写对能省掉一次提示往返。
-    type: z.string().optional().describe(
-      "按 ripgrep 文件类型过滤（如 'ts'、'js'、'py'、'go'、'rust'），比 glob 更高效。"
-      + "注意：ripgrep 无 'tsx'/'jsx' 类型——'ts' 已包含 *.tsx，'js' 已包含 *.jsx；"
-      + "要精确只搜 .tsx 请用 glob='*.tsx'",
-    ),
-    context: z.coerce.number().int().min(0).optional().describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
-    before_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
-    after_context: z.coerce.number().int().min(0).optional().describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
-    head_limit: z.coerce.number().int().min(0).optional().describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
+    type: z
+      .string()
+      .optional()
+      .describe(
+        "按 ripgrep 文件类型过滤（如 'ts'、'js'、'py'、'go'、'rust'），比 glob 更高效。" +
+          "注意：ripgrep 无 'tsx'/'jsx' 类型——'ts' 已包含 *.tsx，'js' 已包含 *.jsx；" +
+          "要精确只搜 .tsx 请用 glob='*.tsx'",
+      ),
+    context: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
+    before_context: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
+    after_context: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
+    head_limit: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
     offset: z.coerce.number().int().min(0).optional().describe("分页偏移量（从 0 开始），默认 0"),
-    max_matches_per_file: z.coerce.number().int().min(0).optional().describe("单文件结果数上限，用于限制单个文件的匹配数量"),
-    fixed_strings: z.boolean().optional().describe("按字面量搜索而非正则表达式，用于搜索包含特殊字符的字符串"),
-    multiline: z.boolean().optional().describe("启用多行匹配模式（rg --multiline），允许 pattern 跨行匹配"),
+    max_matches_per_file: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("单文件结果数上限，用于限制单个文件的匹配数量"),
+    fixed_strings: z
+      .boolean()
+      .optional()
+      .describe("按字面量搜索而非正则表达式，用于搜索包含特殊字符的字符串"),
+    multiline: z
+      .boolean()
+      .optional()
+      .describe("启用多行匹配模式（rg --multiline），允许 pattern 跨行匹配"),
     // 向后兼容：total_max_matches 作为 head_limit 别名
-    total_max_matches: z.coerce.number().int().min(0).optional().describe("已废弃，请使用 head_limit 代替"),
+    total_max_matches: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("已废弃，请使用 head_limit 代替"),
   }),
 );
 
@@ -187,7 +236,14 @@ export class GrepTool implements Tool {
 
     try {
       if (useRipgrep) {
-        const result = await this.executeWithRipgrep(params, searchPath, mode, headLimit, offset, abortSignal);
+        const result = await this.executeWithRipgrep(
+          params,
+          searchPath,
+          mode,
+          headLimit,
+          offset,
+          abortSignal,
+        );
         log.info("TOOL", `✓ 搜索完成`);
         return result;
       }
@@ -197,8 +253,20 @@ export class GrepTool implements Tool {
     } catch (err: any) {
       if (err instanceof RipgrepTimeoutError) {
         if (err.partialResults.length > 0) {
-          const { appliedLimit, pagedLines } = this.applyPagination(err.partialResults, mode, headLimit, offset);
-          const output = this.formatStructuredOutput(mode, pagedLines, searchPath, appliedLimit, offset, "搜索超时，以下为部分结果");
+          const { appliedLimit, pagedLines } = this.applyPagination(
+            err.partialResults,
+            mode,
+            headLimit,
+            offset,
+          );
+          const output = this.formatStructuredOutput(
+            mode,
+            pagedLines,
+            searchPath,
+            appliedLimit,
+            offset,
+            "搜索超时，以下为部分结果",
+          );
           return { output };
         }
         return { output: err.message, isError: true };
@@ -592,13 +660,16 @@ export class GrepTool implements Tool {
         return { output: `搜索失败: grep 退出码 ${exitCode}: ${stderr.trim()}`, isError: true };
       }
 
-      const lines = stdout
-        .trim()
-        .split("\n")
-        .filter(Boolean);
+      const lines = stdout.trim().split("\n").filter(Boolean);
 
       const { appliedLimit, pagedLines } = this.applyPagination(lines, mode, headLimit, offset);
-      const output = this.formatStructuredOutput(mode, pagedLines, searchPath, appliedLimit, offset);
+      const output = this.formatStructuredOutput(
+        mode,
+        pagedLines,
+        searchPath,
+        appliedLimit,
+        offset,
+      );
       return { output };
     } catch (err: any) {
       return { output: `搜索失败: ${err.message}`, isError: true };

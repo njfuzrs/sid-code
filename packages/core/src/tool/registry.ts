@@ -97,9 +97,7 @@ export interface AssembleOptions {
 }
 
 /** simple 模式下可用的工具 */
-const SIMPLE_MODE_TOOLS = new Set([
-  "read", "grep", "glob", "ls", "read_many",
-]);
+const SIMPLE_MODE_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many"]);
 
 export class Registry {
   private builtInTools = new Map<string, LegacyTool>();
@@ -179,10 +177,7 @@ export class Registry {
     const name = tool.name();
     const target = name.startsWith("mcp__") ? this.mcpTools : this.builtInTools;
     if (target.has(name)) {
-      getLogger().warn(
-        "TOOL",
-        `工具名冲突: "${name}" 已注册，跳过重复注册（先到先得，保留首个）`,
-      );
+      getLogger().warn("TOOL", `工具名冲突: "${name}" 已注册，跳过重复注册（先到先得，保留首个）`);
       return;
     }
     target.set(name, tool);
@@ -221,19 +216,19 @@ export class Registry {
     // 2. deny rules 过滤
     if (options?.denyRules?.length) {
       const denySet = new Set(options.denyRules);
-      builtIn = builtIn.filter(t => !denySet.has(t.name()));
+      builtIn = builtIn.filter((t) => !denySet.has(t.name()));
     }
 
     // 3. 运行模式裁剪
     if (options?.mode === "simple") {
-      builtIn = builtIn.filter(t => SIMPLE_MODE_TOOLS.has(t.name()));
+      builtIn = builtIn.filter((t) => SIMPLE_MODE_TOOLS.has(t.name()));
     }
 
     // 4. MCP 工具（同样应用 deny rules，但不受模式裁剪影响）
     let mcp = [...this.mcpTools.values()];
     if (options?.denyRules?.length) {
       const denySet = new Set(options.denyRules);
-      mcp = mcp.filter(t => !denySet.has(t.name()));
+      mcp = mcp.filter((t) => !denySet.has(t.name()));
     }
 
     // 4.1 MCP 工具按名称排序，保证 prompt cache 稳定性。
@@ -260,10 +255,7 @@ export class Registry {
    * 三字段映射，那会丢失 `usageGuide()` 拼接（实测丢 86.1% 描述）、`strict`
    * 标记与 `zodSchema` 优先链（审计第 18 条）。
    */
-  definitionsForTools(
-    tools: LegacyTool[],
-    descCtx?: ToolDescriptionContext,
-  ): ToolDefinition[] {
+  definitionsForTools(tools: LegacyTool[], descCtx?: ToolDescriptionContext): ToolDefinition[] {
     const defs = tools.map((t) => toolToDefinition(t, descCtx));
     // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）。
     // P2-2: StructuredOutput 始终排最后——其动态 schema 变化只影响自身的 cache 命中，
@@ -478,9 +470,7 @@ export class Registry {
     // 不外溢到非延迟工具（跨全量池的精确名匹配由 ToolSearchTool 层的 registry.get
     // 负责，那里语义是"选已加载工具是无害 no-op"）。
     const scored = searchToolsWithScoring(query, deferredInfo, deferredInfo, 50);
-    return scored
-      .map((s) => this.get(s.name))
-      .filter((t): t is LegacyTool => t !== undefined);
+    return scored.map((s) => this.get(s.name)).filter((t): t is LegacyTool => t !== undefined);
   }
 
   /**

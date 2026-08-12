@@ -41,7 +41,12 @@ function extractAtPattern(line: string, cursorCol: number): string | null {
   return null;
 }
 
-export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }: UseAtCompletionProps) {
+export function useAtCompletion({
+  cursorCol,
+  currentLine,
+  cwd,
+  setSuggestions,
+}: UseAtCompletionProps) {
   const lastPatternRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -71,7 +76,11 @@ export function useAtCompletion({ cursorCol, currentLine, cwd, setSuggestions }:
       const entries = readdirSync(absDir, { withFileTypes: true });
 
       // 先收集候选项(跳过隐藏文件/node_modules),再决定用 Fuse 模糊还是直接列全部
-      const candidates: { entry: (typeof entries)[number]; displayName: string; valuePath: string }[] = [];
+      const candidates: {
+        entry: (typeof entries)[number];
+        displayName: string;
+        valuePath: string;
+      }[] = [];
       for (const entry of entries) {
         // 跳过隐藏文件（除非用户输入了 .）
         if (entry.name.startsWith(".") && !searchPrefix.startsWith(".")) continue;

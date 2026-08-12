@@ -67,11 +67,9 @@ export function createTmuxSessionForWorktree(
     return sessionName;
   }
   try {
-    execFileSync(
-      "tmux",
-      ["new-session", "-d", "-s", sessionName, "-c", worktreePath],
-      { stdio: ["pipe", "pipe", "pipe"] },
-    );
+    execFileSync("tmux", ["new-session", "-d", "-s", sessionName, "-c", worktreePath], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     log.info(
       "WORKTREE",
       `已创建 tmux session: ${sessionName}${isITerm2() ? "（iTerm2，可用 tmux -CC attach 接入）" : ""}`,
@@ -139,10 +137,16 @@ export function createTeammatePane(
     execFileSync(
       "tmux",
       [
-        "new-window", "-t", sessionName, "-n", memberName.slice(0, 20),
+        "new-window",
+        "-t",
+        sessionName,
+        "-n",
+        memberName.slice(0, 20),
         // sh -c 里只拼固定命令 + execFileSync 传参（非 shell 拼接用户串），
         // outputFile 由内部生成（taskId 派生），不含用户可控内容。
-        "tail", "-F", outputFile,
+        "tail",
+        "-F",
+        outputFile,
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );

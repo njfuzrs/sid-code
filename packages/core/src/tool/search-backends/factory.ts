@@ -14,9 +14,7 @@ import { DuckDuckGoSearchBackend } from "./duckduckgo.ts";
 
 export function createSearchBackend(config?: SearchConfig): SearchBackend {
   const cfg = config ?? {};
-  const backend = cfg.backend
-    ?? process.env.SEARCH_BACKEND
-    ?? autoDetectBackend(cfg);
+  const backend = cfg.backend ?? process.env.SEARCH_BACKEND ?? autoDetectBackend(cfg);
 
   switch (backend) {
     case "searxng": {

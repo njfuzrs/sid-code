@@ -21,7 +21,12 @@
  * 系统无 ripgrep 时回退到 glob 库（行为对齐：同样接 signal、同样不读 gitignore）。
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { glob } from "glob";
 import { statSync } from "fs";
 import { join, isAbsolute, sep } from "path";
@@ -72,7 +77,10 @@ function noIgnore(): boolean {
  * 判定 —— `glob("src/ui/**\/*.tsx")` 不带 `path` 参数时，若不提取前缀就只能退化成
  * 项目根，`src/ui` 的规范拿不到。复用此函数而非重写，避免两套算法漂移。
  */
-export function extractGlobBaseDirectory(pattern: string): { baseDir: string; relativePattern: string } {
+export function extractGlobBaseDirectory(pattern: string): {
+  baseDir: string;
+  relativePattern: string;
+} {
   const globChars = /[*?[{]/;
   const match = pattern.match(globChars);
 
@@ -98,8 +106,14 @@ export function extractGlobBaseDirectory(pattern: string): { baseDir: string; re
 const globSchema = lazySchema(() =>
   z.object({
     pattern: z.string().describe("Glob 模式（如 '**/*.ts', 'src/**/*.js'）"),
-    path: z.string().optional().describe("搜索的基础路径，默认为当前目录。省略即用默认目录，不要传 'undefined'/'null'"),
-    ignore: z.array(z.string()).optional().describe("额外忽略的模式列表（会与默认的 node_modules/.git/dist 叠加，不会覆盖）"),
+    path: z
+      .string()
+      .optional()
+      .describe("搜索的基础路径，默认为当前目录。省略即用默认目录，不要传 'undefined'/'null'"),
+    ignore: z
+      .array(z.string())
+      .optional()
+      .describe("额外忽略的模式列表（会与默认的 node_modules/.git/dist 叠加，不会覆盖）"),
   }),
 );
 
@@ -239,8 +253,10 @@ export class GlobTool implements Tool {
         if (err.partialResults.length > 0) {
           const rel = err.partialResults
             .slice(0, DEFAULT_RESULT_LIMIT)
-            .map(p => (p.startsWith("./") ? p.slice(2) : p));
-          return { output: `${rel.join("\n")}\n\n（搜索超时，以上为部分结果。请收窄 pattern/path。）` };
+            .map((p) => (p.startsWith("./") ? p.slice(2) : p));
+          return {
+            output: `${rel.join("\n")}\n\n（搜索超时，以上为部分结果。请收窄 pattern/path。）`,
+          };
         }
         return { output: err.message, isError: true };
       }
@@ -281,7 +297,7 @@ export class GlobTool implements Tool {
     // 搜索目录作 spawn cwd，target 传 "."（见上方注释）
     const lines = await ripGrep(args, ".", abortSignal, cwd);
     // rg 输出形如 "./src/a.ts"，去掉 "./" 前缀
-    let rel = lines.map(p => (p.startsWith("./") ? p.slice(2) : p));
+    let rel = lines.map((p) => (p.startsWith("./") ? p.slice(2) : p));
     // G21：deny 规则隐藏——在截断之前过滤，避免被隐藏项占用结果配额
     rel = this.filterHidden(rel, cwd);
     // 截断到上限
@@ -298,7 +314,7 @@ export class GlobTool implements Tool {
   private filterHidden(files: string[], cwd: string): string[] {
     if (!this.isPathHidden) return files;
     const fn = this.isPathHidden;
-    return files.filter(f => {
+    return files.filter((f) => {
       try {
         return !fn(join(cwd, f));
       } catch {
@@ -328,7 +344,7 @@ export class GlobTool implements Tool {
     });
 
     // 按修改时间降序排列（最近编辑的在前）
-    const withMtime = raw.map(f => {
+    const withMtime = raw.map((f) => {
       try {
         return { file: f, mtime: statSync(join(cwd, f)).mtimeMs };
       } catch {
@@ -338,7 +354,10 @@ export class GlobTool implements Tool {
     withMtime.sort((a, b) => b.mtime - a.mtime);
 
     // G21：deny 规则隐藏——在截断之前过滤（同 ripgrep 路径）
-    const visible = this.filterHidden(withMtime.map(f => f.file), cwd);
+    const visible = this.filterHidden(
+      withMtime.map((f) => f.file),
+      cwd,
+    );
     const truncated = visible.length > DEFAULT_RESULT_LIMIT;
     const files = visible.slice(0, DEFAULT_RESULT_LIMIT);
     return { files, truncated };

@@ -25,16 +25,8 @@ import {
 } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
-import type {
-  WorktreeSession,
-  WorktreeChanges,
-  CreateWorktreeOptions,
-} from "./types.ts";
-import {
-  validateWorktreeSlug,
-  flattenSlug,
-  branchNameForSlug,
-} from "./slug.ts";
+import type { WorktreeSession, WorktreeChanges, CreateWorktreeOptions } from "./types.ts";
+import { validateWorktreeSlug, flattenSlug, branchNameForSlug } from "./slug.ts";
 import { findCanonicalGitRoot } from "./canonical.ts";
 import { getWorktreeConfig } from "./config.ts";
 import {
@@ -71,11 +63,11 @@ export function findGitRoot(fromDir: string): string | null {
 /** 解析仓库默认分支（origin/HEAD → main/master 兜底） */
 function resolveDefaultBranch(gitRoot: string): string {
   try {
-    const ref = execFileSync(
-      "git",
-      ["symbolic-ref", "refs/remotes/origin/HEAD"],
-      { cwd: gitRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    ).trim();
+    const ref = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+      cwd: gitRoot,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
     // refs/remotes/origin/main → main
     const m = ref.match(/refs\/remotes\/origin\/(.+)$/);
     if (m) return m[1];
@@ -125,10 +117,7 @@ export class WorktreeManager {
    * @param slug worktree 名称（会校验 + 扁平化）
    * @param opts prNumber（fetch PR 分支）/ baseRef（基准 ref 覆盖）
    */
-  async create(
-    slug: string,
-    opts: CreateWorktreeOptions = {},
-  ): Promise<WorktreeSession> {
+  async create(slug: string, opts: CreateWorktreeOptions = {}): Promise<WorktreeSession> {
     const startedAt = Date.now();
 
     // B5/P0-4：任何 fs/git 操作前先校验 slug
@@ -160,11 +149,10 @@ export class WorktreeManager {
     const baseTreeIsh = this.resolveBaseTreeish(opts, branchName, worktreePath);
 
     // 创建 worktree（-B 强制重建分支，避免残留分支冲突，D4）
-    execFileSync(
-      "git",
-      ["worktree", "add", "-B", branchName, worktreePath, baseTreeIsh],
-      { cwd: this.gitRoot, stdio: ["pipe", "pipe", "pipe"] },
-    );
+    execFileSync("git", ["worktree", "add", "-B", branchName, worktreePath, baseTreeIsh], {
+      cwd: this.gitRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     // P2-2：sparse-checkout（失败回滚整个 worktree）
     const cfg = getWorktreeConfig(this.gitRoot);
@@ -241,11 +229,10 @@ export class WorktreeManager {
     if (opts.prNumber !== undefined) {
       const prRef = `pull/${opts.prNumber}/head`;
       try {
-        execFileSync(
-          "git",
-          ["fetch", "origin", `${prRef}:${branchName}`],
-          { cwd: this.gitRoot, stdio: ["pipe", "pipe", "pipe"] },
-        );
+        execFileSync("git", ["fetch", "origin", `${prRef}:${branchName}`], {
+          cwd: this.gitRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
         // fetch 已建好 branchName，worktree add -B 会复用之
         return branchName;
       } catch (err: any) {
@@ -358,11 +345,11 @@ export class WorktreeManager {
       if (opts.fast) {
         // D17：未推送到任何 remote 的 commit（比相对 original HEAD 更准确地反映"会丢失的工作"）
         try {
-          const out = execFileSync(
-            "git",
-            ["rev-list", "--count", "HEAD", "--not", "--remotes"],
-            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-          ).trim();
+          const out = execFileSync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], {
+            cwd: worktreePath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          }).trim();
           commits = parseInt(out, 10);
           if (Number.isNaN(commits)) commits = 0;
         } catch {
@@ -371,11 +358,11 @@ export class WorktreeManager {
         }
       } else if (originalHeadCommit) {
         // 相对原始 HEAD 的新 commit
-        const out = execFileSync(
-          "git",
-          ["rev-list", "--count", `${originalHeadCommit}..HEAD`],
-          { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        ).trim();
+        const out = execFileSync("git", ["rev-list", "--count", `${originalHeadCommit}..HEAD`], {
+          cwd: worktreePath,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
         commits = parseInt(out, 10);
         if (Number.isNaN(commits)) commits = 0;
       }
@@ -427,16 +414,11 @@ export class WorktreeManager {
   /** 安全删除 Worktree */
   async remove(session: WorktreeSession, force: boolean = false): Promise<boolean> {
     if (!force) {
-      const changes = this.countChanges(
-        session.worktreePath,
-        session.originalHeadCommit,
-      );
+      const changes = this.countChanges(session.worktreePath, session.originalHeadCommit);
 
       // Fail-closed：无法确定状态时拒绝删除
       if (changes === null) {
-        throw new Error(
-          "无法确定 Worktree 状态，拒绝删除。请使用 force 参数强制删除。",
-        );
+        throw new Error("无法确定 Worktree 状态，拒绝删除。请使用 force 参数强制删除。");
       }
 
       if (changes.changedFiles > 0 || changes.commits > 0) {
@@ -457,11 +439,10 @@ export class WorktreeManager {
 
     // 删除 worktree 目录
     try {
-      execFileSync(
-        "git",
-        ["worktree", "remove", "--force", session.worktreePath],
-        { cwd: this.gitRoot, stdio: ["pipe", "pipe", "pipe"] },
-      );
+      execFileSync("git", ["worktree", "remove", "--force", session.worktreePath], {
+        cwd: this.gitRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
     } catch {
       // git worktree remove 失败时手动清理目录
       if (existsSync(session.worktreePath)) {
@@ -591,11 +572,7 @@ export class WorktreeManager {
     //    变成显式提示；条件不成立时零输出，无噪音）。best-effort，异常不阻断。
     const warnings: string[] = [];
     try {
-      const depWarn = checkDependencyConsistency(
-        worktreePath,
-        this.gitRoot,
-        symlinkedNodeModules,
-      );
+      const depWarn = checkDependencyConsistency(worktreePath, this.gitRoot, symlinkedNodeModules);
       if (depWarn) warnings.push(depWarn);
     } catch {
       /* 告警逻辑绝不阻断创建 */
@@ -663,7 +640,10 @@ export class WorktreeManager {
       attribution = DEFAULT_COMMIT_ATTRIBUTION;
     }
     if (!attribution) {
-      log.debug("WORKTREE", "commit 归因已关闭（settings.git.commitAttribution.enabled=false），跳过 hook 安装");
+      log.debug(
+        "WORKTREE",
+        "commit 归因已关闭（settings.git.commitAttribution.enabled=false），跳过 hook 安装",
+      );
       return;
     }
 
@@ -717,11 +697,7 @@ fi
     }
   }
 
-  private restoreExisting(
-    worktreePath: string,
-    slug: string,
-    branchName: string,
-  ): WorktreeSession {
+  private restoreExisting(worktreePath: string, slug: string, branchName: string): WorktreeSession {
     let headCommit = "";
     try {
       headCommit = execFileSync("git", ["rev-parse", "HEAD"], {

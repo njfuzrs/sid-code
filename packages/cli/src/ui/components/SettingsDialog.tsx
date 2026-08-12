@@ -3,12 +3,12 @@
  * 显示和编辑应用配置项
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { theme } from '../semantic-colors.ts';
-import { RadioButtonSelect } from './shared/RadioButtonSelect.tsx';
-import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';
+import { theme } from "../semantic-colors.ts";
+import { RadioButtonSelect } from "./shared/RadioButtonSelect.tsx";
+import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 
 interface SettingItem {
   key: string;
@@ -30,18 +30,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 }) => {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const items = useMemo(() =>
-    settings.map((s, i) => ({
-      label: `${s.label}: ${s.value}`,
-      value: i,
-      key: s.key,
-      description: s.description,
-    })),
-    [settings]
+  const items = useMemo(
+    () =>
+      settings.map((s, i) => ({
+        label: `${s.label}: ${s.value}`,
+        value: i,
+        key: s.key,
+        description: s.description,
+      })),
+    [settings],
   );
 
   useKeypress(KeypressPriority.Critical, (key: Key) => {
-    if (key.name === 'escape') {
+    if (key.name === "escape") {
       onClose();
       return true;
     }
@@ -51,8 +52,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const handleSelect = (index: number) => {
     const setting = settings[index];
     // 简化版：仅支持切换布尔值
-    if (setting.value === 'true' || setting.value === 'false') {
-      const newValue = setting.value === 'true' ? 'false' : 'true';
+    if (setting.value === "true" || setting.value === "false") {
+      const newValue = setting.value === "true" ? "false" : "true";
       onSettingChange(setting.key, newValue);
     }
   };
@@ -65,7 +66,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       paddingX={1}
       paddingY={1}
     >
-      <Text bold color={theme.ui.active}>设置</Text>
+      <Text bold color={theme.ui.active}>
+        设置
+      </Text>
       <Text>使用 ↑↓ 导航，Enter 切换，Esc 关闭</Text>
       <Box marginTop={1}>
         <RadioButtonSelect

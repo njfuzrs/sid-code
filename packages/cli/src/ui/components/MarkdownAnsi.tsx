@@ -21,12 +21,7 @@ import { Ansi as AnsiRaw } from "@sid-code/tui-renderer/Ansi.tsx";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
-import {
-  cachedLexer,
-  formatTokenToAnsi,
-  isTableToken,
-  extractTableData,
-} from "../markdown.ts";
+import { cachedLexer, formatTokenToAnsi, isTableToken, extractTableData } from "../markdown.ts";
 
 // 渲染底座的 Ansi 经 react-compiler 编译后丢失了 props 类型（签名为 (t0)），
 // JSX children 无法通过类型检查。这里补一个类型别名，仅约束我们用到的 props。
@@ -75,9 +70,7 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
     const flushAnsi = () => {
       const joined = ansiParts.join("\n\n").trim();
       if (joined) {
-        out.push(
-          <Ansi key={`ansi-${out.length}`}>{joined}</Ansi>,
-        );
+        out.push(<Ansi key={`ansi-${out.length}`}>{joined}</Ansi>);
       }
       ansiParts = [];
     };
@@ -114,12 +107,7 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
     }
     flushAnsi();
     return out;
-  }, [
-    renderMarkdown,
-    text,
-    terminalWidth,
-    settings.hideLineNumbers,
-  ]);
+  }, [renderMarkdown, text, terminalWidth, settings.hideLineNumbers]);
 
   if (!text) return null;
 

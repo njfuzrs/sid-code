@@ -93,10 +93,7 @@ export class Scheduler {
         );
       } else {
         // 尝试获取持久任务调度锁（失败也能跑，只是不负责持久任务触发）
-        this.hasDurableLock = tryAcquireSchedulerLock(
-          this.opts.workspaceDir,
-          this.opts.sessionId,
-        );
+        this.hasDurableLock = tryAcquireSchedulerLock(this.opts.workspaceDir, this.opts.sessionId);
         if (this.hasDurableLock) {
           this.durableTasks = this.loadDurableTasks();
         }
@@ -200,8 +197,7 @@ export class Scheduler {
       //   只能手动 cron_delete。
       const maxAgeMs = DEFAULTS.maxAgeDays * 24 * 60 * 60 * 1000;
       const durableNeverExpires = this.opts.daemonMode && task.durable;
-      const isAged =
-        task.recurring && !durableNeverExpires && now - task.createdAt >= maxAgeMs;
+      const isAged = task.recurring && !durableNeverExpires && now - task.createdAt >= maxAgeMs;
 
       if (task.recurring && !isAged) {
         // 循环任务：从 now 重新调度（避免快速追赶历史）

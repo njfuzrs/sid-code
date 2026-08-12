@@ -64,13 +64,7 @@ function listIgnoredEntries(gitRoot: string): string[] {
   try {
     const out = execFileSync(
       "git",
-      [
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--directory",
-      ],
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
       { cwd: gitRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     return out

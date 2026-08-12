@@ -134,10 +134,13 @@ export function formatHover(result: unknown): string {
 }
 
 /** 判断 documentSymbol 返回的是层级 DocumentSymbol[] 还是扁平 SymbolInformation[] */
-function isDocumentSymbolArray(
-  arr: unknown[],
-): arr is LSPDocumentSymbol[] {
-  return arr.length > 0 && !!arr[0] && typeof arr[0] === "object" && "selectionRange" in (arr[0] as object);
+function isDocumentSymbolArray(arr: unknown[]): arr is LSPDocumentSymbol[] {
+  return (
+    arr.length > 0 &&
+    !!arr[0] &&
+    typeof arr[0] === "object" &&
+    "selectionRange" in (arr[0] as object)
+  );
 }
 
 /** 递归格式化层级 DocumentSymbol 树 */
@@ -200,7 +203,12 @@ export function formatCallHierarchyItems(result: unknown, workspaceFolder: strin
   if (!result || !Array.isArray(result) || result.length === 0) {
     return "此位置无可用的调用层级项（请确认光标位于函数/方法名上）";
   }
-  const items = result as Array<{ name: string; kind: number; uri: string; selectionRange: { start: { line: number; character: number } } }>;
+  const items = result as Array<{
+    name: string;
+    kind: number;
+    uri: string;
+    selectionRange: { start: { line: number; character: number } };
+  }>;
   const lines = items.map((item) => {
     const kind = symbolKindName(item.kind);
     const path = uriToDisplayPath(item.uri, workspaceFolder);
@@ -218,7 +226,10 @@ export function formatIncomingCalls(result: unknown, workspaceFolder: string): s
   const lines = shown.map((call) => {
     const kind = symbolKindName(call.from.kind);
     const path = uriToDisplayPath(call.from.uri, workspaceFolder);
-    const loc = fmtPos(call.from.selectionRange.start.line, call.from.selectionRange.start.character);
+    const loc = fmtPos(
+      call.from.selectionRange.start.line,
+      call.from.selectionRange.start.character,
+    );
     return `← ${kind} ${call.from.name} (${path}:${loc})  [${call.fromRanges.length} 处调用]`;
   });
   let out = lines.join("\n");
@@ -309,9 +320,7 @@ export function formatCodeActions(result: unknown, workspaceFolder: string): str
     return "无可用的代码修复建议（该位置没有语言服务器可提供的 quickfix）";
   }
   // 过滤掉既无 edit 又无 command 的空壳 action（部分服务器会返回纯占位）
-  const actions = (result as LSPCodeAction[]).filter(
-    (a) => a && a.title && (a.edit || a.command),
-  );
+  const actions = (result as LSPCodeAction[]).filter((a) => a && a.title && (a.edit || a.command));
   if (actions.length === 0) {
     return "无可用的代码修复建议（该位置没有语言服务器可提供的 quickfix）";
   }
@@ -328,7 +337,9 @@ export function formatCodeActions(result: unknown, workspaceFolder: string): str
       lines.push(...summary);
     } else if (action.command) {
       // 纯 command 形态：服务器要求执行命令而非直接给 edit，我们不执行任意命令，仅提示
-      lines.push(`      （此修复需服务器执行命令 \`${action.command.command}\`，无法直接展示 edit）`);
+      lines.push(
+        `      （此修复需服务器执行命令 \`${action.command.command}\`，无法直接展示 edit）`,
+      );
     }
   };
 

@@ -6,14 +6,7 @@
  * 用 PID 探活清理崩溃残留的注册文件（stale）。
  */
 
-import {
-  writeFileSync,
-  readFileSync,
-  readdirSync,
-  unlinkSync,
-  mkdirSync,
-  existsSync,
-} from "fs";
+import { writeFileSync, readFileSync, readdirSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";

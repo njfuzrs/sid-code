@@ -4,146 +4,146 @@
  * 参考 gemini-cli/packages/cli/src/ui/themes/builtin/dark/default-dark.ts
  */
 
-import { darkTheme, Theme } from '../../theme.ts';
-import { darkSemanticColors } from '../../semantic-tokens.ts';
+import { darkTheme, Theme } from "../../theme.ts";
+import { darkSemanticColors } from "../../semantic-tokens.ts";
 
 export const DefaultDark: Theme = new Theme(
-  'Default',
-  'dark',
+  "Default",
+  "dark",
   {
     hljs: {
-      display: 'block',
-      overflowX: 'auto',
-      padding: '0.5em',
+      display: "block",
+      overflowX: "auto",
+      padding: "0.5em",
       background: darkTheme.MessageBackground,
       color: darkTheme.Foreground,
     },
-    'hljs-keyword': {
+    "hljs-keyword": {
       color: darkTheme.AccentBlue,
     },
-    'hljs-literal': {
+    "hljs-literal": {
       color: darkTheme.AccentBlue,
     },
-    'hljs-symbol': {
+    "hljs-symbol": {
       color: darkTheme.AccentBlue,
     },
-    'hljs-name': {
+    "hljs-name": {
       color: darkTheme.AccentBlue,
     },
-    'hljs-link': {
+    "hljs-link": {
       color: darkTheme.AccentBlue,
-      textDecoration: 'underline',
+      textDecoration: "underline",
     },
-    'hljs-built_in': {
+    "hljs-built_in": {
       color: darkTheme.AccentCyan,
     },
-    'hljs-type': {
+    "hljs-type": {
       color: darkTheme.AccentCyan,
     },
-    'hljs-number': {
+    "hljs-number": {
       color: darkTheme.AccentGreen,
     },
-    'hljs-class': {
+    "hljs-class": {
       color: darkTheme.AccentGreen,
     },
-    'hljs-string': {
+    "hljs-string": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-meta-string': {
+    "hljs-meta-string": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-regexp': {
+    "hljs-regexp": {
       color: darkTheme.AccentRed,
     },
-    'hljs-template-tag': {
+    "hljs-template-tag": {
       color: darkTheme.AccentRed,
     },
-    'hljs-subst': {
+    "hljs-subst": {
       color: darkTheme.Foreground,
     },
-    'hljs-function': {
+    "hljs-function": {
       color: darkTheme.Foreground,
     },
-    'hljs-title': {
+    "hljs-title": {
       color: darkTheme.Foreground,
     },
-    'hljs-params': {
+    "hljs-params": {
       color: darkTheme.Foreground,
     },
-    'hljs-formula': {
+    "hljs-formula": {
       color: darkTheme.Foreground,
     },
-    'hljs-comment': {
+    "hljs-comment": {
       color: darkTheme.Comment,
-      fontStyle: 'italic',
+      fontStyle: "italic",
     },
-    'hljs-quote': {
+    "hljs-quote": {
       color: darkTheme.Comment,
-      fontStyle: 'italic',
+      fontStyle: "italic",
     },
-    'hljs-doctag': {
+    "hljs-doctag": {
       color: darkTheme.Comment,
     },
-    'hljs-meta': {
+    "hljs-meta": {
       color: darkTheme.Gray,
     },
-    'hljs-meta-keyword': {
+    "hljs-meta-keyword": {
       color: darkTheme.Gray,
     },
-    'hljs-tag': {
+    "hljs-tag": {
       color: darkTheme.Gray,
     },
-    'hljs-variable': {
+    "hljs-variable": {
       color: darkTheme.AccentPurple,
     },
-    'hljs-template-variable': {
+    "hljs-template-variable": {
       color: darkTheme.AccentPurple,
     },
-    'hljs-attr': {
+    "hljs-attr": {
       color: darkTheme.LightBlue,
     },
-    'hljs-attribute': {
+    "hljs-attribute": {
       color: darkTheme.LightBlue,
     },
-    'hljs-builtin-name': {
+    "hljs-builtin-name": {
       color: darkTheme.LightBlue,
     },
-    'hljs-section': {
+    "hljs-section": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-emphasis': {
-      fontStyle: 'italic',
+    "hljs-emphasis": {
+      fontStyle: "italic",
     },
-    'hljs-strong': {
-      fontWeight: 'bold',
+    "hljs-strong": {
+      fontWeight: "bold",
     },
-    'hljs-bullet': {
+    "hljs-bullet": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-selector-tag': {
+    "hljs-selector-tag": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-selector-id': {
+    "hljs-selector-id": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-selector-class': {
+    "hljs-selector-class": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-selector-attr': {
+    "hljs-selector-attr": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-selector-pseudo': {
+    "hljs-selector-pseudo": {
       color: darkTheme.AccentYellow,
     },
-    'hljs-addition': {
-      backgroundColor: '#144212',
-      display: 'inline-block',
-      width: '100%',
+    "hljs-addition": {
+      backgroundColor: "#144212",
+      display: "inline-block",
+      width: "100%",
     },
-    'hljs-deletion': {
-      backgroundColor: '#600',
-      display: 'inline-block',
-      width: '100%',
+    "hljs-deletion": {
+      backgroundColor: "#600",
+      display: "inline-block",
+      width: "100%",
     },
   },
   darkTheme,

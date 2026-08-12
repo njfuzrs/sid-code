@@ -38,13 +38,16 @@ export class StdioTransport implements Transport {
   // `number | FileSink` / `number | ReadableStream` 联合类型（对应 inherit/fd 的情形），
   // 于是 .getReader() / .write() 全部报错。构造时传的就是 pipe，这里把它写进类型。
   private proc: Subprocess<"pipe", "pipe", "pipe">;
-  private pendingRequests = new Map<number | string, {
-    resolve: (resp: JsonRpcResponse) => void;
-    reject: (err: Error) => void;
-    // 修:请求 settle 时移除 signal 的 abort 监听器,防止成功/超时路径下监听器在
-    // 共享(会话级)signal 上线性累加(每次 MCP 调用泄漏一个)。
-    cleanup?: () => void;
-  }>();
+  private pendingRequests = new Map<
+    number | string,
+    {
+      resolve: (resp: JsonRpcResponse) => void;
+      reject: (err: Error) => void;
+      // 修:请求 settle 时移除 signal 的 abort 监听器,防止成功/超时路径下监听器在
+      // 共享(会话级)signal 上线性累加(每次 MCP 调用泄漏一个)。
+      cleanup?: () => void;
+    }
+  >();
   private buffer = "";
   private closed = false;
   private timeout: number;
@@ -52,14 +55,19 @@ export class StdioTransport implements Transport {
   onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
 
-  constructor(command: string, args: string[] = [], env?: Record<string, string>, timeout?: number) {
+  constructor(
+    command: string,
+    args: string[] = [],
+    env?: Record<string, string>,
+    timeout?: number,
+  ) {
     this.timeout = timeout ?? 30000;
     this.proc = spawn({
       cmd: [command, ...args],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env as Record<string, string>, ...env },
+      env: { ...(process.env as Record<string, string>), ...env },
     });
 
     // 监听进程退出，立即 reject 所有 pending 请求
@@ -150,13 +158,21 @@ export class StdioTransport implements Transport {
       }
     };
     if (!this.onRequest) {
-      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      respond({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32601, message: `方法未找到: ${request.method}` },
+      });
       return;
     }
     this.onRequest(request)
       .then(respond)
       .catch((err) => {
-        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+        respond({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
+        });
       });
   }
 
@@ -460,16 +476,26 @@ export class StreamableHTTPTransport implements Transport {
         method: "POST",
         headers: this.buildHeaders(),
         body: JSON.stringify(sanitizeStrings(response)),
-      }).catch(() => { /* 回传失败忽略 */ });
+      }).catch(() => {
+        /* 回传失败忽略 */
+      });
     };
     if (!this.onRequest) {
-      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      respond({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32601, message: `方法未找到: ${request.method}` },
+      });
       return;
     }
     this.onRequest(request)
       .then(respond)
       .catch((err) => {
-        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+        respond({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
+        });
       });
   }
 
@@ -495,12 +521,15 @@ export class SSETransport implements Transport {
   private headers: Record<string, string>;
   private timeout: number;
   private closed = false;
-  private pendingRequests = new Map<number | string, {
-    resolve: (resp: JsonRpcResponse) => void;
-    reject: (err: Error) => void;
-    // 修:请求 settle 时移除 signal 的 abort 监听器,防止在共享(会话级)signal 上累加。
-    cleanup?: () => void;
-  }>();
+  private pendingRequests = new Map<
+    number | string,
+    {
+      resolve: (resp: JsonRpcResponse) => void;
+      reject: (err: Error) => void;
+      // 修:请求 settle 时移除 signal 的 abort 监听器,防止在共享(会话级)signal 上累加。
+      cleanup?: () => void;
+    }
+  >();
   private abortController: AbortController | null = null;
   /** SSE 握手后服务器返回的 POST 端点（可能是相对路径） */
   private postEndpoint: string | null = null;
@@ -641,16 +670,26 @@ export class SSETransport implements Transport {
         method: "POST",
         headers: { "Content-Type": "application/json", ...this.headers },
         body: JSON.stringify(sanitizeStrings(response)),
-      }).catch(() => { /* 回传失败忽略 */ });
+      }).catch(() => {
+        /* 回传失败忽略 */
+      });
     };
     if (!this.onRequest) {
-      respond({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } });
+      respond({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32601, message: `方法未找到: ${request.method}` },
+      });
       return;
     }
     this.onRequest(request)
       .then(respond)
       .catch((err) => {
-        respond({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: `内部错误: ${err?.message ?? err}` } });
+        respond({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
+        });
       });
   }
 
@@ -748,10 +787,13 @@ export class SSETransport implements Transport {
 /** WebSocket 传输 - 通过 WebSocket 双向通信 */
 export class WebSocketTransport implements Transport {
   private ws: WebSocket;
-  private pendingRequests = new Map<number | string, {
-    resolve: (resp: JsonRpcResponse) => void;
-    reject: (err: Error) => void;
-  }>();
+  private pendingRequests = new Map<
+    number | string,
+    {
+      resolve: (resp: JsonRpcResponse) => void;
+      reject: (err: Error) => void;
+    }
+  >();
   private closed = false;
   private timeout: number;
   private connectPromise: Promise<void>;
@@ -767,17 +809,19 @@ export class WebSocketTransport implements Transport {
 
   private waitForOpen(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws.addEventListener('open', () => resolve(), { once: true });
-      this.ws.addEventListener('error', () => reject(new Error('WebSocket 连接失败')), { once: true });
+      this.ws.addEventListener("open", () => resolve(), { once: true });
+      this.ws.addEventListener("error", () => reject(new Error("WebSocket 连接失败")), {
+        once: true,
+      });
     });
   }
 
   private setupListeners(): void {
-    this.ws.addEventListener('message', (event) => {
+    this.ws.addEventListener("message", (event) => {
       try {
         const msg = JSON.parse(event.data as string);
 
-        if (msg.jsonrpc === '2.0' && !('id' in msg) && msg.method) {
+        if (msg.jsonrpc === "2.0" && !("id" in msg) && msg.method) {
           this.onNotification?.(msg as JsonRpcNotification);
           return;
         }
@@ -791,11 +835,11 @@ export class WebSocketTransport implements Transport {
       } catch {}
     });
 
-    this.ws.addEventListener('close', () => {
+    this.ws.addEventListener("close", () => {
       if (!this.closed) {
         this.closed = true;
         for (const [, p] of this.pendingRequests) {
-          p.reject(new Error('WebSocket 连接断开'));
+          p.reject(new Error("WebSocket 连接断开"));
         }
         this.pendingRequests.clear();
         this.onClose?.();
@@ -804,7 +848,7 @@ export class WebSocketTransport implements Transport {
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
-    if (this.closed) throw new Error('传输已关闭');
+    if (this.closed) throw new Error("传输已关闭");
     await this.connectPromise;
 
     return new Promise((resolve, reject) => {
@@ -812,15 +856,19 @@ export class WebSocketTransport implements Transport {
 
       if (signal?.aborted) {
         this.pendingRequests.delete(request.id);
-        reject(new Error('用户取消'));
+        reject(new Error("用户取消"));
         return;
       }
-      signal?.addEventListener('abort', () => {
-        if (this.pendingRequests.has(request.id)) {
-          this.pendingRequests.delete(request.id);
-          reject(new Error('用户取消'));
-        }
-      }, { once: true });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          if (this.pendingRequests.has(request.id)) {
+            this.pendingRequests.delete(request.id);
+            reject(new Error("用户取消"));
+          }
+        },
+        { once: true },
+      );
 
       this.ws.send(JSON.stringify(sanitizeStrings(request)));
 
@@ -841,7 +889,7 @@ export class WebSocketTransport implements Transport {
     this.closed = true;
     this.ws.close();
     for (const [, p] of this.pendingRequests) {
-      p.reject(new Error('传输已关闭'));
+      p.reject(new Error("传输已关闭"));
     }
     this.pendingRequests.clear();
   }
@@ -850,10 +898,13 @@ export class WebSocketTransport implements Transport {
 /** 进程内传输 - 同进程内存直接通信 */
 class InProcessTransportImpl implements Transport {
   private peer: InProcessTransportImpl | undefined;
-  private pendingRequests = new Map<number | string, {
-    resolve: (resp: JsonRpcResponse) => void;
-    reject: (err: Error) => void;
-  }>();
+  private pendingRequests = new Map<
+    number | string,
+    {
+      resolve: (resp: JsonRpcResponse) => void;
+      reject: (err: Error) => void;
+    }
+  >();
   private closed = false;
   onNotification?: (notification: JsonRpcNotification) => void;
   onClose?: () => void;
@@ -863,22 +914,26 @@ class InProcessTransportImpl implements Transport {
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
-    if (this.closed || !this.peer) throw new Error('传输已关闭');
+    if (this.closed || !this.peer) throw new Error("传输已关闭");
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(request.id, { resolve, reject });
 
       if (signal?.aborted) {
         this.pendingRequests.delete(request.id);
-        reject(new Error('用户取消'));
+        reject(new Error("用户取消"));
         return;
       }
-      signal?.addEventListener('abort', () => {
-        if (this.pendingRequests.has(request.id)) {
-          this.pendingRequests.delete(request.id);
-          reject(new Error('用户取消'));
-        }
-      }, { once: true });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          if (this.pendingRequests.has(request.id)) {
+            this.pendingRequests.delete(request.id);
+            reject(new Error("用户取消"));
+          }
+        },
+        { once: true },
+      );
 
       queueMicrotask(() => {
         this.peer?.handleIncoming(request);
@@ -887,7 +942,7 @@ class InProcessTransportImpl implements Transport {
   }
 
   handleIncoming(msg: JsonRpcRequest | JsonRpcResponse | JsonRpcNotification): void {
-    if ('result' in msg || 'error' in msg) {
+    if ("result" in msg || "error" in msg) {
       const resp = msg as JsonRpcResponse;
       const pending = this.pendingRequests.get(resp.id);
       if (pending) {
@@ -897,7 +952,7 @@ class InProcessTransportImpl implements Transport {
       return;
     }
 
-    if (!('id' in msg)) {
+    if (!("id" in msg)) {
       this.onNotification?.(msg as JsonRpcNotification);
       return;
     }
@@ -913,7 +968,7 @@ class InProcessTransportImpl implements Transport {
   close(): void {
     this.closed = true;
     for (const [, p] of this.pendingRequests) {
-      p.reject(new Error('传输已关闭'));
+      p.reject(new Error("传输已关闭"));
     }
     this.pendingRequests.clear();
   }

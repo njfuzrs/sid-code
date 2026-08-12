@@ -27,21 +27,14 @@ import { getLogger } from "../../debug/logger.ts";
  */
 async function loadCodeReviewBody(): Promise<string | null> {
   try {
-    const { EMBEDDED_BUILTIN_SKILLS } = await import(
-      "../builtin-embedded.generated.ts"
-    );
-    const entry = EMBEDDED_BUILTIN_SKILLS.find(
-      (s: { name: string }) => s.name === "code-review",
-    );
+    const { EMBEDDED_BUILTIN_SKILLS } = await import("../builtin-embedded.generated.ts");
+    const entry = EMBEDDED_BUILTIN_SKILLS.find((s: { name: string }) => s.name === "code-review");
     if (!entry?.rawContent) return null;
     // 剥离开头的 YAML frontmatter（--- ... ---），只保留 Markdown 正文
     const body = entry.rawContent.replace(/^---\n[\s\S]*?\n---\n/, "");
     return body.trim() || null;
   } catch (err: any) {
-    getLogger().debug(
-      "SKILL",
-      `加载 code-review 提示词资产失败，降级到内联兜底: ${err?.message}`,
-    );
+    getLogger().debug("SKILL", `加载 code-review 提示词资产失败，降级到内联兜底: ${err?.message}`);
     return null;
   }
 }
@@ -89,8 +82,7 @@ export function registerReviewSkill(): void {
   registerBundledSkill({
     name: "review",
     description: "对当前变更或指定 diff 做 code review，输出结构化审查意见",
-    whenToUse:
-      "当用户说 'review'、'代码审查'、'审一下'、'review 这个 PR'、'review 这次改动' 时",
+    whenToUse: "当用户说 'review'、'代码审查'、'审一下'、'review 这个 PR'、'review 这次改动' 时",
     argumentHint: "[diff 文件路径 / commit range / 审查重点]",
     // fork 模式：白名单真实生效，锁定只读工具（对齐 code-review RL-001）
     allowedTools: ["read", "grep", "glob", "bash"],
@@ -100,9 +92,7 @@ export function registerReviewSkill(): void {
     timeoutMins: 15, // 逐文件读取 + 多维度审查，2 分钟不够
     async getPromptForCommand(args) {
       const body = (await loadCodeReviewBody()) ?? FALLBACK_REVIEW_PROMPT;
-      const extra = args.trim()
-        ? `\n\n---\n\n## 用户额外要求\n\n${args.trim()}`
-        : "";
+      const extra = args.trim() ? `\n\n---\n\n## 用户额外要求\n\n${args.trim()}` : "";
       return REVIEW_HEADER + body + extra;
     },
   });

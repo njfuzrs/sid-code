@@ -43,8 +43,7 @@ async function cmdStatus(asJson: boolean): Promise<void> {
 
   const activeModel = config.availableModels.find((m) => m.name === config.model);
   // 顶层 key 按 provider 选择（config 用 anthropicKey / openaiKey 两套顶层字段，无统一 apiKey）。
-  const providerKey =
-    config.provider === "openai" ? config.openaiKey : config.anthropicKey;
+  const providerKey = config.provider === "openai" ? config.openaiKey : config.anthropicKey;
   // API Key 解析优先级：模型级 > 顶层 config > env。与 provider 层解析口径保持一致的近似。
   const effectiveKey = activeModel?.apiKey || providerKey || process.env.ANTHROPIC_API_KEY;
   const effectiveBaseURL = activeModel?.baseURL || config.baseURL || undefined;
@@ -79,7 +78,9 @@ async function cmdStatus(asJson: boolean): Promise<void> {
   console.log("认证状态:\n");
   console.log(`  Provider:     ${report.provider}`);
   console.log(`  主模型:       ${report.model}`);
-  console.log(`  API Key:      ${report.apiKeyConfigured ? "✓ 已配置" : "✗ 未配置"}  ${report.apiKeyMasked}`);
+  console.log(
+    `  API Key:      ${report.apiKeyConfigured ? "✓ 已配置" : "✗ 未配置"}  ${report.apiKeyMasked}`,
+  );
   console.log(`  Key 来源:     ${report.apiKeySource}`);
   console.log(`  baseURL:      ${report.baseURL}`);
   console.log(`  经由网关:     ${report.viaGateway ? "是" : "否（直连官方域名）"}`);
@@ -89,10 +90,14 @@ async function cmdStatus(asJson: boolean): Promise<void> {
   console.log("");
   console.log(`  available_models（共 ${report.availableModels.length} 个）:`);
   for (const m of report.availableModels) {
-    console.log(`    - ${m.name}  provider=${m.provider ?? "(继承)"}  key=${m.apiKeyConfigured ? "✓" : "✗"}`);
+    console.log(
+      `    - ${m.name}  provider=${m.provider ?? "(继承)"}  key=${m.apiKeyConfigured ? "✓" : "✗"}`,
+    );
   }
   if (!report.apiKeyConfigured) {
-    console.log("\n提示: API Key 未配置。可在 ~/.sid-code/settings.json 或环境变量 ANTHROPIC_API_KEY 中设置。");
+    console.log(
+      "\n提示: API Key 未配置。可在 ~/.sid-code/settings.json 或环境变量 ANTHROPIC_API_KEY 中设置。",
+    );
   }
 }
 

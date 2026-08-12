@@ -33,7 +33,11 @@ export function offTaskChanged(callback: TaskChangeCallback): void {
 /** 通知所有监听器任务已变更 */
 function notifyTaskChanged(): void {
   for (const cb of changeListeners) {
-    try { cb(); } catch { /* 监听器异常不应影响任务系统 */ }
+    try {
+      cb();
+    } catch {
+      /* 监听器异常不应影响任务系统 */
+    }
   }
 }
 
@@ -44,10 +48,7 @@ export function registerTask(task: TaskState): void {
 }
 
 /** 原子性更新任务状态 */
-export function updateTask<T extends TaskState>(
-  taskId: string,
-  updater: (task: T) => T,
-): void {
+export function updateTask<T extends TaskState>(taskId: string, updater: (task: T) => T): void {
   const task = tasks.get(taskId) as T | undefined;
   if (!task) return;
   const updated = updater(task);
@@ -64,7 +65,7 @@ export function getTask(taskId: string): TaskState | undefined {
 
 /** 获取所有运行中的任务 */
 export function getRunningTasks(): TaskState[] {
-  return [...tasks.values()].filter(t => t.status === "running");
+  return [...tasks.values()].filter((t) => t.status === "running");
 }
 
 /** 获取所有任务 */
@@ -119,9 +120,9 @@ export function evictTerminalTasks(force = false): void {
     if (
       isTerminalStatus(task.status) &&
       task.notified &&
-      (force || (task.evictAfter ?? 0) <= now)  // 缓冲期检查：force 时跳过；未设置视为 0（兼容旧任务立即驱逐）
+      (force || (task.evictAfter ?? 0) <= now) // 缓冲期检查：force 时跳过；未设置视为 0（兼容旧任务立即驱逐）
     ) {
-      evictTaskOutput(id);   // 连带清磁盘 .output 文件 + 内存 outputs 条目，避免孤儿泄露
+      evictTaskOutput(id); // 连带清磁盘 .output 文件 + 内存 outputs 条目，避免孤儿泄露
       tasks.delete(id);
       evicted = true;
     }
@@ -252,7 +253,9 @@ export async function generateTaskStatusAttachment(): Promise<string | null> {
       const p = task.progress;
       lines.push(`    <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
       if (p.lastActivity) {
-        lines.push(`      <last-activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last-activity>`);
+        lines.push(
+          `      <last-activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last-activity>`,
+        );
       }
       lines.push(`    </progress>`);
 

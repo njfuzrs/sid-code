@@ -15,10 +15,7 @@ import { findCanonicalGitRoot, enterWorktreeCwd } from "../worktree/canonical.ts
 import { validateWorktreeSlug, branchNameForSlug } from "../worktree/slug.ts";
 import { saveWorktreeState } from "../worktree/persistence.ts";
 import { logWorktreeEvent } from "../worktree/analytics.ts";
-import {
-  generateTmuxSessionName,
-  createTmuxSessionForWorktree,
-} from "../worktree/tmux.ts";
+import { generateTmuxSessionName, createTmuxSessionForWorktree } from "../worktree/tmux.ts";
 import type { WorktreeSession } from "../worktree/types.ts";
 import { generateWordSlug } from "../plan/slug.ts";
 import { getCwd } from "../bootstrap/state.ts";
@@ -30,9 +27,17 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const enterWorktreeSchema = lazySchema(() =>
   z.object({
-    name: z.string().optional().describe("Worktree 名称（可选，默认自动生成词汇 slug；与 path 互斥）"),
+    name: z
+      .string()
+      .optional()
+      .describe("Worktree 名称（可选，默认自动生成词汇 slug；与 path 互斥）"),
     path: z.string().optional().describe("进入已存在的 Worktree 目录路径（与 name 互斥）"),
-    pr: z.number().int().positive().optional().describe("PR 编号：fetch pull/<n>/head 后创建 worktree review"),
+    pr: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("PR 编号：fetch pull/<n>/head 后创建 worktree review"),
     tmux: z.boolean().optional().describe("同时创建关联的 tmux session（便于独立终端接入）"),
   }),
 );
@@ -130,7 +135,9 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
       });
 
       log.info("WORKTREE", `进入 Worktree: ${session.worktreePath}`);
-      const tmuxLine = session.tmuxSession ? `\ntmux: ${session.tmuxSession}（可用 tmux attach -t ${session.tmuxSession} 接入）` : "";
+      const tmuxLine = session.tmuxSession
+        ? `\ntmux: ${session.tmuxSession}（可用 tmux attach -t ${session.tmuxSession} 接入）`
+        : "";
       // 创建期告警（依赖不一致 / DB migration）：条件真实成立才有内容
       const warnLines = (session.setupWarnings ?? []).length
         ? "\n\n" + session.setupWarnings!.map((w) => `⚠️ ${w}`).join("\n")
@@ -161,7 +168,10 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
       /* 忽略 */
     }
     if (!pointerContent.startsWith("gitdir:")) {
-      return { output: `${worktreePath} 的 .git 不是 worktree pointer（可能是主仓或普通目录）`, isError: true };
+      return {
+        output: `${worktreePath} 的 .git 不是 worktree pointer（可能是主仓或普通目录）`,
+        isError: true,
+      };
     }
 
     // 2. 验证属于当前仓库（canonical root 一致）
@@ -181,10 +191,14 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     try {
       const { execFileSync } = await import("child_process");
       headCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       }).trim();
       const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-        cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       }).trim();
       if (b && b !== "HEAD") branch = b;
     } catch {

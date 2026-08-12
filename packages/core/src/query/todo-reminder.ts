@@ -76,11 +76,7 @@ export function buildUnansweredEndTurnMessage(): string {
 
 /** 状态文案（与 claude-code messages.ts 的 `[status] content` 渲染对齐） */
 function statusLabel(s: string): string {
-  return s === "completed"
-    ? "completed"
-    : s === "in_progress"
-      ? "in_progress"
-      : "pending";
+  return s === "completed" ? "completed" : s === "in_progress" ? "in_progress" : "pending";
 }
 
 /** 未完成（pending + in_progress）项 */
@@ -95,9 +91,7 @@ export function countUnfinished(todos: TodoItem[]): number {
 
 /** 把 todo 渲染成带序号 + 状态标签的多行文本 */
 function renderTodoLines(todos: TodoItem[]): string {
-  return todos
-    .map((t, i) => `${i + 1}. [${statusLabel(t.status)}] ${t.content}`)
-    .join("\n");
+  return todos.map((t, i) => `${i + 1}. [${statusLabel(t.status)}] ${t.content}`).join("\n");
 }
 
 /**

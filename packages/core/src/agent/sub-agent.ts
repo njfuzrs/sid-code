@@ -20,10 +20,7 @@ import {
   StructuredOutputTool,
   structuredOutputPromptSuffix,
 } from "../tool/structured-output-tool.ts";
-import {
-  validateAgainstSchema,
-  formatSchemaErrors,
-} from "../workflow/json-schema-validator.ts";
+import { validateAgainstSchema, formatSchemaErrors } from "../workflow/json-schema-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
@@ -70,7 +67,14 @@ import { withIncrementedDepth } from "./depth-context.ts";
  *  spawn 路径在 dev 下被静默停用（进度回灌、跨进程累积等行为一起消失）。 */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HEADLESS_ENTRY = join(
-  __dirname, "..", "..", "..", "cli", "src", "entrypoints", "headless.ts",
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "cli",
+  "src",
+  "entrypoints",
+  "headless.ts",
 );
 /** headless 入口是否存在于磁盘（编译二进制中为 false） */
 const HEADLESS_AVAILABLE = existsSync(HEADLESS_ENTRY);
@@ -176,7 +180,10 @@ export interface SubAgentTask {
  *  spawn 路径（ParentInitMessage 协议）不透传 forkMessages，跨进程边界后 fork 上下文
  *  已丢失，不适用 200 档位，调用方应始终传非 fork 语境的 task。
  *  导出供单测直接验证，避免依赖端到端跑满 30/200 轮 mock 循环。 */
-export function resolveSubAgentMaxTurns(task: { maxTurns?: number; forkMessages?: unknown[] }): number {
+export function resolveSubAgentMaxTurns(task: {
+  maxTurns?: number;
+  forkMessages?: unknown[];
+}): number {
   if (task.maxTurns !== undefined) return task.maxTurns;
   const isForkTask = Boolean(task.forkMessages && task.forkMessages.length > 0);
   return isForkTask ? 200 : 30;
@@ -201,7 +208,10 @@ export interface SubAgentResult {
 
 /** 子代理系统提示词（从 AgentDefinition 注册表获取，兼容内置 + 自定义类型） */
 function getSystemPrompt(type: string): string {
-  return getAgentSystemPrompt(type) ?? `你是一个 ${type} 代理。完成指定任务并返回结果。\n规则：\n- 专注于完成指定任务\n- 完成后简洁地报告完成状态和关键输出`;
+  return (
+    getAgentSystemPrompt(type) ??
+    `你是一个 ${type} 代理。完成指定任务并返回结果。\n规则：\n- 专注于完成指定任务\n- 完成后简洁地报告完成状态和关键输出`
+  );
 }
 
 /**
@@ -244,7 +254,7 @@ async function enhanceSubAgentPrompt(
     // （悄悄违反格式约束，主代理按标题解析结论时可能拿不到）。这里把二选一变成明确指令。
     notes.push(
       "[FORMAT OVERRIDE] The instructions above may specify Chinese section headings " +
-        '(e.g. \'start with "## 发现"\' or \'"## 结论"\'). In English mode, use the English equivalent instead ' +
+        "(e.g. 'start with \"## 发现\"' or '\"## 结论\"'). In English mode, use the English equivalent instead " +
         '("## Findings", "## Conclusion", "## Result", "## Problem"). Keep the required structure; only the heading language changes.',
     );
   } else {
@@ -265,11 +275,11 @@ async function enhanceSubAgentPrompt(
   notes.push(
     isEn
       ? "[CRITICAL] Your final message must be a structured summary/conclusion, not planning or reasoning. " +
-        "If you sense you are close to the turn limit, stop exploring immediately and output the conclusions you already have. " +
-        'Format: start with "## Conclusion" or "## Findings" and organise findings as a table or list.'
+          "If you sense you are close to the turn limit, stop exploring immediately and output the conclusions you already have. " +
+          'Format: start with "## Conclusion" or "## Findings" and organise findings as a table or list.'
       : "【关键约束】你的最后一条消息必须是结构化总结/结论，不能是规划或思考过程。" +
-        "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
-        "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
+          "如果你感觉快要达到轮次限制，请立即停止探索并输出目前已有的结论。" +
+          "格式要求：以「## 结论」或「## 发现」开头，用表格/列表组织发现内容。",
   );
 
   // 环境信息
@@ -294,11 +304,11 @@ async function enhanceSubAgentPrompt(
     notes.push(
       isEn
         ? "[ISOLATED ENVIRONMENT] You are running inside an isolated Git worktree (a separate working tree sharing the main repo's object store). " +
-          "Your file changes affect only this working tree and will not pollute the main repo. Use the working directory above as the project root; " +
-          "do not assume you are in the main repository directory, and do not reference the main repo's absolute paths."
+            "Your file changes affect only this working tree and will not pollute the main repo. Use the working directory above as the project root; " +
+            "do not assume you are in the main repository directory, and do not reference the main repo's absolute paths."
         : "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中（独立工作区，与主仓共享对象库）。" +
-          "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
-          "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
+            "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
+            "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
     );
   }
 
@@ -404,7 +414,12 @@ export class SubAgent {
   /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
   private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
 
-  constructor(provider: Provider, model: string, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
+  constructor(
+    provider: Provider,
+    model: string,
+    toolRegistry: ToolRegistry,
+    hookSystem?: HookSystem,
+  ) {
     this.provider = provider;
     this.model = model;
     this.toolRegistry = toolRegistry;
@@ -506,7 +521,9 @@ export class SubAgent {
             }
           }
         })
-        .catch(() => { /* JIT 失败绝不影响子代理主流程 */ });
+        .catch(() => {
+          /* JIT 失败绝不影响子代理主流程 */
+        });
     };
   }
 
@@ -574,7 +591,11 @@ export class SubAgent {
     agent.modelOverride = modelOverride;
     agent.language = registry.getLanguage();
     // 保存 spawn 配置（用于子进程启动，兼容未实现 getSpawnConfig 的 registry）
-    try { agent.spawnConfig = registry.getSpawnConfig?.(); } catch { /* registry 未实现 getSpawnConfig，spawn 模式自动回退 */ }
+    try {
+      agent.spawnConfig = registry.getSpawnConfig?.();
+    } catch {
+      /* registry 未实现 getSpawnConfig，spawn 模式自动回退 */
+    }
     return agent;
   }
 
@@ -588,7 +609,9 @@ export class SubAgent {
     try {
       const window = this.registry?.getContextWindow();
       if (typeof window === "number" && window > 0) return window;
-    } catch { /* registry 未实现 getContextWindow 或派生失败，回退兜底 */ }
+    } catch {
+      /* registry 未实现 getContextWindow 或派生失败，回退兜底 */
+    }
     return 50_000;
   }
 
@@ -602,9 +625,7 @@ export class SubAgent {
    */
   private deriveSubAgentSessionId(taskKey?: string): string {
     const suffix = taskKey || "anon";
-    return this.parentSessionId
-      ? `${this.parentSessionId}-sub-${suffix}`
-      : `subagent-${suffix}`;
+    return this.parentSessionId ? `${this.parentSessionId}-sub-${suffix}` : `subagent-${suffix}`;
   }
 
   /** 执行子代理任务 */
@@ -653,14 +674,14 @@ export class SubAgent {
     const startedAt = Date.now();
     try {
       // SubagentStart hook（带预期 model/provider，供遥测按 model 分类）
-      const expectedModel = task.model
-        ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
-      this.hookSystem?.fireSubagentStartEvent(
-        agentId,
-        task.type,
-        undefined,
-        { model: expectedModel, description: task.description },
-      ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
+      const expectedModel =
+        task.model ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
+      this.hookSystem
+        ?.fireSubagentStartEvent(agentId, task.type, undefined, {
+          model: expectedModel,
+          description: task.description,
+        })
+        .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式（独立进程，避免 V8 OOM）
       // M4: task.cwd 存在时强制进程内模式——ALS cwd 上下文无法跨进程传递,
@@ -721,18 +742,20 @@ export class SubAgent {
       // 供 TelemetryHookProbe 创建 invoke_agent 子 span 并按 model 单独计费。
       // result 在 try/catch 任一分支都已赋值（catch 兜底构造），此处可安全读取。
       const r = result!;
-      this.hookSystem?.fireSubagentStopEvent({
-        agent_id: agentId,
-        agent_type: task.type,
-        toolName: `subagent:${task.type}`,
-        success: r?.success,
-        model: r?.model,
-        provider: r?.provider,
-        turns: r?.turns,
-        tool_use_count: r?.toolUseCount,
-        usage: r?.usage,
-        duration_ms: Date.now() - startedAt,
-      }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
+      this.hookSystem
+        ?.fireSubagentStopEvent({
+          agent_id: agentId,
+          agent_type: task.type,
+          toolName: `subagent:${task.type}`,
+          success: r?.success,
+          model: r?.model,
+          provider: r?.provider,
+          turns: r?.turns,
+          tool_use_count: r?.toolUseCount,
+          usage: r?.usage,
+          duration_ms: Date.now() - startedAt,
+        })
+        .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
     return result;
   }
@@ -744,12 +767,11 @@ export class SubAgent {
     let result: SubAgentResult;
     try {
       // SubagentStart hook（description 取自 userPrompt 首段，便于轨迹排查识别派活意图）
-      this.hookSystem?.fireSubagentStartEvent(
-        `subagent-custom-${Date.now()}`,
-        "custom",
-        undefined,
-        { description: task.userPrompt?.slice(0, 120) },
-      ).catch(err => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
+      this.hookSystem
+        ?.fireSubagentStartEvent(`subagent-custom-${Date.now()}`, "custom", undefined, {
+          description: task.userPrompt?.slice(0, 120),
+        })
+        .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 尝试 spawn 模式
       if (this.shouldUseSpawn()) {
@@ -765,9 +787,11 @@ export class SubAgent {
       }
     } finally {
       // subagent_stop hook（非阻塞）
-      this.hookSystem?.fireSubagentStopEvent({
-        toolName: "subagent:custom",
-      }).catch(err => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
+      this.hookSystem
+        ?.fireSubagentStopEvent({
+          toolName: "subagent:custom",
+        })
+        .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
     return result;
   }
@@ -830,7 +854,7 @@ export class SubAgent {
     const agentDef = resolveAgent(task.type);
     const filteredTools = this.resolveFilteredToolsForTask(task, agentDef);
     const defs = (task.tools ?? this.toolRegistry).definitionsForTools(filteredTools);
-    return defs.map(d => ({
+    return defs.map((d) => ({
       name: d.name,
       description: d.description,
       inputSchema: d.input_schema,
@@ -848,7 +872,7 @@ export class SubAgent {
   private getCustomToolDefs(allowedTools: string[]): ToolDef[] {
     const filtered = this.toolRegistry.filter(allowedTools);
     const defs = filtered.definitionsForTools(filtered.all());
-    return defs.map(d => ({
+    return defs.map((d) => ({
       name: d.name,
       description: d.description,
       inputSchema: d.input_schema,
@@ -857,9 +881,18 @@ export class SubAgent {
   }
 
   /** Spawn 子代理（标准类型） */
-  private async executeSpawned(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
+  private async executeSpawned(
+    task: SubAgentTask,
+    signal?: AbortSignal,
+    taskId?: string,
+  ): Promise<SubAgentResult> {
     const basePrompt = getSystemPrompt(task.type);
-    const systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type);
+    const systemPrompt = await enhanceSubAgentPrompt(
+      basePrompt,
+      this.language,
+      process.cwd(),
+      task.type,
+    );
     const toolDefs = this.getToolDefs(task);
 
     // 计费口径对齐：spawn 模式按子代理类型解析模型 + 对应 provider 配置，
@@ -883,7 +916,7 @@ export class SubAgent {
       task_type: task.type,
       system_prompt: systemPrompt,
       user_prompt: task.prompt,
-      allowed_tools: toolDefs.map(t => t.name),
+      allowed_tools: toolDefs.map((t) => t.name),
       tool_defs: toolDefs,
       model,
       wire_model: wireModel,
@@ -902,15 +935,29 @@ export class SubAgent {
 
     // C4b：spawn 路径同样要把进度回灌父工具卡片，不只是进程内路径。task._onProgress
     // 由 tool.ts runSync 接进来（前台子代理），后台/swarm/workflow 路径不传，穿透即可。
-    return this.executeSpawnedInternal(initMsg, task.tools ?? this.toolRegistry, signal, taskId, task._onProgress);
+    return this.executeSpawnedInternal(
+      initMsg,
+      task.tools ?? this.toolRegistry,
+      signal,
+      taskId,
+      task._onProgress,
+    );
   }
 
   /** Spawn 自定义子代理 */
-  private async executeSpawnedCustom(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
-    const enhancedSystemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd());
-    const tools = task.allowedTools.length > 0
-      ? this.toolRegistry.filter(task.allowedTools)
-      : new ToolRegistry();
+  private async executeSpawnedCustom(
+    task: CustomSubAgentTask,
+    signal?: AbortSignal,
+  ): Promise<SubAgentResult> {
+    const enhancedSystemPrompt = await enhanceSubAgentPrompt(
+      task.systemPrompt,
+      this.language,
+      process.cwd(),
+    );
+    const tools =
+      task.allowedTools.length > 0
+        ? this.toolRegistry.filter(task.allowedTools)
+        : new ToolRegistry();
     const toolDefs = this.getCustomToolDefs(task.allowedTools);
 
     // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
@@ -943,7 +990,7 @@ export class SubAgent {
       // P2-2：与 executeCustomInner 对齐为 30（旧值 10 过于保守，CustomSubAgentTask 无 fork 概念）。
       max_turns: task.maxTurns ?? 30,
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? 300_000,  // G4：与进程内 executeCustomInner 对齐为 300s，消除同一自定义代理走 spawn/进程内两条路径超时值不一致（此前 spawn=120s、进程内=300s）
+      timeout: task.timeout ?? 300_000, // G4：与进程内 executeCustomInner 对齐为 300s，消除同一自定义代理走 spawn/进程内两条路径超时值不一致（此前 spawn=120s、进程内=300s）
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -1134,9 +1181,7 @@ export class SubAgent {
                 break;
 
               case "crash":
-                throw new Error(
-                  `子代理崩溃: ${msg.error}${msg.stack ? `\n${msg.stack}` : ""}`,
-                );
+                throw new Error(`子代理崩溃: ${msg.error}${msg.stack ? `\n${msg.stack}` : ""}`);
             }
           }
 
@@ -1147,14 +1192,22 @@ export class SubAgent {
         // cancel 会同时丢弃底层缓冲并解锁；已被 kill 的进程 cancel 静默失败即可。
         try {
           await stdoutReader.cancel();
-        } catch { /* reader 可能已释放 */ }
+        } catch {
+          /* reader 可能已释放 */
+        }
         try {
           stdoutReader.releaseLock();
-        } catch { /* 已释放 */ }
+        } catch {
+          /* 已释放 */
+        }
         // 修（监听器泄漏）：移除挂在共享父 signal 上的 abort 监听器。未 abort 时它不会
         // 自动移除（once:true 仅在触发后移除），退出循环时必须显式清理。
         if (signal && onAbortListener) {
-          try { signal.removeEventListener("abort", onAbortListener); } catch { /* ignore */ }
+          try {
+            signal.removeEventListener("abort", onAbortListener);
+          } catch {
+            /* ignore */
+          }
         }
       }
 
@@ -1248,7 +1301,9 @@ export class SubAgent {
         input: effectiveInput,
         description: `${name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
       };
-      const decision = await this.permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
+      const decision = await this.permissionChecker.check(permReq, tool, undefined, {
+        hookPermissionDecision,
+      });
       if (!decision.allowed) {
         const reason = decision.reason || "子代理不允许此操作";
         log.info("SUBAGENT:PERM", `权限拒绝 ${name}: ${reason}`);
@@ -1265,42 +1320,51 @@ export class SubAgent {
         // 否则这条路径的失败（模型漏 required 字段，最高频的真实失败）
         // 既不进 hook 链也不产 execute_tool span，在 trace 里完全隐身。
         if (this.hookSystem) {
-          this.hookSystem.firePostToolUseFailureEvent(
-            name,
-            effectiveInput,
-            validation.message,
-            undefined,
-            { duration_ms: Date.now() - startTime },
-          ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+          this.hookSystem
+            .firePostToolUseFailureEvent(name, effectiveInput, validation.message, undefined, {
+              duration_ms: Date.now() - startTime,
+            })
+            .catch((e: any) =>
+              log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
+            );
         }
         return { content: validation.message, is_error: true };
       }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
-      const result = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" }, signal);
+      const result = await tool.execute(
+        { ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" },
+        signal,
+      );
       const elapsed = Date.now() - startTime;
       const truncated = ContextManager.truncateToolOutput(result.output);
       // post_tool_use hook（驱动 execute_tool span）
       if (this.hookSystem) {
-        this.hookSystem.firePostToolUseEvent(
-          name,
-          effectiveInput,
-          { output: truncated, isError: result.isError ?? false },
-          result.isError ?? false,
-          undefined,
-          { duration_ms: elapsed },
-        ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+        this.hookSystem
+          .firePostToolUseEvent(
+            name,
+            effectiveInput,
+            { output: truncated, isError: result.isError ?? false },
+            result.isError ?? false,
+            undefined,
+            { duration_ms: elapsed },
+          )
+          .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
       }
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {
       if (this.hookSystem) {
-        this.hookSystem.firePostToolUseFailureEvent(
-          name,
-          effectiveInput,
-          err.message,
-          undefined,
-          // 与上方成功路径 duration_ms 同口径（纯执行耗时）
-          { duration_ms: Date.now() - startTime },
-        ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+        this.hookSystem
+          .firePostToolUseFailureEvent(
+            name,
+            effectiveInput,
+            err.message,
+            undefined,
+            // 与上方成功路径 duration_ms 同口径（纯执行耗时）
+            { duration_ms: Date.now() - startTime },
+          )
+          .catch((e: any) =>
+            log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
+          );
       }
       return { content: `工具执行异常: ${err.message}`, is_error: true };
     }
@@ -1308,7 +1372,11 @@ export class SubAgent {
 
   /** 内部执行逻辑（含超时控制）
    *  M5: 使用共享 runAgentLoop() 替代自维护 while 循环，对标 claude-code runAgent() */
-  private async executeInner(task: SubAgentTask, signal?: AbortSignal, taskId?: string): Promise<SubAgentResult> {
+  private async executeInner(
+    task: SubAgentTask,
+    signal?: AbortSignal,
+    taskId?: string,
+  ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
@@ -1354,7 +1422,13 @@ export class SubAgent {
       // P1-1：解析 agent 定义拿到 skills（预加载技能）。resolveAgent 覆盖 built-in + custom + plugin。
       // 复用到下方 tool 过滤（agentDef.tools/disallowedTools），避免重复解析。
       const agentDef = resolveAgent(task.type);
-      let systemPrompt = await enhanceSubAgentPrompt(basePrompt, this.language, process.cwd(), task.type, agentDef?.skills);
+      let systemPrompt = await enhanceSubAgentPrompt(
+        basePrompt,
+        this.language,
+        process.cwd(),
+        task.type,
+        agentDef?.skills,
+      );
 
       // M2(Dynamic Workflows): 带 schema 时,系统提示追加结构化输出强制段
       let structuredTool: StructuredOutputTool | undefined;
@@ -1391,8 +1465,11 @@ export class SubAgent {
       const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
-      const toolNames = filteredTools.map(t => t.name());
-      log.info("SUBAGENT", `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
+      const toolNames = filteredTools.map((t) => t.name());
+      log.info(
+        "SUBAGENT",
+        `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
+      );
 
       // 动态获取 provider/model（registry 模式下按子代理类型选择）
       // M4(Dynamic Workflows): task.model 显式指定时优先于按类型查找的默认模型。
@@ -1430,7 +1507,8 @@ export class SubAgent {
       // 对子代理同样生效。此前子代理直接手写 thinking/reasoningEffort、绕过 effort.ts 的钳制层，
       // 用户设了上限却只约束主循环——子代理（尤其并发派多个）才是思考 token 的大头，属于
       // 「配置了但对最花钱的路径不起作用」。这里按上限把档位降下来，与主循环 adaptive 路径同一映射。
-      const { getMaxThinkingTokensOverride, mapThinkingCapToEffort } = await import("../llm/effort.ts");
+      const { getMaxThinkingTokensOverride, mapThinkingCapToEffort } =
+        await import("../llm/effort.ts");
       const thinkingCap = getMaxThinkingTokensOverride();
       const cappedEffort = thinkingCap !== null ? mapThinkingCapToEffort(thinkingCap) : null;
       const sendParamsExtra: Partial<SendParams> =
@@ -1473,7 +1551,12 @@ export class SubAgent {
               log.info("SUBAGENT", `[${task.type}] 收到主代理消息: ${msg.slice(0, 100)}`);
               ctxMgr!.addMessage({
                 role: "user",
-                content: [{ type: "text", text: `<system-reminder>\n[主代理消息] ${msg}\n</system-reminder>` }],
+                content: [
+                  {
+                    type: "text",
+                    text: `<system-reminder>\n[主代理消息] ${msg}\n</system-reminder>`,
+                  },
+                ],
               });
             }
           }
@@ -1481,12 +1564,21 @@ export class SubAgent {
           // 与主代理消息队列并列 drain，从第 2 轮起检查——首轮已带初始任务，无需重复注入。
           if (task.drainInbox && turn > 1) {
             let inboxMsgs: string[] = [];
-            try { inboxMsgs = task.drainInbox(); } catch { /* drain 失败不阻断本轮 */ }
+            try {
+              inboxMsgs = task.drainInbox();
+            } catch {
+              /* drain 失败不阻断本轮 */
+            }
             for (const msg of inboxMsgs) {
               log.info("SUBAGENT", `[${task.type}] 收到团队消息: ${msg.slice(0, 100)}`);
               ctxMgr!.addMessage({
                 role: "user",
-                content: [{ type: "text", text: `<system-reminder>\n[团队消息] ${msg}\n</system-reminder>` }],
+                content: [
+                  {
+                    type: "text",
+                    text: `<system-reminder>\n[团队消息] ${msg}\n</system-reminder>`,
+                  },
+                ],
               });
             }
           }
@@ -1504,10 +1596,16 @@ export class SubAgent {
               const all = ctxMgr!.getMessages();
               for (let i = sidechainCursor; i < all.length; i++) {
                 const m = all[i];
-                sidechain.appendMessage(m.role as "user" | "assistant" | "tool", m.content, info.turn);
+                sidechain.appendMessage(
+                  m.role as "user" | "assistant" | "tool",
+                  m.content,
+                  info.turn,
+                );
               }
               sidechainCursor = all.length;
-            } catch { /* sidechain 落盘失败静默 */ }
+            } catch {
+              /* sidechain 落盘失败静默 */
+            }
           }
 
           // 实时写输出到磁盘（支持 task_output 增量读取）
@@ -1540,15 +1638,21 @@ export class SubAgent {
           // 更新任务进度（供 pollTasks / TUI 实时读取）。每轮都更新——
           // 即便本轮无工具调用，token 与耗时也在推进，面板需要随之刷新。
           if (taskId) {
-            const lastToolEntry = info.tools.length > 0 ? info.tools[info.tools.length - 1] : undefined;
+            const lastToolEntry =
+              info.tools.length > 0 ? info.tools[info.tools.length - 1] : undefined;
             updateAgentProgress(taskId, {
               toolUseCount,
               tokenCount,
-              lastActivity: lastToolEntry ? {
-                toolName: lastToolEntry.name,
-                input: lastToolEntry.input,
-                activityDescription: describeToolActivity(lastToolEntry.name, lastToolEntry.input),
-              } : undefined,
+              lastActivity: lastToolEntry
+                ? {
+                    toolName: lastToolEntry.name,
+                    input: lastToolEntry.input,
+                    activityDescription: describeToolActivity(
+                      lastToolEntry.name,
+                      lastToolEntry.input,
+                    ),
+                  }
+                : undefined,
               // 与卡片同一份窗口数据（此前恒 []，面板 verbose 分支形同虚设）
               recentActivities: recentActivities.map((d) => ({
                 toolName: "",
@@ -1559,7 +1663,7 @@ export class SubAgent {
 
             // M5 opt-in: 周期性进度摘要（每 5 轮生成一次）
             if (process.env.SIDCODE_AGENT_PROGRESS_SUMMARY === "1" && info.turn % 5 === 0) {
-              const toolNames = info.tools.map(t => t.name).join(", ");
+              const toolNames = info.tools.map((t) => t.name).join(", ");
               const textPreview = info.textOutput.slice(0, 100);
               const summary = `[轮次 ${info.turn}] 工具: ${toolNames || "(无)"} | 输出预览: ${textPreview || "(无文本)"}`;
               updateTask<LocalAgentTaskState>(taskId, (t) => ({
@@ -1602,7 +1706,10 @@ export class SubAgent {
         finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
       }
       log.info("SUBAGENT", `[${task.type}] 结果: ${finalOutput.slice(0, 200)}`);
-      log.info("SUBAGENT", `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+      log.info(
+        "SUBAGENT",
+        `[${task.type}] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`,
+      );
 
       if (loopResult.success) {
         sidechainStatus = "completed";
@@ -1622,15 +1729,14 @@ export class SubAgent {
         const isTimeout = timeoutCtrl.signal.aborted;
         // P2-10：超时/中断记为 aborted（可恢复），其余非成功记为 failed。
         sidechainStatus = isTimeout ? "aborted" : "failed";
-        const donePart = loopResult.turns > 0
-          ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
-          : "";
+        const donePart =
+          loopResult.turns > 0 ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用` : "";
         // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
         // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
         // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
         const output = isTimeout
           ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
-          : (loopResult.errorMessage || "子代理执行未成功");
+          : loopResult.errorMessage || "子代理执行未成功";
         return {
           success: false,
           output,
@@ -1674,7 +1780,10 @@ export class SubAgent {
   }
 
   /** 自定义子代理内部执行逻辑（M5: 使用共享 runAgentLoop） */
-  private async executeCustomInner(task: CustomSubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
+  private async executeCustomInner(
+    task: CustomSubAgentTask,
+    signal?: AbortSignal,
+  ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
     log.info("SUBAGENT", `启动自定义子代理`);
@@ -1699,31 +1808,42 @@ export class SubAgent {
         sessionId: this.deriveSubAgentSessionId(task.type),
       });
 
-      const systemPrompt = await enhanceSubAgentPrompt(task.systemPrompt, this.language, process.cwd(), task.type);
+      const systemPrompt = await enhanceSubAgentPrompt(
+        task.systemPrompt,
+        this.language,
+        process.cwd(),
+        task.type,
+      );
       ctxMgr.setSystemPrompt(systemPrompt);
       ctxMgr.addMessage({
         role: "user",
         content: [{ type: "text", text: task.userPrompt }],
       });
 
-      const tools = task.allowedTools.length > 0
-        ? this.buildIsolatedToolRegistry(this.toolRegistry.filter(task.allowedTools).all(), task.type)
-        : new ToolRegistry();
+      const tools =
+        task.allowedTools.length > 0
+          ? this.buildIsolatedToolRegistry(
+              this.toolRegistry.filter(task.allowedTools).all(),
+              task.type,
+            )
+          : new ToolRegistry();
       // P2-2：CustomSubAgentTask 无 forkMessages，resolveSubAgentMaxTurns 自然落到常规档 30。
       const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
-      log.info("SUBAGENT", `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`);
+      log.info(
+        "SUBAGENT",
+        `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
+      );
 
       // 动态获取 provider/model（registry 模式下使用 modelOverride 或主模型）
       const activeProvider = this.registry
-        ? (this.modelOverride
-          ? this.registry.getProviderForSubAgent("task")  // 自定义 agent 按 task 类型查找
-          : this.registry.getProvider())
+        ? this.modelOverride
+          ? this.registry.getProviderForSubAgent("task") // 自定义 agent 按 task 类型查找
+          : this.registry.getProvider()
         : this.provider;
-      const activeModel = this.modelOverride || (this.registry
-        ? this.registry.getCurrentModel()
-        : this.model);
+      const activeModel =
+        this.modelOverride || (this.registry ? this.registry.getCurrentModel() : this.model);
 
       // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
       let lastTextOutput = "";
@@ -1773,7 +1893,10 @@ export class SubAgent {
 
       // 提取最终结果：从所有 assistant 消息中回溯查找最后一条有文本内容的
       const finalOutput = this.extractFinalText(ctxMgr.getMessages(), lastTextOutput);
-      log.info("SUBAGENT", `[custom] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
+      log.info(
+        "SUBAGENT",
+        `[custom] 完成，共 ${loopResult.turns} 轮，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`,
+      );
 
       if (loopResult.success) {
         return {
@@ -1787,15 +1910,14 @@ export class SubAgent {
         };
       } else {
         const isTimeout = timeoutCtrl.signal.aborted;
-        const donePart = loopResult.turns > 0
-          ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用`
-          : "";
+        const donePart =
+          loopResult.turns > 0 ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用` : "";
         // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
         // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
         // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
         const output = isTimeout
           ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
-          : (loopResult.errorMessage || "子代理执行未成功");
+          : loopResult.errorMessage || "子代理执行未成功";
         return {
           success: false,
           output,
@@ -1862,7 +1984,12 @@ export class SubAgent {
       }
       // G13：save_memory 绑定当前子代理类型，让 agent scope 能定位到该类型记忆目录。
       // 用鸭子类型探测 withAgentType，避免对 MemoryTool 的强类型 import 依赖。
-      if (!replacement && agentType && t.name() === "save_memory" && typeof (t as any).withAgentType === "function") {
+      if (
+        !replacement &&
+        agentType &&
+        t.name() === "save_memory" &&
+        typeof (t as any).withAgentType === "function"
+      ) {
         replacement = (t as any).withAgentType(agentType) as LegacyTool;
       }
       tools.register(replacement ?? t);
@@ -1878,14 +2005,17 @@ export class SubAgent {
    *
    *  增强：跳过纯 thinking/planning 文本（第三方模型 reasoning 混在 text block 中，
    *  CC 靠 thinking type 过滤，sid-code 需启发式判断）。 */
-  private extractFinalText(messages: Array<{ role: string; content: ContentBlock[] }>, fallback: string): string {
+  private extractFinalText(
+    messages: Array<{ role: string; content: ContentBlock[] }>,
+    fallback: string,
+  ): string {
     // 倒序遍历所有消息
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg?.role !== "assistant") continue;
       const texts = (msg.content as ContentBlock[])
-        .filter(b => b.type === "text")
-        .map(b => b.type === "text" ? b.text : "")
+        .filter((b) => b.type === "text")
+        .map((b) => (b.type === "text" ? b.text : ""))
         .join("\n")
         .trim();
       if (!texts) continue;
@@ -1904,11 +2034,11 @@ export class SubAgent {
    *  故规划文本多为中文（"现在我来看看…" / "让我检查一下…"）。仅匹配英文开头会
    *  让本项目最常见的中文子代理完全绕过这道防线，必须同时覆盖中文规划句式。 */
   private isLikelyThinking(text: string): boolean {
-    const lines = text.split("\n").filter(l => l.trim());
+    const lines = text.split("\n").filter((l) => l.trim());
     // 长文本通常包含结论（有实质内容）
     if (lines.length > 5) return false;
     // 含结构化标记（标题 / 表格 / 列表）的不是纯 thinking
-    if (lines.some(l => /^#{1,3}\s|^\||\*\*/.test(l.trim()))) return false;
+    if (lines.some((l) => /^#{1,3}\s|^\||\*\*/.test(l.trim()))) return false;
     // 全部是规划性开头才判定为 thinking
     const planningPatterns = [
       // 英文规划句式
@@ -1920,7 +2050,7 @@ export class SubAgent {
       /^(让我们|我会|我可以|下一步|继续|那么|好的|接着|另外|此外)/,
       /^(检查一下|看一下|看看|确认一下|分析一下|我已经|目前为止|综上)/,
     ];
-    return lines.every(l => planningPatterns.some(p => p.test(l.trim())));
+    return lines.every((l) => planningPatterns.some((p) => p.test(l.trim())));
   }
 }
 

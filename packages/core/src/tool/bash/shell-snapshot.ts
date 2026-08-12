@@ -162,9 +162,7 @@ let activeSnapshotPath: string | undefined;
  * @param shellPath 用户 shell 路径（如 /bin/zsh）
  * @returns 快照文件绝对路径；失败或 Windows 返回 undefined（调用方降级处理）
  */
-export async function createAndSaveSnapshot(
-  shellPath: string,
-): Promise<string | undefined> {
+export async function createAndSaveSnapshot(shellPath: string): Promise<string | undefined> {
   // 模块级单例：多个 BashTool 实例并发构造时，只创建一次快照，避免并发写同一文件破坏快照内容
   if (snapshotCreatePromise) return snapshotCreatePromise;
 
@@ -186,7 +184,6 @@ async function doCreateSnapshot(
   shellPath: string,
   log: ReturnType<typeof getLogger>,
 ): Promise<string | undefined> {
-
   try {
     const snapshotDir = sidPaths.shellSnapshots();
     mkdirSync(snapshotDir, { recursive: true });
@@ -197,10 +194,7 @@ async function doCreateSnapshot(
       : shellPath.includes("bash")
         ? "bash"
         : "sh";
-    const snapshotFile = join(
-      snapshotDir,
-      `snapshot-${shellName}-${process.pid}.sh`,
-    );
+    const snapshotFile = join(snapshotDir, `snapshot-${shellName}-${process.pid}.sh`);
 
     const script = getSnapshotScript(shellPath, snapshotFile);
 

@@ -85,9 +85,7 @@ export class FocusManager {
   /** Tab:循环到下一个可聚焦元素 */
   focusNext(tabbable: FocusableElement[]): void {
     if (tabbable.length === 0) return;
-    const idx = this._activeElement
-      ? tabbable.indexOf(this._activeElement)
-      : -1;
+    const idx = this._activeElement ? tabbable.indexOf(this._activeElement) : -1;
     const next = (idx + 1) % tabbable.length;
     this.focus(tabbable[next]);
   }
@@ -95,9 +93,7 @@ export class FocusManager {
   /** Shift+Tab:循环到上一个可聚焦元素 */
   focusPrevious(tabbable: FocusableElement[]): void {
     if (tabbable.length === 0) return;
-    const idx = this._activeElement
-      ? tabbable.indexOf(this._activeElement)
-      : 0;
+    const idx = this._activeElement ? tabbable.indexOf(this._activeElement) : 0;
     const prev = (idx - 1 + tabbable.length) % tabbable.length;
     this.focus(tabbable[prev]);
   }

@@ -11,7 +11,13 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { MCPToolDefinition, MCPResource, MCPPrompt } from "./types.ts";
 import { MCPConnectionStatus } from "./types.ts";
 import { MCPClient } from "./client.ts";
-import { StdioTransport, HTTPTransport, StreamableHTTPTransport, SSETransport, WebSocketTransport } from "./transport.ts";
+import {
+  StdioTransport,
+  HTTPTransport,
+  StreamableHTTPTransport,
+  SSETransport,
+  WebSocketTransport,
+} from "./transport.ts";
 import { buildMcpToolName } from "./normalization.ts";
 import { expandEnvVars } from "./env-expansion.ts";
 import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-limit.ts";
@@ -89,9 +95,9 @@ class MCPToolAdapter implements Tool {
   }
 
   description(): string {
-    const desc = this.def.description ?? '';
+    const desc = this.def.description ?? "";
     if (desc.length > MAX_MCP_DESCRIPTION_LENGTH) {
-      return desc.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + '… [截断]';
+      return desc.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + "… [截断]";
     }
     return desc;
   }
@@ -123,7 +129,9 @@ class MCPToolAdapter implements Tool {
 
       // G3：图片内容不静默丢弃。当前主循环 MCP 结果走文本通道，无法透传 image block，
       // 故按固定 token/张计入预算并给占位说明（对齐 CC IMAGE_TOKEN_ESTIMATE 语义）。
-      const imageCount = result.content.filter((c) => c.type === "image" && (c.data || c.mimeType)).length;
+      const imageCount = result.content.filter(
+        (c) => c.type === "image" && (c.data || c.mimeType),
+      ).length;
       if (imageCount > 0) {
         const placeholder = `[MCP 结果含 ${imageCount} 张图片，约 ${imageCount * IMAGE_TOKEN_ESTIMATE} token，当前通道不透传图片内容]`;
         text = text ? `${text}\n\n${placeholder}` : placeholder;
@@ -160,10 +168,10 @@ class MCPToolAdapter implements Tool {
 /** 工具过滤：根据 includeTools/excludeTools 配置过滤工具列表 */
 function filterTools(tools: MCPToolDefinition[], config: MCPServerConfig): MCPToolDefinition[] {
   if (config.includeTools?.length) {
-    return tools.filter(t => config.includeTools!.includes(t.name));
+    return tools.filter((t) => config.includeTools!.includes(t.name));
   }
   if (config.excludeTools?.length) {
-    return tools.filter(t => !config.excludeTools!.includes(t.name));
+    return tools.filter((t) => !config.excludeTools!.includes(t.name));
   }
   return tools;
 }
@@ -184,10 +192,7 @@ async function pMap<T, R>(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => worker(),
-  );
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
   await Promise.all(workers);
   return results;
 }
@@ -196,7 +201,7 @@ async function pMap<T, R>(
 function truncateInstructions(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   if (raw.length > MAX_INSTRUCTIONS_LENGTH) {
-    return raw.slice(0, MAX_INSTRUCTIONS_LENGTH) + '… [截断]';
+    return raw.slice(0, MAX_INSTRUCTIONS_LENGTH) + "… [截断]";
   }
   return raw;
 }
@@ -225,9 +230,7 @@ export class MCPManager {
     const log = getLogger();
     const allTools: Tool[] = [];
 
-    const entries = Object.entries(servers).filter(
-      ([, config]) => config.enabled !== false,
-    );
+    const entries = Object.entries(servers).filter(([, config]) => config.enabled !== false);
     const skipped = Object.keys(servers).length - entries.length;
     if (skipped > 0) {
       log.info("MCP", `跳过 ${skipped} 个已禁用的 MCP 服务器`);
@@ -252,11 +255,12 @@ export class MCPManager {
         log.debug("MCP", `连接服务器: ${name}`, config);
         const tools = await Promise.race([
           this.connect(name, config, connectCtl.signal),
-          new Promise<never>((_, reject) =>
-            connectTimer = setTimeout(() => {
-              connectCtl.abort();
-              reject(new Error(`连接超时 (${connectTimeout}ms)`));
-            }, connectTimeout)
+          new Promise<never>(
+            (_, reject) =>
+              (connectTimer = setTimeout(() => {
+                connectCtl.abort();
+                reject(new Error(`连接超时 (${connectTimeout}ms)`));
+              }, connectTimeout)),
           ),
         ]);
         this.setStatus(name, MCPConnectionStatus.CONNECTED);
@@ -310,16 +314,27 @@ export class MCPManager {
   }
 
   /** 实际建立连接（创建传输 + 初始化 + 发现工具/资源/提示词 + 健康检查） */
-  private async doConnect(name: string, config: MCPServerConfig, signal?: AbortSignal): Promise<Tool[]> {
+  private async doConnect(
+    name: string,
+    config: MCPServerConfig,
+    signal?: AbortSignal,
+  ): Promise<Tool[]> {
     // 已 abort（上层超时）→ 直接放弃，不创建任何资源
     if (signal?.aborted) throw new Error(`连接已取消: ${name}`);
     const transport = await this.createTransport(name, config);
     // 超时/取消孤儿清理：abort 触发时主动 close 传输层，kill 启动中的 stdio 子进程
     // 或 abort HTTP·SSE 连接。此时 client 可能尚未 set 进 this.clients，
     // 靠 catch 里的 client.close() 兜不住，必须在这里直接 close transport。
-    const onAbort = () => { try { transport.close(); } catch {} };
+    const onAbort = () => {
+      try {
+        transport.close();
+      } catch {}
+    };
     if (signal) {
-      if (signal.aborted) { onAbort(); throw new Error(`连接已取消: ${name}`); }
+      if (signal.aborted) {
+        onAbort();
+        throw new Error(`连接已取消: ${name}`);
+      }
       signal.addEventListener("abort", onAbort, { once: true });
     }
     try {
@@ -395,17 +410,13 @@ export class MCPManager {
   /** 执行交互式 OAuth 授权流程（展示/打开授权 URL，等待用户完成） */
   private async runOAuthFlow(name: string, config: MCPServerConfig): Promise<void> {
     const log = getLogger();
-    await performOAuthFlow(
-      name,
-      config,
-      (url) => {
-        if (this.onOAuthAuthorizationUrl) {
-          this.onOAuthAuthorizationUrl(name, url);
-        } else {
-          log.info("MCP", `请在浏览器打开以下 URL 完成 ${name} 的 OAuth 授权:\n${url}`);
-        }
-      },
-    );
+    await performOAuthFlow(name, config, (url) => {
+      if (this.onOAuthAuthorizationUrl) {
+        this.onOAuthAuthorizationUrl(name, url);
+      } else {
+        log.info("MCP", `请在浏览器打开以下 URL 完成 ${name} 的 OAuth 授权:\n${url}`);
+      }
+    });
   }
 
   /** 创建传输层 */
@@ -442,7 +453,7 @@ export class MCPManager {
       }
       // 环境变量展开 command 和 args
       const { expanded: cmd } = expandEnvVars(config.command);
-      const args = config.args?.map(a => expandEnvVars(a).expanded) ?? [];
+      const args = config.args?.map((a) => expandEnvVars(a).expanded) ?? [];
       return new StdioTransport(cmd, args, config.env, timeout);
     } else if (config.transport === "http") {
       // G4：http 默认走 Streamable HTTP（对齐 CC 与 2025-03-26 规范）
@@ -523,7 +534,7 @@ export class MCPManager {
     }
     const result = await client.readResource(uri);
     return result.contents
-      .map(c => c.text ?? (c.blob ? `[二进制数据 ${c.mimeType || "unknown"}]` : ""))
+      .map((c) => c.text ?? (c.blob ? `[二进制数据 ${c.mimeType || "unknown"}]` : ""))
       .join("\n");
   }
 
@@ -571,13 +582,17 @@ export class MCPManager {
   }
 
   /** 获取指定服务器的提示词内容 */
-  async getPrompt(serverName: string, promptName: string, args?: Record<string, string>): Promise<Array<{ role: string; content: string }>> {
+  async getPrompt(
+    serverName: string,
+    promptName: string,
+    args?: Record<string, string>,
+  ): Promise<Array<{ role: string; content: string }>> {
     const client = this.clients.get(serverName);
     if (!client) {
       throw new Error(`MCP 服务器 ${serverName} 未连接`);
     }
     const result = await client.getPrompt(promptName, args);
-    return result.messages.map(m => ({
+    return result.messages.map((m) => ({
       role: m.role,
       content: m.content.text ?? "",
     }));
@@ -603,14 +618,20 @@ export class MCPManager {
 
     // http / http-json 是无长连接的请求-响应传输，不做心跳（重连按请求粒度处理）
     if (!config || config.transport === "http" || config.transport === "http-json") return;
-    if (state.status === MCPConnectionStatus.RECONNECTING || state.status === MCPConnectionStatus.FAILED) return;
+    if (
+      state.status === MCPConnectionStatus.RECONNECTING ||
+      state.status === MCPConnectionStatus.FAILED
+    )
+      return;
 
     this.stopHeartbeat(name);
 
     // 清理旧 client
     const oldClient = this.clients.get(name);
     if (oldClient) {
-      try { oldClient.close(); } catch {}
+      try {
+        oldClient.close();
+      } catch {}
       this.clients.delete(name);
     }
 
@@ -627,10 +648,15 @@ export class MCPManager {
 
     while (state.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       state.reconnectAttempts++;
-      const delay = RECONNECT_BASE_DELAY * Math.pow(2, state.reconnectAttempts - 1)
-        * (0.7 + Math.random() * 0.6);
-      log.info("MCP", `${name} 第 ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 次重连，等待 ${Math.round(delay)}ms`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      const delay =
+        RECONNECT_BASE_DELAY *
+        Math.pow(2, state.reconnectAttempts - 1) *
+        (0.7 + Math.random() * 0.6);
+      log.info(
+        "MCP",
+        `${name} 第 ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 次重连，等待 ${Math.round(delay)}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
 
       try {
         const tools = await this.connect(name, config);
@@ -643,7 +669,9 @@ export class MCPManager {
         log.warn("MCP", `${name} 重连失败: ${err.message}`);
         const client = this.clients.get(name);
         if (client) {
-          try { client.close(); } catch {}
+          try {
+            client.close();
+          } catch {}
           this.clients.delete(name);
         }
       }
@@ -751,7 +779,9 @@ export class MCPManager {
     this.stopHeartbeat(name);
     const client = this.clients.get(name);
     if (client) {
-      try { client.close(); } catch {}
+      try {
+        client.close();
+      } catch {}
       this.clients.delete(name);
     }
     this.serverStates.delete(name);
@@ -767,9 +797,7 @@ export class MCPManager {
    * @param pluginServers 新的插件 MCP 服务器配置（已带 plugin:name:server 前缀）
    * @returns 新连接产生的工具列表
    */
-  async reconnectPluginServers(
-    pluginServers: Record<string, MCPServerConfig>,
-  ): Promise<Tool[]> {
+  async reconnectPluginServers(pluginServers: Record<string, MCPServerConfig>): Promise<Tool[]> {
     // 1. 断开所有旧的插件作用域服务器
     const oldPluginServers = [...this.serverConfigs.keys()].filter((n) => n.startsWith("plugin:"));
     for (const name of oldPluginServers) {
@@ -805,11 +833,12 @@ export class MCPManager {
     try {
       const tools = await Promise.race([
         this.connect(name, config, connectCtl.signal),
-        new Promise<never>((_, reject) =>
-          connectTimer = setTimeout(() => {
-            connectCtl.abort();
-            reject(new Error(`连接超时 (${connectTimeout}ms)`));
-          }, connectTimeout),
+        new Promise<never>(
+          (_, reject) =>
+            (connectTimer = setTimeout(() => {
+              connectCtl.abort();
+              reject(new Error(`连接超时 (${connectTimeout}ms)`));
+            }, connectTimeout)),
         ),
       ]);
       this.setStatus(name, MCPConnectionStatus.CONNECTED);
@@ -821,7 +850,9 @@ export class MCPManager {
       this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
       const client = this.clients.get(name);
       if (client) {
-        try { client.close(); } catch {}
+        try {
+          client.close();
+        } catch {}
         this.clients.delete(name);
       }
       log.error("MCP", `动态注册 ${name} 失败: ${err.message}`);
@@ -843,8 +874,10 @@ export class MCPManager {
 
   /** 检查指定服务器是否已连接 */
   isConnected(name: string): boolean {
-    return this.serverStates.get(name)?.status === MCPConnectionStatus.CONNECTED
-      && this.clients.has(name);
+    return (
+      this.serverStates.get(name)?.status === MCPConnectionStatus.CONNECTED &&
+      this.clients.has(name)
+    );
   }
 
   /**
@@ -904,7 +937,9 @@ export class MCPManager {
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
     const connectTimeout = getMcpTimeout(config.timeout);
     const connectCtl = new AbortController();
-    const connectTimer = setTimeout(() => { connectCtl.abort(); }, connectTimeout);
+    const connectTimer = setTimeout(() => {
+      connectCtl.abort();
+    }, connectTimeout);
     try {
       const tools = await this.doConnect(name, config, connectCtl.signal);
       this.setStatus(name, MCPConnectionStatus.CONNECTED);
@@ -913,7 +948,10 @@ export class MCPManager {
     } catch (err: any) {
       if (!connectCtl.signal.aborted) connectCtl.abort();
       const client = this.clients.get(name);
-      if (client) { client.close(); this.clients.delete(name); }
+      if (client) {
+        client.close();
+        this.clients.delete(name);
+      }
       this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
       throw err;
     } finally {

@@ -83,7 +83,10 @@ export class NeedsAuthorizationError extends Error {
 // ─── 带超时的 fetch ───
 
 /** 在外部 signal 基础上叠加请求超时；POST 失败时规范化 OAuth 错误体 */
-async function authFetch(url: string, init?: RequestInit & { signal?: AbortSignal }): Promise<Response> {
+async function authFetch(
+  url: string,
+  init?: RequestInit & { signal?: AbortSignal },
+): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS);
   const signals: AbortSignal[] = [timeoutSignal];
   if (init?.signal) signals.push(init.signal);
@@ -172,13 +175,18 @@ export async function discoverAuthServerMetadata(
     if (!configuredUrl.startsWith("https://")) {
       throw new Error(`authServerMetadataUrl 必须使用 https://（当前: ${configuredUrl}）`);
     }
-    const resp = await authFetch(configuredUrl, { headers: { Accept: "application/json" }, signal });
+    const resp = await authFetch(configuredUrl, {
+      headers: { Accept: "application/json" },
+      signal,
+    });
     if (resp.ok) {
       const meta = (await resp.json()) as AuthServerMetadata;
       // SSRF 防护：即便 metadata URL 是配置的，返回的端点仍来自远程响应，需校验
-      if (meta.authorization_endpoint) assertSafeOAuthUrl(meta.authorization_endpoint, "authorization_endpoint");
+      if (meta.authorization_endpoint)
+        assertSafeOAuthUrl(meta.authorization_endpoint, "authorization_endpoint");
       if (meta.token_endpoint) assertSafeOAuthUrl(meta.token_endpoint, "token_endpoint");
-      if (meta.registration_endpoint) assertSafeOAuthUrl(meta.registration_endpoint, "registration_endpoint");
+      if (meta.registration_endpoint)
+        assertSafeOAuthUrl(meta.registration_endpoint, "registration_endpoint");
       return meta;
     }
     throw new Error(`拉取配置的授权服务器元数据失败 HTTP ${resp.status}`);
@@ -186,7 +194,8 @@ export async function discoverAuthServerMetadata(
 
   // 2. RFC 9728 受保护资源元数据 → authorization_servers[0]
   try {
-    const prmUrl = resourceMetadataUrl ?? wellKnownUrl(new URL(serverUrl), "oauth-protected-resource");
+    const prmUrl =
+      resourceMetadataUrl ?? wellKnownUrl(new URL(serverUrl), "oauth-protected-resource");
     const prmResp = await authFetch(prmUrl, { headers: { Accept: "application/json" }, signal });
     if (prmResp.ok) {
       const prm = (await prmResp.json()) as ProtectedResourceMetadata;
@@ -212,7 +221,10 @@ export async function discoverAuthServerMetadata(
 }
 
 /** 对给定 URL 做 RFC 8414 授权服务器元数据探测（先 path-aware 再 root） */
-async function fetchAS8414(asUrl: string, signal?: AbortSignal): Promise<AuthServerMetadata | undefined> {
+async function fetchAS8414(
+  asUrl: string,
+  signal?: AbortSignal,
+): Promise<AuthServerMetadata | undefined> {
   const base = new URL(asUrl);
   const candidates = new Set<string>([
     wellKnownUrl(base, "oauth-authorization-server"),
@@ -337,7 +349,13 @@ async function exchangeCodeForTokens(
 /** 用 refresh_token 刷新 access_token */
 async function refreshTokens(
   metadata: AuthServerMetadata,
-  params: { refreshToken: string; clientId: string; clientSecret?: string; resource: string; scope?: string },
+  params: {
+    refreshToken: string;
+    clientId: string;
+    clientSecret?: string;
+    resource: string;
+    scope?: string;
+  },
   signal?: AbortSignal,
 ): Promise<OAuthTokens> {
   const body = new URLSearchParams({
@@ -473,17 +491,32 @@ async function prepareClient(
   try {
     // a. 配置预设 client_id
     if (config.oauth?.clientId) {
-      return { clientId: config.oauth.clientId, clientSecret: config.oauth.clientSecret, redirectUri, callback };
+      return {
+        clientId: config.oauth.clientId,
+        clientSecret: config.oauth.clientSecret,
+        redirectUri,
+        callback,
+      };
     }
     // b. 已动态注册过（存储里有 client_id）
     const existing = getOAuthEntry(serverName, config);
     if (existing?.clientId) {
-      return { clientId: existing.clientId, clientSecret: existing.clientSecret, redirectUri, callback };
+      return {
+        clientId: existing.clientId,
+        clientSecret: existing.clientSecret,
+        redirectUri,
+        callback,
+      };
     }
     // c. 动态注册（注册时要带本次的 redirect_uri）
     const registered = await registerClient(serverName, metadata, redirectUri, signal);
     saveClientInformation(serverName, config, registered);
-    return { clientId: registered.client_id, clientSecret: registered.client_secret, redirectUri, callback };
+    return {
+      clientId: registered.client_id,
+      clientSecret: registered.client_secret,
+      redirectUri,
+      callback,
+    };
   } catch (err) {
     callback.close();
     throw err;
@@ -531,7 +564,11 @@ export async function getValidAccessToken(
   const refreshed = await withRefreshLock(serverName, config, async () => {
     // 拿到锁后重读，可能别的进程已刷新
     const fresh = getOAuthEntry(serverName, config);
-    if (fresh && fresh.accessToken && (fresh.expiresAt - Date.now()) / 1000 > PROACTIVE_REFRESH_THRESHOLD_S) {
+    if (
+      fresh &&
+      fresh.accessToken &&
+      (fresh.expiresAt - Date.now()) / 1000 > PROACTIVE_REFRESH_THRESHOLD_S
+    ) {
       log.debug("MCP", `${serverName} token 已被其它进程刷新，复用`);
       return fresh.accessToken;
     }
@@ -554,8 +591,9 @@ async function doRefresh(
 
   // 复用 discovery 状态拿 metadata（免每次刷新都重新发现）
   const asUrl = entry?.discoveryState?.authorizationServerUrl ?? config.url!;
-  const metadata = await fetchAS8414(asUrl, signal)
-    ?? await discoverAuthServerMetadata(serverName, config.url!, config, signal);
+  const metadata =
+    (await fetchAS8414(asUrl, signal)) ??
+    (await discoverAuthServerMetadata(serverName, config.url!, config, signal));
   if (!metadata) {
     throw new Error(`刷新 token 时无法发现授权服务器元数据`);
   }

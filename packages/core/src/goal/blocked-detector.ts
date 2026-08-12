@@ -38,7 +38,10 @@ export class BlockedDetector {
     const recent = this.recentBlockerKeys.slice(-this.threshold);
     const isBlocked = recent.every((k) => k === recent[0]);
     if (isBlocked) {
-      log.warn("GOAL_BLOCKED", `卡住检测触发: key="${blockerKey}", 连续 ${this.threshold} 轮相同阻塞原因`);
+      log.warn(
+        "GOAL_BLOCKED",
+        `卡住检测触发: key="${blockerKey}", 连续 ${this.threshold} 轮相同阻塞原因`,
+      );
     }
     return isBlocked;
   }

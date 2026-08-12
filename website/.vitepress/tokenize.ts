@@ -42,8 +42,7 @@
  */
 export function tokenizeCJK(text: string): string[] {
   /* 约束一：以下正则/常量必须留在函数体内，不得提到模块级 */
-  const CJK =
-    /[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]/u;
+  const CJK = /[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]/u;
   const NON_WORD = /[^\p{L}\p{N}_]+/u;
 
   if (!text) return [];

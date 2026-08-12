@@ -26,7 +26,14 @@ import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo, TUICallbacks } from "../App.tsx";
+import type {
+  PermissionRequestInfo,
+  ShellConfirmRequestInfo,
+  PlanApprovalRequestInfo,
+  AskUserQuestionRequestInfo,
+  TaskDisplayInfo,
+  TUICallbacks,
+} from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { SessionState } from "@sid-code/core/session/state.ts";
@@ -105,7 +112,12 @@ interface DefaultAppLayoutProps {
   activeDialog: DialogType | null;
   onDialogClose: () => void;
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
-  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
+  availableModels: Array<{
+    name: string;
+    modelId?: string;
+    provider: string;
+    description?: string;
+  }>;
   onModelSelect: (modelName: string) => void;
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
@@ -224,8 +236,20 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
     >
       {/* 消息区域：直接作为根 Box 子元素，ScrollableList 自身 flexGrow=1 会填充剩余空间 */}
       {isEmpty ? (
-        <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center" width={termWidth}>
-          <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} />
+        <Box
+          flexGrow={1}
+          flexDirection="column"
+          justifyContent="center"
+          alignItems="center"
+          width={termWidth}
+        >
+          <EmptyLogo
+            termWidth={termWidth}
+            cwd={cwd}
+            gitBranch={gitBranch}
+            model={model}
+            needsOnboarding={activeDialog === "onboarding"}
+          />
         </Box>
       ) : (
         <MainContent
@@ -251,7 +275,12 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
         <Box flexDirection="column" gap={1}>
           <CopyModeWarning enabled={copyModeEnabled} />
           <Notifications startupWarnings={startupWarnings} />
-          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} tasksHidden={taskPanelHidden} />
+          <TodoPanel
+            todos={todos}
+            tasks={tasks}
+            termWidth={termWidth}
+            tasksHidden={taskPanelHidden}
+          />
           <ToastDisplay />
 
           {/* CM3/CM4：LLM 重试/限流提示 */}

@@ -111,9 +111,10 @@ export const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
  * 这类协议只能做整体前缀匹配，动态区必须搬离 system message 单独处理，
  * 否则动态内容的任何变化都会打断其后全部历史消息的缓存复用。
  */
-export function splitSystemByDynamicBoundary(
-  system: string,
-): { staticContent: string; dynamicContent?: string } {
+export function splitSystemByDynamicBoundary(system: string): {
+  staticContent: string;
+  dynamicContent?: string;
+} {
   const idx = system.indexOf(DYNAMIC_BOUNDARY);
   if (idx === -1) return { staticContent: system };
   return {

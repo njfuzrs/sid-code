@@ -157,7 +157,11 @@ export async function extractAgentOutput(
     // 从末尾找 assistant 消息（final_response）
     for (let i = trajectory.length - 1; i >= 0; i--) {
       const step = trajectory[i];
-      if (step?.role === "assistant" && typeof step.content === "string" && step.content.length > 50) {
+      if (
+        step?.role === "assistant" &&
+        typeof step.content === "string" &&
+        step.content.length > 50
+      ) {
         finalResponse = step.content.slice(0, 3000);
         break;
       }
@@ -193,4 +197,3 @@ export async function extractAgentOutput(
 
 // 暴露纯函数给单元测试用
 export { analyzeTrajectorySignals };
-

@@ -165,7 +165,8 @@ export function aggregateProviderHealth(options: {
     }
   }
   const resolveProvider = (model: string): string =>
-    modelToProvider.get(model) || (model.includes("claude") ? "anthropic" : model ? "openai" : "unknown");
+    modelToProvider.get(model) ||
+    (model.includes("claude") ? "anthropic" : model ? "openai" : "unknown");
 
   for (const e of events) {
     if (e.event === "AfterModelRaw" && e.data) {
@@ -217,7 +218,11 @@ export function aggregateProviderHealth(options: {
     if (e.event === "TimeoutFired" && e.data) {
       const layer = (e.data.layer as string) || "unknown";
       const model = (e.data.model as string) || "";
-      const prov = model.includes("deepseek") ? "openai" : model.includes("claude") ? "anthropic" : "unknown";
+      const prov = model.includes("deepseek")
+        ? "openai"
+        : model.includes("claude")
+          ? "anthropic"
+          : "unknown";
       if (filterProvider && prov !== filterProvider) continue;
       const acc = ensure(prov);
       acc.timeoutsByLayer[layer] = (acc.timeoutsByLayer[layer] || 0) + 1;
@@ -261,7 +266,10 @@ export function aggregateProviderHealth(options: {
           const b = buckets.get(prov);
           if (!b) return {};
           const out: {
-            ttftByCache?: { hit: ReturnType<typeof bucketStats>; miss: ReturnType<typeof bucketStats> };
+            ttftByCache?: {
+              hit: ReturnType<typeof bucketStats>;
+              miss: ReturnType<typeof bucketStats>;
+            };
             ttftBucketDropped?: number;
             ttftNoDimension?: number;
           } = {};
@@ -286,31 +294,59 @@ export function aggregateProviderHealth(options: {
     providers.push(metrics);
 
     // 生成告警
-    const successRate = acc.requests > 0 ? (Math.max(0, succeeded) / acc.requests) : 1;
+    const successRate = acc.requests > 0 ? Math.max(0, succeeded) / acc.requests : 1;
     const timeoutRate = acc.requests > 0 ? acc.timedOut / acc.requests : 0;
     const ttftP95 = metrics.latency.ttft_p95;
 
     if (successRate < 0.9) {
-      alerts.push({ provider: prov, severity: "critical", message: `成功率 ${(successRate * 100).toFixed(1)}% < 90%` });
+      alerts.push({
+        provider: prov,
+        severity: "critical",
+        message: `成功率 ${(successRate * 100).toFixed(1)}% < 90%`,
+      });
     } else if (successRate < 0.95) {
-      alerts.push({ provider: prov, severity: "warning", message: `成功率 ${(successRate * 100).toFixed(1)}% < 95%` });
+      alerts.push({
+        provider: prov,
+        severity: "warning",
+        message: `成功率 ${(successRate * 100).toFixed(1)}% < 95%`,
+      });
     }
     if (timeoutRate > 0.1) {
-      alerts.push({ provider: prov, severity: "critical", message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%` });
+      alerts.push({
+        provider: prov,
+        severity: "critical",
+        message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%`,
+      });
     } else if (timeoutRate > 0.05) {
-      alerts.push({ provider: prov, severity: "warning", message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 5%` });
+      alerts.push({
+        provider: prov,
+        severity: "warning",
+        message: `超时率 ${(timeoutRate * 100).toFixed(1)}% > 5%`,
+      });
     }
     if (ttftP95 && ttftP95 > 60000) {
-      alerts.push({ provider: prov, severity: "critical", message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 60s` });
+      alerts.push({
+        provider: prov,
+        severity: "critical",
+        message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 60s`,
+      });
     } else if (ttftP95 && ttftP95 > 30000) {
-      alerts.push({ provider: prov, severity: "warning", message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s` });
+      alerts.push({
+        provider: prov,
+        severity: "warning",
+        message: `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`,
+      });
     }
   }
 
-  const periodLabel = periodMs >= 86400_000 * 7 ? "7d"
-    : periodMs >= 86400_000 ? "24h"
-    : periodMs >= 3600_000 ? "1h"
-    : `${Math.round(periodMs / 60_000)}min`;
+  const periodLabel =
+    periodMs >= 86400_000 * 7
+      ? "7d"
+      : periodMs >= 86400_000
+        ? "24h"
+        : periodMs >= 3600_000
+          ? "1h"
+          : `${Math.round(periodMs / 60_000)}min`;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -335,7 +371,9 @@ function collectEvents(sessionsDir: string, cutoffTs: number): RawEvent[] {
         if (!stat.isDirectory()) continue;
         // 按目录修改时间过滤
         if (stat.mtimeMs < cutoffTs) continue;
-      } catch { continue; }
+      } catch {
+        continue;
+      }
 
       const eventsPath = join(sessionDir, "events.jsonl");
       if (!existsSync(eventsPath)) continue;
@@ -352,11 +390,17 @@ function collectEvents(sessionsDir: string, cutoffTs: number): RawEvent[] {
               if (ts < cutoffTs) continue;
             }
             events.push(parsed);
-          } catch { /* 跳过格式错误行 */ }
+          } catch {
+            /* 跳过格式错误行 */
+          }
         }
-      } catch { /* 读取失败跳过 */ }
+      } catch {
+        /* 读取失败跳过 */
+      }
     }
-  } catch { /* 目录不存在或无权限 */ }
+  } catch {
+    /* 目录不存在或无权限 */
+  }
 
   return events;
 }
@@ -438,7 +482,9 @@ export function formatAlertText(report: HealthReport): string {
  */
 export function renderHealthText(report: HealthReport): string {
   const out: string[] = [];
-  out.push(`Provider 健康度 · 周期 ${report.periodLabel} · 生成 ${report.generatedAt.slice(11, 19)}`);
+  out.push(
+    `Provider 健康度 · 周期 ${report.periodLabel} · 生成 ${report.generatedAt.slice(11, 19)}`,
+  );
 
   if (report.providers.length === 0) {
     out.push("  无数据（指定时间范围内无 events.jsonl 事件）");
@@ -457,24 +503,25 @@ export function renderHealthText(report: HealthReport): string {
   // 表格
   out.push(
     `  ${"Provider".padEnd(14)} ${"请求".padStart(5)} ${"成功率".padStart(7)} ` +
-    `${"超时".padStart(4)} ${"重试".padStart(4)} ${"TTFT P50".padStart(9)} ${"TTFT P95".padStart(9)} ${"P95延迟".padStart(9)}`,
+      `${"超时".padStart(4)} ${"重试".padStart(4)} ${"TTFT P50".padStart(9)} ${"TTFT P95".padStart(9)} ${"P95延迟".padStart(9)}`,
   );
   out.push("  " + "─".repeat(70));
 
   for (const p of report.providers) {
-    const successRate = p.requests.total > 0
-      ? (p.requests.succeeded / p.requests.total * 100).toFixed(1) + "%"
-      : "N/A";
+    const successRate =
+      p.requests.total > 0
+        ? ((p.requests.succeeded / p.requests.total) * 100).toFixed(1) + "%"
+        : "N/A";
     const s = (ms?: number) => (ms ? `${(ms / 1000).toFixed(1)}s` : "-");
     out.push(
       `  ${p.provider.padEnd(14)} ` +
-      `${String(p.requests.total).padStart(5)} ` +
-      `${successRate.padStart(7)} ` +
-      `${String(p.requests.timedOut).padStart(4)} ` +
-      `${String(p.requests.retried).padStart(4)} ` +
-      `${s(p.latency.ttft_p50).padStart(9)} ` +
-      `${s(p.latency.ttft_p95).padStart(9)} ` +
-      `${s(p.latency.total_p95).padStart(9)}`,
+        `${String(p.requests.total).padStart(5)} ` +
+        `${successRate.padStart(7)} ` +
+        `${String(p.requests.timedOut).padStart(4)} ` +
+        `${String(p.requests.retried).padStart(4)} ` +
+        `${s(p.latency.ttft_p50).padStart(9)} ` +
+        `${s(p.latency.ttft_p95).padStart(9)} ` +
+        `${s(p.latency.total_p95).padStart(9)}`,
     );
     // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
     // 文案走 formatTtftBucketLine，与 /trace 单会话视图逐字一致（同一函数）。
@@ -485,7 +532,9 @@ export function renderHealthText(report: HealthReport): string {
       if (line) out.push(`    └ ${line}`);
     }
     if (Object.keys(p.timeouts.byLayer).length > 0) {
-      const layers = Object.entries(p.timeouts.byLayer).map(([k, v]) => `${k}:${v}`).join(" ");
+      const layers = Object.entries(p.timeouts.byLayer)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(" ");
       out.push(`    超时分布: ${layers}`);
     }
   }

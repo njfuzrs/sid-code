@@ -20,9 +20,7 @@ export interface StructuredOutputConfig {
   maxRetries?: number;
 }
 
-export type ExtractResult =
-  | { success: true; data: unknown }
-  | { success: false; error: string };
+export type ExtractResult = { success: true; data: unknown } | { success: false; error: string };
 
 /**
  * 从助手消息中提取结构化输出
@@ -77,9 +75,7 @@ export function extractStructuredOutput(
 /**
  * 构建结构化输出的系统提示词补充
  */
-export function buildStructuredOutputPrompt(
-  schema: Record<string, unknown>,
-): string {
+export function buildStructuredOutputPrompt(schema: Record<string, unknown>): string {
   return [
     "",
     "<structured-output-requirement>",

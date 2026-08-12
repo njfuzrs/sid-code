@@ -4,12 +4,7 @@
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
-import {
-  getAllTasks,
-  isPanelTask,
-  isAgentTask,
-  isShellTask,
-} from "../task/index.ts";
+import { getAllTasks, isPanelTask, isAgentTask, isShellTask } from "../task/index.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -54,15 +49,13 @@ export class TaskListTool implements Tool {
     // 前台子代理虽也在 registry（taskId / task_output 依赖它），但它是当前这一轮的同步工具调用，
     // 结果就在模型自己的 tool_result 里——报进来会让模型误以为"另有一个后台任务在跑"。
     const allTasks = getAllTasks().filter(isPanelTask);
-    const filtered = statusFilter === "all"
-      ? allTasks
-      : allTasks.filter(t => t.status === statusFilter);
+    const filtered =
+      statusFilter === "all" ? allTasks : allTasks.filter((t) => t.status === statusFilter);
 
     if (filtered.length === 0) {
       return {
-        output: statusFilter === "all"
-          ? "当前没有后台任务"
-          : `没有状态为 "${statusFilter}" 的后台任务`,
+        output:
+          statusFilter === "all" ? "当前没有后台任务" : `没有状态为 "${statusFilter}" 的后台任务`,
       };
     }
 
@@ -82,13 +75,17 @@ export class TaskListTool implements Tool {
           const p = task.progress;
           lines.push(`    <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
           if (p.lastActivity) {
-            lines.push(`      <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`);
+            lines.push(
+              `      <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`,
+            );
           }
           lines.push(`    </progress>`);
         }
         if (task.result) {
           lines.push(`    <result_summary>${task.result.output.slice(0, 500)}</result_summary>`);
-          lines.push(`    <usage total_tokens="${task.result.totalTokens}" tool_uses="${task.result.totalToolUseCount}"/>`);
+          lines.push(
+            `    <usage total_tokens="${task.result.totalTokens}" tool_uses="${task.result.totalToolUseCount}"/>`,
+          );
         }
         if (task.error) {
           lines.push(`    <error>${task.error.slice(0, 500)}</error>`);

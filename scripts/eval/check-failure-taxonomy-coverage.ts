@@ -42,15 +42,23 @@ const DEFAULT_REPORT = join(REPO_ROOT, "_reports/failure-taxonomy-coverage.md");
  */
 export const FAILURE_TAXONOMY_V1 = new Set<string>([
   // Tool Selection
-  "TS-01", "TS-02", "TS-03",
+  "TS-01",
+  "TS-02",
+  "TS-03",
   // Execution Failure
-  "EX-01", "EX-02",
+  "EX-01",
+  "EX-02",
   // Context Misuse
-  "CTX-01", "CTX-02",
+  "CTX-01",
+  "CTX-02",
   // Output / Reasoning
-  "OUT-01", "OUT-02", "OUT-03", "OUT-04",
+  "OUT-01",
+  "OUT-02",
+  "OUT-03",
+  "OUT-04",
   // Abort / Loop
-  "ABORT-01", "ABORT-02",
+  "ABORT-01",
+  "ABORT-02",
   // Tool 调用异常
   "TOOL-01",
 ]);
@@ -75,8 +83,15 @@ export interface CoverageResult {
 const THRESHOLD_YELLOW = 0.05;
 const THRESHOLD_RED = 0.15;
 
-interface DiffFinding { code?: string; title?: string; severity?: string }
-interface DiffEntry { task_id?: string; failure_modes?: DiffFinding[] }
+interface DiffFinding {
+  code?: string;
+  title?: string;
+  severity?: string;
+}
+interface DiffEntry {
+  task_id?: string;
+  failure_modes?: DiffFinding[];
+}
 
 /**
  * 评估一组 diff JSON 的失败模式覆盖率。
@@ -88,7 +103,8 @@ interface DiffEntry { task_id?: string; failure_modes?: DiffFinding[] }
 export function classifyCoverage(diffs: DiffEntry[], sourceFiles: string[] = []): CoverageResult {
   const knownByCode: Record<string, number> = {};
   const unknownCodes: Record<string, number> = {};
-  let knownCount = 0, unknownCount = 0;
+  let knownCount = 0,
+    unknownCount = 0;
   for (const d of diffs) {
     for (const fm of d.failure_modes ?? []) {
       const code = String(fm.code ?? "").trim();
@@ -122,7 +138,11 @@ export function classifyCoverage(diffs: DiffEntry[], sourceFiles: string[] = [])
   };
 }
 
-interface CliArgs { diffGlob: string | null; json: boolean; reportPath: string }
+interface CliArgs {
+  diffGlob: string | null;
+  json: boolean;
+  reportPath: string;
+}
 
 function parseCli(argv: string[]): CliArgs {
   const out: CliArgs = { diffGlob: null, json: false, reportPath: DEFAULT_REPORT };
@@ -137,7 +157,7 @@ function parseCli(argv: string[]): CliArgs {
 
 function loadDiffs(globOrDir: string | null): { diffs: DiffEntry[]; files: string[] } {
   const dir = globOrDir
-    ? globOrDir.endsWith("/") || existsSync(globOrDir) && existsSync(join(globOrDir))
+    ? globOrDir.endsWith("/") || (existsSync(globOrDir) && existsSync(join(globOrDir)))
       ? globOrDir
       : dirname(globOrDir)
     : DEFAULT_DIFF_DIR;
@@ -145,7 +165,13 @@ function loadDiffs(globOrDir: string | null): { diffs: DiffEntry[]; files: strin
   // 简化：只支持目录扫 + 命名前缀（不实现完整 glob）
   if (!existsSync(dir)) return { diffs: [], files: [] };
   const files = readdirSync(dir)
-    .filter((f) => f.startsWith("diff-") && f.endsWith(".json") && !f.startsWith("diff-summary") && f !== "paired-diff-summary.json")
+    .filter(
+      (f) =>
+        f.startsWith("diff-") &&
+        f.endsWith(".json") &&
+        !f.startsWith("diff-summary") &&
+        f !== "paired-diff-summary.json",
+    )
     .map((f) => join(dir, f));
   const diffs: DiffEntry[] = [];
   for (const fp of files) {
@@ -170,18 +196,30 @@ function renderMd(r: CoverageResult): string {
   lines.push(`## 1. 判定`);
   lines.push(``);
   lines.push(`- 状态：${icon} **${r.status.toUpperCase()}**`);
-  lines.push(`- unknown_ratio：**${(r.unknownRatio * 100).toFixed(1)}%**（known=${r.knownCount} / unknown=${r.unknownCount} / total=${r.total}）`);
-  lines.push(`- 阈值：yellow ≥ ${(r.threshold.yellow * 100).toFixed(0)}% / red > ${(r.threshold.red * 100).toFixed(0)}%`);
+  lines.push(
+    `- unknown_ratio：**${(r.unknownRatio * 100).toFixed(1)}%**（known=${r.knownCount} / unknown=${r.unknownCount} / total=${r.total}）`,
+  );
+  lines.push(
+    `- 阈值：yellow ≥ ${(r.threshold.yellow * 100).toFixed(0)}% / red > ${(r.threshold.red * 100).toFixed(0)}%`,
+  );
   lines.push(``);
-  if (r.status === "green") lines.push(`- 决策：飞轮收敛（v1 在新一轮数据上 ≥ 95% 覆盖），继续 v1，不触发升级`);
-  else if (r.status === "yellow") lines.push(`- 决策：评估是否新增 1-2 个小类（不整体升 v2），并 patch 进 docs/eval/失败分类法-v1.md`);
-  else lines.push(`- 决策：**触发 v(N+1) 升级** + SKILL.md 与新分类法对齐 + bump GRADER_VERSION（§0.3.1）`);
+  if (r.status === "green")
+    lines.push(`- 决策：飞轮收敛（v1 在新一轮数据上 ≥ 95% 覆盖），继续 v1，不触发升级`);
+  else if (r.status === "yellow")
+    lines.push(
+      `- 决策：评估是否新增 1-2 个小类（不整体升 v2），并 patch 进 docs/eval/失败分类法-v1.md`,
+    );
+  else
+    lines.push(
+      `- 决策：**触发 v(N+1) 升级** + SKILL.md 与新分类法对齐 + bump GRADER_VERSION（§0.3.1）`,
+    );
   lines.push(``);
   lines.push(`## 2. 已知编码命中`);
   lines.push(``);
   lines.push(`| code | 命中次数 |`);
   lines.push(`| --- | ---: |`);
-  for (const [code, n] of Object.entries(r.knownByCode).sort((a, b) => b[1] - a[1])) lines.push(`| \`${code}\` | ${n} |`);
+  for (const [code, n] of Object.entries(r.knownByCode).sort((a, b) => b[1] - a[1]))
+    lines.push(`| \`${code}\` | ${n} |`);
   if (Object.keys(r.knownByCode).length === 0) lines.push(`| _（无）_ | 0 |`);
   lines.push(``);
   if (Object.keys(r.unknownCodes).length > 0) {
@@ -189,12 +227,19 @@ function renderMd(r: CoverageResult): string {
     lines.push(``);
     lines.push(`| 未识别 code | 命中次数 |`);
     lines.push(`| --- | ---: |`);
-    for (const [code, n] of Object.entries(r.unknownCodes).sort((a, b) => b[1] - a[1])) lines.push(`| \`${code}\` | ${n} |`);
+    for (const [code, n] of Object.entries(r.unknownCodes).sort((a, b) => b[1] - a[1]))
+      lines.push(`| \`${code}\` | ${n} |`);
     lines.push(``);
-    lines.push(`> 这些编码未在 \`FAILURE_TAXONOMY_V1\` 集合（docs/eval/失败分类法-v1.md §1）中。需要：`);
-    lines.push(`> 1. 阅读 raw diff JSON 的 \`failure_modes[].title/evidence\` 字段，确认是否真的是新模式（vs typo）`);
+    lines.push(
+      `> 这些编码未在 \`FAILURE_TAXONOMY_V1\` 集合（docs/eval/失败分类法-v1.md §1）中。需要：`,
+    );
+    lines.push(
+      `> 1. 阅读 raw diff JSON 的 \`failure_modes[].title/evidence\` 字段，确认是否真的是新模式（vs typo）`,
+    );
     lines.push(`> 2. 如果真是新模式：决定是 patch v1（小变化）还是 bump v2（大变化）`);
-    lines.push(`> 3. 同步 update \`scripts/eval/check-failure-taxonomy-coverage.ts\` 中的 \`FAILURE_TAXONOMY_V1\` set + 文档`);
+    lines.push(
+      `> 3. 同步 update \`scripts/eval/check-failure-taxonomy-coverage.ts\` 中的 \`FAILURE_TAXONOMY_V1\` set + 文档`,
+    );
     lines.push(``);
   }
   lines.push(`## 4. 输入文件`);
@@ -213,9 +258,15 @@ async function main() {
     process.stdout.write("\n");
   } else {
     const icon = result.status === "green" ? "🟢" : result.status === "yellow" ? "🟡" : "🔴";
-    console.log(`[B7-8 护栏 3] taxonomy=${result.taxonomyVersion}  ${icon} ${result.status.toUpperCase()}`);
-    console.log(`  total=${result.total}  known=${result.knownCount}  unknown=${result.unknownCount}`);
-    console.log(`  unknown_ratio=${(result.unknownRatio * 100).toFixed(1)}%  阈值 yellow≥${(result.threshold.yellow * 100).toFixed(0)}% red>${(result.threshold.red * 100).toFixed(0)}%`);
+    console.log(
+      `[B7-8 护栏 3] taxonomy=${result.taxonomyVersion}  ${icon} ${result.status.toUpperCase()}`,
+    );
+    console.log(
+      `  total=${result.total}  known=${result.knownCount}  unknown=${result.unknownCount}`,
+    );
+    console.log(
+      `  unknown_ratio=${(result.unknownRatio * 100).toFixed(1)}%  阈值 yellow≥${(result.threshold.yellow * 100).toFixed(0)}% red>${(result.threshold.red * 100).toFixed(0)}%`,
+    );
     if (result.status === "red") {
       console.log(`  ❌ Sprint 末毕业判定（§7.4）阻塞——请先升级失败分类法到 v(N+1)`);
     }

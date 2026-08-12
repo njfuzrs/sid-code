@@ -32,8 +32,8 @@ export const CLIENT_PROTOCOL_VERSION = "2025-03-26";
 
 /** MCPClient 配置选项 */
 export interface MCPClientOptions {
-  timeout?: number;   // 请求超时毫秒，默认 30000
-  retries?: number;   // 重试次数，默认 2
+  timeout?: number; // 请求超时毫秒，默认 30000
+  retries?: number; // 重试次数，默认 2
 }
 
 /** 服务器请求处理器类型（method → handler） */
@@ -73,13 +73,21 @@ export class MCPClient {
     this.transport.onRequest = async (request: import("./types.ts").JsonRpcRequest) => {
       const handler = this.requestHandlers.get(request.method);
       if (!handler) {
-        return { jsonrpc: "2.0" as const, id: request.id, error: { code: -32601, message: `方法未找到: ${request.method}` } };
+        return {
+          jsonrpc: "2.0" as const,
+          id: request.id,
+          error: { code: -32601, message: `方法未找到: ${request.method}` },
+        };
       }
       try {
         const result = await handler(request.params);
         return { jsonrpc: "2.0" as const, id: request.id, result };
       } catch (err: any) {
-        return { jsonrpc: "2.0" as const, id: request.id, error: { code: -32603, message: err?.message ?? "内部错误" } };
+        return {
+          jsonrpc: "2.0" as const,
+          id: request.id,
+          error: { code: -32603, message: err?.message ?? "内部错误" },
+        };
       }
     };
 
@@ -186,11 +194,13 @@ export class MCPClient {
     capabilities.roots = {};
 
     // G6-4：clientInfo 版本号从 package.json 读真实值（此前硬编码 0.1.0，与二进制脱节）。
-    const response = await this.sendWithRetry(this.makeRequest("initialize", {
-      protocolVersion: CLIENT_PROTOCOL_VERSION,
-      capabilities,
-      clientInfo: { name: "sid-code", version: getRawVersion() },
-    }));
+    const response = await this.sendWithRetry(
+      this.makeRequest("initialize", {
+        protocolVersion: CLIENT_PROTOCOL_VERSION,
+        capabilities,
+        clientInfo: { name: "sid-code", version: getRawVersion() },
+      }),
+    );
 
     if (response.error) {
       throw new Error(`MCP 初始化失败: ${response.error.message}`);
@@ -217,11 +227,13 @@ export class MCPClient {
       this.transport.sendNotification(notification);
     } else {
       // 降级：用 send 发送（带 id），忽略响应
-      this.transport.send({
-        jsonrpc: "2.0",
-        id: this.nextId++,
-        method: "notifications/initialized",
-      }).catch(() => {});
+      this.transport
+        .send({
+          jsonrpc: "2.0",
+          id: this.nextId++,
+          method: "notifications/initialized",
+        })
+        .catch(() => {});
     }
 
     return this.serverInfo;
@@ -244,15 +256,22 @@ export class MCPClient {
   }
 
   /** 调用工具 */
-  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<CallToolResult> {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    const response = await this.sendWithRetry(this.makeRequest("tools/call", {
-      name,
-      arguments: args,
-    }), signal);
+    const response = await this.sendWithRetry(
+      this.makeRequest("tools/call", {
+        name,
+        arguments: args,
+      }),
+      signal,
+    );
 
     if (response.error) {
       throw new Error(`调用工具失败: ${response.error.message}`);
@@ -356,7 +375,10 @@ export class MCPClient {
   }
 
   /** 带重试的发送：指数退避 + ±30% 随机抖动 */
-  private async sendWithRetry(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
+  private async sendWithRetry(
+    request: JsonRpcRequest,
+    signal?: AbortSignal,
+  ): Promise<JsonRpcResponse> {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= this.retries; attempt++) {
@@ -377,7 +399,7 @@ export class MCPClient {
           // 配置-5：退避改用 network-profile 的 computeBackoffMs（与 loop/fallback 层同一实现，
           // 指数退避 + jitter），不再就地 `1000 * 2^attempt`。基数 1s、上限 30s 保持原有量级。
           const delay = computeBackoffMs(attempt, 1_000, 30_000);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }

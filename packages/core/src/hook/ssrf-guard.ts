@@ -31,8 +31,7 @@ const BLOCKED_IPV4_RANGES = [
 ];
 
 function isIPAddress(hostname: string): boolean {
-  return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-    hostname.includes(":");
+  return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) || hostname.includes(":");
 }
 
 /** IPv6 私有/本地/保留地址判定（归一化为小写、去除区域 id 与方括号后比较） */
@@ -128,9 +127,10 @@ export async function ssrfGuardedFetch(
         const code = (r.reason as any)?.code as string | undefined;
         // 「无此记录」不计为阻断性错误：该记录类型不存在不代表目标可疑
         if (!code || !NO_RECORD_DNS_CODES.has(code)) {
-          blockingError = r.reason instanceof Error
-            ? r.reason
-            : new Error(String((r.reason as any)?.message ?? r.reason));
+          blockingError =
+            r.reason instanceof Error
+              ? r.reason
+              : new Error(String((r.reason as any)?.message ?? r.reason));
         }
       }
     }

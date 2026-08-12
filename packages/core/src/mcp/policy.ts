@@ -10,9 +10,7 @@ import type { McpPolicy, McpPolicyEntry, ScopedMcpServerConfig } from "./types.t
  * 匹配 URL 通配符（支持 *.example.com/*）
  */
 function matchUrlPattern(url: string, pattern: string): boolean {
-  const regex = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*');
+  const regex = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${regex}$`).test(url);
 }
 
@@ -47,7 +45,7 @@ function isServerDenied(
   denylist?: McpPolicyEntry[],
 ): boolean {
   if (!denylist?.length) return false;
-  return denylist.some(entry => matchesPolicyEntry(name, config, entry));
+  return denylist.some((entry) => matchesPolicyEntry(name, config, entry));
 }
 
 /**
@@ -58,7 +56,7 @@ function isServerInAllowlist(
   config: MCPServerConfig | ScopedMcpServerConfig,
   allowlist: McpPolicyEntry[],
 ): boolean {
-  return allowlist.some(entry => matchesPolicyEntry(name, config, entry));
+  return allowlist.some((entry) => matchesPolicyEntry(name, config, entry));
 }
 
 /**

@@ -54,13 +54,19 @@ export function resolveAutoCompactPctOverride(
   if (raw === undefined || raw.trim() === "") return null;
   const parsed = Number(raw.trim());
   if (!Number.isFinite(parsed)) {
-    getLogger().warn("COMPACT", `AUTOCOMPACT_PCT 非法值「${raw}」，已忽略（需为 (0,1) 小数或 (0,100) 整数）`);
+    getLogger().warn(
+      "COMPACT",
+      `AUTOCOMPACT_PCT 非法值「${raw}」，已忽略（需为 (0,1) 小数或 (0,100) 整数）`,
+    );
     return null;
   }
   // 归一化：>1 视为百分数（50 → 0.5）
   const normalized = parsed > 1 ? parsed / 100 : parsed;
   if (normalized <= 0 || normalized >= 1) {
-    getLogger().warn("COMPACT", `AUTOCOMPACT_PCT 超出范围「${raw}」（归一化 ${normalized}），已忽略（须 0<pct<1）`);
+    getLogger().warn(
+      "COMPACT",
+      `AUTOCOMPACT_PCT 超出范围「${raw}」（归一化 ${normalized}），已忽略（须 0<pct<1）`,
+    );
     return null;
   }
   return normalized;

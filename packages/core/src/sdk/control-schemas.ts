@@ -119,9 +119,6 @@ export const SDKControlResponseErrorSchema = lazySchema(() =>
 export const SDKControlResponseSchema = lazySchema(() =>
   z.object({
     type: z.literal("control_response"),
-    response: z.union([
-      SDKControlResponseSuccessSchema(),
-      SDKControlResponseErrorSchema(),
-    ]),
+    response: z.union([SDKControlResponseSuccessSchema(), SDKControlResponseErrorSchema()]),
   }),
 );

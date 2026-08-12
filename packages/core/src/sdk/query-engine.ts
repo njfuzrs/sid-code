@@ -87,10 +87,7 @@ export class SDKQueryEngine {
    * 3. 消费 driver 事件流 → 转换 yield assistant/tool_progress/...
    * 4. yield result(success/error)（唯一终止信号）
    */
-  async *submitMessage(
-    prompt: string,
-    options?: { uuid?: string },
-  ): AsyncGenerator<SDKMessage> {
+  async *submitMessage(prompt: string, options?: { uuid?: string }): AsyncGenerator<SDKMessage> {
     this.startTime = this.now();
     this.turnCount = 0;
 
@@ -147,8 +144,7 @@ export class SDKQueryEngine {
       }
     } catch (err) {
       runError = err instanceof Error ? err : new Error(String(err));
-      this.aborted =
-        runError.name === "AbortError" || /abort/i.test(runError.message);
+      this.aborted = runError.name === "AbortError" || /abort/i.test(runError.message);
     }
 
     // ④ 若内核未产出 done/max_turns（异常/提前返回），合成终止消息
@@ -189,8 +185,7 @@ export class SDKQueryEngine {
     return {
       ...result,
       result: result.result || this.extractFinalText(),
-      duration_api_ms:
-        result.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
+      duration_api_ms: result.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
       usage: this.driver.getUsage(),
       total_cost_usd: this.driver.getCostUsd(),
     };

@@ -59,26 +59,26 @@ export const MainContent = memo(function MainContent({
   thinkCollapsed = false,
   onStickyChange,
 }: MainContentProps) {
-  const renderListItem = useCallback(({ item, index }: { item: HistoryItem; index: number }) => {
-    // 流式内容特殊项
-    if (item.id === STREAMING_ITEM_ID) {
+  const renderListItem = useCallback(
+    ({ item, index }: { item: HistoryItem; index: number }) => {
+      // 流式内容特殊项
+      if (item.id === STREAMING_ITEM_ID) {
+        return (
+          <StreamingMessage fullText={streamingText} maxWidth={termWidth} />
+        ) as React.ReactElement;
+      }
+      const prevItem = index > 0 ? listData[index - 1] : undefined;
       return (
-        <StreamingMessage
-          fullText={streamingText}
-          maxWidth={termWidth}
+        <HistoryItemDisplay
+          item={item}
+          prevItem={prevItem}
+          terminalWidth={termWidth}
+          thinkCollapsed={thinkCollapsed}
         />
       ) as React.ReactElement;
-    }
-    const prevItem = index > 0 ? listData[index - 1] : undefined;
-    return (
-      <HistoryItemDisplay
-        item={item}
-        prevItem={prevItem}
-        terminalWidth={termWidth}
-        thinkCollapsed={thinkCollapsed}
-      />
-    ) as React.ReactElement;
-  }, [listData, streamingText, termWidth, thinkCollapsed]);
+    },
+    [listData, streamingText, termWidth, thinkCollapsed],
+  );
 
   // 与 gemini-cli 一致：alternate buffer 模式下直接返回 ScrollableList
   // ScrollableList 自身容器 Box 有 flexGrow=1，会填充剩余空间
@@ -100,17 +100,17 @@ export const MainContent = memo(function MainContent({
         </Box>
       )}
       <ScrollableList
-      data={listData}
-      renderItem={renderListItem}
-      estimatedItemHeight={estimatedItemHeight}
-      keyExtractor={keyExtractor}
-      initialScrollIndex={SCROLL_TO_ITEM_END}
-      initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
-      hasFocus={hasFocus}
-      copyModeEnabled={copyModeEnabled}
-      width={termWidth}
-      onStickyChange={onStickyChange}
-    />
+        data={listData}
+        renderItem={renderListItem}
+        estimatedItemHeight={estimatedItemHeight}
+        keyExtractor={keyExtractor}
+        initialScrollIndex={SCROLL_TO_ITEM_END}
+        initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
+        hasFocus={hasFocus}
+        copyModeEnabled={copyModeEnabled}
+        width={termWidth}
+        onStickyChange={onStickyChange}
+      />
     </>
   );
 });

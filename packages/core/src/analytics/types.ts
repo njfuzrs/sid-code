@@ -16,9 +16,7 @@ export type {
  * 调用方需自行保证语义正确——这是开发者契约,不做运行时校验。
  * 用途:减少 `as VerifiedNotCodeOrFilepaths` 的 cast 样板。
  */
-export function asVerified(
-  value: string,
-): import("./index.ts").VerifiedNotCodeOrFilepaths {
+export function asVerified(value: string): import("./index.ts").VerifiedNotCodeOrFilepaths {
   return value as import("./index.ts").VerifiedNotCodeOrFilepaths;
 }
 
@@ -26,8 +24,6 @@ export function asVerified(
  * 辅助函数:将字符串标记为 PII(仅特权后端可见)。
  * 通常配合 `_PROTECTED_` 前缀字段使用。
  */
-export function asPII(
-  value: string,
-): import("./index.ts").VerifiedPIITagged {
+export function asPII(value: string): import("./index.ts").VerifiedPIITagged {
   return value as import("./index.ts").VerifiedPIITagged;
 }

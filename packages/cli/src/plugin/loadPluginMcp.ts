@@ -27,10 +27,7 @@ function resolvePluginRoot(value: string, pluginRoot: string): string {
 }
 
 /** 对单个 MCP 服务器配置做插件级变量替换 */
-function resolvePluginMcpEnvironment(
-  config: MCPServerConfig,
-  pluginRoot: string,
-): MCPServerConfig {
+function resolvePluginMcpEnvironment(config: MCPServerConfig, pluginRoot: string): MCPServerConfig {
   const resolved: MCPServerConfig = { ...config };
 
   if (resolved.command) resolved.command = resolvePluginRoot(resolved.command, pluginRoot);
@@ -58,12 +55,22 @@ async function loadMcpServersFromFile(
     const parsed = JSON.parse(raw);
     const servers = parsed?.mcpServers || parsed?.mcp_servers || parsed;
     if (!servers || typeof servers !== "object") {
-      errors.push({ type: "mcp-server-config-invalid", source, serverName: "(file)", error: "配置不是对象" });
+      errors.push({
+        type: "mcp-server-config-invalid",
+        source,
+        serverName: "(file)",
+        error: "配置不是对象",
+      });
       return {};
     }
     return servers as Record<string, MCPServerConfig>;
   } catch (err: any) {
-    errors.push({ type: "mcp-server-config-invalid", source, serverName: "(file)", error: err.message });
+    errors.push({
+      type: "mcp-server-config-invalid",
+      source,
+      serverName: "(file)",
+      error: err.message,
+    });
     return {};
   }
 }
@@ -135,7 +142,10 @@ export const collectPluginMcpServers = memoize(
     if (errors.length > 0) {
       const log = getLogger();
       for (const err of errors) {
-        log.warn("PLUGIN", `MCP 配置错误 [${err.type === "mcp-server-config-invalid" ? err.source : ""}]`);
+        log.warn(
+          "PLUGIN",
+          `MCP 配置错误 [${err.type === "mcp-server-config-invalid" ? err.source : ""}]`,
+        );
       }
     }
 

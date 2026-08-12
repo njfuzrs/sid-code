@@ -39,7 +39,11 @@ interface OnboardingDialogProps {
 
 /** Provider 预设选项 */
 const PROVIDER_OPTIONS = [
-  { key: "openai", label: "OpenAI 兼容", description: "支持 OpenAI 协议的服务（包括 DeepSeek、通义千问等）" },
+  {
+    key: "openai",
+    label: "OpenAI 兼容",
+    description: "支持 OpenAI 协议的服务（包括 DeepSeek、通义千问等）",
+  },
   { key: "anthropic", label: "Anthropic", description: "Claude 系列模型" },
   { key: "ollama", label: "Ollama（本地）", description: "本地部署，无需 API Key" },
 ] as const;
@@ -47,18 +51,24 @@ const PROVIDER_OPTIONS = [
 /** 根据 provider 给出模型名提示 */
 function getModelHint(provider: string): string {
   switch (provider) {
-    case "anthropic": return "如 claude-sonnet-4-20250514";
-    case "ollama": return "如 llama3、qwen2";
-    default: return "如 gpt-4o、deepseek-chat、qwen-plus";
+    case "anthropic":
+      return "如 claude-sonnet-4-20250514";
+    case "ollama":
+      return "如 llama3、qwen2";
+    default:
+      return "如 gpt-4o、deepseek-chat、qwen-plus";
   }
 }
 
 /** 根据 provider 给出默认 baseURL 提示 */
 function getBaseURLHint(provider: string): string {
   switch (provider) {
-    case "anthropic": return "留空使用默认 https://api.anthropic.com";
-    case "ollama": return "留空使用默认 http://localhost:11434/v1";
-    default: return "留空使用默认 https://api.openai.com/v1，或输入自定义地址";
+    case "anthropic":
+      return "留空使用默认 https://api.anthropic.com";
+    case "ollama":
+      return "留空使用默认 http://localhost:11434/v1";
+    default:
+      return "留空使用默认 https://api.openai.com/v1，或输入自定义地址";
   }
 }
 
@@ -202,8 +212,13 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
       {/* 标题行 */}
       <Box>
-        <Text color={accent} bold>{BULLET} 首次配置</Text>
-        <Text color={theme.text.secondary}>  ({stepNum}/{totalSteps})</Text>
+        <Text color={accent} bold>
+          {BULLET} 首次配置
+        </Text>
+        <Text color={theme.text.secondary}>
+          {" "}
+          ({stepNum}/{totalSteps})
+        </Text>
       </Box>
       <Box paddingLeft={2} marginBottom={1}>
         <Text color={theme.text.secondary}>{stepTitles[step]}</Text>
@@ -235,7 +250,7 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
             );
           })}
           <Box marginTop={1} paddingLeft={2}>
-            <Text color={theme.text.secondary}>↑↓ 选择  Enter 确认  Esc 关闭</Text>
+            <Text color={theme.text.secondary}>↑↓ 选择 Enter 确认 Esc 关闭</Text>
           </Box>
         </Box>
       )}
@@ -252,7 +267,7 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
             <Text color={accent}>{CURSOR}</Text>
           </Box>
           <Box marginTop={1}>
-            <Text color={theme.text.secondary}>Enter 确认（可留空）  Esc 关闭</Text>
+            <Text color={theme.text.secondary}>Enter 确认（可留空） Esc 关闭</Text>
           </Box>
         </Box>
       )}
@@ -269,7 +284,7 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
             <Text color={accent}>{CURSOR}</Text>
           </Box>
           <Box marginTop={1}>
-            <Text color={theme.text.secondary}>Enter 确认  Esc 关闭</Text>
+            <Text color={theme.text.secondary}>Enter 确认 Esc 关闭</Text>
           </Box>
         </Box>
       )}
@@ -288,7 +303,7 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
             <Text color={accent}>{CURSOR}</Text>
           </Box>
           <Box marginTop={1}>
-            <Text color={theme.text.secondary}>Enter 确认  Esc 关闭</Text>
+            <Text color={theme.text.secondary}>Enter 确认 Esc 关闭</Text>
           </Box>
         </Box>
       )}
@@ -296,13 +311,25 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
       {/* 确认步骤 */}
       {step === "confirm" && (
         <Box flexDirection="column" paddingLeft={2}>
-          <Box><Text color={theme.text.secondary}>Provider: </Text><Text>{provider}</Text></Box>
+          <Box>
+            <Text color={theme.text.secondary}>Provider: </Text>
+            <Text>{provider}</Text>
+          </Box>
           {baseURL ? (
-            <Box><Text color={theme.text.secondary}>Base URL: </Text><Text>{baseURL}</Text></Box>
+            <Box>
+              <Text color={theme.text.secondary}>Base URL: </Text>
+              <Text>{baseURL}</Text>
+            </Box>
           ) : null}
-          <Box><Text color={theme.text.secondary}>Model:    </Text><Text>{model}</Text></Box>
+          <Box>
+            <Text color={theme.text.secondary}>Model: </Text>
+            <Text>{model}</Text>
+          </Box>
           {apiKey ? (
-            <Box><Text color={theme.text.secondary}>API Key:  </Text><Text>{maskKey(apiKey)}</Text></Box>
+            <Box>
+              <Text color={theme.text.secondary}>API Key: </Text>
+              <Text>{maskKey(apiKey)}</Text>
+            </Box>
           ) : null}
           <Box marginTop={1}>
             <Text color={accent}>{SUCCESS_MARK} 按 Enter 保存配置并开始使用</Text>

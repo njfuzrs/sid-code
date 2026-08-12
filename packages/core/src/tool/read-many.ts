@@ -44,15 +44,65 @@ const DEFAULT_EXCLUDES = [
 
 /** 二进制文件扩展名 */
 const BINARY_EXTENSIONS = new Set([
-  ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib",
-  ".class", ".jar", ".war", ".ear",
-  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst",
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".tiff", ".tif", ".webp",
-  ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", ".wav", ".flac", ".ogg", ".m4a",
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".woff", ".woff2", ".ttf", ".otf", ".eot",
-  ".pyc", ".pyo", ".wasm",
-  ".sqlite", ".db", ".sqlite3",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".obj",
+  ".o",
+  ".a",
+  ".lib",
+  ".class",
+  ".jar",
+  ".war",
+  ".ear",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".bz2",
+  ".xz",
+  ".7z",
+  ".rar",
+  ".zst",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".bmp",
+  ".ico",
+  ".tiff",
+  ".tif",
+  ".webp",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+  ".wmv",
+  ".flv",
+  ".mkv",
+  ".wav",
+  ".flac",
+  ".ogg",
+  ".m4a",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".pyc",
+  ".pyo",
+  ".wasm",
+  ".sqlite",
+  ".db",
+  ".sqlite3",
   ".DS_Store",
 ]);
 
@@ -69,7 +119,7 @@ function hasBinaryExtension(filePath: string): boolean {
 /** ReadMany 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const readManySchema = lazySchema(() =>
   z.object({
-    pattern: z.array(z.string()).describe("glob 模式列表，如 [\"src/**/*.ts\", \"config/*.json\"]"),
+    pattern: z.array(z.string()).describe('glob 模式列表，如 ["src/**/*.ts", "config/*.json"]'),
     exclude: z.array(z.string()).optional().describe("排除模式列表（可选）"),
     path: z.string().optional().describe("搜索根目录，默认为当前目录"),
   }),
@@ -173,7 +223,7 @@ export class ReadManyTool implements Tool {
           ignore: excludePatterns,
           nodir: true,
         });
-        files.forEach(f => allFiles.add(f));
+        files.forEach((f) => allFiles.add(f));
       }
 
       if (allFiles.size === 0) {
@@ -181,7 +231,7 @@ export class ReadManyTool implements Tool {
       }
 
       // 过滤二进制文件（扩展名检测）
-      const textFiles = Array.from(allFiles).filter(f => !hasBinaryExtension(f));
+      const textFiles = Array.from(allFiles).filter((f) => !hasBinaryExtension(f));
       const skippedBinary = allFiles.size - textFiles.length;
 
       if (textFiles.length === 0) {
@@ -239,8 +289,8 @@ export class ReadManyTool implements Tool {
           } else {
             fileLines = lines;
           }
-          const normalizedLines = fileLines.map(line =>
-            line.endsWith("\r") ? line.slice(0, -1) : line
+          const normalizedLines = fileLines.map((line) =>
+            line.endsWith("\r") ? line.slice(0, -1) : line,
           );
           const fileContent = normalizedLines.join("\n");
 
@@ -281,10 +331,12 @@ export class ReadManyTool implements Tool {
 
       // 收集成功读取的文件（过滤 null 和 rejected）
       const successResults = results
-        .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null)
-        .map(r => r.value);
+        .filter(
+          (r): r is PromiseFulfilledResult<any> => r.status === "fulfilled" && r.value !== null,
+        )
+        .map((r) => r.value);
 
-      const failedCount = results.filter(r => r.status === "rejected").length;
+      const failedCount = results.filter((r) => r.status === "rejected").length;
 
       // 拼接输出
       let header = `成功读取 ${successResults.length} 个文件`;
@@ -310,7 +362,9 @@ export class ReadManyTool implements Tool {
         // 检查是否超过总输出上限
         if (totalChars + part.length > MAX_TOTAL_OUTPUT) {
           const remaining = successResults.length - (parts.length - 1);
-          parts.push(`\n[输出已截断: 已达到 ${MAX_TOTAL_OUTPUT} 字符上限，剩余 ${remaining} 个文件未显示]\n`);
+          parts.push(
+            `\n[输出已截断: 已达到 ${MAX_TOTAL_OUTPUT} 字符上限，剩余 ${remaining} 个文件未显示]\n`,
+          );
           break;
         }
 

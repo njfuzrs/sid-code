@@ -20,9 +20,7 @@ const PS_RE = new RegExp(PS, "g");
  * 转义 U+2028/U+2029，防止行分隔符误切割 JSON
  */
 export function ndjsonStringify(obj: unknown): string {
-  return JSON.stringify(obj)
-    .replace(LS_RE, "\\u2028")
-    .replace(PS_RE, "\\u2029");
+  return JSON.stringify(obj).replace(LS_RE, "\\u2028").replace(PS_RE, "\\u2029");
 }
 
 /**
@@ -41,9 +39,7 @@ export function ndjsonParse(line: string): unknown {
  * 处理跨 chunk 的不完整行：缓冲未遇到换行的尾部，下一个 chunk 拼接。
  * 兼容 Node.js Readable（Buffer/string chunk）。
  */
-export async function* ndjsonLines(
-  input: NodeJS.ReadableStream,
-): AsyncGenerator<string> {
+export async function* ndjsonLines(input: NodeJS.ReadableStream): AsyncGenerator<string> {
   let buffer = "";
   for await (const chunk of input) {
     buffer += typeof chunk === "string" ? chunk : chunk.toString("utf-8");

@@ -144,10 +144,7 @@ export class ToolSearchTool implements Tool {
   }
 
   /** 精确激活模式 */
-  private selectTools(
-    names: string[],
-    log: ReturnType<typeof getLogger>,
-  ): ToolResult {
+  private selectTools(names: string[], log: ReturnType<typeof getLogger>): ToolResult {
     if (names.length === 0) {
       return { output: "错误: select: 后未指定任何工具名", isError: true };
     }
@@ -225,7 +222,9 @@ export class ToolSearchTool implements Tool {
     }
 
     // 命中即激活：搜到的工具直接调出，省去模型再发一次 select 的往返
-    const lines: string[] = [`找到 ${matches.length} 个匹配 "${query}" 的工具并已激活，将在下一轮可用：`];
+    const lines: string[] = [
+      `找到 ${matches.length} 个匹配 "${query}" 的工具并已激活，将在下一轮可用：`,
+    ];
     for (const tool of matches) {
       const name = tool.name();
       this.registry.activateTool(name);
@@ -246,8 +245,6 @@ export class ToolSearchTool implements Tool {
     if (!this.pendingMcpServers) return "";
     const pending = this.pendingMcpServers();
     if (!pending || pending.length === 0) return "";
-    return (
-      `\n\n注意：以下 MCP 服务器仍在连接中，稍后重试可能发现更多工具：${pending.join(", ")}`
-    );
+    return `\n\n注意：以下 MCP 服务器仍在连接中，稍后重试可能发现更多工具：${pending.join(", ")}`;
   }
 }

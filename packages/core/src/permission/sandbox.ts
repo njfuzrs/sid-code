@@ -71,7 +71,10 @@ export class SandboxManager {
   recordViolation(violation: SandboxViolation): void {
     this.violations.push(violation);
     const log = getLogger();
-    log.warn("SANDBOX", `违规: ${violation.type} ${violation.path || violation.host || ""} (${violation.command.slice(0, 60)})`);
+    log.warn(
+      "SANDBOX",
+      `违规: ${violation.type} ${violation.path || violation.host || ""} (${violation.command.slice(0, 60)})`,
+    );
   }
 
   /**

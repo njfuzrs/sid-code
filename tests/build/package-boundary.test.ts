@@ -27,6 +27,7 @@ import {
   PACKAGES,
   extractImports,
   scanPackagesMode,
+  scanPackageTestsMode,
 } from "../../scripts/pkg-boundary-scan.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
@@ -41,7 +42,10 @@ describe("包边界：packages/ 下的真实依赖方向", () => {
     const detail = scan.violations
       .map((v) => `  [${v.kind}] ${v.fromPkg}→${v.toPkg}  ${v.file}:${v.line}  ${v.spec}`)
       .join("\n");
-    expect(scan.violations.length, `包边界越界：\n${detail}\n\n修法见 scripts/pkg-boundary-scan.ts 文件头`).toBe(0);
+    expect(
+      scan.violations.length,
+      `包边界越界：\n${detail}\n\n修法见 scripts/pkg-boundary-scan.ts 文件头`,
+    ).toBe(0);
   });
 
   test("core 完全不知道 TUI 的存在（分包的核心目标）", () => {
@@ -94,7 +98,10 @@ describe("包边界门禁自身有效性（防假绿）", () => {
     ];
     for (const c of cases) {
       const imports = extractImports(`import type { A } from "${c.spec}";\nexport type B = A;\n`);
-      expect(imports.map((i) => i.spec), `${c.desc}：导入说明符未被提取到`).toContain(c.spec);
+      expect(
+        imports.map((i) => i.spec),
+        `${c.desc}：导入说明符未被提取到`,
+      ).toContain(c.spec);
       // 类型导入必须被识别为 type-only：类型越界是最容易漏的一类
       //（编译后整行消失，运行时零征兆），漏判 isTypeOnly 会让报告误导排查方向。
       expect(imports[0]!.isTypeOnly, `${c.desc}：isTypeOnly 判定错误`).toBe(true);
@@ -112,5 +119,37 @@ describe("包边界门禁自身有效性（防假绿）", () => {
       "export const a = 1;",
     ].join("\n");
     expect(extractImports(withComment)).toEqual([]);
+  });
+});
+
+describe("包内测试的边界（P1-2 测试迁进包后新增的扫描面）", () => {
+  const testScan = scanPackageTestsMode(PACKAGES_ROOT);
+
+  test("零跨包相对路径（跨包一律走 @sid-code/* bare specifier）", () => {
+    // 只查这一类。**不查 rank** —— 本仓大量测试刻意跨层验"两层口径是否一致"
+    // （如 packages/core/tests/context/context-display-alignment.test.ts 同时取
+    // core 的压缩阈值与 cli 的 Footer 显示逻辑，钉住 2026-07-29 那次
+    // 「显示 17% 却在 82% 压缩」事故）。理由详见 scanPackageTestsMode 的文件注释。
+    const detail = testScan.violations
+      .map((v) => `  [${v.kind}] ${v.fromPkg}→${v.toPkg}  ${v.file}:${v.line}  ${v.spec}`)
+      .join("\n");
+    expect(
+      testScan.violations.length,
+      `包内测试出现跨包相对路径（绕过 package.json exports 契约）：\n${detail}\n\n` +
+        `修法：改成 bare specifier，如 "../../core/src/x.ts" → "@sid-code/core/x.ts"`,
+    ).toBe(0);
+  });
+
+  test("扫描面非空——测试目录改名/迁移导致空扫时本门禁不得静默通过", () => {
+    // 「零违规 + 零文件」是假绿指纹。P1-2 迁移后实测 616 个文件，取一半作阈值。
+    expect(testScan.files).toBeGreaterThan(300);
+  });
+
+  test("跨包相对路径的判定逻辑真的能检出（合成用例）", () => {
+    // 与上面的 src 侧防假绿同思路：不落盘，直接验说明符提取。
+    const imports = extractImports(
+      `import { x } from "../../core/src/tool/registry.ts";\nexport const y = x;\n`,
+    );
+    expect(imports.map((i) => i.spec)).toContain("../../core/src/tool/registry.ts");
   });
 });

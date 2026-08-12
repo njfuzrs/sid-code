@@ -21,7 +21,7 @@ export interface DiffResult {
   ops: DiffOp[];
 }
 
-const SMALL_FILE_THRESHOLD = 1000;  // 行数
+const SMALL_FILE_THRESHOLD = 1000; // 行数
 const LARGE_FILE_THRESHOLD = 10000; // 行数
 
 /**
@@ -29,11 +29,11 @@ const LARGE_FILE_THRESHOLD = 10000; // 行数
  */
 export function computeDiff(oldText: string, newText: string): DiffResult {
   if (oldText === newText) {
-    return { ops: [{ type: "keep", lines: oldText.split('\n') }] };
+    return { ops: [{ type: "keep", lines: oldText.split("\n") }] };
   }
 
-  const oldLines = oldText.split('\n');
-  const newLines = newText.split('\n');
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
   const maxLines = Math.max(oldLines.length, newLines.length);
 
   if (maxLines < SMALL_FILE_THRESHOLD) {
@@ -68,7 +68,8 @@ function lcsBasedDiff(oldLines: string[], newLines: string[]): DiffResult {
 
   // 回溯生成 diff ops
   const rawOps: { type: "keep" | "add" | "remove"; line: string }[] = [];
-  let i = m, j = n;
+  let i = m,
+    j = n;
 
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
@@ -237,7 +238,7 @@ function backtrackMyersDiff(
  * 将 diff 应用到 oldText 上，还原出 newText
  */
 export function applyDiff(oldText: string, diff: DiffResult): string {
-  const oldLines = oldText.split('\n');
+  const oldLines = oldText.split("\n");
   const result: string[] = [];
   let oldIdx = 0;
 
@@ -260,7 +261,7 @@ export function applyDiff(oldText: string, diff: DiffResult): string {
     }
   }
 
-  return result.join('\n');
+  return result.join("\n");
 }
 
 /**
@@ -268,7 +269,7 @@ export function applyDiff(oldText: string, diff: DiffResult): string {
  * 用于 undo 操作
  */
 export function reverseDiff(newText: string, diff: DiffResult): string {
-  const newLines = newText.split('\n');
+  const newLines = newText.split("\n");
   const result: string[] = [];
   let newIdx = 0;
 
@@ -290,5 +291,5 @@ export function reverseDiff(newText: string, diff: DiffResult): string {
     }
   }
 
-  return result.join('\n');
+  return result.join("\n");
 }

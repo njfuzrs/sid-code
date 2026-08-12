@@ -172,9 +172,7 @@ export function convertToSDKMessage(
       return {
         type: "result",
         subtype: "error_during_execution",
-        errors: event.stack
-          ? [`${event.message}\n${event.stack}`]
-          : [event.message],
+        errors: event.stack ? [`${event.message}\n${event.stack}`] : [event.message],
         duration_ms: nowOf(ctx) - ctx.startTime,
         num_turns: ctx.turnCount,
         total_cost_usd: ctx.totalCostUsd,

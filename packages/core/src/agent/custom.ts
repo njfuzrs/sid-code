@@ -56,10 +56,16 @@ export interface CustomAgentDefinition {
  */
 export function parseListField(raw: unknown): string[] {
   if (typeof raw === "string") {
-    return raw.split(",").map((s) => s.trim()).filter(Boolean);
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   if (Array.isArray(raw)) {
-    return raw.map(String).map((s) => s.trim()).filter(Boolean);
+    return raw
+      .map(String)
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -92,12 +98,18 @@ export function parseAgentTimeout(raw: unknown, agentName: string): number | und
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
     // 非数字（含 NaN / Infinity）：静默回落默认值。frontmatter 未声明是常态，不该 warn。
     if (raw !== undefined && raw !== null) {
-      getLogger().warn("CUSTOM_AGENT", `Agent ${agentName} 的 timeout=${String(raw)} 非有效数字，已忽略（回落默认 300s）`);
+      getLogger().warn(
+        "CUSTOM_AGENT",
+        `Agent ${agentName} 的 timeout=${String(raw)} 非有效数字，已忽略（回落默认 300s）`,
+      );
     }
     return undefined;
   }
   if (raw <= 0) {
-    getLogger().warn("CUSTOM_AGENT", `Agent ${agentName} 的 timeout=${raw} 非正数，已忽略（回落默认 300s）`);
+    getLogger().warn(
+      "CUSTOM_AGENT",
+      `Agent ${agentName} 的 timeout=${raw} 非正数，已忽略（回落默认 300s）`,
+    );
     return undefined;
   }
   if (raw < CUSTOM_AGENT_TIMEOUT_MIN_MS) {
@@ -119,8 +131,14 @@ export function parseAgentTimeout(raw: unknown, agentName: string): number | und
 
 /** 合法权限模式名（P2-1 校验，对齐 src/permission/mode.ts PermissionMode）。 */
 const VALID_PERMISSION_MODES = new Set([
-  "default", "always-allow", "deny-write", "acceptEdits",
-  "plan", "dontAsk", "auto", "dangerously-skip-permissions",
+  "default",
+  "always-allow",
+  "deny-write",
+  "acceptEdits",
+  "plan",
+  "dontAsk",
+  "auto",
+  "dangerously-skip-permissions",
 ]);
 
 /**
@@ -130,9 +148,15 @@ const VALID_PERMISSION_MODES = new Set([
 export function parseAgentExtendedFrontmatter(
   fm: Record<string, unknown>,
   agentName: string,
-): Pick<CustomAgentDefinition, "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"> {
+): Pick<
+  CustomAgentDefinition,
+  "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"
+> {
   const log = getLogger();
-  const out: Pick<CustomAgentDefinition, "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"> = {};
+  const out: Pick<
+    CustomAgentDefinition,
+    "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"
+  > = {};
 
   // model（P0-2）："inherit"（大小写不敏感）视为不设。
   if (typeof fm.model === "string") {
@@ -151,7 +175,8 @@ export function parseAgentExtendedFrontmatter(
   if (typeof fm.permissionMode === "string") {
     const pm = fm.permissionMode.trim();
     if (VALID_PERMISSION_MODES.has(pm)) out.permissionMode = pm;
-    else if (pm) log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 permissionMode="${pm}" 非法，已忽略`);
+    else if (pm)
+      log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 permissionMode="${pm}" 非法，已忽略`);
   }
 
   // hooks（P2-1）：透传对象/数组，非法结构由 hook 注册层校验。
@@ -164,7 +189,11 @@ export function parseAgentExtendedFrontmatter(
   if (typeof fm.isolation === "string") {
     const iso = fm.isolation.trim();
     if (iso === "worktree") out.isolation = "worktree";
-    else if (iso) log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 isolation="${iso}" 非法（仅支持 worktree），已忽略`);
+    else if (iso)
+      log.warn(
+        "CUSTOM_AGENT",
+        `Agent ${agentName} 的 isolation="${iso}" 非法（仅支持 worktree），已忽略`,
+      );
   }
 
   return out;
@@ -181,7 +210,11 @@ export class CustomAgentLoader {
   /** 加载所有自定义 Agent 定义 */
   async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<CustomAgentDefinition[]> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("agents", projectDir ?? process.cwd(), scanOptions);
+    const files = await this.extensionLoader.scan(
+      "agents",
+      projectDir ?? process.cwd(),
+      scanOptions,
+    );
     const agents: CustomAgentDefinition[] = [];
 
     for (const file of files) {
@@ -207,7 +240,7 @@ export class CustomAgentLoader {
 
     if (agents.length > 0) {
       log.info("CUSTOM_AGENT", `加载了 ${agents.length} 个自定义 Agent`, {
-        names: agents.map(a => a.name),
+        names: agents.map((a) => a.name),
       });
     }
 
@@ -233,7 +266,11 @@ export class CustomAgentTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = customAgentSchema;
 
-  constructor(def: CustomAgentDefinition, providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry) {
+  constructor(
+    def: CustomAgentDefinition,
+    providerRegistry: ProviderRegistry,
+    toolRegistry: ToolRegistry,
+  ) {
     this.def = def;
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
@@ -264,7 +301,7 @@ export class CustomAgentTool implements Tool {
 
   readOnly(): boolean {
     const writeTools = ["write", "edit", "bash"];
-    return !this.def.tools.some(t => writeTools.includes(t));
+    return !this.def.tools.some((t) => writeTools.includes(t));
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -276,26 +313,35 @@ export class CustomAgentTool implements Tool {
 
     const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry);
 
-    const result = await subAgent.executeCustom({
-      systemPrompt: this.def.prompt,
-      userPrompt: task,
-      allowedTools: this.def.tools,
-      // P2-2：自定义 Agent 无独立 maxTurns 声明字段，与常规非 fork 子代理同档，默认从 10 提到 30
-      maxTurns: 30,
-      // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
-      timeout: this.def.timeout ?? 300_000,
-      // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
-      type: this.def.name,
-    }, signal);
+    const result = await subAgent.executeCustom(
+      {
+        systemPrompt: this.def.prompt,
+        userPrompt: task,
+        allowedTools: this.def.tools,
+        // P2-2：自定义 Agent 无独立 maxTurns 声明字段，与常规非 fork 子代理同档，默认从 10 提到 30
+        maxTurns: 30,
+        // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
+        timeout: this.def.timeout ?? 300_000,
+        // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
+        type: this.def.name,
+      },
+      signal,
+    );
 
     // P0-1：把自定义子代理消耗的 token/费用回写主会话
     if (this.usageSink) {
       const u = result.usage;
-      const hasUsage = (u?.inputTokens ?? 0) > 0 || (u?.outputTokens ?? 0) > 0 ||
-        (u?.cacheReadInputTokens ?? 0) > 0 || (u?.cacheCreationInputTokens ?? 0) > 0;
+      const hasUsage =
+        (u?.inputTokens ?? 0) > 0 ||
+        (u?.outputTokens ?? 0) > 0 ||
+        (u?.cacheReadInputTokens ?? 0) > 0 ||
+        (u?.cacheCreationInputTokens ?? 0) > 0;
       if (hasUsage) {
-        try { this.usageSink(result); }
-        catch (err: any) { log.warn("CUSTOM_AGENT", `usage 归集失败（不影响结果）: ${err?.message}`); }
+        try {
+          this.usageSink(result);
+        } catch (err: any) {
+          log.warn("CUSTOM_AGENT", `usage 归集失败（不影响结果）: ${err?.message}`);
+        }
       }
     }
 

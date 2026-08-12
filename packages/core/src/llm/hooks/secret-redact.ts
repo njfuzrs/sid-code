@@ -15,13 +15,7 @@
  * 误报守护 (§3.3): 测试 fixture / 代码标识符 / markdown 占位说明
  */
 
-import type {
-  DetectMatch,
-  RedactInput,
-  RedactPattern,
-  RedactResult,
-  SecretHit,
-} from "./types.ts";
+import type { DetectMatch, RedactInput, RedactPattern, RedactResult, SecretHit } from "./types.ts";
 
 // ============================================================================
 // 内置 patterns (按 ADR-026 §3.1 顺序)

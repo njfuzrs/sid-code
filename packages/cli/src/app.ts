@@ -12,7 +12,10 @@ import type {
 } from "@sid-code/core/llm/types.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { Checker } from "@sid-code/core/permission/types.ts";
-import { isBypassDisabledByPolicy, isModeDisabledByPolicy } from "@sid-code/core/permission/mode-policy.ts";
+import {
+  isBypassDisabledByPolicy,
+  isModeDisabledByPolicy,
+} from "@sid-code/core/permission/mode-policy.ts";
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
 import { routeToolProgress } from "./ui/tool-progress-route.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
@@ -27,7 +30,12 @@ import type { FallbackDecision } from "@sid-code/core/llm/fallback.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
 import { TokenEstimator } from "@sid-code/core/llm/token-estimator.ts";
 import { ThinkingManager } from "@sid-code/core/llm/thinking.ts";
-import { lookupErrorMessage, inferErrorCode, stableErrorId, isTransientErrorCode } from "@sid-code/core/llm/error-messages.ts";
+import {
+  lookupErrorMessage,
+  inferErrorCode,
+  stableErrorId,
+  isTransientErrorCode,
+} from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { SessionStore } from "@sid-code/core/session/store.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
@@ -66,13 +74,21 @@ import {
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "@sid-code/core/sdk/index.ts";
-import { JitContextManager, isJitContextEnabled, type JitDiscovery } from "@sid-code/core/config/jit-context.ts";
+import {
+  JitContextManager,
+  isJitContextEnabled,
+  type JitDiscovery,
+} from "@sid-code/core/config/jit-context.ts";
 import {
   collectJitAccessedPaths,
   resolveJitPathExtractor,
 } from "@sid-code/core/tool/jit-affected-paths.ts";
 import { estimateTextTokens } from "@sid-code/core/context/token.ts";
-import { isAbortError, isInternalTimeoutAbortReason, isSessionTimeoutAbortReason } from "@sid-code/core/llm/errors.ts";
+import {
+  isAbortError,
+  isInternalTimeoutAbortReason,
+  isSessionTimeoutAbortReason,
+} from "@sid-code/core/llm/errors.ts";
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 import { execSync } from "child_process";
@@ -83,14 +99,23 @@ import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
-import { recordSideCall, setSideCostCalculator, setSideCostObserver, getSideStats } from "@sid-code/core/trace/side-call-sink.ts";
+import {
+  recordSideCall,
+  setSideCostCalculator,
+  setSideCostObserver,
+  getSideStats,
+} from "@sid-code/core/trace/side-call-sink.ts";
 import {
   buildJitEventData,
   emitJitEvent,
   setJitTraceSink,
   JIT_EVENT_NAME,
 } from "@sid-code/core/trace/jit-telemetry.ts";
-import { setGitOperationObserver, resetGitOperationStats, type GitOperationEvent } from "@sid-code/core/tool/git-operation-tracking.ts";
+import {
+  setGitOperationObserver,
+  resetGitOperationStats,
+  type GitOperationEvent,
+} from "@sid-code/core/tool/git-operation-tracking.ts";
 import { withSideCallDeadline } from "@sid-code/core/llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "@sid-code/core/config/network-profile.ts";
 
@@ -129,7 +154,9 @@ function parseAgentHookVerdict(output: string): { ok?: boolean; reason?: string 
     try {
       const v = JSON.parse(s);
       if (v && typeof v === "object" && "ok" in v) return v as { ok?: boolean; reason?: string };
-    } catch { /* 非 JSON */ }
+    } catch {
+      /* 非 JSON */
+    }
     return null;
   };
   const whole = tryParse(output.trim());
@@ -223,7 +250,9 @@ export async function expandAtReferences(
     }
     try {
       const content = await readFile(absPath, "utf-8");
-      fileContents.push(`以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${content}\n\`\`\``);
+      fileContents.push(
+        `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${content}\n\`\`\``,
+      );
     } catch {
       // 文件不存在时跳过
     }
@@ -246,13 +275,11 @@ export async function expandAtReferences(
 
   return {
     displayText: input,
-    injectedContent: parts.length > 0
-      ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>`
-      : null,
+    injectedContent:
+      parts.length > 0 ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>` : null,
     blockedPaths: blocked.length > 0 ? blocked : undefined,
   };
 }
-
 
 /** App 配置 */
 export interface AppOptions {
@@ -281,9 +308,7 @@ export interface AppOptions {
  * - 过载(529 / overloaded / 503)→ overloaded
  * - 其余 → retry（通用网络/超时/5xx）
  */
-export function classifyRetryKind(
-  error: string,
-): "retry" | "rate_limit" | "overloaded" {
+export function classifyRetryKind(error: string): "retry" | "rate_limit" | "overloaded" {
   const e = (error || "").toLowerCase();
   if (/429|rate.?limit|quota|too many requests/.test(e)) return "rate_limit";
   if (/529|overload|503|capacity/.test(e)) return "overloaded";
@@ -338,7 +363,8 @@ export class App {
   private mcpManager?: MCPManager;
   private ctxMgr: ContextManager;
   /** P2-1 会话回退管理器（Esc+Esc rewind）。每轮输入前登记回退点，UI 选中后截断对话/回滚文件。 */
-  private rewindManager: import("@sid-code/core/session/rewind-manager.ts").RewindManager | null = null;
+  private rewindManager: import("@sid-code/core/session/rewind-manager.ts").RewindManager | null =
+    null;
   /** P2-1：CheckpointManager 最近一次快照 id（回退点登记时记录文件锚点）。空串 = 尚无快照。 */
   private latestCheckpointSnapshotId = "";
   private toolRegistry: ToolRegistry;
@@ -379,7 +405,10 @@ export class App {
    * 经 getPrecomputedResult 命中复用。每个 turn 开始前重建，结束后清空，避免跨轮串味。
    * 仅在 SID_ENABLE_STREAMING_TOOL_EXEC=1 时激活。
    */
-  private _streamingToolResults: Map<string, import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome> | null = null;
+  private _streamingToolResults: Map<
+    string,
+    import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome
+  > | null = null;
   /**
    * 流被重开、已流出内容作废时的回调（2026-08-04 事故根因修复）。
    *
@@ -417,7 +446,9 @@ export class App {
   /** /debug 命令用：轨迹采集器实例（doInit 后赋值） */
   private traceCollector: import("@sid-code/core/trace/collector.ts").TraceCollector | null = null;
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
-  private fileReadTracker: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker | null = null;
+  private fileReadTracker:
+    | import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker
+    | null = null;
   /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
   private skillActivationCoordinator?: import("@sid-code/core/skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** P2-3：Skill 管理器（热重载调 reload()）。可选。 */
@@ -425,7 +456,9 @@ export class App {
   /** P2-3：Skill 文件热重载监听器（退出时 stop()）。 */
   private skillChangeDetector?: import("@sid-code/core/skill/change-detector.ts").SkillChangeDetector;
   /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
-  private cachedMicrocompactState: import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState | null = null;
+  private cachedMicrocompactState:
+    | import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState
+    | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
   private announcedMcpServers = new Set<string>();
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
@@ -433,7 +466,15 @@ export class App {
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
   private currentProjectRules: ProjectRules | null = null;
   /** TUI 模式下的权限确认回调（由 TUI 注入），返回 "yes" | "no" | "always" | "always-persist" */
-  private tuiConfirmCallback: ((toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[], signal?: AbortSignal) => Promise<"yes" | "no" | "always" | "always-persist">) | null = null;
+  private tuiConfirmCallback:
+    | ((
+        toolName: string,
+        toolInput: unknown,
+        desc: string,
+        shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[],
+        signal?: AbortSignal,
+      ) => Promise<"yes" | "no" | "always" | "always-persist">)
+    | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -448,9 +489,13 @@ export class App {
    * Session Memory 句柄（Step 0）：在压缩前持续维护结构化会话笔记，
    * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
    */
-  private sessionMemory: import("@sid-code/core/session-memory/session-memory.ts").SessionMemoryHandle | null = null;
+  private sessionMemory:
+    | import("@sid-code/core/session-memory/session-memory.ts").SessionMemoryHandle
+    | null = null;
   /** 后台记忆提取句柄（每轮 end_turn 后 fire-and-forget 提取记忆，会话关闭前 drain）。 */
-  private extractMemories: import("@sid-code/core/memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
+  private extractMemories:
+    | import("@sid-code/core/memory/extract/extractor.ts").ExtractMemoriesHandle
+    | null = null;
   /** G10：autoDream 自主记忆巩固句柄（默认 null，仅 settings.autoDream 开启时接线） */
   private autoDream: import("@sid-code/core/memory/dream/dream.ts").AutoDreamHandle | null = null;
   /** M4：待审批的外部 @import 路径快照（启动加载 CLAUDE.md 时收集，供审批对话框展示）。 */
@@ -519,7 +564,8 @@ export class App {
       const { RewindManager } = require("@sid-code/core/session/rewind-manager.ts");
       this.rewindManager = new RewindManager({
         getMessages: () => this.ctxMgr.getMessages(),
-        setMessages: (msgs: unknown[]) => this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
+        setMessages: (msgs: unknown[]) =>
+          this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
         getLatestSnapshotId: () => this.latestCheckpointSnapshotId,
         restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
           try {
@@ -566,7 +612,9 @@ export class App {
       if (justUpdated) {
         saveAppConfig((c: any) => ({ ...c, lastPricingSyncVersion: currentVersion }));
       }
-    } catch { /* 采集不可用不影响启动 */ }
+    } catch {
+      /* 采集不可用不影响启动 */
+    }
 
     // 模型**能力**目录同步（与上面的**价格**采集互补，见 model-capabilities.ts 职责切分）。
     // 让「用户只配 name/endpoint/apiKey」的模型也能拿到准确 contextWindow / maxOutputTokens /
@@ -581,7 +629,9 @@ export class App {
           /* 纯优化项：失败退回注册表 + 兜底，用户无需处置 */
         });
       }
-    } catch { /* 能力采集不可用不影响启动 */ }
+    } catch {
+      /* 能力采集不可用不影响启动 */
+    }
     // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
     setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
@@ -599,7 +649,9 @@ export class App {
           kind: event.kind,
           command: event.command,
         });
-      } catch { /* 度量透传失败不影响主流程 */ }
+      } catch {
+        /* 度量透传失败不影响主流程 */
+      }
     });
     getSessionMetrics().setSessionId(sessionId);
     getSessionMetrics().setAvailableModels(opts.config.availableModels);
@@ -624,9 +676,8 @@ export class App {
 
     // Token 计量器（依赖 telemetry bus，延迟到 init() 中创建）
     // 先用 null bus 创建，init() 中 telemetry 启用后会重建
-    this.tokenMeter = new TokenMeter(
-      null,
-      (model, usage) => this.sessionState.calculateCost(model, usage),
+    this.tokenMeter = new TokenMeter(null, (model, usage) =>
+      this.sessionState.calculateCost(model, usage),
     );
 
     // 预算追踪器（如果配置了 budgetRules）
@@ -645,7 +696,10 @@ export class App {
         action: r.action ?? "alert",
       }));
       this.budgetTracker = new BudgetTracker(rules, (alert) => {
-        getLogger().warn("BUDGET", `${alert.ruleName}: ${alert.level} (${(alert.percentage * 100).toFixed(0)}%)`);
+        getLogger().warn(
+          "BUDGET",
+          `${alert.ruleName}: ${alert.level} (${(alert.percentage * 100).toFixed(0)}%)`,
+        );
       });
     }
     // Extended Thinking / 推理强度控制：Anthropic 走 thinking.budgetTokens，
@@ -656,22 +710,31 @@ export class App {
     // 它们的思考能力被无声关闭。能力标志由 catalog(protocolKind) 精确驱动，不随模型改名漂移。
     // （见 memory feedback-no-hardcoded-model-tier-rules.md）
     const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
-    const thinkingModelConfig = opts.config.availableModels?.find(m => m.name === opts.config.model);
-    const { resolveWireModel: resolveWireModelForThinking } = require("@sid-code/core/llm/wire-model.ts");
+    const thinkingModelConfig = opts.config.availableModels?.find(
+      (m) => m.name === opts.config.model,
+    );
+    const {
+      resolveWireModel: resolveWireModelForThinking,
+    } = require("@sid-code/core/llm/wire-model.ts");
     const thinkingCap = resolveEffortCapability({
       // 能力判定吃**真名**（与 query/loop.ts 的 cap 解析同口径）：内部按模型名做
       // catalog/家族/前缀匹配，喂本地别名会静默 miss → thinking 开关被无声关闭。
       model: resolveWireModelForThinking(opts.config.model, opts.config.availableModels),
       provider: opts.config.provider,
       baseURL: thinkingModelConfig?.baseURL ?? opts.config.baseURL,
-      modelConfig: thinkingModelConfig ? { supportsThinking: thinkingModelConfig.supportsThinking } : undefined,
+      modelConfig: thinkingModelConfig
+        ? { supportsThinking: thinkingModelConfig.supportsThinking }
+        : undefined,
     });
     this.thinkingMgr = new ThinkingManager(thinkingCap.supportsThinkingToggle);
 
     // Effort/Thinking 旋钮运行时态初值解析：env > settings(config) > undefined(auto)。
     // env 覆盖优先级最高且会被 queryLoop 每轮重新读取，这里仅解析 runtime 基线。
     {
-      const { getEffortEnvOverride, getThinkingEnvOverride } = require("@sid-code/core/llm/effort.ts");
+      const {
+        getEffortEnvOverride,
+        getThinkingEnvOverride,
+      } = require("@sid-code/core/llm/effort.ts");
       const effortEnv = getEffortEnvOverride();
       // env 已设（含强制 auto=undefined）则以 env 为基线；未设(null)才用 settings。
       this.runtimeEffort = effortEnv !== null ? effortEnv : opts.config.effortLevel;
@@ -694,7 +757,10 @@ export class App {
       const { themeManager } = require("./ui/themes/theme-manager.ts");
       const ok = themeManager.setActiveTheme(opts.config.theme);
       if (!ok) {
-        getLogger().warn("THEME", `settings.json 中的主题 "${opts.config.theme}" 不存在，已回退默认主题`);
+        getLogger().warn(
+          "THEME",
+          `settings.json 中的主题 "${opts.config.theme}" 不存在，已回退默认主题`,
+        );
       }
     }
 
@@ -712,7 +778,9 @@ export class App {
     let fallbackProvider: Provider | undefined;
     let fallbackModel: string | undefined;
     if (opts.config.fallbackModel && opts.providerRegistry) {
-      const fbModelConfig = opts.config.availableModels.find(m => m.name === opts.config.fallbackModel);
+      const fbModelConfig = opts.config.availableModels.find(
+        (m) => m.name === opts.config.fallbackModel,
+      );
       if (fbModelConfig && fbModelConfig.provider) {
         fallbackModel = fbModelConfig.name;
         fallbackProvider = opts.providerRegistry.getProviderFor(
@@ -721,130 +789,142 @@ export class App {
           fbModelConfig.baseURL,
         );
       } else {
-        getLogger().warn("FALLBACK", `fallback_model "${opts.config.fallbackModel}" 不在 available_models 中或缺少 provider，已忽略`);
+        getLogger().warn(
+          "FALLBACK",
+          `fallback_model "${opts.config.fallbackModel}" 不在 available_models 中或缺少 provider，已忽略`,
+        );
       }
     }
 
     // 配置-1：统一超时/重试解析（与 loop.ts 同一 resolveLoopTimeouts 入口，env > settings > 默认）。
-    const { resolveLoopTimeouts: resolveFallbackTimeouts } = require("@sid-code/core/config/network-profile.ts");
+    const {
+      resolveLoopTimeouts: resolveFallbackTimeouts,
+    } = require("@sid-code/core/config/network-profile.ts");
     const fallbackNetTimeouts = resolveFallbackTimeouts({ network: opts.config.network });
 
-    this.fallback = new ModelFallback({
-      availability, fallbackProvider, fallbackModel,
-      // 配置-1：streamTimeoutMs/maxRetries 从 resolveLoopTimeouts 注入（此前未传，fallback 各自
-      // 维护平行常量 CONNECTION_RETRY.maxRetries=3 / DEFAULT_STREAM_TIMEOUT_MS=300s）。
-      // 注入后 fallback 与 loop 层超时/重试对齐——改 settings.json 的 network.* 或 env 一处生效。
-      streamTimeoutMs: fallbackNetTimeouts.watchdogNoProgressMs,
-      maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
-      // 不确定-2/3：单次调用连接+流式两阶段共享重试上界，防退避风暴。
-      maxRetriesPerCall: fallbackNetTimeouts.maxRetriesPerCall,
-      retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
-      retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
-      // H1：注入按模型名实时解析上下文窗口的回调，根治 tryRecoverMaxTokens 死代码
-      // （构造从不传 contextLimit → 恒 return null）。箭头函数捕获 this，读 this.config
-      // 保证主模型切换后仍按当前 model + availableModels 解析。
-      resolveContextLimit: (model: string) => {
-        try {
-          return new TokenEstimator().getContextLimit(model, this.config.availableModels);
-        } catch {
-          return undefined;
-        }
-      },
-      // H4：注入与主路径同源的输出上限解析（availableModels > 注册表），让 fallback 钳制
-      // maxTokens 时不再只查内置注册表——注册表外的自定义模型此前会漏钳制触发 400。
-      resolveMaxOutputTokens: (model: string) => {
-        try {
-          const { resolveMaxOutputTokensForModel } = require("@sid-code/core/config/config.ts");
-          return resolveMaxOutputTokensForModel(model, this.config.availableModels);
-        } catch {
-          return undefined;
-        }
-      },
-      // ══════════════════════════════════════════════════════════════
-      // B5-7：401 凭据刷新钩子（§5 新发现 3）
-      //
-      // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
-      // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
-      // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
-      //
-      // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
-      //
-      // CC 刷的是 OAuth access token（有 refresh_token + token 端点可换新）。
-      // 我们的凭据来自 settings.json / 环境变量，**没有可调用的刷新端点**，所以这里
-      // 能做且只能做的是「**重新读取凭据源**，若确实变了就让 provider 用新值重建」。
-      // 典型受益场景：用户在另一个终端 `export` 了新 key 或改了 settings.json —— 此前
-      // 必须重启进程才能生效，现在下一次 401 就能自动接上。
-      //
-      // 关键纪律：**凭据没变就返回 false**，绝不谎报刷新成功。谎报的代价是白烧一次
-      // 请求配额，并且把"我们已经处理过认证问题了"这个错误印象写进日志与遥测——
-      // 那比没有刷新更糟（排查时会绕过这条线索）。
-      onAuthRefresh: async (providerName: string) => {
-        const log = getLogger();
-        try {
-          const beforeAnthropic = this.config.anthropicKey ?? "";
-          const beforeOpenai = this.config.openaiKey ?? "";
-          // 只重读凭据字段，不整体替换 this.config：整体替换会把用户本会话内用 /model
-          // 等命令做的运行时改动一起冲掉（那是比 401 更严重的副作用）。
-          const { loadConfig } = require("@sid-code/core/config/config.ts");
-          const fresh = await loadConfig({});
-          const afterAnthropic = fresh.anthropicKey ?? "";
-          const afterOpenai = fresh.openaiKey ?? "";
-          if (beforeAnthropic === afterAnthropic && beforeOpenai === afterOpenai) {
-            log.info("APP", `401 凭据刷新：${providerName} 凭据源未变化，不谎报成功`);
+    this.fallback = new ModelFallback(
+      {
+        availability,
+        fallbackProvider,
+        fallbackModel,
+        // 配置-1：streamTimeoutMs/maxRetries 从 resolveLoopTimeouts 注入（此前未传，fallback 各自
+        // 维护平行常量 CONNECTION_RETRY.maxRetries=3 / DEFAULT_STREAM_TIMEOUT_MS=300s）。
+        // 注入后 fallback 与 loop 层超时/重试对齐——改 settings.json 的 network.* 或 env 一处生效。
+        streamTimeoutMs: fallbackNetTimeouts.watchdogNoProgressMs,
+        maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
+        // 不确定-2/3：单次调用连接+流式两阶段共享重试上界，防退避风暴。
+        maxRetriesPerCall: fallbackNetTimeouts.maxRetriesPerCall,
+        retryBackoffBaseMs: fallbackNetTimeouts.retryBackoffBaseMs,
+        retryBackoffMaxMs: fallbackNetTimeouts.retryBackoffMaxMs,
+        // H1：注入按模型名实时解析上下文窗口的回调，根治 tryRecoverMaxTokens 死代码
+        // （构造从不传 contextLimit → 恒 return null）。箭头函数捕获 this，读 this.config
+        // 保证主模型切换后仍按当前 model + availableModels 解析。
+        resolveContextLimit: (model: string) => {
+          try {
+            return new TokenEstimator().getContextLimit(model, this.config.availableModels);
+          } catch {
+            return undefined;
+          }
+        },
+        // H4：注入与主路径同源的输出上限解析（availableModels > 注册表），让 fallback 钳制
+        // maxTokens 时不再只查内置注册表——注册表外的自定义模型此前会漏钳制触发 400。
+        resolveMaxOutputTokens: (model: string) => {
+          try {
+            const { resolveMaxOutputTokensForModel } = require("@sid-code/core/config/config.ts");
+            return resolveMaxOutputTokensForModel(model, this.config.availableModels);
+          } catch {
+            return undefined;
+          }
+        },
+        // ══════════════════════════════════════════════════════════════
+        // B5-7：401 凭据刷新钩子（§5 新发现 3）
+        //
+        // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
+        // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
+        // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
+        //
+        // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
+        //
+        // CC 刷的是 OAuth access token（有 refresh_token + token 端点可换新）。
+        // 我们的凭据来自 settings.json / 环境变量，**没有可调用的刷新端点**，所以这里
+        // 能做且只能做的是「**重新读取凭据源**，若确实变了就让 provider 用新值重建」。
+        // 典型受益场景：用户在另一个终端 `export` 了新 key 或改了 settings.json —— 此前
+        // 必须重启进程才能生效，现在下一次 401 就能自动接上。
+        //
+        // 关键纪律：**凭据没变就返回 false**，绝不谎报刷新成功。谎报的代价是白烧一次
+        // 请求配额，并且把"我们已经处理过认证问题了"这个错误印象写进日志与遥测——
+        // 那比没有刷新更糟（排查时会绕过这条线索）。
+        onAuthRefresh: async (providerName: string) => {
+          const log = getLogger();
+          try {
+            const beforeAnthropic = this.config.anthropicKey ?? "";
+            const beforeOpenai = this.config.openaiKey ?? "";
+            // 只重读凭据字段，不整体替换 this.config：整体替换会把用户本会话内用 /model
+            // 等命令做的运行时改动一起冲掉（那是比 401 更严重的副作用）。
+            const { loadConfig } = require("@sid-code/core/config/config.ts");
+            const fresh = await loadConfig({});
+            const afterAnthropic = fresh.anthropicKey ?? "";
+            const afterOpenai = fresh.openaiKey ?? "";
+            if (beforeAnthropic === afterAnthropic && beforeOpenai === afterOpenai) {
+              log.info("APP", `401 凭据刷新：${providerName} 凭据源未变化，不谎报成功`);
+              return false;
+            }
+            this.config.anthropicKey = fresh.anthropicKey;
+            this.config.openaiKey = fresh.openaiKey;
+            // provider 按 `providerName:baseURL` 缓存、apiKey 在构造时被捕获，
+            // 故必须清缓存才能让新凭据真正生效——只改 config 不清缓存 = 假刷新。
+            this.providerRegistry?.clearCache();
+            log.info("APP", `401 凭据刷新：${providerName} 凭据已更新，provider 缓存已清除`);
+            return true;
+          } catch (err) {
+            // 读盘失败不上抛：漏斗会退化成"旧凭据重试一次"的原行为。
+            log.warn("APP", `401 凭据刷新失败，退化为旧凭据重试: ${err}`);
             return false;
           }
-          this.config.anthropicKey = fresh.anthropicKey;
-          this.config.openaiKey = fresh.openaiKey;
-          // provider 按 `providerName:baseURL` 缓存、apiKey 在构造时被捕获，
-          // 故必须清缓存才能让新凭据真正生效——只改 config 不清缓存 = 假刷新。
-          this.providerRegistry?.clearCache();
-          log.info("APP", `401 凭据刷新：${providerName} 凭据已更新，provider 缓存已清除`);
-          return true;
-        } catch (err) {
-          // 读盘失败不上抛：漏斗会退化成"旧凭据重试一次"的原行为。
-          log.warn("APP", `401 凭据刷新失败，退化为旧凭据重试: ${err}`);
-          return false;
-        }
+        },
+        // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
+        fallbackSwitchMode: opts.config.fallbackSwitchMode ?? "ask",
+        // 降级决策钩子（ask 模式生效）：弹选择题让用户决定切哪个模型 / 不切。
+        onFallbackDecision: (ctx) => this.decideFallback(ctx),
+        onTelemetry: (event) => {
+          this._retryTelemetryWriter?.(event);
+        },
       },
-      // 降级模式：生产默认 "ask"（询问用户），config 未设时兜底询问。
-      fallbackSwitchMode: opts.config.fallbackSwitchMode ?? "ask",
-      // 降级决策钩子（ask 模式生效）：弹选择题让用户决定切哪个模型 / 不切。
-      onFallbackDecision: (ctx) => this.decideFallback(ctx),
-      onTelemetry: (event) => { this._retryTelemetryWriter?.(event); },
-    }, {
-      onRetry: (attempt, error, delayMs) => {
-        const log = getLogger();
-        log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
-        // CM3/CM4：把重试/限流状态推到 TUI，驱动实时倒计时与升级建议。
-        const kind = classifyRetryKind(error);
-        this.tuiStateUpdater?.({
-          retryStatus: {
-            kind,
-            attempt,
-            delayMs,
-            retryAtMs: Date.now() + delayMs,
-            model: this.config.model,
-            error,
-          },
-        });
+      {
+        onRetry: (attempt, error, delayMs) => {
+          const log = getLogger();
+          log.info("FALLBACK", `重试 ${attempt}，错误: ${error}，延迟 ${delayMs}ms`);
+          // CM3/CM4：把重试/限流状态推到 TUI，驱动实时倒计时与升级建议。
+          const kind = classifyRetryKind(error);
+          this.tuiStateUpdater?.({
+            retryStatus: {
+              kind,
+              attempt,
+              delayMs,
+              retryAtMs: Date.now() + delayMs,
+              model: this.config.model,
+              error,
+            },
+          });
+        },
+        onFallback: (reason, model) => {
+          const log = getLogger();
+          log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
+          // CM3：降级也作为一种重试状态展示（attempt 不适用，置 0）。
+          this.tuiStateUpdater?.({
+            retryStatus: {
+              kind: "fallback",
+              attempt: 0,
+              delayMs: 0,
+              retryAtMs: Date.now(),
+              model: this.config.model,
+              fallbackModel: model,
+              error: reason,
+            },
+          });
+        },
       },
-      onFallback: (reason, model) => {
-        const log = getLogger();
-        log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
-        // CM3：降级也作为一种重试状态展示（attempt 不适用，置 0）。
-        this.tuiStateUpdater?.({
-          retryStatus: {
-            kind: "fallback",
-            attempt: 0,
-            delayMs: 0,
-            retryAtMs: Date.now(),
-            model: this.config.model,
-            fallbackModel: model,
-            error: reason,
-          },
-        });
-      },
-    });
+    );
 
     // 初始化 JIT 上下文管理器
     this.jitContextMgr = new JitContextManager();
@@ -875,7 +955,10 @@ export class App {
             disableAllHooks: policy.disableAllHooks,
             allowManagedHooksOnly: policy.allowManagedHooksOnly,
           });
-          getLogger().info("HOOK", `企业策略 Hook 门控已应用（disableAllHooks=${!!policy.disableAllHooks}, allowManagedHooksOnly=${!!policy.allowManagedHooksOnly}）`);
+          getLogger().info(
+            "HOOK",
+            `企业策略 Hook 门控已应用（disableAllHooks=${!!policy.disableAllHooks}, allowManagedHooksOnly=${!!policy.allowManagedHooksOnly}）`,
+          );
         }
       } catch (e) {
         getLogger().debug("HOOK", `企业策略 Hook 门控加载跳过: ${e}`);
@@ -897,18 +980,21 @@ export class App {
           model,
         );
         if (this.permissionChecker) agent.setPermissionChecker(this.permissionChecker);
-        const result = await agent.executeCustom({
-          systemPrompt:
-            "你是一个 Agent Hook 验证器。你可以使用只读工具（read/grep/glob）多轮调查代码，" +
-            "验证 AI 编程助手的操作是否合理/正确。\n" +
-            "调查完成后，最后一条消息只返回一个 JSON 对象：\n" +
-            "- 验证通过：{\"ok\": true}\n" +
-            "- 验证失败：{\"ok\": false, \"reason\": \"失败原因和修复建议\"}",
-          userPrompt: prompt,
-          allowedTools,
-          timeout: timeoutMs,
-          type: "custom",
-        }, signal);
+        const result = await agent.executeCustom(
+          {
+            systemPrompt:
+              "你是一个 Agent Hook 验证器。你可以使用只读工具（read/grep/glob）多轮调查代码，" +
+              "验证 AI 编程助手的操作是否合理/正确。\n" +
+              "调查完成后，最后一条消息只返回一个 JSON 对象：\n" +
+              '- 验证通过：{"ok": true}\n' +
+              '- 验证失败：{"ok": false, "reason": "失败原因和修复建议"}',
+            userPrompt: prompt,
+            allowedTools,
+            timeout: timeoutMs,
+            type: "custom",
+          },
+          signal,
+        );
         // 从子代理输出中解析结构化 { ok, reason }（宽松：截取最后一个 JSON 对象）
         const parsed = parseAgentHookVerdict(result.output);
         return {
@@ -935,14 +1021,19 @@ export class App {
       sessionStore: this.sessionStore ?? undefined,
       skillActivationCoordinator: this.skillActivationCoordinator,
       executeTools: (content) => this.executeTools(content),
-      processStream: (stream, onText, onThinking, turnAbortController) => this.processStream(stream, onText, onThinking, turnAbortController),
+      processStream: (stream, onText, onThinking, turnAbortController) =>
+        this.processStream(stream, onText, onThinking, turnAbortController),
       autoCompact: () => this.autoCompact(),
       contextCollapse: (ratio) => this.contextCollapse(ratio),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
       // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
       abortCurrentRequest: (reason) => {
-        try { this.abortController?.abort(reason ?? "turn-timeout"); } catch { /* ignore */ }
+        try {
+          this.abortController?.abort(reason ?? "turn-timeout");
+        } catch {
+          /* ignore */
+        }
       },
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
       // 缺口 C：把运行时可变的 permission mode 暴露给 queryLoop，每轮取最新值。
@@ -990,7 +1081,9 @@ export class App {
       // G2：暴露 cachedMicrocompact 状态机给 queryLoop，让主循环每轮可产出 cache_edits。
       getCachedMicrocompactState: () => {
         if (!this.cachedMicrocompactState) {
-          const { createCachedMicrocompactState } = require("@sid-code/core/query/compact/cached-microcompact.ts");
+          const {
+            createCachedMicrocompactState,
+          } = require("@sid-code/core/query/compact/cached-microcompact.ts");
           this.cachedMicrocompactState = createCachedMicrocompactState();
         }
         return this.cachedMicrocompactState ?? undefined;
@@ -1081,9 +1174,7 @@ export class App {
       this.ctxMgr.setToolSchemaTokens(estimator.estimateTools(defs));
       // MCP 工具按 mcp__ 前缀识别（与 ToolRegistry 的分桶口径一致，见 registry.ts:180）
       const mcpDefs = defs.filter((d) => d.name.startsWith("mcp__"));
-      this.ctxMgr.setMcpToolSchemaTokens(
-        mcpDefs.length > 0 ? estimator.estimateTools(mcpDefs) : 0,
-      );
+      this.ctxMgr.setMcpToolSchemaTokens(mcpDefs.length > 0 ? estimator.estimateTools(mcpDefs) : 0);
       // §12 P0-1：子代理定义清单（渲染在 sub_agent 工具 description 里）单独记账 →
       // /context 的「自定义代理」类别。它是工具定义总量的子集，不影响总量与压缩决策。
       // 文本由 agent/tool.ts 的 renderAgentTypeLines 提供（与 description 同源，不会漂移）。
@@ -1105,7 +1196,8 @@ export class App {
       if (!usage) return;
       // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
       const model = result.model || this.config.model;
-      const provider = result.provider || SessionState.inferProvider(model, this.config.availableModels);
+      const provider =
+        result.provider || SessionState.inferProvider(model, this.config.availableModels);
       // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
       this.sessionState.updateUsage(model, usage, 0, provider);
     };
@@ -1122,8 +1214,14 @@ export class App {
    * 提供者返回主对话当前消息历史，buildForkMessages 截取尾部构建 fork 子代理初始上下文。
    */
   private wireSubAgentMainContext(): void {
-    const provider = (): { role: string; content: import("@sid-code/core/llm/types.ts").ContentBlock[] }[] =>
-      this.ctxMgr.getMessages() as { role: string; content: import("@sid-code/core/llm/types.ts").ContentBlock[] }[];
+    const provider = (): {
+      role: string;
+      content: import("@sid-code/core/llm/types.ts").ContentBlock[];
+    }[] =>
+      this.ctxMgr.getMessages() as {
+        role: string;
+        content: import("@sid-code/core/llm/types.ts").ContentBlock[];
+      }[];
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setMainContextProvider?: (p: typeof provider) => void };
       if (typeof maybe.setMainContextProvider === "function") {
@@ -1181,7 +1279,9 @@ export class App {
    */
   private wireSkillInvocationSink(): void {
     for (const tool of this.toolRegistry.all()) {
-      const maybe = tool as { setInvokedSkillSink?: (fn: (name: string, content: string) => void) => void };
+      const maybe = tool as {
+        setInvokedSkillSink?: (fn: (name: string, content: string) => void) => void;
+      };
       if (typeof maybe.setInvokedSkillSink === "function") {
         maybe.setInvokedSkillSink((name, content) => this.ctxMgr.addInvokedSkill(name, content));
       }
@@ -1197,7 +1297,9 @@ export class App {
    * 必须是原始规则而非子代理 checker——后者 dontAsk 语义会把 ask 直接降级为 deny，
    * 导致「需确认」的 skill 在用户主动调用时被静默拒绝。
    */
-  private getRawPermissionRules(): import("@sid-code/core/permission/types.ts").PermissionRule | undefined {
+  private getRawPermissionRules():
+    | import("@sid-code/core/permission/types.ts").PermissionRule
+    | undefined {
     const checkerWithRules = this.permissionChecker as unknown as {
       getRules?: () => import("@sid-code/core/permission/types.ts").PermissionRule | null;
     } | null;
@@ -1216,7 +1318,9 @@ export class App {
       const maybe = tool as {
         setPermissionChecker?: (c: import("@sid-code/core/permission/types.ts").Checker) => void;
         setPermissionConfirm?: (fn: (desc: string) => Promise<boolean>) => void;
-        setPermissionRules?: (r: import("@sid-code/core/permission/types.ts").PermissionRule) => void;
+        setPermissionRules?: (
+          r: import("@sid-code/core/permission/types.ts").PermissionRule,
+        ) => void;
       };
       if (typeof maybe.setPermissionChecker === "function") {
         maybe.setPermissionChecker(subChecker);
@@ -1233,7 +1337,9 @@ export class App {
   }
 
   /** 注入子代理错误回调到 SubAgentTool（推入统一错误面板）。 */
-  private wireToolErrorCallback(pushFn: (item: import("./ui/App.tsx").ErrorPanelItem) => void): void {
+  private wireToolErrorCallback(
+    pushFn: (item: import("./ui/App.tsx").ErrorPanelItem) => void,
+  ): void {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setErrorCallback?: (cb: (msg: string) => void) => void };
       if (typeof maybe.setErrorCallback === "function") {
@@ -1261,18 +1367,27 @@ export class App {
   /** 获取自定义命令摘要（供 /help 显示） */
   private getCustomCommandsSummary(): Array<{ name: string; description: string }> {
     const builtinNames = new Set([
-      "help", "model", "cost", "compact", "clear", "config", "exit", "undo", "memory",
+      "help",
+      "model",
+      "cost",
+      "compact",
+      "clear",
+      "config",
+      "exit",
+      "undo",
+      "memory",
     ]);
-    return this.commandRegistry.all()
-      .filter(cmd => !builtinNames.has(cmd.name()))
-      .map(cmd => ({ name: cmd.name(), description: cmd.description() }));
+    return this.commandRegistry
+      .all()
+      .filter((cmd) => !builtinNames.has(cmd.name()))
+      .map((cmd) => ({ name: cmd.name(), description: cmd.description() }));
   }
 
   /** 解析当前模型的 effort 能力描述符（/effort、/think 状态读取 + setter 共用）。 */
   private resolveEffortCap(): import("@sid-code/core/llm/effort.ts").EffortCapability {
     const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
     const { resolveWireModel } = require("@sid-code/core/llm/wire-model.ts");
-    const mc = this.config.availableModels?.find(m => m.name === this.config.model);
+    const mc = this.config.availableModels?.find((m) => m.name === this.config.model);
     return resolveEffortCapability({
       // 真名（与 query/loop.ts、构造期 thinkingCap 三处同口径）。若这里用别名而
       // loop.ts 用真名，会出现「状态栏显示不支持 thinking，实际请求却发了 thinking」的分裂。
@@ -1313,7 +1428,10 @@ export class App {
    * - persist=true 时写 settings.json effortLevel（跨会话）；
    * - 推送展示态到状态栏（TUIState，对标 model 列经 updateState 流到 ConfigContext）。
    */
-  private setEffortRuntime(level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean): void {
+  private setEffortRuntime(
+    level: import("@sid-code/core/llm/effort.ts").EffortSetting,
+    persist?: boolean,
+  ): void {
     this.runtimeEffort = level;
     if (persist) this.persistKnob("effortLevel", level);
     this.persistAgentSetting(); // P1-4b：落会话级快照，供 resume 恢复本会话档位
@@ -1354,14 +1472,19 @@ export class App {
         const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
         patchSettingsFile("userSettings", "statusLine", config);
       } catch (e) {
-        getLogger().warn("STATUSLINE", `持久化 statusLine 失败（不阻断）: ${(e as Error)?.message}`);
+        getLogger().warn(
+          "STATUSLINE",
+          `持久化 statusLine 失败（不阻断）: ${(e as Error)?.message}`,
+        );
       }
     }
     // 配置变更后清脚本节流缓存，确保新命令/禁用立即生效（不复用旧指纹结果）。
     try {
       const { clearStatusLineCache } = require("./ui/statusline/run-statusline.ts");
       clearStatusLineCache();
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
     this.tuiStateUpdater?.({ statusLine: config });
   }
 
@@ -1384,7 +1507,10 @@ export class App {
           .map((b: any) => b.text)
           .join(" ");
         const derived = deriveTaskTitle(text);
-        if (derived) { finalName = derived; break; }
+        if (derived) {
+          finalName = derived;
+          break;
+        }
       }
     }
     if (!finalName) finalName = "未命名会话";
@@ -1396,7 +1522,10 @@ export class App {
   }
 
   /** 设置 thinking 运行时态（/think 用）。语义同 setEffortRuntime。 */
-  private setThinkingRuntime(setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean): void {
+  private setThinkingRuntime(
+    setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting,
+    persist?: boolean,
+  ): void {
     this.runtimeThinking = setting;
     if (persist) {
       // settings.json thinkingEnabled 是 boolean：on→true / off→false / auto→删除字段（回退默认）。
@@ -1439,7 +1568,10 @@ export class App {
         // 快照只保留 model/effortLevel/thinking 这类用户偏好（非安全边界）。
       });
     } catch (e) {
-      getLogger().warn("AGENT_SETTING", `agent 设置快照落盘失败（不阻断）: ${(e as Error)?.message}`);
+      getLogger().warn(
+        "AGENT_SETTING",
+        `agent 设置快照落盘失败（不阻断）: ${(e as Error)?.message}`,
+      );
     }
   }
 
@@ -1476,7 +1608,10 @@ export class App {
   ): void {
     const log = getLogger();
     const label = opts?.reason ? `（${opts.reason}）` : "";
-    log.info("TUI:CMD", `切换模型: ${this.config.model} → ${model}${opts?.persist ? "（持久化）" : ""}${label}`);
+    log.info(
+      "TUI:CMD",
+      `切换模型: ${this.config.model} → ${model}${opts?.persist ? "（持久化）" : ""}${label}`,
+    );
     // H2 死锁根治：用户显式切入某模型时（clearTerminal=true），强制清除它可能残留的 terminal
     // 拉黑态，给一次干净机会。否则 terminal 是进程内永久态——用户 /model 切回被瞬时 401/400
     // 误拉黑的模型，下一轮 isAvailable 开头就被拦、永远走不到成功清除点，切了等于没切且无提示。
@@ -1486,7 +1621,9 @@ export class App {
       try {
         this.fallback?.getAvailability().markHealthy(model, true);
         log.info("FALLBACK", `用户显式切入 ${model}，已清除其 terminal 拉黑态（如有）`);
-      } catch { /* availability 未就绪不阻断切换 */ }
+      } catch {
+        /* availability 未就绪不阻断切换 */
+      }
     }
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
@@ -1505,7 +1642,9 @@ export class App {
         est.getContextLimit(model, this.config.availableModels),
         est.getMaxOutputTokens(model, this.config.availableModels),
       );
-    } catch { /* 窗口解析失败不影响切换，沿用旧窗口 */ }
+    } catch {
+      /* 窗口解析失败不影响切换，沿用旧窗口 */
+    }
     this.tuiStateUpdater?.({ model });
     // 事件元数据同步：_ctx_model / _ctx_provider 是 primeMetadata 在会话初始化时一次性
     // 缓存的，运行时切模型不刷新则此后所有事件都带着旧模型名上报——归因直接错到另一个
@@ -1514,7 +1653,9 @@ export class App {
     try {
       const { refreshMetadata } = require("@sid-code/core/analytics/metadata.ts");
       refreshMetadata({ model, provider: this.config.provider });
-    } catch { /* analytics 未就绪不阻断切换 */ }
+    } catch {
+      /* analytics 未就绪不阻断切换 */
+    }
     // 档位归正：runtimeEffort 是跨模型共享的运行时态，可选档位却每模型不同。
     // 不归正则出现「状态栏显示 xhigh、GLM 实际下发 max、面板 hint 又不含 xhigh」的三方矛盾
     // （在 claude 上调到 xhigh 再切 GLM 即可复现）。归正只在档位对新模型无效时发生，
@@ -1525,9 +1666,14 @@ export class App {
       const after = effMod.reconcileEffortForModel(this.resolveEffortCap(), before);
       if (after !== before) {
         this.runtimeEffort = after;
-        log.info("TUI:CMD", `模型 ${model} 不支持档位 ${before}，已归正为 ${after}（显示与实际下发一致）`);
+        log.info(
+          "TUI:CMD",
+          `模型 ${model} 不支持档位 ${before}，已归正为 ${after}（显示与实际下发一致）`,
+        );
       }
-    } catch { /* 归正失败不阻断切换，沿用旧档位（原行为） */ }
+    } catch {
+      /* 归正失败不阻断切换，沿用旧档位（原行为） */
+    }
     // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
     this.pushKnobDisplay();
     // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
@@ -1579,7 +1725,9 @@ export class App {
     this.probedModels.add(wireModel);
     void import("@sid-code/core/llm/openai.ts")
       .then((m) => m.probeOpenAICompatModel(wireModel, baseURL, apiKey))
-      .catch(() => { /* 纯优化项：探针失败不影响模型正常使用，下次真实请求走自愈兜底 */ });
+      .catch(() => {
+        /* 纯优化项：探针失败不影响模型正常使用，下次真实请求走自愈兜底 */
+      });
   }
 
   /**
@@ -1595,7 +1743,10 @@ export class App {
     updateState?: (patch: Record<string, unknown>) => void,
   ): void {
     const log = getLogger();
-    log.info("TUI:CMD", `切换 fallback 模型: ${this.config.fallbackModel || "(无)"} → ${model ?? "(无)"}${persist ? "（持久化）" : ""}`);
+    log.info(
+      "TUI:CMD",
+      `切换 fallback 模型: ${this.config.fallbackModel || "(无)"} → ${model ?? "(无)"}${persist ? "（持久化）" : ""}`,
+    );
     // config.fallbackModel 是 string（默认 ""），清除时用空串而非 undefined。
     this.config.fallbackModel = model ?? "";
 
@@ -1606,7 +1757,10 @@ export class App {
         this.fallback.setFallbackTarget(model, fbProvider);
       } else {
         // 目标不在 availableModels 或缺 provider：运行时无法构建降级 provider，仅记录 config 值。
-        log.warn("FALLBACK", `fallback 模型 "${model}" 不在 availableModels 中或缺少 provider，运行时降级已禁用`);
+        log.warn(
+          "FALLBACK",
+          `fallback 模型 "${model}" 不在 availableModels 中或缺少 provider，运行时降级已禁用`,
+        );
         this.fallback.setFallbackTarget(undefined, undefined);
       }
     } else {
@@ -1647,7 +1801,8 @@ export class App {
     signal?: AbortSignal;
   }): Promise<FallbackDecision> {
     const log = getLogger();
-    const { askUserQuestion, hasAskUserQuestionHandler } = await import("@sid-code/core/tool/ask-user-question-bridge.ts");
+    const { askUserQuestion, hasAskUserQuestionHandler } =
+      await import("@sid-code/core/tool/ask-user-question-bridge.ts");
 
     // 把降级目标提升为主模型（根因A修复）：切换不再只对当次调用生效，而是写回
     // config.model，让后续轮次也用新模型，避免下一轮又用回失败的主模型撞回 terminal 拉黑。
@@ -1684,7 +1839,11 @@ export class App {
     // 会在切入时 force 清一次 terminal（见下方选中分支），给它一次干净机会；不置灰移除，避免
     // 瞬时 401/400 误拉黑后用户彻底无法选回。
     const avail = (() => {
-      try { return this.fallback?.getAvailability(); } catch { return undefined; }
+      try {
+        return this.fallback?.getAvailability();
+      } catch {
+        return undefined;
+      }
     })();
     const terminalNote = (name: string): string =>
       avail?.isTerminal(name) ? "（曾被标记不可用，切入将重试）" : "";
@@ -1711,19 +1870,21 @@ export class App {
       // loop 无进展）不要把这段静默误判成流 hang 而 abort 掉弹窗（根因B修复，
       // 事故 20260721-142757）。务必用 withHumanInputWait 包裹以保证异常安全闭合。
       const { withHumanInputWait } = require("@sid-code/core/query/human-input-gate.ts");
-      result = await withHumanInputWait(() => askUserQuestion(
-        {
-          questions: [
-            {
-              question,
-              header: "备用模型",
-              // 选项可能超过 4 个（availableModels 较多时），askUserQuestion 支持任意数量选项。
-              options,
-            },
-          ],
-        },
-        ctx.signal,
-      ));
+      result = await withHumanInputWait(() =>
+        askUserQuestion(
+          {
+            questions: [
+              {
+                question,
+                header: "备用模型",
+                // 选项可能超过 4 个（availableModels 较多时），askUserQuestion 支持任意数量选项。
+                options,
+              },
+            ],
+          },
+          ctx.signal,
+        ),
+      );
     } catch (err) {
       // 提问本身异常 → auto 兜底（保任务不中断）。
       log.warn("FALLBACK", `askUserQuestion 异常，降级为自动切换: ${err}`);
@@ -1760,7 +1921,11 @@ export class App {
    * - persist=true 时写 settings.json subAgentModels（整个 record，patchSettingsFile 写顶层字段）。
    * model=undefined 表示删除该类型映射（回退 default/主模型）。
    */
-  private setSubAgentModelRuntime(type: string, model: string | undefined, persist?: boolean): void {
+  private setSubAgentModelRuntime(
+    type: string,
+    model: string | undefined,
+    persist?: boolean,
+  ): void {
     const log = getLogger();
     if (!this.config.subAgentModels) this.config.subAgentModels = {};
     const map = this.config.subAgentModels as Record<string, string>;
@@ -1770,7 +1935,10 @@ export class App {
     } else {
       map[type] = model;
     }
-    log.info("TUI:CMD", `切换子代理模型[${type}]: ${prev ?? "(未设)"} → ${model ?? "(删除)"}${persist ? "（持久化）" : ""}`);
+    log.info(
+      "TUI:CMD",
+      `切换子代理模型[${type}]: ${prev ?? "(未设)"} → ${model ?? "(删除)"}${persist ? "（持久化）" : ""}`,
+    );
 
     // registry 持有同一对象引用，mutate 已生效；清缓存确保新模型 provider 被重建。
     this.providerRegistry?.clearCache();
@@ -1856,13 +2024,18 @@ export class App {
           (event) => {
             try {
               (collector as any).writer?.appendEvent?.(event);
-            } catch { /* 埋点写入失败静默 */ }
+            } catch {
+              /* 埋点写入失败静默 */
+            }
           },
           () => this.sessionState.sessionId,
         );
       }
     } catch (e) {
-      getLogger().warn("APP", `假设工具接线失败（不阻断，埋点/轮次降级）: ${(e as Error)?.message}`);
+      getLogger().warn(
+        "APP",
+        `假设工具接线失败（不阻断，埋点/轮次降级）: ${(e as Error)?.message}`,
+      );
     }
   }
 
@@ -1877,7 +2050,9 @@ export class App {
     // 动态 import 与本文件对 query/* 的既有引用风格一致（避免给 app.ts 顶部再加静态依赖）。
     import("@sid-code/core/query/deliverable-text.ts")
       .then((m) => m.resetDeliverableText(this.sessionState))
-      .catch(() => { /* 纯清理，异常不阻断 /clear */ });
+      .catch(() => {
+        /* 纯清理，异常不阻断 /clear */
+      });
   }
 
   /**
@@ -1890,7 +2065,9 @@ export class App {
     try {
       const { clearInactiveTasks } = require("@sid-code/core/task/index.ts");
       clearInactiveTasks();
-    } catch { /* task 模块未加载或清理失败不影响 /clear 主流程 */ }
+    } catch {
+      /* task 模块未加载或清理失败不影响 /clear 主流程 */
+    }
   }
 
   /**
@@ -1898,7 +2075,9 @@ export class App {
    * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
    * 无新注册表时回退旧 Registry.all()。
    */
-  private async loadCommandList(): Promise<Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>> {
+  private async loadCommandList(): Promise<
+    Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>
+  > {
     // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
     if (this.config.disableSlashCommands) return [];
     if (this.unifiedRegistry) {
@@ -1909,17 +2088,19 @@ export class App {
           process.cwd(),
           buildMcpPromptCommands(this.mcpManager),
         );
-        return cmds
-          // 隐藏命令不进补全列表
-          .filter((c) => !c.isHidden)
-          // 仅用户可调用的进补全（userInvocable 默认 true）
-          .filter((c) => c.userInvocable !== false)
-          .map((c) => ({
-            name: c.name,
-            aliases: c.aliases ?? [],
-            description: c.description,
-            requiresArgs: c.requiresArgs,
-          }));
+        return (
+          cmds
+            // 隐藏命令不进补全列表
+            .filter((c) => !c.isHidden)
+            // 仅用户可调用的进补全（userInvocable 默认 true）
+            .filter((c) => c.userInvocable !== false)
+            .map((c) => ({
+              name: c.name,
+              aliases: c.aliases ?? [],
+              description: c.description,
+              requiresArgs: c.requiresArgs,
+            }))
+        );
       } catch (err: any) {
         getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);
       }
@@ -1942,7 +2123,9 @@ export class App {
     deps: {
       cmd: string;
       commandInput: string;
-      callbacks: { onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void> };
+      callbacks: {
+        onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
+      };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
@@ -1952,7 +2135,16 @@ export class App {
     },
   ): Promise<void> {
     const log = getLogger();
-    const { commandInput, callbacks, updateState, appendCommandOutput, getConversationClearedPatch, clearPromptCache, resetSyncState, rebuildDisplay } = deps;
+    const {
+      commandInput,
+      callbacks,
+      updateState,
+      appendCommandOutput,
+      getConversationClearedPatch,
+      clearPromptCache,
+      resetSyncState,
+      rebuildDisplay,
+    } = deps;
 
     switch (result.type) {
       case "clear":
@@ -2028,8 +2220,16 @@ export class App {
           // G7：清理已完成的异步 hook 条目（会话结束）
           this.hookSystem.cleanupAsyncHooks();
           this.finalizeSessionStore();
-          try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-          try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+          try {
+            CrashMarker.cleanup(this.sessionState.sessionId);
+          } catch {
+            /* ignore */
+          }
+          try {
+            PidManager.cleanup(this.sessionState.sessionId);
+          } catch {
+            /* ignore */
+          }
           setTimeout(() => process.exit(0), 100);
         })();
         break;
@@ -2134,10 +2334,12 @@ export class App {
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
     const toolSchemas = this.toolRegistry.activeDefinitions();
     // §12.3：摘要走低成本模型（subAgentModels.summarize），未配则跟主模型。
-    const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
+    const compactModel =
+      this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
     // §5：延迟创建共享 cached microcompact 状态机
     if (!this.cachedMicrocompactState) {
-      const { createCachedMicrocompactState } = await import("@sid-code/core/query/compact/cached-microcompact.ts");
+      const { createCachedMicrocompactState } =
+        await import("@sid-code/core/query/compact/cached-microcompact.ts");
       this.cachedMicrocompactState = createCachedMicrocompactState();
     }
     // §4.1/§4.3：会话级落盘目录
@@ -2167,7 +2369,9 @@ export class App {
       // 不清缓存会让 recalledMemories 停留在旧话题。clearPromptCache 同时刷新 JIT/git 等动态区。
       try {
         clearPromptCache();
-      } catch { /* 忽略 */ }
+      } catch {
+        /* 忽略 */
+      }
 
       // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
@@ -2207,8 +2411,12 @@ export class App {
       return false;
     }
     try {
-      const { contextCollapse: impl } = await import("@sid-code/core/query/compact/context-collapse.ts");
-      const compactModel = this.config.subAgentModels?.summarize || this.config.subAgentModels?.default || this.config.model;
+      const { contextCollapse: impl } =
+        await import("@sid-code/core/query/compact/context-collapse.ts");
+      const compactModel =
+        this.config.subAgentModels?.summarize ||
+        this.config.subAgentModels?.default ||
+        this.config.model;
       const result = await impl(this.ctxMgr.getMessages(), {
         targetRatio: 0.7,
         maxTokens: this.ctxMgr.getMaxTokens(),
@@ -2219,7 +2427,10 @@ export class App {
       if (result.collapsedSegments > 0) {
         this.ctxMgr.setMessages(result.messages);
         this.ctxMgr.invalidateActualTokenAnchor();
-        log.info("CONTEXT_COLLAPSE", `collapse ${result.collapsedSegments} 段，节省 ~${result.savedTokens} token，success=${result.success}`);
+        log.info(
+          "CONTEXT_COLLAPSE",
+          `collapse ${result.collapsedSegments} 段，节省 ~${result.savedTokens} token，success=${result.success}`,
+        );
       }
       return result.success;
     } catch (err: any) {
@@ -2294,7 +2505,10 @@ export class App {
 
     if (!systemPrompt) {
       if (disableProjectRules) {
-        log.info("APP", "SID_CODE_DISABLE_PROJECT_RULES=1，跳过 CLAUDE.md 规则加载（评测隔离模式）");
+        log.info(
+          "APP",
+          "SID_CODE_DISABLE_PROJECT_RULES=1，跳过 CLAUDE.md 规则加载（评测隔离模式）",
+        );
       } else {
         // 加载并解析 CLAUDE.md 规则
         const projectRules = await loadAllCLAUDEmd(process.cwd());
@@ -2305,7 +2519,10 @@ export class App {
           // G11：指令加载完成 → 触发 InstructionsLoaded hook（CLAUDE.md / rules 进入上下文时）
           try {
             const sources = projectRules.sourcePath ? [projectRules.sourcePath] : ["CLAUDE.md"];
-            await this.hookSystem.fireInstructionsLoadedEvent(sources, projectRules.rawContent.length);
+            await this.hookSystem.fireInstructionsLoadedEvent(
+              sources,
+              projectRules.rawContent.length,
+            );
           } catch (e) {
             log.warn("APP", `InstructionsLoaded hook 触发失败（不影响启动）: ${e}`);
           }
@@ -2319,7 +2536,8 @@ export class App {
         //    避免静默降级）。
         try {
           const { consumeSkippedExternalImports } = await import("@sid-code/core/config/rules.ts");
-          const { getClaudeMdExternalImportsApproved } = await import("@sid-code/core/config/app-config.ts");
+          const { getClaudeMdExternalImportsApproved } =
+            await import("@sid-code/core/config/app-config.ts");
           const skipped = consumeSkippedExternalImports();
           const approval = getClaudeMdExternalImportsApproved(process.cwd());
           const decided = approval !== undefined;
@@ -2330,7 +2548,10 @@ export class App {
           } else if (skipped.length > 0 && approval === false) {
             // 已拒绝 → 无 UI，静默跳过。注入 reminder 让模型知晓（M4-4）。
             this.injectExternalImportSkippedReminder(skipped);
-            log.info("APP", `${skipped.length} 个外部 @import 因已拒绝被跳过，已注入 reminder 告知模型`);
+            log.info(
+              "APP",
+              `${skipped.length} 个外部 @import 因已拒绝被跳过，已注入 reminder 告知模型`,
+            );
           }
         } catch (e) {
           log.warn("APP", `外部导入审批检测失败（不阻断）: ${(e as Error)?.message}`);
@@ -2362,7 +2583,10 @@ export class App {
 
       // 缺口 D：收集 deny 规则摘要（无 checker 或 describeDenyRules 时为 undefined）
       let denyRulesSummary: string | undefined;
-      if (this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function") {
+      if (
+        this.permissionChecker &&
+        typeof (this.permissionChecker as any).describeDenyRules === "function"
+      ) {
         denyRulesSummary = (this.permissionChecker as any).describeDenyRules() || undefined;
       }
 
@@ -2388,7 +2612,8 @@ export class App {
     // 不再依赖 buildStructuredOutputPrompt + extractStructuredOutput（文本提取），
     // 而是注入 StructuredOutput 工具 + system prompt suffix，模型可先调其他工具再输出结构化结果。
     if (this.config.jsonSchema) {
-      const { StructuredOutputTool, structuredOutputPromptSuffix } = await import("@sid-code/core/tool/structured-output-tool.ts");
+      const { StructuredOutputTool, structuredOutputPromptSuffix } =
+        await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
@@ -2396,7 +2621,10 @@ export class App {
     }
 
     this.ctxMgr.setSystemPrompt(systemPrompt);
-    log.info("APP", `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`);
+    log.info(
+      "APP",
+      `初始化完成，系统提示词 ${systemPrompt.length} 字符，工具数 ${this.toolRegistry.size()}`,
+    );
 
     // B1/B6：接入会话持久化写入端。
     // - 纯新会话：startSession（写 session_start，新建 jsonl）。
@@ -2412,7 +2640,10 @@ export class App {
           process.cwd(),
           this.sessionState.sessionId,
         );
-        log.info("APP", `会话持久化续写已启动（resume）: ${this.resumedSessionId}（trace=${this.sessionState.sessionId}）`);
+        log.info(
+          "APP",
+          `会话持久化续写已启动（resume）: ${this.resumedSessionId}（trace=${this.sessionState.sessionId}）`,
+        );
       } else {
         // P0-2：fork 会话把源 id 作为 parentUuid 写入 session_start，便于溯源。
         this.sessionStore?.startSession(
@@ -2447,7 +2678,10 @@ export class App {
         if (this.forkedFromSessionId) {
           try {
             const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
-            const cpMgr = await getCheckpointManager(this.getLogicalSessionId(), this.config.checkpoint);
+            const cpMgr = await getCheckpointManager(
+              this.getLogicalSessionId(),
+              this.config.checkpoint,
+            );
             await cpMgr.inheritFrom(this.forkedFromSessionId);
           } catch (e) {
             log.warn("APP", `checkpoint 继承失败（不阻断）: ${(e as Error)?.message}`);
@@ -2467,7 +2701,9 @@ export class App {
     try {
       const transcriptPath = this.sessionStore?.getCurrentFile() ?? undefined;
       this.ctxMgr.setTranscriptPath(transcriptPath);
-    } catch { /* 注入失败不影响启动，转录路径提示自动省略 */ }
+    } catch {
+      /* 注入失败不影响启动，转录路径提示自动省略 */
+    }
 
     // P1-4a：注入压缩事件观察者，让 compactWithSummary 完成后把 context_compact 记录落盘。
     // 此前 SessionStore.appendCompact 定义了却从不被调用（死代码），JSONL 里从无压缩记录。
@@ -2476,14 +2712,18 @@ export class App {
       this.ctxMgr.setCompactObserver((summary, removedCount) => {
         this.sessionStore?.appendCompact(summary, removedCount);
       });
-    } catch { /* 观察者注入失败不影响启动，压缩仍正常执行只是不落盘诊断记录 */ }
+    } catch {
+      /* 观察者注入失败不影响启动，压缩仍正常执行只是不落盘诊断记录 */
+    }
 
     // P2-10：注入主会话 id 到 SubAgentTool，启用子代理 sidechain 持久化。
     // 放在此处（而非构造函数）：此时 resumedSessionId 已由 restoreSession 设定，
     // sidechain 文件才能挂在正确的主会话名下。
     try {
       this.wireSubAgentSessionId();
-    } catch { /* sidechain 接线失败不影响启动，子代理仍正常执行只是不持久化 */ }
+    } catch {
+      /* sidechain 接线失败不影响启动，子代理仍正常执行只是不持久化 */
+    }
 
     // Step 0：接线 Session Memory 子系统（压缩前持续维护结构化会话笔记）。
     // 三处接线之一（① init）——构造 handle 并持有：
@@ -2493,7 +2733,8 @@ export class App {
     // 失败不阻断启动：sessionMemory 保持 null，autoCompact 回退 LLM 摘要。
     try {
       const { initSessionMemory } = await import("@sid-code/core/session-memory/session-memory.ts");
-      const { createSessionMemoryPermissions } = await import("@sid-code/core/memory/extract/permissions.ts");
+      const { createSessionMemoryPermissions } =
+        await import("@sid-code/core/memory/extract/permissions.ts");
       const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
@@ -2518,7 +2759,10 @@ export class App {
       log.info("APP", `Session Memory 子系统已接线: ${sessionMemoryFile}`);
     } catch (e) {
       this.sessionMemory = null;
-      log.warn("APP", `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`);
+      log.warn(
+        "APP",
+        `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`,
+      );
     }
 
     // 接线后台记忆提取子系统 + autoDream。
@@ -2569,16 +2813,23 @@ export class App {
               const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
               teamIndexContent = await getTeamIndexContent(process.cwd());
             }
-          } catch { /* 团队索引注入失败不阻断 */ }
+          } catch {
+            /* 团队索引注入失败不阻断 */
+          }
           memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent) || undefined;
-        } catch { /* 忽略 */ }
+        } catch {
+          /* 忽略 */
+        }
 
         // G12：CLAUDE.md 重建路径同样刷新输出风格
         let outputStyleContent: string | undefined;
         try {
-          const { getActiveOutputStyleContent } = await import("@sid-code/core/config/output-styles.ts");
+          const { getActiveOutputStyleContent } =
+            await import("@sid-code/core/config/output-styles.ts");
           outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
-        } catch { /* 静默降级 */ }
+        } catch {
+          /* 静默降级 */
+        }
         const newPrompt = buildSystemPrompt({
           tools: this.toolRegistry.all(),
           projectRules: newRules.rawContent,
@@ -2596,7 +2847,8 @@ export class App {
           skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
           // 缺口 D：CLAUDE.md 可能改写 deny 规则，重建时刷新约束摘要
           denyRulesSummary:
-            this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
+            this.permissionChecker &&
+            typeof (this.permissionChecker as any).describeDenyRules === "function"
               ? (this.permissionChecker as any).describeDenyRules() || undefined
               : undefined,
           // §12 P0-1：CLAUDE.md 变更后记忆类占用会变，重建时同步刷新分段记账
@@ -2614,7 +2866,8 @@ export class App {
     await this.startSkillHotReload();
 
     // 轨迹采集初始化（委托给 init-helpers）
-    const { initTraceCollector, initTelemetrySystem } = await import("@sid-code/core/query/init-helpers.ts");
+    const { initTraceCollector, initTelemetrySystem } =
+      await import("@sid-code/core/query/init-helpers.ts");
     const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
     this.traceCollector = traceCollectorInstance;
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
@@ -2649,7 +2902,9 @@ export class App {
         setRetryTelemetryObserver((event: Record<string, unknown>) => {
           traceCollectorInstance.writeRetryTelemetry(event);
         });
-      } catch { /* 采集不可用不影响启动 */ }
+      } catch {
+        /* 采集不可用不影响启动 */
+      }
       // 阶段 2.5：网关定价采集观察者 → 一条 GatewayPricingSync trace 事件。
       // 观察者模式（对齐 setSideCostObserver）避免 gateway-pricing.ts 反向依赖 collector。
       try {
@@ -2657,21 +2912,27 @@ export class App {
         setGatewayPricingObserver((obs: Record<string, unknown>) => {
           traceCollectorInstance.writeGatewayPricingEvent(obs);
         });
-      } catch { /* 采集不可用不影响启动 */ }
+      } catch {
+        /* 采集不可用不影响启动 */
+      }
     }
 
     // session_start hook（非阻塞）。
     // Bug3 桥接：resume 时上报 source="resume" + resumedFrom=旧会话 id，
     // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
-    this.hookSystem.fireSessionStartEvent(
-      this.resumedSessionId ? "resume" : "startup",
-      { model: this.config.model, resumedFrom: this.resumedSessionId ?? undefined },
-    )
-      .catch(err => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+    this.hookSystem
+      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
+        model: this.config.model,
+        resumedFrom: this.resumedSessionId ?? undefined,
+      })
+      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
 
     // 遥测系统初始化（委托给 init-helpers）
     const telemetryResult = await initTelemetrySystem(
-      this.config, this.hookSystem, this.sessionState, this.tokenMeter,
+      this.config,
+      this.hookSystem,
+      this.sessionState,
+      this.tokenMeter,
     );
     if (telemetryResult.tokenMeter) {
       this.tokenMeter = telemetryResult.tokenMeter;
@@ -2688,48 +2949,72 @@ export class App {
     // PID 文件：标记进程生命周期（启动时写入，正常退出时删除）
     try {
       PidManager.write(this.sessionState.sessionId);
-    } catch { /* PID 写入失败不影响启动 */ }
+    } catch {
+      /* PID 写入失败不影响启动 */
+    }
 
     // 启动诊断：检查上一会话是否异常退出
     try {
       const crash = CrashMarker.readPrevious();
       if (crash) {
-        log.warn("DIAG", [
-          `上一会话异常退出:`,
-          `  时间: ${crash.timestamp}`,
-          `  会话: ${crash.session_id}`,
-          `  错误: ${crash.error_name}: ${crash.error_message}`,
-          `  最后 API 调用: #${crash.last_api_call_index}`,
-          `  模型: ${crash.last_model}`,
-          `  内存: ${crash.memory_mb.toFixed(1)} MB`,
-          `  运行时间: ${crash.uptime_seconds.toFixed(1)}s`,
-        ].join("\n"));
+        log.warn(
+          "DIAG",
+          [
+            `上一会话异常退出:`,
+            `  时间: ${crash.timestamp}`,
+            `  会话: ${crash.session_id}`,
+            `  错误: ${crash.error_name}: ${crash.error_message}`,
+            `  最后 API 调用: #${crash.last_api_call_index}`,
+            `  模型: ${crash.last_model}`,
+            `  内存: ${crash.memory_mb.toFixed(1)} MB`,
+            `  运行时间: ${crash.uptime_seconds.toFixed(1)}s`,
+          ].join("\n"),
+        );
       }
-    } catch { /* 诊断失败不影响启动 */ }
+    } catch {
+      /* 诊断失败不影响启动 */
+    }
 
     // PID 孤儿诊断：扫描残留 PID 文件（进程已退出但 PID 文件未清理 → 异常退出）
     try {
       const orphanPids = PidManager.findOrphanPids();
       if (orphanPids.length > 0) {
-        log.warn("DIAG", [
-          `发现 ${orphanPids.length} 个孤儿进程残留（进程已退出但 PID 文件未清理）:`,
-          ...orphanPids.map(p => `  PID ${p.pid} → session ${p.session_id}, 启动时间 ${p.start_time}`),
-        ].join("\n"));
+        log.warn(
+          "DIAG",
+          [
+            `发现 ${orphanPids.length} 个孤儿进程残留（进程已退出但 PID 文件未清理）:`,
+            ...orphanPids.map(
+              (p) => `  PID ${p.pid} → session ${p.session_id}, 启动时间 ${p.start_time}`,
+            ),
+          ].join("\n"),
+        );
         // 后台清理孤儿 PID 文件
         for (const p of orphanPids) {
-          try { PidManager.cleanup(p.session_id); } catch { /* ignore */ }
+          try {
+            PidManager.cleanup(p.session_id);
+          } catch {
+            /* ignore */
+          }
         }
       }
-    } catch { /* 诊断失败不影响启动 */ }
+    } catch {
+      /* 诊断失败不影响启动 */
+    }
 
     // 心跳残留诊断：检测有心跳无 crash.json 的会话 → 疑似 hang/僵尸
     try {
       const stale = PidManager.scanStaleHeartbeats();
       if (stale.length > 0) {
-        log.warn("DIAG", [
-          `发现 ${stale.length} 个疑似 hang/僵尸会话（有心跳无 crash.json，最后心跳 >30s）:`,
-          ...stale.map(s => `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}, 进程状态 ${s.is_process_alive ? "存活" : "已退出"}`),
-        ].join("\n"));
+        log.warn(
+          "DIAG",
+          [
+            `发现 ${stale.length} 个疑似 hang/僵尸会话（有心跳无 crash.json，最后心跳 >30s）:`,
+            ...stale.map(
+              (s) =>
+                `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}, 进程状态 ${s.is_process_alive ? "存活" : "已退出"}`,
+            ),
+          ].join("\n"),
+        );
 
         // §6.2：对进程已退出的僵尸会话（kill -9 / OOM 等），从 events.jsonl 的
         // AfterModelRaw.usage 重算 cost 并补写 traj。SessionEnd 未触发时 traj 可能缺失或 cost=0，
@@ -2744,21 +3029,33 @@ export class App {
             const result = backfillTrajCost(sessionDir, this.config.availableModels);
             if (result.backfilled) {
               backfilledCount++;
-              log.info("DIAG", `  └ session ${s.session_id} traj 已补写: ${result.reason}（cost=$${(result.recomputedCost ?? 0).toFixed(4)}）`);
+              log.info(
+                "DIAG",
+                `  └ session ${s.session_id} traj 已补写: ${result.reason}（cost=$${(result.recomputedCost ?? 0).toFixed(4)}）`,
+              );
             }
           }
           if (backfilledCount > 0) {
-            log.warn("DIAG", `§6.2：已为 ${backfilledCount} 个僵尸会话据 events.jsonl 重算补写 traj cost`);
+            log.warn(
+              "DIAG",
+              `§6.2：已为 ${backfilledCount} 个僵尸会话据 events.jsonl 重算补写 traj cost`,
+            );
           }
-        } catch (err) { log.warn("DIAG", `僵尸会话 cost 补写失败: ${err}`); }
+        } catch (err) {
+          log.warn("DIAG", `僵尸会话 cost 补写失败: ${err}`);
+        }
       }
-    } catch { /* 诊断失败不影响启动 */ }
+    } catch {
+      /* 诊断失败不影响启动 */
+    }
 
     // 启动耗时事件（spec 17 §3.1 零依赖事件 API 埋点示例）
     try {
       const { logEvent } = await import("@sid-code/core/analytics/index.ts");
       logEvent("startup_timing", { duration_ms: Date.now() - initStartMs });
-    } catch { /* 遥测旁路，绝不影响启动 */ }
+    } catch {
+      /* 遥测旁路，绝不影响启动 */
+    }
   }
 
   /**
@@ -2785,19 +3082,24 @@ export class App {
         // 只在首次进入抑制态时触发一次（watcher 内部 suppressionNotified 去重），恢复后重新武装。
         setTeamMemorySuppressionListener((reason) => {
           try {
-            const hint = reason === "no_shared_dir"
-              ? "共享目录不可用"
-              : reason === "disabled"
-                ? "团队记忆未启用"
-                : `原因: ${reason}`;
+            const hint =
+              reason === "no_shared_dir"
+                ? "共享目录不可用"
+                : reason === "disabled"
+                  ? "团队记忆未启用"
+                  : `原因: ${reason}`;
             this.ctxMgr.addMessage({
               role: "user",
-              content: [{
-                type: "text",
-                text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
-              }],
+              content: [
+                {
+                  type: "text",
+                  text: `<system-reminder>团队记忆同步已暂停（${hint}）。本地新写入的团队记忆暂时不会同步给协作者；修复共享目录配置后，删除任一团队记忆文件或重启会话即可恢复同步。</system-reminder>`,
+                },
+              ],
             } as import("@sid-code/core/llm/types.ts").Message);
-          } catch { /* 通知失败不阻断同步 */ }
+          } catch {
+            /* 通知失败不阻断同步 */
+          }
         });
         await startTeamMemoryWatcher(this.config.teamMemory, process.cwd());
         const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
@@ -2823,8 +3125,10 @@ export class App {
     const log = getLogger();
     try {
       const { initExtractMemories } = await import("@sid-code/core/memory/extract/extractor.ts");
-      const { createExtractPermissions } = await import("@sid-code/core/memory/extract/permissions.ts");
-      const { ensureAutoMemPath, isAutoMemoryEnabled } = await import("@sid-code/core/memory/paths.ts");
+      const { createExtractPermissions } =
+        await import("@sid-code/core/memory/extract/permissions.ts");
+      const { ensureAutoMemPath, isAutoMemoryEnabled } =
+        await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
 
@@ -2855,7 +3159,11 @@ export class App {
         teamMemoryEnabled: !!this.config.teamMemory?.enabled,
         // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
         appendSystemMessage: (msg) => {
-          try { this.ctxMgr.addMessage(msg as import("@sid-code/core/llm/types.ts").Message); } catch { /* 回注失败不阻断 */ }
+          try {
+            this.ctxMgr.addMessage(msg as import("@sid-code/core/llm/types.ts").Message);
+          } catch {
+            /* 回注失败不阻断 */
+          }
         },
       });
       this.queryEngine.setExtractMemories(this.extractMemories);
@@ -2866,7 +3174,9 @@ export class App {
         try {
           const { registerCleanup } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
           registerCleanup(() => this.extractMemories?.drainPending(5_000) ?? Promise.resolve());
-        } catch { /* drain 注册失败不阻断启动 */ }
+        } catch {
+          /* drain 注册失败不阻断启动 */
+        }
       }
       log.info("APP", `后台记忆提取子系统已接线: ${memoryDir}`);
 
@@ -2962,17 +3272,21 @@ export class App {
     const MAX_SHOWN = 5;
     const shown = skipped.slice(0, MAX_SHOWN);
     const extra = skipped.length - shown.length;
-    const list = shown.map((p) => `  · ${p}`).join("\n")
-      + (extra > 0 ? `\n  …等共 ${skipped.length} 个` : "");
+    const list =
+      shown.map((p) => `  · ${p}`).join("\n") + (extra > 0 ? `\n  …等共 ${skipped.length} 个` : "");
     try {
       this.ctxMgr.addMessage({
         role: "user",
-        content: [{
-          type: "text",
-          text: `<system-reminder>项目 CLAUDE.md 通过 @import 引用了 ${skipped.length} 个项目根之外的文件，因外部导入未被批准而已跳过，其内容未加载到上下文：\n${list}\n若这些外部指令是需要的，可运行 /memory external allow 批准后重载；否则可忽略本提示。</system-reminder>`,
-        }],
+        content: [
+          {
+            type: "text",
+            text: `<system-reminder>项目 CLAUDE.md 通过 @import 引用了 ${skipped.length} 个项目根之外的文件，因外部导入未被批准而已跳过，其内容未加载到上下文：\n${list}\n若这些外部指令是需要的，可运行 /memory external allow 批准后重载；否则可忽略本提示。</system-reminder>`,
+          },
+        ],
       } as import("@sid-code/core/llm/types.ts").Message);
-    } catch { /* 注入失败不阻断启动 */ }
+    } catch {
+      /* 注入失败不阻断启动 */
+    }
   }
 
   /**
@@ -2997,7 +3311,8 @@ export class App {
   async applyExternalImportDecision(approved: boolean): Promise<void> {
     const log = getLogger();
     try {
-      const { setClaudeMdExternalImportsApproved } = await import("@sid-code/core/config/app-config.ts");
+      const { setClaudeMdExternalImportsApproved } =
+        await import("@sid-code/core/config/app-config.ts");
       setClaudeMdExternalImportsApproved(process.cwd(), approved);
     } catch (e) {
       log.warn("APP", `持久化外部导入批准位失败: ${(e as Error)?.message}`);
@@ -3007,7 +3322,9 @@ export class App {
     try {
       const { consumeSkippedExternalImports } = await import("@sid-code/core/config/rules.ts");
       consumeSkippedExternalImports();
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
 
     if (approved) {
       // 重载规则：这次 externalApproved=true，外部导入会展开，随后重建系统提示词。
@@ -3015,7 +3332,11 @@ export class App {
         const { loadAllCLAUDEmd } = await import("@sid-code/core/config/rules.ts");
         const { clearPromptCache } = await import("@sid-code/core/config/system-prompt.ts");
         // 清 prompt 缓存，确保重新读盘 + 重新展开导入。
-        try { clearPromptCache(); } catch { /* 忽略 */ }
+        try {
+          clearPromptCache();
+        } catch {
+          /* 忽略 */
+        }
         const newRules = await loadAllCLAUDEmd(process.cwd());
         if (newRules) {
           this.applyProjectRules(newRules);
@@ -3052,7 +3373,9 @@ export class App {
     try {
       const { clearPendingTrust } = await import("@sid-code/core/permission/trust.ts");
       clearPendingTrust();
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
 
     if (!trusted) {
       log.info("APP", `工作区未被信任：${itemCount} 项危险配置本会话保持未加载`);
@@ -3084,20 +3407,19 @@ export class App {
       log.warn("APP", `收到 ${signal}，触发 SessionEnd(reason=abort) 后退出`);
       // 兜底退出:无论落盘是否 hang,最多 1.5s 后强制退出。
       // 提前注册(在 await 之前),避免 fireSessionEndEvent 永久挂起时此兜底永远不执行(ASYNC-7)。
-      const forceExitTimer = setTimeout(
-        () => process.exit(signal === "SIGINT" ? 130 : 143),
-        1500,
-      );
+      const forceExitTimer = setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 1500);
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
-      try { this.abortController?.abort(); } catch { /* ignore */ }
+      try {
+        this.abortController?.abort();
+      } catch {
+        /* ignore */
+      }
       try {
         // 给落盘整体一个 1.2s 上限,SessionEnd hook 卡死时不至于拖死整个退出流程(ASYNC-7)
         await Promise.race([
-          this.hookSystem.fireSessionEndEvent(
-            "abort",
-            this.buildSessionEndStats(),
-            { error: { message: `process received ${signal}`, name: signal } },
-          ),
+          this.hookSystem.fireSessionEndEvent("abort", this.buildSessionEndStats(), {
+            error: { message: `process received ${signal}`, name: signal },
+          }),
           new Promise((resolve) => setTimeout(resolve, 1200)),
         ]);
       } catch (err: any) {
@@ -3106,16 +3428,28 @@ export class App {
       // B3：信号退出也结束会话持久化（幂等）
       this.finalizeSessionStore();
       // 清理 crash marker（正常退出不残留）
-      try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-      try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+      try {
+        CrashMarker.cleanup(this.sessionState.sessionId);
+      } catch {
+        /* ignore */
+      }
+      try {
+        PidManager.cleanup(this.sessionState.sessionId);
+      } catch {
+        /* ignore */
+      }
       // 落盘已完成(或超时),清掉兜底并立即退出
       clearTimeout(forceExitTimer);
       process.exit(signal === "SIGINT" ? 130 : 143);
     };
 
     // 用 once 防止 SIGTERM 风暴下重入；fire-and-forget 让 process.on 不卡死
-    process.once("SIGINT", () => { void onSignal("SIGINT"); });
-    process.once("SIGTERM", () => { void onSignal("SIGTERM"); });
+    process.once("SIGINT", () => {
+      void onSignal("SIGINT");
+    });
+    process.once("SIGTERM", () => {
+      void onSignal("SIGTERM");
+    });
   }
 
   /**
@@ -3147,17 +3481,24 @@ export class App {
             const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
             teamIndexContent = await getTeamIndexContent(process.cwd());
           }
-        } catch { /* 团队索引注入失败不阻断 */ }
+        } catch {
+          /* 团队索引注入失败不阻断 */
+        }
         memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent) || undefined;
-      } catch { /* 忽略 */ }
+      } catch {
+        /* 忽略 */
+      }
 
       const rules = this.currentProjectRules;
       // G12：重建时刷新输出风格（用户可能改了 settings.outputStyle 或风格文件）
       let outputStyleContent: string | undefined;
       try {
-        const { getActiveOutputStyleContent } = await import("@sid-code/core/config/output-styles.ts");
+        const { getActiveOutputStyleContent } =
+          await import("@sid-code/core/config/output-styles.ts");
         outputStyleContent = getActiveOutputStyleContent(this.config.outputStyle) || undefined;
-      } catch { /* 静默降级 */ }
+      } catch {
+        /* 静默降级 */
+      }
       const newPrompt = buildSystemPrompt({
         tools: this.toolRegistry.all(),
         projectRules: rules?.rawContent,
@@ -3173,7 +3514,8 @@ export class App {
         availableModels: this.config.availableModels,
         skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
         denyRulesSummary:
-          this.permissionChecker && typeof (this.permissionChecker as any).describeDenyRules === "function"
+          this.permissionChecker &&
+          typeof (this.permissionChecker as any).describeDenyRules === "function"
             ? (this.permissionChecker as any).describeDenyRules() || undefined
             : undefined,
         // §12 P0-1：运行时偏好变更（/language 等）后同步刷新记忆分段记账
@@ -3307,7 +3649,10 @@ export class App {
    */
   async setLanguageRuntime(lang: LanguagePref | undefined, persist?: boolean): Promise<void> {
     const log = getLogger();
-    log.info("TUI:CMD", `切换输出语言: ${this.config.language ?? "(默认)"} → ${lang ?? "(默认)"}${persist ? "（持久化）" : ""}`);
+    log.info(
+      "TUI:CMD",
+      `切换输出语言: ${this.config.language ?? "(默认)"} → ${lang ?? "(默认)"}${persist ? "（持久化）" : ""}`,
+    );
     this.config.language = lang;
     await this.rebuildSystemPrompt();
     if (persist) {
@@ -3328,19 +3673,13 @@ export class App {
 
     // 工具白名单（合并，不覆盖命令行配置）
     if (rules.allowedTools?.length) {
-      this.config.allowedTools = [
-        ...this.config.allowedTools,
-        ...rules.allowedTools,
-      ];
+      this.config.allowedTools = [...this.config.allowedTools, ...rules.allowedTools];
       log.info("APP", `CLAUDE.md 工具白名单: ${rules.allowedTools.join(", ")}`);
     }
 
     // 工具黑名单（合并）
     if (rules.disallowedTools?.length) {
-      this.config.disallowedTools = [
-        ...this.config.disallowedTools,
-        ...rules.disallowedTools,
-      ];
+      this.config.disallowedTools = [...this.config.disallowedTools, ...rules.disallowedTools];
       log.info("APP", `CLAUDE.md 工具黑名单: ${rules.disallowedTools.join(", ")}`);
     }
 
@@ -3392,7 +3731,10 @@ export class App {
       await memStore.load();
       for (const [key, value] of Object.entries(memory)) {
         await memStore.set(key, value, "project");
-        log.info("APP", `CLAUDE.md 记忆写入: ${key} = ${value.slice(0, 50)}${value.length > 50 ? "..." : ""}`);
+        log.info(
+          "APP",
+          `CLAUDE.md 记忆写入: ${key} = ${value.slice(0, 50)}${value.length > 50 ? "..." : ""}`,
+        );
       }
     } catch (err: any) {
       log.warn("APP", `CLAUDE.md 记忆写入失败: ${err.message}`);
@@ -3403,7 +3745,9 @@ export class App {
    * 恢复会话：从 SessionData 恢复消息历史
    * 如果消息太多，注入摘要而非完整历史
    */
-  async restoreSession(sessionData: import("@sid-code/core/session/store.ts").SessionData): Promise<void> {
+  async restoreSession(
+    sessionData: import("@sid-code/core/session/store.ts").SessionData,
+  ): Promise<void> {
     const log = getLogger();
     const { SessionStore } = await import("@sid-code/core/session/store.ts");
     // 安全尾部切片：保证切片起点不落在游离 tool_result 上（Session 0427d1bd 400 根因）。
@@ -3424,8 +3768,9 @@ export class App {
         const sessRoot = resolveProjectRoot(sessCwd);
         const curRoot = resolveProjectRoot(process.cwd());
         if (sessRoot !== curRoot) {
-          const msg = `⚠️ 跨项目恢复：本会话原属于项目 ${sessRoot}，当前工作目录属于 ${curRoot}。`
-            + `工具将在当前工作目录下执行，历史中的文件路径可能与当前项目不匹配，请留意。`;
+          const msg =
+            `⚠️ 跨项目恢复：本会话原属于项目 ${sessRoot}，当前工作目录属于 ${curRoot}。` +
+            `工具将在当前工作目录下执行，历史中的文件路径可能与当前项目不匹配，请留意。`;
           log.warn("APP", msg);
           cwdMismatchNote = msg;
         }
@@ -3450,8 +3795,8 @@ export class App {
       this.forkSourceMessages = sessionData.messages.slice();
       log.info(
         "APP",
-        `会话分叉（--fork-session）：源 ${sessionData.id} → 新会话 ${this.sessionState.sessionId}`
-          + `（${this.forkSourceMessages.length} 条历史将拷入新 jsonl，源会话不改动）`,
+        `会话分叉（--fork-session）：源 ${sessionData.id} → 新会话 ${this.sessionState.sessionId}` +
+          `（${this.forkSourceMessages.length} 条历史将拷入新 jsonl，源会话不改动）`,
       );
     } else {
       this.resumedSessionId = sessionData.id;
@@ -3459,14 +3804,20 @@ export class App {
 
     // /goal：从 JSONL metadata 恢复目标状态（跨会话续做时保持目标意识不断）
     // 边界：读到清除哨兵（/clear 落的）跳过恢复，不复活 clear 前的旧目标。
-    if (sessionData.metadata?.["goal_state"] && sessionData.metadata["goal_state"] !== GOAL_STATE_CLEARED_MARKER) {
+    if (
+      sessionData.metadata?.["goal_state"] &&
+      sessionData.metadata["goal_state"] !== GOAL_STATE_CLEARED_MARKER
+    ) {
       try {
         const { deserializeGoalState } = await import("@sid-code/core/goal/state.ts");
         const restored = deserializeGoalState(sessionData.metadata["goal_state"] as string);
         // 仅恢复非终态目标（complete/impossible 不恢复，已无意义）
         if (restored.status !== "complete" && restored.status !== "impossible") {
           this.goalState = restored;
-          log.info("APP", `恢复 goal state: "${restored.objective.slice(0, 60)}" (status=${restored.status})`);
+          log.info(
+            "APP",
+            `恢复 goal state: "${restored.objective.slice(0, 60)}" (status=${restored.status})`,
+          );
         }
       } catch (e) {
         log.warn("APP", `goal state 恢复失败（不阻断）: ${(e as Error)?.message}`);
@@ -3487,7 +3838,8 @@ export class App {
           thinking?: import("@sid-code/core/llm/effort.ts").ThinkingSetting | null;
           permissionMode?: string | null;
         };
-        const { getEffortEnvOverride, getThinkingEnvOverride } = await import("@sid-code/core/llm/effort.ts");
+        const { getEffortEnvOverride, getThinkingEnvOverride } =
+          await import("@sid-code/core/llm/effort.ts");
 
         // 模型：仅当当前 config.model 与快照不同才切换。不经过 setModel 回调（provider 尚未在
         // TUI 上下文注入），直接改 config + resolveCurrentModelConfig，让 doInit 采用。
@@ -3503,7 +3855,9 @@ export class App {
               est.getContextLimit(setting.model, this.config.availableModels),
               est.getMaxOutputTokens(setting.model, this.config.availableModels),
             );
-          } catch { /* 模型/窗口解析失败沿用旧值，不阻断恢复 */ }
+          } catch {
+            /* 模型/窗口解析失败沿用旧值，不阻断恢复 */
+          }
           log.info("APP", `恢复 agent 模型: ${prev} → ${setting.model}`);
         }
 
@@ -3518,10 +3872,15 @@ export class App {
             const { reconcileEffortForModel } = await import("@sid-code/core/llm/effort.ts");
             const fixed = reconcileEffortForModel(this.resolveEffortCap(), this.runtimeEffort);
             if (fixed !== this.runtimeEffort) {
-              log.info("APP", `恢复的档位 ${this.runtimeEffort} 对模型 ${this.config.model} 无效，已归正为 ${fixed}`);
+              log.info(
+                "APP",
+                `恢复的档位 ${this.runtimeEffort} 对模型 ${this.config.model} 无效，已归正为 ${fixed}`,
+              );
               this.runtimeEffort = fixed;
             }
-          } catch { /* 归正失败不阻断恢复，沿用快照值（原行为） */ }
+          } catch {
+            /* 归正失败不阻断恢复，沿用快照值（原行为） */
+          }
           log.info("APP", `恢复 agent effort: ${this.runtimeEffort ?? "auto"}`);
         }
 
@@ -3551,7 +3910,9 @@ export class App {
     if (sessionData.metadata?.["usage_stats"]) {
       try {
         this.sessionState.hydrateUsage(
-          sessionData.metadata["usage_stats"] as import("@sid-code/core/session/state.ts").UsageSnapshot,
+          sessionData.metadata[
+            "usage_stats"
+          ] as import("@sid-code/core/session/state.ts").UsageSnapshot,
         );
         log.info(
           "APP",
@@ -3589,7 +3950,8 @@ export class App {
           for (const f of files) this.changedFiles.add(f);
           // 摘要只列文件路径（最多 20 条，避免超长会话文件列表撑爆提示），不含 diff。
           const shown = files.slice(0, 20);
-          const more = files.length > shown.length ? `\n…以及另外 ${files.length - shown.length} 个文件` : "";
+          const more =
+            files.length > shown.length ? `\n…以及另外 ${files.length - shown.length} 个文件` : "";
           fileChangesNote = `本会话此前已修改过以下文件（可按需读取确认当前状态，不要假设内容）：\n${shown.map((f) => `- ${f}`).join("\n")}${more}`;
           log.info("APP", `恢复文件修改历史: ${files.length} 个文件`);
         }
@@ -3629,7 +3991,9 @@ export class App {
           | undefined;
         const ledger = regTool?.getLedger();
         if (ledger) {
-          ledger.hydrate(sessionData.metadata["hypothesis_ledger"] as { seq?: unknown; items?: unknown });
+          ledger.hydrate(
+            sessionData.metadata["hypothesis_ledger"] as { seq?: unknown; items?: unknown },
+          );
           const n = ledger.all().length;
           if (n > 0) log.info("APP", `恢复假设登记表: ${n} 条假设`);
         }
@@ -3664,11 +4028,16 @@ export class App {
     try {
       const { loadProgressMarkdown } = await import("@sid-code/core/query/work-log.ts");
       progressNote = loadProgressMarkdown(sessionData.id) ?? undefined;
-    } catch { /* 进度回注是增强，失败不阻断恢复 */ }
+    } catch {
+      /* 进度回注是增强，失败不阻断恢复 */
+    }
 
     // P1-7 + P2-10：把文件修改历史 + 进度 + 未完成子代理摘要并入续接提示，
     // 一并注入到续接标记里。全部为空则 combinedNote 为 undefined。
-    const combinedNote = [cwdMismatchNote, fileChangesNote, sidechainNote, progressNote].filter((s) => s && s.trim()).join("\n\n") || undefined;
+    const combinedNote =
+      [cwdMismatchNote, fileChangesNote, sidechainNote, progressNote]
+        .filter((s) => s && s.trim())
+        .join("\n\n") || undefined;
 
     // ─────────────────────────────────────────────────────────────
     // P0-2 + P1-5：恢复前先跑「脏数据清洗管道 + 中断检测」（session-recovery.ts）。
@@ -3685,7 +4054,8 @@ export class App {
     //         历史末尾让模型直接作答（用户自己的提问就是最强的续接信号，无需再叠加标记）；
     //       · none → 通用续接标记 buildResumeMarker。
     // ─────────────────────────────────────────────────────────────
-    const { deserializeMessagesWithInterruptDetection } = await import("@sid-code/core/sdk/session-recovery.ts");
+    const { deserializeMessagesWithInterruptDetection } =
+      await import("@sid-code/core/sdk/session-recovery.ts");
     const { messages: cleanedMessages, turnInterruptionState } =
       deserializeMessagesWithInterruptDetection(sessionData.messages);
     if (cleanedMessages.length !== sessionData.messages.length) {
@@ -3700,7 +4070,9 @@ export class App {
     // interrupted_prompt：清洗管道已把末尾未应答的 user 消息切出并放进 state.message，
     // 此处单独持有，稍后重挂到历史末尾（而非叠加续接标记）。
     const pendingUserPrompt =
-      turnInterruptionState.kind === "interrupted_prompt" ? turnInterruptionState.message : undefined;
+      turnInterruptionState.kind === "interrupted_prompt"
+        ? turnInterruptionState.message
+        : undefined;
 
     /** 依据中断态构造续接标记消息（interrupted_turn 用专用工具标记，其余用通用标记）。 */
     const buildContinuationMarker = (): import("@sid-code/core/llm/types.ts").Message => {
@@ -3800,18 +4172,26 @@ export class App {
     onThinking?: (text: string) => void,
     turnAbortController?: AbortController,
   ): Promise<AccumulatedResponse> {
-    const { processStream: processStreamImpl } = await import("@sid-code/core/query/stream-processor.ts");
+    const { processStream: processStreamImpl } =
+      await import("@sid-code/core/query/stream-processor.ts");
 
     // GAP-01：流式工具执行——模型仍在输出后续内容时，就对已完整到达的**并发安全**工具抢跑，
     // 使工具执行与模型输出时间重叠。默认关闭（SID_ENABLE_STREAMING_TOOL_EXEC=1 开启）。
     // 只抢跑并发安全工具：写类工具依赖执行顺序/checkpoint 快照/plan-mode 处理，仍留给 executeTools
     // 的批量编排统一处理（此处 precomputed 只对读类命中，写类不进缓存 → 走正常路径，零行为变化）。
-    let onToolUseComplete: ((block: import("@sid-code/core/llm/types.ts").ToolUseBlock) => void) | undefined;
-    const { isStreamingToolExecEnabled } = await import("@sid-code/core/query/streaming-tool-executor.ts");
+    let onToolUseComplete:
+      | ((block: import("@sid-code/core/llm/types.ts").ToolUseBlock) => void)
+      | undefined;
+    const { isStreamingToolExecEnabled } =
+      await import("@sid-code/core/query/streaming-tool-executor.ts");
     if (isStreamingToolExecEnabled()) {
-      const { executeSingleTool, resolveToolPermission } = await import("@sid-code/core/query/tool-executor.ts");
+      const { executeSingleTool, resolveToolPermission } =
+        await import("@sid-code/core/query/tool-executor.ts");
       const deps = this.buildToolExecutorDeps();
-      const cache = new Map<string, import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome>();
+      const cache = new Map<
+        string,
+        import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome
+      >();
       this._streamingToolResults = cache;
       const inflight = new Set<string>();
       onToolUseComplete = (block) => {
@@ -3820,8 +4200,12 @@ export class App {
         if (!tool) return;
         let safe = false;
         try {
-          safe = tool.isConcurrencySafe ? tool.isConcurrencySafe(block.input) : (tool.readOnly?.() ?? false);
-        } catch { safe = false; }
+          safe = tool.isConcurrencySafe
+            ? tool.isConcurrencySafe(block.input)
+            : (tool.readOnly?.() ?? false);
+        } catch {
+          safe = false;
+        }
         if (!safe) return;
         if (cache.has(block.id) || inflight.has(block.id)) return;
         inflight.add(block.id);
@@ -3902,7 +4286,15 @@ export class App {
   }
 
   /** 设置 TUI 模式下的权限确认回调 */
-  setTUIConfirmCallback(cb: (toolName: string, toolInput: unknown, desc: string, shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[], signal?: AbortSignal) => Promise<"yes" | "no" | "always" | "always-persist">): void {
+  setTUIConfirmCallback(
+    cb: (
+      toolName: string,
+      toolInput: unknown,
+      desc: string,
+      shadowedRules?: import("./ui/App.tsx").ShadowedRuleInfo[],
+      signal?: AbortSignal,
+    ) => Promise<"yes" | "no" | "always" | "always-persist">,
+  ): void {
     this.tuiConfirmCallback = cb;
   }
 
@@ -3919,7 +4311,13 @@ export class App {
       // 计算与该工具相关的不可达规则（对标 cc Unreachable Rules），失败不阻断
       const shadowedRules = this.collectShadowedRulesForUI(toolName);
       // H7：透传 signal，弹窗期间被 abort 时 TUI 回调侧解除弹窗（按"no"闭合）。
-      const answer = await this.tuiConfirmCallback(toolName || "", toolInput, description, shadowedRules, signal);
+      const answer = await this.tuiConfirmCallback(
+        toolName || "",
+        toolInput,
+        description,
+        shadowedRules,
+        signal,
+      );
       if (answer === "always") {
         if (req && this.permissionChecker?.rememberDecision) {
           this.permissionChecker.rememberDecision(req, true);
@@ -3950,9 +4348,10 @@ export class App {
     toolInput: unknown,
   ): Promise<void> {
     const log = getLogger();
-    const command = (toolInput as { command?: string })?.command
-      ?? (req?.input as { command?: string } | undefined)?.command
-      ?? "";
+    const command =
+      (toolInput as { command?: string })?.command ??
+      (req?.input as { command?: string } | undefined)?.command ??
+      "";
     if (!command.trim()) {
       // 无命令可归一：退化为会话内记忆，至少本会话不再重复确认
       if (req && this.permissionChecker?.rememberDecision) {
@@ -4012,8 +4411,11 @@ export class App {
   }
 
   /** 执行工具调用，委托给 tool-executor */
-  async executeTools(content: ContentBlock[]): Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }> {
-    const { executeTools: executeToolsImpl } = await import("@sid-code/core/query/tool-executor.ts");
+  async executeTools(
+    content: ContentBlock[],
+  ): Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }> {
+    const { executeTools: executeToolsImpl } =
+      await import("@sid-code/core/query/tool-executor.ts");
     return executeToolsImpl(content, this.buildToolExecutorDeps());
   }
 
@@ -4049,9 +4451,12 @@ export class App {
       // - 无文本的事件（纯类型信号）→ 状态栏 2s 临时提示。
       // 无头模式下 statusNotifier / liveToolProgressSink 均为 null，安全跳过。
       onToolProgress: (toolName, toolUseId, event) => {
-        const msg = typeof (event as any).message === "string"
-          ? (event as any).message
-          : (typeof (event as any).text === "string" ? (event as any).text : event.type);
+        const msg =
+          typeof (event as any).message === "string"
+            ? (event as any).message
+            : typeof (event as any).text === "string"
+              ? (event as any).text
+              : event.type;
         // 路由判定收在 ui/tool-progress-route.ts 的纯函数里（可单测）。
         //
         // 这里曾是一道 inline 的 `isShell` 白名单——只有 bash/shell/execute_command 的进度
@@ -4079,7 +4484,9 @@ export class App {
       // P1-7：把工具修改的文件落盘到会话 JSONL metadata，供 resume 重建文件修改上下文。
       recordFileChanges: (files, toolName) => this.recordFileChanges(files, toolName),
       // P2-1：记录最新快照 id，作为下一轮回退点的文件锚点。
-      onSnapshotCreated: (snapshotId) => { this.latestCheckpointSnapshotId = snapshotId; },
+      onSnapshotCreated: (snapshotId) => {
+        this.latestCheckpointSnapshotId = snapshotId;
+      },
       // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
       getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),
       // 增量呈现：单工具结果一落地就翻卡，不等同批次最慢的兄弟。
@@ -4167,7 +4574,8 @@ export class App {
       // 现在追加 isExecuting()：approve 后进入执行阶段标志，按计划执行期间失败也能触发。
       const inPlanContext = this.planManager.isPlanning() || this.planManager.isExecuting();
       if (result && result.type === "tool_result" && result.is_error && inPlanContext) {
-        const { getSharedRecoveryHook, classifyRecoveryTrigger } = await import("@sid-code/core/plan/recovery.ts");
+        const { getSharedRecoveryHook, classifyRecoveryTrigger } =
+          await import("@sid-code/core/plan/recovery.ts");
         const hook = getSharedRecoveryHook();
         const planFilePath = this.planManager.getPlanFilePath() || "";
         // 执行阶段 plan 文件路径仍保留（approve/deactivate 不清空，仅 forceExit/下次 enter 清）。
@@ -4175,9 +4583,10 @@ export class App {
         if (!planFilePath) continue;
         const ctx = {
           toolName: block.name,
-          errorMessage: typeof result.content === "string"
-            ? result.content
-            : JSON.stringify(result.content ?? ""),
+          errorMessage:
+            typeof result.content === "string"
+              ? result.content
+              : JSON.stringify(result.content ?? ""),
           failedArgs: block.input,
           currentPlanFilePath: planFilePath,
           planStepIndex: null,
@@ -4191,7 +4600,10 @@ export class App {
           const hint = hook.buildRecoveryHint(triggerType, ctx);
           followup.push({ type: "text", text: hint });
           const phase = this.planManager.isExecuting() ? "执行阶段" : "探索阶段";
-          log.info("PLAN", `Recovery Hook 触发(${phase}): trigger=${triggerType} tool=${block.name}`);
+          log.info(
+            "PLAN",
+            `Recovery Hook 触发(${phase}): trigger=${triggerType} tool=${block.name}`,
+          );
         }
         continue;
       }
@@ -4220,7 +4632,10 @@ export class App {
         const fp = input?.file_path;
         if (fp && this.planManager.isPlanFile(fp)) {
           this.planManager.recordPlanFileWrite(Date.now());
-          log.info("PLAN", `plan 文件 ${block.name} 成功 → update_count=${this.planManager.getPlanFileUpdateCount()}`);
+          log.info(
+            "PLAN",
+            `plan 文件 ${block.name} 成功 → update_count=${this.planManager.getPlanFileUpdateCount()}`,
+          );
         }
       }
     }
@@ -4254,8 +4669,8 @@ export class App {
    * 也不能让唯一的约束通道静默失声。
    */
   private async buildPlanModeReminderIfActive(): Promise<string | null> {
-    const inPlanMode = this.planManager?.isPlanning() === true
-      || this.config.permissionMode === "plan";
+    const inPlanMode =
+      this.planManager?.isPlanning() === true || this.config.permissionMode === "plan";
     if (!inPlanMode) return null;
     const { buildPlanModeReminder } = await import("@sid-code/core/plan/prompt.ts");
     // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
@@ -4323,10 +4738,12 @@ export class App {
         // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
         // 用 <system-reminder> 包裹，阻止 TUI 渲染（isInternalOnlyText 识别）
         const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
-        return [{
-          type: "text",
-          text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
-        }];
+        return [
+          {
+            type: "text",
+            text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
+          },
+        ];
       } else if (decision === "cancel") {
         // 用户取消：退出 plan mode，不注入任何 followup
         this.planManager.forceExit();
@@ -4335,21 +4752,22 @@ export class App {
         return null;
       } else {
         // reject（可能带 feedback）
-        const feedback = typeof decision === "string" && decision.startsWith("reject:")
-          ? decision.slice("reject:".length).trim()
-          : "";
+        const feedback =
+          typeof decision === "string" && decision.startsWith("reject:")
+            ? decision.slice("reject:".length).trim()
+            : "";
         const canContinue = this.planManager.reject();
         if (canContinue) {
           const count = this.planManager.getRejectionCount();
           log.info("PLAN", `用户拒绝计划 (${count}/5)，继续修改`);
           // 注入拒绝反馈，让 LLM 知道需要修改计划
-          const feedbackLine = feedback
-            ? `\n\n用户的修改意见：${feedback}`
-            : "";
-          return [{
-            type: "text",
-            text: `<system-reminder>\n用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。${feedbackLine}\n</system-reminder>`,
-          }];
+          const feedbackLine = feedback ? `\n\n用户的修改意见：${feedback}` : "";
+          return [
+            {
+              type: "text",
+              text: `<system-reminder>\n用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。${feedbackLine}\n</system-reminder>`,
+            },
+          ];
         } else {
           await this.deactivatePlanMode();
           log.info("PLAN", "拒绝次数超限，强制退出 Plan Mode");
@@ -4364,10 +4782,12 @@ export class App {
       await this.deactivatePlanMode();
       log.info("PLAN", "非交互模式，自动批准计划");
       const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
-      return [{
-        type: "text",
-        text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
-      }];
+      return [
+        {
+          type: "text",
+          text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
+        },
+      ];
     }
   }
 
@@ -4411,9 +4831,7 @@ export class App {
    * @param toolUseId 工具调用 id（对应 executing 工具项的 callId）
    * @param text 尾部进度快照；null 表示该工具已结束，清除其进度条目
    */
-  private liveToolProgressSink:
-    | ((toolUseId: string, text: string | null) => void)
-    | null = null;
+  private liveToolProgressSink: ((toolUseId: string, text: string | null) => void) | null = null;
 
   /**
    * 工具「已完成」侧信道接收器（并行批次内先完成先翻卡）。
@@ -4426,7 +4844,10 @@ export class App {
    * @param settled 该工具的 tool_result 块 + 它自身的真实耗时
    */
   private liveToolSettledSink:
-    | ((toolUseId: string, settled: { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number }) => void)
+    | ((
+        toolUseId: string,
+        settled: { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number },
+      ) => void)
     | null = null;
 
   /**
@@ -4440,7 +4861,10 @@ export class App {
    * TUI 未就绪（无头模式 / 子代理内部）时为 null，安全跳过——此时行为与改造前一致。
    */
   private liveAgentProgressSink:
-    | ((toolUseId: string, event: import("@sid-code/core/agent/progress.ts").AgentProgressEvent) => void)
+    | ((
+        toolUseId: string,
+        event: import("@sid-code/core/agent/progress.ts").AgentProgressEvent,
+      ) => void)
     | null = null;
 
   /**
@@ -4467,7 +4891,10 @@ export class App {
       return;
     }
 
-    const { getNextKeyboardPermissionMode, getModeName } = require("@sid-code/core/permission/mode.ts");
+    const {
+      getNextKeyboardPermissionMode,
+      getModeName,
+    } = require("@sid-code/core/permission/mode.ts");
     const ctx = {
       mode: this.config.permissionMode,
       prePlanMode: this._originalPermissionMode || undefined,
@@ -4497,7 +4924,10 @@ export class App {
     this.config.yesMode = next === "always-allow";
     this.tuiStateUpdater?.({ permissionMode: next });
     this.statusNotifier?.("perm_mode_switch", `权限模式 → ${getModeName(next)}`, 2500);
-    log.info("PERMISSION", `Shift+Tab 切换权限模式 → ${next}（skipPerms=${this.config.skipPermissions} yesMode=${this.config.yesMode}）`);
+    log.info(
+      "PERMISSION",
+      `Shift+Tab 切换权限模式 → ${next}（skipPerms=${this.config.skipPermissions} yesMode=${this.config.yesMode}）`,
+    );
   }
 
   /** TUI 模式下的 Plan Mode 审批回调，返回决策字符串：approve / cancel / reject / reject:修改意见 */
@@ -4508,23 +4938,22 @@ export class App {
     // 异步执行，不阻塞 Dialog 关闭
     (async () => {
       const { executeExport } = await import("./command/commands/export/export.ts");
-      const result = await executeExport(
-        { target, format },
-        {
-          ctxMgr: this.ctxMgr,
-          toolRegistry: this.toolRegistry,
-          config: this.config,
-          sessionId: this.sessionState.sessionId,
-          provider: this.provider,
-          sessionState: this.sessionState,
-          cwd: process.cwd(),
-        } as import("./command/types.ts").CommandContext,
-      );
+      const result = await executeExport({ target, format }, {
+        ctxMgr: this.ctxMgr,
+        toolRegistry: this.toolRegistry,
+        config: this.config,
+        sessionId: this.sessionState.sessionId,
+        provider: this.provider,
+        sessionState: this.sessionState,
+        cwd: process.cwd(),
+      } as import("./command/types.ts").CommandContext);
       // 将结果显示为命令输出
       if (result.type === "text") {
         this.tuiStateUpdater?.({ commandOutput: result.value });
       }
-    })().catch(() => { /* 静默 */ });
+    })().catch(() => {
+      /* 静默 */
+    });
   }
 
   /** 设置 Plan Mode 审批回调（由 TUI 注入） */
@@ -4642,7 +5071,10 @@ export class App {
         // 追加到系统提示词（走 mergeJitContextIntoPrompt 的逐块幂等判定，
         // 避免 applySystemPrompt 回灌与本次追加叠加成重复注入）
         const currentPrompt = this.ctxMgr.getSystemPrompt();
-        const merged = mergeJitContextIntoPrompt(currentPrompt, this.jitContextMgr.getLoadedBlocks());
+        const merged = mergeJitContextIntoPrompt(
+          currentPrompt,
+          this.jitContextMgr.getLoadedBlocks(),
+        );
         if (merged.appended) this.ctxMgr.setSystemPrompt(merged.prompt);
 
         // P1-7：JIT 注入字节进记账。不记的话 memoryFiles 分类只含启动期 CLAUDE.md，
@@ -4684,7 +5116,8 @@ export class App {
     try {
       const jitBytes = isJitContextEnabled(this.config) ? this.jitContextMgr.getLoadedBytes() : 0;
       // 与 ctxMgr 内部同一套启发式估算器，保证分类量与总量口径一致
-      const jitTokens = jitBytes > 0 ? estimateTextTokens(this.jitContextMgr.getLoadedContexts() ?? "") : 0;
+      const jitTokens =
+        jitBytes > 0 ? estimateTextTokens(this.jitContextMgr.getLoadedContexts() ?? "") : 0;
       this.ctxMgr.setMemoryTokens(this.baseMemoryTokens + jitTokens);
     } catch (err: any) {
       getLogger().debug("JIT", `记忆 token 记账更新失败（不影响主流程）: ${err?.message}`);
@@ -4784,7 +5217,10 @@ export class App {
   /** 构建 SessionEnd 统计数据 */
   private buildSessionEndStats() {
     const totalUsage = this.sessionState.getTotalUsage();
-    const totalRequests = Object.values(this.sessionState.modelUsage).reduce((sum, s) => sum + s.requests, 0);
+    const totalRequests = Object.values(this.sessionState.modelUsage).reduce(
+      (sum, s) => sum + s.requests,
+      0,
+    );
     return {
       model: this.config.model,
       total_tokens_sent: totalUsage.inputTokens,
@@ -4816,7 +5252,9 @@ export class App {
       if (!this.goalState) return;
       const { serializeGoalState } = require("@sid-code/core/goal/state.ts");
       this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
-    } catch { /* 持久化失败不阻断 */ }
+    } catch {
+      /* 持久化失败不阻断 */
+    }
   }
 
   /**
@@ -4928,13 +5366,17 @@ export class App {
     if (this.config.noSessionPersistence) {
       warnings.push({
         id: "no-session-persistence",
-        message: "会话持久化已禁用（--no-session-persistence）：本次对话不会保存，退出后无法 --resume 恢复。",
+        message:
+          "会话持久化已禁用（--no-session-persistence）：本次对话不会保存，退出后无法 --resume 恢复。",
       });
     }
     const diag = this.config._validationDiagnostics;
     if (!diag) return warnings;
     diag.errors.forEach((e, i) => {
-      warnings.push({ id: `startup-error-${i}-${e.path}`, message: `[配置错误] ${e.path}: ${e.message}` });
+      warnings.push({
+        id: `startup-error-${i}-${e.path}`,
+        message: `[配置错误] ${e.path}: ${e.message}`,
+      });
     });
     diag.warnings.forEach((w, i) => {
       warnings.push({ id: `startup-warning-${i}-${w.path}`, message: `${w.path}: ${w.message}` });
@@ -4957,7 +5399,9 @@ export class App {
         this.sessionState.getEffectiveTotalCostUSD(),
         this.ctxMgr.getMessages().length,
       );
-    } catch { /* 文件系统可能已不可用 */ }
+    } catch {
+      /* 文件系统可能已不可用 */
+    }
     // 模块 C1：会话末落一行用量账本（幂等，best-effort，绝不阻断退出）
     this.appendSessionToLedger();
   }
@@ -4968,7 +5412,9 @@ export class App {
    * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
    * - 只存聚合数字，绝不含消息内容——隐私安全。
    */
-  private buildLedgerEntry(): import("@sid-code/core/telemetry/usage-ledger.ts").UsageLedgerEntry | null {
+  private buildLedgerEntry():
+    | import("@sid-code/core/telemetry/usage-ledger.ts").UsageLedgerEntry
+    | null {
     const n = this.sessionState.getNormalizedCacheUsage();
     if (n.promptTotal <= 0) return null; // 空会话不落行
     const models = Object.entries(this.sessionState.modelUsage);
@@ -5037,7 +5483,9 @@ export class App {
       const entry = this.buildLedgerEntry();
       if (!entry) return;
       upsertUsageLedger(entry);
-    } catch { /* 账本写入失败绝不阻断退出 */ }
+    } catch {
+      /* 账本写入失败绝不阻断退出 */
+    }
   }
 
   /**
@@ -5090,7 +5538,11 @@ export class App {
     this.emergencyEnded = true;
 
     // 1. abort 当前请求
-    try { this.abortController?.abort(); } catch { /* ignore */ }
+    try {
+      this.abortController?.abort();
+    } catch {
+      /* ignore */
+    }
 
     // 2. 同步写 crash.json 到磁盘（OOM 前的最后一搏）
     try {
@@ -5105,22 +5557,24 @@ export class App {
         memory_mb: process.memoryUsage().rss / 1024 / 1024,
         uptime_seconds: process.uptime(),
       });
-    } catch { /* 文件系统可能已不可用 */ }
+    } catch {
+      /* 文件系统可能已不可用 */
+    }
 
     // B3：崩溃兜底也结束会话持久化（best-effort，幂等）
     this.finalizeSessionStore();
 
     // 3. fire-and-forget: 尝试触发 SessionEnd（有 200ms 超时）
     try {
-      const promise = this.hookSystem.fireSessionEndEvent(
-        "error",
-        this.buildSessionEndStats(),
-        { error: { message: err.message, name: err.name, stack: err.stack } },
-      );
+      const promise = this.hookSystem.fireSessionEndEvent("error", this.buildSessionEndStats(), {
+        error: { message: err.message, name: err.name, stack: err.stack },
+      });
       // 200ms 超时，不阻塞 exit
       const timeout = new Promise<void>((resolve) => setTimeout(resolve, 200));
       void Promise.race([promise, timeout]);
-    } catch { /* SessionEnd hook 自身报错也不能阻塞退出 */ }
+    } catch {
+      /* SessionEnd hook 自身报错也不能阻塞退出 */
+    }
   }
 
   /** 无头模式：消费 QueryEngine async generator，不依赖任何 renderer */
@@ -5133,7 +5587,9 @@ export class App {
     try {
       const { recordUserMentionedUrls } = await import("@sid-code/core/tool/url-provenance.ts");
       recordUserMentionedUrls(input);
-    } catch { /* 不阻断 */ }
+    } catch {
+      /* 不阻断 */
+    }
 
     // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）。
     // P2-1 --input-format stream-json：输入侧走流式 JSON（stdin 逐条消息）也进 SDK 路径，
@@ -5162,18 +5618,23 @@ export class App {
     // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
     // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 说明）。
     // 0 时必须**完全不挂定时器**——setTimeout(fn, 0) 会立刻 fire，等于开局就 abort。
-    const { resolveLoopTimeouts: resolveHeadlessTimeouts } = require("@sid-code/core/config/network-profile.ts");
-    const sessionTimeoutMs = resolveHeadlessTimeouts({ network: this.config.network }).maxSessionDurationMs;
+    const {
+      resolveLoopTimeouts: resolveHeadlessTimeouts,
+    } = require("@sid-code/core/config/network-profile.ts");
+    const sessionTimeoutMs = resolveHeadlessTimeouts({
+      network: this.config.network,
+    }).maxSessionDurationMs;
     let sessionTimedOut = false;
-    const sessionTimer = sessionTimeoutMs > 0
-      ? setTimeout(() => {
-          sessionTimedOut = true;
-          process.stderr.write(
-            `\n[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
-          );
-          this.abortController?.abort("session-timeout");
-        }, sessionTimeoutMs)
-      : null;
+    const sessionTimer =
+      sessionTimeoutMs > 0
+        ? setTimeout(() => {
+            sessionTimedOut = true;
+            process.stderr.write(
+              `\n[runHeadless] 会话超过 ${Math.round(sessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+            );
+            this.abortController?.abort("session-timeout");
+          }, sessionTimeoutMs)
+        : null;
     if (sessionTimer?.unref) sessionTimer.unref();
     // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
     // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
@@ -5186,7 +5647,9 @@ export class App {
         if (event.kind === "fatal_error") {
           runError = new Error(event.message);
           if (event.stack) runError.stack = event.stack;
-          process.stderr.write(`\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`);
+          process.stderr.write(
+            `\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`,
+          );
           break;
         }
         // 静默-2 / 静默-7：非交互路径事件覆盖对齐交互式 TUI（app.ts system/tombstone/…）。
@@ -5214,7 +5677,9 @@ export class App {
         );
       } else {
         // stderr 输出错误，但不抛出——必须让 SessionEnd hook 落地后再退出
-        process.stderr.write(`\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`);
+        process.stderr.write(
+          `\n[runHeadless] 异常: ${runError.message}\n${runError.stack ?? ""}\n`,
+        );
       }
     } finally {
       if (sessionTimer) clearTimeout(sessionTimer);
@@ -5224,16 +5689,14 @@ export class App {
 
     // session_end hook 必须触发——无论正常结束还是异常，否则 trajectory 永远是 unknown
     // reason 三态：abort（用户取消）/ error（运行时异常）/ exit（正常）
-    const endReason: "exit" | "error" | "abort" = aborted
-      ? "abort"
-      : runError
-      ? "error"
-      : "exit";
+    const endReason: "exit" | "error" | "abort" = aborted ? "abort" : runError ? "error" : "exit";
     try {
       await this.hookSystem.fireSessionEndEvent(
         endReason,
         this.buildSessionEndStats(),
-        runError ? { error: { message: runError.message, name: runError.name, stack: runError.stack } } : undefined,
+        runError
+          ? { error: { message: runError.message, name: runError.name, stack: runError.stack } }
+          : undefined,
       );
     } catch (hookErr: any) {
       // SessionEnd hook 自身报错也不能阻塞退出，否则 trajectory 反而丢失
@@ -5242,18 +5705,30 @@ export class App {
     // B3：无头模式退出也结束会话持久化（幂等）
     this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
-    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try {
+      CrashMarker.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      PidManager.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
 
     // 输出结果（即使出错也输出已收到的内容，便于诊断）
     if (this.config.outputFormat === "json") {
       const messages = this.ctxMgr.getMessages();
       const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-      const traceOutputDir = this.config.trace?.outputDir
-        ?? sidPaths.trajectories();
+      const traceOutputDir = this.config.trace?.outputDir ?? sidPaths.trajectories();
       const result: Record<string, unknown> = {
         session_id: this.sessionState.sessionId,
-        trajectory_path: join(traceOutputDir, "sessions", this.sessionState.sessionId, "session.traj"),
+        trajectory_path: join(
+          traceOutputDir,
+          "sessions",
+          this.sessionState.sessionId,
+          "session.traj",
+        ),
         role: "assistant",
         content: lastAssistant?.content || [],
         usage: this.sessionState.getTotalUsage(),
@@ -5281,11 +5756,11 @@ export class App {
 
     // 会话摘要输出到 stderr（避免污染 JSON stdout）
     const summary = getSessionMetrics().getSummary();
-    process.stderr.write('\n' + '─'.repeat(60) + '\n');
-    process.stderr.write('会话摘要\n');
-    process.stderr.write('─'.repeat(60) + '\n');
-    process.stderr.write(summary + '\n');
-    process.stderr.write('─'.repeat(60) + '\n\n');
+    process.stderr.write("\n" + "─".repeat(60) + "\n");
+    process.stderr.write("会话摘要\n");
+    process.stderr.write("─".repeat(60) + "\n");
+    process.stderr.write(summary + "\n");
+    process.stderr.write("─".repeat(60) + "\n\n");
 
     // headless 模式强制退出：init() 启动的 watcher/interval/telemetry 不会自行排空事件循环
     // 出错时 exit code 非 0，方便 wrapper 区分；trajectory 已在上面正确落盘
@@ -5302,7 +5777,11 @@ export class App {
    * 与 runHeadless / runTUI 平级的第三种运行形态（spec 16 §7）。
    * 进程常驻，直到收到 SIGINT/SIGTERM 才退出。
    */
-  async runBridge(options: { url: string; authToken?: string; permissionTimeoutMs?: number }): Promise<void> {
+  async runBridge(options: {
+    url: string;
+    authToken?: string;
+    permissionTimeoutMs?: number;
+  }): Promise<void> {
     await this.init();
 
     const { BridgeRunner } = await import("@sid-code/core/bridge/bridge-runner.ts");
@@ -5315,7 +5794,9 @@ export class App {
         abort: () => this.abortController?.abort(),
         setPermissionDelegate: (delegate) => {
           // 仅当 checker 支持 Bridge 代理时注入（PermissionChecker 实现了该方法）
-          const checker = this.permissionChecker as { setBridgePermissionDelegate?: (d: typeof delegate) => void } | null;
+          const checker = this.permissionChecker as {
+            setBridgePermissionDelegate?: (d: typeof delegate) => void;
+          } | null;
           checker?.setBridgePermissionDelegate?.(delegate);
         },
       },
@@ -5403,18 +5884,23 @@ export class App {
 
     // 不确定-1②：SDK stream-json 路径同样补齐会话级硬顶（与 TUI/runHeadless 同源配置）。
     // 2026-08-04：默认值已改为 0（关闭）；0 时不挂定时器，否则 setTimeout(fn, 0) 立刻 fire。
-    const { resolveLoopTimeouts: resolveSdkTimeouts } = require("@sid-code/core/config/network-profile.ts");
-    const sdkSessionTimeoutMs = resolveSdkTimeouts({ network: this.config.network }).maxSessionDurationMs;
+    const {
+      resolveLoopTimeouts: resolveSdkTimeouts,
+    } = require("@sid-code/core/config/network-profile.ts");
+    const sdkSessionTimeoutMs = resolveSdkTimeouts({
+      network: this.config.network,
+    }).maxSessionDurationMs;
     let sdkSessionTimedOut = false;
-    const sdkSessionTimer = sdkSessionTimeoutMs > 0
-      ? setTimeout(() => {
-          sdkSessionTimedOut = true;
-          process.stderr.write(
-            `\n[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
-          );
-          this.abortController?.abort("session-timeout");
-        }, sdkSessionTimeoutMs)
-      : null;
+    const sdkSessionTimer =
+      sdkSessionTimeoutMs > 0
+        ? setTimeout(() => {
+            sdkSessionTimedOut = true;
+            process.stderr.write(
+              `\n[runHeadlessSDK] 会话超过 ${Math.round(sdkSessionTimeoutMs / 60000)} 分钟上限，自动结束\n`,
+            );
+            this.abortController?.abort("session-timeout");
+          }, sdkSessionTimeoutMs)
+        : null;
     if (sdkSessionTimer?.unref) sdkSessionTimer.unref();
 
     let runError: Error | null = null;
@@ -5429,8 +5915,7 @@ export class App {
       });
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
-      aborted =
-        runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
+      aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
       structuredIO.rejectAllPending("session ended");
       // 会话硬顶超时按正常自动结束处理（reason=abort 而非 error）。
       if (sdkSessionTimedOut) {
@@ -5448,11 +5933,7 @@ export class App {
     }
 
     // session_end hook（与文本/JSON 模式一致：abort/error/exit 三态）
-    const endReason: "exit" | "error" | "abort" = aborted
-      ? "abort"
-      : runError
-      ? "error"
-      : "exit";
+    const endReason: "exit" | "error" | "abort" = aborted ? "abort" : runError ? "error" : "exit";
     try {
       await this.hookSystem.fireSessionEndEvent(
         endReason,
@@ -5469,8 +5950,16 @@ export class App {
     // B3：stream-json 无头模式退出也结束会话持久化（幂等）
     this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
-    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try {
+      CrashMarker.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      PidManager.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
 
     // 清理 + 优雅关闭（与 runHeadless 收尾一致）
     unwatchCLAUDEmd();
@@ -5546,7 +6035,15 @@ export class App {
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
-      gitBranch: (() => { try { return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { encoding: "utf-8" }).trim(); } catch { return ""; } })(),
+      gitBranch: (() => {
+        try {
+          return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", {
+            encoding: "utf-8",
+          }).trim();
+        } catch {
+          return "";
+        }
+      })(),
       // effort/thinking 展示态初值置 null，doInit 末尾 pushKnobDisplay() 会按当前模型能力填充。
       effortDisplay: null,
       thinkingDisplay: null,
@@ -5577,7 +6074,7 @@ export class App {
           : this.pendingExternalImportPaths.length > 0
             ? ("claude-md-external-imports" as const)
             : null,
-      availableModels: this.config.availableModels.map(m => ({
+      availableModels: this.config.availableModels.map((m) => ({
         name: m.name,
         // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
         // 展示与选中仍用 name，见 model-grouping.ts ModelOption.modelId 注释。
@@ -5638,20 +6135,23 @@ export class App {
           const resp = await withSideCallDeadline(
             "title-generation",
             TITLE_TIMEOUT_MS,
-            (signal) => this.provider.sendMessageNonStreaming!(
-              {
-                model: this.config.model,
-                system: SESSION_TITLE_PROMPT,
-                messages: [{ role: "user", content: [{ type: "text", text: trimmed.slice(0, 1000) }] }],
-                maxTokens: 32,
-                // 标题生成是"起 3-7 个词的名字"这类轻量分类任务，不需要扩展思考。
-                // 不显式关闭时会沿用模型服务端默认——DeepSeek 思考模型默认 thinking=enabled，
-                // 非流式调用下思考+生成耗时常超过硬超时，导致 provider 已计费但客户端拿不到
-                // 响应（recordSideCall 也就不会触发），造成 trajectory/账单对不上。
-                thinking: { enabled: false, budgetTokens: 0 },
-              },
-              signal,
-            ),
+            (signal) =>
+              this.provider.sendMessageNonStreaming!(
+                {
+                  model: this.config.model,
+                  system: SESSION_TITLE_PROMPT,
+                  messages: [
+                    { role: "user", content: [{ type: "text", text: trimmed.slice(0, 1000) }] },
+                  ],
+                  maxTokens: 32,
+                  // 标题生成是"起 3-7 个词的名字"这类轻量分类任务，不需要扩展思考。
+                  // 不显式关闭时会沿用模型服务端默认——DeepSeek 思考模型默认 thinking=enabled，
+                  // 非流式调用下思考+生成耗时常超过硬超时，导致 provider 已计费但客户端拿不到
+                  // 响应（recordSideCall 也就不会触发），造成 trajectory/账单对不上。
+                  thinking: { enabled: false, budgetTokens: 0 },
+                },
+                signal,
+              ),
             // 不与主对话的 abortController 关联——后台任务独立。
           );
           // 记录辅助调用用量
@@ -5748,7 +6248,7 @@ export class App {
      */
     function pushErrorPanel(item: import("./ui/App.tsx").ErrorPanelItem): void {
       const current = bridge.current.errorPanel;
-      const filtered = current.filter(e => e.id !== item.id);
+      const filtered = current.filter((e) => e.id !== item.id);
       const resolved: import("./ui/App.tsx").ErrorPanelItem = {
         ...item,
         transient: item.transient ?? isTransientErrorCode(item.code),
@@ -5777,7 +6277,7 @@ export class App {
     function clearTransientErrorPanel(): void {
       const current = bridge.current.errorPanel;
       if (current.length === 0) return;
-      const remaining = current.filter(e => !e.transient);
+      const remaining = current.filter((e) => !e.transient);
       if (remaining.length === current.length) return;
       log.info("TUI", `请求已恢复，自动清除 ${current.length - remaining.length} 条瞬态错误提示`);
       bridge.update({ errorPanel: remaining });
@@ -5839,7 +6339,8 @@ export class App {
     // 每轮结束时读取最新状态：warning/exceeded 用 sticky 状态消息显示，回到 ok 则清除。
     const syncRateLimitStatus = async (): Promise<void> => {
       try {
-        const { getCurrentRateLimitStatus, formatRateLimitWarning, resetRateLimitStatus } = await import("@sid-code/core/api/rate-limit.ts");
+        const { getCurrentRateLimitStatus, formatRateLimitWarning, resetRateLimitStatus } =
+          await import("@sid-code/core/api/rate-limit.ts");
         let status = getCurrentRateLimitStatus();
         // 陈旧警告自清：配额重置时间（resetsAt）已过 → 旧的 warning/exceeded 已失效
         // （服务端配额窗口已滚动），强制重置回 ok，避免限流提示一直 sticky 误导用户。
@@ -5867,16 +6368,22 @@ export class App {
     // 实现，否则两套渲染的 diff 判定/摘要文案会不一致，卡片完成后又变一次。
     // injectSettledToolCalls / buildSettledToolCallIfReady 是那份实现的两个入口
     // （全量重建 / 单卡判定），逻辑在 history-adapter 里可被单测直接驱动。
-    const { messagesToHistoryItems, injectSettledToolCalls, buildSettledToolCallIfReady, injectAgentProgress } =
-      await import("./ui/history-adapter.ts");
+    const {
+      messagesToHistoryItems,
+      injectSettledToolCalls,
+      buildSettledToolCallIfReady,
+      injectAgentProgress,
+    } = await import("./ui/history-adapter.ts");
     // ToolCallStatus 是运行时枚举（非纯类型），实时进度注入需按值比较 Executing 态，故动态引入。
     const { ToolCallStatus } = await import("./ui/types.ts");
     let lastSyncedCount = 0;
     let historyIdCounter = 0;
 
     /** 为 HistoryItemWithoutId[] 分配 id，返回 HistoryItem[] */
-    const assignIds = (items: import("./ui/types.ts").HistoryItemWithoutId[]): import("./ui/types.ts").HistoryItem[] => {
-      return items.map(item => {
+    const assignIds = (
+      items: import("./ui/types.ts").HistoryItemWithoutId[],
+    ): import("./ui/types.ts").HistoryItem[] => {
+      return items.map((item) => {
         historyIdCounter += 1;
         return { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem;
       });
@@ -5906,7 +6413,10 @@ export class App {
     //   - tool_result 正式入 ctxMgr 后，messagesToHistoryItems 会用**同一个**
     //     buildCompletedToolCall 重建出完全一致的卡片，侧信道条目随轮末 clear 退场——
     //     所以不存在"增量卡"与"最终卡"两套渲染导致的视觉跳变。
-    const liveToolSettled = new Map<string, { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number }>();
+    const liveToolSettled = new Map<
+      string,
+      { block: import("@sid-code/core/llm/types.ts").ContentBlock; elapsedMs?: number }
+    >();
 
     // ── 子代理进度侧信道（治问题三：过程黑盒）──
     //
@@ -5915,7 +6425,10 @@ export class App {
     // 而非文本，渲染时按"并行几个 agent + 终端多高"选呈现档位。
     // 生命周期同样挂轮末 clear，不跨轮累积（这是相对 cc 的结构优势，见
     // ui/agent-progress-view.ts 头部注释）。
-    const liveAgentProgress = new Map<string, import("@sid-code/core/agent/progress.ts").AgentProgressEvent>();
+    const liveAgentProgress = new Map<
+      string,
+      import("@sid-code/core/agent/progress.ts").AgentProgressEvent
+    >();
 
     /**
      * 把侧信道里已完成的工具结果注入到仍是 executing 态的工具项，就地翻成 success/error。
@@ -5923,9 +6436,7 @@ export class App {
      * 只改 status===Executing 的项：tool_result 已入 ctxMgr 的项本就是完成态（由权威路径
      * 渲染），不需要也不应该被侧信道二次覆盖。
      */
-    const injectLiveToolSettled = (
-      historyItems: import("./ui/types.ts").HistoryItem[],
-    ): void => {
+    const injectLiveToolSettled = (historyItems: import("./ui/types.ts").HistoryItem[]): void => {
       injectSettledToolCalls(historyItems, liveToolSettled);
     };
 
@@ -5933,9 +6444,7 @@ export class App {
      * 把侧信道里的实时进度注入到 executing 态工具项。就地改 progressMessage（这些 item
      * 是 assignIds 刚 new 出来的，非共享引用，改它不影响 Static 缓存的已完成项）。
      */
-    const injectLiveToolProgress = (
-      historyItems: import("./ui/types.ts").HistoryItem[],
-    ): void => {
+    const injectLiveToolProgress = (historyItems: import("./ui/types.ts").HistoryItem[]): void => {
       if (liveToolProgress.size === 0) return;
       for (const item of historyItems) {
         if (item.type !== "tool_group") continue;
@@ -5954,9 +6463,7 @@ export class App {
      * 但写的是 agentProgress 结构化字段。判定收在 injectAgentProgress 纯函数里，与轻量
      * 重渲路径共用——两处各写一遍就是 buildSettledToolCallIfReady 那次教训的复刻。
      */
-    const injectLiveAgentProgress = (
-      historyItems: import("./ui/types.ts").HistoryItem[],
-    ): void => {
+    const injectLiveAgentProgress = (historyItems: import("./ui/types.ts").HistoryItem[]): void => {
       injectAgentProgress(historyItems, liveAgentProgress);
     };
 
@@ -6024,7 +6531,8 @@ export class App {
 
       // 旧 DisplayItem 兼容（增量）
       const prevDisplayItems = bridge.current.displayItems;
-      const newDisplayItems = newCount > 0 ? messagesToDisplayItems(allMsgs.slice(lastSyncedCount)) : [];
+      const newDisplayItems =
+        newCount > 0 ? messagesToDisplayItems(allMsgs.slice(lastSyncedCount)) : [];
       const displayItems = [...prevDisplayItems, ...newDisplayItems];
 
       // 新 HistoryItem：始终从完整消息列表重建
@@ -6125,7 +6633,7 @@ export class App {
       historyIdCounter = 0;
       // 保留事件处理中追加的系统消息（如 loop_detected/max_turns/hook_blocked），
       // 这些消息不在 ctxMgr 中，messagesToDisplayItems 无法生成
-      const systemItems = bridge.current.displayItems.filter(d => d.kind === "system");
+      const systemItems = bridge.current.displayItems.filter((d) => d.kind === "system");
       const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
       const historyItems = assignIds(messagesToHistoryItems(allMsgs));
       injectLiveToolSettled(historyItems);
@@ -6178,10 +6686,19 @@ export class App {
           resolve(answer);
         };
         // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
-        if (signal?.aborted) { onAbort(); return; }
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
         if (signal) signal.addEventListener("abort", onAbort, { once: true });
         updateState({
-          permissionRequest: { toolName, toolInput, description: desc, resolve: wrappedResolve, shadowedRules },
+          permissionRequest: {
+            toolName,
+            toolInput,
+            description: desc,
+            resolve: wrappedResolve,
+            shadowedRules,
+          },
         });
       });
     });
@@ -6223,7 +6740,8 @@ export class App {
 
     // 设置 TUI AskUserQuestion 提问回调（结构化选择题，对标 cc AskUserQuestion）
     {
-      const { setAskUserQuestionHandler, parseAskTimeoutMs } = await import("@sid-code/core/tool/ask-user-question-bridge.ts");
+      const { setAskUserQuestionHandler, parseAskTimeoutMs } =
+        await import("@sid-code/core/tool/ask-user-question-bridge.ts");
       setAskUserQuestionHandler(async (req, signal) => {
         return new Promise((resolve) => {
           log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
@@ -6240,7 +6758,11 @@ export class App {
           };
           const wrappedResolve = (
             result:
-              | { decision: "answered"; answers: Record<string, string>; notes?: Record<string, string> }
+              | {
+                  decision: "answered";
+                  answers: Record<string, string>;
+                  notes?: Record<string, string>;
+                }
               | { decision: "cancelled" },
           ) => {
             if (settled) return;
@@ -6260,11 +6782,9 @@ export class App {
               wrappedResolve({ decision: "cancelled" });
               return;
             }
-            signal.addEventListener(
-              "abort",
-              () => wrappedResolve({ decision: "cancelled" }),
-              { once: true },
-            );
+            signal.addEventListener("abort", () => wrappedResolve({ decision: "cancelled" }), {
+              once: true,
+            });
           }
           if (idleTimeoutMs !== null) {
             idleTimer = setTimeout(() => {
@@ -6283,8 +6803,12 @@ export class App {
     const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
       // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
       // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
-      const { resolveLoopTimeouts: resolveSessionTimeouts } = require("@sid-code/core/config/network-profile.ts");
-      const SESSION_TIMEOUT_MS = resolveSessionTimeouts({ network: this.config.network }).maxSessionDurationMs;
+      const {
+        resolveLoopTimeouts: resolveSessionTimeouts,
+      } = require("@sid-code/core/config/network-profile.ts");
+      const SESSION_TIMEOUT_MS = resolveSessionTimeouts({
+        network: this.config.network,
+      }).maxSessionDurationMs;
       // ─── 会话硬顶改为周期检查 + 剔除休眠时长（事故 20260801-175042-699f69f8）───
       //
       // 原实现是裸 setTimeout(SESSION_TIMEOUT_MS)：休眠期间进程被冻结、挂钟照走，
@@ -6300,22 +6824,26 @@ export class App {
       // 若照挂，第一次 tick 就满足 `businessElapsed >= 0` 立刻 abort，等于开局自杀。
       const sessionStartedAt = Date.now();
       const sleepAtSessionStart = getSleepLedger().getTotalMs();
-      const sessionTimer = SESSION_TIMEOUT_MS > 0
-        ? setInterval(() => {
-            // 本轮期间新增的休眠时长（账本是会话级累计，需减去本轮起点的基线）。
-            const sleptThisTurn = getSleepLedger().getTotalMs() - sleepAtSessionStart;
-            const businessElapsed = Date.now() - sessionStartedAt - sleptThisTurn;
-            if (businessElapsed < SESSION_TIMEOUT_MS) return;
-            log.warn(
-              "TUI",
-              `Session 业务耗时超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限（已剔除 ${Math.round(sleptThisTurn / 1000)}s 休眠），触发 abort`,
-            );
-            // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
-            // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
-            // 而非笼统的"已取消当前响应"，且不触发输入框回填。
-            this.abortController?.abort("session-timeout");
-          }, Math.max(1_000, Math.min(5_000, SESSION_TIMEOUT_MS)))
-        : null;
+      const sessionTimer =
+        SESSION_TIMEOUT_MS > 0
+          ? setInterval(
+              () => {
+                // 本轮期间新增的休眠时长（账本是会话级累计，需减去本轮起点的基线）。
+                const sleptThisTurn = getSleepLedger().getTotalMs() - sleepAtSessionStart;
+                const businessElapsed = Date.now() - sessionStartedAt - sleptThisTurn;
+                if (businessElapsed < SESSION_TIMEOUT_MS) return;
+                log.warn(
+                  "TUI",
+                  `Session 业务耗时超过 ${Math.round(SESSION_TIMEOUT_MS / 60000)} 分钟上限（已剔除 ${Math.round(sleptThisTurn / 1000)}s 休眠），触发 abort`,
+                );
+                // A6：会话超时用专属 reason 'session-timeout'（区别于用户主动取消 'user-cancel'
+                // 与内部单轮/看门狗超时），app.ts catch 据此展示"会话超过 N 分钟上限，已自动结束"
+                // 而非笼统的"已取消当前响应"，且不触发输入框回填。
+                this.abortController?.abort("session-timeout");
+              },
+              Math.max(1_000, Math.min(5_000, SESSION_TIMEOUT_MS)),
+            )
+          : null;
 
       this.busy = true;
       // ─── 任务保活：干活期间阻止系统空闲休眠 ───
@@ -6388,7 +6916,12 @@ export class App {
           clearTransientErrorPanel();
         }
         streamingFullText += text;
-        updateState({ streamingText: streamingFullText, streamingThinking: streamingThinkingFull, streamingThinkingStartMs: undefined, isStreaming: true });
+        updateState({
+          streamingText: streamingFullText,
+          streamingThinking: streamingThinkingFull,
+          streamingThinkingStartMs: undefined,
+          isStreaming: true,
+        });
       });
 
       // v2：设置流式思考回调（桥接 processStream 内部的 onThinking，对标 Claude Code）
@@ -6413,13 +6946,20 @@ export class App {
         // P2-2：首帧记录起点时间戳，与 stream-processor 的 block_start 对齐，
         // 避免流式计时器与历史项 durationSeconds 因起点不同而数字跳变。
         const startMsPatch = isFirst ? { streamingThinkingStartMs: Date.now() } : {};
-        updateState({ streamingThinking: streamingThinkingFull, isStreaming: true, ...startMsPatch });
+        updateState({
+          streamingThinking: streamingThinkingFull,
+          isStreaming: true,
+          ...startMsPatch,
+        });
       });
 
       try {
         // 新用户回合开始：清执行阶段标志（同 runHeadless，详见该处注释）。
         this.planManager?.endExecution();
-        for await (const event of this.queryEngine.submitMessage(userInput, displayCommand ? { displayCommand } : undefined)) {
+        for await (const event of this.queryEngine.submitMessage(
+          userInput,
+          displayCommand ? { displayCommand } : undefined,
+        )) {
           switch (event.kind) {
             case "user_message_added":
               syncDisplay();
@@ -6429,7 +6969,10 @@ export class App {
               const hookBlockedText = `⛔ Hook 阻止执行: ${event.reason}`;
               addStatusMessage("hook_blocked", hookBlockedText);
               updateState({ isLoading: false });
-              const hookBlockedDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: hookBlockedText }];
+              const hookBlockedDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: hookBlockedText },
+              ];
               updateState({ displayItems: hookBlockedDisplay });
               break;
             }
@@ -6453,14 +6996,30 @@ export class App {
               // 覆盖的场景与 retryStatus 完全相同——重试成功后模型先发工具调用而非文本，
               // 文本/思考首帧的清除路径走不到，只剩这里能清。
               clearTransientErrorPanel();
-              syncDisplay({ toolName: event.toolName, toolInput: event.toolInput ?? null, isToolExecuting: true, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined, isStreaming: false, streamingLine: "", retryStatus: null });
+              syncDisplay({
+                toolName: event.toolName,
+                toolInput: event.toolInput ?? null,
+                isToolExecuting: true,
+                streamingText: "",
+                streamingThinking: "",
+                streamingThinkingStartMs: undefined,
+                isStreaming: false,
+                streamingLine: "",
+                retryStatus: null,
+              });
               break;
             case "tool_end":
               syncDisplay({
                 toolName: null,
                 toolInput: null,
                 isToolExecuting: false,
-                lastToolResult: event.result ? { toolName: event.toolName, isError: !!event.result.isError, elapsedMs: event.result.elapsedMs ?? 0 } : null,
+                lastToolResult: event.result
+                  ? {
+                      toolName: event.toolName,
+                      isError: !!event.result.isError,
+                      elapsedMs: event.result.elapsedMs ?? 0,
+                    }
+                  : null,
                 // 工具结束即刷新统计三件套，不必等下一轮 done（否则工具跑完后 Footer 仍显示上一轮旧值）
                 usage: { ...this.sessionState.getTotalUsage() },
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
@@ -6470,7 +7029,9 @@ export class App {
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
               if (event.toolName === "todo_write") {
-                const todoTool = this.toolRegistry.get("todo_write") as import("@sid-code/core/tool/todo-write.ts").TodoWriteTool | undefined;
+                const todoTool = this.toolRegistry.get("todo_write") as
+                  | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
+                  | undefined;
                 if (todoTool) {
                   updateState({ todos: todoTool.getTodos() });
                 }
@@ -6491,31 +7052,46 @@ export class App {
               };
               const compactEvidence = `${event.messageCountBefore} → ${event.messageCountAfter} 条消息`;
               const updatedHistoryItems = [...bridge.current.historyItems, compressionItem];
-              const compressionDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: `对话已压缩（${compactEvidence}）` }];
+              const compressionDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: `对话已压缩（${compactEvidence}）` },
+              ];
               updateState({ historyItems: updatedHistoryItems, displayItems: compressionDisplay });
               break;
             }
             case "context_warning":
-              addStatusMessage("context_warning", `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩`);
+              addStatusMessage(
+                "context_warning",
+                `⚠ 上下文剩余 ${event.remaining.toFixed(0)}%，即将自动压缩`,
+              );
               break;
             case "max_turns": {
               const maxTurnsText = `达到最大轮次限制: ${event.maxTurns}`;
               addStatusMessage("max_turns", maxTurnsText);
-              const maxTurnsDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: maxTurnsText }];
+              const maxTurnsDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: maxTurnsText },
+              ];
               updateState({ displayItems: maxTurnsDisplay });
               break;
             }
             case "loop_detected": {
               const loopDetectedText = `⚠️ 检测到循环模式: ${event.detail}`;
               addStatusMessage("loop_detected", loopDetectedText);
-              const loopDetectedDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: loopDetectedText }];
+              const loopDetectedDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: loopDetectedText },
+              ];
               updateState({ displayItems: loopDetectedDisplay });
               break;
             }
             case "loop_recovery": {
               const loopRecoveryText = `🔄 循环恢复尝试 ${event.attempt}/${event.maxAttempts}`;
               addStatusMessage("loop_recovery", loopRecoveryText);
-              const loopRecoveryDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: loopRecoveryText }];
+              const loopRecoveryDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: loopRecoveryText },
+              ];
               updateState({ displayItems: loopRecoveryDisplay });
               break;
             }
@@ -6548,7 +7124,10 @@ export class App {
                 // 根因修复：此前 error 级别被 switch 完全忽略——loop.ts 重试耗尽等场景
                 // yield 的用户可见错误提示从未展示，紧随其后的 done 又清空了流式内容，
                 // 导致"内容消失+无任何提示"。仿照 fatal_error 持久化到 displayItems。
-                const errorDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: event.text }];
+                const errorDisplay = [
+                  ...bridge.current.displayItems,
+                  { kind: "system" as const, text: event.text },
+                ];
                 updateState({ displayItems: errorDisplay });
                 // 同时推入统一错误面板（常驻，用户手动关闭）
                 const code = inferErrorCode(event.text);
@@ -6587,7 +7166,10 @@ export class App {
               streamSynced = false;
               log.error("TUI", `queryLoop 致命错误: ${event.message}`, { stack: event.stack });
               const fatalText = `任务失败：${event.message}\n可重新输入指令重试，或检查上面的工具输出定位原因。`;
-              const fatalDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: fatalText }];
+              const fatalDisplay = [
+                ...bridge.current.displayItems,
+                { kind: "system" as const, text: fatalText },
+              ];
               // 推入统一错误面板（常驻，用户手动关闭）
               const fatalCode = inferErrorCode(event.message);
               const fatalMsg = lookupErrorMessage(event.message, fatalCode);
@@ -6704,33 +7286,42 @@ export class App {
 
         // 无论 completedNormally 与否，流式状态都必须清零——
         // done/fatal_error 路径已在事件处理里清，这里是双重保险（防止未来新路径遗漏）。
-        updateState({ isStreaming: false, streamingText: "", streamingThinking: "", streamingThinkingStartMs: undefined });
+        updateState({
+          isStreaming: false,
+          streamingText: "",
+          streamingThinking: "",
+          streamingThinkingStartMs: undefined,
+        });
 
         // 检查是否正常完成（通过 done 事件标记）
         if (!completedNormally) {
-          const warningDisplay = [...bridge.current.displayItems,
-            { kind: "system" as const, text: "⚠️ 任务异常中断，部分操作可能未完成" }];
-          updateState({ isLoading: false,
+          const warningDisplay = [
+            ...bridge.current.displayItems,
+            { kind: "system" as const, text: "⚠️ 任务异常中断，部分操作可能未完成" },
+          ];
+          updateState({
+            isLoading: false,
             displayItems: warningDisplay,
-            statusMessage: "任务异常中断" });
+            statusMessage: "任务异常中断",
+          });
         }
 
-      // ─────────────────────────────────────────────────────────────────
-      // 轮末清理：**必须在 finally 内**（此前整段在 finally 之外，是真缺陷）
-      //
-      // 根因：上面 catch 的 else 分支对「内部超时泄漏 / 会话硬顶超时 / 真异常」执行
-      // `throw err`，直接跳过 finally 之后的所有代码。后果实测四项：
-      //   ① retryStatus 不清 → 带倒计时的 `⟳ 请求失败，第 N 次重试…` 卡片永久残留，
-      //      且倒计时归零后定格在一个早已过期的时刻；
-      //   ② removeStatusMessage("system:transient") 不执行 → 重试提示残留跨轮；
-      //   ③ this.busy 永久卡 true（全仓只有本轮开头与此处两处赋值）→ flushScheduledPrompts
-      //      从此再不冲刷，Cron 调度提示词静默积压到会话结束；
-      //   ④ syncRateLimitStatus 不执行 → 限流状态停止刷新。
-      // 外层 onUserInput 的 catch 虽有大量清理，但字段清单里没有 retryStatus、没有
-      // removeStatusMessage、更没有 this.busy = false，这条路径此前完全无人兜底。
-      //
-      // 移进 finally 后顺序不变（原本也是紧跟 finally 之后执行），但异常路径同样覆盖。
-      // ─────────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
+        // 轮末清理：**必须在 finally 内**（此前整段在 finally 之外，是真缺陷）
+        //
+        // 根因：上面 catch 的 else 分支对「内部超时泄漏 / 会话硬顶超时 / 真异常」执行
+        // `throw err`，直接跳过 finally 之后的所有代码。后果实测四项：
+        //   ① retryStatus 不清 → 带倒计时的 `⟳ 请求失败，第 N 次重试…` 卡片永久残留，
+        //      且倒计时归零后定格在一个早已过期的时刻；
+        //   ② removeStatusMessage("system:transient") 不执行 → 重试提示残留跨轮；
+        //   ③ this.busy 永久卡 true（全仓只有本轮开头与此处两处赋值）→ flushScheduledPrompts
+        //      从此再不冲刷，Cron 调度提示词静默积压到会话结束；
+        //   ④ syncRateLimitStatus 不执行 → 限流状态停止刷新。
+        // 外层 onUserInput 的 catch 虽有大量清理，但字段清单里没有 retryStatus、没有
+        // removeStatusMessage、更没有 this.busy = false，这条路径此前完全无人兜底。
+        //
+        // 移进 finally 后顺序不变（原本也是紧跟 finally 之后执行），但异常路径同样覆盖。
+        // ─────────────────────────────────────────────────────────────────
         syncDisplay({
           isLoading: false,
           usage: { ...this.sessionState.getTotalUsage() },
@@ -6949,8 +7540,9 @@ export class App {
           }
 
           const sessionTimeoutMin = Math.round(
-            (require("@sid-code/core/config/network-profile.ts").resolveLoopTimeouts({ network: this.config.network })
-              .maxSessionDurationMs) / 60000,
+            require("@sid-code/core/config/network-profile.ts").resolveLoopTimeouts({
+              network: this.config.network,
+            }).maxSessionDurationMs / 60000,
           );
           const message = aborted
             ? "已取消当前响应"
@@ -6988,7 +7580,10 @@ export class App {
           // 与用户主动取消（aborted）一样只给瞬态提示 + 下方持久引导（不确定-1）。
           if (!aborted && !sessionTimedOut) {
             const errDisplayText = `任务失败：${err?.message ?? String(err)}\n可重新输入指令重试，或检查上面的输出定位原因。`;
-            const errDisplay = [...bridge.current.displayItems, { kind: "system" as const, text: errDisplayText }];
+            const errDisplay = [
+              ...bridge.current.displayItems,
+              { kind: "system" as const, text: errDisplayText },
+            ];
             updateState({ displayItems: errDisplay });
             // 推入统一错误面板（常驻，用户手动关闭）——此前只有 5s 瞬态提示 + displayItems，
             // 与 fatal_error 的处理不一致，导致这类真故障（含内部超时泄漏）用户在
@@ -7057,7 +7652,10 @@ export class App {
 
         // P1-8 --disable-slash-commands：禁用时不解析为命令，原文当普通输入交给 LLM。
         if (this.config.disableSlashCommands) {
-          log.info("TUI:CMD", `斜杠命令已禁用（--disable-slash-commands），作为普通输入提交: ${commandInput}`);
+          log.info(
+            "TUI:CMD",
+            `斜杠命令已禁用（--disable-slash-commands），作为普通输入提交: ${commandInput}`,
+          );
           await callbacks.onUserInput(commandInput);
           return;
         }
@@ -7075,7 +7673,8 @@ export class App {
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
           providerRegistry: this.providerRegistry,
           // clearTerminal:true —— 用户显式 /model 切换，给目标模型清一次 terminal 拉黑（H2）。
-          setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
+          setModel: (m, persist) =>
+            this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
           setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist, updateState),
           setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),
           setEffort: (level, persist) => this.setEffortRuntime(level, persist),
@@ -7172,7 +7771,9 @@ export class App {
             // setToolJSX 回调：本项目当前无真 local-jsx 命令（dialog 走 activeDialog state），
             // 但保留接线以备未来 JSX 命令；渲染交给 activeDialog 机制，这里仅兜底关闭。
             const executor = new CommandExecutor(cmdCtxNew, {
-              setToolJSX: () => { /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */ },
+              setToolJSX: () => {
+                /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */
+              },
             });
             log.debug("TUI:CMD", `执行命令(新体系): /${cmd}`);
             execResult = await executor.executeSlashCommand(commandInput, commands);
@@ -7272,8 +7873,16 @@ export class App {
               // B3：/quit 退出也结束会话持久化（幂等）
               this.finalizeSessionStore();
               // 清理 crash marker（正常退出不残留）
-              try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-              try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+              try {
+                CrashMarker.cleanup(this.sessionState.sessionId);
+              } catch {
+                /* ignore */
+              }
+              try {
+                PidManager.cleanup(this.sessionState.sessionId);
+              } catch {
+                /* ignore */
+              }
               setTimeout(() => process.exit(0), 100);
             })();
             break;
@@ -7341,12 +7950,14 @@ export class App {
         patchSettingsFile("userSettings", "model", result.model);
 
         // 2. 更新内存 config
-        this.config.availableModels = [{
-          name: result.model,
-          provider: result.provider,
-          baseURL: result.baseURL || undefined,
-          apiKey: result.apiKey || undefined,
-        }];
+        this.config.availableModels = [
+          {
+            name: result.model,
+            provider: result.provider,
+            baseURL: result.baseURL || undefined,
+            apiKey: result.apiKey || undefined,
+          },
+        ];
         this.config.model = result.model;
         this.config.provider = result.provider;
         if (result.baseURL) this.config.baseURL = result.baseURL;
@@ -7369,7 +7980,9 @@ export class App {
             est.getContextLimit(result.model, this.config.availableModels),
             est.getMaxOutputTokens(result.model, this.config.availableModels),
           );
-        } catch { /* 窗口解析失败不影响配置，沿用旧窗口 */ }
+        } catch {
+          /* 窗口解析失败不影响配置，沿用旧窗口 */
+        }
 
         // 5. 刷新状态栏
         this.pushKnobDisplay();
@@ -7378,11 +7991,13 @@ export class App {
           needsOnboarding: false,
           model: result.model,
           provider: result.provider,
-          availableModels: [{
-            name: result.model,
-            provider: result.provider,
-            description: result.baseURL ? `${result.provider} (${result.baseURL})` : undefined,
-          }],
+          availableModels: [
+            {
+              name: result.model,
+              provider: result.provider,
+              description: result.baseURL ? `${result.provider} (${result.baseURL})` : undefined,
+            },
+          ],
         });
         log.info("TUI:ONBOARD", "配置已写入 settings.json，Provider 热加载成功");
       },
@@ -7475,7 +8090,10 @@ export class App {
 
     // 渲染 TUI（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口，--inline 逃生舱回退旧主屏 Static）
     const alternateBuffer = this.config.alternateBuffer === true;
-    log.info("TUI", `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏有界视口" : "主屏 Static 内联（--inline）"} 模式）`);
+    log.info(
+      "TUI",
+      `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏有界视口" : "主屏 Static 内联（--inline）"} 模式）`,
+    );
 
     const app = createFullScreen(
       React.createElement(TUIApp, {
@@ -7504,7 +8122,11 @@ export class App {
     // 不退出(用户已看到会话摘要却回不到提示符)。这正是"Ctrl+C 有时退出卡住"的根因。
     // 对齐 signal 路径的 forceExitTimer：提前注册(在所有 await 之前),最多 5s 强制退出。
     const forceExitTimer = setTimeout(() => {
-      try { log.warn("TUI", "退出清理超时(5s)，强制退出"); } catch { /* ignore */ }
+      try {
+        log.warn("TUI", "退出清理超时(5s)，强制退出");
+      } catch {
+        /* ignore */
+      }
       process.exit(0);
     }, 5000);
     forceExitTimer.unref();
@@ -7516,13 +8138,23 @@ export class App {
         this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
         new Promise((resolve) => setTimeout(resolve, 1200)),
       ]);
-    } catch { /* SessionEnd 落盘失败不阻塞退出 */ }
+    } catch {
+      /* SessionEnd 落盘失败不阻塞退出 */
+    }
     // B3：正常退出——唯一的"主路径" endSession。写 session_end 并把 currentFile 置 null，
     // 后续若 emergency 再调一次会安全 no-op（幂等）。
     this.finalizeSessionStore();
     // 清理 crash marker（正常退出不残留）
-    try { CrashMarker.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
-    try { PidManager.cleanup(this.sessionState.sessionId); } catch { /* ignore */ }
+    try {
+      CrashMarker.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      PidManager.cleanup(this.sessionState.sessionId);
+    } catch {
+      /* ignore */
+    }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
     stopAppConfigWatcher();
@@ -7534,11 +8166,11 @@ export class App {
 
     // 输出会话摘要到控制台
     const summary = getSessionMetrics().getSummary();
-    console.log('\n' + '─'.repeat(60));
-    console.log('会话摘要');
-    console.log('─'.repeat(60));
+    console.log("\n" + "─".repeat(60));
+    console.log("会话摘要");
+    console.log("─".repeat(60));
     console.log(summary);
-    console.log('─'.repeat(60) + '\n');
+    console.log("─".repeat(60) + "\n");
 
     log.info("TUI", "TUI 退出");
 

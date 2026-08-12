@@ -124,7 +124,10 @@ ${diffText}
 - 必要时引用 reference_answer 风格的可执行修改建议`;
 }
 
-async function spawnSidCode(prompt: string, opts: ReviewOptions): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
+async function spawnSidCode(
+  prompt: string,
+  opts: ReviewOptions,
+): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
   const { cmd, baseArgs } = resolveExecutable();
 
   const cmdArgs: string[] = [...baseArgs, "-p", "--output-format", "json"];
@@ -232,7 +235,9 @@ export async function handleReviewCommand(args: string[]): Promise<void> {
   const fullPrompt = `${systemPrompt}\n\n---\n\n用户输入:\n${userQuery}`;
 
   // 4. spawn sid-code -p
-  console.error(`[sid-code review] 调用 code-review Skill (model=${opts.model || "default"}, diff=${diffText.length} chars)...`);
+  console.error(
+    `[sid-code review] 调用 code-review Skill (model=${opts.model || "default"}, diff=${diffText.length} chars)...`,
+  );
   const startedAt = Date.now();
   const result = await spawnSidCode(fullPrompt, opts);
   const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);

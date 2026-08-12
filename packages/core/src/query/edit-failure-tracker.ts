@@ -69,11 +69,22 @@ function classifyAdvice(errorText: string): string {
     return "多次都没找到匹配串，说明你手里的 old_string 与文件当前内容已对不上。请先用 read 重新读取该文件的最新内容，再用你**从 read 结果里原样复制**的片段作为 old_string，注意保留精确缩进与空白。";
   }
   // 歧义 / 不唯一：old_string 太短或有重复。
-  if (t.includes("模糊匹配歧义") || t.includes("多个位置") || t.includes("处匹配") || t.includes("replace_all")) {
+  if (
+    t.includes("模糊匹配歧义") ||
+    t.includes("多个位置") ||
+    t.includes("处匹配") ||
+    t.includes("replace_all")
+  ) {
     return "多次都是匹配不唯一或歧义。请把 old_string 加长——多带上下几行紧邻的、能唯一定位的上下文；若你本就想改所有同名处，则显式设置 replace_all=true。";
   }
   // 被外部修改 / 未读：先读后写守卫拦下。
-  if (t.includes("被外部修改") || t.includes("已被修改") || t.includes("先完整 read") || t.includes("没有读取") || t.includes("先 read")) {
+  if (
+    t.includes("被外部修改") ||
+    t.includes("已被修改") ||
+    t.includes("先完整 read") ||
+    t.includes("没有读取") ||
+    t.includes("先 read")
+  ) {
     return "文件在你读取后发生了变化，或尚未完整读取。请先重新 read 整个文件拿到最新内容，再基于最新内容编辑。";
   }
   // 截断 / 超大文件：换分段或流式工具。

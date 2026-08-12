@@ -28,7 +28,8 @@ import type { ExecutionTestSpec } from "../core/types";
 
 export class ExecutionTestGrader implements Grader {
   readonly type = "execution_test";
-  readonly description = "SWE-bench 风格 execution grading：sandbox 跑测试命令决定 binary pass/fail";
+  readonly description =
+    "SWE-bench 风格 execution grading：sandbox 跑测试命令决定 binary pass/fail";
 
   async grade(ctx: GraderContext): Promise<GraderResult> {
     const { caseYaml, providerResult } = ctx;
@@ -40,7 +41,10 @@ export class ExecutionTestGrader implements Grader {
 
     const spec = caseYaml.execution_test;
     if (!spec) {
-      return errResult(this.type, "case 未配置 execution_test（grader_type=execution_test 但无规则）");
+      return errResult(
+        this.type,
+        "case 未配置 execution_test（grader_type=execution_test 但无规则）",
+      );
     }
 
     // Step 1: 准备 fixture
@@ -113,16 +117,15 @@ export class ExecutionTestGrader implements Grader {
       // 从 agent 输出末尾提取 ```diff 或 ```patch 块
       const m = agentOutput.match(/```(?:diff|patch)\n([\s\S]*?)\n```/);
       if (!m) {
-        return { error: "agent 输出不含 ```diff/```patch 代码块（execution_test 期望 unified diff）" };
+        return {
+          error: "agent 输出不含 ```diff/```patch 代码块（execution_test 期望 unified diff）",
+        };
       }
       // 把 patch 写入 sandbox 一同放 files；verify_commands 第一条应是 git apply
       // —— 但更鲁棒的做法是直接预处理：在 fixtures 前加 patch 文件 + git apply 命令
       // 当前最小实现：把 patch 作为额外文件写入，留给 verify_commands 决定如何应用
       return {
-        files: [
-          ...files,
-          { path: "_agent.patch", content: m[1] },
-        ],
+        files: [...files, { path: "_agent.patch", content: m[1] }],
       };
     }
 

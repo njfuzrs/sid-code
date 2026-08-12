@@ -9,7 +9,11 @@ import type { GoalState } from "../goal/state.ts";
 import type { GoalEvalResult, EvalConfig } from "../goal/evaluator.ts";
 import type { Message } from "../llm/types.ts";
 import { evaluateGoal, extractEvalContext } from "../goal/evaluator.ts";
-import { checkGoalBudget, buildBudgetLimitMessage, buildBudgetWarningMessage } from "../goal/budget.ts";
+import {
+  checkGoalBudget,
+  buildBudgetLimitMessage,
+  buildBudgetWarningMessage,
+} from "../goal/budget.ts";
 import type { TurnUsage } from "../goal/budget.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
 import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
@@ -41,7 +45,12 @@ export interface GoalGateContext {
   goalConfig?: GoalConfig;
   blockedDetector: BlockedDetector;
   /** Trace 事件写入（可选——未注入则不写 trace） */
-  traceAppendEvent?: (event: { event: string; session_id: string; timestamp: string; data?: Record<string, unknown> }) => void;
+  traceAppendEvent?: (event: {
+    event: string;
+    session_id: string;
+    timestamp: string;
+    data?: Record<string, unknown>;
+  }) => void;
   sessionId?: string;
   /**
    * 缺口7（轮次口径统一）：会话累计轮次（跨用户消息不归零）。
@@ -67,12 +76,28 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   /** 需要显示给用户的系统消息 */
   systemMessages: Array<{ level: "info" | "warning"; text: string }>;
 }> {
-  const { goal, messages, turnUsage, evalConfig, goalConfig = DEFAULT_GOAL_CONFIG, blockedDetector, traceAppendEvent, sessionId, absoluteTurn, promptSeq } = ctx;
-  const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> = [];
+  const {
+    goal,
+    messages,
+    turnUsage,
+    evalConfig,
+    goalConfig = DEFAULT_GOAL_CONFIG,
+    blockedDetector,
+    traceAppendEvent,
+    sessionId,
+    absoluteTurn,
+    promptSeq,
+  } = ctx;
+  const injectMessages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }> }> =
+    [];
   const systemMessages: Array<{ level: "info" | "warning"; text: string }> = [];
 
   /** 写入 GoalGateDecision trace 事件 */
-  const emitTraceEvent = (reason: string, shouldContinue: boolean, extra?: Record<string, unknown>) => {
+  const emitTraceEvent = (
+    reason: string,
+    shouldContinue: boolean,
+    extra?: Record<string, unknown>,
+  ) => {
     if (!traceAppendEvent || !sessionId) return;
     try {
       traceAppendEvent({
@@ -98,7 +123,9 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
           ...extra,
         },
       });
-    } catch { /* trace 写入失败不阻断 */ }
+    } catch {
+      /* trace 写入失败不阻断 */
+    }
   };
 
   // 1. 预算检查（在评估之前，省下评估调用费用）
@@ -106,7 +133,10 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     const budgetStatus = checkGoalBudget(goal, turnUsage);
     if (budgetStatus === "exceeded") {
       goal.status = "budget_limited";
-      log.warn("GOAL_GATE", `预算耗尽: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, 停止循环`);
+      log.warn(
+        "GOAL_GATE",
+        `预算耗尽: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, 停止循环`,
+      );
       injectMessages.push({
         role: "user",
         content: [{ type: "text", text: buildBudgetLimitMessage(goal) }],
@@ -120,12 +150,18 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       };
     }
     if (budgetStatus === "warning") {
-      log.info("GOAL_GATE", `预算预警: ratio=${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%`);
+      log.info(
+        "GOAL_GATE",
+        `预算预警: ratio=${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%`,
+      );
       injectMessages.push({
         role: "user",
         content: [{ type: "text", text: buildBudgetWarningMessage(goal) }],
       });
-      systemMessages.push({ level: "warning", text: `Goal 预算预警 (${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%)` });
+      systemMessages.push({
+        level: "warning",
+        text: `Goal 预算预警 (${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%)`,
+      });
     }
   }
 
@@ -144,7 +180,10 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
 
   // 3. 前 N 轮跳过评估（模型刚开始，不可能已完成）
   if (goal.turnsUsed < evalConfig.minTurnsBeforeEval) {
-    log.debug("GOAL_GATE", `前 ${evalConfig.minTurnsBeforeEval} 轮跳过评估（当前第 ${goal.turnsUsed} 轮）`);
+    log.debug(
+      "GOAL_GATE",
+      `前 ${evalConfig.minTurnsBeforeEval} 轮跳过评估（当前第 ${goal.turnsUsed} 轮）`,
+    );
     emitTraceEvent("eval_skipped", true);
     return {
       result: { shouldContinue: true, completed: false, impossible: false },
@@ -189,7 +228,9 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   // 文案必须随 isGoalHardStopEnabled() 分支：默认（降级模式）达阈值后不会放行，只会持续
   // 注入软提醒直到 maxTurns/budget 兜底——若沿用「第 N 次将自动放行」文案会误导用户。
   if (evalResult.blockerKey === "__evaluator_unavailable__") {
-    const failCount = blockedDetector["recentBlockerKeys"].filter(k => k === "__evaluator_unavailable__").length + 1;
+    const failCount =
+      blockedDetector["recentBlockerKeys"].filter((k) => k === "__evaluator_unavailable__").length +
+      1;
     const text = isGoalHardStopEnabled()
       ? `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，第 ${goalConfig.blockedThreshold} 次将自动放行。可 /goal clear 手动结束。`
       : `⚠️ Goal 评估器连续失败 ${failCount}/${goalConfig.blockedThreshold} 次，将持续提醒模型自行决定收尾（由轮次/预算上限兜底）。可 /goal clear 手动结束。`;
@@ -201,9 +242,18 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     if (isGoalHardStopEnabled()) {
       // 硬停止模式（需 SID_ENABLE_GOAL_HARD_STOP=1 显式开启）：保留旧的"即终止"行为。
       goal.status = "impossible";
-      log.warn("GOAL_GATE", `目标不可能达成（硬停止）: reason="${evalResult.reason}", turn=${goal.turnsUsed}`);
-      systemMessages.push({ level: "warning", text: `Goal 被判定为不可能达成: ${evalResult.reason}` });
-      emitTraceEvent("impossible", false, { evalReason: evalResult.reason, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+      log.warn(
+        "GOAL_GATE",
+        `目标不可能达成（硬停止）: reason="${evalResult.reason}", turn=${goal.turnsUsed}`,
+      );
+      systemMessages.push({
+        level: "warning",
+        text: `Goal 被判定为不可能达成: ${evalResult.reason}`,
+      });
+      emitTraceEvent("impossible", false, {
+        evalReason: evalResult.reason,
+        evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+      });
       return {
         result: { shouldContinue: false, completed: false, impossible: true, evalResult },
         injectMessages,
@@ -212,13 +262,28 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     }
     // 默认（降级模式）：不终止，注入软提醒把判断交还模型，继续循环（由 maxTurns/budget 兜底）。
     goal.lastEvalReason = evalResult.reason;
-    log.info("GOAL_GATE", `目标疑似不可能达成（降级为提醒，不终止）: reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`);
+    log.info(
+      "GOAL_GATE",
+      `目标疑似不可能达成（降级为提醒，不终止）: reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`,
+    );
     const impossibleReminder = buildImpossibleReminder(goal, evalResult);
     injectMessages.push({ role: "user", content: [{ type: "text", text: impossibleReminder }] });
-    systemMessages.push({ level: "warning", text: `评估者认为目标可能无法达成（${evalResult.reason?.slice(0, 60)}），已提醒模型自行决定` });
-    emitTraceEvent("impossible_soft", true, { evalReason: evalResult.reason, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+    systemMessages.push({
+      level: "warning",
+      text: `评估者认为目标可能无法达成（${evalResult.reason?.slice(0, 60)}），已提醒模型自行决定`,
+    });
+    emitTraceEvent("impossible_soft", true, {
+      evalReason: evalResult.reason,
+      evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+    });
     return {
-      result: { shouldContinue: true, completed: false, impossible: false, feedback: impossibleReminder, evalResult },
+      result: {
+        shouldContinue: true,
+        completed: false,
+        impossible: false,
+        feedback: impossibleReminder,
+        evalResult,
+      },
       injectMessages,
       systemMessages,
     };
@@ -227,9 +292,16 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   // 6. 目标达成
   if (evalResult.satisfied) {
     goal.status = "complete";
-    log.info("GOAL_GATE", `目标达成: reason="${evalResult.reason}", turn=${goal.turnsUsed}, progress=100`);
+    log.info(
+      "GOAL_GATE",
+      `目标达成: reason="${evalResult.reason}", turn=${goal.turnsUsed}, progress=100`,
+    );
     systemMessages.push({ level: "info", text: `✓ 目标达成: ${evalResult.reason}` });
-    emitTraceEvent("satisfied", false, { evalReason: evalResult.reason, progress: 100, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+    emitTraceEvent("satisfied", false, {
+      evalReason: evalResult.reason,
+      progress: 100,
+      evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+    });
     return {
       result: { shouldContinue: false, completed: true, impossible: false, evalResult },
       injectMessages,
@@ -242,12 +314,19 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     if (isGoalHardStopEnabled()) {
       // 硬停止模式（需 SID_ENABLE_GOAL_HARD_STOP=1 显式开启）：保留旧的"即暂停"行为。
       goal.status = "blocked";
-      log.warn("GOAL_GATE", `blocked 检测触发（硬停止）: blockerKey="${evalResult.blockerKey}", threshold=${goalConfig.blockedThreshold}, turn=${goal.turnsUsed}`);
+      log.warn(
+        "GOAL_GATE",
+        `blocked 检测触发（硬停止）: blockerKey="${evalResult.blockerKey}", threshold=${goalConfig.blockedThreshold}, turn=${goal.turnsUsed}`,
+      );
       systemMessages.push({
         level: "warning",
         text: `Goal 检测到卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因: ${evalResult.blockerKey}），已暂停`,
       });
-      emitTraceEvent("blocked", false, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+      emitTraceEvent("blocked", false, {
+        blockerKey: evalResult.blockerKey,
+        threshold: goalConfig.blockedThreshold,
+        evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+      });
       return {
         result: { shouldContinue: false, completed: false, impossible: false, evalResult },
         injectMessages,
@@ -258,16 +337,33 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     // 注意：命中后 blockedDetector 内部计数不重置——若模型换路后仍卡在同一 blockerKey，
     // 下一轮会再次命中并再提醒一次，直到换出新 blockerKey（重置）或触及轮次/预算上限。
     goal.lastEvalReason = evalResult.reason;
-    log.info("GOAL_GATE", `blocked 检测触发（降级为提醒，不终止）: blockerKey="${evalResult.blockerKey}", turn=${goal.turnsUsed}`);
-    const blockedReminder = buildBlockedReminder(goal, evalResult.blockerKey, goalConfig.blockedThreshold);
+    log.info(
+      "GOAL_GATE",
+      `blocked 检测触发（降级为提醒，不终止）: blockerKey="${evalResult.blockerKey}", turn=${goal.turnsUsed}`,
+    );
+    const blockedReminder = buildBlockedReminder(
+      goal,
+      evalResult.blockerKey,
+      goalConfig.blockedThreshold,
+    );
     injectMessages.push({ role: "user", content: [{ type: "text", text: blockedReminder }] });
     systemMessages.push({
       level: "warning",
       text: `Goal 疑似卡住（连续 ${goalConfig.blockedThreshold} 轮相同阻塞原因），已提醒模型换思路`,
     });
-    emitTraceEvent("blocked_soft", true, { blockerKey: evalResult.blockerKey, threshold: goalConfig.blockedThreshold, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+    emitTraceEvent("blocked_soft", true, {
+      blockerKey: evalResult.blockerKey,
+      threshold: goalConfig.blockedThreshold,
+      evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+    });
     return {
-      result: { shouldContinue: true, completed: false, impossible: false, feedback: blockedReminder, evalResult },
+      result: {
+        shouldContinue: true,
+        completed: false,
+        impossible: false,
+        feedback: blockedReminder,
+        evalResult,
+      },
       injectMessages,
       systemMessages,
     };
@@ -275,8 +371,16 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
 
   // 8. 未达成 → 注入反馈 + continue
   goal.lastEvalReason = evalResult.reason;
-  log.info("GOAL_GATE", `决策: shouldContinue=true, progress=${evalResult.progress ?? "?"}, reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`);
-  emitTraceEvent("continue", true, { progress: evalResult.progress, evalReason: evalResult.reason?.slice(0, 200), blockerKey: evalResult.blockerKey, evalTokensUsed: evalResult.evalTokensUsed ?? 0 });
+  log.info(
+    "GOAL_GATE",
+    `决策: shouldContinue=true, progress=${evalResult.progress ?? "?"}, reason="${evalResult.reason?.slice(0, 80)}", turn=${goal.turnsUsed}`,
+  );
+  emitTraceEvent("continue", true, {
+    progress: evalResult.progress,
+    evalReason: evalResult.reason?.slice(0, 200),
+    blockerKey: evalResult.blockerKey,
+    evalTokensUsed: evalResult.evalTokensUsed ?? 0,
+  });
   const feedback = buildGoalGateFeedback(goal, evalResult);
   injectMessages.push({
     role: "user",
@@ -352,7 +456,11 @@ function buildImpossibleReminder(goal: GoalState, evalResult: GoalEvalResult): s
 }
 
 /** 构造 blocked 软提醒（降级模式下注入，让模型换思路，而非直接终止）。 */
-function buildBlockedReminder(goal: GoalState, blockerKey: string | undefined, threshold: number): string {
+function buildBlockedReminder(
+  goal: GoalState,
+  blockerKey: string | undefined,
+  threshold: number,
+): string {
   return `<system-reminder>
 [Goal 卡住提示 — 第 ${goal.turnsUsed} 轮 / 最多 ${goal.maxTurns} 轮]
 

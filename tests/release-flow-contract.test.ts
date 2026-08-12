@@ -40,9 +40,9 @@ describe("release.sh：失败回滚（缺陷②）", () => {
     expect(trapPos).toBeLessThan(bumpPos);
   });
 
-  test("package.json 与 changelog 三产物都登记进回滚清单", () => {
+  test("package.json 与 changelog 产物都登记进回滚清单", () => {
     expect(RELEASE_SH).toContain('track_for_rollback "package.json"');
-    for (const f of ["CHANGELOG.md", "CHANGELOG.html", "website/.vitepress/data/changelog.json"]) {
+    for (const f of ["CHANGELOG.md", "website/.vitepress/data/changelog.json"]) {
       expect(RELEASE_SH).toContain(f);
     }
   });
@@ -104,7 +104,7 @@ describe("release.sh：上传原子性（缺陷③）", () => {
 
   test("latest.txt 仍在版本目录切换之后上传（指向的版本必须已完整）", () => {
     const swapPos = posOf("原子切换到");
-    const latestPos = posOf("latest.txt\" \"${DEPLOY_SSH_USER}");
+    const latestPos = posOf('latest.txt" "${DEPLOY_SSH_USER}');
     expect(swapPos).toBeGreaterThan(0);
     expect(latestPos).toBeGreaterThan(swapPos);
   });

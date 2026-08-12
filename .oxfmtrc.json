@@ -1,0 +1,111 @@
+{
+  // oxfmt 配置 —— 见 P2-1（docs-research 的「仓库文件入库与目录规范」方案 §4）。
+  //
+  // 为什么需要它：仓库原先只有 .editorconfig（编辑器级：缩进/行尾/末尾换行）与
+  // .oxlintrc.json（**lint 不管 format**）。没有 formatter 意味着每个人的编辑器按
+  // 自己的偏好排版，diff 里混入格式噪音，review 看不清真实改动。开源后外部贡献者的
+  // 编辑器配置更杂，这个问题会放大。
+  //
+  // 为什么选 oxfmt 而不是 prettier：
+  //   ⚠️ **不是**因为「kimi-code 也用它」—— 实测那是个未接线的残留配置文件
+  //   （.oxfmtrc.json 在，但 package.json 无 oxfmt 依赖、node_modules/oxfmt 不存在）。
+  //   ⚠️ 也**不是**因为「同一工具链零额外依赖」—— oxfmt 是独立 npm 包，不随 oxlint 附带。
+  //   真实理由：与已在用的 oxlint 同属 oxc，Rust 实现、量级与 oxlint 相当，
+  //   快到能进 pre-commit 而不会被人用 --no-verify 绕开（见 .oxlintrc.json 里的同款论证）。
+  //
+  // ⚠️ 版本钉死在 package.json（oxfmt@0.63.0，不用 ^ / ~）。0.x 意味着配置字段与默认值
+  //    仍可能变 —— 升级时单独一个 commit，并在同一个 commit 里重跑一次全仓 format，
+  //    否则「升级」与「格式漂移」两种改动会混在一起没法 review。
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+
+  // printWidth=100 是实测选出来的，不是抄默认值。
+  // 判据：在 packages/shared + packages/core/src/tool（110 文件）上跑 80/90/100/110/120，
+  // 首次格式化的改动行数分别是 4472 / 3050 / 2278 / 2116 / 2032 —— 100 是收益拐点
+  // （比 80 少一半改动，再放宽到 120 只再省 12%，却会让新代码普遍变宽）。
+  // 存量代码 85% 的行本就 ≤80 列，100 能让绝大多数既有换行保持原样。
+  "printWidth": 100,
+
+  // 以下四项与 .editorconfig 一字不差地对齐（indent_size=2 / indent_style=space /
+  // end_of_line=lf / insert_final_newline=true）。两边不一致的后果是编辑器与
+  // formatter 互相打架：保存一次变一种样子，git status 永远脏。改这里必须同步改
+  // .editorconfig，反之亦然。
+  "tabWidth": 2,
+  "useTabs": false,
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+
+  // 以下取值全部是「存量代码的实际风格」，不是新定的规范 —— 目的是让首次格式化
+  // 的 diff 尽量小，而不是趁机改造代码风格。
+  "semi": true,
+  "singleQuote": false,
+  "jsxSingleQuote": false,
+  "quoteProps": "as-needed",
+  "trailingComma": "all",
+  "bracketSpacing": true,
+  "arrowParens": "always",
+
+  // ⚠️ 这两项刻意关闭，不要开。
+  // sortImports：会重排所有 import。本仓有 import 顺序敏感的地方（副作用 import、
+  //   以及 packages/cli/src/vendor-embed.d.ts 那类声明），且它会把首次格式化的 diff
+  //   从「纯排版」变成「排版 + 大规模移动行」，让 blame 失真面积成倍扩大。
+  // sortPackageJson：实测它会把 packages/shared/package.json 的 "type" 挪到
+  //   "description" 之后。package.json 的键序是人有意排的（name/version/private/type
+  //   在前），排序器的算法与这个直觉不一致，改了纯属噪音。
+  "sortImports": false,
+  "sortPackageJson": false,
+
+  // node_modules 默认已跳过（见 --with-node-modules），不必在此列出。
+  // oxfmt 默认还会读 .gitignore / .prettierignore，所以被 ignore 的构建物自动不碰。
+  "ignorePatterns": [
+    // 第三方 vendor 代码：保持与上游可比对，套本仓风格会让 diff 失去意义。
+    // 这条与 .editorconfig 末尾那段同源，且 NOTICE 第 1 节要求不改动其形态。
+    "packages/tui-renderer/src/_vendor/**",
+
+    // 生成物：格式由生成器决定，格式化它等于让下次生成结果与工作区不一致
+    // （builtin-embedded.generated.ts 由 scripts/embed-builtin-skills.ts 产出；
+    //  website/ref/ 与 llms.txt 由 scripts/docs-gen-reference.ts 产出，且有
+    //  `--check` 反漂移门禁 —— 被 formatter 改一下门禁立刻红）。
+    "packages/core/src/skill/builtin-embedded.generated.ts",
+    "website/ref/**",
+    "website/public/llms.txt",
+    "evals/CASES.md",
+
+    // 机器产出的 JSON 数据（不是源码）—— 格式化它们等于跟生成器打架：
+    // 下次生成又写回原样，于是每次跑生成器 git status 就脏一次。
+    //   changelog.json  ← scripts/generate-changelog.ts（只有 release.sh 有资格生成）
+    //   _reports / _diagnoses/runs  ← 评测跑批的转储
+    //   tests/fixtures/vcr  ← 录制下来的 SSE 回放数据，要与真实 wire 内容保持可比对
+    //     （见 content-tracing 的设计：raw.jsonl 已是录制源，VCR 只做回放）
+    "website/.vitepress/data/changelog.json",
+    "evals/_reports/**",
+    "evals/_diagnoses/runs/**",
+    "packages/core/tests/fixtures/vcr/**",
+
+    // 快照由测试生成（当前为 0 个，先立规则免得将来有人踩）。
+    "**/*.snap",
+
+    // ⚠️ 首次接入刻意**只格式化代码**，把 yaml / markdown 排除在外。
+    // 这不是"忘了配"，两类都有具体理由，将来要开必须是独立一次改造 + 独立 commit：
+    //
+    // yaml（283 个会被改，其中 14 个在 evals/holdout/）：它们不是代码而是**评测 case 数据**，
+    //   里面有 baseline_scores 这类会被 runner 读写的字段。格式化它们零收益（没人 review
+    //   case 的排版），却会在评测资产里制造一次大规模 diff，并且 evals/holdout/ 是永封集
+    //   （check-holdout-real-tasks-sealed.sh 对 holdout-sids.txt 做 sha256 + 行数校验；
+    //   虽然当前门禁没覆盖 holdout 的 yaml 本体，但"永封"的语义就是不要去动它）。
+    // markdown（127 个会被改）：oxfmt 会把表格按显示宽度重排（实测 CJK 宽度算对了，
+    //   对齐是正确的），但会让本仓大量手写窄表在源码里变得很宽，且会动到 CLAUDE.md
+    //   这类"约定唯一事实源"。文档排版属于可读性偏好，不该和"消除代码 diff 噪音"
+    //   这个目标混在同一次改造里。
+    //
+    // 判据参照：现有的 lint script（oxlint）实际也只处理 JS/TS —— 对 .md 直接报
+    // "No files found to lint"。所以 format 与 lint 的**有效范围保持一致**，
+    // 而不是让 format 单方面扩到数据与文档。
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.md",
+
+    // ripgrep 二进制目录（保险起见显式排除，避免将来 oxfmt 扩展支持的文件类型时误入）。
+    "vendor/**",
+    "packages/core/vendor/**"
+  ]
+}

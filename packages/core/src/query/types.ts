@@ -62,7 +62,21 @@ export interface ProgressNotification {
 export type QueryLoopYield =
   // P1-G3：persistMeta 携带该次 API 调用的 usage/model/stopReason/msgId，仅用于会话落盘归因，
   // 不进 LLM 历史（不放 message._meta，避免污染后续请求体）。engine 持久化时透传给 store。
-  | { kind: "assistant_message"; message: Message; persistMeta?: { usage?: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }; model?: string; stopReason?: string; msgId?: string } }
+  | {
+      kind: "assistant_message";
+      message: Message;
+      persistMeta?: {
+        usage?: {
+          inputTokens?: number;
+          outputTokens?: number;
+          cacheReadInputTokens?: number;
+          cacheCreationInputTokens?: number;
+        };
+        model?: string;
+        stopReason?: string;
+        msgId?: string;
+      };
+    }
   | { kind: "tool_start"; toolName: string; toolInput?: unknown }
   | { kind: "tool_end"; toolName: string; result?: { isError?: boolean; elapsedMs?: number } }
   | { kind: "stream_text"; text: string }
@@ -542,7 +556,10 @@ export interface QueryDeps {
    * P0-2 / P0-3：读取当前 todo 状态快照（用于回注 + 完成度校验）。
    * 返回 null 表示无 todo 工具或无 todo 项。可 mock。
    */
-  getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  getTodoState?: () => {
+    todos: import("../tool/todo-write.ts").TodoItem[];
+    writeVersion: number;
+  } | null;
   /**
    * 修复 5 / 发现 4a：读取**终态**清单快照（含"全部完成"这一态），专供进度落盘 + 埋点。
    *
@@ -553,7 +570,10 @@ export interface QueryDeps {
    *
    * 未提供时 queryLoop 回退到 `getTodoState`（向后兼容，只是拿不到全完成终态）。可 mock。
    */
-  getTodoTerminalState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  getTodoTerminalState?: () => {
+    todos: import("../tool/todo-write.ts").TodoItem[];
+    writeVersion: number;
+  } | null;
   /**
    * 环节③ 假设登记表(Hypothesis Ledger)接入。返回 harness 持有的登记表实例,
    * queryLoop 每轮工具结果回流后用它做"新证据 vs open 假设证伪条件"匹配(机制2 矛盾中断),
@@ -594,7 +614,9 @@ export interface QueryDeps {
    * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，
    * 将产出的 pendingCacheEdits 注入 sendParams.cacheEdits。可选——未注入则跳过。
    */
-  getCachedMicrocompactState?: () => import("./compact/cached-microcompact.ts").CachedMicrocompactState | undefined;
+  getCachedMicrocompactState?: () =>
+    | import("./compact/cached-microcompact.ts").CachedMicrocompactState
+    | undefined;
   /**
    * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
    */
@@ -635,7 +657,12 @@ export interface QueryDeps {
    * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
    * 可选——未注入则不写 trace 事件。
    */
-  traceAppendEvent?: (event: { event: string; session_id: string; timestamp: string; data?: Record<string, unknown> }) => void;
+  traceAppendEvent?: (event: {
+    event: string;
+    session_id: string;
+    timestamp: string;
+    data?: Record<string, unknown>;
+  }) => void;
   /**
    * 上报重试状态到 TUI（app.ts 注入 → 写 TUIState.retryStatus，由 RetryStatus 组件渲染，
    * 带实时倒计时 + 限流建议）。超时重试用它替代此前 yield system 文本，与 fallback 引擎的

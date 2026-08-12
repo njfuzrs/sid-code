@@ -179,7 +179,13 @@ export class SessionState {
   }
 
   /** 更新 API 调用的用量统计 */
-  updateUsage(model: string, usage: Usage, durationMs: number, provider?: string, baseURL?: string): void {
+  updateUsage(
+    model: string,
+    usage: Usage,
+    durationMs: number,
+    provider?: string,
+    baseURL?: string,
+  ): void {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
     if (!this.modelUsage[model]) {
@@ -312,8 +318,10 @@ export class SessionState {
     if (!snapshot || typeof snapshot !== "object") return;
     this.totalCostUSD = typeof snapshot.totalCostUSD === "number" ? snapshot.totalCostUSD : 0;
     this.sideCostUSD = typeof snapshot.sideCostUSD === "number" ? snapshot.sideCostUSD : 0;
-    this.totalAPIDuration = typeof snapshot.totalAPIDuration === "number" ? snapshot.totalAPIDuration : 0;
-    this.totalToolDuration = typeof snapshot.totalToolDuration === "number" ? snapshot.totalToolDuration : 0;
+    this.totalAPIDuration =
+      typeof snapshot.totalAPIDuration === "number" ? snapshot.totalAPIDuration : 0;
+    this.totalToolDuration =
+      typeof snapshot.totalToolDuration === "number" ? snapshot.totalToolDuration : 0;
     const restored: Record<string, ModelUsageStats> = {};
     const src = snapshot.modelUsage;
     if (src && typeof src === "object") {
@@ -329,7 +337,10 @@ export class SessionState {
           requests: Number((s as ModelUsageStats).requests) || 0,
           costUSD: Number((s as ModelUsageStats).costUSD) || 0,
           cacheSavingsUSD: Number((s as ModelUsageStats).cacheSavingsUSD) || 0,
-          provider: typeof (s as ModelUsageStats).provider === "string" ? (s as ModelUsageStats).provider : "",
+          provider:
+            typeof (s as ModelUsageStats).provider === "string"
+              ? (s as ModelUsageStats).provider
+              : "",
         };
       }
     }
@@ -395,10 +406,10 @@ export class SessionState {
     const cacheWritePrice = pricing.cacheWrite ?? pricing.input * 1.25;
 
     let cost = 0;
-    cost += (n.uncachedInputTokens / 1_000_000) * pricing.input;   // 未命中全价
-    cost += (n.cacheHitTokens / 1_000_000) * cacheHitPrice;         // 命中
-    cost += (n.cacheWriteTokens / 1_000_000) * cacheWritePrice;     // 写入
-    cost += (n.outputTokens / 1_000_000) * pricing.output;          // 输出
+    cost += (n.uncachedInputTokens / 1_000_000) * pricing.input; // 未命中全价
+    cost += (n.cacheHitTokens / 1_000_000) * cacheHitPrice; // 命中
+    cost += (n.cacheWriteTokens / 1_000_000) * cacheWritePrice; // 写入
+    cost += (n.outputTokens / 1_000_000) * pricing.output; // 输出
 
     return cost;
   }
@@ -426,8 +437,7 @@ export class SessionState {
     const outputPrice = pricing?.output ?? SessionState.FALLBACK_PRICING.output;
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
-      (n.promptTotal / 1_000_000) * inputPrice +
-      (n.outputTokens / 1_000_000) * outputPrice;
+      (n.promptTotal / 1_000_000) * inputPrice + (n.outputTokens / 1_000_000) * outputPrice;
     const actual = this.calculateCost(model, usage, prov, baseURL);
     return Math.max(0, hypothetical - actual);
   }
@@ -458,7 +468,7 @@ export class SessionState {
   static inferProvider(model: string, availableModels?: PricingModelEntry[]): string {
     // 优先从用户配置的 availableModels 中查找
     if (availableModels?.length) {
-      const mc = availableModels.find(m => m.name === model);
+      const mc = availableModels.find((m) => m.name === model);
       if (mc?.provider) return mc.provider;
     }
     // 兜底启发式按**真名**判（与 inferPricingProvider 同口径）：别名带渠道前缀时
@@ -562,7 +572,8 @@ export class SessionState {
     for (const stats of Object.values(this.modelUsage)) {
       total.inputTokens += stats.cumulativePromptTokens;
       total.outputTokens += stats.outputTokens;
-      total.cacheCreationInputTokens = (total.cacheCreationInputTokens ?? 0) + stats.cacheCreationInputTokens;
+      total.cacheCreationInputTokens =
+        (total.cacheCreationInputTokens ?? 0) + stats.cacheCreationInputTokens;
       total.cacheReadInputTokens = (total.cacheReadInputTokens ?? 0) + stats.cacheReadInputTokens;
     }
     return total;

@@ -12,14 +12,24 @@ import {
   type GradeResult,
 } from "./outcome-grader.ts";
 import { gradeTrajectory, type TrajectoryMetrics } from "./trajectory-grader.ts";
-import { gradeProcess, aggregateScores, type JudgeConfig, type JudgeInput } from "./process-grader.ts";
+import {
+  gradeProcess,
+  aggregateScores,
+  type JudgeConfig,
+  type JudgeInput,
+} from "./process-grader.ts";
 import { extractAgentOutput, type AdapterConfig } from "./adapters/sid-code.ts";
 import { runSidCodeLive, type SidCodeLiveConfig } from "./adapters/sid-code-live.ts";
 import { parse as parseYaml } from "yaml";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-export type AdapterName = "sid-code-offline" | "sid-code-live" | "claude-code" | "codex" | "simulate";
+export type AdapterName =
+  | "sid-code-offline"
+  | "sid-code-live"
+  | "claude-code"
+  | "codex"
+  | "simulate";
 
 export interface RunConfig {
   benchDir: string; // bench/tasks/ 目录
@@ -108,8 +118,7 @@ async function runSingleTask(
     role: string;
     model?: string;
   }>;
-  const primaryEntry =
-    trajectorySids.find((t) => t.role === "primary") || trajectorySids[0];
+  const primaryEntry = trajectorySids.find((t) => t.role === "primary") || trajectorySids[0];
   const primaryModel = primaryEntry?.model || "unknown";
 
   // ── Adapter 抽取 agent output ──
@@ -134,9 +143,11 @@ async function runSingleTask(
       };
     }
   } else if (adapter === "sid-code-live" && config.liveAdapterConfig) {
-    const instructionText = ((task.instruction as Record<string, string>)?.text ||
+    const instructionText = (
+      (task.instruction as Record<string, string>)?.text ||
       (task.instruction as unknown as string) ||
-      "").slice(0, 4000);
+      ""
+    ).slice(0, 4000);
     const r = await runSidCodeLive(instructionText, config.liveAdapterConfig);
     output = r.output;
     metrics = r.metrics;
@@ -160,10 +171,7 @@ async function runSingleTask(
     yamlMaxSteps: expected.max_steps,
     estimatedTurns: task.estimated_turns as number | undefined,
   });
-  const outcomeResult = gradeOutcome(
-    { ...expected, max_steps: effectiveMaxSteps },
-    output,
-  );
+  const outcomeResult = gradeOutcome({ ...expected, max_steps: effectiveMaxSteps }, output);
 
   // Layer 2
   const trajectoryResult = gradeTrajectory(metrics, {
@@ -226,7 +234,9 @@ export async function runBench(config: RunConfig): Promise<TaskResult[]> {
     taskIds = entries.filter((e) => e.startsWith("T"));
   }
 
-  console.log(`Running bench: ${taskIds.length} tasks (adapter=${config.adapter || "sid-code-offline"})`);
+  console.log(
+    `Running bench: ${taskIds.length} tasks (adapter=${config.adapter || "sid-code-offline"})`,
+  );
   const results: TaskResult[] = [];
 
   for (let i = 0; i < taskIds.length; i++) {

@@ -39,7 +39,11 @@ afterAll(() => {
 
 const NOW = "2026-05-31T00:00:00Z";
 
-function rec(daysAgo: number, track: "execution" | "report", subset = "swe-bench-10"): AnchorRunRecord {
+function rec(
+  daysAgo: number,
+  track: "execution" | "report",
+  subset = "swe-bench-10",
+): AnchorRunRecord {
   const t = Date.parse(NOW) - daysAgo * 24 * 3600 * 1000;
   return {
     run_at: new Date(t).toISOString(),

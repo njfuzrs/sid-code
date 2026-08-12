@@ -11,13 +11,7 @@
  * 复用 concurrent.ts 的 PID 探活模式回收崩溃残留的锁（stale）。
  */
 
-import {
-  writeFileSync,
-  readFileSync,
-  unlinkSync,
-  existsSync,
-  mkdirSync,
-} from "fs";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { getVersion } from "@sid-code/shared/version.ts";

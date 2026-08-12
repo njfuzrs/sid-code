@@ -5,10 +5,10 @@
  * 参考 gemini-cli/packages/cli/src/ui/components/AnsiOutput.tsx
  */
 
-import React from 'react';
+import React from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import type { AnsiLine, AnsiOutput, AnsiToken } from '../types/ansi.ts';
+import type { AnsiLine, AnsiOutput, AnsiToken } from "../types/ansi.ts";
 
 const DEFAULT_HEIGHT = 24;
 
@@ -28,9 +28,7 @@ export const AnsiOutputText: React.FC<AnsiOutputProps> = ({
   disableTruncation,
 }) => {
   const availableHeightLimit =
-    availableTerminalHeight && availableTerminalHeight > 0
-      ? availableTerminalHeight
-      : undefined;
+    availableTerminalHeight && availableTerminalHeight > 0 ? availableTerminalHeight : undefined;
 
   const numLinesRetained =
     availableHeightLimit !== undefined && maxLines !== undefined

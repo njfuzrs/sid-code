@@ -78,8 +78,7 @@ describe("tokenizeCJK · CJK bigram 分词", () => {
     });
 
     test("OR 语义会让站内不存在的词命中（证明上一条断言不是摆设）", () => {
-      const orHits = (q: string) =>
-        tokenizeCJK(q).some((t) => index.has(t)); // 模拟 minisearch 默认 OR
+      const orHits = (q: string) => tokenizeCJK(q).some((t) => index.has(t)); // 模拟 minisearch 默认 OR
       // 「量子计算」站内不存在，但单字「子」被索引里的「钩子」贡献了 ——
       // 这正是真实浏览器里「量子计算」搜出 20 条噪音的机制。
       // AND 下不命中，OR 下命中，差别就在 combineWith。
@@ -90,15 +89,7 @@ describe("tokenizeCJK · CJK bigram 分词", () => {
 
   describe("CJK 段切分规则", () => {
     test("产出全部 1-gram 与全部相邻 2-gram", () => {
-      expect(tokenizeCJK("权限门控")).toEqual([
-        "权",
-        "限",
-        "门",
-        "控",
-        "权限",
-        "限门",
-        "门控",
-      ]);
+      expect(tokenizeCJK("权限门控")).toEqual(["权", "限", "门", "控", "权限", "限门", "门控"]);
     });
 
     test("单个汉字只出 1-gram，无 2-gram", () => {
@@ -123,18 +114,11 @@ describe("tokenizeCJK · CJK bigram 分词", () => {
   describe("非 CJK 段行为与默认分词保持一致", () => {
     test("按非词字符切分并小写化", () => {
       expect(tokenizeCJK("Hello World")).toEqual(["hello", "world"]);
-      expect(tokenizeCJK("sid-code --dump-tools")).toEqual([
-        "sid",
-        "code",
-        "dump",
-        "tools",
-      ]);
+      expect(tokenizeCJK("sid-code --dump-tools")).toEqual(["sid", "code", "dump", "tools"]);
     });
 
     test("下划线与数字保留在同一 token 内", () => {
-      expect(tokenizeCJK("MAX_NO_PROGRESS_NAGS2")).toEqual([
-        "max_no_progress_nags2",
-      ]);
+      expect(tokenizeCJK("MAX_NO_PROGRESS_NAGS2")).toEqual(["max_no_progress_nags2"]);
     });
 
     test("大小写不敏感：查询与索引都会小写化", () => {

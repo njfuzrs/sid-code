@@ -155,8 +155,15 @@ function checkAbruptEnding(content: string, filePath: string): string | undefine
   const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
 
   // HTML/JSX: 以未闭合的标签开头结尾（如 <div class="foo ）
-  if ((ext === ".html" || ext === ".htm" || ext === ".jsx" || ext === ".tsx" || ext === ".vue" || ext === ".svelte") &&
-      /^<[a-zA-Z][^>]*$/.test(lastLine)) {
+  if (
+    (ext === ".html" ||
+      ext === ".htm" ||
+      ext === ".jsx" ||
+      ext === ".tsx" ||
+      ext === ".vue" ||
+      ext === ".svelte") &&
+    /^<[a-zA-Z][^>]*$/.test(lastLine)
+  ) {
     return "末尾是未闭合的 HTML 标签，内容可能被截断";
   }
 

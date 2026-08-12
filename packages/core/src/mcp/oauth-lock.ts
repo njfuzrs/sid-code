@@ -9,7 +9,15 @@
  * 先返回的那次刷新作废另一次的 refresh_token（很多授权服务器刷新即轮换）。
  */
 
-import { mkdirSync, rmdirSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  rmdirSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { MCPServerConfig } from "../config/config.ts";
 import { sidPaths } from "../config/paths.ts";

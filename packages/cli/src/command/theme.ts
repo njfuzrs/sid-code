@@ -15,10 +15,18 @@ import type { Command, AppContext, CommandResult } from "./types.ts";
 import { themeManager } from "../ui/themes/theme-manager.ts";
 
 export class ThemeCommand implements Command {
-  name() { return "theme"; }
-  aliases() { return []; }
-  description() { return "显示或切换主题（-p 持久化）"; }
-  argumentHint() { return "[name|list] [-p]"; }
+  name() {
+    return "theme";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "显示或切换主题（-p 持久化）";
+  }
+  argumentHint() {
+    return "[name|list] [-p]";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const tokens = args.trim().split(/\s+/).filter(Boolean);
@@ -45,11 +53,7 @@ export class ThemeCommand implements Command {
     const current = themeManager.getActiveTheme();
     const themes = themeManager.getAvailableThemes();
 
-    const lines = [
-      `当前主题: ${current.name} (${current.type})`,
-      "",
-      "可用主题:",
-    ];
+    const lines = [`当前主题: ${current.name} (${current.type})`, "", "可用主题:"];
 
     for (const t of themes) {
       const marker = t.name === current.name ? " ✓" : "";
@@ -64,8 +68,9 @@ export class ThemeCommand implements Command {
   private switchTheme(themeName: string, persist: boolean): CommandResult {
     const success = themeManager.setActiveTheme(themeName);
     if (!success) {
-      const available = themeManager.getAvailableThemes()
-        .map(t => `  ${t.name}`)
+      const available = themeManager
+        .getAvailableThemes()
+        .map((t) => `  ${t.name}`)
         .join("\n");
       return {
         kind: "error",

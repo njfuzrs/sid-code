@@ -131,12 +131,18 @@ export async function runStatusLine(
     const chunks: Buffer[] = [];
     child.stdout?.on("data", (d: Buffer) => chunks.push(d));
     // stderr 只吞不显（避免污染 UI），调试时可看日志。
-    child.stderr?.on("data", () => { /* 丢弃 */ });
+    child.stderr?.on("data", () => {
+      /* 丢弃 */
+    });
 
     // 超时保护：到点强杀，回退内置。
     const timer = setTimeout(() => {
       log.warn("UI:STATUSLINE", `脚本超时 ${STATUSLINE_TIMEOUT_MS}ms，回退内置状态栏`);
-      try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* 已退出 */
+      }
       finish(null);
     }, STATUSLINE_TIMEOUT_MS);
 

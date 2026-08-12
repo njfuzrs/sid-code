@@ -134,7 +134,9 @@ export function parseFinalResponseFromStdout(stdout: string): {
   } catch {
     const m = trimmed.match(/\{[\s\S]*\}\s*$/);
     if (m) {
-      try { parsed = JSON.parse(m[0]); } catch {}
+      try {
+        parsed = JSON.parse(m[0]);
+      } catch {}
     }
   }
   if (!parsed) return { ...empty, text: trimmed.slice(0, 3000) };
@@ -389,14 +391,7 @@ export async function runSidCodeLive(
 
   // 注：sid-code 默认 trace=enabled，会自动落 ~/.sid-code/trajectories/sessions/<id>/session.traj
   // --trace-upload-disabled 阻止子进程跑完后上传到平台并清理本地（capability eval 必须保留本地 session.traj 供 adapter 读取）
-  const args = [
-    "run",
-    entrypoint,
-    "-p",
-    "--output-format",
-    "json",
-    "--trace-upload-disabled",
-  ];
+  const args = ["run", entrypoint, "-p", "--output-format", "json", "--trace-upload-disabled"];
   // model 可选：未传则用用户 ~/.sid-code/config.yaml 配置的默认 model
   if (config.model) {
     args.push("--model", config.model);
@@ -451,7 +446,9 @@ export async function runSidCodeLive(
   const startTs = Date.now();
 
   if (process.env.SID_CODE_LIVE_DEBUG === "1") {
-    console.error(`[live-adapter] spawn args: bun ${args.map((a) => (a.length > 80 ? a.slice(0, 80) + "..." : JSON.stringify(a))).join(" ")}`);
+    console.error(
+      `[live-adapter] spawn args: bun ${args.map((a) => (a.length > 80 ? a.slice(0, 80) + "..." : JSON.stringify(a))).join(" ")}`,
+    );
     console.error(`[live-adapter] spawn env keys: ${Object.keys(env).join(", ")}`);
     console.error(`[live-adapter] cwd: ${config.cwd}`);
   }
@@ -473,10 +470,9 @@ export async function runSidCodeLive(
   let stdout = "";
   let stderr = "";
   try {
-    const { buf, timedOut: streamTimedOut } = await readStreamUntilDone(
-      proc.stdout,
-      { deadlineMs: readerDeadlineMs },
-    );
+    const { buf, timedOut: streamTimedOut } = await readStreamUntilDone(proc.stdout, {
+      deadlineMs: readerDeadlineMs,
+    });
     stdout = buf;
 
     // stderr 独立读到 EOF 或 kill
@@ -496,7 +492,7 @@ export async function runSidCodeLive(
     ]);
 
     // 判定超时：Bun spawn timeout 触发（signalCode=SIGKILL）或 reader deadline 触发
-    const spawnTimedOut = proc.signalCode === "SIGKILL" && (Date.now() - startTs) >= timeoutMs * 0.9;
+    const spawnTimedOut = proc.signalCode === "SIGKILL" && Date.now() - startTs >= timeoutMs * 0.9;
     const timedOut = spawnTimedOut || streamTimedOut;
 
     return buildResult({
@@ -515,7 +511,7 @@ export async function runSidCodeLive(
       stdout,
       stderr: stderr + `\n[adapter] spawn error: ${String(err).slice(0, 500)}`,
       exitCode: null,
-      timedOut: (Date.now() - startTs) >= timeoutMs * 0.9,
+      timedOut: Date.now() - startTs >= timeoutMs * 0.9,
       startTs,
       trajectoriesDir,
       plansDir: join(home, ".sid-code", "plans"),
@@ -551,9 +547,7 @@ function buildResult(opts: {
   });
 
   const trajData = sessionDir ? readTrajectoryFile(sessionDir) : null;
-  const trajectory = (trajData?.trajectory || []) as Parameters<
-    typeof analyzeTrajectorySignals
-  >[0];
+  const trajectory = (trajData?.trajectory || []) as Parameters<typeof analyzeTrajectorySignals>[0];
   const meta = trajData?.metadata || {};
 
   const signals = trajectory.length

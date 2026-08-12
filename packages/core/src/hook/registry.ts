@@ -10,7 +10,10 @@ import {
   type HookConfig,
   type NewHooksConfig,
 } from "./types.ts";
-import type { HooksConfig as LegacyHooksConfig, HookConfig as LegacyHookConfig } from "../config/config.ts";
+import type {
+  HooksConfig as LegacyHooksConfig,
+  HookConfig as LegacyHookConfig,
+} from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 注册表条目 */
@@ -46,7 +49,7 @@ export class HookRegistry {
   initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
     const log = getLogger();
     // 保留已有的 runtime hook
-    const runtimeEntries = this.entries.filter(e => e.source === ConfigSource.Runtime);
+    const runtimeEntries = this.entries.filter((e) => e.source === ConfigSource.Runtime);
     this.entries = [...runtimeEntries];
     this.rebuildEventIndex();
 
@@ -73,7 +76,9 @@ export class HookRegistry {
           const missing =
             type === "url" ? "url" : type === "prompt" || type === "agent" ? "prompt" : "command";
           const looksNested =
-            legacyHook && typeof legacyHook === "object" && Array.isArray((legacyHook as { hooks?: unknown }).hooks);
+            legacyHook &&
+            typeof legacyHook === "object" &&
+            Array.isArray((legacyHook as { hooks?: unknown }).hooks);
           log.warn(
             "HOOK",
             looksNested
@@ -172,17 +177,22 @@ export class HookRegistry {
   /** 获取指定事件的所有 hook（已过滤禁用项和已执行的 once hook，按优先级排序） */
   getHooksForEvent(eventName: HookEventName): HookRegistryEntry[] {
     if (!this.hasHookForEvent(eventName)) return [];
-    let entries = this.entries
-      .filter(e => e.eventName === eventName && e.enabled && !(e.once && e.executed));
+    let entries = this.entries.filter(
+      (e) => e.eventName === eventName && e.enabled && !(e.once && e.executed),
+    );
 
     // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。
     // 门控读取 config.source，故过滤前把 entry.source 回填到 config.source（entry 与 config 分别存 source）。
     if (this.policyGate) {
       const gate = this.policyGate;
-      entries = entries.filter(e => gate.isHookAllowed({ ...e.config, source: e.config.source ?? e.source }));
+      entries = entries.filter((e) =>
+        gate.isHookAllowed({ ...e.config, source: e.config.source ?? e.source }),
+      );
     }
 
-    return entries.sort((a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source));
+    return entries.sort(
+      (a, b) => this.getSourcePriority(a.source) - this.getSourcePriority(b.source),
+    );
   }
 
   /**
@@ -340,7 +350,7 @@ export class HookRegistry {
       name: legacy.name,
       command: legacy.command,
       timeout: legacy.timeout,
-      async: legacy.async,           // G7：后台异步执行
+      async: legacy.async, // G7：后台异步执行
       asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
     };
   }
@@ -378,12 +388,18 @@ export class HookRegistry {
   /** 配置源优先级（数字越小优先级越高） */
   private getSourcePriority(source: ConfigSource): number {
     switch (source) {
-      case ConfigSource.Runtime: return 0;
-      case ConfigSource.Project: return 1;
-      case ConfigSource.User: return 2;
-      case ConfigSource.Plugin: return 3;
-      case ConfigSource.Global: return 4;
-      default: return 999;
+      case ConfigSource.Runtime:
+        return 0;
+      case ConfigSource.Project:
+        return 1;
+      case ConfigSource.User:
+        return 2;
+      case ConfigSource.Plugin:
+        return 3;
+      case ConfigSource.Global:
+        return 4;
+      default:
+        return 999;
     }
   }
 

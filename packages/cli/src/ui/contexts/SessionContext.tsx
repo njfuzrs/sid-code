@@ -48,19 +48,18 @@ interface SessionProviderProps {
 }
 
 export const SessionProvider: React.FC<SessionProviderProps> = ({ children, value }) => {
-  const memoized = useMemo(() => value, [
-    value.usage,
-    value.costUSD,
-    value.costLimit,
-    value.contextPercent,
-    value.contextTriggerPercent,
-    value.contextLevel,
-    value.turnStartOutputTokens,
-  ]);
-
-  return (
-    <SessionCtx.Provider value={memoized}>
-      {children}
-    </SessionCtx.Provider>
+  const memoized = useMemo(
+    () => value,
+    [
+      value.usage,
+      value.costUSD,
+      value.costLimit,
+      value.contextPercent,
+      value.contextTriggerPercent,
+      value.contextLevel,
+      value.turnStartOutputTokens,
+    ],
   );
+
+  return <SessionCtx.Provider value={memoized}>{children}</SessionCtx.Provider>;
 };

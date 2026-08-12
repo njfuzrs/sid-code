@@ -3,7 +3,7 @@
 感谢你愿意花时间改进 sid-code。本文只写**这个仓库真实生效的规则**，
 不写通用套话——凡是下面提到的门禁，都能在本地跑出来验证。
 
-面向 AI agent 的仓库约定另有一份 [AGENTS.md](./AGENTS.md)，
+面向 AI agent 的仓库约定在 [CLAUDE.md](./CLAUDE.md)，
 两份文件受众不同但规则一致：agent 与人遵守同一套门禁。
 
 ---
@@ -15,9 +15,11 @@
 
 但**本项目自身的许可不等于整个仓库都干净**，有一条必须在你动手前知道：
 
-> 第三方代码的来源与许可记录在 [NOTICE](./NOTICE)。其中 `src/ink/`（终端渲染底座）
+> 第三方代码的来源与许可记录在 [NOTICE](./NOTICE)。其中终端渲染底座（现 `packages/tui-renderer/src/`）
 > **含有我们未获授权的第三方增量修改**，正在被重构掉。
-> **改动 `src/ink/` 之前请先读 NOTICE 第 1 节**与 [`src/ink/README.md`](./src/ink/README.md)。
+> **改动 `packages/tui-renderer/src/` 之前请先读 NOTICE 第 1 节**与
+> [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md)。
+> （分包前它在 `src/ink/`。）
 
 我们宁愿在这里如实说明现状，也不想让你在不知情的前提下贡献代码。
 如果你发现 NOTICE 里的描述与事实不符（低估了外部来源比例、漏记来源），
@@ -91,11 +93,14 @@ make build      # 构建 + 产物自检，必须成功
 - CI **刻意不含** `tsc --noEmit`：仓库有存量类型错误（P1-3），暂不纳入门禁。
   但请不要新增类型错误。
 - `bun run lint` 跑 oxlint（P1-4，2026-08-10 接入），CI 与 pre-commit 都会拦。
-  规则集只开 correctness 档（真错误），不管风格——没有自动格式化兜底，
-  所以**请照着你改动周边的代码风格写**。规则口径与豁免理由见仓库根 `.oxlintrc.json`
-  的注释；提交前可以本地先跑一遍 `bun run lint`。
+  规则集只开 correctness 档（真错误），不管风格。规则口径与豁免理由见仓库根
+  `.oxlintrc.json` 的注释；提交前可以本地先跑一遍 `bun run lint`。
   （`bun run lint:fix` 也在，但当前唯一开启的规则 `no-unused-vars` oxlint 不做自动修复，
   跑了也是空操作——留着是为了将来规则集扩展后不用再补这个脚本。）
+- `bun run format` 跑 oxfmt（P2-1，2026-08-12 接入），CI 与 pre-commit 也都会拦
+  （拦的是 `bun run format:check`）。**排版不用再靠"照着周边写"**，交给它就行。
+  两个门禁都刻意只**报错**、不自动改你的文件：hook 里偷偷改工作区，会让你提交的内容
+  与你 review 过的内容不一致。红了就跑 `bun run format` 再 `git add`。
 
 ### 改了这些目录，还要重新生成官网参考页
 
@@ -116,10 +121,19 @@ pre-commit hook 有 `--check` 门禁会拦住这种漂移（未装 hook 先跑 `
 
 ## 代码风格
 
-有 `oxlint`（见上一节），但它只管正确性（未用变量这类真问题），不管排版/格式。
-排版这块以下是从现有代码里能观察到的实际约定：
+排版交给 **oxfmt**（`bun run format`，配置见仓库根 `.oxfmtrc.json`，每个取值都写了理由）。
+`oxlint` 管的是正确性（未用变量这类真问题），两者分工不重叠。所以**排版不必手调**，
+写完跑一次 format 就行。
+
+`.oxfmtrc.json` 有两处刻意的范围限制，改之前先读那里的注释：**yaml 与 markdown 不在
+格式化范围内**（yaml 是评测 case 数据、含 `evals/holdout/` 永封集；markdown 会被重排
+表格并动到 `CLAUDE.md` 这类约定事实源），生成物与 `packages/tui-renderer/src/_vendor/`
+也排除在外。
+
+风格约定本身（formatter 覆盖不到的部分）：
 
 - **TypeScript，2 空格缩进**（`src/` 下零 tab 缩进文件），LF 换行，文件末尾留一个换行。
+  这四项与 `.editorconfig` 和 `.oxfmtrc.json` 三处一致，改一处要同步改三处。
 - **注释用中文**，且注释解释**为什么**这么写，不解释代码在做什么。
   仓库里大量注释记录了「这里踩过什么坑、为什么不能改回去」——
   这类注释是资产，遇到时请读，不要因为「看着啰嗦」删掉。
@@ -195,7 +209,7 @@ PR 要求：
 - **bug / 功能请求**：用 [issue 模板](./.github/ISSUE_TEMPLATE/)，
   带上 `sid-code --version`、操作系统、可复现步骤。
 - **安全漏洞**：**不要开公开 issue**，按 [SECURITY.md](./SECURITY.md) 私下上报。
-- **版权 / 归属问题**（尤其涉及 `src/ink/`）：见 [NOTICE](./NOTICE) 第 1 节，
+- **版权 / 归属问题**（尤其涉及 `packages/tui-renderer/src/`，分包前的 `src/ink/`）：见 [NOTICE](./NOTICE) 第 1 节，
   或直接联系维护者。如果你发现 NOTICE 里的描述与事实不符（低估了外部来源比例、
   漏记来源、修改描述不准），**请指出来，我们会更正**——
   我们宁愿披露过度，也不要披露不足。

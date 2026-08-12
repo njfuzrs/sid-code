@@ -15,7 +15,10 @@ import { PROGRESS_FILLED, PROGRESS_EMPTY } from "../constants/figures.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import type { ModelPricing } from "@sid-code/core/api/cost-tracker.ts";
-import { getGitOperationStats, type GitOperationKind } from "@sid-code/core/tool/git-operation-tracking.ts";
+import {
+  getGitOperationStats,
+  type GitOperationKind,
+} from "@sid-code/core/tool/git-operation-tracking.ts";
 
 /** git 操作类型的中文标签（面板展示用）。 */
 const GIT_KIND_LABELS: Record<string, string> = {
@@ -120,7 +123,9 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
     const s = getGitOperationStats();
     return {
       total: s.total,
-      rows: (Object.entries(s.byKind) as Array<[GitOperationKind, number]>).filter(([, n]) => n > 0),
+      rows: (Object.entries(s.byKind) as Array<[GitOperationKind, number]>).filter(
+        ([, n]) => n > 0,
+      ),
     };
   }, []);
 
@@ -146,8 +151,16 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
     : undefined;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>会话统计</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        会话统计
+      </Text>
 
       <SectionTitle>Token 用量</SectionTitle>
       <StatRow label="输入 (input)">

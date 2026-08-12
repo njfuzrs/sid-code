@@ -100,7 +100,9 @@ export function shouldExtractSessionMemory(
 }
 
 /** 把内容按 # section 标题切成 { title, body } 段落 */
-export function splitSessionMemorySections(content: string): Array<{ title: string; body: string }> {
+export function splitSessionMemorySections(
+  content: string,
+): Array<{ title: string; body: string }> {
   const lines = content.split("\n");
   const sections: Array<{ title: string; body: string }> = [];
   let current: { title: string; body: string } | null = null;

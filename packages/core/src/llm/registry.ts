@@ -19,11 +19,11 @@ export interface SubAgentModelMap {
   /** 兜底默认：所有未单独指定的子代理类型都用它；未配则跟主模型。
    *  解析优先级：按类型显式配置 > default > 主模型。 */
   default?: string;
-  explore?: string;    // 代码探索（默认跟 default / 主模型）
-  task?: string;       // 任务执行（默认跟 default / 主模型）
-  plan?: string;       // 规划分析（默认跟 default / 主模型）
-  summarize?: string;  // 摘要总结（默认跟 default / 主模型）
-  verify?: string;     // 对抗式验证（默认跟 default / 主模型）
+  explore?: string; // 代码探索（默认跟 default / 主模型）
+  task?: string; // 任务执行（默认跟 default / 主模型）
+  plan?: string; // 规划分析（默认跟 default / 主模型）
+  summarize?: string; // 摘要总结（默认跟 default / 主模型）
+  verify?: string; // 对抗式验证（默认跟 default / 主模型）
   /**
    * 其它 agent 类型（`general-purpose` 及用户自定义 / plugin agent）。
    *
@@ -175,12 +175,17 @@ export class ProviderRegistry {
    */
   getModelForSubAgent(type: string): string {
     // 1 + 2：用户配置（按类型 > default）——永远优先，保留用户完全控制权。
-    const userConfigured = this.subAgentModels[type as keyof SubAgentModelMap] || this.subAgentModels.default;
+    const userConfigured =
+      this.subAgentModels[type as keyof SubAgentModelMap] || this.subAgentModels.default;
     if (userConfigured) return userConfigured;
 
     // 3 + 4：agent 定义驱动（frontmatter model > 语义档位）。resolveAgent 覆盖 built-in + custom + plugin。
     const def = (() => {
-      try { return resolveAgent(type); } catch { return undefined; }
+      try {
+        return resolveAgent(type);
+      } catch {
+        return undefined;
+      }
     })();
     if (def) {
       // 3：frontmatter/定义显式 model（P0-2）。"inherit" 已在解析层归一为不设，此处非空即用。
@@ -281,20 +286,42 @@ export class ProviderRegistry {
     // 子代理模型与主模型相同 → 复用主 spawn 配置
     if (model === this.config.model) {
       const base = this.getSpawnConfig();
-      return { model, wireModel, wireModelAliases, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+      return {
+        model,
+        wireModel,
+        wireModelAliases,
+        providerName: base.providerName,
+        apiKey: base.apiKey,
+        baseURL: base.baseURL,
+      };
     }
     // 子代理模型在 availableModels 中有独立配置 → 用其 provider/apiKey/baseURL
     const modelConfig = this.findModelConfig(model);
     if (modelConfig) {
       const providerName = modelConfig.provider || this.config.provider;
       const apiKey = modelConfig.apiKey || this.getApiKey(providerName);
-      const baseURL = modelConfig.baseURL
-        || (providerName === this.config.provider ? this.config.baseURL : undefined);
-      return { model, wireModel, wireModelAliases, providerName, apiKey, baseURL: baseURL || undefined };
+      const baseURL =
+        modelConfig.baseURL ||
+        (providerName === this.config.provider ? this.config.baseURL : undefined);
+      return {
+        model,
+        wireModel,
+        wireModelAliases,
+        providerName,
+        apiKey,
+        baseURL: baseURL || undefined,
+      };
     }
     // 未找到独立配置 → 沿用主 provider 配置，仅模型名不同（与 getProviderForSubAgent 末路径一致）
     const base = this.getSpawnConfig();
-    return { model, wireModel, wireModelAliases, providerName: base.providerName, apiKey: base.apiKey, baseURL: base.baseURL };
+    return {
+      model,
+      wireModel,
+      wireModelAliases,
+      providerName: base.providerName,
+      apiKey: base.apiKey,
+      baseURL: base.baseURL,
+    };
   }
 
   /** 获取子代理 Provider（根据模型在 availableModels 中的配置自动选择） */
@@ -311,7 +338,8 @@ export class ProviderRegistry {
     if (modelConfig) {
       const providerName = modelConfig.provider || this.config.provider;
       const apiKey = modelConfig.apiKey || this.getApiKey(providerName);
-      const baseURL = modelConfig.baseURL || (providerName === this.config.provider ? this.config.baseURL : "");
+      const baseURL =
+        modelConfig.baseURL || (providerName === this.config.provider ? this.config.baseURL : "");
       return this.getProviderFor(providerName, apiKey, baseURL);
     }
 
@@ -328,7 +356,7 @@ export class ProviderRegistry {
 
   /** 在 availableModels 中查找模型配置 */
   private findModelConfig(modelName: string): ModelConfig | undefined {
-    return this.config.availableModels?.find(m => m.name === modelName);
+    return this.config.availableModels?.find((m) => m.name === modelName);
   }
 
   /**

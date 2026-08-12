@@ -57,12 +57,13 @@ export class SkillActivationCoordinator {
    */
   init(allSkills: SkillDefinition[]): string[] {
     const unconditional = this.conditional.separate(allSkills);
-    const gatedNames = allSkills
-      .filter((s) => !unconditional.includes(s))
-      .map((s) => s.name);
+    const gatedNames = allSkills.filter((s) => !unconditional.includes(s)).map((s) => s.name);
     this.manager.setGatedSkills(gatedNames);
     if (gatedNames.length > 0) {
-      getLogger().info("SKILL", `${gatedNames.length} 个条件激活 skill 待触发: ${gatedNames.join(", ")}`);
+      getLogger().info(
+        "SKILL",
+        `${gatedNames.length} 个条件激活 skill 待触发: ${gatedNames.join(", ")}`,
+      );
     }
     // 列表注入基线对齐 reinit()（审计第 10 条）：冷启动时当前可见（无条件）skill
     // 已由 collectSkillListingEntries 经 system prompt 静态附件注入一轮，若不设基线，
@@ -170,7 +171,10 @@ export class SkillActivationCoordinator {
         this.pendingActivated.push(name);
       }
     } catch (err) {
-      getLogger().warn("SKILL", `条件激活异常（忽略）: ${err instanceof Error ? err.message : String(err)}`);
+      getLogger().warn(
+        "SKILL",
+        `条件激活异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     // ── P2-2：动态发现 ──
@@ -182,7 +186,10 @@ export class SkillActivationCoordinator {
           await this.loadDiscoveredDirs(newDirs);
         }
       } catch (err) {
-        getLogger().warn("SKILL", `动态发现异常（忽略）: ${err instanceof Error ? err.message : String(err)}`);
+        getLogger().warn(
+          "SKILL",
+          `动态发现异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -216,7 +223,10 @@ export class SkillActivationCoordinator {
       for (const s of newSkills) {
         if (!s.disableModelInvocation) this.pendingActivated.push(s.name);
       }
-      getLogger().info("SKILL", `动态发现 ${newSkills.length} 个 skill: ${newSkills.map((s) => s.name).join(", ")}`);
+      getLogger().info(
+        "SKILL",
+        `动态发现 ${newSkills.length} 个 skill: ${newSkills.map((s) => s.name).join(", ")}`,
+      );
     }
   }
 
@@ -242,7 +252,8 @@ export class SkillActivationCoordinator {
       // 增量：只发新激活且未发送过的
       const pendingSet = new Set(this.pendingActivated.map((n) => n.toLowerCase()));
       toSend = listable.filter(
-        (s) => pendingSet.has(s.name.toLowerCase()) && !this.sentSkillNames.has(s.name.toLowerCase()),
+        (s) =>
+          pendingSet.has(s.name.toLowerCase()) && !this.sentSkillNames.has(s.name.toLowerCase()),
       );
     }
 

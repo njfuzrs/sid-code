@@ -11,16 +11,40 @@ import { execFileSync } from "child_process";
 
 /** 形容词词库 */
 const ADJECTIVES = [
-  "brave", "calm", "clever", "eager", "gentle",
-  "happy", "keen", "lively", "noble", "quick",
-  "sharp", "steady", "swift", "warm", "wise",
+  "brave",
+  "calm",
+  "clever",
+  "eager",
+  "gentle",
+  "happy",
+  "keen",
+  "lively",
+  "noble",
+  "quick",
+  "sharp",
+  "steady",
+  "swift",
+  "warm",
+  "wise",
 ] as const;
 
 /** 名词词库 */
 const NOUNS = [
-  "bear", "crane", "deer", "eagle", "falcon",
-  "hawk", "lion", "otter", "panda", "raven",
-  "tiger", "whale", "wolf", "zebra", "fox",
+  "bear",
+  "crane",
+  "deer",
+  "eagle",
+  "falcon",
+  "hawk",
+  "lion",
+  "otter",
+  "panda",
+  "raven",
+  "tiger",
+  "whale",
+  "wolf",
+  "zebra",
+  "fox",
 ] as const;
 
 /** 生成词汇 Slug（如 brave-eagle-42）
@@ -73,11 +97,12 @@ export function formatPlanTime(d: Date = new Date()): string {
 export function resolvePlanProject(cwd: string): string {
   let root = cwd;
   try {
-    root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim() || cwd;
+    root =
+      execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim() || cwd;
   } catch {
     // 非 git 环境，用 cwd
   }
@@ -90,10 +115,10 @@ export function resolvePlanProject(cwd: string): string {
  */
 export function sanitizeProjectName(raw: string): string {
   const cleaned = raw
-    .replace(/[/\\\x00-\x1f]/g, "")       // 路径分隔符 + 控制字符
-    .replace(/[:*?"<>|]/g, "")             // Windows 敌对字符
-    .replace(/\s+/g, "-")                  // 空白转连字符
-    .replace(/^[.\-]+|[.\-]+$/g, "")       // 去首尾点/横线
+    .replace(/[/\\\x00-\x1f]/g, "") // 路径分隔符 + 控制字符
+    .replace(/[:*?"<>|]/g, "") // Windows 敌对字符
+    .replace(/\s+/g, "-") // 空白转连字符
+    .replace(/^[.\-]+|[.\-]+$/g, "") // 去首尾点/横线
     .slice(0, 50)
     .trim();
   return cleaned || "default";

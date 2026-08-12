@@ -68,26 +68,12 @@ jobs:
             --concurrency 3 \
             --sync
 
-      - name: Generate dashboard
-        run: bun run eval:dashboard
-
-      - name: Commit baseline updates
-        run: |
-          git config user.name "eval-bot"
-          git config user.email "eval-bot@users.noreply.github.com"
-          git add evals/p*-*/case_*.yaml evals/_runs/*.jsonl evals/_scores/ evals/DASHBOARD.md
-          if git diff --cached --quiet; then
-            echo "no changes to commit"
-          else
-            git commit -m "ci(eval): refresh baseline $(date -u +%FT%TZ)"
-            git push
-          fi
-
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: weekly-eval-reports
+          retention-days: 90
           path: |
             evals/_reports/
             evals/_runs/

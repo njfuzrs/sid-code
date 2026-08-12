@@ -57,11 +57,7 @@ export class SubAgentRunner implements AgentRunner {
     this.opts = opts;
   }
 
-  async run(
-    prompt: string,
-    opts: AgentOpts | undefined,
-    ctx: AgentCallContext,
-  ): Promise<unknown> {
+  async run(prompt: string, opts: AgentOpts | undefined, ctx: AgentCallContext): Promise<unknown> {
     const log = getLogger();
     const agentType = opts?.agentType ?? this.opts.defaultAgentType ?? "task";
 
@@ -90,10 +86,7 @@ export class SubAgentRunner implements AgentRunner {
             }
           };
         } catch (err) {
-          log.warn(
-            "WORKFLOW",
-            `worktree 创建失败,降级为非隔离执行: ${(err as Error).message}`,
-          );
+          log.warn("WORKFLOW", `worktree 创建失败,降级为非隔离执行: ${(err as Error).message}`);
         }
       } else {
         log.warn("WORKFLOW", "非 git 仓库,worktree 隔离降级为非隔离执行");

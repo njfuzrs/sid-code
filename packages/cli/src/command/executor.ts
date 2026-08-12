@@ -91,18 +91,12 @@ export class CommandExecutor {
    * immediate 命令的即时执行（模型运行时插队用）
    * 仅分发，不做 passthrough 判断
    */
-  async executeImmediate(
-    cmd: UnifiedCommand,
-    args: string,
-  ): Promise<CommandExecutionResult> {
+  async executeImmediate(cmd: UnifiedCommand, args: string): Promise<CommandExecutionResult> {
     return this.dispatch(cmd, args);
   }
 
   /** 按命令名/别名 + 子命令路径查找命令 */
-  findCommand(
-    name: string,
-    commands: UnifiedCommand[],
-  ): UnifiedCommand | undefined {
+  findCommand(name: string, commands: UnifiedCommand[]): UnifiedCommand | undefined {
     const parts = name.trim().split(/\s+/);
     const top =
       commands.find((c) => c.name === parts[0]) ??
@@ -113,9 +107,7 @@ export class CommandExecutor {
     let current = top;
     for (let i = 1; i < parts.length; i++) {
       const subs = current.subCommands?.() ?? [];
-      const found = subs.find(
-        (c) => c.name === parts[i] || c.aliases?.includes(parts[i]),
-      );
+      const found = subs.find((c) => c.name === parts[i] || c.aliases?.includes(parts[i]));
       if (!found) return current; // 子命令不存在 → 父命令处理参数
       current = found;
     }
@@ -123,10 +115,7 @@ export class CommandExecutor {
   }
 
   /** 按类型分发 */
-  private dispatch(
-    cmd: UnifiedCommand,
-    args: string,
-  ): Promise<CommandExecutionResult> {
+  private dispatch(cmd: UnifiedCommand, args: string): Promise<CommandExecutionResult> {
     // 漏斗 4 · 命令（P0-1）：斜杠命令使用分布，回答「哪些功能是死功能」。
     //
     // 埋在 dispatch 而非 executeSlashCommand，是为了同时覆盖 executeImmediate
@@ -163,9 +152,7 @@ export class CommandExecutor {
   }
 
   /** 将 LocalCommandResult 映射为执行引擎结果 */
-  private mapLocalResult(
-    result: LocalCommandResult,
-  ): CommandExecutionResult {
+  private mapLocalResult(result: LocalCommandResult): CommandExecutionResult {
     switch (result.type) {
       case "text":
         return { type: "message", value: result.value };
@@ -247,9 +234,8 @@ export class CommandExecutor {
     let registeredHookCount = 0;
 
     if (skill) {
-      const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import(
-        "@sid-code/core/skill/executor.ts"
-      );
+      const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } =
+        await import("@sid-code/core/skill/executor.ts");
       const auth = authorizeSkill(skill, { permissionRules: this.ctx.permissionRules });
       if (auth.decision === "deny") {
         return { type: "error", message: `权限拒绝：${auth.reason ?? skill.name}` };
@@ -328,9 +314,8 @@ export class CommandExecutor {
       let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
       let agentType: string | undefined;
       if (skill) {
-        const { normalizeSkillEffort, resolveSkillAgentType } = await import(
-          "@sid-code/core/skill/executor.ts"
-        );
+        const { normalizeSkillEffort, resolveSkillAgentType } =
+          await import("@sid-code/core/skill/executor.ts");
         effort = normalizeSkillEffort(skill.effort);
         agentType = await resolveSkillAgentType(skill.agent, skill.name);
       }
@@ -358,9 +343,7 @@ export class CommandExecutor {
         // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
         // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
         timeout:
-          cmd.timeoutMins != null
-            ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
-            : undefined,
+          cmd.timeoutMins != null ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000 : undefined,
         effort,
         // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
         type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
@@ -368,9 +351,7 @@ export class CommandExecutor {
 
       return {
         type: "message",
-        value: result.success
-          ? result.output
-          : `子代理执行失败: ${result.output}`,
+        value: result.success ? result.output : `子代理执行失败: ${result.output}`,
       };
     } catch (e: any) {
       return {

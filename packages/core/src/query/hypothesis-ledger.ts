@@ -164,9 +164,54 @@ export interface ContradictionHit {
 }
 
 const STOPWORDS = new Set([
-  "的","了","是","在","和","与","或","若","则","就","不","也","这","那","它","其",
-  "a","an","the","is","are","was","were","to","of","in","on","at","it","its","if","then",
-  "and","or","not","be","that","this","with","为","会","被","已","可","该","等","看到","显示",
+  "的",
+  "了",
+  "是",
+  "在",
+  "和",
+  "与",
+  "或",
+  "若",
+  "则",
+  "就",
+  "不",
+  "也",
+  "这",
+  "那",
+  "它",
+  "其",
+  "a",
+  "an",
+  "the",
+  "is",
+  "are",
+  "was",
+  "were",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "it",
+  "its",
+  "if",
+  "then",
+  "and",
+  "or",
+  "not",
+  "be",
+  "that",
+  "this",
+  "with",
+  "为",
+  "会",
+  "被",
+  "已",
+  "可",
+  "该",
+  "等",
+  "看到",
+  "显示",
 ]);
 
 /**
@@ -853,7 +898,12 @@ export class HypothesisLedger {
    *
    * 全量存储 items(含证据链/证伪线索/状态)+ seq(保持 id 单调递增,避免恢复后 register 撞号)。
    */
-  serialize(): { seq: number; items: Hypothesis[]; strategyNagged?: boolean; staleNagged?: boolean } {
+  serialize(): {
+    seq: number;
+    items: Hypothesis[];
+    strategyNagged?: boolean;
+    staleNagged?: boolean;
+  } {
     return {
       seq: this.seq,
       // 缺陷3：一次性标志随快照走。理由与 items 持久化同源——跨会话续做同一排查时
@@ -906,19 +956,41 @@ export class HypothesisLedger {
         id: h.id,
         statement: h.statement,
         falsifier: h.falsifier,
-        falsifierCues: Array.isArray(h.falsifierCues) ? h.falsifierCues.filter((c): c is string => typeof c === "string") : [],
+        falsifierCues: Array.isArray(h.falsifierCues)
+          ? h.falsifierCues.filter((c): c is string => typeof c === "string")
+          : [],
         status: h.status,
-        supporting: Array.isArray(h.supporting) ? h.supporting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
-        refuting: Array.isArray(h.refuting) ? h.refuting.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
+        supporting: Array.isArray(h.supporting)
+          ? h.supporting.filter(
+              (e): e is HypothesisEvidence =>
+                !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string",
+            )
+          : [],
+        refuting: Array.isArray(h.refuting)
+          ? h.refuting.filter(
+              (e): e is HypothesisEvidence =>
+                !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string",
+            )
+          : [],
         // 缺口4：旧快照没有 neutral 字段 → 回灌为空数组（安全降级：只是少了存疑证据的
         // 展示，不影响任何判据；绝不把旧的 refuting 内容挪过来伪造方向）。
-        neutral: Array.isArray(h.neutral) ? h.neutral.filter((e): e is HypothesisEvidence => !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string") : [],
+        neutral: Array.isArray(h.neutral)
+          ? h.neutral.filter(
+              (e): e is HypothesisEvidence =>
+                !!e && typeof e === "object" && typeof (e as HypothesisEvidence).note === "string",
+            )
+          : [],
         createdTurn: typeof h.createdTurn === "number" ? h.createdTurn : 0,
         updatedTurn: typeof h.updatedTurn === "number" ? h.updatedTurn : 0,
-        challengedFingerprints: Array.isArray(h.challengedFingerprints) ? h.challengedFingerprints.filter((f): f is string => typeof f === "string") : [],
+        challengedFingerprints: Array.isArray(h.challengedFingerprints)
+          ? h.challengedFingerprints.filter((f): f is string => typeof f === "string")
+          : [],
         // 缺口1：旧快照缺字段 → 0。降级方向是"确认后被打脸的历史丢了、门禁不拦"，
         // 与 strategyNagged 缺字段时的选择一致：宁可漏一次提醒，不要凭空造出一次拦截。
-        challengedAfterConfirm: typeof h.challengedAfterConfirm === "number" && h.challengedAfterConfirm >= 0 ? h.challengedAfterConfirm : 0,
+        challengedAfterConfirm:
+          typeof h.challengedAfterConfirm === "number" && h.challengedAfterConfirm >= 0
+            ? h.challengedAfterConfirm
+            : 0,
         // 打扰预算刻意**不**从快照恢复语义上的"已用尽"——resume 是新一段排查，
         // 让每条已确认假设重新有 MAX_REOPEN_CHALLENGES 次机会。同样是"宁可多提醒"。
         reopenChallengeCount: 0,
@@ -940,7 +1012,10 @@ export class HypothesisLedger {
       if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
     }
     this.items = restored;
-    const snapSeq = typeof (snapshot as { seq?: unknown }).seq === "number" ? (snapshot as { seq: number }).seq : 0;
+    const snapSeq =
+      typeof (snapshot as { seq?: unknown }).seq === "number"
+        ? (snapshot as { seq: number }).seq
+        : 0;
     this.seq = Math.max(snapSeq, maxSeq);
     // 缺陷3：一次性标志回灌（缺字段的旧快照 → false，即恢复后仍有一次提示机会，
     // 这是安全的降级方向：宁可多给一次有用提示，不要静默哑火）。

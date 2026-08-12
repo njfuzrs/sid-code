@@ -9,7 +9,14 @@ import { validateTrace } from "eval-framework/trace/agent-trace.ts";
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");
 
-function parseArgs(): { prompt: string; caseId: string; model: string | null; timeoutMs: number; maxTurns: number | null; permissionMode: string | null } {
+function parseArgs(): {
+  prompt: string;
+  caseId: string;
+  model: string | null;
+  timeoutMs: number;
+  maxTurns: number | null;
+  permissionMode: string | null;
+} {
   const argv = process.argv.slice(2);
   let prompt = "";
   let caseId = "unknown";
@@ -19,12 +26,19 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   let permissionMode: string | null = null;
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--prompt" && argv[i + 1]) { prompt = argv[++i]; }
-    else if (argv[i] === "--case-id" && argv[i + 1]) { caseId = argv[++i]; }
-    else if (argv[i] === "--model" && argv[i + 1]) { model = argv[++i]; }
-    else if (argv[i] === "--timeout" && argv[i + 1]) { timeoutMs = parseInt(argv[++i], 10) || timeoutMs; }
-    else if (argv[i] === "--max-turns" && argv[i + 1]) { maxTurns = parseInt(argv[++i], 10) || null; }
-    else if (argv[i] === "--permission-mode" && argv[i + 1]) { permissionMode = argv[++i]; }
+    if (argv[i] === "--prompt" && argv[i + 1]) {
+      prompt = argv[++i];
+    } else if (argv[i] === "--case-id" && argv[i + 1]) {
+      caseId = argv[++i];
+    } else if (argv[i] === "--model" && argv[i + 1]) {
+      model = argv[++i];
+    } else if (argv[i] === "--timeout" && argv[i + 1]) {
+      timeoutMs = parseInt(argv[++i], 10) || timeoutMs;
+    } else if (argv[i] === "--max-turns" && argv[i + 1]) {
+      maxTurns = parseInt(argv[++i], 10) || null;
+    } else if (argv[i] === "--permission-mode" && argv[i + 1]) {
+      permissionMode = argv[++i];
+    }
   }
 
   return { prompt, caseId, model, timeoutMs, maxTurns, permissionMode };
@@ -55,7 +69,9 @@ function parseStdoutJson(stdout: string): ParsedStdout {
   } catch {
     const m = trimmed.match(/\{[\s\S]*\}\s*$/);
     if (m) {
-      try { parsed = JSON.parse(m[0]); } catch {
+      try {
+        parsed = JSON.parse(m[0]);
+      } catch {
         // 整段都不是合法 JSON：直接当 abnormal（不再 fallback "把字符串当 text"，
         // 那会让 anchor_hit 偶然命中关键字给假高分）
         return { ...empty, abnormal: true, abnormalReason: "stdout 非合法 JSON" };
@@ -130,7 +146,14 @@ export interface TrajMeta {
 }
 
 export function readTrajectoryMeta(trajPath: string | null): TrajMeta {
-  const empty: TrajMeta = { toolsUsed: [], filesEdited: [], totalSteps: 0, exitStatus: null, totalCostUsd: 0, totalTokens: 0 };
+  const empty: TrajMeta = {
+    toolsUsed: [],
+    filesEdited: [],
+    totalSteps: 0,
+    exitStatus: null,
+    totalCostUsd: 0,
+    totalTokens: 0,
+  };
   if (!trajPath || !existsSync(trajPath)) return empty;
   try {
     const obj = JSON.parse(readFileSync(trajPath, "utf-8"));
@@ -150,7 +173,10 @@ export function readTrajectoryMeta(trajPath: string | null): TrajMeta {
   }
 }
 
-function readRawTokens(trajPath: string | null): { total: number; breakdown: { input: number; output: number; cache_creation: number; cache_read: number } } {
+function readRawTokens(trajPath: string | null): {
+  total: number;
+  breakdown: { input: number; output: number; cache_creation: number; cache_read: number };
+} {
   const empty = { total: 0, breakdown: { input: 0, output: 0, cache_creation: 0, cache_read: 0 } };
   if (!trajPath) return empty;
   const rawPath = join(trajPath, "..", "raw.jsonl");
@@ -170,7 +196,9 @@ function readRawTokens(trajPath: string | null): { total: number; breakdown: { i
     // 实验：case_028 用 claude-opus-4-7 跑出 result.usage = i:3053 o:6828 cc:173k cr:233k
     //   — i 是最后一次 API 调用的输入总量；o/cc/cr 是所有 turn 的累加。
     let lastInput = 0;
-    let output = 0, cc = 0, cr = 0;
+    let output = 0,
+      cc = 0,
+      cr = 0;
     for (const line of lines) {
       const usage = JSON.parse(line)?.response?.usage;
       if (usage) {
@@ -190,14 +218,18 @@ function readRawTokens(trajPath: string | null): { total: number; breakdown: { i
 }
 
 function analyzeTrajectorySignals(trajPath: string | null): {
-  errorCount: number; retryCount: number; backtrackCount: number;
+  errorCount: number;
+  retryCount: number;
+  backtrackCount: number;
 } {
   const empty = { errorCount: 0, retryCount: 0, backtrackCount: 0 };
   if (!trajPath || !existsSync(trajPath)) return empty;
   try {
     const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
     const steps = traj.trajectory || [];
-    let errorCount = 0, retryCount = 0, backtrackCount = 0;
+    let errorCount = 0,
+      retryCount = 0,
+      backtrackCount = 0;
     const editedFiles = new Map<string, number>();
     let prevToolName = "";
     let prevToolInput = "";
@@ -268,7 +300,9 @@ async function main() {
   const { prompt, caseId, model, timeoutMs, maxTurns, permissionMode } = parseArgs();
 
   if (!prompt) {
-    process.stdout.write(JSON.stringify({ output: "[ERROR] empty prompt", meta: {}, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({ output: "[ERROR] empty prompt", meta: {}, error: true }) + "\n",
+    );
     process.exit(1);
   }
 
@@ -279,7 +313,9 @@ async function main() {
   args.push(prompt);
 
   const startedAt = Date.now();
-  process.stderr.write(`[sid-code-live] spawn: bun ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`);
+  process.stderr.write(
+    `[sid-code-live] spawn: bun ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`,
+  );
 
   const child = spawn("bun", args, {
     cwd: REPO_ROOT,
@@ -300,32 +336,46 @@ async function main() {
   let resolved = false;
   let resolveMain: (code: number | null) => void;
 
-  const exitPromise = new Promise<number | null>((res) => { resolveMain = res; });
+  const exitPromise = new Promise<number | null>((res) => {
+    resolveMain = res;
+  });
 
   child.stdout?.on("data", (chunk) => {
     stdoutBuf += chunk.toString();
     if (!resolved && tryExtractCompleteJson(stdoutBuf)) {
       resolved = true;
-      process.stderr.write(`[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), trajectory已落盘 (SessionEnd 先于 stdout)\n`);
+      process.stderr.write(
+        `[sid-code-live] stdout JSON complete (${stdoutBuf.length}B), trajectory已落盘 (SessionEnd 先于 stdout)\n`,
+      );
       // app.ts 已经在打印 stdout 之前 await 完 SessionEnd，trajectory 已完整落盘。
       // 这里给 1s 让进程自然退出，否则强杀。不会丢 trajectory 数据。
       setTimeout(() => {
         if (!child.killed) {
           process.stderr.write(`[sid-code-live] kill child after JSON received\n`);
           child.kill("SIGTERM");
-          setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 2000);
+          setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {}
+          }, 2000);
         }
       }, 1000);
     }
   });
-  child.stderr?.on("data", (chunk) => { stderrBuf += chunk.toString(); });
+  child.stderr?.on("data", (chunk) => {
+    stderrBuf += chunk.toString();
+  });
 
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     process.stderr.write(`[sid-code-live] TIMEOUT after ${timeoutMs}ms, SIGTERM\n`);
     child.kill("SIGTERM");
-    setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
+    setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, 3000);
   }, timeoutMs);
 
   child.on("close", (code) => resolveMain(code));
@@ -368,11 +418,11 @@ async function main() {
   };
 
   process.stderr.write(
-    `[sid-code-live] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
-    + `stdout=${stdoutBuf.length}B stderr=${stderrBuf.length}B `
-    + `session=${parsed.sessionId || "missing"} `
-    + `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps} `
-    + `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`
+    `[sid-code-live] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms ` +
+      `stdout=${stdoutBuf.length}B stderr=${stderrBuf.length}B ` +
+      `session=${parsed.sessionId || "missing"} ` +
+      `tools=${meta.toolsUsed.join(",")} steps=${meta.totalSteps} ` +
+      `tokens=${totalTokens} errors=${trajSignals.errorCount}\n`,
   );
 
   // 校准诊断（2026-05-25 起，配对 claude-code wrapper 同名日志）：
@@ -380,21 +430,23 @@ async function main() {
   // 与 claude CLI result.usage 同语义。
   if (rawTokens > 0) {
     process.stderr.write(
-      `[sid-code-live calibration] raw.jsonl 末次 i（含全历史）+ 累加 o/cc/cr（${meta.totalSteps} turn）: `
-      + `i=${rawTokensInfo.breakdown.input} o=${rawTokensInfo.breakdown.output} `
-      + `cc=${rawTokensInfo.breakdown.cache_creation} cr=${rawTokensInfo.breakdown.cache_read} `
-      + `4sum=${rawTokens}\n`
+      `[sid-code-live calibration] raw.jsonl 末次 i（含全历史）+ 累加 o/cc/cr（${meta.totalSteps} turn）: ` +
+        `i=${rawTokensInfo.breakdown.input} o=${rawTokensInfo.breakdown.output} ` +
+        `cc=${rawTokensInfo.breakdown.cache_creation} cr=${rawTokensInfo.breakdown.cache_read} ` +
+        `4sum=${rawTokens}\n`,
     );
   }
 
   // abnormal 优先：stdout JSON 结构异常（abort / 仅 tool_use / 解析失败）
   // 立即返回 error，不再继续 anchor / rubric 流程（避免假数据）
   if (parsed.abnormal) {
-    process.stdout.write(JSON.stringify({
-      output: `[ERROR] sid-code-live stdout abnormal: ${parsed.abnormalReason ?? "unknown"}`,
-      meta: { ...metaOut, exit_status: "abnormal_stdout" },
-      error: true,
-    }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] sid-code-live stdout abnormal: ${parsed.abnormalReason ?? "unknown"}`,
+        meta: { ...metaOut, exit_status: "abnormal_stdout" },
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
 
@@ -403,11 +455,13 @@ async function main() {
     // （这也是 retry 隔离的最后一道防线：本次 attempt 的 trajectory 必须由本次 spawn 写出，
     //  缺失就让 runner 看到 error，不要 silent fallback）
     if (parsed.sessionId && (!trajPath || !existsSync(trajPath))) {
-      process.stdout.write(JSON.stringify({
-        output: `[ERROR] sid-code-live trajectory_path missing or not exist: session=${parsed.sessionId} path=${trajPath ?? "null"}`,
-        meta: metaOut,
-        error: true,
-      }) + "\n");
+      process.stdout.write(
+        JSON.stringify({
+          output: `[ERROR] sid-code-live trajectory_path missing or not exist: session=${parsed.sessionId} path=${trajPath ?? "null"}`,
+          meta: metaOut,
+          error: true,
+        }) + "\n",
+      );
       process.exit(0);
     }
 
@@ -422,7 +476,7 @@ async function main() {
           // 用短码 pad 成合法 UUID 保持可追溯性。
           const sid = parsed.sessionId;
           const padded = sid.padEnd(32, "0");
-          const uuidFromSid = `${padded.slice(0,8)}-${padded.slice(8,12)}-4${padded.slice(13,16)}-a${padded.slice(17,20)}-${padded.slice(20,32)}`;
+          const uuidFromSid = `${padded.slice(0, 8)}-${padded.slice(8, 12)}-4${padded.slice(13, 16)}-a${padded.slice(17, 20)}-${padded.slice(20, 32)}`;
           const trace = convertRawJsonlToTrace(rawText, {
             session_id: uuidFromSid,
             case_id: caseId !== "unknown" ? caseId : undefined,
@@ -447,20 +501,44 @@ async function main() {
   }
 
   if (timedOut) {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] sid-code-live TIMEOUT after ${timeoutMs}ms`, meta: metaOut, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] sid-code-live TIMEOUT after ${timeoutMs}ms`,
+        meta: metaOut,
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
   if (exitCode !== 0 && exitCode !== null) {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] sid-code-live exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`, meta: metaOut, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] sid-code-live exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`,
+        meta: metaOut,
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
 
-  process.stdout.write(JSON.stringify({ output: "[ERROR] empty output from sid-code-live", meta: metaOut, error: true }) + "\n");
+  process.stdout.write(
+    JSON.stringify({
+      output: "[ERROR] empty output from sid-code-live",
+      meta: metaOut,
+      error: true,
+    }) + "\n",
+  );
 }
 
 if (import.meta.main) {
   main().catch((err) => {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] sid-code-live wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] sid-code-live wrapper crash: ${err?.message || err}`,
+        meta: {},
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   });
 }

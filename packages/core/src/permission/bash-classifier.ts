@@ -120,12 +120,17 @@ export function buildClassifierUserPrompt(req: BashClassifyRequest): string {
  * 解析分类器响应（容错：剥离可能的 markdown 围栏、提取首个 JSON 对象）。
  * 解析失败返回 null（调用方据此走兜底）。
  */
-export function parseClassifierResponse(text: string): { safe: boolean; risk: RiskLevel; reason: string } | null {
+export function parseClassifierResponse(
+  text: string,
+): { safe: boolean; risk: RiskLevel; reason: string } | null {
   if (!text || typeof text !== "string") return null;
 
   // 剥离 markdown 代码围栏
   let cleaned = text.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  cleaned = cleaned
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
   // 提取首个 {...} JSON 对象（模型可能在 JSON 前后夹带文字）
   const start = cleaned.indexOf("{");
@@ -144,11 +149,12 @@ export function parseClassifierResponse(text: string): { safe: boolean; risk: Ri
 
   // safe 与 risk 一致性校验：以 risk 为准派生 safe，杜绝模型自相矛盾（risk=critical 却 safe=true）
   const safeByRisk = risk === "none" || risk === "low";
-  const safe = typeof parsed?.safe === "boolean" ? (parsed.safe && safeByRisk) : safeByRisk;
+  const safe = typeof parsed?.safe === "boolean" ? parsed.safe && safeByRisk : safeByRisk;
 
-  const reason = typeof parsed?.reason === "string" && parsed.reason.trim()
-    ? parsed.reason.trim()
-    : "（分类器未提供理由）";
+  const reason =
+    typeof parsed?.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim()
+      : "（分类器未提供理由）";
 
   return { safe, risk, reason };
 }
@@ -196,10 +202,20 @@ export class BashClassifier {
       return { safe: false, risk: "none", reason: "分类器未启用", classifierUnavailable: true };
     }
     if (!this.provider) {
-      return { safe: false, risk: "none", reason: "分类器无可用 Provider", classifierUnavailable: true };
+      return {
+        safe: false,
+        risk: "none",
+        reason: "分类器无可用 Provider",
+        classifierUnavailable: true,
+      };
     }
     if (!this.modelName) {
-      return { safe: false, risk: "none", reason: "分类器未指定模型名（需在 setProvider 时传入）", classifierUnavailable: true };
+      return {
+        safe: false,
+        risk: "none",
+        reason: "分类器未指定模型名（需在 setProvider 时传入）",
+        classifierUnavailable: true,
+      };
     }
 
     const startedAt = performance.now();
@@ -210,7 +226,13 @@ export class BashClassifier {
       const parsed = parseClassifierResponse(text);
       if (!parsed) {
         log.warn("BASH_CLASSIFIER", `响应解析失败，回退硬编码兜底: ${text.slice(0, 120)}`);
-        return { safe: false, risk: "high", reason: "分类器响应解析失败", classifierUnavailable: true, latencyMs };
+        return {
+          safe: false,
+          risk: "high",
+          reason: "分类器响应解析失败",
+          classifierUnavailable: true,
+          latencyMs,
+        };
       }
 
       log.info(
@@ -225,7 +247,13 @@ export class BashClassifier {
         "BASH_CLASSIFIER",
         `分类调用${aborted ? "被中断/超时" : "失败"}，回退硬编码兜底: ${err?.message || err}`,
       );
-      return { safe: false, risk: "high", reason: `分类器调用失败: ${err?.message || "未知错误"}`, classifierUnavailable: true, latencyMs };
+      return {
+        safe: false,
+        risk: "high",
+        reason: `分类器调用失败: ${err?.message || "未知错误"}`,
+        classifierUnavailable: true,
+        latencyMs,
+      };
     }
   }
 
@@ -242,9 +270,7 @@ export class BashClassifier {
     }
     const system = buildClassifierSystemPrompt();
     const userPrompt = buildClassifierUserPrompt(req);
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: userPrompt }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: userPrompt }] }];
     const model = modelName;
     const maxTokens = this.config.maxTokens ?? DEFAULT_MAX_TOKENS;
     const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -260,10 +286,7 @@ export class BashClassifier {
     try {
       // 优先非流式（更省、更直接）
       if (typeof provider.sendMessageNonStreaming === "function") {
-        const resp = await provider.sendMessageNonStreaming(
-          sendParams,
-          signal,
-        );
+        const resp = await provider.sendMessageNonStreaming(sendParams, signal);
         // 记录辅助调用用量
         if (resp.usage) {
           recordSideCall({

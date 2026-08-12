@@ -164,8 +164,7 @@ export class OtlpTelemetryExporter implements TelemetryExporter {
 
   constructor(options: OtlpTelemetryExporterOptions = {}) {
     const env = process.env;
-    const base =
-      options.endpoint ?? env.OTEL_EXPORTER_OTLP_ENDPOINT ?? DEFAULT_OTLP_ENDPOINT;
+    const base = options.endpoint ?? env.OTEL_EXPORTER_OTLP_ENDPOINT ?? DEFAULT_OTLP_ENDPOINT;
 
     this.tracesEndpoint = resolveSignalEndpoint(
       options.tracesEndpoint,

@@ -15,7 +15,7 @@ import { serializeToJson } from "./serialize-json.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
 
 /** 剪贴板大小保护阈值 */
-const CLIPBOARD_MD_MAX_BYTES = 256 * 1024;   // 256 KB
+const CLIPBOARD_MD_MAX_BYTES = 256 * 1024; // 256 KB
 const CLIPBOARD_JSON_MAX_BYTES = 512 * 1024; // 512 KB
 
 /** 单文件格式（用于序列化 + 剪贴板） */

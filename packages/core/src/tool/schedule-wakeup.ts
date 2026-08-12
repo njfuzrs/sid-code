@@ -31,14 +31,9 @@ const MAX_DELAY_S = 3600;
 
 const scheduleWakeupSchema = lazySchema(() =>
   z.object({
-    delay_seconds: z
-      .number()
-      .describe("距现在多少秒后唤醒一次。会被钳制到 [60, 3600]。"),
+    delay_seconds: z.number().describe("距现在多少秒后唤醒一次。会被钳制到 [60, 3600]。"),
     prompt: z.string().describe("唤醒时执行的 prompt"),
-    reason: z
-      .string()
-      .optional()
-      .describe("一句话说明为何选这个延迟（如「等 CI 跑完约 4 分钟」）"),
+    reason: z.string().optional().describe("一句话说明为何选这个延迟（如「等 CI 跑完约 4 分钟」）"),
   }),
 );
 
@@ -89,10 +84,7 @@ export class ScheduleWakeupTool implements Tool {
     }
 
     // 钳制延迟到 [60, 3600]
-    const clamped = Math.min(
-      MAX_DELAY_S,
-      Math.max(MIN_DELAY_S, Math.round(params.delay_seconds)),
-    );
+    const clamped = Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, Math.round(params.delay_seconds)));
 
     const now = Date.now();
     const task: CronTask = {

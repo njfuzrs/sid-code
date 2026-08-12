@@ -45,7 +45,8 @@ process.env.SID_CODE_CACHE_BREAKS = join(probeTmp, "cache-breaks.jsonl");
 const { loadConfig } = await import("@sid-code/core/config/config.ts");
 const { channelTrustPath } = await import("@sid-code/core/telemetry/channel-trust.ts");
 type ChannelTrustVerdict = import("@sid-code/core/telemetry/channel-trust.ts").ChannelTrustVerdict;
-type ChannelTrustRegistry = import("@sid-code/core/telemetry/channel-trust.ts").ChannelTrustRegistry;
+type ChannelTrustRegistry =
+  import("@sid-code/core/telemetry/channel-trust.ts").ChannelTrustRegistry;
 
 // ─── 成本护栏 ───
 
@@ -119,7 +120,9 @@ async function main(): Promise<void> {
     }
     for (const m of models) {
       const host = hostOf(m.baseURL ?? config.baseURL);
-      console.log(`  ${m.name.padEnd(28)} provider=${(m.provider ?? config.provider ?? "?").padEnd(10)} host=${host ?? "(默认)"}`);
+      console.log(
+        `  ${m.name.padEnd(28)} provider=${(m.provider ?? config.provider ?? "?").padEnd(10)} host=${host ?? "(默认)"}`,
+      );
     }
     return;
   }
@@ -204,7 +207,12 @@ function printHuman(r: {
     );
   }
   console.log("");
-  const tag = r.verdict.verdict === "untrusted" ? "⚠ 不可信" : r.verdict.verdict === "trusted" ? "✓ 可信" : "? 未知";
+  const tag =
+    r.verdict.verdict === "untrusted"
+      ? "⚠ 不可信"
+      : r.verdict.verdict === "trusted"
+        ? "✓ 可信"
+        : "? 未知";
   console.log(`  判定：${tag}`);
   if (r.verdict.failedCriteria?.length) {
     console.log(`  命中判据：${r.verdict.failedCriteria.join(", ")}`);

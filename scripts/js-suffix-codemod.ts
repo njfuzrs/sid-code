@@ -100,7 +100,9 @@ function main() {
 
         if (hasTs && hasTsx) {
           problems.push({
-            file: fileRel, line: i + 1, spec,
+            file: fileRel,
+            line: i + 1,
+            spec,
             kind: "ambiguous",
             detail: `同名 .ts 与 .tsx 并存：${relative(ROOT, base)}`,
           });
@@ -108,14 +110,17 @@ function main() {
         }
         if (!hasTs && !hasTsx) {
           problems.push({
-            file: fileRel, line: i + 1, spec,
+            file: fileRel,
+            line: i + 1,
+            spec,
             kind: "dangling",
             detail: `目标不存在：${relative(ROOT, base)}.{ts,tsx}`,
           });
           continue;
         }
         rewrites.push({
-          file: fileRel, line: i + 1,
+          file: fileRel,
+          line: i + 1,
           from: spec,
           to: `${m[1]!}${hasTs ? ".ts" : ".tsx"}`,
         });

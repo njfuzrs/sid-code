@@ -23,26 +23,26 @@
  *   加 --dry-run 只输出将要写入的结果，不落盘。
  *   结果以 JSON 输出到 stdout：{ ok, op, target, written, added:[], conflicts:[], transforms:[], skipped:[] }
  */
-import fs from 'node:fs';
-import path from 'node:path';
+import fs from "node:fs";
+import path from "node:path";
 
 /** sid-code 支持的 MCP server 字段（与 inspect-migration.mjs / src/config/settings/types.ts 对齐） */
 const MCP_FIELDS = new Set([
-  'transport',
-  'command',
-  'args',
-  'env',
-  'url',
-  'headers',
-  'enabled',
-  'timeout',
-  'retries',
-  'includeTools',
-  'excludeTools',
+  "transport",
+  "command",
+  "args",
+  "env",
+  "url",
+  "headers",
+  "enabled",
+  "timeout",
+  "retries",
+  "includeTools",
+  "excludeTools",
 ]);
 
 function fail(msg) {
-  process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + '\n');
+  process.stdout.write(JSON.stringify({ ok: false, error: msg }, null, 2) + "\n");
   process.exit(1);
 }
 
@@ -54,23 +54,39 @@ function parseArgs(argv) {
     patchFile: null,
     servers: null,
     serversFile: null,
-    onConflict: 'skip',
+    onConflict: "skip",
     dryRun: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => argv[++i];
     switch (arg) {
-      case '--op': opts.op = next(); break;
-      case '--target': opts.target = next(); break;
-      case '--patch': opts.patch = next(); break;
-      case '--patch-file': opts.patchFile = next(); break;
-      case '--servers': opts.servers = next(); break;
-      case '--servers-file': opts.serversFile = next(); break;
-      case '--on-conflict': opts.onConflict = next(); break;
-      case '--dry-run': opts.dryRun = true; break;
+      case "--op":
+        opts.op = next();
+        break;
+      case "--target":
+        opts.target = next();
+        break;
+      case "--patch":
+        opts.patch = next();
+        break;
+      case "--patch-file":
+        opts.patchFile = next();
+        break;
+      case "--servers":
+        opts.servers = next();
+        break;
+      case "--servers-file":
+        opts.serversFile = next();
+        break;
+      case "--on-conflict":
+        opts.onConflict = next();
+        break;
+      case "--dry-run":
+        opts.dryRun = true;
+        break;
       default:
-        if (arg.startsWith('--')) fail(`未知参数: ${arg}`);
+        if (arg.startsWith("--")) fail(`未知参数: ${arg}`);
     }
   }
   return opts;
@@ -78,9 +94,9 @@ function parseArgs(argv) {
 
 /** 去注释后 parse（兼容 Claude 侧 JSONC；sid-code 目标文件通常是纯 JSON） */
 function stripJsonComments(input) {
-  let out = '';
+  let out = "";
   let inString = false;
-  let quote = '';
+  let quote = "";
   let escaped = false;
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
@@ -88,13 +104,27 @@ function stripJsonComments(input) {
     if (inString) {
       out += ch;
       if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
+      else if (ch === "\\") escaped = true;
       else if (ch === quote) inString = false;
       continue;
     }
-    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
-    if (ch === '/' && nx === '/') { while (i < input.length && input[i] !== '\n') i++; out += '\n'; continue; }
-    if (ch === '/' && nx === '*') { i += 2; while (i < input.length && !(input[i] === '*' && input[i + 1] === '/')) i++; i++; continue; }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === "/" && nx === "/") {
+      while (i < input.length && input[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    if (ch === "/" && nx === "*") {
+      i += 2;
+      while (i < input.length && !(input[i] === "*" && input[i + 1] === "/")) i++;
+      i++;
+      continue;
+    }
     out += ch;
   }
   return out;
@@ -102,7 +132,7 @@ function stripJsonComments(input) {
 
 function readJsonFile(pathname) {
   if (!fs.existsSync(pathname)) return { exists: false, value: undefined };
-  const raw = fs.readFileSync(pathname, 'utf8');
+  const raw = fs.readFileSync(pathname, "utf8");
   try {
     return { exists: true, value: JSON.parse(stripJsonComments(raw)) };
   } catch (e) {
@@ -120,10 +150,10 @@ function parseJsonArg(str, label) {
 
 /** 从 Claude MCP server 配置推导 sid-code transport（与 inspector inferTransport 完全一致） */
 function inferTransport(cfg) {
-  const t = typeof cfg.type === 'string' ? cfg.type.toLowerCase() : '';
-  if (t === 'stdio' || t === 'http' || t === 'sse' || t === 'ws') return t;
-  if (cfg.command) return 'stdio';
-  if (cfg.url) return 'http';
+  const t = typeof cfg.type === "string" ? cfg.type.toLowerCase() : "";
+  if (t === "stdio" || t === "http" || t === "sse" || t === "ws") return t;
+  if (cfg.command) return "stdio";
+  if (cfg.url) return "http";
   return null;
 }
 
@@ -145,8 +175,8 @@ function convertMcpServer(name, cfg, transforms) {
     transforms.push(`${name}: 无法推导 transport（缺 type/command/url），已按原样保留待人工指定`);
   }
   for (const [key, value] of Object.entries(cfg)) {
-    if (key === 'type') continue; // 已转 transport
-    if (key === 'disabled') {
+    if (key === "type") continue; // 已转 transport
+    if (key === "disabled") {
       out.enabled = !value;
       transforms.push(`${name}: disabled=${value} -> enabled=${!value}`);
       continue;
@@ -157,16 +187,16 @@ function convertMcpServer(name, cfg, transforms) {
       dropped.push(key);
     }
   }
-  if (dropped.length) transforms.push(`${name}: 丢弃 sid-code 不支持字段 [${dropped.join(', ')}]`);
+  if (dropped.length) transforms.push(`${name}: 丢弃 sid-code 不支持字段 [${dropped.join(", ")}]`);
   return out;
 }
 
 /** 原子写：先写临时文件再 rename，避免半写坏文件 */
 function atomicWriteJson(pathname, value) {
   fs.mkdirSync(path.dirname(pathname), { recursive: true });
-  const text = JSON.stringify(value, null, 2) + '\n';
+  const text = JSON.stringify(value, null, 2) + "\n";
   const tmp = `${pathname}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, text, 'utf8');
+  fs.writeFileSync(tmp, text, "utf8");
   fs.renameSync(tmp, pathname);
 }
 
@@ -178,14 +208,15 @@ function atomicWriteJson(pathname, value) {
 function opMergeSettings(opts) {
   const patch = opts.patchFile
     ? readJsonFile(opts.patchFile).value
-    : parseJsonArg(opts.patch ?? '', '--patch');
-  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-    fail('--patch 必须是 JSON 对象');
+    : parseJsonArg(opts.patch ?? "", "--patch");
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    fail("--patch 必须是 JSON 对象");
   }
   const cur = readJsonFile(opts.target);
-  const base = cur.exists && cur.value && typeof cur.value === 'object' && !Array.isArray(cur.value)
-    ? cur.value
-    : {};
+  const base =
+    cur.exists && cur.value && typeof cur.value === "object" && !Array.isArray(cur.value)
+      ? cur.value
+      : {};
 
   const added = [];
   const conflicts = [];
@@ -193,15 +224,21 @@ function opMergeSettings(opts) {
 
   for (const [topKey, topVal] of Object.entries(patch)) {
     const isNamedMap =
-      topVal && typeof topVal === 'object' && !Array.isArray(topVal) &&
-      base[topKey] && typeof base[topKey] === 'object' && !Array.isArray(base[topKey]);
+      topVal &&
+      typeof topVal === "object" &&
+      !Array.isArray(topVal) &&
+      base[topKey] &&
+      typeof base[topKey] === "object" &&
+      !Array.isArray(base[topKey]);
     if (isNamedMap) {
       // 命名条目级合并（mcpServers.<name>、env.<KEY> 等）：逐条判冲突
       const merged = { ...base[topKey] };
       for (const [name, entry] of Object.entries(topVal)) {
         if (name in merged) {
-          if (opts.onConflict === 'overwrite') { merged[name] = entry; added.push(`${topKey}.${name} (覆盖)`); }
-          else conflicts.push(`${topKey}.${name}`);
+          if (opts.onConflict === "overwrite") {
+            merged[name] = entry;
+            added.push(`${topKey}.${name} (覆盖)`);
+          } else conflicts.push(`${topKey}.${name}`);
         } else {
           merged[name] = entry;
           added.push(`${topKey}.${name}`);
@@ -209,8 +246,10 @@ function opMergeSettings(opts) {
       }
       result[topKey] = merged;
     } else if (topKey in base) {
-      if (opts.onConflict === 'overwrite') { result[topKey] = topVal; added.push(`${topKey} (覆盖)`); }
-      else conflicts.push(topKey);
+      if (opts.onConflict === "overwrite") {
+        result[topKey] = topVal;
+        added.push(`${topKey} (覆盖)`);
+      } else conflicts.push(topKey);
     } else {
       result[topKey] = topVal;
       added.push(topKey);
@@ -221,7 +260,7 @@ function opMergeSettings(opts) {
   if (written) atomicWriteJson(opts.target, result);
   return {
     ok: true,
-    op: 'merge-settings',
+    op: "merge-settings",
     target: opts.target,
     written,
     dryRun: opts.dryRun,
@@ -239,31 +278,33 @@ function opMergeSettings(opts) {
 function opMergeMcp(opts) {
   const rawServers = opts.serversFile
     ? readJsonFile(opts.serversFile).value
-    : parseJsonArg(opts.servers ?? '', '--servers');
+    : parseJsonArg(opts.servers ?? "", "--servers");
   // 兼容传入 { mcpServers: {...} } 或直接传 { <name>: {...} }
   const servers = rawServers?.mcpServers ?? rawServers?.mcp_servers ?? rawServers;
-  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
-    fail('--servers 必须是 JSON 对象（mcpServers 映射，或含 mcpServers 字段的对象）');
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    fail("--servers 必须是 JSON 对象（mcpServers 映射，或含 mcpServers 字段的对象）");
   }
 
   const cur = readJsonFile(opts.target);
-  const base = cur.exists && cur.value && typeof cur.value === 'object' && !Array.isArray(cur.value)
-    ? cur.value
-    : {};
-  const existing = base.mcpServers && typeof base.mcpServers === 'object' && !Array.isArray(base.mcpServers)
-    ? { ...base.mcpServers }
-    : {};
+  const base =
+    cur.exists && cur.value && typeof cur.value === "object" && !Array.isArray(cur.value)
+      ? cur.value
+      : {};
+  const existing =
+    base.mcpServers && typeof base.mcpServers === "object" && !Array.isArray(base.mcpServers)
+      ? { ...base.mcpServers }
+      : {};
 
   const added = [];
   const conflicts = [];
   const transforms = [];
   for (const [name, cfg] of Object.entries(servers)) {
-    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
       transforms.push(`${name}: 跳过（server 配置不是对象）`);
       continue;
     }
     if (name in existing) {
-      if (opts.onConflict === 'overwrite') {
+      if (opts.onConflict === "overwrite") {
         existing[name] = convertMcpServer(name, cfg, transforms);
         added.push(`${name} (覆盖)`);
       } else {
@@ -280,7 +321,7 @@ function opMergeMcp(opts) {
   if (written) atomicWriteJson(opts.target, result);
   return {
     ok: true,
-    op: 'merge-mcp',
+    op: "merge-mcp",
     target: opts.target,
     written,
     dryRun: opts.dryRun,
@@ -293,16 +334,16 @@ function opMergeMcp(opts) {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  if (!opts.op) fail('缺少 --op（merge-settings | merge-mcp）');
-  if (!opts.target) fail('缺少 --target');
-  if (opts.onConflict !== 'skip' && opts.onConflict !== 'overwrite') {
-    fail('--on-conflict 只能是 skip 或 overwrite');
+  if (!opts.op) fail("缺少 --op（merge-settings | merge-mcp）");
+  if (!opts.target) fail("缺少 --target");
+  if (opts.onConflict !== "skip" && opts.onConflict !== "overwrite") {
+    fail("--on-conflict 只能是 skip 或 overwrite");
   }
   let out;
-  if (opts.op === 'merge-settings') out = opMergeSettings(opts);
-  else if (opts.op === 'merge-mcp') out = opMergeMcp(opts);
+  if (opts.op === "merge-settings") out = opMergeSettings(opts);
+  else if (opts.op === "merge-mcp") out = opMergeMcp(opts);
   else fail(`未知 --op: ${opts.op}`);
-  process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+  process.stdout.write(JSON.stringify(out, null, 2) + "\n");
 }
 
 main();

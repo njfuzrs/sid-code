@@ -75,7 +75,9 @@ export function formatDiagnostics(
     try {
       const { fileURLToPath } = require("url");
       displayPath = fileURLToPath(file.uri);
-    } catch { /* 保持原样 */ }
+    } catch {
+      /* 保持原样 */
+    }
 
     lines.push(`## ${displayPath}`);
     for (const diag of file.diagnostics) {

@@ -19,11 +19,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import { HookSystem } from "../hook/system.ts";
-import {
-  HookEventName,
-  LEGACY_EVENT_MAP,
-  type CommandHookConfig,
-} from "../hook/types.ts";
+import { HookEventName, LEGACY_EVENT_MAP, type CommandHookConfig } from "../hook/types.ts";
 
 /** 事件名解析（PascalCase 或旧 snake_case）；未知返回 null。 */
 function resolveEvent(name: string): HookEventName | null {
@@ -54,7 +50,10 @@ export function registerAgentHooks(
     }
     if (!Array.isArray(definitions)) continue;
 
-    for (const def of definitions as Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>) {
+    for (const def of definitions as Array<{
+      matcher?: string;
+      hooks?: Array<{ command?: string; timeout?: number }>;
+    }>) {
       if (!def || !Array.isArray(def.hooks)) continue;
       for (const hook of def.hooks) {
         if (!hook?.command) continue;
@@ -84,7 +83,10 @@ export function registerAgentHooks(
  * 为声明了 hooks 的 agent 构建专属隔离 HookSystem。
  * agent 未声明 hooks（或结构非法/注册数为 0）时返回 undefined，调用方回退共享 hookSystem。
  */
-export function buildAgentHookSystem(agentType: string, hooksConfig: unknown): HookSystem | undefined {
+export function buildAgentHookSystem(
+  agentType: string,
+  hooksConfig: unknown,
+): HookSystem | undefined {
   if (!hooksConfig || typeof hooksConfig !== "object") return undefined;
   const sys = new HookSystem();
   const n = registerAgentHooks(sys, agentType, hooksConfig);

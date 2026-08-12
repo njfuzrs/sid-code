@@ -66,7 +66,7 @@ function loadSession(dir: string, id: string): SessionData | null {
     if (!s || typeof s !== "object") continue;
     const tn = s.tool_name;
     if (!tn || typeof tn !== "string") continue;
-    const ti = (s.tool_input && typeof s.tool_input === "object") ? s.tool_input : {};
+    const ti = s.tool_input && typeof s.tool_input === "object" ? s.tool_input : {};
     let command: string | null = null;
     if (tn === "bash" && typeof ti.command === "string") command = ti.command;
     steps.push({ toolName: tn, toolInput: ti, command });
@@ -86,12 +86,18 @@ function pct(n: number, d: number): string {
  *  仅用于 git 归类的粗判——精确只读性交给 isReadOnlyCommand。 */
 function firstMeaningfulVerb(cmd: string): string {
   // 拆 && / ; / |，取第一个非 cd 段的首词
-  const segs = cmd.split(/&&|\|\||\||;/).map((s) => s.trim()).filter(Boolean);
+  const segs = cmd
+    .split(/&&|\|\||\||;/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   for (const seg of segs) {
     const tokens = seg.split(/\s+/);
     let i = 0;
     // 跳过 cd XXX 和 VAR=val 前缀
-    while (i < tokens.length && (tokens[i] === "cd" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) {
+    while (
+      i < tokens.length &&
+      (tokens[i] === "cd" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))
+    ) {
       if (tokens[i] === "cd") i += 2;
       else i += 1;
     }
@@ -201,7 +207,8 @@ function analyze(sessions: SessionData[]): Metrics {
       if (run.length >= 3) {
         const cmds = run.map((s) => (s.command ?? "").trim());
         // exact：段内是否存在连续 ≥3 完全相同
-        let maxSame = 1, cur = 1;
+        let maxSame = 1,
+          cur = 1;
         for (let k = 1; k < cmds.length; k++) {
           if (cmds[k] === cmds[k - 1] && cmds[k] !== "") cur++;
           else cur = 1;
@@ -259,7 +266,8 @@ function analyze(sessions: SessionData[]): Metrics {
             const nonBash = win.filter((s) => s.toolName !== "bash");
             const distinctInputs = new Set(win.map((s) => JSON.stringify(s.toolInput))).size;
             if (distinctInputs >= Math.ceil(win.length * 0.6)) {
-              verdict = nonBash.length > bashSteps.length ? "误判(多个不同工具)" : "误判(多个不同bash)";
+              verdict =
+                nonBash.length > bashSteps.length ? "误判(多个不同工具)" : "误判(多个不同bash)";
             } else {
               verdict = "疑似真循环(同参数反复)";
             }
@@ -344,35 +352,58 @@ function main() {
   const m = analyze(sessions);
 
   if (asJson) {
-    process.stdout.write(JSON.stringify({ ...m, sessionDirsTotal: refs.length, noTrajOrEmpty: noTraj }, null, 2) + "\n");
+    process.stdout.write(
+      JSON.stringify({ ...m, sessionDirsTotal: refs.length, noTrajOrEmpty: noTraj }, null, 2) +
+        "\n",
+    );
     return;
   }
 
   const L: string[] = [];
   L.push("═══════════ 循环检测利弊·真实轨迹量化 ═══════════");
-  L.push(`会话目录总数：${refs.length}   有可用 session.traj 且含工具调用：${m.scanned}   无轨迹/空：${noTraj}`);
-  L.push(`累计工具调用步数：${m.totalToolSteps}   其中 bash：${m.totalBashSteps} (${pct(m.totalBashSteps, m.totalToolSteps)})`);
+  L.push(
+    `会话目录总数：${refs.length}   有可用 session.traj 且含工具调用：${m.scanned}   无轨迹/空：${noTraj}`,
+  );
+  L.push(
+    `累计工具调用步数：${m.totalToolSteps}   其中 bash：${m.totalBashSteps} (${pct(m.totalBashSteps, m.totalToolSteps)})`,
+  );
   L.push("");
 
   L.push("── 指标1：重复 bash 命令（连续 ≥3 次同为 bash 的段）──");
-  L.push(`  段内存在「连续 ≥3 次完全相同 command」的会话：${m.sessionsWithExactBashRun} (${pct(m.sessionsWithExactBashRun, m.scanned)})，累计 ${m.exactBashRunOccurrences} 段  ← 会被 exact 检测器命中`);
-  L.push(`  「连续 ≥3 次 bash 但 command 不全相同」的会话：${m.sessionsWithDiffBashRun} (${pct(m.sessionsWithDiffBashRun, m.scanned)})，累计 ${m.diffBashRunOccurrences} 段  ← exact 漏判、但 shape 因退化会命中`);
+  L.push(
+    `  段内存在「连续 ≥3 次完全相同 command」的会话：${m.sessionsWithExactBashRun} (${pct(m.sessionsWithExactBashRun, m.scanned)})，累计 ${m.exactBashRunOccurrences} 段  ← 会被 exact 检测器命中`,
+  );
+  L.push(
+    `  「连续 ≥3 次 bash 但 command 不全相同」的会话：${m.sessionsWithDiffBashRun} (${pct(m.sessionsWithDiffBashRun, m.scanned)})，累计 ${m.diffBashRunOccurrences} 段  ← exact 漏判、但 shape 因退化会命中`,
+  );
   L.push("");
 
   L.push("── 指标2：重复 git 命令（连续 bash 段里 ≥3 条 git）──");
   L.push(`  含此类段的会话：${m.sessionsWithGitRun} (${pct(m.sessionsWithGitRun, m.scanned)})`);
   const gitTotal = m.gitRunReadOnly + m.gitRunSideEffect;
-  L.push(`  这些 git 命令：只读(status/log/diff/show...) ${m.gitRunReadOnly} 条 (${pct(m.gitRunReadOnly, gitTotal)})，有副作用(commit/push/add...) ${m.gitRunSideEffect} 条 (${pct(m.gitRunSideEffect, gitTotal)})`);
+  L.push(
+    `  这些 git 命令：只读(status/log/diff/show...) ${m.gitRunReadOnly} 条 (${pct(m.gitRunReadOnly, gitTotal)})，有副作用(commit/push/add...) ${m.gitRunSideEffect} 条 (${pct(m.gitRunSideEffect, gitTotal)})`,
+  );
   L.push("");
 
-  L.push("── 指标3：模拟开启 shape 检测（ToolShapeLoopDetector, DEFAULT_LOOP_CONFIG 窗口10/阈值7）──");
-  L.push(`  会触发 shape 循环告警的会话：${m.shapeHitSessions} (${pct(m.shapeHitSessions, m.scanned)})`);
-  L.push(`  其中触发窗口以「多个不同 bash / 多个不同工具」为主（≈误判）：${m.shapeHitBashDominant} (${pct(m.shapeHitBashDominant, m.shapeHitSessions)})`);
-  L.push(`  ⇒ 预估误判率 ≈ ${pct(m.shapeHitBashDominant, m.shapeHitSessions)}（误命中会话 / 总命中会话）`);
+  L.push(
+    "── 指标3：模拟开启 shape 检测（ToolShapeLoopDetector, DEFAULT_LOOP_CONFIG 窗口10/阈值7）──",
+  );
+  L.push(
+    `  会触发 shape 循环告警的会话：${m.shapeHitSessions} (${pct(m.shapeHitSessions, m.scanned)})`,
+  );
+  L.push(
+    `  其中触发窗口以「多个不同 bash / 多个不同工具」为主（≈误判）：${m.shapeHitBashDominant} (${pct(m.shapeHitBashDominant, m.shapeHitSessions)})`,
+  );
+  L.push(
+    `  ⇒ 预估误判率 ≈ ${pct(m.shapeHitBashDominant, m.shapeHitSessions)}（误命中会话 / 总命中会话）`,
+  );
   L.push("");
   L.push("  抽样（触发点前窗口）：");
   for (const s of m.shapeSamples.slice(0, 5)) {
-    L.push(`    [${s.id}] ${s.model ?? "?"}  判定=${s.verdict}  bash数=${s.bashCount} 其中不同命令=${s.distinctBashCmds}`);
+    L.push(
+      `    [${s.id}] ${s.model ?? "?"}  判定=${s.verdict}  bash数=${s.bashCount} 其中不同命令=${s.distinctBashCmds}`,
+    );
     for (const w of s.window.slice(-DEFAULT_LOOP_CONFIG.toolShapeThreshold)) {
       L.push(`        · ${w}`);
     }

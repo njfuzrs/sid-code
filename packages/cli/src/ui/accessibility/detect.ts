@@ -15,9 +15,7 @@
  */
 
 /** 判定是否应启用无障碍模式。纯函数，注入 env 便于单测。 */
-export function detectScreenReader(
-  env: Record<string, string | undefined> = process.env,
-): boolean {
+export function detectScreenReader(env: Record<string, string | undefined> = process.env): boolean {
   // 1. 显式开关优先。
   const explicit = env.SID_ACCESSIBILITY ?? env.SID_SCREEN_READER;
   if (explicit !== undefined) {

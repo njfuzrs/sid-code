@@ -5,7 +5,12 @@
  * 要求：必须先用 Read 工具读取文件后才能编辑（先读后改）
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
@@ -176,9 +181,8 @@ function tryRegexMatch(
 
   const replaceLines = replace.split("\n");
   const replaceRegex = new RegExp(pattern, replaceAll ? "gm" : "m");
-  const newContent = content.replace(
-    replaceRegex,
-    (_match, indent) => applyIndentation(replaceLines, indent || "").join("\n"),
+  const newContent = content.replace(replaceRegex, (_match, indent) =>
+    applyIndentation(replaceLines, indent || "").join("\n"),
   );
 
   return {
@@ -200,9 +204,7 @@ function levenshtein(a: string, b: string): number {
     dp[0] = i;
     for (let j = 1; j <= n; j++) {
       const temp = dp[j];
-      dp[j] = a[i - 1] === b[j - 1]
-        ? prev
-        : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
       prev = temp;
     }
   }
@@ -213,10 +215,10 @@ function stripWhitespace(s: string): string {
   return s.replace(/\s/g, "");
 }
 
-const FUZZY_THRESHOLD = 0.1;          // 允许 10% 差异
-const WHITESPACE_PENALTY = 0.1;       // 空白差异权重
-const FUZZY_MIN_LENGTH = 10;          // 最短触发长度
-const FUZZY_COMPLEXITY_LIMIT = 4e8;   // 复杂度保护
+const FUZZY_THRESHOLD = 0.1; // 允许 10% 差异
+const WHITESPACE_PENALTY = 0.1; // 空白差异权重
+const FUZZY_MIN_LENGTH = 10; // 最短触发长度
+const FUZZY_COMPLEXITY_LIMIT = 4e8; // 复杂度保护
 /**
  * 模糊匹配歧义边界：单处替换时，若次优候选分数与最优候选之差小于此值，
  * 判定为"歧义"（old_string 可能命中错误的相似块）并拒绝，避免静默错位替换。
@@ -233,7 +235,11 @@ function tryFuzzyMatch(
   if (search.length < FUZZY_MIN_LENGTH) return null;
 
   const sourceLines = content.match(/.*(?:\n|$)/g)?.slice(0, -1) ?? [];
-  const searchLines = search.match(/.*(?:\n|$)/g)?.slice(0, -1)?.map((l) => l.trimEnd()) ?? [];
+  const searchLines =
+    search
+      .match(/.*(?:\n|$)/g)
+      ?.slice(0, -1)
+      ?.map((l) => l.trimEnd()) ?? [];
   const N = searchLines.length;
   if (N === 0) return null;
 
@@ -244,7 +250,10 @@ function tryFuzzyMatch(
   const candidates: Array<{ index: number; score: number }> = [];
 
   for (let i = 0; i <= sourceLines.length - N; i++) {
-    const windowText = sourceLines.slice(i, i + N).map((l) => l.trimEnd()).join("\n");
+    const windowText = sourceLines
+      .slice(i, i + N)
+      .map((l) => l.trimEnd())
+      .join("\n");
     // 长度启发式过滤
     const lengthDiff = Math.abs(windowText.length - searchBlock.length);
     if (lengthDiff / searchBlock.length > FUZZY_THRESHOLD / WHITESPACE_PENALTY) continue;
@@ -278,9 +287,7 @@ function tryFuzzyMatch(
   // 此时宁可拒绝、让模型提供更精确的 old_string，也不赌一个可能改错地方的替换。
   if (!replaceAll) {
     const best = selected[0];
-    const runnerUp = candidates.find(
-      (c) => Math.abs(c.index - best.index) >= N,
-    );
+    const runnerUp = candidates.find((c) => Math.abs(c.index - best.index) >= N);
     if (runnerUp && runnerUp.score - best.score < FUZZY_AMBIGUITY_MARGIN) {
       // 用 occurrences=-1 作为"模糊歧义"信号，上层据此报专门的错误
       return { newContent: content, occurrences: -1, strategy: "fuzzy" };
@@ -321,8 +328,8 @@ function tryFuzzyMatch(
  */
 function normalizeQuotes(str: string): string {
   return str
-    .replace(/[\u201C\u201D]/g, '"')   // curly double quotes -> "
-    .replace(/[\u2018\u2019]/g, "'");  // curly single quotes -> '
+    .replace(/[\u201C\u201D]/g, '"') // curly double quotes -> "
+    .replace(/[\u2018\u2019]/g, "'"); // curly single quotes -> '
 }
 
 // ─── 主替换函数 ───────────────────────────────────────────────────────────────
@@ -355,7 +362,12 @@ function calculateReplacement(
     }
   }
 
-  const flexible = tryFlexibleMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
+  const flexible = tryFlexibleMatch(
+    normalizedContent,
+    normalizedSearch,
+    normalizedReplace,
+    replaceAll,
+  );
   if (flexible) return flexible;
 
   const regex = tryRegexMatch(normalizedContent, normalizedSearch, normalizedReplace, replaceAll);
@@ -411,7 +423,9 @@ export class EditTool implements Tool {
       const expanded = normalizeToolPath(filePath);
       if (expanded === filePath) return undefined;
       return { ...(input as any), file_path: expanded };
-    } catch { return undefined; }
+    } catch {
+      return undefined;
+    }
   }
 
   /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
@@ -421,7 +435,12 @@ export class EditTool implements Tool {
       return { behavior: "passthrough" };
     }
     const name = basename(filePath);
-    if (name.startsWith(".env") || name === "credentials.json" || name.endsWith(".pem") || name.endsWith(".key")) {
+    if (
+      name.startsWith(".env") ||
+      name === "credentials.json" ||
+      name.endsWith(".pem") ||
+      name.endsWith(".key")
+    ) {
       return { behavior: "ask", message: `编辑敏感文件需要确认: ${filePath}` };
     }
     return { behavior: "passthrough" };
@@ -498,7 +517,7 @@ export class EditTool implements Tool {
     if (!isDoc && newString.split("\n").length > 10) {
       const omissions = detectOmissionPlaceholders(newString, false, isPythonFile(filePath));
       if (omissions.length > 0) {
-        const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
+        const details = omissions.map((m) => `  行 ${m.line}: ${m.text}`).join("\n");
         return {
           output: `错误: new_string 中检测到省略占位符，请提供完整代码:\n${details}\n\n请重新生成完整的替换内容。`,
           isError: true,
@@ -621,9 +640,8 @@ export class EditTool implements Tool {
         this.tracker.updateMtime(filePath, finalContent);
       }
 
-      const strategyNote = result.strategy !== "exact"
-        ? `，使用${this.strategyLabel(result.strategy)}匹配`
-        : "";
+      const strategyNote =
+        result.strategy !== "exact" ? `，使用${this.strategyLabel(result.strategy)}匹配` : "";
       log.info("TOOL", `✓ 编辑 ${filePath} 完成 (${result.occurrences}处${strategyNote})`);
 
       // 结构化 diff 直传 UI 渲染(独立于回传 LLM 的文本);给 LLM 的 output 仅一句话摘要,

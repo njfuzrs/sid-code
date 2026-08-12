@@ -28,7 +28,9 @@ const registerSchema = lazySchema(() =>
     falsifier_cues: z
       .array(z.string())
       .optional()
-      .describe("可选:证伪条件的关键线索词(用于自动匹配矛盾证据)。不填则从 falsifier 文本自动提取。"),
+      .describe(
+        "可选:证伪条件的关键线索词(用于自动匹配矛盾证据)。不填则从 falsifier 文本自动提取。",
+      ),
     supporting_evidence: z
       .array(
         z.object({
@@ -73,8 +75,10 @@ function fmtHypothesis(h: Hypothesis): string {
     `${statusIcon} ${h.id} [${h.status}] ${h.statement}`,
     `   证伪条件: ${h.falsifier}`,
   ];
-  if (h.supporting.length) lines.push(`   支持(${h.supporting.length}): ${h.supporting.map((e) => e.note).join("; ")}`);
-  if (h.refuting.length) lines.push(`   反驳(${h.refuting.length}): ${h.refuting.map((e) => e.note).join("; ")}`);
+  if (h.supporting.length)
+    lines.push(`   支持(${h.supporting.length}): ${h.supporting.map((e) => e.note).join("; ")}`);
+  if (h.refuting.length)
+    lines.push(`   反驳(${h.refuting.length}): ${h.refuting.map((e) => e.note).join("; ")}`);
   return lines.join("\n");
 }
 

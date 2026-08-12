@@ -4,103 +4,103 @@
  * 参考 gemini-cli/packages/cli/src/ui/themes/builtin/light/default-light.ts
  */
 
-import { lightTheme, Theme } from '../../theme.ts';
-import { lightSemanticColors } from '../../semantic-tokens.ts';
+import { lightTheme, Theme } from "../../theme.ts";
+import { lightSemanticColors } from "../../semantic-tokens.ts";
 
 export const DefaultLight: Theme = new Theme(
-  'Default Light',
-  'light',
+  "Default Light",
+  "light",
   {
     hljs: {
-      display: 'block',
-      overflowX: 'auto',
-      padding: '0.5em',
+      display: "block",
+      overflowX: "auto",
+      padding: "0.5em",
       background: lightTheme.MessageBackground,
       color: lightTheme.Foreground,
     },
-    'hljs-comment': {
+    "hljs-comment": {
       color: lightTheme.Comment,
     },
-    'hljs-quote': {
+    "hljs-quote": {
       color: lightTheme.Comment,
     },
-    'hljs-variable': {
+    "hljs-variable": {
       color: lightTheme.Foreground,
     },
-    'hljs-keyword': {
+    "hljs-keyword": {
       color: lightTheme.AccentBlue,
     },
-    'hljs-selector-tag': {
+    "hljs-selector-tag": {
       color: lightTheme.AccentBlue,
     },
-    'hljs-built_in': {
+    "hljs-built_in": {
       color: lightTheme.AccentBlue,
     },
-    'hljs-name': {
+    "hljs-name": {
       color: lightTheme.AccentBlue,
     },
-    'hljs-tag': {
+    "hljs-tag": {
       color: lightTheme.AccentBlue,
     },
-    'hljs-string': {
+    "hljs-string": {
       color: lightTheme.AccentRed,
     },
-    'hljs-title': {
+    "hljs-title": {
       color: lightTheme.AccentRed,
     },
-    'hljs-section': {
+    "hljs-section": {
       color: lightTheme.AccentRed,
     },
-    'hljs-attribute': {
+    "hljs-attribute": {
       color: lightTheme.AccentRed,
     },
-    'hljs-literal': {
+    "hljs-literal": {
       color: lightTheme.AccentRed,
     },
-    'hljs-template-tag': {
+    "hljs-template-tag": {
       color: lightTheme.AccentRed,
     },
-    'hljs-template-variable': {
+    "hljs-template-variable": {
       color: lightTheme.AccentRed,
     },
-    'hljs-type': {
+    "hljs-type": {
       color: lightTheme.AccentRed,
     },
-    'hljs-addition': {
+    "hljs-addition": {
       color: lightTheme.AccentGreen,
     },
-    'hljs-deletion': {
+    "hljs-deletion": {
       color: lightTheme.AccentRed,
     },
-    'hljs-selector-attr': {
+    "hljs-selector-attr": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-selector-pseudo': {
+    "hljs-selector-pseudo": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-meta': {
+    "hljs-meta": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-doctag': {
+    "hljs-doctag": {
       color: lightTheme.Gray,
     },
-    'hljs-attr': {
+    "hljs-attr": {
       color: lightTheme.AccentRed,
     },
-    'hljs-symbol': {
+    "hljs-symbol": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-bullet': {
+    "hljs-bullet": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-link': {
+    "hljs-link": {
       color: lightTheme.AccentCyan,
     },
-    'hljs-emphasis': {
-      fontStyle: 'italic',
+    "hljs-emphasis": {
+      fontStyle: "italic",
     },
-    'hljs-strong': {
-      fontWeight: 'bold',
+    "hljs-strong": {
+      fontWeight: "bold",
     },
   },
   lightTheme,

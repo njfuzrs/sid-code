@@ -55,9 +55,7 @@ export function getBuiltinPluginDefinition(name: string): BuiltinPluginDefinitio
  *
  * @param enabledOverrides 来自 installed.json 的显式启用/禁用覆盖（按插件名）
  */
-export function getBuiltinPlugins(
-  enabledOverrides?: Record<string, boolean>,
-): LoadedPlugin[] {
+export function getBuiltinPlugins(enabledOverrides?: Record<string, boolean>): LoadedPlugin[] {
   const result: LoadedPlugin[] = [];
 
   for (const [name, def] of BUILTIN_PLUGINS) {
@@ -82,9 +80,7 @@ export function getBuiltinPlugins(
       skillsPaths: [],
       agentsPaths: [],
       hooksConfig: def.hooks,
-      mcpServers: def.mcpServers
-        ? addPluginScopeToServers(def.mcpServers, name)
-        : undefined,
+      mcpServers: def.mcpServers ? addPluginScopeToServers(def.mcpServers, name) : undefined,
     });
   }
 

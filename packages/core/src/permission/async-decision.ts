@@ -84,7 +84,9 @@ export async function resolvePermission(
 
     // Grace period timer
     if (options.userDecision && gracePeriodMs > 0) {
-      setTimeout(() => { graceExpired = true; }, gracePeriodMs);
+      setTimeout(() => {
+        graceExpired = true;
+      }, gracePeriodMs);
     }
 
     // Race 1: Hook 路径
@@ -129,10 +131,13 @@ export async function resolvePermission(
             log.debug("PERMISSION", "用户决策在 grace period 内,延迟处理");
             // 延迟到 grace 过期再检查
             const remaining = gracePeriodMs - (Date.now() - startTime);
-            setTimeout(() => {
-              if (resolved) return;
-              finish({ decision, source: "user", alwaysAllow });
-            }, Math.max(0, remaining));
+            setTimeout(
+              () => {
+                if (resolved) return;
+                finish({ decision, source: "user", alwaysAllow });
+              },
+              Math.max(0, remaining),
+            );
             return;
           }
           finish({ decision, source: "user", alwaysAllow });

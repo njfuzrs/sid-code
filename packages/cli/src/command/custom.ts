@@ -14,12 +14,26 @@ import { resolve } from "path";
 
 /** 保护命令名（不允许被自定义命令覆盖） */
 const PROTECTED_NAMES = new Set([
-  "help", "h", "?",
-  "exit", "quit", "q",
-  "clear", "compact", "cost",
-  "config", "model", "m",
-  "undo", "memory", "mem",
-  "sessions", "rewind", "stats", "init", "mcp",
+  "help",
+  "h",
+  "?",
+  "exit",
+  "quit",
+  "q",
+  "clear",
+  "compact",
+  "cost",
+  "config",
+  "model",
+  "m",
+  "undo",
+  "memory",
+  "mem",
+  "sessions",
+  "rewind",
+  "stats",
+  "init",
+  "mcp",
 ]);
 
 /**
@@ -57,11 +71,18 @@ export function parseCustomCommandOptions(
     opts.argumentHint = hint.trim();
   }
 
-  const rawTools = frontmatter["allowed-tools"] ?? frontmatter["allowedTools"] ?? frontmatter["tools"];
+  const rawTools =
+    frontmatter["allowed-tools"] ?? frontmatter["allowedTools"] ?? frontmatter["tools"];
   if (typeof rawTools === "string" && rawTools.trim()) {
-    opts.allowedTools = rawTools.split(",").map((s) => s.trim()).filter(Boolean);
+    opts.allowedTools = rawTools
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   } else if (Array.isArray(rawTools)) {
-    opts.allowedTools = rawTools.map(String).map((s) => s.trim()).filter(Boolean);
+    opts.allowedTools = rawTools
+      .map(String)
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
 
   const model = frontmatter["model"];
@@ -130,9 +151,8 @@ async function processShellInjections(
         maxBuffer: 10 * 1024 * 1024, // 10MB
       });
       // 截断超长输出
-      const truncated = output.length > 10000
-        ? output.slice(0, 10000) + "\n... [输出已截断]"
-        : output;
+      const truncated =
+        output.length > 10000 ? output.slice(0, 10000) + "\n... [输出已截断]" : output;
       result = result.replace(match[0], truncated.trimEnd());
     } catch (err: any) {
       const errMsg = err.stderr ? err.stderr.toString().trim() : err.message;
@@ -186,11 +206,19 @@ export class CustomCommand implements Command {
     this._options = options;
   }
 
-  name(): string { return this._name; }
-  aliases(): string[] { return []; }
-  description(): string { return this._description || `自定义命令: ${this._name}`; }
+  name(): string {
+    return this._name;
+  }
+  aliases(): string[] {
+    return [];
+  }
+  description(): string {
+    return this._description || `自定义命令: ${this._name}`;
+  }
   // P2-2：frontmatter argument-hint 透出到补全（adapter 会取 argumentHint()）。
-  argumentHint(): string { return this._options.argumentHint ?? ""; }
+  argumentHint(): string {
+    return this._options.argumentHint ?? "";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     let text: string;
@@ -269,9 +297,16 @@ export class CustomCommandLoader {
    * @param projectDir 项目目录（用于区分 user/project 来源）
    * @param scanOptions 扫描选项（信任检查等）
    */
-  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<Array<{ cmd: CustomCommand; source: "user" | "project" }>> {
+  async loadAll(
+    projectDir?: string,
+    scanOptions?: ScanOptions,
+  ): Promise<Array<{ cmd: CustomCommand; source: "user" | "project" }>> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan("commands", projectDir ?? process.cwd(), scanOptions);
+    const files = await this.extensionLoader.scan(
+      "commands",
+      projectDir ?? process.cwd(),
+      scanOptions,
+    );
     const results: Array<{ cmd: CustomCommand; source: "user" | "project" }> = [];
 
     for (const file of files) {

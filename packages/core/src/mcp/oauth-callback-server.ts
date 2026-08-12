@@ -107,7 +107,9 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
 
     if (error) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`<h1>授权失败</h1><p>${escapeHtml(error)}: ${escapeHtml(errorDesc || "")}</p><p>可关闭此窗口。</p>`);
+      res.end(
+        `<h1>授权失败</h1><p>${escapeHtml(error)}: ${escapeHtml(errorDesc || "")}</p><p>可关闭此窗口。</p>`,
+      );
       close();
       rejectCode?.(new Error(`OAuth 错误: ${error} - ${errorDesc || ""}`));
       return;
@@ -184,5 +186,9 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

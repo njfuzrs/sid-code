@@ -64,9 +64,7 @@ export function isStreamingTransportError(error: unknown): boolean {
  * 将累积好的非流式响应转换为流式事件序列。
  * 重放顺序：message_start → 每个 block(start/delta/stop) → message_delta → message_stop。
  */
-export function* convertToStreamEvents(
-  response: AccumulatedResponse,
-): Generator<StreamEvent> {
+export function* convertToStreamEvents(response: AccumulatedResponse): Generator<StreamEvent> {
   yield {
     type: "message_start",
     message: { usage: response.usage },
@@ -139,7 +137,11 @@ export async function* streamWithFallback(
     for await (const event of provider.sendMessageStream(params, signal)) {
       // error 事件：判定是否传输错误
       if (event.type === "error") {
-        if (!yieldedContent && allowFallback && isStreamingTransportError(new Error(event.error.message))) {
+        if (
+          !yieldedContent &&
+          allowFallback &&
+          isStreamingTransportError(new Error(event.error.message))
+        ) {
           transportError = new Error(event.error.message);
           break; // 跳出去走降级
         }
@@ -175,9 +177,7 @@ export async function* streamWithFallback(
     log.warn("STREAM", "流式传输失败且 Provider 不支持非流式降级", { error: trigger });
     // 空流路径没有 transportError（`throw undefined` 会把 catch 方的 err 变成 undefined，
     // 上游一切按 message 取值的代码全部拿到 undefined —— 比不降级更难排查）。
-    throw emptyStream
-      ? new Error("流式响应为空且 Provider 不支持非流式降级")
-      : transportError;
+    throw emptyStream ? new Error("流式响应为空且 Provider 不支持非流式降级") : transportError;
   }
 
   const nonStreamMaxTokens = Math.min(

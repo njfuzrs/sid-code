@@ -1,0 +1,40 @@
+# 全仓文本统一 LF：Windows 上 core.autocrlf=true 会把文本签出成 CRLF，
+# 导致跨平台 PR 出现整文件行尾 diff，也会让按字节计数的快照测试漂移。
+* text=auto eol=lf
+
+# 必须 LF 才能在类 Unix 上执行的文件
+*.sh   eol=lf
+*.bash eol=lf
+*.exp  eol=lf
+Makefile eol=lf
+
+# 二进制：禁止行尾规范化与 diff
+vendor/ripgrep/**  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+
+# 生成文件：不计入语言统计，PR diff 默认折叠。
+# builtin-embedded.generated.ts 是 scripts/embed-builtin-skills.ts 的产物（568KB，
+# 已追踪文件里第 6 大），每次改内置 skill 都变，不折叠会占满 PR diff。
+#
+# ⚠️ `linguist-generated` 是 **GitHub Linguist** 专有属性，**GitLab 不识别它**。
+#    本仓当前 remote 是 gitlab.example.com，所以下面这几行**现在拿不到任何收益**，
+#    是为「开源首发落在 GitHub」预备的。写着零成本，但别指望现在就看到 diff 折叠 ——
+#    发现没折叠不是配错了，是平台不支持。
+packages/core/src/skill/builtin-embedded.generated.ts  linguist-generated
+website/ref/**                                          linguist-generated
+website/public/llms.txt                                 linguist-generated
+website/.vitepress/data/changelog.json                  linguist-generated
+CHANGELOG.md                                            linguist-generated
+
+# lock 文件：不 diff（噪音），但仍入库
+bun.lock         -diff
+website/bun.lock -diff

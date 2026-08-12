@@ -37,7 +37,8 @@ const taskUpdateSchema = lazySchema(() =>
 export class TaskUpdateTool implements Tool {
   readonly zodSchema = taskUpdateSchema();
   readonly shouldDefer = true;
-  readonly searchHint = "structured task list update status owner blocks 结构化 任务 清单 更新 状态 依赖 删除";
+  readonly searchHint =
+    "structured task list update status owner blocks 结构化 任务 清单 更新 状态 依赖 删除";
   readonly exemptFromLoopDetection = true;
   /**
    * 同 task_create：output 是裸 JSON（会被 pretty-print 成多行糊在消息流里），
@@ -103,7 +104,11 @@ export class TaskUpdateTool implements Tool {
 
     if (result.deleted) {
       return {
-        output: JSON.stringify({ taskId: params.task_id, deleted: true, message: `任务 #${params.task_id} 已删除` }),
+        output: JSON.stringify({
+          taskId: params.task_id,
+          deleted: true,
+          message: `任务 #${params.task_id} 已删除`,
+        }),
       };
     }
 

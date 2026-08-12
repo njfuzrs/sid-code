@@ -15,11 +15,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { resolveEnvVars } from "../env-interpolation.ts";
 import { markInternalWrite } from "./internal-writes.ts";
-import {
-  SETTING_SOURCES,
-  getSettingsFilePath,
-  type SettingSource,
-} from "./constants.ts";
+import { SETTING_SOURCES, getSettingsFilePath, type SettingSource } from "./constants.ts";
 import { SettingsSchema, type SettingsJson } from "./types.ts";
 import {
   formatZodErrors,
@@ -73,7 +69,9 @@ let enabledDiskSources: ReadonlySet<SettingSource> | null = null;
  * 设置 --setting-sources 过滤（cli.ts 极早期调用，早于任何 getSettings）。
  * @param sources CC 风格来源名子集 user/project/local；空/undefined 清除限制。
  */
-export function setEnabledSettingSources(sources: ("user" | "project" | "local")[] | null | undefined): void {
+export function setEnabledSettingSources(
+  sources: ("user" | "project" | "local")[] | null | undefined,
+): void {
   if (!sources || sources.length === 0) {
     enabledDiskSources = null;
     setSessionCache(null);
@@ -192,9 +190,7 @@ export function getSettingsForSource(
 
   // 安全边界：项目级配置不能设置安全敏感字段
   const finalSettings =
-    settings && source === "projectSettings"
-      ? filterProjectSettings(settings)
-      : settings;
+    settings && source === "projectSettings" ? filterProjectSettings(settings) : settings;
 
   setCachedSource(source, finalSettings);
   return { settings: finalSettings, errors };

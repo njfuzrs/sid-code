@@ -25,9 +25,7 @@ export const SETTING_SOURCES = [
 export type SettingSource = (typeof SETTING_SOURCES)[number];
 
 /** 不参与文件监听的内存来源（flagSettings 来自 CLI，无对应磁盘文件） */
-export const IN_MEMORY_SOURCES: ReadonlySet<SettingSource> = new Set([
-  "flagSettings",
-]);
+export const IN_MEMORY_SOURCES: ReadonlySet<SettingSource> = new Set(["flagSettings"]);
 
 /**
  * 解析每个来源对应的文件路径。

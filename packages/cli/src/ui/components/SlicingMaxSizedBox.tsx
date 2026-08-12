@@ -54,10 +54,7 @@ function countNewlines(text: string): number {
  * 对标 claude-code utils/terminal.ts 的 wrapText。
  * 仅在提供 maxColumnWidth 时调用。
  */
-function wrapLinesToWidth(
-  text: string,
-  maxColumnWidth: number,
-): string[] {
+function wrapLinesToWidth(text: string, maxColumnWidth: number): string[] {
   const rawLines = text.split("\n");
   const wrappedLines: string[] = [];
 
@@ -155,15 +152,20 @@ export const SlicingMaxSizedBox = React.memo(function SlicingMaxSizedBox({
   }
 
   const lines = displayText.split("\n");
-  const indicator = hiddenCount > 0
-    ? <Text color={theme.status.warning}>{formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}</Text>
-    : null;
+  const indicator =
+    hiddenCount > 0 ? (
+      <Text color={theme.status.warning}>
+        {formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}
+      </Text>
+    ) : null;
 
   return (
     <Box flexDirection="column">
       {truncated && overflowDirection === "top" && indicator}
       {lines.map((line, idx) => (
-        <Text key={idx} color={color}>{line}</Text>
+        <Text key={idx} color={color}>
+          {line}
+        </Text>
       ))}
       {truncated && overflowDirection === "bottom" && indicator}
     </Box>

@@ -84,7 +84,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
   explore: {
     agentType: "explore",
     description: "快速搜索和分析代码库，只返回关键发现",
-    whenToUse: "当需要搜索代码库、查找文件、理解代码结构时使用。只读操作，不修改文件。派活时在 prompt 里指明彻底程度：quick（快速定位单个文件/符号）/ medium（适度探索，覆盖主要相关点）/ very thorough（多处、多命名约定的全面分析）——不同程度对应不同的搜索深度。",
+    whenToUse:
+      "当需要搜索代码库、查找文件、理解代码结构时使用。只读操作，不修改文件。派活时在 prompt 里指明彻底程度：quick（快速定位单个文件/符号）/ medium（适度探索，覆盖主要相关点）/ very thorough（多处、多命名约定的全面分析）——不同程度对应不同的搜索深度。",
     systemPrompt: `你是一个代码库探索代理。你的任务是搜索和分析代码，只返回关键发现。你被设计为一个快速代理，尽可能快地返回结果。
 
 === 只读模式 ===
@@ -117,7 +118,22 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 完成后以 "## 结果" 开头简洁地报告完成状态和关键输出
 - 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案
 - 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认或留有疑问的点，让主代理能判断哪些结果需要复核。不要把未验证的推测当作已完成的事实陈述`,
-    tools: ["read", "write", "edit", "bash", "grep", "glob", "ls", "read_many", "web_fetch", "web_search", "task_list", "task_get", "task_create", "task_update"],
+    tools: [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "grep",
+      "glob",
+      "ls",
+      "read_many",
+      "web_fetch",
+      "web_search",
+      "task_list",
+      "task_get",
+      "task_create",
+      "task_update",
+    ],
     // task 常做多步编码 + 命令执行，比 explore 更重；给足 300s。
     timeout: 300_000,
     source: "built-in",
@@ -165,7 +181,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
   "general-purpose": {
     agentType: "general-purpose",
     description: "通用 Agent，拥有全部工具集，适合复杂的多步骤任务",
-    whenToUse: "当需要完成复杂的多步骤研究、搜索或编码任务时使用。拥有全部工具（除 sub_agent 外），是省略 type 时的默认兜底类型。",
+    whenToUse:
+      "当需要完成复杂的多步骤研究、搜索或编码任务时使用。拥有全部工具（除 sub_agent 外），是省略 type 时的默认兜底类型。",
     systemPrompt: `你是一个通用任务执行代理。你拥有完整的工具集来完成复杂任务。
 规则：
 - 分析任务需求，选择合适的工具组合
@@ -182,7 +199,8 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
   verify: {
     agentType: "verify",
     description: "对抗式验证：验证给定结论/修复/发现是否真实成立",
-    whenToUse: "当需要验证某个结论或修复是否真实有效时使用。持怀疑态度，主动寻找反例。只读 + bash 核实。",
+    whenToUse:
+      "当需要验证某个结论或修复是否真实有效时使用。持怀疑态度，主动寻找反例。只读 + bash 核实。",
     systemPrompt: `你是一个对抗式验证代理。你的唯一任务是：判断给定的结论/修复/发现/bug 是否真实成立——并默认它**可能是错的**。
 
 === 只读模式 ===

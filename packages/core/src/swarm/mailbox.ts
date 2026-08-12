@@ -7,14 +7,7 @@
  * 与 message-queue.ts（进程内、易失）互补：mailbox 跨进程、可持久、可回放。
  */
 
-import {
-  writeFileSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  mkdirSync,
-  existsSync,
-} from "fs";
+import { writeFileSync, readFileSync, readdirSync, renameSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
 /** 邮件 */

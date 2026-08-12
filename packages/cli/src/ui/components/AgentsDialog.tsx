@@ -4,7 +4,10 @@ import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
-import { getActiveAgentDefinitions, type AgentDefinition } from "@sid-code/core/agent/agent-definition.ts";
+import {
+  getActiveAgentDefinitions,
+  type AgentDefinition,
+} from "@sid-code/core/agent/agent-definition.ts";
 import { getAgentInkColor } from "@sid-code/core/agent/color.ts";
 
 interface AgentsDialogProps {
@@ -38,8 +41,16 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
   const agents = getActiveAgentDefinitions();
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>{ARROW_PROMPT} Agents（{agents.length}）</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        {ARROW_PROMPT} Agents（{agents.length}）
+      </Text>
 
       <Box marginTop={1} flexDirection="column" gap={0}>
         {agents.map((a) => {
@@ -59,7 +70,9 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
                 <Text color={getAgentInkColor(a.agentType)}>{a.agentType}</Text>
               </Box>
               <Box flexGrow={1} flexDirection="column">
-                <Text wrap="truncate-end" color={theme.text.primary}>{a.description || a.whenToUse}</Text>
+                <Text wrap="truncate-end" color={theme.text.primary}>
+                  {a.description || a.whenToUse}
+                </Text>
                 {tags.length > 0 ? (
                   <Text color={theme.text.secondary}>{tags.join("  ·  ")}</Text>
                 ) : null}
@@ -71,14 +84,17 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
 
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.text.secondary}>
-          Agent 类型在 <Text color={theme.ui.active}>.sid-code/agents/</Text> 或 <Text color={theme.ui.active}>~/.sid-code/agents/</Text> 目录下以 .md 文件定义
+          Agent 类型在 <Text color={theme.ui.active}>.sid-code/agents/</Text> 或{" "}
+          <Text color={theme.ui.active}>~/.sid-code/agents/</Text> 目录下以 .md 文件定义
         </Text>
         <Text color={theme.text.secondary}>
           frontmatter 支持 model / skills / color / permissionMode / background / isolation 等字段
         </Text>
       </Box>
 
-      <Box marginTop={1}><Text italic>Esc 关闭</Text></Box>
+      <Box marginTop={1}>
+        <Text italic>Esc 关闭</Text>
+      </Box>
     </Box>
   );
 };

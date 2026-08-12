@@ -3,7 +3,7 @@
  * 追踪关键操作耗时，定位性能瓶颈
  */
 
-import { getLogger } from './logger.ts';
+import { getLogger } from "./logger.ts";
 
 export interface PerfTimerHandle {
   /** 结束计时，返回耗时毫秒数 */
@@ -45,7 +45,7 @@ export class PerfTimer {
         });
 
         // 同时写入日志
-        getLogger().debug('PERF', `${name} ${duration.toFixed(1)}ms`, details);
+        getLogger().debug("PERF", `${name} ${duration.toFixed(1)}ms`, details);
         return duration;
       },
     };
@@ -63,14 +63,11 @@ export class PerfTimer {
 
   /** 生成性能报告摘要 */
   getSummary(): string {
-    const phases = this.getPhases()
-      .sort((a, b) => b.durationMs - a.durationMs);
+    const phases = this.getPhases().sort((a, b) => b.durationMs - a.durationMs);
 
-    if (phases.length === 0) return '无性能数据';
+    if (phases.length === 0) return "无性能数据";
 
-    return phases
-      .map(p => `  ${p.name}: ${p.durationMs.toFixed(1)}ms`)
-      .join('\n');
+    return phases.map((p) => `  ${p.name}: ${p.durationMs.toFixed(1)}ms`).join("\n");
   }
 
   clear(): void {

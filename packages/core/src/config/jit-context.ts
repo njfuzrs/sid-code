@@ -42,10 +42,7 @@ import { getClaudeMdExternalImportsApproved } from "./app-config.ts";
  * Local 层，JIT 侧此前完全盲区）。`.claude/rules/` 目录不在此列 —— 它是目录不是文件，
  * 由 `scanRulesDir` 单独递归（带 realpath 去重防 symlink 环）。
  */
-const JIT_CANDIDATE_FILES: readonly string[] = [
-  ...CLAUDE_MD_FILES,
-  ...CLAUDE_LOCAL_FILES,
-];
+const JIT_CANDIDATE_FILES: readonly string[] = [...CLAUDE_MD_FILES, ...CLAUDE_LOCAL_FILES];
 
 /**
  * JIT 上下文发现的默认值 —— **唯一事实源**。
@@ -102,7 +99,12 @@ export interface JitDiscovery {
   /**
    * 读取失败明细（P2-8：不再静默）。`ENOENT` 不进此列（候选文件不存在属正常）。
    */
-  failures: Array<{ path: string; code: string; phase: "probe" | "read" | "import"; message: string }>;
+  failures: Array<{
+    path: string;
+    code: string;
+    phase: "probe" | "read" | "import";
+    message: string;
+  }>;
   /** 本次发现耗时（毫秒，埋点用：JIT 是否进 TTFT 的实测依据） */
   elapsedMs: number;
 }
@@ -508,7 +510,14 @@ export class JitContextManager {
       const fullReal = safeResolvePath(full);
       if (visitedCandidates.has(fullReal)) continue;
       visitedCandidates.add(fullReal);
-      const outcome = await this.loadOne(full, activeAbsPath, realRoot, "rules_dir", failures, ownerDir);
+      const outcome = await this.loadOne(
+        full,
+        activeAbsPath,
+        realRoot,
+        "rules_dir",
+        failures,
+        ownerDir,
+      );
       if (outcome.kind === "loaded") loaded.push(outcome.entry);
       else if (outcome.kind === "scope-miss") scopeSkipped++;
     }
@@ -547,8 +556,7 @@ export class JitContextManager {
     if (prev) {
       const unchanged =
         // stamp 取不到（mtimeMs=0）时退化为「不重读」，避免 stat 失败导致每轮重复注入
-        stamp.mtimeMs === 0 ||
-        (prev.mtimeMs === stamp.mtimeMs && prev.size === stamp.size);
+        stamp.mtimeMs === 0 || (prev.mtimeMs === stamp.mtimeMs && prev.size === stamp.size);
       if (unchanged) return { kind: "already" };
       log.info("JIT", `规则文件已变更，重新加载: ${candidatePath}`);
     }
@@ -560,7 +568,12 @@ export class JitContextManager {
       // P2-8：区分 ENOENT（正常：候选竞态被删）与真实错误（EACCES / 编码 / IO）
       const code = String(err?.code ?? "EUNKNOWN");
       if (code !== "ENOENT") {
-        failures.push({ path: candidatePath, code, phase: "read", message: String(err?.message ?? err) });
+        failures.push({
+          path: candidatePath,
+          code,
+          phase: "read",
+          message: String(err?.message ?? err),
+        });
         log.warn("JIT", `读取规则文件失败 [${code}]: ${candidatePath}`, err);
       } else {
         log.debug("JIT", `规则文件已不存在（竞态），跳过: ${candidatePath}`);
@@ -601,7 +614,9 @@ export class JitContextManager {
       let externalApproved = false;
       try {
         externalApproved = getClaudeMdExternalImportsApproved(realRoot) === true;
-      } catch { /* 读批准位失败 → 保守按未批准处理 */ }
+      } catch {
+        /* 读批准位失败 → 保守按未批准处理 */
+      }
       expanded = await processImports(body, candidatePath, {
         allowedDirectories: [realRoot],
         projectRoot: realRoot,

@@ -1,0 +1,579 @@
+/**
+ * src/llm/effort.ts 单测：5 类协议映射矩阵 + max→high 钳制 + env 覆盖 + auto 解析。
+ */
+
+import { describe, expect, test, beforeEach } from "bun:test";
+import {
+  EFFORT_LEVELS,
+  isEffortLevel,
+  resolveEffortCapability,
+  resolveAppliedEffort,
+  getDisplayedEffort,
+  isEffortAuto,
+  resolveThinking,
+  getEffortEnvOverride,
+  getThinkingEnvOverride,
+  previewWireEffort,
+  getMaxThinkingTokensOverride,
+  mapThinkingCapToEffort,
+} from "@sid-code/core/llm/effort.ts";
+import type { SendParams } from "@sid-code/core/llm/types.ts";
+import { __resetCapabilityCacheForTest } from "@sid-code/core/llm/model-capabilities.ts";
+
+function baseParams(model: string): SendParams {
+  return { model, messages: [], maxTokens: 1000 };
+}
+
+/**
+ * 全局隔离真实能力缓存（~/.sid-code/model-capabilities.json）。
+ *
+ * resolveEffortCapability 对未知模型会查动态能力缓存，而该缓存在开发机上可能已被
+ * 真实目录同步填充（2900+ 条）。不隔离的话，用例结果取决于「这台机器同步过没有」：
+ * 例如 kimi-k3 采到 ["low","high","max"]（无 medium）会让 defaultEffort 从 medium 变 high。
+ * 单测必须只依赖显式声明的输入，不依赖磁盘状态。
+ */
+beforeEach(() => {
+  __resetCapabilityCacheForTest({});
+});
+
+describe("isEffortLevel / EFFORT_LEVELS", () => {
+  test("5 档标度（含 xhigh，对齐 claude-code）", () => {
+    expect(EFFORT_LEVELS).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+  test("合法/非法判定", () => {
+    expect(isEffortLevel("high")).toBe(true);
+    expect(isEffortLevel("max")).toBe(true);
+    expect(isEffortLevel("xhigh")).toBe(true);
+    expect(isEffortLevel("auto")).toBe(false);
+  });
+});
+
+describe("resolveEffortCapability — 协议分类", () => {
+  test("规则1 DeepSeek OpenAI 端点", () => {
+    const cap = resolveEffortCapability({
+      model: "deepseek-v4-pro",
+      provider: "openai",
+      baseURL: "https://api.deepseek.com",
+    });
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.supportsMaxEffort).toBe(true);
+    expect(cap.supportsThinkingToggle).toBe(true);
+    expect(cap.thinkingDefaultOn).toBe(true);
+  });
+
+  test("规则2 DeepSeek Anthropic 端点（baseURL 含 /anthropic）", () => {
+    const cap = resolveEffortCapability({
+      model: "deepseek-v4-pro",
+      provider: "anthropic",
+      baseURL: "https://api.deepseek.com/anthropic",
+    });
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.thinkingDefaultOn).toBe(true);
+    // 验证走 output_config 映射
+    const p = baseParams("deepseek-v4-pro");
+    cap.applyToSendParams(p, "max", true);
+    expect(p.outputConfig).toEqual({ effort: "max" });
+  });
+
+  test("规则3 Anthropic 原生 Claude", () => {
+    const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.supportsMaxEffort).toBe(true);
+    expect(cap.thinkingDefaultOn).toBe(false); // 原生默认不开思考
+  });
+
+  test("规则4 OpenAI o-series（无 max）", () => {
+    const cap = resolveEffortCapability({ model: "o1-preview", provider: "openai" });
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.supportsMaxEffort).toBe(false);
+    expect(cap.supportsThinkingToggle).toBe(false);
+  });
+
+  // ⚠ 契约变更（原用例名「兜底全不支持」）：未知模型不再一律判「不支持」。
+  //
+  // 旧行为把 /effort 直接挡死（"当前模型不支持推理强度档位切换"），用户配了新模型就报错，
+  // 只能等注册表补条目 —— 这正是「出一个新模型改一次代码」的根源。
+  // 新行为：未知模型**乐观放行**，真 400 时由 withCapabilityHealing 剥字段重试并记住
+  //（见 model-capabilities.ts）。宁可多一次内部重试，也不要把用户挡在门外。
+  //
+  // 不变的部分：thinking 开关仍不猜（结构跨供应商差异大，贸然下发更容易 400）。
+  test("规则5 未知端点：effort 乐观放行，但 thinking 开关仍不猜", () => {
+    const cap = resolveEffortCapability({ model: "llama3", provider: "openai" });
+    expect(cap.supportsEffort).toBe(true);
+    expect(cap.supportsThinkingToggle).toBe(false);
+    expect(cap.thinkingDefaultOn).toBe(false);
+  });
+
+  // 必删-3 回归：GLM/Grok 同样支持 thinking，此前 app.ts 用 /deepseek/i 判定
+  // ThinkingManager 启用，把它们静默排除。这里锁定它们 supportsThinkingToggle=true，
+  // 保证 app.ts 改用能力标志后 GLM/Grok 的思考能力不再被无声关闭。
+  test("必删-3：GLM（OpenAI 兼容）supportsThinkingToggle=true", () => {
+    const cap = resolveEffortCapability({ model: "glm-4.6", provider: "openai" });
+    expect(cap.supportsThinkingToggle).toBe(true);
+  });
+
+  test("必删-3：Grok（OpenAI 兼容）无 thinking 开关但 reasoning_effort 独立生效", () => {
+    const cap = resolveEffortCapability({ model: "grok-4", provider: "openai" });
+    // Grok 配置化推理、无显式 thinking 开关 → supportsThinkingToggle=false（ThinkingManager 关，正确）。
+    // 但 reasoning_effort 经 loop.ts 的 applyToSendParams 独立下发，不受 ThinkingManager 门控。
+    expect(cap.supportsThinkingToggle).toBe(false);
+    expect(cap.supportsEffort).toBe(true);
+  });
+
+  test("优先级1：modelConfig.supportsThinking=false 强制全不支持", () => {
+    const cap = resolveEffortCapability({
+      model: "deepseek-v4-pro",
+      provider: "openai",
+      baseURL: "https://api.deepseek.com",
+      modelConfig: { supportsThinking: false },
+    });
+    expect(cap.supportsEffort).toBe(false);
+    expect(cap.supportsThinkingToggle).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// openai-responses 族（GPT-5.x）回归锁
+//
+// 修复前本族是 supportsEffort:false + applyNoop，/effort 对所有 GPT-5.x 硬报
+// 「不支持推理强度档位切换」——而服务端实测会校验 reasoning.effort（非法值 400
+// `param: reasoning.effort`），证明是未接线而非真不支持。
+// 此前**无任何测试覆盖本族**，所以那个缺陷能一直绿着；这组用例就是补上的锁。
+// ─────────────────────────────────────────────────────────────
+describe("openai-responses 族（GPT-5.x）— effort 能力回归", () => {
+  test("已注册的 GPT-5.x 支持 effort（修复前为 false，/effort 直接报错）", () => {
+    for (const model of ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.4", "gpt-5.5"]) {
+      const cap = resolveEffortCapability({ model, provider: "openai" });
+      expect(cap.supportsEffort).toBe(true);
+      expect(cap.supportsMaxEffort).toBe(true);
+      // 推理内置、无显式开关；但这不影响 effort 下发（与 Grok 同构）。
+      expect(cap.supportsThinkingToggle).toBe(false);
+      // 服务端实测默认档（不传 reasoning 时回显 medium）。
+      expect(cap.defaultEffort).toBe("medium");
+    }
+  });
+
+  test("5 档原样透传不钳制 —— 该族是唯一原生认 xhigh 的协议族", () => {
+    const cap = resolveEffortCapability({ model: "gpt-5.6-luna", provider: "openai" });
+    for (const level of EFFORT_LEVELS) {
+      expect(previewWireEffort(cap, level)).toBe(level);
+    }
+    // 关键差异：GLM 会把 xhigh 钳成 max，本族不钳。
+    const glm = resolveEffortCapability({ model: "glm-5.2", provider: "openai" });
+    expect(previewWireEffort(glm, "xhigh")).toBe("max");
+    expect(previewWireEffort(cap, "xhigh")).toBe("xhigh");
+  });
+
+  test("effort 写入 params.reasoningEffort，且不下发 thinking（无显式开关）", () => {
+    const cap = resolveEffortCapability({ model: "gpt-5.6-luna", provider: "openai" });
+    const p = baseParams("gpt-5.6-luna");
+    cap.applyToSendParams(p, "xhigh", true);
+    expect(p.reasoningEffort).toBe("xhigh");
+    expect(p.thinking).toBeUndefined();
+
+    // auto（undefined）时不下发任何字段，沿用服务端默认。
+    const auto = baseParams("gpt-5.6-luna");
+    cap.applyToSendParams(auto, undefined, true);
+    expect(auto.reasoningEffort).toBeUndefined();
+  });
+
+  test("任意未注册模型都能用 effort，且不靠模型名判据", () => {
+    // 「不报错」的结构性保障：网关先上线、注册表还没跟上时 /effort 也要能用。
+    //
+    // ⚠ 这里曾断言「gpt-4.1/llama3/kimi-k3 不得被判进本族」——那个断言依赖
+    // classifyCapability 里的 /^gpt-5\./i 硬编码，而该判据已删除（违反
+    // feedback-no-hardcoded-model-tier-rules，且是「出一个新模型改一次代码」的根源）。
+    // 现在的语义是：**未知即乐观放行**，与模型叫什么名字无关——这才是可持续的。
+    // ⚠ 必须隔离真实能力缓存（~/.sid-code/model-capabilities.json）。
+    // 否则本地跑过一次目录同步后，测试会读到真实采集数据 —— 例如 kimi-k3 采到
+    // ["low","high","max"]（无 medium）→ defaultEffort 落到 high，断言随机失败。
+    // 测试结果不能依赖开发机状态。
+    __resetCapabilityCacheForTest({});
+    for (const model of [
+      "gpt-5.9-not-yet-released",
+      "some-vendor-brand-new-2027",
+      "llama3",
+      "kimi-k3",
+    ]) {
+      const cap = resolveEffortCapability({ model, provider: "openai" });
+      expect(cap.supportsEffort).toBe(true);
+      expect(cap.defaultEffort).toBe("medium");
+    }
+  });
+
+  test("能力缓存有档位表时，defaultEffort / 钳制都跟随真实档位（不再是固定 medium）", () => {
+    // 与上一个用例互补：上面锁「无数据时的乐观默认」，这里锁「有数据时数据说话」。
+    __resetCapabilityCacheForTest({
+      "vendor-x-model": { effortValues: ["low", "high", "max"] },
+    });
+    const cap = resolveEffortCapability({ model: "vendor-x-model", provider: "openai" });
+    expect(cap.supportsEffort).toBe(true);
+    // 表里没有 medium → 退到 high（而不是硬编码 medium）。
+    expect(cap.defaultEffort).toBe("high");
+    // 表里有 max → 支持 max 档。
+    expect(cap.supportsMaxEffort).toBe(true);
+    // medium 不在表内 → 沿标度向下钳到 low。
+    expect(previewWireEffort(cap, "medium")).toBe("low");
+    // xhigh 不在表内 → 向下钳到 high。
+    expect(previewWireEffort(cap, "xhigh")).toBe("high");
+  });
+});
+
+describe("applyToSendParams — 线格式映射", () => {
+  test("规则1 DeepSeek OpenAI：effort→reasoningEffort 二值钳制", () => {
+    const cap = resolveEffortCapability({
+      model: "deepseek-v4-pro",
+      provider: "openai",
+      baseURL: "https://api.deepseek.com",
+    });
+    const low = baseParams("deepseek-v4-pro");
+    cap.applyToSendParams(low, "low", true);
+    expect(low.thinking).toEqual({ enabled: true, budgetTokens: 0 });
+    expect(low.reasoningEffort).toBe("high"); // low→high 钳制
+
+    const max = baseParams("deepseek-v4-pro");
+    cap.applyToSendParams(max, "max", true);
+    expect(max.reasoningEffort).toBe("max");
+  });
+
+  test("规则1 DeepSeek：思考关闭则不下发 effort", () => {
+    const cap = resolveEffortCapability({
+      model: "deepseek-v4-pro",
+      provider: "openai",
+      baseURL: "https://api.deepseek.com",
+    });
+    const p = baseParams("deepseek-v4-pro");
+    cap.applyToSendParams(p, "max", false);
+    expect(p.thinking).toEqual({ enabled: false, budgetTokens: 0 });
+    expect(p.reasoningEffort).toBeUndefined();
+  });
+
+  test("规则3 Anthropic 原生：effort→budgetTokens 档位映射", () => {
+    const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+    const cases: [string, number][] = [
+      ["low", 2000],
+      ["medium", 10000],
+      ["high", 20000],
+      ["max", 50000],
+    ];
+    for (const [level, budget] of cases) {
+      const p = baseParams("claude-opus-4");
+      cap.applyToSendParams(p, level as any, true);
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: budget });
+    }
+  });
+
+  test("规则3 Anthropic 原生：thinking off 不开思考", () => {
+    const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+    const p = baseParams("claude-opus-4");
+    cap.applyToSendParams(p, "max", false);
+    expect(p.thinking).toEqual({ enabled: false, budgetTokens: 0 });
+  });
+
+  test("规则4 o-series：max→high，low/medium 原样", () => {
+    const cap = resolveEffortCapability({ model: "o3-mini", provider: "openai" });
+    const p1 = baseParams("o3-mini");
+    cap.applyToSendParams(p1, "max", true);
+    expect(p1.reasoningEffort).toBe("high");
+    const p2 = baseParams("o3-mini");
+    cap.applyToSendParams(p2, "low", true);
+    expect(p2.reasoningEffort).toBe("low");
+  });
+
+  // ⚠ 契约变更（原用例名「全 no-op，不下发任何字段」）：未知模型现在会乐观下发 effort。
+  // 只有 thinking / outputConfig 仍保持 no-op —— 这两个结构跨供应商差异大，猜错更易 400，
+  // 且无法像 effort 那样从错误文本里可靠自愈。
+  test("规则5 未知端点：乐观下发 effort，但 thinking/outputConfig 仍 no-op", () => {
+    const cap = resolveEffortCapability({ model: "llama3", provider: "openai" });
+    const p = baseParams("llama3");
+    cap.applyToSendParams(p, "max", true);
+    expect(p.reasoningEffort).toBe("max");
+    expect(p.thinking).toBeUndefined();
+    expect(p.outputConfig).toBeUndefined();
+
+    // auto（undefined）时仍完全不下发。
+    const auto = baseParams("llama3");
+    cap.applyToSendParams(auto, undefined, true);
+    expect(auto.reasoningEffort).toBeUndefined();
+  });
+});
+
+describe("resolveAppliedEffort — 优先级链 + max 钳制", () => {
+  const dsCap = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+  });
+  const oCap = resolveEffortCapability({ model: "o1", provider: "openai" });
+
+  test("env 未设(null)用 runtime", () => {
+    expect(resolveAppliedEffort(dsCap, "high", null)).toBe("high");
+  });
+  test("env 强制档位覆盖 runtime", () => {
+    expect(resolveAppliedEffort(dsCap, "low", "max")).toBe("max");
+  });
+  test("env 强制 auto(undefined) 覆盖 runtime", () => {
+    expect(resolveAppliedEffort(dsCap, "high", undefined)).toBeUndefined();
+  });
+  test("max→high：模型不支持 max 时降级", () => {
+    expect(resolveAppliedEffort(oCap, "max", null)).toBe("high");
+  });
+  test("runtime auto 保持 undefined", () => {
+    expect(resolveAppliedEffort(dsCap, undefined, null)).toBeUndefined();
+  });
+});
+
+describe("getDisplayedEffort / isEffortAuto", () => {
+  const dsCap = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+  });
+  test("auto 态展示模型默认档", () => {
+    expect(getDisplayedEffort(dsCap, undefined, null)).toBe("high");
+    expect(isEffortAuto(undefined, null)).toBe(true);
+  });
+  test("显式档位展示该档（基线，非服务端钳制后）", () => {
+    expect(getDisplayedEffort(dsCap, "low", null)).toBe("low"); // 展示用户设的基线 low
+    expect(isEffortAuto("low", null)).toBe(false);
+  });
+  test("env 强制 auto → isEffortAuto true", () => {
+    expect(isEffortAuto("high", undefined)).toBe(true);
+  });
+});
+
+describe("resolveThinking — 优先级链", () => {
+  const dsCap = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+  });
+  const claudeCap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+
+  test("env 覆盖最高", () => {
+    expect(resolveThinking(dsCap, "off", true)).toBe(true);
+    expect(resolveThinking(dsCap, "on", false)).toBe(false);
+  });
+  test("runtime on/off", () => {
+    expect(resolveThinking(dsCap, "on", null)).toBe(true);
+    expect(resolveThinking(dsCap, "off", null)).toBe(false);
+  });
+  test("auto 跟随 cap.thinkingDefaultOn", () => {
+    expect(resolveThinking(dsCap, undefined, null)).toBe(true); // DeepSeek 默认 on
+    expect(resolveThinking(claudeCap, undefined, null)).toBe(false); // Claude 默认 off
+  });
+});
+
+describe("getEffortEnvOverride — env 读取 + 别名兼容", () => {
+  test("SID_CODE_EFFORT_LEVEL 优先于 CLAUDE_CODE_EFFORT_LEVEL", () => {
+    expect(
+      getEffortEnvOverride({ SID_CODE_EFFORT_LEVEL: "max", CLAUDE_CODE_EFFORT_LEVEL: "low" }),
+    ).toBe("max");
+  });
+  test("兼容别名 CLAUDE_CODE_EFFORT_LEVEL", () => {
+    expect(getEffortEnvOverride({ CLAUDE_CODE_EFFORT_LEVEL: "high" })).toBe("high");
+  });
+  test("unset / auto → 强制 auto(undefined)", () => {
+    expect(getEffortEnvOverride({ SID_CODE_EFFORT_LEVEL: "unset" })).toBeUndefined();
+    expect(getEffortEnvOverride({ SID_CODE_EFFORT_LEVEL: "auto" })).toBeUndefined();
+  });
+  test("未设 → null", () => {
+    expect(getEffortEnvOverride({})).toBeNull();
+  });
+  test("非法值 → null", () => {
+    expect(getEffortEnvOverride({ SID_CODE_EFFORT_LEVEL: "ultra" })).toBeNull();
+  });
+});
+
+describe("getThinkingEnvOverride", () => {
+  test("on/true/1 → true", () => {
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "on" })).toBe(true);
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "true" })).toBe(true);
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "1" })).toBe(true);
+  });
+  test("off/false/0 → false", () => {
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "off" })).toBe(false);
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "false" })).toBe(false);
+  });
+  test("auto / 未设 / 非法 → null", () => {
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "auto" })).toBeNull();
+    expect(getThinkingEnvOverride({})).toBeNull();
+    expect(getThinkingEnvOverride({ SID_CODE_THINKING: "xyz" })).toBeNull();
+  });
+});
+
+describe("previewWireEffort — 预演实际下发档（钳制提示用）", () => {
+  const dsOpenAI = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+  });
+  const dsAnthropic = resolveEffortCapability({
+    model: "deepseek-v4-pro",
+    provider: "openai",
+    baseURL: "https://api.deepseek.com/anthropic",
+  });
+  const claudeCap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+  const oCap = resolveEffortCapability({ model: "o1", provider: "openai" });
+  const unknownCap = resolveEffortCapability({ model: "llama3", provider: "openai" });
+
+  test("DeepSeek OpenAI 端点：low/medium 实际下发 high（被钳制）", () => {
+    expect(previewWireEffort(dsOpenAI, "low")).toBe("high");
+    expect(previewWireEffort(dsOpenAI, "medium")).toBe("high");
+  });
+  test("DeepSeek OpenAI 端点：high/max 原样下发（无钳制）", () => {
+    expect(previewWireEffort(dsOpenAI, "high")).toBe("high");
+    expect(previewWireEffort(dsOpenAI, "max")).toBe("max");
+  });
+  test("DeepSeek Anthropic 端点：low/medium→high（走 output_config.effort）", () => {
+    expect(previewWireEffort(dsAnthropic, "low")).toBe("high");
+    expect(previewWireEffort(dsAnthropic, "max")).toBe("max");
+  });
+  test("o-series：max 实际下发 high（被钳制），low/medium 原样", () => {
+    expect(previewWireEffort(oCap, "max")).toBe("high");
+    expect(previewWireEffort(oCap, "low")).toBe("low");
+    expect(previewWireEffort(oCap, "medium")).toBe("medium");
+  });
+  test("原生 Claude：走 budget_tokens 无显式 effort 下发 → 返回原档（视为无钳制）", () => {
+    for (const lv of EFFORT_LEVELS) {
+      expect(previewWireEffort(claudeCap, lv)).toBe(lv);
+    }
+  });
+  test("unknown：no-op → 返回原档", () => {
+    expect(previewWireEffort(unknownCap, "max")).toBe("max");
+    expect(previewWireEffort(unknownCap, "low")).toBe("low");
+  });
+});
+
+describe("§12 P2-1 getMaxThinkingTokensOverride", () => {
+  test("未设 env/settings 返回 null", () => {
+    expect(getMaxThinkingTokensOverride(undefined, {})).toBeNull();
+  });
+
+  test("env SID_CODE_ 优先，正整数生效", () => {
+    expect(getMaxThinkingTokensOverride(undefined, { SID_CODE_MAX_THINKING_TOKENS: "5000" })).toBe(
+      5000,
+    );
+  });
+
+  test("兼容别名 MAX_THINKING_TOKENS", () => {
+    expect(getMaxThinkingTokensOverride(undefined, { MAX_THINKING_TOKENS: "8000" })).toBe(8000);
+  });
+
+  test("SID_CODE_ 优先于 MAX_THINKING_TOKENS 别名", () => {
+    expect(
+      getMaxThinkingTokensOverride(undefined, {
+        SID_CODE_MAX_THINKING_TOKENS: "3000",
+        MAX_THINKING_TOKENS: "9000",
+      }),
+    ).toBe(3000);
+  });
+
+  test("env 未设时用 settings 兜底", () => {
+    expect(getMaxThinkingTokensOverride(7000, {})).toBe(7000);
+  });
+
+  test("env 非法值忽略返回 null（不回退 settings）", () => {
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "abc" })).toBeNull();
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "0" })).toBeNull();
+    expect(getMaxThinkingTokensOverride(7000, { SID_CODE_MAX_THINKING_TOKENS: "-5" })).toBeNull();
+  });
+});
+
+describe("§12 P2-1 mapThinkingCapToEffort", () => {
+  test("<5K → low", () => expect(mapThinkingCapToEffort(3000)).toBe("low"));
+  test("<15K → medium", () => expect(mapThinkingCapToEffort(10000)).toBe("medium"));
+  test("<32K → high", () => expect(mapThinkingCapToEffort(20000)).toBe("high"));
+  test("≥32K → null（不降档）", () => expect(mapThinkingCapToEffort(40000)).toBeNull());
+});
+
+describe("§12 P2-1 思考预算钳制 — applyToSendParams", () => {
+  const OLD_ENV = { ...process.env };
+  function clearEnv() {
+    delete process.env.SID_CODE_MAX_THINKING_TOKENS;
+    delete process.env.MAX_THINKING_TOKENS;
+  }
+
+  test("manual 模型：env 上限 < 档位预算 → 精确钳制 budget", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "5000";
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      cap.applyToSendParams(p, "high", true); // high=20K → 钳到 5K
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 5000 });
+      expect(p.thinkingBudgetCapped).toMatchObject({
+        mode: "manual",
+        appliedBudget: 5000,
+        requestedMax: 5000,
+      });
+    } finally {
+      Object.assign(process.env, OLD_ENV);
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("manual 模型：上限 > 档位预算 → 不钳制（用档位预算）", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "40000";
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      cap.applyToSendParams(p, "high", true); // high=20K < 40K → 不钳
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 20000 });
+      expect(p.thinkingBudgetCapped).toBeUndefined();
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("manual 模型：settings 兜底（无 env）", () => {
+    clearEnv();
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4", provider: "anthropic" });
+      const p = baseParams("claude-opus-4");
+      p.maxThinkingTokens = 2000;
+      cap.applyToSendParams(p, "high", true); // high=20K → 钳到 2K
+      expect(p.thinking).toEqual({ enabled: true, budgetTokens: 2000 });
+      expect(p.thinkingBudgetCapped).toMatchObject({ mode: "manual", appliedBudget: 2000 });
+    } finally {
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("adaptive 模型：低上限映射 effort 降档并打标记（无法精确钳制）", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "4000"; // <5K → low
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4-8", provider: "anthropic" });
+      const p = baseParams("claude-opus-4-8");
+      cap.applyToSendParams(p, "high", true); // 请求 high，但上限映射降到 low
+      expect(p.outputConfig).toMatchObject({ effort: "low", thinkingType: "adaptive" });
+      expect(p.thinkingBudgetCapped).toMatchObject({
+        mode: "adaptive",
+        mappedEffort: "low",
+        requestedMax: 4000,
+      });
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+
+  test("adaptive 模型：上限映射档位不低于当前档 → 不降档不打标记", () => {
+    clearEnv();
+    process.env.SID_CODE_MAX_THINKING_TOKENS = "40000"; // ≥32K → 不降档
+    try {
+      const cap = resolveEffortCapability({ model: "claude-opus-4-8", provider: "anthropic" });
+      const p = baseParams("claude-opus-4-8");
+      cap.applyToSendParams(p, "low", true); // 已是 low，上限也不要求降
+      expect(p.outputConfig).toMatchObject({ effort: "low" });
+      expect(p.thinkingBudgetCapped).toBeUndefined();
+    } finally {
+      clearEnv();
+      Object.assign(process.env, OLD_ENV);
+    }
+  });
+});

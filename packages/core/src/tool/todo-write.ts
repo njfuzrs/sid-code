@@ -104,13 +104,15 @@ function newlyCompleted(oldTodos: TodoItem[], newTodos: TodoItem[]): TodoItem[] 
 function buildForwardDirective(todos: TodoItem[]): string | null {
   if (todos.length === 0) return null;
 
-  const current = todos.find(t => t.status === "in_progress");
+  const current = todos.find((t) => t.status === "in_progress");
   if (current) {
-    return `下一步：当前进行中的是「${current.content}」。做完它后**立即**用 todo_write 把它标为 completed，` +
-      `并把下一项置为 in_progress——不要攒到最后一起标记。`;
+    return (
+      `下一步：当前进行中的是「${current.content}」。做完它后**立即**用 todo_write 把它标为 completed，` +
+      `并把下一项置为 in_progress——不要攒到最后一起标记。`
+    );
   }
 
-  const nextPending = todos.find(t => t.status === "pending");
+  const nextPending = todos.find((t) => t.status === "pending");
   if (nextPending) {
     // "没有 in_progress" 这条状态判断由 statusAdvisories 点名承载（见 execute()），
     // 此处不重复那句话，只强调实时流转纪律，避免同一轮返回里出现两段近义文本。
@@ -132,12 +134,14 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
   }
 
   // 统计
-  const completed = newTodos.filter(t => t.status === "completed").length;
-  const inProgress = newTodos.filter(t => t.status === "in_progress").length;
-  const pending = newTodos.filter(t => t.status === "pending").length;
-  lines.push(`\n进度: ${completed}/${newTodos.length} 已完成` +
-    (inProgress > 0 ? `, ${inProgress} 进行中` : "") +
-    (pending > 0 ? `, ${pending} 待开始` : ""));
+  const completed = newTodos.filter((t) => t.status === "completed").length;
+  const inProgress = newTodos.filter((t) => t.status === "in_progress").length;
+  const pending = newTodos.filter((t) => t.status === "pending").length;
+  lines.push(
+    `\n进度: ${completed}/${newTodos.length} 已完成` +
+      (inProgress > 0 ? `, ${inProgress} 进行中` : "") +
+      (pending > 0 ? `, ${pending} 待开始` : ""),
+  );
 
   // L1：前向推进指令（每次调用必达）
   const directive = buildForwardDirective(newTodos);
@@ -406,7 +410,7 @@ print("Hello World")
 
   /** 获取当前 todo 列表的深拷贝（供 TUI 面板读取，防止外部修改污染内部状态） */
   getTodos(): TodoItem[] {
-    return this.currentTodos.map(t => ({ ...t }));
+    return this.currentTodos.map((t) => ({ ...t }));
   }
 
   /**
@@ -420,7 +424,7 @@ print("Hello World")
    * 一张全绿清单不消失，是行为回退。两个语义分两个入口是**结论**，不是重复代码。
    */
   getLastWrittenTodos(): TodoItem[] {
-    return this.lastWrittenTodos.map(t => ({ ...t }));
+    return this.lastWrittenTodos.map((t) => ({ ...t }));
   }
 
   /**
@@ -559,7 +563,7 @@ print("Hello World")
     }));
 
     // 检查全部完成（必须在 in_progress 校验之前，否则 [{completed}, {completed}] 会被误杀）
-    const allDone = todos.length > 0 && todos.every(t => t.status === "completed");
+    const allDone = todos.length > 0 && todos.every((t) => t.status === "completed");
 
     // ─── 2026-07-30 修复：「恰好一个 in_progress」从硬拒绝降级为软提示 ───
     //
@@ -594,7 +598,7 @@ print("Hello World")
     // 正好漏掉了最需要管的入口态。本缺陷现场就是这样：18 项全 pending 首建后再没碰过清单。
     const statusAdvisories: string[] = [];
     if (!allDone) {
-      const inProgressCount = todos.filter(t => t.status === "in_progress").length;
+      const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
       if (inProgressCount > 1) {
         statusAdvisories.push(
           `提示：当前有 ${inProgressCount} 个 in_progress。清单已按你提交的内容保存，但建议同一时刻只保留 1 个 in_progress、其余置 pending——这样进度展示更清晰，也更容易发现自己是否在并行摊开太多任务。`,
@@ -602,7 +606,7 @@ print("Hello World")
       } else if (inProgressCount === 0 && todos.length > 0) {
         // 点名下一项（而非泛泛说"把下一项置为 in_progress"）：弱模型对具体指令的执行率
         // 显著高于泛化提醒，与 buildForwardDirective 的分流同源、可共用同一锚点。
-        const nextPending = todos.find(t => t.status === "pending");
+        const nextPending = todos.find((t) => t.status === "pending");
         const named = nextPending ? `（建议是「${nextPending.content}」）` : "";
         statusAdvisories.push(
           `提示：当前没有 in_progress 任务。清单已保存，但若你正要继续推进，` +
@@ -648,9 +652,7 @@ print("Hello World")
     // 返回 diff（附上状态建议——写入已成功，建议不影响结果）
     const diff = formatTodoDiff(oldTodos, this.currentTodos);
     return {
-      output: statusAdvisories.length > 0
-        ? `${diff}\n\n${statusAdvisories.join("\n")}`
-        : diff,
+      output: statusAdvisories.length > 0 ? `${diff}\n\n${statusAdvisories.join("\n")}` : diff,
     };
   }
 }

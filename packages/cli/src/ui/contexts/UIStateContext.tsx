@@ -3,13 +3,13 @@
  * 管理全局 UI 状态，包括 renderMarkdown 开关、通知消息等
  */
 
-import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
 
 /** 瞬态消息类型 */
 export enum TransientMessageType {
-  Warning = 'warning',
-  Hint = 'hint',
-  Info = 'info',
+  Warning = "warning",
+  Hint = "hint",
+  Info = "info",
 }
 
 /** 瞬态消息 */
@@ -39,7 +39,7 @@ export const EXPAND_LEVEL_MAX_LINES: Record<ExpandLevel, number> = {
 
 /** TO4：阶梯循环下一级别（0→1→2→0）。纯函数，便于单测。 */
 export function nextExpandLevel(level: ExpandLevel): ExpandLevel {
-  return (((level + 1) % 3) as ExpandLevel);
+  return ((level + 1) % 3) as ExpandLevel;
 }
 
 /** TO4：旧 constrainHeight 布尔到展开级别的兼容映射（true→0 折叠，false→2 全展开）。 */
@@ -100,7 +100,7 @@ const UIActionsContext = createContext<UIActions | undefined>(undefined);
 export const useUIState = (): UIState => {
   const context = useContext(UIStateContext);
   if (!context) {
-    throw new Error('useUIState must be used within a UIStateProvider');
+    throw new Error("useUIState must be used within a UIStateProvider");
   }
   return context;
 };
@@ -108,7 +108,7 @@ export const useUIState = (): UIState => {
 export const useUIActions = (): UIActions => {
   const context = useContext(UIActionsContext);
   if (!context) {
-    throw new Error('useUIActions must be used within a UIStateProvider');
+    throw new Error("useUIActions must be used within a UIStateProvider");
   }
   return context;
 };
@@ -160,11 +160,11 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
   const [taskPanelHidden, setTaskPanelHidden] = useState(false);
 
   const toggleRenderMarkdown = useCallback(() => {
-    setRenderMarkdown(prev => !prev);
+    setRenderMarkdown((prev) => !prev);
   }, []);
 
   const toggleTaskPanel = useCallback(() => {
-    setTaskPanelHidden(prev => !prev);
+    setTaskPanelHidden((prev) => !prev);
   }, []);
 
   // TO4：constrainHeight 派生自 expandLevel（0=约束，≥1=放开），保留旧语义。
@@ -174,64 +174,68 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     setTransientMessage({ text, type });
   }, []);
 
-  const state = useMemo<UIState>(() => ({
-    renderMarkdown,
-    transientMessage,
-    updateInfo,
-    showIsExpandableHint,
-    constrainHeight,
-    expandLevel,
-    ctrlCPressedOnce,
-    ctrlDPressedOnce,
-    showEscapePrompt,
-    dialogsVisible,
-    taskPanelHidden,
-  }), [
-    renderMarkdown,
-    transientMessage,
-    updateInfo,
-    showIsExpandableHint,
-    constrainHeight,
-    expandLevel,
-    ctrlCPressedOnce,
-    ctrlDPressedOnce,
-    showEscapePrompt,
-    dialogsVisible,
-    taskPanelHidden,
-  ]);
+  const state = useMemo<UIState>(
+    () => ({
+      renderMarkdown,
+      transientMessage,
+      updateInfo,
+      showIsExpandableHint,
+      constrainHeight,
+      expandLevel,
+      ctrlCPressedOnce,
+      ctrlDPressedOnce,
+      showEscapePrompt,
+      dialogsVisible,
+      taskPanelHidden,
+    }),
+    [
+      renderMarkdown,
+      transientMessage,
+      updateInfo,
+      showIsExpandableHint,
+      constrainHeight,
+      expandLevel,
+      ctrlCPressedOnce,
+      ctrlDPressedOnce,
+      showEscapePrompt,
+      dialogsVisible,
+      taskPanelHidden,
+    ],
+  );
 
-  const actions = useMemo<UIActions>(() => ({
-    setRenderMarkdown,
-    toggleRenderMarkdown,
-    setTransientMessage,
-    showTransientMessage,
-    setUpdateInfo,
-    setShowIsExpandableHint,
-    // TO4：兼容旧 setConstrainHeight 语义——true→级别0(折叠)，false→级别2(全展开)。
-    setConstrainHeight: (value: boolean | ((prev: boolean) => boolean)) => {
-      setExpandLevelState(prevLevel => {
-        const prevConstrain = prevLevel === 0;
-        const next = typeof value === "function" ? value(prevConstrain) : value;
-        return expandLevelFromConstrain(next);
-      });
-    },
-    // TO4：阶梯循环 0→1→2→0。
-    cycleExpandLevel: () => {
-      setExpandLevelState(prev => nextExpandLevel(prev));
-    },
-    setExpandLevel: (level: ExpandLevel) => setExpandLevelState(level),
-    setCtrlCPressedOnce,
-    setCtrlDPressedOnce,
-    setShowEscapePrompt,
-    setDialogsVisible,
-    toggleTaskPanel,
-  }), [toggleRenderMarkdown, showTransientMessage, toggleTaskPanel]);
+  const actions = useMemo<UIActions>(
+    () => ({
+      setRenderMarkdown,
+      toggleRenderMarkdown,
+      setTransientMessage,
+      showTransientMessage,
+      setUpdateInfo,
+      setShowIsExpandableHint,
+      // TO4：兼容旧 setConstrainHeight 语义——true→级别0(折叠)，false→级别2(全展开)。
+      setConstrainHeight: (value: boolean | ((prev: boolean) => boolean)) => {
+        setExpandLevelState((prevLevel) => {
+          const prevConstrain = prevLevel === 0;
+          const next = typeof value === "function" ? value(prevConstrain) : value;
+          return expandLevelFromConstrain(next);
+        });
+      },
+      // TO4：阶梯循环 0→1→2→0。
+      cycleExpandLevel: () => {
+        setExpandLevelState((prev) => nextExpandLevel(prev));
+      },
+      setExpandLevel: (level: ExpandLevel) => setExpandLevelState(level),
+      setCtrlCPressedOnce,
+      setCtrlDPressedOnce,
+      setShowEscapePrompt,
+      setDialogsVisible,
+      toggleTaskPanel,
+    }),
+    [toggleRenderMarkdown, showTransientMessage, toggleTaskPanel],
+  );
 
   return (
     <UIStateContext.Provider value={state}>
-      <UIActionsContext.Provider value={actions}>
-        {children}
-      </UIActionsContext.Provider>
+      <UIActionsContext.Provider value={actions}>{children}</UIActionsContext.Provider>
     </UIStateContext.Provider>
   );
 };

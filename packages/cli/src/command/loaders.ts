@@ -22,9 +22,7 @@ export async function loadCustomCommands(
   const { CustomCommandLoader } = await import("./custom.ts");
   const loader = new CustomCommandLoader();
   const customCmds = await loader.loadAll(cwd, scanOptions);
-  return customCmds.map(({ cmd, source }) =>
-    adaptLegacyCommand(cmd, source as CommandSource),
-  );
+  return customCmds.map(({ cmd, source }) => adaptLegacyCommand(cmd, source as CommandSource));
 }
 
 /**

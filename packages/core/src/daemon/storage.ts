@@ -3,7 +3,14 @@
  * ADR-030 / S8-T08
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { StorageAdapter } from "./types.ts";
 

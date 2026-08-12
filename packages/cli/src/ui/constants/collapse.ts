@@ -62,10 +62,7 @@ export interface TruncatedShellCommand {
  * 纯函数，不含前缀：调用方负责拼 `$ ` / `! `。`expanded=true` 时原样返回完整命令。
  * 统一换行符为 \n（兼容 Windows \r\n），避免字符计数偏大、前缀与命令不对齐。
  */
-export function truncateShellCommand(
-  command: string,
-  expanded: boolean,
-): TruncatedShellCommand {
+export function truncateShellCommand(command: string, expanded: boolean): TruncatedShellCommand {
   const normalized = command.replace(/\r\n/g, "\n");
 
   if (expanded) {

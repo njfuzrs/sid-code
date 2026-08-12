@@ -57,9 +57,7 @@ if (!existsSync(META_FILE)) {
 }
 mkdirSync(outDir, { recursive: true });
 
-const splitFile = values.task
-  ? undefined
-  : join(SPLITS_DIR, `${values.split}.txt`);
+const splitFile = values.task ? undefined : join(SPLITS_DIR, `${values.split}.txt`);
 
 if (splitFile && !existsSync(splitFile)) {
   console.error(`✗ split 文件不存在: ${splitFile}`);
@@ -84,7 +82,9 @@ const config: RunConfig = {
   },
 };
 
-console.log(`Mode      : ${values.execute ? "execute (real LLM judge)" : "skip-llm-judge (省钱模式)"}`);
+console.log(
+  `Mode      : ${values.execute ? "execute (real LLM judge)" : "skip-llm-judge (省钱模式)"}`,
+);
 console.log(`Adapter   : sid-code-offline (从 trajectory-platform 抽取)`);
 console.log(`Split     : ${values.task ? `single task ${values.task}` : values.split}`);
 console.log(`Bench dir : ${benchDir}`);

@@ -121,7 +121,9 @@ export function renderMessageForSummary(msg: Message): string {
           return String(block.input);
         }
       })();
-      parts.push(`[工具调用: ${block.name}] ${truncateWithMark(input, TRUNCATE_LIMITS.toolUseInput)}`);
+      parts.push(
+        `[工具调用: ${block.name}] ${truncateWithMark(input, TRUNCATE_LIMITS.toolUseInput)}`,
+      );
     } else if (block.type === "tool_result") {
       const total = block.content.length;
       const head = block.content.slice(0, TRUNCATE_LIMITS.toolResult);
@@ -201,7 +203,10 @@ export function formatCompactSummary(summary: string): string {
   // 4. 兜底：剥离后若为空（标签处理意外清空），回退到剥离 analysis 后的原文
   const trimmed = formatted.trim();
   if (trimmed.length === 0) {
-    return summary.replace(/<analysis>[\s\S]*?<\/analysis>/gi, "").replace(/<\/?(analysis|summary)>/gi, "").trim();
+    return summary
+      .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
+      .replace(/<\/?(analysis|summary)>/gi, "")
+      .trim();
   }
   return trimmed;
 }
@@ -233,12 +238,10 @@ export function getCompactUserSummaryMessage(
 ): string {
   const formattedSummary = formatCompactSummary(summary);
 
-  let base =
-    `以下是对之前对话的结构化摘要（之前的会话因上下文超限被压缩，本摘要覆盖较早的对话部分）：\n\n${formattedSummary}`;
+  let base = `以下是对之前对话的结构化摘要（之前的会话因上下文超限被压缩，本摘要覆盖较早的对话部分）：\n\n${formattedSummary}`;
 
   if (options.transcriptPath) {
-    base +=
-      `\n\n如果你需要压缩前的具体细节（例如确切的代码片段、错误信息或你之前生成的内容），可以读取完整转录文件：${options.transcriptPath}`;
+    base += `\n\n如果你需要压缩前的具体细节（例如确切的代码片段、错误信息或你之前生成的内容），可以读取完整转录文件：${options.transcriptPath}`;
   }
 
   if (options.recentMessagesPreserved) {
@@ -308,7 +311,10 @@ const PARTIAL_COMPACT_PROMPT = `你的任务是：为下面这段对话的**前�
  * @param messages 待压缩的前半段消息
  * @param customInstructions 可选自定义指令
  */
-export function buildPartialCompactUserPrompt(messages: Message[], customInstructions?: string): string {
+export function buildPartialCompactUserPrompt(
+  messages: Message[],
+  customInstructions?: string,
+): string {
   let instruction = PARTIAL_COMPACT_PROMPT;
   if (customInstructions && customInstructions.trim() !== "") {
     instruction += `\n\n额外指令:\n${customInstructions.trim()}`;

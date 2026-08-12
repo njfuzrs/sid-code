@@ -10,7 +10,13 @@ import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { ToolMessage } from "./ToolMessage.tsx";
 import { isShellTool, type ToolCallStatus } from "./ToolShared.tsx";
-import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput, getThinkThought } from "../../ui-utils.ts";
+import {
+  getToolSummary,
+  getResultSummary,
+  isDiffContent,
+  getFilenameFromInput,
+  getThinkThought,
+} from "../../ui-utils.ts";
 import { useOverflowState } from "../../contexts/OverflowContext.tsx";
 import { theme } from "../../semantic-colors.ts";
 
@@ -87,15 +93,11 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   // （pending / executing / success / error / cancelled），只有 success 才该退场。
   //   - pending（排队等权限）与 executing 都还没有结果，留着表达"这一步在进行"；
   //   - error / cancelled 是用户必须看到的异常收尾，绝不隐藏。
-  const visibleTools = tools.filter(
-    (t) => !(t.displayMode === "hidden" && t.status === "success"),
-  );
+  const visibleTools = tools.filter((t) => !(t.displayMode === "hidden" && t.status === "success"));
 
   // 检查是否有溢出内容（通过 OverflowContext）
   const overflowState = useOverflowState();
-  const hasOverflow = overflowState
-    ? overflowState.overflowingIds.size > 0
-    : false;
+  const hasOverflow = overflowState ? overflowState.overflowingIds.size > 0 : false;
 
   // 是否显示展开提示
   const showExpandHint = isExpandable && hasOverflow;
@@ -110,11 +112,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
   const contentWidth = terminalWidth - TOOL_MESSAGE_HORIZONTAL_MARGIN;
 
   return (
-    <Box
-      flexDirection="column"
-      width={terminalWidth}
-      paddingRight={TOOL_MESSAGE_HORIZONTAL_MARGIN}
-    >
+    <Box flexDirection="column" width={terminalWidth} paddingRight={TOOL_MESSAGE_HORIZONTAL_MARGIN}>
       {visibleTools.map((tool, index) => {
         // 结构化 diff 优先(从 Message[] 重建路径携带);缺失时降级到对 result 文本的正则检测。
         const hasPatch = !!tool.structuredPatch?.length;
@@ -122,11 +120,12 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
         const filename = tool.filename ?? getFilenameFromInput(tool.name, tool.input);
 
         // bash/shell 工具：提取完整命令行供独立换行展示
-        const shellCommand = tool.shellCommand != null
-          ? tool.shellCommand
-          : isShellTool(tool.name)
-            ? (tool.input as any)?.command || ""
-            : undefined;
+        const shellCommand =
+          tool.shellCommand != null
+            ? tool.shellCommand
+            : isShellTool(tool.name)
+              ? (tool.input as any)?.command || ""
+              : undefined;
 
         // think 工具：思考正文在 input 里（工具结果只是无信息确认语），取出交给结果区展示
         const thinkThought = getThinkThought(tool.name, tool.input);
@@ -171,9 +170,7 @@ export const ToolGroupMessage: React.FC<ToolGroupMessageProps> = ({
       })}
       {showExpandHint && (
         <Box paddingLeft={2}>
-          <Text color={theme.text.secondary}>
-            ctrl+o 展开完整输出
-          </Text>
+          <Text color={theme.text.secondary}>ctrl+o 展开完整输出</Text>
         </Box>
       )}
     </Box>

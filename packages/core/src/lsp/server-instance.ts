@@ -52,7 +52,9 @@ export class LSPServerInstance {
   async ensureStarted(): Promise<void> {
     if (this._state === "running") return;
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.start().finally(() => { this.startPromise = null; });
+    this.startPromise = this.start().finally(() => {
+      this.startPromise = null;
+    });
     return this.startPromise;
   }
 
@@ -63,11 +65,10 @@ export class LSPServerInstance {
 
     this._state = "starting";
     try {
-      await this.client.start(
-        this.config.command,
-        this.config.args ?? [],
-        { env: this.config.env, cwd: this.config.workspaceFolder },
-      );
+      await this.client.start(this.config.command, this.config.args ?? [], {
+        env: this.config.env,
+        cwd: this.config.workspaceFolder,
+      });
 
       // 重新注册崩溃前的通知处理器
       for (const { method, handler } of this.notificationHandlers) {
@@ -78,39 +79,43 @@ export class LSPServerInstance {
       const { pathToFileURL } = await import("url");
       const rootUri = pathToFileURL(this.config.workspaceFolder).href;
 
-      await this.client.sendRequest("initialize", {
-        processId: process.pid,
-        rootUri,
-        workspaceFolders: [{ uri: rootUri, name: this.name }],
-        initializationOptions: this.config.initializationOptions,
-        capabilities: {
-          textDocument: {
-            synchronization: { didSave: true, dynamicRegistration: false },
-            publishDiagnostics: { relatedInformation: true },
-            // G7：声明查询能力，否则服务器可能不返回 definition/references/hover 等结果。
-            hover: { contentFormat: ["markdown", "plaintext"] },
-            definition: { linkSupport: true },
-            references: {},
-            implementation: { linkSupport: true },
-            documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-            callHierarchy: { dynamicRegistration: false },
-            // codeAction：声明支持 literal 形态 + isPreferred，否则部分服务器只回 Command
-            // 或不返回 quickfix。仅 pull 式按需查询用（LSPTool 的 codeAction 操作），不做推送。
-            codeAction: {
-              codeActionLiteralSupport: {
-                codeActionKind: { valueSet: ["quickfix", "refactor", "source"] },
+      await this.client.sendRequest(
+        "initialize",
+        {
+          processId: process.pid,
+          rootUri,
+          workspaceFolders: [{ uri: rootUri, name: this.name }],
+          initializationOptions: this.config.initializationOptions,
+          capabilities: {
+            textDocument: {
+              synchronization: { didSave: true, dynamicRegistration: false },
+              publishDiagnostics: { relatedInformation: true },
+              // G7：声明查询能力，否则服务器可能不返回 definition/references/hover 等结果。
+              hover: { contentFormat: ["markdown", "plaintext"] },
+              definition: { linkSupport: true },
+              references: {},
+              implementation: { linkSupport: true },
+              documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+              callHierarchy: { dynamicRegistration: false },
+              // codeAction：声明支持 literal 形态 + isPreferred，否则部分服务器只回 Command
+              // 或不返回 quickfix。仅 pull 式按需查询用（LSPTool 的 codeAction 操作），不做推送。
+              codeAction: {
+                codeActionLiteralSupport: {
+                  codeActionKind: { valueSet: ["quickfix", "refactor", "source"] },
+                },
+                isPreferredSupport: true,
               },
-              isPreferredSupport: true,
+            },
+            workspace: {
+              workspaceFolders: true,
+              symbol: { dynamicRegistration: false },
+              // G8：声明支持 configuration 请求，与 client.ts 的 workspace/configuration 应答配套。
+              configuration: true,
             },
           },
-          workspace: {
-            workspaceFolders: true,
-            symbol: { dynamicRegistration: false },
-            // G8：声明支持 configuration 请求，与 client.ts 的 workspace/configuration 应答配套。
-            configuration: true,
-          },
         },
-      }, timeout);
+        timeout,
+      );
 
       this.client.sendNotification("initialized", {});
       this._state = "running";
@@ -131,7 +136,9 @@ export class LSPServerInstance {
         await this.client.sendRequest("shutdown", undefined, 3000).catch(() => {});
         this.client.sendNotification("exit");
       }
-    } catch { /* 最佳努力 */ }
+    } catch {
+      /* 最佳努力 */
+    }
     this.client.stop();
     this._state = "stopped";
   }
@@ -189,7 +196,10 @@ export class LSPServerInstance {
 
     this.crashRecoveryCount++;
     this._state = "stopped";
-    log.warn("LSP", `[${this.name}] 第 ${this.crashRecoveryCount}/${maxRestarts} 次崩溃恢复，重启中...`);
+    log.warn(
+      "LSP",
+      `[${this.name}] 第 ${this.crashRecoveryCount}/${maxRestarts} 次崩溃恢复，重启中...`,
+    );
 
     // 重新创建 client 并重启
     this.client = new LSPClient(this.name);

@@ -116,7 +116,8 @@ sc            # 全放行（= --dangerously-skip-permissions），确认过风�
                   脚本生成的 ref/tools.md 同源同值。此前写"60+"与运行时真值不符，已改）
     eval case     bun run eval:list 的汇总行（2026-07-27 实测 P0=10 holdout=5 P1=9 P2=6 = 30）
   改这组数字前先跑上面的命令，不要凭记忆改。
-  三处须一致：本文、README.md、README.en.md —— 改一处要改三处。
+  三处须一致：本文、README.md（英文主入口）、README.zh-CN.md —— 改一处要改三处。
+  （2026-08-12 P2-6 把主 README 换成英文、中文挪到 README.zh-CN.md，文件名已变。）
   ⚠️ 2026-08-10 教训：工具数从"60+"改成 44 时只改了本文，README.md 漏改，
      两份对外文档不一致挂了两周多。改这张表时把三处一起 grep 一遍。
 -->

@@ -301,8 +301,10 @@ export class DiminishingReturnsDetector {
   private readonly diminishingThreshold: number;
 
   constructor(options?: DiminishingReturnsOptions) {
-    this.maxRecoveryCount = options?.maxRecoveryCount ?? DiminishingReturnsDetector.MAX_RECOVERY_COUNT;
-    this.diminishingThreshold = options?.diminishingThreshold ?? DiminishingReturnsDetector.DIMINISHING_THRESHOLD;
+    this.maxRecoveryCount =
+      options?.maxRecoveryCount ?? DiminishingReturnsDetector.MAX_RECOVERY_COUNT;
+    this.diminishingThreshold =
+      options?.diminishingThreshold ?? DiminishingReturnsDetector.DIMINISHING_THRESHOLD;
   }
 
   /** 记录一次续写的输出 token 数 */
@@ -328,8 +330,7 @@ export class DiminishingReturnsDetector {
     if (history.length >= 2) {
       const last = history[history.length - 1];
       const prev = history[history.length - 2];
-      if (last < this.diminishingThreshold &&
-          prev < this.diminishingThreshold) {
+      if (last < this.diminishingThreshold && prev < this.diminishingThreshold) {
         return true;
       }
     }

@@ -3,14 +3,14 @@
  * 基于 BaseSelectionList 的单选列表
  */
 
-import React from 'react';
+import React from "react";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { theme } from '../../semantic-colors.ts';
+import { theme } from "../../semantic-colors.ts";
 import {
   BaseSelectionList,
   type RenderItemContext,
   type SelectionListItem,
-} from './BaseSelectionList.tsx';
+} from "./BaseSelectionList.tsx";
 
 export interface RadioSelectItem<T> extends SelectionListItem<T> {
   label: string;
@@ -27,10 +27,7 @@ export interface RadioButtonSelectProps<T> {
   showScrollArrows?: boolean;
   maxItemsToShow?: number;
   showNumbers?: boolean;
-  renderItem?: (
-    item: RadioSelectItem<T>,
-    context: RenderItemContext,
-  ) => React.ReactNode;
+  renderItem?: (item: RadioSelectItem<T>, context: RenderItemContext) => React.ReactNode;
 }
 
 export function RadioButtonSelect<T>({
@@ -59,9 +56,7 @@ export function RadioButtonSelect<T>({
         ((item, { titleColor }) => (
           <Text color={titleColor} wrap="truncate" key={item.key}>
             {item.label}
-            {item.sublabel && (
-              <Text color={theme.text.secondary}> {item.sublabel}</Text>
-            )}
+            {item.sublabel && <Text color={theme.text.secondary}> {item.sublabel}</Text>}
           </Text>
         ))
       }

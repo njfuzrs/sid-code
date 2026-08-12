@@ -9,7 +9,6 @@
  *   ② 无内网地址：JSON 会随站点发到公网，不能带 gitlab / 内网 IP（设计方案 §6.5）
  *   ③ 容器页 frontmatter 必须有 search: false，否则几百条 commit 冲垮全站搜索
  *   ④ 全站搜索排除钩子必须先 render 再判断（顺序颠倒会静默失效——实测踩过）
- *   ⑤ CHANGELOG.html 是指向 /changelog 的跳转页，不再是自建 mini 站
  *
  * 不在覆盖范围内（如实记录，免得看到"有测试"就以为全覆盖）：
  *   · 组件的实际渲染与搜索交互 —— 需浏览器，已用 playwright + computed style 实测
@@ -26,7 +25,6 @@ const DATA_PATH = resolve(ROOT, "website/.vitepress/data/changelog.json");
 const PAGE_PATH = resolve(ROOT, "website/changelog.md");
 const CONFIG_PATH = resolve(ROOT, "website/.vitepress/config.ts");
 const COMPONENT_PATH = resolve(ROOT, "website/.vitepress/theme/Changelog.vue");
-const HTML_PATH = resolve(ROOT, "CHANGELOG.html");
 const MD_PATH = resolve(ROOT, "CHANGELOG.md");
 
 describe("changelog.json · 站点数据源形态", () => {
@@ -61,8 +59,7 @@ describe("changelog.json · 站点数据源形态", () => {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
     expect(d.totalVersions).toBe(d.versions.length);
     const actual = d.versions.reduce(
-      (n: number, v: any) =>
-        n + v.sections.reduce((m: number, s: any) => m + s.items.length, 0),
+      (n: number, v: any) => n + v.sections.reduce((m: number, s: any) => m + s.items.length, 0),
       0,
     );
     expect(d.totalItems).toBe(actual);
@@ -245,11 +242,10 @@ describe("CHANGELOG.md · 版本区间不漏提交（回归：补跑会清空当
       const tag = `v${v.version}`;
       let tagDay: string;
       try {
-        tagDay = execFileSync(
-          "git",
-          ["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d", tag],
-          { cwd: ROOT, encoding: "utf8" },
-        ).trim();
+        tagDay = execFileSync("git", ["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d", tag], {
+          cwd: ROOT,
+          encoding: "utf8",
+        }).trim();
       } catch {
         continue; // 尚未打 tag
       }
@@ -293,12 +289,12 @@ describe("changelog.json · 不含内网地址（会随站点发到公网）", (
     const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
     const bareIpv4 = new RegExp(
       [
-        "(?<![\\d.])",                                        // 左边界：不紧邻数字/点（排除版本号尾部）
-        "(?!(?:10|127|0|255)\\.)",                            // 排除 10./127./0./255.
+        "(?<![\\d.])", // 左边界：不紧邻数字/点（排除版本号尾部）
+        "(?!(?:10|127|0|255)\\.)", // 排除 10./127./0./255.
         "(?!192\\.168\\.)(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)", // 排除私网段（上一条已覆盖）
         "(?!203\\.0\\.113\\.)(?!198\\.51\\.100\\.)(?!192\\.0\\.2\\.)", // 排除 RFC 5737 文档段
         `${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}`,
-        "(?![\\d.])",                                         // 右边界：四段就结束（排除 1.2.3.4.5 版本号）
+        "(?![\\d.])", // 右边界：四段就结束（排除 1.2.3.4.5 版本号）
       ].join(""),
     );
     expect(raw.match(bareIpv4) ?? []).toEqual([]);
@@ -340,26 +336,6 @@ describe("容器页与全站搜索隔离", () => {
     const src = readFileSync(CONFIG_PATH, "utf8");
     // 注释里提到这个名字是允许的（有一条警告注释），这里只禁止真实调用
     expect(src).not.toMatch(/await\s+md\.renderAsync\s*\(/);
-  });
-});
-
-describe("CHANGELOG.html · 跳转页而非自建 mini 站", () => {
-  test("是跳转页：含 meta refresh 指向 /changelog", () => {
-    const html = readFileSync(HTML_PATH, "utf8");
-    expect(html).toMatch(/http-equiv=["']refresh["']/i);
-    expect(html).toContain("/changelog");
-  });
-
-  test("不再是 mini 站：体积远小于旧版、无搜索/分组交互", () => {
-    const html = readFileSync(HTML_PATH, "utf8");
-    // 旧版自带 300+ 行内联 CSS/JS，约 120K；跳转页应在 4K 以内
-    expect(html.length).toBeLessThan(4096);
-    expect(html).not.toContain("--sid-brand");
-  });
-
-  test("不含内网地址", () => {
-    const html = readFileSync(HTML_PATH, "utf8");
-    expect(html).not.toMatch(/gitlab\.[a-z0-9.-]+\.(cc|com|cn|net|local)/i);
   });
 });
 
@@ -439,7 +415,7 @@ describe("组件与数据的耦合点", () => {
 
   test("生成器写入的正是组件读取的那个文件", () => {
     const gen = readFileSync(resolve(ROOT, "scripts/generate-changelog.ts"), "utf8");
-    expect(gen).toContain('website/.vitepress/data');
+    expect(gen).toContain("website/.vitepress/data");
     expect(gen).toContain('"changelog.json"');
   });
 });
@@ -458,10 +434,7 @@ describe("左栏版本时间线", () => {
   const data = () => JSON.parse(readFileSync(DATA_PATH, "utf8"));
 
   test("分组条数之和等于版本总数（漏版本是静默缺陷：左栏少一条没人会发现）", () => {
-    const total = CHANGELOG_SIDEBAR.reduce(
-      (n: number, g: any) => n + g.items.length,
-      0,
-    );
+    const total = CHANGELOG_SIDEBAR.reduce((n: number, g: any) => n + g.items.length, 0);
     expect(total).toBe(data().versions.length);
   });
 
@@ -482,8 +455,8 @@ describe("左栏版本时间线", () => {
   });
 
   test("组顺序与组内顺序都是最新在前（左栏顺序必须与正文一致）", () => {
-    const flat = CHANGELOG_SIDEBAR.flatMap((g: any) => g.items).map(
-      (i: any) => i.link.replace("/changelog#v", ""),
+    const flat = CHANGELOG_SIDEBAR.flatMap((g: any) => g.items).map((i: any) =>
+      i.link.replace("/changelog#v", ""),
     );
     expect(flat).toEqual(data().versions.map((v: any) => v.version));
   });
@@ -506,7 +479,7 @@ describe("左栏版本时间线", () => {
     expect(vue).toContain('versionAnchor } from "../changelog-meta"');
     expect(vue).toContain(':id="versionAnchor(v.version)"');
     // 禁止退回手拼字符串（曾经是 :id="`v${v.version}`"）——那样两侧就各拼一套了
-    expect(vue).not.toContain(":id=\"`v${v.version}`\"");
+    expect(vue).not.toContain(':id="`v${v.version}`"');
     expect(versionAnchor("0.1.600")).toBe("v0.1.600");
   });
 
@@ -539,9 +512,6 @@ describe("左栏版本时间线", () => {
       { version: "9.9.9", date: "2026-08-01" },
       { version: "9.9.8", date: "2026-07-31" },
     ]);
-    expect(groups.map((g: any) => g.text)).toEqual([
-      "2026 年 8 月（1）",
-      "2026 年 7 月（1）",
-    ]);
+    expect(groups.map((g: any) => g.text)).toEqual(["2026 年 8 月（1）", "2026 年 7 月（1）"]);
   });
 });

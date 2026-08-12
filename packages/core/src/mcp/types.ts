@@ -71,11 +71,11 @@ export interface CallToolResult {
 /** MCP 服务器连接状态 */
 export enum MCPConnectionStatus {
   DISCONNECTED = "disconnected",
-  CONNECTING   = "connecting",
-  CONNECTED    = "connected",
+  CONNECTING = "connecting",
+  CONNECTED = "connected",
   RECONNECTING = "reconnecting",
-  FAILED       = "failed",
-  DISABLED     = "disabled",
+  FAILED = "failed",
+  DISABLED = "disabled",
 }
 
 /** MCP 资源定义 */
@@ -128,7 +128,7 @@ export interface GetPromptResult {
 
 // ─── 配置 Scope 体系 ───
 
-export type ConfigScope = 'user' | 'project' | 'local' | 'dynamic';
+export type ConfigScope = "user" | "project" | "local" | "dynamic";
 
 /** 带 Scope 标记的 MCP 服务器配置 */
 export interface ScopedMcpServerConfig {
@@ -149,7 +149,7 @@ export interface ScopedMcpServerConfig {
 // ─── Elicitation ───
 
 export interface ElicitRequest {
-  method: 'elicitation/create';
+  method: "elicitation/create";
   params: {
     message: string;
     requestedSchema?: Record<string, unknown>;
@@ -158,7 +158,7 @@ export interface ElicitRequest {
 }
 
 export interface ElicitResult {
-  action: 'accept' | 'cancel';
+  action: "accept" | "cancel";
   content?: Record<string, unknown>;
 }
 

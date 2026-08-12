@@ -40,7 +40,10 @@ export const SIDE_CALL_NO_THINK: NonNullable<SendParams["thinking"]> = {
 
 /** side-call 超时错误（消息含"超时"字样，便于上层 isTimeoutError / catch 识别）。 */
 export class SideCallTimeoutError extends Error {
-  constructor(public readonly caller: string, public readonly timeoutMs: number) {
+  constructor(
+    public readonly caller: string,
+    public readonly timeoutMs: number,
+  ) {
     super(`side-call 超时：${caller} 超过 ${(timeoutMs / 1000).toFixed(0)}s 未完成`);
     this.name = "SideCallTimeoutError";
   }
@@ -65,7 +68,11 @@ export function mergeTimeoutSignal(
   let timedOut = false;
 
   const onExternalAbort = () => {
-    try { ctl.abort(externalSignal?.reason ?? "user-cancel"); } catch { /* ignore */ }
+    try {
+      ctl.abort(externalSignal?.reason ?? "user-cancel");
+    } catch {
+      /* ignore */
+    }
   };
 
   // 外部 signal 已 abort：立即传播。
@@ -77,7 +84,11 @@ export function mergeTimeoutSignal(
 
   const timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
     timedOut = true;
-    try { ctl.abort("side-call-timeout"); } catch { /* ignore */ }
+    try {
+      ctl.abort("side-call-timeout");
+    } catch {
+      /* ignore */
+    }
   }, timeoutMs);
   // 不 unref：与 loop.ts/fallback.ts 的教训一致——unref timer 在事件循环被 IO 占满时
   // 不保证按时 fire。dispose() 会在正常路径清理，不会泄漏阻止退出。
@@ -85,8 +96,18 @@ export function mergeTimeoutSignal(
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    if (timer !== null) { try { clearTimeout(timer); } catch { /* ignore */ } }
-    try { externalSignal?.removeEventListener("abort", onExternalAbort); } catch { /* ignore */ }
+    if (timer !== null) {
+      try {
+        clearTimeout(timer);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    } catch {
+      /* ignore */
+    }
   };
 
   return { signal: ctl.signal, dispose, timedOut: () => timedOut };

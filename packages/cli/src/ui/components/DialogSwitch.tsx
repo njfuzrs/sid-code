@@ -58,7 +58,12 @@ export interface DialogSwitchProps {
   activeDialog: DialogType | null;
   onDialogClose: () => void;
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
-  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
+  availableModels: Array<{
+    name: string;
+    modelId?: string;
+    provider: string;
+    description?: string;
+  }>;
   onModelSelect: (modelName: string) => void;
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
@@ -189,7 +194,9 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     return <OnboardingDialog onComplete={onCompleteOnboarding} onClose={onDialogClose} />;
   }
   if (activeDialog === "mcp" && mcpManager && sessionState) {
-    return <McpDialog onClose={onDialogClose} mcpManager={mcpManager} sessionState={sessionState} />;
+    return (
+      <McpDialog onClose={onDialogClose} mcpManager={mcpManager} sessionState={sessionState} />
+    );
   }
   if (activeDialog === "effort") {
     return (
@@ -220,7 +227,13 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     );
   }
   if (activeDialog === "permissions" && sessionState) {
-    return <PermissionsDialog onClose={onDialogClose} config={callbacks.config} sessionState={sessionState} />;
+    return (
+      <PermissionsDialog
+        onClose={onDialogClose}
+        config={callbacks.config}
+        sessionState={sessionState}
+      />
+    );
   }
   if (activeDialog === "memory") {
     return <MemoryDialog onClose={onDialogClose} cwd={cwd} />;
@@ -258,7 +271,9 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     );
   }
   if (activeDialog === "config" && callbacks.config) {
-    return <ConfigDialog onClose={onDialogClose} config={callbacks.config} sessionState={sessionState} />;
+    return (
+      <ConfigDialog onClose={onDialogClose} config={callbacks.config} sessionState={sessionState} />
+    );
   }
   if (activeDialog === "hooks" && callbacks.hookSystem) {
     return <HooksDialog onClose={onDialogClose} hookSystem={callbacks.hookSystem} />;
@@ -287,27 +302,23 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     return <AgentsDialog onClose={onDialogClose} />;
   }
   if (activeDialog === "commands" && callbacks.unifiedRegistry) {
-    return <CommandsDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} mcpManager={mcpManager} />;
+    return (
+      <CommandsDialog
+        onClose={onDialogClose}
+        registry={callbacks.unifiedRegistry}
+        mcpManager={mcpManager}
+      />
+    );
   }
   if (activeDialog === "help" && callbacks.unifiedRegistry) {
     return <HelpDialog onClose={onDialogClose} registry={callbacks.unifiedRegistry} />;
   }
   if (activeDialog === "export" && callbacks.onExportConversation) {
-    return (
-      <ExportDialog
-        onClose={onDialogClose}
-        onExport={callbacks.onExportConversation}
-      />
-    );
+    return <ExportDialog onClose={onDialogClose} onExport={callbacks.onExportConversation} />;
   }
   // /context：上下文分类 token 拆解可视化
   if (activeDialog === "context" && callbacks.getContextBreakdown) {
-    return (
-      <ContextDialog
-        onClose={onDialogClose}
-        getBreakdown={callbacks.getContextBreakdown}
-      />
-    );
+    return <ContextDialog onClose={onDialogClose} getBreakdown={callbacks.getContextBreakdown} />;
   }
   // P2-1：Esc+Esc 会话回退选择器
   if (activeDialog === "rewind") {

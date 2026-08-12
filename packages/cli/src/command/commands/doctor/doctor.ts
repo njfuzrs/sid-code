@@ -53,7 +53,9 @@ function checkLargeRuleFiles(cwd: string): CheckItem[] {
     try {
       const rel = relative(cwd, path);
       if (rel && !rel.startsWith("..")) shown = rel;
-    } catch { /* 相对化失败就用绝对路径 */ }
+    } catch {
+      /* 相对化失败就用绝对路径 */
+    }
     return {
       status: "warn" as const,
       label: "规则文件过大",
@@ -83,7 +85,11 @@ function checkGitRepo(cwd: string): CheckItem {
     } catch {
       branch = "(未知分支)";
     }
-    return { status: "ok", label: "工作目录", detail: `git 仓库${branch ? `，分支 ${branch}` : ""}` };
+    return {
+      status: "ok",
+      label: "工作目录",
+      detail: `git 仓库${branch ? `，分支 ${branch}` : ""}`,
+    };
   } catch {
     return { status: "warn", label: "工作目录", detail: "非 git 仓库（部分功能不可用）" };
   }
@@ -143,7 +149,11 @@ function checkModelProvider(ctx: CommandContext): CheckItem[] {
   const { config } = ctx;
 
   if (!config.model) {
-    items.push({ status: "fail", label: "模型", detail: "未配置（settings.json 无 model / 无 availableModels）" });
+    items.push({
+      status: "fail",
+      label: "模型",
+      detail: "未配置（settings.json 无 model / 无 availableModels）",
+    });
     return items;
   }
   items.push({
@@ -268,7 +278,9 @@ const mod: LocalCommandModule = {
     const warnCount = items.filter((i) => i.status === "warn").length;
     lines.push("");
     if (failCount > 0) {
-      lines.push(`${ERROR_MARK} 发现 ${failCount} 项异常${warnCount > 0 ? `、${warnCount} 项警告` : ""}，请按提示修复。`);
+      lines.push(
+        `${ERROR_MARK} 发现 ${failCount} 项异常${warnCount > 0 ? `、${warnCount} 项警告` : ""}，请按提示修复。`,
+      );
     } else if (warnCount > 0) {
       lines.push(`${WARNING_MARK} ${warnCount} 项警告，核心功能可用。`);
     } else {

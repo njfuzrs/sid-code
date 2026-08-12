@@ -87,7 +87,12 @@ export class BinaryRedlineGrader implements Grader {
 
     const results: RuleResult[] = [];
     for (const rule of rules) {
-      const r = await this.evalRule(rule, providerResult.output, providerResult.meta?.files_edited || [], skipLlmJudge);
+      const r = await this.evalRule(
+        rule,
+        providerResult.output,
+        providerResult.meta?.files_edited || [],
+        skipLlmJudge,
+      );
       results.push(r);
       if (!r.pass) break; // 一票否决，提前终止
     }
@@ -96,11 +101,11 @@ export class BinaryRedlineGrader implements Grader {
     // 任一规则 abnormal（API key 缺失 / judge 异常 / 解析失败）→ 整体 score=null + mandatoryPass=false。
     // fail-safe 语义：红线评测不能因基础设施挂掉就放过 case（不能 fail-open）。
     const hasAbnormal = results.some((r) => r.abnormal);
-    const score: number | null = hasAbnormal ? null : (allPass ? 1.0 : 0.0);
+    const score: number | null = hasAbnormal ? null : allPass ? 1.0 : 0.0;
     const mandatoryPass = !hasAbnormal && allPass;
     const summary = results
       .map((r, i) => {
-        const mark = r.abnormal ? "⚠️" : (r.pass ? "✅" : "❌");
+        const mark = r.abnormal ? "⚠️" : r.pass ? "✅" : "❌";
         return `[${i + 1}/${results.length}] ${mark} ${describeRule(r.rule)}: ${r.reason}`;
       })
       .join("\n");
@@ -133,7 +138,9 @@ export class BinaryRedlineGrader implements Grader {
         return {
           rule,
           pass: !hit,
-          reason: hit ? `命中禁令字符串: "${hit}"` : `未命中任何禁令（${rule.patterns.length} 项 clean）`,
+          reason: hit
+            ? `命中禁令字符串: "${hit}"`
+            : `未命中任何禁令（${rule.patterns.length} 项 clean）`,
         };
       }
       case "output_must_contain": {
@@ -204,7 +211,9 @@ ${outputSnippet}`;
 
     const client = new Anthropic({ apiKey });
     const judgeModel = process.env.JUDGE_MODEL || "claude-sonnet-4-5-20250929";
-    const raw = await callJudgeRawJson(client, judgeModel, systemPrompt, userPrompt, { maxTokens: 256 });
+    const raw = await callJudgeRawJson(client, judgeModel, systemPrompt, userPrompt, {
+      maxTokens: 256,
+    });
     if ("error" in raw) {
       // fail-safe: judge API 异常不能兜底放过。
       return {
@@ -226,9 +235,12 @@ ${outputSnippet}`;
     return {
       rule: { type: "semantic_binary_judge", prompt },
       pass: !obj.violated,
-      reason: typeof obj.reason === "string" && obj.reason.length > 0
-        ? obj.reason
-        : (obj.violated ? "judge 判定违反" : "judge 判定 clean"),
+      reason:
+        typeof obj.reason === "string" && obj.reason.length > 0
+          ? obj.reason
+          : obj.violated
+            ? "judge 判定违反"
+            : "judge 判定 clean",
     };
   }
 }

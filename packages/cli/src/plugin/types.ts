@@ -20,12 +20,12 @@ export type PluginComponent = "commands" | "skills" | "agents" | "hooks" | "mcp-
  * managed / user / project 为未来预留
  */
 export type PluginScope =
-  | "managed"   // 企业策略（MDM），用户不可修改（预留）
-  | "user"      // 用户级（~/.sid-code/plugins/）
-  | "project"   // 项目级（.sid-code/plugins/）（预留）
-  | "local"     // 本地安装（等同于当前的 user）
-  | "builtin"   // 内置
-  | "inline";   // 会话级（--plugin-dir）
+  | "managed" // 企业策略（MDM），用户不可修改（预留）
+  | "user" // 用户级（~/.sid-code/plugins/）
+  | "project" // 项目级（.sid-code/plugins/）（预留）
+  | "local" // 本地安装（等同于当前的 user）
+  | "builtin" // 内置
+  | "inline"; // 会话级（--plugin-dir）
 
 /** 用户配置字段定义 */
 export interface UserConfigField {
@@ -51,11 +51,11 @@ export interface PluginManifest {
   license?: string;
 
   /** 组件声明（路径，相对插件根目录） */
-  commands?: string | string[];   // 命令目录路径，默认 "commands/"
-  skills?: string | string[];     // Skill 目录路径，默认 "skills/"
-  agents?: string | string[];     // Agent 目录路径，默认 "agents/"
-  hooks?: string;                 // Hook 配置文件路径，默认 "hooks.json"
-  mcpServers?: Record<string, MCPServerConfig> | string;  // MCP 服务器配置（内联或文件路径）
+  commands?: string | string[]; // 命令目录路径，默认 "commands/"
+  skills?: string | string[]; // Skill 目录路径，默认 "skills/"
+  agents?: string | string[]; // Agent 目录路径，默认 "agents/"
+  hooks?: string; // Hook 配置文件路径，默认 "hooks.json"
+  mcpServers?: Record<string, MCPServerConfig> | string; // MCP 服务器配置（内联或文件路径）
 
   /** 依赖声明（插件名列表） */
   dependencies?: string[];
@@ -138,10 +138,10 @@ export interface InstalledPluginEntry {
 /** Marketplace 来源配置（预留） */
 export interface MarketplaceSource {
   source: "github" | "git" | "npm" | "url" | "directory";
-  repo?: string;    // github 简写
-  url?: string;     // git/url 完整地址
+  repo?: string; // github 简写
+  url?: string; // git/url 完整地址
   package?: string; // npm 包名
-  path?: string;    // 本地目录
+  path?: string; // 本地目录
 }
 
 /** 企业策略配置（预留） */

@@ -155,13 +155,13 @@ export function describeIntegrityViolation(result: MessageHistoryIntegrity): str
   const parts: string[] = [];
   if (result.orphans.length > 0) {
     const items = result.orphans
-      .map(o => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
+      .map((o) => `${o.name}(id=${o.id} @msg#${o.messageIndex})`)
       .join(", ");
     parts.push(`${result.orphans.length} 个孤儿 tool_use: ${items}`);
   }
   if (result.dangling.length > 0) {
     const items = result.dangling
-      .map(d => `tool_use_id=${d.toolUseId} @msg#${d.messageIndex}`)
+      .map((d) => `tool_use_id=${d.toolUseId} @msg#${d.messageIndex}`)
       .join(", ");
     parts.push(`${result.dangling.length} 个游离 tool_result: ${items}`);
   }
@@ -264,7 +264,7 @@ export function backfillOrphanToolResults(messages: Message[]): BackfillResult {
       }
       // 剥离该消息内所有游离 tool_result block
       const kept = msg.content.filter(
-        b => !(b.type === "tool_result" && danglingIds.has(b.tool_use_id)),
+        (b) => !(b.type === "tool_result" && danglingIds.has(b.tool_use_id)),
       );
       if (kept.length === 0) continue; // 整条删除（content 被剥空）
       afterStrip.push({ ...msg, content: kept });

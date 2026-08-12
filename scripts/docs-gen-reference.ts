@@ -221,7 +221,12 @@ function extractEnumComments(file: string, enumName: string): Map<string, string
     for (let j = i - 1; j >= 0; j--) {
       const p = lines[j].trim();
       if (p.startsWith("/**") || p === "*/" || p.startsWith("*") || p.startsWith("//")) {
-        buf.unshift(p.replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "").replace(/\*\/$/, "").trim());
+        buf.unshift(
+          p
+            .replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "")
+            .replace(/\*\/$/, "")
+            .trim(),
+        );
       } else break;
     }
     const text = buf.filter(Boolean).join(" ").trim();
@@ -255,7 +260,10 @@ async function loadHookEvents(): Promise<HookEvent[]> {
   const toSnake = new Map<string, string>();
   for (const [snake, pascal] of Object.entries(legacyMap)) toSnake.set(pascal, snake);
 
-  const comments = extractEnumComments(join(ROOT, "packages/core/src/hook/types.ts"), "HookEventName");
+  const comments = extractEnumComments(
+    join(ROOT, "packages/core/src/hook/types.ts"),
+    "HookEventName",
+  );
   const wired = await loadWiredHookEvents();
   return Object.keys(enumObj).map((k) => {
     const description = comments.get(k) ?? "";
@@ -389,7 +397,19 @@ function zodTypeName(z: any): {
   return { type: map[t] ?? t.replace(/^Zod/, "").toLowerCase(), enumValues, constraint };
 }
 
-/** 抽 TS 接口/对象字面量里字段的前置注释或行尾注释 */
+/**
+ * 抽 TS 接口/对象字面量里字段的前置注释或行尾注释
+ *
+ * ⚠️ 字段行的识别**不能锚定具体缩进量**。原先写的是 `^\s{2,6}`（2~6 个空格），
+ * 2026-08-12 接入 oxfmt（P2-1）时它悄悄失效了：formatter 把
+ * `lazySchema(() =>` 拆成 `lazySchema(\n  () =>`，整个 schema 体多缩进一级 →
+ * 字段行变成 8 个空格 → 正则不匹配 → `env` / `mcpServers` / `permissions` /
+ * `worktree` 四个字段的说明在 ref/settings.md 里**静默变空**。
+ *
+ * 这类失效很危险：生成器不报错、`--check` 只说"参考页与源码不一致"，
+ * 不会告诉你是描述丢了。所以这里改成「至少 2 个空格、不限上限」，
+ * 让缩进深度的变化（换 formatter、多包一层函数）不再影响提取结果。
+ */
 function extractFieldComments(file: string, anchor: string, stopAt: string): Map<string, string> {
   const src = readFileSync(file, "utf8");
   const s = src.indexOf(anchor);
@@ -399,7 +419,7 @@ function extractFieldComments(file: string, anchor: string, stopAt: string): Map
   const lines = (stop > 0 ? rest.slice(0, stop) : rest).split("\n");
   const out = new Map<string, string>();
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^\s{2,6}([a-zA-Z][a-zA-Z0-9]*)\??:\s*/);
+    const m = lines[i].match(/^\s{2,}([a-zA-Z][a-zA-Z0-9]*)\??:\s*/);
     if (!m) continue;
     const field = m[1];
     if (out.has(field)) continue;
@@ -413,7 +433,12 @@ function extractFieldComments(file: string, anchor: string, stopAt: string): Map
     for (let j = i - 1; j >= 0; j--) {
       const p = lines[j].trim();
       if (p.startsWith("/**") || p === "*/" || p.startsWith("*") || p.startsWith("//")) {
-        buf.unshift(p.replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "").replace(/\*\/$/, "").trim());
+        buf.unshift(
+          p
+            .replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "")
+            .replace(/\*\/$/, "")
+            .trim(),
+        );
       } else break;
     }
     const text = buf.filter(Boolean).join(" ").trim();
@@ -572,9 +597,11 @@ export interface CliReconcile {
 /** 从 packages/cli/src/cli.ts 的 parseArgs options 对象抽 flag 名。用花括号配平定位，不硬编码行号。 */
 export function extractParseArgsFlags(cliSrc: string): string[] {
   const anchor = cliSrc.indexOf("const result = parseArgs({");
-  if (anchor < 0) throw new Error("packages/cli/src/cli.ts 里找不到 parseArgs({ ——源码结构变了，生成器需同步");
+  if (anchor < 0)
+    throw new Error("packages/cli/src/cli.ts 里找不到 parseArgs({ ——源码结构变了，生成器需同步");
   const optIdx = cliSrc.indexOf("options: {", anchor);
-  if (optIdx < 0) throw new Error("packages/cli/src/cli.ts 的 parseArgs 里找不到 options: { ——生成器需同步");
+  if (optIdx < 0)
+    throw new Error("packages/cli/src/cli.ts 的 parseArgs 里找不到 options: { ——生成器需同步");
   const open = cliSrc.indexOf("{", optIdx + "options:".length);
   let depth = 0;
   let close = -1;
@@ -590,9 +617,9 @@ export function extractParseArgsFlags(cliSrc: string): string[] {
   }
   if (close < 0) throw new Error("packages/cli/src/cli.ts 的 parseArgs options 花括号不配平");
   const block = cliSrc.slice(open, close);
-  const flags = [
-    ...block.matchAll(/(?:^|\n)\s*"?([a-zA-Z][a-zA-Z0-9-]*)"?\s*:\s*\{\s*type:/g),
-  ].map((m) => m[1]);
+  const flags = [...block.matchAll(/(?:^|\n)\s*"?([a-zA-Z][a-zA-Z0-9-]*)"?\s*:\s*\{\s*type:/g)].map(
+    (m) => m[1],
+  );
   return [...new Set(flags)].sort();
 }
 
@@ -626,7 +653,8 @@ interface HelpEntry {
 function helpBody(helpSrc: string): string[] {
   const s = helpSrc.indexOf("console.log(`");
   const e = helpSrc.lastIndexOf("`);");
-  if (s < 0 || e < 0) throw new Error("packages/cli/src/help.ts 里找不到 printHelp 的模板字符串——生成器需同步");
+  if (s < 0 || e < 0)
+    throw new Error("packages/cli/src/help.ts 里找不到 printHelp 的模板字符串——生成器需同步");
   return helpSrc.slice(s + "console.log(`".length, e).split("\n");
 }
 
@@ -936,7 +964,11 @@ function renderLlmsTxt(pages: SitePage[]): string {
 export function findStalePages(
   today: string,
   threshold = 90,
-): { stale: Array<{ file: string; last: string; days: number }>; missing: string[]; invalid: string[] } {
+): {
+  stale: Array<{ file: string; last: string; days: number }>;
+  missing: string[];
+  invalid: string[];
+} {
   const glob = new Glob("**/*.md");
   const stale: Array<{ file: string; last: string; days: number }> = [];
   const missing: string[] = [];
@@ -1216,7 +1248,12 @@ async function build(): Promise<{ pages: Page[]; llms: Page; rec: CliReconcile }
 async function main(): Promise<void> {
   if (COVERAGE) {
     const cmds = await loadSlashCommands();
-    process.exit(reportCoverage(cmds.map((c) => c.name), COVERAGE_STRICT));
+    process.exit(
+      reportCoverage(
+        cmds.map((c) => c.name),
+        COVERAGE_STRICT,
+      ),
+    );
   }
 
   if (STALE) {

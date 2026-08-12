@@ -119,12 +119,12 @@ export class BridgeCore {
 
     switch (msg.type) {
       case "user_message": {
-        const text = typeof msg.data === "string"
-          ? msg.data
-          : (msg.data as { text?: string })?.text ?? "";
-        if (text) void Promise.resolve(this.onUserMessage(text)).catch((err) => {
-          getLogger().error("BRIDGE", `处理远程消息失败: ${err.message}`);
-        });
+        const text =
+          typeof msg.data === "string" ? msg.data : ((msg.data as { text?: string })?.text ?? "");
+        if (text)
+          void Promise.resolve(this.onUserMessage(text)).catch((err) => {
+            getLogger().error("BRIDGE", `处理远程消息失败: ${err.message}`);
+          });
         break;
       }
       case "permission_response":

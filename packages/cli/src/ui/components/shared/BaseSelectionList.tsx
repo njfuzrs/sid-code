@@ -3,13 +3,13 @@
  * 提供通用的选择列表 UI 结构和键盘导航逻辑
  */
 
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { theme } from '../../semantic-colors.ts';
-import type { Color } from '@sid-code/tui-renderer/styles.ts';
-import { useKeypress, KeypressPriority, type Key } from '../../contexts/KeypressContext.tsx';
-import { BULLET } from '../../constants/figures.ts';
+import { theme } from "../../semantic-colors.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import { useKeypress, KeypressPriority, type Key } from "../../contexts/KeypressContext.tsx";
+import { BULLET } from "../../constants/figures.ts";
 
 export interface SelectionListItem<T> {
   value: T;
@@ -40,10 +40,7 @@ export interface BaseSelectionListProps<
   renderItem: (item: TItem, context: RenderItemContext) => React.ReactNode;
 }
 
-export function BaseSelectionList<
-  T,
-  TItem extends SelectionListItem<T> = SelectionListItem<T>,
->({
+export function BaseSelectionList<T, TItem extends SelectionListItem<T> = SelectionListItem<T>>({
   items,
   initialIndex = 0,
   onSelect,
@@ -83,17 +80,17 @@ export function BaseSelectionList<
     if (!isFocused) return false;
 
     // 上下导航
-    if (key.name === 'up' || (key.ctrl && key.name === 'p')) {
+    if (key.name === "up" || (key.ctrl && key.name === "p")) {
       moveUp();
       return true;
     }
-    if (key.name === 'down' || (key.ctrl && key.name === 'n')) {
+    if (key.name === "down" || (key.ctrl && key.name === "n")) {
       moveDown();
       return true;
     }
 
     // 回车选择
-    if (key.name === 'enter' || key.name === 'return') {
+    if (key.name === "enter" || key.name === "return") {
       const item = items[activeIndex];
       if (!item.disabled) {
         onSelect(item.value);
@@ -132,24 +129,13 @@ export function BaseSelectionList<
     setScrollOffset(effectiveScrollOffset);
   }
 
-  const visibleItems = items.slice(
-    effectiveScrollOffset,
-    effectiveScrollOffset + maxItemsToShow,
-  );
+  const visibleItems = items.slice(effectiveScrollOffset, effectiveScrollOffset + maxItemsToShow);
   const numberColumnWidth = String(items.length).length;
 
   return (
     <Box flexDirection="column">
       {showScrollArrows && items.length > maxItemsToShow && (
-        <Text
-          color={
-            effectiveScrollOffset > 0
-              ? theme.text.primary
-              : theme.text.secondary
-          }
-        >
-          ▲
-        </Text>
+        <Text color={effectiveScrollOffset > 0 ? theme.text.primary : theme.text.secondary}>▲</Text>
       )}
 
       {visibleItems.map((item, index) => {
@@ -175,16 +161,13 @@ export function BaseSelectionList<
           numberColor = theme.text.secondary;
         }
 
-        const itemNumberText = `${String(itemIndex + 1).padStart(
-          numberColumnWidth,
-          ' ',
-        )}. `;
+        const itemNumberText = `${String(itemIndex + 1).padStart(numberColumnWidth, " ")}. `;
 
         return (
           <Box key={item.key} flexDirection="row">
             <Box width={2} flexShrink={0}>
               <Text color={isSelected ? theme.ui.focus : theme.text.secondary}>
-                {isSelected ? selectedIndicator : ' '}
+                {isSelected ? selectedIndicator : " "}
               </Text>
             </Box>
             {showNumbers && (
@@ -192,9 +175,7 @@ export function BaseSelectionList<
                 <Text color={numberColor}>{itemNumberText}</Text>
               </Box>
             )}
-            <Box flexGrow={1}>
-              {renderItem(item, { isSelected, titleColor, numberColor })}
-            </Box>
+            <Box flexGrow={1}>{renderItem(item, { isSelected, titleColor, numberColor })}</Box>
           </Box>
         );
       })}

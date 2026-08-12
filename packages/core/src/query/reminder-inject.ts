@@ -82,7 +82,10 @@ function normalizeTiers(parts: ReminderTiers | string[]): {
   const rawCritical = Array.isArray(parts) ? [] : (parts.critical ?? []);
   const rawAmbient = Array.isArray(parts) ? parts : (parts.ambient ?? []);
   const fence = (arr: string[]) =>
-    arr.map(ensureFenced).filter((s) => s.length > 0).join("\n\n");
+    arr
+      .map(ensureFenced)
+      .filter((s) => s.length > 0)
+      .join("\n\n");
   return { critical: fence(rawCritical), ambient: fence(rawAmbient) };
 }
 
@@ -96,10 +99,7 @@ function normalizeTiers(parts: ReminderTiers | string[]): {
  * @param parts    分级 reminder；传 `string[]` 时按 ambient 处理（向后兼容）
  * @returns 注入后的消息序列
  */
-export function injectReminders(
-  messages: Message[],
-  parts: ReminderTiers | string[],
-): Message[] {
+export function injectReminders(messages: Message[], parts: ReminderTiers | string[]): Message[] {
   const { critical, ambient } = normalizeTiers(parts);
   if (!critical && !ambient) return messages;
 

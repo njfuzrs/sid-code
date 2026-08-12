@@ -142,15 +142,15 @@ async function checkStuckGuard(): Promise<CheckResult> {
 async function checkEmbeddedSkills(): Promise<CheckResult> {
   const name = "内置 skill 已嵌入";
   try {
-    const { EMBEDDED_BUILTIN_SKILLS, EMBEDDED_BUILTIN_SKILLS_HASH } = await import(
-      "@sid-code/core/skill/builtin-embedded.generated.ts"
-    );
+    const { EMBEDDED_BUILTIN_SKILLS, EMBEDDED_BUILTIN_SKILLS_HASH } =
+      await import("@sid-code/core/skill/builtin-embedded.generated.ts");
 
     if (!Array.isArray(EMBEDDED_BUILTIN_SKILLS) || EMBEDDED_BUILTIN_SKILLS.length === 0) {
       return {
         name,
         ok: false,
-        detail: "嵌入的内置 skill 清单为空——几乎可以断定漏跑 embed-builtin-skills.ts，请重新 make build。",
+        detail:
+          "嵌入的内置 skill 清单为空——几乎可以断定漏跑 embed-builtin-skills.ts，请重新 make build。",
       };
     }
     if (!EMBEDDED_BUILTIN_SKILLS_HASH) {
@@ -180,7 +180,7 @@ async function checkEmbeddedSkills(): Promise<CheckResult> {
 /**
  * 校验 4：内嵌 ripgrep 是**当前平台可执行**的二进制。
  *
- * 背景：`vendor/rg-embed` 是 bun --compile 的固定嵌入路径，属于跨命令共享的可变状态。
+ * 背景：`packages/core/vendor/rg-embed` 是 bun --compile 的固定嵌入路径，属于跨命令共享的可变状态。
  * release.sh 的 4 平台循环会把它依次覆盖成各平台二进制，跑完残留最后一个 target
  * （linux-arm64）；此后若 `make build` 里的 `fetch-ripgrep.ts --as-embed` 失败
  * （Makefile 那行有前导 `-`，失败被忽略），0 字节兜底又只在文件**不存在**时触发，
@@ -241,7 +241,7 @@ async function checkEmbeddedRipgrep(): Promise<CheckResult> {
           detail:
             `内嵌 rg 有 ${bytes.byteLength} 字节但无法在本机（${process.platform}/${process.arch}）执行` +
             `${spawnErr ? `（${spawnErr}）` : ""} —— 几乎可以断定嵌入了**错误平台**的二进制：` +
-            `release.sh 的 4 平台循环会把 vendor/rg-embed 覆盖成最后一个 target（linux-arm64）。` +
+            `release.sh 的 4 平台循环会把 packages/core/vendor/rg-embed 覆盖成最后一个 target（linux-arm64）。` +
             `请重新 make build，让 fetch-ripgrep.ts --as-embed 落成本机平台。`,
         };
       }
@@ -299,7 +299,9 @@ export async function runSelfCheck(): Promise<boolean> {
       const colorReset = r.ok ? "" : redReset;
       console.error(`  ${color}${mark}${colorReset} ${r.name}：${r.detail}`);
     }
-    console.error(`${red}自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 \`make build\`。${redReset}`);
+    console.error(
+      `${red}自检失败：二进制缺失关键修复。若刚改过相关源码，请重新 \`make build\`。${redReset}`,
+    );
   }
   return allOk;
 }

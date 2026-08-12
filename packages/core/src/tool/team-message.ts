@@ -23,9 +23,7 @@ const LEADER = "leader";
 
 const teamMessageSchema = lazySchema(() =>
   z.object({
-    to: z
-      .string()
-      .describe(`收信人：其他成员名，或 "${LEADER}" 发给团队负责人（主代理）`),
+    to: z.string().describe(`收信人：其他成员名，或 "${LEADER}" 发给团队负责人（主代理）`),
     message: z.string().describe("消息内容"),
     kind: z
       .enum(["task", "result", "info"])
@@ -96,11 +94,17 @@ export class TeamMessageTool implements Tool {
         timestamp: 0,
       });
     } catch (err: any) {
-      getLogger().warn("SWARM", `team_message 投递失败 (${ctx.memberName}→${to}): ${err?.message ?? err}`);
+      getLogger().warn(
+        "SWARM",
+        `team_message 投递失败 (${ctx.memberName}→${to}): ${err?.message ?? err}`,
+      );
       return { output: `消息投递失败: ${err?.message ?? err}`, isError: true };
     }
 
-    getLogger().info("SWARM", `team_message: ${ctx.memberName} → ${to} (${params.message.length} 字符)`);
+    getLogger().info(
+      "SWARM",
+      `team_message: ${ctx.memberName} → ${to} (${params.message.length} 字符)`,
+    );
     return {
       output: `已发送给 ${to}（对方将在下一轮收到）。`,
     };

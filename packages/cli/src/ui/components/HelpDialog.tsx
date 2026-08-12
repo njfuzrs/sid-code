@@ -43,8 +43,16 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>{ARROW_PROMPT} 帮助</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        {ARROW_PROMPT} 帮助
+      </Text>
 
       {/* 常用命令 */}
       <Box marginTop={1} flexDirection="column">
@@ -76,7 +84,9 @@ export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {
         </Box>
       </Box>
 
-      <Box marginTop={1}><Text italic>输入 /commands 查看全部命令 · Esc 关闭</Text></Box>
+      <Box marginTop={1}>
+        <Text italic>输入 /commands 查看全部命令 · Esc 关闭</Text>
+      </Box>
     </Box>
   );
 };

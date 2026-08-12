@@ -147,7 +147,14 @@ export async function partialCompact(
 
   const splitIndex = resolvePartialSplitIndex(messages, upTo);
   if (splitIndex < 1) {
-    return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: "找不到安全的压缩边界" };
+    return {
+      messages,
+      success: false,
+      splitIndex: -1,
+      compactedCount: 0,
+      savedTokens: 0,
+      reason: "找不到安全的压缩边界",
+    };
   }
 
   const toCompact = messages.slice(0, splitIndex);
@@ -168,7 +175,14 @@ export async function partialCompact(
     const retreat = findSafeSplitAtOrBefore(messages, finalSplit - 1);
     if (retreat < 1) {
       log.warn("PARTIAL_COMPACT", "无法找到不切碎工具配对的安全边界，放弃部分压缩");
-      return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: "所有候选边界都会切碎工具配对" };
+      return {
+        messages,
+        success: false,
+        splitIndex: -1,
+        compactedCount: 0,
+        savedTokens: 0,
+        reason: "所有候选边界都会切碎工具配对",
+      };
     }
     finalSplit = retreat;
     compactPart = messages.slice(0, finalSplit);
@@ -176,7 +190,14 @@ export async function partialCompact(
   }
 
   if (compactPart.length < 2) {
-    return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: "可压缩段太小" };
+    return {
+      messages,
+      success: false,
+      splitIndex: -1,
+      compactedCount: 0,
+      savedTokens: 0,
+      reason: "可压缩段太小",
+    };
   }
 
   const tokensBefore = estimateMessagesTokens(compactPart);
@@ -200,12 +221,26 @@ export async function partialCompact(
       error: err.message,
       timedOut: /timeout|超时|timed out/i.test(err.message),
     });
-    return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: `摘要请求失败: ${err.message}` };
+    return {
+      messages,
+      success: false,
+      splitIndex: -1,
+      compactedCount: 0,
+      savedTokens: 0,
+      reason: `摘要请求失败: ${err.message}`,
+    };
   }
 
   const trimmed = summary.trim();
   if (!trimmed) {
-    return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: "摘要为空" };
+    return {
+      messages,
+      success: false,
+      splitIndex: -1,
+      compactedCount: 0,
+      savedTokens: 0,
+      reason: "摘要为空",
+    };
   }
 
   // 组装：前段摘要（user + assistant ack）+ 保留段原文
@@ -225,7 +260,14 @@ export async function partialCompact(
   const finalIntegrity = checkMessageHistoryIntegrity(result);
   if (!finalIntegrity.intact) {
     log.warn("PARTIAL_COMPACT", "组装后消息历史意外破缺，放弃部分压缩");
-    return { messages, success: false, splitIndex: -1, compactedCount: 0, savedTokens: 0, reason: "组装后完整性校验未通过" };
+    return {
+      messages,
+      success: false,
+      splitIndex: -1,
+      compactedCount: 0,
+      savedTokens: 0,
+      reason: "组装后完整性校验未通过",
+    };
   }
 
   const tokensAfter = estimateMessagesTokens([summaryMsg, ackMsg]);

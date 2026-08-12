@@ -73,8 +73,7 @@ async function runOnePair(
 ): Promise<CalibrationVerdict> {
   const first = order === "AB" ? pair.response_A : pair.response_B;
   const second = order === "AB" ? pair.response_B : pair.response_A;
-  const prompt = PAIRWISE_PROMPT
-    .replace("{{USER_QUERY}}", pair.user_query)
+  const prompt = PAIRWISE_PROMPT.replace("{{USER_QUERY}}", pair.user_query)
     .replace("{{RESPONSE_FIRST}}", first.slice(0, 8000))
     .replace("{{RESPONSE_SECOND}}", second.slice(0, 8000));
 
@@ -148,8 +147,10 @@ function summarize(verdicts: CalibrationVerdict[], judge: string): CalibrationSu
   const accuracyBA = ba.length > 0 ? ba.filter((v) => v.correct).length / ba.length : 0;
 
   // position bias：AB 顺序选 A 比例 vs BA 顺序选 A 比例
-  const abPickA = ab.length > 0 ? ab.filter((v) => v.normalized_winner === "A").length / ab.length : 0;
-  const baPickA = ba.length > 0 ? ba.filter((v) => v.normalized_winner === "A").length / ba.length : 0;
+  const abPickA =
+    ab.length > 0 ? ab.filter((v) => v.normalized_winner === "A").length / ab.length : 0;
+  const baPickA =
+    ba.length > 0 ? ba.filter((v) => v.normalized_winner === "A").length / ba.length : 0;
   const positionBias = Math.abs(abPickA - baPickA);
 
   // verdict flip rate：同 pair 在 AB / BA 下结论不一致的比例
@@ -232,7 +233,9 @@ async function main(): Promise<void> {
     const ab = await runOnePair(client, opts.judge, p, "AB", opts.dryRun);
     const ba = await runOnePair(client, opts.judge, p, "BA", opts.dryRun);
     verdicts.push(ab, ba);
-    console.log(`  ${p.pair_id}: AB=${ab.normalized_winner}/${ab.correct ? "✓" : "✗"}  BA=${ba.normalized_winner}/${ba.correct ? "✓" : "✗"}`);
+    console.log(
+      `  ${p.pair_id}: AB=${ab.normalized_winner}/${ab.correct ? "✓" : "✗"}  BA=${ba.normalized_winner}/${ba.correct ? "✓" : "✗"}`,
+    );
   }
 
   const datestamp = new Date().toISOString().slice(0, 10);
@@ -248,7 +251,9 @@ async function main(): Promise<void> {
   console.log(`[calibrate-pairwise] 写入:`);
   console.log(`  ${resultsPath} (${verdicts.length} verdicts)`);
   console.log(`  ${summaryPath}`);
-  console.log(`  position_bias=${summary.position_bias} accuracy_avg=${summary.accuracy_avg} flip_rate=${summary.verdict_flip_rate}`);
+  console.log(
+    `  position_bias=${summary.position_bias} accuracy_avg=${summary.accuracy_avg} flip_rate=${summary.verdict_flip_rate}`,
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

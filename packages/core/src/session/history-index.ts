@@ -85,7 +85,7 @@ export function readHistoryEntries(opts?: { project?: string; limit?: number }):
       /* 跳过坏行 */
     }
   }
-  const filtered = opts?.project ? entries.filter(e => e.project === opts.project) : entries;
+  const filtered = opts?.project ? entries.filter((e) => e.project === opts.project) : entries;
   // 文件是"最旧在前"追加序；调用方要"最新在前"，反转后截断。
   const reversed = filtered.reverse();
   const limit = opts?.limit ?? MAX_IN_MEMORY;
@@ -124,7 +124,7 @@ export function migrateLegacyInputHistory(): void {
     if (legacyStrings.length === 0) return;
     mkdirSync(getSidHome(), { recursive: true });
     const lines = legacyStrings
-      .map(display =>
+      .map((display) =>
         JSON.stringify({
           display,
           pastedContents: [],
@@ -135,7 +135,10 @@ export function migrateLegacyInputHistory(): void {
       )
       .join("\n");
     writeFileSync(jsonlPath, lines + "\n", "utf-8");
-    getLogger().info("HISTORY", `已迁移 ${legacyStrings.length} 条旧 input-history 到 history.jsonl`);
+    getLogger().info(
+      "HISTORY",
+      `已迁移 ${legacyStrings.length} 条旧 input-history 到 history.jsonl`,
+    );
   } catch (e) {
     getLogger().warn("HISTORY", `迁移旧 input-history 失败（不阻断）: ${(e as Error)?.message}`);
   }

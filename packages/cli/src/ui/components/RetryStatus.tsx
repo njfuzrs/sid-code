@@ -67,8 +67,7 @@ export const RetryStatus: React.FC<RetryStatusProps> = ({ status, nowMs }) => {
   // 仅在"真正需要逐秒刷新的倒计时"时才起定时器：
   // - nowMs 注入（测试）→ 用固定值，不起定时器；
   // - kind==="fallback" → headline 是静态降级文案、不含秒数，起定时器纯空转，排除掉。
-  const isCountingDown =
-    !!status && nowMs === undefined && status.kind !== "fallback";
+  const isCountingDown = !!status && nowMs === undefined && status.kind !== "fallback";
   React.useEffect(() => {
     if (!isCountingDown) return;
     const timer = setInterval(() => setNowState(Date.now()), 500);

@@ -88,16 +88,36 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
   // 通用 Token
   { type: "Bearer Token", pattern: /Bearer\s+[A-Za-z0-9_\-.]{20,}/g, keepHead: 10, keepTail: 4 },
   { type: "Basic Auth", pattern: /Basic\s+[A-Za-z0-9+/=]{20,}/g, keepHead: 9, keepTail: 4 },
-  { type: "JWT", pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, keepHead: 10, keepTail: 4 },
+  {
+    type: "JWT",
+    pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+    keepHead: 10,
+    keepTail: 4,
+  },
 
   // 数据库连接串
-  { type: "DB 连接串", pattern: /(?:mysql|postgres|postgresql|mongodb|redis):\/\/[^\s'"]{10,}/gi, keepHead: 10, keepTail: 4 },
+  {
+    type: "DB 连接串",
+    pattern: /(?:mysql|postgres|postgresql|mongodb|redis):\/\/[^\s'"]{10,}/gi,
+    keepHead: 10,
+    keepTail: 4,
+  },
 
   // 密码赋值（key=value 或 key: value 形式）
-  { type: "密码赋值", pattern: /(?:password|passwd|pwd|secret)[\s]*[=:]\s*['"]?[^\s'"]{8,}['"]?/gi, keepHead: 10, keepTail: 0 },
+  {
+    type: "密码赋值",
+    pattern: /(?:password|passwd|pwd|secret)[\s]*[=:]\s*['"]?[^\s'"]{8,}['"]?/gi,
+    keepHead: 10,
+    keepTail: 0,
+  },
 
   // SSH 私钥
-  { type: "SSH 私钥", pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g, keepHead: 10, keepTail: 0 },
+  {
+    type: "SSH 私钥",
+    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
+    keepHead: 10,
+    keepTail: 0,
+  },
 
   // Slack Token
   { type: "Slack Token", pattern: /xox[bpors]-[A-Za-z0-9-]{10,}/g, keepHead: 5, keepTail: 4 },
@@ -111,7 +131,8 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
   //   - luhnValid：真实卡号必过校验位；随机 16 位数字仅 1/10 概率误过
   {
     type: "信用卡号",
-    pattern: /\b(?:4[0-9]{3}|5[1-5][0-9]{2}|3[47][0-9]{2}|6(?:011|5[0-9]{2}))[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}\b/g,
+    pattern:
+      /\b(?:4[0-9]{3}|5[1-5][0-9]{2}|3[47][0-9]{2}|6(?:011|5[0-9]{2}))[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}\b/g,
     keepHead: 4,
     keepTail: 4,
     validate: (value, index, text) =>
@@ -119,10 +140,22 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
   },
 
   // AWS Secret Key（40 位 base64 字符，前面有关键词）
-  { type: "AWS Secret Key", pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[\s]*[=:]\s*['"]?[A-Za-z0-9/+=]{40}['"]?/gi, keepHead: 25, keepTail: 4 },
+  {
+    type: "AWS Secret Key",
+    pattern:
+      /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[\s]*[=:]\s*['"]?[A-Za-z0-9/+=]{40}['"]?/gi,
+    keepHead: 25,
+    keepTail: 4,
+  },
 
   // 私有 Token（通用 private_token / access_token 赋值）
-  { type: "Private Token", pattern: /(?:private_token|access_token|api_token|auth_token)[\s]*[=:]\s*['"]?[A-Za-z0-9_\-.]{16,}['"]?/gi, keepHead: 15, keepTail: 4 },
+  {
+    type: "Private Token",
+    pattern:
+      /(?:private_token|access_token|api_token|auth_token)[\s]*[=:]\s*['"]?[A-Za-z0-9_\-.]{16,}['"]?/gi,
+    keepHead: 15,
+    keepTail: 4,
+  },
 ];
 
 /**
@@ -175,9 +208,7 @@ export function maskSensitiveData(text: string): string {
   // 去重（重叠区间只保留最长的）
   const deduped: typeof allMatches = [];
   for (const m of allMatches) {
-    const overlaps = deduped.some(
-      (d) => m.index >= d.index && m.index < d.index + d.length,
-    );
+    const overlaps = deduped.some((d) => m.index >= d.index && m.index < d.index + d.length);
     if (!overlaps) {
       deduped.push(m);
     }

@@ -15,7 +15,12 @@ import { parseArgs } from "node:util";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
+const CASE_DIRS = [
+  "evals/general/p0-core",
+  "evals/general/p1-common",
+  "evals/general/p2-edge",
+  "evals/holdout",
+];
 
 interface CaseSummary {
   id: string;
@@ -86,9 +91,7 @@ function main(): void {
   if (skipHoldout) console.log("# (已排除 holdout)");
   if (priority) console.log(`# (filter: priority=${priority})`);
   console.log();
-  console.log(
-    ["ID", "Pri", "Hold", "Tgt", "Category", "Subsystem", "Source"].join("\t"),
-  );
+  console.log(["ID", "Pri", "Hold", "Tgt", "Category", "Subsystem", "Source"].join("\t"));
   console.log("─".repeat(100));
   for (const c of cases) {
     console.log(
@@ -110,7 +113,12 @@ function main(): void {
     acc[k] = (acc[k] ?? 0) + 1;
     return acc;
   }, {});
-  console.log("汇总: " + Object.entries(summary).map(([k, v]) => `${k}=${v}`).join("  "));
+  console.log(
+    "汇总: " +
+      Object.entries(summary)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("  "),
+  );
 }
 
 main();

@@ -10,8 +10,8 @@ import { resolve } from "path";
 /** 文件读取记录 */
 interface ReadRecord {
   path: string;
-  readTime: number;  // 读取时的时间戳
-  mtime: number;     // 读取时文件的 mtime
+  readTime: number; // 读取时的时间戳
+  mtime: number; // 读取时文件的 mtime
   lastAccessTime: number; // 最近一次访问（读/写/编辑）的时间戳（§2.1 post-compact 文件恢复用）
   /**
    * 是否只读取了文件的部分内容（offset/limit 分段读、或超默认行数被截断）。

@@ -66,9 +66,7 @@ export function getEventMetadata(): EventMetadataContext {
 
 /** 刷新可变字段(如 model 切换后调用) */
 export function refreshMetadata(
-  updates: Partial<
-    Pick<EventMetadataContext, "model" | "provider" | "mcp_server_count">
-  >,
+  updates: Partial<Pick<EventMetadataContext, "model" | "provider" | "mcp_server_count">>,
 ): void {
   if (cachedContext) {
     Object.assign(cachedContext, updates);

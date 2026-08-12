@@ -4,15 +4,17 @@
  * 安全限制：拒绝私有 IP 和 localhost
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { isPreapprovedHost } from "./web-fetch-preapproved.ts";
-import {
-  getSharedWebFetchExtractor,
-  SAFE_FALLBACK_CHARS,
-} from "./web-fetch-extract.ts";
+import { getSharedWebFetchExtractor, SAFE_FALLBACK_CHARS } from "./web-fetch-extract.ts";
 import { classifyUrlProvenance } from "./url-provenance.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
@@ -87,7 +89,7 @@ function checkRateLimit(hostname: string): { allowed: boolean; waitTime?: number
   const history = hostRequestHistory.get(hostname) || [];
 
   // 清理过期记录（超过 1 分钟）
-  const recentRequests = history.filter(time => now - time < RATE_LIMIT_WINDOW_MS);
+  const recentRequests = history.filter((time) => now - time < RATE_LIMIT_WINDOW_MS);
 
   if (recentRequests.length >= RATE_LIMIT_PER_HOST) {
     const oldestRequest = recentRequests[0];
@@ -166,7 +168,9 @@ function upgradeToHttps(urlStr: string): string {
       url.protocol = "https:";
       return url.href;
     }
-  } catch { /* 忽略无效 URL */ }
+  } catch {
+    /* 忽略无效 URL */
+  }
   return urlStr;
 }
 
@@ -181,7 +185,9 @@ function convertGithubUrl(urlStr: string): string {
       url.pathname = url.pathname.replace(/^\/([^/]+\/[^/]+)\/blob\//, "/$1/");
       return url.href;
     }
-  } catch { /* 忽略无效 URL */ }
+  } catch {
+    /* 忽略无效 URL */
+  }
   return urlStr;
 }
 
@@ -218,16 +224,28 @@ function htmlToMarkdown(html: string): string {
     .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, "");
 
   // 2) 内联元素：链接 → [text](url)，强调 → **/*（先处理，避免被后续剥标签吃掉）
-  text = text.replace(/<a\b[^>]*\bhref=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
-    const label = inner.replace(/<[^>]+>/g, "").trim();
-    const url = String(href).trim();
-    if (!label) return url; // 无文字的链接直接给 URL
-    if (!url || url.startsWith("javascript:")) return label; // 空/伪协议只留文字
-    return `[${label}](${url})`;
-  });
-  text = text.replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _tag, inner) => `**${inner.replace(/<[^>]+>/g, "").trim()}**`);
-  text = text.replace(/<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_, _tag, inner) => `*${inner.replace(/<[^>]+>/g, "").trim()}*`);
-  text = text.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, inner) => `\`${inner.replace(/<[^>]+>/g, "")}\``);
+  text = text.replace(
+    /<a\b[^>]*\bhref=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_, href, inner) => {
+      const label = inner.replace(/<[^>]+>/g, "").trim();
+      const url = String(href).trim();
+      if (!label) return url; // 无文字的链接直接给 URL
+      if (!url || url.startsWith("javascript:")) return label; // 空/伪协议只留文字
+      return `[${label}](${url})`;
+    },
+  );
+  text = text.replace(
+    /<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+    (_, _tag, inner) => `**${inner.replace(/<[^>]+>/g, "").trim()}**`,
+  );
+  text = text.replace(
+    /<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+    (_, _tag, inner) => `*${inner.replace(/<[^>]+>/g, "").trim()}*`,
+  );
+  text = text.replace(
+    /<code\b[^>]*>([\s\S]*?)<\/code>/gi,
+    (_, inner) => `\`${inner.replace(/<[^>]+>/g, "")}\``,
+  );
 
   // 3) 标题：<h1..6> → 对应级别的 # 前缀（前后留空行）
   text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, inner) => {
@@ -266,7 +284,10 @@ function htmlToMarkdown(html: string): string {
 const webFetchSchema = lazySchema(() =>
   z.object({
     url: z.string().describe("要抓取的 URL（必须是 http 或 https）"),
-    prompt: z.string().optional().describe("可选：说明你关注该页面的哪些信息；会作为提炼关注点拼在返回正文前，引导据此提取"),
+    prompt: z
+      .string()
+      .optional()
+      .describe("可选：说明你关注该页面的哪些信息；会作为提炼关注点拼在返回正文前，引导据此提取"),
   }),
 );
 
@@ -418,11 +439,7 @@ export class WebFetchTool implements Tool {
     if (extractor.isAvailable()) {
       const result = await extractor.extract(body, prompt, fetchUrl, signal);
       if (result.ok && result.text) {
-        return (
-          header +
-          `[已由独立小模型隔离提炼，以下为提炼结果而非网页原文]\n\n` +
-          result.text
-        );
+        return header + `[已由独立小模型隔离提炼，以下为提炼结果而非网页原文]\n\n` + result.text;
       }
       // 提炼失败 → 落到下方降级路径（不返回全文）
       return header + this.fallbackBody(body, prompt, result.reason ?? "提炼失败");
@@ -488,7 +505,7 @@ export class WebFetchTool implements Tool {
             redirect: "manual",
             headers: {
               "User-Agent": "Mozilla/5.0 (compatible; sid-code/1.0)",
-              "Accept": "text/html,text/plain,application/json,*/*",
+              Accept: "text/html,text/plain,application/json,*/*",
             },
           });
 
@@ -559,7 +576,10 @@ export class WebFetchTool implements Tool {
       // 写缓存：存未截断/未拼引导的正文，供 15 分钟内不同 prompt 复用
       setCachedBody(fetchUrl, text);
 
-      log.info("TOOL", `✓ 抓取完成 ${text.length}字符${text.length > MAX_CONTENT_LENGTH ? "(已截断)" : ""}`);
+      log.info(
+        "TOOL",
+        `✓ 抓取完成 ${text.length}字符${text.length > MAX_CONTENT_LENGTH ? "(已截断)" : ""}`,
+      );
 
       // 注意：formatResult 内含隔离提炼（可能是一次 LLM 调用），但它**不抛异常**
       // （extract 内部 fail-closed，失败返回 ok:false 走降级），故放在 try 内不会被
@@ -572,7 +592,7 @@ export class WebFetchTool implements Tool {
       if (shouldRetry) {
         const delay = RETRY_DELAYS[retryCount];
         log.info("TOOL", `⚠ 抓取失败，${delay}ms 后重试 (${retryCount + 1}/${MAX_RETRIES})`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
         return this.fetchWithRetry(fetchUrl, isConverted, prompt, signal, log, retryCount + 1);
       }
 

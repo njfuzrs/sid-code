@@ -16,10 +16,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
-import {
-  askUserQuestion,
-  type AskQuestion,
-} from "./ask-user-question-bridge.ts";
+import { askUserQuestion, type AskQuestion } from "./ask-user-question-bridge.ts";
 
 /** 单题最多候选项数（对标 cc 的 2-4） */
 const MAX_OPTIONS = 4;
@@ -32,9 +29,7 @@ const askUserQuestionSchema = lazySchema(() =>
     questions: z
       .array(
         z.object({
-          question: z
-            .string()
-            .describe("完整问题文本，应以问号结尾，清晰具体"),
+          question: z.string().describe("完整问题文本，应以问号结尾，清晰具体"),
           header: z
             .string()
             .describe("极短标签（≤12 字符），作为该问题的分类 chip 显示，如 '认证方式' '数据库'"),
@@ -42,10 +37,7 @@ const askUserQuestionSchema = lazySchema(() =>
             .array(
               z.object({
                 label: z.string().describe("选项显示文本（1-5 词，简洁且互斥）"),
-                description: z
-                  .string()
-                  .optional()
-                  .describe("该选项的说明或权衡解释（可选）"),
+                description: z.string().optional().describe("该选项的说明或权衡解释（可选）"),
                 preview: z
                   .string()
                   .optional()
@@ -56,7 +48,9 @@ const askUserQuestionSchema = lazySchema(() =>
             )
             .min(MIN_OPTIONS)
             .max(MAX_OPTIONS)
-            .describe(`${MIN_OPTIONS}-${MAX_OPTIONS} 个候选项。无需提供"其他"选项——UI 会自动追加，允许用户自定义输入`),
+            .describe(
+              `${MIN_OPTIONS}-${MAX_OPTIONS} 个候选项。无需提供"其他"选项——UI 会自动追加，允许用户自定义输入`,
+            ),
           multi_select: z
             .boolean()
             .optional()

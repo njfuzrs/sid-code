@@ -48,9 +48,7 @@ export class EventDiskCache {
    * 启动时扫描并重试上次会话的失败事件。
    * sendFn 成功 → 删除文件;失败 → 保留文件等下次启动再试。
    */
-  async retryPreviousBatches(
-    sendFn: (events: FailedEvent[]) => Promise<void>,
-  ): Promise<void> {
+  async retryPreviousBatches(sendFn: (events: FailedEvent[]) => Promise<void>): Promise<void> {
     let files: string[];
     try {
       files = (await readdir(this.config.cacheDir))

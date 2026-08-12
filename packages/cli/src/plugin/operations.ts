@@ -27,9 +27,7 @@ import { loadAllPlugins } from "./loader.ts";
 import type { PluginError } from "./types.ts";
 
 /** 操作结果 */
-export type OperationResult =
-  | { ok: true; message: string }
-  | { ok: false; error: string };
+export type OperationResult = { ok: true; message: string } | { ok: false; error: string };
 
 /** 时间戳注入（由调用方提供，因 workflow/纯函数约束不在此处用 Date.now） */
 function nowIso(): string {
@@ -56,7 +54,10 @@ export async function installPlugin(
   const errors: PluginError[] = [];
   const manifest = await loadManifest(absSource, errors, `${absSource}@local`);
   if (!manifest) {
-    return { ok: false, error: `Manifest 验证失败: ${errors.map((e) => JSON.stringify(e)).join("; ")}` };
+    return {
+      ok: false,
+      error: `Manifest 验证失败: ${errors.map((e) => JSON.stringify(e)).join("; ")}`,
+    };
   }
 
   // 检查名称冲突
@@ -170,7 +171,9 @@ export async function enablePlugin(name: string): Promise<OperationResult> {
 
   // 依赖闭包检查
   const enabledNames = new Set(
-    Object.values(registry.plugins).filter((p) => p.enabled).map((p) => p.name),
+    Object.values(registry.plugins)
+      .filter((p) => p.enabled)
+      .map((p) => p.name),
   );
   const resolution = await resolveDependencyClosure(
     name,

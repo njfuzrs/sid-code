@@ -64,12 +64,19 @@ function listTestFiles(repoDir: string): string[] {
   return out;
 }
 
-function findCoverage(funcName: string, testFiles: string[], repoDir: string): { file?: string; line?: number } {
+function findCoverage(
+  funcName: string,
+  testFiles: string[],
+  repoDir: string,
+): { file?: string; line?: number } {
   for (const tf of testFiles) {
     try {
-      const out = execSync(`grep -nE "${funcName}\\(|describe\\(.*${funcName}|test\\(.*${funcName}|it\\(.*${funcName}" "${join(repoDir, tf)}" 2>/dev/null | head -1`, {
-        encoding: "utf-8",
-      }).trim();
+      const out = execSync(
+        `grep -nE "${funcName}\\(|describe\\(.*${funcName}|test\\(.*${funcName}|it\\(.*${funcName}" "${join(repoDir, tf)}" 2>/dev/null | head -1`,
+        {
+          encoding: "utf-8",
+        },
+      ).trim();
       if (out) {
         const m = out.match(/^(\d+):/);
         return { file: tf, line: m ? parseInt(m[1], 10) : 1 };

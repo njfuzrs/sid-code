@@ -171,7 +171,18 @@ function renderFirstLineContent(lineText: string, promptLen: number): React.Reac
 
 // ── 组件 ──────────────────────────────────────────────────────────
 
-export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, queuedCount = 0, queuedByPriority, onPopQueuedForEdit, onPermissionModeSwitch, onExitRequest }: InputAreaProps) {
+export function InputArea({
+  onSubmit,
+  onShellCommand,
+  isLoading,
+  commands,
+  cwd,
+  queuedCount = 0,
+  queuedByPriority,
+  onPopQueuedForEdit,
+  onPermissionModeSwitch,
+  onExitRequest,
+}: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
   const log = getLogger();
@@ -199,7 +210,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   const { press: pressCtrlD, cancel: cancelCtrlDConfirm } = useExitConfirm({
     pressedOnce: ctrlDPressedOnce,
     setPressedOnce: setCtrlDPressedOnce,
-    onConfirm: () => { onExitRequest?.(); },
+    onConfirm: () => {
+      onExitRequest?.();
+    },
   });
 
   // 挂载时消费早期输入缓冲（启动期间用户按键）
@@ -207,12 +220,16 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   useEffect(() => {
     if (earlyInputConsumed.current) return;
     earlyInputConsumed.current = true;
-    import("./early-input.ts").then(({ consumeEarlyInput }) => {
-      const earlyText = consumeEarlyInput();
-      if (earlyText) {
-        tb.setText(earlyText);
-      }
-    }).catch(() => { /* 静默失败 */ });
+    import("./early-input.ts")
+      .then(({ consumeEarlyInput }) => {
+        const earlyText = consumeEarlyInput();
+        if (earlyText) {
+          tb.setText(earlyText);
+        }
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
   }, []);
 
   // 反向搜索
@@ -242,27 +259,30 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
    * INSERT 模式引擎不消费普通字符（返回 consumed=false），键透传给原生 readline 编辑逻辑，
    * 故插入、退格、补全、历史等既有行为在 INSERT 下原样保留。
    */
-  const handleVimKey = useCallback((key: VimKey): boolean => {
-    if (!vimMode) return false;
-    const prev = vimStateRef.current;
-    const bufBefore: VimBuffer = {
-      lines: tb.state.lines,
-      cursorRow: tb.state.cursorRow,
-      cursorCol: tb.state.cursorCol,
-    };
-    const r = reduceVimEngine(bufBefore, prev, key);
-    vimStateRef.current = r.state;
-    if (r.state.mode !== prev.mode) setVimModeLabel(r.state.mode);
-    // 缓冲有变化才写回（避免纯移动/无操作触发多余 dispatch）。
-    const changed =
-      r.buffer.lines !== bufBefore.lines ||
-      r.buffer.cursorRow !== bufBefore.cursorRow ||
-      r.buffer.cursorCol !== bufBefore.cursorCol;
-    if (changed) {
-      tb.vimSetBuffer(r.buffer.lines, r.buffer.cursorRow, r.buffer.cursorCol);
-    }
-    return r.consumed;
-  }, [vimMode, tb]);
+  const handleVimKey = useCallback(
+    (key: VimKey): boolean => {
+      if (!vimMode) return false;
+      const prev = vimStateRef.current;
+      const bufBefore: VimBuffer = {
+        lines: tb.state.lines,
+        cursorRow: tb.state.cursorRow,
+        cursorCol: tb.state.cursorCol,
+      };
+      const r = reduceVimEngine(bufBefore, prev, key);
+      vimStateRef.current = r.state;
+      if (r.state.mode !== prev.mode) setVimModeLabel(r.state.mode);
+      // 缓冲有变化才写回（避免纯移动/无操作触发多余 dispatch）。
+      const changed =
+        r.buffer.lines !== bufBefore.lines ||
+        r.buffer.cursorRow !== bufBefore.cursorRow ||
+        r.buffer.cursorCol !== bufBefore.cursorCol;
+      if (changed) {
+        tb.vimSetBuffer(r.buffer.lines, r.buffer.cursorRow, r.buffer.cursorCol);
+      }
+      return r.consumed;
+    },
+    [vimMode, tb],
+  );
 
   // vimMode 开启时从 normal 模式起步；关闭时复位内部态，避免下次开启残留 insert/待决前缀。
   useEffect(() => {
@@ -271,30 +291,33 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   }, [vimMode]);
 
   /** 执行一个和弦 action（示例:编辑器级操作,作用于当前输入框）。 */
-  const runChordAction = useCallback((action: string): boolean => {
-    const row = tb.state.cursorRow;
-    const line = tb.state.lines[row] ?? "";
-    switch (action) {
-      case "editor:uppercase": {
-        // 整行转大写,光标列保持
-        const col = tb.state.cursorCol;
-        tb.moveCursor("home");
-        tb.killLine();
-        tb.insert(line.toUpperCase());
-        tb.moveCursor("home");
-        for (let i = 0; i < col; i++) tb.moveCursor("right");
-        return true;
+  const runChordAction = useCallback(
+    (action: string): boolean => {
+      const row = tb.state.cursorRow;
+      const line = tb.state.lines[row] ?? "";
+      switch (action) {
+        case "editor:uppercase": {
+          // 整行转大写,光标列保持
+          const col = tb.state.cursorCol;
+          tb.moveCursor("home");
+          tb.killLine();
+          tb.insert(line.toUpperCase());
+          tb.moveCursor("home");
+          for (let i = 0; i < col; i++) tb.moveCursor("right");
+          return true;
+        }
+        case "editor:copyLine": {
+          // 复制当前行到行尾(在输入框内即"重复一行"——无系统剪贴板时的可见行为)
+          tb.moveCursor("end");
+          tb.insert("\n" + line);
+          return true;
+        }
+        default:
+          return false;
       }
-      case "editor:copyLine": {
-        // 复制当前行到行尾(在输入框内即"重复一行"——无系统剪贴板时的可见行为)
-        tb.moveCursor("end");
-        tb.insert("\n" + line);
-        return true;
-      }
-      default:
-        return false;
-    }
-  }, [tb]);
+    },
+    [tb],
+  );
 
   // K5：和弦前缀超时(1.5s 未按第二键则取消，丢弃前缀)。
   useEffect(() => {
@@ -314,7 +337,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
     mode: CompletionMode;
   }
   const [completion, setCompletion] = useState<CompletionState>({
-    suggestions: [], activeIndex: 0, mode: "none",
+    suggestions: [],
+    activeIndex: 0,
+    mode: "none",
   });
   // 兼容层：解构出旧变量名供渲染和交互使用
   const { suggestions, activeIndex } = completion;
@@ -326,7 +351,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
 
   // / 命令补全
   const setSlashSuggestions = useCallback((items: Suggestion[]) => {
-    setCompletion(prev => {
+    setCompletion((prev) => {
       if (items.length > 0) {
         return { suggestions: items, activeIndex: 0, mode: "slash" };
       } else if (prev.mode === "slash") {
@@ -345,7 +370,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
 
   // @ 文件补全
   const setAtSuggestions = useCallback((items: Suggestion[]) => {
-    setCompletion(prev => {
+    setCompletion((prev) => {
       if (items.length > 0) {
         return { suggestions: items, activeIndex: 0, mode: "at" };
       } else if (prev.mode === "at") {
@@ -364,7 +389,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
 
   // ! Shell 命令补全
   const setShellSuggestions = useCallback((items: Suggestion[]) => {
-    setCompletion(prev => {
+    setCompletion((prev) => {
       if (items.length > 0) {
         return { suggestions: items, activeIndex: 0, mode: "shell" };
       } else if (prev.mode === "shell") {
@@ -384,34 +409,40 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   const hasSuggestions = suggestions.length > 0;
 
   // 应用补全：替换触发文本为选中的补全值
-  const applyCompletion = useCallback((suggestion: Suggestion) => {
-    const mode = completionMode;
-    if (mode === "slash" || mode === "shell") {
-      // 替换整行为命令（shell 模式保留 ! 前缀）
-      tb.moveCursor("home");
-      tb.killLine();
-      if (mode === "shell") {
-        tb.insert("!" + suggestion.value);
-      } else {
-        tb.insert(suggestion.value);
+  const applyCompletion = useCallback(
+    (suggestion: Suggestion) => {
+      const mode = completionMode;
+      if (mode === "slash" || mode === "shell") {
+        // 替换整行为命令（shell 模式保留 ! 前缀）
+        tb.moveCursor("home");
+        tb.killLine();
+        if (mode === "shell") {
+          tb.insert("!" + suggestion.value);
+        } else {
+          tb.insert(suggestion.value);
+        }
+      } else if (mode === "at") {
+        // 找到 @ 的位置，替换 @ 后的 pattern
+        const line = tb.state.lines[tb.state.cursorRow];
+        let atPos = -1;
+        for (let i = tb.state.cursorCol - 1; i >= 0; i--) {
+          if (line[i] === "@") {
+            atPos = i;
+            break;
+          }
+          if (line[i] === " ") break;
+        }
+        if (atPos >= 0) {
+          // 删除 @ 后的 pattern
+          const deleteCount = tb.state.cursorCol - atPos - 1;
+          for (let i = 0; i < deleteCount; i++) tb.deleteBackward();
+          tb.insert(suggestion.value);
+        }
       }
-    } else if (mode === "at") {
-      // 找到 @ 的位置，替换 @ 后的 pattern
-      const line = tb.state.lines[tb.state.cursorRow];
-      let atPos = -1;
-      for (let i = tb.state.cursorCol - 1; i >= 0; i--) {
-        if (line[i] === "@") { atPos = i; break; }
-        if (line[i] === " ") break;
-      }
-      if (atPos >= 0) {
-        // 删除 @ 后的 pattern
-        const deleteCount = tb.state.cursorCol - atPos - 1;
-        for (let i = 0; i < deleteCount; i++) tb.deleteBackward();
-        tb.insert(suggestion.value);
-      }
-    }
-    setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
-  }, [tb, completionMode]);
+      setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
+    },
+    [tb, completionMode],
+  );
 
   useEffect(() => {
     if (prevLoadingRef.current !== isLoading) {
@@ -434,10 +465,13 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
 
   // P2-6/P2-7 共用：把图片文件路径以 @<path> 引用插入输入框，走 Read 工具 vision 管道。
   // 路径含空格时用引号包裹，确保 @ 引用解析与 shell 补全不被空格截断。
-  const insertImageRef = useCallback((imgPath: string) => {
-    const ref = /\s/.test(imgPath) ? `@"${imgPath}" ` : `@${imgPath} `;
-    tb.insert(ref);
-  }, [tb]);
+  const insertImageRef = useCallback(
+    (imgPath: string) => {
+      const ref = /\s/.test(imgPath) ? `@"${imgPath}" ` : `@${imgPath} `;
+      tb.insert(ref);
+    },
+    [tb],
+  );
 
   // P2-6：尝试读剪贴板图片 → 临时文件 → 插入 @ 引用。成功给 hint，失败给 warning（剪贴板无图/无工具）。
   const tryInsertClipboardImage = useCallback((): boolean => {
@@ -450,7 +484,10 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
       return true;
     }
     // 剪贴板无图片或系统无读取工具——给一次轻提示，不打断输入。
-    showTransientMessage("剪贴板无图片（或缺 pngpaste/xclip/wl-paste）", TransientMessageType.Warning);
+    showTransientMessage(
+      "剪贴板无图片（或缺 pngpaste/xclip/wl-paste）",
+      TransientMessageType.Warning,
+    );
     return false;
   }, [insertImageRef, showTransientMessage]);
 
@@ -459,61 +496,73 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
    * 裸 Enter 走默认（next），Alt+N → now（插队），Alt+L → later（延后）。
    * shell 模式（`!` 前缀）走直送 /bash，优先级对其无意义（不排队），忽略。
    */
-  const handleSubmit = useCallback((priority?: "now" | "next" | "later") => {
-    const raw = tb.submit();
-    if (!raw) return;
+  const handleSubmit = useCallback(
+    (priority?: "now" | "next" | "later") => {
+      const raw = tb.submit();
+      if (!raw) return;
 
-    // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
-    const text = expandPastedRefs(raw);
-    clearPastes();
+      // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
+      const text = expandPastedRefs(raw);
+      clearPastes();
 
-    if (text === lastSubmittedRef.current) {
-      log.warn("UI:INPUT", `重复内容被拦截: "${text.slice(0, 50)}"`);
-      return;
-    }
-
-    // 持久化历史（存还原后的真实内容）
-    addHistoryEntry(text);
-
-    // Shell 模式：! 前缀直接执行 shell 命令
-    if (shellModeActive && text.startsWith("!")) {
-      const shellCmd = text.slice(1).trim();
-      if (shellCmd) {
-        log.info("UI:INPUT", `Shell 模式执行: "${shellCmd}"`);
-        onShellCommand(shellCmd);
+      if (text === lastSubmittedRef.current) {
+        log.warn("UI:INPUT", `重复内容被拦截: "${text.slice(0, 50)}"`);
+        return;
       }
-      setShellModeActive(false);
+
+      // 持久化历史（存还原后的真实内容）
+      addHistoryEntry(text);
+
+      // Shell 模式：! 前缀直接执行 shell 命令
+      if (shellModeActive && text.startsWith("!")) {
+        const shellCmd = text.slice(1).trim();
+        if (shellCmd) {
+          log.info("UI:INPUT", `Shell 模式执行: "${shellCmd}"`);
+          onShellCommand(shellCmd);
+        }
+        setShellModeActive(false);
+        lastSubmittedRef.current = text;
+        setTimeout(() => {
+          lastSubmittedRef.current = "";
+        }, 1000);
+        return;
+      }
+
+      log.info(
+        "UI:INPUT",
+        `提交输入${priority && priority !== "next" ? `（${priority}）` : ""}: ` +
+          `"${text.slice(0, 100)}"${text.length > 100 ? "..." : ""}`,
+      );
       lastSubmittedRef.current = text;
-      setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-      return;
-    }
+      onSubmit(text, priority);
 
-    log.info(
-      "UI:INPUT",
-      `提交输入${priority && priority !== "next" ? `（${priority}）` : ""}: `
-        + `"${text.slice(0, 100)}"${text.length > 100 ? "..." : ""}`,
-    );
-    lastSubmittedRef.current = text;
-    onSubmit(text, priority);
-
-    setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-  }, [tb, onSubmit, onShellCommand, shellModeActive, addHistoryEntry]);
+      setTimeout(() => {
+        lastSubmittedRef.current = "";
+      }, 1000);
+    },
+    [tb, onSubmit, onShellCommand, shellModeActive, addHistoryEntry],
+  );
 
   // 从补全列表直接提交一条命令文本（无需经过 tb.submit()——避免"插入后同帧提交"读到
   // reducer 旧 state）。仅用于「无参命令回车直接执行」路径：清空输入框 + 走历史/去重 + 提交。
-  const submitCommandText = useCallback((commandText: string) => {
-    tb.setText("");
-    setShellModeActive(false);
-    if (commandText === lastSubmittedRef.current) {
-      log.warn("UI:INPUT", `重复内容被拦截: "${commandText.slice(0, 50)}"`);
-      return;
-    }
-    addHistoryEntry(commandText);
-    log.info("UI:INPUT", `补全列表直接执行命令: "${commandText}"`);
-    lastSubmittedRef.current = commandText;
-    onSubmit(commandText);
-    setTimeout(() => { lastSubmittedRef.current = ""; }, 1000);
-  }, [tb, onSubmit, addHistoryEntry]);
+  const submitCommandText = useCallback(
+    (commandText: string) => {
+      tb.setText("");
+      setShellModeActive(false);
+      if (commandText === lastSubmittedRef.current) {
+        log.warn("UI:INPUT", `重复内容被拦截: "${commandText.slice(0, 50)}"`);
+        return;
+      }
+      addHistoryEntry(commandText);
+      log.info("UI:INPUT", `补全列表直接执行命令: "${commandText}"`);
+      lastSubmittedRef.current = commandText;
+      onSubmit(commandText);
+      setTimeout(() => {
+        lastSubmittedRef.current = "";
+      }, 1000);
+    },
+    [tb, onSubmit, addHistoryEntry],
+  );
 
   // ── 核心键盘处理 ──────────────────────────────────────────────────
   useKeypress(KeypressPriority.Normal, (key) => {
@@ -613,7 +662,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
             log.warn("UI:INPUT", `外部编辑器: ${result.error}`);
           }
         })
-        .finally(() => { externalEditingRef.current = false; });
+        .finally(() => {
+          externalEditingRef.current = false;
+        });
       return true;
     }
 
@@ -699,11 +750,17 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
         return true;
       }
       if (key.name === "up" && !key.shift) {
-        setCompletion(prev => ({ ...prev, activeIndex: (prev.activeIndex - 1 + prev.suggestions.length) % prev.suggestions.length }));
+        setCompletion((prev) => ({
+          ...prev,
+          activeIndex: (prev.activeIndex - 1 + prev.suggestions.length) % prev.suggestions.length,
+        }));
         return true;
       }
       if (key.name === "down" && !key.shift) {
-        setCompletion(prev => ({ ...prev, activeIndex: (prev.activeIndex + 1) % prev.suggestions.length }));
+        setCompletion((prev) => ({
+          ...prev,
+          activeIndex: (prev.activeIndex + 1) % prev.suggestions.length,
+        }));
         return true;
       }
     }
@@ -711,9 +768,15 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
     // ── 普通键盘输入 ──
     // 换行：Shift+Enter / Option(Alt)+Enter 都插换行（macOS 用户惯用 Option+Enter，
     // 解析层已把 ESC+CR 识别为 alt+enter，此前误落提交分支）。
-    if (key.name === "enter" && (key.shift || key.alt)) { tb.insert("\n"); return true; }
+    if (key.name === "enter" && (key.shift || key.alt)) {
+      tb.insert("\n");
+      return true;
+    }
     // 提交：仅裸 Enter（无 shift/alt）→ 默认 next 级排队
-    if (key.name === "enter" && !key.shift && !key.alt) { handleSubmit(); return true; }
+    if (key.name === "enter" && !key.shift && !key.alt) {
+      handleSubmit();
+      return true;
+    }
 
     // P1-G6：带优先级提交（Alt+N=now 插队 / Alt+L=later 延后，对齐 CC now>next>later）。
     // 仅在**流式进行中**（isLoading）拦截——空闲时提交不入队，优先级无意义，此时放行让
@@ -721,8 +784,14 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
     // 输入框为空时同样放行（没内容可提交）。
     if (isLoading && !tb.isEmpty()) {
       const action = matchBinding(key)?.action;
-      if (action === "input:submitNow") { handleSubmit("now"); return true; }
-      if (action === "input:submitLater") { handleSubmit("later"); return true; }
+      if (action === "input:submitNow") {
+        handleSubmit("now");
+        return true;
+      }
+      if (action === "input:submitLater") {
+        handleSubmit("later");
+        return true;
+      }
     }
 
     // 历史记录：
@@ -760,35 +829,95 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
       return true;
     }
 
-    if (key.name === "left" && !key.alt) { tb.moveCursor("left"); return true; }
-    if (key.name === "right" && !key.alt) { tb.moveCursor("right"); return true; }
-    if (key.name === "left" && key.alt) { tb.moveCursor("wordLeft"); return true; }
-    if (key.name === "right" && key.alt) { tb.moveCursor("wordRight"); return true; }
-    if (key.name === "backspace" || key.name === "delete") { tb.deleteBackward(); return true; }
-    if (key.name === "home") { tb.moveCursor("home"); return true; }
-    if (key.name === "end") { tb.moveCursor("end"); return true; }
+    if (key.name === "left" && !key.alt) {
+      tb.moveCursor("left");
+      return true;
+    }
+    if (key.name === "right" && !key.alt) {
+      tb.moveCursor("right");
+      return true;
+    }
+    if (key.name === "left" && key.alt) {
+      tb.moveCursor("wordLeft");
+      return true;
+    }
+    if (key.name === "right" && key.alt) {
+      tb.moveCursor("wordRight");
+      return true;
+    }
+    if (key.name === "backspace" || key.name === "delete") {
+      tb.deleteBackward();
+      return true;
+    }
+    if (key.name === "home") {
+      tb.moveCursor("home");
+      return true;
+    }
+    if (key.name === "end") {
+      tb.moveCursor("end");
+      return true;
+    }
 
     // ── Emacs 光标/编辑键（Alt 词移 + Ctrl 字符移/删词/kill ring）──
     // Alt+B / Alt+F：按词左右移（与 Alt+方向键等价的字母键，emacs 惯用）。
-    if (key.alt && key.name === "b") { tb.moveCursor("wordLeft"); return true; }
-    if (key.alt && key.name === "f") { tb.moveCursor("wordRight"); return true; }
+    if (key.alt && key.name === "b") {
+      tb.moveCursor("wordLeft");
+      return true;
+    }
+    if (key.alt && key.name === "f") {
+      tb.moveCursor("wordRight");
+      return true;
+    }
     // Alt+Y：yank-pop（仅紧邻 yank 后有效，循环取 kill ring 更早条目）。
-    if (key.alt && key.name === "y") { tb.yankPop(); return true; }
+    if (key.alt && key.name === "y") {
+      tb.yankPop();
+      return true;
+    }
 
     // Emacs Ctrl 快捷键
     if (key.ctrl) {
-      if (key.name === "a") { tb.moveCursor("home"); return true; }
-      if (key.name === "e") { tb.moveCursor("end"); return true; }
-      if (key.name === "f") { tb.moveCursor("right"); return true; }
-      if (key.name === "b") { tb.moveCursor("left"); return true; }
-      if (key.name === "k") { tb.killLine(); return true; }
-      if (key.name === "u") { tb.killToStart(); return true; }
-      if (key.name === "w") { tb.killWordBefore(); return true; }
-      if (key.name === "y") { tb.yank(); return true; }
+      if (key.name === "a") {
+        tb.moveCursor("home");
+        return true;
+      }
+      if (key.name === "e") {
+        tb.moveCursor("end");
+        return true;
+      }
+      if (key.name === "f") {
+        tb.moveCursor("right");
+        return true;
+      }
+      if (key.name === "b") {
+        tb.moveCursor("left");
+        return true;
+      }
+      if (key.name === "k") {
+        tb.killLine();
+        return true;
+      }
+      if (key.name === "u") {
+        tb.killToStart();
+        return true;
+      }
+      if (key.name === "w") {
+        tb.killWordBefore();
+        return true;
+      }
+      if (key.name === "y") {
+        tb.yank();
+        return true;
+      }
       // Ctrl+J：插入换行（通用换行键；解析层把裸 \n 归一为 name:'j',ctrl:true）。
-      if (key.name === "j") { tb.insert("\n"); return true; }
+      if (key.name === "j") {
+        tb.insert("\n");
+        return true;
+      }
       // Ctrl+H：部分终端把退格发为 ^H，显式归一为删除（对齐 cc）。
-      if (key.name === "h") { tb.deleteBackward(); return true; }
+      if (key.name === "h") {
+        tb.deleteBackward();
+        return true;
+      }
       if (key.name === "d") {
         // Ctrl+D：输入框为空 → 二次确认退出（终端 EOF 约定）；非空 → 删除光标后字符。
         if (tb.isEmpty()) {
@@ -832,7 +961,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
         {match ? (
           <Box>
             <Text>匹配: </Text>
-            <Text>{match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}</Text>
+            <Text>
+              {match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}
+            </Text>
           </Box>
         ) : query ? (
           <Box>
@@ -876,23 +1007,26 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
       now > 0 ? `插队 ${now}` : null,
       next > 0 ? `常规 ${next}` : null,
       later > 0 ? `延后 ${later}` : null,
-    ].filter(Boolean).join(" · ");
+    ]
+      .filter(Boolean)
+      .join(" · ");
   })();
 
   // 队列提示：流式中已排队 N 条输入待接续时，在输入框上方一行提示。
   // P2-G6：完整形态附带"↑ 编辑"提示，告知用户可把队尾输入弹回编辑（输入框空时按 ↑）。
   // P1-G6：有非默认优先级时追加分组明细（按发送顺序 插队 · 常规 · 延后）。
-  const queueHint = queuedCount > 0 ? (
-    <Box paddingLeft={1}>
-      <Text color={theme.status.warning}>
-        {queueHintFullRef.current
-          ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入`
-            + `${queueBreakdown ? `（${queueBreakdown}）` : ""}`
-            + `，将在当前响应结束后依次发送（空输入框按 ↑ 弹回编辑）`
-          : `${ARROW_PROMPT} 已排队 ${queuedCount} 条${queueBreakdown ? `（${queueBreakdown}）` : ""}`}
-      </Text>
-    </Box>
-  ) : null;
+  const queueHint =
+    queuedCount > 0 ? (
+      <Box paddingLeft={1}>
+        <Text color={theme.status.warning}>
+          {queueHintFullRef.current
+            ? `${ARROW_PROMPT} 已排队 ${queuedCount} 条输入` +
+              `${queueBreakdown ? `（${queueBreakdown}）` : ""}` +
+              `，将在当前响应结束后依次发送（空输入框按 ↑ 弹回编辑）`
+            : `${ARROW_PROMPT} 已排队 ${queuedCount} 条${queueBreakdown ? `（${queueBreakdown}）` : ""}`}
+        </Text>
+      </Box>
+    ) : null;
 
   // Shell 模式退出提示渐进衰减（交互铁律 C，G23）：首次进入 shell 模式的新用户需要知道
   // "怎么退出"（删掉行首 ! 即回普通模式），但老手每次进 shell 都被提醒就是唠叨。
@@ -914,13 +1048,14 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   }, [shellModeActive]);
 
   // Shell 模式提示：进入 shell 模式且未看够次数时，输入框上方一行引导退出方式。
-  const shellHint = shellModeActive && shellHintRef.current ? (
-    <Box paddingLeft={1}>
-      <Text color={theme.text.secondary}>
-        {`${ARROW_PROMPT} Shell 模式：命令将直接在终端执行，删除行首 ! 可退出`}
-      </Text>
-    </Box>
-  ) : null;
+  const shellHint =
+    shellModeActive && shellHintRef.current ? (
+      <Box paddingLeft={1}>
+        <Text color={theme.text.secondary}>
+          {`${ARROW_PROMPT} Shell 模式：命令将直接在终端执行，删除行首 ! 可退出`}
+        </Text>
+      </Box>
+    ) : null;
 
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
@@ -937,7 +1072,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
           paddingX={1}
         >
           <Text>
-            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+            <Text color={theme.ui.active} bold>
+              {currentPrompt}
+            </Text>
             <Text inverse> </Text>
             <Text>{currentPlaceholder}</Text>
           </Text>
@@ -956,19 +1093,26 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
   const visualLines = getVisualLines(displayLines, availableWidth);
 
   // 光标在 display 坐标中的位置
-  const displayCursorCol = tb.state.cursorRow === 0
-    ? PROMPT.length + tb.state.cursorCol
-    : 2 + tb.state.cursorCol;
-  const cursorPos = getCursorVisualPosition(displayLines, tb.state.cursorRow, displayCursorCol, availableWidth);
+  const displayCursorCol =
+    tb.state.cursorRow === 0 ? PROMPT.length + tb.state.cursorCol : 2 + tb.state.cursorCol;
+  const cursorPos = getCursorVisualPosition(
+    displayLines,
+    tb.state.cursorRow,
+    displayCursorCol,
+    availableWidth,
+  );
 
   // Viewport 滚动
   const totalVisualLines = visualLines.length;
   let viewStart = 0;
   if (totalVisualLines > MAX_INPUT_LINES) {
-    viewStart = Math.max(0, Math.min(
-      cursorPos.visualRow - Math.floor(MAX_INPUT_LINES / 2),
-      totalVisualLines - MAX_INPUT_LINES,
-    ));
+    viewStart = Math.max(
+      0,
+      Math.min(
+        cursorPos.visualRow - Math.floor(MAX_INPUT_LINES / 2),
+        totalVisualLines - MAX_INPUT_LINES,
+      ),
+    );
   }
   const viewEnd = Math.min(viewStart + MAX_INPUT_LINES, totalVisualLines);
   const visibleLines = visualLines.slice(viewStart, viewEnd);
@@ -982,7 +1126,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
       if (vl.logicalRow === 0 && vl.start === 0) {
         return (
           <Text key={`vl-${visualIdx}`}>
-            <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+            <Text color={theme.ui.active} bold>
+              {currentPrompt}
+            </Text>
             {renderFirstLineContent(lineText, currentPrompt.length)}
           </Text>
         );
@@ -999,7 +1145,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
     // vim 命令态(normal/visual)光标用品牌色块,与 insert(普通 inverse)区分——一眼可辨当前模式。
     const vimNormal = vimMode && vimModeLabel !== "insert";
     const cursorNode = vimNormal ? (
-      <Text backgroundColor={theme.ui.active} color={theme.background.primary}>{cursorChar}</Text>
+      <Text backgroundColor={theme.ui.active} color={theme.background.primary}>
+        {cursorChar}
+      </Text>
     ) : (
       <Text inverse>{cursorChar}</Text>
     );
@@ -1013,7 +1161,9 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
 
       return (
         <Text key={`vl-${visualIdx}`}>
-          <Text color={theme.ui.active} bold>{currentPrompt}</Text>
+          <Text color={theme.ui.active} bold>
+            {currentPrompt}
+          </Text>
           {renderHighlightedSegments(beforeSegments)}
           {cursorNode}
           {renderHighlightedSegments(afterSegments)}
@@ -1035,11 +1185,7 @@ export function InputArea({ onSubmit, onShellCommand, isLoading, commands, cwd, 
       {queueHint}
       {shellHint}
       {hasSuggestions && (
-        <SuggestionsDisplay
-          suggestions={suggestions}
-          activeIndex={activeIndex}
-          width={termWidth}
-        />
+        <SuggestionsDisplay suggestions={suggestions} activeIndex={activeIndex} width={termWidth} />
       )}
       <Box
         width={termWidth}

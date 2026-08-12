@@ -26,7 +26,12 @@ import { spawn } from "node:child_process";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = ["evals/general/p0-core", "evals/general/p1-common", "evals/general/p2-edge", "evals/holdout"];
+const CASE_DIRS = [
+  "evals/general/p0-core",
+  "evals/general/p1-common",
+  "evals/general/p2-edge",
+  "evals/holdout",
+];
 const RAW_DIR = "evals/raw-outputs";
 const REPORTS_DIR = "evals/_reports";
 
@@ -85,7 +90,10 @@ interface RunRecord {
   ended_at: string;
 }
 
-function checkAnchors(output: string, expected: Case["expected"]): {
+function checkAnchors(
+  output: string,
+  expected: Case["expected"],
+): {
   hits: string[];
   misses: string[];
   violations: string[];
@@ -103,11 +111,7 @@ async function runCase(c: Case, timeoutMs: number): Promise<RunRecord> {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
 
-  const transcriptPath = join(
-    ROOT,
-    RAW_DIR,
-    `${c.id}_${Date.now()}.jsonl`,
-  );
+  const transcriptPath = join(ROOT, RAW_DIR, `${c.id}_${Date.now()}.jsonl`);
 
   const env = {
     ...process.env,
@@ -116,11 +120,15 @@ async function runCase(c: Case, timeoutMs: number): Promise<RunRecord> {
   };
 
   const args = [
-    "run", "packages/cli/src/entrypoints/bootstrap.ts",
+    "run",
+    "packages/cli/src/entrypoints/bootstrap.ts",
     "--print",
-    "--output-format", "json",
-    "--max-turns", String(c.expected.max_steps ?? 15),
-    "--permission-mode", "default",
+    "--output-format",
+    "json",
+    "--max-turns",
+    String(c.expected.max_steps ?? 15),
+    "--permission-mode",
+    "default",
     c.input.user_query,
   ];
 
@@ -132,8 +140,12 @@ async function runCase(c: Case, timeoutMs: number): Promise<RunRecord> {
       proc.kill("SIGTERM");
     }, timeoutMs);
 
-    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
 
     proc.on("close", (code) => {
       clearTimeout(killTimer);
@@ -141,15 +153,19 @@ async function runCase(c: Case, timeoutMs: number): Promise<RunRecord> {
       const endedAt = new Date().toISOString();
 
       try {
-        writeFileSync(transcriptPath, JSON.stringify({
-          case_id: c.id,
-          started_at: startedAt,
-          ended_at: endedAt,
-          duration_ms: t1 - t0,
-          exit_code: code,
-          stdout,
-          stderr,
-        }) + "\n", "utf-8");
+        writeFileSync(
+          transcriptPath,
+          JSON.stringify({
+            case_id: c.id,
+            started_at: startedAt,
+            ended_at: endedAt,
+            duration_ms: t1 - t0,
+            exit_code: code,
+            stdout,
+            stderr,
+          }) + "\n",
+          "utf-8",
+        );
       } catch {
         /* ignore — 不阻塞 */
       }

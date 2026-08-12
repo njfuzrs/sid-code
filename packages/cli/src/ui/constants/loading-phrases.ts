@@ -74,4 +74,3 @@ export function formatToolElapsed(elapsedSec: number): string {
   const s = elapsedSec % 60;
   return `已执行 ${m}m${s}s`;
 }
-

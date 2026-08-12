@@ -30,9 +30,8 @@ function templateContent(): string {
 
 const mod: LocalCommandModule = {
   async call(args: string, _ctx: CommandContext): Promise<LocalCommandResult> {
-    const { userBindingsPath, loadUserBindings } = await import(
-      "../../../ui/keybindings/loadUserBindings.ts"
-    );
+    const { userBindingsPath, loadUserBindings } =
+      await import("../../../ui/keybindings/loadUserBindings.ts");
     const path = userBindingsPath();
     const sub = args.trim().toLowerCase();
 
@@ -54,7 +53,10 @@ const mod: LocalCommandModule = {
         };
       } catch (e) {
         getLogger().error("KEYBINDING", `写入模板失败: ${(e as Error)?.message}`);
-        return { type: "text", value: `写入模板失败: ${(e as Error)?.message ?? e}\n路径: ${path}` };
+        return {
+          type: "text",
+          value: `写入模板失败: ${(e as Error)?.message ?? e}\n路径: ${path}`,
+        };
       }
     }
 

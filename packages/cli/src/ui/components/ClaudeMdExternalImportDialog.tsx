@@ -23,7 +23,12 @@ interface ChoiceItem extends SelectionListItem<boolean> {
 }
 
 const OPTIONS: ChoiceItem[] = [
-  { value: true, key: "yes", label: "允许外部导入", desc: "信任并展开项目外的 @import（记住选择）" },
+  {
+    value: true,
+    key: "yes",
+    label: "允许外部导入",
+    desc: "信任并展开项目外的 @import（记住选择）",
+  },
   { value: false, key: "no", label: "禁用外部导入", desc: "跳过所有项目外的 @import（记住选择）" },
 ];
 
@@ -52,8 +57,16 @@ export const ClaudeMdExternalImportDialog: React.FC<Props> = ({ paths, onDecisio
   const extra = paths.length - shown.length;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>允许加载项目外的 CLAUDE.md 导入？</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        允许加载项目外的 CLAUDE.md 导入？
+      </Text>
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.text.secondary}>
           你的 CLAUDE.md 通过 @import 引用了项目根之外的文件。为防止外部文件注入未经审阅的指令，
@@ -62,9 +75,12 @@ export const ClaudeMdExternalImportDialog: React.FC<Props> = ({ paths, onDecisio
       </Box>
       <Box marginTop={1} flexDirection="column">
         {shown.map((p) => (
-          <Text key={p} color={theme.text.secondary}>  · {p}</Text>
+          <Text key={p} color={theme.text.secondary}>
+            {" "}
+            · {p}
+          </Text>
         ))}
-        {extra > 0 && <Text>  …等共 {paths.length} 个</Text>}
+        {extra > 0 && <Text> …等共 {paths.length} 个</Text>}
       </Box>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<boolean, ChoiceItem>
@@ -78,7 +94,7 @@ export const ClaudeMdExternalImportDialog: React.FC<Props> = ({ paths, onDecisio
           renderItem={(item, { isSelected }) => (
             <Box>
               <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{item.label}</Text>
-              <Text color={theme.text.secondary}>  {item.desc}</Text>
+              <Text color={theme.text.secondary}> {item.desc}</Text>
             </Box>
           )}
         />

@@ -62,9 +62,7 @@ export class OtlpExporter implements SinkBackend {
     this.name = config.name ?? "otlp";
     this.stripProtected = config.stripProtected ?? true;
     const base =
-      config.endpoint ??
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
-      "http://localhost:4318";
+      config.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:4318";
     // 若给的是 base(不含 /v1/logs),补全
     this.endpoint = base.endsWith("/v1/logs") ? base : `${base.replace(/\/$/, "")}/v1/logs`;
     this.authHeader = config.authHeader;
@@ -142,9 +140,7 @@ export class OtlpExporter implements SinkBackend {
       resourceLogs: [
         {
           resource: {
-            attributes: [
-              { key: "service.name", value: { stringValue: this.serviceName } },
-            ],
+            attributes: [{ key: "service.name", value: { stringValue: this.serviceName } }],
           },
           scopeLogs: [{ scope: { name: "sid-code.analytics" }, logRecords }],
         },

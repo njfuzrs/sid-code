@@ -11,12 +11,7 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type {
-  ContentBlock,
-  StreamEvent,
-  AccumulatedResponse,
-  SendParams,
-} from "../llm/types.ts";
+import type { ContentBlock, StreamEvent, AccumulatedResponse, SendParams } from "../llm/types.ts";
 import type { Config } from "../config/config.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { QuotaManager } from "../llm/quota.ts";
@@ -52,7 +47,9 @@ export interface QueryEngineDeps {
   /** P1-2/P2-2/P3-2：Skill 运行时激活协调器（条件激活 + 动态发现 + 增量 listing）。可选。 */
   skillActivationCoordinator?: import("../skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** 执行工具调用（含权限检查）。返回 results + 可选 followup（ADR-019） */
-  executeTools: (content: ContentBlock[]) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
+  executeTools: (
+    content: ContentBlock[],
+  ) => Promise<{ results: ContentBlock[]; followup?: ContentBlock[] }>;
   /** 处理流式响应。onThinking 对标 Claude Code 的独立思考流通道 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,
@@ -82,15 +79,23 @@ export interface QueryEngineDeps {
   getEffortSetting?: () => import("../llm/effort.ts").EffortSetting;
   getThinkingSetting?: () => import("../llm/effort.ts").ThinkingSetting;
   /** P0-2 / P0-3：读取 todo 状态快照（回注 + 完成度校验用） */
-  getTodoState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  getTodoState?: () => {
+    todos: import("../tool/todo-write.ts").TodoItem[];
+    writeVersion: number;
+  } | null;
   /** 修复 5 / 发现 4a：读取**终态**清单（含全部完成态），专供进度落盘 + 埋点。见 types.ts 同名字段。 */
-  getTodoTerminalState?: () => { todos: import("../tool/todo-write.ts").TodoItem[]; writeVersion: number } | null;
+  getTodoTerminalState?: () => {
+    todos: import("../tool/todo-write.ts").TodoItem[];
+    writeVersion: number;
+  } | null;
   /** 环节③：读取假设登记表实例（矛盾中断 + 交付门禁用） */
   getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
   /** §3.1/§3.3：轨迹采集器（用于异常路径持久化 errors.jsonl + TurnError 事件） */
   traceCollector?: import("../trace/collector.ts").TraceCollector;
   /** G2：获取 cachedMicrocompact 状态机（缓存友好压缩产出 cache_edits）。可选 */
-  getCachedMicrocompactState?: () => import("./compact/cached-microcompact.ts").CachedMicrocompactState | undefined;
+  getCachedMicrocompactState?: () =>
+    | import("./compact/cached-microcompact.ts").CachedMicrocompactState
+    | undefined;
   /** G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选 */
   getProviderName?: () => string;
   /** MCP server instructions 增量拉取（新连接 server 的使用说明，经 reminderParts 注入）。可选 */
@@ -125,12 +130,14 @@ export class QueryEngine {
    * Step 0：Session Memory 句柄（由 App 在 doInit 接线后注入）。
    * queryLoop 每轮收尾触发提取（updateSessionMemory）+ 工具调用计数（recordToolCall）。
    */
-  private sessionMemory: import("../session-memory/session-memory.ts").SessionMemoryHandle | null = null;
+  private sessionMemory: import("../session-memory/session-memory.ts").SessionMemoryHandle | null =
+    null;
   /**
    * 后台记忆提取句柄（由 App 在 doInit 接线后注入）。
    * queryLoop 每轮 end_turn 收尾触发提取（extractMemories）。
    */
-  private extractMemories: import("../memory/extract/extractor.ts").ExtractMemoriesHandle | null = null;
+  private extractMemories: import("../memory/extract/extractor.ts").ExtractMemoriesHandle | null =
+    null;
 
   constructor(deps: QueryEngineDeps) {
     this.deps = deps;
@@ -190,7 +197,10 @@ export class QueryEngine {
     const log = getLogger();
     const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
 
-    log.info("ENGINE", `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
+    log.info(
+      "ENGINE",
+      `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`,
+    );
 
     // 记录用户提示
     getSessionMetrics().recordPrompt();
@@ -206,7 +216,10 @@ export class QueryEngine {
         // G4：UserPromptSubmit 阻塞语义——直接 return 使原 prompt 不进入模型上下文
         // （等价 CC exit2 的"擦除原 prompt"），只反馈阻塞原因。此处 return 前用户消息
         // 尚未 addMessage（见下方 ctxMgr.addMessage 在 thinking 解析之后），天然不落库。
-        log.info("HOOK", `用户输入被 hook 阻止（原 prompt 不入上下文）: ${hookResult.finalOutput.getEffectiveReason()}`);
+        log.info(
+          "HOOK",
+          `用户输入被 hook 阻止（原 prompt 不入上下文）: ${hookResult.finalOutput.getEffectiveReason()}`,
+        );
         yield { kind: "hook_blocked", reason: hookResult.finalOutput.getEffectiveReason() };
         return;
       }
@@ -228,7 +241,8 @@ export class QueryEngine {
     // 现经 queryDeps.getThinkingConfig 注入 queryLoop。
     const { cleaned: cleanedInput, config: thinkingConfig } =
       this.deps.thinkingMgr.parseThinkingHint(finalInput);
-    const thinking = options?.thinking ?? thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
+    const thinking =
+      options?.thinking ?? thinkingConfig ?? this.deps.thinkingMgr.getThinkingConfig(cleanedInput);
 
     // ─── 添加用户消息 ───
     // B2：API 调用前先持久化 user 消息（对标 claude-code：进程中途被 kill 也可 resume）。
@@ -321,7 +335,7 @@ export class QueryEngine {
       drainAsyncHookRewakes: hookSystem
         ? () => {
             const notes = hookSystem.drainRewakeNotifications();
-            return notes.map(n => `[Hook: ${n.hookName}]\n${n.error}`);
+            return notes.map((n) => `[Hook: ${n.hookName}]\n${n.error}`);
           }
         : undefined,
       // P1-2/P2-2/P3-2：skill 激活协调器转发（条件激活/动态发现 + 增量 listing）
@@ -437,7 +451,9 @@ export class QueryEngine {
           source: "engine",
           extra: { turn: currentIndex },
         });
-      } catch { /* 埋点绝不影响错误处理主路径 */ }
+      } catch {
+        /* 埋点绝不影响错误处理主路径 */
+      }
       if (this.deps.traceCollector) {
         this.deps.traceCollector.recordError({
           phase: "engine",

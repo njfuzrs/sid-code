@@ -3,24 +3,24 @@
  * 长会话场景下检测内存泄漏，提供诊断数据
  */
 
-import { getLogger } from './logger.ts';
+import { getLogger } from "./logger.ts";
 
 export interface MemorySnapshot {
   timestamp: number;
-  heapUsed: number;     // V8 堆已用（字节）
-  heapTotal: number;    // V8 堆总量
-  rss: number;          // 常驻集大小
-  external: number;     // 外部内存（Buffer 等）
+  heapUsed: number; // V8 堆已用（字节）
+  heapTotal: number; // V8 堆总量
+  rss: number; // 常驻集大小
+  external: number; // 外部内存（Buffer 等）
   arrayBuffers: number; // ArrayBuffer 内存
 }
 
 export class MemoryMonitor {
   private intervalId: ReturnType<typeof setInterval> | null = null;
-  private highWaterMark: number = 0;           // RSS 高水位（字节）
-  private readonly growthThreshold = 0.1;      // 10% 增长才记录
-  private readonly checkIntervalMs = 30_000;   // 30 秒检查一次
+  private highWaterMark: number = 0; // RSS 高水位（字节）
+  private readonly growthThreshold = 0.1; // 10% 增长才记录
+  private readonly checkIntervalMs = 30_000; // 30 秒检查一次
   private snapshots: MemorySnapshot[] = [];
-  private readonly maxSnapshots = 100;         // 最多保留 100 条
+  private readonly maxSnapshots = 100; // 最多保留 100 条
 
   start(): void {
     if (this.intervalId) return;
@@ -50,12 +50,14 @@ export class MemoryMonitor {
     const currentRss = mem.rss;
 
     // 首次或增长超过阈值时记录
-    if (this.highWaterMark === 0 ||
-        currentRss > this.highWaterMark * (1 + this.growthThreshold)) {
+    if (this.highWaterMark === 0 || currentRss > this.highWaterMark * (1 + this.growthThreshold)) {
       this.highWaterMark = currentRss;
       this.takeSnapshot();
 
-      getLogger().debug('MEMORY', `高水位更新: RSS=${formatBytes(currentRss)}, Heap=${formatBytes(mem.heapUsed)}`);
+      getLogger().debug(
+        "MEMORY",
+        `高水位更新: RSS=${formatBytes(currentRss)}, Heap=${formatBytes(mem.heapUsed)}`,
+      );
     }
   }
 
@@ -115,10 +117,12 @@ export class MemoryMonitor {
       const first = this.snapshots[0];
       const growth = current.rss - first.rss;
       const elapsed = (current.timestamp - first.timestamp) / 1000 / 60;
-      lines.push(`  RSS 增长:     ${growth > 0 ? '+' : ''}${formatBytes(growth)} (${elapsed.toFixed(1)}分钟)`);
+      lines.push(
+        `  RSS 增长:     ${growth > 0 ? "+" : ""}${formatBytes(growth)} (${elapsed.toFixed(1)}分钟)`,
+      );
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 }
 

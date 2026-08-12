@@ -222,10 +222,7 @@ function hasStrictIncompatibleNode(schema: unknown): boolean {
   if (node.propertyNames !== undefined || node.patternProperties !== undefined) {
     return true;
   }
-  if (
-    node.additionalProperties !== undefined
-    && node.additionalProperties !== false
-  ) {
+  if (node.additionalProperties !== undefined && node.additionalProperties !== false) {
     return true;
   }
 
@@ -382,7 +379,10 @@ function convertToolChoice(
  * 注意：同一消息中的文本块合并到一个 role item 中；遇到 tool_use/tool_result 就切分为独立 item。
  * 不处理 thinking / reasoningEffort（GPT-5.x 不支持），请求为无状态（store: false）。
  */
-export function buildResponsesRequest(params: SendParams, effectiveModel: string): ResponsesAPIRequest {
+export function buildResponsesRequest(
+  params: SendParams,
+  effectiveModel: string,
+): ResponsesAPIRequest {
   // 展开所有消息为扁平的 input item 序列
   const input: ResponsesInputItem[] = [];
   for (const message of params.messages) {

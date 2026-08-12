@@ -114,7 +114,6 @@ function formatDate(iso: string): string {
   if (!m) return iso;
   return `${m[1]} 年 ${Number(m[2])} 月 ${Number(m[3])} 日`;
 }
-
 </script>
 
 <template>

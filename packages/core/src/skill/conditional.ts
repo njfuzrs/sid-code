@@ -63,11 +63,7 @@ export class ConditionalSkillStore {
   }
 
   /** 检查一组文件路径中是否有任何一个匹配 glob 模式 */
-  private anyPathMatches(
-    filePaths: string[],
-    patterns: string[],
-    cwd: string,
-  ): boolean {
+  private anyPathMatches(filePaths: string[], patterns: string[], cwd: string): boolean {
     for (const filePath of filePaths) {
       const rel = isAbsolute(filePath) ? relative(cwd, filePath) : filePath;
       // 跳过 cwd 外的路径

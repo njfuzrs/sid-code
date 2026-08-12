@@ -75,14 +75,18 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
       const { resetCachedMicrocompactState } = await import("./cached-microcompact.ts");
       resetCachedMicrocompactState(opts.cachedMicrocompactState);
       log.debug("COMPACT", "已重置 cached microcompact 状态机");
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
   }
 
   // 3. G1：抑制紧接的一次 cache break 检测，避免误报淹没真实告警
   try {
     const { notifyCompaction } = await import("../../api/cache-detection.ts");
     notifyCompaction("main");
-  } catch { /* 忽略 */ }
+  } catch {
+    /* 忽略 */
+  }
 
   // 3.5 内容级 tracing（缺陷清单 P1-5 设计点 4）：压缩把历史消息换成了摘要，
   // 此前「已发过全文」的内容 hash 与压缩后的上下文再无对应关系。不清的话，压缩后
@@ -95,25 +99,38 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
   try {
     const { clearContentTracingState } = await import("../../telemetry/content-tracing.ts");
     clearContentTracingState();
-  } catch { /* 忽略 */ }
+  } catch {
+    /* 忽略 */
+  }
 
   // 4. §4.1：质量校验（覆盖率）
   let coverage = 1;
   try {
     const { recordCompactQuality } = await import("./quality-check.ts");
     coverage = recordCompactQuality(opts.originalMessages, opts.summary, opts.sessionDir).coverage;
-  } catch { /* 忽略 */ }
+  } catch {
+    /* 忽略 */
+  }
 
   const tokensAfter = ctxMgr.estimateTokens();
   const messagesAfter = ctxMgr.messageCount();
   const tokensBefore = opts.tokensBefore;
-  const savedRatio = tokensBefore > 0 ? Math.max(0, (tokensBefore - tokensAfter) / tokensBefore) : 0;
+  const savedRatio =
+    tokensBefore > 0 ? Math.max(0, (tokensBefore - tokensAfter) / tokensBefore) : 0;
 
   // 5. §4.2：记录压缩特征供后续自适应
   try {
     const { recordCompactFeature } = await import("./adaptive-strategy.ts");
-    recordCompactFeature({ tokensBefore, tokensAfter, savedRatio, usedLLM: opts.usedLLM, coverage });
-  } catch { /* 忽略 */ }
+    recordCompactFeature({
+      tokensBefore,
+      tokensAfter,
+      savedRatio,
+      usedLLM: opts.usedLLM,
+      coverage,
+    });
+  } catch {
+    /* 忽略 */
+  }
 
   // 6. §3.2：PostCompact hook
   try {

@@ -43,7 +43,9 @@ const ActionKey: React.FC<{ keyLabel: string; desc: string; color: Color }> = ({
   color,
 }) => (
   <Text>
-    <Text color={color} bold>{keyLabel}</Text>
+    <Text color={color} bold>
+      {keyLabel}
+    </Text>
     <Text color={theme.text.secondary}>{` ${desc}`}</Text>
   </Text>
 );
@@ -107,12 +109,7 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={accentColor}
-      paddingX={1}
-    >
+    <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
       {/* 标题行：危险=红、普通=警告黄，圆点 + 标题 */}
       <Box>
         <Text color={accentColor} bold>{`${BULLET} ${title}`}</Text>
@@ -122,12 +119,16 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
       <Box marginTop={1} flexDirection="column">
         <Box>
           <Text color={theme.text.secondary}>{"工具  "}</Text>
-          <Text color={theme.text.primary} bold>{request.toolName}</Text>
+          <Text color={theme.text.primary} bold>
+            {request.toolName}
+          </Text>
         </Box>
         {detail && (
           <Box>
             <Text color={theme.text.secondary}>{"参数  "}</Text>
-            <Text color={isDangerous ? theme.status.error : theme.text.secondary}>{String(detail).length > 120 ? String(detail).slice(0, 120) + "…" : String(detail)}</Text>
+            <Text color={isDangerous ? theme.status.error : theme.text.secondary}>
+              {String(detail).length > 120 ? String(detail).slice(0, 120) + "…" : String(detail)}
+            </Text>
           </Box>
         )}
         {request.reason && (
@@ -138,7 +139,10 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
         )}
         {isDangerous && (
           <Box marginTop={1}>
-            <Text color={theme.status.error} bold>{`${WARNING_MARK} 此操作具有破坏性且不可逆，默认拒绝（按 n 或回车）`}</Text>
+            <Text
+              color={theme.status.error}
+              bold
+            >{`${WARNING_MARK} 此操作具有破坏性且不可逆，默认拒绝（按 n 或回车）`}</Text>
           </Box>
         )}
       </Box>
@@ -146,11 +150,17 @@ export function PermissionPrompt({ request }: { request: PermissionPromptRequest
       {/* 操作行：按键字母高亮，绿/红/蓝区分语义 */}
       <Box marginTop={1} gap={2}>
         <ActionKey keyLabel="y" desc="允许" color={theme.status.success} />
-        <ActionKey keyLabel="n" desc={isDangerous ? "拒绝（默认）" : "拒绝"} color={theme.status.error} />
-        <ActionKey keyLabel="a" desc={isBashTool ? "本会话始终允许" : "始终允许"} color={theme.ui.active} />
-        {isBashTool && (
-          <ActionKey keyLabel="A" desc="持久化到项目配置" color={theme.ui.active} />
-        )}
+        <ActionKey
+          keyLabel="n"
+          desc={isDangerous ? "拒绝（默认）" : "拒绝"}
+          color={theme.status.error}
+        />
+        <ActionKey
+          keyLabel="a"
+          desc={isBashTool ? "本会话始终允许" : "始终允许"}
+          color={theme.ui.active}
+        />
+        {isBashTool && <ActionKey keyLabel="A" desc="持久化到项目配置" color={theme.ui.active} />}
       </Box>
     </Box>
   );

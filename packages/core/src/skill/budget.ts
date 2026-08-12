@@ -53,9 +53,7 @@ export function computeCharBudget(contextWindowTokens?: number): number {
   if (!contextWindowTokens || contextWindowTokens <= 0) {
     return DEFAULT_CHAR_BUDGET;
   }
-  return Math.floor(
-    contextWindowTokens * CHARS_PER_TOKEN * SKILL_BUDGET_CONTEXT_PERCENT,
-  );
+  return Math.floor(contextWindowTokens * CHARS_PER_TOKEN * SKILL_BUDGET_CONTEXT_PERCENT);
 }
 
 /**
@@ -70,8 +68,7 @@ export function formatCommandsWithinBudget(
 
   const budget = computeCharBudget(contextWindowTokens);
 
-  const truncate = (s: string, max: number) =>
-    s.length > max ? s.slice(0, max) : s;
+  const truncate = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s);
 
   const descOf = (cmd: SkillListingEntry) =>
     truncate((cmd.whenToUse || cmd.description || "").trim(), MAX_LISTING_DESC_CHARS);
@@ -92,10 +89,7 @@ export function formatCommandsWithinBudget(
   const bundled = commands.filter((c) => c.isBundled);
   const rest = commands.filter((c) => !c.isBundled);
 
-  const bundledChars = bundled.reduce(
-    (sum, c) => sum + fullLine(c).length + 1,
-    0,
-  );
+  const bundledChars = bundled.reduce((sum, c) => sum + fullLine(c).length + 1, 0);
   const remainingBudget = budget - bundledChars;
 
   // 没有非 bundled，或预算已被 bundled 占满 → 只输出 bundled 完整描述
@@ -107,9 +101,7 @@ export function formatCommandsWithinBudget(
   const maxDescLen = Math.floor(remainingBudget / rest.length);
   if (maxDescLen < MIN_DESC_LENGTH) {
     // 预算太紧：非 bundled 只显示名称
-    return commands
-      .map((c) => (c.isBundled ? fullLine(c) : nameLine(c)))
-      .join("\n");
+    return commands.map((c) => (c.isBundled ? fullLine(c) : nameLine(c))).join("\n");
   }
 
   // 4. 截断非 bundled 描述

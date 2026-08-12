@@ -70,38 +70,46 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
     const { hook } = view;
     const cfg = hook.config as any;
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>{hookName(hook)}</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          {hookName(hook)}
+        </Text>
         <Box marginTop={1} flexDirection="column">
           <Box>
-            <Text color={theme.text.secondary}>状态      </Text>
+            <Text color={theme.text.secondary}>状态 </Text>
             <Text color={hook.enabled ? theme.status.success : theme.status.error}>
               {hook.enabled ? `${SUCCESS_MARK} 启用` : `${ERROR_MARK} 禁用`}
             </Text>
           </Box>
           <Box>
-            <Text color={theme.text.secondary}>触发事件  </Text>
+            <Text color={theme.text.secondary}>触发事件 </Text>
             <Text color={theme.text.primary}>{hook.eventName}</Text>
           </Box>
           <Box>
-            <Text color={theme.text.secondary}>来源      </Text>
+            <Text color={theme.text.secondary}>来源 </Text>
             <Text color={theme.text.primary}>{sourceLabel(hook.source)}</Text>
           </Box>
           {hook.matcher && (
             <Box>
-              <Text color={theme.text.secondary}>匹配工具  </Text>
+              <Text color={theme.text.secondary}>匹配工具 </Text>
               <Text color={theme.text.primary}>{hook.matcher}</Text>
             </Box>
           )}
           {cfg.command && (
             <Box>
-              <Text color={theme.text.secondary}>命令      </Text>
+              <Text color={theme.text.secondary}>命令 </Text>
               <Text color={theme.text.primary}>{cfg.command}</Text>
             </Box>
           )}
           {cfg.url && (
             <Box>
-              <Text color={theme.text.secondary}>URL       </Text>
+              <Text color={theme.text.secondary}>URL </Text>
               <Text color={theme.text.primary}>{cfg.url}</Text>
             </Box>
           )}
@@ -113,7 +121,7 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
           )}
           {hook.once && (
             <Box>
-              <Text color={theme.text.secondary}>一次性    </Text>
+              <Text color={theme.text.secondary}>一次性 </Text>
               <Text color={theme.text.primary}>{hook.executed ? "已执行" : "待执行"}</Text>
             </Box>
           )}
@@ -128,8 +136,16 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
   // ── 列表视图 ──
   if (hooks.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>Hooks 管理</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          Hooks 管理
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>当前没有注册任何 Hook</Text>
         </Box>
@@ -153,9 +169,17 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>Hooks 管理</Text>
+        <Text bold color={theme.ui.active}>
+          Hooks 管理
+        </Text>
         <Text color={theme.text.secondary}> · {hooks.length} 个注册</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
@@ -177,7 +201,8 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
                   {hookName(entry)}
                 </Text>
                 <Text color={theme.text.secondary}>
-                  {"  "}{entry.eventName}  [{sourceLabel(entry.source)}]
+                  {"  "}
+                  {entry.eventName} [{sourceLabel(entry.source)}]
                 </Text>
               </Box>
             );

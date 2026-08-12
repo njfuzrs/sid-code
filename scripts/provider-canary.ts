@@ -105,7 +105,9 @@ function getTargetProviders(): CanaryProviderConfig[] {
   if (values.provider) {
     const found = PROVIDER_CONFIGS.find((p) => p.name === values.provider);
     if (!found) {
-      console.error(`未知 provider: ${values.provider}，可选: ${PROVIDER_CONFIGS.map((p) => p.name).join(", ")}`);
+      console.error(
+        `未知 provider: ${values.provider}，可选: ${PROVIDER_CONFIGS.map((p) => p.name).join(", ")}`,
+      );
       process.exit(1);
     }
     return [found];
@@ -257,7 +259,9 @@ async function main() {
   }
 
   if (VERBOSE) {
-    console.error(`[canary] 测试 ${targets.length} 个 provider: ${targets.map((t) => t.name).join(", ")}`);
+    console.error(
+      `[canary] 测试 ${targets.length} 个 provider: ${targets.map((t) => t.name).join(", ")}`,
+    );
     console.error(`[canary] 超时: ${TIMEOUT_MS}ms`);
   }
 

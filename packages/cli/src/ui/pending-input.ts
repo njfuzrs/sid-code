@@ -86,7 +86,10 @@ interface MsgLike {
 export function canRestoreCanceledInput(msgs: MsgLike[]): boolean {
   let lastUserIdx = -1;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === "user") { lastUserIdx = i; break; }
+    if (msgs[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
   }
   if (lastUserIdx === -1) return false;
 

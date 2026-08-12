@@ -67,7 +67,7 @@ jobs:
 
       # ── VCR 离线回放（无网络依赖）──
       - name: VCR Replay Tests
-        run: bun test tests/llm/vcr/
+        run: bun test packages/core/tests/llm/vcr/
 
       # ── Provider 健康看板（聚合 24h）──
       - name: Provider Health Report

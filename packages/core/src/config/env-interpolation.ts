@@ -9,7 +9,10 @@
  * 未定义的变量保留原占位符不替换。
  * 使用 WeakSet 防止循环引用。
  */
-export function resolveEnvVars<T>(obj: T, env: Record<string, string> = process.env as Record<string, string>): T {
+export function resolveEnvVars<T>(
+  obj: T,
+  env: Record<string, string> = process.env as Record<string, string>,
+): T {
   const visited = new WeakSet<object>();
 
   function resolve(value: any): any {
@@ -36,7 +39,7 @@ export function resolveEnvVars<T>(obj: T, env: Record<string, string> = process.
 
     // 数组：递归处理每个元素
     if (Array.isArray(value)) {
-      return value.map(item => resolve(item));
+      return value.map((item) => resolve(item));
     }
 
     // 对象：递归处理每个值（不处理 key）

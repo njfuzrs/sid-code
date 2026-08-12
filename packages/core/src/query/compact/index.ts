@@ -53,7 +53,10 @@ export function runCompactPipeline(
   let currentMessages = messages;
   let currentRatio = options.currentUsageRatio;
 
-  log.info("COMPACT_PIPELINE", `开始渐进式压缩，当前使用率 ${(currentRatio * 100).toFixed(0)}%，目标 ${(targetRatio * 100).toFixed(0)}%`);
+  log.info(
+    "COMPACT_PIPELINE",
+    `开始渐进式压缩，当前使用率 ${(currentRatio * 100).toFixed(0)}%，目标 ${(targetRatio * 100).toFixed(0)}%`,
+  );
 
   // 如果已经低于目标，不需要压缩
   if (currentRatio <= targetRatio) {
@@ -65,10 +68,15 @@ export function runCompactPipeline(
   if (budgetResult.truncatedCount > 0) {
     currentMessages = budgetResult.messages;
     totalSavedChars += budgetResult.savedChars;
-    steps.push(`toolResultBudget: 截断 ${budgetResult.truncatedCount} 个，节省 ${budgetResult.savedChars} 字符`);
+    steps.push(
+      `toolResultBudget: 截断 ${budgetResult.truncatedCount} 个，节省 ${budgetResult.savedChars} 字符`,
+    );
     currentRatio = estimateRatio(currentMessages, options.maxTokens);
     if (currentRatio <= targetRatio) {
-      log.info("COMPACT_PIPELINE", `toolResultBudget 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`);
+      log.info(
+        "COMPACT_PIPELINE",
+        `toolResultBudget 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`,
+      );
       return { messages: currentMessages, steps, totalSavedChars, needsAutoCompact: false };
     }
   }
@@ -80,7 +88,10 @@ export function runCompactPipeline(
     steps.push(`snipCompact: 裁剪 ${snipResult.snippedCount} 条消息`);
     currentRatio = estimateRatio(currentMessages, options.maxTokens);
     if (currentRatio <= targetRatio) {
-      log.info("COMPACT_PIPELINE", `snipCompact 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`);
+      log.info(
+        "COMPACT_PIPELINE",
+        `snipCompact 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`,
+      );
       return { messages: currentMessages, steps, totalSavedChars, needsAutoCompact: false };
     }
   }
@@ -90,16 +101,24 @@ export function runCompactPipeline(
   if (microResult.compactedCount > 0) {
     currentMessages = microResult.messages;
     totalSavedChars += microResult.savedChars;
-    steps.push(`microcompact: 压缩 ${microResult.compactedCount} 个，节省 ${microResult.savedChars} 字符`);
+    steps.push(
+      `microcompact: 压缩 ${microResult.compactedCount} 个，节省 ${microResult.savedChars} 字符`,
+    );
     currentRatio = estimateRatio(currentMessages, options.maxTokens);
     if (currentRatio <= targetRatio) {
-      log.info("COMPACT_PIPELINE", `microcompact 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`);
+      log.info(
+        "COMPACT_PIPELINE",
+        `microcompact 后使用率 ${(currentRatio * 100).toFixed(0)}%，已达目标`,
+      );
       return { messages: currentMessages, steps, totalSavedChars, needsAutoCompact: false };
     }
   }
 
   // ④ 仍然超标 → 需要 autoCompact（LLM 摘要）
-  log.info("COMPACT_PIPELINE", `轻量压缩后使用率仍为 ${(currentRatio * 100).toFixed(0)}%，需要 autoCompact`);
+  log.info(
+    "COMPACT_PIPELINE",
+    `轻量压缩后使用率仍为 ${(currentRatio * 100).toFixed(0)}%，需要 autoCompact`,
+  );
   return { messages: currentMessages, steps, totalSavedChars, needsAutoCompact: true };
 }
 

@@ -24,11 +24,46 @@ interface ExportOption extends SelectionListItem<string> {
 }
 
 const OPTIONS: ExportOption[] = [
-  { value: "clip-md", key: "clip-md", target: "clipboard", format: "md", label: "复制到剪贴板（文本）", desc: "人类可读 Markdown 格式" },
-  { value: "clip-json", key: "clip-json", target: "clipboard", format: "json", label: "复制到剪贴板（JSON）", desc: "完整结构化数据，可恢复上下文" },
-  { value: "file-md", key: "file-md", target: "file", format: "md", label: "保存到文件（文本）", desc: "Markdown 文件到当前目录" },
-  { value: "file-json", key: "file-json", target: "file", format: "json", label: "保存到文件（JSON）", desc: "JSON 文件到当前目录" },
-  { value: "file-both", key: "file-both", target: "file", format: "both", label: "保存到文件（文本 + JSON）", desc: "同时生成两个文件，各取所需" },
+  {
+    value: "clip-md",
+    key: "clip-md",
+    target: "clipboard",
+    format: "md",
+    label: "复制到剪贴板（文本）",
+    desc: "人类可读 Markdown 格式",
+  },
+  {
+    value: "clip-json",
+    key: "clip-json",
+    target: "clipboard",
+    format: "json",
+    label: "复制到剪贴板（JSON）",
+    desc: "完整结构化数据，可恢复上下文",
+  },
+  {
+    value: "file-md",
+    key: "file-md",
+    target: "file",
+    format: "md",
+    label: "保存到文件（文本）",
+    desc: "Markdown 文件到当前目录",
+  },
+  {
+    value: "file-json",
+    key: "file-json",
+    target: "file",
+    format: "json",
+    label: "保存到文件（JSON）",
+    desc: "JSON 文件到当前目录",
+  },
+  {
+    value: "file-both",
+    key: "file-both",
+    target: "file",
+    format: "both",
+    label: "保存到文件（文本 + JSON）",
+    desc: "同时生成两个文件，各取所需",
+  },
 ];
 
 interface ExportDialogProps {
@@ -58,15 +93,29 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({ onClose, onExport })
 
   if (status) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
         <Text color={theme.ui.active}>{status}</Text>
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>导出对话</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        导出对话
+      </Text>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<string, ExportOption>
           items={OPTIONS}
@@ -78,10 +127,8 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({ onClose, onExport })
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => (
             <Box>
-              <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
-                {item.label}
-              </Text>
-              <Text color={theme.text.secondary}>  {item.desc}</Text>
+              <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{item.label}</Text>
+              <Text color={theme.text.secondary}> {item.desc}</Text>
             </Box>
           )}
         />

@@ -32,7 +32,7 @@ export interface UseInputHistoryStoreReturn {
  *  只存类型 + 首行预览，不存全文（history.jsonl 是检索索引，不该膨胀成内容库）。 */
 function collectPastedContents(): HistoryEntry["pastedContents"] {
   try {
-    return listPastes().map(p => ({
+    return listPastes().map((p) => ({
       id: p.id,
       type: p.type,
       preview: p.type === "text" ? p.content.slice(0, 80) : p.content,
@@ -59,8 +59,8 @@ export function useInputHistoryStore(): UseInputHistoryStoreReturn {
       sessionId: safeSessionId(),
     });
     // 同步更新内存视图（去重、最新在前）供本次会话即时检索。
-    setHistory(prev => {
-      const filtered = prev.filter(item => item !== text);
+    setHistory((prev) => {
+      const filtered = prev.filter((item) => item !== text);
       return [text, ...filtered].slice(0, MAX_IN_MEMORY);
     });
   }, []);

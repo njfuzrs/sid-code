@@ -19,9 +19,7 @@ export interface TeamPermissionRequest {
 }
 
 /** leader 裁决函数 */
-export type PermissionArbiter = (
-  req: TeamPermissionRequest,
-) => Promise<PermissionVerdict>;
+export type PermissionArbiter = (req: TeamPermissionRequest) => Promise<PermissionVerdict>;
 
 export class PermissionSync {
   private arbiter: PermissionArbiter | null = null;

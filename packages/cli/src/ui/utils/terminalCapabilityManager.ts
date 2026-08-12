@@ -12,23 +12,23 @@
  * 参考 gemini-cli/packages/cli/src/ui/utils/terminalCapabilityManager.ts
  */
 
-import * as fs from 'node:fs';
-import { getLogger } from '@sid-code/core/debug/logger.ts';
+import * as fs from "node:fs";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export type TerminalBackgroundColor = string | undefined;
 
 /** Kitty 键盘协议：启用 flags=0b11111（所有增强） */
-const ENABLE_KITTY = '\x1b[>31u';
+const ENABLE_KITTY = "\x1b[>31u";
 /** Kitty 键盘协议：禁用（弹出所有 flags） */
-const DISABLE_KITTY = '\x1b[<u';
+const DISABLE_KITTY = "\x1b[<u";
 /** ModifyOtherKeys level 2 */
-const ENABLE_MODIFY_OTHER_KEYS = '\x1b[>4;2m';
+const ENABLE_MODIFY_OTHER_KEYS = "\x1b[>4;2m";
 /** 禁用 ModifyOtherKeys */
-const DISABLE_MODIFY_OTHER_KEYS = '\x1b[>4;0m';
+const DISABLE_MODIFY_OTHER_KEYS = "\x1b[>4;0m";
 /** 启用 Bracketed Paste Mode */
-const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
+const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 /** 禁用 Bracketed Paste Mode */
-const DISABLE_BRACKETED_PASTE = '\x1b[?2004l';
+const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
 
 /** 退出时的清理序列（同步写入） */
 const TERMINAL_CLEANUP_SEQUENCE = `${DISABLE_KITTY}${DISABLE_MODIFY_OTHER_KEYS}${DISABLE_BRACKETED_PASTE}`;
@@ -59,7 +59,7 @@ export function cleanupTerminalOnExit() {
  * 输出：标准化为 2 位 hex（取高 8 位）
  */
 function parseColorComponent(hex: string): string {
-  if (hex.length <= 2) return hex.padStart(2, '0');
+  if (hex.length <= 2) return hex.padStart(2, "0");
   // 取高 8 位（前 2 位）
   return hex.slice(0, 2);
 }
@@ -73,14 +73,14 @@ export class TerminalCapabilityManager {
   private static instance: TerminalCapabilityManager | undefined;
 
   // 探测查询序列
-  private static readonly KITTY_QUERY = '\x1b[?u';
-  private static readonly OSC_11_QUERY = '\x1b]11;?\x1b\\';
-  private static readonly TERMINAL_NAME_QUERY = '\x1b[>q';
-  private static readonly DEVICE_ATTRIBUTES_QUERY = '\x1b[c';
-  private static readonly MODIFY_OTHER_KEYS_QUERY = '\x1b[>4;?m';
-  private static readonly HIDDEN_MODE = '\x1b[8m';
-  private static readonly CLEAR_LINE_AND_RETURN = '\x1b[2K\r';
-  private static readonly RESET_ATTRIBUTES = '\x1b[0m';
+  private static readonly KITTY_QUERY = "\x1b[?u";
+  private static readonly OSC_11_QUERY = "\x1b]11;?\x1b\\";
+  private static readonly TERMINAL_NAME_QUERY = "\x1b[>q";
+  private static readonly DEVICE_ATTRIBUTES_QUERY = "\x1b[c";
+  private static readonly MODIFY_OTHER_KEYS_QUERY = "\x1b[>4;?m";
+  private static readonly HIDDEN_MODE = "\x1b[8m";
+  private static readonly CLEAR_LINE_AND_RETURN = "\x1b[2K\r";
+  private static readonly RESET_ATTRIBUTES = "\x1b[0m";
 
   /** 触发终端背景色查询 */
   static queryBackgroundColor(stdout: { write: (data: string) => void | boolean }): void {
@@ -95,7 +95,8 @@ export class TerminalCapabilityManager {
   // eslint-disable-next-line no-control-regex
   private static readonly DEVICE_ATTRIBUTES_REGEX = /\x1b\[\?(\d+)(;\d+)*c/;
   // eslint-disable-next-line no-control-regex
-  static readonly OSC_11_REGEX = /\x1b\]11;rgb:([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})(\x1b\\|\x07)/;
+  static readonly OSC_11_REGEX =
+    /\x1b\]11;rgb:([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})\/([0-9a-fA-F]{1,4})(\x1b\\|\x07)/;
   // eslint-disable-next-line no-control-regex
   private static readonly MODIFY_OTHER_KEYS_REGEX = /\x1b\[>4;(\d+)m/;
 
@@ -134,12 +135,12 @@ export class TerminalCapabilityManager {
     const log = getLogger();
 
     // 注册退出清理
-    process.off('exit', cleanupTerminalOnExit);
-    process.off('SIGTERM', cleanupTerminalOnExit);
-    process.off('SIGINT', cleanupTerminalOnExit);
-    process.on('exit', cleanupTerminalOnExit);
-    process.on('SIGTERM', cleanupTerminalOnExit);
-    process.on('SIGINT', cleanupTerminalOnExit);
+    process.off("exit", cleanupTerminalOnExit);
+    process.off("SIGTERM", cleanupTerminalOnExit);
+    process.off("SIGINT", cleanupTerminalOnExit);
+    process.on("exit", cleanupTerminalOnExit);
+    process.on("SIGTERM", cleanupTerminalOnExit);
+    process.on("SIGINT", cleanupTerminalOnExit);
 
     return new Promise((resolve) => {
       const originalRawMode = process.stdin.isRaw;
@@ -147,7 +148,7 @@ export class TerminalCapabilityManager {
         process.stdin.setRawMode(true);
       }
 
-      let buffer = '';
+      let buffer = "";
       let kittyKeyboardReceived = false;
       let terminalNameReceived = false;
       let deviceAttributesReceived = false;
@@ -157,7 +158,7 @@ export class TerminalCapabilityManager {
 
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
-        process.stdin.removeListener('data', onData);
+        process.stdin.removeListener("data", onData);
         if (!originalRawMode) {
           process.stdin.setRawMode(false);
         }
@@ -177,7 +178,7 @@ export class TerminalCapabilityManager {
           if (match) {
             bgReceived = true;
             this.terminalBackgroundColor = parseColor(match[1], match[2], match[3]);
-            log.info('TERMINAL', `检测到终端背景色: ${this.terminalBackgroundColor}`);
+            log.info("TERMINAL", `检测到终端背景色: ${this.terminalBackgroundColor}`);
           }
         }
 
@@ -185,7 +186,7 @@ export class TerminalCapabilityManager {
         if (!kittyKeyboardReceived && TerminalCapabilityManager.KITTY_REGEX.test(buffer)) {
           kittyKeyboardReceived = true;
           this.kittySupported = true;
-          log.info('TERMINAL', 'Kitty 键盘协议受支持');
+          log.info("TERMINAL", "Kitty 键盘协议受支持");
         }
 
         // 检测 ModifyOtherKeys 支持
@@ -195,7 +196,10 @@ export class TerminalCapabilityManager {
             modifyOtherKeysReceived = true;
             const level = parseInt(match[1], 10);
             this.modifyOtherKeysSupported = level >= 2;
-            log.info('TERMINAL', `ModifyOtherKeys 支持: ${this.modifyOtherKeysSupported} (level ${level})`);
+            log.info(
+              "TERMINAL",
+              `ModifyOtherKeys 支持: ${this.modifyOtherKeysSupported} (level ${level})`,
+            );
           }
         }
 
@@ -205,7 +209,7 @@ export class TerminalCapabilityManager {
           if (match) {
             terminalNameReceived = true;
             this.terminalName = match[1];
-            log.info('TERMINAL', `检测到终端名称: ${this.terminalName}`);
+            log.info("TERMINAL", `检测到终端名称: ${this.terminalName}`);
           }
         }
 
@@ -219,7 +223,7 @@ export class TerminalCapabilityManager {
         }
       };
 
-      process.stdin.on('data', onData);
+      process.stdin.on("data", onData);
 
       try {
         // 使用隐藏模式防止查询序列在终端上显示
@@ -235,7 +239,7 @@ export class TerminalCapabilityManager {
             TerminalCapabilityManager.RESET_ATTRIBUTES,
         );
       } catch (e) {
-        log.warn('TERMINAL', '写入终端能力查询失败', { error: (e as Error).message });
+        log.warn("TERMINAL", "写入终端能力查询失败", { error: (e as Error).message });
         cleanup();
       }
     });
@@ -246,17 +250,17 @@ export class TerminalCapabilityManager {
     const log = getLogger();
     try {
       if (this.kittySupported) {
-        log.info('TERMINAL', '启用 Kitty 键盘协议');
+        log.info("TERMINAL", "启用 Kitty 键盘协议");
         process.stdout.write(ENABLE_KITTY);
         this.kittyEnabled = true;
       } else if (this.modifyOtherKeysSupported) {
-        log.info('TERMINAL', '启用 ModifyOtherKeys');
+        log.info("TERMINAL", "启用 ModifyOtherKeys");
         process.stdout.write(ENABLE_MODIFY_OTHER_KEYS);
       }
       // 始终启用 Bracketed Paste（不支持的终端会忽略）
       process.stdout.write(ENABLE_BRACKETED_PASTE);
     } catch (e) {
-      log.warn('TERMINAL', '启用键盘协议失败', { error: (e as Error).message });
+      log.warn("TERMINAL", "启用键盘协议失败", { error: (e as Error).message });
     }
   }
 
@@ -274,11 +278,11 @@ export class TerminalCapabilityManager {
 
   /** 检查终端是否支持 OSC 9 通知 */
   supportsOsc9Notifications(env: NodeJS.ProcessEnv = process.env): boolean {
-    if (env['WT_SESSION']) return false;
+    if (env["WT_SESSION"]) return false;
     return (
       this.hasOsc9TerminalSignature(this.getTerminalName()) ||
-      this.hasOsc9TerminalSignature(env['TERM_PROGRAM']) ||
-      this.hasOsc9TerminalSignature(env['TERM'])
+      this.hasOsc9TerminalSignature(env["TERM_PROGRAM"]) ||
+      this.hasOsc9TerminalSignature(env["TERM"])
     );
   }
 
@@ -286,10 +290,10 @@ export class TerminalCapabilityManager {
     if (!value) return false;
     const normalized = value.toLowerCase();
     return (
-      normalized.includes('wezterm') ||
-      normalized.includes('ghostty') ||
-      normalized.includes('iterm') ||
-      normalized.includes('kitty')
+      normalized.includes("wezterm") ||
+      normalized.includes("ghostty") ||
+      normalized.includes("iterm") ||
+      normalized.includes("kitty")
     );
   }
 }

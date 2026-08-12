@@ -49,9 +49,8 @@ export class StructuredTaskListTool implements Tool {
 
     if (filtered.length === 0) {
       return {
-        output: statusFilter === "all"
-          ? "结构化任务清单为空"
-          : `没有状态为 "${statusFilter}" 的任务`,
+        output:
+          statusFilter === "all" ? "结构化任务清单为空" : `没有状态为 "${statusFilter}" 的任务`,
       };
     }
 

@@ -114,15 +114,15 @@ const SENSITIVE_NAME_PATTERNS = [
 
 /** 敏感值模式（正则） */
 const SENSITIVE_VALUE_PATTERNS = [
-  /^sk-[a-zA-Z0-9]{20,}$/,           // OpenAI API Key
-  /^ghp_[a-zA-Z0-9]{36,}$/,          // GitHub Personal Access Token
-  /^gho_[a-zA-Z0-9]{36,}$/,          // GitHub OAuth Token
-  /^github_pat_[a-zA-Z0-9_]{82}$/,   // GitHub Fine-grained PAT
-  /^glpat-[a-zA-Z0-9_-]{20,}$/,      // GitLab Personal Access Token
-  /^xoxb-[a-zA-Z0-9-]+$/,            // Slack Bot Token
-  /^xoxp-[a-zA-Z0-9-]+$/,            // Slack User Token
+  /^sk-[a-zA-Z0-9]{20,}$/, // OpenAI API Key
+  /^ghp_[a-zA-Z0-9]{36,}$/, // GitHub Personal Access Token
+  /^gho_[a-zA-Z0-9]{36,}$/, // GitHub OAuth Token
+  /^github_pat_[a-zA-Z0-9_]{82}$/, // GitHub Fine-grained PAT
+  /^glpat-[a-zA-Z0-9_-]{20,}$/, // GitLab Personal Access Token
+  /^xoxb-[a-zA-Z0-9-]+$/, // Slack Bot Token
+  /^xoxp-[a-zA-Z0-9-]+$/, // Slack User Token
   /^-----BEGIN (RSA |DSA |EC )?PRIVATE KEY-----/, // 私钥
-  /^[A-Za-z0-9+/]{40,}={0,2}$/,      // Base64 编码的长字符串（可能是密钥）
+  /^[A-Za-z0-9+/]{40,}={0,2}$/, // Base64 编码的长字符串（可能是密钥）
 ];
 
 /**
@@ -137,7 +137,7 @@ const SENSITIVE_VALUE_PATTERNS = [
  */
 export function sanitizeEnv(
   env: Record<string, string>,
-  options?: SanitizeOptions
+  options?: SanitizeOptions,
 ): Record<string, string> {
   const result: Record<string, string> = {};
   const allowed = new Set([...ALWAYS_ALLOWED, ...(options?.extraAllowed || [])]);

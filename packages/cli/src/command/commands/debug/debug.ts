@@ -49,25 +49,39 @@ const mod: LocalCommandModule = {
       oscSeq = await setClipboard(sessionId);
       if (oscSeq) process.stdout.write(oscSeq);
       clipboardOk = true;
-    } catch { /* 静默 */ }
+    } catch {
+      /* 静默 */
+    }
 
     // ── 格式化输出 ──
     lines.push(sep);
     lines.push("              调 试 信 息");
     lines.push(sep);
-    lines.push(`Session ID : ${sessionId}${clipboardOk ? "  ✓ 已复制到剪贴板" : "  ⚠ 剪贴板写入失败，请手动复制"}`);
+    lines.push(
+      `Session ID : ${sessionId}${clipboardOk ? "  ✓ 已复制到剪贴板" : "  ⚠ 剪贴板写入失败，请手动复制"}`,
+    );
     lines.push(`版本       : ${version}`);
     lines.push(`模型       : ${model} (${provider})`);
     lines.push(`工作目录   : ${cwd}`);
     lines.push(`运行时长   : ${elapsed}`);
-    lines.push(`对话轮次   : ${turnCount} 轮 (用户提问 ${promptCount} 次${subAgentCount > 0 ? ` / 子代理 ${subAgentCount}` : ""})`);
-    lines.push(`Token 用量 : 入 ${fmtNum(usage.inputTokens)} / 出 ${fmtNum(usage.outputTokens)}${cacheRead > 0 ? ` (缓存命中 ${fmtNum(cacheRead)})` : ""}`);
-    lines.push(`累计费用   : $${totalCost.toFixed(4)}${sideCost > 0 ? ` (主循环 $${mainCost.toFixed(4)} + 辅助 $${sideCost.toFixed(4)})` : ""}`);
+    lines.push(
+      `对话轮次   : ${turnCount} 轮 (用户提问 ${promptCount} 次${subAgentCount > 0 ? ` / 子代理 ${subAgentCount}` : ""})`,
+    );
+    lines.push(
+      `Token 用量 : 入 ${fmtNum(usage.inputTokens)} / 出 ${fmtNum(usage.outputTokens)}${cacheRead > 0 ? ` (缓存命中 ${fmtNum(cacheRead)})` : ""}`,
+    );
+    lines.push(
+      `累计费用   : $${totalCost.toFixed(4)}${sideCost > 0 ? ` (主循环 $${mainCost.toFixed(4)} + 辅助 $${sideCost.toFixed(4)})` : ""}`,
+    );
     if (compactCount > 0) {
-      lines.push(`上下文压缩 : ${compactCount} 次${peakTokens > 0 ? ` (峰值 ${fmtNum(peakTokens)} tokens)` : ""}`);
+      lines.push(
+        `上下文压缩 : ${compactCount} 次${peakTokens > 0 ? ` (峰值 ${fmtNum(peakTokens)} tokens)` : ""}`,
+      );
     }
     if (toolTotal > 0) {
-      lines.push(`工具调用   : ${toolTotal} 次 (成功 ${toolSuccess}${toolFail > 0 ? ` / 失败 ${toolFail}` : ""})`);
+      lines.push(
+        `工具调用   : ${toolTotal} 次 (成功 ${toolSuccess}${toolFail > 0 ? ` / 失败 ${toolFail}` : ""})`,
+      );
     }
 
     // ── 轨迹上传 ──

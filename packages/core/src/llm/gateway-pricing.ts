@@ -51,9 +51,9 @@ const log = () => getLogger();
 /** new-api /api/pricing 单条原始返回（仅声明我们消费的字段）。 */
 interface RawPricingEntry {
   model_name?: string;
-  quota_type?: number;         // 0=按 token，1=按次
+  quota_type?: number; // 0=按 token，1=按次
   model_ratio?: number;
-  model_price?: number;        // quota_type=1 时的按次单价（USD/次）
+  model_price?: number; // quota_type=1 时的按次单价（USD/次）
   completion_ratio?: number;
   cache_ratio?: number;
   create_cache_ratio?: number;
@@ -171,7 +171,9 @@ function isFiniteNonNeg(n: unknown): n is number {
 /**
  * 把一条原始 pricing 换算成 GatewayPricingEntry。非法数据返回 null（调用方丢弃）。
  */
-export function convertRawEntry(raw: RawPricingEntry): { name: string; entry: GatewayPricingEntry } | null {
+export function convertRawEntry(
+  raw: RawPricingEntry,
+): { name: string; entry: GatewayPricingEntry } | null {
   const name = raw.model_name;
   if (!name || typeof name !== "string") return null;
 
@@ -183,7 +185,14 @@ export function convertRawEntry(raw: RawPricingEntry): { name: string; entry: Ga
     if (!isFiniteNonNeg(perCall)) return null;
     return {
       name,
-      entry: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, quotaType: 1, perCallUSD: perCall },
+      entry: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        quotaType: 1,
+        perCallUSD: perCall,
+      },
     };
   }
 
@@ -194,7 +203,9 @@ export function convertRawEntry(raw: RawPricingEntry): { name: string; entry: Ga
 
   const compRatio = isFiniteNonNeg(raw.completion_ratio) ? raw.completion_ratio : 0;
   const cacheRatio = isFiniteNonNeg(raw.cache_ratio) ? raw.cache_ratio : undefined;
-  const createCacheRatio = isFiniteNonNeg(raw.create_cache_ratio) ? raw.create_cache_ratio : undefined;
+  const createCacheRatio = isFiniteNonNeg(raw.create_cache_ratio)
+    ? raw.create_cache_ratio
+    : undefined;
 
   const entry: GatewayPricingEntry = {
     input,
@@ -331,7 +342,10 @@ export function loadGatewayCache(): void {
       memBuckets[key] = bucket.models;
       total += Object.keys(bucket.models).length;
     }
-    log().debug("GATEWAY-PRICING", `载入网关定价缓存 ${total} 条 / ${Object.keys(memBuckets).length} 端点`);
+    log().debug(
+      "GATEWAY-PRICING",
+      `载入网关定价缓存 ${total} 条 / ${Object.keys(memBuckets).length} 端点`,
+    );
   } catch (e) {
     log().warn("GATEWAY-PRICING", "载入网关定价缓存失败，回退注册表", { error: String(e) });
   }
@@ -371,7 +385,7 @@ export function lookupGatewayPricing(model: string, baseURL?: string): ModelPric
 function toModelPricing(entry?: GatewayPricingEntry): ModelPricing | null {
   if (!entry) return null;
   if (entry.quotaType === 1) return null; // 按次计费无 per-token 价，退回兜底
-  if (!(entry.input > 0)) return null;    // 免费/零价模型不覆盖注册表
+  if (!(entry.input > 0)) return null; // 免费/零价模型不覆盖注册表
   return {
     input: entry.input,
     output: entry.output,
@@ -445,8 +459,7 @@ export async function syncGatewayPricing(opts?: {
   force?: boolean;
   timeoutMs?: number;
 }): Promise<{ updated: boolean; count: number; version: string; reason: string }> {
-  const url = opts?.url
-    ?? (opts?.baseURL ? derivePricingURL(opts.baseURL) : undefined);
+  const url = opts?.url ?? (opts?.baseURL ? derivePricingURL(opts.baseURL) : undefined);
   if (!url) {
     return { updated: false, count: 0, version: "", reason: "未提供采集 URL 或 baseURL" };
   }
@@ -473,7 +486,15 @@ export async function syncGatewayPricing(opts?: {
     });
     if (!resp.ok) {
       recordFailure(endpointKey, url);
-      emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped: 0, reason: `HTTP ${resp.status}` });
+      emit({
+        endpoint: endpointKey,
+        url,
+        outcome: "failed",
+        count: 0,
+        version: "",
+        dropped: 0,
+        reason: `HTTP ${resp.status}`,
+      });
       return { updated: false, count: 0, version: "", reason: `HTTP ${resp.status}` };
     }
     raw = (await resp.json()) as { data?: RawPricingEntry[] };
@@ -488,7 +509,15 @@ export async function syncGatewayPricing(opts?: {
     log().debug("GATEWAY-PRICING", `${reason}，保留旧缓存并回退注册表估价`, { url });
     // 记负缓存：不可达端点不再每次启动都白烧一个 socket，按指数退避冷却。
     recordFailure(endpointKey, url);
-    emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped: 0, reason });
+    emit({
+      endpoint: endpointKey,
+      url,
+      outcome: "failed",
+      count: 0,
+      version: "",
+      dropped: 0,
+      reason,
+    });
     return { updated: false, count: 0, version: "", reason };
   } finally {
     clearTimeout(timer);
@@ -499,7 +528,10 @@ export async function syncGatewayPricing(opts?: {
   let dropped = 0;
   for (const item of list) {
     const converted = convertRawEntry(item);
-    if (!converted) { dropped++; continue; }
+    if (!converted) {
+      dropped++;
+      continue;
+    }
     models[converted.name] = converted.entry;
   }
 
@@ -507,7 +539,15 @@ export async function syncGatewayPricing(opts?: {
   if (count === 0) {
     // 连得上但返回不可用（非 new-api 网关 / 结构变更）——同样退避，否则每次启动照样白跑一趟。
     recordFailure(endpointKey, url);
-    emit({ endpoint: endpointKey, url, outcome: "failed", count: 0, version: "", dropped, reason: "解析后无有效条目" });
+    emit({
+      endpoint: endpointKey,
+      url,
+      outcome: "failed",
+      count: 0,
+      version: "",
+      dropped,
+      reason: "解析后无有效条目",
+    });
     return { updated: false, count: 0, version: "", reason: "解析后无有效条目" };
   }
 
@@ -524,7 +564,15 @@ export async function syncGatewayPricing(opts?: {
   if (!opts?.force && existing && existing.pricing_version === version && !hasStaleFailure) {
     memBuckets[endpointKey] = models;
     memLoaded = true;
-    emit({ endpoint: endpointKey, url, outcome: "unchanged", count, version, dropped, reason: "版本未变，跳过写盘" });
+    emit({
+      endpoint: endpointKey,
+      url,
+      outcome: "unchanged",
+      count,
+      version,
+      dropped,
+      reason: "版本未变，跳过写盘",
+    });
     return { updated: false, count, version, reason: "版本未变，跳过写盘" };
   }
 
@@ -548,9 +596,26 @@ export async function syncGatewayPricing(opts?: {
 
   memBuckets[endpointKey] = models;
   memLoaded = true;
-  log().info("GATEWAY-PRICING", `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目）` : ""}`, { version, endpoint: endpointKey });
-  emit({ endpoint: endpointKey, url, outcome: "updated", count, version, dropped, reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功" });
-  return { updated: true, count, version, reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功" };
+  log().info(
+    "GATEWAY-PRICING",
+    `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目）` : ""}`,
+    { version, endpoint: endpointKey },
+  );
+  emit({
+    endpoint: endpointKey,
+    url,
+    outcome: "updated",
+    count,
+    version,
+    dropped,
+    reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功",
+  });
+  return {
+    updated: true,
+    count,
+    version,
+    reason: dropped > 0 ? `成功（丢弃 ${dropped} 非法）` : "成功",
+  };
 }
 
 /**

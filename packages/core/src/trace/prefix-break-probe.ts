@@ -56,11 +56,7 @@
 import { createHash } from "node:crypto";
 
 /** 段类型 —— 与 P1-3 的候选优化项一一对应，便于直接读出该改哪里 */
-export type PrefixSegmentKind =
-  | "system_static"
-  | "system_dynamic"
-  | "tools"
-  | "message";
+export type PrefixSegmentKind = "system_static" | "system_dynamic" | "tools" | "message";
 
 export interface PrefixSegment {
   kind: PrefixSegmentKind;
@@ -218,7 +214,11 @@ export function fingerprintPrefix(
     segments.push({ kind: "system_static", hash: h(staticContent), length: staticContent.length });
     parts.push(staticContent);
     if (dynamicContent !== undefined) {
-      segments.push({ kind: "system_dynamic", hash: h(dynamicContent), length: dynamicContent.length });
+      segments.push({
+        kind: "system_dynamic",
+        hash: h(dynamicContent),
+        length: dynamicContent.length,
+      });
       parts.push(dynamicContent);
     }
   }

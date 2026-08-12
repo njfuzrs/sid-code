@@ -35,7 +35,7 @@ export async function scanSkillResources(skillDir: string): Promise<string> {
     const resourceDirs = ["scripts", "references", "assets"];
 
     for (const dirName of resourceDirs) {
-      const entry = entries.find(e => e.name === dirName && e.isDirectory());
+      const entry = entries.find((e) => e.name === dirName && e.isDirectory());
       if (!entry) continue;
 
       const dirPath = join(skillDir, dirName);
@@ -131,12 +131,7 @@ function countFiles(node: ResourceNode): number {
  * - references/: 参考文档，LLM 通过 read 工具按需读取
  * - assets/: 输出资源（模板、图片等），LLM 在生成输出时使用
  */
-function formatNode(
-  node: ResourceNode,
-  indent: string,
-  isLast: boolean,
-  lines: string[],
-): void {
+function formatNode(node: ResourceNode, indent: string, isLast: boolean, lines: string[]): void {
   const connector = isLast ? "└───" : "├───";
   const suffix = node.isDirectory ? sep : "";
 

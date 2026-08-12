@@ -167,13 +167,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         // （思考短于 44 列时 header 摘要与正文会一模一样，读起来像卡带）。
         // 但 header 不能退回光秃秃的 `⏺ think`——那正是本次要修的问题；改用用途标签
         // 回答"这一步在干什么"，与下方"记了什么"分工。
-        description={
-          hasShellCommand
-            ? ""
-            : hasThinkThought
-              ? THINK_HEADER_LABEL
-              : description
-        }
+        description={hasShellCommand ? "" : hasThinkThought ? THINK_HEADER_LABEL : description}
         status={status}
         emphasis={emphasis}
         // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
@@ -200,10 +194,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   // 与 CommandMessage 共用同一套两级截断逻辑（先行后字符）。$ 前缀在此拼接。
   const commandDisplay = React.useMemo(() => {
     if (!shellCommand) return null;
-    const { text, truncated, summary } = truncateShellCommand(
-      shellCommand,
-      isFullyExpanded,
-    );
+    const { text, truncated, summary } = truncateShellCommand(shellCommand, isFullyExpanded);
     return { text: `$ ${text}`, truncated, summary };
   }, [shellCommand, isFullyExpanded]);
 
@@ -220,11 +211,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
           </Box>
           <Box flexGrow={1}>
             <Text
-              color={
-                status === "executing"
-                  ? theme.text.primary
-                  : theme.text.secondary
-              }
+              color={status === "executing" ? theme.text.primary : theme.text.secondary}
               wrap={commandDisplay.truncated ? "truncate-end" : "wrap"}
             >
               {commandDisplay.text}
@@ -237,9 +224,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
               <Text> </Text>
             </Box>
             <Box flexGrow={1}>
-              <Text color={theme.text.secondary}>
-                {commandDisplay.summary}
-              </Text>
+              <Text color={theme.text.secondary}>{commandDisplay.summary}</Text>
             </Box>
           </Box>
         )}
@@ -250,8 +235,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   // 快照，多行）展示在命令行下方，让 `bun test` 这类长命令不再"卡在无输出"。
   // 仅 executing 态且有进度文本时出现；命令结束后由真实 resultDisplay 接管（progressMessage
   // 不再注入）。灰色 + 2 空格缩进，与命令行、结果区的视觉节奏一致。
-  const hasShellLiveOutput =
-    hasShellCommand && status === "executing" && !!progressMessage;
+  const hasShellLiveOutput = hasShellCommand && status === "executing" && !!progressMessage;
   // progressMessage 是多行尾部快照，逐行渲染（每行独立 truncate-end 兜底窄终端）。
   const shellLiveLines = hasShellLiveOutput ? progressMessage!.split("\n") : [];
   const shellLiveOutputSection = hasShellLiveOutput ? (

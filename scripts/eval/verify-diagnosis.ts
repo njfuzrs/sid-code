@@ -57,7 +57,11 @@ function getCurrentScore(caseId: string, provider: string): number | null {
   const all = loadAllCases(EVALS_DIR);
   const c = all.find((c) => c.id === caseId);
   if (!c) return null;
-  const baseline = ((c as unknown as Record<string, unknown>).baseline_scores as Record<string, { score?: number | null }> | undefined)?.[provider];
+  const baseline = (
+    (c as unknown as Record<string, unknown>).baseline_scores as
+      | Record<string, { score?: number | null }>
+      | undefined
+  )?.[provider];
   return typeof baseline?.score === "number" ? baseline.score : null;
 }
 
@@ -85,8 +89,8 @@ function verifyEntry(
     entry.fix_type === "model_limit"
       ? "stable"
       : entry.fix_type === "case_design"
-      ? "down" // 大多数 case_design fix(去 echo / 加反例)信号回归 = 分数下降
-      : "up"; // code_bug / system_prompt / infra_bug 修对应该升分
+        ? "down" // 大多数 case_design fix(去 echo / 加反例)信号回归 = 分数下降
+        : "up"; // code_bug / system_prompt / infra_bug 修对应该升分
 
   if (scoreDiff === null) {
     verified = "inconclusive";
@@ -141,7 +145,10 @@ function verifyEntry(
   };
 }
 
-function logMisdiagnosis(verifyResult: VerifyResult, additionalContext: { actual_fix_type?: string; lesson?: string } = {}) {
+function logMisdiagnosis(
+  verifyResult: VerifyResult,
+  additionalContext: { actual_fix_type?: string; lesson?: string } = {},
+) {
   if (verifyResult.verified !== false) return;
   const entry = {
     ts: verifyResult.ts,
@@ -169,7 +176,7 @@ function main() {
       "run-id": { type: "string" },
       "output-file": { type: "string" },
       "score-before": { type: "string" },
-      "case": { type: "string" },
+      case: { type: "string" },
       provider: { type: "string", default: "sid_code_deepseek_v4_pro" },
       ts: { type: "string", default: "manual" },
     },
@@ -225,13 +232,22 @@ function main() {
   const verified = verifyResults.filter((r) => r.verified === true).length;
   const inconclusive = verifyResults.filter((r) => r.verified === "inconclusive").length;
   const misdiagnosed = verifyResults.filter((r) => r.verified === false).length;
-  console.log(`\n[verify-diagnosis] 汇总: ${total} 条 | verified=${verified} / inconclusive=${inconclusive} / misdiagnosed=${misdiagnosed}`);
+  console.log(
+    `\n[verify-diagnosis] 汇总: ${total} 条 | verified=${verified} / inconclusive=${inconclusive} / misdiagnosed=${misdiagnosed}`,
+  );
 
   // 落盘 verify.json (与 output.json 同目录)
   const verifyDir = outputPath.replace(/output\.json$/, "");
   if (verifyDir !== outputPath) {
     const verifyPath = join(verifyDir, "verify.json");
-    writeFileSync(verifyPath, JSON.stringify({ provider, ts, total, verified, inconclusive, misdiagnosed, results: verifyResults }, null, 2));
+    writeFileSync(
+      verifyPath,
+      JSON.stringify(
+        { provider, ts, total, verified, inconclusive, misdiagnosed, results: verifyResults },
+        null,
+        2,
+      ),
+    );
     console.log(`[verify-diagnosis] 输出: ${verifyPath}`);
   }
 }

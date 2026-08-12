@@ -13,13 +13,13 @@
  * 参考 gemini-cli/packages/cli/src/ui/components/messages/ToolResultDisplay.tsx
  */
 
-import React from 'react';
-import { DiffRenderer } from '../DiffRenderer.tsx';
-import { MarkdownAnsi } from '../MarkdownAnsi.tsx';
-import { AnsiOutputText } from '../AnsiOutput.tsx';
-import { SlicingMaxSizedBox } from '../SlicingMaxSizedBox.tsx';
-import { useUIState, useExpandedMaxLines } from '../../contexts/UIStateContext.tsx';
-import type { AnsiOutput } from '../../types/ansi.ts';
+import React from "react";
+import { DiffRenderer } from "../DiffRenderer.tsx";
+import { MarkdownAnsi } from "../MarkdownAnsi.tsx";
+import { AnsiOutputText } from "../AnsiOutput.tsx";
+import { SlicingMaxSizedBox } from "../SlicingMaxSizedBox.tsx";
+import { useUIState, useExpandedMaxLines } from "../../contexts/UIStateContext.tsx";
+import type { AnsiOutput } from "../../types/ansi.ts";
 
 /** 最大结果字符数（超过此值预先截断，避免性能问题） */
 const MAXIMUM_RESULT_DISPLAY_CHARACTERS = 20_000;
@@ -49,8 +49,8 @@ function tryParseJSON(str: string): object | null {
   try {
     const trimmed = str.trim();
     if (
-      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
     ) {
       return JSON.parse(trimmed) as object;
     }
@@ -75,16 +75,18 @@ function containsAnsiEscapes(str: string): boolean {
  */
 function parseAnsiString(str: string): AnsiOutput {
   const lines = str.split(/\r?\n/);
-  return lines.map(line => [{
-    text: line,
-    bold: false,
-    italic: false,
-    underline: false,
-    dim: false,
-    inverse: false,
-    fg: undefined,
-    bg: undefined,
-  }]);
+  return lines.map((line) => [
+    {
+      text: line,
+      bold: false,
+      italic: false,
+      underline: false,
+      dim: false,
+      inverse: false,
+      fg: undefined,
+      bg: undefined,
+    },
+  ]);
 }
 
 export interface ToolResultDisplayProps {
@@ -92,7 +94,7 @@ export interface ToolResultDisplayProps {
   terminalWidth: number;
   renderOutputAsMarkdown?: boolean;
   maxLines?: number;
-  overflowDirection?: 'top' | 'bottom';
+  overflowDirection?: "top" | "bottom";
   /** 是否为 diff 内容 */
   isDiff?: boolean;
   /** 文件名（用于 diff 语法高亮） */
@@ -108,7 +110,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   terminalWidth,
   renderOutputAsMarkdown = false,
   maxLines = DEFAULT_MAX_LINES,
-  overflowDirection = 'top',
+  overflowDirection = "top",
   isDiff = false,
   filename,
   structuredPatch,
@@ -121,9 +123,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   const effectiveMaxLines = useExpandedMaxLines(maxLines);
   // diff 专用折叠档：基线更宽松（DIFF_COLLAPSE_MAX_LINES），阶梯与普通文本共用同一 expandLevel。
   // 全展开档同样返回 undefined（不折叠）。
-  const effectiveDiffMaxLines = useExpandedMaxLines(
-    Math.max(maxLines, DIFF_COLLAPSE_MAX_LINES),
-  );
+  const effectiveDiffMaxLines = useExpandedMaxLines(Math.max(maxLines, DIFF_COLLAPSE_MAX_LINES));
 
   // 宽度感知换行 / diff 折叠框宽度：终端宽度减去边距（树枝缩进 + 容器 padding），最小 20 列。
   // 提前到分支之前计算，diff 折叠框与文本截断框共用。
@@ -155,10 +155,10 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   // 0. 预先截断超长内容，避免性能问题
   let content = resultDisplay;
   if (content.length > MAXIMUM_RESULT_DISPLAY_CHARACTERS) {
-    if (overflowDirection === 'bottom') {
-      content = content.slice(0, MAXIMUM_RESULT_DISPLAY_CHARACTERS) + '...';
+    if (overflowDirection === "bottom") {
+      content = content.slice(0, MAXIMUM_RESULT_DISPLAY_CHARACTERS) + "...";
     } else {
-      content = '...' + content.slice(-MAXIMUM_RESULT_DISPLAY_CHARACTERS);
+      content = "..." + content.slice(-MAXIMUM_RESULT_DISPLAY_CHARACTERS);
     }
   }
 
@@ -189,13 +189,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
   // 3. ANSI 输出 → AnsiOutputText
   if (containsAnsiEscapes(content)) {
     const ansiData = parseAnsiString(content);
-    return (
-      <AnsiOutputText
-        data={ansiData}
-        width={terminalWidth}
-        maxLines={effectiveMaxLines}
-      />
-    );
+    return <AnsiOutputText data={ansiData} width={terminalWidth} maxLines={effectiveMaxLines} />;
   }
 
   // 4. JSON 字符串 → pretty-print
@@ -219,8 +213,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
     // 降级为纯文本走 SlicingMaxSizedBox 截断（保证 ctrl+o 可阶梯展开）；
     // 全展开（effectiveMaxLines===undefined）或内容本身不超限时，完整渲染 markdown。
     const exceedsLimit =
-      effectiveMaxLines !== undefined &&
-      content.split('\n').length > effectiveMaxLines;
+      effectiveMaxLines !== undefined && content.split("\n").length > effectiveMaxLines;
     if (exceedsLimit) {
       return (
         <SlicingMaxSizedBox
@@ -232,11 +225,7 @@ export const ToolResultDisplay: React.FC<ToolResultDisplayProps> = ({
       );
     }
     return (
-      <MarkdownAnsi
-        text={content}
-        terminalWidth={terminalWidth}
-        renderMarkdown={renderMarkdown}
-      />
+      <MarkdownAnsi text={content} terminalWidth={terminalWidth} renderMarkdown={renderMarkdown} />
     );
   }
 

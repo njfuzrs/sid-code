@@ -41,10 +41,7 @@ export const CLAUDE_MD_FILES = [
 ] as const;
 
 /** 本地私有规则文件名（不检入代码库，优先级最高） */
-export const CLAUDE_LOCAL_FILES = [
-  "CLAUDE.local.md",
-  ".claude/CLAUDE.local.md",
-] as const;
+export const CLAUDE_LOCAL_FILES = ["CLAUDE.local.md", ".claude/CLAUDE.local.md"] as const;
 
 /** 项目规则目录（.claude/rules/*.md） */
 export const CLAUDE_RULES_DIR = ".claude/rules";
@@ -93,10 +90,7 @@ export function resetLargeMemoryFiles(): void {
  * 优先级介于 user 层（全局 CLAUDE.md）之后、project 层之前。
  */
 function userRulesDirs(): string[] {
-  return [
-    join(homedir(), ".claude", "rules"),
-    join(homedir(), ".sid-code", "rules"),
-  ];
+  return [join(homedir(), ".claude", "rules"), join(homedir(), ".sid-code", "rules")];
 }
 
 /**
@@ -314,7 +308,9 @@ export function collectActiveScopeFiles(
     if (relDir && !relDir.startsWith("..")) {
       files.add(relDir.split(sep).join("/") + "/");
     }
-  } catch { /* 路径不可比较时跳过该信号 */ }
+  } catch {
+    /* 路径不可比较时跳过该信号 */
+  }
 
   // 2. git 变更文件（已追踪的改动 + 未追踪的新文件），取相对项目根路径。
   //    只保留 cwd 子树内的（见上方"必须按 cwd 收窄"）。cwd=项目根时 prefix 为空 → 全收。
@@ -322,7 +318,9 @@ export function collectActiveScopeFiles(
   try {
     const relDir = relative(projectRoot, cwd);
     if (relDir && !relDir.startsWith("..")) prefix = relDir.split(sep).join("/") + "/";
-  } catch { /* 不可比较时按"全收"处理，与 cwd=根 同语义 */ }
+  } catch {
+    /* 不可比较时按"全收"处理，与 cwd=根 同语义 */
+  }
 
   for (const p of listGitChangedFiles(projectRoot)) {
     if (!prefix || p.startsWith(prefix)) files.add(p);
@@ -448,23 +446,41 @@ function parseKeyValuePairs(content: string): Record<string, string> {
 }
 
 /** 从段落中提取结构化规则 */
-function extractRules(sections: ClaudeMdSection[], sourcePath: string, rawContent: string): ProjectRules {
+function extractRules(
+  sections: ClaudeMdSection[],
+  sourcePath: string,
+  rawContent: string,
+): ProjectRules {
   const rules: ProjectRules = { rawContent, sourcePath };
 
   for (const section of sections) {
     // 去掉标题中的序号前缀（如 "10. 权限系统增强" → "权限系统增强"）
-    const titleClean = section.title.replace(/^\d+[\.\-\s]+/, "").trim().toLowerCase();
+    const titleClean = section.title
+      .replace(/^\d+[\.\-\s]+/, "")
+      .trim()
+      .toLowerCase();
 
     // 累积型字段用 includes 匹配（宽松，多匹配无害）
     // 覆盖型字段（permission/model）用精确匹配（严格，防止文档标题误匹配）
     if (titleClean.includes("instruction") || titleClean.includes("指令")) {
       rules.instructions = (rules.instructions || "") + section.content + "\n";
-    } else if (titleClean.includes("disallowed tool") || titleClean.includes("禁止的工具") || titleClean.includes("工具黑名单")) {
+    } else if (
+      titleClean.includes("disallowed tool") ||
+      titleClean.includes("禁止的工具") ||
+      titleClean.includes("工具黑名单")
+    ) {
       rules.disallowedTools = parseListItems(section.content);
-    } else if (titleClean.includes("allowed tool") || titleClean.includes("允许的工具") || titleClean.includes("工具白名单")) {
+    } else if (
+      titleClean.includes("allowed tool") ||
+      titleClean.includes("允许的工具") ||
+      titleClean.includes("工具白名单")
+    ) {
       rules.allowedTools = parseListItems(section.content);
-    } else if (titleClean === "permission mode" || titleClean === "permission"
-            || titleClean === "权限模式") {
+    } else if (
+      titleClean === "permission mode" ||
+      titleClean === "permission" ||
+      titleClean === "权限模式"
+    ) {
       // 精确匹配：避免 "权限系统增强" 等文档标题误匹配
       const firstLine = section.content.trim().split("\n")[0];
       if (firstLine) rules.permissionMode = firstLine.trim();
@@ -524,14 +540,19 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
     sourcePath: override.sourcePath,
 
     // 累积型：合并
-    instructions: [base.instructions, override.instructions].filter(Boolean).join("\n\n") || undefined,
-    systemPromptAddition: [base.systemPromptAddition, override.systemPromptAddition].filter(Boolean).join("\n\n") || undefined,
-    customRules: [...(base.customRules || []), ...(override.customRules || [])].length > 0
-      ? [...(base.customRules || []), ...(override.customRules || [])]
-      : undefined,
-    memory: (base.memory || override.memory)
-      ? { ...(base.memory || {}), ...(override.memory || {}) }
-      : undefined,
+    instructions:
+      [base.instructions, override.instructions].filter(Boolean).join("\n\n") || undefined,
+    systemPromptAddition:
+      [base.systemPromptAddition, override.systemPromptAddition].filter(Boolean).join("\n\n") ||
+      undefined,
+    customRules:
+      [...(base.customRules || []), ...(override.customRules || [])].length > 0
+        ? [...(base.customRules || []), ...(override.customRules || [])]
+        : undefined,
+    memory:
+      base.memory || override.memory
+        ? { ...(base.memory || {}), ...(override.memory || {}) }
+        : undefined,
 
     // 覆盖型：后者优先
     allowedTools: override.allowedTools || base.allowedTools,
@@ -564,7 +585,11 @@ export function mergeProjectRules(base: ProjectRules, override: ProjectRules): P
     // 会导致该清单被 merge 抹成 undefined → JIT 预标记事实源丢失。
     // 语义取并集：loadedPaths 是「实际加载的文件清单」，两侧加载的都算。
     ...(base.loadedPaths || override.loadedPaths
-      ? { loadedPaths: Array.from(new Set([...(base.loadedPaths || []), ...(override.loadedPaths || [])])) }
+      ? {
+          loadedPaths: Array.from(
+            new Set([...(base.loadedPaths || []), ...(override.loadedPaths || [])]),
+          ),
+        }
       : {}),
   };
 }
@@ -639,7 +664,8 @@ export async function findCLAUDEmdChain(startDir: string): Promise<string[]> {
     // 用 existsSync 探测 `.git`（文件或目录，worktree 下 .git 是文件），零子进程。
     const isGitRoot = existsSync(join(currentDir, ".git"));
     // 上界 2/3：文件系统根、或家目录（及其父级，不再往系统上层扫）。
-    if (isGitRoot || currentDir === fsRoot || currentDir === home || currentDir === homeParent) break;
+    if (isGitRoot || currentDir === fsRoot || currentDir === home || currentDir === homeParent)
+      break;
     const parentDir = dirname(currentDir);
     if (parentDir === currentDir) break;
     currentDir = parentDir;
@@ -693,7 +719,9 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
     try {
       const { getClaudeMdExternalImportsApproved } = await import("./app-config.ts");
       externalApproved = getClaudeMdExternalImportsApproved(projectRoot) === true;
-    } catch { /* 读批准位失败 → 保守按未批准处理 */ }
+    } catch {
+      /* 读批准位失败 → 保守按未批准处理 */
+    }
     content = await processImports(content, filePath, {
       allowedDirectories: allowedDirs,
       projectRoot,
@@ -755,15 +783,13 @@ async function findProjectCLAUDEmdFiles(projectRoot: string): Promise<string[]> 
     visited.add(normalizedDir);
 
     try {
-      const entries = await Array.fromAsync(
-        new Bun.Glob("*").scan({ cwd: dir, onlyFiles: false })
-      );
+      const entries = await Array.fromAsync(new Bun.Glob("*").scan({ cwd: dir, onlyFiles: false }));
 
       for (const entry of entries) {
         const fullPath = join(dir, entry);
 
         // 检查是否是 CLAUDE.md 文件
-        if (CLAUDE_MD_FILES.some(name => entry === name || fullPath.endsWith(name))) {
+        if (CLAUDE_MD_FILES.some((name) => entry === name || fullPath.endsWith(name))) {
           if (existsSync(fullPath)) {
             found.push(fullPath);
             log.debug("RULES", `发现子目录 CLAUDE.md: ${fullPath}`);
@@ -969,7 +995,10 @@ export async function loadAllCLAUDEmd(
   // 默认即采集后，"忘记传"不再是一种可能的错误。
   const activeFiles = opts?.activeFiles ?? collectActiveScopeFiles(projectRoot, startDir);
   if (!opts?.activeFiles) {
-    log.debug("RULES", `自动采集作用域活动文件 ${activeFiles.length} 个（projectRoot=${projectRoot}）`);
+    log.debug(
+      "RULES",
+      `自动采集作用域活动文件 ${activeFiles.length} 个（projectRoot=${projectRoot}）`,
+    );
   }
 
   // 第 7 批：`paths:` glob 基准目录按层分层，对齐 CC（`claudemd.ts:1376-1380`）——
@@ -1015,7 +1044,11 @@ export async function loadAllCLAUDEmd(
   };
 
   /** Managed / User / userRulesDir 三层用 originalCwd 基准，其余层用 projectRoot 基准 */
-  const ORIGINAL_CWD_BASIS_LAYERS = new Set<ProjectRules["layer"]>(["managed", "user", "userRulesDir"]);
+  const ORIGINAL_CWD_BASIS_LAYERS = new Set<ProjectRules["layer"]>([
+    "managed",
+    "user",
+    "userRulesDir",
+  ]);
 
   // 实际合并进结果的文件清单（按合并顺序）。这是 JIT 预标记的事实源：
   // 只预标记真正注入了的文件，被作用域拦下的**不标记**，留给 JIT 在触达对应目录时按需注入。
@@ -1136,10 +1169,7 @@ const activeWatchers: FSWatcher[] = [];
  * 监听 CLAUDE.md 文件变化
  * 变化时清除系统提示词缓存，下次请求自动使用新规则
  */
-export function watchCLAUDEmd(
-  startDir: string,
-  onChange?: (path: string) => void,
-): void {
+export function watchCLAUDEmd(startDir: string, onChange?: (path: string) => void): void {
   const log = getLogger();
 
   // M10：变更去抖——目录级监听 fs.watch 对单次保存可能触发多个事件，

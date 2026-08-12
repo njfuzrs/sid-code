@@ -8,11 +8,16 @@ import type { PlanModeManager } from "../plan/state.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
-const enterPlanModeSchema = lazySchema(() => z.object({
-  topic: z.string().optional().describe(
-    "本次计划的中文主题，用于命名计划文件（如「重构认证模块」）。简短名词短语，10 字以内最佳。可省略。"
-  ),
-}));
+const enterPlanModeSchema = lazySchema(() =>
+  z.object({
+    topic: z
+      .string()
+      .optional()
+      .describe(
+        "本次计划的中文主题，用于命名计划文件（如「重构认证模块」）。简短名词短语，10 字以内最佳。可省略。",
+      ),
+  }),
+);
 
 export class EnterPlanModeTool implements Tool {
   readonly zodSchema = enterPlanModeSchema();
@@ -38,7 +43,9 @@ export class EnterPlanModeTool implements Tool {
 
   constructor(private planManager: PlanModeManager) {}
 
-  name(): string { return "enter_plan_mode"; }
+  name(): string {
+    return "enter_plan_mode";
+  }
 
   description(): string {
     return `当任务的实现路径存在真实的模糊性，且先获得用户输入能避免大量返工时使用此工具。它将你切换到计划模式，在写代码前探索代码库、设计方案并获得用户审批。
@@ -84,7 +91,9 @@ export class EnterPlanModeTool implements Tool {
     return z.toJSONSchema(enterPlanModeSchema()) as Record<string, unknown>;
   }
 
-  readOnly(): boolean { return true; }
+  readOnly(): boolean {
+    return true;
+  }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     // 禁止在子代理上下文中进入 plan mode（防套娃）
@@ -92,7 +101,8 @@ export class EnterPlanModeTool implements Tool {
     const inp = input as Record<string, unknown> | undefined;
     if (inp?._agentId) {
       return {
-        output: "子代理不能进入 plan mode。如需制定方案，请使用 sub_agent(type='plan') 委托子代理研究。",
+        output:
+          "子代理不能进入 plan mode。如需制定方案，请使用 sub_agent(type='plan') 委托子代理研究。",
         isError: true,
       };
     }

@@ -17,10 +17,16 @@ export interface Span {
 }
 
 const PAIRS: Record<string, [string, string]> = {
-  "(": ["(", ")"], ")": ["(", ")"], "b": ["(", ")"],
-  "[": ["[", "]"], "]": ["[", "]"],
-  "{": ["{", "}"], "}": ["{", "}"], "B": ["{", "}"],
-  "<": ["<", ">"], ">": ["<", ">"],
+  "(": ["(", ")"],
+  ")": ["(", ")"],
+  b: ["(", ")"],
+  "[": ["[", "]"],
+  "]": ["[", "]"],
+  "{": ["{", "}"],
+  "}": ["{", "}"],
+  B: ["{", "}"],
+  "<": ["<", ">"],
+  ">": ["<", ">"],
 };
 
 const QUOTES = new Set(['"', "'", "`"]);
@@ -47,8 +53,9 @@ export function wordObject(buf: VimBuffer, around: boolean): Span | null {
     // 含尾随空白
     let e = end;
     while (e < line.length && /\s/.test(line[e])) e++;
-    if (e > end) { end = e; }
-    else {
+    if (e > end) {
+      end = e;
+    } else {
       // 无尾随空白 → 含前导空白
       while (start > 0 && /\s/.test(line[start - 1])) start--;
     }
@@ -90,7 +97,10 @@ export function bracketObject(buf: VimBuffer, key: string, around: boolean): Spa
   for (let i = col; i >= 0; i--) {
     if (line[i] === close && i !== col) depth++;
     else if (line[i] === open) {
-      if (depth === 0) { openIdx = i; break; }
+      if (depth === 0) {
+        openIdx = i;
+        break;
+      }
       depth--;
     }
   }
@@ -101,7 +111,10 @@ export function bracketObject(buf: VimBuffer, key: string, around: boolean): Spa
   for (let i = openIdx + 1; i < line.length; i++) {
     if (line[i] === open) depth++;
     else if (line[i] === close) {
-      if (depth === 0) { closeIdx = i; break; }
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
       depth--;
     }
   }
@@ -111,11 +124,7 @@ export function bracketObject(buf: VimBuffer, key: string, around: boolean): Spa
 }
 
 /** 统一解析：i/a + 对象类型键 → Span。未识别返回 null。 */
-export function resolveTextObject(
-  buf: VimBuffer,
-  variant: "i" | "a",
-  objKey: string,
-): Span | null {
+export function resolveTextObject(buf: VimBuffer, variant: "i" | "a", objKey: string): Span | null {
   const around = variant === "a";
   if (objKey === "w" || objKey === "W") return wordObject(buf, around);
   if (QUOTES.has(objKey)) return quoteObject(buf, objKey, around);

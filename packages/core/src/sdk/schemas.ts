@@ -121,11 +121,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
 export const SDKResultErrorSchema = lazySchema(() =>
   z.object({
     type: z.literal("result"),
-    subtype: z.enum([
-      "error_during_execution",
-      "error_max_turns",
-      "error_max_budget_usd",
-    ]),
+    subtype: z.enum(["error_during_execution", "error_max_turns", "error_max_budget_usd"]),
     errors: z.array(z.string()),
     duration_ms: z.number(),
     num_turns: z.number(),
@@ -137,10 +133,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
 
 /** 结果消息（成功或错误） */
 export const SDKResultMessageSchema = lazySchema(() =>
-  z.discriminatedUnion("subtype", [
-    SDKResultSuccessSchema(),
-    SDKResultErrorSchema(),
-  ]),
+  z.discriminatedUnion("subtype", [SDKResultSuccessSchema(), SDKResultErrorSchema()]),
 );
 
 // ─── 系统消息 ───

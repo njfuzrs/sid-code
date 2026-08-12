@@ -110,11 +110,7 @@ function main() {
    * 把「某文件里的某个相对说明符」翻译成迁移后的说明符。
    * 返回 null = 不需要改（同包内，相对路径迁移后依然正确）。
    */
-  function rewriteSpec(
-    fileRelOld: string,
-    fileNewRel: string,
-    spec: string,
-  ): string | null {
+  function rewriteSpec(fileRelOld: string, fileNewRel: string, spec: string): string | null {
     if (!spec.startsWith(".")) return null; // npm 包
     const targetAbs = resolve(join(ROOT, fileRelOld), "..", spec);
     const targetOld = relative(ROOT, targetAbs);
@@ -133,11 +129,7 @@ function main() {
     return rewriteResolved(fileNewRel, targetNew, spec);
   }
 
-  function rewriteResolved(
-    fileNewRel: string,
-    targetNewRel: string,
-    _spec: string,
-  ): string | null {
+  function rewriteResolved(fileNewRel: string, targetNewRel: string, _spec: string): string | null {
     const from = pkgOfNewPath(fileNewRel);
     const to = pkgOfNewPath(targetNewRel);
     if (!from || !to) return null;
@@ -145,7 +137,11 @@ function main() {
     return `${SCOPE}/${to.pkg}/${to.within}`;
   }
 
-  interface Edit { file: string; from: string; to: string }
+  interface Edit {
+    file: string;
+    from: string;
+    to: string;
+  }
   const edits: Edit[] = [];
 
   // 1a. src/ 内部的跨包导入
@@ -184,8 +180,8 @@ function main() {
       if (!targetOld.startsWith("src/")) continue;
       let targetNew = moveMap.get(targetOld);
       if (!targetNew) {
-        const hit = [`${targetOld}.ts`, `${targetOld}.tsx`, `${targetOld}/index.ts`].find(
-          (c) => moveMap.has(c),
+        const hit = [`${targetOld}.ts`, `${targetOld}.tsx`, `${targetOld}/index.ts`].find((c) =>
+          moveMap.has(c),
         );
         if (!hit) continue;
         targetNew = moveMap.get(hit)!;
@@ -239,15 +235,17 @@ function main() {
       if (seen.has(targetOld)) continue;
       seen.add(targetOld);
       const targetNew =
-        moveMap.get(targetOld) ??
-        moveMap.get(`${targetOld}.ts`) ??
-        moveMap.get(`${targetOld}.tsx`);
+        moveMap.get(targetOld) ?? moveMap.get(`${targetOld}.ts`) ?? moveMap.get(`${targetOld}.tsx`);
       if (targetNew) {
         edits.push({ file: f, from: targetOld, to: targetNew });
         continue;
       }
       if (moveMap.has(`${targetOld}/index.ts`)) {
-        edits.push({ file: f, from: targetOld, to: dirname(moveMap.get(`${targetOld}/index.ts`)!) });
+        edits.push({
+          file: f,
+          from: targetOld,
+          to: dirname(moveMap.get(`${targetOld}/index.ts`)!),
+        });
         continue;
       }
       // 目录形态（如 src/ui、src/tool）：必须是真实目录才改

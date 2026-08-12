@@ -53,9 +53,7 @@ export interface HeadlessEventOutput {
  *
  * @returns null 表示该事件在 headless 下无需产出（如 assistant_message 由 streamBuffer 承载）。
  */
-export function formatHeadlessEvent(
-  event: QueryEngineEvent,
-): HeadlessEventOutput | null {
+export function formatHeadlessEvent(event: QueryEngineEvent): HeadlessEventOutput | null {
   switch (event.kind) {
     case "system":
       if (event.level === "warning") {

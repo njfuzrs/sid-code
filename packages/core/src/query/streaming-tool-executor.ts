@@ -75,12 +75,12 @@ export class StreamingToolExecutor {
 
   /** 当前正在执行的工具数 */
   private executingCount(): number {
-    return this.entries.filter(e => e.state === "executing").length;
+    return this.entries.filter((e) => e.state === "executing").length;
   }
 
   /** 是否存在正在执行的非并发安全工具 */
   private hasUnsafeExecuting(): boolean {
-    return this.entries.some(e => e.state === "executing" && !e.isConcurrencySafe);
+    return this.entries.some((e) => e.state === "executing" && !e.isConcurrencySafe);
   }
 
   /**
@@ -130,7 +130,10 @@ export class StreamingToolExecutor {
   /** 启动单个工具执行 */
   private startExecuting(entry: ToolEntry): void {
     entry.state = "executing";
-    this.log.debug("STREAM_TOOL", `启动执行 ${entry.block.name}(idx=${entry.idx}) safe=${entry.isConcurrencySafe}`);
+    this.log.debug(
+      "STREAM_TOOL",
+      `启动执行 ${entry.block.name}(idx=${entry.idx}) safe=${entry.isConcurrencySafe}`,
+    );
     entry.promise = this.executeOne(entry.block, entry.tool, entry.idx)
       .then((result) => {
         entry.result = result;
@@ -157,11 +160,11 @@ export class StreamingToolExecutor {
     // 此时靠已在执行工具 settle 后的 pump 推进；这里再兜底 pump 一次）
     this.pump();
     // 等待所有 executing 的 promise
-    let pending = this.entries.filter(e => e.state === "executing").map(e => e.promise!);
+    let pending = this.entries.filter((e) => e.state === "executing").map((e) => e.promise!);
     while (pending.length > 0) {
       await Promise.all(pending);
       this.pump(); // settle 后可能解锁新的排队工具
-      pending = this.entries.filter(e => e.state === "executing").map(e => e.promise!);
+      pending = this.entries.filter((e) => e.state === "executing").map((e) => e.promise!);
     }
     // 标记 yielded 并按 idx 排序返回
     const out = this.entries
@@ -175,7 +178,7 @@ export class StreamingToolExecutor {
 
   /** 当前是否还有未收集完成的工具 */
   hasPending(): boolean {
-    return this.entries.some(e => e.state === "queued" || e.state === "executing");
+    return this.entries.some((e) => e.state === "queued" || e.state === "executing");
   }
 
   /** 工具总数 */

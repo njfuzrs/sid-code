@@ -41,24 +41,36 @@ const COMMAND_SEMANTICS: Map<string, CommandSemantic> = new Map([
   ["rg", GREP_SEMANTIC],
   ["ag", GREP_SEMANTIC],
   // find：0=成功，1=部分目录不可访问（部分成功），≥2=真错误
-  ["find", (exitCode) => ({
-    isError: exitCode >= 2,
-    message: exitCode === 1 ? "部分目录不可访问" : undefined,
-  })],
+  [
+    "find",
+    (exitCode) => ({
+      isError: exitCode >= 2,
+      message: exitCode === 1 ? "部分目录不可访问" : undefined,
+    }),
+  ],
   // diff：0=无差异，1=有差异（非错误），≥2=真错误
-  ["diff", (exitCode) => ({
-    isError: exitCode >= 2,
-    message: exitCode === 1 ? "文件存在差异" : undefined,
-  })],
+  [
+    "diff",
+    (exitCode) => ({
+      isError: exitCode >= 2,
+      message: exitCode === 1 ? "文件存在差异" : undefined,
+    }),
+  ],
   // test / [：0=条件为真，1=条件为假（非错误），≥2=真错误
-  ["test", (exitCode) => ({
-    isError: exitCode >= 2,
-    message: exitCode === 1 ? "条件为假" : undefined,
-  })],
-  ["[", (exitCode) => ({
-    isError: exitCode >= 2,
-    message: exitCode === 1 ? "条件为假" : undefined,
-  })],
+  [
+    "test",
+    (exitCode) => ({
+      isError: exitCode >= 2,
+      message: exitCode === 1 ? "条件为假" : undefined,
+    }),
+  ],
+  [
+    "[",
+    (exitCode) => ({
+      isError: exitCode >= 2,
+      message: exitCode === 1 ? "条件为假" : undefined,
+    }),
+  ],
 ]);
 
 /**
@@ -89,10 +101,7 @@ function extractExitCodeCommand(command: string): string {
  * @param exitCode 进程退出码
  * @returns isError（是否真错误）+ 可选 message（非错误的语义提示）
  */
-export function interpretExitCode(
-  command: string,
-  exitCode: number,
-): CommandResultInterpretation {
+export function interpretExitCode(command: string, exitCode: number): CommandResultInterpretation {
   const baseCommand = extractExitCodeCommand(command);
   const semantic = COMMAND_SEMANTICS.get(baseCommand) ?? DEFAULT_SEMANTIC;
   return semantic(exitCode);

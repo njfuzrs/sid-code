@@ -82,10 +82,7 @@ export function authorizeSkill(
  *   - "Skill(*)" —— 显式全通配
  *   - "skill:<name>" —— checkSkillPermission 已支持的前缀写法（透传）
  */
-function extractSkillRules(
-  skillName: string,
-  rules?: PermissionRule,
-): SkillPermissionRules {
+function extractSkillRules(skillName: string, rules?: PermissionRule): SkillPermissionRules {
   if (!rules) return {};
   const out: SkillPermissionRules = { allow: [], deny: [] };
 
@@ -143,7 +140,10 @@ export async function resolveSkillAsk(
     try {
       return await opts.confirm(desc);
     } catch (err) {
-      log.warn("SKILL", `skill 确认回调异常，保守拒绝: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(
+        "SKILL",
+        `skill 确认回调异常，保守拒绝: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -159,7 +159,10 @@ export async function resolveSkillAsk(
       // 子代理 subChecker 语义：ask→deny，needsConfirmation 视为拒绝
       return decision.allowed === true;
     } catch (err) {
-      log.warn("SKILL", `skill 权限 checker 异常，保守拒绝: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(
+        "SKILL",
+        `skill 权限 checker 异常，保守拒绝: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -184,10 +187,7 @@ export function registerSkillLifecycleHooks(
 
   // 安全铁律：MCP 来源禁止注册 hooks
   if (skill.loadedFrom === "mcp") {
-    getLogger().warn(
-      "SKILL",
-      `MCP 来源 skill "${skill.name}" 声明了 hooks，出于安全已拒绝注册`,
-    );
+    getLogger().warn("SKILL", `MCP 来源 skill "${skill.name}" 声明了 hooks，出于安全已拒绝注册`);
     return 0;
   }
 

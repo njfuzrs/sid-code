@@ -12,7 +12,12 @@
  * - 空文件明确提示
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import type { FileStateCache } from "./file-state-cache.ts";
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
@@ -20,7 +25,11 @@ import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
-import { detectBinaryContent, formatBinaryRejection, BINARY_CHECK_WINDOW } from "./binary-detect.ts";
+import {
+  detectBinaryContent,
+  formatBinaryRejection,
+  BINARY_CHECK_WINDOW,
+} from "./binary-detect.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -57,7 +66,10 @@ function estimatePdfPageCount(buffer: Buffer): number | null {
  * 解析失败返回 null（交由上层报格式错误）。
  */
 function countRequestedPages(pages: string): number | null {
-  const parts = pages.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = pages
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   if (parts.length === 0) return null;
   let total = 0;
   for (const part of parts) {
@@ -105,16 +117,67 @@ const BLOCKED_DEVICE_PATHS = new Set([
  * 读取这些文件会产生乱码，浪费上下文 token。
  */
 const BINARY_EXTENSIONS = new Set([
-  ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a", ".lib",
-  ".class", ".jar", ".war", ".ear",
-  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst",
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".tiff", ".tif", ".webp",
-  ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", ".wav", ".flac", ".ogg", ".m4a",
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".woff", ".woff2", ".ttf", ".otf", ".eot",
-  ".pyc", ".pyo", ".wasm",
-  ".sqlite", ".db", ".sqlite3",
-  ".DS_Store", ".ico",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".bin",
+  ".obj",
+  ".o",
+  ".a",
+  ".lib",
+  ".class",
+  ".jar",
+  ".war",
+  ".ear",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".bz2",
+  ".xz",
+  ".7z",
+  ".rar",
+  ".zst",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".bmp",
+  ".ico",
+  ".tiff",
+  ".tif",
+  ".webp",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+  ".wmv",
+  ".flv",
+  ".mkv",
+  ".wav",
+  ".flac",
+  ".ogg",
+  ".m4a",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".pyc",
+  ".pyo",
+  ".wasm",
+  ".sqlite",
+  ".db",
+  ".sqlite3",
+  ".DS_Store",
+  ".ico",
 ]);
 
 /** 检查路径是否为会阻塞/无限输出的设备文件 */
@@ -123,9 +186,7 @@ function isBlockedDevicePath(filePath: string): boolean {
   // /proc/self/fd/0-2 和 /proc/<pid>/fd/0-2 是 Linux 下 stdio 别名
   if (
     filePath.startsWith("/proc/") &&
-    (filePath.endsWith("/fd/0") ||
-      filePath.endsWith("/fd/1") ||
-      filePath.endsWith("/fd/2"))
+    (filePath.endsWith("/fd/0") || filePath.endsWith("/fd/1") || filePath.endsWith("/fd/2"))
   ) {
     return true;
   }
@@ -146,9 +207,7 @@ function hasBinaryExtension(filePath: string): boolean {
 // 四种格式（image/png、image/jpeg、image/gif、image/webp）。
 // TIFF/BMP：Anthropic vision 明确不支持，加入只会触发 API 400（invalid media type），
 // 故不纳入——如需读这类图片，应先本地转码为上述格式（P3-4 结论：不支持则明确不支持）。
-const IMAGE_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp",
-]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 /** 图片扩展名 → MIME 媒体类型 */
 const IMAGE_MEDIA_TYPES: Record<string, string> = {
@@ -254,14 +313,19 @@ const readSchema = lazySchema(() =>
     file_path: z.string().describe("要读取的文件的绝对路径"),
     offset: z.number().optional().describe("起始行号（从 1 开始），默认为 1"),
     limit: z.number().optional().describe(`读取的最大行数，默认 ${DEFAULT_MAX_LINES} 行`),
-    pages: z.string().optional().describe("PDF 文件的页码范围（如 \"1-5\"、\"3\"、\"2,4,7\"），仅对 .pdf 生效。单次最多 20 页；PDF 超过 10 页时必须指定该参数，否则会报错要求分页"),
+    pages: z
+      .string()
+      .optional()
+      .describe(
+        'PDF 文件的页码范围（如 "1-5"、"3"、"2,4,7"），仅对 .pdf 生效。单次最多 20 页；PDF 超过 10 页时必须指定该参数，否则会报错要求分页',
+      ),
   }),
 );
 
 /** 发现 4：单文件读取历史（一次读取的行窗口 + 是否整文件可覆盖），用于"重复窄读"引导。 */
 interface ReadWindow {
   startLine: number; // 1-based 起始行
-  endLine: number;   // 含
+  endLine: number; // 含
   totalLines: number;
 }
 
@@ -377,9 +441,9 @@ export class ReadTool implements Tool {
       const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES;
       hints.push(
         `本会话已第 ${readCount} 次读取 ${filePath},且本次窗口与此前读过的区域高度重叠。` +
-        (fitsInOneRead
-          ? `该文件共 ${win.totalLines} 行(未超单次上限 ${DEFAULT_MAX_LINES}),建议一次性整读(不传 offset/limit)或直接复用已读内容,避免重复读推高上下文。`
-          : `建议复用已读内容,或用 grep 定位后按需读,避免反复窄读同一区域。`)
+          (fitsInOneRead
+            ? `该文件共 ${win.totalLines} 行(未超单次上限 ${DEFAULT_MAX_LINES}),建议一次性整读(不传 offset/limit)或直接复用已读内容,避免重复读推高上下文。`
+            : `建议复用已读内容,或用 grep 定位后按需读,避免反复窄读同一区域。`),
       );
     } else if (
       // ② 读太窄:**首次**读一个不大的文件却传了小 limit(只在第 1 次提示,避免每次窄读都唠叨)
@@ -390,7 +454,7 @@ export class ReadTool implements Tool {
       winLen < 200
     ) {
       hints.push(
-        `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`
+        `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`,
       );
     }
 
@@ -415,7 +479,9 @@ export class ReadTool implements Tool {
       const expanded = normalizeToolPath(filePath);
       if (expanded === filePath) return undefined;
       return { ...(input as any), file_path: expanded };
-    } catch { return undefined; }
+    } catch {
+      return undefined;
+    }
   }
 
   name(): string {
@@ -491,7 +557,10 @@ export class ReadTool implements Tool {
       };
     }
 
-    log.info("TOOL", `▶ 读取 ${filePath} offset=${params.offset ?? 1} limit=${params.limit ?? DEFAULT_MAX_LINES}`);
+    log.info(
+      "TOOL",
+      `▶ 读取 ${filePath} offset=${params.offset ?? 1} limit=${params.limit ?? DEFAULT_MAX_LINES}`,
+    );
 
     try {
       // P1: 目录检查 + P0: 大文件保护 — 在全量读取前用 stat 拦截
@@ -570,8 +639,8 @@ export class ReadTool implements Tool {
       const isTruncated = endIdx < totalLines;
 
       // P2: CRLF → LF 规范化
-      const normalizedLines = selectedLines.map(line =>
-        line.endsWith("\r") ? line.slice(0, -1) : line
+      const normalizedLines = selectedLines.map((line) =>
+        line.endsWith("\r") ? line.slice(0, -1) : line,
       );
 
       // 记录文件已被读取
@@ -601,9 +670,7 @@ export class ReadTool implements Tool {
       }
 
       // 格式化输出（带行号，使用 tab 分隔符对齐 CC 的 cat -n 格式）
-      let output = normalizedLines
-        .map((line, idx) => `${startIdx + idx + 1}\t${line}`)
-        .join("\n");
+      let output = normalizedLines.map((line, idx) => `${startIdx + idx + 1}\t${line}`).join("\n");
 
       // 截断提示：告知 LLM 当前显示的行范围和总行数
       if (isTruncated) {
@@ -620,9 +687,14 @@ export class ReadTool implements Tool {
           { startLine: offset, endLine: endIdx, totalLines },
           params.limit !== undefined,
         );
-      } catch { /* 引导是锦上添花，绝不阻断读取 */ }
+      } catch {
+        /* 引导是锦上添花，绝不阻断读取 */
+      }
 
-      log.info("TOOL", `✓ 读取 ${filePath} ${normalizedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`);
+      log.info(
+        "TOOL",
+        `✓ 读取 ${filePath} ${normalizedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`,
+      );
 
       return { output };
     } catch (err: any) {
@@ -661,13 +733,17 @@ export class ReadTool implements Tool {
       const buffer = await Bun.file(filePath).arrayBuffer();
       const base64 = Buffer.from(buffer).toString("base64");
 
-      log.info("TOOL", `✓ 读取图片 ${filePath} (${(stat.size / 1024).toFixed(0)} KB, ${mediaType})`);
+      log.info(
+        "TOOL",
+        `✓ 读取图片 ${filePath} (${(stat.size / 1024).toFixed(0)} KB, ${mediaType})`,
+      );
       return {
         output: `[图片: ${filePath} (${mediaType}, ${(stat.size / 1024).toFixed(0)} KB)]`,
         mediaBlocks: [{ kind: "image", mediaType, data: base64 }],
       };
     } catch (err: any) {
-      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT")
+        return { output: formatPathNotFoundError(filePath), isError: true };
       return { output: `读取图片失败: ${err.message}`, isError: true };
     }
   }
@@ -699,7 +775,8 @@ export class ReadTool implements Tool {
       log.info("TOOL", `✓ 读取 notebook ${filePath}`);
       return { output: rendered };
     } catch (err: any) {
-      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT")
+        return { output: formatPathNotFoundError(filePath), isError: true };
       return { output: `读取 notebook 失败: ${err.message}`, isError: true };
     }
   }
@@ -765,13 +842,17 @@ export class ReadTool implements Tool {
       const pageCountHint = pageCount !== null ? `，共 ${pageCount} 页` : "";
       const pagesHint = params.pages ? `，关注页码 ${params.pages}` : "";
 
-      log.info("TOOL", `✓ 读取 PDF ${filePath} (${(stat.size / 1024).toFixed(0)} KB${pageCountHint})`);
+      log.info(
+        "TOOL",
+        `✓ 读取 PDF ${filePath} (${(stat.size / 1024).toFixed(0)} KB${pageCountHint})`,
+      );
       return {
         output: `[PDF 文档: ${filePath} (${(stat.size / 1024).toFixed(0)} KB${pageCountHint})${pagesHint}]`,
         mediaBlocks: [{ kind: "document", mediaType: "application/pdf", data: base64 }],
       };
     } catch (err: any) {
-      if (err.code === "ENOENT") return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT")
+        return { output: formatPathNotFoundError(filePath), isError: true };
       return { output: `读取 PDF 失败: ${err.message}`, isError: true };
     }
   }

@@ -124,7 +124,8 @@ function unwrap(schema: unknown): {
         continue;
       case "lazy": {
         // z.lazy：调 getter 拿真实 schema（失败则停在当前层，按不可归一处理）
-        if (typeof def.getter !== "function") return { inner: current, isOptional, explicitlyNullable };
+        if (typeof def.getter !== "function")
+          return { inner: current, isOptional, explicitlyNullable };
         try {
           current = def.getter();
         } catch {

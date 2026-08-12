@@ -42,7 +42,9 @@ function subagentTypes(): string[] {
     const { getActiveAgentTypes } = require("@sid-code/core/agent/agent-definition.ts");
     const active = getActiveAgentTypes() as string[];
     if (active.length > 0) return ["default", ...active];
-  } catch { /* registry 未就绪时退回静态兜底，保证命令仍可用 */ }
+  } catch {
+    /* registry 未就绪时退回静态兜底，保证命令仍可用 */
+  }
   return ["default", "explore", "task", "plan", "summarize", "verify"];
 }
 
@@ -100,7 +102,10 @@ const mod: LocalCommandModule = {
       const { persist, rest } = stripPersist(tokens);
       if (rest.length === 0) {
         // 只给了 -p 没给模型名：提示用法（避免把 "-p" 当模型名去查找报错）。
-        return { type: "text", value: `错误: 缺少模型名\n用法: /model <name> [-p]\n\n${buildHelp()}` };
+        return {
+          type: "text",
+          value: `错误: 缺少模型名\n用法: /model <name> [-p]\n\n${buildHelp()}`,
+        };
       }
       return switchModel(rest[0], persist, ctx);
     }
@@ -206,7 +211,10 @@ function switchSubAgent(rawArgs: string[], ctx: CommandContext): LocalCommandRes
   if (rest[0] === "clear" || rest[0] === "none") {
     const type = rest[1];
     if (!type) {
-      return { type: "text", value: `错误: 缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${subagentTypes().join(" / ")}` };
+      return {
+        type: "text",
+        value: `错误: 缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${subagentTypes().join(" / ")}`,
+      };
     }
     if (!isValidSubAgentType(type)) {
       return { type: "text", value: buildInvalidTypeError(type) };
@@ -261,9 +269,11 @@ function detectPricingSource(
   baseURL?: string,
 ): "用户手写" | "网关采集" | "内置注册表" | "兜底估算" {
   const models = ctx.config.availableModels;
-  const exact = models.find(m => m.name === name && normalizeBaseURL(m.baseURL) === normalizeBaseURL(baseURL));
+  const exact = models.find(
+    (m) => m.name === name && normalizeBaseURL(m.baseURL) === normalizeBaseURL(baseURL),
+  );
   if (exact?.pricing && exact.pricing.input > 0) return "用户手写";
-  const byName = models.find(m => m.name === name);
+  const byName = models.find((m) => m.name === name);
   if (byName?.pricing && byName.pricing.input > 0) return "用户手写";
   if (lookupGatewayPricing(name, baseURL)) return "网关采集";
   if (lookupRegistry(name)?.pricing) return "内置注册表";
@@ -304,7 +314,9 @@ function buildAvailableModels(ctx: CommandContext): string {
     if (m.provider) lines.push(`   提供商: ${m.provider}`);
     if (m.baseURL) lines.push(`   API 地址: ${m.baseURL}`);
     const src = detectPricingSource(ctx, m.name, m.baseURL);
-    lines.push(`   ${formatPriceLine(m.name, ctx.config.availableModels, m.baseURL)}（来源: ${src}）`);
+    lines.push(
+      `   ${formatPriceLine(m.name, ctx.config.availableModels, m.baseURL)}（来源: ${src}）`,
+    );
   });
 
   // 当前 fallback / 子代理映射一并展示，让用户知道除主模型外还有哪些可切换项。
@@ -368,7 +380,10 @@ function buildHelp(): string {
  * 遍历 availableModels 里去重后的端点，逐个拉取 `/api/pricing`。每个端点写入各自的
  * 缓存桶（按归一化端点分桶），不再互相覆盖——多渠道场景下所有端点的价格都得以保留。
  */
-async function syncGatewayPricingCmd(ctx: CommandContext, force: boolean): Promise<LocalCommandResult> {
+async function syncGatewayPricingCmd(
+  ctx: CommandContext,
+  force: boolean,
+): Promise<LocalCommandResult> {
   const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
   // 去重端点：优先 availableModels 的 baseURL，回退顶层 config.baseURL。
   const endpoints = new Set<string>();
@@ -377,13 +392,18 @@ async function syncGatewayPricingCmd(ctx: CommandContext, force: boolean): Promi
   }
   if (endpoints.size === 0 && ctx.config.baseURL) endpoints.add(ctx.config.baseURL);
   if (endpoints.size === 0) {
-    return { type: "text", value: "未找到可采集的端点（availableModels 与 config.baseURL 均无 base_url）" };
+    return {
+      type: "text",
+      value: "未找到可采集的端点（availableModels 与 config.baseURL 均无 base_url）",
+    };
   }
   const results: string[] = ["网关定价采集结果:"];
   for (const baseURL of endpoints) {
     try {
       const r = await syncGatewayPricing({ baseURL, force });
-      results.push(`  ${baseURL} → ${r.reason}（${r.count} 条，${r.updated ? "已更新" : "无变化"}）`);
+      results.push(
+        `  ${baseURL} → ${r.reason}（${r.count} 条，${r.updated ? "已更新" : "无变化"}）`,
+      );
     } catch (e) {
       results.push(`  ${baseURL} → 采集失败: ${String(e)}`);
     }
@@ -406,7 +426,9 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
   const meta = getGatewayCacheMeta();
   if (meta) {
     const ageH = ((Date.now() - meta.fetchedAt) / 3_600_000).toFixed(1);
-    lines.push(`网关定价缓存: ${meta.count} 条，采集于 ${ageH}h 前（version ${meta.version.slice(0, 8)}）`);
+    lines.push(
+      `网关定价缓存: ${meta.count} 条，采集于 ${ageH}h 前（version ${meta.version.slice(0, 8)}）`,
+    );
   } else {
     lines.push("网关定价缓存: (无，执行 /model discover --pricing 采集)");
   }
@@ -430,7 +452,9 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
       if (perCall !== undefined) {
         lines.push(`    按次计费 $${perCall}/次  [网关采集]`);
       } else if (p) {
-        lines.push(`    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]`);
+        lines.push(
+          `    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]`,
+        );
       } else {
         lines.push(`    (未知价格，走兜底估算 in $2 / out $10)  [${src}]`);
       }
@@ -446,13 +470,16 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
         lines.push(`  ${name}: (无定价)`);
         continue;
       }
-      lines.push(`  ${name}: in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}`);
+      lines.push(
+        `  ${name}: in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}`,
+      );
     }
 
     // 网关采集到的按次计费模型（quota_type=1，如 veo 视频类）：token 价不适用，
     // 单列展示按次单价——否则这些模型在上面按 token 的表里会被漏掉或误示为 $0。
-    const perCallEntries = Object.entries(getAllGatewayEntries())
-      .filter(([, e]) => e.quotaType === 1 && typeof e.perCallUSD === "number");
+    const perCallEntries = Object.entries(getAllGatewayEntries()).filter(
+      ([, e]) => e.quotaType === 1 && typeof e.perCallUSD === "number",
+    );
     if (perCallEntries.length > 0) {
       lines.push("", "─────────────", "网关按次计费模型（quota_type=1，USD/次）:", "");
       for (const [name, e] of perCallEntries) {

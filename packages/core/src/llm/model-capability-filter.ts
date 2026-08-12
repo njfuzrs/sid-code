@@ -43,8 +43,8 @@ export function filterParamsForModel<T extends FilterableParams>(model: string, 
 
   // 1. system role 转换：system → developer
   if (entry.systemRole === "developer" && params.messages) {
-    params.messages = params.messages.map(m =>
-      m.role === "system" ? { ...m, role: "developer" } : m
+    params.messages = params.messages.map((m) =>
+      m.role === "system" ? { ...m, role: "developer" } : m,
     );
   }
 

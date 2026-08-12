@@ -32,7 +32,7 @@ export async function detectIDEs(cwd: string): Promise<DetectedIDE[]> {
     }
 
     // 工作区目录匹配
-    if (content.workspaceFolders?.some(folder => isSubPath(cwd, folder))) {
+    if (content.workspaceFolders?.some((folder) => isSubPath(cwd, folder))) {
       matches.push(lockfileToDetectedIDE(port, content));
     }
   }
@@ -61,7 +61,7 @@ export async function findAvailableIDE(
     if (matches.length > 1) return null; // 多个匹配，需要用户手动选择
 
     // 等待 1 秒后重试
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
   return null;
@@ -84,6 +84,5 @@ export function lockfileToDetectedIDE(port: number, content: IDELockfileContent)
 export function isSubPath(child: string, parent: string): boolean {
   const normalizedChild = child.replace(/\/$/, "");
   const normalizedParent = parent.replace(/\/$/, "");
-  return normalizedChild === normalizedParent
-    || normalizedChild.startsWith(normalizedParent + "/");
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(normalizedParent + "/");
 }

@@ -81,9 +81,7 @@ const ApprovalModeIndicator: React.FC<{ permissionMode: string }> = ({ permissio
 };
 
 /** 原始 Markdown 指示器 */
-const RawMarkdownIndicator: React.FC = () => (
-  <Text color={theme.status.warning}>{BULLET} RAW</Text>
-);
+const RawMarkdownIndicator: React.FC = () => <Text color={theme.status.warning}>{BULLET} RAW</Text>;
 
 /**
  * 上下文使用量显示。
@@ -219,8 +217,7 @@ export const Composer: React.FC<ComposerProps> = ({
   // 静默探针：实时流式字符数（文本 + 思考）。streamingText/streamingThinking 每来
   // 一段 token 就更新，单次长输出期间也持续增长，是判断「模型是否还在产出」的可靠
   // 实时信号。慢提示据此归零——内容在流就绝不报慢。
-  const progressCount =
-    streaming.streamingText.length + streaming.streamingThinking.length;
+  const progressCount = streaming.streamingText.length + streaming.streamingThinking.length;
 
   const { elapsedTime, currentLoadingPhrase, slowHint, toolElapsedTime } = useLoadingIndicator({
     streamingState: streaming.streamingState,
@@ -287,11 +284,15 @@ export const Composer: React.FC<ComposerProps> = ({
         >
           {/* 瞬态消息优先显示 */}
           {uiState.transientMessage ? (
-            <Text color={
-              uiState.transientMessage.type === "warning" ? theme.status.warning
-              : uiState.transientMessage.type === "hint" ? theme.text.accent
-              : theme.text.primary
-            }>
+            <Text
+              color={
+                uiState.transientMessage.type === "warning"
+                  ? theme.status.warning
+                  : uiState.transientMessage.type === "hint"
+                    ? theme.text.accent
+                    : theme.text.primary
+              }
+            >
               {uiState.transientMessage.text}
             </Text>
           ) : showLoadingIndicator ? (
@@ -306,7 +307,10 @@ export const Composer: React.FC<ComposerProps> = ({
               outputTokens={turnOutputTokens}
             />
           ) : (
-            <Box flexDirection={isNarrow ? "column" : "row"} alignItems={isNarrow ? "flex-start" : "center"}>
+            <Box
+              flexDirection={isNarrow ? "column" : "row"}
+              alignItems={isNarrow ? "flex-start" : "center"}
+            >
               {/* 工具完成状态（短暂显示） */}
               <ToolResultIndicator lastResult={streaming.lastToolResult} />
               {/* 权限模式指示 */}
@@ -323,11 +327,7 @@ export const Composer: React.FC<ComposerProps> = ({
         </Box>
 
         {/* 右侧：上下文使用量 / 快捷键提示 */}
-        <Box
-          flexDirection="row"
-          alignItems="center"
-          marginRight={1}
-        >
+        <Box flexDirection="row" alignItems="center" marginRight={1}>
           {showContextUsage && !showLoadingIndicator && (
             <Box marginRight={1}>
               <ContextUsageDisplay

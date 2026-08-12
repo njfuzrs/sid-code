@@ -11,7 +11,15 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  chmodSync,
+  unlinkSync,
+  renameSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { MCPServerConfig } from "../config/config.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -96,14 +104,21 @@ function writeStorage(data: OAuthStorageData): void {
   } catch {
     // 回退：直接覆盖写
     writeFileSync(path, JSON.stringify(data, null, 2), { mode: 0o600 });
-    try { unlinkSync(tmpPath); } catch {}
+    try {
+      unlinkSync(tmpPath);
+    } catch {}
   }
   // 双保险：确保权限位正确（部分平台 writeFile 的 mode 受 umask 影响）
-  try { chmodSync(path, 0o600); } catch {}
+  try {
+    chmodSync(path, 0o600);
+  } catch {}
 }
 
 /** 读取指定服务器的 OAuth 凭据条目 */
-export function getOAuthEntry(serverName: string, config: MCPServerConfig): MCPOAuthEntry | undefined {
+export function getOAuthEntry(
+  serverName: string,
+  config: MCPServerConfig,
+): MCPOAuthEntry | undefined {
   const key = getServerKey(serverName, config);
   return readStorage().mcpOAuth[key];
 }

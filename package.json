@@ -13,7 +13,7 @@
     "build": "make build",
     "build-bump": "make build-bump",
     "test": "bun test",
-    "test:ui": "bun test tests/ui packages/cli/src/ui",
+    "test:ui": "bun test packages/cli/tests/ui packages/cli/src/ui",
     "test:ui:stats": "bun run scripts/ui-test-stats.ts",
     "website:dev": "bun run --cwd website dev",
     "website:build": "bun run --cwd website build",
@@ -29,6 +29,8 @@
     "lint": "oxlint packages tests scripts evals website",
     "lint:fix": "oxlint packages tests scripts evals website --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",
+    "format": "oxfmt packages tests scripts evals website",
+    "format:check": "oxfmt --check packages tests scripts evals website",
     "eval:run": "bun run packages/eval-framework/core/runner.ts",
     "eval:list": "bun run scripts/eval/list-evals.ts",
     "eval:tally": "bun run scripts/eval/tally-baseline.ts",
@@ -39,9 +41,6 @@
     "eval:context-capability": "bun run scripts/eval/run-context-capability.ts",
     "eval:router-capability": "bun run scripts/eval/run-router-capability.ts",
     "eval:harness-capability": "bun run scripts/eval/run-harness-capability.ts",
-    "eval:dashboard": "bun run scripts/eval/dashboard.ts",
-    "eval:dashboard-html": "bun run scripts/eval/build-dashboard-html.ts",
-    "eval:dashboard:open": "bun run scripts/eval/build-dashboard-html.ts --serve",
     "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts",
     "eval:diagnose": "bun run scripts/eval/diagnose.ts",
     "eval:verify-diagnosis": "bun run scripts/eval/verify-diagnosis.ts"
@@ -93,6 +92,10 @@
     "scheduler": "0.27.0"
   },
   "devDependencies": {
+    "@oxlint/binding-darwin-arm64": "1.77.0",
+    "@oxlint/binding-darwin-x64": "1.77.0",
+    "@oxlint/binding-linux-arm64-gnu": "1.77.0",
+    "@oxlint/binding-linux-x64-gnu": "1.77.0",
     "@types/bun": "latest",
     "@types/diff": "^8.0.0",
     "@types/hast": "^3.0.4",
@@ -107,11 +110,8 @@
     "@types/tinycolor2": "^1.4.6",
     "eval-framework": "workspace:*",
     "js-yaml": "^4.1.1",
+    "oxfmt": "0.63.0",
     "oxlint": "1.77.0",
-    "@oxlint/binding-darwin-arm64": "1.77.0",
-    "@oxlint/binding-darwin-x64": "1.77.0",
-    "@oxlint/binding-linux-arm64-gnu": "1.77.0",
-    "@oxlint/binding-linux-x64-gnu": "1.77.0",
     "type-fest": "^5.8.0"
   },
   "engines": {

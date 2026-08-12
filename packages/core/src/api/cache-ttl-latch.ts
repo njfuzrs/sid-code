@@ -21,10 +21,7 @@ let latchedTTL: CacheTTL | null = null;
  *
  * 1h TTL 资格条件（对标 CC should1hCacheTTL）：付费订阅用户 且 未处于超额状态。
  */
-export function resolveCacheTTL(options?: {
-  isPaidUser?: boolean;
-  isOverage?: boolean;
-}): CacheTTL {
+export function resolveCacheTTL(options?: { isPaidUser?: boolean; isOverage?: boolean }): CacheTTL {
   // Latch：一旦锁定，整个会话不变
   if (latchedTTL !== null) return latchedTTL;
 

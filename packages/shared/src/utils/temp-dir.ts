@@ -55,8 +55,7 @@ let cachedTempDir: string | null = null;
 export function getSidTempDir(): string {
   if (cachedTempDir) return cachedTempDir;
 
-  const baseTmpDir =
-    process.env.SID_CODE_TMPDIR || (isWindows() ? tmpdir() : "/tmp");
+  const baseTmpDir = process.env.SID_CODE_TMPDIR || (isWindows() ? tmpdir() : "/tmp");
 
   // 解析 base tmp 的 symlink（macOS /tmp → /private/tmp），失败则用原路径
   let resolvedBase = baseTmpDir;

@@ -205,14 +205,12 @@ export function generateFixSuggestions(input: FixTemplateInput): FixTemplateResu
     .slice(0, 5)
     .map((r: FileRef) => `${r.file}${r.line ? `:${r.line}` : ""}`);
 
-  const baseSuggestions = (TEMPLATES[cls] ?? TEMPLATES.unknown)
-    .slice(0, max)
-    .map((tpl, idx) => ({
-      ...tpl,
-      // 第 1 条最高 confidence, 后续梯度降低
-      confidence: parseFloat((baseConfidence - idx * 0.08).toFixed(2)),
-      references: refs,
-    }));
+  const baseSuggestions = (TEMPLATES[cls] ?? TEMPLATES.unknown).slice(0, max).map((tpl, idx) => ({
+    ...tpl,
+    // 第 1 条最高 confidence, 后续梯度降低
+    confidence: parseFloat((baseConfidence - idx * 0.08).toFixed(2)),
+    references: refs,
+  }));
 
   // 当 candidate_alternatives 存在时, 把 top alternative 的第一条也加进来 (让 LLM 看到次选可能)
   const alts = input.classify.candidate_alternatives ?? [];

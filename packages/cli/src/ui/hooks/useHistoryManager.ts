@@ -43,65 +43,85 @@ export function useHistoryManager(): UseHistoryManagerReturn {
     return idCounterRef.current;
   }, []);
 
-  const assignId = useCallback((item: HistoryItemWithoutId): HistoryItem => {
-    return { ...item, id: nextId() } as HistoryItem;
-  }, [nextId]);
+  const assignId = useCallback(
+    (item: HistoryItemWithoutId): HistoryItem => {
+      return { ...item, id: nextId() } as HistoryItem;
+    },
+    [nextId],
+  );
 
-  const addItem = useCallback((itemData: HistoryItemWithoutId): number => {
-    const newItem = assignId(itemData);
-    setHistory(prev => [...prev, newItem]);
-    return newItem.id;
-  }, [assignId]);
+  const addItem = useCallback(
+    (itemData: HistoryItemWithoutId): number => {
+      const newItem = assignId(itemData);
+      setHistory((prev) => [...prev, newItem]);
+      return newItem.id;
+    },
+    [assignId],
+  );
 
-  const addItems = useCallback((items: HistoryItemWithoutId[]): number[] => {
-    if (items.length === 0) return [];
-    const newItems = items.map(assignId);
-    setHistory(prev => [...prev, ...newItems]);
-    return newItems.map(i => i.id);
-  }, [assignId]);
+  const addItems = useCallback(
+    (items: HistoryItemWithoutId[]): number[] => {
+      if (items.length === 0) return [];
+      const newItems = items.map(assignId);
+      setHistory((prev) => [...prev, ...newItems]);
+      return newItems.map((i) => i.id);
+    },
+    [assignId],
+  );
 
-  const updateItem = useCallback((
-    id: number,
-    updates: Partial<Omit<HistoryItem, "id">> | HistoryItemUpdater,
-  ) => {
-    setHistory(prev => prev.map(item => {
-      if (item.id !== id) return item;
-      const newUpdates = typeof updates === "function" ? updates(item) : updates;
-      return { ...item, ...newUpdates } as HistoryItem;
-    }));
-  }, []);
+  const updateItem = useCallback(
+    (id: number, updates: Partial<Omit<HistoryItem, "id">> | HistoryItemUpdater) => {
+      setHistory((prev) =>
+        prev.map((item) => {
+          if (item.id !== id) return item;
+          const newUpdates = typeof updates === "function" ? updates(item) : updates;
+          return { ...item, ...newUpdates } as HistoryItem;
+        }),
+      );
+    },
+    [],
+  );
 
   const clearItems = useCallback(() => {
     setHistory([]);
     idCounterRef.current = 0;
   }, []);
 
-  const rebuildFromMessages = useCallback((msgs: Message[]) => {
-    idCounterRef.current = 0;
-    const itemsWithoutId = messagesToHistoryItems(msgs);
-    const items = itemsWithoutId.map(assignId);
-    setHistory(items);
-  }, [assignId]);
+  const rebuildFromMessages = useCallback(
+    (msgs: Message[]) => {
+      idCounterRef.current = 0;
+      const itemsWithoutId = messagesToHistoryItems(msgs);
+      const items = itemsWithoutId.map(assignId);
+      setHistory(items);
+    },
+    [assignId],
+  );
 
-  const syncFromMessages = useCallback((msgs: Message[], lastSyncedCount: number): number => {
-    const newCount = msgs.length - lastSyncedCount;
-    if (newCount <= 0) return lastSyncedCount;
+  const syncFromMessages = useCallback(
+    (msgs: Message[], lastSyncedCount: number): number => {
+      const newCount = msgs.length - lastSyncedCount;
+      if (newCount <= 0) return lastSyncedCount;
 
-    // 始终从完整消息列表重建，确保 tool_use + tool_result 正确合并
-    idCounterRef.current = 0;
-    const itemsWithoutId = messagesToHistoryItems(msgs);
-    const items = itemsWithoutId.map(assignId);
-    setHistory(items);
-    return msgs.length;
-  }, [assignId]);
+      // 始终从完整消息列表重建，确保 tool_use + tool_result 正确合并
+      idCounterRef.current = 0;
+      const itemsWithoutId = messagesToHistoryItems(msgs);
+      const items = itemsWithoutId.map(assignId);
+      setHistory(items);
+      return msgs.length;
+    },
+    [assignId],
+  );
 
-  return useMemo(() => ({
-    history,
-    addItem,
-    addItems,
-    updateItem,
-    clearItems,
-    rebuildFromMessages,
-    syncFromMessages,
-  }), [history, addItem, addItems, updateItem, clearItems, rebuildFromMessages, syncFromMessages]);
+  return useMemo(
+    () => ({
+      history,
+      addItem,
+      addItems,
+      updateItem,
+      clearItems,
+      rebuildFromMessages,
+      syncFromMessages,
+    }),
+    [history, addItem, addItems, updateItem, clearItems, rebuildFromMessages, syncFromMessages],
+  );
 }

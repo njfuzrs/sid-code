@@ -63,10 +63,7 @@ function humanCount(n: number): string {
 
 /** 构造某条登记的占位引用字符串 */
 function refString(entry: PastedContent): string {
-  const summary =
-    entry.lineCount > 1
-      ? `+${entry.lineCount} 行`
-      : humanCount(entry.charCount);
+  const summary = entry.lineCount > 1 ? `+${entry.lineCount} 行` : humanCount(entry.charCount);
   return `[粘贴 #${entry.id} ${summary}]`;
 }
 
@@ -74,10 +71,7 @@ function refString(entry: PastedContent): string {
  * 登记一段粘贴内容，返回应插入缓冲区的占位引用字符串。
  * 占位引用形如 `[粘贴 #1 +42 行]`（多行）或 `[粘贴 #2 1.2k 字符]`（单行长文）。
  */
-export function registerPaste(
-  content: string,
-  type: PastedContentType = "text",
-): string {
+export function registerPaste(content: string, type: PastedContentType = "text"): string {
   const entry: PastedContent = {
     id: nextId++,
     type,

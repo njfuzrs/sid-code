@@ -10,7 +10,11 @@
  */
 
 import { useEffect, useState } from "react";
-import { runStatusLine, type StatusLineSessionData, type StatusLineConfig } from "./run-statusline.ts";
+import {
+  runStatusLine,
+  type StatusLineSessionData,
+  type StatusLineConfig,
+} from "./run-statusline.ts";
 
 export interface UseCustomStatusLineInput {
   config: StatusLineConfig | undefined;

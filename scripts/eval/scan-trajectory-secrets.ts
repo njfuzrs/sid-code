@@ -126,11 +126,17 @@ function renderReport(results: TaskScanResult[]): string {
   lines.push("# Trajectory-platform bench 脱敏二审报告（B6-4）");
   lines.push("");
   lines.push(`> 扫描时间：${new Date().toISOString()}`);
-  lines.push("> 扫描器：`scripts/eval/scan-trajectory-secrets.ts`（复用 importer scanSecrets / scanContamination）");
+  lines.push(
+    "> 扫描器：`scripts/eval/scan-trajectory-secrets.ts`（复用 importer scanSecrets / scanContamination）",
+  );
   lines.push(">");
   lines.push("> **判定规则**：");
-  lines.push("> - `unsafe_for_holdout`：命中 contamination（tool_result_content 等）或强 secret（private_key / api_key）—— 严禁进 holdout");
-  lines.push("> - `needs_sanitization`：命中 email / ip —— 可进 capability/regression，但 holdout 前需脱敏");
+  lines.push(
+    "> - `unsafe_for_holdout`：命中 contamination（tool_result_content 等）或强 secret（private_key / api_key）—— 严禁进 holdout",
+  );
+  lines.push(
+    "> - `needs_sanitization`：命中 email / ip —— 可进 capability/regression，但 holdout 前需脱敏",
+  );
   lines.push("> - `safe`：无任何命中");
   lines.push("");
 
@@ -223,7 +229,9 @@ function main(argv: string[]): number {
   for (const split of args.splits) {
     const splitFile = join(args.benchRoot, "bench", "splits", `${split}.txt`);
     if (!existsSync(splitFile)) continue;
-    const totalLines = readFileSync(splitFile, "utf-8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
+    const totalLines = readFileSync(splitFile, "utf-8")
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("#")).length;
     const scanned = results.filter((r) => r.split === split).length;
     if (scanned < totalLines) {
       console.log(
@@ -248,7 +256,9 @@ function main(argv: string[]): number {
   const safe = results.filter((r) => r.status === "safe").length;
   const sanit = results.filter((r) => r.status === "needs_sanitization").length;
   const unsafe = results.filter((r) => r.status === "unsafe_for_holdout").length;
-  console.log(`[scan] 总计 ${results.length}: safe=${safe} / needs_sanitization=${sanit} / unsafe_for_holdout=${unsafe}`);
+  console.log(
+    `[scan] 总计 ${results.length}: safe=${safe} / needs_sanitization=${sanit} / unsafe_for_holdout=${unsafe}`,
+  );
 
   if (unsafe > 0 || sanit > 0) return 1;
   return 0;

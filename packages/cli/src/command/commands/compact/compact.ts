@@ -137,8 +137,7 @@ async function runPartial(
 ): Promise<{ type: "text"; value: string }> {
   const { partialCompact } = await import("@sid-code/core/query/compact/index.ts");
   // 摘要用低成本模型优先（子代理 summarize 档），否则回退主模型
-  const compactModel =
-    ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
+  const compactModel = ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
 
   // 压缩前的原始消息快照：post-compact 的摘要覆盖率校验要拿它跟摘要比对
   const originalMessages = ctx.ctxMgr.getMessages();

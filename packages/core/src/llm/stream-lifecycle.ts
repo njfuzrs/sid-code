@@ -258,10 +258,22 @@ async function* streamLifecycleImpl<T>(
   let stallTimer: ReturnType<typeof setInterval> | null = null;
 
   const clearTimers = () => {
-    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-    if (contentTimer) { clearTimeout(contentTimer); contentTimer = null; }
-    if (overallTimer) { clearTimeout(overallTimer); overallTimer = null; }
-    if (stallTimer) { clearInterval(stallTimer); stallTimer = null; }
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    if (contentTimer) {
+      clearTimeout(contentTimer);
+      contentTimer = null;
+    }
+    if (overallTimer) {
+      clearTimeout(overallTimer);
+      overallTimer = null;
+    }
+    if (stallTimer) {
+      clearInterval(stallTimer);
+      stallTimer = null;
+    }
   };
 
   const fireTimeout = (layer: StreamTimeoutLayer): boolean => {
@@ -290,7 +302,12 @@ async function* streamLifecycleImpl<T>(
         `流式${snapshot.firstEventAt === null ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
         { totalEvents: snapshot.totalEvents },
       );
-      onTelemetry?.({ type: "stream_idle_timeout", provider: providerTag, timeoutMs: limit, totalEvents: snapshot.totalEvents });
+      onTelemetry?.({
+        type: "stream_idle_timeout",
+        provider: providerTag,
+        timeoutMs: limit,
+        totalEvents: snapshot.totalEvents,
+      });
       onTimeout?.("idle");
     }, limit);
   };
@@ -308,7 +325,12 @@ async function* streamLifecycleImpl<T>(
         `业务内容进展超时 ${contentProgressTimeoutMs! / 1000}s（可能只有 keep-alive/ping，无实际内容），中断`,
         { totalEvents: snapshot.totalEvents },
       );
-      onTelemetry?.({ type: "stream_content_progress_timeout", provider: providerTag, timeoutMs: contentProgressTimeoutMs!, totalEvents: snapshot.totalEvents });
+      onTelemetry?.({
+        type: "stream_content_progress_timeout",
+        provider: providerTag,
+        timeoutMs: contentProgressTimeoutMs!,
+        totalEvents: snapshot.totalEvents,
+      });
       onTimeout?.("content_progress");
     }, contentProgressTimeoutMs!);
   };
@@ -318,8 +340,15 @@ async function* streamLifecycleImpl<T>(
     if (!overallEnabled) return;
     overallTimer = setTimeout(() => {
       if (!fireTimeout("overall")) return;
-      log.warn(`LLM:${label}`, `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`, { totalEvents: snapshot.totalEvents });
-      onTelemetry?.({ type: "stream_overall_timeout", provider: providerTag, timeoutMs: overallTimeoutMs!, totalEvents: snapshot.totalEvents });
+      log.warn(`LLM:${label}`, `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`, {
+        totalEvents: snapshot.totalEvents,
+      });
+      onTelemetry?.({
+        type: "stream_overall_timeout",
+        provider: providerTag,
+        timeoutMs: overallTimeoutMs!,
+        totalEvents: snapshot.totalEvents,
+      });
       onTimeout?.("overall");
     }, overallTimeoutMs!);
   };
@@ -328,8 +357,15 @@ async function* streamLifecycleImpl<T>(
   stallTimer = setInterval(() => {
     const gap = Date.now() - snapshot.lastEventAt;
     if (gap >= stallWarnMs) {
-      log.warn(`LLM:${label}`, `事件间隔 ${(gap / 1000).toFixed(0)}s（stall）`, { totalEvents: snapshot.totalEvents });
-      onTelemetry?.({ type: "stream_stall", provider: providerTag, gapMs: gap, totalEvents: snapshot.totalEvents });
+      log.warn(`LLM:${label}`, `事件间隔 ${(gap / 1000).toFixed(0)}s（stall）`, {
+        totalEvents: snapshot.totalEvents,
+      });
+      onTelemetry?.({
+        type: "stream_stall",
+        provider: providerTag,
+        gapMs: gap,
+        totalEvents: snapshot.totalEvents,
+      });
     }
   }, stallWarnMs);
 
@@ -338,7 +374,7 @@ async function* streamLifecycleImpl<T>(
 
   resetIdle();
   resetContentProgress(); // 启动 content progress 计时（未启用时空转）
-  startOverall();         // 启动 overall 计时（未启用时空转）
+  startOverall(); // 启动 overall 计时（未启用时空转）
   try {
     // P0-2 §7.3 修复：与 fallback.ts/stream-processor.ts 同理，将 for-await 改为
     // 手动迭代 + Promise.race(abortPromise)。当 source（SDK raw stream）半开时，
@@ -394,7 +430,11 @@ async function* streamLifecycleImpl<T>(
           firstContentFired = true;
           const baseTime = requestStartTimeMs ?? snapshot.startedAt;
           const ttftMs = Date.now() - baseTime;
-          try { onFirstContentProgress(ttftMs); } catch { /* 回调异常不影响流 */ }
+          try {
+            onFirstContentProgress(ttftMs);
+          } catch {
+            /* 回调异常不影响流 */
+          }
         }
       }
       yield event;
@@ -404,6 +444,12 @@ async function* streamLifecycleImpl<T>(
     const elapsedMs = Date.now() - streamStartTime;
     const ttftMs = snapshot.firstEventAt ? snapshot.firstEventAt - streamStartTime : undefined;
     log.debug(`LLM:${label}`, `流结束`, { totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });
-    onTelemetry?.({ type: "stream_completed", provider: providerTag, totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });
+    onTelemetry?.({
+      type: "stream_completed",
+      provider: providerTag,
+      totalEvents: snapshot.totalEvents,
+      elapsedMs,
+      ttftMs,
+    });
   }
 }

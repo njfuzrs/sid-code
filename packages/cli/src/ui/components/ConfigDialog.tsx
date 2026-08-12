@@ -81,19 +81,27 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
   if (view.type === "detail") {
     const { item } = view;
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>{item.key}</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          {item.key}
+        </Text>
         <Box marginTop={1} flexDirection="column">
           <Box>
-            <Text color={theme.text.secondary}>当前值    </Text>
+            <Text color={theme.text.secondary}>当前值 </Text>
             <Text color={theme.text.primary}>{item.value}</Text>
           </Box>
           <Box>
-            <Text color={theme.text.secondary}>来源      </Text>
+            <Text color={theme.text.secondary}>来源 </Text>
             <Text color={sourceColor(item.source)}>{sourceLabel(item.source)}</Text>
           </Box>
           <Box>
-            <Text color={theme.text.secondary}>分组      </Text>
+            <Text color={theme.text.secondary}>分组 </Text>
             <Text color={theme.text.primary}>{item.group}</Text>
           </Box>
           {item.description && (
@@ -140,8 +148,16 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>配置总览</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        配置总览
+      </Text>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<string, ConfigListItem>
           items={items}

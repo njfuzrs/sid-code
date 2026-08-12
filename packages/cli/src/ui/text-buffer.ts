@@ -16,10 +16,10 @@ import stringWidth from "string-width";
 // ── 类型定义 ──────────────────────────────────────────────────────
 
 export interface TextBufferState {
-  lines: string[];              // 逻辑行（\n 分割）
-  cursorRow: number;            // 逻辑行号
-  cursorCol: number;            // 行内列号（code point 索引）
-  preferredCol: number | null;  // 上下移动时保持列位置
+  lines: string[]; // 逻辑行（\n 分割）
+  cursorRow: number; // 逻辑行号
+  cursorCol: number; // 行内列号（code point 索引）
+  preferredCol: number | null; // 上下移动时保持列位置
   history: string[];
   historyIndex: number;
   savedInput: string;
@@ -67,7 +67,10 @@ type Action =
   | { type: "insert"; text: string }
   | { type: "delete-backward" }
   | { type: "delete-forward" }
-  | { type: "move"; direction: "left" | "right" | "up" | "down" | "home" | "end" | "wordLeft" | "wordRight" }
+  | {
+      type: "move";
+      direction: "left" | "right" | "up" | "down" | "home" | "end" | "wordLeft" | "wordRight";
+    }
   | { type: "kill-line" }
   | { type: "kill-to-start" }
   | { type: "kill-word-before" }
@@ -78,10 +81,10 @@ type Action =
   | { type: "reset" }
   | { type: "set-text"; text: string }
   // ── Vim 动作（现有 action 无法表达的最小补充；移动/退格等复用现有 move/delete-*）──
-  | { type: "vim-delete-line" }              // dd：删整逻辑行
-  | { type: "vim-delete-to-line-end" }       // D / d$：删到行末
+  | { type: "vim-delete-line" } // dd：删整逻辑行
+  | { type: "vim-delete-to-line-end" } // D / d$：删到行末
   | { type: "vim-open-line"; above: boolean } // o / O：下方(上方)开新行并把光标置于其上
-  | { type: "vim-move-line-first-nonblank" }  // ^：移到行首第一个非空白字符
+  | { type: "vim-move-line-first-nonblank" } // ^：移到行首第一个非空白字符
   // Vim 引擎原子写回：完整 vim 状态机在外部对 {lines,cursor} 求值后，用本 action 一次性
   // 写回结果（行数组 + 精确光标）。区别于 set-text（光标只能落末尾），vim 的 motion/operator
   // 需要把光标停在任意位置，故需要携带 row/col 的原子入口。
@@ -164,7 +167,8 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
         // 行内删除
         const line = state.lines[state.cursorRow];
         const newLines = [...state.lines];
-        newLines[state.cursorRow] = line.slice(0, state.cursorCol - 1) + line.slice(state.cursorCol);
+        newLines[state.cursorRow] =
+          line.slice(0, state.cursorCol - 1) + line.slice(state.cursorCol);
         return { ...state, lines: newLines, cursorCol: state.cursorCol - 1, preferredCol: null };
       }
       if (state.cursorRow > 0) {
@@ -173,7 +177,13 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
         const prevLen = newLines[state.cursorRow - 1].length;
         newLines[state.cursorRow - 1] += newLines[state.cursorRow];
         newLines.splice(state.cursorRow, 1);
-        return { ...state, lines: newLines, cursorRow: state.cursorRow - 1, cursorCol: prevLen, preferredCol: null };
+        return {
+          ...state,
+          lines: newLines,
+          cursorRow: state.cursorRow - 1,
+          cursorCol: prevLen,
+          preferredCol: null,
+        };
       }
       return state;
     }
@@ -182,7 +192,8 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       const line = state.lines[state.cursorRow];
       if (state.cursorCol < line.length) {
         const newLines = [...state.lines];
-        newLines[state.cursorRow] = line.slice(0, state.cursorCol) + line.slice(state.cursorCol + 1);
+        newLines[state.cursorRow] =
+          line.slice(0, state.cursorCol) + line.slice(state.cursorCol + 1);
         return { ...state, lines: newLines, preferredCol: null };
       }
       if (state.cursorRow < state.lines.length - 1) {
@@ -205,7 +216,12 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
             return { ...state, cursorCol: state.cursorCol - 1, preferredCol: null };
           }
           if (state.cursorRow > 0) {
-            return { ...state, cursorRow: state.cursorRow - 1, cursorCol: state.lines[state.cursorRow - 1].length, preferredCol: null };
+            return {
+              ...state,
+              cursorRow: state.cursorRow - 1,
+              cursorCol: state.lines[state.cursorRow - 1].length,
+              preferredCol: null,
+            };
           }
           return state;
 
@@ -254,18 +270,31 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
 
         case "wordLeft": {
           if (state.cursorCol > 0) {
-            return { ...state, cursorCol: findPrevWordBoundary(line, state.cursorCol), preferredCol: null };
+            return {
+              ...state,
+              cursorCol: findPrevWordBoundary(line, state.cursorCol),
+              preferredCol: null,
+            };
           }
           // 跳到上一行末尾
           if (state.cursorRow > 0) {
-            return { ...state, cursorRow: state.cursorRow - 1, cursorCol: state.lines[state.cursorRow - 1].length, preferredCol: null };
+            return {
+              ...state,
+              cursorRow: state.cursorRow - 1,
+              cursorCol: state.lines[state.cursorRow - 1].length,
+              preferredCol: null,
+            };
           }
           return state;
         }
 
         case "wordRight": {
           if (state.cursorCol < line.length) {
-            return { ...state, cursorCol: findNextWordBoundary(line, state.cursorCol), preferredCol: null };
+            return {
+              ...state,
+              cursorCol: findNextWordBoundary(line, state.cursorCol),
+              preferredCol: null,
+            };
           }
           // 跳到下一行开头
           if (state.cursorRow < state.lines.length - 1) {
@@ -281,7 +310,12 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       const killed = line.slice(state.cursorCol);
       const newLines = [...state.lines];
       newLines[state.cursorRow] = line.slice(0, state.cursorCol);
-      return { ...state, lines: newLines, preferredCol: null, killRing: pushKill(state.killRing, killed) };
+      return {
+        ...state,
+        lines: newLines,
+        preferredCol: null,
+        killRing: pushKill(state.killRing, killed),
+      };
     }
 
     case "kill-to-start": {
@@ -289,7 +323,13 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       const killed = line.slice(0, state.cursorCol);
       const newLines = [...state.lines];
       newLines[state.cursorRow] = line.slice(state.cursorCol);
-      return { ...state, lines: newLines, cursorCol: 0, preferredCol: null, killRing: pushKill(state.killRing, killed) };
+      return {
+        ...state,
+        lines: newLines,
+        cursorCol: 0,
+        preferredCol: null,
+        killRing: pushKill(state.killRing, killed),
+      };
     }
 
     case "kill-word-before": {
@@ -314,7 +354,13 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
         const prevLen = newLines[state.cursorRow - 1].length;
         newLines[state.cursorRow - 1] += newLines[state.cursorRow];
         newLines.splice(state.cursorRow, 1);
-        return { ...state, lines: newLines, cursorRow: state.cursorRow - 1, cursorCol: prevLen, preferredCol: null };
+        return {
+          ...state,
+          lines: newLines,
+          cursorRow: state.cursorRow - 1,
+          cursorCol: prevLen,
+          preferredCol: null,
+        };
       }
       return state;
     }
@@ -327,7 +373,7 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       const inserted = baseReducer(state, { type: "insert", text });
       return {
         ...inserted,
-        killRing: state.killRing,       // insert 会清 historyIndex,但 killRing 需原样保留
+        killRing: state.killRing, // insert 会清 historyIndex,但 killRing 需原样保留
         killRingIndex: lastIdx,
         lastActionWasYank: true,
         lastYankText: text,
@@ -405,9 +451,7 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
 
     case "reset": {
       const text = getText(state).trim();
-      const newHistory = text
-        ? [text, ...state.history].slice(0, MAX_HISTORY)
-        : state.history;
+      const newHistory = text ? [text, ...state.history].slice(0, MAX_HISTORY) : state.history;
       return {
         lines: [""],
         cursorRow: 0,
@@ -446,7 +490,13 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       newLines.splice(state.cursorRow, 1);
       const newRow = Math.min(state.cursorRow, newLines.length - 1);
       const newCol = Math.min(state.cursorCol, newLines[newRow].length);
-      return { ...state, lines: newLines, cursorRow: newRow, cursorCol: newCol, preferredCol: null };
+      return {
+        ...state,
+        lines: newLines,
+        cursorRow: newRow,
+        cursorCol: newCol,
+        preferredCol: null,
+      };
     }
 
     case "vim-delete-to-line-end": {
@@ -551,7 +601,12 @@ export function getVisualLines(lines: string[], width: number): VisualLine[] {
         lineWidth += charW;
       }
     }
-    result.push({ logicalRow: row, start: lineStart, end: line.length, text: line.slice(lineStart) });
+    result.push({
+      logicalRow: row,
+      start: lineStart,
+      end: line.length,
+      text: line.slice(lineStart),
+    });
   }
   return result;
 }
@@ -610,9 +665,12 @@ export function useTextBuffer(props: UseTextBufferProps) {
     dispatch({ type: "delete-forward" });
   }, []);
 
-  const moveCursor = useCallback((direction: "left" | "right" | "up" | "down" | "home" | "end" | "wordLeft" | "wordRight") => {
-    dispatch({ type: "move", direction });
-  }, []);
+  const moveCursor = useCallback(
+    (direction: "left" | "right" | "up" | "down" | "home" | "end" | "wordLeft" | "wordRight") => {
+      dispatch({ type: "move", direction });
+    },
+    [],
+  );
 
   const killLine = useCallback(() => {
     dispatch({ type: "kill-line" });
@@ -664,7 +722,10 @@ export function useTextBuffer(props: UseTextBufferProps) {
   // ── Vim 动作 dispatch 封装 ──
   const vimDeleteLine = useCallback(() => dispatch({ type: "vim-delete-line" }), []);
   const vimDeleteToLineEnd = useCallback(() => dispatch({ type: "vim-delete-to-line-end" }), []);
-  const vimOpenLine = useCallback((above: boolean) => dispatch({ type: "vim-open-line", above }), []);
+  const vimOpenLine = useCallback(
+    (above: boolean) => dispatch({ type: "vim-open-line", above }),
+    [],
+  );
   const vimSetBuffer = useCallback(
     (lines: string[], cursorRow: number, cursorCol: number) =>
       dispatch({ type: "vim-set-buffer", lines, cursorRow, cursorCol }),
@@ -677,10 +738,7 @@ export function useTextBuffer(props: UseTextBufferProps) {
 
   // Viewport 滚动
   const { height: vpHeight, width: vpWidth } = props.viewport;
-  const visualLines = useMemo(
-    () => getVisualLines(state.lines, vpWidth),
-    [state.lines, vpWidth],
-  );
+  const visualLines = useMemo(() => getVisualLines(state.lines, vpWidth), [state.lines, vpWidth]);
   const cursorVisual = useMemo(
     () => getCursorVisualPosition(state.lines, state.cursorRow, state.cursorCol, vpWidth),
     [state.lines, state.cursorRow, state.cursorCol, vpWidth],

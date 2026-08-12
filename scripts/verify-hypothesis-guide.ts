@@ -113,7 +113,12 @@ function main() {
   const total = rows.length;
 
   // 四象限分布
-  const byQuad: Record<string, SessionRow[]> = { TRIGGER: [], PATH_ONLY: [], INV_ONLY: [], NEITHER: [] };
+  const byQuad: Record<string, SessionRow[]> = {
+    TRIGGER: [],
+    PATH_ONLY: [],
+    INV_ONLY: [],
+    NEITHER: [],
+  };
   for (const r of rows) byQuad[r.quadrant].push(r);
 
   const triggered = rows.filter((r) => r.triggered);
@@ -145,12 +150,29 @@ function main() {
           quadrants: Object.fromEntries(
             Object.entries(byQuad).map(([k, v]) => [
               k,
-              { count: v.length, pct: pct(v.length, total), avgSteps: v.length ? Math.round(v.reduce((s, r) => s + r.steps, 0) / v.length) : 0 },
+              {
+                count: v.length,
+                pct: pct(v.length, total),
+                avgSteps: v.length ? Math.round(v.reduce((s, r) => s + r.steps, 0) / v.length) : 0,
+              },
             ]),
           ),
-          triggered: { count: triggered.length, pct: pct(triggered.length, total), byLayer: triggeredByLayer },
-          missCandidates: missCandidates.map((r) => ({ id: r.id, steps: r.steps, quadrant: r.quadrant, firstPrompt: r.firstPrompt.slice(0, 200) })),
-          falsePositiveCandidates: falsePositiveCandidates.map((r) => ({ id: r.id, steps: r.steps, firstPrompt: r.firstPrompt.slice(0, 200) })),
+          triggered: {
+            count: triggered.length,
+            pct: pct(triggered.length, total),
+            byLayer: triggeredByLayer,
+          },
+          missCandidates: missCandidates.map((r) => ({
+            id: r.id,
+            steps: r.steps,
+            quadrant: r.quadrant,
+            firstPrompt: r.firstPrompt.slice(0, 200),
+          })),
+          falsePositiveCandidates: falsePositiveCandidates.map((r) => ({
+            id: r.id,
+            steps: r.steps,
+            firstPrompt: r.firstPrompt.slice(0, 200),
+          })),
           adoption: {
             anyAdoptedCount: anyAdopted.length,
             triggeredAndAdoptedCount: triggeredAndAdopted.length,
@@ -189,7 +211,9 @@ function main() {
   L.push(``);
   L.push(`## 二、最终触发率（三层判定后）`);
   L.push(``);
-  L.push(`触发总数：${triggered.length} / ${total} = **${pct(triggered.length, total)}**（文档预估 ~17-18%）`);
+  L.push(
+    `触发总数：${triggered.length} / ${total} = **${pct(triggered.length, total)}**（文档预估 ~17-18%）`,
+  );
   L.push(`命中层拆解：`);
   L.push(`  - Layer 2 高信号短语命中：${triggeredByLayer.highSignal}`);
   L.push(`  - Layer 3 JSON title 才命中：${triggeredByLayer.jsonTitle}`);
@@ -197,7 +221,9 @@ function main() {
   L.push(``);
   L.push(`## 三、漏判候选（未触发 + 步数>20，需人工抽查是否真核查任务）`);
   L.push(``);
-  L.push(`共 ${missCandidates.length} 条，展示步数最高的前 ${Math.min(sampleN, missCandidates.length)} 条：`);
+  L.push(
+    `共 ${missCandidates.length} 条，展示步数最高的前 ${Math.min(sampleN, missCandidates.length)} 条：`,
+  );
   for (const r of missCandidates.slice(0, sampleN)) {
     L.push(`  [${r.id}] steps=${r.steps} quad=${r.quadrant}`);
     L.push(`    «${r.firstPrompt.slice(0, 160).replace(/\n/g, " ")}»`);
@@ -213,7 +239,9 @@ function main() {
   L.push(``);
   L.push(`## 五、采纳关联（触发 → 模型实际调 hypothesis_register）`);
   L.push(``);
-  L.push(`触发的会话中实际调用 hypothesis_register：${triggeredAndAdopted.length} / ${triggered.length} = ${pct(triggeredAndAdopted.length, triggered.length)}`);
+  L.push(
+    `触发的会话中实际调用 hypothesis_register：${triggeredAndAdopted.length} / ${triggered.length} = ${pct(triggeredAndAdopted.length, triggered.length)}`,
+  );
   L.push(`全量会话中任意调用 hypothesis_register：${anyAdopted.length}`);
   L.push(``);
   L.push(`> 注：本地历史会话多数早于本次改动落地，采纳数据预期偏低/为 0；`);

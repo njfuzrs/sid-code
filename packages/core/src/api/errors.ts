@@ -135,7 +135,10 @@ export function isImageTooLarge(error: unknown): boolean {
 
 export function isPdfTooLarge(error: unknown): boolean {
   const msg = lower(error);
-  return (msg.includes("pdf") && (msg.includes("too large") || msg.includes("exceeds"))) || msg.includes("pdf_too_large");
+  return (
+    (msg.includes("pdf") && (msg.includes("too large") || msg.includes("exceeds"))) ||
+    msg.includes("pdf_too_large")
+  );
 }
 
 export function isToolUseMismatch(error: unknown): boolean {
@@ -152,7 +155,7 @@ export function isCreditBalanceLow(error: unknown): boolean {
     msg.includes("credit balance") ||
     msg.includes("insufficient") ||
     msg.includes("billing") ||
-    msg.includes("quota") && msg.includes("exceeded")
+    (msg.includes("quota") && msg.includes("exceeded"))
   );
 }
 
@@ -160,7 +163,13 @@ export function isServerError(error: unknown): boolean {
   const status = extractHTTPStatus(error);
   if (status !== undefined && status >= 500 && status !== 529) return true;
   const msg = lower(error);
-  return msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("server_error") || msg.includes("internal server error");
+  return (
+    msg.includes("500") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("server_error") ||
+    msg.includes("internal server error")
+  );
 }
 
 export function isConnectionError(error: unknown): boolean {

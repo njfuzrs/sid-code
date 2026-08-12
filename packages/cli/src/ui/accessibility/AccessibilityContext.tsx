@@ -14,12 +14,7 @@
  * 「语义前缀文本 + 动画降级」这一终端可行形态。
  */
 
-import React, {
-  createContext,
-  useContext,
-  useMemo,
-  useState,
-} from "react";
+import React, { createContext, useContext, useMemo, useState } from "react";
 import { detectScreenReader } from "./detect.ts";
 
 export interface AccessibilityContextValue {
@@ -29,9 +24,7 @@ export interface AccessibilityContextValue {
   setEnabled: (value: boolean) => void;
 }
 
-const AccessibilityContext = createContext<AccessibilityContextValue | null>(
-  null,
-);
+const AccessibilityContext = createContext<AccessibilityContextValue | null>(null);
 
 export function AccessibilityProvider({
   children,
@@ -41,20 +34,14 @@ export function AccessibilityProvider({
   children: React.ReactNode;
   initialEnabled?: boolean;
 }) {
-  const [enabled, setEnabled] = useState<boolean>(
-    initialEnabled ?? detectScreenReader(),
-  );
+  const [enabled, setEnabled] = useState<boolean>(initialEnabled ?? detectScreenReader());
 
   const value = useMemo<AccessibilityContextValue>(
     () => ({ enabled, setEnabled: (v: boolean) => setEnabled(v) }),
     [enabled],
   );
 
-  return (
-    <AccessibilityContext.Provider value={value}>
-      {children}
-    </AccessibilityContext.Provider>
-  );
+  return <AccessibilityContext.Provider value={value}>{children}</AccessibilityContext.Provider>;
 }
 
 /**

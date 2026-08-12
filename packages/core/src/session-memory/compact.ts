@@ -77,7 +77,11 @@ export async function trySessionMemoryCompaction(
   }
 
   // 4. 按 section 截断
-  const truncated = truncateSessionMemory(content!, config.maxSummaryTokens, config.perSectionTokens);
+  const truncated = truncateSessionMemory(
+    content!,
+    config.maxSummaryTokens,
+    config.perSectionTokens,
+  );
   if (!truncated.trim()) {
     return null;
   }

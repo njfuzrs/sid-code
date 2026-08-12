@@ -13,7 +13,11 @@ import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase, clearStreamSnapshot, cleanupAgentSnapshots } from "../trace/stream-observer.ts";
+import {
+  emitStreamPhase,
+  clearStreamSnapshot,
+  cleanupAgentSnapshots,
+} from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
@@ -288,7 +292,13 @@ async function runAgentLoopInner(
 ): Promise<AgentLoopResult> {
   const log = getLogger();
   const {
-    provider, model, ctxMgr, tools, maxTurns, signal, loopDetector,
+    provider,
+    model,
+    ctxMgr,
+    tools,
+    maxTurns,
+    signal,
+    loopDetector,
     loopRecoveryPrompt = LOOP_RECOVERY_PROMPT,
     availability,
   } = config;
@@ -391,17 +401,21 @@ async function runAgentLoopInner(
         if (diagnosticText) {
           ctxMgr.addMessage({
             role: "user",
-            content: [{
-              type: "text",
-              text:
-                `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
-                `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
-                `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
-            }],
+            content: [
+              {
+                type: "text",
+                text:
+                  `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
+                  `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
+                  `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
+              },
+            ],
           });
           log.info("AGENT_LOOP", "注入 LSP 诊断反馈（子代理）");
         }
-      } catch { /* LSP 未启用 / 收集失败：降级不注入，绝不影响子代理循环 */ }
+      } catch {
+        /* LSP 未启用 / 收集失败：降级不注入，绝不影响子代理循环 */
+      }
     }
 
     const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
@@ -451,7 +465,12 @@ async function runAgentLoopInner(
     //   processStream idle/overall = 跨重试兜底 → 触发即结束本轮；
     //   sub-agent.ts 的 timeoutCtrl = wall-clock 总预算硬顶。
     // ══════════════════════════════════════════════════════════════════
-    emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt: 0 }, observerAgentId);
+    emitStreamPhase(
+      agentStreamIndex,
+      "fetch_sent",
+      { caller: "sub-agent", model, attempt: 0 },
+      observerAgentId,
+    );
 
     const stream = streamWithResilience(provider, sendParams, signal, {
       querySource: config.querySource ?? "agent:builtin",
@@ -474,11 +493,24 @@ async function runAgentLoopInner(
       // 这正是缺口 A 的镜像：改造前是删别人的，漏传 id 就变成删错人的。
       onRetry: (attempt: number, error: string) => {
         clearStreamSnapshot(agentStreamIndex, undefined, observerAgentId);
-        emitStreamPhase(agentStreamIndex, "error", {
-          caller: "sub-agent", model, error, attempt,
-          elapsed_ms: Date.now() - turnStartTime,
-        }, observerAgentId);
-        emitStreamPhase(agentStreamIndex, "fetch_sent", { caller: "sub-agent", model, attempt }, observerAgentId);
+        emitStreamPhase(
+          agentStreamIndex,
+          "error",
+          {
+            caller: "sub-agent",
+            model,
+            error,
+            attempt,
+            elapsed_ms: Date.now() - turnStartTime,
+          },
+          observerAgentId,
+        );
+        emitStreamPhase(
+          agentStreamIndex,
+          "fetch_sent",
+          { caller: "sub-agent", model, attempt },
+          observerAgentId,
+        );
       },
     });
 
@@ -492,10 +524,17 @@ async function runAgentLoopInner(
     } catch (err) {
       // 漏斗只在「用户/外部 abort」时抛（可重试错误已在内部消化成重试或 error 事件）。
       const errMessage = (err as Error)?.message ?? String(err);
-      emitStreamPhase(agentStreamIndex, "error", {
-        caller: "sub-agent", model, error: errMessage,
-        elapsed_ms: Date.now() - turnStartTime,
-      }, observerAgentId);
+      emitStreamPhase(
+        agentStreamIndex,
+        "error",
+        {
+          caller: "sub-agent",
+          model,
+          error: errMessage,
+          elapsed_ms: Date.now() - turnStartTime,
+        },
+        observerAgentId,
+      );
       return {
         success: false,
         turns,
@@ -508,16 +547,22 @@ async function runAgentLoopInner(
     }
 
     if (response.stopReason !== "error") {
-      emitStreamPhase(agentStreamIndex, "completed", {
-        caller: "sub-agent", model, elapsed_ms: Date.now() - turnStartTime,
-      }, observerAgentId);
+      emitStreamPhase(
+        agentStreamIndex,
+        "completed",
+        {
+          caller: "sub-agent",
+          model,
+          elapsed_ms: Date.now() - turnStartTime,
+        },
+        observerAgentId,
+      );
     }
-
 
     if (config.onStreamText) {
       const responseText = response.content
-        .filter(b => b.type === "text")
-        .map(b => b.type === "text" ? b.text : "")
+        .filter((b) => b.type === "text")
+        .map((b) => (b.type === "text" ? b.text : ""))
         .join("");
       if (responseText) config.onStreamText(responseText);
     }
@@ -555,10 +600,15 @@ async function runAgentLoopInner(
     // 这里，故那条路径的归因仍不精确。修它要动漏斗的空响应语义，属另案；
     // 现状已由 tests/agent/resilience-b5-gates.test.ts 钉住。
     const hasAnyContent = response.content.length > 0;
-    if (!hasAnyContent &&
-        response.stopReason !== "max_tokens" &&
-        response.stopReason !== "model_context_window_exceeded") {
-      log.error("AGENT_LOOP", `子代理收到空响应（0 内容块，stopReason=${response.stopReason}），判定失败`);
+    if (
+      !hasAnyContent &&
+      response.stopReason !== "max_tokens" &&
+      response.stopReason !== "model_context_window_exceeded"
+    ) {
+      log.error(
+        "AGENT_LOOP",
+        `子代理收到空响应（0 内容块，stopReason=${response.stopReason}），判定失败`,
+      );
       return {
         success: false,
         turns,
@@ -578,14 +628,14 @@ async function runAgentLoopInner(
     try {
       const norm = normalizeCacheUsage(response.usage, provider.name());
       ctxMgr.recordActualTokens(norm.promptTotal, tools.size());
-    } catch { /* 校准失败不影响子代理循环 */ }
+    } catch {
+      /* 校准失败不影响子代理循环 */
+    }
 
     // 提取文本输出
-    const textBlocks = response.content.filter(b => b.type === "text");
+    const textBlocks = response.content.filter((b) => b.type === "text");
     if (textBlocks.length > 0) {
-      lastTextOutput = textBlocks
-        .map(b => b.type === "text" ? b.text : "")
-        .join("\n");
+      lastTextOutput = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
     }
 
     // 添加助手消息到历史
@@ -616,7 +666,13 @@ async function runAgentLoopInner(
     // 停止原因处理
     if (response.stopReason === "end_turn" || response.stopReason === "stop") {
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      config.onTurnEnd?.({
+        turn: turns,
+        textOutput: lastTextOutput,
+        tools: [],
+        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+        toolUseCount,
+      });
       return {
         success: true,
         turns,
@@ -661,12 +717,12 @@ async function runAgentLoopInner(
       }
 
       // 统计工具调用次数
-      const toolUseBlocks = response.content.filter(b => b.type === "tool_use");
+      const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
       toolUseCount += toolUseBlocks.length;
 
       // 空参数检测（对标主循环 F1）：弱模型退化时输出 input={} 的 tool_use，
       // 直接执行会报参数缺失错误，浪费工具执行 token。检测到后替换为错误提示让模型重试。
-      const emptyParamBlocks = toolUseBlocks.filter(b => {
+      const emptyParamBlocks = toolUseBlocks.filter((b) => {
         if (b.type !== "tool_use") return false;
         if (!isEmptyToolInput(b.input)) return false;
         const schema = tools.get(b.name)?.inputSchema?.();
@@ -675,7 +731,7 @@ async function runAgentLoopInner(
       if (emptyParamBlocks.length > 0) {
         log.warn("AGENT_LOOP", `检测到 ${emptyParamBlocks.length} 个空参数 tool_use，注入重试提示`);
         // 构造 tool_result 错误响应 + 重试提示
-        const errorResults: ContentBlock[] = emptyParamBlocks.map(b => ({
+        const errorResults: ContentBlock[] = emptyParamBlocks.map((b) => ({
           type: "tool_result" as const,
           tool_use_id: (b as { type: "tool_use"; id: string }).id,
           content: "错误：工具参数为空。请检查工具定义，提供完整的必需参数后重新调用。",
@@ -686,7 +742,14 @@ async function runAgentLoopInner(
       }
 
       // 执行工具
-      const toolResults = await executeTools(response.content, tools, signal, config.hookSystem, config.permissionChecker, config.onToolProgress);
+      const toolResults = await executeTools(
+        response.content,
+        tools,
+        signal,
+        config.hookSystem,
+        config.permissionChecker,
+        config.onToolProgress,
+      );
       ctxMgr.addMessage({ role: "user", content: toolResults });
 
       // P2-1：JIT 上下文发现（子代理侧，独立实例）。放在 addMessage 之后、
@@ -717,11 +780,17 @@ async function runAgentLoopInner(
       }
 
       // 每轮结束回调（进度追踪 + 磁盘输出）
-      const turnToolInfo = toolUseBlocks.map(b => ({
+      const turnToolInfo = toolUseBlocks.map((b) => ({
         name: b.type === "tool_use" ? b.name : "",
         input: b.type === "tool_use" ? (b.input as Record<string, unknown>) : {},
       }));
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: turnToolInfo, tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      config.onTurnEnd?.({
+        turn: turns,
+        textOutput: lastTextOutput,
+        tools: turnToolInfo,
+        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+        toolUseCount,
+      });
 
       continue;
     }
@@ -729,7 +798,13 @@ async function runAgentLoopInner(
     // max_tokens 续写
     if (response.stopReason === "max_tokens" || response.stopReason === "length") {
       log.info("AGENT_LOOP", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      config.onTurnEnd?.({
+        turn: turns,
+        textOutput: lastTextOutput,
+        tools: [],
+        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+        toolUseCount,
+      });
       continue;
     }
 
@@ -779,7 +854,10 @@ async function runAgentLoopInner(
       // 「第 3/2 次续写」——一句自相矛盾且承诺了一次并不会发生的续写的日志。
       // 日志是排查的第一手材料，这种矛盾会直接把人带偏。
       if (ctxWindowRecoveryCount > MAX_CTX_WINDOW_RECOVERY) {
-        log.error("AGENT_LOOP", `context window 压缩续写已达 ${MAX_CTX_WINDOW_RECOVERY} 次上限，子代理终止`);
+        log.error(
+          "AGENT_LOOP",
+          `context window 压缩续写已达 ${MAX_CTX_WINDOW_RECOVERY} 次上限，子代理终止`,
+        );
         return {
           success: false,
           turns,
@@ -799,7 +877,13 @@ async function runAgentLoopInner(
           `${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
       );
 
-      config.onTurnEnd?.({ turn: turns, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      config.onTurnEnd?.({
+        turn: turns,
+        textOutput: lastTextOutput,
+        tools: [],
+        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+        toolUseCount,
+      });
       continue;
     }
 
@@ -843,7 +927,12 @@ async function runAgentLoopInner(
     log.info("AGENT_LOOP", `达到最大轮次 ${maxTurns}，请求强制总结`);
     ctxMgr.addMessage({
       role: "user",
-      content: [{ type: "text", text: "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。" }],
+      content: [
+        {
+          type: "text",
+          text: "你已达到最大轮次限制，无法继续调用工具。请立即输出你到目前为止的所有发现和结论，以结构化格式（表格/列表）呈现。不要再调用任何工具，直接输出结论。",
+        },
+      ],
     });
 
     // T13.1：强制总结轮同样发射 StreamPhase 事件（与主循环轮对齐，避免总结轮 LLM 调用不可见）。
@@ -852,7 +941,12 @@ async function runAgentLoopInner(
     const summaryStartTime = Date.now();
     // B4：总结轮同样带 observerAgentId —— 20000 命名空间只避开了「同一子代理内主流
     // 与总结流」的撞车，避不开「多个并行子代理的总结轮」互相撞车（它们 turns 常常相同）。
-    emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model }, observerAgentId);
+    emitStreamPhase(
+      summaryStreamIndex,
+      "fetch_sent",
+      { caller: "sub-agent-summary", model },
+      observerAgentId,
+    );
 
     try {
       // B2（D2）：总结轮同样走漏斗，**首次获得韧性**。
@@ -890,11 +984,24 @@ async function runAgentLoopInner(
           onTelemetry: onTelemetryTap,
           onRetry: (attempt: number, error: string) => {
             clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
-            emitStreamPhase(summaryStreamIndex, "error", {
-              caller: "sub-agent-summary", model, error, attempt,
-              elapsed_ms: Date.now() - summaryStartTime,
-            }, observerAgentId);
-            emitStreamPhase(summaryStreamIndex, "fetch_sent", { caller: "sub-agent-summary", model, attempt }, observerAgentId);
+            emitStreamPhase(
+              summaryStreamIndex,
+              "error",
+              {
+                caller: "sub-agent-summary",
+                model,
+                error,
+                attempt,
+                elapsed_ms: Date.now() - summaryStartTime,
+              },
+              observerAgentId,
+            );
+            emitStreamPhase(
+              summaryStreamIndex,
+              "fetch_sent",
+              { caller: "sub-agent-summary", model, attempt },
+              observerAgentId,
+            );
           },
         },
       );
@@ -905,22 +1012,41 @@ async function runAgentLoopInner(
         overallTimeoutMs: config.streamOverallTimeoutMs,
       });
       accumulateUsage(totalUsage, summaryResponse.usage);
-      emitStreamPhase(summaryStreamIndex, "completed", { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime }, observerAgentId);
+      emitStreamPhase(
+        summaryStreamIndex,
+        "completed",
+        { caller: "sub-agent-summary", model, elapsed_ms: Date.now() - summaryStartTime },
+        observerAgentId,
+      );
 
       // 提取总结文本
-      const summaryTexts = summaryResponse.content.filter(b => b.type === "text");
+      const summaryTexts = summaryResponse.content.filter((b) => b.type === "text");
       if (summaryTexts.length > 0) {
-        lastTextOutput = summaryTexts
-          .map(b => b.type === "text" ? b.text : "")
-          .join("\n");
+        lastTextOutput = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       }
 
       // 添加总结到历史
       ctxMgr.addMessage({ role: "assistant", content: summaryResponse.content });
-      config.onTurnEnd?.({ turn: turns + 1, textOutput: lastTextOutput, tools: [], tokenCount: totalUsage.inputTokens + totalUsage.outputTokens, toolUseCount });
+      config.onTurnEnd?.({
+        turn: turns + 1,
+        textOutput: lastTextOutput,
+        tools: [],
+        tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+        toolUseCount,
+      });
     } catch (err: any) {
       // 强制总结失败不影响整体返回（降级到 extractFinalText 的启发式过滤）
-      emitStreamPhase(summaryStreamIndex, "error", { caller: "sub-agent-summary", model, error: err.message, elapsed_ms: Date.now() - summaryStartTime }, observerAgentId);
+      emitStreamPhase(
+        summaryStreamIndex,
+        "error",
+        {
+          caller: "sub-agent-summary",
+          model,
+          error: err.message,
+          elapsed_ms: Date.now() - summaryStartTime,
+        },
+        observerAgentId,
+      );
       log.warn("AGENT_LOOP", `强制总结轮失败: ${err.message}`);
     }
   }

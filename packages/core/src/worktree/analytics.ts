@@ -25,10 +25,7 @@ export type WorktreeEventName =
  * 上报一个 worktree analytics 事件。
  * 容错：上报失败绝不影响主流程。
  */
-export function logWorktreeEvent(
-  event: WorktreeEventName,
-  data: Record<string, unknown>,
-): void {
+export function logWorktreeEvent(event: WorktreeEventName, data: Record<string, unknown>): void {
   try {
     const log = getLogger();
     log.info("WORKTREE_ANALYTICS", `${event} ${JSON.stringify(data)}`);

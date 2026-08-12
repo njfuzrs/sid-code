@@ -23,9 +23,7 @@ import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
 
 /** 加载单个插件的所有 skills（施加 pluginName: 命名空间前缀） */
-export async function loadSkillsForPlugin(
-  plugin: LoadedPlugin,
-): Promise<SkillDefinition[]> {
+export async function loadSkillsForPlugin(plugin: LoadedPlugin): Promise<SkillDefinition[]> {
   const log = getLogger();
   const extLoader = new ExtensionLoader();
   const skillLoader = new SkillLoader(extLoader);

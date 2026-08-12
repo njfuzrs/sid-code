@@ -11,11 +11,7 @@ import type { SpanHandle } from "./bus.ts";
 import type { TokenMeter } from "./metrics/token-meter.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
-import {
-  addRequestContent,
-  addResponseContent,
-  addToolContent,
-} from "./content-tracing.ts";
+import { addRequestContent, addResponseContent, addToolContent } from "./content-tracing.ts";
 import { HookEventName } from "../hook/types.ts";
 import type {
   HookInput,
@@ -172,7 +168,7 @@ export class TelemetryHookProbe {
       [ATTR.CONVERSATION_ID]: this.config.sessionId,
       [ATTR.REQUEST_MODEL]: this.config.model,
       [ATTR.CWD]: input.cwd,
-      ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+      ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
     });
   }
 
@@ -183,7 +179,7 @@ export class TelemetryHookProbe {
       [ATTR.PROVIDER_NAME]: this.config.provider,
       [ATTR.REQUEST_MODEL]: input.llm_request.model,
       [ATTR.TURN_NUMBER]: this.turns,
-      ...this.collectEnrichedAttributes("chat", input) as Attributes,
+      ...(this.collectEnrichedAttributes("chat", input) as Attributes),
     });
 
     // 内容级 tracing（P1-5）：默认关闭，四道闸门见 content-tracing.ts。
@@ -244,7 +240,7 @@ export class TelemetryHookProbe {
       [ATTR.FINISH_REASONS]: input.llm_response.stop_reason ?? "unknown",
       [ATTR.COST_USD]: input.llm_response.cost_usd ?? 0,
       [ATTR.CACHE_SAVINGS_USD]: input.llm_response.cache_savings_usd ?? 0,
-      ...enriched as Attributes,
+      ...(enriched as Attributes),
     });
     this.llmSpan?.end();
     this.llmSpan = undefined;
@@ -259,7 +255,7 @@ export class TelemetryHookProbe {
       [ATTR.TOOL_NAME]: input.tool_name,
       [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
       [ATTR.SUCCESS]: !input.is_error,
-      ...enriched as Attributes,
+      ...(enriched as Attributes),
     });
     // 如果有真实耗时，记录为属性
     if (input.duration_ms !== undefined) {
@@ -284,16 +280,12 @@ export class TelemetryHookProbe {
   }
 
   private handleBeforePermissionCheck(input: PermissionCheckInput): void {
-    const span = this.bus.startSpan(
-      "blocked_on_user",
-      `blocked_on_user ${input.tool_name}`,
-      {
-        [ATTR.OPERATION_NAME]: "blocked_on_user",
-        [ATTR.TOOL_NAME]: input.tool_name,
-        ...(input.tool_use_id ? { [ATTR.TOOL_CALL_ID]: input.tool_use_id } : {}),
-        ...this.collectEnrichedAttributes("execute_tool", input) as Attributes,
-      },
-    );
+    const span = this.bus.startSpan("blocked_on_user", `blocked_on_user ${input.tool_name}`, {
+      [ATTR.OPERATION_NAME]: "blocked_on_user",
+      [ATTR.TOOL_NAME]: input.tool_name,
+      ...(input.tool_use_id ? { [ATTR.TOOL_CALL_ID]: input.tool_use_id } : {}),
+      ...(this.collectEnrichedAttributes("execute_tool", input) as Attributes),
+    });
     this.permissionSpans.set(this.permissionKey(input), span);
   }
 
@@ -307,17 +299,13 @@ export class TelemetryHookProbe {
   }
 
   private handleBeforeHookExecution(input: HookExecutionInput): void {
-    const span = this.bus.startSpan(
-      "hook_execution",
-      `hook_execution ${input.hook_name}`,
-      {
-        [ATTR.OPERATION_NAME]: "hook_execution",
-        "sidcode.hook.name": input.hook_name,
-        ...(input.triggering_event
-          ? { "sidcode.hook.triggering_event": input.triggering_event }
-          : {}),
-      },
-    );
+    const span = this.bus.startSpan("hook_execution", `hook_execution ${input.hook_name}`, {
+      [ATTR.OPERATION_NAME]: "hook_execution",
+      "sidcode.hook.name": input.hook_name,
+      ...(input.triggering_event
+        ? { "sidcode.hook.triggering_event": input.triggering_event }
+        : {}),
+    });
     this.hookSpans.set(input.hook_name, span);
   }
 
@@ -341,7 +329,7 @@ export class TelemetryHookProbe {
       ...(input.provider ? { [ATTR.PROVIDER_NAME]: input.provider } : {}),
       "sidcode.subagent.id": input.agent_id,
       "sidcode.subagent.type": input.agent_type,
-      ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+      ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
     });
     this.subagentSpans.set(input.agent_id, span);
   }
@@ -370,15 +358,19 @@ export class TelemetryHookProbe {
     if (span) {
       span.setAttributes({
         [ATTR.SUCCESS]: input.success ?? true,
-        ...(usage ? {
-          [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
-          [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
-          [ATTR.CACHE_READ_TOKENS]: usage.cacheReadInputTokens ?? 0,
-          [ATTR.CACHE_CREATION_TOKENS]: usage.cacheCreationInputTokens ?? 0,
-        } : {}),
+        ...(usage
+          ? {
+              [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
+              [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
+              [ATTR.CACHE_READ_TOKENS]: usage.cacheReadInputTokens ?? 0,
+              [ATTR.CACHE_CREATION_TOKENS]: usage.cacheCreationInputTokens ?? 0,
+            }
+          : {}),
         ...(input.turns !== undefined ? { [ATTR.TOTAL_TURNS]: input.turns } : {}),
-        ...(input.duration_ms !== undefined ? { "sidcode.subagent.duration_ms": input.duration_ms } : {}),
-        ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+        ...(input.duration_ms !== undefined
+          ? { "sidcode.subagent.duration_ms": input.duration_ms }
+          : {}),
+        ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
       });
       span.end();
       if (key) this.subagentSpans.delete(key);
@@ -393,7 +385,7 @@ export class TelemetryHookProbe {
         [ATTR.TOTAL_COST_USD]: stats.total_cost_usd ?? 0,
         [ATTR.INPUT_TOKENS]: stats.total_tokens_sent ?? 0,
         [ATTR.OUTPUT_TOKENS]: stats.total_tokens_received ?? 0,
-        ...this.collectEnrichedAttributes("invoke_agent", input) as Attributes,
+        ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
       });
     }
     this.agentSpan?.end();

@@ -45,12 +45,22 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
   const disallowedTools = config?.disallowedTools ?? [];
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>权限管理</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        权限管理
+      </Text>
 
       {/* 权限模式 */}
       <Box marginTop={1} flexDirection="column">
-        <Text bold color={theme.text.primary}>权限模式</Text>
+        <Text bold color={theme.text.primary}>
+          权限模式
+        </Text>
         <Box paddingLeft={2}>
           <Text color={modeInfo.color}>{modeInfo.label}</Text>
           {modeInfo.desc && <Text color={theme.text.secondary}> — {modeInfo.desc}</Text>}
@@ -59,7 +69,9 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
 
       {/* Allow 规则 */}
       <Box marginTop={1} flexDirection="column">
-        <Text bold color={theme.text.primary}>Allow 规则 ({allowedTools.length})</Text>
+        <Text bold color={theme.text.primary}>
+          Allow 规则 ({allowedTools.length})
+        </Text>
         {allowedTools.length === 0 ? (
           <Box paddingLeft={2}>
             <Text color={theme.text.secondary}>（无显式 allow 规则）</Text>
@@ -81,7 +93,9 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
 
       {/* Deny 规则 */}
       <Box marginTop={1} flexDirection="column">
-        <Text bold color={theme.text.primary}>Deny 规则 ({disallowedTools.length})</Text>
+        <Text bold color={theme.text.primary}>
+          Deny 规则 ({disallowedTools.length})
+        </Text>
         {disallowedTools.length === 0 ? (
           <Box paddingLeft={2}>
             <Text color={theme.text.secondary}>（无显式 deny 规则）</Text>
@@ -103,11 +117,19 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
 
       {/* 操作提示 */}
       <Box marginTop={1} flexDirection="column">
-        <Text bold color={theme.text.primary}>操作</Text>
+        <Text bold color={theme.text.primary}>
+          操作
+        </Text>
         <Box paddingLeft={2} flexDirection="column">
-          <Text color={theme.text.secondary}>{WARNING_MARK} /allow &lt;规则&gt; — 添加 allow 规则</Text>
-          <Text color={theme.text.secondary}>{WARNING_MARK} /deny &lt;规则&gt;  — 添加 deny 规则</Text>
-          <Text color={theme.text.secondary}>{WARNING_MARK} /permissions list — 查看完整规则列表</Text>
+          <Text color={theme.text.secondary}>
+            {WARNING_MARK} /allow &lt;规则&gt; — 添加 allow 规则
+          </Text>
+          <Text color={theme.text.secondary}>
+            {WARNING_MARK} /deny &lt;规则&gt; — 添加 deny 规则
+          </Text>
+          <Text color={theme.text.secondary}>
+            {WARNING_MARK} /permissions list — 查看完整规则列表
+          </Text>
         </Box>
       </Box>
 

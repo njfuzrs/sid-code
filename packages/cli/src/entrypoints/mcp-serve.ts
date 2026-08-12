@@ -15,7 +15,11 @@
  * stdout 协议独占：JSON-RPC 消息只走 stdout，所有日志/诊断必须走 stderr，否则污染协议流。
  */
 
-import type { JsonRpcRequest, JsonRpcResponse, MCPToolDefinition } from "@sid-code/core/mcp/types.ts";
+import type {
+  JsonRpcRequest,
+  JsonRpcResponse,
+  MCPToolDefinition,
+} from "@sid-code/core/mcp/types.ts";
 import { CLIENT_PROTOCOL_VERSION } from "@sid-code/core/mcp/client.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import type { LegacyTool } from "@sid-code/core/tool/types.ts";
@@ -135,9 +139,7 @@ export async function runMcpServe(args: string[]): Promise<void> {
  * @param allowWrite 是否放开写/执行类工具（默认 false 仅只读）。
  * @returns handler（JSON-RPC 请求 → 响应）与已暴露工具列表。
  */
-export async function createMcpServeHandler(
-  allowWrite: boolean,
-): Promise<{
+export async function createMcpServeHandler(allowWrite: boolean): Promise<{
   handler: (req: JsonRpcRequest) => Promise<JsonRpcResponse>;
   tools: LegacyTool[];
 }> {

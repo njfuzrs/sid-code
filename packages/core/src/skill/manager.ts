@@ -91,7 +91,7 @@ export class SkillManager {
   private addSkillsWithPrecedence(newSkills: SkillDefinition[]): void {
     const log = getLogger();
     const skillMap = new Map<string, SkillDefinition>(
-      this.skills.map(s => [s.name.toLowerCase(), s]),
+      this.skills.map((s) => [s.name.toLowerCase(), s]),
     );
 
     for (const newSkill of newSkills) {
@@ -102,7 +102,10 @@ export class SkillManager {
         if (existingSkill.isBuiltin) {
           log.warn("SKILL", `Skill "${newSkill.name}" (${newSkill.source}) 覆盖了内置 Skill`);
         } else {
-          log.warn("SKILL", `Skill "${newSkill.name}" (${newSkill.source}) 覆盖了来自 ${existingSkill.source} 的同名 Skill`);
+          log.warn(
+            "SKILL",
+            `Skill "${newSkill.name}" (${newSkill.source}) 覆盖了来自 ${existingSkill.source} 的同名 Skill`,
+          );
         }
       }
 
@@ -163,10 +166,7 @@ export class SkillManager {
       }
     }
 
-    getLogger().info(
-      "SKILL",
-      `插件 Skill 已替换: ${before} → ${pluginSkills.length}`,
-    );
+    getLogger().info("SKILL", `插件 Skill 已替换: ${before} → ${pluginSkills.length}`);
     this.notifySkillsChanged();
     return pluginSkills.length;
   }
@@ -184,7 +184,9 @@ export class SkillManager {
     // 清 ExtensionLoader 缓存，否则 5min TTL 内重扫命中旧结果，改动不生效。
     try {
       this.loader.getExtensionLoader().clearCache();
-    } catch { /* 缓存清理失败不阻断重载 */ }
+    } catch {
+      /* 缓存清理失败不阻断重载 */
+    }
 
     // 快照 reload 前的禁用集（discover 重建 skill 定义会丢失 disabled 态，需重放）。
     const disabledNames = this.skills.filter((s) => s.disabled).map((s) => s.name);
@@ -197,7 +199,10 @@ export class SkillManager {
     }
     // 重放禁用态（/skills disable 的选择应跨热重载保留）
     if (disabledNames.length > 0) this.setDisabledSkills(disabledNames);
-    log.info("SKILL", `Skill 热重载完成：${this.skills.length} 个（含 ${preserved.length} 个插件/动态）`);
+    log.info(
+      "SKILL",
+      `Skill 热重载完成：${this.skills.length} 个（含 ${preserved.length} 个插件/动态）`,
+    );
     // 热重载改变了整个 skill 集合（新增/删除/内容变更），斜杠命令快照必须失效
     this.notifySkillsChanged();
   }
@@ -274,7 +279,7 @@ export class SkillManager {
    * 获取所有已启用的 Skill
    */
   getSkills(): SkillDefinition[] {
-    return this.skills.filter(s => !s.disabled);
+    return this.skills.filter((s) => !s.disabled);
   }
 
   /**
@@ -289,7 +294,7 @@ export class SkillManager {
    */
   getSkill(name: string): SkillDefinition | null {
     const lowercaseName = name.toLowerCase();
-    return this.skills.find(s => s.name.toLowerCase() === lowercaseName) ?? null;
+    return this.skills.find((s) => s.name.toLowerCase() === lowercaseName) ?? null;
   }
 
   /**
@@ -310,7 +315,7 @@ export class SkillManager {
    * 设置禁用列表
    */
   setDisabledSkills(names: string[]): void {
-    const lowercaseDisabledNames = names.map(n => n.toLowerCase());
+    const lowercaseDisabledNames = names.map((n) => n.toLowerCase());
     for (const skill of this.skills) {
       skill.disabled = lowercaseDisabledNames.includes(skill.name.toLowerCase());
     }

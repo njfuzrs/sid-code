@@ -143,9 +143,7 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
 /**
  * 将新体系 CommandExecutionResult 转换为旧 CommandResult
  */
-function toLegacyResult(
-  result: import("./types.ts").CommandExecutionResult,
-): LegacyCommandResult {
+function toLegacyResult(result: import("./types.ts").CommandExecutionResult): LegacyCommandResult {
   switch (result.type) {
     case "message":
       return { kind: "message", message: result.value };
@@ -186,9 +184,7 @@ function toLegacyResult(
  * execute 内部会创建 CommandExecutor，将 AppContext→CommandContext 桥接，
  * 执行后将 CommandExecutionResult→CommandResult 转换。
  */
-export async function adaptUnifiedToLegacy(
-  uc: UnifiedCommand,
-): Promise<LegacyCommand> {
+export async function adaptUnifiedToLegacy(uc: UnifiedCommand): Promise<LegacyCommand> {
   // 递归适配子命令（同步，新旧体系 subCommands 都是同步的）
   let subAdapterCache: LegacyCommand[] | undefined;
   const adaptSubCommands = (): LegacyCommand[] => {

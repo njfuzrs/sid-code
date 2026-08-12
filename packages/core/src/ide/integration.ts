@@ -146,10 +146,12 @@ export class IDEIntegration {
 export function shouldAutoConnect(configAutoConnect?: boolean): boolean {
   return !!(
     // --ide flag / settings.json ide.autoConnect 显式开启（与 env 等价，A-4 子集）
-    configAutoConnect ||
-    process.env.SID_CODE_SSE_PORT ||
-    process.env.SID_CODE_AUTO_CONNECT_IDE === "true" ||
-    isSupportedTerminal()
+    (
+      configAutoConnect ||
+      process.env.SID_CODE_SSE_PORT ||
+      process.env.SID_CODE_AUTO_CONNECT_IDE === "true" ||
+      isSupportedTerminal()
+    )
   );
 }
 
@@ -211,9 +213,10 @@ export function collectIDEContext(): { ideSelection?: string; ideMention?: strin
   if (mentions.length > 0) {
     result.ideMention = mentions
       .map((m) => {
-        const range = m.lineStart != null
-          ? `:${m.lineStart + 1}${m.lineEnd != null ? `-${m.lineEnd + 1}` : ""}`
-          : "";
+        const range =
+          m.lineStart != null
+            ? `:${m.lineStart + 1}${m.lineEnd != null ? `-${m.lineEnd + 1}` : ""}`
+            : "";
         return `  - ${m.filePath}${range}`;
       })
       .join("\n");
@@ -274,9 +277,10 @@ export function drainIDEContextDelta(): string | null {
   if (mentions.length > 0) {
     const lines = mentions
       .map((m) => {
-        const range = m.lineStart != null
-          ? `:${m.lineStart + 1}${m.lineEnd != null ? `-${m.lineEnd + 1}` : ""}`
-          : "";
+        const range =
+          m.lineStart != null
+            ? `:${m.lineStart + 1}${m.lineEnd != null ? `-${m.lineEnd + 1}` : ""}`
+            : "";
         return `  - ${m.filePath}${range}`;
       })
       .join("\n");

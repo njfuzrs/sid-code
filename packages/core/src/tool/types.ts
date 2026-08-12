@@ -242,9 +242,7 @@ export interface ToolCapabilityFields<Input = unknown> {
    * 故本字段允许函数形态（与 `isConcurrencySafe(input)` / `interruptBehavior()` 同风格），
    * 返回 `undefined` 表示"本次调用按默认原样展示"。
    */
-  resultDisplayMode?:
-    | ToolResultDisplayMode
-    | ((input: Input) => ToolResultDisplayMode | undefined);
+  resultDisplayMode?: ToolResultDisplayMode | ((input: Input) => ToolResultDisplayMode | undefined);
 }
 
 // ===== 旧版接口（渐进式迁移期间保留） =====
@@ -297,7 +295,11 @@ export interface LegacyTool extends ToolCapabilityFields {
    *   期间多次调用，把中间进度桥接到 UI；执行器负责把它路由到状态栏。既有工具不实现即忽略，
    *   向后兼容（可选参数）。对标 claude-code toolExecution.ts 的 progress 流桥接。
    */
-  execute(input: unknown, signal?: AbortSignal, onProgress?: (event: ToolProgressData) => void): Promise<LegacyToolResult>;
+  execute(
+    input: unknown,
+    signal?: AbortSignal,
+    onProgress?: (event: ToolProgressData) => void,
+  ): Promise<LegacyToolResult>;
   readOnly?(): boolean;
   isConcurrencySafe?(input: unknown): boolean;
   usageGuide?(): string;
@@ -333,12 +335,10 @@ export type PermissionResult =
   | { behavior: "allow"; updatedInput?: unknown }
   | { behavior: "deny"; message: string }
   | { behavior: "ask"; message: string }
-  | { behavior: "passthrough" };  // 工具没有意见，交给权限系统决定
+  | { behavior: "passthrough" }; // 工具没有意见，交给权限系统决定
 
 /** 输入校验结果 */
-export type ValidationResult =
-  | { result: true }
-  | { result: false; message: string };
+export type ValidationResult = { result: true } | { result: false; message: string };
 
 /** 工具执行的完整环境快照 */
 export interface ToolUseContext {
@@ -428,7 +428,10 @@ export interface Tool<
   // ===== 结果序列化 =====
 
   /** 将工具结果序列化为 API 格式的 tool_result */
-  serializeResult?(data: Output, toolUseId: string): {
+  serializeResult?(
+    data: Output,
+    toolUseId: string,
+  ): {
     type: "tool_result";
     tool_use_id: string;
     content: string;

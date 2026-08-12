@@ -23,11 +23,7 @@ import {
 } from "@sid-code/core/agent/sub-agent-protocol.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import { describeToolActivity } from "@sid-code/core/agent/progress.ts";
-import type {
-  ContentBlock,
-  StreamEvent,
-  Usage,
-} from "@sid-code/core/llm/types.ts";
+import type { ContentBlock, StreamEvent, Usage } from "@sid-code/core/llm/types.ts";
 import { accumulateUsage } from "@sid-code/core/llm/types.ts";
 import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, describeStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
@@ -96,22 +92,10 @@ async function main(): Promise<void> {
     }
 
     // 2. 创建 Provider
-    const provider = createProvider(
-      init.provider_name,
-      init.model,
-      init.api_key,
-      init.base_url,
-    );
+    const provider = createProvider(init.provider_name, init.model, init.api_key, init.base_url);
 
     // 3. 运行 Agent Loop
-    await runAgentLoop(
-      provider,
-      init,
-      stdinReader,
-      decoder,
-      buffer,
-      logError,
-    );
+    await runAgentLoop(provider, init, stdinReader, decoder, buffer, logError);
   } catch (err: any) {
     // 未捕获异常 → 发送 crash 消息
     try {
@@ -120,7 +104,9 @@ async function main(): Promise<void> {
         error: err.message,
         stack: err.stack?.slice(0, 500),
       });
-    } catch { /* 忽略 — stdout 可能已关闭 */ }
+    } catch {
+      /* 忽略 — stdout 可能已关闭 */
+    }
     logError("[headless] 未捕获异常:", err.message);
     process.exit(1);
   }
@@ -204,15 +190,16 @@ async function runAgentLoop(
       turns++;
 
       // 调用 LLM
-      const toolDefs = init.tool_defs.length > 0
-        ? init.tool_defs.map(d => ({
-            name: d.name,
-            description: d.description,
-            input_schema: d.inputSchema, // camelCase → snake_case
-            // 审计第 18 条：透传 strict（Constrained Decoding），此前手写映射丢失此字段。
-            ...(d.strict !== undefined ? { strict: d.strict } : {}),
-          }))
-        : undefined;
+      const toolDefs =
+        init.tool_defs.length > 0
+          ? init.tool_defs.map((d) => ({
+              name: d.name,
+              description: d.description,
+              input_schema: d.inputSchema, // camelCase → snake_case
+              // 审计第 18 条：透传 strict（Constrained Decoding），此前手写映射丢失此字段。
+              ...(d.strict !== undefined ? { strict: d.strict } : {}),
+            }))
+          : undefined;
 
       // B2（D4）：走唯一漏斗，不再直连。
       //
@@ -256,11 +243,9 @@ async function runAgentLoop(
       accumulateUsage(totalUsage, response.usage);
 
       // 提取文本输出
-      const textBlocks = response.content.filter(b => b.type === "text");
+      const textBlocks = response.content.filter((b) => b.type === "text");
       if (textBlocks.length > 0) {
-        lastTextOutput = textBlocks
-          .map(b => (b.type === "text" ? b.text : ""))
-          .join("\n");
+        lastTextOutput = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       }
 
       ctxMgr.addMessage({
@@ -281,17 +266,12 @@ async function runAgentLoop(
           max_turns: init.max_turns,
           toolUseCount: toolUseCount + turnToolUses.length,
           tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
-          lastActivity: lastTool
-            ? describeToolActivity(lastTool.name, lastTool.input)
-            : undefined,
+          lastActivity: lastTool ? describeToolActivity(lastTool.name, lastTool.input) : undefined,
         });
       }
 
       // 检查停止原因
-      if (
-        response.stopReason === "end_turn" ||
-        response.stopReason === "stop"
-      ) {
+      if (response.stopReason === "end_turn" || response.stopReason === "stop") {
         // 正常结束
         emitResult(true, lastTextOutput);
         return;
@@ -300,8 +280,9 @@ async function runAgentLoop(
       // 处理工具调用
       if (response.stopReason === "tool_use") {
         // 收集所有 tool_use blocks
-        const toolUses = response.content
-          .filter((b): b is ContentBlock & { type: "tool_use" } => b.type === "tool_use");
+        const toolUses = response.content.filter(
+          (b): b is ContentBlock & { type: "tool_use" } => b.type === "tool_use",
+        );
 
         if (toolUses.length === 0) {
           // 没有工具调用但 stop_reason 是 tool_use (异常)
@@ -486,12 +467,7 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
 // ============================================================
 
 /** 根据配置创建 Provider 实例（与 registry.ts createProvider 逻辑一致） */
-function createProvider(
-  name: string,
-  model: string,
-  apiKey: string,
-  baseURL?: string,
-): Provider {
+function createProvider(name: string, model: string, apiKey: string, baseURL?: string): Provider {
   switch (name) {
     case "anthropic": {
       // 动态导入避免顶层阻塞

@@ -14,9 +14,13 @@ function parseArgs() {
   let timeoutMs = 480_000;
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--prompt" && argv[i + 1]) { prompt = argv[++i]; }
-    else if (argv[i] === "--case-id" && argv[i + 1]) { caseId = argv[++i]; }
-    else if (argv[i] === "--timeout" && argv[i + 1]) { timeoutMs = parseInt(argv[++i], 10) || timeoutMs; }
+    if (argv[i] === "--prompt" && argv[i + 1]) {
+      prompt = argv[++i];
+    } else if (argv[i] === "--case-id" && argv[i + 1]) {
+      caseId = argv[++i];
+    } else if (argv[i] === "--timeout" && argv[i + 1]) {
+      timeoutMs = parseInt(argv[++i], 10) || timeoutMs;
+    }
   }
 
   return { prompt, caseId, timeoutMs };

@@ -82,9 +82,7 @@ export async function ensureBuiltinSkillsReleased(): Promise<string> {
         const dest = join(skillDir, ...file.relPath.split("/"));
         await mkdir(dirname(dest), { recursive: true });
         const data =
-          file.encoding === "base64"
-            ? Buffer.from(file.content, "base64")
-            : file.content;
+          file.encoding === "base64" ? Buffer.from(file.content, "base64") : file.content;
         await writeFile(dest, data);
         fileCount++;
       }

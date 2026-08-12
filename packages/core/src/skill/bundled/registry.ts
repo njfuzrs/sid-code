@@ -11,10 +11,7 @@
  * 与磁盘 Skill / 自定义命令走完全相同的执行路径。
  */
 
-import type {
-  UnifiedCommand,
-  CommandContext,
-} from "../../command-contract/types.ts";
+import type { UnifiedCommand, CommandContext } from "../../command-contract/types.ts";
 import { extractBundledSkillFiles } from "./extract.ts";
 import { getLogger } from "../../debug/logger.ts";
 

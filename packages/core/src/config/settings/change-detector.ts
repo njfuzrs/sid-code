@@ -32,9 +32,7 @@ const stabilityTimers = new Map<string, ReturnType<typeof setTimeout>>();
  * 初始化变更检测器——监听所有 settings 文件的变更。
  * @param settingsFiles 文件路径 → 来源 的映射（见 constants.getSettingsFilePaths）
  */
-export function initializeChangeDetector(
-  settingsFiles: Map<string, SettingSource>,
-): void {
+export function initializeChangeDetector(settingsFiles: Map<string, SettingSource>): void {
   cleanup(); // 清理旧监听器
 
   for (const [filePath, source] of settingsFiles) {

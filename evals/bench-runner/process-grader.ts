@@ -22,10 +22,7 @@ export interface JudgeInput {
  * Layer 3: Process Grader — LLM Judge 语义评分
  * 调用 LLM，秒级延迟，$0.001/条
  */
-export async function gradeProcess(
-  input: JudgeInput,
-  config: JudgeConfig,
-): Promise<GradeResult> {
+export async function gradeProcess(input: JudgeInput, config: JudgeConfig): Promise<GradeResult> {
   const judgePrompt = await Bun.file(config.promptPath).text();
 
   const userMsg = `Task: ${input.task}
@@ -63,9 +60,7 @@ ${input.agentResponse.slice(0, 3000)}`;
     // 解析 JSON
     let judgment: { score?: number; reasoning?: string };
     try {
-      const jsonStr = text.startsWith("```")
-        ? text.split("```")[1].replace(/^json\n?/, "")
-        : text;
+      const jsonStr = text.startsWith("```") ? text.split("```")[1].replace(/^json\n?/, "") : text;
       judgment = JSON.parse(jsonStr);
     } catch {
       // 尝试从文本中提取分数
@@ -86,8 +81,7 @@ ${input.agentResponse.slice(0, 3000)}`;
       score: Math.min(5, Math.max(0, judgment.score ?? 3)),
       layer: "process",
       details: {},
-      reasoning: judgment.reasoning
-        || `LLM Judge evaluation (raw: ${String(text).slice(0, 200)})`,
+      reasoning: judgment.reasoning || `LLM Judge evaluation (raw: ${String(text).slice(0, 200)})`,
     };
   } catch (error) {
     return {

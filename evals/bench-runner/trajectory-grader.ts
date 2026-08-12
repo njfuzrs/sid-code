@@ -83,8 +83,6 @@ export function gradeTrajectory(
     layer: "trajectory",
     details,
     reasoning:
-      penalties.length > 0
-        ? `扣分原因: ${penalties.join("; ")}`
-        : "过程质量良好，无明显问题",
+      penalties.length > 0 ? `扣分原因: ${penalties.join("; ")}` : "过程质量良好，无明显问题",
   };
 }

@@ -9,9 +9,15 @@ import { detectIDEs } from "@sid-code/core/ide/detect.ts";
 
 /** /ide 主命令 */
 export class IDECommand implements Command {
-  name() { return "ide"; }
-  aliases() { return []; }
-  description() { return "IDE 集成管理（status/connect/disconnect/install）"; }
+  name() {
+    return "ide";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "IDE 集成管理（status/connect/disconnect/install）";
+  }
 
   subCommands(): Command[] {
     return [
@@ -30,9 +36,15 @@ export class IDECommand implements Command {
 
 /** /ide status - 显示 IDE 连接状态 */
 class IDEStatusCommand implements Command {
-  name() { return "status"; }
-  aliases() { return ["ls"]; }
-  description() { return "显示 IDE 连接状态"; }
+  name() {
+    return "status";
+  }
+  aliases() {
+    return ["ls"];
+  }
+  description() {
+    return "显示 IDE 连接状态";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
@@ -43,11 +55,12 @@ class IDEStatusCommand implements Command {
     const { status, ideName } = integration?.getStatus() ?? { status: null, ideName: null };
 
     const lines = ["IDE 集成状态:"];
-    const statusText = {
-      connected: "✓ 已连接",
-      pending: "… 连接中",
-      disconnected: "✗ 已断开",
-    }[status as string] || "○ 未连接";
+    const statusText =
+      {
+        connected: "✓ 已连接",
+        pending: "… 连接中",
+        disconnected: "✗ 已断开",
+      }[status as string] || "○ 未连接";
 
     lines.push(`  状态: ${statusText}`);
     if (ideName) lines.push(`  IDE: ${ideName}`);
@@ -72,9 +85,15 @@ class IDEStatusCommand implements Command {
 
 /** /ide connect - 手动连接 IDE */
 class IDEConnectCommand implements Command {
-  name() { return "connect"; }
-  aliases() { return []; }
-  description() { return "手动连接到 IDE"; }
+  name() {
+    return "connect";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "手动连接到 IDE";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
@@ -88,10 +107,13 @@ class IDEConnectCommand implements Command {
 
     const detected = await detectIDEs(process.cwd());
     if (detected.length === 0) {
-      return { kind: "message", message: "未发现可用 IDE\n请确认 IDE 扩展已安装并运行（/ide install 可安装扩展）" };
+      return {
+        kind: "message",
+        message: "未发现可用 IDE\n请确认 IDE 扩展已安装并运行（/ide install 可安装扩展）",
+      };
     }
     if (detected.length > 1) {
-      const list = detected.map(i => `  - ${i.name} (${i.url})`).join("\n");
+      const list = detected.map((i) => `  - ${i.name} (${i.url})`).join("\n");
       return {
         kind: "message",
         message: `发现多个 IDE，请关闭多余实例后重试：\n${list}`,
@@ -107,9 +129,15 @@ class IDEConnectCommand implements Command {
 
 /** /ide disconnect - 断开 IDE 连接 */
 class IDEDisconnectCommand implements Command {
-  name() { return "disconnect"; }
-  aliases() { return []; }
-  description() { return "断开 IDE 连接"; }
+  name() {
+    return "disconnect";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "断开 IDE 连接";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
@@ -123,9 +151,15 @@ class IDEDisconnectCommand implements Command {
 
 /** /ide install - 安装 IDE 扩展 */
 class IDEInstallCommand implements Command {
-  name() { return "install"; }
-  aliases() { return []; }
-  description() { return "安装 sid-code IDE 扩展"; }
+  name() {
+    return "install";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "安装 sid-code IDE 扩展";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     const { getTerminalIDEType, isExtensionInstalled, installExtension } =

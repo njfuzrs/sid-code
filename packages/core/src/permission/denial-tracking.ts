@@ -135,7 +135,8 @@ export function recordSuccess(
   const signature = denialSignature(tool, resource);
   const bySignature = { ...state.bySignature };
   delete bySignature[signature];
-  const stillBlocked = state.lastDeniedSignature === signature ? undefined : state.lastDeniedSignature;
+  const stillBlocked =
+    state.lastDeniedSignature === signature ? undefined : state.lastDeniedSignature;
   return {
     ...state,
     // 当前展示的连续数只在"清掉的正是最近被拒的那个签名"时归零
@@ -154,11 +155,7 @@ export function recordSuccess(
  * 必须传入当前 tool/resource——熔断是"针对这次请求"的判断，而不是全局状态查询；
  * 不传则退化为看 lastDeniedSignature（兼容既有调用点/单测）。
  */
-export function shouldFuse(
-  state: DenialTrackingState,
-  tool?: string,
-  resource?: string,
-): boolean {
+export function shouldFuse(state: DenialTrackingState, tool?: string, resource?: string): boolean {
   const signature = tool ? denialSignature(tool, resource) : state.lastDeniedSignature;
   if (!signature) return false;
   const consecutive = state.bySignature[signature]?.consecutive ?? 0;

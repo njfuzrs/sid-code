@@ -124,7 +124,15 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
     const key = `${e.model}|${e.endpointHost ?? ""}`;
     let b = buckets.get(key);
     if (!b) {
-      b = { model: e.model, endpointHost: e.endpointHost, sessions: 0, promptTotal: 0, cacheHit: 0, costUSD: 0, savingsUSD: 0 };
+      b = {
+        model: e.model,
+        endpointHost: e.endpointHost,
+        sessions: 0,
+        promptTotal: 0,
+        cacheHit: 0,
+        costUSD: 0,
+        savingsUSD: 0,
+      };
       buckets.set(key, b);
     }
     b.sessions++;
@@ -230,8 +238,10 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
   }
 
   L.push("");
-  L.push(`  总计  命中率 ${r.totalHitRate === null ? "N/A" : pct(r.totalHitRate)}` +
-    `   成本 $${r.totalCostUSD.toFixed(4)}   省下 $${r.totalSavingsUSD.toFixed(4)}`);
+  L.push(
+    `  总计  命中率 ${r.totalHitRate === null ? "N/A" : pct(r.totalHitRate)}` +
+      `   成本 $${r.totalCostUSD.toFixed(4)}   省下 $${r.totalSavingsUSD.toFixed(4)}`,
+  );
   // 排除了多少行必须写出来：静默排除读起来像"全部数据都在这儿"
   if (r.excludedUntrustedRows > 0) {
     L.push(`        （已排除 ${r.excludedUntrustedRows} 个不可信渠道行，见下方 ⚠）`);
@@ -263,7 +273,9 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
 
   L.push("");
   const b = r.breaks;
-  L.push(`  中断归因（最近 ${b.total} 条；结构化 ${b.structuredCount} / 旧文案 ${b.legacyCount}）:`);
+  L.push(
+    `  中断归因（最近 ${b.total} 条；结构化 ${b.structuredCount} / 旧文案 ${b.legacyCount}）:`,
+  );
   if (b.total === 0) {
     L.push("    无记录。");
   } else {

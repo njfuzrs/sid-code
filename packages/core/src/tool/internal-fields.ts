@@ -14,11 +14,7 @@
  */
 
 /** 内部字段名单：这些字段只应由 harness 注入，绝不接受模型自行生成 */
-export const INTERNAL_FIELDS = [
-  "_agentId",
-  "_simulatedSedEdit",
-  "_hookInjected",
-] as const;
+export const INTERNAL_FIELDS = ["_agentId", "_simulatedSedEdit", "_hookInjected"] as const;
 
 /**
  * 剥离 input 中的内部字段，返回浅拷贝（不改原对象）。

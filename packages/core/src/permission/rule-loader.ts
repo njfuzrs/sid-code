@@ -44,14 +44,14 @@ const UNTRUSTED_PROJECT_SETTINGS = SECURITY_SENSITIVE_FIELDS;
  * 必须剔除（deny/ask 规则是收紧安全，允许保留）。
  */
 const DANGEROUS_SELF_AUTHORIZATION_PATTERNS: RegExp[] = [
-  /^Bash\(\s*\*\s*\)$/i,            // Bash(*) 全放行
-  /^Bash\(\s*\)$/i,                 // Bash() 空 = 全放行
-  /^\*$/,                            // * 裸通配（所有工具全放行）
-  /^Bash\([^)]*\brm\b[^)]*\)$/i,    // Bash(rm ...) 放行删除
-  /^Bash\([^)]*\bsudo\b[^)]*\)$/i,  // Bash(sudo ...) 放行提权
-  /^Bash\([^)]*\bcurl\b[^)]*\)$/i,  // Bash(curl ...) 放行外联/下载
-  /^Bash\([^)]*\|[^)]*\)$/,         // Bash(... | ...) 放行管道（curl|bash 类）
-  /^(Write|Edit)\(\s*\*\s*\)$/i,    // Write/Edit(*) 全放行文件写入
+  /^Bash\(\s*\*\s*\)$/i, // Bash(*) 全放行
+  /^Bash\(\s*\)$/i, // Bash() 空 = 全放行
+  /^\*$/, // * 裸通配（所有工具全放行）
+  /^Bash\([^)]*\brm\b[^)]*\)$/i, // Bash(rm ...) 放行删除
+  /^Bash\([^)]*\bsudo\b[^)]*\)$/i, // Bash(sudo ...) 放行提权
+  /^Bash\([^)]*\bcurl\b[^)]*\)$/i, // Bash(curl ...) 放行外联/下载
+  /^Bash\([^)]*\|[^)]*\)$/, // Bash(... | ...) 放行管道（curl|bash 类）
+  /^(Write|Edit)\(\s*\*\s*\)$/i, // Write/Edit(*) 全放行文件写入
 ];
 
 /**
@@ -83,8 +83,14 @@ export class RuleLoader {
     await Promise.all([
       this.loadPolicyFile(),
       this.loadSettingsFile("userSettings", sidPaths.settings()),
-      this.loadSettingsFile("projectSettings", join(this.workspacePath, ".sid-code", "settings.json")),
-      this.loadSettingsFile("localSettings", join(this.workspacePath, ".sid-code", "settings.local.json")),
+      this.loadSettingsFile(
+        "projectSettings",
+        join(this.workspacePath, ".sid-code", "settings.json"),
+      ),
+      this.loadSettingsFile(
+        "localSettings",
+        join(this.workspacePath, ".sid-code", "settings.local.json"),
+      ),
     ]);
 
     this.invalidateCache();
@@ -113,7 +119,10 @@ export class RuleLoader {
         const { statSync } = await import("fs");
         const mode = statSync(filePath).mode & 0o777;
         if (mode !== 0o600) {
-          log.warn("RULE_LOADER", `企业策略文件 ${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`);
+          log.warn(
+            "RULE_LOADER",
+            `企业策略文件 ${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`,
+          );
         }
       } catch {
         /* 权限检查失败不阻塞加载 */
@@ -126,7 +135,10 @@ export class RuleLoader {
         // 可信源：不做 filterUntrustedProjectRules 剥离
         const rules = this.parsePermissions(settings.permissions, "policySettings");
         this.sources.set("policySettings", rules);
-        log.info("RULE_LOADER", `policySettings: ${filePath} → ${rules.length} 条规则（企业策略，最高优先级）`);
+        log.info(
+          "RULE_LOADER",
+          `policySettings: ${filePath} → ${rules.length} 条规则（企业策略，最高优先级）`,
+        );
       } catch (err: any) {
         log.warn("RULE_LOADER", `读取企业策略文件 ${filePath} 失败: ${err.message}`);
       }
@@ -164,7 +176,7 @@ export class RuleLoader {
       // ① 检测并告警注入的安全敏感顶层字段（settings 层面的过滤由 settings.ts
       //    filterProjectSettings 兜底，这里仅做审计告警，让攻击行为可见）。
       if (source === "projectSettings") {
-        const injected = Object.keys(settings).filter(k => UNTRUSTED_PROJECT_SETTINGS.has(k));
+        const injected = Object.keys(settings).filter((k) => UNTRUSTED_PROJECT_SETTINGS.has(k));
         if (injected.length > 0) {
           log.warn(
             "RULE_LOADER",
@@ -207,7 +219,9 @@ export class RuleLoader {
 
     for (const rule of rules) {
       if (rule.behavior === "allow") {
-        const dangerous = DANGEROUS_SELF_AUTHORIZATION_PATTERNS.some(p => p.test(rule.rawRule.trim()));
+        const dangerous = DANGEROUS_SELF_AUTHORIZATION_PATTERNS.some((p) =>
+          p.test(rule.rawRule.trim()),
+        );
         if (dangerous) {
           dropped.push(rule.rawRule);
           continue;
@@ -229,7 +243,10 @@ export class RuleLoader {
   /**
    * 解析权限配置为 SourcedPermissionRule 数组
    */
-  private parsePermissions(perms: SettingsPermissions, source: PermissionRuleSource): SourcedPermissionRule[] {
+  private parsePermissions(
+    perms: SettingsPermissions,
+    source: PermissionRuleSource,
+  ): SourcedPermissionRule[] {
     const rules: SourcedPermissionRule[] = [];
 
     for (const rule of perms.allow || []) {
@@ -287,7 +304,10 @@ export class RuleLoader {
    * 从 CLAUDE.md 的 PermissionRule 导入规则（作为 projectSettings）
    * 兼容现有的 CLAUDE.md 规则加载机制
    */
-  importFromPermissionRule(rules: PermissionRule, source: PermissionRuleSource = "projectSettings"): void {
+  importFromPermissionRule(
+    rules: PermissionRule,
+    source: PermissionRuleSource = "projectSettings",
+  ): void {
     let parsed = this.parsePermissions(rules, source);
     // CLAUDE.md 等项目级来源同样不可信，剔除危险自我授权 allow 规则
     if (source === "projectSettings") {
@@ -342,9 +362,15 @@ export class RuleLoader {
 
     for (const rule of rules) {
       switch (rule.behavior) {
-        case "allow": result.allow!.push(rule.rawRule); break;
-        case "deny": result.deny!.push(rule.rawRule); break;
-        case "ask": result.ask!.push(rule.rawRule); break;
+        case "allow":
+          result.allow!.push(rule.rawRule);
+          break;
+        case "deny":
+          result.deny!.push(rule.rawRule);
+          break;
+        case "ask":
+          result.ask!.push(rule.rawRule);
+          break;
       }
     }
 

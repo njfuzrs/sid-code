@@ -12,10 +12,27 @@ import { Ansi } from "@sid-code/tui-renderer/Ansi.tsx";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
 import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useTerminalDimensions } from "../contexts/TerminalContext.tsx";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../App.tsx";
+import type {
+  PermissionRequestInfo,
+  ShellConfirmRequestInfo,
+  PlanApprovalRequestInfo,
+  AskUserQuestionRequestInfo,
+} from "../App.tsx";
 import { getToolDetailFull } from "../ui-utils.ts";
 import { theme } from "../semantic-colors.ts";
-import { BULLET, PLAN_REVIEW, WARNING_MARK, ARROW_PROMPT, CURSOR, POINTER, RADIO_EMPTY, RADIO_SELECTED, CHECKBOX_EMPTY, CHECKBOX_CHECKED, SUCCESS_MARK } from "../constants/figures.ts";
+import {
+  BULLET,
+  PLAN_REVIEW,
+  WARNING_MARK,
+  ARROW_PROMPT,
+  CURSOR,
+  POINTER,
+  RADIO_EMPTY,
+  RADIO_SELECTED,
+  CHECKBOX_EMPTY,
+  CHECKBOX_CHECKED,
+  SUCCESS_MARK,
+} from "../constants/figures.ts";
 import { renderMarkdown } from "../markdown.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
 
@@ -39,21 +56,33 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
     if (resolvedRef.current) return false;
     if (!key.insertable) return false;
     const lower = key.name;
-    if (lower === "y") { resolvedRef.current = true; request.resolve("yes"); return true; }
-    if (lower === "n") { resolvedRef.current = true; request.resolve("no"); return true; }
-    if (lower === "a") { resolvedRef.current = true; request.resolve("always"); return true; }
+    if (lower === "y") {
+      resolvedRef.current = true;
+      request.resolve("yes");
+      return true;
+    }
+    if (lower === "n") {
+      resolvedRef.current = true;
+      request.resolve("no");
+      return true;
+    }
+    if (lower === "a") {
+      resolvedRef.current = true;
+      request.resolve("always");
+      return true;
+    }
     return false;
   });
 
   // 危险时整体切到 error 红，标题加警告标记；普通时维持 warning 黄。
   const accentColor = danger.isDangerous ? theme.status.error : theme.status.warning;
-  const title = danger.isDangerous
-    ? `${WARNING_MARK} 危险操作确认`
-    : `${BULLET} 权限请求`;
+  const title = danger.isDangerous ? `${WARNING_MARK} 危险操作确认` : `${BULLET} 权限请求`;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
-      <Text color={accentColor} bold>{title}</Text>
+      <Text color={accentColor} bold>
+        {title}
+      </Text>
       <Box marginTop={0} paddingLeft={2} flexDirection="column">
         <Box>
           <Text color={theme.text.secondary}>工具: </Text>
@@ -64,12 +93,16 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
             <Text color={theme.text.secondary}>详情: </Text>
           </Box>
           <Box flexGrow={1}>
-            <Text color={theme.ui.active} wrap="wrap">{detail}</Text>
+            <Text color={theme.ui.active} wrap="wrap">
+              {detail}
+            </Text>
           </Box>
         </Box>
         {danger.isDangerous && (
           <Box>
-            <Text color={theme.status.error} bold>{WARNING_MARK} 此操作不可逆：{danger.label}</Text>
+            <Text color={theme.status.error} bold>
+              {WARNING_MARK} 此操作不可逆：{danger.label}
+            </Text>
           </Box>
         )}
         {/* 不可达规则提示（对标 cc Unreachable Rules）：当前工具有被高优先级规则遮蔽的规则时展示 */}
@@ -80,7 +113,9 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
             </Text>
             {request.shadowedRules.map((s, i) => (
               <Box key={i} flexDirection="column" paddingLeft={2}>
-                <Text color={s.severity === "blocked" ? theme.status.warning : theme.text.secondary}>
+                <Text
+                  color={s.severity === "blocked" ? theme.status.warning : theme.text.secondary}
+                >
                   {s.rule}
                 </Text>
                 <Text color={theme.text.secondary}>
@@ -95,15 +130,39 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
       {/* 安全默认：危险操作把「拒绝」放在最前并标红强调，避免手滑误允许 */}
       {danger.isDangerous ? (
         <Box marginTop={0}>
-          <Text color={theme.status.error} bold> (n)</Text><Text>拒绝（推荐） </Text>
-          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
-          <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
+          <Text color={theme.status.error} bold>
+            {" "}
+            (n)
+          </Text>
+          <Text>拒绝（推荐） </Text>
+          <Text color={theme.status.success} bold>
+            {" "}
+            (y)
+          </Text>
+          <Text>确认执行 </Text>
+          <Text color={theme.status.warning} bold>
+            {" "}
+            (a)
+          </Text>
+          <Text>始终允许</Text>
         </Box>
       ) : (
         <Box marginTop={0}>
-          <Text color={theme.status.success} bold> (y)</Text><Text>允许 </Text>
-          <Text color={theme.status.error} bold> (n)</Text><Text>拒绝 </Text>
-          <Text color={theme.status.warning} bold> (a)</Text><Text>始终允许</Text>
+          <Text color={theme.status.success} bold>
+            {" "}
+            (y)
+          </Text>
+          <Text>允许 </Text>
+          <Text color={theme.status.error} bold>
+            {" "}
+            (n)
+          </Text>
+          <Text>拒绝 </Text>
+          <Text color={theme.status.warning} bold>
+            {" "}
+            (a)
+          </Text>
+          <Text>始终允许</Text>
         </Box>
       )}
     </Box>
@@ -122,19 +181,27 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
     if (resolvedRef.current) return false;
     if (!key.insertable) return false;
     const lower = key.name;
-    if (lower === "y") { resolvedRef.current = true; request.resolve(true); return true; }
-    if (lower === "n") { resolvedRef.current = true; request.resolve(false); return true; }
+    if (lower === "y") {
+      resolvedRef.current = true;
+      request.resolve(true);
+      return true;
+    }
+    if (lower === "n") {
+      resolvedRef.current = true;
+      request.resolve(false);
+      return true;
+    }
     return false;
   });
 
   const accentColor = isDangerous ? theme.status.error : theme.text.accent;
-  const title = isDangerous
-    ? `${WARNING_MARK} 危险 Shell 命令确认`
-    : `${BULLET} Shell 命令确认`;
+  const title = isDangerous ? `${WARNING_MARK} 危险 Shell 命令确认` : `${BULLET} Shell 命令确认`;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accentColor} paddingX={1}>
-      <Text color={accentColor} bold>{title}</Text>
+      <Text color={accentColor} bold>
+        {title}
+      </Text>
       <Text>自定义命令将执行以下 Shell 命令：</Text>
       {request.commands.map((cmd, i) => (
         <Box key={i} marginLeft={2}>
@@ -144,18 +211,36 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
       ))}
       {isDangerous && (
         <Box>
-          <Text color={theme.status.error} bold>{WARNING_MARK} 此操作不可逆：{verdicts[dangerIndex].label}</Text>
+          <Text color={theme.status.error} bold>
+            {WARNING_MARK} 此操作不可逆：{verdicts[dangerIndex].label}
+          </Text>
         </Box>
       )}
       {isDangerous ? (
         <Box marginTop={0}>
-          <Text color={theme.status.error} bold> (n)</Text><Text>取消（推荐） </Text>
-          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行</Text>
+          <Text color={theme.status.error} bold>
+            {" "}
+            (n)
+          </Text>
+          <Text>取消（推荐） </Text>
+          <Text color={theme.status.success} bold>
+            {" "}
+            (y)
+          </Text>
+          <Text>确认执行</Text>
         </Box>
       ) : (
         <Box marginTop={0}>
-          <Text color={theme.status.success} bold> (y)</Text><Text>确认执行 </Text>
-          <Text color={theme.status.error} bold> (n)</Text><Text>取消</Text>
+          <Text color={theme.status.success} bold>
+            {" "}
+            (y)
+          </Text>
+          <Text>确认执行 </Text>
+          <Text color={theme.status.error} bold>
+            {" "}
+            (n)
+          </Text>
+          <Text>取消</Text>
         </Box>
       )}
     </Box>
@@ -202,9 +287,19 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         finish(text ? `reject:${text}` : "reject");
         return true;
       }
-      if (key.name === "escape") { setEditingFeedback(false); setFeedbackText(""); return true; }
-      if (key.name === "backspace") { setFeedbackText(t => t.slice(0, -1)); return true; }
-      if (key.insertable && key.name) { setFeedbackText(t => t + key.name); return true; }
+      if (key.name === "escape") {
+        setEditingFeedback(false);
+        setFeedbackText("");
+        return true;
+      }
+      if (key.name === "backspace") {
+        setFeedbackText((t) => t.slice(0, -1));
+        return true;
+      }
+      if (key.insertable && key.name) {
+        setFeedbackText((t) => t + key.name);
+        return true;
+      }
       return true; // 吃掉所有按键
     }
     if (editingOther) {
@@ -213,28 +308,50 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
         if (text) finish(`reject:${text}`);
         return true;
       }
-      if (key.name === "escape") { setEditingOther(false); setOtherText(""); return true; }
-      if (key.name === "backspace") { setOtherText(t => t.slice(0, -1)); return true; }
-      if (key.insertable && key.name) { setOtherText(t => t + key.name); return true; }
+      if (key.name === "escape") {
+        setEditingOther(false);
+        setOtherText("");
+        return true;
+      }
+      if (key.name === "backspace") {
+        setOtherText((t) => t.slice(0, -1));
+        return true;
+      }
+      if (key.insertable && key.name) {
+        setOtherText((t) => t + key.name);
+        return true;
+      }
       return true;
     }
 
     // 列表导航态
     if (key.name === "up" || (key.ctrl && key.name === "p")) {
-      setCursor(c => c <= 0 ? totalRows - 1 : c - 1);
+      setCursor((c) => (c <= 0 ? totalRows - 1 : c - 1));
       return true;
     }
     if (key.name === "down" || (key.ctrl && key.name === "n")) {
-      setCursor(c => c >= totalRows - 1 ? 0 : c + 1);
+      setCursor((c) => (c >= totalRows - 1 ? 0 : c + 1));
       return true;
     }
-    if (key.name === "escape") { finish("cancel"); return true; }
+    if (key.name === "escape") {
+      finish("cancel");
+      return true;
+    }
     if (isEnter) {
       if (cursor < options.length) {
         const opt = options[cursor];
-        if (opt.action === "approve") { finish("approve"); return true; }
-        if (opt.action === "cancel") { finish("cancel"); return true; }
-        if (opt.action === "reject-feedback") { setEditingFeedback(true); return true; }
+        if (opt.action === "approve") {
+          finish("approve");
+          return true;
+        }
+        if (opt.action === "cancel") {
+          finish("cancel");
+          return true;
+        }
+        if (opt.action === "reject-feedback") {
+          setEditingFeedback(true);
+          return true;
+        }
       } else {
         // "其他…"
         setEditingOther(true);
@@ -243,8 +360,15 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
     }
     // 快捷键（不在编辑态时）
     if (key.insertable) {
-      if (key.name === "y") { finish("approve"); return true; }
-      if (key.name === "n") { setEditingFeedback(true); setCursor(1); return true; }
+      if (key.name === "y") {
+        finish("approve");
+        return true;
+      }
+      if (key.name === "n") {
+        setEditingFeedback(true);
+        setCursor(1);
+        return true;
+      }
     }
     return false;
   });
@@ -253,8 +377,12 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
-      <Text color={accent} bold>{PLAN_REVIEW} 计划审批</Text>
-      <Text>文件: {request.planFilePath} ({lineCount} 行)</Text>
+      <Text color={accent} bold>
+        {PLAN_REVIEW} 计划审批
+      </Text>
+      <Text>
+        文件: {request.planFilePath} ({lineCount} 行)
+      </Text>
       <Box flexDirection="column" marginTop={1}>
         {options.map((opt, i) => {
           const focused = cursor === i && !editingFeedback && !editingOther;
@@ -265,18 +393,38 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
                   {focused ? POINTER : " "} {focused ? RADIO_SELECTED : RADIO_EMPTY}
                 </Text>
               </Box>
-              <Text color={focused ? accent : undefined} bold={focused}>{opt.label}</Text>
+              <Text color={focused ? accent : undefined} bold={focused}>
+                {opt.label}
+              </Text>
             </Box>
           );
         })}
         {/* "其他…"行 */}
         <Box>
           <Box width={5} flexShrink={0}>
-            <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary}>
-              {cursor === otherIndex && !editingFeedback && !editingOther ? POINTER : " "} {cursor === otherIndex && !editingFeedback && !editingOther ? RADIO_SELECTED : RADIO_EMPTY}
+            <Text
+              color={
+                cursor === otherIndex && !editingFeedback && !editingOther
+                  ? accent
+                  : theme.text.secondary
+              }
+            >
+              {cursor === otherIndex && !editingFeedback && !editingOther ? POINTER : " "}{" "}
+              {cursor === otherIndex && !editingFeedback && !editingOther
+                ? RADIO_SELECTED
+                : RADIO_EMPTY}
             </Text>
           </Box>
-          <Text color={cursor === otherIndex && !editingFeedback && !editingOther ? accent : theme.text.secondary} bold={cursor === otherIndex && !editingFeedback && !editingOther}>其他…</Text>
+          <Text
+            color={
+              cursor === otherIndex && !editingFeedback && !editingOther
+                ? accent
+                : theme.text.secondary
+            }
+            bold={cursor === otherIndex && !editingFeedback && !editingOther}
+          >
+            其他…
+          </Text>
         </Box>
       </Box>
       {/* 反馈文本输入区 */}
@@ -306,16 +454,32 @@ function PlanApprovalDialog({ request }: { request: PlanApprovalRequestInfo }) {
 }
 
 /** "其他…"行（选中后进入自定义文本输入）。preview 视图与列表视图共用。 */
-function OtherRow({ focused, editing, text, accent, showConfirmHint }: { focused: boolean; editing: boolean; text: string; accent: Color; showConfirmHint?: boolean }) {
+function OtherRow({
+  focused,
+  editing,
+  text,
+  accent,
+  showConfirmHint,
+}: {
+  focused: boolean;
+  editing: boolean;
+  text: string;
+  accent: Color;
+  showConfirmHint?: boolean;
+}) {
   return (
     <Box flexDirection="column">
       <Box>
         <Box width={2} flexShrink={0}>
-          <Text color={focused ? accent : theme.text.secondary}>{focused && !editing ? POINTER : " "}</Text>
+          <Text color={focused ? accent : theme.text.secondary}>
+            {focused && !editing ? POINTER : " "}
+          </Text>
         </Box>
-        <Text color={focused ? accent : theme.text.secondary} bold={focused}>其他…</Text>
+        <Text color={focused ? accent : theme.text.secondary} bold={focused}>
+          其他…
+        </Text>
         {showConfirmHint && !editing && text.trim() && (
-          <Text color={theme.text.secondary}>  ({text}) (再按 Enter 确认)</Text>
+          <Text color={theme.text.secondary}> ({text}) (再按 Enter 确认)</Text>
         )}
       </Box>
       {editing && (
@@ -333,7 +497,14 @@ function OtherRow({ focused, editing, text, accent, showConfirmHint }: { focused
  * "确认提交"行——提交是与选择分离的独立第二步（防手滑）。
  * enabled=false（无任何选择）时置灰，该行 Enter 不生效。
  */
-function ConfirmRow({ focused, enabled, summary, isMulti, selectedCount, accent }: {
+function ConfirmRow({
+  focused,
+  enabled,
+  summary,
+  isMulti,
+  selectedCount,
+  accent,
+}: {
   focused: boolean;
   enabled: boolean;
   summary: string;
@@ -351,7 +522,9 @@ function ConfirmRow({ focused, enabled, summary, isMulti, selectedCount, accent 
   return (
     <Box marginTop={1}>
       <Box width={2} flexShrink={0}>
-        <Text color={focused && enabled ? accent : theme.text.secondary}>{focused ? POINTER : " "}</Text>
+        <Text color={focused && enabled ? accent : theme.text.secondary}>
+          {focused ? POINTER : " "}
+        </Text>
       </Box>
       {/* 置灰不用 ANSI dim：dim 与 bold 在终端互斥（见 src/ui/CLAUDE.md L1.3），
           且上面的 `color` 在 !enabled 时已是 theme.text.secondary，灰色 token 已把
@@ -368,7 +541,7 @@ function ConfirmRow({ focused, enabled, summary, isMulti, selectedCount, accent 
 function hintText(editingOther: boolean, editingNotes: boolean, isMulti: boolean): string {
   if (editingOther) return "输入自定义答案，Enter 确认，Esc 返回";
   if (editingNotes) return "输入备注，Enter 确认，Esc 返回";
-  if (isMulti) return "↑↓ 移动 · Enter/Space 勾选 · 到\"确认提交\"按 Enter · Esc 取消";
+  if (isMulti) return '↑↓ 移动 · Enter/Space 勾选 · 到"确认提交"按 Enter · Esc 取消';
   return "↑↓ 移动 · Enter 选择/确认 · n 备注 · Esc 取消";
 }
 
@@ -465,9 +638,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
     const answer = assembleAnswer(current.options, selected, otherText, isMulti);
     if (answer.length === 0) return; // 无选择：确认行不生效
     const nextAnswers = { ...answers, [current.question]: answer };
-    const nextNotes = notesText.trim()
-      ? { ...notes, [current.question]: notesText.trim() }
-      : notes;
+    const nextNotes = notesText.trim() ? { ...notes, [current.question]: notesText.trim() } : notes;
     setAnswers(nextAnswers);
     setNotes(nextNotes);
     if (qIndex < questions.length - 1) {
@@ -584,15 +755,25 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
     if (key.name === "return" || key.name === "enter") {
       // 多选模式：保持原逻辑（确认提交行 + 勾选）
       if (isMulti) {
-        if (cursor === confirmIndex) { submitCurrent(); return true; }
-        if (cursor === otherIndex) { setEditingOther(true); return true; }
+        if (cursor === confirmIndex) {
+          submitCurrent();
+          return true;
+        }
+        if (cursor === otherIndex) {
+          setEditingOther(true);
+          return true;
+        }
         toggleOption(cursor);
         return true;
       }
       // 单选模式：双击 Enter 确认（已选中再按 Enter → 直接提交）
       if (cursor === otherIndex) {
         // "其他"行：有文本时直接提交（等同"已选中再按 Enter"），无文本时进入输入
-        if (otherText.trim()) { submitCurrent(); } else { setEditingOther(true); }
+        if (otherText.trim()) {
+          submitCurrent();
+        } else {
+          setEditingOther(true);
+        }
         return true;
       }
       if (selected.has(cursor)) {
@@ -623,16 +804,24 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
     const maxPreviewLines = 12;
     const isTruncated = previewLines.length > maxPreviewLines;
     const displayPreview = isTruncated
-      ? [...previewLines.slice(0, maxPreviewLines), `\x1b[2m… +${previewLines.length - maxPreviewLines} 行已折叠\x1b[0m`].join("\n")
+      ? [
+          ...previewLines.slice(0, maxPreviewLines),
+          `\x1b[2m… +${previewLines.length - maxPreviewLines} 行已折叠\x1b[0m`,
+        ].join("\n")
       : previewContent;
 
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
         {/* 标题行 */}
         <Box>
-          <Text color={accent} bold>{BULLET} {current.header}</Text>
+          <Text color={accent} bold>
+            {BULLET} {current.header}
+          </Text>
           {questions.length > 1 && (
-            <Text color={theme.text.secondary}>  ({qIndex + 1}/{questions.length})</Text>
+            <Text color={theme.text.secondary}>
+              {" "}
+              ({qIndex + 1}/{questions.length})
+            </Text>
           )}
         </Box>
         <Box paddingLeft={2} marginTop={0}>
@@ -653,15 +842,19 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
                 <Box key={i} flexDirection="column">
                   <Box>
                     <Box width={2} flexShrink={0}>
-                      <Text color={isCursor ? accent : theme.text.secondary}>{isCursor ? POINTER : " "}</Text>
+                      <Text color={isCursor ? accent : theme.text.secondary}>
+                        {isCursor ? POINTER : " "}
+                      </Text>
                     </Box>
                     <Box width={2} flexShrink={0}>
-                      <Text color={isSel ? theme.status.success : theme.text.secondary}>{glyph}</Text>
+                      <Text color={isSel ? theme.status.success : theme.text.secondary}>
+                        {glyph}
+                      </Text>
                     </Box>
-                    <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
-                    {isSel && (
-                      <Text color={theme.text.secondary}>  (再按 Enter 确认)</Text>
-                    )}
+                    <Text color={labelColor} bold={isCursor || recommended}>
+                      {opt.label}
+                    </Text>
+                    {isSel && <Text color={theme.text.secondary}> (再按 Enter 确认)</Text>}
                   </Box>
                 </Box>
               );
@@ -677,7 +870,13 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
           </Box>
 
           {/* 右栏：预览框 */}
-          <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={theme.border.default} paddingX={1}>
+          <Box
+            flexDirection="column"
+            flexGrow={1}
+            borderStyle="round"
+            borderColor={theme.border.default}
+            paddingX={1}
+          >
             {displayPreview ? (
               <Ansi>{displayPreview}</Ansi>
             ) : (
@@ -712,9 +911,14 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
       {/* 标题行：chip 标签 + 进度 */}
       <Box>
-        <Text color={accent} bold>{BULLET} {current.header}</Text>
+        <Text color={accent} bold>
+          {BULLET} {current.header}
+        </Text>
         {questions.length > 1 && (
-          <Text color={theme.text.secondary}>  ({qIndex + 1}/{questions.length})</Text>
+          <Text color={theme.text.secondary}>
+            {" "}
+            ({qIndex + 1}/{questions.length})
+          </Text>
         )}
       </Box>
       <Box paddingLeft={2} marginTop={0}>
@@ -729,23 +933,29 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
           const recommended = isRecommendedLabel(opt.label);
           // 形状区分语义：单选圆圈 / 多选方框；填充度表达选中态
           const glyph = isMulti
-            ? (isSel ? CHECKBOX_CHECKED : CHECKBOX_EMPTY)
-            : (isSel ? RADIO_SELECTED : RADIO_EMPTY);
+            ? isSel
+              ? CHECKBOX_CHECKED
+              : CHECKBOX_EMPTY
+            : isSel
+              ? RADIO_SELECTED
+              : RADIO_EMPTY;
           const glyphColor = isSel ? theme.status.success : theme.text.secondary;
           const labelColor = isCursor ? accent : recommended ? accent : theme.text.primary;
           return (
             <Box key={i} flexDirection="column">
               <Box>
                 <Box width={2} flexShrink={0}>
-                  <Text color={isCursor ? accent : theme.text.secondary}>{isCursor ? POINTER : " "}</Text>
+                  <Text color={isCursor ? accent : theme.text.secondary}>
+                    {isCursor ? POINTER : " "}
+                  </Text>
                 </Box>
                 <Box width={2} flexShrink={0}>
                   <Text color={glyphColor}>{glyph}</Text>
                 </Box>
-                <Text color={labelColor} bold={isCursor || recommended}>{opt.label}</Text>
-                {isSel && !isMulti && (
-                  <Text color={theme.text.secondary}>  (再按 Enter 确认)</Text>
-                )}
+                <Text color={labelColor} bold={isCursor || recommended}>
+                  {opt.label}
+                </Text>
+                {isSel && !isMulti && <Text color={theme.text.secondary}> (再按 Enter 确认)</Text>}
               </Box>
               {isCursor && opt.description && (
                 <Box paddingLeft={4}>
@@ -779,8 +989,8 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
       </Box>
 
       {/* notes 区（仅单选题可用） */}
-      {!isMulti && (
-        editingNotes ? (
+      {!isMulti &&
+        (editingNotes ? (
           <Box paddingLeft={2} marginTop={0}>
             <Text color={accent}>备注: {ARROW_PROMPT} </Text>
             <Text>{notesText}</Text>
@@ -790,8 +1000,7 @@ function AskUserQuestionDialog({ request }: { request: AskUserQuestionRequestInf
           <Box paddingLeft={2} marginTop={0}>
             <Text color={theme.text.secondary}>备注: {notesText}</Text>
           </Box>
-        ) : null
-      )}
+        ) : null)}
 
       {/* 操作提示行：随模式切换 */}
       <Box marginTop={1}>

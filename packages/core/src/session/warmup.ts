@@ -60,25 +60,28 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
     // 最小 payload：system + tools + 一条极短的 user 消息 + maxTokens=1
     // 目标仅是触发 cache_creation（服务端缓存 system+tools 前缀），
     // 不关心模型输出（会返回一个极短回复或被 stop 截断）。
-    const warmupMessages: Message[] = [{
-      role: "user",
-      content: [{ type: "text", text: "." }],
-    }];
+    const warmupMessages: Message[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "." }],
+      },
+    ];
 
     // T3：warmup 是非流式 side-call，此前无 signal 也无 timeout——若网关 hang 则永久阻塞
     // 会话启动。套 10s 硬超时（Promise.race + 合并 signal），超时/失败都走下方 catch 静默降级。
     // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 10s）
     const WARMUP_TIMEOUT_MS = resolveSideCallTimeouts().warmupMs;
-    const resp = await withSideCallDeadline(
-      "cache-warmup",
-      WARMUP_TIMEOUT_MS,
-      (signal) => params.provider.sendMessageNonStreaming!({
-        model: "", // 使用 provider 默认模型
-        system: params.systemPrompt,
-        tools: params.tools,
-        messages: warmupMessages,
-        maxTokens: 1, // 最小化输出 token 开销
-      }, signal),
+    const resp = await withSideCallDeadline("cache-warmup", WARMUP_TIMEOUT_MS, (signal) =>
+      params.provider.sendMessageNonStreaming!(
+        {
+          model: "", // 使用 provider 默认模型
+          system: params.systemPrompt,
+          tools: params.tools,
+          messages: warmupMessages,
+          maxTokens: 1, // 最小化输出 token 开销
+        },
+        signal,
+      ),
     );
 
     // 记录辅助调用用量

@@ -54,9 +54,10 @@ export function serializeToMarkdown(messages: Message[], options: SerializeMdOpt
   }
 
   const body = renderedMessages.join("\n\n---\n\n");
-  const truncateNotice = truncatedCount > 0
-    ? `\n\n> [...已省略 ${truncatedCount} 条早期消息]\n\n---\n\n`
-    : "\n\n---\n\n";
+  const truncateNotice =
+    truncatedCount > 0
+      ? `\n\n> [...已省略 ${truncatedCount} 条早期消息]\n\n---\n\n`
+      : "\n\n---\n\n";
 
   return `${header}${truncateNotice}${body}\n`;
 }

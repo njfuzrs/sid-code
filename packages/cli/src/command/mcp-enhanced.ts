@@ -8,10 +8,7 @@ import { ArgParser } from "./args.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import {
-  getSettingsForSource,
-  patchSettingsFile,
-} from "@sid-code/core/config/settings/index.ts";
+import { getSettingsForSource, patchSettingsFile } from "@sid-code/core/config/settings/index.ts";
 
 /** MCP 服务器配置 */
 interface MCPServerConfig {
@@ -30,9 +27,15 @@ interface MCPServerConfig {
 
 /** /mcp 主命令 */
 export class MCPEnhancedCommand implements Command {
-  name() { return "mcp"; }
-  aliases() { return []; }
-  description() { return "MCP 服务器管理"; }
+  name() {
+    return "mcp";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "MCP 服务器管理";
+  }
 
   subCommands(): Command[] {
     return [
@@ -61,15 +64,22 @@ export class MCPEnhancedCommand implements Command {
 
 /** /mcp list - 列出所有 MCP 服务器 */
 class MCPListCommand implements Command {
-  name() { return "list"; }
-  aliases() { return ["ls", "status"]; }
-  description() { return "列出所有 MCP 服务器状态"; }
+  name() {
+    return "list";
+  }
+  aliases() {
+    return ["ls", "status"];
+  }
+  description() {
+    return "列出所有 MCP 服务器状态";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
       return {
         kind: "message",
-        message: "未配置 MCP 服务器\n在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置",
+        message:
+          "未配置 MCP 服务器\n在 ~/.sid-code/settings.json 或项目 .mcp.json 中添加 mcpServers 配置",
       };
     }
 
@@ -80,14 +90,15 @@ class MCPListCommand implements Command {
 
     const lines = ["MCP 服务器状态:"];
     for (const s of statuses) {
-      const statusText = {
-        connected: "✓ 已连接",
-        connecting: "… 连接中",
-        reconnecting: "↻ 重连中",
-        failed: "✗ 连接失败",
-        disabled: "○ 已禁用",
-        disconnected: "✗ 未连接",
-      }[s.status] || s.status;
+      const statusText =
+        {
+          connected: "✓ 已连接",
+          connecting: "… 连接中",
+          reconnecting: "↻ 重连中",
+          failed: "✗ 连接失败",
+          disabled: "○ 已禁用",
+          disconnected: "✗ 未连接",
+        }[s.status] || s.status;
 
       const counts: string[] = [];
       if (s.status === "connected") {
@@ -109,9 +120,15 @@ class MCPListCommand implements Command {
 
 /** /mcp add - 添加 MCP 服务器 */
 class MCPAddCommand implements Command {
-  name() { return "add"; }
-  aliases() { return []; }
-  description() { return "添加 MCP 服务器配置"; }
+  name() {
+    return "add";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "添加 MCP 服务器配置";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -121,7 +138,8 @@ class MCPAddCommand implements Command {
     if (!name || !commandOrUrl) {
       return {
         kind: "error",
-        message: "用法: /mcp add <name> <command|url> [args...] [--scope user|project] [--transport stdio|http|sse] [--env KEY=VALUE] [--timeout 5000]",
+        message:
+          "用法: /mcp add <name> <command|url> [args...] [--scope user|project] [--transport stdio|http|sse] [--env KEY=VALUE] [--timeout 5000]",
       };
     }
 
@@ -220,9 +238,15 @@ class MCPAddCommand implements Command {
 
 /** /mcp remove - 移除 MCP 服务器 */
 class MCPRemoveCommand implements Command {
-  name() { return "remove"; }
-  aliases() { return ["rm", "delete"]; }
-  description() { return "移除 MCP 服务器配置"; }
+  name() {
+    return "remove";
+  }
+  aliases() {
+    return ["rm", "delete"];
+  }
+  description() {
+    return "移除 MCP 服务器配置";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -282,9 +306,15 @@ class MCPRemoveCommand implements Command {
 
 /** /mcp enable - 启用 MCP 服务器 */
 class MCPEnableCommand implements Command {
-  name() { return "enable"; }
-  aliases() { return []; }
-  description() { return "启用 MCP 服务器"; }
+  name() {
+    return "enable";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "启用 MCP 服务器";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -298,8 +328,8 @@ class MCPEnableCommand implements Command {
 
     if (sessionOnly) {
       // 会话级启用（从 SessionState 中移除禁用标记）
-      const disabled = ctx.sessionState.get("mcp_disabled") as string[] || [];
-      const newDisabled = disabled.filter(n => n !== name);
+      const disabled = (ctx.sessionState.get("mcp_disabled") as string[]) || [];
+      const newDisabled = disabled.filter((n) => n !== name);
       ctx.sessionState.set("mcp_disabled", newDisabled);
       return { kind: "message", message: `MCP 服务器 "${name}" 已在当前会话启用` };
     }
@@ -310,7 +340,10 @@ class MCPEnableCommand implements Command {
       if (!target) {
         return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
       }
-      return { kind: "message", message: `MCP 服务器 "${name}" 已持久启用（${target} 配置）\n重启会话后生效` };
+      return {
+        kind: "message",
+        message: `MCP 服务器 "${name}" 已持久启用（${target} 配置）\n重启会话后生效`,
+      };
     } catch (err: any) {
       return { kind: "error", message: `启用失败: ${err.message}` };
     }
@@ -319,9 +352,15 @@ class MCPEnableCommand implements Command {
 
 /** /mcp disable - 禁用 MCP 服务器 */
 class MCPDisableCommand implements Command {
-  name() { return "disable"; }
-  aliases() { return []; }
-  description() { return "禁用 MCP 服务器"; }
+  name() {
+    return "disable";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "禁用 MCP 服务器";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -335,7 +374,7 @@ class MCPDisableCommand implements Command {
 
     if (sessionOnly) {
       // 会话级禁用（存储在 SessionState）
-      const disabled = ctx.sessionState.get("mcp_disabled") as string[] || [];
+      const disabled = (ctx.sessionState.get("mcp_disabled") as string[]) || [];
       if (!disabled.includes(name)) {
         disabled.push(name);
         ctx.sessionState.set("mcp_disabled", disabled);
@@ -349,7 +388,10 @@ class MCPDisableCommand implements Command {
       if (!target) {
         return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
       }
-      return { kind: "message", message: `MCP 服务器 "${name}" 已持久禁用（${target} 配置）\n重启会话后生效` };
+      return {
+        kind: "message",
+        message: `MCP 服务器 "${name}" 已持久禁用（${target} 配置）\n重启会话后生效`,
+      };
     } catch (err: any) {
       return { kind: "error", message: `禁用失败: ${err.message}` };
     }
@@ -398,9 +440,15 @@ function setServerEnabled(name: string, enabled: boolean): "project" | "user" | 
 
 /** /mcp test - 测试 MCP 服务器连接 */
 class MCPTestCommand implements Command {
-  name() { return "test"; }
-  aliases() { return []; }
-  description() { return "测试 MCP 服务器连接"; }
+  name() {
+    return "test";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "测试 MCP 服务器连接";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -416,7 +464,7 @@ class MCPTestCommand implements Command {
 
     // 查找服务器状态
     const statuses = ctx.mcpManager.getStatus();
-    const server = statuses.find(s => s.name === name);
+    const server = statuses.find((s) => s.name === name);
 
     if (!server) {
       return { kind: "error", message: `未找到 MCP 服务器 "${name}"` };
@@ -448,11 +496,17 @@ class MCPTestCommand implements Command {
 
 /** /mcp authenticate - 触发远程 MCP 服务器的 OAuth 授权 */
 class MCPAuthenticateCommand implements Command {
-  name() { return "authenticate"; }
+  name() {
+    return "authenticate";
+  }
   // 别名收窄为 ["auth"]：不再劫持 "login"（账户登录通用语义，CC /login=登录 Anthropic 账户）。
   // 释放顶层 login，避免未来账户体系硬冲突 + 语义误导。
-  aliases() { return ["auth"]; }
-  description() { return "对配置了 OAuth 的远程 MCP 服务器发起授权"; }
+  aliases() {
+    return ["auth"];
+  }
+  description() {
+    return "对配置了 OAuth 的远程 MCP 服务器发起授权";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -468,7 +522,7 @@ class MCPAuthenticateCommand implements Command {
       if (oauthServers.length === 0) {
         return {
           kind: "message",
-          message: "没有配置 OAuth 的 MCP 服务器\n在服务器配置中添加 \"oauth\": {} 即可启用 OAuth",
+          message: '没有配置 OAuth 的 MCP 服务器\n在服务器配置中添加 "oauth": {} 即可启用 OAuth',
         };
       }
       return {
@@ -491,9 +545,15 @@ class MCPAuthenticateCommand implements Command {
 
 /** /mcp prompts - 列出所有提示词 */
 class MCPPromptsCommand implements Command {
-  name() { return "prompts"; }
-  aliases() { return []; }
-  description() { return "列出所有 MCP 提示词"; }
+  name() {
+    return "prompts";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "列出所有 MCP 提示词";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
@@ -507,7 +567,8 @@ class MCPPromptsCommand implements Command {
 
     const lines = ["MCP 提示词:"];
     for (const { serverName, prompt } of prompts) {
-      const argList = prompt.arguments?.map(a => a.required ? `<${a.name}>` : `[${a.name}]`).join(" ") || "";
+      const argList =
+        prompt.arguments?.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ") || "";
       const desc = prompt.description ? ` — ${prompt.description}` : "";
       lines.push(`  /mcp prompt ${serverName}:${prompt.name} ${argList}${desc}`);
     }
@@ -523,10 +584,18 @@ class MCPPromptsCommand implements Command {
  * 用户照做时命令回退到父命令 → 只列状态）。逻辑迁自原死代码 MCPCommand.usePrompt。
  */
 class MCPPromptRunCommand implements Command {
-  name() { return "prompt"; }
-  aliases() { return []; }
-  description() { return "执行 MCP 提示词：/mcp prompt <server>:<name> [arg=val ...]"; }
-  argumentHint() { return "<server>:<name> [arg=val ...]"; }
+  name() {
+    return "prompt";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "执行 MCP 提示词：/mcp prompt <server>:<name> [arg=val ...]";
+  }
+  argumentHint() {
+    return "<server>:<name> [arg=val ...]";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {
@@ -538,7 +607,8 @@ class MCPPromptRunCommand implements Command {
     if (!match) {
       return {
         kind: "error",
-        message: "用法: /mcp prompt <server>:<name> [arg1=val1 arg2=val2 ...]\n用 /mcp prompts 查看可用提示词",
+        message:
+          "用法: /mcp prompt <server>:<name> [arg1=val1 arg2=val2 ...]\n用 /mcp prompts 查看可用提示词",
       };
     }
 
@@ -560,7 +630,7 @@ class MCPPromptRunCommand implements Command {
         Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
       );
       // 将提示词消息拼接为文本，作为用户输入提交给 LLM
-      const text = messages.map(m => m.content).join("\n\n");
+      const text = messages.map((m) => m.content).join("\n\n");
       if (!text.trim()) {
         return { kind: "error", message: `提示词 ${serverName}:${promptName} 返回空内容` };
       }
@@ -573,9 +643,15 @@ class MCPPromptRunCommand implements Command {
 
 /** /mcp resources - 列出所有资源 */
 class MCPResourcesCommand implements Command {
-  name() { return "resources"; }
-  aliases() { return []; }
-  description() { return "列出所有 MCP 资源"; }
+  name() {
+    return "resources";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "列出所有 MCP 资源";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.mcpManager) {

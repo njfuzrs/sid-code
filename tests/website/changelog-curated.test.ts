@@ -48,12 +48,7 @@ function ok(overrides: Record<string, unknown> = {}) {
 describe("受控词表", () => {
   test("只有 4 组，且破坏性变更排在最前", () => {
     // 顺序即渲染顺序：破坏性变更是用户升级前最该先看到的一类。
-    expect(SECTION_META.map((s) => s.key)).toEqual([
-      "breaking",
-      "feat",
-      "improve",
-      "fix",
-    ]);
+    expect(SECTION_META.map((s) => s.key)).toEqual(["breaking", "feat", "improve", "fix"]);
   });
 
   test("旧的 6 组分类里，docs/other/refactor/perf 都不在词表内", () => {
@@ -83,9 +78,7 @@ describe("validateCurated · 通过的情形", () => {
 
   test("userFacing=false + sections 为空合法（纯内部版本是合法结论）", () => {
     // 这是刻意设计的快速通道：纯内部版本的 review 成本近零。
-    expect(
-      validateCurated(ok({ userFacing: false, sections: [], highlight: null })),
-    ).toEqual([]);
+    expect(validateCurated(ok({ userFacing: false, sections: [], highlight: null }))).toEqual([]);
   });
 
   test("discarded 可缺省（早期 backfill 的文件可能没有）", () => {
@@ -373,7 +366,9 @@ describe("提示词模板", () => {
 
 describe("已入库的 curated 文件", () => {
   const files = existsSync(CURATED_DIR)
-    ? readdirSync(CURATED_DIR).filter((f) => /^v\d+\.\d+\.\d+\.json$/.test(f)).sort()
+    ? readdirSync(CURATED_DIR)
+        .filter((f) => /^v\d+\.\d+\.\d+\.json$/.test(f))
+        .sort()
     : [];
 
   test("目录存在且有文件（缺了官网会整站显示「无变更说明」）", () => {
@@ -399,11 +394,10 @@ describe("已入库的 curated 文件", () => {
 
   test("每个已打 tag 的版本都有对应文件（官网无降级态，见方案决策 3）", () => {
     const { execFileSync } = require("node:child_process");
-    const tags: string[] = execFileSync(
-      "git",
-      ["tag", "-l", "v*", "--sort=-v:refname"],
-      { cwd: ROOT, encoding: "utf8" },
-    )
+    const tags: string[] = execFileSync("git", ["tag", "-l", "v*", "--sort=-v:refname"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    })
       .split("\n")
       .map((s: string) => s.trim())
       .filter((t: string) => /^v\d+\.\d+\.\d+$/.test(t));

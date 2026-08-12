@@ -61,7 +61,13 @@ function tableRowKeys(body: string): string[] {
     if (cells.length < 2) continue;
     const first = cells[0].trim();
     if (!first || /^-+$/.test(first) || !first.startsWith("`")) continue;
-    keys.push(first.replace(/`/g, "").replace(/\\/g, "").replace(/\s*⚠$/, "").trim());
+    keys.push(
+      first
+        .replace(/`/g, "")
+        .replace(/\\/g, "")
+        .replace(/\s*⚠$/, "")
+        .trim(),
+    );
   }
   return keys;
 }
@@ -85,7 +91,10 @@ function tableRows(body: string): Array<string[]> {
   const rows: Array<string[]> = [];
   for (const line of body.split("\n")) {
     if (!line.startsWith("|")) continue;
-    const cells = line.split("|").slice(1, -1).map((c) => c.trim());
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((c) => c.trim());
     if (cells.length < 2 || /^-+$/.test(cells[0]) || !cells[0].startsWith("`")) continue;
     rows.push(cells);
   }
@@ -390,7 +399,9 @@ describe("叙述覆盖度门禁 · 匹配器准确度（判宽=门禁失效，�
   });
 
   test("清单式代码块不算覆盖（防贴一段 /help 输出就'覆盖'全部命令）", () => {
-    const dump = ["```text", "/clear", "/compact", "/context", "/cost", "/doctor", "```"].join("\n");
+    const dump = ["```text", "/clear", "/compact", "/context", "/cost", "/doctor", "```"].join(
+      "\n",
+    );
     const one = ["```text", "/copy        复制最后一条回复", "```"].join("\n");
 
     // 清单被整块丢弃 → 里面的命令一个都不算覆盖
@@ -462,8 +473,7 @@ describe("参考页生成器 · AUTO-GEN 标记语义（T-3.6c）", () => {
     const src = read("website/ref/tools.md");
     const s = src.indexOf(MARKER_START);
     const e = src.indexOf(MARKER_END, s + MARKER_START.length);
-    const tampered =
-      src.slice(0, s) + MARKER_START + "\n\n手工塞进来的假内容\n\n" + src.slice(e);
+    const tampered = src.slice(0, s) + MARKER_START + "\n\n手工塞进来的假内容\n\n" + src.slice(e);
     expect(tampered).toContain("手工塞进来的假内容");
 
     const regenerated = spliceAutoGen(tampered, "真内容", "tools.md");

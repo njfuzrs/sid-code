@@ -132,7 +132,11 @@ function loadPromptTemplate(): string {
   return raw;
 }
 
-function buildPrompt(version: string, range: string, commits: Array<{ hash: string; subject: string }>): string {
+function buildPrompt(
+  version: string,
+  range: string,
+  commits: Array<{ hash: string; subject: string }>,
+): string {
   const tpl = loadPromptTemplate();
   const commitList = commits.map((c) => `${c.hash}  ${c.subject}`).join("\n");
   return tpl
@@ -385,7 +389,9 @@ async function curateOne(version: string, opts: CurateOptions): Promise<boolean>
     writeGenesisStub(version, hashes);
     const vres = verifyCuratedFile(version);
     if (!vres.ok) {
-      console.error(`  ❌ genesis 占位自身校验失败：\n${vres.errors.map((e) => "     " + e).join("\n")}`);
+      console.error(
+        `  ❌ genesis 占位自身校验失败：\n${vres.errors.map((e) => "     " + e).join("\n")}`,
+      );
       return false;
     }
     printEntry(vres.entry!);
@@ -485,10 +491,9 @@ function checkAll(): number {
   for (const f of files) {
     const version = f.replace(/^v/, "").replace(/\.json$/, "");
     const vr = versionRange(version, tags);
-    const hashes = collectRawCommits(
-      vr.range,
-      vr.isGenesis && vr.tag ? vr.tag : undefined,
-    ).map((c) => c.hash);
+    const hashes = collectRawCommits(vr.range, vr.isGenesis && vr.tag ? vr.tag : undefined).map(
+      (c) => c.hash,
+    );
     const vres = verifyCuratedFile(version, hashes);
     if (!vres.ok) {
       bad++;
@@ -544,7 +549,8 @@ async function main(): Promise<void> {
   const force = argv.includes("--force");
   const stub = argv.includes("--stub");
   const tIdx = argv.indexOf("--timeout");
-  const timeoutMs = tIdx >= 0 && argv[tIdx + 1] ? Number(argv[tIdx + 1]) * 1000 : DEFAULT_TIMEOUT_MS;
+  const timeoutMs =
+    tIdx >= 0 && argv[tIdx + 1] ? Number(argv[tIdx + 1]) * 1000 : DEFAULT_TIMEOUT_MS;
   const lIdx = argv.indexOf("--limit");
   const limit = lIdx >= 0 && argv[lIdx + 1] ? Number(argv[lIdx + 1]) : Infinity;
   const rIdx = argv.indexOf("--retries");

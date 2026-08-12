@@ -259,9 +259,7 @@ export class UploadManager implements TraceUploaderInterface {
 
         // 构建 FormData（对齐 claude-trace uploader.py 的 _upload_single_file）
         const formData = new FormData();
-        const uploadName = this.opts.compress
-          ? `${basename(filePath)}.gz`
-          : basename(filePath);
+        const uploadName = this.opts.compress ? `${basename(filePath)}.gz` : basename(filePath);
         const contentType = this.opts.compress ? "application/gzip" : "application/octet-stream";
         formData.append("file", new Blob([content], { type: contentType }), uploadName);
         formData.append("session_id", sessionId);
@@ -271,29 +269,24 @@ export class UploadManager implements TraceUploaderInterface {
         if (this.opts.deviceId) formData.append("device_id", this.opts.deviceId);
 
         // 发送请求（30 秒超时）
-        const response = await fetch(
-          `${this.opts.baseUrl}/api/v1/upload/session-file`,
-          {
-            method: "POST",
-            headers: {
-              "X-Upload-Token": this.opts.token,
-              "X-Content-SHA256": sha256,
-            },
-            body: formData,
-            signal: AbortSignal.timeout(30_000),
+        const response = await fetch(`${this.opts.baseUrl}/api/v1/upload/session-file`, {
+          method: "POST",
+          headers: {
+            "X-Upload-Token": this.opts.token,
+            "X-Content-SHA256": sha256,
           },
-        );
+          body: formData,
+          signal: AbortSignal.timeout(30_000),
+        });
 
         // ── 响应处理（适配平台实际返回格式） ──
         if (response.ok) {
           // traj: 返回 { status: "created"|"updated", ... }
           // raw/events: 返回 { status: "saved", sha256, oss_key }
-          const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+          const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
           // 二次校验：服务端返回了非空 sha256 时才校验（与本地一致）
           if (typeof body.sha256 === "string" && body.sha256 !== "" && body.sha256 !== sha256) {
-            lastError = new Error(
-              `服务端 hash 不一致: local=${sha256}, server=${body.sha256}`,
-            );
+            lastError = new Error(`服务端 hash 不一致: local=${sha256}, server=${body.sha256}`);
             continue; // 重试
           }
           return { fileType, status: "uploaded", sha256 };
@@ -311,7 +304,7 @@ export class UploadManager implements TraceUploaderInterface {
         }
 
         if (response.status === 400) {
-          const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+          const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
           const detail =
             typeof body.detail === "object" && body.detail !== null
               ? (body.detail as Record<string, unknown>)
@@ -366,7 +359,8 @@ export class UploadManager implements TraceUploaderInterface {
     if (!this.opts.recomputeCostBeforeUpload) return;
     try {
       // 同步 require 形式动态加载，避免上传器与 cost-recompute 形成顶层循环依赖
-      const { backfillTrajCost } = require("./cost-recompute.ts") as typeof import("./cost-recompute.ts");
+      const { backfillTrajCost } =
+        require("./cost-recompute.ts") as typeof import("./cost-recompute.ts");
       const result = backfillTrajCost(sessionDir, this.opts.availableModels);
       if (result.backfilled) {
         getLogger().info(
@@ -403,7 +397,9 @@ export class UploadManager implements TraceUploaderInterface {
             if (`${entry.session_id}\u0000${entry.file}` === key && entry.status !== "failed") {
               return; // 已在队列中，跳过
             }
-          } catch { /* 损坏行跳过 */ }
+          } catch {
+            /* 损坏行跳过 */
+          }
         }
       }
       const entry: QueueEntry = {
@@ -510,9 +506,7 @@ export class UploadManager implements TraceUploaderInterface {
 
     // 重写队列文件
     try {
-      const newContent = finalRemaining.length
-        ? finalRemaining.join("\n") + "\n"
-        : "";
+      const newContent = finalRemaining.length ? finalRemaining.join("\n") + "\n" : "";
       await writeFile(this.retryQueuePath, newContent);
     } catch (err) {
       getLogger().warn("TRACE", `重写重试队列失败: ${err}`);
@@ -628,7 +622,9 @@ export class UploadManager implements TraceUploaderInterface {
   }
 
   /** 获取上传平台 URL（/debug 显示用） */
-  getBaseUrl(): string { return this.opts.baseUrl; }
+  getBaseUrl(): string {
+    return this.opts.baseUrl;
+  }
 
   /** 持久化重试队列路径（供测试访问） */
   getRetryQueuePath(): string {
@@ -639,7 +635,7 @@ export class UploadManager implements TraceUploaderInterface {
 // ─── 辅助函数 ───
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function fileNameToType(fileName: string): "traj" | "raw" | "events" | null {

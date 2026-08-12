@@ -65,13 +65,34 @@ function readRepoFile(rel: string): string | null {
  * 任一缺失（被重构挪走而文档未同步）都会让自诊断走空。
  */
 const CORE_MODULES: Array<{ path: string; role: string }> = [
-  { path: "packages/core/src/query/tool-executor.ts", role: "工具执行器：并发分区策略（isConcurrencySafe → 并行/串行）" },
-  { path: "packages/core/src/agent/sub-agent.ts", role: "子代理执行引擎：超时/spawn/进程内三条路径" },
-  { path: "packages/core/src/agent/tool.ts", role: "SubAgentTool：并发安全声明 + runSync/runAsync" },
-  { path: "packages/core/src/agent/agent-definition.ts", role: "内置 agent 注册表：readOnly / timeout 按类型" },
-  { path: "packages/core/src/trace/collector.ts", role: "可观测性采集：SubagentStart/Stop 事件落盘" },
-  { path: "packages/core/src/trace/digest.ts", role: "轨迹嚼碎：子代理 section（串/并行 + 成败判定）" },
-  { path: "packages/core/src/config/system-prompt.ts", role: "系统提示词：架构知识 + sub_agent 工具描述" },
+  {
+    path: "packages/core/src/query/tool-executor.ts",
+    role: "工具执行器：并发分区策略（isConcurrencySafe → 并行/串行）",
+  },
+  {
+    path: "packages/core/src/agent/sub-agent.ts",
+    role: "子代理执行引擎：超时/spawn/进程内三条路径",
+  },
+  {
+    path: "packages/core/src/agent/tool.ts",
+    role: "SubAgentTool：并发安全声明 + runSync/runAsync",
+  },
+  {
+    path: "packages/core/src/agent/agent-definition.ts",
+    role: "内置 agent 注册表：readOnly / timeout 按类型",
+  },
+  {
+    path: "packages/core/src/trace/collector.ts",
+    role: "可观测性采集：SubagentStart/Stop 事件落盘",
+  },
+  {
+    path: "packages/core/src/trace/digest.ts",
+    role: "轨迹嚼碎：子代理 section（串/并行 + 成败判定）",
+  },
+  {
+    path: "packages/core/src/config/system-prompt.ts",
+    role: "系统提示词：架构知识 + sub_agent 工具描述",
+  },
   { path: "packages/core/src/query/loop.ts", role: "主循环 queryLoop：reminder 注入 + 压缩恢复" },
   { path: "packages/core/src/query/hypothesis-guide.ts", role: "假设纪律引导：调查性上下文检测" },
   { path: "CLAUDE.md", role: "最高指令：战略定位 + 五层架构 + 三组不变量" },
@@ -108,28 +129,32 @@ const INVARIANTS: Array<{
     file: "packages/core/src/query/tool-executor.ts",
     pattern: /isConcurrencySafe/,
     semantic: "工具执行器仍按 isConcurrencySafe(input) 做并发分区（P0：修复子代理假并行真串行）",
-    remedy: "并发分区逻辑被改动，只读子代理可能重新被串行执行。核对 tool-executor.ts 的 partition 段。",
+    remedy:
+      "并发分区逻辑被改动，只读子代理可能重新被串行执行。核对 tool-executor.ts 的 partition 段。",
   },
   {
     id: "subagent-concurrency-safe",
     file: "packages/core/src/agent/tool.ts",
     pattern: /isConcurrencySafe\s*\(\s*input/,
     semantic: "SubAgentTool 仍声明 isConcurrencySafe(input)，按类型 readOnly 决定可否并行",
-    remedy: "SubAgentTool 不再声明 isConcurrencySafe → 回退到类级 readOnly()=false → 全部串行。补回该方法。",
+    remedy:
+      "SubAgentTool 不再声明 isConcurrencySafe → 回退到类级 readOnly()=false → 全部串行。补回该方法。",
   },
   {
     id: "runsync-iserror",
     file: "packages/core/src/agent/tool.ts",
     pattern: /isError:\s*!result\.success/,
     semantic: "runSync 成功路径按 result.success 设 isError（P0：TUI 区分子代理成败）",
-    remedy: "runSync 正常路径不再设 isError，TUI 无法区分子代理成功/失败。补回 `isError: !result.success`。",
+    remedy:
+      "runSync 正常路径不再设 isError，TUI 无法区分子代理成功/失败。补回 `isError: !result.success`。",
   },
   {
     id: "collector-stop-status",
     file: "packages/core/src/trace/collector.ts",
     pattern: /status:\s*stopInput\.success\s*===\s*true/,
     semantic: "SubagentStop 事件按 success 写 status（P0：消灭'全部 SUCCESS'误判的物理根因）",
-    remedy: "SubagentStop 不再从 success 派生 status，events.jsonl 又变得无成败可读。补回 status 字段。",
+    remedy:
+      "SubagentStop 不再从 success 派生 status，events.jsonl 又变得无成败可读。补回 status 字段。",
   },
   {
     id: "digest-subagent-section",
@@ -150,7 +175,8 @@ const INVARIANTS: Array<{
     file: "packages/core/src/agent/agent-definition.ts",
     pattern: /readOnly:\s*true/,
     semantic: "内置 agent 仍按类型声明 readOnly（explore/plan/verify 只读可并行）",
-    remedy: "只读 agent 不再声明 readOnly:true → isConcurrencySafe 判不出只读 → 被串行。核对 BUILTIN_AGENTS。",
+    remedy:
+      "只读 agent 不再声明 readOnly:true → isConcurrencySafe 判不出只读 → 被串行。核对 BUILTIN_AGENTS。",
   },
 ];
 
@@ -194,7 +220,9 @@ if (promptContent === null) {
   });
 } else {
   const mentionsExplore = /explore/.test(promptContent) && /sub_agent/.test(promptContent);
-  const mentionsTypeChoice = /只读.*explore|explore.*只读|type:\s*verify|派\s*explore/.test(promptContent);
+  const mentionsTypeChoice = /只读.*explore|explore.*只读|type:\s*verify|派\s*explore/.test(
+    promptContent,
+  );
   const ok = mentionsExplore && mentionsTypeChoice;
   record({
     id: "prompt-alignment:sub-agent-desc",
@@ -258,7 +286,9 @@ if (jsonMode) {
   if (failed.length === 0) {
     L.push(`全部 ${results.length} 项通过：代码与架构文档一致，"吃狗粮"地图未漂移。`);
   } else {
-    L.push(`${failed.length}/${results.length} 项失败：代码与架构文档已漂移，请按上述修复指引同步。`);
+    L.push(
+      `${failed.length}/${results.length} 项失败：代码与架构文档已漂移，请按上述修复指引同步。`,
+    );
   }
   process.stdout.write(L.join("\n") + "\n");
 }

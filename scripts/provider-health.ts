@@ -8,7 +8,11 @@
  * 从最近 N 个会话的 events.jsonl 聚合各 provider 的健康指标并输出格式化看板。
  */
 
-import { aggregateProviderHealth, sendHealthAlerts, type HealthReport } from "@sid-code/core/telemetry/provider-health.ts";
+import {
+  aggregateProviderHealth,
+  sendHealthAlerts,
+  type HealthReport,
+} from "@sid-code/core/telemetry/provider-health.ts";
 // P2-3：分桶行文案与命令面板共用（避免同一份数据在三个入口有三种说法）
 import { formatTtftBucketLine } from "@sid-code/core/trace/ttft-cache-buckets.ts";
 
@@ -26,7 +30,10 @@ for (let i = 0; i < args.length; i++) {
     if (v === "1h") periodMs = 3600_000;
     else if (v === "24h") periodMs = 86400_000;
     else if (v === "7d") periodMs = 86400_000 * 7;
-    else { console.error(`未知周期: ${v}，支持 1h/24h/7d`); process.exit(1); }
+    else {
+      console.error(`未知周期: ${v}，支持 1h/24h/7d`);
+      process.exit(1);
+    }
   } else if (args[i] === "--provider" && args[i + 1]) {
     filterProvider = args[++i];
   } else if (args[i] === "--alert") {
@@ -37,7 +44,9 @@ for (let i = 0; i < args.length; i++) {
     doAlert = true;
     alertOnly = true;
   } else if (args[i] === "--help" || args[i] === "-h") {
-    console.log("用法: bun run scripts/provider-health.ts [--period 1h|24h|7d] [--provider NAME] [--alert] [--alert-only]");
+    console.log(
+      "用法: bun run scripts/provider-health.ts [--period 1h|24h|7d] [--provider NAME] [--alert] [--alert-only]",
+    );
     process.exit(0);
   }
 }
@@ -64,7 +73,12 @@ function c(color: keyof typeof ANSI, text: string): string {
 
 function renderReport(report: HealthReport): void {
   console.log("");
-  console.log(c("bold", `  ═══ Provider 健康度看板 ═══  周期: ${report.periodLabel}  生成: ${report.generatedAt.slice(11, 19)}`));
+  console.log(
+    c(
+      "bold",
+      `  ═══ Provider 健康度看板 ═══  周期: ${report.periodLabel}  生成: ${report.generatedAt.slice(11, 19)}`,
+    ),
+  );
   console.log("");
 
   if (report.providers.length === 0) {
@@ -88,10 +102,12 @@ function renderReport(report: HealthReport): void {
   console.log(c("gray", "  " + "─".repeat(75)));
 
   for (const p of report.providers) {
-    const successRate = p.requests.total > 0
-      ? (p.requests.succeeded / p.requests.total * 100).toFixed(1) + "%"
-      : "N/A";
-    const rateColor = p.requests.total > 0 && p.requests.succeeded / p.requests.total < 0.95 ? "red" : "green";
+    const successRate =
+      p.requests.total > 0
+        ? ((p.requests.succeeded / p.requests.total) * 100).toFixed(1) + "%"
+        : "N/A";
+    const rateColor =
+      p.requests.total > 0 && p.requests.succeeded / p.requests.total < 0.95 ? "red" : "green";
 
     const ttftP50 = p.latency.ttft_p50 ? `${(p.latency.ttft_p50 / 1000).toFixed(1)}s` : "-";
     const ttftP95 = p.latency.ttft_p95 ? `${(p.latency.ttft_p95 / 1000).toFixed(1)}s` : "-";
@@ -102,13 +118,13 @@ function renderReport(report: HealthReport): void {
 
     console.log(
       `  ${c("cyan", p.provider.padEnd(15))} ` +
-      `${String(p.requests.total).padStart(6)} ` +
-      `${c(rateColor, successRate.padStart(7))} ` +
-      `${(p.requests.timedOut > 0 ? c("yellow", timeoutStr) : timeoutStr).padStart(5 + (p.requests.timedOut > 0 ? 9 : 0))} ` +
-      `${retryStr.padStart(5)} ` +
-      `${ttftP50.padStart(10)} ` +
-      `${ttftP95.padStart(10)} ` +
-      `${totalP95.padStart(10)}`
+        `${String(p.requests.total).padStart(6)} ` +
+        `${c(rateColor, successRate.padStart(7))} ` +
+        `${(p.requests.timedOut > 0 ? c("yellow", timeoutStr) : timeoutStr).padStart(5 + (p.requests.timedOut > 0 ? 9 : 0))} ` +
+        `${retryStr.padStart(5)} ` +
+        `${ttftP50.padStart(10)} ` +
+        `${ttftP95.padStart(10)} ` +
+        `${totalP95.padStart(10)}`,
     );
 
     // P2-3：命中/未命中分桶 TTFT。文案与 /trace、/trace --health 共用同一函数
@@ -123,7 +139,9 @@ function renderReport(report: HealthReport): void {
 
     // 超时分布详情
     if (Object.keys(p.timeouts.byLayer).length > 0) {
-      const layers = Object.entries(p.timeouts.byLayer).map(([k, v]) => `${k}:${v}`).join(" ");
+      const layers = Object.entries(p.timeouts.byLayer)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(" ");
       console.log(c("gray", `${"".padStart(18)}超时分布: ${layers}`));
     }
   }
@@ -135,7 +153,9 @@ function renderReport(report: HealthReport): void {
   const totalFallbacks = report.providers.reduce((s, p) => s + p.retries.fallbackTriggered, 0);
   const totalExhausted = report.providers.reduce((s, p) => s + p.retries.exhausted, 0);
   if (totalRetries > 0 || totalFallbacks > 0) {
-    console.log(c("gray", `  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`));
+    console.log(
+      c("gray", `  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`),
+    );
     console.log("");
   }
 }
@@ -158,5 +178,5 @@ if (doAlert || process.env.SID_CODE_ALERT_WEBHOOK_URL) {
 }
 
 // 有 critical 告警时退出码非零（供 CI 判断）
-const hasCritical = report.alerts.some(a => a.severity === "critical");
+const hasCritical = report.alerts.some((a) => a.severity === "critical");
 if (hasCritical) process.exit(1);

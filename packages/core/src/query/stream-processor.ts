@@ -6,22 +6,14 @@
  * 不再从 content 移除。新增 onThinking 回调，与 onText 完全分离。
  */
 
-import type {
-  StreamEvent,
-  AccumulatedResponse,
-  ContentBlock,
-  ToolUseBlock,
-} from "../llm/types.ts";
+import type { StreamEvent, AccumulatedResponse, ContentBlock, ToolUseBlock } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
-import {
-  resolveLoopTimeouts,
-  resolveProviderStreamTimeouts,
-} from "../config/network-profile.ts";
+import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
 
@@ -178,9 +170,7 @@ export async function processStream(
 
     // 整体超时检测（扣除累计的用户等待时段）
     if (now - startTime - humanWaitAccumMs > OVERALL_TIMEOUT) {
-      timeoutError = new Error(
-        `Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
-      );
+      timeoutError = new Error(`Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`);
       log.warn("STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
       // 根治（2026-07）：abort 时携带 reason。AbortSignal.reason 在首次 abort() 时被
       // 永久锁定，不受"abortPromise 与 timeoutError 谁赢得 Promise.race"影响——上层
@@ -291,7 +281,10 @@ export async function processStream(
             });
           } catch (e) {
             // UI 撤回失败绝不影响流处理主流程（与 onToolUseComplete 同取向）。
-            log.warn("STREAM", `onStreamRestart 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+            log.warn(
+              "STREAM",
+              `onStreamRestart 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`,
+            );
           }
           break;
         }
@@ -390,7 +383,10 @@ export async function processStream(
                 try {
                   options.onToolUseComplete(block as ToolUseBlock);
                 } catch (e) {
-                  log.warn("STREAM", `onToolUseComplete 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`);
+                  log.warn(
+                    "STREAM",
+                    `onToolUseComplete 回调异常（忽略）: ${e instanceof Error ? e.message : String(e)}`,
+                  );
                 }
               }
             }
@@ -402,9 +398,7 @@ export async function processStream(
               // SP1：算出该思考块耗时（block_start → stop）；无起点则不附。
               const startedAt = thinkingStartMs.get(event.index);
               const durationMs =
-                startedAt !== undefined
-                  ? Math.max(0, Date.now() - startedAt)
-                  : undefined;
+                startedAt !== undefined ? Math.max(0, Date.now() - startedAt) : undefined;
               // 原地转型为 ThinkingBlock（保留在 content 中，对标 Claude Code）
               // § 把 anthropic.ts 累积的 signature 从 _raw_block 中提取
               const rawBlock = (event as any)._raw_block;
@@ -459,11 +453,14 @@ export async function processStream(
 
   // 流结束日志（区分文本块和思考块）
   const totalTextLen = response.content
-    .filter(b => b.type === "text")
+    .filter((b) => b.type === "text")
     .reduce((sum, b) => sum + (b.type === "text" ? b.text.length : 0), 0);
-  const thinkingCount = response.content.filter(b => b.type === "thinking").length;
-  const toolCallCount = response.content.filter(b => b.type === "tool_use").length;
-  log.info("STREAM", `流结束: 文本${totalTextLen}字符, 思考${thinkingCount}块, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`);
+  const thinkingCount = response.content.filter((b) => b.type === "thinking").length;
+  const toolCallCount = response.content.filter((b) => b.type === "tool_use").length;
+  log.info(
+    "STREAM",
+    `流结束: 文本${totalTextLen}字符, 思考${thinkingCount}块, 工具调用${toolCallCount}个, stop=${response.stopReason}, in=${response.usage.inputTokens} out=${response.usage.outputTokens}`,
+  );
 
   if (thinkingBlocks.length > 0) {
     (response as any)._thinkingBlocks = thinkingBlocks;

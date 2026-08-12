@@ -4,7 +4,11 @@
  * 所有依赖通过 await import() 动态加载
  */
 
-import { profileCheckpoint, profileReport, isProfilingEnabled } from "@sid-code/shared/utils/startup-profiler.ts";
+import {
+  profileCheckpoint,
+  profileReport,
+  isProfilingEnabled,
+} from "@sid-code/shared/utils/startup-profiler.ts";
 profileCheckpoint("bootstrap_entry");
 
 // 启动性能剖析：进程退出时输出报告

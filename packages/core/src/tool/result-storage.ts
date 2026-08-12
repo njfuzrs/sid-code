@@ -18,16 +18,16 @@ import { sidPaths } from "../config/paths.ts";
 
 /** 各工具的 maxResultSizeChars 配置 */
 export const TOOL_MAX_RESULT_SIZE: Record<string, number> = {
-  read: Infinity,       // 防止 Read→file→Read 循环，工具自身已有行数限制
-  edit: Infinity,       // 编辑结果通常很短（diff 上下文）
-  write: Infinity,      // 写入确认通常很短
-  bash: 30000,          // 命令输出可能很大
-  grep: 30000,          // 搜索结果可能很多
-  glob: 30000,          // 文件列表可能很长
-  ls: 30000,            // 目录列表可能很长
-  read_many: 50000,     // 批量读取
-  web_fetch: 50000,     // 网页内容可能很大
-  web_search: 30000,    // 搜索结果
+  read: Infinity, // 防止 Read→file→Read 循环，工具自身已有行数限制
+  edit: Infinity, // 编辑结果通常很短（diff 上下文）
+  write: Infinity, // 写入确认通常很短
+  bash: 30000, // 命令输出可能很大
+  grep: 30000, // 搜索结果可能很多
+  glob: 30000, // 文件列表可能很长
+  ls: 30000, // 目录列表可能很长
+  read_many: 50000, // 批量读取
+  web_fetch: 50000, // 网页内容可能很大
+  web_search: 30000, // 搜索结果
 };
 
 /** 默认最大结果大小 */
@@ -38,12 +38,7 @@ const DEFAULT_MAX_RESULT_SIZE = 30000;
  * 与 context/tool-result-storage.ts 的 persistLargeOutput 共用同一根，避免两套路径策略。
  */
 function toolResultsDir(sessionId: string): string {
-  return join(
-    sidPaths.trajectories(),
-    "sessions",
-    sessionId,
-    "tool-outputs",
-  );
+  return join(sidPaths.trajectories(), "sessions", sessionId, "tool-outputs");
 }
 
 /**

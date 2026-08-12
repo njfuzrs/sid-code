@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "eval:run": "bun run core/runner.ts",
-    "eval:dashboard": "bun run scripts/dashboard.ts"
+    "eval:run": "bun run core/runner.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.79.0",

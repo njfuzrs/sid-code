@@ -35,7 +35,11 @@ const STATUS_TEXT: Record<GoalStatus, string> = {
 
 /** 记录 Goal 生命周期事件（结构化日志，方便后续分析/回放） */
 function logLifecycle(action: string, goal: GoalState, extra?: Record<string, unknown>): void {
-  log.info("GOAL_LIFECYCLE", `${action}: id=${goal.id}, objective="${goal.objective.slice(0, 60)}", status=${goal.status}, turns=${goal.turnsUsed}/${goal.maxTurns}, tokens=${goal.tokensUsed}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}, evidence=${goal.evidenceLog.length}`, { action, goalId: goal.id, ...extra });
+  log.info(
+    "GOAL_LIFECYCLE",
+    `${action}: id=${goal.id}, objective="${goal.objective.slice(0, 60)}", status=${goal.status}, turns=${goal.turnsUsed}/${goal.maxTurns}, tokens=${goal.tokensUsed}${goal.tokenBudget ? `/${goal.tokenBudget}` : ""}, evidence=${goal.evidenceLog.length}`,
+    { action, goalId: goal.id, ...extra },
+  );
 }
 
 const mod: LocalCommandModule = {
@@ -111,9 +115,10 @@ function showGoalStatus(ctx: CommandContext): LocalCommandResult {
     ? `Token 预算: 已用 ${goal.tokensUsed.toLocaleString()} / 上限 ${goal.tokenBudget.toLocaleString()}`
     : `Token 用量: 已用 ${goal.tokensUsed.toLocaleString()}（未设预算上限）`;
 
-  const evidenceLine = goal.evidenceLog.length > 0
-    ? `证据: ${goal.evidenceLog.length} 条（最新: ${goal.evidenceLog[goal.evidenceLog.length - 1]!.summary.slice(0, 60)}）`
-    : `证据: 暂无`;
+  const evidenceLine =
+    goal.evidenceLog.length > 0
+      ? `证据: ${goal.evidenceLog.length} 条（最新: ${goal.evidenceLog[goal.evidenceLog.length - 1]!.summary.slice(0, 60)}）`
+      : `证据: 暂无`;
 
   const lines = [
     `目标状态: ${STATUS_TEXT[goal.status] || goal.status}`,
@@ -136,11 +141,16 @@ function pauseGoal(ctx: CommandContext): LocalCommandResult {
     return { type: "text", value: "当前无活跃目标。" };
   }
   if (goal.status !== "active") {
-    return { type: "text", value: `目标状态为 "${STATUS_TEXT[goal.status] || goal.status}"，无法暂停。` };
+    return {
+      type: "text",
+      value: `目标状态为 "${STATUS_TEXT[goal.status] || goal.status}"，无法暂停。`,
+    };
   }
 
   goal.status = "paused";
-  ctx.updateGoalState?.((g: GoalState) => { g.status = "paused"; });
+  ctx.updateGoalState?.((g: GoalState) => {
+    g.status = "paused";
+  });
   logLifecycle("pause", goal);
   return { type: "text", value: `⏸ 目标已暂停。使用 \`/goal resume\` 恢复。` };
 }
@@ -159,7 +169,9 @@ function resumeGoal(ctx: CommandContext): LocalCommandResult {
 
   // 恢复目标
   goal.status = "active";
-  ctx.updateGoalState?.((g: GoalState) => { g.status = "active"; });
+  ctx.updateGoalState?.((g: GoalState) => {
+    g.status = "active";
+  });
   logLifecycle("resume", goal);
 
   return {
@@ -179,7 +191,10 @@ function editGoal(newObjective: string, ctx: CommandContext): LocalCommandResult
     return { type: "text", value: "请提供新的完成条件。用法: `/goal edit <新条件>`" };
   }
   if (trimmed.length > MAX_OBJECTIVE_CHARS) {
-    return { type: "text", value: `目标条件过长（${trimmed.length} 字符），最多 ${MAX_OBJECTIVE_CHARS} 字符。` };
+    return {
+      type: "text",
+      value: `目标条件过长（${trimmed.length} 字符），最多 ${MAX_OBJECTIVE_CHARS} 字符。`,
+    };
   }
 
   // 编辑目标：修改 objective，重置 evidenceLog + blockedDetector，状态恢复 active
@@ -195,7 +210,10 @@ function editGoal(newObjective: string, ctx: CommandContext): LocalCommandResult
   });
   logLifecycle("edit", goal, { newObjective: trimmed.slice(0, 200) });
 
-  return { type: "text", value: `✔ 目标已更新为: "${trimmed.slice(0, 80)}${trimmed.length > 80 ? "..." : ""}"\n证据日志已重置，继续推进新目标。` };
+  return {
+    type: "text",
+    value: `✔ 目标已更新为: "${trimmed.slice(0, 80)}${trimmed.length > 80 ? "..." : ""}"\n证据日志已重置，继续推进新目标。`,
+  };
 }
 
 /** /goal turns <n>：调整当前目标的最大轮次上限（运行时按需放宽/收紧）。 */
@@ -208,10 +226,16 @@ function setMaxTurns(turnsStr: string, ctx: CommandContext): LocalCommandResult 
   const trimmed = turnsStr.trim();
   const n = parseInt(trimmed, 10);
   if (isNaN(n) || String(n) !== trimmed) {
-    return { type: "text", value: `无效的轮次值: "${trimmed}"。请输入正整数，例如 \`/goal turns 200\`。` };
+    return {
+      type: "text",
+      value: `无效的轮次值: "${trimmed}"。请输入正整数，例如 \`/goal turns 200\`。`,
+    };
   }
   if (n < MIN_TURNS || n > MAX_TURNS_LIMIT) {
-    return { type: "text", value: `轮次上限需在 ${MIN_TURNS}~${MAX_TURNS_LIMIT} 之间（输入了 ${n}）。` };
+    return {
+      type: "text",
+      value: `轮次上限需在 ${MIN_TURNS}~${MAX_TURNS_LIMIT} 之间（输入了 ${n}）。`,
+    };
   }
   if (n < goal.turnsUsed) {
     return {
@@ -222,7 +246,9 @@ function setMaxTurns(turnsStr: string, ctx: CommandContext): LocalCommandResult 
 
   const old = goal.maxTurns;
   goal.maxTurns = n;
-  ctx.updateGoalState?.((g: GoalState) => { g.maxTurns = n; });
+  ctx.updateGoalState?.((g: GoalState) => {
+    g.maxTurns = n;
+  });
   logLifecycle("turns", goal, { oldMaxTurns: old, newMaxTurns: n });
   return { type: "text", value: `最大轮次已从 ${old} 调整为 ${n}（已用 ${goal.turnsUsed} 轮）。` };
 }
@@ -244,13 +270,21 @@ function setBudget(budgetStr: string, ctx: CommandContext): LocalCommandResult {
   }
 
   if (isNaN(budget) || budget <= 0) {
-    return { type: "text", value: `无效的预算值: "${trimmed}"。请输入正整数（支持 "100k" 格式）。` };
+    return {
+      type: "text",
+      value: `无效的预算值: "${trimmed}"。请输入正整数（支持 "100k" 格式）。`,
+    };
   }
 
   goal.tokenBudget = budget;
-  ctx.updateGoalState?.((g: GoalState) => { g.tokenBudget = budget; });
+  ctx.updateGoalState?.((g: GoalState) => {
+    g.tokenBudget = budget;
+  });
   logLifecycle("budget", goal, { newBudget: budget });
-  return { type: "text", value: `Token 预算已设为 ${budget.toLocaleString()}（已用 ${goal.tokensUsed.toLocaleString()}）` };
+  return {
+    type: "text",
+    value: `Token 预算已设为 ${budget.toLocaleString()}（已用 ${goal.tokensUsed.toLocaleString()}）`,
+  };
 }
 
 function clearGoal(ctx: CommandContext): LocalCommandResult {
@@ -261,7 +295,10 @@ function clearGoal(ctx: CommandContext): LocalCommandResult {
 
   logLifecycle("clear", goal);
   ctx.setGoalState?.(null);
-  return { type: "text", value: `目标已清除: "${goal.objective.slice(0, 60)}${goal.objective.length > 60 ? "..." : ""}"` };
+  return {
+    type: "text",
+    value: `目标已清除: "${goal.objective.slice(0, 60)}${goal.objective.length > 60 ? "..." : ""}"`,
+  };
 }
 
 export default mod;

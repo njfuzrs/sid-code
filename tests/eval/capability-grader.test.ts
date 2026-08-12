@@ -290,10 +290,7 @@ describe("runCheck — recovery_plan_update_count_min", () => {
 
 describe("runCheck — 未知 check", () => {
   test("未知 check 名 → 自动 fail（带原因）", () => {
-    const r = runCheck(
-      { type: "assert", check: "non_existent_check", weight: 0.1 },
-      buildInput(),
-    );
+    const r = runCheck({ type: "assert", check: "non_existent_check", weight: 0.1 }, buildInput());
     expect(r.passed).toBe(false);
     expect(r.reason).toContain("未知 check");
   });

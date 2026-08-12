@@ -19,7 +19,11 @@
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitTimeoutFired, armIneffectiveCheck, getStreamSnapshot } from "../trace/stream-observer.ts";
+import {
+  emitTimeoutFired,
+  armIneffectiveCheck,
+  getStreamSnapshot,
+} from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   classifyError,
@@ -43,10 +47,7 @@ import { disableKeepAlive } from "./keepalive.ts";
 // S4：非流式降级。`src/api/stream-handler.ts` 早就写好了这套（含 SSE 事件重放），
 // 但生产零消费——只有测试在驱动它（§2.3 / §七 F7 记的三处"死能力"之一）。
 // 这里把它接进漏斗，成为空响应/传输错误的最后一道兜底。
-import {
-  convertToStreamEvents,
-  isStreamingTransportError,
-} from "../api/stream-handler.ts";
+import { convertToStreamEvents, isStreamingTransportError } from "../api/stream-handler.ts";
 
 // ═══════════════════════════════════════════════════════════════════
 // 查询来源分类（从 retry-engine.ts 吸收）
@@ -60,20 +61,20 @@ import {
  *  对照 CC `withRetry.ts` 的 `FOREGROUND_529_RETRY_SOURCES`：它把全部 agent 源
  *  都算前台（子代理是用户等待链路的一环，不是可丢弃的后台 side-call）。 */
 export type QuerySource =
-  | "main_thread"     // 用户主对话（前台）
-  | "agent"           // 子代理（前台）——保留为兼容旧调用方的笼统标签
-  | "agent:builtin"   // 内置子代理主流（前台）
-  | "agent:custom"    // 自定义子代理主流（前台）
-  | "agent:summary"   // 子代理强制总结轮（前台，B2 首次获得韧性）
-  | "agent:fork"      // fork 子代理（前台）
-  | "headless"        // 无头子进程主循环（前台，绝不阻塞）
-  | "compact"         // 上下文压缩（前台）
-  | "goal_eval"       // 目标评估（B3 接线）
-  | "hook_agent"      // hook 触发的 agent（B3 接线）
-  | "memory_recall"   // 记忆召回（B3 接线）
-  | "summary"         // 摘要生成（后台）
-  | "title"           // 标题生成（后台）
-  | "classifier";     // 分类器（后台）
+  | "main_thread" // 用户主对话（前台）
+  | "agent" // 子代理（前台）——保留为兼容旧调用方的笼统标签
+  | "agent:builtin" // 内置子代理主流（前台）
+  | "agent:custom" // 自定义子代理主流（前台）
+  | "agent:summary" // 子代理强制总结轮（前台，B2 首次获得韧性）
+  | "agent:fork" // fork 子代理（前台）
+  | "headless" // 无头子进程主循环（前台，绝不阻塞）
+  | "compact" // 上下文压缩（前台）
+  | "goal_eval" // 目标评估（B3 接线）
+  | "hook_agent" // hook 触发的 agent（B3 接线）
+  | "memory_recall" // 记忆召回（B3 接线）
+  | "summary" // 摘要生成（后台）
+  | "title" // 标题生成（后台）
+  | "classifier"; // 分类器（后台）
 
 /** 前台查询源 — 用户正在等待结果，529 时重试。
  *
@@ -536,7 +537,10 @@ export class ModelFallback {
    * fallback 的 provider/model 原本只在构造时定死；/model 切换 fallbackModel 后若不同步更新，
    * 主模型出错降级仍会走旧目标。传 undefined 表示清除 fallback（回退到"无降级"）。
    */
-  setFallbackTarget(fallbackModel: string | undefined, fallbackProvider: Provider | undefined): void {
+  setFallbackTarget(
+    fallbackModel: string | undefined,
+    fallbackProvider: Provider | undefined,
+  ): void {
     this.config.fallbackModel = fallbackModel;
     this.config.fallbackProvider = fallbackProvider;
     // 已发生过的降级状态重置，避免旧降级标志影响新目标判定。
@@ -585,7 +589,11 @@ export class ModelFallback {
     params = {
       ...params,
       onStreamTelemetry: (sig) => {
-        try { upstreamStreamTelemetry?.(sig); } catch { /* ignore */ }
+        try {
+          upstreamStreamTelemetry?.(sig);
+        } catch {
+          /* ignore */
+        }
         // B4：流内诊断事件（stream_stall / stream_*_timeout / stream_completed）同样带
         // agentId。它们是 per-attempt 的耗时/停顿数据——并行子代理下若不带身份，
         // digest 的 gen 耗时分位数会把 6 路混在一起算，看不出是哪一路在卡。
@@ -624,15 +632,18 @@ export class ModelFallback {
           log.info(
             "FALLBACK",
             `S2：模型 ${params.model} 处于共享限流冷却（剩余 ${cd.remainingMs}ms，` +
-            `错峰槽位 ${slot} → 等 ${waitMs}ms，已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
+              `错峰槽位 ${slot} → 等 ${waitMs}ms，已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
           );
-          this.emitTelemetry({
-            type: "shared_cooldown_wait",
-            model: params.model,
-            delayMs: waitMs,
-            remainingMs: cd.remainingMs,
-            error: cd.reason,
-          }, perCall.agentId);
+          this.emitTelemetry(
+            {
+              type: "shared_cooldown_wait",
+              model: params.model,
+              delayMs: waitMs,
+              remainingMs: cd.remainingMs,
+              error: cd.reason,
+            },
+            perCall.agentId,
+          );
           await this.sleep(waitMs, signal);
           if (signal?.aborted) throw new RequestAbortedError("Request aborted");
         } else {
@@ -662,10 +673,15 @@ export class ModelFallback {
         // B4：带 agentId —— 漏斗这层用的是 ambient `turnIndex`（主循环轮次），子代理调用
         // 也会拿到同一个 turnIndex。不带身份时，子代理的 fallback 超时会被写进**主循环那份
         // 快照**的 timeoutsFired，污染主循环的重开成因归因（并行子代理越多污染越重）。
-        emitTimeoutFired(currentSseDumpContext().turnIndex, "fallback_stream_timeout", {
-          threshold_ms: streamTimeoutMs,
-          model: params.model,
-        }, perCall.agentId);
+        emitTimeoutFired(
+          currentSseDumpContext().turnIndex,
+          "fallback_stream_timeout",
+          {
+            threshold_ms: streamTimeoutMs,
+            model: params.model,
+          },
+          perCall.agentId,
+        );
         // 缺口 2 进阶：武装未生效检查（abort 后若流循环 5s 内未抛出 → TimeoutIneffective）
         disarmStreamIneffective = armIneffectiveCheck(
           currentSseDumpContext().turnIndex,
@@ -803,12 +819,15 @@ export class ModelFallback {
                 log.info("FALLBACK", `max_tokens 溢出恢复: ${original} → ${adjusted}`);
                 ctx.maxTokensOverride = adjusted;
                 this.listener?.onMaxTokensAdjusted?.(original, adjusted);
-                this.emitTelemetry({
-                  type: "max_tokens_adjust",
-                  model: params.model,
-                  originalTokens: original,
-                  adjustedTokens: adjusted,
-                }, perCall.agentId);
+                this.emitTelemetry(
+                  {
+                    type: "max_tokens_adjust",
+                    model: params.model,
+                    originalTokens: original,
+                    adjustedTokens: adjusted,
+                  },
+                  perCall.agentId,
+                );
                 // 跳出当前流，进入流式重试（会使用新的 maxTokens）
                 throw new RetryableError(event.error.message, "server_error");
               }
@@ -844,11 +863,14 @@ export class ModelFallback {
               ) {
                 log.info("FALLBACK", `后台查询遇 529，立即放弃`);
                 this.listener?.on529Dropped?.(perCall.querySource ?? "unknown");
-                this.emitTelemetry({
-                  type: "529_dropped",
-                  model: params.model,
-                  querySource: perCall.querySource ?? "unknown",
-                }, perCall.agentId);
+                this.emitTelemetry(
+                  {
+                    type: "529_dropped",
+                    model: params.model,
+                    querySource: perCall.querySource ?? "unknown",
+                  },
+                  perCall.agentId,
+                );
                 yield* this.tryFallback(params, signal, ctx);
                 return;
               }
@@ -860,12 +882,15 @@ export class ModelFallback {
                 ctx.consecutive529 >= MAX_529_CONSECUTIVE
               ) {
                 log.warn("FALLBACK", `连续 ${ctx.consecutive529} 次 529，触发降级`);
-                this.emitTelemetry({
-                  type: "fallback",
-                  model: params.model,
-                  fallbackModel: perCall.fallbackModel,
-                  error: "连续 529 错误",
-                }, perCall.agentId);
+                this.emitTelemetry(
+                  {
+                    type: "fallback",
+                    model: params.model,
+                    fallbackModel: perCall.fallbackModel,
+                    error: "连续 529 错误",
+                  },
+                  perCall.agentId,
+                );
                 yield* this.tryFallback(params, signal, ctx);
                 return;
               }
@@ -911,7 +936,6 @@ export class ModelFallback {
           // 不清的话，后续并发路径会守着一段已经作废的冷却白等（把 S2 从"省"变成纯"慢"）。
           this.availability.clearCooldown(params.model);
           return;
-
         } catch (err) {
           // 用户主动中断（ESC）：立即传播，终止整轮对话
           if (signal?.aborted) {
@@ -971,15 +995,18 @@ export class ModelFallback {
                 ? "401 认证错误，凭据已刷新，立即重试（不退避）"
                 : `401 认证错误，触发 retry-once 闸门并重试（${this.config.onAuthRefresh ? "凭据刷新未成功" : "未注入凭据刷新钩子"}，不退避）`,
             );
-            this.emitTelemetry({
-              type: "auth_refresh",
-              model: params.model,
-              error: String(err),
-              provider: primaryProvider.name(),
-              // B5-7：区分"真刷新过"与"只是重试一次"。缺了它，遥测里两种语义
-              // 完全同形——正是本项要消除的那类"看着有能力、实际没有"的盲区。
-              authRefreshed: refreshed,
-            }, perCall.agentId);
+            this.emitTelemetry(
+              {
+                type: "auth_refresh",
+                model: params.model,
+                error: String(err),
+                provider: primaryProvider.name(),
+                // B5-7：区分"真刷新过"与"只是重试一次"。缺了它，遥测里两种语义
+                // 完全同形——正是本项要消除的那类"看着有能力、实际没有"的盲区。
+                authRefreshed: refreshed,
+              },
+              perCall.agentId,
+            );
             resetStreamTimeout();
             // 作废语义广播（与下方重试路径同理）：401 重试同样是**全新请求**。
             // 401 通常在建流阶段就抛、尚未产出内容块，但「通常」不是「必然」——
@@ -1021,7 +1048,10 @@ export class ModelFallback {
           // 死连接**，重试次数被白烧。禁用复用后强制新建连接才可能自愈。
           const netCode = getNetworkErrorCode(err);
           if ((netCode === "ECONNRESET" || netCode === "EPIPE") && !ctx.disableKeepAlive) {
-            log.info("FALLBACK", `${netCode} 检测到，禁用 keep-alive 连接池（进程级，后续请求不复用连接）`);
+            log.info(
+              "FALLBACK",
+              `${netCode} 检测到，禁用 keep-alive 连接池（进程级，后续请求不复用连接）`,
+            );
             ctx.disableKeepAlive = true;
             this.config.disableKeepAlive = true;
             disableKeepAlive(); // ← 真消费者：进入 provider 的 fetch 选项
@@ -1050,7 +1080,10 @@ export class ModelFallback {
           // 被删的 R1 循环在这点上是对的（`canRetry = !!retryable && …`），收敛进漏斗时
           // 必须把这条语义一并带过来——否则"删掉平行实现"会顺手弄丢一个正确行为。
           if (!(classified instanceof RetryableError)) {
-            log.warn("FALLBACK", `错误无法分类为可重试，不重试直接转 fallback: ${classified.message}`);
+            log.warn(
+              "FALLBACK",
+              `错误无法分类为可重试，不重试直接转 fallback: ${classified.message}`,
+            );
             // 根因留档（缺口 D）：本路径没走重试，需在此显式记一笔，否则耗尽文案会丢掉它。
             ctx.lastRetryError = classified.message;
             // S4：**保留精确 reason**，不要一律压成 "unclassified"。
@@ -1072,7 +1105,12 @@ export class ModelFallback {
             // timeout，provider 代码 bug（unclassified）照旧直接转 fallback。
             const degradeOutcome = { degraded: false };
             yield* this.tryNonStreamingDegrade(
-              primaryProvider, params, ctx, hasYieldedContent, signal, degradeOutcome,
+              primaryProvider,
+              params,
+              ctx,
+              hasYieldedContent,
+              signal,
+              degradeOutcome,
             );
             if (degradeOutcome.degraded) return;
 
@@ -1088,11 +1126,14 @@ export class ModelFallback {
             if (this.config.persistent) {
               log.info("FALLBACK", "persistent 模式，继续重试");
               const delayMs = PERSISTENT_MAX_DELAY_MS;
-              this.emitTelemetry({
-                type: "persistent_retry_wait",
-                model: params.model,
-                delayMs,
-              }, perCall.agentId);
+              this.emitTelemetry(
+                {
+                  type: "persistent_retry_wait",
+                  model: params.model,
+                  delayMs,
+                },
+                perCall.agentId,
+              );
               yield* this.sleepWithProgress(
                 delayMs,
                 attempt + 1,
@@ -1124,12 +1165,16 @@ export class ModelFallback {
           // B2（缺口 D）：留档真实根因。每次重试都覆盖，故耗尽时留下的是**最后一次**
           // 失败原因——正是用户最需要看到的那个。
           ctx.lastRetryError = classified.message;
-          ctx.lastRetryReason = classified instanceof RetryableError
-            ? classified.reason
-            : undefined;
+          ctx.lastRetryReason =
+            classified instanceof RetryableError ? classified.reason : undefined;
 
           // 流式重试：重新发起完整请求
-          const delayMs = this.calculateRetryDelay(err, attempt, classified, STREAM_RETRY.maxDelayMs);
+          const delayMs = this.calculateRetryDelay(
+            err,
+            attempt,
+            classified,
+            STREAM_RETRY.maxDelayMs,
+          );
 
           // ═══════════════════════════════════════════════════════════
           // S2（写侧）：撞到限流 → 在共享 availability 上写下冷却截止时刻
@@ -1171,14 +1216,17 @@ export class ModelFallback {
               const slot = cooldownStaggerSlot(perCall.agentId);
               const staggered = cdRemaining + slot * COOLDOWN_STAGGER_MS;
               if (staggered > effectiveDelayMs) {
-                this.emitTelemetry({
-                  type: "shared_cooldown_wait",
-                  model: params.model,
-                  attempt: attempt + 1,
-                  delayMs: staggered,
-                  remainingMs: cdRemaining,
-                  error: `retry aligned to shared cooldown (slot ${slot})`,
-                }, perCall.agentId);
+                this.emitTelemetry(
+                  {
+                    type: "shared_cooldown_wait",
+                    model: params.model,
+                    attempt: attempt + 1,
+                    delayMs: staggered,
+                    remainingMs: cdRemaining,
+                    error: `retry aligned to shared cooldown (slot ${slot})`,
+                  },
+                  perCall.agentId,
+                );
                 effectiveDelayMs = staggered;
               }
             }
@@ -1202,20 +1250,22 @@ export class ModelFallback {
               log.warn(
                 "FALLBACK",
                 `S3：剩余预算 ${Math.max(0, remaining)}ms 不足以「退避 ${effectiveDelayMs}ms + 一次请求」，` +
-                `停止重试（已重试 ${ctx.totalRetriesThisCall} 次）`,
+                  `停止重试（已重试 ${ctx.totalRetriesThisCall} 次）`,
               );
-              this.emitTelemetry({
-                type: "retry_budget_exhausted",
-                model: params.model,
-                attempt: attempt + 1,
-                delayMs: effectiveDelayMs,
-                remainingMs: Math.max(0, remaining),
-                error: classified.message,
-              }, perCall.agentId);
+              this.emitTelemetry(
+                {
+                  type: "retry_budget_exhausted",
+                  model: params.model,
+                  attempt: attempt + 1,
+                  delayMs: effectiveDelayMs,
+                  remainingMs: Math.max(0, remaining),
+                  error: classified.message,
+                },
+                perCall.agentId,
+              );
               // 留档：让耗尽文案说得出"是时间不够，不是次数用尽"——两者修法完全不同
               // （前者调 timeout / 降退避，后者查限流），归因混淆会把排查带偏。
-              ctx.lastRetryError =
-                `${classified.message}（剩余时间预算不足，已重试 ${ctx.totalRetriesThisCall} 次后停止）`;
+              ctx.lastRetryError = `${classified.message}（剩余时间预算不足，已重试 ${ctx.totalRetriesThisCall} 次后停止）`;
               this.availability.markRetryOnce(params.model, "时间预算不足");
               break;
             }
@@ -1245,19 +1295,24 @@ export class ModelFallback {
             if (snapshot && snapshot.timeoutsFired.length > 0) {
               reopenReason = snapshot.timeoutsFired[snapshot.timeoutsFired.length - 1];
             }
-          } catch { /* 可观测性不影响重试 */ }
+          } catch {
+            /* 可观测性不影响重试 */
+          }
           // B4：这条是"哪个子代理重试了几次"的**主数据源**——按 agentId 聚合
           // type=retry 事件即可回答。缺了它只能聚合到 querySource 类别，
           // 分不清"一路撞 N 次"和"N 路各撞一次"（修法完全不同）。
-          this.emitTelemetry({
-            type: "retry",
-            model: params.model,
-            attempt: attempt + 1,
-            delayMs: effectiveDelayMs,
-            error: classified.message,
-            phase: "stream",
-            reopenReason,
-          }, perCall.agentId);
+          this.emitTelemetry(
+            {
+              type: "retry",
+              model: params.model,
+              attempt: attempt + 1,
+              delayMs: effectiveDelayMs,
+              error: classified.message,
+              phase: "stream",
+              reopenReason,
+            },
+            perCall.agentId,
+          );
 
           // S2：睡 `effectiveDelayMs`（已向共享冷却对齐），不是原始 delayMs。
           // 这一行是 S2 从"写了个字段"变成"真的少发一发请求"的落点。
@@ -1399,7 +1454,9 @@ export class ModelFallback {
       log.warn("FALLBACK", "fallbackSwitchMode=off，不降级，直接终止本轮");
       yield {
         type: "error",
-        error: { message: `模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）${rootCause}` },
+        error: {
+          message: `模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）${rootCause}`,
+        },
       };
       return;
     }
@@ -1433,7 +1490,9 @@ export class ModelFallback {
         log.warn("FALLBACK", "用户/钩子选择不切换，终止本轮");
         yield {
           type: "error",
-          error: { message: "主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。" },
+          error: {
+            message: "主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。",
+          },
         };
         return;
       }
@@ -1464,12 +1523,15 @@ export class ModelFallback {
     this.listener?.onFallback?.("主模型失败", targetModel);
     // B4：agentId 从 ctx.perCall 取（tryFallback 无 perCall 局部变量）。
     // ctx 缺省时（防御性，仅未来新增路径漏传 ctx）退化为不带身份，与旧行为一致。
-    this.emitTelemetry({
-      type: "fallback",
-      model: params.model,
-      fallbackModel: targetModel,
-      error: "主模型失败",
-    }, ctx?.perCall.agentId);
+    this.emitTelemetry(
+      {
+        type: "fallback",
+        model: params.model,
+        fallbackModel: targetModel,
+        error: "主模型失败",
+      },
+      ctx?.perCall.agentId,
+    );
 
     // 作废语义广播（第三个重开点）：降级换的是**另一个模型**的全新请求，
     // 主模型此前流出的部分内容块同样全部作废。
@@ -1559,7 +1621,8 @@ export class ModelFallback {
     // 与下方 fbCeiling 同口径：注册表兜底必须按真名查（别名会 miss → 不钳制 → 400）。
     const ceiling =
       this.config.resolveMaxOutputTokens?.(params.model) ??
-      lookupRegistry(params.wireModel ?? lookupWireModelAlias(params.model) ?? params.model)?.maxOutputTokens;
+      lookupRegistry(params.wireModel ?? lookupWireModelAlias(params.model) ?? params.model)
+        ?.maxOutputTokens;
     const nonStreamMaxTokens = Math.min(
       ctx.maxTokensOverride ?? params.maxTokens,
       // 非流式无增量，过大容易整体超时；与 stream-handler 的默认上限同源。
@@ -1571,13 +1634,16 @@ export class ModelFallback {
       "FALLBACK",
       `S4：流式失败（${lastReason || "transport"}），同模型降级为非流式重试（maxTokens=${nonStreamMaxTokens}）`,
     );
-    this.emitTelemetry({
-      type: "non_streaming_degrade",
-      model: params.model,
-      error: ctx.lastRetryError,
-      reopenReason: lastReason || undefined,
-      provider: provider.name(),
-    }, ctx.perCall.agentId);
+    this.emitTelemetry(
+      {
+        type: "non_streaming_degrade",
+        model: params.model,
+        error: ctx.lastRetryError,
+        reopenReason: lastReason || undefined,
+        provider: provider.name(),
+      },
+      ctx.perCall.agentId,
+    );
 
     let result;
     try {
@@ -1655,8 +1721,9 @@ export class ModelFallback {
     // 必须自己把别名翻成真名：lookupRegistry 是精确/前缀/家族匹配，喂别名必然 miss
     // → fbCeiling=undefined → 不钳制 → 把主模型的高 maxTokens 原样发给 fallback 吃 400。
     // 这里拿不到 availableModels（ModelFallback 只持有回调），故走进程级别名表。
-    const fbCeiling = this.config.resolveMaxOutputTokens?.(fallbackModel)
-      ?? lookupRegistry(lookupWireModelAlias(fallbackModel) ?? fallbackModel)?.maxOutputTokens;
+    const fbCeiling =
+      this.config.resolveMaxOutputTokens?.(fallbackModel) ??
+      lookupRegistry(lookupWireModelAlias(fallbackModel) ?? fallbackModel)?.maxOutputTokens;
     if (fbCeiling && fallbackParams.maxTokens && fallbackParams.maxTokens > fbCeiling) {
       log.info(
         "FALLBACK",

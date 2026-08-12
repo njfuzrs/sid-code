@@ -34,10 +34,7 @@ export async function initTraceCollector(
     // 限制了数据外发，实际整份轨迹照传。这类缺陷比崩溃危险，因为它静默。
     const { isEssentialTrafficOnly } = await import("../analytics/privacy-level.ts");
     if (traceConfig.upload?.url && traceConfig.upload?.token && isEssentialTrafficOnly()) {
-      log.info(
-        "TRACE",
-        "隐私级别为 essential-traffic，轨迹上传已禁用（仅本地留存）",
-      );
+      log.info("TRACE", "隐私级别为 essential-traffic，轨迹上传已禁用（仅本地留存）");
     } else if (traceConfig.upload?.url && traceConfig.upload?.token) {
       const { UploadManager } = await import("../trace/uploader.ts");
       const uploadMgr = new UploadManager({
@@ -94,11 +91,13 @@ export async function initTelemetrySystem(
     if (telemetryConfig?.enabled) {
       initTelemetry(telemetryConfig);
       const { TokenMeter } = await import("../telemetry/metrics/token-meter.ts");
-      result.tokenMeter = new TokenMeter(
-        getTelemetryBus(),
-        (model, usage) => sessionState.calculateCost(model, usage),
+      result.tokenMeter = new TokenMeter(getTelemetryBus(), (model, usage) =>
+        sessionState.calculateCost(model, usage),
       );
-      log.info("TELEMETRY", `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`);
+      log.info(
+        "TELEMETRY",
+        `遥测已启用，导出器: ${telemetryConfig.exporters?.map((e: any) => e.type).join(", ") ?? "无"}`,
+      );
 
       const { TelemetryHookProbe } = await import("../telemetry/hook-probe.ts");
       const probe = new TelemetryHookProbe(getTelemetryBus(), result.tokenMeter, {
@@ -143,9 +142,8 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
       setKillswitchHook,
       setMetadataHook,
     } = await import("../analytics/sink.ts");
-    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig } = await import(
-      "../analytics/privacy-level.ts"
-    );
+    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig } =
+      await import("../analytics/privacy-level.ts");
 
     // 1. 配置文件中的隐私级别覆盖
     const analyticsCfg = (config as any).analytics as
@@ -177,9 +175,7 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
 
     // 元数据富化(spec 17 §5.3)
     try {
-      const { getEventMetadataFields, primeMetadata } = await import(
-        "../analytics/metadata.ts"
-      );
+      const { getEventMetadataFields, primeMetadata } = await import("../analytics/metadata.ts");
       primeMetadata({
         sessionId,
         model: config.model,
@@ -254,10 +250,7 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
           registerBackend(exporter);
           // 跨会话恢复:重试上次未发送成功的事件
           void exporter.recoverFromDisk();
-          log.info(
-            "TELEMETRY",
-            `远程事件后端已注册: ${backendCfg.name} (type=${backendCfg.type})`,
-          );
+          log.info("TELEMETRY", `远程事件后端已注册: ${backendCfg.name} (type=${backendCfg.type})`);
         } catch (hbErr: any) {
           log.warn("TELEMETRY", `远程事件后端 ${backendCfg.name} 初始化失败: ${hbErr?.message}`);
         }
@@ -293,12 +286,14 @@ export async function buildInitialSystemPrompt(
   // 评测隔离：SID_CODE_DISABLE_PROJECT_RULES=1 时不加载 CLAUDE.md（与 app.ts 同步）
   // 防止项目 CLAUDE.md 里的目录结构泄露成 case 锚点答案
   const disableProjectRules = process.env.SID_CODE_DISABLE_PROJECT_RULES === "1";
-  const projectRules = disableProjectRules ? null : await (async () => {
-    const { loadAllCLAUDEmd } = await import("../config/rules.ts");
-    // activeFiles 不在此处传：loadAllCLAUDEmd 内部按自己算出的 projectRoot 自动采集
-    // （见该函数 §2.5）。调用点手传会让 5 个入口各算一次 projectRoot、且新入口必然漏传。
-    return loadAllCLAUDEmd(process.cwd());
-  })();
+  const projectRules = disableProjectRules
+    ? null
+    : await (async () => {
+        const { loadAllCLAUDEmd } = await import("../config/rules.ts");
+        // activeFiles 不在此处传：loadAllCLAUDEmd 内部按自己算出的 projectRoot 自动采集
+        // （见该函数 §2.5）。调用点手传会让 5 个入口各算一次 projectRoot、且新入口必然漏传。
+        return loadAllCLAUDEmd(process.cwd());
+      })();
 
   let filePrompt: string | undefined;
   if (config.systemPromptFile) {
@@ -316,7 +311,7 @@ export async function buildInitialSystemPrompt(
   try {
     const { MemoryStore } = await import("../memory/store.ts");
     const memStore = new MemoryStore(process.cwd());
-    memorySummary = await memStore.generateSummary() || undefined;
+    memorySummary = (await memStore.generateSummary()) || undefined;
     if (memorySummary) {
       log.debug("APP", `加载记忆摘要 (${memorySummary.length} 字符)`);
     }
@@ -351,7 +346,9 @@ export async function buildInitialSystemPrompt(
   try {
     const { getActiveOutputStyleContent } = await import("../config/output-styles.ts");
     outputStyleContent = getActiveOutputStyleContent(config.outputStyle) || undefined;
-  } catch { /* 加载失败静默降级 */ }
+  } catch {
+    /* 加载失败静默降级 */
+  }
   return buildSystemPrompt({
     tools,
     projectRules: projectRules?.rawContent,

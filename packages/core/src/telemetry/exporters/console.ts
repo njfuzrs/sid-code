@@ -31,7 +31,7 @@ export class ConsoleExporter implements TelemetryExporter {
 
     for (const [, traceSpans] of byTrace) {
       // 找到根 Span
-      const root = traceSpans.find(s => !s.parentSpanId);
+      const root = traceSpans.find((s) => !s.parentSpanId);
       if (root) {
         console.error(this.formatSpanTree(root, traceSpans, 0));
       } else {
@@ -56,7 +56,7 @@ export class ConsoleExporter implements TelemetryExporter {
     const lines: string[] = [this.formatSpan(span, depth)];
     // 找子 Span
     const children = allSpans
-      .filter(s => s.parentSpanId === span.spanId)
+      .filter((s) => s.parentSpanId === span.spanId)
       .sort((a, b) => a.startTime - b.startTime);
     for (const child of children) {
       lines.push(this.formatSpanTree(child, allSpans, depth + 1));
@@ -67,9 +67,8 @@ export class ConsoleExporter implements TelemetryExporter {
   private formatSpan(span: SpanData, depth: number): string {
     const indent = depth === 0 ? "[TRACE] " : "  " + "│ ".repeat(depth - 1) + "├─ ";
     const status = span.status === "error" ? "ERR" : "OK";
-    const dur = span.durationMs < 1000
-      ? `${span.durationMs}ms`
-      : `${(span.durationMs / 1000).toFixed(1)}s`;
+    const dur =
+      span.durationMs < 1000 ? `${span.durationMs}ms` : `${(span.durationMs / 1000).toFixed(1)}s`;
 
     let extra = "";
     if (span.kind === "chat") {
@@ -86,7 +85,7 @@ export class ConsoleExporter implements TelemetryExporter {
         }
       }
       // TTFT
-      const ttftEvent = span.events.find(e => e.name === "gen_ai.first_token");
+      const ttftEvent = span.events.find((e) => e.name === "gen_ai.first_token");
       if (ttftEvent?.attributes?.ttft_ms) {
         extra += ` | TTFT:${ttftEvent.attributes.ttft_ms}ms`;
       }

@@ -35,20 +35,18 @@ export const ToolStatusIndicator: React.FC<{
 }> = ({ status }) => {
   return (
     <Box minWidth={STATUS_INDICATOR_WIDTH}>
-      {status === "pending" && (
-        <Text color={theme.text.secondary}>{BULLET}</Text>
-      )}
-      {status === "executing" && (
-        <Text color={theme.ui.active}>{BULLET}</Text>
-      )}
-      {status === "success" && (
-        <Text color={theme.status.success}>{BULLET}</Text>
-      )}
+      {status === "pending" && <Text color={theme.text.secondary}>{BULLET}</Text>}
+      {status === "executing" && <Text color={theme.ui.active}>{BULLET}</Text>}
+      {status === "success" && <Text color={theme.status.success}>{BULLET}</Text>}
       {status === "cancelled" && (
-        <Text color={theme.text.secondary} strikethrough>{BULLET}</Text>
+        <Text color={theme.text.secondary} strikethrough>
+          {BULLET}
+        </Text>
       )}
       {status === "error" && (
-        <Text color={theme.status.error} bold>{BULLET}</Text>
+        <Text color={theme.status.error} bold>
+          {BULLET}
+        </Text>
       )}
     </Box>
   );
@@ -110,11 +108,9 @@ export const ToolInfo: React.FC<{
   const nameColor = emphasis === "low" ? theme.text.secondary : theme.text.primary;
   const isDone = status === "success" || status === "error";
 
-  const durationText =
-    isDone && elapsedMs !== undefined ? ` (${formatDuration(elapsedMs)})` : "";
+  const durationText = isDone && elapsedMs !== undefined ? ` (${formatDuration(elapsedMs)})` : "";
   const summaryText = resultSummary && isDone ? ` — ${resultSummary}` : "";
-  const progressText =
-    progressMessage && status === "executing" ? ` ${progressMessage}` : "";
+  const progressText = progressMessage && status === "executing" ? ` ${progressMessage}` : "";
 
   // description 的列宽预算 = 总宽 - 状态点 - 工具名 - 耗时 - 结果摘要 - 进度
   // 预算算不出来（未传 availableWidth）或过窄时不主动收缩，交给终端硬截兜底。
@@ -144,7 +140,9 @@ export const ToolInfo: React.FC<{
   return (
     <Box overflow="hidden" height={1} flexGrow={1} flexShrink={1}>
       <Text strikethrough={status === "cancelled"} wrap="truncate">
-        <Text color={nameColor} bold>{name}</Text>
+        <Text color={nameColor} bold>
+          {name}
+        </Text>
         {fittedDescription ? (
           <>
             {" "}
@@ -154,7 +152,9 @@ export const ToolInfo: React.FC<{
         {durationText ? <Text>{durationText}</Text> : null}
         {summaryText ? <Text>{summaryText}</Text> : null}
         {progressText ? (
-          <Text color={theme.text.accent} italic>{progressText}</Text>
+          <Text color={theme.text.accent} italic>
+            {progressText}
+          </Text>
         ) : null}
       </Text>
     </Box>
@@ -176,9 +176,7 @@ export const McpProgressIndicator: React.FC<{
   barWidth: number;
 }> = ({ progress, total, message, barWidth }) => {
   const percentage =
-    total && total > 0
-      ? Math.min(100, Math.round((progress / total) * 100))
-      : null;
+    total && total > 0 ? Math.min(100, Math.round((progress / total) * 100)) : null;
 
   let rawFilled: number;
   if (total && total > 0) {
@@ -244,9 +242,7 @@ export const FocusHint: React.FC<{
 
   return (
     <Box marginLeft={1} flexShrink={0}>
-      <Text color={theme.ui.active}>
-        (执行中…)
-      </Text>
+      <Text color={theme.ui.active}>(执行中…)</Text>
     </Box>
   );
 };

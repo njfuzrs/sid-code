@@ -25,18 +25,10 @@
 // 调用点用的名字必须在表里），防止再退化成「有代码无调用」的死资产。
 
 import { logEvent } from "./index.ts";
-import type {
-  EventMetadata,
-  EventMetadataValue,
-  VerifiedNotCodeOrFilepaths,
-} from "./index.ts";
+import type { EventMetadata, EventMetadataValue, VerifiedNotCodeOrFilepaths } from "./index.ts";
 import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
-import {
-  sanitizeToolName,
-  safeFileExtension,
-  mcpToolDetailsForAnalytics,
-} from "./sanitize.ts";
+import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
@@ -279,11 +271,7 @@ export function logContextCompact(opts: {
 }
 
 /** compact 被跳过的原因分型。「触发了但没压成」和「没触发」是两回事，混在一起就看不出问题。 */
-export type CompactSkipReason =
-  | "too_few_messages"
-  | "lock_held"
-  | "hook_blocked"
-  | "circuit_open";
+export type CompactSkipReason = "too_few_messages" | "lock_held" | "hook_blocked" | "circuit_open";
 
 export function logContextCompactSkipped(reason: CompactSkipReason): void {
   emit(EVENT_NAMES.CONTEXT_COMPACT_SKIPPED, { reason: v(reason) });

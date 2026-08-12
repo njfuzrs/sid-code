@@ -81,7 +81,7 @@ export class TaskOutputTool implements Tool {
         if (signal?.aborted) break;
         const current = getTask(params.task_id);
         if (!current || isTerminalStatus(current.status)) break;
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
 

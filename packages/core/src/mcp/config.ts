@@ -11,8 +11,10 @@ import { getLogger } from "../debug/logger.ts";
 /**
  * 基于签名去重：相同 command+args 或相同 url 视为同一 Server
  */
-export function getMcpServerSignature(config: MCPServerConfig | ScopedMcpServerConfig): string | null {
-  if (config.transport === 'stdio' && config.command) {
+export function getMcpServerSignature(
+  config: MCPServerConfig | ScopedMcpServerConfig,
+): string | null {
+  if (config.transport === "stdio" && config.command) {
     return `stdio:${JSON.stringify([config.command, ...(config.args || [])])}`;
   }
   if (config.url) {
@@ -48,9 +50,7 @@ export function mergeMcpConfigs(
   const seenSignatures = new Map<string, { name: string; scope: ConfigScope }>();
 
   // 按优先级排序（高优先级先处理）
-  const sorted = [...sources].sort(
-    (a, b) => SCOPE_PRIORITY[a.scope] - SCOPE_PRIORITY[b.scope],
-  );
+  const sorted = [...sources].sort((a, b) => SCOPE_PRIORITY[a.scope] - SCOPE_PRIORITY[b.scope]);
 
   for (const { scope, servers } of sorted) {
     for (const [name, config] of Object.entries(servers)) {
@@ -67,7 +67,10 @@ export function mergeMcpConfigs(
       if (sig) {
         const existing = seenSignatures.get(sig);
         if (existing) {
-          log.debug("MCP", `签名去重: ${name} (scope=${scope}) 与 ${existing.name} (scope=${existing.scope}) 重复，跳过`);
+          log.debug(
+            "MCP",
+            `签名去重: ${name} (scope=${scope}) 与 ${existing.name} (scope=${existing.scope}) 重复，跳过`,
+          );
           continue;
         }
         seenSignatures.set(sig, { name, scope });

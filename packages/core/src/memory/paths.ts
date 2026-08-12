@@ -227,10 +227,7 @@ export function getAgentMemoryIndexPath(agentType: string): string {
 export function isAutoMemPath(absolutePath: string, memoryDir: string): boolean {
   const normalizedTarget = resolve(absolutePath);
   const normalizedDir = resolve(memoryDir);
-  return (
-    normalizedTarget === normalizedDir ||
-    normalizedTarget.startsWith(normalizedDir + sep)
-  );
+  return normalizedTarget === normalizedDir || normalizedTarget.startsWith(normalizedDir + sep);
 }
 
 /**
@@ -315,12 +312,13 @@ export function stripMemoryTypePrefix(name: string): string {
  * 因为剥离只作用于 name，不作用于最终拼出的文件名。
  */
 export function memoryFilename(type: string, name: string): string {
-  const slug = name
-    .toLowerCase()
-    .trim()
-    .replace(MEMORY_TYPE_PREFIX_RE, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60) || "untitled";
+  const slug =
+    name
+      .toLowerCase()
+      .trim()
+      .replace(MEMORY_TYPE_PREFIX_RE, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "untitled";
   return `${type}_${slug}.md`;
 }

@@ -42,10 +42,7 @@ export interface SnipCompactResult {
  * 裁剪最早的消息
  * 保留系统摘要消息（第一条 user 消息如果是摘要则保留）
  */
-export function snipCompact(
-  messages: Message[],
-  options?: SnipCompactOptions,
-): SnipCompactResult {
+export function snipCompact(messages: Message[], options?: SnipCompactOptions): SnipCompactResult {
   const log = getLogger();
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
@@ -65,15 +62,17 @@ export function snipCompact(
   let startIdx = 0;
   if (messages.length > 0 && messages[0].role === "user") {
     const firstText = messages[0].content
-      .filter(b => b.type === "text")
-      .map(b => b.type === "text" ? b.text : "")
+      .filter((b) => b.type === "text")
+      .map((b) => (b.type === "text" ? b.text : ""))
       .join("");
-    if (firstText.startsWith("[自动截断]") ||
-        firstText.startsWith("[响应式压缩]") ||
-        firstText.startsWith("[snipCompact]") ||
-        firstText.startsWith("[对话摘要]") ||
-        firstText.startsWith("[压缩边界]") ||
-        messages[0]._meta?.compact_boundary) {
+    if (
+      firstText.startsWith("[自动截断]") ||
+      firstText.startsWith("[响应式压缩]") ||
+      firstText.startsWith("[snipCompact]") ||
+      firstText.startsWith("[对话摘要]") ||
+      firstText.startsWith("[压缩边界]") ||
+      messages[0]._meta?.compact_boundary
+    ) {
       startIdx = 1; // 跳过摘要 / 边界消息
     }
   }
@@ -89,8 +88,8 @@ export function snipCompact(
   const summaryParts: string[] = [];
   for (const msg of snipped) {
     const texts = msg.content
-      .filter(b => b.type === "text")
-      .map(b => b.type === "text" ? b.text.slice(0, 100) : "")
+      .filter((b) => b.type === "text")
+      .map((b) => (b.type === "text" ? b.text.slice(0, 100) : ""))
       .filter(Boolean);
     if (texts.length > 0) {
       summaryParts.push(`[${msg.role}] ${texts[0]}...`);
@@ -99,11 +98,13 @@ export function snipCompact(
 
   const summaryMsg: Message = {
     role: "user",
-    content: [{
-      type: "text",
-      // 文案前缀 "[snipCompact]" 是再压缩防重入的承重标识(见上方 startsWith 判定),勿改。
-      text: `[snipCompact] 裁剪了 ${snipCount} 条早期消息：\n${summaryParts.join("\n")}`,
-    }],
+    content: [
+      {
+        type: "text",
+        // 文案前缀 "[snipCompact]" 是再压缩防重入的承重标识(见上方 startsWith 判定),勿改。
+        text: `[snipCompact] 裁剪了 ${snipCount} 条早期消息：\n${summaryParts.join("\n")}`,
+      },
+    ],
     // 内部裁剪摘要仅供 LLM 续接,不应作为 `> [snipCompact]…` 泄漏到 TUI。
     // 打 compact-summary origin,与其它压缩摘要一致被 history-adapter 整条隐藏。
     _meta: { origin: "compact-summary" },

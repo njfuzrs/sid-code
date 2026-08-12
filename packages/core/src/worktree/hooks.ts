@@ -87,9 +87,7 @@ function runHookCommand(
         resolve(stdout.trim());
       } else {
         reject(
-          new Error(
-            `worktree hook 退出码 ${code}: ${stderr.trim() || stdout.trim() || "无输出"}`,
-          ),
+          new Error(`worktree hook 退出码 ${code}: ${stderr.trim() || stdout.trim() || "无输出"}`),
         );
       }
     });

@@ -80,12 +80,8 @@ const findScrollableCandidates = (
   return candidates;
 };
 
-export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
-  const [scrollables, setScrollables] = useState(
-    new Map<string, ScrollableEntry>(),
-  );
+export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [scrollables, setScrollables] = useState(new Map<string, ScrollableEntry>());
 
   const register = useCallback((entry: ScrollableEntry) => {
     setScrollables((prev) => {
@@ -141,23 +137,16 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
   /** 处理鼠标滚轮 */
   const handleScroll = (direction: "up" | "down", mouseEvent: MouseEvent) => {
     const delta = direction === "up" ? -1 : 1;
-    const candidates = findScrollableCandidates(
-      mouseEvent,
-      scrollablesRef.current,
-    );
-
+    const candidates = findScrollableCandidates(mouseEvent, scrollablesRef.current);
 
     for (const candidate of candidates) {
-      const { scrollTop, scrollHeight, innerHeight } =
-        candidate.getScrollState();
+      const { scrollTop, scrollHeight, innerHeight } = candidate.getScrollState();
       const pendingDelta = pendingScrollsRef.current.get(candidate.id) || 0;
       const effectiveScrollTop = scrollTop + pendingDelta;
 
       // 浮点精度容差
       const canScrollUp = effectiveScrollTop > 0.001;
-      const canScrollDown =
-        effectiveScrollTop < scrollHeight - innerHeight - 0.001;
-
+      const canScrollDown = effectiveScrollTop < scrollHeight - innerHeight - 0.001;
 
       if (direction === "up" && canScrollUp) {
         pendingScrollsRef.current.set(candidate.id, pendingDelta + delta);
@@ -185,27 +174,18 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
       const { x, y, width, height } = boundingBox;
 
       // 检查点击是否在滚动条列（x + width）
-      if (
-        mouseEvent.col === x + width &&
-        mouseEvent.row >= y &&
-        mouseEvent.row < y + height
-      ) {
+      if (mouseEvent.col === x + width && mouseEvent.row >= y && mouseEvent.row < y + height) {
         const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
 
         if (scrollHeight <= innerHeight) continue;
 
-        const thumbHeight = Math.max(
-          1,
-          Math.floor((innerHeight / scrollHeight) * innerHeight),
-        );
+        const thumbHeight = Math.max(1, Math.floor((innerHeight / scrollHeight) * innerHeight));
         const maxScrollTop = scrollHeight - innerHeight;
         const maxThumbY = innerHeight - thumbHeight;
 
         if (maxThumbY <= 0) continue;
 
-        const currentThumbY = Math.round(
-          (scrollTop / maxScrollTop) * maxThumbY,
-        );
+        const currentThumbY = Math.round((scrollTop / maxScrollTop) * maxThumbY);
 
         const absoluteThumbTop = y + currentThumbY;
         const absoluteThumbBottom = absoluteThumbTop + thumbHeight;
@@ -215,12 +195,9 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
         const isBottom = mouseEvent.row === y + height - 1;
 
         const hitTop = isTop ? absoluteThumbTop : absoluteThumbTop - 1;
-        const hitBottom = isBottom
-          ? absoluteThumbBottom
-          : absoluteThumbBottom + 1;
+        const hitBottom = isBottom ? absoluteThumbBottom : absoluteThumbBottom + 1;
 
-        const isThumbClick =
-          mouseEvent.row >= hitTop && mouseEvent.row < hitBottom;
+        const isThumbClick = mouseEvent.row >= hitTop && mouseEvent.row < hitBottom;
 
         let offset = 0;
         const relativeMouseY = mouseEvent.row - y;
@@ -235,9 +212,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
             Math.min(maxThumbY, relativeMouseY - Math.floor(thumbHeight / 2)),
           );
 
-          const newScrollTop = Math.round(
-            (targetThumbY / maxThumbY) * maxScrollTop,
-          );
+          const newScrollTop = Math.round((targetThumbY / maxThumbY) * maxScrollTop);
           if (entry.scrollTo) {
             entry.scrollTo(newScrollTop);
           } else {
@@ -258,10 +233,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     // 非滚动条区域点击：闪烁最内层候选的滚动条
-    const candidates = findScrollableCandidates(
-      mouseEvent,
-      scrollablesRef.current,
-    );
+    const candidates = findScrollableCandidates(mouseEvent, scrollablesRef.current);
 
     if (candidates.length > 0) {
       candidates[0].flashScrollbar();
@@ -287,24 +259,16 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
     const { y } = boundingBox;
     const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
 
-    const thumbHeight = Math.max(
-      1,
-      Math.floor((innerHeight / scrollHeight) * innerHeight),
-    );
+    const thumbHeight = Math.max(1, Math.floor((innerHeight / scrollHeight) * innerHeight));
     const maxScrollTop = scrollHeight - innerHeight;
     const maxThumbY = innerHeight - thumbHeight;
 
     if (maxThumbY <= 0) return false;
 
     const relativeMouseY = mouseEvent.row - y;
-    const targetThumbY = Math.max(
-      0,
-      Math.min(maxThumbY, relativeMouseY - state.offset),
-    );
+    const targetThumbY = Math.max(0, Math.min(maxThumbY, relativeMouseY - state.offset));
 
-    const targetScrollTop = Math.round(
-      (targetThumbY / maxThumbY) * maxScrollTop,
-    );
+    const targetScrollTop = Math.round((targetThumbY / maxThumbY) * maxScrollTop);
 
     if (entry.scrollTo) {
       entry.scrollTo(targetScrollTop, 0);
@@ -360,11 +324,7 @@ export const ScrollProvider: React.FC<{ children: React.ReactNode }> = ({
     [register, unregister, getFocusedEntry],
   );
 
-  return (
-    <ScrollContext.Provider value={contextValue}>
-      {children}
-    </ScrollContext.Provider>
-  );
+  return <ScrollContext.Provider value={contextValue}>{children}</ScrollContext.Provider>;
 };
 
 let nextId = 0;
@@ -375,10 +335,7 @@ let nextId = 0;
  * @param entry - 滚动区域入口（不含 id，自动生成）
  * @param isActive - 是否激活注册
  */
-export const useScrollable = (
-  entry: Omit<ScrollableEntry, "id">,
-  isActive: boolean,
-) => {
+export const useScrollable = (entry: Omit<ScrollableEntry, "id">, isActive: boolean) => {
   const context = useContext(ScrollContext);
   if (!context) {
     throw new Error("useScrollable 必须在 ScrollProvider 内使用");
@@ -428,35 +385,38 @@ export function useScrollState() {
     return { percent };
   }, [context]);
 
-  const scrollActive = useCallback((action: "pageup" | "pagedown" | "up" | "down" | "top" | "bottom") => {
-    const entry = context.getFocusedEntry?.();
-    if (!entry) return;
-    const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
-    const maxScroll = Math.max(0, scrollHeight - innerHeight);
+  const scrollActive = useCallback(
+    (action: "pageup" | "pagedown" | "up" | "down" | "top" | "bottom") => {
+      const entry = context.getFocusedEntry?.();
+      if (!entry) return;
+      const { scrollTop, scrollHeight, innerHeight } = entry.getScrollState();
+      const maxScroll = Math.max(0, scrollHeight - innerHeight);
 
-    switch (action) {
-      case "up":
-        entry.scrollBy(-1);
-        break;
-      case "down":
-        entry.scrollBy(1);
-        break;
-      case "pageup":
-        entry.scrollBy(-Math.max(1, innerHeight - 1));
-        break;
-      case "pagedown":
-        entry.scrollBy(Math.max(1, innerHeight - 1));
-        break;
-      case "top":
-        if (entry.scrollTo) entry.scrollTo(0);
-        else entry.scrollBy(-scrollTop);
-        break;
-      case "bottom":
-        if (entry.scrollTo) entry.scrollTo(maxScroll);
-        else entry.scrollBy(maxScroll - scrollTop);
-        break;
-    }
-  }, [context]);
+      switch (action) {
+        case "up":
+          entry.scrollBy(-1);
+          break;
+        case "down":
+          entry.scrollBy(1);
+          break;
+        case "pageup":
+          entry.scrollBy(-Math.max(1, innerHeight - 1));
+          break;
+        case "pagedown":
+          entry.scrollBy(Math.max(1, innerHeight - 1));
+          break;
+        case "top":
+          if (entry.scrollTo) entry.scrollTo(0);
+          else entry.scrollBy(-scrollTop);
+          break;
+        case "bottom":
+          if (entry.scrollTo) entry.scrollTo(maxScroll);
+          else entry.scrollBy(maxScroll - scrollTop);
+          break;
+      }
+    },
+    [context],
+  );
 
   return { getScrollState, scrollActive };
 }

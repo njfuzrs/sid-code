@@ -9,7 +9,12 @@
  * See: docs/bugfixes/todo/p0-2/持久Shell会话-补齐分析.md
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
 import { join } from "path";
@@ -33,11 +38,29 @@ import { bashWriteTargets } from "./jit-affected-paths.ts";
 const bashSchema = lazySchema(() =>
   z.object({
     command: z.string().describe("要执行的 shell 命令"),
-    description: z.string().optional().describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
-    timeout: z.number().optional().describe("超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）；可用 BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS 环境变量覆盖默认值与上限"),
+    description: z
+      .string()
+      .optional()
+      .describe("用自然语言描述这条命令要做什么（会显示给用户审批）"),
+    timeout: z
+      .number()
+      .optional()
+      .describe(
+        "超时时间（毫秒），默认 120000（2 分钟），最长 600000（10 分钟）；可用 BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS 环境变量覆盖默认值与上限",
+      ),
     cwd: z.string().optional().describe("工作目录，默认为当前目录"),
-    is_background: z.boolean().optional().describe("[已废弃，请用 run_in_background] 后台运行。为兼容保留，行为已等同 run_in_background（走 Task 系统）"),
-    run_in_background: z.boolean().optional().describe("是否以后台任务模式运行（通过 Task 系统管理，返回 task_id，完成后通知；用 task_output 查询输出）"),
+    is_background: z
+      .boolean()
+      .optional()
+      .describe(
+        "[已废弃，请用 run_in_background] 后台运行。为兼容保留，行为已等同 run_in_background（走 Task 系统）",
+      ),
+    run_in_background: z
+      .boolean()
+      .optional()
+      .describe(
+        "是否以后台任务模式运行（通过 Task 系统管理，返回 task_id，完成后通知；用 task_output 查询输出）",
+      ),
   }),
 );
 
@@ -64,7 +87,10 @@ export function resolveTimeoutBounds(): { defaultMs: number; maxMs: number } {
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
-  const maxMs = Math.max(parseEnv("BASH_MAX_TIMEOUT_MS") ?? FACTORY_MAX_TIMEOUT_MS, TIMEOUT_FLOOR_MS);
+  const maxMs = Math.max(
+    parseEnv("BASH_MAX_TIMEOUT_MS") ?? FACTORY_MAX_TIMEOUT_MS,
+    TIMEOUT_FLOOR_MS,
+  );
   const defaultRaw = parseEnv("BASH_DEFAULT_TIMEOUT_MS") ?? FACTORY_DEFAULT_TIMEOUT_MS;
   // 默认值夹在 [floor, max] 内
   const defaultMs = Math.min(Math.max(defaultRaw, TIMEOUT_FLOOR_MS), maxMs);
@@ -103,9 +129,7 @@ function tailProgressSnapshot(fullOutput: string): string {
   const tail = lines.slice(-PROGRESS_TAIL_LINES);
   return tail
     .map((line) =>
-      line.length > PROGRESS_LINE_MAX_CHARS
-        ? `${line.slice(0, PROGRESS_LINE_MAX_CHARS)}…`
-        : line,
+      line.length > PROGRESS_LINE_MAX_CHARS ? `${line.slice(0, PROGRESS_LINE_MAX_CHARS)}…` : line,
     )
     .join("\n");
 }
@@ -148,9 +172,17 @@ export function killProcessTree(
   // Windows：taskkill /T 递归杀子进程，/F 强制
   if (platform() === "win32") {
     try {
-      spawn({ cmd: ["taskkill", "/pid", String(pid), "/T", "/F"], stdout: "ignore", stderr: "ignore" });
+      spawn({
+        cmd: ["taskkill", "/pid", String(pid), "/T", "/F"],
+        stdout: "ignore",
+        stderr: "ignore",
+      });
     } catch {
-      try { fallbackKill ? fallbackKill() : process.kill(pid, signal); } catch { /* 已退出 */ }
+      try {
+        fallbackKill ? fallbackKill() : process.kill(pid, signal);
+      } catch {
+        /* 已退出 */
+      }
     }
     return;
   }
@@ -161,7 +193,9 @@ export function killProcessTree(
     // 进程组不存在（未 detached）或已退出，回退到单进程 kill
     try {
       fallbackKill ? fallbackKill() : process.kill(pid, signal);
-    } catch { /* 进程可能已自行退出 */ }
+    } catch {
+      /* 进程可能已自行退出 */
+    }
   }
 }
 
@@ -180,7 +214,9 @@ export function killBackgroundProcesses(): void {
 // 自注册到优雅关闭序列(退出时清理后台进程)
 try {
   registerCleanup(killBackgroundProcesses);
-} catch { /* 测试或非标准入口下可能不可用,忽略 */ }
+} catch {
+  /* 测试或非标准入口下可能不可用,忽略 */
+}
 
 /**
  * Ctrl+B 热转后台（P1-4，对标 claude-code）。
@@ -217,7 +253,9 @@ export function requestDetachForegroundBash(): number {
   for (const handler of handlers) {
     try {
       if (handler()) detachedCount++;
-    } catch { /* 单个 handler 异常不应影响其它并发前台执行 */ }
+    } catch {
+      /* 单个 handler 异常不应影响其它并发前台执行 */
+    }
   }
   return detachedCount;
 }
@@ -514,7 +552,11 @@ export class BashTool implements Tool {
     } catch {
       /* 文件不存在或读取失败（命令失败时 pwd 未执行），忽略 */
     } finally {
-      try { unlinkSync(cwdFile); } catch { /* 忽略 */ }
+      try {
+        unlinkSync(cwdFile);
+      } catch {
+        /* 忽略 */
+      }
     }
   }
 
@@ -547,7 +589,10 @@ export class BashTool implements Tool {
     // 确保快照创建完成（首条命令可能赶在快照就绪前；snapshotReady 永不 reject）
     await this.snapshotReady;
 
-    log.info("TOOL", `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`);
+    log.info(
+      "TOOL",
+      `▶ 执行: ${params.command.slice(0, 200)}${params.command.length > 200 ? "..." : ""}`,
+    );
 
     // Task 系统后台模式（统一通道）。
     // P2-10：is_background 是旧后台通道（不进 Task 系统、无 task_id、无完成通知），弱模型
@@ -623,7 +668,9 @@ export class BashTool implements Tool {
         lastEmitted = snapshot;
         try {
           onProgress({ type: "output", text: snapshot });
-        } catch { /* 进度上报失败不影响命令执行 */ }
+        } catch {
+          /* 进度上报失败不影响命令执行 */
+        }
       };
 
       // 单一超时定时器：到点直接杀进程树并标记 timedOut（对标 claude-code #handleTimeout → #doKill）。
@@ -659,8 +706,8 @@ export class BashTool implements Tool {
         if (Date.now() - spawnedAt < timeout) return;
         log.warn(
           "BASH",
-          `挂钟检查发现命令已超时（设定 ${timeout / 1000}s，实际已 ${((Date.now() - spawnedAt) / 1000).toFixed(0)}s，`
-          + `定时器未按时 fire，通常是系统休眠），补杀进程树`,
+          `挂钟检查发现命令已超时（设定 ${timeout / 1000}s，实际已 ${((Date.now() - spawnedAt) / 1000).toFixed(0)}s，` +
+            `定时器未按时 fire，通常是系统休眠），补杀进程树`,
         );
         killForTimeout();
       }, WALL_CLOCK_CHECK_MS);
@@ -679,7 +726,9 @@ export class BashTool implements Tool {
       // 执行会被守卫忽略（迟到的转后台请求没有意义，进程已经在被杀或已经杀完）。
       const detachHandlerId = ++foregroundDetachSeq;
       let resolveDetach: ((result: ToolResult) => void) | null = null;
-      const detachPromise = new Promise<ToolResult>((resolve) => { resolveDetach = resolve; });
+      const detachPromise = new Promise<ToolResult>((resolve) => {
+        resolveDetach = resolve;
+      });
       foregroundDetachHandlers.set(detachHandlerId, () => {
         if (detachedTaskHandle || timedOut || aborted) return false;
         clearTimeout(timeoutId);
@@ -689,7 +738,13 @@ export class BashTool implements Tool {
         signal?.removeEventListener("abort", abortHandler);
         // 后台任务不追踪 cwd（对齐 executeWithTaskSystem 的既有语义）：cd 发生的时间点已经
         // 脱离"用户仍在等待这条命令"的因果链，异步写回全局 cwd 会与用户后续操作产生竞态。
-        if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
+        if (cwdFile) {
+          try {
+            unlinkSync(cwdFile);
+          } catch {
+            /* 忽略 */
+          }
+        }
 
         const { adoptRunningProcessAsTask } = require("../task/index.ts");
         const adopted: DetachedTaskHandle = adoptRunningProcessAsTask({
@@ -745,7 +800,11 @@ export class BashTool implements Tool {
             const tail = decoder.decode();
             if (tail) append(tail);
           } finally {
-            try { reader.releaseLock(); } catch { /* 已释放 */ }
+            try {
+              reader.releaseLock();
+            } catch {
+              /* 已释放 */
+            }
           }
         };
 
@@ -756,11 +815,17 @@ export class BashTool implements Tool {
           try {
             await Promise.all([
               pump(proc.stdout, (t) => {
-                if (detachedTaskHandle) { detachedTaskHandle.appendLiveOutput(t); return; }
+                if (detachedTaskHandle) {
+                  detachedTaskHandle.appendLiveOutput(t);
+                  return;
+                }
                 stdout += t;
               }),
               pump(proc.stderr, (t) => {
-                if (detachedTaskHandle) { detachedTaskHandle.appendLiveOutput(t); return; }
+                if (detachedTaskHandle) {
+                  detachedTaskHandle.appendLiveOutput(t);
+                  return;
+                }
                 stderr += t;
               }),
             ]);
@@ -786,14 +851,18 @@ export class BashTool implements Tool {
               try {
                 const { clearGitStatusCache } = require("../config/attachments.ts");
                 clearGitStatusCache();
-              } catch { /* 失效缓存失败不阻断命令返回 */ }
+              } catch {
+                /* 失效缓存失败不阻断命令返回 */
+              }
 
               // P2-3：git 操作使用度量。命令成功后分类 commit/push/pr_created 等并落计数，
               // 供 trace/telemetry 观察（非 git 操作静默忽略）。记账失败不阻断命令返回。
               try {
                 const { recordGitOperation } = require("./git-operation-tracking.ts");
                 recordGitOperation(params.command, Date.now());
-              } catch { /* 度量失败不阻断命令返回 */ }
+              } catch {
+                /* 度量失败不阻断命令返回 */
+              }
             }
 
             // 合并输出
@@ -823,8 +892,8 @@ export class BashTool implements Tool {
               const overshoot = actualMs - timeout;
               const sleepHint =
                 overshoot > 30_000
-                  ? `\n注意：实际墙钟耗时 ${(actualMs / 1000).toFixed(0)}s 远超设定的 ${timeout / 1000}s，`
-                    + `期间系统很可能进入过休眠（命令本身未必慢）。`
+                  ? `\n注意：实际墙钟耗时 ${(actualMs / 1000).toFixed(0)}s 远超设定的 ${timeout / 1000}s，` +
+                    `期间系统很可能进入过休眠（命令本身未必慢）。`
                   : "";
               return {
                 output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。${sleepHint}\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
@@ -843,7 +912,10 @@ export class BashTool implements Tool {
             // / test 条件为假 等，退出码非 0 但不是错误，不再误标 isError。
             const interp = interpretExitCode(params.command, exitCode);
             if (interp.isError) {
-              log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+              log.info(
+                "TOOL",
+                `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`,
+              );
               // 引号畸形诊断：命令失败且疑似"手写引号被 shell 拆断"（中文/多行 commit message
               // 高频场景）时，附一段可直接照抄的 heredoc 写法，避免模型原样重发陷入死循环。
               let failOutput = `命令执行失败（退出码 ${exitCode}）:\n${output}`;
@@ -856,7 +928,10 @@ export class BashTool implements Tool {
               };
             }
 
-            log.info("TOOL", `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`);
+            log.info(
+              "TOOL",
+              `✓ 命令完成 code=${exitCode} stdout=${stdout.length}字符 stderr=${stderr.length}字符`,
+            );
 
             // P1-3：合并冲突感知（超越 CC 的运行时增强）。git merge/rebase/cherry-pick/pull
             // 产生冲突时（输出含 CONFLICT），附一条提示引导模型按「合并冲突处理协议」逐个解决，
@@ -869,7 +944,8 @@ export class BashTool implements Tool {
 
             // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
             if (exitCode !== 0 && interp.message) {
-              const note = output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
+              const note =
+                output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
               return { output: note };
             }
             return { output };
@@ -877,7 +953,11 @@ export class BashTool implements Tool {
             // 已转后台时，pump/exited 阶段的异常记为任务失败（对齐 spawnShellTask 的
             // child.on("error")），不再向外抛——execute() 已经通过 detachPromise 返回过了。
             // 同上，穿 finalizeIfDetached 走一次函数调用边界规避 tsc 窄化缺陷。
-            if (finalizeIfDetached(detachedTaskHandle, (h) => h.markError(err instanceof Error ? err : new Error(String(err))))) {
+            if (
+              finalizeIfDetached(detachedTaskHandle, (h) =>
+                h.markError(err instanceof Error ? err : new Error(String(err))),
+              )
+            ) {
               return { output: "" };
             }
             throw err;
@@ -898,21 +978,32 @@ export class BashTool implements Tool {
       }
     } catch (err: any) {
       // 异常路径也清理 cwd 临时文件，避免泄漏
-      if (cwdFile) { try { unlinkSync(cwdFile); } catch { /* 忽略 */ } }
+      if (cwdFile) {
+        try {
+          unlinkSync(cwdFile);
+        } catch {
+          /* 忽略 */
+        }
+      }
       return { output: formatSpawnError(err, cwd), isError: true };
     }
   }
 
   /** Task 系统后台执行（新模式，不追踪 cwd） */
-  private async executeWithTaskSystem(params: {
-    command: string;
-    cwd?: string;
-  }, signal?: AbortSignal): Promise<ToolResult> {
+  private async executeWithTaskSystem(
+    params: {
+      command: string;
+      cwd?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
     const { spawnShellTask } = require("../task/index.ts");
     await this.snapshotReady;
     const cwd = this.resolveCwd(params.cwd);
     // 后台任务：注入快照但不追踪 cwd
-    const { commandString: rawTaskCommand } = this.buildCommand(params.command, { trackCwd: false });
+    const { commandString: rawTaskCommand } = this.buildCommand(params.command, {
+      trackCwd: false,
+    });
     const commandString = this.sandboxManager?.isEnabled()
       ? this.sandboxManager.wrapCommand(rawTaskCommand)
       : rawTaskCommand;

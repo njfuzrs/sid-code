@@ -16,7 +16,9 @@
  *       彻底无法对照——这是已知的、当前接受的设计。
  *
  * 2. evals/_legacy/promptfoo/lib/yaml-to-tests.ts: buildRubricValue
- *    promptfoo 时代的旧拷贝。已冻结，禁止修改（详见 evals/_legacy/README.md）。
+ *    promptfoo 时代的旧拷贝。已冻结，禁止修改
+ *    （回查线索见 evals/README.md「历史：promptfoo 时期的实现」——
+ *     原 evals/_legacy/README.md 已于 2026-08-12 P2-4 并入那里）。
  *
  * ─── 何时改这里 ───
  *
@@ -129,29 +131,32 @@ export function buildRubricPrompt(c: CaseYaml): RubricPromptResult {
   const refAns = c.expected.reference_answer?.trim() || "(无)";
   const r = c.rubric || {};
 
-  const mustNotSection = mustNot.length > 0
-    ? [
-        "禁止内容（must_not_include，违反触发硬扣分规则 1）:",
-        ...mustNot.map((k) => `  - ${k}`),
-        "",
-      ]
-    : [];
+  const mustNotSection =
+    mustNot.length > 0
+      ? [
+          "禁止内容（must_not_include，违反触发硬扣分规则 1）:",
+          ...mustNot.map((k) => `  - ${k}`),
+          "",
+        ]
+      : [];
 
-  const mustSection = must.length > 0
-    ? [
-        "必须包含关键词（must_include_any_of，任一命中即基础合格）:",
-        ...must.map((k) => `  - ${k}`),
-        "",
-      ]
-    : [];
+  const mustSection =
+    must.length > 0
+      ? [
+          "必须包含关键词（must_include_any_of，任一命中即基础合格）:",
+          ...must.map((k) => `  - ${k}`),
+          "",
+        ]
+      : [];
 
-  const mustNotCallSection = mustNotCallTools.length > 0
-    ? [
-        "禁止调用的工具（must_not_call_tools，若输出展示调用过则触发硬扣分规则 3）:",
-        ...mustNotCallTools.map((t) => `  - ${t}`),
-        "",
-      ]
-    : [];
+  const mustNotCallSection =
+    mustNotCallTools.length > 0
+      ? [
+          "禁止调用的工具（must_not_call_tools，若输出展示调用过则触发硬扣分规则 3）:",
+          ...mustNotCallTools.map((t) => `  - ${t}`),
+          "",
+        ]
+      : [];
 
   const user = [
     `任务类别: ${c.category}（${c.priority}）`,

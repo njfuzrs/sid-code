@@ -26,8 +26,7 @@ function isPlainObject(v: unknown): v is AnyRecord {
  */
 function mergeArrays(target: unknown[], source: unknown[]): unknown[] {
   const allStrings =
-    target.every((v) => typeof v === "string") &&
-    source.every((v) => typeof v === "string");
+    target.every((v) => typeof v === "string") && source.every((v) => typeof v === "string");
   if (allStrings) {
     return [...new Set([...target, ...source])];
   }
@@ -39,10 +38,7 @@ function mergeArrays(target: unknown[], source: unknown[]): unknown[] {
  * 后者（source）覆盖前者（target）的标量，对象递归合并，数组按上面的策略合并。
  * 返回新对象，不修改入参。
  */
-export function mergeSettingsRead<T extends AnyRecord>(
-  target: T,
-  source: AnyRecord,
-): T {
+export function mergeSettingsRead<T extends AnyRecord>(target: T, source: AnyRecord): T {
   const result: AnyRecord = { ...target };
 
   for (const [key, srcVal] of Object.entries(source)) {
@@ -68,10 +64,7 @@ export function mergeSettingsRead<T extends AnyRecord>(
  * - undefined：删除该字段
  * 返回新对象，不修改入参。
  */
-export function mergeSettingsWrite<T extends AnyRecord>(
-  target: T,
-  patch: AnyRecord,
-): T {
+export function mergeSettingsWrite<T extends AnyRecord>(target: T, patch: AnyRecord): T {
   const result: AnyRecord = { ...target };
 
   for (const [key, patchVal] of Object.entries(patch)) {

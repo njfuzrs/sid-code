@@ -42,8 +42,7 @@ async function safeWriteFile(filePath: string, content: string): Promise<void> {
   const parent = dirname(filePath);
   await mkdir(parent, { recursive: true, mode: 0o700 });
 
-  const SAFE_WRITE_FLAGS =
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL;
+  const SAFE_WRITE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL;
   const fh = await open(filePath, SAFE_WRITE_FLAGS, 0o600);
   try {
     await fh.writeFile(content);

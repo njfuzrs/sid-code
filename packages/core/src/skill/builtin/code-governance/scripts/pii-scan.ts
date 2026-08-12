@@ -26,7 +26,14 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 export interface PiiFinding {
-  pii_class: "email" | "phone_cn" | "phone_intl" | "id_card_cn" | "credit_card" | "ipv4_private" | "ipv6_private";
+  pii_class:
+    | "email"
+    | "phone_cn"
+    | "phone_intl"
+    | "id_card_cn"
+    | "credit_card"
+    | "ipv4_private"
+    | "ipv6_private";
   severity: "violation" | "warning";
   file: string;
   line: number;
@@ -79,7 +86,8 @@ const PATTERNS: PiiPattern[] = [
     pii_class: "id_card_cn",
     severity: "violation",
     pattern_id: "id_card_cn_18",
-    match: /(?<![\d])[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![\d])/,
+    match:
+      /(?<![\d])[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![\d])/,
     redact: (s) => s.replace(/(\d{6})\d{8}([\dXx]{4})/, "$1********$2"),
   },
   {
@@ -93,13 +101,15 @@ const PATTERNS: PiiPattern[] = [
     pii_class: "ipv4_private",
     severity: "warning",
     pattern_id: "ipv4_private_range",
-    match: /(?<![\d.])(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])/,
+    match:
+      /(?<![\d.])(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])/,
     redact: (s) => s.replace(/(\d+\.\d+\.)(\d+\.\d+)/, "$1***.***"),
   },
 ];
 
 const FIXTURE_PATH = /(fixtures?|tests?|examples?|samples?|mocks?|__mocks__)\//i;
-const REDACTED_HINT = /(脱敏|redacted|fake|test\s*data|placeholder|example\s*data|do\s*not\s*use|不\s*要\s*使用)/i;
+const REDACTED_HINT =
+  /(脱敏|redacted|fake|test\s*data|placeholder|example\s*data|do\s*not\s*use|不\s*要\s*使用)/i;
 const PLACEHOLDER = /(?:xxx|yyy|zzz|\*+|\<TODO\>|\<placeholder\>|example\.com)/i;
 
 interface DiffLine {
@@ -167,7 +177,10 @@ export function scanPii(diff: string): PiiScanResult {
     }
   }
 
-  return { findings, summary: { total: findings.length, by_class: byClass, by_severity: bySeverity } };
+  return {
+    findings,
+    summary: { total: findings.length, by_class: byClass, by_severity: bySeverity },
+  };
 }
 
 if (import.meta.main) {

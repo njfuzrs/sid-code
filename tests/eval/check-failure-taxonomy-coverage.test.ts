@@ -8,16 +8,28 @@
  *   - 空输入 → green（无证据无判定）
  */
 import { describe, test, expect } from "bun:test";
-import { classifyCoverage, FAILURE_TAXONOMY_V1, TAXONOMY_VERSION } from "../../scripts/eval/check-failure-taxonomy-coverage";
+import {
+  classifyCoverage,
+  FAILURE_TAXONOMY_V1,
+  TAXONOMY_VERSION,
+} from "../../scripts/eval/check-failure-taxonomy-coverage";
 
 describe("B7-8 FAILURE_TAXONOMY_V1 集合完整性", () => {
   test("v1 必含 14 个编码（与 docs/eval/失败分类法-v1.md §1 表对齐）", () => {
     const expected = [
-      "TS-01", "TS-02", "TS-03",
-      "EX-01", "EX-02",
-      "CTX-01", "CTX-02",
-      "OUT-01", "OUT-02", "OUT-03", "OUT-04",
-      "ABORT-01", "ABORT-02",
+      "TS-01",
+      "TS-02",
+      "TS-03",
+      "EX-01",
+      "EX-02",
+      "CTX-01",
+      "CTX-02",
+      "OUT-01",
+      "OUT-02",
+      "OUT-03",
+      "OUT-04",
+      "ABORT-01",
+      "ABORT-02",
       "TOOL-01",
     ];
     expect(FAILURE_TAXONOMY_V1.size).toBe(expected.length);
@@ -62,7 +74,7 @@ describe("B7-8 classifyCoverage 阈值边界", () => {
     // 2 unknown / 20 total = 10%
     const codes = [...Array(18).fill("TS-01"), "NEW-1", "NEW-2"];
     const r = classifyCoverage([mk(codes)]);
-    expect(r.unknownRatio).toBeCloseTo(0.10, 5);
+    expect(r.unknownRatio).toBeCloseTo(0.1, 5);
     expect(r.status).toBe("yellow");
   });
 
@@ -91,10 +103,7 @@ describe("B7-8 classifyCoverage 阈值边界", () => {
   });
 
   test("跨多 diff 累加 + 按 code 计数", () => {
-    const r = classifyCoverage([
-      mk(["TS-01", "TS-01", "EX-01"]),
-      mk(["TS-01", "OUT-01"]),
-    ]);
+    const r = classifyCoverage([mk(["TS-01", "TS-01", "EX-01"]), mk(["TS-01", "OUT-01"])]);
     expect(r.knownByCode["TS-01"]).toBe(3);
     expect(r.knownByCode["EX-01"]).toBe(1);
     expect(r.knownByCode["OUT-01"]).toBe(1);

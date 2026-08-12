@@ -86,7 +86,7 @@ export function dumpProtocolViolation(
     const sortedWindow = [...windowIndices].sort((a, b) => a - b);
 
     // 周边消息：保留 role + content 概要（tool_use/tool_result 的 id，文本截断），避免泄露/膨胀
-    const context = sortedWindow.map(i => ({
+    const context = sortedWindow.map((i) => ({
       index: i,
       role: messages[i].role,
       blocks: summarizeBlocks(messages[i]),
@@ -119,7 +119,7 @@ export function dumpProtocolViolation(
 /** 把单条消息的 content 概要化（只留类型 + id + 文本截断），用于诊断落盘 */
 function summarizeBlocks(msg: Message): Array<Record<string, unknown>> {
   if (!Array.isArray(msg.content)) return [];
-  return msg.content.map(b => {
+  return msg.content.map((b) => {
     if (b.type === "text") {
       return { type: "text", text_preview: b.text.slice(0, 200) };
     }

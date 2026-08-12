@@ -1,5 +1,5 @@
 #!/bin/sh
-# F-H5: 检测 evals/CASES.md / evals/DASHBOARD.md 是否含 holdout 题面/锚点/答案
+# F-H5: 检测 evals/CASES.md 是否含 holdout 题面/锚点/答案
 #
 # 用法（pre-push 调用）:
 #   sh scripts/eval/check-holdout-leak.sh && echo "OK"
@@ -10,7 +10,7 @@
 #
 # 检测策略:
 #   1. 扫所有 holdout/* yaml,提取 must_include_any_of / must_not_include / user_query / reference_answer
-#   2. 把这些 token 在 evals/CASES.md / evals/DASHBOARD.md 里 grep
+#   2. 把这些 token 在 evals/CASES.md 里 grep
 #   3. 任一命中 → 视为泄露
 #
 # 误报豁免:
@@ -30,7 +30,7 @@ cd "$REPO_ROOT"
 # 用 find 展开而非写死 glob：PUBLIC_FILES 靠 shell 分词遍历，
 # 未匹配的 glob 在 sh 下会原样留下（成为不存在的文件名），靠下方 [ -f ] 兜底虽不报错，
 # 但会掩盖"目录改名后再也没扫到"的静默失效。find 拿不到就是空，语义更干净。
-PUBLIC_FILES="evals/CASES.md evals/DASHBOARD.md"
+PUBLIC_FILES="evals/CASES.md"
 if [ -d "website" ]; then
   WEBSITE_MD=$(find website -name node_modules -prune -o -name '.vitepress' -prune -o -name '*.md' -print 2>/dev/null || true)
   # llms.txt 也是生成物且会被公网抓取，一并纳入
@@ -67,8 +67,7 @@ if [ "$LEAKS" -gt 0 ]; then
   echo ""
   echo "[check-holdout-leak] ❌ 检测到 $LEAKS 处 holdout 题面泄露,push 中止"
   echo "  修复:① 检查 gen-cases-md.ts 的 holdout 渲染分支(F-H1);"
-  echo "       ② 检查 dashboard render holdout 行(F-H6);"
-  echo "       ③ 必要时 \`git rm --cached evals/CASES.md\` 后 regen"
+  echo "       ② 必要时 \`git rm --cached evals/CASES.md\` 后 regen"
   exit 1
 fi
 

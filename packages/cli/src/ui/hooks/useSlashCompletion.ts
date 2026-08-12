@@ -34,7 +34,12 @@ export interface UseSlashCompletionProps {
   setSuggestions: (suggestions: Suggestion[]) => void;
 }
 
-export function useSlashCompletion({ text, cursorCol, commands, setSuggestions }: UseSlashCompletionProps) {
+export function useSlashCompletion({
+  text,
+  cursorCol,
+  commands,
+  setSuggestions,
+}: UseSlashCompletionProps) {
   useEffect(() => {
     // 情况 A：行首斜杠命令（/ 开头，光标在第一个空格之前）
     if (text.startsWith("/")) {

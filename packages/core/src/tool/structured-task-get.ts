@@ -50,18 +50,22 @@ export class StructuredTaskGetTool implements Tool {
     }
 
     return {
-      output: JSON.stringify({
-        id: task.id,
-        subject: task.subject,
-        description: task.description,
-        status: task.status,
-        activeForm: task.activeForm,
-        owner: task.owner,
-        blocks: task.blocks,
-        blockedBy: task.blockedBy,
-        unblocked: isTaskUnblocked(task),
-        metadata: task.metadata,
-      }, null, 2),
+      output: JSON.stringify(
+        {
+          id: task.id,
+          subject: task.subject,
+          description: task.description,
+          status: task.status,
+          activeForm: task.activeForm,
+          owner: task.owner,
+          blocks: task.blocks,
+          blockedBy: task.blockedBy,
+          unblocked: isTaskUnblocked(task),
+          metadata: task.metadata,
+        },
+        null,
+        2,
+      ),
     };
   }
 }

@@ -70,10 +70,7 @@ export async function processSkillPrompt(
   // 避免从 CC 迁移的 skill 变量原样残留在 prompt。两套名等价替换。
   const skillDirRe = /\$\{(?:CLAUDE_)?SKILL_DIR\}/g;
   if (isMcp) {
-    content = content.replace(
-      skillDirRe,
-      "[MCP Skill 不支持 SKILL_DIR 变量]",
-    );
+    content = content.replace(skillDirRe, "[MCP Skill 不支持 SKILL_DIR 变量]");
   } else if (options.skillRoot) {
     const skillDir = options.skillRoot.replace(/\\/g, "/");
     content = content.replace(skillDirRe, skillDir);
@@ -86,21 +83,11 @@ export async function processSkillPrompt(
   if (isMcp) {
     const shellMatches = content.match(/!`[^`]+`/g);
     if (shellMatches) {
-      getLogger().warn(
-        "SKILL",
-        `MCP Skill 包含 ${shellMatches.length} 个内联 shell 命令，已忽略`,
-      );
-      content = content.replace(
-        /!`[^`]+`/g,
-        "[MCP Skill 不允许执行内联 shell 命令]",
-      );
+      getLogger().warn("SKILL", `MCP Skill 包含 ${shellMatches.length} 个内联 shell 命令，已忽略`);
+      content = content.replace(/!`[^`]+`/g, "[MCP Skill 不允许执行内联 shell 命令]");
     }
   } else {
-    content = await executeShellCommandsInPrompt(
-      content,
-      context.cwd,
-      options.shell,
-    );
+    content = await executeShellCommandsInPrompt(content, context.cwd, options.shell);
   }
 
   return content;
@@ -128,10 +115,7 @@ export function substituteArguments(
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
       const value = i < parts.length ? parts[i] : "";
       // 用单词边界避免 $file 误伤 $filename
-      result = result.replace(
-        new RegExp(`\\$${name}\\b`, "g"),
-        value,
-      );
+      result = result.replace(new RegExp(`\\$${name}\\b`, "g"), value);
     }
   }
 

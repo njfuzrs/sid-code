@@ -175,10 +175,7 @@ export interface CheckResult {
  * 通用 check 处理器：处理 5 子系统共用的 check 类型，未识别的 check 返回 null
  * 各子系统 runner 应先调本函数，未命中再 fallback 到自己专属的 handler
  */
-export function runSharedCheck(
-  rule: GraderRule,
-  input: SharedGraderInput,
-): CheckResult | null {
+export function runSharedCheck(rule: GraderRule, input: SharedGraderInput): CheckResult | null {
   const check = rule.check || "";
   const tools = new Set(input.toolsCalled.map((t) => t.toLowerCase()));
   const expected = input.expected;
@@ -230,7 +227,8 @@ export function runSharedCheck(
       const allNaturalEchoed = list.length > 0 && safe.length + echoedCode.length === 0;
       // "复读嫌疑":仅命中 echoedCode 且无 safe 命中 → agent 可能没真读代码,只复读题面字面 token
       const onlyCodeEcho = safeHits.length === 0 && codeEchoHits.length > 0;
-      const passed = !allNaturalEchoed && !onlyCodeEcho && (safeHits.length > 0 || codeEchoHits.length > 0);
+      const passed =
+        !allNaturalEchoed && !onlyCodeEcho && (safeHits.length > 0 || codeEchoHits.length > 0);
       const parts: string[] = [];
       if (safeHits.length > 0) parts.push(`safe 命中 [${safeHits.join(",")}]`);
       if (codeEchoHits.length > 0) parts.push(`code-echo 命中 [${codeEchoHits.join(",")}]`);
@@ -301,15 +299,14 @@ export function aggregateCapabilityScore(opts: {
   details: Record<string, string | number | boolean>;
 } {
   const totalAssertWeight = opts.assertResults.reduce((s, r) => s + r.weight, 0);
-  const passWeight = opts.assertResults
-    .filter((r) => r.passed)
-    .reduce((s, r) => s + r.weight, 0);
+  const passWeight = opts.assertResults.filter((r) => r.passed).reduce((s, r) => s + r.weight, 0);
   const assertRatio = totalAssertWeight > 0 ? passWeight / totalAssertWeight : 0;
   const assertScore = Math.round(assertRatio * 5 * 10) / 10;
 
   // weight 分母：必须永远包含 yaml 设计的 llmJudgeWeight（即使本次 skip 跑没真调 LLM Judge）
   // —— 否则 skip 模式下 assert 部分会被自动放大（"weight 蒸发" bug，evals/a.md 问题 1）
-  const declaredLlmWeight = opts.llmJudgeWeight && opts.llmJudgeWeight > 0 ? opts.llmJudgeWeight : 0;
+  const declaredLlmWeight =
+    opts.llmJudgeWeight && opts.llmJudgeWeight > 0 ? opts.llmJudgeWeight : 0;
   const totalWeight = totalAssertWeight + declaredLlmWeight;
 
   let finalScore: number;
@@ -420,7 +417,9 @@ export function classifyRunStatus(opts: {
 export function medianSuccessScore(
   samples: Array<{ score: number | null; runStatus: string }>,
 ): number | null {
-  const valid = samples.filter((s) => s.runStatus === "success" && typeof s.score === "number") as Array<{
+  const valid = samples.filter(
+    (s) => s.runStatus === "success" && typeof s.score === "number",
+  ) as Array<{
     score: number;
     runStatus: string;
   }>;

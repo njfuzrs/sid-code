@@ -80,7 +80,7 @@ export interface ToolResultBlock {
 export interface ThinkingBlock {
   type: "thinking";
   thinking: string;
-  signature?: string;  // Anthropic 签名（多轮回传必需，丢失/修改 → 400）
+  signature?: string; // Anthropic 签名（多轮回传必需，丢失/修改 → 400）
   /**
    * SP1：思考耗时（毫秒）。流式期间由 stream-processor 测量（从该块首个
    * delta 到 content_block_stop），用于历史项稳定显示「已思考 Ns」而非
@@ -100,7 +100,12 @@ export interface RedactedThinkingBlock {
 }
 
 /** 内容块类型 */
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | RedactedThinkingBlock;
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ThinkingBlock
+  | RedactedThinkingBlock;
 
 /** 消息 */
 export interface Message {
@@ -166,10 +171,7 @@ export interface NormalizedCacheUsage {
  * @param usage provider 解析后的原始用量
  * @param provider provider 名称（来自 Provider.name()："anthropic" / "openai" / "ollama" / ...）
  */
-export function normalizeCacheUsage(
-  usage: Usage,
-  provider: string,
-): NormalizedCacheUsage {
+export function normalizeCacheUsage(usage: Usage, provider: string): NormalizedCacheUsage {
   const hit = usage.cacheReadInputTokens ?? 0;
   const write = usage.cacheCreationInputTokens ?? 0;
   const output = usage.outputTokens ?? 0;
@@ -233,8 +235,7 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
   // 缺口分析二类：reasoning token 随 usage 事件透传。仅在显式提供时累加，避免 undefined→0 污染
   //（与 cache 字段同口径）。OpenAI 族在最终 usage chunk 给累计值，累加等价于取末值。
   if (eventUsage.reasoningTokens != null) {
-    target.reasoningTokens =
-      (target.reasoningTokens ?? 0) + eventUsage.reasoningTokens;
+    target.reasoningTokens = (target.reasoningTokens ?? 0) + eventUsage.reasoningTokens;
   }
   return target;
 }
@@ -282,13 +283,33 @@ export type StreamEvent =
    *   3. 通知 UI 撤回已流出的文本（否则用户屏幕上留着作废那半段叙述）
    */
   | { type: "stream_restart"; reason: string; attempt?: number }
-  | { type: "content_block_start"; index: number; content_block: ContentBlock; _raw_block?: unknown }
+  | {
+      type: "content_block_start";
+      index: number;
+      content_block: ContentBlock;
+      _raw_block?: unknown;
+    }
   | { type: "content_block_delta"; index: number; delta: TextDelta | InputJsonDelta }
   | { type: "content_block_stop"; index: number }
-  | { type: "message_delta"; delta: { stop_reason: string | null }; usage: Usage; _rawOutputTokensZero?: boolean }
+  | {
+      type: "message_delta";
+      delta: { stop_reason: string | null };
+      usage: Usage;
+      _rawOutputTokensZero?: boolean;
+    }
   | { type: "message_stop" }
-  | { type: "error"; error: { message: string; type?: string; statusCode?: number; streamLevel?: boolean } }
-  | { type: "system_api_error"; content: string; delayMs: number; attempt: number; maxRetries: number; category: string };
+  | {
+      type: "error";
+      error: { message: string; type?: string; statusCode?: number; streamLevel?: boolean };
+    }
+  | {
+      type: "system_api_error";
+      content: string;
+      delayMs: number;
+      attempt: number;
+      maxRetries: number;
+      category: string;
+    };
 
 /** 工具定义 */
 export interface ToolDefinition {
@@ -348,7 +369,7 @@ export interface SendParams {
    */
   thinking?: {
     enabled: boolean;
-    budgetTokens: number;  // 思考预算 token 数（仅 Anthropic 生效）
+    budgetTokens: number; // 思考预算 token 数（仅 Anthropic 生效）
   };
   /**
    * 推理强度（思考模式专用，OpenAI 兼容端点请求体顶层 `reasoning_effort`；
@@ -440,12 +461,23 @@ export type StreamTelemetrySignal =
   // T2：业务内容进展超时。区别于 idle_timeout（任何数据包间隔，含 ping keep-alive）：
   // content_progress_timeout 只在"有意义的业务内容"（content_block_delta / message_delta）
   // 长时间未到达时触发——即便 ping 还在续命 idle timer，也能识破"只有 keep-alive、无真内容"。
-  | { type: "stream_content_progress_timeout"; provider: string; timeoutMs: number; totalEvents: number }
+  | {
+      type: "stream_content_progress_timeout";
+      provider: string;
+      timeoutMs: number;
+      totalEvents: number;
+    }
   // T7：请求级整体超时。从流开始到现在超过硬上限（不因任何事件重置），对齐官方 SDK 的
   // request-level timeout。区别于 idle/content_progress（都会在事件到达时重置）：overall 是
   // 绝对上限，防"持续吐 keep-alive 或缓慢有效内容但永不结束"的流无限占用一次请求配额。
   | { type: "stream_overall_timeout"; provider: string; timeoutMs: number; totalEvents: number }
-  | { type: "stream_completed"; provider: string; totalEvents: number; elapsedMs: number; ttftMs?: number };
+  | {
+      type: "stream_completed";
+      provider: string;
+      totalEvents: number;
+      elapsedMs: number;
+      ttftMs?: number;
+    };
 
 /** 累积的流式响应 */
 export interface AccumulatedResponse {

@@ -110,7 +110,10 @@ function buildSystemPrompt(opts: { withSkill: boolean }): SkillPrompt {
 // 静态契约校验(不调 LLM)
 // ============================================================
 
-function staticContractCheck(cases: IncCase[], skillPrompt: SkillPrompt): {
+function staticContractCheck(
+  cases: IncCase[],
+  skillPrompt: SkillPrompt,
+): {
   results: Array<{
     id: string;
     contractIssues: string[];
@@ -274,7 +277,10 @@ async function executeCase(c: IncCase, skillPrompt: SkillPrompt): Promise<Execut
   }
 }
 
-function gradeExecuteResult(c: IncCase, r: ExecuteResult): {
+function gradeExecuteResult(
+  c: IncCase,
+  r: ExecuteResult,
+): {
   score: number;
   details: Record<string, string | number | boolean>;
 } {
@@ -283,7 +289,10 @@ function gradeExecuteResult(c: IncCase, r: ExecuteResult): {
   let dimScore = 5;
 
   if (r.error || r.timedOut) {
-    return { score: 0, details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus } };
+    return {
+      score: 0,
+      details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus },
+    };
   }
 
   const includeList = c.expected.must_include_any_of ?? [];
@@ -340,8 +349,12 @@ async function main() {
   const skillPrompt = buildSystemPrompt({ withSkill: values.skill });
 
   console.log(`Cases       : ${cases.length} (${cases.map((c) => c.id).join(", ")})`);
-  console.log(`Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`);
-  console.log(`Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`);
+  console.log(
+    `Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`,
+  );
+  console.log(
+    `Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`,
+  );
   console.log("");
 
   const ts = Date.now();
@@ -388,14 +401,24 @@ async function main() {
   const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
   const allResults: Array<{
     caseId: string;
-    samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }>;
+    samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }>;
   }> = [];
 
   for (let i = 0; i < cases.length; i++) {
     const c = cases[i];
-    console.log(`[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`);
+    console.log(
+      `[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+    );
 
-    const samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> = [];
+    const samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }> = [];
     for (let s = 0; s < samplesN; s++) {
       const r = await executeCase(c, skillPrompt);
       const grade = gradeExecuteResult(c, r);

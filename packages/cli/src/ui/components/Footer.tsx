@@ -31,7 +31,13 @@ import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import type { Usage } from "@sid-code/core/llm/types.ts";
 import { theme } from "../semantic-colors.ts";
-import { WARNING_MARK, GIT_BRANCH, WORKTREE_MARK, TOKEN_IN, TOKEN_OUT } from "../constants/figures.ts";
+import {
+  WARNING_MARK,
+  GIT_BRANCH,
+  WORKTREE_MARK,
+  TOKEN_IN,
+  TOKEN_OUT,
+} from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
@@ -111,10 +117,14 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   const val = theme.text.primary;
 
   // P1-5 自定义状态栏：配了 statusLine.command 就跑用户脚本，stdout 作状态栏（原样透传 ANSI）。
-  const cacheNorm = normalizeCacheUsage(props.usage, SessionState.inferProvider(props.model, config.availableModels));
-  const cacheHitRate = cacheNorm.cacheHitTokens > 0 && cacheNorm.promptTotal > 0
-    ? Math.round((cacheNorm.cacheHitTokens / Math.max(1, cacheNorm.promptTotal)) * 100)
-    : 0;
+  const cacheNorm = normalizeCacheUsage(
+    props.usage,
+    SessionState.inferProvider(props.model, config.availableModels),
+  );
+  const cacheHitRate =
+    cacheNorm.cacheHitTokens > 0 && cacheNorm.promptTotal > 0
+      ? Math.round((cacheNorm.cacheHitTokens / Math.max(1, cacheNorm.promptTotal)) * 100)
+      : 0;
   const customStatusLine = useCustomStatusLine({
     config: config.statusLine,
     data: {
@@ -128,7 +138,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       contextPercent: props.contextPercent,
       costUSD: props.costUSD,
       cacheHitRate,
-      effort: config.effortDisplay ? (config.effortDisplay.isAuto ? "auto" : config.effortDisplay.level) : "",
+      effort: config.effortDisplay
+        ? config.effortDisplay.isAuto
+          ? "auto"
+          : config.effortDisplay.level
+        : "",
       thinking: !!config.thinkingDisplay?.on,
     },
   });
@@ -141,36 +155,66 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   const fixedSegs: Segment[] = [];
   {
     const idNodes: React.ReactNode[] = [
-      <Text key="model" bold color={val} wrap="truncate-end">{data.model}</Text>,
+      <Text key="model" bold color={val} wrap="truncate-end">
+        {data.model}
+      </Text>,
     ];
-    if (data.isRaw) idNodes.push(<Text key="raw" color={dim}> ·r</Text>);
-    if (data.isVim) idNodes.push(<Text key="vim" color={dim}> ·v</Text>);
+    if (data.isRaw)
+      idNodes.push(
+        <Text key="raw" color={dim}>
+          {" "}
+          ·r
+        </Text>,
+      );
+    if (data.isVim)
+      idNodes.push(
+        <Text key="vim" color={dim}>
+          {" "}
+          ·v
+        </Text>,
+      );
     let idStr = data.model + (data.isRaw ? " ·r" : "") + (data.isVim ? " ·v" : "");
     fixedSegs.push({ key: "model", str: idStr, dropOrder: -1, nodes: <>{idNodes}</> });
   }
   if (data.goal) {
     fixedSegs.push({
-      key: "goal", str: data.goal.text, dropOrder: -1,
-      nodes: <Text color={data.goal.color} wrap="truncate-end">{data.goal.text}</Text>,
+      key: "goal",
+      str: data.goal.text,
+      dropOrder: -1,
+      nodes: (
+        <Text color={data.goal.color} wrap="truncate-end">
+          {data.goal.text}
+        </Text>
+      ),
     });
   }
   if (data.thinking) {
     // 旋钮区只渲染字形（✻/✧），字形自解释开关态。
     fixedSegs.push({
-      key: "thinking", str: data.thinking.glyph, dropOrder: -1,
+      key: "thinking",
+      str: data.thinking.glyph,
+      dropOrder: -1,
       nodes: <Text color={data.thinking.color}>{data.thinking.glyph}</Text>,
     });
   }
   if (data.effort) {
     fixedSegs.push({
-      key: "effort", str: data.effort.text, dropOrder: -1,
+      key: "effort",
+      str: data.effort.text,
+      dropOrder: -1,
       nodes: <Text color={data.effort.color}>{data.effort.text}</Text>,
     });
   }
   if (data.isPlanMode) {
     fixedSegs.push({
-      key: "plan", str: "[PLAN]", dropOrder: -1,
-      nodes: <Text bold color={theme.ui.active}>[PLAN]</Text>,
+      key: "plan",
+      str: "[PLAN]",
+      dropOrder: -1,
+      nodes: (
+        <Text bold color={theme.ui.active}>
+          [PLAN]
+        </Text>
+      ),
     });
   }
 
@@ -181,7 +225,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.context) {
     const elevated = data.context.color !== theme.ui.comment;
     metricSegs.push({
-      key: "context", str: data.context.text, dropOrder: 1,
+      key: "context",
+      str: data.context.text,
+      dropOrder: 1,
       nodes: <Text color={elevated ? data.context.color : val}>{data.context.text}</Text>,
     });
   }
@@ -190,7 +236,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     const inStr = formatLargeNumber(props.stockInputTokens);
     const outStr = formatLargeNumber(props.usage.outputTokens);
     metricSegs.push({
-      key: "tokens", str: `${TOKEN_IN}${inStr} ${TOKEN_OUT}${outStr}`, dropOrder: 2,
+      key: "tokens",
+      str: `${TOKEN_IN}${inStr} ${TOKEN_OUT}${outStr}`,
+      dropOrder: 2,
       nodes: (
         <>
           <Text color={dim}>{TOKEN_IN}</Text>
@@ -207,7 +255,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     const prefix = m?.[1] ?? "$";
     const num = m?.[2] ?? data.cost.text;
     metricSegs.push({
-      key: "cost", str: data.cost.text, dropOrder: 3,
+      key: "cost",
+      str: data.cost.text,
+      dropOrder: 3,
       nodes: (
         <>
           <Text color={dim}>{prefix}</Text>
@@ -220,7 +270,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.cache) {
     const rateColor = data.cache.rate >= 50 ? theme.status.success : val;
     metricSegs.push({
-      key: "cache", str: data.cache.text, dropOrder: 4,
+      key: "cache",
+      str: data.cache.text,
+      dropOrder: 4,
       nodes: (
         <>
           <Text color={dim}>⚡</Text>
@@ -233,7 +285,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.cacheSavings) {
     const amount = data.cacheSavings.text.replace(/\s*saved\s*$/, "");
     metricSegs.push({
-      key: "savings", str: data.cacheSavings.text, dropOrder: 5,
+      key: "savings",
+      str: data.cacheSavings.text,
+      dropOrder: 5,
       nodes: (
         <>
           <Text color={theme.status.success}>{amount}</Text>
@@ -246,7 +300,9 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   if (data.scroll) {
     const pct = data.scroll.text.replace(/^↑/, "");
     metricSegs.push({
-      key: "scroll", str: data.scroll.text, dropOrder: 6,
+      key: "scroll",
+      str: data.scroll.text,
+      dropOrder: 6,
       nodes: (
         <>
           <Text color={dim}>↑</Text>
@@ -266,17 +322,39 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     const gitNodes: React.ReactNode[] = [];
     const gitStrParts: string[] = [];
     if (data.repoName) {
-      gitNodes.push(<Text key="repo" color={val} wrap="truncate-end">{data.repoName}</Text>);
+      gitNodes.push(
+        <Text key="repo" color={val} wrap="truncate-end">
+          {data.repoName}
+        </Text>,
+      );
       gitStrParts.push(data.repoName);
     }
     if (data.gitBranch) {
-      gitNodes.push(<Text key="gb" color={dim}> {GIT_BRANCH} </Text>);
-      gitNodes.push(<Text key="branch" color={val} wrap="truncate-end">{data.gitBranch}</Text>);
+      gitNodes.push(
+        <Text key="gb" color={dim}>
+          {" "}
+          {GIT_BRANCH}{" "}
+        </Text>,
+      );
+      gitNodes.push(
+        <Text key="branch" color={val} wrap="truncate-end">
+          {data.gitBranch}
+        </Text>,
+      );
       gitStrParts.push(`${GIT_BRANCH} ${data.gitBranch}`);
     }
     if (data.worktree) {
-      gitNodes.push(<Text key="wt" color={dim}> {WORKTREE_MARK} </Text>);
-      gitNodes.push(<Text key="wtname" color={val} wrap="truncate-end">{data.worktree}</Text>);
+      gitNodes.push(
+        <Text key="wt" color={dim}>
+          {" "}
+          {WORKTREE_MARK}{" "}
+        </Text>,
+      );
+      gitNodes.push(
+        <Text key="wtname" color={val} wrap="truncate-end">
+          {data.worktree}
+        </Text>,
+      );
       gitStrParts.push(`${WORKTREE_MARK} ${data.worktree}`);
     }
     row2Segs.push({ key: "git", str: gitStrParts.join(" "), dropOrder: 1, nodes: <>{gitNodes}</> });
@@ -289,8 +367,14 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       : data.permission.color;
   const permStr = (data.permission.isDanger ? `${WARNING_MARK} ` : "") + data.permission.display;
   row2Segs.push({
-    key: "perm", str: permStr, dropOrder: -1,
-    nodes: <Text bold={data.permission.isDanger} color={permColor} wrap="truncate-end">{permStr}</Text>,
+    key: "perm",
+    str: permStr,
+    dropOrder: -1,
+    nodes: (
+      <Text bold={data.permission.isDanger} color={permColor} wrap="truncate-end">
+        {permStr}
+      </Text>
+    ),
   });
 
   // ── 窄终端渐进隐藏：各行独立按 dropOrder 从大到小丢，直到该行放得下（L4.D）──

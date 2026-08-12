@@ -16,10 +16,7 @@
  * 返回 >0 表示 a>b,<0 表示 a<b,0 表示相等。
  * 缺失段按 0 处理;非数字段按 0 处理(宽松解析,避免抛错)。
  */
-export function compareVersions(
-  a: string | undefined,
-  b: string | undefined,
-): number {
+export function compareVersions(a: string | undefined, b: string | undefined): number {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
   const len = Math.max(pa.length, pb.length);
@@ -33,12 +30,10 @@ export function compareVersions(
 
 function parseVersion(v: string | undefined): number[] {
   if (!v) return [];
-  return v
-    .split(".")
-    .map((seg) => {
-      const n = parseInt(seg, 10);
-      return Number.isNaN(n) ? 0 : n;
-    });
+  return v.split(".").map((seg) => {
+    const n = parseInt(seg, 10);
+    return Number.isNaN(n) ? 0 : n;
+  });
 }
 
 export interface SyncOutputEnv {

@@ -139,7 +139,9 @@ export function buildProgressReminder(snap: ProgressSnapshot): string | null {
   lines.push(`- 仍待办 ${snap.pending.length} 项：${snap.pending.join("；")}`);
   if (snap.inProgress) lines.push(`- 当前进行中：${snap.inProgress}`);
   lines.push("请继续推进待办项，不要重复已完成的工作，也不要遗漏任何待办。");
-  lines.push("若某待办其实已完成只是忘了标记，请用 todo_write 标为 completed 后如实收尾；不要为凑\"未完成\"去臆造用户没要求的新工作或排查不存在的故障。");
+  lines.push(
+    '若某待办其实已完成只是忘了标记，请用 todo_write 标为 completed 后如实收尾；不要为凑"未完成"去臆造用户没要求的新工作或排查不存在的故障。',
+  );
   lines.push("</system-reminder>");
   return lines.join("\n");
 }

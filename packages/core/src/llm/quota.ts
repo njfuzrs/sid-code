@@ -15,9 +15,9 @@ export interface QuotaCheckResult {
 
 /** 配额配置 */
 export interface QuotaConfig {
-  costLimit?: number;          // 总成本上限（美元）
-  requestsPerMinute?: number;  // 每分钟请求数上限
-  tokensPerMinute?: number;    // 每分钟 token 数上限
+  costLimit?: number; // 总成本上限（美元）
+  requestsPerMinute?: number; // 每分钟请求数上限
+  tokensPerMinute?: number; // 每分钟 token 数上限
 }
 
 export class QuotaManager {
@@ -28,7 +28,7 @@ export class QuotaManager {
   private lastAlertLevel: AlertLevel | null = null;
 
   /** 滑动窗口：记录最近 60 秒的请求 */
-  private requestWindow: number[] = [];  // 时间戳数组
+  private requestWindow: number[] = []; // 时间戳数组
   private tokenWindow: { ts: number; tokens: number }[] = [];
 
   constructor(config: QuotaConfig | number) {
@@ -52,8 +52,8 @@ export class QuotaManager {
 
     // 清理 60 秒前的记录
     const cutoff = now - 60_000;
-    this.requestWindow = this.requestWindow.filter(ts => ts > cutoff);
-    this.tokenWindow = this.tokenWindow.filter(r => r.ts > cutoff);
+    this.requestWindow = this.requestWindow.filter((ts) => ts > cutoff);
+    this.tokenWindow = this.tokenWindow.filter((r) => r.ts > cutoff);
   }
 
   /** 检查速率限制，返回需要等待的毫秒数（0 表示不需要等待） */
@@ -86,9 +86,9 @@ export class QuotaManager {
       level = "exceeded";
     } else if (ratio >= 0.95) {
       level = "critical";
-    } else if (ratio >= 0.80) {
+    } else if (ratio >= 0.8) {
       level = "warning";
-    } else if (ratio >= 0.50) {
+    } else if (ratio >= 0.5) {
       level = "info";
     }
 

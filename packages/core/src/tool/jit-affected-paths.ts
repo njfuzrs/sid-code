@@ -154,7 +154,10 @@ export function bashWriteTargets(command: unknown): string[] {
   for (const m of cmd.matchAll(new RegExp(`(?:^|[\\s;&|])\\d*>>?\\s*(${TARGET})`, "g"))) push(m[1]);
 
   // ② tee：`tee out.txt` / `tee -a out.txt`
-  for (const m of cmd.matchAll(new RegExp(`(?:^|[\\s;&|])tee\\s+((?:-[a-zA-Z-]+\\s+)*)(${TARGET})`, "g"))) push(m[2]);
+  for (const m of cmd.matchAll(
+    new RegExp(`(?:^|[\\s;&|])tee\\s+((?:-[a-zA-Z-]+\\s+)*)(${TARGET})`, "g"),
+  ))
+    push(m[2]);
 
   // ③ sed 原地改：`sed -i 's/a/b/' file` / `sed --in-place=bak -e ... file`
   //    取该 sed 片段的**最后一个**非选项参数作为目标文件。

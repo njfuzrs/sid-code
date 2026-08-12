@@ -123,7 +123,9 @@ export function getLSPHealthWarning(): string | null {
   const broken = health.servers.filter((s) => s.restartsExhausted || s.state === "error");
   if (broken.length > 0) {
     const detail = broken
-      .map((s) => `${s.name}（崩溃 ${s.crashCount} 次${s.restartsExhausted ? "，已停止重启" : ""}）`)
+      .map(
+        (s) => `${s.name}（崩溃 ${s.crashCount} 次${s.restartsExhausted ? "，已停止重启" : ""}）`,
+      )
       .join("、");
     return `LSP 服务器异常：${detail}。相关语言的代码智能功能可能不可用。`;
   }
@@ -164,10 +166,7 @@ export async function syncFileToLSP(filePath: string): Promise<void> {
     await notifyFileChanged(filePath, content);
     getLSPManager()?.saveFile(filePath);
   } catch (e) {
-    getLogger().debug(
-      "LSP",
-      `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`,
-    );
+    getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
   }
 }
 
@@ -196,7 +195,9 @@ export function collectDiagnosticText(scopeFilePaths?: Iterable<string>): string
     for (const p of scopeFilePaths) {
       try {
         scopeUris.push(pathToFileURL(p).href);
-      } catch { /* 畸形路径跳过 */ }
+      } catch {
+        /* 畸形路径跳过 */
+      }
     }
     // 显式传了作用域但没有一个合法 URI → 不误退化为全量消费，直接返回 null。
     if (scopeUris.length === 0) return null;

@@ -51,9 +51,7 @@ describe("classifyHits - 三档判定", () => {
   });
 
   test("api_key 命中 → unsafe_for_holdout", () => {
-    expect(classifyHits([], [{ kind: "api_key", match: "sk-AAAA..." }])).toBe(
-      "unsafe_for_holdout",
-    );
+    expect(classifyHits([], [{ kind: "api_key", match: "sk-AAAA..." }])).toBe("unsafe_for_holdout");
   });
 
   test("仅 email 命中 → needs_sanitization", () => {
@@ -164,7 +162,13 @@ describe("scanTask - 单 task 扫描", () => {
 describe("renderReport - markdown 报告生成", () => {
   test("混合状态报告含 3 个 section + 总览正确", () => {
     const results: TaskScanResult[] = [
-      { task_id: "T0001", split: "capability", status: "safe", contamination_hits: [], secret_hits: [] },
+      {
+        task_id: "T0001",
+        split: "capability",
+        status: "safe",
+        contamination_hits: [],
+        secret_hits: [],
+      },
       {
         task_id: "T0002",
         split: "capability",

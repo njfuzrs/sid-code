@@ -146,7 +146,7 @@ function useSessionBrowserState(
   initialSearchQuery = "",
   initialSearchMode = false,
   projectRoot?: string,
-  sessionsPerPage: number = FALLBACK_SESSIONS_PER_PAGE
+  sessionsPerPage: number = FALLBACK_SESSIONS_PER_PAGE,
 ): SessionBrowserState {
   const [sessions, setSessions] = useState<SessionInfo[]>(initialSessions);
   const [loading, setLoading] = useState(initialLoading);
@@ -227,7 +227,7 @@ function useSessionBrowserState(
 function useLoadSessions(
   config: Config,
   currentSessionId: string | undefined,
-  state: SessionBrowserState
+  state: SessionBrowserState,
 ) {
   const {
     setSessions,
@@ -296,10 +296,7 @@ function useMoveSelection(state: SessionBrowserState) {
 
   return useCallback(
     (delta: number) => {
-      const newIndex = Math.max(
-        0,
-        Math.min(totalSessions - 1, activeIndex + delta)
-      );
+      const newIndex = Math.max(0, Math.min(totalSessions - 1, activeIndex + delta));
       setActiveIndex(newIndex);
 
       // 调整滚动偏移
@@ -309,14 +306,7 @@ function useMoveSelection(state: SessionBrowserState) {
         setScrollOffset(newIndex - sessionsPerPage + 1);
       }
     },
-    [
-      totalSessions,
-      activeIndex,
-      scrollOffset,
-      sessionsPerPage,
-      setActiveIndex,
-      setScrollOffset,
-    ]
+    [totalSessions, activeIndex, scrollOffset, sessionsPerPage, setActiveIndex, setScrollOffset],
   );
 }
 
@@ -339,9 +329,7 @@ function useWrapSelection(state: SessionBrowserState) {
     (delta: number) => {
       if (totalSessions <= 0) return;
       // 取模环绕：+totalSessions 再取模，保证负数（往上越界）也落到正确区间。
-      const newIndex =
-        (((activeIndex + delta) % totalSessions) + totalSessions) %
-        totalSessions;
+      const newIndex = (((activeIndex + delta) % totalSessions) + totalSessions) % totalSessions;
       setActiveIndex(newIndex);
 
       // 滚动窗口跟随:目标行在窗口上方→顶对齐;在窗口下方→底对齐。
@@ -353,14 +341,7 @@ function useWrapSelection(state: SessionBrowserState) {
         setScrollOffset(Math.max(0, newIndex - sessionsPerPage + 1));
       }
     },
-    [
-      totalSessions,
-      activeIndex,
-      scrollOffset,
-      sessionsPerPage,
-      setActiveIndex,
-      setScrollOffset,
-    ]
+    [totalSessions, activeIndex, scrollOffset, sessionsPerPage, setActiveIndex, setScrollOffset],
   );
 }
 
@@ -386,7 +367,7 @@ function useSessionBrowserInput(
   onDeleteSession: (session: SessionInfo) => Promise<void>,
   onExit: () => void,
   searchFirst = false,
-  projectFilterEnabled = false
+  projectFilterEnabled = false,
 ) {
   useInput((input, key) => {
     // Ctrl+P：在「全部 / 仅当前项目」间切换（两种模式下都生效，且不落进搜索框）。
@@ -435,9 +416,7 @@ function useSessionBrowserInput(
         state.setScrollOffset(0);
       } else if (input === "G") {
         state.setActiveIndex(state.totalSessions - 1);
-        state.setScrollOffset(
-          Math.max(0, state.totalSessions - state.sessionsPerPage)
-        );
+        state.setScrollOffset(Math.max(0, state.totalSessions - state.sessionsPerPage));
       } else if (input === "s") {
         cycleSortOrder();
       } else if (input === "r") {
@@ -451,13 +430,9 @@ function useSessionBrowserInput(
         if (selectedSession && !selectedSession.isCurrentSession) {
           onDeleteSession(selectedSession)
             .then(() => {
-              state.setSessions(
-                state.sessions.filter((s) => s.id !== selectedSession.id)
-              );
+              state.setSessions(state.sessions.filter((s) => s.id !== selectedSession.id));
               if (state.activeIndex >= state.filteredAndSortedSessions.length - 1) {
-                state.setActiveIndex(
-                  Math.max(0, state.filteredAndSortedSessions.length - 2)
-                );
+                state.setActiveIndex(Math.max(0, state.filteredAndSortedSessions.length - 2));
               }
             })
             .catch((error: any) => {
@@ -522,11 +497,7 @@ function SessionBrowserEmpty(): React.JSX.Element {
  * 顶部标题 + 搜索框（对标 CC：带圆角边框的搜索输入，一眼就知道能打字）。
  * 无论导航还是搜索模式都渲染，只是搜索模式下光标可见 + 提示"输入以搜索"。
  */
-function SearchHeader({
-  state,
-}: {
-  state: SessionBrowserState;
-}): React.JSX.Element {
+function SearchHeader({ state }: { state: SessionBrowserState }): React.JSX.Element {
   const hasQuery = Boolean(state.searchQuery);
   const scopeLabel = state.projectOnly ? "仅当前项目" : "全部项目";
   return (
@@ -537,12 +508,7 @@ function SearchHeader({
           （{scopeLabel} · {state.totalSessions} 个）
         </Text>
       </Text>
-      <Box
-        borderStyle="round"
-        borderColor={theme.ui.active}
-        paddingX={1}
-        marginTop={0}
-      >
+      <Box borderStyle="round" borderColor={theme.ui.active} paddingX={1} marginTop={0}>
         <Text color={theme.ui.symbol}>⌕ </Text>
         {hasQuery ? (
           <Text color={theme.text.primary}>{state.searchQuery}</Text>
@@ -621,27 +587,18 @@ function SessionItem({
   // 括号里再附相对时间（如 2d/3h）便于快速估算新旧。
   const absTime = formatAbsoluteTime(session.lastUpdated);
   const relTime = formatRelativeTime(session.lastUpdated, "short");
-  const metaParts = [
-    absTime ? `${absTime} (${relTime})` : relTime,
-    `${session.messageCount} 条`,
-  ];
+  const metaParts = [absTime ? `${absTime} (${relTime})` : relTime, `${session.messageCount} 条`];
   const modelShort = shortenModel(session.model);
   if (modelShort) metaParts.push(modelShort);
   const cwdShort = shortenPath(session.cwd);
   if (cwdShort) metaParts.push(cwdShort);
   if (session.isCurrentSession) metaParts.push("当前");
-  if (
-    state.searchQuery &&
-    session.matchCount &&
-    session.matchCount > 1
-  ) {
+  if (state.searchQuery && session.matchCount && session.matchCount > 1) {
     metaParts.push(`+${session.matchCount - 1} 处匹配`);
   }
 
   const showMatch =
-    Boolean(state.searchQuery) &&
-    session.matchSnippets &&
-    session.matchSnippets.length > 0;
+    Boolean(state.searchQuery) && session.matchSnippets && session.matchSnippets.length > 0;
 
   // 关键：每行用**单个** <Text wrap="truncate-end">，不套 flex-row + flexGrow 子项。
   // flex-row 里放可伸缩的 <Text> 时，vendored ink 对超宽 CJK 文本的测量会先按完整宽度
@@ -653,9 +610,7 @@ function SessionItem({
     <Box flexDirection="column" marginBottom={1}>
       {/* 行 1：箭头 + 序号 + 标题 */}
       <Text wrap="truncate-end">
-        <Text color={isActive ? theme.ui.active : theme.text.secondary}>
-          {arrow}
-        </Text>
+        <Text color={isActive ? theme.ui.active : theme.text.secondary}>{arrow}</Text>
         <Text color={metaColor}>{indexLabel}</Text>
         <Text bold={isActive} color={titleColor}>
           {session.displayName}
@@ -677,14 +632,12 @@ function SessionItem({
 function SessionList({ state }: { state: SessionBrowserState }): React.JSX.Element {
   return (
     <Box flexDirection="column" marginTop={1}>
-      {state.scrollOffset > 0 && (
-        <Text color={theme.text.secondary}>  ▲ 还有更新的会话</Text>
-      )}
+      {state.scrollOffset > 0 && <Text color={theme.text.secondary}> ▲ 还有更新的会话</Text>}
       {state.visibleSessions.map((session) => (
         <SessionItem key={session.id} session={session} state={state} />
       ))}
       {state.endIndex < state.totalSessions && (
-        <Text color={theme.text.secondary}>  ▼ 还有更早的会话</Text>
+        <Text color={theme.text.secondary}> ▼ 还有更早的会话</Text>
       )}
     </Box>
   );
@@ -711,13 +664,10 @@ function FooterHints({
     : null;
   let hints: (string | null)[];
   if (state.isSearchMode) {
-    const escHint =
-      searchFirst && !state.searchQuery ? "Esc 退出" : "Esc 清空/退出";
+    const escHint = searchFirst && !state.searchQuery ? "Esc 退出" : "Esc 清空/退出";
     hints = ["输入以搜索", "↑↓ 移动", "Enter 恢复", projectHint, escHint];
   } else {
-    const sortLabel = { date: "时间", messages: "消息数", name: "名称" }[
-      state.sortOrder
-    ];
+    const sortLabel = { date: "时间", messages: "消息数", name: "名称" }[state.sortOrder];
     hints = [
       "↑↓ 移动",
       "Enter 恢复",
@@ -801,7 +751,7 @@ export function SessionBrowser({
     initialSearchQuery,
     searchFirst || Boolean(initialSearchQuery),
     projectRoot,
-    sessionsPerPage
+    sessionsPerPage,
   );
   const moveSelection = useMoveSelection(state);
   const wrapSelection = useWrapSelection(state);
@@ -817,7 +767,7 @@ export function SessionBrowser({
     onDeleteSession,
     onExit,
     searchFirst,
-    Boolean(projectRoot)
+    Boolean(projectRoot),
   );
 
   return (

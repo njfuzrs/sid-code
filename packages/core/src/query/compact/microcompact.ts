@@ -40,12 +40,7 @@ const DISCARDABLE_TOOLS = new Set([
 
 /** 不可丢弃工具（输出不可复现，压缩时保留摘要）。
  * 条目使用去掉下划线和连字符的规范化名称。 */
-const NON_DISCARDABLE_TOOLS = new Set([
-  "edit",
-  "write",
-  "memory",
-  "askuser",
-]);
+const NON_DISCARDABLE_TOOLS = new Set(["edit", "write", "memory", "askuser"]);
 
 /** 规范化工具名：小写 + 去掉下划线和连字符 */
 function normalizeToolName(toolName: string): string {
@@ -73,8 +68,8 @@ export interface MicrocompactOptions {
 }
 
 const DEFAULT_OPTIONS: Required<MicrocompactOptions> = {
-  preserveRecentCount: 6,   // 保留最近 3 轮（6 条消息）
-  minContentLength: 500,    // 超过 500 字符才压缩
+  preserveRecentCount: 6, // 保留最近 3 轮（6 条消息）
+  minContentLength: 500, // 超过 500 字符才压缩
   mode: "time",
 };
 
@@ -161,17 +156,20 @@ export function microcompactMessages(
     if (msg.role !== "user") return msg;
 
     const hasLargeToolResult = msg.content.some(
-      b => b.type === "tool_result" &&
-           typeof b.content === "string" &&
-           b.content.length > opts.minContentLength
+      (b) =>
+        b.type === "tool_result" &&
+        typeof b.content === "string" &&
+        b.content.length > opts.minContentLength,
     );
 
     if (!hasLargeToolResult) return msg;
 
-    const newContent: ContentBlock[] = msg.content.map(b => {
-      if (b.type === "tool_result" &&
-          typeof b.content === "string" &&
-          b.content.length > opts.minContentLength) {
+    const newContent: ContentBlock[] = msg.content.map((b) => {
+      if (
+        b.type === "tool_result" &&
+        typeof b.content === "string" &&
+        b.content.length > opts.minContentLength
+      ) {
         const originalLen = b.content.length;
         const toolName = findToolName(messages, b.tool_use_id);
         const compacted = compactToolResultContent(b.content, toolName, opts.mode);

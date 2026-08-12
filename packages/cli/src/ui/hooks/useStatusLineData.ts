@@ -24,7 +24,16 @@ import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
-import { TOKEN_IN, TOKEN_OUT, EFFORT_GLYPHS, EFFORT_AUTO, THINKING_ON, THINKING_OFF, GOAL_MARK, PAUSED_MARK } from "../constants/figures.ts";
+import {
+  TOKEN_IN,
+  TOKEN_OUT,
+  EFFORT_GLYPHS,
+  EFFORT_AUTO,
+  THINKING_ON,
+  THINKING_OFF,
+  GOAL_MARK,
+  PAUSED_MARK,
+} from "../constants/figures.ts";
 import type { PricingModelEntry } from "@sid-code/core/api/cost-tracker.ts";
 
 /** 缩短路径：~ 替换 home，超长时只保留最后两级。导出供测试与 Footer 复用。 */
@@ -74,8 +83,7 @@ export function derivePermission(permissionMode: string): {
   isDanger: boolean;
 } {
   const isDanger =
-    permissionMode === "dangerously-skip-permissions" ||
-    permissionMode === "deny-write";
+    permissionMode === "dangerously-skip-permissions" || permissionMode === "deny-write";
   const color = (() => {
     switch (permissionMode) {
       case "plan":
@@ -175,15 +183,12 @@ export function deriveCacheMetrics(
  * 展示本次会话累计因缓存命中而节省的美元金额，比单纯命中率更直观有说服力。
  * 返回 null 表示节省为 0 或无数据（不显示）。
  */
-export function deriveCacheSavings(
-  cacheSavingsUSD: number,
-): { text: string; color: Color } | null {
+export function deriveCacheSavings(cacheSavingsUSD: number): { text: string; color: Color } | null {
   if (cacheSavingsUSD <= 0) return null;
   // 格式化：< $0.01 不显示（避免精度误导），>= $1 只保留 2 位小数
   if (cacheSavingsUSD < 0.01) return null;
-  const formatted = cacheSavingsUSD >= 1
-    ? `$${cacheSavingsUSD.toFixed(2)}`
-    : `$${cacheSavingsUSD.toFixed(3)}`;
+  const formatted =
+    cacheSavingsUSD >= 1 ? `$${cacheSavingsUSD.toFixed(2)}` : `$${cacheSavingsUSD.toFixed(3)}`;
   return {
     text: `${formatted} saved`,
     color: theme.status.success,
@@ -197,7 +202,10 @@ export function deriveCacheSavings(
  * - 显式档位 → 填充方块字形（▁▃▅█）+ 档位名；max 用品牌色点睛，其余用默认灰。
  */
 export function deriveEffort(
-  effortDisplay: { level: import("@sid-code/core/llm/effort.ts").EffortLevel; isAuto: boolean } | null,
+  effortDisplay: {
+    level: import("@sid-code/core/llm/effort.ts").EffortLevel;
+    isAuto: boolean;
+  } | null,
   defaultColor: Color,
 ): { glyph: string; text: string; color: Color } | null {
   if (!effortDisplay) return null;
@@ -250,9 +258,10 @@ function deriveGoal(
   const { turnsUsed, maxTurns, status } = goalDisplay;
   if (status !== "active" && status !== "paused") return null;
   const nearLimit = maxTurns > 0 && turnsUsed / maxTurns >= 0.8;
-  const text = status === "paused"
-    ? `${PAUSED_MARK} 目标已暂停 ${turnsUsed}/${maxTurns} 轮`
-    : `${GOAL_MARK} 目标 ${turnsUsed}/${maxTurns} 轮`;
+  const text =
+    status === "paused"
+      ? `${PAUSED_MARK} 目标已暂停 ${turnsUsed}/${maxTurns} 轮`
+      : `${GOAL_MARK} 目标 ${turnsUsed}/${maxTurns} 轮`;
   const color = status === "paused" || nearLimit ? theme.status.warning : defaultColor;
   return { text, color };
 }

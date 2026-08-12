@@ -76,12 +76,12 @@ export type DialogType =
 // ============================================================
 
 export type CommandSource =
-  | "builtin"       // 内置命令
-  | "user"          // 用户自定义（~/.sid-code/commands/）
-  | "project"       // 项目自定义（.sid-code/commands/）
-  | "skill"         // Skill 系统
-  | "plugin"        // 插件（带 pluginName: 前缀）
-  | "mcp";          // MCP 服务器
+  | "builtin" // 内置命令
+  | "user" // 用户自定义（~/.sid-code/commands/）
+  | "project" // 项目自定义（.sid-code/commands/）
+  | "skill" // Skill 系统
+  | "plugin" // 插件（带 pluginName: 前缀）
+  | "mcp"; // MCP 服务器
 
 // ============================================================
 // 统一命令注册表的结构化契约
@@ -168,7 +168,10 @@ export interface CommandContext {
   /** 读取当前 Vim 输入模式开关（/vim 无参 toggle 时用）。 */
   getVimMode?: () => boolean;
   /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
-  setStatusLine?: (config: import("../config/statusline-types.ts").StatusLineConfig | undefined, persist?: boolean) => void;
+  setStatusLine?: (
+    config: import("../config/statusline-types.ts").StatusLineConfig | undefined,
+    persist?: boolean,
+  ) => void;
   /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
   getStatusLine?: () => import("../config/statusline-types.ts").StatusLineConfig | undefined;
   /**
@@ -233,27 +236,27 @@ export interface CommandContext {
 
 export interface CommandBase {
   // === 身份标识 ===
-  name: string;                       // 命令名（唯一标识，如 "compact"）
-  aliases?: string[];                 // 别名（如 ["q"] 对应 /exit）
-  description: string;                // 描述（显示在补全列表和 /help 中）
-  argumentHint?: string;              // 参数提示（如 "session-id"）
+  name: string; // 命令名（唯一标识，如 "compact"）
+  aliases?: string[]; // 别名（如 ["q"] 对应 /exit）
+  description: string; // 描述（显示在补全列表和 /help 中）
+  argumentHint?: string; // 参数提示（如 "session-id"）
 
   // === 可见性控制 ===
-  isEnabled?: () => boolean;          // 运行时条件门控（feature flag 等）
-  isHidden?: boolean;                 // 从补全列表/help 中隐藏
+  isEnabled?: () => boolean; // 运行时条件门控（feature flag 等）
+  isHidden?: boolean; // 从补全列表/help 中隐藏
 
   // === 调用控制 ===
-  userInvocable?: boolean;            // 用户能否通过 /name 调用（false = 仅模型可用）
-  disableModelInvocation?: boolean;   // 模型能否通过 SkillTool 调用
-  immediate?: boolean;                // 是否绕过队列立即执行（模型运行时可用）
-  requiresArgs?: boolean;             // 无参数就无法工作（如 /btw）。true = 补全列表回车仅回填等待输入；
-                                      // 默认 false = 补全列表回车直接执行（无参开对话框/显示状态的命令）
+  userInvocable?: boolean; // 用户能否通过 /name 调用（false = 仅模型可用）
+  disableModelInvocation?: boolean; // 模型能否通过 SkillTool 调用
+  immediate?: boolean; // 是否绕过队列立即执行（模型运行时可用）
+  requiresArgs?: boolean; // 无参数就无法工作（如 /btw）。true = 补全列表回车仅回填等待输入；
+  // 默认 false = 补全列表回车直接执行（无参开对话框/显示状态的命令）
 
   // === 来源追踪 ===
-  source?: CommandSource;             // 来源标记
+  source?: CommandSource; // 来源标记
 
   // === 模型集成 ===
-  whenToUse?: string;                 // 告诉模型何时应该使用此命令
+  whenToUse?: string; // 告诉模型何时应该使用此命令
 
   // === 子命令 ===
   subCommands?: () => UnifiedCommand[];
@@ -274,12 +277,12 @@ export interface LocalCommandModule {
 }
 
 export type LocalCommandResult =
-  | { type: "text"; value: string }           // 显示文本
-  | { type: "compact"; summary: string }      // 上下文压缩结果
-  | { type: "skip" }                          // 静默完成
-  | { type: "clear" }                         // 清空对话
-  | { type: "quit"; message?: string }        // 退出程序
-  | { type: "dialog"; dialog: DialogType }    // 打开交互式对话框
+  | { type: "text"; value: string } // 显示文本
+  | { type: "compact"; summary: string } // 上下文压缩结果
+  | { type: "skip" } // 静默完成
+  | { type: "clear" } // 清空对话
+  | { type: "quit"; message?: string } // 退出程序
+  | { type: "dialog"; dialog: DialogType } // 打开交互式对话框
   | { type: "submit_prompt"; prompt: string } // 将文本提交给 LLM
   | { type: "confirm"; message: string; onConfirm: () => Promise<LocalCommandResult> }; // 需要用户确认
 
@@ -290,36 +293,26 @@ export interface LocalJSXCommand {
 }
 
 export interface LocalJSXCommandModule {
-  call(
-    onDone: LocalJSXCommandOnDone,
-    ctx: CommandContext,
-    args: string,
-  ): Promise<ReactNode | null>;
+  call(onDone: LocalJSXCommandOnDone, ctx: CommandContext, args: string): Promise<ReactNode | null>;
 }
 
-export type LocalJSXCommandOnDone = (
-  result?: string,
-  options?: LocalJSXDoneOptions,
-) => void;
+export type LocalJSXCommandOnDone = (result?: string, options?: LocalJSXDoneOptions) => void;
 
 export interface LocalJSXDoneOptions {
-  display?: "skip" | "system" | "user";   // 结果如何显示
-  shouldQuery?: boolean;                   // 完成后是否触发模型调用
-  nextInput?: string;                      // 链式命令：设置下一个输入
-  submitNextInput?: boolean;               // 链式命令：自动提交下一个输入
+  display?: "skip" | "system" | "user"; // 结果如何显示
+  shouldQuery?: boolean; // 完成后是否触发模型调用
+  nextInput?: string; // 链式命令：设置下一个输入
+  submitNextInput?: boolean; // 链式命令：自动提交下一个输入
 }
 
 /** prompt 命令：生成 prompt 注入对话，触发模型调用 */
 export interface PromptCommand {
   type: "prompt";
-  context?: "inline" | "fork";             // inline=当前对话展开，fork=子代理执行
-  getPromptForCommand(
-    args: string,
-    ctx: CommandContext,
-  ): Promise<string>;
-  allowedTools?: string[];                 // 限制模型可用的工具集（fork 模式）
-  maxTurns?: number;                       // 最大轮次（fork 模式）
-  timeoutMins?: number;                    // 子代理超时(分钟，fork 模式)；默认 2，最大 30
+  context?: "inline" | "fork"; // inline=当前对话展开，fork=子代理执行
+  getPromptForCommand(args: string, ctx: CommandContext): Promise<string>;
+  allowedTools?: string[]; // 限制模型可用的工具集（fork 模式）
+  maxTurns?: number; // 最大轮次（fork 模式）
+  timeoutMins?: number; // 子代理超时(分钟，fork 模式)；默认 2，最大 30
   /**
    * 来源 skill 定义（仅 skill 适配出的 prompt 命令有）。
    *
@@ -336,5 +329,4 @@ export interface PromptCommand {
 // 统一命令类型 = 基础属性 + 三种变体之一
 // ============================================================
 
-export type UnifiedCommand = CommandBase &
-  (LocalCommand | LocalJSXCommand | PromptCommand);
+export type UnifiedCommand = CommandBase & (LocalCommand | LocalJSXCommand | PromptCommand);

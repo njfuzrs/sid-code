@@ -21,10 +21,7 @@ export interface ValidationError {
  * 格式化 Zod 错误为 ValidationError 列表。
  * 兼容 zod@3 的 ZodIssue 结构。
  */
-export function formatZodErrors(
-  error: z.ZodError,
-  filePath: string,
-): ValidationError[] {
+export function formatZodErrors(error: z.ZodError, filePath: string): ValidationError[] {
   return error.issues.map((issue) => {
     const anyIssue = issue as any;
     return {
@@ -65,10 +62,7 @@ function generateSuggestion(issue: z.ZodIssue): string | undefined {
  * 避免一条坏规则（非字符串）导致整个 permissions 字段被 Zod 拒绝。
  * 直接原地修改 data.permissions，返回被剔除规则的警告列表。
  */
-export function filterInvalidPermissionRules(
-  data: any,
-  filePath: string,
-): ValidationError[] {
+export function filterInvalidPermissionRules(data: any, filePath: string): ValidationError[] {
   const warnings: ValidationError[] = [];
   if (!data?.permissions || typeof data.permissions !== "object") return warnings;
 

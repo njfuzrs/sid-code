@@ -39,7 +39,10 @@
         "required": ["evidence_id", "type", "source", "content_summary"],
         "properties": {
           "evidence_id": { "type": "string" },
-          "type": { "type": "string", "enum": ["log", "metric", "trace", "commit", "adr", "config"] },
+          "type": {
+            "type": "string",
+            "enum": ["log", "metric", "trace", "commit", "adr", "config"]
+          },
           "source": { "type": "string" },
           "content_summary": { "type": "string" },
           "timestamp": { "type": ["string", "null"] }

@@ -328,7 +328,8 @@ function sanitizeEntry(raw: unknown): ModelCapabilityEntry | null {
     } else {
       const words = (r.effortValues as unknown[]).filter(
         (w): w is string =>
-          typeof w === "string" && (KNOWN_EFFORT_WORDS as readonly string[]).includes(w.toLowerCase()),
+          typeof w === "string" &&
+          (KNOWN_EFFORT_WORDS as readonly string[]).includes(w.toLowerCase()),
       );
       // 过滤后非空才采信；全是垃圾内容 → 判定损坏，整字段丢弃（不当成「确认不支持」）。
       if (words.length > 0) {
@@ -428,7 +429,10 @@ function sanitizeEffortWords(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const set = new Set<string>();
   for (const x of v) {
-    if (typeof x === "string" && (KNOWN_EFFORT_WORDS as readonly string[]).includes(x.toLowerCase())) {
+    if (
+      typeof x === "string" &&
+      (KNOWN_EFFORT_WORDS as readonly string[]).includes(x.toLowerCase())
+    ) {
       set.add(x.toLowerCase());
     }
   }
@@ -492,7 +496,10 @@ export async function syncExternalCatalogs(opts?: {
     memMeta.failCount = (memMeta.failCount ?? 0) + 1;
     memMeta.syncedAt = now;
     persist();
-    log().debug("MODEL-CAP", `外部目录同步全部失败，退避 ${computeCatalogBackoffMs(memMeta.failCount)}ms`);
+    log().debug(
+      "MODEL-CAP",
+      `外部目录同步全部失败，退避 ${computeCatalogBackoffMs(memMeta.failCount)}ms`,
+    );
     return { updated: 0, sources: [], failed };
   }
 
@@ -502,7 +509,10 @@ export async function syncExternalCatalogs(opts?: {
   memMeta.failCount = 0;
   memMeta.syncedAt = now;
   persist();
-  log().debug("MODEL-CAP", `外部目录同步完成：${Object.keys(merged).length} 条 / 源 ${okSources.join("+")}`);
+  log().debug(
+    "MODEL-CAP",
+    `外部目录同步完成：${Object.keys(merged).length} 条 / 源 ${okSources.join("+")}`,
+  );
   return { updated: Object.keys(merged).length, sources: okSources, failed };
 }
 
@@ -553,11 +563,9 @@ async function fetchCatalog(
     return Object.keys(out).length > 0 ? out : null;
   } catch (e) {
     // 与 gateway-pricing 同理：这是纯优化项，失败对用户不可行动 → debug 级，不惊扰终端。
-    log().debug(
-      "MODEL-CAP",
-      timedOut ? `目录源超时 ${timeoutMs}ms` : `目录源失败: ${String(e)}`,
-      { url },
-    );
+    log().debug("MODEL-CAP", timedOut ? `目录源超时 ${timeoutMs}ms` : `目录源失败: ${String(e)}`, {
+      url,
+    });
     return null;
   } finally {
     clearTimeout(timer);

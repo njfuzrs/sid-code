@@ -78,7 +78,13 @@ function clusterFailureModes(diffs: DiffEntry[]): Array<{
   total_count: number;
   avg_severity: number;
   task_coverage: string[];
-  examples: Array<{ task_id: string; code: string; title: string; evidence: string; severity: string }>;
+  examples: Array<{
+    task_id: string;
+    code: string;
+    title: string;
+    evidence: string;
+    severity: string;
+  }>;
 }> {
   const map = new Map<
     string,
@@ -87,7 +93,13 @@ function clusterFailureModes(diffs: DiffEntry[]): Array<{
       total_count: number;
       sev_sum: number;
       tasks: Set<string>;
-      examples: Array<{ task_id: string; code: string; title: string; evidence: string; severity: string }>;
+      examples: Array<{
+        task_id: string;
+        code: string;
+        title: string;
+        evidence: string;
+        severity: string;
+      }>;
     }
   >();
 
@@ -122,11 +134,14 @@ function clusterFailureModes(diffs: DiffEntry[]): Array<{
     }))
     .sort(
       (a, b) =>
-        b.total_count * b.avg_severity - a.total_count * a.avg_severity || b.task_coverage.length - a.task_coverage.length,
+        b.total_count * b.avg_severity - a.total_count * a.avg_severity ||
+        b.task_coverage.length - a.task_coverage.length,
     );
 }
 
-function clusterFixSuggestions(diffs: DiffEntry[]): Array<{ type: string; total_count: number; targets: string[]; sample_contents: string[] }> {
+function clusterFixSuggestions(
+  diffs: DiffEntry[],
+): Array<{ type: string; total_count: number; targets: string[]; sample_contents: string[] }> {
   const map = new Map<string, { total_count: number; targets: Set<string>; samples: string[] }>();
   for (const d of diffs) {
     for (const f of d.fix_suggestions ?? []) {
@@ -156,9 +171,8 @@ function renderMarkdown(diffs: DiffEntry[]): string {
   const totalClaudeSteps = diffs.reduce((s, d) => s + d.step_diff.claude, 0);
   const avgRatio =
     diffs.length > 0
-      ? Math.round(
-          (diffs.reduce((s, d) => s + (d.step_diff.ratio || 0), 0) / diffs.length) * 100,
-        ) / 100
+      ? Math.round((diffs.reduce((s, d) => s + (d.step_diff.ratio || 0), 0) / diffs.length) * 100) /
+        100
       : 0;
   const abnormalCount = diffs.filter((d) => d.meta.sid_status !== "ok").length;
 
@@ -167,18 +181,28 @@ function renderMarkdown(diffs: DiffEntry[]): string {
   lines.push("");
   lines.push(`> 自动生成 / paired-trajectory-diff.ts + aggregate-failure-modes.ts`);
   lines.push(`> 生成时间：${new Date().toISOString()}`);
-  lines.push(`> 输入：${diffs.length} 条 paired comparison（trajectory-platform/bench/splits/capability.txt 选取）`);
+  lines.push(
+    `> 输入：${diffs.length} 条 paired comparison（trajectory-platform/bench/splits/capability.txt 选取）`,
+  );
   lines.push(`> 路线对应：B0-3 MVP-T03（agent-eval-真化路线-v1.md §13.8）`);
   lines.push("");
   lines.push("## 1. 总览");
   lines.push("");
   lines.push(`- paired comparison 条数：${diffs.length}`);
-  lines.push(`- sid-code 总步数：${totalSidSteps}（平均 ${diffs.length > 0 ? (totalSidSteps / diffs.length).toFixed(1) : 0}）`);
-  lines.push(`- claude primary 总步数：${totalClaudeSteps}（平均 ${diffs.length > 0 ? (totalClaudeSteps / diffs.length).toFixed(1) : 0}）`);
-  lines.push(`- 平均步数比 (sid / claude)：**${avgRatio}**${avgRatio > 1.5 ? "（sid 步数显著偏多，疑似探索/重试过多）" : avgRatio < 0.5 ? "（sid 步数偏少，疑似过早收尾）" : ""}`);
+  lines.push(
+    `- sid-code 总步数：${totalSidSteps}（平均 ${diffs.length > 0 ? (totalSidSteps / diffs.length).toFixed(1) : 0}）`,
+  );
+  lines.push(
+    `- claude primary 总步数：${totalClaudeSteps}（平均 ${diffs.length > 0 ? (totalClaudeSteps / diffs.length).toFixed(1) : 0}）`,
+  );
+  lines.push(
+    `- 平均步数比 (sid / claude)：**${avgRatio}**${avgRatio > 1.5 ? "（sid 步数显著偏多，疑似探索/重试过多）" : avgRatio < 0.5 ? "（sid 步数偏少，疑似过早收尾）" : ""}`,
+  );
   lines.push(`- sid-code 异常完成数：${abnormalCount} / ${diffs.length}`);
   lines.push("");
-  lines.push("> ⚠️ §15.2 修订：步数差**不等同**错误信号；本节「步数比」仅作整体探索强度参考，不进 grader 总分。");
+  lines.push(
+    "> ⚠️ §15.2 修订：步数差**不等同**错误信号；本节「步数比」仅作整体探索强度参考，不进 grader 总分。",
+  );
   lines.push("");
 
   lines.push("## 2. Top 5 失败模式（按 count × 平均 severity 排序）");
@@ -220,7 +244,9 @@ function renderMarkdown(diffs: DiffEntry[]): string {
     for (const f of fixes) {
       lines.push(`### type=${f.type}（${f.total_count} 次）`);
       lines.push("");
-      lines.push(`涉及 target：${f.targets.length === 0 ? "(无)" : f.targets.map((t) => `\`${t}\``).join(", ")}`);
+      lines.push(
+        `涉及 target：${f.targets.length === 0 ? "(无)" : f.targets.map((t) => `\`${t}\``).join(", ")}`,
+      );
       lines.push("");
       if (f.sample_contents.length > 0) {
         lines.push(`样本：`);
@@ -232,7 +258,9 @@ function renderMarkdown(diffs: DiffEntry[]): string {
 
   lines.push("## 5. 逐 task step_diff 表");
   lines.push("");
-  lines.push("| task | difficulty | sid steps | claude steps | ratio | sid status | failure modes |");
+  lines.push(
+    "| task | difficulty | sid steps | claude steps | ratio | sid status | failure modes |",
+  );
   lines.push("| --- | --- | ---: | ---: | ---: | --- | ---: |");
   for (const d of diffs) {
     lines.push(
@@ -247,17 +275,25 @@ function renderMarkdown(diffs: DiffEntry[]): string {
   lines.push("");
   for (let i = 0; i < Math.min(5, diffs.length); i++) {
     const d = diffs[i];
-    lines.push(`- [ ] ${d.task_id}（${d.failure_modes.length} 条失败模式）—— 看 \`_reports/sid-vs-claude/diff-${d.task_id}.json\``);
+    lines.push(
+      `- [ ] ${d.task_id}（${d.failure_modes.length} 条失败模式）—— 看 \`_reports/sid-vs-claude/diff-${d.task_id}.json\``,
+    );
   }
   lines.push("");
-  lines.push("准确率合格线：≥ 4/5 标注与 LLM judge 一致 → 报告进入下一步（B0-4 据 Top 失败模式补 SKILL 规则）。");
+  lines.push(
+    "准确率合格线：≥ 4/5 标注与 LLM judge 一致 → 报告进入下一步（B0-4 据 Top 失败模式补 SKILL 规则）。",
+  );
   lines.push("");
 
   lines.push("## 7. 下一步");
   lines.push("");
-  lines.push("1. B0-4：从 Top 1 失败模式（上表 §2 第 1 行）选最高频的 fix_suggestion → 落到 `packages/core/src/skill/builtin/<skill-name>/SKILL.md`，**走 L3 core_code 审批**");
+  lines.push(
+    "1. B0-4：从 Top 1 失败模式（上表 §2 第 1 行）选最高频的 fix_suggestion → 落到 `packages/core/src/skill/builtin/<skill-name>/SKILL.md`，**走 L3 core_code 审批**",
+  );
   lines.push("2. 跑 1507 单测确保 SKILL.md 增量无回归");
-  lines.push("3. 下个 Sprint 重跑同样 10 条 paired comparison，看该 Top 失败模式占比是否下降（数据飞轮 v0）");
+  lines.push(
+    "3. 下个 Sprint 重跑同样 10 条 paired comparison，看该 Top 失败模式占比是否下降（数据飞轮 v0）",
+  );
   lines.push("");
 
   return lines.join("\n");

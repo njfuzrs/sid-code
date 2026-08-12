@@ -57,10 +57,7 @@ export function isRuntimeModeSwitch(lastSeen: string | undefined, mode: string):
  * @param justChanged 本轮是否刚发生 mode 切换（true 时文案强调"已切换"）
  * @returns system-reminder 文本；mode 无对应描述时返回 null
  */
-export function buildPermissionModeReminder(
-  mode: string,
-  justChanged: boolean,
-): string | null {
+export function buildPermissionModeReminder(mode: string, justChanged: boolean): string | null {
   const description = PERMISSION_MODE_DESCRIPTIONS[mode];
   // 未知 mode（无对应描述）不注入，避免喂给模型空洞约束
   if (!description) return null;

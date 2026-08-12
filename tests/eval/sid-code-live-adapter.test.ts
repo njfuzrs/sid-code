@@ -23,7 +23,10 @@ import { tmpdir } from "node:os";
 let tmpRoot: string;
 
 beforeAll(() => {
-  tmpRoot = join(tmpdir(), `sid-code-live-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpRoot = join(
+    tmpdir(),
+    `sid-code-live-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   mkdirSync(tmpRoot, { recursive: true });
 });
 
@@ -185,7 +188,12 @@ describe("readTrajectoryFile", () => {
     mkdirSync(dir, { recursive: true });
     const traj = {
       trajectory: [{ message_type: "action", tool_name: "Read" }],
-      metadata: { session_id: "abc", tools_used: ["Read"], total_steps: 1, exit_status: "end_turn" },
+      metadata: {
+        session_id: "abc",
+        tools_used: ["Read"],
+        total_steps: 1,
+        exit_status: "end_turn",
+      },
     };
     writeFileSync(join(dir, "session.traj"), JSON.stringify(traj));
     const r = readTrajectoryFile(dir);
@@ -234,29 +242,54 @@ describe("countPlanFileUpdates — plan 文件 write/edit 真命中（W12.D3）"
   });
 
   test("planFilePath 为空 → 0", () => {
-    expect(countPlanFileUpdates({ trajectory: [{ message_type: "action", tool_name: "write" }], planFilePath: null })).toBe(0);
+    expect(
+      countPlanFileUpdates({
+        trajectory: [{ message_type: "action", tool_name: "write" }],
+        planFilePath: null,
+      }),
+    ).toBe(0);
   });
 
   test("write 命中 plan 文件 → 1", () => {
     const traj = [
-      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "# v1" } },
+      {
+        message_type: "action",
+        tool_name: "write",
+        tool_input: { file_path: planPath, content: "# v1" },
+      },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
   });
 
   test("write + edit 各 1 次命中 plan → 2", () => {
     const traj = [
-      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "# v1" } },
+      {
+        message_type: "action",
+        tool_name: "write",
+        tool_input: { file_path: planPath, content: "# v1" },
+      },
       { message_type: "observation", role: "user" },
-      { message_type: "action", tool_name: "edit", tool_input: { file_path: planPath, content: "# v2" } },
+      {
+        message_type: "action",
+        tool_name: "edit",
+        tool_input: { file_path: planPath, content: "# v2" },
+      },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(2);
   });
 
   test("write 命中其他文件 → 0（非 plan 文件不算）", () => {
     const traj = [
-      { message_type: "action", tool_name: "write", tool_input: { file_path: "/tmp/other.ts", content: "x" } },
-      { message_type: "action", tool_name: "edit", tool_input: { file_path: "/tmp/other.ts", content: "y" } },
+      {
+        message_type: "action",
+        tool_name: "write",
+        tool_input: { file_path: "/tmp/other.ts", content: "x" },
+      },
+      {
+        message_type: "action",
+        tool_name: "edit",
+        tool_input: { file_path: "/tmp/other.ts", content: "y" },
+      },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(0);
   });
@@ -273,14 +306,22 @@ describe("countPlanFileUpdates — plan 文件 write/edit 真命中（W12.D3）"
   test("file_path 缺失 → 跳过该步", () => {
     const traj = [
       { message_type: "action", tool_name: "write", tool_input: {} },
-      { message_type: "action", tool_name: "write", tool_input: { file_path: planPath, content: "v1" } },
+      {
+        message_type: "action",
+        tool_name: "write",
+        tool_input: { file_path: planPath, content: "v1" },
+      },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
   });
 
   test("路径含 ./ 或 ../ → resolve 后比较仍能匹配", () => {
     const traj = [
-      { message_type: "action", tool_name: "write", tool_input: { file_path: "/tmp/./plan-test-w12.md", content: "v1" } },
+      {
+        message_type: "action",
+        tool_name: "write",
+        tool_input: { file_path: "/tmp/./plan-test-w12.md", content: "v1" },
+      },
     ];
     expect(countPlanFileUpdates({ trajectory: traj, planFilePath: planPath })).toBe(1);
   });
@@ -338,8 +379,10 @@ describe("readStreamUntilDone — deadline 行为（W12.D4 hotfix）", () => {
 
   test("isDone 在 deadline 之前触发 → timedOut=false", async () => {
     // 构造含"会话摘要"完成标志的 stream
-    const doneChunk = "────────────────────────────────────────\n会话摘要\n────────────────────────────────────────\n" +
-      "x".repeat(60) + "\n────────────────────────────────────────\n";
+    const doneChunk =
+      "────────────────────────────────────────\n会话摘要\n────────────────────────────────────────\n" +
+      "x".repeat(60) +
+      "\n────────────────────────────────────────\n";
     const stream = makeStream(["prefix ", doneChunk], 10);
     const { buf, timedOut } = await readStreamUntilDone(stream, { deadlineMs: 5000 });
     expect(timedOut).toBe(false);

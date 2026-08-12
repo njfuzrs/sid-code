@@ -4,11 +4,7 @@
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
-import {
-  getTask,
-  isAgentTask,
-  isShellTask,
-} from "../task/index.ts";
+import { getTask, isAgentTask, isShellTask } from "../task/index.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -70,13 +66,17 @@ export class TaskGetTool implements Tool {
         const p = task.progress;
         lines.push(`  <progress tools="${p.toolUseCount}" tokens="${p.tokenCount}">`);
         if (p.lastActivity) {
-          lines.push(`    <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`);
+          lines.push(
+            `    <last_activity>${p.lastActivity.toolName}: ${p.lastActivity.activityDescription || ""}</last_activity>`,
+          );
         }
         lines.push(`  </progress>`);
       }
       if (task.result) {
         lines.push(`  <result>${task.result.output.slice(0, 4000)}</result>`);
-        lines.push(`  <usage total_tokens="${task.result.totalTokens}" tool_uses="${task.result.totalToolUseCount}"/>`);
+        lines.push(
+          `  <usage total_tokens="${task.result.totalTokens}" tool_uses="${task.result.totalToolUseCount}"/>`,
+        );
       }
       if (task.error) {
         lines.push(`  <error>${task.error.slice(0, 2000)}</error>`);

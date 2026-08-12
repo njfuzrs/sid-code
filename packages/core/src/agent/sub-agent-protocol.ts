@@ -95,10 +95,7 @@ export interface ParentSignalMessage {
   signal: "abort";
 }
 
-export type ParentMessage =
-  | ParentInitMessage
-  | ParentToolResultMessage
-  | ParentSignalMessage;
+export type ParentMessage = ParentInitMessage | ParentToolResultMessage | ParentSignalMessage;
 
 // ============================================================
 // 子 → 父 (stdout)

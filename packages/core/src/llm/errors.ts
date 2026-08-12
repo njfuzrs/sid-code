@@ -12,18 +12,21 @@ const MAX_CAUSE_DEPTH = 5;
 
 /** 不可重试的终端错误（模型不存在、认证失败、配额耗尽） */
 export class TerminalError extends Error {
-  constructor(message: string, public readonly reason: TerminalReason) {
+  constructor(
+    message: string,
+    public readonly reason: TerminalReason,
+  ) {
     super(message);
     this.name = "TerminalError";
   }
 }
 
 export type TerminalReason =
-  | "auth_failed"          // API Key 无效
-  | "model_not_found"      // 模型不存在
-  | "quota_exhausted"      // 配额永久耗尽
-  | "content_policy"       // 内容策略拒绝
-  | "invalid_request"      // 请求参数错误
+  | "auth_failed" // API Key 无效
+  | "model_not_found" // 模型不存在
+  | "quota_exhausted" // 配额永久耗尽
+  | "content_policy" // 内容策略拒绝
+  | "invalid_request" // 请求参数错误
   | "server_declined_retry"; // 服务端明确要求不要重试（x-should-retry: false）
 
 /** 可重试的瞬态错误（限流、过载、网络抖动、请求超时、锁超时） */
@@ -31,7 +34,7 @@ export class RetryableError extends Error {
   constructor(
     message: string,
     public readonly reason: RetryableReason,
-    public readonly retryAfterMs?: number,  // 服务器建议的重试延迟（毫秒）
+    public readonly retryAfterMs?: number, // 服务器建议的重试延迟（毫秒）
     /** 服务端明确指示应该重试（来自 x-should-retry header） */
     public readonly serverInstructedRetry = false,
   ) {
@@ -41,13 +44,13 @@ export class RetryableError extends Error {
 }
 
 export type RetryableReason =
-  | "rate_limit"           // 429 限流
-  | "overloaded"           // 529/503 过载
-  | "network_error"        // 网络连接错误
-  | "timeout"              // 超时
-  | "server_error"         // 500/502 服务端错误
-  | "request_timeout"      // 408 请求超时
-  | "lock_timeout";        // 409 锁超时
+  | "rate_limit" // 429 限流
+  | "overloaded" // 529/503 过载
+  | "network_error" // 网络连接错误
+  | "timeout" // 超时
+  | "server_error" // 500/502 服务端错误
+  | "request_timeout" // 408 请求超时
+  | "lock_timeout"; // 409 锁超时
 
 /** 流式内容验证错误（响应不完整、工具调用格式错误） */
 export class StreamValidationError extends Error {
@@ -61,9 +64,9 @@ export class StreamValidationError extends Error {
 }
 
 export type StreamValidationReason =
-  | "no_finish_reason"         // 流结束但没有 finish_reason
-  | "malformed_tool_call"      // 工具调用 JSON 解析失败
-  | "empty_response";          // 响应为空
+  | "no_finish_reason" // 流结束但没有 finish_reason
+  | "malformed_tool_call" // 工具调用 JSON 解析失败
+  | "empty_response"; // 响应为空
 
 /**
  * 流内错误（T6）：HTTP 200 但流内事件携带的服务端错误（如 Anthropic 的
@@ -95,7 +98,10 @@ export class RequestAbortedError extends Error {
    * abort-race Promise 在 signal 被 abort 时 reject 本错误，携带此 reason 让
    * query/loop.ts 无需依赖错误消息文本即可正确分类。
    */
-  constructor(message = "Request aborted", public readonly abortReason?: unknown) {
+  constructor(
+    message = "Request aborted",
+    public readonly abortReason?: unknown,
+  ) {
     super(message);
     this.name = "RequestAbortedError";
   }
@@ -212,8 +218,13 @@ export function isSessionTimeoutAbortReason(reason: unknown): boolean {
 
 /** 可重试的网络错误码 */
 const RETRYABLE_NETWORK_CODES = [
-  "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND",
-  "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EPIPE",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
 ];
 
 /**
@@ -249,10 +260,10 @@ const RETRYABLE_CONNECTION_MESSAGES = [
   // 文案来源与 `api/stream-handler.ts` 的 isStreamingTransportError 同源（那里已把
   // 这批判为"传输层错误 → 该走非流式降级"）。同一批文案在一处判该降级、在另一处判
   // 不可分类不重试，本身就是两份实现漂移的证据。
-  "unexpected end of json",       // "Unexpected end of JSON input"（SSE 帧被截断）
-  "unexpected end of input",      // 同类的另一种措辞
-  "premature close",              // undici/node stream 提前关闭
-  "incomplete chunked encoding",  // chunked 传输未收到结束块
+  "unexpected end of json", // "Unexpected end of JSON input"（SSE 帧被截断）
+  "unexpected end of input", // 同类的另一种措辞
+  "premature close", // undici/node stream 提前关闭
+  "incomplete chunked encoding", // chunked 传输未收到结束块
 ];
 
 // ─── Cause 链遍历工具 ───
@@ -465,17 +476,14 @@ export function isAbortError(error: unknown): boolean {
     "this operation was aborted",
     "signal is aborted",
     "aborterror",
-  ].some(fragment => lowerMsg.includes(fragment));
+  ].some((fragment) => lowerMsg.includes(fragment));
 }
 
 /** 将原始中断错误标准化为 RequestAbortedError */
 export function toAbortError(error?: unknown): RequestAbortedError {
   if (error instanceof RequestAbortedError) return error;
-  const message = error instanceof Error
-    ? error.message
-    : typeof error === "string"
-      ? error
-      : "Request aborted";
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "Request aborted";
   return new RequestAbortedError(message);
 }
 
@@ -554,7 +562,11 @@ function parseRetryAfter(error: unknown): number | undefined {
  * 正文里的不透明 ID（request id / trace id）干扰判断。只有拿不到结构化状态码时，才
  * 回退到 hasBoundaryDigits 的数字边界文本匹配。
  */
-function matchesHttpStatus(structuredStatus: number | undefined, msg: string, code: string): boolean {
+function matchesHttpStatus(
+  structuredStatus: number | undefined,
+  msg: string,
+  code: string,
+): boolean {
   if (structuredStatus !== undefined) return String(structuredStatus) === code;
   return hasBoundaryDigits(msg, code);
 }
@@ -593,13 +605,19 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   // 等**可重试** 5xx 错误误判成终端 model_not_found → 提前放弃重试、直接切 fallback
   // （与本文件 hasBoundaryDigits 记录的 404-in-request-id 事故同类）。
   // 仅保留：真 404 状态码（数字边界匹配） 或 明确的 `model_not_found` 结构化标记。
-  if (matchesHttpStatus(structuredStatus, lowerMsg, "404") || lowerMsg.includes("model_not_found")) {
+  if (
+    matchesHttpStatus(structuredStatus, lowerMsg, "404") ||
+    lowerMsg.includes("model_not_found")
+  ) {
     return new TerminalError(msg, "model_not_found");
   }
   if (lowerMsg.includes("content_policy") || lowerMsg.includes("safety")) {
     return new TerminalError(msg, "content_policy");
   }
-  if (matchesHttpStatus(structuredStatus, lowerMsg, "400") || lowerMsg.includes("invalid_request")) {
+  if (
+    matchesHttpStatus(structuredStatus, lowerMsg, "400") ||
+    lowerMsg.includes("invalid_request")
+  ) {
     return new TerminalError(msg, "invalid_request");
   }
 
@@ -629,12 +647,20 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "rate_limit", retryAfter);
   }
-  if (lowerMsg.includes("overloaded") || matchesHttpStatus(structuredStatus, lowerMsg, "529") ||
-      matchesHttpStatus(structuredStatus, lowerMsg, "503") || lowerMsg.includes("insufficient_system_resource")) {
+  if (
+    lowerMsg.includes("overloaded") ||
+    matchesHttpStatus(structuredStatus, lowerMsg, "529") ||
+    matchesHttpStatus(structuredStatus, lowerMsg, "503") ||
+    lowerMsg.includes("insufficient_system_resource")
+  ) {
     const retryAfter = parseRetryAfter(error);
     return new RetryableError(msg, "overloaded", retryAfter);
   }
-  if (matchesHttpStatus(structuredStatus, lowerMsg, "502") || matchesHttpStatus(structuredStatus, lowerMsg, "500") || lowerMsg.includes("server_error")) {
+  if (
+    matchesHttpStatus(structuredStatus, lowerMsg, "502") ||
+    matchesHttpStatus(structuredStatus, lowerMsg, "500") ||
+    lowerMsg.includes("server_error")
+  ) {
     return new RetryableError(msg, "server_error");
   }
   if (lowerMsg.includes("timeout") || lowerMsg.includes("etimedout") || msg.includes("超时")) {
@@ -653,7 +679,7 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   // "other side closed"、"terminated" 等。它们是**瞬态**网络故障，应重试而非静默放弃。
   // 根因（2026-07 迁移 skill 崩溃复盘）：网关在 [DONE] 后延迟关 socket，最终 RST 抛出
   // 上述消息，此前落到"无法分类"分支 → 不重试。放在网络码检测之后，避免遮蔽结构化码。
-  if (RETRYABLE_CONNECTION_MESSAGES.some(frag => lowerMsg.includes(frag))) {
+  if (RETRYABLE_CONNECTION_MESSAGES.some((frag) => lowerMsg.includes(frag))) {
     return new RetryableError(msg, "network_error");
   }
 
@@ -704,7 +730,13 @@ export function classifyStreamError(
   const classified = classifyError(new Error(message));
   if (classified instanceof TerminalError) return classified;
   if (classified instanceof RetryableError) {
-    return new StreamLevelError(provider, statusCode ?? 0, message, classified.reason, classified.retryAfterMs);
+    return new StreamLevelError(
+      provider,
+      statusCode ?? 0,
+      message,
+      classified.reason,
+      classified.retryAfterMs,
+    );
   }
   // 3. 兜底：无法归类的流内错误默认按 server_error 重试（流已 200，倾向瞬态）
   const finalStatus = statusCode ?? (lowerMsg.includes("529") ? 529 : 500);

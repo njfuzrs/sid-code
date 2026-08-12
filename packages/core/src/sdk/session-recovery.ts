@@ -96,7 +96,9 @@ const filterUnresolvedToolUses: MessageFilter = (messages, ctx) => {
       }
       return true;
     });
-    return filteredContent.length === msg.content.length ? msg : { ...msg, content: filteredContent };
+    return filteredContent.length === msg.content.length
+      ? msg
+      : { ...msg, content: filteredContent };
   });
 };
 
@@ -110,7 +112,10 @@ const filterOrphanedThinkingOnlyMessages: MessageFilter = (messages, ctx) => {
       (b) => b.type !== "thinking" && b.type !== "redacted_thinking",
     );
     if (!hasNonThinking) {
-      ctx.log("孤立thinking消息过滤", "丢弃仅含 thinking/redacted_thinking block 的 assistant 消息");
+      ctx.log(
+        "孤立thinking消息过滤",
+        "丢弃仅含 thinking/redacted_thinking block 的 assistant 消息",
+      );
       return false;
     }
     return true;
@@ -139,7 +144,10 @@ const validateContentBlockIntegrity: MessageFilter = (messages, ctx) => {
         return false;
       }
       if (block.type === "tool_result" && !block.tool_use_id) {
-        ctx.log("contentBlock完整性校验", "丢弃缺失 tool_use_id 的不完整 tool_result block 所在消息");
+        ctx.log(
+          "contentBlock完整性校验",
+          "丢弃缺失 tool_use_id 的不完整 tool_result block 所在消息",
+        );
         return false;
       }
     }

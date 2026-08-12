@@ -26,7 +26,12 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { resolvePaths, listSessions, aggregateJitStats, percentile } from "@sid-code/core/trace/digest.ts";
+import {
+  resolvePaths,
+  listSessions,
+  aggregateJitStats,
+  percentile,
+} from "@sid-code/core/trace/digest.ts";
 
 interface SessionJit {
   id: string;
@@ -61,8 +66,16 @@ function parseSessionStartMs(id: string): number {
 
 /** 会触发 JIT 的文件类工具（与 `jitAffectedPaths` 自报机制大致对应，此处仅用于统计口径） */
 const FILE_TOOLS = new Set([
-  "read", "write", "edit", "multi_edit", "notebook_edit", "read_many_files",
-  "grep", "glob", "ls", "lsp",
+  "read",
+  "write",
+  "edit",
+  "multi_edit",
+  "notebook_edit",
+  "read_many_files",
+  "grep",
+  "glob",
+  "ls",
+  "lsp",
 ]);
 
 function scanSession(dir: string, id: string): SessionJit | null {
@@ -153,8 +166,13 @@ function main() {
   const fileToolNoJit = postTelemetry.filter((s) => s.hasFileTool && s.stats === null);
 
   const totals = {
-    injections: 0, hits: 0, loadedCount: 0, injectedBytes: 0,
-    scopeSkipped: 0, oversized: 0, failures: 0,
+    injections: 0,
+    hits: 0,
+    loadedCount: 0,
+    injectedBytes: 0,
+    scopeSkipped: 0,
+    oversized: 0,
+    failures: 0,
   };
   const cumulatives: number[] = [];
   const elapsedP95s: number[] = [];
@@ -175,8 +193,10 @@ function main() {
     totals.failures += st.failures;
     if (st.cumulativeBytes > 0) cumulatives.push(st.cumulativeBytes);
     if (st.elapsedP95 != null) elapsedP95s.push(st.elapsedP95);
-    for (const [k, v] of Object.entries(st.reasonCounts)) reasonCounts[k] = (reasonCounts[k] ?? 0) + v;
-    for (const [k, v] of Object.entries(st.failureCodes)) failureCodes[k] = (failureCodes[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(st.reasonCounts))
+      reasonCounts[k] = (reasonCounts[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(st.failureCodes))
+      failureCodes[k] = (failureCodes[k] ?? 0) + v;
     for (const [k, v] of Object.entries(s.bySource)) bySourceTotal[k] = (bySourceTotal[k] ?? 0) + v;
     for (const f of st.topFiles) {
       fileBytes.set(f.path, Math.max(fileBytes.get(f.path) ?? 0, f.bytes));
@@ -200,7 +220,8 @@ function main() {
     scopeSkipped: totals.scopeSkipped,
     wasteRate: pct(totals.scopeSkipped, scanned),
     injectedBytesTotal: totals.injectedBytes,
-    avgInjectedBytesPerInjection: totals.injections > 0 ? Math.round(totals.injectedBytes / totals.injections) : 0,
+    avgInjectedBytesPerInjection:
+      totals.injections > 0 ? Math.round(totals.injectedBytes / totals.injections) : 0,
     cumulativeBytes: {
       p50: percentile(sortedCum, 0.5) ?? 0,
       p95: percentile(sortedCum, 0.95) ?? 0,
@@ -221,7 +242,8 @@ function main() {
     const out: any = { summary };
     if (byFile) {
       out.topFiles = [...fileBytes.entries()]
-        .sort((a, b) => b[1] - a[1]).slice(0, 20)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
         .map(([path, bytes]) => ({ path, bytes }));
     }
     if (list) {
@@ -243,7 +265,9 @@ function main() {
   if (withJit.length === 0) {
     L.push("没有任何会话带 jit_context 事件。可能原因：");
     if (postTelemetry.length === 0) {
-      L.push(`  ▸ 本次样本 ${sessions.length} 个会话**全部早于埋点上线时刻**（2026-07-31 11:11）——`);
+      L.push(
+        `  ▸ 本次样本 ${sessions.length} 个会话**全部早于埋点上线时刻**（2026-07-31 11:11）——`,
+      );
       L.push("    这是预期结果，不是缺陷。跑几个新任务后再来立基线。");
     } else {
       L.push("  ① trace 上传后本地文件被清理（见 §12 验证方法注解）");
@@ -261,8 +285,12 @@ function main() {
 
   L.push("核心三问（第 5 批的验收标准）：");
   L.push(`  命中率 ....... ${summary.hitRate}  (${summary.hits}/${summary.injections} 次触发命中)`);
-  L.push(`  均次注入 ..... ${fmtBytes(summary.avgInjectedBytesPerInjection)}  (合计 ${fmtBytes(summary.injectedBytesTotal)})`);
-  L.push(`  浪费率 ....... ${summary.wasteRate}  (作用域跳过 ${summary.scopeSkipped} / 扫到 ${scanned} 份)`);
+  L.push(
+    `  均次注入 ..... ${fmtBytes(summary.avgInjectedBytesPerInjection)}  (合计 ${fmtBytes(summary.injectedBytesTotal)})`,
+  );
+  L.push(
+    `  浪费率 ....... ${summary.wasteRate}  (作用域跳过 ${summary.scopeSkipped} / 扫到 ${scanned} 份)`,
+  );
   L.push("");
   L.push("累积字节（§10.3 —— 每轮全量携带的真实成本，治理重点）：");
   L.push(
@@ -271,7 +299,9 @@ function main() {
   );
   L.push("");
   L.push("耗时（各会话 P95 的分布 —— P2-3 已 fire-and-forget，不进 TTFT，此处看队列拖尾）：");
-  L.push(`  P50=${summary.elapsedMsP95AcrossSessions.p50}ms  MAX=${summary.elapsedMsP95AcrossSessions.max}ms`);
+  L.push(
+    `  P50=${summary.elapsedMsP95AcrossSessions.p50}ms  MAX=${summary.elapsedMsP95AcrossSessions.max}ms`,
+  );
   L.push("");
   const reasons = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]);
   if (reasons.length > 0) L.push("归因分布：" + reasons.map(([r, n]) => `${r}×${n}`).join("  "));
@@ -284,7 +314,12 @@ function main() {
   }
   if (summary.oversized > 0) L.push(`⚡ 超大小告警阈值：${summary.oversized} 份（内容未截断）`);
   if (summary.failures > 0) {
-    L.push(`✗ 读取失败：${summary.failures} 次  ` + Object.entries(failureCodes).map(([k, n]) => `${k}×${n}`).join(" "));
+    L.push(
+      `✗ 读取失败：${summary.failures} 次  ` +
+        Object.entries(failureCodes)
+          .map(([k, n]) => `${k}×${n}`)
+          .join(" "),
+    );
   }
   if (fileToolNoJit.length > 0) {
     L.push("");
@@ -305,10 +340,14 @@ function main() {
     L.push("      **先不要做**（§10.3 明确：无数据不动手，别先写代码再找数据证明它合理）。");
   }
   if (wasteNum > 0.5) {
-    L.push(`      浪费率 ${pct(totals.scopeSkipped, scanned)} 偏高：大量规则被扫到却因 paths: 未命中而白读，值得看 glob 基准（第 7 批）。`);
+    L.push(
+      `      浪费率 ${pct(totals.scopeSkipped, scanned)} 偏高：大量规则被扫到却因 paths: 未命中而白读，值得看 glob 基准（第 7 批）。`,
+    );
   }
   if (hitRateNum < 0.2 && totals.injections >= 20) {
-    L.push(`      命中率 ${summary.hitRate} 偏低：多数触发落在无规则目录（可能正常），但值得抽查是否有边界判定问题。`);
+    L.push(
+      `      命中率 ${summary.hitRate} 偏低：多数触发落在无规则目录（可能正常），但值得抽查是否有边界判定问题。`,
+    );
   }
 
   if (list) {

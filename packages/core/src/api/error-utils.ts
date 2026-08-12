@@ -37,9 +37,7 @@ export interface ConnectionErrorDetails {
  * 多数运行时把底层 socket/TLS 错误包在 cause 链里（fetch → TypeError → cause: Error{code}），
  * 因此需要逐层下钻而不是只看顶层 error.code。
  */
-export function extractConnectionErrorDetails(
-  error: unknown,
-): ConnectionErrorDetails | undefined {
+export function extractConnectionErrorDetails(error: unknown): ConnectionErrorDetails | undefined {
   let current: any = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current; depth++) {
     if (current.code && typeof current.code === "string") {
@@ -47,9 +45,7 @@ export function extractConnectionErrorDetails(
       return {
         code,
         isSSLError:
-          code in SSL_ERROR_HINTS ||
-          code.startsWith("ERR_TLS_") ||
-          code.startsWith("ERR_SSL_"),
+          code in SSL_ERROR_HINTS || code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_"),
       };
     }
     current = current.cause;

@@ -67,7 +67,12 @@ async function loadInlinePlugins(errors: PluginError[]): Promise<LoadedPlugin[]>
   const plugins: LoadedPlugin[] = [];
   for (const dir of inlinePluginDirs) {
     if (!existsSync(dir)) {
-      errors.push({ type: "path-not-found", source: `${dir}@inline`, path: dir, component: "commands" });
+      errors.push({
+        type: "path-not-found",
+        source: `${dir}@inline`,
+        path: dir,
+        component: "commands",
+      });
       continue;
     }
     const plugin = await loadPluginFromDirectory(dir, "inline", true, errors);
@@ -157,29 +162,28 @@ async function assemblePluginLoadResult(_fullLoad: boolean): Promise<PluginLoadR
  * 缓存加载：用于启动关键路径（getCommands / getAgentDefinitions 等）。
  * 与 loadAllPlugins 共享 memoize slot 语义——首次调用任一即填充。
  */
-export const loadAllPluginsCacheOnly = memoize(
-  async (): Promise<PluginLoadResult> => {
-    return assemblePluginLoadResult(false);
-  },
-);
+export const loadAllPluginsCacheOnly = memoize(async (): Promise<PluginLoadResult> => {
+  return assemblePluginLoadResult(false);
+});
 
 /**
  * 完整加载：可能触发磁盘 I/O（读取 plugin.json、验证目录）。
  * 完成后预热 cache-only 的 memoize，保证两者一致。
  */
-export const loadAllPlugins = memoize(
-  async (): Promise<PluginLoadResult> => {
-    const result = await assemblePluginLoadResult(true);
-    // 预热 cache-only memoize
-    loadAllPluginsCacheOnly.cache.set(undefined, Promise.resolve(result));
+export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
+  const result = await assemblePluginLoadResult(true);
+  // 预热 cache-only memoize
+  loadAllPluginsCacheOnly.cache.set(undefined, Promise.resolve(result));
 
-    if (result.errors.length > 0) {
-      const log = getLogger();
-      log.warn("PLUGIN", `插件加载完成，${result.enabled.length} 启用 / ${result.disabled.length} 禁用 / ${result.errors.length} 错误`);
-    }
-    return result;
-  },
-);
+  if (result.errors.length > 0) {
+    const log = getLogger();
+    log.warn(
+      "PLUGIN",
+      `插件加载完成，${result.enabled.length} 启用 / ${result.disabled.length} 禁用 / ${result.errors.length} 错误`,
+    );
+  }
+  return result;
+});
 
 // 注册缓存清除（供 clearAllPluginCaches）
 registerPluginCache(loadAllPlugins.clear);

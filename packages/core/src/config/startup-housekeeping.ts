@@ -223,16 +223,22 @@ function cleanupStaleMaskedOutputs(): number {
               removedInDir++;
               totalCleaned++;
             }
-          } catch { /* 单文件失败跳过 */ }
+          } catch {
+            /* 单文件失败跳过 */
+          }
         }
         // 清空后删除目录本身
         if (removedInDir > 0) {
           try {
             const remaining = readdirSync(maskedDir);
             if (remaining.length === 0) rmSync(maskedDir, { force: true });
-          } catch { /* 目录删除失败不致命 */ }
+          } catch {
+            /* 目录删除失败不致命 */
+          }
         }
-      } catch { /* 单个 session 目录失败跳过 */ }
+      } catch {
+        /* 单个 session 目录失败跳过 */
+      }
     }
   } catch {
     // temp dir 不存在或无权限，跳过

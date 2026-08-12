@@ -68,17 +68,16 @@ export const SettingsProvider: React.FC<SettingsProviderProps> = ({
   });
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
-    setSettings(prev => ({ ...prev, ...patch }));
+    setSettings((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  const value = useMemo(() => ({
-    settings,
-    updateSettings,
-  }), [settings, updateSettings]);
-
-  return (
-    <SettingsCtx.Provider value={value}>
-      {children}
-    </SettingsCtx.Provider>
+  const value = useMemo(
+    () => ({
+      settings,
+      updateSettings,
+    }),
+    [settings, updateSettings],
   );
+
+  return <SettingsCtx.Provider value={value}>{children}</SettingsCtx.Provider>;
 };

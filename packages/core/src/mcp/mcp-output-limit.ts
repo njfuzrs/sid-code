@@ -34,9 +34,7 @@ const estimator = new TokenEstimator();
  * 非法值（非正整数）回退默认。
  */
 export function getMaxMcpOutputTokens(): number {
-  const raw =
-    process.env.SID_CODE_MAX_MCP_OUTPUT_TOKENS ??
-    process.env.MAX_MCP_OUTPUT_TOKENS;
+  const raw = process.env.SID_CODE_MAX_MCP_OUTPUT_TOKENS ?? process.env.MAX_MCP_OUTPUT_TOKENS;
   if (raw != null && raw !== "") {
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return Math.floor(n);

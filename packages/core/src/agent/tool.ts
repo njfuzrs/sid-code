@@ -8,12 +8,13 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { SubAgent } from "./sub-agent.ts";
-import { getActiveAgentTypes, getActiveAgentDefinitions, resolveAgent } from "./agent-definition.ts";
-import { getLogger } from "../debug/logger.ts";
 import {
-  createAgentTask,
-  failAgentTask,
-} from "../task/index.ts";
+  getActiveAgentTypes,
+  getActiveAgentDefinitions,
+  resolveAgent,
+} from "./agent-definition.ts";
+import { getLogger } from "../debug/logger.ts";
+import { createAgentTask, failAgentTask } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
 import {
@@ -39,13 +40,16 @@ const subAgentSchema = lazySchema(() => {
       .describe("子代理类型（见工具描述中列出的可用类型，省略时默认 general-purpose）"),
     description: z.string().describe("子任务的简短描述"),
     prompt: z.string().describe("给子代理的详细指令"),
-    run_in_background: z.boolean().optional().describe("是否后台执行（立即返回 task_id，完成后通知）"),
+    run_in_background: z
+      .boolean()
+      .optional()
+      .describe("是否后台执行（立即返回 task_id，完成后通知）"),
     model: z
       .string()
       .optional()
       .describe(
-        "覆盖子代理使用的模型（省略时按子代理类型的默认模型）。用于给重任务派更强模型、给轻任务派更省模型。"
-        + "必须是当前配置里可用的完整模型名（区分大小写），不要凭印象缩写或臆造名字；不确定就省略该参数。",
+        "覆盖子代理使用的模型（省略时按子代理类型的默认模型）。用于给重任务派更强模型、给轻任务派更省模型。" +
+          "必须是当前配置里可用的完整模型名（区分大小写），不要凭印象缩写或臆造名字；不确定就省略该参数。",
       ),
     cwd: z
       .string()
@@ -54,11 +58,15 @@ const subAgentSchema = lazySchema(() => {
     fork: z
       .boolean()
       .optional()
-      .describe("Fork 模式：让子代理继承当前对话的最近上下文（而非空上下文起步），适合『接着当前对话深入钻研某分支』的子任务。仅同步模式支持。"),
+      .describe(
+        "Fork 模式：让子代理继承当前对话的最近上下文（而非空上下文起步），适合『接着当前对话深入钻研某分支』的子任务。仅同步模式支持。",
+      ),
     isolation: z
       .enum(["worktree"])
       .optional()
-      .describe("隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。"),
+      .describe(
+        "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。",
+      ),
   });
 });
 
@@ -124,7 +132,10 @@ export class SubAgentTool implements Tool {
   private permissionChecker?: import("../permission/types.ts").Checker;
   /** 主对话上下文提供者（fork 模式用）。由主会话注入，返回主对话当前消息历史。
    *  未注入时 fork 模式降级为普通子代理（空上下文起步）。 */
-  private mainContextProvider?: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[];
+  private mainContextProvider?: () => {
+    role: string;
+    content: import("../llm/types.ts").ContentBlock[];
+  }[];
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = subAgentSchema();
@@ -153,7 +164,9 @@ export class SubAgentTool implements Tool {
   private static waiters: Array<() => void> = [];
 
   /** 解析子代理并发上限。导出 raw 入参便于测试（默认读 env）。 */
-  static resolveMaxConcurrent(raw: string | undefined = process.env.SID_SUBAGENT_MAX_CONCURRENT): number {
+  static resolveMaxConcurrent(
+    raw: string | undefined = process.env.SID_SUBAGENT_MAX_CONCURRENT,
+  ): number {
     if (raw === undefined || raw === "") return 3;
     const n = Number.parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 3;
@@ -230,7 +243,11 @@ export class SubAgentTool implements Tool {
   /** P2-10：主会话 id（由 App 注入），用于给子代理开 sidechain JSONL。未注入时不持久化。 */
   private parentSessionId?: string;
 
-  constructor(providerRegistry: ProviderRegistry, toolRegistry: ToolRegistry, hookSystem?: HookSystem) {
+  constructor(
+    providerRegistry: ProviderRegistry,
+    toolRegistry: ToolRegistry,
+    hookSystem?: HookSystem,
+  ) {
     this.providerRegistry = providerRegistry;
     this.toolRegistry = toolRegistry;
     this.hookSystem = hookSystem;
@@ -392,7 +409,10 @@ ${typeLines}
 
     const validTypes = getActiveAgentTypes();
     if (!validTypes.includes(params.type)) {
-      return { output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`, isError: true };
+      return {
+        output: `错误: 无效的子代理类型 "${params.type}"，可选: ${validTypes.join(", ")}`,
+        isError: true,
+      };
     }
 
     // model 白名单校验（与上面 type 校验同一范式：非法值当场退回可选清单，不透传给网关）。
@@ -410,8 +430,8 @@ ${typeLines}
       if (known.length > 0 && !known.includes(requested)) {
         return {
           output:
-            `错误: 模型 "${requested}" 不在可用模型列表中，可选: ${known.join(", ")}。\n`
-            + `请改用列表中的准确名称（区分大小写），或省略 model 参数以使用该子代理类型的默认模型。`,
+            `错误: 模型 "${requested}" 不在可用模型列表中，可选: ${known.join(", ")}。\n` +
+            `请改用列表中的准确名称（区分大小写），或省略 model 参数以使用该子代理类型的默认模型。`,
           isError: true,
         };
       }
@@ -460,7 +480,10 @@ ${typeLines}
         const isolated = buildAgentHookSystem(agentType, def.hooks);
         if (isolated) hookSystem = isolated;
       } catch (err: any) {
-        getLogger().warn("SUBAGENT", `Agent ${agentType} hooks 注册失败（回退共享 hookSystem）: ${err?.message ?? err}`);
+        getLogger().warn(
+          "SUBAGENT",
+          `Agent ${agentType} hooks 注册失败（回退共享 hookSystem）: ${err?.message ?? err}`,
+        );
       }
     }
 
@@ -470,13 +493,18 @@ ${typeLines}
     if (this.permissionChecker) {
       let checker = this.permissionChecker;
       const mode = def?.permissionMode;
-      const derivable = checker as { deriveWithPermissionMode?: (m: string) => import("../permission/types.ts").Checker };
+      const derivable = checker as {
+        deriveWithPermissionMode?: (m: string) => import("../permission/types.ts").Checker;
+      };
       if (mode && typeof derivable.deriveWithPermissionMode === "function") {
         try {
           checker = derivable.deriveWithPermissionMode(mode);
           getLogger().debug("SUBAGENT", `Agent ${agentType} 应用 permissionMode=${mode}`);
         } catch (err: any) {
-          getLogger().warn("SUBAGENT", `Agent ${agentType} permissionMode=${mode} 派生失败（回退共享 checker）: ${err?.message ?? err}`);
+          getLogger().warn(
+            "SUBAGENT",
+            `Agent ${agentType} permissionMode=${mode} 派生失败（回退共享 checker）: ${err?.message ?? err}`,
+          );
         }
       }
       subAgent.setPermissionChecker(checker);
@@ -486,15 +514,19 @@ ${typeLines}
   }
 
   /** 同步执行子代理 */
-  private async runSync(params: {
-    type: string;
-    description: string;
-    prompt: string;
-    fork?: boolean;
-    isolation?: "worktree";
-    model?: string;
-    cwd?: string;
-  }, signal?: AbortSignal, onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void): Promise<ToolResult> {
+  private async runSync(
+    params: {
+      type: string;
+      description: string;
+      prompt: string;
+      fork?: boolean;
+      isolation?: "worktree";
+      model?: string;
+      cwd?: string;
+    },
+    signal?: AbortSignal,
+    onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void,
+  ): Promise<ToolResult> {
     const log = getLogger();
 
     // 并发控制（G1/G5 修复）：超上限时排队等待 slot 而非拒绝；占位在 worktree 创建等
@@ -551,12 +583,17 @@ ${typeLines}
       subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
-      let forkMessages: { role: string; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
+      let forkMessages:
+        | { role: string; content: import("../llm/types.ts").ContentBlock[] }[]
+        | undefined;
       if (params.fork && this.mainContextProvider) {
         const { buildForkMessages } = await import("./fork.ts");
         const parentMessages = this.mainContextProvider();
         forkMessages = buildForkMessages(parentMessages, params.prompt) as typeof forkMessages;
-        log.info("SUBAGENT", `[fork] 继承主对话 ${parentMessages.length} 条消息，构建 ${forkMessages!.length} 条 fork 消息`);
+        log.info(
+          "SUBAGENT",
+          `[fork] 继承主对话 ${parentMessages.length} 条消息，构建 ${forkMessages!.length} 条 fork 消息`,
+        );
       }
 
       const result = await subAgent.execute(
@@ -619,13 +656,16 @@ ${typeLines}
   }
 
   /** 后台异步执行子代理 */
-  private async runAsync(params: {
-    type: string;
-    description: string;
-    prompt: string;
-    model?: string;
-    cwd?: string;
-  }, signal?: AbortSignal): Promise<ToolResult> {
+  private async runAsync(
+    params: {
+      type: string;
+      description: string;
+      prompt: string;
+      model?: string;
+      cwd?: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
     const log = getLogger();
 
     const { taskState, abortController } = createAgentTask({

@@ -79,11 +79,7 @@ export function findFirstVisible(offsets: number[], top: number): number {
 }
 
 /** 找到最后一个顶部 < bottom 的项 */
-export function findLastVisible(
-  offsets: number[],
-  bottom: number,
-  totalItems: number,
-): number {
+export function findLastVisible(offsets: number[], bottom: number, totalItems: number): number {
   let lo = 0;
   let hi = totalItems - 1;
   let ans = totalItems - 1;

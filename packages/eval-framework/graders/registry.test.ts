@@ -20,7 +20,10 @@ function fakeMeta(overrides: Partial<ProviderResult["meta"]> = {}): ProviderResu
   } as ProviderResult["meta"];
 }
 
-function fakeResult(output: string, metaOverrides: Partial<ProviderResult["meta"]> = {}): ProviderResult {
+function fakeResult(
+  output: string,
+  metaOverrides: Partial<ProviderResult["meta"]> = {},
+): ProviderResult {
   return {
     output,
     meta: fakeMeta(metaOverrides),
@@ -398,7 +401,10 @@ describe("T-11 Mandatory + Optional rubric 分级", () => {
       caseYaml: fakeCase({
         expected: { must_include_any_of: ["foo"], max_steps: 10 },
       }),
-      providerResult: fakeResult("含 foo 关键字的合理回答", { tools_used: ["read"], total_steps: 3 }),
+      providerResult: fakeResult("含 foo 关键字的合理回答", {
+        tools_used: ["read"],
+        total_steps: 3,
+      }),
       skipLlmJudge: true,
       judgeSamples: 1,
     });
@@ -568,7 +574,10 @@ new file
           apply_mode: "extract_files",
           verify_commands: [
             { cmd: "bun", args: ["hi.ts"], timeout_ms: 10000 }, // 围栏未剥则 SyntaxError
-            { cmd: "sh", args: ["-c", "grep -F '+ new line' bye.diff && ! grep -F '\\`\\`\\`' bye.diff"] },
+            {
+              cmd: "sh",
+              args: ["-c", "grep -F '+ new line' bye.diff && ! grep -F '\\`\\`\\`' bye.diff"],
+            },
           ],
         },
       }),

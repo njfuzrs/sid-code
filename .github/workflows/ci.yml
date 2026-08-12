@@ -2,7 +2,7 @@
 #
 # 为什么需要：在此之前仓库有 5 个 workflow，但**没有一个跑全量 bun test**
 #   · docs-lint.yml            只在 docs/ 改动时跑文档规则（现已删除）
-#   · provider-daily-canary.yml 定时任务，且只跑 tests/llm/vcr/ 子集
+#   · provider-daily-canary.yml 定时任务，且只跑 packages/core/tests/llm/vcr/ 子集
 #   · eval-pr-smoke.yml         只跑 5 个 P0 eval case
 #   · eval-weekly.yml / judge-calibration.yml  定时的评估任务
 # 于是 PR 阶段测试完全不设防，问题一路憋到 `./scripts/release.sh` 的发布前门禁才炸。
@@ -38,7 +38,7 @@ concurrency:
 jobs:
   test:
     # 多平台矩阵：三家对标项目（codex / opencode / gemini-cli）都至少覆盖 ubuntu + macOS。
-    # 内嵌 rg 这两个平台都已入库（vendor/ripgrep/15.1.0/rg-linux-x64 与 rg-darwin-arm64），
+    # 内嵌 rg 这两个平台都已入库（packages/core/vendor/ripgrep/15.1.0/rg-linux-x64 与 rg-darwin-arm64），
     # 所以 make build 的 fetch-ripgrep 步骤不需要联网。
     # Windows 未纳入：见 docs/bugfixes/todo/高级能力/Windows系统兼容性能力补齐/
     runs-on: ${{ matrix.os }}
@@ -120,6 +120,15 @@ jobs:
 
       - name: oxlint
         run: bun run lint
+
+      # P2-1：格式门禁。与 oxlint 同 job（都是几百毫秒的静态检查，见下方同款理由）。
+      #
+      # 为什么服务端也要有：pre-commit 装在本地且能被 --no-verify 跳过，而 formatter
+      # 的全部价值在于「所有人的 diff 里没有排版噪音」——只要有一个人绕过去，
+      # 后面每个碰到那个文件的人都会带上一次无关的重排。外部贡献者的编辑器配置更杂，
+      # 这道检查是让「格式统一」这件事不依赖任何人的本地设置。
+      - name: oxfmt
+        run: bun run format:check
 
       # P2-2 步骤6：包边界（shared(0) < tui-renderer(1) < core(2) < cli(3)）。
       # 与 lint 同 job：都是几百毫秒的静态检查，没必要各起一次 checkout + bun install。

@@ -209,7 +209,12 @@ export interface RuntimeHookConfig {
   source?: ConfigSource;
 }
 
-export type HookConfig = CommandHookConfig | UrlHookConfig | RuntimeHookConfig | PromptHookConfig | AgentHookConfig;
+export type HookConfig =
+  | CommandHookConfig
+  | UrlHookConfig
+  | RuntimeHookConfig
+  | PromptHookConfig
+  | AgentHookConfig;
 
 /** Hook 定义（配置文件中的一组 hook，带 matcher） */
 export interface HookDefinition {
@@ -786,7 +791,10 @@ export class AfterModelHookOutput extends DefaultHookOutput {
 }
 
 /** 根据事件名创建对应的 HookOutput 子类 */
-export function createHookOutput(eventName: HookEventName, data: Partial<HookOutput>): DefaultHookOutput {
+export function createHookOutput(
+  eventName: HookEventName,
+  data: Partial<HookOutput>,
+): DefaultHookOutput {
   switch (eventName) {
     case HookEventName.PreToolUse:
       return new PreToolUseHookOutput(data);
@@ -855,8 +863,8 @@ export interface AggregatedHookResult {
 export interface HarnessHookContext {
   /** Phase 0: 任务画像 */
   task_profile?: {
-    task_type?: string;       // "read_only" | "single_file_edit" | "multi_file_edit" | ...
-    risk_level?: string;      // "low" | "medium" | "high" | "critical"
+    task_type?: string; // "read_only" | "single_file_edit" | "multi_file_edit" | ...
+    risk_level?: string; // "low" | "medium" | "high" | "critical"
     estimated_files?: number;
     needs_verification?: boolean;
   };
@@ -869,8 +877,8 @@ export interface HarnessHookContext {
   /** Phase 2: 本轮上下文动作 */
   context_actions?: Array<{ action: string; reason: string }>;
   /** Phase 3: 运行时模式 */
-  runtime_mode?: string;      // "local-inline" | "managed-worktree" | "sandbox-remote"
-  runtime_id?: string;        // worktree/sandbox 实例 ID
+  runtime_mode?: string; // "local-inline" | "managed-worktree" | "sandbox-remote"
+  runtime_id?: string; // worktree/sandbox 实例 ID
   /** Phase 4: 候选并行 */
   candidate_id?: string;
   candidate_total?: number;
@@ -880,11 +888,11 @@ export interface HarnessHookContext {
 
 /** Harness 编辑元数据——附加在 PostToolUseInput 上（仅 edit/write 工具） */
 export interface HarnessEditMeta {
-  protocol?: string;            // "replace" | "hashline" | "hybrid"
+  protocol?: string; // "replace" | "hashline" | "hybrid"
   first_pass_success?: boolean;
   retry_count?: number;
-  match_strategy?: string;      // "exact" | "flexible" | "regex" | "fuzzy"
-  hashline_address?: string;    // hashline 地址（如 "42:k9f2"）
+  match_strategy?: string; // "exact" | "flexible" | "regex" | "fuzzy"
+  hashline_address?: string; // hashline 地址（如 "42:k9f2"）
 }
 
 /** Harness 会话级汇总——附加在 SessionEndInput 上 */

@@ -24,7 +24,10 @@ export function parseShellInput(input: string): string | null {
  * 该纯函数与 App 的执行闭包分离，便于锁定“用户输入必须生成 bash tool_use，
  * 不能再生成 /bash 斜杠命令”的契约。
  */
-export function buildInteractiveBashToolUse(command: string, id = "interactive-bash-test"): {
+export function buildInteractiveBashToolUse(
+  command: string,
+  id = "interactive-bash-test",
+): {
   type: "tool_use";
   id: string;
   name: "bash";

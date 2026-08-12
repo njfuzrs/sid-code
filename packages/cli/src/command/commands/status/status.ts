@@ -16,9 +16,7 @@ const mod: LocalCommandModule = {
 
     const effort = ctx.getEffortState?.();
     if (effort) {
-      const label = effort.isAuto
-        ? "auto"
-        : (effort.applied ?? effort.runtime ?? "auto");
+      const label = effort.isAuto ? "auto" : (effort.applied ?? effort.runtime ?? "auto");
       const support = effort.capability?.supportsEffort ? "" : "（当前模型不支持切换）";
       lines.push(`  推理强度: ${label}${support}`);
     }
@@ -59,7 +57,10 @@ const mod: LocalCommandModule = {
     try {
       const skills = ctx.ctxMgr.getInvokedSkills?.() ?? [];
       if (skills.length > 0) {
-        lines.push("", `  已激活 Skills: ${skills.length}（${skills.map((s) => s.name).join(", ")}）`);
+        lines.push(
+          "",
+          `  已激活 Skills: ${skills.length}（${skills.map((s) => s.name).join(", ")}）`,
+        );
       }
     } catch {
       // 忽略

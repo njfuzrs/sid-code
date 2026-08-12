@@ -168,9 +168,7 @@ export interface CategorizedSuggestion {
  * 当用户只输入 "/" 时，按分类展示所有命令：
  * 最近使用 → 内置命令 → Skills → 自定义命令
  */
-export function getCategorizedCommands(
-  commands: UnifiedCommand[],
-): CategorizedSuggestion[] {
+export function getCategorizedCommands(commands: UnifiedCommand[]): CategorizedSuggestion[] {
   const visible = buildSearchItems(commands);
   const results: CategorizedSuggestion[] = [];
 
@@ -207,8 +205,7 @@ export function getCategorizedCommands(
   const custom = visible
     .filter(
       (c) =>
-        (c.command.source === "user" || c.command.source === "project") &&
-        !recentNames.has(c.name),
+        (c.command.source === "user" || c.command.source === "project") && !recentNames.has(c.name),
     )
     .sort((a, b) => a.name.localeCompare(b.name));
   if (custom.length > 0) {
@@ -314,9 +311,7 @@ export function rankCommandInfos(
     return {
       label: `/${item.name}`,
       value: `/${item.name} `,
-      description: matchedAlias
-        ? `(${matchedAlias}) ${item.description}`
-        : item.description,
+      description: matchedAlias ? `(${matchedAlias}) ${item.description}` : item.description,
       matchedAlias,
       requiresArgs: item.requiresArgs,
     };

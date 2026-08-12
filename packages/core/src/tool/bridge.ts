@@ -95,12 +95,17 @@ export function toLegacyTool<Input = unknown, Output = string>(
   if (tool.alwaysLoad) legacy.alwaysLoad = tool.alwaysLoad;
   if (tool.interruptBehavior) legacy.interruptBehavior = tool.interruptBehavior;
   if (tool.maxResultSizeChars !== undefined) legacy.maxResultSizeChars = tool.maxResultSizeChars;
-  if (tool.toAutoClassifierInput) legacy.toAutoClassifierInput = tool.toAutoClassifierInput.bind(tool);
-  if (tool.backfillObservableInput) legacy.backfillObservableInput = tool.backfillObservableInput.bind(tool);
+  if (tool.toAutoClassifierInput)
+    legacy.toAutoClassifierInput = tool.toAutoClassifierInput.bind(tool);
+  if (tool.backfillObservableInput)
+    legacy.backfillObservableInput = tool.backfillObservableInput.bind(tool);
 
   // 权限检查透传
   if (tool.checkPermissions) {
-    legacy.checkPermissions = async (input: unknown, context: ToolUseContext): Promise<PermissionResult> => {
+    legacy.checkPermissions = async (
+      input: unknown,
+      context: ToolUseContext,
+    ): Promise<PermissionResult> => {
       return tool.checkPermissions!(input as Input, context);
     };
   }

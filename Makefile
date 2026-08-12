@@ -91,11 +91,11 @@ test:
 # Provider 层一致性测试快速入口（方案 §8.3）。
 # make test 已通过 bun test 全量覆盖这些用例，此 target 用于聚焦 provider 层回归。
 test-providers:
-	$(BUN) test tests/llm/provider-conformance.test.ts \
-		tests/llm/provider-anthropic-conformance.test.ts \
-		tests/llm/provider-protocol-contract.test.ts \
-		tests/llm/openai-protocol-edge.test.ts \
-		tests/llm/fallback.test.ts
+	$(BUN) test packages/core/tests/llm/provider-conformance.test.ts \
+		packages/core/tests/llm/provider-anthropic-conformance.test.ts \
+		packages/core/tests/llm/provider-protocol-contract.test.ts \
+		packages/core/tests/llm/openai-protocol-edge.test.ts \
+		packages/core/tests/llm/fallback.test.ts
 
 clean:
 	rm -f $(BINARY)

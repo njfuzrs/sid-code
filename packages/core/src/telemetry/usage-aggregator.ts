@@ -127,8 +127,15 @@ function isoWeekNumber(date: Date): { isoYear: number; isoWeek: number } {
 /** 空模型统计 */
 function emptyModelStats(): ModelCacheStats {
   return {
-    promptTotal: 0, cacheHit: 0, cacheWrite: 0, uncachedInput: 0,
-    output: 0, costUSD: 0, savingsUSD: 0, sessions: 0, hosts: [],
+    promptTotal: 0,
+    cacheHit: 0,
+    cacheWrite: 0,
+    uncachedInput: 0,
+    output: 0,
+    costUSD: 0,
+    savingsUSD: 0,
+    sessions: 0,
+    hosts: [],
   };
 }
 
@@ -246,7 +253,9 @@ export function aggregateUsage(opts: AggregateOptions = {}): PeriodCacheStats[] 
   // 模型过滤（精确或前缀）
   if (opts.model) {
     const q = opts.model;
-    entries = entries.filter((e) => e.model === q || e.model.startsWith(q) || q.startsWith(e.model));
+    entries = entries.filter(
+      (e) => e.model === q || e.model.startsWith(q) || q.startsWith(e.model),
+    );
   }
 
   // 时间窗过滤
@@ -284,7 +293,9 @@ export function aggregateOverall(opts: AggregateOptions = {}): PeriodCacheStats 
   let entries = dedupeBySession(readUsageLedger(opts.maxEntries));
   if (opts.model) {
     const q = opts.model;
-    entries = entries.filter((e) => e.model === q || e.model.startsWith(q) || q.startsWith(e.model));
+    entries = entries.filter(
+      (e) => e.model === q || e.model.startsWith(q) || q.startsWith(e.model),
+    );
   }
   if (opts.sinceDays !== undefined) {
     const cutoff = now - opts.sinceDays * 24 * 60 * 60;

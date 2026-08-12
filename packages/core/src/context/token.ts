@@ -6,7 +6,7 @@
 import { memoizeWithLRU } from "@sid-code/shared/utils/memoize-lru.ts";
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高,取 0.20 折中 */
-const ASCII_TOKENS_PER_CHAR = 0.20;
+const ASCII_TOKENS_PER_CHAR = 0.2;
 /** 非 ASCII 字符（中文/日文/韩文等）：取 0.65 tok/字符。
  *
  *  口径权衡（9.4）：DeepSeek 官方 tokenizer 实测中文 ≈0.52，但 Claude/Anthropic tokenizer
@@ -53,9 +53,7 @@ function computeTextTokens(text: string): number {
 
   let tokens = 0;
   for (let i = 0; i < text.length; i++) {
-    tokens += text.charCodeAt(i) <= 127
-      ? ASCII_TOKENS_PER_CHAR
-      : NON_ASCII_TOKENS_PER_CHAR;
+    tokens += text.charCodeAt(i) <= 127 ? ASCII_TOKENS_PER_CHAR : NON_ASCII_TOKENS_PER_CHAR;
   }
 
   return Math.ceil(tokens);
@@ -66,11 +64,7 @@ function computeTextTokens(text: string): number {
  * 短会话也不会无限增长（max=200，对齐 spec 2.1.3）。
  * 只缓存中短文本——超长文本作为 key 本身昂贵且很少重复。
  */
-const memoizedTextTokens = memoizeWithLRU(
-  computeTextTokens,
-  (text: string) => text,
-  200,
-);
+const memoizedTextTokens = memoizeWithLRU(computeTextTokens, (text: string) => text, 200);
 
 /**
  * 估算文本的 token 数

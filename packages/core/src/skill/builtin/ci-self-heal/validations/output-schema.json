@@ -3,13 +3,7 @@
   "title": "ci-self-heal Skill 输出契约",
   "description": "ci-self-heal Skill 输出 markdown 报告需按本 schema 描述的字段顺序与字段集. 不直接做 JSON-Schema 校验 (输出本身是 markdown), 但用于 SDK 形态 Step 7 边界回归 + 单测 prompt 一致性断言.",
   "type": "object",
-  "required": [
-    "failure_class",
-    "confidence",
-    "verdict",
-    "root_cause_hypotheses",
-    "related_files"
-  ],
+  "required": ["failure_class", "confidence", "verdict", "root_cause_hypotheses", "related_files"],
   "additionalProperties": false,
   "properties": {
     "failure_class": {
@@ -34,12 +28,7 @@
     },
     "verdict": {
       "type": "string",
-      "enum": [
-        "likely_pr_caused",
-        "likely_flaky",
-        "likely_environment",
-        "needs_human"
-      ],
+      "enum": ["likely_pr_caused", "likely_flaky", "likely_environment", "needs_human"],
       "description": "根据 PR diff 关联 + 启发式信号决定; LLM 不确定时必须返回 needs_human (RL-007 守护)"
     },
     "root_cause_hypotheses": {

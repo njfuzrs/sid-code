@@ -69,7 +69,11 @@ export function deleteRange(buf: VimBuffer, target: Pos, inclusive: boolean): Op
   const merged = first.slice(0, a.col) + last.slice(b.col);
   lines.splice(a.row, b.row - a.row + 1, merged);
   const col = Math.min(a.col, Math.max(0, merged.length - 1));
-  return { buffer: { lines, cursorRow: a.row, cursorCol: col }, yanked: captured.join("\n"), linewise: false };
+  return {
+    buffer: { lines, cursorRow: a.row, cursorCol: col },
+    yanked: captured.join("\n"),
+    linewise: false,
+  };
 }
 
 /** 复制一个 motion 区间（不改缓冲，仅捕获 yanked + 定位光标到区间起点）。 */
@@ -79,12 +83,20 @@ export function yankRange(buf: VimBuffer, target: Pos, inclusive: boolean): OpRe
   const b = inclusive ? { row: b0.row, col: b0.col + 1 } : b0;
   if (a.row === b.row) {
     const line = buf.lines[a.row] ?? "";
-    return { buffer: { ...buf, cursorRow: a.row, cursorCol: a.col }, yanked: sliceLine(line, a.col, b.col), linewise: false };
+    return {
+      buffer: { ...buf, cursorRow: a.row, cursorCol: a.col },
+      yanked: sliceLine(line, a.col, b.col),
+      linewise: false,
+    };
   }
   const captured: string[] = [(buf.lines[a.row] ?? "").slice(a.col)];
   for (let r = a.row + 1; r < b.row; r++) captured.push(buf.lines[r] ?? "");
   captured.push((buf.lines[b.row] ?? "").slice(0, b.col));
-  return { buffer: { ...buf, cursorRow: a.row, cursorCol: a.col }, yanked: captured.join("\n"), linewise: false };
+  return {
+    buffer: { ...buf, cursorRow: a.row, cursorCol: a.col },
+    yanked: captured.join("\n"),
+    linewise: false,
+  };
 }
 
 /** 删除一个 text object span（行内）。 */
@@ -100,7 +112,11 @@ export function deleteSpan(buf: VimBuffer, span: Span): OpResult {
 /** 复制一个 text object span。 */
 export function yankSpan(buf: VimBuffer, span: Span): OpResult {
   const line = buf.lines[span.row] ?? "";
-  return { buffer: { ...buf, cursorRow: span.row, cursorCol: span.start }, yanked: sliceLine(line, span.start, span.end), linewise: false };
+  return {
+    buffer: { ...buf, cursorRow: span.row, cursorCol: span.start },
+    yanked: sliceLine(line, span.start, span.end),
+    linewise: false,
+  };
 }
 
 /** dd：删 count 整行，返回整行文本（linewise）。 */
@@ -116,7 +132,11 @@ export function deleteLines(buf: VimBuffer, count: number): OpResult {
   const line = lines[row] ?? "";
   let col = 0;
   while (col < line.length && /\s/.test(line[col])) col++;
-  return { buffer: { lines, cursorRow: row, cursorCol: Math.min(col, Math.max(0, line.length - 1)) }, yanked: captured, linewise: true };
+  return {
+    buffer: { lines, cursorRow: row, cursorCol: Math.min(col, Math.max(0, line.length - 1)) },
+    yanked: captured,
+    linewise: true,
+  };
 }
 
 /** yy：复制 count 整行（linewise）。 */
@@ -137,7 +157,12 @@ export function deleteToLineEnd(buf: VimBuffer): OpResult {
 }
 
 /** p / P：粘贴寄存器。after=true 为 p（光标后/下行），false 为 P（光标前/上行）。 */
-export function paste(buf: VimBuffer, register: string, linewise: boolean, after: boolean): VimBuffer {
+export function paste(
+  buf: VimBuffer,
+  register: string,
+  linewise: boolean,
+  after: boolean,
+): VimBuffer {
   if (!register) return buf;
   const lines = [...buf.lines];
   if (linewise) {
@@ -156,7 +181,11 @@ export function paste(buf: VimBuffer, register: string, linewise: boolean, after
     const pieces = register.split("\n");
     const newLines = [head + pieces[0], ...pieces.slice(1, -1), pieces[pieces.length - 1] + tail];
     lines.splice(buf.cursorRow, 1, ...newLines);
-    return { lines, cursorRow: buf.cursorRow + pieces.length - 1, cursorCol: Math.max(0, pieces[pieces.length - 1].length) };
+    return {
+      lines,
+      cursorRow: buf.cursorRow + pieces.length - 1,
+      cursorCol: Math.max(0, pieces[pieces.length - 1].length),
+    };
   }
   lines[buf.cursorRow] = line.slice(0, col) + register + line.slice(col);
   return { lines, cursorRow: buf.cursorRow, cursorCol: col + register.length - 1 };
@@ -178,7 +207,11 @@ export function joinLines(buf: VimBuffer, count: number): VimBuffer {
     lines.splice(buf.cursorRow + 1, 1);
   }
   void times;
-  return { lines, cursorRow: buf.cursorRow, cursorCol: Math.min(cursorCol, Math.max(0, (lines[buf.cursorRow] ?? "").length - 1)) };
+  return {
+    lines,
+    cursorRow: buf.cursorRow,
+    cursorCol: Math.min(cursorCol, Math.max(0, (lines[buf.cursorRow] ?? "").length - 1)),
+  };
 }
 
 /** >> / <<：对 count 行做缩进/反缩进。indent=true 加一级，false 减一级。 */
@@ -208,5 +241,9 @@ export function toggleCase(buf: VimBuffer, count: number): VimBuffer {
   }
   const lines = [...buf.lines];
   lines[buf.cursorRow] = chars.join("");
-  return { lines, cursorRow: buf.cursorRow, cursorCol: Math.min(col, Math.max(0, lines[buf.cursorRow].length - 1)) };
+  return {
+    lines,
+    cursorRow: buf.cursorRow,
+    cursorCol: Math.min(col, Math.max(0, lines[buf.cursorRow].length - 1)),
+  };
 }

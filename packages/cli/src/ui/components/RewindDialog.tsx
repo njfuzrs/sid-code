@@ -53,7 +53,11 @@ function formatRelative(ts: number, now: number): string {
   return `${hr}h 前`;
 }
 
-export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPoints, onRewind }) => {
+export const RewindDialog: React.FC<RewindDialogProps> = ({
+  onClose,
+  getRewindPoints,
+  onRewind,
+}) => {
   const points = getRewindPoints?.() ?? [];
   // 阶段：选点 → 选模式 → 回显结果。
   const [selectedPoint, setSelectedPoint] = useState<RewindPointInfo | null>(null);
@@ -78,8 +82,16 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
   // 无回退点：直接说明并允许 Esc 关闭。
   if (points.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>会话回退</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          会话回退
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>暂无可回退的历史轮次。</Text>
         </Box>
@@ -96,21 +108,30 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
     const touchedCode = result.mode === "code" || result.mode === "conversation-and-code";
     const touchedConversation = result.mode !== "code";
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.status.success} paddingX={1} paddingY={0}>
-        <Text bold color={theme.status.success}>已回退（{modeText}）</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.status.success}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.status.success}>
+          已回退（{modeText}）
+        </Text>
         <Box marginTop={1} flexDirection="column">
           {touchedConversation && (
             <Text color={theme.text.secondary}>丢弃了 {result.messagesDropped} 条消息</Text>
           )}
-          {touchedCode && (
-            result.fileRestoreSkipped
-              ? (
-                <Text color={theme.status.warning}>
-                  {touchedConversation ? "无文件快照可回滚（仅回退了对话）" : "无文件快照可回滚（未做任何改动）"}
-                </Text>
-              )
-              : <Text color={theme.text.secondary}>回滚了 {result.filesRestored} 个文件</Text>
-          )}
+          {touchedCode &&
+            (result.fileRestoreSkipped ? (
+              <Text color={theme.status.warning}>
+                {touchedConversation
+                  ? "无文件快照可回滚（仅回退了对话）"
+                  : "无文件快照可回滚（未做任何改动）"}
+              </Text>
+            ) : (
+              <Text color={theme.text.secondary}>回滚了 {result.filesRestored} 个文件</Text>
+            ))}
         </Box>
         <Box marginTop={1}>
           <Text italic>Esc 关闭</Text>
@@ -128,18 +149,25 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
         value: "code",
         key: "code-only",
         label: "仅代码",
-        desc: selectedPoint.hasSnapshot ? "只把文件回滚到该轮快照，保留对话" : "该轮无文件快照，无可回滚内容",
+        desc: selectedPoint.hasSnapshot
+          ? "只把文件回滚到该轮快照，保留对话"
+          : "该轮无文件快照，无可回滚内容",
       },
       { value: "conversation", key: "conv", label: "仅对话", desc: "截断对话到该轮之前，不动文件" },
       {
         value: "conversation-and-code",
         key: "both",
         label: "对话 + 代码",
-        desc: selectedPoint.hasSnapshot ? "同时把文件回滚到该轮快照" : "该轮无文件快照，将仅回退对话",
+        desc: selectedPoint.hasSnapshot
+          ? "同时把文件回滚到该轮快照"
+          : "该轮无文件快照，将仅回退对话",
       },
     ];
     const handleModeSelect = async (mode: ModeValue) => {
-      if (!onRewind) { onClose(); return; }
+      if (!onRewind) {
+        onClose();
+        return;
+      }
       setBusy(true);
       try {
         const r = await onRewind(selectedPoint.id, mode);
@@ -152,8 +180,16 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
       }
     };
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>回退范围</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          回退范围
+        </Text>
         <Text color={theme.text.secondary} wrap="truncate-end">
           目标轮次: {selectedPoint.inputPreview || "(空输入)"}
         </Text>
@@ -169,7 +205,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
             renderItem={(item, { isSelected }) => (
               <Box>
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{item.label}</Text>
-                <Text color={theme.text.secondary}>  {item.desc}</Text>
+                <Text color={theme.text.secondary}> {item.desc}</Text>
               </Box>
             )}
           />
@@ -192,8 +228,16 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
     if (p) setSelectedPoint(p);
   };
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>会话回退</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        会话回退
+      </Text>
       <Text color={theme.text.secondary}>选择回退到哪一轮之前（最新在上）</Text>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<number, PointItem>
@@ -211,7 +255,7 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({ onClose, getRewindPo
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary} wrap="truncate-end">
                   {p.inputPreview || "(空输入)"}
                 </Text>
-                <Text color={theme.text.secondary}>  {formatRelative(p.timestamp, now)}</Text>
+                <Text color={theme.text.secondary}> {formatRelative(p.timestamp, now)}</Text>
                 {p.hasSnapshot && <Text color={theme.text.secondary}> · 有快照</Text>}
               </Box>
             );

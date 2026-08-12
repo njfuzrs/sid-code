@@ -44,7 +44,10 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
   let startIdx = 0;
   if (total > MAX_VISIBLE) {
     // 让选中项尽量在中间
-    startIdx = Math.max(0, Math.min(activeIndex - Math.floor(MAX_VISIBLE / 2), total - MAX_VISIBLE));
+    startIdx = Math.max(
+      0,
+      Math.min(activeIndex - Math.floor(MAX_VISIBLE / 2), total - MAX_VISIBLE),
+    );
   }
   const endIdx = Math.min(startIdx + MAX_VISIBLE, total);
   const visible = suggestions.slice(startIdx, endIdx);
@@ -97,7 +100,10 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
       })}
       {total > MAX_VISIBLE && (
         <Box>
-          <Text> ({total} 条结果，显示 {startIdx + 1}-{endIdx})</Text>
+          <Text>
+            {" "}
+            ({total} 条结果，显示 {startIdx + 1}-{endIdx})
+          </Text>
         </Box>
       )}
     </Box>

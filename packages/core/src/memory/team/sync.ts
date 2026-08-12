@@ -111,7 +111,10 @@ async function readEntries(
       const st = await stat(filePath);
       if (!st.isFile()) continue;
       if (st.size > MAX_FILE_SIZE_BYTES) {
-        getLogger().warn("TEAMMEM", `跳过超大记忆文件 ${filename} (${st.size} > ${MAX_FILE_SIZE_BYTES}B)`);
+        getLogger().warn(
+          "TEAMMEM",
+          `跳过超大记忆文件 ${filename} (${st.size} > ${MAX_FILE_SIZE_BYTES}B)`,
+        );
         continue;
       }
       const content = await readFile(filePath, "utf8");
@@ -178,10 +181,18 @@ async function deleteEntry(dir: string, key: string): Promise<void> {
  *
  * 幂等：内容已一致时不读写、只刷新 manifest。
  */
-export async function syncTeamMemory(opts: TeamMemoryOptions, cwd: string = process.cwd()): Promise<TeamMemorySyncResult> {
+export async function syncTeamMemory(
+  opts: TeamMemoryOptions,
+  cwd: string = process.cwd(),
+): Promise<TeamMemorySyncResult> {
   const log = getLogger();
   const empty: TeamMemorySyncResult = {
-    success: false, pulled: 0, pushed: 0, deleted: 0, conflicts: 0, skippedSecrets: [],
+    success: false,
+    pulled: 0,
+    pushed: 0,
+    deleted: 0,
+    conflicts: 0,
+    skippedSecrets: [],
   };
 
   if (!opts?.enabled) {
@@ -211,7 +222,10 @@ export async function syncTeamMemory(opts: TeamMemoryOptions, cwd: string = proc
       ...Object.keys(base),
     ]);
 
-    let pulled = 0, pushed = 0, deleted = 0, conflicts = 0;
+    let pulled = 0,
+      pushed = 0,
+      deleted = 0,
+      conflicts = 0;
     const nextManifest: SyncManifest = {};
 
     for (const key of allKeys) {
@@ -327,10 +341,16 @@ export async function syncTeamMemory(opts: TeamMemoryOptions, cwd: string = proc
 
     if (skippedSecrets.length > 0) {
       const labels = Array.from(new Set(skippedSecrets.map((s) => s.label))).join(", ");
-      log.warn("TEAMMEM", `${skippedSecrets.length} 个文件含 secret(${labels})，已跳过同步（未外泄到共享目录）`);
+      log.warn(
+        "TEAMMEM",
+        `${skippedSecrets.length} 个文件含 secret(${labels})，已跳过同步（未外泄到共享目录）`,
+      );
     }
     if (pulled || pushed || deleted || conflicts) {
-      log.info("TEAMMEM", `同步完成：拉 ${pulled} / 推 ${pushed} / 删 ${deleted} / 冲突 ${conflicts}`);
+      log.info(
+        "TEAMMEM",
+        `同步完成：拉 ${pulled} / 推 ${pushed} / 删 ${deleted} / 冲突 ${conflicts}`,
+      );
     }
 
     return { success: true, pulled, pushed, deleted, conflicts, skippedSecrets };
@@ -341,12 +361,18 @@ export async function syncTeamMemory(opts: TeamMemoryOptions, cwd: string = proc
 }
 
 /** 仅拉取（启动时初始 pull 的语义包装，复用全量同步） */
-export async function pullTeamMemory(opts: TeamMemoryOptions, cwd?: string): Promise<TeamMemorySyncResult> {
+export async function pullTeamMemory(
+  opts: TeamMemoryOptions,
+  cwd?: string,
+): Promise<TeamMemorySyncResult> {
   return syncTeamMemory(opts, cwd);
 }
 
 /** 仅推送语义包装（watcher debounce 后调用，复用全量同步保证一致性） */
-export async function pushTeamMemory(opts: TeamMemoryOptions, cwd?: string): Promise<TeamMemorySyncResult> {
+export async function pushTeamMemory(
+  opts: TeamMemoryOptions,
+  cwd?: string,
+): Promise<TeamMemorySyncResult> {
   return syncTeamMemory(opts, cwd);
 }
 

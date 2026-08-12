@@ -118,6 +118,44 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 配置加载时会做环境变量展开。用户级 `settings.json` 不进仓库，但也建议同样处理。
 :::
 
+### 完整模板与三个容易踩的点
+
+一份带远程 server 示例的完整模板：
+
+```json
+{
+  "mcpServers": {
+    "tavily": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@latest"],
+      "env": {
+        "TAVILY_API_KEY": "tvly-dev-REPLACE_WITH_YOUR_KEY"
+      }
+    },
+    "example-remote": {
+      "transport": "http",
+      "url": "https://mcp.example.com/v1",
+      "headers": {
+        "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}"
+      },
+      "disabled": true
+    }
+  }
+}
+```
+
+三个只有读过源码才知道的坑：
+
+- **`env` 的值不做 `${VAR}` 展开**，只有 `command` / `args` / `url` / `headers` 会展开
+  （见 `packages/core/src/mcp/env-expansion.ts` 的 `expandEnvVars`）。上面例子里
+  `TAVILY_API_KEY` 直接写死是因为它展开不了，真实使用时建议按下一条处理。
+- **推荐做法是删掉 `env` 块，改在 shell 里 `export TAVILY_API_KEY=...`**——stdio
+  子进程会继承父进程的全部环境变量（`packages/core/src/mcp/transport.ts:62`
+  的 `{ ...process.env, ...env }`），照样能拿到，不用把 key 落进配置文件。
+- **远程服务器的凭据用 `headers` 里的 `${VAR}`**，因为 `headers` 会展开——不必把
+  token 明文写进 `.mcp.json` 或落到磁盘上。
+
 ## 四层作用域与优先级
 
 | scope | 位置 | 谁能看到 |

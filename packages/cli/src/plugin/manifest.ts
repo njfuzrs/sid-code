@@ -7,11 +7,7 @@ import { readFile } from "fs/promises";
 import { join, isAbsolute } from "path";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import type { HooksConfig } from "@sid-code/core/config/config.ts";
-import type {
-  PluginManifest,
-  LoadedPlugin,
-  PluginError,
-} from "./types.ts";
+import type { PluginManifest, LoadedPlugin, PluginError } from "./types.ts";
 import { validateManifest } from "./validate.ts";
 import { buildPluginId } from "./identifier.ts";
 
@@ -136,7 +132,7 @@ async function loadHooksConfig(
     const raw = await readFile(hooksPath, "utf-8");
     const parsed = JSON.parse(raw);
     // 支持 { "hooks": {...} } 或直接 { eventName: [...] }
-    const hooks = (parsed && typeof parsed === "object" && parsed.hooks) ? parsed.hooks : parsed;
+    const hooks = parsed && typeof parsed === "object" && parsed.hooks ? parsed.hooks : parsed;
     if (!hooks || typeof hooks !== "object") {
       errors.push({ type: "hook-load-failed", source, error: "hooks 配置必须是对象" });
       return undefined;

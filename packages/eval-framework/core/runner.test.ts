@@ -15,7 +15,13 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { runProvider, runProviderOnce, isRetryableError, aggregateSamples, type ProviderDef } from "./runner.ts";
+import {
+  runProvider,
+  runProviderOnce,
+  isRetryableError,
+  aggregateSamples,
+  type ProviderDef,
+} from "./runner.ts";
 import type { DimScore } from "./judge.ts";
 
 const FAKE_SCRIPT = resolve(import.meta.dir, "../providers/_test_fixtures/fake-provider.ts");
@@ -143,7 +149,8 @@ describe("isRetryableError - 真实匹配", () => {
     // 旧实现扫整个 stdout → 任何讨论 HTTP 状态码的回答都会被误判为可重试错误，
     // 触发无声 retry，最后一次 attempt 的结果覆盖前一次（污染数据）。
     // 新实现：只看 stderr 和 output 的 [ERROR]/[TIMEOUT] 前缀块。
-    const agentAnswer = "HTTP 502 是 Bad Gateway 错误，常见于 nginx 反向代理。如果遇到 429 Too Many Requests，应该退避重试。";
+    const agentAnswer =
+      "HTTP 502 是 Bad Gateway 错误，常见于 nginx 反向代理。如果遇到 429 Too Many Requests，应该退避重试。";
     expect(isRetryableError(agentAnswer, "")).toBe(false);
   });
 
@@ -173,7 +180,7 @@ describe("aggregateSamples - 多次采样每维度中位数", () => {
 
   test("3 次采样：每维度独立取中位数（rubric 跳变不污染 anchor）", () => {
     const samples = [
-      { anchor_hit: dim(1.0), rubric_score: dim(0) },     // rubric 异常 0
+      { anchor_hit: dim(1.0), rubric_score: dim(0) }, // rubric 异常 0
       { anchor_hit: dim(1.0), rubric_score: dim(1.0) },
       { anchor_hit: dim(1.0), rubric_score: dim(0.95) },
     ];

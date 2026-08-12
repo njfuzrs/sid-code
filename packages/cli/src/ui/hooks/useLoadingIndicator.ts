@@ -10,7 +10,11 @@
 import { useState, useEffect, useRef } from "react";
 import { StreamingState } from "../types.ts";
 import { pickSpinnerVerb } from "../spinnerVerbs.ts";
-import { CONNECTING_PHRASE, CONTINUATION_PHRASE, pickSlowHint } from "../constants/loading-phrases.ts";
+import {
+  CONNECTING_PHRASE,
+  CONTINUATION_PHRASE,
+  pickSlowHint,
+} from "../constants/loading-phrases.ts";
 
 /** 短语切换间隔（毫秒） */
 const PHRASE_INTERVAL = 4000;
@@ -53,9 +57,7 @@ export function useLoadingIndicator({
   // 静默时长：距上次「检测到模型产出」的秒数。token 在流就归零，
   // 只有真正卡住（一段时间零产出）才会累积上去 → 作为慢提示的准确信号。
   const [silenceSec, setSilenceSec] = useState(0);
-  const [currentPhrase, setCurrentPhrase] = useState<string>(() =>
-    pickSpinnerVerb(),
-  );
+  const [currentPhrase, setCurrentPhrase] = useState<string>(() => pickSpinnerVerb());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const phraseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -80,11 +82,11 @@ export function useLoadingIndicator({
   useEffect(() => {
     if (isActive) {
       timerRef.current = setInterval(() => {
-        setElapsedTime(t => t + 1);
+        setElapsedTime((t) => t + 1);
         // 工具执行期间冻结静默计时——避免长工具（git clone / 测试 / sub-agent）的
         // 执行耗时被算成「静默」，导致工具结束进入下一步时瞬间误报慢。
         if (!toolActiveRef.current) {
-          setSilenceSec(t => t + 1);
+          setSilenceSec((t) => t + 1);
         }
       }, 1000);
     } else {
@@ -122,11 +124,9 @@ export function useLoadingIndicator({
   // Connecting → Responding 的内部切换不归零（保持连续计时，根治盲区 2）。
   useEffect(() => {
     const prev = prevStateRef.current;
-    const wasActive =
-      prev === StreamingState.Connecting || prev === StreamingState.Responding;
+    const wasActive = prev === StreamingState.Connecting || prev === StreamingState.Responding;
     const nowActive =
-      streamingState === StreamingState.Connecting ||
-      streamingState === StreamingState.Responding;
+      streamingState === StreamingState.Connecting || streamingState === StreamingState.Responding;
     if (!wasActive && nowActive) {
       // 上升沿：回车进入 Connecting（或极快直达 Responding）。
       setElapsedTime(0);
@@ -141,7 +141,7 @@ export function useLoadingIndicator({
   useEffect(() => {
     if (isResponding && !toolName) {
       phraseTimerRef.current = setInterval(() => {
-        setCurrentPhrase(prev => pickSpinnerVerb(prev));
+        setCurrentPhrase((prev) => pickSpinnerVerb(prev));
       }, PHRASE_INTERVAL);
     } else {
       if (phraseTimerRef.current) {
@@ -172,12 +172,12 @@ export function useLoadingIndicator({
       setSilenceSec(0);
       // P2-2：换工具/工具结束也重选 spinner 动词。否则工具结束回到无工具等待期时
       // 会沿用上一个动词（仅计时归零、动词没换），观感不连贯。
-      setCurrentPhrase(prev => pickSpinnerVerb(prev));
+      setCurrentPhrase((prev) => pickSpinnerVerb(prev));
       prevToolRef.current = toolName ?? null;
     }
     if (hasTool) {
       toolTimerRef.current = setInterval(() => {
-        setToolElapsedTime(t => t + 1);
+        setToolElapsedTime((t) => t + 1);
       }, 1000);
     } else {
       if (toolTimerRef.current) {
@@ -207,10 +207,7 @@ export function useLoadingIndicator({
   // 慢提示：仅在「连接中」或「流式无工具」时给（工具执行有自己的耗时显示，不重复打扰）。
   // 关键——用「静默时长」silenceSec 而非整轮 elapsedTime：模型在持续产出（含思考）时
   // silenceSec 一直归零，绝不报慢；只有真正一段时间收不到任何输出（疑似卡住）才提示。
-  const slowHint =
-    isConnecting || (isResponding && !toolName)
-      ? pickSlowHint(silenceSec)
-      : null;
+  const slowHint = isConnecting || (isResponding && !toolName) ? pickSlowHint(silenceSec) : null;
 
   return {
     elapsedTime,

@@ -88,8 +88,7 @@ const ruleE14: LintRule = {
           rule: this.id,
           severity: "warn",
           file: `packages/core/src/skill/builtin/${skillName}/SKILL.md`,
-          message:
-            'SKILL.md 缺 Known Limitations 段（M0 阶段允许 warn，S3+ 必须有）',
+          message: "SKILL.md 缺 Known Limitations 段（M0 阶段允许 warn，S3+ 必须有）",
         });
       }
     }
@@ -134,7 +133,10 @@ const ruleP11: LintRule = {
       let body = "";
       try {
         const { execSync } = require("node:child_process") as typeof import("node:child_process");
-        files = execSync(`git show --pretty=format: --name-only ${sha}`, { cwd: ROOT, encoding: "utf-8" })
+        files = execSync(`git show --pretty=format: --name-only ${sha}`, {
+          cwd: ROOT,
+          encoding: "utf-8",
+        })
           .trim()
           .split("\n")
           .filter(Boolean);
@@ -188,9 +190,7 @@ function main(): number {
     const findings = rule.run();
     allFindings.push(...findings);
     const passEmoji = findings.length === 0 ? "✅" : "❌";
-    console.log(
-      `${passEmoji} ${rule.id} ${rule.description} —— ${findings.length} finding`,
-    );
+    console.log(`${passEmoji} ${rule.id} ${rule.description} —— ${findings.length} finding`);
     for (const f of findings) {
       const sev = f.severity === "error" ? "ERR " : "WARN";
       console.log(`   [${sev}] ${f.file}: ${f.message}`);

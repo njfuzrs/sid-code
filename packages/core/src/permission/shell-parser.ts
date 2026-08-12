@@ -179,8 +179,8 @@ const SENSITIVE_REDIRECT_PATHS = [
   /^\/var\/log\//,
   /^\/System\//,
   /^\/Library\//,
-  /^~\/\./,           // 家目录下的 dotfiles
-  /^\$HOME\/\./,      // $HOME 下的 dotfiles
+  /^~\/\./, // 家目录下的 dotfiles
+  /^\$HOME\/\./, // $HOME 下的 dotfiles
   /\.bashrc$/,
   /\.zshrc$/,
   /\.profile$/,
@@ -228,8 +228,8 @@ export function hasSensitiveRedirection(cmd: string): { sensitive: boolean; targ
   const { hasRedirection, targets } = detectRedirections(cmd);
   if (!hasRedirection) return { sensitive: false, targets: [] };
 
-  const sensitiveTargets = targets.filter(target =>
-    SENSITIVE_REDIRECT_PATHS.some(pattern => pattern.test(target))
+  const sensitiveTargets = targets.filter((target) =>
+    SENSITIVE_REDIRECT_PATHS.some((pattern) => pattern.test(target)),
   );
 
   return {

@@ -173,7 +173,11 @@ export function* blocksToStreamEvents(
       case "text": {
         yield { type: "content_block_start", index: i, content_block: { type: "text", text: "" } };
         if (block.text) {
-          yield { type: "content_block_delta", index: i, delta: { type: "text_delta", text: block.text } };
+          yield {
+            type: "content_block_delta",
+            index: i,
+            delta: { type: "text_delta", text: block.text },
+          };
         }
         yield { type: "content_block_stop", index: i };
         break;
@@ -182,12 +186,20 @@ export function* blocksToStreamEvents(
         yield {
           type: "content_block_start",
           index: i,
-          content_block: { type: "thinking", thinking: "", ...(block.signature ? { signature: block.signature } : {}) },
+          content_block: {
+            type: "thinking",
+            thinking: "",
+            ...(block.signature ? { signature: block.signature } : {}),
+          },
         };
         if (block.thinking) {
           // thinking 的增量走 text_delta（与 provider 侧一致：thinking_delta 在
           // 本仓库的 StreamEvent 里归一化成了 text_delta，由 index 所属块类型区分）
-          yield { type: "content_block_delta", index: i, delta: { type: "text_delta", text: block.thinking } };
+          yield {
+            type: "content_block_delta",
+            index: i,
+            delta: { type: "text_delta", text: block.thinking },
+          };
         }
         yield { type: "content_block_stop", index: i };
         break;
@@ -203,7 +215,11 @@ export function* blocksToStreamEvents(
         };
         const json = safeJson(block.input);
         if (json !== undefined) {
-          yield { type: "content_block_delta", index: i, delta: { type: "input_json_delta", partial_json: json } };
+          yield {
+            type: "content_block_delta",
+            index: i,
+            delta: { type: "input_json_delta", partial_json: json },
+          };
         }
         yield { type: "content_block_stop", index: i };
         break;
@@ -331,10 +347,7 @@ export class ReplayProvider implements Provider {
     this.receivedParams = [];
   }
 
-  async *sendMessageStream(
-    params: SendParams,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  async *sendMessageStream(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     this.receivedParams.push(params);
 
     // 尊重 abort：回放也要能测「用户中途 ESC」的路径

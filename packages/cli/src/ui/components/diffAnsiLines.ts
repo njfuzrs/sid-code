@@ -15,12 +15,12 @@
  * 纯函数(不依赖 React),便于单测。颜色经引擎 colorize/applyTextStyles 生成 ANSI。
  */
 
-import { diffWordsWithSpace } from 'diff';
-import { applyColor, colorize, applyTextStyles } from '@sid-code/tui-renderer/colorize.ts';
-import { stringWidth } from '@sid-code/tui-renderer/stringWidth.ts';
-import { ELLIPSIS } from '../constants/collapse.ts';
-import type { Color } from '@sid-code/tui-renderer/styles.ts';
-import type { DiffLine, DiffRenderPlanItem } from './DiffRenderer.js';
+import { diffWordsWithSpace } from "diff";
+import { applyColor, colorize, applyTextStyles } from "@sid-code/tui-renderer/colorize.ts";
+import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { ELLIPSIS } from "../constants/collapse.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { DiffLine, DiffRenderPlanItem } from "./DiffRenderer.js";
 
 /** 生产 ANSI 行所需的颜色(从 semanticTheme 取实际色值,避免本模块依赖主题单例) */
 export interface DiffAnsiColors {
@@ -44,7 +44,7 @@ export interface DiffAnsiColors {
 function padStart(s: string, width: number): string {
   const w = stringWidth(s);
   if (w >= width) return s;
-  return ' '.repeat(width - w) + s;
+  return " ".repeat(width - w) + s;
 }
 
 /**
@@ -54,14 +54,14 @@ function padStart(s: string, width: number): string {
 function renderContentSegment(
   displayContent: string,
   pairContent: string | undefined,
-  which: 'del' | 'add' | 'context',
+  which: "del" | "add" | "context",
   colors: DiffAnsiColors,
 ): { ansi: string; plain: string } {
-  if (which === 'context') {
+  if (which === "context") {
     return { ansi: displayContent, plain: displayContent };
   }
-  const fg = which === 'del' ? colors.delFg : colors.addFg;
-  const emphBg = which === 'del' ? colors.delEmphasisBg : colors.addEmphasisBg;
+  const fg = which === "del" ? colors.delFg : colors.addFg;
+  const emphBg = which === "del" ? colors.delEmphasisBg : colors.addEmphasisBg;
 
   if (pairContent === undefined) {
     // 无对侧配对:整行同前景色(不强调)
@@ -69,18 +69,18 @@ function renderContentSegment(
   }
 
   // 词级 diff:del 行强调被删词,add 行强调新增词
-  const oldContent = which === 'del' ? displayContent : pairContent;
-  const newContent = which === 'del' ? pairContent : displayContent;
+  const oldContent = which === "del" ? displayContent : pairContent;
+  const newContent = which === "del" ? pairContent : displayContent;
   const parts = diffWordsWithSpace(oldContent, newContent);
-  let ansi = '';
-  let plain = '';
+  let ansi = "";
+  let plain = "";
   for (const part of parts) {
-    if (which === 'del' && part.added) continue;
-    if (which === 'add' && part.removed) continue;
-    const changed = which === 'del' ? part.removed : part.added;
+    if (which === "del" && part.added) continue;
+    if (which === "add" && part.removed) continue;
+    const changed = which === "del" ? part.removed : part.added;
     if (changed) {
       // 加粗 + emphasis 底色 + 前景色
-      const colored = colorize(applyColor(part.value, fg), emphBg, 'background');
+      const colored = colorize(applyColor(part.value, fg), emphBg, "background");
       ansi += applyTextStyles(colored, { bold: true });
     } else {
       ansi += applyColor(part.value, fg);
@@ -110,65 +110,63 @@ export interface BuildDiffAnsiLinesOptions {
  * 把折叠计划渲染为 ANSI 字符串行数组。每个元素恰好一终端行,已含全部 ANSI 转义。
  */
 export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
-  const { plan, displayableLines, pairMap, baseIndentation, gutterWidth, terminalWidth, colors } = opts;
+  const { plan, displayableLines, pairMap, baseIndentation, gutterWidth, terminalWidth, colors } =
+    opts;
   // 行号槽 = gutterWidth + 1 个右侧空格(与 React 路径 width={gutterWidth+1}+paddingRight 对齐)
   const gutterCols = gutterWidth + 1;
   const out: string[] = [];
 
   for (const item of plan) {
-    if (item.kind === 'collapsed') {
+    if (item.kind === "collapsed") {
       const text = `${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`;
       // 折叠提示行:行号槽留白 + dim 次要色
-      const indent = ' '.repeat(gutterCols + 1);
+      const indent = " ".repeat(gutterCols + 1);
       out.push(indent + applyTextStyles(applyColor(text, colors.secondary), { dim: true }));
       continue;
     }
 
     const index = item.origIndex!;
     const srcLine = displayableLines[index];
-    let gutterNumStr = '';
-    let prefix = ' ';
+    let gutterNumStr = "";
+    let prefix = " ";
     let rowBg: string | undefined;
-    let which: 'del' | 'add' | 'context';
+    let which: "del" | "add" | "context";
 
     switch (srcLine.type) {
-      case 'add':
-        gutterNumStr = (srcLine.newLine ?? '').toString();
-        prefix = '+';
+      case "add":
+        gutterNumStr = (srcLine.newLine ?? "").toString();
+        prefix = "+";
         rowBg = colors.addBg;
-        which = 'add';
+        which = "add";
         break;
-      case 'del':
-        gutterNumStr = (srcLine.oldLine ?? '').toString();
-        prefix = '-';
+      case "del":
+        gutterNumStr = (srcLine.oldLine ?? "").toString();
+        prefix = "-";
         rowBg = colors.delBg;
-        which = 'del';
+        which = "del";
         break;
-      case 'context':
+      case "context":
       default:
-        gutterNumStr = (srcLine.newLine ?? '').toString();
-        prefix = ' ';
+        gutterNumStr = (srcLine.newLine ?? "").toString();
+        prefix = " ";
         rowBg = undefined;
-        which = 'context';
+        which = "context";
         break;
     }
 
     const displayContent = srcLine.content.substring(baseIndentation);
-    const seg = renderContentSegment(
-      displayContent,
-      pairMap.get(index),
-      which,
-      colors,
-    );
+    const seg = renderContentSegment(displayContent, pairMap.get(index), which, colors);
 
     // 行号槽:右对齐数字 + 1 空格,次要色
-    const gutter = applyColor(padStart(gutterNumStr, gutterWidth) + ' ', colors.secondary);
+    const gutter = applyColor(padStart(gutterNumStr, gutterWidth) + " ", colors.secondary);
 
     // 前缀符号:add/del 加粗着色;context 普通
     const prefixAnsi =
-      which === 'context'
-        ? prefix + ' '
-        : applyTextStyles(applyColor(prefix, which === 'add' ? colors.addFg : colors.delFg), { bold: true }) + ' ';
+      which === "context"
+        ? prefix + " "
+        : applyTextStyles(applyColor(prefix, which === "add" ? colors.addFg : colors.delFg), {
+            bold: true,
+          }) + " ";
 
     // 计算内容区可见宽度,用空格补足使底色铺满到 terminalWidth
     const prefixPlainW = 2; // 符号 + 空格
@@ -178,9 +176,9 @@ export function buildDiffAnsiLines(opts: BuildDiffAnsiLinesOptions): string[] {
 
     // 整行(含行号槽)拼装;add/del 行对整体上底色,与 React 路径(gutter Box + 内容 Text 同色底)一致。
     // chalk 背景包裹会在内层词级强调底色的 close 序列处自动重开外层底色,嵌套安全。
-    let line = gutter + prefixAnsi + seg.ansi + ' '.repeat(fillW);
+    let line = gutter + prefixAnsi + seg.ansi + " ".repeat(fillW);
     if (rowBg) {
-      line = colorize(line, rowBg, 'background');
+      line = colorize(line, rowBg, "background");
     }
 
     out.push(line);

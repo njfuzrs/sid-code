@@ -30,7 +30,9 @@ function parseSettingSourcesArg(args: string[]): ("user" | "project" | "local")[
   const valid = new Set(["user", "project", "local"]);
   const bad = parts.filter((p) => !valid.has(p));
   if (bad.length > 0) {
-    console.error(`错误: --setting-sources 含无效源 "${bad.join(", ")}"，可选: user / project / local`);
+    console.error(
+      `错误: --setting-sources 含无效源 "${bad.join(", ")}"，可选: user / project / local`,
+    );
     process.exit(1);
   }
   return parts as ("user" | "project" | "local")[];
@@ -43,7 +45,8 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
   // --setting-sources：极早期注入，限定后续磁盘设置加载范围（与 cli.ts 主流程同源）。
   if (settingSources) {
     try {
-      const { setEnabledSettingSources } = await import("@sid-code/core/config/settings/settings.ts");
+      const { setEnabledSettingSources } =
+        await import("@sid-code/core/config/settings/settings.ts");
       setEnabledSettingSources(settingSources);
     } catch {
       /* 忽略：设置源过滤失败不应阻塞列举 */
@@ -114,5 +117,7 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
     console.log(`      工具: ${r.tools}`);
     console.log("");
   }
-  console.log("提示: 用 --agent <name> 让整个会话以某个子代理的人格运行；--agents <json> 动态注入自定义子代理。");
+  console.log(
+    "提示: 用 --agent <name> 让整个会话以某个子代理的人格运行；--agents <json> 动态注入自定义子代理。",
+  );
 }

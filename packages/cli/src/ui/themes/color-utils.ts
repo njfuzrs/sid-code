@@ -153,21 +153,9 @@ export function resolveColor(colorValue: string): Color | undefined {
  * 宽 `string` 重载保留给 `ColorsTheme` 之外的调用方（如 HalfLinePaddedBox 传的是
  * `resolveColor(...) || 原值`，原值可能是任意字符串）。
  */
-export function interpolateColor(
-  color1: Color,
-  color2: Color,
-  factor: number,
-): Color;
-export function interpolateColor(
-  color1: string,
-  color2: string,
-  factor: number,
-): string;
-export function interpolateColor(
-  color1: string,
-  color2: string,
-  factor: number,
-): string {
+export function interpolateColor(color1: Color, color2: Color, factor: number): Color;
+export function interpolateColor(color1: string, color2: string, factor: number): string;
+export function interpolateColor(color1: string, color2: string, factor: number): string {
   if (factor <= 0 && color1) {
     return color1;
   }
@@ -295,9 +283,7 @@ export function isValidColor(color: string): boolean {
   // 2. ink Color 联合里的三种带前缀形态（resolveColor 的输出 + 主题里可直接书写的值）。
   //    大小写不敏感地比对 ansi 名（Color 联合用驼峰 `ansi:blackBright`）。
   if (lowerColor.startsWith("ansi:")) {
-    return Object.values(INK_NAME_TO_ANSI_MAP).some(
-      (v) => v.toLowerCase() === lowerColor,
-    );
+    return Object.values(INK_NAME_TO_ANSI_MAP).some((v) => v.toLowerCase() === lowerColor);
   }
   if (lowerColor.startsWith("ansi256(")) {
     const m = /^ansi256\(\s*(\d+)\s*\)$/.exec(lowerColor);
@@ -336,7 +322,8 @@ export function isLowColorDepth(): boolean {
 
   // TERM_PROGRAM 检测常见终端
   const termProgram = process.env["TERM_PROGRAM"]?.toLowerCase();
-  if (termProgram === "iterm.app" || termProgram === "hyper" || termProgram === "wezterm") return false;
+  if (termProgram === "iterm.app" || termProgram === "hyper" || termProgram === "wezterm")
+    return false;
 
   // TERM 检测
   const term = process.env["TERM"]?.toLowerCase() || "";
@@ -349,9 +336,7 @@ export function isLowColorDepth(): boolean {
 /**
  * 为低色深终端返回安全的背景色
  */
-export function getSafeLowColorBackground(
-  terminalBg: string,
-): Color | undefined {
+export function getSafeLowColorBackground(terminalBg: string): Color | undefined {
   const resolvedTerminalBg = resolveColor(terminalBg) || terminalBg;
   if (
     resolvedTerminalBg === "black" ||

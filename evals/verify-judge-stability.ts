@@ -91,7 +91,9 @@ function loadCase(caseId: string): CaseYaml {
     const p = join(ROOT, dir, `${caseId}.yaml`);
     try {
       return parseYaml(readFileSync(p, "utf-8")) as CaseYaml;
-    } catch { continue; }
+    } catch {
+      continue;
+    }
   }
   throw new Error(`case 不存在: ${caseId}`);
 }
@@ -108,12 +110,22 @@ async function main() {
   console.log(`[verify-judge-stability] N=${N} 次/fixture，共 ${FIXTURES.length} fixture`);
   console.log("");
 
-  const rows: { caseId: string; scores: number[]; mean: number; stddev: number; min: number; max: number; range: number }[] = [];
+  const rows: {
+    caseId: string;
+    scores: number[];
+    mean: number;
+    stddev: number;
+    min: number;
+    max: number;
+    range: number;
+  }[] = [];
 
   for (const fixture of FIXTURES) {
     const c = loadCase(fixture.caseId);
     const prompt = buildRubricPrompt(c);
-    console.log(`▶ ${fixture.caseId} (expected ≈ ${fixture.expectedRubric}, output ${fixture.output.length} chars)`);
+    console.log(
+      `▶ ${fixture.caseId} (expected ≈ ${fixture.expectedRubric}, output ${fixture.output.length} chars)`,
+    );
     const scores: number[] = [];
     for (let i = 0; i < N; i++) {
       const r = await gradeRubric(fixture.output, prompt);
@@ -122,7 +134,9 @@ async function main() {
         continue;
       }
       scores.push(r.score);
-      console.log(`  [${i + 1}/${N}] score=${r.score.toFixed(3)} pass=${r.pass} reason=${r.reason.slice(0, 80)}...`);
+      console.log(
+        `  [${i + 1}/${N}] score=${r.score.toFixed(3)} pass=${r.pass} reason=${r.reason.slice(0, 80)}...`,
+      );
     }
     if (scores.length === 0) continue;
     const mean = scores.reduce((s, x) => s + x, 0) / scores.length;
@@ -130,18 +144,24 @@ async function main() {
     const min = Math.min(...scores);
     const max = Math.max(...scores);
     rows.push({ caseId: fixture.caseId, scores, mean, stddev: sd, min, max, range: max - min });
-    console.log(`  → 均值=${mean.toFixed(3)} stddev=${sd.toFixed(4)} range=${(max - min).toFixed(3)} [${min.toFixed(2)}, ${max.toFixed(2)}]`);
+    console.log(
+      `  → 均值=${mean.toFixed(3)} stddev=${sd.toFixed(4)} range=${(max - min).toFixed(3)} [${min.toFixed(2)}, ${max.toFixed(2)}]`,
+    );
     console.log("");
   }
 
   console.log("=== 汇总 ===");
-  console.log(`${"case".padEnd(12)} ${"mean".padEnd(7)} ${"stddev".padEnd(7)} ${"range".padEnd(7)} ${"min".padEnd(5)} ${"max"}`);
+  console.log(
+    `${"case".padEnd(12)} ${"mean".padEnd(7)} ${"stddev".padEnd(7)} ${"range".padEnd(7)} ${"min".padEnd(5)} ${"max"}`,
+  );
   for (const r of rows) {
-    console.log(`${r.caseId.padEnd(12)} ${r.mean.toFixed(3).padEnd(7)} ${r.stddev.toFixed(4).padEnd(7)} ${r.range.toFixed(3).padEnd(7)} ${r.min.toFixed(2).padEnd(5)} ${r.max.toFixed(2)}`);
+    console.log(
+      `${r.caseId.padEnd(12)} ${r.mean.toFixed(3).padEnd(7)} ${r.stddev.toFixed(4).padEnd(7)} ${r.range.toFixed(3).padEnd(7)} ${r.min.toFixed(2).padEnd(5)} ${r.max.toFixed(2)}`,
+    );
   }
 
   const avgStddev = rows.reduce((s, r) => s + r.stddev, 0) / rows.length;
-  const maxRange = Math.max(...rows.map(r => r.range));
+  const maxRange = Math.max(...rows.map((r) => r.range));
   console.log("");
   console.log(`平均 stddev = ${avgStddev.toFixed(4)} (修复前历史值 > 0.20)`);
   console.log(`最大 range  = ${maxRange.toFixed(3)} (修复前历史值 > 0.65 i.e. 2.84/5 分制)`);
@@ -155,7 +175,7 @@ async function main() {
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("[verify-judge-stability] fatal:", err);
   process.exit(2);
 });

@@ -56,16 +56,8 @@ export type VirtualizedListRef<T> = {
   scrollBy: (delta: number) => void;
   scrollTo: (offset: number) => void;
   scrollToEnd: () => void;
-  scrollToIndex: (params: {
-    index: number;
-    viewOffset?: number;
-    viewPosition?: number;
-  }) => void;
-  scrollToItem: (params: {
-    item: T;
-    viewOffset?: number;
-    viewPosition?: number;
-  }) => void;
+  scrollToIndex: (params: { index: number; viewOffset?: number; viewPosition?: number }) => void;
+  scrollToItem: (params: { item: T; viewOffset?: number; viewPosition?: number }) => void;
   getScrollIndex: () => number;
   getScrollState: () => {
     scrollTop: number;
@@ -86,10 +78,7 @@ function findLastIndex<T>(
   return -1;
 }
 
-function VirtualizedList<T>(
-  props: VirtualizedListProps<T>,
-  ref: React.Ref<VirtualizedListRef<T>>,
-) {
+function VirtualizedList<T>(props: VirtualizedListProps<T>, ref: React.Ref<VirtualizedListRef<T>>) {
   const {
     data,
     renderItem,
@@ -212,10 +201,7 @@ function VirtualizedList<T>(
   const scrollableContainerHeight = containerHeight;
 
   const getAnchorForScrollTop = useCallback(
-    (
-      scrollTop: number,
-      offsets: number[],
-    ): { index: number; offset: number } => {
+    (scrollTop: number, offsets: number[]): { index: number; offset: number } => {
       const index = findLastIndex(offsets, (offset) => offset <= scrollTop);
       if (index === -1) {
         return { index: 0, offset: 0 };
@@ -240,18 +226,9 @@ function VirtualizedList<T>(
     }
 
     return offset + scrollAnchor.offset;
-  }, [
-    scrollAnchor,
-    offsets,
-    heights,
-    scrollableContainerHeight,
-    data,
-    keyExtractor,
-  ]);
+  }, [scrollAnchor, offsets, heights, scrollableContainerHeight, data, keyExtractor]);
 
-  const scrollTop = isStickingToBottom
-    ? Number.MAX_SAFE_INTEGER
-    : actualScrollTop;
+  const scrollTop = isStickingToBottom ? Number.MAX_SAFE_INTEGER : actualScrollTop;
 
   // ST8：粘底状态变化时通知外部协调器（流式↔滚动状态机）。
   const prevStickyRef = useRef(isStickingToBottom);
@@ -269,11 +246,9 @@ function VirtualizedList<T>(
   const prevContainerHeight = useRef(scrollableContainerHeight);
 
   useLayoutEffect(() => {
-    const contentPreviouslyFit =
-      prevTotalHeight.current <= prevContainerHeight.current;
+    const contentPreviouslyFit = prevTotalHeight.current <= prevContainerHeight.current;
     const wasScrolledToBottomPixels =
-      prevScrollTop.current >=
-      prevTotalHeight.current - prevContainerHeight.current - 1;
+      prevScrollTop.current >= prevTotalHeight.current - prevContainerHeight.current - 1;
     const wasAtBottom = contentPreviouslyFit || wasScrolledToBottomPixels;
 
     if (wasAtBottom && actualScrollTop >= prevScrollTop.current) {
@@ -281,8 +256,7 @@ function VirtualizedList<T>(
     }
 
     const listGrew = data.length > prevDataLength.current;
-    const containerChanged =
-      prevContainerHeight.current !== scrollableContainerHeight;
+    const containerChanged = prevContainerHeight.current !== scrollableContainerHeight;
 
     if (
       (listGrew && (isStickingToBottom || wasAtBottom)) ||
@@ -381,22 +355,15 @@ function VirtualizedList<T>(
   // 视觉滚动仍由下方 Ink 容器的精确 scrollTop 驱动，保持平滑。
   const qTop = quantize(Math.max(0, actualScrollTop), SCROLL_QUANTUM);
   const windowTop = Math.max(0, qTop - SCROLL_QUANTUM);
-  const windowBottom =
-    qTop + SCROLL_QUANTUM + scrollableContainerHeight + SCROLL_QUANTUM;
+  const windowBottom = qTop + SCROLL_QUANTUM + scrollableContainerHeight + SCROLL_QUANTUM;
 
-  const startIndex = Math.max(
-    0,
-    findLastIndex(offsets, (offset) => offset <= windowTop) - 1,
-  );
+  const startIndex = Math.max(0, findLastIndex(offsets, (offset) => offset <= windowTop) - 1);
   const endIndexOffset = offsets.findIndex((offset) => offset > windowBottom);
   const endIndex =
-    endIndexOffset === -1
-      ? data.length - 1
-      : Math.min(data.length - 1, endIndexOffset);
+    endIndexOffset === -1 ? data.length - 1 : Math.min(data.length - 1, endIndexOffset);
 
   const topSpacerHeight = offsets[startIndex] ?? 0;
-  const bottomSpacerHeight =
-    totalHeight - (offsets[endIndex + 1] ?? totalHeight);
+  const bottomSpacerHeight = totalHeight - (offsets[endIndex + 1] ?? totalHeight);
 
   // ── 观察可见项 ──
   const observedNodes = useRef<Set<DOMElement>>(new Set());
@@ -464,9 +431,7 @@ function VirtualizedList<T>(
           newScrollTop = Number.MAX_SAFE_INTEGER;
         }
         setPendingScrollTop(newScrollTop);
-        setScrollAnchor(
-          getAnchorForScrollTop(Math.min(newScrollTop, maxScroll), offsets),
-        );
+        setScrollAnchor(getAnchorForScrollTop(Math.min(newScrollTop, maxScroll), offsets));
       },
       scrollTo: (offset: number) => {
         const maxScroll = Math.max(0, totalHeight - scrollableContainerHeight);
@@ -508,16 +473,10 @@ function VirtualizedList<T>(
         setIsStickingToBottom(false);
         const offset = offsets[index];
         if (offset !== undefined) {
-          const maxScroll = Math.max(
-            0,
-            totalHeight - scrollableContainerHeight,
-          );
+          const maxScroll = Math.max(0, totalHeight - scrollableContainerHeight);
           const newScrollTop = Math.max(
             0,
-            Math.min(
-              maxScroll,
-              offset - viewPosition * scrollableContainerHeight + viewOffset,
-            ),
+            Math.min(maxScroll, offset - viewPosition * scrollableContainerHeight + viewOffset),
           );
           setPendingScrollTop(newScrollTop);
           setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));
@@ -537,16 +496,10 @@ function VirtualizedList<T>(
         if (index !== -1) {
           const offset = offsets[index];
           if (offset !== undefined) {
-            const maxScroll = Math.max(
-              0,
-              totalHeight - scrollableContainerHeight,
-            );
+            const maxScroll = Math.max(0, totalHeight - scrollableContainerHeight);
             const newScrollTop = Math.max(
               0,
-              Math.min(
-                maxScroll,
-                offset - viewPosition * scrollableContainerHeight + viewOffset,
-              ),
+              Math.min(maxScroll, offset - viewPosition * scrollableContainerHeight + viewOffset),
             );
             setPendingScrollTop(newScrollTop);
             setScrollAnchor(getAnchorForScrollTop(newScrollTop, offsets));

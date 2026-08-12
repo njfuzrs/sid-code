@@ -51,7 +51,7 @@ async function doRelease(): Promise<string | null> {
   }
 
   try {
-    // 动态 import：避免 dev 模式静态解析 vendor/rg-embed。守卫已在上方拦住 dev。
+    // 动态 import：避免 dev 模式静态解析 packages/core/vendor/rg-embed。守卫已在上方拦住 dev。
     const { rgEmbeddedPath } = await import("./rg-embedded.ts");
     const bytes = await Bun.file(rgEmbeddedPath).bytes();
 

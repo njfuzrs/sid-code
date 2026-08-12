@@ -18,9 +18,7 @@ export interface InputRouterDeps {
   /** 直接执行用户输入（模型空闲时），由应用层提供 */
   runInput: (input: string) => Promise<void>;
   /** 处理 immediate 命令的执行结果 */
-  onImmediateResult?: (
-    result: import("./types.ts").CommandExecutionResult,
-  ) => void;
+  onImmediateResult?: (result: import("./types.ts").CommandExecutionResult) => void;
 }
 
 export class InputRouter {
@@ -41,10 +39,7 @@ export class InputRouter {
       if (parsed) {
         const cmd = this.deps.executor.findCommand(parsed.commandName, commands);
         if (cmd?.immediate && cmd.userInvocable !== false) {
-          const result = await this.deps.executor.executeImmediate(
-            cmd,
-            parsed.args,
-          );
+          const result = await this.deps.executor.executeImmediate(cmd, parsed.args);
           this.deps.onImmediateResult?.(result);
           return "immediate";
         }

@@ -117,7 +117,10 @@ export function shouldDream(
   // Gate 1: 时间
   const hoursSince = (now - state.lastDreamAt) / (1000 * 60 * 60);
   if (state.lastDreamAt > 0 && hoursSince < minHours) {
-    return { should: false, reason: `时间 gate 未满足（距上次 ${hoursSince.toFixed(1)}h < ${minHours}h）` };
+    return {
+      should: false,
+      reason: `时间 gate 未满足（距上次 ${hoursSince.toFixed(1)}h < ${minHours}h）`,
+    };
   }
 
   // Gate 2: 会话数
@@ -133,7 +136,10 @@ export function shouldDream(
     return { should: false, reason: `记忆量 gate 未满足（${memoryCount} < ${minMemories} 条）` };
   }
 
-  return { should: true, reason: `三级 gate 全部满足（${hoursSince.toFixed(1)}h / ${state.sessionsSinceLastDream} 会话 / ${memoryCount} 条记忆）` };
+  return {
+    should: true,
+    reason: `三级 gate 全部满足（${hoursSince.toFixed(1)}h / ${state.sessionsSinceLastDream} 会话 / ${memoryCount} 条记忆）`,
+  };
 }
 
 /**
@@ -205,10 +211,7 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
 
   async function drainPending(timeoutMs = 5_000): Promise<void> {
     if (!pending) return;
-    await Promise.race([
-      pending,
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    await Promise.race([pending, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
   }
 
   return { recordSession, maybeDream, drainPending };

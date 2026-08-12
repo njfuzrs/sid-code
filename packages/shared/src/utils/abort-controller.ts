@@ -34,9 +34,7 @@ export interface ChildAbortController {
  *
  * @param parentSignal 父信号（可选）。无父信号时返回独立 controller。
  */
-export function createChildAbortController(
-  parentSignal?: AbortSignal,
-): ChildAbortController {
+export function createChildAbortController(parentSignal?: AbortSignal): ChildAbortController {
   const controller = new AbortController();
 
   // 无父信号：独立 controller，dispose/abort 退化为普通操作

@@ -14,10 +14,7 @@ import type { ForkedAgentContext, CanUseToolFn } from "../agent/forked-agent.ts"
 import { runForkedAgent } from "../agent/forked-agent.ts";
 import { getSessionMemoryPath } from "../memory/paths.ts";
 import { getLogger } from "../debug/logger.ts";
-import {
-  DEFAULT_SESSION_MEMORY_TEMPLATE,
-  buildSessionMemoryUpdatePrompt,
-} from "./prompts.ts";
+import { DEFAULT_SESSION_MEMORY_TEMPLATE, buildSessionMemoryUpdatePrompt } from "./prompts.ts";
 import {
   type SessionMemoryConfig,
   type SessionMemoryState,
@@ -96,7 +93,10 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
     state.extractionStartedAt = Date.now();
     try {
       const currentContent = await ensureFile();
-      const promptText = buildSessionMemoryUpdatePrompt(currentContent, DEFAULT_SESSION_MEMORY_TEMPLATE);
+      const promptText = buildSessionMemoryUpdatePrompt(
+        currentContent,
+        DEFAULT_SESSION_MEMORY_TEMPLATE,
+      );
       const promptMessages: Message[] = [
         { role: "user", content: [{ type: "text", text: promptText }] },
       ];
@@ -129,7 +129,9 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
       }
       pending = runUpdate()
         .catch((err) => log.debug("SESSION_MEM", `更新失败: ${err.message}`))
-        .finally(() => { pending = null; });
+        .finally(() => {
+          pending = null;
+        });
       // fire-and-forget
     },
 

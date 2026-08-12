@@ -75,10 +75,7 @@ export function appendWorkflowOutput(taskId: string, content: string): void {
 }
 
 /** 标记 workflow 完成 */
-export async function completeWorkflowTask(
-  taskId: string,
-  result: AgentTaskResult,
-): Promise<void> {
+export async function completeWorkflowTask(taskId: string, result: AgentTaskResult): Promise<void> {
   await flushTaskOutput(taskId);
   activeWorkflowControllers.delete(taskId);
 

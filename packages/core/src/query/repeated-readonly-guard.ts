@@ -242,7 +242,12 @@ export function processObservation(
   const representative = gitProbe ?? probes[probes.length - 1];
   if (state.reminderCount < MAX_STUCK_REMINDERS) {
     state.reminderCount++;
-    return { stuck: true, action: "remind", command: representative.command, output: representative.output };
+    return {
+      stuck: true,
+      action: "remind",
+      command: representative.command,
+      output: representative.output,
+    };
   }
   // 提醒已注满。是否升级到"强制收尾"要看命令类型：
   //   - git status 家族：正是文档记录的死锁模式（快照冻结 vs 实时矛盾），强制收尾是治本，放行。
@@ -253,7 +258,12 @@ export function processObservation(
     return { stuck: true, action: "terminate", command: gitProbe.command, output: gitProbe.output };
   }
   // 非 git 探查：已注满提醒，之后保持沉默（不再刷提醒，也不强制收尾），避免刷屏。
-  return { stuck: true, action: "none", command: representative.command, output: representative.output };
+  return {
+    stuck: true,
+    action: "none",
+    command: representative.command,
+    output: representative.output,
+  };
 }
 
 /**

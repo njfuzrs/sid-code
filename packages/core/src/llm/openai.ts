@@ -18,7 +18,15 @@ import type {
   ContentBlock,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { emitStreamPhase, emitTimeoutFired, updateStreamStats, emitStreamStall, armIneffectiveCheck, emitHttpConnected, cacheDimsFor } from "../trace/stream-observer.ts";
+import {
+  emitStreamPhase,
+  emitTimeoutFired,
+  updateStreamStats,
+  emitStreamStall,
+  armIneffectiveCheck,
+  emitHttpConnected,
+  cacheDimsFor,
+} from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
@@ -39,9 +47,16 @@ import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { getKeepAliveFetchOptions } from "./keepalive.ts";
 import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
-import { resolveHeaderTimeoutMs, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
+import {
+  resolveHeaderTimeoutMs,
+  resolveProviderStreamTimeouts,
+} from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
-import { parseResponsesStream, parseResponsesBody, type ResponsesNonStreamingBody } from "./openai-responses.ts";
+import {
+  parseResponsesStream,
+  parseResponsesBody,
+  type ResponsesNonStreamingBody,
+} from "./openai-responses.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
 import { extractOpenAICacheHit, extractOpenAIReasoningTokens } from "./openai-usage.ts";
 
@@ -130,7 +145,7 @@ export class OpenAIProvider implements Provider {
     return {
       streaming: true,
       tools: true,
-      thinking: false,       // OpenAI 的 o1/o3 有内置推理，但接口不同
+      thinking: false, // OpenAI 的 o1/o3 有内置推理，但接口不同
       // §3.4：诚实能力。模型（GPT-4o）确实支持图片，但 sid-code 内部 ContentBlock
       // 目前无 image 变体、convertMessages 也无 image → image_url content part 的转换，
       // 即没有任何上游路径能把图片喂进来。在补齐多模态管线前如实声明 false，避免能力虚标。
@@ -304,7 +319,8 @@ export class OpenAIProvider implements Provider {
    */
   private applyDeepSeekThinking(requestBody: any, params: SendParams, model: string): void {
     const kind = lookupCatalog(model)?.protocolKind;
-    const isDeepSeek = kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
+    const isDeepSeek =
+      kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
     const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
     const isGrok = kind === "grok-openai" || (kind === undefined && /grok/i.test(model));
     const isOSeries = kind === "o-series" || (kind === undefined && /^o[0-9]/i.test(model));
@@ -402,7 +418,8 @@ export class OpenAIProvider implements Provider {
    */
   private applyToolChoice(requestBody: any, params: SendParams, model: string): void {
     const kind = lookupCatalog(model)?.protocolKind;
-    const isDeepSeek = kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
+    const isDeepSeek =
+      kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
     const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
     const thinkingActive = isDeepSeek && params.thinking?.enabled !== false;
     const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
@@ -606,10 +623,7 @@ export class OpenAIProvider implements Provider {
     return result;
   }
 
-  async *sendMessageStream(
-    params: SendParams,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  async *sendMessageStream(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     // 能力自愈外层：首次因「我们多发了一个模型不认的能力字段」而 400 时，剥掉该字段重试一次。
     // 让「用户只配 name/endpoint/apiKey」的未知模型也能一次成功，而不是把 400 抛给用户。
     // 详见 healCapabilityAndRetry 与 model-capabilities.ts 的自愈说明。
@@ -677,11 +691,9 @@ export class OpenAIProvider implements Provider {
       }
 
       // 剥掉 effort 字段重试。params 是调用方对象，不可原地改 → 浅拷贝。
-      getLogger().debug(
-        "LLM:OPENAI",
-        `能力自愈：${model} 拒绝 reasoning_effort，剥离该字段重试`,
-        { error: capabilityError.slice(0, 160) },
-      );
+      getLogger().debug("LLM:OPENAI", `能力自愈：${model} 拒绝 reasoning_effort，剥离该字段重试`, {
+        error: capabilityError.slice(0, 160),
+      });
       params = { ...params, reasoningEffort: undefined };
       healed = true;
     }
@@ -791,7 +803,10 @@ export class OpenAIProvider implements Provider {
           `响应头超时 ${headerTimeoutMs / 1000}s 未收到响应头，主动中断 fetch（model=${this._model}）`,
         );
         // 缺口 2：记录响应头超时触发
-        emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: attrModel });
+        emitTimeoutFired(obsIndex, "header_timeout", {
+          threshold_ms: headerTimeoutMs,
+          model: attrModel,
+        });
         // 缺口 2 进阶：武装未生效检查（abort 后若 fetch 未在 5s 内 settle → TimeoutIneffective）
         disarmHeaderIneffective = armIneffectiveCheck(
           obsIndex,
@@ -813,8 +828,15 @@ export class OpenAIProvider implements Provider {
       const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
       const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
       const fetchSignal = signal
-        ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
-        : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
+        ? AbortSignal.any([
+            signal,
+            headerTimeoutCtl.signal,
+            AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
+          ])
+        : AbortSignal.any([
+            headerTimeoutCtl.signal,
+            AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
+          ]);
 
       let response: Response;
       // 缺口 1：记录 fetch 发出阶段
@@ -871,7 +893,10 @@ export class OpenAIProvider implements Provider {
           type: "error",
           // statusCode 必须带上：能力自愈的结构判据（shouldRetryWithoutEffort）看的是
           // HTTP 码而非措辞——网关可能只透传一句 "400 Bad Request"，正文里啥字段名都没有。
-          error: { message: `OpenAI API 错误: ${response.status} ${error}`, statusCode: response.status },
+          error: {
+            message: `OpenAI API 错误: ${response.status} ${error}`,
+            statusCode: response.status,
+          },
         };
         return;
       }
@@ -913,7 +938,9 @@ export class OpenAIProvider implements Provider {
         let bodySnippet = "";
         try {
           bodySnippet = (await response.text()).slice(0, 300).replace(/\s+/g, " ").trim();
-        } catch { /* 读 body 失败不影响判错 */ }
+        } catch {
+          /* 读 body 失败不影响判错 */
+        }
         emitStreamPhase(obsIndex, "error", {
           http_status: response.status,
           content_type: contentType,
@@ -979,13 +1006,17 @@ export class OpenAIProvider implements Provider {
               threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
               model: attrModel,
             });
-          } catch { /* 可观测性不影响主流程 */ }
+          } catch {
+            /* 可观测性不影响主流程 */
+          }
         },
         onTelemetry: (evt: StreamTelemetrySignal) => {
           log.debug("TELEMETRY:OPENAI", `${evt.type}`, evt as any);
           try {
             params.onStreamTelemetry?.(evt);
-          } catch { /* 遥测失败不影响主流程 */ }
+          } catch {
+            /* 遥测失败不影响主流程 */
+          }
         },
       });
       for await (const event of lifecycle.guard(this.parseSSE(response.body!, signal))) {
@@ -1020,9 +1051,7 @@ export class OpenAIProvider implements Provider {
             const estOut = estimateTextTokens(accumulatedOutputText);
             if (estOut > 0) {
               const inputZero = (u.inputTokens ?? 0) === 0;
-              const estIn = inputZero
-                ? OpenAIProvider.estimatePromptTokens(params)
-                : u.inputTokens;
+              const estIn = inputZero ? OpenAIProvider.estimatePromptTokens(params) : u.inputTokens;
               const patched: Usage = {
                 ...u,
                 inputTokens: estIn,
@@ -1054,7 +1083,10 @@ export class OpenAIProvider implements Provider {
       const log = getLogger();
       log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
-      log.warn("AUDIT:API", `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`);
+      log.warn(
+        "AUDIT:API",
+        `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
       yield {
         type: "error",
         error: { message: err.message || String(err) },
@@ -1161,8 +1193,15 @@ export class OpenAIProvider implements Provider {
         "LLM:OPENAI:RESPONSES",
         `响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`,
       );
-      emitTimeoutFired(obsIndex, "header_timeout", { threshold_ms: headerTimeoutMs, model: attrModel });
-      disarmHeaderIneffective = armIneffectiveCheck(obsIndex, "header_timeout", "fetch_not_settled_after_5s");
+      emitTimeoutFired(obsIndex, "header_timeout", {
+        threshold_ms: headerTimeoutMs,
+        model: attrModel,
+      });
+      disarmHeaderIneffective = armIneffectiveCheck(
+        obsIndex,
+        "header_timeout",
+        "fetch_not_settled_after_5s",
+      );
       headerTimeoutCtl.abort();
     }, headerTimeoutMs);
 
@@ -1170,7 +1209,11 @@ export class OpenAIProvider implements Provider {
     const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
     const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
     const fetchSignal = signal
-      ? AbortSignal.any([signal, headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)])
+      ? AbortSignal.any([
+          signal,
+          headerTimeoutCtl.signal,
+          AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
+        ])
       : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
 
     let response: Response;
@@ -1191,11 +1234,16 @@ export class OpenAIProvider implements Provider {
     } catch (err: any) {
       if (headerTimedOut) {
         (disarmHeaderIneffective as (() => void) | null)?.();
-        throw new Error(`OpenAI Responses API 响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`);
+        throw new Error(
+          `OpenAI Responses API 响应头超时 ${headerTimeoutMs / 1000}s（model=${effectiveModel}）`,
+        );
       }
       throw err;
     } finally {
-      if (headerTimeoutId !== null) { clearTimeout(headerTimeoutId); headerTimeoutId = null; }
+      if (headerTimeoutId !== null) {
+        clearTimeout(headerTimeoutId);
+        headerTimeoutId = null;
+      }
       (disarmHeaderIneffective as (() => void) | null)?.();
     }
 
@@ -1206,7 +1254,9 @@ export class OpenAIProvider implements Provider {
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
-      log.error("LLM:OPENAI:RESPONSES", `HTTP ${response.status}`, { body: errorBody.slice(0, 500) });
+      log.error("LLM:OPENAI:RESPONSES", `HTTP ${response.status}`, {
+        body: errorBody.slice(0, 500),
+      });
       yield {
         type: "error",
         error: {
@@ -1250,11 +1300,17 @@ export class OpenAIProvider implements Provider {
               threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
               model: attrModel,
             });
-          } catch { /* 可观测性不影响主流程 */ }
+          } catch {
+            /* 可观测性不影响主流程 */
+          }
         },
         onTelemetry: (evt: StreamTelemetrySignal) => {
           log.debug("TELEMETRY:OPENAI-RESPONSES", `${evt.type}`, evt as any);
-          try { params.onStreamTelemetry?.(evt); } catch { /* 安全 */ }
+          try {
+            params.onStreamTelemetry?.(evt);
+          } catch {
+            /* 安全 */
+          }
         },
         isContentProgress: (ev) =>
           ev.type === "content_block_delta" || ev.type === "content_block_start",
@@ -1289,7 +1345,10 @@ export class OpenAIProvider implements Provider {
       });
     } catch (err: any) {
       log.error("LLM:OPENAI:RESPONSES", `请求异常`, { error: err.message, stack: err.stack });
-      log.warn("AUDIT:API", `✗ OpenAI Responses API 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`);
+      log.warn(
+        "AUDIT:API",
+        `✗ OpenAI Responses API 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
       yield {
         type: "error",
         error: { message: err.message || String(err) },
@@ -1501,20 +1560,14 @@ export class OpenAIProvider implements Provider {
     // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / warmup 等）经
     // classifyError 归为 overloaded 触发重试，而非返回一个静默截断的 end_turn 式响应。
     if (finishReason === "insufficient_system_resource") {
-      throw new Error(
-        "DeepSeek insufficient_system_resource（推理系统资源不足，可重试）",
-      );
+      throw new Error("DeepSeek insufficient_system_resource（推理系统资源不足，可重试）");
     }
 
     // §2.1：内容审查拒绝。模型触发安全策略时返回 `refusal`（拒绝理由）而非 `content`。
     // 此前完全未解析——若 refusal 非空而 content 为空，会得到无任何块的空响应，
     // 表现为"模型莫名没回复"。这里在正文均空时把 refusal 文本兜底为 text 块，
     // 至少让用户/上层看到拒绝原因，并标注来源。
-    if (
-      content.length === 0 &&
-      typeof msg.refusal === "string" &&
-      msg.refusal.length > 0
-    ) {
+    if (content.length === 0 && typeof msg.refusal === "string" && msg.refusal.length > 0) {
       content.push({ type: "text", text: `[模型拒绝] ${msg.refusal}` });
       getLogger().warn("LLM:OPENAI", `模型返回 refusal: ${msg.refusal.slice(0, 200)}`);
     }
@@ -1536,9 +1589,7 @@ export class OpenAIProvider implements Provider {
       },
       // §2.3：reasoning_content 存入 _meta，供 convertMessages 下轮按需回传
       //（与流式路径 stream-processor 的 response._meta 同源）。
-      ...(reasoningContent.length > 0
-        ? { _meta: { reasoning_content: reasoningContent } }
-        : {}),
+      ...(reasoningContent.length > 0 ? { _meta: { reasoning_content: reasoningContent } } : {}),
     };
   }
 
@@ -1596,9 +1647,7 @@ export class OpenAIProvider implements Provider {
     // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
     // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
     if (body.status === "failed") {
-      throw new Error(
-        `OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`,
-      );
+      throw new Error(`OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`);
     }
 
     const parsed = parseResponsesBody(body);
@@ -1614,7 +1663,10 @@ export class OpenAIProvider implements Provider {
    * 解析 SSE 流，转换为统一的 StreamEvent
    * 支持多工具并行调用：用 Map<index, ToolCallState> 追踪每个工具调用
    */
-  private async *parseSSE(stream: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  private async *parseSSE(
+    stream: ReadableStream<Uint8Array>,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1662,7 +1714,9 @@ export class OpenAIProvider implements Provider {
     const stallLogger = setInterval(() => {
       const elapsed = Date.now() - lastContentProgressAt;
       if (elapsed >= STALL_LOG_MS) {
-        dbg(`stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`);
+        dbg(
+          `stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`,
+        );
         // 缺口 1：每 60s 记录一次 StreamStall 事件（首次 30s 触发后不重复）
         if (!stallEmitted) {
           stallEmitted = true;
@@ -1673,7 +1727,11 @@ export class OpenAIProvider implements Provider {
           });
         }
         // 更新快照统计
-        updateStreamStats(parseObsIndex, { chunksReceived: totalChunks, emptyChunks, lastContentProgressAt });
+        updateStreamStats(parseObsIndex, {
+          chunksReceived: totalChunks,
+          emptyChunks,
+          lastContentProgressAt,
+        });
       }
     }, STALL_LOG_MS);
 
@@ -1681,10 +1739,13 @@ export class OpenAIProvider implements Provider {
     // 在外部创建一次，避免每次循环创建新 listener 导致泄漏
     // 预先 abort 走循环顶部快速检查（第 838 行），不在此创建 reject Promise（避免 unhandled rejection）
     let signalAbortHandler: (() => void) | null = null;
-    const abortPromise = (signal && !signal.aborted) ? new Promise<never>((_, reject) => {
-      signalAbortHandler = () => reject(new Error("Request aborted"));
-      signal.addEventListener("abort", signalAbortHandler, { once: true });
-    }) : null;
+    const abortPromise =
+      signal && !signal.aborted
+        ? new Promise<never>((_, reject) => {
+            signalAbortHandler = () => reject(new Error("Request aborted"));
+            signal.addEventListener("abort", signalAbortHandler, { once: true });
+          })
+        : null;
 
     // 空转崩溃修复：收到 [DONE] 后置位，让外层 while 立即退出，不再 reader.read()。
     let streamDone = false;
@@ -1728,10 +1789,16 @@ export class OpenAIProvider implements Provider {
               "idle_timeout",
               "read_race_not_settled_after_5s",
             );
-            reject(new Error(`SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`));
+            reject(
+              new Error(
+                `SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`,
+              ),
+            );
           }, IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
-          cancelTimeoutId = setTimeout(() => { reader.cancel().catch(() => {}); }, IDLE_TIMEOUT_MS + 100);
+          cancelTimeoutId = setTimeout(() => {
+            reader.cancel().catch(() => {});
+          }, IDLE_TIMEOUT_MS + 100);
         });
 
         let result: Awaited<ReturnType<typeof reader.read>>;
@@ -1760,7 +1827,9 @@ export class OpenAIProvider implements Provider {
           const data = line.slice(6);
           if (data === "[DONE]") {
             lastContentProgressAt = Date.now();
-            dbg(`[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`);
+            dbg(
+              `[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`,
+            );
             // 缺口 1：记录流正常完成 + 更新最终统计
             emitStreamPhase(parseObsIndex, "completed", {
               chunks: totalChunks,
@@ -1773,7 +1842,11 @@ export class OpenAIProvider implements Provider {
               // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
               ...cacheDimsFor(usage.cacheReadInputTokens ?? 0),
             });
-            updateStreamStats(parseObsIndex, { chunksReceived: totalChunks, emptyChunks, lastContentProgressAt });
+            updateStreamStats(parseObsIndex, {
+              chunksReceived: totalChunks,
+              emptyChunks,
+              lastContentProgressAt,
+            });
             // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
             if (pendingFinishReason) {
               yield {
@@ -1841,7 +1914,8 @@ export class OpenAIProvider implements Provider {
             // content/tool_calls/finish_reason/reasoning_content 均视为有效进展
             const hasContent = typeof delta?.content === "string" && delta.content.length > 0;
             const hasToolCalls = Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0;
-            const hasReasoning = typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
+            const hasReasoning =
+              typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
             if (hasContent || hasToolCalls || hasReasoning || finishReason) {
               lastContentProgressAt = Date.now();
             } else {
@@ -2090,14 +2164,25 @@ export class OpenAIProvider implements Provider {
       // 必须用 .catch() 兜住异步 rejection（对齐本文件 1374/1411/1731 行的既有写法）。
       try {
         reader.cancel().catch((e) => {
-          getLogger().debug("LLM:OPENAI", `reader.cancel() 失败（不影响主流程）: ${(e as Error)?.message}`);
+          getLogger().debug(
+            "LLM:OPENAI",
+            `reader.cancel() 失败（不影响主流程）: ${(e as Error)?.message}`,
+          );
         });
       } catch (e) {
         // 极少数运行时 cancel() 同步抛错的兜底（如 reader 状态非法）
-        getLogger().debug("LLM:OPENAI", `reader.cancel() 同步异常（不影响主流程）: ${(e as Error)?.message}`);
+        getLogger().debug(
+          "LLM:OPENAI",
+          `reader.cancel() 同步异常（不影响主流程）: ${(e as Error)?.message}`,
+        );
       }
-      try { reader.releaseLock(); } catch (e) {
-        getLogger().debug("LLM:OPENAI", `reader.releaseLock() 失败（不影响主流程）: ${(e as Error)?.message}`);
+      try {
+        reader.releaseLock();
+      } catch (e) {
+        getLogger().debug(
+          "LLM:OPENAI",
+          `reader.releaseLock() 失败（不影响主流程）: ${(e as Error)?.message}`,
+        );
       }
     }
   }

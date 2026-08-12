@@ -72,8 +72,13 @@ export interface ParsedCILog {
  */
 function detectRunner(log: string): CIRunner {
   // 顺序敏感: 先匹配特征强的(独有标记)
-  if (/PASS|FAIL\s+.*\.(test|spec)\.(ts|tsx|js|jsx)/i.test(log) && /at Object\.<anonymous>|jest\.fn/.test(log)) return "jest";
-  if (/✓|✗|×|expect\(.*\)\.to|describe\s*\(/i.test(log) && /vitest|vite\.config/.test(log)) return "vitest";
+  if (
+    /PASS|FAIL\s+.*\.(test|spec)\.(ts|tsx|js|jsx)/i.test(log) &&
+    /at Object\.<anonymous>|jest\.fn/.test(log)
+  )
+    return "jest";
+  if (/✓|✗|×|expect\(.*\)\.to|describe\s*\(/i.test(log) && /vitest|vite\.config/.test(log))
+    return "vitest";
   if (/=+ FAILURES =+|=+ short test summary info =+|^_____ /m.test(log)) return "pytest";
   if (/^FAIL|^ok\s+\d|^---\s*FAIL:|^=== RUN/m.test(log) && /\.go:\d+/.test(log)) return "go-test";
   if (/error TS\d{4}:/.test(log)) return "tsc";
@@ -98,7 +103,8 @@ function extractFileRefs(log: string): FileRef[] {
   const refs = new Map<string, FileRef>();
 
   // 通用 file:line 格式(支持 file:line:col)
-  const generic = /(?:^|[\s(])([\w./_-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|cpp|c|rb|sh|md|yaml|yml|json))(?::|, line\s+)(\d+)/gi;
+  const generic =
+    /(?:^|[\s(])([\w./_-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|cpp|c|rb|sh|md|yaml|yml|json))(?::|, line\s+)(\d+)/gi;
   let m: RegExpExecArray | null;
   while ((m = generic.exec(log)) !== null) {
     const file = m[1];
@@ -149,7 +155,9 @@ function extractStackTraces(log: string): StackTrace[] {
     for (let j = i + 1; j < Math.min(lines.length, i + MAX_FRAMES + 1); j++) {
       const f = lines[j];
       // JS/TS: at fn (file:line:col)
-      const jsFrame = f.match(/^\s+at\s+(?:(\S+)\s+\()?([\w./_-]+\.(?:ts|tsx|js|jsx)):(\d+)(?::\d+)?\)?/);
+      const jsFrame = f.match(
+        /^\s+at\s+(?:(\S+)\s+\()?([\w./_-]+\.(?:ts|tsx|js|jsx)):(\d+)(?::\d+)?\)?/,
+      );
       if (jsFrame) {
         frames.push({
           file: jsFrame[2],
@@ -244,7 +252,9 @@ function extractErrorMessages(log: string): string[] {
   const lines = log.split("\n");
   for (const line of lines) {
     if (messages.size >= 20) break;
-    const m = line.match(/^(?:Error|TypeError|RangeError|ReferenceError|SyntaxError|AssertionError|Exception|FAIL|panic|fatal):\s*(.+)$/);
+    const m = line.match(
+      /^(?:Error|TypeError|RangeError|ReferenceError|SyntaxError|AssertionError|Exception|FAIL|panic|fatal):\s*(.+)$/,
+    );
     if (m) messages.add(m[1].trim());
     const tsErr = line.match(/error\s+TS\d{4}:\s+(.+)$/);
     if (tsErr) messages.add(tsErr[1].trim());

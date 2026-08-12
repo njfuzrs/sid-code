@@ -50,9 +50,9 @@ const TIP_EXCLUDED_ACTIONS = new Set<string>([
 ]);
 
 function buildKeybindingTips(): string[] {
-  return DEFAULT_BINDINGS
-    .filter((b) => b.showInHelp && !TIP_EXCLUDED_ACTIONS.has(b.action))
-    .map((b) => `按 ${b.display} ${b.description}`);
+  return DEFAULT_BINDINGS.filter((b) => b.showInHelp && !TIP_EXCLUDED_ACTIONS.has(b.action)).map(
+    (b) => `按 ${b.display} ${b.description}`,
+  );
 }
 
 const COMMAND_TIPS: string[] = [
@@ -65,9 +65,7 @@ const COMMAND_TIPS: string[] = [
 
 const ALL_TIPS: string[] = [...buildKeybindingTips(), ...COMMAND_TIPS];
 const SESSION_TIP: string =
-  ALL_TIPS.length > 0
-    ? ALL_TIPS[Math.floor(Math.random() * ALL_TIPS.length)]
-    : "";
+  ALL_TIPS.length > 0 ? ALL_TIPS[Math.floor(Math.random() * ALL_TIPS.length)] : "";
 
 interface EmptyLogoProps {
   termWidth: number;

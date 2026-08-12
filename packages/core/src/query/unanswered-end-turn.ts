@@ -39,8 +39,7 @@ export function detectUnansweredEndTurn(
 ): void {
   const log = getLogger();
 
-  const isEndTurnLike =
-    response.stopReason === "end_turn" || response.stopReason === "stop";
+  const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
   if (!isEndTurnLike) return;
 
   const totalTextLen = response.content
@@ -80,8 +79,7 @@ export function detectUnansweredEndTurn(
   if (totalTextLen === 0 && thinkingCount === 1) {
     const idx = response.content.findIndex((b) => b.type === "thinking");
     const block = idx >= 0 ? response.content[idx] : undefined;
-    const thinkingText =
-      block && block.type === "thinking" ? block.thinking.trim() : "";
+    const thinkingText = block && block.type === "thinking" ? block.thinking.trim() : "";
     if (thinkingText && thinkingText.length <= SHORT_ANSWER_LEN) {
       // 极短思考：多半是被误塞进思考通道的一句直答，转正文让用户看到
       response.content[idx] = { type: "text", text: thinkingText } as ContentBlock;

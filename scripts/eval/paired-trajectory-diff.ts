@@ -179,9 +179,7 @@ function readClaudeTrajectory(sid: string): { steps: CompactStep[]; tools: strin
       agent: t.agent ?? "unknown",
       message_type: t.message_type ?? "unknown",
       tool_name: t.tool_name,
-      tool_input_brief: t.tool_input
-        ? JSON.stringify(t.tool_input).slice(0, 200)
-        : undefined,
+      tool_input_brief: t.tool_input ? JSON.stringify(t.tool_input).slice(0, 200) : undefined,
       thought_brief: t.thought ? String(t.thought).slice(0, 200) : undefined,
       is_error: !!t.is_error,
     };
@@ -202,15 +200,7 @@ async function runSidCode(taskId: string, instruction: string): Promise<SidRunRe
   return new Promise((resolveP) => {
     const child = spawn(
       "bun",
-      [
-        wrapper,
-        "--prompt",
-        instruction,
-        "--case-id",
-        `paired_${taskId}`,
-        "--timeout",
-        "240000",
-      ],
+      [wrapper, "--prompt", instruction, "--case-id", `paired_${taskId}`, "--timeout", "240000"],
       { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
@@ -263,9 +253,7 @@ async function runSidCode(taskId: string, instruction: string): Promise<SidRunRe
           steps,
           tools: [...tools],
           status,
-          abnormalReason: wrapperError
-            ? String(j.output ?? "").slice(0, 200)
-            : undefined,
+          abnormalReason: wrapperError ? String(j.output ?? "").slice(0, 200) : undefined,
         });
       } catch (e) {
         resolveP({
@@ -285,12 +273,11 @@ function compactTraceForPrompt(steps: CompactStep[], maxSteps = 40): string {
   const trimmed = steps.slice(0, maxSteps);
   return trimmed
     .map((s) => {
-      const tag =
-        s.message_type === "action" ? "→" : s.message_type === "observation" ? "←" : "·";
+      const tag = s.message_type === "action" ? "→" : s.message_type === "observation" ? "←" : "·";
       const tool = s.tool_name ? `[${s.tool_name}]` : "";
       const brief =
         s.message_type === "action"
-          ? s.tool_input_brief ?? s.thought_brief ?? ""
+          ? (s.tool_input_brief ?? s.thought_brief ?? "")
           : s.is_error
             ? "(error result)"
             : "(ok result)";
@@ -317,7 +304,10 @@ async function judgeDiff(
     .replace("{task_summary}", meta.instruction.slice(0, 400).replace(/\s+/g, " "))
     .replace("{difficulty}", meta.difficulty)
     .replace("{estimated_turns}", String(meta.estimated_turns))
-    .replace("{sid_status}", `${meta.sid.status}${meta.sid.abnormalReason ? `（${meta.sid.abnormalReason.slice(0, 120)}）` : ""}`)
+    .replace(
+      "{sid_status}",
+      `${meta.sid.status}${meta.sid.abnormalReason ? `（${meta.sid.abnormalReason.slice(0, 120)}）` : ""}`,
+    )
     .replace("{sid_steps}", String(meta.sid.steps.length))
     .replace("{sid_tools}", meta.sid.tools.join(",") || "(none)")
     .replace("{sid_trace}", compactTraceForPrompt(meta.sid.steps))
@@ -393,13 +383,19 @@ async function processOne(taskId: string): Promise<PairedDiff | null> {
     console.error(`[paired-diff] ${taskId} instruction 为空，跳过`);
     return null;
   }
-  console.log(`[paired-diff] instruction: ${yamlInfo.instruction.slice(0, 80).replace(/\s+/g, " ")}...`);
+  console.log(
+    `[paired-diff] instruction: ${yamlInfo.instruction.slice(0, 80).replace(/\s+/g, " ")}...`,
+  );
   const claude = readClaudeTrajectory(yamlInfo.primary_sid);
-  console.log(`[paired-diff] claude: ${claude.steps.length} steps / tools=${claude.tools.join(",")}`);
+  console.log(
+    `[paired-diff] claude: ${claude.steps.length} steps / tools=${claude.tools.join(",")}`,
+  );
 
   console.log(`[paired-diff] running sid-code (timeout 270s)...`);
   const sid = await runSidCode(taskId, yamlInfo.instruction);
-  console.log(`[paired-diff] sid: status=${sid.status} steps=${sid.steps.length} tools=${sid.tools.join(",")}`);
+  console.log(
+    `[paired-diff] sid: status=${sid.status} steps=${sid.steps.length} tools=${sid.tools.join(",")}`,
+  );
 
   console.log(`[paired-diff] judging via ${JUDGE_MODEL}...`);
   const diff = await judgeDiff(taskId, {
@@ -464,7 +460,9 @@ async function main(): Promise<void> {
       2,
     ),
   );
-  console.log(`\n[paired-diff] DONE. 成功 ${successes.length}/${taskIds.length}，summary: ${summaryPath}`);
+  console.log(
+    `\n[paired-diff] DONE. 成功 ${successes.length}/${taskIds.length}，summary: ${summaryPath}`,
+  );
   if (failures.length > 0) {
     console.error(`[paired-diff] 失败 ${failures.length} 条：`);
     for (const f of failures) console.error(`  - ${f.taskId}: ${f.reason}`);

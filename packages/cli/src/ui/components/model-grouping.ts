@@ -250,11 +250,7 @@ export function firstSelectableIndex(rows: ModelRow[]): number {
  * 从 from 出发朝 dir 方向找下一个可选行（跳过分组标题），到边界环绕。
  * 无可选行返回 -1；只有一个可选行时原地返回它。
  */
-export function nextSelectableIndex(
-  rows: ModelRow[],
-  from: number,
-  dir: 1 | -1,
-): number {
+export function nextSelectableIndex(rows: ModelRow[], from: number, dir: 1 | -1): number {
   if (rows.length === 0) return -1;
   for (let step = 1; step <= rows.length; step++) {
     const idx = (from + dir * step + rows.length * step) % rows.length;

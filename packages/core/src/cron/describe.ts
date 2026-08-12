@@ -34,7 +34,13 @@ export function cronToHuman(cronExpr: string): string {
   }
 
   // 每小时（第 M 分钟）：M * * * *
-  if (/^\d+$/.test(min) && everyField(hour) && everyField(dom) && everyField(mon) && everyField(dow)) {
+  if (
+    /^\d+$/.test(min) &&
+    everyField(hour) &&
+    everyField(dom) &&
+    everyField(mon) &&
+    everyField(dow)
+  ) {
     return Number(min) === 0 ? "每小时整点" : `每小时第 ${Number(min)} 分钟`;
   }
 

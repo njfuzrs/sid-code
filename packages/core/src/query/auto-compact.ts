@@ -134,7 +134,14 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactOut
   }
 
   try {
-    return await doAutoCompact(deps, messages, circuitBreaker, isMainAgent, recordFailure, recordSuccess);
+    return await doAutoCompact(
+      deps,
+      messages,
+      circuitBreaker,
+      isMainAgent,
+      recordFailure,
+      recordSuccess,
+    );
   } finally {
     deps.ctxMgr.releaseCompactLock();
   }
@@ -158,7 +165,14 @@ async function doAutoCompact(
     log.warn("COMPACT", "autoCompact 熔断中，降级为简单截断");
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
     deps.ctxMgr.compactWithSummary(simpleSummary);
-    await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+    await postCompactReattachAndNotify(
+      deps,
+      messages,
+      simpleSummary,
+      messagesBefore,
+      tokensBefore,
+      false,
+    );
     // 熔断降级：结果是 truncated（确实压了，但是靠粗暴截断而非摘要）。
     // 这一档单独可见很重要——"压缩成功率" 里混入截断会掩盖摘要链路已经在连续失败。
     logContextCompact({
@@ -192,7 +206,14 @@ async function doAutoCompact(
           deps.ctxMgr.compactWithSummary(smResult.summary);
           recordSuccess();
           log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
-          await postCompactReattachAndNotify(deps, messages, smResult.summary, messagesBefore, tokensBefore, false);
+          await postCompactReattachAndNotify(
+            deps,
+            messages,
+            smResult.summary,
+            messagesBefore,
+            tokensBefore,
+            false,
+          );
           // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
           logContextCompact({
             outcome: "summarized",
@@ -219,10 +240,8 @@ async function doAutoCompact(
     const summarizeBase = stripReinjectedAttachments(stripImages(messages));
     const toSummarize = summarizeBase.slice(0, -PRESERVE_RECENT);
 
-    const {
-      buildCompactUserPrompt,
-      getCompactUserSummaryMessage,
-    } = await import("./compact/auto-compact-prompt.ts");
+    const { buildCompactUserPrompt, getCompactUserSummaryMessage } =
+      await import("./compact/auto-compact-prompt.ts");
 
     // T3.1/T3.2：给整个"建流 + 流消费"套 60s 硬超时（Promise.race，不依赖 signal 传播）。
     // 摘要不应超过 1 分钟；超时后走下方 catch → recordFailure + 降级为简单截断。
@@ -242,7 +261,11 @@ async function doAutoCompact(
       // §12 P1-3：hook additionalContext 作为 customInstructions 注入摘要 prompt
       const summaryPrompt = buildCompactUserPrompt(ptlSummarizeBase, hookInstructions);
       try {
-        ({ summary, streamUsage } = await runSummaryRequest(deps, summaryPrompt, COMPACT_TIMEOUT_MS));
+        ({ summary, streamUsage } = await runSummaryRequest(
+          deps,
+          summaryPrompt,
+          COMPACT_TIMEOUT_MS,
+        ));
         break; // 成功（含空摘要，交由下方判定）
       } catch (err: any) {
         // 仅对 PTL 错误做截头重试；其它错误（超时/网络/abort）直接上抛给外层 catch 降级
@@ -287,8 +310,18 @@ async function doAutoCompact(
       const extraReattach = await buildExtraReattach(deps, toSummarize);
       deps.ctxMgr.compactWithSummary(formattedSummary, extraReattach);
       recordSuccess();
-      log.info("COMPACT", `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
-      await postCompactReattachAndNotify(deps, toSummarize, formattedSummary, messagesBefore, tokensBefore, true);
+      log.info(
+        "COMPACT",
+        `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`,
+      );
+      await postCompactReattachAndNotify(
+        deps,
+        toSummarize,
+        formattedSummary,
+        messagesBefore,
+        tokensBefore,
+        true,
+      );
       // 主路径成功：LLM 摘要压缩。tokens_before/after 是「更省」这条北极星
       // 唯一能直接量出来的信号之一——省了多少 token 就在这两个数的差里。
       logContextCompact({
@@ -325,7 +358,14 @@ async function doAutoCompact(
   const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
   deps.ctxMgr.compactWithSummary(simpleSummary);
   log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
-  await postCompactReattachAndNotify(deps, messages, simpleSummary, messagesBefore, tokensBefore, false);
+  await postCompactReattachAndNotify(
+    deps,
+    messages,
+    simpleSummary,
+    messagesBefore,
+    tokensBefore,
+    false,
+  );
   // 摘要链路失败后的有损降级。上报为 failed 而非 truncated：从"是否省到"的角度它确实
   // 压了，但从"压缩质量"角度这是一次失败——把它记成 truncated 会与熔断降级混同，
   // 掩盖「摘要请求正在连续报错」这个需要立刻看见的信号。
@@ -468,12 +508,16 @@ function truncateHeadForPTLRetry(messages: Message[], attempt: number): Message[
  * 文件恢复在 postCompact 阶段单独做（要在压缩完成、token 腾出后再注入并守预算）。
  * 决策点和原始任务锚点都很短，随摘要一起注入信息密度最高。
  */
-async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[]): Promise<Message[] | undefined> {
+async function buildExtraReattach(
+  deps: AutoCompactDeps,
+  toSummarize: Message[],
+): Promise<Message[] | undefined> {
   const results: Message[] = [];
 
   // 决策点重注入
   try {
-    const { extractDecisions, persistDecisions, buildDecisionReattachMessages } = await import("./compact/decisions.ts");
+    const { extractDecisions, persistDecisions, buildDecisionReattachMessages } =
+      await import("./compact/decisions.ts");
     const decisions = extractDecisions(toSummarize);
     if (decisions.length > 0) {
       const decisionsPath = deps.sessionDir ? persistDecisions(decisions, deps.sessionDir) : null;
@@ -486,7 +530,8 @@ async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[])
   // 原始任务锚点：把第一条用户消息原文保留（防止弱模型摘要丢失目标）。
   // 只有当第一条用户消息确实在被压缩的范围内时才需要重注入。
   try {
-    const { REATTACH_ORIGINAL_TASK_PREFIX, REATTACH_ORIGIN } = await import("./compact/reattach-markers.ts");
+    const { REATTACH_ORIGINAL_TASK_PREFIX, REATTACH_ORIGIN } =
+      await import("./compact/reattach-markers.ts");
     // 只认**真实用户输入**，跳过 harness 内部注入的 user 消息（防御性过滤）。
     //
     // 主防线是"注入产物永不写回 ctxMgr"这条不变量（见 query/reminder-inject.ts 头部
@@ -496,31 +541,38 @@ async function buildExtraReattach(deps: AutoCompactDeps, toSummarize: Message[])
     // 一旦被当成"用户最初的请求"重注入，就会把内部提醒冒充成用户意图——正是
     // 2026-07-29 那次"模型分不清谁在说话"的同类故障（轨迹 20260729-180624-b8ae8e78）。
     // 这里按 `_meta.origin` + 围栏/前缀双重识别，两条判据任一命中即跳过。
-    const isInternalUserMsg = (m: typeof toSummarize[number]): boolean => {
+    const isInternalUserMsg = (m: (typeof toSummarize)[number]): boolean => {
       if ((m as any)._meta?.origin) return true; // reattach / hook 等带来源标记的内部消息
       const text = m.content
-        .filter(b => b.type === "text")
-        .map(b => (b as { type: "text"; text: string }).text)
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
         .join("\n")
         .trimStart();
-      return text.startsWith("<system-reminder>")
-        || text.startsWith("<available-deferred-tools>")
-        || text.startsWith(REATTACH_ORIGINAL_TASK_PREFIX)
-        || text.startsWith("[对话摘要]");
+      return (
+        text.startsWith("<system-reminder>") ||
+        text.startsWith("<available-deferred-tools>") ||
+        text.startsWith(REATTACH_ORIGINAL_TASK_PREFIX) ||
+        text.startsWith("[对话摘要]")
+      );
     };
     const firstUserMsg = toSummarize.find(
-      m => m.role === "user" && m.content.some(b => b.type === "text") && !isInternalUserMsg(m),
+      (m) => m.role === "user" && m.content.some((b) => b.type === "text") && !isInternalUserMsg(m),
     );
     if (firstUserMsg) {
       const userText = firstUserMsg.content
-        .filter(b => b.type === "text")
-        .map(b => (b as { type: "text"; text: string }).text)
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
         .join("\n");
       // 截断到 2000 字符，避免超长用户消息占满恢复预算
       const truncated = userText.length > 2000 ? userText.slice(0, 2000) + "\n[截断]" : userText;
       results.push({
         role: "user",
-        content: [{ type: "text", text: `${REATTACH_ORIGINAL_TASK_PREFIX}\n以下是用户最初的请求（原始任务），即使摘要遗漏也务必遵循：\n\n${truncated}` }],
+        content: [
+          {
+            type: "text",
+            text: `${REATTACH_ORIGINAL_TASK_PREFIX}\n以下是用户最初的请求（原始任务），即使摘要遗漏也务必遵循：\n\n${truncated}`,
+          },
+        ],
         _meta: { origin: REATTACH_ORIGIN },
       });
       results.push({
@@ -576,7 +628,11 @@ export function handleContextOverflow(
 ): number | null {
   const msg = err.message || String(err);
   const overflowMatch = msg.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
-  if (!overflowMatch && !msg.toLowerCase().includes("context") && !msg.toLowerCase().includes("token")) {
+  if (
+    !overflowMatch &&
+    !msg.toLowerCase().includes("context") &&
+    !msg.toLowerCase().includes("token")
+  ) {
     return null;
   }
 

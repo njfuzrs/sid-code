@@ -13,11 +13,11 @@ import { getLogger } from "../debug/logger.ts";
 
 /** Diff 展示结果 */
 export type DiffResult =
-  | { action: "saved"; content?: string }    // 用户在 IDE 中保存（可能修改了内容）
-  | { action: "rejected" }                    // 用户拒绝了变更
-  | { action: "closed" }                      // 用户关闭了 diff 标签页
-  | { action: "unsupported" }                 // IDE 未连接或不支持 diff 功能
-  | { action: "error"; message: string };     // 出错
+  | { action: "saved"; content?: string } // 用户在 IDE 中保存（可能修改了内容）
+  | { action: "rejected" } // 用户拒绝了变更
+  | { action: "closed" } // 用户关闭了 diff 标签页
+  | { action: "unsupported" } // IDE 未连接或不支持 diff 功能
+  | { action: "error"; message: string }; // 出错
 
 /** 生成唯一 tab id（不依赖 Math.random，使用计数器 + 时间戳） */
 let diffTabCounter = 0;

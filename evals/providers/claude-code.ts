@@ -3,9 +3,21 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { validateTrace, type AgentTrace, type TraceSpan } from "eval-framework/trace/agent-trace.ts";
+import {
+  validateTrace,
+  type AgentTrace,
+  type TraceSpan,
+} from "eval-framework/trace/agent-trace.ts";
 
-function parseArgs(): { prompt: string; caseId: string; model: string | null; timeoutMs: number; maxTurns: number | null; skipPermissions: boolean; cliPath: string } {
+function parseArgs(): {
+  prompt: string;
+  caseId: string;
+  model: string | null;
+  timeoutMs: number;
+  maxTurns: number | null;
+  skipPermissions: boolean;
+  cliPath: string;
+} {
   const argv = process.argv.slice(2);
   let prompt = "";
   let caseId = "unknown";
@@ -16,14 +28,23 @@ function parseArgs(): { prompt: string; caseId: string; model: string | null; ti
   let cliPath = "claude";
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--prompt" && argv[i + 1]) { prompt = argv[++i]; }
-    else if (argv[i] === "--case-id" && argv[i + 1]) { caseId = argv[++i]; }
-    else if (argv[i] === "--model" && argv[i + 1]) { model = argv[++i]; }
-    else if (argv[i] === "--timeout" && argv[i + 1]) { timeoutMs = parseInt(argv[++i], 10) || timeoutMs; }
-    else if (argv[i] === "--max-turns" && argv[i + 1]) { maxTurns = parseInt(argv[++i], 10) || null; }
-    else if (argv[i] === "--skip-permissions") { skipPermissions = true; }
-    else if (argv[i] === "--no-skip-permissions") { skipPermissions = false; }
-    else if (argv[i] === "--cli-path" && argv[i + 1]) { cliPath = argv[++i]; }
+    if (argv[i] === "--prompt" && argv[i + 1]) {
+      prompt = argv[++i];
+    } else if (argv[i] === "--case-id" && argv[i + 1]) {
+      caseId = argv[++i];
+    } else if (argv[i] === "--model" && argv[i + 1]) {
+      model = argv[++i];
+    } else if (argv[i] === "--timeout" && argv[i + 1]) {
+      timeoutMs = parseInt(argv[++i], 10) || timeoutMs;
+    } else if (argv[i] === "--max-turns" && argv[i + 1]) {
+      maxTurns = parseInt(argv[++i], 10) || null;
+    } else if (argv[i] === "--skip-permissions") {
+      skipPermissions = true;
+    } else if (argv[i] === "--no-skip-permissions") {
+      skipPermissions = false;
+    } else if (argv[i] === "--cli-path" && argv[i + 1]) {
+      cliPath = argv[++i];
+    }
   }
 
   return { prompt, caseId, model, timeoutMs, maxTurns, skipPermissions, cliPath };
@@ -68,13 +89,24 @@ const FILE_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"])
  */
 export class StreamJsonParser {
   meta: StreamMeta = {
-    text: "", toolsUsed: [], filesEdited: [], numTurns: 0, totalCostUsd: 0,
-    totalTokens: 0, errorCount: 0, retryCount: 0, backtrackCount: 0,
-    exitStatus: null, sawResult: false, eventCount: 0,
+    text: "",
+    toolsUsed: [],
+    filesEdited: [],
+    numTurns: 0,
+    totalCostUsd: 0,
+    totalTokens: 0,
+    errorCount: 0,
+    retryCount: 0,
+    backtrackCount: 0,
+    exitStatus: null,
+    sawResult: false,
+    eventCount: 0,
     rawResultUsage: null,
     assistantUsageSum: {
-      input_tokens: 0, output_tokens: 0,
-      cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
     },
   };
   private toolsSeen = new Set<string>();
@@ -88,7 +120,11 @@ export class StreamJsonParser {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) return;
     let evt: Record<string, unknown>;
-    try { evt = JSON.parse(trimmed); } catch { return; }
+    try {
+      evt = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
 
     this.meta.eventCount++;
 
@@ -125,7 +161,8 @@ export class StreamJsonParser {
       if (u) {
         this.meta.assistantUsageSum.input_tokens += u.input_tokens || 0;
         this.meta.assistantUsageSum.output_tokens += u.output_tokens || 0;
-        this.meta.assistantUsageSum.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+        this.meta.assistantUsageSum.cache_creation_input_tokens +=
+          u.cache_creation_input_tokens || 0;
         this.meta.assistantUsageSum.cache_read_input_tokens += u.cache_read_input_tokens || 0;
       }
     } else if (evt.type === "user" && evt.message && typeof evt.message === "object") {
@@ -155,10 +192,11 @@ export class StreamJsonParser {
         //   累加会双倍计数。case_028 实测：assistant 累加 4sum=1.5M / result.usage 4sum=417k。
         //   assistantUsageSum 字段仅用于 stderr 诊断，不进 totalTokens。
         this.meta.rawResultUsage = { ...usage };
-        this.meta.totalTokens = (usage.input_tokens || 0)
-          + (usage.output_tokens || 0)
-          + (usage.cache_creation_input_tokens || 0)
-          + (usage.cache_read_input_tokens || 0);
+        this.meta.totalTokens =
+          (usage.input_tokens || 0) +
+          (usage.output_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0) +
+          (usage.cache_read_input_tokens || 0);
       }
       if (evt.is_error === true || evt.subtype === "error") this.meta.exitStatus = "error";
       else if (evt.subtype === "success") this.meta.exitStatus = "success";
@@ -177,7 +215,9 @@ async function main() {
   const { prompt, caseId, model, timeoutMs, maxTurns, skipPermissions, cliPath } = parseArgs();
 
   if (!prompt) {
-    process.stdout.write(JSON.stringify({ output: "[ERROR] empty prompt", meta: {}, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({ output: "[ERROR] empty prompt", meta: {}, error: true }) + "\n",
+    );
     process.exit(1);
   }
 
@@ -195,7 +235,9 @@ async function main() {
   args.push(prompt);
 
   const startedAt = Date.now();
-  process.stderr.write(`[claude-code] spawn: ${cliPath} ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`);
+  process.stderr.write(
+    `[claude-code] spawn: ${cliPath} ${args.slice(0, 5).join(" ")} ... (prompt ${prompt.length} chars, case=${caseId})\n`,
+  );
 
   const child = spawn(cliPath, args, {
     env: {
@@ -211,7 +253,9 @@ async function main() {
     process.stderr.write(`[claude-code] TIMEOUT after ${timeoutMs}ms\n`);
     child.kill("SIGTERM");
     setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
+      try {
+        child.kill("SIGKILL");
+      } catch {}
     }, 3000);
   }, timeoutMs);
 
@@ -231,7 +275,9 @@ async function main() {
   });
   // stderr 体积一般很小，保留累加以便 ERROR 时回显
   let stderrBuf = "";
-  child.stderr?.on("data", (c) => { stderrBuf += c.toString(); });
+  child.stderr?.on("data", (c) => {
+    stderrBuf += c.toString();
+  });
 
   const exitCode: number | null = await new Promise((res) => {
     child.on("close", (code) => res(code));
@@ -253,14 +299,16 @@ async function main() {
     // token_breakdown：从 result.usage 抽出 4 项原始数，让 eval-judge 的 gradeCost
     // 按 cache_read * 0.1x 折算后再评分（claude-opus 重 cache，不折算会被 raw token 全价计费）。
     // result.usage 缺失时（incomplete stream）退化为 0，gradeCost 退化为 total_tokens 评分。
-    token_breakdown: parsed.rawResultUsage ? {
-      input: parsed.rawResultUsage.input_tokens || 0,
-      output: parsed.rawResultUsage.output_tokens || 0,
-      cache_creation: parsed.rawResultUsage.cache_creation_input_tokens || 0,
-      cache_read: parsed.rawResultUsage.cache_read_input_tokens || 0,
-    } : { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
+    token_breakdown: parsed.rawResultUsage
+      ? {
+          input: parsed.rawResultUsage.input_tokens || 0,
+          output: parsed.rawResultUsage.output_tokens || 0,
+          cache_creation: parsed.rawResultUsage.cache_creation_input_tokens || 0,
+          cache_read: parsed.rawResultUsage.cache_read_input_tokens || 0,
+        }
+      : { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
     latency_ms: elapsedMs,
-    exit_status: timedOut ? "timeout" : (parsed.exitStatus || (exitCode === 0 ? "success" : "error")),
+    exit_status: timedOut ? "timeout" : parsed.exitStatus || (exitCode === 0 ? "success" : "error"),
     error_count: parsed.errorCount,
     retry_count: parsed.retryCount,
     backtrack_count: parsed.backtrackCount,
@@ -268,44 +316,59 @@ async function main() {
   };
 
   process.stderr.write(
-    `[claude-code] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms `
-    + `stdout=${stdoutBytes}B events=${parsed.eventCount} sawResult=${parsed.sawResult} `
-    + `turns=${parsed.numTurns} tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`
+    `[claude-code] exit=${exitCode} timedOut=${timedOut} elapsed=${elapsedMs}ms ` +
+      `stdout=${stdoutBytes}B events=${parsed.eventCount} sawResult=${parsed.sawResult} ` +
+      `turns=${parsed.numTurns} tools=${parsed.toolsUsed.join(",")} errors=${parsed.errorCount}\n`,
   );
 
   // 校准诊断（2026-05-25 修订）：
   // result.usage 是真实累计；assistantUsageSum 是 streaming message_delta 累加（含双倍计数），
   // 仅用于事后诊断 streaming 协议变更。两者比值应远 >1（重复计数证据），不再作为"语义判断"。
   if (parsed.rawResultUsage) {
-    const r4 = (parsed.rawResultUsage.input_tokens || 0)
-      + (parsed.rawResultUsage.output_tokens || 0)
-      + (parsed.rawResultUsage.cache_creation_input_tokens || 0)
-      + (parsed.rawResultUsage.cache_read_input_tokens || 0);
+    const r4 =
+      (parsed.rawResultUsage.input_tokens || 0) +
+      (parsed.rawResultUsage.output_tokens || 0) +
+      (parsed.rawResultUsage.cache_creation_input_tokens || 0) +
+      (parsed.rawResultUsage.cache_read_input_tokens || 0);
     process.stderr.write(
-      `[claude-code calibration] result.usage: i=${parsed.rawResultUsage.input_tokens || 0} `
-      + `o=${parsed.rawResultUsage.output_tokens || 0} `
-      + `cc=${parsed.rawResultUsage.cache_creation_input_tokens || 0} `
-      + `cr=${parsed.rawResultUsage.cache_read_input_tokens || 0} 4sum=${r4} `
-      + `(num_turns=${parsed.numTurns})\n`
+      `[claude-code calibration] result.usage: i=${parsed.rawResultUsage.input_tokens || 0} ` +
+        `o=${parsed.rawResultUsage.output_tokens || 0} ` +
+        `cc=${parsed.rawResultUsage.cache_creation_input_tokens || 0} ` +
+        `cr=${parsed.rawResultUsage.cache_read_input_tokens || 0} 4sum=${r4} ` +
+        `(num_turns=${parsed.numTurns})\n`,
     );
   }
 
   // 健康检查：exit=0 但没有 result 事件 → 说明输出在中途被截断/丢失，应当标 error
   if (!timedOut && exitCode === 0 && !parsed.sawResult) {
-    process.stdout.write(JSON.stringify({
-      output: `[ERROR] claude-code stream-json incomplete: no result event (events=${parsed.eventCount}, stdout=${stdoutBytes}B)`,
-      meta: metaOut,
-      error: true,
-    }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] claude-code stream-json incomplete: no result event (events=${parsed.eventCount}, stdout=${stdoutBytes}B)`,
+        meta: metaOut,
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
 
   if (timedOut) {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code TIMEOUT after ${timeoutMs}ms`, meta: metaOut, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] claude-code TIMEOUT after ${timeoutMs}ms`,
+        meta: metaOut,
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
   if (exitCode !== 0) {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`, meta: metaOut, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] claude-code exit=${exitCode}\nstderr tail:\n${stderrBuf.slice(-800)}`,
+        meta: metaOut,
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   }
 
@@ -316,7 +379,12 @@ async function main() {
       const now = new Date().toISOString();
       const startIso = new Date(startedAt).toISOString();
       const sessionUuid = crypto.randomUUID();
-      const usage = parsed.rawResultUsage || { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+      const usage = parsed.rawResultUsage || {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      };
       const summarySpan: TraceSpan = {
         span_id: 0,
         span_kind: "thought",
@@ -342,7 +410,11 @@ async function main() {
         total_output_tokens: usage.output_tokens || 0,
         total_cache_read_tokens: usage.cache_read_input_tokens || 0,
         total_cache_creation_tokens: usage.cache_creation_input_tokens || 0,
-        billable_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.cache_creation_input_tokens || 0) + Math.round((usage.cache_read_input_tokens || 0) * 0.1),
+        billable_tokens:
+          (usage.input_tokens || 0) +
+          (usage.output_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0) +
+          Math.round((usage.cache_read_input_tokens || 0) * 0.1),
         status: "ok",
         final_output: parsed.text.slice(0, 8192),
         spans: [summarySpan],
@@ -359,12 +431,24 @@ async function main() {
     }
   }
 
-  process.stdout.write(JSON.stringify({ output: parsed.text || "[ERROR] empty output from claude-code", meta: metaOut, error: !parsed.text }) + "\n");
+  process.stdout.write(
+    JSON.stringify({
+      output: parsed.text || "[ERROR] empty output from claude-code",
+      meta: metaOut,
+      error: !parsed.text,
+    }) + "\n",
+  );
 }
 
 if (import.meta.main) {
   main().catch((err) => {
-    process.stdout.write(JSON.stringify({ output: `[ERROR] claude-code wrapper crash: ${err?.message || err}`, meta: {}, error: true }) + "\n");
+    process.stdout.write(
+      JSON.stringify({
+        output: `[ERROR] claude-code wrapper crash: ${err?.message || err}`,
+        meta: {},
+        error: true,
+      }) + "\n",
+    );
     process.exit(0);
   });
 }

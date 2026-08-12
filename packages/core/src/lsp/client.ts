@@ -13,10 +13,13 @@ import { getLogger } from "../debug/logger.ts";
 export class LSPClient {
   private process: ChildProcess | null = null;
   private requestId = 0;
-  private pendingRequests = new Map<number, {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-  }>();
+  private pendingRequests = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
   private notificationHandlers = new Map<string, Array<(params: unknown) => void>>();
   private buffer = "";
   private contentLength = -1;
@@ -52,8 +55,14 @@ export class LSPClient {
 
     // 等待进程成功 spawn
     await new Promise<void>((resolve, reject) => {
-      const onSpawn = () => { cleanup(); resolve(); };
-      const onError = (err: Error) => { cleanup(); reject(err); };
+      const onSpawn = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
       const cleanup = () => {
         this.process?.removeListener("spawn", onSpawn);
         this.process?.removeListener("error", onError);
@@ -102,8 +111,14 @@ export class LSPClient {
       }, timeoutMs);
 
       this.pendingRequests.set(id, {
-        resolve: (v) => { clearTimeout(timer); resolve(v as T); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v as T);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
       });
 
       this.writeMessage(message);
@@ -128,10 +143,24 @@ export class LSPClient {
     this.isStopping = true;
     if (this.process && !this.process.killed) {
       // 先摘掉 stdout/stderr/exit 监听器,避免进程退出后回调残留(LEAK-6)
-      try { this.process.stdout?.removeAllListeners(); } catch { /* ignore */ }
-      try { this.process.stderr?.removeAllListeners(); } catch { /* ignore */ }
-      try { this.process.removeAllListeners("exit"); } catch { /* ignore */ }
-      try { this.process.kill(); } catch {}
+      try {
+        this.process.stdout?.removeAllListeners();
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.process.stderr?.removeAllListeners();
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.process.removeAllListeners("exit");
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.process.kill();
+      } catch {}
     }
     // reject 残留 pending 请求,避免调用方永久挂起
     const err = new Error(`LSP 服务器 ${this.serverName} 已停止`);
@@ -205,7 +234,9 @@ export class LSPClient {
       const handlers = this.notificationHandlers.get(msg.method);
       if (handlers) {
         for (const handler of handlers) {
-          try { handler(msg.params); } catch {}
+          try {
+            handler(msg.params);
+          } catch {}
         }
       }
     } else if (msg.method && msg.id != null) {
@@ -227,8 +258,7 @@ export class LSPClient {
    * - 其余未知请求：回 -32601 MethodNotFound
    */
   private handleServerRequest(msg: any): void {
-    const respond = (result: unknown) =>
-      this.writeMessage({ jsonrpc: "2.0", id: msg.id, result });
+    const respond = (result: unknown) => this.writeMessage({ jsonrpc: "2.0", id: msg.id, result });
 
     switch (msg.method) {
       case "workspace/configuration": {

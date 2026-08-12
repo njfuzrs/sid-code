@@ -15,7 +15,17 @@
  * 存储位置：~/.sid-code/cache-breaks.jsonl（可经 SID_CODE_CACHE_BREAKS 环境变量重定向，测试隔离用）。
  */
 
-import { existsSync, appendFileSync, mkdirSync, statSync, renameSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
+import {
+  existsSync,
+  appendFileSync,
+  mkdirSync,
+  statSync,
+  renameSync,
+  unlinkSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import type { CacheBreakRecord, CacheBreakCategory } from "../api/cache-detection.ts";
@@ -140,7 +150,11 @@ function readTailLines(path: string, n: number): string[] {
     return [];
   } finally {
     if (fd !== undefined) {
-      try { closeSync(fd); } catch { /* ignore */ }
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -197,9 +211,12 @@ export function queryCacheBreakHistory(limit = 100): CacheBreakTelemetryEntry[] 
  * 聚合历史中断按归因类型计数（供 /cache --history 展示哪类中断最频繁）。
  * 归因映射到稳定的类别键，便于跨条目聚合。
  */
-export function summarizeCacheBreakHistory(
-  limit = 500,
-): { total: number; byCategory: Record<string, number>; structuredCount: number; legacyCount: number } {
+export function summarizeCacheBreakHistory(limit = 500): {
+  total: number;
+  byCategory: Record<string, number>;
+  structuredCount: number;
+  legacyCount: number;
+} {
   const entries = queryCacheBreakHistory(limit);
   const byCategory: Record<string, number> = {};
   let structuredCount = 0;

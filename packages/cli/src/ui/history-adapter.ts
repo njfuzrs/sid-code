@@ -17,7 +17,12 @@ import {
   type ToolResultDisplay,
 } from "./types.ts";
 import type { Message, ContentBlock } from "@sid-code/core/llm/types.ts";
-import { getToolSummary, getResultSummary, isDiffContent, getFilenameFromInput } from "./ui-utils.ts";
+import {
+  getToolSummary,
+  getResultSummary,
+  isDiffContent,
+  getFilenameFromInput,
+} from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
 import { hasInternalOrigin as hasInternalOriginImpl } from "@sid-code/core/context/internal-message.ts";
@@ -34,10 +39,7 @@ import { hasInternalOrigin as hasInternalOriginImpl } from "@sid-code/core/conte
  */
 export function buildStaticItems(historyItems: HistoryItem[], version: string): HistoryItem[] {
   if (historyItems.length === 0) return [];
-  return [
-    { id: -2, type: "app_header", version } as HistoryItem,
-    ...historyItems,
-  ];
+  return [{ id: -2, type: "app_header", version } as HistoryItem, ...historyItems];
 }
 
 /** 思考摘要（从 thinking block 提取） */
@@ -55,9 +57,11 @@ const PLACEHOLDER_TEXT = "[系统] 自动插入占位消息以保持角色交替
 
 /** 判断是否为占位消息 */
 export function isPlaceholderMessage(msg: Message): boolean {
-  return msg.content.length === 1
-    && msg.content[0].type === "text"
-    && msg.content[0].text === PLACEHOLDER_TEXT;
+  return (
+    msg.content.length === 1 &&
+    msg.content[0].type === "text" &&
+    msg.content[0].text === PLACEHOLDER_TEXT
+  );
 }
 
 /**
@@ -70,10 +74,12 @@ const RESUME_MARKER_SIGNATURE = "本次会话是从之前的对话恢复的续�
 
 /** 续接标记消息（恢复会话时注入,仅供 LLM,不展示） */
 export function isResumeMarkerMessage(msg: Message): boolean {
-  return msg.role === "user"
-    && msg.content.length === 1
-    && msg.content[0].type === "text"
-    && msg.content[0].text.includes(RESUME_MARKER_SIGNATURE);
+  return (
+    msg.role === "user" &&
+    msg.content.length === 1 &&
+    msg.content[0].type === "text" &&
+    msg.content[0].text.includes(RESUME_MARKER_SIGNATURE)
+  );
 }
 
 /** <task-notification> 起始标签（后台任务完成通知，由 query/loop.ts 作为 user 文本消息注入） */
@@ -115,7 +121,14 @@ function tryParseTaskNotifications(msg: Message): {
     //
     // 兼容单个对象与数组两种形态：query/loop 现注入数组（一条消息聚合多通知）；
     // 旧会话 resume 可能是单个对象（早期实现）。两者都遍历渲染，不丢任何一条。
-    type StructuredNotif = { taskId?: string; status?: string; summary?: string; result?: string; outputFile?: string; agentType?: string };
+    type StructuredNotif = {
+      taskId?: string;
+      status?: string;
+      summary?: string;
+      result?: string;
+      outputFile?: string;
+      agentType?: string;
+    };
     const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
     const notifList: StructuredNotif[] = Array.isArray(raw)
       ? raw
@@ -133,10 +146,10 @@ function tryParseTaskNotifications(msg: Message): {
     // `⏺ task_stop`，误导用户以为任务还在跑。
     //
     // 修复：只吃掉通知**文本**块，其余 blocks 原样交还调用方走正常渲染路径（与通用路径一致）。
-    const nonTextBlocks = msg.content.filter(b => b.type !== "text");
+    const nonTextBlocks = msg.content.filter((b) => b.type !== "text");
     if (notifList.length > 0) {
       return {
-        notifications: notifList.map(notif => ({
+        notifications: notifList.map((notif) => ({
           type: "task_notification" as const,
           taskId: notif.taskId ?? "",
           status: notif.status ?? "",
@@ -151,7 +164,7 @@ function tryParseTaskNotifications(msg: Message): {
     }
     // 回退正则解析：旧会话 resume（注入时还没有 _meta.notif 结构化快照）时兼容。
     // 旧数据里若结论含 XML 字面量仍可能被截断——那是历史遗留，新会话不再走此路径。
-    const text = msg.content.map(b => (b.type === "text" ? b.text : "")).join("\n");
+    const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
     const blocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/g);
     // 无通知块可解析时返回 null，让消息完全走正常渲染路径（tool_result 因此不会丢）。
     if (!blocks || blocks.length === 0) return null;
@@ -226,9 +239,9 @@ function parseOneNotificationBlock(block: string): HistoryItemWithoutId {
  */
 function isInternalOnlyText(text: string): boolean {
   const t = text.trimStart();
-  return t.startsWith("<system-reminder>")
-    || t.startsWith("[压缩边界]")
-    || t.startsWith("[已释放]");
+  return (
+    t.startsWith("<system-reminder>") || t.startsWith("[压缩边界]") || t.startsWith("[已释放]")
+  );
 }
 
 /**
@@ -254,7 +267,7 @@ function hasInternalOrigin(msg: Message): boolean {
  * user 消息上时才现形。
  */
 function hasToolBlocks(msg: Message): boolean {
-  return msg.content.some(b => b.type === "tool_use" || b.type === "tool_result");
+  return msg.content.some((b) => b.type === "tool_use" || b.type === "tool_result");
 }
 
 /**
@@ -274,8 +287,10 @@ export function isHiddenFromDisplay(msg: Message): boolean {
   // 现按注释办——混合内容交给调用方剥离文本块后继续渲染工具块。
   if (hasInternalOrigin(msg)) return !hasToolBlocks(msg);
   // 仅含内部文本块(无其它类型 block)的消息整条隐藏
-  return msg.content.length > 0
-    && msg.content.every(b => b.type === "text" && isInternalOnlyText(b.text));
+  return (
+    msg.content.length > 0 &&
+    msg.content.every((b) => b.type === "text" && isInternalOnlyText(b.text))
+  );
 }
 
 /**
@@ -285,12 +300,12 @@ export function isHiddenFromDisplay(msg: Message): boolean {
  * 返回 content 全空时调用方应跳过该消息。
  */
 function stripInternalTextBlocks(msg: Message): Message {
-  if (!msg.content.some(b => b.type === "text" && isInternalOnlyText(b.text))) {
+  if (!msg.content.some((b) => b.type === "text" && isInternalOnlyText(b.text))) {
     return msg;
   }
   return {
     ...msg,
-    content: msg.content.filter(b => !(b.type === "text" && isInternalOnlyText(b.text))),
+    content: msg.content.filter((b) => !(b.type === "text" && isInternalOnlyText(b.text))),
   };
 }
 
@@ -390,9 +405,7 @@ export function messagesToHistoryItemsWithMap(
     // 只显示触发命令本身（_meta.displayCommand，如 /commit），提示词内容不展示。
     if (rawMsg._meta?.origin === "command-expansion") {
       const displayCommand =
-        typeof rawMsg._meta.displayCommand === "string"
-          ? rawMsg._meta.displayCommand
-          : "";
+        typeof rawMsg._meta.displayCommand === "string" ? rawMsg._meta.displayCommand : "";
       if (displayCommand) {
         items.push({ type: "command", input: displayCommand, output: null });
       }
@@ -401,7 +414,7 @@ export function messagesToHistoryItemsWithMap(
       // 那条 tool_result 被一并丢弃 → tool_use 永久 pending → 末尾挂"执行中"气泡。
       pushRemainingBlocks(
         rawMsg,
-        rawMsg.content.filter(b => b.type !== "text"),
+        rawMsg.content.filter((b) => b.type !== "text"),
         items,
         toolNameMap,
         pendingToolCalls,
@@ -416,7 +429,7 @@ export function messagesToHistoryItemsWithMap(
     if (hasInternalOrigin(rawMsg)) {
       pushRemainingBlocks(
         rawMsg,
-        rawMsg.content.filter(b => b.type !== "text"),
+        rawMsg.content.filter((b) => b.type !== "text"),
         items,
         toolNameMap,
         pendingToolCalls,
@@ -614,7 +627,16 @@ export function injectSettledToolCalls(
  */
 export function injectAgentProgress(
   historyItems: HistoryItem[],
-  progressById: Map<string, { recentActivities: string[]; agentType: string; toolUseCount: number; tokenCount: number; elapsedMs?: number }>,
+  progressById: Map<
+    string,
+    {
+      recentActivities: string[];
+      agentType: string;
+      toolUseCount: number;
+      tokenCount: number;
+      elapsedMs?: number;
+    }
+  >,
 ): number {
   if (progressById.size === 0) return 0;
   let injected = 0;
@@ -700,9 +722,7 @@ function convertAssistantMessage(
       flushText();
       // SP1：把持久化的 durationMs 折算为秒带入，历史项才能稳定显示耗时。
       const durationSeconds =
-        typeof block.durationMs === "number"
-          ? Math.floor(block.durationMs / 1000)
-          : undefined;
+        typeof block.durationMs === "number" ? Math.floor(block.durationMs / 1000) : undefined;
       items.push({
         type: "thinking",
         thought: {

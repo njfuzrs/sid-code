@@ -42,6 +42,10 @@ chat_session*.json
 .mcp.json
 /.sid-code/tool-results/
 
+# MCP 项目配置模板：内容已并入 website/extend/mcp.md，仓库根不再入库
+# （本机 cp 出的示例文件仍可保留在工作区，不进 git）
+/.mcp.json.example
+
 # 团队默认配置真实值（含共享 API key，只保留占位模板 team-defaults.template.json 入库）
 /scripts/team-defaults.json
 
@@ -52,11 +56,23 @@ chat_session*.json
 _template
 scheduled_tasks.lock
 
-# ripgrep 二进制：vendor/ripgrep/<version>/ 是入库的规范存放位置（离线可用，见
-# scripts/fetch-ripgrep.ts），不忽略。vendor/rg-embed 是构建时从中拷贝出的固定嵌入
-# import 路径产物（bun --compile 用，见 src/tool/rg-embedded.ts），纯本地构建物、不入库；
-# 旧的扁平缓存路径 vendor/rg-<platform> 一并忽略（如本机残留不会被误加入库）。
+# ripgrep 二进制：packages/core/vendor/ripgrep/<version>/ 是入库的规范存放位置
+# （离线可用，见 scripts/fetch-ripgrep.ts），不忽略。
+# packages/core/vendor/rg-embed 是构建时从中拷贝出的固定嵌入 import 路径产物
+# （bun --compile 用，见 packages/core/src/tool/rg-embedded.ts），纯本地构建物、不入库；
+# 旧的扁平缓存路径 rg-<platform> 一并忽略（如本机残留不会被误加入库）。
+#
+# ⚠️ P2-3（2026-08-12）把 vendor/ 从仓库根下沉到 packages/core/（谁用谁带，对齐
+#    gemini-cli 的 packages/core/vendor/ripgrep/）。前导 `/` 把规则**锚定在仓库根**，
+#    所以这一行必须跟着迁移一起改，且必须在**同一个 commit** 里 ——
+#    锚点失效是静默的：5 个构建物（21MB）会出现在 git status 里，
+#    而迁移期的提交纪律恰恰要求用 `git add -A`（避免漏文件），两者叠加就是
+#    「21MB 二进制被静默提交」。防复发门禁见 tests/build/vendor-location.test.ts。
+#
+#    旧的根路径规则一并保留：换分支/回滚到迁移前的提交时，根 vendor/ 会重新出现，
+#    没有这条会让那 5 个构建物在旧分支上暴露出来。
 /vendor/rg-*
+/packages/core/vendor/rg-*
 
 # eval 真实会话原始输出（P0-4 开源脱敏）
 #
@@ -78,3 +94,44 @@ scheduled_tasks.lock
 !/evals/raw-outputs/.gitkeep
 /evals/sample-50.jsonl
 /evals/sample-50.txt
+
+# _reports/ 单次运行的能力/技能评测转储：文件名含 13 位毫秒时间戳 = 机器生成、可重跑、无读取方
+# （2026-08-12 审计确认 `run-*-capability.ts` 只写不读）。判别规则（勿改成一刀切 /evals/_reports/）：
+#   出库 = 名字里有 13 位毫秒时间戳（capability-plan-1779815841472.json）
+#   入库 = 名字里是人工语义锚点（capability-plan-w11.json / eval-latest.json）
+# gitignore 不支持 {13} 量词，只能用 13 个 [0-9] 字符类；写死 13 位是有意的，不会误伤 w11 这类文件。
+/evals/_reports/capability-*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].json
+/evals/_reports/skill-*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].json
+
+# dashboard 生成机制已整体删除（2026-08-12）：DASHBOARD.md / eval-dashboard.html /
+# eval-data.json 曾由 pre-push hook 每次 push 自动生成并 commit，61 次提交累计 14.3MB。
+# 调研 SWE-bench / OpenHands / Aider 后确认同类开源项目均无"CI 自动回写看板产物"模式，
+# 遂删除生成脚本本身（scripts/eval/dashboard.ts 等），不再是"产物不入库"而是"不再生成"。
+# 此处 ignore 仅作兜底，防止同名文件被误加回索引。
+/evals/DASHBOARD.md
+/evals/eval-dashboard.html
+/evals/eval-data.json
+
+# Claude Code 的本地工作配置：**保留在工作区（我们用 CC 开发 sid-code），但不入库。**
+# 对标（15 个项目实测）：codex / cc-switch / kimi-code / langchain / litellm / langfuse
+# 六家把 .claude/ 整体 ignore。理由不是"竞品观感"，而是它确实是**每个开发者的本地配置**：
+# settings.local.json 含个人权限白名单，worktrees / tsc-cache 是本地状态。
+# 改造前 settings.local.json 只靠开发者的用户全局 ~/.config/git/ignore 兜住 ——
+# 换台机器 clone 就会出现在 git status 里。
+#
+# ⚠️ 写 `.claude/*` 而不是 `.claude/`：git 对被忽略的**目录**不会下降进去，
+#    写 `.claude/` 会让下面的 `!` 放行永远不生效（gitignore 最经典的坑）。
+#    加 `*` 后忽略的是"目录内的每一项"，`!` 才能生效。
+#    形态照 openclaw（`.claude/*` + `!.claude/settings.json`）。
+# ⚠️ 这是 **fail-closed**：将来 .claude/ 下新增任何本地状态（worktrees / tsc-cache /
+#    launch.json）默认被挡住，不需要有人记得来补规则。
+#    绝不要改成 promptfoo 式的「只 ignore settings.local.json」——那是 fail-open，
+#    新增产物默认入库。本仓 .gitignore:30-33 记着同类教训：
+#    「原先写成三条精确子路径，漏掉了 worktrees/ 和 *.lock 等新增运行时产物」。
+.claude/*
+# 例外：skills/ 是**仓库资产**不是本地配置（见 SKILL.md frontmatter：
+# "执行者可以是任意 agent(Claude Code / sid-code 自己 / 其他)"），
+# 且它是 CLAUDE.md 北极星章点名的数据飞轮组件、未被内置嵌入
+# （grep -c "eval-session" builtin-embedded.generated.ts = 0），出库就是真的丢了。
+# 放行目录这一行后 git 会下降进去，内部文件自动可追踪（`.claude/*` 的 `*` 只匹配第一层）。
+!.claude/skills/

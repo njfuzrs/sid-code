@@ -24,7 +24,15 @@ interface RunRecord {
   score: number | null;
   named_scores?: Record<string, number | null>;
   latency_ms?: number;
-  meta?: { total_tokens?: number; token_breakdown?: { input?: number; output?: number; cache_read?: number; cache_creation?: number } };
+  meta?: {
+    total_tokens?: number;
+    token_breakdown?: {
+      input?: number;
+      output?: number;
+      cache_read?: number;
+      cache_creation?: number;
+    };
+  };
   is_median?: boolean;
   tested_at: string;
   run_status?: string;
@@ -33,24 +41,27 @@ interface RunRecord {
 interface ProviderStats {
   provider: string;
   totalCases: number;
-  passCount: number;          // score >= 2.5
+  passCount: number; // score >= 2.5
   passRate: number;
-  avgScore: number | null;    // correctness：归一化到 5 分制
+  avgScore: number | null; // correctness：归一化到 5 分制
   avgLatencyMs: number | null;
   avgTokensPerCase: number | null;
-  avgCostUsd: number | null;  // 按 token 估算（待精算时填进价表）
-  errorCount: number;         // null score 数量
+  avgCostUsd: number | null; // 按 token 估算（待精算时填进价表）
+  errorCount: number; // null score 数量
 }
 
-const TOKEN_PRICING_USD: Record<string, { input: number; output: number; cache_read: number; cache_creation: number }> = {
+const TOKEN_PRICING_USD: Record<
+  string,
+  { input: number; output: number; cache_read: number; cache_creation: number }
+> = {
   // 单位：USD per 1M token
   "claude-sonnet-4-5-20250929": { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
   "claude-opus-4-7": { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
   "deepseek-v4-pro": { input: 0.28, output: 1.1, cache_read: 0.028, cache_creation: 0.28 },
-  "default": { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25 },
+  default: { input: 1, output: 5, cache_read: 0.1, cache_creation: 1.25 },
 };
 
-function pricingFor(provider: string): typeof TOKEN_PRICING_USD["default"] {
+function pricingFor(provider: string): (typeof TOKEN_PRICING_USD)["default"] {
   // sid-code-deepseek-v4-pro / claude-code-claude-opus-4-7 等 → 取关键字段
   for (const key of Object.keys(TOKEN_PRICING_USD)) {
     if (provider.includes(key)) return TOKEN_PRICING_USD[key];
@@ -81,11 +92,18 @@ function computeStats(provider: string, records: RunRecord[]): ProviderStats {
   const validScores = records.map((r) => r.score).filter((s): s is number => typeof s === "number");
   const passCount = validScores.filter((s) => s >= 2.5).length;
   const errorCount = records.filter((r) => r.score === null).length;
-  const avgScore = validScores.length > 0 ? validScores.reduce((a, b) => a + b, 0) / validScores.length : null;
-  const latencies = records.map((r) => r.latency_ms).filter((x): x is number => typeof x === "number");
-  const avgLatencyMs = latencies.length > 0 ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null;
-  const tokens = records.map((r) => r.meta?.total_tokens).filter((x): x is number => typeof x === "number");
-  const avgTokensPerCase = tokens.length > 0 ? tokens.reduce((a, b) => a + b, 0) / tokens.length : null;
+  const avgScore =
+    validScores.length > 0 ? validScores.reduce((a, b) => a + b, 0) / validScores.length : null;
+  const latencies = records
+    .map((r) => r.latency_ms)
+    .filter((x): x is number => typeof x === "number");
+  const avgLatencyMs =
+    latencies.length > 0 ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null;
+  const tokens = records
+    .map((r) => r.meta?.total_tokens)
+    .filter((x): x is number => typeof x === "number");
+  const avgTokensPerCase =
+    tokens.length > 0 ? tokens.reduce((a, b) => a + b, 0) / tokens.length : null;
 
   // Cost 估算
   const pricing = pricingFor(provider);
@@ -122,7 +140,9 @@ function renderReport(stats: ProviderStats[], since: string | undefined): string
   lines.push("");
   lines.push(`> 生成时间: ${new Date().toISOString()}`);
   lines.push(`> 数据范围: ${since ? `since ${since}` : "全部历史"}`);
-  lines.push(`> 业界对齐: Artificial Analysis Coding Agent Index — correctness / cost / time / token 独立报告`);
+  lines.push(
+    `> 业界对齐: Artificial Analysis Coding Agent Index — correctness / cost / time / token 独立报告`,
+  );
   lines.push("");
   lines.push("## 1. Correctness（衡量能力，主指标）");
   lines.push("");
@@ -159,8 +179,12 @@ function renderReport(stats: ProviderStats[], since: string | undefined): string
   lines.push("## 4. 设计原则");
   lines.push("");
   lines.push("- **correctness 与 cost / time 严格独立**：不并入加权总分（业界共识 C4）");
-  lines.push("- **不写 case yaml 的 baseline_scores**：横评数据生命周期短（每周 / 每月一次），不污染 case 永久 baseline");
-  lines.push("- **token pricing 表见 `scripts/eval/cross-provider-report.ts`**：仅供横评，不进 grader");
+  lines.push(
+    "- **不写 case yaml 的 baseline_scores**：横评数据生命周期短（每周 / 每月一次），不污染 case 永久 baseline",
+  );
+  lines.push(
+    "- **token pricing 表见 `scripts/eval/cross-provider-report.ts`**：仅供横评，不进 grader",
+  );
   return lines.join("\n");
 }
 
@@ -207,7 +231,11 @@ async function main(): Promise<void> {
     typeof values.output === "string" ? resolve(values.output) : join(outDir, `${ts}.md`);
   writeFileSync(outPath, md, "utf-8");
   // 同时存 jsonl 供后续工具消费
-  writeFileSync(join(outDir, `${ts}.jsonl`), stats.map((s) => JSON.stringify(s)).join("\n"), "utf-8");
+  writeFileSync(
+    join(outDir, `${ts}.jsonl`),
+    stats.map((s) => JSON.stringify(s)).join("\n"),
+    "utf-8",
+  );
   console.log(`\n[cross-provider] 写入 ${outPath}`);
 }
 

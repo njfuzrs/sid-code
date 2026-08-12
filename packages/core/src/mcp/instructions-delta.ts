@@ -13,13 +13,13 @@ export function getMcpInstructionsDelta(
   announcedServers: Set<string>,
 ): { added: string[]; blocks: string[] } | null {
   const connected = serverStatuses.filter(
-    s => s.status === 'connected' && s.instructions && !announcedServers.has(s.name)
+    (s) => s.status === "connected" && s.instructions && !announcedServers.has(s.name),
   );
   if (connected.length === 0) return null;
 
   return {
-    added: connected.map(s => s.name),
-    blocks: connected.map(s => `## ${s.name}\n${s.instructions}`),
+    added: connected.map((s) => s.name),
+    blocks: connected.map((s) => `## ${s.name}\n${s.instructions}`),
   };
 }
 
@@ -40,17 +40,11 @@ export function getMcpInstructionsDelta(
  *
  * 这两条与 `loop.ts` 里增量注入的文案保持同形，避免哪天有人接线时把旧形态带回来。
  */
-export function buildMcpInstructionsSection(
-  serverStatuses: MCPServerStatusInfo[],
-): string {
-  const connected = serverStatuses.filter(
-    s => s.status === 'connected' && s.instructions
-  );
-  if (connected.length === 0) return '';
+export function buildMcpInstructionsSection(serverStatuses: MCPServerStatusInfo[]): string {
+  const connected = serverStatuses.filter((s) => s.status === "connected" && s.instructions);
+  if (connected.length === 0) return "";
 
-  const blocks = connected.map(
-    s => `## ${s.name}\n${s.instructions}`
-  ).join('\n\n');
+  const blocks = connected.map((s) => `## ${s.name}\n${s.instructions}`).join("\n\n");
 
   return (
     `<system-reminder>\n` +

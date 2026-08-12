@@ -21,7 +21,12 @@ import { WriteTool } from "./write.ts";
  * 持有 FileReadTracker 状态的工具名集合。
  * 子代理隔离时据此判断「哪些工具需用独立 tracker 重建、哪些可安全复用父实例」。
  */
-export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "edit", "read_many", "write"]);
+export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "read",
+  "edit",
+  "read_many",
+  "write",
+]);
 
 /**
  * 用指定 tracker 构造一组有状态工具（read / edit / read_many / write）。

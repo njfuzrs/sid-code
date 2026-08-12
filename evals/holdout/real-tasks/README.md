@@ -14,7 +14,7 @@
 >
 > **本文件不能改的内容**（路线 §9.1.2 + §9.1.1 铁律）：
 > - 永远不要把 holdout sid 派生 case 落到 `evals/real-tasks/<cat>/`
-> - 永远不要在 `evals/CASES.md` / `evals/DASHBOARD.md` 公开页面引用本文件中的 sid
+> - 永远不要在 `evals/CASES.md` 公开页面引用本文件中的 sid
 > - 永远不要在 src/ commit 中以"调试"为名读取 holdout sid 对应的 trajectory（默认 `--skip-holdout=true`）
 
 ## 落地说明

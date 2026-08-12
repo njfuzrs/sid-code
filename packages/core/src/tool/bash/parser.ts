@@ -14,8 +14,16 @@ export type BashASTNode =
 
 /** 包装命令前缀（需要剥离以获取实际命令） */
 const WRAPPER_COMMANDS = new Set([
-  "timeout", "env", "nice", "nohup", "time", "strace",
-  "ionice", "taskset", "chrt", "numactl",
+  "timeout",
+  "env",
+  "nice",
+  "nohup",
+  "time",
+  "strace",
+  "ionice",
+  "taskset",
+  "chrt",
+  "numactl",
 ]);
 
 /**
@@ -29,14 +37,18 @@ export function parseBashCommand(command: string): BashASTNode {
     // 1. 处理复合命令（&&、||、;）— 在引号外拆分
     const seqParts = splitOutsideQuotes(trimmed, /\s*(&&|\|\||;)\s*/);
     if (seqParts.parts.length > 1) {
-      const commands = seqParts.parts.map(p => parseBashCommand(p));
-      return { type: "sequence", operator: (seqParts.separators[0] || "&&") as "&&" | "||" | ";", commands };
+      const commands = seqParts.parts.map((p) => parseBashCommand(p));
+      return {
+        type: "sequence",
+        operator: (seqParts.separators[0] || "&&") as "&&" | "||" | ";",
+        commands,
+      };
     }
 
     // 2. 处理管道（|）— 在引号外拆分
     const pipeParts = splitOutsideQuotes(trimmed, /\s*\|\s*(?!\|)/);
     if (pipeParts.parts.length > 1) {
-      return { type: "pipeline", commands: pipeParts.parts.map(p => parseBashCommand(p)) };
+      return { type: "pipeline", commands: pipeParts.parts.map((p) => parseBashCommand(p)) };
     }
 
     // 3. 处理重定向
@@ -167,13 +179,18 @@ function collectRedirects(node: BashASTNode, targets: string[]): void {
 /**
  * 从 AST 中提取所有简单命令节点
  */
-export function extractSimpleCommands(node: BashASTNode): Array<{ command: string; args: string[] }> {
+export function extractSimpleCommands(
+  node: BashASTNode,
+): Array<{ command: string; args: string[] }> {
   const commands: Array<{ command: string; args: string[] }> = [];
   collectSimpleCommands(node, commands);
   return commands;
 }
 
-function collectSimpleCommands(node: BashASTNode, out: Array<{ command: string; args: string[] }>): void {
+function collectSimpleCommands(
+  node: BashASTNode,
+  out: Array<{ command: string; args: string[] }>,
+): void {
   switch (node.type) {
     case "simple":
       if (node.command) out.push({ command: node.command, args: node.args });

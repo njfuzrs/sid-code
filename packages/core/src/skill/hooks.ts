@@ -16,11 +16,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
-import {
-  HookEventName,
-  LEGACY_EVENT_MAP,
-  type CommandHookConfig,
-} from "../hook/types.ts";
+import { HookEventName, LEGACY_EVENT_MAP, type CommandHookConfig } from "../hook/types.ts";
 import type { SkillHooksConfig } from "./types.ts";
 
 /** 校验事件名是否合法（PascalCase 或旧 snake_case） */
@@ -100,10 +96,7 @@ export function registerSkillHooks(
             once: hook.once ?? false,
           });
           count++;
-          log.debug(
-            "SKILL",
-            `注册 Skill hook: ${skillName} → ${eventName}:${def.matcher ?? "*"}`,
-          );
+          log.debug("SKILL", `注册 Skill hook: ${skillName} → ${eventName}:${def.matcher ?? "*"}`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log.warn("SKILL", `注册 Skill hook 失败 (${skillName}): ${msg}`);
@@ -119,9 +112,6 @@ export function registerSkillHooks(
 }
 
 /** 卸载 Skill 声明的所有生命周期钩子 */
-export function unregisterSkillHooks(
-  hookSystem: HookSystem,
-  skillName: string,
-): number {
+export function unregisterSkillHooks(hookSystem: HookSystem, skillName: string): number {
   return hookSystem.removeSkillHooks(skillName);
 }

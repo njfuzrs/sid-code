@@ -39,7 +39,11 @@ export class ExtensionLoader {
    * @param options 扫描选项（可选）
    * @returns 解析后的文件列表
    */
-  async scan(type: string, projectDir?: string, options?: ScanOptions): Promise<ParsedExtensionFile[]> {
+  async scan(
+    type: string,
+    projectDir?: string,
+    options?: ScanOptions,
+  ): Promise<ParsedExtensionFile[]> {
     const result = await this.scanWithResult(type, projectDir, options);
     return result.files;
   }
@@ -51,7 +55,11 @@ export class ExtensionLoader {
    * @param options 扫描选项
    * @returns 扫描结果（含文件、错误、覆盖信息）
    */
-  async scanWithResult(type: string, projectDir?: string, options?: ScanOptions): Promise<ScanResult> {
+  async scanWithResult(
+    type: string,
+    projectDir?: string,
+    options?: ScanOptions,
+  ): Promise<ScanResult> {
     const cacheKey = `${type}:${projectDir ?? ""}:${JSON.stringify(options ?? {})}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
@@ -109,7 +117,10 @@ export class ExtensionLoader {
     //    CC 迁移用户把命令放在 ~/.claude/{type}/，我们兼容读取；同名以 .sid-code 为准。
     if (!surfaceLocked) {
       const userClaudeDir = join(getClaudeHome(), type);
-      const { files: userClaudeFiles, errors: userClaudeErrors } = await this.scanDir(userClaudeDir, "user");
+      const { files: userClaudeFiles, errors: userClaudeErrors } = await this.scanDir(
+        userClaudeDir,
+        "user",
+      );
       mergeFiles(userClaudeFiles);
       errors.push(...userClaudeErrors);
 
@@ -123,7 +134,9 @@ export class ExtensionLoader {
     //    两个项目目录都走信任检查（项目级扩展默认不可信）。
     if (projectDir && !surfaceLocked) {
       // 对一批项目级文件做信任过滤，返回可信文件
-      const filterTrusted = async (files: ParsedExtensionFile[]): Promise<ParsedExtensionFile[]> => {
+      const filterTrusted = async (
+        files: ParsedExtensionFile[],
+      ): Promise<ParsedExtensionFile[]> => {
         if (options?.trustProjectExtensions || !options?.trustManager || files.length === 0) {
           return files;
         }
@@ -153,7 +166,10 @@ export class ExtensionLoader {
       };
 
       const projClaudeDir = join(projectDir, ".claude", type);
-      const { files: projClaudeFiles, errors: projClaudeErrors } = await this.scanDir(projClaudeDir, "project");
+      const { files: projClaudeFiles, errors: projClaudeErrors } = await this.scanDir(
+        projClaudeDir,
+        "project",
+      );
       mergeFiles(await filterTrusted(projClaudeFiles));
       errors.push(...projClaudeErrors);
 
@@ -184,7 +200,10 @@ export class ExtensionLoader {
     const policyDisabled = process.env.SID_CODE_DISABLE_POLICY_SKILLS === "1";
     if (options?.managedDirs && options.managedDirs.length > 0 && !policyDisabled) {
       for (const managedDir of options.managedDirs) {
-        const { files: managedFiles, errors: managedErrors } = await this.scanDir(managedDir, "managed");
+        const { files: managedFiles, errors: managedErrors } = await this.scanDir(
+          managedDir,
+          "managed",
+        );
         mergeFiles(managedFiles);
         errors.push(...managedErrors);
       }

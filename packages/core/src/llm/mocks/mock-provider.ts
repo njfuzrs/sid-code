@@ -87,10 +87,7 @@ export class MockProvider implements Provider {
     this.requestCount = 0;
   }
 
-  async *sendMessageStream(
-    _params: SendParams,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  async *sendMessageStream(_params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     this.requestCount += 1;
     const shouldFail =
       this.cfg.failPattern !== "ok" && this.requestCount > this.cfg.failAfterRequests;
@@ -98,9 +95,7 @@ export class MockProvider implements Provider {
     if (shouldFail) {
       // 模拟 abort 行为 — 如果调用方传了已中断的 signal, 优先抛 AbortError
       if (signal?.aborted) {
-        throw signal.reason instanceof Error
-          ? signal.reason
-          : new Error("Request aborted");
+        throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted");
       }
       throw this.buildFailError();
     }
@@ -135,10 +130,7 @@ export class MockProvider implements Provider {
   private buildFailError(): Error {
     switch (this.cfg.failPattern) {
       case "503":
-        return new RetryableError(
-          `Mock 503 Service Unavailable (${this.cfg.name})`,
-          "overloaded",
-        );
+        return new RetryableError(`Mock 503 Service Unavailable (${this.cfg.name})`, "overloaded");
       case "rate_limit":
         return new RetryableError(
           `Mock 429 Rate Limit (${this.cfg.name})`,
@@ -146,10 +138,7 @@ export class MockProvider implements Provider {
           this.cfg.retryAfterMs,
         );
       case "timeout":
-        return new RetryableError(
-          `Mock Timeout (${this.cfg.name})`,
-          "timeout",
-        );
+        return new RetryableError(`Mock Timeout (${this.cfg.name})`, "timeout");
       default:
         // unreachable — failPattern=ok 时 shouldFail=false 不会进入此分支
         throw new Error(`MockProvider: unexpected failPattern ${this.cfg.failPattern}`);

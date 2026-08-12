@@ -28,13 +28,33 @@ export interface DecisionRecord {
 
 /** 用户纠正信号（"不要这样"、"应该"、"错了"等） */
 const CORRECTION_PATTERNS = [
-  /不要/, /别/, /错了?/, /不对/, /不应该/, /应该是/, /其实/, /而不是/,
-  /don'?t/i, /should not/i, /instead/i, /actually/i, /wrong/i, /no,? /i,
+  /不要/,
+  /别/,
+  /错了?/,
+  /不对/,
+  /不应该/,
+  /应该是/,
+  /其实/,
+  /而不是/,
+  /don'?t/i,
+  /should not/i,
+  /instead/i,
+  /actually/i,
+  /wrong/i,
+  /no,? /i,
 ];
 /** 架构/技术选择信号 */
 const ARCHITECTURE_PATTERNS = [
-  /用\s*\S+\s*而不是/, /选择/, /架构/, /方案/, /改用/, /决定/,
-  /use\s+\S+\s+instead/i, /architecture/i, /approach/i, /decide/i,
+  /用\s*\S+\s*而不是/,
+  /选择/,
+  /架构/,
+  /方案/,
+  /改用/,
+  /决定/,
+  /use\s+\S+\s+instead/i,
+  /architecture/i,
+  /approach/i,
+  /decide/i,
 ];
 
 /**

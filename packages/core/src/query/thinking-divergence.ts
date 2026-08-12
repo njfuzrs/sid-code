@@ -103,10 +103,7 @@ export function isThinkingDiverging(history: ReadonlyArray<number>): boolean {
  * 把本轮思考量并入历史，滚动保留最近 WINDOW 轮。
  * 返回更新后的数组（不修改入参，便于 state 直接赋值）。
  */
-export function pushThinkingLen(
-  history: ReadonlyArray<number> | undefined,
-  len: number,
-): number[] {
+export function pushThinkingLen(history: ReadonlyArray<number> | undefined, len: number): number[] {
   const next = [...(history ?? []), len];
   if (next.length > THINKING_DIVERGENCE_WINDOW) {
     return next.slice(-THINKING_DIVERGENCE_WINDOW);

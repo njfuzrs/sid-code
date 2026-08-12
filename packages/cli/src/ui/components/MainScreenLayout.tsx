@@ -27,7 +27,14 @@ import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type { HistoryItem } from "../types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo, TaskDisplayInfo, TUICallbacks } from "../App.tsx";
+import type {
+  PermissionRequestInfo,
+  ShellConfirmRequestInfo,
+  PlanApprovalRequestInfo,
+  AskUserQuestionRequestInfo,
+  TaskDisplayInfo,
+  TUICallbacks,
+} from "../App.tsx";
 import type { DialogType } from "../../command/types.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { SessionState } from "@sid-code/core/session/state.ts";
@@ -111,7 +118,12 @@ interface MainScreenLayoutProps {
   activeDialog: DialogType | null;
   onDialogClose: () => void;
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
-  availableModels: Array<{ name: string; modelId?: string; provider: string; description?: string }>;
+  availableModels: Array<{
+    name: string;
+    modelId?: string;
+    provider: string;
+    description?: string;
+  }>;
   onModelSelect: (modelName: string) => void;
   availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
   currentTheme: string;
@@ -208,18 +220,18 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
     <Box flexDirection="column" width={termWidth}>
       {/* 历史区：Static print-and-forget → 终端 scrollback（原生可选/可滚） */}
-        <Static items={staticItems}>
-          {(item: HistoryItem, index: number) => (
-            <HistoryItemDisplay
-              key={keyExtractor(item, index)}
-              item={item}
-              prevItem={index > 0 ? staticItems[index - 1] : undefined}
-              terminalWidth={termWidth}
-              thinkCollapsed={thinkCollapsed}
-              thinkExpandable={false}
-            />
-          )}
-        </Static>
+      <Static items={staticItems}>
+        {(item: HistoryItem, index: number) => (
+          <HistoryItemDisplay
+            key={keyExtractor(item, index)}
+            item={item}
+            prevItem={index > 0 ? staticItems[index - 1] : undefined}
+            terminalWidth={termWidth}
+            thinkCollapsed={thinkCollapsed}
+            thinkExpandable={false}
+          />
+        )}
+      </Static>
 
       {/* 动态区（log-update 只重绘这部分，历史不动）
           间距规范（src/ui/CLAUDE.md L2.2）：
@@ -230,7 +242,15 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
         {/* 留白区：瞬态块与输入框，块间恒为 1 行（gap）；空块返回 null 不产生幻影间距 */}
         <Box flexDirection="column" gap={1}>
           {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}
-          {isEmpty ? <EmptyLogo termWidth={termWidth} cwd={cwd} gitBranch={gitBranch} model={model} needsOnboarding={activeDialog === "onboarding"} /> : null}
+          {isEmpty ? (
+            <EmptyLogo
+              termWidth={termWidth}
+              cwd={cwd}
+              gitBranch={gitBranch}
+              model={model}
+              needsOnboarding={activeDialog === "onboarding"}
+            />
+          ) : null}
 
           {/* 执行中工具不再单独渲染：作为普通 tool_group（status=executing）随 staticItems 进 Static，
               完成时原地 reconcile 成终态（对齐 cc inline 路「同一 keyed 行原地变态」）。此前的独立
@@ -259,7 +279,12 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           ) : null}
 
           <Notifications startupWarnings={startupWarnings} />
-          <TodoPanel todos={todos} tasks={tasks} termWidth={termWidth} tasksHidden={taskPanelHidden} />
+          <TodoPanel
+            todos={todos}
+            tasks={tasks}
+            termWidth={termWidth}
+            tasksHidden={taskPanelHidden}
+          />
           <ToastDisplay />
 
           {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}

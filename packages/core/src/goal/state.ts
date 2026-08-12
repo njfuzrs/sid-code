@@ -24,13 +24,13 @@ export interface EvidenceEntry {
 }
 
 export type GoalStatus =
-  | "active"          // 正在执行
-  | "paused"          // 用户暂停（/goal pause）
-  | "blocked"         // 模型报告卡住（连续 N 轮无进展）
-  | "impossible"      // 评估者判定目标无法达成
-  | "budget_limited"  // Token 预算耗尽
-  | "turns_limited"   // 轮次上限耗尽
-  | "complete";       // 评估者确认完成
+  | "active" // 正在执行
+  | "paused" // 用户暂停（/goal pause）
+  | "blocked" // 模型报告卡住（连续 N 轮无进展）
+  | "impossible" // 评估者判定目标无法达成
+  | "budget_limited" // Token 预算耗尽
+  | "turns_limited" // 轮次上限耗尽
+  | "complete"; // 评估者确认完成
 
 export interface GoalState {
   /** 唯一标识（UUID），每次 /goal set 生成新值 */

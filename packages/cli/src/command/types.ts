@@ -50,9 +50,15 @@ export interface AppContext {
   /** 切换子代理模型（/model sub 用）。persist=true 时写 settings.json。 */
   setSubAgentModel?: (type: string, model: string | undefined, persist?: boolean) => void;
   /** 推理强度旋钮 setter（/effort 用）。persist=true 时写 settings.json。 */
-  setEffort?: (level: import("@sid-code/core/llm/effort.ts").EffortSetting, persist?: boolean) => void;
+  setEffort?: (
+    level: import("@sid-code/core/llm/effort.ts").EffortSetting,
+    persist?: boolean,
+  ) => void;
   /** 思考开关旋钮 setter（/think 用）。persist=true 时写 settings.json。 */
-  setThinking?: (setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting, persist?: boolean) => void;
+  setThinking?: (
+    setting: import("@sid-code/core/llm/effort.ts").ThinkingSetting,
+    persist?: boolean,
+  ) => void;
   /** 输出语言 setter（/language 用）。persist=true 时写 settings.json；lang=undefined 回退默认。 */
   setLanguage?: (lang: LanguagePref | undefined, persist?: boolean) => void | Promise<void>;
   /** Vim 输入模式 setter（/vim 用）。persist=true 时写 settings.json vimMode。 */
@@ -74,9 +80,14 @@ export interface AppContext {
   /** M4-5：读取当前外部导入审批态（/memory external status 用）。undefined=尚未询问。 */
   getExternalImportsState?: () => { approved: boolean | undefined };
   /** 自定义状态栏 setter（/statusline 用，P1-5）。config=undefined 禁用；persist=true 写 settings.json。 */
-  setStatusLine?: (config: import("@sid-code/core/config/statusline-types.ts").StatusLineConfig | undefined, persist?: boolean) => void;
+  setStatusLine?: (
+    config: import("@sid-code/core/config/statusline-types.ts").StatusLineConfig | undefined,
+    persist?: boolean,
+  ) => void;
   /** 读取当前自定义状态栏配置（/statusline 展示/toggle 用）。 */
-  getStatusLine?: () => import("@sid-code/core/config/statusline-types.ts").StatusLineConfig | undefined;
+  getStatusLine?: () =>
+    | import("@sid-code/core/config/statusline-types.ts").StatusLineConfig
+    | undefined;
   /** 会话重命名（/rename 用）。name 为空时基于上下文生成。返回最终名字。 */
   renameSession?: (name?: string) => string | Promise<string>;
   /** 读取当前 effort 运行时态 + 能力（/effort 展示用） */
@@ -140,7 +151,9 @@ export interface AppContext {
   /** /goal：设置目标状态（null 表示清除） */
   setGoalState?: (goal: import("@sid-code/core/goal/state.ts").GoalState | null) => void;
   /** /goal：更新目标状态（原地修改） */
-  updateGoalState?: (updater: (goal: import("@sid-code/core/goal/state.ts").GoalState) => void) => void;
+  updateGoalState?: (
+    updater: (goal: import("@sid-code/core/goal/state.ts").GoalState) => void,
+  ) => void;
   /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
   traceCollector?: import("@sid-code/core/trace/collector.ts").TraceCollector;
   /** 权限检查器实例（/allow /deny /add-dir /permissions 用；运行时注入，可能为 null） */
@@ -158,18 +171,18 @@ export type { DialogType } from "@sid-code/core/command-contract/types.ts";
 
 /** 命令执行结果类型 */
 export type CommandResultKind =
-  | "message"        // 显示文本消息
-  | "submit_prompt"  // 将文本提交给 LLM
-  | "clear"          // 清空对话
-  | "quit"           // 退出程序
-  | "confirm"        // 需要用户确认
-  | "dialog"         // 打开交互式对话框
-  | "error";         // 错误信息
+  | "message" // 显示文本消息
+  | "submit_prompt" // 将文本提交给 LLM
+  | "clear" // 清空对话
+  | "quit" // 退出程序
+  | "confirm" // 需要用户确认
+  | "dialog" // 打开交互式对话框
+  | "error"; // 错误信息
 
 export interface CommandResult {
   kind: CommandResultKind;
-  message?: string;  // kind=message/error/confirm 时的文本
-  prompt?: string;   // kind=submit_prompt 时的提示词
+  message?: string; // kind=message/error/confirm 时的文本
+  prompt?: string; // kind=submit_prompt 时的提示词
   /** kind=confirm 时的确认回调 */
   onConfirm?: () => Promise<CommandResult>;
   /** kind=dialog 时指定打开哪个对话框 */
@@ -222,7 +235,6 @@ export type {
   UnifiedCommandRegistryContract,
 } from "@sid-code/core/command-contract/types.ts";
 
-
 // ============================================================
 // 新体系：命令执行结果（执行引擎返回给应用层）
 // ============================================================
@@ -236,5 +248,5 @@ export type CommandExecutionResult =
   | { type: "compact"; summary: string }
   | { type: "confirm"; message: string; onConfirm: () => Promise<CommandExecutionResult> }
   | { type: "error"; message: string }
-  | { type: "passthrough"; value: string }  // 当作普通文本发给模型
-  | { type: "skip" };                       // 静默完成
+  | { type: "passthrough"; value: string } // 当作普通文本发给模型
+  | { type: "skip" }; // 静默完成

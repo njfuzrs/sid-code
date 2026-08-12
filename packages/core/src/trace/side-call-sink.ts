@@ -35,7 +35,13 @@ export interface SideCallStats {
   costUSD: number;
   tokensSent: number;
   tokensReceived: number;
-  details: Array<{ label: string; model: string; inputTokens: number; outputTokens: number; costUSD: number }>;
+  details: Array<{
+    label: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUSD: number;
+  }>;
   /** T13.4：失败统计 */
   failed: number;
   timedOut: number;
@@ -82,25 +88,40 @@ export function setSideStatsObserver(fn: () => void): void {
  * 记录一次辅助 LLM 调用的用量。影子调用点在收到响应后调用。
  * T13.2：扩展支持 success/error/timedOut 字段记录失败调用。
  */
-export function recordSideCall(record: Omit<SideCallRecord, "costUSD" | "success"> & { costUSD?: number; success?: boolean; error?: string; timedOut?: boolean }): void {
-  const cost = record.costUSD ?? (
-    _costCalculator
+export function recordSideCall(
+  record: Omit<SideCallRecord, "costUSD" | "success"> & {
+    costUSD?: number;
+    success?: boolean;
+    error?: string;
+    timedOut?: boolean;
+  },
+): void {
+  const cost =
+    record.costUSD ??
+    (_costCalculator
       ? _costCalculator(record.model, {
           inputTokens: record.inputTokens,
           outputTokens: record.outputTokens,
           cacheReadInputTokens: record.cacheReadTokens,
           cacheCreationInputTokens: record.cacheCreationTokens,
         })
-      : 0
-  );
+      : 0);
   _calls.push({ ...record, costUSD: cost, success: record.success ?? true });
   // 实时通知观察者（SessionState.addSideCost），使展示层和 quota 守卫看到真实总花费
   if (_costObserver && cost > 0) {
-    try { _costObserver(cost); } catch { /* 观察者异常不影响记录 */ }
+    try {
+      _costObserver(cost);
+    } catch {
+      /* 观察者异常不影响记录 */
+    }
   }
   // 实时通知统计观察者（TraceCollector），使 trajectory 不必等 SessionEnd 才落盘本次用量
   if (_statsObserver) {
-    try { _statsObserver(); } catch { /* 观察者异常不影响记录 */ }
+    try {
+      _statsObserver();
+    } catch {
+      /* 观察者异常不影响记录 */
+    }
   }
 }
 

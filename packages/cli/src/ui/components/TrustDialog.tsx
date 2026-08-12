@@ -33,7 +33,12 @@ interface ChoiceItem extends SelectionListItem<boolean> {
  * 这一步在授予执行权限。
  */
 const OPTIONS: ChoiceItem[] = [
-  { value: true, key: "yes", label: "是，我信任此代码库", desc: "记住此选择，下次启动时加载这些配置" },
+  {
+    value: true,
+    key: "yes",
+    label: "是，我信任此代码库",
+    desc: "记住此选择，下次启动时加载这些配置",
+  },
   { value: false, key: "no", label: "不信任", desc: "跳过这些配置继续使用（下次仍会询问）" },
 ];
 
@@ -72,8 +77,16 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
   const extra = items.length - shown.length;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.status.warning} paddingX={1} paddingY={0}>
-      <Text bold color={theme.status.warning}>是否信任此代码库？</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.status.warning}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.status.warning}>
+        是否信任此代码库？
+      </Text>
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.text.secondary}>
           此目录的 .sid-code/settings.json 含可执行配置。信任后它们会在本次及后续会话中加载——
@@ -92,12 +105,10 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
               <Text color={theme.text.primary}>{TYPE_LABELS[item.type]}: </Text>
               <Text color={theme.text.secondary}>{item.description}</Text>
             </Box>
-            {item.details ? (
-              <Text>    {item.details.slice(0, 120)}</Text>
-            ) : null}
+            {item.details ? <Text> {item.details.slice(0, 120)}</Text> : null}
           </Box>
         ))}
-        {extra > 0 && <Text>  …等共 {items.length} 项</Text>}
+        {extra > 0 && <Text> …等共 {items.length} 项</Text>}
       </Box>
       <Box marginTop={1} flexDirection="column">
         <BaseSelectionList<boolean, ChoiceItem>
@@ -112,7 +123,7 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
           renderItem={(item, { isSelected }) => (
             <Box>
               <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{item.label}</Text>
-              <Text color={theme.text.secondary}>  {item.desc}</Text>
+              <Text color={theme.text.secondary}> {item.desc}</Text>
             </Box>
           )}
         />

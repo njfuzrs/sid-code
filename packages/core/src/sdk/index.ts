@@ -41,10 +41,7 @@ export {
 } from "./mcp-bridge.ts";
 export { deserializeMessagesWithInterruptDetection } from "./session-recovery.ts";
 export type { TurnInterruptionState, DeserializeResult } from "./session-recovery.ts";
-export {
-  extractStructuredOutput,
-  buildStructuredOutputPrompt,
-} from "./structured-output.ts";
+export { extractStructuredOutput, buildStructuredOutputPrompt } from "./structured-output.ts";
 export type { StructuredOutputConfig } from "./structured-output.ts";
 export { runHeadless, runHeadlessStreaming } from "./headless-runner.ts";
 export {

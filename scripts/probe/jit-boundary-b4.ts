@@ -48,9 +48,7 @@ for (const [kind, cmd, expect] of CASES) {
     failed++;
     if (kind === "fix") fixPending++;
   }
-  lines.push(
-    `${ok ? "✔" : "✘"} [${kind.padEnd(5)}] ${JSON.stringify(got).padEnd(24)} ← ${cmd}`,
-  );
+  lines.push(`${ok ? "✔" : "✘"} [${kind.padEnd(5)}] ${JSON.stringify(got).padEnd(24)} ← ${cmd}`);
 }
 
 const fixTotal = CASES.filter((c) => c[0] === "fix").length;

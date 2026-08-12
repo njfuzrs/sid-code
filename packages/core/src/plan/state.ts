@@ -175,18 +175,32 @@ export class PlanModeManager {
 
   // ── 查询方法 ──
 
-  isActive(): boolean { return this.state !== "inactive"; }
-  isPlanning(): boolean { return this.state === "planning"; }
-  isAwaitingApproval(): boolean { return this.state === "awaiting_approval"; }
+  isActive(): boolean {
+    return this.state !== "inactive";
+  }
+  isPlanning(): boolean {
+    return this.state === "planning";
+  }
+  isAwaitingApproval(): boolean {
+    return this.state === "awaiting_approval";
+  }
   /**
    * 是否处于执行阶段（计划已 approve、正在按计划执行）。
    * 与 isActive() 正交：执行阶段 state 已是 inactive、权限模式已恢复，但 isExecuting() 为真。
    * Recovery Hook 据此在执行阶段工具失败时触发。
    */
-  isExecuting(): boolean { return this.executing; }
-  getState(): PlanModeState { return this.state; }
-  getPlanFilePath(): string | null { return this.planFilePath; }
-  getRejectionCount(): number { return this.rejectionCount; }
+  isExecuting(): boolean {
+    return this.executing;
+  }
+  getState(): PlanModeState {
+    return this.state;
+  }
+  getPlanFilePath(): string | null {
+    return this.planFilePath;
+  }
+  getRejectionCount(): number {
+    return this.rejectionCount;
+  }
 
   /** 检查给定路径是否为当前计划文件 */
   isPlanFile(filePath: string): boolean {
@@ -201,10 +215,7 @@ export class PlanModeManager {
    */
   nextReminderIsFull(): boolean {
     this.reminderTurn++;
-    return (
-      this.reminderTurn === 1 ||
-      this.reminderTurn % this.fullReminderInterval === 0
-    );
+    return this.reminderTurn === 1 || this.reminderTurn % this.fullReminderInterval === 0;
   }
 
   /** 记录执行阶段所需权限（exit_plan_mode 调用） */
@@ -333,7 +344,7 @@ export class PlanModeManager {
   onStateChange(listener: PlanModeListener): () => void {
     this.listeners.push(listener);
     return () => {
-      this.listeners = this.listeners.filter(l => l !== listener);
+      this.listeners = this.listeners.filter((l) => l !== listener);
     };
   }
 

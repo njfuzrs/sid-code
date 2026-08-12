@@ -25,14 +25,54 @@ import { getLogger } from "../debug/logger.ts";
  * 放开扩展名后，外部导入闸门（M4）是配套安全措施。
  */
 const TEXT_FILE_EXTENSIONS = new Set([
-  ".md", ".markdown", ".mdx", ".txt", ".text",
-  ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env",
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-  ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift",
-  ".c", ".h", ".cpp", ".hpp", ".cc", ".cs",
-  ".sh", ".bash", ".zsh", ".fish",
-  ".html", ".css", ".scss", ".sql", ".graphql", ".proto",
-  ".xml", ".csv", ".log", ".conf", ".cfg", ".gitignore", ".dockerignore",
+  ".md",
+  ".markdown",
+  ".mdx",
+  ".txt",
+  ".text",
+  ".json",
+  ".jsonc",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".env",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".rb",
+  ".go",
+  ".rs",
+  ".java",
+  ".kt",
+  ".swift",
+  ".c",
+  ".h",
+  ".cpp",
+  ".hpp",
+  ".cc",
+  ".cs",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".fish",
+  ".html",
+  ".css",
+  ".scss",
+  ".sql",
+  ".graphql",
+  ".proto",
+  ".xml",
+  ".csv",
+  ".log",
+  ".conf",
+  ".cfg",
+  ".gitignore",
+  ".dockerignore",
 ]);
 
 export interface ImportOptions {
@@ -165,7 +205,7 @@ function extractImportsFromLine(line: string): string[] {
 export async function processImports(
   content: string,
   filePath: string,
-  options: ImportOptions = {}
+  options: ImportOptions = {},
 ): Promise<string> {
   const log = getLogger();
   const maxDepth = options.maxDepth ?? 5;
@@ -177,7 +217,7 @@ export async function processImports(
   async function processRecursive(
     text: string,
     currentFile: string,
-    depth: number
+    depth: number,
   ): Promise<string> {
     // 深度限制（对齐 CC：>= maxDepth 即停，不再多允许一层）
     if (depth >= maxDepth) {
@@ -255,7 +295,11 @@ export async function processImports(
         const isExternal = projectRoot ? !isInsideDir(absolutePath, projectRoot) : false;
         if (isExternal && !externalApproved) {
           log.warn("IMPORT", `外部导入未批准，跳过: ${importPath}（${absolutePath}）`);
-          try { options.onExternalSkipped?.(absolutePath); } catch { /* 回调失败不阻断 */ }
+          try {
+            options.onExternalSkipped?.(absolutePath);
+          } catch {
+            /* 回调失败不阻断 */
+          }
           continue;
         }
 

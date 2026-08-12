@@ -26,7 +26,10 @@ export const POST_COMPACT_PER_FILE_BUDGET = 5_000; // tokens
 export const POST_COMPACT_TOTAL_BUDGET = 50_000; // tokens
 
 /** 按 token 预算截断文件内容（粗略 4 char ≈ 1 token，够用且无需精确） */
-function truncateToTokenBudget(content: string, tokenBudget: number): { text: string; truncated: boolean } {
+function truncateToTokenBudget(
+  content: string,
+  tokenBudget: number,
+): { text: string; truncated: boolean } {
   const approxChars = tokenBudget * 4;
   if (content.length <= approxChars) return { text: content, truncated: false };
   return { text: content.slice(0, approxChars), truncated: true };
@@ -77,8 +80,12 @@ export function buildReattachFileMessages(
     const fileBudget = Math.min(perFileBudget, remainingTotal);
     const { text, truncated } = truncateToTokenBudget(content, fileBudget);
 
-    const changedNote = changed ? "（注意：此文件自上次读取后已被外部修改，以下为当前磁盘内容）" : "";
-    const truncNote = truncated ? `\n\n[内容已截断到约 ${fileBudget} token，如需完整内容请重新 read]` : "";
+    const changedNote = changed
+      ? "（注意：此文件自上次读取后已被外部修改，以下为当前磁盘内容）"
+      : "";
+    const truncNote = truncated
+      ? `\n\n[内容已截断到约 ${fileBudget} token，如需完整内容请重新 read]`
+      : "";
     sections.push(`### ${filePath}${changedNote}\n\`\`\`\n${text}${truncNote}\n\`\`\``);
 
     usedTokens += estimateTextTokens(text);

@@ -106,10 +106,7 @@ interface PrefixCache {
   renderedNodes: React.ReactNode[];
 }
 
-const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
-  text,
-  terminalWidth,
-}) => {
+const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({ text, terminalWidth }) => {
   // 'use no memo'：本组件在 render 期间读写 ref（边界单调推进，幂等安全），
   // 但 react-compiler 无法证明这点。项目当前无 react-compiler（no-op），
   // 保留以对齐 cc、防未来启用编译器时被错误自动 memo。运行时 React.memo 包装单独保留。
@@ -132,10 +129,7 @@ const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
   }
 
   const prevBoundary = cacheRef.current.boundary;
-  const { stablePrefix, unstableSuffix, boundary } = computeStreamSplit(
-    text,
-    prevBoundary,
-  );
+  const { stablePrefix, unstableSuffix, boundary } = computeStreamSplit(text, prevBoundary);
 
   // ── 性能核心：stablePrefix 增量渲染 ──
   // 仅当 boundary 推进时（新块闭合），lex+render 增量部分 stablePrefix[prevBoundary..boundary]，
@@ -166,11 +160,7 @@ const StreamingMarkdownInternal: React.FC<StreamingMarkdownProps> = ({
     <Box flexDirection="column" gap={1}>
       {prefixNodes.length > 0 ? prefixNodes : null}
       {unstableSuffix ? (
-        <MarkdownAnsi
-          text={unstableSuffix}
-          terminalWidth={terminalWidth}
-          renderMarkdown={true}
-        />
+        <MarkdownAnsi text={unstableSuffix} terminalWidth={terminalWidth} renderMarkdown={true} />
       ) : null}
     </Box>
   );

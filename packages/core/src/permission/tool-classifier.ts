@@ -77,10 +77,19 @@ const DEFAULT_MAX_TOKENS = 512;
  * 教训：**摘除自动放行必须把所有并行路径一次摘干净**，"那条现在是死代码"不是留它的理由。
  */
 const AUTO_ALLOW_TOOLS = new Set([
-  "read", "read_many", "glob", "grep", "ls", "ripgrep",
-  "bg_task_list", "bg_task_get",
+  "read",
+  "read_many",
+  "glob",
+  "grep",
+  "ls",
+  "ripgrep",
+  "bg_task_list",
+  "bg_task_get",
   // 结构化任务清单：纯内存态清单读写，无外部副作用，工作区内自动放行
-  "task_list", "task_get", "task_create", "task_update",
+  "task_list",
+  "task_get",
+  "task_create",
+  "task_update",
 ]);
 
 /** 工具在工作区内执行 write/edit 时自动放行 */
@@ -160,9 +169,7 @@ export class ToolClassifier {
       const abortCtl = new AbortController();
       // H10：超时用带 reason 的 abort，与主路径 reason 白名单口径统一（详见 errors.ts）。
       const timer = setTimeout(() => abortCtl.abort(SIDE_CALL_TIMEOUT_REASON), timeoutMs);
-      const signal = req.signal
-        ? AbortSignal.any([req.signal, abortCtl.signal])
-        : abortCtl.signal;
+      const signal = req.signal ? AbortSignal.any([req.signal, abortCtl.signal]) : abortCtl.signal;
 
       // 推理盲设计：只传 toolName + input + cwd，不传 description/recentContext
       // G7：工具若提供精简语义视图（classifierInput 非空），优先用它替代原始 input——
@@ -173,9 +180,7 @@ export class ToolClassifier {
         cwd: req.cwd,
       });
 
-      const messages: Message[] = [
-        { role: "user", content: [{ type: "text", text: userPrompt }] },
-      ];
+      const messages: Message[] = [{ role: "user", content: [{ type: "text", text: userPrompt }] }];
 
       const model = this.config.model || "";
       const maxTokens = this.config.maxTokens ?? DEFAULT_MAX_TOKENS;
@@ -188,10 +193,7 @@ export class ToolClassifier {
 
       // 优先非流式
       if (typeof this.provider!.sendMessageNonStreaming === "function") {
-        const resp = await this.provider!.sendMessageNonStreaming(
-          sendParams,
-          signal,
-        );
+        const resp = await this.provider!.sendMessageNonStreaming(sendParams, signal);
         clearTimeout(timer);
         const latencyMs = Date.now() - startTime;
         if (resp.usage) {
@@ -206,13 +208,17 @@ export class ToolClassifier {
           });
         }
         text = resp.content
-          .filter((b: ContentBlock): b is ContentBlock & { type: "text"; text: string } => b.type === "text")
+          .filter(
+            (b: ContentBlock): b is ContentBlock & { type: "text"; text: string } =>
+              b.type === "text",
+          )
           .map((b: ContentBlock & { type: "text"; text: string }) => b.text)
           .join("");
       } else {
         // 流式累积兜底
         for await (const ev of this.provider!.sendMessageStream(sendParams, signal)) {
-          if (signal.aborted) throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON)); // H10
+          if (signal.aborted)
+            throw new Error(String((signal as any).reason ?? SIDE_CALL_TIMEOUT_REASON)); // H10
           if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
             text += ev.delta.text;
           }
@@ -226,13 +232,25 @@ export class ToolClassifier {
       const jsonMatch = text.match(/\{[\s\S]*?\}/);
       if (!jsonMatch) {
         log.warn("CLASSIFIER", `解析失败(无JSON): ${text.slice(0, 100)}`);
-        return { safe: false, risk: "medium", reason: "分类器解析失败", classifierUnavailable: true, latencyMs };
+        return {
+          safe: false,
+          risk: "medium",
+          reason: "分类器解析失败",
+          classifierUnavailable: true,
+          latencyMs,
+        };
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
       if (typeof parsed.safe !== "boolean") {
         log.warn("CLASSIFIER", `解析失败(无 safe 字段): ${jsonMatch[0]}`);
-        return { safe: false, risk: "medium", reason: "分类器解析失败", classifierUnavailable: true, latencyMs };
+        return {
+          safe: false,
+          risk: "medium",
+          reason: "分类器解析失败",
+          classifierUnavailable: true,
+          latencyMs,
+        };
       }
 
       return {
@@ -248,7 +266,13 @@ export class ToolClassifier {
       } else {
         log.warn("CLASSIFIER", `分类器异常: ${err.message}`);
       }
-      return { safe: false, risk: "medium", reason: `分类器异常: ${err.message}`, classifierUnavailable: true, latencyMs };
+      return {
+        safe: false,
+        risk: "medium",
+        reason: `分类器异常: ${err.message}`,
+        classifierUnavailable: true,
+        latencyMs,
+      };
     }
   }
 }

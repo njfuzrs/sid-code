@@ -1,14 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { useMemo } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { RawAnsi } from "@sid-code/tui-renderer/components/RawAnsi.tsx";
-import crypto from 'node:crypto';
-import { diffWordsWithSpace, type StructuredPatchHunk } from 'diff';
-import { colorizeCode, colorizeLine } from './CodeColorizer.js';
-import { theme as semanticTheme } from '../semantic-colors.js';
-import { buildDiffAnsiLines, type DiffAnsiColors } from './diffAnsiLines.js';
-import { ELLIPSIS, formatCollapsedSummary } from '../constants/collapse.ts';
-import type { Color } from '@sid-code/tui-renderer/styles.ts';
+import crypto from "node:crypto";
+import { diffWordsWithSpace, type StructuredPatchHunk } from "diff";
+import { colorizeCode, colorizeLine } from "./CodeColorizer.js";
+import { theme as semanticTheme } from "../semantic-colors.js";
+import { buildDiffAnsiLines, type DiffAnsiColors } from "./diffAnsiLines.js";
+import { ELLIPSIS, formatCollapsedSummary } from "../constants/collapse.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
 
 /**
  * DF3:超过此行数的 diff 走 RawAnsi 单 Yoga leaf 路径(预渲染 ANSI 字符串),
@@ -18,7 +18,7 @@ import type { Color } from '@sid-code/tui-renderer/styles.ts';
 const RAW_ANSI_LINE_THRESHOLD = 80;
 
 export interface DiffLine {
-  type: 'add' | 'del' | 'context' | 'hunk' | 'other';
+  type: "add" | "del" | "context" | "hunk" | "other";
   oldLine?: number;
   newLine?: number;
   content: string;
@@ -35,28 +35,24 @@ export interface DiffLine {
 function renderWordDiff(
   oldContent: string,
   newContent: string,
-  which: 'del' | 'add',
+  which: "del" | "add",
 ): React.ReactNode {
   const parts = diffWordsWithSpace(oldContent, newContent);
   const nodes: React.ReactNode[] = [];
   let k = 0;
   for (const part of parts) {
     // del 行只渲染「公共 + 删除」段，add 行只渲染「公共 + 新增」段。
-    if (which === 'del' && part.added) continue;
-    if (which === 'add' && part.removed) continue;
-    const changed = which === 'del' ? part.removed : part.added;
+    if (which === "del" && part.added) continue;
+    if (which === "add" && part.removed) continue;
+    const changed = which === "del" ? part.removed : part.added;
     if (changed) {
       nodes.push(
         <Text
           key={`wd-${k++}`}
           bold
-          color={
-            which === 'del'
-              ? semanticTheme.status.error
-              : semanticTheme.status.success
-          }
+          color={which === "del" ? semanticTheme.status.error : semanticTheme.status.success}
           backgroundColor={
-            which === 'del'
+            which === "del"
               ? semanticTheme.background.diff.removedEmphasis
               : semanticTheme.background.diff.addedEmphasis
           }
@@ -70,7 +66,6 @@ function renderWordDiff(
   }
   return <>{nodes}</>;
 }
-
 
 /**
  * 解析 unified diff 格式并附加行号
@@ -89,7 +84,7 @@ function parseDiffWithLineNumbers(diffContent: string): DiffLine[] {
       currentOldLine = parseInt(hunkMatch[1], 10);
       currentNewLine = parseInt(hunkMatch[2], 10);
       inHunk = true;
-      result.push({ type: 'hunk', content: line });
+      result.push({ type: "hunk", content: line });
       // 调整起始点，因为第一个行号适用于第一个实际行变化/上下文，
       // 但我们在推送该行之前递增。所以这里递减。
       currentOldLine--;
@@ -98,38 +93,38 @@ function parseDiffWithLineNumbers(diffContent: string): DiffLine[] {
     }
     if (!inHunk) {
       // 跳过标准 Git 头部行
-      if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+      if (line.startsWith("--- ") || line.startsWith("+++ ")) {
         continue;
       }
       // 如果不是 hunk 或头部，跳过（或根据需要处理为 'other'）
       continue;
     }
-    if (line.startsWith('+')) {
+    if (line.startsWith("+")) {
       currentNewLine++; // 推送前递增
       result.push({
-        type: 'add',
+        type: "add",
         newLine: currentNewLine,
         content: line.substring(1),
       });
-    } else if (line.startsWith('-')) {
+    } else if (line.startsWith("-")) {
       currentOldLine++; // 推送前递增
       result.push({
-        type: 'del',
+        type: "del",
         oldLine: currentOldLine,
         content: line.substring(1),
       });
-    } else if (line.startsWith(' ')) {
+    } else if (line.startsWith(" ")) {
       currentOldLine++; // 推送前递增
       currentNewLine++;
       result.push({
-        type: 'context',
+        type: "context",
         oldLine: currentOldLine,
         newLine: currentNewLine,
         content: line.substring(1),
       });
-    } else if (line.startsWith('\\')) {
+    } else if (line.startsWith("\\")) {
       // 处理 "\ No newline at end of file"
-      result.push({ type: 'other', content: line });
+      result.push({ type: "other", content: line });
     }
   }
   return result;
@@ -147,24 +142,24 @@ export function hunksToDiffLines(hunks: StructuredPatchHunk[]): DiffLine[] {
   for (const hunk of hunks) {
     // 重建 @@ 头,供折叠逻辑识别 hunk 边界(与文本路径一致)
     result.push({
-      type: 'hunk',
+      type: "hunk",
       content: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
     });
     let oldLine = hunk.oldStart - 1;
     let newLine = hunk.newStart - 1;
     for (const line of hunk.lines) {
-      if (line.startsWith('+')) {
+      if (line.startsWith("+")) {
         newLine++;
-        result.push({ type: 'add', newLine, content: line.substring(1) });
-      } else if (line.startsWith('-')) {
+        result.push({ type: "add", newLine, content: line.substring(1) });
+      } else if (line.startsWith("-")) {
         oldLine++;
-        result.push({ type: 'del', oldLine, content: line.substring(1) });
-      } else if (line.startsWith(' ')) {
+        result.push({ type: "del", oldLine, content: line.substring(1) });
+      } else if (line.startsWith(" ")) {
         oldLine++;
         newLine++;
-        result.push({ type: 'context', oldLine, newLine, content: line.substring(1) });
-      } else if (line.startsWith('\\')) {
-        result.push({ type: 'other', content: line });
+        result.push({ type: "context", oldLine, newLine, content: line.substring(1) });
+      } else if (line.startsWith("\\")) {
+        result.push({ type: "other", content: line });
       }
     }
   }
@@ -178,18 +173,18 @@ export function hunksToDiffLines(hunks: StructuredPatchHunk[]): DiffLine[] {
  * 抽成纯函数便于单测。
  */
 export function computeWordDiffPairs(
-  lines: { type: DiffLine['type']; content: string }[],
+  lines: { type: DiffLine["type"]; content: string }[],
 ): Map<number, string> {
   const pairMap = new Map<number, string>();
-  for (let i = 0; i < lines.length; ) {
-    if (lines[i].type !== 'del') {
+  for (let i = 0; i < lines.length;) {
+    if (lines[i].type !== "del") {
       i++;
       continue;
     }
     let delEnd = i;
-    while (delEnd < lines.length && lines[delEnd].type === 'del') delEnd++;
+    while (delEnd < lines.length && lines[delEnd].type === "del") delEnd++;
     let addEnd = delEnd;
-    while (addEnd < lines.length && lines[addEnd].type === 'add') addEnd++;
+    while (addEnd < lines.length && lines[addEnd].type === "add") addEnd++;
     const pairCount = Math.min(delEnd - i, addEnd - delEnd);
     for (let p = 0; p < pairCount; p++) {
       pairMap.set(i + p, lines[delEnd + p].content);
@@ -207,9 +202,9 @@ const CONTEXT_KEEP_LINES = 3;
 
 /** diff 渲染计划项:正常行 或 折叠占位 */
 export interface DiffRenderPlanItem {
-  kind: 'line' | 'collapsed';
+  kind: "line" | "collapsed";
   /** kind==='line' 时的原始行 */
-  line?: { type: DiffLine['type']; content: string };
+  line?: { type: DiffLine["type"]; content: string };
   /** kind==='line' 时该行在 displayableLines 中的原始下标(供 pairMap 查询) */
   origIndex?: number;
   /** kind==='collapsed' 时被折叠隐藏的行数 */
@@ -235,7 +230,7 @@ export function foldRenderPlan(
   let foldedLineCount = 0;
   for (let i = maxLines; i < plan.length; i++) {
     const it = plan[i];
-    foldedLineCount += it.kind === 'collapsed' ? (it.hiddenCount ?? 0) : 1;
+    foldedLineCount += it.kind === "collapsed" ? (it.hiddenCount ?? 0) : 1;
   }
   return { plan: plan.slice(0, maxLines), foldedLineCount };
 }
@@ -247,33 +242,33 @@ export function foldRenderPlan(
  * 抽成纯函数便于单测。
  */
 export function planDiffWithContextCollapse(
-  lines: { type: DiffLine['type']; content: string }[],
+  lines: { type: DiffLine["type"]; content: string }[],
   threshold = CONTEXT_COLLAPSE_THRESHOLD,
   keep = CONTEXT_KEEP_LINES,
 ): DiffRenderPlanItem[] {
   const plan: DiffRenderPlanItem[] = [];
   let i = 0;
   while (i < lines.length) {
-    if (lines[i].type !== 'context') {
-      plan.push({ kind: 'line', line: lines[i], origIndex: i });
+    if (lines[i].type !== "context") {
+      plan.push({ kind: "line", line: lines[i], origIndex: i });
       i++;
       continue;
     }
     // 收集连续的 context run
     let runEnd = i;
-    while (runEnd < lines.length && lines[runEnd].type === 'context') runEnd++;
+    while (runEnd < lines.length && lines[runEnd].type === "context") runEnd++;
     const runLen = runEnd - i;
     if (runLen > threshold && runLen - keep * 2 >= 1) {
       for (let p = 0; p < keep; p++) {
-        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+        plan.push({ kind: "line", line: lines[i + p], origIndex: i + p });
       }
-      plan.push({ kind: 'collapsed', hiddenCount: runLen - keep * 2 });
+      plan.push({ kind: "collapsed", hiddenCount: runLen - keep * 2 });
       for (let p = runLen - keep; p < runLen; p++) {
-        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+        plan.push({ kind: "line", line: lines[i + p], origIndex: i + p });
       }
     } else {
       for (let p = 0; p < runLen; p++) {
-        plan.push({ kind: 'line', line: lines[i + p], origIndex: i + p });
+        plan.push({ kind: "line", line: lines[i + p], origIndex: i + p });
       }
     }
     i = runEnd;
@@ -330,7 +325,7 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
     if (hasPatch) {
       return hunksToDiffLines(structuredPatch!);
     }
-    if (!diffContent || typeof diffContent !== 'string') {
+    if (!diffContent || typeof diffContent !== "string") {
       return [];
     }
     return parseDiffWithLineNumbers(diffContent);
@@ -340,27 +335,23 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
     if (parsedLines.length === 0) return false;
     return parsedLines.every(
       (line) =>
-        line.type === 'add' ||
-        line.type === 'hunk' ||
-        line.type === 'other' ||
-        line.content.startsWith('diff --git') ||
-        line.content.startsWith('new file mode'),
+        line.type === "add" ||
+        line.type === "hunk" ||
+        line.type === "other" ||
+        line.content.startsWith("diff --git") ||
+        line.content.startsWith("new file mode"),
     );
   }, [parsedLines]);
 
   const renderedOutput = useMemo(() => {
     // 结构化路径下 diffContent 可为空,只要 parsedLines 非空即可渲染
-    if (!hasPatch && (!diffContent || typeof diffContent !== 'string')) {
+    if (!hasPatch && (!diffContent || typeof diffContent !== "string")) {
       return <Text color={semanticTheme.status.warning}>无 diff 内容。</Text>;
     }
 
     if (parsedLines.length === 0) {
       return (
-        <Box
-          borderStyle="round"
-          borderColor={semanticTheme.border.default}
-          paddingX={1}
-        >
+        <Box borderStyle="round" borderColor={semanticTheme.border.default} paddingX={1}>
           <Text>未检测到变化。</Text>
         </Box>
       );
@@ -369,24 +360,20 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
     if (isNewFile) {
       // 提取仅添加行的内容
       const addedLines = parsedLines
-        .filter((line) => line.type === 'add')
+        .filter((line) => line.type === "add")
         .map((line) => line.content);
       // 从文件名推断语言，如果没有文件名则默认为纯文本
-      const fileExtension = filename?.split('.').pop() || null;
-      const language = fileExtension
-        ? getLanguageFromExtension(fileExtension)
-        : null;
+      const fileExtension = filename?.split(".").pop() || null;
+      const language = fileExtension ? getLanguageFromExtension(fileExtension) : null;
 
       // 折叠：新建文件全是 add 行、零上下文，planDiffWithContextCollapse 折不掉，
       // 必须在此按 maxLines **同步**保留头部（看文件开头最有用）、末尾追加统一折叠 footer。
       // 不用 colorizeCode 的 availableHeight——那是保留尾部（top overflow），方向相反。
       const hiddenCount =
-        maxLines !== undefined && addedLines.length > maxLines
-          ? addedLines.length - maxLines
-          : 0;
-      const shownContent = (
-        hiddenCount > 0 ? addedLines.slice(0, maxLines) : addedLines
-      ).join('\n');
+        maxLines !== undefined && addedLines.length > maxLines ? addedLines.length - maxLines : 0;
+      const shownContent = (hiddenCount > 0 ? addedLines.slice(0, maxLines) : addedLines).join(
+        "\n",
+      );
 
       const colorized = colorizeCode({
         code: shownContent,
@@ -400,31 +387,16 @@ export const DiffRenderer: React.FC<DiffRendererProps> = ({
           <Box flexDirection="column" width={terminalWidth}>
             {colorized}
             <Text color={semanticTheme.text.secondary}>
-              {formatCollapsedSummary(hiddenCount, { hint: 'ctrl+o' })}
+              {formatCollapsedSummary(hiddenCount, { hint: "ctrl+o" })}
             </Text>
           </Box>
         );
       }
       return colorized;
     } else {
-      return renderDiffContent(
-        parsedLines,
-        filename,
-        tabWidth,
-        terminalWidth,
-        maxLines,
-      );
+      return renderDiffContent(parsedLines, filename, tabWidth, terminalWidth, maxLines);
     }
-  }, [
-    hasPatch,
-    diffContent,
-    parsedLines,
-    isNewFile,
-    filename,
-    terminalWidth,
-    tabWidth,
-    maxLines,
-  ]);
+  }, [hasPatch, diffContent, parsedLines, isNewFile, filename, terminalWidth, tabWidth, maxLines]);
 
   return renderedOutput;
 };
@@ -439,21 +411,15 @@ const renderDiffContent = (
   // 1. 标准化空白（在进一步处理之前将制表符替换为空格）
   const normalizedLines = parsedLines.map((line) => ({
     ...line,
-    content: line.content.replace(/\t/g, ' '.repeat(tabWidth)),
+    content: line.content.replace(/\t/g, " ".repeat(tabWidth)),
   }));
 
   // 过滤掉不可显示的行（hunks，可能是 'other'）
-  const displayableLines = normalizedLines.filter(
-    (l) => l.type !== 'hunk' && l.type !== 'other',
-  );
+  const displayableLines = normalizedLines.filter((l) => l.type !== "hunk" && l.type !== "other");
 
   if (displayableLines.length === 0) {
     return (
-      <Box
-        borderStyle="round"
-        borderColor={semanticTheme.border.default}
-        paddingX={1}
-      >
+      <Box borderStyle="round" borderColor={semanticTheme.border.default} paddingX={1}>
         <Text>未检测到变化。</Text>
       </Box>
     );
@@ -466,16 +432,14 @@ const renderDiffContent = (
   );
   const gutterWidth = Math.max(1, maxLineNumber.toString().length);
 
-  const fileExtension = filename?.split('.').pop() || null;
-  const language = fileExtension
-    ? getLanguageFromExtension(fileExtension)
-    : null;
+  const fileExtension = filename?.split(".").pop() || null;
+  const language = fileExtension ? getLanguageFromExtension(fileExtension) : null;
 
   // 计算所有可显示行的最小缩进
   let baseIndentation = Infinity; // 从高开始以找到最小值
   for (const line of displayableLines) {
     // 仅考虑有实际内容的行进行缩进计算
-    if (line.content.trim() === '') continue;
+    if (line.content.trim() === "") continue;
 
     const firstCharIndex = line.content.search(/\S/); // 查找第一个非空白字符的索引
     const currentIndent = firstCharIndex === -1 ? 0 : firstCharIndex; // 如果没有找到非空白则缩进为 0
@@ -488,7 +452,7 @@ const renderDiffContent = (
 
   const key = filename
     ? `diff-box-${filename}`
-    : `diff-box-${crypto.createHash('sha1').update(JSON.stringify(parsedLines)).digest('hex')}`;
+    : `diff-box-${crypto.createHash("sha1").update(JSON.stringify(parsedLines)).digest("hex")}`;
 
   let lastLineNumber: number | null = null;
   const MAX_CONTEXT_LINES_WITHOUT_GAP = 5;
@@ -514,7 +478,7 @@ const renderDiffContent = (
   const foldFooter =
     foldedLineCount > 0 ? (
       <Text color={semanticTheme.text.secondary}>
-        {formatCollapsedSummary(foldedLineCount, { hint: 'ctrl+o' })}
+        {formatCollapsedSummary(foldedLineCount, { hint: "ctrl+o" })}
       </Text>
     ) : null;
 
@@ -549,139 +513,133 @@ const renderDiffContent = (
     );
   }
 
-  const content = renderPlan.reduce<React.ReactNode[]>(
-    (acc, item, planIdx) => {
-      // 折叠占位行:展示被隐藏的上下文行数
-      if (item.kind === 'collapsed') {
-        acc.push(
-          <Box key={`collapse-${planIdx}`} paddingLeft={gutterWidth + 2}>
-            <Text color={semanticTheme.text.secondary}>
-              {`${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`}
-            </Text>
-          </Box>,
-        );
-        // 折叠会中断行号连续性,复位 lastLineNumber 避免误插 gap 分隔线
-        lastLineNumber = null;
-        return acc;
-      }
-
-      const index = item.origIndex!;
-      // 根据类型确定用于间隔计算的相关行号
-      let relevantLineNumberForGapCalc: number | null = null;
-      const srcLine = displayableLines[index];
-      if (srcLine.type === 'add' || srcLine.type === 'context') {
-        relevantLineNumberForGapCalc = srcLine.newLine ?? null;
-      } else if (srcLine.type === 'del') {
-        // 对于删除，间隔通常与原始文件的行号有关
-        relevantLineNumberForGapCalc = srcLine.oldLine ?? null;
-      }
-
-      if (
-        lastLineNumber !== null &&
-        relevantLineNumberForGapCalc !== null &&
-        relevantLineNumberForGapCalc >
-          lastLineNumber + MAX_CONTEXT_LINES_WITHOUT_GAP + 1
-      ) {
-        acc.push(
-          <Box key={`gap-${index}`}>
-            <Box
-              borderStyle="single"
-              borderLeft={false}
-              borderRight={false}
-              borderBottom={false}
-              width={terminalWidth}
-              borderColor={semanticTheme.text.secondary}
-            ></Box>
-          </Box>,
-        );
-      }
-
-      const lineKey = `diff-line-${index}`;
-      let gutterNumStr = '';
-      let prefixSymbol = ' ';
-
-      switch (srcLine.type) {
-        case 'add':
-          gutterNumStr = (srcLine.newLine ?? '').toString();
-          prefixSymbol = '+';
-          lastLineNumber = srcLine.newLine ?? null;
-          break;
-        case 'del':
-          gutterNumStr = (srcLine.oldLine ?? '').toString();
-          prefixSymbol = '-';
-          // 对于删除，如果 oldLine 在前进，则基于 oldLine 更新 lastLineNumber。
-          // 这有助于在有多个连续删除或删除后跟原始文件中远处的上下文行时正确管理间隔。
-          if (srcLine.oldLine !== undefined) {
-            lastLineNumber = srcLine.oldLine;
-          }
-          break;
-        case 'context':
-          gutterNumStr = (srcLine.newLine ?? '').toString();
-          prefixSymbol = ' ';
-          lastLineNumber = srcLine.newLine ?? null;
-          break;
-        default:
-          return acc;
-      }
-
-      const displayContent = srcLine.content.substring(baseIndentation);
-
-      const backgroundColor =
-        srcLine.type === 'add'
-          ? semanticTheme.background.diff.added
-          : srcLine.type === 'del'
-            ? semanticTheme.background.diff.removed
-            : undefined;
+  const content = renderPlan.reduce<React.ReactNode[]>((acc, item, planIdx) => {
+    // 折叠占位行:展示被隐藏的上下文行数
+    if (item.kind === "collapsed") {
       acc.push(
-        <Box key={lineKey} flexDirection="row">
-          <Box
-            width={gutterWidth + 1}
-            paddingRight={1}
-            flexShrink={0}
-            backgroundColor={backgroundColor}
-            justifyContent="flex-end"
-          >
-            <Text color={semanticTheme.text.secondary}>{gutterNumStr}</Text>
-          </Box>
-          {srcLine.type === 'context' ? (
-            <>
-              <Text>{prefixSymbol} </Text>
-              <Text wrap="wrap">{colorizeLine(displayContent, language)}</Text>
-            </>
-          ) : (
-            <Text
-              backgroundColor={
-                srcLine.type === 'add'
-                  ? semanticTheme.background.diff.added
-                  : semanticTheme.background.diff.removed
-              }
-              wrap="wrap"
-            >
-              <Text
-                bold
-                color={
-                  srcLine.type === 'add'
-                    ? semanticTheme.status.success
-                    : semanticTheme.status.error
-                }
-              >
-                {prefixSymbol}
-              </Text>{' '}
-              {pairMap.has(index)
-                ? renderWordDiff(
-                    srcLine.type === 'del' ? displayContent : pairMap.get(index)!,
-                    srcLine.type === 'del' ? pairMap.get(index)! : displayContent,
-                    srcLine.type as 'del' | 'add',
-                  )
-                : colorizeLine(displayContent, language)}
-            </Text>
-          )}
+        <Box key={`collapse-${planIdx}`} paddingLeft={gutterWidth + 2}>
+          <Text color={semanticTheme.text.secondary}>
+            {`${ELLIPSIS} ${item.hiddenCount} 行未变更上下文已折叠`}
+          </Text>
         </Box>,
       );
+      // 折叠会中断行号连续性,复位 lastLineNumber 避免误插 gap 分隔线
+      lastLineNumber = null;
       return acc;
-    },
-    [],
-  );
+    }
+
+    const index = item.origIndex!;
+    // 根据类型确定用于间隔计算的相关行号
+    let relevantLineNumberForGapCalc: number | null = null;
+    const srcLine = displayableLines[index];
+    if (srcLine.type === "add" || srcLine.type === "context") {
+      relevantLineNumberForGapCalc = srcLine.newLine ?? null;
+    } else if (srcLine.type === "del") {
+      // 对于删除，间隔通常与原始文件的行号有关
+      relevantLineNumberForGapCalc = srcLine.oldLine ?? null;
+    }
+
+    if (
+      lastLineNumber !== null &&
+      relevantLineNumberForGapCalc !== null &&
+      relevantLineNumberForGapCalc > lastLineNumber + MAX_CONTEXT_LINES_WITHOUT_GAP + 1
+    ) {
+      acc.push(
+        <Box key={`gap-${index}`}>
+          <Box
+            borderStyle="single"
+            borderLeft={false}
+            borderRight={false}
+            borderBottom={false}
+            width={terminalWidth}
+            borderColor={semanticTheme.text.secondary}
+          ></Box>
+        </Box>,
+      );
+    }
+
+    const lineKey = `diff-line-${index}`;
+    let gutterNumStr = "";
+    let prefixSymbol = " ";
+
+    switch (srcLine.type) {
+      case "add":
+        gutterNumStr = (srcLine.newLine ?? "").toString();
+        prefixSymbol = "+";
+        lastLineNumber = srcLine.newLine ?? null;
+        break;
+      case "del":
+        gutterNumStr = (srcLine.oldLine ?? "").toString();
+        prefixSymbol = "-";
+        // 对于删除，如果 oldLine 在前进，则基于 oldLine 更新 lastLineNumber。
+        // 这有助于在有多个连续删除或删除后跟原始文件中远处的上下文行时正确管理间隔。
+        if (srcLine.oldLine !== undefined) {
+          lastLineNumber = srcLine.oldLine;
+        }
+        break;
+      case "context":
+        gutterNumStr = (srcLine.newLine ?? "").toString();
+        prefixSymbol = " ";
+        lastLineNumber = srcLine.newLine ?? null;
+        break;
+      default:
+        return acc;
+    }
+
+    const displayContent = srcLine.content.substring(baseIndentation);
+
+    const backgroundColor =
+      srcLine.type === "add"
+        ? semanticTheme.background.diff.added
+        : srcLine.type === "del"
+          ? semanticTheme.background.diff.removed
+          : undefined;
+    acc.push(
+      <Box key={lineKey} flexDirection="row">
+        <Box
+          width={gutterWidth + 1}
+          paddingRight={1}
+          flexShrink={0}
+          backgroundColor={backgroundColor}
+          justifyContent="flex-end"
+        >
+          <Text color={semanticTheme.text.secondary}>{gutterNumStr}</Text>
+        </Box>
+        {srcLine.type === "context" ? (
+          <>
+            <Text>{prefixSymbol} </Text>
+            <Text wrap="wrap">{colorizeLine(displayContent, language)}</Text>
+          </>
+        ) : (
+          <Text
+            backgroundColor={
+              srcLine.type === "add"
+                ? semanticTheme.background.diff.added
+                : semanticTheme.background.diff.removed
+            }
+            wrap="wrap"
+          >
+            <Text
+              bold
+              color={
+                srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error
+              }
+            >
+              {prefixSymbol}
+            </Text>{" "}
+            {pairMap.has(index)
+              ? renderWordDiff(
+                  srcLine.type === "del" ? displayContent : pairMap.get(index)!,
+                  srcLine.type === "del" ? pairMap.get(index)! : displayContent,
+                  srcLine.type as "del" | "add",
+                )
+              : colorizeLine(displayContent, language)}
+          </Text>
+        )}
+      </Box>,
+    );
+    return acc;
+  }, []);
 
   // 超长未变更上下文已由 planDiffWithContextCollapse 折叠;折叠档再按 maxLines 同步裁剪头部,
   // 末尾追加统一折叠 footer(foldFooter)。全展开档 foldFooter 为 null,与旧行为一致。
@@ -695,29 +653,29 @@ const renderDiffContent = (
 
 const getLanguageFromExtension = (extension: string): string | null => {
   const languageMap: { [key: string]: string } = {
-    js: 'javascript',
-    jsx: 'javascript',
-    ts: 'typescript',
-    tsx: 'typescript',
-    py: 'python',
-    json: 'json',
-    css: 'css',
-    html: 'html',
-    sh: 'bash',
-    bash: 'bash',
-    md: 'markdown',
-    yaml: 'yaml',
-    yml: 'yaml',
-    txt: 'plaintext',
-    java: 'java',
-    c: 'c',
-    cpp: 'cpp',
-    rb: 'ruby',
-    go: 'go',
-    rs: 'rust',
-    php: 'php',
-    swift: 'swift',
-    kt: 'kotlin',
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    py: "python",
+    json: "json",
+    css: "css",
+    html: "html",
+    sh: "bash",
+    bash: "bash",
+    md: "markdown",
+    yaml: "yaml",
+    yml: "yaml",
+    txt: "plaintext",
+    java: "java",
+    c: "c",
+    cpp: "cpp",
+    rb: "ruby",
+    go: "go",
+    rs: "rust",
+    php: "php",
+    swift: "swift",
+    kt: "kotlin",
   };
   return languageMap[extension] || null; // 如果未找到扩展名则返回 null
 };

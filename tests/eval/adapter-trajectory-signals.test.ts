@@ -34,16 +34,36 @@ describe("analyzeTrajectorySignals — error_count", () => {
 describe("analyzeTrajectorySignals — retry_count", () => {
   test("相邻同 tool + 相同 input 视为 retry", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/a.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/a.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/a.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/a.ts" },
+      },
     ]);
     expect(r.retry_count).toBe(1);
   });
 
   test("相邻同 tool + 不同 input 不算 retry", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/a.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/b.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/a.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/b.ts" },
+      },
     ]);
     expect(r.retry_count).toBe(0);
   });
@@ -51,18 +71,43 @@ describe("analyzeTrajectorySignals — retry_count", () => {
   test("中间隔了 observation 也算相邻 action", () => {
     // observation 不是 action，actions 列表只收 message_type=action 的
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/a.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/a.ts" },
+      },
       { message_type: "observation", role: "user", content: "result" },
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/a.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/a.ts" },
+      },
     ]);
     expect(r.retry_count).toBe(1);
   });
 
   test("3 次连续相同 = 2 次 retry", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Bash", tool_input: { command: "ls" } },
-      { message_type: "action", role: "assistant", tool_name: "Bash", tool_input: { command: "ls" } },
-      { message_type: "action", role: "assistant", tool_name: "Bash", tool_input: { command: "ls" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Bash",
+        tool_input: { command: "ls" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Bash",
+        tool_input: { command: "ls" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Bash",
+        tool_input: { command: "ls" },
+      },
     ]);
     expect(r.retry_count).toBe(2);
   });
@@ -71,33 +116,78 @@ describe("analyzeTrajectorySignals — retry_count", () => {
 describe("analyzeTrajectorySignals — backtrack_count", () => {
   test("Write 同一 file 两次 = 1 次 backtrack", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Write", tool_input: { file_path: "/x.ts", content: "v1" } },
-      { message_type: "action", role: "assistant", tool_name: "Write", tool_input: { file_path: "/x.ts", content: "v2" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Write",
+        tool_input: { file_path: "/x.ts", content: "v1" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Write",
+        tool_input: { file_path: "/x.ts", content: "v2" },
+      },
     ]);
     expect(r.backtrack_count).toBe(1);
   });
 
   test("Edit / Write 混合也算 backtrack", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Write", tool_input: { file_path: "/x.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Edit", tool_input: { file_path: "/x.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Edit", tool_input: { file_path: "/x.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Write",
+        tool_input: { file_path: "/x.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Edit",
+        tool_input: { file_path: "/x.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Edit",
+        tool_input: { file_path: "/x.ts" },
+      },
     ]);
     expect(r.backtrack_count).toBe(2);
   });
 
   test("不同 file 不算 backtrack", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Write", tool_input: { file_path: "/x.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Write", tool_input: { file_path: "/y.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Write",
+        tool_input: { file_path: "/x.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Write",
+        tool_input: { file_path: "/y.ts" },
+      },
     ]);
     expect(r.backtrack_count).toBe(0);
   });
 
   test("Read 同 file 两次不算 backtrack（不是 write 类工具）", () => {
     const r = analyzeTrajectorySignals([
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/x.ts" } },
-      { message_type: "action", role: "assistant", tool_name: "Read", tool_input: { file_path: "/x.ts" } },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/x.ts" },
+      },
+      {
+        message_type: "action",
+        role: "assistant",
+        tool_name: "Read",
+        tool_input: { file_path: "/x.ts" },
+      },
     ]);
     expect(r.backtrack_count).toBe(0);
   });

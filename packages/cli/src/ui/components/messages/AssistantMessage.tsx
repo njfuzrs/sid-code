@@ -18,10 +18,7 @@ interface AssistantMessageProps {
   width: number;
 }
 
-export const AssistantMessage: React.FC<AssistantMessageProps> = ({
-  text,
-  width,
-}) => {
+export const AssistantMessage: React.FC<AssistantMessageProps> = ({ text, width }) => {
   const { renderMarkdown } = useUIState();
   // ⏺ bullet 与工具行同构（品牌蓝），占位宽 2（glyph + 空格）
   const prefixWidth = 2;

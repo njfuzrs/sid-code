@@ -4,6 +4,11 @@
 # 注意：GitHub 上生效需要这些用户对仓库有写权限；内网 GitLab 上此文件不生效
 # （GitLab 的等价机制是 CODEOWNERS + Owner approval，且需要 Premium 版）。
 
+# ⚠️ 路径必须与 packages/ 分包后的真实结构一致。P1-2/P2-2 分包后曾残留
+# /src/ink/ 与 /src/permission/ 这类**匹配不到任何文件**的规则（2026-08-12 P2-6 顺手修）——
+# 失效时没有任何报错，只是 review 请求静默不再发出，是最难发现的一类漂移。
+# 改动目录结构时，把这个文件一起 grep 一遍。
+
 # 兜底：所有文件
 *                           @zhourusheng
 
@@ -12,10 +17,10 @@
 # 第三方归属声明：改动这里等于改动版权事实陈述，必须维护者过目。
 # 尤其不要以「清理痕迹 / 统一措辞 / 看着不专业」为由删掉来源事实。
 /NOTICE                     @zhourusheng
-/src/ink/README.md          @zhourusheng
+/packages/tui-renderer/src/README.md    @zhourusheng
 
 # 未获授权的第三方代码，正在重构移除。改动前先读 NOTICE 第 1 节。
-/src/ink/                   @zhourusheng
+/packages/tui-renderer/src/             @zhourusheng
 
 # 发布链路：脚本改错会污染版本号、打错 tag、或让线上二进制对不上 commit。
 /scripts/release.sh         @zhourusheng
@@ -25,10 +30,14 @@
 
 # 安全与权限：绕过一条规则就是一个漏洞。
 # path-validator.ts 与 bash-security.ts 都在这个目录下，无需单列。
-/src/permission/            @zhourusheng
+/packages/core/src/permission/          @zhourusheng
 
 # CI 门禁与治理文件
 /.github/                   @zhourusheng
 /CONTRIBUTING.md            @zhourusheng
+# 对外第一入口：主 README 是英文（P2-6，2026-08-12），中文翻译在 README.zh-CN.md。
+# 两份都列，避免只改一份造成中英不一致（2026-08-10 就发生过工具数只改一处的事故）。
+/README.md                  @zhourusheng
+/README.zh-CN.md            @zhourusheng
 /SECURITY.md                @zhourusheng
 /CODE_OF_CONDUCT.md         @zhourusheng

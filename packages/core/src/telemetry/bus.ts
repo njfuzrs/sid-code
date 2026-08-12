@@ -4,9 +4,15 @@
  */
 
 import type {
-  SpanData, SpanEvent, SpanKind, SpanStatus,
-  Attributes, AttributeValue, MetricPoint,
-  TelemetryExporter, TelemetryConfig,
+  SpanData,
+  SpanEvent,
+  SpanKind,
+  SpanStatus,
+  Attributes,
+  AttributeValue,
+  MetricPoint,
+  TelemetryExporter,
+  TelemetryConfig,
 } from "./types.ts";
 import { TraceContext, generateSpanId } from "./context.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -160,17 +166,18 @@ export class TelemetryBus {
     if (!this.config.enabled) return;
     // 防重复:已有定时器时先清理,避免重复 start() 泄漏 setInterval(LEAK-5)
     if (this.flushTimer) clearInterval(this.flushTimer);
-    this.flushTimer = setInterval(
-      () => { this.flush().catch(() => {}); },
-      this.config.flushIntervalMs,
-    );
+    this.flushTimer = setInterval(() => {
+      this.flush().catch(() => {});
+    }, this.config.flushIntervalMs);
     // 关闭交由统一的 graceful-shutdown 流程驱动(spec 17 §3.4):
     // 不再在此自行注册 SIGINT/SIGTERM,避免与 app.ts 的信号处理器、
     // graceful-shutdown 的 failsafe 重复触发 process.exit。
     // 仅保留 beforeExit 作为非信号退出路径(如事件循环排空)的兜底刷新。
     if (!this._shutdownRegistered) {
       this._shutdownRegistered = true;
-      process.on("beforeExit", () => { this.shutdown().catch(() => {}); });
+      process.on("beforeExit", () => {
+        this.shutdown().catch(() => {});
+      });
     }
   }
 
@@ -245,10 +252,10 @@ export class TelemetryBus {
     if (this.spanQueue.length === 0) return;
     const batch = this.spanQueue.splice(0, this.config.batchSize);
     await Promise.allSettled(
-      this.exporters.map(e =>
-        e.exportSpans(batch).catch(err => {
+      this.exporters.map((e) =>
+        e.exportSpans(batch).catch((err) => {
           getLogger().debug("TELEMETRY", `导出失败 (${e.name}): ${err}`);
-        })
+        }),
       ),
     );
   }
@@ -258,11 +265,11 @@ export class TelemetryBus {
     const batch = this.metricQueue.splice(0, this.config.batchSize);
     await Promise.allSettled(
       this.exporters
-        .filter(e => e.exportMetrics)
-        .map(e =>
-          e.exportMetrics!(batch).catch(err => {
+        .filter((e) => e.exportMetrics)
+        .map((e) =>
+          e.exportMetrics!(batch).catch((err) => {
             getLogger().debug("TELEMETRY", `指标导出失败 (${e.name}): ${err}`);
-          })
+          }),
         ),
     );
   }
@@ -286,7 +293,7 @@ export class TelemetryBus {
       // Perfetto 输出失败不影响关闭
     }
 
-    await Promise.allSettled(this.exporters.map(e => e.shutdown()));
+    await Promise.allSettled(this.exporters.map((e) => e.shutdown()));
   }
 
   /** 获取会话内所有已完成的 span（供 /telemetry 命令使用） */

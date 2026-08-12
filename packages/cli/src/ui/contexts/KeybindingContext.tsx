@@ -10,14 +10,7 @@
  * 保证首帧键位即可用、绝不阻塞启动。
  */
 
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "./KeypressContext.tsx";
 import {
   DEFAULT_BINDINGS,
@@ -70,9 +63,7 @@ export function KeybindingProvider({
   initialBindings?: KeyBinding[];
   extraChords?: ChordBinding[];
 }) {
-  const [bindings, setBindings] = useState<KeyBinding[]>(
-    initialBindings ?? DEFAULT_BINDINGS,
-  );
+  const [bindings, setBindings] = useState<KeyBinding[]>(initialBindings ?? DEFAULT_BINDINGS);
   const [userConfigApplied, setUserConfigApplied] = useState(false);
 
   // ChordMachine 实例只创建一次；表变化时通过 setBindings 重新喂入。
@@ -113,11 +104,7 @@ export function KeybindingProvider({
     [bindings, userConfigApplied],
   );
 
-  return (
-    <KeybindingContext.Provider value={value}>
-      {children}
-    </KeybindingContext.Provider>
-  );
+  return <KeybindingContext.Provider value={value}>{children}</KeybindingContext.Provider>;
 }
 
 /**

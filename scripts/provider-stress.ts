@@ -140,7 +140,9 @@ async function executeRequest(
 
   const params: SendParams = {
     model,
-    messages: [{ role: "user", content: [{ type: "text", text: `Count from 1 to 3. (seq=${seq})` }] }],
+    messages: [
+      { role: "user", content: [{ type: "text", text: `Count from 1 to 3. (seq=${seq})` }] },
+    ],
     maxTokens: 20,
   };
 
@@ -302,7 +304,10 @@ interface Summary {
 
 function computeSummary(results: RequestResult[], startMemMb: number): Summary {
   const passed = results.filter((r) => r.status === "pass");
-  const ttfts = passed.map((r) => r.ttft_ms!).filter((t) => t != null).sort((a, b) => a - b);
+  const ttfts = passed
+    .map((r) => r.ttft_ms!)
+    .filter((t) => t != null)
+    .sort((a, b) => a - b);
   const totals = results.map((r) => r.total_ms).sort((a, b) => a - b);
   const endMemMb = Math.round(process.memoryUsage.rss() / 1024 / 1024);
 
@@ -379,27 +384,35 @@ async function main() {
     console.error(`\n[stress] 完成`);
     console.error(`  总请求: ${summary.total_requests}`);
     console.error(`  成功率: ${(summary.success_rate * 100).toFixed(1)}%`);
-    console.error(`  TTFT P50/P95: ${summary.ttft_p50_ms ?? "-"}ms / ${summary.ttft_p95_ms ?? "-"}ms`);
+    console.error(
+      `  TTFT P50/P95: ${summary.ttft_p50_ms ?? "-"}ms / ${summary.ttft_p95_ms ?? "-"}ms`,
+    );
     console.error(`  总耗时 P50/P95: ${summary.total_p50_ms}ms / ${summary.total_p95_ms}ms`);
-    console.error(`  内存增长: ${summary.mem_growth_mb}MB (${summary.mem_start_mb} → ${summary.mem_end_mb})`);
+    console.error(
+      `  内存增长: ${summary.mem_growth_mb}MB (${summary.mem_start_mb} → ${summary.mem_end_mb})`,
+    );
   }
 
   // 排除 chaos 模式中故意注入的 abort/timeout，只看"正常请求"的成功率
-  const normalResults = MODE === "chaos"
-    ? results.filter((r) => r.status !== "aborted") // chaos abort 是故意的
-    : results;
-  const normalSuccessRate = normalResults.length > 0
-    ? normalResults.filter((r) => r.status === "pass").length / normalResults.length
-    : 0;
+  const normalResults =
+    MODE === "chaos"
+      ? results.filter((r) => r.status !== "aborted") // chaos abort 是故意的
+      : results;
+  const normalSuccessRate =
+    normalResults.length > 0
+      ? normalResults.filter((r) => r.status === "pass").length / normalResults.length
+      : 0;
 
   // 退出码判定：成功率 < 95% 或内存增长 > 20MB
   const MAX_MEM_GROWTH_MB = parseInt(process.env.SID_CODE_STRESS_MAX_MEM_MB ?? "20", 10);
   if (normalSuccessRate < 0.95) {
-    if (VERBOSE) console.error(`[stress] FAIL: 成功率 ${(normalSuccessRate * 100).toFixed(1)}% < 95%`);
+    if (VERBOSE)
+      console.error(`[stress] FAIL: 成功率 ${(normalSuccessRate * 100).toFixed(1)}% < 95%`);
     process.exit(1);
   }
   if (summary.mem_growth_mb > MAX_MEM_GROWTH_MB) {
-    if (VERBOSE) console.error(`[stress] FAIL: 内存增长 ${summary.mem_growth_mb}MB > ${MAX_MEM_GROWTH_MB}MB`);
+    if (VERBOSE)
+      console.error(`[stress] FAIL: 内存增长 ${summary.mem_growth_mb}MB > ${MAX_MEM_GROWTH_MB}MB`);
     process.exit(2);
   }
   process.exit(0);

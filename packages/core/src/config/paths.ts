@@ -89,7 +89,10 @@ export const sidPaths = {
    * 2. ~/.sid-code/managed-settings.json    —— 用户级 MDM/回退（原 ManagedFileLoader 路径，兼容既有）
    * 统一后废弃历史上冲突的 /etc/sid-code/policy.json 与 /etc/sid-code/policy.yaml 两个路径。
    */
-  managedPolicyCandidates: (): string[] => ["/etc/sid-code/managed-settings.json", sidHomePath("managed-settings.json")],
+  managedPolicyCandidates: (): string[] => [
+    "/etc/sid-code/managed-settings.json",
+    sidHomePath("managed-settings.json"),
+  ],
   globalClaudeMd: () => sidHomePath("CLAUDE.md"),
   gitignore: () => sidHomePath(".gitignore"),
   lspConfig: () => sidHomePath("lsp.json"),

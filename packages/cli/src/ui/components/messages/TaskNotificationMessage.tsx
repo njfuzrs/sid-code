@@ -77,10 +77,10 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
         </Box>
         <Box flexGrow={1}>
           {/* P1-2：agent 身份色只点在类型标签上（克制点睛，不给整行上色）。 */}
-          {agentType ? (
-            <Text color={getAgentInkColor(agentType)}>{`${agentType} `}</Text>
-          ) : null}
-          <Text wrap="wrap" color={theme.text.primary}>{summary}</Text>
+          {agentType ? <Text color={getAgentInkColor(agentType)}>{`${agentType} `}</Text> : null}
+          <Text wrap="wrap" color={theme.text.primary}>
+            {summary}
+          </Text>
         </Box>
       </Box>
 

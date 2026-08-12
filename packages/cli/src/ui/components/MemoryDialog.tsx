@@ -106,40 +106,46 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   }, [reloadEntries]);
 
   // 用编辑器打开某条记忆
-  const openEntryInEditor = useCallback(async (entry: MemoryEntry) => {
-    try {
-      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
-      const store = new MemoryStore(cwd);
-      const path = await store.resolveEntryPath(entry.key, entry.scope);
-      if (!path) {
-        setStatusMsg(`未找到记忆文件: ${entry.key}`);
-        return;
+  const openEntryInEditor = useCallback(
+    async (entry: MemoryEntry) => {
+      try {
+        const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+        const store = new MemoryStore(cwd);
+        const path = await store.resolveEntryPath(entry.key, entry.scope);
+        if (!path) {
+          setStatusMsg(`未找到记忆文件: ${entry.key}`);
+          return;
+        }
+        const res = await openFileInExternalEditor(path);
+        if (!res.ok) {
+          setStatusMsg(res.error || "编辑器打开失败");
+        } else {
+          setStatusMsg(`已编辑: ${entry.key}`);
+          await reloadEntries();
+        }
+      } catch (e) {
+        setStatusMsg(`编辑失败: ${(e as Error)?.message}`);
       }
-      const res = await openFileInExternalEditor(path);
-      if (!res.ok) {
-        setStatusMsg(res.error || "编辑器打开失败");
-      } else {
-        setStatusMsg(`已编辑: ${entry.key}`);
-        await reloadEntries();
-      }
-    } catch (e) {
-      setStatusMsg(`编辑失败: ${(e as Error)?.message}`);
-    }
-  }, [cwd, reloadEntries]);
+    },
+    [cwd, reloadEntries],
+  );
 
   // 删除某条记忆
-  const deleteEntry = useCallback(async (entry: MemoryEntry) => {
-    try {
-      const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
-      const store = new MemoryStore(cwd);
-      const ok = await store.delete(entry.key, entry.scope);
-      setStatusMsg(ok ? `已删除: ${entry.key}` : `删除失败: ${entry.key}`);
-      await reloadEntries();
-    } catch (e) {
-      setStatusMsg(`删除失败: ${(e as Error)?.message}`);
-    }
-    setView({ type: "auto-list" });
-  }, [cwd, reloadEntries]);
+  const deleteEntry = useCallback(
+    async (entry: MemoryEntry) => {
+      try {
+        const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+        const store = new MemoryStore(cwd);
+        const ok = await store.delete(entry.key, entry.scope);
+        setStatusMsg(ok ? `已删除: ${entry.key}` : `删除失败: ${entry.key}`);
+        await reloadEntries();
+      } catch (e) {
+        setStatusMsg(`删除失败: ${(e as Error)?.message}`);
+      }
+      setView({ type: "auto-list" });
+    },
+    [cwd, reloadEntries],
+  );
 
   // 键盘：动作键（e/d/f）+ Esc 分层返回。BaseSelectionList 处理 ↑↓/Enter。
   useKeypress(KeypressPriority.Critical, (key: Key) => {
@@ -185,8 +191,14 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
 
     // f：auto-list ↔ files-list 切换
     if (key.name === "f" && !key.ctrl && !key.alt) {
-      if (view.type === "auto-list") { setView({ type: "files-list" }); return true; }
-      if (view.type === "files-list") { setView({ type: "auto-list" }); return true; }
+      if (view.type === "auto-list") {
+        setView({ type: "files-list" });
+        return true;
+      }
+      if (view.type === "files-list") {
+        setView({ type: "auto-list" });
+        return true;
+      }
     }
 
     return false;
@@ -197,16 +209,30 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
     const { entry } = view;
     const lines = entry.value.split("\n");
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
         <Box>
-          <Text bold color={theme.ui.active}>{entry.key}</Text>
-          <Text color={theme.text.secondary}> ({ENTRY_SCOPE_LABEL[entry.scope]}{entry.type ? ` · ${TYPE_LABEL[entry.type] ?? entry.type}` : ""})</Text>
+          <Text bold color={theme.ui.active}>
+            {entry.key}
+          </Text>
+          <Text color={theme.text.secondary}>
+            {" "}
+            ({ENTRY_SCOPE_LABEL[entry.scope]}
+            {entry.type ? ` · ${TYPE_LABEL[entry.type] ?? entry.type}` : ""})
+          </Text>
         </Box>
         {entry.description && <Text color={theme.text.secondary}>{entry.description}</Text>}
         <Text color={theme.text.secondary}>更新: {formatUpdated(entry.updatedAt)}</Text>
         <Box marginTop={1} flexDirection="column">
           {lines.map((line, i) => (
-            <Text key={i} color={theme.text.primary}>{line || " "}</Text>
+            <Text key={i} color={theme.text.primary}>
+              {line || " "}
+            </Text>
           ))}
         </Box>
         <Box marginTop={1}>
@@ -220,8 +246,16 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   if (view.type === "confirm-del") {
     const { entry } = view;
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.status.error} paddingX={1} paddingY={0}>
-        <Text bold color={theme.status.error}>确认删除记忆？</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.status.error}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.status.error}>
+          确认删除记忆？
+        </Text>
         <Box marginTop={1} flexDirection="column">
           <Text color={theme.text.primary}>{entry.key}</Text>
           {entry.description && <Text color={theme.text.secondary}>{entry.description}</Text>}
@@ -229,7 +263,7 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
         </Box>
         <Box marginTop={1}>
           <Text color={theme.status.error}>y 确认删除</Text>
-          <Text color={theme.text.secondary}>  ·  n 取消</Text>
+          <Text color={theme.text.secondary}> · n 取消</Text>
         </Box>
       </Box>
     );
@@ -244,9 +278,17 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
     const truncated = allLines.length > MAX_PREVIEW_LINES;
 
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
         <Box>
-          <Text bold color={theme.ui.active}>{file.displayPath}</Text>
+          <Text bold color={theme.ui.active}>
+            {file.displayPath}
+          </Text>
           <Text color={theme.text.secondary}> ({SCOPE_LABEL[file.scope]})</Text>
         </Box>
         <Text color={theme.text.secondary}>
@@ -275,8 +317,16 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   if (view.type === "files-list") {
     if (files.length === 0) {
       return (
-        <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-          <Text bold color={theme.ui.active}>CLAUDE.md 文件</Text>
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={theme.ui.active}
+          paddingX={1}
+          paddingY={0}
+        >
+          <Text bold color={theme.ui.active}>
+            CLAUDE.md 文件
+          </Text>
           <Box marginTop={1}>
             <Text color={theme.text.secondary}>未发现任何 CLAUDE.md 文件</Text>
           </Box>
@@ -287,12 +337,24 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
         </Box>
       );
     }
-    const fileItems: FileItem[] = files.map((info, i) => ({ value: info.path, key: `f-${i}`, info }));
+    const fileItems: FileItem[] = files.map((info, i) => ({
+      value: info.path,
+      key: `f-${i}`,
+      info,
+    }));
     const pathColWidth = Math.max(...files.map((f) => stringWidth(f.displayPath)), 0);
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
         <Box>
-          <Text bold color={theme.ui.active}>CLAUDE.md 文件</Text>
+          <Text bold color={theme.ui.active}>
+            CLAUDE.md 文件
+          </Text>
           <Text color={theme.text.secondary}> · {files.length} 个</Text>
         </Box>
         <Box marginTop={1} flexDirection="column">
@@ -311,9 +373,13 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
               const pad = " ".repeat(Math.max(2, pathColWidth - stringWidth(info.displayPath) + 2));
               return (
                 <Box>
-                  <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{info.displayPath}</Text>
+                  <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
+                    {info.displayPath}
+                  </Text>
                   <Text color={theme.text.secondary}>
-                    {pad}{SCOPE_LABEL[info.scope]} · {formatFileSize(info.size)} · {formatMtime(info.mtimeMs)}
+                    {pad}
+                    {SCOPE_LABEL[info.scope]} · {formatFileSize(info.size)} ·{" "}
+                    {formatMtime(info.mtimeMs)}
                   </Text>
                 </Box>
               );
@@ -330,17 +396,35 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   // ── auto-list：auto-memory 条目列表（主视图）──
   if (entries === null) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>Memory 管理</Text>
-        <Box marginTop={1}><Text color={theme.text.secondary}>加载中…</Text></Box>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          Memory 管理
+        </Text>
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>加载中…</Text>
+        </Box>
       </Box>
     );
   }
 
   if (entries.length === 0) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>Memory 管理</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          Memory 管理
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>暂无 auto-memory 记忆条目</Text>
         </Box>
@@ -360,9 +444,17 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
   const keyColWidth = Math.max(...entries.map((e) => stringWidth(e.key)), 0);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       <Box>
-        <Text bold color={theme.ui.active}>Memory 管理</Text>
+        <Text bold color={theme.ui.active}>
+          Memory 管理
+        </Text>
         <Text color={theme.text.secondary}> · {entries.length} 条记忆</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
@@ -384,13 +476,20 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
             return (
               <Box>
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{entry.key}</Text>
-                <Text color={theme.text.secondary}>{pad}{meta}</Text>
+                <Text color={theme.text.secondary}>
+                  {pad}
+                  {meta}
+                </Text>
               </Box>
             );
           }}
         />
       </Box>
-      {statusMsg && <Box marginTop={1}><Text color={theme.text.secondary}>{statusMsg}</Text></Box>}
+      {statusMsg && (
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>{statusMsg}</Text>
+        </Box>
+      )}
       <Box marginTop={1}>
         <Text italic>↑↓ 导航 · Enter 查看 · e 编辑 · d 删除 · f CLAUDE.md · Esc 关闭</Text>
       </Box>

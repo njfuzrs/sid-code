@@ -15,10 +15,13 @@ import { getLogger } from "../debug/logger.ts";
 
 export class PermissionProxy {
   private transport: BridgeTransport;
-  private pendingRequests = new Map<string, {
-    resolve: (allowed: boolean) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private pendingRequests = new Map<
+    string,
+    {
+      resolve: (allowed: boolean) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   private readonly timeoutMs: number;
   /** 单调递增序号（不依赖随机数，保证 id 唯一） */
   private seq = 0;
@@ -44,18 +47,20 @@ export class PermissionProxy {
 
       this.pendingRequests.set(requestId, { resolve, timer });
 
-      void this.transport.write({
-        type: "permission_request",
-        id: requestId,
-        data: request,
-        timestamp: Date.now(),
-      }).catch((err) => {
-        // 发送失败 → 立即拒绝
-        clearTimeout(timer);
-        this.pendingRequests.delete(requestId);
-        getLogger().error("BRIDGE", `权限请求发送失败: ${err.message}`);
-        resolve(false);
-      });
+      void this.transport
+        .write({
+          type: "permission_request",
+          id: requestId,
+          data: request,
+          timestamp: Date.now(),
+        })
+        .catch((err) => {
+          // 发送失败 → 立即拒绝
+          clearTimeout(timer);
+          this.pendingRequests.delete(requestId);
+          getLogger().error("BRIDGE", `权限请求发送失败: ${err.message}`);
+          resolve(false);
+        });
     });
   }
 

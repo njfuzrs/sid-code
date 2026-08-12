@@ -37,7 +37,7 @@ export class SearXNGSearchBackend implements SearchBackend {
 
     try {
       const response = await fetch(url.toString(), {
-        headers: { "Accept": "application/json" },
+        headers: { Accept: "application/json" },
         signal: combinedSignal,
       });
 

@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 
-export type ApprovalStatus = 'approved' | 'rejected' | 'pending';
+export type ApprovalStatus = "approved" | "rejected" | "pending";
 
 interface ApprovalStore {
   approved: string[];
@@ -22,7 +22,7 @@ function approvalsPath(): string {
 function loadApprovals(): ApprovalStore {
   try {
     if (existsSync(approvalsPath())) {
-      return JSON.parse(readFileSync(approvalsPath(), 'utf-8'));
+      return JSON.parse(readFileSync(approvalsPath(), "utf-8"));
     }
   } catch {}
   return { approved: [], rejected: [] };
@@ -39,17 +39,14 @@ function saveApprovals(store: ApprovalStore): void {
 /**
  * 检查项目级 MCP Server 的审批状态
  */
-export function getProjectServerApproval(
-  serverName: string,
-  projectPath: string,
-): ApprovalStatus {
+export function getProjectServerApproval(serverName: string, projectPath: string): ApprovalStatus {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
 
-  if (approvals.rejected?.includes(key)) return 'rejected';
-  if (approvals.approved?.includes(key)) return 'approved';
-  if (approvals.approveAll) return 'approved';
-  return 'pending';
+  if (approvals.rejected?.includes(key)) return "rejected";
+  if (approvals.approved?.includes(key)) return "approved";
+  if (approvals.approveAll) return "approved";
+  return "pending";
 }
 
 /**
@@ -61,7 +58,7 @@ export function approveProjectServer(serverName: string, projectPath: string): v
   if (!approvals.approved.includes(key)) {
     approvals.approved.push(key);
   }
-  approvals.rejected = approvals.rejected.filter(k => k !== key);
+  approvals.rejected = approvals.rejected.filter((k) => k !== key);
   saveApprovals(approvals);
 }
 
@@ -74,7 +71,7 @@ export function rejectProjectServer(serverName: string, projectPath: string): vo
   if (!approvals.rejected.includes(key)) {
     approvals.rejected.push(key);
   }
-  approvals.approved = approvals.approved.filter(k => k !== key);
+  approvals.approved = approvals.approved.filter((k) => k !== key);
   saveApprovals(approvals);
 }
 

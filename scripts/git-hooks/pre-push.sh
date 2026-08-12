@@ -2,9 +2,8 @@
 # pre-push hook 受控版本（git track，团队成员安装一次即可同步）
 #
 # 行为：
-#   1. 检查最近 commit 是否涉及 evals/ 下的 yaml / _scores / _reports
-#   2. 如果有变动，跑 bun run eval:dashboard 刷新 DASHBOARD.md
-#   3. 如果 DASHBOARD.md 有变化，生成独立 commit（不 amend）
+#   1. holdout 泄露检测 / 永封校验
+#   2. website/ 有变动时跑一次站点构建（死链检测）
 #
 # 安装：
 #   bun run scripts/install-git-hooks.sh
@@ -50,63 +49,6 @@ if ! git diff --quiet HEAD~1 HEAD -- 'website/' 2>/dev/null || ! git diff --quie
     exit 1
   fi
   echo "[pre-push] ✅ 站点构建通过（无死链）"
-fi
-
-# Step 2-3：dashboard 刷新（与原 hook 行为一致）
-NEEDS_REFRESH=0
-
-if ! git diff --quiet HEAD~1 HEAD -- 'evals/' 2>/dev/null; then
-  NEEDS_REFRESH=1
-fi
-if ! git diff --quiet -- 'evals/' 2>/dev/null; then
-  NEEDS_REFRESH=1
-fi
-
-if [ "$NEEDS_REFRESH" = "0" ]; then
-  exit 0
-fi
-
-echo "[eval-dashboard] 检测到 evals/ 变动，刷新 DASHBOARD.md..."
-
-if grep -q '"eval:dashboard"' package.json 2>/dev/null; then
-  bun run eval:dashboard || {
-    echo "[eval-dashboard] ⚠️  Dashboard 刷新失败，push 中止"
-    exit 1
-  }
-elif grep -q '"eval:dashboard:md"' package.json 2>/dev/null; then
-  bun run eval:dashboard:md || {
-    echo "[eval-dashboard] ⚠️  Dashboard 刷新失败，push 中止"
-    exit 1
-  }
-else
-  echo "[eval-dashboard] 未找到 eval:dashboard 命令，跳过"
-  exit 0
-fi
-
-# 同步刷新 HTML 操作台（评测系统 HTML 可视化操作台，docs/eval/演进路线/评测系统html.md）
-if grep -q '"eval:dashboard-html"' package.json 2>/dev/null; then
-  echo "[eval-dashboard-html] 刷新 evals/eval-dashboard.html + eval-data.json ..."
-  bun run eval:dashboard-html || {
-    echo "[eval-dashboard-html] ⚠️  HTML dashboard 刷新失败，push 中止"
-    exit 1
-  }
-fi
-
-REFRESHED_FILES=""
-if ! git diff --quiet evals/DASHBOARD.md 2>/dev/null; then
-  REFRESHED_FILES="$REFRESHED_FILES evals/DASHBOARD.md"
-fi
-if ! git diff --quiet evals/eval-dashboard.html 2>/dev/null; then
-  REFRESHED_FILES="$REFRESHED_FILES evals/eval-dashboard.html"
-fi
-if ! git diff --quiet evals/eval-data.json 2>/dev/null; then
-  REFRESHED_FILES="$REFRESHED_FILES evals/eval-data.json"
-fi
-
-if [ -n "$REFRESHED_FILES" ]; then
-  git add $REFRESHED_FILES
-  git commit -m "ci(eval): refresh dashboard $(date -u +%Y-%m-%dT%H:%MZ)"
-  echo "[eval-dashboard] ✅ 已生成独立 commit (含:$REFRESHED_FILES)"
 fi
 
 exit 0

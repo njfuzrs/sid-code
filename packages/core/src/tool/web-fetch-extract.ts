@@ -143,9 +143,7 @@ export class WebFetchExtractor {
       `来源 URL: ${fetchUrl}\n\n` +
       `<fetched_content>\n${truncatedBody}\n</fetched_content>`;
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: userPrompt }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: userPrompt }] }];
 
     const startedAt = Date.now();
 

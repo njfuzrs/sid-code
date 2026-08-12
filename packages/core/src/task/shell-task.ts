@@ -6,16 +6,10 @@
 import { spawn } from "child_process";
 import { openSync, closeSync } from "fs";
 import { platform } from "os";
-import {
-  generateTaskId,
-  type LocalShellTaskState,
-  isTerminalStatus,
-} from "./types.ts";
+import { generateTaskId, type LocalShellTaskState, isTerminalStatus } from "./types.ts";
 import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
 import { initTaskOutput, getTaskOutputTail } from "./disk-output.ts";
-import {
-  enqueueTaskNotification,
-} from "./notification.ts";
+import { enqueueTaskNotification } from "./notification.ts";
 
 /** 获取平台 shell 配置 */
 function getPlatformShell(): { shell: string; args: string[] } {
@@ -176,7 +170,14 @@ export function spawnShellTask(opts: {
 
   child.on("exit", (code, signal) => {
     activeProcesses.delete(taskId);
-    finalizeShellTaskExit({ taskId, toolUseId: opts.toolUseId, outputFile: output.filePath, display, code, signal });
+    finalizeShellTaskExit({
+      taskId,
+      toolUseId: opts.toolUseId,
+      outputFile: output.filePath,
+      display,
+      code,
+      signal,
+    });
   });
 
   child.on("error", (err) => {
@@ -275,7 +276,12 @@ export function adoptRunningProcessAsTask(opts: {
     },
     markError: (err: Error) => {
       activeProcesses.delete(taskId);
-      finalizeShellTaskError({ taskId, toolUseId: opts.toolUseId, outputFile: output.filePath, err });
+      finalizeShellTaskError({
+        taskId,
+        toolUseId: opts.toolUseId,
+        outputFile: output.filePath,
+        err,
+      });
     },
   };
 }
@@ -289,13 +295,21 @@ export function killShellTask(taskId: string): void {
       try {
         spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
       } catch {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
       }
     } else {
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
-        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
       }
     }
   }
@@ -337,8 +351,11 @@ const STALL_CHECK_INTERVAL_MS = 5_000;
 const STALL_THRESHOLD_MS = 45_000;
 
 const PROMPT_PATTERNS = [
-  /\(y\/n\)/i, /\[y\/n\]/i, /\(yes\/no\)/i,
-  /Continue\?/i, /Overwrite\?/i,
+  /\(y\/n\)/i,
+  /\[y\/n\]/i,
+  /\(yes\/no\)/i,
+  /Continue\?/i,
+  /Overwrite\?/i,
   /Press (any key|Enter)/i,
   /Are you sure/i,
 ];
@@ -364,10 +381,8 @@ function startStallWatchdog(taskId: string): void {
       }
       if (Date.now() - lastGrowth < STALL_THRESHOLD_MS) return;
 
-      if (tail && PROMPT_PATTERNS.some(p => p.test(tail))) {
-        const tailSnippet = tail.length > 200
-          ? `…${tail.slice(-200)}`
-          : tail;
+      if (tail && PROMPT_PATTERNS.some((p) => p.test(tail))) {
+        const tailSnippet = tail.length > 200 ? `…${tail.slice(-200)}` : tail;
         enqueueTaskNotification(
           {
             taskId,
@@ -379,7 +394,9 @@ function startStallWatchdog(taskId: string): void {
         );
         lastGrowth = Date.now();
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, STALL_CHECK_INTERVAL_MS);
 
   // 确保 interval 不阻止进程退出

@@ -15,12 +15,12 @@ import type { Decision, PermissionDecisionReason } from "./types.ts";
 /** 权限模式的中文名（与 permission/mode.ts 展示口径一致，缺省回退原值） */
 const MODE_LABELS: Record<string, string> = {
   "always-allow": "全部允许（always-allow）",
-  "acceptEdits": "自动接受编辑（acceptEdits）",
+  acceptEdits: "自动接受编辑（acceptEdits）",
   "deny-write": "拒绝写入（deny-write）",
-  "yesMode": "自动批准（--yes）",
-  "auto": "自动分类（auto）",
-  "dontAsk": "从不询问（dontAsk）",
-  "plan": "计划模式（plan）",
+  yesMode: "自动批准（--yes）",
+  auto: "自动分类（auto）",
+  dontAsk: "从不询问（dontAsk）",
+  plan: "计划模式（plan）",
   "plan+plan-file": "计划模式·计划文件放行",
   "plan+bypass": "计划模式·继承 bypass 放行",
 };
@@ -96,11 +96,7 @@ export function explainDecisionReason(reason: PermissionDecisionReason): string 
  * @returns 面向用户/日志的中文解释
  */
 export function explainDecision(decision: Decision): string {
-  const verdict = decision.allowed
-    ? "允许"
-    : decision.needsConfirmation
-      ? "需要确认"
-      : "拒绝";
+  const verdict = decision.allowed ? "允许" : decision.needsConfirmation ? "需要确认" : "拒绝";
 
   let detail: string;
   if (decision.decisionReason) {

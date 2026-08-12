@@ -82,7 +82,7 @@ export function resolvePricing(
   //    仅当 baseURL 传入时启用；两端都过归一化，杜绝斜杠/大小写漏配。
   if (baseURL !== undefined) {
     const exact = availableModels?.find(
-      m => m.name === model && sameEndpoint(m.baseURL, baseURL),
+      (m) => m.name === model && sameEndpoint(m.baseURL, baseURL),
     );
     if (exact?.pricing && exact.pricing.input > 0) {
       return exact.pricing;
@@ -90,7 +90,7 @@ export function resolvePricing(
   }
 
   // 2. 用户手写「仅模型名」：兼容旧配置（无端点维度时命中第一条同名）。
-  const userModel = availableModels?.find(m => m.name === model);
+  const userModel = availableModels?.find((m) => m.name === model);
   if (userModel?.pricing && userModel.pricing.input > 0) {
     return userModel.pricing;
   }
@@ -124,11 +124,8 @@ export function resolvePricing(
  *
  * 优先级：availableModels[].provider（用户配置，权威） > 启发式（claude* → anthropic，其余 → openai）。
  */
-export function inferPricingProvider(
-  model: string,
-  availableModels?: PricingModelEntry[],
-): string {
-  const mc = availableModels?.find(m => m.name === model);
+export function inferPricingProvider(model: string, availableModels?: PricingModelEntry[]): string {
+  const mc = availableModels?.find((m) => m.name === model);
   if (mc?.provider) return mc.provider;
   // 兜底启发式必须按**真名**判：别名带渠道前缀时（gw-claude-sonnet-5）`/^claude/i`
   // 判成 openai，normalizeCacheUsage 的三段拆分口径随之反了（Anthropic 的
@@ -229,9 +226,7 @@ export class CostTracker {
     const lines: string[] = [`总成本: $${this.totalCostUSD.toFixed(4)}`];
     for (const [model, mu] of Object.entries(this.modelUsage)) {
       const cacheInfo =
-        mu.cacheReadInputTokens > 0
-          ? ` (${formatTokens(mu.cacheReadInputTokens)} cache read)`
-          : "";
+        mu.cacheReadInputTokens > 0 ? ` (${formatTokens(mu.cacheReadInputTokens)} cache read)` : "";
       lines.push(
         `  ${model}: ${formatTokens(mu.inputTokens)} in, ${formatTokens(mu.outputTokens)} out${cacheInfo} (${mu.requestCount} 次请求)`,
       );

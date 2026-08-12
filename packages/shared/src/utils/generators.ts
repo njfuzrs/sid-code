@@ -56,9 +56,7 @@ export async function* all<A>(
   }
 
   while (active.size > 0) {
-    const { key, res } = await Promise.race(
-      Array.from(active.values(), (e) => e.pending),
-    );
+    const { key, res } = await Promise.race(Array.from(active.values(), (e) => e.pending));
 
     const entry = active.get(key);
     if (!entry) continue;

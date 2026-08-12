@@ -61,17 +61,12 @@ export function clearCachedParsedFile(path: string): void {
 }
 
 /** 获取单来源缓存（undefined = 未缓存；null = 缓存了"该来源无设置"） */
-export function getCachedSource(
-  source: SettingSource,
-): SettingsJson | null | undefined {
+export function getCachedSource(source: SettingSource): SettingsJson | null | undefined {
   return perSourceCache.has(source) ? perSourceCache.get(source) : undefined;
 }
 
 /** 设置单来源缓存 */
-export function setCachedSource(
-  source: SettingSource,
-  value: SettingsJson | null,
-): void {
+export function setCachedSource(source: SettingSource, value: SettingsJson | null): void {
   perSourceCache.set(source, value);
 }
 

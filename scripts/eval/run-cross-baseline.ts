@@ -3,8 +3,15 @@
  */
 
 import { join } from "node:path";
-import { runClaudeCode, type ClaudeCodeConfig } from "../../evals/bench-runner/adapters/claude-code.ts";
-import { gradeProcess, type JudgeConfig, type JudgeInput } from "../../evals/bench-runner/process-grader.ts";
+import {
+  runClaudeCode,
+  type ClaudeCodeConfig,
+} from "../../evals/bench-runner/adapters/claude-code.ts";
+import {
+  gradeProcess,
+  type JudgeConfig,
+  type JudgeInput,
+} from "../../evals/bench-runner/process-grader.ts";
 import { parseArgs } from "node:util";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -176,9 +183,7 @@ async function main() {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    const finalScore = judgeScore !== null
-      ? outcomeScore * 0.6 + judgeScore * 0.4
-      : outcomeScore;
+    const finalScore = judgeScore !== null ? outcomeScore * 0.6 + judgeScore * 0.4 : outcomeScore;
 
     results.push({
       caseId: c.id,

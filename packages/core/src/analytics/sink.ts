@@ -56,8 +56,7 @@ let samplingHook: (eventName: string) => number | null = (eventName) => {
 };
 
 /** killswitch hook:返回 true=该后端被关闭。默认走静态集合。 */
-let killswitchHook: (sinkName: string) => boolean = (name) =>
-  staticKilledSinks.has(name);
+let killswitchHook: (sinkName: string) => boolean = (name) => staticKilledSinks.has(name);
 
 /** 元数据富化 hook:返回要合并进每个事件的上下文字段。默认空。 */
 let metadataHook: () => EventMetadata = () => ({});
@@ -183,7 +182,5 @@ export function setMetadataHook(fn: () => EventMetadata): void {
 
 /** 关闭所有后端,刷新剩余事件 */
 export async function shutdownBackends(): Promise<void> {
-  await Promise.allSettled(
-    backends.map((b) => (b.shutdown ? b.shutdown() : Promise.resolve())),
-  );
+  await Promise.allSettled(backends.map((b) => (b.shutdown ? b.shutdown() : Promise.resolve())));
 }

@@ -5,14 +5,14 @@
  * 参考 gemini-cli/packages/cli/src/ui/components/shared/MaxSizedBox.tsx
  */
 
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import { ResizeObserver } from "@sid-code/tui-renderer/_vendor/resize-observer.ts";
 import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
-import { theme } from '../../semantic-colors.ts';
-import { useOverflowActions } from '../../contexts/OverflowContext.tsx';
-import { formatCollapsedSummary } from '../../constants/collapse.ts';
+import { theme } from "../../semantic-colors.ts";
+import { useOverflowActions } from "../../contexts/OverflowContext.tsx";
+import { formatCollapsedSummary } from "../../constants/collapse.ts";
 
 /**
  * MaxSizedBox 组件的最小高度
@@ -24,7 +24,7 @@ export interface MaxSizedBoxProps {
   children?: React.ReactNode;
   maxWidth?: number;
   maxHeight?: number;
-  overflowDirection?: 'top' | 'bottom';
+  overflowDirection?: "top" | "bottom";
   additionalHiddenLinesCount?: number;
 }
 
@@ -35,7 +35,7 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
   children,
   maxWidth,
   maxHeight,
-  overflowDirection = 'top',
+  overflowDirection = "top",
   additionalHiddenLinesCount = 0,
 }) => {
   const id = useId();
@@ -65,9 +65,7 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
   );
 
   const effectiveMaxHeight =
-    maxHeight !== undefined
-      ? Math.max(Math.round(maxHeight), MINIMUM_MAX_HEIGHT)
-      : undefined;
+    maxHeight !== undefined ? Math.max(Math.round(maxHeight), MINIMUM_MAX_HEIGHT) : undefined;
 
   const isOverflowing =
     (effectiveMaxHeight !== undefined && contentHeight > effectiveMaxHeight) ||
@@ -75,14 +73,10 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
 
   // 如果溢出，需要隐藏至少 1 行用于显示消息
   const visibleContentHeight =
-    isOverflowing && effectiveMaxHeight !== undefined
-      ? effectiveMaxHeight - 1
-      : effectiveMaxHeight;
+    isOverflowing && effectiveMaxHeight !== undefined ? effectiveMaxHeight - 1 : effectiveMaxHeight;
 
   const hiddenLinesCount =
-    visibleContentHeight !== undefined
-      ? Math.max(0, contentHeight - visibleContentHeight)
-      : 0;
+    visibleContentHeight !== undefined ? Math.max(0, contentHeight - visibleContentHeight) : 0;
 
   const totalHiddenLines = hiddenLinesCount + additionalHiddenLinesCount;
 
@@ -109,17 +103,11 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
     );
   }
 
-  const offset =
-    hiddenLinesCount > 0 && overflowDirection === 'top' ? -hiddenLinesCount : 0;
+  const offset = hiddenLinesCount > 0 && overflowDirection === "top" ? -hiddenLinesCount : 0;
 
   return (
-    <Box
-      flexDirection="column"
-      width={maxWidth}
-      maxHeight={effectiveMaxHeight}
-      flexShrink={0}
-    >
-      {totalHiddenLines > 0 && overflowDirection === 'top' && (
+    <Box flexDirection="column" width={maxWidth} maxHeight={effectiveMaxHeight} flexShrink={0}>
+      {totalHiddenLines > 0 && overflowDirection === "top" && (
         <Text color={theme.text.secondary} wrap="truncate">
           {formatCollapsedSummary(totalHiddenLines, { hint: "ctrl+o" })}
         </Text>
@@ -130,16 +118,11 @@ export const MaxSizedBox: React.FC<MaxSizedBoxProps> = ({
         flexGrow={0}
         maxHeight={isOverflowing ? visibleContentHeight : undefined}
       >
-        <Box
-          flexDirection="column"
-          ref={onRefChange}
-          flexShrink={0}
-          marginTop={offset}
-        >
+        <Box flexDirection="column" ref={onRefChange} flexShrink={0} marginTop={offset}>
           {children}
         </Box>
       </Box>
-      {totalHiddenLines > 0 && overflowDirection === 'bottom' && (
+      {totalHiddenLines > 0 && overflowDirection === "bottom" && (
         <Text color={theme.text.secondary} wrap="truncate">
           {formatCollapsedSummary(totalHiddenLines, { hint: "ctrl+o" })}
         </Text>

@@ -43,38 +43,35 @@ export class IDEMentionManager {
   register(client: MCPClient): void {
     this.unsubscribe?.();
 
-    this.unsubscribe = client.onNotification(
-      "notifications/at_mentioned",
-      (params: unknown) => {
-        try {
-          const p = params as {
-            filePath: string;
-            lineStart?: number;
-            lineEnd?: number;
-          };
-          if (typeof p?.filePath !== "string") return;
+    this.unsubscribe = client.onNotification("notifications/at_mentioned", (params: unknown) => {
+      try {
+        const p = params as {
+          filePath: string;
+          lineStart?: number;
+          lineEnd?: number;
+        };
+        if (typeof p?.filePath !== "string") return;
 
-          this.mentions.push({
-            filePath: p.filePath,
-            lineStart: p.lineStart,
-            lineEnd: p.lineEnd,
-            timestamp: Date.now(),
-          });
+        this.mentions.push({
+          filePath: p.filePath,
+          lineStart: p.lineStart,
+          lineEnd: p.lineEnd,
+          timestamp: Date.now(),
+        });
 
-          // 保留最近 maxMentions 条
-          if (this.mentions.length > this.maxMentions) {
-            this.mentions = this.mentions.slice(-this.maxMentions);
-          }
-
-          getLogger().debug(
-            "IDE",
-            `@提及: ${p.filePath}${p.lineStart != null ? `:${p.lineStart + 1}` : ""}`,
-          );
-        } catch (err) {
-          getLogger().error("IDE", "解析 @提及通知失败", err);
+        // 保留最近 maxMentions 条
+        if (this.mentions.length > this.maxMentions) {
+          this.mentions = this.mentions.slice(-this.maxMentions);
         }
-      },
-    );
+
+        getLogger().debug(
+          "IDE",
+          `@提及: ${p.filePath}${p.lineStart != null ? `:${p.lineStart + 1}` : ""}`,
+        );
+      } catch (err) {
+        getLogger().error("IDE", "解析 @提及通知失败", err);
+      }
+    });
   }
 
   /** 取消注册 */

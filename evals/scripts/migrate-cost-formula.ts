@@ -30,7 +30,8 @@ const CASE_DIRS = ["p0-core", "p1-common", "p2-edge", "holdout"];
 
 const apply = process.argv.includes("--apply");
 
-const LEGACY_WARNING = "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加 input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值 200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值";
+const LEGACY_WARNING =
+  "⚠️ legacy cost 公式: score/cost 字段为旧公式（v1: input+output 累加 / v2: 4 项累加 input 含 N² 过计数, 阈值 500k 系列）产物, 与 v3 (input 取 last + 其它累加, 阈值 200k/500k/1.5M, 已校准) 不可直接比较; --sync 重跑后会刷成 v3 真实值";
 const CURRENT_FORMULA_VERSION = "v3";
 
 interface MigrationResult {
@@ -70,9 +71,7 @@ async function main() {
 
         const formulaVer = entry.get("_formula_version") as yamlLib.YAMLMap | undefined;
         const existingCostVer =
-          formulaVer && yamlLib.isMap(formulaVer)
-            ? String(formulaVer.get("cost") ?? "")
-            : "";
+          formulaVer && yamlLib.isMap(formulaVer) ? String(formulaVer.get("cost") ?? "") : "";
 
         // 当前公式版本的 entry 跳过
         if (existingCostVer === CURRENT_FORMULA_VERSION) continue;
@@ -80,7 +79,8 @@ async function main() {
         const oldNotes = entry.get("notes");
         const oldStr = typeof oldNotes === "string" ? oldNotes : "";
         const alreadyHasNewWarning = oldStr.startsWith(LEGACY_WARNING);
-        const alreadyMarkedLegacy = existingCostVer === "legacy_v1" || existingCostVer === "legacy_v2";
+        const alreadyMarkedLegacy =
+          existingCostVer === "legacy_v1" || existingCostVer === "legacy_v2";
 
         // 已经完整迁移过（标记 + 新警告齐全）：跳过
         if (alreadyMarkedLegacy && alreadyHasNewWarning) continue;
@@ -121,9 +121,11 @@ async function main() {
     console.log(`  ${r.caseId}: ${r.providersTouched.join(", ")}`);
   }
   console.log("");
-  console.log(apply
-    ? `✅ 已写入 ${results.length} 个 case yaml 的 _formula_version 标记 + notes 头部警告`
-    : `干跑模式：未写入。加 --apply 实际执行；下一步用 --sync 重跑后真实刷新分数`);
+  console.log(
+    apply
+      ? `✅ 已写入 ${results.length} 个 case yaml 的 _formula_version 标记 + notes 头部警告`
+      : `干跑模式：未写入。加 --apply 实际执行；下一步用 --sync 重跑后真实刷新分数`,
+  );
 }
 
 if (import.meta.main) {

@@ -3,16 +3,16 @@
  * 允许用户切换 UI 主题
  */
 
-import React from 'react';
+import React from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { theme } from '../semantic-colors.ts';
-import { RadioButtonSelect } from './shared/RadioButtonSelect.tsx';
-import { useKeypress, KeypressPriority, type Key } from '../contexts/KeypressContext.tsx';
+import { theme } from "../semantic-colors.ts";
+import { RadioButtonSelect } from "./shared/RadioButtonSelect.tsx";
+import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 
 interface ThemeOption {
   name: string;
-  type: 'light' | 'dark';
+  type: "light" | "dark";
   description?: string;
 }
 
@@ -31,16 +31,16 @@ export const ThemeDialog: React.FC<ThemeDialogProps> = ({
 }) => {
   const items = availableThemes.map((t, i) => ({
     label: t.name,
-    sublabel: t.type === 'light' ? '亮色' : '暗色',
+    sublabel: t.type === "light" ? "亮色" : "暗色",
     value: t.name,
     key: `theme-${i}`,
     description: t.description,
   }));
 
-  const initialIndex = items.findIndex(item => item.value === currentTheme);
+  const initialIndex = items.findIndex((item) => item.value === currentTheme);
 
   useKeypress(KeypressPriority.Critical, (key: Key) => {
-    if (key.name === 'escape') {
+    if (key.name === "escape") {
       onClose();
       return true;
     }
@@ -60,7 +60,9 @@ export const ThemeDialog: React.FC<ThemeDialogProps> = ({
       paddingX={1}
       paddingY={1}
     >
-      <Text bold color={theme.ui.active}>选择主题</Text>
+      <Text bold color={theme.ui.active}>
+        选择主题
+      </Text>
       <Text>使用 ↑↓ 导航，Enter 选择，Esc 取消</Text>
       <Box marginTop={1}>
         <RadioButtonSelect

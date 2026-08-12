@@ -53,7 +53,9 @@ interface CaseStats {
 function loadCriticalCases(evalsDir: string): { id: string; category: string }[] {
   const path = join(evalsDir, "_meta", "critical-cases.yaml");
   if (!existsSync(path)) return [];
-  const doc = yaml.parse(readFileSync(path, "utf-8")) as { critical_cases?: { id: string; category: string }[] };
+  const doc = yaml.parse(readFileSync(path, "utf-8")) as {
+    critical_cases?: { id: string; category: string }[];
+  };
   return doc.critical_cases ?? [];
 }
 
@@ -128,7 +130,8 @@ function renderReport(provider: string, stats: CaseStats[], threshold: number): 
   const stableCases = stats.filter((s) => s.stable).length;
   const avgPassAt1 = stats.length > 0 ? stats.reduce((a, b) => a + b.passAt1, 0) / stats.length : 0;
   const avgPassAt3 = stats.length > 0 ? stats.reduce((a, b) => a + b.passAt3, 0) / stats.length : 0;
-  const avgPassPow3 = stats.length > 0 ? stats.reduce((a, b) => a + b.passPow3, 0) / stats.length : 0;
+  const avgPassPow3 =
+    stats.length > 0 ? stats.reduce((a, b) => a + b.passPow3, 0) / stats.length : 0;
   lines.push("## 汇总");
   lines.push("");
   lines.push(`- 评测 case 数: ${totalCases}`);

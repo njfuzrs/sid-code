@@ -5,15 +5,15 @@
  * 参考 gemini-cli/packages/cli/src/ui/themes/theme-manager.ts
  */
 
-import type { Theme } from './theme.ts';
-import type { Color } from '@sid-code/tui-renderer/styles.ts';
-import { DefaultDark } from './builtin/dark/default-dark.ts';
-import { GitHubDark } from './builtin/dark/github-dark.ts';
-import { DaltonizedDark } from './builtin/dark/daltonized-dark.ts';
-import { DefaultLight } from './builtin/light/default-light.ts';
-import { GitHubLight } from './builtin/light/github-light.ts';
-import { DaltonizedLight } from './builtin/light/daltonized-light.ts';
-import { getThemeTypeFromBackgroundColor, isValidColor, resolveColor } from './color-utils.ts';
+import type { Theme } from "./theme.ts";
+import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import { DefaultDark } from "./builtin/dark/default-dark.ts";
+import { GitHubDark } from "./builtin/dark/github-dark.ts";
+import { DaltonizedDark } from "./builtin/dark/daltonized-dark.ts";
+import { DefaultLight } from "./builtin/light/default-light.ts";
+import { GitHubLight } from "./builtin/light/github-light.ts";
+import { DaltonizedLight } from "./builtin/light/daltonized-light.ts";
+import { getThemeTypeFromBackgroundColor, isValidColor, resolveColor } from "./color-utils.ts";
 
 export const DEFAULT_THEME: Theme = DefaultDark;
 
@@ -79,9 +79,7 @@ class ThemeManager {
 
   isDefaultTheme(themeName: string | undefined): boolean {
     return (
-      themeName === undefined ||
-      themeName === DEFAULT_THEME.name ||
-      themeName === DefaultLight.name
+      themeName === undefined || themeName === DEFAULT_THEME.name || themeName === DefaultLight.name
     );
   }
 
@@ -98,7 +96,7 @@ class ThemeManager {
    * 获取当前活动主题
    */
   getActiveTheme(): Theme {
-    if (process.env['NO_COLOR']) {
+    if (process.env["NO_COLOR"]) {
       // NO_COLOR 环境变量时使用默认主题
       return DEFAULT_THEME;
     }
@@ -145,11 +143,8 @@ class ThemeManager {
   /**
    * 检查主题是否与终端背景兼容
    */
-  isThemeCompatible(
-    activeTheme: Theme,
-    terminalBackground: string | undefined,
-  ): boolean {
-    if (activeTheme.type === 'ansi') {
+  isThemeCompatible(activeTheme: Theme, terminalBackground: string | undefined): boolean {
+    if (activeTheme.type === "ansi") {
       return true;
     }
 

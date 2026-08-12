@@ -68,7 +68,12 @@ export class Rubric5dGrader implements Grader {
     if (skipLlmJudge) {
       dims.rubric_score = { pass: true, score: 1.0, reason: "跳过 LLM judge" };
     } else {
-      dims.rubric_score = await gradeRubric(output, buildRubricPrompt(caseYaml), undefined, judgeSamples);
+      dims.rubric_score = await gradeRubric(
+        output,
+        buildRubricPrompt(caseYaml),
+        undefined,
+        judgeSamples,
+      );
     }
 
     dims.tool_compliance = gradeToolCompliance(meta, {

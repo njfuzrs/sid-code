@@ -27,9 +27,7 @@ export class DuckDuckGoSearchBackend implements SearchBackend {
     const maxResults = options?.maxResults ?? 5;
 
     // DDG 不接受超过 499 字符的查询
-    const trimmedQuery = query.length > MAX_QUERY_LENGTH
-      ? query.slice(0, MAX_QUERY_LENGTH)
-      : query;
+    const trimmedQuery = query.length > MAX_QUERY_LENGTH ? query.slice(0, MAX_QUERY_LENGTH) : query;
 
     const url = new URL(DDG_HTML_URL);
     url.searchParams.set("q", trimmedQuery);
@@ -43,13 +41,14 @@ export class DuckDuckGoSearchBackend implements SearchBackend {
     try {
       const response = await fetch(url.toString(), {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
           "Sec-Fetch-Dest": "document",
           "Sec-Fetch-Mode": "navigate",
           "Sec-Fetch-Site": "none",
-          "Referer": "https://html.duckduckgo.com/",
+          Referer: "https://html.duckduckgo.com/",
         },
         signal: combinedSignal,
       });
@@ -85,14 +84,17 @@ export class DuckDuckGoSearchBackend implements SearchBackend {
   private parseHTML(html: string, maxResults: number): SearchResult[] {
     const results: SearchResult[] = [];
 
-    const resultBlockRegex = /<div[^>]*class="[^"]*result[^"]*web-result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
+    const resultBlockRegex =
+      /<div[^>]*class="[^"]*result[^"]*web-result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
     let blockMatch: RegExpExecArray | null;
 
     while ((blockMatch = resultBlockRegex.exec(html)) !== null && results.length < maxResults) {
       const block = blockMatch[0];
 
       // 提取标题和 URL
-      const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
+      const titleMatch = block.match(
+        /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i,
+      );
       if (!titleMatch) continue;
 
       let url = titleMatch[1];
@@ -103,12 +105,15 @@ export class DuckDuckGoSearchBackend implements SearchBackend {
         try {
           const uddg = new URL(url, "https://duckduckgo.com").searchParams.get("uddg");
           if (uddg) url = decodeURIComponent(uddg);
-        } catch { /* 保留原始 URL */ }
+        } catch {
+          /* 保留原始 URL */
+        }
       }
 
       // 提取摘要
-      const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i)
-        || block.match(/<span[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/span>/i);
+      const snippetMatch =
+        block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i) ||
+        block.match(/<span[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/span>/i);
       const snippet = snippetMatch ? this.stripTags(snippetMatch[1]).trim() : "";
 
       if (title && url) {

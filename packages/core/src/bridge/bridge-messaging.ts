@@ -34,7 +34,11 @@ export function formatToolUseMessage(toolName: string, input: unknown): BridgeOu
 }
 
 /** 格式化工具结果消息 */
-export function formatToolResultMessage(toolName: string, output: string, isError?: boolean): BridgeOutMessage {
+export function formatToolResultMessage(
+  toolName: string,
+  output: string,
+  isError?: boolean,
+): BridgeOutMessage {
   return {
     type: "tool_result",
     id: nextMessageId("result"),
@@ -44,7 +48,10 @@ export function formatToolResultMessage(toolName: string, output: string, isErro
 }
 
 /** 格式化状态消息 */
-export function formatStatusMessage(status: string, extra?: Record<string, unknown>): BridgeOutMessage {
+export function formatStatusMessage(
+  status: string,
+  extra?: Record<string, unknown>,
+): BridgeOutMessage {
   return {
     type: "status",
     id: nextMessageId("status"),

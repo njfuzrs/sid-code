@@ -57,28 +57,34 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
     matchIndex: -1,
   });
 
-  const findMatch = useCallback((query: string, startIndex: number): { match: string; index: number } | null => {
-    if (!query) return null;
-    const lowerQuery = query.toLowerCase();
-    for (let i = startIndex; i < history.length; i++) {
-      if (history[i].toLowerCase().includes(lowerQuery)) {
-        return { match: history[i], index: i };
+  const findMatch = useCallback(
+    (query: string, startIndex: number): { match: string; index: number } | null => {
+      if (!query) return null;
+      const lowerQuery = query.toLowerCase();
+      for (let i = startIndex; i < history.length; i++) {
+        if (history[i].toLowerCase().includes(lowerQuery)) {
+          return { match: history[i], index: i };
+        }
       }
-    }
-    return null;
-  }, [history]);
+      return null;
+    },
+    [history],
+  );
 
   /** 向更早方向（索引减小）查找匹配 */
-  const findMatchBackward = useCallback((query: string, startIndex: number): { match: string; index: number } | null => {
-    if (!query) return null;
-    const lowerQuery = query.toLowerCase();
-    for (let i = startIndex; i >= 0; i--) {
-      if (history[i] && history[i].toLowerCase().includes(lowerQuery)) {
-        return { match: history[i], index: i };
+  const findMatchBackward = useCallback(
+    (query: string, startIndex: number): { match: string; index: number } | null => {
+      if (!query) return null;
+      const lowerQuery = query.toLowerCase();
+      for (let i = startIndex; i >= 0; i--) {
+        if (history[i] && history[i].toLowerCase().includes(lowerQuery)) {
+          return { match: history[i], index: i };
+        }
       }
-    }
-    return null;
-  }, [history]);
+      return null;
+    },
+    [history],
+  );
 
   const activate = useCallback(() => {
     setState({ active: true, query: "", match: null, matchIndex: -1 });
@@ -88,22 +94,25 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
     setState({ active: false, query: "", match: null, matchIndex: -1 });
   }, []);
 
-  const appendQuery = useCallback((char: string) => {
-    setState(prev => {
-      if (!prev.active) return prev;
-      const newQuery = prev.query + char;
-      const result = findMatch(newQuery, 0);
-      return {
-        ...prev,
-        query: newQuery,
-        match: result?.match ?? null,
-        matchIndex: result?.index ?? -1,
-      };
-    });
-  }, [findMatch]);
+  const appendQuery = useCallback(
+    (char: string) => {
+      setState((prev) => {
+        if (!prev.active) return prev;
+        const newQuery = prev.query + char;
+        const result = findMatch(newQuery, 0);
+        return {
+          ...prev,
+          query: newQuery,
+          match: result?.match ?? null,
+          matchIndex: result?.index ?? -1,
+        };
+      });
+    },
+    [findMatch],
+  );
 
   const deleteQuery = useCallback(() => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.active || prev.query.length === 0) return prev;
       const newQuery = prev.query.slice(0, -1);
       if (!newQuery) {
@@ -120,7 +129,7 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
   }, [findMatch]);
 
   const searchNext = useCallback(() => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.active || !prev.query) return prev;
       const result = findMatch(prev.query, prev.matchIndex + 1);
       if (result) {
@@ -137,7 +146,7 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
 
   /** 搜索上一个匹配（向更新方向，索引减小）。到头则循环到末尾。 */
   const searchPrev = useCallback(() => {
-    setState(prev => {
+    setState((prev) => {
       if (!prev.active || !prev.query) return prev;
       const result = findMatchBackward(prev.query, prev.matchIndex - 1);
       if (result) {
@@ -156,5 +165,14 @@ export function useReverseSearch({ history }: UseReverseSearchProps): UseReverse
     return state.match;
   }, [state.match]);
 
-  return { state, activate, deactivate, appendQuery, deleteQuery, searchNext, searchPrev, getMatch };
+  return {
+    state,
+    activate,
+    deactivate,
+    appendQuery,
+    deleteQuery,
+    searchNext,
+    searchPrev,
+    getMatch,
+  };
 }

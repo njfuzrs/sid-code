@@ -60,7 +60,9 @@ shared.jitContext = false;
 const after = reg.getJitContextEnabled();
 const liveOk = before === true && after === false;
 if (!liveOk) failed++;
-console.log(`${liveOk ? "✔" : "✘"} registry 读共享引用，运行时切换即时生效（${before} → ${after}）`);
+console.log(
+  `${liveOk ? "✔" : "✘"} registry 读共享引用，运行时切换即时生效（${before} → ${after}）`,
+);
 
 console.log("\n=== B3 · jitContext 默认值单一事实源 ===");
 console.log(`JIT_CONTEXT_DEFAULT = ${JIT_CONTEXT_DEFAULT}`);
@@ -90,7 +92,9 @@ for (const f of files) {
   });
 }
 if (violations.length > 0) failed++;
-console.log(`${violations.length === 0 ? "✔" : "✘"} src/ 裸比较数 = ${violations.length}（扫 ${files.length} 个文件）`);
+console.log(
+  `${violations.length === 0 ? "✔" : "✘"} src/ 裸比较数 = ${violations.length}（扫 ${files.length} 个文件）`,
+);
 for (const v of violations) console.log(`    ${v}`);
 
 console.log(`\n未达期望：${failed}`);

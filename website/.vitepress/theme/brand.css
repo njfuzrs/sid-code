@@ -91,10 +91,10 @@
   --sid-card-shadow-2: rgba(28, 28, 30, 0.045);
 
   /* ── 字体：mono 承担技术感 ── */
-  --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "PingFang SC", "Microsoft YaHei", sans-serif;
-  --vp-font-family-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
-    Menlo, Consolas, monospace;
+  --vp-font-family-base:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --vp-font-family-mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 
   /* ── 映射到 VitePress 主题变量 ── */
   --vp-c-brand-1: var(--sid-brand-strong);
@@ -165,8 +165,7 @@ html {
 .VPHome {
   background:
     radial-gradient(1200px 620px at 82% -12%, var(--sid-bg-grad-1), transparent 60%),
-    radial-gradient(900px 520px at -12% 8%, var(--sid-bg-grad-2), transparent 55%),
-    var(--sid-bg);
+    radial-gradient(900px 520px at -12% 8%, var(--sid-bg-grad-2), transparent 55%), var(--sid-bg);
   background-attachment: fixed;
 }
 
@@ -217,11 +216,7 @@ html {
 
 /* hero 主标题走品牌渐变，避免纯色单调 */
 .VPHero .name {
-  background: linear-gradient(
-    120deg,
-    var(--sid-brand-strong) 10%,
-    #7c5cf6 90%
-  );
+  background: linear-gradient(120deg, var(--sid-brand-strong) 10%, #7c5cf6 90%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;

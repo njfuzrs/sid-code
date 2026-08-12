@@ -71,7 +71,7 @@ export function parseRetentionPeriod(period: string): number {
 export async function identifySessionsToDelete(
   allFiles: SessionFileEntry[],
   retentionConfig: SessionRetentionSettings,
-  currentSessionId?: string
+  currentSessionId?: string,
 ): Promise<SessionFileEntry[]> {
   const toDelete: SessionFileEntry[] = [];
   const now = Date.now();
@@ -203,7 +203,7 @@ async function deleteSessionArtifacts(
 export async function cleanupExpiredSessions(
   config: Config,
   retentionConfig: SessionRetentionSettings,
-  currentSessionId?: string
+  currentSessionId?: string,
 ): Promise<CleanupResult> {
   const log = getLogger();
 
@@ -238,11 +238,7 @@ export async function cleanupExpiredSessions(
   const scanned = allFiles.length;
 
   // 识别待删除会话
-  const toDelete = await identifySessionsToDelete(
-    allFiles,
-    retentionConfig,
-    currentSessionId
-  );
+  const toDelete = await identifySessionsToDelete(allFiles, retentionConfig, currentSessionId);
 
   const result: CleanupResult = {
     scanned,
@@ -257,12 +253,7 @@ export async function cleanupExpiredSessions(
   for (const entry of toDelete) {
     try {
       if (entry.sessionInfo) {
-        await deleteSessionArtifacts(
-          entry.sessionInfo.id,
-          entry.fileName,
-          config,
-          entry.dirPath,
-        );
+        await deleteSessionArtifacts(entry.sessionInfo.id, entry.fileName, config, entry.dirPath);
         result.deleted++;
         result.deletedIds.push(entry.sessionInfo.id);
       } else {
@@ -285,7 +276,7 @@ export async function cleanupExpiredSessions(
   if (result.deleted > 0) {
     log.info(
       "CLEANUP",
-      `会话清理完成: 扫描 ${result.scanned} 个，删除 ${result.deleted} 个，跳过 ${result.skipped} 个，失败 ${result.failed} 个`
+      `会话清理完成: 扫描 ${result.scanned} 个，删除 ${result.deleted} 个，跳过 ${result.skipped} 个，失败 ${result.failed} 个`,
     );
   }
 

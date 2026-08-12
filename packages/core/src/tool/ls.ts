@@ -3,7 +3,12 @@
  * 列举指定目录的直接子项（非递归），目录优先，显示文件大小
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { readdirSync, lstatSync, statSync, readlinkSync, type Dirent } from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
@@ -35,7 +40,10 @@ const MAX_OUTPUT_CHARS = 100_000;
 const lsSchema = lazySchema(() =>
   z.object({
     dir_path: z.string().describe("要列举的目录的绝对路径"),
-    ignore: z.array(z.string()).optional().describe("额外忽略的文件名模式（支持 * 通配符，如 ['*.log', 'tmp']）"),
+    ignore: z
+      .array(z.string())
+      .optional()
+      .describe("额外忽略的文件名模式（支持 * 通配符，如 ['*.log', 'tmp']）"),
   }),
 );
 
@@ -169,7 +177,10 @@ export class LsTool implements Tool {
         entries = readdirSync(dirPath, { withFileTypes: true });
       } catch (err: any) {
         if (err?.code === "EACCES") {
-          return { output: `错误: 无权限读取目录: ${dirPath}（权限被拒绝，请检查目录访问权限）`, isError: true };
+          return {
+            output: `错误: 无权限读取目录: ${dirPath}（权限被拒绝，请检查目录访问权限）`,
+            isError: true,
+          };
         }
         throw err;
       }
@@ -260,7 +271,9 @@ export class LsTool implements Tool {
             linkCount++;
             break;
           case "broken":
-            lines.push(`[断链] ${item.name} → ${item.linkTarget}（${item.brokenReason ?? "目标不存在或无法访问"}）`);
+            lines.push(
+              `[断链] ${item.name} → ${item.linkTarget}（${item.brokenReason ?? "目标不存在或无法访问"}）`,
+            );
             brokenCount++;
             break;
           default:

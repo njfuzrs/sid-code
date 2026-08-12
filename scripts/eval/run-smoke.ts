@@ -60,7 +60,11 @@ function runEval(provider: string, cases: string[], evalsDir: string): Promise<v
   });
 }
 
-function loadBaselineFromCaseYaml(caseId: string, provider: string, evalsDir: string): number | null {
+function loadBaselineFromCaseYaml(
+  caseId: string,
+  provider: string,
+  evalsDir: string,
+): number | null {
   for (const dir of ["p0-core", "p1-common", "p2-edge"]) {
     const p = join(evalsDir, dir, `${caseId}.yaml`);
     if (!existsSync(p)) continue;
@@ -114,7 +118,9 @@ async function main(): Promise<void> {
   const evalsDir = resolve(values["evals-dir"] as string);
 
   const cases = loadSmokeCases(evalsDir);
-  console.log(`[smoke] provider=${provider} max-regression=${maxRegression} min-score=${minScore} cases=${cases.length}`);
+  console.log(
+    `[smoke] provider=${provider} max-regression=${maxRegression} min-score=${minScore} cases=${cases.length}`,
+  );
 
   // 跑评测
   try {
@@ -198,17 +204,23 @@ async function main(): Promise<void> {
   const failed = results.filter((r) => r.status === "regression");
   const skipped = results.filter((r) => r.status === "skip");
   if (failed.length > 0) {
-    console.error(`\n[smoke] ❌ ${failed.length}/${results.length} case 回归（> ${maxRegression} 或 < 最低分 ${minScore}）`);
+    console.error(
+      `\n[smoke] ❌ ${failed.length}/${results.length} case 回归（> ${maxRegression} 或 < 最低分 ${minScore}）`,
+    );
     process.exit(1);
   }
   // FUNCVERIFY-6：skip（新分缺失/wrapper 失败）意味着该 case 未产出有效分数，
   // 不能当作"通过"静默放行——否则评测整体失败时门禁仍变绿。任一 skip 即 block，
   // 需要时可显式 --allow-skip 放宽（默认严格）。
   if (skipped.length > 0 && !values["allow-skip"]) {
-    console.error(`\n[smoke] ❌ ${skipped.length}/${results.length} case 未产出有效分数（skip，疑似评测未真正跑成）；如确为预期可加 --allow-skip`);
+    console.error(
+      `\n[smoke] ❌ ${skipped.length}/${results.length} case 未产出有效分数（skip，疑似评测未真正跑成）；如确为预期可加 --allow-skip`,
+    );
     process.exit(1);
   }
-  console.log(`\n[smoke] ✅ ${results.length} case 全部通过（无 > ${maxRegression} 回归，无低于最低分 ${minScore}）`);
+  console.log(
+    `\n[smoke] ✅ ${results.length} case 全部通过（无 > ${maxRegression} 回归，无低于最低分 ${minScore}）`,
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

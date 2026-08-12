@@ -47,22 +47,87 @@ interface SignalDef {
 
 const SIGNAL_DEFS: SignalDef[] = [
   // P0 signals
-  { signal: "全站不可用", weight: 1.0, pattern: /全站|全量|100%.*不可用|complete.*outage|total.*failure/i, severity_hint: "P0" },
-  { signal: "数据丢失", weight: 1.0, pattern: /数据丢失|data.*loss|数据损坏|corruption/i, severity_hint: "P0" },
-  { signal: "安全事件", weight: 1.0, pattern: /安全事件|security.*breach|unauthorized.*access|数据泄露/i, severity_hint: "P0" },
-  { signal: "支付中断", weight: 0.9, pattern: /支付.*中断|payment.*fail|交易.*失败|资金/i, severity_hint: "P0" },
+  {
+    signal: "全站不可用",
+    weight: 1.0,
+    pattern: /全站|全量|100%.*不可用|complete.*outage|total.*failure/i,
+    severity_hint: "P0",
+  },
+  {
+    signal: "数据丢失",
+    weight: 1.0,
+    pattern: /数据丢失|data.*loss|数据损坏|corruption/i,
+    severity_hint: "P0",
+  },
+  {
+    signal: "安全事件",
+    weight: 1.0,
+    pattern: /安全事件|security.*breach|unauthorized.*access|数据泄露/i,
+    severity_hint: "P0",
+  },
+  {
+    signal: "支付中断",
+    weight: 0.9,
+    pattern: /支付.*中断|payment.*fail|交易.*失败|资金/i,
+    severity_hint: "P0",
+  },
   // P1 signals
-  { signal: "核心功能降级", weight: 0.7, pattern: /核心.*降级|core.*degraded|主流程.*异常|登录.*失败/i, severity_hint: "P1" },
-  { signal: "部分用户受影响", weight: 0.6, pattern: /部分用户|partial.*users|部分.*受影响|某些.*无法/i, severity_hint: "P1" },
-  { signal: "SLA 违约", weight: 0.7, pattern: /SLA.*违约|SLA.*breach|超时.*严重|latency.*spike/i, severity_hint: "P1" },
-  { signal: "错误率飙升", weight: 0.6, pattern: /错误率.*飙升|error.*rate.*spike|5xx.*增加|异常.*增长/i, severity_hint: "P1" },
+  {
+    signal: "核心功能降级",
+    weight: 0.7,
+    pattern: /核心.*降级|core.*degraded|主流程.*异常|登录.*失败/i,
+    severity_hint: "P1",
+  },
+  {
+    signal: "部分用户受影响",
+    weight: 0.6,
+    pattern: /部分用户|partial.*users|部分.*受影响|某些.*无法/i,
+    severity_hint: "P1",
+  },
+  {
+    signal: "SLA 违约",
+    weight: 0.7,
+    pattern: /SLA.*违约|SLA.*breach|超时.*严重|latency.*spike/i,
+    severity_hint: "P1",
+  },
+  {
+    signal: "错误率飙升",
+    weight: 0.6,
+    pattern: /错误率.*飙升|error.*rate.*spike|5xx.*增加|异常.*增长/i,
+    severity_hint: "P1",
+  },
   // P2 signals
-  { signal: "非核心功能异常", weight: 0.4, pattern: /非核心|non-critical|辅助.*功能|次要.*模块/i, severity_hint: "P2" },
-  { signal: "性能下降", weight: 0.4, pattern: /性能.*下降|performance.*degradation|响应.*变慢|latency.*increase/i, severity_hint: "P2" },
-  { signal: "单个服务异常", weight: 0.3, pattern: /单个.*服务|single.*service|某个.*pod|一个.*实例/i, severity_hint: "P2" },
+  {
+    signal: "非核心功能异常",
+    weight: 0.4,
+    pattern: /非核心|non-critical|辅助.*功能|次要.*模块/i,
+    severity_hint: "P2",
+  },
+  {
+    signal: "性能下降",
+    weight: 0.4,
+    pattern: /性能.*下降|performance.*degradation|响应.*变慢|latency.*increase/i,
+    severity_hint: "P2",
+  },
+  {
+    signal: "单个服务异常",
+    weight: 0.3,
+    pattern: /单个.*服务|single.*service|某个.*pod|一个.*实例/i,
+    severity_hint: "P2",
+  },
   // P3 signals
-  { signal: "告警无影响", weight: 0.2, pattern: /告警.*无影响|alert.*no.*impact|日志.*异常|log.*anomaly/i, severity_hint: "P3" },
-  { signal: "自动恢复", weight: 0.2, pattern: /自动恢复|auto.*recover|已恢复|resolved.*automatically/i, severity_hint: "P3" },
+  {
+    signal: "告警无影响",
+    weight: 0.2,
+    pattern: /告警.*无影响|alert.*no.*impact|日志.*异常|log.*anomaly/i,
+    severity_hint: "P3",
+  },
+  {
+    signal: "自动恢复",
+    weight: 0.2,
+    pattern: /自动恢复|auto.*recover|已恢复|resolved.*automatically/i,
+    severity_hint: "P3",
+  },
 ];
 
 export function classifySeverity(description: string): SeverityClassification {

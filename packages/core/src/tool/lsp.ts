@@ -96,9 +96,7 @@ interface LSPToolInput {
 
 const lspSchema = lazySchema(() =>
   z.object({
-    operation: z
-      .enum(LSP_OPERATIONS)
-      .describe("要执行的 LSP 操作"),
+    operation: z.enum(LSP_OPERATIONS).describe("要执行的 LSP 操作"),
     file_path: z
       .string()
       .describe("文件的绝对路径。所有操作都需要（workspaceSymbol 用它定位语言服务器）"),
@@ -106,16 +104,15 @@ const lspSchema = lazySchema(() =>
       .number()
       .int()
       .optional()
-      .describe("行号（1-based，如编辑器所示）。位置相关操作必填，documentSymbol/workspaceSymbol 可省略；codeAction 可省略（省略=整文件范围）"),
+      .describe(
+        "行号（1-based，如编辑器所示）。位置相关操作必填，documentSymbol/workspaceSymbol 可省略；codeAction 可省略（省略=整文件范围）",
+      ),
     character: z
       .number()
       .int()
       .optional()
       .describe("列号（1-based，如编辑器所示）。位置相关操作必填；codeAction 可省略"),
-    query: z
-      .string()
-      .optional()
-      .describe("workspaceSymbol 的搜索关键词（符号名）"),
+    query: z.string().optional().describe("workspaceSymbol 的搜索关键词（符号名）"),
   }),
 );
 
@@ -142,7 +139,9 @@ export async function filterGitignored(
       stdio: ["pipe", "pipe", "ignore"],
     });
     // T5-B3：signal abort 时也 kill git 子进程，防止孤儿进程
-    const onAbort = () => { if (!child!.killed) child!.kill(); };
+    const onAbort = () => {
+      if (!child!.killed) child!.kill();
+    };
     signal?.addEventListener("abort", onAbort, { once: true });
     let stdout = "";
     // T5-B3：stdout 累积加 1MB 上限，防止异常大输出撑爆内存
@@ -160,7 +159,12 @@ export async function filterGitignored(
     let timedOut = false;
     await Promise.race([
       exitPromise,
-      new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 5000)),
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, 5000),
+      ),
     ]);
     signal?.removeEventListener("abort", onAbort);
     if (timedOut && !child.killed) {
@@ -174,7 +178,11 @@ export async function filterGitignored(
   } finally {
     // T5-B3 兜底：无论正常退出、超时还是异常，确保子进程不成孤儿
     if (child && !child.killed) {
-      try { child.kill(); } catch { /* 进程已退出，kill 是 no-op */ }
+      try {
+        child.kill();
+      } catch {
+        /* 进程已退出，kill 是 no-op */
+      }
     }
   }
   return ignored;
@@ -292,7 +300,8 @@ export class LSPTool implements Tool {
     const ready = await waitForLSPReady();
     if (!ready) {
       return {
-        output: "LSP 服务器未就绪或未配置。请确认对应语言的 language server 已安装并在 PATH 中（内置支持 TypeScript/Vue/Python/Go/Rust 等，装好即自动生效）。",
+        output:
+          "LSP 服务器未就绪或未配置。请确认对应语言的 language server 已安装并在 PATH 中（内置支持 TypeScript/Vue/Python/Go/Rust 等，装好即自动生效）。",
         isError: true,
       };
     }
@@ -438,14 +447,22 @@ export class LSPTool implements Tool {
         }
         const item = items[0];
         if (params.operation === "incomingCalls") {
-          const result = await manager.sendRequest(params.file_path, "callHierarchy/incomingCalls", {
-            item,
-          });
+          const result = await manager.sendRequest(
+            params.file_path,
+            "callHierarchy/incomingCalls",
+            {
+              item,
+            },
+          );
           return { output: formatIncomingCalls(result, workspaceFolder) };
         } else {
-          const result = await manager.sendRequest(params.file_path, "callHierarchy/outgoingCalls", {
-            item,
-          });
+          const result = await manager.sendRequest(
+            params.file_path,
+            "callHierarchy/outgoingCalls",
+            {
+              item,
+            },
+          );
           return { output: formatOutgoingCalls(result, workspaceFolder) };
         }
       }
@@ -476,7 +493,10 @@ export class LSPTool implements Tool {
         // 有 position：把范围收窄到光标所在行，只查该行诊断的修复（更聚焦、结果更少）；
         // 无 position：整文件范围 + 全部诊断（查整个文件有哪些可用修复）。
         const severityToNum: Record<string, number> = { Error: 1, Warning: 2, Info: 3, Hint: 4 };
-        let range: { start: { line: number; character: number }; end: { line: number; character: number } };
+        let range: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
         let contextDiags = allDiags;
         if (position) {
           range = { start: position, end: position };
@@ -540,7 +560,11 @@ export class LSPTool implements Tool {
    * 把结果归一化为 Location[]，提取磁盘路径批量交给 git check-ignore，
    * 剔除被忽略项后返回过滤后的原始结果数组。
    */
-  private async filterLocationResult(result: unknown, workspaceFolder: string, signal?: AbortSignal): Promise<unknown> {
+  private async filterLocationResult(
+    result: unknown,
+    workspaceFolder: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (!result) return result;
     const arr = Array.isArray(result) ? result : [result];
     if (arr.length === 0) return result;
@@ -558,9 +582,7 @@ export class LSPTool implements Tool {
       }
     };
 
-    const absPaths = locations
-      .map((l) => pathOf(l.uri))
-      .filter((p): p is string => p !== null);
+    const absPaths = locations.map((l) => pathOf(l.uri)).filter((p): p is string => p !== null);
     const ignored = await filterGitignored(absPaths, workspaceFolder, signal);
     if (ignored.size === 0) return result; // 无忽略项，原样返回
 

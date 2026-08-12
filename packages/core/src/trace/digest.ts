@@ -611,7 +611,10 @@ export function resolveSession(arg: string | undefined, all: SessionRef[]): Reso
 // ─────────────────────────── 摘要构建 ───────────────────────────
 
 /** 提取 tool_input 的关键参数做预览(不同工具看不同字段) */
-function previewArgs(input: Record<string, unknown> | undefined, action: string | undefined): string {
+function previewArgs(
+  input: Record<string, unknown> | undefined,
+  action: string | undefined,
+): string {
   if (!input || typeof input !== "object") {
     // 退回从 action 字符串里截
     if (action) {
@@ -620,7 +623,17 @@ function previewArgs(input: Record<string, unknown> | undefined, action: string 
     }
     return "";
   }
-  const anchors = ["file_path", "path", "pattern", "command", "query", "old_string", "url", "prompt", "description"];
+  const anchors = [
+    "file_path",
+    "path",
+    "pattern",
+    "command",
+    "query",
+    "old_string",
+    "url",
+    "prompt",
+    "description",
+  ];
   const parts: string[] = [];
   for (const k of anchors) {
     if (k in input && input[k] != null) {
@@ -1089,7 +1102,8 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const ledger = readJsonl<LedgerEntry>(paths.ledgerPath)
     .filter((e) => e.sessionId === ref.id)
     .pop();
-  const costUSD = ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
+  const costUSD =
+    ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
   const durationMs = ledger?.durationMs ?? deriveDuration(meta);
 
   // 成本归零仅在「有账本条目且账本明确记成本为 0」时才算异常:
@@ -1128,7 +1142,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // ── 协议违规关联(按时间窗匹配) ──
-  const crashSnapshot = readJsonSafe<{ reason?: string; attribution?: unknown }>(join(ref.dir, "messages.json"));
+  const crashSnapshot = readJsonSafe<{ reason?: string; attribution?: unknown }>(
+    join(ref.dir, "messages.json"),
+  );
   const matchedViolations = matchViolations(ref, meta, paths);
   if (matchedViolations > 0) {
     // L0:时间窗内的违规文件数是客观计数。但"属于本会话"是按时间戳粗匹配的推断 → 归 L1。
@@ -1166,24 +1182,32 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
 
   // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
-  const beforeModels = events.filter(e => e.event === "BeforeModel");
-  const afterEvents = events.filter(e =>
-    e.event === "AfterModel" || e.event === "AfterModelRaw" || e.event === "TurnError" || e.event === "ModelCallUnpaired",
+  const beforeModels = events.filter((e) => e.event === "BeforeModel");
+  const afterEvents = events.filter(
+    (e) =>
+      e.event === "AfterModel" ||
+      e.event === "AfterModelRaw" ||
+      e.event === "TurnError" ||
+      e.event === "ModelCallUnpaired",
   );
-  const pairedIndices = new Set(afterEvents.map(e => (e.data as any)?.index ?? (e.data as any)?.turn));
-  const unpairedBefores = beforeModels.filter(b => !pairedIndices.has((b.data as any)?.index));
+  const pairedIndices = new Set(
+    afterEvents.map((e) => (e.data as any)?.index ?? (e.data as any)?.turn),
+  );
+  const unpairedBefores = beforeModels.filter((b) => !pairedIndices.has((b.data as any)?.index));
   if (unpairedBefores.length > 0) {
     anomalies.push({
       layer: "L0",
       severity: "high",
       kind: "unpaired_before_model",
       detail: `${unpairedBefores.length} 个 BeforeModel 在 events.jsonl 中无配对的 AfterModel/AfterModelRaw/TurnError`,
-      provenance: [{
-        sourceFile: eventsPath,
-        lineRef: `BeforeModel indices: ${unpairedBefores.map(b => (b.data as any)?.index).join(",")}`,
-        rawValue: `count=${unpairedBefores.length}`,
-        mtime: fileMtimeIso(eventsPath),
-      }],
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `BeforeModel indices: ${unpairedBefores.map((b) => (b.data as any)?.index).join(",")}`,
+          rawValue: `count=${unpairedBefores.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
       pointer: `errors.jsonl（若存在）或全局 audit.log`,
     });
     anomalies.push({
@@ -1198,7 +1222,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // 检测 TurnError 事件（queryLoop 内部崩溃）
-  const turnErrors = events.filter(e => e.event === "TurnError");
+  const turnErrors = events.filter((e) => e.event === "TurnError");
   if (turnErrors.length > 0) {
     for (const te of turnErrors) {
       anomalies.push({
@@ -1206,12 +1230,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         severity: "high",
         kind: "turn_error_in_events",
         detail: `TurnError: ${(te.data as any)?.error ?? "unknown"} (turn=${(te.data as any)?.turn})`,
-        provenance: [{
-          sourceFile: eventsPath,
-          lineRef: `event=TurnError turn=${(te.data as any)?.turn}`,
-          rawValue: truncate(String((te.data as any)?.error ?? ""), 200),
-          mtime: fileMtimeIso(eventsPath),
-        }],
+        provenance: [
+          {
+            sourceFile: eventsPath,
+            lineRef: `event=TurnError turn=${(te.data as any)?.turn}`,
+            rawValue: truncate(String((te.data as any)?.error ?? ""), 200),
+            mtime: fileMtimeIso(eventsPath),
+          },
+        ],
         pointer: `errors.jsonl（详细 stack）`,
       });
     }
@@ -1224,30 +1250,37 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       severity: "high",
       kind: "errors_jsonl_has_entries",
       detail: `errors.jsonl 包含 ${errors.length} 条错误记录`,
-      provenance: [{
-        sourceFile: errorsPath,
-        lineRef: `${errors.length} entries`,
-        rawValue: errors.slice(0, 3).map(e => truncate(String((e.data as any)?.error ?? ""), 80)).join(" | "),
-        mtime: fileMtimeIso(errorsPath),
-      }],
+      provenance: [
+        {
+          sourceFile: errorsPath,
+          lineRef: `${errors.length} entries`,
+          rawValue: errors
+            .slice(0, 3)
+            .map((e) => truncate(String((e.data as any)?.error ?? ""), 80))
+            .join(" | "),
+          mtime: fileMtimeIso(errorsPath),
+        },
+      ],
       pointer: errorsPath,
     });
   }
 
   // 检测 SessionEnd 缺失（进程可能被强杀或 hang）
-  const hasSessionEnd = events.some(e => e.event === "SessionEnd");
+  const hasSessionEnd = events.some((e) => e.event === "SessionEnd");
   if (!hasSessionEnd && events.length > 0) {
     anomalies.push({
       layer: "L0",
       severity: "medium",
       kind: "session_end_missing",
       detail: `events.jsonl 有 ${events.length} 条事件但无 SessionEnd`,
-      provenance: [{
-        sourceFile: eventsPath,
-        lineRef: "无 SessionEnd 事件",
-        rawValue: `event_count=${events.length}`,
-        mtime: fileMtimeIso(eventsPath),
-      }],
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "无 SessionEnd 事件",
+          rawValue: `event_count=${events.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
       pointer: `heartbeat.txt（看最后心跳时间）`,
     });
     anomalies.push({
@@ -1262,7 +1295,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // 检测 ModelCallUnpaired 事件（看门狗超时触发）
-  const unpairedEvents = events.filter(e => e.event === "ModelCallUnpaired");
+  const unpairedEvents = events.filter((e) => e.event === "ModelCallUnpaired");
   if (unpairedEvents.length > 0) {
     for (const ue of unpairedEvents) {
       const d = (ue.data as any) ?? {};
@@ -1286,12 +1319,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         detail: stillProgressing
           ? `慢响应（超时未配对但流仍在进展，非 hang）: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`
           : `配对看门狗超时: index=${d.index} model=${d.model} elapsed=${d.elapsed_ms}ms${snapDetail}`,
-        provenance: [{
-          sourceFile: eventsPath,
-          lineRef: `event=ModelCallUnpaired index=${d.index}`,
-          rawValue: snap ? JSON.stringify(snap) : (d.hint ?? ""),
-          mtime: fileMtimeIso(eventsPath),
-        }],
+        provenance: [
+          {
+            sourceFile: eventsPath,
+            lineRef: `event=ModelCallUnpaired index=${d.index}`,
+            rawValue: snap ? JSON.stringify(snap) : (d.hint ?? ""),
+            mtime: fileMtimeIso(eventsPath),
+          },
+        ],
         pointer: `warn.log（超时相关 WARN）+ raw_preview.jsonl（请求指标）`,
       });
     }
@@ -1299,11 +1334,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── 缺口 1/2/4：hang 诊断事件消费（StreamPhase/TimeoutFired/TimeoutIneffective/TimeoutRetry/StreamStall）──
   // 目标：打开 digest 摘要即可在 <1 分钟内定位"卡在哪层 + 超时是否生效"，无需手工 grep events.jsonl。
-  const timeoutFired = events.filter(e => e.event === "TimeoutFired");
-  const timeoutIneffective = events.filter(e => e.event === "TimeoutIneffective");
-  const timeoutRetry = events.filter(e => e.event === "TimeoutRetry");
-  const timeoutRetryExhausted = events.filter(e => e.event === "TimeoutRetryExhausted");
-  const streamStalls = events.filter(e => e.event === "StreamStall");
+  const timeoutFired = events.filter((e) => e.event === "TimeoutFired");
+  const timeoutIneffective = events.filter((e) => e.event === "TimeoutIneffective");
+  const timeoutRetry = events.filter((e) => e.event === "TimeoutRetry");
+  const timeoutRetryExhausted = events.filter((e) => e.event === "TimeoutRetryExhausted");
+  const streamStalls = events.filter((e) => e.event === "StreamStall");
 
   // 缺口 2 进阶（本次事故指纹）：超时 fire 了却没生效 —— 最高价值信号，单列 high 异常。
   if (timeoutIneffective.length > 0) {
@@ -1314,12 +1349,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         severity: "high",
         kind: "timeout_ineffective",
         detail: `超时触发但未生效: layer=${d.layer} index=${d.index} 原因=${d.reason}`,
-        provenance: [{
-          sourceFile: eventsPath,
-          lineRef: `event=TimeoutIneffective layer=${d.layer} index=${d.index}`,
-          rawValue: String(d.reason ?? ""),
-          mtime: fileMtimeIso(eventsPath),
-        }],
+        provenance: [
+          {
+            sourceFile: eventsPath,
+            lineRef: `event=TimeoutIneffective layer=${d.layer} index=${d.index}`,
+            rawValue: String(d.reason ?? ""),
+            mtime: fileMtimeIso(eventsPath),
+          },
+        ],
         pointer: `事件循环被底层 IO 阻塞导致 Promise.race 无法 settle —— 需不依赖 microtask 的强制中断`,
       });
     }
@@ -1341,18 +1378,22 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       const layer = String((tf.data as any)?.layer ?? "unknown");
       byLayer.set(layer, (byLayer.get(layer) ?? 0) + 1);
     }
-    const layerSummary = Array.from(byLayer.entries()).map(([l, c]) => `${l}×${c}`).join(", ");
+    const layerSummary = Array.from(byLayer.entries())
+      .map(([l, c]) => `${l}×${c}`)
+      .join(", ");
     anomalies.push({
       layer: "L0",
       severity: "medium",
       kind: "timeout_fired",
       detail: `超时防线触发: ${layerSummary}`,
-      provenance: [{
-        sourceFile: eventsPath,
-        lineRef: `event=TimeoutFired count=${timeoutFired.length}`,
-        rawValue: layerSummary,
-        mtime: fileMtimeIso(eventsPath),
-      }],
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `event=TimeoutFired count=${timeoutFired.length}`,
+          rawValue: layerSummary,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
       pointer: `若同 index 无对应 TimeoutIneffective，说明超时正常生效（触发即中断）`,
     });
   }
@@ -1364,14 +1405,20 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       layer: "L0",
       severity: exhausted ? "high" : "medium",
       kind: "timeout_retry",
-      detail: `超时重试: ${timeoutRetry.length} 次${exhausted ? `，最终耗尽（${timeoutRetryExhausted.map(e => (e.data as any)?.model).join(",")}）` : ""}`,
-      provenance: [{
-        sourceFile: eventsPath,
-        lineRef: `event=TimeoutRetry×${timeoutRetry.length}${exhausted ? " + TimeoutRetryExhausted" : ""}`,
-        rawValue: timeoutRetry.map(e => `attempt=${(e.data as any)?.attempt}/${(e.data as any)?.max}`).join(" "),
-        mtime: fileMtimeIso(eventsPath),
-      }],
-      pointer: exhausted ? `重试耗尽后请求彻底失败，看后续 TurnError/errors.jsonl` : `重试后是否恢复看后续 AfterModel`,
+      detail: `超时重试: ${timeoutRetry.length} 次${exhausted ? `，最终耗尽（${timeoutRetryExhausted.map((e) => (e.data as any)?.model).join(",")}）` : ""}`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `event=TimeoutRetry×${timeoutRetry.length}${exhausted ? " + TimeoutRetryExhausted" : ""}`,
+          rawValue: timeoutRetry
+            .map((e) => `attempt=${(e.data as any)?.attempt}/${(e.data as any)?.max}`)
+            .join(" "),
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: exhausted
+        ? `重试耗尽后请求彻底失败，看后续 TurnError/errors.jsonl`
+        : `重试后是否恢复看后续 AfterModel`,
     });
   }
 
@@ -1384,12 +1431,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         severity: "medium",
         kind: "stream_stall",
         detail: `流 stall: index=${d.index} ${Math.round((d.no_content_progress_ms ?? 0) / 1000)}s 无内容进展 chunks=${d.total_chunks} empty=${d.empty_chunks}`,
-        provenance: [{
-          sourceFile: eventsPath,
-          lineRef: `event=StreamStall index=${d.index}`,
-          rawValue: JSON.stringify(d),
-          mtime: fileMtimeIso(eventsPath),
-        }],
+        provenance: [
+          {
+            sourceFile: eventsPath,
+            lineRef: `event=StreamStall index=${d.index}`,
+            rawValue: JSON.stringify(d),
+            mtime: fileMtimeIso(eventsPath),
+          },
+        ],
         pointer: `empty_chunks>0 说明网关在发 keepalive 但无业务内容（路径 A：keepalive 绕过 idle 超时）`,
       });
     }
@@ -1398,7 +1447,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── T13.5：Side-call 健康诊断 ──
   // 判据（对齐 roadmap 规格）：失败率 = failed/total。失败率 > 20% 标记 warning，
   // pointer 只列 top-3 失败最多的 label（而非全量），避免 label 多时刷屏。
-  const sessionEndEvent = events.find(e => e.event === "SessionEnd");
+  const sessionEndEvent = events.find((e) => e.event === "SessionEnd");
   const sideCallData = (sessionEndEvent?.data as any)?.sideCallStats;
   if (sideCallData && sideCallData.failed > 0) {
     const total = sideCallData.total || 0;
@@ -1409,7 +1458,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       .sort(([, a]: [string, any], [, b]: [string, any]) => b.failed - a.failed)
       .slice(0, 3)
       .map(([k, v]: [string, any]) => `${k}(${v.failed}失败)`);
-    const failLabelCount = Object.values(sideCallData.byLabel || {}).filter((v: any) => v.failed > 0).length;
+    const failLabelCount = Object.values(sideCallData.byLabel || {}).filter(
+      (v: any) => v.failed > 0,
+    ).length;
     const overflow = failLabelCount > 3 ? ` 等 ${failLabelCount} 类` : "";
     anomalies.push({
       layer: "L0",
@@ -1417,12 +1468,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       severity: failRate > 0.2 ? "high" : "medium",
       kind: "side_call_failures",
       detail: `Side-call 失败 ${sideCallData.failed}/${total}（失败率 ${(failRate * 100).toFixed(1)}%，超时 ${sideCallData.timedOut} 次）${failRate > 0.2 ? " ⚠ 失败率 > 20%" : ""}`,
-      provenance: [{
-        sourceFile: eventsPath,
-        lineRef: `event=SessionEnd sideCallStats`,
-        rawValue: JSON.stringify(sideCallData.byLabel),
-        mtime: fileMtimeIso(eventsPath),
-      }],
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `event=SessionEnd sideCallStats`,
+          rawValue: JSON.stringify(sideCallData.byLabel),
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
       pointer: `失败最多的 side-call（top-3）: ${top3.join(", ")}${overflow}`,
     });
   }
@@ -1487,7 +1540,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── 该看哪个原始文件(指针) ──
   const pointers: Digest["pointers"] = [
-    { label: "完整轨迹", path: join(ref.dir, "session.traj"), hint: "TAO 步骤 + history + metadata,SFT/回溯用" },
+    {
+      label: "完整轨迹",
+      path: join(ref.dir, "session.traj"),
+      hint: "TAO 步骤 + history + metadata,SFT/回溯用",
+    },
     {
       label: "原始请求响应",
       path: join(ref.dir, "raw.jsonl"),
@@ -1573,7 +1630,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     anomalies,
     pointers,
     ledger: ledger || undefined,
-    crash: crashSnapshot ? { reason: crashSnapshot.reason, attribution: crashSnapshot.attribution } : undefined,
+    crash: crashSnapshot
+      ? { reason: crashSnapshot.reason, attribution: crashSnapshot.attribution }
+      : undefined,
     providerStats: providerStats.length > 0 ? providerStats : undefined,
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
@@ -1631,7 +1690,11 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   // 哪些是待验证假设(且每条假设都带证伪条件)。
   L.push("");
   const sevTagOf = (a: Anomaly) =>
-    a.severity === "high" ? c("red", "[高]") : a.severity === "medium" ? c("yellow", "[中]") : c("gray", "[低]");
+    a.severity === "high"
+      ? c("red", "[高]")
+      : a.severity === "medium"
+        ? c("yellow", "[中]")
+        : c("gray", "[低]");
   const renderProvenance = (p: Provenance) => {
     const bits = [p.sourceFile];
     if (p.lineRef) bits.push(`@${p.lineRef}`);
@@ -1685,7 +1748,8 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       const arg = t.argPreview ? c("gray", ` ${t.argPreview}`) : "";
       L.push(`  ${mark} ${c("cyan", t.tool)}${arg}`);
     }
-    if (d.toolSequence.length > shown.length) L.push(c("gray", `  … 余 ${d.toolSequence.length - shown.length} 次`));
+    if (d.toolSequence.length > shown.length)
+      L.push(c("gray", `  … 余 ${d.toolSequence.length - shown.length} 次`));
   }
 
   // 思维链要点
@@ -1707,7 +1771,10 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push("");
     L.push(c("bold", "Provider 健康:"));
     for (const ps of d.providerStats) {
-      const successRate = ps.requests > 0 ? ((ps.requests - ps.failed - ps.timedOut) / ps.requests * 100).toFixed(0) : "N/A";
+      const successRate =
+        ps.requests > 0
+          ? (((ps.requests - ps.failed - ps.timedOut) / ps.requests) * 100).toFixed(0)
+          : "N/A";
       // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
       const ttft = ps.ttft_p50 ? ` TTFT(首字节)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
       // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
@@ -1715,7 +1782,9 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟
       const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
       const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
-      L.push(`  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`);
+      L.push(
+        `  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`,
+      );
       // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
       // 文案由 formatTtftBucketLine 统一（四个入口共用，避免措辞各写一遍后漂移）。
       if (ps.ttftByCache) {
@@ -1758,7 +1827,10 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       L.push(
         c("gray", "  浪费率: ") +
           c(wasteColor, `${pct(j.wasteRate)}`) +
-          c("gray", `（作用域跳过 ${j.scopeSkipped} 份 / 扫到 ${j.loadedCount + j.scopeSkipped} 份）`),
+          c(
+            "gray",
+            `（作用域跳过 ${j.scopeSkipped} 份 / 扫到 ${j.loadedCount + j.scopeSkipped} 份）`,
+          ),
       );
     }
     if (j.elapsedP50 != null) {
@@ -1783,8 +1855,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       L.push(c("yellow", `  ⚡ ${j.oversized} 份超大小告警阈值（内容未截断，见 /doctor）`));
     }
     if (j.failures > 0) {
-      const codes = Object.entries(j.failureCodes).map(([k, n]) => `${k}×${n}`).join(" ");
-      L.push(c("red", `  ✗ ${j.failures} 次读取失败: ${codes}`) + c("gray", "（ENOENT 已排除，均为真实错误）"));
+      const codes = Object.entries(j.failureCodes)
+        .map(([k, n]) => `${k}×${n}`)
+        .join(" ");
+      L.push(
+        c("red", `  ✗ ${j.failures} 次读取失败: ${codes}`) +
+          c("gray", "（ENOENT 已排除，均为真实错误）"),
+      );
     }
     for (const f of j.topFiles) {
       L.push(c("gray", `    · ${truncate(f.path, 60)} ${fmtBytes(f.bytes)} [${f.reason}]`));
@@ -1807,9 +1884,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       c("bold", "todo 实时性:") +
         " " +
         c(ratioColor, `推进 ${t.advances} 次 / ${t.total} 项  ${ratioText}`) +
-        (t.total > 0
-          ? c("gray", `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成`)
-          : ""),
+        (t.total > 0 ? c("gray", `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成`) : ""),
     );
     if (ratio !== undefined && ratio < 0.5) {
       // 点破而不只是标黄：这条线是缺陷本体的判据，读者需要知道该怎么读它。
@@ -1821,9 +1896,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (t.advanceGaps.length > 0) {
       const maxGap = Math.max(...t.advanceGaps);
       L.push(
-        c("gray", "  推进间隔: ") +
-          t.advanceGaps.join(", ") +
-          c("gray", ` 轮（最大 ${maxGap}）`),
+        c("gray", "  推进间隔: ") + t.advanceGaps.join(", ") + c("gray", ` 轮（最大 ${maxGap}）`),
       );
     }
     // 回注次数是 L2 通道的存活证明：旧实现 60 轮只响 1 次、全网累计仅 3 次。
@@ -1853,12 +1926,17 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push(
       c("bold", "前缀断裂:") +
         " " +
-        c(rateColor, `${p.brokenTurns}/${p.comparedTurns} 轮 (${(p.brokenRate * 100).toFixed(0)}%)`) +
+        c(
+          rateColor,
+          `${p.brokenTurns}/${p.comparedTurns} 轮 (${(p.brokenRate * 100).toFixed(0)}%)`,
+        ) +
         c("gray", `  平均作废前缀 ${(p.avgWastedRatio * 100).toFixed(1)}%`),
     );
     // 按**平均浪费比例**降序而非按次数：断在第 2 条与第 200 条都算 1 次，
     // 但作废的前缀量差两个数量级，只看次数会把优化力气用错地方。
-    const kinds = Object.entries(p.byKind).sort((a, b) => b[1].avgWastedRatio - a[1].avgWastedRatio);
+    const kinds = Object.entries(p.byKind).sort(
+      (a, b) => b[1].avgWastedRatio - a[1].avgWastedRatio,
+    );
     for (const [kind, v] of kinds) {
       L.push(
         `  ${kind.padEnd(16)} ${String(v.count).padStart(3)} 次  ` +
@@ -1895,9 +1973,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
     if (p.charJudgeMissingTurns > 0) {
       // 与"判据矛盾"分开说：这是历史空档，不是冲突
-      L.push(
-        c("gray", `  （${p.charJudgeMissingTurns} 轮无字符级数据：埋点上线前的轨迹）`),
-      );
+      L.push(c("gray", `  （${p.charJudgeMissingTurns} 轮无字符级数据：埋点上线前的轨迹）`));
     }
   }
 
@@ -1912,11 +1988,15 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       single: "单个",
     };
     // 有失败标红，串行也是需要警觉的信号（可能是并发 bug）
-    const headColor: Color = sa.failed > 0 ? "red" : sa.concurrency === "serial" && sa.total >= 2 ? "yellow" : "green";
+    const headColor: Color =
+      sa.failed > 0 ? "red" : sa.concurrency === "serial" && sa.total >= 2 ? "yellow" : "green";
     L.push(
       c("bold", "子代理执行:") +
         " " +
-        c(headColor, `${sa.total} 个（${sa.succeeded} 成功 / ${sa.failed} 失败${sa.unknown > 0 ? ` / ${sa.unknown} 未知` : ""}）`) +
+        c(
+          headColor,
+          `${sa.total} 个（${sa.succeeded} 成功 / ${sa.failed} 失败${sa.unknown > 0 ? ` / ${sa.unknown} 未知` : ""}）`,
+        ) +
         c("gray", `  执行模式: ${modeLabel[sa.concurrency]}`),
     );
     if (sa.concurrency === "serial" && sa.total >= 2 && sa.serialEvidence) {
@@ -1925,14 +2005,18 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     for (let i = 0; i < sa.spans.length; i++) {
       const s = sa.spans[i];
       const mark =
-        s.status === "completed" ? c("green", "·") : s.status === "error" ? c("red", "✗") : c("yellow", "○");
-      const statusText =
-        s.status === "completed" ? "成功" : s.status === "error" ? "失败" : "未知";
+        s.status === "completed"
+          ? c("green", "·")
+          : s.status === "error"
+            ? c("red", "✗")
+            : c("yellow", "○");
+      const statusText = s.status === "completed" ? "成功" : s.status === "error" ? "失败" : "未知";
       const dur = s.elapsedMs != null ? ` ${(s.elapsedMs / 1000).toFixed(1)}s` : "";
       const turns = s.turns != null ? ` ${s.turns}轮` : "";
-      const gap = s.gapFromPrevMs != null && s.gapFromPrevMs >= 0 && s.gapFromPrevMs < 1000
-        ? c("yellow", ` ←${s.gapFromPrevMs}ms`)
-        : "";
+      const gap =
+        s.gapFromPrevMs != null && s.gapFromPrevMs >= 0 && s.gapFromPrevMs < 1000
+          ? c("yellow", ` ←${s.gapFromPrevMs}ms`)
+          : "";
       const desc = s.description ? c("gray", ` ${truncate(s.description, 64)}`) : "";
       L.push(`  ${mark} ${c("cyan", s.agentType)} [${statusText}]${dur}${turns}${gap}${desc}`);
     }
@@ -1992,17 +2076,32 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
  * first_content 事件只带 model 不带 provider，故先扫一遍 AfterModelRaw 建立 model→provider 映射，
  * 再用它把 first_content 的 ttft 归因到正确 provider（映射缺失时回退按 model 名启发式推断）。
  */
-export function aggregateProviderStats(events: Array<{ event?: string; data?: Record<string, unknown> }>): ProviderDigestStats[] {
-  const map = new Map<string, {
-    requests: number; failed: number; timedOut: number; retried: number;
-    totalLatencyMs: number; ttfts: number[]; gens: number[];
-  }>();
+export function aggregateProviderStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): ProviderDigestStats[] {
+  const map = new Map<
+    string,
+    {
+      requests: number;
+      failed: number;
+      timedOut: number;
+      retried: number;
+      totalLatencyMs: number;
+      ttfts: number[];
+      gens: number[];
+    }
+  >();
 
   const ensure = (p: string) => {
     if (!map.has(p)) {
       map.set(p, {
-        requests: 0, failed: 0, timedOut: 0, retried: 0, totalLatencyMs: 0,
-        ttfts: [], gens: [],
+        requests: 0,
+        failed: 0,
+        timedOut: 0,
+        retried: 0,
+        totalLatencyMs: 0,
+        ttfts: [],
+        gens: [],
       });
     }
     return map.get(p)!;
@@ -2066,7 +2165,11 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       const type = e.data.type as string;
       if (type === "retry") {
         stats.retried++;
-      } else if (type === "stream_idle_timeout" || type === "stream_content_progress_timeout" || type === "stream_overall_timeout") {
+      } else if (
+        type === "stream_idle_timeout" ||
+        type === "stream_content_progress_timeout" ||
+        type === "stream_overall_timeout"
+      ) {
         stats.timedOut++;
       } else if (type === "529_dropped") {
         stats.failed++;
@@ -2081,7 +2184,13 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
       const model = (e.data.model as string) || "";
       // TimeoutFired 没有 provider 字段，用 model 推断
       if (model) {
-        const stats = ensure(model.includes("deepseek") ? "openai" : model.includes("claude") ? "anthropic" : "unknown");
+        const stats = ensure(
+          model.includes("deepseek")
+            ? "openai"
+            : model.includes("claude")
+              ? "anthropic"
+              : "unknown",
+        );
         stats.timedOut++;
       }
     }
@@ -2099,7 +2208,8 @@ export function aggregateProviderStats(events: Array<{ event?: string; data?: Re
     if (timeoutRate > 0.1) warning = `超时率 ${(timeoutRate * 100).toFixed(1)}% > 10%`;
     // T14.5：TTFT > 30s 标记 warning（现在基于纯净的 first_content TTFT，不再虚高误报）
     const ttftP95 = percentile(sortedTtfts, 0.95);
-    if (ttftP95 && ttftP95 > 30000 && !warning) warning = `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`;
+    if (ttftP95 && ttftP95 > 30000 && !warning)
+      warning = `TTFT P95 ${(ttftP95 / 1000).toFixed(1)}s > 30s`;
 
     result.push({
       provider,
@@ -2157,7 +2267,8 @@ export function ttftByCacheFields(
   bucket: TtftCacheBucket | undefined,
 ): Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> {
   if (!bucket) return {};
-  const out: Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> = {};
+  const out: Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> =
+    {};
   if (bucket.hit.length + bucket.miss.length > 0) {
     out.ttftByCache = {
       hit: bucketStats(bucket.hit, percentile),
@@ -2286,7 +2397,11 @@ export function aggregatePrefixBreakStats(
     byKind: Object.fromEntries(
       Object.entries(byKind).map(([k, v]) => [
         k,
-        { count: v.count, avgWastedRatio: v.count > 0 ? v.sum / v.count : 0, maxWastedRatio: v.max },
+        {
+          count: v.count,
+          avgWastedRatio: v.count > 0 ? v.sum / v.count : 0,
+          maxWastedRatio: v.max,
+        },
       ]),
     ),
     avgWastedRatio: broken > 0 ? wastedSum / broken : 0,

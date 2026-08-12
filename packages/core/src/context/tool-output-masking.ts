@@ -61,7 +61,10 @@ export class ToolOutputMaskingService {
     // （模型下一轮才能看到它们，遮罩掉等于模型从未看到过工具结果）
     let lastAssistantIdx = -1;
     for (let k = messages.length - 1; k >= 0; k--) {
-      if (messages[k].role === "assistant") { lastAssistantIdx = k; break; }
+      if (messages[k].role === "assistant") {
+        lastAssistantIdx = k;
+        break;
+      }
     }
 
     // 第一遍：后向扫描，收集保护窗口外的可修剪候选

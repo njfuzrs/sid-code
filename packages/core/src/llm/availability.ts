@@ -6,8 +6,8 @@
 /** 模型健康状态 */
 type HealthState =
   | { status: "healthy" }
-  | { status: "retry_once"; reason: string; consumed: boolean }  // 本轮只允许重试一次
-  | { status: "terminal"; reason: string };                       // 永久不可用
+  | { status: "retry_once"; reason: string; consumed: boolean } // 本轮只允许重试一次
+  | { status: "terminal"; reason: string }; // 永久不可用
 
 /** S2：共享限流冷却记录。 */
 interface RateLimitCooldown {
@@ -142,10 +142,7 @@ export class ModelAvailabilityService {
     // 双向钳制：下限保证冷却是个**能被别人读到**的信号（1ms 冷却等于没有冷却，
     // 见 MIN_COOLDOWN_MS 注释）；上限防止服务端一个超长 Retry-After 让全部并发
     // 路径集体长睡。
-    const wait = Math.min(
-      Math.max(retryAfterMs ?? 2_000, MIN_COOLDOWN_MS),
-      MAX_COOLDOWN_WAIT_MS,
-    );
+    const wait = Math.min(Math.max(retryAfterMs ?? 2_000, MIN_COOLDOWN_MS), MAX_COOLDOWN_WAIT_MS);
     const until = Date.now() + wait;
     const prev = this.cooldowns.get(model);
     // 取**更晚**的截止时刻：多路先后撞限流时，冷却应该只延长不缩短——
@@ -175,7 +172,9 @@ export class ModelAvailabilityService {
   }
 
   /** S2：读冷却归因（供日志/遥测说明"为什么在等"）。无冷却返回 undefined。 */
-  getCooldownInfo(model: string): { remainingMs: number; reason: string; hits: number } | undefined {
+  getCooldownInfo(
+    model: string,
+  ): { remainingMs: number; reason: string; hits: number } | undefined {
     const cd = this.cooldowns.get(model);
     if (!cd) return undefined;
     const remainingMs = cd.until - Date.now();
@@ -198,7 +197,9 @@ export class ModelAvailabilityService {
   }
 
   /** 从候选模型列表中选择第一个可用的 */
-  selectFirstAvailable(models: string[]): { model: string } | { unavailable: true; reason: string } {
+  selectFirstAvailable(
+    models: string[],
+  ): { model: string } | { unavailable: true; reason: string } {
     for (const model of models) {
       const check = this.isAvailable(model);
       if (check.available) return { model };

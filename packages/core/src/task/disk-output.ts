@@ -147,10 +147,7 @@ export async function getTaskOutputDelta(
 }
 
 /** 读取输出末尾（用于停滞检测） */
-export async function getTaskOutputTail(
-  taskId: string,
-  tailBytes = 1024,
-): Promise<string | null> {
+export async function getTaskOutputTail(taskId: string, tailBytes = 1024): Promise<string | null> {
   const output = outputs.get(taskId);
   if (!output) return null;
 
@@ -180,6 +177,8 @@ export function evictTaskOutput(taskId: string): void {
   const output = outputs.get(taskId);
   outputs.delete(taskId);
   if (output) {
-    void unlink(output.filePath).catch(() => { /* 文件可能不存在或已被删，忽略 */ });
+    void unlink(output.filePath).catch(() => {
+      /* 文件可能不存在或已被删，忽略 */
+    });
   }
 }

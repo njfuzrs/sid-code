@@ -93,7 +93,11 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   if (item.kind === "system") {
     return (
       <Box justifyContent="center" paddingX={1}>
-        <Text>{"── "}{item.text}{" ──"}</Text>
+        <Text>
+          {"── "}
+          {item.text}
+          {" ──"}
+        </Text>
       </Box>
     );
   }
@@ -118,7 +122,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   const toolNameMap = buildToolNameMap(msg, prevMsg);
 
   // 纯 tool_result 消息 → ToolGroupMessage
-  const hasOnlyToolResults = msg.content.every(b => b.type === "tool_result");
+  const hasOnlyToolResults = msg.content.every((b) => b.type === "tool_result");
   if (msg.role === "user" && hasOnlyToolResults) {
     const toolResults = extractToolResults(msg, toolNameMap);
     if (toolResults.length > 0) {
@@ -129,8 +133,8 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
 
   // 用户消息（含文本内容）
   if (msg.role === "user") {
-    const textBlocks = msg.content.filter(b => b.type === "text");
-    const text = textBlocks.map(b => b.type === "text" ? b.text : "").join("\n");
+    const textBlocks = msg.content.filter((b) => b.type === "text");
+    const text = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
     return (
       <Box flexDirection="column" marginTop={prevItem ? 1 : 0}>
         <UserMessage text={text} width={termWidth} />
@@ -150,7 +154,7 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
       // 遇到非文本块，先输出累积的文本
       if (textAccum) {
         elements.push(
-          <AssistantMessage key={`text-${elements.length}`} text={textAccum} width={termWidth} />
+          <AssistantMessage key={`text-${elements.length}`} text={textAccum} width={termWidth} />,
         );
         textAccum = "";
       }
@@ -159,20 +163,16 @@ export const MessageItemRenderer = React.memo(function MessageItemRenderer({
   // 输出剩余文本
   if (textAccum) {
     elements.push(
-      <AssistantMessage key={`text-${elements.length}`} text={textAccum} width={termWidth} />
+      <AssistantMessage key={`text-${elements.length}`} text={textAccum} width={termWidth} />,
     );
   }
 
   // 工具调用分组
   if (toolCalls.length > 0) {
     elements.push(
-      <ToolGroupMessage key="tool-group" tools={toolCalls} terminalWidth={termWidth} />
+      <ToolGroupMessage key="tool-group" tools={toolCalls} terminalWidth={termWidth} />,
     );
   }
 
-  return (
-    <Box flexDirection="column">
-      {elements}
-    </Box>
-  );
+  return <Box flexDirection="column">{elements}</Box>;
 });

@@ -16,9 +16,7 @@
  * - 一次只跑一轮：远程消息在上一轮未结束时排队，串行消费（与 TUI 单轮语义一致）。
  */
 
-import type {
-  QueryEngineEvent,
-} from "../query/types.ts";
+import type { QueryEngineEvent } from "../query/types.ts";
 import { BridgeCore } from "./bridge-core.ts";
 import { createBridgeTransport } from "./transport.ts";
 import {
@@ -42,12 +40,14 @@ export interface BridgeRunnerDeps {
    * delegate 返回 true=允许 / false=拒绝。
    */
   setPermissionDelegate: (
-    delegate: ((req: {
-      toolName: string;
-      toolInput: unknown;
-      description: string;
-      dangerLevel: string;
-    }) => Promise<boolean>) | null,
+    delegate:
+      | ((req: {
+          toolName: string;
+          toolInput: unknown;
+          description: string;
+          dangerLevel: string;
+        }) => Promise<boolean>)
+      | null,
   ) => void;
 }
 
@@ -155,9 +155,7 @@ export class BridgeRunner {
         void this.core.send(formatToolUseMessage(event.toolName, event.toolInput));
         break;
       case "tool_end":
-        void this.core.send(
-          formatToolResultMessage(event.toolName, "", event.result?.isError),
-        );
+        void this.core.send(formatToolResultMessage(event.toolName, "", event.result?.isError));
         break;
       case "system":
         if (event.level === "warning" || event.level === "error") {

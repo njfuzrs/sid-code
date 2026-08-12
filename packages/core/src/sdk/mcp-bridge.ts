@@ -40,10 +40,7 @@ export interface MCPTransport {
  */
 export class SdkControlClientTransport implements MCPTransport {
   private serverName: string;
-  private sendMcpMessage: (
-    serverName: string,
-    message: JSONRPCMessage,
-  ) => Promise<JSONRPCMessage>;
+  private sendMcpMessage: (serverName: string, message: JSONRPCMessage) => Promise<JSONRPCMessage>;
 
   onmessage?: (message: JSONRPCMessage) => void;
 

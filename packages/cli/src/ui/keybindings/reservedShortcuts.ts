@@ -42,9 +42,7 @@ export const RESERVED_STROKES: readonly Keystroke[] = [
 ];
 
 /** 预计算的保留键签名集合（模块加载时一次性构建）。 */
-const RESERVED_SIGNATURES: ReadonlySet<string> = new Set(
-  RESERVED_STROKES.map(strokeSignature),
-);
+const RESERVED_SIGNATURES: ReadonlySet<string> = new Set(RESERVED_STROKES.map(strokeSignature));
 
 /**
  * 判断某个 stroke 是否为保留键。

@@ -8,7 +8,10 @@
  *   - 比例计算：unknown 不计入分母（避免被刷分母绕过 30%）
  */
 import { describe, test, expect } from "bun:test";
-import { classifyTaskSourceRepo, checkExternalRatio } from "../../evals/scripts/distill-skill-rules";
+import {
+  classifyTaskSourceRepo,
+  checkExternalRatio,
+} from "../../evals/scripts/distill-skill-rules";
 
 describe("B7-6 classifyTaskSourceRepo", () => {
   test("working_directory 含 sid-code → sid-code", () => {
@@ -54,7 +57,10 @@ describe("B7-6 classifyTaskSourceRepo", () => {
   test("text 同时含 ≥ 2 个 sid-code 子系统名 → sid-code", () => {
     const r = classifyTaskSourceRepo({
       task_id: "T0226",
-      instruction: { working_directory: "", text: "梳理 src/debug/、src/trace/、src/telemetry/ 的采集点" },
+      instruction: {
+        working_directory: "",
+        text: "梳理 src/debug/、src/trace/、src/telemetry/ 的采集点",
+      },
     });
     expect(r.source).toBe("sid-code");
   });
@@ -103,21 +109,29 @@ describe("B7-6 checkExternalRatio", () => {
   test("external/total 严格 ≥ 30% → pass", () => {
     // 3 external + 7 sid-code → external/(3+7) = 30% (=阈值边界, 等于 = pass)
     const r = checkExternalRatio([
-      mk("T1", "external"), mk("T2", "external"), mk("T3", "external"),
-      mk("T4", "sid-code"), mk("T5", "sid-code"), mk("T6", "sid-code"),
-      mk("T7", "sid-code"), mk("T8", "sid-code"), mk("T9", "sid-code"),
+      mk("T1", "external"),
+      mk("T2", "external"),
+      mk("T3", "external"),
+      mk("T4", "sid-code"),
+      mk("T5", "sid-code"),
+      mk("T6", "sid-code"),
+      mk("T7", "sid-code"),
+      mk("T8", "sid-code"),
+      mk("T9", "sid-code"),
       mk("T10", "sid-code"),
     ]);
     expect(r.passed).toBe(true);
     expect(r.externalCount).toBe(3);
     expect(r.sidCount).toBe(7);
-    expect(r.externalRatio).toBeCloseTo(0.30, 5);
+    expect(r.externalRatio).toBeCloseTo(0.3, 5);
   });
 
   test("external_ratio < 30% → reject + 给出原因", () => {
     const r = checkExternalRatio([
       mk("T1", "external"),
-      mk("T2", "sid-code"), mk("T3", "sid-code"), mk("T4", "sid-code"),
+      mk("T2", "sid-code"),
+      mk("T3", "sid-code"),
+      mk("T4", "sid-code"),
     ]);
     expect(r.passed).toBe(false);
     expect(r.externalRatio).toBeCloseTo(0.25, 5);
@@ -127,7 +141,9 @@ describe("B7-6 checkExternalRatio", () => {
   test("unknown 不计入分母（防被刷比例）", () => {
     // 3 external + 0 sid-code + 100 unknown → ratio=100% (不是 3/103 = 2.9%)
     const r = checkExternalRatio([
-      mk("T1", "external"), mk("T2", "external"), mk("T3", "external"),
+      mk("T1", "external"),
+      mk("T2", "external"),
+      mk("T3", "external"),
       ...Array.from({ length: 100 }, (_, i) => mk(`U${i}`, "unknown" as const)),
     ]);
     expect(r.passed).toBe(true);
@@ -138,9 +154,7 @@ describe("B7-6 checkExternalRatio", () => {
   });
 
   test("全 unknown → reject（分母 0 无法判定）", () => {
-    const r = checkExternalRatio([
-      mk("T1", "unknown"), mk("T2", "unknown"),
-    ]);
+    const r = checkExternalRatio([mk("T1", "unknown"), mk("T2", "unknown")]);
     expect(r.passed).toBe(false);
     expect(r.rejectReasons?.[0]).toContain("0");
   });

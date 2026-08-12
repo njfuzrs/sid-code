@@ -52,10 +52,7 @@ export function logAPISuccess(metrics: APICallMetrics): void {
     cost: `$${metrics.costUSD.toFixed(4)}`,
     attempt: metrics.attempt,
     stop: metrics.stopReason,
-    stalls:
-      metrics.stallCount > 0
-        ? `${metrics.stallCount}次/${metrics.totalStallTimeMs}ms`
-        : "无",
+    stalls: metrics.stallCount > 0 ? `${metrics.stallCount}次/${metrics.totalStallTimeMs}ms` : "无",
     ...(metrics.didFallbackToNonStreaming ? { fallback: "非流式" } : {}),
     ...(metrics.requestId ? { reqId: metrics.requestId } : {}),
     clientReqId: metrics.clientRequestId,

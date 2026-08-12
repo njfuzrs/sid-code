@@ -56,11 +56,10 @@ export class GitCloneWorkspaceProvider implements WorkspaceProvider {
     // 用数组参数（execFileSync）而非字符串拼接：opts.branch / repoUrl 溯源到
     // GitHub PR webhook 载荷（外部可控），字符串插值进 shell 会导致命令注入
     // （分支名含 `;`、`$()`、空格等）。数组参数不经 shell 解析，天然免疫。
-    execFileSync(
-      "git",
-      ["clone", "--depth", "1", "--branch", opts.branch, repoUrl, this.workdir],
-      { stdio: "pipe", timeout: 60_000 },
-    );
+    execFileSync("git", ["clone", "--depth", "1", "--branch", opts.branch, repoUrl, this.workdir], {
+      stdio: "pipe",
+      timeout: 60_000,
+    });
 
     if (opts.commit) {
       execFileSync("git", ["checkout", opts.commit], {

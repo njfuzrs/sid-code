@@ -91,7 +91,6 @@ TODO: 列出使用时的注意事项
   console.log("1. 编辑文件，填写 TODO 部分");
   console.log("2. 根据需要调整 allowed-tools、max-turns、timeout-mins");
   console.log("3. 重启 sid-code 以加载新 Skill");
-
 } else {
   // 子目录模式（activate）
   const skillDir = join(skillsDir, skillName);

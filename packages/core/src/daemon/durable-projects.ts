@@ -12,12 +12,7 @@
  * 这是 C1 唯一需要触碰会话内层的地方（cron_create 加一行登记）。
  */
 
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-} from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";

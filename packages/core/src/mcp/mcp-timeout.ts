@@ -27,11 +27,7 @@ function readEnvMs(...names: string[]): number | undefined {
  * 优先级：SID_CODE_MCP_TIMEOUT / MCP_TIMEOUT(兜底) > configTimeout > 30000。
  */
 export function getMcpTimeout(configTimeout?: number): number {
-  return (
-    readEnvMs("SID_CODE_MCP_TIMEOUT", "MCP_TIMEOUT") ??
-    configTimeout ??
-    DEFAULT_MCP_TIMEOUT
-  );
+  return readEnvMs("SID_CODE_MCP_TIMEOUT", "MCP_TIMEOUT") ?? configTimeout ?? DEFAULT_MCP_TIMEOUT;
 }
 
 /**

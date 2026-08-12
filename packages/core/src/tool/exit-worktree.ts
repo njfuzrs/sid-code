@@ -25,8 +25,14 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const exitWorktreeSchema = lazySchema(() =>
   z.object({
-    action: z.enum(["keep", "remove"]).optional().describe("keep 保留 Worktree，remove 删除（默认 keep）"),
-    discard_changes: z.boolean().optional().describe("remove 且存在未提交工作时，设为 true 强制删除"),
+    action: z
+      .enum(["keep", "remove"])
+      .optional()
+      .describe("keep 保留 Worktree，remove 删除（默认 keep）"),
+    discard_changes: z
+      .boolean()
+      .optional()
+      .describe("remove 且存在未提交工作时，设为 true 强制删除"),
   }),
 );
 
@@ -87,10 +93,7 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
   }
 
   /** remove 模式：精确变更报告 + fail-closed + 删除失败回滚（P0-3/B6） */
-  private async doRemove(
-    session: WorktreeSession,
-    discard: boolean,
-  ): Promise<ToolResult> {
+  private async doRemove(session: WorktreeSession, discard: boolean): Promise<ToolResult> {
     const log = getLogger();
     const manager = new WorktreeManager(session.originalCwd);
 

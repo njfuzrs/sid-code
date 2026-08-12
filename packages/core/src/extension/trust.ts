@@ -69,7 +69,10 @@ export class TrustManager {
    * @param files 文件列表 { filePath, content }
    * @param projectDir 项目目录
    */
-  async trustBatch(files: Array<{ filePath: string; content: string }>, projectDir: string): Promise<void> {
+  async trustBatch(
+    files: Array<{ filePath: string; content: string }>,
+    projectDir: string,
+  ): Promise<void> {
     await this.ensureLoaded();
 
     if (!this.store[projectDir]) {

@@ -3,10 +3,19 @@
  * 支持分级日志、文件输出、格式化输出
  */
 
-import { createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync, appendFileSync, statSync, type WriteStream } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { maskSensitiveData } from '../permission/sensitive.ts';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  unlinkSync,
+  appendFileSync,
+  statSync,
+  type WriteStream,
+} from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { maskSensitiveData } from "../permission/sensitive.ts";
 
 export enum LogLevel {
   ERROR = 0,
@@ -33,22 +42,22 @@ export interface LoggerOptions {
 
 // ANSI 颜色码
 const C = {
-  reset: '\x1b[0m',
-  bold: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  cyan: '\x1b[36m',
-  gray: '\x1b[90m',
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
+  gray: "\x1b[90m",
 };
 
 // 级别 → 颜色 + 图标
 const LEVEL_STYLE: Record<number, { color: string; icon: string }> = {
-  [LogLevel.ERROR]: { color: C.red, icon: '✗' },
-  [LogLevel.WARN]:  { color: C.yellow, icon: '⚠' },
-  [LogLevel.INFO]:  { color: C.cyan, icon: '●' },
-  [LogLevel.DEBUG]: { color: C.gray, icon: '·' },
+  [LogLevel.ERROR]: { color: C.red, icon: "✗" },
+  [LogLevel.WARN]: { color: C.yellow, icon: "⚠" },
+  [LogLevel.INFO]: { color: C.cyan, icon: "●" },
+  [LogLevel.DEBUG]: { color: C.gray, icon: "·" },
 };
 
 // 分类 → 颜色（高频分类做区分，其余用默认色）
@@ -56,7 +65,7 @@ const CAT_COLOR: Record<string, string> = {
   LLM: C.cyan + C.bold,
   TOOL: C.yellow,
   AGENT: C.green,
-  PERMISSION: '\x1b[35m', // magenta
+  PERMISSION: "\x1b[35m", // magenta
   HOOK: C.dim,
   CONFIG: C.dim,
   STREAM: C.gray,
@@ -76,11 +85,11 @@ const ALWAYS_PERSIST_CATEGORIES = ["AUDIT"] as const;
 
 // 结构化日志条目
 interface LogEntry {
-  ts: string;        // ISO 8601 时间戳
-  level: string;     // ERROR/WARN/INFO/DEBUG
-  cat: string;       // 分类
-  msg: string;       // 消息
-  data?: unknown;    // 附加数据（已脱敏）
+  ts: string; // ISO 8601 时间戳
+  level: string; // ERROR/WARN/INFO/DEBUG
+  cat: string; // 分类
+  msg: string; // 消息
+  data?: unknown; // 附加数据（已脱敏）
 }
 
 class Logger {
@@ -133,22 +142,24 @@ class Logger {
     this.currentLogSize = 0;
 
     if (this.options.enabled && this.options.logFile) {
-      this.logFilePath = this.options.logFile.startsWith('~')
+      this.logFilePath = this.options.logFile.startsWith("~")
         ? join(homedir(), this.options.logFile.slice(1))
         : this.options.logFile;
 
       // 确保日志目录存在
-      const logDir = join(this.logFilePath, '..');
+      const logDir = join(this.logFilePath, "..");
       if (!existsSync(logDir)) {
         mkdirSync(logDir, { recursive: true });
       }
 
       // 改用 WriteStream 异步写入（审计模式 append 跨会话累积，debug 模式 w 覆盖）
-      this.logStream = createWriteStream(this.logFilePath, { flags: this.options.append ? 'a' : 'w' });
-      this.logStream.on('error', () => {}); // 静默错误
+      this.logStream = createWriteStream(this.logFilePath, {
+        flags: this.options.append ? "a" : "w",
+      });
+      this.logStream.on("error", () => {}); // 静默错误
 
       // 写入头部
-      const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
+      const header = `${"─".repeat(60)}\n SID-CODE DEBUG LOG  ${new Date().toLocaleString("zh-CN")}\n${"─".repeat(60)}\n\n`;
       this.logStream.write(header);
 
       // append 模式必须用**既有文件大小**作为起点，否则轮转永不触发：
@@ -167,16 +178,21 @@ class Logger {
 
       // JSON Lines 输出
       if (this.options.jsonLog) {
-        this.jsonLogPath = this.options.jsonLogFile ?? this.logFilePath.replace(/\.log$/, '.jsonl');
-        this.jsonStream = createWriteStream(this.jsonLogPath, { flags: 'w' });
-        this.jsonStream.on('error', () => {});
+        this.jsonLogPath = this.options.jsonLogFile ?? this.logFilePath.replace(/\.log$/, ".jsonl");
+        this.jsonStream = createWriteStream(this.jsonLogPath, { flags: "w" });
+        this.jsonStream.on("error", () => {});
       }
     }
   }
 
-  private formatMessage(level: LogLevel, category: string, message: string, data?: unknown): string {
+  private formatMessage(
+    level: LogLevel,
+    category: string,
+    message: string,
+    data?: unknown,
+  ): string {
     const now = new Date();
-    const time = now.toLocaleTimeString('zh-CN', { hour12: false });
+    const time = now.toLocaleTimeString("zh-CN", { hour12: false });
     const style = LEVEL_STYLE[level] ?? LEVEL_STYLE[LogLevel.DEBUG];
     const catColor = CAT_COLOR[category] ?? C.dim;
 
@@ -190,10 +206,10 @@ class Logger {
     if (data !== undefined) {
       const dataStr = this.formatData(data);
       // 数据紧凑放在同一行（短数据）或换行缩进（长数据）
-      if (dataStr.length < 120 && !dataStr.includes('\n')) {
+      if (dataStr.length < 120 && !dataStr.includes("\n")) {
         line += ` ${C.dim}${dataStr}${C.reset}`;
       } else {
-        line += `\n${C.dim}  ${dataStr.split('\n').join('\n  ')}${C.reset}`;
+        line += `\n${C.dim}  ${dataStr.split("\n").join("\n  ")}${C.reset}`;
       }
     }
 
@@ -201,7 +217,7 @@ class Logger {
   }
 
   private formatData(data: unknown): string {
-    if (typeof data === 'string') {
+    if (typeof data === "string") {
       return maskSensitiveData(data);
     }
 
@@ -215,25 +231,28 @@ class Logger {
 
   /** 替换敏感字段（API Key 等） */
   private sensitiveReplacer(key: string, value: unknown): unknown {
-    const sensitiveKeys = ['anthropicKey', 'openaiKey', 'apiKey', 'api_key', 'token', 'secret'];
-    if (typeof value === 'string' && sensitiveKeys.some(k => key.toLowerCase().includes(k.toLowerCase()))) {
+    const sensitiveKeys = ["anthropicKey", "openaiKey", "apiKey", "api_key", "token", "secret"];
+    if (
+      typeof value === "string" &&
+      sensitiveKeys.some((k) => key.toLowerCase().includes(k.toLowerCase()))
+    ) {
       if (value.length > 8) {
-        return value.slice(0, 4) + '****' + value.slice(-4);
+        return value.slice(0, 4) + "****" + value.slice(-4);
       }
-      return '****';
+      return "****";
     }
     return value;
   }
 
   /** 去除 ANSI 转义码 */
   private stripAnsi(str: string): string {
-    return str.replace(/\x1b\[[0-9;]*m/g, '');
+    return str.replace(/\x1b\[[0-9;]*m/g, "");
   }
 
   private writeToFile(message: string): void {
     if (!this.logStream || this.logStream.destroyed) return;
 
-    const data = this.stripAnsi(message) + '\n';
+    const data = this.stripAnsi(message) + "\n";
     this.currentLogSize += Buffer.byteLength(data);
     this.logStream.write(data);
 
@@ -250,31 +269,31 @@ class Logger {
     this.logStream.end();
 
     // 重命名旧文件（只保留 1 个备份）
-    const backupPath = this.logFilePath + '.1';
+    const backupPath = this.logFilePath + ".1";
     try {
       if (existsSync(backupPath)) unlinkSync(backupPath);
       if (existsSync(this.logFilePath)) renameSync(this.logFilePath, backupPath);
     } catch {}
 
     // 创建新流
-    this.logStream = createWriteStream(this.logFilePath, { flags: 'w' });
-    this.logStream.on('error', () => {});
+    this.logStream = createWriteStream(this.logFilePath, { flags: "w" });
+    this.logStream.on("error", () => {});
     this.currentLogSize = 0;
 
-    const header = `${'─'.repeat(60)}\n SID-CODE DEBUG LOG (轮转) ${new Date().toLocaleString('zh-CN')}\n${'─'.repeat(60)}\n\n`;
+    const header = `${"─".repeat(60)}\n SID-CODE DEBUG LOG (轮转) ${new Date().toLocaleString("zh-CN")}\n${"─".repeat(60)}\n\n`;
     this.logStream.write(header);
     this.currentLogSize = Buffer.byteLength(header);
 
     // JSON 日志也轮转
     if (this.jsonStream && this.jsonLogPath) {
       this.jsonStream.end();
-      const jsonBackup = this.jsonLogPath + '.1';
+      const jsonBackup = this.jsonLogPath + ".1";
       try {
         if (existsSync(jsonBackup)) unlinkSync(jsonBackup);
         if (existsSync(this.jsonLogPath)) renameSync(this.jsonLogPath, jsonBackup);
       } catch {}
-      this.jsonStream = createWriteStream(this.jsonLogPath, { flags: 'w' });
-      this.jsonStream.on('error', () => {});
+      this.jsonStream = createWriteStream(this.jsonLogPath, { flags: "w" });
+      this.jsonStream.on("error", () => {});
     }
   }
 
@@ -339,7 +358,9 @@ class Logger {
           this.sessionWarnLogPath,
           `[${ts}] [${levelName}] [${category}] ${message}${dataStr}\n`,
         );
-      } catch { /* per-session 日志写入失败静默 */ }
+      } catch {
+        /* per-session 日志写入失败静默 */
+      }
     }
 
     // JSON Lines 输出
@@ -366,7 +387,7 @@ class Logger {
       entry.data = JSON.parse(JSON.stringify(data, this.sensitiveReplacer));
     }
 
-    this.jsonStream.write(JSON.stringify(entry) + '\n');
+    this.jsonStream.write(JSON.stringify(entry) + "\n");
   }
 
   /** 检查分类是否被静默 */
@@ -375,15 +396,13 @@ class Logger {
    * 仅作用于文件 sink；mutedCategories 优先级更高（已在 log() 上游拦截）。
    */
   private isAlwaysPersisted(category: string): boolean {
-    return ALWAYS_PERSIST_CATEGORIES.some(
-      c => category === c || category.startsWith(c + ':'),
-    );
+    return ALWAYS_PERSIST_CATEGORIES.some((c) => category === c || category.startsWith(c + ":"));
   }
 
   private isMuted(category: string): boolean {
     const muted = this.options.mutedCategories;
     if (!muted || muted.length === 0) return false;
-    return muted.some(m => category === m || category.startsWith(m + ':'));
+    return muted.some((m) => category === m || category.startsWith(m + ":"));
   }
 
   /** 切换为仅文件输出模式（TUI 模式下使用） */
@@ -423,53 +442,72 @@ class Logger {
   }
 
   // 特殊方法：记录 LLM 请求
-  llmRequest(_provider: string, model: string, messageCount: number, toolCount: number, maxTokens?: number): void {
-    this.info('LLM', `→ ${model} (${messageCount}消息, ${toolCount}工具, maxTokens=${maxTokens ?? '?'})`);
+  llmRequest(
+    _provider: string,
+    model: string,
+    messageCount: number,
+    toolCount: number,
+    maxTokens?: number,
+  ): void {
+    this.info(
+      "LLM",
+      `→ ${model} (${messageCount}消息, ${toolCount}工具, maxTokens=${maxTokens ?? "?"})`,
+    );
   }
 
   // 特殊方法：记录 LLM 响应
-  llmResponse(stopReason: string, usage?: { inputTokens: number; outputTokens: number }, durationMs?: number, costUSD?: number): void {
-    const tokens = usage ? ` in=${usage.inputTokens} out=${usage.outputTokens}` : '';
-    const dur = durationMs !== undefined ? ` ${(durationMs / 1000).toFixed(1)}s` : '';
-    const cost = costUSD !== undefined ? ` $${costUSD.toFixed(4)}` : '';
-    this.info('LLM', `← ${stopReason}${tokens}${dur}${cost}`);
+  llmResponse(
+    stopReason: string,
+    usage?: { inputTokens: number; outputTokens: number },
+    durationMs?: number,
+    costUSD?: number,
+  ): void {
+    const tokens = usage ? ` in=${usage.inputTokens} out=${usage.outputTokens}` : "";
+    const dur = durationMs !== undefined ? ` ${(durationMs / 1000).toFixed(1)}s` : "";
+    const cost = costUSD !== undefined ? ` $${costUSD.toFixed(4)}` : "";
+    this.info("LLM", `← ${stopReason}${tokens}${dur}${cost}`);
   }
 
   // 特殊方法：记录 LLM 回复文本内容（截断到合理长度）
   llmResponseText(text: string): void {
     if (!text) return;
     const preview = text.length > 500 ? text.slice(0, 500) + `... (共${text.length}字符)` : text;
-    this.info('LLM', `回复内容:\n${preview}`);
+    this.info("LLM", `回复内容:\n${preview}`);
   }
 
   // 特殊方法：记录流式事件
   streamEvent(eventType: string, data?: unknown): void {
-    this.debug('STREAM', eventType, data);
+    this.debug("STREAM", eventType, data);
   }
 
   // 特殊方法：记录工具执行开始（含输入参数）
   toolStart(toolName: string, input: unknown): void {
-    const inputStr = typeof input === 'object' ? JSON.stringify(input) : String(input);
-    const preview = inputStr.length > 300 ? inputStr.slice(0, 300) + '...' : inputStr;
-    this.info('TOOL', `▶ ${toolName} ${preview}`);
+    const inputStr = typeof input === "object" ? JSON.stringify(input) : String(input);
+    const preview = inputStr.length > 300 ? inputStr.slice(0, 300) + "..." : inputStr;
+    this.info("TOOL", `▶ ${toolName} ${preview}`);
   }
 
   // 特殊方法：记录工具执行结果（含输出摘要和耗时）
   toolEnd(toolName: string, output: string, isError: boolean, durationMs: number): void {
-    const icon = isError ? '✗' : '✓';
-    const preview = output.length > 300 ? output.slice(0, 300) + `... (共${output.length}字符)` : output;
-    this.info('TOOL', `${icon} ${toolName} (${durationMs}ms)\n${preview}`);
+    const icon = isError ? "✗" : "✓";
+    const preview =
+      output.length > 300 ? output.slice(0, 300) + `... (共${output.length}字符)` : output;
+    this.info("TOOL", `${icon} ${toolName} (${durationMs}ms)\n${preview}`);
   }
 
   // 特殊方法：记录工具执行（兼容旧调用）
-  toolExecution(toolName: string, args: unknown, result?: { success: boolean; error?: string }): void {
-    const status = result ? (result.success ? '✓' : `✗ ${result.error}`) : '';
-    this.debug('TOOL', `${toolName} ${status}`, args);
+  toolExecution(
+    toolName: string,
+    args: unknown,
+    result?: { success: boolean; error?: string },
+  ): void {
+    const status = result ? (result.success ? "✓" : `✗ ${result.error}`) : "";
+    this.debug("TOOL", `${toolName} ${status}`, args);
   }
 
   // 特殊方法：记录配置加载
   configLoaded(source: string, config: unknown): void {
-    this.info('CONFIG', `加载: ${source}`, config);
+    this.info("CONFIG", `加载: ${source}`, config);
   }
 
   // 更新配置

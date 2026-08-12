@@ -5,7 +5,14 @@
 
 import { EventEmitter } from "events";
 import type { TUIState, TaskDisplayInfo } from "./App.tsx";
-import { getPanelVisibleTasks, isAgentTask, isShellTask, isWorkflowTask, onTaskChanged, offTaskChanged } from "@sid-code/core/task/index.ts";
+import {
+  getPanelVisibleTasks,
+  isAgentTask,
+  isShellTask,
+  isWorkflowTask,
+  onTaskChanged,
+  offTaskChanged,
+} from "@sid-code/core/task/index.ts";
 
 export class StateBridge extends EventEmitter {
   current: TUIState;
@@ -47,7 +54,7 @@ export class StateBridge extends EventEmitter {
    *     `bg_task_list` / `task_output` 照常查得到。 */
   updateTasks(): void {
     const all = getPanelVisibleTasks();
-    const taskInfos: TaskDisplayInfo[] = all.map(t => {
+    const taskInfos: TaskDisplayInfo[] = all.map((t) => {
       const info: TaskDisplayInfo = {
         id: t.id,
         type: t.type,

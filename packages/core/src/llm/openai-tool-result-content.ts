@@ -44,7 +44,7 @@ export function serializeToolResultContentForOpenAI(
   // mediaBlocks：无法回传（协议只允许 text part + 本 provider vision=false），
   // 但要在文本里如实交代，避免模型对着"已附上截图"空想。
   if (block.mediaBlocks && block.mediaBlocks.length > 0) {
-    const kinds = block.mediaBlocks.map(mb => `${mb.kind}(${mb.mediaType})`).join(", ");
+    const kinds = block.mediaBlocks.map((mb) => `${mb.kind}(${mb.mediaType})`).join(", ");
     content +=
       `\n[注意：本工具结果还包含 ${block.mediaBlocks.length} 个富媒体附件（${kinds}），` +
       `但当前 provider 的工具消息不支持图片/文档回传，你看不到这些内容。` +

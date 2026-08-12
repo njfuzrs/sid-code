@@ -11,7 +11,7 @@ import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
 
 /** 验证错误 */
 export interface ValidationError {
-  path: string;      // 如 "provider" 或 "mcpServers.fetch.timeout"
+  path: string; // 如 "provider" 或 "mcpServers.fetch.timeout"
   message: string;
   value: unknown;
 }
@@ -119,10 +119,11 @@ export function validateConfig(config: Config): ValidationResult {
     // availableModels 条目的 name 后，忘记同步顶层 model（或 fallbackModel/subAgentModels）里的旧引用，
     // 导致按名查找落空、从未回填。这里补一句定位提示，避免误诊为 provider 校验规则本身有问题。
     if (config.model && config.availableModels?.length) {
-      const found = config.availableModels.some(m => m.name === config.model);
+      const found = config.availableModels.some((m) => m.name === config.model);
       if (!found) {
-        const available = config.availableModels.map(m => m.name).join(", ");
-        message += `；模型 "${config.model}" 未在 availableModels 中找到（可用: ${available}）。` +
+        const available = config.availableModels.map((m) => m.name).join(", ");
+        message +=
+          `；模型 "${config.model}" 未在 availableModels 中找到（可用: ${available}）。` +
           `如果重命名过 availableModels 条目，请同步更新顶层 model / fallbackModel / subAgentModels 中的引用`;
       }
     }
@@ -160,7 +161,7 @@ export function validateConfig(config: Config): ValidationResult {
     // 输出上限唯一真正不合理的情形是"超过模型上下文窗口"（物理上不可能输出比窗口还多）。
     // 拿不到模型窗口时不告警 —— maxTokens 多由系统按模型 max_output_tokens 自动推导，
     // 用一个无关的硬编码数去警告系统自己的正确推导，只会制造首屏噪音。
-    const currentModel = config.availableModels?.find(m => m.name === config.model);
+    const currentModel = config.availableModels?.find((m) => m.name === config.model);
     const ctxWindow = currentModel?.contextWindow;
     if (typeof ctxWindow === "number" && ctxWindow > 0 && config.maxTokens > ctxWindow) {
       warnings.push({
@@ -209,7 +210,10 @@ export function validateConfig(config: Config): ValidationResult {
       }
 
       // http/sse 类型必须有 url
-      if ((serverConfig.transport === "http" || serverConfig.transport === "sse") && !serverConfig.url) {
+      if (
+        (serverConfig.transport === "http" || serverConfig.transport === "sse") &&
+        !serverConfig.url
+      ) {
         errors.push({
           path: `${prefix}.url`,
           message: `${serverConfig.transport} 类型的 MCP 服务器必须指定 url`,
@@ -332,7 +336,10 @@ export function validateConfig(config: Config): ValidationResult {
           message: "模型名称不能为空",
           value: modelName,
         });
-      } else if (config.availableModels?.length && !config.availableModels.some(m => m.name === modelName)) {
+      } else if (
+        config.availableModels?.length &&
+        !config.availableModels.some((m) => m.name === modelName)
+      ) {
         // 非致命：registry.getSpawnConfigForSubAgent 找不到时会静默退回主 provider 配置，
         // 但仍把这个不存在的模型名发给网关，多半在运行时才报"模型不可用"，难定位。
         // 提前告警，指向最可能的诱因（重命名 availableModels 条目后忘记同步这里）。
@@ -350,13 +357,29 @@ export function validateConfig(config: Config): ValidationResult {
   // 不加任何功能开关前置条件（如 enableLLMClassifier）——尽早暴露配置漂移，好过等真正
   // 启用功能那一刻才发现模型名早已失效，体验上和静默没有本质区别。
   const modelRefFields: Array<{ path: string; value: string | undefined; hint: string }> = [
-    { path: "fallbackModel", value: config.fallbackModel, hint: "降级功能不会生效（app.ts 静默忽略）" },
-    { path: "classifierModel", value: config.classifierModel, hint: "启用 enableLLMClassifier 后会携带此模型名请求网关" },
-    { path: "goal.evaluatorModel", value: config.goal?.evaluatorModel, hint: "/goal 评估会携带此模型名请求网关" },
+    {
+      path: "fallbackModel",
+      value: config.fallbackModel,
+      hint: "降级功能不会生效（app.ts 静默忽略）",
+    },
+    {
+      path: "classifierModel",
+      value: config.classifierModel,
+      hint: "启用 enableLLMClassifier 后会携带此模型名请求网关",
+    },
+    {
+      path: "goal.evaluatorModel",
+      value: config.goal?.evaluatorModel,
+      hint: "/goal 评估会携带此模型名请求网关",
+    },
   ];
   for (const ref of modelRefFields) {
-    if (ref.value && ref.value.trim() !== "" &&
-        config.availableModels?.length && !config.availableModels.some(m => m.name === ref.value)) {
+    if (
+      ref.value &&
+      ref.value.trim() !== "" &&
+      config.availableModels?.length &&
+      !config.availableModels.some((m) => m.name === ref.value)
+    ) {
       warnings.push({
         path: ref.path,
         message: `模型 "${ref.value}" 未在 availableModels 中找到，${ref.hint}，可能导致"模型不可用"报错。如果重命名过 availableModels 条目，请同步更新这里的引用`,
@@ -451,7 +474,8 @@ export function validateConfig(config: Config): ValidationResult {
       if (endpoints.size > 1) {
         warnings.push({
           path: "availableModels",
-          message: `模型 "${name}" 配了 ${endpoints.size} 个不同端点，但模型选择（/model、fallback、子代理）一律按名匹配第一条，` +
+          message:
+            `模型 "${name}" 配了 ${endpoints.size} 个不同端点，但模型选择（/model、fallback、子代理）一律按名匹配第一条，` +
             `其余端点条目及其 base_url / api_key 永远不会生效。正确配法：给每条取**不同的 name**（如 ` +
             `${name}-gateway / ${name}-official）让两条都能被选中，再各自加 "model_id": "${name}" ` +
             `指回厂商真实模型名——只改 name 不加 model_id 会把别名当模型名发给厂商，导致请求报错`,
@@ -492,7 +516,8 @@ export function validateConfig(config: Config): ValidationResult {
       if (alias && wire && alias === wire) {
         warnings.push({
           path: "availableModels",
-          message: `模型 "${alias}" 的 model_id 与 name 完全相同，等价于不配（model_id 缺省即取 name），可以删掉。` +
+          message:
+            `模型 "${alias}" 的 model_id 与 name 完全相同，等价于不配（model_id 缺省即取 name），可以删掉。` +
             `注意：多渠道靠「name 各不相同」区分，只加 model_id 不改 name 仍然只有第一条生效`,
         });
       }
@@ -516,7 +541,8 @@ export function validateConfig(config: Config): ValidationResult {
       if (wires.size > 1) {
         warnings.push({
           path: "availableModels",
-          message: `模型名 "${alias}" 重复出现且各条的 model_id 不同（${Array.from(wires).join(" / ")}），` +
+          message:
+            `模型名 "${alias}" 重复出现且各条的 model_id 不同（${Array.from(wires).join(" / ")}），` +
             `但按名查找只命中第一条，其余条目的 model_id 永远不生效。多渠道必须让 **name 各不相同**` +
             `（如 ${alias}-a / ${alias}-b），再各自配自己的 model_id`,
         });
@@ -535,14 +561,14 @@ export function validateConfig(config: Config): ValidationResult {
   const TEMPLATE_PLACEHOLDER_PATTERN = /^__.+__$/;
   if (config.availableModels?.length) {
     const placeholderModels = config.availableModels.filter(
-      m => m.provider !== "ollama" && m.apiKey && TEMPLATE_PLACEHOLDER_PATTERN.test(m.apiKey)
+      (m) => m.provider !== "ollama" && m.apiKey && TEMPLATE_PLACEHOLDER_PATTERN.test(m.apiKey),
     );
     if (placeholderModels.length > 0) {
-      const detail = placeholderModels.map(m => `${m.name}(${m.apiKey})`).join(", ");
+      const detail = placeholderModels.map((m) => `${m.name}(${m.apiKey})`).join(", ");
       errors.push({
         path: "availableModels",
         message: `以下模型的 apiKey 仍是模板占位符，发消息时会认证失败：${detail}。请编辑 settings.json 替换为真实 Key`,
-        value: placeholderModels.map(m => m.apiKey),
+        value: placeholderModels.map((m) => m.apiKey),
       });
     }
   }
@@ -564,10 +590,16 @@ export function validateConfig(config: Config): ValidationResult {
     if (q.costLimit !== undefined && (typeof q.costLimit !== "number" || q.costLimit <= 0)) {
       warnings.push({ path: "quota.costLimit", message: "必须是正数" });
     }
-    if (q.requestsPerMinute !== undefined && (typeof q.requestsPerMinute !== "number" || q.requestsPerMinute <= 0)) {
+    if (
+      q.requestsPerMinute !== undefined &&
+      (typeof q.requestsPerMinute !== "number" || q.requestsPerMinute <= 0)
+    ) {
       warnings.push({ path: "quota.requestsPerMinute", message: "必须是正数" });
     }
-    if (q.tokensPerMinute !== undefined && (typeof q.tokensPerMinute !== "number" || q.tokensPerMinute <= 0)) {
+    if (
+      q.tokensPerMinute !== undefined &&
+      (typeof q.tokensPerMinute !== "number" || q.tokensPerMinute <= 0)
+    ) {
       warnings.push({ path: "quota.tokensPerMinute", message: "必须是正数" });
     }
 
@@ -599,7 +631,10 @@ export function validateConfig(config: Config): ValidationResult {
         }
 
         if (typeof rule.limit_usd !== "number" || rule.limit_usd <= 0) {
-          warnings.push({ path: `${prefix}.limit_usd`, message: "必须是正数，否则该预算规则无意义" });
+          warnings.push({
+            path: `${prefix}.limit_usd`,
+            message: "必须是正数，否则该预算规则无意义",
+          });
         }
 
         if (rule.action !== undefined && !VALID_BUDGET_ACTIONS.has(rule.action)) {
@@ -612,8 +647,11 @@ export function validateConfig(config: Config): ValidationResult {
         // 关键检查：budget-tracker.ts 用字符串精确匹配用量事件的 model 字段，
         // scope.model 一旦引用失效的模型名，这条预算规则会永久静默失效——
         // 用户以为设了限额，实际从未生效，属于财务/安全相关的真实风险。
-        if (rule.scope?.model && config.availableModels?.length &&
-            !config.availableModels.some(m => m.name === rule.scope!.model)) {
+        if (
+          rule.scope?.model &&
+          config.availableModels?.length &&
+          !config.availableModels.some((m) => m.name === rule.scope!.model)
+        ) {
           warnings.push({
             path: `${prefix}.scope.model`,
             message: `模型 "${rule.scope.model}" 未在 availableModels 中找到，此预算规则永远不会命中用量匹配，等同于已失效。如果重命名过 availableModels 条目，请同步更新这里的引用`,
@@ -624,14 +662,23 @@ export function validateConfig(config: Config): ValidationResult {
         if (th) {
           for (const [key, val] of Object.entries(th)) {
             if (val !== undefined && (typeof val !== "number" || val <= 0)) {
-              warnings.push({ path: `${prefix}.thresholds.${key}`, message: "必须是正数（0-1 之间的比例，如 0.8 = 80%）" });
+              warnings.push({
+                path: `${prefix}.thresholds.${key}`,
+                message: "必须是正数（0-1 之间的比例，如 0.8 = 80%）",
+              });
             }
           }
           if (th.warning !== undefined && th.critical !== undefined && th.warning > th.critical) {
-            warnings.push({ path: `${prefix}.thresholds`, message: "warning 阈值应小于等于 critical 阈值" });
+            warnings.push({
+              path: `${prefix}.thresholds`,
+              message: "warning 阈值应小于等于 critical 阈值",
+            });
           }
           if (th.critical !== undefined && th.exceeded !== undefined && th.critical > th.exceeded) {
-            warnings.push({ path: `${prefix}.thresholds`, message: "critical 阈值应小于等于 exceeded 阈值" });
+            warnings.push({
+              path: `${prefix}.thresholds`,
+              message: "critical 阈值应小于等于 exceeded 阈值",
+            });
           }
         }
       });
@@ -736,7 +783,10 @@ export function validateConfig(config: Config): ValidationResult {
       }
     }
     if (config.trace.maxSessionsRetained !== undefined) {
-      if (typeof config.trace.maxSessionsRetained !== "number" || config.trace.maxSessionsRetained <= 0) {
+      if (
+        typeof config.trace.maxSessionsRetained !== "number" ||
+        config.trace.maxSessionsRetained <= 0
+      ) {
         errors.push({
           path: "trace.maxSessionsRetained",
           message: "必须是正整数",
@@ -848,11 +898,15 @@ export function validateConfig(config: Config): ValidationResult {
           if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
             warnings.push({
               path: `${prefix}.endpoint`,
-              message: "未设置且环境变量 OTEL_EXPORTER_OTLP_ENDPOINT 也未配置，会回退到 http://localhost:4318/v1/logs",
+              message:
+                "未设置且环境变量 OTEL_EXPORTER_OTLP_ENDPOINT 也未配置，会回退到 http://localhost:4318/v1/logs",
             });
           }
         } else {
-          warnings.push({ path: `${prefix}.endpoint`, message: "不能为空，否则该后端初始化会失败" });
+          warnings.push({
+            path: `${prefix}.endpoint`,
+            message: "不能为空，否则该后端初始化会失败",
+          });
         }
       }
       if (!b.name || b.name.trim() === "") {
@@ -899,7 +953,7 @@ function validateApiKey(
   path: string,
   key: string,
   errors: ValidationError[],
-  warnings: ValidationWarning[]
+  warnings: ValidationWarning[],
 ): void {
   if (!key || key.trim() === "") {
     warnings.push({

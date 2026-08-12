@@ -41,7 +41,7 @@ export function extractPathsFromCommand(command: string): ExtractedPath[] {
     if (!spec) continue;
 
     // 过滤掉选项参数（以 - 开头）
-    const nonOptionArgs = args.filter(a => !a.startsWith("-"));
+    const nonOptionArgs = args.filter((a) => !a.startsWith("-"));
     if (nonOptionArgs.length === 0) continue;
 
     if (spec.targetArgIndex === "last") {
@@ -54,10 +54,15 @@ export function extractPathsFromCommand(command: string): ExtractedPath[] {
     }
 
     // sed -i 的目标文件
-    if (cmd === "sed" && args.some(a => a === "-i" || a.startsWith("-i") || a === "--in-place")) {
+    if (cmd === "sed" && args.some((a) => a === "-i" || a.startsWith("-i") || a === "--in-place")) {
       // sed -i 的最后一个非选项参数是目标文件
       const lastNonOption = nonOptionArgs[nonOptionArgs.length - 1];
-      if (lastNonOption && !lastNonOption.startsWith("s/") && !lastNonOption.startsWith("'") && !lastNonOption.startsWith('"')) {
+      if (
+        lastNonOption &&
+        !lastNonOption.startsWith("s/") &&
+        !lastNonOption.startsWith("'") &&
+        !lastNonOption.startsWith('"')
+      ) {
         paths.push({ path: lastNonOption, isWrite: true });
       }
     }

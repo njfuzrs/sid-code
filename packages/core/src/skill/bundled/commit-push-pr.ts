@@ -61,8 +61,7 @@ export function registerCommitPushPrSkill(): void {
   registerBundledSkill({
     name: "commit-push-pr",
     description: "提交变更、推送到远端并创建 PR(gh pr create)的完整流程",
-    whenToUse:
-      "当用户说 'commit push pr'、'提交并发 PR'、'推送并创建 PR'、'一键发 PR' 时",
+    whenToUse: "当用户说 'commit push pr'、'提交并发 PR'、'推送并创建 PR'、'一键发 PR' 时",
     argumentHint: "[PR 标题或额外说明]",
     // fork 模式：以下白名单真实生效
     allowedTools: ["bash", "read", "grep", "glob"],
@@ -75,7 +74,8 @@ export function registerCommitPushPrSkill(): void {
     async getPromptForCommand(args, context) {
       // P3-1：commit + PR 归因动态注入（settings.git.commitAttribution / prAttribution）。
       // 各自 enabled=false → 空串 → 不出现对应归因指令。
-      const { commitAttributionInstruction, prAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const { commitAttributionInstruction, prAttributionInstruction } =
+        await import("../../tool/git-attribution.ts");
       const commitAttr = commitAttributionInstruction(context?.config?.git);
       const prAttr = prAttributionInstruction(context?.config?.git);
       const parts = [commitAttr, prAttr].filter(Boolean);

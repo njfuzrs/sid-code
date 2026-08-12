@@ -65,9 +65,8 @@ export function levenshteinDistance(a: string, b: string): number {
   for (let i = 1; i <= m; i++) {
     curr[0] = i;
     for (let j = 1; j <= n; j++) {
-      curr[j] = a[i - 1] === b[j - 1]
-        ? prev[j - 1]
-        : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+      curr[j] =
+        a[i - 1] === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
     }
     [prev, curr] = [curr, prev];
   }
@@ -80,11 +79,7 @@ export function levenshteinDistance(a: string, b: string): number {
  * 用于路径某一段拼错时（如 `本体&管道&数据` 被吞成 `本体管道数据`）给出候选。
  * @returns 命中的真实条目名数组（最多 maxHits 个），无命中返回空数组
  */
-function findSimilarEntries(
-  ancestorDir: string,
-  name: string,
-  maxHits: number,
-): string[] {
+function findSimilarEntries(ancestorDir: string, name: string, maxHits: number): string[] {
   let entries: string[];
   try {
     entries = readdirSync(ancestorDir);
@@ -187,8 +182,11 @@ function suggestNearestExistingSegment(filePath: string): string {
     const hits = findSimilarEntries(ancestorDir, missingSeg, 3);
     if (hits.length > 0) {
       const best = hits[0];
-      const fullPath = ancestorDir + sep + best
-        + (i < segments.length - 1 ? sep + segments.slice(i + 1).join(sep) : "");
+      const fullPath =
+        ancestorDir +
+        sep +
+        best +
+        (i < segments.length - 1 ? sep + segments.slice(i + 1).join(sep) : "");
       const more = hits.length > 1 ? `（其它候选: ${hits.slice(1).join(", ")}）` : "";
       return `路径段 "${missingSeg}" 疑似应为 "${best}"${more}。可尝试完整路径: ${fullPath}`;
     }

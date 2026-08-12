@@ -46,9 +46,7 @@ export interface FromPrResult {
  */
 export function extractSessionIdFromBody(body: string): string | undefined {
   if (!body) return undefined;
-  const patterns = [
-    /(?:sid[-_]?session|session[-_]?id|session)\s*[:=]\s*([0-9a-zA-Z-]{8,})/i,
-  ];
+  const patterns = [/(?:sid[-_]?session|session[-_]?id|session)\s*[:=]\s*([0-9a-zA-Z-]{8,})/i];
   for (const re of patterns) {
     const m = body.match(re);
     if (m && m[1]) {
@@ -107,9 +105,10 @@ export async function loadFromPr(prNumber: string, cwd: string): Promise<FromPrR
     raw = stdout;
   } catch (err: any) {
     // gh 不存在 → ENOENT；未登录 / PR 不存在 → 非零退出码，stderr 带原因。
-    const msg = err?.code === "ENOENT"
-      ? "未找到 gh CLI。请先安装 GitHub CLI（https://cli.github.com/）并 gh auth login。"
-      : (err?.stderr?.toString().trim() || err?.message || String(err));
+    const msg =
+      err?.code === "ENOENT"
+        ? "未找到 gh CLI。请先安装 GitHub CLI（https://cli.github.com/）并 gh auth login。"
+        : err?.stderr?.toString().trim() || err?.message || String(err);
     throw new Error(`gh pr view ${n} 失败：${msg}`);
   }
 

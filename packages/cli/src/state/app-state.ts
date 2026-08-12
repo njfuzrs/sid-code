@@ -6,16 +6,24 @@
 
 import type { Message, Usage } from "@sid-code/core/llm/types.ts";
 import type { HistoryItem } from "../ui/types.ts";
-import type { PermissionRequestInfo, ShellConfirmRequestInfo, PlanApprovalRequestInfo, AskUserQuestionRequestInfo } from "../ui/App.tsx";
+import type {
+  PermissionRequestInfo,
+  ShellConfirmRequestInfo,
+  PlanApprovalRequestInfo,
+  AskUserQuestionRequestInfo,
+} from "../ui/App.tsx";
 import type { DialogType } from "../command/types.ts";
 
 /** 深度不可变类型工具 */
-type DeepImmutable<T> =
-  T extends (infer U)[] ? readonly DeepImmutable<U>[] :
-  T extends Map<infer K, infer V> ? ReadonlyMap<DeepImmutable<K>, DeepImmutable<V>> :
-  T extends Set<infer U> ? ReadonlySet<DeepImmutable<U>> :
-  T extends object ? { readonly [K in keyof T]: DeepImmutable<T[K]> } :
-  T;
+type DeepImmutable<T> = T extends (infer U)[]
+  ? readonly DeepImmutable<U>[]
+  : T extends Map<infer K, infer V>
+    ? ReadonlyMap<DeepImmutable<K>, DeepImmutable<V>>
+    : T extends Set<infer U>
+      ? ReadonlySet<DeepImmutable<U>>
+      : T extends object
+        ? { readonly [K in keyof T]: DeepImmutable<T[K]> }
+        : T;
 
 /** 流式状态枚举 */
 export type StreamingStatus = "idle" | "streaming" | "tool_executing" | "loading";

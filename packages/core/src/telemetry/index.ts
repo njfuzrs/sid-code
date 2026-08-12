@@ -26,9 +26,16 @@ export {
   CONTENT_TRACING_FLAG,
 } from "./content-tracing.ts";
 export type {
-  SpanData, SpanEvent, SpanKind, SpanStatus,
-  Attributes, AttributeValue, MetricPoint,
-  TelemetryExporter, TelemetryConfig, TelemetryExporterConfig,
+  SpanData,
+  SpanEvent,
+  SpanKind,
+  SpanStatus,
+  Attributes,
+  AttributeValue,
+  MetricPoint,
+  TelemetryExporter,
+  TelemetryConfig,
+  TelemetryExporterConfig,
 } from "./types.ts";
 export { ATTR } from "./types.ts";
 

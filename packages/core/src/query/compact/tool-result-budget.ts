@@ -59,10 +59,10 @@ export function applyToolResultBudget(
     if (idx >= cutoff) return msg; // 保留最近的消息
     if (msg.role !== "user") return msg;
 
-    const hasToolResult = msg.content.some(b => b.type === "tool_result");
+    const hasToolResult = msg.content.some((b) => b.type === "tool_result");
     if (!hasToolResult) return msg;
 
-    const newContent: ContentBlock[] = msg.content.map(b => {
+    const newContent: ContentBlock[] = msg.content.map((b) => {
       if (b.type !== "tool_result" || typeof b.content !== "string") return b;
 
       const contentChars = b.content.length;

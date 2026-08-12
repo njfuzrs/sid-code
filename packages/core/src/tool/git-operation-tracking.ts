@@ -42,8 +42,14 @@ export interface GitOperationStats {
 
 function emptyByKind(): Record<GitOperationKind, number> {
   return {
-    commit: 0, push: 0, pr_created: 0, merge: 0,
-    rebase: 0, checkout: 0, reset: 0, other: 0,
+    commit: 0,
+    push: 0,
+    pr_created: 0,
+    merge: 0,
+    rebase: 0,
+    checkout: 0,
+    reset: 0,
+    other: 0,
   };
 }
 
@@ -110,7 +116,11 @@ export function recordGitOperation(command: string, timestamp: number): GitOpera
   _byKind[kind]++;
   _events.push(event);
   // 观察者失败不影响主流程
-  try { _observer?.(event); } catch { /* 静默 */ }
+  try {
+    _observer?.(event);
+  } catch {
+    /* 静默 */
+  }
   return event;
 }
 

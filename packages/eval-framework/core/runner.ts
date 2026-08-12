@@ -77,7 +77,13 @@ export interface ProviderDef {
 
 export interface ProviderResult {
   output: string;
-  meta: AgentMeta & { latency_ms: number; exit_status: string; error_count: number; retry_count: number; backtrack_count: number };
+  meta: AgentMeta & {
+    latency_ms: number;
+    exit_status: string;
+    error_count: number;
+    retry_count: number;
+    backtrack_count: number;
+  };
   error?: boolean;
 }
 
@@ -150,7 +156,18 @@ function loadProviderRegistry(): Record<string, ProviderRegistryEntry> {
     throw new Error(`eval.config.yaml 不存在: ${configPath}\n请创建配置文件或检查 evals/ 目录`);
   }
   const raw = readFileSync(configPath, "utf-8");
-  const config = parseYaml(raw) as { providers: Record<string, { script: string; default_model: string; timeout_ms?: number; max_turns?: number; constraints?: { model_prefix?: string } }> };
+  const config = parseYaml(raw) as {
+    providers: Record<
+      string,
+      {
+        script: string;
+        default_model: string;
+        timeout_ms?: number;
+        max_turns?: number;
+        constraints?: { model_prefix?: string };
+      }
+    >;
+  };
   if (!config?.providers || typeof config.providers !== "object") {
     throw new Error(`eval.config.yaml 格式错误: 缺少 providers 字段`);
   }
@@ -190,17 +207,20 @@ function validateModelForProvider(providerType: string, model: string): void {
   const prefix = reg.constraints?.modelPrefix;
   if (prefix && !model.startsWith(prefix)) {
     throw new Error(
-      `provider=${providerType} 不兼容 model=${model}（要求前缀 "${prefix}"）。\n`
-      + `  解决方法：\n`
-      + `    1. 拆成两次跑：先 --provider sid-code --model ${model}，再 --provider ${providerType} --model ${prefix}<X>\n`
-      + `    2. 多 provider 时不传 --model：各自用 defaultModel`
+      `provider=${providerType} 不兼容 model=${model}（要求前缀 "${prefix}"）。\n` +
+        `  解决方法：\n` +
+        `    1. 拆成两次跑：先 --provider sid-code --model ${model}，再 --provider ${providerType} --model ${prefix}<X>\n` +
+        `    2. 多 provider 时不传 --model：各自用 defaultModel`,
     );
   }
 }
 
 function buildProvider(type: string, model: string | undefined): ProviderDef {
   const reg = PROVIDER_REGISTRY[type];
-  if (!reg) throw new Error(`未知 provider 类型: ${type}，可选: ${Object.keys(PROVIDER_REGISTRY).join(", ")}`);
+  if (!reg)
+    throw new Error(
+      `未知 provider 类型: ${type}，可选: ${Object.keys(PROVIDER_REGISTRY).join(", ")}`,
+    );
   const resolved = model ?? reg.defaultModel;
   validateModelForProvider(type, resolved);
   const modelSlug = resolved.replace(/[^a-zA-Z0-9]/g, "_");
@@ -249,7 +269,11 @@ async function loadCases(
   // includeHoldout=true 时，额外扫描 evals/holdout/ + evals/holdout/architecture/<sub>/，且不再过滤 holdout 标记。
   // 注意：单独传 --cases case_004（在 holdout 目录里）的情况，
   // 会通过下面的 holdout 目录扫描分支拿到（即便 includeHoldout=false 也允许显式指定）。
-  const dirsToScan = [...CASE_DIRS, ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT), ...discoverRealTasksSubDirs(REAL_TASKS_ROOT)];
+  const dirsToScan = [
+    ...CASE_DIRS,
+    ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT),
+    ...discoverRealTasksSubDirs(REAL_TASKS_ROOT),
+  ];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
   if (includeHoldout || explicitlyAskedHoldoutId) {
     dirsToScan.push(HOLDOUT_DIR);
@@ -265,9 +289,7 @@ async function loadCases(
       const c = parseYaml(content) as CaseYaml;
       // case 在 holdout 目录/子树 或带 holdout=true 标记 → 视为 holdout
       const isHoldout =
-        dir === HOLDOUT_DIR ||
-        dir.startsWith(HOLDOUT_ARCHITECTURE_ROOT) ||
-        c.holdout === true;
+        dir === HOLDOUT_DIR || dir.startsWith(HOLDOUT_ARCHITECTURE_ROOT) || c.holdout === true;
       if (isHoldout && skipHoldout && !includeHoldout && !(wantSet && wantSet.has(c.id))) continue;
       if (wantSet && !wantSet.has(c.id)) continue;
       cases.push(c);
@@ -322,17 +344,18 @@ export function isRetryableError(output: string, stderr: string): boolean {
   ];
   // 只扫 stderr 和 output 的 [ERROR]/[TIMEOUT] 前缀块（前 500 字符），避免 agent 长输出里
   // 的关键字误命中。wrapper 的错误信号都在 [ERROR] 块的开头。
-  const errorPrefix = output.startsWith("[ERROR]") || output.startsWith("[TIMEOUT]") ? output.slice(0, 500) : "";
+  const errorPrefix =
+    output.startsWith("[ERROR]") || output.startsWith("[TIMEOUT]") ? output.slice(0, 500) : "";
   const haystack = `${errorPrefix}\n${stderr}`;
-  return retryablePatterns.some(p => haystack.includes(p));
+  return retryablePatterns.some((p) => haystack.includes(p));
 }
 
-export async function runProviderOnce(provider: ProviderDef, prompt: string, caseId: string): Promise<ProviderResult & { stderrTail: string }> {
-  const args = [
-    "run", provider.script,
-    "--prompt", prompt,
-    "--case-id", caseId,
-  ];
+export async function runProviderOnce(
+  provider: ProviderDef,
+  prompt: string,
+  caseId: string,
+): Promise<ProviderResult & { stderrTail: string }> {
+  const args = ["run", provider.script, "--prompt", prompt, "--case-id", caseId];
   if (provider.model) args.push("--model", provider.model);
   if (provider.timeoutMs) args.push("--timeout", String(provider.timeoutMs));
   if (provider.maxTurns) args.push("--max-turns", String(provider.maxTurns));
@@ -358,8 +381,14 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
     stdoutBuf += c.toString();
     if (stdoutBuf.length > STDOUT_MAX) {
       stdoutOverflow = true;
-      process.stderr.write(`[eval-runner] stdout overflow >${STDOUT_MAX}B for ${caseId} × ${provider.name}, SIGKILL\n`);
-      try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+      process.stderr.write(
+        `[eval-runner] stdout overflow >${STDOUT_MAX}B for ${caseId} × ${provider.name}, SIGKILL\n`,
+      );
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already exited */
+      }
     }
   });
   proc.stderr?.on("data", (c) => {
@@ -368,9 +397,17 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
     if (stderrBuf.length > STDERR_MAX) {
       stderrOverflow = true;
       // 截尾保留头部（更可能定位首次错误），避免后续覆盖
-      stderrBuf = stderrBuf.slice(0, STDERR_MAX) + `\n[eval-runner] stderr overflow truncated at ${STDERR_MAX}B\n`;
-      process.stderr.write(`[eval-runner] stderr overflow >${STDERR_MAX}B for ${caseId} × ${provider.name}, SIGKILL\n`);
-      try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+      stderrBuf =
+        stderrBuf.slice(0, STDERR_MAX) +
+        `\n[eval-runner] stderr overflow truncated at ${STDERR_MAX}B\n`;
+      process.stderr.write(
+        `[eval-runner] stderr overflow >${STDERR_MAX}B for ${caseId} × ${provider.name}, SIGKILL\n`,
+      );
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already exited */
+      }
     }
   });
 
@@ -381,8 +418,14 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
   let outerTimedOut = false;
   const outerTimer = setTimeout(() => {
     outerTimedOut = true;
-    process.stderr.write(`[eval-runner] OUTER TIMEOUT after ${outerTimeoutMs}ms for ${caseId} × ${provider.name}, SIGKILL\n`);
-    try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+    process.stderr.write(
+      `[eval-runner] OUTER TIMEOUT after ${outerTimeoutMs}ms for ${caseId} × ${provider.name}, SIGKILL\n`,
+    );
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      /* already exited */
+    }
   }, outerTimeoutMs);
 
   const exitCode: number | null = await new Promise((res) => {
@@ -398,7 +441,17 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
   if (outerTimedOut) {
     return {
       output: `[ERROR] eval-runner OUTER TIMEOUT after ${outerTimeoutMs}ms`,
-      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: outerTimeoutMs, exit_status: "outer_timeout", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      meta: {
+        tools_used: [],
+        files_edited: [],
+        total_steps: 0,
+        total_tokens: 0,
+        latency_ms: outerTimeoutMs,
+        exit_status: "outer_timeout",
+        error_count: 0,
+        retry_count: 0,
+        backtrack_count: 0,
+      },
       error: true,
       stderrTail,
     };
@@ -407,7 +460,17 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
   if (stdoutOverflow) {
     return {
       output: `[ERROR] eval-runner stdout overflow >${STDOUT_MAX}B`,
-      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: 0, exit_status: "stdout_overflow", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      meta: {
+        tools_used: [],
+        files_edited: [],
+        total_steps: 0,
+        total_tokens: 0,
+        latency_ms: 0,
+        exit_status: "stdout_overflow",
+        error_count: 0,
+        retry_count: 0,
+        backtrack_count: 0,
+      },
       error: true,
       stderrTail,
     };
@@ -416,7 +479,17 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
   if (stderrOverflow) {
     return {
       output: `[ERROR] eval-runner stderr overflow >${STDERR_MAX}B (子进程 console.error 失控?)`,
-      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: 0, exit_status: "stderr_overflow", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      meta: {
+        tools_used: [],
+        files_edited: [],
+        total_steps: 0,
+        total_tokens: 0,
+        latency_ms: 0,
+        exit_status: "stderr_overflow",
+        error_count: 0,
+        retry_count: 0,
+        backtrack_count: 0,
+      },
       error: true,
       stderrTail,
     };
@@ -428,7 +501,17 @@ export async function runProviderOnce(provider: ProviderDef, prompt: string, cas
   } catch {
     return {
       output: stdoutBuf || `[ERROR] provider exit=${exitCode}`,
-      meta: { tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0, latency_ms: 0, exit_status: "parse_error", error_count: 0, retry_count: 0, backtrack_count: 0 },
+      meta: {
+        tools_used: [],
+        files_edited: [],
+        total_steps: 0,
+        total_tokens: 0,
+        latency_ms: 0,
+        exit_status: "parse_error",
+        error_count: 0,
+        retry_count: 0,
+        backtrack_count: 0,
+      },
       error: true,
       stderrTail,
     };
@@ -453,8 +536,13 @@ function totalBackoffMs(maxRetries: number): number {
   return total;
 }
 
-export async function runProvider(provider: ProviderDef, prompt: string, caseId: string, maxRetries = DEFAULT_MAX_RETRIES): Promise<ProviderResult> {
-  let lastResult: ProviderResult & { stderrTail: string } | null = null;
+export async function runProvider(
+  provider: ProviderDef,
+  prompt: string,
+  caseId: string,
+  maxRetries = DEFAULT_MAX_RETRIES,
+): Promise<ProviderResult> {
+  let lastResult: (ProviderResult & { stderrTail: string }) | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const result = await runProviderOnce(provider, prompt, caseId);
     lastResult = result;
@@ -467,13 +555,17 @@ export async function runProvider(provider: ProviderDef, prompt: string, caseId:
 
     // 重试用尽：返回最后结果
     if (attempt === maxRetries) {
-      process.stderr.write(`[eval-runner] ${caseId} × ${provider.name} retry exhausted (${attempt + 1}/${maxRetries + 1})\n`);
+      process.stderr.write(
+        `[eval-runner] ${caseId} × ${provider.name} retry exhausted (${attempt + 1}/${maxRetries + 1})\n`,
+      );
       return stripStderr(result);
     }
 
     const delayMs = retryBackoffMs(attempt);
-    process.stderr.write(`[eval-runner] ${caseId} × ${provider.name} 第 ${attempt + 1}/${maxRetries + 1} 次失败（网络错误），${delayMs}ms 后重试\n`);
-    await new Promise(r => setTimeout(r, delayMs));
+    process.stderr.write(
+      `[eval-runner] ${caseId} × ${provider.name} 第 ${attempt + 1}/${maxRetries + 1} 次失败（网络错误），${delayMs}ms 后重试\n`,
+    );
+    await new Promise((r) => setTimeout(r, delayMs));
   }
   // 不会到这里
   return stripStderr(lastResult!);
@@ -534,10 +626,13 @@ function makeStubProviderResult(caseId: string): ProviderResult {
 export function isCompleteFailure(result: ProviderResult): { failed: boolean; reason: string } {
   // static_grader_skip 是合法路径（structured_arch 不需要 agent），不算 failure
   if (result.meta?.exit_status === "static_grader_skip") return { failed: false, reason: "" };
-  if (result.error === true) return { failed: true, reason: `wrapper error=true (exit_status=${result.meta.exit_status})` };
+  if (result.error === true)
+    return { failed: true, reason: `wrapper error=true (exit_status=${result.meta.exit_status})` };
   const out = result.output ?? "";
-  if (out.startsWith("[ERROR]")) return { failed: true, reason: `output 以 [ERROR] 开头: ${out.slice(0, 100)}` };
-  if (out.startsWith("[TIMEOUT]")) return { failed: true, reason: `output 以 [TIMEOUT] 开头: ${out.slice(0, 100)}` };
+  if (out.startsWith("[ERROR]"))
+    return { failed: true, reason: `output 以 [ERROR] 开头: ${out.slice(0, 100)}` };
+  if (out.startsWith("[TIMEOUT]"))
+    return { failed: true, reason: `output 以 [TIMEOUT] 开头: ${out.slice(0, 100)}` };
   if (FAILED_EXIT_STATUSES.has(result.meta.exit_status)) {
     return { failed: true, reason: `exit_status=${result.meta.exit_status}` };
   }
@@ -605,7 +700,9 @@ async function gradeCase(
  * @param sampleDims N 次采样的 dims 数组，长度 = samples
  * @returns 聚合后的单次 dims（结构与单次跑结果相同）
  */
-export function aggregateSamples(sampleDims: Array<Record<string, DimScore>>): Record<string, DimScore> {
+export function aggregateSamples(
+  sampleDims: Array<Record<string, DimScore>>,
+): Record<string, DimScore> {
   if (sampleDims.length === 0) return {};
   if (sampleDims.length === 1) return sampleDims[0];
 
@@ -632,7 +729,9 @@ export function aggregateSamples(sampleDims: Array<Record<string, DimScore>>): R
     }
 
     // 取下中位数：sort 升序后 idx = floor((n-1)/2)
-    const sortedByScore = [...validSamples].sort((a, b) => (a.score as number) - (b.score as number));
+    const sortedByScore = [...validSamples].sort(
+      (a, b) => (a.score as number) - (b.score as number),
+    );
     const medianIdx = Math.floor((sortedByScore.length - 1) / 2);
     const chosen = sortedByScore[medianIdx];
     const allScores = validSamples.map((s) => (s.score as number).toFixed(2)).join("/");
@@ -652,10 +751,13 @@ function pLimit(concurrency: number) {
     return new Promise<T>((resolve, reject) => {
       const run = () => {
         active++;
-        fn().then(resolve).catch(reject).finally(() => {
-          active--;
-          if (queue.length > 0) queue.shift()!();
-        });
+        fn()
+          .then(resolve)
+          .catch(reject)
+          .finally(() => {
+            active--;
+            if (queue.length > 0) queue.shift()!();
+          });
       };
       if (active < concurrency) run();
       else queue.push(run);
@@ -688,7 +790,10 @@ export function writeWeekScores(results: TestResult[], weekNum: number, baseDir:
     let existing: Record<string, unknown> = {};
     if (existsSync(filePath)) {
       try {
-        const parsed = yamlLib.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown> | null;
+        const parsed = yamlLib.parse(readFileSync(filePath, "utf-8")) as Record<
+          string,
+          unknown
+        > | null;
         if (parsed && typeof parsed === "object") existing = parsed;
       } catch {
         // 旧文件损坏：忽略，按从头写处理（不阻断 eval 流程）
@@ -780,62 +885,68 @@ export function appendRunHistory(
     const lines: string[] = [];
     // 写 median / 单次 result（is_median: results 长度 = 1 单次跑则不显式标）
     for (const r of providerResults) {
-      lines.push(JSON.stringify({
-        run_id: runId,
-        week: weekNum,
-        case_id: r.caseId,
-        provider: r.provider,
-        // 与 baseline 一致：runStatus !== "success" 时 score 写 null
-        score: r.runStatus === "success" ? r.score : null,
-        named_scores: r.namedScores,
-        latency_ms: r.latencyMs,
-        success: r.success,
-        run_status: r.runStatus,
-        // A3-1：红线一票否决结果（binary_redline grader 的关键信号）+ grader 类型 + grader 版本
-        // dashboard / weekly-report 用 mandatory_pass 单独统计红线击穿率，与 score=0 区分
-        // grader_version：决策文档 §6 第 2 条收敛标准——legacy 数据隔离过滤器靠这个字段
-        mandatory_pass: r.mandatoryPass,
-        grader_type: r.graderType,
-        grader_version: GRADER_VERSION,
-        // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
-        tested_at: r.testedAt,
-        // meta：原始 token / step 计数，事后分析用（不再依赖 grep dims.cost.reason）
-        ...(r.meta ? { meta: r.meta } : {}),
-        // B5-3 诊断：grader_reasons 落各维度 reason 文本（≤ 1KB 截断），事后无需 keepTmp 即可看 sandbox 跑出哪条命令 fail / exitCode 几 / 是否 timeout
-        // 仅落非 pass 维度的 reason（pass=true 时省略，避免 jsonl 膨胀）
-        grader_reasons: collectGraderReasons(r.dims),
-        // is_median=true 当本批跑了 --samples > 1 后的中位数聚合；
-        // dashboard 默认只读 is_median=true 或字段缺失（向后兼容单次跑）的行
-        ...(rawSamples ? { is_median: true } : {}),
-      }));
+      lines.push(
+        JSON.stringify({
+          run_id: runId,
+          week: weekNum,
+          case_id: r.caseId,
+          provider: r.provider,
+          // 与 baseline 一致：runStatus !== "success" 时 score 写 null
+          score: r.runStatus === "success" ? r.score : null,
+          named_scores: r.namedScores,
+          latency_ms: r.latencyMs,
+          success: r.success,
+          run_status: r.runStatus,
+          // A3-1：红线一票否决结果（binary_redline grader 的关键信号）+ grader 类型 + grader 版本
+          // dashboard / weekly-report 用 mandatory_pass 单独统计红线击穿率，与 score=0 区分
+          // grader_version：决策文档 §6 第 2 条收敛标准——legacy 数据隔离过滤器靠这个字段
+          mandatory_pass: r.mandatoryPass,
+          grader_type: r.graderType,
+          grader_version: GRADER_VERSION,
+          // 单 case 实际完成时间，与整批 run_id 分开。趋势图按 tested_at 画。
+          tested_at: r.testedAt,
+          // meta：原始 token / step 计数，事后分析用（不再依赖 grep dims.cost.reason）
+          ...(r.meta ? { meta: r.meta } : {}),
+          // B5-3 诊断：grader_reasons 落各维度 reason 文本（≤ 1KB 截断），事后无需 keepTmp 即可看 sandbox 跑出哪条命令 fail / exitCode 几 / 是否 timeout
+          // 仅落非 pass 维度的 reason（pass=true 时省略，避免 jsonl 膨胀）
+          grader_reasons: collectGraderReasons(r.dims),
+          // is_median=true 当本批跑了 --samples > 1 后的中位数聚合；
+          // dashboard 默认只读 is_median=true 或字段缺失（向后兼容单次跑）的行
+          ...(rawSamples ? { is_median: true } : {}),
+        }),
+      );
     }
     // 追加 raw samples（带 sample_index，is_median=false）
     const rawList = rawByProvider.get(provider) ?? [];
     for (const r of rawList) {
-      lines.push(JSON.stringify({
-        run_id: runId,
-        week: weekNum,
-        case_id: r.caseId,
-        provider: r.provider,
-        score: r.runStatus === "success" ? r.score : null,
-        named_scores: r.namedScores,
-        latency_ms: r.latencyMs,
-        success: r.success,
-        run_status: r.runStatus,
-        // A3-1：raw sample 也落红线一票否决 + grader 类型 + grader 版本，事后追溯单次表现
-        mandatory_pass: r.mandatoryPass,
-        grader_type: r.graderType,
-        grader_version: GRADER_VERSION,
-        tested_at: r.testedAt,
-        ...(r.meta ? { meta: r.meta } : {}),
-        grader_reasons: collectGraderReasons(r.dims),
-        sample_index: r.sampleIndex,
-        is_median: false,
-      }));
+      lines.push(
+        JSON.stringify({
+          run_id: runId,
+          week: weekNum,
+          case_id: r.caseId,
+          provider: r.provider,
+          score: r.runStatus === "success" ? r.score : null,
+          named_scores: r.namedScores,
+          latency_ms: r.latencyMs,
+          success: r.success,
+          run_status: r.runStatus,
+          // A3-1：raw sample 也落红线一票否决 + grader 类型 + grader 版本，事后追溯单次表现
+          mandatory_pass: r.mandatoryPass,
+          grader_type: r.graderType,
+          grader_version: GRADER_VERSION,
+          tested_at: r.testedAt,
+          ...(r.meta ? { meta: r.meta } : {}),
+          grader_reasons: collectGraderReasons(r.dims),
+          sample_index: r.sampleIndex,
+          is_median: false,
+        }),
+      );
     }
     appendFileSync(filePath, lines.join("\n") + "\n", "utf-8");
   }
-  console.log(`  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`);
+  console.log(
+    `  运行历史: ${runsDir}/ (${byProvider.size} 个 provider × ${results.length / byProvider.size} 个 case)`,
+  );
 }
 
 /**
@@ -855,7 +966,8 @@ function collectGraderReasons(dims: Record<string, DimScore>): Record<string, st
   for (const [name, dim] of Object.entries(dims)) {
     if (!dim || dim.pass === true) continue;
     if (typeof dim.reason !== "string" || dim.reason.length === 0) continue;
-    out[name] = dim.reason.length > 1000 ? dim.reason.slice(0, 1000) + "...(truncated)" : dim.reason;
+    out[name] =
+      dim.reason.length > 1000 ? dim.reason.slice(0, 1000) + "...(truncated)" : dim.reason;
     hasAny = true;
   }
   return hasAny ? out : undefined;
@@ -918,26 +1030,26 @@ async function main() {
       //   judge-samples 是"同一份 agent 输出 × N 次 judge"——只能对冲 judge 自身方差（已验证 stddev<0.05，意义不大）
       //   samples 是"同一份 case × N 次 agent"——对冲 agent 跨次输出波动（temperature>0 时同一 case 不同回答）
       // 默认 1 保持向后兼容；跑权威 baseline 建议 --samples=3 取中位数。
-      "samples": { type: "string", default: "1" },
+      samples: { type: "string", default: "1" },
       // sync 默认行为：
       //   - 未指定 --cases（全量模式）：默认 on（baseline 必须刷新；不刷会让 dashboard 持续显示旧数据）
       //   - 指定 --cases（调试模式）：默认 off（避免单 case 调试污染 baseline_scores）
       // 显式 --sync 始终生效；显式 --no-sync 禁用回写
       // A1-4 / F-S2（2026-05-30）：评测系统报告"全量模式不 sync 会让 dashboard 滞后"
-      "sync": { type: "boolean" },
+      sync: { type: "boolean" },
       "no-sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
-      // 控制 refreshReports 失败是否让 eval-runner exit 非 0（CI 用）
-      "strict-refresh": { type: "boolean", default: false },
     },
     strict: false,
   });
 
-  const providerTypes = (values.provider as string).split(",").map(s => s.trim());
+  const providerTypes = (values.provider as string).split(",").map((s) => s.trim());
   const model = values.model as string | undefined;
-  const providers = providerTypes.map(t => buildProvider(t, model));
+  const providers = providerTypes.map((t) => buildProvider(t, model));
 
-  const caseFilter = values.cases ? (values.cases as string).split(",").map(s => s.trim()) : undefined;
+  const caseFilter = values.cases
+    ? (values.cases as string).split(",").map((s) => s.trim())
+    : undefined;
   const concurrency = parseInt(values.concurrency as string, 10) || 2;
   const skipLlmJudge = values["skip-llm-judge"] as boolean;
   const judgeSamples = parseInt((values["judge-samples"] as string) || "1", 10) || 1;
@@ -950,7 +1062,6 @@ async function main() {
   else if (syncFlag === true) doSync = true;
   else doSync = caseFilter === undefined; // 全量默认 on，单 case 默认 off
   const dryRun = values["dry-run"] as boolean;
-  const strictRefresh = values["strict-refresh"] as boolean;
   const outputPath = resolve(ROOT, "..", values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
 
@@ -965,20 +1076,28 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[eval-runner] ${cases.length} cases × ${providers.length} providers${samples > 1 ? ` × ${samples} samples` : ""} = ${cases.length * providers.length * samples} 次跑`);
-  console.log(`  provider: ${providers.map(p => `${p.name}(model=${p.model})`).join(", ")}`);
-  console.log(`  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : `启用(judge-samples=${judgeSamples})`} | agent samples: ${samples}${samples > 1 ? "（每维度取中位数）" : ""} | week: w${weekNum}`);
+  console.log(
+    `[eval-runner] ${cases.length} cases × ${providers.length} providers${samples > 1 ? ` × ${samples} samples` : ""} = ${cases.length * providers.length * samples} 次跑`,
+  );
+  console.log(`  provider: ${providers.map((p) => `${p.name}(model=${p.model})`).join(", ")}`);
+  console.log(
+    `  并发: ${concurrency} | LLM judge: ${skipLlmJudge ? "跳过" : `启用(judge-samples=${judgeSamples})`} | agent samples: ${samples}${samples > 1 ? "（每维度取中位数）" : ""} | week: w${weekNum}`,
+  );
 
   // 时长预估：单 case 最坏 = (DEFAULT_MAX_RETRIES+1) × timeoutMs + totalBackoff × samples
   // 全批最坏 = ceil(总组合数 / 并发) × 单 case 最坏 × samples
   // 一旦超过 2h，cron 任务（如 trajectory-dashboard 的 0 4 * * *）会被截断 → 直接告警
   const PER_CASE_TIMEOUT_MS = providers[0]?.timeoutMs ?? 480_000;
-  const worstSingleMs = ((DEFAULT_MAX_RETRIES + 1) * PER_CASE_TIMEOUT_MS + totalBackoffMs(DEFAULT_MAX_RETRIES)) * samples;
+  const worstSingleMs =
+    ((DEFAULT_MAX_RETRIES + 1) * PER_CASE_TIMEOUT_MS + totalBackoffMs(DEFAULT_MAX_RETRIES)) *
+    samples;
   const totalCombos = cases.length * providers.length;
   const worstTotalMs = Math.ceil(totalCombos / concurrency) * worstSingleMs;
   const worstHours = (worstTotalMs / 3_600_000).toFixed(1);
   const expectedHours = (worstTotalMs / 3_600_000 / 3).toFixed(1); // 假设平均 1/3 最坏
-  console.log(`  预估耗时: ~${expectedHours}h 正常 / ${worstHours}h 最坏（全部 retry 用尽 + 全 timeout）`);
+  console.log(
+    `  预估耗时: ~${expectedHours}h 正常 / ${worstHours}h 最坏（全部 retry 用尽 + 全 timeout）`,
+  );
   if (worstTotalMs > 2 * 3_600_000) {
     console.log(`  ⚠️  最坏耗时 ${worstHours}h > 2h，可能超过 cron 窗口。考虑：`);
     console.log(`     - 提高并发: --concurrency ${Math.min(8, concurrency * 2)}`);
@@ -1003,142 +1122,156 @@ async function main() {
   const sampleResults: Array<TestResult & { sampleIndex: number; isMedian: boolean }> = [];
   const startTime = Date.now();
 
-  const tasks = cases.flatMap(c =>
-    providers.map(p => limit(async () => {
-      const taskStart = Date.now();
-      const label = samples > 1 ? `${c.id} × ${p.name} (×${samples} samples)` : `${c.id} × ${p.name}`;
-      console.log(`▶ ${label} ...`);
+  const tasks = cases.flatMap((c) =>
+    providers.map((p) =>
+      limit(async () => {
+        const taskStart = Date.now();
+        const label =
+          samples > 1 ? `${c.id} × ${p.name} (×${samples} samples)` : `${c.id} × ${p.name}`;
+        console.log(`▶ ${label} ...`);
 
-      try {
-        // 多次采样：每次都跑一遍完整的 (provider, grade) 流程，收集 dims + 元数据
-        const perSample: Array<{
-          dims: Record<string, DimScore>;
-          provResult: ProviderResult;
-          runStatus: string;
-          completedAt: string;
-          mandatoryPass: boolean;
-          graderType: string;
-        }> = [];
-        for (let i = 0; i < samples; i++) {
-          // T-10.2 静态 grader 短路：requiresAgentOutput=false（如 structured_arch）的 case
-          // 不需要 agent 输出，直接喂 stub ProviderResult 调 grader——避免 agent 在描述类
-          // 题面上跑超时（meta_001/003 类长描述会让 agent 真去 ls/read 文件，超过 510s outer timeout）。
-          const grader = getGrader(c.grader_type);
-          const useStub = grader.requiresAgentOutput === false;
-          const provResult = useStub
-            ? makeStubProviderResult(c.id)
-            : await runProvider(p, c.input.user_query, c.id);
-          const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
-          const failure = isCompleteFailure(provResult);
-          const runStatus = classifyRunStatus(provResult, failure);
-          perSample.push({
-            dims: grade.dims,
-            provResult,
-            runStatus,
-            completedAt: new Date().toISOString(),
-            mandatoryPass: grade.mandatoryPass,
-            graderType: grade.graderType,
-          });
-          if (samples > 1) {
-            const sScoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
-            console.log(`  · sample ${i + 1}/${samples} = ${sScoreStr}`);
-            // 把每次 sample 也加入 sampleResults（is_median=false），便于事后追溯单次表现
-            sampleResults.push({
-              caseId: c.id,
-              provider: p.name,
-              score: grade.score,
-              namedScores: grade.namedScores,
+        try {
+          // 多次采样：每次都跑一遍完整的 (provider, grade) 流程，收集 dims + 元数据
+          const perSample: Array<{
+            dims: Record<string, DimScore>;
+            provResult: ProviderResult;
+            runStatus: string;
+            completedAt: string;
+            mandatoryPass: boolean;
+            graderType: string;
+          }> = [];
+          for (let i = 0; i < samples; i++) {
+            // T-10.2 静态 grader 短路：requiresAgentOutput=false（如 structured_arch）的 case
+            // 不需要 agent 输出，直接喂 stub ProviderResult 调 grader——避免 agent 在描述类
+            // 题面上跑超时（meta_001/003 类长描述会让 agent 真去 ls/read 文件，超过 510s outer timeout）。
+            const grader = getGrader(c.grader_type);
+            const useStub = grader.requiresAgentOutput === false;
+            const provResult = useStub
+              ? makeStubProviderResult(c.id)
+              : await runProvider(p, c.input.user_query, c.id);
+            const grade = await gradeCase(c, provResult, skipLlmJudge, judgeSamples);
+            const failure = isCompleteFailure(provResult);
+            const runStatus = classifyRunStatus(provResult, failure);
+            perSample.push({
               dims: grade.dims,
-              response: { output: provResult.output },
-              latencyMs: provResult.meta.latency_ms || (Date.now() - taskStart),
-              success: !provResult.error,
+              provResult,
               runStatus,
-              testedAt: perSample[i].completedAt,
+              completedAt: new Date().toISOString(),
               mandatoryPass: grade.mandatoryPass,
               graderType: grade.graderType,
-              meta: extractMeta(provResult.meta),
-              sampleIndex: i,
-              isMedian: false,
             });
+            if (samples > 1) {
+              const sScoreStr = grade.score === null ? `null（${runStatus}）` : String(grade.score);
+              console.log(`  · sample ${i + 1}/${samples} = ${sScoreStr}`);
+              // 把每次 sample 也加入 sampleResults（is_median=false），便于事后追溯单次表现
+              sampleResults.push({
+                caseId: c.id,
+                provider: p.name,
+                score: grade.score,
+                namedScores: grade.namedScores,
+                dims: grade.dims,
+                response: { output: provResult.output },
+                latencyMs: provResult.meta.latency_ms || Date.now() - taskStart,
+                success: !provResult.error,
+                runStatus,
+                testedAt: perSample[i].completedAt,
+                mandatoryPass: grade.mandatoryPass,
+                graderType: grade.graderType,
+                meta: extractMeta(provResult.meta),
+                sampleIndex: i,
+                isMedian: false,
+              });
+            }
           }
+
+          // 聚合：samples=1 → 直接用唯一一次的 dims；samples>1 → 每维度独立取中位数
+          const mergedDims =
+            samples > 1 ? aggregateSamples(perSample.map((s) => s.dims)) : perSample[0].dims;
+          const { score, namedScores } = aggregate(mergedDims);
+
+          // runStatus 用"多数派"：多次跑都失败才算 error；只要 ≥半数成功就算 success
+          const successCount = perSample.filter((s) => s.runStatus === "success").length;
+          const majorityRunStatus =
+            successCount >= Math.ceil(samples / 2)
+              ? "success"
+              : perSample[perSample.length - 1].runStatus;
+          // output / latency 取最后一次的（用于 _reports 展示，中位数维度已在 dims 里）
+          const lastSample = perSample[perSample.length - 1];
+
+          const elapsed = Date.now() - taskStart;
+          const completedAt = new Date().toISOString();
+          const emoji =
+            score === null
+              ? "⚪"
+              : score >= 4.5
+                ? "✅"
+                : score >= 3.5
+                  ? "🟢"
+                  : score >= 2.5
+                    ? "🟡"
+                    : "🔴";
+          const scoreStr = score === null ? `null（${majorityRunStatus}）` : String(score);
+          const sampleNote = samples > 1 ? ` [中位数 of ${samples}]` : "";
+          // mandatoryPass 聚合：红线类用 AND（一票否决），其他类用多数派
+          const mandatoryPassCount = perSample.filter((s) => s.mandatoryPass).length;
+          const aggregatedGraderType = lastSample.graderType;
+          const aggregatedMandatoryPass =
+            aggregatedGraderType === "binary_redline"
+              ? perSample.every((s) => s.mandatoryPass)
+              : mandatoryPassCount >= Math.ceil(samples / 2);
+          console.log(
+            `  ${emoji} ${c.id} × ${p.name} = ${scoreStr}${sampleNote} (${(elapsed / 1000).toFixed(1)}s)`,
+          );
+
+          const finalResult: TestResult = {
+            caseId: c.id,
+            provider: p.name,
+            score,
+            namedScores,
+            dims: mergedDims,
+            response: { output: lastSample.provResult.output },
+            latencyMs: lastSample.provResult.meta.latency_ms || elapsed,
+            success: majorityRunStatus === "success",
+            runStatus: majorityRunStatus,
+            testedAt: completedAt,
+            mandatoryPass: aggregatedMandatoryPass,
+            graderType: aggregatedGraderType,
+            // samples > 1 时取最后一次的 meta（与 output / latency 同源；中位数维度已聚合在 dims 里）
+            // 注意：billable/total_tokens 不是中位数，事后做精细分析用 sampleResults 里的 raw 行
+            meta: extractMeta(lastSample.provResult.meta),
+          };
+          results.push(finalResult);
+          if (samples > 1) {
+            sampleResults.push({ ...finalResult, sampleIndex: -1, isMedian: true });
+          }
+        } catch (err) {
+          // 单个 case 失败不能拖垮整批：记录降级结果，let 整体继续。
+          // crash 时 score 写 null（不是 0）—— 区别"测了但 0 分"与"压根没测".
+          const elapsed = Date.now() - taskStart;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.log(
+            `  ⚠️  ${c.id} × ${p.name} = ERROR (${(elapsed / 1000).toFixed(1)}s): ${errMsg.slice(0, 120)}`,
+          );
+          const dims = makeErrorDims(`eval-runner task crash: ${errMsg.slice(0, 200)}`);
+          const { score, namedScores } = aggregate(dims);
+          results.push({
+            caseId: c.id,
+            provider: p.name,
+            score,
+            namedScores,
+            dims,
+            response: { output: `[ERROR] eval-runner task crash: ${errMsg}` },
+            latencyMs: elapsed,
+            success: false,
+            runStatus: "error",
+            testedAt: new Date().toISOString(),
+            // crash 时无法判定红线 pass/fail —— fail-safe 视为击穿（与 binary-redline-grader abnormal 路径一致）
+            mandatoryPass: false,
+            graderType: c.grader_type ?? "rubric_5d",
+          });
         }
-
-        // 聚合：samples=1 → 直接用唯一一次的 dims；samples>1 → 每维度独立取中位数
-        const mergedDims = samples > 1
-          ? aggregateSamples(perSample.map((s) => s.dims))
-          : perSample[0].dims;
-        const { score, namedScores } = aggregate(mergedDims);
-
-        // runStatus 用"多数派"：多次跑都失败才算 error；只要 ≥半数成功就算 success
-        const successCount = perSample.filter((s) => s.runStatus === "success").length;
-        const majorityRunStatus = successCount >= Math.ceil(samples / 2) ? "success" : perSample[perSample.length - 1].runStatus;
-        // output / latency 取最后一次的（用于 _reports 展示，中位数维度已在 dims 里）
-        const lastSample = perSample[perSample.length - 1];
-
-        const elapsed = Date.now() - taskStart;
-        const completedAt = new Date().toISOString();
-        const emoji =
-          score === null ? "⚪"
-          : score >= 4.5 ? "✅"
-          : score >= 3.5 ? "🟢"
-          : score >= 2.5 ? "🟡"
-          : "🔴";
-        const scoreStr = score === null ? `null（${majorityRunStatus}）` : String(score);
-        const sampleNote = samples > 1 ? ` [中位数 of ${samples}]` : "";
-        // mandatoryPass 聚合：红线类用 AND（一票否决），其他类用多数派
-        const mandatoryPassCount = perSample.filter((s) => s.mandatoryPass).length;
-        const aggregatedGraderType = lastSample.graderType;
-        const aggregatedMandatoryPass = aggregatedGraderType === "binary_redline"
-          ? perSample.every((s) => s.mandatoryPass)
-          : mandatoryPassCount >= Math.ceil(samples / 2);
-        console.log(`  ${emoji} ${c.id} × ${p.name} = ${scoreStr}${sampleNote} (${(elapsed / 1000).toFixed(1)}s)`);
-
-        const finalResult: TestResult = {
-          caseId: c.id,
-          provider: p.name,
-          score,
-          namedScores,
-          dims: mergedDims,
-          response: { output: lastSample.provResult.output },
-          latencyMs: lastSample.provResult.meta.latency_ms || elapsed,
-          success: majorityRunStatus === "success",
-          runStatus: majorityRunStatus,
-          testedAt: completedAt,
-          mandatoryPass: aggregatedMandatoryPass,
-          graderType: aggregatedGraderType,
-          // samples > 1 时取最后一次的 meta（与 output / latency 同源；中位数维度已聚合在 dims 里）
-          // 注意：billable/total_tokens 不是中位数，事后做精细分析用 sampleResults 里的 raw 行
-          meta: extractMeta(lastSample.provResult.meta),
-        };
-        results.push(finalResult);
-        if (samples > 1) {
-          sampleResults.push({ ...finalResult, sampleIndex: -1, isMedian: true });
-        }
-      } catch (err) {
-        // 单个 case 失败不能拖垮整批：记录降级结果，let 整体继续。
-        // crash 时 score 写 null（不是 0）—— 区别"测了但 0 分"与"压根没测".
-        const elapsed = Date.now() - taskStart;
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.log(`  ⚠️  ${c.id} × ${p.name} = ERROR (${(elapsed / 1000).toFixed(1)}s): ${errMsg.slice(0, 120)}`);
-        const dims = makeErrorDims(`eval-runner task crash: ${errMsg.slice(0, 200)}`);
-        const { score, namedScores } = aggregate(dims);
-        results.push({
-          caseId: c.id,
-          provider: p.name,
-          score,
-          namedScores,
-          dims,
-          response: { output: `[ERROR] eval-runner task crash: ${errMsg}` },
-          latencyMs: elapsed,
-          success: false,
-          runStatus: "error",
-          testedAt: new Date().toISOString(),
-          // crash 时无法判定红线 pass/fail —— fail-safe 视为击穿（与 binary-redline-grader abnormal 路径一致）
-          mandatoryPass: false,
-          graderType: c.grader_type ?? "rubric_5d",
-        });
-      }
-    }))
+      }),
+    ),
   );
 
   await Promise.all(tasks);
@@ -1148,8 +1281,8 @@ async function main() {
     version: 2,
     timestamp: new Date().toISOString(),
     config: {
-      cases: cases.map(c => c.id),
-      providers: providers.map(p => ({ name: p.name, model: p.model })),
+      cases: cases.map((c) => c.id),
+      providers: providers.map((p) => ({ name: p.name, model: p.model })),
       // model 字段保留为兼容性占位（旧 dashboard 读这个）。多 provider 不同 model 时取第一个。
       model: providers[0]?.model ?? null,
       concurrency,
@@ -1159,7 +1292,7 @@ async function main() {
     },
     results: {
       timestamp: new Date().toISOString(),
-      results: results.map(r => {
+      results: results.map((r) => {
         // score === null（wrapper 完全挂掉）→ 报表里把 score 写 0、pass=false，但保留 success=false 区分
         // 真实分数留在 namedScores 里（也都是 null），消费者用 success 字段过滤
         const reportedScore = r.score === null ? 0 : r.score / 5;
@@ -1201,67 +1334,32 @@ async function main() {
     syncBaselineScores(results);
   } else {
     // A1-4 / F-S2：未 sync 时 dashboard 会显示旧数据。在末尾打 banner 警示
-    const reason = caseFilter !== undefined
-      ? "（--cases 模式默认不回写，避免污染 baseline；--sync 显式启用）"
-      : "（已显式 --no-sync）";
+    const reason =
+      caseFilter !== undefined
+        ? "（--cases 模式默认不回写，避免污染 baseline；--sync 显式启用）"
+        : "（已显式 --no-sync）";
     console.log("");
     console.log("⚠️  本次未回写 baseline_scores，dashboard 将显示上次已 sync 的数据（可能滞后）");
     console.log(`    跳过原因${reason}`);
   }
 
   console.log("");
-  console.log(`[eval-runner] 完成 ${results.length} 组评测，耗时 ${(totalElapsed / 1000).toFixed(0)}s`);
+  console.log(
+    `[eval-runner] 完成 ${results.length} 组评测，耗时 ${(totalElapsed / 1000).toFixed(0)}s`,
+  );
   console.log(`  输出: ${outputPath}`);
   // 平均分仅统计 score !== null 的 case（"有可评分数据"）。null case 单独计数。
   // 旧实现把 error case 的 ~2.5 算进均值，导致 17% 错误率仍能稳在 4.1，看起来"还行"。
-  const valid = results.filter(r => r.score !== null);
+  const valid = results.filter((r) => r.score !== null);
   const nullCount = results.length - valid.length;
   if (valid.length > 0) {
     const avgScore = valid.reduce((s, r) => s + (r.score as number), 0) / valid.length;
-    console.log(`  平均分: ${avgScore.toFixed(2)}/5 (n=${valid.length})${nullCount > 0 ? `；另有 ${nullCount} 个 case 无可评分数据（score=null，未计入均值）` : ""}`);
+    console.log(
+      `  平均分: ${avgScore.toFixed(2)}/5 (n=${valid.length})${nullCount > 0 ? `；另有 ${nullCount} 个 case 无可评分数据（score=null，未计入均值）` : ""}`,
+    );
   } else {
     console.log(`  平均分: N/A（全部 ${results.length} 个 case 无可评分数据）`);
   }
-
-  const refreshOk = await refreshReports();
-  if (!refreshOk && strictRefresh) {
-    console.error("[eval-runner] dashboard/cases 刷新失败，--strict-refresh 模式下 exit 1");
-    process.exit(1);
-  }
-}
-
-/**
- * 自动刷新 DASHBOARD.md / CASES.md。
- *
- * v2（审查 #12）：返回 boolean 标识成功，失败时调用方决定是否 exit 非 0。
- * 旧实现失败只打 ❌ 然后正常退出，CI 看不到错误。
- */
-async function refreshReports(): Promise<boolean> {
-  console.log("");
-  console.log("[eval-runner] 自动刷新报告...");
-  const projectRoot = resolve(ROOT, "..");
-
-  const dashboardProc = spawn("bun", ["run", "eval:dashboard"], {
-    cwd: projectRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const casesProc = spawn("bun", ["run", join(ROOT, "gen-cases-md.ts")], {
-    cwd: projectRoot,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  const wait = (p: ReturnType<typeof spawn>) => new Promise<number | null>((res) => {
-    p.on("close", (code) => res(code));
-    p.on("error", () => res(null));
-  });
-
-  const [dashCode, casesCode] = await Promise.all([wait(dashboardProc), wait(casesProc)]);
-  if (dashCode === 0) console.log("  ✅ DASHBOARD.md 已刷新");
-  else console.log(`  ❌ DASHBOARD.md 刷新失败 (exit=${dashCode})`);
-  if (casesCode === 0) console.log("  ✅ CASES.md 已刷新");
-  else console.log(`  ❌ CASES.md 刷新失败 (exit=${casesCode})`);
-
-  return dashCode === 0 && casesCode === 0;
 }
 
 if (import.meta.main) {

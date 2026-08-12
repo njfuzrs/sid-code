@@ -96,13 +96,19 @@ export function MouseProvider({
     onSelectionWarningRef.current = onSelectionWarning;
   }, [onSelectionWarning]);
 
-  const subscribe = useCallback((handler: MouseHandler) => {
-    subscribers.add(handler);
-  }, [subscribers]);
+  const subscribe = useCallback(
+    (handler: MouseHandler) => {
+      subscribers.add(handler);
+    },
+    [subscribers],
+  );
 
-  const unsubscribe = useCallback((handler: MouseHandler) => {
-    subscribers.delete(handler);
-  }, [subscribers]);
+  const unsubscribe = useCallback(
+    (handler: MouseHandler) => {
+      subscribers.delete(handler);
+    },
+    [subscribers],
+  );
 
   // 启用/禁用鼠标事件（仅初始化和清理，Copy Mode 切换由外部命令式调用）
   useEffect(() => {
@@ -116,7 +122,7 @@ export function MouseProvider({
   useEffect(() => {
     if (!mouseEventsEnabled) return;
 
-    let mouseBuffer = '';
+    let mouseBuffer = "";
 
     const broadcast = (event: MouseEvent) => {
       let handled = false;
@@ -129,10 +135,10 @@ export function MouseProvider({
       // 检测拖拽选择：move 事件 + left button + 未被处理 → 提示用户按 Ctrl+S
       if (
         !handled &&
-        event.name === 'move' &&
+        event.name === "move" &&
         event.col >= 0 &&
         event.row >= 0 &&
-        event.button === 'left'
+        event.button === "left"
       ) {
         // 终端应用只在鼠标按下时接收 move 事件，说明用户在拖拽
         // 但因为我们捕获了鼠标事件，终端无法原生选择文本
@@ -140,7 +146,7 @@ export function MouseProvider({
       }
 
       // 双击检测
-      if (event.name === 'left-press') {
+      if (event.name === "left-press") {
         const now = Date.now();
         const lastClick = lastClickRef.current;
         if (
@@ -149,7 +155,7 @@ export function MouseProvider({
           Math.abs(event.col - lastClick.col) <= DOUBLE_CLICK_DISTANCE_TOLERANCE &&
           Math.abs(event.row - lastClick.row) <= DOUBLE_CLICK_DISTANCE_TOLERANCE
         ) {
-          const doubleClickEvent: MouseEvent = { ...event, name: 'double-click' };
+          const doubleClickEvent: MouseEvent = { ...event, name: "double-click" };
           for (const handler of subscribers) {
             handler(doubleClickEvent);
           }
@@ -161,7 +167,7 @@ export function MouseProvider({
     };
 
     const handleData = (data: Buffer | string) => {
-      mouseBuffer += typeof data === 'string' ? data : data.toString('utf-8');
+      mouseBuffer += typeof data === "string" ? data : data.toString("utf-8");
 
       // 安全上限
       if (mouseBuffer.length > MAX_MOUSE_BUFFER_SIZE) {
@@ -185,26 +191,19 @@ export function MouseProvider({
         if (nextEsc !== -1) {
           mouseBuffer = mouseBuffer.slice(nextEsc);
         } else {
-          mouseBuffer = '';
+          mouseBuffer = "";
           break;
         }
       }
     };
 
-    stdin.on('data', handleData);
+    stdin.on("data", handleData);
     return () => {
-      stdin.removeListener('data', handleData);
+      stdin.removeListener("data", handleData);
     };
   }, [stdin, mouseEventsEnabled, subscribers]);
 
-  const contextValue = useMemo(
-    () => ({ subscribe, unsubscribe }),
-    [subscribe, unsubscribe],
-  );
+  const contextValue = useMemo(() => ({ subscribe, unsubscribe }), [subscribe, unsubscribe]);
 
-  return (
-    <MouseCtx.Provider value={contextValue}>
-      {children}
-    </MouseCtx.Provider>
-  );
+  return <MouseCtx.Provider value={contextValue}>{children}</MouseCtx.Provider>;
 }

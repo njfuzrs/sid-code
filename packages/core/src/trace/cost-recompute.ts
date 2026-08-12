@@ -123,7 +123,15 @@ export function recomputeCostFromEvents(
     };
     const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL);
 
-    calls.push({ index: Number(data.index ?? calls.length + 1), model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUSD });
+    calls.push({
+      index: Number(data.index ?? calls.length + 1),
+      model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      costUSD,
+    });
     totalCostUSD += costUSD;
     cumulativeInputTokens += inputTokens;
     totalOutputTokens += outputTokens;
@@ -139,7 +147,10 @@ export function recomputeCostFromEvents(
   let model = "";
   let maxCount = 0;
   for (const [m, c] of modelCounts) {
-    if (c > maxCount) { maxCount = c; model = m; }
+    if (c > maxCount) {
+      maxCount = c;
+      model = m;
+    }
   }
 
   return {
@@ -220,8 +231,15 @@ export function backfillTrajCost(
     try {
       const minimalTraj = buildMinimalTrajFromRecompute(sessionDir, recomputed);
       Bun.write(trajPath, JSON.stringify(minimalTraj, null, 2));
-      log.info("TRACE", `§6.2 僵尸会话补写 traj: ${sessionDir} cost=$${recomputed.totalCostUSD.toFixed(4)} (${recomputed.apiCalls} calls)`);
-      return { backfilled: true, reason: "traj 缺失，据 events 重算补写", recomputedCost: recomputed.totalCostUSD };
+      log.info(
+        "TRACE",
+        `§6.2 僵尸会话补写 traj: ${sessionDir} cost=$${recomputed.totalCostUSD.toFixed(4)} (${recomputed.apiCalls} calls)`,
+      );
+      return {
+        backfilled: true,
+        reason: "traj 缺失，据 events 重算补写",
+        recomputedCost: recomputed.totalCostUSD,
+      };
     } catch (err) {
       return { backfilled: false, reason: `补写 traj 失败: ${err}` };
     }
@@ -278,10 +296,20 @@ export function backfillTrajCost(
   const isUndercount = newCost > 0 && oldCost > 0 && (newCost - oldCost) / newCost > threshold;
 
   if (!isMissing && !isUndercount) {
-    return { backfilled: false, reason: "traj cost 合理（≥ events 重算值），不覆盖", oldCost, recomputedCost: newCost };
+    return {
+      backfilled: false,
+      reason: "traj cost 合理（≥ events 重算值），不覆盖",
+      oldCost,
+      recomputedCost: newCost,
+    };
   }
   if (newCost <= 0) {
-    return { backfilled: false, reason: "events 重算 cost 为 0，无需补写", oldCost, recomputedCost: newCost };
+    return {
+      backfilled: false,
+      reason: "events 重算 cost 为 0，无需补写",
+      oldCost,
+      recomputedCost: newCost,
+    };
   }
 
   // 写回：更新 cost + 标记来源，保留其余字段
@@ -306,10 +334,23 @@ export function backfillTrajCost(
       obj.info.model_stats.total_cost_usd = newCost;
     }
     Bun.write(trajPath, JSON.stringify(obj, null, 2));
-    log.info("TRACE", `§6.4 traj cost 校正: ${sessionDir} $${oldCost.toFixed(4)} → $${newCost.toFixed(4)}`);
-    return { backfilled: true, reason: isMissing ? "traj cost 缺失，据 events 补写" : "traj cost 偏低，据 events 校正", oldCost, recomputedCost: newCost };
+    log.info(
+      "TRACE",
+      `§6.4 traj cost 校正: ${sessionDir} $${oldCost.toFixed(4)} → $${newCost.toFixed(4)}`,
+    );
+    return {
+      backfilled: true,
+      reason: isMissing ? "traj cost 缺失，据 events 补写" : "traj cost 偏低，据 events 校正",
+      oldCost,
+      recomputedCost: newCost,
+    };
   } catch (err) {
-    return { backfilled: false, reason: `写回 traj 失败: ${err}`, oldCost, recomputedCost: newCost };
+    return {
+      backfilled: false,
+      reason: `写回 traj 失败: ${err}`,
+      oldCost,
+      recomputedCost: newCost,
+    };
   }
 }
 
@@ -359,4 +400,3 @@ function buildMinimalTrajFromRecompute(sessionDir: string, r: RecomputedCost): o
     },
   };
 }
-

@@ -13,8 +13,13 @@ export interface OmissionMatch {
 
 // 文档类文件扩展名（不区分大小写）
 const DOCUMENT_EXTENSIONS = new Set([
-  ".md", ".mdx", ".markdown",
-  ".txt", ".rst", ".adoc", ".asciidoc",
+  ".md",
+  ".mdx",
+  ".markdown",
+  ".txt",
+  ".rst",
+  ".adoc",
+  ".asciidoc",
   ".org",
 ]);
 
@@ -22,9 +27,7 @@ const DOCUMENT_EXTENSIONS = new Set([
 // Python 的 `...`（Ellipsis）是合法字面量：抽象方法体、`.pyi` stub、占位实现、
 // numpy 切片、重载声明都会独占一行写 `...`。对这类文件放行"独立省略号"规则，
 // 否则合法 Python 代码会被误判为"偷懒省略"而拒写（见约束型误伤排查清单 Top 2）。
-const PYTHON_EXTENSIONS = new Set([
-  ".py", ".pyi", ".pyw",
-]);
+const PYTHON_EXTENSIONS = new Set([".py", ".pyi", ".pyw"]);
 
 /**
  * 判断文件是否为文档类型（基于扩展名）
@@ -82,26 +85,55 @@ export function isBareEllipsisCheckEnabled(): boolean {
  * 把合法 TODO 当成省略占位符拒写属误伤（CLAUDE.md 禁的是省略标记，不是 TODO 注释）。
  * 真正的"偷懒省略"由 `... rest of` / `existing code` / 独立省略号等规则覆盖，无需 TODO 规则。
  */
-const OMISSION_PATTERNS: Array<{ pattern: RegExp; name: string; docSafe: boolean; pySafe?: boolean; defaultOff?: boolean }> = [
+const OMISSION_PATTERNS: Array<{
+  pattern: RegExp;
+  name: string;
+  docSafe: boolean;
+  pySafe?: boolean;
+  defaultOff?: boolean;
+}> = [
   // JavaScript/TypeScript 注释
-  { pattern: /\/\/\s*\.{3,}\s*(rest|remaining|existing|previous|other|more)/i,
-    name: "JS comment ellipsis", docSafe: false },
-  { pattern: /\/\*\s*\.{3,}\s*(rest|remaining|existing|previous|other|more).*?\*\//i,
-    name: "JS block comment ellipsis", docSafe: true },
-  { pattern: /\/\/\s*(existing|previous|rest of|remaining)\s+(code|implementation|logic|methods?|functions?)/i,
-    name: "JS existing code", docSafe: false },
+  {
+    pattern: /\/\/\s*\.{3,}\s*(rest|remaining|existing|previous|other|more)/i,
+    name: "JS comment ellipsis",
+    docSafe: false,
+  },
+  {
+    pattern: /\/\*\s*\.{3,}\s*(rest|remaining|existing|previous|other|more).*?\*\//i,
+    name: "JS block comment ellipsis",
+    docSafe: true,
+  },
+  {
+    pattern:
+      /\/\/\s*(existing|previous|rest of|remaining)\s+(code|implementation|logic|methods?|functions?)/i,
+    name: "JS existing code",
+    docSafe: false,
+  },
 
   // Python/Shell 注释
-  { pattern: /#\s*\.{3,}\s*(rest|remaining|existing|previous|other|more)/i,
-    name: "Python/Shell ellipsis", docSafe: false },
-  { pattern: /#\s*(existing|previous|rest of|remaining)\s+(code|implementation|logic|methods?|functions?)/i,
-    name: "Python/Shell existing code", docSafe: false },
+  {
+    pattern: /#\s*\.{3,}\s*(rest|remaining|existing|previous|other|more)/i,
+    name: "Python/Shell ellipsis",
+    docSafe: false,
+  },
+  {
+    pattern:
+      /#\s*(existing|previous|rest of|remaining)\s+(code|implementation|logic|methods?|functions?)/i,
+    name: "Python/Shell existing code",
+    docSafe: false,
+  },
 
   // HTML 注释
-  { pattern: /<!--\s*\.{3,}\s*(rest|remaining|existing|previous|other|more).*?-->/i,
-    name: "HTML ellipsis", docSafe: true },
-  { pattern: /<!--\s*(existing|previous|rest of|remaining)\s+(code|content|markup).*?-->/i,
-    name: "HTML existing code", docSafe: true },
+  {
+    pattern: /<!--\s*\.{3,}\s*(rest|remaining|existing|previous|other|more).*?-->/i,
+    name: "HTML ellipsis",
+    docSafe: true,
+  },
+  {
+    pattern: /<!--\s*(existing|previous|rest of|remaining)\s+(code|content|markup).*?-->/i,
+    name: "HTML existing code",
+    docSafe: true,
+  },
 
   // 独立省略号（整行只有省略号或空白）
   // 修复：去掉 m 多行标志，外层循环已逐行处理，m 标志导致匹配跨行污染和错误行号报告
@@ -135,9 +167,9 @@ export function detectOmissionPlaceholders(
     const lineNum = i + 1;
 
     for (const { pattern, name, docSafe, pySafe, defaultOff } of OMISSION_PATTERNS) {
-      if (isDoc && docSafe) continue;  // 文档文件跳过易误伤规则
-      if (isPython && pySafe) continue;  // Python 源码跳过合法 `...` Ellipsis 规则
-      if (defaultOff && !bareEllipsisEnabled) continue;  // 裸符号规则默认关闭（实测净负债）
+      if (isDoc && docSafe) continue; // 文档文件跳过易误伤规则
+      if (isPython && pySafe) continue; // Python 源码跳过合法 `...` Ellipsis 规则
+      if (defaultOff && !bareEllipsisEnabled) continue; // 裸符号规则默认关闭（实测净负债）
       if (pattern.test(line)) {
         matches.push({
           line: lineNum,

@@ -81,7 +81,8 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
 
   // 整体网格宽度（格数），按 maxTokens 归一化——每格代表 maxTokens/GRID_WIDTH 个 token。
   const GRID_WIDTH = 40;
-  const usedCells = maxTokens > 0 ? Math.min(GRID_WIDTH, Math.round((total / maxTokens) * GRID_WIDTH)) : 0;
+  const usedCells =
+    maxTokens > 0 ? Math.min(GRID_WIDTH, Math.round((total / maxTokens) * GRID_WIDTH)) : 0;
 
   // 各分类在"已用格数"里按占比分配格子（保证总和 = usedCells，用最大余数法避免丢格）。
   const withCells = allocateCells(categories, usedCells);
@@ -107,8 +108,16 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
   const freeSpace = Math.max(0, remaining - completionBuffer);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>上下文用量</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        上下文用量
+      </Text>
 
       {/* 彩色网格 */}
       <Box paddingLeft={2} marginTop={1} flexWrap="wrap">
@@ -147,7 +156,10 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
       <Box flexDirection="column" marginTop={1}>
         <Row label="已用">
           <Text color={theme.text.primary}>{fmtNum(total)}</Text>
-          <Text color={theme.text.secondary}> / {fmtNum(maxTokens)} tokens（{usedPct}%）</Text>
+          <Text color={theme.text.secondary}>
+            {" "}
+            / {fmtNum(maxTokens)} tokens（{usedPct}%）
+          </Text>
         </Row>
         {/* P3-2：完成缓冲区单独成行——它占着窗口但不可用于对话，混进"剩余"会让用户高估余量 */}
         {completionBuffer > 0 ? (
@@ -157,10 +169,14 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
           </Row>
         ) : null}
         <Row label={completionBuffer > 0 ? "可用空闲" : "剩余"}>
-          <Text color={theme.text.primary}>{fmtNum(completionBuffer > 0 ? freeSpace : remaining)} tokens</Text>
+          <Text color={theme.text.primary}>
+            {fmtNum(completionBuffer > 0 ? freeSpace : remaining)} tokens
+          </Text>
         </Row>
         <Row label="压缩阈值">
-          <Text color={theme.status.warning}>{fmtNum(compactThresholdTokens)} tokens（{compactPct}%）</Text>
+          <Text color={theme.status.warning}>
+            {fmtNum(compactThresholdTokens)} tokens（{compactPct}%）
+          </Text>
           <Text color={theme.text.secondary}>
             {toCompact > 0 ? `，距触发还剩 ~${fmtNum(toCompact)}` : "，已达阈值"}
           </Text>
@@ -169,7 +185,7 @@ export const ContextDialog: React.FC<ContextDialogProps> = ({ onClose, getBreakd
 
       <Box marginTop={1} paddingLeft={2}>
         <Text color={theme.text.secondary}>
-          {calibrated ? "（已按真实用量校准）" : "（启发式估算，未校准）"}  Esc 关闭
+          {calibrated ? "（已按真实用量校准）" : "（启发式估算，未校准）"} Esc 关闭
         </Text>
       </Box>
     </Box>
@@ -191,7 +207,11 @@ function allocateCells(
     key: c.key,
     exact: (c.tokens / totalTokens) * usedCells,
   }));
-  const floored = raw.map((r) => ({ key: r.key, cells: Math.floor(r.exact), frac: r.exact - Math.floor(r.exact) }));
+  const floored = raw.map((r) => ({
+    key: r.key,
+    cells: Math.floor(r.exact),
+    frac: r.exact - Math.floor(r.exact),
+  }));
   let assigned = floored.reduce((s, r) => s + r.cells, 0);
   // 剩余格子按小数部分从大到小补齐
   const order = [...floored].sort((a, b) => b.frac - a.frac);

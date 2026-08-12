@@ -15,9 +15,7 @@ import type { LegacyTool } from "./types.ts";
 import { normalizeStrictNulls } from "./nullish-normalize.ts";
 
 /** 校验结果 */
-export type ToolInputValidation =
-  | { ok: true; data: unknown }
-  | { ok: false; message: string };
+export type ToolInputValidation = { ok: true; data: unknown } | { ok: false; message: string };
 
 /**
  * 「schema 未发送」补救提示（对标 claude-code buildSchemaNotSentHint）。

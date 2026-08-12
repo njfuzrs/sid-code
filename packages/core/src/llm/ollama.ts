@@ -9,7 +9,7 @@ import type { ProviderCapabilities } from "./provider.ts";
 export class OllamaProvider extends OpenAIProvider {
   constructor(model: string, baseURL?: string) {
     super(
-      "ollama",  // Ollama 不需要真实 API Key
+      "ollama", // Ollama 不需要真实 API Key
       model,
       baseURL || "http://localhost:11434/v1",
     );
@@ -22,9 +22,9 @@ export class OllamaProvider extends OpenAIProvider {
   capabilities(): ProviderCapabilities {
     return {
       streaming: true,
-      tools: true,           // 部分模型支持
+      tools: true, // 部分模型支持
       thinking: false,
-      vision: false,         // 取决于具体模型
+      vision: false, // 取决于具体模型
       promptCaching: false,
       parallelToolCalls: false,
     };

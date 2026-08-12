@@ -46,9 +46,5 @@ export function AppStateProvider({
   children: React.ReactNode;
   store: AppStateStore;
 }) {
-  return (
-    <AppStoreContext.Provider value={store}>
-      {children}
-    </AppStoreContext.Provider>
-  );
+  return <AppStoreContext.Provider value={store}>{children}</AppStoreContext.Provider>;
 }

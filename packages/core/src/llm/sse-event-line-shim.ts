@@ -32,10 +32,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 
-export type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 type ShimMode = "auto" | "off" | "force";
 
@@ -146,9 +143,8 @@ function createEventLineTransform(onInject?: () => void): TransformStream<Uint8A
         // 末尾无 \n 的残行：按行逻辑处理但不额外补 \n（保持原始字节边界）。
         // 注意：processLine 会补 \n，这里剥掉以免改变末尾。
         const processed = processLine(buffer);
-        const emit = processed.endsWith("\n") && !buffer.endsWith("\n")
-          ? processed.slice(0, -1)
-          : processed;
+        const emit =
+          processed.endsWith("\n") && !buffer.endsWith("\n") ? processed.slice(0, -1) : processed;
         buffer = "";
         if (emit) controller.enqueue(encoder.encode(emit));
       }

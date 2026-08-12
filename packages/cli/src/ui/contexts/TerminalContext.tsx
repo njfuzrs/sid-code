@@ -64,15 +64,21 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
   const { stdin } = useStdin();
   const { stdout } = useStdout();
   const subscribers = useRef<Set<TerminalEventHandler>>(new Set()).current;
-  const bufferRef = useRef('');
+  const bufferRef = useRef("");
 
-  const subscribe = useCallback((handler: TerminalEventHandler) => {
-    subscribers.add(handler);
-  }, [subscribers]);
+  const subscribe = useCallback(
+    (handler: TerminalEventHandler) => {
+      subscribers.add(handler);
+    },
+    [subscribers],
+  );
 
-  const unsubscribe = useCallback((handler: TerminalEventHandler) => {
-    subscribers.delete(handler);
-  }, [subscribers]);
+  const unsubscribe = useCallback(
+    (handler: TerminalEventHandler) => {
+      subscribers.delete(handler);
+    },
+    [subscribers],
+  );
 
   const queryTerminalBackground = useCallback(
     async () =>
@@ -94,7 +100,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handleData = (data: Buffer | string) => {
-      bufferRef.current += typeof data === 'string' ? data : data.toString('utf-8');
+      bufferRef.current += typeof data === "string" ? data : data.toString("utf-8");
 
       // 检测 OSC 11 响应
       const match = bufferRef.current.match(TerminalCapabilityManager.OSC_11_REGEX);
@@ -113,9 +119,9 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    stdin.on('data', handleData);
+    stdin.on("data", handleData);
     return () => {
-      stdin.removeListener('data', handleData);
+      stdin.removeListener("data", handleData);
     };
   }, [stdin, subscribers]);
 
@@ -140,19 +146,12 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
   const width = inkSize?.columns || stdout.columns || DEFAULT_TERM_WIDTH;
   const height = inkSize?.rows || stdout.rows || 24;
   // 依赖两个基础类型而非对象字面量，否则每次渲染都是新引用，白费下游 memo。
-  const dimensions = useMemo<TerminalDimensions>(
-    () => ({ width, height }),
-    [width, height],
-  );
+  const dimensions = useMemo<TerminalDimensions>(() => ({ width, height }), [width, height]);
 
   const contextValue = useMemo(
     () => ({ subscribe, unsubscribe, queryTerminalBackground, dimensions }),
     [subscribe, unsubscribe, queryTerminalBackground, dimensions],
   );
 
-  return (
-    <TerminalCtx.Provider value={contextValue}>
-      {children}
-    </TerminalCtx.Provider>
-  );
+  return <TerminalCtx.Provider value={contextValue}>{children}</TerminalCtx.Provider>;
 }

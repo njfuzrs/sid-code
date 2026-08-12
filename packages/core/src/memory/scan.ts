@@ -8,7 +8,12 @@
 import { join } from "path";
 import { existsSync } from "fs";
 import { readdir, stat } from "fs/promises";
-import { isMemoryType, type MemoryHeader, type MemoryFrontmatter, type MemoryType } from "./types.ts";
+import {
+  isMemoryType,
+  type MemoryHeader,
+  type MemoryFrontmatter,
+  type MemoryType,
+} from "./types.ts";
 import { MEMORY_LIMITS } from "./types.ts";
 
 /** 匹配 --- 包围的 frontmatter 块（文件开头） */
@@ -40,7 +45,10 @@ export function parseFrontmatter(text: string): Partial<MemoryFrontmatter> {
 
 /** 去掉正文里的 frontmatter 块，返回正文部分 */
 export function stripFrontmatter(text: string): string {
-  return text.replace(FRONTMATTER_RE, "").replace(/^\s*\n/, "").trimEnd();
+  return text
+    .replace(FRONTMATTER_RE, "")
+    .replace(/^\s*\n/, "")
+    .trimEnd();
 }
 
 /** 应跳过的文件名 / 目录名 */

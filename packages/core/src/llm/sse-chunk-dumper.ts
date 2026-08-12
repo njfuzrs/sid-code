@@ -52,10 +52,17 @@ const TAIL_KEEP = 12;
  * loopId（Fix 1）：每次 queryLoop 分配唯一 ID，用于 snapshot namespace 隔离，
  * 防止跨 queryLoop 的孤儿 generator 写入脏数据污染新循环的看门狗。
  */
-let ambientCtx: { sessionId?: string; turnIndex: number; loopId: string } = { turnIndex: 0, loopId: "default" };
+let ambientCtx: { sessionId?: string; turnIndex: number; loopId: string } = {
+  turnIndex: 0,
+  loopId: "default",
+};
 
 /** 主循环在每轮 sendWithRetry 前调用，登记当前会话 id、轮次与 loopId。 */
-export function setSseDumpContext(sessionId: string | undefined, turnIndex: number, loopId?: string): void {
+export function setSseDumpContext(
+  sessionId: string | undefined,
+  turnIndex: number,
+  loopId?: string,
+): void {
   ambientCtx = { sessionId, turnIndex, loopId: loopId ?? ambientCtx.loopId };
 }
 
@@ -69,7 +76,8 @@ function classifyChunk(raw: any): DumpedChunk["ch"] {
   if (raw?.error) return "error";
   const delta = raw?.choices?.[0]?.delta;
   const finish = raw?.choices?.[0]?.finish_reason;
-  if (typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0) return "reasoning";
+  if (typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0)
+    return "reasoning";
   if (typeof delta?.content === "string" && delta.content.length > 0) return "content";
   if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) return "tool";
   if (finish) return "finish";

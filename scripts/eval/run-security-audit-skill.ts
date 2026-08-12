@@ -115,7 +115,10 @@ function buildSystemPrompt(opts: { withSkill: boolean }): SkillPrompt {
 // 静态契约校验（默认模式，不调 LLM）
 // ============================================================
 
-function staticContractCheck(cases: SecCase[], skillPrompt: SkillPrompt): {
+function staticContractCheck(
+  cases: SecCase[],
+  skillPrompt: SkillPrompt,
+): {
   results: Array<{
     id: string;
     contractIssues: string[];
@@ -211,7 +214,9 @@ function staticContractCheck(cases: SecCase[], skillPrompt: SkillPrompt): {
         estimatedExecScore += 0.1;
       }
     } else {
-      estimatedNotes.push("无 Skill, LLM 仅按用户 query 直接审计, 预期类别覆盖 / CWE 引用 / block 准确率显著较低");
+      estimatedNotes.push(
+        "无 Skill, LLM 仅按用户 query 直接审计, 预期类别覆盖 / CWE 引用 / block 准确率显著较低",
+      );
     }
 
     if (issues.length > 0) {
@@ -292,7 +297,10 @@ async function executeCase(c: SecCase, skillPrompt: SkillPrompt): Promise<Execut
   }
 }
 
-function gradeExecuteResult(c: SecCase, r: ExecuteResult): {
+function gradeExecuteResult(
+  c: SecCase,
+  r: ExecuteResult,
+): {
   score: number;
   details: Record<string, string | number | boolean>;
 } {
@@ -301,7 +309,10 @@ function gradeExecuteResult(c: SecCase, r: ExecuteResult): {
   let dimScore = 5;
 
   if (r.error || r.timedOut) {
-    return { score: 0, details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus } };
+    return {
+      score: 0,
+      details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus },
+    };
   }
 
   // 1. must_include_any_of
@@ -364,8 +375,12 @@ async function main() {
   const skillPrompt = buildSystemPrompt({ withSkill: values.skill });
 
   console.log(`Cases       : ${cases.length} (${cases.map((c) => c.id).join(", ")})`);
-  console.log(`Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`);
-  console.log(`Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`);
+  console.log(
+    `Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`,
+  );
+  console.log(
+    `Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`,
+  );
   console.log("");
 
   const ts = Date.now();
@@ -413,14 +428,24 @@ async function main() {
   const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
   const allResults: Array<{
     caseId: string;
-    samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }>;
+    samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }>;
   }> = [];
 
   for (let i = 0; i < cases.length; i++) {
     const c = cases[i];
-    console.log(`[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`);
+    console.log(
+      `[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+    );
 
-    const samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> = [];
+    const samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }> = [];
     for (let s = 0; s < samplesN; s++) {
       const r = await executeCase(c, skillPrompt);
       const grade = gradeExecuteResult(c, r);

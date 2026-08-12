@@ -53,7 +53,9 @@ export function createSubagentContext(
 
   const setAppState = shareSetAppState
     ? rootStore.setState
-    : (_updater: (prev: AppState) => AppState) => { /* no-op for async subagents */ };
+    : (_updater: (prev: AppState) => AppState) => {
+        /* no-op for async subagents */
+      };
 
   const setAppStateForTasks = rootStore.setState;
 

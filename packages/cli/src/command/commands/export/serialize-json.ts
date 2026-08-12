@@ -107,7 +107,11 @@ function trimLargeToolResults(msg: Message): Message {
     if (block.type === "tool_result" && block.content && block.content.length > 1024) {
       return {
         ...block,
-        content: block.content.slice(0, 200) + "\n\n[...内容已省略，原始长度: " + block.content.length + " 字符]",
+        content:
+          block.content.slice(0, 200) +
+          "\n\n[...内容已省略，原始长度: " +
+          block.content.length +
+          " 字符]",
       };
     }
     return block;

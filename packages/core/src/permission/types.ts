@@ -47,7 +47,12 @@ export interface PermissionCheckOptions {
 
 /** 权限检查器接口 */
 export interface Checker {
-  check(req: PermissionRequest, tool?: unknown, toolContext?: unknown, options?: PermissionCheckOptions): Promise<Decision>;
+  check(
+    req: PermissionRequest,
+    tool?: unknown,
+    toolContext?: unknown,
+    options?: PermissionCheckOptions,
+  ): Promise<Decision>;
   /** 记住会话内权限决策（可选） */
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
   /**
@@ -82,20 +87,20 @@ export interface Checker {
 
 /** 权限规则配置 */
 export interface PermissionRule {
-  allow?: string[];   // ["Read", "Glob", "Bash(npm *)"]
-  deny?: string[];    // ["Edit(.env*)", "Bash(rm *)"]
-  ask?: string[];     // ["Edit", "Write"]
+  allow?: string[]; // ["Read", "Glob", "Bash(npm *)"]
+  deny?: string[]; // ["Edit(.env*)", "Bash(rm *)"]
+  ask?: string[]; // ["Edit", "Write"]
 }
 
 /** 审计日志条目 */
 export interface AuditEntry {
-  timestamp: string;        // ISO 8601
-  type: string;             // "tool_use"
-  tool: string;             // 工具名
-  resource?: string;        // 资源路径
+  timestamp: string; // ISO 8601
+  type: string; // "tool_use"
+  tool: string; // 工具名
+  resource?: string; // 资源路径
   decision: "allow" | "deny";
-  reason?: string;          // 拒绝原因
-  severity?: string;        // 危险级别
+  reason?: string; // 拒绝原因
+  severity?: string; // 危险级别
   user_confirmed?: boolean; // 是否用户确认
   /** 决策原因链 */
   decisionReason?: PermissionDecisionReason;
@@ -109,14 +114,14 @@ export interface AuditEntry {
 
 /** 规则来源（8 种，优先级从低到高） */
 export type PermissionRuleSource =
-  | "session"           // 运行时动态添加（权限弹窗 Always Allow）
-  | "command"           // 斜杠命令 /allow, /deny
-  | "cliArg"            // CLI 参数 --allow-tool, --deny-tool
-  | "userSettings"      // ~/.sid-code/settings.json
-  | "projectSettings"   // .sid-code/settings.json（不可信来源）
-  | "localSettings"     // .sid-code/settings.local.json
-  | "flagSettings"      // SDK 内联设置
-  | "policySettings";   // 企业策略（最高优先级）
+  | "session" // 运行时动态添加（权限弹窗 Always Allow）
+  | "command" // 斜杠命令 /allow, /deny
+  | "cliArg" // CLI 参数 --allow-tool, --deny-tool
+  | "userSettings" // ~/.sid-code/settings.json
+  | "projectSettings" // .sid-code/settings.json（不可信来源）
+  | "localSettings" // .sid-code/settings.local.json
+  | "flagSettings" // SDK 内联设置
+  | "policySettings"; // 企业策略（最高优先级）
 
 /** 规则来源优先级（数值越大优先级越高） */
 export const RULE_SOURCE_PRIORITY: Record<PermissionRuleSource, number> = {

@@ -54,7 +54,10 @@ function persistPermissionRule(
 ): string {
   try {
     const source = scope === "project" ? "projectSettings" : "userSettings";
-    const { getSettingsForSource, patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
+    const {
+      getSettingsForSource,
+      patchSettingsFile,
+    } = require("@sid-code/core/config/settings/index.ts");
     const { settings } = getSettingsForSource(source);
     // 保留用户已有的 allow/deny/ask/defaultMode，仅在对应数组里增量追加。
     const perms: Record<string, unknown> = { ...(settings?.permissions ?? {}) };
@@ -72,17 +75,26 @@ function persistPermissionRule(
 }
 
 export class AllowCommand implements Command {
-  name() { return "allow"; }
-  aliases() { return []; }
-  description() { return "添加 allow 权限规则（默认当前会话，-p 持久化）"; }
-  argumentHint() { return "<规则> [-p] [--scope user|project]"; }
+  name() {
+    return "allow";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "添加 allow 权限规则（默认当前会话，-p 持久化）";
+  }
+  argumentHint() {
+    return "<规则> [-p] [--scope user|project]";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { rule, persist, scope } = parseRuleArgs(args);
     if (!rule) {
       return {
         kind: "error",
-        message: "用法: /allow <规则> [-p] [--scope user|project]\n示例: /allow Bash(npm *)\n      /allow Bash(npm *) -p          持久化到 user settings.json\n      /allow Read(*) -p --scope project  持久化到项目 settings.json",
+        message:
+          "用法: /allow <规则> [-p] [--scope user|project]\n示例: /allow Bash(npm *)\n      /allow Bash(npm *) -p          持久化到 user settings.json\n      /allow Read(*) -p --scope project  持久化到项目 settings.json",
       };
     }
 
@@ -107,17 +119,26 @@ export class AllowCommand implements Command {
 }
 
 export class DenyCommand implements Command {
-  name() { return "deny"; }
-  aliases() { return []; }
-  description() { return "添加 deny 权限规则（默认当前会话，-p 持久化）"; }
-  argumentHint() { return "<规则> [-p] [--scope user|project]"; }
+  name() {
+    return "deny";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "添加 deny 权限规则（默认当前会话，-p 持久化）";
+  }
+  argumentHint() {
+    return "<规则> [-p] [--scope user|project]";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { rule, persist, scope } = parseRuleArgs(args);
     if (!rule) {
       return {
         kind: "error",
-        message: "用法: /deny <规则> [-p] [--scope user|project]\n示例: /deny Bash(rm -rf *)\n      /deny Bash(rm -rf *) -p          持久化到 user settings.json\n      /deny Bash(curl *) -p --scope project  持久化到项目 settings.json",
+        message:
+          "用法: /deny <规则> [-p] [--scope user|project]\n示例: /deny Bash(rm -rf *)\n      /deny Bash(rm -rf *) -p          持久化到 user settings.json\n      /deny Bash(curl *) -p --scope project  持久化到项目 settings.json",
       };
     }
 
@@ -148,10 +169,18 @@ export class DenyCommand implements Command {
  * /add-dir --list 查看当前白名单，/add-dir --remove <目录> 移除。
  */
 export class AddDirCommand implements Command {
-  name() { return "add-dir"; }
-  aliases() { return []; }
-  description() { return "运行时把目录加入当前会话可访问白名单（用户级授权，仅本会话）"; }
-  argumentHint() { return "<目录路径> | --list | --remove <目录>"; }
+  name() {
+    return "add-dir";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "运行时把目录加入当前会话可访问白名单（用户级授权，仅本会话）";
+  }
+  argumentHint() {
+    return "<目录路径> | --list | --remove <目录>";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const checker = this.getChecker(ctx);
@@ -172,7 +201,8 @@ export class AddDirCommand implements Command {
       if (dirs.length === 0) {
         return {
           kind: "message",
-          message: "当前会话未配置目录白名单（未限制到特定目录）。\n用法: /add-dir <目录路径>  将目录加入白名单（仅本会话生效）",
+          message:
+            "当前会话未配置目录白名单（未限制到特定目录）。\n用法: /add-dir <目录路径>  将目录加入白名单（仅本会话生效）",
         };
       }
       return {
@@ -222,9 +252,15 @@ export class AddDirCommand implements Command {
 }
 
 export class PermissionsCommand implements Command {
-  name() { return "permissions"; }
-  aliases() { return ["perms"]; }
-  description() { return "查看当前权限规则和模式"; }
+  name() {
+    return "permissions";
+  }
+  aliases() {
+    return ["perms"];
+  }
+  description() {
+    return "查看当前权限规则和模式";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开交互式权限管理面板

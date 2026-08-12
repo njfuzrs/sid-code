@@ -23,25 +23,31 @@ export class HookPlanner {
   }
 
   /** 创建执行计划 */
-  createExecutionPlan(eventName: HookEventName, context?: HookEventContext): HookExecutionPlan | null {
+  createExecutionPlan(
+    eventName: HookEventName,
+    context?: HookEventContext,
+  ): HookExecutionPlan | null {
     const entries = this.registry.getHooksForEvent(eventName);
     if (entries.length === 0) return null;
 
     // 按 matcher 过滤
-    const matching = entries.filter(e => this.matchesContext(e, context));
+    const matching = entries.filter((e) => this.matchesContext(e, context));
     if (matching.length === 0) return null;
 
     // 去重
     const deduped = this.deduplicateHooks(matching);
 
     // 提取配置
-    const hookConfigs = deduped.map(e => e.config);
+    const hookConfigs = deduped.map((e) => e.config);
 
     // 任一 definition 标记 sequential=true → 整体串行
-    const sequential = deduped.some(e => e.sequential === true);
+    const sequential = deduped.some((e) => e.sequential === true);
 
     const log = getLogger();
-    log.debug("HOOK", `执行计划 [${eventName}]: ${hookConfigs.length} 个 hook，${sequential ? "串行" : "并行"}`);
+    log.debug(
+      "HOOK",
+      `执行计划 [${eventName}]: ${hookConfigs.length} 个 hook，${sequential ? "串行" : "并行"}`,
+    );
 
     // entries 与 hookConfigs 下标一一对应：执行后据此回标 once hook 已执行（否则 once 永不失效）
     return { eventName, hookConfigs, sequential, entries: deduped };

@@ -27,7 +27,10 @@ interface TaskResult {
   tags: string[];
   primaryModel: string;
   scores: { outcome: number; trajectory: number; process: number; final: number };
-  details: { outcome: Record<string, boolean | number>; trajectory: Record<string, boolean | number> };
+  details: {
+    outcome: Record<string, boolean | number>;
+    trajectory: Record<string, boolean | number>;
+  };
   reasoning: string;
   agentSnapshot: AgentSnapshot;
 }
@@ -71,9 +74,7 @@ const avgL2 = avg((r) => r.scores.trajectory);
 const avgL3 = avg((r) => r.scores.process);
 
 // 按难度分桶
-function bucket<T extends string | number>(
-  key: (r: TaskResult) => T,
-): Map<T, TaskResult[]> {
+function bucket<T extends string | number>(key: (r: TaskResult) => T): Map<T, TaskResult[]> {
   const m = new Map<T, TaskResult[]>();
   for (const r of results) {
     const k = key(r);
@@ -109,9 +110,7 @@ for (const r of results) {
     }
   }
 }
-const l1FailTop = [...l1FailReasons.entries()]
-  .sort((a, b) => b[1] - a[1])
-  .slice(0, 10);
+const l1FailTop = [...l1FailReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
 
 // Sanity 指标
 const fallbackCount = results.filter(
@@ -268,9 +267,11 @@ ${bottomN
 
 ${tableRow("断言", "失败次数")}
 ${tableRow("---", "---")}
-${l1FailTop.length === 0
-  ? tableRow("（所有断言全过）", 0)
-  : l1FailTop.map(([k, v]) => tableRow("\\`" + k + "\\`", v)).join("\n")}
+${
+  l1FailTop.length === 0
+    ? tableRow("（所有断言全过）", 0)
+    : l1FailTop.map(([k, v]) => tableRow("\\`" + k + "\\`", v)).join("\n")
+}
 
 ---
 
@@ -306,4 +307,6 @@ ${l1FailTop.length === 0
 
 await Bun.write(reportPath, md);
 console.log(`✓ 报告写入: ${reportPath.replace(ROOT + "/", "")}`);
-console.log(`  Final: ${fmt(avgFinal)} / L1: ${fmt(avgL1)} / L2: ${fmt(avgL2)} / L3: ${fmt(avgL3)}`);
+console.log(
+  `  Final: ${fmt(avgFinal)} / L1: ${fmt(avgL1)} / L2: ${fmt(avgL2)} / L3: ${fmt(avgL3)}`,
+);

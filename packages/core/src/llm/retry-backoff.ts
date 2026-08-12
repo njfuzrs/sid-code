@@ -53,7 +53,11 @@ export function calculateRetryDelay(
   if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, MAX_DELAY_MS);
 
   // 2. RetryableError 携带的 retryAfterMs
-  if (classified instanceof RetryableError && classified.retryAfterMs && classified.retryAfterMs > 0) {
+  if (
+    classified instanceof RetryableError &&
+    classified.retryAfterMs &&
+    classified.retryAfterMs > 0
+  ) {
     return Math.min(classified.retryAfterMs, MAX_DELAY_MS);
   }
 

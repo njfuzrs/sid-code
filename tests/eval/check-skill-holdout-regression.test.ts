@@ -87,26 +87,14 @@ describe("surveyHoldout - 统计 grader_type 分布", () => {
   test("混合 grader_type 正确分类", () => {
     const dir = join(tmpRoot, "holdout-mixed");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, "case_exec.yaml"),
-      "id: e1\ngrader_type: execution_test\n",
-      "utf-8",
-    );
-    writeFileSync(
-      join(dir, "case_rubric.yaml"),
-      "id: r1\ngrader_type: rubric_5d\n",
-      "utf-8",
-    );
+    writeFileSync(join(dir, "case_exec.yaml"), "id: e1\ngrader_type: execution_test\n", "utf-8");
+    writeFileSync(join(dir, "case_rubric.yaml"), "id: r1\ngrader_type: rubric_5d\n", "utf-8");
     writeFileSync(
       join(dir, "case_default.yaml"),
       "id: d1\n", // 缺 grader_type → fallback rubric_5d
       "utf-8",
     );
-    writeFileSync(
-      join(dir, "case_arch.yaml"),
-      "id: a1\ngrader_type: structured_arch\n",
-      "utf-8",
-    );
+    writeFileSync(join(dir, "case_arch.yaml"), "id: a1\ngrader_type: structured_arch\n", "utf-8");
 
     const s = surveyHoldout(dir);
     expect(s.total_cases).toBe(4);

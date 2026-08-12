@@ -152,7 +152,13 @@ export function judgeSamples(
   // 后者会把一次失败的探测记成一张清白证明。
   const hasEvidence = Boolean(a) || Boolean(b) || repeats.length >= 3;
   if (!hasEvidence) {
-    return { host, model, verdict: "unknown", probedAt: nowSeconds, reason: "样本不足，未能执行任何判据" };
+    return {
+      host,
+      model,
+      verdict: "unknown",
+      probedAt: nowSeconds,
+      reason: "样本不足，未能执行任何判据",
+    };
   }
 
   /**
@@ -178,7 +184,14 @@ export function judgeSamples(
   }
 
   if (failed.length > 0) {
-    return { host, model, verdict: "untrusted", failedCriteria: failed, reason: reasons.join("；"), probedAt: nowSeconds };
+    return {
+      host,
+      model,
+      verdict: "untrusted",
+      failedCriteria: failed,
+      reason: reasons.join("；"),
+      probedAt: nowSeconds,
+    };
   }
   return { host, model, verdict: "trusted", probedAt: nowSeconds };
 }
@@ -241,7 +254,9 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeResult> {
       const usage = await send({ withCacheControl, prefix });
       spent += usage.costUSD;
       samples.push({ label, criterion, usage });
-      deps.log(`  ${label}: in=${usage.inputTokens} read=${usage.cacheRead} create=${usage.cacheWrite} sum=${usage.sum}`);
+      deps.log(
+        `  ${label}: in=${usage.inputTokens} read=${usage.cacheRead} create=${usage.cacheWrite} sum=${usage.sum}`,
+      );
       return true;
     } catch (e) {
       // 请求失败不等于渠道造数 —— 记为中止并让判定落回 unknown/已有样本
@@ -250,7 +265,9 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeResult> {
     }
   };
 
-  deps.log(`探测 ${deps.host} / ${deps.modelConfig.name}（nonce=${deps.nonce}，轮数=${deps.rounds}）`);
+  deps.log(
+    `探测 ${deps.host} / ${deps.modelConfig.name}（nonce=${deps.nonce}，轮数=${deps.rounds}）`,
+  );
 
   // 判据 A：全新前缀 + 打断点，r1 不应有命中
   let ok = await step("A·新前缀首发", "A", true);
@@ -274,7 +291,12 @@ export async function runProbe(deps: ProbeDeps): Promise<ProbeResult> {
   const verdict = judgeSamples(deps.host, deps.modelConfig.name, samples, now());
   // 中止且未定罪时不给"可信"背书：没跑完的探测不能当清白证明
   if (aborted && verdict.verdict === "trusted") {
-    return { verdict: { ...verdict, verdict: "unknown", reason: `探测未跑完：${aborted}` }, samples, spentUSD: spent, aborted };
+    return {
+      verdict: { ...verdict, verdict: "unknown", reason: `探测未跑完：${aborted}` },
+      samples,
+      spentUSD: spent,
+      aborted,
+    };
   }
   return { verdict, samples, spentUSD: spent, aborted };
 }
@@ -300,17 +322,21 @@ export function isExplicitCacheProtocol(provider: string): boolean {
  * 探针本就该在协议层自己构造请求：它测的是"渠道上报的 usage 可不可信"，
  * 与 sid-code 的请求组装逻辑无关，绕过反而让判据更干净（不受本地策略变化影响）。
  */
-function makeRealSender(deps: ProbeDeps): (opts: { withCacheControl: boolean; prefix: string }) => Promise<UsageSample> {
+function makeRealSender(
+  deps: ProbeDeps,
+): (opts: { withCacheControl: boolean; prefix: string }) => Promise<UsageSample> {
   return async ({ withCacheControl, prefix }) => {
     const { normalizeCacheUsage } = await import("../llm/types.ts");
     const wireModel = deps.modelConfig.modelId ?? deps.modelConfig.name;
-    const apiKey = deps.modelConfig.apiKey
-      ?? (deps.provider === "anthropic" ? deps.config.anthropicKey : deps.config.openaiKey);
+    const apiKey =
+      deps.modelConfig.apiKey ??
+      (deps.provider === "anthropic" ? deps.config.anthropicKey : deps.config.openaiKey);
     const base = (deps.baseURL ?? "").replace(/\/+$/, "");
 
-    const raw = deps.provider === "anthropic"
-      ? await sendAnthropicRaw(base, apiKey, wireModel, prefix, deps.maxTokens, withCacheControl)
-      : await sendOpenAIRaw(base, apiKey, wireModel, prefix, deps.maxTokens);
+    const raw =
+      deps.provider === "anthropic"
+        ? await sendAnthropicRaw(base, apiKey, wireModel, prefix, deps.maxTokens, withCacheControl)
+        : await sendOpenAIRaw(base, apiKey, wireModel, prefix, deps.maxTokens);
 
     // 线上 usage 是 snake_case，normalizeCacheUsage 吃的是内部 camelCase `Usage` ——
     // 必须先映射。第一版直接把线上原始对象喂进去，三段全读成 0，探针却报"可信"：
@@ -355,11 +381,13 @@ function toInternalUsage(raw: Record<string, unknown>, provider: string): any {
 function extractCacheHitFromRaw(raw: Record<string, unknown>): number {
   const details = raw.prompt_tokens_details as { cached_tokens?: number } | undefined;
   const inputDetails = raw.input_tokens_details as { cached_tokens?: number } | undefined;
-  return (raw.prompt_cache_hit_tokens as number)
-    ?? details?.cached_tokens
-    ?? inputDetails?.cached_tokens
-    ?? (raw.cached_tokens as number)
-    ?? 0;
+  return (
+    (raw.prompt_cache_hit_tokens as number) ??
+    details?.cached_tokens ??
+    inputDetails?.cached_tokens ??
+    (raw.cached_tokens as number) ??
+    0
+  );
 }
 
 /**

@@ -135,10 +135,7 @@ export function countCoverHits(planContent: string, keywords: string[]): number 
  *
  * 暴露给单测用
  */
-export function runCheck(
-  rule: GraderRule,
-  input: CapabilityGraderInput,
-): CapabilityCheckResult {
+export function runCheck(rule: GraderRule, input: CapabilityGraderInput): CapabilityCheckResult {
   const check = rule.check || "";
   const planSteps = countPlanSteps(input.planContent);
   const tools = new Set(input.toolsCalled.map((t) => t.toLowerCase()));
@@ -147,19 +144,34 @@ export function runCheck(
     case "plan_min_steps": {
       const min = input.expected.plan_min_steps ?? 1;
       const ok = planSteps >= min;
-      return { check, passed: ok, weight: rule.weight, reason: `plan_steps=${planSteps} ${ok ? "≥" : "<"} ${min}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `plan_steps=${planSteps} ${ok ? "≥" : "<"} ${min}`,
+      };
     }
     case "plan_max_steps": {
       const max = input.expected.plan_max_steps ?? 999;
       const ok = planSteps <= max;
-      return { check, passed: ok, weight: rule.weight, reason: `plan_steps=${planSteps} ${ok ? "≤" : ">"} ${max}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `plan_steps=${planSteps} ${ok ? "≤" : ">"} ${max}`,
+      };
     }
     case "plan_must_not_have_zero_match": {
       const banned = input.expected.plan_must_not_have || [];
       const lower = input.planContent.toLowerCase();
       const hit = banned.find((kw) => lower.includes(kw.toLowerCase()));
       const ok = !hit;
-      return { check, passed: ok, weight: rule.weight, reason: hit ? `命中违禁词: ${hit}` : "无违禁词命中" };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: hit ? `命中违禁词: ${hit}` : "无违禁词命中",
+      };
     }
     case "execution_must_call_tools_any_of_hit": {
       const expected = input.expected.execution_must_call_tools_any_of || [];
@@ -168,7 +180,9 @@ export function runCheck(
         check,
         passed: hit,
         weight: rule.weight,
-        reason: hit ? `tools 命中 ${expected.filter((t) => tools.has(t.toLowerCase())).join(",")}` : `未命中 [${expected.join(",")}]`,
+        reason: hit
+          ? `tools 命中 ${expected.filter((t) => tools.has(t.toLowerCase())).join(",")}`
+          : `未命中 [${expected.join(",")}]`,
       };
     }
     case "fidelity_step_ratio_in_range": {
@@ -178,23 +192,43 @@ export function runCheck(
       const planLineItems = countPlanLineItems(input.planContent);
       const ratio = planLineItems > 0 ? input.steps / planLineItems : 0;
       const ok = ratio >= min && ratio <= max;
-      return { check, passed: ok, weight: rule.weight, reason: `actual_steps/plan_line_items=${ratio.toFixed(2)} 范围[${min}, ${max}]` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `actual_steps/plan_line_items=${ratio.toFixed(2)} 范围[${min}, ${max}]`,
+      };
     }
     case "premature_exit_max_plan_steps": {
       const max = input.expected.premature_exit_max_plan_steps ?? 3;
       const ok = planSteps <= max;
-      return { check, passed: ok, weight: rule.weight, reason: `plan_steps=${planSteps} ${ok ? "≤" : ">"} ${max}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `plan_steps=${planSteps} ${ok ? "≤" : ">"} ${max}`,
+      };
     }
     case "recovery_plan_update_count_min": {
       const min = input.expected.recovery_plan_update_count_min ?? 2;
       const ok = input.planUpdateCount >= min;
-      return { check, passed: ok, weight: rule.weight, reason: `plan_update_count=${input.planUpdateCount} ${ok ? "≥" : "<"} ${min}` };
+      return {
+        check,
+        passed: ok,
+        weight: rule.weight,
+        reason: `plan_update_count=${input.planUpdateCount} ${ok ? "≥" : "<"} ${min}`,
+      };
     }
     case "recovery_must_include_after_failure_hit": {
       const expected = input.expected.recovery_must_include_after_failure || [];
       const lower = input.planContent.toLowerCase();
       const hit = expected.some((kw) => lower.includes(kw.toLowerCase()));
-      return { check, passed: hit, weight: rule.weight, reason: hit ? "fallback 关键词命中" : `未命中 [${expected.join(",")}]` };
+      return {
+        check,
+        passed: hit,
+        weight: rule.weight,
+        reason: hit ? "fallback 关键词命中" : `未命中 [${expected.join(",")}]`,
+      };
     }
     default: {
       // plan_must_cover_any_of_hit_ge_N（动态 N）
@@ -203,7 +237,12 @@ export function runCheck(
         const n = parseInt(m[1], 10);
         const hits = countCoverHits(input.planContent, input.expected.plan_must_cover_any_of || []);
         const ok = hits >= n;
-        return { check, passed: ok, weight: rule.weight, reason: `cover_hits=${hits} ${ok ? "≥" : "<"} ${n}` };
+        return {
+          check,
+          passed: ok,
+          weight: rule.weight,
+          reason: `cover_hits=${hits} ${ok ? "≥" : "<"} ${n}`,
+        };
       }
       return { check, passed: false, weight: rule.weight, reason: `未知 check: ${check}` };
     }
@@ -222,7 +261,12 @@ export function aggregateCapabilityScore(opts: {
   llmJudgeScore?: number;
   /** LLM Judge 在 yaml 中的 weight；缺省 0 */
   llmJudgeWeight?: number;
-}): { score: number; assertScore: number; llmScore: number | null; details: Record<string, string | number | boolean> } {
+}): {
+  score: number;
+  assertScore: number;
+  llmScore: number | null;
+  details: Record<string, string | number | boolean>;
+} {
   const totalAssertWeight = opts.assertResults.reduce((s, r) => s + r.weight, 0);
   const passWeight = opts.assertResults.filter((r) => r.passed).reduce((s, r) => s + r.weight, 0);
   const assertRatio = totalAssertWeight > 0 ? passWeight / totalAssertWeight : 0;
@@ -232,7 +276,7 @@ export function aggregateCapabilityScore(opts: {
   if (opts.llmJudgeScore != null && opts.llmJudgeWeight && opts.llmJudgeWeight > 0) {
     const totalWeight = totalAssertWeight + opts.llmJudgeWeight;
     finalScore =
-      ((assertScore * totalAssertWeight) + (opts.llmJudgeScore * opts.llmJudgeWeight)) /
+      (assertScore * totalAssertWeight + opts.llmJudgeScore * opts.llmJudgeWeight) /
       Math.max(totalWeight, 1e-6);
     finalScore = Math.round(finalScore * 10) / 10;
   }
@@ -286,7 +330,9 @@ export function toGradeResult(opts: {
     score: opts.score,
     layer: opts.layer || "capability",
     details: Object.fromEntries(
-      Object.entries(opts.details).filter(([, v]) => typeof v === "boolean" || typeof v === "number"),
+      Object.entries(opts.details).filter(
+        ([, v]) => typeof v === "boolean" || typeof v === "number",
+      ),
     ) as Record<string, boolean | number>,
     reasoning: opts.reasoning,
   };

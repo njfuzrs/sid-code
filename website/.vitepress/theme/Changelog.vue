@@ -94,8 +94,7 @@ const filtered = computed<Version[]>(() => {
 
   const out: Version[] = [];
   for (const v of changelog.versions) {
-    const highlightHit =
-      !k && terms.length > 0 && !!v.highlight && itemMatches(v.highlight, terms);
+    const highlightHit = !k && terms.length > 0 && !!v.highlight && itemMatches(v.highlight, terms);
 
     const sections: Section[] = [];
     for (const sec of v.sections) {

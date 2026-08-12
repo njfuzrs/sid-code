@@ -92,7 +92,11 @@ function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
 async function accumulate(
   stream: AsyncIterable<any>,
   signal?: AbortSignal,
-): Promise<{ content: ContentBlock[]; stopReason: string | null; usage: { inputTokens: number; outputTokens: number } }> {
+): Promise<{
+  content: ContentBlock[];
+  stopReason: string | null;
+  usage: { inputTokens: number; outputTokens: number };
+}> {
   const content: ContentBlock[] = [];
   let stopReason: string | null = null;
   const usage = { inputTokens: 0, outputTokens: 0 };
@@ -135,7 +139,10 @@ async function accumulate(
           const block = content[event.index];
           if (block?.type === "text") block.text += event.delta.text;
         } else if (event.delta?.type === "input_json_delta") {
-          partialJson.set(event.index, (partialJson.get(event.index) ?? "") + event.delta.partial_json);
+          partialJson.set(
+            event.index,
+            (partialJson.get(event.index) ?? "") + event.delta.partial_json,
+          );
         }
         break;
       case "content_block_stop": {
@@ -265,7 +272,9 @@ export async function runForkedAgent(
       appended.push(assistantMsg);
 
       // 收集 tool_use
-      const toolUses = content.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
+      const toolUses = content.filter(
+        (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+      );
       if (toolUses.length === 0 || stopReason === "end_turn") {
         break; // 无工具调用，结束
       }
@@ -308,7 +317,10 @@ export async function runForkedAgent(
             continue;
           }
           // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃
-          const res = await tool.execute({ ...(validation.data as Record<string, unknown>), _agentId: "forked-agent" }, signal);
+          const res = await tool.execute(
+            { ...(validation.data as Record<string, unknown>), _agentId: "forked-agent" },
+            signal,
+          );
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

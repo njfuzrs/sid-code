@@ -4,137 +4,137 @@
  * 参考 gemini-cli/packages/cli/src/ui/themes/builtin/light/github-light.ts
  */
 
-import { type ColorsTheme, Theme } from '../../theme.ts';
-import { interpolateColor } from '../../color-utils.ts';
-import { githubLightSemanticColors } from '../../semantic-tokens.ts';
+import { type ColorsTheme, Theme } from "../../theme.ts";
+import { interpolateColor } from "../../color-utils.ts";
+import { githubLightSemanticColors } from "../../semantic-tokens.ts";
 
 const githubLightColors: ColorsTheme = {
-  type: 'light',
-  Background: '#ffffff',
-  Foreground: '#24292e',
-  LightBlue: '#005cc5',
-  AccentBlue: '#005cc5',
-  AccentPurple: '#6f42c1',
-  AccentCyan: '#032f62',
-  AccentGreen: '#22863a',
-  AccentYellow: '#e36209',
-  AccentRed: '#d73a49',
-  DiffAdded: '#e6ffed',
-  DiffRemoved: '#ffeef0',
-  Comment: '#6a737d',
-  Gray: '#6a737d',
-  DarkGray: interpolateColor('#6a737d', '#ffffff', 0.5),
-  GradientColors: ['#005cc5', '#22863a'],
+  type: "light",
+  Background: "#ffffff",
+  Foreground: "#24292e",
+  LightBlue: "#005cc5",
+  AccentBlue: "#005cc5",
+  AccentPurple: "#6f42c1",
+  AccentCyan: "#032f62",
+  AccentGreen: "#22863a",
+  AccentYellow: "#e36209",
+  AccentRed: "#d73a49",
+  DiffAdded: "#e6ffed",
+  DiffRemoved: "#ffeef0",
+  Comment: "#6a737d",
+  Gray: "#6a737d",
+  DarkGray: interpolateColor("#6a737d", "#ffffff", 0.5),
+  GradientColors: ["#005cc5", "#22863a"],
 };
 
 export const GitHubLight: Theme = new Theme(
-  'GitHub Light',
-  'light',
+  "GitHub Light",
+  "light",
   {
     hljs: {
-      display: 'block',
-      overflowX: 'auto',
-      padding: '0.5em',
+      display: "block",
+      overflowX: "auto",
+      padding: "0.5em",
       color: githubLightColors.Foreground,
       background: githubLightColors.Background,
     },
-    'hljs-comment': {
+    "hljs-comment": {
       color: githubLightColors.Comment,
-      fontStyle: 'italic',
+      fontStyle: "italic",
     },
-    'hljs-quote': {
+    "hljs-quote": {
       color: githubLightColors.Comment,
-      fontStyle: 'italic',
+      fontStyle: "italic",
     },
-    'hljs-keyword': {
+    "hljs-keyword": {
       color: githubLightColors.AccentRed,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-selector-tag': {
+    "hljs-selector-tag": {
       color: githubLightColors.AccentRed,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-subst': {
+    "hljs-subst": {
       color: githubLightColors.Foreground,
     },
-    'hljs-number': {
+    "hljs-number": {
       color: githubLightColors.LightBlue,
     },
-    'hljs-literal': {
+    "hljs-literal": {
       color: githubLightColors.LightBlue,
     },
-    'hljs-variable': {
+    "hljs-variable": {
       color: githubLightColors.AccentYellow,
     },
-    'hljs-template-variable': {
+    "hljs-template-variable": {
       color: githubLightColors.AccentYellow,
     },
-    'hljs-string': {
+    "hljs-string": {
       color: githubLightColors.AccentCyan,
     },
-    'hljs-doctag': {
+    "hljs-doctag": {
       color: githubLightColors.AccentCyan,
     },
-    'hljs-title': {
+    "hljs-title": {
       color: githubLightColors.AccentPurple,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-section': {
+    "hljs-section": {
       color: githubLightColors.AccentPurple,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-selector-id': {
+    "hljs-selector-id": {
       color: githubLightColors.AccentPurple,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-type': {
+    "hljs-type": {
       color: githubLightColors.AccentGreen,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-tag': {
-      color: githubLightColors.AccentGreen,
-    },
-    'hljs-name': {
+    "hljs-tag": {
       color: githubLightColors.AccentGreen,
     },
-    'hljs-attribute': {
+    "hljs-name": {
+      color: githubLightColors.AccentGreen,
+    },
+    "hljs-attribute": {
       color: githubLightColors.LightBlue,
     },
-    'hljs-regexp': {
+    "hljs-regexp": {
       color: githubLightColors.AccentCyan,
     },
-    'hljs-link': {
+    "hljs-link": {
       color: githubLightColors.AccentCyan,
     },
-    'hljs-symbol': {
+    "hljs-symbol": {
       color: githubLightColors.AccentPurple,
     },
-    'hljs-bullet': {
+    "hljs-bullet": {
       color: githubLightColors.AccentPurple,
     },
-    'hljs-built_in': {
+    "hljs-built_in": {
       color: githubLightColors.LightBlue,
     },
-    'hljs-builtin-name': {
+    "hljs-builtin-name": {
       color: githubLightColors.LightBlue,
     },
-    'hljs-meta': {
+    "hljs-meta": {
       color: githubLightColors.LightBlue,
-      fontWeight: 'bold',
+      fontWeight: "bold",
     },
-    'hljs-deletion': {
-      background: '#ffeef0',
+    "hljs-deletion": {
+      background: "#ffeef0",
       color: githubLightColors.AccentRed,
     },
-    'hljs-addition': {
-      background: '#e6ffed',
+    "hljs-addition": {
+      background: "#e6ffed",
       color: githubLightColors.AccentGreen,
     },
-    'hljs-emphasis': {
-      fontStyle: 'italic',
+    "hljs-emphasis": {
+      fontStyle: "italic",
     },
-    'hljs-strong': {
-      fontWeight: 'bold',
+    "hljs-strong": {
+      fontWeight: "bold",
     },
   },
   githubLightColors,

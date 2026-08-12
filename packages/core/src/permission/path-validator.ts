@@ -45,10 +45,19 @@ export function normalizeCaseForComparison(p: string): string {
 
 /** 系统目录保护（写入拦截）— 包含 macOS /private 前缀 */
 const PROTECTED_WRITE_DIRS = [
-  "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/",
-  "/proc/", "/sys/", "/dev/", "/var/log/",
-  "/System/", "/Library/",
-  "/private/etc/", "/private/var/log/",
+  "/etc/",
+  "/usr/",
+  "/bin/",
+  "/sbin/",
+  "/boot/",
+  "/proc/",
+  "/sys/",
+  "/dev/",
+  "/var/log/",
+  "/System/",
+  "/Library/",
+  "/private/etc/",
+  "/private/var/log/",
 ];
 
 /** 系统目录保护（读取拦截）— 包含 macOS /private 前缀 */
@@ -154,13 +163,21 @@ export class PathValidator {
       this.workspacePath = resolved;
     }
     this.workspacePathLower = normalizeCaseForComparison(this.workspacePath);
-    this.allowedDirectories = allowedDirectories.map(d => {
+    this.allowedDirectories = allowedDirectories.map((d) => {
       const r = path.resolve(d);
-      try { return fs.existsSync(r) ? fs.realpathSync(r) : r; } catch { return r; }
+      try {
+        return fs.existsSync(r) ? fs.realpathSync(r) : r;
+      } catch {
+        return r;
+      }
     });
-    this.blockedDirectories = blockedDirectories.map(d => {
+    this.blockedDirectories = blockedDirectories.map((d) => {
       const r = path.resolve(d);
-      try { return fs.existsSync(r) ? fs.realpathSync(r) : r; } catch { return r; }
+      try {
+        return fs.existsSync(r) ? fs.realpathSync(r) : r;
+      } catch {
+        return r;
+      }
     });
   }
 
@@ -231,7 +248,7 @@ export class PathValidator {
 
     // 2. 目录白名单（如果配置了，大小写归一化比较）
     if (this.allowedDirectories.length > 0) {
-      const inAllowed = this.allowedDirectories.some(dir => {
+      const inAllowed = this.allowedDirectories.some((dir) => {
         const dirLower = normalizeCaseForComparison(dir);
         return realPathLower.startsWith(dirLower + "/") || realPathLower === dirLower;
       });
@@ -277,7 +294,7 @@ export class PathValidator {
       const originalInWorkspace = this.isWithinWorkspace(resolved);
       if (originalInWorkspace) {
         const chain = this.getAllResolvedPaths(filePath);
-        const escaped = chain.find(p => !this.isWithinWorkspace(p));
+        const escaped = chain.find((p) => !this.isWithinWorkspace(p));
         if (escaped) {
           return {
             allowed: false,
@@ -407,8 +424,7 @@ export class PathValidator {
   /** 检查路径是否在工作区内（大小写归一化比较，防大小写不敏感文件系统绕过） */
   isWithinWorkspace(resolvedPath: string): boolean {
     const lower = normalizeCaseForComparison(resolvedPath);
-    return lower === this.workspacePathLower ||
-      lower.startsWith(this.workspacePathLower + "/");
+    return lower === this.workspacePathLower || lower.startsWith(this.workspacePathLower + "/");
   }
 
   // ── G25：运行时动态增删目录白名单（对标 claude-code /add-dir 扩展工作目录）──

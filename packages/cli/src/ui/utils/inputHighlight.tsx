@@ -85,13 +85,29 @@ export function renderHighlightedSegments(segments: HighlightSegment[]): React.R
   return segments.map((seg, i) => {
     switch (seg.type) {
       case "slash":
-        return <Text key={i} color={theme.text.accent} bold>{seg.text}</Text>;
+        return (
+          <Text key={i} color={theme.text.accent} bold>
+            {seg.text}
+          </Text>
+        );
       case "at":
-        return <Text key={i} color={theme.text.link}>{seg.text}</Text>;
+        return (
+          <Text key={i} color={theme.text.link}>
+            {seg.text}
+          </Text>
+        );
       case "shell":
-        return <Text key={i} color={theme.status.warning} bold>{seg.text}</Text>;
+        return (
+          <Text key={i} color={theme.status.warning} bold>
+            {seg.text}
+          </Text>
+        );
       case "path":
-        return <Text key={i} color={theme.text.link} underline>{seg.text}</Text>;
+        return (
+          <Text key={i} color={theme.text.link} underline>
+            {seg.text}
+          </Text>
+        );
       default:
         return <Text key={i}>{seg.text}</Text>;
     }

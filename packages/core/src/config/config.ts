@@ -36,18 +36,18 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
-  enabled?: boolean;       // 默认 true，可临时禁用服务器
-  timeout?: number;        // 请求超时毫秒，默认 30000
-  retries?: number;        // 重试次数，默认 2
+  enabled?: boolean; // 默认 true，可临时禁用服务器
+  timeout?: number; // 请求超时毫秒，默认 30000
+  retries?: number; // 重试次数，默认 2
   includeTools?: string[]; // 工具白名单（优先于 excludeTools）
   excludeTools?: string[]; // 工具黑名单
   // ─── IDE 集成元数据（动态注册的 IDE MCP server 使用，对标 Claude Code sse-ide/ws-ide） ───
-  authToken?: string;          // 认证令牌（注入为 Authorization: Bearer 头）
-  ideName?: string;            // IDE 名称（VS Code / Cursor / JetBrains 等）
+  authToken?: string; // 认证令牌（注入为 Authorization: Bearer 头）
+  ideName?: string; // IDE 名称（VS Code / Cursor / JetBrains 等）
   ideRunningInWindows?: boolean; // IDE 是否运行在 Windows 上（WSL 场景）
   scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
   // ─── OAuth 2.1 接入（远程 MCP：Linear / Sentry / claude.ai 等，对标 Claude Code auth.ts） ───
-  oauth?: MCPOAuthConfig;      // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
+  oauth?: MCPOAuthConfig; // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
 }
 
 /** MCP OAuth 配置（远程 HTTP/SSE 服务器） */
@@ -67,22 +67,22 @@ export interface MCPOAuthConfig {
 /** Hook 配置（支持 command / url / prompt / agent 四种类型） */
 export interface HookConfig {
   type?: "command" | "url" | "prompt" | "agent"; // 钩子类型，默认 command
-  event?: string;                  // 旧格式兼容：事件名
-  command?: string;                // command 类型：shell 命令
-  url?: string;                    // url 类型：HTTP 地址
-  method?: string;                 // url 类型：HTTP 方法，默认 POST
+  event?: string; // 旧格式兼容：事件名
+  command?: string; // command 类型：shell 命令
+  url?: string; // url 类型：HTTP 地址
+  method?: string; // url 类型：HTTP 方法，默认 POST
   headers?: Record<string, string>; // url 类型：HTTP 头
-  timeout?: number;                // 超时（秒），默认 30
-  blocking?: boolean;              // 是否阻塞，默认 false
-  async?: boolean;                 // G7：command 类型后台异步执行，不阻塞主循环
-  asyncRewake?: boolean;           // G7：后台 hook exit 2 时，其 stderr 下一轮回灌唤醒模型
-  matcher?: string;                // 工具匹配（精确或 /regex/）
-  if?: string;                     // G10：tool_input 细粒度条件（权限规则语法，如 Bash(git *)）
+  timeout?: number; // 超时（秒），默认 30
+  blocking?: boolean; // 是否阻塞，默认 false
+  async?: boolean; // G7：command 类型后台异步执行，不阻塞主循环
+  asyncRewake?: boolean; // G7：后台 hook exit 2 时，其 stderr 下一轮回灌唤醒模型
+  matcher?: string; // 工具匹配（精确或 /regex/）
+  if?: string; // G10：tool_input 细粒度条件（权限规则语法，如 Bash(git *)）
   // ─── prompt / agent 类型（LLM 层 hook，G5） ───
-  name?: string;                   // hook 名称（可观测性/日志）
-  prompt?: string;                 // prompt/agent 类型：验证提示词
-  model?: string;                  // prompt/agent 类型：使用的模型（默认走 side-call 模型）
-  tools?: string[];                // agent 类型：子代理可用工具白名单
+  name?: string; // hook 名称（可观测性/日志）
+  prompt?: string; // prompt/agent 类型：验证提示词
+  model?: string; // prompt/agent 类型：使用的模型（默认走 side-call 模型）
+  tools?: string[]; // agent 类型：子代理可用工具白名单
 }
 
 /** Hook 配置集合（按事件分组，新格式） */
@@ -121,9 +121,9 @@ export interface ModelConfig {
   provider?: string;
   baseURL?: string;
   apiKey?: string;
-  contextWindow?: number;       // 上下文窗口（tokens）
-  maxOutputTokens?: number;     // 最大输出 tokens
-  supportsThinking?: boolean;   // 是否支持 Extended Thinking
+  contextWindow?: number; // 上下文窗口（tokens）
+  maxOutputTokens?: number; // 最大输出 tokens
+  supportsThinking?: boolean; // 是否支持 Extended Thinking
   /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
   pricing?: ModelPricing;
 }
@@ -393,7 +393,10 @@ export interface Config {
    * CLI 注入的子代理定义（--agents <json>）：{ name: { description, prompt, tools?, model? } }。
    * 注册进聚合 registry，使 sub_agent 可发现。运行时字段，不落盘。
    */
-  injectedAgents?: Record<string, { description?: string; prompt: string; tools?: string[]; model?: string }>;
+  injectedAgents?: Record<
+    string,
+    { description?: string; prompt: string; tools?: string[]; model?: string }
+  >;
   /**
    * 整会话使用的顶层子代理人格名（--agent <name>）。
    * 指向 injectedAgents 或已注册 agent 的名字。运行时字段，不落盘。
@@ -937,7 +940,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         // 此前遗漏导致走 snake_case 归一化路径时用户自配价被静默丢弃（架空「用户手写价最高优先」）。
         pricing: m.pricing,
       }));
-    // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
+      // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
     } else if (configKey === "hooks" && Array.isArray(value)) {
       const grouped: HooksConfig = {};
       for (const hook of value) {
@@ -946,7 +949,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         grouped[event].push(hook);
       }
       result[configKey] = grouped;
-    // 特殊处理 checkpoint：转换字段名
+      // 特殊处理 checkpoint：转换字段名
     } else if (configKey === "checkpoint" && typeof value === "object") {
       result[configKey] = {
         enabled: value.enabled,
@@ -957,7 +960,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
         hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
       };
-    // 特殊处理 search：转换字段名（snake_case → camelCase）
+      // 特殊处理 search：转换字段名（snake_case → camelCase）
     } else if (configKey === "search" && typeof value === "object" && value !== null) {
       result[configKey] = {
         backend: value.backend,
@@ -965,30 +968,34 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         braveApiKey: value.brave_api_key || value.braveApiKey,
         tavilyApiKey: value.tavily_api_key || value.tavilyApiKey,
       };
-    // 特殊处理 trace：转换字段名（snake_case → camelCase）
+      // 特殊处理 trace：转换字段名（snake_case → camelCase）
     } else if (configKey === "trace" && typeof value === "object" && value !== null) {
       const upload = value.upload;
       result[configKey] = {
         enabled: value.enabled,
         outputDir: value.output_dir || value.outputDir,
         maxSessionsRetained: value.max_sessions_retained || value.maxSessionsRetained,
-        upload: upload && typeof upload === "object" ? {
-          url: upload.url,
-          token: upload.token,
-          autoUpload: upload.auto_upload ?? upload.autoUpload,
-          userId: upload.user_id || upload.userId,
-          deviceId: upload.device_id || upload.deviceId,
-          toolSource: upload.tool_source || upload.toolSource,
-          maxRetries: upload.max_retries || upload.maxRetries,
-          retryBaseMs: upload.retry_base_ms || upload.retryBaseMs,
-          compress: upload.compress,
-          deleteAfterUpload: upload.delete_after_upload ?? upload.deleteAfterUpload,
-          healthCheckIntervalMs: upload.health_check_interval_ms || upload.healthCheckIntervalMs,
-          maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
-          queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
-        } : undefined,
+        upload:
+          upload && typeof upload === "object"
+            ? {
+                url: upload.url,
+                token: upload.token,
+                autoUpload: upload.auto_upload ?? upload.autoUpload,
+                userId: upload.user_id || upload.userId,
+                deviceId: upload.device_id || upload.deviceId,
+                toolSource: upload.tool_source || upload.toolSource,
+                maxRetries: upload.max_retries || upload.maxRetries,
+                retryBaseMs: upload.retry_base_ms || upload.retryBaseMs,
+                compress: upload.compress,
+                deleteAfterUpload: upload.delete_after_upload ?? upload.deleteAfterUpload,
+                healthCheckIntervalMs:
+                  upload.health_check_interval_ms || upload.healthCheckIntervalMs,
+                maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
+                queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
+              }
+            : undefined,
       };
-    // 特殊处理 telemetry：转换字段名
+      // 特殊处理 telemetry：转换字段名
     } else if (configKey === "telemetry" && typeof value === "object" && value !== null) {
       const v = value as any;
       // ⚠️ 三个数值字段必须「只在有值时才写入」。
@@ -1008,7 +1015,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
       if (flushIntervalMs !== undefined) telemetry.flushIntervalMs = flushIntervalMs;
       if (maxQueueSize !== undefined) telemetry.maxQueueSize = maxQueueSize;
       result[configKey] = telemetry;
-    // 特殊处理 analytics：转换字段名（snake_case → camelCase），解析后端列表（spec 17）
+      // 特殊处理 analytics：转换字段名（snake_case → camelCase），解析后端列表（spec 17）
     } else if (configKey === "analytics" && typeof value === "object" && value !== null) {
       const v = value as any;
       const backends = Array.isArray(v.backends)
@@ -1030,7 +1037,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         flags: v.flags,
         backends,
       };
-    // 特殊处理 quota：转换字段名
+      // 特殊处理 quota：转换字段名
     } else if (configKey === "quota" && typeof value === "object" && value !== null) {
       const v = value as any;
       result[configKey] = {
@@ -1107,8 +1114,12 @@ async function loadNewFormatAsConfig(
         // 当前所有配置结构（trace.upload、telemetry.exporters 等）实际只需一层即可。
         for (const [key, value] of Object.entries(raw)) {
           if (
-            value !== null && typeof value === "object" && !Array.isArray(value) &&
-            merged[key] !== null && typeof merged[key] === "object" && !Array.isArray(merged[key])
+            value !== null &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            merged[key] !== null &&
+            typeof merged[key] === "object" &&
+            !Array.isArray(merged[key])
           ) {
             merged[key] = { ...(merged[key] as Record<string, unknown>), ...value };
           } else {
@@ -1335,7 +1346,10 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
           //
           // 现在改为：pending → 不加入，登记到待审批快照，由 /mcp 面板审批后下次启动生效。
           pendingApprovalServers[name] = serverConfig;
-          getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 待审批，本次不加载（用 /mcp 审批）`);
+          getLogger().info(
+            "CONFIG",
+            `项目 MCP 服务器 "${name}" 待审批，本次不加载（用 /mcp 审批）`,
+          );
           continue;
         }
         projectServers[name] = serverConfig;
@@ -1349,11 +1363,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
     // 有 local/project 源，或配了 policy 时才走合并（否则保持纯 user 直通，零行为变化）。
     const policy = (merged as Config).mcpPolicy;
-    if (
-      Object.keys(localServers).length > 0 ||
-      Object.keys(projectServers).length > 0 ||
-      policy
-    ) {
+    if (Object.keys(localServers).length > 0 || Object.keys(projectServers).length > 0 || policy) {
       const { mergeMcpConfigs } = await import("../mcp/config.ts");
       const mergedMcp = mergeMcpConfigs(
         [
@@ -1372,7 +1382,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 记录用户显式配置的 maxTokens 全局覆盖值——必须在首次 resolveCurrentModelConfig 之前，
   // 否则 resolveCurrentModelConfig 读不到 _explicitMaxTokens 会走「按模型推导」分支，把用户
   // 显式值覆盖掉（回归）。供后续运行时 /model 切换区分「刻意设的」与「模型推导残留」。
-  const userExplicitMaxTokens = cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
+  const userExplicitMaxTokens =
+    cliArgs.maxTokens || (fileConfig as any).maxTokens || (envConfig as any).maxTokens;
   if (userExplicitMaxTokens) {
     const n = Number(userExplicitMaxTokens);
     if (Number.isFinite(n) && n > 0) config._explicitMaxTokens = n;
@@ -1416,8 +1427,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     if (config.print) {
       throw new Error(
         "未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels 数组中添加模型配置。\n" +
-        "示例: { \"availableModels\": [{ \"name\": \"<你的模型名>\", \"provider\": \"openai\", \"api_key\": \"sk-xxx\", \"base_url\": \"https://api.example.com\" }] }\n" +
-        "可选字段: contextWindow (上下文窗口), maxOutputTokens (最大输出), pricing (自定义价格), supportsThinking (是否支持深度思考)",
+          '示例: { "availableModels": [{ "name": "<你的模型名>", "provider": "openai", "api_key": "sk-xxx", "base_url": "https://api.example.com" }] }\n' +
+          "可选字段: contextWindow (上下文窗口), maxOutputTokens (最大输出), pricing (自定义价格), supportsThinking (是否支持深度思考)",
       );
     }
     config._needsOnboarding = true;
@@ -1464,21 +1475,21 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 故不在此直接打印，挂到 config 上由上层在 logger 就绪后统一输出。
   if (validation.warnings.length > 0 || validation.errors.length > 0) {
     config._validationDiagnostics = {
-      warnings: validation.warnings.map(w => ({ path: w.path, message: w.message })),
-      errors: validation.errors.map(e => ({ path: e.path, message: e.message })),
+      warnings: validation.warnings.map((w) => ({ path: w.path, message: w.message })),
+      errors: validation.errors.map((e) => ({ path: e.path, message: e.message })),
     };
   }
 
   // 致命错误：provider / model 无效时必须立即阻止启动（不依赖 logger）。
   // 这是"不修就跑不起来"的唯一该抛首屏的情形。
   if (validation.errors.length > 0) {
-    const hasFatalError = validation.errors.some(e =>
-      e.path === "provider" || e.path === "model"
+    const hasFatalError = validation.errors.some(
+      (e) => e.path === "provider" || e.path === "model",
     );
     if (hasFatalError) {
       const detail = validation.errors
-        .filter(e => e.path === "provider" || e.path === "model")
-        .map(e => `${e.path}: ${e.message}`)
+        .filter((e) => e.path === "provider" || e.path === "model")
+        .map((e) => `${e.path}: ${e.message}`)
         .join("; ");
       throw new Error(`配置验证失败，存在致命错误，无法启动 (${detail})`);
     }
@@ -1526,7 +1537,7 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
 
   if (!config.availableModels?.length) return;
 
-  const mc = config.availableModels.find(m => m.name === config.model);
+  const mc = config.availableModels.find((m) => m.name === config.model);
   if (!mc) return;
 
   if (mc.provider) config.provider = mc.provider;
@@ -1592,7 +1603,7 @@ export function resolveMaxOutputTokensForModel(
   if (availableModels?.length) {
     // 第一优先仍按**别名**查：maxOutputTokens 是用户对「这条渠道」的显式声明，
     // 同一真名的两个端点上限确实可能不同（网关常比官方更紧），必须各自取各自的。
-    const modelConfig = availableModels.find(m => m.name === model);
+    const modelConfig = availableModels.find((m) => m.name === model);
     if (modelConfig?.maxOutputTokens) return modelConfig.maxOutputTokens;
   }
   // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）。
@@ -1633,7 +1644,9 @@ export async function ensureConfigDir(): Promise<string> {
  * 调用方（cli.ts）仅用其返回值作 checker 构造期的**启动占位**规则；
  * checker.initRules() 会再跑一次 RuleLoader.loadAll 并以其为准（清除占位避免重复）。
  */
-export async function loadPermissionRules(): Promise<import("../permission/types.ts").PermissionRule> {
+export async function loadPermissionRules(): Promise<
+  import("../permission/types.ts").PermissionRule
+> {
   const log = getLogger();
 
   // P2-1：两套加载器合一——以 RuleLoader 为唯一事实源。

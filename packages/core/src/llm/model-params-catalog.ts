@@ -25,7 +25,15 @@ export interface ModelParamsEntry {
   /** 支持的 reasoning_effort 档位。undefined = 不支持 */
   reasoningEffortValues?: ("low" | "medium" | "high" | "max")[];
   /** 协议族标识（用于 effort.ts 分发）。undefined = 走现有 runtime 推断 */
-  protocolKind?: "deepseek-openai" | "deepseek-anthropic" | "anthropic-native" | "o-series" | "glm-openai" | "grok-openai" | "openai-responses" | "unknown";
+  protocolKind?:
+    | "deepseek-openai"
+    | "deepseek-anthropic"
+    | "anthropic-native"
+    | "o-series"
+    | "glm-openai"
+    | "grok-openai"
+    | "openai-responses"
+    | "unknown";
   /**
    * 多轮工具调用时是否要求回传 reasoning_content。
    * DeepSeek V4 thinking 系为 true（tool-call 轮必须回传，否则 400）；

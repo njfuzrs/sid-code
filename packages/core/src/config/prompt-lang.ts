@@ -47,7 +47,14 @@ export function normalizeLanguagePref(value: unknown): LanguagePref | undefined 
 
   // locale 串取主语言子标签：zh-CN / zh_TW / zh.UTF-8 → zh
   const primary = v.split(/[-_.@]/)[0];
-  if (primary === "zh" || primary === "cn" || primary === "chinese" || primary === "zho" || primary === "cmn") return "zh";
+  if (
+    primary === "zh" ||
+    primary === "cn" ||
+    primary === "chinese" ||
+    primary === "zho" ||
+    primary === "cmn"
+  )
+    return "zh";
   if (primary === "en" || primary === "eng" || primary === "english") return "en";
   return undefined;
 }
@@ -59,7 +66,9 @@ export function normalizeLanguagePref(value: unknown): LanguagePref | undefined 
  * 纯代码片段）。读取顺序对齐 POSIX：`LC_ALL` > `LC_MESSAGES` > `LANG`。
  * 判定不了一律回落 `zh`——「中文优先」是产品缺省，不确定时不该漂到英文。
  */
-export function detectSystemLanguage(env: Record<string, string | undefined> = process.env): ResolvedLanguage {
+export function detectSystemLanguage(
+  env: Record<string, string | undefined> = process.env,
+): ResolvedLanguage {
   for (const key of ["LC_ALL", "LC_MESSAGES", "LANG"]) {
     const pref = normalizeLanguagePref(env[key]);
     if (pref === "zh" || pref === "en") return pref;
@@ -92,7 +101,10 @@ export function resolveLanguageFromEnv(
 }
 
 /** 人类可读标签（命令回显 / 状态栏共用，避免各处手写不一致）。 */
-export function describeLanguagePref(pref: LanguagePref | undefined, lang: ResolvedLanguage = "zh"): string {
+export function describeLanguagePref(
+  pref: LanguagePref | undefined,
+  lang: ResolvedLanguage = "zh",
+): string {
   if (lang === "en") {
     if (pref === "zh") return "Chinese-first";
     if (pref === "en") return "English-first";
@@ -131,13 +143,15 @@ const INTERNAL_EN_STRAY_TAG = /<\/?internal_en>/gi;
 export function stripInternalEnTags(text: string): string {
   // 判据要覆盖游离闭合标签，否则 `</internal_en>` 单独出现时漏出。
   if (!text || !hasInternalEnTags(text)) return text;
-  return text
-    .replace(INTERNAL_EN_BLOCK, "")
-    .replace(INTERNAL_EN_UNCLOSED, "")
-    .replace(INTERNAL_EN_STRAY_TAG, "")
-    // 剥离后常留下连续空行，压成最多一个空行，避免渲染出大段空白
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return (
+    text
+      .replace(INTERNAL_EN_BLOCK, "")
+      .replace(INTERNAL_EN_UNCLOSED, "")
+      .replace(INTERNAL_EN_STRAY_TAG, "")
+      // 剥离后常留下连续空行，压成最多一个空行，避免渲染出大段空白
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 /** 文本中是否含 `<internal_en>` 痕迹（供测试与诊断断言）。 */
@@ -183,6 +197,9 @@ export function extractInternalEnTags(content: string): { thinking: string; text
   return {
     thinking: parts.filter(Boolean).join("\n\n"),
     // 游离标签兜底清理 + 压缩剥离后留下的连续空行
-    text: text.replace(INTERNAL_EN_STRAY_TAG, "").replace(/\n{3,}/g, "\n\n").trim(),
+    text: text
+      .replace(INTERNAL_EN_STRAY_TAG, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
   };
 }

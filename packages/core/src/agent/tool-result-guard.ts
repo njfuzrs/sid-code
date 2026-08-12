@@ -49,9 +49,7 @@ export function collectExistingToolResultIds(
 /**
  * 从 ContentBlock 数组中收集 tool_result ID
  */
-export function collectToolResultIdsFromBlocks(
-  blocks: ContentBlock[],
-): Set<string> {
+export function collectToolResultIdsFromBlocks(blocks: ContentBlock[]): Set<string> {
   const ids = new Set<string>();
   for (const block of blocks) {
     if (block.type === "tool_result") {

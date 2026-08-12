@@ -157,7 +157,13 @@ export function loadAllCases(evalsDir: string): CaseDoc[] {
     // case 文件名前缀：legacy 用 case_*，新架构用 arch_*；B5-6 起 execution 桶用 bug_*；B6-2 起 real-tasks 用 real_*；B7-4 起 cr_* (code-review execution)；B7-5 起 csh_* (ci-self-heal execution)
     const entries = readdirSync(abs).filter(
       (f) =>
-        (f.startsWith("case_") || f.startsWith("arch_") || f.startsWith("bug_") || f.startsWith("real_") || f.startsWith("cr_") || f.startsWith("csh_")) && f.endsWith(".yaml"),
+        (f.startsWith("case_") ||
+          f.startsWith("arch_") ||
+          f.startsWith("bug_") ||
+          f.startsWith("real_") ||
+          f.startsWith("cr_") ||
+          f.startsWith("csh_")) &&
+        f.endsWith(".yaml"),
     );
     for (const f of entries) {
       const p = join(abs, f);
@@ -184,7 +190,11 @@ export function loadAllCases(evalsDir: string): CaseDoc[] {
  * 读取一条 case 的所有历史周分数。
  * 优先外部 _scores/wNN/case_NNN.yaml,fallback 到内联 code_graph_scores。
  */
-export function loadWeekScores(caseId: string, evalsDir: string, inlineScores?: unknown): WeekScore[] {
+export function loadWeekScores(
+  caseId: string,
+  evalsDir: string,
+  inlineScores?: unknown,
+): WeekScore[] {
   const byWeek = new Map<number, WeekScore>();
 
   if (inlineScores && typeof inlineScores === "object") {
@@ -214,7 +224,8 @@ export function loadWeekScores(caseId: string, evalsDir: string, inlineScores?: 
 function normalizeWeekDoc(week: number, doc: Record<string, unknown>): WeekScore {
   if (doc.anchor && typeof doc.anchor === "object") {
     const anchor = (doc.anchor as { score?: number }).score;
-    const llm = doc.llm && typeof doc.llm === "object" ? (doc.llm as { score?: number }).score : undefined;
+    const llm =
+      doc.llm && typeof doc.llm === "object" ? (doc.llm as { score?: number }).score : undefined;
     const dims =
       doc.llm && typeof doc.llm === "object"
         ? ((doc.llm as { dimensions?: Record<string, number> }).dimensions ?? undefined)

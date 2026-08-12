@@ -103,7 +103,10 @@ export function createSessionMemoryPermissions(sessionMemoryFile: string): CanUs
     }
     if (toolName === "write" || toolName === "edit") {
       const target = extractTargetPath(input);
-      if (target && require("path").resolve(target) === require("path").resolve(sessionMemoryFile)) {
+      if (
+        target &&
+        require("path").resolve(target) === require("path").resolve(sessionMemoryFile)
+      ) {
         return { behavior: "allow" };
       }
       return { behavior: "deny", message: `Session Memory 代理只能编辑: ${sessionMemoryFile}` };

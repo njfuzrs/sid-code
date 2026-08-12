@@ -122,7 +122,10 @@ function buildSystemPrompt(opts: { withSkill: boolean }): SkillPrompt {
  * 这不是真 baseline，但可以快速发现 case / Skill 设计错位。
  * 真 baseline 需要 --execute 模式。
  */
-function staticContractCheck(cases: CrCase[], skillPrompt: SkillPrompt): {
+function staticContractCheck(
+  cases: CrCase[],
+  skillPrompt: SkillPrompt,
+): {
   results: Array<{
     id: string;
     contractIssues: string[];
@@ -152,7 +155,10 @@ function staticContractCheck(cases: CrCase[], skillPrompt: SkillPrompt): {
     }
 
     if (skillPrompt.withSkill) {
-      if (skillPrompt.system.includes("不删除用户代码") || skillPrompt.system.includes("不修改文件")) {
+      if (
+        skillPrompt.system.includes("不删除用户代码") ||
+        skillPrompt.system.includes("不修改文件")
+      ) {
         // ok
       } else {
         issues.push("SKILL.md 未明确禁止修改文件 — 与 case 期望失配");
@@ -199,19 +205,27 @@ function staticContractCheck(cases: CrCase[], skillPrompt: SkillPrompt): {
       if (category.includes("boundary")) {
         if (category.includes("long_pr")) {
           estimatedExecScore += 0.5;
-          estimatedNotes.push("Skill §2.1 长 PR 警告（> 50 文件 / > 1000 行），提供拆分 + 局部 review 指引");
+          estimatedNotes.push(
+            "Skill §2.1 长 PR 警告（> 50 文件 / > 1000 行），提供拆分 + 局部 review 指引",
+          );
         } else if (category.includes("empty_pr")) {
           estimatedExecScore += 0.6;
-          estimatedNotes.push("Skill §1 触发不命中场景含 whitespace-only 跳过指引，false_positive 控制");
+          estimatedNotes.push(
+            "Skill §1 触发不命中场景含 whitespace-only 跳过指引，false_positive 控制",
+          );
         } else if (category.includes("binary")) {
           estimatedExecScore += 0.7;
-          estimatedNotes.push("Skill §1 触发不命中含二进制文件 (.png/.pdf/.lock) 跳过指引，false_positive 控制");
+          estimatedNotes.push(
+            "Skill §1 触发不命中含二进制文件 (.png/.pdf/.lock) 跳过指引，false_positive 控制",
+          );
         } else if (category.includes("docs_only")) {
           estimatedExecScore += 0.6;
           estimatedNotes.push("Skill §1 触发不命中含 docs/ 跳过指引，false_positive 控制");
         } else if (category.includes("mixed_languages")) {
           estimatedExecScore += 0.7;
-          estimatedNotes.push("Skill §2.4 7 维度检查清单 + AI 反模式清单跨语言适用，加强多语言 issue 检出");
+          estimatedNotes.push(
+            "Skill §2.4 7 维度检查清单 + AI 反模式清单跨语言适用，加强多语言 issue 检出",
+          );
         } else {
           estimatedExecScore += 0.4;
           estimatedNotes.push("Skill 边界场景指引（通用）");
@@ -303,7 +317,10 @@ async function executeCase(c: CrCase, skillPrompt: SkillPrompt): Promise<Execute
   }
 }
 
-function gradeExecuteResult(c: CrCase, r: ExecuteResult): {
+function gradeExecuteResult(
+  c: CrCase,
+  r: ExecuteResult,
+): {
   score: number;
   details: Record<string, string | number | boolean>;
 } {
@@ -312,7 +329,10 @@ function gradeExecuteResult(c: CrCase, r: ExecuteResult): {
   let dimScore = 5;
 
   if (r.error || r.timedOut) {
-    return { score: 0, details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus } };
+    return {
+      score: 0,
+      details: { error: r.error, timedOut: r.timedOut, exitStatus: r.exitStatus },
+    };
   }
 
   // 1. must_include_any_of
@@ -373,8 +393,12 @@ async function main() {
   const skillPrompt = buildSystemPrompt({ withSkill: values.skill });
 
   console.log(`Cases       : ${cases.length} (${cases.map((c) => c.id).join(", ")})`);
-  console.log(`Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`);
-  console.log(`Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`);
+  console.log(
+    `Mode        : ${values.execute ? "execute (真调 LLM)" : "static-contract (不调 LLM)"}`,
+  );
+  console.log(
+    `Skill prompt: ${skillPrompt.withSkill ? "INJECTED (after-baseline)" : "NOT injected (before-baseline)"}`,
+  );
   console.log("");
 
   const ts = Date.now();
@@ -421,13 +445,26 @@ async function main() {
 
   // 真 execute 模式
   const samplesN = Math.max(1, parseInt(values.samples || "1", 10));
-  const allResults: Array<{ caseId: string; samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> }> = [];
+  const allResults: Array<{
+    caseId: string;
+    samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }>;
+  }> = [];
 
   for (let i = 0; i < cases.length; i++) {
     const c = cases[i];
-    console.log(`[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`);
+    console.log(
+      `[${i + 1}/${cases.length}] ${c.id} ...${samplesN > 1 ? ` (samples=${samplesN})` : ""}`,
+    );
 
-    const samples: Array<{ score: number; details: Record<string, string | number | boolean>; raw: ExecuteResult }> = [];
+    const samples: Array<{
+      score: number;
+      details: Record<string, string | number | boolean>;
+      raw: ExecuteResult;
+    }> = [];
     for (let s = 0; s < samplesN; s++) {
       const r = await executeCase(c, skillPrompt);
       const grade = gradeExecuteResult(c, r);

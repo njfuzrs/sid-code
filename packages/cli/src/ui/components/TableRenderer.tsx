@@ -7,7 +7,13 @@ import React, { useMemo } from "react";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import type { StyledChar } from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
-import { toStyledCharacters, styledCharsWidth, wrapStyledChars, widestLineFromStyledChars, wordBreakStyledChars } from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
+import {
+  toStyledCharacters,
+  styledCharsWidth,
+  wrapStyledChars,
+  widestLineFromStyledChars,
+  wordBreakStyledChars,
+} from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
 import { styledCharsToString } from "@alcalzone/ansi-tokenize";
 import { theme } from "../semantic-colors.ts";
 import { renderInlineMarkdown } from "../markdown.ts";
@@ -27,10 +33,7 @@ const TABLE_MARGIN = 2;
  * 走 marked 内联 lexer（renderInlineMarkdown）生成 ANSI，再用 Ink 的
  * toStyledCharacters 解析（P1-E：不再依赖手写正则 parseMarkdownToANSI）。
  */
-const parseMarkdownToStyledChars = (
-  text: string,
-  defaultColor?: string,
-): StyledChar[] => {
+const parseMarkdownToStyledChars = (text: string, defaultColor?: string): StyledChar[] => {
   const ansi = renderInlineMarkdown(text, defaultColor);
   return toStyledCharacters(ansi);
 };
@@ -51,11 +54,7 @@ interface ProcessedLine {
   width: number;
 }
 
-export const TableRenderer: React.FC<TableRendererProps> = ({
-  headers,
-  rows,
-  terminalWidth,
-}) => {
+export const TableRenderer: React.FC<TableRendererProps> = ({ headers, rows, terminalWidth }) => {
   // 1. 将所有单元格转换为 StyledChar 数组
   const styledHeaders = useMemo(
     () => headers.map((header) => parseMarkdownToStyledChars(header, theme.text.link)),
@@ -63,16 +62,14 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
   );
 
   const styledRows = useMemo(
-    () => rows.map((row) => row.map((cell) => parseMarkdownToStyledChars(cell, theme.text.primary))),
+    () =>
+      rows.map((row) => row.map((cell) => parseMarkdownToStyledChars(cell, theme.text.primary))),
     [rows],
   );
 
   // 2. 计算列宽并换行
   const { wrappedHeaders, wrappedRows, adjustedWidths } = useMemo(() => {
-    const numColumns = Math.max(
-      styledHeaders.length,
-      ...styledRows.map((row) => row.length),
-    );
+    const numColumns = Math.max(styledHeaders.length, ...styledRows.map((row) => row.length));
 
     // 计算每列的最小/最大宽度约束
     const constraints = Array.from({ length: numColumns }).map((_, colIndex) => {
@@ -81,7 +78,8 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
 
       styledRows.forEach((row) => {
         const cellStyledChars = row[colIndex] || [];
-        const { contentWidth: cellWidth, maxWordWidth: cellWordWidth } = calculateWidths(cellStyledChars);
+        const { contentWidth: cellWidth, maxWordWidth: cellWordWidth } =
+          calculateWidths(cellStyledChars);
         maxContentWidth = Math.max(maxContentWidth, cellWidth);
         maxWordWidth = Math.max(maxWordWidth, cellWordWidth);
       });
@@ -103,8 +101,11 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
       // 空间不足，按比例压缩（保护短列）
       const shortColumns = constraints.filter((c) => c.maxWidth <= MIN_COLUMN_WIDTH);
       const totalShortColumnWidth = shortColumns.reduce((sum, c) => sum + c.minWidth, 0);
-      const finalTotalShortColumnWidth = totalShortColumnWidth >= availableWidth ? 0 : totalShortColumnWidth;
-      const scale = (availableWidth - finalTotalShortColumnWidth) / (totalMinWidth - finalTotalShortColumnWidth) || 0;
+      const finalTotalShortColumnWidth =
+        totalShortColumnWidth >= availableWidth ? 0 : totalShortColumnWidth;
+      const scale =
+        (availableWidth - finalTotalShortColumnWidth) /
+          (totalMinWidth - finalTotalShortColumnWidth) || 0;
 
       finalContentWidths = constraints.map((c) => {
         if (c.maxWidth <= MIN_COLUMN_WIDTH && finalTotalShortColumnWidth > 0) {
@@ -166,11 +167,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
   // 3. 渲染辅助函数
 
   /** 渲染单元格 */
-  const renderCell = (
-    content: ProcessedLine,
-    width: number,
-    isHeader = false,
-  ): React.ReactNode => {
+  const renderCell = (content: ProcessedLine, width: number, isHeader = false): React.ReactNode => {
     const contentWidth = Math.max(0, width - COLUMN_PADDING);
     const displayWidth = content.width;
     const paddingNeeded = Math.max(0, contentWidth - displayWidth);
@@ -179,11 +176,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
     // 不要在外层 <Text> 设置 color 属性，否则会覆盖内部颜色
     return (
       <Text>
-        {isHeader ? (
-          <Text bold>{content.text}</Text>
-        ) : (
-          <Text>{content.text}</Text>
-        )}
+        {isHeader ? <Text bold>{content.text}</Text> : <Text>{content.text}</Text>}
         {" ".repeat(paddingNeeded)}
       </Text>
     );
@@ -205,10 +198,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
   };
 
   /** 渲染单行（可能包含多个换行后的子行） */
-  const renderVisualRow = (
-    cells: ProcessedLine[],
-    isHeader = false,
-  ): React.ReactNode => {
+  const renderVisualRow = (cells: ProcessedLine[], isHeader = false): React.ReactNode => {
     const renderedCells = cells.map((cell, index) => {
       const width = adjustedWidths[index] || 0;
       return renderCell(cell, width, isHeader);
@@ -220,9 +210,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
         {renderedCells.map((cell, index) => (
           <React.Fragment key={index}>
             <Box paddingX={1}>{cell}</Box>
-            {index < renderedCells.length - 1 && (
-              <Text color={theme.border.default}>│</Text>
-            )}
+            {index < renderedCells.length - 1 && <Text color={theme.border.default}>│</Text>}
           </React.Fragment>
         ))}
         <Text color={theme.border.default}>│</Text>
@@ -241,9 +229,7 @@ export const TableRenderer: React.FC<TableRendererProps> = ({
 
     const visualRows: React.ReactNode[] = [];
     for (let i = 0; i < maxHeight; i++) {
-      const visualRowCells = wrappedCells.map(
-        (lines) => lines[i] || { text: "", width: 0 },
-      );
+      const visualRowCells = wrappedCells.map((lines) => lines[i] || { text: "", width: 0 });
       visualRows.push(
         <React.Fragment key={`${key}-${i}`}>
           {renderVisualRow(visualRowCells, isHeader)}

@@ -38,10 +38,7 @@ export interface FullScreenOptions {
 /**
  * 创建 ink 应用（双模式：alternate buffer 全屏 / 主屏）
  */
-export function createFullScreen(
-  node: ReactElement,
-  opts?: FullScreenOptions,
-): FullScreenInstance {
+export function createFullScreen(node: ReactElement, opts?: FullScreenOptions): FullScreenInstance {
   const log = getLogger();
   const stdout = process.stdout;
   const alternateBuffer = opts?.alternateBuffer ?? false;
@@ -50,7 +47,9 @@ export function createFullScreen(
   let exitPromise: Promise<void>;
 
   return {
-    get instance() { return instance; },
+    get instance() {
+      return instance;
+    },
     start: async () => {
       // 防止 EIO/EPIPE 错误从 Ink 渲染管线抛出 uncaughtException
       // 对标 claude-code registerProcessOutputErrorHandlers()
@@ -67,9 +66,7 @@ export function createFullScreen(
       // vendored ink 的 alt-screen 是组件(<AlternateScreen>)而非 render option。
       // alternateBuffer=true 时用 AlternateScreen 包裹(约束高度到视口 + 启用鼠标跟踪);
       // 主屏模式直接渲染,内容自然滚入终端 scrollback。
-      const rootNode = alternateBuffer
-        ? React.createElement(AlternateScreen, null, node)
-        : node;
+      const rootNode = alternateBuffer ? React.createElement(AlternateScreen, null, node) : node;
 
       const options = {
         stdout,
@@ -87,7 +84,10 @@ export function createFullScreen(
         disableLineWrapping();
       }
 
-      log.info("TUI:RENDER", `ink 实例已创建（${alternateBuffer ? "Alternate Buffer" : "主屏"} 模式）`);
+      log.info(
+        "TUI:RENDER",
+        `ink 实例已创建（${alternateBuffer ? "Alternate Buffer" : "主屏"} 模式）`,
+      );
 
       exitPromise = (async () => {
         try {

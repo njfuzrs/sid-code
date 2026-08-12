@@ -20,14 +20,11 @@ import { z } from "zod";
 export function semanticBoolean<T extends z.ZodType = z.ZodBoolean>(
   inner: T = z.boolean() as unknown as T,
 ): z.ZodEffects<T> {
-  return z.preprocess(
-    (v: unknown) => {
-      if (v === "true") return true;
-      if (v === "false") return false;
-      return v;
-    },
-    inner,
-  ) as unknown as z.ZodEffects<T>;
+  return z.preprocess((v: unknown) => {
+    if (v === "true") return true;
+    if (v === "false") return false;
+    return v;
+  }, inner) as unknown as z.ZodEffects<T>;
 }
 
 /**
@@ -38,10 +35,7 @@ export function semanticBoolean<T extends z.ZodType = z.ZodBoolean>(
  * - false / "false" / undefined / null → false（fail-safe：默认关闭）
  * - 其他值按 Boolean() 处理
  */
-export function coerceSemanticBoolean(
-  v: unknown,
-  defaultValue = false,
-): boolean {
+export function coerceSemanticBoolean(v: unknown, defaultValue = false): boolean {
   if (v === undefined || v === null) return defaultValue;
   if (v === true || v === "true") return true;
   if (v === false || v === "false") return false;

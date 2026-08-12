@@ -96,7 +96,10 @@ export class HeadlessExecutor {
     }
 
     if (runResult.timedOut) {
-      log.warn("DAEMON", `headless job 超时 id=${job.jobId} (${job.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms)`);
+      log.warn(
+        "DAEMON",
+        `headless job 超时 id=${job.jobId} (${job.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms)`,
+      );
       return {
         event_id: job.jobId,
         skill: job.source,
@@ -119,7 +122,10 @@ export class HeadlessExecutor {
       };
     }
 
-    log.info("DAEMON", `headless job 完成 id=${job.jobId} (${(runResult.durationMs / 1000).toFixed(1)}s)`);
+    log.info(
+      "DAEMON",
+      `headless job 完成 id=${job.jobId} (${(runResult.durationMs / 1000).toFixed(1)}s)`,
+    );
     return {
       event_id: job.jobId,
       skill: job.source,
@@ -174,7 +180,11 @@ export class HeadlessExecutor {
         timedOut = true;
         child.kill("SIGTERM");
         killTimer = setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* 已退出 */
+          }
         }, KILL_GRACE_MS);
       }, timeoutMs);
 

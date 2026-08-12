@@ -13,11 +13,17 @@ import type { SkillDefinition } from "./types.ts";
 function parseStringList(raw: unknown): string[] | undefined {
   if (!raw) return undefined;
   if (Array.isArray(raw)) {
-    const list = raw.map(String).map((s) => s.trim()).filter(Boolean);
+    const list = raw
+      .map(String)
+      .map((s) => s.trim())
+      .filter(Boolean);
     return list.length > 0 ? list : undefined;
   }
   if (typeof raw === "string") {
-    const list = raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    const list = raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     return list.length > 0 ? list : undefined;
   }
   return undefined;
@@ -55,10 +61,7 @@ export class SkillLoader {
    *
    * 注意:builtinDir 不会被当作 projectDir,而是直接作为 builtin 来源传给 ExtensionLoader。
    */
-  async loadAll(
-    projectDir?: string,
-    scanOptions?: ScanOptions,
-  ): Promise<SkillDefinition[]> {
+  async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<SkillDefinition[]> {
     const log = getLogger();
     // P2-1：默认注入企业 managed skills 目录候选（调用方未显式指定时）。
     // managed 层最高优先级，覆盖同名 user/project；SID_CODE_DISABLE_POLICY_SKILLS=1 时 loader 内部跳过。
@@ -73,11 +76,7 @@ export class SkillLoader {
         `additional skills 目录（--add-dir）: ${effectiveOptions.additionalDirs.join(", ")}`,
       );
     }
-    const files = await this.extensionLoader.scan(
-      "skills",
-      projectDir,
-      effectiveOptions,
-    );
+    const files = await this.extensionLoader.scan("skills", projectDir, effectiveOptions);
     const skills: SkillDefinition[] = [];
 
     for (const file of files) {
@@ -92,7 +91,7 @@ export class SkillLoader {
 
     if (skills.length > 0) {
       log.info("SKILL", `加载了 ${skills.length} 个 Skill`, {
-        names: skills.map(s => s.name),
+        names: skills.map((s) => s.name),
       });
     }
 
@@ -156,7 +155,10 @@ export class SkillLoader {
     let allowedTools: string[] | undefined;
     const rawTools = fm["allowed-tools"] ?? fm["allowedTools"] ?? fm["tools"];
     if (typeof rawTools === "string") {
-      allowedTools = rawTools.split(",").map(s => s.trim()).filter(Boolean);
+      allowedTools = rawTools
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     } else if (Array.isArray(rawTools)) {
       allowedTools = rawTools.map(String);
     }
@@ -175,10 +177,18 @@ export class SkillLoader {
     }
 
     // 解析 maxTurns 和 timeoutMins
-    const maxTurns = typeof fm["max-turns"] === "number" ? fm["max-turns"] :
-                     typeof fm["maxTurns"] === "number" ? fm["maxTurns"] : undefined;
-    const timeoutMins = typeof fm["timeout-mins"] === "number" ? fm["timeout-mins"] :
-                        typeof fm["timeoutMins"] === "number" ? fm["timeoutMins"] : undefined;
+    const maxTurns =
+      typeof fm["max-turns"] === "number"
+        ? fm["max-turns"]
+        : typeof fm["maxTurns"] === "number"
+          ? fm["maxTurns"]
+          : undefined;
+    const timeoutMins =
+      typeof fm["timeout-mins"] === "number"
+        ? fm["timeout-mins"]
+        : typeof fm["timeoutMins"] === "number"
+          ? fm["timeoutMins"]
+          : undefined;
 
     // user-invocable（默认 true）
     const rawUserInvocable = fm["user-invocable"] ?? fm["userInvocable"];
@@ -202,17 +212,22 @@ export class SkillLoader {
       allowedTools,
       // P1-3 变量/字段兼容：CC 权威字段是 when_to_use（下划线，frontmatterParser.ts），
       // sid 原生用 when-to-use/whenToUse。三写法兼容，避免从 CC 迁移的 skill 静默丢 whenToUse。
-      whenToUse: (fm["when_to_use"] as string) ?? (fm["when-to-use"] as string) ?? (fm["whenToUse"] as string),
-      argumentHint: fm["argument-hint"] as string ?? fm["argumentHint"] as string,
+      whenToUse:
+        (fm["when_to_use"] as string) ??
+        (fm["when-to-use"] as string) ??
+        (fm["whenToUse"] as string),
+      argumentHint: (fm["argument-hint"] as string) ?? (fm["argumentHint"] as string),
       model: fm.model as string,
-      disableModelInvocation: fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
+      disableModelInvocation:
+        fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
       mode,
       context,
       maxTurns,
       timeoutMins,
       prompt: file.body,
       source: file.source,
-      loadedFrom: file.source === "builtin" ? "builtin" : file.source === "managed" ? "managed" : "skills",
+      loadedFrom:
+        file.source === "builtin" ? "builtin" : file.source === "managed" ? "managed" : "skills",
       filePath: file.filePath,
       skillRoot,
       userInvocable,

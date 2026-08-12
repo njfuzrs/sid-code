@@ -31,11 +31,7 @@ export const NOTIFICATION_ERROR_MAX_CHARS = 4_000;
  * 截断长文本：超过 max 时保留前 max 字符并追加一行提示，指向完整内容所在文件。
  * 未超长时原样返回。用码点安全切割（Array.from），避免把多字节字符切坏。
  */
-function truncateForNotification(
-  text: string,
-  max: number,
-  outputFile?: string,
-): string {
+function truncateForNotification(text: string, max: number, outputFile?: string): string {
   const codePoints = Array.from(text);
   if (codePoints.length <= max) return text;
   const head = codePoints.slice(0, max).join("");
@@ -67,10 +63,7 @@ export interface TaskNotification {
  *  completed 时包含结构化 <result> 和 <usage> 块，
  *  failed 时包含错误信息 */
 export function formatNotification(n: TaskNotification): string {
-  const parts = [
-    "<task-notification>",
-    `  <task-id>${n.taskId}</task-id>`,
-  ];
+  const parts = ["<task-notification>", `  <task-id>${n.taskId}</task-id>`];
   if (n.toolUseId) {
     parts.push(`  <tool-use-id>${n.toolUseId}</tool-use-id>`);
   }
@@ -94,7 +87,9 @@ export function formatNotification(n: TaskNotification): string {
       `  </usage>`,
     );
   } else if (n.error) {
-    parts.push(`  <error>${truncateForNotification(n.error, NOTIFICATION_ERROR_MAX_CHARS, n.outputFile)}</error>`);
+    parts.push(
+      `  <error>${truncateForNotification(n.error, NOTIFICATION_ERROR_MAX_CHARS, n.outputFile)}</error>`,
+    );
   }
 
   parts.push("</task-notification>");

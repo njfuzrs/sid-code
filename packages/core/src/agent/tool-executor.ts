@@ -60,8 +60,9 @@ export async function executeTools(
   // 提取所有 tool_use 块，保留原始顺序索引
   const toolBlocks = content
     .map((block, idx) => ({ block, idx }))
-    .filter((item): item is { block: ContentBlock & { type: "tool_use" }; idx: number } =>
-      item.block.type === "tool_use"
+    .filter(
+      (item): item is { block: ContentBlock & { type: "tool_use" }; idx: number } =>
+        item.block.type === "tool_use",
     );
 
   if (toolBlocks.length === 0) return [];
@@ -90,7 +91,10 @@ export async function executeTools(
     }
   }
 
-  log.debug("SUBAGENT:TOOL", `工具分类: 并发安全 ${readOnlyBlocks.length} 个并行, 其余 ${writingBlocks.length} 个串行`);
+  log.debug(
+    "SUBAGENT:TOOL",
+    `工具分类: 并发安全 ${readOnlyBlocks.length} 个并行, 其余 ${writingBlocks.length} 个串行`,
+  );
 
   // 结果收集（按原始顺序索引存储）
   const resultMap = new Map<number, ContentBlock>();
@@ -109,8 +113,10 @@ export async function executeTools(
   if (readOnlyBlocks.length > 0) {
     const readResults = await Promise.all(
       readOnlyBlocks.map(({ block, idx }) =>
-        executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress).then(r => ({ idx, result: r }))
-      )
+        executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress).then(
+          (r) => ({ idx, result: r }),
+        ),
+      ),
     );
     for (const { idx, result } of readResults) {
       resultMap.set(idx, result);
@@ -119,7 +125,14 @@ export async function executeTools(
 
   // 非并发安全工具串行执行
   for (const { block, idx } of writingBlocks) {
-    const result = await executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress);
+    const result = await executeSingleTool(
+      block,
+      tools,
+      signal,
+      hookSystem,
+      permissionChecker,
+      onProgress,
+    );
     resultMap.set(idx, result);
   }
 
@@ -157,15 +170,17 @@ function firePostToolUseFailure(
   if (!hookSystem) return;
   const log = getLogger();
   try {
-    void hookSystem.firePostToolUseFailureEvent?.(
-      block.name,
-      (toolInput ?? block.input) as Record<string, unknown>,
-      reason,
-      block.id,
-      durationMs !== undefined ? { duration_ms: durationMs } : undefined,
-    )?.catch?.((e: any) =>
-      log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
-    );
+    void hookSystem
+      .firePostToolUseFailureEvent?.(
+        block.name,
+        (toolInput ?? block.input) as Record<string, unknown>,
+        reason,
+        block.id,
+        durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+      )
+      ?.catch?.((e: any) =>
+        log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
+      );
   } catch (e: any) {
     log.error("SUBAGENT:HOOK", `post_tool_use_failure 触发异常（忽略）: ${e?.message ?? e}`);
   }
@@ -252,7 +267,9 @@ async function executeSingleTool(
       description: `${block.name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
     };
     // G3：PreToolUse permissionDecision 注入（子代理无 UI，ask 在下方 needsConfirmation→deny）
-    const decision = await permissionChecker.check(permReq, tool, undefined, { hookPermissionDecision });
+    const decision = await permissionChecker.check(permReq, tool, undefined, {
+      hookPermissionDecision,
+    });
     if (!decision.allowed) {
       // 子代理无 UI 通道，needsConfirmation 也直接 deny（dontAsk 语义）
       const reason = decision.reason || "子代理不允许此操作";
@@ -287,7 +304,10 @@ async function executeSingleTool(
       ? tool.isConcurrencySafe(effectiveInput)
       : (tool.readOnly?.() ?? false);
     if (!isSafe) {
-      log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: 未配置权限检查器，写类操作默认拒绝（fail-closed）`);
+      log.info(
+        "SUBAGENT:PERM",
+        `权限拒绝 ${block.name}: 未配置权限检查器，写类操作默认拒绝（fail-closed）`,
+      );
       // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
       firePostToolUseFailure(
         hookSystem,
@@ -354,7 +374,9 @@ async function executeSingleTool(
       if (editedPath) {
         void import("../lsp/manager.ts")
           .then(({ syncFileToLSP }) => syncFileToLSP(editedPath))
-          .catch(() => { /* best-effort，失败不影响子代理执行 */ });
+          .catch(() => {
+            /* best-effort，失败不影响子代理执行 */
+          });
       }
     }
 
@@ -367,14 +389,16 @@ async function executeSingleTool(
 
     // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）
     if (hookSystem) {
-      hookSystem.firePostToolUseEvent(
-        block.name,
-        effectiveInput,
-        { output: truncated, isError: result.isError },
-        result.isError,
-        block.id,
-        { duration_ms: elapsed },
-      ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+      hookSystem
+        .firePostToolUseEvent(
+          block.name,
+          effectiveInput,
+          { output: truncated, isError: result.isError },
+          result.isError,
+          block.id,
+          { duration_ms: elapsed },
+        )
+        .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
     }
 
     return {
@@ -393,15 +417,19 @@ async function executeSingleTool(
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
     // post_tool_use_failure hook（异常路径也接入 hook，与主循环对齐）
     if (hookSystem) {
-      hookSystem.firePostToolUseFailureEvent(
-        block.name,
-        effectiveInput,
-        err.message,
-        block.id,
-        // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
-        // 慢工具卡很久才抛，正是要看的那个数。
-        { duration_ms: Date.now() - startTime },
-      ).catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+      hookSystem
+        .firePostToolUseFailureEvent(
+          block.name,
+          effectiveInput,
+          err.message,
+          block.id,
+          // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
+          // 慢工具卡很久才抛，正是要看的那个数。
+          { duration_ms: Date.now() - startTime },
+        )
+        .catch((e: any) =>
+          log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
+        );
     }
     return {
       type: "tool_result",

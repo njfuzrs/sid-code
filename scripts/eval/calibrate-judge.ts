@@ -5,7 +5,11 @@
  */
 
 import { join } from "node:path";
-import { gradeProcess, type JudgeConfig, type JudgeInput } from "../../evals/bench-runner/process-grader.ts";
+import {
+  gradeProcess,
+  type JudgeConfig,
+  type JudgeInput,
+} from "../../evals/bench-runner/process-grader.ts";
 
 const EVALS_DIR = join(import.meta.dir, "../..");
 const CALIBRATION_FILE = join(EVALS_DIR, "evals/_judge/calibration-v3/answers.jsonl");
@@ -151,7 +155,9 @@ async function main() {
   console.log(`  ================================`);
 
   if (rho >= 0.6 && meanDelta <= 1.0) {
-    console.log(`\n  ✅ 校准通过！ρ=${rho.toFixed(3)} >= 0.6, mean_delta=${meanDelta.toFixed(2)} <= 1.0`);
+    console.log(
+      `\n  ✅ 校准通过！ρ=${rho.toFixed(3)} >= 0.6, mean_delta=${meanDelta.toFixed(2)} <= 1.0`,
+    );
     console.log(`  → 锁定 prompt-v2，更新 kappa-history.md`);
   } else if (rho >= 0.5) {
     console.log(`\n  🟡 接近达标。ρ=${rho.toFixed(3)}，考虑微调 prompt 或增加 few-shot 示例`);
@@ -167,8 +173,11 @@ async function main() {
     if (group.length === 0) continue;
     const avgJudge = group.reduce((s, r) => s + r.judge_score, 0) / group.length;
     const avgAuthor = group.reduce((s, r) => s + r.author_score, 0) / group.length;
-    const groupDelta = group.reduce((s, r) => s + Math.abs(r.judge_score - r.author_score), 0) / group.length;
-    console.log(`    ${quality.padEnd(6)}: avg_author=${avgAuthor.toFixed(1)} avg_judge=${avgJudge.toFixed(1)} mean_Δ=${groupDelta.toFixed(2)}`);
+    const groupDelta =
+      group.reduce((s, r) => s + Math.abs(r.judge_score - r.author_score), 0) / group.length;
+    console.log(
+      `    ${quality.padEnd(6)}: avg_author=${avgAuthor.toFixed(1)} avg_judge=${avgJudge.toFixed(1)} mean_Δ=${groupDelta.toFixed(2)}`,
+    );
   }
 }
 

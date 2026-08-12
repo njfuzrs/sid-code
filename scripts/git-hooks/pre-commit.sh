@@ -1,5 +1,6 @@
 #!/bin/sh
-# pre-commit hook —— B6-10 数据污染防护 + B7-7 SKILL holdout 回归护栏 + P1-4 lint 门禁
+# pre-commit hook —— B6-10 数据污染防护 + B7-7 SKILL holdout 回归护栏
+#                    + P1-4 lint 门禁 + P2-1 format 门禁
 #
 # 行为：
 #   1. 扫 staged 的 evals/real-tasks/**.yaml 是否含 §9.1.1 黑名单关键词
@@ -9,6 +10,7 @@
 #      调用 holdout 回归扫描器：holdout 暂无 execution case → INFO skip；有则提示应跑回归
 #      （B7-7 §13.4.4 蒸馏护栏 2，holdout case 入库后会自动激活）
 #   3. oxlint 检查 staged 的 .ts/.tsx（P1-4）
+#   4. oxfmt --check 检查 staged 的代码文件（P2-1；只报错不改文件，理由见该段注释）
 #
 # 安装：
 #   bun run install-hooks
@@ -180,6 +182,40 @@ if [ -n "$STAGED_TS" ]; then
   # shellcheck disable=SC2086
   if ! (cd "$REPO_ROOT" && ./node_modules/.bin/oxlint $ABS_FILES); then
     echo "[pre-commit] ❌ oxlint 检查失败，commit 中止"
+    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+    exit 1
+  fi
+fi
+
+# ============================================================================
+# P2-1: oxfmt 格式检查（只对 staged 文件跑）
+#
+# 与上面的 oxlint 分工：lint 管正确性（未用变量这类真错误），format 管排版。
+# 两者都限定 staged，理由同上——精确定位本次改动，而不是对着存量报错发懵。
+#
+# ⚠️ 刻意用 `--check` 报错**而不是**自动 `--write` 改文件：
+#    hook 里偷偷改动工作区，会让「你提交的内容」与「你 review 过的内容」不一致，
+#    而且已 staged 的部分不会跟着更新（改完还得再 git add 一次），
+#    最终形态是"提交了一半格式化"。让它红、让人自己跑 `bun run format`，
+#    是唯一不会产生这种撕裂的做法。
+#
+# .oxfmtrc.json 的 ignorePatterns 对显式传入的文件同样生效（与 oxlint 同款行为，
+# 已实测），所以直接喂 staged 路径不会漏掉 _vendor / 生成物 / yaml / md 的排除规则。
+# ============================================================================
+STAGED_FMT=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|json|jsonc|css|vue)$' || true)
+
+if [ -n "$STAGED_FMT" ]; then
+  echo "[pre-commit] oxfmt 格式检查 staged 文件 ($(echo "$STAGED_FMT" | wc -l | tr -d ' ') 个)..."
+
+  ABS_FMT=""
+  for f in $STAGED_FMT; do
+    ABS_FMT="$ABS_FMT $REPO_ROOT/$f"
+  done
+
+  # shellcheck disable=SC2086
+  if ! (cd "$REPO_ROOT" && ./node_modules/.bin/oxfmt --check $ABS_FMT); then
+    echo "[pre-commit] ❌ 格式不符合 .oxfmtrc.json，commit 中止"
+    echo "             修复：bun run format && git add <改动文件>"
     echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
     exit 1
   fi

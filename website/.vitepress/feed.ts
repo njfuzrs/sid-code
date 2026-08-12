@@ -76,9 +76,7 @@ export function renderFeed(posts: BlogPost[]): string {
       // series 与 tags 去重后合并：系列名常常同时也是一个标签
       // （如「上下文工程」既是 series 又在 tags 里），不去重会输出两条相同的 category。
       const terms = [...new Set([p.series, ...p.tags].filter(Boolean))];
-      const cats = terms
-        .map((t) => `    <category term="${xmlEscape(t)}" />`)
-        .join("\n");
+      const cats = terms.map((t) => `    <category term="${xmlEscape(t)}" />`).join("\n");
       // summary 里带上 highlight：阅读器列表页往往只显示 summary，
       // 硬数据那一行是这些文章最强的点击理由，不该只存在于网站上。
       const summary = [p.highlight, p.description].filter(Boolean).join(" —— ");

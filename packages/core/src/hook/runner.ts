@@ -111,7 +111,8 @@ export class HookRunner {
       }
     } catch (error) {
       const duration = Date.now() - startTime;
-      const hookId = hookConfig.name || (hookConfig.type === "command" ? hookConfig.command : "") || "unknown";
+      const hookId =
+        hookConfig.name || (hookConfig.type === "command" ? hookConfig.command : "") || "unknown";
       const log = getLogger();
       log.warn("HOOK", `Hook 执行异常 [${eventName}] (${hookId}): ${error}`);
 
@@ -158,7 +159,7 @@ export class HookRunner {
 
     for (const config of hookConfigs) {
       if (signal?.aborted) return;
-      this.executeHook(config, eventName, input).then(result => {
+      this.executeHook(config, eventName, input).then((result) => {
         results.push(result);
         remaining--;
         resolveNext?.();
@@ -170,7 +171,9 @@ export class HookRunner {
       if (results.length > 0) {
         yield results.shift()!;
       } else {
-        await new Promise<void>(r => { resolveNext = r; });
+        await new Promise<void>((r) => {
+          resolveNext = r;
+        });
         resolveNext = null;
       }
     }
@@ -216,7 +219,9 @@ export class HookRunner {
   ): Promise<HookExecutionResult> {
     if (!hookConfig.command) {
       return {
-        hookConfig, eventName, success: false,
+        hookConfig,
+        eventName,
+        success: false,
         error: new Error("command hook 缺少 command 字段"),
         duration: Date.now() - startTime,
       };
@@ -269,7 +274,11 @@ export class HookRunner {
       const bgTimeoutId = setTimeout(() => {
         proc.kill("SIGTERM");
         setTimeout(() => {
-          try { proc.kill("SIGKILL"); } catch { /* 进程可能已退出 */ }
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            /* 进程可能已退出 */
+          }
         }, 5000);
       }, timeout);
       void (async () => {
@@ -287,7 +296,8 @@ export class HookRunner {
 
       // 立即返回 success（异步 hook 不参与本轮阻塞决策）
       return {
-        hookConfig, eventName,
+        hookConfig,
+        eventName,
         success: true,
         stdout: "",
         stderr: "",
@@ -303,7 +313,11 @@ export class HookRunner {
       timedOut = true;
       proc.kill("SIGTERM");
       setTimeout(() => {
-        try { proc.kill("SIGKILL"); } catch { /* 进程可能已退出 */ }
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* 进程可能已退出 */
+        }
       }, 5000);
     }, timeout);
 
@@ -315,9 +329,13 @@ export class HookRunner {
 
       if (timedOut) {
         return {
-          hookConfig, eventName, success: false,
+          hookConfig,
+          eventName,
+          success: false,
           error: new Error(`Hook 超时 (${timeout / 1000}s)`),
-          stdout, stderr, duration,
+          stdout,
+          stderr,
+          duration,
         };
       }
 
@@ -325,10 +343,12 @@ export class HookRunner {
       const output = this.parseCommandOutput(stdout, stderr, exitCode ?? 0);
 
       return {
-        hookConfig, eventName,
+        hookConfig,
+        eventName,
         success: exitCode === EXIT_SUCCESS,
         output,
-        stdout, stderr,
+        stdout,
+        stderr,
         exitCode: exitCode ?? 0,
         duration,
       };
@@ -346,7 +366,9 @@ export class HookRunner {
   ): Promise<HookExecutionResult> {
     if (!hookConfig.url) {
       return {
-        hookConfig, eventName, success: false,
+        hookConfig,
+        eventName,
+        success: false,
         error: new Error("url hook 缺少 url 字段"),
         duration: Date.now() - startTime,
       };
@@ -374,7 +396,8 @@ export class HookRunner {
 
       if (!response.ok) {
         return {
-          hookConfig, eventName,
+          hookConfig,
+          eventName,
           success: false,
           output: { decision: "deny", reason: `HTTP ${response.status}: ${text.slice(0, 200)}` },
           stdout: text,
@@ -384,7 +407,8 @@ export class HookRunner {
 
       const output = this.parseJsonOutput(text);
       return {
-        hookConfig, eventName,
+        hookConfig,
+        eventName,
         success: true,
         output,
         stdout: text,
@@ -394,7 +418,9 @@ export class HookRunner {
       const duration = Date.now() - startTime;
       if (err.name === "AbortError") {
         return {
-          hookConfig, eventName, success: false,
+          hookConfig,
+          eventName,
+          success: false,
           error: new Error(`URL Hook 超时 (${timeout / 1000}s)`),
           duration,
         };
@@ -418,15 +444,12 @@ export class HookRunner {
 
     try {
       const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () => {
-            // 立即 abort:让 action 内部尽早收到取消信号释放资源(网络/子进程),
-            // 而非等到 catch 才 abort —— 缩短孤儿 action 的存活窗口。
-            controller.abort();
-            reject(new Error(`Runtime hook 超时 (${timeout}ms)`));
-          },
-          timeout,
-        );
+        timeoutHandle = setTimeout(() => {
+          // 立即 abort:让 action 内部尽早收到取消信号释放资源(网络/子进程),
+          // 而非等到 catch 才 abort —— 缩短孤儿 action 的存活窗口。
+          controller.abort();
+          reject(new Error(`Runtime hook 超时 (${timeout}ms)`));
+        }, timeout);
       });
 
       const result = await Promise.race([
@@ -435,7 +458,8 @@ export class HookRunner {
       ]);
 
       return {
-        hookConfig, eventName,
+        hookConfig,
+        eventName,
         success: true,
         output: result === null || result === undefined ? undefined : result,
         duration: Date.now() - startTime,
@@ -443,7 +467,8 @@ export class HookRunner {
     } catch (error) {
       controller.abort();
       return {
-        hookConfig, eventName,
+        hookConfig,
+        eventName,
         success: false,
         error: error instanceof Error ? error : new Error(String(error)),
         duration: Date.now() - startTime,
@@ -479,7 +504,10 @@ export class HookRunner {
       return { decision: "deny", reason: stderrText || stdoutText || `Hook 退出码 ${exitCode}` };
     } else {
       // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
-      return { decision: "allow", systemMessage: stderrText ? `警告: ${stderrText}` : (stdoutText || undefined) };
+      return {
+        decision: "allow",
+        systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined,
+      };
     }
   }
 
@@ -512,7 +540,7 @@ export class HookRunner {
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) continue;
-      const isSensitive = SENSITIVE_ENV_PATTERNS.some(p => p.test(key));
+      const isSensitive = SENSITIVE_ENV_PATTERNS.some((p) => p.test(key));
       if (!isSensitive) {
         result[key] = value;
       }
@@ -599,9 +627,19 @@ export class HookRunner {
       case HookEventName.PreToolUse: {
         const so = hookOutput.hookSpecificOutput;
         // G1：updatedInput 优先，整体替换（对齐 CC 语义）
-        if ("updatedInput" in so && so["updatedInput"] && typeof so["updatedInput"] === "object" && "tool_input" in modified) {
+        if (
+          "updatedInput" in so &&
+          so["updatedInput"] &&
+          typeof so["updatedInput"] === "object" &&
+          "tool_input" in modified
+        ) {
           (modified as any).tool_input = so["updatedInput"];
-        } else if ("tool_input" in so && so["tool_input"] && typeof so["tool_input"] === "object" && "tool_input" in modified) {
+        } else if (
+          "tool_input" in so &&
+          so["tool_input"] &&
+          typeof so["tool_input"] === "object" &&
+          "tool_input" in modified
+        ) {
           // 旧格式兼容：浅合并保留其他字段
           (modified as any).tool_input = {
             ...(modified as any).tool_input,
@@ -660,27 +698,38 @@ export class HookRunner {
       const timeoutId = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
 
       try {
-        const text = await this.collectStreamResponse(provider, {
-          model,
-          messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
-          system: "你是一个 Hook 验证器，负责评估 AI 编程助手的操作是否合理。\n你的响应必须是一个 JSON 对象：\n- 如果操作合理：{\"ok\": true}\n- 如果操作不合理：{\"ok\": false, \"reason\": \"具体原因\"}\n只返回 JSON，不要包含其他内容。",
-          maxTokens: 1024,
-          // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
-          thinking: SIDE_CALL_NO_THINK,
-        }, controller.signal, timeout, registry.availability);
+        const text = await this.collectStreamResponse(
+          provider,
+          {
+            model,
+            messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
+            system:
+              '你是一个 Hook 验证器，负责评估 AI 编程助手的操作是否合理。\n你的响应必须是一个 JSON 对象：\n- 如果操作合理：{"ok": true}\n- 如果操作不合理：{"ok": false, "reason": "具体原因"}\n只返回 JSON，不要包含其他内容。',
+            maxTokens: 1024,
+            // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
+            thinking: SIDE_CALL_NO_THINK,
+          },
+          controller.signal,
+          timeout,
+          registry.availability,
+        );
 
         const parsed = this.parseJsonOutput(text);
 
         if (parsed && (parsed as any).ok === false) {
           return {
-            hookConfig, eventName, success: true,
+            hookConfig,
+            eventName,
+            success: true,
             output: { decision: "block", reason: (parsed as any).reason ?? "Prompt Hook 拒绝" },
             duration: Date.now() - startTime,
           };
         }
 
         return {
-          hookConfig, eventName, success: true,
+          hookConfig,
+          eventName,
+          success: true,
           output: { decision: "allow" },
           duration: Date.now() - startTime,
         };
@@ -690,7 +739,9 @@ export class HookRunner {
     } catch (error) {
       log.warn("HOOK", `Prompt Hook 执行失败: ${error}`);
       return {
-        hookConfig, eventName, success: true,
+        hookConfig,
+        eventName,
+        success: true,
         output: { decision: "allow" },
         duration: Date.now() - startTime,
       };
@@ -727,17 +778,23 @@ export class HookRunner {
         });
         if (res.ok === false) {
           return {
-            hookConfig, eventName, success: true,
+            hookConfig,
+            eventName,
+            success: true,
             output: {
               decision: "block",
               reason: res.reason ?? "Agent Hook 验证失败",
-              hookSpecificOutput: res.transcript ? { additionalContext: res.transcript } : undefined,
+              hookSpecificOutput: res.transcript
+                ? { additionalContext: res.transcript }
+                : undefined,
             },
             duration: Date.now() - startTime,
           };
         }
         return {
-          hookConfig, eventName, success: true,
+          hookConfig,
+          eventName,
+          success: true,
           output: { decision: "allow" },
           duration: Date.now() - startTime,
         };
@@ -745,7 +802,9 @@ export class HookRunner {
         // 真子代理失败：不阻断主流程（放行），记录告警（与下方单轮回退的失败语义一致）。
         log.warn("HOOK", `Agent Hook 子代理执行失败: ${error}`);
         return {
-          hookConfig, eventName, success: true,
+          hookConfig,
+          eventName,
+          success: true,
           output: { decision: "allow" },
           duration: Date.now() - startTime,
         };
@@ -768,20 +827,29 @@ export class HookRunner {
       const timeoutId = setTimeout(() => controller.abort(SIDE_CALL_TIMEOUT_REASON), timeout);
 
       try {
-        const text = await this.collectStreamResponse(provider, {
-          model,
-          messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
-          system: "你是一个 Agent Hook 验证器。你的任务是验证 AI 编程助手的操作结果是否正确。\n分析完成后，返回一个 JSON 对象：\n- 如果验证通过：{\"ok\": true}\n- 如果验证失败：{\"ok\": false, \"reason\": \"失败原因和修复建议\"}\n只返回 JSON，不要包含其他内容。",
-          maxTokens: 2048,
-          // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
-          thinking: SIDE_CALL_NO_THINK,
-        }, controller.signal, timeout, registry.availability);
+        const text = await this.collectStreamResponse(
+          provider,
+          {
+            model,
+            messages: [{ role: "user", content: [{ type: "text", text: processedPrompt }] }],
+            system:
+              '你是一个 Agent Hook 验证器。你的任务是验证 AI 编程助手的操作结果是否正确。\n分析完成后，返回一个 JSON 对象：\n- 如果验证通过：{"ok": true}\n- 如果验证失败：{"ok": false, "reason": "失败原因和修复建议"}\n只返回 JSON，不要包含其他内容。',
+            maxTokens: 2048,
+            // H5：Agent Hook 验证器是「出个 {ok,reason} JSON」的分类任务，关思考。
+            thinking: SIDE_CALL_NO_THINK,
+          },
+          controller.signal,
+          timeout,
+          registry.availability,
+        );
 
         const parsed = this.parseJsonOutput(text);
 
         if (parsed && (parsed as any).ok === false) {
           return {
-            hookConfig, eventName, success: true,
+            hookConfig,
+            eventName,
+            success: true,
             output: {
               decision: "block",
               reason: (parsed as any).reason ?? "Agent Hook 验证失败",
@@ -792,7 +860,9 @@ export class HookRunner {
         }
 
         return {
-          hookConfig, eventName, success: true,
+          hookConfig,
+          eventName,
+          success: true,
           output: { decision: "allow" },
           duration: Date.now() - startTime,
         };
@@ -802,7 +872,9 @@ export class HookRunner {
     } catch (error) {
       log.warn("HOOK", `Agent Hook 执行失败: ${error}`);
       return {
-        hookConfig, eventName, success: true,
+        hookConfig,
+        eventName,
+        success: true,
         output: { decision: "allow" },
         duration: Date.now() - startTime,
       };
@@ -826,21 +898,16 @@ export class HookRunner {
     // 收紧参数：hook agent 验证是轻量分类任务，只值得轻量重试，deadlineAt 与调用方
     // 传入的 timeoutMs（hookConfig.timeout，缺省 60s）同源，退避睡不完就提前收手。
     const { streamWithResilience } = await import("../llm/resilient-stream.ts");
-    const stream = streamWithResilience(
-      provider,
-      params,
-      signal,
-      {
-        querySource: "hook_agent",
-        switchMode: "auto",
-        maxRetries: 2,
-        retryBackoffBaseMs: 1000,
-        retryBackoffMaxMs: 5000,
-        streamTimeoutMs: timeoutMs,
-        deadlineAt: timeoutMs ? Date.now() + timeoutMs : undefined,
-        availability,
-      },
-    );
+    const stream = streamWithResilience(provider, params, signal, {
+      querySource: "hook_agent",
+      switchMode: "auto",
+      maxRetries: 2,
+      retryBackoffBaseMs: 1000,
+      retryBackoffMaxMs: 5000,
+      streamTimeoutMs: timeoutMs,
+      deadlineAt: timeoutMs ? Date.now() + timeoutMs : undefined,
+      availability,
+    });
     for await (const event of stream) {
       // 纵深防御:hook-runner side-call 检查 signal,防止 provider 层超时失效时挂死
       // H10：抛出携带 abort reason 的错误，与主路径 reason 白名单口径一致。

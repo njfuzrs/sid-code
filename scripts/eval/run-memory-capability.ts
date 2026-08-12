@@ -28,10 +28,7 @@ import {
   type SidCodeLiveResult,
 } from "../../evals/bench-runner/adapters/sid-code-live.ts";
 import { gradeProcess, type JudgeConfig } from "../../evals/bench-runner/process-grader.ts";
-import {
-  syncBaselineScores,
-  type BaselineResult,
-} from "eval-framework/core/baseline-sync.ts";
+import { syncBaselineScores, type BaselineResult } from "eval-framework/core/baseline-sync.ts";
 import {
   loadCapabilityCases,
   runSharedCheck,
@@ -124,7 +121,13 @@ function runMemoryCheck(rule: GraderRule, input: MemoryGraderInput): CheckResult
   switch (check) {
     case "memory_write_scope_must_be": {
       const want = expected.memory_write_scope_must_be;
-      if (!want) return { check, passed: false, weight: rule.weight, reason: "缺 expected.memory_write_scope_must_be" };
+      if (!want)
+        return {
+          check,
+          passed: false,
+          weight: rule.weight,
+          reason: "缺 expected.memory_write_scope_must_be",
+        };
       const writtenScopes = new Set(newEntries.map((e) => e.scope));
       const ok = writtenScopes.has(want);
       return {
@@ -169,7 +172,9 @@ function runMemoryCheck(rule: GraderRule, input: MemoryGraderInput): CheckResult
       const { safe, echoedCode, echoedNatural } = classifyEchoKeywords(list, input.userQuery);
       const lower = input.finalResponse.toLowerCase();
       const safeHits = safe.map((k) => k.toLowerCase()).filter((kw) => lower.includes(kw));
-      const codeEchoHits = echoedCode.map((k) => k.toLowerCase()).filter((kw) => lower.includes(kw));
+      const codeEchoHits = echoedCode
+        .map((k) => k.toLowerCase())
+        .filter((kw) => lower.includes(kw));
       const ok = safeHits.length >= 2;
       const parts: string[] = [];
       if (codeEchoHits.length > 0) parts.push(`code-echo 命中(不计) [${codeEchoHits.join(",")}]`);
@@ -230,7 +235,10 @@ function snapshotMemoryFile(filePath: string): { existed: boolean; content: stri
 }
 
 /** 还原 memory 文件到 snapshot 状态 */
-function restoreMemoryFile(filePath: string, snapshot: { existed: boolean; content: string | null }): void {
+function restoreMemoryFile(
+  filePath: string,
+  snapshot: { existed: boolean; content: string | null },
+): void {
   if (snapshot.existed && snapshot.content != null) {
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, snapshot.content, "utf-8");
@@ -323,7 +331,9 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
-console.log(`Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`);
+console.log(
+  `Mode      : ${values.execute ? "execute (真调 LLM Judge)" : "skip-llm-judge (省钱模式)"}`,
+);
 console.log(`Adapter   : sid-code-live`);
 console.log(`Model     : ${liveConfig.model || "(用户 config 默认)"}`);
 console.log(`Timeout   : ${liveConfig.timeoutMs}ms`);
@@ -389,10 +399,14 @@ for (let i = 0; i < cases.length; i++) {
 
     // 清空 memory(避免 backup 之外的污染干扰断言)
     if (existsSync(GLOBAL_MEMORY_FILE)) {
-      try { unlinkSync(GLOBAL_MEMORY_FILE); } catch {}
+      try {
+        unlinkSync(GLOBAL_MEMORY_FILE);
+      } catch {}
     }
     if (existsSync(PROJECT_MEMORY_FILE)) {
-      try { unlinkSync(PROJECT_MEMORY_FILE); } catch {}
+      try {
+        unlinkSync(PROJECT_MEMORY_FILE);
+      } catch {}
     }
 
     // 2. seed memory
@@ -409,7 +423,9 @@ for (let i = 0; i < cases.length; i++) {
     try {
       live = await runSidCodeLive(c.input.user_query.trim(), liveConfig);
     } catch (err) {
-      console.log(`    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`);
+      console.log(
+        `    [sample ${s + 1}/${samplesN}] ✗ adapter error: ${String(err).slice(0, 200)}`,
+      );
       restoreMemoryFile(GLOBAL_MEMORY_FILE, globalBackup);
       restoreMemoryFile(PROJECT_MEMORY_FILE, projectBackup);
       sampleSnapshots.push({
@@ -630,10 +646,14 @@ await Bun.write(
 console.log("\n" + "=".repeat(60));
 console.log(`Memory capability eval done`);
 console.log("=".repeat(60));
-console.log(`  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`);
+console.log(
+  `  Total: ${overall.total} | avg=${overall.avgScore}/5 | pass=${(overall.passRate * 100).toFixed(0)}%`,
+);
 console.log(`  By dimension:`);
 for (const [dim, s] of Object.entries(dimensionSummary)) {
-  console.log(`    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`);
+  console.log(
+    `    ${dim.padEnd(28)} avg=${s.avgScore} pass=${(s.passRate * 100).toFixed(0)}% (n=${s.count})`,
+  );
 }
 console.log(`\n  Raw  → ${rawOutputPath}`);
 console.log(`  Report → ${reportOutputPath}`);

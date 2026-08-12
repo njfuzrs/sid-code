@@ -15,12 +15,7 @@
 
 import { Scheduler } from "./scheduler.ts";
 import { Journal, computeFingerprint } from "./journal.ts";
-import type {
-  AgentOpts,
-  Budget,
-  PipelineStage,
-  WorkflowApi,
-} from "./types.ts";
+import type { AgentOpts, Budget, PipelineStage, WorkflowApi } from "./types.ts";
 
 /** 单 run 总 agent 上限(runaway 后备) */
 export const MAX_AGENTS_PER_RUN = 1000;
@@ -39,11 +34,7 @@ export interface AgentRunner {
    * @param ctx     运行上下文(调用序号、所属 phase、abort 信号)
    * @returns       无 schema → string;有 schema → 校验后的对象;失败/被 skip → null
    */
-  run(
-    prompt: string,
-    opts: AgentOpts | undefined,
-    ctx: AgentCallContext,
-  ): Promise<unknown>;
+  run(prompt: string, opts: AgentOpts | undefined, ctx: AgentCallContext): Promise<unknown>;
 }
 
 /** 单次 agent 调用的上下文 */
@@ -143,8 +134,7 @@ export class WorkflowRuntime {
     this.budget = {
       total: budgetTotal,
       spent: () => spentReader(),
-      remaining: () =>
-        budgetTotal === null ? Infinity : Math.max(0, budgetTotal - spentReader()),
+      remaining: () => (budgetTotal === null ? Infinity : Math.max(0, budgetTotal - spentReader())),
     };
   }
 
@@ -207,9 +197,7 @@ export class WorkflowRuntime {
   };
 
   /** parallel(thunks) — 屏障语义,抛错落 null,调用本身不 reject */
-  private parallel = async (
-    thunks: Array<() => Promise<unknown>>,
-  ): Promise<unknown[]> => {
+  private parallel = async (thunks: Array<() => Promise<unknown>>): Promise<unknown[]> => {
     if (!Array.isArray(thunks)) {
       throw new TypeError("[workflow] parallel(thunks) 的参数必须是数组(每项是 () => Promise)");
     }
@@ -229,10 +217,7 @@ export class WorkflowRuntime {
   };
 
   /** pipeline(items, ...stages) — 无屏障逐项推进(M3 灵魂) */
-  private pipeline = async (
-    items: unknown[],
-    ...stages: PipelineStage[]
-  ): Promise<unknown[]> => {
+  private pipeline = async (items: unknown[], ...stages: PipelineStage[]): Promise<unknown[]> => {
     if (!Array.isArray(items)) {
       throw new TypeError("[workflow] pipeline(items, ...stages) 的 items 必须是数组");
     }
@@ -276,10 +261,7 @@ export class WorkflowRuntime {
    * @param workflowFn  M6 注入的内联子 workflow 实现(可选)
    * @param argsOverride 覆盖注入的 args(子 workflow 用,传自己的 args 而非父的)
    */
-  buildApi(
-    workflowFn?: WorkflowApi["workflow"],
-    argsOverride?: { args: unknown },
-  ): WorkflowApi {
+  buildApi(workflowFn?: WorkflowApi["workflow"], argsOverride?: { args: unknown }): WorkflowApi {
     return {
       agent: this.agent,
       parallel: this.parallel,

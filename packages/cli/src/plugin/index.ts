@@ -64,11 +64,7 @@ export {
 export type { BuiltinPluginDefinition } from "./builtin.ts";
 
 // 依赖解析
-export {
-  resolveDependencyClosure,
-  verifyAndDemote,
-  findReverseDependents,
-} from "./dependency.ts";
+export { resolveDependencyClosure, verifyAndDemote, findReverseDependents } from "./dependency.ts";
 export type { ResolutionResult } from "./dependency.ts";
 
 // 作用域
@@ -97,12 +93,7 @@ export { mergePluginCommands } from "./merge.ts";
 // ── Phase 3：生命周期与刷新 ──
 
 // 生命周期操作
-export {
-  installPlugin,
-  uninstallPlugin,
-  enablePlugin,
-  disablePlugin,
-} from "./operations.ts";
+export { installPlugin, uninstallPlugin, enablePlugin, disablePlugin } from "./operations.ts";
 export type { OperationResult } from "./operations.ts";
 
 // 运行时刷新

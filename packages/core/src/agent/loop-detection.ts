@@ -32,10 +32,10 @@ export interface LoopDetectionConfig {
 
 /** 默认配置 */
 export const DEFAULT_LOOP_CONFIG: LoopDetectionConfig = {
-  toolCallThreshold: 3,      // 连续 3 次相同工具调用即触发（之前 5 次过于宽松，模型容易绕开）
-  contentThreshold: 10,      // 相同内容块出现 10 次
-  contentChunkSize: 50,      // 50 字符一块
-  maxRecoveryAttempts: 3,    // 最多恢复 3 次（方案 C-1: 2→3，避免正当任务被一次误判掐死）
+  toolCallThreshold: 3, // 连续 3 次相同工具调用即触发（之前 5 次过于宽松，模型容易绕开）
+  contentThreshold: 10, // 相同内容块出现 10 次
+  contentChunkSize: 50, // 50 字符一块
+  maxRecoveryAttempts: 3, // 最多恢复 3 次（方案 C-1: 2→3，避免正当任务被一次误判掐死）
   // ADR-020 §2.2 原始值 5/8（62.5%）；差距分析 P1-3 发现该比例对"同 path 下连续多个
   // 不同主题的正当探索"（如系统性 grep 5-6 个不同 symbol）误报率偏高——这类场景与
   // hrn_006（反复变换 pattern 探测同一个不存在字符串）在 shape 层面无法区分，只能靠
@@ -132,7 +132,7 @@ function canonicalStringify(v: unknown): string {
   if (typeof v === "object") {
     const obj = v as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
-    return `{${keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`).join(",")}}`;
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`).join(",")}}`;
   }
   return JSON.stringify(v);
 }
@@ -171,10 +171,16 @@ export class ToolCallLoopDetector {
 
     if (key === this.lastToolCallKey) {
       this.repetitionCount++;
-      log.debug("LOOP_DETECT", `工具调用重复: ${toolName}, 计数: ${this.repetitionCount}/${this.config.toolCallThreshold}`);
+      log.debug(
+        "LOOP_DETECT",
+        `工具调用重复: ${toolName}, 计数: ${this.repetitionCount}/${this.config.toolCallThreshold}`,
+      );
 
       if (this.repetitionCount >= this.config.toolCallThreshold) {
-        log.warn("LOOP_DETECT", `检测到工具调用循环: ${toolName} 连续重复 ${this.repetitionCount} 次`);
+        log.warn(
+          "LOOP_DETECT",
+          `检测到工具调用循环: ${toolName} 连续重复 ${this.repetitionCount} 次`,
+        );
         return true;
       }
     } else {
@@ -262,12 +268,12 @@ export class ToolShapeLoopDetector {
     const paginationFields = ["offset", "limit", "start_line", "end_line", "line"];
 
     const anchors = anchorFields
-      .filter(f => f in obj)
-      .map(f => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
+      .filter((f) => f in obj)
+      .map((f) => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
       .join("|");
     const pages = paginationFields
-      .filter(f => f in obj)
-      .map(f => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
+      .filter((f) => f in obj)
+      .map((f) => `${f}=${typeof obj[f] === "string" ? obj[f] : JSON.stringify(obj[f])}`)
       .join("|");
 
     return `${toolName}::keys=[${keys.join(",")}]::anchors=${anchors || "(none)"}${pages ? `::pages=${pages}` : ""}`;
@@ -300,7 +306,10 @@ export class ToolShapeLoopDetector {
     }
 
     if (count >= this.config.toolShapeThreshold) {
-      log.warn("LOOP_DETECT", `检测到工具 shape 探测循环: ${shape} 在 ${this.window.length} 次内出现 ${count} 次`);
+      log.warn(
+        "LOOP_DETECT",
+        `检测到工具 shape 探测循环: ${shape} 在 ${this.window.length} 次内出现 ${count} 次`,
+      );
       return true;
     }
     return false;
@@ -340,8 +349,8 @@ export class ContentLoopDetector {
 
     // 将文本分块并计算 hash
     const chunks = this.chunkText(text, this.config.contentChunkSize);
-    const hashes = chunks.map(chunk =>
-      createHash("sha256").update(chunk).digest("hex").slice(0, 16)
+    const hashes = chunks.map((chunk) =>
+      createHash("sha256").update(chunk).digest("hex").slice(0, 16),
     );
 
     // 更新 hash 计数
@@ -435,11 +444,20 @@ export interface LLMLoopCheckResult {
  *  这样"新增工具时忘记评估豁免"从静默漂移变成 CI 可见的硬错误。
  *  修改本集合时，务必同步在对应工具类上增删 `exemptFromLoopDetection` 字段。 */
 export const EXEMPT_TOOLS = new Set([
-  "sub_agent", "task_output", "task_stop",
-  "send_message", "todo_write", "enter_plan_mode",
-  "exit_plan_mode", "bg_task_list", "bg_task_get",
+  "sub_agent",
+  "task_output",
+  "task_stop",
+  "send_message",
+  "todo_write",
+  "enter_plan_mode",
+  "exit_plan_mode",
+  "bg_task_list",
+  "bg_task_get",
   // 结构化任务清单：连续 create/update/list 是正当的清单维护而非循环
-  "task_create", "task_update", "task_list", "task_get",
+  "task_create",
+  "task_update",
+  "task_list",
+  "task_get",
   // P1-3 团队通信：连续给不同成员发消息是正当的协作编排（与 send_message 同理）
   "team_message",
 ]);
@@ -558,7 +576,10 @@ export class LoopDetector {
       return false;
     }
 
-    log.info("LOOP_DETECT", `尝试恢复 (${this.recoveryAttempts}/${this.config.maxRecoveryAttempts})`);
+    log.info(
+      "LOOP_DETECT",
+      `尝试恢复 (${this.recoveryAttempts}/${this.config.maxRecoveryAttempts})`,
+    );
 
     // 清除检测状态但保留计数
     this.toolCallDetector.clearState();

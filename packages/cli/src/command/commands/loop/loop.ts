@@ -84,8 +84,7 @@ const mod: LocalCommandModule = {
       scheduler.addSessionTask(task);
 
       const mins = Math.round(result.totalSeconds / 60);
-      const everyLabel =
-        mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`;
+      const everyLabel = mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`;
       return {
         type: "text",
         value:

@@ -84,7 +84,9 @@ function main(argv: string[]): number {
     return 0;
   }
 
-  console.error(`[pollution-scan] ❌ ${totalViolations} contamination hit(s) in ${offenders.length} file(s):`);
+  console.error(
+    `[pollution-scan] ❌ ${totalViolations} contamination hit(s) in ${offenders.length} file(s):`,
+  );
   console.error("");
   console.error("§9.1.1 铁律：trajectory-platform 上游 task.yaml 中 tool_result_content /");
   console.error("response_content / patch_content / observation_content / completion_text");
@@ -97,7 +99,9 @@ function main(argv: string[]): number {
     }
     console.error("");
   }
-  console.error("修复：删除上述字段后重新 commit。如需保留，请改字段名（如改为 reference_answer 并人工审核）。");
+  console.error(
+    "修复：删除上述字段后重新 commit。如需保留，请改字段名（如改为 reference_answer 并人工审核）。",
+  );
   return 1;
 }
 

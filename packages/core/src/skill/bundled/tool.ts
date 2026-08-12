@@ -22,7 +22,11 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../../t
 import type { ProviderRegistry } from "../../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../../tool/registry.ts";
 import type { HookSystem } from "../../hook/system.ts";
-import type { UnifiedCommand, PromptCommand, CommandContext } from "../../command-contract/types.ts";
+import type {
+  UnifiedCommand,
+  PromptCommand,
+  CommandContext,
+} from "../../command-contract/types.ts";
 import { SubAgent } from "../../agent/sub-agent.ts";
 import { getLogger } from "../../debug/logger.ts";
 import { z } from "zod/v4";
@@ -104,10 +108,7 @@ export class BundledSkillTool implements Tool {
         // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认，从 10 提到 30
         // （与 sub-agent.ts/skill/meta-tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
         maxTurns: this.cmd.maxTurns ?? 30,
-        timeout:
-          timeoutMins != null
-            ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000
-            : undefined,
+        timeout: timeoutMins != null ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000 : undefined,
         // G13：以内置 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
         type: `skill:${this.cmd.name}`,
       },

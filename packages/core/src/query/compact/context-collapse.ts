@@ -68,8 +68,10 @@ function renderSegment(messages: Message[]): string {
     const text = msg.content
       .map((b) => {
         if (b.type === "text") return b.text;
-        if (b.type === "tool_use") return `[调用工具 ${b.name}: ${JSON.stringify(b.input).slice(0, 300)}]`;
-        if (b.type === "tool_result" && typeof b.content === "string") return `[工具结果: ${b.content.slice(0, 500)}]`;
+        if (b.type === "tool_use")
+          return `[调用工具 ${b.name}: ${JSON.stringify(b.input).slice(0, 300)}]`;
+        if (b.type === "tool_result" && typeof b.content === "string")
+          return `[工具结果: ${b.content.slice(0, 500)}]`;
         return "";
       })
       .filter(Boolean)
@@ -91,7 +93,10 @@ function findSegmentBoundaries(messages: Message[], compressibleEnd: number): nu
     const hasToolResult = msg.content.some((b) => b.type === "tool_result");
     const isSafe = msg.role === "user" && !hasToolResult && !msg._meta?.origin;
     if (boundaries.length === 0) {
-      if (isSafe) { boundaries.push(i); countSinceLast = 0; }
+      if (isSafe) {
+        boundaries.push(i);
+        countSinceLast = 0;
+      }
     } else {
       countSinceLast++;
       if (isSafe && countSinceLast >= SEGMENT_SIZE) {

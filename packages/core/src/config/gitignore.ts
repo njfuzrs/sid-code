@@ -78,9 +78,7 @@ export async function addFileGlobRuleToGitignore(
     if (!dirIsInGitRepo(cwd)) return;
 
     // 目录规则（以 / 结尾）用一个示例文件来判重
-    const testPath = filename.endsWith("/")
-      ? `${filename}sample-file.txt`
-      : filename;
+    const testPath = filename.endsWith("/") ? `${filename}sample-file.txt` : filename;
     if (isPathGitignored(testPath, cwd)) {
       // 已被某个 gitignore（全局或项目）覆盖，无需重复添加
       return;
@@ -103,11 +101,7 @@ export async function addFileGlobRuleToGitignore(
       // 文件不存在，首次创建
     }
 
-    await appendFile(
-      globalGitignorePath,
-      `${needsLeadingNewline ? "\n" : ""}${entry}\n`,
-      "utf-8",
-    );
+    await appendFile(globalGitignorePath, `${needsLeadingNewline ? "\n" : ""}${entry}\n`, "utf-8");
     log.debug("GITIGNORE", `已将 ${entry} 加入全局 gitignore ${globalGitignorePath}`);
   } catch (err: any) {
     log.warn("GITIGNORE", `写入全局 gitignore 失败: ${err?.message ?? err}`);

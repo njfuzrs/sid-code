@@ -31,7 +31,10 @@ const loadSkillContentMap = memoize(async (): Promise<SkillContentMap> => {
       }
     }
   } catch (err: any) {
-    getLogger().debug("SUBAGENT", `技能预加载 discover 失败（降级为空）: ${err?.message ?? String(err)}`);
+    getLogger().debug(
+      "SUBAGENT",
+      `技能预加载 discover 失败（降级为空）: ${err?.message ?? String(err)}`,
+    );
   }
   return map;
 });

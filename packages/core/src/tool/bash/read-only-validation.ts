@@ -8,25 +8,87 @@ import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from 
 /** 已知的只读命令 */
 const READ_ONLY_COMMANDS = new Set([
   // 文件查看
-  "ls", "cat", "head", "tail", "wc", "file", "stat", "du", "df",
-  "find", "locate", "which", "whereis", "type", "readlink",
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "file",
+  "stat",
+  "du",
+  "df",
+  "find",
+  "locate",
+  "which",
+  "whereis",
+  "type",
+  "readlink",
   // 搜索
-  "grep", "rg", "ag", "ack", "fgrep", "egrep",
+  "grep",
+  "rg",
+  "ag",
+  "ack",
+  "fgrep",
+  "egrep",
   // Git 只读
   "git", // git 子命令单独检查
   // 版本查询
-  "node", "npm", "bun", "deno", "python", "python3", "ruby", "go", "rustc", "cargo",
-  "java", "javac", "gcc", "g++", "clang", "make",
+  "node",
+  "npm",
+  "bun",
+  "deno",
+  "python",
+  "python3",
+  "ruby",
+  "go",
+  "rustc",
+  "cargo",
+  "java",
+  "javac",
+  "gcc",
+  "g++",
+  "clang",
+  "make",
   // 系统信息
-  "echo", "printf", "date", "whoami", "hostname", "uname",
-  "pwd", "env", "printenv", "id", "uptime", "free", "top",
+  "echo",
+  "printf",
+  "date",
+  "whoami",
+  "hostname",
+  "uname",
+  "pwd",
+  "env",
+  "printenv",
+  "id",
+  "uptime",
+  "free",
+  "top",
   // 数据处理（无写入）
-  "jq", "yq", "sort", "uniq", "cut", "tr", "awk", "sed",
-  "diff", "comm", "paste", "column", "tee",
+  "jq",
+  "yq",
+  "sort",
+  "uniq",
+  "cut",
+  "tr",
+  "awk",
+  "sed",
+  "diff",
+  "comm",
+  "paste",
+  "column",
+  "tee",
   // 目录
-  "tree", "basename", "dirname", "realpath",
+  "tree",
+  "basename",
+  "dirname",
+  "realpath",
   // 网络（只读）
-  "ping", "dig", "nslookup", "host", "curl", "wget",
+  "ping",
+  "dig",
+  "nslookup",
+  "host",
+  "curl",
+  "wget",
 ]);
 
 /**
@@ -38,10 +100,25 @@ const READ_ONLY_COMMANDS = new Set([
  * 按 flag 细分（见下）。
  */
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  "status", "log", "diff", "show", "branch", "remote", "tag",
-  "stash", "describe", "shortlog", "blame", "ls-files",
-  "ls-tree", "cat-file", "rev-parse", "rev-list",
-  "reflog", "name-rev", "for-each-ref",
+  "status",
+  "log",
+  "diff",
+  "show",
+  "branch",
+  "remote",
+  "tag",
+  "stash",
+  "describe",
+  "shortlog",
+  "blame",
+  "ls-files",
+  "ls-tree",
+  "cat-file",
+  "rev-parse",
+  "rev-list",
+  "reflog",
+  "name-rev",
+  "for-each-ref",
 ]);
 
 /**
@@ -59,14 +136,26 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
 export function isReadOnlyGitConfig(args: string[]): boolean {
   // 写操作 flag —— 命中任一即非只读
   const WRITE_FLAGS = new Set([
-    "--add", "--unset", "--unset-all", "--replace-all",
-    "--edit", "-e", "--rename-section", "--remove-section",
+    "--add",
+    "--unset",
+    "--unset-all",
+    "--replace-all",
+    "--edit",
+    "-e",
+    "--rename-section",
+    "--remove-section",
     "--unset-section",
   ]);
   // 纯读 flag —— 命中即倾向只读（仍需无写入位置参数）
   const READ_FLAGS = new Set([
-    "--get", "--get-all", "--get-regexp", "--get-urlmatch",
-    "--list", "-l", "--get-color", "--get-colorbool",
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--get-urlmatch",
+    "--list",
+    "-l",
+    "--get-color",
+    "--get-colorbool",
   ]);
 
   let hasReadFlag = false;
@@ -77,9 +166,15 @@ export function isReadOnlyGitConfig(args: string[]): boolean {
     const a = args[i];
     if (!a) continue;
     if (WRITE_FLAGS.has(a)) return false;
-    if (READ_FLAGS.has(a)) { hasReadFlag = true; continue; }
+    if (READ_FLAGS.has(a)) {
+      hasReadFlag = true;
+      continue;
+    }
     // --file <path> / -f <path> / --blob <blob>：跳过其后紧跟的值参数（不算 key/value）
-    if (a === "--file" || a === "-f" || a === "--blob") { i++; continue; }
+    if (a === "--file" || a === "-f" || a === "--blob") {
+      i++;
+      continue;
+    }
     // 作用域 flag 与其它 -- 开头选项：跳过
     if (a.startsWith("-")) continue;
     positional.push(a);
@@ -107,9 +202,18 @@ export function isReadOnlyGitConfig(args: string[]): boolean {
  * `alias.*`、`core.sshCommand`）从而借只读子命令执行任意代码，必须保持「非只读」判定。
  */
 const SAFE_GIT_GLOBAL_BOOL_OPTS = new Set([
-  "-P", "--no-pager", "--paginate", "--bare", "--no-replace-objects",
-  "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
-  "--no-optional-locks", "--no-lazy-fetch", "--no-advice",
+  "-P",
+  "--no-pager",
+  "--paginate",
+  "--bare",
+  "--no-replace-objects",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+  "--no-optional-locks",
+  "--no-lazy-fetch",
+  "--no-advice",
 ]);
 /** 安全的带值全局选项（值可能是同 token 的 `--opt=v` 或下一个 token）。 */
 const SAFE_GIT_GLOBAL_VALUE_OPTS = new Set(["-C", "--git-dir", "--work-tree", "--namespace"]);
@@ -142,26 +246,52 @@ export function stripSafeGitGlobalOptions(args: string[]): string[] | null {
 
 /** 已知的危险 Git 子命令 */
 const DANGEROUS_GIT_SUBCOMMANDS = new Set([
-  "push", "reset", "rebase", "merge", "cherry-pick",
-  "clean", "checkout", "restore", "switch", "rm", "mv",
-  "commit", "pull", "fetch", "clone", "init", "submodule",
+  "push",
+  "reset",
+  "rebase",
+  "merge",
+  "cherry-pick",
+  "clean",
+  "checkout",
+  "restore",
+  "switch",
+  "rm",
+  "mv",
+  "commit",
+  "pull",
+  "fetch",
+  "clone",
+  "init",
+  "submodule",
 ]);
 
 /** 需要特殊处理的命令（看起来只读但可能有副作用） */
 const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   // sed 只有不带 -i 时才是只读
-  sed: (args) => !args.some(a => a === "-i" || a.startsWith("-i") || a === "--in-place"),
+  sed: (args) => !args.some((a) => a === "-i" || a.startsWith("-i") || a === "--in-place"),
   // awk 只有不带重定向时才是只读（重定向在 AST 层处理）
   awk: () => true,
   // tee 总是写文件
   tee: () => false,
   // curl/wget 只有不带 -o/-O 时才是只读
-  curl: (args) => !args.some(a => a === "-o" || a === "-O" || a === "--output" || a.startsWith("-o")),
-  wget: (args) => !args.some(a => a === "-O" || a === "--output-document" || a.startsWith("-O")),
+  curl: (args) =>
+    !args.some((a) => a === "-o" || a === "-O" || a === "--output" || a.startsWith("-o")),
+  wget: (args) => !args.some((a) => a === "-O" || a === "--output-document" || a.startsWith("-O")),
   // npm/bun 只有特定子命令是只读
   npm: (args) => {
     const sub = args[0];
-    return ["list", "ls", "view", "info", "show", "search", "outdated", "audit", "why", "explain"].includes(sub);
+    return [
+      "list",
+      "ls",
+      "view",
+      "info",
+      "show",
+      "search",
+      "outdated",
+      "audit",
+      "why",
+      "explain",
+    ].includes(sub);
   },
   bun: (args) => {
     const sub = args[0];
@@ -207,7 +337,8 @@ export function isReadOnlyCommand(command: string): boolean {
       const subCmd = gitArgs[0];
       if (!subCmd) continue; // 裸 git（或仅剩安全全局选项）是只读的
       // `git --version` / `git --help`：纯信息查询，此前落到「未知子命令」被判非只读，白弹确认
-      if (subCmd === "--version" || subCmd === "--help" || subCmd === "-v" || subCmd === "-h") continue;
+      if (subCmd === "--version" || subCmd === "--help" || subCmd === "-v" || subCmd === "-h")
+        continue;
       if (DANGEROUS_GIT_SUBCOMMANDS.has(subCmd)) return false;
       // P0-1：git config 按 flag 细分读写（写操作含 core.hooksPath 劫持不可判只读）
       if (subCmd === "config") {

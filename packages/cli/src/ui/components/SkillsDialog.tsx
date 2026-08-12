@@ -27,12 +27,7 @@ import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import { theme } from "../semantic-colors.ts";
 import type { Color } from "@sid-code/tui-renderer/styles.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
-import {
-  POINTER,
-  SUCCESS_MARK,
-  ERROR_MARK,
-  SEARCH_MARK,
-} from "../constants/figures.ts";
+import { POINTER, SUCCESS_MARK, ERROR_MARK, SEARCH_MARK } from "../constants/figures.ts";
 import { SkillManager } from "@sid-code/core/skill/manager.ts";
 import { loadBundledSkills } from "@sid-code/core/skill/bundled/index.ts";
 import { estimateSkillListingTokens } from "@sid-code/core/skill/budget.ts";
@@ -297,10 +292,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
     [rows, disabledSet],
   );
 
-  const enabledCount = useMemo(
-    () => decorated.filter((r) => !r.disabled).length,
-    [decorated],
-  );
+  const enabledCount = useMemo(() => decorated.filter((r) => !r.disabled).length, [decorated]);
 
   // 搜索过滤 + 排序
   const filtered = useMemo(() => {
@@ -344,9 +336,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
       const source = scope === "project" ? "projectSettings" : "userSettings";
       const { settings } = getSettingsForSource(source);
       const scopeList = settings?.disabledSkills ?? [];
-      const inScope = scopeList.some(
-        (n) => n.toLowerCase() === row.name.toLowerCase(),
-      );
+      const inScope = scopeList.some((n) => n.toLowerCase() === row.name.toLowerCase());
       const next = inScope
         ? scopeList.filter((n) => n.toLowerCase() !== row.name.toLowerCase())
         : [...scopeList, row.name];
@@ -459,24 +449,34 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
     const isDisabled = disabledSet.has(selected.name.toLowerCase());
     // 元信息行的键值项（短值，标签定宽对齐成列，遵守 L2「对齐成列」）
     const sec = theme.text.secondary;
-    const execLabel =
-      selected.type === "inline" ? "inline（注入当前对话）" : "fork（子代理执行）";
+    const execLabel = selected.type === "inline" ? "inline（注入当前对话）" : "fork（子代理执行）";
     const metaRows: Array<{ label: string; node: React.ReactNode }> = [
       {
         label: "来源",
-        node: <Text color={sourceColor(selected.sourceKey)}>{sourceLabel(selected.sourceKey)}</Text>,
+        node: (
+          <Text color={sourceColor(selected.sourceKey)}>{sourceLabel(selected.sourceKey)}</Text>
+        ),
       },
       { label: "执行", node: <Text color={sec}>{execLabel}</Text> },
       { label: "开销", node: <Text color={sec}>{tokLabel(selected.tokens)}</Text> },
     ];
-    if (selected.model) metaRows.push({ label: "模型", node: <Text color={sec}>{selected.model}</Text> });
-    if (selected.effort) metaRows.push({ label: "强度", node: <Text color={sec}>{selected.effort}</Text> });
-    if (selected.agent) metaRows.push({ label: "代理", node: <Text color={sec}>{selected.agent}</Text> });
+    if (selected.model)
+      metaRows.push({ label: "模型", node: <Text color={sec}>{selected.model}</Text> });
+    if (selected.effort)
+      metaRows.push({ label: "强度", node: <Text color={sec}>{selected.effort}</Text> });
+    if (selected.agent)
+      metaRows.push({ label: "代理", node: <Text color={sec}>{selected.agent}</Text> });
     // 轮次 / 超时仅 fork 模式有意义
     if (selected.type !== "inline" && selected.maxTurns != null)
-      metaRows.push({ label: "轮次", node: <Text color={sec}>{`最多 ${selected.maxTurns} 轮`}</Text> });
+      metaRows.push({
+        label: "轮次",
+        node: <Text color={sec}>{`最多 ${selected.maxTurns} 轮`}</Text>,
+      });
     if (selected.type !== "inline" && selected.timeoutMins != null)
-      metaRows.push({ label: "超时", node: <Text color={sec}>{`${selected.timeoutMins} 分钟`}</Text> });
+      metaRows.push({
+        label: "超时",
+        node: <Text color={sec}>{`${selected.timeoutMins} 分钟`}</Text>,
+      });
     if (selected.argumentHint)
       metaRows.push({ label: "参数", node: <Text color={sec}>{selected.argumentHint}</Text> });
     if (selected.version)
@@ -498,10 +498,18 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
     const promptRemaining = Math.max(0, promptAllLines.length - PROMPT_PREVIEW_LINES);
 
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={2} paddingY={1}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={2}
+        paddingY={1}
+      >
         {/* 身份区：大号命令名 + 状态徽章，主色点睛（L2 排版表达状态） */}
         <Box>
-          <Text bold color={theme.ui.active}>/{selected.name}</Text>
+          <Text bold color={theme.ui.active}>
+            /{selected.name}
+          </Text>
           <Text color={isDisabled ? theme.status.error : theme.status.success}>
             {"   "}
             {isDisabled ? ERROR_MARK : SUCCESS_MARK} {isDisabled ? "已禁用" : "已启用"}
@@ -510,7 +518,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
 
         {/* 分隔留白 + 描述区（标签独占一行，正文缩进另起，杜绝「标签和正文黏一起」） */}
         <Box marginTop={1} flexDirection="column">
-          <Text bold color={theme.text.secondary}>描述</Text>
+          <Text bold color={theme.text.secondary}>
+            描述
+          </Text>
           <Box paddingLeft={2}>
             <Text color={theme.text.primary} wrap="wrap">
               {selected.description || "（无）"}
@@ -520,9 +530,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
 
         {selected.whenToUse && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>何时使用</Text>
+            <Text bold color={theme.text.secondary}>
+              何时使用
+            </Text>
             <Box paddingLeft={2}>
-              <Text color={theme.text.secondary} wrap="wrap">{selected.whenToUse}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">
+                {selected.whenToUse}
+              </Text>
             </Box>
           </Box>
         )}
@@ -534,7 +548,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
               <Box width={metaLabelW} flexShrink={0}>
                 <Text color={theme.text.secondary}>{r.label}</Text>
               </Box>
-              <Text color={theme.text.secondary}>  </Text>
+              <Text color={theme.text.secondary}> </Text>
               {r.node}
             </Box>
           ))}
@@ -543,9 +557,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         {/* 可用工具（可能较长，标签独占一行 + 缩进） */}
         {selected.allowedTools && selected.allowedTools.length > 0 && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>可用工具</Text>
+            <Text bold color={theme.text.secondary}>
+              可用工具
+            </Text>
             <Box paddingLeft={2}>
-              <Text color={theme.text.secondary} wrap="wrap">{selected.allowedTools.join("、")}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">
+                {selected.allowedTools.join("、")}
+              </Text>
             </Box>
           </Box>
         )}
@@ -553,7 +571,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         {/* 命名参数 $arg_name */}
         {selected.argumentNames && selected.argumentNames.length > 0 && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>命名参数</Text>
+            <Text bold color={theme.text.secondary}>
+              命名参数
+            </Text>
             <Box paddingLeft={2}>
               <Text color={theme.text.secondary} wrap="wrap">
                 {selected.argumentNames.map((n) => `$${n}`).join("、")}
@@ -565,9 +585,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         {/* 条件激活路径（glob）：只在操作匹配文件时自动激活 */}
         {selected.paths && selected.paths.length > 0 && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>激活路径</Text>
+            <Text bold color={theme.text.secondary}>
+              激活路径
+            </Text>
             <Box paddingLeft={2}>
-              <Text color={theme.text.secondary} wrap="wrap">{selected.paths.join("、")}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">
+                {selected.paths.join("、")}
+              </Text>
             </Box>
           </Box>
         )}
@@ -575,9 +599,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         {/* 生命周期钩子（按事件名） */}
         {selected.hookEvents && selected.hookEvents.length > 0 && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>钩子</Text>
+            <Text bold color={theme.text.secondary}>
+              钩子
+            </Text>
             <Box paddingLeft={2}>
-              <Text color={theme.text.secondary} wrap="wrap">{selected.hookEvents.join("、")}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">
+                {selected.hookEvents.join("、")}
+              </Text>
             </Box>
           </Box>
         )}
@@ -597,9 +625,7 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
                   {line || " "}
                 </Text>
               ))}
-              {promptRemaining > 0 && (
-                <Text italic>… 还有 {promptRemaining} 行（见文件）</Text>
-              )}
+              {promptRemaining > 0 && <Text italic>… 还有 {promptRemaining} 行（见文件）</Text>}
             </Box>
           </Box>
         )}
@@ -607,7 +633,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
         {/* 路径（长路径，弱化为暗色，单独一行截断） */}
         {selected.filePath && (
           <Box marginTop={1} flexDirection="column">
-            <Text bold color={theme.text.secondary}>路径</Text>
+            <Text bold color={theme.text.secondary}>
+              路径
+            </Text>
             <Box paddingLeft={2}>
               <Text wrap="truncate-middle">{selected.filePath}</Text>
             </Box>
@@ -637,16 +665,33 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
   // 描述可用列宽 = 终端宽 - 边框/内边距 - 指针 - 状态 - 名称列 - 徽章 - token
   const descWidth = Math.max(
     12,
-    termWidth - 2 /*border*/ - 2 /*padX*/ - 2 /*指针*/ - 2 /*状态*/ - (NAME_COL + 1) - 8 /*徽章*/ - 12 /*tok*/ - 2,
+    termWidth -
+      2 /*border*/ -
+      2 /*padX*/ -
+      2 /*指针*/ -
+      2 /*状态*/ -
+      (NAME_COL + 1) -
+      8 /*徽章*/ -
+      12 /*tok*/ -
+      2,
   );
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
       {/* 标题行 */}
       <Box>
-        <Text bold color={theme.text.accent}>Skills</Text>
+        <Text bold color={theme.text.accent}>
+          Skills
+        </Text>
         <Text color={theme.text.secondary}>
-          {"  "}· {enabledCount}/{decorated.length} 已启用 · 排序 {SORT_LABEL[sort]} · 作用范围 {scope === "user" ? "全局" : "仅本项目"}
+          {"  "}· {enabledCount}/{decorated.length} 已启用 · 排序 {SORT_LABEL[sort]} · 作用范围{" "}
+          {scope === "user" ? "全局" : "仅本项目"}
         </Text>
       </Box>
 
@@ -664,7 +709,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
 
       {/* 列表 */}
       {!loaded ? (
-        <Box marginTop={1}><Text color={theme.text.secondary}>加载中…</Text></Box>
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>加载中…</Text>
+        </Box>
       ) : filtered.length === 0 ? (
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>{query ? "无匹配的 Skill" : "暂无可用 Skill"}</Text>
@@ -699,10 +746,12 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
                   <Text color={sourceColor(row.sourceKey)}> [{sourceLabel(row.sourceKey)}]</Text>
                 </Box>
                 <Box flexShrink={0}>
-                  <Text color={theme.text.secondary}>{" "}{padEndWidth(tokLabel(row.tokens), 9)}</Text>
+                  <Text color={theme.text.secondary}> {padEndWidth(tokLabel(row.tokens), 9)}</Text>
                 </Box>
                 <Box flexGrow={1}>
-                  <Text color={theme.text.secondary}>{truncateToWidth(row.description, descWidth)}</Text>
+                  <Text color={theme.text.secondary}>
+                    {truncateToWidth(row.description, descWidth)}
+                  </Text>
                 </Box>
               </Box>
             );
@@ -718,7 +767,8 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
       {/* 底部 hint（常驻，对标 resume：输入即过滤，动作在非字母键） */}
       <Box marginTop={1}>
         <Text italic>
-          输入过滤 · ↑↓ 选择 · Enter 启/禁 · Tab 详情 · Ctrl+S 排序 · Ctrl+T 作用范围 · Esc {query ? "清除" : "关闭"}
+          输入过滤 · ↑↓ 选择 · Enter 启/禁 · Tab 详情 · Ctrl+S 排序 · Ctrl+T 作用范围 · Esc{" "}
+          {query ? "清除" : "关闭"}
         </Text>
       </Box>
     </Box>

@@ -22,10 +22,7 @@ export class QuadraticBackoff {
     }
 
     // 二次退避: base * attempts²(首次 attempts=0 → 0 延迟,立即重试一次)
-    const delay = Math.min(
-      this.baseDelayMs * this.attempts * this.attempts,
-      this.maxDelayMs,
-    );
+    const delay = Math.min(this.baseDelayMs * this.attempts * this.attempts, this.maxDelayMs);
     this.attempts++;
 
     if (this.timer) clearTimeout(this.timer);

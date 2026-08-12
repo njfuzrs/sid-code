@@ -54,7 +54,9 @@ for (const rel of uniq) {
     }
     if (inFence || /^\s*<!--/.test(line)) continue;
     const noCode = line.replace(/`[^`]*`/g, " ");
-    for (const m of noCode.matchAll(/(?:^|[\s，。、；：！？（）【】「」『』〈〉《》〔〕“”‘’…—～·])@([^\s，。、；：！？（）【】「」『』〈〉《》〔〕“”‘’…—～·]+)/g)) {
+    for (const m of noCode.matchAll(
+      /(?:^|[\s，。、；：！？（）【】「」『』〈〉《》〔〕“”‘’…—～·])@([^\s，。、；：！？（）【】「」『』〈〉《》〔〕“”‘’…—～·]+)/g,
+    )) {
       let p = m[1];
       const h = p.indexOf("#");
       if (h !== -1) p = p.slice(0, h);
@@ -78,6 +80,4 @@ for (const rel of uniq) {
 }
 
 console.log(`\n合计：真导入 ${resolved} 处，prose/不存在 ${unresolved} 处`);
-console.log(
-  "判据：prose 那栏不是回归 —— 需人工确认的只有「该导入却出现在 prose 栏」的条目。",
-);
+console.log("判据：prose 那栏不是回归 —— 需人工确认的只有「该导入却出现在 prose 栏」的条目。");

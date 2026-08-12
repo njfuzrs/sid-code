@@ -52,7 +52,10 @@ export class Registry {
       const prefixed = wrapWithName(cmd, prefixedName);
       this.commands.set(prefixedName, prefixed);
       this.commandSources.set(prefixedName, source);
-      log.warn("COMMAND", `自定义命令 "/${cmd.name()}" 与内置命令冲突，已重命名为 "/${prefixedName}"`);
+      log.warn(
+        "COMMAND",
+        `自定义命令 "/${cmd.name()}" 与内置命令冲突，已重命名为 "/${prefixedName}"`,
+      );
       return;
     }
 
@@ -78,8 +81,8 @@ export class Registry {
     // 查找子命令
     for (let i = 1; i < parts.length; i++) {
       const subs: Command[] = current.subCommands?.() ?? [];
-      const found: Command | undefined = subs.find((c: Command) =>
-        c.name() === parts[i] || c.aliases().includes(parts[i])
+      const found: Command | undefined = subs.find(
+        (c: Command) => c.name() === parts[i] || c.aliases().includes(parts[i]),
       );
 
       if (!found) {

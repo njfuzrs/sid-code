@@ -149,7 +149,11 @@ function applyDeepSeekOpenAI(params: SendParams, effort: EffortSetting, thinking
  * - thinking 开关有效（budget 被服务端忽略，仍按 anthropic.ts 既有形态下发 enabled）。
  * - effort   走 output_config.effort（由 anthropic.ts S7 补丁消费）：low/medium→high，max→max。
  */
-function applyDeepSeekAnthropic(params: SendParams, effort: EffortSetting, thinking: boolean): void {
+function applyDeepSeekAnthropic(
+  params: SendParams,
+  effort: EffortSetting,
+  thinking: boolean,
+): void {
   params.thinking = { enabled: thinking, budgetTokens: 0 };
   if (thinking && effort !== undefined) {
     params.outputConfig = { effort: clampToMaxWire(effort) === "max" ? "max" : "high" };
@@ -190,9 +194,16 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
     // 仅当降档结果比用户档位更低时才生效（不上调），并在 outputConfig 打标记供 UI/日志诚实告知。
     if (maxThinking !== null) {
       const capped = mapThinkingCapToEffort(maxThinking);
-      if (capped !== null && ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[effectiveEffort]) {
+      if (
+        capped !== null &&
+        ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[effectiveEffort]
+      ) {
         effectiveEffort = capped;
-        params.thinkingBudgetCapped = { requestedMax: maxThinking, mappedEffort: capped, mode: "adaptive" };
+        params.thinkingBudgetCapped = {
+          requestedMax: maxThinking,
+          mappedEffort: capped,
+          mode: "adaptive",
+        };
       }
     }
     // Anthropic adaptive 线格式官方档位为 low/medium/high/max，不含 xhigh：
@@ -213,7 +224,11 @@ function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinkin
     // §12 P2-1：manual 模型 budget 由客户端下发，可精确钳制：Math.min(档位budget, 上限)。
     if (maxThinking !== null && maxThinking < budget) {
       budget = maxThinking;
-      params.thinkingBudgetCapped = { requestedMax: maxThinking, appliedBudget: budget, mode: "manual" };
+      params.thinkingBudgetCapped = {
+        requestedMax: maxThinking,
+        appliedBudget: budget,
+        mode: "manual",
+      };
     }
     params.thinking = { enabled: true, budgetTokens: budget };
   }
@@ -298,10 +313,7 @@ const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = 
 };
 
 /** 各协议的能力位（除 applyToSendParams 外的描述字段） */
-const CAPABILITY_FLAGS: Record<
-  CapabilityKind,
-  Omit<EffortCapability, "applyToSendParams">
-> = {
+const CAPABILITY_FLAGS: Record<CapabilityKind, Omit<EffortCapability, "applyToSendParams">> = {
   "deepseek-openai": {
     supportsEffort: true,
     supportsMaxEffort: true,
@@ -488,7 +500,7 @@ function resolveFromCapabilityCache(model: string): EffortCapability {
       ? "medium"
       : values.includes("high")
         ? "high"
-        : (values.find((v: string) => isEffortLevel(v)) as EffortLevel | undefined) ?? "medium"
+        : ((values.find((v: string) => isEffortLevel(v)) as EffortLevel | undefined) ?? "medium")
     : "medium";
 
   return {
@@ -734,7 +746,7 @@ export function getEffortEnvOverride(
   const raw = env.SID_CODE_EFFORT_LEVEL ?? env.CLAUDE_CODE_EFFORT_LEVEL;
   if (raw === undefined) return null;
   const v = raw.trim().toLowerCase();
-  if (v === "" ) return null;
+  if (v === "") return null;
   if (v === "unset" || v === "auto") return undefined; // 强制 auto
   if (isEffortLevel(v)) return v;
   return null; // 非法值忽略

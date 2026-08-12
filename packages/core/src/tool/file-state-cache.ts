@@ -40,8 +40,8 @@ interface CacheEntry {
 
 export class FileStateCache {
   private map = new Map<string, CacheEntry>();
-  private head: CacheEntry | null = null;  // 最近使用
-  private tail: CacheEntry | null = null;  // 最久未使用
+  private head: CacheEntry | null = null; // 最近使用
+  private tail: CacheEntry | null = null; // 最久未使用
   private currentSize = 0;
   private maxSize: number;
 
@@ -51,7 +51,7 @@ export class FileStateCache {
 
   /** 估算条目内存占用 */
   private estimateSize(state: FileState): number {
-    return state.content.length * 2 + 200;  // UTF-16 + 固定开销
+    return state.content.length * 2 + 200; // UTF-16 + 固定开销
   }
 
   /** 将节点移到链表头部（最近使用） */

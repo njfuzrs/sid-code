@@ -151,14 +151,12 @@ export class SkillMetaTool implements Tool {
   getListingEntries(): import("./budget.ts").SkillListingEntry[] {
     // P1-2/P3-2：只列可 listing 的 skill（排除被 gate 的条件激活 skill）。
     // 条件 skill 激活后由 SkillActivationCoordinator 经 reminder 增量注入，不进静态 system prompt。
-    return this.manager
-      .getListableSkills()
-      .map((s) => ({
-        name: s.name,
-        description: s.description,
-        whenToUse: s.whenToUse,
-        isBundled: s.loadedFrom === "bundled" || s.isBuiltin === true,
-      }));
+    return this.manager.getListableSkills().map((s) => ({
+      name: s.name,
+      description: s.description,
+      whenToUse: s.whenToUse,
+      isBundled: s.loadedFrom === "bundled" || s.isBuiltin === true,
+    }));
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -203,8 +201,7 @@ export class SkillMetaTool implements Tool {
     if (this.manager.isGated(skill.name)) {
       const paths = skill.paths?.length ? skill.paths.join(", ") : "特定文件";
       return {
-        output:
-          `错误：Skill "${skill.name}" 是条件激活 skill，尚未触发（需先接触匹配 ${paths} 的文件），当前不可调用。`,
+        output: `错误：Skill "${skill.name}" 是条件激活 skill，尚未触发（需先接触匹配 ${paths} 的文件），当前不可调用。`,
         isError: true,
       };
     }
@@ -292,7 +289,8 @@ export class SkillMetaTool implements Tool {
 
     // 资源清单 + 绝对目录路径（delegate 子 agent 工作目录是项目目录，需绝对路径读 skill 资源）
     const resourceHint = await this.buildResourceHint(skill);
-    const userPrompt = skill.prompt + resourceHint + (userInput ? `\n\n用户输入:\n${userInput}` : "");
+    const userPrompt =
+      skill.prompt + resourceHint + (userInput ? `\n\n用户输入:\n${userInput}` : "");
 
     // P1-1：effort/agent 透传
     const effort = normalizeSkillEffort(skill.effort);

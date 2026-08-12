@@ -116,7 +116,9 @@ function discoverArchitectureSubDirs(absRoot: string): string[] {
     const p = join(absRoot, entry);
     try {
       if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return dirs;
 }
@@ -179,7 +181,9 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
     // general + architecture 模式：约定文件名 = caseId.yaml
     // architecture 子目录动态发现 —— S1-T01 起 evals/architecture/<sub>/<case>.yaml 加入 sync
     const archSubs = discoverArchitectureSubDirs(join(opts.baseDir, "architecture"));
-    const holdoutArchSubs = discoverArchitectureSubDirs(join(opts.baseDir, "holdout", "architecture"));
+    const holdoutArchSubs = discoverArchitectureSubDirs(
+      join(opts.baseDir, "holdout", "architecture"),
+    );
     const searchDirs = [
       ...DEFAULT_GENERAL_DIRS.map((d) => join(opts.baseDir!, d)),
       ...archSubs,
@@ -269,7 +273,9 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
     updated++;
   }
   if (droppedHoldout > 0) {
-    console.warn(`  ⚠️ F-H4 holdout 防御:跳过 ${droppedHoldout} 条 holdout result(allowHoldout=false)`);
+    console.warn(
+      `  ⚠️ F-H4 holdout 防御:跳过 ${droppedHoldout} 条 holdout result(allowHoldout=false)`,
+    );
   }
   console.log(`  回写 baseline_scores: ${updated} 个 case yaml`);
   return updated;

@@ -167,7 +167,7 @@ export function resolveWireModel(
   if (!alias || !availableModels?.length) return alias;
   // find-first 与选择侧（resolveCurrentModelConfig / `/model <name>`）严格同语义：
   // 同名多条时命中同一条，杜绝「选的是第一条、发的是第二条的真名」这种错配。
-  const hit = availableModels.find(m => m.name === alias);
+  const hit = availableModels.find((m) => m.name === alias);
   return normalizeWire(hit?.modelId) ?? alias;
 }
 

@@ -57,8 +57,7 @@ const TOOL_USE_WEIGHT = 60;
  */
 export function isOutputStallDetectionEnabled(): boolean {
   return (
-    process.env.SID_ENABLE_OUTPUT_STALL === "1" ||
-    process.env.SID_ENABLE_LOOP_DETECTION === "1"
+    process.env.SID_ENABLE_OUTPUT_STALL === "1" || process.env.SID_ENABLE_LOOP_DETECTION === "1"
   );
 }
 

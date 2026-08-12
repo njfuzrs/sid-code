@@ -75,12 +75,19 @@ export function pushRecentActivity(
 export function describeToolActivity(toolName: string, input: unknown): string {
   const inp = (input ?? {}) as Record<string, unknown>;
   switch (toolName) {
-    case "read": return `读取 ${inp.file_path ?? ""}`;
-    case "write": return `写入 ${inp.file_path ?? ""}`;
-    case "edit": return `编辑 ${inp.file_path ?? ""}`;
-    case "bash": return `执行 ${String(inp.command ?? "").slice(0, 60)}`;
-    case "grep": return `搜索 "${inp.pattern ?? ""}"`;
-    case "glob": return `查找 ${inp.pattern ?? ""}`;
-    default: return toolName;
+    case "read":
+      return `读取 ${inp.file_path ?? ""}`;
+    case "write":
+      return `写入 ${inp.file_path ?? ""}`;
+    case "edit":
+      return `编辑 ${inp.file_path ?? ""}`;
+    case "bash":
+      return `执行 ${String(inp.command ?? "").slice(0, 60)}`;
+    case "grep":
+      return `搜索 "${inp.pattern ?? ""}"`;
+    case "glob":
+      return `查找 ${inp.pattern ?? ""}`;
+    default:
+      return toolName;
   }
 }

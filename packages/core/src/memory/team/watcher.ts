@@ -16,11 +16,7 @@ import { type FSWatcher, watch } from "fs";
 import { mkdir, stat } from "fs/promises";
 import { join } from "path";
 import { getLogger } from "../../debug/logger.ts";
-import {
-  getTeamMemPath,
-  isTeamMemorySyncAvailable,
-  type TeamMemoryOptions,
-} from "./paths.ts";
+import { getTeamMemPath, isTeamMemorySyncAvailable, type TeamMemoryOptions } from "./paths.ts";
 import { syncTeamMemory, type TeamMemorySyncResult } from "./sync.ts";
 
 const DEFAULT_DEBOUNCE_MS = 2000;
@@ -90,7 +86,11 @@ async function executeSync(): Promise<void> {
         // 首次进入抑制态：一次性通知上层（恢复后 suppressionNotified 复位重新武装）
         if (!suppressionNotified && suppressionListener) {
           suppressionNotified = true;
-          try { suppressionListener(syncSuppressedReason); } catch { /* 通知失败不影响同步 */ }
+          try {
+            suppressionListener(syncSuppressedReason);
+          } catch {
+            /* 通知失败不影响同步 */
+          }
         }
       }
     }
@@ -137,8 +137,10 @@ async function startFileWatcher(teamDir: string): Promise<void> {
       //   - .team-memory-sync.json：同步状态 manifest，每轮同步都写
       //   - MEMORY.md：本地索引，由 saveTeamMemory / syncTeamMemory 收尾重建。
       //     它本就被 readEntries 排除在同步之外，重建它触发的那一轮同步是纯空转。
-      if (typeof filename === "string"
-        && (filename.includes(".team-memory-sync.json") || filename.endsWith("MEMORY.md"))) {
+      if (
+        typeof filename === "string" &&
+        (filename.includes(".team-memory-sync.json") || filename.endsWith("MEMORY.md"))
+      ) {
         return;
       }
       if (syncSuppressedReason !== null) {
@@ -181,9 +183,10 @@ export async function startTeamMemoryWatcher(
   const log = getLogger();
   currentOpts = opts;
   currentCwd = cwd;
-  debounceMs = typeof opts.debounceMs === "number" && opts.debounceMs >= 0
-    ? opts.debounceMs
-    : DEFAULT_DEBOUNCE_MS;
+  debounceMs =
+    typeof opts.debounceMs === "number" && opts.debounceMs >= 0
+      ? opts.debounceMs
+      : DEFAULT_DEBOUNCE_MS;
 
   // 初始同步（先于 watcher，避免其写入自触发）
   try {
@@ -217,16 +220,28 @@ export async function stopTeamMemoryWatcher(): Promise<void> {
     debounceTimer = null;
   }
   if (watcher) {
-    try { watcher.close(); } catch { /* ignore */ }
+    try {
+      watcher.close();
+    } catch {
+      /* ignore */
+    }
     watcher = null;
   }
   // 等待进行中的同步
   if (currentSyncPromise) {
-    try { await currentSyncPromise; } catch { /* ignore */ }
+    try {
+      await currentSyncPromise;
+    } catch {
+      /* ignore */
+    }
   }
   // flush 已 debounce 但未同步的变更
   if (hasPendingChanges && currentOpts && syncSuppressedReason === null) {
-    try { await syncTeamMemory(currentOpts, currentCwd); } catch { /* best-effort */ }
+    try {
+      await syncTeamMemory(currentOpts, currentCwd);
+    } catch {
+      /* best-effort */
+    }
   }
   watcherStarted = false;
 }
@@ -242,7 +257,11 @@ export function _resetWatcherStateForTesting(opts?: {
   debounceMs?: number;
 }): void {
   if (watcher) {
-    try { watcher.close(); } catch { /* ignore */ }
+    try {
+      watcher.close();
+    } catch {
+      /* ignore */
+    }
   }
   watcher = null;
   if (debounceTimer) clearTimeout(debounceTimer);

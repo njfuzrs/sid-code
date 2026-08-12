@@ -20,11 +20,7 @@ import { getLogger } from "../../debug/logger.ts";
  * 可信的 Settings 来源——这些来源的 env 在 Phase 1 就可完整应用。
  * （用户自己 / CLI 显式传入 / 管理员控制）
  */
-const TRUSTED_SETTING_SOURCES: SettingSource[] = [
-  "userSettings",
-  "flagSettings",
-  "policySettings",
-];
+const TRUSTED_SETTING_SOURCES: SettingSource[] = ["userSettings", "flagSettings", "policySettings"];
 
 /**
  * 安全环境变量白名单——即使被恶意设置也不会导致凭证泄露、流量劫持或代码执行。
@@ -93,10 +89,7 @@ export function isProtectedEnvVar(key: string): boolean {
  * 过滤并应用环境变量。
  * @param allAllowed true=应用全部（受保护变量除外）；false=仅应用白名单变量
  */
-function applyEnvFiltered(
-  env: Record<string, string>,
-  allAllowed: boolean,
-): number {
+function applyEnvFiltered(env: Record<string, string>, allAllowed: boolean): number {
   let applied = 0;
   for (const [key, value] of Object.entries(env)) {
     if (PROTECTED_ENV_VARS.has(key)) continue; // 受保护变量永不覆盖

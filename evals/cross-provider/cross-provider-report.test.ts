@@ -9,7 +9,15 @@ interface FakeRecord {
   provider: string;
   score: number | null;
   latency_ms?: number;
-  meta?: { total_tokens?: number; token_breakdown?: { input?: number; output?: number; cache_read?: number; cache_creation?: number } };
+  meta?: {
+    total_tokens?: number;
+    token_breakdown?: {
+      input?: number;
+      output?: number;
+      cache_read?: number;
+      cache_creation?: number;
+    };
+  };
   is_median?: boolean;
   tested_at: string;
   run_status?: string;

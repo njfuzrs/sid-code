@@ -15,16 +15,18 @@ import {
 
 /** /skills 命令 */
 export class SkillsCommand implements Command {
-  name() { return "skills"; }
-  aliases() { return []; }
-  description() { return "Skills 管理"; }
+  name() {
+    return "skills";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "Skills 管理";
+  }
 
   subCommands(): Command[] {
-    return [
-      new SkillsListCommand(),
-      new SkillsEnableCommand(),
-      new SkillsDisableCommand(),
-    ];
+    return [new SkillsListCommand(), new SkillsEnableCommand(), new SkillsDisableCommand()];
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -39,9 +41,15 @@ export class SkillsCommand implements Command {
 
 /** /skills list - 列出所有 skills */
 class SkillsListCommand implements Command {
-  name() { return "list"; }
-  aliases() { return ["ls"]; }
-  description() { return "列出所有 skills"; }
+  name() {
+    return "list";
+  }
+  aliases() {
+    return ["ls"];
+  }
+  description() {
+    return "列出所有 skills";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -58,7 +66,8 @@ class SkillsListCommand implements Command {
     if (skills.length === 0) {
       return {
         kind: "message",
-        message: "未找到 skills\n在 .sid-code/skills/ 或 ~/.sid-code/skills/ 目录添加 .md 文件，或使用内置 skills",
+        message:
+          "未找到 skills\n在 .sid-code/skills/ 或 ~/.sid-code/skills/ 目录添加 .md 文件，或使用内置 skills",
       };
     }
 
@@ -66,9 +75,13 @@ class SkillsListCommand implements Command {
     const disabled = this.getDisabledSkills();
 
     const lines = ["Skills 列表:"];
-    const builtinSkills = skills.filter(s => s.loadedFrom === "builtin" || s.isBuiltin);
-    const userSkills = skills.filter(s => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "user");
-    const projectSkills = skills.filter(s => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "project");
+    const builtinSkills = skills.filter((s) => s.loadedFrom === "builtin" || s.isBuiltin);
+    const userSkills = skills.filter(
+      (s) => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "user",
+    );
+    const projectSkills = skills.filter(
+      (s) => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "project",
+    );
 
     const renderGroup = (title: string, group: typeof skills) => {
       if (group.length === 0) return;
@@ -103,9 +116,15 @@ class SkillsListCommand implements Command {
 
 /** /skills enable - 启用 skill */
 class SkillsEnableCommand implements Command {
-  name() { return "enable"; }
-  aliases() { return []; }
-  description() { return "启用 skill"; }
+  name() {
+    return "enable";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "启用 skill";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -128,7 +147,11 @@ class SkillsEnableCommand implements Command {
     }
   }
 
-  private updateSkillStatus(name: string, action: "enable" | "disable", scope: "user" | "project"): void {
+  private updateSkillStatus(
+    name: string,
+    action: "enable" | "disable",
+    scope: "user" | "project",
+  ): void {
     const log = getLogger();
 
     // user → 用户全局 settings.json；project → 项目 .sid-code/settings.json
@@ -154,9 +177,15 @@ class SkillsEnableCommand implements Command {
 
 /** /skills disable - 禁用 skill */
 class SkillsDisableCommand implements Command {
-  name() { return "disable"; }
-  aliases() { return []; }
-  description() { return "禁用 skill"; }
+  name() {
+    return "disable";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "禁用 skill";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
@@ -182,9 +211,15 @@ class SkillsDisableCommand implements Command {
 
 /** /agents 命令 */
 export class AgentsCommand implements Command {
-  name() { return "agents"; }
-  aliases() { return []; }
-  description() { return "自定义 Agents 管理"; }
+  name() {
+    return "agents";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "自定义 Agents 管理";
+  }
 
   subCommands(): Command[] {
     return [new AgentsListCommand()];
@@ -197,9 +232,15 @@ export class AgentsCommand implements Command {
 
 /** /agents list - 列出所有自定义 agents */
 class AgentsListCommand implements Command {
-  name() { return "list"; }
-  aliases() { return ["ls"]; }
-  description() { return "列出所有自定义 agents"; }
+  name() {
+    return "list";
+  }
+  aliases() {
+    return ["ls"];
+  }
+  description() {
+    return "列出所有自定义 agents";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     const loader = new ExtensionLoader();
@@ -208,13 +249,14 @@ class AgentsListCommand implements Command {
     if (files.length === 0) {
       return {
         kind: "message",
-        message: "未找到自定义 agents\n在 .sid-code/agents/ 或 ~/.sid-code/agents/ 目录添加 .md 文件",
+        message:
+          "未找到自定义 agents\n在 .sid-code/agents/ 或 ~/.sid-code/agents/ 目录添加 .md 文件",
       };
     }
 
     const lines = ["自定义 Agents:"];
-    const userAgents = files.filter(f => f.source === "user");
-    const projectAgents = files.filter(f => f.source === "project");
+    const userAgents = files.filter((f) => f.source === "user");
+    const projectAgents = files.filter((f) => f.source === "project");
 
     if (userAgents.length > 0) {
       lines.push("\n用户级 (~/.sid-code/agents/):");
@@ -242,9 +284,15 @@ class AgentsListCommand implements Command {
 
 /** /commands 命令 */
 export class CommandsListCommand implements Command {
-  name() { return "commands"; }
-  aliases() { return ["cmds"]; }
-  description() { return "列出所有自定义命令"; }
+  name() {
+    return "commands";
+  }
+  aliases() {
+    return ["cmds"];
+  }
+  description() {
+    return "列出所有自定义命令";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开交互式命令浏览面板
@@ -258,13 +306,14 @@ export class CommandsListCommand implements Command {
     if (files.length === 0) {
       return {
         kind: "message",
-        message: "未找到自定义命令\n在 .sid-code/commands/ 或 ~/.sid-code/commands/ 目录添加 .md 文件",
+        message:
+          "未找到自定义命令\n在 .sid-code/commands/ 或 ~/.sid-code/commands/ 目录添加 .md 文件",
       };
     }
 
     const lines = ["自定义命令:"];
-    const userCommands = files.filter(f => f.source === "user");
-    const projectCommands = files.filter(f => f.source === "project");
+    const userCommands = files.filter((f) => f.source === "user");
+    const projectCommands = files.filter((f) => f.source === "project");
 
     if (userCommands.length > 0) {
       lines.push("\n用户级 (~/.sid-code/commands/):");

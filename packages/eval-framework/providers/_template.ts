@@ -44,12 +44,19 @@ function parseArgs(): ProviderArgs {
   let permissionMode: string | null = null;
 
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--prompt" && argv[i + 1]) { prompt = argv[++i]; }
-    else if (argv[i] === "--case-id" && argv[i + 1]) { caseId = argv[++i]; }
-    else if (argv[i] === "--model" && argv[i + 1]) { model = argv[++i]; }
-    else if (argv[i] === "--timeout" && argv[i + 1]) { timeoutMs = parseInt(argv[++i], 10) || timeoutMs; }
-    else if (argv[i] === "--max-turns" && argv[i + 1]) { maxTurns = parseInt(argv[++i], 10) || null; }
-    else if (argv[i] === "--permission-mode" && argv[i + 1]) { permissionMode = argv[++i]; }
+    if (argv[i] === "--prompt" && argv[i + 1]) {
+      prompt = argv[++i];
+    } else if (argv[i] === "--case-id" && argv[i + 1]) {
+      caseId = argv[++i];
+    } else if (argv[i] === "--model" && argv[i + 1]) {
+      model = argv[++i];
+    } else if (argv[i] === "--timeout" && argv[i + 1]) {
+      timeoutMs = parseInt(argv[++i], 10) || timeoutMs;
+    } else if (argv[i] === "--max-turns" && argv[i + 1]) {
+      maxTurns = parseInt(argv[++i], 10) || null;
+    } else if (argv[i] === "--permission-mode" && argv[i + 1]) {
+      permissionMode = argv[++i];
+    }
   }
 
   return { prompt, caseId, model, timeoutMs, maxTurns, permissionMode };
@@ -116,7 +123,18 @@ async function main() {
   if (!args.prompt) {
     const errorResult: ProviderOutput = {
       output: "[ERROR] --prompt is required",
-      meta: { latency_ms: 0, exit_status: "error", error_count: 1, retry_count: 0, backtrack_count: 0, tools_used: [], files_edited: [], num_turns: 0, total_tokens: 0, total_steps: 0 },
+      meta: {
+        latency_ms: 0,
+        exit_status: "error",
+        error_count: 1,
+        retry_count: 0,
+        backtrack_count: 0,
+        tools_used: [],
+        files_edited: [],
+        num_turns: 0,
+        total_tokens: 0,
+        total_steps: 0,
+      },
       error: true,
     };
     process.stdout.write(JSON.stringify(errorResult));
@@ -129,12 +147,16 @@ async function main() {
     const result = await Promise.race([
       runAgent(args),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), args.timeoutMs)
+        setTimeout(() => reject(new Error("timeout")), args.timeoutMs),
       ),
     ]);
 
     const latencyMs = Date.now() - startMs;
-    const totalTokens = result.tokens.input + result.tokens.output + result.tokens.cache_read + result.tokens.cache_creation;
+    const totalTokens =
+      result.tokens.input +
+      result.tokens.output +
+      result.tokens.cache_read +
+      result.tokens.cache_creation;
 
     const output: ProviderOutput = {
       output: result.output,

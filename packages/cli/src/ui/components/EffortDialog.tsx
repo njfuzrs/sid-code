@@ -43,7 +43,10 @@ interface EffortDialogProps {
   getEffortState?: () => EffortState;
   setEffort?: (level: EffortSetting, persist?: boolean) => void;
   /** 读取 thinking 态：仅用于「思考已关 → 档位不下发」提示（GLM/DeepSeek 门控），缺省不显示。 */
-  getThinkingState?: () => { runtime: import("@sid-code/core/llm/effort.ts").ThinkingSetting; applied: boolean };
+  getThinkingState?: () => {
+    runtime: import("@sid-code/core/llm/effort.ts").ThinkingSetting;
+    applied: boolean;
+  };
 }
 
 // value: "auto" 代表 undefined（跟随默认）
@@ -77,7 +80,13 @@ export function buildOptions(levels: EffortLevel[]): EffortItem[] {
     label: lv,
     desc: LEVEL_META[lv].desc,
   }));
-  items.push({ value: "auto", key: "auto", glyph: EFFORT_AUTO, label: "auto", desc: "跟随模型默认" });
+  items.push({
+    value: "auto",
+    key: "auto",
+    glyph: EFFORT_AUTO,
+    label: "auto",
+    desc: "跟随模型默认",
+  });
   return items;
 }
 
@@ -100,8 +109,16 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
   // 能力门控：模型不支持档位切换时直接说明
   if (state && !state.capability.supportsEffort) {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-        <Text bold color={theme.ui.active}>推理强度</Text>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.ui.active}
+        paddingX={1}
+        paddingY={0}
+      >
+        <Text bold color={theme.ui.active}>
+          推理强度
+        </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>
             当前模型不支持推理强度档位切换（无 reasoning_effort / thinking budget 能力）。
@@ -122,7 +139,10 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
 
   // 当前生效档位（auto 时用 "auto"）
   const currentValue = state?.runtime ?? "auto";
-  const initialIndex = Math.max(0, options.findIndex((o) => o.value === currentValue));
+  const initialIndex = Math.max(
+    0,
+    options.findIndex((o) => o.value === currentValue),
+  );
 
   // 当前状态描述行
   let statusLine = "";
@@ -154,8 +174,16 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.ui.active} paddingX={1} paddingY={0}>
-      <Text bold color={theme.ui.active}>推理强度</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.ui.active}
+      paddingX={1}
+      paddingY={0}
+    >
+      <Text bold color={theme.ui.active}>
+        推理强度
+      </Text>
       {statusLine && <Text color={theme.text.secondary}>{statusLine}</Text>}
       {levelsLine && <Text color={theme.text.secondary}>{levelsLine}</Text>}
       {effortInert && (
@@ -179,7 +207,7 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
                   {item.glyph} {item.label}
                 </Text>
-                <Text color={theme.text.secondary}>  {item.desc}</Text>
+                <Text color={theme.text.secondary}> {item.desc}</Text>
                 {isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
               </Box>
             );

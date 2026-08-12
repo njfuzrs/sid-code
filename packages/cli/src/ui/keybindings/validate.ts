@@ -54,11 +54,7 @@ export type UserKeyBindingInput = z.infer<typeof UserKeyBindingSchema>;
 export interface BindingIssue {
   level: "error" | "warning";
   /** 机器可判类型，便于测试与上层分流。 */
-  code:
-    | "reserved"
-    | "conflict"
-    | "duplicate_action"
-    | "schema";
+  code: "reserved" | "conflict" | "duplicate_action" | "schema";
   message: string;
   action?: string;
 }
@@ -77,10 +73,7 @@ export interface ValidateResult {
  * @param defaults  默认绑定表，用于跨表冲突检测与元数据继承。
  * @returns         accepted（可合并）+ issues（错误/警告）。
  */
-export function validateUserBindings(
-  raw: unknown,
-  defaults: KeyBinding[],
-): ValidateResult {
+export function validateUserBindings(raw: unknown, defaults: KeyBinding[]): ValidateResult {
   const issues: BindingIssue[] = [];
 
   // ── 1. schema 校验 ──
@@ -121,8 +114,7 @@ export function validateUserBindings(
     if (isReservedStroke(stroke)) {
       // 豁免：用户把保留键绑回它在默认表里的原 action（如 Ctrl+C → app:quit）。
       const defaultActions = defaultStrokeActions.get(sig);
-      const isRebindToSameAction =
-        defaultActions !== undefined && defaultActions.has(ub.action);
+      const isRebindToSameAction = defaultActions !== undefined && defaultActions.has(ub.action);
       if (!isRebindToSameAction) {
         issues.push({
           level: "error",
@@ -187,9 +179,7 @@ export function formatStroke(s: Keystroke): string {
   if (s.cmd) parts.push("Cmd");
   // 单字符键大写（k → K）；多字符键名首字母大写（enter → Enter）。
   const name =
-    s.name.length === 1
-      ? s.name.toUpperCase()
-      : s.name.charAt(0).toUpperCase() + s.name.slice(1);
+    s.name.length === 1 ? s.name.toUpperCase() : s.name.charAt(0).toUpperCase() + s.name.slice(1);
   parts.push(name);
   return parts.join("+");
 }

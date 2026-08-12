@@ -39,10 +39,18 @@ const UNSET_TOKENS = new Set(["unset", "default", "none"]);
 const STATUS_TOKENS = new Set(["status", "list", "ls", "show"]);
 
 export class LanguageCommand implements Command {
-  name() { return "language"; }
-  aliases() { return ["lang"]; }
-  description() { return "显示或切换输出语言偏好（-p 持久化）"; }
-  argumentHint() { return "[zh|en|auto|unset|status] [-p]"; }
+  name() {
+    return "language";
+  }
+  aliases() {
+    return ["lang"];
+  }
+  description() {
+    return "显示或切换输出语言偏好（-p 持久化）";
+  }
+  argumentHint() {
+    return "[zh|en|auto|unset|status] [-p]";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const tokens = args.trim().split(/\s+/).filter(Boolean);
@@ -83,9 +91,10 @@ export class LanguageCommand implements Command {
 
     // auto 档额外回显"当前会落到哪种语言"——否则用户切了 auto 却看不出效果，
     // 无从判断系统 locale 探测是否如他所愿。
-    const detail = norm === "auto"
-      ? `（跟随用户输入语言；判断不出时用${detectSystemLanguage() === "en" ? "英文" : "中文"}）`
-      : `（${describeLanguagePref(norm)}）`;
+    const detail =
+      norm === "auto"
+        ? `（跟随用户输入语言；判断不出时用${detectSystemLanguage() === "en" ? "英文" : "中文"}）`
+        : `（${describeLanguagePref(norm)}）`;
 
     return {
       kind: "message",
@@ -94,9 +103,7 @@ export class LanguageCommand implements Command {
   }
 
   private persistNote(persist: boolean): string {
-    return persist
-      ? "，并已保存到 settings.json（跨会话生效）"
-      : "（仅当前会话，加 -p 可持久化）";
+    return persist ? "，并已保存到 settings.json（跨会话生效）" : "（仅当前会话，加 -p 可持久化）";
   }
 
   private buildStatus(ctx: AppContext): string {
@@ -107,7 +114,9 @@ export class LanguageCommand implements Command {
     return [
       `当前输出语言: ${shown} — ${describeLanguagePref(cur)}`,
       ...(cur === "auto"
-        ? [`  判断不出用户语言时回落: ${detectSystemLanguage() === "en" ? "英文" : "中文"}（按系统 locale）`]
+        ? [
+            `  判断不出用户语言时回落: ${detectSystemLanguage() === "en" ? "英文" : "中文"}（按系统 locale）`,
+          ]
         : []),
       "",
       "可用值:",

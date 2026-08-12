@@ -31,10 +31,7 @@ export {
   type TestResult,
 } from "./core/runner.ts";
 
-export {
-  syncBaselineScores,
-  type BaselineResult,
-} from "./core/baseline-sync.ts";
+export { syncBaselineScores, type BaselineResult } from "./core/baseline-sync.ts";
 
 export type { CaseYaml } from "./core/types.ts";
 

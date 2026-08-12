@@ -137,7 +137,10 @@ describe("runSandbox", () => {
     const { existsSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const pidFile = join(tmpdir(), `sid-sandbox-pid-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
+    const pidFile = join(
+      tmpdir(),
+      `sid-sandbox-pid-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+    );
     if (existsSync(pidFile)) rmSync(pidFile);
 
     const r = await runSandbox({

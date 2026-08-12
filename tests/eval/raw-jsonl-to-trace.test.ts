@@ -15,10 +15,7 @@ import {
   convertRawJsonlToTrace,
   extractSessionIdFromPath,
 } from "../../scripts/eval/raw-jsonl-to-trace.ts";
-import {
-  validateTrace,
-  SPAN_FIELD_BYTE_LIMIT,
-} from "eval-framework/trace/agent-trace.ts";
+import { validateTrace, SPAN_FIELD_BYTE_LIMIT } from "eval-framework/trace/agent-trace.ts";
 
 const SESSION_UUID = "12345678-1234-4234-8234-123456789012";
 
@@ -72,9 +69,7 @@ describe("convertRawJsonlToTrace - response 解析", () => {
   });
 
   test("response.text → 1 个 thought span（含 thought 文本）", () => {
-    const raw = makeRawLine(1, "2026-05-31T00:00:00", [
-      { type: "text", text: "我先看下文件" },
-    ]);
+    const raw = makeRawLine(1, "2026-05-31T00:00:00", [{ type: "text", text: "我先看下文件" }]);
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     expect(trace.spans.length).toBe(1);
     expect(trace.spans[0].span_kind).toBe("thought");
@@ -82,9 +77,7 @@ describe("convertRawJsonlToTrace - response 解析", () => {
   });
 
   test("空白 text 不生成 thought span（避免噪声）", () => {
-    const raw = makeRawLine(1, "2026-05-31T00:00:00", [
-      { type: "text", text: "   \n\n  " },
-    ]);
+    const raw = makeRawLine(1, "2026-05-31T00:00:00", [{ type: "text", text: "   \n\n  " }]);
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     expect(trace.spans.length).toBe(0);
   });
@@ -103,28 +96,23 @@ describe("convertRawJsonlToTrace - response 解析", () => {
 
 describe("convertRawJsonlToTrace - request.messages 末尾 user.tool_result", () => {
   test("末尾 user.tool_result → observation span", () => {
-    const raw = makeRawLine(
-      2,
-      "2026-05-31T00:00:01",
-      [{ type: "text", text: "看到了" }],
-      {
-        requestMessages: [
-          { role: "user", content: "原始用户输入" },
-          { role: "assistant", content: [{ type: "text", text: "..." }] },
-          {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "tooluse_xyz",
-                content: "ok",
-                is_error: false,
-              },
-            ],
-          },
-        ],
-      },
-    );
+    const raw = makeRawLine(2, "2026-05-31T00:00:01", [{ type: "text", text: "看到了" }], {
+      requestMessages: [
+        { role: "user", content: "原始用户输入" },
+        { role: "assistant", content: [{ type: "text", text: "..." }] },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tooluse_xyz",
+              content: "ok",
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    });
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     // observation 在前（来自历史 tool_result），thought 在后（本轮 response.text）
     expect(trace.spans.length).toBe(2);
@@ -136,83 +124,68 @@ describe("convertRawJsonlToTrace - request.messages 末尾 user.tool_result", ()
   });
 
   test("is_error=true 时 span_kind 升级为 error", () => {
-    const raw = makeRawLine(
-      1,
-      "2026-05-31T00:00:00",
-      [],
-      {
-        requestMessages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "x",
-                content: "permission denied",
-                is_error: true,
-              },
-            ],
-          },
-        ],
-      },
-    );
+    const raw = makeRawLine(1, "2026-05-31T00:00:00", [], {
+      requestMessages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "x",
+              content: "permission denied",
+              is_error: true,
+            },
+          ],
+        },
+      ],
+    });
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     expect(trace.spans[0].span_kind).toBe("error");
     expect(trace.spans[0].is_error).toBe(true);
   });
 
   test("tool_result.content 为 array<{type:'text',text}> → 拼接", () => {
-    const raw = makeRawLine(
-      1,
-      "2026-05-31T00:00:00",
-      [],
-      {
-        requestMessages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "x",
-                content: [
-                  { type: "text", text: "line1" },
-                  { type: "text", text: "line2" },
-                ],
-                is_error: false,
-              },
-            ],
-          },
-        ],
-      },
-    );
+    const raw = makeRawLine(1, "2026-05-31T00:00:00", [], {
+      requestMessages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "x",
+              content: [
+                { type: "text", text: "line1" },
+                { type: "text", text: "line2" },
+              ],
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    });
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     expect(trace.spans[0].tool_output).toContain("line1");
     expect(trace.spans[0].tool_output).toContain("line2");
   });
 
   test("中间 user message（前面已转过的历史）不被重复转", () => {
-    const raw = makeRawLine(
-      1,
-      "2026-05-31T00:00:00",
-      [],
-      {
-        requestMessages: [
-          {
-            role: "user",
-            content: [
-              { type: "tool_result", tool_use_id: "older", content: "旧的", is_error: false },
-            ],
-          },
-          { role: "assistant", content: [{ type: "text", text: "..." }] },
-          {
-            role: "user",
-            content: [
-              { type: "tool_result", tool_use_id: "newer", content: "新的", is_error: false },
-            ],
-          },
-        ],
-      },
-    );
+    const raw = makeRawLine(1, "2026-05-31T00:00:00", [], {
+      requestMessages: [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "older", content: "旧的", is_error: false },
+          ],
+        },
+        { role: "assistant", content: [{ type: "text", text: "..." }] },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "newer", content: "新的", is_error: false },
+          ],
+        },
+      ],
+    });
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     // 只有末尾 user.tool_result 转，前面那条不重复
     expect(trace.spans.length).toBe(1);
@@ -291,7 +264,9 @@ describe("convertRawJsonlToTrace - 顶层字段 + final_output", () => {
   });
 
   test("非法 JSON 行抛错并指明行号", () => {
-    expect(() => convertRawJsonlToTrace("not json\n", { session_id: SESSION_UUID })).toThrow(/line 1/);
+    expect(() => convertRawJsonlToTrace("not json\n", { session_id: SESSION_UUID })).toThrow(
+      /line 1/,
+    );
   });
 });
 
@@ -302,22 +277,17 @@ describe("convertRawJsonlToTrace - 转换产物过 validateTrace（spec §5 兜�
         { type: "text", text: "我看下" },
         { type: "tool_use", id: "x", name: "Read", input: { p: "/x" } },
       ]),
-      makeRawLine(
-        2,
-        "2026-05-31T00:00:01",
-        [{ type: "text", text: "已看完，输出结论" }],
-        {
-          requestMessages: [
-            {
-              role: "user",
-              content: [
-                { type: "tool_result", tool_use_id: "x", content: "file content", is_error: false },
-              ],
-            },
-          ],
-          usage: { input_tokens: 50, output_tokens: 20 },
-        },
-      ),
+      makeRawLine(2, "2026-05-31T00:00:01", [{ type: "text", text: "已看完，输出结论" }], {
+        requestMessages: [
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "x", content: "file content", is_error: false },
+            ],
+          },
+        ],
+        usage: { input_tokens: 50, output_tokens: 20 },
+      }),
     ].join("\n");
     const trace = convertRawJsonlToTrace(raw, { session_id: SESSION_UUID });
     const r = validateTrace(trace);

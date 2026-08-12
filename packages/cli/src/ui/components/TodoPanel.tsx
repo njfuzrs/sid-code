@@ -82,7 +82,15 @@ function truncate(text: string, maxLen: number): string {
 }
 
 /** 极简进度条：宽度固定，按完成比例填充 ▰/▱ */
-function ProgressBar({ completed, total, width = 10 }: { completed: number; total: number; width?: number }) {
+function ProgressBar({
+  completed,
+  total,
+  width = 10,
+}: {
+  completed: number;
+  total: number;
+  width?: number;
+}) {
   if (total <= 0) return null;
   const ratio = Math.max(0, Math.min(1, completed / total));
   const filled = Math.min(width, Math.round(ratio * width));
@@ -109,17 +117,13 @@ const TodoRow = React.memo(function TodoRow({
   const isCompleted = item.status === "completed";
   const isInProgress = item.status === "in_progress";
 
-  const icon = isCompleted
-    ? TODO_COMPLETED
-    : isInProgress
-    ? TODO_IN_PROGRESS
-    : TODO_PENDING;
+  const icon = isCompleted ? TODO_COMPLETED : isInProgress ? TODO_IN_PROGRESS : TODO_PENDING;
 
   const iconColor = isCompleted
     ? theme.status.success
     : isInProgress
-    ? theme.ui.active
-    : theme.text.secondary;
+      ? theme.ui.active
+      : theme.text.secondary;
 
   // 进行中优先显示 activeForm（现在分词形式，更生动），否则用 content
   const label = isInProgress && item.activeForm ? item.activeForm : item.content;
@@ -127,7 +131,9 @@ const TodoRow = React.memo(function TodoRow({
   return (
     <Box flexDirection="row">
       <Box width={2} flexShrink={0}>
-        <Text color={iconColor} bold={isInProgress}>{icon}</Text>
+        <Text color={iconColor} bold={isInProgress}>
+          {icon}
+        </Text>
       </Box>
       <Text
         color={isInProgress ? theme.text.primary : theme.text.secondary}
@@ -147,7 +153,8 @@ const TodoRow = React.memo(function TodoRow({
 function compactTaskLabel(task: TaskDisplayInfo): string {
   if (task.type === "local_agent") return task.agentType || "agent";
   if (task.type === "local_shell") return "shell";
-  if (task.type === "local_workflow") return task.agentType?.replace(/^workflow:/, "") || "workflow";
+  if (task.type === "local_workflow")
+    return task.agentType?.replace(/^workflow:/, "") || "workflow";
   return task.type;
 }
 
@@ -190,29 +197,29 @@ const TaskRow = React.memo(function TaskRow({
   const statusIcon = isRunning
     ? spinnerFrame
     : isFailed
-    ? ERROR_MARK
-    : isKilled
-    ? TASK_KILLED_MARK
-    : TODO_COMPLETED;
+      ? ERROR_MARK
+      : isKilled
+        ? TASK_KILLED_MARK
+        : TODO_COMPLETED;
 
   const statusColor = isRunning
     ? theme.ui.active
     : isFailed
-    ? theme.status.error
-    : isKilled
-    ? theme.status.warning
-    : theme.status.success;
+      ? theme.status.error
+      : isKilled
+        ? theme.status.warning
+        : theme.status.success;
 
   const label =
     task.type === "local_agent" && task.agentType
       ? `AG ${task.agentType}`
       : task.type === "local_shell"
-      ? "SH"
-      : task.type === "local_workflow"
-      ? // state-bridge 传入 agentType="workflow:<名字>",剥前缀显示为 "WF <名字>",
-        // 与 "AG"/"SH" 风格统一;无名字时退回 "WF"。
-        `WF ${task.agentType?.replace(/^workflow:/, "") ?? ""}`.trimEnd()
-      : task.type;
+        ? "SH"
+        : task.type === "local_workflow"
+          ? // state-bridge 传入 agentType="workflow:<名字>",剥前缀显示为 "WF <名字>",
+            // 与 "AG"/"SH" 风格统一;无名字时退回 "WF"。
+            `WF ${task.agentType?.replace(/^workflow:/, "") ?? ""}`.trimEnd()
+          : task.type;
 
   const desc =
     task.description ||
@@ -229,7 +236,8 @@ const TaskRow = React.memo(function TaskRow({
   const stats: string[] = [];
   if (isRunning && task.progress) {
     if (task.progress.toolUseCount > 0) stats.push(`${task.progress.toolUseCount} 工具`);
-    if (task.progress.tokenCount > 0) stats.push(`${formatLargeNumber(task.progress.tokenCount)} token`);
+    if (task.progress.tokenCount > 0)
+      stats.push(`${formatLargeNumber(task.progress.tokenCount)} token`);
   }
   stats.push(durationText);
   const statsText = stats.join(" · ");
@@ -244,7 +252,9 @@ const TaskRow = React.memo(function TaskRow({
       <Box flexDirection="row">
         <Box width={2} flexShrink={0} ref={tickRef}>
           {/* ref 挂在字形容器上做视口可见性检测；离屏时动画自动暂停 */}
-          <Text color={statusColor} bold={isRunning}>{statusIcon}</Text>
+          <Text color={statusColor} bold={isRunning}>
+            {statusIcon}
+          </Text>
         </Box>
         <Box flexGrow={1}>
           <Text>
@@ -347,10 +357,14 @@ export const TodoPanel = React.memo(function TodoPanel({
         {/* 标题行：箭头引导 + 标题 + 右对齐进度条 + 计数 */}
         <Box flexDirection="row" marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text bold color={theme.text.primary}>任务清单</Text>
+          <Text bold color={theme.text.primary}>
+            任务清单
+          </Text>
           <Box flexGrow={1} />
           <ProgressBar completed={completed} total={total} />
-          <Text color={allDone ? theme.status.success : theme.text.secondary}>{`  ${completed}/${total}`}</Text>
+          <Text
+            color={allDone ? theme.status.success : theme.text.secondary}
+          >{`  ${completed}/${total}`}</Text>
           {hiddenCount > 0 && <Text>{`  …+${hiddenCount}`}</Text>}
         </Box>
         {!compactMode &&
@@ -385,14 +399,12 @@ export const TodoPanel = React.memo(function TodoPanel({
       <Box flexDirection="column">
         <Box flexDirection="row" marginBottom={1}>
           <Text color={theme.ui.active}>{`${ARROW_PROMPT} `}</Text>
-          <Text bold color={theme.text.primary}>后台任务</Text>
+          <Text bold color={theme.text.primary}>
+            后台任务
+          </Text>
           <Box flexGrow={1} />
-          {running.length > 0 && (
-            <Text color={theme.ui.active}>{`${running.length} 运行中`}</Text>
-          )}
-          {allTerminal && (
-            <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>
-          )}
+          {running.length > 0 && <Text color={theme.ui.active}>{`${running.length} 运行中`}</Text>}
+          {allTerminal && <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>}
           {/* 截断提示：与任务清单区的 `…+N` 同格式，用户一眼看出"还有 N 条没显示" */}
           {hiddenTaskCount > 0 && <Text>{`  …+${hiddenTaskCount}`}</Text>}
         </Box>

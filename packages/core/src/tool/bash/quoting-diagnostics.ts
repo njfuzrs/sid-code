@@ -56,13 +56,11 @@ export function looksLikeQuotingBreakage(
   // 会吞掉后续内容直到下一个引号或行尾，是最强的畸形信号。
   const doubleQuoteCount = (command.match(/"/g) || []).length;
   const singleQuoteCount = (command.match(/'/g) || []).length;
-  const unbalancedQuotes =
-    doubleQuoteCount % 2 === 1 || singleQuoteCount % 2 === 1;
+  const unbalancedQuotes = doubleQuoteCount % 2 === 1 || singleQuoteCount % 2 === 1;
 
   // 疑似内层同类引号嵌套：`-m "..."..."` 这种外层引号被内层提前闭合
   // （即本次事故的形态：-m "text"更多text"more"）。
-  const nestedQuoteHint = /-m\s+"[^"]*"[^"]*"/.test(command) ||
-    /-m\s+'[^']*'[^']*'/.test(command);
+  const nestedQuoteHint = /-m\s+"[^"]*"[^"]*"/.test(command) || /-m\s+'[^']*'[^']*'/.test(command);
 
   // 判定：只有出现真正的畸形信号（不平衡 / 嵌套）才命中。
   // 注意：多行本身**不是**判据——合法的多行命令（如正常 heredoc、多行脚本）引号是平衡的，
@@ -83,7 +81,7 @@ export function quotingBreakageHint(command: string): string {
   if (isGitCommit) {
     return [
       "",
-      "⚠️ 命令疑似因引号未转义而被 shell 拆断——commit message 里的引号/多行内容把外层 -m \"...\" 提前闭合了。",
+      '⚠️ 命令疑似因引号未转义而被 shell 拆断——commit message 里的引号/多行内容把外层 -m "..." 提前闭合了。',
       "不要原样重发，改用 heredoc 从 stdin 读取（引号、中文标点、多行都按字面量处理，最稳）：",
       "",
       "git commit -F - << 'SIDEOF'",

@@ -89,7 +89,13 @@ export async function editInExternalEditor(
   ink?.exitAlternateScreen();
 
   if (exitCode !== 0) {
-    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ } }
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 忽略 */
+      }
+    }
     return {
       ok: false,
       text: initialText,
@@ -105,11 +111,23 @@ export async function editInExternalEditor(
     edited = edited.replace(/\n+$/, "");
   } catch (e) {
     log.warn("UI:EDITOR", `读取编辑结果失败: ${String(e)}`);
-    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ } }
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 忽略 */
+      }
+    }
     return { ok: false, text: initialText, error: `读取编辑结果失败: ${String(e)}` };
   }
 
-  if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ } }
+  if (dir) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* 忽略 */
+    }
+  }
   return { ok: true, text: edited };
 }
 

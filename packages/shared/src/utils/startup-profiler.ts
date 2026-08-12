@@ -6,9 +6,7 @@
  * 非 enabled 模式下所有操作为空操作，零开销
  */
 
-const enabled =
-  process.env.SID_CODE_PROFILE_STARTUP === "1" ||
-  process.env.DEBUG === "1";
+const enabled = process.env.SID_CODE_PROFILE_STARTUP === "1" || process.env.DEBUG === "1";
 
 interface Checkpoint {
   name: string;

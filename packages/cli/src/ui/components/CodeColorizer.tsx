@@ -94,9 +94,7 @@ function renderHastNode(
     const colorToPass = elementColor || inheritedColor;
 
     const children = el.children?.map((child: ElementContent, i: number) => (
-      <React.Fragment key={i}>
-        {renderHastNode(child, activeTheme, colorToPass)}
-      </React.Fragment>
+      <React.Fragment key={i}>{renderHastNode(child, activeTheme, colorToPass)}</React.Fragment>
     ));
 
     return <React.Fragment>{children}</React.Fragment>;
@@ -106,9 +104,7 @@ function renderHastNode(
     const root = node as Root;
     if (!root.children || root.children.length === 0) return null;
     return root.children?.map((child: RootContent, i: number) => (
-      <React.Fragment key={i}>
-        {renderHastNode(child, activeTheme, inheritedColor)}
-      </React.Fragment>
+      <React.Fragment key={i}>{renderHastNode(child, activeTheme, inheritedColor)}</React.Fragment>
     ));
   }
 
@@ -135,9 +131,10 @@ function highlightAndRenderLine(
 ): React.ReactNode {
   return getCachedHighlight(line, lang, activeTheme, () => {
     try {
-      const tree = lang && lowlight.registered(lang)
-        ? lowlight.highlight(lang, line)
-        : lowlight.highlightAuto(line);
+      const tree =
+        lang && lowlight.registered(lang)
+          ? lowlight.highlight(lang, line)
+          : lowlight.highlightAuto(line);
 
       const rendered = renderHastNode(tree, activeTheme, undefined);
       return rendered !== null ? rendered : line;
@@ -163,9 +160,10 @@ export function colorizeLine(
 export function highlightToReact(code: string, lang?: string): React.ReactNode {
   try {
     const activeTheme = themeManager.getActiveTheme();
-    const tree = lang && lowlight.registered(lang)
-      ? lowlight.highlight(lang, code)
-      : lowlight.highlightAuto(code);
+    const tree =
+      lang && lowlight.registered(lang)
+        ? lowlight.highlight(lang, code)
+        : lowlight.highlightAuto(code);
 
     const rendered = renderHastNode(tree, activeTheme, undefined);
     return rendered !== null ? rendered : <Text>{code}</Text>;
@@ -230,9 +228,7 @@ export function colorizeCode({
               alignItems="flex-start"
               justifyContent="flex-end"
             >
-              <Text color={activeTheme.colors.Gray}>
-                {`${index + 1}`}
-              </Text>
+              <Text color={activeTheme.colors.Gray}>{`${index + 1}`}</Text>
             </Box>
           )}
           <Text color={activeTheme.defaultColor} wrap="wrap">

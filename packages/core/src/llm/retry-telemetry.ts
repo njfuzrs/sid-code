@@ -142,9 +142,7 @@ let _observer: ((event: RetryTelemetryEvent) => void) | null = null;
  * `setGatewayPricingObserver`）：避免 llm 层反向依赖 trace 层，也避免在
  * agentic-loop → sub-agent → app 这条链上逐层加参数。
  */
-export function setRetryTelemetryObserver(
-  fn: ((event: RetryTelemetryEvent) => void) | null,
-): void {
+export function setRetryTelemetryObserver(fn: ((event: RetryTelemetryEvent) => void) | null): void {
   _observer = fn;
 }
 
@@ -173,11 +171,17 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
 
   switch (event.type) {
     case "retry":
-      log.info("TELEMETRY", `[retry] ${event.model} phase=${event.phase} attempt=${event.attempt} delay=${event.delayMs}ms reopen=${event.reopenReason ?? "N/A"} error=${event.error}`);
+      log.info(
+        "TELEMETRY",
+        `[retry] ${event.model} phase=${event.phase} attempt=${event.attempt} delay=${event.delayMs}ms reopen=${event.reopenReason ?? "N/A"} error=${event.error}`,
+      );
       break;
 
     case "fallback":
-      log.warn("TELEMETRY", `[fallback] ${event.model} → ${event.fallbackModel} error=${event.error}`);
+      log.warn(
+        "TELEMETRY",
+        `[fallback] ${event.model} → ${event.fallbackModel} error=${event.error}`,
+      );
       break;
 
     case "529_dropped":
@@ -185,7 +189,10 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
       break;
 
     case "max_tokens_adjust":
-      log.info("TELEMETRY", `[max_tokens_adjust] ${event.model} ${event.originalTokens} → ${event.adjustedTokens}`);
+      log.info(
+        "TELEMETRY",
+        `[max_tokens_adjust] ${event.model} ${event.originalTokens} → ${event.adjustedTokens}`,
+      );
       break;
 
     case "persistent_retry_wait":
@@ -197,35 +204,59 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
       break;
 
     case "non_streaming_degrade":
-      log.warn("TELEMETRY", `[non_streaming_degrade] ${event.model} provider=${event.provider} reason=${event.reopenReason ?? "N/A"} error=${event.error}`);
+      log.warn(
+        "TELEMETRY",
+        `[non_streaming_degrade] ${event.model} provider=${event.provider} reason=${event.reopenReason ?? "N/A"} error=${event.error}`,
+      );
       break;
 
     case "retry_budget_exhausted":
-      log.warn("TELEMETRY", `[retry_budget_exhausted] ${event.model} attempt=${event.attempt} needDelay=${event.delayMs}ms remaining=${event.remainingMs}ms error=${event.error}`);
+      log.warn(
+        "TELEMETRY",
+        `[retry_budget_exhausted] ${event.model} attempt=${event.attempt} needDelay=${event.delayMs}ms remaining=${event.remainingMs}ms error=${event.error}`,
+      );
       break;
 
     case "shared_cooldown_wait":
-      log.info("TELEMETRY", `[shared_cooldown_wait] ${event.model} wait=${event.delayMs}ms reason=${event.error}`);
+      log.info(
+        "TELEMETRY",
+        `[shared_cooldown_wait] ${event.model} wait=${event.delayMs}ms reason=${event.error}`,
+      );
       break;
 
     case "stream_stall":
-      log.warn("TELEMETRY", `[stream_stall] provider=${event.provider} gap=${event.gapMs}ms events=${event.totalEvents}`);
+      log.warn(
+        "TELEMETRY",
+        `[stream_stall] provider=${event.provider} gap=${event.gapMs}ms events=${event.totalEvents}`,
+      );
       break;
 
     case "stream_idle_timeout":
-      log.warn("TELEMETRY", `[stream_idle_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      log.warn(
+        "TELEMETRY",
+        `[stream_idle_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`,
+      );
       break;
 
     case "stream_content_progress_timeout":
-      log.warn("TELEMETRY", `[stream_content_progress_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      log.warn(
+        "TELEMETRY",
+        `[stream_content_progress_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`,
+      );
       break;
 
     case "stream_overall_timeout":
-      log.warn("TELEMETRY", `[stream_overall_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`);
+      log.warn(
+        "TELEMETRY",
+        `[stream_overall_timeout] provider=${event.provider} timeout=${event.timeoutMs}ms events=${event.totalEvents}`,
+      );
       break;
 
     case "stream_completed":
-      log.info("TELEMETRY", `[stream_completed] provider=${event.provider} events=${event.totalEvents} elapsed=${event.elapsedMs}ms ttft=${event.ttftMs ?? "N/A"}ms`);
+      log.info(
+        "TELEMETRY",
+        `[stream_completed] provider=${event.provider} events=${event.totalEvents} elapsed=${event.elapsedMs}ms ttft=${event.ttftMs ?? "N/A"}ms`,
+      );
       break;
   }
 }

@@ -22,10 +22,7 @@ import teamDefaults from "../../../../scripts/team-defaults.template.json" with 
 import { mergeMissingTopLevelKeys } from "../config/settings/settings.ts";
 
 export function migrate(): void {
-  const added = mergeMissingTopLevelKeys(
-    "userSettings",
-    teamDefaults as Record<string, unknown>,
-  );
+  const added = mergeMissingTopLevelKeys("userSettings", teamDefaults as Record<string, unknown>);
   if (added.length > 0) {
     console.log(`已补全团队默认配置字段（未覆盖任何已有配置）: ${added.join(", ")}`);
   }

@@ -13,10 +13,7 @@ const KILLSWITCH_FLAG = "sink_killswitch";
  * 用于紧急情况下不发版关闭特定后端。
  */
 export function isSinkKilled(sinkName: string): boolean {
-  const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<string, boolean>>(
-    KILLSWITCH_FLAG,
-    {},
-  );
+  const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<string, boolean>>(KILLSWITCH_FLAG, {});
 
   return config[sinkName] === true;
 }

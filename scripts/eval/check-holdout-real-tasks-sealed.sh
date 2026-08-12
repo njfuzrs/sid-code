@@ -50,7 +50,7 @@ fi
 # 源码里出现过 holdout sid 就会被带出去，正是门禁该守的地方。
 # 用 find 展开而非写死 glob：未匹配的 glob 在 sh 下原样留下成为不存在的文件名，
 # 会被下方 [ -f ] 静默跳过，从而掩盖"目录改名后再也没扫到"的失效。
-PUBLIC_FILES="evals/CASES.md evals/DASHBOARD.md evals/eval-dashboard.html evals/eval-data.json"
+PUBLIC_FILES="evals/CASES.md"
 if [ -d "website" ]; then
   WEBSITE_PUBLIC=$(find website -name node_modules -prune -o -name '.vitepress' -prune -o -name '*.md' -print 2>/dev/null || true)
   [ -f "website/public/llms.txt" ] && WEBSITE_PUBLIC="$WEBSITE_PUBLIC website/public/llms.txt"
@@ -117,7 +117,7 @@ fi
 if [ "$LEAKS" -gt 0 ]; then
   echo ""
   echo "[check-holdout-sealed] ❌ 公开页面 $LEAKS 处 holdout sid 泄露，push 中止"
-  echo "  修复：① regen DASHBOARD.md（不应渲染 holdout sid）"
+  echo "  修复：① regen CASES.md（不应渲染 holdout sid）"
   echo "       ② 若 case yaml 误用 holdout sid 作为 anchor，删除该字段"
   exit 1
 fi

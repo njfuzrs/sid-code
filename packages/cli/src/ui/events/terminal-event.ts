@@ -90,9 +90,7 @@ export interface EventTarget {
 }
 
 /** 创建一个空的 EventTarget(供组件初始化 ref) */
-export function createEventTarget(
-  parentNode: EventTarget | null = null,
-): EventTarget {
+export function createEventTarget(parentNode: EventTarget | null = null): EventTarget {
   return {
     parentNode,
     captureHandlers: new Map(),

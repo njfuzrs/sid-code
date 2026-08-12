@@ -35,14 +35,42 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // 所以要显式带上 packages/core 这一段（分段写法不会被路径字符串替换命中，需手工维护）。
 const builtinDir = resolve(__dirname, "..", "packages", "core", "src", "skill", "builtin");
 const outPath = resolve(
-  __dirname, "..", "packages", "core", "src", "skill", "builtin-embedded.generated.ts",
+  __dirname,
+  "..",
+  "packages",
+  "core",
+  "src",
+  "skill",
+  "builtin-embedded.generated.ts",
 );
 
 /** 以 utf-8 原文存储的文本文件扩展名（其余按二进制 base64 处理） */
 const TEXT_EXTENSIONS = new Set([
-  ".md", ".markdown", ".txt", ".json", ".jsonc", ".yaml", ".yml",
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".toml", ".csv", ".tsv",
-  ".html", ".htm", ".css", ".svg", ".xml", ".sh", ".env", ".ini", ".cfg",
+  ".md",
+  ".markdown",
+  ".txt",
+  ".json",
+  ".jsonc",
+  ".yaml",
+  ".yml",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".toml",
+  ".csv",
+  ".tsv",
+  ".html",
+  ".htm",
+  ".css",
+  ".svg",
+  ".xml",
+  ".sh",
+  ".env",
+  ".ini",
+  ".cfg",
 ]);
 
 interface EmbeddedFile {
@@ -98,13 +126,18 @@ if (existsSync(builtinDir)) {
       if (TEXT_EXTENSIONS.has(extOf(relPath))) {
         return { relPath, content: readFileSync(abs, "utf-8"), encoding: "utf-8" as const };
       }
-      return { relPath, content: readFileSync(abs).toString("base64"), encoding: "base64" as const };
+      return {
+        relPath,
+        content: readFileSync(abs).toString("base64"),
+        encoding: "base64" as const,
+      };
     });
 
     const skillMd = files.find((f) => f.relPath === "SKILL.md");
     entries.push({
       name: entry.name,
-      rawContent: skillMd?.encoding === "utf-8" ? skillMd.content : readFileSync(skillFile, "utf-8"),
+      rawContent:
+        skillMd?.encoding === "utf-8" ? skillMd.content : readFileSync(skillFile, "utf-8"),
       files,
     });
   }

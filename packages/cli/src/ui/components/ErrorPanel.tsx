@@ -33,11 +33,7 @@ interface ErrorPanelProps {
 /** 关闭提示显示上限（超过后不再提示，避免唠叨——L4.C 渐进衰减） */
 const DISMISS_HINT_MAX_SHOWS = 3;
 
-export const ErrorPanel: React.FC<ErrorPanelProps> = ({
-  items,
-  width,
-  showCount = 0,
-}) => {
+export const ErrorPanel: React.FC<ErrorPanelProps> = ({ items, width, showCount = 0 }) => {
   const { bindingFor } = useKeybindings();
 
   if (items.length === 0) {
@@ -69,12 +65,16 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({
           {/* 错误标题 */}
           <Box>
             <Text color={theme.status.error} bold>{`${ERROR_MARK} `}</Text>
-            <Text color={theme.status.error} bold>{item.title}</Text>
+            <Text color={theme.status.error} bold>
+              {item.title}
+            </Text>
           </Box>
           {/* 详细信息（如有） */}
           {item.detail && (
             <Box marginLeft={2}>
-              <Text color={theme.text.secondary} wrap="wrap">{item.detail}</Text>
+              <Text color={theme.text.secondary} wrap="wrap">
+                {item.detail}
+              </Text>
             </Box>
           )}
           {/* 建议方案 */}

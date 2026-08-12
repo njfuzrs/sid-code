@@ -15,10 +15,13 @@ import { sidPaths } from "../config/paths.ts";
 import { BUILTIN_LSP_SERVERS } from "./builtin-servers.ts";
 
 /** lsp.json 文件格式：服务器名 → 部分配置（workspaceFolder/name 自动填充） */
-type LSPConfigFile = Record<string, Partial<LSPServerConfig> & {
-  command: string;
-  extensionToLanguage: Record<string, string>;
-}>;
+type LSPConfigFile = Record<
+  string,
+  Partial<LSPServerConfig> & {
+    command: string;
+    extensionToLanguage: Record<string, string>;
+  }
+>;
 
 export async function loadLSPConfigs(
   workspaceFolder: string,
@@ -50,13 +53,21 @@ export async function loadLSPConfigs(
     registered.push(server.name);
   });
   if (registered.length > 0) {
-    log.info("LSP", `内置语言目录自动注册 ${registered.length} 个可用服务器：${registered.join("、")}`);
+    log.info(
+      "LSP",
+      `内置语言目录自动注册 ${registered.length} 个可用服务器：${registered.join("、")}`,
+    );
   }
 
   // 2. 全局配置覆盖
   await mergeConfigFile(configs, sidPaths.lspConfig(), workspaceFolder, log);
   // 3. 项目配置覆盖（最高优先级）
-  await mergeConfigFile(configs, join(workspaceFolder, ".sid-code", "lsp.json"), workspaceFolder, log);
+  await mergeConfigFile(
+    configs,
+    join(workspaceFolder, ".sid-code", "lsp.json"),
+    workspaceFolder,
+    log,
+  );
 
   return configs;
 }

@@ -67,7 +67,10 @@ export function loadTeamTasks(teamName: string, baseDir?: string): boolean {
     restoreTeamTasks(teamName, parsed.tasks);
     return true;
   } catch (err: any) {
-    getLogger().warn("TEAM_TASKS", `团队任务文件读取失败 (${teamName})，降级为全新: ${err?.message ?? err}`);
+    getLogger().warn(
+      "TEAM_TASKS",
+      `团队任务文件读取失败 (${teamName})，降级为全新: ${err?.message ?? err}`,
+    );
     return false;
   }
 }

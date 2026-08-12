@@ -15,7 +15,14 @@
  * 此为 sid-code 独有创新。
  */
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+  readdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 
@@ -250,11 +257,15 @@ export function scanStaleHeartbeats(): StaleHeartbeatSession[] {
                       }
                       break;
                     }
-                  } catch { /* ignore */ }
+                  } catch {
+                    /* ignore */
+                  }
                 }
               }
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           stale.push({
             session_id: d.name,

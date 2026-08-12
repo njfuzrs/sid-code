@@ -17,7 +17,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
-import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from "../tool/bash/parser.ts";
+import {
+  parseBashCommand,
+  extractSimpleCommands,
+  extractRedirectTargets,
+} from "../tool/bash/parser.ts";
 import { matchGitDanger } from "../permission/git-danger-patterns.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -73,14 +77,18 @@ async function getGitCleanTargets(command: string, cwd: string): Promise<string[
   let cleanArgs: string[];
   try {
     const simples = extractSimpleCommands(parseBashCommand(command));
-    const gitClean = simples.find(s => s.command === "git" && s.args.some(a => a === "clean"));
+    const gitClean = simples.find((s) => s.command === "git" && s.args.some((a) => a === "clean"));
     if (!gitClean) return [];
     const idx = gitClean.args.indexOf("clean");
-    const rest = gitClean.args.slice(idx + 1).filter(a => {
-      if (a === "--force") return false;
-      // 短 flag 组合（-fd / -fdx）里剥掉 f，其余保留
-      return true;
-    }).map(a => (/^-[a-zA-Z]+$/.test(a) ? a.replace(/f/g, "") : a)).filter(a => a !== "-" && a !== "");
+    const rest = gitClean.args
+      .slice(idx + 1)
+      .filter((a) => {
+        if (a === "--force") return false;
+        // 短 flag 组合（-fd / -fdx）里剥掉 f，其余保留
+        return true;
+      })
+      .map((a) => (/^-[a-zA-Z]+$/.test(a) ? a.replace(/f/g, "") : a))
+      .filter((a) => a !== "-" && a !== "");
     cleanArgs = ["clean", "-n", ...rest];
   } catch {
     cleanArgs = ["clean", "-n", "-d"];
@@ -94,7 +102,12 @@ async function getGitCleanTargets(command: string, cwd: string): Promise<string[
       //   - git 会按 locale 本地化输出（中文环境下是「将删除 xxx」），
       //     不锁 LC_ALL 则解析正则全部失配 → 未跟踪文件静默不进快照（回退不了还以为保护了）。
       //   - core.quotepath=false 让非 ASCII 文件名原样输出，不被转义成 \344\270\255。
-      env: { ...process.env, LC_ALL: "C", LANG: "C", GIT_CONFIG_PARAMETERS: "'core.quotepath=false'" },
+      env: {
+        ...process.env,
+        LC_ALL: "C",
+        LANG: "C",
+        GIT_CONFIG_PARAMETERS: "'core.quotepath=false'",
+      },
     });
     // 输出形如 `Would remove path/to/file` / `Would remove dir/`
     for (const line of stdout.split("\n")) {
@@ -125,7 +138,7 @@ async function listFilesRecursive(dir: string, depth = 0): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) out.push(...await listFilesRecursive(full, depth + 1));
+      if (e.isDirectory()) out.push(...(await listFilesRecursive(full, depth + 1)));
       else if (e.isFile()) out.push(full);
     }
   } catch {
@@ -183,7 +196,9 @@ function extractExplicitPaths(command: string, cwd: string): string[] {
       }
     } else if (cmd === "sed") {
       // sed [flags] SCRIPT FILE...：仅在带 -i（原地编辑）时提取目标文件。
-      const hasInplace = args.some(a => a === "-i" || a.startsWith("-i") || a === "--in-place" || a.startsWith("--in-place"));
+      const hasInplace = args.some(
+        (a) => a === "-i" || a.startsWith("-i") || a === "--in-place" || a.startsWith("--in-place"),
+      );
       if (hasInplace) {
         // 结构=flags + 脚本 + 文件...。脚本是第一个非 flag token（形如 's/a/b/'、'1d'），
         // 跳过它，其余非 flag token 视为文件。`-e <script>` 形式也一并跳过其后紧邻的脚本。
@@ -191,9 +206,16 @@ function extractExplicitPaths(command: string, cwd: string): string[] {
         for (let i = 0; i < args.length; i++) {
           const a = args[i];
           if (!a) continue;
-          if (a === "-e" || a === "-f") { i++; scriptSeen = true; continue; } // 脚本作为独立参数
+          if (a === "-e" || a === "-f") {
+            i++;
+            scriptSeen = true;
+            continue;
+          } // 脚本作为独立参数
           if (a.startsWith("-")) continue;
-          if (!scriptSeen) { scriptSeen = true; continue; } // 第一个非 flag = 内联脚本，跳过
+          if (!scriptSeen) {
+            scriptSeen = true;
+            continue;
+          } // 第一个非 flag = 内联脚本，跳过
           if (!isStatic(a)) continue;
           files.push(resolve(a));
         }

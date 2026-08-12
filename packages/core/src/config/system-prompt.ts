@@ -16,7 +16,11 @@ interface Tool {
   description(context?: ToolDescriptionContext): string;
   usageGuide?(): string;
 }
-import { isCoordinatorMode, getCoordinatorSystemPrompt, COORDINATOR_ONLY_TOOLS } from "../coordinator/mode.ts";
+import {
+  isCoordinatorMode,
+  getCoordinatorSystemPrompt,
+  COORDINATOR_ONLY_TOOLS,
+} from "../coordinator/mode.ts";
 import { platform, homedir, type as osType, release as osRelease } from "os";
 import { cwd } from "process";
 import { existsSync } from "fs";
@@ -175,7 +179,7 @@ function simpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash |= 0; // 转为 32 位整数
   }
   return hash.toString(36);
@@ -358,7 +362,9 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   ];
 
   if (ctx.tools.length > 0) {
-    coreParts.push(buildToolGuideSection(ctx.tools, { excludeMcp: true, language: ctx.preferredLanguage }));
+    coreParts.push(
+      buildToolGuideSection(ctx.tools, { excludeMcp: true, language: ctx.preferredLanguage }),
+    );
   }
 
   coreParts.push(buildConstraintsSection(ctx.preferredLanguage));
@@ -399,18 +405,22 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 当前日期（P0：易变值移出静态区，消除跨天缓存击穿）。
   // priority=DATE_CONTEXT(2) 让它稳定处于动态区最前部，紧跟静态前缀。
-  attachments.push(generateDateAttachment(new Date().toISOString().split("T")[0], ctx.preferredLanguage));
+  attachments.push(
+    generateDateAttachment(new Date().toISOString().split("T")[0], ctx.preferredLanguage),
+  );
 
   // G11：MCP 工具列表（动态区）。MCP 工具随 server 连接/断开动态变化，
   // 放入静态区会击穿 prompt cache 前缀，单独作为动态附件注入。
   const mcpToolSection = buildMcpToolGuideSection(ctx.tools);
   if (mcpToolSection) {
-    attachments.push(DANGEROUS_dynamicAttachment(
-      "mcpToolGuide",
-      mcpToolSection,
-      PRIORITY.DATE_CONTEXT + 1,  // 优先级 3，紧跟日期
-      "MCP 工具列表随 server 连接/断开动态变化，放入静态区会击穿 prompt cache 前缀",
-    ));
+    attachments.push(
+      DANGEROUS_dynamicAttachment(
+        "mcpToolGuide",
+        mcpToolSection,
+        PRIORITY.DATE_CONTEXT + 1, // 优先级 3，紧跟日期
+        "MCP 工具列表随 server 连接/断开动态变化，放入静态区会击穿 prompt cache 前缀",
+      ),
+    );
   }
 
   // 权限模式提示词：**已移除**（2026-07-30，重复注入根因修复 P0）。
@@ -550,7 +560,10 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   for (const att of attachments) {
     const attTokens = estimateTokens(att.content);
     const displayName = att.label || att.type;
-    log.info("PROMPT", `附件: ${displayName}(${(attTokens / 1000).toFixed(1)}K tok, priority=${att.priority})`);
+    log.info(
+      "PROMPT",
+      `附件: ${displayName}(${(attTokens / 1000).toFixed(1)}K tok, priority=${att.priority})`,
+    );
   }
 
   // 4. 按 cacheStability 分拣附件：stable 进静态区享受长 TTL 缓存，dynamic/未标记进动态区
@@ -610,7 +623,10 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     // 断言：只要有附件被保留（included/truncated 非空），边界必须存在。
     // 保守缓解——真丢了标记宁可 dev 期暴露，也不让缓存正确性 bug 静默溜到生产。
     if ((result.included.length > 0 || result.truncated) && !content.includes(DYNAMIC_BOUNDARY)) {
-      log.warn("PROMPT", "截断后 DYNAMIC_BOUNDARY 缺失，缓存分区可能失效（请检查 truncateToLimit）");
+      log.warn(
+        "PROMPT",
+        "截断后 DYNAMIC_BOUNDARY 缺失，缓存分区可能失效（请检查 truncateToLimit）",
+      );
     }
     // 记录截断详情
     if (result.truncated) {
@@ -621,19 +637,26 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
       const name = att.label || att.type;
       log.info("PROMPT", `附件被丢弃: ${name}(priority=${att.priority})`);
     }
-    log.info("PROMPT", `截断后 ${estimateTokens(content)} tokens, 包含${result.included.length}个附件, 丢弃${result.discarded.length}个`);
+    log.info(
+      "PROMPT",
+      `截断后 ${estimateTokens(content)} tokens, 包含${result.included.length}个附件, 丢弃${result.discarded.length}个`,
+    );
 
     // §9.1：裁剪降级通知——在动态区末尾追加一行,告知模型哪些上下文因空间限制被省略/截断,
     // 否则模型不知道 GIT_STATUS 等附件已缺失,可能基于"应该有但其实没有"的假设做出错误操作。
     const omittedNames: string[] = [];
     for (const att of result.discarded) omittedNames.push(att.label || att.type);
-    if (result.truncated) omittedNames.push(`${result.truncated.label || result.truncated.type}(部分截断)`);
+    if (result.truncated)
+      omittedNames.push(`${result.truncated.label || result.truncated.type}(部分截断)`);
     if (omittedNames.length > 0) {
       content += `\n\n[注意：以下上下文因空间限制被省略或截断，相关信息可能不完整，必要时请通过工具主动获取：${omittedNames.join("、")}]`;
     }
   }
 
-  log.info("PROMPT", `系统提示词构建完成: ${content.length}字符, ~${estimateTokens(content)} tokens, ${attachments.length}个附件`);
+  log.info(
+    "PROMPT",
+    `系统提示词构建完成: ${content.length}字符, ~${estimateTokens(content)} tokens, ${attachments.length}个附件`,
+  );
 
   // §12 P0-1 完整版：报告分段 token（供 /context 拆出「记忆/CLAUDE.md」类别）。
   // 只统计**实际留在最终 content 里**的段——截断丢弃的附件不计入，否则 /context 会
@@ -658,7 +681,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
  * 用包装后的附件文本（而非裸内容）估算，才能把 <system-reminder> 标签开销正确归到本类别。
  */
 function collectMemorySections(ctx: SystemPromptContext, out: string[]): void {
-  if (!ctx.onSectionTokens) return;  // 未注入回调 → 完全不做这些字符串构造
+  if (!ctx.onSectionTokens) return; // 未注入回调 → 完全不做这些字符串构造
   if (ctx.memorySystemPrompt) out.push(ctx.memorySystemPrompt);
   if (ctx.projectRules) {
     out.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath).content);
@@ -685,7 +708,7 @@ function reportSectionTokens(
   content: string,
   candidates: string[],
 ): void {
-  if (!ctx.onSectionTokens) return;  // 未注入回调 → 零开销
+  if (!ctx.onSectionTokens) return; // 未注入回调 → 零开销
   let memory = 0;
   for (const text of candidates) {
     if (!text) continue;
@@ -918,17 +941,17 @@ function buildToolGuideSection(
 ): string {
   // P1a：工具列表只保留首句摘要（一行简介），完整 description 已在 tools 数组里。
   // 消除"system prompt toolList + tools 数组"的双重注入（实测省 ~12k 字符 / ~4k token）。
-  const filtered = options?.excludeMcp
-    ? tools.filter((t) => !t.name().startsWith("mcp__"))
-    : tools;
+  const filtered = options?.excludeMcp ? tools.filter((t) => !t.name().startsWith("mcp__")) : tools;
 
-  const toolList = filtered.map((t) => {
-    const desc = t.description();
-    // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
-    const firstSentence = desc.split(/[。\n;；]/)[0].trim();
-    const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
-    return `  - ${t.name()}: ${brief}`;
-  }).join("\n");
+  const toolList = filtered
+    .map((t) => {
+      const desc = t.description();
+      // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
+      const firstSentence = desc.split(/[。\n;；]/)[0].trim();
+      const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
+      return `  - ${t.name()}: ${brief}`;
+    })
+    .join("\n");
 
   // 收集工具自带的使用指南。
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
@@ -1035,12 +1058,14 @@ function buildMcpToolGuideSection(tools: Tool[]): string | null {
   const mcpTools = tools.filter((t) => t.name().startsWith("mcp__"));
   if (mcpTools.length === 0) return null;
 
-  const toolList = mcpTools.map((t) => {
-    const desc = t.description();
-    const firstSentence = desc.split(/[。\n;；]/)[0].trim();
-    const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
-    return `  - ${t.name()}: ${brief}`;
-  }).join("\n");
+  const toolList = mcpTools
+    .map((t) => {
+      const desc = t.description();
+      const firstSentence = desc.split(/[。\n;；]/)[0].trim();
+      const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
+      return `  - ${t.name()}: ${brief}`;
+    })
+    .join("\n");
 
   const customGuides: string[] = [];
   for (const tool of mcpTools) {
@@ -1125,9 +1150,7 @@ function buildSchedulingSection(language?: LanguagePref): string {
  */
 function buildLanguagePrecedenceSection(language: LanguagePref): string {
   const target =
-    language === "en" ? "英文（English）"
-      : language === "auto" ? "跟随用户输入语言"
-        : "中文";
+    language === "en" ? "英文（English）" : language === "auto" ? "跟随用户输入语言" : "中文";
 
   return `
 <language-precedence>
@@ -1147,9 +1170,10 @@ function buildConstraintsSection(language?: LanguagePref): string {
   // 中文块，占 en 模式残留汉字的绝大部分）。
   if (language === "en") return buildConstraintsSectionEn();
 
-  const langConstraint = language === "auto"
-    ? "1. **语言要求**: 跟随用户输入语言作答（判断不出时用中文）。详细规则见上方\"⚠️ 语言规则\""
-    : "1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方\"⚠️ 语言规则\"（含允许切换的例外条款）";
+  const langConstraint =
+    language === "auto"
+      ? '1. **语言要求**: 跟随用户输入语言作答（判断不出时用中文）。详细规则见上方"⚠️ 语言规则"'
+      : '1. **语言要求**: 所有回复、代码注释、文档均使用中文。详细规则见上方"⚠️ 语言规则"（含允许切换的例外条款）';
 
   return `
 <constraints>

@@ -73,7 +73,10 @@ async function scanCommandFiles(
         const { frontmatter, body, error: fmError } = parseFrontmatter(raw);
         // 审计第 4 条：畸形 frontmatter fail-closed 跳过，避免 YAML 原文被当指令喂给模型。
         if (fmError) {
-          getLogger().warn("PLUGIN", `插件命令 frontmatter 格式错误，已跳过 ${fullPath}: ${fmError}`);
+          getLogger().warn(
+            "PLUGIN",
+            `插件命令 frontmatter 格式错误，已跳过 ${fullPath}: ${fmError}`,
+          );
           continue;
         }
         const name = getCommandName(fullPath, baseDir, pluginName);

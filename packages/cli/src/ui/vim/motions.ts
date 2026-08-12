@@ -83,8 +83,14 @@ export function motionWordForward(buf: VimBuffer, count: number): Pos {
     while (true) {
       while (col < curLine.length && charClass(curLine[col]) === 0) col++;
       if (col < curLine.length) break;
-      if (row < buf.lines.length - 1) { row++; col = 0; curLine = buf.lines[row] ?? ""; }
-      else { col = Math.max(0, curLine.length - 1); break; }
+      if (row < buf.lines.length - 1) {
+        row++;
+        col = 0;
+        curLine = buf.lines[row] ?? "";
+      } else {
+        col = Math.max(0, curLine.length - 1);
+        break;
+      }
     }
   }
   return { row, col };
@@ -96,13 +102,19 @@ export function motionWordBackward(buf: VimBuffer, count: number): Pos {
   for (let n = 0; n < count; n++) {
     // 先后退一格（可跨行）
     if (col > 0) col--;
-    else if (row > 0) { row--; col = Math.max(0, (buf.lines[row] ?? "").length - 1); }
+    else if (row > 0) {
+      row--;
+      col = Math.max(0, (buf.lines[row] ?? "").length - 1);
+    }
     let line = buf.lines[row] ?? "";
     // 跳过空白（可跨行）
     while (charClass(line[col]) === 0) {
       if (col > 0) col--;
-      else if (row > 0) { row--; line = buf.lines[row] ?? ""; col = Math.max(0, line.length - 1); }
-      else break;
+      else if (row > 0) {
+        row--;
+        line = buf.lines[row] ?? "";
+        col = Math.max(0, line.length - 1);
+      } else break;
     }
     // 退到该 word 的起点
     const cls = charClass(line[col]);
@@ -118,13 +130,19 @@ export function motionWordEnd(buf: VimBuffer, count: number): Pos {
     // 先前进一格（可跨行）
     const line0 = buf.lines[row] ?? "";
     if (col < line0.length - 1) col++;
-    else if (row < buf.lines.length - 1) { row++; col = 0; }
+    else if (row < buf.lines.length - 1) {
+      row++;
+      col = 0;
+    }
     let line = buf.lines[row] ?? "";
     // 跳过空白
     while (charClass(line[col]) === 0) {
       if (col < line.length - 1) col++;
-      else if (row < buf.lines.length - 1) { row++; line = buf.lines[row] ?? ""; col = 0; }
-      else break;
+      else if (row < buf.lines.length - 1) {
+        row++;
+        line = buf.lines[row] ?? "";
+        col = 0;
+      } else break;
     }
     // 推进到该 word 末尾
     const cls = charClass(line[col]);

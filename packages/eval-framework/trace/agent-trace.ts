@@ -138,7 +138,9 @@ export function validateTrace(input: unknown): ValidationResult {
 
   // ===== 顶层枚举校验 =====
   if (typeof t.agent_kind !== "string" || t.agent_kind.length === 0) {
-    violations.push(`agent_kind must be a non-empty string (builtin: ${VALID_AGENT_KINDS.join("/")})`);
+    violations.push(
+      `agent_kind must be a non-empty string (builtin: ${VALID_AGENT_KINDS.join("/")})`,
+    );
   }
   if (!VALID_TRACE_STATUS.includes(t.status as TraceStatus)) {
     violations.push(`status must be one of ${VALID_TRACE_STATUS.join("/")}`);
@@ -199,7 +201,8 @@ export function validateTrace(input: unknown): ValidationResult {
 
     // §5-2 tool_input / tool_output ≤ 8KB（截断需 metadata.truncated=true）
     if (s.tool_input !== undefined) {
-      const serialized = typeof s.tool_input === "string" ? s.tool_input : JSON.stringify(s.tool_input);
+      const serialized =
+        typeof s.tool_input === "string" ? s.tool_input : JSON.stringify(s.tool_input);
       const bytes = Buffer.byteLength(serialized ?? "", "utf-8");
       const meta = (s.metadata ?? {}) as Record<string, unknown>;
       if (bytes > SPAN_FIELD_BYTE_LIMIT && meta.truncated !== true) {
@@ -235,7 +238,10 @@ export function validateTrace(input: unknown): ValidationResult {
 }
 
 /** 工具：截断 tool_input / tool_output 到 8KB，并打 metadata.truncated=true 标记。 */
-export function truncateSpanField(value: string, byteLimit = SPAN_FIELD_BYTE_LIMIT): {
+export function truncateSpanField(
+  value: string,
+  byteLimit = SPAN_FIELD_BYTE_LIMIT,
+): {
   value: string;
   truncated: boolean;
 } {

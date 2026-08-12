@@ -25,11 +25,7 @@ export interface PermissionModeContext {
 
 /** plan 模式是否应继承 bypass 行为 */
 export function shouldPlanInheritBypass(ctx: PermissionModeContext): boolean {
-  return (
-    ctx.mode === "plan" &&
-    ctx.prePlanMode === "always-allow" &&
-    ctx.isBypassAvailable
-  );
+  return ctx.mode === "plan" && ctx.prePlanMode === "always-allow" && ctx.isBypassAvailable;
 }
 
 /** 获取下一个权限模式（循环切换，Shift+Tab） */
@@ -86,14 +82,23 @@ export function getNextKeyboardPermissionMode(
 /** 模式显示名称 */
 export function getModeName(mode: PermissionMode): string {
   switch (mode) {
-    case "default": return "Manual（手动）";
-    case "always-allow": return "全部允许";
-    case "deny-write": return "禁止写入";
-    case "acceptEdits": return "自动接受编辑";
-    case "plan": return "计划模式";
-    case "dontAsk": return "静默拒绝";
-    case "auto": return "自动模式";
-    case "dangerously-skip-permissions": return "跳过权限(危险)";
-    default: return mode;
+    case "default":
+      return "Manual（手动）";
+    case "always-allow":
+      return "全部允许";
+    case "deny-write":
+      return "禁止写入";
+    case "acceptEdits":
+      return "自动接受编辑";
+    case "plan":
+      return "计划模式";
+    case "dontAsk":
+      return "静默拒绝";
+    case "auto":
+      return "自动模式";
+    case "dangerously-skip-permissions":
+      return "跳过权限(危险)";
+    default:
+      return mode;
   }
 }

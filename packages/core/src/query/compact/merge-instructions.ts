@@ -14,8 +14,6 @@
  * @returns 合并后的单段指令（用双换行分隔，保持可读性）；全空时返回 undefined
  */
 export function mergeInstructions(...parts: (string | undefined | null)[]): string | undefined {
-  const xs = parts
-    .map((p) => (typeof p === "string" ? p.trim() : ""))
-    .filter((p) => p.length > 0);
+  const xs = parts.map((p) => (typeof p === "string" ? p.trim() : "")).filter((p) => p.length > 0);
   return xs.length > 0 ? xs.join("\n\n") : undefined;
 }

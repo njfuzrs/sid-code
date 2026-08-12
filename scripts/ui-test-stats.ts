@@ -3,7 +3,8 @@
  * UI 测试独立统计 — D4-4
  *
  * 系统级查漏补缺方案 §防线4 D4-4：确保 UI 测试在 sprint 末回归矩阵里有**独立统计**，
- * 而非淹没在 `bun test` 全量数字里。本脚本只跑 UI 测试（tests/ui + src/ui），解析
+ * 而非淹没在 `bun test` 全量数字里。本脚本只跑 UI 测试（packages/cli/tests/ui +
+ * packages/cli/src/ui 下的就近测试），解析
  * bun test 输出，打印结构化统计（文件数 / 用例数 / pass / fail），并以 JSON 摘要收尾，
  * 便于回归矩阵脚本采集。
  *
@@ -20,11 +21,13 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const JSON_ONLY = process.argv.includes("--json");
 
-// UI 测试分布在两处：tests/ui（多数）+ 就近放在 UI 源码旁的 .test.ts/.tsx。
+// UI 测试分布在两处：packages/cli/tests/ui（多数）+ 就近放在 UI 源码旁的 .test.ts/.tsx。
 // P2-2 分包：UI 源码从 src/ui/ 搬到 packages/cli/src/ui/。
+// P1-2 测试分包：UI 测试从根 tests/ui/ 搬到 packages/cli/tests/ui/（归属 cli 包，
+// 因为它们 import 的是 @sid-code/cli/ui/*）。
 // 注：搬迁时实测 packages/cli/src/ui 下就近测试为 0 个，路径仍保留 ——
 // 这条路径的作用是「就近测试一旦新增就自动纳入统计」，删掉它会让以后新增的就近测试静默漏统计。
-const UI_TEST_PATHS = ["tests/ui", "packages/cli/src/ui"];
+const UI_TEST_PATHS = ["packages/cli/tests/ui", "packages/cli/src/ui"];
 
 function runUITests(): { stdout: string; stderr: string; code: number } {
   const res = spawnSync("bun", ["test", ...UI_TEST_PATHS], {

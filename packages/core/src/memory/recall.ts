@@ -158,9 +158,7 @@ export async function findRelevantMemories(
       const raw = await Bun.file(header.filePath).text();
       const body = stripFrontmatter(raw);
       const warning = buildFreshnessWarning(header.mtimeMs);
-      const content = warning
-        ? `<system-reminder>${warning}</system-reminder>\n\n${body}`
-        : body;
+      const content = warning ? `<system-reminder>${warning}</system-reminder>\n\n${body}` : body;
       results.push({
         path: header.filePath,
         filename: header.filename,

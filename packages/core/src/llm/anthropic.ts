@@ -15,13 +15,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, ProviderCapabilities } from "./provider.ts";
-import type {
-  SendParams,
-  StreamEvent,
-  ContentBlock,
-  Usage,
-  AccumulatedResponse,
-} from "./types.ts";
+import type { SendParams, StreamEvent, ContentBlock, Usage, AccumulatedResponse } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { generateClientRequestId } from "../api/api-log.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
@@ -31,7 +25,12 @@ import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import { wrapFetchWithKeepAlive } from "./keepalive.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
-import { emitTimeoutFired, emitStreamPhase, emitHttpConnected, cacheDimsFor } from "../trace/stream-observer.ts";
+import {
+  emitTimeoutFired,
+  emitStreamPhase,
+  emitHttpConnected,
+  cacheDimsFor,
+} from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
@@ -122,17 +121,14 @@ export class AnthropicProvider implements Provider {
     return {
       streaming: true,
       tools: true,
-      thinking: true,        // Anthropic 支持 Extended Thinking
-      vision: true,          // Claude 支持图片
-      promptCaching: true,   // Anthropic 支持 Prompt Caching
+      thinking: true, // Anthropic 支持 Extended Thinking
+      vision: true, // Claude 支持图片
+      promptCaching: true, // Anthropic 支持 Prompt Caching
       parallelToolCalls: true,
     };
   }
 
-  async *sendMessageStream(
-    params: SendParams,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  async *sendMessageStream(params: SendParams, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const log = getLogger();
 
     // § P1: 发送前消息完整性校验（对齐 openai.ts 的 guardOutgoingMessages 调用）
@@ -188,10 +184,10 @@ export class AnthropicProvider implements Provider {
     // strict 工具无声降级——不报错，只是行为变差，比报错更难发现。
     const model = pickWireModel(params, this._model);
     const enableStrict = !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(model);
-    const enableFGTS = isDirectAnthropicEndpoint(this.client.baseURL)
-      && !process.env.SID_DISABLE_FGTS;
-    const tokenEfficientToolsEnabled = !enableStrict
-      && process.env.SID_ENABLE_TOKEN_EFFICIENT_TOOLS === "1";
+    const enableFGTS =
+      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_FGTS;
+    const tokenEfficientToolsEnabled =
+      !enableStrict && process.env.SID_ENABLE_TOKEN_EFFICIENT_TOOLS === "1";
 
     const tools = params.tools?.map((t) => ({
       name: t.name,
@@ -206,16 +202,16 @@ export class AnthropicProvider implements Provider {
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
     // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
     // G4：Anthropic 直连且未禁用时，静态区用 global scope（跨用户共享 KV Cache）。
-    const useGlobalScope = isDirectAnthropicEndpoint(this.client.baseURL)
-      && !process.env.SID_DISABLE_GLOBAL_CACHE;
+    const useGlobalScope =
+      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_GLOBAL_CACHE;
     const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
     // 增强 5.1：工具区缓存断点（对齐 CC toolToAPISchema cacheControl）。
     // 仅直连 Anthropic 且未禁用时，在最后一个工具上打一个断点，把整个工具区纳入前缀缓存分层。
     // 走网关时降级不打（网关对 scope/beta 字段兼容性差，且收益仅直连链路）。
     // SID_DISABLE_TOOL_CACHE=1 可一键关闭降级。
-    const enableToolCache = isDirectAnthropicEndpoint(this.client.baseURL)
-      && !process.env.SID_DISABLE_TOOL_CACHE;
+    const enableToolCache =
+      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_TOOL_CACHE;
     if (enableToolCache) {
       markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
     }
@@ -265,9 +261,10 @@ export class AnthropicProvider implements Provider {
         ...(params.thinking?.enabled && buildThinkingParam(params)),
         // output_config.effort：adaptive 模型 + DeepSeek-via-Anthropic 端点均走此字段。
         // adaptive 模型由 effort.ts 填充 params.outputConfig；DeepSeek-via-Anthropic 同理。
-        ...(params.outputConfig && !params.outputFormat && {
-          output_config: { effort: params.outputConfig.effort },
-        }),
+        ...(params.outputConfig &&
+          !params.outputFormat && {
+            output_config: { effort: params.outputConfig.effort },
+          }),
         // P3-1: API 级结构化输出（output_config.format）— 独立于工具调用的 JSON 约束
         ...(params.outputFormat && {
           output_config: {
@@ -277,10 +274,11 @@ export class AnthropicProvider implements Provider {
         }),
         // G2: cache_edits — 服务器侧删除旧工具结果（Anthropic 私有字段，缓存友好压缩产出）。
         // SID_DISABLE_CACHE_EDITS=1 时一键关闭降级（见方案 §12 风险表）。
-        ...(params.cacheEdits && params.cacheEdits.length > 0
-          && !process.env.SID_DISABLE_CACHE_EDITS && {
-          cache_edits: params.cacheEdits,
-        }),
+        ...(params.cacheEdits &&
+          params.cacheEdits.length > 0 &&
+          !process.env.SID_DISABLE_CACHE_EDITS && {
+            cache_edits: params.cacheEdits,
+          }),
       };
 
       // § 关键改动：create({stream:true}) 替代 messages.stream()
@@ -377,7 +375,9 @@ export class AnthropicProvider implements Provider {
                 model: this._model,
                 ...cacheDimsFor(ttftCacheRead),
               });
-            } catch { /* 可观测性不影响主流程 */ }
+            } catch {
+              /* 可观测性不影响主流程 */
+            }
           }
         },
         // § 行为等价（T7）：不把 signal 交给 lifecycle 做早退——abort 语义完全保留在下方
@@ -389,26 +389,35 @@ export class AnthropicProvider implements Provider {
           // Anthropic 路径此前不写 stream-observer，这里补上超时可观测性（对齐 openai.ts）。
           try {
             const timeoutLayer =
-              layer === "content_progress" ? "content_progress_timeout"
-              : layer === "overall" ? "turn_hard_timeout"
-              : "idle_timeout";
+              layer === "content_progress"
+                ? "content_progress_timeout"
+                : layer === "overall"
+                  ? "turn_hard_timeout"
+                  : "idle_timeout";
             const threshold =
-              layer === "content_progress" ? LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs
-              : layer === "overall" ? LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs
-              : LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs;
-            emitTimeoutFired(
-              currentSseDumpContext().turnIndex,
-              timeoutLayer,
-              { threshold_ms: threshold, model: this._model },
-            );
-          } catch { /* 可观测性不影响主流程 */ }
+              layer === "content_progress"
+                ? LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs
+                : layer === "overall"
+                  ? LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs
+                  : LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs;
+            emitTimeoutFired(currentSseDumpContext().turnIndex, timeoutLayer, {
+              threshold_ms: threshold,
+              model: this._model,
+            });
+          } catch {
+            /* 可观测性不影响主流程 */
+          }
           // § 主动 abort 底层连接（对齐 Claude Code 的 releaseStreamResources）
           try {
             (rawStream as any).controller?.abort();
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
           try {
             response.body?.cancel().catch(() => {});
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         },
         onTelemetry: (evt: StreamTelemetrySignal) => {
           // 遥测事件通过 logger 记录，接入现有可观测性系统
@@ -417,7 +426,9 @@ export class AnthropicProvider implements Provider {
           // 让 stream_stall / idle_timeout / completed 进 events.jsonl，被 trace-digest.ts 消费
           try {
             params.onStreamTelemetry?.(evt);
-          } catch { /* 遥测失败不影响主流程 */ }
+          } catch {
+            /* 遥测失败不影响主流程 */
+          }
         },
       });
       const guarded = lifecycle.guard(rawStream as unknown as AsyncIterable<any>);
@@ -443,7 +454,8 @@ export class AnthropicProvider implements Provider {
         const abortPromise: Promise<never> | null = (() => {
           if (!signal || signal.aborted) return null;
           return new Promise<never>((_, reject) => {
-            const onAbort = () => reject(new RequestAbortedError("请求已中止（anthropic consume race）"));
+            const onAbort = () =>
+              reject(new RequestAbortedError("请求已中止（anthropic consume race）"));
             signal.addEventListener("abort", onAbort, { once: true });
           });
         })();
@@ -513,7 +525,8 @@ export class AnthropicProvider implements Provider {
               const entry = contentBlocks[idx];
               if (!entry) {
                 log.error("LLM:ANTHROPIC", `content_block_delta 引用不存在的 index=${idx}`, {
-                  totalBlocks: contentBlocks.length, eventIndex: idx,
+                  totalBlocks: contentBlocks.length,
+                  eventIndex: idx,
                 });
                 continue; // fail-safe：跳过而非崩溃
               }
@@ -551,7 +564,8 @@ export class AnthropicProvider implements Provider {
                 // [来源: anthropic-messages-api.md:104-111; tavily 确认丢失 → 400]
                 const entry = contentBlocks[idx];
                 if (entry) {
-                  (entry as any)._signature = ((entry as any)._signature || "") + ((delta as any).signature || "");
+                  (entry as any)._signature =
+                    ((entry as any)._signature || "") + ((delta as any).signature || "");
                 }
               }
               // citations_delta 等非关键 delta 静默忽略
@@ -565,7 +579,9 @@ export class AnthropicProvider implements Provider {
               const entry = contentBlocks[idx];
               if (entry && entry.block.type === "tool_use" && entry._inputAccumulator) {
                 try {
-                  (entry.block as any).input = normalizeToolInput(JSON.parse(entry._inputAccumulator));
+                  (entry.block as any).input = normalizeToolInput(
+                    JSON.parse(entry._inputAccumulator),
+                  );
                 } catch (e) {
                   log.error("LLM:ANTHROPIC", `tool input JSON 解析失败`, {
                     raw: entry._inputAccumulator.slice(0, 200),
@@ -641,15 +657,22 @@ export class AnthropicProvider implements Provider {
           if (controller && !controller.signal?.aborted) {
             controller.abort();
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         try {
           response.body?.cancel().catch(() => {});
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     } catch (err: any) {
       log.error("LLM:ANTHROPIC", `请求异常`, { error: err.message, stack: err.stack });
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
-      log.warn("AUDIT:API", `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`);
+      log.warn(
+        "AUDIT:API",
+        `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
       yield {
         type: "error",
         error: { message: err.message || String(err) },
@@ -706,16 +729,17 @@ export class AnthropicProvider implements Provider {
       input_schema: t.input_schema,
       // 非流式路径同样支持 strict（对齐流式路径门控逻辑）。
       // 同流式路径：能力判定吃真名，别名会静默判 false。
-      ...(t.strict && !process.env.SID_DISABLE_STRICT_TOOLS
-        && modelSupportsStrict(pickWireModel(params, this._model)) && { strict: true }),
+      ...(t.strict &&
+        !process.env.SID_DISABLE_STRICT_TOOLS &&
+        modelSupportsStrict(pickWireModel(params, this._model)) && { strict: true }),
     }));
 
     // G8: 非流式路径缓存标记对齐流式路径——
     // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control（含 G4 global scope）；
     // ② 在最后一条 user 消息末块打 cache_control（与流式路径同策略）；
     // ③ 携带 cache_edits（G2）。否则非流式降级路径完全不命中缓存，每次全价重算前缀。
-    const useGlobalScope = isDirectAnthropicEndpoint(this.client.baseURL)
-      && !process.env.SID_DISABLE_GLOBAL_CACHE;
+    const useGlobalScope =
+      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_GLOBAL_CACHE;
     const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
 
     // 在最后一条 user 消息的最后一个 content block 上标记 cache_control（与流式路径一致）
@@ -723,8 +747,8 @@ export class AnthropicProvider implements Provider {
     markLastUserMessageCacheBreakpoint(messages);
 
     // 增强 5.1：工具区缓存断点（与流式路径同策略，仅直连 Anthropic 且未禁用时打）。
-    const enableToolCache = isDirectAnthropicEndpoint(this.client.baseURL)
-      && !process.env.SID_DISABLE_TOOL_CACHE;
+    const enableToolCache =
+      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_TOOL_CACHE;
     if (enableToolCache) {
       markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
     }
@@ -756,10 +780,11 @@ export class AnthropicProvider implements Provider {
           output_config: { effort: params.outputConfig.effort },
         }),
         // G2: cache_edits（同流式路径门控）
-        ...(params.cacheEdits && params.cacheEdits.length > 0
-          && !process.env.SID_DISABLE_CACHE_EDITS && {
-          cache_edits: params.cacheEdits,
-        }),
+        ...(params.cacheEdits &&
+          params.cacheEdits.length > 0 &&
+          !process.env.SID_DISABLE_CACHE_EDITS && {
+            cache_edits: params.cacheEdits,
+          }),
       },
       signal ? { signal } : undefined,
     );

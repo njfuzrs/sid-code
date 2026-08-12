@@ -56,7 +56,11 @@ export interface LastTurnSignals {
 // ─── 快速路径 ───
 
 /** 成本优化：Evidence Log 快速路径，省下明确满足时的 LLM 调用 */
-export function tryFastPathEval(goal: GoalState, lastStopReason?: string, lastAssistantTextLength?: number): GoalEvalResult | null {
+export function tryFastPathEval(
+  goal: GoalState,
+  lastStopReason?: string,
+  lastAssistantTextLength?: number,
+): GoalEvalResult | null {
   const lastEvidence = goal.evidenceLog[goal.evidenceLog.length - 1];
 
   // P1-1: "报告型任务已交付"快速路径
@@ -118,9 +122,16 @@ export async function evaluateGoal(
   lastTurnSignals?: LastTurnSignals,
 ): Promise<GoalEvalResult> {
   // 1. 先尝试快速路径（含 P1-1 报告型任务放行）
-  const fastResult = tryFastPathEval(goal, lastTurnSignals?.stopReason, lastTurnSignals?.assistantTextLength);
+  const fastResult = tryFastPathEval(
+    goal,
+    lastTurnSignals?.stopReason,
+    lastTurnSignals?.assistantTextLength,
+  );
   if (fastResult) {
-    log.info("GOAL_EVAL", `快速路径命中: ${fastResult.reason}`, { goalId: goal.id, type: fastResult.satisfied ? "satisfied" : "not_satisfied" });
+    log.info("GOAL_EVAL", `快速路径命中: ${fastResult.reason}`, {
+      goalId: goal.id,
+      type: fastResult.satisfied ? "satisfied" : "not_satisfied",
+    });
     return fastResult;
   }
 
@@ -129,18 +140,32 @@ export async function evaluateGoal(
   const userPrompt = buildEvalUserPrompt(goal, conversationContext);
   const startTime = Date.now();
 
-  log.info("GOAL_EVAL", `开始评估: objective="${goal.objective.slice(0, 60)}", evidenceCount=${goal.evidenceLog.length}, contextChars=${conversationContext.length}, model=${config.model}`);
+  log.info(
+    "GOAL_EVAL",
+    `开始评估: objective="${goal.objective.slice(0, 60)}", evidenceCount=${goal.evidenceLog.length}, contextChars=${conversationContext.length}, model=${config.model}`,
+  );
 
   try {
-    const { text: response, tokensUsed } = await callEvaluatorModel(systemPrompt, userPrompt, config);
+    const { text: response, tokensUsed } = await callEvaluatorModel(
+      systemPrompt,
+      userPrompt,
+      config,
+    );
     const result = parseEvalResponse(response);
     const durationMs = Date.now() - startTime;
-    log.info("GOAL_EVAL", `评估完成: satisfied=${result.satisfied}, reason="${result.reason?.slice(0, 100)}", progress=${result.progress ?? "N/A"}, impossible=${result.impossible ?? false}, blockerKey=${result.blockerKey ?? "N/A"}, durationMs=${durationMs}, tokensUsed=${tokensUsed}`);
+    log.info(
+      "GOAL_EVAL",
+      `评估完成: satisfied=${result.satisfied}, reason="${result.reason?.slice(0, 100)}", progress=${result.progress ?? "N/A"}, impossible=${result.impossible ?? false}, blockerKey=${result.blockerKey ?? "N/A"}, durationMs=${durationMs}, tokensUsed=${tokensUsed}`,
+    );
     return { ...result, evalTokensUsed: tokensUsed };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     const durationMs = Date.now() - startTime;
-    log.warn("GOAL_EVAL", `评估者调用失败: ${msg}`, { goalId: goal.id, durationMs, model: config.model });
+    log.warn("GOAL_EVAL", `评估者调用失败: ${msg}`, {
+      goalId: goal.id,
+      durationMs,
+      model: config.model,
+    });
     // P0-1 修复：评估失败设 blockerKey="__evaluator_unavailable__"，复用 BlockedDetector 做熔断。
     // 方向反转：评估器坏了 ≠ "目标未满足"，而是"无法判定"——连续失败达阈值后由 blocked 路径放行。
     return {
@@ -243,10 +268,7 @@ function formatEvidenceLog(entries: EvidenceEntry[]): string {
   // 最多取最近 20 条，避免超长
   const recent = entries.slice(-20);
   return recent
-    .map(
-      (e) =>
-        `[轮${e.turn}] ${e.type}: ${e.summary}${e.raw ? `\n  输出: ${e.raw}` : ""}`,
-    )
+    .map((e) => `[轮${e.turn}] ${e.type}: ${e.summary}${e.raw ? `\n  输出: ${e.raw}` : ""}`)
     .join("\n");
 }
 

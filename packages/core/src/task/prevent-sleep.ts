@@ -171,11 +171,13 @@ function spawnCaffeinate(): void {
     proc.unref?.();
     // 进程自己退出（-t 到期 / 被外部杀）时清空句柄，
     // 否则 spawnCaffeinate 的 `!== null` 守卫会永久挡住后续重启。
-    void proc.exited.then(() => {
-      if (caffeinateProc === proc) caffeinateProc = null;
-    }).catch(() => {
-      if (caffeinateProc === proc) caffeinateProc = null;
-    });
+    void proc.exited
+      .then(() => {
+        if (caffeinateProc === proc) caffeinateProc = null;
+      })
+      .catch(() => {
+        if (caffeinateProc === proc) caffeinateProc = null;
+      });
     getLogger().debug?.("PREVENT_SLEEP", "已启动 caffeinate -i，任务期间阻止空闲休眠");
   } catch {
     // caffeinate 不存在 / spawn 失败 → 静默降级。

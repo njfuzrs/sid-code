@@ -99,7 +99,11 @@ export function loadRuns(statePath: string = STATE_PATH): AnchorRunRecord[] {
     if (!t) continue;
     try {
       const obj = JSON.parse(t) as AnchorRunRecord;
-      if (obj && typeof obj.run_at === "string" && (obj.track === "execution" || obj.track === "report")) {
+      if (
+        obj &&
+        typeof obj.run_at === "string" &&
+        (obj.track === "execution" || obj.track === "report")
+      ) {
         out.push(obj);
       }
     } catch {
@@ -109,10 +113,7 @@ export function loadRuns(statePath: string = STATE_PATH): AnchorRunRecord[] {
   return out;
 }
 
-export function recordRun(
-  rec: AnchorRunRecord,
-  statePath: string = STATE_PATH,
-): void {
+export function recordRun(rec: AnchorRunRecord, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   appendFileSync(statePath, JSON.stringify(rec) + "\n", "utf-8");
 }
@@ -171,8 +172,18 @@ function renderReport(rep: AnchorReport): string {
   const lines: string[] = [];
   lines.push("[external-anchor-due] 状态：" + rep.status.toUpperCase());
   lines.push(`  窗口      = ${rep.window_days} 天（cutoff = ${rep.cutoff_iso}）`);
-  lines.push(`  execution 轨命中 ${rep.execution_count} 次` + (rep.most_recent_execution ? `（最近 ${rep.most_recent_execution.run_at} / subset=${rep.most_recent_execution.subset}）` : ""));
-  lines.push(`  report 轨命中 ${rep.report_count} 次` + (rep.most_recent_report ? `（最近 ${rep.most_recent_report.run_at} / subset=${rep.most_recent_report.subset}）` : ""));
+  lines.push(
+    `  execution 轨命中 ${rep.execution_count} 次` +
+      (rep.most_recent_execution
+        ? `（最近 ${rep.most_recent_execution.run_at} / subset=${rep.most_recent_execution.subset}）`
+        : ""),
+  );
+  lines.push(
+    `  report 轨命中 ${rep.report_count} 次` +
+      (rep.most_recent_report
+        ? `（最近 ${rep.most_recent_report.run_at} / subset=${rep.most_recent_report.subset}）`
+        : ""),
+  );
   if (rep.missing_tracks.length > 0) {
     lines.push(`  缺失轨    = ${rep.missing_tracks.join(", ")}`);
   }
@@ -192,7 +203,9 @@ function main(argv: string[]): number {
 
   if (args.mode === "record") {
     if (!args.track || !args.subset) {
-      console.error("[external-anchor] usage: --record --track <execution|report> --subset <name> [--summary <path>] [--sprint <S?>]");
+      console.error(
+        "[external-anchor] usage: --record --track <execution|report> --subset <name> [--summary <path>] [--sprint <S?>]",
+      );
       return 2;
     }
     if (args.track !== "execution" && args.track !== "report") {

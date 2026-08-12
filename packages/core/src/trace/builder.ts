@@ -146,7 +146,13 @@ export interface TraceMetadata {
   files_edited: Set<string>;
   user_prompts: string[];
   compactions: Array<{ trigger: string; timestamp: string }>;
-  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string; description?: string }>;
+  subagent_spans: Array<{
+    agent_id: string;
+    agent_type: string;
+    start: string;
+    end?: string;
+    description?: string;
+  }>;
   has_thinking: boolean;
   has_sub_agent: boolean;
   total_tokens_sent: number;
@@ -412,7 +418,13 @@ export interface TrajectoryMetaOutput {
   has_sub_agent: boolean;
   user_prompts: string[];
   compactions: Array<{ trigger: string; timestamp: string }>;
-  subagent_spans: Array<{ agent_id: string; agent_type: string; start: string; end?: string; description?: string }>;
+  subagent_spans: Array<{
+    agent_id: string;
+    agent_type: string;
+    start: string;
+    end?: string;
+    description?: string;
+  }>;
   tool_source: "sid-code";
   start_source?: string;
   end_source?: string;
@@ -521,10 +533,10 @@ function findToolResult(
     // 内存优化：collector 会剥离旧 pair 的 raw_messages（O(N²) 驻留），此时回退到
     // new_messages。tool_result 恒出现在 tool_use 之后一轮的 user turn → 落在下一个
     // pair 的 new_messages（增量）里，故增量足以覆盖 maxLookahead 窗口内的查找。
-    const messages = (pair.request.raw_messages
-      ?? pair.request.new_messages
-      ?? pair.request.messages
-      ?? []) as Array<Record<string, unknown>>;
+    const messages = (pair.request.raw_messages ??
+      pair.request.new_messages ??
+      pair.request.messages ??
+      []) as Array<Record<string, unknown>>;
 
     for (const msg of messages) {
       if (msg.role !== "user") continue;
@@ -599,8 +611,7 @@ export function buildTrajectory(
   const history: HistoryEntry[] = [];
 
   // ─── 提取 system prompt ───
-  const systemPrompt = metadata.system_prompt
-    ?? extractSystemPromptText(pairs[0]?.request.system);
+  const systemPrompt = metadata.system_prompt ?? extractSystemPromptText(pairs[0]?.request.system);
   const claudeMdHash = systemPrompt ? md5(systemPrompt) : undefined;
 
   // ─── 写入 history 的 system 消息 ───
@@ -615,7 +626,9 @@ export function buildTrajectory(
   // ─── 写入首次请求的 user messages ───
   if (pairs.length > 0) {
     const firstPair = pairs[0];
-    const firstMessages = (firstPair.request.raw_messages ?? firstPair.request.messages ?? []) as Array<Record<string, unknown>>;
+    const firstMessages = (firstPair.request.raw_messages ??
+      firstPair.request.messages ??
+      []) as Array<Record<string, unknown>>;
     for (const msg of firstMessages) {
       if (msg.role === "user") {
         history.push({
@@ -653,7 +666,12 @@ export function buildTrajectory(
         thought: "",
         thinking_blocks: null,
         tool_calls: [],
-        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
         stop_reason: "interrupted",
         timestamp: pair.timestamp,
       } as AssistantHistoryEntry);
@@ -668,10 +686,10 @@ export function buildTrajectory(
     const fullContent = extractFullContent(contentBlocks, thinkingBlocks);
 
     // 提取 tool_use blocks
-    const toolUseBlocks = contentBlocks.filter(b => b.type === "tool_use");
+    const toolUseBlocks = contentBlocks.filter((b) => b.type === "tool_use");
 
     // ─── 构建 history：assistant 消息 ───
-    const toolCalls = toolUseBlocks.map(b => ({
+    const toolCalls = toolUseBlocks.map((b) => ({
       function: {
         name: b.name as string,
         arguments: JSON.stringify(b.input ?? {}),
@@ -706,8 +724,8 @@ export function buildTrajectory(
       // 只在第一个 tool_use 中关联 thought，避免多工具调用时重复
       for (let ti = 0; ti < toolUseBlocks.length; ti++) {
         const tb = toolUseBlocks[ti];
-        const toolUseId = tb.tool_use_id as string ?? tb.id as string ?? "";
-        const toolName = tb.name as string ?? "";
+        const toolUseId = (tb.tool_use_id as string) ?? (tb.id as string) ?? "";
+        const toolName = (tb.name as string) ?? "";
         const toolInput = (tb.input ?? {}) as Record<string, unknown>;
         const inputStr = JSON.stringify(toolInput);
 
@@ -744,12 +762,14 @@ export function buildTrajectory(
           // 找到对应的 tool_result block 插入 history
           history.push({
             role: "user",
-            content: [{
-              type: "tool_result",
-              tool_use_id: toolUseId,
-              content: toolResultInfo.content,
-              is_error: toolResultInfo.is_error,
-            }],
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolUseId,
+                content: toolResultInfo.content,
+                is_error: toolResultInfo.is_error,
+              },
+            ],
             message_type: "observation",
             agent: "primary",
             tool_call_ids: [toolUseId],
@@ -797,7 +817,7 @@ export function buildTrajectory(
           // 过滤掉 tool_result 类型（已经由 findToolResult 路径处理）
           if (Array.isArray(content)) {
             const nonToolResultBlocks = (content as Array<Record<string, unknown>>).filter(
-              b => b.type !== "tool_result"
+              (b) => b.type !== "tool_result",
             );
             if (nonToolResultBlocks.length > 0) {
               history.push({
@@ -838,8 +858,9 @@ export function buildTrajectory(
   }
 
   // 推断 exit_status
-  const exitStatus = metadata.exit_status
-    ?? (pairs.length > 0 && pairs[pairs.length - 1].stop_reason === "end_turn"
+  const exitStatus =
+    metadata.exit_status ??
+    (pairs.length > 0 && pairs[pairs.length - 1].stop_reason === "end_turn"
       ? "end_turn"
       : "unknown");
 
@@ -879,21 +900,38 @@ export function buildTrajectory(
     total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
     total_cost_usd: metadata.total_cost_usd,
     // 缺口分析补全：派生/采集类指标（仅在有值时输出，避免污染旧 traj 的解析预期）
-    ...(metadata.total_reasoning_tokens ? { total_reasoning_tokens: metadata.total_reasoning_tokens } : {}),
-    ...(metadata.output_tokens_per_sec !== undefined ? { output_tokens_per_sec: metadata.output_tokens_per_sec } : {}),
-    ...(metadata.total_gen_elapsed_ms ? { total_gen_elapsed_ms: metadata.total_gen_elapsed_ms } : {}),
-    ...(metadata.total_tool_duration_ms ? { total_tool_duration_ms: metadata.total_tool_duration_ms } : {}),
-    ...(metadata.tool_duration_samples ? { tool_duration_samples: metadata.tool_duration_samples } : {}),
-    ...(metadata.context_usage_peak_ratio !== undefined ? {
-      context_usage_peak_ratio: metadata.context_usage_peak_ratio,
-      context_usage_peak_tokens: metadata.context_usage_peak_tokens,
-    } : {}),
+    ...(metadata.total_reasoning_tokens
+      ? { total_reasoning_tokens: metadata.total_reasoning_tokens }
+      : {}),
+    ...(metadata.output_tokens_per_sec !== undefined
+      ? { output_tokens_per_sec: metadata.output_tokens_per_sec }
+      : {}),
+    ...(metadata.total_gen_elapsed_ms
+      ? { total_gen_elapsed_ms: metadata.total_gen_elapsed_ms }
+      : {}),
+    ...(metadata.total_tool_duration_ms
+      ? { total_tool_duration_ms: metadata.total_tool_duration_ms }
+      : {}),
+    ...(metadata.tool_duration_samples
+      ? { tool_duration_samples: metadata.tool_duration_samples }
+      : {}),
+    ...(metadata.context_usage_peak_ratio !== undefined
+      ? {
+          context_usage_peak_ratio: metadata.context_usage_peak_ratio,
+          context_usage_peak_tokens: metadata.context_usage_peak_tokens,
+        }
+      : {}),
     ...(metadata.context_usage_trend && metadata.context_usage_trend.length > 0
-      ? { context_usage_trend: metadata.context_usage_trend } : {}),
+      ? { context_usage_trend: metadata.context_usage_trend }
+      : {}),
     ...(metadata.discarded_streams ? { discarded_streams: metadata.discarded_streams } : {}),
     ...(metadata.model_retry_count ? { model_retry_count: metadata.model_retry_count } : {}),
-    ...(metadata.output_input_ratio !== undefined ? { output_input_ratio: metadata.output_input_ratio } : {}),
-    ...(metadata.session_cache_hit_rate !== undefined ? { session_cache_hit_rate: metadata.session_cache_hit_rate } : {}),
+    ...(metadata.output_input_ratio !== undefined
+      ? { output_input_ratio: metadata.output_input_ratio }
+      : {}),
+    ...(metadata.session_cache_hit_rate !== undefined
+      ? { session_cache_hit_rate: metadata.session_cache_hit_rate }
+      : {}),
     exit_status: exitStatus,
     tools_used: Array.from(metadata.tools_used),
     files_edited: Array.from(metadata.files_edited),
@@ -912,12 +950,14 @@ export function buildTrajectory(
     ...(metadata.harness ? { harness: metadata.harness } : {}),
     ...(metadata.last_known_state ? { last_known_state: metadata.last_known_state } : {}),
     // 辅助 LLM 调用统计（仅在有值时输出，避免污染历史 traj 解析）
-    ...(metadata.side_api_calls ? {
-      side_api_calls: metadata.side_api_calls,
-      side_cost_usd: metadata.side_cost_usd,
-      side_tokens_sent: metadata.side_tokens_sent,
-      side_tokens_received: metadata.side_tokens_received,
-    } : {}),
+    ...(metadata.side_api_calls
+      ? {
+          side_api_calls: metadata.side_api_calls,
+          side_cost_usd: metadata.side_cost_usd,
+          side_tokens_sent: metadata.side_tokens_sent,
+          side_tokens_received: metadata.side_tokens_received,
+        }
+      : {}),
   };
 
   return {

@@ -83,8 +83,7 @@ export class TrajectoryMatchGrader implements Grader {
     const stepWarning = computeStepWarning(totalSteps, spec);
 
     // ─── 综合分（仅诊断） ────────────────────────────
-    const diagnosticScore =
-      milestoneMatch.score * 0.6 + toolMatch.score * 0.4;
+    const diagnosticScore = milestoneMatch.score * 0.6 + toolMatch.score * 0.4;
 
     const reasonParts: string[] = [
       `milestone 命中 ${milestoneMatch.hitCount}/${spec.milestones.length} = ${milestoneMatch.score.toFixed(2)}`,

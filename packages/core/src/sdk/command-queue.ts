@@ -84,10 +84,7 @@ export class CommandQueue {
   }
 
   /** 判断 next 是否可与 head 批量合并 */
-  private canBatchWith(
-    head: QueuedCommand,
-    next: QueuedCommand | undefined,
-  ): boolean {
+  private canBatchWith(head: QueuedCommand, next: QueuedCommand | undefined): boolean {
     return (
       next !== undefined &&
       next.mode === "prompt" &&

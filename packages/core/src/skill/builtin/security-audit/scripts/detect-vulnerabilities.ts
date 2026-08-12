@@ -121,7 +121,8 @@ const PATTERNS: DetectorPattern[] = [
     cwe: "CWE-798",
     owasp: "A07:2021",
     pattern_id: "hardcoded_api_key",
-    match: /(?:api[_-]?key|api[_-]?token|secret[_-]?key)\s*[:=]\s*['"](?!process\.env|<TODO|\$\{)[A-Za-z0-9]{16,}['"]/i,
+    match:
+      /(?:api[_-]?key|api[_-]?token|secret[_-]?key)\s*[:=]\s*['"](?!process\.env|<TODO|\$\{)[A-Za-z0-9]{16,}['"]/i,
   },
 
   // xss
@@ -316,7 +317,9 @@ async function main() {
   } else {
     diff = await new Promise<string>((resolve) => {
       const chunks: Buffer[] = [];
-      process.stdin.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c as string)));
+      process.stdin.on("data", (c) =>
+        chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c as string)),
+      );
       process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     });
   }

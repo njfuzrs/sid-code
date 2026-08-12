@@ -61,7 +61,7 @@ sid-code 是一个**在你本机上读写文件、执行 shell 命令、访问�
 这些是我们**已经知道且已公开记录**的问题，不需要重复上报
 （但如果你发现我们低估了影响，欢迎指出）：
 
-- **`src/ink/` 含未获授权的第三方代码**。这是版权/合规问题而非技术漏洞，
+- **`packages/tui-renderer/src/`（分包前的 `src/ink/`）含未获授权的第三方代码**。这是版权/合规问题而非技术漏洞，
   已在 [NOTICE](./NOTICE) 第 1 节如实披露，正在重构移除。
 - **`src/command/commands/claude-api/reference/` 下两份入库的 Anthropic API 参考资料
   许可未确认**（[NOTICE](./NOTICE) 第 5 节）。

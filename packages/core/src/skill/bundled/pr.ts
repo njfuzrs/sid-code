@@ -68,8 +68,7 @@ export function registerPrSkill(): void {
   registerBundledSkill({
     name: "pr",
     description: "分析当前分支的 commit 与 diff，生成 PR 标题与结构化描述",
-    whenToUse:
-      "当用户说 '生成 PR 描述'、'写个 PR'、'pr description'、'总结这个分支的改动发 PR' 时",
+    whenToUse: "当用户说 '生成 PR 描述'、'写个 PR'、'pr description'、'总结这个分支的改动发 PR' 时",
     argumentHint: "[基线分支或额外要求]",
     // inline 模式下以下白名单不生效，仅作意图声明（见 commit.ts 头注释）
     allowedTools: ["bash", "read", "grep", "glob"],

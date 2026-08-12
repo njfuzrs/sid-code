@@ -153,12 +153,15 @@ export class TokenMeter {
    * 纯计算缓存节省金额，不记录数据
    * 供 loop.ts 在 fireAfterModelEvent 前调用（Step 5 清理时使用）
    */
-  calculateCacheSavings(model: string, usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens?: number;
-    cacheCreationInputTokens?: number;
-  }): number {
+  calculateCacheSavings(
+    model: string,
+    usage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens?: number;
+      cacheCreationInputTokens?: number;
+    },
+  ): number {
     const noCacheUsage: Usage = {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

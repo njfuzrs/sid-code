@@ -3,7 +3,12 @@
  * 自动创建目录，覆盖已存在的文件
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { dirname, basename } from "path";
 import { mkdirSync, existsSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
@@ -74,7 +79,9 @@ export class WriteTool implements Tool {
       const expanded = normalizeToolPath(filePath);
       if (expanded === filePath) return undefined; // 已是绝对路径，无需回填
       return { ...(input as any), file_path: expanded };
-    } catch { return undefined; }
+    } catch {
+      return undefined;
+    }
   }
 
   /** 工具级权限检查：敏感文件路径要求确认，其余 passthrough */
@@ -84,7 +91,12 @@ export class WriteTool implements Tool {
       return { behavior: "passthrough" };
     }
     const name = basename(filePath);
-    if (name.startsWith(".env") || name === "credentials.json" || name.endsWith(".pem") || name.endsWith(".key")) {
+    if (
+      name.startsWith(".env") ||
+      name === "credentials.json" ||
+      name.endsWith(".pem") ||
+      name.endsWith(".key")
+    ) {
       return { behavior: "ask", message: `写入敏感文件需要确认: ${filePath}` };
     }
     return { behavior: "passthrough" };
@@ -127,9 +139,13 @@ export class WriteTool implements Tool {
     }
 
     // 省略占位符检测（文档文件跳过易误伤规则；Python 源码放行合法 `...` Ellipsis）
-    const omissions = detectOmissionPlaceholders(params.content, isDocumentFile(filePath), isPythonFile(filePath));
+    const omissions = detectOmissionPlaceholders(
+      params.content,
+      isDocumentFile(filePath),
+      isPythonFile(filePath),
+    );
     if (omissions.length > 0) {
-      const details = omissions.map(m => `  行 ${m.line}: ${m.text}`).join("\n");
+      const details = omissions.map((m) => `  行 ${m.line}: ${m.text}`).join("\n");
       return {
         output: `错误: 检测到省略占位符，请提供完整代码而非省略标记:\n${details}\n\n请重新生成完整的文件内容。`,
         isError: true,

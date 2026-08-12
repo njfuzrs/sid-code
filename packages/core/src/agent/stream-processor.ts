@@ -75,9 +75,7 @@ export async function processStream(
 ): Promise<StreamProcessResult> {
   // 兼容旧签名：第二参为 AbortSignal 时归一化为 options
   const options: AgentStreamOptions =
-    signalOrOptions instanceof AbortSignal
-      ? { signal: signalOrOptions }
-      : (signalOrOptions ?? {});
+    signalOrOptions instanceof AbortSignal ? { signal: signalOrOptions } : (signalOrOptions ?? {});
   const signal = options.signal;
 
   const content: ContentBlock[] = [];
@@ -94,8 +92,7 @@ export async function processStream(
   // 「等首个事件」这段等待是网关鉴权 + 排队 + 模型冷启动，实测可达 50-60s，而子代理
   // idle 档默认仅 60s（BASE*0.2）——用 idle 阈值卡它会把正常排队误杀成流卡死。
   // 默认取 headerTimeoutMs（300s，与主循环同源），可经 options 覆盖。
-  const FIRST_BYTE_TIMEOUT =
-    options.firstByteTimeoutMs ?? resolveHeaderTimeoutMs();
+  const FIRST_BYTE_TIMEOUT = options.firstByteTimeoutMs ?? resolveHeaderTimeoutMs();
   let timeoutError: Error | null = null;
 
   const lifecycle = createStreamLifecycle<StreamEvent>({
@@ -148,102 +145,102 @@ export async function processStream(
       }
 
       switch (event.type) {
-      case "message_start":
-        accumulateUsage(usage, event.message.usage);
-        break;
+        case "message_start":
+          accumulateUsage(usage, event.message.usage);
+          break;
 
-      // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
-      //
-      // 子代理路径的错乱形态与主循环**不同但同源**：这里用 `content[event.index]`
-      // 直接按 index 落位（不是 push + 映射表），重开后 index 从 0 重新开始，低位块
-      // 会被覆盖，但**上一次尝试的高位块原样残留**——拼出「新响应 + 旧尾巴」。
-      // 主循环是「旧头 + 新响应」，子代理是「新头 + 旧尾」，都必须清。
-      //
-      // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
-      case "stream_restart": {
-        const outcome = resetOnStreamRestart({ content, jsonAccumulators });
-        if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
-          getLogger().warn("AGENT_STREAM", describeStreamRestart(event, outcome));
-        }
-        break;
-      }
-
-      case "content_block_start":
-        if (event.content_block.type === "text") {
-          content[event.index] = { type: "text", text: "" };
-        } else if (event.content_block.type === "tool_use") {
-          content[event.index] = {
-            type: "tool_use",
-            id: event.content_block.id,
-            name: event.content_block.name,
-            input: {},
-          };
-          jsonAccumulators.set(event.index, "");
-        }
-        break;
-
-      case "content_block_delta": {
-        const delta = event.delta;
-        if (delta.type === "text_delta") {
-          const block = content[event.index];
-          if (block?.type === "text") {
-            block.text += delta.text;
+        // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
+        //
+        // 子代理路径的错乱形态与主循环**不同但同源**：这里用 `content[event.index]`
+        // 直接按 index 落位（不是 push + 映射表），重开后 index 从 0 重新开始，低位块
+        // 会被覆盖，但**上一次尝试的高位块原样残留**——拼出「新响应 + 旧尾巴」。
+        // 主循环是「旧头 + 新响应」，子代理是「新头 + 旧尾」，都必须清。
+        //
+        // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
+        case "stream_restart": {
+          const outcome = resetOnStreamRestart({ content, jsonAccumulators });
+          if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
+            getLogger().warn("AGENT_STREAM", describeStreamRestart(event, outcome));
           }
-        } else if (delta.type === "input_json_delta") {
-          const acc = jsonAccumulators.get(event.index) ?? "";
-          jsonAccumulators.set(event.index, acc + delta.partial_json);
+          break;
         }
-        break;
-      }
 
-      case "content_block_stop": {
-        const jsonStr = jsonAccumulators.get(event.index);
-        if (jsonStr !== undefined) {
-          const block = content[event.index];
-          if (block?.type === "tool_use") {
-            // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
-            try {
-              block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
-            } catch (e) {
-              // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
-              getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
-                toolName: block.name,
-                inputLength: jsonStr.length,
-                error: e instanceof Error ? e.message : String(e),
-                inputHead: jsonStr.slice(0, 200),
-              });
-              block.input = {};
+        case "content_block_start":
+          if (event.content_block.type === "text") {
+            content[event.index] = { type: "text", text: "" };
+          } else if (event.content_block.type === "tool_use") {
+            content[event.index] = {
+              type: "tool_use",
+              id: event.content_block.id,
+              name: event.content_block.name,
+              input: {},
+            };
+            jsonAccumulators.set(event.index, "");
+          }
+          break;
+
+        case "content_block_delta": {
+          const delta = event.delta;
+          if (delta.type === "text_delta") {
+            const block = content[event.index];
+            if (block?.type === "text") {
+              block.text += delta.text;
             }
+          } else if (delta.type === "input_json_delta") {
+            const acc = jsonAccumulators.get(event.index) ?? "";
+            jsonAccumulators.set(event.index, acc + delta.partial_json);
           }
-          jsonAccumulators.delete(event.index);
+          break;
         }
-        break;
-      }
 
-      case "message_delta":
-        stopReason = event.delta.stop_reason;
-        // 统一走 accumulateUsage：补齐此前丢弃的 inputTokens 与 cacheRead/cacheCreation 字段
-        // （子代理路径原先只加 outputTokens → 接入计费后会按全价计 + input 计 0）
-        accumulateUsage(usage, event.usage);
-        break;
+        case "content_block_stop": {
+          const jsonStr = jsonAccumulators.get(event.index);
+          if (jsonStr !== undefined) {
+            const block = content[event.index];
+            if (block?.type === "tool_use") {
+              // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
+              try {
+                block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
+              } catch (e) {
+                // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+                getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
+                  toolName: block.name,
+                  inputLength: jsonStr.length,
+                  error: e instanceof Error ? e.message : String(e),
+                  inputHead: jsonStr.slice(0, 200),
+                });
+                block.input = {};
+              }
+            }
+            jsonAccumulators.delete(event.index);
+          }
+          break;
+        }
 
-      case "error":
-        return {
-          content,
-          stopReason: "error",
-          usage,
-          errorMessage: `LLM 错误: ${event.error.message}`,
-          // R1：结构化字段原样带出，供调用方走 classifyStreamError 精确判定（见 errorMeta 注释）
-          errorMeta: {
-            type: event.error.type,
-            statusCode: event.error.statusCode,
-            streamLevel: event.error.streamLevel,
-          },
-        };
+        case "message_delta":
+          stopReason = event.delta.stop_reason;
+          // 统一走 accumulateUsage：补齐此前丢弃的 inputTokens 与 cacheRead/cacheCreation 字段
+          // （子代理路径原先只加 outputTokens → 接入计费后会按全价计 + input 计 0）
+          accumulateUsage(usage, event.usage);
+          break;
 
-      case "system_api_error":
-        // 子代理上下文无 TUI 渲染，静默忽略重试进度事件
-        break;
+        case "error":
+          return {
+            content,
+            stopReason: "error",
+            usage,
+            errorMessage: `LLM 错误: ${event.error.message}`,
+            // R1：结构化字段原样带出，供调用方走 classifyStreamError 精确判定（见 errorMeta 注释）
+            errorMeta: {
+              type: event.error.type,
+              statusCode: event.error.statusCode,
+              streamLevel: event.error.streamLevel,
+            },
+          };
+
+        case "system_api_error":
+          // 子代理上下文无 TUI 渲染，静默忽略重试进度事件
+          break;
       }
     }
   } finally {

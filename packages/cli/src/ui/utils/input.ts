@@ -7,7 +7,7 @@
  * 参考 gemini-cli/packages/cli/src/ui/utils/input.ts
  */
 
-export const ESC = '\u001B';
+export const ESC = "\u001B";
 export const SGR_EVENT_PREFIX = `${ESC}[<`;
 export const X11_EVENT_PREFIX = `${ESC}[M`;
 

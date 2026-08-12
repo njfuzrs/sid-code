@@ -8,16 +8,16 @@ import { getLogger } from "../debug/logger.ts";
 
 /** 可控制的功能列表 */
 export type PolicyFeature =
-  | "mcp"                    // MCP 服务器
-  | "sub_agent"              // 子代理
-  | "custom_commands"        // 自定义斜杠命令
-  | "hooks"                  // Hook 系统
-  | "bypass_permissions"     // always-allow 模式
-  | "auto_mode"              // 自动模式（dontAsk）
-  | "extensions"             // 扩展/技能
-  | "file_upload"            // 文件上传
-  | "network_access"         // 网络访问
-  | "sandbox_bypass";        // 绕过沙箱
+  | "mcp" // MCP 服务器
+  | "sub_agent" // 子代理
+  | "custom_commands" // 自定义斜杠命令
+  | "hooks" // Hook 系统
+  | "bypass_permissions" // always-allow 模式
+  | "auto_mode" // 自动模式（dontAsk）
+  | "extensions" // 扩展/技能
+  | "file_upload" // 文件上传
+  | "network_access" // 网络访问
+  | "sandbox_bypass"; // 绕过沙箱
 
 /** 功能开关状态 */
 export interface PolicyLimitsState {
@@ -28,7 +28,9 @@ export interface PolicyLimitsState {
 let globalPolicyLimits: PolicyLimitsState = { limits: {} };
 
 /** 设置全局策略限制（从 PolicyManager 加载后调用） */
-export function setPolicyLimits(limits: Record<string, { allowed: boolean; reason?: string }>): void {
+export function setPolicyLimits(
+  limits: Record<string, { allowed: boolean; reason?: string }>,
+): void {
   globalPolicyLimits = { limits };
   const log = getLogger();
   const disabled = Object.entries(limits)

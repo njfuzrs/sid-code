@@ -91,7 +91,11 @@ interface RuleMatch {
  *
  * @param pathCtx 文件路径类工具（read/write/edit）的前缀解析上下文；不传则退化为 cwd/home 默认
  */
-export function matchRule(rule: string, req: PermissionRequest, pathCtx?: PathRuleContext): boolean {
+export function matchRule(
+  rule: string,
+  req: PermissionRequest,
+  pathCtx?: PathRuleContext,
+): boolean {
   const match = rule.match(/^([*\w]+)(?:\(([^)]+)\))?$/);
   if (!match) return false;
 

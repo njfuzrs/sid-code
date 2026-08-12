@@ -23,13 +23,22 @@ export class MessageDataStore extends EventEmitter {
   }
 
   // 类型安全的 emit/on/off 重载
-  override emit<K extends keyof MessageStoreEvents>(event: K, ...args: MessageStoreEvents[K]): boolean {
+  override emit<K extends keyof MessageStoreEvents>(
+    event: K,
+    ...args: MessageStoreEvents[K]
+  ): boolean {
     return super.emit(event, ...args);
   }
-  override on<K extends keyof MessageStoreEvents>(event: K, listener: (...args: MessageStoreEvents[K]) => void): this {
+  override on<K extends keyof MessageStoreEvents>(
+    event: K,
+    listener: (...args: MessageStoreEvents[K]) => void,
+  ): this {
     return super.on(event, listener as (...args: any[]) => void);
   }
-  override off<K extends keyof MessageStoreEvents>(event: K, listener: (...args: MessageStoreEvents[K]) => void): this {
+  override off<K extends keyof MessageStoreEvents>(
+    event: K,
+    listener: (...args: MessageStoreEvents[K]) => void,
+  ): this {
     return super.off(event, listener as (...args: any[]) => void);
   }
 

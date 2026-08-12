@@ -159,7 +159,9 @@ export function initExtractMemories(ctx: ExtractContext): ExtractMemoriesHandle 
       }
       pending = runExtraction()
         .catch((err) => log.debug("EXTRACT", `后台提取失败: ${err.message}`))
-        .finally(() => { pending = null; });
+        .finally(() => {
+          pending = null;
+        });
       // fire-and-forget：不 await
     },
 

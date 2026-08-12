@@ -61,10 +61,7 @@ export async function getAgentIndexContent(agentType: string): Promise<string | 
  * @param indexContent 该类型 MEMORY.md 索引内容（为 null / 空时返回空串）
  * @returns 可直接追加到子代理系统提示词的片段；无记忆时返回空串
  */
-export function buildAgentMemorySection(
-  agentType: string,
-  indexContent: string | null,
-): string {
+export function buildAgentMemorySection(agentType: string, indexContent: string | null): string {
   if (!indexContent || !indexContent.trim()) return "";
   return `<system-reminder>
 ### ${agentType} 类型的历史积累记忆（跨会话）
@@ -105,13 +102,17 @@ interface AgentMemoryEntry {
 function inferAgentMemoryType(key: string, value: string): MemoryType {
   const hay = `${key} ${value}`.toLowerCase();
   if (/(http|url|dashboard|ticket|jira|链接|地址|文档|wiki)/.test(hay)) return "reference";
-  if (/(偏好|喜欢|不要|always|prefer|纠正|反馈|以后都|风格|约定|坑|注意)/.test(hay)) return "feedback";
+  if (/(偏好|喜欢|不要|always|prefer|纠正|反馈|以后都|风格|约定|坑|注意)/.test(hay))
+    return "feedback";
   if (/(用户|我是|角色|工程师|expert|新手|背景|profile)/.test(hay)) return "user";
   return "project";
 }
 
 /** 从记忆 .md 文件正文解析出 description / type / name（供重建索引） */
-function parseAgentMemoryHead(text: string, filename: string): { key: string; description: string; type: MemoryType } {
+function parseAgentMemoryHead(
+  text: string,
+  filename: string,
+): { key: string; description: string; type: MemoryType } {
   const m = text.match(AGENT_FRONTMATTER_RE);
   let name: string | undefined;
   let description = "";
@@ -259,7 +260,14 @@ export async function saveAgentMemory(
     }
   }
 
-  const entry: AgentMemoryEntry = { key: cleanKey, value: cleanValue, description, type, updatedAt: now, filename };
+  const entry: AgentMemoryEntry = {
+    key: cleanKey,
+    value: cleanValue,
+    description,
+    type,
+    updatedAt: now,
+    filename,
+  };
   await Bun.write(filePath, serializeAgentMemoryFile(entry, createdAt));
   await rebuildAgentIndex(dir);
   log.info("MEMORY", `✓ agent 记忆已保存 [${agentType}] ${cleanKey}`);

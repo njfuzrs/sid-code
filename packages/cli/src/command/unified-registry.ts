@@ -84,11 +84,7 @@ export class UnifiedCommandRegistry {
     ]);
 
     // 顺序即优先级：自定义 > Skills > 内置
-    const merged = this.dedupe([
-      ...customCommands,
-      ...skills,
-      ...builtinCommands,
-    ]);
+    const merged = this.dedupe([...customCommands, ...skills, ...builtinCommands]);
 
     this.cache.set(cwd, merged);
     log.info("COMMAND", `统一注册表加载完成: ${merged.length} 个命令`, {
@@ -106,16 +102,11 @@ export class UnifiedCommandRegistry {
    * - isEnabled() 可能依赖运行时状态（如 feature flag）
    * - MCP 命令是动态的（服务器可能连接/断开）
    */
-  async getCommands(
-    cwd: string,
-    mcpCommands?: UnifiedCommand[],
-  ): Promise<UnifiedCommand[]> {
+  async getCommands(cwd: string, mcpCommands?: UnifiedCommand[]): Promise<UnifiedCommand[]> {
     const allCommands = await this.loadAllCommands(cwd);
 
     // 过滤：只保留当前启用的命令
-    const filtered = allCommands.filter((cmd) =>
-      cmd.isEnabled ? cmd.isEnabled() : true,
-    );
+    const filtered = allCommands.filter((cmd) => (cmd.isEnabled ? cmd.isEnabled() : true));
 
     // 合并插件命令（动态来源，去重；pluginName: 前缀天然不与内置/自定义冲突）
     const existingNames = new Set(filtered.map((c) => c.name));
@@ -144,10 +135,7 @@ export class UnifiedCommandRegistry {
    */
   async loadPlugins(): Promise<number> {
     this.pluginCommands = await loadPluginCommands();
-    getLogger().info(
-      "COMMAND",
-      `插件命令加载完成: ${this.pluginCommands.length} 个`,
-    );
+    getLogger().info("COMMAND", `插件命令加载完成: ${this.pluginCommands.length} 个`);
     return this.pluginCommands.length;
   }
 
@@ -160,18 +148,12 @@ export class UnifiedCommandRegistry {
    */
   async reloadPlugins(): Promise<number> {
     this.pluginCommands = await loadPluginCommands();
-    getLogger().info(
-      "COMMAND",
-      `插件命令已重新加载: ${this.pluginCommands.length} 个`,
-    );
+    getLogger().info("COMMAND", `插件命令已重新加载: ${this.pluginCommands.length} 个`);
     return this.pluginCommands.length;
   }
 
   /** 按名称或别名查找命令（精确名称优先，其次别名） */
-  findCommand(
-    name: string,
-    commands: UnifiedCommand[],
-  ): UnifiedCommand | undefined {
+  findCommand(name: string, commands: UnifiedCommand[]): UnifiedCommand | undefined {
     const exact = commands.find((c) => c.name === name);
     if (exact) return exact;
     return commands.find((c) => c.aliases?.includes(name));

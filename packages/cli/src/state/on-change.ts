@@ -41,7 +41,7 @@ export function onChangeAppState({
 
   // MCP 连接状态变更 → 日志
   if (newState.mcpConnections !== oldState.mcpConnections) {
-    const connected = newState.mcpConnections.filter(c => c.status === "connected").length;
+    const connected = newState.mcpConnections.filter((c) => c.status === "connected").length;
     const total = newState.mcpConnections.length;
     log.debug("STATE", `MCP 连接: ${connected}/${total}`);
   }

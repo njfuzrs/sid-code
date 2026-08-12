@@ -160,9 +160,7 @@ export class LSPServerManager {
 
   /** 关闭所有服务器 */
   async shutdown(): Promise<void> {
-    await Promise.all(
-      Array.from(this.servers.values()).map((s) => s.stop().catch(() => {})),
-    );
+    await Promise.all(Array.from(this.servers.values()).map((s) => s.stop().catch(() => {})));
     this.servers.clear();
     this.extensionRoutes.clear();
     this.openFiles.clear();

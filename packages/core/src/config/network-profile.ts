@@ -231,14 +231,13 @@ export function resolveProviderStreamTimeouts(opts?: {
       ? "SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS"
       : "SID_CODE_OPENAI_OVERALL_TIMEOUT_MS";
   return {
-    idleTimeoutMs:
-      readEnvMs("SID_CODE_IDLE_TIMEOUT_MS") ?? PROVIDER_STREAM_DEFAULTS.idleTimeoutMs,
+    idleTimeoutMs: readEnvMs("SID_CODE_IDLE_TIMEOUT_MS") ?? PROVIDER_STREAM_DEFAULTS.idleTimeoutMs,
     contentProgressTimeoutMs:
       readEnvMs(contentProgressEnv) ?? PROVIDER_STREAM_DEFAULTS.contentProgressTimeoutMs,
     fetchAbsoluteTimeoutMs:
-      readEnvMs("SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS") ?? PROVIDER_STREAM_DEFAULTS.fetchAbsoluteTimeoutMs,
-    overallTimeoutMs:
-      readEnvMs(overallEnv) ?? PROVIDER_STREAM_DEFAULTS.overallTimeoutMs,
+      readEnvMs("SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS") ??
+      PROVIDER_STREAM_DEFAULTS.fetchAbsoluteTimeoutMs,
+    overallTimeoutMs: readEnvMs(overallEnv) ?? PROVIDER_STREAM_DEFAULTS.overallTimeoutMs,
   };
 }
 
@@ -260,27 +259,47 @@ export function resolveLoopTimeouts(input: LoopTimeoutInputs): ResolvedLoopTimeo
   const n = input.network;
   return {
     headerTimeoutMs:
-      readEnvMs("SID_CODE_RESPONSE_HEADER_TIMEOUT_MS") ?? n?.headerTimeoutMs ?? DEFAULTS.headerTimeoutMs,
+      readEnvMs("SID_CODE_RESPONSE_HEADER_TIMEOUT_MS") ??
+      n?.headerTimeoutMs ??
+      DEFAULTS.headerTimeoutMs,
     watchdogCheckIntervalMs:
-      readEnvMs("SID_CODE_WATCHDOG_CHECK_INTERVAL_MS") ?? n?.watchdogCheckIntervalMs ?? DEFAULTS.watchdogCheckIntervalMs,
+      readEnvMs("SID_CODE_WATCHDOG_CHECK_INTERVAL_MS") ??
+      n?.watchdogCheckIntervalMs ??
+      DEFAULTS.watchdogCheckIntervalMs,
     watchdogNoProgressMs:
-      readEnvMs("SID_CODE_WATCHDOG_NO_PROGRESS_MS") ?? n?.watchdogNoProgressMs ?? DEFAULTS.watchdogNoProgressMs,
+      readEnvMs("SID_CODE_WATCHDOG_NO_PROGRESS_MS") ??
+      n?.watchdogNoProgressMs ??
+      DEFAULTS.watchdogNoProgressMs,
     watchdogHeaderGraceMs:
-      readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ?? n?.watchdogHeaderGraceMs ?? DEFAULTS.watchdogHeaderGraceMs,
+      readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ??
+      n?.watchdogHeaderGraceMs ??
+      DEFAULTS.watchdogHeaderGraceMs,
     maxTurnDurationMs:
-      readEnvMs("SID_CODE_MAX_TURN_DURATION_MS") ?? n?.maxTurnDurationMs ?? DEFAULTS.maxTurnDurationMs,
+      readEnvMs("SID_CODE_MAX_TURN_DURATION_MS") ??
+      n?.maxTurnDurationMs ??
+      DEFAULTS.maxTurnDurationMs,
     // 用 nonNegative 而非 readEnvMs：0 是「关闭会话硬顶」的显式合法值（默认即 0），
     // 走 readEnvMs 会把 0 当非法值静默回退到默认，导致 `=0` 无法表达关闭意图。
     maxSessionDurationMs:
-      readEnvNonNegative("SID_CODE_MAX_SESSION_DURATION_MS") ?? n?.maxSessionDurationMs ?? DEFAULTS.maxSessionDurationMs,
+      readEnvNonNegative("SID_CODE_MAX_SESSION_DURATION_MS") ??
+      n?.maxSessionDurationMs ??
+      DEFAULTS.maxSessionDurationMs,
     maxTimeoutRetries:
-      readEnvNonNegative("SID_CODE_MAX_TIMEOUT_RETRIES") ?? n?.maxTimeoutRetries ?? DEFAULTS.maxTimeoutRetries,
+      readEnvNonNegative("SID_CODE_MAX_TIMEOUT_RETRIES") ??
+      n?.maxTimeoutRetries ??
+      DEFAULTS.maxTimeoutRetries,
     maxRetriesPerCall:
-      readEnvNonNegative("SID_CODE_MAX_RETRIES_PER_CALL") ?? n?.maxRetriesPerCall ?? DEFAULTS.maxRetriesPerCall,
+      readEnvNonNegative("SID_CODE_MAX_RETRIES_PER_CALL") ??
+      n?.maxRetriesPerCall ??
+      DEFAULTS.maxRetriesPerCall,
     retryBackoffBaseMs:
-      readEnvNonNegative("SID_CODE_RETRY_BACKOFF_BASE_MS") ?? n?.retryBackoffBaseMs ?? DEFAULTS.retryBackoffBaseMs,
+      readEnvNonNegative("SID_CODE_RETRY_BACKOFF_BASE_MS") ??
+      n?.retryBackoffBaseMs ??
+      DEFAULTS.retryBackoffBaseMs,
     retryBackoffMaxMs:
-      readEnvMs("SID_CODE_RETRY_BACKOFF_MAX_MS") ?? n?.retryBackoffMaxMs ?? DEFAULTS.retryBackoffMaxMs,
+      readEnvMs("SID_CODE_RETRY_BACKOFF_MAX_MS") ??
+      n?.retryBackoffMaxMs ??
+      DEFAULTS.retryBackoffMaxMs,
   };
 }
 

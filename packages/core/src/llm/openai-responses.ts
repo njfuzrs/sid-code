@@ -222,7 +222,12 @@ function mapResponseEvent(
         results.push({
           type: "content_block_start",
           index: state.blockIndex,
-          content_block: { type: "tool_use", id: item.call_id ?? item.id, name: item.name, input: {} },
+          content_block: {
+            type: "tool_use",
+            id: item.call_id ?? item.id,
+            name: item.name,
+            input: {},
+          },
         } as StreamEvent);
       }
       break;
@@ -338,9 +343,10 @@ function mapResponseEvent(
 
     // ─── Response Failed ───
     case "response.failed": {
-      const errMsg = raw.response?.status === "incomplete"
-        ? "Response incomplete"
-        : raw.error?.message ?? "Response failed";
+      const errMsg =
+        raw.response?.status === "incomplete"
+          ? "Response incomplete"
+          : (raw.error?.message ?? "Response failed");
       results.push({
         type: "error",
         error: { message: errMsg },
@@ -552,9 +558,7 @@ export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedRespo
 function mapResponsesStatus(body: ResponsesNonStreamingBody, sawToolCall: boolean): string {
   if (sawToolCall) return "tool_use";
   if (body.status === "incomplete") {
-    return body.incomplete_details?.reason === "content_filter"
-      ? "content_filter"
-      : "max_tokens";
+    return body.incomplete_details?.reason === "content_filter" ? "content_filter" : "max_tokens";
   }
   return "end_turn";
 }

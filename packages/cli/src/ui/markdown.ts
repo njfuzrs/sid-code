@@ -219,7 +219,10 @@ function wrapText(text: string, maxWidth: number): string[] {
   if (maxWidth <= 0) return [text];
   const result: string[] = [];
   for (const paragraph of text.split("\n")) {
-    if (paragraph === "") { result.push(""); continue; }
+    if (paragraph === "") {
+      result.push("");
+      continue;
+    }
     // 检测是否含 ANSI 转义码
     const hasAnsi = ANSI_RE.test(paragraph);
     ANSI_RE.lastIndex = 0; // 重置 lastIndex
@@ -249,11 +252,11 @@ function wrapText(text: string, maxWidth: number): string[] {
 
       while (i < paragraph.length) {
         // 检查是否是 OSC 8 超链接开始
-        if (paragraph.slice(i, i + 3) === '\x1b]8') {
+        if (paragraph.slice(i, i + 3) === "\x1b]8") {
           // 查找完整的 OSC 8 超链接（从开始到结束）
           const linkStart = i;
           // 跳过 OSC 8 开始标记：\x1b]8;;....\x1b\\
-          const startEnd = paragraph.indexOf('\x1b\\', i);
+          const startEnd = paragraph.indexOf("\x1b\\", i);
           if (startEnd === -1) {
             // 格式错误，跳过
             i++;
@@ -264,7 +267,7 @@ function wrapText(text: string, maxWidth: number): string[] {
           i = startEnd + 2;
 
           // 查找链接文本和结束标记
-          const linkEnd = paragraph.indexOf('\x1b]8;;\x1b\\', i);
+          const linkEnd = paragraph.indexOf("\x1b]8;;\x1b\\", i);
           if (linkEnd === -1) {
             // 格式错误，跳过
             continue;
@@ -330,13 +333,13 @@ function padRight(text: string, targetWidth: number): string {
 
 /** 绘制水平分隔线 */
 function hLine(colWidths: number[], left: string, mid: string, right: string): string {
-  return left + colWidths.map(w => "─".repeat(w + CELL_PADDING)).join(mid) + right;
+  return left + colWidths.map((w) => "─".repeat(w + CELL_PADDING)).join(mid) + right;
 }
 
 /** 绘制内容行（支持多行 cell） */
 function contentRows(cells: string[][], colWidths: number[], isBold: boolean): string[] {
   // cells[col] = wrapText 后的行数组
-  const maxLines = Math.max(...cells.map(c => c.length), 1);
+  const maxLines = Math.max(...cells.map((c) => c.length), 1);
   const lines: string[] = [];
   for (let l = 0; l < maxLines; l++) {
     const cellParts: string[] = [];
@@ -354,9 +357,9 @@ function contentRows(cells: string[][], colWidths: number[], isBold: boolean): s
 
 /** 用 box-drawing 字符绘制完整表格 */
 function drawTable(
-  headers: string[][],   // headers[col] = wrapText 后的行数组
-  rows: string[][][],    // rows[row][col] = wrapText 后的行数组
-  colWidths: number[],   // 每列纯内容宽度
+  headers: string[][], // headers[col] = wrapText 后的行数组
+  rows: string[][][], // rows[row][col] = wrapText 后的行数组
+  colWidths: number[], // 每列纯内容宽度
 ): string {
   const lines: string[] = [];
   // 顶部边框
@@ -380,12 +383,10 @@ function drawTable(
 /** 将 marked table token 渲染为终端友好的表格或 key-value 降级格式 */
 function renderTable(token: any, width: number): string {
   const headers: string[] = token.header.map((cell: any) =>
-    cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
+    cell.tokens ? renderInline(cell.tokens) : cell.text || "",
   );
   const rows: string[][] = token.rows.map((row: any[]) =>
-    row.map((cell: any) =>
-      cell.tokens ? renderInline(cell.tokens) : (cell.text || ""),
-    ),
+    row.map((cell: any) => (cell.tokens ? renderInline(cell.tokens) : cell.text || "")),
   );
   const colCount = headers.length;
   const termWidth = width;
@@ -443,7 +444,7 @@ function renderTable(token: any, width: number): string {
 
   // 对每个 cell 调用 wrapText 换行
   const wrappedHeaders: string[][] = headers.map((h, i) => wrapText(h, colWidths[i]));
-  const wrappedRows: string[][][] = rows.map(row =>
+  const wrappedRows: string[][][] = rows.map((row) =>
     row.map((cell, i) => wrapText(cell, colWidths[i])),
   );
 
@@ -502,10 +503,14 @@ function toRoman(n: number): string {
 /** 按嵌套深度格式化有序列表前缀：depth 0 数字，depth 1 字母，depth 2 罗马 */
 function formatOrderedPrefix(num: number, depth: number): string {
   switch (depth % 3) {
-    case 0: return `${num}.`;
-    case 1: return `${toAlpha(num)}.`;
-    case 2: return `${toRoman(num)}.`;
-    default: return `${num}.`;
+    case 0:
+      return `${num}.`;
+    case 1:
+      return `${toAlpha(num)}.`;
+    case 2:
+      return `${toRoman(num)}.`;
+    default:
+      return `${num}.`;
   }
 }
 
@@ -552,10 +557,7 @@ export function renderInline(tokens: any[]): string {
         result += chalk.hex(theme.text.secondary).strikethrough(renderInline(token.tokens));
         break;
       case "link":
-        result += renderLink(
-          token.tokens ? renderInline(token.tokens) : token.text,
-          token.href,
-        );
+        result += renderLink(token.tokens ? renderInline(token.tokens) : token.text, token.href);
         break;
       case "image":
         result += token.href || token.text;
@@ -615,9 +617,7 @@ function renderList(token: any, depth: number = 0): string {
 
   for (let i = 0; i < token.items.length; i++) {
     const item = token.items[i];
-    const prefix = token.ordered
-      ? `${formatOrderedPrefix((token.start || 1) + i, depth)} `
-      : "- ";
+    const prefix = token.ordered ? `${formatOrderedPrefix((token.start || 1) + i, depth)} ` : "- ";
 
     // 收集当前列表项的内容。同一列表项可能有多个子块（松散列表的多段落、
     // 段落+代码块、段落+引用等，见 marked 对 "loose list" 的解析）。
@@ -661,7 +661,6 @@ function renderList(token: any, depth: number = 0): string {
       }
     });
   }
-
 
   return lines.join("\n");
 }
@@ -780,11 +779,20 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
   const log = getLogger();
 
   try {
-    log.debug("UI:MD", `renderMarkdown 开始: textLen=${text.length} effectiveWidth=${effectiveWidth} textPreview=${JSON.stringify(text.slice(0, 100))}`);
+    log.debug(
+      "UI:MD",
+      `renderMarkdown 开始: textLen=${text.length} effectiveWidth=${effectiveWidth} textPreview=${JSON.stringify(text.slice(0, 100))}`,
+    );
     const tokens = cachedLexer(text);
-    log.debug("UI:MD", `cachedLexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`);
+    log.debug(
+      "UI:MD",
+      `cachedLexer 完成: tokenCount=${tokens.length} tokenTypes=${tokens.map((t: any) => t.type).join(",")}`,
+    );
     const result = renderTokens(tokens as any[], effectiveWidth).trimEnd();
-    log.debug("UI:MD", `renderTokens 完成: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} resultPreview=${JSON.stringify(result.slice(0, 100))}`);
+    log.debug(
+      "UI:MD",
+      `renderTokens 完成: resultLen=${result.length} hasAnsi=${/\x1b\[/.test(result)} resultPreview=${JSON.stringify(result.slice(0, 100))}`,
+    );
 
     if (renderCache.size >= MAX_CACHE_SIZE) {
       const firstKey = renderCache.keys().next().value;
@@ -795,7 +803,12 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
     return result;
   } catch (err: any) {
-    log.error("UI:MD", `Markdown 渲染失败`, { error: err.message, stack: err.stack, textLen: text.length, textPreview: text.slice(0, 100) });
+    log.error("UI:MD", `Markdown 渲染失败`, {
+      error: err.message,
+      stack: err.stack,
+      textLen: text.length,
+      textPreview: text.slice(0, 100),
+    });
     return text;
   }
 }
@@ -806,9 +819,7 @@ export function renderMarkdown(text: string, maxWidth?: number): string {
 
 /** 从 marked table token 提取 headers / rows 原始 markdown 文本 */
 export function extractTableData(token: any): { headers: string[]; rows: string[][] } {
-  const headers: string[] = (token.header ?? []).map(
-    (cell: any) => cell.text || "",
-  );
+  const headers: string[] = (token.header ?? []).map((cell: any) => cell.text || "");
   const rows: string[][] = (token.rows ?? []).map((row: any[]) =>
     row.map((cell: any) => cell.text || ""),
   );

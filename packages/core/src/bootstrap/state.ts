@@ -111,11 +111,7 @@ export function getTotalToolDuration(): number {
 
 // --- 模型用量 ---
 
-export function addModelUsage(
-  model: string,
-  input: number,
-  output: number,
-): void {
+export function addModelUsage(model: string, input: number, output: number): void {
   const existing = state.modelUsage[model] ?? {
     inputTokens: 0,
     outputTokens: 0,
@@ -128,10 +124,7 @@ export function addModelUsage(
   state.modelUsage[model] = existing;
 }
 
-export function getModelUsage(): Record<
-  string,
-  { inputTokens: number; outputTokens: number }
-> {
+export function getModelUsage(): Record<string, { inputTokens: number; outputTokens: number }> {
   return { ...state.modelUsage };
 }
 

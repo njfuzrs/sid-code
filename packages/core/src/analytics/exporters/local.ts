@@ -10,11 +10,7 @@ import { join } from "node:path";
 import { sidPaths } from "../../config/paths.ts";
 import type { SinkBackend } from "../sink.ts";
 import type { EventMetadata } from "../index.ts";
-import {
-  extractProtectedFields,
-  hasProtectedFields,
-  stripProtectedFields,
-} from "../privacy.ts";
+import { extractProtectedFields, hasProtectedFields, stripProtectedFields } from "../privacy.ts";
 
 const EVENTS_FILE = "events.jsonl";
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -70,9 +66,7 @@ export class LocalEventBackend implements SinkBackend {
     const line = JSON.stringify(record) + "\n";
 
     // 串行追加,错误静默(遥测旁路)
-    this.writeChain = this.writeChain
-      .then(() => this.write(line))
-      .catch(() => {});
+    this.writeChain = this.writeChain.then(() => this.write(line)).catch(() => {});
   }
 
   async shutdown(): Promise<void> {
@@ -98,12 +92,18 @@ export class LocalEventBackend implements SinkBackend {
     }
     const prefix = "events";
     const oldest = join(this.dir, `${prefix}.${MAX_FILES}.jsonl`);
-    try { await unlink(oldest); } catch {}
+    try {
+      await unlink(oldest);
+    } catch {}
     for (let i = MAX_FILES - 1; i >= 1; i--) {
       const from = join(this.dir, `${prefix}.${i}.jsonl`);
       const to = join(this.dir, `${prefix}.${i + 1}.jsonl`);
-      try { await rename(from, to); } catch {}
+      try {
+        await rename(from, to);
+      } catch {}
     }
-    try { await rename(this.filePath, join(this.dir, `${prefix}.1.jsonl`)); } catch {}
+    try {
+      await rename(this.filePath, join(this.dir, `${prefix}.1.jsonl`));
+    } catch {}
   }
 }

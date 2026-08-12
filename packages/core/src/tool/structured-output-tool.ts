@@ -61,9 +61,15 @@ export class StructuredOutputTool implements Tool {
 
   constructor(schema: Record<string, unknown>, maxRetries?: number) {
     this.schema = schema;
-    this.maxRetries = maxRetries
+    this.maxRetries =
+      maxRetries ??
       // 配置-5：env 前缀统一为 SID_CODE_（保留旧名兼容，优先新名）。
-      ?? parseInt(process.env.SID_CODE_STRUCTURED_OUTPUT_MAX_RETRIES || process.env.SID_STRUCTURED_OUTPUT_MAX_RETRIES || "5", 10);
+      parseInt(
+        process.env.SID_CODE_STRUCTURED_OUTPUT_MAX_RETRIES ||
+          process.env.SID_STRUCTURED_OUTPUT_MAX_RETRIES ||
+          "5",
+        10,
+      );
   }
 
   /** 是否已捕获到合规的结构化输出 */
@@ -87,10 +93,7 @@ export class StructuredOutputTool implements Tool {
   }
 
   /** 始终放行:它只是返回数据,无副作用 */
-  async checkPermissions(
-    _input: unknown,
-    _context: ToolUseContext,
-  ): Promise<PermissionResult> {
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     return { behavior: "allow", updatedInput: _input as Record<string, unknown> };
   }
 

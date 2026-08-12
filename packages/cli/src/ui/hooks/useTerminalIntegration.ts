@@ -72,8 +72,7 @@ export function useTerminalIntegration({
   // 「活动中」= 连接（等首字）或响应中。标题动画前缀在连接期就开始跳动，
   // 让用户从回车那刻起就看到窗口在「工作」，而非等首字到达才动。
   const isActive =
-    streamingState === StreamingState.Connecting ||
-    streamingState === StreamingState.Responding;
+    streamingState === StreamingState.Connecting || streamingState === StreamingState.Responding;
 
   // 进行中跑标题动画帧（a11y 下不跑,见文件头说明）。
   const [frame, setFrame] = useState(0);
@@ -87,7 +86,9 @@ export function useTerminalIntegration({
 
   // 活动中 → 动画点（a11y 下退化为静态首帧）；其余状态 → 静态星号。
   const prefix = isActive
-    ? (a11y ? TITLE_ANIMATION_FRAMES[0] : TITLE_ANIMATION_FRAMES[frame] ?? TITLE_ANIMATION_FRAMES[0])
+    ? a11y
+      ? TITLE_ANIMATION_FRAMES[0]
+      : (TITLE_ANIMATION_FRAMES[frame] ?? TITLE_ANIMATION_FRAMES[0])
     : TITLE_STATIC_PREFIX;
   useTerminalTitle(`${prefix} ${baseTitle}`);
 
@@ -103,8 +104,7 @@ export function useTerminalIntegration({
     // 从「忙」回到「闲」视为一轮响应完成 → 提示一次。
     // 「忙」含 Connecting 与 Responding：若请求在首字到达前被取消（Connecting→Idle），
     // 同样视为一轮结束，提示一次。
-    const wasBusy =
-      prev === StreamingState.Connecting || prev === StreamingState.Responding;
+    const wasBusy = prev === StreamingState.Connecting || prev === StreamingState.Responding;
     if (wasBusy && streamingState === StreamingState.Idle) {
       // 原始 BEL：所有终端/tmux 都能 fallback（tmux 触发 window bell flag）。
       writeRaw(BEL);

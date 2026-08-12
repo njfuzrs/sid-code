@@ -193,21 +193,12 @@ export const ThinkingMessage: React.FC<ThinkingMessageProps> = ({
         width={bodyWidth}
       >
         {lines.map((line, index) => (
-          <Text
-            key={`thought-${index}`}
-            color={theme.text.secondary}
-            italic
-            wrap="wrap"
-          >
+          <Text key={`thought-${index}`} color={theme.text.secondary} italic wrap="wrap">
             {line === "" ? " " : line}
           </Text>
         ))}
         {/* 流式时在末尾附一个光标提示，暗示仍在输出 */}
-        {streaming && (
-          <Text color={theme.ui.dark}>
-            {CURSOR}
-          </Text>
-        )}
+        {streaming && <Text color={theme.ui.dark}>{CURSOR}</Text>}
       </Box>
     </Box>
   );

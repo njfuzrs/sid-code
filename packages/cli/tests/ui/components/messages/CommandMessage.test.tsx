@@ -1,0 +1,78 @@
+/**
+ * CommandMessage 渲染测试 — CM2（bash 输入/输出区分）
+ */
+
+import { test, expect, describe } from "bun:test";
+import React from "react";
+import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import {
+  CommandMessage,
+  isBashCommand,
+  extractBashCommand,
+} from "@sid-code/cli/ui/components/messages/CommandMessage.tsx";
+
+describe("CM2 — isBashCommand / extractBashCommand", () => {
+  test("识别 /bash 前缀命令", () => {
+    expect(isBashCommand("/bash ls -la")).toBe(true);
+    expect(isBashCommand("/help")).toBe(false);
+    expect(isBashCommand("/model gpt")).toBe(false);
+  });
+
+  test("还原原始 shell 命令", () => {
+    expect(extractBashCommand("/bash ls -la")).toBe("ls -la");
+    expect(extractBashCommand("/bash echo hi")).toBe("echo hi");
+  });
+});
+
+describe("CM2 — CommandMessage 渲染", () => {
+  test("bash 命令用 ! 前缀渲染输入与还原后的命令", () => {
+    const { lastFrame } = render(
+      <CommandMessage input="/bash ls -la" output="file1\nfile2" width={80} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("!");
+    expect(frame).toContain("ls -la");
+    expect(frame).toContain("file1");
+    // 不应出现内部前缀
+    expect(frame).not.toContain("/bash");
+  });
+
+  test("普通斜杠命令用 > 前缀（UserMessage）", () => {
+    const { lastFrame } = render(<CommandMessage input="/help" output="帮助内容" width={80} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain(">");
+    expect(frame).toContain("/help");
+    expect(frame).toContain("帮助内容");
+  });
+
+  test("无输出时不渲染输出区", () => {
+    const { lastFrame } = render(<CommandMessage input="/bash pwd" output={null} width={80} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("pwd");
+  });
+
+  test("内置斜杠命令的多行输出不被折叠（全量展示）", () => {
+    // /think 等内置命令输出是我们自产的 UI 文本，应完整可读，不能像工具结果那样折叠到 3 行。
+    const output = [
+      "当前思考开关: auto",
+      "实际状态(auto 解析): on（跟随默认）",
+      "",
+      "可切换: on / off / auto",
+      "用 /think <on|off|auto> 切换，加 -p 持久化到 settings.json",
+    ].join("\n");
+    const { lastFrame } = render(<CommandMessage input="/think" output={output} width={80} />);
+    const frame = lastFrame() ?? "";
+    // 末行（第 5 行）必须出现 → 证明没有被折叠到 3 行
+    expect(frame).toContain("持久化到 settings.json");
+    // 不应出现折叠摘要文案
+    expect(frame).not.toContain("已折叠");
+  });
+
+  test("错误输出可渲染（isError）", () => {
+    const { lastFrame } = render(
+      <CommandMessage input="/bash badcmd" output="command not found" width={80} isError={true} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("command not found");
+  });
+});

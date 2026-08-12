@@ -3,7 +3,14 @@
  *
  * bun 编译时把文件内容嵌入产物，import 默认导出一个运行时虚拟路径字符串
  * （`/$bunfs/...`）。TS 不认识 vendor 下的无扩展名二进制占位文件，这里给它
- * 补一个字符串默认导出的模块声明。见 src/tool/rg-embedded.ts。
+ * 补一个字符串默认导出的模块声明。见 packages/core/src/tool/rg-embedded.ts。
+ *
+ * 下面的模块名用前缀通配符（星号 + /vendor/rg-embed）而不写死路径：P2-3 把 vendor/
+ * 从仓库根挪到 packages/core/ 时，正是这个通配符让本声明**不需要**跟着改。
+ *
+ * ⚠️ 注意别把那个通配符原样写进块注释里 —— 星号紧跟斜杠会提前闭合注释，
+ *    实测会让本文件从第 17 行起整段解析错乱（TS1005 / TS1160），
+ *    而这类报错的位置离真正的错因很远，排查很费时间。
  */
 declare module "*/vendor/rg-embed" {
   const path: string;

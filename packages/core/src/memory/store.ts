@@ -22,12 +22,7 @@ import { readdir, stat, unlink, rename } from "fs/promises";
 import { getLogger } from "../debug/logger.ts";
 import { getAutoMemPath } from "./paths.ts";
 import { sidHomePath } from "../config/paths.ts";
-import {
-  MEMORY_LIMITS,
-  MEMORY_TYPES,
-  isMemoryType,
-  type MemoryType,
-} from "./types.ts";
+import { MEMORY_LIMITS, MEMORY_TYPES, isMemoryType, type MemoryType } from "./types.ts";
 import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 
 /** 单条记忆（向后兼容旧结构，新增可选 type/description） */
@@ -87,13 +82,13 @@ const MEMORY_DESC_MAX_LEN = 150;
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
 const PUBLIC_IPV4_RE = new RegExp(
   [
-    "(?<![\\d.])",                                   // 左边界：不紧邻数字/点
-    "(?!(?:10|127|0|255)\\.)",                       // 排除 10./127./0./255.
-    "(?!169\\.254\\.)",                              // 排除链路本地
-    "(?!192\\.168\\.)",                              // 排除 192.168.
-    "(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)",            // 排除 172.16-31.
+    "(?<![\\d.])", // 左边界：不紧邻数字/点
+    "(?!(?:10|127|0|255)\\.)", // 排除 10./127./0./255.
+    "(?!169\\.254\\.)", // 排除链路本地
+    "(?!192\\.168\\.)", // 排除 192.168.
+    "(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)", // 排除 172.16-31.
     `(?:${OCTET}\\.){3}${OCTET}`,
-    "(?![\\d.])",                                    // 右边界
+    "(?![\\d.])", // 右边界
   ].join(""),
   "g",
 );
@@ -155,12 +150,14 @@ export function redactInfraCoordinates(desc: string): string {
     return "<地址已省略>";
   });
   if (!redactedAny) return desc;
-  return out
-    // 账号标注只在**同一条摘要里真抹掉过公网 IP** 时才处理：脱离了主机的 `（root）`
-    // 已无指向性，但同现时二者拼起来就是一份可直接用的登录坐标。
-    .replace(PRIVILEGED_ACCOUNT_RE, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  return (
+    out
+      // 账号标注只在**同一条摘要里真抹掉过公网 IP** 时才处理：脱离了主机的 `（root）`
+      // 已无指向性，但同现时二者拼起来就是一份可直接用的登录坐标。
+      .replace(PRIVILEGED_ACCOUNT_RE, "")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  );
 }
 
 /**
@@ -180,25 +177,25 @@ export function redactInfraCoordinates(desc: string): string {
  * `- [Title](file.md) — one-line hook`、单条 ~150 字符，且明令
  * "MEMORY.md is an index, not a memory / Never write memory content directly into MEMORY.md"。
  */
-export function normalizeMemoryDesc(
-  description: string | undefined,
-  value: string,
-): string {
+export function normalizeMemoryDesc(description: string | undefined, value: string): string {
   // 优先用显式 description；缺省时取正文第一个**非空**行（原实现只取 [0]，
   // 正文以空行开头时会得到空串 → 索引里出现 `- [key](file) — ` 空摘要）
   let raw = (description ?? "").trim();
   if (!raw) {
     for (const line of value.split("\n")) {
       const t = line.trim();
-      if (t) { raw = t; break; }
+      if (t) {
+        raw = t;
+        break;
+      }
     }
   }
   const cleaned = raw
-    .replace(/^#{1,6}\s+/, "")        // markdown 标题标记（`## 标题` → `标题`）
-    .replace(/^>\s*/, "")             // 引用标记
+    .replace(/^#{1,6}\s+/, "") // markdown 标题标记（`## 标题` → `标题`）
+    .replace(/^>\s*/, "") // 引用标记
     .replace(/^(?:[-*+]|\d+\.)\s+/, "") // 列表标记
-    .replace(/\*\*/g, "")             // 强调标记（`**Why:**` → `Why:`）
-    .replace(/\s*\n\s*/g, " ")        // 折行压平（description 可能多行）
+    .replace(/\*\*/g, "") // 强调标记（`**Why:**` → `Why:`）
+    .replace(/\s*\n\s*/g, " ") // 折行压平（description 可能多行）
     .trim();
   // 脱敏在截断**之前**：否则 150 字符边界可能把 IP 切成半截，
   // 既没抹干净又匹配不上（`121.196.14` 这种残留同样有指向性）。
@@ -241,7 +238,10 @@ function parseMemoryFile(
       else if (k === "created") created = Number(v) || undefined;
       else if (k === "updated") updated = Number(v) || undefined;
     }
-    body = text.replace(FRONTMATTER_RE, "").replace(/^\s*\n/, "").trimEnd();
+    body = text
+      .replace(FRONTMATTER_RE, "")
+      .replace(/^\s*\n/, "")
+      .trimEnd();
   } else {
     body = text.trim();
   }
@@ -297,8 +297,7 @@ export class MemoryStore {
   ) {
     this.globalDir = opts?.globalMemoryDir ?? sidHomePath("memory");
     this.projectRoot = projectRoot ?? null;
-    this.projectDir = opts?.projectMemoryDir
-      ?? (projectRoot ? getAutoMemPath(projectRoot) : null);
+    this.projectDir = opts?.projectMemoryDir ?? (projectRoot ? getAutoMemPath(projectRoot) : null);
   }
 
   /** 获取项目记忆目录（供召回/提示词注入使用） */
@@ -395,7 +394,10 @@ export class MemoryStore {
         renamed = true;
         log.debug("MEMORY", `记忆文件名归一化: ${filename} → ${target}`);
       } catch (err) {
-        log.warn("MEMORY", `记忆文件名归一化失败（跳过）: ${filename} — ${(err as Error)?.message}`);
+        log.warn(
+          "MEMORY",
+          `记忆文件名归一化失败（跳过）: ${filename} — ${(err as Error)?.message}`,
+        );
       }
     }
 
@@ -533,7 +535,11 @@ export class MemoryStore {
       for (const old of toRemove) {
         const fn = files.get(old.key);
         if (fn) {
-          try { await unlink(join(dir, fn)); } catch { /* ignore */ }
+          try {
+            await unlink(join(dir, fn));
+          } catch {
+            /* ignore */
+          }
         }
         entries.delete(old.key);
         files.delete(old.key);
@@ -564,7 +570,11 @@ export class MemoryStore {
       if (!dir || !entries.has(key)) return;
       const fn = files.get(key);
       if (fn) {
-        try { await unlink(join(dir, fn)); } catch { /* ignore */ }
+        try {
+          await unlink(join(dir, fn));
+        } catch {
+          /* ignore */
+        }
       }
       entries.delete(key);
       files.delete(key);
@@ -605,8 +615,9 @@ export class MemoryStore {
     // 优先按传入 scope；未指定时项目覆盖全局（与 get 一致）
     if (scope === "global") return tryResolve(this.globalFiles, this.globalDir);
     if (scope === "project") return tryResolve(this.projectFiles, this.projectDir);
-    return tryResolve(this.projectFiles, this.projectDir)
-      ?? tryResolve(this.globalFiles, this.globalDir);
+    return (
+      tryResolve(this.projectFiles, this.projectDir) ?? tryResolve(this.globalFiles, this.globalDir)
+    );
   }
 
   /** 搜索记忆（key 或 value 含关键词） */
@@ -720,7 +731,11 @@ export class MemoryStore {
 
     if (entries.size === 0) {
       if (existsSync(indexPath)) {
-        try { await unlink(indexPath); } catch { /* ignore */ }
+        try {
+          await unlink(indexPath);
+        } catch {
+          /* ignore */
+        }
       }
       return;
     }
@@ -774,8 +789,7 @@ export class MemoryStore {
 
       const usedFilenames = new Set<string>();
       const indexEntries = new Map<string, MemoryEntry>();
-      const indexFiles =
-        targetDir === this.globalDir ? this.globalFiles : this.projectFiles;
+      const indexFiles = targetDir === this.globalDir ? this.globalFiles : this.projectFiles;
 
       for (const e of entries) {
         const type = e.type || inferMemoryType(e.key, e.value);
@@ -799,7 +813,10 @@ export class MemoryStore {
 
       await this.writeIndex(targetDir, indexEntries);
       await rename(legacyPath, legacyPath + ".bak").catch(() => {});
-      log.info("MEMORY", `已迁移 ${entries.length} 条旧记忆: ${basename(legacyPath)} → .md (${scope})`);
+      log.info(
+        "MEMORY",
+        `已迁移 ${entries.length} 条旧记忆: ${basename(legacyPath)} → .md (${scope})`,
+      );
     } catch (err: any) {
       log.warn("MEMORY", `旧记忆迁移失败 (${legacyPath}): ${err.message}`);
     }

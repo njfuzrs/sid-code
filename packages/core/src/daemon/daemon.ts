@@ -67,9 +67,7 @@ export class Daemon {
 
   constructor(private opts: DaemonRuntimeOptions = {}) {
     this.sessionId = `daemon-${process.pid}`;
-    this.storage = new FileStorageAdapter(
-      join(sidPaths.trajectories(), "daemon-jobs"),
-    );
+    this.storage = new FileStorageAdapter(join(sidPaths.trajectories(), "daemon-jobs"));
     this.executor = new HeadlessExecutor({ storage: this.storage });
   }
 
@@ -100,8 +98,7 @@ export class Daemon {
     });
 
     // 3. 启动调度源
-    const interval =
-      this.opts.scheduleCheckIntervalMs ?? DAEMON_DEFAULTS.scheduleCheckIntervalMs;
+    const interval = this.opts.scheduleCheckIntervalMs ?? DAEMON_DEFAULTS.scheduleCheckIntervalMs;
     this.scheduler = new Scheduler({
       daemonMode: true,
       checkIntervalMs: interval,
@@ -139,18 +136,38 @@ export class Daemon {
     this.shuttingDown = true;
     getLogger().info("DAEMON", "守护进程停机中…");
 
-    try { this.scheduler?.stop(); } catch { /* 忽略 */ }
-    try { this.webhookServer?.stop(); } catch { /* 忽略 */ }
+    try {
+      this.scheduler?.stop();
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      this.webhookServer?.stop();
+    } catch {
+      /* 忽略 */
+    }
     if (this.keepAlive) {
       clearInterval(this.keepAlive);
       this.keepAlive = null;
     }
-    try { unregisterSession(this.sessionId); } catch { /* 忽略 */ }
-    try { releaseDaemonLock(); } catch { /* 忽略 */ }
+    try {
+      unregisterSession(this.sessionId);
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      releaseDaemonLock();
+    } catch {
+      /* 忽略 */
+    }
 
     // 解绑信号 handler（避免重复触发）
     for (const { sig, handler } of this.signalHandlers) {
-      try { process.off(sig, handler); } catch { /* 忽略 */ }
+      try {
+        process.off(sig, handler);
+      } catch {
+        /* 忽略 */
+      }
     }
     this.signalHandlers = [];
     this.started = false;
@@ -176,7 +193,7 @@ export class Daemon {
       allowedTools:
         task.allowedTools && task.allowedTools.length > 0
           ? task.allowedTools
-          : this.opts.allowedTools ?? [],
+          : (this.opts.allowedTools ?? []),
     };
     this.queue.push(job);
     getLogger().info("DAEMON", `调度任务入队 id=${task.id} 队列长=${this.queue.length}`);
@@ -191,7 +208,10 @@ export class Daemon {
       void this.executor
         .run(job)
         .catch((err) => {
-          getLogger().error("DAEMON", `headless job 未捕获异常 id=${job.jobId}: ${err?.message ?? err}`);
+          getLogger().error(
+            "DAEMON",
+            `headless job 未捕获异常 id=${job.jobId}: ${err?.message ?? err}`,
+          );
         })
         .finally(() => {
           this.running--;

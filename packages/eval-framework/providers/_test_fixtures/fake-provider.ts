@@ -40,14 +40,23 @@ function emitSuccess(prompt: string) {
     retry_count: 0,
     backtrack_count: 0,
   };
-  process.stdout.write(JSON.stringify({ output: `fake answer to: ${prompt.slice(0, 50)}`, meta }) + "\n");
+  process.stdout.write(
+    JSON.stringify({ output: `fake answer to: ${prompt.slice(0, 50)}`, meta }) + "\n",
+  );
   process.exit(0);
 }
 
 function emitError(reason: string, errSubstring: string) {
   const meta = {
-    tools_used: [], files_edited: [], total_steps: 0, total_tokens: 0,
-    latency_ms: 0, exit_status: "error", error_count: 0, retry_count: 0, backtrack_count: 0,
+    tools_used: [],
+    files_edited: [],
+    total_steps: 0,
+    total_tokens: 0,
+    latency_ms: 0,
+    exit_status: "error",
+    error_count: 0,
+    retry_count: 0,
+    backtrack_count: 0,
   };
   process.stderr.write(`[fake-provider] ${errSubstring}\n`);
   process.stdout.write(JSON.stringify({ output: `[ERROR] ${reason}`, meta, error: true }) + "\n");

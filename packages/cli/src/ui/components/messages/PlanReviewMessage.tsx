@@ -61,11 +61,7 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
 
       {/* 计划内容 */}
       <Box flexDirection="column">
-        <MarkdownAnsi
-          text={planContent}
-          terminalWidth={contentWidth}
-          renderMarkdown={true}
-        />
+        <MarkdownAnsi text={planContent} terminalWidth={contentWidth} renderMarkdown={true} />
       </Box>
     </Box>
   );

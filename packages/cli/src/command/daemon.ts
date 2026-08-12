@@ -84,7 +84,10 @@ function parseDaemonArgs(args: string[]): { sub: string; opts: DaemonCliOptions 
           ? parseInt(values["max-concurrent"], 10)
           : undefined,
         allowedTools: values["allowed-tools"]
-          ? String(values["allowed-tools"]).split(",").map((s) => s.trim()).filter(Boolean)
+          ? String(values["allowed-tools"])
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
           : undefined,
         help: !!values.help,
       },
@@ -95,15 +98,7 @@ function parseDaemonArgs(args: string[]): { sub: string; opts: DaemonCliOptions 
   }
 }
 
-const KNOWN_SUBS = new Set([
-  "start",
-  "status",
-  "stop",
-  "restart",
-  "logs",
-  "install",
-  "uninstall",
-]);
+const KNOWN_SUBS = new Set(["start", "status", "stop", "restart", "logs", "install", "uninstall"]);
 
 /** 守护进程日志文件路径 */
 function daemonLogFile(): string {
@@ -162,7 +157,8 @@ async function runStatus(): Promise<void> {
 
 /** 停止运行中的守护进程 */
 async function runStop(): Promise<void> {
-  const { readDaemonLock, isDaemonRunning, releaseDaemonLock } = await import("@sid-code/core/daemon/lock.ts");
+  const { readDaemonLock, isDaemonRunning, releaseDaemonLock } =
+    await import("@sid-code/core/daemon/lock.ts");
   const lock = readDaemonLock();
   if (!lock || !isDaemonRunning()) {
     console.log("守护进程未运行，无需停止");

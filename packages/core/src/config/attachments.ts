@@ -5,10 +5,7 @@
 
 import { execFileSync } from "child_process";
 import { getLogger } from "../debug/logger.ts";
-import {
-  generateSkillListing,
-  type SkillListingEntry,
-} from "../skill/budget.ts";
+import { generateSkillListing, type SkillListingEntry } from "../skill/budget.ts";
 
 /** 附件类型 */
 export interface Attachment {
@@ -189,7 +186,8 @@ ${content}
 }
 
 /** Git 状态缓存（TTL 30 秒，覆盖用户输入期间的预取窗口） */
-let gitStatusCache: { result: Attachment | null; timestamp: number; workingDir: string } | null = null;
+let gitStatusCache: { result: Attachment | null; timestamp: number; workingDir: string } | null =
+  null;
 const GIT_STATUS_CACHE_TTL = 30_000;
 
 /** 清除 Git 状态缓存（供外部调用，如 CLAUDE.md 变更时） */
@@ -227,9 +225,11 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
   const log = getLogger();
 
   // 命中缓存
-  if (gitStatusCache
-    && gitStatusCache.workingDir === workingDir
-    && Date.now() - gitStatusCache.timestamp < GIT_STATUS_CACHE_TTL) {
+  if (
+    gitStatusCache &&
+    gitStatusCache.workingDir === workingDir &&
+    Date.now() - gitStatusCache.timestamp < GIT_STATUS_CACHE_TTL
+  ) {
     log.debug("ATTACHMENT", "Git 状态命中缓存");
     return gitStatusCache.result;
   }
@@ -257,8 +257,10 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
 
     // 获取默认主分支（对标 CC context.ts:63 —— getDefaultBranch()）
     // 优先从 remote HEAD 推断（execFile 不走 shell，故不能用 `|| echo ''`，改由 runGit 失败返回空串兜底）
-    let mainBranch = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], workingDir, 3000)
-      .replace("refs/remotes/origin/", "");
+    let mainBranch = runGit(["symbolic-ref", "refs/remotes/origin/HEAD"], workingDir, 3000).replace(
+      "refs/remotes/origin/",
+      "",
+    );
     if (!mainBranch) {
       // 回退：检查常见分支名
       for (const candidate of ["main", "master"]) {
@@ -286,10 +288,10 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
 
     const lines: string[] = [
       // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。
-      "This is the git status at the start of the conversation. Note that this status is a snapshot in time, "
-        + "and will not update during the conversation. "
-        + "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);"
-        + "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。",
+      "This is the git status at the start of the conversation. Note that this status is a snapshot in time, " +
+        "and will not update during the conversation. " +
+        "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);" +
+        "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。",
       `Current branch: ${branch}`,
     ];
     if (mainBranch) lines.push(`Main branch (you will usually use this for PRs): ${mainBranch}`);
@@ -430,9 +432,7 @@ export function generateRecalledMemoryAttachment(
   recalled: Array<{ filename: string; content: string }>,
 ): Attachment | null {
   if (!recalled || recalled.length === 0) return null;
-  const body = recalled
-    .map((m) => `### ${m.filename}\n${m.content}`)
-    .join("\n\n---\n\n");
+  const body = recalled.map((m) => `### ${m.filename}\n${m.content}`).join("\n\n---\n\n");
   return {
     type: "memoryRecalled",
     label: "召回记忆",
@@ -479,4 +479,3 @@ export function generateSkillListingAttachment(
     priority: PRIORITY.SKILL_LISTING,
   };
 }
-

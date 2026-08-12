@@ -50,10 +50,17 @@ export interface ParsedIncidentLog {
 }
 
 const LEVEL_MAP: Record<string, LogEntry["level"]> = {
-  error: "error", err: "error", fatal: "error", panic: "error", critical: "error",
-  warn: "warn", warning: "warn",
-  info: "info", notice: "info",
-  debug: "debug", trace: "debug",
+  error: "error",
+  err: "error",
+  fatal: "error",
+  panic: "error",
+  critical: "error",
+  warn: "warn",
+  warning: "warn",
+  info: "info",
+  notice: "info",
+  debug: "debug",
+  trace: "debug",
 };
 
 const TIMESTAMP_RE = /(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/;
@@ -104,7 +111,11 @@ function parseTextLine(line: string): LogEntry {
 }
 
 function toMs(ts: string): number {
-  try { return new Date(ts).getTime(); } catch { return 0; }
+  try {
+    return new Date(ts).getTime();
+  } catch {
+    return 0;
+  }
 }
 
 export function parseIncidentLog(content: string): ParsedIncidentLog {
@@ -125,9 +136,7 @@ export function parseIncidentLog(content: string): ParsedIncidentLog {
   const services = [...new Set(entries.map((e) => e.service).filter((s) => s !== "unknown"))];
 
   const timestamps = entries.map((e) => toMs(e.timestamp)).filter((t) => t > 0);
-  const timeRange = timestamps.length >= 2
-    ? Math.max(...timestamps) - Math.min(...timestamps)
-    : 0;
+  const timeRange = timestamps.length >= 2 ? Math.max(...timestamps) - Math.min(...timestamps) : 0;
 
   // 构建 timeline（仅 error + 首个 warn）
   const timeline: TimelineEvent[] = errors.slice(0, 10).map((e) => ({
@@ -137,11 +146,13 @@ export function parseIncidentLog(content: string): ParsedIncidentLog {
   }));
 
   if (warns.length > 0 && timeline.length < 15) {
-    timeline.push(...warns.slice(0, 5).map((e) => ({
-      timestamp: e.timestamp,
-      event: e.message.slice(0, 80),
-      severity: "medium" as const,
-    })));
+    timeline.push(
+      ...warns.slice(0, 5).map((e) => ({
+        timestamp: e.timestamp,
+        event: e.message.slice(0, 80),
+        severity: "medium" as const,
+      })),
+    );
   }
 
   timeline.sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));

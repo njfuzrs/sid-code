@@ -27,7 +27,10 @@ export interface McpResourceProvider {
 /** 解析 allowed-tools（逗号分隔字符串或数组） */
 function parseAllowedTools(raw: unknown): string[] | undefined {
   if (typeof raw === "string") {
-    const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const list = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     return list.length > 0 ? list : undefined;
   }
   if (Array.isArray(raw)) return raw.map(String);
@@ -38,16 +41,12 @@ function parseAllowedTools(raw: unknown): string[] | undefined {
  * 从 MCP 服务器发现 Skill
  * 查找 skill:// 前缀的资源，解析 frontmatter 为 SkillDefinition
  */
-export async function discoverMcpSkills(
-  provider: McpResourceProvider,
-): Promise<SkillDefinition[]> {
+export async function discoverMcpSkills(provider: McpResourceProvider): Promise<SkillDefinition[]> {
   const log = getLogger();
   const skills: SkillDefinition[] = [];
 
   const all = provider.getAllResources();
-  const skillResources = all.filter((r) =>
-    r.resource.uri.startsWith(SKILL_URI_PREFIX),
-  );
+  const skillResources = all.filter((r) => r.resource.uri.startsWith(SKILL_URI_PREFIX));
 
   for (const { serverName, resource } of skillResources) {
     try {
@@ -57,22 +56,23 @@ export async function discoverMcpSkills(
       // 审计第 4 条：畸形 frontmatter fail-closed 跳过。MCP Skill 来自外部 server，
       // 更不能因解析失败就丢掉 allowed-tools/context 约束（fork 会退化成 inline）。
       if (fmError) {
-        log.warn("MCP", `跳过 frontmatter 格式错误的 MCP Skill: ${serverName}:${resource.name} - ${fmError}`);
+        log.warn(
+          "MCP",
+          `跳过 frontmatter 格式错误的 MCP Skill: ${serverName}:${resource.name} - ${fmError}`,
+        );
         continue;
       }
 
       const rawName = (fm.name as string) || resource.name;
       const name = `${serverName}:${rawName}`;
-      const description =
-        (fm.description as string) || resource.description || "";
+      const description = (fm.description as string) || resource.description || "";
       if (!description.trim()) {
         log.warn("MCP", `跳过缺少 description 的 MCP Skill: ${name}`);
         continue;
       }
 
       const rawContext = fm.context as string;
-      const context: "inline" | "fork" =
-        rawContext === "fork" ? "fork" : "inline";
+      const context: "inline" | "fork" = rawContext === "fork" ? "fork" : "inline";
 
       skills.push({
         name,
@@ -88,8 +88,7 @@ export async function discoverMcpSkills(
         // MCP Skill 没有本地目录，skillRoot 留空
         userInvocable: fm["user-invocable"] === false ? false : true,
         disableModelInvocation:
-          fm["disable-model-invocation"] === true ||
-          fm["disableModelInvocation"] === true,
+          fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -23,11 +23,7 @@
 import { join, resolve, sep } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { getSidHome } from "../../config/paths.ts";
-import {
-  resolveProjectRoot,
-  sanitizeProjectKey,
-  validateMemoryPath,
-} from "../paths.ts";
+import { resolveProjectRoot, sanitizeProjectKey, validateMemoryPath } from "../paths.ts";
 
 /** 本地团队记忆目录名 */
 export const TEAM_MEMORY_DIRNAME = "team-memory";
@@ -69,10 +65,7 @@ export function ensureTeamMemPath(cwd: string = process.cwd()): string {
  * 供 write/edit 工具的 secret 守卫判定「这是不是一次团队记忆写入」。
  * 两端规范化，防止 ../ 逃逸。
  */
-export function isTeamMemPath(
-  absolutePath: string,
-  cwd: string = process.cwd(),
-): boolean {
+export function isTeamMemPath(absolutePath: string, cwd: string = process.cwd()): boolean {
   const teamDir = resolve(getTeamMemPath(cwd));
   const target = resolve(absolutePath);
   return target === teamDir || target.startsWith(teamDir + sep);

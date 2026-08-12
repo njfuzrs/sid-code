@@ -10,9 +10,15 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /** /help 命令 */
 export class HelpCommand implements Command {
-  name() { return "help"; }
-  aliases() { return ["h", "?"]; }
-  description() { return "显示帮助信息"; }
+  name() {
+    return "help";
+  }
+  aliases() {
+    return ["h", "?"];
+  }
+  description() {
+    return "显示帮助信息";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const trimmed = args.trim();
@@ -30,7 +36,7 @@ export class HelpCommand implements Command {
     // 这里需要访问 CommandRegistry，但当前 AppContext 没有暴露
     // 简化实现：只显示已知命令的帮助
     const helpTexts: Record<string, string> = {
-      "mcp": `MCP 服务器管理
+      mcp: `MCP 服务器管理
 
 子命令:
   /mcp list              - 列出所有 MCP 服务器状态
@@ -54,7 +60,7 @@ export class HelpCommand implements Command {
   /mcp add remote http://localhost:3000 --transport http
   /mcp disable myserver --session`,
 
-      "skills": `Skills 管理
+      skills: `Skills 管理
 
 子命令:
   /skills list           - 列出所有 skills
@@ -69,7 +75,7 @@ export class HelpCommand implements Command {
   /skills enable my-skill --scope project
   /skills disable my-skill`,
 
-      "memory": `记忆管理
+      memory: `记忆管理
 
 子命令:
   /memory set <key> <value>  - 设置记忆
@@ -87,7 +93,7 @@ export class HelpCommand implements Command {
   /memory search api
   /memory show`,
 
-      "model": `模型管理
+      model: `模型管理
 
 用法:
   /model                          - 打开模型选择对话框
@@ -107,7 +113,7 @@ export class HelpCommand implements Command {
   /model fallback deepseek-v4-flash -p
   /model sub verify glm-5.2 -p`,
 
-      "theme": `主题管理
+      theme: `主题管理
 
 用法:
   /theme              - 打开主题选择对话框
@@ -117,7 +123,7 @@ export class HelpCommand implements Command {
 持久化: 默认仅当会话生效；加 -p 才跨会话保留。对话框选择主题会自动持久化。
 注意: 多词主题名直接写，如 /theme "Default Light" 或 /theme Default Light`,
 
-      "language": `输出语言偏好
+      language: `输出语言偏好
 
 用法:
   /language            - 显示当前语言偏好
@@ -138,7 +144,7 @@ export class HelpCommand implements Command {
 语言只是偏好，不是硬锁: 你随时可以在单轮里要求"用英文回答"，
 模型会当轮照办，不会以"系统约束"为由拒绝。`,
 
-      "hooks": `Hook 管理
+      hooks: `Hook 管理
 
 子命令:
   /hooks                    - 打开 Hook 管理面板
@@ -150,7 +156,7 @@ export class HelpCommand implements Command {
 
 持久化: 默认仅当会话生效；加 -p 写入 settings.json disabledHooks 跨会话保留。`,
 
-      "allow": `添加 allow 权限规则
+      allow: `添加 allow 权限规则
 
 用法:
   /allow <规则> [-p] [--scope user|project]
@@ -164,7 +170,7 @@ export class HelpCommand implements Command {
   /allow Bash(npm *) -p
   /allow Read(*) -p --scope project`,
 
-      "deny": `添加 deny 权限规则
+      deny: `添加 deny 权限规则
 
 用法:
   /deny <规则> [-p] [--scope user|project]
@@ -178,7 +184,7 @@ export class HelpCommand implements Command {
   /deny Bash(rm -rf *) -p
   /deny Bash(curl *) -p --scope project`,
 
-      "trace": `会话轨迹排查 —— 把当前/指定会话嚼碎成结构化排查摘要
+      trace: `会话轨迹排查 —— 把当前/指定会话嚼碎成结构化排查摘要
 
 用法:
   /trace                 分析当前正在跑的会话(进程内拿 sessionId,比时间猜测准)
@@ -216,9 +222,15 @@ export class HelpCommand implements Command {
 
 /** /model 命令 */
 export class ModelCommand implements Command {
-  name() { return "model"; }
-  aliases() { return ["m"]; }
-  description() { return "显示或切换模型"; }
+  name() {
+    return "model";
+  }
+  aliases() {
+    return ["m"];
+  }
+  description() {
+    return "显示或切换模型";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const trimmedArgs = args.trim();
@@ -240,10 +252,7 @@ export class ModelCommand implements Command {
   }
 
   private buildCurrentModel(ctx: AppContext): string {
-    const lines = [
-      `当前模型: ${ctx.config.model}`,
-      `提供商: ${ctx.config.provider}`,
-    ];
+    const lines = [`当前模型: ${ctx.config.model}`, `提供商: ${ctx.config.provider}`];
     if (ctx.config.availableModels.length > 0) {
       lines.push("", "可用模型:");
       ctx.config.availableModels.forEach((m) => {
@@ -290,9 +299,15 @@ export class ModelCommand implements Command {
 
 /** /cost 命令 */
 export class CostCommand implements Command {
-  name() { return "cost"; }
-  aliases() { return []; }
-  description() { return "显示 token 用量和费用"; }
+  name() {
+    return "cost";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "显示 token 用量和费用";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
@@ -342,7 +357,9 @@ export class CostCommand implements Command {
         // 汇总 input 走 getTotalUsage() = ΣcumulativePromptTokens（flow），若此处用末次 stock，
         // 两者口径不一致：分模型之和 ≪ 汇总（末次值只保留最后一次请求的 prompt 长度），
         // 用户会看到"汇总 input 远大于分模型 input 之和"的诡异对不上。统一为 flow 口径。
-        lines.push(`  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`);
+        lines.push(
+          `  ${model}: ${stats.requests} 次请求, $${stats.costUSD.toFixed(4)}, input=${stats.cumulativePromptTokens}, output=${stats.outputTokens}`,
+        );
       }
     }
 
@@ -352,9 +369,15 @@ export class CostCommand implements Command {
 
 /** /compact 命令 */
 export class CompactCommand implements Command {
-  name() { return "compact"; }
-  aliases() { return []; }
-  description() { return "压缩对话历史"; }
+  name() {
+    return "compact";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "压缩对话历史";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const before = ctx.ctxMgr.messageCount();
@@ -381,9 +404,15 @@ export class CompactCommand implements Command {
 
 /** /clear 命令 */
 export class ClearCommand implements Command {
-  name() { return "clear"; }
-  aliases() { return ["reset", "new"]; }
-  description() { return "清空对话历史"; }
+  name() {
+    return "clear";
+  }
+  aliases() {
+    return ["reset", "new"];
+  }
+  description() {
+    return "清空对话历史";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     return { kind: "clear" };
@@ -392,9 +421,15 @@ export class ClearCommand implements Command {
 
 /** /config 命令 */
 export class ConfigCommand implements Command {
-  name() { return "config"; }
-  aliases() { return ["settings"]; }
-  description() { return "显示当前配置"; }
+  name() {
+    return "config";
+  }
+  aliases() {
+    return ["settings"];
+  }
+  description() {
+    return "显示当前配置";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开结构化配置浏览面板
@@ -417,9 +452,15 @@ export class ConfigCommand implements Command {
 
 /** /exit 命令 */
 export class ExitCommand implements Command {
-  name() { return "exit"; }
-  aliases() { return ["quit", "q"]; }
-  description() { return "退出程序"; }
+  name() {
+    return "exit";
+  }
+  aliases() {
+    return ["quit", "q"];
+  }
+  description() {
+    return "退出程序";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     return { kind: "quit", message: "再见！" };
@@ -428,9 +469,15 @@ export class ExitCommand implements Command {
 
 /** /undo 命令 */
 export class UndoCommand implements Command {
-  name() { return "undo"; }
-  aliases() { return []; }
-  description() { return "撤销最近一次文件修改（回滚到上一个 checkpoint）"; }
+  name() {
+    return "undo";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "撤销最近一次文件修改（回滚到上一个 checkpoint）";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
@@ -445,9 +492,9 @@ export class UndoCommand implements Command {
     if (trimmed) {
       const result = await cpMgr.undoFile(trimmed);
       if (result) {
-        const fileActions = result.files.map(f =>
-          `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
-        ).join("\n");
+        const fileActions = result.files
+          .map((f) => `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`)
+          .join("\n");
         return {
           kind: "message",
           message: `已撤销快照 ${result.snapshotId}:\n${fileActions}`,
@@ -459,9 +506,9 @@ export class UndoCommand implements Command {
     // 回滚最近一次快照（可能包含多个文件）
     const result = await cpMgr.undo();
     if (result) {
-      const fileActions = result.files.map(f =>
-        `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
-      ).join("\n");
+      const fileActions = result.files
+        .map((f) => `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`)
+        .join("\n");
       return {
         kind: "message",
         message: `已撤销快照 ${result.snapshotId}:\n${fileActions}`,
@@ -473,9 +520,15 @@ export class UndoCommand implements Command {
 
 /** /checkpoints 命令 */
 export class CheckpointsCommand implements Command {
-  name() { return "checkpoints"; }
-  aliases() { return ["cp"]; }
-  description() { return "查看快照历史"; }
+  name() {
+    return "checkpoints";
+  }
+  aliases() {
+    return ["cp"];
+  }
+  description() {
+    return "查看快照历史";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
@@ -499,7 +552,9 @@ export class CheckpointsCommand implements Command {
       const time = new Date(s.timestamp);
       const timeStr = this.formatTime(time);
       const fileCountStr = `${s.fileCount} 个文件`;
-      lines.push(`  ${s.id}  ${timeStr}  ${s.toolName.padEnd(8)}  ${s.toolSummary.slice(0, 40)}  (${fileCountStr})`);
+      lines.push(
+        `  ${s.id}  ${timeStr}  ${s.toolName.padEnd(8)}  ${s.toolSummary.slice(0, 40)}  (${fileCountStr})`,
+      );
     }
 
     lines.push("");
@@ -525,9 +580,15 @@ export class CheckpointsCommand implements Command {
 
 /** /restore 命令 */
 export class RestoreCommand implements Command {
-  name() { return "restore"; }
-  aliases() { return []; }
-  description() { return "恢复到指定快照点"; }
+  name() {
+    return "restore";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "恢复到指定快照点";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const snapshotId = args.trim();
@@ -550,17 +611,14 @@ export class RestoreCommand implements Command {
 
     // 显示确认信息（需要用户确认）
     const allSnapshots = cpMgr.listSnapshots();
-    const targetIndex = allSnapshots.findIndex(s => s.id === snapshotId);
+    const targetIndex = allSnapshots.findIndex((s) => s.id === snapshotId);
     const snapshotsToRollback = allSnapshots.slice(targetIndex + 1);
 
     if (snapshotsToRollback.length === 0) {
       return { kind: "message", message: `快照 ${snapshotId} 已经是最新状态，无需恢复` };
     }
 
-    const lines = [
-      `将回滚以下 ${snapshotsToRollback.length} 个快照:`,
-      "",
-    ];
+    const lines = [`将回滚以下 ${snapshotsToRollback.length} 个快照:`, ""];
 
     for (const s of snapshotsToRollback.reverse()) {
       lines.push(`  ${s.id}: ${s.toolName} ${s.toolSummary.slice(0, 40)}`);
@@ -598,9 +656,9 @@ export class RestoreCommand implements Command {
       onConfirm: async () => {
         const result = await cpMgr.restoreToSnapshot(snapshotId);
         if (result) {
-          const fileActions = result.files.map(f =>
-            `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`
-          ).join("\n");
+          const fileActions = result.files
+            .map((f) => `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`)
+            .join("\n");
           return {
             kind: "message",
             message: `已恢复到快照 ${result.targetSnapshotId}，回滚了 ${result.snapshotsRolledBack} 个快照:\n${fileActions}`,
@@ -614,9 +672,15 @@ export class RestoreCommand implements Command {
 
 /** /memory 命令 */
 export class MemoryCommand implements Command {
-  name() { return "memory"; }
-  aliases() { return ["mem"]; }
-  description() { return "管理记忆（auto/external/set/get/delete/list/search/show/reload）"; }
+  name() {
+    return "memory";
+  }
+  aliases() {
+    return ["mem"];
+  }
+  description() {
+    return "管理记忆（auto/external/set/get/delete/list/search/show/reload）";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开交互式记忆面板（auto-memory 条目管理 + f 键切回 CLAUDE.md 浏览）
@@ -642,7 +706,11 @@ export class MemoryCommand implements Command {
             return { kind: "message", message: "auto-memory 状态不可用（运行环境未接线）" };
           }
           const st = ctx.getAutoMemoryState();
-          const sourceLabel = { env: "环境变量 SID_CODE_AUTO_MEMORY", settings: "settings.json", default: "默认" }[st.source];
+          const sourceLabel = {
+            env: "环境变量 SID_CODE_AUTO_MEMORY",
+            settings: "settings.json",
+            default: "默认",
+          }[st.source];
           const stateLabel = st.enabled ? "已启用（extraction on）" : "已禁用（extraction off）";
           return {
             kind: "message",
@@ -664,7 +732,8 @@ export class MemoryCommand implements Command {
           return { kind: "message", message: "auto-memory 开关不可用（运行环境未接线）" };
         }
         // env 覆盖优先级更高：若 env 显式设值，运行时切换仍生效但重启后被 env 覆盖，提示用户。
-        const envSet = process.env.SID_CODE_AUTO_MEMORY !== undefined && process.env.SID_CODE_AUTO_MEMORY !== "";
+        const envSet =
+          process.env.SID_CODE_AUTO_MEMORY !== undefined && process.env.SID_CODE_AUTO_MEMORY !== "";
         await ctx.setAutoMemory(enable, persist);
         const lines = [
           `auto-memory 后台提取已${enable ? "启用" : "禁用"}${persist ? "（已持久化到 settings.json）" : "（仅本会话）"}`,
@@ -685,11 +754,12 @@ export class MemoryCommand implements Command {
             return { kind: "message", message: "外部导入审批状态不可用（运行环境未接线）" };
           }
           const { approved } = ctx.getExternalImportsState();
-          const stateLabel = approved === undefined
-            ? "尚未询问（首次遇到外部导入时会弹审批对话框）"
-            : approved
-              ? "已允许（项目外的 @import 会被展开加载）"
-              : "已禁用（项目外的 @import 会被跳过）";
+          const stateLabel =
+            approved === undefined
+              ? "尚未询问（首次遇到外部导入时会弹审批对话框）"
+              : approved
+                ? "已允许（项目外的 @import 会被展开加载）"
+                : "已禁用（项目外的 @import 会被跳过）";
           return {
             kind: "message",
             message: [
@@ -725,7 +795,7 @@ export class MemoryCommand implements Command {
         if (!key || !value) {
           return { kind: "error", message: "用法: /memory set <key> <value> [--global]" };
         }
-        const scope = args.includes("--global") ? "global" as const : "project" as const;
+        const scope = args.includes("--global") ? ("global" as const) : ("project" as const);
         const cleanValue = value.replace("--global", "").trim();
         await store.set(key, cleanValue, scope);
         return { kind: "message", message: `记忆已保存: [${scope}] ${key} = ${cleanValue}` };
@@ -739,7 +809,10 @@ export class MemoryCommand implements Command {
         const entry = await store.get(key);
         if (entry) {
           const date = new Date(entry.updatedAt).toLocaleString();
-          return { kind: "message", message: `[${entry.scope}] ${entry.key} = ${entry.value}\n  更新时间: ${date}` };
+          return {
+            kind: "message",
+            message: `[${entry.scope}] ${entry.key} = ${entry.value}\n  更新时间: ${date}`,
+          };
         }
         return { kind: "message", message: `未找到记忆: ${key}` };
       }
@@ -803,7 +876,9 @@ export class MemoryCommand implements Command {
             const { getTeamIndexContent } = await import("@sid-code/core/memory/team/store.ts");
             teamIndexContent = await getTeamIndexContent(process.cwd());
           }
-        } catch { /* 团队记忆索引注入失败不阻断 reload */ }
+        } catch {
+          /* 团队记忆索引注入失败不阻断 reload */
+        }
 
         const memorySystemPrompt = buildMemorySystemPrompt(indexContent, teamIndexContent);
         if (!memorySystemPrompt) {
@@ -832,7 +907,10 @@ export class MemoryCommand implements Command {
         ctx.ctxMgr.setSystemPrompt(newPrompt);
         clearPromptCache();
 
-        return { kind: "message", message: `记忆已重新加载，系统提示词已刷新 (${newPrompt.length} 字符)` };
+        return {
+          kind: "message",
+          message: `记忆已重新加载，系统提示词已刷新 (${newPrompt.length} 字符)`,
+        };
       }
 
       case "list":
@@ -860,11 +938,17 @@ export class MemoryCommand implements Command {
 
 /** /rewind 命令 — 回退最近 n 轮对话 */
 export class RewindCommand implements Command {
-  name() { return "rewind"; }
+  name() {
+    return "rewind";
+  }
   // P0-B2：`/checkpoint`（单数）作为别名——CC 用户敲这个词期待的是「回退到某个检查点」，
   // 语义落在本命令而非 `/checkpoints`（复数，只列快照，别名 /cp）。不加别名会让 CC 习惯落空。
-  aliases() { return ["checkpoint"]; }
-  description() { return "回退会话（可选代码/对话/两者），等价 Esc+Esc"; }
+  aliases() {
+    return ["checkpoint"];
+  }
+  description() {
+    return "回退会话（可选代码/对话/两者），等价 Esc+Esc";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const trimmed = args.trim();
@@ -890,9 +974,15 @@ export class RewindCommand implements Command {
 
 /** /stats 命令 — 会话统计 */
 export class StatsCommand implements Command {
-  name() { return "stats"; }
-  aliases() { return []; }
-  description() { return "显示当前会话统计信息"; }
+  name() {
+    return "stats";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "显示当前会话统计信息";
+  }
 
   async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
     // 无参数 → 打开结构化统计面板（交互式）
@@ -970,9 +1060,15 @@ const INIT_ANALYSIS_PROMPT = `请为当前代码库生成（或改进）一份 \
  * - \`--dirs-only\`：仅执行 \`.sid-code/\` 目录脚手架（保留旧行为，不再写占位 CLAUDE.md）。
  */
 export class InitCommand implements Command {
-  name() { return "init"; }
-  aliases() { return []; }
-  description() { return "分析代码库并生成 CLAUDE.md（--dirs-only 仅初始化 .sid-code/ 目录）"; }
+  name() {
+    return "init";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "分析代码库并生成 CLAUDE.md（--dirs-only 仅初始化 .sid-code/ 目录）";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const dirsOnly = /(^|\s)--dirs-only(\s|$)/.test(args);
@@ -987,11 +1083,7 @@ export class InitCommand implements Command {
     const path = await import("path");
     const cwd = process.cwd();
 
-    const dirs = [
-      ".sid-code/commands",
-      ".sid-code/skills",
-      ".sid-code/agents",
-    ];
+    const dirs = [".sid-code/commands", ".sid-code/skills", ".sid-code/agents"];
 
     const created: string[] = [];
     const skipped: string[] = [];
@@ -1007,10 +1099,17 @@ export class InitCommand implements Command {
     }
 
     const lines: string[] = [];
-    if (created.length > 0) lines.push(`已创建目录:\n${created.map(d => `  ${d}/`).join("\n")}`);
-    if (skipped.length > 0) lines.push(`已存在（跳过）:\n${skipped.map(d => `  ${d}/`).join("\n")}`);
+    if (created.length > 0) lines.push(`已创建目录:\n${created.map((d) => `  ${d}/`).join("\n")}`);
+    if (skipped.length > 0)
+      lines.push(`已存在（跳过）:\n${skipped.map((d) => `  ${d}/`).join("\n")}`);
 
-    lines.push("\n提示：", "  .sid-code/commands/ — 放置自定义斜杠命令 (.md)", "  .sid-code/skills/   — 放置 Skills 提示词模板 (.md)", "  .sid-code/agents/   — 放置自定义 Agent 定义 (.md)", "\n运行不带参数的 /init 可分析代码库并生成 CLAUDE.md。");
+    lines.push(
+      "\n提示：",
+      "  .sid-code/commands/ — 放置自定义斜杠命令 (.md)",
+      "  .sid-code/skills/   — 放置 Skills 提示词模板 (.md)",
+      "  .sid-code/agents/   — 放置自定义 Agent 定义 (.md)",
+      "\n运行不带参数的 /init 可分析代码库并生成 CLAUDE.md。",
+    );
 
     return { kind: "message", message: lines.join("\n") };
   }
@@ -1018,10 +1117,18 @@ export class InitCommand implements Command {
 
 /** /hooks 命令 — Hook 管理 */
 export class HooksCommand implements Command {
-  name() { return "hooks"; }
-  aliases() { return []; }
-  description() { return "管理 Hook (list/enable/disable/enable-all/disable-all，-p 持久化)"; }
-  argumentHint() { return "[list|enable|disable|enable-all|disable-all] [name] [-p]"; }
+  name() {
+    return "hooks";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "管理 Hook (list/enable/disable/enable-all/disable-all，-p 持久化)";
+  }
+  argumentHint() {
+    return "[list|enable|disable|enable-all|disable-all] [name] [-p]";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     if (!ctx.hookSystem) {
@@ -1034,9 +1141,7 @@ export class HooksCommand implements Command {
     const rest = parts.filter((t) => t !== "-p" && t !== "--persist" && t !== "save");
     const subCmd = rest[0] || "";
     const hookName = rest.slice(1).join(" ");
-    const persistNote = persist
-      ? "（已持久化到 settings.json）"
-      : "（仅当前会话，加 -p 可持久化）";
+    const persistNote = persist ? "（已持久化到 settings.json）" : "（仅当前会话，加 -p 可持久化）";
 
     switch (subCmd) {
       case "":
@@ -1065,7 +1170,10 @@ export class HooksCommand implements Command {
         if (persist) this.persistAllDisabled(ctx);
         return { kind: "message", message: `已禁用所有 hook${persistNote}` };
       default:
-        return { kind: "error", message: `未知子命令: ${subCmd}\n用法: /hooks [list|enable|disable|enable-all|disable-all] [-p]` };
+        return {
+          kind: "error",
+          message: `未知子命令: ${subCmd}\n用法: /hooks [list|enable|disable|enable-all|disable-all] [-p]`,
+        };
     }
   }
 
@@ -1076,7 +1184,10 @@ export class HooksCommand implements Command {
    */
   private persistHookDisabled(hookName: string, disable: boolean): void {
     try {
-      const { getSettingsForSource, patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
+      const {
+        getSettingsForSource,
+        patchSettingsFile,
+      } = require("@sid-code/core/config/settings/index.ts");
       const { settings } = getSettingsForSource("userSettings");
       const set = new Set<string>(settings?.disabledHooks ?? []);
       if (disable) set.add(hookName);
@@ -1100,13 +1211,17 @@ export class HooksCommand implements Command {
   /** 把当前所有 hook 名写入 disabledHooks（/hooks disable-all -p）。 */
   private persistAllDisabled(ctx: AppContext): void {
     try {
-      const names = ctx.hookSystem!.getAllHooks()
+      const names = ctx
+        .hookSystem!.getAllHooks()
         .map((e) => ctx.hookSystem!.getHookName(e))
         .filter(Boolean);
       const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
       patchSettingsFile("userSettings", "disabledHooks", [...new Set(names)]);
     } catch (e) {
-      getLogger().warn("HOOK", `持久化 disabledHooks（全部）失败（不阻断）: ${(e as Error)?.message}`);
+      getLogger().warn(
+        "HOOK",
+        `持久化 disabledHooks（全部）失败（不阻断）: ${(e as Error)?.message}`,
+      );
     }
   }
 
@@ -1119,10 +1234,11 @@ export class HooksCommand implements Command {
     const lines = ["已注册的 Hook:"];
     for (const entry of hooks) {
       const status = entry.enabled ? "✓" : "✗";
-      const name = entry.config.name
-        || (entry.config.type === "command" ? entry.config.command : "")
-        || (entry.config.type === "url" ? entry.config.url : "")
-        || "unknown";
+      const name =
+        entry.config.name ||
+        (entry.config.type === "command" ? entry.config.command : "") ||
+        (entry.config.type === "url" ? entry.config.url : "") ||
+        "unknown";
       const type = entry.config.type || "command";
       const matcher = entry.matcher ? ` [${entry.matcher}]` : "";
       const source = entry.source;
@@ -1134,9 +1250,15 @@ export class HooksCommand implements Command {
 
 /** /plan 命令 — 进入/退出计划模式 */
 export class PlanCommand implements Command {
-  name() { return "plan"; }
-  aliases() { return []; }
-  description() { return "进入计划模式（先规划后执行）"; }
+  name() {
+    return "plan";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "进入计划模式（先规划后执行）";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     // 从 App 获取 planManager（通过 sendToLLM 间接触发）
@@ -1146,7 +1268,8 @@ export class PlanCommand implements Command {
     if (trimmed === "exit" || trimmed === "quit") {
       return {
         kind: "submit_prompt",
-        prompt: "请退出计划模式。如果你有未完成的计划，先保存到计划文件，然后调用 exit_plan_mode 工具提交审批。",
+        prompt:
+          "请退出计划模式。如果你有未完成的计划，先保存到计划文件，然后调用 exit_plan_mode 工具提交审批。",
       };
     }
 
@@ -1169,9 +1292,15 @@ export class PlanCommand implements Command {
 
 /** /telemetry 命令 — 展示当前会话的 Span 树和 Metric 汇总 */
 export class TelemetryCommand implements Command {
-  name() { return "telemetry"; }
-  aliases() { return ["tele"]; }
-  description() { return "显示当前会话遥测摘要（Span 树 + Metric 汇总）"; }
+  name() {
+    return "telemetry";
+  }
+  aliases() {
+    return ["tele"];
+  }
+  description() {
+    return "显示当前会话遥测摘要（Span 树 + Metric 汇总）";
+  }
 
   async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
     const { getTelemetryBus } = await import("@sid-code/core/telemetry/index.ts");
@@ -1179,7 +1308,10 @@ export class TelemetryCommand implements Command {
     const bus = getTelemetryBus();
 
     if (!bus.isEnabled()) {
-      return { kind: "message", message: "遥测未启用。在 ~/.sid-code/app.json 中设置 telemetry.enabled: true" };
+      return {
+        kind: "message",
+        message: "遥测未启用。在 ~/.sid-code/app.json 中设置 telemetry.enabled: true",
+      };
     }
 
     const spans = bus.getCompletedSpans();
@@ -1191,12 +1323,15 @@ export class TelemetryCommand implements Command {
 
     const lines: string[] = ["遥测摘要", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
 
-    const chatSpans = spans.filter(s => s.kind === "chat");
-    const toolSpans = spans.filter(s => s.kind === "execute_tool");
+    const chatSpans = spans.filter((s) => s.kind === "chat");
+    const toolSpans = spans.filter((s) => s.kind === "execute_tool");
 
     // === 总览（最重要的信息放最前面）===
     if (chatSpans.length > 0) {
-      let totalIn = 0, totalOut = 0, totalCost = 0, totalCacheSavings = 0;
+      let totalIn = 0,
+        totalOut = 0,
+        totalCost = 0,
+        totalCacheSavings = 0;
       const ttfts: number[] = [];
       for (const s of chatSpans) {
         totalIn += (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
@@ -1216,7 +1351,9 @@ export class TelemetryCommand implements Command {
 
       lines.push("");
       lines.push(`  LLM 调用: ${chatSpans.length} 轮`);
-      lines.push(`  Token 消耗: ${fmtNum(totalIn + totalOut)} (输入 ${fmtNum(totalIn)} / 输出 ${fmtNum(totalOut)})`);
+      lines.push(
+        `  Token 消耗: ${fmtNum(totalIn + totalOut)} (输入 ${fmtNum(totalIn)} / 输出 ${fmtNum(totalOut)})`,
+      );
       if (totalCost > 0) {
         lines.push(`  费用: $${totalCost.toFixed(4)}`);
       }
@@ -1248,8 +1385,8 @@ export class TelemetryCommand implements Command {
     if (metrics.length > 0) {
       const agg = aggregateMetrics(metrics);
       // 过滤掉已在总览中展示的指标
-      const extraMetrics = Object.entries(agg).filter(([name]) =>
-        name !== "gen_ai.client.token.usage" && name !== "sidcode.cost.usd"
+      const extraMetrics = Object.entries(agg).filter(
+        ([name]) => name !== "gen_ai.client.token.usage" && name !== "sidcode.cost.usd",
       );
       if (extraMetrics.length > 0) {
         lines.push("", "其他指标:");
@@ -1260,7 +1397,9 @@ export class TelemetryCommand implements Command {
           } else if (info.type === "gauge") {
             lines.push(`  ${label}: ${fmtNum(info.last)}`);
           } else {
-            lines.push(`  ${label}: ${info.count} 次, 平均 ${fmtNum(info.sum / info.count)}, 最大 ${fmtNum(info.max)}`);
+            lines.push(
+              `  ${label}: ${info.count} 次, 平均 ${fmtNum(info.sum / info.count)}, 最大 ${fmtNum(info.max)}`,
+            );
           }
         }
       }
@@ -1287,7 +1426,9 @@ interface SpanTreeNode {
 }
 
 /** 将扁平 span 列表构建为树 */
-function buildSpanTree(spans: readonly import("@sid-code/core/telemetry/types.ts").SpanData[]): SpanTreeNode[] {
+function buildSpanTree(
+  spans: readonly import("@sid-code/core/telemetry/types.ts").SpanData[],
+): SpanTreeNode[] {
   const nodeMap = new Map<string, SpanTreeNode>();
   const roots: SpanTreeNode[] = [];
 
@@ -1369,10 +1510,22 @@ function renderSpanNode(
 }
 
 /** 聚合 metric 数据 */
-function aggregateMetrics(metrics: readonly import("@sid-code/core/telemetry/types.ts").MetricPoint[]): Record<string, {
-  type: string; sum: number; count: number; max: number; last: number;
-}> {
-  const agg: Record<string, { type: string; sum: number; count: number; max: number; last: number }> = {};
+function aggregateMetrics(
+  metrics: readonly import("@sid-code/core/telemetry/types.ts").MetricPoint[],
+): Record<
+  string,
+  {
+    type: string;
+    sum: number;
+    count: number;
+    max: number;
+    last: number;
+  }
+> {
+  const agg: Record<
+    string,
+    { type: string; sum: number; count: number; max: number; last: number }
+  > = {};
   for (const m of metrics) {
     if (!agg[m.name]) {
       agg[m.name] = { type: m.type, sum: 0, count: 0, max: -Infinity, last: 0 };
@@ -1416,12 +1569,19 @@ function sparkline(values: number[]): string {
 
 /** /cache 命令 — 缓存命中长期统计与退化监测（模块 C3 + D3） */
 export class CacheCommand implements Command {
-  name() { return "cache"; }
-  aliases() { return []; }
-  description() { return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）"; }
+  name() {
+    return "cache";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）";
+  }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { aggregateUsage, aggregateOverall } = await import("@sid-code/core/telemetry/usage-aggregator.ts");
+    const { aggregateUsage, aggregateOverall } =
+      await import("@sid-code/core/telemetry/usage-aggregator.ts");
     const { pruneUsageLedger } = await import("@sid-code/core/telemetry/usage-ledger.ts");
     const { getRecentCacheBreaks, getCacheHealthAdvice, formatCacheBreakReport } =
       await import("@sid-code/core/api/cache-detection.ts");
@@ -1495,7 +1655,9 @@ export class CacheCommand implements Command {
       }
       for (const e of recent) {
         const time = new Date(e.ts * 1000).toLocaleString();
-        lines.push(`  [${time}] ${e.model}: 下降 ${e.dropPercent}% (${e.dropTokens} tok): ${e.changes.join("; ")}`);
+        lines.push(
+          `  [${time}] ${e.model}: 下降 ${e.dropPercent}% (${e.dropTokens} tok): ${e.changes.join("; ")}`,
+        );
       }
       const cats = Object.entries(summary.byCategory).sort(([, a], [, b]) => b - a);
       if (cats.length > 0) {
@@ -1542,7 +1704,9 @@ export class CacheCommand implements Command {
     const hitPct = (overall.totalHitRate * 100).toFixed(1);
     lines.push(`  总命中率:   ${hitPct}%   (${fmtTok(totalHit)} / ${fmtTok(totalPrompt)} tokens)`);
     lines.push(`  累计省钱:   $${overall.totalSavingsUSD.toFixed(4)}`);
-    lines.push(`  累计成本:   $${overall.totalCostUSD.toFixed(4)}   (${overall.totalSessions} 会话)`);
+    lines.push(
+      `  累计成本:   $${overall.totalCostUSD.toFixed(4)}   (${overall.totalSessions} 会话)`,
+    );
 
     // P0-4：排除了多少行必须显式写出来 —— 静默排除读起来像"全部数据都在这儿"。
     // 不打印被排除的数字本身：把假数字印出来，迟早有人当真数字抄走。
@@ -1575,10 +1739,14 @@ export class CacheCommand implements Command {
         // 数字与"这个数的前提"分开放会让人只抄走数字。
         // 多渠道时全列出来：合并成一个百分比恰恰掩盖了渠道差异。
         const host =
-          m.hosts.length === 0 ? "" :
-          m.hosts.length === 1 ? `  @${m.hosts[0]}` :
-          `  @${m.hosts.join(",")}`;
-        lines.push(`    ${name}:  命中 ${rate}%  省 $${m.savingsUSD.toFixed(4)}  (${m.sessions} 会话)${host}`);
+          m.hosts.length === 0
+            ? ""
+            : m.hosts.length === 1
+              ? `  @${m.hosts[0]}`
+              : `  @${m.hosts.join(",")}`;
+        lines.push(
+          `    ${name}:  命中 ${rate}%  省 $${m.savingsUSD.toFixed(4)}  (${m.sessions} 会话)${host}`,
+        );
       }
       // hosts 为空不是"没有渠道"，是"这些行早于渠道字段上线"——不点破会被读成前者
       if (models.some(([, m]) => m.hosts.length === 0)) {
@@ -1590,7 +1758,9 @@ export class CacheCommand implements Command {
     if (periods.length >= 2) {
       const rates = periods.map((p) => p.totalHitRate);
       const unit = granularity === "day" ? "日" : granularity === "week" ? "周" : "月";
-      lines.push(`  趋势(${periods.length}${unit}命中率): ${sparkline(rates)}   ← 上升=前缀越来越稳定`);
+      lines.push(
+        `  趋势(${periods.length}${unit}命中率): ${sparkline(rates)}   ← 上升=前缀越来越稳定`,
+      );
     }
 
     return { kind: "message", message: lines.join("\n") };
@@ -1608,9 +1778,15 @@ export class CacheCommand implements Command {
  *   /trace --full     附带更多思维链/参数细节
  */
 export class TraceCommand implements Command {
-  name() { return "trace"; }
-  aliases() { return ["digest"]; }
-  description() { return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图)"; }
+  name() {
+    return "trace";
+  }
+  aliases() {
+    return ["digest"];
+  }
+  description() {
+    return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图)";
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { resolvePaths, listSessions, resolveSession, buildDigest, renderHuman, renderList } =
@@ -1630,9 +1806,7 @@ export class TraceCommand implements Command {
         await import("@sid-code/core/telemetry/provider-health.ts");
       const periodTok = positional.find((t) => /^(1h|24h|7d)$/.test(t));
       const periodMs =
-        periodTok === "1h" ? 3600_000 :
-        periodTok === "7d" ? 86400_000 * 7 :
-        86400_000; // 默认 24h
+        periodTok === "1h" ? 3600_000 : periodTok === "7d" ? 86400_000 * 7 : 86400_000; // 默认 24h
       // --provider 后跟的值（positional 里排除周期 token 后的第一个）
       const provTok = positional.find((t) => t !== periodTok);
       const report = aggregateProviderHealth({ periodMs, provider: provTok });
@@ -1757,7 +1931,8 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   registry.register(new LanguageCommand());
 
   // 权限管理命令
-  const { AllowCommand, DenyCommand, PermissionsCommand, AddDirCommand } = await import("./permissions.ts");
+  const { AllowCommand, DenyCommand, PermissionsCommand, AddDirCommand } =
+    await import("./permissions.ts");
   registry.register(new AllowCommand());
   registry.register(new DenyCommand());
   registry.register(new PermissionsCommand());

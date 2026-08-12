@@ -17,9 +17,9 @@ export interface BudgetRule {
   };
   /** 告警阈值（0-1） */
   thresholds: {
-    warning: number;   // 如 0.5 = 50%
-    critical: number;  // 如 0.8 = 80%
-    exceeded: number;  // 如 1.0 = 100%
+    warning: number; // 如 0.5 = 50%
+    critical: number; // 如 0.8 = 80%
+    exceeded: number; // 如 1.0 = 100%
   };
   /** 超限动作 */
   action: "alert" | "downgrade" | "block";
@@ -109,7 +109,7 @@ export class BudgetTracker {
 
   /** 获取所有规则的当前状态 */
   getStatus(): BudgetRuleStatus[] {
-    return this.rules.map(rule => {
+    return this.rules.map((rule) => {
       const periodKey = this.getPeriodKey(rule);
       const costKey = `${rule.id}:${periodKey}`;
       const currentUSD = this.periodCosts.get(costKey) ?? 0;

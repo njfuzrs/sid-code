@@ -244,8 +244,7 @@ function wouldLoseImportantState(fresh: Partial<AppConfig>): boolean {
   if (!cached) return false;
 
   const lostOnboarding =
-    cached.hasCompletedOnboarding === true &&
-    fresh.hasCompletedOnboarding !== true;
+    cached.hasCompletedOnboarding === true && fresh.hasCompletedOnboarding !== true;
 
   const lostProjects =
     !!cached.projects &&

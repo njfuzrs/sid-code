@@ -29,9 +29,15 @@ export class SkillCommand implements Command {
     this.context = skill.context ?? (skill.mode === "activate" ? "inline" : "fork");
   }
 
-  name(): string { return this.skill.name; }
-  aliases(): string[] { return []; }
-  description(): string { return this.skill.description || `Skill: ${this.skill.name}`; }
+  name(): string {
+    return this.skill.name;
+  }
+  aliases(): string[] {
+    return [];
+  }
+  description(): string {
+    return this.skill.description || `Skill: ${this.skill.name}`;
+  }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const log = getLogger();
@@ -57,10 +63,17 @@ export class SkillCommand implements Command {
     }
 
     // ── P0-3：权限判定（用户路径可用主会话弹窗做 ask）──
-    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } = await import("@sid-code/core/skill/executor.ts");
-    const rawRules = ctx.permissionChecker && typeof (ctx.permissionChecker as { getRules?: () => unknown }).getRules === "function"
-      ? (ctx.permissionChecker as unknown as { getRules: () => import("@sid-code/core/permission/types.ts").PermissionRule | null }).getRules()
-      : null;
+    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } =
+      await import("@sid-code/core/skill/executor.ts");
+    const rawRules =
+      ctx.permissionChecker &&
+      typeof (ctx.permissionChecker as { getRules?: () => unknown }).getRules === "function"
+        ? (
+            ctx.permissionChecker as unknown as {
+              getRules: () => import("@sid-code/core/permission/types.ts").PermissionRule | null;
+            }
+          ).getRules()
+        : null;
     const auth = authorizeSkill(this.skill, { permissionRules: rawRules ?? undefined });
     if (auth.decision === "deny") {
       return { kind: "error", message: `权限拒绝：Skill "${this.skill.name}" 被规则拒绝` };
@@ -123,7 +136,8 @@ export class SkillCommand implements Command {
 
     try {
       const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
-      const { normalizeSkillEffort, resolveSkillAgentType } = await import("@sid-code/core/skill/executor.ts");
+      const { normalizeSkillEffort, resolveSkillAgentType } =
+        await import("@sid-code/core/skill/executor.ts");
       const subAgent = SubAgent.fromRegistry(
         ctx.providerRegistry,
         ctx.registry,

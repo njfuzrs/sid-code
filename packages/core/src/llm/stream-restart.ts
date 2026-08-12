@@ -60,9 +60,7 @@ export interface StreamRestartOutcome {
  * @param state 要清空的累加状态容器（原地修改）
  * @returns 被丢弃的内容规模，供调用方决定是否需要通知 UI 撤回
  */
-export function resetOnStreamRestart(
-  state: StreamAccumulatorState,
-): StreamRestartOutcome {
+export function resetOnStreamRestart(state: StreamAccumulatorState): StreamRestartOutcome {
   const blocks = state.content ?? [];
   const discardedBlocks = blocks.length;
   let discardedTextLength = 0;

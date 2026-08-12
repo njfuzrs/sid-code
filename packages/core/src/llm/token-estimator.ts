@@ -29,7 +29,7 @@ function resolveFallbackWindow(): number {
 }
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
-const ASCII_TOKENS_PER_CHAR = 0.20;
+const ASCII_TOKENS_PER_CHAR = 0.2;
 /** 非 ASCII 字符（中文等）：取 0.65 tok/char（9.4：偏保守，防长中文对话对 Claude 累积低估） */
 const NON_ASCII_TOKENS_PER_CHAR = 0.65;
 
@@ -63,9 +63,7 @@ export class TokenEstimator {
     }
     let tokens = 0;
     for (let i = 0; i < text.length; i++) {
-      tokens += text.charCodeAt(i) <= 127
-        ? ASCII_TOKENS_PER_CHAR
-        : NON_ASCII_TOKENS_PER_CHAR;
+      tokens += text.charCodeAt(i) <= 127 ? ASCII_TOKENS_PER_CHAR : NON_ASCII_TOKENS_PER_CHAR;
     }
     return Math.ceil(tokens);
   }
@@ -112,7 +110,7 @@ export class TokenEstimator {
     //    避免内置静态表与用户真实部署（自建/代理/新版本）漂移。
     //    Number.isFinite 防手改 settings.json 写出 1e400 之类溢出成 Infinity 的值——
     //    `Infinity > 0` 为 true，只查 `> 0` 挡不住，会让上下文预算永远「还有空间」。
-    const userModel = availableModels?.find(m => m.name === model);
+    const userModel = availableModels?.find((m) => m.name === model);
     if (
       typeof userModel?.contextWindow === "number" &&
       Number.isFinite(userModel.contextWindow) &&
@@ -160,7 +158,7 @@ export class TokenEstimator {
     model: string,
     availableModels?: Array<{ name?: string; modelId?: string; maxOutputTokens?: number }>,
   ): number | undefined {
-    const userModel = availableModels?.find(m => m.name === model);
+    const userModel = availableModels?.find((m) => m.name === model);
     if (
       typeof userModel?.maxOutputTokens === "number" &&
       Number.isFinite(userModel.maxOutputTokens) &&
@@ -198,7 +196,8 @@ export class TokenEstimator {
     if (params.tools) estimated += this.estimateTools(params.tools);
     estimated += params.maxTokens; // 预留输出空间
 
-    if (estimated < limit * 0.95) { // 留 5% 安全余量
+    if (estimated < limit * 0.95) {
+      // 留 5% 安全余量
       return { fits: true };
     }
     return { fits: false, estimated, limit };

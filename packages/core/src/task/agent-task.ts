@@ -12,9 +12,7 @@ import {
 } from "./types.ts";
 import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
-import {
-  enqueueTaskNotification,
-} from "./notification.ts";
+import { enqueueTaskNotification } from "./notification.ts";
 
 /** 活跃 Agent 的 AbortController（用于 kill） */
 const activeAgentControllers = new Map<string, AbortController>();
@@ -82,7 +80,11 @@ export function appendAgentOutput(taskId: string, content: string): void {
  *   task-notification 就是"双投递"（同一批结果既渲染工具卡片又渲染 `⏺ Agent "..." 执行完成`）。
  *   对齐 claude-code：前台工具的完成态靠同一 keyed 行原地变态，不靠额外通知（见根治方案 §5.1）。
  */
-export async function completeAgentTask(taskId: string, result: AgentTaskResult, notify: boolean = true): Promise<void> {
+export async function completeAgentTask(
+  taskId: string,
+  result: AgentTaskResult,
+  notify: boolean = true,
+): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -98,7 +100,7 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult,
     status: "completed",
     result,
     endTime: Date.now(),
-    evictAfter: graceDeadlineFor("completed"),  // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
+    evictAfter: graceDeadlineFor("completed"), // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
   }));
 
@@ -122,7 +124,11 @@ export async function completeAgentTask(taskId: string, result: AgentTaskResult,
  *   失败结果已由 runSync 作为 isError 的 tool_result 返回（并通知统一错误面板），无需再发通知
  *   （双投递）。见 completeAgentTask 的 notify 说明与根治方案 §5.1。
  */
-export async function failAgentTask(taskId: string, error: string, notify: boolean = true): Promise<void> {
+export async function failAgentTask(
+  taskId: string,
+  error: string,
+  notify: boolean = true,
+): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -140,7 +146,7 @@ export async function failAgentTask(taskId: string, error: string, notify: boole
     status: "failed",
     error,
     endTime: Date.now(),
-    evictAfter: graceDeadlineFor("failed"),  // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
+    evictAfter: graceDeadlineFor("failed"), // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
   }));
 

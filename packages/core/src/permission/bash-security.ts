@@ -254,7 +254,9 @@ export function validateNewlines(command: string): InjectionFinding | null {
  * 包括不间断空格、各种宽度空格、行/段分隔符、零宽 BOM 等。
  */
 // eslint-disable-next-line no-misleading-character-class
-const UNICODE_WS_RE = new RegExp("[\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]");
+const UNICODE_WS_RE = new RegExp(
+  "[\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]",
+);
 
 export function validateUnicodeWhitespace(command: string): InjectionFinding | null {
   if (UNICODE_WS_RE.test(command)) {
@@ -293,7 +295,10 @@ export function validateControlCharacters(command: string): InjectionFinding | n
  *
  * echo 命令对混淆 flag 安全（但仅限无 shell 操作符的简单 echo）。
  */
-export function validateObfuscatedFlags(command: string, baseCommand: string): InjectionFinding | null {
+export function validateObfuscatedFlags(
+  command: string,
+  baseCommand: string,
+): InjectionFinding | null {
   // 简单 echo（无管道/分号/&）对混淆 flag 安全
   const hasShellOperators = /[|&;]/.test(command);
   if (baseCommand === "echo" && !hasShellOperators) {
@@ -314,7 +319,7 @@ export function validateObfuscatedFlags(command: string, baseCommand: string): I
     return {
       id: "obfuscated-flags",
       severity: "ask",
-      message: "命令包含 locale 引号 ($\"...\")，可隐藏字符",
+      message: '命令包含 locale 引号 ($"...")，可隐藏字符',
     };
   }
 
@@ -670,11 +675,24 @@ export function validateProcessSubstitution(command: string): InjectionFinding |
  *   zsh/zpty 伪终端执行、zsh/net/tcp 网络外传、zsh/files 绕过二进制检查的 rm/mv 等）。
  */
 const ZSH_DANGEROUS_COMMANDS = new Set([
-  "zmodload", "emulate",
-  "sysopen", "sysread", "syswrite", "sysseek",
-  "zpty", "ztcp", "zsocket", "mapfile",
-  "zf_rm", "zf_mv", "zf_ln", "zf_chmod", "zf_chown",
-  "zf_mkdir", "zf_rmdir", "zf_chgrp",
+  "zmodload",
+  "emulate",
+  "sysopen",
+  "sysread",
+  "syswrite",
+  "sysseek",
+  "zpty",
+  "ztcp",
+  "zsocket",
+  "mapfile",
+  "zf_rm",
+  "zf_mv",
+  "zf_ln",
+  "zf_chmod",
+  "zf_chown",
+  "zf_mkdir",
+  "zf_rmdir",
+  "zf_chgrp",
 ]);
 
 const ZSH_PRECOMMAND_MODIFIERS = new Set(["command", "builtin", "noglob", "nocorrect"]);
@@ -922,7 +940,8 @@ export function validateDangerousVariablesAndIncomplete(command: string): Inject
   const { fullyUnquoted } = extractQuotedContent(command);
 
   // (a) 危险环境变量赋值（命令前缀或 export）
-  const dangerousVars = /(?:^|;|&&|\|\|)\s*(?:export\s+)?(?:PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|PYTHONPATH|NODE_PATH|RUBYLIB|PERL5LIB)\s*=/;
+  const dangerousVars =
+    /(?:^|;|&&|\|\|)\s*(?:export\s+)?(?:PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|PYTHONPATH|NODE_PATH|RUBYLIB|PERL5LIB)\s*=/;
   if (dangerousVars.test(fullyUnquoted)) {
     return {
       id: "dangerous-variable-assignment",

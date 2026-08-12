@@ -165,9 +165,7 @@ export function replaceEmptyParamToolUses(
   getSchema?: SchemaLookup,
 ): ContentBlock[] {
   // 先判定本轮是否存在真退化：决定要不要启动"连坐"。
-  const hasDegraded = content.some(
-    (b) => b.type === "tool_use" && isDegradedToolUse(b, getSchema),
-  );
+  const hasDegraded = content.some((b) => b.type === "tool_use" && isDegradedToolUse(b, getSchema));
   if (!hasDegraded) return content.map((block) => block);
 
   return content.map((block) => {
@@ -221,9 +219,7 @@ export function buildEmptyParamRetryMessage(
   stopReason?: string,
 ): string {
   const toolList = hits.map((h) => h.name).join("、");
-  const compactNote = compacted
-    ? "系统已为你精简对话上下文以释放空间。"
-    : "";
+  const compactNote = compacted ? "系统已为你精简对话上下文以释放空间。" : "";
 
   // ★第二层·预防(根治「git 快照冻结死循环」)——消除导火索:让模型永远知道"上一步到底落没落地"。
   //

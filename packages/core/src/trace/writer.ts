@@ -280,10 +280,7 @@ export class TraceWriter {
     if (!this.ensureDir()) return;
     try {
       const filePath = join(this.sessionDir, "messages.json");
-      writeFileSync(
-        filePath,
-        maskJsonSafe(JSON.stringify(snapshot, null, 2), 2, "messages.json"),
-      );
+      writeFileSync(filePath, maskJsonSafe(JSON.stringify(snapshot, null, 2), 2, "messages.json"));
     } catch (err) {
       getLogger().warn("TRACE", `写入 messages.json 失败: ${err}`);
     }

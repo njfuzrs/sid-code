@@ -59,9 +59,7 @@ export function buildForkMessages(
 function stripDanglingToolBlocks(messages: ForkMessage[]): ForkMessage[] {
   const result: ForkMessage[] = [];
   for (const msg of messages) {
-    const textBlocks = msg.content.filter(
-      (b) => b.type === "text",
-    );
+    const textBlocks = msg.content.filter((b) => b.type === "text");
     // 消息含工具块 → 只保留文本部分；纯工具消息则跳过
     if (textBlocks.length === 0) continue;
     result.push({ role: msg.role, content: textBlocks });

@@ -78,10 +78,8 @@ const PR_WORKFLOW_PROMPT = `# PR 工作流 SOP
 export function registerPrWorkflowSkill(): void {
   registerBundledSkill({
     name: "pr-workflow",
-    description:
-      "完整 PR 工作流 SOP：提交 → 推送 → 创建 PR → 自审 → 处理评审意见(一键走完)",
-    whenToUse:
-      "当用户说 'pr workflow'、'走完整 PR 流程'、'一键提交发 PR 并审查'、'PR SOP' 时",
+    description: "完整 PR 工作流 SOP：提交 → 推送 → 创建 PR → 自审 → 处理评审意见(一键走完)",
+    whenToUse: "当用户说 'pr workflow'、'走完整 PR 流程'、'一键提交发 PR 并审查'、'PR SOP' 时",
     argumentHint: "[PR 说明 / reviewer 评论 / 额外要求]",
     // fork 模式：白名单真实生效（含 edit/write 以便阶段 5 改代码）
     allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
@@ -94,7 +92,8 @@ export function registerPrWorkflowSkill(): void {
     async getPromptForCommand(args, context) {
       // P3-1：commit + PR 归因动态注入（settings.git.commitAttribution / prAttribution）。
       // 本 skill 同时做 commit 与建 PR，两处归因都要覆盖；各自 enabled=false → 空串。
-      const { commitAttributionInstruction, prAttributionInstruction } = await import("../../tool/git-attribution.ts");
+      const { commitAttributionInstruction, prAttributionInstruction } =
+        await import("../../tool/git-attribution.ts");
       const parts = [
         commitAttributionInstruction(context?.config?.git),
         prAttributionInstruction(context?.config?.git),

@@ -37,10 +37,7 @@ const APPLY = process.argv.includes("--apply");
 /** `src/<rest>` → `packages/<pkg>/src/<rest>`；判不出包或目标不存在则返回 null。 */
 function mapSrcPath(rest: string): string | null {
   const parts = rest.split("/");
-  const pkg =
-    parts.length === 1
-      ? ROOT_FILE_TO_PACKAGE[parts[0]!]
-      : MODULE_TO_PACKAGE[parts[0]!];
+  const pkg = parts.length === 1 ? ROOT_FILE_TO_PACKAGE[parts[0]!] : MODULE_TO_PACKAGE[parts[0]!];
   if (!pkg) return null;
   // ink 被扁平化进 tui-renderer 的 src 根
   const within = parts[0] === "ink" ? parts.slice(1).join("/") : parts.join("/");
@@ -116,7 +113,10 @@ for (const rel of files) {
       count++;
       // packages/<pkg>/src/<...> → 拆回分段字面量，保持原有 join(...) 风格
       const q = whole[0]!;
-      return mapped.split("/").map((p) => `${q}${p}${q}`).join(", ");
+      return mapped
+        .split("/")
+        .map((p) => `${q}${p}${q}`)
+        .join(", ");
     },
   );
 

@@ -7,7 +7,11 @@ import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 import { estimateTextTokens, estimateBlockTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
-import { persistLargeOutput, isPersistedReference, ContentReplacementState } from "./tool-result-storage.ts";
+import {
+  persistLargeOutput,
+  isPersistedReference,
+  ContentReplacementState,
+} from "./tool-result-storage.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -158,9 +162,9 @@ export interface CompactionOutcome {
 
 /** 压缩级别 */
 export type CompactionLevel =
-  | "none"       // 不需要压缩
-  | "soft"       // 建议压缩（工具输出遮罩即可）
-  | "hard"       // 需要摘要压缩
+  | "none" // 不需要压缩
+  | "soft" // 建议压缩（工具输出遮罩即可）
+  | "hard" // 需要摘要压缩
   | "emergency"; // 紧急：强制截断，防止 API 报错
 
 /**
@@ -183,7 +187,7 @@ const BUFFER_THRESHOLDS = {
   emergency: 40_000,
 };
 /** 小窗口模型阈值（window ≤ 60K tokens 时仅 emergency 截断生效，比例触发） */
-const SMALL_WINDOW_EMERGENCY_RATIO = 0.90;
+const SMALL_WINDOW_EMERGENCY_RATIO = 0.9;
 
 /**
  * P3-2：完成缓冲区（Completion Buffer）——对标 CC `getEffectiveContextWindowSize` 的意图。
@@ -214,14 +218,14 @@ const COMPLETION_BUFFER = {
   /** 一次 LLM 摘要往返的预留（对齐 CC 的 min(20K,...) 量级） */
   SUMMARY_RESERVE: 20_000,
   /** 缓冲区总量占窗口的上限比例（硬护栏：地板绝不抬过窗口 20%） */
-  TOTAL_MAX_RATIO: 0.20,
+  TOTAL_MAX_RATIO: 0.2,
   /** 小窗口模型（≤60K）不启用——空间本就紧张，抬地板会让它一直处于压缩态 */
   MIN_WINDOW_TO_APPLY: 60_000,
 };
 
 /** 上下文管理器配置 */
 export interface ManagerOptions {
-  maxTokens: number;        // 上下文窗口最大 token 数
+  maxTokens: number; // 上下文窗口最大 token 数
   compactThreshold?: number; // 触发压缩的阈值比例（默认 0.7）
   /**
    * P3-2：模型单次响应的最大输出 token 数（来自 model-registry 的 maxOutputTokens）。
@@ -393,8 +397,7 @@ export class Manager {
    * @param tokens 全部工具定义序列化后的估算 token 数；传 0 或负数视为未知，回退粗估。
    */
   setToolSchemaTokens(tokens: number): void {
-    this.toolSchemaTokens =
-      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : null;
+    this.toolSchemaTokens = Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : null;
   }
 
   /**
@@ -407,8 +410,7 @@ export class Manager {
    * @param tokens MCP 工具定义的估算 token 数；非正值视为 0（无 MCP 工具，分类不展示）。
    */
   setMcpToolSchemaTokens(tokens: number): void {
-    this.mcpToolSchemaTokens =
-      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+    this.mcpToolSchemaTokens = Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
   }
 
   /**
@@ -416,8 +418,7 @@ export class Manager {
    * 对齐 CC analyzeContext 的 Custom agents 分类。非正值视为 0（分类不展示）。
    */
   setAgentDefinitionTokens(tokens: number): void {
-    this.agentDefinitionTokens =
-      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+    this.agentDefinitionTokens = Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
   }
 
   /**
@@ -425,8 +426,7 @@ export class Manager {
    * 对齐 CC analyzeContext 的 Memory files 分类。非正值视为 0（分类不展示）。
    */
   setMemoryTokens(tokens: number): void {
-    this.memoryTokens =
-      Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
+    this.memoryTokens = Number.isFinite(tokens) && tokens > 0 ? Math.ceil(tokens) : 0;
   }
 
   /**
@@ -505,7 +505,9 @@ export class Manager {
    * 由上层（App）转调 sessionStore.appendCompact 落盘 context_compact 记录。
    * 传 undefined 可解除观察者。
    */
-  setCompactObserver(observer: ((summary: string, removedCount: number) => void) | undefined): void {
+  setCompactObserver(
+    observer: ((summary: string, removedCount: number) => void) | undefined,
+  ): void {
     this.compactObserver = observer;
   }
 
@@ -613,8 +615,12 @@ export class Manager {
     const sessionId = this.sessionId ?? "default";
     const compressed: Message = {
       ...msg,
-      content: msg.content.map(block => {
-        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > OUTPUT_THRESHOLD) {
+      content: msg.content.map((block) => {
+        if (
+          block.type === "tool_result" &&
+          typeof block.content === "string" &&
+          block.content.length > OUTPUT_THRESHOLD
+        ) {
           // 跳过已是持久化引用的内容（会话恢复路径 2 逐条 addMessage 时，避免对引用二次持久化）
           if (isPersistedReference(block.content)) {
             return block;
@@ -622,11 +628,22 @@ export class Manager {
           const toolName = this.resolveToolName(block.tool_use_id);
           // read/edit/write/read_many 工具不在入队时持久化——依赖 getCleanedMessages 的分级保护
           // OOM 安全：read 工具自身有 2000 行限制，单次最大 ~200K；保留 6 条 ≈ 1.2MB 可接受
-          if (toolName === "read" || toolName === "edit" || toolName === "write" || toolName === "read_many") {
-            log.debug("CONTEXT", `豁免持久化 tool_result (${toolName}): ${block.content.length} 字符保留在内存`);
+          if (
+            toolName === "read" ||
+            toolName === "edit" ||
+            toolName === "write" ||
+            toolName === "read_many"
+          ) {
+            log.debug(
+              "CONTEXT",
+              `豁免持久化 tool_result (${toolName}): ${block.content.length} 字符保留在内存`,
+            );
             return block;
           }
-          log.debug("CONTEXT", `增量持久化 tool_result (${toolName}): ${block.content.length} → 磁盘`);
+          log.debug(
+            "CONTEXT",
+            `增量持久化 tool_result (${toolName}): ${block.content.length} → 磁盘`,
+          );
           const { reference } = persistLargeOutput(
             block.content,
             block.tool_use_id,
@@ -653,9 +670,10 @@ export class Manager {
           ...lastMsg,
           content: [...lastMsg.content, ...compressed.content],
           // 保留上一条的 _meta，新消息若带 _meta 则浅合并（reasoning_content 等以新值为准）
-          _meta: compressed._meta || lastMsg._meta
-            ? { ...lastMsg._meta, ...compressed._meta }
-            : undefined,
+          _meta:
+            compressed._meta || lastMsg._meta
+              ? { ...lastMsg._meta, ...compressed._meta }
+              : undefined,
         };
         return;
       }
@@ -692,15 +710,25 @@ export class Manager {
    * 用于（a）识别哪些大 tool_result 对应"正在编辑的文件"应豁免清理；
    *      （b）为被清理的占位符附带"重读指引"（9.3：含工具名 + input 摘要，精准而非通用文案）。
    */
-  private buildToolUseIndex(messages: Message[]): Map<string, { toolName: string; filePath?: string; inputSummary?: string }> {
+  private buildToolUseIndex(
+    messages: Message[],
+  ): Map<string, { toolName: string; filePath?: string; inputSummary?: string }> {
     const index = new Map<string, { toolName: string; filePath?: string; inputSummary?: string }>();
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
       for (const block of msg.content) {
         if (block.type === "tool_use" && block.id) {
-          const input = (block.input ?? {}) as { file_path?: string; path?: string; command?: string };
+          const input = (block.input ?? {}) as {
+            file_path?: string;
+            path?: string;
+            command?: string;
+          };
           const filePath = input.file_path ?? input.path;
-          index.set(block.id, { toolName: block.name, filePath, inputSummary: summarizeToolInput(block.input) });
+          index.set(block.id, {
+            toolName: block.name,
+            filePath,
+            inputSummary: summarizeToolInput(block.input),
+          });
         }
       }
     }
@@ -712,7 +740,9 @@ export class Manager {
    * 规则：历史中出现过对该文件的 write 或 edit（成功与否不区分，意图即视为活跃）。
    * 活跃文件的 read 大输出不清理——避免"改代码 → 输出被蒸发 → 被迫重读"的循环。
    */
-  private collectActiveFiles(toolIndex: Map<string, { toolName: string; filePath?: string }>): Set<string> {
+  private collectActiveFiles(
+    toolIndex: Map<string, { toolName: string; filePath?: string }>,
+  ): Set<string> {
     const active = new Set<string>();
     for (const { toolName, filePath } of toolIndex.values()) {
       if (!filePath) continue;
@@ -737,7 +767,11 @@ export class Manager {
     let cleaned = [...this.messages];
     if (this.maskingService) {
       const compactionLevel = this.getCompactionLevel();
-      if (compactionLevel === "soft" || compactionLevel === "hard" || compactionLevel === "emergency") {
+      if (
+        compactionLevel === "soft" ||
+        compactionLevel === "hard" ||
+        compactionLevel === "emergency"
+      ) {
         cleaned = this.maskingService.mask(cleaned);
       }
     }
@@ -760,7 +794,10 @@ export class Manager {
     // 模型下一轮才能看到它们，不应在本次 getCleanedMessages 中被清理。
     let lastAssistantIdx = -1;
     for (let k = cleaned.length - 1; k >= 0; k--) {
-      if (cleaned[k].role === "assistant") { lastAssistantIdx = k; break; }
+      if (cleaned[k].role === "assistant") {
+        lastAssistantIdx = k;
+        break;
+      }
     }
 
     for (let i = 0; i < cleaned.length; i++) {
@@ -771,9 +808,13 @@ export class Manager {
           const meta = toolIndex.get(block.tool_use_id);
           const filePath = meta?.filePath;
           // P1-3：read 了活跃（被 write/edit 过）文件的大输出 → 豁免清理
-          const isActiveFile = !!(filePath && meta?.toolName === "read" && activeFiles.has(filePath));
+          const isActiveFile = !!(
+            filePath &&
+            meta?.toolName === "read" &&
+            activeFiles.has(filePath)
+          );
           // 当前 turn 保护：最后一条 assistant 之后的 tool_result 不清理
-          const isCurrentTurn = (lastAssistantIdx >= 0 && i > lastAssistantIdx);
+          const isCurrentTurn = lastAssistantIdx >= 0 && i > lastAssistantIdx;
           const exempt = isActiveFile || isCurrentTurn;
           largeOutputPositions.push({
             msgIdx: i,
@@ -788,7 +829,7 @@ export class Manager {
     }
 
     // 仅对"非豁免"的大输出做保留数判定（活跃文件输出不计入清理候选）
-    const cleanable = largeOutputPositions.filter(p => !p.exempt);
+    const cleanable = largeOutputPositions.filter((p) => !p.exempt);
 
     // 如果可清理的大输出数量不超过保留数，直接返回
     if (cleanable.length <= KEEP_RECENT_OUTPUTS) {
@@ -796,7 +837,7 @@ export class Manager {
       const errors = MessageValidator.validate(cleaned);
       if (errors.length > 0) {
         log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
-          errors: errors.map(e => `[${e.code}] ${e.message}`),
+          errors: errors.map((e) => `[${e.code}] ${e.message}`),
         });
       }
       return cleaned;
@@ -805,8 +846,11 @@ export class Manager {
     // 需要清理的旧输出（保留最近 N 个），活跃文件已被排除在 cleanable 之外
     const toClean = cleanable.slice(0, -KEEP_RECENT_OUTPUTS);
     // key → {filePath, toolName, inputSummary}，用于占位符精准重读指引（9.3）
-    const cleanMap = new Map<string, { filePath?: string; toolName?: string; inputSummary?: string }>(
-      toClean.map(p => [
+    const cleanMap = new Map<
+      string,
+      { filePath?: string; toolName?: string; inputSummary?: string }
+    >(
+      toClean.map((p) => [
         `${p.msgIdx}:${p.blockIdx}`,
         { filePath: p.filePath, toolName: p.toolName, inputSummary: p.inputSummary },
       ]),
@@ -854,7 +898,11 @@ export class Manager {
       const msg = result[i];
       for (let j = 0; j < msg.content.length; j++) {
         const block = msg.content[j];
-        if (block.type === "tool_result" && typeof block.content === "string" && isPersistedReference(block.content)) {
+        if (
+          block.type === "tool_result" &&
+          typeof block.content === "string" &&
+          isPersistedReference(block.content)
+        ) {
           persistedRefPositions.push({ msgIdx: i, blockIdx: j });
         }
       }
@@ -876,7 +924,7 @@ export class Manager {
     const errors = MessageValidator.validate(result);
     if (errors.length > 0) {
       log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
-        errors: errors.map(e => `[${e.code}] ${e.message}`),
+        errors: errors.map((e) => `[${e.code}] ${e.message}`),
       });
     }
 
@@ -938,18 +986,26 @@ export class Manager {
       const msg = this.messages[i];
       // 替换内容为空引用，让 GC 回收
       // 使用小对象替换大 content 数组
-      const hadContent = msg.content.length > 0 && msg.content.some(b => {
-        if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 100) return true;
-        if (b.type === "text" && b.text.length > 100) return true;
-        return false;
-      });
+      const hadContent =
+        msg.content.length > 0 &&
+        msg.content.some((b) => {
+          if (b.type === "tool_result" && typeof b.content === "string" && b.content.length > 100)
+            return true;
+          if (b.type === "text" && b.text.length > 100) return true;
+          return false;
+        });
 
       if (hadContent) {
         // `...msg._meta` 而非整体覆盖：`origin`（TUI 隐藏标记）、`compact_boundary`
         // 等已有元数据必须留下，只叠加 gc_released。
         this.messages[i] = {
           ...msg,
-          content: [{ type: "text", text: `[已释放] ${msg.role} 消息内容已被 GC 回收，详情见 compact_boundary` }],
+          content: [
+            {
+              type: "text",
+              text: `[已释放] ${msg.role} 消息内容已被 GC 回收，详情见 compact_boundary`,
+            },
+          ],
           _meta: { ...msg._meta, gc_released: true },
         };
         releasedCount++;
@@ -1035,7 +1091,7 @@ export class Manager {
     while ((match = codeBlockRegex.exec(content)) !== null) {
       const code = match[2];
       if (code.length > 2000) {
-        const lines = code.split('\n');
+        const lines = code.split("\n");
         const keepHead = Math.ceil(lines.length * 0.6);
         const keepTail = Math.floor(lines.length * 0.4);
         const omitted = lines.length - keepHead - keepTail;
@@ -1044,7 +1100,7 @@ export class Manager {
             ...lines.slice(0, keepHead),
             `\n... [省略 ${omitted} 行] ...\n`,
             ...lines.slice(-keepTail),
-          ].join('\n');
+          ].join("\n");
           result = result.replace(match[0], `\`\`\`${match[1]}\n${compressed}\`\`\``);
         }
       }
@@ -1052,11 +1108,11 @@ export class Manager {
     if (result.length <= maxChars) return result;
 
     // 2. 检测文件内容（行号特征：→ 或 数字│）
-    if (content.includes('→') || /^\s*\d+\s*[│|]/m.test(content)) {
-      const lines = content.split('\n');
+    if (content.includes("→") || /^\s*\d+\s*[│|]/m.test(content)) {
+      const lines = content.split("\n");
       if (lines.length > 30) {
-        const head = lines.slice(0, 20).join('\n');
-        const tail = lines.slice(-10).join('\n');
+        const head = lines.slice(0, 20).join("\n");
+        const tail = lines.slice(-10).join("\n");
         return `${head}\n\n... [省略 ${lines.length - 30} 行，共 ${lines.length} 行] ...\n\n${tail}`;
       }
     }
@@ -1226,7 +1282,7 @@ export class Manager {
       const compressionRemaining =
         this.autoCompactPctOverride !== null
           ? Math.max(this.maxTokens * (1 - this.autoCompactPctOverride), emergencyRemaining)
-          : 0;  // 未设 override → 无 hard 档（门槛 0，剩余永不 ≤ 0 除非溢出）
+          : 0; // 未设 override → 无 hard 档（门槛 0，剩余永不 ≤ 0 除非溢出）
       return {
         effectiveWindow,
         completionBuffer,
@@ -1249,7 +1305,7 @@ export class Manager {
     // P3-2 地板：emergency 是最后一道防线，剩余必须够「写完当前回复 + 一次摘要」。
     let emergencyRemaining = Math.max(
       BUFFER_THRESHOLDS.emergency,
-      this.maxTokens * 0.10,
+      this.maxTokens * 0.1,
       completionBuffer,
     );
 
@@ -1478,10 +1534,10 @@ export class Manager {
     }
 
     // 按剩余空间从紧到松检查：剩余越少 → 响应越激进
-    if (remaining <= t.emergencyRemaining) return "emergency";    // 紧急截断
-    if (remaining <= t.compressionRemaining) return "hard";       // LLM 摘要压缩
-    if (remaining <= t.maskingRemaining) return "soft";           // 工具输出遮罩
-    return "none";                                                // 充裕 → 不需要压缩
+    if (remaining <= t.emergencyRemaining) return "emergency"; // 紧急截断
+    if (remaining <= t.compressionRemaining) return "hard"; // LLM 摘要压缩
+    if (remaining <= t.maskingRemaining) return "soft"; // 工具输出遮罩
+    return "none"; // 充裕 → 不需要压缩
   }
 
   /**
@@ -1551,10 +1607,7 @@ export class Manager {
       const why = !integrity.intact
         ? describeIntegrityViolation(integrity)
         : structural.map((e) => `${e.code}@${e.messageIndex}`).join(", ");
-      log.warn(
-        "CONTEXT",
-        `紧急截断已回滚：切分后序列非法（${why}），${before} 条消息未变`,
-      );
+      log.warn("CONTEXT", `紧急截断已回滚：切分后序列非法（${why}），${before} 条消息未变`);
       this.messages = snapshot;
       return {
         success: false,
@@ -1621,7 +1674,9 @@ export class Manager {
       parts.push(`涉及文件：${fileList}${files.size > 10 ? ` 等 ${files.size} 个` : ""}。`);
     }
     if (lastUserText) {
-      parts.push(`最近的用户意图：${lastUserText.slice(0, 300)}${lastUserText.length > 300 ? "…" : ""}`);
+      parts.push(
+        `最近的用户意图：${lastUserText.slice(0, 300)}${lastUserText.length > 300 ? "…" : ""}`,
+      );
     }
     parts.push("如需被截断的细节，可读取完整转录文件或重新读取上述文件。");
     return parts.join("\n");
@@ -1775,7 +1830,7 @@ export class Manager {
       const msg = result[i];
       result[i] = {
         ...msg,
-        content: msg.content.map(block => {
+        content: msg.content.map((block) => {
           if (block.type !== "tool_result") return block;
           const tokens = estimateTextTokens(block.content);
           if (tokenBudget >= tokens) {
@@ -1918,7 +1973,10 @@ export class Manager {
     if (tokensAfter >= tokensBefore) {
       log.warn("CONTEXT", `压缩异常：压缩后 token 数 (${tokensAfter}) >= 压缩前 (${tokensBefore})`);
     } else {
-      log.info("CONTEXT", `压缩完成: ${tokensBefore} → ${tokensAfter} tokens (节省 ${Math.round((1 - tokensAfter / tokensBefore) * 100)}%)`);
+      log.info(
+        "CONTEXT",
+        `压缩完成: ${tokensBefore} → ${tokensAfter} tokens (节省 ${Math.round((1 - tokensAfter / tokensBefore) * 100)}%)`,
+      );
     }
 
     // 记录压缩到会话指标
@@ -1991,9 +2049,7 @@ export class Manager {
     };
     const skillAckMsg: Message = {
       role: "assistant",
-      content: [
-        { type: "text", text: "好的，我已重新加载之前调用的 Skill 上下文，会继续遵循。" },
-      ],
+      content: [{ type: "text", text: "好的，我已重新加载之前调用的 Skill 上下文，会继续遵循。" }],
       _meta: { origin: "compact-summary" },
     };
     return [skillUserMsg, skillAckMsg];

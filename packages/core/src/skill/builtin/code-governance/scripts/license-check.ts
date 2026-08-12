@@ -115,7 +115,13 @@ function parseNpm(content: string, filename: string): ParsedDep[] {
           break;
         }
       }
-      out.push({ package: pkg, version: verStr, license, evidence_file: filename, evidence_line: line });
+      out.push({
+        package: pkg,
+        version: verStr,
+        license,
+        evidence_file: filename,
+        evidence_line: line,
+      });
     }
     return out;
   } catch {
@@ -129,7 +135,13 @@ function parsePypi(content: string, filename: string): ParsedDep[] {
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^([a-zA-Z0-9_\-]+)==([^\s#]+)/);
     if (m) {
-      out.push({ package: m[1], version: m[2], license: null, evidence_file: filename, evidence_line: i + 1 });
+      out.push({
+        package: m[1],
+        version: m[2],
+        license: null,
+        evidence_file: filename,
+        evidence_line: i + 1,
+      });
     }
   }
   return out;
@@ -146,7 +158,13 @@ function parseGo(content: string, filename: string): ParsedDep[] {
     else if (inRequire || l.startsWith("require ")) {
       const m = l.replace(/^require\s+/, "").match(/^(\S+)\s+(\S+)/);
       if (m) {
-        out.push({ package: m[1], version: m[2], license: null, evidence_file: filename, evidence_line: i + 1 });
+        out.push({
+          package: m[1],
+          version: m[2],
+          license: null,
+          evidence_file: filename,
+          evidence_line: i + 1,
+        });
       }
     }
   }
@@ -157,17 +175,17 @@ const KNOWN_PKG_LICENSE: Record<string, string> = {
   // npm / 常见 GPL / AGPL 包（用于 license:null 的兜底推断）
   "readline-sync": "MIT",
   "node-pty": "MIT",
-  "lodash": "MIT",
-  "express": "MIT",
-  "react": "MIT",
+  lodash: "MIT",
+  express: "MIT",
+  react: "MIT",
   "license-info-gpl-pkg": "GPL-3.0",
   "agpl-tagged-pkg": "AGPL-3.0",
   "sspl-tagged-pkg": "SSPL",
   "lgpl-pkg": "LGPL-3.0",
   "mpl-pkg": "MPL-2.0",
   // pypi
-  "django": "BSD-3-Clause",
-  "flask": "BSD-3-Clause",
+  django: "BSD-3-Clause",
+  flask: "BSD-3-Clause",
   "gpl-tagged-py": "GPL-3.0",
   "agpl-tagged-py": "AGPL-3.0",
   // go

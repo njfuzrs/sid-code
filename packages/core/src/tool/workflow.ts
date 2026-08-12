@@ -58,19 +58,27 @@ const workflowSchema = lazySchema(() =>
       script_path: z
         .string()
         .optional()
-        .describe("磁盘上的 workflow 脚本路径。优先于 script。用于迭代:编辑该文件后用同一 script_path 重跑。"),
+        .describe(
+          "磁盘上的 workflow 脚本路径。优先于 script。用于迭代:编辑该文件后用同一 script_path 重跑。",
+        ),
       name: z
         .string()
         .optional()
-        .describe("已保存 workflow 的名字(从 ~/.sid-code/workflows/scripts/ 加载)。script/script_path 都没给时用它。"),
+        .describe(
+          "已保存 workflow 的名字(从 ~/.sid-code/workflows/scripts/ 加载)。script/script_path 都没给时用它。",
+        ),
       args: z
         .unknown()
         .optional()
-        .describe("传给脚本的 args(脚本里以全局 `args` 逐字可见)。传数组/对象用真正的 JSON 值,不要传 JSON 字符串。"),
+        .describe(
+          "传给脚本的 args(脚本里以全局 `args` 逐字可见)。传数组/对象用真正的 JSON 值,不要传 JSON 字符串。",
+        ),
       resume_from_run_id: z
         .string()
         .optional()
-        .describe("从先前某次 run 的 journal 恢复:未改动的 agent() 调用直接返回缓存,只重跑改动及其之后的。"),
+        .describe(
+          "从先前某次 run 的 journal 恢复:未改动的 agent() 调用直接返回缓存,只重跑改动及其之后的。",
+        ),
       budget_total: z
         .number()
         .optional()
@@ -135,10 +143,7 @@ export class WorkflowTool implements Tool {
     return false;
   }
 
-  async checkPermissions(
-    _input: unknown,
-    _context: ToolUseContext,
-  ): Promise<PermissionResult> {
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
     return { behavior: "passthrough" };
   }
 
@@ -160,7 +165,9 @@ export class WorkflowTool implements Tool {
       const defs = getActiveAgentDefinitions() as Array<{ agentType: string; description: string }>;
       const list = defs.map((d) => `${d.agentType}(${d.description})`).join("、");
       agentTypesLine = `\n- agent({agentType}) 可选类型:${list}。对抗校验场景用 agent({agentType:'verify'}) 开对抗式验证子代理(默认怀疑、主动证伪、读码举证)。`;
-    } catch { /* 注册表读取失败不影响指南主体 */ }
+    } catch {
+      /* 注册表读取失败不影响指南主体 */
+    }
 
     return `- 仅当任务需要多 agent 编排(穷尽/对抗/大规模)时用;单点查找用普通工具或单个子代理。
 - 脚本必须以 \`export const meta = { name, description }\` 纯字面量开头。
@@ -185,7 +192,10 @@ export class WorkflowTool implements Tool {
         return { error: `script_path 不存在: ${params.script_path}` };
       }
       try {
-        return { src: readFileSync(params.script_path, "utf-8"), source: `scriptPath:${params.script_path}` };
+        return {
+          src: readFileSync(params.script_path, "utf-8"),
+          source: `scriptPath:${params.script_path}`,
+        };
       } catch (err) {
         return { error: `读取 script_path 失败: ${(err as Error).message}` };
       }
@@ -343,7 +353,9 @@ export class WorkflowTool implements Tool {
           childSrc = readFileSync(p, "utf-8");
         } else if (nameOrRef && typeof nameOrRef === "object" && nameOrRef.scriptPath) {
           if (!existsSync(nameOrRef.scriptPath)) {
-            throw new Error(`[workflow] 内联子 workflow scriptPath 不存在: ${nameOrRef.scriptPath}`);
+            throw new Error(
+              `[workflow] 内联子 workflow scriptPath 不存在: ${nameOrRef.scriptPath}`,
+            );
           }
           childSrc = readFileSync(nameOrRef.scriptPath, "utf-8");
         } else {
@@ -376,7 +388,10 @@ export class WorkflowTool implements Tool {
         usage: { inputTokens, outputTokens },
       });
 
-      log.info("WORKFLOW", `✓ workflow "${meta.name}" 完成,共 ${runtime.agentCallCount} 个 agent 调用`);
+      log.info(
+        "WORKFLOW",
+        `✓ workflow "${meta.name}" 完成,共 ${runtime.agentCallCount} 个 agent 调用`,
+      );
 
       const resumeHint = savedPath
         ? `\n\n可迭代:编辑 ${savedPath} 后用 {script_path:"${savedPath}", resume_from_run_id:"${runId}"} 重跑(已完成的 agent 走缓存)。`

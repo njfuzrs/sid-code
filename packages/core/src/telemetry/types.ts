@@ -8,9 +8,9 @@ export type SpanStatus = "ok" | "error" | "unset";
 
 /** Span 类型——对应 OTel GenAI 的 operation.name */
 export type SpanKind =
-  | "invoke_agent"    // Agent 调用（顶层）
-  | "chat"            // LLM 推理调用
-  | "execute_tool"    // 工具执行
+  | "invoke_agent" // Agent 调用（顶层）
+  | "chat" // LLM 推理调用
+  | "execute_tool" // 工具执行
   | "blocked_on_user" // 等待用户权限确认（spec 17 §6.1.3）
   | "hook_execution"; // Hook 执行（spec 17 §6.1.3）
 
@@ -23,31 +23,32 @@ export type Attributes = Record<string, AttributeValue>;
 /** Span 事件（轻量级，不创建独立 Span） */
 export interface SpanEvent {
   name: string;
-  timestamp: number;       // Unix 毫秒
+  timestamp: number; // Unix 毫秒
   attributes?: Attributes;
 }
 
 /** 完成的 Span 数据 */
 export interface SpanData {
   // === 标识 ===
-  traceId: string;         // 32 字符十六进制（W3C Trace Context）
-  spanId: string;          // 16 字符十六进制
-  parentSpanId?: string;   // 父 Span ID（顶层 Span 无此字段）
+  traceId: string; // 32 字符十六进制（W3C Trace Context）
+  spanId: string; // 16 字符十六进制
+  parentSpanId?: string; // 父 Span ID（顶层 Span 无此字段）
 
   // === 语义 ===
-  name: string;            // 格式: "{operation} {target}"
+  name: string; // 格式: "{operation} {target}"
   kind: SpanKind;
   status: SpanStatus;
 
   // === 时间 ===
-  startTime: number;       // Unix 毫秒
-  endTime: number;         // Unix 毫秒
-  durationMs: number;      // endTime - startTime
+  startTime: number; // Unix 毫秒
+  endTime: number; // Unix 毫秒
+  durationMs: number; // endTime - startTime
 
   // === 数据 ===
-  attributes: Attributes;  // OTel GenAI 标准属性
-  events: SpanEvent[];     // Span 内的事件序列
-  error?: {                // 错误信息（仅 status=error 时）
+  attributes: Attributes; // OTel GenAI 标准属性
+  events: SpanEvent[]; // Span 内的事件序列
+  error?: {
+    // 错误信息（仅 status=error 时）
     type: string;
     message: string;
     stack?: string;
@@ -56,10 +57,10 @@ export interface SpanData {
 
 /** Metric 数据点 */
 export interface MetricPoint {
-  name: string;            // 如 "gen_ai.client.token.usage"
+  name: string; // 如 "gen_ai.client.token.usage"
   value: number;
   timestamp: number;
-  attributes: Attributes;  // 维度标签
+  attributes: Attributes; // 维度标签
   type: "counter" | "histogram" | "gauge";
 }
 
@@ -75,9 +76,9 @@ export interface TelemetryExporter {
 export interface TelemetryConfig {
   enabled: boolean;
   exporters: TelemetryExporterConfig[];
-  batchSize: number;       // 批量导出大小，默认 512
+  batchSize: number; // 批量导出大小，默认 512
   flushIntervalMs: number; // 刷新间隔，默认 5000
-  maxQueueSize: number;    // 最大队列大小，默认 2048
+  maxQueueSize: number; // 最大队列大小，默认 2048
 }
 
 export interface TelemetryExporterConfig {

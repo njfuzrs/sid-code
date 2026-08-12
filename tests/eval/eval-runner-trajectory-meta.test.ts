@@ -22,7 +22,9 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+  try {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  } catch {}
 });
 
 function writeTraj(name: string, metadata: Record<string, unknown>): string {
@@ -34,8 +36,8 @@ function writeTraj(name: string, metadata: Record<string, unknown>): string {
 describe("readTrajectoryMeta totalSteps 语义", () => {
   test("metadata 有 total_api_calls 时优先用它（turn 语义）", () => {
     const path = writeTraj("with-api-calls", {
-      total_steps: 33,        // trajectory.length，含 observation 翻倍
-      total_api_calls: 16,    // 真实 LLM turn 数
+      total_steps: 33, // trajectory.length，含 observation 翻倍
+      total_api_calls: 16, // 真实 LLM turn 数
       tools_used: ["grep", "read"],
       files_edited: [],
       total_tokens: 12000,

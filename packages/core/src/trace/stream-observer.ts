@@ -13,7 +13,6 @@
  * - 快照数据用于 heartbeat 增强和 ModelCallUnpaired 增强
  */
 
-
 // ─── 流阶段枚举 ───
 
 export type StreamPhase =
@@ -38,9 +37,10 @@ export type StreamPhase =
  * 不知道（OpenAI 族在首内容时刻拿不到 usage）与知道且为 0 是两件事，
  * 落一个假的 `cache_hit: false` 会把"未知"算进 miss 桶，直接污染对照结论。
  */
-export function cacheDimsFor(
-  cacheReadTokens: number | undefined,
-): { cache_hit?: boolean; cache_read?: number } {
+export function cacheDimsFor(cacheReadTokens: number | undefined): {
+  cache_hit?: boolean;
+  cache_read?: number;
+} {
   if (cacheReadTokens === undefined) return {};
   return { cache_hit: cacheReadTokens > 0, cache_read: cacheReadTokens };
 }
@@ -203,7 +203,9 @@ export function emitStreamPhase(
         data: agentId ? { index, phase, agent_id: agentId, ...extra } : { index, phase, ...extra },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 // ─── TimeoutFired 事件（缺口 2） ───
@@ -237,18 +239,16 @@ export function emitTimeoutFired(
         data: agentId ? { index, layer, agent_id: agentId, ...extra } : { index, layer, ...extra },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 /**
  * 记录超时触发后未生效（Promise.race 未 settle）。
  * 调用点：超时触发 5s 后检查是否已 settle。
  */
-export function emitTimeoutIneffective(
-  index: number,
-  layer: TimeoutLayer,
-  reason: string,
-): void {
+export function emitTimeoutIneffective(index: number, layer: TimeoutLayer, reason: string): void {
   try {
     if (_eventWriter && _sessionId) {
       _eventWriter({
@@ -258,7 +258,9 @@ export function emitTimeoutIneffective(
         data: { index, layer, reason },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 /** 超时未生效检查的默认宽限期（缺口 2 进阶）。 */
@@ -291,12 +293,18 @@ export function armIneffectiveCheck(
     if (timer && typeof timer === "object" && "unref" in timer) {
       (timer as { unref: () => void }).unref();
     }
-  } catch { /* 探针创建失败静默 */ }
+  } catch {
+    /* 探针创建失败静默 */
+  }
   return () => {
     if (disarmed) return;
     disarmed = true;
     if (timer !== null) {
-      try { clearTimeout(timer); } catch { /* 静默 */ }
+      try {
+        clearTimeout(timer);
+      } catch {
+        /* 静默 */
+      }
       timer = null;
     }
   };
@@ -327,7 +335,9 @@ export function emitHttpConnected(
         data: { index, ...data },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 // ─── TimeoutRetry 事件（缺口 4） ───
@@ -352,7 +362,9 @@ export function emitTimeoutRetry(data: {
         data: data as unknown as Record<string, unknown>,
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 /**
@@ -372,7 +384,9 @@ export function emitTimeoutRetryExhausted(data: {
         data: data as unknown as Record<string, unknown>,
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 // ─── 快照更新（供 openai.ts 内部调用） ───
@@ -383,7 +397,12 @@ export function emitTimeoutRetryExhausted(data: {
  */
 export function updateStreamStats(
   index: number,
-  update: Partial<Pick<StreamSnapshot, "chunksReceived" | "emptyChunks" | "lastContentProgressAt" | "abortSignalAborted">>,
+  update: Partial<
+    Pick<
+      StreamSnapshot,
+      "chunksReceived" | "emptyChunks" | "lastContentProgressAt" | "abortSignalAborted"
+    >
+  >,
 ): void {
   try {
     const { loopId } = currentSseDumpContext();
@@ -392,10 +411,14 @@ export function updateStreamStats(
     if (snapshot) {
       if (update.chunksReceived !== undefined) snapshot.chunksReceived = update.chunksReceived;
       if (update.emptyChunks !== undefined) snapshot.emptyChunks = update.emptyChunks;
-      if (update.lastContentProgressAt !== undefined) snapshot.lastContentProgressAt = update.lastContentProgressAt;
-      if (update.abortSignalAborted !== undefined) snapshot.abortSignalAborted = update.abortSignalAborted;
+      if (update.lastContentProgressAt !== undefined)
+        snapshot.lastContentProgressAt = update.lastContentProgressAt;
+      if (update.abortSignalAborted !== undefined)
+        snapshot.abortSignalAborted = update.abortSignalAborted;
     }
-  } catch { /* 静默 */ }
+  } catch {
+    /* 静默 */
+  }
 }
 
 // ─── 快照读取（供 collector heartbeat / ModelCallUnpaired 使用） ───
@@ -404,7 +427,11 @@ export function updateStreamStats(
  * 获取指定 index 的流状态快照。
  * loopId 可选——不传时使用当前 ambient context 的 loopId。
  */
-export function getStreamSnapshot(index: number, loopId?: string, agentId?: string): StreamSnapshot | undefined {
+export function getStreamSnapshot(
+  index: number,
+  loopId?: string,
+  agentId?: string,
+): StreamSnapshot | undefined {
   const effectiveLoopId = loopId ?? currentSseDumpContext().loopId;
   return _snapshots.get(makeSnapshotKey(effectiveLoopId, index, agentId));
 }
@@ -520,7 +547,9 @@ export function emitWatchdogKill(
         data: { index, ...data },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 // ─── TimerDrift 事件（定时器迟到实测） ───
@@ -588,7 +617,9 @@ export function emitTimerDrift(
         data: { index, ...data },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }
 
 /**
@@ -623,5 +654,7 @@ export function emitStreamStall(
         data: { index, ...data },
       });
     }
-  } catch { /* 可观测性不影响正常流程 */ }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
 }

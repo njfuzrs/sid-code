@@ -17,14 +17,11 @@
  * @param indexToTest 要测试的字符索引
  * @returns 如果索引在代码块内容中则返回 true，否则返回 false
  */
-export const isIndexInsideCodeBlock = (
-  content: string,
-  indexToTest: number,
-): boolean => {
+export const isIndexInsideCodeBlock = (content: string, indexToTest: number): boolean => {
   let fenceCount = 0;
   let searchPos = 0;
   while (searchPos < content.length) {
-    const nextFence = content.indexOf('```', searchPos);
+    const nextFence = content.indexOf("```", searchPos);
     if (nextFence === -1 || nextFence >= indexToTest) {
       break;
     }
@@ -41,20 +38,17 @@ export const isIndexInsideCodeBlock = (
  * @param index 要检查的索引
  * @returns 包含代码块的起始索引或 -1
  */
-export const findEnclosingCodeBlockStart = (
-  content: string,
-  index: number,
-): number => {
+export const findEnclosingCodeBlockStart = (content: string, index: number): number => {
   if (!isIndexInsideCodeBlock(content, index)) {
     return -1;
   }
   let currentSearchPos = 0;
   while (currentSearchPos < index) {
-    const blockStartIndex = content.indexOf('```', currentSearchPos);
+    const blockStartIndex = content.indexOf("```", currentSearchPos);
     if (blockStartIndex === -1 || blockStartIndex >= index) {
       break;
     }
-    const blockEndIndex = content.indexOf('```', blockStartIndex + 3);
+    const blockEndIndex = content.indexOf("```", blockStartIndex + 3);
     if (blockStartIndex < index) {
       if (blockEndIndex === -1 || index < blockEndIndex + 3) {
         return blockStartIndex;
@@ -85,10 +79,7 @@ export const findEnclosingCodeBlockStart = (
  * @returns 安全拆分点的索引
  */
 export const findLastSafeSplitPoint = (content: string): number => {
-  const enclosingBlockStart = findEnclosingCodeBlockStart(
-    content,
-    content.length,
-  );
+  const enclosingBlockStart = findEnclosingCodeBlockStart(content, content.length);
   if (enclosingBlockStart !== -1) {
     // 内容末尾在代码块内。在代码块之前拆分。
     return enclosingBlockStart;
@@ -97,7 +88,7 @@ export const findLastSafeSplitPoint = (content: string): number => {
   // 搜索不在代码块内的最后一个双换行符（\n\n）
   let searchStartIndex = content.length;
   while (searchStartIndex >= 0) {
-    const dnlIndex = content.lastIndexOf('\n\n', searchStartIndex);
+    const dnlIndex = content.lastIndexOf("\n\n", searchStartIndex);
     if (dnlIndex === -1) {
       // 没有找到更多双换行符
       break;

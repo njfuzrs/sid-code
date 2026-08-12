@@ -117,14 +117,10 @@ function printUsage(data: UsageResponse) {
   console.log("\n📊 Tavily API Usage Report");
   console.log("─".repeat(40));
   console.log(`🎯 Plan:     ${account.current_plan}`);
-  console.log(
-    `✅ Total:    ${totalUsed.toLocaleString()} / ${planLimit.toLocaleString()} calls`,
-  );
+  console.log(`✅ Total:    ${totalUsed.toLocaleString()} / ${planLimit.toLocaleString()} calls`);
   console.log(`📈 Usage:    ${pct}%`);
   if (planLimit > 0) {
-    console.log(
-      `✅ Remaining: ${(planLimit - totalUsed).toLocaleString()} calls`,
-    );
+    console.log(`✅ Remaining: ${(planLimit - totalUsed).toLocaleString()} calls`);
   }
 
   console.log("\n🔍 Breakdown:");

@@ -44,10 +44,7 @@ export function registerVerifySkill(): void {
     userInvocable: true,
     maxTurns: 20,
     async getPromptForCommand(args) {
-      return (
-        VERIFY_PROMPT +
-        (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
-      );
+      return VERIFY_PROMPT + (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "");
     },
   });
 }

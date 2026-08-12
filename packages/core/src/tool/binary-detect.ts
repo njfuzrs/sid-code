@@ -96,8 +96,7 @@ export function detectBinaryContent(buffer: Buffer): BinaryDetectResult {
     };
   }
 
-  const overRatio =
-    checkSize > 0 && nonPrintableCount / checkSize > NON_PRINTABLE_RATIO_THRESHOLD;
+  const overRatio = checkSize > 0 && nonPrintableCount / checkSize > NON_PRINTABLE_RATIO_THRESHOLD;
 
   return {
     isBinary: overRatio,
@@ -119,10 +118,7 @@ export function isBinaryContent(buffer: Buffer): boolean {
  * 把字节偏移换算成 1-based 行列号（按 \n 计行，用于定位可疑字节）。
  * 偏移超出缓冲区时返回 null。
  */
-function offsetToLineCol(
-  buffer: Buffer,
-  offset: number,
-): { line: number; column: number } | null {
+function offsetToLineCol(buffer: Buffer, offset: number): { line: number; column: number } | null {
   if (offset < 0 || offset >= buffer.length) return null;
   let line = 1;
   let lineStart = 0;
@@ -175,9 +171,7 @@ export function formatBinaryRejection(
   buffer: Buffer,
   totalBytes?: number,
 ): string {
-  const lines: string[] = [
-    `错误: 文件内容包含二进制数据，无法以文本形式读取: ${filePath}`,
-  ];
+  const lines: string[] = [`错误: 文件内容包含二进制数据，无法以文本形式读取: ${filePath}`];
 
   const sizeNote =
     totalBytes !== undefined && totalBytes > result.checkSize
@@ -190,7 +184,9 @@ export function formatBinaryRejection(
       result.firstOffset !== null
         ? `字节偏移 ${result.firstOffset}` + (pos ? `（第 ${pos.line} 行第 ${pos.column} 列）` : "")
         : "位置未知";
-    lines.push(`判定依据: 检出 NUL 字节（0x00）——首个位于 ${where}，检测范围内共 ${result.nulCount} 个。`);
+    lines.push(
+      `判定依据: 检出 NUL 字节（0x00）——首个位于 ${where}，检测范围内共 ${result.nulCount} 个。`,
+    );
     lines.push(sizeNote);
 
     // 极少量 NUL 掺在文本里 → 几乎必然是源码把 \x00 写成了真字节，而非文件损坏。
@@ -202,7 +198,9 @@ export function formatBinaryRejection(
           `可用 \`rg -c $'\\x00' <file>\` 或 \`tr -cd '\\0' < <file> | wc -c\` 复核，改完本工具即可正常读取。`,
       );
     } else {
-      lines.push("提示: NUL 数量较多，大概率确实是二进制文件——请改用适合该格式的工具处理，不要按文本读取。");
+      lines.push(
+        "提示: NUL 数量较多，大概率确实是二进制文件——请改用适合该格式的工具处理，不要按文本读取。",
+      );
     }
   } else {
     const pos = result.firstOffset !== null ? offsetToLineCol(buffer, result.firstOffset) : null;
@@ -217,7 +215,9 @@ export function formatBinaryRejection(
       `判定依据: 不可打印控制字符占比 ${ratio.toFixed(1)}%（${result.nonPrintableCount}/${result.checkSize}），超过 ${NON_PRINTABLE_RATIO_THRESHOLD * 100}% 阈值——${where}。`,
     );
     lines.push(sizeNote);
-    lines.push("提示: 若这是文本文件被异常编码/损坏，可先用 grep 或 ls 确认；若确为二进制格式，请改用适合该格式的工具。");
+    lines.push(
+      "提示: 若这是文本文件被异常编码/损坏，可先用 grep 或 ls 确认；若确为二进制格式，请改用适合该格式的工具。",
+    );
   }
 
   return lines.join("\n");

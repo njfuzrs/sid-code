@@ -16,13 +16,13 @@
 #   加 --skip-test 可跳过单测（救急用），冒烟测试始终执行、不可跳过。
 #
 # 内嵌 ripgrep（仓库本地优先，联网仅作缺失时回退，best-effort 不阻断发布）：
-#   vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，`fetch-ripgrep.ts --all`
+#   packages/core/vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，`fetch-ripgrep.ts --all`
 #   优先直接复用（全程不联网）；仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载。
-#   每个 target 编译前把对应平台的二进制放到 vendor/rg-embed（bun --compile 的固定嵌入
+#   每个 target 编译前把对应平台的二进制放到 packages/core/vendor/rg-embed（bun --compile 的固定嵌入
 #   import 路径，见 packages/core/src/tool/rg-embedded.ts）。仓库内和服务器都没有对应二进制/版本时不
 #   阻断发布，仅让该 target 的产物不含内嵌 rg（运行时透明回退系统 rg，与本功能上线前行为一致）。
 #   升级 rg 版本：改 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION → 跑 --all 下载新版本
-#   → git add vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
+#   → git add packages/core/vendor/ripgrep/<新版本>/ 提交入库（可选再用 --upload-ripgrep 同步一份到服务器作为团队备用源）。
 #
 # Changelog + Git Commit + Git Tag（顺序在 2026-08-01 调整，见下方 ★）：
 #   ⓪ bump 之后先检查 changelog/curated/v<version>.json 是否存在（用户视角文案，
@@ -30,15 +30,14 @@
 #      因为此刻跑一次 `bun run changelog:curate <version>` 就能补上；等到发布结束才
 #      发现，补救就得重新发一版。本脚本从不调 LLM，只读这份缓存
 #      （发布路径必须确定性 + 离线 + 幂等）。
-#   ① bump 版本号之后，跑 scripts/generate-changelog.ts 从 git 历史生成三份产物：
+#   ① bump 版本号之后，跑 scripts/generate-changelog.ts 从 git 历史生成两份产物：
 #      · CHANGELOG.md                          文本事实源（仓库根，累积追踪）
 #      · website/.vitepress/data/changelog.json 官网 /changelog 页的数据源
-#      · CHANGELOG.html                        跳转页 → /changelog（保住散落各处的老链接）
 #   ② 4 平台构建 + 本机冒烟 + --self-check 全部通过后，脚本**自己提交** `bump vX.Y.Z`
-#      （只 add package.json / changelog 三产物 / builtin-embedded.generated.ts）
+#      （只 add package.json / changelog 产物 / builtin-embedded.generated.ts）
 #   ③ 把 annotated tag vX.Y.Z 打在**这个 bump 提交**上，并当场校验
 #      `git show <tag>:package.json` 的版本号与 tag 一致
-#   --upload 时额外把 CHANGELOG.md + CHANGELOG.html 传到服务器顶层、并在上传成功后 push tag。
+#   --upload 时额外把 CHANGELOG.md 传到服务器顶层、并在上传成功后 push tag。
 #   changelog 失败不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
 #
 #   ★ 为什么②③要这么排：旧流程把 tag 打在 bump **之前**的 HEAD 上，bump 提交留给用户
@@ -58,7 +57,7 @@
 #   再直接 release 会导致版本号 +2 —— 此时加 --no-bump 复用现有版本号。
 #
 # 中途失败怎么办：直接重跑，**不需要** --no-bump。
-#   脚本装了 EXIT trap，非正常退出时会把 package.json 与 changelog 三产物回滚到运行前的
+#   脚本装了 EXIT trap，非正常退出时会把 package.json 与 changelog 产物回滚到运行前的
 #   状态（仅回滚运行前本就 clean 的文件，绝不吃掉你自己的改动），并在 stderr 打印回滚结果。
 #   所以失败不再消耗版本号。已成功创建的本地 tag 刻意不删（创建是幂等的），重跑会复用。
 #
@@ -91,7 +90,7 @@
 #   - install.sh 的 RELEASE_BASE 由 PUBLIC_BASE_URL 在拷贝时注入，对外地址只需改一处
 #   - team-defaults.json 不随常规发布上传，避免用仓库里的占位模板覆盖服务器上的真实配置；
 #     只能通过 --upload-team-defaults 显式单独推送
-#   - vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库随仓库版本化，常规发布无需联网；
+#   - packages/core/vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库随仓库版本化，常规发布无需联网；
 #     升级 rg 版本才需要 --upload-ripgrep 把新版本同步一份到服务器，供他人 fetch-ripgrep.ts
 #     首次下载填充本地仓库副本时使用
 
@@ -99,6 +98,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# vendor 根目录 —— P2-3（2026-08-12）从仓库根下沉到 packages/core/（谁用谁带，rg 只有
+# core 包在用）。这里抽成变量而不是把新路径散在 7 处：下次再动位置只需改这一行，
+# 而散着写就必然漏一处，且漏掉的那处是**静默**的（cp 到不存在的目录会失败，
+# 但 restore_rg_embed 里全是 `|| return 0` / `|| true` 的容错兜底，不会报错，
+# 只会让本机产物悄悄嵌错平台的 rg —— 正是第 280 行那段注释在防的事）。
+# 同源改动点见 scripts/fetch-ripgrep.ts 的 VENDOR_DIR 注释。
+VENDOR_DIR="$ROOT/packages/core/vendor"
 DIST_DIR="$ROOT/dist"
 BUILD_DIR="$DIST_DIR/build"
 RELEASE_DIR="$DIST_DIR/release"
@@ -255,9 +261,9 @@ run_scp() {
 # changelog 是空的，本次真实提交全被记在那个从未发布的版本名下。
 #
 # 回滚策略：只恢复**本脚本自己改过的、且能安全恢复的**本地文件，绝不碰用户的其它改动。
-#   - package.json / changelog 三产物：仅当本次运行前它们是 clean 的才 git checkout 恢复。
+#   - package.json / changelog 产物：仅当本次运行前它们是 clean 的才 git checkout 恢复。
 #     若运行前就已脏（用户自己在改），保持原样并提示——宁可不回滚，也不能吃掉用户的改动。
-#   - vendor/rg-embed：不入库，直接重新落成本机平台（见 restore_rg_embed）。
+#   - packages/core/vendor/rg-embed：不入库，直接重新落成本机平台（见 restore_rg_embed）。
 #   - 本地 tag：**刻意不删**。tag 创建是幂等的（同名跳过），删了反而可能删掉用户手工打的。
 #     只在回滚提示里告诉用户它还在。
 #
@@ -278,7 +284,7 @@ track_for_rollback() {
     fi
 }
 
-# 把 vendor/rg-embed 还原成**本机平台**的二进制。
+# 把 packages/core/vendor/rg-embed 还原成**本机平台**的二进制。
 # 4 平台循环会把这个固定嵌入路径依次覆盖，跑完残留的是最后一个 target（linux-arm64）。
 # 不还原的话，接下来在本机跑 make build 若 --as-embed 恰好失败（Makefile 那行前导 `-`
 # 忽略错误），就会把 Linux rg 嵌进本机产物 —— 静默降级，极难发现。
@@ -287,20 +293,20 @@ restore_rg_embed() {
     self_p="$(self_platform)"
     [ -n "$self_p" ] || return 0
     # vendor/ 不存在就没什么可还原的（也别让重定向失败往 stderr 吐裸错误）
-    [ -d "$ROOT/vendor" ] || return 0
-    embed_path="$ROOT/vendor/rg-embed"
+    [ -d "$VENDOR_DIR" ] || return 0
+    embed_path="$VENDOR_DIR/rg-embed"
     # 嵌入文件本来就不存在时无需处理：下次 make build 的 --as-embed 会重新落成
     [ -e "$embed_path" ] || return 0
-    rg_file="$ROOT/vendor/ripgrep/${RG_VERSION}/rg-${self_p}"
+    rg_file="$VENDOR_DIR/ripgrep/${RG_VERSION}/rg-${self_p}"
     if [ -f "$rg_file" ]; then
         cp "$rg_file" "$embed_path" 2>/dev/null || return 0
         chmod +x "$embed_path" 2>/dev/null || true
-        info "已把 vendor/rg-embed 还原为本机平台（${self_p}）"
+        info "已把 packages/core/vendor/rg-embed 还原为本机平台（${self_p}）"
     else
         # 本机平台的 rg 都没有，那就置空：宁可"无内嵌 rg"（设计内降级），
         # 也不能留一个其它平台的二进制在那儿等着被嵌错。
         : > "$embed_path" 2>/dev/null || true
-        info "已清空 vendor/rg-embed（缺本机平台 rg，避免残留其它平台二进制）"
+        info "已清空 packages/core/vendor/rg-embed（缺本机平台 rg，避免残留其它平台二进制）"
     fi
 }
 
@@ -485,7 +491,7 @@ else
 fi
 
 echo ">>> 生成 changelog (v$VERSION) ..."
-for _f in CHANGELOG.md CHANGELOG.html website/.vitepress/data/changelog.json; do
+for _f in CHANGELOG.md website/.vitepress/data/changelog.json; do
     track_for_rollback "$_f"
 done
 bun run scripts/generate-changelog.ts "$VERSION" || warn "changelog 生成失败（不阻断发布）"
@@ -514,7 +520,7 @@ bun run scripts/embed-builtin-skills.ts
 echo ""
 
 # ─── 准备内嵌 ripgrep（4 平台，best-effort）───
-# vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，优先直接复用（全程不联网）；
+# packages/core/vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，优先直接复用（全程不联网）；
 # 仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载服务器。服务器缺文件不阻断发布，
 # 产物退化为「无内嵌 rg，运行时回退系统 rg」——与本功能上线前的行为完全一致。
 
@@ -549,15 +555,15 @@ for entry in "${TARGETS[@]}"; do
     mkdir -p "$OUT_DIR"
 
     # ─── 切换嵌入的 rg 二进制为当前 target 对应平台 ───
-    # vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 packages/core/src/tool/rg-embedded.ts）。
+    # packages/core/vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 packages/core/src/tool/rg-embedded.ts）。
     # 明确置空（而非跳过）以避免复用上一个 target 残留的错误平台二进制。
-    RG_VENDOR_FILE="$ROOT/vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}"
+    RG_VENDOR_FILE="$VENDOR_DIR/ripgrep/${RG_VERSION}/rg-${PLATFORM}"
     if [ -f "$RG_VENDOR_FILE" ]; then
-        cp "$RG_VENDOR_FILE" "$ROOT/vendor/rg-embed"
-        chmod +x "$ROOT/vendor/rg-embed"
+        cp "$RG_VENDOR_FILE" "$VENDOR_DIR/rg-embed"
+        chmod +x "$VENDOR_DIR/rg-embed"
     else
-        : > "$ROOT/vendor/rg-embed"
-        warn "未找到 vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
+        : > "$VENDOR_DIR/rg-embed"
+        warn "未找到 packages/core/vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
     fi
 
     # --define process.env.NODE_ENV：必须带，别删（与 Makefile 的 BUILD_DEFINES 同源同理由）。
@@ -638,7 +644,6 @@ echo ""
 RELEASE_COMMIT_FILES=(
     package.json
     CHANGELOG.md
-    CHANGELOG.html
     website/.vitepress/data/changelog.json
     packages/core/src/skill/builtin-embedded.generated.ts
 )
@@ -706,15 +711,10 @@ sed "s#https://www\.sid-code\.cc#${PUBLIC_BASE_URL}#g" \
 chmod +x "$RELEASE_DIR/install.sh"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
 
-# 把仓库根 CHANGELOG.md + CHANGELOG.html 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR
-# 本地验证与真实上传走同一套相对路径逻辑。MD 是文本事实源；HTML 现在只是跳转页
-# （→ 官网 /changelog），保留它是因为老链接散落在 README / install.sh 收尾提示 /
-# 用户终端历史输出里，直接删就是一堆 404。
+# 把仓库根 CHANGELOG.md 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR
+# 本地验证与真实上传走同一套相对路径逻辑。MD 是文本事实源。
 if [ -f "$ROOT/CHANGELOG.md" ]; then
     cp "$ROOT/CHANGELOG.md" "$RELEASE_DIR/CHANGELOG.md"
-fi
-if [ -f "$ROOT/CHANGELOG.html" ]; then
-    cp "$ROOT/CHANGELOG.html" "$RELEASE_DIR/CHANGELOG.html"
 fi
 
 echo "=== 发布产物（${RELEASE_DIR}）==="
@@ -812,14 +812,10 @@ fi"
 
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
-    # 上传顶层 CHANGELOG.md + CHANGELOG.html（供用户通过链接查看版本变更）
+    # 上传顶层 CHANGELOG.md（供用户通过链接查看版本变更）
     if [ -f "$RELEASE_DIR/CHANGELOG.md" ]; then
         info "上传 CHANGELOG.md ..."
         run_scp "$RELEASE_DIR/CHANGELOG.md" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.md"
-    fi
-    if [ -f "$RELEASE_DIR/CHANGELOG.html" ]; then
-        info "上传 CHANGELOG.html（跳转页 → /changelog）..."
-        run_scp "$RELEASE_DIR/CHANGELOG.html" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.html"
     fi
 
     # latest.txt 放最后：确保它指向的版本此时已经完整上传

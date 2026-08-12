@@ -118,7 +118,8 @@ case_002: score=0 — 未命中 6 个内置工具路径
 
 1. **横向对比 claude-code / codex 用 Inspect 重做**
    `inspect_ai` 原生支持 spawn 任意 CLI 作为 solver，比手写 adapter + 解析 jsonl 简单。
-   （sid-code/evals/_reports/horizontal-comparison-v1.md 显示 claude-code 5/25 超时，可能是 adapter 实现问题）
+   （旧横向对比报告 `_reports/horizontal-comparison-v1.md` 已作为沉没成本清理，见 git 历史 —— 结论是
+   claude-code 5/25 超时，可能是 adapter 实现问题）
 
 2. **`.eval` → `_scores/wNN/case_NNN.yaml` 转换器**
    让 inspect 跑分能进 dashboard 时序图。约 1h 工作量。

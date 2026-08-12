@@ -115,8 +115,9 @@ async function main(argv: string[]): Promise<number> {
     // P2-2 分包：builtin Skill 归 core 包。walkYaml 对不存在的目录返回 []，
     // 路径指错不会报错，只会「扫到 0 个 SKILL.md → 打印 skip → return 0」——
     // 这道 holdout 泄露门禁就此静默失效。
-    stagedSkills = walkYaml(join(SID_CODE_ROOT, "packages", "core", "src", "skill", "builtin"))
-      .filter((p) => p.endsWith("/SKILL.md") || p.endsWith("\\SKILL.md"));
+    stagedSkills = walkYaml(
+      join(SID_CODE_ROOT, "packages", "core", "src", "skill", "builtin"),
+    ).filter((p) => p.endsWith("/SKILL.md") || p.endsWith("\\SKILL.md"));
   }
 
   if (stagedSkills.length === 0) {
@@ -139,7 +140,9 @@ async function main(argv: string[]): Promise<number> {
 
   if (survey.execution_cases === 0) {
     console.log("");
-    console.log("[skill-holdout-guardrail] ⚠️  护栏 2（§13.4.4 v1.3）— holdout 暂无 execution case，skip");
+    console.log(
+      "[skill-holdout-guardrail] ⚠️  护栏 2（§13.4.4 v1.3）— holdout 暂无 execution case，skip",
+    );
     console.log("    ↑ 待 B7-5「永封 200 条 holdout + 标 grader_type=execution_test」后自动激活");
     console.log("    ↑ 当前 hook 不阻塞 SKILL.md commit，但**该护栏未生效**，蒸馏改动需人工把关");
     return 0;
@@ -149,11 +152,17 @@ async function main(argv: string[]): Promise<number> {
 
   if (!isCI) {
     console.log("");
-    console.log(`[skill-holdout-guardrail] ✅ holdout 有 ${survey.execution_cases} 条 execution case，应跑回归：`);
+    console.log(
+      `[skill-holdout-guardrail] ✅ holdout 有 ${survey.execution_cases} 条 execution case，应跑回归：`,
+    );
     console.log("");
-    console.log(`    bun run eval:run --cases ${survey.execution_case_paths.map(p => p.replace(SID_CODE_ROOT + "/", "")).join(",")} --provider sid-code --skip-llm-judge`);
+    console.log(
+      `    bun run eval:run --cases ${survey.execution_case_paths.map((p) => p.replace(SID_CODE_ROOT + "/", "")).join(",")} --provider sid-code --skip-llm-judge`,
+    );
     console.log("");
-    console.log("    跑完检查 _runs/sid_code_*.jsonl 中本次 run_id 的所有 execution_test case mandatoryPass");
+    console.log(
+      "    跑完检查 _runs/sid_code_*.jsonl 中本次 run_id 的所有 execution_test case mandatoryPass",
+    );
     console.log("    — 任一 false 即视为护栏 2 reject，不应合入 SKILL.md 改动");
     console.log("");
     console.log("    （CI=true 环境下会自动跑 + 失败阻塞合入）");
@@ -162,26 +171,39 @@ async function main(argv: string[]): Promise<number> {
 
   // CI=true 模式：自动跑 holdout execution 回归 + 失败阻塞合入
   console.log("");
-  console.log(`[skill-holdout-guardrail] 🔒 CI 模式：自动跑 ${survey.execution_cases} 条 holdout execution 回归`);
+  console.log(
+    `[skill-holdout-guardrail] 🔒 CI 模式：自动跑 ${survey.execution_cases} 条 holdout execution 回归`,
+  );
 
   const { spawnSync } = await import("node:child_process");
-  const caseIds = survey.execution_case_paths.map(p => {
-    const base = p.split("/").pop()!.replace(/\.ya?ml$/, "");
+  const caseIds = survey.execution_case_paths.map((p) => {
+    const base = p
+      .split("/")
+      .pop()!
+      .replace(/\.ya?ml$/, "");
     return base;
   });
 
-  const result = spawnSync("bun", [
-    "run", "eval:run",
-    "--cases", caseIds.join(","),
-    "--provider", "sid-code",
-    "--skip-llm-judge",
-    "--no-sync",
-    "--concurrency", "2",
-  ], {
-    cwd: SID_CODE_ROOT,
-    stdio: "inherit",
-    timeout: 600_000,
-  });
+  const result = spawnSync(
+    "bun",
+    [
+      "run",
+      "eval:run",
+      "--cases",
+      caseIds.join(","),
+      "--provider",
+      "sid-code",
+      "--skip-llm-judge",
+      "--no-sync",
+      "--concurrency",
+      "2",
+    ],
+    {
+      cwd: SID_CODE_ROOT,
+      stdio: "inherit",
+      timeout: 600_000,
+    },
+  );
 
   if (result.status !== 0) {
     console.error("");
@@ -222,13 +244,17 @@ async function main(argv: string[]): Promise<number> {
 
   if (!allPass || checked === 0) {
     console.error("");
-    console.error(`[skill-holdout-guardrail] ❌ 护栏 2 REJECT — ${checked === 0 ? "未找到 execution 结果" : "存在 mandatoryPass=false"}`);
+    console.error(
+      `[skill-holdout-guardrail] ❌ 护栏 2 REJECT — ${checked === 0 ? "未找到 execution 结果" : "存在 mandatoryPass=false"}`,
+    );
     console.error("    SKILL.md 改动不应合入");
     return 1;
   }
 
   console.log("");
-  console.log(`[skill-holdout-guardrail] ✅ 护栏 2 PASS — ${checked}/${survey.execution_cases} 条 holdout execution 全部通过`);
+  console.log(
+    `[skill-holdout-guardrail] ✅ 护栏 2 PASS — ${checked}/${survey.execution_cases} 条 holdout execution 全部通过`,
+  );
   return 0;
 }
 

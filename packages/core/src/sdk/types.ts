@@ -39,7 +39,9 @@ export type SDKControlRequest = z.infer<ReturnType<typeof controlSchemas.SDKCont
 export type SDKControlRequestInner = z.infer<
   ReturnType<typeof controlSchemas.SDKControlRequestInnerSchema>
 >;
-export type SDKControlResponse = z.infer<ReturnType<typeof controlSchemas.SDKControlResponseSchema>>;
+export type SDKControlResponse = z.infer<
+  ReturnType<typeof controlSchemas.SDKControlResponseSchema>
+>;
 export type SDKControlPermissionRequest = z.infer<
   ReturnType<typeof controlSchemas.SDKControlPermissionRequestSchema>
 >;
@@ -53,10 +55,7 @@ export type SDKControlInitialize = z.infer<
 // ─── 传输层消息（stdin/stdout 上的所有消息） ───
 
 /** 来自 stdin 的消息：用户消息 / 控制响应 / 心跳 */
-export type StdinMessage =
-  | SDKUserMessage
-  | SDKControlResponse
-  | { type: "keep_alive" };
+export type StdinMessage = SDKUserMessage | SDKControlResponse | { type: "keep_alive" };
 
 /** 写往 stdout 的消息：SDK 数据/系统消息 / 控制请求 */
 export type StdoutMessage = SDKMessage | SDKControlRequest;

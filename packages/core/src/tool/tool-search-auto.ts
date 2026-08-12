@@ -67,10 +67,7 @@ export interface AutoThresholdInput {
  * 使用已有的 TokenEstimator（estimateTools + getContextLimit），不引入新依赖。
  * 只在工具定义确实"撑爆"上下文时才开延迟——少量 MCP 工具时全量更方便。
  */
-export function checkAutoThreshold(
-  input: AutoThresholdInput,
-  percentage: number,
-): boolean {
+export function checkAutoThreshold(input: AutoThresholdInput, percentage: number): boolean {
   const estimator = new TokenEstimator();
   const deferredTokens = estimator.estimateTools(input.deferredDefinitions);
   const contextWindow = estimator.getContextLimit(input.model, input.availableModels);

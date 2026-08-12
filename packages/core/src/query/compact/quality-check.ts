@@ -58,7 +58,10 @@ export function extractAnchors(messages: Message[]): string[] {
 /**
  * 校验摘要对关键锚点的覆盖率（纯本地字符串包含判断）。
  */
-export function checkCompactQuality(originalMessages: Message[], summary: string): CompactQualityReport {
+export function checkCompactQuality(
+  originalMessages: Message[],
+  summary: string,
+): CompactQualityReport {
   const anchors = extractAnchors(originalMessages);
   if (anchors.length === 0) {
     return { totalAnchors: 0, coveredAnchors: 0, coverage: 1, missedSamples: [] };
@@ -95,13 +98,20 @@ export function recordCompactQuality(
         `可能丢失关键信息。未覆盖样例: ${report.missedSamples.slice(0, 5).join(", ")}`,
     );
   } else {
-    log.info("COMPACT_QUALITY", `压缩摘要覆盖率 ${(report.coverage * 100).toFixed(0)}%（${report.coveredAnchors}/${report.totalAnchors}）`);
+    log.info(
+      "COMPACT_QUALITY",
+      `压缩摘要覆盖率 ${(report.coverage * 100).toFixed(0)}%（${report.coveredAnchors}/${report.totalAnchors}）`,
+    );
   }
 
   if (sessionDir) {
     try {
       if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
-      appendFileSync(join(sessionDir, "compact-quality.jsonl"), JSON.stringify(report) + "\n", "utf-8");
+      appendFileSync(
+        join(sessionDir, "compact-quality.jsonl"),
+        JSON.stringify(report) + "\n",
+        "utf-8",
+      );
     } catch {
       // 落盘失败不影响主流程
     }

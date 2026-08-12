@@ -67,8 +67,7 @@ export function writePerfettoTrace(spans: SpanData[], outputPath?: string): stri
   const envPath = process.env.SID_CODE_PERFETTO_TRACE;
   // 环境变量为 "1" 时视为开关而非路径,使用默认文件名
   const path =
-    outputPath ??
-    (envPath && envPath !== "1" ? envPath : `sid-code-trace-${Date.now()}.json`);
+    outputPath ?? (envPath && envPath !== "1" ? envPath : `sid-code-trace-${Date.now()}.json`);
 
   try {
     writeFileSync(path, JSON.stringify(trace), "utf-8");

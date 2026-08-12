@@ -11,11 +11,7 @@ export {
   type SettingSource,
 } from "./constants.ts";
 
-export {
-  SettingsSchema,
-  lazySchema,
-  type SettingsJson,
-} from "./types.ts";
+export { SettingsSchema, lazySchema, type SettingsJson } from "./types.ts";
 
 export {
   type ValidationError,
@@ -23,19 +19,11 @@ export {
   filterInvalidPermissionRules,
 } from "./validation.ts";
 
-export {
-  mergeSettingsRead,
-  mergeSettingsWrite,
-} from "./merge.ts";
+export { mergeSettingsRead, mergeSettingsWrite } from "./merge.ts";
 
-export {
-  SECURITY_SENSITIVE_FIELDS,
-  filterProjectSettings,
-} from "./security.ts";
+export { SECURITY_SENSITIVE_FIELDS, filterProjectSettings } from "./security.ts";
 
-export {
-  resetSettingsCache,
-} from "./cache.ts";
+export { resetSettingsCache } from "./cache.ts";
 
 export {
   getSettings,
@@ -55,10 +43,7 @@ export {
   cleanup as cleanupChangeDetector,
 } from "./change-detector.ts";
 
-export {
-  markInternalWrite,
-  consumeInternalWrite,
-} from "./internal-writes.ts";
+export { markInternalWrite, consumeInternalWrite } from "./internal-writes.ts";
 
 export {
   applySafeConfigEnvironmentVariables,

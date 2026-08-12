@@ -19,7 +19,16 @@ const ROOT = resolve(import.meta.dir, "..", "..");
 
 describe("stripFrontmatter · 剥离 frontmatter", () => {
   test("剥掉开头的 frontmatter 块，保留正文", () => {
-    const src = ["---", "title: 内置工具", "description: 全部工具", "---", "", "# 内置工具", "", "正文"].join("\n");
+    const src = [
+      "---",
+      "title: 内置工具",
+      "description: 全部工具",
+      "---",
+      "",
+      "# 内置工具",
+      "",
+      "正文",
+    ].join("\n");
     const out = stripFrontmatter(src);
     expect(out).toBe("# 内置工具\n\n正文");
     expect(out).not.toContain("title:");

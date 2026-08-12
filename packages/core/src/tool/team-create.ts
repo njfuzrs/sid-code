@@ -22,11 +22,16 @@ const teamCreateSchema = lazySchema(() =>
           name: z.string().describe("成员名（团队内唯一）"),
           type: z.string().describe("子代理类型（见 sub_agent 工具描述中列出的可用类型）"),
           task: z.string().describe("分配给该成员的任务"),
-          isolated: z.boolean().optional().describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
+          isolated: z
+            .boolean()
+            .optional()
+            .describe("是否在独立 Worktree 执行（会改文件的成员应为 true，默认 true）"),
           depends_on: z
             .array(z.string())
             .optional()
-            .describe("依赖的其他成员名列表：这些成员完成后本成员才开始（用于有序编排，如测试成员依赖实现成员）。不填=无依赖，立即并发"),
+            .describe(
+              "依赖的其他成员名列表：这些成员完成后本成员才开始（用于有序编排，如测试成员依赖实现成员）。不填=无依赖，立即并发",
+            ),
         }),
       )
       .describe("团队成员列表"),
@@ -147,7 +152,10 @@ export class TeamCreateTool implements Tool {
       }
       // 对标 sub_agent 工具：运行时校验成员类型有效性（支持动态注册的自定义/插件 Agent）
       if (!validTypes.includes(m.type)) {
-        return { output: `错误: 成员 "${m.name}" 的无效子代理类型 "${m.type}"，可选: ${validTypes.join(", ")}`, isError: true };
+        return {
+          output: `错误: 成员 "${m.name}" 的无效子代理类型 "${m.type}"，可选: ${validTypes.join(", ")}`,
+          isError: true,
+        };
       }
       names.add(m.name);
     }

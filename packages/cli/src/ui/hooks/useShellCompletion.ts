@@ -137,11 +137,13 @@ export function useShellCompletion({
     if (!input || effectiveCursor <= 0) {
       // 空输入：显示常用命令
       const topCmds = SHELL_COMMANDS.slice(0, 8);
-      setSuggestions(topCmds.map(cmd => ({
-        label: cmd.name,
-        value: cmd.name + " ",
-        description: cmd.description,
-      })));
+      setSuggestions(
+        topCmds.map((cmd) => ({
+          label: cmd.name,
+          value: cmd.name + " ",
+          description: cmd.description,
+        })),
+      );
       return;
     }
 
@@ -150,15 +152,15 @@ export function useShellCompletion({
 
     if (parts.length === 1) {
       // 补全命令名
-      const matches = SHELL_COMMANDS.filter(cmd =>
-        cmd.name.startsWith(cmdPart),
-      );
+      const matches = SHELL_COMMANDS.filter((cmd) => cmd.name.startsWith(cmdPart));
       if (matches.length > 0) {
-        setSuggestions(matches.slice(0, 8).map(cmd => ({
-          label: cmd.name,
-          value: cmd.name + " ",
-          description: cmd.description,
-        })));
+        setSuggestions(
+          matches.slice(0, 8).map((cmd) => ({
+            label: cmd.name,
+            value: cmd.name + " ",
+            description: cmd.description,
+          })),
+        );
       } else {
         setSuggestions([]);
       }
@@ -166,18 +168,18 @@ export function useShellCompletion({
     }
 
     // 补全子命令
-    const parentCmd = SHELL_COMMANDS.find(cmd => cmd.name === cmdPart);
+    const parentCmd = SHELL_COMMANDS.find((cmd) => cmd.name === cmdPart);
     if (parentCmd?.subcommands) {
       const subPart = (parts[1] || "").toLowerCase();
-      const matches = parentCmd.subcommands.filter(sub =>
-        sub.name.startsWith(subPart),
-      );
+      const matches = parentCmd.subcommands.filter((sub) => sub.name.startsWith(subPart));
       if (matches.length > 0) {
-        setSuggestions(matches.slice(0, 8).map(sub => ({
-          label: `${parentCmd.name} ${sub.name}`,
-          value: `${parentCmd.name} ${sub.name} `,
-          description: sub.description,
-        })));
+        setSuggestions(
+          matches.slice(0, 8).map((sub) => ({
+            label: `${parentCmd.name} ${sub.name}`,
+            value: `${parentCmd.name} ${sub.name} `,
+            description: sub.description,
+          })),
+        );
       } else {
         setSuggestions([]);
       }

@@ -22,10 +22,7 @@ import type { ModelConfig } from "@sid-code/core/config/config.ts";
 import { lookupCatalog } from "@sid-code/core/llm/model-params-catalog.ts";
 import { lookupCapability } from "@sid-code/core/llm/model-capabilities.ts";
 import { resolveWireModel } from "@sid-code/core/llm/wire-model.ts";
-import {
-  getSettingsForSource,
-  patchSettingsFile,
-} from "@sid-code/core/config/settings/index.ts";
+import { getSettingsForSource, patchSettingsFile } from "@sid-code/core/config/settings/index.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 // ─── 类型 ───────────────────────────────────────────────────────────
@@ -60,7 +57,8 @@ export async function discoverModels(
   if (models.length === 0) {
     return {
       type: "text",
-      value: "未配置 availableModels，无模型可发现。\n请在 ~/.sid-code/settings.json 中添加模型配置。",
+      value:
+        "未配置 availableModels，无模型可发现。\n请在 ~/.sid-code/settings.json 中添加模型配置。",
     };
   }
 
@@ -115,10 +113,7 @@ export async function discoverModels(
 
 // ─── 单模型查询 ─────────────────────────────────────────────────────
 
-async function discoverSingle(
-  model: ModelConfig,
-  force: boolean,
-): Promise<DiscoverResult> {
+async function discoverSingle(model: ModelConfig, force: boolean): Promise<DiscoverResult> {
   // 已有参数且非强制模式 → 跳过
   if (!force && model.contextWindow && model.maxOutputTokens) {
     return {
@@ -136,16 +131,12 @@ async function discoverSingle(
       return {
         model,
         contextWindow: apiResult.contextWindow ?? model.contextWindow ?? null,
-        maxOutputTokens:
-          apiResult.maxOutputTokens ?? model.maxOutputTokens ?? null,
+        maxOutputTokens: apiResult.maxOutputTokens ?? model.maxOutputTokens ?? null,
         source: "api",
       };
     }
   } catch (err) {
-    getLogger().debug(
-      "DISCOVER",
-      `API 查询失败: ${model.name} — ${err}`,
-    );
+    getLogger().debug("DISCOVER", `API 查询失败: ${model.name} — ${err}`);
   }
 
   // 2. 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得）。
@@ -238,12 +229,8 @@ async function queryAnthropic(
   if (!resp.ok) return null;
 
   const data = (await resp.json()) as Record<string, unknown>;
-  const cw =
-    typeof data.context_window === "number" ? data.context_window : undefined;
-  const mo =
-    typeof data.max_output_tokens === "number"
-      ? data.max_output_tokens
-      : undefined;
+  const cw = typeof data.context_window === "number" ? data.context_window : undefined;
+  const mo = typeof data.max_output_tokens === "number" ? data.max_output_tokens : undefined;
 
   if (!cw && !mo) return null;
   return { contextWindow: cw, maxOutputTokens: mo };
@@ -258,12 +245,8 @@ async function queryGemini(
   apiKey: string,
   baseURL?: string,
 ): Promise<{ contextWindow?: number; maxOutputTokens?: number } | null> {
-  const base = (
-    baseURL || "https://generativelanguage.googleapis.com"
-  ).replace(/\/$/, "");
-  const modelPath = modelName.startsWith("models/")
-    ? modelName
-    : `models/${modelName}`;
+  const base = (baseURL || "https://generativelanguage.googleapis.com").replace(/\/$/, "");
+  const modelPath = modelName.startsWith("models/") ? modelName : `models/${modelName}`;
   const url = `${base}/v1beta/${modelPath}?key=${apiKey}`;
 
   const resp = await fetch(url, {
@@ -273,12 +256,8 @@ async function queryGemini(
   if (!resp.ok) return null;
 
   const data = (await resp.json()) as Record<string, unknown>;
-  const cw =
-    typeof data.inputTokenLimit === "number" ? data.inputTokenLimit : undefined;
-  const mo =
-    typeof data.outputTokenLimit === "number"
-      ? data.outputTokenLimit
-      : undefined;
+  const cw = typeof data.inputTokenLimit === "number" ? data.inputTokenLimit : undefined;
+  const mo = typeof data.outputTokenLimit === "number" ? data.outputTokenLimit : undefined;
 
   if (!cw && !mo) return null;
   return { contextWindow: cw, maxOutputTokens: mo };
@@ -323,10 +302,7 @@ function buildReport(results: DiscoverResult[]): string {
   const lines: string[] = ["模型参数发现结果:", ""];
 
   // 表头
-  const nameWidth = Math.max(
-    12,
-    ...results.map((r) => r.model.name.length),
-  );
+  const nameWidth = Math.max(12, ...results.map((r) => r.model.name.length));
   const header = [
     pad("模型", nameWidth + 4),
     pad("contextWindow", 14),
@@ -343,12 +319,9 @@ function buildReport(results: DiscoverResult[]): string {
     const sourceName = sourceLabel(r.source);
 
     lines.push(
-      [
-        `${icon} ${pad(r.model.name, nameWidth + 2)}`,
-        pad(cw, 14),
-        pad(mo, 12),
-        sourceName,
-      ].join("  "),
+      [`${icon} ${pad(r.model.name, nameWidth + 2)}`, pad(cw, 14), pad(mo, 12), sourceName].join(
+        "  ",
+      ),
     );
   }
 

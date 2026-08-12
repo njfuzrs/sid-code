@@ -38,7 +38,7 @@ function applyGradient(text: string, colors: string[]): React.ReactNode {
   }
 
   // 生成渐变色
-  const gradient = tinygradient(colors.map(c => tinycolor(c)));
+  const gradient = tinygradient(colors.map((c) => tinycolor(c)));
   const gradientColors = gradient.rgb(Math.max(chars.length, 2));
 
   // 为每个可见字符分配颜色
@@ -56,7 +56,11 @@ function applyGradient(text: string, colors: string[]): React.ReactNode {
           {line.split("").map((char, colIdx) => {
             const color = colorMap.get(`${lineIdx}-${colIdx}`);
             if (color) {
-              return <Text key={colIdx} color={color}>{char}</Text>;
+              return (
+                <Text key={colIdx} color={color}>
+                  {char}
+                </Text>
+              );
             }
             return <Text key={colIdx}>{char}</Text>;
           })}

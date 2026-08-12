@@ -61,10 +61,7 @@ export function detectLintConfigs(repoDir: string): LintConfig[] {
     });
   }
 
-  if (
-    existsSync(resolve(repoDir, "pyproject.toml")) ||
-    existsSync(resolve(repoDir, "ruff.toml"))
-  ) {
+  if (existsSync(resolve(repoDir, "pyproject.toml")) || existsSync(resolve(repoDir, "ruff.toml"))) {
     configs.push({
       type: "ruff",
       configFile: existsSync(resolve(repoDir, "ruff.toml")) ? "ruff.toml" : "pyproject.toml",
@@ -73,10 +70,15 @@ export function detectLintConfigs(repoDir: string): LintConfig[] {
     });
   }
 
-  if (existsSync(resolve(repoDir, ".golangci.yml")) || existsSync(resolve(repoDir, ".golangci.yaml"))) {
+  if (
+    existsSync(resolve(repoDir, ".golangci.yml")) ||
+    existsSync(resolve(repoDir, ".golangci.yaml"))
+  ) {
     configs.push({
       type: "golangci-lint",
-      configFile: existsSync(resolve(repoDir, ".golangci.yml")) ? ".golangci.yml" : ".golangci.yaml",
+      configFile: existsSync(resolve(repoDir, ".golangci.yml"))
+        ? ".golangci.yml"
+        : ".golangci.yaml",
       command: `golangci-lint run --out-format json`,
       available: true,
     });

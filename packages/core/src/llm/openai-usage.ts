@@ -39,11 +39,13 @@ import type { Usage } from "./types.ts";
  * 当前 openai 协议路径不发该标记，不会产生，故不映射。
  */
 export function extractOpenAICacheHit(usage: any): number {
-  return usage?.prompt_cache_hit_tokens
-    ?? usage?.prompt_tokens_details?.cached_tokens
-    ?? usage?.input_tokens_details?.cached_tokens
-    ?? usage?.cached_tokens
-    ?? 0;
+  return (
+    usage?.prompt_cache_hit_tokens ??
+    usage?.prompt_tokens_details?.cached_tokens ??
+    usage?.input_tokens_details?.cached_tokens ??
+    usage?.cached_tokens ??
+    0
+  );
 }
 
 /**
@@ -59,10 +61,12 @@ export function extractOpenAICacheHit(usage: any): number {
  * 无该字段（非思考模型 / 网关未透传）时返回 0，由上层决定是否落 undefined。
  */
 export function extractOpenAIReasoningTokens(usage: any): number {
-  return usage?.completion_tokens_details?.reasoning_tokens
-    ?? usage?.output_tokens_details?.reasoning_tokens
-    ?? usage?.reasoning_tokens
-    ?? 0;
+  return (
+    usage?.completion_tokens_details?.reasoning_tokens ??
+    usage?.output_tokens_details?.reasoning_tokens ??
+    usage?.reasoning_tokens ??
+    0
+  );
 }
 
 /**

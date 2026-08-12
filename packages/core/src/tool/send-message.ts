@@ -126,7 +126,9 @@ export class SendMessageTool implements Tool {
     }
 
     // P2-3：尝试从 sidechain transcript 重建完整历史（真恢复）。成功则走 forkMessages 续跑。
-    let forkMessages: { role: "user" | "assistant"; content: import("../llm/types.ts").ContentBlock[] }[] | undefined;
+    let forkMessages:
+      | { role: "user" | "assistant"; content: import("../llm/types.ts").ContentBlock[] }[]
+      | undefined;
     let resumeMode: "transcript" | "lightweight" = "lightweight";
     if (this.parentSessionId) {
       try {
@@ -139,7 +141,10 @@ export class SendMessageTool implements Tool {
             { role: "user", content: [{ type: "text", text: `[续传指令] ${message}` }] },
           ];
           resumeMode = "transcript";
-          log.info("SUBAGENT", `Resume(真恢复): 从 transcript 重建 ${reconstructed.messages.length} 条消息`);
+          log.info(
+            "SUBAGENT",
+            `Resume(真恢复): 从 transcript 重建 ${reconstructed.messages.length} 条消息`,
+          );
         }
       } catch (err: any) {
         log.warn("SUBAGENT", `Resume transcript 重建失败，降级轻量续传: ${err?.message ?? err}`);
@@ -198,7 +203,10 @@ export class SendMessageTool implements Tool {
       }
     })();
 
-    log.info("SUBAGENT", `Resume agent(${resumeMode}): 原 ${task.id} → 新 ${newTaskId} (${task.agentType})`);
+    log.info(
+      "SUBAGENT",
+      `Resume agent(${resumeMode}): 原 ${task.id} → 新 ${newTaskId} (${task.agentType})`,
+    );
 
     return {
       output: JSON.stringify({

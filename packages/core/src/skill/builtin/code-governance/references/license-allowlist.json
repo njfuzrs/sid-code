@@ -6,7 +6,12 @@
   { "license": "ISC", "policy": "allow", "reason": "permissive" },
   { "license": "0BSD", "policy": "allow", "reason": "permissive" },
   { "license": "Unlicense", "policy": "allow", "reason": "permissive" },
-  { "license": "GPL-3.0", "policy": "block", "reason": "copyleft", "alternatives": ["MIT 替代", "Apache-2.0 替代"] },
+  {
+    "license": "GPL-3.0",
+    "policy": "block",
+    "reason": "copyleft",
+    "alternatives": ["MIT 替代", "Apache-2.0 替代"]
+  },
   { "license": "GPL-2.0", "policy": "block", "reason": "copyleft" },
   { "license": "AGPL-3.0", "policy": "block", "reason": "strong copyleft (network use)" },
   { "license": "SSPL", "policy": "block", "reason": "MongoDB SSPL 闭源限制" },

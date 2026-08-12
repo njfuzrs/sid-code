@@ -67,10 +67,7 @@ export type PipelineStage = (
 ) => Promise<unknown> | unknown;
 
 /** pipeline(items, ...stages) 原语签名 */
-export type PipelineFn = (
-  items: unknown[],
-  ...stages: PipelineStage[]
-) => Promise<unknown[]>;
+export type PipelineFn = (items: unknown[], ...stages: PipelineStage[]) => Promise<unknown[]>;
 
 /** phase(title) 原语签名 */
 export type PhaseFn = (title: string) => void;
@@ -110,6 +107,4 @@ export interface SandboxResult {
 }
 
 /** meta 校验结果 */
-export type MetaValidation =
-  | { ok: true; meta: WorkflowMeta }
-  | { ok: false; error: string };
+export type MetaValidation = { ok: true; meta: WorkflowMeta } | { ok: false; error: string };

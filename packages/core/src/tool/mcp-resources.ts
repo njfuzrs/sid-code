@@ -64,7 +64,10 @@ export class ListMcpResourcesTool implements Tool {
     if (server) all = all.filter((r) => r.serverName === server);
 
     if (all.length === 0) {
-      return { output: server ? `服务器 "${server}" 没有可用资源` : "没有可用的 MCP 资源", isError: false };
+      return {
+        output: server ? `服务器 "${server}" 没有可用资源` : "没有可用的 MCP 资源",
+        isError: false,
+      };
     }
 
     const lines = all.map(({ serverName, resource }) => {

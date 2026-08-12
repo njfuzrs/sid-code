@@ -32,15 +32,18 @@ export interface SessionMetrics {
      * 杜绝"末次 input(stock) + 累计命中(flow)"混用导致的命中率虚高。
      */
     totalCumulativePromptTokens: number;
-    byModel: Record<string, {
-      requests: number;
-      inputTokens: number;
-      outputTokens: number;
-      latencyMs: number;
-      costUSD: number;
-      cacheReadTokens: number;
-      cacheCreationTokens: number;
-    }>;
+    byModel: Record<
+      string,
+      {
+        requests: number;
+        inputTokens: number;
+        outputTokens: number;
+        latencyMs: number;
+        costUSD: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+      }
+    >;
   };
 
   /** 工具调用统计 */
@@ -49,13 +52,16 @@ export interface SessionMetrics {
     totalSuccess: number;
     totalFail: number;
     totalDurationMs: number;
-    byName: Record<string, {
-      calls: number;
-      success: number;
-      fail: number;
-      totalDurationMs: number;
-      avgDurationMs: number;
-    }>;
+    byName: Record<
+      string,
+      {
+        calls: number;
+        success: number;
+        fail: number;
+        totalDurationMs: number;
+        avgDurationMs: number;
+      }
+    >;
   };
 
   /** 上下文统计 */
@@ -68,7 +74,7 @@ export interface SessionMetrics {
   /** 用户交互统计 */
   interaction: {
     promptCount: number;
-    turnCount: number;        // agent loop 轮次
+    turnCount: number; // agent loop 轮次
     subAgentCount: number;
   };
 }
@@ -101,14 +107,22 @@ export class SessionMetricsCollector {
     return {
       startTime: Date.now(),
       llm: {
-        totalRequests: 0, totalErrors: 0, totalLatencyMs: 0,
-        totalInputTokens: 0, totalOutputTokens: 0, totalCostUSD: 0,
-        totalCacheReadTokens: 0, totalCacheCreationTokens: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        totalLatencyMs: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUSD: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
         totalCumulativePromptTokens: 0,
         byModel: {},
       },
       tools: {
-        totalCalls: 0, totalSuccess: 0, totalFail: 0, totalDurationMs: 0,
+        totalCalls: 0,
+        totalSuccess: 0,
+        totalFail: 0,
+        totalDurationMs: 0,
         byName: {},
       },
       context: { compactCount: 0, totalTruncated: 0, peakTokens: 0 },
@@ -159,11 +173,19 @@ export class SessionMetricsCollector {
     llm.totalCumulativePromptTokens += norm.promptTotal;
 
     if (!llm.byModel[model]) {
-      llm.byModel[model] = { requests: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0, costUSD: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+      llm.byModel[model] = {
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 0,
+        costUSD: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      };
     }
     const m = llm.byModel[model];
     m.requests++;
-    m.inputTokens = inputTokens;       // 末次覆盖（含全部历史，去重）
+    m.inputTokens = inputTokens; // 末次覆盖（含全部历史，去重）
     m.outputTokens += outputTokens;
     m.latencyMs += latencyMs;
     m.costUSD += costUSD;
@@ -189,15 +211,23 @@ export class SessionMetricsCollector {
   recordToolCall(toolName: string, durationMs: number, success: boolean): void {
     const tools = this.metrics.tools;
     tools.totalCalls++;
-    if (success) tools.totalSuccess++; else tools.totalFail++;
+    if (success) tools.totalSuccess++;
+    else tools.totalFail++;
     tools.totalDurationMs += durationMs;
 
     if (!tools.byName[toolName]) {
-      tools.byName[toolName] = { calls: 0, success: 0, fail: 0, totalDurationMs: 0, avgDurationMs: 0 };
+      tools.byName[toolName] = {
+        calls: 0,
+        success: 0,
+        fail: 0,
+        totalDurationMs: 0,
+        avgDurationMs: 0,
+      };
     }
     const t = tools.byName[toolName];
     t.calls++;
-    if (success) t.success++; else t.fail++;
+    if (success) t.success++;
+    else t.fail++;
     t.totalDurationMs += durationMs;
     t.avgDurationMs = Math.round(t.totalDurationMs / t.calls);
   }
@@ -268,11 +298,7 @@ export class SessionMetricsCollector {
         name: "session-metrics-post-tool",
         action: async (input: HookInput) => {
           const postTool = input as PostToolUseInput;
-          this.recordToolCall(
-            postTool.tool_name,
-            postTool.duration_ms ?? 0,
-            !postTool.is_error,
-          );
+          this.recordToolCall(postTool.tool_name, postTool.duration_ms ?? 0, !postTool.is_error);
         },
       },
       HookEventName.PostToolUse,
@@ -343,9 +369,10 @@ export class SessionMetricsCollector {
   getSummary(): string {
     const m = this.metrics;
     const elapsed = ((Date.now() - m.startTime) / 1000 / 60).toFixed(1);
-    const avgLatency = m.llm.totalRequests > 0
-      ? (m.llm.totalLatencyMs / m.llm.totalRequests / 1000).toFixed(1)
-      : '0';
+    const avgLatency =
+      m.llm.totalRequests > 0
+        ? (m.llm.totalLatencyMs / m.llm.totalRequests / 1000).toFixed(1)
+        : "0";
 
     const lines: string[] = [];
     if (this.sessionId) {
@@ -355,7 +382,7 @@ export class SessionMetricsCollector {
       `会话时长: ${elapsed} 分钟`,
       `LLM: ${m.llm.totalRequests} 次请求, ${m.llm.totalInputTokens + m.llm.totalOutputTokens} tokens, 平均 ${avgLatency}s, $${m.llm.totalCostUSD.toFixed(4)}`,
       `工具: ${m.tools.totalCalls} 次调用 (${m.tools.totalSuccess}成功/${m.tools.totalFail}失败)`,
-      `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`
+      `交互: ${m.interaction.promptCount} 次提示, ${m.interaction.turnCount} 轮循环`,
     );
 
     // 缓存命中率（命中 / 累计完整 prompt）——仅在有命中时展示，避免无缓存模型误导。
@@ -374,8 +401,7 @@ export class SessionMetricsCollector {
     }
 
     // 按调用次数排序的工具明细
-    const toolEntries = Object.entries(m.tools.byName)
-      .sort(([, a], [, b]) => b.calls - a.calls);
+    const toolEntries = Object.entries(m.tools.byName).sort(([, a], [, b]) => b.calls - a.calls);
     if (toolEntries.length > 0) {
       lines.push(`工具明细:`);
       for (const [name, stats] of toolEntries) {
@@ -391,7 +417,7 @@ export class SessionMetricsCollector {
       }
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   /** 重置指标 */

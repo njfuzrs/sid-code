@@ -37,11 +37,17 @@ export function checkGoalBudget(
 
   const ratio = goal.tokensUsed / goal.tokenBudget;
   if (ratio >= 1.0) {
-    log.warn("GOAL_BUDGET", `预算耗尽: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, ratio=${ratio.toFixed(2)}`);
+    log.warn(
+      "GOAL_BUDGET",
+      `预算耗尽: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, ratio=${ratio.toFixed(2)}`,
+    );
     return "exceeded";
   }
   if (ratio >= 0.85) {
-    log.info("GOAL_BUDGET", `预算预警: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, ratio=${(ratio * 100).toFixed(0)}%`);
+    log.info(
+      "GOAL_BUDGET",
+      `预算预警: used=${goal.tokensUsed}, budget=${goal.tokenBudget}, ratio=${(ratio * 100).toFixed(0)}%`,
+    );
     return "warning";
   }
   return "ok";

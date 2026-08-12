@@ -62,20 +62,28 @@ export const StreamingProvider: React.FC<StreamingProviderProps> = ({
   lastToolResult,
   statusMessage,
 }) => {
-  const value = useMemo<StreamingContextValue>(() => ({
-    streamingState,
-    streamingText,
-    streamingThinking,
-    toolName,
-    toolInput,
-    isToolExecuting,
-    lastToolResult,
-    statusMessage,
-  }), [streamingState, streamingText, streamingThinking, toolName, toolInput, isToolExecuting, lastToolResult, statusMessage]);
-
-  return (
-    <StreamingCtx.Provider value={value}>
-      {children}
-    </StreamingCtx.Provider>
+  const value = useMemo<StreamingContextValue>(
+    () => ({
+      streamingState,
+      streamingText,
+      streamingThinking,
+      toolName,
+      toolInput,
+      isToolExecuting,
+      lastToolResult,
+      statusMessage,
+    }),
+    [
+      streamingState,
+      streamingText,
+      streamingThinking,
+      toolName,
+      toolInput,
+      isToolExecuting,
+      lastToolResult,
+      statusMessage,
+    ],
   );
+
+  return <StreamingCtx.Provider value={value}>{children}</StreamingCtx.Provider>;
 };

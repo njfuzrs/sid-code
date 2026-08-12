@@ -39,18 +39,14 @@ O(n²) 可降为 O(n) 的循环、可缓存却未缓存的重复工作。
 export function registerSimplifySkill(): void {
   registerBundledSkill({
     name: "simplify",
-    description:
-      "审查已修改的代码，检查复用性、质量和效率问题，然后修复发现的问题",
+    description: "审查已修改的代码，检查复用性、质量和效率问题，然后修复发现的问题",
     whenToUse: "当用户说 'review'、'simplify'、'检查代码'、'清理代码' 时",
     allowedTools: ["read", "write", "edit", "bash", "grep", "glob", "sub_agent"],
     context: "fork",
     userInvocable: true,
     maxTurns: 30,
     async getPromptForCommand(args) {
-      return (
-        SIMPLIFY_PROMPT +
-        (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "")
-      );
+      return SIMPLIFY_PROMPT + (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "");
     },
   });
 }

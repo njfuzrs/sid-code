@@ -164,7 +164,8 @@ function extractObservationSpansFromMessages(
         role: "system",
         agent_label: "primary",
         is_error: block.is_error === true,
-        metadata: typeof block.tool_use_id === "string" ? { tool_use_id: block.tool_use_id } : undefined,
+        metadata:
+          typeof block.tool_use_id === "string" ? { tool_use_id: block.tool_use_id } : undefined,
       };
 
       // tool_result.content 可能是 string 或 array<{type:"text"|"image", text?}>
@@ -175,7 +176,11 @@ function extractObservationSpansFromMessages(
         const flattened = out
           .map((p) => {
             if (typeof p === "string") return p;
-            if (p && typeof p === "object" && typeof (p as Record<string, unknown>).text === "string") {
+            if (
+              p &&
+              typeof p === "object" &&
+              typeof (p as Record<string, unknown>).text === "string"
+            ) {
               return (p as Record<string, unknown>).text as string;
             }
             return "";
@@ -281,7 +286,8 @@ export function convertRawJsonlToTrace(rawText: string, opts: ConvertOptions): A
     const u = line.usage ?? {};
     const inT = typeof u.input_tokens === "number" ? u.input_tokens : 0;
     const outT = typeof u.output_tokens === "number" ? u.output_tokens : 0;
-    const ccT = typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : 0;
+    const ccT =
+      typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : 0;
     const crT = typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : 0;
     totalInput += inT;
     totalOutput += outT;
@@ -292,12 +298,10 @@ export function convertRawJsonlToTrace(rawText: string, opts: ConvertOptions): A
     spans.push(...extractObservationSpansFromMessages(line.request?.messages, ts, spans.length));
 
     // 2. 再抽 action / thought（来自 response.content）
-    const actionSpans = extractActionSpansFromResponse(
-      line.response?.content,
-      ts,
-      spans.length,
-      { input_tokens: inT, output_tokens: outT },
-    );
+    const actionSpans = extractActionSpansFromResponse(line.response?.content, ts, spans.length, {
+      input_tokens: inT,
+      output_tokens: outT,
+    });
     spans.push(...actionSpans);
 
     // final_output 用最后一行 response.content 里所有 text 块拼接

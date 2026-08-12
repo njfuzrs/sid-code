@@ -11,7 +11,12 @@
  * - 原子写入：读→改→写 整个 JSON 文件
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult, PermissionResult, ToolUseContext } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "./types.ts";
 import { readFileSync, writeFileSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
@@ -24,10 +29,16 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 const notebookEditSchema = lazySchema(() =>
   z.object({
     notebook_path: z.string().describe("notebook 文件的绝对路径（.ipynb）"),
-    cell_id: z.string().optional().describe("要操作的 cell ID（replace/delete 必填，insert 时可选——省略则插到最前面）"),
+    cell_id: z
+      .string()
+      .optional()
+      .describe("要操作的 cell ID（replace/delete 必填，insert 时可选——省略则插到最前面）"),
     edit_mode: z.enum(["replace", "insert", "delete"]).default("replace").describe("编辑模式"),
     new_source: z.string().describe("新的 cell 内容（delete 模式时可为空串）"),
-    cell_type: z.enum(["code", "markdown"]).optional().describe("cell 类型（insert 时必填，replace 时可选——省略则保持原类型）"),
+    cell_type: z
+      .enum(["code", "markdown"])
+      .optional()
+      .describe("cell 类型（insert 时必填，replace 时可选——省略则保持原类型）"),
   }),
 );
 
@@ -183,7 +194,10 @@ export class NotebookEditTool implements Tool {
       }
       case "insert": {
         if (!params.cell_type) {
-          return { output: "错误: insert 模式需要 cell_type 参数（code 或 markdown）", isError: true };
+          return {
+            output: "错误: insert 模式需要 cell_type 参数（code 或 markdown）",
+            isError: true,
+          };
         }
         const newCell: NotebookCell = {
           cell_type: params.cell_type,

@@ -26,7 +26,14 @@ import { existsSync } from "fs";
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOOTSTRAP_PATH = join(
-  __dirname, "..", "..", "..", "cli", "src", "entrypoints", "bootstrap.ts",
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "cli",
+  "src",
+  "entrypoints",
+  "bootstrap.ts",
 );
 
 /** 是否为开发模式（bootstrap.ts 存在于磁盘） */

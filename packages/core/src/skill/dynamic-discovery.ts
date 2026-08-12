@@ -18,12 +18,7 @@ export function extractAffectedPaths(input: unknown): string[] {
   const obj = input as Record<string, unknown>;
   const paths: string[] = [];
 
-  const candidates = [
-    obj.file_path,
-    obj.path,
-    obj.filePath,
-    obj.notebook_path,
-  ];
+  const candidates = [obj.file_path, obj.path, obj.filePath, obj.notebook_path];
   for (const c of candidates) {
     if (typeof c === "string" && c) paths.push(c);
   }
@@ -57,11 +52,7 @@ export function discoverSkillDirsForPaths(
     let guard = 0;
     while (guard++ < 100) {
       const skillsDir = join(dir, ".sid-code", "skills");
-      if (
-        existsSync(skillsDir) &&
-        !alreadyDiscovered.has(skillsDir) &&
-        !found.has(skillsDir)
-      ) {
+      if (existsSync(skillsDir) && !alreadyDiscovered.has(skillsDir) && !found.has(skillsDir)) {
         found.add(skillsDir);
       }
 
@@ -73,11 +64,7 @@ export function discoverSkillDirsForPaths(
   }
 
   if (found.size > 0) {
-    getLogger().debug(
-      "SKILL",
-      `动态发现 ${found.size} 个 skills 目录`,
-      { dirs: [...found] },
-    );
+    getLogger().debug("SKILL", `动态发现 ${found.size} 个 skills 目录`, { dirs: [...found] });
   }
 
   return [...found];
@@ -101,11 +88,7 @@ export class DynamicSkillDiscovery {
     const paths = extractAffectedPaths(input);
     if (paths.length === 0) return [];
 
-    const newDirs = discoverSkillDirsForPaths(
-      paths,
-      this.cwd,
-      this.discoveredDirs,
-    );
+    const newDirs = discoverSkillDirsForPaths(paths, this.cwd, this.discoveredDirs);
     for (const d of newDirs) this.discoveredDirs.add(d);
     return newDirs;
   }

@@ -50,7 +50,9 @@ export class ExitPlanModeTool implements Tool {
 
   constructor(private planManager: PlanModeManager) {}
 
-  name(): string { return "exit_plan_mode"; }
+  name(): string {
+    return "exit_plan_mode";
+  }
 
   description(): string {
     return `在计划模式下完成计划编写后使用此工具，请求用户审批。
@@ -67,7 +69,9 @@ export class ExitPlanModeTool implements Tool {
     return z.toJSONSchema(exitPlanModeSchema()) as Record<string, unknown>;
   }
 
-  readOnly(): boolean { return true; }
+  readOnly(): boolean {
+    return true;
+  }
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     if (!this.planManager.isPlanning()) {
@@ -80,8 +84,7 @@ export class ExitPlanModeTool implements Tool {
       //   - inactive：计划已审批通过（或从未进入计划模式）→ 告诉模型"进入执行阶段，逐条执行，勿再调用"
       if (this.planManager.isAwaitingApproval()) {
         return {
-          output:
-            "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。",
+          output: "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。",
         };
       }
       return {

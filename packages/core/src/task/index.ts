@@ -65,11 +65,7 @@ export {
   hasPendingNotifications,
 } from "./notification.ts";
 
-export {
-  spawnShellTask,
-  adoptRunningProcessAsTask,
-  killShellTask,
-} from "./shell-task.ts";
+export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
 export {
   createAgentTask,

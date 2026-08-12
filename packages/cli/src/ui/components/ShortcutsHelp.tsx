@@ -58,7 +58,9 @@ export const ShortcutsHelp: React.FC = () => {
   return (
     <Box flexDirection="column" width="100%">
       <Box paddingX={1}>
-        <Text color={theme.text.accent} bold>快捷键</Text>
+        <Text color={theme.text.accent} bold>
+          快捷键
+        </Text>
         <Text color={theme.text.secondary}> — 输入 /help 查看更多</Text>
       </Box>
       <Box flexDirection="row" flexWrap="wrap" paddingLeft={1} paddingRight={2}>

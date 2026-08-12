@@ -21,7 +21,11 @@ import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
 import { isAbortError } from "@sid-code/core/llm/errors.ts";
 import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
-import { LANGUAGE_PREFS, normalizeLanguagePref, resolveLanguageFromEnv } from "@sid-code/core/config/prompt-lang.ts";
+import {
+  LANGUAGE_PREFS,
+  normalizeLanguagePref,
+  resolveLanguageFromEnv,
+} from "@sid-code/core/config/prompt-lang.ts";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
@@ -102,7 +106,8 @@ export function resolveAlternateBufferDecision(env: {
   if (env.termProgram === "Apple_Terminal") {
     return {
       value: false,
-      reason: 'TERM_PROGRAM="Apple_Terminal" 自动回退主屏（其 alt-screen 鼠标追踪兼容性差；可用 --alternate-buffer 覆盖）',
+      reason:
+        'TERM_PROGRAM="Apple_Terminal" 自动回退主屏（其 alt-screen 鼠标追踪兼容性差；可用 --alternate-buffer 覆盖）',
     };
   }
   return {
@@ -299,7 +304,7 @@ function parseCLIArgs(): CLIArgs {
         "bridge-token": { type: "string" },
 
         // UI 渲染（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口）
-        "inline": { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
+        inline: { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
         "alternate-buffer": { type: "boolean" }, // 兼容保留：显式开全屏 alt-screen（现已是默认，此 flag 仅为不破坏旧脚本）
 
         // Worktree 隔离（P1-2）：启动时直接进入 worktree
@@ -436,7 +441,9 @@ function parseCLIArgs(): CLIArgs {
     if (raw === "text" || raw === "stream-json") {
       inputFormat = raw as Config["inputFormat"];
     } else {
-      console.error(`错误: --input-format 无效值 "${values["input-format"]}"，可选: text / stream-json`);
+      console.error(
+        `错误: --input-format 无效值 "${values["input-format"]}"，可选: text / stream-json`,
+      );
       process.exit(1);
     }
   }
@@ -465,11 +472,16 @@ function parseCLIArgs(): CLIArgs {
   // setting-sources（P1-6）：逗号分隔子集 user/project/local。
   let settingSources: Config["settingSources"] | undefined;
   if (values["setting-sources"] !== undefined) {
-    const parts = String(values["setting-sources"]).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const parts = String(values["setting-sources"])
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
     const valid = new Set(["user", "project", "local"]);
     const bad = parts.filter((p) => !valid.has(p));
     if (bad.length > 0) {
-      console.error(`错误: --setting-sources 含无效源 "${bad.join(", ")}"，可选: user / project / local`);
+      console.error(
+        `错误: --setting-sources 含无效源 "${bad.join(", ")}"，可选: user / project / local`,
+      );
       process.exit(1);
     }
     settingSources = parts as Config["settingSources"];
@@ -496,7 +508,9 @@ function parseCLIArgs(): CLIArgs {
         ? `${appendSystemPrompt}\n${fileContent}`
         : fileContent;
     } catch (err: any) {
-      console.error(`错误: 无法读取 --append-system-prompt-file "${filePath}": ${err?.message ?? err}`);
+      console.error(
+        `错误: 无法读取 --append-system-prompt-file "${filePath}": ${err?.message ?? err}`,
+      );
       process.exit(1);
     }
   }
@@ -511,7 +525,12 @@ function parseCLIArgs(): CLIArgs {
       }
       // 逐项校验 prompt 必填。
       for (const [name, def] of Object.entries(parsed as Record<string, any>)) {
-        if (!def || typeof def !== "object" || typeof def.prompt !== "string" || !def.prompt.trim()) {
+        if (
+          !def ||
+          typeof def !== "object" ||
+          typeof def.prompt !== "string" ||
+          !def.prompt.trim()
+        ) {
           throw new Error(`子代理 "${name}" 缺少 prompt 字段`);
         }
       }
@@ -532,10 +551,16 @@ function parseCLIArgs(): CLIArgs {
     yesMode: values.yes,
     // 缺口 C1 §5.3：逗号分隔 → string[]（守护进程无头 job 预授权白名单）
     allowedTools: values["allowed-tools"]
-      ? String(values["allowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
+      ? String(values["allowed-tools"])
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean)
       : undefined,
     disallowedTools: values["disallowed-tools"]
-      ? String(values["disallowed-tools"]).split(",").map((s: string) => s.trim()).filter(Boolean)
+      ? String(values["disallowed-tools"])
+          .split(",")
+          .map((s: string) => s.trim())
+          .filter(Boolean)
       : undefined,
     // P2-1：--allow-tool / --deny-tool 为规则语法（cliArg 源）。multiple:true → string[]；
     // 每项再按逗号拆分，兼容 `--deny-tool "Bash(curl *),Read(.env)"` 与多次传参两种写法。
@@ -570,7 +595,7 @@ function parseCLIArgs(): CLIArgs {
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
     // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
-    worktree: values.worktree !== undefined ? (values.worktree || true) : undefined,
+    worktree: values.worktree !== undefined ? values.worktree || true : undefined,
     // UI 渲染模式（幽灵残留根治方案乙）：默认全屏 alt-screen 有界视口（config 默认 true）。
     // --inline 逃生舱强制回退旧主屏 Static（false，最高优先级）；--alternate-buffer 兼容保留（显式 true）；
     // 两者都不给 → undefined → 走 config 默认（true），但对 macOS Terminal.app 自动回退 false
@@ -593,27 +618,31 @@ function parseCLIArgs(): CLIArgs {
     //
     // 关键：仅当用户通过 CLI flag 显式指定 trace 相关参数时才构造 trace 对象。
     // 否则不覆盖配置文件中的 trace 配置（避免浅合并把 settings.json 的完整 trace 吃掉）。
-    trace: (values.trace === false || values["trace-upload-disabled"] || values["trace-upload-url"] || values["trace-upload-token"])
-      ? {
-          enabled: values.trace !== false,
-          upload: values["trace-upload-disabled"]
-            ? undefined // 强制禁用上传（最高优先级）
-            : (values["trace-upload-url"] || values["trace-upload-token"])
-              ? {
-                  url: values["trace-upload-url"],
-                  token: values["trace-upload-token"],
-                  userId: values["trace-user-id"],
-                  deviceId: values["trace-device-id"],
-                  toolSource: "sid-code",
-                  autoUpload: true,
-                  deleteAfterUpload: false,
-                  compress: true,
-                  maxRetries: 5,
-                  retryBaseMs: 2000,
-                }
-              : undefined,
-        }
-      : undefined, // 不覆盖——完全由配置文件（settings.json）决定
+    trace:
+      values.trace === false ||
+      values["trace-upload-disabled"] ||
+      values["trace-upload-url"] ||
+      values["trace-upload-token"]
+        ? {
+            enabled: values.trace !== false,
+            upload: values["trace-upload-disabled"]
+              ? undefined // 强制禁用上传（最高优先级）
+              : values["trace-upload-url"] || values["trace-upload-token"]
+                ? {
+                    url: values["trace-upload-url"],
+                    token: values["trace-upload-token"],
+                    userId: values["trace-user-id"],
+                    deviceId: values["trace-device-id"],
+                    toolSource: "sid-code",
+                    autoUpload: true,
+                    deleteAfterUpload: false,
+                    compress: true,
+                    maxRetries: 5,
+                    retryBaseMs: 2000,
+                  }
+                : undefined,
+          }
+        : undefined, // 不覆盖——完全由配置文件（settings.json）决定
 
     // ── 对齐 claude-code 新增 flag（批次 1/2/4）──
     // P0-3 推理强度档位（已在上方校验为合法档位或 auto→undefined）。
@@ -659,7 +688,10 @@ function parseCLIArgs(): CLIArgs {
       : undefined,
     // P2-6 工具白名单替换整个内置集（逗号分隔）。
     toolsWhitelist: values.tools
-      ? String(values.tools).split(",").map((s) => s.trim()).filter(Boolean)
+      ? String(values.tools)
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       : undefined,
     // P1-10 子代理注入（已解析校验）+ 顶层人格。
     injectedAgents: injectedAgents,
@@ -689,7 +721,7 @@ function parseCLIArgs(): CLIArgs {
  */
 async function runSessionPicker(
   config: Config,
-  opts: { searchFirst?: boolean; initialSearchQuery?: string } = {}
+  opts: { searchFirst?: boolean; initialSearchQuery?: string } = {},
 ): Promise<string | null> {
   const React = await import("react");
   const { default: render } = await import("@sid-code/tui-renderer/root.ts");
@@ -744,7 +776,7 @@ async function runSessionPicker(
       onExit: () => {
         unmount?.(); // 取消：卸载但不设 selectedId
       },
-    })
+    }),
   );
   unmount = instance.unmount;
 
@@ -778,7 +810,8 @@ async function handleBrowseSessions(config: Config): Promise<void> {
 
 /** 处理清理会话命令 */
 async function handleCleanupSessions(config: Config): Promise<void> {
-  const { cleanupExpiredSessions, getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
+  const { cleanupExpiredSessions, getRetentionSettings } =
+    await import("@sid-code/core/session/cleanup.ts");
 
   try {
     const retentionSettings = getRetentionSettings(config);
@@ -816,7 +849,9 @@ async function handleCleanupSessions(config: Config): Promise<void> {
 async function handleUploadTraces(config: Config): Promise<void> {
   const traceUpload = config.trace?.upload;
   if (!traceUpload?.url || !traceUpload?.token) {
-    console.error("错误: 未配置上传地址或 token，请在配置文件或通过 --trace-upload-url / --trace-upload-token 参数指定");
+    console.error(
+      "错误: 未配置上传地址或 token，请在配置文件或通过 --trace-upload-url / --trace-upload-token 参数指定",
+    );
     process.exit(1);
   }
 
@@ -867,7 +902,9 @@ function registerGlobalErrorHandlers(): void {
     try {
       const { getLogger } = require("@sid-code/core/debug/logger.ts");
       getLogger().error("GLOBAL", `unhandledRejection: ${msg}`, { stack });
-    } catch { /* logger 可能未初始化 */ }
+    } catch {
+      /* logger 可能未初始化 */
+    }
 
     // A5：abort 类拒绝 = 用户按 ESC / 超时主动中断，是可观测事件而非故障。
     // 对标 claude-code：abort 的 unhandledRejection 仅记录，不触发 emergencySessionEnd
@@ -882,7 +919,11 @@ function registerGlobalErrorHandlers(): void {
     if (stack) process.stderr.write(`${stack}\n`);
     // 非 abort 的未处理拒绝：保留原有兜底（紧急 SessionEnd + 退出）
     const err = reason instanceof Error ? reason : new Error(String(reason));
-    try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
+    try {
+      lastAppRef?.deref()?.emergencySessionEnd(err);
+    } catch {
+      /* ignore */
+    }
     process.exit(1);
   });
 
@@ -890,7 +931,9 @@ function registerGlobalErrorHandlers(): void {
     try {
       const { getLogger } = require("@sid-code/core/debug/logger.ts");
       getLogger().error("GLOBAL", `uncaughtException: ${err.message}`, { stack: err.stack });
-    } catch { /* logger 可能未初始化 */ }
+    } catch {
+      /* logger 可能未初始化 */
+    }
 
     // 与 unhandledRejection 对称：abort 类异常 = 用户/超时主动中断，不是真故障。
     // 多数 abort 走 unhandledRejection，但 setTimeout 回调内的 abort throw、
@@ -904,7 +947,11 @@ function registerGlobalErrorHandlers(): void {
     process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
     if (err.stack) process.stderr.write(`${err.stack}\n`);
     // 紧急 SessionEnd（在 exit 前做最后一搏）
-    try { lastAppRef?.deref()?.emergencySessionEnd(err); } catch { /* ignore */ }
+    try {
+      lastAppRef?.deref()?.emergencySessionEnd(err);
+    } catch {
+      /* ignore */
+    }
     // 强制退出（对标 claude-code forceExit）：
     // 终端已死时 process.exit() 可能抛 EIO，此时回退到 SIGKILL
     try {
@@ -919,7 +966,7 @@ function registerGlobalErrorHandlers(): void {
 /** 主函数（由 bootstrap.ts 调用） */
 export async function main(): Promise<void> {
   registerGlobalErrorHandlers();
-  const startupTimer = getPerfTimer().start('startup');
+  const startupTimer = getPerfTimer().start("startup");
 
   try {
     const cliArgs = parseCLIArgs();
@@ -927,7 +974,8 @@ export async function main(): Promise<void> {
     // P1-5 / P1-6：在 loadConfig 之前注入 settings 源过滤与 --settings 覆盖源，
     // 使后续 loadConfigFile → getSettings 合并时即生效（settings 是 config 的上游数据源之一）。
     {
-      const { setFlagSettings, setEnabledSettingSources } = await import("@sid-code/core/config/settings/index.ts");
+      const { setFlagSettings, setEnabledSettingSources } =
+        await import("@sid-code/core/config/settings/index.ts");
       // --setting-sources：限定磁盘来源子集（flag/policy 始终保留）。
       setEnabledSettingSources(cliArgs.settingSources ?? null);
       // --settings：文件路径或内联 JSON，作为 flagSettings 内存源注入（优先级最高的磁盘外覆盖）。
@@ -943,7 +991,9 @@ export async function main(): Promise<void> {
           }
           setFlagSettings(json);
         } catch (err: any) {
-          console.error(`错误: --settings 解析失败（应为文件路径或内联 JSON）: ${err?.message ?? err}`);
+          console.error(
+            `错误: --settings 解析失败（应为文件路径或内联 JSON）: ${err?.message ?? err}`,
+          );
           process.exit(1);
         }
       }
@@ -981,7 +1031,8 @@ export async function main(): Promise<void> {
     // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
     if (!config.skipPermissions && !config.yesMode) {
       try {
-        const { TrustManager, setPendingTrust } = await import("@sid-code/core/permission/trust.ts");
+        const { TrustManager, setPendingTrust } =
+          await import("@sid-code/core/permission/trust.ts");
         const trustMgr = new TrustManager(process.cwd());
         const dangerousItems = await trustMgr.scanDangerousConfigs();
         if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
@@ -995,7 +1046,10 @@ export async function main(): Promise<void> {
             if (item.type === "hooks" && Object.keys(config.hooks ?? {}).length > 0) {
               config.hooks = {};
               stripped.push("hooks");
-            } else if (item.type === "mcp_servers" && Object.keys(config.mcpServers ?? {}).length > 0) {
+            } else if (
+              item.type === "mcp_servers" &&
+              Object.keys(config.mcpServers ?? {}).length > 0
+            ) {
               config.mcpServers = {};
               stripped.push("mcpServers");
             }
@@ -1012,7 +1066,8 @@ export async function main(): Promise<void> {
             `未信任工作区：已跳过 ${stripped.join(" / ") || "（无可摘项）"}，共 ${dangerousItems.length} 项危险配置待确认`,
           );
 
-          const interactive = !config.print && !(config.maxTurns !== undefined && config.maxTurns > 0);
+          const interactive =
+            !config.print && !(config.maxTurns !== undefined && config.maxTurns > 0);
           if (interactive) {
             // 交互模式：登记快照，待 TUI 就绪后弹 TrustDialog（app.ts 消费）
             setPendingTrust({ items: dangerousItems, workspacePath: process.cwd() });
@@ -1044,11 +1099,13 @@ export async function main(): Promise<void> {
         // 定制化来源锁定（strictPluginOnlyCustomization）：屏蔽用户/项目级自带 skill 等，
         // 只保留 managed/plugin/builtin。必须在扩展扫描之前注入。
         {
-          const { setPluginOnlyPolicy } = await import("@sid-code/core/config/plugin-only-policy.ts");
+          const { setPluginOnlyPolicy } =
+            await import("@sid-code/core/config/plugin-only-policy.ts");
           setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
         }
         // 模式级管控（P2-2）
-        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } = await import("@sid-code/core/permission/mode-policy.ts");
+        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } =
+          await import("@sid-code/core/permission/mode-policy.ts");
         setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
 
         // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
@@ -1059,7 +1116,7 @@ export async function main(): Promise<void> {
         if (isBypassDisabledByPolicy() && cliWantsBypass) {
           console.error(
             "错误: 企业策略（managed settings: disableBypassPermissionsMode=disable）已禁用 bypass 权限模式，" +
-            "--dangerously-skip-permissions / --permission-mode always-allow 不可用。",
+              "--dangerously-skip-permissions / --permission-mode always-allow 不可用。",
           );
           process.exit(1);
         }
@@ -1073,7 +1130,10 @@ export async function main(): Promise<void> {
         // 降级：策略禁用 bypass 时，抹掉从其它来源（settings 文件等）渗入的 skip/bypass 态
         if (isBypassDisabledByPolicy()) {
           if (config.skipPermissions) config.skipPermissions = false;
-          if (config.permissionMode === "dangerously-skip-permissions" || config.permissionMode === "always-allow") {
+          if (
+            config.permissionMode === "dangerously-skip-permissions" ||
+            config.permissionMode === "always-allow"
+          ) {
             config.permissionMode = "default";
           }
         }
@@ -1092,7 +1152,8 @@ export async function main(): Promise<void> {
 
     // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
     try {
-      const { runStartupHousekeeping } = await import("@sid-code/core/config/startup-housekeeping.ts");
+      const { runStartupHousekeeping } =
+        await import("@sid-code/core/config/startup-housekeeping.ts");
       runStartupHousekeeping();
     } catch (err) {
       getLogger().debug("CONFIG", `启动管家任务跳过: ${err}`);
@@ -1101,9 +1162,8 @@ export async function main(): Promise<void> {
     // Settings 系统：Phase 1 安全环境变量（信任边界之前，仅可信来源 + 安全白名单）
     // 旧 safe-env.ts 从未被调用——此处首次接入两阶段环境变量应用。
     try {
-      const { applySafeConfigEnvironmentVariables } = await import(
-        "@sid-code/core/config/settings/managed-env.ts"
-      );
+      const { applySafeConfigEnvironmentVariables } =
+        await import("@sid-code/core/config/settings/managed-env.ts");
       applySafeConfigEnvironmentVariables();
     } catch (err) {
       // P2-8：initLogger 之前的 warn 命中 stderr 兜底分支，降级 debug 静默
@@ -1112,9 +1172,8 @@ export async function main(): Promise<void> {
 
     // AppConfig：加载内部应用状态 + 递增启动计数（write-through，后台 watchFile）
     try {
-      const { getAppConfig, incrementStartupCount } = await import(
-        "@sid-code/core/config/app-config.ts"
-      );
+      const { getAppConfig, incrementStartupCount } =
+        await import("@sid-code/core/config/app-config.ts");
       getAppConfig();
       incrementStartupCount();
     } catch (err) {
@@ -1233,14 +1292,18 @@ export async function main(): Promise<void> {
       const diag = config._validationDiagnostics;
       const total = diag.warnings.length + diag.errors.length;
       if (total > 0) {
-        console.error(`配置检查发现 ${total} 项提示（不影响本次启动，可能导致部分功能未按预期工作）:`);
+        console.error(
+          `配置检查发现 ${total} 项提示（不影响本次启动，可能导致部分功能未按预期工作）:`,
+        );
         for (const e of diag.errors) {
           console.error(`  ✗ [错误] ${e.path}: ${e.message}`);
         }
         for (const w of diag.warnings) {
           console.error(`  ⚠ [提示] ${w.path}: ${w.message}`);
         }
-        const logPath = config.debug ? config.debugLogFile : (config.auditLogFile ?? "~/.sid-code/audit.log");
+        const logPath = config.debug
+          ? config.debugLogFile
+          : (config.auditLogFile ?? "~/.sid-code/audit.log");
         console.error(`详情见 ${logPath}`);
       }
     }
@@ -1291,7 +1354,7 @@ export async function main(): Promise<void> {
           : `未配置 ${keyName}。\n`;
         console.error(
           `错误: ${hint}` +
-          `请在 ~/.sid-code/settings.json 配置 availableModels[].api_key，或设置环境变量 ${keyName}。`,
+            `请在 ~/.sid-code/settings.json 配置 availableModels[].api_key，或设置环境变量 ${keyName}。`,
         );
         process.exit(1);
       }
@@ -1302,17 +1365,14 @@ export async function main(): Promise<void> {
     // 当前无独立信任对话框 UI，以"通过 API Key 校验、确定在此项目运行"为信任边界。
     if (!config.print) {
       try {
-        const { applyAllConfigEnvironmentVariables } = await import(
-          "@sid-code/core/config/settings/managed-env.ts"
-        );
+        const { applyAllConfigEnvironmentVariables } =
+          await import("@sid-code/core/config/settings/managed-env.ts");
         applyAllConfigEnvironmentVariables();
 
-        const { initializeChangeDetector } = await import(
-          "@sid-code/core/config/settings/change-detector.ts"
-        );
-        const { getSettingsFilePaths } = await import(
-          "@sid-code/core/config/settings/constants.ts"
-        );
+        const { initializeChangeDetector } =
+          await import("@sid-code/core/config/settings/change-detector.ts");
+        const { getSettingsFilePaths } =
+          await import("@sid-code/core/config/settings/constants.ts");
         initializeChangeDetector(getSettingsFilePaths());
       } catch (err) {
         getLogger().warn("SETTINGS", `Phase 2 / 变更监听初始化跳过: ${err}`);
@@ -1347,7 +1407,10 @@ export async function main(): Promise<void> {
     // 记录 Provider 信息
     if (config.debug) {
       const { getLogger } = await import("@sid-code/core/debug/logger.ts");
-      getLogger().info("CONFIG", `Provider: ${config.provider} model=${config.model} baseURL=${config.baseURL || "(默认)"}`);
+      getLogger().info(
+        "CONFIG",
+        `Provider: ${config.provider} model=${config.model} baseURL=${config.baseURL || "(默认)"}`,
+      );
     }
 
     // 注册内置工具（共享 FileReadTracker 实例）
@@ -1434,7 +1497,8 @@ export async function main(): Promise<void> {
     // 不注册工具时 deps.getHypothesisLedger 也拿不到 ledger，矛盾中断/交付门禁一并静默。
     const { isHypothesisEnabled } = await import("@sid-code/core/query/hypothesis-ledger.ts");
     if (isHypothesisEnabled()) {
-      const { HypothesisRegisterTool, HypothesisChallengeTool } = await import("@sid-code/core/tool/hypothesis.ts");
+      const { HypothesisRegisterTool, HypothesisChallengeTool } =
+        await import("@sid-code/core/tool/hypothesis.ts");
       const hypothesisRegisterTool = new HypothesisRegisterTool();
       toolRegistry.register(hypothesisRegisterTool);
       toolRegistry.register(new HypothesisChallengeTool(hypothesisRegisterTool.getLedger()));
@@ -1475,7 +1539,8 @@ export async function main(): Promise<void> {
     // 注册 Worktree 隔离工具（D27: 仅在 git 仓库或配置了 WorktreeCreate/Remove hook 时注册）
     {
       const { findGitRoot } = await import("@sid-code/core/worktree/manager.ts");
-      const { hasWorktreeCreateHook, hasWorktreeRemoveHook } = await import("@sid-code/core/worktree/hooks.ts");
+      const { hasWorktreeCreateHook, hasWorktreeRemoveHook } =
+        await import("@sid-code/core/worktree/hooks.ts");
       const gitRoot = findGitRoot(process.cwd());
       if (gitRoot || hasWorktreeCreateHook() || hasWorktreeRemoveHook()) {
         const { EnterWorktreeTool } = await import("@sid-code/core/tool/enter-worktree.ts");
@@ -1568,7 +1633,8 @@ export async function main(): Promise<void> {
 
     // P1-2/P2-2/P3-2：Skill 运行时激活协调器。init() 延后到插件 skills 也加载完毕后调用
     // （下方插件块），以便条件激活门控覆盖插件 skill。
-    const { SkillActivationCoordinator } = await import("@sid-code/core/skill/activation-coordinator.ts");
+    const { SkillActivationCoordinator } =
+      await import("@sid-code/core/skill/activation-coordinator.ts");
     const skillActivationCoordinator = new SkillActivationCoordinator({
       manager: skillManager,
       cwd: process.cwd(),
@@ -1586,15 +1652,10 @@ export async function main(): Promise<void> {
         if (cmd.type !== "prompt") continue;
         if (cmd.context !== "fork") continue; // inline 不可包装
         if (cmd.disableModelInvocation) continue;
-        toolRegistry.register(
-          new BundledSkillTool(cmd, providerRegistry, toolRegistry),
-        );
+        toolRegistry.register(new BundledSkillTool(cmd, providerRegistry, toolRegistry));
       }
     } catch (err: any) {
-      getLogger().debug(
-        "SKILL",
-        `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`,
-      );
+      getLogger().debug("SKILL", `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`);
     }
 
     // 加载自定义 Agents（P2-4：只注册进统一聚合 registry，通过 sub_agent({type}) 访问；
@@ -1607,7 +1668,10 @@ export async function main(): Promise<void> {
     const registerAgentColor = (agentType: string, color: string | undefined) => {
       if (!color) return;
       if (!setAgentColor(agentType, color)) {
-        getLogger().warn("AGENT", `Agent "${agentType}" 的 color="${color}" 非法，已回退自动分配色`);
+        getLogger().warn(
+          "AGENT",
+          `Agent "${agentType}" 的 color="${color}" 非法，已回退自动分配色`,
+        );
       }
     };
     const customAgents = await new CustomAgentLoader().loadAll(undefined, scanOptions);
@@ -1650,17 +1714,20 @@ export async function main(): Promise<void> {
       }));
       registerDynamicAgents(injected);
       // P2-4：不再注册 agent__xxx 独立工具，注入的 agent 统一通过 sub_agent({type}) 访问。
-      getLogger().info("AGENT", `--agents 注入 ${injected.length} 个子代理: ${injected.map((a) => a.agentType).join(", ")}`);
+      getLogger().info(
+        "AGENT",
+        `--agents 注入 ${injected.length} 个子代理: ${injected.map((a) => a.agentType).join(", ")}`,
+      );
     }
 
     // 加载插件组件（命令 / Agent；Hooks 和 MCP 在下方各自的初始化点接入）
-    let pluginMcpServers: Record<string, import("@sid-code/core/config/config.ts").MCPServerConfig> = {};
+    let pluginMcpServers: Record<
+      string,
+      import("@sid-code/core/config/config.ts").MCPServerConfig
+    > = {};
     try {
-      const {
-        mergePluginCommands,
-        loadPluginAgents,
-        collectPluginMcpServers,
-      } = await import("./plugin/index.ts");
+      const { mergePluginCommands, loadPluginAgents, collectPluginMcpServers } =
+        await import("./plugin/index.ts");
 
       // 插件命令（带 pluginName: 前缀，与内置/自定义命令隔离）
       const pluginCmdCount = await mergePluginCommands(commandRegistry);
@@ -1712,8 +1779,15 @@ export async function main(): Promise<void> {
       // 收集插件 MCP 服务器（合并到 config.mcpServers，下方统一连接）
       pluginMcpServers = await collectPluginMcpServers();
 
-      if (pluginCmdCount > 0 || pluginAgents.length > 0 || Object.keys(pluginMcpServers).length > 0) {
-        getLogger().info("PLUGIN", `插件组件: ${pluginCmdCount} 命令, ${pluginAgents.length} Agent, ${Object.keys(pluginMcpServers).length} MCP 服务器`);
+      if (
+        pluginCmdCount > 0 ||
+        pluginAgents.length > 0 ||
+        Object.keys(pluginMcpServers).length > 0
+      ) {
+        getLogger().info(
+          "PLUGIN",
+          `插件组件: ${pluginCmdCount} 命令, ${pluginAgents.length} Agent, ${Object.keys(pluginMcpServers).length} MCP 服务器`,
+        );
       }
     } catch (err: any) {
       getLogger().error("PLUGIN", `插件组件加载失败: ${err.message}`);
@@ -1745,7 +1819,8 @@ export async function main(): Promise<void> {
       // 不调 execute），dump 后立即 exit，不进正常启动路径、不污染运行时工具集。
       // 若 mcpManager 已存在并已注册（防御性，当前时序不会发生），先到先得会跳过。
       if (!toolRegistry.get("ListMcpResources")) {
-        const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("@sid-code/core/tool/mcp-resources.ts");
+        const { ListMcpResourcesTool, ReadMcpResourceTool } =
+          await import("@sid-code/core/tool/mcp-resources.ts");
         const noop: () => undefined = () => undefined;
         toolRegistry.register(new ListMcpResourcesTool(noop));
         toolRegistry.register(new ReadMcpResourceTool(noop));
@@ -1785,7 +1860,8 @@ export async function main(): Promise<void> {
     // config.model 解析完毕，此处再改 config.model 已无法回传到已实例化的 provider。
     // 会话级模型切换应由 --model（更高优先级、在 provider 解析前生效）承担。
     if (config.topLevelAgent) {
-      const { resolveAgent, getActiveAgentTypes } = await import("@sid-code/core/agent/agent-definition.ts");
+      const { resolveAgent, getActiveAgentTypes } =
+        await import("@sid-code/core/agent/agent-definition.ts");
       const persona = resolveAgent(config.topLevelAgent);
       if (!persona) {
         console.error(
@@ -1810,7 +1886,10 @@ export async function main(): Promise<void> {
 
     // P1-7 --mcp-config：解析额外 MCP 配置源（文件路径或内联 JSON，可重复）。
     // 支持 { "mcpServers": {...} } 或直接 { "serverName": {...} } 两种形态（与 .mcp.json 一致）。
-    let mcpConfigServers: Record<string, import("@sid-code/core/config/config.ts").MCPServerConfig> = {};
+    let mcpConfigServers: Record<
+      string,
+      import("@sid-code/core/config/config.ts").MCPServerConfig
+    > = {};
     if (config.mcpConfigSources && config.mcpConfigSources.length > 0) {
       for (const src of config.mcpConfigSources) {
         const raw = String(src).trim();
@@ -1828,7 +1907,9 @@ export async function main(): Promise<void> {
             getLogger().warn("MCP", `--mcp-config 源格式不正确（期望对象）: ${raw.slice(0, 60)}`);
           }
         } catch (err: any) {
-          console.error(`错误: --mcp-config 解析失败 "${raw.slice(0, 60)}": ${err?.message ?? err}`);
+          console.error(
+            `错误: --mcp-config 解析失败 "${raw.slice(0, 60)}": ${err?.message ?? err}`,
+          );
           process.exit(1);
         }
       }
@@ -1841,7 +1922,10 @@ export async function main(): Promise<void> {
       ? { ...mcpConfigServers }
       : { ...config.mcpServers, ...pluginMcpServers, ...mcpConfigServers };
     if (config.strictMcpConfig) {
-      getLogger().info("MCP", `严格 MCP 配置模式（--strict-mcp-config）：仅加载 --mcp-config 指定的 ${Object.keys(mcpConfigServers).length} 个服务器。`);
+      getLogger().info(
+        "MCP",
+        `严格 MCP 配置模式（--strict-mcp-config）：仅加载 --mcp-config 指定的 ${Object.keys(mcpConfigServers).length} 个服务器。`,
+      );
     }
     let mcpManager: import("@sid-code/core/mcp/manager.ts").MCPManager | undefined;
 
@@ -1886,39 +1970,48 @@ export async function main(): Promise<void> {
 
       if (Object.keys(allMcpServers).length > 0) {
         const mgrForSkills = mcpManager;
-        mcpManager.connectAll(allMcpServers).then(async (mcpTools) => {
-          for (const tool of mcpTools) toolRegistry.register(tool);
-          if (mcpTools.length > 0) {
-            // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
-            // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
-            toolRegistry.invalidateParamTextCache();
-            getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
-          }
-          // P2-4：连接完成后发现 MCP server 暴露的 skill:// 资源，转成 loadedFrom="mcp" 的 skill。
-          // 安全隔离已就位（prompt-processor 禁内联 shell、executor 拒 hooks、permission 敏感属性强制 ask）。
-          try {
-            const { discoverMcpSkills } = await import("@sid-code/core/mcp/skill-discovery.ts");
-            const mcpSkills = await discoverMcpSkills(mgrForSkills);
-            if (mcpSkills.length > 0) {
-              skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
-              for (const skill of mcpSkills) {
-                if (skill.userInvocable !== false) {
-                  commandRegistry.register(new SkillCommand(skill), "user");
-                }
-              }
-              // 新 skill 进 listing：走增量注入路径（system prompt 已在启动时建好、
-              // 来不及含这些迟到 skill，故必须经 reminder 增量提醒，否则模型看不到）。
-              skillActivationCoordinator.enqueueListingForNewSkills(
-                mcpSkills.filter((s) => !s.disableModelInvocation).map((s) => s.name),
-              );
-              getLogger().info("MCP", `发现 ${mcpSkills.length} 个 MCP Skill: ${mcpSkills.map((s) => s.name).join(", ")}`);
+        mcpManager
+          .connectAll(allMcpServers)
+          .then(async (mcpTools) => {
+            for (const tool of mcpTools) toolRegistry.register(tool);
+            if (mcpTools.length > 0) {
+              // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
+              // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
+              toolRegistry.invalidateParamTextCache();
+              getLogger().info("MCP", `已连接，注册 ${mcpTools.length} 个工具`);
             }
-          } catch (err: any) {
-            getLogger().warn("MCP", `MCP Skill 发现失败（不阻断）: ${err?.message ?? String(err)}`);
-          }
-        }).catch((err: any) => {
-          getLogger().error("MCP", `初始化失败: ${err.message}`);
-        });
+            // P2-4：连接完成后发现 MCP server 暴露的 skill:// 资源，转成 loadedFrom="mcp" 的 skill。
+            // 安全隔离已就位（prompt-processor 禁内联 shell、executor 拒 hooks、permission 敏感属性强制 ask）。
+            try {
+              const { discoverMcpSkills } = await import("@sid-code/core/mcp/skill-discovery.ts");
+              const mcpSkills = await discoverMcpSkills(mgrForSkills);
+              if (mcpSkills.length > 0) {
+                skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
+                for (const skill of mcpSkills) {
+                  if (skill.userInvocable !== false) {
+                    commandRegistry.register(new SkillCommand(skill), "user");
+                  }
+                }
+                // 新 skill 进 listing：走增量注入路径（system prompt 已在启动时建好、
+                // 来不及含这些迟到 skill，故必须经 reminder 增量提醒，否则模型看不到）。
+                skillActivationCoordinator.enqueueListingForNewSkills(
+                  mcpSkills.filter((s) => !s.disableModelInvocation).map((s) => s.name),
+                );
+                getLogger().info(
+                  "MCP",
+                  `发现 ${mcpSkills.length} 个 MCP Skill: ${mcpSkills.map((s) => s.name).join(", ")}`,
+                );
+              }
+            } catch (err: any) {
+              getLogger().warn(
+                "MCP",
+                `MCP Skill 发现失败（不阻断）: ${err?.message ?? String(err)}`,
+              );
+            }
+          })
+          .catch((err: any) => {
+            getLogger().error("MCP", `初始化失败: ${err.message}`);
+          });
       }
     }
 
@@ -1927,7 +2020,8 @@ export async function main(): Promise<void> {
     // 仅在存在 mcpManager 时注册，避免无 MCP 场景给模型塞无用工具。
     if (mcpManager) {
       const mgrRef = mcpManager;
-      const { ListMcpResourcesTool, ReadMcpResourceTool } = await import("@sid-code/core/tool/mcp-resources.ts");
+      const { ListMcpResourcesTool, ReadMcpResourceTool } =
+        await import("@sid-code/core/tool/mcp-resources.ts");
       toolRegistry.register(new ListMcpResourcesTool(() => mgrRef));
       toolRegistry.register(new ReadMcpResourceTool(() => mgrRef));
     }
@@ -1956,7 +2050,10 @@ export async function main(): Promise<void> {
     // 记录注册的工具
     if (config.debug) {
       const { getLogger } = await import("@sid-code/core/debug/logger.ts");
-      const toolNames = toolRegistry.all().map(t => t.name()).join(", ");
+      const toolNames = toolRegistry
+        .all()
+        .map((t) => t.name())
+        .join(", ");
       getLogger().info("CONFIG", `注册工具: ${toolNames} (共${toolRegistry.size()}个)`);
     }
 
@@ -1986,7 +2083,10 @@ export async function main(): Promise<void> {
       });
       if (config.enableLLMClassifier === true) {
         // 复用主 provider；模型默认跟主循环模型
-        classifier.setProvider(providerRegistry.getProvider(), config.classifierModel || config.model);
+        classifier.setProvider(
+          providerRegistry.getProvider(),
+          config.classifierModel || config.model,
+        );
       }
       permissionChecker.setBashClassifier(classifier);
     }
@@ -2005,7 +2105,10 @@ export async function main(): Promise<void> {
         enabled: true,
         model: config.classifierModel,
       });
-      toolClassifier.setProvider(providerRegistry.getProvider(), config.classifierModel || config.model);
+      toolClassifier.setProvider(
+        providerRegistry.getProvider(),
+        config.classifierModel || config.model,
+      );
       permissionChecker.setToolClassifier(toolClassifier);
     }
 
@@ -2014,7 +2117,8 @@ export async function main(): Promise<void> {
     // 未注入 provider 时 WebFetch 走降级路径（截断 + 不可信标注），不会退回"原文直返"。
     // webFetchIsolate 显式设 false 才跳过注入（默认启用）。
     if (config.webFetchIsolate !== false) {
-      const { getSharedWebFetchExtractor } = await import("@sid-code/core/tool/web-fetch-extract.ts");
+      const { getSharedWebFetchExtractor } =
+        await import("@sid-code/core/tool/web-fetch-extract.ts");
       getSharedWebFetchExtractor().setProvider(
         providerRegistry.getProvider(),
         config.webFetchExtractModel || config.model,
@@ -2026,12 +2130,16 @@ export async function main(): Promise<void> {
       const allowCount = permissionRules.allow?.length ?? 0;
       const denyCount = permissionRules.deny?.length ?? 0;
       const askCount = permissionRules.ask?.length ?? 0;
-      getLogger().info("CONFIG", `权限规则: ${allowCount}条 allow, ${denyCount}条 deny, ${askCount}条 ask`);
+      getLogger().info(
+        "CONFIG",
+        `权限规则: ${allowCount}条 allow, ${denyCount}条 deny, ${askCount}条 ask`,
+      );
     }
 
     // 沙箱初始化（macOS Seatbelt，默认关闭）
     if (config.enableSandbox) {
-      const { SandboxManager, defaultSandboxConfig } = await import("@sid-code/core/permission/sandbox.ts");
+      const { SandboxManager, defaultSandboxConfig } =
+        await import("@sid-code/core/permission/sandbox.ts");
       const sandboxConfig = { ...defaultSandboxConfig(), enabled: true };
       const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
       permissionChecker.setSandboxManager(sandboxManager);
@@ -2072,13 +2180,27 @@ export async function main(): Promise<void> {
 
     // 创建 App
     const { App } = await import("./app.ts");
-    const app = new App({ config, provider, providerRegistry, toolRegistry, commandRegistry, unifiedRegistry, permissionChecker, mcpManager, planManager, fileReadTracker, skillActivationCoordinator, skillManager });
+    const app = new App({
+      config,
+      provider,
+      providerRegistry,
+      toolRegistry,
+      commandRegistry,
+      unifiedRegistry,
+      permissionChecker,
+      mcpManager,
+      planManager,
+      fileReadTracker,
+      skillActivationCoordinator,
+      skillManager,
+    });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
 
     // 注册并发会话（Spec 18 §4）+ 启动 Cron 调度器（Spec 18 §5）
     {
-      const { registerSession, unregisterSession } = await import("@sid-code/core/session/concurrent.ts");
+      const { registerSession, unregisterSession } =
+        await import("@sid-code/core/session/concurrent.ts");
       const sessionEntry = {
         sessionId: config.sessionId,
         pid: process.pid,
@@ -2103,8 +2225,16 @@ export async function main(): Promise<void> {
 
       // 退出时注销会话 + 停止调度器
       const cleanup = () => {
-        try { unregisterSession(config.sessionId); } catch { /* 忽略 */ }
-        try { scheduler.stop(); } catch { /* 忽略 */ }
+        try {
+          unregisterSession(config.sessionId);
+        } catch {
+          /* 忽略 */
+        }
+        try {
+          scheduler.stop();
+        } catch {
+          /* 忽略 */
+        }
       };
       // ASYNC-2 修复：只挂 exit 兜底，不再注册同步 process.exit 的信号 handler。
       // 原先 cli.ts 在此处注册 SIGINT/SIGTERM → cleanup() + 同步 process.exit，
@@ -2117,7 +2247,8 @@ export async function main(): Promise<void> {
 
     // 启动时自动清理过期会话（后台静默执行）
     if (!config.print) {
-      const { cleanupExpiredSessions, getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
+      const { cleanupExpiredSessions, getRetentionSettings } =
+        await import("@sid-code/core/session/cleanup.ts");
       const retentionSettings = getRetentionSettings(config);
       if (retentionSettings.enabled) {
         cleanupExpiredSessions(config, retentionSettings, config.sessionId)
@@ -2203,7 +2334,9 @@ export async function main(): Promise<void> {
                 getLogger().info("WORKTREE", `自动清理: 删除 ${n} 个过期临时 Worktree`);
               }
             })
-            .catch(() => {/* 忽略 */});
+            .catch(() => {
+              /* 忽略 */
+            });
         }
       } catch (err: any) {
         getLogger().warn("WORKTREE", `worktree 启动处理失败（不阻断）: ${err.message}`);
@@ -2219,7 +2352,10 @@ export async function main(): Promise<void> {
         const { loadFromPr } = await import("@sid-code/core/session/from-pr.ts");
         const result = await loadFromPr(cliArgs.fromPr, process.cwd());
         if (result.sessionId) {
-          getLogger().info("CLI", `--from-pr ${result.prNumber}：内嵌会话 id ${result.sessionId}，转为 resume`);
+          getLogger().info(
+            "CLI",
+            `--from-pr ${result.prNumber}：内嵌会话 id ${result.sessionId}，转为 resume`,
+          );
           config.resume = result.sessionId;
         } else if (result.contextText) {
           getLogger().info("CLI", `--from-pr ${result.prNumber}：注入 PR 上下文到新会话`);
@@ -2245,7 +2381,9 @@ export async function main(): Promise<void> {
 
       // 无头模式（--print）不能弹交互选择器：缺 stdin 无法选择。
       if (cliArgs.resumePicker && config.print) {
-        console.error("错误: 无头模式（--print）下 --resume 必须带会话 ID。用法: sid-code -p --resume <id>");
+        console.error(
+          "错误: 无头模式（--print）下 --resume 必须带会话 ID。用法: sid-code -p --resume <id>",
+        );
         process.exit(1);
       }
 
