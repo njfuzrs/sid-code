@@ -7,7 +7,11 @@ import { convertRawJsonlToTrace } from "../../scripts/eval/raw-jsonl-to-trace.ts
 import { validateTrace } from "eval-framework/trace/agent-trace.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../..");
-const ENTRYPOINT = join(REPO_ROOT, "src/entrypoints/bootstrap.ts");
+// P2-2 分包后入口搬到了 packages/cli/ 下。旧值 "src/entrypoints/bootstrap.ts" 会让每次
+// spawn 都在 16ms 内死于 `Module not found`，而 provider 把 stderr 折进结构化输出、
+// runner 只看到 5 个 case 全部 skip —— 症状长得像「评测没跑成」而不是「路径错了」。
+// 参照 scripts/eval/run-eval-baseline.ts:124，它用的就是这个新路径。
+const ENTRYPOINT = join(REPO_ROOT, "packages/cli/src/entrypoints/bootstrap.ts");
 
 function parseArgs(): {
   prompt: string;

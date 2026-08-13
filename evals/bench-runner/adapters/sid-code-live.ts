@@ -386,7 +386,8 @@ export async function runSidCodeLive(
 ): Promise<SidCodeLiveResult> {
   const home = homedir();
   const trajectoriesDir = config.trajectoriesDir || join(home, ".sid-code", "trajectories");
-  const entrypoint = config.entrypoint || "src/entrypoints/bootstrap.ts";
+  // P2-2 分包后入口搬到了 packages/cli/ 下（同 evals/providers/sid-code-live.ts:10 的修正）。
+  const entrypoint = config.entrypoint || "packages/cli/src/entrypoints/bootstrap.ts";
   const timeoutMs = config.timeoutMs ?? 360_000;
 
   // 注：sid-code 默认 trace=enabled，会自动落 ~/.sid-code/trajectories/sessions/<id>/session.traj

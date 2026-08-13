@@ -23,18 +23,42 @@ import {
   type BaselineResult,
 } from "./baseline-sync.ts";
 
-const ROOT = resolve(import.meta.dir, "..");
+/**
+ * 两个根路径，用途不同，**不要合并**（合并过一次就是下面那个 bug）：
+ *
+ *  · PKG_ROOT   = packages/eval-framework/ —— 框架**代码与配置**所在
+ *                 （eval.config.yaml、providers/*.ts 这类随包分发的东西）
+ *  · EVALS_ROOT = <仓库根>/evals/          —— 评测**数据与产物**所在
+ *                 （case yaml、_runs/、_reports/、_scores/、baseline 回写目标）
+ *
+ * 历史：vendor 进 workspace 之前 runner 就在 `evals/core/`，`resolve(import.meta.dir, "..")`
+ * 天然等于 `evals/`，一个常量够用。P1-5 把框架搬到 `packages/eval-framework/` 后整条链
+ * 平移了两级，但这个常量没跟着改 —— 于是 case 扫描去了
+ * `packages/eval-framework/general/p0-core/`（根本不存在），`eval:run` 从那时起就是坏的：
+ *
+ *     $ bun run eval:run -- --provider sid-code --cases case_001
+ *     未找到匹配的 case
+ *
+ * 它一直没被发现，因为 `eval-pr-smoke.yml` 的 paths 过滤在 2026-08-13 之前从未被触发过
+ * （那之前 remote 是内网 GitLab，不读 .github/workflows/）。首个真跑的 PR 立刻暴露。
+ *
+ * 判据：**路径指向「随代码分发的东西」用 PKG_ROOT，指向「case / 产物」用 EVALS_ROOT。**
+ */
+const PKG_ROOT = resolve(import.meta.dir, "..");
+const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
+const EVALS_ROOT = join(REPO_ROOT, "evals");
+
 const CASE_DIRS = [
-  join(ROOT, "general", "p0-core"),
-  join(ROOT, "general", "p1-common"),
-  join(ROOT, "general", "p2-edge"),
-  join(ROOT, "general", "execution"),
+  join(EVALS_ROOT, "general", "p0-core"),
+  join(EVALS_ROOT, "general", "p1-common"),
+  join(EVALS_ROOT, "general", "p2-edge"),
+  join(EVALS_ROOT, "general", "execution"),
 ];
-const HOLDOUT_DIR = join(ROOT, "holdout");
-const ARCHITECTURE_ROOT = join(ROOT, "architecture");
-const HOLDOUT_ARCHITECTURE_ROOT = join(ROOT, "holdout", "architecture");
-const REAL_TASKS_ROOT = join(ROOT, "real-tasks");
-const HOLDOUT_REAL_TASKS_ROOT = join(ROOT, "holdout", "real-tasks");
+const HOLDOUT_DIR = join(EVALS_ROOT, "holdout");
+const ARCHITECTURE_ROOT = join(EVALS_ROOT, "architecture");
+const HOLDOUT_ARCHITECTURE_ROOT = join(EVALS_ROOT, "holdout", "architecture");
+const REAL_TASKS_ROOT = join(EVALS_ROOT, "real-tasks");
+const HOLDOUT_REAL_TASKS_ROOT = join(EVALS_ROOT, "holdout", "real-tasks");
 
 /**
  * 动态发现 `evals/architecture/<sub>/` 下所有子目录。
@@ -150,8 +174,38 @@ interface ProviderRegistryEntry {
   constraints?: { modelPrefix?: string };
 }
 
+/**
+ * 解析 `eval.config.yaml` 里的 provider script 路径：**先包内，再仓库根 evals/**。
+ *
+ * 为什么要两处找：P1-5 vendor 时只搬了一半 provider，两个目录内容互补、零重叠：
+ *
+ *  · `packages/eval-framework/providers/` —— mock-echo / aider / _template
+ *    共性是**零仓库依赖**，纯外部工具 wrapper，随包分发天经地义。
+ *  · `evals/providers/`                   —— sid-code-live / claude-code
+ *    共性是**依赖仓库自身**（sid-code-live 引 `../../scripts/eval/raw-jsonl-to-trace.ts`）。
+ *    搬进包等于让包反向依赖仓库源码、破坏包边界（`bun run lint:boundary` 会拦），
+ *    所以它们**刻意**留在仓库侧。
+ *
+ * 这不是过渡态，是稳定的职责切分 —— 别为了「统一目录」把后两个搬进包。
+ *
+ * 之前这里写 `resolve(PKG_ROOT, def.script)`，于是 sid-code / claude-code 两个
+ * provider 恒解析到不存在的路径。只有 mock-echo / aider 能跑，而它们恰好都不是
+ * PR smoke 用的那个。
+ */
+function resolveProviderScript(name: string, script: string): string {
+  const candidates = [resolve(PKG_ROOT, script), resolve(EVALS_ROOT, script)];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  throw new Error(
+    `eval.config.yaml: provider "${name}" 的 script 找不到。\n` +
+      `已尝试:\n${candidates.map((p) => `  - ${p}`).join("\n")}\n` +
+      `请确认文件存在，或修正 eval.config.yaml 里的 script 字段。`,
+  );
+}
+
 function loadProviderRegistry(): Record<string, ProviderRegistryEntry> {
-  const configPath = join(ROOT, "eval.config.yaml");
+  const configPath = join(PKG_ROOT, "eval.config.yaml");
   if (!existsSync(configPath)) {
     throw new Error(`eval.config.yaml 不存在: ${configPath}\n请创建配置文件或检查 evals/ 目录`);
   }
@@ -177,7 +231,7 @@ function loadProviderRegistry(): Record<string, ProviderRegistryEntry> {
       throw new Error(`eval.config.yaml: provider "${name}" 缺少 script 或 default_model`);
     }
     registry[name] = {
-      script: resolve(ROOT, def.script),
+      script: resolveProviderScript(name, def.script),
       defaultModel: def.default_model,
       timeoutMs: def.timeout_ms ?? 480_000,
       maxTurns: def.max_turns ?? 30,
@@ -362,7 +416,7 @@ export async function runProviderOnce(
   if (provider.extraArgs) args.push(...provider.extraArgs);
 
   const proc = spawn("bun", args, {
-    cwd: resolve(ROOT, ".."),
+    cwd: REPO_ROOT,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -771,7 +825,11 @@ function currentWeekNumber(): number {
   return Math.ceil((now.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000));
 }
 
-export function writeWeekScores(results: TestResult[], weekNum: number, baseDir: string = ROOT) {
+export function writeWeekScores(
+  results: TestResult[],
+  weekNum: number,
+  baseDir: string = EVALS_ROOT,
+) {
   const scoresDir = join(baseDir, "_scores", `w${weekNum}`);
   mkdirSync(scoresDir, { recursive: true });
 
@@ -857,7 +915,7 @@ export function appendRunHistory(
   results: TestResult[],
   runId: string,
   weekNum: number,
-  baseDir: string = ROOT,
+  baseDir: string = EVALS_ROOT,
   /** 可选：raw samples（每次采样的原始记录），用 sample_index 标识，is_median=false */
   rawSamples?: Array<TestResult & { sampleIndex: number; isMedian: boolean }>,
 ) {
@@ -973,8 +1031,8 @@ function collectGraderReasons(dims: Record<string, DimScore>): Record<string, st
   return hasAny ? out : undefined;
 }
 
-export function syncBaselineScores(results: TestResult[], baseDir: string = ROOT) {
-  // 映射 TestResult → BaselineResult；general 模式按 ROOT 下 4 个目录扫
+export function syncBaselineScores(results: TestResult[], baseDir: string = EVALS_ROOT) {
+  // 映射 TestResult → BaselineResult；general 模式按 EVALS_ROOT 下 4 个目录扫
   // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
   // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
   // dashboard 取均值时会把这 2.5 算进去，污染横向对比。
@@ -1062,7 +1120,7 @@ async function main() {
   else if (syncFlag === true) doSync = true;
   else doSync = caseFilter === undefined; // 全量默认 on，单 case 默认 off
   const dryRun = values["dry-run"] as boolean;
-  const outputPath = resolve(ROOT, "..", values.output as string);
+  const outputPath = resolve(REPO_ROOT, values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
 
   const cases = await loadCases(caseFilter, {
@@ -1327,7 +1385,7 @@ async function main() {
   await Bun.write(outputPath, JSON.stringify(output, null, 2));
 
   const runId = output.timestamp;
-  appendRunHistory(results, runId, weekNum, ROOT, samples > 1 ? sampleResults : undefined);
+  appendRunHistory(results, runId, weekNum, EVALS_ROOT, samples > 1 ? sampleResults : undefined);
   writeWeekScores(results, weekNum);
 
   if (doSync) {
