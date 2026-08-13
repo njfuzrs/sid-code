@@ -205,6 +205,12 @@ describe("SkillChangeDetector — 防抖与停止（P2-3）", () => {
       return;
     }
 
+    // macOS 的 fs.watch(recursive) 走 FSEvents，watcher 对象建好后还要异步"武装"才开始收事件
+    // —— isWatching() 为 true 只代表 watcher 已创建，不代表已就绪。紧接着写文件会赛在武装
+    // 之前，事件被整个漏掉。Linux 走 inotify，watch() 返回即生效，所以只有 macOS 会挂。
+    // 2026-08-13 实测：本条在 macOS CI runner 上 fail（9190 pass / 1 fail），Linux 全绿。
+    // 修法照抄 change-detector.test.ts 里同一竞态已验证过的写法，不要删这段等待。
+    await new Promise((r) => setTimeout(r, 50));
     await writeFile(join(dir, "SKILL.md"), "---\nname: x\n---\nbody");
     // 等防抖 + 触发
     await new Promise((r) => setTimeout(r, 250));

@@ -75,15 +75,101 @@ make build            # 构建开发版二进制（不改版本号）
 
 ---
 
-## 提 PR 之前必须跑的两条命令
+## 分支与工作流
 
-```bash
-bun test        # 全量单测，必须 0 fail
-make build      # 构建 + 产物自检，必须成功
+### 用 GitHub Flow，不是 GitFlow
+
+**只有一条长期分支 `main`，所有改动走「短命分支 → PR → 合回 main」。**
+没有 `develop`、没有 `release/*`、没有 `hotfix/*`。
+
+这不是图省事，是与现有基础设施对齐的**唯一可行选择**：
+
+- `.github/workflows/ci.yml` 的触发条件写死了 `branches: [main]`（`pull_request` 与 `push` 都是）。
+  **建一条 `develop` 分支，往它提的 PR 一道 CI 都不会跑** —— 门禁静默失效，PR 页面还显示绿色。
+  （这个坑本仓踩过一次：2026-08 把默认分支 `master` 改名 `main` 时忘了同步改 workflow 的
+  `branches:`，导致门禁不触发而 PR 显绿。）
+- 发布走 `./scripts/release.sh`，它直接从当前 HEAD bump + 打 tag，**本来就不需要 release 分支**。
+  版本号是编译期内联的，"准备发布"这个阶段不存在需要单独隔离的状态。
+
+所以：**改动都从 `main` 切出去，都提 PR 回 `main`。**
+
+### 不要直接 push 到 `main`
+
+即使你有权限。理由是机制性的，不是纪律要求：
+
+- 直推绕过 PR，就绕过了 `eval-pr-smoke.yml`（只在 `pull_request` 触发），
+  也没有任何 diff review 的落点。
+- `ci.yml` 虽然 `push: branches: [main]` 也会跑，但那时代码**已经在 main 上了** ——
+  红了是在污染主干之后才知道，而不是之前。
+- 改到一半的状态会暴露给所有人：这是开源仓库，`main` 是别人 `git clone` 拿到的东西。
+
+### 分支命名
+
+```text
+<type>/<简短描述>
 ```
 
-这两条就是 CI 门禁的内容（见 `.github/workflows/ci.yml`），
-在 PR 与 push 到 `main` 时都会跑。本地跑绿了 CI 基本不会红。
+`type` 与 Conventional Commits 保持一致（`fix` / `feat` / `refactor` / `perf` / `docs` /
+`test` / `build` / `ci` / `chore`），描述用小写英文加连字符：
+
+```bash
+git switch main && git pull
+git switch -c fix/subagent-timeout-discards-output
+git switch -c feat/digest-auto-trigger
+git switch -c docs/contributing-branch-policy
+```
+
+> 历史分支里有 `feature/xxx` 形式（分包前留下的），**新分支统一用 `feat/`**，
+> 与 commit type 同名，省掉「这个前缀对应哪个 type」的换算。
+
+### 一个 PR 一件事，宁可拆多个
+
+这条在下面「提交与 PR」一节也写了，这里补充**怎么拆**：
+
+- 按**关注点**拆，不按文件数拆。改 10 个文件修一个 bug 是一个 PR；
+  改 2 个文件修两个无关 bug 是两个 PR。
+- 修复方案文档里列了 N 个缺陷时，**互不依赖的缺陷各自一个 PR**；
+  强耦合的（改了 A 不改 B 就是半成品）放同一个 PR，并在正文说清为什么绑一起。
+- 顺手发现的无关问题（路径漂移、拼写、注释过时）：单独开 `docs:` / `chore:` 的 PR，
+  **不要塞进正在做的功能 PR 里**。混进去会让 review 的人分不清哪些改动是必要的。
+
+### 合并
+
+由维护者合并，用 **squash merge**：一个 PR 在 `main` 上留一个提交，
+commit message 用 PR 标题（所以标题必须是合规的 Conventional Commits —— 它会直接进
+`CHANGELOG.md`）。合并后删掉远端分支。
+
+---
+
+## 提 PR 之前必须跑的门禁
+
+CI（`.github/workflows/ci.yml`）有 **两个 job、五道门禁**，本地全部可跑：
+
+```bash
+# test job
+bun test                 # 全量单测，必须 0 fail
+make build               # 构建 + 产物自检，必须成功
+
+# lint job
+bun run lint             # oxlint，只开 correctness 档
+bun run format:check     # oxfmt 排版检查（红了跑 bun run format 再 git add）
+bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
+```
+
+**五条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
+排版或跨包导入不合规照样拦。
+
+### 另有两个 git hook 门禁（跑 `bun run install-hooks` 安装）
+
+它们**不在 CI 里**，只在本地拦，所以更容易忘记装：
+
+| hook | 门禁 |
+| --- | --- |
+| pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移） |
+| pre-push | holdout 泄露检测、`holdout/real-tasks` 永封校验、website 站点构建（死链检测） |
+
+没装 hook 的话，参考页漂移和站点死链会一路带到 PR 里才被发现。
+**clone 之后第一件事就是 `bun run install-hooks`。**
 
 几个容易踩的点：
 
@@ -94,18 +180,19 @@ make build      # 构建 + 产物自检，必须成功
   但请不要新增类型错误。
 - `bun run lint` 跑 oxlint（P1-4，2026-08-10 接入），CI 与 pre-commit 都会拦。
   规则集只开 correctness 档（真错误），不管风格。规则口径与豁免理由见仓库根
-  `.oxlintrc.json` 的注释；提交前可以本地先跑一遍 `bun run lint`。
+  `.oxlintrc.json` 的注释。
   （`bun run lint:fix` 也在，但当前唯一开启的规则 `no-unused-vars` oxlint 不做自动修复，
   跑了也是空操作——留着是为了将来规则集扩展后不用再补这个脚本。）
-- `bun run format` 跑 oxfmt（P2-1，2026-08-12 接入），CI 与 pre-commit 也都会拦
-  （拦的是 `bun run format:check`）。**排版不用再靠"照着周边写"**，交给它就行。
-  两个门禁都刻意只**报错**、不自动改你的文件：hook 里偷偷改工作区，会让你提交的内容
+- `bun run format` 跑 oxfmt（P2-1，2026-08-12 接入），CI 与 pre-commit 拦的是
+  `bun run format:check`。**排版不用再靠"照着周边写"**，交给它就行。
+- 两个格式化门禁都刻意只**报错**、不自动改你的文件：hook 里偷偷改工作区，会让你提交的内容
   与你 review 过的内容不一致。红了就跑 `bun run format` 再 `git add`。
 
 ### 改了这些目录，还要重新生成官网参考页
 
 `website/ref/` 下 6 个页面是**从源码生成**的。动过
-`src/help.ts`、`src/cli.ts`、`src/tool/`、`src/command/`、`src/config/`、`src/hook/`
+`packages/cli/src/help.ts`、`packages/cli/src/cli.ts`、`packages/core/src/tool/`、
+`packages/cli/src/command/`、`packages/core/src/config/`、`packages/core/src/hook/`
 之后跑：
 
 ```bash
@@ -175,7 +262,13 @@ pre-commit hook 有 `--check` 门禁会拦住这种漂移（未装 hook 先跑 `
 
 为什么这条约定要写进贡献指南：违反它的测试**会全绿**，同时往用户真实的
 `~/.sid-code/` 里灌假数据，把线上遥测查询污染成查不到真记录。
-防复发门禁在 `tests/telemetry/no-real-path-writes.test.ts`（静态扫描 `tests/` 下的落盘调用方）。
+防复发门禁在 `packages/core/tests/telemetry/no-real-path-writes.test.ts`
+（静态扫描**全部 5 个测试根**：4 个包内 `tests/` + 仓库级根 `tests/`）。
+
+> ⚠️ 还有一个分包带来的隐患：`bunfig.toml` 的 preload 兜底**只在以仓库根为 cwd 跑
+> `bun test` 时生效**。`cd packages/core && bun test` 读不到根 bunfig，兜底消失，
+> 直接写你真实的 `~/.sid-code/`。**新增含 `tests/` 的包时，必须一起加一份
+> `bunfig.toml` 指回根预载文件**（门禁见 `tests/build/test-isolation-preload-wiring.test.ts`）。
 
 ---
 
@@ -184,7 +277,7 @@ pre-commit hook 有 `--check` 门禁会拦住这种漂移（未装 hook 先跑 `
 **提交信息用 Conventional Commits**，因为 `CHANGELOG.md` 是从 git 历史机械生成的
 （`scripts/generate-changelog.ts` 按 type 分组），格式不对就会被归到「其他」组：
 
-```
+```text
 feat(cache): 新增 XXX
 fix(tool): 修复 YYY 在 ZZZ 下不生效
 docs: 更新 AAA
@@ -196,9 +289,24 @@ docs: 更新 AAA
 PR 要求：
 
 - **一个 PR 一件事**。混合改动 review 成本高，且出问题不好回滚。
-- 标题同样用 Conventional Commits 格式，控制在 70 字符内。
+- 标题同样用 Conventional Commits 格式，控制在 70 字符内
+  （squash merge 后它就是 `main` 上的 commit message，会直接进 `CHANGELOG.md`）。
 - 正文说清三件事：改了什么、为什么这么改、怎么验证的（贴 `bun test` 与 `make build` 结果）。
 - 用 [PR 模板](./.github/pull_request_template.md)，它就是这三件事的清单。
+
+### issue 先行：什么时候需要
+
+不像某些项目那样**一律强制**（我们不想把小修小补也拦在流程外），但这两类必须先开 issue：
+
+| 情况 | 要求 |
+| --- | --- |
+| 新功能、改变现有行为、动架构 | **先开 issue 讨论**再写代码。否则可能做完才发现方向不对，白费你的时间 |
+| 改动跨多个包 / 涉及 `packages/tui-renderer/src/` | 先开 issue（后者还要先读 [NOTICE](./NOTICE) 第 1 节） |
+| bug 修复、文档、拼写、路径漂移、加测试 | 直接提 PR 即可，正文说清根因就行 |
+
+PR 正文里用 `Fixes #123` 关联 issue —— 合并时 issue 会自动关闭，也让「为什么做这个」
+永久可追溯。修复方案文档里列的缺陷清单，**建议每个缺陷一个 issue**，
+这样 PR ↔ issue ↔ 缺陷编号三者对得上。
 
 ### ⛔ 一条铁律：不要动与你的改动无关的文件
 

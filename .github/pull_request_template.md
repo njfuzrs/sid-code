@@ -23,13 +23,21 @@
 
 <!-- 贴真实输出，不要只写「测试通过」。失败也如实贴，比隐去更有用。 -->
 
+```text
+bun test              →
+make build            →
+bun run lint          →
+bun run format:check  →
+bun run lint:boundary →
 ```
-bun test    →
-make build  →
-```
+
+CI 有两个 job、五道门禁，上面五条本地全跑绿基本就不会红：
 
 - [ ] `bun test` 全绿（0 fail）
 - [ ] `make build` 成功（末尾 `--self-check` 通过）
+- [ ] `bun run lint` 通过（oxlint）
+- [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+- [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
 - [ ] 带了覆盖本次改动的测试（bug 修复要有能复现原问题的用例）
 - [ ] 用 `sc-dev` 实际跑过（**不是 `sc`**，那是线上版，验证不到本地改动）
 
@@ -40,11 +48,15 @@ make build  →
 - [ ] 没跑 `make build-bump` 或 `./scripts/release.sh`（版本号只在发布流程里变）
 - [ ] 没新增类型错误（CI 暂不含 `tsc --noEmit`，靠自觉）
 - [ ] 没提交密钥、内网地址、本机绝对路径
-- [ ] 改了 `src/help.ts` / `src/cli.ts` / `src/tool/` / `src/command/` / `src/config/` / `src/hook/`
-      的话，跑过 `bun run docs:gen-reference` 并提交了 `website/ref/` 的改动
+- [ ] 改了 `packages/cli/src/{help,cli}.ts` / `packages/core/src/{tool,config,hook}/` /
+      `packages/cli/src/command/` 的话，跑过 `bun run docs:gen-reference`
+      并提交了 `website/ref/` 与 `website/public/llms.txt` 的改动
 - [ ] 测试若会写 `~/.sid-code/`，已重定向到 tmpdir
       （见 [CONTRIBUTING.md](../CONTRIBUTING.md) 的测试约定——违反它的测试**会全绿**）
-- [ ] 改动涉及 `src/ink/` 的话，读过 [NOTICE](../NOTICE) 第 1 节
+- [ ] 改动涉及 `packages/tui-renderer/src/`（分包前的 `src/ink/`）的话，
+      读过 [NOTICE](../NOTICE) 第 1 节
+- [ ] 分支不是 `main`（从 `main` 切出的 `<type>/<描述>` 短命分支），且已装 git hook
+      （`bun run install-hooks`）
 
 ## 破坏性变更
 

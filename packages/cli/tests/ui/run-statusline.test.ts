@@ -44,10 +44,19 @@ describe("runStatusLine", () => {
   });
 
   test("脚本能从 stdin 读到 JSON 会话数据", async () => {
-    // jq 可能不在所有环境；用 node 读 stdin 更稳。
-    const cmd = `node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);process.stdout.write(j.model+'|'+j.gitBranch)})"`;
-    const out = await runStatusLine({ type: "command", command: cmd }, DATA, 1000);
-    expect(out).toBe("opus-4.8|main");
+    // 用 `cat` 原样回吐 stdin，解析放在测试侧做。
+    //
+    // 之前这里 spawn 了 `node -e "...JSON.parse..."`，注释写着「jq 可能不在所有环境；
+    // 用 node 读 stdin 更稳」—— 比 jq 稳，但引入了更大的变量：node 冷启动。
+    // 而 STATUSLINE_TIMEOUT_MS = 1000 是**生产常量**（run-statusline.ts:56），测试直接
+    // 受它约束，于是余量完全取决于 runner 当时的负载。2026-08-13 实测在 ubuntu CI 上
+    // fail，耗时 1002.91ms —— 精确撞线（本机 macOS node 冷启动仅 20~30ms，不复现）。
+    //
+    // `cat` 是 coreutils，无运行时冷启动（实测 0ms），且断言比原来更强：
+    // 验证的是整份 JSON 结构，不只是两个字段。**不要改回 spawn 运行时的写法。**
+    const out = await runStatusLine({ type: "command", command: "cat" }, DATA, 1000);
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out!)).toEqual(DATA);
   });
 
   test("非零退出 → 回退 null", async () => {
