@@ -86,9 +86,14 @@ $ sc
        因为下一个人会以为自己核对过了。ink fork 现在自成一包，用排包代替原先的 grep -v '/ink/'。
     代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
                 （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer）
-    测试文件    find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 642）
-    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                （实测 8,569）
+    ⚠️ P1-2 测试分包（2026-08-13）：测试搬到了 packages/<包>/tests/，只覆盖 packages/*/src
+       的命令会数出 30 而不是 644 —— **不报错，只静默少数 95%**。这正是本注释块想防的那类
+       故障，却还是又发生了一次：测试目录一动，这里的路径清单必须跟着动。下面同时保留
+       两个路径，因为 src/ 下仍有少量就地放置的 *.test.ts。
+    测试文件    find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 644）
+    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                （实测 8,576；`bun test` 自己报 ~9,191 个 / 652 文件，差值是动态生成的用例，
+                  静态 grep 数不到，两个数字都不算错，口径不同而已）
     Hook 事件   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
     内置工具    sid-code --dump-tools 数组长度（实测 44，与脚本生成的 ref/tools.md 同源同值。
                 ⚠️ 此处曾写"60+"，与运行时真值不符 —— website/index.md 早已改对而本文漏改，

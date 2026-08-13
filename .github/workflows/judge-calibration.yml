@@ -10,9 +10,11 @@
 name: Monthly Judge Calibration
 
 on:
-  schedule:
-    # 每月 1 号 UTC 02:00（北京时间 10:00）
-    - cron: "0 2 1 * *"
+  # ⚠️ cron 已停用（2026-08-13）：依赖 ANTHROPIC_API_KEY，而首发时该 secret 未配置。
+  # 理由与恢复方式同 eval-weekly.yml 同位注释。
+  # schedule:
+  #   # 每月 1 号 UTC 02:00（北京时间 10:00）
+  #   - cron: "0 2 1 * *"
   workflow_dispatch:
     inputs:
       judge:

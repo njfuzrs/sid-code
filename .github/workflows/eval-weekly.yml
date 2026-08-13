@@ -8,9 +8,16 @@
 name: Weekly Full Eval
 
 on:
-  schedule:
-    # 每周一 16:00 UTC（北京时间周二 00:00）
-    - cron: "0 16 * * 1"
+  # ⚠️ cron 已停用（2026-08-13）：本 workflow 依赖 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY，
+  # 而开源首发时仓库 Actions secrets 一个都没配 —— 定时触发只会每周一稳定失败一次，
+  # 在 Actions 页面堆红叉。**空 secret 不会让 workflow 报「缺少密钥」，只会让真实请求
+  # 拿 401 失败在半路**，排查成本比直接不跑高。
+  #
+  # 恢复条件：在 Settings → Secrets and variables → Actions 配好上面两个 key 之后，
+  # 取消下面 3 行注释即可（不要顺手改 workflow_dispatch，它一直可用）。
+  # schedule:
+  #   # 每周一 16:00 UTC（北京时间周二 00:00）
+  #   - cron: "0 16 * * 1"
   workflow_dispatch:
     inputs:
       provider:

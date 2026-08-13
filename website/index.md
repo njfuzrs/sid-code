@@ -109,8 +109,13 @@ sc            # 全放行（= --dangerously-skip-permissions），确认过风�
     自研代码行数  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
                   （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer；
                     2026-08-10 曾为 203,178，2026-07-27 曾为 176,887）
-    单测          grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                  （2026-08-11 实测 8,569 个用例 / 642 个测试文件；2026-07-27 曾为 6,583 / 520）
+    ⚠️ P1-2 测试分包（2026-08-13）：测试搬到了 packages/<包>/tests/，只覆盖 packages/*/src
+                  的命令会数出 30 而不是 644 —— **不报错，只静默少数 95%**。这正是本注释块想防的
+                  那类故障，却还是又发生了一次：测试目录一动，这里的路径清单必须跟着动。
+                  下面同时保留两个路径，因为 src/ 下仍有少量就地放置的 *.test.ts。
+    单测          grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                  （2026-08-13 实测 8,576 个用例 / 644 个测试文件；2026-07-27 曾为 6,583 / 520。
+                    `bun test` 自己报 ~9,191 个 / 652 文件，差值是动态生成的用例，静态 grep 数不到）
     Hook 事件数   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
     内置工具数    sid-code --dump-tools | bun -e '...' 数组长度（2026-07-27 实测 44，与
                   脚本生成的 ref/tools.md 同源同值。此前写"60+"与运行时真值不符，已改）

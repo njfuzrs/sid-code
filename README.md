@@ -103,9 +103,16 @@ Coming from Claude Code, migration is close to zero-cost — see the
                    package, so we exclude a package instead of the previous grep -v '/ink/'.
     lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
                    (2026-08-11: 203,533 lines, excluding the vendored ink fork = packages/tui-renderer)
-    test files     find tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (642)
-    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                   (8,569)
+    NOTE (P1-2, 2026-08-13): tests were split into packages/<pkg>/tests/, so a command
+                   covering only `packages/*/src` counts 30 instead of 644 — it does NOT error,
+                   it just silently undercounts by 95%. That is the exact failure this comment
+                   block was written to prevent, and it still happened: the path list must be
+                   updated whenever tests move. Both paths are kept below because a few
+                   colocated *.test.ts files still live under src/.
+    test files     find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (644)
+    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                   (8,576; `bun test` itself reports ~9,191 across 652 files because it also
+                    counts dynamically generated cases the static grep cannot see)
     hook events    member count of the HookEventName enum in packages/core/src/hook/types.ts  (32)
     built-in tools length of the `sid-code --dump-tools` array (44 — same source as the
                    generated ref/tools.md). Do NOT write "60+"; that was wrong and is

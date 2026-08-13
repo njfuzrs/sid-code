@@ -12,9 +12,16 @@
 name: Daily Provider Canary
 
 on:
-  schedule:
-    # 每天 UTC 00:00（北京时间 08:00）
-    - cron: "0 0 * * *"
+  # ⚠️ cron 已停用（2026-08-13）：依赖 ANTHROPIC_API_KEY / OPENAI_API_KEY /
+  # DEEPSEEK_API_KEY / OPENAI_BASE_URL，首发时全部未配置。这条是**每日**触发，
+  # 噪音是三条里最大的。理由与恢复方式同 eval-weekly.yml 同位注释。
+  #
+  # 注意本 workflow 有两段职责：canary 冒烟需要真 key，而 VCR 离线回放不需要。
+  # 未来若只想保留 VCR 的每日回归，应拆成独立 job 再单独恢复 cron，
+  # 而不是整条打开 —— 否则 canary 仍会因缺 key 而红。
+  # schedule:
+  #   # 每天 UTC 00:00（北京时间 08:00）
+  #   - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       provider:
