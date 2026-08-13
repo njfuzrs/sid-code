@@ -17,8 +17,13 @@ on:
   # 噪音是三条里最大的。理由与恢复方式同 eval-weekly.yml 同位注释。
   #
   # 注意本 workflow 有两段职责：canary 冒烟需要真 key，而 VCR 离线回放不需要。
-  # 未来若只想保留 VCR 的每日回归，应拆成独立 job 再单独恢复 cron，
-  # 而不是整条打开 —— 否则 canary 仍会因缺 key 而红。
+  #
+  # P1-4-B（2026-08-13）：VCR 离线回放已经在 PR blocking check 里跑到了——
+  # `packages/core/tests/llm/vcr/` 是 `ci.yml` 全量 `bun test` 覆盖的目录之一，
+  # 而 `ci.yml` 的 `test (ubuntu-latest)` / `test (macos-latest)` 本身就是 main 分支
+  # required status check（实测：单独跑该目录 3 pass，全量 bun test 里同样跑到）。
+  # 本 workflow 里重复跑的这份 VCR 是 canary 冒烟专用的，不需要再拆成独立 job
+  # 接 PR CI——那件事已经通过 ci.yml 达成，不用建新 workflow。
   # schedule:
   #   # 每天 UTC 00:00（北京时间 08:00）
   #   - cron: "0 0 * * *"

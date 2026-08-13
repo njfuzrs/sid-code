@@ -1,63 +1,54 @@
-# PR Smoke Test (T-17 §6.4)
+# Smoke Eval（T-17 §6.4，P0-2 改造：摘出 PR blocking check）
 #
-# 触发：每次 PR 推送，跑 5 条 P0 smoke case 守护核心能力不回归。
-# 设计：scripts/eval/run-smoke.ts 跑 1 provider × 5 case，分数下降 > 0.5 则 block merge。
+# 触发：手动 workflow_dispatch + nightly cron（当前停用，见下方 on: 注释）。
+# 设计：scripts/eval/run-smoke.ts 跑 1 provider × 5 case，分数下降 > max-regression 则退出非零。
 #
-# 注意：本 workflow **不** sync baseline_scores（避免 PR CI 污染主分支）；
-# 全量回归在另一个 workflow（eval-weekly.yml）由 cron 触发。
+# ⚠️ P0-2（2026-08-13）：本 workflow 曾挂在 `pull_request` 上、当 PR 的 blocking check。
+# 已摘掉，理由是机制性的，不是省钱：
 #
-# 业界对应：Promptfoo / Inspect AI / DeepEval 都建议把 P0 smoke 接进 PR CI。
+#   LLM judge 天然有方差（同一份回答重跑 judge 分数会跳变），把它设成必需门禁，
+#   红了分不清是真回归还是模型抖动——那会养成"重跑一次看看"的习惯，
+#   门禁随即失去意义。确定性判据（bun test / lint / build）才适合当 blocking check，
+#   LLM 评测适合当 nightly/手动触发的信号，出问题人工看，不卡 PR 合并。
+#
+# 参照的三个开源项目实测：codex / opencode 的 PR CI 完全不跑真实 LLM 评测；
+# gemini-cli 虽然跑，但窄 paths + environment 人工审批 + concurrency cancel 三重门禁，
+# 且用最便宜的模型档位——没有一个项目把 LLM 评测设成无条件的 PR blocking check。
+#
+# 原本的 paths 过滤（P1-3 指出 `packages/**` 覆盖 1525 个文件、触发面过宽）
+# 随本次改动一并解决：workflow_dispatch / schedule 不支持也不需要 paths，
+# 不存在"改一行无关代码也触发"的问题了。
+#
+# 本 workflow **不** sync baseline_scores；全量回归在 eval-weekly.yml。
 
-name: PR Smoke Eval
+name: Smoke Eval
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      # P2-2 分包：源码从 src/ 搬到 packages/*/src/。这里必须跟着改 ——
-      # 仍写 "src/**" 会永远匹配不到，于是这道 smoke 门禁**静默不再触发**：
-      # PR CI 一直显示绿（skipped 也算通过），比没有门禁更危险。
-      - "packages/**"
-      - "evals/**"
-      - "scripts/eval/**"
-      - ".github/workflows/eval-pr-smoke.yml"
+  # ⚠️ cron 已停用（同 eval-weekly.yml / provider-daily-canary.yml 的理由）：
+  # 依赖 DEEPSEEK_API_KEY，首发时未配置。配好 secret 后取消下方注释即可。
+  # schedule:
+  #   - cron: "0 2 * * *"  # 每天 UTC 02:00（北京时间 10:00）
+  workflow_dispatch:
+    inputs:
+      max-regression:
+        description: "分数下降阈值（默认 0.5）"
+        default: "0.5"
+        required: false
 
 jobs:
   smoke-eval:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    # 最小权限：读代码 + 往 PR 写一条评论。
-    #
-    # 不给这个块的后果实测过（2026-08-13 首个真跑的 PR）：GITHUB_TOKEN 默认只读，
-    # 末尾 "Comment on PR" 步骤拿 403 `Resource not accessible by integration` 挂掉，
-    # 于是 job 有**两个**失败步骤——真正的失败（smoke 本身）被淹在 octokit 的
-    # 报错栈里，排查时要先翻掉几十行 x-ratelimit-* 响应头才看得到根因。
-    #
-    # pull-requests: write 是 createComment 需要的最小权限；刻意不给 write 到别处。
+    # 最小权限：只读代码。P0-2 摘掉 pull_request 触发后不再需要 pull-requests: write——
+    # 旧版靠 "Comment on PR" 步骤在 PR 上留言，workflow_dispatch/schedule 没有 PR 可评论，
+    # 该步骤随本次改动一并删除（见下方 steps）。
     permissions:
       contents: read
-      pull-requests: write
 
-    # 两道前置条件，缺任一则整个 job 不跑（skipped 而非 failure）：
-    #
-    #  1. 非 fork PR —— fork 默认拿不到 secret。
-    #  2. DEEPSEEK_API_KEY 已配置 —— smoke 的 provider 是 sid-code + deepseek-v4-pro。
-    #
-    # 第 2 条是 2026-08-13 补的，与 eval-weekly / judge-calibration /
-    # provider-daily-canary 三个 workflow 同日停用 cron 是同一个原因：开源首发时仓库
-    # Actions secrets 一个都没配。**空 secret 不会让 workflow 报「缺少密钥」**，只会让
-    # 真实请求死在半路 —— 实测本 workflow 的表现是 sid-code 二进制起不来：
-    #     error: 未配置任何模型。请在 ~/.sid-code/settings.json 的 availableModels ...
-    # 然后 runner 报「5/5 case 未产出有效分数（skip，疑似评测未真正跑成）」。
-    # 症状离根因隔了三层，排查成本远高于直接不跑。
-    #
-    # 恢复条件：Settings → Secrets and variables → Actions 配好 DEEPSEEK_API_KEY
-    # （judge 打分还需 ANTHROPIC_API_KEY）之后，本 job 自动开始跑，无需改这个文件。
-    # ⚠️ `secrets` **不是** job 级 `if:` 的合法 context（只有 github / needs / vars /
-    # inputs 等可用），写 `secrets.X != ''` 会让整个 workflow 解析失败。所以第 2 条
-    # 走「env 提到 job 级 → 各 step 的 if 判 env」这个标准写法，见下方 steps。
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # fork 里不跑 cron：fork 继承 cron 但拿不到 secrets。判据与取舍同 eval-weekly.yml
+    # 同位注释（`repository.fork == false` 只拦 schedule，workflow_dispatch 手动触发不受影响）。
+    if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
 
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -98,7 +89,13 @@ jobs:
       - name: Run smoke eval (5 P0 case × sid-code)
         id: smoke
         if: steps.guard.outputs.has_key == 'true'
-        run: bun run scripts/eval/run-smoke.ts --provider sid-code --max-regression 0.5
+        # 注意：inputs 里带连字符的 key 在表达式语法里必须用中括号取——
+        # `github.event.inputs.max-regression` 会被解析成
+        # `github.event.inputs.max` 减去变量 `regression`，静默拿到空值而非报错，
+        # 排查成本高。已用 `inputs['max-regression']` 写法验证过语法正确。
+        run: |
+          bun run scripts/eval/run-smoke.ts --provider sid-code \
+            --max-regression "${{ github.event.inputs['max-regression'] || '0.5' }}"
 
       # 注意条件是 `steps.smoke.outcome != 'skipped'` 而不是 `always()`：
       # 原先写 always() 的话，缺 key 时前面全 skip、根本没 checkout，这一步会因为
@@ -111,15 +108,3 @@ jobs:
           path: |
             evals/_runs/sid-code.jsonl
             evals/_reports/smoke-*.md
-
-      - name: Comment on PR
-        if: failure() && steps.smoke.outcome == 'failure'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '⚠️ PR Smoke Eval 失败：分数下降 > 0.5，请检查 Actions artifact 中的 smoke-eval-results。'
-            })
