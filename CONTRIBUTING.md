@@ -56,6 +56,29 @@ make build            # 构建开发版二进制（不改版本号）
 
 框架自己的 4 个测试文件（159 个用例）会被根 `bun test` 一并跑到，这是预期的。
 
+### 贡献者不需要任何 LLM API key
+
+`evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
+提 PR 的门槛。提 PR 之前必须跑的五道 CI 门禁（见下一节）全部不需要 LLM：
+`bun test` / `make build` / `bun run lint` / `bun run format:check` /
+`bun run lint:boundary` 都是本地静态检查或跑固定断言，没有一处调真实模型。
+
+评测（`.github/workflows/eval-*.yml`）是维护者职责，需要仓库配好
+`DEEPSEEK_API_KEY`（judge 打分还需 `ANTHROPIC_API_KEY`）才能真正跑起来。
+你作为贡献者不需要关心这些 workflow 何时触发、怎么触发——那是维护者侧的
+CI 拓扑决策（各文件头注释有说明），跟你提 PR 该做什么完全无关。fork PR
+更是天然拿不到仓库 secret：这是 GitHub 平台层的安全机制（防止任何人改
+workflow 偷 secret），不是本仓刻意设的限制。
+
+想在本地跑评测是可选行为，用你自己的 key：
+
+```bash
+DEEPSEEK_API_KEY=xxx bun run eval:run -- --provider sid-code --cases case_001
+```
+
+成本量级供参考：5 个 P0 smoke case 一次性跑完（agent + judge）约 ¥8，
+单 case 更低。
+
 ---
 
 ## 双版本并存：验证改动必须跑 `sc-dev`
