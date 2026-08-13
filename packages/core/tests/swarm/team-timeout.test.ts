@@ -94,8 +94,11 @@ describe("T5-B2 team 级硬超时", () => {
       }
       const elapsed = Date.now() - start;
       expect(caught).toBe(true);
-      // 应在 200ms 左右 reject（允许 300ms 余量）
-      expect(elapsed).toBeLessThan(500);
+      // 200ms 超时应远早于 HangingSubAgent 的 30s 兜底触发（证明走的是硬超时路径，不是等到子代理自己完成）。
+      // 边界给到 10x（2000ms）而非贴着 300ms 走：全量 bun test 下 CPU 争抢会让 200ms 超时
+      // 实际落地延后到 500ms+，本条断言曾在全量跑（而非单文件跑）时随机红，
+      // 与本仓另两处已修过的时序余量过紧问题同类（见 CLAUDE.md「测试约定」）。
+      expect(elapsed).toBeLessThan(2_000);
     } finally {
       origImport.fromRegistry = origFromRegistry;
     }

@@ -1097,6 +1097,10 @@ async function main() {
       sync: { type: "boolean" },
       "no-sync": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
+      // P0-1：--dry-run 完全不跑 provider，验证不了 spawn/路径链路是否真的通。
+      // --no-write 让 provider 真实执行，但跳过 eval-latest.json / _runs / _scores
+      // 三处落盘（也隐含跳过 --sync）——用于"只想验证能跑通"而不产出可信分数的场景。
+      "no-write": { type: "boolean", default: false },
     },
     strict: false,
   });
@@ -1120,6 +1124,7 @@ async function main() {
   else if (syncFlag === true) doSync = true;
   else doSync = caseFilter === undefined; // 全量默认 on，单 case 默认 off
   const dryRun = values["dry-run"] as boolean;
+  const noWrite = values["no-write"] as boolean;
   const outputPath = resolve(REPO_ROOT, values.output as string);
   const weekNum = values.week ? parseInt(values.week as string, 10) : currentWeekNumber();
 
@@ -1382,23 +1387,47 @@ async function main() {
     stats: { totalMs: totalElapsed, count: results.length },
   };
 
-  await Bun.write(outputPath, JSON.stringify(output, null, 2));
+  // 平均分仅统计 score !== null 的 case（"有可评分数据"）。null case 单独计数。
+  // 旧实现把 error case 的 ~2.5 算进均值，导致 17% 错误率仍能稳在 4.1，看起来"还行"。
+  const valid = results.filter((r) => r.score !== null);
+  const nullCount = results.length - valid.length;
 
-  const runId = output.timestamp;
-  appendRunHistory(results, runId, weekNum, EVALS_ROOT, samples > 1 ? sampleResults : undefined);
-  writeWeekScores(results, weekNum);
-
-  if (doSync) {
-    syncBaselineScores(results);
-  } else {
-    // A1-4 / F-S2：未 sync 时 dashboard 会显示旧数据。在末尾打 banner 警示
-    const reason =
-      caseFilter !== undefined
-        ? "（--cases 模式默认不回写，避免污染 baseline；--sync 显式启用）"
-        : "（已显式 --no-sync）";
+  // P0-1：三处落盘（eval-latest.json / _runs / _scores）都是"资产"而非"产物"——
+  // eval-latest.json 会被 dashboard 读，_scores/w<N>/ 与历史周分数并列。
+  // 无条件写入的旧实现曾用一次全 judge 503 的验证跑，把 w22 的真实分数 0.534 覆盖成 0。
+  //
+  // 两道出路：
+  //   --no-write：provider 真实执行（区别于完全不跑的 --dry-run），但显式放弃落盘，
+  //     用于"只想验证 spawn/路径链路能跑通"的场景（本次事故的触发场景）。
+  //   全 null 兜底：即使没传 --no-write，只要本批结果没有一个有效分数
+  //     （judge/provider 全挂），也跳过写入——不能让一次全失败的跑覆盖已有资产。
+  if (noWrite) {
     console.log("");
-    console.log("⚠️  本次未回写 baseline_scores，dashboard 将显示上次已 sync 的数据（可能滞后）");
-    console.log(`    跳过原因${reason}`);
+    console.log("⚠️  --no-write：跳过 eval-latest.json / _runs / _scores 三处落盘（含 --sync）");
+  } else if (valid.length === 0) {
+    console.log("");
+    console.log(
+      `⚠️  本次 ${results.length} 个 case 全部无可评分数据（score=null），疑似 judge/provider 未真正跑成，跳过写入 eval-latest.json / _runs / _scores，避免覆盖已有资产`,
+    );
+  } else {
+    await Bun.write(outputPath, JSON.stringify(output, null, 2));
+
+    const runId = output.timestamp;
+    appendRunHistory(results, runId, weekNum, EVALS_ROOT, samples > 1 ? sampleResults : undefined);
+    writeWeekScores(results, weekNum);
+
+    if (doSync) {
+      syncBaselineScores(results);
+    } else {
+      // A1-4 / F-S2：未 sync 时 dashboard 会显示旧数据。在末尾打 banner 警示
+      const reason =
+        caseFilter !== undefined
+          ? "（--cases 模式默认不回写，避免污染 baseline；--sync 显式启用）"
+          : "（已显式 --no-sync）";
+      console.log("");
+      console.log("⚠️  本次未回写 baseline_scores，dashboard 将显示上次已 sync 的数据（可能滞后）");
+      console.log(`    跳过原因${reason}`);
+    }
   }
 
   console.log("");
@@ -1406,10 +1435,6 @@ async function main() {
     `[eval-runner] 完成 ${results.length} 组评测，耗时 ${(totalElapsed / 1000).toFixed(0)}s`,
   );
   console.log(`  输出: ${outputPath}`);
-  // 平均分仅统计 score !== null 的 case（"有可评分数据"）。null case 单独计数。
-  // 旧实现把 error case 的 ~2.5 算进均值，导致 17% 错误率仍能稳在 4.1，看起来"还行"。
-  const valid = results.filter((r) => r.score !== null);
-  const nullCount = results.length - valid.length;
   if (valid.length > 0) {
     const avgScore = valid.reduce((s, r) => s + (r.score as number), 0) / valid.length;
     console.log(
