@@ -55,7 +55,7 @@ jobs:
       # ⚠️ fetch-depth: 0 不是「顺手要全量」：tests/website/changelog-integration.test.ts
       # 的两条断言要用 `git tag` 算版本区间的真实提交数，而 checkout 默认 depth=1 且不取
       # tag —— 区间恒为空，`toBeGreaterThan(0)` 必失败。2026-08-12 首次真跑 CI 时实测到。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
