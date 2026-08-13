@@ -102,7 +102,7 @@ jobs:
       # 找不到 path 而报 warning 甚至失败 —— 又是一条「跳过反而制造噪声」的坑。
       - name: Upload smoke results
         if: steps.smoke.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-eval-results
           path: |
