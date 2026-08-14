@@ -156,12 +156,30 @@ export const ABORT_REASONS = [
   // reason 白名单而非错误文本」的口径分裂。改用 controller.abort(AGENT_STREAM_TIMEOUT_REASON)
   // 后，登记于此确保孤儿 rejection 被 isAbortError 识别、且可被 isInternalTimeoutAbortReason 命中。
   "agent-stream-timeout",
+  // P0-1：子代理墙钟**硬 kill** 兜底（detach 之后的最后一道闸）。
+  //
+  // 语义变更的落点：改造前墙钟到点即 `timeoutCtrl.abort()`，成果被整句丢弃（184 万
+  // input token 产出归零的直接原因）。改造后墙钟到点只做 **detach**（转后台继续跑、
+  // 前台交回残卷，不 abort），真正 abort 只在 detach 之后又跑满 SUBAGENT_HARD_KILL_MULTIPLIER
+  // 倍时长才发生——那已不是"跑得慢"而是"跑失控了"。
+  //
+  // 必须登记：detach 后的续跑发生在**没有前台 await 的后台**，硬 kill 时底层 fetch 会以
+  // 这个裸字符串 reject，未登记就是一条绕过 isAbortError 总闸门的孤儿 rejection（历史事故：
+  // 自定义 reason 绕过闸门致崩溃）。
+  "subagent-hard-kill",
 ] as const;
 
 /** H10：子代理流整体硬超时的 abort reason（单一事实源，供 agentic-loop 使用）。 */
 export const AGENT_STREAM_TIMEOUT_REASON = "agent-stream-timeout" as const;
 /** H10：side-call 硬超时的 abort reason（与既有 "side-call-timeout" 一致，供各 side-call 复用）。 */
 export const SIDE_CALL_TIMEOUT_REASON = "side-call-timeout" as const;
+/**
+ * P0-1：子代理硬 kill 的 abort reason（单一事实源，供 sub-agent.ts 使用）。
+ *
+ * 只在 detach 之后又跑满硬 kill 期限时才用。墙钟到点本身**不再** abort（改为 detach），
+ * 这是本次修复的语义核心——见 ABORT_REASONS 里 "subagent-hard-kill" 的说明。
+ */
+export const SUBAGENT_HARD_KILL_REASON = "subagent-hard-kill" as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];
 

@@ -22,7 +22,14 @@ export class TaskListTool implements Tool {
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
   readonly searchHint = "background task list status 后台 任务 列出 状态 bg_task_list";
-  /** P2-3：任务管理类工具，状态查询工具连续调用是正当行为而非循环，豁免循环检测 */
+  /**
+   * P2-3：任务管理类工具，状态查询连续调用是正当行为而非循环，豁免循环检测。
+   *
+   * P1-3 收窄：这个豁免现在是**有条件**的——见 `loop-detection.ts` 的
+   * `CONDITIONALLY_EXEMPT_TOOLS`。入参**不同**时才豁免（那才是"查询不同任务"的真实形态）；
+   * 入参相同且连续达阈值会被正常拦下。改造前是无条件豁免，实测放过了 49 次
+   * 入参全为 `{}` 且进度纹丝不动的轮询（占该会话全部工具调用的 18.8%）。
+   */
   readonly exemptFromLoopDetection = true;
 
   name(): string {

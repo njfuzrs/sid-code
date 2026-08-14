@@ -47,6 +47,8 @@ import {
   LoopDetector,
   LOOP_RECOVERY_PROMPT,
   LOOP_RECOVERY_FINAL_PROMPT,
+  // P1-3：同参状态轮询的专用恢复文案（搜索类建议对轮询场景一条都不适用）。
+  LOOP_RECOVERY_POLLING_PROMPT,
 } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
 import {
@@ -4784,9 +4786,14 @@ async function recoverFromLoop(
     );
   }
 
+  // P1-3：按触发成因选文案。同参状态轮询要给「改用阻塞等待」，搜索类死循环要给
+  // 「换工具/放宽匹配」——后者对轮询一条都不适用，给错建议等于没给，模型只会继续轮询。
+  const recoveryPrompt =
+    loopDetector.lastTrigger === "polling" ? LOOP_RECOVERY_POLLING_PROMPT : LOOP_RECOVERY_PROMPT;
+
   ctxMgr.addMessage({
     role: "user",
-    content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_PROMPT }],
+    content: [...orphanResults, { type: "text", text: recoveryPrompt }],
   });
 
   return true;

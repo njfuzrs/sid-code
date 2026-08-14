@@ -32,6 +32,15 @@ import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
 import { describeToolActivity, pushRecentActivity } from "./progress.ts";
+// P0-1：超时不再丢弃成果——残卷（已改动文件 / 已确认结论 / 未完成部分 / 下一步）见 salvage.ts 头注释。
+import { SalvageCollector, buildSalvageOutput } from "./salvage.ts";
+// P0-1(a)(c)：detach 语义的硬 kill 倍数 + 按实测吞吐派生墙钟预算。
+import {
+  resolveSubAgentTimeout,
+  recordTurnLatency,
+  HARD_KILL_MULTIPLIER,
+} from "./timeout-budget.ts";
+import { SUBAGENT_HARD_KILL_REASON } from "../llm/errors.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -39,6 +48,8 @@ import {
   appendAgentOutput,
   updateAgentProgress,
   updateTask,
+  // P0-1：残卷要带上 output-file 路径（残卷是摘要，完整输出在磁盘上）。
+  getTask,
 } from "../task/index.ts";
 import type { AgentTaskResult, LocalAgentTaskState } from "../task/types.ts";
 import {
@@ -1017,6 +1028,25 @@ export class SubAgent {
     // 直接的 info.tools。
     let recentActivities: string[] = [];
 
+    /**
+     * P0-1(b)：spawn 路径的残卷收集器。
+     *
+     * 这条路径能攒出残卷的关键事实：**工具是父进程执行的**（子进程只跑 LLM 循环，
+     * 每次工具调用都经 `tool_use` 消息回传父进程执行，见本文件 executeToolForChild），
+     * 所以父进程手里有完整的工具名 + 入参——与进程内路径信息量等价。
+     *
+     * 唯一不如进程内路径的是 findings：子进程只报 `lastActivity` 文案，不报每轮
+     * 文本输出（`ChildProgressMessage` 无该字段）。所以 spawn 残卷的"已确认结论"段
+     * 会是空的，其余三段（已改动文件 / 未完成部分 / 下一步）齐全。这是协议限制，
+     * 补它要改 sub-agent-protocol.ts 的消息形状 + headless 侧发送逻辑，属独立工单——
+     * 但**已改动文件清单**（§1.6 的核心验收项）在这条路径上是齐的。
+     */
+    const salvage = new SalvageCollector();
+    /** spawn 侧的轮次计数（子进程 progress 消息带 turn）。 */
+    let spawnTurn = 0;
+    let spawnToolUseCount = 0;
+    let spawnTokenCount = 0;
+
     // 构建启动参数——使用绝对路径，避免用户项目 cwd 下找不到 headless.ts
     const spawnArgs = ["run", HEADLESS_ENTRY];
     // 容器环境设堆限制
@@ -1123,6 +1153,22 @@ export class SubAgent {
                   tools,
                   signal,
                 );
+                // P0-1(b)：喂残卷。只在**执行成功**时记——失败的 write/edit 没有真的改动
+                // 文件，记进"已改动文件清单"就是假信息（与 agentic-loop 只把非 is_error
+                // 的 edit/write 纳入 LSP 诊断作用域同一判据）。
+                if (!toolResult.is_error) {
+                  try {
+                    salvage.recordTurn({
+                      turn: spawnTurn,
+                      textOutput: "",
+                      tools: [{ name: msg.name, input: msg.input as Record<string, unknown> }],
+                      tokenCount: spawnTokenCount,
+                      toolUseCount: ++spawnToolUseCount,
+                    });
+                  } catch {
+                    /* 残卷收集失败不影响子代理执行 */
+                  }
+                }
                 writeParentMsg(subprocess.stdin, {
                   type: "tool_result",
                   tool_use_id: msg.id,
@@ -1133,6 +1179,11 @@ export class SubAgent {
               }
 
               case "progress":
+                // P0-1(b)：记住子进程报的轮次/累计量，供残卷的 progress 段用真实值
+                // （残卷的 turns 不能靠父进程数 tool_use 次数推——一轮可以有多次调用）。
+                spawnTurn = msg.turn ?? spawnTurn;
+                if (msg.tokenCount != null) spawnTokenCount = msg.tokenCount;
+                if (msg.toolUseCount != null) spawnToolUseCount = msg.toolUseCount;
                 // 实时进度回写：spawn 子进程每轮上报真实 token / 工具次数 / 活动文案。
                 // 两路消费，同一份窗口数据：
                 //   - registry（updateAgentProgress）→ 后台任务面板；
@@ -1215,35 +1266,57 @@ export class SubAgent {
       await subprocess.exited;
 
       if (!result) {
-        // G3：区分超时 vs 意外退出。超时给友好文案（与进程内模式 942 行口径一致），
-        // 让模型知道是"跑太久被中断"而非"子进程崩溃"，便于决策（简化任务重试 vs 报错）。
+        // P0-1(b)：三条无结果出口（超时 / 被中止 / 意外退出）统一交回残卷。
+        //
+        // 这是 §1.5(b) 四处落点的第四处。改造前三条出口都是「一句文案 + usage/turns 归零」，
+        // 而 spawn 路径的工具**是父进程执行的**，父进程明明知道子代理改过哪些文件——
+        // 那份信息就在手里却被丢掉，是三条出口里最可惜的一种。
+        const snap = salvage.snapshot();
+        const spawnUsage = { inputTokens: snap.tokenCount, outputTokens: 0 };
+        // G3：区分超时 vs 意外退出。让模型知道是"跑太久被中断"而非"子进程崩溃"，
+        // 便于决策（简化任务重试 vs 报错）。
         if (timedOut) {
-          log.warn("SUBAGENT", `spawn 子代理超时 (${Math.round(timeout / 1000)}秒)`);
+          log.warn("SUBAGENT", `spawn 子代理墙钟到点 (${Math.round(timeout / 1000)}秒)，交回残卷`);
           return {
             success: false,
-            output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
-            usage: { inputTokens: 0, outputTokens: 0 },
-            turns: 0,
-            toolUseCount: 0,
+            output: buildSalvageOutput(snap, {
+              reason: "timeout",
+              timeoutMs: timeout,
+              taskId,
+              outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+            }),
+            usage: spawnUsage,
+            turns: snap.turns,
+            toolUseCount: snap.toolUseCount,
           };
         }
-        // 父进程主动 abort（用户取消）导致的退出，也给明确文案而非裸 exit code。
+        // 父进程主动 abort（用户取消）导致的退出。用户取消同样要交回残卷——
+        // 用户按 ESC 不代表他想丢掉子代理已经改好的文件。
         if (signal?.aborted) {
           return {
             success: false,
-            output: "子代理被中止",
-            usage: { inputTokens: 0, outputTokens: 0 },
-            turns: 0,
-            toolUseCount: 0,
+            output: buildSalvageOutput(snap, {
+              reason: "aborted",
+              taskId,
+              outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+            }),
+            usage: spawnUsage,
+            turns: snap.turns,
+            toolUseCount: snap.toolUseCount,
           };
         }
         const exitCode = subprocess.exitCode;
         return {
           success: false,
-          output: `子代理意外退出 (exit code: ${exitCode})`,
-          usage: { inputTokens: 0, outputTokens: 0 },
-          turns: 0,
-          toolUseCount: 0,
+          output: buildSalvageOutput(snap, {
+            reason: "error",
+            errorMessage: `子进程意外退出 (exit code: ${exitCode})`,
+            taskId,
+            outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+          }),
+          usage: spawnUsage,
+          turns: snap.turns,
+          toolUseCount: snap.toolUseCount,
         };
       }
 
@@ -1381,17 +1454,78 @@ export class SubAgent {
     const startTime = Date.now();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
-    // 超时控制：task.timeout > AgentDefinition.timeout > 默认 120 秒
+    // 超时控制：task.timeout > env > 实测派生 > AgentDefinition.timeout > 默认 120 秒。
+    // P0-1(c)：不再所有模型共用一个写死的 300s，见 timeout-budget.ts 头注释
+    // （实测同会话单轮 p50=6.1s/p95=19.1s，300s 对慢模型连"读懂上下文"都不够）。
     const agentDefForTimeout = resolveAgent(task.type);
-    const timeout = task.timeout ?? agentDefForTimeout?.timeout ?? 120_000;
+    const modelForBudget =
+      task.model ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
+    const budget = resolveSubAgentTimeout({
+      definitionTimeoutMs: agentDefForTimeout?.timeout,
+      explicitTimeoutMs: task.timeout,
+      model: modelForBudget,
+      fallbackMs: 120_000,
+    });
+    const timeout = budget.timeoutMs;
+
+    // ── P0-1(a)：墙钟到点 = detach（转后台继续跑），**不是** abort ──
+    //
+    // 改造前这里是 `setTimeout(() => timeoutCtrl.abort(), timeout)`：到点直接掐死，
+    // 已完成的成果被下面的超时分支整句替换成一句"超时"，1.84M input token 产出归零。
+    //
+    // 对齐 CC：`LocalAgentTask.tsx:582-606` 到点只置 `isBackgrounded` 标志位并 resolve
+    // backgroundSignal，**没有任何 abort**（在 `AgentTool/` 与 `LocalAgentTask/` 下 grep
+    // `abortController.abort()` 零命中）；且这个 auto-background 默认还是**关闭**的
+    // （`AgentTool.tsx:72` 返回 0）——CC 的前台子代理默认没有墙钟上限。
+    //
+    // 我们保留墙钟（无人值守长任务需要一个可预期的前台返回点），但把它的语义从
+    // "kill 并丢弃"改成"交回残卷 + 后台续跑"。硬 kill 只留给三种情况：
+    //   ① 用户显式 task_stop（killAgentTask → activeAgentControllers）；
+    //   ② 用户/父代理 abort（外层 signal，不经这里）；
+    //   ③ detach 之后又跑满 timeout × HARD_KILL_MULTIPLIER —— 那已是失控不是慢。
+    //
+    // 为什么 detach 只有在 `_isAsync`（后台子代理）路径上才是真"续跑"：前台
+    // `sub_agent` 的调用方（tool.ts runSync）在 await 这个 Promise，我们一旦提前
+    // return，函数栈就走完了，续跑无处附着。所以前台路径 detach 时仍要结束执行，
+    // 只是**带着残卷**结束（reason "timeout"），而后台路径能真正甩掉前台等待。
     const timeoutCtrl = new AbortController();
-    const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
+    /** detach 是否已触发（墙钟到点）。超时分支据此判定，不再看 `timeoutCtrl.signal.aborted`。 */
+    let detached = false;
+    /** detach 后的硬 kill 定时器；只有它才会真的 abort。 */
+    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      detached = true;
+      log.warn(
+        "SUBAGENT",
+        `[${task.type}] 达到墙钟预算 ${Math.round(timeout / 1000)}s（来源 ${budget.source}），` +
+          `转 detach：交回残卷、不终止执行（硬 kill 在 ${HARD_KILL_MULTIPLIER}× 后）`,
+      );
+      // 到点**不** abort。只挂硬 kill 兜底，避免 detach 后无限跑。
+      hardKillTimer = setTimeout(
+        () => {
+          log.warn(
+            "SUBAGENT",
+            `[${task.type}] detach 后仍未结束，达到硬 kill 期限（${HARD_KILL_MULTIPLIER}×${Math.round(timeout / 1000)}s），终止`,
+          );
+          // reason 必须登记于 ABORT_REASONS（历史事故：自定义 reason 绕过 isAbortError
+          // 闸门致崩溃）。detach 后的续跑没有前台 await，底层 fetch 会以这个裸字符串
+          // reject，未登记就是一条孤儿 rejection。
+          timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
+        },
+        timeout * (HARD_KILL_MULTIPLIER - 1),
+      );
+    }, timeout);
     const mergedSignal = signal
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
 
     // try 块外部声明 ctxMgr，以便 catch 块在超时时能读取部分进度信息
     let ctxMgr: ContextManager | undefined;
+
+    /** P0-1(b)：残卷收集器。每轮喂 onTurnEnd 快照，超时/异常分支据此交回已完成的成果。 */
+    const salvage = new SalvageCollector();
+    /** 上一轮结束的时刻，用于算单轮耗时喂给预算派生（timeout-budget.recordTurnLatency）。 */
+    let lastTurnAt = startTime;
 
     // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
     // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
@@ -1589,6 +1723,20 @@ export class SubAgent {
           toolUseCount = info.toolUseCount;
           tokenCount = info.tokenCount;
 
+          // P0-1(b)：喂残卷收集器。onTurnEnd 在**工具执行之后**触发且带本轮工具名+入参
+          // （agentic-loop.ts 的 turnToolInfo），所以在这一层就能攒出"已改动文件 / 已确认
+          // 结论 / 停在哪一步"，无需改动被主路径与两条子代理路径共用的 runAgentLoop 契约。
+          // try/catch 兜住：残卷是止损手段，它自己绝不能成为让子代理白跑的新故障源。
+          try {
+            salvage.recordTurn(info);
+          } catch {
+            /* 残卷收集失败不影响子代理执行 */
+          }
+          // P0-1(c)：单轮耗时样本喂给预算派生（下次同模型子代理据此放宽墙钟）。
+          const now = Date.now();
+          recordTurnLatency(modelForBudget, now - lastTurnAt);
+          lastTurnAt = now;
+
           // P2-10：把本轮新增的对话消息落盘到 sidechain。用游标记录已持久化的消息数，
           // 每轮从 ctxMgr 取增量顺序追加，避免重复写。落盘失败不影响子代理执行。
           if (sidechain) {
@@ -1723,20 +1871,45 @@ export class SubAgent {
           provider: activeProvider.name(),
         };
       } else {
-        // 超时检测：runAgentLoop 内部消化了 abort 异常（不抛出），
-        // 返回 success=false + 原始 AbortError message。此处补充友好超时提示，
-        // 包含已完成轮次和工具调用数，帮助用户判断是否"只差一点"还是完全没进展。
-        const isTimeout = timeoutCtrl.signal.aborted;
+        // ── P0-1(b)：超时/失败分支**不得替换** finalOutput，改为交回结构化残卷 ──
+        //
+        // 改造前这里是 `output = isTimeout ? "子代理执行超时 (300秒…)" : …`，把 finalOutput
+        // 整句**替换**掉。实测代价：那个 explore 子代理已经读出了 Color 类型的真实定义
+        // （整个任务的关键前提），主代理收到的却只有一句 `<error>子代理执行超时</error>`，
+        // 1.84M input token 产出归零。
+        //
+        // 现在 buildSalvageOutput 把 finalText **原样置顶**再追加四段残卷（已改动文件 /
+        // 已确认结论 / 未完成部分 / 建议的下一步）。判据："300s 改 600s 只是把同样的浪费
+        // 翻倍，交回残卷才是止损。"
+        //
+        // 判"是否墙钟到点"看 `detached` 标志而**不是** `timeoutCtrl.signal.aborted`：
+        // detach 语义下墙钟到点根本不 abort，signal 只在硬 kill / 外层取消时才 aborted。
+        // 这与「判超时看 abort reason 白名单而非错误文本」是同一条原则的延伸——
+        // 判据要对准真正表达该语义的那个状态位。
+        const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
+        const isTimeout = detached || hardKilled;
         // P2-10：超时/中断记为 aborted（可恢复），其余非成功记为 failed。
         sidechainStatus = isTimeout ? "aborted" : "failed";
-        const donePart =
-          loopResult.turns > 0 ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用` : "";
-        // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
-        // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
-        // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
-        const output = isTimeout
-          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
-          : loopResult.errorMessage || "子代理执行未成功";
+        const snap = salvage.snapshot();
+        // B5-4（缺口 D）：重试次数仍要带上（限流打满退避耗尽会被误读成"超时"，
+        // 见 formatRetryHint 注释）。非超时分支的 errorMessage 里漏斗已含重试信息，不重复拼。
+        const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
+        const output = buildSalvageOutput(snap, {
+          // 前台 detach 也归 "timeout"：真正能"转后台续跑"的只有 _isAsync 路径，
+          // 前台调用方在 await 我们，提前 return 就没有栈可以承载续跑（见上方 detach 注释）。
+          reason: isTimeout
+            ? task._isAsync === true && !hardKilled
+              ? "detached"
+              : "timeout"
+            : "error",
+          finalText: finalOutput,
+          timeoutMs: timeout,
+          errorMessage: isTimeout
+            ? retryHint.replace(/^，/, "") || undefined
+            : loopResult.errorMessage || "子代理执行未成功",
+          taskId,
+          outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+        });
         return {
           success: false,
           output,
@@ -1748,31 +1921,59 @@ export class SubAgent {
         };
       }
     } catch (err: any) {
-      // 超时中断时返回友好提示，包含部分进度信息
-      if (timeoutCtrl.signal.aborted) {
-        log.warn("SUBAGENT", `[${task.type}] 超时 (${timeout}ms)`);
-        // 从 ctxMgr 获取部分进度：子代理已完成的消息对数 ≈ 已执行轮次
-        const msgCount = ctxMgr?.messageCount() ?? 0;
-        const partialInfo = msgCount > 2 ? `，已执行约 ${Math.round((msgCount - 1) / 2)} 轮` : "";
-        return {
-          success: false,
-          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒${partialInfo})`,
-          usage: { inputTokens: 0, outputTokens: 0 },
-          turns: 0,
-          toolUseCount: 0,
-        };
+      // ── P0-1(b)：catch 分支同样交回残卷，且**禁止把 usage/turns 归零** ──
+      //
+      // 改造前这里硬写 `usage: {inputTokens:0, outputTokens:0}, turns:0, toolUseCount:0`。
+      // 那是双重损失：成果丢了，连"这次烧了多少钱"都测不出来（北极星「更省」那条依赖
+      // 这个数据）。归零不是保守估计，是**假数据**——它让一次 40 万 token 的失败在账上
+      // 与一次零成本失败完全同形。现在按残卷里的实际累计值回填。
+      const snap = salvage.snapshot();
+      const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
+      const isTimeout = detached || hardKilled;
+      if (isTimeout) {
+        log.warn("SUBAGENT", `[${task.type}] 墙钟到点抛出（${timeout}ms），交回残卷`);
+      } else {
+        log.error("SUBAGENT", `[${task.type}] 执行异常`, { error: err.message });
       }
-      // 其他异常也不穿透，转为失败结果
-      log.error("SUBAGENT", `[${task.type}] 执行异常`, { error: err.message });
       return {
         success: false,
-        output: `子代理执行异常: ${err.message}`,
-        usage: { inputTokens: 0, outputTokens: 0 },
-        turns: 0,
-        toolUseCount: 0,
+        output: buildSalvageOutput(snap, {
+          reason: isTimeout ? "timeout" : "error",
+          timeoutMs: timeout,
+          errorMessage: isTimeout ? undefined : err.message,
+          taskId,
+          outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+        }),
+        // ── usage 回填的口径（诚实声明，勿当精确值读）──
+        //
+        // 这条路径是 `runAgentLoop` **抛异常**而非正常返回，所以 `loopResult` 不存在，
+        // `totalUsage`（唯一带 input/output 拆分的来源）在这里客观上拿不到。能观测到的
+        // 只有 `onTurnEnd` 每轮带的 `tokenCount`，而它已经是 **input + output 之和**
+        // （agentic-loop.ts:791 `totalUsage.inputTokens + totalUsage.outputTokens`）——
+        // 拆分信息在进入本函数前就已经被压平了，不是我们漏读。
+        //
+        // 于是有三种处理，选第三种：
+        //   ① 归零 —— 改造前的做法，**明确禁止**：它让一次 40 万 token 的失败在账上与
+        //      一次零成本失败完全同形，是假数据而非保守估计。
+        //   ② 编一个拆分比例把 sum 拆开 —— 更糟，凭空造出两个都不真的数字。
+        //   ③ 把**能观测到的 sum** 如实记进 inputTokens，outputTokens 记 0 并在此注明
+        //      「0 = 未观测到，不是真的为零」。
+        //
+        // 选 ③ 且把 sum 归到 input 侧的依据是实测量级：事故会话 4 个子代理合计
+        // input 1,842,462 / output 8,873，**比值 208:1**——sum 的 99.5% 本就是 input。
+        // 归到 input 侧的口径误差在 0.5% 量级，而归零的误差是 100%。
+        //
+        // 想要精确拆分需要改 `agentic-loop.ts` 的 onTurnEnd 契约（透出未压平的 Usage），
+        // 那是独立工单：本次任务禁止改动该文件（它正被另一个 agent 并行修改）。
+        usage: { inputTokens: snap.tokenCount, outputTokens: 0 },
+        turns: snap.turns,
+        toolUseCount: snap.toolUseCount,
       };
     } finally {
       clearTimeout(timer);
+      // detach 后的硬 kill 定时器同样要清——不清会让进程多挂住 2×timeout 才退出
+      // （Node/Bun 的 pending timer 会阻止事件循环空转退出）。
+      if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
       // P2-10：无论成功/失败/异常，都写 sidechain_end 收尾。sidechainStatus 默认 aborted，
       // 仅成功/明确失败分支改写——恢复扫描据此过滤已结束的 sidechain。
       sidechain?.end(sidechainStatus);
@@ -1788,13 +1989,44 @@ export class SubAgent {
     const startTime = Date.now();
     log.info("SUBAGENT", `启动自定义子代理`);
 
-    // 三级回退：task.timeout > 默认 300s（自定义 agent 执行复杂任务，与 task 类型对齐）
-    const timeout = task.timeout ?? 300_000;
+    // 三级回退：task.timeout > env/派生 > 默认 300s（与 task 类型对齐）。
+    // P0-1(c)：与内置路径共用 resolveSubAgentTimeout，避免"两条路径各写一份预算逻辑"——
+    // buildBaseLoopConfig 的注释记录过同型教训（漏传 permissionChecker 是靠人工两处同步失败）。
+    const customBudget = resolveSubAgentTimeout({
+      definitionTimeoutMs: 300_000,
+      explicitTimeoutMs: task.timeout,
+      model: this.modelOverride ?? this.model,
+      fallbackMs: 300_000,
+    });
+    const timeout = customBudget.timeoutMs;
     const timeoutCtrl = new AbortController();
-    const timer = setTimeout(() => timeoutCtrl.abort(), timeout);
+    /** P0-1(a)：墙钟到点标志。自定义路径同样不再到点即 abort，见 executeInner 的 detach 注释。 */
+    let detached = false;
+    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      detached = true;
+      log.warn(
+        "SUBAGENT",
+        `[custom] 达到墙钟预算 ${Math.round(timeout / 1000)}s（来源 ${customBudget.source}），交回残卷`,
+      );
+      // 自定义路径（skill/agent 调用）**没有** taskId、不进 registry，所以"转后台续跑"
+      // 无处附着：调用方在 await 我们，提前 return 就没有栈能承载续跑。因此这里 detach
+      // 的收益只有「交回残卷」这一半，硬 kill 仍要挂——否则自定义子代理会无限跑下去。
+      hardKillTimer = setTimeout(
+        () => {
+          log.warn("SUBAGENT", `[custom] detach 后仍未结束，硬 kill`);
+          timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
+        },
+        timeout * (HARD_KILL_MULTIPLIER - 1),
+      );
+    }, timeout);
     const mergedSignal = signal
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
+
+    /** P0-1(b)：自定义路径的残卷收集器（与内置路径同一实现，不另写一份）。 */
+    const salvage = new SalvageCollector();
+    let lastTurnAt = startTime;
 
     // B4：观测身份必须「每次调用唯一」，而 masking 的 sessionId 刻意按 task.type
     // 复用（同类型自定义代理共用一个临时目录，见下方注释）。两者目的不同，故分开派生：
@@ -1886,6 +2118,15 @@ export class SubAgent {
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
           toolUseCount += info.tools.length;
+          // P0-1(b)(c)：与内置路径同口径地喂残卷 + 吞吐样本。
+          try {
+            salvage.recordTurn(info);
+          } catch {
+            /* 残卷收集失败不影响子代理执行 */
+          }
+          const now = Date.now();
+          recordTurnLatency(this.modelOverride ?? this.model, now - lastTurnAt);
+          lastTurnAt = now;
         },
       });
 
@@ -1909,15 +2150,24 @@ export class SubAgent {
           provider: activeProvider.name(),
         };
       } else {
-        const isTimeout = timeoutCtrl.signal.aborted;
-        const donePart =
-          loopResult.turns > 0 ? `，已完成 ${loopResult.turns} 轮、${toolUseCount} 次工具调用` : "";
-        // B5-4（缺口 D）：重试次数拼进**超时**文案，见 formatRetryHint 注释。
-        // 只加在超时分支：非超时分支用的是 loopResult.errorMessage，而漏斗的耗尽文案
-        // 里已含「重试 N 次，最后一次失败原因 …」（B2 已做），再拼一遍就是重复。
-        const output = isTimeout
-          ? `子代理执行超时 (${Math.round(timeout / 1000)}秒${donePart}${formatRetryHint(loopResult)})`
-          : loopResult.errorMessage || "子代理执行未成功";
+        // P0-1(b)：与内置路径同口径交回残卷，不再把 finalOutput 替换成一句"超时"。
+        // 两条路径必须同时改：§1.5(b) 列了 4 处落点，只改内置那处会让 skill/自定义 agent
+        // 继续丢成果，且不会有任何报错（formatRetryHint 的注释记录过同型的"两处逐字重复
+        // 各改一遍必然漂移"教训）。
+        const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
+        const isTimeout = detached || hardKilled;
+        const snap = salvage.snapshot();
+        const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
+        const output = buildSalvageOutput(snap, {
+          // 自定义路径无 taskId、不进 registry，转后台无处附着 → 一律 "timeout"，
+          // 不谎报 "detached"（说了转后台却取不回来，比不说更坏）。见上方 detach 注释。
+          reason: isTimeout ? "timeout" : "error",
+          finalText: finalOutput,
+          timeoutMs: timeout,
+          errorMessage: isTimeout
+            ? retryHint.replace(/^，/, "") || undefined
+            : loopResult.errorMessage || "子代理执行未成功",
+        });
         return {
           success: false,
           output,
@@ -1929,27 +2179,29 @@ export class SubAgent {
         };
       }
     } catch (err: any) {
-      if (timeoutCtrl.signal.aborted) {
-        log.warn("SUBAGENT", `[custom] 超时 (${timeout}ms)`);
-        return {
-          success: false,
-          output: `子代理执行超时 (${Math.round(timeout / 1000)}秒)`,
-          usage: { inputTokens: 0, outputTokens: 0 },
-          turns: 0,
-          toolUseCount: 0,
-        };
+      // P0-1(b)：catch 分支同样交回残卷，usage/turns 不归零（口径说明见 executeInner 同位注释）。
+      const snap = salvage.snapshot();
+      const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
+      const isTimeout = detached || hardKilled;
+      if (isTimeout) {
+        log.warn("SUBAGENT", `[custom] 墙钟到点抛出（${timeout}ms），交回残卷`);
+      } else {
+        log.error("SUBAGENT", `[custom] 执行异常`, { error: err.message });
       }
-      // 其他异常也不穿透，转为失败结果
-      log.error("SUBAGENT", `[custom] 执行异常`, { error: err.message });
       return {
         success: false,
-        output: `子代理执行异常: ${err.message}`,
-        usage: { inputTokens: 0, outputTokens: 0 },
-        turns: 0,
-        toolUseCount: 0,
+        output: buildSalvageOutput(snap, {
+          reason: isTimeout ? "timeout" : "error",
+          timeoutMs: timeout,
+          errorMessage: isTimeout ? undefined : err.message,
+        }),
+        usage: { inputTokens: snap.tokenCount, outputTokens: 0 },
+        turns: snap.turns,
+        toolUseCount: snap.toolUseCount,
       };
     } finally {
       clearTimeout(timer);
+      if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
     }
   }
 

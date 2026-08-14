@@ -103,6 +103,28 @@ export const LOOP_RECOVERY_PROMPT = `<system-reminder>
 如果你其实在对**同一个文件的不同部分**做合法的分段读取、多点编辑或迭代验证（这是正常的开发行为），请明确说明你的当前进展，然后继续完成剩余工作。只有在反复尝试完全相同的参数却无任何进展时才需要换思路。
 </system-reminder>`;
 
+/**
+ * P1-3：**同参状态轮询**专用的恢复提示。
+ *
+ * 为什么不复用 `LOOP_RECOVERY_PROMPT`：那份提示讲的是"换工具/换粒度/放宽匹配"
+ * （grep 找不到就换 glob、read 失败就先 ls），全部是**搜索类**建议——对"反复查同一个
+ * 后台任务的状态"一条都不适用。给错的建议等于没给建议，模型只会继续轮询。
+ *
+ * 文案原则（§3.5 第 2 条）：**给出路而非训话。** 所以三条建议都是可直接执行的动作，
+ * 且第一条就是本次新增的阻塞等待原语——轮询的根因是"没有阻塞等待手段"，
+ * 那么拦下轮询时的第一件事就该是告诉模型这个手段现在有了。
+ */
+export const LOOP_RECOVERY_POLLING_PROMPT = `<system-reminder>
+你已连续多次以**完全相同的入参**查询后台任务状态，且返回的进度没有变化。反复轮询不会让任务更快完成，只会消耗上下文与预算。
+
+请改用下面任一方式：
+1. **阻塞等待**（推荐）：\`bg_task_get({ task_id: "...", block: true, timeout: 60000 })\` —— 它会一直等到任务进入终态再返回，你问一次就够。返回的 \`retrieval_status\` 会告诉你是 \`success\`（拿到最终结果）还是 \`timeout\`（还在跑，可以再等）。
+2. **先做别的**：去推进**不依赖**该任务产出的部分。任务完成时你会自动收到 \`<task-notification>\`，里面直接带结果正文，不需要你主动查。
+3. **确实要放弃**：用 \`task_stop\` 终止它，然后如实告诉用户当前进展和你的判断。
+
+如果你在查询**不同**的任务（入参不同），那不受此限制，照常继续。
+</system-reminder>`;
+
 /** 恢复次数耗尽后的「最终提示」（recoveryExhaustedAction = "continue" 时注入）
  *  与 LOOP_RECOVERY_PROMPT 的区别：这是最后一次提醒，语气更重，并明确把"是否停止"的
  *  决定权交还模型——不再由系统强行 return 终止任务。这样真死循环模型会自己 end_turn，
@@ -462,6 +484,38 @@ export const EXEMPT_TOOLS = new Set([
   "team_message",
 ]);
 
+/**
+ * P1-3：**有条件**豁免的状态查询类工具——豁免只覆盖它声称的那个语义。
+ *
+ * ## 病灶：豁免的语义前提没错，但实现是无条件的
+ *
+ * 这三个工具原本的豁免理由是"连续查询**不同**后台任务是正当轮询"——**理由本身成立**。
+ * 但实现是 `EXEMPT_TOOLS.has(name) → return false`，于是：入参完全相同（`{}`）、
+ * 返回体除时间戳外无变化的**49 次**调用同样被放过（实测 2026-08-11 会话，
+ * 占全部工具调用 18.8%，间隔约 5.7s，进度字段纹丝不动）。
+ *
+ * ```
+ * 13:51:59  <progress tools="17" tokens="169174">  last_activity: read ink.d.ts
+ * 13:52:03  <progress tools="17" tokens="169174">  last_activity: read ink.d.ts   ← 无变化
+ * 13:52:08  <progress tools="17" tokens="169174">  last_activity: read ink.d.ts   ← 无变化
+ * ```
+ *
+ * ## 收窄后的判据：**入参不同才豁免**
+ *
+ * - 入参**不同** → 豁免（这才是"查询不同任务"的真实形态）；
+ * - 入参**相同**且连续达 `toolCallThreshold` 次 → 交给正常循环检测拦下。
+ *
+ * 为什么不直接把它们从 EXEMPT_TOOLS 移除：移除后 shape detector 也会开始管它们，
+ * 而 `bg_task_get({task_id:"a"})` / `bg_task_get({task_id:"b"})` 是**同 shape 不同 value**
+ * 的典型形态——那正是 shape detector 会误判的东西。收窄成"按入参判"既拦住同参轮询，
+ * 又不会误杀"轮流查 3 个子代理"这种正当行为。
+ *
+ * ⚠️ 改这个集合时必须同步 `EXEMPT_TOOLS` 与对应工具类的 `exemptFromLoopDetection` 字段
+ * （见上方 EXEMPT_TOOLS 的 P2-3 说明与 `tests/agent/loop-detection-exemption-audit.test.ts`
+ * 的双向对账）——本集合是 EXEMPT_TOOLS 的**子集**，不是平行名单。
+ */
+export const CONDITIONALLY_EXEMPT_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_output"]);
+
 /** 循环检测器（组合工具调用和内容检测） */
 export class LoopDetector {
   private config: LoopDetectionConfig;
@@ -486,14 +540,43 @@ export class LoopDetector {
     this.contentDetector = new ContentLoopDetector(config);
   }
 
+  /**
+   * P1-3：最近一次触发循环判定的**成因**。
+   *
+   * 存在的唯一目的是让恢复提示能选对文案：同参状态轮询要给"改用阻塞等待"，
+   * 而搜索类死循环要给"换工具/放宽匹配"。此前只有一个布尔返回值，调用方
+   * 无法分辨，只能一律注入搜索类建议——对轮询场景一条都不适用（见
+   * LOOP_RECOVERY_POLLING_PROMPT 注释）。
+   */
+  private _lastTrigger: "polling" | "generic" | null = null;
+
+  /**
+   * 上一次 `recordToolCall` 返回 true 时的成因。null 表示尚未触发过。
+   * 调用方据此在 `LOOP_RECOVERY_POLLING_PROMPT` 与 `LOOP_RECOVERY_PROMPT` 之间选择。
+   */
+  get lastTrigger(): "polling" | "generic" | null {
+    return this._lastTrigger;
+  }
+
   /** 记录工具调用，返回是否检测到循环（任一检测器命中即触发） */
   recordToolCall(toolName: string, toolInput: unknown): boolean {
     if (this._disabled) return false;
+    // P1-3：状态查询类工具改为**有条件**豁免——入参不同才放过（见
+    // CONDITIONALLY_EXEMPT_TOOLS 注释：无条件豁免会把 49 次同参 `{}` 轮询一起放过）。
+    // 只走精确检测（exact）不走 shape：同 shape 不同 value 正是"轮流查多个任务"的
+    // 正当形态，交给 shape detector 会误杀。
+    if (CONDITIONALLY_EXEMPT_TOOLS.has(toolName)) {
+      const hit = this.toolCallDetector.record(toolName, toolInput);
+      if (hit) this._lastTrigger = "polling";
+      return hit;
+    }
     // 豁免工具：合法并发/分派行为不应被判定为循环
     if (EXEMPT_TOOLS.has(toolName)) return false;
     const exact = this.toolCallDetector.record(toolName, toolInput);
     const shape = this.toolShapeDetector.record(toolName, toolInput);
-    return exact || shape;
+    const hit = exact || shape;
+    if (hit) this._lastTrigger = "generic";
+    return hit;
   }
 
   /** 记录内容输出，返回是否检测到循环 */

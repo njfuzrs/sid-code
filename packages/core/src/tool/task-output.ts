@@ -34,7 +34,13 @@ export class TaskOutputTool implements Tool {
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
   readonly searchHint = "background task output result 后台 任务 输出 结果";
-  /** P2-3：任务管理类工具，连续查询不同 task 的输出是正当推进而非循环，豁免循环检测 */
+  /**
+   * P2-3：任务管理类工具，连续查询**不同** task 的输出是正当推进而非循环，豁免循环检测。
+   *
+   * P1-3 收窄：豁免现在是**有条件**的（见 `loop-detection.ts` 的
+   * `CONDITIONALLY_EXEMPT_TOOLS`）——入参不同才放过，同参连续查询交给正常循环检测。
+   * 本工具已有 block 参数（阻塞等待），所以"同参反复查"在这里更没有正当理由。
+   */
   readonly exemptFromLoopDetection = true;
 
   name(): string {
