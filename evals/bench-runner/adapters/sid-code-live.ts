@@ -592,7 +592,7 @@ function buildResult(opts: {
 
   const signals = trajectory.length
     ? analyzeTrajectorySignals(trajectory)
-    : { error_count: 0, retry_count: 0, backtrack_count: 0 };
+    : { error_count: 0, retry_count: 0, max_repeat_cluster: 0, backtrack_count: 0 };
 
   // W12.D3：从 trajectory 解析 plan 文件真命中次数
   const planFileUpdateCount = countPlanFileUpdates({

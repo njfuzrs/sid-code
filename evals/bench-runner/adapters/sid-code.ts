@@ -50,14 +50,32 @@ async function loadMetaIndex(metaFile: string): Promise<Map<string, SessionMeta>
 }
 
 /**
+ * retry 指纹的滑动窗口大小（单位：action 步数）。
+ *
+ * P2-11：判据原来只看**相邻**两步，于是「同一个失败调用重试 5 次、中间插一次 read」
+ * 就把链条断成两段，计数从 4 掉到 3——模型只要在重试之间夹一个只读调用，
+ * 这个指标就测不到它在原地打转。改成窗口内同指纹计数后，插步不再能断链。
+ *
+ * 取 10 步：足够跨过「重试 → 读文件确认 → 再重试」这类真实穿插模式，
+ * 又不至于把任务后期偶然重复的同一命令（相隔几十步）误判成重试。
+ */
+const RETRY_WINDOW_STEPS = 10;
+
+/**
  * 解析 trajectory steps 提 L2 信号
  * - error_count: observation 步骤里 is_error == true 的数量
- * - retry_count: 同 tool_name + 相似 tool_input（input JSON 串前 100 字符匹配）的连续 action 次数
+ * - retry_count: 同 tool_name + 相似 tool_input（input JSON 串前 100 字符匹配）的
+ *   action 在 `RETRY_WINDOW_STEPS` 窗口内**重复出现**的次数（首次调用不算重试，
+ *   所以一簇 k 次同指纹调用记 k-1）。
+ * - max_repeat_cluster: 窗口内同指纹调用簇的最大规模（含首次），即"同一个调用最多被
+ *   连着发了几次"。retry_count 是全局累加值，这个是单点峰值，用来区分
+ *   "到处各重试一次" 和 "在一个点上死磕 5 次"。
  * - backtrack_count: tool_name in {Write, Edit} 且同一 file_path 出现 ≥ 2 次（回溯重写）
  */
 function analyzeTrajectorySignals(steps: TrajectoryStep[]): {
   error_count: number;
   retry_count: number;
+  max_repeat_cluster: number;
   backtrack_count: number;
 } {
   let errorCount = 0;
@@ -92,10 +110,38 @@ function analyzeTrajectorySignals(steps: TrajectoryStep[]): {
     }
   }
 
-  // retry: 相邻两步 fingerprint 相同（同工具 + 同前缀 input）
-  for (let i = 1; i < actions.length; i++) {
-    if (actions[i].fp === actions[i - 1].fp) {
+  // retry: 滑动窗口内 fingerprint 重复出现（同工具 + 同前缀 input）。
+  //
+  // P2-11：旧实现是 `actions[i].fp === actions[i-1].fp`，只看紧邻的前一步。
+  // 于是 `A A read A A A` 里 read 把链条切成 [A A] 与 [A A A] 两段 → 记 1+2=3；
+  // 而实际上同一个调用被发了 5 次，只是中间夹了一次只读操作。插一步就能把
+  // 判据打回去，等于给"原地打转"留了个免检通道。
+  //
+  // 现在改为：往前回看 RETRY_WINDOW_STEPS 步，只要窗口内出现过同指纹就算一次重复。
+  // 同时记录每簇的规模峰值（max_repeat_cluster），因为"5 处各重试一次"和
+  // "一个点上死磕 5 次"是两种完全不同的失败模式，累加值分不出来。
+  let maxRepeatCluster = actions.length > 0 ? 1 : 0;
+  /** fp → 该指纹在当前窗口内已出现的次数（含首次），用于算簇规模峰值 */
+  const clusterSize = new Map<string, number>();
+  for (let i = 0; i < actions.length; i++) {
+    const fp = actions[i].fp;
+    // 窗口起点：从 i-RETRY_WINDOW_STEPS 到 i-1 之间是否出现过同指纹
+    const windowStart = Math.max(0, i - RETRY_WINDOW_STEPS);
+    let seenInWindow = false;
+    for (let j = windowStart; j < i; j++) {
+      if (actions[j].fp === fp) {
+        seenInWindow = true;
+        break;
+      }
+    }
+    if (seenInWindow) {
       retryCount++;
+      const size = (clusterSize.get(fp) ?? 1) + 1;
+      clusterSize.set(fp, size);
+      if (size > maxRepeatCluster) maxRepeatCluster = size;
+    } else {
+      // 窗口内没见过 → 这是一簇的起点，簇计数重置为 1（首次调用不算重试）
+      clusterSize.set(fp, 1);
     }
   }
 
@@ -107,7 +153,12 @@ function analyzeTrajectorySignals(steps: TrajectoryStep[]): {
     }
   }
 
-  return { error_count: errorCount, retry_count: retryCount, backtrack_count: backtrackCount };
+  return {
+    error_count: errorCount,
+    retry_count: retryCount,
+    max_repeat_cluster: maxRepeatCluster,
+    backtrack_count: backtrackCount,
+  };
 }
 
 /**
@@ -147,7 +198,12 @@ export async function extractAgentOutput(
 
   // 读 trajectory 拿 final_response + L2 信号
   let finalResponse = "";
-  let trajSignals = { error_count: 0, retry_count: 0, backtrack_count: 0 };
+  let trajSignals = {
+    error_count: 0,
+    retry_count: 0,
+    max_repeat_cluster: 0,
+    backtrack_count: 0,
+  };
   const trajPath = join(config.trajectoryDir, sid, "trajectory.json");
   try {
     const trajContent = await Bun.file(trajPath).text();

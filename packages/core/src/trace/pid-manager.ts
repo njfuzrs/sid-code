@@ -50,6 +50,20 @@ export interface StaleHeartbeatSession {
   is_process_alive: boolean;
 }
 
+/**
+ * 心跳残留会话的分类结果。
+ *
+ * 之所以要分类：这两类的**处置方式相反**。真 hang 是「现在就有个进程卡着」，值得告警；
+ * 未正常收尾是「历史残留」，除了顺手补个 cost 什么都不用做。混在一条 WARN 里报，
+ * 真 hang 会被几十条残留淹没，等于告警作废。
+ */
+export interface StaleHeartbeatClassification {
+  /** 进程仍存活但心跳停止 → 真 hang，值得告警 */
+  hang: StaleHeartbeatSession[];
+  /** 进程已退出、只是没清 heartbeat → 未正常收尾（残留），非故障 */
+  unfinished: StaleHeartbeatSession[];
+}
+
 // ─── 路径常量 ───
 
 /** 基础路径：~/.sid-code/trajectories/ */
@@ -188,11 +202,17 @@ export function cleanup(sessionId: string): void {
 /**
  * 扫描 sessions/ 目录，找出有心跳文件但无 crash.json 的会话。
  *
- * 有心跳无 crash.json 意味着：
- * 1. 进程正常退出但未清理 heartbeat → session hang（非正常退出）
- * 2. 进程仍存活但心跳停止 → session hang
+ * 有心跳无 crash.json 有两种**性质完全不同**的成因，本函数只做原始扫描、不分类：
+ * 1. 进程已退出但未清理 heartbeat → 「未正常收尾」（残留，不是故障）
+ * 2. 进程仍存活但心跳停止 → 真 hang（需要人看一眼）
  *
- * 判断标准：最后心跳时间 > 30 秒前 → 疑似 hang。
+ * 判断标准：最后心跳时间 > 30 秒前 → stale。
+ *
+ * ⚠️ 想要「疑似 hang」结论的调用方请用 `classifyStaleHeartbeats()`，不要直接把本函数
+ * 的返回长度当 hang 数报警——`is_process_alive` 字段从一开始就有，但从不参与过滤，
+ * 结果是启动诊断把 29 个「已退出」的残留会话全部报成「疑似 hang/僵尸会话」刷屏 29 行
+ * （实测 2026-08-10，29 条无一例外都是 `进程状态 已退出`）。
+ * 本函数仍返回全量（含已退出），因为 traj cost 补写**刻意**只对已退出的会话做。
  */
 export function scanStaleHeartbeats(): StaleHeartbeatSession[] {
   try {
@@ -282,4 +302,22 @@ export function scanStaleHeartbeats(): StaleHeartbeatSession[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 把心跳残留会话按「进程是否还活着」分成 hang 与未正常收尾两类。
+ *
+ * 这一步是纯函数（不碰文件系统），传入 `scanStaleHeartbeats()` 的结果即可，
+ * 方便调用方复用同一次扫描：告警读 `hang`，cost 补写读 `unfinished`。
+ */
+export function classifyStaleHeartbeats(
+  stale: StaleHeartbeatSession[],
+): StaleHeartbeatClassification {
+  const hang: StaleHeartbeatSession[] = [];
+  const unfinished: StaleHeartbeatSession[] = [];
+  for (const s of stale) {
+    if (s.is_process_alive) hang.push(s);
+    else unfinished.push(s);
+  }
+  return { hang, unfinished };
 }

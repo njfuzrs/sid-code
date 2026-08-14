@@ -3005,16 +3005,33 @@ export class App {
     try {
       const stale = PidManager.scanStaleHeartbeats();
       if (stale.length > 0) {
-        log.warn(
-          "DIAG",
-          [
-            `发现 ${stale.length} 个疑似 hang/僵尸会话（有心跳无 crash.json，最后心跳 >30s）:`,
-            ...stale.map(
-              (s) =>
-                `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}, 进程状态 ${s.is_process_alive ? "存活" : "已退出"}`,
-            ),
-          ].join("\n"),
-        );
+        // P2-13：把「真 hang」与「未正常收尾」分开呈现。
+        //
+        // 旧写法把整个 stale 列表当 hang 报，每条一行 → 实测启动时刷 29 行
+        // 「疑似 hang/僵尸会话」，而 29 条全是「进程状态 已退出」，即无一例真 hang。
+        // 已退出的会话只是退出时没清 heartbeat，属于历史残留而非故障；混进同一条 WARN
+        // 会把真正需要人看的 hang 淹掉，等于把这条告警作废。
+        const { hang, unfinished } = PidManager.classifyStaleHeartbeats(stale);
+
+        // 真 hang：进程还活着但心跳停了，逐条列出（这类通常个位数，值得看细节）
+        if (hang.length > 0) {
+          log.warn(
+            "DIAG",
+            [
+              `发现 ${hang.length} 个疑似 hang 会话（进程仍存活但心跳 >30s 未更新）:`,
+              ...hang.map((s) => `  session ${s.session_id}, 最后心跳 ${s.last_heartbeat_ts}`),
+            ].join("\n"),
+          );
+        }
+
+        // 未正常收尾：只报一行汇总。这类数量随历史累积（实测 29 个），逐条列出就是刷屏，
+        // 而单条信息对用户没有行动价值——要查明细去 trajectories/sessions/ 即可。
+        if (unfinished.length > 0) {
+          log.warn(
+            "DIAG",
+            `发现 ${unfinished.length} 个未正常收尾的历史会话（进程已退出但残留 heartbeat，非 hang）`,
+          );
+        }
 
         // §6.2：对进程已退出的僵尸会话（kill -9 / OOM 等），从 events.jsonl 的
         // AfterModelRaw.usage 重算 cost 并补写 traj。SessionEnd 未触发时 traj 可能缺失或 cost=0，
@@ -5526,6 +5543,22 @@ export class App {
   }
 
   /**
+   * P2-14：崩溃快照里的「已发生多少次 API 调用」。
+   *
+   * 口径与 SessionEnd 的 `total_api_calls` 完全一致（都是各模型 requests 之和），
+   * 这样 crash.json 与 SessionEnd 统计不会给出两个互相矛盾的数字。
+   * 取不到时回 -1 而非 0——0 是「一次都没调」的合法值，用它当兜底会把
+   * 「读失败」伪装成「真的零调用」。
+   */
+  private countApiCallsForCrash(): number {
+    try {
+      return Object.values(this.sessionState.modelUsage).reduce((sum, s) => sum + s.requests, 0);
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
    * 紧急 SessionEnd：uncaughtException / V8 OOM 等无法正常退出的场景。
    *
    * 约束：
@@ -5552,7 +5585,12 @@ export class App {
         error_message: err.message,
         error_name: err.name,
         stack: err.stack?.split("\n").slice(0, 10).join("\n"),
-        last_api_call_index: -1, // emergency 上下文中无法安全获取
+        // P2-14：此处原为硬编码 -1，注释称"emergency 上下文中无法安全获取"——但实测
+        // 崩溃现场明明发生过 156 次 API 调用，字段却报 -1，诊断里"最后 API 调用: #-1"
+        // 对排障零价值。真实计数一直就在 sessionState.modelUsage[*].requests 里躺着，
+        // 只读内存、不碰 IO、不 await，在 uncaughtException 上下文里同样安全。
+        // 整个取值包在 try 里兜底回 -1，保留"取不到"这个语义（而不是假装是 0）。
+        last_api_call_index: this.countApiCallsForCrash(),
         last_model: this.config.model ?? "unknown",
         memory_mb: process.memoryUsage().rss / 1024 / 1024,
         uptime_seconds: process.uptime(),

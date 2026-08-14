@@ -95,12 +95,50 @@ function findCrashedSessions(): string[] {
 // ─── 公开 API ───
 
 /**
+ * 判断一个崩溃快照是否只是「用户关掉了终端」，而非本体故障。
+ *
+ * P2-14 背景：实测捞到的 crash.json 长这样——
+ *
+ *     {"error_message":"EIO: i/o error, write","error_name":"Error",
+ *      "stack":"Error: EIO: i/o error, write\n at writeSync (unknown)\n at unmount (…)"}
+ *
+ * 成因链：用户关终端 → tty 消失 → Ink 卸载时往 fd 1 写终端复位序列（writeSync）拿到 EIO
+ * → 冒泡成 uncaughtException → 兜底写 crash.json。整条链上没有任何一处是 sid-code 的故障，
+ * 但它进了 crash.json，于是「崩溃率」这个指标里混进了「用户正常关窗口」。
+ *
+ * 为什么判据放在这里、而不是去 tui-renderer 的 writeSync 外面包 try/catch：
+ * 1. `packages/tui-renderer/src/` 是未获授权的第三方增量修改（见 NOTICE 第 1 节），
+ *    改动要最小化；而 EIO 的**危害**是污染崩溃统计，统计的入口就是本文件。
+ * 2. writeSync 直写 fd 1，绕过了 stream 对象，
+ *    `registerProcessOutputErrorHandlers()` 注册的 'error' 事件处理器**保护不到它**
+ *    （那道防线只对 `process.stdout.write` 生效）。所以 EIO 源头不止 root.ts 一处
+ *    （`ui/utils/terminalCapabilityManager.ts` 也有两处 writeSync）——
+ *    在数据入口拦一次，比逐个包 try/catch 更不容易漏。
+ *
+ * 判据用 `EIO:` / `EPIPE:` 前缀而非裸子串匹配：Node 的 ErrnoException 消息格式固定为
+ * `<code>: <描述>, <syscall>`，前缀锚定不会把「某个文件内容里含 EIO」误判进来。
+ */
+export function isTerminalDeathSnapshot(snapshot: CrashSnapshot): boolean {
+  const msg = snapshot.error_message ?? "";
+  return /^(EIO|EPIPE):/.test(msg);
+}
+
+/**
  * 同步写入 crash.json 到磁盘。
  *
  * ⚠️ 使用同步写入（writeFileSync），因为调用方通常是 uncaughtException / V8 OOM 上下文，
  * 异步操作可能被事件循环裁剪。同步写是 OOM 前的最后一搏。
+ *
+ * 返回 false 有两种含义：文件系统不可用（OOM 场景），或该快照被判定为
+ * 「用户关终端」而**刻意不落盘**（见 `isTerminalDeathSnapshot`）。调用方本来就只把
+ * 返回值当 best-effort 信号，不区分这两者。
  */
 export function write(snapshot: CrashSnapshot): boolean {
+  // P2-14：终端关闭导致的 EIO/EPIPE 不是崩溃，落盘会让崩溃率统计失真。
+  // 放在最前面 return，连目录都不建——否则空 session 目录也是一种残留。
+  if (isTerminalDeathSnapshot(snapshot)) {
+    return false;
+  }
   try {
     const dir = join(baseDir(), "sessions", snapshot.session_id);
     if (!existsSync(dir)) {

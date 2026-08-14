@@ -170,3 +170,95 @@ describe("CrashMarker", () => {
     }
   });
 });
+
+/**
+ * P2-14：用户关终端导致的 EIO/EPIPE 不应记成 crash。
+ *
+ * 实测捞到的 crash.json 里 error_message 是 `EIO: i/o error, write`、
+ * 栈顶是 `writeSync` → `unmount`——整条链是「用户关窗口 → tty 消失 → Ink 卸载时
+ * 写终端复位序列失败」，没有一处是 sid-code 的故障，但它进了崩溃统计。
+ */
+describe("CrashMarker · 终端关闭不算崩溃（P2-14）", () => {
+  const TTY_SESSION = `test-crash-eio-${Date.now()}`;
+  const TTY_SESSION_DIR = join(BASE_DIR, "sessions", TTY_SESSION);
+
+  /** 复刻实测那份 crash.json 的形态 */
+  function ttyDeathSnapshot(
+    message: string,
+    overrides: Partial<CrashMarker.CrashSnapshot> = {},
+  ): CrashMarker.CrashSnapshot {
+    return {
+      session_id: TTY_SESSION,
+      timestamp: new Date().toISOString(),
+      error_message: message,
+      error_name: "Error",
+      stack: `Error: ${message}\n at writeSync (unknown)\n at unmount (…)`,
+      last_api_call_index: 156,
+      last_model: "deepseek-v4-pro",
+      memory_mb: 474.6,
+      uptime_seconds: 1778.77,
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    try {
+      CrashMarker.cleanup(TTY_SESSION);
+      if (existsSync(TTY_SESSION_DIR)) {
+        rmSync(TTY_SESSION_DIR, { recursive: true, force: true });
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test("EIO（tty 消失后 unmount 写失败）不生成 crash.json", () => {
+    const snapshot = ttyDeathSnapshot("EIO: i/o error, write");
+
+    expect(CrashMarker.isTerminalDeathSnapshot(snapshot)).toBe(true);
+    expect(CrashMarker.write(snapshot)).toBe(false);
+    // 关键断言：文件不存在。连 session 目录都不该建（空目录也是残留）
+    expect(existsSync(join(TTY_SESSION_DIR, "crash.json"))).toBe(false);
+    expect(existsSync(TTY_SESSION_DIR)).toBe(false);
+  });
+
+  test("EPIPE（管道断开）同样不生成 crash.json", () => {
+    const snapshot = ttyDeathSnapshot("EPIPE: broken pipe, write");
+
+    expect(CrashMarker.isTerminalDeathSnapshot(snapshot)).toBe(true);
+    expect(CrashMarker.write(snapshot)).toBe(false);
+    expect(existsSync(join(TTY_SESSION_DIR, "crash.json"))).toBe(false);
+  });
+
+  test("真故障（OOM）仍照常落盘——过滤不能把真崩溃一起吞掉", () => {
+    const snapshot = ttyDeathSnapshot("Heap out of memory", { error_name: "V8HeapOOM" });
+
+    expect(CrashMarker.isTerminalDeathSnapshot(snapshot)).toBe(false);
+    expect(CrashMarker.write(snapshot)).toBe(true);
+    expect(existsSync(join(TTY_SESSION_DIR, "crash.json"))).toBe(true);
+  });
+
+  test("判据锚定前缀：错误内容里恰好含 EIO 字样的真故障不被误吞", () => {
+    // 裸子串匹配会把这条误判成"关终端"。前缀锚定（/^(EIO|EPIPE):/）不会。
+    const snapshot = ttyDeathSnapshot("failed to parse config: unexpected token EIO: at line 3", {
+      error_name: "SyntaxError",
+    });
+
+    expect(CrashMarker.isTerminalDeathSnapshot(snapshot)).toBe(false);
+    expect(CrashMarker.write(snapshot)).toBe(true);
+    expect(existsSync(join(TTY_SESSION_DIR, "crash.json"))).toBe(true);
+  });
+
+  test("last_api_call_index 落盘的是实际调用数，不是 -1", () => {
+    // 这里钉住的是「字段能承载真实值」这一半；取值侧（app.ts countApiCallsForCrash
+    // 按 modelUsage[*].requests 求和，与 SessionEnd 的 total_api_calls 同口径）
+    // 依赖完整 App 实例，不在本单测范围内。
+    const snapshot = ttyDeathSnapshot("Heap out of memory", { last_api_call_index: 156 });
+    CrashMarker.write(snapshot);
+
+    const read = CrashMarker.readPrevious();
+    expect(read).not.toBeNull();
+    expect(read!.last_api_call_index).toBe(156);
+    expect(read!.last_api_call_index).not.toBe(-1);
+  });
+});

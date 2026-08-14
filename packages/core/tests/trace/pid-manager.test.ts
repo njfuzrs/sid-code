@@ -1,9 +1,9 @@
 /**
  * pid-manager 单测
  */
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, afterAll } from "bun:test";
 import { join } from "node:path";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 import { getSidHome } from "@sid-code/core/config/paths.ts";
 
@@ -181,5 +181,103 @@ describe("pid-manager", () => {
   test("scanStaleHeartbeats() 无残留返回空数组", () => {
     const sessions = PidManager.scanStaleHeartbeats();
     expect(Array.isArray(sessions)).toBe(true);
+  });
+});
+
+/**
+ * P2-13：僵尸会话误报。
+ *
+ * 旧行为把 scanStaleHeartbeats() 的**全量**结果当「疑似 hang」报警，实测启动时刷 29 行，
+ * 而 29 条全是「进程已退出」——即真 hang 数为 0。`is_process_alive` 字段一直存在，
+ * 只是从不参与过滤。这里钉住分类判据本身。
+ */
+describe("pid-manager · classifyStaleHeartbeats（P2-13 hang 与未正常收尾分流）", () => {
+  const SESSIONS_DIR = join(BASE_DIR, "sessions");
+  /** 本组测试造的 session 目录，afterAll 里逐个删（只删自己造的，绝不整目录 rm） */
+  const created: string[] = [];
+
+  /** 造一个「有心跳、无 crash.json、心跳已过期」的残留会话目录 */
+  function makeStaleSession(name: string, opts: { withLivePid: boolean }): string {
+    const sessionId = `p2-13-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const dir = join(SESSIONS_DIR, sessionId);
+    mkdirSync(dir, { recursive: true });
+    created.push(dir);
+
+    // 心跳时间戳设在 10 分钟前，确保跨过 30s stale 阈值
+    const ts = new Date(Date.now() - 600_000).toISOString();
+    writeFileSync(join(dir, "heartbeat.txt"), JSON.stringify({ ts }));
+
+    if (opts.withLivePid) {
+      // 把 PID 指向**当前测试进程**——它必然存活，于是该会话被判为真 hang。
+      // 用真实存活 pid 而不是 mock process.kill：判据本身就是 kill(pid, 0)，
+      // mock 掉它等于测试自己写的假逻辑。
+      mkdirSync(PIDS_DIR, { recursive: true });
+      const pidFile = join(PIDS_DIR, `${process.pid}.json`);
+      writeFileSync(
+        pidFile,
+        JSON.stringify({
+          pid: process.pid,
+          session_id: sessionId,
+          start_time: new Date().toISOString(),
+          process_title: "p2-13-test",
+        }),
+      );
+      created.push(pidFile);
+    }
+    // withLivePid=false：不写 PID 文件 → 查不到存活进程 → 判为已退出（未正常收尾）
+
+    return sessionId;
+  }
+
+  afterAll(() => {
+    for (const p of created) {
+      try {
+        rmSync(p, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  test("N 个「有心跳 + 进程已退出」的残留：hang 计数为 0，未正常收尾计数为 N", () => {
+    const N = 3;
+    const ids = Array.from({ length: N }, (_, i) =>
+      makeStaleSession(`exited-${i}`, {
+        withLivePid: false,
+      }),
+    );
+
+    const stale = PidManager.scanStaleHeartbeats();
+    const mine = stale.filter((s) => ids.includes(s.session_id));
+    expect(mine.length).toBe(N); // 扫描仍返回全量，分类才是新增的那一步
+
+    const { hang, unfinished } = PidManager.classifyStaleHeartbeats(mine);
+    expect(hang.length).toBe(0);
+    expect(unfinished.length).toBe(N);
+  });
+
+  test("进程仍存活的残留会话被判为真 hang", () => {
+    const id = makeStaleSession("alive", { withLivePid: true });
+
+    const stale = PidManager.scanStaleHeartbeats();
+    const mine = stale.filter((s) => s.session_id === id);
+    expect(mine.length).toBe(1);
+
+    const { hang, unfinished } = PidManager.classifyStaleHeartbeats(mine);
+    expect(hang.length).toBe(1);
+    expect(unfinished.length).toBe(0);
+    expect(hang[0].session_id).toBe(id);
+  });
+
+  test("分类是纯函数：hang + unfinished 无重无漏地覆盖输入", () => {
+    const input: PidManager.StaleHeartbeatSession[] = [
+      { session_id: "a", last_heartbeat_ts: "2026-08-10T00:00:00.000Z", is_process_alive: false },
+      { session_id: "b", last_heartbeat_ts: "2026-08-10T00:00:01.000Z", is_process_alive: true },
+      { session_id: "c", last_heartbeat_ts: "2026-08-10T00:00:02.000Z", is_process_alive: false },
+    ];
+    const { hang, unfinished } = PidManager.classifyStaleHeartbeats(input);
+    expect(hang.map((s) => s.session_id)).toEqual(["b"]);
+    expect(unfinished.map((s) => s.session_id)).toEqual(["a", "c"]);
+    expect(hang.length + unfinished.length).toBe(input.length);
   });
 });

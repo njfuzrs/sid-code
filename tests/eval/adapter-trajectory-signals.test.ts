@@ -113,6 +113,79 @@ describe("analyzeTrajectorySignals — retry_count", () => {
   });
 });
 
+/**
+ * P2-11：retry 判据从「相邻」改为「滑动窗口内同指纹」。
+ *
+ * 旧判据只比 actions[i] 与 actions[i-1]，插一个只读调用就把链条切断、计数缩水，
+ * 等于给「原地打转」留了免检通道。这里钉住「插步不再能断链」。
+ */
+describe("analyzeTrajectorySignals — retry_count 窗口化（P2-11）", () => {
+  /** 造一个 action 步骤 */
+  const action = (tool: string, input: Record<string, unknown>) => ({
+    message_type: "action" as const,
+    role: "assistant",
+    tool_name: tool,
+    tool_input: input,
+  });
+
+  const A = () => action("Bash", { command: "bun test foo" });
+  const READ = () => action("Read", { file_path: "/some/other.ts" });
+
+  test("A A read A A A：插入的只读调用不再断链", () => {
+    const r = analyzeTrajectorySignals([A(), A(), READ(), A(), A(), A()]);
+
+    // 同一个 A 被发了 5 次 → 首次不算重试，重复 4 次。
+    // 旧实现在这里算 1+2=3（被 read 切成两段），少记 1 次。
+    expect(r.retry_count).toBe(4);
+    // 峰值：这一簇 A 的规模是 5，即「同一个调用最多被连着发了 5 次」。
+    // 方案文档写的「重复计数为 5」指的是这个口径（含首次的簇规模），
+    // 而 retry_count 沿用既有语义（不含首次），两个数字各有其义、不要混。
+    expect(r.max_repeat_cluster).toBe(5);
+  });
+
+  test("旧判据的漏检形态：A read A → 记 1 次重试（旧实现记 0）", () => {
+    const r = analyzeTrajectorySignals([A(), READ(), A()]);
+    expect(r.retry_count).toBe(1);
+    expect(r.max_repeat_cluster).toBe(2);
+  });
+
+  test("间隔超出窗口（>10 步）不算重试：偶然重复同一命令不误判", () => {
+    // A ...12 个不同的中间步骤... A → 窗口内看不到前一个 A
+    const filler = Array.from({ length: 12 }, (_, i) => action("Read", { file_path: `/f${i}.ts` }));
+    const r = analyzeTrajectorySignals([A(), ...filler, A()]);
+    expect(r.retry_count).toBe(0);
+    expect(r.max_repeat_cluster).toBe(1);
+  });
+
+  test("不同 input 前缀仍不算重试（指纹口径未变）", () => {
+    const r = analyzeTrajectorySignals([
+      action("Bash", { command: "bun test a" }),
+      READ(),
+      action("Bash", { command: "bun test b" }),
+    ]);
+    expect(r.retry_count).toBe(0);
+  });
+
+  test("多簇累加与峰值分离：两处各重试一次 ≠ 一处死磕三次", () => {
+    const B = () => action("Bash", { command: "make build" });
+    // A A（重复1） … B B（重复1）：累加 2，峰值 2
+    const spread = analyzeTrajectorySignals([A(), A(), READ(), B(), B()]);
+    expect(spread.retry_count).toBe(2);
+    expect(spread.max_repeat_cluster).toBe(2);
+
+    // A A A（重复2）：累加 2 与上例相同，但峰值 3 —— 靠峰值才能区分这两种失败模式
+    const stuck = analyzeTrajectorySignals([A(), A(), A()]);
+    expect(stuck.retry_count).toBe(2);
+    expect(stuck.max_repeat_cluster).toBe(3);
+  });
+
+  test("空输入的峰值为 0，不是 1", () => {
+    const r = analyzeTrajectorySignals([]);
+    expect(r.retry_count).toBe(0);
+    expect(r.max_repeat_cluster).toBe(0);
+  });
+});
+
 describe("analyzeTrajectorySignals — backtrack_count", () => {
   test("Write 同一 file 两次 = 1 次 backtrack", () => {
     const r = analyzeTrajectorySignals([
