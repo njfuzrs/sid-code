@@ -119,6 +119,22 @@ import {
   persistProgress,
   buildProgressReminder,
 } from "./work-log.ts";
+import {
+  observeLowYieldTurn,
+  buildLowYieldSpinReminder,
+  createLowYieldSpinState,
+  LOW_YIELD_SPIN_THRESHOLD,
+  MAX_LOW_YIELD_INTERVENTIONS,
+} from "./low-yield-spin.ts";
+import {
+  type MeasuredProgressState,
+  MEASURED_PROGRESS_KEY,
+  FILE_MUTATING_TOOLS,
+  createMeasuredProgressState,
+  recordFileChange,
+  recordScalarObservation,
+  hasRealProgress,
+} from "./measured-progress.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { drainByPriorityAndKind, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
 import {
@@ -130,7 +146,13 @@ import {
   isThinkingDivergenceDetectionEnabled,
 } from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
-import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts";
+import {
+  decideNagInjection,
+  decideTodoNagInjection,
+  MAX_NO_PROGRESS_NAGS,
+  MAX_TODO_BOOKKEEPING_NAGS,
+  TODO_BOOKKEEPING_NAG_COUNT_KEY,
+} from "./reminder-throttle.ts";
 import {
   processObservation as observeRepeatedReadonly,
   isReadonlyProbeCommand,
@@ -420,6 +442,24 @@ function turnMetrics(
   };
 }
 
+/**
+ * 取本会话的"实测进展"状态（P1-4 item 1），不存在则创建并挂上 SessionState。
+ *
+ * 为什么挂 SessionState 而不是 LoopState：LoopState 每条用户消息重建，而"这个会话已经改过
+ * 哪些文件、某个观测值从多少变到多少"是**跨用户消息的会话级事实**。放 LoopState 会让用户
+ * 追问一句就把已有进展清零，work-log 立刻退回报"已完成 0 项"——本次要修的假信号会复活。
+ * 同构参照 LAST_TODO_WRITE_VERSION_KEY（那处注释记录了同一个坑：基线放 LoopState 导致
+ * 第二条用户消息后计数虚增）。
+ */
+function getMeasuredProgress(sessionState: SessionState): MeasuredProgressState {
+  let s = sessionState.get(MEASURED_PROGRESS_KEY) as MeasuredProgressState | undefined;
+  if (!s) {
+    s = createMeasuredProgressState();
+    sessionState.set(MEASURED_PROGRESS_KEY, s);
+  }
+  return s;
+}
+
 function emitNagInjectedEvent(
   deps: QueryDeps,
   sessionId: string,
@@ -436,9 +476,14 @@ function emitNagInjectedEvent(
     cap?: number;
     countedAsNoProgress?: boolean;
     afterCompact?: boolean;
-    // ─── todo 通道字段（2026-08-01 改无状态扫描后，nagCount/cap 概念已不存在）───
+    // ─── todo 通道字段 ───
     // 记两个扫描出来的"距今多少轮"，供事后核对阈值是否过紧/过松。
     // `Infinity` 不是合法 JSON，故由调用方归一化为 -1（= 从未发生过）。
+    //
+    // 2026-08-01 改无状态扫描时 nagCount/cap 概念一度不存在；P1-4 item 2 又把它们带回来了，
+    // 但语义**与 work-log 不同**：这里的 cap 是**条件式**的，只在"有真实副作用进展却不更新
+    // 清单"时计数（催记账），无进展时永不封顶（催干活=主功能，见 decideTodoNagInjection）。
+    // 两条通道复用同名字段但判据不同，分析 events.jsonl 时必须结合 kind 区分。
     turnsSinceLastTodoWrite?: number;
     turnsSinceLastReminder?: number;
   },
@@ -1144,7 +1189,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         const todoAdvanced = !!todoFactState && lastSeenWriteVersion !== todoFactState.writeVersion;
         if (todoFactState && todoFactState.todos.length > 0) {
           if (todoAdvanced) {
-            const snap = snapshotFromTodos(sessionState.sessionId, todoFactState.todos);
+            // P1-4 item 1：落盘快照带上实测进展。这个文件是**跨会话续做时的唯一进度来源**
+            // （app.ts 的 loadProgressMarkdown），只写 todo 口径的话，"改了 7 个文件但一项
+            // 都没标"会渲染成"0 已完成"，假信号一路传染到下一个会话。
+            const snap = snapshotFromTodos(
+              sessionState.sessionId,
+              todoFactState.todos,
+              [],
+              getMeasuredProgress(sessionState),
+            );
             persistProgress(snap);
             // 可观测性（§8.3）：writeVersion 增长是**唯一能直接量"实时性"的指标**，此前完全无埋点。
             // 缺陷现场只能靠"progress 文件只写过 1 次"反推清单只更新过 1 次——那是间接证据。
@@ -1168,6 +1221,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // gate 不该继续消耗上一段停滞攒下的续命额度。
             state.progressNagCount = 0;
             state.todoGateRetryCount = 0;
+            // P1-4 item 2：模型确实更新了清单 = 记账催促奏效了 → 清零条件封顶预算，
+            // 让它在下一段"有进展但又忘记记账"时还能再催。不清零的话一个长会话里
+            // 只要早期催满 2 次，后面就永久哑火。
+            sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, 0);
             // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
             // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
             state.todoGateProductiveNoUpdateCount = 0;
@@ -1202,9 +1259,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
             });
-            if (throttleSaysYes || afterCompact) {
+            // ─── P1-4 item 2：条件式封顶（绑真实进展，刻意不是无条件 cap）───
+            //
+            // 判据分两态，详见 reminder-throttle.ts decideTodoNagInjection 的注释表：
+            //   无真实进展（模型真卡住）→ 催更是主功能，**永不封顶**（保住 2026-08-01 修复）；
+            //   有真实进展但清单没动 → 催的只是"记账"，催 N 次无效即停手。
+            // 后者才是本次事故的形态：模型在改文件、观测值在降，却被每 8 轮催去更新清单。
+            //
+            // afterCompact 旁路**不受封顶管辖**：压缩把清单从上下文里抹掉后若不强制重注，
+            // 清单会在模型视野里永久消失——那是信息丢失，不是催促噪音，两者不能共用预算。
+            const measuredForNag = getMeasuredProgress(sessionState);
+            const bookkeepingNagCount =
+              (sessionState.get(TODO_BOOKKEEPING_NAG_COUNT_KEY) as number | undefined) ?? 0;
+            const todoNagDecision = decideTodoNagInjection({
+              hasRealProgress: hasRealProgress(measuredForNag),
+              bookkeepingNagCount,
+            });
+            if ((throttleSaysYes && todoNagDecision.inject) || afterCompact) {
               reminderParts.push(buildTodoReminder(todoState.todos));
               state.todoReminderPendingAfterCompact = false;
+              if (todoNagDecision.countedAsNoProgress) {
+                sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
+              }
               // 锚点存 SessionState（跨用户消息持久），与 lastSeenContextPressureLevel /
               // lastSeenPermissionMode 同构（审计第 9 条：LoopState 每消息重建，放不住跨消息事实）。
               sessionState.set(LAST_TODO_REMINDER_TURN_KEY, sessionState.getAbsoluteTurn());
@@ -1219,6 +1295,22 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 kind: "todo",
                 ...turnMetrics(state, sessionState, promptSeq),
                 afterCompact,
+                // P1-4 item 2：条件封顶必须可观测，否则"它到底有没有拦住/有没有误伤"
+                // 只能靠离线重放猜（emitNagInjectedEvent 顶部注释记录的同一个教训：
+                // 只有 log.info 不落盘时，封顶行为在现网完全不可见）。
+                //
+                // ⚠ 只在**封顶真正生效的那一态**（有真实进展 → 催记账）才带这两个字段。
+                // 无进展态永不封顶，此时若照样上报 nagCount/cap，离线分析会以为本通道
+                // 存在封顶行为——那正是 2026-08-01 删字段时要避免的误导
+                // （见 todo-realtime-integration.test.ts「不带封顶字段」那组断言）。
+                // 字段在/不在本身就携带信息：在 = 当时处于记账催促态。
+                ...(todoNagDecision.countedAsNoProgress
+                  ? {
+                      nagCount: bookkeepingNagCount + 1,
+                      cap: MAX_TODO_BOOKKEEPING_NAGS,
+                      countedAsNoProgress: true,
+                    }
+                  : {}),
                 turnsSinceLastTodoWrite: Number.isFinite(counts.turnsSinceLastTodoWrite)
                   ? counts.turnsSinceLastTodoWrite
                   : -1,
@@ -1233,7 +1325,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 强调持久进度 + 别重复已完成项（与 P0-2 的 todo 原文回注互补）。
           const turnsSinceProgress = state.turnCount - (state.lastProgressReminderTurn ?? 0);
           if (turnsSinceProgress >= PROGRESS_REMINDER_INTERVAL) {
-            const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
+            // P1-4 item 1：回注摘要带上实测进展——这是消掉"已完成 0 项"假信号的关键路径
+            // （事故窗口里模型每 8 轮读到的就是这段文本）。
+            const measured = getMeasuredProgress(sessionState);
+            const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos, [], measured);
             const progressReminder = buildProgressReminder(snap);
             // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与 todo 回注同机制。P2-2 摘要在
             // todo 长期停滞时内容几乎逐字节相同（idx 41/87/112 就是这样的三连重复），
@@ -1407,6 +1502,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         criticalReminderParts.push(state.pendingStuckReminder);
         log.info("QUERY_LOOP", "注入无进展止损收敛提醒（实时 git 状态）");
         state.pendingStuckReminder = undefined;
+      }
+
+      // P1-4 item 3（低信息量空转·注入端）：上一轮检出"连续 N 轮只思考 + 同参同返回值的
+      // 单标量命令"，本轮注入**可执行的替代命令**。走 critical 档（前置于用户指令）：
+      // 事故里模型已连说 8 次"我要停止反复思考、直接动手"却仍在空转，说明它不缺决心而
+      // 缺"下一条命令敲什么"——这条提醒的全部价值在于尽早被读到，压到用户指令之后
+      // 就退化成了又一条泛化催促（正是本项要消掉的东西）。注入后清空避免重复。
+      if (state.pendingLowYieldSpinReminder) {
+        criticalReminderParts.push(state.pendingLowYieldSpinReminder);
+        log.info("QUERY_LOOP", "P1-4：注入低信息量空转介入（含可执行替代命令）");
+        state.pendingLowYieldSpinReminder = undefined;
       }
 
       // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
@@ -4022,6 +4128,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           //   - 其它一切(写操作、编辑、其它 bash 命令、task_*/todo_write 等有产出工具、文本产出)
           //     = 真进展,置 hadOtherActivity=true 触发清零。
           const probes: Array<{ command: string; output: string }> = [];
+          const measuredProgress = getMeasuredProgress(sessionState);
           let hadOtherActivity = responseText.trim().length > 0;
           for (const b of toolBlocks) {
             if (b.type !== "tool_use") continue;
@@ -4039,6 +4146,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               return stripReadEfficiencyHint(raw);
             };
             const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
+
+            // ─── P1-4 item 1：采集"实测进展"两个维度（与下方止损阀共用这次遍历）───
+            //
+            // 这里是全 harness 里唯一能同时看到「工具入参 + 真实返回值」的地方，故两件事都在此记：
+            //   ① 文件落盘：edit/write/notebook_edit 执行完 → 磁盘确实变了（不可伪造的进展证据）；
+            //   ② 可量化观测值：任何 bash 命令，只要输出是单个标量（`grep -c` / `wc -l` / 自研
+            //      脚本吐一个数字）就登记，首末值不同即"世界确实变了"。
+            //
+            // 判据刻意是**形态**而非命令名：harness 不该知道用户项目的检查命令是 tsc 还是
+            // cargo check 还是 pytest（写死命令名 = 只对 TS 项目有效，换语言就静默失效，
+            // 而静默失效的信号比没有信号更糟）。详见 measured-progress.ts 顶部注释。
+            if (FILE_MUTATING_TOOLS.has(b.name)) {
+              recordFileChange(measuredProgress, (b.input as any)?.file_path);
+              recordFileChange(measuredProgress, (b.input as any)?.notebook_path);
+            } else if (b.name === "bash" && typeof cmd === "string") {
+              recordScalarObservation(measuredProgress, cmd, readOutput());
+            }
+
             if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {
               probes.push({ command: cmd, output: readOutput() });
             } else if (isReadFamilyTool(b.name)) {
@@ -4050,6 +4175,81 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               hadOtherActivity = true;
             }
           }
+          // ─── P1-4 item 3：低信息量空转检测（独立于上面那道只读探查阀）───
+          //
+          // 为什么必须独立一道而不是调那道的阈值：事故里的
+          // `cd <repo> && bunx tsc --noEmit 2>&1 | grep -c "error TS"` 含管道且 bunx 不在
+          // 只读白名单，实测 isReadOnlyCommand=false → isReadonlyProbeCommand=false，
+          // 33 次空转一次都进不了 repeatedReadonly。缺的不是阈值，是这个形态的检测本身。
+          // 判据是"输出是单标量且不变 + 无落盘 + 无面向用户文本"，见 low-yield-spin.ts。
+          {
+            const bashCommands: string[] = [];
+            const bashOutputs: string[] = [];
+            let hadFileMutation = false;
+            for (const b of toolBlocks) {
+              if (b.type !== "tool_use") continue;
+              if (FILE_MUTATING_TOOLS.has(b.name)) {
+                hadFileMutation = true;
+                continue;
+              }
+              if (b.name !== "bash") continue;
+              const c = (b.input as any)?.command;
+              if (typeof c !== "string") continue;
+              const r = resultMap.get(b.id);
+              bashCommands.push(c);
+              bashOutputs.push(
+                r && r.type === "tool_result"
+                  ? typeof r.content === "string"
+                    ? r.content
+                    : JSON.stringify(r.content)
+                  : "",
+              );
+            }
+            if (!state.lowYieldSpin) state.lowYieldSpin = createLowYieldSpinState();
+            const lowYield = observeLowYieldTurn(state.lowYieldSpin, {
+              commands: bashCommands,
+              outputs: bashOutputs,
+              hadFileMutation,
+              // responseText 是面向用户的文本产出（thinking 不在其中）——"只思考不交付"
+              // 正是本阀要盯的形态，故有文本产出即视为有交付、清零。
+              hadTextOutput: responseText.trim().length > 0,
+            });
+            if (lowYield.intervene && lowYield.command !== undefined) {
+              state.pendingLowYieldSpinReminder = buildLowYieldSpinReminder(
+                lowYield.command,
+                lowYield.output ?? "",
+                lowYield.repeatTurns,
+              );
+              log.warn(
+                "QUERY_LOOP",
+                `低信息量空转：连续 ${lowYield.repeatTurns} 轮同参同返回值的单标量命令 ` +
+                  `\`${lowYield.command.trim()}\`（阈值 ${LOW_YIELD_SPIN_THRESHOLD}），` +
+                  `下一轮注入可执行替代命令（第 ${state.lowYieldSpin.interventionCount}/${MAX_LOW_YIELD_INTERVENTIONS} 次）`,
+              );
+              // 可观测性：与 RepeatedReadonlyGuardTriggered 同机制。没有埋点的话，
+              // "这道阀有没有触发过、有没有误伤"只能靠离线重放猜（发现 1 的教训）。
+              if (deps.traceAppendEvent) {
+                try {
+                  deps.traceAppendEvent({
+                    event: "LowYieldSpinIntervened",
+                    session_id: sessionState.sessionId,
+                    timestamp: new Date().toISOString(),
+                    data: {
+                      ...turnMetrics(state, sessionState, promptSeq),
+                      repeatTurns: lowYield.repeatTurns,
+                      interventionCount: state.lowYieldSpin.interventionCount,
+                      cap: MAX_LOW_YIELD_INTERVENTIONS,
+                      command: lowYield.command.trim().slice(0, 200),
+                      output: (lowYield.output ?? "").trim().slice(0, 40),
+                    },
+                  });
+                } catch {
+                  /* trace 写入失败不阻断主循环 */
+                }
+              }
+            }
+          }
+
           if (!state.repeatedReadonly) state.repeatedReadonly = createRepeatedReadonlyState();
           const decision = observeRepeatedReadonly(
             state.repeatedReadonly,

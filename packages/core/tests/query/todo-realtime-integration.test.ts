@@ -394,7 +394,12 @@ describe("修复 5 + 发现 4a：终态可观测", () => {
   });
 });
 
-describe("埋点语义：todo 通道不再上报 nagCount/cap", () => {
+// P1-4 item 2（2026-08-14）：todo 通道又有了 cap，但是**条件式**的——只在"有真实副作用
+// 进展却不更新清单"（催记账）时计数，无进展时永不封顶（催干活=主功能，见
+// reminder-throttle.ts decideTodoNagInjection）。本组断言的场景没有任何 edit/write 落盘，
+// 即处于"无进展"态，故仍**不得**带封顶字段——本组的判据与理由都没变，继续有效：
+// 字段在/不在本身携带信息，无进展态上报 nagCount/cap 会让离线分析误判本通道有封顶行为。
+describe("埋点语义：todo 通道在无进展态不上报 nagCount/cap", () => {
   test("NoProgressNagInjected 的 todo 事件带扫描距离，不带封顶字段", async () => {
     const { loopConfig, traceEvents } = makeHarness({
       turns: 20,
