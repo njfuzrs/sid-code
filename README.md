@@ -75,10 +75,10 @@ structurally cannot offer**:
 
 | Capability | What it means |
 | --- | --- |
-| **Pluggable providers** | Three protocol families: Anthropic / OpenAI / Ollama. Self-hosted gateways, Azure, and fully offline local models all work. Switching models is a config change, not a change of tool |
-| **Own the whole harness** | 44 built-in tools, 32 hook event types, skills and subagents — all readable and modifiable. Find a problem, fix it the same day, without waiting on a vendor roadmap |
-| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks |
-| **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure. That's a compliance prerequisite, and it's also the fuel for improving the agent |
+| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
+| **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (32 hook event types, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
+| **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
+| **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
 
 Coming from Claude Code, migration is close to zero-cost — see the
 [migration guide](https://www.sid-code.cc/team/migrate).

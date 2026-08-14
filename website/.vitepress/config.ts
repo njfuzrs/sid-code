@@ -395,6 +395,24 @@ export default defineConfig({
     ],
 
     /**
+     * ── 顶栏最右：GitHub 仓库入口 ──
+     *
+     * 用默认主题的 `socialLinks` 而不是往 `nav` 里加一条文字链接：它渲染成图标、
+     * 排在搜索框与主题开关之后，是所有开源项目文档站的同一个位置——读者不用找。
+     * 写进 `nav` 则会挤进「阶段轴」（开始 / 指南 / 参考 / 团队部署），
+     * 把那条刚声明过的顺序又切断一次（见上方 nav 的注释）。
+     *
+     * `icon: "github"` 是默认主题内置的图标名，不需要自带 svg。
+     *
+     * ⚠ 地址与 README.md / README.zh-CN.md / SECURITY.md / CODE_OF_CONDUCT.md 同源。
+     *   仓库改名或转移时这五处要一起改 —— 站点构建**不检查外链**，
+     *   这条断了不会让 CI 变红，只会静默把访客送到 404。
+     */
+    socialLinks: [
+      { icon: "github", link: "https://github.com/rushengzhou/sid-code", ariaLabel: "GitHub 仓库" },
+    ],
+
+    /**
      * ── 按路径分组的多 sidebar：进哪个 Tab 只看到该 Tab 的页面 ──
      *
      * ⚠ 两处 `GUIDE_SIDEBAR`（`/use/` `/extend/`）刻意共用同一个数组引用，

@@ -15,6 +15,7 @@ import CopyPage from "./CopyPage.vue";
 import Changelog from "./Changelog.vue";
 import BlogIndex from "./BlogIndex.vue";
 import BlogPostFooter from "./BlogPostFooter.vue";
+import HomeShowcase from "./HomeShowcase.vue";
 import "./brand.css";
 
 export default {
@@ -49,9 +50,14 @@ export default {
    * 全局注册在 markdown 里直接用的组件。
    * 只注册这几个：它们的数据源都是构建期 JSON/扫目录结果，写成 md 会被全站搜索索引
    * 冲成噪音（详见 Changelog.vue / BlogIndex.vue 顶部说明）。
+   *
+   * HomeShowcase 是另一类原因：首页正文（能力条 / 四大特性 / 四大方向）需要网格、
+   * 数字滚动、描边动画这些 markdown 表达不了的形态，且「特性」与「方向」必须共用
+   * 同一套卡片视觉（旧版一个是卡片一个是表格，读者会以为是两类东西）。
    */
   enhanceApp({ app }) {
     app.component("Changelog", Changelog);
     app.component("BlogIndex", BlogIndex);
+    app.component("HomeShowcase", HomeShowcase);
   },
 } satisfies Theme;

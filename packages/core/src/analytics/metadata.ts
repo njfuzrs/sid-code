@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import type { EventMetadata, VerifiedNotCodeOrFilepaths } from "./index.ts";
 import { asVerified } from "./types.ts";
 import { getUserBucket } from "./user-bucket.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 
 interface EventMetadataContext {
   session_id: string;
@@ -163,6 +164,22 @@ function computeRepoHash(): string | null {
   }
 }
 
+/**
+ * 事件的版本维度。
+ *
+ * ⚠️ 这里曾是 `process.env.SID_CODE_VERSION ?? "dev"` —— 一个**遮蔽**了
+ * `@sid-code/shared/version.ts` 的同名局部函数。而 `SID_CODE_VERSION` 全仓只有
+ * 安装脚本在读（用于锁定下载版本），运行时无人设置，于是**每个发布版本的每条事件
+ * 都标成 `dev`**（实测本机 3658 条事件的 `_ctx_version` 全部为 `"dev"`）。
+ *
+ * 后果不是"少一个字段"，而是**四大方向全部退化成一次性快照**：版本维度是
+ * release-over-release 趋势的唯一分组键，值恒定即无法分组。而故障完全静默——
+ * 字段在、管道在、非空、类型正确，只有值是废的，任何断言都不会红。
+ *
+ * 取 `getRawVersion()`（裸 `x.y.z`）而非 `getVersion()`：后者返回
+ * `"sid-code v0.1.6xx (TypeScript)"`，带前后缀的字符串当分组键要下游反复剥壳。
+ * env 覆盖保留在最前，便于灰度/回放时手动打标。
+ */
 function getVersion(): string {
-  return process.env.SID_CODE_VERSION ?? "dev";
+  return process.env.SID_CODE_VERSION ?? getRawVersion();
 }
