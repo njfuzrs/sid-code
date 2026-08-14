@@ -338,6 +338,22 @@ export interface LoopState {
    */
   repeatedReadonly?: import("./repeated-readonly-guard.ts").RepeatedReadonlyState;
   /**
+   * P1-4 item 3：低信息量空转检测状态（连续 N 轮"只思考 + 同参同返回值的单标量命令"）。
+   *
+   * 与 repeatedReadonly 分开的理由：那道阀盯"只读白名单命令 + 输出不变"，本阀盯
+   * "输出信息量本身就低（单标量）+ 不变"。事故里的
+   * `bunx tsc --noEmit 2>&1 | grep -c "error TS"` 因含管道 + bunx 不在只读白名单，
+   * 被 isReadOnlyCommand 判为 false，那道阀对它**完全失明**（实测），故必须独立一道。
+   * 详见 low-yield-spin.ts 顶部注释。
+   */
+  lowYieldSpin?: import("./low-yield-spin.ts").LowYieldSpinState;
+  /**
+   * P1-4 item 3：检出低信息量空转后，待下一轮循环开头经 reminderParts 注入的介入提醒。
+   * 与 pendingStuckReminder 同机制（检测在工具结果回流、注入在下一轮 reminder 通道），
+   * 注入后清空。文案给可执行的替代命令而非训话。
+   */
+  pendingLowYieldSpinReminder?: string;
+  /**
    * 方向 2/4/6：检测到"卡在只读命令上"，待下一轮循环开头经 reminderParts 注入的收敛提醒文本。
    * 与 pendingContradictions 同机制——检测发生在工具结果回流（本轮末尾），注入发生在下一轮
    * 循环开头的 reminder 通道（走 injectReminders，仅本轮注入、不落历史、缓存友好），

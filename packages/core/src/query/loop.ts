@@ -120,6 +120,13 @@ import {
   buildProgressReminder,
 } from "./work-log.ts";
 import {
+  observeLowYieldTurn,
+  buildLowYieldSpinReminder,
+  createLowYieldSpinState,
+  LOW_YIELD_SPIN_THRESHOLD,
+  MAX_LOW_YIELD_INTERVENTIONS,
+} from "./low-yield-spin.ts";
+import {
   type MeasuredProgressState,
   MEASURED_PROGRESS_KEY,
   FILE_MUTATING_TOOLS,
@@ -1495,6 +1502,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         criticalReminderParts.push(state.pendingStuckReminder);
         log.info("QUERY_LOOP", "注入无进展止损收敛提醒（实时 git 状态）");
         state.pendingStuckReminder = undefined;
+      }
+
+      // P1-4 item 3（低信息量空转·注入端）：上一轮检出"连续 N 轮只思考 + 同参同返回值的
+      // 单标量命令"，本轮注入**可执行的替代命令**。走 critical 档（前置于用户指令）：
+      // 事故里模型已连说 8 次"我要停止反复思考、直接动手"却仍在空转，说明它不缺决心而
+      // 缺"下一条命令敲什么"——这条提醒的全部价值在于尽早被读到，压到用户指令之后
+      // 就退化成了又一条泛化催促（正是本项要消掉的东西）。注入后清空避免重复。
+      if (state.pendingLowYieldSpinReminder) {
+        criticalReminderParts.push(state.pendingLowYieldSpinReminder);
+        log.info("QUERY_LOOP", "P1-4：注入低信息量空转介入（含可执行替代命令）");
+        state.pendingLowYieldSpinReminder = undefined;
       }
 
       // 方案③（思考发散·注入端）：上一轮检出的思考发散，本轮经 reminder 通道注入收敛提示。
@@ -4157,6 +4175,81 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               hadOtherActivity = true;
             }
           }
+          // ─── P1-4 item 3：低信息量空转检测（独立于上面那道只读探查阀）───
+          //
+          // 为什么必须独立一道而不是调那道的阈值：事故里的
+          // `cd <repo> && bunx tsc --noEmit 2>&1 | grep -c "error TS"` 含管道且 bunx 不在
+          // 只读白名单，实测 isReadOnlyCommand=false → isReadonlyProbeCommand=false，
+          // 33 次空转一次都进不了 repeatedReadonly。缺的不是阈值，是这个形态的检测本身。
+          // 判据是"输出是单标量且不变 + 无落盘 + 无面向用户文本"，见 low-yield-spin.ts。
+          {
+            const bashCommands: string[] = [];
+            const bashOutputs: string[] = [];
+            let hadFileMutation = false;
+            for (const b of toolBlocks) {
+              if (b.type !== "tool_use") continue;
+              if (FILE_MUTATING_TOOLS.has(b.name)) {
+                hadFileMutation = true;
+                continue;
+              }
+              if (b.name !== "bash") continue;
+              const c = (b.input as any)?.command;
+              if (typeof c !== "string") continue;
+              const r = resultMap.get(b.id);
+              bashCommands.push(c);
+              bashOutputs.push(
+                r && r.type === "tool_result"
+                  ? typeof r.content === "string"
+                    ? r.content
+                    : JSON.stringify(r.content)
+                  : "",
+              );
+            }
+            if (!state.lowYieldSpin) state.lowYieldSpin = createLowYieldSpinState();
+            const lowYield = observeLowYieldTurn(state.lowYieldSpin, {
+              commands: bashCommands,
+              outputs: bashOutputs,
+              hadFileMutation,
+              // responseText 是面向用户的文本产出（thinking 不在其中）——"只思考不交付"
+              // 正是本阀要盯的形态，故有文本产出即视为有交付、清零。
+              hadTextOutput: responseText.trim().length > 0,
+            });
+            if (lowYield.intervene && lowYield.command !== undefined) {
+              state.pendingLowYieldSpinReminder = buildLowYieldSpinReminder(
+                lowYield.command,
+                lowYield.output ?? "",
+                lowYield.repeatTurns,
+              );
+              log.warn(
+                "QUERY_LOOP",
+                `低信息量空转：连续 ${lowYield.repeatTurns} 轮同参同返回值的单标量命令 ` +
+                  `\`${lowYield.command.trim()}\`（阈值 ${LOW_YIELD_SPIN_THRESHOLD}），` +
+                  `下一轮注入可执行替代命令（第 ${state.lowYieldSpin.interventionCount}/${MAX_LOW_YIELD_INTERVENTIONS} 次）`,
+              );
+              // 可观测性：与 RepeatedReadonlyGuardTriggered 同机制。没有埋点的话，
+              // "这道阀有没有触发过、有没有误伤"只能靠离线重放猜（发现 1 的教训）。
+              if (deps.traceAppendEvent) {
+                try {
+                  deps.traceAppendEvent({
+                    event: "LowYieldSpinIntervened",
+                    session_id: sessionState.sessionId,
+                    timestamp: new Date().toISOString(),
+                    data: {
+                      ...turnMetrics(state, sessionState, promptSeq),
+                      repeatTurns: lowYield.repeatTurns,
+                      interventionCount: state.lowYieldSpin.interventionCount,
+                      cap: MAX_LOW_YIELD_INTERVENTIONS,
+                      command: lowYield.command.trim().slice(0, 200),
+                      output: (lowYield.output ?? "").trim().slice(0, 40),
+                    },
+                  });
+                } catch {
+                  /* trace 写入失败不阻断主循环 */
+                }
+              }
+            }
+          }
+
           if (!state.repeatedReadonly) state.repeatedReadonly = createRepeatedReadonlyState();
           const decision = observeRepeatedReadonly(
             state.repeatedReadonly,
