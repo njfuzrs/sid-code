@@ -1777,8 +1777,50 @@ export class TraceCollector {
         top_tools: digest.toolsUsed.slice(0, 8),
         files_edited_count: digest.filesEdited.length,
         has_subagent: digest.subAgents != null,
+        // P1-8：过程病态六项的判定结果。只落"哪几项病态"这个列表而非全部数值——
+        // 批量分诊需要的是"该不该看这次会话"，具体数值回 digest 拿（避免 summary 再次膨胀）。
+        pathological: digest.pathology
+          ? Object.entries({
+              poll_ratio: digest.pathology.pollRatioPathological,
+              zero_yield_subagents: digest.pathology.zeroYieldPathological,
+              subagent_io_ratio: digest.pathology.subagentIoPathological,
+              edit_latency: digest.pathology.editLatencyPathological,
+              observation_entropy: digest.pathology.observationEntropyPathological,
+              retry_wasted_tokens: digest.pathology.retryWastedPathological,
+            })
+              .filter(([, v]) => v)
+              .map(([k]) => k)
+          : [],
       };
       this.writer.writeSessionSummary(summary);
+
+      // P1-7：`[高]` 级异常主动打 WARN。
+      //
+      // 缺口的准确描述（核验后修正）：SessionEnd 自动跑 digest + 落盘 session-summary.json
+      // 这半**早已存在**（就是上面这段），高severity 计数也一直在算。真正缺的只是
+      // **告警半**——算出来的结论没有任何一条走进日志，除非有人事后主动跑
+      // `bun scripts/trace-digest.ts <id>`，否则"子代理 4 个全灭"这种结论不会有人知道。
+      // 所以这里只补 WARN，不重写检测逻辑、不新建第二套摘要（见本函数头部注释：
+      // 两套摘要必然漂移出两套结论）。
+      //
+      // 为什么只对 high 打、medium 只落盘不打扰：告警通道的价值取决于信噪比。
+      // §8.1 的教训是启动时刷 29 行"疑似僵尸会话"，结果没人再看那类提示。
+      // medium 里含 L1 假设与已知假阳性（慢响应/并行读），进 WARN 必然刷屏。
+      if (highSeverityAnomalies > 0) {
+        const highs = digest.anomalies.filter((a) => a.severity === "high");
+        // 单行汇总 + 最多 3 条明细：明细给出 kind 才能判断要不要深挖，
+        // 但不能把全部异常倒进日志（本会话实测 8 条 high，全打就成了新的噪声源）。
+        const preview = highs
+          .slice(0, 3)
+          .map((a) => a.kind)
+          .join(", ");
+        getLogger().warn(
+          "TRACE",
+          `会话 ${digest.sessionId} 检出 ${highs.length} 条[高]级异常：${preview}` +
+            `${highs.length > 3 ? ` 等 ${highs.length} 条` : ""}。` +
+            `详情：bun scripts/trace-digest.ts ${digest.sessionId}`,
+        );
+      }
     } catch (err: any) {
       getLogger().warn(
         "TRACE",

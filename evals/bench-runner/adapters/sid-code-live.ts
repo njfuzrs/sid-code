@@ -13,6 +13,10 @@
 import type { AgentOutput } from "../outcome-grader.ts";
 import type { TrajectoryMetrics } from "../trajectory-grader.ts";
 import { analyzeTrajectorySignals } from "./sid-code.ts";
+// P1-8：过程病态六项直接复用 core 的计算函数，**不在 evals 侧重算一遍**。
+// 重算就会出现"digest 一个口径、evals 另一个口径"，而这正是 §12.4c 缺口③
+// 要消除的病（同一仓库里一套系统算出的结论另一套看不见/算得不一样）。
+import { computeProcessPathology } from "@sid-code/core/trace/digest.ts";
 import { join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
@@ -171,6 +175,41 @@ export function readTrajectoryFile(sessionDir: string): TrajectoryFile | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * P1-8：读 session 目录下的 events.jsonl（过程病态指标的主要数据源）。
+ *
+ * 逐行容错解析：events.jsonl 是追加写的，进程被强杀时**末行可能是半条 JSON**。
+ * 整体 JSON.parse 会因这一行失败而丢掉全部事件 —— 而"被强杀的会话"恰恰是
+ * 最需要诊断的那一类，不能在这里把它的数据丢干净。
+ */
+function readSessionEvents(
+  sessionDir: string,
+): Array<{ event?: string; data?: Record<string, unknown> }> {
+  const path = join(sessionDir, "events.jsonl");
+  if (!existsSync(path)) return [];
+  try {
+    const out: Array<{ event?: string; data?: Record<string, unknown> }> = [];
+    for (const line of readFileSync(path, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+        // 半条 JSON：跳过这一行，不影响其余事件
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 解析会话开始时刻为 ms epoch（editLatency 的基准）。解析不出返回 undefined。 */
+function parseStartMs(v: string | undefined): number | undefined {
+  if (!v) return undefined;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? undefined : t;
 }
 
 /**
@@ -578,6 +617,17 @@ function buildResult(opts: {
     exit_status: exitStatus,
   };
 
+  // P1-8：过程病态六项。只有 live adapter 能算——它拿得到真实 session 目录，
+  // 因而拿得到 events.jsonl（poll_ratio 的真实分母、子代理配对、重试建连数都在里面）。
+  // 读不到就整段留 undefined，让 grader 跳过这几项（"测不了"≠"实测为零"）。
+  const pathology = sessionDir
+    ? computeProcessPathology(
+        trajectory as Parameters<typeof computeProcessPathology>[0],
+        readSessionEvents(sessionDir),
+        parseStartMs(meta.start_time),
+      )
+    : undefined;
+
   const metrics: TrajectoryMetrics = {
     steps: output.steps,
     tool_calls: output.tools_called.length,
@@ -585,6 +635,12 @@ function buildResult(opts: {
     error_count: signals.error_count,
     retry_count: signals.retry_count,
     backtrack_count: signals.backtrack_count,
+    poll_ratio: pathology?.pollRatio,
+    zero_yield_subagents: pathology?.zeroYieldSubagents,
+    subagent_io_ratio: pathology?.subagentIoRatio,
+    edit_latency_ms: pathology?.editLatencyMs,
+    max_unchanged_observation_run: pathology?.maxUnchangedObservationRun,
+    retry_wasted_ratio: pathology?.retryWastedRatio,
   };
 
   return {

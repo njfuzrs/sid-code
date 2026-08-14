@@ -338,6 +338,138 @@ export interface TodoDigestStats {
 }
 
 /**
+ * P1-8：过程病态度量（6 个指标）。
+ *
+ * ## 它补的是什么缺口
+ *
+ * digest 原有的异常规则回答的是"发生了什么事件"（超时了 / 子代理失败了 / 退出码是 error）。
+ * 但一类最贵的故障不产生任何异常事件：**主 agent 一直在合法地调用合法的工具，只是没在推进**。
+ * 实测一次会话跑了 31 分钟、烧掉 30.6M input token、最终被用户手动终止，全过程
+ * 每一次调用单看都无可指摘——digest 只能报出"子代理 4 个全失败"，说不出
+ * "18.8% 的调用是在原地轮询、首次编辑发生在第 18 分钟、重试白烧了 13.6M token"。
+ *
+ * 评估侧的同一个盲区更严重：过程病态与"模型笨"**表现完全同形**（都是 steps 偏多、
+ * retry 偏多），无法归因到 harness。这 6 个指标就是把"病态"从"步数多"里分离出来。
+ *
+ * ## 为什么不需要新埋点
+ *
+ * 六项全部从现有 `session.traj` + `events.jsonl` 派生。这是刻意的：
+ * 先把已采到的数据变成指标，再谈补采集——否则容易一边加埋点一边让已有数据继续躺着。
+ *
+ * ## 阈值的性质
+ *
+ * 每项都带一个 `*Pathological` 布尔判定，阈值写在字段注释里。这些阈值是
+ * **单次实测 + 量级判断**得出的，不是统计显著的分界线；它们的作用是让
+ * "这次比上次更病态了吗"可比较，不是给会话盖章。误报的代价（多看一眼）
+ * 远低于漏报（几十分钟白烧），所以阈值刻意偏敏感，但都留了豁免条件（见各字段注释）。
+ */
+export interface ProcessPathologyStats {
+  /**
+   * 轮询占比 = 状态查询类调用 / 全部工具调用。
+   *
+   * 口径：分母是 `events.jsonl` 的 `PreToolUse` 条数（真实发起的调用），
+   * 不是 `session.traj` 的 action 数——后者在实测会话里只有 164，而真实调用是 260，
+   * 用它当分母会把 18.8% 算成 29.9%，凭空夸大近一倍。
+   * traj 缺失时退化为按 traj action 计（比不算好，但口径要在 provenance 里标明）。
+   *
+   * 阈值 > 10% 判病态。豁免：真正需要等后台任务的会话（跑长测试/构建）本就该轮询，
+   * 此时应结合 `observationEntropy` 看返回值有没有变化。
+   */
+  pollRatio: number;
+  /** 轮询类调用次数（分子），供人工核对 */
+  pollCalls: number;
+  /** 全部工具调用次数（分母） */
+  totalCalls: number;
+  /** pollRatio > 0.10 */
+  pollRatioPathological: boolean;
+
+  /**
+   * 零产出子代理数 = 派出去但成果未被采用的子代理个数。
+   *
+   * 当前口径是 `status !== "completed"`（失败/未知即视为零产出）——这是**保守下界**：
+   * 一个 completed 的子代理其成果也可能被主 agent 忽略，但"是否被采用"目前无埋点，
+   * 不可从 events.jsonl 判定。所以本字段只在"连成功都没成功"这个确定的子集上报数，
+   * 宁可漏报不误报。真正的 `subagent_yield` 需要新埋点，属下一批。
+   *
+   * 阈值 > 0 就告警：派出去一个没回来，本身就值得看一眼。
+   */
+  zeroYieldSubagents: number;
+  /** 子代理总数（zeroYieldSubagents 的分母，0 表示本会话没派子代理） */
+  subagentTotal: number;
+  /** zeroYieldSubagents > 0 */
+  zeroYieldPathological: boolean;
+
+  /**
+   * 子代理 input/output token 比。实测 208:1（1,842,462 : 8,873）。
+   *
+   * 它测的是"喂进去多少、产出多少"。比值极高说明子代理反复读大量上下文却几乎没写出东西——
+   * 典型形态是超时前一直在探索。无子代理或 output=0 时为 undefined（不是 0：
+   * "没派子代理"与"派了但产出为 0"必须可区分，后者是除零而非低效）。
+   *
+   * 阈值 > 50 判失衡。豁免：纯只读调研型子代理（explore）本就 input 重 output 轻，
+   * 判定时应结合 agentType 看，本字段不做区分（不想在指标里内置策略）。
+   */
+  subagentIoRatio?: number;
+  /** subagentIoRatio > 50 */
+  subagentIoPathological: boolean;
+
+  /**
+   * 首次编辑延迟（毫秒）= 第一个 edit/write/notebook_edit 调用距会话开始的时间。
+   * 实测 1,116,907ms（18 分 37 秒）。
+   *
+   * 它是"迟迟不动手"的直接度量：编辑类任务在前 18 分钟只读不写，几乎必然是
+   * 在反复探索/等待而非在解决问题。无编辑调用时为 undefined——
+   * 纯调研会话本就不该有编辑，那不是病态（所以判定里必须先看有没有编辑意图）。
+   *
+   * 阈值 > 5min（300,000ms）判病态，且**仅对确实发生过编辑的会话生效**：
+   * 没编辑过的会话一律不判病态，否则每个只读问答都会误报。
+   */
+  editLatencyMs?: number;
+  /** editLatencyMs > 300000（且存在编辑） */
+  editLatencyPathological: boolean;
+
+  /**
+   * 观察熵：重复执行同一命令时返回值有没有变化。
+   *
+   * 记录"同指纹（tool + 完整入参）调用 ≥ 3 次且**观察值完全不变**"的最长连续段。
+   * 实测 `tsc | grep -c` 连续 22 次都返回 `139\n`——这 22 次调用没有带来任何新信息，
+   * 是纯空转。这与 `repeated_tool_shape_run` 不同：后者只看调用形状重复，
+   * 抓不到"形状重复但返回值在变"（合法进展，如轮询到任务真的完成了）。
+   * 实测 49 次 `bg_task_list` 有 45 个不同返回值——**它是合法轮询，不该被判空转**。
+   * 两个指标必须并存才能区分这两种形态。
+   *
+   * 0 表示没有任何"重复且返回值不变"的段。
+   */
+  maxUnchangedObservationRun: number;
+  /** 产生最长不变段的工具名（供定位） */
+  unchangedObservationTool?: string;
+  /** maxUnchangedObservationRun >= 3 */
+  observationEntropyPathological: boolean;
+
+  /**
+   * 重试白烧的 token（估算）。实测约 13.6M。
+   *
+   * 算法：`HttpConnected` 条数（真实建连次数，实测 254）减 `AfterModelRaw` 条数
+   * （成功记账的轮次，实测 153）= 101 次重连；乘以每轮平均 input token
+   * （从 AfterModelRaw 的 usage.input_tokens 求均值，实测 134,379）。
+   *
+   * 为什么是**估算**且必须标明：重连时实际重发的 prompt 长度不等于全局均值
+   * （早期轮次短、后期长），且缓存命中会让真实计费远低于此数。它的用途是回答
+   * "这个数量级值不值得治"（13.6M vs 记账的 20.6M，即 40% 的连接是白建的），
+   * 不能拿去对账单。精确值需要在重试路径上补埋点，属下一批。
+   *
+   * 数据缺失（无 HttpConnected 或无 AfterModelRaw）时为 undefined。
+   */
+  retryWastedTokens?: number;
+  /** 白建连接次数（HttpConnected − AfterModelRaw），负数归 0 */
+  extraConnections: number;
+  /** retryWastedTokens 占已记账 input 的比例 */
+  retryWastedRatio?: number;
+  /** retryWastedRatio > 0.20 */
+  retryWastedPathological: boolean;
+}
+
+/**
  * 单个子代理执行 span（digest 消费视角）。
  *
  * 由 events.jsonl 的 SubagentStart / SubagentStop 事件配对而成：
@@ -416,6 +548,12 @@ export interface Digest {
    * （老会话 / 整场没建过清单）。
    */
   todo?: TodoDigestStats;
+  /**
+   * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
+   * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
+   * 不能因为没病态就整节消失，否则无法区分"这次很干净"与"这版还没接线"。
+   */
+  pathology?: ProcessPathologyStats;
 }
 
 export interface SessionRef {
@@ -1070,9 +1208,18 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
   if (maxRun >= 4) {
     // L0:连续相同工具形状的次数是客观计数。
+    //
+    // P1-9:severity 必须随量级升级,不能固定 low。
+    // 此前 41 次连续同参轮询与"连续 4 次"同报 [低] —— 阈值二元化让量级信息全丢,
+    // 而量级恰恰是"合法进展"与"原地打转"的唯一区分信号:分段读大文件确实会连续 4-9 次,
+    // 但没有任何合法编排需要连续 30+ 次同形状调用。定级压在 low 的直接后果是
+    // 实测 41 次轮询(占全部工具调用 18.8%)在 digest 里毫无存在感,靠人工读轨迹才发现。
+    // 同一个病在 evals 侧的复发见 trajectory-grader.ts 的 retry_count 连续扣分。
+    const runSeverity: Anomaly["severity"] =
+      maxRun >= 30 ? "high" : maxRun >= 10 ? "medium" : "low";
     anomalies.push({
       layer: "L0",
-      severity: "low",
+      severity: runSeverity,
       kind: "repeated_tool_shape_run",
       detail: `工具形状 "${maxRunShape}" 连续出现 ${maxRun} 次`,
       provenance: [
@@ -1087,9 +1234,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     // L1:由它推断"原地打转",配证伪条件。
     // 对应 memory loop-detection-false-positive-shape:大文件分段读/多点编辑/反复 bash
     // 都会产生相同 shape 连续段,但都是合法进展,不是循环。
+    //
+    // P1-9:假设层跟着 L0 一起升级到 high,但**不下调**到 low ——
+    // run ∈ [4,10) 时保持 medium(原行为)。理由是 L1 表达的是"值得怀疑"而非"已确证",
+    // 4 次连读本就该留在雷达上;而 30+ 次时若还是 medium,等于让最强的循环信号
+    // 与最弱的同级,又回到二元化。
     anomalies.push({
       layer: "L1",
-      severity: "medium",
+      severity: maxRun >= 30 ? "high" : "medium",
       kind: "hypothesis_stuck_loop",
       detail: `假设:相同工具形状连续出现是 Agent 在原地打转。`,
       falsifier:
@@ -1589,6 +1741,30 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
+  // ── P1-8：过程病态度量（轮询占比 / 零产出子代理 / 子代理 IO 比 /
+  //    首次编辑延迟 / 观察熵 / 重试白烧 token）──
+  // 补的是"合法调用堆成的空转"这个缺口：这类会话不产生任何异常事件，
+  // 原有规则全部沉默，而它恰恰是最贵的一类故障（实测 31 分钟 / 30.6M token 无产出）。
+  //
+  // 位置要求：必须在 anomalies.sort() 之前——下面会把病态项转成 anomaly，
+  // 排在 sort 之后就会让这几条永远沉在数组末尾，破坏"高严重度在前"的契约。
+  const pathologyStartMs = (() => {
+    const v = meta.start_time;
+    if (typeof v === "number") return v < 1e12 ? v * 1000 : v;
+    if (typeof v === "string") {
+      const t = Date.parse(v);
+      return Number.isNaN(t) ? undefined : t;
+    }
+    return undefined;
+  })();
+  const pathology = computeProcessPathology(steps, events, pathologyStartMs);
+  // 把病态判定接进 anomalies —— 否则又是一个"算了不看"的指标（这正是本轮要消除的病）。
+  // 只有判为病态的项才产出 anomaly：健康值不该占据告警通道。
+  // 全部定级 medium 而非 high：这几项是**过程可疑**而非**确证故障**，
+  // 每一项都有合法豁免场景（见 ProcessPathologyStats 各字段注释）。定成 high 会让
+  // P1-7 的 WARN 通道被合法长任务刷屏，重演 §8.1 那 29 行噪声的教训。
+  for (const item of describePathology(pathology, ref, eventsPath)) anomalies.push(item);
+
   // 按 layer(L0 事实在前、L1 假设在后)再按严重度排序异常。
   // L0 优先:消费者应先看客观事实,再看建立在事实上的假设。
   const sevRank = { high: 0, medium: 1, low: 2 } as const;
@@ -1638,6 +1814,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
+    pathology,
   };
 }
 
@@ -2557,6 +2734,343 @@ export function aggregateTodoStats(
     maxTurnsSinceWrite: sinceWrites.length > 0 ? Math.max(...sinceWrites) : undefined,
     gateRetries: gateRetries.length,
   };
+}
+
+/**
+ * 轮询类工具名。这些工具的语义都是"查状态"——调用本身不改变世界，
+ * 只把外部状态读回来。反复调它们不产生进展，是"等待"而非"工作"。
+ *
+ * 名字是从工具注册处核对过的实名（`bg_task_list` 见 tool/task-list.ts、
+ * `bg_task_get` 见 tool/task-get.ts、`task_list`/`task_get` 是结构化任务清单侧的
+ * 两个同类）。**不要凭印象往里加名字**：多算一个就会让 pollRatio 虚高，
+ * 而这个比值是"该不该看这次会话"的分诊主键。
+ */
+const POLL_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_list", "task_get"]);
+
+/** 编辑类工具名（editLatency 的触发工具）。核对自 tool/{edit,write,notebook-edit}.ts 的 name getter。 */
+const EDIT_TOOLS = new Set(["edit", "write", "notebook_edit"]);
+
+/** pollRatio 判病态阈值：状态查询占全部调用 > 10% */
+const POLL_RATIO_THRESHOLD = 0.1;
+/** subagentIoRatio 判失衡阈值：input/output > 50 */
+const SUBAGENT_IO_THRESHOLD = 50;
+/** editLatency 判病态阈值：首次编辑距开始 > 5min */
+const EDIT_LATENCY_THRESHOLD_MS = 5 * 60 * 1000;
+/** observationEntropy 判空转阈值：同指纹连续 ≥ 3 次且返回值完全不变 */
+const UNCHANGED_OBSERVATION_THRESHOLD = 3;
+/** retryWastedRatio 判病态阈值：白烧 token 占已记账 input > 20% */
+const RETRY_WASTED_RATIO_THRESHOLD = 0.2;
+
+/**
+ * P1-8：计算 6 个过程病态指标。见 `ProcessPathologyStats` 接口注释（含每项的口径与豁免）。
+ *
+ * 纯函数、只读、不抛异常：任一数据源缺失时对应字段退化为 undefined / 0 并把
+ * `*Pathological` 判为 false。**缺数据必须判"不病态"而不是"病态"** ——
+ * 老会话（埋点上线前）与空壳会话数量远多于真病态会话，缺数据判病态会让告警被
+ * 历史会话淹没，重演 §8.1「启动时报 29 个疑似僵尸会话」那种噪声灾难。
+ *
+ * @param steps traj 的 trajectory 数组（算 poll/edit/observation 三项）
+ * @param events events.jsonl（算 subagent 两项 + retry 一项，并提供 pollRatio 的真实分母）
+ * @param startMs 会话开始时刻（editLatency 的基准；缺失时该项为 undefined）
+ */
+export function computeProcessPathology(
+  steps: TrajStep[],
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+  startMs?: number,
+): ProcessPathologyStats {
+  // ── 指标 1：pollRatio ──
+  // 分母优先用 PreToolUse 事件数（真实发起的调用）。实测同一会话 traj 只记 164 个 action
+  // 而 PreToolUse 有 260 条——traj 会丢步（压缩/截断/子代理内调用不入主 traj），
+  // 用它当分母会把 18.8% 算成 29.9%，凭空夸大近一倍。traj 是兜底而非首选。
+  const actions = steps.filter((s) => s.message_type === "action" && s.tool_name);
+  const preToolUses = events.filter((e) => e.event === "PreToolUse");
+  const callsFromEvents = preToolUses.length;
+  const totalCalls = callsFromEvents > 0 ? callsFromEvents : actions.length;
+  const pollCalls =
+    callsFromEvents > 0
+      ? preToolUses.filter((e) => POLL_TOOLS.has(String((e.data as any)?.tool_name ?? ""))).length
+      : actions.filter((s) => POLL_TOOLS.has(s.tool_name!)).length;
+  const pollRatio = totalCalls > 0 ? pollCalls / totalCalls : 0;
+
+  // ── 指标 2/3：子代理零产出数 与 IO 比 ──
+  // 复用 buildSubAgentSummary 的配对结果，不在这里重写一遍配对逻辑：
+  // 它已处理 agent_id 精确匹配 / 最近未闭合回退 / 只有 Stop 的畸形轨迹三种情况，
+  // 重写必然漂移出第二套口径（这正是 P2-12 要消除的病）。
+  const subAgents = buildSubAgentSummary(events);
+  const subagentTotal = subAgents?.total ?? 0;
+  // 零产出口径 = 非 completed。见接口注释：这是保守下界，不是真正的 yield。
+  const zeroYieldSubagents = subAgents
+    ? subAgents.spans.filter((s) => s.status !== "completed").length
+    : 0;
+  let subIn = 0;
+  let subOut = 0;
+  for (const s of subAgents?.spans ?? []) {
+    subIn += s.inputTokens ?? 0;
+    subOut += s.outputTokens ?? 0;
+  }
+  // output=0 时留 undefined 而非 Infinity：除零得出的"无穷失衡"不是可比较的度量，
+  // 且会在渲染/JSON 序列化里变成 null 造成下游误判。
+  const subagentIoRatio = subOut > 0 ? subIn / subOut : undefined;
+
+  // ── 指标 4：editLatency ──
+  const editSteps = actions.filter((s) => EDIT_TOOLS.has(s.tool_name!));
+  const firstEditMs = editSteps
+    .map((s) => parseStepTsMs(s.timestamp))
+    .find((ms): ms is number => ms !== undefined);
+  const editLatencyMs =
+    startMs !== undefined && firstEditMs !== undefined && firstEditMs >= startMs
+      ? firstEditMs - startMs
+      : undefined;
+
+  // ── 指标 5：observationEntropy ──
+  // 与 repeated_tool_shape_run 的分工见接口注释：那个只看调用形状，
+  // 这个额外要求"返回值完全不变"，才能把 49 次 bg_task_list（45 个不同返回值 = 合法轮询）
+  // 与 22 次 tsc|grep -c（全部返回 "139\n" = 纯空转）区分开。
+  // 指纹用**完整入参**（非 shape 的锚点前缀）：入参不同就不是重复执行同一件事。
+  const { maxRun: maxUnchangedObservationRun, tool: unchangedObservationTool } =
+    maxUnchangedObservationStreak(steps);
+
+  // ── 指标 6：retryWastedTokens ──
+  // HttpConnected = 真实建连次数，AfterModelRaw = 成功记账的轮次。差值即白建的连接。
+  // 实测 254 − 153 = 101 次重连，乘以每轮均值 134,379 ≈ 13.6M token 白烧。
+  const httpConnected = events.filter((e) => e.event === "HttpConnected").length;
+  const afterModelRaw = events.filter((e) => e.event === "AfterModelRaw");
+  const inputsPerTurn = afterModelRaw
+    .map((e) => num(((e.data as any)?.usage ?? {}).input_tokens))
+    .filter((n) => n > 0);
+  const extraConnections = Math.max(0, httpConnected - afterModelRaw.length);
+  const recordedInput = inputsPerTurn.reduce((a, b) => a + b, 0);
+  const avgInput = inputsPerTurn.length > 0 ? recordedInput / inputsPerTurn.length : 0;
+  // 两个数据源都得有才给数：只有 HttpConnected 没有 usage 时算不出 token 量，
+  // 此时给 0 会被误读成"没有浪费"，给 undefined 才诚实。
+  const retryWastedTokens =
+    extraConnections > 0 && avgInput > 0 ? Math.round(extraConnections * avgInput) : undefined;
+  const retryWastedRatio =
+    retryWastedTokens !== undefined && recordedInput > 0
+      ? retryWastedTokens / recordedInput
+      : undefined;
+
+  return {
+    pollRatio,
+    pollCalls,
+    totalCalls,
+    pollRatioPathological: pollRatio > POLL_RATIO_THRESHOLD,
+    zeroYieldSubagents,
+    subagentTotal,
+    zeroYieldPathological: zeroYieldSubagents > 0,
+    subagentIoRatio,
+    subagentIoPathological:
+      subagentIoRatio !== undefined && subagentIoRatio > SUBAGENT_IO_THRESHOLD,
+    editLatencyMs,
+    // 没编辑过的会话一律不判病态（纯调研问答不该因"从未编辑"被告警）
+    editLatencyPathological:
+      editLatencyMs !== undefined && editLatencyMs > EDIT_LATENCY_THRESHOLD_MS,
+    maxUnchangedObservationRun,
+    unchangedObservationTool,
+    observationEntropyPathological: maxUnchangedObservationRun >= UNCHANGED_OBSERVATION_THRESHOLD,
+    retryWastedTokens,
+    extraConnections,
+    retryWastedRatio,
+    retryWastedPathological:
+      retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
+  };
+}
+
+/**
+ * P1-8：把病态判定转成 anomaly，让指标进入既有的告警/落盘通道。
+ *
+ * 这一步是刻意加的：指标算出来没有消费者等于没有指标（本仓反复栽在"建好未接线"上）。
+ * 六项共用一个转换器而不是各写一条 push，是为了让"新增一项指标"只需改
+ * `ProcessPathologyStats` 与本函数两处，不会漏接。
+ *
+ * 全部产出 **L0 + medium**：
+ * - L0：每条 detail 只陈述实测值与阈值，不含判断词，判断留给读者（符合分层契约）；
+ * - medium：这些是"过程可疑"，不是"确证故障"。每项都有合法豁免场景
+ *   （等后台任务的会话本就该轮询、只读调研本就 input 重）。定成 high 会让
+ *   P1-7 的 WARN 通道被正常长任务刷屏 —— 宁可让人主动查 digest，
+ *   也不要把告警训练成噪音（§8.1 那 29 行的教训）。
+ */
+function describePathology(
+  p: ProcessPathologyStats,
+  ref: SessionRef,
+  eventsPath: string,
+): Anomaly[] {
+  const out: Anomaly[] = [];
+  const trajFile = join(ref.dir, "session.traj");
+  const push = (kind: string, detail: string, prov: Provenance) => {
+    out.push({ layer: "L0", severity: "medium", kind, detail, provenance: [prov] });
+  };
+
+  if (p.pollRatioPathological) {
+    push(
+      "poll_ratio_high",
+      `状态查询类调用 ${p.pollCalls}/${p.totalCalls} = ${(p.pollRatio * 100).toFixed(1)}%（阈值 10%）`,
+      {
+        sourceFile: eventsPath,
+        lineRef: "event=PreToolUse data.tool_name",
+        rawValue: `poll=${p.pollCalls} total=${p.totalCalls}`,
+        mtime: fileMtimeIso(eventsPath),
+      },
+    );
+  }
+  if (p.zeroYieldPathological) {
+    push(
+      "zero_yield_subagents",
+      `子代理 ${p.zeroYieldSubagents}/${p.subagentTotal} 个未以 completed 收尾（成果是否被采用无埋点，此数为保守下界）`,
+      {
+        sourceFile: eventsPath,
+        lineRef: "event=SubagentStart/SubagentStop 配对",
+        rawValue: `zero_yield=${p.zeroYieldSubagents} total=${p.subagentTotal}`,
+        mtime: fileMtimeIso(eventsPath),
+      },
+    );
+  }
+  if (p.subagentIoPathological) {
+    push(
+      "subagent_io_imbalance",
+      `子代理 input/output token 比 = ${p.subagentIoRatio!.toFixed(1)}:1（阈值 50:1）`,
+      {
+        sourceFile: eventsPath,
+        lineRef: "event=SubagentStop data.input_tokens/output_tokens",
+        rawValue: `ratio=${p.subagentIoRatio!.toFixed(1)}`,
+        mtime: fileMtimeIso(eventsPath),
+      },
+    );
+  }
+  if (p.editLatencyPathological) {
+    push("edit_latency_high", `首次编辑距会话开始 ${fmtDuration(p.editLatencyMs)}（阈值 5min）`, {
+      sourceFile: trajFile,
+      lineRef: "trajectory[] 首个 edit/write/notebook_edit 的 timestamp",
+      rawValue: `edit_latency_ms=${p.editLatencyMs}`,
+      mtime: fileMtimeIso(ref.trajPath),
+    });
+  }
+  if (p.observationEntropyPathological) {
+    push(
+      "observation_entropy_zero",
+      `工具 "${p.unchangedObservationTool}" 连续 ${p.maxUnchangedObservationRun} 次同参调用且返回值完全不变` +
+        `（阈值 3 次；与 repeated_tool_shape_run 的区别是本项额外要求返回值不变，故排除了合法轮询）`,
+      {
+        sourceFile: trajFile,
+        lineRef: "trajectory[] action 指纹 + 紧邻 observation.content",
+        rawValue: `tool=${p.unchangedObservationTool} run=${p.maxUnchangedObservationRun}`,
+        mtime: fileMtimeIso(ref.trajPath),
+      },
+    );
+  }
+  if (p.retryWastedPathological) {
+    push(
+      "retry_wasted_tokens",
+      `${p.extraConnections} 次建连未产生记账轮次，按每轮均值估算白烧约 ` +
+        `${(p.retryWastedTokens! / 1e6).toFixed(2)}M token（占已记账 input ` +
+        `${(p.retryWastedRatio! * 100).toFixed(1)}%，阈值 20%）。估算值，不可用于对账`,
+      {
+        sourceFile: eventsPath,
+        lineRef: "event=HttpConnected 数 − event=AfterModelRaw 数，乘 usage.input_tokens 均值",
+        rawValue: `extra_conn=${p.extraConnections} wasted≈${p.retryWastedTokens}`,
+        mtime: fileMtimeIso(eventsPath),
+        lossy: true, // 均值估算，非精确重发量：见 ProcessPathologyStats.retryWastedTokens 注释
+      },
+    );
+  }
+  return out;
+}
+
+/**
+ * 求「同指纹调用连续出现且观察值完全不变」的最长段长度。
+ *
+ * 观察值取该 action 之后的第一个 observation 步骤的 content。取"之后最近的一个"
+ * 而非按 tool_use_id 配对，是因为 traj 里 observation 紧跟 action 是稳定形态，
+ * 而 tool_use_id 在并行调用与老轨迹里缺失率高，按它配对会大面积算不出来。
+ *
+ * ## "连续"的口径：按指纹分组内相邻，不是全局序列相邻
+ *
+ * 实测教训（值得记住）：最初实现按**全局 action 序列**相邻判定，对目标会话只算出 2，
+ * 而真实空转是"同一条 `tsc | grep -c` 反复返回 139"。原因是这些重复调用之间
+ * **夹着别的工具调用**（读文件、改代码、再验证），全局相邻一次就断链。
+ * 判据必须先按指纹分组，再在"该命令自己的历次调用"这个子序列里看返回值有没有变——
+ * 这才对应"我反复问同一个问题，答案一直没变"这个语义。
+ *
+ * 这与 `repeated_tool_shape_run` 的"全局连续"是**刻意不同**的两个口径：
+ * 那个测"有没有连轴转"，这个测"重复劳动有没有产出新信息"。用同一个口径就会
+ * 让本指标退化成前者的复制品。
+ *
+ * 注：本口径仍是保守下界。目标会话里 22 次返回 139 分散在**略有差异的几条命令**上
+ * （grep 模式不同），按完整入参分组后最长同值段是 7 —— 已足够超阈值判定为空转，
+ * 且宁可少报也不跨指纹合并（合并就要判断"哪些命令算同一件事"，那是启发式，会误报）。
+ */
+function maxUnchangedObservationStreak(steps: TrajStep[]): { maxRun: number; tool?: string } {
+  // 先把 (指纹, 观察值序列化) 按 action 顺序抽出来
+  const seq: Array<{ fp: string; tool: string; obs: string }> = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.message_type !== "action" || !s.tool_name) continue;
+    let obs: unknown;
+    for (let j = i + 1; j < steps.length; j++) {
+      if (steps[j].message_type === "observation") {
+        obs = steps[j].content;
+        break;
+      }
+      // 遇到下一个 action 说明本次调用没有观察值（未闭合），停止查找
+      if (steps[j].message_type === "action") break;
+    }
+    seq.push({
+      fp: `${s.tool_name}|${stableStringify(s.tool_input)}`,
+      tool: s.tool_name,
+      // 观察值缺失用一个不可能与真实内容相等的哨兵：两次"都没有观察值"
+      // 不该被算成"返回值相同"（那是未闭合，不是空转）。
+      //
+      // 必须写成 `\x00` 转义而**不能敲裸 NUL 字节**：裸 0x00 会让 grep 把整个文件
+      // 当二进制静默跳过（exit=1 与"真的没匹配"不可区分），本文件符号全都搜不到。
+      // 这不是假设——本次开发就踩到了：改完之后 grep 本文件一次零命中，
+      // 误以为编辑没落盘。pre-commit 有专门的门禁拦这个。
+      obs: obs === undefined ? `\x00missing:${i}` : truncate(stableStringify(obs), 2000),
+    });
+  }
+
+  // 按指纹分组：每个指纹保留它历次调用的观察值序列（保持时间顺序）
+  const byFingerprint = new Map<string, { tool: string; observations: string[] }>();
+  for (const item of seq) {
+    let g = byFingerprint.get(item.fp);
+    if (!g) {
+      g = { tool: item.tool, observations: [] };
+      byFingerprint.set(item.fp, g);
+    }
+    g.observations.push(item.obs);
+  }
+
+  // 在各指纹自己的子序列里求「连续相同观察值」最长段
+  let maxRun = 0;
+  let maxTool: string | undefined;
+  for (const g of byFingerprint.values()) {
+    let curRun = 1;
+    for (let i = 1; i < g.observations.length; i++) {
+      if (g.observations[i] === g.observations[i - 1]) {
+        curRun++;
+        if (curRun > maxRun) {
+          maxRun = curRun;
+          maxTool = g.tool;
+        }
+      } else {
+        curRun = 1;
+      }
+    }
+  }
+  // 只出现一次 / 从未连续同值时返回 0（而非 1）：1 次调用不构成"重复劳动"，
+  // 返回 1 会让阈值判断需要额外记住"1 其实等于没有"，是个易错的隐式约定。
+  return { maxRun: maxRun >= 2 ? maxRun : 0, tool: maxRun >= 2 ? maxTool : undefined };
+}
+
+/**
+ * 稳定序列化：对象键按字典序输出，保证 `{a:1,b:2}` 与 `{b:2,a:1}` 得到同一指纹。
+ * 不用 JSON.stringify 直出，是因为键序取决于对象构造顺序，
+ * 同一个工具调用在不同轮次可能序不同 → 指纹不等 → 重复被算成不重复（漏报）。
+ */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v) ?? String(v);
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  const keys = Object.keys(v as Record<string, unknown>).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((v as any)[k])}`).join(",")}}`;
 }
 
 /** 事件字段取数：非有限数字统一归 0，避免 undefined 参与算术得出 NaN 污染整节 */

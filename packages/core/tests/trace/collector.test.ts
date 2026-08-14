@@ -837,6 +837,90 @@ describe("TraceCollector", () => {
     expect(summary.errors).toBeGreaterThan(0);
   });
 
+  // ─── P1-7：`[高]` 级异常主动打 WARN ───
+  //
+  // 缺口的准确描述（核验后修正，与旧方案文档不同）：
+  // "SessionEnd 自动跑 digest + 落盘 session-summary.json" 这半**早已存在**，
+  // `high_severity_anomalies` 也一直在算。真正缺的只是**告警半** ——
+  // 算出来的结论不进日志，除非有人事后主动跑 CLI，否则没人知道。
+  // 所以这几个用例验的是 WARN 有没有被打，而不是落盘有没有发生（那早有覆盖）。
+
+  /** 抓取本次 SessionEnd 期间 TRACE 通道的 warn 文本 */
+  function captureTraceWarns(): { lines: string[]; restore: () => void } {
+    const logger = initLogger({ enabled: true, level: LogLevel.WARN });
+    const lines: string[] = [];
+    const orig = logger.warn.bind(logger);
+    (logger as any).warn = (mod: string, msg: string, ...rest: unknown[]) => {
+      if (mod === "TRACE") lines.push(msg);
+      return orig(mod, msg, ...rest);
+    };
+    return { lines, restore: () => ((logger as any).warn = orig) };
+  }
+
+  test("P1-7：异常退出（含[高]级异常）触发 WARN，且带会话 id 与复查命令", async () => {
+    const cap = captureTraceWarns();
+    try {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, {
+        messages: [{ role: "user", content: "task" }],
+        contentBlocks: [{ type: "text", text: "处理中" }],
+        stopReason: "tool_use",
+      });
+      await hookSystem.fireSessionEndEvent("error", undefined, {
+        error: { message: "API 错误: 400", name: "ApiError" },
+      });
+    } finally {
+      cap.restore();
+    }
+
+    const alert = cap.lines.find((l) => l.includes("[高]级异常"));
+    expect(alert).toBeDefined();
+    expect(alert).toContain("sess-001");
+    // 必须给出下一步动作，否则用户看到告警也不知道能做什么
+    expect(alert).toContain("trace-digest");
+  });
+
+  test("P1-7 反向验收：正常会话不产生 [高] 级告警（防误报刷屏）", async () => {
+    const cap = captureTraceWarns();
+    try {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, {
+        messages: [{ role: "user", content: "hi" }],
+        contentBlocks: [{ type: "text", text: "hello" }],
+        stopReason: "end_turn",
+      });
+      await hookSystem.fireSessionEndEvent("exit");
+    } finally {
+      cap.restore();
+    }
+
+    expect(cap.lines.filter((l) => l.includes("[高]级异常"))).toEqual([]);
+    // 同时确认 summary 确实落了盘且高severity 为 0（证明"没告警"是因为真没异常，
+    // 不是因为落盘失败让整段逻辑没跑到）
+    const summary = JSON.parse(
+      readFileSync(join(testDir, "sessions", "sess-001", "session-summary.json"), "utf-8"),
+    );
+    expect(summary.high_severity_anomalies).toBe(0);
+  });
+
+  test("P1-8：summary 落 pathological 列表（健康会话为空数组）", async () => {
+    await fireSessionStart(hookSystem);
+    await fireModelRound(hookSystem, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+      stopReason: "end_turn",
+    });
+    await hookSystem.fireSessionEndEvent("exit");
+
+    const summary = JSON.parse(
+      readFileSync(join(testDir, "sessions", "sess-001", "session-summary.json"), "utf-8"),
+    );
+    // 字段必须存在（哪怕是空数组）——缺字段与"六项都健康"是两件事，
+    // 批量分诊脚本靠它区分"这版还没接线"和"这次很干净"
+    expect(Array.isArray(summary.pathological)).toBe(true);
+    expect(summary.pathological).toEqual([]);
+  });
+
   test("D3-3：异常退出(error) 写 exit_attribution 到 metadata，abnormal=true", async () => {
     await fireSessionStart(hookSystem);
     await fireModelRound(hookSystem, {
