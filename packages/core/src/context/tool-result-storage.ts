@@ -20,7 +20,7 @@ import {
   unlinkSync,
   rmdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { getLogger } from "../debug/index.ts";
 import { sidPaths } from "../config/paths.ts";
 
@@ -215,7 +215,17 @@ export function cleanupPersistedOutputs(
       const filePath = join(dir, file);
       try {
         const stat = statSync(filePath);
-        if (now - stat.mtimeMs > maxAgeMs) {
+        // 两处刻意的写法，都是实测踩出来的：
+        // 1. `Math.max(0, ...)`：mtimeMs 是**亚毫秒浮点**（实测 1786731022719.6404），
+        //    而 Date.now() 只有毫秒整数，于是刚写完的文件 now - mtimeMs 会是**负数**
+        //    （实测 -0.64ms）。
+        // 2. `>=` 而非 `>`：配合上面的钳制，maxAgeMs=0 语义才真的是"全删"。
+        //    旧写法 `-0.64 > 0` 恒为 false —— 调用方传 0 想清空，结果一个文件都没删，
+        //    且因为本函数吞掉所有异常、不返回计数，**调用方完全看不出清理失败**。
+        //    实测后果：测试 afterAll 传 0 清理，文件却留在盘上（见本包
+        //    tests/context/tool-result-storage.test.ts 的清理断言）。
+        //    生产路径（默认 7 天）不受影响：钳制后为 0，`0 >= 7天` 仍为 false，新文件照样保留。
+        if (Math.max(0, now - stat.mtimeMs) >= maxAgeMs) {
           unlinkSync(filePath);
           cleaned++;
         }
@@ -228,11 +238,22 @@ export function cleanupPersistedOutputs(
       log.info("TOOL_STORAGE", `清理了 ${cleaned} 个过期的工具输出临时文件`);
     }
 
-    // 如果目录为空，删除目录
+    // 如果目录为空，删除目录。
+    // 连父目录 sessions/<id>/ 一起收：persistLargeOutput 用 mkdirSync(recursive:true) 建目录，
+    // 会**顺带建出** sessions/<id>/，而此前只删 tool-outputs/ 这一层 —— 于是每个只产生过
+    // 大工具输出、没有其它轨迹文件的会话，都在盘上留下一个空的 sessions/<id>/。
+    // 这类空壳会灌水"会话数"分母（同一病灶另见 trace/collector.ts 的 pruneStaleBlankSessions），
+    // 让覆盖率这类指标算出来偏低。
+    // 只在**确认为空**时删，且 rmdirSync 对非空目录本就会抛错 —— 双重保险：
+    // 绝不会碰到有真实轨迹数据（events.jsonl / session.traj）的会话目录。
     try {
-      const remaining = readdirSync(dir);
-      if (remaining.length === 0) {
+      if (readdirSync(dir).length === 0) {
         rmdirSync(dir);
+        // 父目录若因此变空，一并回收（非空则 rmdirSync 抛错，被 catch 吞掉，正是想要的行为）
+        const sessionDir = dirname(dir);
+        if (readdirSync(sessionDir).length === 0) {
+          rmdirSync(sessionDir);
+        }
       }
     } catch {
       // 目录删除失败，忽略

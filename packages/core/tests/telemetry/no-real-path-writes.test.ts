@@ -17,6 +17,15 @@
  *  2. 静态扫描（核心）：扫 tests/ 下所有 import 了落盘类导出的文件，断言每个都声明了
  *     隔离（SID_CODE_CACHE_BREAKS 或 SID_CONFIG_DIR）。新增测试漏设 → 本测试失败并点名文件。
  *
+ * ## 本门禁抓不到什么（别误以为它覆盖了全部落盘）
+ *
+ * 静态扫描的判据是「测试源码里 import 了落盘导出」，所以对**间接**落盘结构性无效：
+ * 一个只调 `mgr.addMessage(...)` 的测试，源码里既没有 `.sid-code` 字样、也没 import
+ * 任何落盘导出，但 `Manager.addMessage` 内部会对超大 tool_result 调 `persistLargeOutput`
+ * 写 `sidPaths.trajectories()`。这类污染只能靠**观察副作用**抓 ——
+ * 见 `tests/build/no-real-trajectory-writes-runtime.test.ts`（重定向 HOME 跑子进程，
+ * 再看那个假家目录有没有被写）。两道门禁互补，不要拿一个去替代另一个。
+ *
  * 判据（源自 docs/bugfixes/todo/20260803-单测污染用户遥测数据-隔离缺口根治方案.md §2.4）：
  *   只要一个函数除返回值外还有「写用户家目录」这种进程外副作用，
  *   调它的测试就必须显式隔离。
