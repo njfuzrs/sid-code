@@ -6,7 +6,13 @@
  * 不再从 content 移除。新增 onThinking 回调，与 onText 完全分离。
  */
 
-import type { StreamEvent, AccumulatedResponse, ContentBlock, ToolUseBlock } from "../llm/types.ts";
+import type {
+  StreamEvent,
+  AccumulatedResponse,
+  ContentBlock,
+  ToolUseBlock,
+  Usage,
+} from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
@@ -443,6 +449,27 @@ export async function processStream(
           break;
       }
     }
+  } catch (err) {
+    // 用量口径修复（P0-2 C 组）：把**已累加的 usage** 挂到即将抛出的错误上再重抛。
+    //
+    // 为什么需要这条旁路：本函数一旦抛错（超时 / 流内 error），`response` 连同它累加好的
+    // usage 一起被丢弃 —— 调用方 loop.ts 的 catch 只拿到一个 Error，随后 `continue`
+    // 重试，`updateUsage` 根本没被调到。而这次尝试的 prompt **已经完整发到服务端**
+    //（厂商按收到的 prompt 计费，不管客户端后来是否丢弃响应），钱是真花了。
+    //
+    // 实测证据（2026-08-11 事故）：`HttpConnected(status=200)` 254 次、记账 153 次 ——
+    // 差的 101 次全走这条路径，约 12M token 的隐性开销在轨迹里完全不可见
+    //（轨迹自报 22.4M，用户真实账单对应 30.6M）。
+    //
+    // 注意与 `stream_restart` 的分工，两者**不重复计**：
+    // - 流**内部**重开（fallback.ts 重连）：usage 跨 attempt 累加进同一个 response，
+    //   由 stream-restart.ts 保证"不回退"，最终随正常返回一起记账，与本处无关；
+    // - 流**整体**抛错（本处）：response 被丢弃，只能靠这个旁路把已花的量交出去。
+    // 判据取"是否真的累加到了量"，0 不挂（挂上去只会让下游多一次空记账）。
+    if (err instanceof Error && response.usage.inputTokens + response.usage.outputTokens > 0) {
+      (err as Error & { discardedUsage?: Usage }).discardedUsage = { ...response.usage };
+    }
+    throw err;
   } finally {
     clearInterval(checkInterval);
   }

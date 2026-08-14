@@ -1198,8 +1198,15 @@ export class App {
       const model = result.model || this.config.model;
       const provider =
         result.provider || SessionState.inferProvider(model, this.config.availableModels);
+      // 端点必须与主循环同口径（loop.ts 的 updateUsage 传了 config.baseURL）：
+      // 计价按 (model, endpoint) 复合键精确匹配，缺 baseURL 会让子代理落进
+      // 空 key 桶（"官方默认端点"），于是主/子两条路径对**同一个模型**取到不同价格桶，
+      // 同一会话内的费用口径自相矛盾。按子代理实际模型在 availableModels 里的
+      // 配置取端点，缺省回退主模型端点（与 resolveEffortCap 同款派生）。
+      const mc = this.config.availableModels?.find((m) => m.name === model);
+      const baseURL = mc?.baseURL ?? this.config.baseURL;
       // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
-      this.sessionState.updateUsage(model, usage, 0, provider);
+      this.sessionState.updateUsage(model, usage, 0, provider, baseURL);
     };
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setUsageSink?: (s: typeof sink) => void };

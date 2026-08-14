@@ -2426,6 +2426,37 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       } catch (err: any) {
         perfHandle.end({ model: config.model });
 
+        // ─── 作废尝试的用量入账（P0-2 C 组）───
+        //
+        // 放在 catch **最前面**是刻意的：本 catch 有三条 `continue` 重试出口
+        // （超时重试 / prompt-too-long 压缩后重试 / fallback 换模型），它们全都绕过了
+        // 下方 `sessionState.updateUsage(...)`（那句在 try/catch **之后**）。挂在这里
+        // 是唯一能同时覆盖三条出口的位置；分别在每条 continue 前埋一次必然漏掉将来
+        // 新增的第四条出口。
+        //
+        // 为什么这些量必须记：这次尝试的 prompt **已经完整发到服务端**了，
+        // 厂商按收到的 prompt 计费，不管客户端后来是否丢弃响应 —— 实测该会话
+        // `HttpConnected(status=200)` 254 次全部成功建连，而记账只有 153 次。
+        // 差额 101 次约 12M token 从未入账（轨迹自报 22.4M，真实账单对应 30.6M）。
+        //
+        // 口径：计入 `cumulativePromptTokens` / cost（billable，对账官方账单用），
+        // 但**不动** stock 口径的"当前上下文大小"—— 作废尝试不构成上下文。
+        // 这个区分由 updateUsage 的 discarded 参数实现，见 session/state.ts。
+        {
+          const discarded = (err as { discardedUsage?: import("../llm/types.ts").Usage })
+            ?.discardedUsage;
+          if (discarded) {
+            sessionState.updateUsage(
+              config.model,
+              discarded,
+              0,
+              config.provider,
+              config.baseURL,
+              true, // discarded=true：只累加 flow 口径与费用，不覆盖 stock
+            );
+          }
+        }
+
         // 优化 1：只记录会被本 catch「吞掉/重试」的分支（timeout / prompt-too-long）。
         // 未识别错误走下面 throw err → 冒泡到 engine 层已 recordError，此处不重复记，避免双写。
         // willRetry 反映本轮是否还会重试：超时看重试次数未耗尽，prompt-too-long 看响应式压缩未用过。

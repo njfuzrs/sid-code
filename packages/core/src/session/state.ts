@@ -59,6 +59,20 @@ export interface ModelUsageStats {
    * 旧数据无此字段（undefined = 未知渠道，按可信处理，避免把历史数据一律打上警示）。
    */
   endpointHost?: string;
+  /**
+   * 作废尝试的次数（P0-2 C 组）：超时/流内错误后重试、响应被丢弃但 prompt 已发出并计费。
+   *
+   * 与 `requests` 的关系：`requests` 是**总记账次数**（含作废），此字段是其中作废的那部分。
+   * 单独留一个计数是为了让「重试烧了多少钱」直接可查 —— 重试是 harness 的行为，
+   * 代价却此前完全不可见（实测该会话 101 次作废连接 ≈ 12M token 隐性开销）。
+   * 旧快照无此字段（undefined = 0）。
+   */
+  discardedRequests?: number;
+  /**
+   * 作废尝试累计烧掉的 prompt token（billable 口径的一部分）。
+   * 让"省了多少 / 白烧了多少"能分开看，而不是混在 cumulativePromptTokens 里无从拆解。
+   */
+  discardedPromptTokens?: number;
 }
 
 /**
@@ -178,13 +192,28 @@ export class SessionState {
     return this.sessionData.has(key);
   }
 
-  /** 更新 API 调用的用量统计 */
+  /**
+   * 更新 API 调用的用量统计。
+   *
+   * @param discarded 本次 usage 是否来自**被作废的尝试**（超时/流内错误后重试，
+   *   响应被丢弃但 prompt 已发到服务端、厂商已计费）。
+   *
+   *   两个口径必须并存、不能合并（P0-2 C 组）：
+   *   - **billable**（含作废重发）= 对账官方账单用 → `cumulativePromptTokens` / `costUSD`
+   *     / cache 累加值 / `requests`，这些照常累加；
+   *   - **effective**（仅末次成功）= 看"当前上下文有多大"用 → `inputTokens` /
+   *     `stockPromptTokens`，作废尝试**不得**覆盖它们。
+   *
+   *   混在一起的后果是双向的：作废量不记 → 费用低估 26.2%、costLimit 守卫晚触发；
+   *   作废量覆盖 stock → 状态栏"当前上下文"跳成一个已经不存在的值。
+   */
   updateUsage(
     model: string,
     usage: Usage,
     durationMs: number,
     provider?: string,
     baseURL?: string,
+    discarded = false,
   ): void {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
@@ -215,8 +244,17 @@ export class SessionState {
     // stockPromptTokens 取最后一次的归一化完整输入（uncached+hit+write，跨 provider 统一，给上下文占比展示）；
     // cumulativePromptTokens 累加（flow，给命中率/省钱统计，与 cacheRead 累加口径一致）。
     // 校准记录见 evals/eval-judge.ts gradeCost 注释。
-    stats.inputTokens = usage.inputTokens;
-    stats.stockPromptTokens = normalizeCacheUsage(usage, prov).promptTotal;
+    // 作废尝试（discarded）**不覆盖 stock 口径**：它记录的是"当前上下文有多大"，
+    // 而作废的那次响应已经不存在于上下文里。覆盖会让状态栏显示一个幽灵值。
+    // flow 口径（下面三行累加）照记 —— 钱是真花了。
+    if (!discarded) {
+      stats.inputTokens = usage.inputTokens;
+      stats.stockPromptTokens = normalizeCacheUsage(usage, prov).promptTotal;
+    } else {
+      // 作废量单独留痕，让"重试白烧了多少"可直接查（否则混进 cumulative 后无从拆解）。
+      stats.discardedRequests = (stats.discardedRequests ?? 0) + 1;
+      stats.discardedPromptTokens = (stats.discardedPromptTokens ?? 0) + usage.inputTokens;
+    }
     stats.cumulativePromptTokens += usage.inputTokens;
     stats.outputTokens += usage.outputTokens;
     stats.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;

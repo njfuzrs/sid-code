@@ -37,6 +37,7 @@ import { sidPaths } from "../config/paths.ts";
 import { normalizeBaseURL } from "./endpoint-key.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import type { ModelPricing } from "../api/cost-tracker.ts";
+import { getRegistryEntries } from "./model-registry.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
@@ -133,6 +134,16 @@ export function computeFailureBackoffMs(failCount: number): number {
  * key="" 表示官方默认端点。
  */
 let memBuckets: Record<string, Record<string, GatewayPricingEntry>> = {};
+/**
+ * 各端点桶的连续失败次数（与 memBuckets 同步载入）。
+ *
+ * 为什么内存里也要留一份：`lookupGatewayPricing` 是计费**热路径**，不能每次去读盘查
+ * fail_count。而"这个桶的价格新鲜不新鲜"恰恰是**跨桶兜底**该不该借用它的判据——
+ * 失败中的端点，其价格是上一次成功时的快照，借给**别的**端点用属于双重不确定。
+ * 注意只约束跨桶兜底：桶自己被精确命中时仍照用（失败不该抹掉已采到的价格，
+ * 见「失败不抹掉上次成功采到的价格」回归测试）。
+ */
+let memBucketFailCount: Record<string, number> = {};
 let memLoaded = false;
 
 /**
@@ -310,6 +321,9 @@ function recordFailure(endpointKey: string, url: string): void {
       fail_count: (prev?.fail_count ?? 0) + 1,
     };
     file.schema_version = 2;
+    // 内存侧同步失败计数：本次会话内该桶立刻停止对外借价（跨桶兜底判据）。
+    // 不同步会留下"盘上已记失败、内存仍当健康桶借价"的窗口，直到下次进程重启才生效。
+    memBucketFailCount[endpointKey] = file.endpoints[endpointKey].fail_count ?? 1;
     const path = sidPaths.gatewayPricing();
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(file, null, 2), "utf8");
@@ -337,9 +351,11 @@ export function loadGatewayCache(): void {
     const file = readCacheFile();
     if (!file) return;
     memBuckets = {};
+    memBucketFailCount = {};
     let total = 0;
     for (const [key, bucket] of Object.entries(file.endpoints)) {
       memBuckets[key] = bucket.models;
+      memBucketFailCount[key] = bucket.fail_count ?? 0;
       total += Object.keys(bucket.models).length;
     }
     log().debug(
@@ -352,33 +368,161 @@ export function loadGatewayCache(): void {
 }
 
 /**
+ * 是否**厂商裸名**（= 内置注册表里有这个精确键），如 `deepseek-v4-pro` / `DeepSeek-V4-Pro`。
+ * 带渠道前缀的网关名（`ali-deepseek-v4-pro` / `gw-claude-sonnet-5`）返回 false。
+ *
+ * ⚠ 判据必须是**注册表精确键**，两条都实测验证过，别改成看起来更简单的写法：
+ *
+ * - **不能用字符串前缀切分**（"第一个连字符之前算前缀"）：`deepseek-v4-pro` 会被切出
+ *   `deepseek` 这个"前缀"，于是官方裸名被判成"带渠道前缀"→ 约束失效 →
+ *   本次 4.94× 的事故原样复发。实测：naivePrefix("deepseek-v4-pro") === "deepseek"。
+ * - **不能用 `lookupRegistry(model) !== null`**：它带**前缀剥离**兜底，
+ *   `lookupRegistry("ali-deepseek-v4-pro")` 照样返回 0.435（官方价）→ 渠道名被判成裸名 →
+ *   禁止它跨桶兜底 → 反而复发它本要修的「渠道名套官方价、**低估** 3.7 倍」。
+ *   实测：`ali-deepseek-v4-pro` exactKey=false 但 lookupRegistry=0.435。
+ *
+ * 大小写各自登记（注册表里 `deepseek-v4-pro` 与 `DeepSeek-V4-Pro` 是两个键），
+ * 故先精确查、再不区分大小写查一次，避免仅因大小写写法不同而漏判成渠道名。
+ */
+function isBareVendorName(model: string): boolean {
+  if (bareVendorKeys === null) {
+    const entries = getRegistryEntries();
+    bareVendorKeys = new Set(entries.map(([k]) => k));
+    bareVendorKeysLower = new Set(entries.map(([k]) => k.toLowerCase()));
+  }
+  if (bareVendorKeys.has(model)) return true;
+  return bareVendorKeysLower!.has(model.toLowerCase());
+}
+
+/** 注册表键集合缓存（注册表是编译期常量，只需构建一次）。 */
+let bareVendorKeys: Set<string> | null = null;
+let bareVendorKeysLower: Set<string> | null = null;
+
+/**
+ * 厂商**官方**端点白名单（host 后缀匹配）。
+ *
+ * 命中即「这是厂商直连，不是 new-api 类网关」→ 官方价一律以内置注册表为准，
+ * 跳过网关采集价。理由是官方端点**根本没有** `/api/pricing` 这个接口（那是 new-api
+ * 的私有接口），`derivePricingURL` 拼出来的 URL 必然失败，只会留下一个
+ * `fail_count>0` + `models:{}` 的空桶——而空桶又会触发跨桶兜底去抓**别的渠道**的价。
+ *
+ * 2026-08-11 实测事故：`resolvePricing("deepseek-v4-pro", …, "https://api.deepseek.com")`
+ * 返回 `{input: 1.64383, cacheRead: 0.137}`（某网关渠道价），而正确的官方价躺在注册表里
+ * （`{input: 0.435, cacheRead: 0.0036}`）。cacheRead 偏离 **38.1×**，且本次 81.2% 的
+ * token 都是缓存命中 → 费用被高估 393%。见修复方案 §2.4(c)。
+ */
+const OFFICIAL_ENDPOINT_HOSTS = [
+  "api.deepseek.com",
+  "api.anthropic.com",
+  "api.openai.com",
+  "api.moonshot.cn",
+  "api.moonshot.ai",
+  "open.bigmodel.cn",
+  "dashscope.aliyuncs.com",
+  "ark.cn-beijing.volces.com",
+  "api.minimax.chat",
+  "api.x.ai",
+  "generativelanguage.googleapis.com",
+];
+
+/**
+ * 是否厂商官方端点（→ 计价直接用内置注册表，不碰网关采集价）。
+ *
+ * 只按 host 判，不看路径：同一 host 上 `/v1` 与无路径是不同部署，但都是官方直连。
+ * 用后缀匹配而非全等，兼容 `api.deepseek.com:443` 这类带端口写法被 URL 归一化后的形态。
+ */
+export function isOfficialEndpoint(baseURL?: string): boolean {
+  if (!baseURL) return false;
+  let host: string;
+  try {
+    host = new URL(baseURL.trim()).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return OFFICIAL_ENDPOINT_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
+/**
  * 计费热路径查询 — 只读内存缓存，**绝不触网**。
  *
  * 端点感知（修复多端点覆盖后）：
+ *   0. 官方厂商端点直接返回 null → 由 resolvePricing 落到内置注册表（权威官方价）。
  *   1. 先查请求端点（normalizeBaseURL(baseURL)）对应桶里的精确渠道价。
- *   2. 未命中再跨桶按模型名兜底（兼容没传 baseURL、或端点桶里没这个冷门模型的场景）。
+ *   2. 未命中再跨桶按名兜底，但受**两条约束**（见下）。
  * 按次计费（quotaType=1）返回 null，由调用方退回注册表兜底。
+ *
+ * ── 跨桶兜底的两条约束（2026-08-11 计费错 4.94× 的修复，别放宽）──
+ *
+ * **(a) 失效桶不参与兜底**：`fail_count > 0` 或 `models` 为空的桶跳过。失败中的端点，
+ * 其价格是上一次成功时的旧快照，借给**别的**端点用是双重不确定；而空桶更危险——
+ * 它会让「本该回落注册表」变成「静默抓到某个不相干渠道的价」，且不报错。
+ *
+ * **(b) 裸名不得跨桶兜底**：只有**带渠道前缀**的名字（`ali-deepseek-v4-pro`）才可跨桶借价。
+ * 本模块顶部注释记录的跨桶兜底本意是修「`ali-deepseek-v4-pro` 被剥成
+ * `deepseek-v4-pro` 套官方价、低估 3.7 倍」——它修对了**带前缀的渠道名**，
+ * 却修错了**裸名**：原设计假设「裸名 = 需要兜底」，但裸名恰恰也是**官方直连**的名字。
+ * 于是官方端点请求 `deepseek-v4-pro` 时跨桶抓到了空 key 桶里某网关的 `deepseek-v4-pro`
+ * （$1.64383，正确值 $0.435）。裸名回落注册表才是对的。
+ *
+ * 注：这条约束**不能**写成「同前缀才可互兜」——本函数按精确名查各桶，跨桶时两边键名
+ * 是同一个字符串，前缀比较恒为真，那样写等于没有约束。
  */
 export function lookupGatewayPricing(model: string, baseURL?: string): ModelPricing | null {
   if (!memLoaded) loadGatewayCache();
 
-  // 1. 端点精确桶。
+  // 0. 官方厂商端点：注册表优先级高于网关采集价，直接退出让 resolvePricing 走注册表。
+  //    官方端点桶本就采不到东西（无 /api/pricing），留在这里只会被下面的兜底拿去乱借价。
+  if (isOfficialEndpoint(baseURL)) return null;
+
+  // 1. 端点精确桶（该端点自己采到的价，最权威；失败态不影响自己的价）。
+  //
+  // 例外：**空 key 桶 + 厂商裸名** → 同样让注册表赢。空 key（`endpoints[""]`）名义上是
+  // "官方默认端点"，实际却是个**成分不明的收纳桶**：`syncGatewayPricing({url})`
+  // 不带 baseURL 时、以及旧版 v1 扁平结构迁移时，采到的价都落在这里。本次事故里它装的
+  // 正是某网关渠道价（`deepseek-v4-pro` → $1.64383）。
+  // 而"没有 baseURL"这件事本身就意味着走厂商官方直连（要用网关必须配 baseURL），
+  // 所以裸名撞上空 key 桶时，可信的是注册表而非这桶来源不明的采集价。
+  // 带渠道前缀的名字（`ali-…`）不受影响，仍照用空 key 桶里的渠道价。
   const key = normalizeBaseURL(baseURL);
+  if (key === "" && isBareVendorName(model)) return null;
   const primary = memBuckets[key]?.[model];
   const hit = toModelPricing(primary);
   if (hit) return hit;
 
-  // 2. 跨桶按名兜底（同名渠道价在任一端点桶里出现即可用；官方端点桶 "" 优先）。
-  if (memBuckets[""]?.[model]) {
-    const fromDefault = toModelPricing(memBuckets[""][model]);
-    if (fromDefault) return fromDefault;
-  }
-  for (const [k, models] of Object.entries(memBuckets)) {
-    if (k === key || k === "") continue;
+  // 2. 跨桶按名兜底 —— 受「裸名禁止跨桶」+「失效桶不参与」两条约束。
+  //
+  // ⚠ 约束 (b) 的判据是**这个名字是不是厂商裸名**，不是"两个名字前缀是否相同"。
+  //   本函数按**精确名**查各桶，跨桶时两边键名本就是同一个字符串，
+  //   "同前缀才可互兜"在这里恒为真、拦不住任何东西（写成那样是个空判断）。
+  //   真正要拦的是：**裸名**（= 厂商官方模型名）不得从别的桶借价，该回落注册表。
+  if (isBareVendorName(model)) return null;
+
+  // 官方端点桶 "" 优先（历史行为保留：它通常是"没配 baseURL"时采到的那份）。
+  const orderedKeys = ["", ...Object.keys(memBuckets).filter((k) => k !== "")];
+  for (const k of orderedKeys) {
+    if (k === key) continue; // 步骤 1 已查过
+    const models = memBuckets[k];
+    if (!models) continue;
+    if (isBucketUnusableForFallback(k, models)) continue; // 约束 (a)
     const fallback = toModelPricing(models[model]);
     if (fallback) return fallback;
   }
   return null;
+}
+
+/**
+ * 该桶是否**不可**用于跨桶兜底（失效桶）。
+ *
+ * 两个条件任一命中即失效：
+ * - `models` 为空：从没采成功过（或采到的全是非法条目），没有任何可借的价；
+ * - `fail_count > 0`：处于连续失败态，价格是旧快照，借给别的端点不可信。
+ */
+function isBucketUnusableForFallback(
+  key: string,
+  models: Record<string, GatewayPricingEntry>,
+): boolean {
+  if (Object.keys(models).length === 0) return true;
+  return (memBucketFailCount[key] ?? 0) > 0;
 }
 
 /** GatewayPricingEntry → ModelPricing（按次计费/零价返回 null，退回兜底）。 */
@@ -563,6 +707,8 @@ export async function syncGatewayPricing(opts?: {
   const hasStaleFailure = !!(existing?.failed_at || existing?.fail_count);
   if (!opts?.force && existing && existing.pricing_version === version && !hasStaleFailure) {
     memBuckets[endpointKey] = models;
+    // 采集成功 → 清内存失败计数，桶重新可用于跨桶兜底（与写盘处"成功即清零"同口径）。
+    memBucketFailCount[endpointKey] = 0;
     memLoaded = true;
     emit({
       endpoint: endpointKey,
@@ -595,6 +741,8 @@ export async function syncGatewayPricing(opts?: {
   }
 
   memBuckets[endpointKey] = models;
+  // 采集成功 → 清内存失败计数（磁盘侧靠"整桶重写不带 fail_count"实现，见上方注释）。
+  memBucketFailCount[endpointKey] = 0;
   memLoaded = true;
   log().info(
     "GATEWAY-PRICING",
@@ -704,5 +852,6 @@ export function refreshGatewayPricingOnStartup(
 /** 仅测试用：重置内存态。 */
 export function __resetGatewayPricingForTest(): void {
   memBuckets = {};
+  memBucketFailCount = {};
   memLoaded = false;
 }
