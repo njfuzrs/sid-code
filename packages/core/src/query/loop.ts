@@ -126,6 +126,7 @@ import {
   createMeasuredProgressState,
   recordFileChange,
   recordScalarObservation,
+  hasRealProgress,
 } from "./measured-progress.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { drainByPriorityAndKind, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
@@ -138,7 +139,13 @@ import {
   isThinkingDivergenceDetectionEnabled,
 } from "./thinking-divergence.ts";
 import { injectReminders } from "./reminder-inject.ts";
-import { decideNagInjection, MAX_NO_PROGRESS_NAGS } from "./reminder-throttle.ts";
+import {
+  decideNagInjection,
+  decideTodoNagInjection,
+  MAX_NO_PROGRESS_NAGS,
+  MAX_TODO_BOOKKEEPING_NAGS,
+  TODO_BOOKKEEPING_NAG_COUNT_KEY,
+} from "./reminder-throttle.ts";
 import {
   processObservation as observeRepeatedReadonly,
   isReadonlyProbeCommand,
@@ -462,9 +469,14 @@ function emitNagInjectedEvent(
     cap?: number;
     countedAsNoProgress?: boolean;
     afterCompact?: boolean;
-    // ─── todo 通道字段（2026-08-01 改无状态扫描后，nagCount/cap 概念已不存在）───
+    // ─── todo 通道字段 ───
     // 记两个扫描出来的"距今多少轮"，供事后核对阈值是否过紧/过松。
     // `Infinity` 不是合法 JSON，故由调用方归一化为 -1（= 从未发生过）。
+    //
+    // 2026-08-01 改无状态扫描时 nagCount/cap 概念一度不存在；P1-4 item 2 又把它们带回来了，
+    // 但语义**与 work-log 不同**：这里的 cap 是**条件式**的，只在"有真实副作用进展却不更新
+    // 清单"时计数（催记账），无进展时永不封顶（催干活=主功能，见 decideTodoNagInjection）。
+    // 两条通道复用同名字段但判据不同，分析 events.jsonl 时必须结合 kind 区分。
     turnsSinceLastTodoWrite?: number;
     turnsSinceLastReminder?: number;
   },
@@ -1202,6 +1214,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // gate 不该继续消耗上一段停滞攒下的续命额度。
             state.progressNagCount = 0;
             state.todoGateRetryCount = 0;
+            // P1-4 item 2：模型确实更新了清单 = 记账催促奏效了 → 清零条件封顶预算，
+            // 让它在下一段"有进展但又忘记记账"时还能再催。不清零的话一个长会话里
+            // 只要早期催满 2 次，后面就永久哑火。
+            sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, 0);
             // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
             // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
             state.todoGateProductiveNoUpdateCount = 0;
@@ -1236,9 +1252,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
             });
-            if (throttleSaysYes || afterCompact) {
+            // ─── P1-4 item 2：条件式封顶（绑真实进展，刻意不是无条件 cap）───
+            //
+            // 判据分两态，详见 reminder-throttle.ts decideTodoNagInjection 的注释表：
+            //   无真实进展（模型真卡住）→ 催更是主功能，**永不封顶**（保住 2026-08-01 修复）；
+            //   有真实进展但清单没动 → 催的只是"记账"，催 N 次无效即停手。
+            // 后者才是本次事故的形态：模型在改文件、观测值在降，却被每 8 轮催去更新清单。
+            //
+            // afterCompact 旁路**不受封顶管辖**：压缩把清单从上下文里抹掉后若不强制重注，
+            // 清单会在模型视野里永久消失——那是信息丢失，不是催促噪音，两者不能共用预算。
+            const measuredForNag = getMeasuredProgress(sessionState);
+            const bookkeepingNagCount =
+              (sessionState.get(TODO_BOOKKEEPING_NAG_COUNT_KEY) as number | undefined) ?? 0;
+            const todoNagDecision = decideTodoNagInjection({
+              hasRealProgress: hasRealProgress(measuredForNag),
+              bookkeepingNagCount,
+            });
+            if ((throttleSaysYes && todoNagDecision.inject) || afterCompact) {
               reminderParts.push(buildTodoReminder(todoState.todos));
               state.todoReminderPendingAfterCompact = false;
+              if (todoNagDecision.countedAsNoProgress) {
+                sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
+              }
               // 锚点存 SessionState（跨用户消息持久），与 lastSeenContextPressureLevel /
               // lastSeenPermissionMode 同构（审计第 9 条：LoopState 每消息重建，放不住跨消息事实）。
               sessionState.set(LAST_TODO_REMINDER_TURN_KEY, sessionState.getAbsoluteTurn());
@@ -1253,6 +1288,22 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 kind: "todo",
                 ...turnMetrics(state, sessionState, promptSeq),
                 afterCompact,
+                // P1-4 item 2：条件封顶必须可观测，否则"它到底有没有拦住/有没有误伤"
+                // 只能靠离线重放猜（emitNagInjectedEvent 顶部注释记录的同一个教训：
+                // 只有 log.info 不落盘时，封顶行为在现网完全不可见）。
+                //
+                // ⚠ 只在**封顶真正生效的那一态**（有真实进展 → 催记账）才带这两个字段。
+                // 无进展态永不封顶，此时若照样上报 nagCount/cap，离线分析会以为本通道
+                // 存在封顶行为——那正是 2026-08-01 删字段时要避免的误导
+                // （见 todo-realtime-integration.test.ts「不带封顶字段」那组断言）。
+                // 字段在/不在本身就携带信息：在 = 当时处于记账催促态。
+                ...(todoNagDecision.countedAsNoProgress
+                  ? {
+                      nagCount: bookkeepingNagCount + 1,
+                      cap: MAX_TODO_BOOKKEEPING_NAGS,
+                      countedAsNoProgress: true,
+                    }
+                  : {}),
                 turnsSinceLastTodoWrite: Number.isFinite(counts.turnsSinceLastTodoWrite)
                   ? counts.turnsSinceLastTodoWrite
                   : -1,
