@@ -388,3 +388,42 @@ fix(tool): 修复 YYY 在 ZZZ 下不生效
 关于第 2 点有一条实测教训：**目标指标改善 + 测试全绿 + 机理讲得通，
 三者同时成立时结论仍然可能是错的**。收尾必须回到端到端的真实指标上验证，
 不要只看你专门优化的那个代理指标——代理指标会奖励「把浪费重新贴个标签」。
+
+### 在 worktree 里跑门禁：`exit 0` 不等于可交付
+
+worktree 默认**没有自己的 `node_modules`**，`@sid-code/core` 会向上解析到主仓 checkout ——
+那里没有你本次新增的导出。症状是 `make build` 打出
+`<你的新函数名> will always be undefined`，而**构建仍然 exit 0**。
+只看退出码就交付，等于交了一个新函数在编译产物里是 `undefined` 的版本。
+
+- **新建模块 / 新增导出的改动，必须显式 grep 这条 warning**，不能只看 exit code。
+- 进 worktree 后先跑一次 `bun install`（实测：装完后 3 个失败转绿、warning 归零）。
+  `website/` 是独立包，动了它还要在 `website/` 里再装一次，否则 pre-push 的
+  `website:build` 会以 127（command not found）拒绝推送。
+- 跑过 `bun install` 后，pre-commit 里硬编码的 `./node_modules/.bin/oxlint` 也就能正常工作，
+  不必再 `--no-verify`。
+
+### 判定「这个失败与我无关」必须举证，且别叫它「既存失败」
+
+实测教训：三个并行执行分身都把 worktree 里的失败报成「既存失败」，复核后发现
+**这些测试在干净 main 上是绿的**（`plan-mode-write-plan-file` 等 4 个文件 95 pass / 0 fail）。
+「既存失败」意味着"主干本来就坏"，会让人跳过本该排查的东西；真实成因是环境。
+
+宣称一个失败与本次改动无关时，**三条证据缺一不可**：
+
+1. 该测试不 import 本次改动的任何模块；
+2. 在**父仓 main** 上单跑能通过（不是在你的 worktree 里跑）；
+3. 能指出具体的环境成因。
+
+已知两类 worktree 环境产物：上面那条 `node_modules` 向上解析；以及 **worktree 路径含
+`.claude/`**，命中 `packages/core/src/permission/checker.ts` 的敏感路径拦截，
+在 plan-mode 判定**之前**就返回（结论仍是 DENY，只是 reason 不同）。
+
+顺带两条同源的判读经验：
+
+- **超时类失败先看数字对不对得上**。`runSandbox` 在 CI macOS 上失败于 5002ms —— 那是
+  bun **默认的 5s 单测超时**，不是 sandbox 自己的 60s 上限。写文件 + spawn 子进程的测试
+  在慢 runner 上会踩线，是 flake；重跑即绿，不要当回归去改代码。
+- **防漂移哨兵红了，要补清单而不是删断言**。`ABORT_REASONS 覆盖所有 abort 调用点`
+  就是为了拦「新 reason 只登记进 `errors.ts`、忘了同步哨兵期望值」而存在的。
+  它红 = 它在正常工作。
