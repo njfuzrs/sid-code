@@ -119,6 +119,14 @@ import {
   persistProgress,
   buildProgressReminder,
 } from "./work-log.ts";
+import {
+  type MeasuredProgressState,
+  MEASURED_PROGRESS_KEY,
+  FILE_MUTATING_TOOLS,
+  createMeasuredProgressState,
+  recordFileChange,
+  recordScalarObservation,
+} from "./measured-progress.ts";
 import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
 import { drainByPriorityAndKind, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
 import {
@@ -418,6 +426,24 @@ function turnMetrics(
     absoluteTurn: sessionState.getAbsoluteTurn(),
     promptSeq,
   };
+}
+
+/**
+ * 取本会话的"实测进展"状态（P1-4 item 1），不存在则创建并挂上 SessionState。
+ *
+ * 为什么挂 SessionState 而不是 LoopState：LoopState 每条用户消息重建，而"这个会话已经改过
+ * 哪些文件、某个观测值从多少变到多少"是**跨用户消息的会话级事实**。放 LoopState 会让用户
+ * 追问一句就把已有进展清零，work-log 立刻退回报"已完成 0 项"——本次要修的假信号会复活。
+ * 同构参照 LAST_TODO_WRITE_VERSION_KEY（那处注释记录了同一个坑：基线放 LoopState 导致
+ * 第二条用户消息后计数虚增）。
+ */
+function getMeasuredProgress(sessionState: SessionState): MeasuredProgressState {
+  let s = sessionState.get(MEASURED_PROGRESS_KEY) as MeasuredProgressState | undefined;
+  if (!s) {
+    s = createMeasuredProgressState();
+    sessionState.set(MEASURED_PROGRESS_KEY, s);
+  }
+  return s;
 }
 
 function emitNagInjectedEvent(
@@ -1144,7 +1170,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         const todoAdvanced = !!todoFactState && lastSeenWriteVersion !== todoFactState.writeVersion;
         if (todoFactState && todoFactState.todos.length > 0) {
           if (todoAdvanced) {
-            const snap = snapshotFromTodos(sessionState.sessionId, todoFactState.todos);
+            // P1-4 item 1：落盘快照带上实测进展。这个文件是**跨会话续做时的唯一进度来源**
+            // （app.ts 的 loadProgressMarkdown），只写 todo 口径的话，"改了 7 个文件但一项
+            // 都没标"会渲染成"0 已完成"，假信号一路传染到下一个会话。
+            const snap = snapshotFromTodos(
+              sessionState.sessionId,
+              todoFactState.todos,
+              [],
+              getMeasuredProgress(sessionState),
+            );
             persistProgress(snap);
             // 可观测性（§8.3）：writeVersion 增长是**唯一能直接量"实时性"的指标**，此前完全无埋点。
             // 缺陷现场只能靠"progress 文件只写过 1 次"反推清单只更新过 1 次——那是间接证据。
@@ -1233,7 +1267,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 强调持久进度 + 别重复已完成项（与 P0-2 的 todo 原文回注互补）。
           const turnsSinceProgress = state.turnCount - (state.lastProgressReminderTurn ?? 0);
           if (turnsSinceProgress >= PROGRESS_REMINDER_INTERVAL) {
-            const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos);
+            // P1-4 item 1：回注摘要带上实测进展——这是消掉"已完成 0 项"假信号的关键路径
+            // （事故窗口里模型每 8 轮读到的就是这段文本）。
+            const measured = getMeasuredProgress(sessionState);
+            const snap = snapshotFromTodos(sessionState.sessionId, todoState.todos, [], measured);
             const progressReminder = buildProgressReminder(snap);
             // 去重 + 封顶（对话重播幻觉修复 Fix 1/2）：与 todo 回注同机制。P2-2 摘要在
             // todo 长期停滞时内容几乎逐字节相同（idx 41/87/112 就是这样的三连重复），
@@ -4022,6 +4059,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           //   - 其它一切(写操作、编辑、其它 bash 命令、task_*/todo_write 等有产出工具、文本产出)
           //     = 真进展,置 hadOtherActivity=true 触发清零。
           const probes: Array<{ command: string; output: string }> = [];
+          const measuredProgress = getMeasuredProgress(sessionState);
           let hadOtherActivity = responseText.trim().length > 0;
           for (const b of toolBlocks) {
             if (b.type !== "tool_use") continue;
@@ -4039,6 +4077,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               return stripReadEfficiencyHint(raw);
             };
             const cmd = b.name === "bash" ? (b.input as any)?.command : undefined;
+
+            // ─── P1-4 item 1：采集"实测进展"两个维度（与下方止损阀共用这次遍历）───
+            //
+            // 这里是全 harness 里唯一能同时看到「工具入参 + 真实返回值」的地方，故两件事都在此记：
+            //   ① 文件落盘：edit/write/notebook_edit 执行完 → 磁盘确实变了（不可伪造的进展证据）；
+            //   ② 可量化观测值：任何 bash 命令，只要输出是单个标量（`grep -c` / `wc -l` / 自研
+            //      脚本吐一个数字）就登记，首末值不同即"世界确实变了"。
+            //
+            // 判据刻意是**形态**而非命令名：harness 不该知道用户项目的检查命令是 tsc 还是
+            // cargo check 还是 pytest（写死命令名 = 只对 TS 项目有效，换语言就静默失效，
+            // 而静默失效的信号比没有信号更糟）。详见 measured-progress.ts 顶部注释。
+            if (FILE_MUTATING_TOOLS.has(b.name)) {
+              recordFileChange(measuredProgress, (b.input as any)?.file_path);
+              recordFileChange(measuredProgress, (b.input as any)?.notebook_path);
+            } else if (b.name === "bash" && typeof cmd === "string") {
+              recordScalarObservation(measuredProgress, cmd, readOutput());
+            }
+
             if (b.name === "bash" && typeof cmd === "string" && isReadonlyProbeCommand(cmd)) {
               probes.push({ command: cmd, output: readOutput() });
             } else if (isReadFamilyTool(b.name)) {
