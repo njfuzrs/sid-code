@@ -38,6 +38,22 @@ import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 
+/**
+ * 非主循环路径的单次尝试流超时缺省值（P2-6）。
+ *
+ * 抽成导出常量 + 导出解析函数，是为了让"缺省档位取的是 overall 而不是 idle"这件事
+ * 能被**直接断言**，而不是靠扫源码字符串。回归的形态是有人把它改回 idle 档，
+ * 那种改动在行为上只表现为"慢首字节的子代理偶尔被杀"，没有任何断言会失败。
+ */
+export const DEFAULT_SIDE_STREAM_TIMEOUT_MS = LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;
+
+/**
+ * 解析单次尝试的流超时。显式传入优先，否则走 {@link DEFAULT_SIDE_STREAM_TIMEOUT_MS}。
+ */
+export function resolveSideStreamTimeoutMs(explicit?: number): number {
+  return explicit ?? DEFAULT_SIDE_STREAM_TIMEOUT_MS;
+}
+
 /** 韧性流选项 */
 export interface ResilientStreamOptions {
   /** 本次调用的查询来源（必填）。决定 529 前后台闸门与遥测归因。 */
@@ -57,12 +73,18 @@ export interface ResilientStreamOptions {
   retryBackoffBaseMs?: number;
   retryBackoffMaxMs?: number;
   /**
-   * 单次尝试的流超时（毫秒）。缺省用 subAgent idle 档（60s）。
+   * 单次尝试的流超时（毫秒）。缺省用 subAgent overall 档（180s）。
    *
    * 语义分层（三层各司其职，不要合并）：
-   *   ① 本超时 = **单次尝试**的无数据上限，触发后漏斗按可重试超时**重试**；
+   *   ① 本超时 = **单次尝试的整体上限**，触发后漏斗按可重试超时**重试**；
    *   ② 调用方 processStream 的 idle/overall = **跨重试**的兜底，触发即结束本轮（不重试）；
    *   ③ 子代理 wall-clock（`sub-agent.ts` 的 timeoutCtrl，120–360s）= 总预算硬顶。
+   *
+   * P2-6：缺省档位曾是 `subAgent.idleTimeoutMs`（60s），与本参数在漏斗里的**真实语义
+   * 不匹配**。漏斗那个定时器（`fallback.ts:669` startStreamTimeout）只在发起尝试时
+   * 武装一次，此后**只在重试路径**被 reset（:1010 / :1328），**收到数据不会续期**——
+   * 所以它实际是"单次尝试的整体上限"，不是 idle 上限。拿三档里最激进的 idle 值去当
+   * 整体上限，等于把 60s 当成"一次尝试最多允许跑多久"，慢首字节必被误杀。
    */
   streamTimeoutMs?: number;
   /** 模型可用性服务。**应注入与主路径同一实例**，让 terminal 拉黑跨路径共享。 */
@@ -147,7 +169,9 @@ export function streamWithResilience(
       querySource: opts.querySource,
       maxRetries: opts.maxRetries ?? net.maxTimeoutRetries,
       maxRetriesPerCall: net.maxRetriesPerCall,
-      streamTimeoutMs: opts.streamTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.idleTimeoutMs,
+      // P2-6：档位取 overall（180s）而非 idle（60s）——见 `streamTimeoutMs` 声明处的注释，
+      // 漏斗那个定时器收到数据不续期，语义是"单次尝试整体上限"，只有 overall 档对得上。
+      streamTimeoutMs: resolveSideStreamTimeoutMs(opts.streamTimeoutMs),
       retryBackoffBaseMs: opts.retryBackoffBaseMs ?? net.retryBackoffBaseMs,
       retryBackoffMaxMs: opts.retryBackoffMaxMs ?? net.retryBackoffMaxMs,
       onTelemetry: opts.onTelemetry,

@@ -164,9 +164,13 @@ export interface AgentLoopConfig {
   /**
    * B2：跨重试的兜底超时（毫秒），传给 `processStream`。
    *
-   * 注意它与漏斗的 `streamTimeoutMs` 是**不同层**：漏斗那层是单次尝试的无数据
-   * 上限（触发后重试），这一层是把"重试也救不回来"兜住（触发即结束本轮）。
-   * 缺省走 `LIFECYCLE_PRESETS.subAgent`（idle 60s / overall 180s）。
+   * 注意它与漏斗的 `streamTimeoutMs` 是**不同层**：漏斗那层是单次尝试的上限
+   * （触发后重试），这一层是把"重试也救不回来"兜住（触发即结束本轮）。
+   * 缺省走 `LIFECYCLE_PRESETS.subAgent`（idle 60s / overall 180s，见 stream-processor.ts:89-90）。
+   *
+   * P2-6：这一层的 idle 60s 是**对的**（它真的按事件到达续期，见 stream-lifecycle 的
+   * lastEventAt 判据），不要连带改动。被修掉的是漏斗那层——它拿同一个 60s 去做
+   * "单次尝试整体上限"，而那个定时器收到数据并不续期，两者只是数值巧合相同。
    */
   streamIdleTimeoutMs?: number;
   streamOverallTimeoutMs?: number;
@@ -461,9 +465,14 @@ async function runAgentLoopInner(
     //     漏斗内部 markTerminal 已覆盖，不必在此另写一份）。
     //
     // 三层超时的分工（不要合并，见 resilient-stream.ts 的 streamTimeoutMs 注释）：
-    //   漏斗 streamTimeoutMs = 单次尝试无数据上限 → 触发后**重试**；
-    //   processStream idle/overall = 跨重试兜底 → 触发即结束本轮；
+    //   漏斗 streamTimeoutMs = **单次尝试的整体上限**（180s）→ 触发后**重试**；
+    //   processStream idle/overall = 跨重试兜底（idle 60s / overall 180s）→ 触发即结束本轮；
     //   sub-agent.ts 的 timeoutCtrl = wall-clock 总预算硬顶。
+    //
+    // P2-6：第一层原写成"单次尝试**无数据**上限"，与实现不符——漏斗那个定时器只在
+    // 发起尝试时武装、收到数据不续期，所以它量的是"这次尝试跑了多久"而非"多久没数据"。
+    // 注释与实现不一致的代价是真实的：缺省值照着"无数据上限"的字面语义取了 idle 档
+    // 60s，把慢首字节（本会话实测 max 102.8s）当无响应误杀。
     // ══════════════════════════════════════════════════════════════════
     emitStreamPhase(
       agentStreamIndex,
