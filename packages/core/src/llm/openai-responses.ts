@@ -118,8 +118,21 @@ interface OutputItem {
   summary?: { type?: string; text?: string }[];
 }
 
+/**
+ * `content_part.added` / `reasoning_summary_part.added` 的 part 载荷。
+ *
+ * ⚠️ 三个字面量都取自 OpenAI 规范，**不要凭直觉加 `"reasoning"`**：
+ * - `content_part.added` 的 part 只能是 `output_text` / `refusal` / `reasoning_text`
+ *   （openapi.yaml:54571-54575 的 `OutputContent` oneOf；`ReasoningTextContent.type`
+ *   枚举值是 **`reasoning_text`**，openapi.yaml:75568-75574）；
+ * - `reasoning_summary_part.added` 的 part 只能是 `summary_text`
+ *   （openapi.yaml:68746-68755）。
+ *
+ * 此前这里写的是 `"reasoning"` —— 那个值在规范里**不存在**，导致推理块判据恒不命中，
+ * 推理摘要被当正文发出。教训：协议字面量必须回源码规范核对，不能按语义猜。
+ */
 interface ContentPart {
-  type: "output_text" | "reasoning" | "refusal";
+  type: "output_text" | "reasoning_text" | "refusal" | "summary_text";
   text?: string;
   annotations?: unknown[];
 }
@@ -179,6 +192,30 @@ export function isResponsesContentProgress(event: StreamEvent): boolean {
 }
 
 // ─── 事件映射（核心逻辑） ───
+
+/**
+ * 开一个思考块（置位 `inReasoningBlock` + 发 `content_block_start`）。
+ *
+ * 抽成函数是因为**两个不同的事件**都要开思考块：`content_part.added`
+ * （part 为 `reasoning_text`）与 `reasoning_summary_part.added`。两处若各写一份，
+ * 就又回到"同一语义两份实现、其中一份漏了"的老形态。
+ *
+ * 幂等：已在思考块中时不重复开块。真实流里 `reasoning_summary_part.added` 可能
+ * 对同一 item 发多次（`summary_index` 递增），重复开块会让 blockIndex 与
+ * `content_block_stop` 失配。
+ */
+function openThinkingBlock(state: ParserState): StreamEvent[] {
+  if (state.inReasoningBlock) return [];
+  state.inReasoningBlock = true;
+  return [
+    {
+      type: "content_block_start",
+      index: state.blockIndex,
+      content_block: { type: "thinking", thinking: "" },
+      _raw_block: { type: "thinking" },
+    } as StreamEvent,
+  ];
+}
 
 function mapResponseEvent(
   raw: ResponsesStreamEvent,
@@ -242,15 +279,22 @@ function mapResponseEvent(
           index: state.blockIndex,
           content_block: { type: "text", text: "" },
         } as StreamEvent);
-      } else if (part?.type === "reasoning") {
-        state.inReasoningBlock = true;
-        results.push({
-          type: "content_block_start",
-          index: state.blockIndex,
-          content_block: { type: "thinking", thinking: "" },
-          _raw_block: { type: "thinking" },
-        } as StreamEvent);
+      } else if (part?.type === "reasoning_text") {
+        // 规范字面量是 reasoning_text（openapi.yaml:75568-75574），不是 "reasoning"。
+        results.push(...openThinkingBlock(state));
       }
+      break;
+    }
+
+    // ─── Reasoning Summary Part 添加 ───
+    // 真实流里推理摘要走的是**这个**事件（openapi.yaml:68718-68768），而不是
+    // content_part.added —— 此前完全没有这个 case，是推理摘要串进正文的直接原因：
+    // inReasoningBlock 永不置位 → 后续 reasoning_summary_text.delta 被当正文 text_delta。
+    case "response.reasoning_summary_part.added": {
+      // part.type 恒为 summary_text（openapi.yaml:68746-68755）。这里不校验 part
+      // 而是无条件开思考块：事件名本身已经确定了语义，多一层判据只会在网关
+      // 省略 part 字段时再制造一次静默丢失。
+      results.push(...openThinkingBlock(state));
       break;
     }
 
@@ -356,6 +400,17 @@ function mapResponseEvent(
 
     // ─── Response Incomplete ───
     case "response.incomplete": {
+      // 缺陷 B 修复：此前这里**不读 usage**，而同为终态的 response.completed 读了。
+      // 规范上 incomplete 的 `response` 是完整 Response 对象、含 usage
+      //（openapi.yaml:67965-67966），所以漏读纯属遗漏而非协议限制。
+      //
+      // 后果不是"少一个字段"，而是**方向性偏在最贵的样本上**：incomplete 意味着
+      // 输出打到 max_tokens 上限，恰是单轮 output 最满、成本最高的那一类，
+      // 而它的成本被记成 0。账本里越贵的轮越不计数，「更省」的曲线会系统性偏乐观。
+      const usage = raw.response?.usage;
+      if (usage) {
+        applyResponsesUsage(state.usage, usage);
+      }
       results.push({
         type: "message_delta",
         delta: { stop_reason: "max_tokens" },
@@ -534,7 +589,9 @@ export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedRespo
     for (const part of item.content ?? []) {
       if (part.type === "output_text" && part.text) {
         content.push({ type: "text", text: part.text });
-      } else if (part.type === "reasoning" && part.text) {
+      } else if (part.type === "reasoning_text" && part.text) {
+        // 同缺陷 A：此处原本也写 "reasoning"（规范里不存在的值），
+        // 即非流式路径的思考内容同样被丢弃。两条路径必须用同一个字面量。
         content.push({ type: "thinking", thinking: part.text });
       } else if (part.type === "refusal" && part.text) {
         // 与 Chat 路径对齐：refusal 兜底为可见文本，否则表现为"模型莫名没回复"

@@ -673,9 +673,46 @@ export class AnthropicProvider implements Provider {
         "AUDIT:API",
         `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
+      // § 从 SDK 抛出的 APIError 里还原结构化字段（缺陷 C 修复）
+      //
+      // 上面那个 `case "error"` 分支在真实 SDK 路径上**不可达**：SDK 的
+      // `core/streaming.js` 只 yield 六种事件（message_start / message_delta /
+      // message_stop / content_block_*），对 `sse.event === 'error'` 是
+      // **直接 `throw new APIError(...)`** —— 于是流内 error 一律落到这个 catch。
+      //
+      // 此前这里只取 `err.message`，把 `type` 与 `streamLevel` 都丢了，后果分两档：
+      //   - 消息里恰好含 `overloaded` 等关键词时：`classifyError` 靠关键词兜住，
+      //     仍判可重试（SDK 把整个 body JSON 塞进了 message，关键词恰好在里面）——
+      //     **线上没炸是运气，不是设计**；
+      //   - 消息里没有关键词时（如 `api_error` + "服务暂时不可用"）：实测得到
+      //     **裸 `Error`**（reason undefined）→ 既不重试也不降级。
+      // 带上 `type` 走 `classifyStreamError` 才能得到可重试的 `StreamLevelError`。
+      // 这正是 errors.ts 里「不能靠关键词匹配、要用 provider 给出的错误类型」
+      // 那条注释所要求的，而这条路径此前恰恰给不出来。
+      //
+      // `err.error` 是 SDK 保留的**已解析** body（`core/error.js` 的 `this.error = error`），
+      // 对流内 error 就是 `{type:"error", error:{type,message}}`，故取两层 `.error.type`。
+      const parsedBody = err?.error;
+      const upstreamType =
+        typeof parsedBody?.error?.type === "string"
+          ? parsedBody.error.type
+          : typeof parsedBody?.type === "string" && parsedBody.type !== "error"
+            ? parsedBody.type
+            : undefined;
+      const upstreamMessage =
+        typeof parsedBody?.error?.message === "string" ? parsedBody.error.message : undefined;
       yield {
         type: "error",
-        error: { message: err.message || String(err) },
+        error: {
+          // 优先用上游给的人类可读消息；没有才退回 SDK 拼的整串（含 body JSON）。
+          message: upstreamMessage || err.message || String(err),
+          ...(upstreamType && { type: upstreamType }),
+          ...(typeof err?.status === "number" && { statusCode: err.status }),
+          // 只有确实拿到上游结构化 type 时才置 streamLevel —— 它是
+          // fallback.ts 选择 classifyStreamError 而非 classifyError 的开关，
+          // 无脑置位会让纯网络异常（ECONNRESET 等）也走流内错误分类。
+          ...(upstreamType && { streamLevel: true }),
+        },
       };
     }
   }

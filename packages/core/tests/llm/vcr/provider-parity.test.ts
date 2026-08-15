@@ -18,23 +18,29 @@
  * 2. **协议专属**：只在某一族成立的行为（Anthropic 的 signature_delta、DeepSeek 的
  *    insufficient_system_resource 等），单族断言，不进 parity。
  *
- * § 已知不 parity 的三处（本文件用 `test.failing` 钉住，不是遗漏）
- * 见文件末尾 "§ 已知缺陷" 两节，三条都是本 PR 从字节层回放才暴露出来的：
- *   - **缺陷 A**：`response.content_part.added` 的 reasoning 判据用了规范里不存在的
- *     part 类型 → Responses 族推理摘要串进正文（证据：openapi.yaml 行号）。
- *   - **缺陷 B**：`response.incomplete` 不采 usage → 截断轮成本记 0（同上）。
- *   - **缺陷 C**：Anthropic SDK 对 `event: error` 直接 throw，`case "error"` 不可达
- *     → 结构化 `error.type` / `streamLevel` 丢失（证据：SDK 源码行号）。
+ * § 建这张网时查出并修掉的四个缺陷
+ * 四条都是**从字节层回放**才暴露的 —— 此前的 provider 测试都在 Provider 层造假流
+ * （直接 yield 已经成形的 StreamEvent），绕过了真实的解析/SDK 路径。也就是说它们测的是
+ * 「下游拿到字段后处理得对不对」，而不是「provider 到底给不给得出那些字段」。
  *
- * **用 `test.failing` 而不是注释掉**：注释掉的断言不会在修好之后提醒你回来删，
- * `test.failing` 会在缺陷被修复的那一刻变红（此机制已实测自证：断言一旦通过，
- * bun 报 "marked as failing but it passed"）。
+ *   - **A**：`content_part.added` 的推理判据用了规范里不存在的 part 类型 `"reasoning"`
+ *     （规范是 `reasoning_text`），且真实流走的 `reasoning_summary_part.added`
+ *     根本没有对应 case → Responses 族推理摘要串进正文。
+ *   - **A′**：修 A 时 TypeScript 收窄 union 报 "no overlap"，连带暴露**非流式路径**
+ *     写了同一个错字面量 → 非流式思考内容同样被丢弃。**这条是类型检查查出来的，
+ *     不是 review 看出来的** —— 也是为什么值得把字面量收进一个 union 而不是散写字符串。
+ *   - **B**：`response.incomplete` 不采 usage（同为终态的 `completed` 采了）
+ *     → 截断轮成本记 0，而截断轮恰是单轮最贵的那类。
+ *   - **C**：Anthropic SDK 对 `event: error` 直接 throw、从不 yield，导致
+ *     `case "error"` 不可达，catch 只取 `err.message` → 结构化 `type`/`streamLevel` 丢失。
  *
- * 三条都**不在本 PR 修** —— PR-1 的范围是「补回归网」，改 provider 行为属 fix 类改动，
- * 应各自单开 PR。这三条 test.failing 就是那些 PR 的现成验收断言。
+ * 四条均已在本轮修复，断言从「`test.failing` 钉桩」转为「防复发断言」，
+ * 分别落在下面的 "防复发 · …" 两节与「协议专属 · Anthropic」节。
  */
 
 import { describe, test, expect } from "bun:test";
+import { classifyError, classifyStreamError, StreamLevelError } from "@sid-code/core/llm/errors.ts";
+import { parseResponsesBody } from "@sid-code/core/llm/openai-responses.ts";
 import { replayFixture, type ProtocolFamily, type ReplayResult } from "./replay-collect.ts";
 
 /** 一个语义场景在某一族里的夹具坐标 */
@@ -309,22 +315,49 @@ describe("协议专属 · Anthropic", () => {
   });
 
   /**
-   * 这条断言钉住的是**实际行为**，不是期望行为——期望行为见下面缺陷 C 的 test.failing。
+   * 流内 error 走的是 **SDK throw → provider catch** 这条路，不是 `case "error"`
+   * （SDK `core/streaming.js` 对 `sse.event === 'error'` 直接 throw，从不 yield）。
+   * 缺陷 C 修复后，catch 会从 `APIError.error`（SDK 保留的已解析 body）还原结构化字段。
    *
-   * 实测：`event: error` 到不了 `anthropic.ts:634` 的 `case "error"`。Anthropic SDK 在
-   * `core/streaming.js:62-63` 对 `sse.event === 'error'` **直接 throw APIError**，
-   * 根本不 yield 该事件。所以真实 SDK 路径走的是 `anthropic.ts:668` 的 catch，
-   * 那里只取 `err.message`（整个 body 的 JSON 字符串），`type` / `streamLevel` 全丢。
+   * 这条断言的价值在于**它测的是真实路径**：现有的
+   * `stream-level-error.test.ts` 在 Provider 层造假流、直接 yield 一个已带
+   * `type`/`streamLevel` 的事件，绕过了整个 SDK —— 所以它证明不了 provider
+   * 到底给不给得出这些字段。只有从字节层回放才能。
    */
-  test("流内 error 目前经 SDK throw → catch 落地，结构化字段丢失（现状钉桩）", async () => {
+  test("流内 error 还原上游结构化 type + streamLevel（供按字段而非关键词判重试）", async () => {
     const r = await replayFixture("anthropic-stream-error.json", "anthropic-messages");
     const errEvent = r.events.find((e) => e.type === "error") as any;
     expect(errEvent).toBeDefined();
-    // 现状：message 里是被 JSON.stringify 的整个 error body
-    expect(errEvent.error?.message).toContain("overloaded_error");
-    // 现状：结构化字段没了（这正是缺陷 C）
-    expect(errEvent.error?.type).toBeUndefined();
-    expect(errEvent.error?.streamLevel).toBeUndefined();
+    expect(errEvent.error?.type).toBe("overloaded_error");
+    // streamLevel 是 fallback.ts 选 classifyStreamError（而非 classifyError）的开关
+    expect(errEvent.error?.streamLevel).toBe(true);
+    // 消息取上游的人类可读文本，而不是 SDK 拼的整串 body JSON
+    expect(errEvent.error?.message).toBe("Overloaded");
+  });
+
+  test("还原出的结构化 type 确实让 fallback 判成可重试（端到端到分类器）", async () => {
+    // 光断言"字段还原了"不够——要证明它真的改变了分类结果。
+    // 关键点：这里刻意用**不含任何关键词**的场景才有意义，但本夹具消息是
+    // "Overloaded"（含关键词），所以直接拿分类器对比两种输入：
+    //   带 type   → StreamLevelError(可重试)
+    //   不带 type → classifyError 靠关键词，无关键词时退化成裸 Error
+    const r = await replayFixture("anthropic-stream-error.json", "anthropic-messages");
+    const errEvent = r.events.find((e) => e.type === "error") as any;
+    const classified = classifyStreamError(
+      "anthropic",
+      errEvent.error.message,
+      errEvent.error.type,
+      errEvent.error.statusCode,
+    );
+    expect(classified).toBeInstanceOf(StreamLevelError);
+    expect((classified as any).reason).toBe("overloaded");
+
+    // 反例：同样的消息文本但**没有关键词**时，丢了 type 就分不出可重试。
+    // 这正是缺陷 C 在 api_error 类错误上的真实后果。
+    const withoutType = classifyError(new Error("服务暂时不可用"));
+    expect(withoutType).not.toBeInstanceOf(StreamLevelError);
+    const withType = classifyStreamError("anthropic", "服务暂时不可用", "api_error");
+    expect(withType).toBeInstanceOf(StreamLevelError);
   });
 });
 
@@ -354,95 +387,153 @@ describe("协议专属 · OpenAI 族 finish_reason 映射", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-// § 已知缺陷（用 test.failing 钉住，修好后会变红提醒删除 .failing）
+// § 缺陷防复发（三条都由本 PR 的字节层回放发现并当场修掉）
 // ══════════════════════════════════════════════════════════════════════════
 
-describe("已知缺陷 · Responses 族（PR-1 实测发现，证据见注释）", () => {
+describe("防复发 · Responses 族推理摘要归属（缺陷 A）", () => {
   /**
-   * 缺陷 A：`openai-responses.ts:245` 用 `part?.type === "reasoning"` 判定推理块，
+   * 缺陷 A（已修）：`openai-responses.ts` 用 `part?.type === "reasoning"` 判定推理块，
    * 但 OpenAI 规范里 `content_part.added` 的 part 类型只有三种：
    * `output_text` / `refusal` / **`reasoning_text`**（openapi.yaml:54571-54575，
    * `ReasoningTextContent.type` 枚举值为 `reasoning_text`，openapi.yaml:75568-75574）。
    * **`"reasoning"` 这个值在规范里不存在**，所以该分支恒不命中。
    *
-   * 后果：真实流里推理摘要走 `response.reasoning_summary_part.added`
-   * （openapi.yaml:68726-68728，解析器**完全没有这个 case**）→ `inReasoningBlock`
-   * 永不置位 → 后续 `reasoning_summary_text.delta` 被当作**正文** text_delta 发出。
-   * 实测结果：`responses-reasoning.json` 回放出 `text="Considering 6*742"`
-   * —— 推理摘要与正文粘在一起，而 `thinking` 为空。
+   * 更关键的是：真实流里推理摘要根本不走 `content_part.added`，而走
+   * `response.reasoning_summary_part.added`（openapi.yaml:68718-68768），
+   * 而解析器**完全没有这个 case** → `inReasoningBlock` 永不置位 →
+   * 后续 `reasoning_summary_text.delta` 被当作**正文** text_delta 发出。
+   * 修复前实测回放出 `text="Considering 6*742"`（摘要与正文粘连），`thinking` 为空。
    *
-   * 影响面：Responses 族全部思考模型（gpt-5.x 系）的思考内容会污染正文。
-   * 这与 Anthropic / DeepSeek 两族的行为**不一致**，所以它是 parity 缺口而非协议差异。
+   * 修法：补 `reasoning_summary_part.added` case + 把字面量改成 `reasoning_text`，
+   * 两处共用 `openThinkingBlock()`（幂等，防同一 item 多次 summary_index 重复开块）。
    *
-   * 不在本 PR 修：PR-1 的范围是「补回归网」，改解析器行为属于 fix 类改动，
-   * 应单开 PR（并按 CONTRIBUTING.md 在正文说清根因）。本条 test.failing 就是那个 PR 的验收断言。
+   * ⚠️ 连带修了**非流式路径的同一个 bug**：`buildResponsesMessage` 里也写了
+   * `part.type === "reasoning"`，即非流式思考内容同样被丢弃。这处是 TypeScript
+   * 类型检查在收窄 union 后报 "no overlap" 才暴露的 —— 手工 review 没看出来。
    */
-  test.failing("缺陷 A：reasoning summary 应进 thinking 而不是正文", async () => {
+  test("推理摘要进 thinking、不污染正文（reasoning_summary_part.added 路径）", async () => {
     const r = await replayFixture("responses-reasoning.json", "openai-responses");
     expect(r.thinking).toBe("Considering 6*7");
     expect(r.text).toBe("42");
   });
 
+  test("三族的思考内容都与正文分离（parity：这曾是唯一不一致的一族）", async () => {
+    // 缺陷 A 的本质是 parity 缺口：Anthropic / DeepSeek 都分离，只有 Responses 不分离。
+    // 这条断言把三族拉到一起，防止将来只修一族。
+    const cases: Array<[string, ProtocolFamily, string, string]> = [
+      [
+        "anthropic-thinking-stream.json",
+        "anthropic-messages",
+        "Let me think about 6×7. It is 42.",
+        "42",
+      ],
+      ["deepseek-reasoning-cache.json", "openai-chat", "Thinking: 6*7 = 42", "42"],
+      ["responses-reasoning.json", "openai-responses", "Considering 6*7", "42"],
+    ];
+    for (const [fixture, family, thinking, text] of cases) {
+      const r = await replayFixture(fixture, family);
+      expect(r.thinking, `${fixture} 的思考`).toBe(thinking);
+      expect(r.text, `${fixture} 的正文`).toBe(text);
+    }
+  });
+
   /**
-   * 缺陷 B：`response.incomplete` 分支（`openai-responses.ts:358-366`）
-   * **不读 `response.usage`**，而同为终态的 `response.completed` 分支读了
-   * （`openai-responses.ts:330-333` 调 `applyResponsesUsage`）。
+   * 缺陷 A′：`parseResponsesBody`（非流式路径）里也写了同一个错字面量 `"reasoning"`，
+   * 即降级到非流式时思考内容同样被丢弃。
+   *
+   * 这条**不是 review 看出来的** —— 是修 A 时把 `ContentPart.type` 收成 union 后，
+   * TypeScript 报 "This comparison appears to be unintentional... have no overlap"
+   * 才暴露的。教训：协议字面量散写成裸字符串时，写错了类型系统一声不响；
+   * 收进一个 union，同类错误就变成编译期错误。
+   *
+   * 顺带补上：`parseResponsesBody` 此前**零测试覆盖**（全仓 grep 无引用），
+   * 这正是它能带着 bug 存活的原因。降级路径的代码最容易这样——不常走，所以不常测。
+   */
+  test("非流式路径（降级用）同样把 reasoning_text 归到 thinking", () => {
+    const parsed = parseResponsesBody({
+      id: "resp_ns",
+      status: "completed",
+      output: [
+        {
+          id: "item_m",
+          type: "message",
+          role: "assistant",
+          content: [
+            { type: "reasoning_text", text: "Considering 6*7" },
+            { type: "output_text", text: "42" },
+          ],
+        },
+      ],
+      usage: { input_tokens: 50, output_tokens: 20 },
+    });
+
+    expect(parsed.content).toEqual([
+      { type: "thinking", thinking: "Considering 6*7" },
+      { type: "text", text: "42" },
+    ]);
+    expect(parsed.stopReason).toBe("end_turn");
+    expect(parsed.usage.inputTokens).toBe(50);
+    expect(parsed.usage.outputTokens).toBe(20);
+  });
+
+  test("非流式 reasoning item 的 summary 也归到 thinking（另一种承载形态）", () => {
+    // Responses 非流式有两种思考载体：message 里的 reasoning_text part，
+    // 以及独立的 reasoning item 的 summary 数组。两条都要走通。
+    const parsed = parseResponsesBody({
+      id: "resp_ns2",
+      status: "completed",
+      output: [
+        { id: "rs_1", type: "reasoning", summary: [{ type: "summary_text", text: "step one" }] },
+        {
+          id: "item_m",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "done" }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+    expect(parsed.content).toEqual([
+      { type: "thinking", thinking: "step one" },
+      { type: "text", text: "done" },
+    ]);
+  });
+});
+
+describe("防复发 · Responses 族 incomplete 采 usage（缺陷 B）", () => {
+  /**
+   * 缺陷 B（已修）：`response.incomplete` 分支**不读 `response.usage`**，
+   * 而同为终态的 `response.completed` 分支读了（调 `applyResponsesUsage`）。
    *
    * 规范上 `response.incomplete` 的 `response` 字段是完整的 `Response` 对象
-   * （openapi.yaml:67965-67966），含 usage。实测 `responses-incomplete.json`
-   * 回放出 `usage={inputTokens:0, outputTokens:0}`，而夹具里明确写了 8/10。
+   * （openapi.yaml:67965-67966），含 usage —— 所以漏读纯属遗漏而非协议限制。
+   * 修复前实测回放出 `usage={inputTokens:0, outputTokens:0}`，而夹具里写了 8/10。
    *
-   * 后果：被 max_tokens 截断的轮次**成本记 0**。而截断轮恰恰是输出最满的轮
-   * （output 打到上限），是单轮成本最高的那一类 —— 这个漏采方向性地低估成本，
-   * 且正好偏在最贵的样本上。它直接影响北极星「更省」的账本口径。
-   *
-   * 同样不在本 PR 修，理由同缺陷 A。
+   * 后果不是"少一个字段"，而是**方向性偏在最贵的样本上**：incomplete 意味着输出
+   * 打到 max_tokens 上限，恰是单轮 output 最满、成本最高的那一类，而它的成本被记成 0。
+   * 账本里越贵的轮越不计数 → 「更省」的曲线系统性偏乐观。
    */
-  test.failing("缺陷 B：response.incomplete 应采 usage（截断轮成本不应记 0）", async () => {
+  test("response.incomplete 采 usage（截断轮成本不记 0）", async () => {
     const r = await replayFixture("responses-incomplete.json", "openai-responses");
     expect(r.usage.inputTokens).toBe(8);
     expect(r.usage.outputTokens).toBe(10);
   });
-});
 
-describe("已知缺陷 · Anthropic 流内 error 结构化字段丢失（PR-1 实测发现）", () => {
-  /**
-   * 缺陷 C：`anthropic.ts:634` 的 `case "error"` 在真实 SDK 路径上**不可达**。
-   *
-   * 证据链（三步，全部回源实测）：
-   *   1. Anthropic SDK `core/streaming.js:44-49` 只 yield 六种事件
-   *      （message_start / message_delta / message_stop / content_block_*），
-   *      `error` 不在其中；
-   *   2. 同文件 `:62-63` 对 `sse.event === 'error'` **直接 `throw new APIError(...)`**；
-   *   3. 于是流在 provider 的 for-await 里抛出 → 落到 `anthropic.ts:668` 的 catch，
-   *      那里只 `yield { type:"error", error:{ message: err.message } }`
-   *      —— **`type` 与 `streamLevel: true` 都没带上**。
-   *
-   * 为什么此前没被发现：现有测试（`stream-level-error.test.ts:116-123` 等）在
-   * **Provider 层**造假流，直接 yield 一个已经带 `type`/`streamLevel` 的 error 事件，
-   * 绕过了整个 SDK。也就是说它测的是「fallback 拿到结构化字段后分类对不对」，
-   * 而不是「provider 到底给不给得出结构化字段」。VCR 从**字节层**回放才暴露这一段。
-   *
-   * 后果分两档（实测 `classifyError` / `classifyStreamError` 的真实返回值）：
-   *   - 错误消息里**恰好含** `overloaded` 关键词时：`classifyError` 靠关键词兜住，
-   *     仍得 `RetryableError(overloaded)` —— 所以线上没炸，是**运气**，
-   *     因为 SDK 把整个 body JSON 塞进了 message，关键词恰好在里面。
-   *   - 消息里**没有**关键词时（如 `api_error` + "服务暂时不可用"）：
-   *     `streamLevel` 丢失 → 走 `classifyError` → 实测返回**裸 `Error`**（reason undefined），
-   *     **既不重试也不降级**。而带上 `type` 走 `classifyStreamError` 会得到
-   *     `StreamLevelError(server_error)`，是可重试的。
-   *
-   * 这正是 `errors.ts:711-712` 注释警告过的形态：「不能靠关键词匹配，要用 provider
-   * 明确给出的错误类型」—— 而 provider 这条路径恰恰没能给出来。
-   *
-   * 不在本 PR 修（PR-1 的范围是补回归网）。修法方向：catch 里判 `err` 是否
-   * `APIError` 并从 `err.error`（SDK 保留了解析后的 body，`core/error.js:15`）
-   * 取回 `type`，再带上 `streamLevel: true`。本条 test.failing 是那个 PR 的验收断言。
-   */
-  test.failing("缺陷 C：SDK throw 的流内 error 应还原出结构化 type + streamLevel", async () => {
-    const r = await replayFixture("anthropic-stream-error.json", "anthropic-messages");
-    const errEvent = r.events.find((e) => e.type === "error") as any;
-    expect(errEvent.error?.type).toBe("overloaded_error");
-    expect(errEvent.error?.streamLevel).toBe(true);
+  test("三族的截断轮 usage 都不为 0（parity：这曾是唯一记 0 的一族）", async () => {
+    // 与 PARITY-4 互补：那条比 stopReason 归一，这条比"截断轮到底有没有成本"。
+    // 缺陷 B 的形态正是「stopReason 对了但 usage 丢了」—— 只比前者会漏掉它。
+    const cases: Array<[string, ProtocolFamily]> = [
+      ["anthropic-max-tokens-truncated.json", "anthropic-messages"],
+      ["openai-max-tokens-truncated.json", "openai-chat"],
+      ["responses-incomplete.json", "openai-responses"],
+    ];
+    for (const [fixture, family] of cases) {
+      const r = await replayFixture(fixture, family);
+      expect(r.usage.inputTokens, `${fixture} 的 input`).toBe(8);
+      expect(r.usage.outputTokens, `${fixture} 的 output`).toBe(10);
+    }
   });
 });
+
+// 缺陷 C 的断言不单列一节 —— 它已并入上面「协议专属 · Anthropic」，
+// 与 ping / thinking 等同族行为放在一起（那才是它的归属）。
