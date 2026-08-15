@@ -95,6 +95,36 @@ describe("usage-ledger 读写", () => {
     expect(all.length).toBe(2);
   });
 
+  /**
+   * P0-1：`appVersion` 是**可选**字段，混合固件必须全部解析成功。
+   *
+   * 存量 377 行没有这个字段，把它设成必填会让 `readUsageLedger()` 整批丢行 ——
+   * 而 readUsageLedger 的失败是静默的（catch 里跳过损坏行），一次改动就能让
+   * 历史成本数据凭空消失且没有任何报错。
+   */
+  test("混合固件（5 行有 appVersion + 5 行无）10 行全部解析成功", () => {
+    for (let i = 0; i < 5; i++) {
+      appendUsageLedger(entry({ sessionId: `new${i}`, appVersion: "0.1.601" }));
+    }
+    for (let i = 0; i < 5; i++) {
+      appendUsageLedger(entry({ sessionId: `old${i}`, appVersion: undefined }));
+    }
+    const all = readUsageLedger();
+    expect(all.length).toBe(10);
+    expect(all.filter((e) => e.appVersion === "0.1.601").length).toBe(5);
+  });
+
+  test("无 appVersion 的行读回是 undefined —— 不是空串，也不抛错", () => {
+    // 这条防的是 explicit-undefined-punches-through-defaults 那类击穿：
+    // 落盘时写 `"appVersion": undefined` 或 `""` 都会让消费侧的
+    // 「字段缺失 = 存量数据」判据失效（空串是有值的，`!e.appVersion` 虽然仍为真，
+    // 但 JSON 里多出一个键会让"这行没版本"与"这行版本是空"再也分不开）。
+    appendUsageLedger(entry({ sessionId: "old", appVersion: undefined }));
+    const [row] = readUsageLedger();
+    expect(row!.appVersion).toBeUndefined();
+    expect("appVersion" in row!).toBe(false);
+  });
+
   test("maxEntries 只取尾部 N 行", () => {
     for (let i = 0; i < 5; i++) appendUsageLedger(entry({ sessionId: `s${i}` }));
     const last2 = readUsageLedger(2);

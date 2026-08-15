@@ -62,6 +62,18 @@ export interface CacheModelRow {
   trust: "trusted" | "untrusted" | "unknown";
   /** 样本不足 / 命中率异常低 / 渠道不可信等需要人看一眼的原因；为空表示无异常 */
   caveats: string[];
+
+  /**
+   * P2-9：本行里属于存量数据（无 `appVersion`，即 2026-08-08 前的采集代码写的）
+   * 的份额。行的主数字仍是全量 —— 存量只从**总计**里减掉，不改单行展示。
+   *
+   * 单行不减的理由：一行就是一个渠道的全部历史，把它按采集代码版本劈成两半，
+   * 会让"这个渠道命中率多少"这个问题失去唯一答案。而总计要给一个能引用的数字，
+   * 必须干净。
+   */
+  legacySessions: number;
+  legacyPromptTotal: number;
+  legacyCacheHit: number;
 }
 
 export interface CacheReport {
@@ -85,6 +97,42 @@ export interface CacheReport {
   rowsWithoutHost: number;
   /** 同上，按会话数计（行是"模型×渠道"分组，会话数才是用户能对上的量级） */
   sessionsWithoutHost: number;
+
+  /**
+   * P2-9：没有 `appVersion` 的账本行数 —— 即**用 2026-08-08 之前的采集代码写的**。
+   *
+   * 为什么必须排除出命中率总计：那批代码有两个已修的漏采缺陷
+   * （`e6642094` 修 Responses API 缓存双漏采、`ed26bfeb` 修 savings 兜底）。
+   * 实测同一模型同一渠道，`gpt-5.6-luna` 08-02 记 3.2%、08-09 记 81.1% ——
+   * 差异**全部**来自采集代码的修复时点，不是渠道变化。把这批行混进总计，
+   * 会把总命中率从主力渠道的 79~82% 拉低到 66.2%，读起来像"缓存没做好"。
+   *
+   * 与 `rowsWithoutHost` 同一套处理模式（不新造一套）：归入"无版本标记"桶、
+   * 默认排除出总计、渲染层**必须**显式报告排除了多少 —— 静默排除读起来像
+   * "全部数据都在这儿"，而静默不排除读起来像"总计干净"，两种都是骗人。
+   */
+  rowsWithoutVersion: number;
+  /** 同上按会话数计 */
+  sessionsWithoutVersion: number;
+  /** 被排除出命中率总计的存量输入 token 数 */
+  excludedLegacyPromptTotal: number;
+  /** 被排除出命中率总计的存量命中 token 数 */
+  excludedLegacyCacheHit: number;
+  /**
+   * 存量行自己的命中率（可为 null）。
+   *
+   * 单独给出来是为了**自证排除真的生效了**：若它与 `totalHitRate` 相差无几，
+   * 说明要么存量数据本来就不脏、要么排除逻辑没接上 —— 两种都需要人看一眼。
+   * 只报一个"已排除"计数而不给对照值，无法区分这两种情况。
+   */
+  legacyHitRate: number | null;
+  /**
+   * 含存量行的总命中率 —— **仅供对照，不要拿它下结论**。
+   *
+   * 它就是修复前那个被拉低的数字（实测 66.2%）。与 `totalHitRate` 并列输出，
+   * 让"排除了多少脏数据"变成一个能看见的差值而不是一句承诺。
+   */
+  totalHitRateIncludingLegacy: number | null;
   breaks: {
     total: number;
     byCategory: Record<string, number>;
@@ -104,6 +152,18 @@ interface Bucket {
   cacheHit: number;
   costUSD: number;
   savingsUSD: number;
+
+  /**
+   * P2-9：上面各项里**属于存量行（无 `appVersion`）的那部分**，作为子集单独累加。
+   *
+   * 为什么是"桶内子集"而不是"多一个桶维度"：分组键必须保持 `模型 × 渠道`。
+   * 把版本加进键会把每个渠道切成"有版本/无版本"两半，行数翻倍且每半样本更少 ——
+   * 而这个视图要回答的问题是"哪个渠道更省"，不是"哪个版本更省"。
+   * 存量只需要能从总计里**减掉**，不需要单独成行。
+   */
+  legacySessions: number;
+  legacyPromptTotal: number;
+  legacyCacheHit: number;
 }
 
 /** 构造报告数据（纯函数，便于测试；渲染在 renderCacheSection） */
@@ -132,6 +192,9 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
         cacheHit: 0,
         costUSD: 0,
         savingsUSD: 0,
+        legacySessions: 0,
+        legacyPromptTotal: 0,
+        legacyCacheHit: 0,
       };
       buckets.set(key, b);
     }
@@ -140,6 +203,18 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
     b.cacheHit += e.cacheHit;
     b.costUSD += e.costUSD;
     b.savingsUSD += e.savingsUSD;
+
+    // P2-9：判据是"字段缺失"而非任何版本号比较。
+    //
+    // 刻意不写 `if (e.appVersion < "0.1.601")` 这类版本比较：字符串比版本号会在
+    // 0.1.99 vs 0.1.100 上排错，而语义化比较需要引一个解析器 —— 而这里真正要
+    // 区分的只有一件事：**这行是不是用带修复的采集代码写的**。修复落地即开始写
+    // 这个字段，所以"有没有字段"正好就是那条分界线，比任何数值比较都准。
+    if (!e.appVersion) {
+      b.legacySessions++;
+      b.legacyPromptTotal += e.promptTotal;
+      b.legacyCacheHit += e.cacheHit;
+    }
   }
 
   const models = [...buckets.values()]
@@ -167,16 +242,36 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
     .filter((m) => !m.endpointHost)
     .reduce((s, m) => s + m.sessions, 0);
 
+  // P2-9：存量行（无 appVersion）在可信渠道内的份额 —— 从命中率总计里减掉。
+  //
+  // 只在 `counted` 上累加：untrusted 渠道的行已经整行排除掉了，再把它的存量份额
+  // 算进"排除量"会重复计数，让"排除了多少"这个数字本身失真。
+  const legacyPrompt = counted.reduce((s, m) => s + m.legacyPromptTotal, 0);
+  const legacyHit = counted.reduce((s, m) => s + m.legacyCacheHit, 0);
+  const cleanPrompt = totalPrompt - legacyPrompt;
+  const cleanHit = totalHit - legacyHit;
+
   return {
     models,
     // 分母为 0 时给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"
-    totalHitRate: totalPrompt > 0 ? totalHit / totalPrompt : null,
+    //
+    // P2-9：**默认口径已改为"排除存量行"**。全是存量数据时（cleanPrompt=0）给 null
+    // 而不是回落到含存量的数字 —— 回落会让"这个总计是干净的"这个承诺在最需要它的
+    // 场景下静默失效，而 null + 下方显式说明能让人看出"暂时无可信样本"。
+    totalHitRate: cleanPrompt > 0 ? cleanHit / cleanPrompt : null,
     totalCostUSD: counted.reduce((s, m) => s + m.costUSD, 0),
     totalSavingsUSD: counted.reduce((s, m) => s + m.savingsUSD, 0),
     totalSessions: counted.reduce((s, m) => s + m.sessions, 0),
     excludedUntrustedRows: models.length - counted.length,
     rowsWithoutHost,
     sessionsWithoutHost,
+    rowsWithoutVersion: models.filter((m) => m.legacySessions > 0).length,
+    sessionsWithoutVersion: counted.reduce((s, m) => s + m.legacySessions, 0),
+    excludedLegacyPromptTotal: legacyPrompt,
+    excludedLegacyCacheHit: legacyHit,
+    legacyHitRate: legacyPrompt > 0 ? legacyHit / legacyPrompt : null,
+    // 对照值：修复前那个被存量拉低的数字。并列输出让差值可见。
+    totalHitRateIncludingLegacy: totalPrompt > 0 ? totalHit / totalPrompt : null,
     breaks,
   };
 }
@@ -205,6 +300,17 @@ function toRow(s: Bucket, registry: ChannelTrustRegistry): CacheModelRow {
     caveats.push("有命中但省钱为 0，疑为定价表缺该模型");
   }
 
+  // P2-9：本行掺了多少存量数据。**行内数字不减，只标注** —— 一行是一个渠道的
+  // 全部历史，劈成两半就没有唯一答案了；但不标注的话，一个被存量拉低的行数字
+  // 会被当成"这个渠道命中率就这么低"抄走（luna 那次就是这么得出错误结论的）。
+  if (s.legacySessions > 0) {
+    const share = s.sessions > 0 ? ` (${s.legacySessions}/${s.sessions} 会话)` : "";
+    caveats.push(
+      `含 2026-08-08 前采集的存量数据${share}，其 cacheHit/savings 已知漏采 ——` +
+        `本行数字偏低，已从总计中排除该部分`,
+    );
+  }
+
   return {
     model: s.model,
     endpointHost: s.endpointHost,
@@ -216,6 +322,9 @@ function toRow(s: Bucket, registry: ChannelTrustRegistry): CacheModelRow {
     savingsUSD: s.savingsUSD,
     trust: verdict.verdict,
     caveats,
+    legacySessions: s.legacySessions,
+    legacyPromptTotal: s.legacyPromptTotal,
+    legacyCacheHit: s.legacyCacheHit,
   };
 }
 
@@ -252,6 +361,25 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
     L.push(
       `        ⚠ 其中 ${r.sessionsWithoutHost} 个会话无渠道标记（账本 2026-08-08 前不记 endpointHost），` +
         `未参与可信度判定 —— 上面的总计里可能仍混有不可信渠道的数字`,
+    );
+  }
+  // P2-9：存量数据的排除必须**显式报告数量 + 给出对照值**。
+  //
+  // 只说"已排除"不给对照，读者无法判断排除是否真的生效（这正是 §七.3 验收里
+  // "若排除后数字没动说明排除逻辑没生效"那一条要防的）。所以三个数一起给：
+  // 排除了多少会话、存量自己的命中率、以及含存量的旧口径值。
+  if (r.sessionsWithoutVersion > 0) {
+    L.push(
+      `        ⚠ 已排除 ${r.sessionsWithoutVersion} 个无版本标记会话` +
+        `（2026-08-08 前的采集代码，cacheHit/savings 已知漏采）：` +
+        `其命中率 ${r.legacyHitRate === null ? "N/A" : pct(r.legacyHitRate)}，` +
+        `含它们的旧口径总计为 ${
+          r.totalHitRateIncludingLegacy === null ? "N/A" : pct(r.totalHitRateIncludingLegacy)
+        }`,
+    );
+    L.push(
+      `          （上面那行"总计"已是排除后的干净口径。存量行的 cost 仍然有效，` +
+        `只有 cacheHit/savings 失真，所以数据保留不删）`,
     );
   }
   L.push("");

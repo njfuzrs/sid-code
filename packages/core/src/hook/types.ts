@@ -388,11 +388,30 @@ export interface SessionStartInput extends HookInput {
   system_prompt_hash?: string;
   /** Bug3 桥接：source="resume" 时携带被恢复的旧会话 id，使 trajectory 能反查对话历史。 */
   resumed_from?: string;
+  /**
+   * sid-code 自身版本号（`getRawVersion()` 的裸 x.y.z，如 "0.1.601"）。
+   *
+   * 北极星四方向的第 3 级都是「release-over-release 曲线」，而**版本是那条曲线唯一的维度**。
+   * 在此之前轨迹里一个版本字段都没有（`session.traj` 的 metadata 47 个键含 `ver` 的 0 个），
+   * 于是任何指标都归属不到某个 release —— 能力从来不缺（`getRawVersion()` 一直可用），
+   * 缺的是没人把它写进采集链。
+   *
+   * 可选而非必填：hook input 可能由旧版本或测试构造，消费侧（collector）自己兜底取真值。
+   */
+  app_version?: string;
 }
 
 /** SessionEnd 输入 */
 export interface SessionEndInput extends HookInput {
   reason: "exit" | "clear" | "other" | "error" | "abort";
+  /**
+   * sid-code 自身版本号，语义同 `SessionStartInput.app_version`。
+   *
+   * 两端都记的理由：版本在一个进程内恒定（不像 `/model` 可中途切换），
+   * 两端都写是为了让**只有 SessionEnd 存活**的会话也能归因 ——
+   * 实测本机 `SessionStart 55 : SessionEnd 25`，两侧都有缺失，靠单端会丢样本。
+   */
+  app_version?: string;
   /** 当 reason=error 时，可携带错误信息用于 trajectory 诊断 */
   error?: { message: string; name?: string; stack?: string };
   /** 会话统计汇总 */

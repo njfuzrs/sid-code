@@ -134,6 +134,17 @@ export const sidPaths = {
   telemetry: () => sidHomePath("telemetry"),
   /** 用量账本（缓存命中长期统计底座，append-only，默认开、不轮转） */
   usageLedger: () => sidHomePath("usage-ledger.jsonl"),
+  /**
+   * P0-2：会话指标索引（每会话一行摘要，**不受 trajectories LRU 影响**）。
+   *
+   * ⚠ 路径刻意与 `trajectories/` **同级而非在其下**：轨迹目录受 LRU=100 管辖，
+   * `pruneOldSessions()` 会 `rmSync` 整个会话目录。把索引放进去，等于让它被将来
+   * 任何对 `trajectories/` 的清理连带删掉 —— 而它存在的唯一理由就是"删了还在"。
+   *
+   * 与 `usageLedger` 同一套语义（每会话一行 upsert、不自动清理、人类可读）：
+   * 19 字段 ≈ 500B，377 会话 ≈ 190KB，跑到 10 万会话也只有 50MB。
+   */
+  sessionIndex: () => sidHomePath("session-index.jsonl"),
   /** 缓存中断遥测（G13，append-only，跨会话缓存健康度历史） */
   cacheBreaks: () => sidHomePath("cache-breaks.jsonl"),
 

@@ -565,6 +565,43 @@ export interface Digest {
    * 不能因为没病态就整节消失，否则无法区分"这次很干净"与"这版还没接线"。
    */
   pathology?: ProcessPathologyStats;
+
+  /**
+   * P0-2：**会话级**（跨 provider 合并）的指标摘要，供 session-index 长期留存。
+   *
+   * 为什么不复用 `providerStats`：那是按 provider 分桶的，一个会话切多个模型时
+   * 有多行；而索引每会话一行，需要一个会话级的数字。**分位数不能从分桶的分位数
+   * 再平均**（p50 的平均不是平均的 p50），必须回到原始样本重算 —— 所以这里与
+   * `aggregateProviderStats` 共用同一份 first_content 样本提取逻辑，
+   * 而不是拿它的输出二次加工。
+   *
+   * `traj_corrupt` 放这里而不是另开字段：损坏检测本来就在 buildDigest 里做过
+   * （`traj_file_corrupt` 异常），再判一次会漂移出两个答案。
+   */
+  sessionMetrics?: SessionLevelMetrics;
+}
+
+/**
+ * 会话级指标（P0-2 的产物，写进 `~/.sid-code/session-index.jsonl`）。
+ *
+ * 分位数一律"无样本就 undefined，绝不落 0" —— 0 会被读成"0 毫秒"，
+ * 而 undefined 才准确表达"这个会话没有可用样本"。
+ */
+export interface SessionLevelMetrics {
+  ttft_p50?: number;
+  ttft_p95?: number;
+  /** TTFT 样本数。必须一起给：单会话样本天然少，不标 n 会让人误判置信度 */
+  ttft_n: number;
+  /** 端到端耗时分位数 —— PR-4（P1-4）补 `TurnComplete` 埋点后才有值 */
+  e2e_p50?: number;
+  e2e_p95?: number;
+  e2e_n: number;
+  /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
+  defenseTriggered: boolean;
+  /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
+  trajCorrupt: boolean;
+  /** 上下文压缩次数 */
+  compactions: number;
 }
 
 export interface SessionRef {
@@ -1786,6 +1823,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── T12.5：按 Provider 聚合诊断信号 ──
   const providerStats = aggregateProviderStats(events);
+  // P0-2：会话级指标（供 session-index 长留）。trajCorrupt 复用上面已经做过的
+  // 损坏判定（trajRead.corrupt），不再判第二次 —— 两处判定必然漂移出两个答案。
+  const sessionMetrics = aggregateSessionMetrics(events, { trajCorrupt: trajRead.corrupt });
 
   // ── 第 5 批：JIT 上下文度量（命中率 / 字节 / 浪费率 / 耗时分位）──
   const jit = aggregateJitStats(events);
@@ -1826,6 +1866,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
     pathology,
+    // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
+    // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
+    sessionMetrics,
   };
 }
 
@@ -2421,6 +2464,79 @@ export function aggregateProviderStats(
     });
   }
   return result;
+}
+
+/**
+ * P0-2：从 events 派生**会话级**指标，供 session-index 长期留存。
+ *
+ * 与 `aggregateProviderStats` 共用同一份 TTFT 判据（`StreamPhase("first_content")`
+ * 的 `ttft_ms`，每次 fetch 独立计），而不是拿它的输出二次加工 —— 两个理由：
+ *
+ * 1. **分位数不可再平均**：p50 的平均不是平均的 p50。想要会话级 p50 必须回到
+ *    原始样本重排，从分桶结果反推出来的数只是个看起来合理的错数。
+ * 2. **判据必须只有一份**。TTFT 曾栽在"两个消费方各有一套判据"上：旧的
+ *    `AfterModelRaw.ttft_ms` 只在可视文本上触发且重试不重设基准，对 thinking
+ *    模型虚高数十秒（实测合成 53.7s vs 真实 4.9s）。这里再抄一份谓词就是重蹈覆辙。
+ *
+ * `TurnComplete` 是 PR-4（P1-4）才补的埋点，此处**先读、缺了就 n=0** ——
+ * 让索引的字段集从第一天就稳定，避免 PR-4 落地后要迁移历史行。
+ */
+export function aggregateSessionMetrics(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+  opts: { trajCorrupt: boolean },
+): SessionLevelMetrics {
+  const ttfts: number[] = [];
+  const e2es: number[] = [];
+  let defenseTriggered = false;
+  let compactions = 0;
+
+  /** 四环防线的工具信号，与 `scripts/defense-trigger-rate.ts:32` 同一口径 */
+  const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);
+
+  for (const e of events) {
+    if (!e.data) continue;
+
+    // TTFT：与 aggregateProviderStats 逐字同款条件（首个任意内容 chunk，含 thinking）
+    if (e.event === "StreamPhase" && e.data.phase === "first_content") {
+      const ttft = e.data.ttft_ms as number | undefined;
+      if (ttft && ttft > 0) ttfts.push(ttft);
+    }
+
+    // 端到端：PR-4 的 TurnComplete。`elapsed_ms_since_prompt` 在发事件时当场算好，
+    // 这里不做配对 —— 配对式口径已经栽过（watchdog 快照按两套 key 查，结构性恒 null）。
+    if (e.event === "TurnComplete") {
+      const ms = e.data.elapsed_ms_since_prompt as number | undefined;
+      if (ms && ms > 0) e2es.push(ms);
+    }
+
+    if (e.event === "PreToolUse") {
+      const tn = e.data.tool_name as string | undefined;
+      if (tn && HYP_TOOLS.has(tn)) defenseTriggered = true;
+      if (tn === "sub_agent") {
+        const input = e.data.tool_input as Record<string, unknown> | undefined;
+        const at = input?.agent_type ?? e.data.agent_type;
+        if (at === "verify") defenseTriggered = true;
+      }
+    }
+
+    if (e.event === "PreCompact") compactions++;
+  }
+
+  const sortedTtfts = [...ttfts].sort((a, b) => a - b);
+  const sortedE2es = [...e2es].sort((a, b) => a - b);
+
+  return {
+    // 分位数无样本时 percentile 返回 undefined，正是想要的语义（不是 0）
+    ttft_p50: percentile(sortedTtfts, 0.5),
+    ttft_p95: percentile(sortedTtfts, 0.95),
+    ttft_n: sortedTtfts.length,
+    e2e_p50: percentile(sortedE2es, 0.5),
+    e2e_p95: percentile(sortedE2es, 0.95),
+    e2e_n: sortedE2es.length,
+    defenseTriggered,
+    trajCorrupt: opts.trajCorrupt,
+    compactions,
+  };
 }
 
 /**

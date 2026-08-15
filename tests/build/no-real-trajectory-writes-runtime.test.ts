@@ -94,8 +94,8 @@ async function runWithFakeHome(
   return { leaked, exitCode, fakeHome };
 }
 
-describe("运行时落盘门禁：受检测试不得写真实家目录的 trajectories/", () => {
-  test("受检目录跑完，假家目录里不出现 trajectories/", async () => {
+describe("运行时落盘门禁：受检测试不得写真实家目录的长留 sink", () => {
+  test("受检目录跑完，假家目录里不出现 trajectories/ 或 session-index.jsonl", async () => {
     const { leaked, exitCode, fakeHome } = await runWithFakeHome([...SCOPE]);
     try {
       // 先确认被测测试真的跑起来了。子进程若因为路径写错、bun 参数变化而一个测试都没跑，
@@ -105,9 +105,17 @@ describe("运行时落盘门禁：受检测试不得写真实家目录的 trajec
         `受检测试子进程退出码 ${exitCode}（非 0）。先修那边的失败，否则本门禁的结论不可信。`,
       ).toBe(0);
 
+      // 不只看 trajectories/：`trace/` 下的落盘已不止那一个 sink。
+      // P0-2 起 collector 还会写 `~/.sid-code/session-index.jsonl`（与 trajectories/
+      // **同级**，刻意不在其下，好躲开 LRU），只断言 trajectories 会让它整个漏出门禁。
+      //
+      // 这里列 sink 名而非"假家目录必须为空"：preload 兜底本身会在临时目录创建
+      // 一些无害路径，要求全空会让门禁变成噪音源，最后被人加 `|| true` 绕过。
+      const FORBIDDEN_SINKS = ["trajectories", "session-index.jsonl"] as const;
+      const hit = FORBIDDEN_SINKS.filter((s) => leaked.includes(s));
       expect(
-        leaked.includes("trajectories"),
-        `受检测试往真实家目录写了 trajectories/。\n` +
+        hit.length > 0,
+        `受检测试往真实家目录写了：${hit.join(", ")}。\n` +
           `（本次用假 HOME=${fakeHome} 拦下了，真实运行时写的就是用户的 ~/.sid-code/）\n\n` +
           `假家目录 .sid-code/ 下实际出现：${leaked.join(", ") || "(空)"}\n\n` +
           `成因通常是**间接**落盘：测试只调 Manager.addMessage 之类的上层 API，\n` +

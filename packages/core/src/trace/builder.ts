@@ -243,6 +243,14 @@ export interface TraceMetadata {
   exit_status?: string;
   start_source?: string;
   end_source?: string;
+  /**
+   * P0-1：sid-code 自身版本号（裸 x.y.z）。**飞轮维度的唯一来源。**
+   *
+   * 四方向的第 3 级都是 release-over-release 曲线，而在此之前轨迹里一个版本字段都没有
+   * （实测 `session.traj` 的 metadata 47 个键含 `ver` 的 0 个）——于是任何指标都归属不到
+   * 某个 release，第 3 级全部无法起步。由 collector 在会话初始化时兜底填入真值。
+   */
+  app_version?: string;
   /** Bug3 桥接：resume 时本进程用新 id 写 trajectory，此处记录被恢复的旧会话 id，
    *  使 trajectory 能反查到 SessionStore 的 sessions/{旧id}.jsonl 对话历史。 */
   resumed_from?: string;
@@ -428,6 +436,14 @@ export interface TrajectoryMetaOutput {
   tool_source: "sid-code";
   start_source?: string;
   end_source?: string;
+  /**
+   * P0-1：写这份 traj 的 sid-code 版本号（裸 x.y.z，如 "0.1.601"）。
+   *
+   * 消费侧靠它做 release-over-release 对比。**存量 traj 没有这个字段**，
+   * 消费侧必须把 `undefined` 归入「无版本标记」桶并显式标注，不要当成 0 或空串
+   * （见 `explicit-undefined-punches-through-defaults` 那类击穿）。
+   */
+  app_version?: string;
   /** Bug3 桥接：被恢复的旧会话 id（resume 场景），用于反查 SessionStore 对话历史。 */
   resumed_from?: string;
   claude_md_hash?: string;
@@ -944,6 +960,9 @@ export function buildTrajectory(
     tool_source: "sid-code",
     ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
     ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
+    // P0-1：版本号。用「有值才写」而非无条件写 undefined —— 后者会让 JSON 里出现
+    // `"app_version": undefined` 这类击穿默认值的形态（`explicit-undefined-punches-through-defaults`）。
+    ...(metadata.app_version ? { app_version: metadata.app_version } : {}),
     ...(metadata.resumed_from ? { resumed_from: metadata.resumed_from } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
     ...(metadata.error ? { error: metadata.error } : {}),

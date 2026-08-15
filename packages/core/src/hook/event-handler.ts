@@ -40,6 +40,21 @@ import {
   type HookExecutionPlan,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
+
+/**
+ * P0-1：本进程的 sid-code 版本号（裸 x.y.z），供 SessionStart/End 两端携带。
+ *
+ * 在事件层填而不是只在 collector 里兜底：外部 hook 脚本也是这两个事件的消费方，
+ * 它们同样需要知道"这条事件出自哪个版本"。只在 collector 填的话，
+ * hook 侧永远看不到版本，等于把维度锁死在内部一个消费者里。
+ *
+ * env 覆盖与 `analytics/metadata.ts` / `trace/collector.ts` 保持同一口径
+ * （灰度/回放时手动打标）。
+ */
+function appVersion(): string {
+  return process.env.SID_CODE_VERSION ?? getRawVersion();
+}
 
 /** 空结果（无 hook 匹配时返回） */
 function emptyResult(): AggregatedHookResult {
@@ -225,7 +240,13 @@ export class HookEventHandler {
   /** SessionStart 事件 */
   async fireSessionStartEvent(
     source: SessionStartInput["source"] = "startup",
-    options?: { model?: string; systemPromptHash?: string; resumedFrom?: string },
+    options?: {
+      model?: string;
+      systemPromptHash?: string;
+      resumedFrom?: string;
+      /** P0-1：一般不传，由本函数填真值；仅测试与回放需要显式覆盖 */
+      app_version?: string;
+    },
   ): Promise<AggregatedHookResult> {
     const input: SessionStartInput = {
       ...this.createBaseInput(HookEventName.SessionStart),
@@ -233,6 +254,8 @@ export class HookEventHandler {
       model: options?.model,
       system_prompt_hash: options?.systemPromptHash,
       resumed_from: options?.resumedFrom,
+      // P0-1：飞轮维度。四方向第 3 级都是 release-over-release 曲线，版本是唯一分组键。
+      app_version: options?.app_version ?? appVersion(),
     };
     return this.executeHooks(HookEventName.SessionStart, input, { trigger: source });
   }
@@ -244,6 +267,8 @@ export class HookEventHandler {
     options?: {
       harness_summary?: import("./types.ts").HarnessSessionSummary;
       error?: { message: string; name?: string; stack?: string };
+      /** P0-1：一般不传，由本函数填真值；仅测试与回放需要显式覆盖 */
+      app_version?: string;
     },
   ): Promise<AggregatedHookResult> {
     const input: SessionEndInput = {
@@ -252,6 +277,9 @@ export class HookEventHandler {
       stats,
       harness_summary: options?.harness_summary,
       error: options?.error,
+      // P0-1：两端都记。版本在一个进程内恒定，两端都写是为了让**只有 SessionEnd 存活**
+      // 的会话也能归因 —— 实测 SessionStart 55 : SessionEnd 25，两侧都有缺失。
+      app_version: options?.app_version ?? appVersion(),
     };
     return this.executeHooks(HookEventName.SessionEnd, input, { trigger: reason });
   }

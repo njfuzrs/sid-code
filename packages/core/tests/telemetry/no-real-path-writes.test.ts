@@ -48,10 +48,16 @@ import { getSidHome } from "@sid-code/core/config/paths.ts";
  *   更严重：cache-breaks 被灌假数据只是让归因视图失效，账本被灌假会让
  *   `/cache`、trace-digest、博客里所有百分比全部失真。
  *
+ * - upsertSessionIndex / pruneSessionIndex：直接写 ~/.sid-code/session-index.jsonl
+ *   （P0-2，2026-08-15 新增）。这个 sink 的污染后果**比账本更严重**：它存在的
+ *   唯一理由是"轨迹被 LRU 删掉后指标还在"，即它是设计上**永不自动清理**的长期
+ *   趋势底座。灌进去的假行会永久留在里面，且正是 release-over-release 曲线的输入。
+ *
  * 注：checkResponseForCacheBreak 刻意**不在**此列——它只做检测与归因，
  * 落盘由主循环（query/loop.ts:2453）另行调 recordCacheBreak 完成，
  * 实测调它不写盘。把它加进来会制造假阳性。
- * 同理 readUsageLedger / dedupeBySession 是纯读，不在此列。
+ * 同理 readUsageLedger / dedupeBySession / readSessionIndex 是纯读，不在此列；
+ * buildSessionIndexEntry 是纯函数（只组装对象、不落盘），也不在此列。
  */
 const WRITING_EXPORTS = [
   "recordCacheBreak",
@@ -59,6 +65,8 @@ const WRITING_EXPORTS = [
   "appendUsageLedger",
   "upsertUsageLedger",
   "pruneUsageLedger",
+  "upsertSessionIndex",
+  "pruneSessionIndex",
 ] as const;
 
 /**
@@ -73,6 +81,7 @@ const WRITING_EXPORTS = [
 const ISOLATION_MARKERS = [
   "SID_CODE_CACHE_BREAKS",
   "SID_CODE_USAGE_LEDGER",
+  "SID_CODE_SESSION_INDEX",
   "SID_CONFIG_DIR",
 ] as const;
 
@@ -162,9 +171,13 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
         .map((v) => {
           // 按用到的导出指出**对应的**落盘文件与环境变量。写死 cache-breaks 会让
           // 账本类违规拿到一条误导的修复指引（改错变量名，门禁照样红）。
-          const ledger = v.usedExport.includes("UsageLedger");
-          const sink = ledger ? "usage-ledger.jsonl" : "cache-breaks.jsonl";
-          const marker = ledger ? "SID_CODE_USAGE_LEDGER" : "SID_CODE_CACHE_BREAKS";
+          // 三个 sink 各有自己的环境变量，指错一个的后果是"照着提示改完门禁照样红"
+          const sinkAndMarker = v.usedExport.includes("UsageLedger")
+            ? ["usage-ledger.jsonl", "SID_CODE_USAGE_LEDGER"]
+            : v.usedExport.includes("SessionIndex")
+              ? ["session-index.jsonl", "SID_CODE_SESSION_INDEX"]
+              : ["cache-breaks.jsonl", "SID_CODE_CACHE_BREAKS"];
+          const [sink, marker] = sinkAndMarker;
           return `  - ${v.file}（用了 ${v.usedExport} → 写 ~/.sid-code/${sink}，需设 ${marker} 或 SID_CONFIG_DIR）`;
         })
         .join("\n");

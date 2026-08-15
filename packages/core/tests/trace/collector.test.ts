@@ -118,6 +118,71 @@ describe("TraceCollector", () => {
     expect(collector.getMetadata()).toBeUndefined();
   });
 
+  // ─── P0-1：版本号维度（四方向第 3 级「release-over-release 曲线」的唯一分组键）───
+  //
+  // 修复前轨迹里一个版本字段都没有（实测 session.traj 的 metadata 47 个键含 ver 的 0 个），
+  // 于是任何指标都归属不到某个 release。这组测试锁三件事：兜底生效、值是真值不是常量、
+  // 上游传了就用上游的。
+
+  describe("P0-1 app_version 采集", () => {
+    const savedEnv = process.env.SID_CODE_VERSION;
+    afterEach(() => {
+      // 存/恢复而非无条件 delete —— bun test 同进程跑多文件，delete 会抹掉别人的隔离
+      if (savedEnv === undefined) delete process.env.SID_CODE_VERSION;
+      else process.env.SID_CODE_VERSION = savedEnv;
+    });
+
+    test("hook input 不带 app_version 时，collector 兜底取真实版本号", async () => {
+      // fireSessionStart 只传 model，不传 app_version —— 正是生产路径的形态。
+      // 兜底而非只透传：上游漏传就静默丢维度是这类字段最常见的失效方式。
+      delete process.env.SID_CODE_VERSION;
+      await fireSessionStart(hookSystem);
+      const { getRawVersion } = await import("@sid-code/shared/version.ts");
+      expect(collector.getMetadata()!.app_version).toBe(getRawVersion());
+    });
+
+    test("落盘值是裸 x.y.z，不带 'sid-code v' 前缀或 '(TypeScript)' 后缀", async () => {
+      // 带前后缀的字符串当分组键要下游反复剥壳，且两处剥法一旦不一致就分裂成两个桶
+      delete process.env.SID_CODE_VERSION;
+      await fireSessionStart(hookSystem);
+      expect(collector.getMetadata()!.app_version).toMatch(/^\d+\.\d+\.\d+/);
+    });
+
+    test("反向自证：版本源被改成 0.0.0-test 时，落盘就是 0.0.0-test", async () => {
+      // 这条防的是"零命中当成功" —— 只断言"字段存在且形如 x.y.z"的话，
+      // 一个写死的常量也能过。必须证明写进去的是**真值**而非硬编码。
+      // 同类教训见 metric-exists-but-value-is-junk：_ctx_version 曾恒为 "dev"，
+      // 字段在、非空、类型对，任何存在性断言都不会红。
+      process.env.SID_CODE_VERSION = "0.0.0-test";
+      await fireSessionStart(hookSystem);
+      expect(collector.getMetadata()!.app_version).toBe("0.0.0-test");
+    });
+
+    test("hook input 显式带 app_version 时优先用上游值（兜底不覆盖真值）", async () => {
+      process.env.SID_CODE_VERSION = "0.0.0-env";
+      await hookSystem.fireSessionStartEvent("startup", {
+        model: "claude-test",
+        app_version: "1.2.3",
+      });
+      expect(collector.getMetadata()!.app_version).toBe("1.2.3");
+    });
+
+    test("app_version 进 session.traj 的 metadata（不只留在内存里）", async () => {
+      // 内存里有、落盘没有 = 消费侧读不到，等于没采。必须验到文件。
+      process.env.SID_CODE_VERSION = "0.0.0-persist";
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem);
+      await hookSystem.fireSessionEndEvent("exit");
+
+      // 目录名取 SessionStart 触发时的 session_id（beforeEach 设的 sess-001），
+      // 不是 fireSessionStart 事后 setSessionId 的值 —— 与本文件其余 traj 断言一致
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      expect(existsSync(trajPath)).toBe(true);
+      const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+      expect(traj.metadata.app_version).toBe("0.0.0-persist");
+    });
+  });
+
   test("SessionStart 创建 writer，后续事件写入 events.jsonl", async () => {
     await fireSessionStart(hookSystem);
     const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");

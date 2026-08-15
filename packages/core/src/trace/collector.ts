@@ -35,9 +35,11 @@ import {
   type UserPromptSubmitInput,
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
-import { buildDigest, resolvePaths } from "./digest.ts";
+import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
+import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -210,6 +212,21 @@ export class TraceCollector {
   private trajThrottleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TRAJ_THROTTLE_MS = 30_000;
 
+  /**
+   * P0-2：session-index 增量落盘节流。
+   *
+   * **为什么增量路径是必需的、不是优化**：只挂 SessionEnd 会重演账本踩过的坑
+   *（见 `app.ts` 的 upsert 注释：账本此前只在退出路径落一行，交互式会话停在 REPL
+   * 不退出 → 该会话在跨会话聚合里长期计 $0）。实测本机 `SessionStart 55 : SessionEnd 25`
+   * —— **30 个会话没有终态**，只挂 SessionEnd 等于放弃 54.5% 的样本，
+   * 而 P0-2 的全部目的就是"样本不要丢"。
+   *
+   * 节流间隔比 traj 大一档（60s vs 30s）：索引写的是 upsert（读全量→重写全文），
+   * 比 traj 的单文件覆盖更贵，而"最近一分钟的指标"对趋势曲线没有意义。
+   */
+  private indexThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly INDEX_THROTTLE_MS = 60_000;
+
   // ── Harness 编辑统计内部计数器 ──
   private harnessEditCount = 0;
   private harnessEditFirstPass = 0;
@@ -251,6 +268,17 @@ export class TraceCollector {
    * 优先删已上传的（含 .uploaded 标记）——它们的数据已安全落到远端；
    * 未上传的目录（重试队列待传）即使较旧也尽量保留，避免丢失尚未采集到的训练数据。
    * 失败静默：清理不是关键路径，不能阻塞采集。
+   *
+   * ⚠ **P0-2：本函数只清原始轨迹，指标摘要已由 `trace/session-index.ts` 长期留存**
+   *（`~/.sid-code/session-index.jsonl`，与 trajectories/ 同级，不受本函数影响）。
+   *
+   * 不要为了"保住指标"而调大 `maxSessionsRetained` —— 那条路已经论证过是错解：
+   * 只是把问题推迟到 1000 个会话之后，且届时数据量 ×10。真正需要长留的是每会话
+   * ≈500B 的摘要，不是 45MB 的原始轨迹，两者差两个数量级。
+   *
+   * 修复前的后果值得记下来：本函数删掉目录时 `session-summary.json` 一起消失，
+   * 于是 TTFT p50 从文档记录的 4.7s（1032 样本）"变成" 3.3s（1399 样本）——
+   * **不是性能改善，是样本被换了一批**。一个不可复现的指标证明不了任何改进。
    */
   private pruneOldSessions(): void {
     try {
@@ -629,6 +657,11 @@ export class TraceCollector {
       has_thinking: false,
       has_sub_agent: false,
       start_source: input.source,
+      // P0-1：版本号是四方向第 3 级「release-over-release 曲线」的唯一维度。
+      // **兜底而非只透传**：hook input 可能来自旧版本或测试构造，collector 自己能拿到
+      // 真值时不该依赖上游 —— 上游漏传就静默丢维度是这类字段最常见的失效方式。
+      // env 覆盖保持与 `analytics/metadata.ts:184` 同一口径（灰度/回放时手动打标）。
+      app_version: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
       resumed_from: input.resumed_from,
       total_tokens_sent: 0,
       total_tokens_received: 0,
@@ -1188,6 +1221,10 @@ export class TraceCollector {
     // 重建 session.traj（节流：最多 30s 一次，不再每轮全量覆盖）
     this.rebuildTraj();
 
+    // P0-2：增量落 session-index（节流 60s）。挂在这里而非只挂 SessionEnd ——
+    // 实测 55 个 SessionStart 只有 25 个 SessionEnd，只挂终态会丢掉 54.5% 的样本。
+    this.scheduleSessionIndexFlush();
+
     this.writer.appendEvent({
       event: HookEventName.AfterModel,
       session_id: this.metadata.session_id,
@@ -1607,6 +1644,14 @@ export class TraceCollector {
     // 最终重建 session.traj（强制刷，确保包含所有数据，取消未 fire 的节流定时器）
     await this.forceRebuildTraj();
 
+    // P0-2：取消在途的 session-index 增量排程。下面 persistSessionSummary 会写权威行，
+    // 若不取消，那个定时器可能在权威行之后 fire，用 exit_status="incomplete" 的
+    // 中间态把已经写好的终态行覆盖掉（latest-wins 对它同样生效）。
+    if (this.indexThrottleTimer !== null) {
+      clearTimeout(this.indexThrottleTimer);
+      this.indexThrottleTimer = null;
+    }
+
     // D3-1 + D3-3：退出时落 messages.json（完整消息历史 + 退出归因）。
     // 落实 CLAUDE.md 评测纪律不变量第 1 条「transcript 必落盘」到真实交互退出路径。
     // 尤其 abnormal / user_interrupt 退出时，此前只有 metadata.json 无法验尸。
@@ -1893,6 +1938,20 @@ export class TraceCollector {
       };
       this.writer.writeSessionSummary(summary);
 
+      // P0-2：同一份 digest 结论再落一行到 ~/.sid-code/session-index.jsonl。
+      //
+      // 为什么紧贴 writeSessionSummary 而不另找位置：两者用**同一个 digest 对象**，
+      // 保证 summary 与 index 的数字恒等。分开算就是 collector 一套、index 一套，
+      // 日后必然漂移出两套结论（这与本函数头部"复用 digest"是同一条契约）。
+      //
+      // 索引存在的唯一理由是「LRU 删掉会话目录后指标还在」—— 所以它落在
+      // trajectories/ **之外**（见 sidPaths.sessionIndex 注释）。
+      //
+      // 直接把上面那个 summary 对象传下去，而不是在索引侧重算 real_errors /
+      // anomalies_count / pathological：那三项的口径判据（REAL_ERROR_KINDS 白名单、
+      // high+medium 过滤、六项病态映射）已经在上面写过一遍，重算就是第二份判据。
+      this.writeSessionIndexRow(summary, digest.sessionMetrics);
+
       // P1-7：`[高]` 级异常主动打 WARN。
       //
       // 缺口的准确描述（核验后修正）：SessionEnd 自动跑 digest + 落盘 session-summary.json
@@ -1925,6 +1984,34 @@ export class TraceCollector {
         "TRACE",
         `落 session-summary.json 失败（不影响退出）: ${err?.message ?? err}`,
       );
+    }
+  }
+
+  /**
+   * P0-2：把 digest 的会话级结论 upsert 进 `~/.sid-code/session-index.jsonl`。
+   *
+   * 与 `persistSessionSummary` 共用同一个 digest 对象（调用方传入），不重算 ——
+   * 见调用点注释。全程 try-catch：索引写不进去绝不能影响会话本身。
+   */
+  private writeSessionIndexRow(
+    summary: Record<string, unknown>,
+    m: SessionLevelMetrics | undefined,
+  ): void {
+    try {
+      upsertSessionIndex(
+        buildSessionIndexEntry(summary, {
+          ts: Math.floor(Date.now() / 1000),
+          // P0-1 的产物。metadata 里已由 collector 兜底填过真值，此处直接取。
+          app_version: this.metadata.app_version,
+          ttft: { p50: m?.ttft_p50, p95: m?.ttft_p95, n: m?.ttft_n },
+          e2e: { p50: m?.e2e_p50, p95: m?.e2e_p95, n: m?.e2e_n },
+          defense_triggered: m?.defenseTriggered,
+          traj_corrupt: m?.trajCorrupt,
+          compactions: this.metadata.compactions.length,
+        }),
+      );
+    } catch (err: any) {
+      getLogger().warn("TRACE", `写 session-index 失败（不影响退出）: ${err?.message ?? err}`);
     }
   }
 
@@ -2124,6 +2211,78 @@ export class TraceCollector {
     }, this.TRAJ_THROTTLE_MS);
     // unref：不因这个定时器阻止进程退出（session end 有 forceRebuildTraj 兜底）。
     this.trajThrottleTimer?.unref?.();
+  }
+
+  /**
+   * P0-2：排程一次 session-index 增量落盘（节流 60s，首轮立即写）。
+   *
+   * 首轮立即写的理由与 `rebuildTraj` 的"前 5 轮直接写"同源：**崩溃安全优先**。
+   * 一个跑了 40 秒就被 Ctrl-C 掉的会话若等节流，索引里一行都没有 —— 而这类
+   * 短命会话恰恰是"没有终态"那 54.5% 的主要构成。
+   *
+   * 增量行的 exit_status 必然是"还没结束"的中间态，SessionEnd 时的 upsert 会覆盖它
+   *（latest-wins）。中间态行本身也有价值：它标出"这个会话跑过但没善终"。
+   */
+  private scheduleSessionIndexFlush(): void {
+    // 首轮立即写：崩溃/Ctrl-C 掉的短会话不能一行都没有
+    if (this.pairs.length <= 1) {
+      this.flushSessionIndexIncremental();
+      return;
+    }
+    if (this.indexThrottleTimer !== null) return; // 已排程，等它 fire
+    this.indexThrottleTimer = setTimeout(() => {
+      this.indexThrottleTimer = null;
+      this.flushSessionIndexIncremental();
+    }, this.INDEX_THROTTLE_MS);
+    // unref：不因这个定时器阻止进程退出（SessionEnd 路径有权威 upsert 兜底）
+    this.indexThrottleTimer?.unref?.();
+  }
+
+  /**
+   * 增量写一行 session-index。
+   *
+   * 与 SessionEnd 路径的关键差异：**这里不跑 digest**。digest 要读盘上的
+   * session.traj 并跑 20+ 条异常规则，每轮都跑会把它从"退出时算一次"变成
+   * 长会话里的热路径。增量行只带 metadata 里现成的累计量 + events 无关的字段，
+   * 异常/病态类结论留给 SessionEnd 的权威行补齐（latest-wins 会覆盖）。
+   *
+   * 代价点破：增量行的 `real_errors` / `anomalies_count` / `pathological` 恒为
+   * 空/0，直到 SessionEnd 覆盖。所以**「没有终态的会话」在索引里只有过程指标、
+   * 没有质量结论** —— 这是有意的取舍（有过程指标远好于整行都没有），
+   * 消费侧要按 `exit_status === "incomplete"` 区分，不能把它当成"零错误"。
+   */
+  private flushSessionIndexIncremental(): void {
+    try {
+      if (!this.initialized) return;
+      upsertSessionIndex(
+        buildSessionIndexEntry(
+          {
+            session_id: this.metadata.session_id,
+            model: this.metadata.model,
+            // 显式标成 incomplete 而非留空：留空会被消费侧当成 end_turn 之外的未知态，
+            // 而"还在跑/没善终"是一个需要能被 filter 出来的明确状态
+            exit_status: "incomplete",
+            duration_ms: Date.now() - new Date(this.metadata.start_time).getTime(),
+            turns: this.metadata.total_api_calls,
+            total_steps: this.pairs.length,
+            cost_usd: this.metadata.total_cost_usd,
+            tokens_sent: this.metadata.total_tokens_sent,
+            tokens_received: this.metadata.total_tokens_received,
+            // 三项质量结论留给 SessionEnd 的权威行（见本函数注释的代价说明）
+            real_errors: 0,
+            anomalies_count: 0,
+            pathological: [],
+          },
+          {
+            ts: Math.floor(Date.now() / 1000),
+            app_version: this.metadata.app_version,
+            compactions: this.metadata.compactions.length,
+          },
+        ),
+      );
+    } catch {
+      // 索引写失败绝不影响会话（不变量：采集永不阻塞主循环）
+    }
   }
 
   /** 强制立即重建 session.traj（session end / snapshot 上传 / 侧调用用量落定时调用）。 */

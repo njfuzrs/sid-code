@@ -357,7 +357,13 @@ export class HookSystem {
 
   async fireSessionStartEvent(
     source: SessionStartInput["source"] = "startup",
-    options?: { model?: string; systemPromptHash?: string; resumedFrom?: string },
+    options?: {
+      model?: string;
+      systemPromptHash?: string;
+      resumedFrom?: string;
+      /** P0-1：一般不传，由 event-handler 填真实版本号；仅测试/回放需显式覆盖 */
+      app_version?: string;
+    },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSessionStartEvent(source, options);
   }
@@ -368,6 +374,8 @@ export class HookSystem {
     options?: {
       harness_summary?: import("./types.ts").HarnessSessionSummary;
       error?: { message: string; name?: string; stack?: string };
+      /** P0-1：一般不传，由 event-handler 填真实版本号；仅测试/回放需显式覆盖 */
+      app_version?: string;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSessionEndEvent(reason, stats, options);

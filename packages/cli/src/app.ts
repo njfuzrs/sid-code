@@ -99,6 +99,7 @@ import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 import {
   recordSideCall,
   setSideCostCalculator,
@@ -5468,6 +5469,12 @@ export class App {
       // 取主模型而非 config.baseURL：多模型会话里账本行标注的是主导模型，
       // 端点必须与之对应，否则会把 A 渠道的可信度贴到 B 渠道的数字上。
       ...(primary?.[1]?.endpointHost ? { endpointHost: primary[1].endpointHost } : {}),
+      // P0-1：写这一行的 sid-code 版本号。两个用途：① 四方向第 3 级的 release-over-release
+      // 曲线唯一分组键；② 让消费侧能把「08-08 前用旧采集代码写的脏数据」隔离出总计（P2-9）。
+      // 无条件写（不像上面几个字段做存在性判断）：版本号永远拿得到，缺失只发生在存量行上，
+      // 而「缺失」本身正是消费侧用来识别存量数据的信号。
+      // env 覆盖与 `analytics/metadata.ts:184`、`trace/collector.ts` 同一口径。
+      appVersion: process.env.SID_CODE_VERSION ?? getRawVersion(),
     };
   }
 

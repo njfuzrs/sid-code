@@ -21,6 +21,14 @@ const savedLedger = process.env.SID_CODE_USAGE_LEDGER;
 const savedBreaks = process.env.SID_CODE_CACHE_BREAKS;
 const savedTrust = process.env.SID_CODE_CHANNEL_TRUST;
 
+/**
+ * 默认造**当前采集代码写的行**（带 appVersion）。
+ *
+ * 这个默认值是刻意的：P2-9 之后，无 `appVersion` 的行被判为「2026-08-08 前的存量
+ * 脏数据」并排除出命中率总计。本文件其余测试考的是 trust 排除口径，不是版本口径 ——
+ * 若默认不带版本，它们会因为"整批被当存量排除"而全部变成 N/A，测出来的东西就不是
+ * 它们的题目了。**要测存量路径请显式传 `appVersion: undefined`**（见文件末尾那组）。
+ */
 function entry(over: Partial<UsageLedgerEntry> & { sessionId: string }): UsageLedgerEntry {
   return {
     ts: 1_700_000_000,
@@ -34,6 +42,7 @@ function entry(over: Partial<UsageLedgerEntry> & { sessionId: string }): UsageLe
     costUSD: 0.01,
     savingsUSD: 0.02,
     durationMs: 1000,
+    appVersion: "0.1.601",
     ...over,
   };
 }
@@ -273,6 +282,126 @@ describe("P0-4 不可信渠道排除", () => {
     const out = renderCacheSection({ noColor: true });
     expect(out).toContain("未知渠道");
     expect(buildCacheReport().totalHitRate).toBeCloseTo(0.7, 6);
+  });
+});
+
+/**
+ * P2-9：无 `appVersion` 的存量行排除出命中率总计。
+ *
+ * 背景（本组测试要锁住的事实）：`gpt-5.6-luna` 实测 2026-08-02 记 3.2% 命中、
+ * 08-09 记 81.1% —— 同模型同渠道，差异**全部**来自采集代码的修复时点
+ * （`e6642094` / `ed26bfeb`，均 2026-08-08），不是渠道变化。这批行混进总计会把
+ * 总命中率从主力渠道的 79~82% 拉到 66.2%，读起来像"缓存没做好"。
+ */
+describe("P2-9 存量脏数据（无版本标记）隔离", () => {
+  beforeEach(() => {
+    // 空 trust 登记表：本组只考版本口径，不让 trust 排除掺进来
+    writeFileSync(
+      process.env.SID_CODE_CHANNEL_TRUST!,
+      JSON.stringify({ channels: {} }) + "\n",
+      "utf-8",
+    );
+  });
+
+  test("混合固件：总计只用带版本的行，且排除计数与会话数对得上", () => {
+    writeLedger([
+      // 3 行当前代码（高命中，接近实测主力渠道）
+      entry({ sessionId: "n1", appVersion: "0.1.601", promptTotal: 10000, cacheHit: 8000 }),
+      entry({ sessionId: "n2", appVersion: "0.1.601", promptTotal: 10000, cacheHit: 8000 }),
+      entry({ sessionId: "n3", appVersion: "0.1.602", promptTotal: 10000, cacheHit: 8000 }),
+      // 3 行存量（漏采导致命中近零，正是 luna 08-02 那批的形态）
+      entry({ sessionId: "o1", appVersion: undefined, promptTotal: 10000, cacheHit: 0 }),
+      entry({ sessionId: "o2", appVersion: undefined, promptTotal: 10000, cacheHit: 0 }),
+      entry({ sessionId: "o3", appVersion: undefined, promptTotal: 10000, cacheHit: 0 }),
+    ]);
+    const r = buildCacheReport();
+
+    // 干净口径：只有 3 行新数据参与 → 80%
+    expect(r.totalHitRate).toBeCloseTo(0.8, 6);
+    // 对照口径（旧行为）：6 行全算 → 40%。两者必须不同，否则排除没生效
+    expect(r.totalHitRateIncludingLegacy).toBeCloseTo(0.4, 6);
+    expect(r.totalHitRate!).toBeGreaterThan(r.totalHitRateIncludingLegacy!);
+
+    // 排除量：3 个会话、30000 输入 token、0 命中
+    expect(r.sessionsWithoutVersion).toBe(3);
+    expect(r.excludedLegacyPromptTotal).toBe(30000);
+    expect(r.excludedLegacyCacheHit).toBe(0);
+    // 存量自己的命中率单独可见 —— 用来自证"排除的确实是脏的那批"
+    expect(r.legacyHitRate).toBeCloseTo(0, 6);
+  });
+
+  test("排除后总命中率显著高于含存量口径（若不动说明排除逻辑没接上）", () => {
+    // 这条是 §七.3 验收里那句"若排除后数字没动，说明排除逻辑没生效"的机械化版本
+    writeLedger([
+      entry({ sessionId: "clean", appVersion: "0.1.601", promptTotal: 1000, cacheHit: 820 }),
+      entry({ sessionId: "dirty", appVersion: undefined, promptTotal: 100000, cacheHit: 3200 }),
+    ]);
+    const r = buildCacheReport();
+    expect(r.totalHitRate).toBeCloseTo(0.82, 6);
+    // 存量体量大得多（100k vs 1k），不排除的话总计被彻底带偏到 4%
+    expect(r.totalHitRateIncludingLegacy!).toBeLessThan(0.05);
+  });
+
+  test("全是存量数据时总计给 null，不回落到含存量的数字", () => {
+    // 回落会让"这个总计是干净的"在最需要它的场景下静默失效
+    writeLedger([
+      entry({ sessionId: "o1", appVersion: undefined, promptTotal: 10000, cacheHit: 100 }),
+    ]);
+    const r = buildCacheReport();
+    expect(r.totalHitRate).toBeNull();
+    // 但对照值仍算得出来，且存量行本身没被丢弃
+    expect(r.totalHitRateIncludingLegacy).toBeCloseTo(0.01, 6);
+    expect(r.models).toHaveLength(1);
+  });
+
+  test("全是新数据时不报排除，也不误判", () => {
+    writeLedger([
+      entry({ sessionId: "n1", appVersion: "0.1.601", promptTotal: 1000, cacheHit: 750 }),
+    ]);
+    const r = buildCacheReport();
+    expect(r.sessionsWithoutVersion).toBe(0);
+    expect(r.excludedLegacyPromptTotal).toBe(0);
+    expect(r.legacyHitRate).toBeNull();
+    // 无存量时两个口径必须相等 —— 不相等说明减法减错了对象
+    expect(r.totalHitRate).toBeCloseTo(r.totalHitRateIncludingLegacy!, 9);
+    expect(renderCacheSection({ noColor: true })).not.toContain("无版本标记");
+  });
+
+  test("存量行的 cost 仍计入总成本（只有 cacheHit/savings 失真，不能整行丢）", () => {
+    writeLedger([
+      entry({ sessionId: "n1", appVersion: "0.1.601", costUSD: 1, promptTotal: 1000, cacheHit: 0 }),
+      entry({ sessionId: "o1", appVersion: undefined, costUSD: 2, promptTotal: 1000, cacheHit: 0 }),
+    ]);
+    // 花过的钱是事实，删了就无法回溯"历史上花了多少"
+    expect(buildCacheReport().totalCostUSD).toBeCloseTo(3, 6);
+  });
+
+  test("渲染层显式报告排除量 + 给出对照值（只说已排除无法判断是否生效）", () => {
+    writeLedger([
+      entry({ sessionId: "n1", appVersion: "0.1.601", promptTotal: 1000, cacheHit: 800 }),
+      entry({ sessionId: "o1", appVersion: undefined, promptTotal: 1000, cacheHit: 0 }),
+      entry({ sessionId: "o2", appVersion: undefined, promptTotal: 1000, cacheHit: 0 }),
+    ]);
+    const out = renderCacheSection({ noColor: true });
+    expect(out).toContain("已排除 2 个无版本标记会话");
+    // 对照值必须出现，否则读者无法判断排除是否真的生效
+    expect(out).toContain("旧口径总计");
+    // 必须点明数据保留不删，否则下一个人会以为该清掉存量
+    expect(out).toContain("cost 仍然有效");
+    // 行级也要标注，防止一个被存量拉低的行数字被单独抄走
+    expect(out).toContain("含 2026-08-08 前采集的存量数据");
+  });
+
+  test("判据是「字段缺失」而非版本号比较（0.1.99 vs 0.1.100 不会排错）", () => {
+    // 刻意不做版本号大小比较：字符串比会把 0.1.99 判成大于 0.1.100，
+    // 而语义化比较要引解析器。真正的分界线就是"有没有这个字段"。
+    writeLedger([
+      entry({ sessionId: "a", appVersion: "0.1.99", promptTotal: 1000, cacheHit: 900 }),
+      entry({ sessionId: "b", appVersion: "0.1.100", promptTotal: 1000, cacheHit: 900 }),
+    ]);
+    const r = buildCacheReport();
+    expect(r.sessionsWithoutVersion).toBe(0);
+    expect(r.totalHitRate).toBeCloseTo(0.9, 6);
   });
 });
 
