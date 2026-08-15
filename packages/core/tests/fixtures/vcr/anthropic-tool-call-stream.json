@@ -1,0 +1,46 @@
+{
+  "provider": "anthropic",
+  "scenario": "tool-call-stream",
+  "description": "Anthropic Messages — 单工具调用（parity 场景 tool-call）",
+  "model": "claude-haiku-4-5-20251001",
+  "request": {
+    "model": "claude-haiku-4-5-20251001",
+    "url": "https://api.anthropic.com/v1/messages"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5-20251001\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":0}}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\"\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\":\\\"Paris\\\"}\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":8}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

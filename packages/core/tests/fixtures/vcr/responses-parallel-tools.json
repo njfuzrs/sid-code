@@ -1,0 +1,62 @@
+{
+  "description": "OpenAI Responses — 两个 function_call 并行",
+  "provider": "openai-responses",
+  "scenario": "parallel-tools",
+  "model": "gpt-5.6-luna",
+  "request": {
+    "method": "POST",
+    "url": "/v1/responses",
+    "body": {
+      "model": "gpt-5.6-luna",
+      "stream": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_p\",\"status\":\"in_progress\"},\"sequence_number\":0}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_a\",\"type\":\"function_call\",\"name\":\"get_weather\",\"call_id\":\"call_a\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_a\",\"output_index\":0,\"delta\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"sequence_number\":2}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_a\",\"output_index\":0,\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"sequence_number\":3}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_a\",\"type\":\"function_call\",\"name\":\"get_weather\",\"call_id\":\"call_a\",\"status\":\"completed\"},\"sequence_number\":4}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_b\",\"type\":\"function_call\",\"name\":\"get_time\",\"call_id\":\"call_b\",\"status\":\"in_progress\"},\"sequence_number\":5}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_b\",\"output_index\":1,\"delta\":\"{\\\"tz\\\":\\\"UTC\\\"}\",\"sequence_number\":6}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_b\",\"output_index\":1,\"arguments\":\"{\\\"tz\\\":\\\"UTC\\\"}\",\"sequence_number\":7}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc_b\",\"type\":\"function_call\",\"name\":\"get_time\",\"call_id\":\"call_b\",\"status\":\"completed\"},\"sequence_number\":8}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_p\",\"status\":\"completed\",\"usage\":{\"input_tokens\":25,\"output_tokens\":14,\"total_tokens\":39}},\"sequence_number\":9}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

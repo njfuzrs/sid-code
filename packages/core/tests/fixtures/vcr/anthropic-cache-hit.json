@@ -1,0 +1,42 @@
+{
+  "provider": "anthropic",
+  "scenario": "cache-hit",
+  "description": "Anthropic Messages — 缓存命中（message_start 携带 cache_read_input_tokens）",
+  "model": "claude-haiku-4-5-20251001",
+  "request": {
+    "model": "claude-haiku-4-5-20251001",
+    "url": "https://api.anthropic.com/v1/messages"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5-20251001\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":2048}}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"cached\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

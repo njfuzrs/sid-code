@@ -1,0 +1,30 @@
+{
+  "provider": "openai",
+  "scenario": "stream-error",
+  "description": "OpenAI Chat — 流中途下发 error 对象（服务端 500 类）",
+  "model": "gpt-4o-mini",
+  "request": {
+    "model": "gpt-4o-mini",
+    "url": "https://api.openai.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"error\":{\"message\":\"Internal server error\",\"type\":\"server_error\",\"code\":null}}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

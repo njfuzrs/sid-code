@@ -1,0 +1,42 @@
+{
+  "description": "OpenAI Responses — response.incomplete 映射为 max_tokens（parity 场景 truncated）",
+  "provider": "openai-responses",
+  "scenario": "incomplete",
+  "model": "gpt-5.6-luna",
+  "request": {
+    "method": "POST",
+    "url": "/v1/responses",
+    "body": {
+      "model": "gpt-5.6-luna",
+      "stream": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_i\",\"status\":\"in_progress\"},\"sequence_number\":0}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"item_i\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"item_i\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"},\"sequence_number\":2}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"item_i\",\"output_index\":0,\"content_index\":0,\"delta\":\"This answer gets cut off mid-\",\"sequence_number\":3}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_i\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":8,\"output_tokens\":10,\"total_tokens\":18}},\"sequence_number\":4}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

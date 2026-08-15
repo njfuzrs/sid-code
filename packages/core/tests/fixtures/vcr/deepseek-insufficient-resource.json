@@ -1,0 +1,34 @@
+{
+  "provider": "deepseek",
+  "scenario": "insufficient-resource",
+  "description": "DeepSeek — finish_reason=insufficient_system_resource 保留原值（供 fallback 判重试）",
+  "model": "deepseek-chat",
+  "request": {
+    "model": "deepseek-chat",
+    "url": "https://api.deepseek.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"start\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"insufficient_system_resource\"}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: [DONE]\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

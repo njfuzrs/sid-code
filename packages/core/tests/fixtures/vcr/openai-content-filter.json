@@ -1,0 +1,38 @@
+{
+  "provider": "openai",
+  "scenario": "content-filter",
+  "description": "OpenAI Chat — finish_reason=content_filter 保留原值（不并入 end_turn）",
+  "model": "gpt-4o-mini",
+  "request": {
+    "model": "gpt-4o-mini",
+    "url": "https://api.openai.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I can\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3,\"total_tokens\":12}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: [DONE]\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

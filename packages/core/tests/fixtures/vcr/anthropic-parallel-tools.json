@@ -1,0 +1,54 @@
+{
+  "provider": "anthropic",
+  "scenario": "parallel-tools",
+  "description": "Anthropic Messages — 两个工具并行调用（index 0/1 交错）",
+  "model": "claude-haiku-4-5-20251001",
+  "request": {
+    "model": "claude-haiku-4-5-20251001",
+    "url": "https://api.anthropic.com/v1/messages"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5-20251001\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":25,\"output_tokens\":0}}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"get_time\",\"input\":{}}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"tz\\\":\\\"UTC\\\"}\"}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":14}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

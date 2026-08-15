@@ -1,0 +1,46 @@
+{
+  "provider": "deepseek",
+  "scenario": "reasoning-cache",
+  "description": "DeepSeek — reasoning_content + 顶层 prompt_cache_hit_tokens（官方直连字段形态）",
+  "model": "deepseek-reasoner",
+  "request": {
+    "model": "deepseek-reasoner",
+    "url": "https://api.deepseek.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Thinking: 6*7\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\" = 42\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"42\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-reasoner\",\"choices\":[],\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":20,\"total_tokens\":70,\"prompt_cache_hit_tokens\":32,\"prompt_cache_miss_tokens\":18,\"completion_tokens_details\":{\"reasoning_tokens\":12}}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: [DONE]\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}

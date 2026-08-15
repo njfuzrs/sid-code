@@ -1,0 +1,38 @@
+{
+  "provider": "openai",
+  "scenario": "max-tokens-truncated",
+  "description": "OpenAI Chat — finish_reason=length 映射为 max_tokens（parity 场景 truncated）",
+  "model": "gpt-4o-mini",
+  "request": {
+    "model": "gpt-4o-mini",
+    "url": "https://api.openai.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"This answer gets cut off mid-\"},\"finish_reason\":null}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini\",\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":10,\"total_tokens\":18}}\n\n",
+        "delayMs": 5
+      },
+      {
+        "data": "data: [DONE]\n\n",
+        "delayMs": 5
+      }
+    ]
+  }
+}
