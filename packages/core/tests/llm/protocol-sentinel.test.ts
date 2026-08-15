@@ -10,7 +10,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@sid-code/core/llm/types.ts";
@@ -132,5 +140,101 @@ describe("D3-2 — 违例现场落盘", () => {
       dumpDir: "/proc/nonexistent-readonly-\0invalid",
     });
     expect(path).toBeNull();
+  });
+});
+
+/**
+ * P2-12：违规样本目录的 LRU 保留上限。
+ *
+ * 背景（2026-08-14 实测）：`protocol-violations/` 无任何保留策略，用户盘上攒到
+ * **8255 个文件 / 32MB**。落盘本身是对的（D3-2 的验尸现场），但没有上限的采集
+ * 等于慢性泄漏。
+ *
+ * 上限 500 在生产代码里是常量，测试里用「铺 505 个假样本再落一个新的」来验：
+ * 数量被压回上限、且**本次样本一定保得住**（LRU 在 write 之后跑，只回收更旧的）。
+ */
+describe("P2-12 — 违规样本目录 LRU", () => {
+  const MAX = 500; // 与 protocol-sentinel.ts 的 MAX_VIOLATION_DUMPS 对齐
+
+  function orphanMessages(): Message[] {
+    return [asst(["lru1", "read"], ["lru2", "edit"]), userResults("lru1")];
+  }
+
+  /** 铺 n 个旧样本，mtime 依次更旧（i 越小越旧） */
+  function seedOldDumps(n: number): string[] {
+    const paths: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const p = join(dumpDir, `protocol-violation-${1000000 + i}.json`);
+      writeFileSync(p, "{}");
+      const t = new Date(Date.now() - (n - i) * 60_000);
+      utimesSync(p, t, t);
+      paths.push(p);
+    }
+    return paths;
+  }
+
+  test("超过上限时回收最旧的，数量压回 MAX", () => {
+    seedOldDumps(MAX + 5);
+    expect(readdirSync(dumpDir).length).toBe(MAX + 5);
+
+    const messages = orphanMessages();
+    const path = dumpProtocolViolation(messages, checkMessageHistoryIntegrity(messages), {
+      providerName: "deepseek",
+      dumpDir,
+      now: Date.now(),
+    });
+
+    // 落盘 1 个 → 506 个 → 回收 6 个最旧的 → 剩 500
+    expect(readdirSync(dumpDir).length).toBe(MAX);
+    // 本次样本必须保得住（LRU 跑在 write 之后）
+    expect(path).not.toBeNull();
+    expect(existsSync(path!)).toBe(true);
+  });
+
+  test("回收的是最旧的那几个，较新的样本不受影响", () => {
+    const seeded = seedOldDumps(MAX + 3);
+    const messages = orphanMessages();
+    dumpProtocolViolation(messages, checkMessageHistoryIntegrity(messages), {
+      providerName: "deepseek",
+      dumpDir,
+      now: Date.now(),
+    });
+
+    // 最旧的 4 个（3 个溢出 + 本次新增挤掉 1 个）应已不存在
+    expect(existsSync(seeded[0])).toBe(false);
+    expect(existsSync(seeded[1])).toBe(false);
+    // 最新铺进去的那个仍在
+    expect(existsSync(seeded[seeded.length - 1])).toBe(true);
+  });
+
+  test("未超上限时一个都不删（防把 LRU 写成无条件清理）", () => {
+    const seeded = seedOldDumps(10);
+    const messages = orphanMessages();
+    dumpProtocolViolation(messages, checkMessageHistoryIntegrity(messages), {
+      providerName: "deepseek",
+      dumpDir,
+      now: Date.now(),
+    });
+
+    expect(readdirSync(dumpDir).length).toBe(11);
+    expect(seeded.every((p) => existsSync(p))).toBe(true);
+  });
+
+  test("目录里的非样本文件不被 LRU 碰到（只认 protocol-violation- 前缀）", () => {
+    seedOldDumps(MAX + 5);
+    const foreign = join(dumpDir, "README-别删我.txt");
+    writeFileSync(foreign, "人写的说明");
+    const t = new Date(Date.now() - 999 * 60_000); // 故意做成最旧
+    utimesSync(foreign, t, t);
+
+    const messages = orphanMessages();
+    dumpProtocolViolation(messages, checkMessageHistoryIntegrity(messages), {
+      providerName: "deepseek",
+      dumpDir,
+      now: Date.now(),
+    });
+
+    // 即使它是目录里 mtime 最旧的，也不该被当成样本回收
+    expect(existsSync(foreign)).toBe(true);
   });
 });

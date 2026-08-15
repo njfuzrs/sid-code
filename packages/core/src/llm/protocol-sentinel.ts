@@ -20,7 +20,7 @@
  */
 
 import { join } from "node:path";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, rmSync } from "node:fs";
 import type { Message } from "./types.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -50,6 +50,58 @@ function resolveStrict(explicit?: boolean): boolean {
   if (typeof explicit === "boolean") return explicit;
   const env = process.env.SID_CODE_PROTOCOL_STRICT;
   return env === "1" || env === "true";
+}
+
+/**
+ * P2-12：违规样本保留上限。
+ *
+ * 为什么需要（2026-08-14 实测）：`protocol-violations/` 无任何保留策略，用户盘上
+ * 攒到 **8255 个文件 / 32MB**。落盘本身是对的（D3-2 的验尸现场），但**没有上限的
+ * 采集等于慢性泄漏**。
+ *
+ * 上限定 500 而不是更小：违规样本的价值在于「同一类违规反复出现」的模式，
+ * 只留几十个会把模式截断。500 × 平均 4KB ≈ 2MB，量级上无感。
+ */
+const MAX_VIOLATION_DUMPS = 500;
+
+/**
+ * 违规样本 LRU 清理：文件数超过 MAX_VIOLATION_DUMPS 时按 mtime 删最旧的。
+ *
+ * 复用 `collector.ts` 的 `pruneOldSessions` 模式（数一遍 → 算 overflow → 按 mtime
+ * 排序删最旧）。差异只有一处：这里的条目是**文件**而非目录 —— 实测盘上 8255 个条目
+ * 全是 `protocol-violation-<ts>.json` 平铺文件（方案文档写的"8255 个目录"口径有误）。
+ *
+ * best-effort：清理失败绝不影响落盘本身（落盘是主线，清理是附带）。
+ */
+function pruneOldViolationDumps(dumpDir: string): void {
+  try {
+    const entries = readdirSync(dumpDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.startsWith("protocol-violation-"))
+      .map((e) => {
+        const path = join(dumpDir, e.name);
+        let mtime = 0;
+        try {
+          mtime = statSync(path).mtimeMs;
+        } catch {
+          /* stat 失败按最旧处理（mtime=0），优先被回收 */
+        }
+        return { path, mtime };
+      });
+
+    if (entries.length <= MAX_VIOLATION_DUMPS) return;
+
+    const overflow = entries.length - MAX_VIOLATION_DUMPS;
+    const deletable = entries.sort((a, b) => a.mtime - b.mtime).slice(0, overflow);
+    for (const e of deletable) {
+      try {
+        rmSync(e.path, { force: true });
+      } catch {
+        /* 单个删除失败不影响其余 */
+      }
+    }
+  } catch {
+    /* 清理失败静默——不能让它挡住落盘 */
+  }
 }
 
 /**
@@ -105,6 +157,9 @@ export function dumpProtocolViolation(
 
     const filePath = join(dumpDir, `protocol-violation-${ts}.json`);
     writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+    // P2-12：落盘后做一次 LRU，把目录压回上限内。
+    // 放在 write **之后**：本次样本永远保得住，被回收的只会是更旧的。
+    pruneOldViolationDumps(dumpDir);
     log.error(
       "LLM:PROTOCOL",
       `协议违例现场已落盘: ${filePath}（${describeIntegrityViolation(result)}）`,

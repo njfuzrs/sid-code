@@ -13,7 +13,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  utimesSync,
+  readdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TraceCollector } from "@sid-code/core/trace/collector.ts";
@@ -133,7 +141,9 @@ describe("空壳会话清理的保守性（绝不能删的）", () => {
     expect(existsSync(dir)).toBe(true);
   });
 
-  test("没有 events.jsonl → 保留（可能正在初始化，交给 LRU 管）", () => {
+  test("没有 events.jsonl 且静置未满 24h → 保留（可能正在初始化，交给 LRU 管）", () => {
+    // 注意：这个目录**完全为空**，正好也是 P2-11 新分支的形态。3h < 24h 阈值 →
+    // 仍然保留，即条件 1 的保护语义没有被新分支削弱。
     const dir = makeSession("noevents1", {}, { ageHours: 3 });
     runPrune();
     expect(existsSync(dir)).toBe(true);
@@ -143,6 +153,76 @@ describe("空壳会话清理的保守性（绝不能删的）", () => {
     const dir = makeSession("empty1", { "events.jsonl": "" });
     runPrune();
     expect(existsSync(dir)).toBe(true);
+  });
+});
+
+/**
+ * P2-11：完全为空的目录（连 events.jsonl 都没有）掉在两道清理机制的缝里 ——
+ * 条件 1 要求「有 events.jsonl」把它排除，LRU 又因为没到 100 个上限而不触发。
+ *
+ * 新增的是一条**独立分支**（不是放宽条件 1），阈值 24h。两侧边界都要锁死：
+ * ⚠ `statSync().mtimeMs` 是浮点数，对新目录 `now - mtimeMs` 会算出负数，
+ * 只测「删掉了」这一侧会漏掉「该留的也被删了」这类反向故障
+ * （见 MEMORY mtime-float-breaks-maxage-zero）。
+ */
+describe("P2-11 完全空目录的独立判据分支", () => {
+  /** 造一个完全为空的目录（ls -A 无任何内容），mtime 推到 ageHours 小时前 */
+  function makeEmptyDir(id: string, ageHours: number): string {
+    const dir = join(sessionsDir, id);
+    mkdirSync(dir, { recursive: true });
+    const t = new Date(Date.now() - ageHours * 3600_000);
+    utimesSync(dir, t, t);
+    return dir;
+  }
+
+  test("空目录 + 25 小时前 → 删除（阈值内侧）", () => {
+    const dir = makeEmptyDir("empty-25h", 25);
+    expect(readdirSync(dir).length).toBe(0); // 前置断言：确实是空目录
+    runPrune();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("空目录 + 23 小时前 → 保留（阈值外侧，防止把 24h 判据写成恒真）", () => {
+    const dir = makeEmptyDir("empty-23h", 23);
+    runPrune();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test("空目录 + 刚刚创建（mtime 浮点，now - mtimeMs 可能为负）→ 保留", () => {
+    // 不调 utimesSync，让 mtime 就是"现在"。若判据写成 `ageMs > 0` 之类，
+    // 浮点负数会让它恒 false —— 那种写法在这里表现为"一个都不删"，
+    // 反过来若写成 `Math.abs(...)` 则会误删。两种错法都被这条测试盯住。
+    const dir = join(sessionsDir, "empty-now");
+    mkdirSync(dir, { recursive: true });
+    runPrune();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  test("非空但只含 events.jsonl 的老目录仍走原条件 1 分支（既有行为不变）", () => {
+    // 这是防「新分支顺手改掉了老分支语义」的对照组：
+    // 有 events.jsonl + 只含 SessionStart + 3h（>1h 阈值）→ 按原判据删。
+    const dir = makeSession("cond1-intact", { "events.jsonl": evt("SessionStart") });
+    runPrune();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("清理结果分开报两类删除数与盘上目录数（两个分母的取数源）", () => {
+    makeEmptyDir("res-empty1", 30);
+    makeEmptyDir("res-empty2", 30);
+    makeEmptyDir("res-empty-fresh", 2); // 未到 24h，不该被算进 removedEmpty
+    makeSession("res-blank1", { "events.jsonl": evt("SessionStart") }); // 走条件 1 分支
+    makeSession("res-real1", {
+      "events.jsonl": evt("SessionStart", "AfterModelRaw"),
+      "session.traj": "{}",
+    });
+
+    const collector = new TraceCollector({ outputDir: join(root, "trajectories") }, null);
+    const result = collector.getLastBlankPruneResult();
+
+    expect(result.removedEmpty).toBe(2); // 两个 30h 的空目录
+    expect(result.removedBlank).toBe(1); // 一个只含 SessionStart 的
+    // 盘上还剩：未到期的空目录 + 有真实调用的会话 = 2
+    expect(result.remaining).toBe(2);
   });
 });
 

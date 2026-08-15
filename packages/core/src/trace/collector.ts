@@ -73,6 +73,26 @@ export interface CollectorOptions {
   maxSessionsRetained?: number;
 }
 
+/**
+ * P2-11：空壳清理的结果，**分开报两类删除数**与清理后的盘上目录数。
+ *
+ * 为什么要区分：`removedBlank`（有 events.jsonl、只含未开工事件）与 `removedEmpty`
+ * （目录完全为空、连 events.jsonl 都没有）掉在两道不同的判据里，混成一个数字就
+ * 说不清哪条分支在起作用。`remaining` 是「盘上目录数」这个分母的取数源 ——
+ * P2-11 要求指标输出同时给「有效会话数」与「盘上目录数」两个分母。
+ *
+ * 消费端（`session-index.jsonl` 与 `northstar-snapshot`）属 PR-2 / PR-5，尚未合并；
+ * 这里先把数据备好，不在本 PR 里造消费方。
+ */
+export interface StaleBlankPruneResult {
+  /** 删掉的「有 events.jsonl 但只含未开工事件」目录数（原有条件 1~4 分支） */
+  removedBlank: number;
+  /** 删掉的「完全为空」目录数（P2-11 新增独立分支） */
+  removedEmpty: number;
+  /** 清理后 sessions/ 下剩余目录数（盘上目录分母，含尚无数据的新目录） */
+  remaining: number;
+}
+
 // ─── system prompt 文本提取 ───
 
 function extractSystemPromptText(system: unknown): string {
@@ -198,6 +218,16 @@ export class TraceCollector {
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
   private readonly tokenEstimator = new TokenEstimator();
 
+  /**
+   * P2-11：最近一次启动清理的结果（两类删除数 + 清理后盘上目录数）。
+   * 暴露给 `getLastBlankPruneResult()`，供「同时报两个分母」的指标输出消费。
+   */
+  private lastBlankPrune: StaleBlankPruneResult = {
+    removedBlank: 0,
+    removedEmpty: 0,
+    remaining: 0,
+  };
+
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir ?? sidPaths.trajectories();
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
@@ -205,7 +235,7 @@ export class TraceCollector {
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
     // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
-    this.pruneStaleBlankSessions();
+    this.lastBlankPrune = this.pruneStaleBlankSessions();
     // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
     // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
@@ -292,31 +322,62 @@ export class TraceCollector {
    *
    * 条件 2 用**白名单**而非黑名单：新增事件类型时，未知事件默认被当作"有活动"从而
    * 保留目录。判据宁可漏删，绝不能误删。
+   *
+   * ── P2-11：另有一条**独立**判据分支（2026-08-14 实测）──
+   *
+   * 上面四个条件有个缝：条件 1 要求「有 events.jsonl」，而实测 82 个目录里有 24 个
+   * **完全为空**（`ls -A` 无任何内容），连 events.jsonl 都没有 → 被条件 1 直接排除；
+   * LRU 那道机制也没删（82 < 100 未触发上限）。它们正好掉在两道清理机制之间。
+   *
+   * 修法是**新增一条独立分支**，而不是放宽条件 1 —— 条件 1 保护的是"正在初始化的
+   * 新会话"（目录已建、events.jsonl 还没写第一行），放宽它会误删并发 sid-code 进程
+   * 刚建的目录，而多开终端是常态。独立分支 + 更长的静置阈值（24h vs 1h）风险最小：
+   * 一个已经空了整天的目录不可能还是"正在初始化"。
    */
-  private pruneStaleBlankSessions(): void {
+  private pruneStaleBlankSessions(): StaleBlankPruneResult {
     /** "未开工"事件白名单：只出现这些 = 会话从未真正开始工作 */
     const IDLE_ONLY_EVENTS = new Set(["SessionStart", "SessionEnd", "GatewayPricingSync"]);
     /** 除 events.jsonl / warn.log / heartbeat.txt 外，任何文件存在即视为有数据，保留 */
     const IGNORABLE_FILES = new Set(["events.jsonl", "warn.log", "heartbeat.txt"]);
     /** 目录至少静置这么久才考虑删除（防误删其它进程正在用的目录） */
     const STALE_BLANK_AGE_MS = 60 * 60 * 1000;
+    /** P2-11 独立分支：完全为空的目录需要静置更久才删（阈值刻意比上面长一个量级） */
+    const EMPTY_DIR_AGE_MS = 24 * 60 * 60 * 1000;
 
+    let removed = 0;
+    let removedEmpty = 0;
     try {
       const sessionsDir = join(this.outputDir, "sessions");
-      if (!existsSync(sessionsDir)) return;
+      if (!existsSync(sessionsDir)) return { removedBlank: 0, removedEmpty: 0, remaining: 0 };
 
       const now = Date.now();
-      let removed = 0;
 
       for (const e of readdirSync(sessionsDir, { withFileTypes: true })) {
         if (!e.isDirectory() || e.name.startsWith(".")) continue;
         const dir = join(sessionsDir, e.name);
         try {
+          // 目录静置时长——两条分支共用这一次 statSync。
+          // ⚠ mtimeMs 是浮点数，对刚建的目录 now - mtimeMs 可能算出**负数**
+          // （见 MEMORY mtime-float-breaks-maxage-zero）。用 `<` 比较天然把负数
+          // 判成"太新，不动"，方向是安全的；但阈值两侧都必须有测试锁死。
+          const ageMs = now - statSync(dir).mtimeMs;
+
+          const files = readdirSync(dir, { withFileTypes: true });
+
+          // ── P2-11 独立分支：目录完全为空（ls -A 无内容）且静置 > 24h → 删 ──
+          // 放在条件 1 之前，因为条件 1（必须有 events.jsonl）恰好会把这类目录排除掉。
+          if (files.length === 0) {
+            if (ageMs >= EMPTY_DIR_AGE_MS) {
+              rmSync(dir, { recursive: true, force: true });
+              removedEmpty++;
+            }
+            continue;
+          }
+
           // 条件 4：太新的目录不动（可能是别的进程正在跑）
-          if (now - statSync(dir).mtimeMs < STALE_BLANK_AGE_MS) continue;
+          if (ageMs < STALE_BLANK_AGE_MS) continue;
 
           // 条件 3：除 events/warn/heartbeat 外有任何文件 → 有数据，保留
-          const files = readdirSync(dir, { withFileTypes: true });
           if (files.some((f) => !IGNORABLE_FILES.has(f.name))) continue;
 
           // 条件 1：必须有 events.jsonl
@@ -352,16 +413,54 @@ export class TraceCollector {
         }
       }
 
-      if (removed > 0) {
+      if (removed > 0 || removedEmpty > 0) {
         getLogger().info(
           "TRACE",
-          `清理历史空壳会话 ${removed} 个（只含 SessionStart、无任何 LLM 调用）——` +
+          `清理历史空壳会话 ${removed} 个（只含 SessionStart、无任何 LLM 调用）` +
+            `+ 完全空目录 ${removedEmpty} 个——` +
             `它们会把"traj 覆盖率"这类指标的分母灌水`,
         );
       }
+      return {
+        removedBlank: removed,
+        removedEmpty,
+        remaining: this.countSessionDirs(),
+      };
     } catch (err) {
       getLogger().warn("TRACE", `空壳会话清理失败（不影响采集）: ${err}`);
+      return { removedBlank: removed, removedEmpty, remaining: this.countSessionDirs() };
     }
+  }
+
+  /**
+   * 数一下 sessions/ 下还剩多少目录（不含隐藏项）。
+   *
+   * 只用于清理结果的 `remaining` 字段——它是「盘上目录数」这个**分母口径**的取数源。
+   * P2-11 要求指标输出同时报两个分母（有效会话数 / 盘上目录数），避免只给一个数字
+   * 然后被质疑口径。消费端（session-index.jsonl + northstar-snapshot，属 PR-2/PR-5）
+   * 尚未合并，本函数先把数据备好。
+   */
+  private countSessionDirs(): number {
+    try {
+      const sessionsDir = join(this.outputDir, "sessions");
+      if (!existsSync(sessionsDir)) return 0;
+      return readdirSync(sessionsDir, { withFileTypes: true }).filter(
+        (e) => e.isDirectory() && !e.name.startsWith("."),
+      ).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * P2-11：读取本次启动清理的结果，供指标输出「同时报两个分母」。
+   *
+   * 期望的渲染形态（消费方在 PR-2 / PR-5）：
+   *   `会话终态覆盖率 45.5%（25/55 有效会话）｜盘上目录 82 个，含 26 个无数据目录`
+   * 两个分母都给，比只给一个然后被质疑口径更好。
+   */
+  getLastBlankPruneResult(): StaleBlankPruneResult {
+    return { ...this.lastBlankPrune };
   }
 
   /**
