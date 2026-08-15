@@ -10,11 +10,10 @@
 
 import {
   aggregateProviderHealth,
+  renderHealthLines,
   sendHealthAlerts,
-  type HealthReport,
+  type HealthColor,
 } from "@sid-code/core/telemetry/provider-health.ts";
-// P2-3：分桶行文案与命令面板共用（避免同一份数据在三个入口有三种说法）
-import { formatTtftBucketLine } from "@sid-code/core/trace/ttft-cache-buckets.ts";
 
 // ─── 参数解析 ───
 
@@ -56,8 +55,13 @@ for (let i = 0; i < args.length; i++) {
 const report = aggregateProviderHealth({ periodMs, provider: filterProvider });
 
 // ─── 渲染看板 ───
+//
+// P2-7：渲染实现已收口到 core 的 `renderHealthLines`，本文件只提供 ANSI 上色钩子。
+// 此前这里有一份手写的彩色渲染，与 `renderHealthText`（供 /trace --health）列宽、
+// 标题、缩进全都不同 —— "同一份数据在两个入口逐行一致"这个验收标准结构上不可能成立。
+// 现在两边同源，唯一差别就是有没有传 colorize。
 
-const ANSI = {
+const ANSI: Record<HealthColor | "reset", string> = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
   red: "\x1b[31m",
@@ -67,100 +71,11 @@ const ANSI = {
   gray: "\x1b[90m",
 };
 
-function c(color: keyof typeof ANSI, text: string): string {
+function c(color: HealthColor, text: string): string {
   return `${ANSI[color]}${text}${ANSI.reset}`;
 }
 
-function renderReport(report: HealthReport): void {
-  console.log("");
-  console.log(
-    c(
-      "bold",
-      `  ═══ Provider 健康度看板 ═══  周期: ${report.periodLabel}  生成: ${report.generatedAt.slice(11, 19)}`,
-    ),
-  );
-  console.log("");
-
-  if (report.providers.length === 0) {
-    console.log(c("gray", "  无数据（指定时间范围内无 events.jsonl 事件）"));
-    return;
-  }
-
-  // 告警区
-  if (report.alerts.length > 0) {
-    console.log(c("bold", "  ⚠ 告警:"));
-    for (const alert of report.alerts) {
-      const icon = alert.severity === "critical" ? c("red", "✘") : c("yellow", "⚡");
-      console.log(`    ${icon} [${alert.provider}] ${alert.message}`);
-    }
-    console.log("");
-  }
-
-  // 表格
-  const header = `  ${"Provider".padEnd(15)} ${"请求".padStart(6)} ${"成功率".padStart(7)} ${"超时".padStart(5)} ${"重试".padStart(5)} ${"TTFT P50".padStart(10)} ${"TTFT P95".padStart(10)} ${"P95 延迟".padStart(10)}`;
-  console.log(c("gray", header));
-  console.log(c("gray", "  " + "─".repeat(75)));
-
-  for (const p of report.providers) {
-    const successRate =
-      p.requests.total > 0
-        ? ((p.requests.succeeded / p.requests.total) * 100).toFixed(1) + "%"
-        : "N/A";
-    const rateColor =
-      p.requests.total > 0 && p.requests.succeeded / p.requests.total < 0.95 ? "red" : "green";
-
-    const ttftP50 = p.latency.ttft_p50 ? `${(p.latency.ttft_p50 / 1000).toFixed(1)}s` : "-";
-    const ttftP95 = p.latency.ttft_p95 ? `${(p.latency.ttft_p95 / 1000).toFixed(1)}s` : "-";
-    const totalP95 = p.latency.total_p95 ? `${(p.latency.total_p95 / 1000).toFixed(1)}s` : "-";
-
-    const timeoutStr = String(p.requests.timedOut);
-    const retryStr = String(p.requests.retried);
-
-    console.log(
-      `  ${c("cyan", p.provider.padEnd(15))} ` +
-        `${String(p.requests.total).padStart(6)} ` +
-        `${c(rateColor, successRate.padStart(7))} ` +
-        `${(p.requests.timedOut > 0 ? c("yellow", timeoutStr) : timeoutStr).padStart(5 + (p.requests.timedOut > 0 ? 9 : 0))} ` +
-        `${retryStr.padStart(5)} ` +
-        `${ttftP50.padStart(10)} ` +
-        `${ttftP95.padStart(10)} ` +
-        `${totalP95.padStart(10)}`,
-    );
-
-    // P2-3：命中/未命中分桶 TTFT。文案与 /trace、/trace --health 共用同一函数
-    // （formatTtftBucketLine），三个入口逐字一致 —— 同一份数据不该有三种说法。
-    if (p.latency.ttftByCache) {
-      const line = formatTtftBucketLine(p.latency.ttftByCache, p.latency.ttftBucketDropped, {
-        colorize: (kind, text) => c(kind, text),
-        noDimension: p.latency.ttftNoDimension,
-      });
-      if (line) console.log(`${"".padStart(18)}└ ${line}`);
-    }
-
-    // 超时分布详情
-    if (Object.keys(p.timeouts.byLayer).length > 0) {
-      const layers = Object.entries(p.timeouts.byLayer)
-        .map(([k, v]) => `${k}:${v}`)
-        .join(" ");
-      console.log(c("gray", `${"".padStart(18)}超时分布: ${layers}`));
-    }
-  }
-
-  console.log("");
-
-  // 重试/降级汇总
-  const totalRetries = report.providers.reduce((s, p) => s + p.retries.total, 0);
-  const totalFallbacks = report.providers.reduce((s, p) => s + p.retries.fallbackTriggered, 0);
-  const totalExhausted = report.providers.reduce((s, p) => s + p.retries.exhausted, 0);
-  if (totalRetries > 0 || totalFallbacks > 0) {
-    console.log(
-      c("gray", `  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`),
-    );
-    console.log("");
-  }
-}
-
-if (!alertOnly) renderReport(report);
+if (!alertOnly) console.log(renderHealthLines(report, { colorize: c }).join("\n"));
 
 // ─── 退化告警推送（T9.3）───
 

@@ -56,6 +56,20 @@ export interface TtftCacheBucket {
    *（见 `stream-observer.ts:36-39` 关于不落假 `cache_hit:false` 的同一条理由）。
    */
   noDimension: number;
+  /**
+   * P2-8：该 provider 观察到的 `first_content` 样本总数（= 进桶 + 弃用 + 历史空档）。
+   *
+   * 存在的唯一理由是**让分母可对账**：不落这个字段时，唯一能和分桶 n 并排看的数字
+   * 就是看板上的「请求」列，而那一列数的是 `AfterModelRaw`（**每轮一条**），
+   * 分桶 n 数的是 `first_content`（**每次 fetch 一条**）—— 两者单位不同。
+   * 实测本机 7 天窗口：anthropic 30 轮却有 39 条 first_content（4 轮里发生了重试，
+   * 分别是 4/1、3/1、3/1、3/1），于是看板显示「30 请求 · 命中 n=39」，
+   * 子集看起来大于全集。
+   *
+   * 不变量：`total === hit.length + miss.length + dropped + noDimension`
+   *（`ttft-cache-buckets.test.ts` 与 `provider-health.test.ts` 两侧都断言它）。
+   */
+  total: number;
 }
 
 /** 事件的最小形状 —— 两个消费方的事件类型不同，这里只约束用到的字段 */
@@ -109,7 +123,7 @@ export class TtftCacheBucketer {
   private ensure(provider: string): TtftCacheBucket {
     let b = this.buckets.get(provider);
     if (!b) {
-      b = { hit: [], miss: [], dropped: 0, noDimension: 0 };
+      b = { hit: [], miss: [], dropped: 0, noDimension: 0, total: 0 };
       this.buckets.set(provider, b);
     }
     return b;
@@ -128,6 +142,9 @@ export class TtftCacheBucketer {
    * @param ttft     首内容延迟（ms），调用方需自行保证 > 0
    */
   observeFirstContent(e: BucketableEvent, provider: string, ttft: number): void {
+    // P2-8：先记分母。放在两条分支**之前**，因为 total 的定义是"观察到多少条
+    // first_content"，与它最终进了哪个桶无关 —— 写在分支里就会漏掉待配对那一路。
+    this.ensure(provider).total++;
     if (typeof e.data?.cache_hit === "boolean") {
       // Anthropic：事件自带命中维度，直接分桶
       const b = this.ensure(provider);
@@ -205,13 +222,18 @@ export function bucketStats(
 /**
  * 渲染分桶行的共享文案（`/trace`、`/trace --health`、两个脚本四处共用一句话）。
  *
- * 四条渲染约定固化在这里，避免四个入口各写一遍后措辞漂移：
+ * 五条渲染约定固化在这里，避免四个入口各写一遍后措辞漂移：
  * 1. **两桶都有样本才给差值** —— 只有一桶时给差值等于拿空气做对照；
  * 2. 空桶显示"无样本"而不是 `0.0s`；
  * 3. `dropped > 0` 必须显式写出来 —— 静默截断读起来像全覆盖；
  * 4. **`noDimension` 与 `dropped` 分开措辞** —— 前者是"这批轨迹早于埋点上线"
  *    （预期，不用管），后者是"有 fetch 没走到 completed"（值得看一眼）。
  *    合并成一句会让历史空档看起来像埋点故障。
+ * 5. **P2-8：给出 `total` 时必须把分桶分母写出来，并点明它与"请求"列不同源**。
+ *    这一条是修 bug 修出来的：此前分桶 n 与看板「请求」列并排放着，读者自然会去加减，
+ *    而两者单位根本不同（前者每次 fetch 一条，后者每轮一条），于是出现
+ *    「30 请求 · 命中 n=39」这种"子集大于全集"的观感。不可加减的两个数并排放着，
+ *    就必须自己声明不可加减。
  *
  * @returns 分桶行文本；两桶都空时返回 null（调用方据此整行不渲染）
  */
@@ -222,6 +244,11 @@ export function formatTtftBucketLine(
     colorize?: (kind: "green" | "gray", text: string) => string;
     /** 因轨迹早于 cache_hit 维度上线而未进桶的样本数（与 dropped 分开显示） */
     noDimension?: number;
+    /**
+     * P2-8：该 provider 的 first_content 样本总数（分桶的真实分母）。
+     * 传了就渲染"样本 N 条(每次 fetch 一条…)"，不传则整段不出现（向后兼容旧调用方）。
+     */
+    total?: number;
   },
 ): string | null {
   const { hit, miss } = bucket;
@@ -237,5 +264,11 @@ export function formatTtftBucketLine(
   const legacy = opts?.noDimension
     ? c("gray", `  另 ${opts.noDimension} 个样本来自埋点上线前的轨迹`)
     : "";
-  return `TTFT 命中:${fmt(hit)} 未命中:${fmt(miss)}${delta}${drop}${legacy}`;
+  // P2-8：分桶分母。措辞刻意点明"每次 fetch 一条"并与"请求(每轮)"对举 ——
+  // 只写个数字仍然会被拿去和「请求」列加减。
+  const denom =
+    opts?.total !== undefined
+      ? c("gray", `  [分桶样本 ${opts.total} 条=每次 fetch 一条，与"请求"列(每轮一条)不同源]`)
+      : "";
+  return `TTFT 命中:${fmt(hit)} 未命中:${fmt(miss)}${delta}${drop}${legacy}${denom}`;
 }

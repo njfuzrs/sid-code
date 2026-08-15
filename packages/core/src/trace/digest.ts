@@ -226,6 +226,17 @@ export interface ProviderDigestStats {
    * 与 `ttftBucketDropped` 分开：前者是历史空档（预期），后者才是异常信号。
    */
   ttftNoDimension?: number;
+  /**
+   * P2-8：分桶的**真实分母** —— 该 provider 观察到的 `first_content` 样本总数。
+   *
+   * 与 `requests`（数 `AfterModelRaw`，每轮一条）**不同源、不可加减**：本字段每次
+   * fetch 一条，重试会让它大于轮数。实测本机 7 天窗口 anthropic 30 轮 / 39 条
+   * first_content（4 轮各发生了重试），此前看板并排显示「30 请求 · 命中 n=39」，
+   * 读起来像子集大于全集。
+   *
+   * 不变量：`ttftSampleTotal === hit.count + miss.count + ttftBucketDropped + ttftNoDimension`。
+   */
+  ttftSampleTotal?: number;
   /** 超时率 > 10% 时标记 warning */
   warning?: string;
 }
@@ -1968,6 +1979,8 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
         const line = formatTtftBucketLine(ps.ttftByCache, ps.ttftBucketDropped, {
           colorize: (kind, text) => c(kind, text),
           noDimension: ps.ttftNoDimension,
+          // P2-8：分桶分母与 n 同行。这里的上一行也有个「请求:N」，同样不可与 n 加减。
+          total: ps.ttftSampleTotal,
         });
         if (line) L.push(`  ${" ".repeat(12)} └ ${line}`);
       }
@@ -2442,10 +2455,15 @@ function prefixKindHint(kind: string): string {
  */
 export function ttftByCacheFields(
   bucket: TtftCacheBucket | undefined,
-): Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> {
+): Pick<
+  ProviderDigestStats,
+  "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension" | "ttftSampleTotal"
+> {
   if (!bucket) return {};
-  const out: Pick<ProviderDigestStats, "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension"> =
-    {};
+  const out: Pick<
+    ProviderDigestStats,
+    "ttftByCache" | "ttftBucketDropped" | "ttftNoDimension" | "ttftSampleTotal"
+  > = {};
   if (bucket.hit.length + bucket.miss.length > 0) {
     out.ttftByCache = {
       hit: bucketStats(bucket.hit, percentile),
@@ -2454,6 +2472,9 @@ export function ttftByCacheFields(
   }
   if (bucket.dropped > 0) out.ttftBucketDropped = bucket.dropped;
   if (bucket.noDimension > 0) out.ttftNoDimension = bucket.noDimension;
+  // P2-8：分桶分母。与上面几个字段不同，它 >0 就落 —— 有分桶就必然有分母，
+  // 而"有 n 却没有分母"正是这个 bug 的形态（读者只能拿"请求"列去凑）。
+  if (bucket.total > 0) out.ttftSampleTotal = bucket.total;
   return out;
 }
 

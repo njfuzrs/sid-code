@@ -650,6 +650,330 @@ describe("T15: Provider 健康度聚合", () => {
       // 断言这次对账不是"两边都是 undefined"的空对账
       expect(dig.ttftByCache).toBeDefined();
       expect(dig.ttftBucketDropped).toBe(2);
+      // P2-8：分母也要参与对账。两处的字段构造已收口到 digest.ttftByCacheFields，
+      // 这条保证将来谁再抄第二份实现时会红。
+      expect(health.latency.ttftSampleTotal).toBe(dig.ttftSampleTotal);
+      expect(dig.ttftSampleTotal).toBe(4); // 1100 + 4200 + 2000 + 2100
+    });
+  });
+
+  /**
+   * P2-8：分桶分母口径。
+   *
+   * 修的是实测输出里两处自相矛盾的数字：
+   *   openai    620 请求 · 命中 n=523 未命中 n=33 弃用 292 另 229  → 四项和 1077 ≠ 620
+   *   anthropic  30 请求 · 命中 n=39                              → 子集大于全集
+   *
+   * 分诊结论（三个计数器实测，非推测）：**不是**跨 provider 污染。
+   * anthropic 的 completed 事件数为 0（它的维度自带在 first_content 上，压根不进配对表），
+   * 39 全部来自它自己的 first_content。真因是两个数**单位不同**：
+   *   · 「请求」列数 `AfterModelRaw` —— 每轮一条
+   *   · 分桶 n 数 `first_content`   —— 每次 fetch 一条，重试会多出来
+   * 实测 anthropic 30 轮里有 4 轮发生了重试（4/1、3/1、3/1、3/1），30 + 9 = 39。
+   *
+   * 所以修的是**口径可对账性**，不是配对表：补一个同源分母 `ttftSampleTotal`，
+   * 并在渲染里显式写明它与「请求」列不同源。
+   */
+  describe("P2-8 分桶分母口径", () => {
+    const now = new Date().toISOString();
+
+    it("★ 不变量：命中 + 未命中 + 弃用 + 历史空档 == 分桶样本总数", () => {
+      // 一组正常配对（1 命中 1 未命中）、一组数量不等（2 弃用）、一组老轨迹（1 空档）
+      writeSession("s-denom", [
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "first_content", index: 2, model: "deepseek", ttft_ms: 4000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "completed", index: 2, model: "deepseek", cache_hit: false },
+        },
+        // index=3：2 条 first_content 只有 1 条 completed → 整组弃用
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "first_content", index: 3, model: "deepseek", ttft_ms: 2000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "first_content", index: 3, model: "deepseek", ttft_ms: 2100 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "completed", index: 3, model: "deepseek", cache_hit: true },
+        },
+        // index=4：completed 不带 cache_hit → 历史空档
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "first_content", index: 4, model: "deepseek", ttft_ms: 5000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom",
+          data: { phase: "completed", index: 4, model: "deepseek", chunks: 7 },
+        },
+      ]);
+
+      const openai = aggregateProviderHealth({
+        periodMs: 3600_000,
+        sessionsDir,
+      }).providers.find((p) => p.provider === "openai")!;
+
+      const b = openai.latency.ttftByCache!;
+      expect(b.hit.count).toBe(1);
+      expect(b.miss.count).toBe(1);
+      expect(openai.latency.ttftBucketDropped).toBe(2);
+      expect(openai.latency.ttftNoDimension).toBe(1);
+      // 这就是原来对不上的那个和：1+1+2+1 = 5
+      expect(openai.latency.ttftSampleTotal).toBe(5);
+      expect(
+        b.hit.count +
+          b.miss.count +
+          (openai.latency.ttftBucketDropped ?? 0) +
+          (openai.latency.ttftNoDimension ?? 0),
+      ).toBe(openai.latency.ttftSampleTotal!);
+    });
+
+    it("★ 混合 provider：anthropic 的命中样本数 ≤ anthropic 的分桶样本总数（子集不大于全集）", () => {
+      // 同一份事件里两个 provider 都有数据。此前唯一能与分桶 n 并排看的数字是
+      // 「请求」列（每轮一条），于是重试一多就出现 n > 请求 的观感。
+      // 现在断言的是同源分母，这个不变量在任何重试次数下都必须成立。
+      writeSession("s-mixed", [
+        // anthropic：2 轮 AfterModelRaw，但 3 条 first_content（第 2 轮重试了一次）
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "anthropic", model: "claude-opus-5", elapsed_ms: 9000 },
+        },
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "anthropic", model: "claude-opus-5", elapsed_ms: 8000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-mixed",
+          data: {
+            phase: "first_content",
+            index: 1,
+            model: "claude-opus-5",
+            ttft_ms: 8000,
+            cache_hit: true,
+          },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-mixed",
+          data: {
+            phase: "first_content",
+            index: 2,
+            model: "claude-opus-5",
+            ttft_ms: 8300,
+            cache_hit: true,
+          },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-mixed",
+          data: {
+            phase: "first_content",
+            index: 2,
+            model: "claude-opus-5",
+            ttft_ms: 8600,
+            cache_hit: true,
+          },
+        },
+        // openai 同时在跑，且它的 completed 带维度 —— 不得把它的 completed
+        // 算到 anthropic 头上（配对表按 (session,index,agent) 分组，anthropic 不入表）
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-mixed",
+          data: { phase: "first_content", index: 10, model: "deepseek", ttft_ms: 1200 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-mixed",
+          data: { phase: "completed", index: 10, model: "deepseek", cache_hit: false },
+        },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const anthropic = report.providers.find((p) => p.provider === "anthropic")!;
+      const openai = report.providers.find((p) => p.provider === "openai")!;
+
+      const hitCount = anthropic.latency.ttftByCache!.hit.count;
+      // 本项最基本的不变量：命中样本是分桶样本的子集
+      expect(hitCount).toBeLessThanOrEqual(anthropic.latency.ttftSampleTotal!);
+      expect(anthropic.latency.ttftSampleTotal).toBe(3);
+      expect(hitCount).toBe(3);
+      // 分桶 n（3）确实大于「请求」列（2 轮）—— 这正是原始现象，且它是**对的**：
+      // 两个数不同源。修复的价值在于分母现在同源可校验，而不是把 39 强行压到 30。
+      expect(anthropic.requests.total).toBe(2);
+      expect(anthropic.latency.ttftSampleTotal).toBeGreaterThan(anthropic.requests.total);
+
+      // 跨 provider 未串味：openai 的样本没跑到 anthropic 桶里
+      expect(openai.latency.ttftSampleTotal).toBe(1);
+      expect(openai.latency.ttftByCache!.miss.count).toBe(1);
+    });
+
+    it("渲染里显式写明分桶分母与「请求」列不同源（不可加减的两个数不得并排裸放）", () => {
+      writeSession("s-denom-render", [
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "anthropic", model: "claude", elapsed_ms: 3000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom-render",
+          data: {
+            phase: "first_content",
+            index: 1,
+            model: "claude",
+            ttft_ms: 1000,
+            cache_hit: true,
+          },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-denom-render",
+          data: {
+            phase: "first_content",
+            index: 2,
+            model: "claude",
+            ttft_ms: 3000,
+            cache_hit: false,
+          },
+        },
+      ]);
+
+      const text = renderHealthText(aggregateProviderHealth({ periodMs: 3600_000, sessionsDir }));
+      expect(text).toContain("分桶样本 2 条");
+      // 措辞必须点明不同源，只给数字仍然会被拿去和「请求」列加减
+      expect(text).toContain("不同源");
+    });
+  });
+
+  /**
+   * P2-7：`/trace --health`、`scripts/trace-digest.ts --health`、
+   * `scripts/provider-health.ts` 三个入口必须逐行一致。
+   *
+   * 保证方式是**结构性**的：三者都走 `renderHealthLines`，彩色版只多传一个
+   * colorize 钩子。此前是两份手写渲染（列宽 14 vs 15、`P95延迟` vs `P95 延迟`、
+   * 缩进 4 空格 vs 18 空格），"逐行一致"这个验收标准根本不可能成立。
+   */
+  describe("P2-7 健康看板渲染同源", () => {
+    const now = new Date().toISOString();
+
+    it("★ 彩色版剥掉 ANSI 后与纯文本版逐行一致", async () => {
+      const { renderHealthLines } = await import("@sid-code/core/telemetry/provider-health.ts");
+      writeSession("s-render-parity", [
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-render-parity",
+          data: { phase: "first_content", index: 1, model: "deepseek", ttft_ms: 1200 },
+        },
+        {
+          event: "StreamPhase",
+          timestamp: now,
+          session_id: "s-render-parity",
+          data: { phase: "completed", index: 1, model: "deepseek", cache_hit: true },
+        },
+        {
+          event: "RetryTelemetry",
+          timestamp: now,
+          data: { type: "stream_idle_timeout", provider: "openai" },
+        },
+      ]);
+
+      const report = aggregateProviderHealth({ periodMs: 3600_000, sessionsDir });
+      const ANSI: Record<string, string> = {
+        bold: "\x1b[1m",
+        red: "\x1b[31m",
+        green: "\x1b[32m",
+        yellow: "\x1b[33m",
+        cyan: "\x1b[36m",
+        gray: "\x1b[90m",
+      };
+      const colored = renderHealthLines(report, {
+        colorize: (k, t) => `${ANSI[k]}${t}\x1b[0m`,
+      }).join("\n");
+      const plain = renderHealthText(report);
+
+      // 剥掉 ANSI 后必须字节级相同 —— 这是"逐行一致"的机械判据
+      expect(colored.replace(/\x1b\[[0-9;]*m/g, "")).toBe(plain);
+      // 反向自证：彩色版真的带了颜色（否则上面这条对空气成立）
+      expect(/\x1b\[/.test(colored)).toBe(true);
+      expect(/\x1b\[/.test(plain)).toBe(false);
+    });
+
+    it("超时列对齐：纯文本模式下不因抵消 ANSI 长度而多补空格", () => {
+      // 旧脚本写的是 padStart(5 + (timedOut > 0 ? 9 : 0))，用魔数 9 抵消 ANSI 转义
+      // 序列占的字符数。纯文本模式下那 9 个空格没有东西抵消，列宽就错了。
+      // 改成"先补位再着色"后，两种模式列宽都对。
+      writeSession("s-align", [
+        {
+          event: "AfterModelRaw",
+          timestamp: now,
+          data: { provider: "openai", model: "deepseek", elapsed_ms: 3000 },
+        },
+        {
+          event: "RetryTelemetry",
+          timestamp: now,
+          data: { type: "stream_idle_timeout", provider: "openai" },
+        },
+      ]);
+      const text = renderHealthText(aggregateProviderHealth({ periodMs: 3600_000, sessionsDir }));
+      const row = text.split("\n").find((l) => l.includes("openai"))!;
+      // 超时数 1 后面不应跟着一长串空格再接重试数
+      expect(row).not.toMatch(/ {12,}/);
     });
   });
 });

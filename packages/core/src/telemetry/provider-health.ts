@@ -8,13 +8,11 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
-import { percentile } from "../trace/digest.ts";
+// P2-8：`ttftByCacheFields` 一并从 digest.ts 引入 —— 分桶字段的构造规则收口到那一份，
+// 本文件此前是内联抄的第二份（详见下方调用点的注释）。
+import { percentile, ttftByCacheFields } from "../trace/digest.ts";
 // P2-3：TTFT×缓存分桶与 digest.ts 共用同一实现（方案要求"两处刻意同口径"）
-import {
-  TtftCacheBucketer,
-  bucketStats,
-  formatTtftBucketLine,
-} from "../trace/ttft-cache-buckets.ts";
+import { TtftCacheBucketer, formatTtftBucketLine } from "../trace/ttft-cache-buckets.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -54,6 +52,17 @@ export interface ProviderHealthMetrics {
     };
     /** P2-3：有维度但配对数量不等而弃用的 TTFT 样本数（不落=无此情况） */
     ttftBucketDropped?: number;
+    /**
+     * P2-8：分桶的**真实分母** —— 该 provider 观察到的 `first_content` 样本总数。
+     *
+     * 与 `requests.total`（数 `AfterModelRaw`，每轮一条）**不同源、不可加减**：
+     * 本字段每次 fetch 一条，重试会让它大于轮数。实测本机 7 天窗口 anthropic
+     * 30 轮 / 39 条 first_content（4 轮各发生了重试），此前看板并排显示
+     * 「30 请求 · 命中 n=39」，读起来像子集大于全集。
+     *
+     * 不变量：`ttftSampleTotal === hit.count + miss.count + ttftBucketDropped + ttftNoDimension`。
+     */
+    ttftSampleTotal?: number;
     /**
      * P2-3：因轨迹早于 `cache_hit` 维度上线（2026-08-08）而未进桶的样本数。
      * 与 `ttftBucketDropped` 分开：前者是历史空档（预期），后者才是异常信号。
@@ -262,27 +271,13 @@ export function aggregateProviderHealth(options: {
         total_p95: percentile(sortedLatencies, 0.95),
         // P2-3：分桶字段与 digest 同构。两桶皆空 / dropped=0 时不落该键
         // （见 ttft-cache-buckets.ts：落 count 全 0 会把"未采到"读成"一样快"）。
-        ...(() => {
-          const b = buckets.get(prov);
-          if (!b) return {};
-          const out: {
-            ttftByCache?: {
-              hit: ReturnType<typeof bucketStats>;
-              miss: ReturnType<typeof bucketStats>;
-            };
-            ttftBucketDropped?: number;
-            ttftNoDimension?: number;
-          } = {};
-          if (b.hit.length + b.miss.length > 0) {
-            out.ttftByCache = {
-              hit: bucketStats(b.hit, percentile),
-              miss: bucketStats(b.miss, percentile),
-            };
-          }
-          if (b.dropped > 0) out.ttftBucketDropped = b.dropped;
-          if (b.noDimension > 0) out.ttftNoDimension = b.noDimension;
-          return out;
-        })(),
+        //
+        // P2-8：这里原来是把 digest.ts 的 `ttftByCacheFields` 抄了第二遍的**内联副本**。
+        // 注释写着"与 digest 同构"，但同构靠的是两份代码各自正确 —— 加 `ttftSampleTotal`
+        // 时必须同时改两处，漏一处就是"同一份 events.jsonl 两个入口给不同结论"。
+        // 改成直接调那个已导出的共享函数，这类漏改从此不可能发生（同 §P2-3 收口到
+        // ttft-cache-buckets.ts 的同一条理由）。
+        ...ttftByCacheFields(buckets.get(prov)),
       },
       timeouts: { byLayer: acc.timeoutsByLayer },
       retries: {
@@ -475,77 +470,133 @@ export function formatAlertText(report: HealthReport): string {
   return lines.join("\n");
 }
 
+/** 渲染钩子支持的颜色种类（与 scripts/provider-health.ts 的 ANSI 表同名） */
+export type HealthColor = "bold" | "red" | "green" | "yellow" | "cyan" | "gray";
+
 /**
- * T15.5：把健康报告渲染成**无 ANSI 颜色**的纯文本看板，供 `/trace --health`
- * 命令面板复用（与 scripts/provider-health.ts 的彩色版共享同一数据结构，
- * 但命令面板固定纯文本，避免 ANSI 码污染）。
+ * P2-7：健康看板的**唯一渲染实现**，返回逐行文本。
+ *
+ * 为什么要收口：此前有两份手写渲染 —— 本文件的 `renderHealthText`（纯文本，供
+ * `/trace --health`）与 `scripts/provider-health.ts` 的 `renderReport`（彩色）。
+ * 两份的列宽、分隔线长度、标题措辞、缩进全都不一样（`padEnd(14)` vs `padEnd(15)`、
+ * `P95延迟` vs `P95 延迟`、`    └` vs 18 空格），于是"同一份数据在两个入口逐行一致"
+ * 这个验收标准**结构上不可能成立**，只能靠人肉盯。
+ *
+ * 现在两个入口都走本函数，差别只剩一个 `colorize` 钩子：不传 = 纯文本
+ * （命令面板固定纯文本，ANSI 码会污染面板）。同 §P2-3 把分桶逻辑收口到
+ * `ttft-cache-buckets.ts` 的同一条理由：**"两处必须一致"靠注释是拦不住的。**
+ *
+ * 一处顺带修的对齐 bug：旧脚本对「超时」列写的是
+ * `padStart(5 + (timedOut > 0 ? 9 : 0))` —— 用魔数 9 去抵消 ANSI 转义序列占的字符数。
+ * 那是"先着色再补位"的必然结果，且纯文本模式下会多补 9 个空格。这里改成
+ * **先补位再着色**，两种模式下列宽都对。
  */
-export function renderHealthText(report: HealthReport): string {
+export function renderHealthLines(
+  report: HealthReport,
+  opts?: { colorize?: (kind: HealthColor, text: string) => string },
+): string[] {
+  const c = opts?.colorize ?? ((_k: HealthColor, t: string) => t);
   const out: string[] = [];
+
+  out.push("");
   out.push(
-    `Provider 健康度 · 周期 ${report.periodLabel} · 生成 ${report.generatedAt.slice(11, 19)}`,
+    c(
+      "bold",
+      `  ═══ Provider 健康度看板 ═══  周期: ${report.periodLabel}  生成: ${report.generatedAt.slice(11, 19)}`,
+    ),
   );
+  out.push("");
 
   if (report.providers.length === 0) {
-    out.push("  无数据（指定时间范围内无 events.jsonl 事件）");
-    return out.join("\n");
+    out.push(c("gray", "  无数据（指定时间范围内无 events.jsonl 事件）"));
+    return out;
   }
 
   // 告警区
   if (report.alerts.length > 0) {
-    out.push("  ⚠ 告警:");
+    out.push(c("bold", "  ⚠ 告警:"));
     for (const a of report.alerts) {
-      const icon = a.severity === "critical" ? "✘" : "⚡";
+      const icon = a.severity === "critical" ? c("red", "✘") : c("yellow", "⚡");
       out.push(`    ${icon} [${a.provider}] ${a.message}`);
     }
+    out.push("");
   }
 
   // 表格
   out.push(
-    `  ${"Provider".padEnd(14)} ${"请求".padStart(5)} ${"成功率".padStart(7)} ` +
-      `${"超时".padStart(4)} ${"重试".padStart(4)} ${"TTFT P50".padStart(9)} ${"TTFT P95".padStart(9)} ${"P95延迟".padStart(9)}`,
+    c(
+      "gray",
+      `  ${"Provider".padEnd(15)} ${"请求".padStart(6)} ${"成功率".padStart(7)} ` +
+        `${"超时".padStart(5)} ${"重试".padStart(5)} ${"TTFT P50".padStart(10)} ` +
+        `${"TTFT P95".padStart(10)} ${"P95 延迟".padStart(10)}`,
+    ),
   );
-  out.push("  " + "─".repeat(70));
+  out.push(c("gray", "  " + "─".repeat(75)));
 
   for (const p of report.providers) {
     const successRate =
       p.requests.total > 0
         ? ((p.requests.succeeded / p.requests.total) * 100).toFixed(1) + "%"
         : "N/A";
+    const rateColor: HealthColor =
+      p.requests.total > 0 && p.requests.succeeded / p.requests.total < 0.95 ? "red" : "green";
     const s = (ms?: number) => (ms ? `${(ms / 1000).toFixed(1)}s` : "-");
+
     out.push(
-      `  ${p.provider.padEnd(14)} ` +
-        `${String(p.requests.total).padStart(5)} ` +
-        `${successRate.padStart(7)} ` +
-        `${String(p.requests.timedOut).padStart(4)} ` +
-        `${String(p.requests.retried).padStart(4)} ` +
-        `${s(p.latency.ttft_p50).padStart(9)} ` +
-        `${s(p.latency.ttft_p95).padStart(9)} ` +
-        `${s(p.latency.total_p95).padStart(9)}`,
+      `  ${c("cyan", p.provider.padEnd(15))} ` +
+        `${String(p.requests.total).padStart(6)} ` +
+        `${c(rateColor, successRate.padStart(7))} ` +
+        // 先补位再着色（见函数注释：旧脚本用魔数 9 抵消 ANSI 长度，纯文本模式下会错）
+        `${p.requests.timedOut > 0 ? c("yellow", String(p.requests.timedOut).padStart(5)) : String(p.requests.timedOut).padStart(5)} ` +
+        `${String(p.requests.retried).padStart(5)} ` +
+        `${s(p.latency.ttft_p50).padStart(10)} ` +
+        `${s(p.latency.ttft_p95).padStart(10)} ` +
+        `${s(p.latency.total_p95).padStart(10)}`,
     );
+
     // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
     // 文案走 formatTtftBucketLine，与 /trace 单会话视图逐字一致（同一函数）。
     if (p.latency.ttftByCache) {
       const line = formatTtftBucketLine(p.latency.ttftByCache, p.latency.ttftBucketDropped, {
+        colorize: (kind, text) => c(kind, text),
         noDimension: p.latency.ttftNoDimension,
+        // P2-8：分桶分母必须与 n 同行出现，否则读者只能拿上一行的「请求」列去凑，
+        // 而那两个数不同源（每轮一条 vs 每次 fetch 一条）。
+        total: p.latency.ttftSampleTotal,
       });
-      if (line) out.push(`    └ ${line}`);
+      if (line) out.push(`${"".padStart(18)}└ ${line}`);
     }
+
     if (Object.keys(p.timeouts.byLayer).length > 0) {
       const layers = Object.entries(p.timeouts.byLayer)
         .map(([k, v]) => `${k}:${v}`)
         .join(" ");
-      out.push(`    超时分布: ${layers}`);
+      out.push(c("gray", `${"".padStart(18)}超时分布: ${layers}`));
     }
   }
+
+  out.push("");
 
   // 重试/降级汇总
   const totalRetries = report.providers.reduce((s, p) => s + p.retries.total, 0);
   const totalFallbacks = report.providers.reduce((s, p) => s + p.retries.fallbackTriggered, 0);
   const totalExhausted = report.providers.reduce((s, p) => s + p.retries.exhausted, 0);
   if (totalRetries > 0 || totalFallbacks > 0) {
-    out.push(`  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`);
+    out.push(
+      c("gray", `  重试: ${totalRetries}  降级: ${totalFallbacks}  重试耗尽: ${totalExhausted}`),
+    );
+    out.push("");
   }
 
-  return out.join("\n");
+  return out;
+}
+
+/**
+ * T15.5：把健康报告渲染成**无 ANSI 颜色**的纯文本看板，供 `/trace --health`
+ * 命令面板与 `scripts/trace-digest.ts --health` 复用。
+ *
+ * P2-7 后这只是 {@link renderHealthLines} 的"不传 colorize"包装 —— 渲染实现只有一份。
+ */
+export function renderHealthText(report: HealthReport): string {
+  return renderHealthLines(report).join("\n");
 }
