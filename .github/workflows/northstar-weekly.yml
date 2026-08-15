@@ -1,0 +1,91 @@
+# 北极星指标 · 每周自检（P1-5 第二层）
+#
+# ## 这个 workflow 刻意**不**聚合真实指标
+#
+# 它只跑 `scripts/northstar-snapshot.ts --self-test`：用合成固件验证指标计算逻辑本身
+# 没坏。理由很硬 —— CI runner 上**没有 `~/.sid-code/`**，真实用量数据只存在于维护者
+# 本机。在这里强行聚合只会产出一份 n=0 的快照，而**n=0 的快照比没有快照更危险**：
+# 它看起来像数据，会被当成"这个版本的端到端是 0 秒"写进结论。
+#
+# 真实的周趋势由维护者本机跑 `bun scripts/northstar-snapshot.ts --weekly` 产出。
+# 那是**人工触发的自动化脚本，不是全自动** —— 这句必须照实写。把它描述成"已自动化"
+# 就是本方案 §六（P0-3）要防的那类文档漂移，而且是写在最容易被引用的地方。
+#
+# ## 为什么这个 workflow 敢开 cron，而 eval-weekly.yml 不敢
+#
+# 唯一的区别是**依赖**：eval-weekly 要 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY 才能跑，
+# 空 secret 不会让它报「缺少密钥」，只会让真实请求拿 401 失败在半路 —— 于是每周一
+# 稳定堆一个红叉，排查成本比不跑还高。本 workflow **零 secret 依赖**（不联网、不调
+# 模型、只读仓库内代码），所以它在任何 fork 上都能绿。
+#
+# 这条差异正是当初「四个 cron 全被注释」的真实原因：不是"没有自动化能力"，而是
+# 需要 key 的和不需要 key 的被绑在了一起。拆开之后，不需要 key 的那部分立刻可自动化。
+#
+# ## 验收（不可省的一条）
+#
+# **在无 secret 的 fork 环境下必须绿色通过** —— 防的就是"又造一个稳定失败堆红叉的
+# workflow"。若哪天本文件开始需要 secret，先把 cron 关掉再说。
+
+name: Northstar Weekly Self-Check
+
+on:
+  schedule:
+    # 周一 01:23 UTC。**刻意避开 :00 / :30** —— 整点是全球默认值，Actions 的排队
+    # 高峰都堆在那儿；错峰几分钟对周频任务毫无代价，却能少排一会儿队。
+    - cron: "23 1 * * 1"
+  workflow_dispatch:
+  # 改到本脚本自己时也跑一次：一个"验证计算逻辑没坏"的检查，最该在改动它的那个
+  # PR 上先跑一遍，而不是等下周一。
+  pull_request:
+    paths:
+      - "scripts/northstar-snapshot.ts"
+      - "packages/core/src/trace/session-index.ts"
+      - "packages/core/src/telemetry/usage-ledger.ts"
+      - ".github/workflows/northstar-weekly.yml"
+
+concurrency:
+  group: northstar-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # fork 里不跑 cron：fork 会连 cron 一起继承。本 workflow 本身不需要 secret，
+    # 所以 fork 上跑也能绿 —— 但仍然拦掉定时触发，理由是**不给 fork 制造它没要过的
+    # Actions 用量**。判据与 eval-weekly.yml 选同一个（`repository.fork == false`），
+    # 不写死 owner/repo slug：换 owner 仍成立。
+    # 后半段保留 workflow_dispatch / pull_request（fork 维护者手动跑应该能跑）。
+    if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # 唯一的实质步骤。--self-test 用合成数据跑通全链路（聚合 → 一致性断言 →
+      # 渲染 → 版本对比 → markdown 生成 → 陈旧检测双向），并含**反向自证**：
+      # 人为构造违反场景，断言必须变红。只验"正常时全绿"测不出断言是否真的在判。
+      - name: 指标计算逻辑自检（合成数据，不读真实用量）
+        run: bun run scripts/northstar-snapshot.ts --self-test
+
+      # 生成块必须**能生成**。这一步不写盘到文档，只验生成器本身可用 ——
+      # 文档在 docs-research/（另一个仓库），CI 碰不到它，见 P0-3 §C 那条
+      # "跨仓库门禁做不了，所以生成块自带时间戳是唯一可行手段"。
+      - name: markdown 生成块可生成
+        run: |
+          out=$(bun run scripts/northstar-snapshot.ts --emit-markdown)
+          echo "$out"
+          echo "$out" | grep -q "NORTHSTAR:BEGIN" || { echo "::error::生成块缺少 BEGIN 标记"; exit 1; }
+          echo "$out" | grep -q "NORTHSTAR:END" || { echo "::error::生成块缺少 END 标记"; exit 1; }
+          echo "$out" | grep -q "生成于" || { echo "::error::生成块缺少时间戳——防漂移的唯一手段就是它"; exit 1; }
+
+      # 完整单测：含 flag 双向对账（防 trace-digest.ts --health 那类"头注释写了、
+      # 代码没接"）、反向自证断言、以及 release.sh / workflow / pre-push 的接线门禁。
+      - name: 快照脚本单测
+        run: bun test tests/scripts/northstar-snapshot.test.ts

@@ -189,7 +189,7 @@ bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
 | hook | 门禁 |
 | --- | --- |
 | pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移） |
-| pre-push | holdout 泄露检测、`holdout/real-tasks` 永封校验、website 站点构建（死链检测） |
+| pre-push | holdout 泄露检测、`holdout/real-tasks` 永封校验、website 站点构建（死链检测）、北极星生成块陈旧检测（30 天） |
 
 没装 hook 的话，参考页漂移和站点死链会一路带到 PR 里才被发现。
 **clone 之后第一件事就是 `bun run install-hooks`。**
@@ -210,6 +210,30 @@ bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
   `bun run format:check`。**排版不用再靠"照着周边写"**，交给它就行。
 - 两个格式化门禁都刻意只**报错**、不自动改你的文件：hook 里偷偷改工作区，会让你提交的内容
   与你 review 过的内容不一致。红了就跑 `bun run format` 再 `git add`。
+- **北极星生成块陈旧检测**（pre-push，阈值 30 天）只在本仓库内**确实含生成块的 `.md`** 上生效；
+  没有块的文件一律不拦（否则会在无关文件上误报，人会直接卸掉 hook）。红了就跑
+  `bun run scripts/northstar-snapshot.ts --emit-markdown` 刷新，**不要手改块内数字** ——
+  手改会让时间戳与数字脱节，正是这个门禁要防的东西。
+
+### 北极星指标：本地看板与周报（人工触发，不是全自动）
+
+四个方向的主指标都能从本地数据算出来，**一行 LLM 调用都没有**：
+
+```bash
+bun run scripts/northstar-snapshot.ts              # 当前快照（含三个会话数分母 + 一致性断言）
+bun run scripts/northstar-snapshot.ts --weekly     # 最近 7 天周报
+bun run scripts/northstar-snapshot.ts --compare 0.1.600 0.1.601   # 版本间对比
+```
+
+两条必须说清楚的事：
+
+- **周趋势是「人工触发的自动化脚本」，不是全自动。** CI runner 上没有 `~/.sid-code/`，
+  所以 `northstar-weekly.yml` 只跑 `--self-test`（验计算逻辑没坏），**不聚合真实用量** ——
+  在 CI 里硬聚合只会产出一份 n=0 的快照，而它看起来像数据，比没有快照更危险。
+  真实周趋势需要维护者本机跑。把这件事写成"已自动化"就是那类文档漂移。
+- **版本快照由 `release.sh` 在发版时自动产出**（`northstar/v<version>.json` +
+  `northstar/latest-delta.md`），**只报告不阻断发版**：指标退步需要人判断，
+  自动拦发版会逼人加 `--skip` 绕过，最后连报告都不看。
 
 ### 改了这些目录，还要重新生成官网参考页
 

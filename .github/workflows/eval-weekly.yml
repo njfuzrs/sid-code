@@ -52,6 +52,34 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
     steps:
+      # ─── 前置检查：secret 是否已配（P1-5 第三层）───────────────────────────
+      #
+      # 这一步的存在理由，就是上面那段"为什么停用 cron"的注释里点破的那个问题：
+      # **空 secret 不会让 workflow 报「缺少密钥」，只会让真实请求拿 401 失败在半路**。
+      # 那种失败的排查成本高得离谱 —— 日志里是一堆 eval case 的模型调用错误，
+      # 得翻到最里层才发现根因是 key 没配。
+      #
+      # 放在**第一步**（在 checkout 之前也可以，但放这里让 checkout 的报错优先级更清晰）：
+      # 让"缺 key"在 5 秒内明确报错，而不是在 20 分钟的 eval 跑到一半时以 401 现形。
+      #
+      # 这直接消掉了当初注释 cron 的那个理由，为将来恢复定时创造条件 ——
+      # 但**本 PR 不恢复 cron**：恢复的前提是 secret 真的配好了，那是一次独立的、
+      # 需要人确认的动作，不该由一个改注释的 PR 顺手打开。
+      #
+      # ⚠ 只检查非空，不校验有效性（那需要真发一次请求，等于把待验证的事提前做了）。
+      - name: 前置检查（secret 是否已配）
+        run: |
+          missing=""
+          [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ] && missing="$missing ANTHROPIC_API_KEY"
+          [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ] && missing="$missing DEEPSEEK_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 secret:$missing —— 本 workflow 需要真实模型调用，无法运行。"
+            echo "::error::配置位置：Settings → Secrets and variables → Actions。"
+            echo "::error::（这一步刻意在第一步就失败：缺 key 若不拦，会在 eval 跑到一半时以 401 现形，排查成本高得多。）"
+            exit 1
+          fi
+          echo "✅ 两个 API key 均已配置（只验非空，不验有效性）"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:

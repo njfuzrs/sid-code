@@ -725,6 +725,36 @@ echo ""
 echo "  本地验证（不碰真实服务器）："
 echo "    RELEASE_BASE=\"file://$RELEASE_DIR\" bash $RELEASE_DIR/install.sh"
 
+# ─── 北极星指标快照（P1-5 第一层：版本间对比）───────────────────────────────
+#
+# 位置：构建之后、上传之前。
+#   · 放构建后 —— 快照要标的是"这个版本"，而版本号在 bump 之后才确定；
+#   · 放上传前 —— 让维护者在真正对外广播之前看到"这版比上版是快了还是慢了"。
+#
+# 三条禁令（与 changelog 那四条同源：发布路径必须确定性 + 离线 + 幂等）：
+#   ① **绝不调 LLM**。northstar-snapshot.ts 全程只读本地 jsonl，无网络无模型。
+#   ② 失败**不阻断发版**（`|| warn`）。快照是观测产物，不是发布物 —— 让一份统计
+#      写不下去而中止一次已经构建+冒烟+自检全过的发布，是拿因果关系换整洁。
+#   ③ 指标退步**只报告不拦**。发版门禁已经够多（工作区洁净 + bun test + 冒烟 +
+#      自检）；再加一道基于统计量的门禁会因样本波动误拦，而人一旦被误拦过就会
+#      养成加 --skip 的习惯，最后连报告都不看了 —— 那是比没有门禁更差的结局。
+#
+# 产出两份（都在 northstar/，随仓库入库，让曲线可追溯）：
+#   · northstar/v<version>.json   本版快照（4 主指标 + 辅助指标 + 每项的 n）
+#   · northstar/latest-delta.md   与上一版逐指标 diff；首次发版输出"基线已建立"
+echo ""
+echo ">>> 生成北极星指标快照（v${VERSION}）..."
+if bun run "$ROOT/scripts/northstar-snapshot.ts" --version "$VERSION" --emit "$ROOT/northstar"; then
+    # 把 delta 直接打到发布日志里：写进文件但没人看的报告等于没有报告
+    if [ -f "$ROOT/northstar/latest-delta.md" ]; then
+        echo ""
+        echo "  --- 与上一版对比（只报告，不阻断）---"
+        sed 's/^/  /' "$ROOT/northstar/latest-delta.md"
+    fi
+else
+    warn "北极星快照生成失败（不阻断发布）"
+fi
+
 # ─── 上传（可选）───
 
 if [ "$DO_UPLOAD" = true ]; then
