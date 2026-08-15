@@ -150,8 +150,9 @@ gh pr close <n> && gh pr reopen <n>    # 发 reopened，不留多余提交
 
 即使你有权限。理由是机制性的，不是纪律要求：
 
-- 直推绕过 PR，就绕过了 `eval-pr-smoke.yml`（只在 `pull_request` 触发），
-  也没有任何 diff review 的落点。
+- 直推绕过 PR，就没有任何 diff review 的落点，也绕过 ruleset `protect-main`
+  要求的三个检查（`test (ubuntu-latest)` / `test (macos-latest)` / `lint`）
+  在**合入之前**给出结论这件事。
 - `ci.yml` 虽然 `push: branches: [main]` 也会跑，但那时代码**已经在 main 上了** ——
   红了是在污染主干之后才知道，而不是之前。
 - 改到一半的状态会暴露给所有人：这是开源仓库，`main` 是别人 `git clone` 拿到的东西。
