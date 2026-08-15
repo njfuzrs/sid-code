@@ -116,6 +116,36 @@ DEEPSEEK_API_KEY=xxx bun run eval:run -- --provider sid-code --cases case_001
 
 所以：**改动都从 `main` 切出去，都提 PR 回 `main`。**
 
+### ⚠️ 别把 PR 的 base 指向另一条 PR 分支（stacked PR）
+
+同一个 `branches: [main]` 过滤器还有第二个坑，2026-08-15 在 PR #31 上实测踩到过：
+
+把 PR B 的 base 设成 PR A 的分支（stacked PR），CI **一次都不会跑** —— base 不是
+`main`，`pull_request` 事件被过滤器整个滤掉。这部分和上面 `develop` 的情形同源。
+
+真正阴的是后面：等 A 合入 main，GitHub 会自动把 B 的 base 改成 `main`
+（PR timeline 里的 `automatic_base_change_succeeded`）。此时 base 已经合规了，
+但那次自动改 base 发出的是 `pull_request` 的 **`edited`** action，
+**不是** `synchronize` —— 所以它**仍然不触发 CI**，而且此后再没有任何事件能触发它。
+
+后果不是「少跑一次」，是**这个 PR 永久卡死**：ruleset `protect-main` 要求
+`test (ubuntu-latest)` / `test (macos-latest)` / `lint` 三个检查，它们全部由 `ci.yml` 产出。
+一个 run 都没有 → 三个检查恒为 pending，PR 页面显示
+`Some checks haven't completed yet` + `Waiting for status to be reported`。
+**没有红叉，只有一个永远转不完的圈**，比直接失败更难归因。
+
+`ci.yml` 现在显式声明了 `types: [opened, synchronize, reopened, edited]` 来覆盖这种情况
+（反漂移门禁在 `tests/release-flow-contract.test.ts`），所以自动改 base 之后 CI 会补跑。
+但**仍然建议不要 stacked**：在 base 指向别的分支的那段时间里 CI 依然是不跑的，
+你会在没有任何门禁反馈的情况下往上堆提交。
+
+如果你已经卡在这个状态里（`gh pr view <n> --json statusCheckRollup` 看到必需检查
+一个 run 都没有），手动解开的办法是发一个 CI 认的事件：
+
+```bash
+gh pr close <n> && gh pr reopen <n>    # 发 reopened，不留多余提交
+```
+
 ### 不要直接 push 到 `main`
 
 即使你有权限。理由是机制性的，不是纪律要求：

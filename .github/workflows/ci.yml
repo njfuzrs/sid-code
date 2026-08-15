@@ -27,6 +27,23 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # ⚠️ `edited` 不是可选项，缺了它 stacked PR 会**永久卡死**（2026-08-15 实测于 PR #31）。
+    #
+    # 复发路径：PR B 的 base 先指向 PR A 的分支（stacked），此时 `branches: [main]`
+    # 把 B 的 pull_request 事件整个滤掉 —— CI 一次都不跑。等 A 合入 main，GitHub 自动把
+    # B 的 base 改成 main（timeline 里的 `automatic_base_change_succeeded`），发出的却是
+    # `edited` action。而 types 的默认值是 `[opened, synchronize, reopened]`，**不含
+    # `edited`** —— 于是 base 已经合规了，CI 依然不跑，而且此后再没有任何事件能触发它。
+    #
+    # 后果不是「少跑一次」而是「永久 BLOCKED」：ruleset protect-main 要求
+    # test (ubuntu-latest) / test (macos-latest) / lint 三个检查，它们全部由本文件产出。
+    # 一个 run 都没有 → 三个检查恒为 pending（PR 页面显示 "Waiting for status to be
+    # reported"）→ 只能靠人手动 close/reopen 才能解开。**这个失败模式没有红叉，
+    # 只有一个永远转不完的圈**，比直接失败更难归因。
+    #
+    # 代价是改标题/正文这类纯文本编辑也会触发一次 CI。这个代价是刻意接受的：
+    # 一次多余的 run 是几分钟 runner 时间，而一个卡死的 PR 要靠人发现 + 人干预。
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
