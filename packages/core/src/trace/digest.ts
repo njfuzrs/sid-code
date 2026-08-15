@@ -595,7 +595,22 @@ export interface SessionLevelMetrics {
   /** 端到端耗时分位数 —— PR-4（P1-4）补 `TurnComplete` 埋点后才有值 */
   e2e_p50?: number;
   e2e_p95?: number;
+  /**
+   * P1-4：p99 只在 digest 展示，**刻意不进 `session-index.jsonl`**。
+   * 单会话的端到端样本是个位数（每条用户消息 1 个），n<100 时 p99 恒等于 max，
+   * 存进索引只会诱使消费侧拿它当"尾延迟"用。跨版本的 p99 由 northstar 快照在
+   * 全量样本上重算 —— 分位数不可再平均，这是同一条铁律的另一面。
+   */
+  e2e_p99?: number;
   e2e_n: number;
+  /**
+   * P1-4：含 HITL 等待（权限确认弹窗）的样本数。
+   *
+   * 端到端口径**含**等人的墙钟（剔除需引两个事件并保证配对，收益不足、失真更高），
+   * 所以给出这个计数让消费侧自己决定是否排除。`had_hitl` 全 0 时这个字段恒 0，
+   * 那正是"HITL 没被触发过"的诚实表达，不是缺数据。
+   */
+  e2e_hitl_n: number;
   /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
   defenseTriggered: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
@@ -2030,6 +2045,41 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ─── P1-4：端到端耗时（「更快」方向的主口径）───
+  //
+  // 与 TTFT 并列展示，且**必须标 n**：端到端样本天然比 TTFT 少一个数量级
+  //（一条用户消息里多次 fetch 各有一个 TTFT，但只有一个"答复完成"），
+  // 不标 n 会让人误以为两者置信度相同，拿 n=2 的 p95 去下结论。
+  //
+  // 单会话只有个位数样本时 p95 基本等于 max，所以这里明确写出"单会话"——
+  // 跨版本比较要看 `session-index.jsonl` 聚合，不是看这一行。
+  if (d.sessionMetrics && d.sessionMetrics.e2e_n > 0) {
+    const m = d.sessionMetrics;
+    L.push("");
+    const s = (ms?: number) => (ms === undefined ? "—" : `${(ms / 1000).toFixed(1)}s`);
+    L.push(
+      c("bold", "端到端耗时(本会话):") +
+        ` P50=${s(m.e2e_p50)} P95=${s(m.e2e_p95)} P99=${s(m.e2e_p99)}` +
+        c("gray", `  n=${m.e2e_n}（每条用户消息 1 个样本，含 HITL 等待）`),
+    );
+    // 含 HITL 的样本数单独一行：这些轮的耗时里有一段等的是人，不是 agent。
+    // 只在 >0 时打印 —— 恒打印一行 "含 HITL 0 个" 会把"防线没被触发"读成噪声。
+    if (m.e2e_hitl_n > 0) {
+      L.push(
+        c("gray", `  其中 ${m.e2e_hitl_n}/${m.e2e_n} 轮含权限确认等待`) +
+          c("gray", " —— 评估 agent 自身速度时应排除这些样本"),
+      );
+    }
+    // 口径自证：端到端必然 ≥ 首字节。违反说明两个口径的基准点不一致——
+    // 这个不变量比数值本身更值得断言（TTFT 曾因基准不重设而虚高到反超端到端）。
+    if (m.ttft_p50 !== undefined && m.e2e_p50 !== undefined && m.e2e_p50 < m.ttft_p50) {
+      L.push(
+        c("red", `  ⚠ 口径异常: 端到端 P50 ${s(m.e2e_p50)} < 首字节 P50 ${s(m.ttft_p50)}`) +
+          c("gray", " —— 两者基准点不一致，数字不可用，先查埋点"),
+      );
+    }
+  }
+
   // 第 5 批：JIT 上下文 section。验收标准就是这一节能直接答出
   // 「命中率多少 / 平均注入多少字节 / 浪费率多少」，不用再手工 grep events.jsonl。
   if (d.jit) {
@@ -2487,6 +2537,7 @@ export function aggregateSessionMetrics(
 ): SessionLevelMetrics {
   const ttfts: number[] = [];
   const e2es: number[] = [];
+  let hitlSamples = 0;
   let defenseTriggered = false;
   let compactions = 0;
 
@@ -2506,7 +2557,12 @@ export function aggregateSessionMetrics(
     // 这里不做配对 —— 配对式口径已经栽过（watchdog 快照按两套 key 查，结构性恒 null）。
     if (e.event === "TurnComplete") {
       const ms = e.data.elapsed_ms_since_prompt as number | undefined;
-      if (ms && ms > 0) e2es.push(ms);
+      if (ms && ms > 0) {
+        e2es.push(ms);
+        // 含 HITL 的样本单独计数（不剔除）。只在**进了分位数样本的那些轮**上计，
+        // 否则分子会包含没进分母的轮，得到 "hitl_n > e2e_n" 这种自相矛盾的数。
+        if (e.data.had_hitl === true) hitlSamples++;
+      }
     }
 
     if (e.event === "PreToolUse") {
@@ -2532,7 +2588,9 @@ export function aggregateSessionMetrics(
     ttft_n: sortedTtfts.length,
     e2e_p50: percentile(sortedE2es, 0.5),
     e2e_p95: percentile(sortedE2es, 0.95),
+    e2e_p99: percentile(sortedE2es, 0.99),
     e2e_n: sortedE2es.length,
+    e2e_hitl_n: hitlSamples,
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,

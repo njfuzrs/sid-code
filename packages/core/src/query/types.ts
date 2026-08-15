@@ -139,6 +139,54 @@ export type ContinueReason =
 export interface LoopState {
   /** 当前轮次 */
   turnCount: number;
+  /**
+   * P1-4：本轮（= 本条用户消息的本次 API 轮）起点时刻（epoch ms）。
+   *
+   * 端到端耗时（"用户回车 → 最终答复"，「更快」方向的主口径）的基准点。
+   * 由 `queryLoop` 在 while 循环顶部每轮**重设**，`TurnComplete` 事件发射时当场
+   * 用 `Date.now() - turnStartedAtMs` 算差值 —— 不留给消费侧配对。
+   *
+   * 两条设计约束（都是踩出来的）：
+   *
+   * 1. **每轮重设，绝不跨轮累计**。TTFT 曾栽在这条上：重试循环外只设一次基准，
+   *    于是 thinking 模型的首字节延迟被算成"整轮生成耗时"，实测合成 53.7s vs
+   *    真实 4.9s。端到端同理 —— 不重设则第 N 轮的数字里含前 N-1 轮，p95 虚高。
+   * 2. **不留给消费侧配对**。`watchdog-snapshot-index-mismatch` 的教训：注册用
+   *    turnCount、查用 pair index，两套 key 让快照结构性恒 null。所以差值在发事件
+   *    的那一刻当场算完落进 data，消费侧只做分位数、不做配对。
+   *
+   * 口径诚实说明：这个差值**含 HITL 等待时间**（权限确认弹窗等的是人不是 agent）。
+   * 剔除它需要再引两个事件并保证配对，收益不足、失真风险更高；改为在有权限确认的
+   * 轮次上打 `had_hitl: true`，让消费侧自己决定是否排除。
+   */
+  turnStartedAtMs?: number;
+  /**
+   * P1-4：本轮是否发生过 HITL（需用户确认的权限弹窗）。
+   *
+   * 由 `tool-executor` 经 `sessionState` 的计数器回传（见 `HITL_PROMPT_COUNT_KEY`），
+   * queryLoop 在轮末取差值判定 —— 不直接传布尔，因为"本轮有没有"必须是
+   * **前后差值**而非累计标志：累计标志一旦置真，后面每轮都会被标成有 HITL。
+   */
+  hadHitlThisTurn?: boolean;
+  /** P1-4：轮首的 HITL 累计计数快照，轮末与当前值比较得出"本轮有没有" */
+  hitlCountAtTurnStart?: number;
+  /**
+   * P1-4：本轮的 `TurnComplete` 是否已发射（幂等位）。
+   *
+   * queryLoop 有 20+ 个 `yield done; return` 出口，再加 finally 兜底 ——
+   * 不做幂等必然重复计数。而端到端样本本就比 TTFT 少一个数量级（一轮多次 API 调用），
+   * 重复一次就能明显偏移分位数。每轮在 `beginTurn()` 里清零。
+   */
+  turnCompleteEmitted?: boolean;
+  /**
+   * P1-4：本条用户消息内累计派发的工具调用数，落进 `TurnComplete.tool_calls_in_turn`。
+   *
+   * 在真正派发工具的那一处（`yield tool_start` 的循环）累加，而不是数响应里的
+   * tool_use 块数：后者含被循环检测拦下、被 abort 跳过、被 F2 fall-through 重排的块，
+   * 数出来的是"模型想调多少"而非"实际调了多少"。端到端耗时要归因到工具往返，
+   * 需要的是后者。
+   */
+  toolCallsDispatched?: number;
   /** 最大轮次 */
   maxTurns: number;
   /** max_output_tokens 恢复次数 */

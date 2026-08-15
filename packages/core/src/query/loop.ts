@@ -220,6 +220,12 @@ import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import type { QueryLoopYield, QueryDeps, LoopState } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
+import {
+  beginTurn,
+  emitTurnComplete,
+  normalizeTurnStopReason,
+  type TurnStopReason,
+} from "./turn-complete.ts";
 import { lookupRegistry } from "../llm/model-registry.ts";
 
 /**
@@ -624,6 +630,47 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // P1-4：端到端耗时基准 = "用户回车那一刻"，所以设在 queryLoop **入口**，
+  // 不是 while 每次迭代（那是本条消息内的一次 API 往返，不是一次答复）。
+  // 基准随 LoopState 每条用户消息重建而天然重设 —— 见 turn-complete.ts 文件头铁律 2。
+  beginTurn(state, sessionState);
+  /**
+   * P1-4：本轮结束原因。在语义明确的收尾点显式赋值；未赋值时由下方统一出口按
+   * abort signal 判定。刻意不在这里预设 "end_turn" —— 预设成正常值会让所有异常
+   * 退出路径静默计成正常收尾，那正是「归因与真实信号脱节」那类反模式。
+   */
+  let turnStopReason: TurnStopReason | undefined;
+  /**
+   * P1-4：是否将要跑「maxTurns 强制总结轮」。判据与下方那段的 `if` 逐字同源 ——
+   * 抄一份判据就是给自己埋一个"两处条件漂移"的坑，所以抽成函数由两处共用。
+   */
+  const willRunForcedSummary = (): boolean =>
+    state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted;
+  /**
+   * P1-4：发射本轮 `TurnComplete`（幂等，重复调用只生效一次）。
+   *
+   * 归因优先级：语义明确的赋值 > abort signal > maxTurns > error。
+   * 刻意不做"错误文本匹配"—— `stream-timeout-misclassified-as-cancel` 的教训：
+   * 判超时要看 abort reason 白名单而不是错误字符串，字符串一改口径就悄悄失效。
+   */
+  const emitTurnCompleteHere = (): void => {
+    const abortedNow = deps.getAbortSignal?.()?.aborted === true;
+    emitTurnComplete(state, sessionState, deps, {
+      sessionId: sessionState.sessionId,
+      absoluteTurn: sessionState.getAbsoluteTurn(),
+      promptSeq,
+      stopReason:
+        turnStopReason ??
+        (abortedNow
+          ? "abort"
+          : state.turnCount >= state.maxTurns
+            ? "max_turns"
+            : // 既没走正常收尾、也没 abort、也没到上限 —— 抛错穿透 finally 的形态。
+              // 归 error 而非 other：这是唯一能观测到"异常穿透"的位置。
+              "error"),
+      toolCallsInTurn: state.toolCallsDispatched ?? 0,
+    });
+  };
   // 缺口7：本次 queryLoop 即"第几条用户消息"。埋点带上它，`turn=3` 才能还原到
   // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
   // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
@@ -3790,6 +3837,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         deps.extractMemories?.().catch(() => {
           /* 提取失败不阻断收尾 */
         });
+        // P1-4：唯一的"模型正常说完了"出口。归一化而非透传 stopReason ——
+        // end_turn / stop / stop_sequence 三值同义，透传等于把归一责任推给每个消费方。
+        turnStopReason = normalizeTurnStopReason(response.stopReason);
         yield { kind: "done", turns: state.turnCount };
         return;
       }
@@ -3863,6 +3913,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         for (const b of toolBlocks) {
           if (b.type === "tool_use") {
             yield { kind: "tool_start", toolName: b.name, toolInput: b.input };
+            // P1-4：在**实际派发**处累加，不数响应里的 tool_use 块数 —— 后者含被循环
+            // 检测拦下 / 被 abort 跳过的块，数出来是"模型想调多少"而非"真调了多少"。
+            state.toolCallsDispatched = (state.toolCallsDispatched ?? 0) + 1;
             // 可观测性：把 hypothesis_register / hypothesis_challenge 的实际调用落成 trace 事件
             // （events.jsonl），与 HypothesisGuideInjected 配对——前者记"注入命中"、后者记"模型采纳"，
             // 两者相除即「防线采纳率」，可被 trace-digest 自动统计，无需离线 grep。
@@ -4626,6 +4679,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       return;
     }
   } finally {
+    // ─── P1-4：端到端耗时锚点（TurnComplete）───
+    //
+    // 放在 finally 而不是逐个出口：queryLoop 有 20+ 个 `yield done; return`，逐个补
+    // 必然漏 —— 而漏掉的恰恰是异常/中断路径，也就是**最慢的那些轮次**。只在成功路径
+    // 发事件会让 p95 系统性偏低，看起来"变快了"其实是把慢样本筛掉了（选择偏差）。
+    // finally 覆盖正常 return / throw / 外部 .return() 中止三条路径，一个不漏。
+    //
+    // ⚠ 一个**必须**在这里点破的例外：本 finally 跑在 maxTurns 强制总结轮（下方，在 try
+    // 之外）**之前**。若在此处就发事件，那条路径的端到端耗时会漏掉整个强制总结轮 ——
+    // 而强制总结正是发生在最长的那些轮次上，漏掉等于系统性低估最慢样本，与"只在成功
+    // 路径发事件"是同一种偏差。所以命中该条件时**推迟**到下方总结轮结束后再发。
+    if (!willRunForcedSummary()) emitTurnCompleteHere();
+
     // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留
     clearAllSnapshots(loopId);
 
@@ -4707,6 +4773,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     log.warn("QUERY_LOOP", `达到最大轮次限制: ${state.maxTurns}`);
     yield { kind: "max_turns", maxTurns: state.maxTurns };
   }
+  // P1-4：强制总结轮跑完后的补发点。上方 finally 对这条路径刻意让位（见那里的注释），
+  // 否则端到端耗时会漏掉整个总结轮 —— 而它恰好只发生在最长的那些轮次上。
+  // 幂等位保证：走到这里若 finally 已发过（例如总结轮判据在两处之间变了），不会重复。
+  emitTurnCompleteHere();
   yield { kind: "done", turns: state.turnCount };
 }
 

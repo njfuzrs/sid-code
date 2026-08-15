@@ -25,6 +25,7 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
+import { recordHitlPrompt } from "./turn-complete.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
 // P0-1 漏斗 1/2：工具与权限埋点。必须走 analytics/events.ts 门面，不直接调 logEvent——
 // 门面强制脱敏工具名与文件路径，业务侧拿不到裸传接口（见该文件顶部的三条硬约束）。
@@ -1004,6 +1005,11 @@ export async function resolveToolPermission(
     // 弹确认。这条直接服务北极星里「更安全 ↔ 更快」的 trade-off 判断：
     // 没有它，「HITL 是不是太吵」只能靠感觉争论，改不改默认值也没有依据。
     logPermissionPrompt(block.name);
+    // P1-4：同一时机给端到端口径记一笔 HITL。挂在这里而不是"用户点了按钮之后"——
+    // 端到端耗时要排除的是**等人的那段墙钟**，而墙钟从弹窗那一刻就开始走了，
+    // 无论用户最终批准、拒绝，还是超时/被 abort 掉。按"用户作答"记会漏掉后两类，
+    // 而超时那类恰好是等得最久的（默认 300s），漏掉等于专门漏掉最慢样本。
+    recordHitlPrompt(deps.sessionState);
 
     // 三路竞争：hook / classifier / 用户交互
     const { resolvePermission } = await import("../permission/async-decision.ts");
