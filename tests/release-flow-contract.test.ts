@@ -18,6 +18,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = join(import.meta.dir, "..");
 const RELEASE_SH = readFileSync(join(ROOT, "scripts/release.sh"), "utf8");
@@ -170,5 +171,34 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
   test("跑全量 bun test 与 make build", () => {
     expect(CI).toMatch(/run:\s*bun test\s*$/m);
     expect(CI).toMatch(/run:\s*make build\s*$/m);
+  });
+
+  // 2026-08-15 实测事故（PR #31）：stacked PR 的 base 从「PR A 的分支」被 GitHub 自动
+  // 改成 main 时，发出的是 pull_request 的 `edited` action。而 types 的**默认值**是
+  // `[opened, synchronize, reopened]`，不含 `edited` —— 于是 base 合规之后 CI 依然不跑，
+  // 且此后没有任何事件能触发它。ruleset protect-main 要求的三个检查全部由本文件产出，
+  // 一个 run 都没有 → 三个检查恒 pending → PR 永久 BLOCKED，且**不报红只转圈**。
+  //
+  // 这里刻意**解析 YAML** 而不是拿正则扫文本：`types:` 在本文件里可能出现在任何位置
+  // （另一个 trigger、甚至注释里），只有解析后按 `on.pull_request.types` 取值才能确认
+  // 它真的挂在 pull_request 上、而不是碰巧在文件里出现过这个词。
+  test("pull_request 显式含 edited（否则 stacked PR 改 base 后永久卡死）", () => {
+    const doc = parseYaml(CI) as Record<string, unknown>;
+    // YAML 1.1 把裸 `on` 解析成布尔真键；两种取法都留着，避免解析器行为变化时静默失效。
+    const on = (doc.on ?? doc[true as unknown as keyof typeof doc]) as Record<string, unknown>;
+    expect(on).toBeDefined();
+
+    const pr = on.pull_request as Record<string, unknown>;
+    expect(pr).toBeDefined();
+
+    const types = pr.types as string[] | undefined;
+    // 断言「显式列出」而非「不含 edited 就行」：省掉 types 会落到不含 edited 的默认值上，
+    // 那正是本次事故的成因，所以缺失必须判红。
+    expect(Array.isArray(types)).toBe(true);
+    expect(types).toContain("edited");
+    // 补上默认三项：显式写了 types 就会**整体覆盖**默认值，漏一个等于关掉一类触发。
+    expect(types).toContain("opened");
+    expect(types).toContain("synchronize");
+    expect(types).toContain("reopened");
   });
 });
