@@ -208,6 +208,23 @@ export function logToolFailure(
 /**
  * 弹出权限确认。这条直接服务北极星里「更安全 ↔ 更快」的 trade-off 判断：
  * 没有它就只能凭感觉争论「HITL 是不是太吵」。
+ *
+ * ⚠️ **本事件仅在「权限层判定 needsConfirmation=true，即真的要弹窗问用户」时触发；
+ * 开发机长期为 0 属正常，不是接线缺陷**（P1-6 分诊结论，勿重复分诊）。
+ *
+ * 判 a 类（路径本机没走到）的证据，三条互相独立：
+ *  1. 唯一调用点 `query/tool-executor.ts` 的 `resolveToolPermission`
+ *     在 `if (decision.needsConfirmation)` 分支内 —— 与它**同一个函数**里的
+ *     `logPermissionAllow` / `logPermissionDeny` 已落盘 758 / 6 条，
+ *     证明函数本身跑过，只是这个分支没进；
+ *  2. 落盘的 758 条 `permission_allow` **全部**是 `source:"rule"` +
+ *     `needed_prompt:false`，6 条 `permission_deny` 也全是 `needsPrompt:false`——
+ *     即每一次鉴权都在 `decision.allowed` / 规则直拒处就短路了；
+ *  3. 本机会话跑在允许直放的权限档上（`skipPermissions` 早退 / 规则命中 /
+ *     非交互模式直拒），`needsConfirmation` 分支结构上到不了。
+ *
+ * 推论：要让它出数，得在**交互式**会话里制造一次真需要确认的操作
+ * （如未在白名单内的写入），而不是去改这里的接线。
  */
 export function logPermissionPrompt(toolName: string): void {
   emit(EVENT_NAMES.PERMISSION_PROMPT, toolNameFields(toolName));
@@ -251,6 +268,18 @@ export type CompactOutcome = "summarized" | "truncated" | "failed";
 
 /**
  * 压缩完成。tokensBefore/After 是「更省」这条北极星唯一能直接量出来的信号之一。
+ *
+ * P1-6 分诊结论：本事件曾判 **b 类（调用点在死路径 / 有一档零 producer）并已修**。
+ * 原状是 4 个调用点全在 `query/auto-compact.ts` 且**全部硬编码 `trigger:"auto"`**，
+ * 手动 `/compact` 走的是另一条链路（`cli/src/command/commands/compact/compact.ts`
+ * 的 partialCompact），真压缩了却一条埋点都不发 —— `trigger:"manual"` 这一档
+ * 生产侧零 producer。现已在手动路径补齐 3 个 outcome（summarized/failed×2）。
+ *
+ * 两条改的时候别破坏的口径约束：
+ *  1. `tokensAfter` 必须在 post-compact 收尾**之后**取（收尾会做文件重注入，
+ *     那部分 token 也算压缩后的真实占用）。收尾前取会系统性把「省了多少」算多。
+ *  2. 摘要链路失败后的有损降级一律记 `failed`，不是 `truncated`——
+ *     `truncated` 专留给熔断降级。两条路径必须同口径，否则聚合时要先做换算。
  */
 export function logContextCompact(opts: {
   outcome: CompactOutcome;
@@ -270,9 +299,23 @@ export function logContextCompact(opts: {
   });
 }
 
-/** compact 被跳过的原因分型。「触发了但没压成」和「没触发」是两回事，混在一起就看不出问题。 */
+/**
+ * compact 被跳过的原因分型。「触发了但没压成」和「没触发」是两回事，混在一起就看不出问题。
+ *
+ * ⚠️ `circuit_open` **是这张表里唯一没有 producer 的取值**：`auto-compact.ts` 的
+ * `!circuitBreaker.canExecute()` 分支并不 skip，而是降级为简单截断后上报
+ * `logContextCompact({ outcome: "truncated" })`（那更准确 —— 它确实压了）。
+ * 留着这个取值只为表达「熔断」这个语义档位；**别看到它零命中就去补一个 skip 调用**，
+ * 那会让同一次熔断同时记进 compact 与 skipped 两个计数，分母直接被污染。
+ */
 export type CompactSkipReason = "too_few_messages" | "lock_held" | "hook_blocked" | "circuit_open";
 
+/**
+ * P1-6 分诊结论：本事件曾判 **b 类并已修**。原状 3 个调用点全在
+ * `query/auto-compact.ts`（auto 路径），手动 `/compact` 的三个同构早退分支
+ * （消息太少 / 锁被占 / hook 阻止）**一个都没上报**。现已在
+ * `cli/src/command/commands/compact/compact.ts` 补齐同名三档，两条路径同口径。
+ */
 export function logContextCompactSkipped(reason: CompactSkipReason): void {
   emit(EVENT_NAMES.CONTEXT_COMPACT_SKIPPED, { reason: v(reason) });
 }
@@ -315,6 +358,19 @@ export type CommandRejectReason =
   | "disabled"
   | "parse_error";
 
+/**
+ * ⚠️ **本事件仅在斜杠命令被拒时触发（打错名字 / 命令被禁用 / 只供模型调用 /
+ * 解析失败），本机长期为 0 属正常，不是接线缺陷**（P1-6 分诊结论，勿重复分诊）。
+ *
+ * 判 a 类的证据：4 个调用点全在 `cli/src/command/executor.ts`
+ * 的 `executeSlashCommand` 里，而**同一个方法**尾部的 `dispatch → logCommandInvoke`
+ * 已落盘 41 条 —— 方法可达，只是 41 次调用全部命中了存在且可用的命令，
+ * 四个拒绝分支一个都没进。`~/.sid-code/command-usage.json` 里
+ * 记录的也全是真实存在的命令（skills / clear / stats / plugin / memory / config / mcp）。
+ *
+ * 分母提示：这条的分母是「用户敲下的斜杠命令总数」（≈ command_invoke + command_rejected），
+ * 用全量会话数当分母会把 unknown_command 率稀释到看不见。
+ */
 export function logCommandRejected(reason: CommandRejectReason): void {
   emit(EVENT_NAMES.COMMAND_REJECTED, { reason: v(reason) });
 }
@@ -329,6 +385,32 @@ export function logCommandRejected(reason: CommandRejectReason): void {
  *
  * 刻意不接收错误消息文本：错误消息里常带文件路径、命令行、甚至密钥片段。
  * 需要定位具体错误时看本地日志与 raw.jsonl，遥测只出分型。
+ *
+ * ⚠️ **本事件仅在 queryLoop 抛出异常并被 engine 封装成 `fatal_error` 时触发，
+ * 本机长期为 0 属正常，不是接线缺陷**（P1-6 分诊结论，勿重复分诊）。
+ *
+ * 先纠正一个会误导后人的计数：分诊前的清单写「9 个调用点却 0 落盘，最可疑」。
+ * 实测**本函数只有 1 个生产调用点**（`query/engine.ts` 的 queryLoop catch 块）。
+ * 另外 8 处是三个**同名但完全无关**的函数：
+ *   - `tui-renderer/src/_vendor/log.ts` 的 ink 渲染期 stderr 打印（4 处引用）；
+ *   - `cli/src/state/bootstrap.ts` 的进程内存错误环形缓冲；
+ *   - `cli/src/entrypoints/headless.ts` 里一个写 stderr 的局部闭包（3 处调用）。
+ * 按函数名 grep 会把它们全算进来 —— 这正是「'有无引用'测不出接线状态」的又一例。
+ *
+ * 为什么 1 个调用点 + 本机 6 次 `exit_status=error` 仍然对得上（不是漏采）：
+ * 那 6 次错误退出**没有一次**走 engine 的 catch。逐个核对 warn.log，窗口内的三次
+ * （20260809-044734 / 20260810-214525 / 20260811-060605）全部终结于
+ * `[GLOBAL] uncaughtException`（EPIPE / EIO，终端已死时写 stdout 失败），
+ * 由 `cli.ts` 的 `process.on("uncaughtException")` → `app.emergencySessionEnd()`
+ * → `fireSessionEndEvent("error")` 直接落 `exit_status=error` 后 `process.exit(1)`。
+ * 这条路径根本不经过 queryLoop 的 catch，且全库 `"phase":"engine"` 与
+ * `fatal_error` 的轨迹记录都是 0 条 —— 两个独立信号互相印证。
+ *
+ * 所以「exit_status=error 有 6 次」推不出「engine 埋点漏了」：
+ * 两者统计的是不同事件（进程级崩溃 vs 主循环内异常）。真想覆盖崩溃类错误，
+ * 应当在 emergencySessionEnd 另起一条埋点 —— 但那条路径上进程即将 exit(1)，
+ * 而本地 backend 是 `writeChain` 异步追加写，**发了也大概率来不及落盘**；
+ * 要做得先解决刷盘时序，不是在这里补一次调用就完事。故本次不动，如实记录待办。
  */
 export function logError(opts: {
   category: string;

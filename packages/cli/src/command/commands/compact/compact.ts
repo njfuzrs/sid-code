@@ -1,5 +1,17 @@
 import type { LocalCommandModule, CommandContext } from "../../types.ts";
 import { mergeInstructions } from "@sid-code/core/query/compact/merge-instructions.ts";
+// P1-6 漏斗 3：手动 /compact 的压缩埋点。
+//
+// 分诊结论（本次任务）：`logContextCompact` 的 4 个调用点全在 `query/auto-compact.ts`，
+// 且**全部硬编码 `trigger: "auto"`**——门面声明的 `trigger: "manual"` 这一档
+// 生产侧零producer。而手动 /compact 走的是本文件的 partialCompact 链路，
+// 与 autoCompact 完全不相交：它真的压缩了上下文，却一条埋点都不发。
+//
+// 为什么这一档不能缺（「更省」方向）：手动压缩是用户**主动**为省钱做的动作，
+// auto 是系统被上限逼的。两者的 tokens_before/after 分布含义不同，
+// 只采 auto 会让「用户主动压了多少」这个问题永久答不出来，
+// 且会把 compact 总量系统性低估——低估幅度恰好等于用户手动压的那部分。
+import { logContextCompact, logContextCompactSkipped } from "@sid-code/core/analytics/events.ts";
 
 /**
  * /compact 命令实现（按需加载）
@@ -32,11 +44,15 @@ const mod: LocalCommandModule = {
   async call(args, ctx) {
     const before = ctx.ctxMgr.messageCount();
     if (before <= 4) {
+      // 与 auto 路径同口径（auto-compact.ts 的 messages.length <= 4 分支）：
+      // 「触发了但没压成」必须分型上报，否则它会藏进正常路径。
+      logContextCompactSkipped("too_few_messages");
       return { type: "text", value: "对话历史太短，无需压缩" };
     }
 
     // §6 压缩互斥锁：避免与自动压缩竞态
     if (!ctx.ctxMgr.acquireCompactLock()) {
+      logContextCompactSkipped("lock_held");
       return { type: "text", value: "已有压缩流程在进行中，请稍后再试" };
     }
 
@@ -47,6 +63,7 @@ const mod: LocalCommandModule = {
       try {
         const pre = await ctx.hookSystem?.firePreCompactEvent("manual");
         if (pre?.finalOutput?.isBlockingDecision()) {
+          logContextCompactSkipped("hook_blocked");
           return {
             type: "text",
             value: `压缩被 hook 阻止：${pre.finalOutput.getEffectiveReason()}`,
@@ -151,8 +168,19 @@ async function runPartial(
   if (!result.success) {
     if (opts.fallbackOnFailure) {
       // §12 P2-4：无参全量模式 LLM 摘要失败 → 本地截断兜底（有损，但保证释放空间）。
+      // 埋点在 runLocalTruncationFallback 内发（它才知道压完的 tokensAfter）。
       return runLocalTruncationFallback(ctx, opts.before, opts.tokensBefore);
     }
+    // 数字 / focus 模式摘要失败且不兜底：消息历史保持不变，一个 token 都没省。
+    // 上报 failed 而非 skipped——skip 的语义是「没走到压缩」，这里是「走到了但没成」，
+    // 混在一起会掩盖「摘要请求正在连续报错」这个要立刻看见的信号（口径同 auto 路径）。
+    logContextCompact({
+      outcome: "failed",
+      trigger: "manual",
+      messagesBefore: opts.before,
+      tokensBefore: opts.tokensBefore,
+      tokensAfter: ctx.ctxMgr.estimateTokens(),
+    });
     return { type: "text", value: `压缩未执行：${result.reason ?? "未知原因"}` };
   }
 
@@ -171,6 +199,17 @@ async function runPartial(
   });
 
   const after = ctx.ctxMgr.messageCount();
+  // 手动压缩主路径成功（LLM 摘要，语义无损）。tokensAfter 必须在 runManualPostCompact
+  // **之后**取：收尾会做文件重注入，重注入的 token 也算进压缩后的真实占用。
+  // 在收尾前取会系统性低估 tokens_after，把「省了多少」算多——这正是「值有区分度」
+  // 那一问要防的：字段在、值偏乐观，比没有这个字段更能误导。
+  logContextCompact({
+    outcome: "summarized",
+    trigger: "manual",
+    messagesBefore: opts.before,
+    tokensBefore: opts.tokensBefore,
+    tokensAfter: ctx.ctxMgr.estimateTokens(),
+  });
   return {
     type: "text",
     value: opts.successPrefix(result.compactedCount, result.savedTokens, after),
@@ -228,6 +267,16 @@ function runLocalTruncationFallback(
 
   ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
   const after = ctx.ctxMgr.messageCount();
+  // 摘要链路失败后的有损降级：上报 failed 而非 truncated，口径与 auto 路径
+  // （auto-compact.ts 尾部那处 outcome:"failed"）严格一致——两条路径同一个语义
+  // 记成两个值，聚合时就得先做口径换算，那正是「分母口径一变曲线整体平移」的来源。
+  logContextCompact({
+    outcome: "failed",
+    trigger: "manual",
+    messagesBefore: before,
+    tokensBefore,
+    tokensAfter: ctx.ctxMgr.estimateTokens(),
+  });
   // fire-and-forget PostCompact（兜底路径不 await，避免阻断返回）
   void firePostCompact(ctx, before, after, tokensBefore);
   return {
