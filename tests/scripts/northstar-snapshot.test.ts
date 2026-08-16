@@ -194,6 +194,109 @@ describe("northstar · 分位数口径", () => {
   });
 });
 
+// ─── 命中率口径收口：与 /cache 视图共用同一个聚合器 ───
+
+describe("northstar · 缓存命中率口径（与 /cache 视图共用聚合器）", () => {
+  /**
+   * 这一组防的是本次修复的缺陷复发：命中率此前在本脚本里是一段裸循环
+   * （`hitSum / inputSum`），三层清洗一个都没做，于是同一份 `usage-ledger.jsonl`
+   * 在 `/cache` 里是 76.4%、在这份**进 release 曲线**的快照里是 68.2%。
+   * 现在两边都调 `telemetry/cache-hit-aggregate.ts`。
+   */
+
+  test("重复会话行只算一次（账本里有 append 时代的残留）", () => {
+    const s = snap(
+      [],
+      [
+        led({ sessionId: "dup", promptTotal: 1_000, cacheHit: 100 }),
+        led({ sessionId: "dup", promptTotal: 1_000, cacheHit: 900 }),
+      ],
+    );
+    // latest-wins → 900/1000；漏了去重则 1000/2000 = 0.5
+    expect(s.cheaper.cache_hit_rate.value).toBeCloseTo(0.9, 9);
+    expect(s.cheaper.cache_hit_rate.value).not.toBeCloseTo(0.5, 2);
+    expect(s.cacheHitCaliber.duplicateRows).toBe(1);
+  });
+
+  test("无 appVersion 的存量行排除出干净口径，且对照值仍可算", () => {
+    const s = snap(
+      [],
+      [
+        led({ sessionId: "new", promptTotal: 10_000, cacheHit: 8_000 }),
+        led({ sessionId: "old", appVersion: undefined, promptTotal: 90_000, cacheHit: 9_000 }),
+      ],
+    );
+    expect(s.cheaper.cache_hit_rate.value).toBeCloseTo(0.8, 9);
+    expect(s.cacheHitCaliber.legacyRows).toBe(1);
+    // 对照值必须在：只报"已排除 N 行"分不清"存量不脏"与"排除没接上"
+    expect(s.cacheHitCaliber.hitRateIncludingLegacy).toBeCloseTo(17_000 / 100_000, 9);
+    expect(s.cacheHitCaliber.legacyHitRate).toBeCloseTo(0.1, 9);
+  });
+
+  test("n 是干净口径的会话数，不是账本总行数（虚报 n 会绕过样本不足护栏）", () => {
+    // 实测本机 378 行里 377 行是存量，干净口径只由 1 个会话支撑。
+    // 报 n=378 会让一个 n=1 的数字在版本对比里被当成结论。
+    const ledger = [
+      led({ sessionId: "clean" }),
+      ...Array.from({ length: 20 }, (_, i) => led({ sessionId: `old${i}`, appVersion: undefined })),
+    ];
+    const s = snap([], ledger);
+    expect(s.cheaper.cache_hit_rate.n).toBe(1);
+    expect(s.cheaper.cache_hit_rate.n).not.toBe(ledger.length);
+  });
+
+  test("source 串如实反映清洗口径（口径变了描述必须跟着变）", () => {
+    const s = snap([], [led()]);
+    const src = s.cheaper.cache_hit_rate.source;
+    expect(src).toContain("usage-ledger.jsonl");
+    expect(src).toContain("去重");
+    expect(src).toContain("untrusted");
+    expect(src).toContain("appVersion");
+  });
+
+  test("清洗账无条件渲染在命中率下面，排除量为 0 时也说", () => {
+    const text = renderSnapshot(snap([], [led()]));
+    expect(text).toContain("口径:");
+    expect(text).toContain("对照:");
+    expect(text).toContain("去重 0 行");
+  });
+
+  test("时间窗与版本过滤仍作用于命中率", () => {
+    const ledger = [
+      led({ sessionId: "recent", ts: NOW_SEC - 86400, promptTotal: 1_000, cacheHit: 900 }),
+      led({ sessionId: "ancient", ts: NOW_SEC - 60 * 86400, promptTotal: 1_000, cacheHit: 100 }),
+    ];
+    expect(snap([], ledger, { windowDays: 7 }).cheaper.cache_hit_rate.value).toBeCloseTo(0.9, 9);
+    expect(snap([], ledger).cheaper.cache_hit_rate.value).toBeCloseTo(0.5, 9);
+
+    const versioned = [
+      led({ sessionId: "a", appVersion: "0.1.600", promptTotal: 1_000, cacheHit: 100 }),
+      led({ sessionId: "b", appVersion: "0.1.601", promptTotal: 1_000, cacheHit: 900 }),
+    ];
+    expect(
+      snap([], versioned, { onlyVersion: "0.1.601" }).cheaper.cache_hit_rate.value,
+    ).toBeCloseTo(0.9, 9);
+    // 反向自证：过滤不存在的版本得到 null，而不是静默回落到全量
+    const none = snap([], versioned, { onlyVersion: "9.9.9" });
+    expect(none.cheaper.cache_hit_rate.value).toBeNull();
+    expect(none.cheaper.cache_hit_rate.n).toBe(0);
+  });
+
+  test("全是存量行时命中率为 null，n=0，且自洽断言仍通过", () => {
+    const s = snap(
+      [],
+      [
+        led({ sessionId: "o1", appVersion: undefined }),
+        led({ sessionId: "o2", appVersion: undefined }),
+      ],
+    );
+    expect(s.cheaper.cache_hit_rate.value).toBeNull();
+    expect(s.cheaper.cache_hit_rate.n).toBe(0);
+    const a = s.assertions.find((x) => x.name.startsWith("缓存命中率的 n"));
+    expect(a?.ok).toBe(true);
+  });
+});
+
 // ─── P2-13：三个分母 + 一致性断言 ───
 
 describe("P2-13 · 三个会话数分母与一致性断言", () => {

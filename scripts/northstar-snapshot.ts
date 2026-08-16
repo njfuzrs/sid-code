@@ -57,6 +57,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { join } from "node:path";
 import { readSessionIndex, type SessionIndexEntry } from "@sid-code/core/trace/session-index.ts";
 import { readUsageLedger, type UsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger.ts";
+import {
+  aggregateCacheHit,
+  type CacheHitAggregate,
+} from "@sid-code/core/telemetry/cache-hit-aggregate.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 
@@ -146,6 +150,50 @@ export interface NorthstarSnapshot {
     cache_hit_rate: Metric;
     turns_per_session: Metric;
     compactions_per_session: Metric;
+  };
+  /**
+   * 缓存命中率的**清洗账**：排除了什么、以及排除前后的两个数。
+   *
+   * 为什么它必须进快照结构而不只是渲染时打一行：`cache_hit_rate` 现在是**干净口径**
+   * （去重 + 排除 untrusted 渠道 + 排除无 appVersion 存量行），这让它与历史快照
+   * 里那个脏口径的数**不可直接比较**。不把清洗账一并落盘，将来对比两份 JSON 的人
+   * 会把一次口径修复读成一次真实的指标跃升 —— 那正是本脚本存在的理由要防的事。
+   *
+   * 静默排除读起来像"全部数据都在这儿"，静默不排除读起来像"总计干净"，两种都是骗人。
+   */
+  cacheHitCaliber: {
+    /** 干净口径的分子分母（可复算 `cache_hit_rate`，也让"分母有多小"可见） */
+    cleanPromptTotal: number;
+    cleanCacheHit: number;
+    /**
+     * 含存量行的命中率 —— **仅供对照**，就是本次口径修复之前报的那个数。
+     * 与 `cache_hit_rate` 并列，让"排除了多少脏数据"变成能看见的差值而非一句承诺。
+     */
+    hitRateIncludingLegacy: number | null;
+    /**
+     * 存量行自己的命中率。给它是为了**自证排除真的生效了**：若与干净口径相差无几，
+     * 说明要么存量本来就不脏、要么排除没接上 —— 两种都需要人看一眼。
+     */
+    legacyHitRate: number | null;
+    /** 去重掉的重复会话行数（>0 说明账本里有 append 时代的残留） */
+    duplicateRows: number;
+    /** 被判 untrusted 整行排除的会话行数 */
+    untrustedRows: number;
+    /**
+     * 无 `endpointHost` 因而**无法参与可信度判定**的行数。
+     * `untrustedRows === 0` 时也必须报出来：否则"已排除 0 行"读起来像"总计干净"，
+     * 真相是脏数据没带渠道标签所以排不掉（机制上线 ≠ 数据被治理）。
+     */
+    rowsWithoutHost: number;
+    /** 无 `appVersion` 被判存量、排除出干净口径的会话行数 */
+    legacyRows: number;
+    /**
+     * 可信渠道内的全部会话行数（含存量）—— `hitRateIncludingLegacy` 的样本量。
+     *
+     * 它同时是「有没有东西可判」的判据：为 0 时命中率相关的一致性断言一律不产出
+     * （账本为空时那条断言恒成立，不携带信息，报 skip 比报 pass 诚实）。
+     */
+    countedSessions: number;
   };
   /** 更少返工 */
   fewerRedos: { real_errors_per_session: Metric; pathological_session_rate: Metric };
@@ -280,13 +328,22 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
 
   // 缓存命中率 = cache_read ÷ 总 input。**在 token 总量上算，不是各会话命中率的平均** ——
   // 后者会让一个 100 token 的会话与一个 100 万 token 的会话等权，得出的数没有计费意义。
-  let hitSum = 0;
-  let inputSum = 0;
-  for (const e of ledger) {
-    if (typeof e.cacheHit === "number") hitSum += e.cacheHit;
-    if (typeof e.promptTotal === "number") inputSum += e.promptTotal;
-  }
-  const hitRate = inputSum > 0 ? hitSum / inputSum : null;
+  //
+  // 走公共聚合器 `telemetry/cache-hit-aggregate.ts`，**不在这里自己做除法**。
+  // 此前这里是一段裸循环（`hitSum / inputSum`），三层清洗一个都没做，于是同一份
+  // `usage-ledger.jsonl` 在 `/cache` 视图里是 76.4%、在这份进 release 曲线的快照里是
+  // 68.2%。差的 8.2pp 全部来自：① 未按 sessionId 去重 ② 未排除伪造 usage 的渠道
+  // ③ 未排除 2026-08-08 前采集代码写的存量行。**脏的那个恰好是画曲线的那个。**
+  //
+  // 注意传的是 `rawLedger` 而不是上面已按窗口过滤的 `ledger`：去重必须发生在窗口
+  // 过滤之前（否则窗口边界会把一次 upsert 的旧行当成"窗口内唯一的行"留下），
+  // 所以窗口/版本过滤一并交给聚合器按正确顺序做。
+  const cacheAgg = aggregateCacheHit({
+    entries: rawLedger,
+    windowDays: opts.windowDays,
+    onlyVersion: opts.onlyVersion,
+    now,
+  });
 
   // ── 更少返工 ──
   // 只统计有终态的会话：增量行的 real_errors 恒 0（见 collector 的
@@ -326,7 +383,10 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     },
     cheaper: {
       cost_per_session: metric(mean(costs), costs.length, `${LED}:costUSD`, "usd"),
-      cache_hit_rate: metric(hitRate, ledger.length, `${LED}:cacheHit÷promptTotal`, "ratio"),
+      // n 用 `cleanSessions`（真正贡献了这个比值的会话数），**不是账本总行数**。
+      // 以前写 `ledger.length` 是虚报样本量：实测本机 378 行里 377 行是存量被排除，
+      // 干净口径只由 1 个会话支撑 —— 报 n=378 会让一个 n=1 的数字看起来像结论。
+      cache_hit_rate: metric(cacheAgg.hitRate, cacheAgg.cleanSessions, cacheAgg.source, "ratio"),
       turns_per_session: metric(mean(turns), turns.length, `${IDX}:turns`, "count"),
       compactions_per_session: metric(
         mean(compactions),
@@ -335,6 +395,7 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         "count",
       ),
     },
+    cacheHitCaliber: buildCacheHitCaliber(cacheAgg),
     fewerRedos: {
       real_errors_per_session: metric(
         mean(realErrors),
@@ -369,6 +430,27 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
 
   snapshot.assertions = buildAssertions(snapshot);
   return snapshot;
+}
+
+/**
+ * 把公共聚合器的清洗账搬进快照结构。
+ *
+ * 单独一个函数只为一件事：**字段与聚合器一一对应**。以前这类"顺手在 return 里
+ * 展开一下"的写法，是漏字段最常见的形态 —— 漏掉的那项在 JSON 里就是不存在，
+ * 而读 JSON 的人分不清"没排除"和"没记录"。
+ */
+function buildCacheHitCaliber(agg: CacheHitAggregate): NorthstarSnapshot["cacheHitCaliber"] {
+  return {
+    cleanPromptTotal: agg.cleanPromptTotal,
+    cleanCacheHit: agg.cleanCacheHit,
+    hitRateIncludingLegacy: agg.hitRateIncludingLegacy,
+    legacyHitRate: agg.legacyHitRate,
+    duplicateRows: agg.excluded.duplicateRows,
+    untrustedRows: agg.excluded.untrustedRows,
+    rowsWithoutHost: agg.excluded.rowsWithoutHost,
+    legacyRows: agg.excluded.legacyRows,
+    countedSessions: agg.countedSessions,
+  };
 }
 
 /**
@@ -412,6 +494,26 @@ export function buildAssertions(s: NorthstarSnapshot): NorthstarSnapshot["assert
       name: "端到端 p50 >= 首字节 p50",
       ok: e2e >= ttft,
       detail: `e2e ${(e2e / 1000).toFixed(1)}s vs ttft ${(ttft / 1000).toFixed(1)}s`,
+    });
+  }
+
+  // 命中率的样本量必须**等于**干净口径的分母所覆盖的会话数。
+  //
+  // 这条不是数据校验，是接线自证：`cache_hit_rate.n` 以前写的是账本总行数
+  // （实测 378），而真正贡献那个比值的只有 1 个会话 —— 一个 n=1 的数字被标成 n=378，
+  // 于是它在版本对比里绕过了"样本不足"护栏（阈值 20），能算出几十个百分点的
+  // "改善"写进 release note。断言它与 `cleanPromptTotal>0` 自洽，能拦住这类回归。
+  // ⚠ 只在账本非空时判：空账本（新机器 / CI runner）上这条恒成立，不携带信息 ——
+  // 报 skip 比报 pass 诚实，与上面两条断言同一处理（"0 条断言的全绿是假绿"）。
+  if (s.cacheHitCaliber.countedSessions > 0) {
+    const hitN = s.cheaper.cache_hit_rate.n;
+    const hasCleanDenominator = s.cacheHitCaliber.cleanPromptTotal > 0;
+    out.push({
+      name: "缓存命中率的 n 与干净口径分母自洽（不虚报样本量）",
+      ok: hasCleanDenominator ? hitN > 0 : hitN === 0,
+      detail: hasCleanDenominator
+        ? `干净分母 ${s.cacheHitCaliber.cleanPromptTotal} token，n=${hitN}`
+        : `无干净样本（分母 0），n=${hitN}（应为 0）`,
     });
   }
 
@@ -512,6 +614,36 @@ function fmt(m: Metric): string {
   return fmtValue(m.value, m.unit);
 }
 
+/**
+ * 渲染缓存命中率的清洗账（缩进在命中率那一行下面）。
+ *
+ * **无条件输出**，不做"有排除才打印"的裁剪：这个数现在是干净口径，与本次修复之前
+ * 落盘的历史快照不可直接比较。任何一行都省掉的话，读者手里就只剩一个裸百分比，
+ * 而那正是「luna 命中率 2.2% → 判定网关不支持前缀缓存」那个错误结论的成因。
+ */
+export function renderCacheHitCaliber(s: NorthstarSnapshot): string[] {
+  const c = s.cacheHitCaliber;
+  const L: string[] = [];
+  L.push(
+    `    口径: 已按 sessionId 去重 ${c.duplicateRows} 行 · ` +
+      `排除 untrusted 渠道 ${c.untrustedRows} 行 · ` +
+      `排除无版本标记存量行 ${c.legacyRows} 行`,
+  );
+  L.push(
+    `    对照: 含存量的旧口径 ${fmtValue(c.hitRateIncludingLegacy, "ratio")} · ` +
+      `存量行自身 ${fmtValue(c.legacyHitRate, "ratio")}` +
+      `（两者与上面的干净口径相差无几 = 存量不脏或排除没生效，都要看一眼）`,
+  );
+  // 排除数为 0 时也要说 —— 见函数注释。这条盲区在 excludedUntrustedRows=0 时最危险。
+  if (c.rowsWithoutHost > 0) {
+    L.push(
+      `    ⚠ 其中 ${c.rowsWithoutHost} 行无 endpointHost（账本 2026-08-08 前不记），` +
+        `未参与可信度判定 —— 干净口径里可能仍混有不可信渠道的数字`,
+    );
+  }
+  return L;
+}
+
 export function renderSnapshot(s: NorthstarSnapshot): string {
   const L: string[] = [];
   L.push(`北极星指标快照  v${s.appVersion}  生成于 ${s.generatedAt}`);
@@ -558,6 +690,12 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   L.push("更省（成本 / 缓存 / 上下文）:");
   L.push(row("单会话成本", s.cheaper.cost_per_session));
   L.push(row("缓存命中率", s.cheaper.cache_hit_rate));
+  // 命中率的清洗账必须紧跟在那一行下面，且**排除量为 0 时也要说**。
+  //
+  // 两个理由：① 这个数现在是干净口径，与历史快照里的脏口径不可直接比较，不写清楚
+  // 会有人把一次口径修复读成一次真实跃升；② "已排除 0 行"读起来像"总计干净"，
+  // 而真相往往是脏数据没带标签所以排不掉（机制上线 ≠ 数据被治理）。
+  L.push(...renderCacheHitCaliber(s));
   L.push(row("单会话轮数", s.cheaper.turns_per_session));
   L.push(row("单会话压缩数", s.cheaper.compactions_per_session));
   L.push("");
@@ -926,6 +1064,65 @@ export function selfTest(): string[] {
     Math.abs(snap.cheaper.cache_hit_rate.value - 0.8) > 1e-9
   ) {
     errors.push(`缓存命中率期望 0.8，实得 ${snap.cheaper.cache_hit_rate.value}`);
+  }
+  // 合成数据全部带 appVersion 且 sessionId 互不相同 → 三层清洗**一行都不该排除**，
+  // 干净口径与含存量口径必须相等。期望值仍是 0.8（清洗是恒等变换），
+  // 所以上面那条断言无需改动 —— 这正是「口径变了但合成数据不脏」的正确形态。
+  if (snap.cacheHitCaliber.legacyRows !== 0 || snap.cacheHitCaliber.duplicateRows !== 0) {
+    errors.push(
+      `合成数据不该有任何排除，实得 存量 ${snap.cacheHitCaliber.legacyRows} 行 / ` +
+        `重复 ${snap.cacheHitCaliber.duplicateRows} 行`,
+    );
+  }
+  if (snap.cheaper.cache_hit_rate.n !== 30) {
+    // n 必须是**贡献了这个比值的会话数**，不是账本行数。以前写 ledger.length
+    // 在这份合成数据上碰巧也是 30，所以这条得配下面那个"脏数据"场景才测得出。
+    errors.push(`命中率样本数期望 30，实得 ${snap.cheaper.cache_hit_rate.n}`);
+  }
+
+  // 反向自证：掺入存量行与重复行，干净口径必须**不动**，而含存量口径必须被拉低。
+  // 只验"干净数据上算得对"测不出清洗是否真的在做 —— 恒等变换也能让上面全绿。
+  const dirty = buildSnapshot({
+    data: {
+      index,
+      ledger: [
+        ...ledger,
+        // 无 appVersion = 2026-08-08 前采集代码写的，已知漏采 cacheHit
+        mkLedger(100, {
+          sessionId: "legacy",
+          appVersion: undefined,
+          promptTotal: 300_000,
+          cacheHit: 0,
+        }),
+        // append 时代的残留：同一 sessionId 两行
+        mkLedger(101, { sessionId: "dup", promptTotal: 1_000, cacheHit: 0 }),
+        mkLedger(101, { sessionId: "dup", promptTotal: 1_000, cacheHit: 1_000 }),
+      ],
+    },
+    denominators,
+    appVersion: "0.1.600",
+    now,
+  });
+  if (
+    dirty.cheaper.cache_hit_rate.value === null ||
+    Math.abs(dirty.cheaper.cache_hit_rate.value - (800 * 30 + 1_000) / (1_000 * 30 + 1_000)) > 1e-9
+  ) {
+    errors.push(
+      `掺脏后干净口径应只含带版本的行（含去重后的 dup），实得 ${dirty.cheaper.cache_hit_rate.value}`,
+    );
+  }
+  if (dirty.cacheHitCaliber.legacyRows !== 1) {
+    errors.push(`反向自证：存量行应被排除 1 行，实得 ${dirty.cacheHitCaliber.legacyRows}`);
+  }
+  if (dirty.cacheHitCaliber.duplicateRows !== 1) {
+    errors.push(`反向自证：重复行应被去重 1 行，实得 ${dirty.cacheHitCaliber.duplicateRows}`);
+  }
+  const incl = dirty.cacheHitCaliber.hitRateIncludingLegacy;
+  if (incl === null || incl >= dirty.cheaper.cache_hit_rate.value!) {
+    // 含存量口径必须**明显更低** —— 若两者相等说明排除没接上（这正是对照值存在的理由）
+    errors.push(
+      `反向自证：含存量口径应低于干净口径，实得 ${incl} vs ${dirty.cheaper.cache_hit_rate.value}`,
+    );
   }
 
   // scope 必须如实反映"有没有按版本过滤"。写错会让一份混着历史版本的快照

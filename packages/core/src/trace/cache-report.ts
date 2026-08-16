@@ -18,8 +18,8 @@
  */
 
 import { summarizeCacheBreakHistory } from "../telemetry/cache-telemetry.ts";
-import { readUsageLedger, dedupeBySession } from "../telemetry/usage-ledger.ts";
-import { readChannelTrust, lookupChannelTrust } from "../telemetry/channel-trust.ts";
+import { aggregateCacheHit } from "../telemetry/cache-hit-aggregate.ts";
+import { lookupChannelTrust } from "../telemetry/channel-trust.ts";
 import type { ChannelTrustRegistry } from "../telemetry/channel-trust.ts";
 
 /** 样本量下限：低于此值只列数字不做判断（避免拿 2 个会话下结论） */
@@ -169,18 +169,20 @@ interface Bucket {
 /** 构造报告数据（纯函数，便于测试；渲染在 renderCacheSection） */
 export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
   const breaks = summarizeCacheBreakHistory(500);
-  const registry = readChannelTrust();
 
-  // 自己读账本而不复用 aggregateOverall：后者按模型聚合，会把不同渠道的数字
-  // 合成一行，之后再也分不开可信与不可信（P0-4 的核心要求就是分得开）。
-  let entries = dedupeBySession(readUsageLedger());
-  if (opts.sinceDays !== undefined) {
-    const cutoff = Math.floor(Date.now() / 1000) - opts.sinceDays * 24 * 60 * 60;
-    entries = entries.filter((e) => e.ts >= cutoff);
-  }
+  // 命中率总计走公共聚合器（`telemetry/cache-hit-aggregate.ts`）——
+  // 三层清洗（去重 / untrusted / 存量行）此前在本文件与 `scripts/northstar-snapshot.ts`
+  // 各写一份，同一份账本算出 76.4% 与 68.2% 两个数。收口后**总计只有一个实现**。
+  //
+  // 分行视图（模型 × 渠道）仍在本文件里自己分桶：公共聚合器刻意不做分组，因为
+  // 「哪个渠道更省」这个问题只有这里要回答。但分桶必须用聚合器返回的 `entries`
+  // （已去重、已按同一时间窗过滤），否则分行与总计会各自读一次账本 —— 那时两侧
+  // 数字对不上，又变回"一套数据两个说法"。
+  const agg = aggregateCacheHit({ windowDays: opts.sinceDays });
+  const registry = agg.registry;
 
   const buckets = new Map<string, Bucket>();
-  for (const e of entries) {
+  for (const e of agg.entries) {
     const key = `${e.model}|${e.endpointHost ?? ""}`;
     let b = buckets.get(key);
     if (!b) {
@@ -221,57 +223,39 @@ export function buildCacheReport(opts: CacheReportOptions = {}): CacheReport {
     .map((b) => toRow(b, registry))
     .sort((a, b) => b.promptTotal - a.promptTotal);
 
+  // 成本/省钱/会话数仍按 counted 桶累加：它们是**分行视图的合计**，与命中率不同 ——
+  // 命中率有三层清洗（去重/untrusted/存量），成本没有（存量行的 cost 仍然有效，
+  // 只有 cacheHit/savings 失真），两者不该共用一个累加器。
+  //
   // 总计只累加可信（含 unknown）渠道：把伪造的"命中"混进去会凭空抬高整体数字，
   // 让"缓存做得好"这个结论建立在假数据上。
   const counted = models.filter((m) => m.trust !== "untrusted");
-  const totalPrompt = counted.reduce((s, m) => s + m.promptTotal, 0);
-  const totalHit = counted.reduce((s, m) => s + m.cacheHit, 0);
-
-  // P0-4 的**覆盖盲区**：排除只能作用于带 endpointHost 的行。
-  //
-  // `endpointHost` 2026-08-08 才随 P0-4 落地，之前的账本行一条都没有 host，
-  // 于是全部按 unknown（= 可信）计入 —— 包括那些真的来自不可信渠道的行。
-  // 实测本机：358 行里只有 8 行带 host，ppchat 判为 untrusted 却排除了 **0 行**。
-  //
-  // ⚠️ 不把这个盲区写出来，"已排除 0 个不可信渠道行"会被读成"总计里没有脏数据"，
-  // 而真相是"脏数据还在里面，只是它没带渠道标签所以排不掉"。
-  // 这正是本仓库反复栽的那个跟头：**机制上线 ≠ 数据被治理**，中间隔着一段
-  // 只有新数据才有字段的过渡期。同病见记忆 `proxy-metric-rewards-relabeling-waste`。
-  const rowsWithoutHost = models.filter((m) => !m.endpointHost).length;
-  const sessionsWithoutHost = models
-    .filter((m) => !m.endpointHost)
-    .reduce((s, m) => s + m.sessions, 0);
-
-  // P2-9：存量行（无 appVersion）在可信渠道内的份额 —— 从命中率总计里减掉。
-  //
-  // 只在 `counted` 上累加：untrusted 渠道的行已经整行排除掉了，再把它的存量份额
-  // 算进"排除量"会重复计数，让"排除了多少"这个数字本身失真。
-  const legacyPrompt = counted.reduce((s, m) => s + m.legacyPromptTotal, 0);
-  const legacyHit = counted.reduce((s, m) => s + m.legacyCacheHit, 0);
-  const cleanPrompt = totalPrompt - legacyPrompt;
-  const cleanHit = totalHit - legacyHit;
 
   return {
     models,
-    // 分母为 0 时给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"
+    // 命中率三项（干净口径 / 存量口径 / 含存量对照）**全部取自公共聚合器**。
+    // 这里刻意不再自己做除法：口径一分成两处实现就会漂移，而这正是本次收口要修的
+    // 缺陷本身（northstar 那份漏了三层清洗，同一账本算出 68.2% 对 76.4%）。
     //
-    // P2-9：**默认口径已改为"排除存量行"**。全是存量数据时（cleanPrompt=0）给 null
-    // 而不是回落到含存量的数字 —— 回落会让"这个总计是干净的"这个承诺在最需要它的
-    // 场景下静默失效，而 null + 下方显式说明能让人看出"暂时无可信样本"。
-    totalHitRate: cleanPrompt > 0 ? cleanHit / cleanPrompt : null,
+    // 分母为 0 时聚合器给 null 而不是 0：没有分母就没有比率，落 0 会被读成"命中率 0%"。
+    // 全是存量数据时同样给 null 而不回落到含存量的数字 —— 回落会让"这个总计是干净的"
+    // 这个承诺在最需要它的场景下静默失效。
+    totalHitRate: agg.hitRate,
     totalCostUSD: counted.reduce((s, m) => s + m.costUSD, 0),
     totalSavingsUSD: counted.reduce((s, m) => s + m.savingsUSD, 0),
     totalSessions: counted.reduce((s, m) => s + m.sessions, 0),
+    // 这三个是**桶（模型 × 渠道）计数**，不是会话计数 —— 分组维度只有本文件有，
+    // 所以留在本地算。下面带 `sessions` 前缀的那两个才是会话计数，取自聚合器。
     excludedUntrustedRows: models.length - counted.length,
-    rowsWithoutHost,
-    sessionsWithoutHost,
+    rowsWithoutHost: models.filter((m) => !m.endpointHost).length,
     rowsWithoutVersion: models.filter((m) => m.legacySessions > 0).length,
-    sessionsWithoutVersion: counted.reduce((s, m) => s + m.legacySessions, 0),
-    excludedLegacyPromptTotal: legacyPrompt,
-    excludedLegacyCacheHit: legacyHit,
-    legacyHitRate: legacyPrompt > 0 ? legacyHit / legacyPrompt : null,
+    sessionsWithoutHost: agg.excluded.rowsWithoutHost,
+    sessionsWithoutVersion: agg.excluded.legacyRows,
+    excludedLegacyPromptTotal: agg.excluded.legacyPromptTotal,
+    excludedLegacyCacheHit: agg.excluded.legacyCacheHit,
+    legacyHitRate: agg.legacyHitRate,
     // 对照值：修复前那个被存量拉低的数字。并列输出让差值可见。
-    totalHitRateIncludingLegacy: totalPrompt > 0 ? totalHit / totalPrompt : null,
+    totalHitRateIncludingLegacy: agg.hitRateIncludingLegacy,
     breaks,
   };
 }
