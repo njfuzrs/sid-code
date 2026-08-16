@@ -123,6 +123,29 @@ function wireToolDef(t: DiscoveredTool): ToolDefinition {
   } as ToolDefinition;
 }
 
+/**
+ * 递归剥掉 JSON Schema 元信息键，用于比对「降级路径发的是未改造的 schema」。
+ *
+ * ⚠ 这里**刻意重新实现**一遍，不 import 生产代码的 `stripMetaKeys`：
+ * 拿被测实现去构造期望值是同义反复，实现改错了两边一起变、断言失效。
+ * 这条与本文件顶部「两个模块各自演进导致契约漂移」是同一个道理。
+ */
+function stripMetaKeysDeep(node: unknown): unknown {
+  if (node === null || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(stripMetaKeysDeep);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (k === "$schema") continue;
+    out[k] = stripMetaKeysDeep(v);
+  }
+  return out;
+}
+
+/** 顶层入口：工具 schema 必然是对象，故此处收窄类型供 toEqual 使用 */
+function stripMetaKeys(schema: Record<string, unknown>): Record<string, unknown> {
+  return stripMetaKeysDeep(schema) as Record<string, unknown>;
+}
+
 function buildWire(t: DiscoveredTool) {
   const params = {
     model: "gpt-5.6-luna",
@@ -245,8 +268,14 @@ describe("strict wire 契约与本地校验对账", () => {
       const wire = buildWire(t);
       if (hasDynamicKey) {
         expect(wire.strict, `${t.name} 含动态 key 关键字，应降级为非 strict`).toBe(false);
-        // 降级后必须发原始 schema（而非改造过的半成品）
-        expect(wire.parameters).toEqual(t.jsonSchema);
+        // 降级后必须发**未经 strict 改造**的 schema（而非改造过的半成品）——
+        // 但 `$schema` 这类元信息键仍会被剥掉（它与 strict 无关，是 zod 无条件注入的、
+        // 五家厂商都不认的键，白烧 ~570 token/轮，见 dialect/tool-schema.md）。
+        // 故这里比对「剥掉元信息键后的原始 schema」，而不是逐字比对原始对象。
+        expect(wire.parameters).toEqual(stripMetaKeys(t.jsonSchema));
+        // 同时正面断言：strict 改造的痕迹一个都不许有。
+        // 这是本断言的真实意图——降级路径不能发半成品。
+        expect(JSON.stringify(wire.parameters)).not.toContain('"null"');
       }
     }
   });

@@ -85,6 +85,13 @@ const WIRE_DIALECTS: Record<ProtocolFamily, WireDialect> = {
 
 export { classifyProtocolFamily, isChatCompletionsFamily } from "./classify.ts";
 export type { ClassifyInput } from "./classify.ts";
+export {
+  getToolSchemaDialect,
+  sanitizeToolSchema,
+  hasStrictIncompatibleNode,
+  JSON_SCHEMA_META_KEYS,
+} from "./tool-schema.ts";
+export type { ToolSchemaDialect, SanitizeResult, SanitizeOptions } from "./tool-schema.ts";
 export type {
   Dialect,
   DialectFlags,

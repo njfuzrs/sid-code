@@ -305,12 +305,17 @@ describe("openai.ts 的族判定**不得**吃 baseURL（重构中真实踩到的
     expect(getDialectWire("deepseek-openai").toolChoice).toBe("reject-when-thinking");
   });
 
-  test("openai.ts 两处调用点均不传 baseURL（源码级断言，防后人「补全」）", async () => {
+  test("openai.ts 全部调用点均不传 baseURL（源码级断言，防后人「补全」）", async () => {
     // 直接读源码断言，而不是靠行为测 —— 行为测需要构造真实 provider + 网关，
     // 而这条约束的本质是「别给这个调用点加参数」，源码级最直接。
+    //
+    // ⚠ 调用点数量从 2 涨到 3：新增的是 `convertTools`（工具 schema 方言层要按族取
+    // 裁剪规则）。**这个数字本身不是不变量**，真正的不变量是下面那个循环——
+    // 每一处都不许吃 baseURL。故数字只做「有新调用点时提醒人来看一眼」的哨兵，
+    // 加调用点时更新它是预期动作；把断言删掉才是错的。
     const src = await Bun.file(new URL("../../src/llm/openai.ts", import.meta.url).pathname).text();
     const calls = src.match(/classifyProtocolFamily\(\{[^}]*\}\)/g) ?? [];
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBe(3);
     for (const c of calls) {
       expect(c).not.toContain("baseURL");
     }

@@ -16,6 +16,7 @@ import type {
   Usage,
   AccumulatedResponse,
   ContentBlock,
+  ToolDefinition,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
@@ -37,7 +38,9 @@ import { lookupModelCompat } from "./model-compat.ts";
 import {
   classifyProtocolFamily,
   getDialectWire,
+  getToolSchemaDialect,
   isChatCompletionsFamily,
+  sanitizeToolSchema,
 } from "./dialect/catalog.ts";
 import {
   learnFromError,
@@ -194,6 +197,37 @@ export class OpenAIProvider implements Provider {
     const declared = lookupModelCompat(alias)?.requiresReasoningContentForToolCalls;
     if (declared !== undefined) return declared;
     return lookupCatalog(model)?.requiresReasoningContentForToolCalls === true;
+  }
+
+  /**
+   * 把工具定义转成 Chat Completions 的嵌套 `function` 格式，并按族方言清理 schema。
+   *
+   * 流式与非流式两条路径共用（此前两处各手写一遍同样的 `.map()`——本仓「同一转换写两遍」
+   * 有多次漂移前科，`markLastUserMessageCacheBreakpoint` 就是同一原因收敛的）。
+   *
+   * ## 为什么这条线只剥元信息键、不打 strict
+   *
+   * `registry.ts:79` 给 40 个内置工具打了 `strict: true`，但**本文件全文零 `strict` 命中**
+   * ——这条线从来不下发它。要接线需同时决定 DeepSeek 的 `/beta` base_url 切换
+   * （strict 在 DeepSeek 上是 beta 端点专属），那是改渠道行为，且 DeepSeek 官方仓有
+   * strict 吐畸形 JSON 的未闭 issue。**开关是独立一件事，不混在本次改动里**——
+   * 混了就同时改了「schema 形状」与「发不发 strict」两个变量，出问题分不清是谁。
+   *
+   * 故这里传 `strict: false`：只剥 `$schema` 这类 zod 无条件注入、五家都不认的元信息键
+   * （实测 40 份 schema 合计 ~570 token/轮，且常驻 prompt cache 工具区前缀）。
+   * 依据见 `dialect/tool-schema.md`。
+   */
+  private static convertTools(model: string, tools?: ToolDefinition[]) {
+    if (!tools) return undefined;
+    const dialect = getToolSchemaDialect(classifyProtocolFamily({ model }));
+    return tools.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: sanitizeToolSchema(t.input_schema, dialect, { strict: false }).schema,
+      },
+    }));
   }
 
   /**
@@ -795,15 +829,8 @@ export class OpenAIProvider implements Provider {
     // 另传别名供 compat 声明查表——两者不能合并，见 requiresReasoningContentForToolCalls）
     const messages = this.convertMessages(params.messages, effectiveModel, params.model);
 
-    // 转换工具定义
-    const tools = params.tools?.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
+    // 转换工具定义（schema 按族方言清理，见 convertTools 注释）
+    const tools = OpenAIProvider.convertTools(effectiveModel, params.tools);
 
     const requestBody: any = {
       model: effectiveModel,
@@ -1537,14 +1564,8 @@ export class OpenAIProvider implements Provider {
 
     // 与流式路径同口径传别名（compat 查表用），漏传即「非流式路径上用户声明静默失效」。
     const messages = this.convertMessages(params.messages, effectiveModel, params.model);
-    const tools = params.tools?.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
+    // 与流式路径共用同一转换（含 schema 方言清理），避免两条线的 schema 形状漂移。
+    const tools = OpenAIProvider.convertTools(effectiveModel, params.tools);
 
     const requestBody: any = {
       model: effectiveModel,

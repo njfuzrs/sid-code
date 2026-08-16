@@ -35,6 +35,11 @@ import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import {
+  classifyProtocolFamily,
+  getToolSchemaDialect,
+  sanitizeToolSchema,
+} from "./dialect/catalog.ts";
+import {
   buildSystemBlocks,
   assertCacheBreakpointBudget,
   markLastToolCacheBreakpoint,
@@ -189,15 +194,12 @@ export class AnthropicProvider implements Provider {
     const tokenEfficientToolsEnabled =
       !enableStrict && process.env.SID_ENABLE_TOKEN_EFFICIENT_TOOLS === "1";
 
-    const tools = params.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.input_schema,
-      // strict 三重门控：工具声明 + 模型支持 + 环境变量未禁用
-      ...(t.strict && enableStrict && { strict: true }),
-      // FGTS：让 API 在生成过程中就流式发送 JSON 片段（减少大输入的等待时间）
-      ...(enableFGTS && { eager_input_streaming: true }),
-    }));
+    // schema 按族方言清理（见 convertAnthropicTools）。必须喂**真名** model，喂别名会静默
+    // 落到 unknown 族 —— 与上面 modelSupportsStrict 同一条约束。
+    const tools = convertAnthropicTools(model, params.tools, {
+      strictOn: enableStrict,
+      eagerInputStreaming: enableFGTS,
+    });
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
     // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
@@ -760,16 +762,16 @@ export class AnthropicProvider implements Provider {
       }),
     }));
 
-    const tools = params.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.input_schema,
-      // 非流式路径同样支持 strict（对齐流式路径门控逻辑）。
-      // 同流式路径：能力判定吃真名，别名会静默判 false。
-      ...(t.strict &&
-        !process.env.SID_DISABLE_STRICT_TOOLS &&
-        modelSupportsStrict(pickWireModel(params, this._model)) && { strict: true }),
-    }));
+    // 非流式路径同样支持 strict（对齐流式路径门控逻辑）。
+    // 同流式路径：能力判定吃真名，别名会静默判 false。
+    const nonStreamingModel = pickWireModel(params, this._model);
+    const tools = convertAnthropicTools(nonStreamingModel, params.tools, {
+      strictOn: !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(nonStreamingModel),
+      // ⚠ 非流式刻意**不**开 FGTS：eager_input_streaming 是流式专属语义
+      // （「生成过程中就流式发 JSON 片段」），非流式没有「过程」。
+      // 此前两处手写的 .map() 里非流式那份也没有它 —— 保持原样，不趁收敛改行为。
+      eagerInputStreaming: false,
+    });
 
     // G8: 非流式路径缓存标记对齐流式路径——
     // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control（含 G4 global scope）；
@@ -947,6 +949,62 @@ function buildToolChoiceParam(params: SendParams): Record<string, unknown> {
   }
   // { name } → 强制调用指定工具
   return { tool_choice: { type: "tool" as const, name: tc.name } };
+}
+
+/**
+ * 把工具定义转成 Anthropic Messages API 的 `tools` 形态，并按族方言清理 `input_schema`。
+ *
+ * 流式与非流式两条路径共用（此前两处各手写一遍同样的 `.map()`，且已经**不完全一致**：
+ * 非流式那份漏了 FGTS 的 `eager_input_streaming`）。
+ *
+ * ## Anthropic 这一族清理什么、为什么
+ *
+ * 它的子集与 OpenAI **有一处正好相反**，所以不能共用一套裁剪：
+ *
+ * | | OpenAI strict | Anthropic strict |
+ * | --- | --- | --- |
+ * | 数值/长度约束（`minimum`/`maxLength`…） | **支持** | **不支持** |
+ * | `required` 必须覆盖 properties 全集 | **是** | **否**（保留可选参数，限量 24 个） |
+ * | `default` | 未列入（三方指向被拒） | **明确支持** |
+ *
+ * 故本族的方言声明是「剥数值与长度约束、`minItems` 只留 0/1、**不**做 required 全补全」。
+ * required 那一条若搞反，后果是把所有可选参数变成必填、模型被迫给每个字段编个值。
+ *
+ * ⚠ **这是按文档保守化，不是修一个正在炸的 bug。** 实测 7 个内置工具
+ * （`grep`/`lsp`/`enter_worktree`/`tool_search`/`ask_user_question`/`task_create`/`task_update`）
+ * 带着子集外的关键字发出去，而本仓 51 个会话的轨迹里**查不到任何 schema 类 400**
+ * ——Anthropic 实际上容忍了它们。裁掉的约束会**转写进 `description`**（官方 SDK 的同一
+ * 策略），语义不丢。依据与核查命令见 `dialect/tool-schema.md` §③。
+ *
+ * @param model      **真名**（wire model）——`classifyProtocolFamily` 按名匹配，喂别名会
+ *                   静默 miss 落到 `unknown` 族（那一族不裁剪任何东西）。与 `modelSupportsStrict`
+ *                   同一条约束。
+ * @param strictOn   本轮 strict 三重门控的结论（工具声明 × 模型支持 × 环境变量未禁用）
+ */
+function convertAnthropicTools(
+  model: string,
+  tools: SendParams["tools"],
+  opts: { strictOn: boolean; eagerInputStreaming: boolean },
+) {
+  if (!tools) return undefined;
+  const dialect = getToolSchemaDialect(classifyProtocolFamily({ model, provider: "anthropic" }));
+  return tools.map((t) => {
+    // strict 语境按族子集裁剪；非 strict 语境只剥 `$schema`（Anthropic 对工具 schema 里
+    // 不认识的关键字是忽略的，裁剪无收益，但 `$schema` 白烧 token 仍值得剥）。
+    const useStrict = Boolean(t.strict && opts.strictOn);
+    const cleaned = sanitizeToolSchema(t.input_schema, dialect, { strict: useStrict });
+    return {
+      name: t.name,
+      description: t.description,
+      input_schema: cleaned.schema,
+      // strict 三重门控 + schema 结构性可用性。`strictUsable: false` = 含无约束任意值
+      // （z.unknown()）或动态 key 字典（z.record → propertyNames），与 strict 结构上互斥，
+      // 降级为不发 strict 而不是硬塞一个不合规的 schema。
+      ...(useStrict && cleaned.strictUsable && { strict: true as const }),
+      // FGTS：让 API 在生成过程中就流式发送 JSON 片段（减少大输入的等待时间）
+      ...(opts.eagerInputStreaming && { eager_input_streaming: true as const }),
+    };
+  });
 }
 
 /**
