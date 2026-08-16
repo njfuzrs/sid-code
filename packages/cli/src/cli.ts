@@ -1151,10 +1151,14 @@ export async function main(): Promise<void> {
     checkCoordinatorEnv();
 
     // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
+    //
+    // ⚠ 必须传 selfSessionId：清理会 rmSync 过期的 checkpoint 会话目录，而本会话自己的
+    // registerSession() 在下面 :2212 才跑 —— 这中间本会话不在活跃注册表里。平时无害，
+    // 但 `--resume` 一个 30 天前的旧会话时会把用户正要恢复的那个会话的 checkpoint 删掉。
     try {
       const { runStartupHousekeeping } =
         await import("@sid-code/core/config/startup-housekeeping.ts");
-      runStartupHousekeeping();
+      runStartupHousekeeping(Date.now(), { selfSessionId: config.sessionId });
     } catch (err) {
       getLogger().debug("CONFIG", `启动管家任务跳过: ${err}`);
     }
