@@ -196,6 +196,7 @@ export class HelpCommand implements Command {
   /trace --health 1h     指定聚合周期(1h|24h|7d,默认 24h)
   /trace --cache         跨会话缓存视图(命中率/省钱/中断归因/渠道可信度)
   /trace --cache --days 7  只看最近 N 天(不传=全部历史)
+  /trace --prune-index 5000  裁剪会话索引,只保留最近 N 行(手动,索引不自动清理)
   /digest                /trace 的别名
 
 输出内容:
@@ -1785,7 +1786,7 @@ export class TraceCommand implements Command {
     return ["digest"];
   }
   description() {
-    return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图)";
+    return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图, --prune-index N 裁剪会话索引)";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -1831,6 +1832,45 @@ export class TraceCommand implements Command {
       return {
         kind: "message",
         message: renderCacheSection({ noColor: true, sinceDays: days }),
+      };
+    }
+
+    // --prune-index N：手动裁剪会话索引，只保留最近 N 行。
+    //
+    // pruneSessionIndex 刻意不自动调用（索引 10 万会话 ≈ 50MB，自动清理正是 P0-2
+    // 要治的病），所以它必须有一个手动入口，否则就是死函数 —— 此前方案承诺了这个
+    // 入口却从未接线，函数全仓零生产调用点。
+    //
+    // 与 --cache 同理，必须放在下面 "未找到任何会话轨迹" 早退**之前**：索引是独立
+    // 数据源（~/.sid-code/session-index.jsonl），trajectories 被 LRU 清掉后索引仍在，
+    // 而那恰恰是最需要裁剪它的时刻。
+    if (flags.has("--prune-index")) {
+      const { pruneSessionIndex, sessionIndexPath } =
+        await import("@sid-code/core/trace/session-index.ts");
+      // existsSync 走分支内动态 import：本文件顶层刻意零 fs 依赖（命令模块只做分派），
+      // 为一个分支引入顶层 fs 会让所有命令都背上这个依赖
+      const { existsSync } = await import("node:fs");
+      const idx = tokens.indexOf("--prune-index");
+      const raw = idx >= 0 ? tokens[idx + 1] : undefined;
+      // 用正则而非 parseInt：parseInt("5x") 会静默得到 5，把用户的错字当成有效参数，
+      // 而这个参数决定删掉多少行数据，宽容解析在这里是危险的
+      if (!raw || !/^\d+$/.test(raw)) {
+        return { kind: "error", message: "--prune-index 需要一个非负整数" };
+      }
+      const n = parseInt(raw, 10);
+      // 先判文件是否存在：pruneSessionIndex 对"索引不存在"和"裁剪后剩 0 行"都返回 0,
+      // 两者对用户是完全不同的事实（没数据 vs 全删了），不能渲染成同一句话
+      const path = sessionIndexPath();
+      if (!existsSync(path)) {
+        return { kind: "message", message: `会话索引不存在 (${path})，无需裁剪。` };
+      }
+      const kept = pruneSessionIndex(n);
+      return {
+        kind: "message",
+        message:
+          kept >= 0
+            ? `会话索引已裁剪，保留最近 ${kept} 行 (${path})`
+            : `会话索引裁剪失败（文件不可写?）: ${path}`,
       };
     }
 
