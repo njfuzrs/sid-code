@@ -19,9 +19,15 @@
  */
 
 import type { SendParams } from "./types.ts";
-import { lookupCatalog } from "./model-params-catalog.ts";
 import { lookupCapability } from "./model-capabilities.ts";
 import { lookupModelCompat, type ModelCompat } from "./model-compat.ts";
+import {
+  buildDialectCatalog,
+  classifyProtocolFamily,
+  mapThinkingCapToEffort,
+  type Dialect,
+  type ProtocolFamily,
+} from "./dialect/catalog.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 1. 统一内部标度（与协议无关）
@@ -47,25 +53,24 @@ type WireEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * 不含 xhigh 的线格式子集（绝大多数 provider 的实际可用值域）。
- * 两个 clamp 函数的返回类型收窄到此，避免把 xhigh 漏给不认它的 provider
+ * clamp 的返回类型收窄到此，避免把 xhigh 漏给不认它的 provider
  * （SendParams.reasoningEffort 亦不含 xhigh，类型层直接挡住）。
  */
 type WireEffortNoXhigh = Exclude<WireEffort, "xhigh">;
 
 /**
- * 把统一档位钳到「支持 max 但不支持 xhigh 的线格式」（DeepSeek/GLM/Anthropic-adaptive 用）：
- * xhigh → max（视为最高档），其余原样。
+ * 把统一档位钳到「支持 max 但不支持 xhigh 的线格式」：xhigh → max，其余原样。
+ *
+ * 仅 {@link resolveFromCapabilityCache}（未知族 + 动态能力缓存兜底）还用它。
+ * 各**已知族**的钳制已随行为迁进 `dialect/` 各族模块——那里能连同「为什么这一族
+ * 只有这几档」的出处一起写（如 `grok.md` 的「无 max」、`glm.md` 的「不认 xhigh」），
+ * 比一个共享工具函数更能说明差异。
+ *
+ * 曾有一个对偶函数 `clampToHighWire`（max/xhigh → high，o-series/Grok 用），
+ * 随那两族一起迁走后已无调用方，故删除。
  */
 function clampToMaxWire(effort: EffortLevel): WireEffortNoXhigh {
   return effort === "xhigh" ? "max" : effort;
-}
-
-/**
- * 把统一档位钳到「无 max 的线格式」（o-series/Grok 用）：
- * max 与 xhigh 均 → high，其余原样。
- */
-function clampToHighWire(effort: EffortLevel): WireEffortNoXhigh {
-  return effort === "max" || effort === "xhigh" ? "high" : effort;
 }
 
 /** 思考开关三态。undefined = auto（跟随模型/provider 默认） */
@@ -76,23 +81,20 @@ export function isEffortLevel(v: string): v is EffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(v);
 }
 
-/**
- * Anthropic 原生 Claude 的「档位 → thinking budget_tokens」映射。
- * 复用 thinking.ts 的预算思路（simple 2K / medium 10K / complex 50K），补 high=20K 这一档，
- * 使 4 档与 budget 一一对应。
- */
-const ANTHROPIC_EFFORT_BUDGET: Record<EffortLevel, number> = {
-  low: 2_000,
-  medium: 10_000,
-  high: 20_000,
-  xhigh: 32_000,
-  max: 50_000,
-};
-
 // ─────────────────────────────────────────────────────────────
 // 2. 能力描述符
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 模型的推理能力描述符。
+ *
+ * ⚠ 本接口与 `dialect/types.ts` 的 {@link Dialect} 是**同一组信息的两种视角**，不是重复：
+ * `Dialect` 按「族」组织（一族一份，含线格式描述符），`EffortCapability` 是**解析结果**
+ * （已叠加用户 compat 声明与动态能力缓存，只保留上层 UI/loop 需要的那几位）。
+ *
+ * 保留本接口而不让上层直接吃 `Dialect`，是因为上层拿到的东西必须是**已经算完的**：
+ * 状态栏不该知道「这一位来自族默认还是用户覆盖」。
+ */
 export interface EffortCapability {
   /** 支持档位切换；false → 状态栏不显示 effort 列 */
   supportsEffort: boolean;
@@ -115,276 +117,45 @@ export interface EffortCapability {
   applyToSendParams(params: SendParams, effort: EffortSetting, thinking: boolean): void;
 }
 
-/** 协议种类（resolveEffortCapability 内部判定结果） */
-type CapabilityKind =
-  | "deepseek-openai"
-  | "deepseek-anthropic"
-  | "anthropic-native"
-  | "o-series"
-  | "glm-openai"
-  | "grok-openai"
-  | "openai-responses"
-  | "unknown";
+/**
+ * 协议种类。**别名**指向 dialect 层的 {@link ProtocolFamily}——保留这个名字是因为
+ * 它已散在测试与注释里，改名的 diff 噪音远大于收益；但取值定义只有一份。
+ */
+type CapabilityKind = ProtocolFamily;
 
 // ─────────────────────────────────────────────────────────────
-// 3. 各协议的 applyToSendParams 实现矩阵
+// 3. 族方言表（实现已迁至 dialect/，此处只做解析与叠加）
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 规则 1：DeepSeek（OpenAI 兼容端点，主力路径）。
- * - thinking → params.thinking（openai.ts applyDeepSeekThinking 转请求体 thinking.type）。
- * - effort   → params.reasoningEffort，DeepSeek 仅 high/max：low/medium→high，max→max。
- */
-function applyDeepSeekOpenAI(params: SendParams, effort: EffortSetting, thinking: boolean): void {
-  // budgetTokens 在 DeepSeek OpenAI 端点无对应字段，置 0；强度走 reasoningEffort。
-  params.thinking = { enabled: thinking, budgetTokens: 0 };
-  // 思考关闭时不下发 effort（与 openai.ts 的 thinkingDisabled 规避一致，避冲突）。
-  // DeepSeek 仅认 high/max：xhigh 与 max 同视为 max，low/medium 视为 high。
-  if (thinking && effort !== undefined) {
-    params.reasoningEffort = clampToMaxWire(effort) === "max" ? "max" : "high";
-  }
-}
-
-/**
- * 规则 2：DeepSeek（Anthropic 兼容端点）。
- * - thinking 开关有效（budget 被服务端忽略，仍按 anthropic.ts 既有形态下发 enabled）。
- * - effort   走 output_config.effort（由 anthropic.ts S7 补丁消费）：low/medium→high，max→max。
- */
-function applyDeepSeekAnthropic(
-  params: SendParams,
-  effort: EffortSetting,
-  thinking: boolean,
-): void {
-  params.thinking = { enabled: thinking, budgetTokens: 0 };
-  if (thinking && effort !== undefined) {
-    params.outputConfig = { effort: clampToMaxWire(effort) === "max" ? "max" : "high" };
-  }
-}
-
-/**
- * 规则 3：Anthropic 原生 Claude。
+ * 全族方言表。
  *
- * 根据 thinkingMode 分两条路径：
- * - adaptive（Opus 4.7+/Sonnet 4.6/Fable 5）→ `thinking:{type:"adaptive"}` + `output_config.effort`
- * - always-on（Fable 5/Mythos 5）→ 同 adaptive 但不允许关闭思考
- * - manual（旧模型，thinkingMode 为 undefined）→ `thinking:{type:"enabled", budget_tokens:N}`
- *
- * [来源: anthropic-api.md:316-323,325-332]
+ * 惰性构造 + 缓存：`buildDialectCatalog` 需要注入 `getMaxThinkingTokensOverride`
+ * （anthropic-native 要读思考上限），而那个函数定义在本文件下方——模块顶层直接构造会
+ * 撞 TDZ（`const` 提升但未初始化）。惰性化同时避免了「导入本模块就构造八个对象」。
  */
-function applyAnthropicNative(params: SendParams, effort: EffortSetting, thinking: boolean): void {
-  const catalogEntry = lookupCatalog(params.model || "");
-  const thinkingMode = catalogEntry?.thinkingMode;
+let _dialects: Record<CapabilityKind, Dialect> | null = null;
 
-  // §12 P2-1：思考 token 上限（env / settings）。null 表示未设。
-  const maxThinking = getMaxThinkingTokensOverride(params.maxThinkingTokens);
+function dialects(): Record<CapabilityKind, Dialect> {
+  _dialects ??= buildDialectCatalog((settingsValue) => getMaxThinkingTokensOverride(settingsValue));
+  return _dialects;
+}
 
-  if (thinkingMode === "always-on" || thinkingMode === "adaptive") {
-    // ── adaptive / always-on 路径 ──
-    // always-on 模型不可关闭思考（关也按低 effort 下发），avoid 400
-    const effectiveThinking = thinkingMode === "always-on" ? true : thinking;
-
-    if (!effectiveThinking) {
-      // adaptive 模型显式关闭思考：不下发 thinking 参数（省略 = 不思考）
-      params.thinking = { enabled: false, budgetTokens: 0 };
-      return;
-    }
-
-    // auto（effort=undefined）→ 走模型默认（Opus 4.8 默认 high）
-    let effectiveEffort: EffortLevel = effort ?? "high";
-    // §12 P2-1：adaptive 模型 budget 由服务端定，客户端无法硬钳——改为按上限把 effort 降档间接压低。
-    // 仅当降档结果比用户档位更低时才生效（不上调），并在 outputConfig 打标记供 UI/日志诚实告知。
-    if (maxThinking !== null) {
-      const capped = mapThinkingCapToEffort(maxThinking);
-      if (
-        capped !== null &&
-        ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[effectiveEffort]
-      ) {
-        effectiveEffort = capped;
-        params.thinkingBudgetCapped = {
-          requestedMax: maxThinking,
-          mappedEffort: capped,
-          mode: "adaptive",
-        };
-      }
-    }
-    // Anthropic adaptive 线格式官方档位为 low/medium/high/max，不含 xhigh：
-    // xhigh 钳到 max，避免未知档位触发 400。
-    const level: WireEffort = clampToMaxWire(effectiveEffort);
-    // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}
-    params.thinking = { enabled: true, budgetTokens: 0 };
-    params.outputConfig = { effort: level, thinkingType: "adaptive" };
-  } else {
-    // ── manual 路径（旧模型：Opus 4-20250514/Sonnet 4.5/Haiku 4.5 等）──
-    if (!thinking) {
-      params.thinking = { enabled: false, budgetTokens: 0 };
-      return;
-    }
-    // auto（effort=undefined）兜底用 medium 预算，保证开思考时有合理预算。
-    const level: EffortLevel = effort ?? "medium";
-    let budget = ANTHROPIC_EFFORT_BUDGET[level];
-    // §12 P2-1：manual 模型 budget 由客户端下发，可精确钳制：Math.min(档位budget, 上限)。
-    if (maxThinking !== null && maxThinking < budget) {
-      budget = maxThinking;
-      params.thinkingBudgetCapped = {
-        requestedMax: maxThinking,
-        appliedBudget: budget,
-        mode: "manual",
-      };
-    }
-    params.thinking = { enabled: true, budgetTokens: budget };
-  }
+/** 取某族的方言（供本文件内解析用；跨文件请走 `dialect/catalog.ts`） */
+function dialectOf(kind: CapabilityKind): Dialect {
+  return dialects()[kind];
 }
 
 /**
- * 规则 4：OpenAI o-series。
- * - 无显式思考开关（内置推理），thinking no-op。
- * - effort → reasoning_effort（low/medium/high，无 max：max→high）。由 openai.ts 对 o-series 透传。
- */
-function applyOSeries(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
-  if (effort !== undefined) {
-    // o-series 仅 low/medium/high，无 max：max 与 xhigh 均钳到 high。
-    params.reasoningEffort = clampToHighWire(effort);
-  }
-}
-
-/** 规则 5：兜底——不下发任何字段，避免未知端点 400。 */
-function applyNoop(_params: SendParams, _effort: EffortSetting, _thinking: boolean): void {
-  /* no-op */
-}
-
-/**
- * 规则 6：智谱 GLM（OpenAI 兼容端点）。
- * - thinking → params.thinking（openai.ts 转请求体顶层 `thinking:{type:enabled/disabled}`，GLM-4.5+）。
- * - effort   → params.reasoningEffort（仅 GLM-5.2 生效；GLM 内部钳制：low/medium→high，max→max）。
- *   GLM 支持 max，故 supportsMaxEffort=true，直接透传统一档位由 GLM 服务端按上表收敛。
- *   [来源: glm-api.md:144-147,189-201]
- */
-function applyGLMOpenAI(params: SendParams, effort: EffortSetting, thinking: boolean): void {
-  params.thinking = { enabled: thinking, budgetTokens: 0 };
-  // 思考关闭时不下发 effort（与 DeepSeek 一致，避免与 disabled 冲突）。
-  // GLM 线格式仅认 low/medium/high/max，不认 xhigh：xhigh 钳到 max（GLM 支持的最高档）。
-  if (thinking && effort !== undefined) {
-    params.reasoningEffort = clampToMaxWire(effort);
-  }
-}
-
-/**
- * 规则 7：xAI Grok（OpenAI 兼容端点，推理模型 grok-4.3 / grok-4.20 / grok-build）。
- * - 无显式思考开关（配置化推理，内置），thinking no-op。
- * - effort → reasoning_effort（none/low/medium/high，**无 max**：max→high）。
- *   openai.ts 需对 grok 透传 reasoning_effort。[来源: grok-api.md:30,157,277,487]
- */
-function applyGrokOpenAI(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
-  if (effort !== undefined) {
-    // Grok 无 max：max 与 xhigh 均钳到 high。
-    params.reasoningEffort = clampToHighWire(effort);
-  }
-}
-
-/**
- * 规则 8：OpenAI Responses API 族（GPT-5.x，走 POST /v1/responses 的 `reasoning.effort`）。
+ * 把 {@link Dialect} 投影成 {@link EffortCapability}。
  *
- * - 无显式思考开关（推理内置、不可关），thinking no-op —— 故不下发 params.thinking。
- * - effort → reasoning_effort，**5 档原样透传不钳制**：该族是目前唯一原生认 xhigh 的协议族。
- *   由 openai-responses-request.ts 的 buildResponsesRequest 转成嵌套 `reasoning:{effort}`。
- *
- * 此前本族错绑 applyNoop（连同 CAPABILITY_FLAGS.supportsEffort=false），导致 /effort 对所有
- * GPT-5.x 硬报「不支持推理强度档位切换」——但服务端实际会校验该字段（传非法值返回 400
- * `param: reasoning.effort`），证明能力真实存在，是我们没接线。
- *
- * [实测: 自建网关 /v1/responses — low/medium/high→reasoning_tokens=0、xhigh→9、max→18、
- *  minimal→400「not supported with this model」；不传时服务端回显默认 effort=medium]
- * [官方: developers.openai.com/api/docs/models/gpt-5.6-sol、/guides/reasoning]
+ * `applyToSendParams` 的签名在两边**刻意保持一致**（`EffortSetting` 与
+ * `DialectEffortLevel | undefined` 是同一组取值），故直接引用而不是包一层适配器——
+ * 包适配器只会让 `previewWireEffort` 那类「跑一次真实映射」的探测多穿一层。
  */
-function applyOpenAIResponses(params: SendParams, effort: EffortSetting, _thinking: boolean): void {
-  if (effort !== undefined) {
-    params.reasoningEffort = effort;
-  }
+function toCapability(d: Dialect): EffortCapability {
+  return { ...d.flags, applyToSendParams: d.applyToSendParams };
 }
-
-const APPLIERS: Record<CapabilityKind, EffortCapability["applyToSendParams"]> = {
-  "deepseek-openai": applyDeepSeekOpenAI,
-  "deepseek-anthropic": applyDeepSeekAnthropic,
-  "anthropic-native": applyAnthropicNative,
-  "o-series": applyOSeries,
-  "glm-openai": applyGLMOpenAI,
-  "grok-openai": applyGrokOpenAI,
-  "openai-responses": applyOpenAIResponses,
-  unknown: applyNoop,
-};
-
-/** 各协议的能力位（除 applyToSendParams 外的描述字段） */
-const CAPABILITY_FLAGS: Record<CapabilityKind, Omit<EffortCapability, "applyToSendParams">> = {
-  "deepseek-openai": {
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsThinkingToggle: true,
-    thinkingDefaultOn: true,
-    defaultEffort: "high",
-  },
-  "deepseek-anthropic": {
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsThinkingToggle: true,
-    thinkingDefaultOn: true,
-    defaultEffort: "high",
-  },
-  "anthropic-native": {
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsThinkingToggle: true,
-    thinkingDefaultOn: false,
-    defaultEffort: "high",
-  },
-  "o-series": {
-    supportsEffort: true,
-    supportsMaxEffort: false,
-    supportsThinkingToggle: false,
-    thinkingDefaultOn: true,
-    defaultEffort: "medium",
-  },
-  "glm-openai": {
-    // GLM-4.5+ 有显式思考开关，GLM-5.2 支持 reasoning_effort（含 max）。
-    // 注：effort 仅 GLM-5.2 生效，其余 GLM 无 reasoning_effort 粒度——但下发对它们无害
-    // （非 5.2 会忽略该字段），故统一声明 supportsEffort=true。[来源: glm-api.md:144-147,189]
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsThinkingToggle: true,
-    thinkingDefaultOn: true,
-    defaultEffort: "high",
-  },
-  "grok-openai": {
-    // Grok 推理模型配置化推理，无显式思考开关；reasoning_effort 无 max（max→high）。
-    // grok-4.3 默认 low。[来源: grok-api.md:30,277]
-    supportsEffort: true,
-    supportsMaxEffort: false,
-    supportsThinkingToggle: false,
-    thinkingDefaultOn: true,
-    defaultEffort: "low",
-  },
-  "openai-responses": {
-    // GPT-5.x Responses API：`reasoning.effort` 原生支持 5 档（含 xhigh，无需钳制）。
-    // 无显式思考开关（推理内置、不可关）→ supportsThinkingToggle=false，但这**不影响**
-    // effort 下发（applyOpenAIResponses 不受 thinking 门控，与 Grok 同构）。
-    // defaultEffort=medium 取自服务端实测回显（不传 reasoning 时 echo effort=medium）。
-    //
-    // ⚠ 此前这里是 supportsEffort:false + APPLIERS 绑 applyNoop，注释写「当前不支持」——
-    // 实为未接线而非真不支持：服务端对非法值返回 400 `param: reasoning.effort`，
-    // 证明字段被校验、能力存在。修复见 applyOpenAIResponses 的实测记录。
-    supportsEffort: true,
-    supportsMaxEffort: true,
-    supportsThinkingToggle: false,
-    thinkingDefaultOn: false,
-    defaultEffort: "medium",
-  },
-  unknown: {
-    supportsEffort: false,
-    supportsMaxEffort: false,
-    supportsThinkingToggle: false,
-    thinkingDefaultOn: false,
-    defaultEffort: "high",
-  },
-};
 
 // ─────────────────────────────────────────────────────────────
 // 4. 能力解析入口
@@ -393,54 +164,19 @@ const CAPABILITY_FLAGS: Record<CapabilityKind, Omit<EffortCapability, "applyToSe
 /**
  * 判定模型/协议属于哪一类。
  *
- * 查询优先级（方案 §5.4）：
- *   1. catalog 中声明的 protocolKind（精确，可预测）
- *   2. 现有 runtime 推断（兜底，处理未注册模型和 DeepSeek baseURL 判断）
+ * **实现已迁至 `dialect/classify.ts`**，本函数只是保留旧名的转发壳。
+ *
+ * 为什么必须只有一份实现：重构前这套判据被写了三次（本函数 + `openai.ts` 的两处），
+ * 三份各自维护且已经不一致。危害不是「代码多」，而是**新增一族时改一处、漏两处、
+ * 而测试全绿**——漏掉的那处静默走兜底分支。2026-08-01 的未知族缺陷就是这么来的
+ * （详见 `dialect/classify.ts` 顶部）。
  */
 function classifyCapability(opts: {
   model: string;
   provider: string;
   baseURL?: string;
 }): CapabilityKind {
-  const { model, provider, baseURL } = opts;
-
-  // 优先级 1：查 catalog 中声明的 protocolKind
-  const catalogEntry = lookupCatalog(model);
-  if (catalogEntry?.protocolKind) {
-    return catalogEntry.protocolKind;
-  }
-
-  // 优先级 2：runtime 推断兜底（处理未注册模型和 DeepSeek baseURL 判断）
-  const isDeepSeek = /deepseek/i.test(model);
-  const isAnthropicEndpoint = !!baseURL && /\/anthropic/i.test(baseURL);
-
-  if (isDeepSeek) {
-    return isAnthropicEndpoint ? "deepseek-anthropic" : "deepseek-openai";
-  }
-  // 原生 Claude：provider 为 anthropic 且非 deepseek。
-  if (provider === "anthropic" || /^claude/i.test(model)) {
-    return "anthropic-native";
-  }
-  // OpenAI o-series（o1 / o3 / o4 …）。
-  if (/^o[0-9]/i.test(model)) {
-    return "o-series";
-  }
-  // 智谱 GLM（OpenAI 兼容端点）。
-  if (/^glm/i.test(model)) {
-    return "glm-openai";
-  }
-  // xAI Grok（OpenAI 兼容端点）。
-  if (/grok/i.test(model)) {
-    return "grok-openai";
-  }
-  // Responses API 协议族：判据是「该端点/模型是否走 /v1/responses」这一**协议事实**，
-  // 由 openai.ts shouldUseResponsesAPI 统一裁决，不在这里复制模型名正则。
-  //
-  // ⚠ 曾经这里写过 `/^gpt-5\./i` 兜底——那正是「出一个新模型改一次代码」的老路，
-  // 且违反 `feedback-no-hardcoded-model-tier-rules`（不按模型名硬编码分档）。
-  // 现已删除：未注册模型的 effort 能力改由 model-capabilities.ts 的动态采集
-  //（外部目录 + 服务端自报探针 + 400 自愈）数据驱动，见 resolveEffortCapability 优先级 2.5。
-  return "unknown";
+  return classifyProtocolFamily(opts);
 }
 
 /**
@@ -475,18 +211,12 @@ export function resolveEffortCapability(opts: {
 
   // 优先级 1：用户显式声明不支持思考 → 全 no-op（不下发任何字段）。
   if (opts.modelConfig?.supportsThinking === false) {
-    return applyCompatOverrides(
-      { ...CAPABILITY_FLAGS.unknown, applyToSendParams: APPLIERS.unknown },
-      compat,
-    );
+    return applyCompatOverrides(toCapability(dialectOf("unknown")), compat);
   }
 
   const kind = classifyCapability(opts);
   if (kind !== "unknown") {
-    return applyCompatOverrides(
-      { ...CAPABILITY_FLAGS[kind], applyToSendParams: APPLIERS[kind] },
-      compat,
-    );
+    return applyCompatOverrides(toCapability(dialectOf(kind)), compat);
   }
 
   // 优先级 2.5：协议族未知 → 查动态能力缓存（纯内存读，不触网）。
@@ -585,7 +315,7 @@ function resolveFromCapabilityCache(model: string): EffortCapability {
 
   // 明确不支持（探针已证实服务端不校验 reasoning_effort）。
   if (cap?.effortValues && cap.effortValues.length === 0) {
-    return { ...CAPABILITY_FLAGS.unknown, applyToSendParams: APPLIERS.unknown };
+    return toCapability(dialectOf("unknown"));
   }
 
   const values = cap?.effortValues;
@@ -898,12 +628,12 @@ export function getMaxThinkingTokensOverride(
 
 /**
  * §12 P2-1：adaptive 模型下把「思考 token 上限」映射到 effort 降档（客户端无法硬钳服务端预算）。
- * 阈值与 ANTHROPIC_EFFORT_BUDGET 档位预算对应：<5K→low、<15K→medium、<32K→high，否则不降。
- * 返回降档后的建议 effort（若无需降档返回 null）。
+ *
+ * **实现在 `dialect/anthropic.ts`**（与它唯一的消费者 `ANTHROPIC_EFFORT_BUDGET` 同处一室，
+ * 两者共用同一组阈值、必须同步改）。这里只做 re-export：本函数已被 `sub-agent.ts` 与
+ * 测试按 `effort.ts` 的路径引用，搬走会造成无谓的调用方 diff。
+ *
+ * ⚠ 刻意**不**在这里重写一份：正向映射（档位→预算）与反向钳制（上限→档位）共用阈值，
+ * 拆成两处必然漂移成「面板显示降到 medium、实发预算却按 high」这种对不上的状态。
  */
-export function mapThinkingCapToEffort(maxThinkingTokens: number): EffortLevel | null {
-  if (maxThinkingTokens < 5_000) return "low";
-  if (maxThinkingTokens < 15_000) return "medium";
-  if (maxThinkingTokens < 32_000) return "high";
-  return null; // ≥32K：不降档（已接近/超过 xhigh 预算）
-}
+export { mapThinkingCapToEffort };

@@ -35,6 +35,11 @@ import { pickWireModel } from "./wire-model.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { lookupModelCompat } from "./model-compat.ts";
 import {
+  classifyProtocolFamily,
+  getDialectWire,
+  isChatCompletionsFamily,
+} from "./dialect/catalog.ts";
+import {
   learnFromError,
   shouldRetryWithoutEffort,
   recordEffortRejected,
@@ -328,67 +333,66 @@ export class OpenAIProvider implements Provider {
     // 用户 compat 声明（按渠道/别名查，故用 params.model 而非上面的真名 model）——
     // 权威度高于下面一切按名推导，但只覆盖它声明了的位，其余位照走原判定。
     const compat = lookupModelCompat(params.model ?? this._model);
-    const kind = lookupCatalog(model)?.protocolKind;
-    const isDeepSeek =
-      kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
-    const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
-    const isGrok = kind === "grok-openai" || (kind === undefined && /grok/i.test(model));
-    const isOSeries = kind === "o-series" || (kind === undefined && /^o[0-9]/i.test(model));
+
+    // 族判定：**唯一**入口在 dialect/classify.ts（重构前这套正则在本文件里有两份副本，
+    // 且与 effort.ts 那份判的族数不一致 —— 新增一族时漏改一处就静默走兜底分支）。
+    //
+    // ⚠ **刻意不传 `baseURL`**，尽管 classify 支持它。理由：本文件是 OpenAI 协议 provider，
+    // 走到这里的请求**定义上**就在 OpenAI 兼容 Chat Completions 线上。而 `baseURL` 在
+    // classify 里唯一的作用是把未注册的 DeepSeek 模型分到 `deepseek-anthropic`
+    // （判据是路径含 `/anthropic`）—— 那一族有独立请求构造器，根本不该由本文件处理。
+    //
+    // 传了会引入一个**真实的行为回归**：企业网关的路径里带 `/anthropic` 时（实测存在这类
+    // 路由前缀），未注册的 DeepSeek 模型会被判成 `deepseek-anthropic` → 被下面的
+    // `isChatCompletionsFamily` 早退挡掉 → thinking 开关与 reasoning_effort 全不下发，
+    // 且 `applyToolChoice` 那边会因此**开始下发 `tool_choice`**（V4 思考模式实测 400）。
+    // 重构前这里的判据是 `kind === undefined && /deepseek/i.test(model)`，不看 baseURL。
+    const kind = classifyProtocolFamily({ model });
+    const wire = getDialectWire(kind);
 
     /**
-     * 未知协议族兜底 —— 修复「动态能力采集对未知模型整链空转」的断点（2026-08-01）。
+     * 本函数只处理 **Chat Completions 线**（顶层字段透传）。
      *
-     * 症状：effort.ts 的 resolveFromCapabilityCache 对未知族**乐观放行**
-     * （supportsEffort=true），算出 params.reasoningEffort="high"；但这里的分派只认
-     * deepseek/glm/grok/o-series 四族，未知族没有任何分支接它——字段算出来却**从不进
-     * requestBody**。实测 kimi-k3 / qwen3-coder-plus / 任意新模型全部如此。
+     * `anthropic-native` / `deepseek-anthropic` / `openai-responses` 各有独立请求构造器
+     * （`anthropic.ts` / `openai-responses-request.ts`），根本不经过这里 —— 早退而不是
+     * 让它们落进下面的字段装配。
      *
-     * 连带后果比「effort 不生效」严重得多：字段发不出去 ⇒ 服务端永远不会因它报 400
-     * ⇒ withCapabilityHealing 的自愈**对未知模型永不触发** ⇒ model-capabilities.ts 的
-     * 「乐观放行 + 400 自愈学真值」闭环在它唯一的目标人群上是断的。整套动态采集机制
-     * 恰好在最需要它的地方空转。
+     * 这条早退替换了重构前的 `isUnknownFamily` 排除式
+     * （`kind === undefined && !isDeepSeek && !isGLM && !isGrok && !isOSeries`）：
+     * 那种写法**每加一族都要在排除项里补一个 `!isXxx`**，漏补的后果是新族被误当未知族，
+     * 拿到未知族的线格式。现在改为白名单谓词（`isChatCompletionsFamily`），
+     * 新增族默认**不**进这条线，要进得显式登记。
      *
-     * 取舍（明知代价，仍选下发）：下发等于主动去撞可能的 400 换取自愈学习，首次请求
-     * 可能多一跳重试。之所以可接受——
-     *   1. 撞了就学到：learnFromError 记住服务端自报档位，剥字段重试一次即成功，
-     *      用户看到的是一次正常完成的请求；下次起缓存已准，不再多这一跳。
-     *   2. 大量 OpenAI 兼容端点对不认识的顶层字段是**忽略**而非报错，多数情况零代价。
-     *   3. 反面更糟：永不下发 = 用户设了 /effort 却静默无效，且这个静默永远不会自愈。
-     *
-     * 只下发 reasoning_effort、**不**下发 thinking：与 effort.ts 同一判断
-     * （supportsThinkingToggle=false）——thinking 的结构各家不同（DeepSeek/GLM 是
-     * `{type}`、Anthropic 是 `{budget_tokens}`），瞎猜结构的 400 风险远高于一个标量字段，
-     * 且无法从错误文本反推出正确结构，自愈救不回来。
-     *
-     * ⚠ 判据是「`protocolKind` 缺失**且**四族正则都不匹配」，不是「不属于这四族」。
-     * 差别在 catalog 里已声明为**其它已知族**的模型（如 `openai-responses`）：它们各有
-     * 专属 applier 与专属线格式，不该被当成未知族。
-     *
-     * 历史（2026-08-08 前）：这道排除还兼任一个补丁——`sendMessageNonStreamingInner`
+     * 历史（2026-08-08 前）：这道排除还兼任一个补丁 —— `sendMessageNonStreamingInner`
      * 当时不做 Responses 分派，GPT-5.x 走「流式失败降级到非流式」时会落进本函数，
      * 把 Responses 专属的 `xhigh`/`max` 档位当普通 `reasoning_effort` 发到
      * Chat Completions 线上。**该补丁只挡住了 effort 字段，没解决协议错配本身**
-     *（还导致缓存口径分裂：命中键 Chat 在 prompt_tokens_details、Responses 在
-     * input_tokens_details）。现在非流式已同样做 `shouldUseResponsesAPI` 分派（P0-5），
-     * openai-responses 族根本不会走到这里，本条排除退回它原本的语义职责。
+     * （还导致缓存口径分裂：命中键 Chat 在 prompt_tokens_details、Responses 在
+     * input_tokens_details）。现在非流式已同样做 `shouldUseResponsesAPI` 分派（P0-5）。
      */
-    const isUnknownFamily = kind === undefined && !isDeepSeek && !isGLM && !isGrok && !isOSeries;
+    if (!isChatCompletionsFamily(kind)) {
+      // user_id 仍要下发：它与推理能力无关（通用隔离字段），不该被协议族早退连带关掉。
+      if (params.userId) requestBody.user_id = params.userId;
+      return;
+    }
 
     const thinkingDisabled = params.thinking?.enabled === false;
 
-    // ── compat 声明的三道闸门（放在所有族分支之前，对每一族同样生效） ──
+    // ── compat 声明的三道闸门（放在字段装配之前，对每一族同样生效） ──
     //
-    // 为什么在这里统一拦，而不是逐个族分支里加条件：族分支有 5 支（DeepSeek/GLM 合一支、
-    // Grok、o-series、未知族），逐支加就是 5 处手写守卫，新增一族的人必然漏 ——
+    // 为什么统一拦而不是逐族加条件：逐族加就是每族一处手写守卫，新增一族的人必然漏 ——
     // 本仓「手写字段列表漏字段」有多次前科。统一闸门让「默认就成立」。
     //
-    // ⚠ effort 被 compat 关掉时**不能** early-return 整个函数：下面还有 user_id 下发，
-    // 它与推理能力无关（通用隔离字段），一起跳过就是把不相关的能力连带关掉。
+    // ⚠ effort 被 compat 关掉时**不能** early-return 整个函数：下面还有 user_id 下发。
     const effortBlocked = compat?.supportsReasoningEffort === false;
     const thinkingToggleBlocked = compat?.supportsThinkingToggle === false;
-    // 声明不支持 max 时钳到 high。effort.ts 侧已钳过一道（applyCompatOverrides），
+    // 用户声明不支持 max 时**钳到 high**。effort.ts 侧已钳过一道（applyCompatOverrides），
     // 这里再兜一道：非主循环路径（side-call / headless）不一定跑过那层 cap 解析，
-    // 而这里是**所有** OpenAI 族请求的唯一咽喉。两道同口径、幂等，不会打架。
+    // 而这里是**所有** Chat Completions 请求的唯一咽喉。两道同口径、幂等，不会打架。
+    //
+    // ⚠ 注意这与下面 `wire.allowsMaxEffort` 的处置**刻意不同**：用户声明 → 降档到 high
+    // （他要的是「别发 max」，不是「别发 effort」）；族线格式不认 max → **整个字段不发**。
+    // 后者是既有行为，不趁本次重构改，理由见下面 maxRejected 处的说明。
     const wireEffort =
       compat?.supportsMaxEffort === false &&
       (params.reasoningEffort === "max" || params.reasoningEffort === "xhigh")
@@ -396,42 +400,36 @@ export class OpenAIProvider implements Provider {
         : params.reasoningEffort;
     const effectiveEffort = effortBlocked ? undefined : wireEffort;
 
-    // DeepSeek / GLM：同构的 thinking 开关 + reasoning_effort（顶层字段）。
-    // GLM 见 glm-api.md:144-147,189；DeepSeek 见 deepseek-api.md:2003-2004。
-    if (isDeepSeek || isGLM) {
-      // 思考开关：显式下发 enabled/disabled。params.thinking 不传时不下发，沿用服务端默认。
-      // compat 声明不支持开关时不下发（私有网关做了参数过滤 / 该模型无此概念）。
-      if (params.thinking && !thinkingToggleBlocked) {
-        requestBody.thinking = {
-          type: params.thinking.enabled ? "enabled" : "disabled",
-        };
-      }
-      // 思考强度：思考显式关闭时不下发，避免冲突；其余情况按需下发。
-      if (effectiveEffort && !thinkingDisabled) {
-        requestBody.reasoning_effort = effectiveEffort;
-      }
+    // ── 思考开关 ──
+    // 仅 `type-enum` 形态的族（DeepSeek / GLM）下发 `thinking:{type}`。
+    // 其余族（Grok / o-series / 未知族）刻意不发：thinking 结构各家不同
+    // （Anthropic 是 `{budget_tokens}`），瞎猜结构的 400 风险远高于一个标量字段，
+    // 且无法从错误文本反推正确结构 —— 自愈救不回来。
+    if (wire.thinkingToggle === "type-enum" && params.thinking && !thinkingToggleBlocked) {
+      requestBody.thinking = { type: params.thinking.enabled ? "enabled" : "disabled" };
     }
 
-    // Grok：无思考开关；仅透传 reasoning_effort（无 max，effort.ts 已钳 max→high）。
-    // grok-api.md:30,157,277。
-    if (isGrok && effectiveEffort && effectiveEffort !== "max" && !thinkingDisabled) {
-      requestBody.reasoning_effort = effectiveEffort;
-    }
-
-    // OpenAI o-series（o1/o3/o4…）：内置推理，仅透传 reasoning_effort（low/medium/high，无 max）。
-    // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里再兜一道。
-    if (isOSeries && effectiveEffort && effectiveEffort !== "max") {
-      requestBody.reasoning_effort = effectiveEffort;
-    }
-
-    // 未知协议族：只透传 reasoningEffort（档位已由 effort.ts 依能力缓存钳过）。
-    // 见 isUnknownFamily 的详细说明——这一支是自愈闭环的入口，删掉它整套动态采集对
-    // 未知模型即失效。thinkingDisabled 时不下发，与其它族保持一致语义。
-    // ⚠ compat 声明关掉 effort 时这一支也不发 —— 代价是**该模型的 400 自愈闭环也随之关闭**
-    // （不发字段 ⇒ 服务端不会因它报错 ⇒ withCapabilityHealing 无从触发）。这是刻意的：
-    // 用户显式声明「这条渠道不认 reasoning_effort」时，正是要省掉那一跳探路重试，
-    // 而自愈的存在意义本就是「没人告诉我们时自己学」。声明了就不必再学。
-    if (isUnknownFamily && effectiveEffort && !thinkingDisabled) {
+    // ── 思考强度 ──
+    //
+    // 两个族差异位，都照搬重构前各族分支的原样语义（本次是纯搬迁，不改行为）：
+    //
+    // ① `allowsMaxEffort: false`（Grok / o-series）→ 档位为 max 时**整个字段不发**，
+    //    而不是降到 high。这看着不如降档合理（用户选 max 结果一个 effort 都没发出去），
+    //    但它是既有行为，且 `effort.ts` 侧的 applier 已把 max 钳成 high —— 主循环路径
+    //    根本走不到这里的 max。真能走到的是 side-call / headless 那些不跑 cap 解析的路径，
+    //    改成降档等于在**没有回归证据的路径上**改线上行为。要改另开 PR，别混进重构。
+    //
+    // ② `effortGatedByThinking`（DeepSeek / GLM）→ 思考显式关闭时不发（与
+    //    `thinking:{type:"disabled"}` 冲突）。Grok 亦沿用旧代码里的 `!thinkingDisabled`
+    //    守卫（虽然它无思考开关，该守卫实际很少生效）；o-series 旧代码**没有**这道守卫,
+    //    故其 `effortGatedByThinking` 为 false —— 这处不对称是原样保留的，不是笔误。
+    // ⚠ 只判 `=== "max"`，**不含 xhigh** —— 旧代码两处写的都是 `effectiveEffort !== "max"`。
+    // 顺手把 xhigh 一起拦看着更「对」（Grok/o-series 都不认 xhigh），但那是改行为：
+    // 实践中 effort.ts 已把 xhigh 钳掉，走到这里的 xhigh 只可能来自不跑 cap 解析的路径，
+    // 而那正是没有回归证据的地方。原样保留。
+    const maxRejected = !wire.allowsMaxEffort && effectiveEffort === "max";
+    const thinkingGated = wire.effortGatedByThinking && thinkingDisabled;
+    if (wire.sendsReasoningEffort && effectiveEffort && !maxRejected && !thinkingGated) {
       requestBody.reasoning_effort = effectiveEffort;
     }
 
@@ -454,15 +452,21 @@ export class OpenAIProvider implements Provider {
   private applyToolChoice(requestBody: any, params: SendParams, model: string): void {
     // compat 按渠道（别名）查，与下面按真名做的族推导互补：声明存在时它说了算。
     const compat = lookupModelCompat(params.model ?? this._model);
-    const kind = lookupCatalog(model)?.protocolKind;
-    const isDeepSeek =
-      kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
-    const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
+    // 族判定走**唯一**入口（重构前这里是本文件内的第二份分类副本，只判 deepseek/glm 两族）。
+    // 与 `applyDeepSeekThinking` 同样**不传 baseURL** —— 理由见那里的详细说明
+    // （传了会让带 `/anthropic` 路由前缀的网关上的未注册 DeepSeek 模型开始下发
+    // `tool_choice`，而 V4 思考模式实测会 400）。两处必须同口径，否则同一次请求里
+    // thinking 按一族算、tool_choice 按另一族算。
+    const kind = classifyProtocolFamily({ model });
+    const wire = getDialectWire(kind);
     // DeepSeek 思考模式不接受 tool_choice（§2.4）。compat 显式声明 supportsToolChoice: true
     // 时不再按族推导拦 —— 这正是 compat 存在的意义：网关可能已经替我们过滤掉了该字段，
     // 或用户跑的是修过这个问题的私有版本，只有他知道。
     const thinkingActive =
-      isDeepSeek && params.thinking?.enabled !== false && compat?.supportsToolChoice !== true;
+      wire.toolChoice === "reject-when-thinking" &&
+      params.thinking?.enabled !== false &&
+      compat?.supportsToolChoice !== true;
+    const autoOnlyFamily = wire.toolChoice === "auto-only";
     const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
 
     if (toolChoice !== undefined) {
@@ -481,18 +485,20 @@ export class OpenAIProvider implements Provider {
         );
       } else if (thinkingActive) {
         // DeepSeek 思考模式下 tool_choice 会触发 400，跳过下发（保留模型自主调用）。
+        // 日志带上族名：重构后本分支不再只有 DeepSeek 会进（任何 dialect 声明
+        // `reject-when-thinking` 的族都会），写死「DeepSeek」会误导排查的人。
         getLogger().warn(
           "LLM:OPENAI",
-          `DeepSeek 思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
+          `协议族「${kind}」思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
         );
-      } else if (isGLM && toolChoice !== "auto" && compat?.toolChoiceAutoOnly !== false) {
-        // §GLM：tool_choice 默认且仅支持 auto，不支持 none/required/指定函数（glm-api.md:147,276,431）。
+      } else if (autoOnlyFamily && toolChoice !== "auto" && compat?.toolChoiceAutoOnly !== false) {
+        // §GLM：tool_choice 默认且仅支持 auto，不支持 none/required/指定函数（见 dialect/glm.md）。
         // 下发 required/指定函数会被 GLM 拒绝，降级为 auto（不下发即等价服务端默认 auto）而非冒错。
         // compat 显式声明 tool_choice_auto_only=false 时跳过本降级（如 GLM-5.2+ 已放开、
         // 或网关代为转换）—— 显式声明优先于按族推导，这是 compat 的全部意义。
         getLogger().warn(
           "LLM:OPENAI",
-          `GLM 仅支持 tool_choice=auto，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
+          `协议族「${kind}」仅支持 tool_choice=auto，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
         );
       } else {
         requestBody.tool_choice = toolChoice;
