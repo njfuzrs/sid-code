@@ -38,6 +38,7 @@ import {
   is401Error,
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
+import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
 import { lookupRegistry } from "./model-registry.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
@@ -358,6 +359,22 @@ export interface FallbackConfig {
    * 关掉它只会退回 CC 的语义（各自撞、各自退避），不会更糟。
    */
   respectSharedCooldown?: boolean;
+  /**
+   * S5：是否允许**冷却探针**。默认 `true`。依附于 `respectSharedCooldown`——
+   * 后者为 false 时整段冷却逻辑不执行，本开关无从生效。
+   *
+   * 探针补的是 S2 的一个结构性盲区：冷却只有"自然到期"和"成功产出后
+   * `clearCooldown`"两条出口，而全部路径都在守冷却时**没人去产出**，
+   * 第二条出口走不到。于是一个偏保守的 `Retry-After` 会被完整睡满。
+   * 探针放一路先走：成功则一次性解放所有路径，失败只烧一发请求。
+   *
+   * ⚠️ **它与"更省"冲突，这是刻意的 trade-off**：探针打的是一发可能注定被拒的
+   * 真实请求。三条约束把代价钉住——一个冷却窗口最多一发共享探针、只在已有冷却时
+   * 才可能发生（无限流时零开销）、成因不对不探（见 `cooldown-probe.ts`）。
+   *
+   * 关掉它退回纯 S2 语义（老老实实等满冷却），不会更糟——只是慢。
+   */
+  allowCooldownProbe?: boolean;
 }
 
 /** 回退事件监听器 */
@@ -522,6 +539,8 @@ export class ModelFallback {
       allowNonStreamingFallback: config.allowNonStreamingFallback ?? true,
       // S2：同上。默认开——无限流时冷却表恒空，零影响。
       respectSharedCooldown: config.respectSharedCooldown ?? true,
+      // S5：同上。默认开——只在**已有冷却**时才可能发生一发探针，无限流时零开销。
+      allowCooldownProbe: config.allowCooldownProbe ?? true,
     };
     this.listener = listener ?? null;
     this.availability = config.availability ?? new ModelAvailabilityService();
@@ -618,40 +637,101 @@ export class ModelFallback {
     //
     // 与 S3 的关系：冷却等待也要受时间预算约束。若等完冷却就没时间发请求了，
     // 那等待毫无意义（还不如立刻发，赌限流窗口已过），故此处直接跳过冷却。
+    // S5：本路径是否持有**共享**探针配额。持有者在探针失败且失败与配额窗口无关时
+    // 必须把配额还回去（见下方 catch 里的释放点），否则一次 401 就把整个冷却窗口里
+    // 唯一的探针机会白吃掉，S2 的出口被锁死一整个窗口。
+    // 只对 usedSharedSlot 的放行置位：不占共享配额的那类（单路径成因）无需释放。
+    let heldCooldownProbe = false;
     if (this.config.respectSharedCooldown !== false) {
       const cd = this.availability.getCooldownInfo(params.model);
       if (cd) {
-        // 同重试侧一样要错峰——入口处更需要：并发子代理往往是被同一个 Task 批次
-        // **同时**拉起的，不错峰就是整批一起醒、一起撞。
-        const slot = cooldownStaggerSlot(perCall.agentId);
-        const waitMs = cd.remainingMs + slot * COOLDOWN_STAGGER_MS;
-        const budgetOk =
-          perCall.deadlineAt === undefined ||
-          perCall.deadlineAt - Date.now() > waitMs + MIN_USEFUL_ATTEMPT_MS;
-        if (budgetOk) {
+        // ═══════════════════════════════════════════════════════════
+        // S5：探针 —— 全都在等的时候，放一路先走
+        // ═══════════════════════════════════════════════════════════
+        //
+        // 位置刻意在**等待之前**：探针的全部价值就是"这一路不等"。放到等完之后
+        // 就只是一次普通重试，什么也没探到。
+        //
+        // 收益（S2 的出口从两条变三条）：冷却原本只能自然到期或靠"成功产出"清除，
+        // 而全都在等时没人去产出 → 第二条出口结构性走不到。探针补上第三条：
+        // 一路先试，成功则 clearCooldown 一次性解放所有路径。
+        //
+        // 代价（诚实记账，与北极星"更省"直接冲突）：探针会打一发**可能注定被拒**的
+        // 真实请求。三条约束把这个代价钉死在可接受范围：
+        //   ① 一个冷却窗口最多一发（配额挂在冷却记录上，见 availability.ts）；
+        //   ② 只在已有冷却时才可能发生 —— 无限流时零开销、零行为变化；
+        //   ③ 成因不对（认证/参数类）一律不探，见 cooldown-probe.ts 判定 ①。
+        // 净账：拿"最多一发"换掉"全部路径睡满整个窗口"，比值随并发路径数放大。
+        const probe =
+          this.config.allowCooldownProbe === false
+            ? undefined
+            : this.availability.tryAcquireCooldownProbe(params.model);
+        if (probe?.granted) {
+          heldCooldownProbe = probe.usedSharedSlot;
           log.info(
             "FALLBACK",
-            `S2：模型 ${params.model} 处于共享限流冷却（剩余 ${cd.remainingMs}ms，` +
-              `错峰槽位 ${slot} → 等 ${waitMs}ms，已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
+            `S5：模型 ${params.model} 冷却中（剩余 ${cd.remainingMs}ms，成因 ${cd.cause ?? "unknown"}），` +
+              `本路径取得探针资格（${probe.reason}），跳过等待直接发起 —— ` +
+              `成功则一次性解除全部并发路径的冷却`,
           );
           this.emitTelemetry(
             {
-              type: "shared_cooldown_wait",
+              type: "cooldown_probe",
               model: params.model,
-              delayMs: waitMs,
               remainingMs: cd.remainingMs,
               error: cd.reason,
+              probeDecision: probe.reason,
             },
             perCall.agentId,
           );
-          await this.sleep(waitMs, signal);
-          if (signal?.aborted) throw new RequestAbortedError("Request aborted");
         } else {
-          // 预算不够等 → 不等。记一笔，否则"为什么这一路没遵守冷却"无从解释。
-          log.info(
-            "FALLBACK",
-            `S2：冷却剩余 ${cd.remainingMs}ms（错峰后 ${waitMs}ms）但时间预算不足，跳过等待直接发起`,
-          );
+          if (probe) {
+            // 未获资格 → 照旧等冷却（与本特性上线前逐字节相同）。记一笔归因，
+            // 回答"为什么这一路没探"——否则 slot_taken 与 cause_not_probeable
+            // 在轨迹里同形，分不清"配额被别人拿了"还是"这类成因根本不该探"。
+            this.emitTelemetry(
+              {
+                type: "cooldown_probe_denied",
+                model: params.model,
+                remainingMs: cd.remainingMs,
+                error: cd.reason,
+                probeDecision: probe.reason,
+              },
+              perCall.agentId,
+            );
+          }
+          // 同重试侧一样要错峰——入口处更需要：并发子代理往往是被同一个 Task 批次
+          // **同时**拉起的，不错峰就是整批一起醒、一起撞。
+          const slot = cooldownStaggerSlot(perCall.agentId);
+          const waitMs = cd.remainingMs + slot * COOLDOWN_STAGGER_MS;
+          const budgetOk =
+            perCall.deadlineAt === undefined ||
+            perCall.deadlineAt - Date.now() > waitMs + MIN_USEFUL_ATTEMPT_MS;
+          if (budgetOk) {
+            log.info(
+              "FALLBACK",
+              `S2：模型 ${params.model} 处于共享限流冷却（剩余 ${cd.remainingMs}ms，` +
+                `错峰槽位 ${slot} → 等 ${waitMs}ms，已累计 ${cd.hits} 次限流），延迟起跑避免级联放大`,
+            );
+            this.emitTelemetry(
+              {
+                type: "shared_cooldown_wait",
+                model: params.model,
+                delayMs: waitMs,
+                remainingMs: cd.remainingMs,
+                error: cd.reason,
+              },
+              perCall.agentId,
+            );
+            await this.sleep(waitMs, signal);
+            if (signal?.aborted) throw new RequestAbortedError("Request aborted");
+          } else {
+            // 预算不够等 → 不等。记一笔，否则"为什么这一路没遵守冷却"无从解释。
+            log.info(
+              "FALLBACK",
+              `S2：冷却剩余 ${cd.remainingMs}ms（错峰后 ${waitMs}ms）但时间预算不足，跳过等待直接发起`,
+            );
+          }
         }
       }
     }
@@ -840,6 +920,25 @@ export class ModelFallback {
                     event.error.statusCode,
                   )
                 : classifyError(new Error(event.error.message));
+
+              // ═══════════════════════════════════════════════════════
+              // S5 释放点之一（**流内 error 事件**路径）
+              // ═══════════════════════════════════════════════════════
+              //
+              // 为什么必须在这里也放一个（实测逼出来的，不是防御性编程）：
+              // 首版只在下方 catch 里释放，结果「探针死于 401 → 配额被发还」这条
+              // 断言**实测失败**。根因是 401 以 HTTP 200 + 流内 `error` 事件的形态
+              // 到达（网关的典型行为），走的是本分支 → `TerminalError` → 立刻
+              // `return`，**永远到不了 catch**。
+              //
+              // 也就是说：最该发还配额的两类（401 / 模型不存在）恰好走的是这条
+              // 不经过 catch 的路径。少这一处，S5 的释放逻辑对生产中最常见的
+              // 认证故障形态完全无效——而单测仍会全绿（纯函数是对的）。
+              heldCooldownProbe = this.maybeReleaseCooldownProbe(
+                params.model,
+                classified,
+                heldCooldownProbe,
+              );
 
               if (classified instanceof TerminalError) {
                 this.availability.markTerminal(params.model, classified.reason);
@@ -1061,6 +1160,13 @@ export class ModelFallback {
             ? new RetryableError(`流式整体超时（${streamTimeoutMs / 1000}s 无数据）`, "timeout")
             : classifyError(err);
 
+          // S5 释放点之二（连接/流异常抛出路径）。见 maybeReleaseCooldownProbe 注释。
+          heldCooldownProbe = this.maybeReleaseCooldownProbe(
+            params.model,
+            classified,
+            heldCooldownProbe,
+          );
+
           if (classified instanceof TerminalError) {
             this.availability.markTerminal(params.model, classified.reason);
             log.error("FALLBACK", `终端错误: ${classified.reason}`);
@@ -1192,7 +1298,16 @@ export class ModelFallback {
             classified instanceof RetryableError &&
             classified.reason === "rate_limit"
           ) {
-            this.availability.markRateLimited(params.model, delayMs, classified.message);
+            // S5：连**结构化成因**一起写。`classified.message` 是错误原文（给人看），
+            // `classified.reason` 是闭合词表（给探针判定看）。少传第四个参数，
+            // 冷却记录里就没有 cause → 探针判定 fail-closed 恒拒 → S5 静默失效
+            // 且测试全绿（这正是「仪器少记一个字段」那类故障的形态）。
+            this.availability.markRateLimited(
+              params.model,
+              delayMs,
+              classified.message,
+              classified.reason,
+            );
           }
 
           // ═══════════════════════════════════════════════════════════
@@ -1852,6 +1967,40 @@ export class ModelFallback {
     const floor = resolveFloorOutputTokens(contextLimit);
     if (available < floor) return null;
     return Math.max(floor, available);
+  }
+
+  /**
+   * S5：探针失败后按结构化 reason 决定配额是否发还。返回**更新后的持有标记**。
+   *
+   * 抽成方法而不是在两处各写一遍：它有两个调用点（流内 `error` 事件路径、
+   * 连接/流异常 catch 路径），而这两条路径的分歧正是首版的 bug——只接一处时，
+   * 生产中最常见的 401 形态（HTTP 200 + 流内 error）走的恰好是没接的那条。
+   * 同一段判定手抄两遍，将来改一处漏一处会以更低频率复发（更难查）。
+   *
+   * 返回值语义：调用方**必须**把它赋回自己的 `heldCooldownProbe`。这保证幂等——
+   * 重试循环里本方法可被同一次调用多次进入，不置位就会反复"发还"配额，
+   * 等于每次重试补一张探针券，配额形同虚设。
+   */
+  private maybeReleaseCooldownProbe(model: string, classified: unknown, held: boolean): boolean {
+    if (!held) return false;
+    // 三个错误类都带 `reason`，但入参类型是 unknown（classifyError 的契约是
+    // 认不出就原样返回入参）。显式 instanceof 收窄而不是 `as any`：
+    // 认不出的那一格必须落到 undefined，而 undefined 在判定③里是"不发还"。
+    const reason =
+      classified instanceof TerminalError ||
+      classified instanceof RetryableError ||
+      classified instanceof StreamValidationError
+        ? classified.reason
+        : undefined;
+    if (shouldPreserveTransientCooldownProbeSlot(reason)) {
+      this.availability.releaseCooldownProbe(model);
+      getLogger().info(
+        "FALLBACK",
+        `S5：探针失败于 ${reason ?? "unclassified"}（与限流窗口无关），发还探针配额 —— ` +
+          `不让一次无关故障锁死整个冷却窗口的探针机会`,
+      );
+    }
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════

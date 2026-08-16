@@ -42,6 +42,8 @@ const EVENT_TYPE_TABLE: Record<RetryTelemetryEvent["type"], true> = {
   non_streaming_degrade: true,
   retry_budget_exhausted: true,
   shared_cooldown_wait: true,
+  cooldown_probe: true,
+  cooldown_probe_denied: true,
   stream_stall: true,
   stream_idle_timeout: true,
   stream_content_progress_timeout: true,
@@ -52,11 +54,11 @@ const EVENT_TYPE_TABLE: Record<RetryTelemetryEvent["type"], true> = {
 const ALL_EVENT_TYPES = Object.keys(EVENT_TYPE_TABLE) as RetryTelemetryEvent["type"][];
 
 describe("T8.12 — defaultTelemetryHandler 覆盖所有事件类型", () => {
-  test("哨兵自身覆盖 14 类（漏登记时先在此处红）", () => {
+  test("哨兵自身覆盖 16 类（漏登记时先在此处红）", () => {
     // 这条断言与上面 Record 的穷尽性是**两道不同的门**，都要留：
     // Record 拦"漏写键"（编译期），本断言拦"类型自身被删/被改少"（运行期）——
     // 后者在删除一个 type 时会让数字对不上，逼人显式确认那是刻意删除。
-    expect(ALL_EVENT_TYPES.length).toBe(14);
+    expect(ALL_EVENT_TYPES.length).toBe(16);
   });
 
   test("每个 type 都不抛异常", () => {

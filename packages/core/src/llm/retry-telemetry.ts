@@ -44,6 +44,23 @@ export interface RetryTelemetryEvent {
      * 没有它就只能说"应该更好"，有它才能给出"限流级联下少发了 N 发"。
      */
     | "shared_cooldown_wait"
+    /**
+     * S5：本路径取得**冷却探针**资格，跳过冷却等待直接发起。
+     *
+     * 与 `shared_cooldown_wait` 恰好互补：那个数"被拦下来的请求"，这个数
+     * "刻意放过去的请求"。两者相加 = 冷却期间的全部决策数，这个分母让
+     * "探针占比"可算——占比失控（接近 1）说明配额判定漏了，是唯一的病态信号。
+     */
+    | "cooldown_probe"
+    /**
+     * S5：申请探针被拒（随后照旧等冷却）。
+     *
+     * 单独一个类型而不塞进 `cooldown_probe` 加个布尔位：拒绝**归因**
+     * （`slot_taken` / `cause_not_probeable`）才是这个事件的全部价值。
+     * 前者是健康的（配额正在起作用），后者说明成因不该探——两者同形就分不清
+     * "探针在正常限流"还是"词表把该探的挡住了"。
+     */
+    | "cooldown_probe_denied"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
@@ -108,6 +125,15 @@ export interface RetryTelemetryEvent {
    * 幻觉"这件事从推论变成**可实测**的字段。
    */
   remainingMs?: number;
+  /**
+   * S5：`cooldown_probe` / `cooldown_probe_denied` 专用——探针判定的结构化归因。
+   *
+   * 取值来自 `CooldownProbeDecision.reason`（`granted` / `granted_unshared` /
+   * `slot_taken` / `cause_not_probeable` / `no_cooldown`）。**不复用 `error`**：
+   * 那一格装的是限流错误原文（给人读），本字段是闭合词表（给聚合脚本 group by）。
+   * 混用会让"按拒绝原因分组"退化成子串匹配。
+   */
+  probeDecision?: string;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */
@@ -221,6 +247,20 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
       log.info(
         "TELEMETRY",
         `[shared_cooldown_wait] ${event.model} wait=${event.delayMs}ms reason=${event.error}`,
+      );
+      break;
+
+    case "cooldown_probe":
+      log.info(
+        "TELEMETRY",
+        `[cooldown_probe] ${event.model} decision=${event.probeDecision} remaining=${event.remainingMs}ms reason=${event.error}`,
+      );
+      break;
+
+    case "cooldown_probe_denied":
+      log.info(
+        "TELEMETRY",
+        `[cooldown_probe_denied] ${event.model} decision=${event.probeDecision} remaining=${event.remainingMs}ms reason=${event.error}`,
       );
       break;
 

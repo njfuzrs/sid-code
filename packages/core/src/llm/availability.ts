@@ -3,6 +3,12 @@
  * 三态健康管理（healthy/retry_once/terminal），避免反复请求已知不可用的模型
  */
 
+import {
+  type CooldownCause,
+  shouldAllowCooldownProbeForReason,
+  shouldUseTransientCooldownProbeSlot,
+} from "./cooldown-probe.ts";
+
 /** 模型健康状态 */
 type HealthState =
   | { status: "healthy" }
@@ -17,6 +23,49 @@ interface RateLimitCooldown {
   reason: string;
   /** 本模型累计被标记限流的次数（仅用于观测，不参与决策）。 */
   hits: number;
+  /**
+   * S5：结构化的冷却成因（驱动探针判定）。
+   *
+   * 与 `reason` 并存而不是替换它：`reason` 是**错误原文**（`classified.message`，
+   * 进日志给人看），本字段是**闭合词表**（进判定给代码看）。压成一个字段就得靠
+   * 子串匹配去判定——正是这个仓反复在修的「用粗糙代理代替真实信号」。
+   * 可选：老调用点不传时探针一律不放行（fail-closed，见 tryAcquireCooldownProbe）。
+   */
+  cause?: CooldownCause;
+  /**
+   * S5：本冷却窗口的**跨路径共享**探针配额是否已被消耗。
+   *
+   * 为什么配额挂在**冷却记录**上而不是服务实例上：配额的生命周期必须与冷却窗口
+   * 严格同生共死。挂实例上就得自己管"什么时候重置"，而那个重置时机恰好是
+   * 冷却过期——于是又要写一份同样的过期逻辑，两份必然漂移。挂记录上则
+   * `getCooldownRemaining` 里已有的那句 `delete` 顺带就把配额清了：
+   * **一个冷却窗口一发探针**这条不变量由数据结构本身保证，不靠调用方自觉。
+   *
+   * 注意 `markRateLimited` 续期时**刻意不重置它**：又撞一次限流是"窗口还在"的证据，
+   * 重置等于每来一次 429 就补发一张探针券，那就退回"各路各探一发"的放大形态。
+   */
+  probeConsumed: boolean;
+}
+
+/**
+ * S5：探针申请的结果。
+ *
+ * `granted=false` 时调用方照旧等冷却（**行为与本特性上线前逐字节相同**）——
+ * 探针是给冷却开一个出口，不是给它加一道新的拦截。
+ */
+export interface CooldownProbeDecision {
+  /** 是否放行本路径立刻发起探针请求（跳过冷却等待）。 */
+  granted: boolean;
+  /**
+   * 本次放行是否消耗了**共享**配额。
+   *
+   * `granted && !usedSharedSlot` 是合法组合：`timeout` / `network_error` 这类
+   * 单路径成因各路径各自探，不占共享配额（见 `shouldUseTransientCooldownProbeSlot`）。
+   * 调用方**只在本字段为 true 时**才需要在失败后考虑发还配额。
+   */
+  usedSharedSlot: boolean;
+  /** 拒绝/放行的归因（进遥测与日志，回答"为什么这一路探了/没探"）。 */
+  reason: "granted" | "granted_unshared" | "no_cooldown" | "slot_taken" | "cause_not_probeable";
 }
 
 /**
@@ -138,7 +187,12 @@ export class ModelAvailabilityService {
    *   但"别在同一毫秒再打一发"这件事本身就有价值。
    * @param reason 归因文本，进日志与遥测。
    */
-  markRateLimited(model: string, retryAfterMs?: number, reason = "rate_limit"): void {
+  markRateLimited(
+    model: string,
+    retryAfterMs?: number,
+    reason = "rate_limit",
+    cause?: CooldownCause,
+  ): void {
     // 双向钳制：下限保证冷却是个**能被别人读到**的信号（1ms 冷却等于没有冷却，
     // 见 MIN_COOLDOWN_MS 注释）；上限防止服务端一个超长 Retry-After 让全部并发
     // 路径集体长睡。
@@ -151,7 +205,79 @@ export class ModelAvailabilityService {
       until: prev && prev.until > until ? prev.until : until,
       reason,
       hits: (prev?.hits ?? 0) + 1,
+      cause: cause ?? prev?.cause,
+      // S5：续期**不**补发探针券。又撞一次 429 是"窗口还在"的证据，不是新窗口；
+      // 每次 429 都重置配额 = 每路各探一发，退回 S2 要消灭的放大形态。
+      probeConsumed: prev?.probeConsumed ?? false,
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // S5：冷却探针配额（移植自 openclaw failover-policy 的三个判定）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // 补的洞：S2 的冷却只有两条出口——自然到期，或该模型**成功产出一次**
+  // （clearCooldown）。而全部路径都在守冷却时没人去发那一发，第二条出口结构性
+  // 走不到。于是一个偏保守的 Retry-After 会被完整睡满，S2 从"更省"变成纯"更慢"。
+  //
+  // 探针放一路先走、其余照旧等：成功则 clearCooldown 一次解放所有路径；
+  // 失败只烧掉一发请求。判定逻辑全在 cooldown-probe.ts（纯函数，可穷举单测），
+  // 这里只持配额状态。
+
+  /**
+   * S5：申请本冷却窗口的探针资格。**有副作用**（消耗共享配额），故名 `try*`。
+   *
+   * 三层判定，任一不过就照旧等冷却：
+   * ① 无冷却 → 无需探针（`no_cooldown`，调用方本来就会直接发）；
+   * ② 成因不值得探 → 拒（`cause_not_probeable`）；
+   * ③ 共享配额已被别人拿走 → 拒（`slot_taken`）。
+   *
+   * **fail-closed 的两处，都是刻意的**：
+   * - `cause` 缺省（老调用点没传）→ 判定 ① 收到 `undefined` 返回 false → 不放行。
+   *   宁可退回"老实等冷却"（= 上线前行为），也不要在不知道成因时打真实请求。
+   * - 判定 ② 返回 false（单路径成因）→ 放行但**不**占共享配额，
+   *   于是各路径各自探。这不是漏洞：那类成因本就不构成跨路径放大。
+   */
+  tryAcquireCooldownProbe(model: string): CooldownProbeDecision {
+    const cd = this.cooldowns.get(model);
+    // 用 getCooldownRemaining 而非直接读 until：它顺带清理过期记录，
+    // 避免这里自己再写一份过期判断（两份必然漂移）。
+    if (!cd || this.getCooldownRemaining(model) <= 0) {
+      return { granted: false, usedSharedSlot: false, reason: "no_cooldown" };
+    }
+    if (!shouldAllowCooldownProbeForReason(cd.cause)) {
+      return { granted: false, usedSharedSlot: false, reason: "cause_not_probeable" };
+    }
+    if (!shouldUseTransientCooldownProbeSlot(cd.cause)) {
+      // 单路径成因（timeout / network_error）：放行且不占共享配额。
+      return { granted: true, usedSharedSlot: false, reason: "granted_unshared" };
+    }
+    if (cd.probeConsumed) {
+      return { granted: false, usedSharedSlot: false, reason: "slot_taken" };
+    }
+    cd.probeConsumed = true;
+    return { granted: true, usedSharedSlot: true, reason: "granted" };
+  }
+
+  /**
+   * S5：把探针配额还回去（探针死于**与配额窗口无关**的故障时调用）。
+   *
+   * 判据在 `shouldPreserveTransientCooldownProbeSlot`：401 / 模型不存在这类"敲错门"
+   * 对"限流窗口过了没有"一个字都没回答，让它吃掉窗口里唯一的探针机会，
+   * 等于一次无关故障把 S2 的出口锁死一整个窗口。
+   *
+   * 幂等且对已过期冷却无副作用（记录已被清理时是空操作）——探针失败路径可能
+   * 与冷却自然到期竞争，这里不该因此抛错。
+   */
+  releaseCooldownProbe(model: string): void {
+    const cd = this.cooldowns.get(model);
+    if (!cd) return;
+    cd.probeConsumed = false;
+  }
+
+  /** S5：读探针配额是否已被消耗（测试与遥测归因用；无冷却记录返回 false）。 */
+  isCooldownProbeConsumed(model: string): boolean {
+    return this.cooldowns.get(model)?.probeConsumed ?? false;
   }
 
   /**
@@ -174,12 +300,12 @@ export class ModelAvailabilityService {
   /** S2：读冷却归因（供日志/遥测说明"为什么在等"）。无冷却返回 undefined。 */
   getCooldownInfo(
     model: string,
-  ): { remainingMs: number; reason: string; hits: number } | undefined {
+  ): { remainingMs: number; reason: string; hits: number; cause?: CooldownCause } | undefined {
     const cd = this.cooldowns.get(model);
     if (!cd) return undefined;
     const remainingMs = cd.until - Date.now();
     if (remainingMs <= 0) return undefined;
-    return { remainingMs, reason: cd.reason, hits: cd.hits };
+    return { remainingMs, reason: cd.reason, hits: cd.hits, cause: cd.cause };
   }
 
   /** S2：清除某模型的冷却（该模型成功产出内容时调用——限流窗口已过的最强信号）。 */
