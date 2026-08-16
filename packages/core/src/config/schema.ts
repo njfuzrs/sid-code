@@ -6,6 +6,9 @@
 import type { Config } from "./config.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { normalizeBaseURL } from "../llm/endpoint-key.ts";
+// compat 的合法键清单只在 model-compat.ts 维护一份：校验侧与归一化侧共用同一个源，
+// 否则加一个位就要改两处，漏改的那处会静默放过（或误报）用户的合法配置。
+import { MODEL_COMPAT_KEYS, COMPAT_KEY_ALIASES, COMPAT_KEY_SET } from "../llm/model-compat.ts";
 // VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
 import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
 
@@ -546,6 +549,47 @@ export function validateConfig(config: Config): ValidationResult {
             `但按名查找只命中第一条，其余条目的 model_id 永远不生效。多渠道必须让 **name 各不相同**` +
             `（如 ${alias}-a / ${alias}-b），再各自配自己的 model_id`,
         });
+      }
+    }
+
+    // compat 自检。与 model_id 完全同一个理由：归一化（model-compat.ts）对脏值一律**静默丢弃**
+    // 以免在 loadConfig 链上抛出致进程起不来，那么「让用户知道自己配错了」就只能落在这里。
+    // 这三类错全都会让用户以为声明生效了，而实际上没有 —— compat 恰恰是用来救「注册表猜错」的，
+    // 它自己静默失效比不配更糟（用户会以为已经排除了这个变量）。
+    for (const m of config.availableModels) {
+      const rawCompat: unknown = (m as { compat?: unknown }).compat;
+      if (rawCompat === undefined) continue;
+      const alias = (typeof m.name === "string" ? m.name.trim() : "") || "(未命名)";
+
+      // ① 整个字段类型错（写成字符串/数组/null）→ 全部声明失效。
+      if (typeof rawCompat !== "object" || rawCompat === null || Array.isArray(rawCompat)) {
+        warnings.push({
+          path: "availableModels",
+          message: `模型 "${alias}" 的 compat 必须是对象，当前是 ${Array.isArray(rawCompat) ? "array" : rawCompat === null ? "null" : typeof rawCompat}，整个 compat 已被忽略（回落内置能力判定）`,
+        });
+        continue;
+      }
+
+      for (const [rawKey, value] of Object.entries(rawCompat as Record<string, unknown>)) {
+        const known = COMPAT_KEY_ALIASES[rawKey] ?? (COMPAT_KEY_SET.has(rawKey) ? rawKey : null);
+        // ② 键名不认识（拼错、或用了参照实现里我们没实现的位）→ 静默丢弃最难排查，必须点名。
+        if (!known) {
+          warnings.push({
+            path: "availableModels",
+            message:
+              `模型 "${alias}" 的 compat 含未知字段 "${rawKey}"，已忽略。` +
+              `可用字段：${MODEL_COMPAT_KEYS.join(" / ")}（也接受对应的 snake_case 写法）`,
+          });
+          continue;
+        }
+        // ③ 值不是布尔 → 刻意不做真值转换（把 "false" 当 true 或当 false 都是猜，
+        //    两个方向猜错的后果相反：多发字段 400 / 该发的没发静默失效）。
+        if (typeof value !== "boolean") {
+          warnings.push({
+            path: "availableModels",
+            message: `模型 "${alias}" 的 compat.${rawKey} 必须是布尔值（true/false，不带引号），当前是 ${typeof value}，该字段已被忽略`,
+          });
+        }
       }
     }
   }

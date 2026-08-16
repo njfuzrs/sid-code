@@ -726,6 +726,9 @@ export class App {
       modelConfig: thinkingModelConfig
         ? { supportsThinking: thinkingModelConfig.supportsThinking }
         : undefined,
+      // compat 按渠道（别名）建键，与上面 model 吃真名相反 —— 漏传这里 ThinkingManager
+      // 会按内置判定初始化，用户声明的 supportsThinkingToggle:false 对状态栏不生效。
+      alias: opts.config.model,
     });
     this.thinkingMgr = new ThinkingManager(thinkingCap.supportsThinkingToggle);
 
@@ -1403,6 +1406,9 @@ export class App {
       provider: this.config.provider,
       baseURL: mc?.baseURL ?? this.config.baseURL,
       modelConfig: mc ? { supportsThinking: mc.supportsThinking } : undefined,
+      // compat 按渠道（别名）建键。三处 cap 解析（本处、构造期 thinkingCap、loop.ts）
+      // 必须同口径传 alias，否则又是「状态栏一个说法、请求体另一个说法」的分裂。
+      alias: this.config.model,
     });
   }
 

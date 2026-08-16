@@ -917,6 +917,9 @@ export class SubAgent {
     // 整张别名表：单条 wireModel 只覆盖「本次要发的模型」，而子进程内 ModelFallback
     // 降级会**换模型**并靠别名表翻译新目标。只播种一条 → fallback 目标发别名 → 400。
     const wireModelAliases = sc?.wireModelAliases;
+    // compat 声明表：同样整张过管道。子进程不读配置文件，不播种则用户在 availableModels[].compat
+    // 里的协议能力声明在子代理里静默失效——父按声明发字段、子按内置判定发，同一份配置两种行为。
+    const modelCompat = sc?.modelCompat;
     const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
     const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
     const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
@@ -932,6 +935,7 @@ export class SubAgent {
       model,
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
+      model_compat: modelCompat,
       // P2-2：与 executeInner 的常规子代理默认对齐为 30（旧值 10 过于保守）。
       // 注：ParentInitMessage 协议不透传 task.forkMessages（跨进程边界），fork 模式
       // 走 spawn 时上下文本就无法继承，不适用 fork=200 的档位，统一按非 fork 默认处理。
@@ -983,6 +987,9 @@ export class SubAgent {
     // 整张别名表与 model 的选择无关（它是全量映射，不是"本次那条"），
     // 故 modelOverride 分支同样直接用，不需要重新解析。子进程内换模型时靠它翻译。
     const wireModelAliases = sc?.wireModelAliases;
+    // compat 表与 model 的选择无关（全量映射，非「本次那条」），故 modelOverride 分支
+    // 同样直接用，不需要重新解析——与上面 wireModelAliases 同理。
+    const modelCompat = sc?.modelCompat;
     const providerName = sc?.providerName ?? this.spawnConfig!.providerName;
     const apiKey = sc?.apiKey ?? this.spawnConfig!.apiKey;
     const baseURL = sc?.baseURL ?? this.spawnConfig?.baseURL;
@@ -998,6 +1005,7 @@ export class SubAgent {
       model,
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
+      model_compat: modelCompat,
       // P2-2：与 executeCustomInner 对齐为 30（旧值 10 过于保守，CustomSubAgentTask 无 fork 概念）。
       max_turns: task.maxTurns ?? 30,
       max_tokens: task.maxTokens ?? 50000,

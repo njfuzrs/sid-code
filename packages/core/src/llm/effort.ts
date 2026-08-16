@@ -21,6 +21,7 @@
 import type { SendParams } from "./types.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
 import { lookupCapability } from "./model-capabilities.ts";
+import { lookupModelCompat, type ModelCompat } from "./model-compat.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 1. 统一内部标度（与协议无关）
@@ -458,19 +459,114 @@ export function resolveEffortCapability(opts: {
   provider: string;
   baseURL?: string;
   modelConfig?: { supportsThinking?: boolean };
+  /**
+   * 本地别名（`config.model` / fallback 名），用于查 compat 声明。
+   *
+   * ⚠ 与 `opts.model` 是**两个不同的东西**，别合并：`opts.model` 必须是**真名**
+   * （内部按前缀/家族匹配，喂别名会静默 miss），而 compat 按**渠道**（别名）建键
+   * ——同一真名的两个渠道声明可以不同。缺省时退化为按 `opts.model` 查（两者相等
+   * 是没配 modelId 的绝大多数情况）。
+   */
+  alias?: string;
 }): EffortCapability {
+  // 优先级 0：用户显式的 compat 声明——权威度高于下面一切按名推导的判定。
+  // 它只**覆盖它声明了的那几位**，没声明的位继续走原有判定（undefined ≠ false）。
+  const compat = lookupModelCompat(opts.alias ?? opts.model);
+
   // 优先级 1：用户显式声明不支持思考 → 全 no-op（不下发任何字段）。
   if (opts.modelConfig?.supportsThinking === false) {
-    return { ...CAPABILITY_FLAGS.unknown, applyToSendParams: APPLIERS.unknown };
+    return applyCompatOverrides(
+      { ...CAPABILITY_FLAGS.unknown, applyToSendParams: APPLIERS.unknown },
+      compat,
+    );
   }
 
   const kind = classifyCapability(opts);
   if (kind !== "unknown") {
-    return { ...CAPABILITY_FLAGS[kind], applyToSendParams: APPLIERS[kind] };
+    return applyCompatOverrides(
+      { ...CAPABILITY_FLAGS[kind], applyToSendParams: APPLIERS[kind] },
+      compat,
+    );
   }
 
   // 优先级 2.5：协议族未知 → 查动态能力缓存（纯内存读，不触网）。
-  return resolveFromCapabilityCache(opts.model);
+  return applyCompatOverrides(resolveFromCapabilityCache(opts.model), compat);
+}
+
+/**
+ * 把用户的 compat 声明叠加到已解析的能力描述符上。
+ *
+ * 设计要点（三条，都踩过对应的坑形态）：
+ *
+ * 1. **只覆盖声明了的位**。`undefined` 一律不动原值——`compat` 是「补充/纠正个别位」，
+ *    不是「整体替换能力描述符」。若按整体替换，用户为了纠正一个位就得把 6 位全配对，
+ *    配漏的位会被当成 false，反而制造新的静默失真。
+ *
+ * 2. **`supportsReasoningEffort: false` 必须真的让 `applyToSendParams` 不写字段**，
+ *    而不只是把 `supportsEffort` 标志位改掉。标志位只影响状态栏展示与档位选择，
+ *    真正决定「线上发不发」的是 applier —— 只改标志位是本仓「仪器/开关改了但链路没改」
+ *    的经典形态：UI 显示不支持，请求体照发，两边说法不一致。
+ *
+ * 3. **包装 applier 而不是替换**。各族 applier 里有大量族专属结构转换
+ *    （DeepSeek 的 `thinking:{}`、Anthropic 的 `budget_tokens`），compat 是布尔位层，
+ *    表达不了这些 —— 那是 dialect 模块的职责。故这里先跑原 applier，再按声明**剥字段**。
+ */
+function applyCompatOverrides(cap: EffortCapability, compat?: ModelCompat): EffortCapability {
+  if (!compat) return cap;
+
+  const out: EffortCapability = { ...cap };
+
+  if (compat.supportsReasoningEffort !== undefined) {
+    out.supportsEffort = compat.supportsReasoningEffort;
+  }
+  if (compat.supportsThinkingToggle !== undefined) {
+    out.supportsThinkingToggle = compat.supportsThinkingToggle;
+    // 声明为不支持开关时，thinkingDefaultOn 也不能再是 true —— 否则状态栏显示「思考默认开」
+    // 却没有任何开关字段下发，是同一句话的两个矛盾说法。
+    if (!compat.supportsThinkingToggle) out.thinkingDefaultOn = false;
+  }
+  if (compat.supportsMaxEffort !== undefined) {
+    out.supportsMaxEffort = compat.supportsMaxEffort;
+  }
+
+  const inner = cap.applyToSendParams.bind(cap);
+  out.applyToSendParams = (params, effort, thinking) => {
+    // max 钳制：声明不支持 max 时，把档位降到 high 再交给原 applier。
+    // 在**进入** applier 前钳，而不是事后改 params —— 各族 applier 对 max 有各自的分支
+    // （DeepSeek 的 max→"max"、Grok/o-series 的守卫），事后改改不干净。
+    let effective = effort;
+    if (compat.supportsMaxEffort === false && (effort === "max" || effort === "xhigh")) {
+      effective = "high";
+    }
+
+    inner(params, effective, thinking);
+
+    // 声明为不支持 → 事后剥掉。剥而不是不调 applier：applier 同时负责 thinking 等
+    // 其它字段，整个跳过会把不相关的能力一起关掉。
+    if (compat.supportsReasoningEffort === false) {
+      params.reasoningEffort = undefined;
+      // Anthropic 族的 effort 走 outputConfig.effort（见 applyDeepSeekAnthropic），
+      // 只剥 reasoningEffort 会漏掉这条线 —— 那正是「同一语义两条线只堵一条」的漏法。
+      //
+      // ⚠ 但只在 outputConfig **只承载 effort** 时整个置空。带了 thinkingType 时
+      // （anthropic-native 的 adaptive 模型）刻意不动：`effort` 在该类型里是必填，
+      // 「保留 thinkingType 但去掉 effort」根本表达不出来，而丢掉整个对象会让
+      // buildThinkingParam（anthropic.ts:889）从 adaptive 静默退回 manual budget_tokens
+      // —— 用一个协议降级去实现另一个字段的关闭，代价远超收益。
+      //
+      // 这是 compat 布尔位层的**已知表达边界**，不是漏改：adaptive 模型按定义就吃 effort，
+      // 对它声明 supportsReasoningEffort:false 本身是矛盾配置。真要支持这种组合，
+      // 需要 dialect 层做结构转换（下一步），布尔位表达不了。
+      if (params.outputConfig && params.outputConfig.thinkingType === undefined) {
+        params.outputConfig = undefined;
+      }
+    }
+    if (compat.supportsThinkingToggle === false) {
+      params.thinking = undefined;
+    }
+  };
+
+  return out;
 }
 
 /**

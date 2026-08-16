@@ -70,6 +70,21 @@ export interface ParentInitMessage {
    * 表通常只有 0-2 条，跨进程开销可忽略；绝大多数用户没配 model_id，此字段整个缺省。
    */
   wire_model_aliases?: Record<string, string>;
+  /**
+   * **完整** compat 表（alias → 协议能力声明），仅含真正配了 `compat` 的条目。
+   *
+   * 与 `wire_model_aliases` 是**逐条同构的理由**（那里写得更细）：子进程不读配置文件，
+   * 进程级 compat 表默认为空；不播种的话用户在 `availableModels[].compat` 里的声明
+   * 在子代理里**静默失效** —— 父进程按声明发字段、子进程按内置判定发字段，同一份配置
+   * 两种行为，且不报错。
+   *
+   * 同样传**整张表**而不是当前模型那一条：子进程内 `ModelFallback` 会换模型，
+   * 降级目标的声明查不到就会按内置判定发字段（用户声明「这条渠道不认 thinking」失效 → 400），
+   * 而降级正是主模型已出问题时的最后一道防线。
+   *
+   * 没配 compat 的用户此字段整个缺省，管道上零多余字节。
+   */
+  model_compat?: Record<string, unknown>;
   max_turns: number;
   max_tokens: number;
   timeout: number;

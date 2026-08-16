@@ -10,6 +10,7 @@ import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { resolvePricing } from "../api/cost-tracker.ts";
 import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
+import { buildModelCompatMap } from "./model-compat.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
 import type { LanguagePref } from "../config/prompt-lang.ts";
 import { isJitContextEnabled } from "../config/jit-context.ts";
@@ -272,6 +273,14 @@ export class ProviderRegistry {
      * 主模型已出问题时的最后一道防线。见 sub-agent-protocol.ts 的 wire_model_aliases。
      */
     wireModelAliases?: Record<string, string>;
+    /**
+     * **完整** compat 表，随 init 过管道播种进子进程。
+     *
+     * 与上面 wireModelAliases 逐条同理：子进程不读配置文件，进程级 compat 表默认为空；
+     * 不播种则用户的协议能力声明在子代理里静默失效（父按声明发、子按内置判定发，
+     * 同一份配置两种行为且不报错）。整张表而非单条，同样是为了 fallback 换模型后仍有声明可查。
+     */
+    modelCompat?: Record<string, unknown>;
     providerName: string;
     apiKey: string;
     baseURL?: string;
@@ -283,6 +292,9 @@ export class ProviderRegistry {
     // 直接从 availableModels 构造，不读父进程的全局表——后者依赖 resolveCurrentModelConfig
     // 已跑过，而本方法可能在任何时机被调；从配置现算是唯一不依赖调用时序的口径。
     const wireModelAliases = buildWireModelAliasMap(this.config.availableModels);
+    // compat 声明表。同样从配置现算而不读全局表——理由与上面 wireModelAliases 完全相同
+    // （本方法可能在 resolveCurrentModelConfig 之前的任何时机被调）。
+    const modelCompat = buildModelCompatMap(this.config.availableModels);
     // 子代理模型与主模型相同 → 复用主 spawn 配置
     if (model === this.config.model) {
       const base = this.getSpawnConfig();
@@ -290,6 +302,7 @@ export class ProviderRegistry {
         model,
         wireModel,
         wireModelAliases,
+        modelCompat,
         providerName: base.providerName,
         apiKey: base.apiKey,
         baseURL: base.baseURL,
@@ -307,6 +320,7 @@ export class ProviderRegistry {
         model,
         wireModel,
         wireModelAliases,
+        modelCompat,
         providerName,
         apiKey,
         baseURL: baseURL || undefined,
@@ -318,6 +332,7 @@ export class ProviderRegistry {
       model,
       wireModel,
       wireModelAliases,
+      modelCompat,
       providerName: base.providerName,
       apiKey: base.apiKey,
       baseURL: base.baseURL,

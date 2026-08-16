@@ -91,6 +91,14 @@ async function main(): Promise<void> {
       }
     }
 
+    // compat 声明表播种（与上面别名表同一个理由）：子进程不读配置文件，进程级表默认为空。
+    // 不播种则父进程按用户声明发字段、子进程按内置判定发字段 —— 同一份配置两种行为且不报错。
+    // 老版本父进程不发该字段时表为空、行为与此前完全一致（向后兼容）。
+    {
+      const { setModelCompatFromMap } = require("@sid-code/core/llm/model-compat.ts");
+      if (init.model_compat) setModelCompatFromMap(init.model_compat);
+    }
+
     // 2. 创建 Provider
     const provider = createProvider(init.provider_name, init.model, init.api_key, init.base_url);
 

@@ -96,6 +96,11 @@ export type { SubAgentModelMap } from "../llm/registry.ts";
 import type { ModelPricing } from "../api/cost-tracker.ts";
 export type { ModelPricing };
 
+// 协议能力声明（compat 布尔位）的单一真相源在 llm/model-compat.ts。
+// 同样先 import 进本地作用域（下方 ModelConfig.compat 要用）再 re-export 对外暴露。
+import type { ModelCompat } from "../llm/model-compat.ts";
+export type { ModelCompat };
+
 /** 可用模型配置 */
 export interface ModelConfig {
   /**
@@ -126,6 +131,23 @@ export interface ModelConfig {
   supportsThinking?: boolean; // 是否支持 Extended Thinking
   /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
   pricing?: ModelPricing;
+  /**
+   * 可选：这条渠道的**协议能力声明**（6 个布尔位，见 `llm/model-compat.ts`）。
+   *
+   * 存在的理由：族差异此前只能表达为**代码**（`effort.ts` 813 行族矩阵 + 199 处族关键字
+   * 散在 15 个文件），于是上一家新厂商就要改一次代码——而判据往往只是「这家认不认
+   * `thinking` 字段」这种一个布尔位就够的事实。配了它，加一家兼容端点从改代码变成配一行。
+   *
+   * 三层优先级（`compat` 最高）：**用户声明 > 内置注册表按名匹配 > 400 自愈兜底**。
+   * ⚠ 它**不替代**自愈——私有网关上的私有模型名注册表必然 miss，只有用户知道它认什么；
+   * 但用户也会配错，配错了仍要靠 `withCapabilityHealing`（`llm/openai.ts:650`）救回来。
+   *
+   * 按**渠道**（name）而非模型真名生效：同一真名接官方端点与公司网关，网关那条可能因为
+   * 自己做了参数透传过滤而不认某些字段。与 `supportsThinking` 的既有口径一致。
+   *
+   * 缺省（不配）时行为与此前**完全一致**：全部回落内置判定。`undefined` ≠ `false`。
+   */
+  compat?: ModelCompat;
 }
 
 /** 应用配置 */
@@ -939,6 +961,10 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         // pricing 内部字段本就 camelCase（input/output/cacheRead/cacheWrite），直接透传。
         // 此前遗漏导致走 snake_case 归一化路径时用户自配价被静默丢弃（架空「用户手写价最高优先」）。
         pricing: m.pricing,
+        // compat 的内部键两种风格都要认，归一化在 model-compat.ts（合法键集合的单一真相源）。
+        // 这里透传原始对象而不是自己转键：转键逻辑写两份必然漂移，而漏一个键就是用户配了
+        // 却被静默丢弃 —— 与上面 model_id / pricing 同类前科。
+        compat: m.compat,
       }));
       // 特殊处理 hooks：旧格式（数组）→ 新格式（按事件分组）
     } else if (configKey === "hooks" && Array.isArray(value)) {
@@ -1534,6 +1560,13 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
   // setWireModelAliases(空/undefined) 即清空，所以这里无条件调用是安全的。
   const { setWireModelAliases } = require("../llm/wire-model.ts");
   setWireModelAliases(config.availableModels);
+
+  // compat 表刷新（alias → 协议能力声明）。挂在这里的理由与上面别名表**逐条相同**：
+  // 本函数是启动解析与 `/model` 运行时切换的共同咽喉，且「availableModels 为空」
+  // 与「mc 未命中」两条 early-return 都必须先把表清空，否则上一份配置的声明残留 ——
+  // 会让新配置按旧声明发字段，且不报错。setModelCompat(空) 即清空，无条件调用是安全的。
+  const { setModelCompat } = require("../llm/model-compat.ts");
+  setModelCompat(config.availableModels);
 
   if (!config.availableModels?.length) return;
 

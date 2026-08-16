@@ -33,6 +33,7 @@ import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
 import { pickWireModel } from "./wire-model.ts";
 import { lookupCatalog } from "./model-params-catalog.ts";
+import { lookupModelCompat } from "./model-compat.ts";
 import {
   learnFromError,
   shouldRetryWithoutEffort,
@@ -179,7 +180,13 @@ export class OpenAIProvider implements Provider {
    * 但 provider 仍用主模型名构造），this._model 与 params.model 会分裂。若用 this._model，
    * 主/备模型的回传规则不同（V4 必回传 vs 旧 reasoner 禁回传）时会错发/漏发 → 400 或思维链断裂。
    */
-  private requiresReasoningContentForToolCalls(model: string): boolean {
+  private requiresReasoningContentForToolCalls(model: string, alias?: string): boolean {
+    // 用户 compat 声明优先：注册表按模型名前缀/家族匹配，私有网关上的私有模型名
+    // （如 gw-internal-r1）必然 miss → 落到默认 false。而这个字段两个方向都会错且
+    // **自愈救不回来**（回传缺失 → 400 + 思维链断裂；旧协议多回传 → 也 400），
+    // 故必须给用户一个显式出口。按渠道（别名）查，与 model 吃真名互补。
+    const declared = lookupModelCompat(alias)?.requiresReasoningContentForToolCalls;
+    if (declared !== undefined) return declared;
     return lookupCatalog(model)?.requiresReasoningContentForToolCalls === true;
   }
 
@@ -318,6 +325,9 @@ export class OpenAIProvider implements Provider {
    * - `user_id`——KVCache/调度/内容安全隔离，通用字段，任意端点按需下发（他端忽略不报错）。
    */
   private applyDeepSeekThinking(requestBody: any, params: SendParams, model: string): void {
+    // 用户 compat 声明（按渠道/别名查，故用 params.model 而非上面的真名 model）——
+    // 权威度高于下面一切按名推导，但只覆盖它声明了的位，其余位照走原判定。
+    const compat = lookupModelCompat(params.model ?? this._model);
     const kind = lookupCatalog(model)?.protocolKind;
     const isDeepSeek =
       kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
@@ -366,38 +376,63 @@ export class OpenAIProvider implements Provider {
 
     const thinkingDisabled = params.thinking?.enabled === false;
 
+    // ── compat 声明的三道闸门（放在所有族分支之前，对每一族同样生效） ──
+    //
+    // 为什么在这里统一拦，而不是逐个族分支里加条件：族分支有 5 支（DeepSeek/GLM 合一支、
+    // Grok、o-series、未知族），逐支加就是 5 处手写守卫，新增一族的人必然漏 ——
+    // 本仓「手写字段列表漏字段」有多次前科。统一闸门让「默认就成立」。
+    //
+    // ⚠ effort 被 compat 关掉时**不能** early-return 整个函数：下面还有 user_id 下发，
+    // 它与推理能力无关（通用隔离字段），一起跳过就是把不相关的能力连带关掉。
+    const effortBlocked = compat?.supportsReasoningEffort === false;
+    const thinkingToggleBlocked = compat?.supportsThinkingToggle === false;
+    // 声明不支持 max 时钳到 high。effort.ts 侧已钳过一道（applyCompatOverrides），
+    // 这里再兜一道：非主循环路径（side-call / headless）不一定跑过那层 cap 解析，
+    // 而这里是**所有** OpenAI 族请求的唯一咽喉。两道同口径、幂等，不会打架。
+    const wireEffort =
+      compat?.supportsMaxEffort === false &&
+      (params.reasoningEffort === "max" || params.reasoningEffort === "xhigh")
+        ? "high"
+        : params.reasoningEffort;
+    const effectiveEffort = effortBlocked ? undefined : wireEffort;
+
     // DeepSeek / GLM：同构的 thinking 开关 + reasoning_effort（顶层字段）。
     // GLM 见 glm-api.md:144-147,189；DeepSeek 见 deepseek-api.md:2003-2004。
     if (isDeepSeek || isGLM) {
       // 思考开关：显式下发 enabled/disabled。params.thinking 不传时不下发，沿用服务端默认。
-      if (params.thinking) {
+      // compat 声明不支持开关时不下发（私有网关做了参数过滤 / 该模型无此概念）。
+      if (params.thinking && !thinkingToggleBlocked) {
         requestBody.thinking = {
           type: params.thinking.enabled ? "enabled" : "disabled",
         };
       }
       // 思考强度：思考显式关闭时不下发，避免冲突；其余情况按需下发。
-      if (params.reasoningEffort && !thinkingDisabled) {
-        requestBody.reasoning_effort = params.reasoningEffort;
+      if (effectiveEffort && !thinkingDisabled) {
+        requestBody.reasoning_effort = effectiveEffort;
       }
     }
 
     // Grok：无思考开关；仅透传 reasoning_effort（无 max，effort.ts 已钳 max→high）。
     // grok-api.md:30,157,277。
-    if (isGrok && params.reasoningEffort && params.reasoningEffort !== "max" && !thinkingDisabled) {
-      requestBody.reasoning_effort = params.reasoningEffort;
+    if (isGrok && effectiveEffort && effectiveEffort !== "max" && !thinkingDisabled) {
+      requestBody.reasoning_effort = effectiveEffort;
     }
 
     // OpenAI o-series（o1/o3/o4…）：内置推理，仅透传 reasoning_effort（low/medium/high，无 max）。
     // 不下发 thinking 开关（o-series 无显式开关）。effort.ts 已把 max 钳为 high，这里再兜一道。
-    if (isOSeries && params.reasoningEffort && params.reasoningEffort !== "max") {
-      requestBody.reasoning_effort = params.reasoningEffort;
+    if (isOSeries && effectiveEffort && effectiveEffort !== "max") {
+      requestBody.reasoning_effort = effectiveEffort;
     }
 
     // 未知协议族：只透传 reasoningEffort（档位已由 effort.ts 依能力缓存钳过）。
     // 见 isUnknownFamily 的详细说明——这一支是自愈闭环的入口，删掉它整套动态采集对
     // 未知模型即失效。thinkingDisabled 时不下发，与其它族保持一致语义。
-    if (isUnknownFamily && params.reasoningEffort && !thinkingDisabled) {
-      requestBody.reasoning_effort = params.reasoningEffort;
+    // ⚠ compat 声明关掉 effort 时这一支也不发 —— 代价是**该模型的 400 自愈闭环也随之关闭**
+    // （不发字段 ⇒ 服务端不会因它报错 ⇒ withCapabilityHealing 无从触发）。这是刻意的：
+    // 用户显式声明「这条渠道不认 reasoning_effort」时，正是要省掉那一跳探路重试，
+    // 而自愈的存在意义本就是「没人告诉我们时自己学」。声明了就不必再学。
+    if (isUnknownFamily && effectiveEffort && !thinkingDisabled) {
+      requestBody.reasoning_effort = effectiveEffort;
     }
 
     // user_id：通用隔离字段，按需下发（DeepSeek 专有语义，其它端点忽略不报错）。
@@ -417,23 +452,44 @@ export class OpenAIProvider implements Provider {
    * `parallel_tool_calls` 未见冲突报告，保持下发。
    */
   private applyToolChoice(requestBody: any, params: SendParams, model: string): void {
+    // compat 按渠道（别名）查，与下面按真名做的族推导互补：声明存在时它说了算。
+    const compat = lookupModelCompat(params.model ?? this._model);
     const kind = lookupCatalog(model)?.protocolKind;
     const isDeepSeek =
       kind === "deepseek-openai" || (kind === undefined && /deepseek/i.test(model));
     const isGLM = kind === "glm-openai" || (kind === undefined && /^glm/i.test(model));
-    const thinkingActive = isDeepSeek && params.thinking?.enabled !== false;
+    // DeepSeek 思考模式不接受 tool_choice（§2.4）。compat 显式声明 supportsToolChoice: true
+    // 时不再按族推导拦 —— 这正是 compat 存在的意义：网关可能已经替我们过滤掉了该字段，
+    // 或用户跑的是修过这个问题的私有版本，只有他知道。
+    const thinkingActive =
+      isDeepSeek && params.thinking?.enabled !== false && compat?.supportsToolChoice !== true;
     const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
 
     if (toolChoice !== undefined) {
-      if (thinkingActive) {
+      // compat 声明整个不接受 tool_choice → 不下发（保留模型自主调用）。
+      // 放在最前面：它是最强的声明，优先于下面所有按族推导的降级。
+      if (compat?.supportsToolChoice === false) {
+        getLogger().warn(
+          "LLM:OPENAI",
+          `模型「${params.model ?? this._model}」的 compat 声明 supports_tool_choice=false，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
+        );
+      } else if (compat?.toolChoiceAutoOnly === true && toolChoice !== "auto") {
+        // 仅支持 auto（GLM 形态）→ 降级为不下发（等价服务端默认 auto），而非冒 400。
+        getLogger().warn(
+          "LLM:OPENAI",
+          `模型「${params.model ?? this._model}」的 compat 声明 tool_choice_auto_only=true，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
+        );
+      } else if (thinkingActive) {
         // DeepSeek 思考模式下 tool_choice 会触发 400，跳过下发（保留模型自主调用）。
         getLogger().warn(
           "LLM:OPENAI",
           `DeepSeek 思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
         );
-      } else if (isGLM && toolChoice !== "auto") {
+      } else if (isGLM && toolChoice !== "auto" && compat?.toolChoiceAutoOnly !== false) {
         // §GLM：tool_choice 默认且仅支持 auto，不支持 none/required/指定函数（glm-api.md:147,276,431）。
         // 下发 required/指定函数会被 GLM 拒绝，降级为 auto（不下发即等价服务端默认 auto）而非冒错。
+        // compat 显式声明 tool_choice_auto_only=false 时跳过本降级（如 GLM-5.2+ 已放开、
+        // 或网关代为转换）—— 显式声明优先于按族推导，这是 compat 的全部意义。
         getLogger().warn(
           "LLM:OPENAI",
           `GLM 仅支持 tool_choice=auto，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
@@ -455,7 +511,7 @@ export class OpenAIProvider implements Provider {
    * 2. OpenAI 的 tool_result 不在 user 消息的 content 里，而是独立的 role:"tool" 消息
    * 3. OpenAI 的 content 字段对于纯文本消息应该是字符串，不是数组
    */
-  private convertMessages(messages: Message[], effectiveModel?: string): any[] {
+  private convertMessages(messages: Message[], effectiveModel?: string, alias?: string): any[] {
     const model = effectiveModel || this._model;
     const result: any[] = [];
 
@@ -560,7 +616,7 @@ export class OpenAIProvider implements Provider {
         //   分叉判据取自 model-registry 的 requiresReasoningContentForToolCalls 能力标志
         //   （而非散落的模型名 if），避免协议演进时漂移。
         if (msg._meta?.reasoning_content) {
-          const carryOnToolCalls = this.requiresReasoningContentForToolCalls(model);
+          const carryOnToolCalls = this.requiresReasoningContentForToolCalls(model, alias);
           if (toolCalls.length === 0 || carryOnToolCalls) {
             assistantMsg.reasoning_content = msg._meta.reasoning_content;
           }
@@ -728,8 +784,9 @@ export class OpenAIProvider implements Provider {
       return;
     }
 
-    // 转换消息格式（传入 effectiveModel 供 reasoning_content 回传分叉判据使用）
-    const messages = this.convertMessages(params.messages, effectiveModel);
+    // 转换消息格式（传入 effectiveModel 供 reasoning_content 回传分叉判据使用；
+    // 另传别名供 compat 声明查表——两者不能合并，见 requiresReasoningContentForToolCalls）
+    const messages = this.convertMessages(params.messages, effectiveModel, params.model);
 
     // 转换工具定义
     const tools = params.tools?.map((t) => ({
@@ -1429,7 +1486,8 @@ export class OpenAIProvider implements Provider {
       return await this.sendNonStreamingViaResponsesAPI(params, effectiveModel, signal);
     }
 
-    const messages = this.convertMessages(params.messages, effectiveModel);
+    // 与流式路径同口径传别名（compat 查表用），漏传即「非流式路径上用户声明静默失效」。
+    const messages = this.convertMessages(params.messages, effectiveModel, params.model);
     const tools = params.tools?.map((t) => ({
       type: "function",
       function: {

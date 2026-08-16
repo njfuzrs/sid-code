@@ -1824,6 +1824,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           provider: config.provider,
           baseURL: modelConfig?.baseURL ?? config.baseURL,
           modelConfig: modelConfig ? { supportsThinking: modelConfig.supportsThinking } : undefined,
+          // compat 声明按**渠道**（别名）建键，与上面 model 吃真名刚好相反，故单独传。
+          // 同一真名的官方端点与公司网关可以有不同声明，合并成一个参数就分不开了。
+          alias: config.model,
         });
         const runtimeEffort = deps.getEffortSetting?.();
         const runtimeThinking = deps.getThinkingSetting?.();
