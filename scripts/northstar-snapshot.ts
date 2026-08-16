@@ -204,6 +204,46 @@ export interface NorthstarSnapshot {
     /** 无版本标记因而无法参与版本对比的索引行数 */
     rows_without_version: number;
   };
+  /**
+   * 轨迹损坏率的**口径账**：分母里放了谁、排除了谁。
+   *
+   * 与 `cacheHitCaliber` 同一处理模式，理由也同一条：损坏率的分母**不是索引全部行**，
+   * 而是「真的做过损坏检测的行」。增量行（崩溃 / 还在跑的会话）压根没跑检测，
+   * 既不该进分子也不该进分母 —— 但**被排除了多少必须显式报出来**，
+   * 否则读起来像「全部会话都查过了，只有 x% 坏」。
+   *
+   * 这个排除量本身就是最该看的数字：它等于「有多少会话的轨迹健康状况我们根本不知道」。
+   * 它长期偏高，说明崩溃会话的认领路径（启动扫描）没接上，而不是数据很干净。
+   */
+  trajCorruptCaliber: {
+    /** 有结论的行数 = 损坏率的分母。与 `traj_corrupt_rate.n` 恒等 */
+    detectedRows: number;
+    /** 其中判定为损坏的行数 = 分子 */
+    corruptRows: number;
+    /**
+     * 未检测因而被排除的行数（`traj_corrupt` 键不存在）。
+     *
+     * 主要来源是增量行：会话崩溃 / 被 `kill -9`，或此刻仍在跑。
+     * **为 0 时也必须打印** —— 「排除 0 行」与「没在算这件事」看起来一样，
+     * 但结论相反（cacheHitCaliber 的 `rowsWithoutHost` 是同一条教训）。
+     */
+    undetectedRows: number;
+    /**
+     * 其中**声称**有结论、但没有 `traj_corrupt_detected_by` 的存量行数。
+     *
+     * 这批行是 P2-14 修复**之前**写出的：那时增量路径会谎报 `traj_corrupt: false`，
+     * 所以它们的 `false` 分不清是「真检测过」还是「增量行谎报」。一律排除出分母，
+     * 判据是**字段缺失**而非版本号比较（版本号比较要额外维护一张「哪版起可信」的表，
+     * 而字段在不在是自解释的）。不写迁移脚本改用户已落盘的数据。
+     */
+    legacyUnattributedRows: number;
+    /**
+     * 假如把未检测行也当「未损坏」算出来的损坏率 —— **仅供对照**，
+     * 就是本次修复之前那个偏低的数。并列输出让「盲区把指标压低了多少」变成
+     * 能看见的差值，而不是一句承诺。
+     */
+    rateCountingUndetectedAsClean: number | null;
+  };
   /** 一致性断言结果。任一条失败说明某侧漏采，是真缺陷 */
   assertions: Array<{ name: string; ok: boolean; detail: string }>;
 }
@@ -356,7 +396,26 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
 
   // ── 底座 ──
   const defenseCount = index.filter((e) => e.defense_triggered === true).length;
-  const corruptCount = index.filter((e) => e.traj_corrupt === true).length;
+
+  // P2-14：损坏率的分母是**做过损坏检测的行**，不是索引全部行。
+  //
+  // 三类行必须分开（`traj_corrupt` 是三态，见 session-index.ts）：
+  // - 有 boolean 且有 detected_by → 有结论，进分母
+  // - 键不存在 → 增量行，**没检测**（崩溃 / 仍在跑的会话），排除
+  // - 有 boolean 但无 detected_by → 修复前的存量行，那个 false 是增量路径谎报的，排除
+  //
+  // 为什么不能沿用 real_errors 那套「按 exit_status !== incomplete 过滤」：
+  // real_errors 恒 0 是「还没跑完所以还没出错」，过滤掉就对了；而 traj_corrupt 恒 false 是
+  // 「没检测所以不知道」。按 exit_status 过滤会把这两种事实当成一种处理，
+  // 而且真正需要被看见的恰恰是「有多少会话的健康状况我们不知道」这个量。
+  const trajDetected = index.filter(
+    (e) => typeof e.traj_corrupt === "boolean" && e.traj_corrupt_detected_by !== undefined,
+  );
+  const corruptCount = trajDetected.filter((e) => e.traj_corrupt === true).length;
+  const trajUndetectedRows = index.filter((e) => typeof e.traj_corrupt !== "boolean").length;
+  const trajLegacyUnattributedRows = index.filter(
+    (e) => typeof e.traj_corrupt === "boolean" && e.traj_corrupt_detected_by === undefined,
+  ).length;
 
   const denominators: SessionDenominators = {
     activeSessions: opts.denominators?.activeSessions ?? countActiveSessions(),
@@ -417,13 +476,26 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         `${IDX}:defense_triggered`,
         "ratio",
       ),
+      // 口径变了 source 串必须跟着变（仓库硬规矩）：旧串 `session-index.jsonl:traj_corrupt`
+      // 读起来像"数了全部行里的 true"，而现在分母只含做过检测的行。
+      // n 同理必须是 `trajDetected.length` 而不是 `index.length` —— 虚报的 n 会让这个数
+      // 绕过版本对比的样本不足护栏（MIN_SAMPLES_FOR_CONCLUSION=20），在两个 n=1 的
+      // 快照之间算出几十个百分点的"改善"（PR #38 的 cache_hit_rate.n 是同一个教训）。
       traj_corrupt_rate: metric(
-        index.length > 0 ? corruptCount / index.length : null,
-        index.length,
-        `${IDX}:traj_corrupt`,
+        trajDetected.length > 0 ? corruptCount / trajDetected.length : null,
+        trajDetected.length,
+        `${IDX}:traj_corrupt（仅已检测行 · 排除增量行与无 detected_by 的存量行）`,
         "ratio",
       ),
       rows_without_version: rowsWithoutVersion,
+    },
+    trajCorruptCaliber: {
+      detectedRows: trajDetected.length,
+      corruptRows: corruptCount,
+      undetectedRows: trajUndetectedRows,
+      legacyUnattributedRows: trajLegacyUnattributedRows,
+      // 对照口径：把未检测行当"未损坏"（= 修复前的算法）。分母回到索引全部行。
+      rateCountingUndetectedAsClean: index.length > 0 ? corruptCount / index.length : null,
     },
     assertions: [],
   };
@@ -482,6 +554,28 @@ export function buildAssertions(s: NorthstarSnapshot): NorthstarSnapshot["assert
       name: "索引会话数 >= 轨迹有效会话数（索引不受 LRU 影响）",
       ok: d.indexSessions >= d.trajValidSessions,
       detail: `索引 ${d.indexSessions} vs 轨迹有效 ${d.trajValidSessions}`,
+    });
+  }
+
+  // P2-14：损坏率的 n 必须**恒等于**口径账里的已检测行数。
+  //
+  // 这条锁的是「n 虚报」这一类缺陷：n 一旦回退成 `index.length`（把未检测行也算进
+  // 样本量），这个数就能绕过版本对比的样本不足护栏（MIN_SAMPLES_FOR_CONCLUSION=20），
+  // 在两个实际只有 1 个样本的快照之间算出几十个百分点的"改善"。
+  // 只在有行可判时产出：全空时它恒成立、不携带信息，报 skip 比报 pass 诚实。
+  // 三类行任一非空就有东西可判（含只有存量行的情形 —— 那时 n 与分母都该是 0，
+  // 断言仍然携带信息："排除生效了"）。
+  if (
+    s.trajCorruptCaliber.detectedRows > 0 ||
+    s.trajCorruptCaliber.undetectedRows > 0 ||
+    s.trajCorruptCaliber.legacyUnattributedRows > 0
+  ) {
+    out.push({
+      name: "轨迹损坏率的 n 与已检测行数自洽（不虚报样本量）",
+      ok: s.foundation.traj_corrupt_rate.n === s.trajCorruptCaliber.detectedRows,
+      detail:
+        `n=${s.foundation.traj_corrupt_rate.n}，已检测 ${s.trajCorruptCaliber.detectedRows} 行，` +
+        `未检测 ${s.trajCorruptCaliber.undetectedRows} 行被排除`,
     });
   }
 
@@ -644,6 +738,36 @@ export function renderCacheHitCaliber(s: NorthstarSnapshot): string[] {
   return L;
 }
 
+/**
+ * 渲染轨迹损坏率的口径账（缩进在损坏率那一行下面）。
+ *
+ * **无条件输出**，与 `renderCacheHitCaliber` 同一条理由，且这里更要紧：
+ * 损坏率的分母排除了「没做过检测」的行，而排除量本身就是最该看的数字 ——
+ * 它等于「有多少会话的轨迹健康状况我们根本不知道」。
+ * 只打一个裸百分比，读者会以为全部会话都查过了。
+ */
+export function renderTrajCorruptCaliber(s: NorthstarSnapshot): string[] {
+  const c = s.trajCorruptCaliber;
+  const L: string[] = [];
+  L.push(
+    `    口径: 分母=已检测 ${c.detectedRows} 行（损坏 ${c.corruptRows}）· ` +
+      `排除未检测 ${c.undetectedRows} 行 · 排除无 detected_by 的存量行 ${c.legacyUnattributedRows} 行`,
+  );
+  // 排除量为 0 也打印：「排除 0 行」与「没在算这件事」看起来一样、结论相反。
+  if (c.undetectedRows > 0) {
+    L.push(
+      `    ⚠ 那 ${c.undetectedRows} 行是增量行（会话崩溃 / 被 kill -9 / 仍在跑），` +
+        `**从未跑过损坏检测** —— 它们的轨迹是好是坏我们不知道，不是"已确认没坏"`,
+    );
+  }
+  L.push(
+    `    对照: 若把未检测行当未损坏算（= 本次修复前的口径）则为 ` +
+      `${fmtValue(c.rateCountingUndetectedAsClean, "ratio")}` +
+      `（该口径在崩溃会话多时系统性偏低，正是它掩盖了最高危的一批样本）`,
+  );
+  return L;
+}
+
 export function renderSnapshot(s: NorthstarSnapshot): string {
   const L: string[] = [];
   L.push(`北极星指标快照  v${s.appVersion}  生成于 ${s.generatedAt}`);
@@ -708,6 +832,7 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   L.push("底座（可度量）:");
   L.push(row("防线触发率", s.foundation.defense_trigger_rate));
   L.push(row("轨迹损坏率", s.foundation.traj_corrupt_rate));
+  L.push(...renderTrajCorruptCaliber(s));
   if (s.foundation.rows_without_version > 0) {
     L.push(
       `  ⚠ ${s.foundation.rows_without_version} 行无版本标记，无法参与版本对比（刻意不回填：` +
@@ -781,6 +906,14 @@ export function renderMarkdown(s: NorthstarSnapshot): string {
   L.push(r("更少返工", "病态会话率", s.fewerRedos.pathological_session_rate));
   L.push(r("底座", "防线触发率", s.foundation.defense_trigger_rate));
   L.push(r("底座", "轨迹损坏率", s.foundation.traj_corrupt_rate));
+  L.push("");
+  // 生成块里也必须带排除量：这块会被贴进 markdown 长期留存，只留一个裸百分比的话，
+  // 将来读它的人无从知道分母里少了哪一批会话（而少掉的正是崩溃会话那批）。
+  L.push(
+    `轨迹损坏率口径：分母=已检测 ${s.trajCorruptCaliber.detectedRows} 行，` +
+      `另有 ${s.trajCorruptCaliber.undetectedRows} 行未检测（增量行 / 崩溃会话）被排除、` +
+      `${s.trajCorruptCaliber.legacyUnattributedRows} 行为无 detected_by 的存量行。`,
+  );
   L.push("");
   L.push(
     `会话数三个口径：active ${s.denominators.activeSessions} / 轨迹有效 ${s.denominators.trajValidSessions} / ` +
@@ -1015,6 +1148,11 @@ export function selfTest(): string[] {
     compactions: 0,
     defense_triggered: false,
     traj_corrupt: false,
+    // P2-14：合成行代表「有终态、跑过 digest 的会话」，所以必须带 detected_by ——
+    // 它才是「已检测」的判据。**这个补充不是为了让断言变绿**：不补的话这批行就等价于
+    // 修复前那些谎报 false 的存量行，而拿存量行去验新口径，验的是错的东西。
+    // 想验「未检测」态请显式传 traj_corrupt: undefined（见下面的反向自证）。
+    traj_corrupt_detected_by: "session_end",
     ...over,
   });
 
@@ -1123,6 +1261,77 @@ export function selfTest(): string[] {
     errors.push(
       `反向自证：含存量口径应低于干净口径，实得 ${incl} vs ${dirty.cheaper.cache_hit_rate.value}`,
     );
+  }
+
+  // P2-14 正向：合成行全部带 detected_by，所以全部进分母、一行都不排除。
+  if (snap.trajCorruptCaliber.detectedRows !== 30 || snap.trajCorruptCaliber.undetectedRows !== 0) {
+    errors.push(
+      `合成数据应全部已检测，实得 已检测 ${snap.trajCorruptCaliber.detectedRows} 行 / ` +
+        `未检测 ${snap.trajCorruptCaliber.undetectedRows} 行`,
+    );
+  }
+  if (snap.foundation.traj_corrupt_rate.n !== 30) {
+    errors.push(`损坏率样本数期望 30，实得 ${snap.foundation.traj_corrupt_rate.n}`);
+  }
+
+  // P2-14 反向自证：掺入三类行，锁住「未检测既不进分子也不进分母」。
+  //
+  // 只验"干净数据上算得对"测不出盲区是否真的被排除了 —— 全部已检测时新旧口径
+  // 恒等，上面那几条断言在旧算法（分母=全部行）下同样全绿。所以必须掺脏：
+  // - 1 行真损坏（有 detected_by）→ 进分子也进分母
+  // - 1 行未检测（增量行形态：traj_corrupt 缺失）→ 两边都不进
+  // - 1 行修复前的存量行（有 false 但无 detected_by）→ 两边都不进
+  const dirtyCorrupt = buildSnapshot({
+    data: {
+      index: [
+        ...index,
+        mkIndex(200, { session_id: "corrupt1", traj_corrupt: true }),
+        mkIndex(201, {
+          session_id: "incremental1",
+          exit_status: "incomplete",
+          traj_corrupt: undefined,
+          traj_corrupt_detected_by: undefined,
+        }),
+        mkIndex(202, {
+          session_id: "legacy1",
+          traj_corrupt: false,
+          traj_corrupt_detected_by: undefined,
+        }),
+      ],
+      ledger,
+    },
+    denominators,
+    appVersion: "0.1.600",
+    now,
+  });
+  const cc = dirtyCorrupt.trajCorruptCaliber;
+  if (cc.detectedRows !== 31) {
+    errors.push(`反向自证：已检测应为 31 行（30 干净 + 1 损坏），实得 ${cc.detectedRows}`);
+  }
+  if (cc.corruptRows !== 1) {
+    errors.push(`反向自证：损坏应为 1 行，实得 ${cc.corruptRows}`);
+  }
+  if (cc.undetectedRows !== 1) {
+    errors.push(`反向自证：未检测（增量行）应被排除 1 行，实得 ${cc.undetectedRows}`);
+  }
+  if (cc.legacyUnattributedRows !== 1) {
+    errors.push(
+      `反向自证：无 detected_by 的存量行应被排除 1 行，实得 ${cc.legacyUnattributedRows}`,
+    );
+  }
+  // 干净口径 = 1/31；旧口径把未检测行也当未损坏 → 1/33，**系统性偏低**。
+  // 这个差值就是本次修复要暴露的盲区，两者相等则说明排除没生效。
+  if (
+    dirtyCorrupt.foundation.traj_corrupt_rate.value === null ||
+    Math.abs(dirtyCorrupt.foundation.traj_corrupt_rate.value - 1 / 31) > 1e-9
+  ) {
+    errors.push(
+      `反向自证：损坏率期望 1/31，实得 ${dirtyCorrupt.foundation.traj_corrupt_rate.value}`,
+    );
+  }
+  const asClean = cc.rateCountingUndetectedAsClean;
+  if (asClean === null || asClean >= dirtyCorrupt.foundation.traj_corrupt_rate.value!) {
+    errors.push(`反向自证：旧口径应低于干净口径（盲区压低指标），实得 ${asClean}`);
   }
 
   // scope 必须如实反映"有没有按版本过滤"。写错会让一份混着历史版本的快照

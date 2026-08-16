@@ -2006,7 +2006,11 @@ export class TraceCollector {
           ttft: { p50: m?.ttft_p50, p95: m?.ttft_p95, n: m?.ttft_n },
           e2e: { p50: m?.e2e_p50, p95: m?.e2e_p95, n: m?.e2e_n },
           defense_triggered: m?.defenseTriggered,
+          // 这条路径**跑过** digest，所以它是唯一有资格给出损坏结论的地方。
+          // `m` 为 undefined（digest 没产出 sessionMetrics）时这里也是 undefined ——
+          // 那同样是「没检测」，不能兜底成 false（见 buildSessionIndexEntry 注释）。
           traj_corrupt: m?.trajCorrupt,
+          traj_corrupt_detected_by: "session_end",
           compactions: this.metadata.compactions.length,
         }),
       );
@@ -2250,6 +2254,32 @@ export class TraceCollector {
    * 空/0，直到 SessionEnd 覆盖。所以**「没有终态的会话」在索引里只有过程指标、
    * 没有质量结论** —— 这是有意的取舍（有过程指标远好于整行都没有），
    * 消费侧要按 `exit_status === "incomplete"` 区分，不能把它当成"零错误"。
+   *
+   * ## `traj_corrupt` 为什么在这里**整个字段不落**，而不是落 `false`
+   *
+   * 上面那三项落 0 是「还没跑完所以还没出错」，消费侧过滤掉就对了。
+   * 损坏检测不是同一回事：落 `false` 表达的是「已检测且未损坏」，而这里
+   * 根本没检测 —— 两个不同的事实塌缩成一个观测。且塌缩方向恰好最坏：
+   * 没有 SessionEnd 的会话（`kill -9` / OOM / 崩溃）正是最可能留下损坏轨迹的一批，
+   * 而它们**只有**增量行。所以键不落，让「未检测」在数据里如实可见
+   *（见 `session-index.ts` 的三态说明）。
+   *
+   * ## 为什么不在这里做一次「廉价」损坏检测（tail 几行试 parse）
+   *
+   * 评估过，不可行，两条都是硬伤：
+   *
+   * 1. **这个进程自己就是 `session.traj` 的写者**，且写法是 `buildTrajectory` 全量
+   *    覆盖（见 `flushTraj`）。增量 flush 与 traj flush 是两个独立节流（60s / 30s），
+   *    此刻读到的可能是一次全量覆盖写到一半的中间态 —— 那会**产出假损坏**，
+   *    把一个健康会话报成损坏。为了修一个假阴性引入一个假阳性，指标更不可信。
+   * 2. **`session.traj` 不是 JSONL，尾部几行 parse 不出任何结论**。它是单个 JSON
+   *    对象（`{trajectory:[...], history:[...], metadata:{...}}`），真要判就得
+   *    `JSON.parse` 全文 —— 长会话实测 45MB，每 60s 全量 parse 一次是把退出时算一次
+   *    的东西搬进热路径，正是本函数不跑 digest 的同一条理由。
+   *
+   * 结论：崩溃会话的损坏状态由**下次启动的僵尸会话扫描**认领（`cost-recompute.ts`
+   * 的 `backfillTrajCost` 本来就会读这些会话的 traj、且已经在判损坏），
+   * 不由本路径认领。
    */
   private flushSessionIndexIncremental(): void {
     try {

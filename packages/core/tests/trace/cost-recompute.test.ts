@@ -365,3 +365,74 @@ describe("backfillTrajCost 情形 A'：traj 损坏 → 据 events 重建", () =>
     expect(existsSync(join(sessionDir, "session.traj.corrupt"))).toBe(false);
   });
 });
+
+/**
+ * P2-14：`trajCorrupt` 结论必须**返回出去**，供调用方认领 session-index。
+ *
+ * 为什么这件事只能在这里做：本函数是崩溃会话（kill -9 / OOM，SessionEnd 从未运行）
+ * 唯一还会去读它 traj 的地方，而它**读完就把损坏文件重建了** —— 过了这一刻，
+ * 事后任何 parse 都只会得到"未损坏"，损坏率再也测不到。
+ */
+describe("backfillTrajCost 的 trajCorrupt 结论（P2-14 崩溃会话认领）", () => {
+  beforeEach(() => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      afterModelRaw(1, "deepseek-v4-pro", 27424, 74) + "\n",
+    );
+  });
+
+  test("traj 损坏 → trajCorrupt: true（重建前的状态，唯一记账时机）", () => {
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      '{"metadata":{"total_cost_usd": 0.4428********0257}}',
+    );
+    const r = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(r.trajCorrupt).toBe(true);
+    // 重建已发生：此刻文件已经是好的，所以这个 true 只能靠返回值传出去
+    expect(() => JSON.parse(readFileSync(join(sessionDir, "session.traj"), "utf-8"))).not.toThrow();
+  });
+
+  test("traj 可解析 → trajCorrupt: false（真实检测结论，不是「没检测」）", () => {
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({ metadata: { session_id: "x", total_cost_usd: 0 } }),
+    );
+    expect(backfillTrajCost(sessionDir, AVAILABLE_MODELS).trajCorrupt).toBe(false);
+  });
+
+  test("幂等跳过时仍给出 false —— cost 只补一次，但「这次它是好的」每次都成立", () => {
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({ metadata: { total_cost_usd: 0.5, cost_recomputed_from_events: true } }),
+    );
+    const r = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(r.reason).toContain("幂等");
+    expect(r.trajCorrupt).toBe(false);
+  });
+
+  test("traj 不存在 → trajCorrupt 为 undefined（没有可判对象 ≠ 未损坏）", () => {
+    // 把"连 traj 都没写出来"算成未损坏，会让它进损坏率的分母、把比值拉低。
+    // 那是另一个缺口，由索引会话数 vs 轨迹会话数的一致性断言负责。
+    expect(existsSync(join(sessionDir, "session.traj"))).toBe(false);
+    const r = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(r.backfilled).toBe(true); // 走情形 A 重建
+    expect(r.trajCorrupt).toBeUndefined();
+  });
+
+  test("events 无可重算数据 → trajCorrupt 为 undefined（提前返回，压根没读 traj）", () => {
+    writeFileSync(join(sessionDir, "events.jsonl"), "");
+    writeFileSync(join(sessionDir, "session.traj"), '{"metadata":{}}');
+    expect(backfillTrajCost(sessionDir, AVAILABLE_MODELS).trajCorrupt).toBeUndefined();
+  });
+
+  test("损坏且重建失败仍报 true —— 损坏结论与修复成败无关", () => {
+    // 混在一起会让"修不好的损坏"从损坏率里消失，即越坏的越测不到。
+    // 造重建失败：把 session.traj 做成目录，Bun.write 写不进去。
+    const p = join(sessionDir, "session.traj");
+    rmSync(p, { force: true });
+    mkdirSync(p, { recursive: true });
+    const r = backfillTrajCost(sessionDir, AVAILABLE_MODELS);
+    expect(r.backfilled).toBe(false);
+    expect(r.trajCorrupt).toBe(true);
+  });
+});

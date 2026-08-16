@@ -48,6 +48,11 @@ function row(over: Partial<SessionIndexEntry> & { session_id: string }): Session
     compactions: 0,
     defense_triggered: false,
     traj_corrupt: false,
+    // 默认造「有终态、跑过 digest 的权威行」，所以必须带 detected_by ——
+    // 它才是"已检测"的判据。不带的话这个 helper 造出来的全是修复前那种
+    // 谎报 false 的存量行形态，用它去验新口径就验错了对象。
+    // 要造增量行 / 存量行请显式传 undefined（见对应用例）。
+    traj_corrupt_detected_by: "session_end",
     ...over,
   };
 }
@@ -164,12 +169,58 @@ describe("buildSessionIndexEntry 字段映射", () => {
     expect("app_version" in e).toBe(false);
   });
 
-  test("traj_corrupt / defense_triggered 缺省为 false，不是 undefined", () => {
-    // 这两个是 bool 指标，undefined 会让消费侧的 `filter(x => x.traj_corrupt)`
-    // 与 `filter(x => x.traj_corrupt === false)` 加起来不等于总数
+  test("defense_triggered 缺省为 false，不是 undefined", () => {
+    // 防线没触发就是没触发：这个语义下 undefined 与 false 是同一件事
+    //（触发率的分母是全部会话），所以恒落 boolean。
+    // ⚠ traj_corrupt **刻意不同** —— 见下面那一组三态测试。
     const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1 });
-    expect(e.traj_corrupt).toBe(false);
     expect(e.defense_triggered).toBe(false);
+  });
+
+  /**
+   * P2-14：`traj_corrupt` 是三态，`false` 必须只表示「已检测且未损坏」。
+   *
+   * 这组锁的是一个已实测到的度量盲区：增量路径不跑损坏检测却落 `false`，
+   * 于是崩溃 / `kill -9` 的会话（最可能损坏的那批）全部谎报未损坏，
+   * 损坏率在最该报警的场景下反而更好看。
+   */
+  describe("traj_corrupt 三态：未检测 ≠ 已检测且未损坏", () => {
+    test("没传 traj_corrupt → 键整个不落盘（表达「未检测」，不是 false）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1 });
+      // `in` 而不是 `=== undefined`：显式 undefined 键会被 JSON.stringify 丢掉，
+      // 但类型上仍"存在"，而消费侧判据是键在不在
+      expect("traj_corrupt" in e).toBe(false);
+      expect("traj_corrupt_detected_by" in e).toBe(false);
+    });
+
+    test("传 false → 落 false 且标注检测者（这才是「已检测未损坏」）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1, traj_corrupt: false });
+      expect(e.traj_corrupt).toBe(false);
+      expect(e.traj_corrupt_detected_by).toBe("session_end");
+    });
+
+    test("传 true → 落 true 且标注检测者", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1, traj_corrupt: true });
+      expect(e.traj_corrupt).toBe(true);
+      expect(e.traj_corrupt_detected_by).toBe("session_end");
+    });
+
+    test("检测者可指定为 startup_scan（崩溃会话的认领路径）", () => {
+      const e = buildSessionIndexEntry(
+        { session_id: "s1" },
+        { ts: 1, traj_corrupt: true, traj_corrupt_detected_by: "startup_scan" },
+      );
+      expect(e.traj_corrupt_detected_by).toBe("startup_scan");
+    });
+
+    test("落盘 → 读回后「未检测」仍是键缺失，不被 JSON 往返变成 false", () => {
+      // 这条是端到端形态：谎报 false 的危害发生在**读侧**，
+      // 所以必须验一次真实的写盘 + 读回，而不只验构造函数的返回值
+      upsertSessionIndex(buildSessionIndexEntry({ session_id: "incr" }, { ts: 1 }));
+      const back = readSessionIndex()[0]!;
+      expect("traj_corrupt" in back).toBe(false);
+      expect(back.traj_corrupt).toBeUndefined();
+    });
   });
 
   test("summary 字段类型异常时回落 0，不产出 NaN/undefined 污染聚合", () => {
@@ -295,15 +346,180 @@ describe("P2-14 轨迹损坏率可见", () => {
     expect(digest!.sessionMetrics!.trajCorrupt).toBe(false);
   });
 
-  test("损坏率可从索引直接算出（分母是索引行数，口径写死）", () => {
+  test("损坏率可从索引直接算出（分母=已检测行，非索引全部行）", () => {
+    // ⚠ 口径已修（P2-14）：分母**不是**索引行数，而是「做过损坏检测的行数」。
+    // 旧口径把没跑过检测的增量行也当"未损坏"塞进分母，于是崩溃会话越多、
+    // 损坏率被稀释得越低 —— 指标在最该报警时反而更好看。
     upsertSessionIndex(row({ session_id: "a", traj_corrupt: true }));
     for (let i = 0; i < 55; i++) upsertSessionIndex(row({ session_id: `ok${i}` }));
     const all = readSessionIndex();
-    const corrupt = all.filter((e) => e.traj_corrupt).length;
+    const detected = all.filter(
+      (e) => typeof e.traj_corrupt === "boolean" && e.traj_corrupt_detected_by !== undefined,
+    );
+    const corrupt = detected.filter((e) => e.traj_corrupt === true).length;
     expect(corrupt).toBe(1);
-    expect(all).toHaveLength(56);
+    expect(detected).toHaveLength(56);
     // 1/56 ≈ 1.8%，与实测一致
-    expect((corrupt / all.length) * 100).toBeCloseTo(1.8, 1);
+    expect((corrupt / detected.length) * 100).toBeCloseTo(1.8, 1);
+  });
+
+  test("增量行混进来时不进分母，且排除量可数（这才是修复的效果）", () => {
+    upsertSessionIndex(row({ session_id: "a", traj_corrupt: true }));
+    for (let i = 0; i < 9; i++) upsertSessionIndex(row({ session_id: `ok${i}` }));
+    // 20 个崩溃会话：只有增量行，没有损坏结论
+    for (let i = 0; i < 20; i++) {
+      upsertSessionIndex(
+        row({
+          session_id: `crash${i}`,
+          exit_status: "incomplete",
+          traj_corrupt: undefined,
+          traj_corrupt_detected_by: undefined,
+        }),
+      );
+    }
+    const all = readSessionIndex();
+    const detected = all.filter(
+      (e) => typeof e.traj_corrupt === "boolean" && e.traj_corrupt_detected_by !== undefined,
+    );
+    const undetected = all.filter((e) => typeof e.traj_corrupt !== "boolean");
+    expect(detected).toHaveLength(10);
+    expect(undetected).toHaveLength(20);
+    // 干净口径 1/10 = 10%；旧口径 1/30 ≈ 3.3%，被那 20 个未检测行稀释了三倍。
+    // 两个数都在这里断言：差值就是本次修复要暴露出来的盲区大小。
+    expect(1 / detected.length).toBeCloseTo(0.1, 9);
+    expect(1 / all.length).toBeCloseTo(1 / 30, 9);
+  });
+});
+
+/**
+ * P2-14 崩溃会话认领路径：`claimTrajCorrupt`。
+ *
+ * 这是 `kill -9` / OOM 会话的**唯一**认领点 —— 它们永远等不到 SessionEnd。
+ * 三条不变量各自对应一种把数据搞坏的写法，见函数注释。
+ */
+describe("claimTrajCorrupt：崩溃会话补认领损坏状态", () => {
+  test("给增量行补上结论 + 检测者标记", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    upsertSessionIndex(
+      row({
+        session_id: "crash",
+        exit_status: "incomplete",
+        traj_corrupt: undefined,
+        traj_corrupt_detected_by: undefined,
+      }),
+    );
+    expect(claimTrajCorrupt("crash", true)).toBe(true);
+    const back = readSessionIndex().find((e) => e.session_id === "crash")!;
+    expect(back.traj_corrupt).toBe(true);
+    expect(back.traj_corrupt_detected_by).toBe("startup_scan");
+    // 只改这一个字段，其余过程指标原样保留（认领不是重写整行）
+    expect(back.turns).toBe(3);
+    expect(back.exit_status).toBe("incomplete");
+  });
+
+  test("不新建行：会话不在索引里就什么都不做", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    expect(claimTrajCorrupt("never-seen", true)).toBe(false);
+    // 凭一次外部扫描造出的行会缺全部过程指标，却照样进各指标的分母
+    expect(readSessionIndex()).toHaveLength(0);
+  });
+
+  test("绝不覆盖 SessionEnd 的权威结论（true 不被事后的 false 擦掉）", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    // 权威行说损坏；此后 backfillTrajCost 已把 traj 重建成好文件，
+    // 事后扫描必然读到"未损坏" —— 若允许覆盖，真损坏就被修复后的状态擦掉了
+    upsertSessionIndex(row({ session_id: "s", traj_corrupt: true }));
+    expect(claimTrajCorrupt("s", false)).toBe(false);
+    const back = readSessionIndex().find((e) => e.session_id === "s")!;
+    expect(back.traj_corrupt).toBe(true);
+    expect(back.traj_corrupt_detected_by).toBe("session_end");
+  });
+
+  test("已认领过则第二次是空操作（幂等，不重复写）", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    upsertSessionIndex(
+      row({ session_id: "c", traj_corrupt: undefined, traj_corrupt_detected_by: undefined }),
+    );
+    expect(claimTrajCorrupt("c", true)).toBe(true);
+    expect(claimTrajCorrupt("c", false)).toBe(false);
+    expect(readSessionIndex().find((e) => e.session_id === "c")!.traj_corrupt).toBe(true);
+  });
+
+  test("存量行（有 false 但无 detected_by）不被就地改写", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    // 那个 false 确实不可信，但"不可信"不等于"我现在这个值更对"。
+    // 消费侧靠 detected_by 缺失把这批行排除出分母（可复算），
+    // 比改写用户已落盘的数据（不可逆）更安全。
+    upsertSessionIndex(
+      row({ session_id: "legacy", traj_corrupt: false, traj_corrupt_detected_by: undefined }),
+    );
+    expect(claimTrajCorrupt("legacy", true)).toBe(false);
+    const back = readSessionIndex().find((e) => e.session_id === "legacy")!;
+    expect(back.traj_corrupt).toBe(false);
+    expect("traj_corrupt_detected_by" in back).toBe(false);
+  });
+
+  test("认领不影响其他会话的行（upsert 是按 session_id 定位的）", async () => {
+    const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
+    upsertSessionIndex(row({ session_id: "other", turns: 42 }));
+    upsertSessionIndex(
+      row({ session_id: "mine", traj_corrupt: undefined, traj_corrupt_detected_by: undefined }),
+    );
+    claimTrajCorrupt("mine", true);
+    const all = readSessionIndex();
+    expect(all).toHaveLength(2);
+    expect(all.find((e) => e.session_id === "other")!.turns).toBe(42);
+  });
+});
+
+/**
+ * 时序：增量行先写、SessionEnd 权威行后写（正常顺序），以及反向顺序。
+ *
+ * `upsertSessionIndex` 是 latest-wins，所以"谁最后写"决定结论。
+ * 这两条锁住 latest-wins 在本次三态改动下不会把结论丢掉。
+ */
+describe("时序：增量行与权威行的覆盖关系", () => {
+  test("正常时序（增量 → 权威）：权威结论落地，未检测态被替换", () => {
+    // 增量行：未检测
+    upsertSessionIndex(
+      buildSessionIndexEntry(
+        { session_id: "s", exit_status: "incomplete", real_errors: 0 },
+        { ts: 1 },
+      ),
+    );
+    expect("traj_corrupt" in readSessionIndex()[0]!).toBe(false);
+    // SessionEnd 权威行：检测出损坏
+    upsertSessionIndex(
+      buildSessionIndexEntry(
+        { session_id: "s", exit_status: "end_turn", real_errors: 2 },
+        { ts: 2, traj_corrupt: true },
+      ),
+    );
+    const back = readSessionIndex();
+    expect(back).toHaveLength(1); // upsert 而非 append
+    expect(back[0]!.traj_corrupt).toBe(true);
+    expect(back[0]!.traj_corrupt_detected_by).toBe("session_end");
+    expect(back[0]!.exit_status).toBe("end_turn");
+  });
+
+  test("反向时序（权威 → 增量）：latest-wins 会丢结论，故生产侧必须取消在途定时器", () => {
+    // 这条不是"期望的行为"，而是**把风险钉在测试里**：
+    // 若哪天 collector 忘了在 SessionEnd 取消 indexThrottleTimer
+    //（collector.ts 现有那段 clearTimeout 就是为此存在），
+    // 迟到的增量行会用"未检测 + incomplete"把已写好的权威结论覆盖掉。
+    // 断言这个覆盖**确实会发生**，是为了让那段 clearTimeout 不被当成多余代码删掉。
+    upsertSessionIndex(
+      buildSessionIndexEntry(
+        { session_id: "s", exit_status: "end_turn" },
+        { ts: 2, traj_corrupt: true },
+      ),
+    );
+    upsertSessionIndex(
+      buildSessionIndexEntry({ session_id: "s", exit_status: "incomplete" }, { ts: 3 }),
+    );
+    const back = readSessionIndex()[0]!;
+    expect("traj_corrupt" in back).toBe(false);
+    expect(back.exit_status).toBe("incomplete");
   });
 });
 
@@ -454,6 +670,23 @@ describe("P0-2 增量路径：没有 SessionEnd 的会话也进索引", () => {
     expect(mine.real_errors).toBe(0);
     expect(mine.pathological).toEqual([]);
     expect(mine.exit_status).toBe("incomplete");
+  });
+
+  test("★ 增量行不谎报「未损坏」：traj_corrupt 键整个不存在", async () => {
+    // 这是 P2-14 度量盲区的端到端形态，也是本次修复的核心验收。
+    //
+    // 修复前：这一行落 `traj_corrupt: false`，而增量路径**从未跑过损坏检测**。
+    // 没有 SessionEnd 的会话（崩溃 / kill -9 / OOM）恰恰是最可能留下损坏轨迹的一批，
+    // 却全部报"未损坏" —— 损坏率的分子里结构性缺失最高危的整类样本。
+    //
+    // 断言键"不存在"而非"=== undefined"：JSON.stringify 会丢掉显式 undefined 键，
+    // 键在不在才是消费侧真正的判据。
+    await runWithoutSessionEnd("sess-nocheck", 1);
+    const mine = readSessionIndex().find((e) => e.session_id === "sess-nocheck")!;
+    expect("traj_corrupt" in mine).toBe(false);
+    expect("traj_corrupt_detected_by" in mine).toBe(false);
+    // 同时确认它**不是**整行缺数据：过程指标照常有，只有质量结论缺
+    expect(mine.turns).toBeGreaterThanOrEqual(1);
   });
 
   test("多轮只留一行（upsert 语义，不随轮数翻倍）", async () => {
