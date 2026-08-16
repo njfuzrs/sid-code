@@ -44,7 +44,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/debug` | 调试信息：上传当前轨迹快照、显示诊断数据、复制 Session ID | `/diag` | — |
 | `/deny` | 添加 deny 权限规则（默认当前会话，-p 持久化） | — | `<规则> [-p] [--scope user\|project]` |
 | `/diff` | 显示当前工作区 git diff（--staged 看已暂存改动） | — | `[--staged\|--cached]` |
-| `/doctor` | 环境自检诊断（版本/运行时/配置/git/ripgrep/模型/MCP） | `/checkup` | — |
+| `/doctor` | 环境自检诊断（版本/运行时/配置/git/ripgrep/模型/MCP）；--disk 看磁盘占用与保留策略 | `/checkup` | — |
 | `/effort` | 显示或切换推理强度档位（low/medium/high/max/auto） | — | `low\|medium\|high\|max\|auto` |
 | `/exit` | 退出程序 | `/quit` `/q` | — |
 | `/export` | 导出对话到剪贴板或文件 | `/save` | `[clipboard\|file\|<path>] [json\|md]` |

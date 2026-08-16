@@ -17,6 +17,7 @@ import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from "@sid-code/core/
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../../../ui/constants/figures.ts";
 import { getSidHome, sidPaths } from "@sid-code/core/config/paths.ts";
+import { collectDiskUsage, formatBytes } from "@sid-code/core/config/disk-usage.ts";
 import { resolveRgCommand } from "@sid-code/core/tool/ripgrep.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
 
@@ -230,8 +231,80 @@ function checkMCP(ctx: CommandContext): CheckItem[] {
   return items;
 }
 
+/**
+ * `/doctor --disk`：按目录报 ~/.sid-code/ 的占用 + 各自保留策略 + 超期未回收量。
+ *
+ * 单独一个子视图而不并进主诊断，理由是它要扫盘（几千个文件，实测百毫秒级），
+ * 而 `/doctor` 是常用的快速自检 —— 让每次自检都付这个代价不划算。
+ *
+ * **只读**：`collectDiskUsage()` 一个字节都不删。刻意先做可观测、不做自动删 ——
+ * 让人能看见，比让程序替人决定删什么更安全（上一轮方案 §P2-12 否决过统一总量管理）。
+ */
+function renderEntries(report: ReturnType<typeof collectDiskUsage>): string[] {
+  const lines: string[] = [];
+  // 只列前 12 项 + 其余合并成一行。全列会把几十个小文件铺满屏，
+  // 而这个视图的用途是"哪块在涨"，不是完整清单。
+  const SHOWN = 12;
+  const shown = report.entries.slice(0, SHOWN);
+  const rest = report.entries.slice(SHOWN);
+  const nameWidth = Math.max(...shown.map((e) => e.name.length));
+
+  for (const e of shown) {
+    const size = formatBytes(e.bytes).padStart(6);
+    const name = e.name.padEnd(nameWidth);
+    const cnt = e.isDir ? ` ${String(e.count).padStart(5)} 项` : "        ";
+    // 未登记策略显式标成"未登记"而非留空——留空看着像"没问题"，
+    // 而它的真实含义是"这块没人管"，恰恰是最该被看见的状态。
+    const policy = e.retention ?? "⚠ 未登记（无人管理）";
+    let staleNote = "";
+    if (e.staleBytes != null && e.staleCount != null && e.staleCount > 0) {
+      staleNote = `\n      └ 超期未回收 ${formatBytes(e.staleBytes)} / ${e.staleCount} 项`;
+    }
+    lines.push(`  ${size}${cnt}  ${name}  ${policy}${staleNote}`);
+  }
+
+  if (rest.length > 0) {
+    const restBytes = rest.reduce((a, b) => a + b.bytes, 0);
+    lines.push(`  ${formatBytes(restBytes).padStart(6)}         其余 ${rest.length} 项`);
+  }
+  return lines;
+}
+
+function renderDiskUsage(): string {
+  const report = collectDiskUsage();
+  const lines = [`~/.sid-code/ 磁盘占用（${report.root}）`, ""];
+
+  // 空目录也要走到末尾的页脚（只读声明 + 与 du 的口径差异）。
+  // 早退会让这两条说明在"首次运行/空目录"时凭空消失 —— 而那恰恰是最需要
+  // 「这命令不会删我东西」这句保证的时候。
+  if (report.entries.length === 0) {
+    lines.push("  配置目录为空或不存在。");
+  } else {
+    lines.push(`  合计 ${formatBytes(report.totalBytes)}`, "");
+    lines.push(...renderEntries(report));
+  }
+
+  if (report.unreadable.length > 0) {
+    // 如实报出读不了的路径：静默当 0 会让用户以为占用不在那里
+    lines.push("", `  ${WARNING_MARK} ${report.unreadable.length} 个路径无法读取（统计已跳过）`);
+  }
+
+  lines.push(
+    "",
+    `  ${SUCCESS_MARK} 本视图只读，不删除任何数据。过期数据由各模块策略与启动期兜底清理回收。`,
+    // 用户拿这个数去和 du 对比是必然的，差异必须先说清楚，否则会被当成 bug
+    `    统计的是逻辑字节（stat size）；du 报已分配块，会更大（小文件的块开销）。`,
+  );
+  return lines.join("\n");
+}
+
 const mod: LocalCommandModule = {
-  async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
+  async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
+    // --disk / disk：磁盘占用子视图（要扫盘，故不并进主诊断）
+    if (/(^|\s)(--disk|disk)(\s|$)/.test(args ?? "")) {
+      return { type: "text", value: renderDiskUsage() };
+    }
+
     const items: CheckItem[] = [];
 
     // 版本（getVersion 返回形如 "sid-code v0.1.586 (TypeScript)"）
