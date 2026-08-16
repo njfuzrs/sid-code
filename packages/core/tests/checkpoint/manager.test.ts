@@ -1,13 +1,45 @@
 /**
  * CheckpointManager 集成测试
  * 测试批量快照、新文件删除、restore 等功能
+ *
+ * ## 隔离说明（2026-08-16 补）
+ *
+ * `testDir` 是**被快照的源文件目录**，不是快照落盘目录：`new CheckpointManager(sessionId)`
+ * 无条件写 `sidPaths.checkpoints(sessionId)`，即真实 `~/.sid-code/checkpoints/<sessionId>/`。
+ * 于是本文件每跑一次就在用户家目录留一个 `test-session-<ts>-<rand>` 目录 ——
+ * 实测存量 4545 个（约 34MB 的大头）。测试全绿，无任何断言会失败。
+ *
+ * 所以必须显式设 `SID_CONFIG_DIR`。别指望 `cleanupOldSessions()` 兜底：它按
+ * maxAgeDays=30 删，这些目录要躺满 30 天才够资格，而且那个清理自己也打不到
+ *（挂在懒加载 init 里，见 startup-housekeeping.ts 的 checkpoints 兜底注释）。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
-import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+
+/** 配置根目录隔离：CheckpointManager 无条件写 sidPaths.checkpoints() */
+let tmpHome: string;
+let prevConfigDir: string | undefined;
+
+beforeAll(() => {
+  tmpHome = mkdtempSync(join(tmpdir(), "sid-ckpt-home-"));
+  prevConfigDir = process.env.SID_CONFIG_DIR;
+  process.env.SID_CONFIG_DIR = tmpHome;
+});
+
+afterAll(() => {
+  // 存/恢复原值，不无条件 delete（同进程多文件，会抹掉 preload 兜底）
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  try {
+    rmSync(tmpHome, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 describe("CheckpointManager", () => {
   let testDir: string;

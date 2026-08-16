@@ -6,12 +6,40 @@
  *  - rm 前建的快照能通过 undo 恢复被删文件（端到端）。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import { getBashAffectedFiles } from "@sid-code/core/checkpoint/bash-affected-files.ts";
 import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
-import { mkdirSync, rmSync, existsSync, writeFileSync, unlinkSync } from "fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, unlinkSync, mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+
+/**
+ * 配置根目录隔离（2026-08-16 补）。
+ *
+ * 下面两个 describe 里 `new CheckpointManager(sessionId)` 无条件写
+ * `sidPaths.checkpoints(sessionId)` = 真实 `~/.sid-code/checkpoints/<sessionId>/`。
+ * 传给它的 tmpdir 只是**被快照的源目录**，不改落盘位置。详见
+ * packages/core/tests/checkpoint/manager.test.ts 头部说明。
+ */
+let tmpHome: string;
+let prevConfigDir: string | undefined;
+
+beforeAll(() => {
+  tmpHome = mkdtempSync(join(tmpdir(), "sid-ckpt-bash-home-"));
+  prevConfigDir = process.env.SID_CONFIG_DIR;
+  process.env.SID_CONFIG_DIR = tmpHome;
+});
+
+afterAll(() => {
+  // 存/恢复原值，不无条件 delete（同进程多文件，会抹掉 preload 兜底）
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  try {
+    rmSync(tmpHome, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 describe("P2-1 getBashAffectedFiles 提取", () => {
   let dir: string;

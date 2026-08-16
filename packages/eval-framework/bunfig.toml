@@ -1,0 +1,11 @@
+# 测试隔离兜底接线（与 core/cli/shared/tui-renderer 同一份）。
+#
+# 为什么这个包也需要：`cd packages/eval-framework && bun test` 读不到仓库根 bunfig，
+# 根预载文件不生效 → 落盘组件（深层无参构造的 AuditLogger 等）直接写用户真实
+# ~/.sid-code/，且测试全绿、没有任何断言会失败。
+#
+# 本包的 4 个测试平铺在 core/、sandbox/、graders/ 下，没有 tests/ 目录 ——
+# 正因如此它曾被接线门禁按"有 tests/ 目录"的旧判据整包跳过。
+# 门禁见 tests/build/test-isolation-preload-wiring.test.ts。
+[test]
+preload = ["../../tests/preload-isolate-sid-home.ts"]

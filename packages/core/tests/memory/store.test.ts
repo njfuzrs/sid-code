@@ -1,9 +1,24 @@
 /**
  * Auto Memory 存储测试（Task 1）
  * 使用临时目录，不污染真实 ~/.sid-code
+ *
+ * ## 为什么「构造参数指向 tmpdir」不算隔离（2026-08-16 补）
+ *
+ * `new MemoryStore(projectRoot)` 的 projectRoot **不是落盘目录，是项目标识**：
+ *   store.ts:298   getAutoMemPath(projectRoot)
+ *     → memory/paths.ts:157  join(projectsRoot(), sanitizeProjectKey(root), "memory")
+ *                                 ^^^^^^^^^^^^^^ 读 SID_CONFIG_DIR，与 projectRoot 无关
+ * 于是传进去的 tmpdir 路径只是被 sanitize 成目录名，内容照样写进真实
+ * `~/.sid-code/projects/`。实测存量物证：该目录下 2962 个
+ * `var-folders-…-T-sid-mem-test-<rand>` 目录 —— 目录名里那串被 sanitize 的 tmpdir
+ * 路径，就是「测试以为自己在 tmpdir、实际写在家目录」的直接证据。
+ *
+ * 本文件的 `makeStore()` 显式传了 projectMemoryDir / globalMemoryDir 覆盖，
+ * 所以它本身不落到家目录；但仍必须设 `SID_CONFIG_DIR` —— 一旦将来新增一个
+ * 不传覆盖参数的用例，没有这层兜底就会静默污染（且全绿）。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -16,6 +31,28 @@ import {
 let tmpProject: string;
 let projDir: string;
 let globalDir: string;
+
+/** 配置根目录隔离：兜住任何未显式传目录覆盖的落盘路径 */
+let tmpHome: string;
+let prevConfigDir: string | undefined;
+
+beforeAll(() => {
+  tmpHome = mkdtempSync(join(tmpdir(), "sid-mem-store-home-"));
+  prevConfigDir = process.env.SID_CONFIG_DIR;
+  process.env.SID_CONFIG_DIR = tmpHome;
+});
+
+afterAll(() => {
+  // 存/恢复原值，不无条件 delete —— bun test 同批多文件同进程，
+  // delete 会把别的文件或 preload 的兜底一起抹掉。
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  try {
+    rmSync(tmpHome, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 /** 构造使用临时目录的 store，避免污染真实 ~/.sid-code */
 function makeStore(): MemoryStore {

@@ -55,15 +55,28 @@ const REPO_ROOT = join(import.meta.dir, "..", "..");
 /**
  * 受检目录。
  *
- * 只列**已知会写 `sidPaths.trajectories()`** 的测试目录：
- *  - `context/`：`persistLargeOutput` 的直接与间接（`Manager.addMessage`）调用方
- *  - `trace/`  ：`TrajectoryCollector` 全家
+ * 只列**已知会写用户家目录长留 sink** 的测试目录：
+ *  - `context/`   ：`persistLargeOutput` 的直接与间接（`Manager.addMessage`）调用方
+ *  - `trace/`     ：`TrajectoryCollector` 全家
+ *  - `memory/`    ：`MemoryStore` 构造即派生 `projects/<哈希>/memory/`（2026-08-16 纳入）
+ *  - `checkpoint/`：`CheckpointManager` 构造即写 `checkpoints/<sessionId>/`（同上）
+ *
+ * 后两个是 2026-08-16 补的，成因值得记住：它们的落盘**不经过任何名字带 write/append
+ * 的函数**，而是构造函数深处 `join(projectsRoot(), …)` / `sidPaths.checkpoints(…)`。
+ * 静态扫描要靠"把类名也列进 WRITING_EXPORTS"才抓得到，那是穷举式防线（每漏一个类
+ * 就多一个缺口）；本门禁按副作用判，不依赖穷举。存量物证：那两条路径曾在真实家目录
+ * 留下 4545 个 `test-session-*` + 2962 个 `…sid-mem-test-*` 目录，约 40MB。
  *
  * ⚠ 这是刻意的范围限制，不是遗漏：全量 `bun test` 要 190s，进 CI 翻倍不划算。
  * 代价是**别的目录下新增的间接落盘本门禁抓不到** —— 真出现了就把目录加进这个数组，
  * 别把它改成扫全仓（那等于让每个 PR 多等 3 分钟）。
  */
-const SCOPE = ["packages/core/tests/context/", "packages/core/tests/trace/"] as const;
+const SCOPE = [
+  "packages/core/tests/context/",
+  "packages/core/tests/trace/",
+  "packages/core/tests/memory/",
+  "packages/core/tests/checkpoint/",
+] as const;
 
 /** 在指定 HOME 下跑一批测试，返回那个假家目录里出现的 `.sid-code/` 子路径。 */
 async function runWithFakeHome(
@@ -111,7 +124,16 @@ describe("运行时落盘门禁：受检测试不得写真实家目录的长留 
       //
       // 这里列 sink 名而非"假家目录必须为空"：preload 兜底本身会在临时目录创建
       // 一些无害路径，要求全空会让门禁变成噪音源，最后被人加 `|| true` 绕过。
-      const FORBIDDEN_SINKS = ["trajectories", "session-index.jsonl"] as const;
+      // 2026-08-16 加入 projects / checkpoints：SCOPE 扩到 memory/ 与 checkpoint/ 之后，
+      // 不同步加 sink 名的话，新纳入的两个目录等于白扫 —— 它们的污染写的是
+      // `projects/<哈希>/memory/` 与 `checkpoints/<sessionId>/`，一个都不落在
+      // trajectories/ 或 session-index.jsonl 下。
+      const FORBIDDEN_SINKS = [
+        "trajectories",
+        "session-index.jsonl",
+        "projects",
+        "checkpoints",
+      ] as const;
       const hit = FORBIDDEN_SINKS.filter((s) => leaked.includes(s));
       expect(
         hit.length > 0,
@@ -167,6 +189,52 @@ describe("运行时落盘门禁：受检测试不得写真实家目录的长留 
           `门禁失效：探针明明抹掉了隔离并落盘，检测逻辑却没抓到。\n` +
             `假家目录 .sid-code/ 下：${leaked.join(", ") || "(空)"}\n` +
             `可能原因：HOME 重定向失效、或 getSidHome() 不再回落 homedir()。`,
+        ).toBe(true);
+      } finally {
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test("门禁自证 2：构造即落盘（CheckpointManager）也必须被抓到", async () => {
+    // 上一条自证走的是 persistLargeOutput —— 一个"名字里就带落盘语义"的函数。
+    // 但 2026-08-16 扩 SCOPE 要覆盖的是另一种形态：**构造函数深处派生家目录路径**，
+    // 调用方源码里既没有 .sid-code 字样、也没有任何 write/append 名字。
+    // 不为这种形态单独自证，扩 SCOPE + 加 sink 名这两步就都是没验证过的。
+    //
+    // 实测（未加断言前）：本探针 `0 fail`，同时假家目录里出现 `checkpoints`
+    // —— 全绿而污染，正是本门禁存在的理由。
+    const probeDir = mkdtempSync(
+      join(REPO_ROOT, "packages", "core", "tests", "runtime-gate-ctor-probe-"),
+    );
+    const probeFile = join(probeDir, "probe.test.ts");
+    mkdirSync(probeDir, { recursive: true });
+    writeFileSync(
+      probeFile,
+      [
+        `import { test, expect } from "bun:test";`,
+        `import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";`,
+        `test("探针：抹掉隔离后构造 CheckpointManager（本用例故意全绿而污染）", async () => {`,
+        `  delete process.env.SID_CONFIG_DIR;`,
+        `  const m = new CheckpointManager("runtime-gate-ctor-probe", { enabled: true });`,
+        `  await m.init();`,
+        `  expect(true).toBe(true);`,
+        `});`,
+      ].join("\n"),
+    );
+
+    try {
+      const rel = probeFile.replace(REPO_ROOT + "/", "./");
+      const { leaked, exitCode, fakeHome } = await runWithFakeHome([rel]);
+      try {
+        expect(exitCode, "探针本应通过（它根本没断言落盘位置）").toBe(0);
+        expect(
+          leaked.includes("checkpoints"),
+          `门禁失效：探针抹掉隔离后 new CheckpointManager 就该在假家目录留下 checkpoints/，\n` +
+            `但检测逻辑没抓到。假家目录 .sid-code/ 下：${leaked.join(", ") || "(空)"}\n` +
+            `可能原因：FORBIDDEN_SINKS 少了 "checkpoints"、或 CheckpointManager 不再于 init 时建目录。`,
         ).toBe(true);
       } finally {
         rmSync(fakeHome, { recursive: true, force: true });

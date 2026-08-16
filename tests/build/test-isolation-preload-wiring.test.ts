@@ -13,8 +13,21 @@
  * `~/.sid-code/`。这正是 2026-08-03 那次「单测把 6 万行假数据灌进 cache-breaks.jsonl
  * 且全绿」事故的复发条件。
  *
- * 修法是给每个含 tests/ 的包放一份 `bunfig.toml` 指回根的预载文件。本门禁断言那份
- * 接线**始终存在且指对**——新增一个包、或有人清理"看起来重复"的 bunfig 时会红。
+ * 修法是给每个**能独立跑 `bun test` 的包**放一份 `bunfig.toml` 指回根的预载文件。
+ * 本门禁断言那份接线**始终存在且指对**——新增一个包、或有人清理"看起来重复"的
+ * bunfig 时会红。
+ *
+ * ## 判据为什么是「包内有 *.test.ts」而不是「包内有 tests/ 目录」（2026-08-16 修正）
+ *
+ * 原判据写的是 `existsSync(packages/<pkg>/tests/)`，抄的是上一段那句"给每个含 tests/
+ * 的包放一份 bunfig"的**字面**。实测代价：`packages/eval-framework/` 的 4 个测试
+ * 平铺在 `core/`、`sandbox/`、`graders/` 下，没有 `tests/` 目录 —— 于是整个包被门禁
+ * **跳过**，且确实没有 bunfig。`cd packages/eval-framework && bun test` 读不到根
+ * bunfig → 兜底消失 → 直接写用户真实 `~/.sid-code/`，而门禁一路绿灯。
+ *
+ * 真正要防的是"任何能独立跑 bun test 的包"，与测试文件摆在哪个子目录无关。
+ * 所以判据改为**递归找 `*.test.ts`**（跳过 node_modules）。这条修正本身也是
+ * 「门禁判据抄了文档措辞、而非抄了它要防的事」的一个实例。
  *
  * ## 为什么不能只靠"跑一次测试看绿"
  *
@@ -23,20 +36,45 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const PRELOAD_FILE = join(REPO_ROOT, "tests", "preload-isolate-sid-home.ts");
 
-/** 收集所有含 tests/ 目录的 package（即需要自带 bunfig 的包）。 */
+/**
+ * 包内是否存在任意 `*.test.ts`（递归，跳过 node_modules）。
+ *
+ * 判据刻意**不看目录名**：测试摆在 `tests/` 还是平铺在 `core/`、`sandbox/` 下，
+ * 对「能不能 `cd` 进去跑 bun test」毫无影响 —— 而后者才是兜底失效的条件。
+ * 找到第一个即返回（不必数全量，只需知道"有没有"）。
+ */
+function hasTestFile(dir: string): boolean {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false; // 无权限/已删除，按"无测试"处理
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      // node_modules 里全是依赖自带的测试，不是本包的；扫进去既慢又会误判
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      if (hasTestFile(join(dir, entry.name))) return true;
+    } else if (entry.name.endsWith(".test.ts")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 收集所有含测试文件的 package（即能独立跑 bun test、需要自带 bunfig 的包）。 */
 function packagesWithTests(): string[] {
   const packagesRoot = join(REPO_ROOT, "packages");
-  return readdirSync(packagesRoot)
-    .filter((name) => {
-      const testsDir = join(packagesRoot, name, "tests");
-      return existsSync(testsDir) && statSync(testsDir).isDirectory();
-    })
+  return readdirSync(packagesRoot, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .filter((name) => hasTestFile(join(packagesRoot, name)))
     .sort();
 }
 
@@ -63,11 +101,26 @@ describe("隔离兜底接线（P1-2 测试分包后的防复发门禁）", () =>
   });
 
   test("扫描面非空——包目录改名/结构变动导致空扫时本门禁不得静默通过", () => {
-    // 迁移后至少 core / cli / shared / tui-renderer 四个包有 tests/
-    expect(packagesWithTests().length).toBeGreaterThanOrEqual(4);
+    // 迁移后至少 core / cli / shared / tui-renderer / eval-framework 五个包有测试文件。
+    // eval-framework 是判据从"有 tests/ 目录"改成"有 *.test.ts"后新纳入的那个
+    // （它的 4 个测试平铺在 core/、sandbox/、graders/ 下，旧判据整包跳过）。
+    expect(packagesWithTests().length).toBeGreaterThanOrEqual(5);
   });
 
-  test("每个含 tests/ 的 package 都有 bunfig.toml 且 preload 指向根预载文件", () => {
+  test("判据自证：eval-framework 这类无 tests/ 目录的包必须被扫到", () => {
+    // 这条是对上一次漏网的定点防复发。判据一旦被改回"看 tests/ 目录存在"，
+    // 本条立刻红 —— 而只靠上面那个 >= 5 的下限，改回旧判据后新增任意一个
+    // 带 tests/ 的包就能把数字凑够，漏网会再次静默。
+    const pkgs = packagesWithTests();
+    expect(existsSync(join(REPO_ROOT, "packages", "eval-framework", "tests"))).toBe(false);
+    expect(
+      pkgs,
+      `eval-framework 有 4 个 *.test.ts（平铺在 core/、sandbox/、graders/ 下）但没有 tests/ 目录。\n` +
+        `它必须在扫描面内 —— 漏掉它就等于允许 \`cd packages/eval-framework && bun test\` 写用户真实 ~/.sid-code/。`,
+    ).toContain("eval-framework");
+  });
+
+  test("每个含 *.test.ts 的 package 都有 bunfig.toml 且 preload 指向根预载文件", () => {
     const missing: string[] = [];
     const misconfigured: Array<{ pkg: string; preloads: string[] }> = [];
 
@@ -87,7 +140,7 @@ describe("隔离兜底接线（P1-2 测试分包后的防复发门禁）", () =>
 
     expect(
       missing,
-      `以下 package 有 tests/ 但缺 bunfig.toml —— 在包内跑 \`bun test\` 时读不到根 bunfig，\n` +
+      `以下 package 有 *.test.ts 但缺 bunfig.toml —— 在包内跑 \`bun test\` 时读不到根 bunfig，\n` +
         `隔离兜底失效，测试会写用户真实 ~/.sid-code/（且全绿，不会有任何断言失败）。\n` +
         `修法：在包根建 bunfig.toml，内容为\n` +
         `  [test]\n  preload = ["../../tests/preload-isolate-sid-home.ts"]\n` +

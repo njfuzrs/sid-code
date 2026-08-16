@@ -26,6 +26,14 @@
  * 见 `tests/build/no-real-trajectory-writes-runtime.test.ts`（重定向 HOME 跑子进程，
  * 再看那个假家目录有没有被写）。两道门禁互补，不要拿一个去替代另一个。
  *
+ * 2026-08-16 补充的一条反例，说明「加白名单」这个动作本身的局限：
+ * `MemoryStore` / `CheckpointManager` 被补进 WRITING_EXPORTS 之后，静态扫描能抓到
+ * 「测试 import 了它们却没声明隔离」，但抓不到「某个上层 API 内部 new 了它们」。
+ * 白名单是**穷举式**防线，每漏一个类就多一个缺口；运行时门禁是**判据式**防线，
+ * 不依赖穷举。所以扩白名单只是补当下这两个已知洞，
+ * 真正的结构性覆盖靠 `tests/build/no-real-trajectory-writes-runtime.test.ts`
+ * 的 SCOPE 数组（已把 memory/ 与 checkpoint/ 纳入）。
+ *
  * 判据（源自 docs/bugfixes/todo/20260803-单测污染用户遥测数据-隔离缺口根治方案.md §2.4）：
  *   只要一个函数除返回值外还有「写用户家目录」这种进程外副作用，
  *   调它的测试就必须显式隔离。
@@ -53,6 +61,24 @@ import { getSidHome } from "@sid-code/core/config/paths.ts";
  *   唯一理由是"轨迹被 LRU 删掉后指标还在"，即它是设计上**永不自动清理**的长期
  *   趋势底座。灌进去的假行会永久留在里面，且正是 release-over-release 曲线的输入。
  *
+ * - MemoryStore / CheckpointManager / getCheckpointManager：**构造即落盘**的类
+ *   （2026-08-16 新增）。它们与上面 7 个函数形态不同——不是"名字里带 write 的函数"，
+ *   而是构造函数深处派生出真实家目录路径：
+ *     · `new MemoryStore(projectRoot)` → `store.ts:298 getAutoMemPath(projectRoot)`
+ *       → `memory/paths.ts:157 join(projectsRoot(), sanitizeProjectKey(root), "memory")`。
+ *       注意 `projectsRoot()` 读 SID_CONFIG_DIR，**与传入的 projectRoot 无关** ——
+ *       所以"把 projectRoot 指向 tmpdir"看着像隔离，实际只是把 tmpdir 路径当作项目
+ *       标识哈希成目录名，照样写进真实 `~/.sid-code/projects/`。
+ *     · `new CheckpointManager(sessionId)` → 写 `sidPaths.checkpoints(sessionId)`。
+ *
+ *   实测存量后果：`~/.sid-code/projects/` 下 2962 个 `…-sid-mem-test-<rand>` 目录、
+ *   `checkpoints/` 下 4545 个 `test-session-<ts>-<rand>` 目录（约 40MB）。
+ *   目录名里那串被 sanitize 的 tmpdir 路径，本身就是"测试以为自己在 tmpdir、
+ *   实际写在家目录"的物证。
+ *
+ *   ⚠ 这两个是**按名字**能抓到的最外层入口，不代表静态扫描覆盖了它们的全部落盘路径。
+ *   真正的兜底是运行时门禁（见下方"本门禁抓不到什么"）。
+ *
  * 注：checkResponseForCacheBreak 刻意**不在**此列——它只做检测与归因，
  * 落盘由主循环（query/loop.ts:2453）另行调 recordCacheBreak 完成，
  * 实测调它不写盘。把它加进来会制造假阳性。
@@ -67,6 +93,9 @@ const WRITING_EXPORTS = [
   "pruneUsageLedger",
   "upsertSessionIndex",
   "pruneSessionIndex",
+  "MemoryStore",
+  "CheckpointManager",
+  "getCheckpointManager",
 ] as const;
 
 /**
@@ -161,10 +190,15 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
       }
     }
 
-    // 已知调用方至少 4 个（cache-detection / clear-resets-cache-state /
-    // cache-telemetry-rotation / usage-ledger）。若正则或导出名漂移导致一个都匹配不上，
-    // 这条会先失败，而不是让门禁空转成绿灯。
-    expect(scanned).toBeGreaterThanOrEqual(4);
+    // 已知调用方至少 8 个（cache-detection / clear-resets-cache-state /
+    // cache-telemetry-rotation / usage-ledger 四个遥测类，
+    // + memory/store、tool/memory、checkpoint/manager、checkpoint/eviction 等构造即落盘类）。
+    // 若正则或导出名漂移导致一个都匹配不上，这条会先失败，而不是让门禁空转成绿灯。
+    //
+    // ⚠ 这个下限**刻意低于实测值**（实测 11）：写成精确相等会让「新增一个已正确隔离的
+    // 测试」也把门禁弄红，逼人来改数字，最后被人干脆删掉这条断言。它要防的只是
+    // "一个都没匹配上"这种空转成绿灯，不是锁定当前文件数。
+    expect(scanned).toBeGreaterThanOrEqual(8);
 
     if (violations.length > 0) {
       const detail = violations
@@ -176,9 +210,18 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
             ? ["usage-ledger.jsonl", "SID_CODE_USAGE_LEDGER"]
             : v.usedExport.includes("SessionIndex")
               ? ["session-index.jsonl", "SID_CODE_SESSION_INDEX"]
-              : ["cache-breaks.jsonl", "SID_CODE_CACHE_BREAKS"];
+              : // MemoryStore / Checkpoint 两类没有专用重定向变量，只能整体改配置根目录。
+                // 指一个不存在的 SID_CODE_MEMORY_DIR 会让人白改一轮、门禁照样红。
+                v.usedExport === "MemoryStore"
+                ? ["projects/<项目哈希>/memory/", "SID_CONFIG_DIR"]
+                : v.usedExport.includes("Checkpoint")
+                  ? ["checkpoints/<sessionId>/", "SID_CONFIG_DIR"]
+                  : ["cache-breaks.jsonl", "SID_CODE_CACHE_BREAKS"];
           const [sink, marker] = sinkAndMarker;
-          return `  - ${v.file}（用了 ${v.usedExport} → 写 ~/.sid-code/${sink}，需设 ${marker} 或 SID_CONFIG_DIR）`;
+          // 专用变量与 SID_CONFIG_DIR 相同时不重复印两遍（"需设 SID_CONFIG_DIR 或
+          // SID_CONFIG_DIR" 读起来像提示自身出了 bug，会让人怀疑整条指引的可信度）。
+          const how = marker === "SID_CONFIG_DIR" ? marker : `${marker} 或 SID_CONFIG_DIR`;
+          return `  - ${v.file}（用了 ${v.usedExport} → 写 ~/.sid-code/${sink}，需设 ${how}）`;
         })
         .join("\n");
       throw new Error(
