@@ -396,11 +396,19 @@ export class AnthropicProvider implements Provider {
                 : layer === "overall"
                   ? "turn_hard_timeout"
                   : "idle_timeout";
+            // threshold_ms 必须报**该层实际配进 lifecycle 的那个值**，不是 preset 常量。
+            //
+            // 上面的 lifecycle 配置里，content_progress 与 overall 取的是
+            // `anthropicStreamTimeouts.*`（可被 SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS /
+            // SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS 覆盖），只有 idle 才是 preset 常量。
+            // 原来三层一律读 preset：运维设了那两个 env 之后，超时事件报的阈值与真实
+            // 触发阈值不符，且**没有任何信号提示它不符** —— 排查的人会拿着一个从未生效过的
+            // 数字去核对时间线。归因层的数字与判据脱节，是本仓反复记的那类缺陷。
             const threshold =
               layer === "content_progress"
-                ? LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs
+                ? anthropicStreamTimeouts.contentProgressTimeoutMs
                 : layer === "overall"
-                  ? LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs
+                  ? anthropicStreamTimeouts.overallTimeoutMs
                   : LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs;
             emitTimeoutFired(currentSseDumpContext().turnIndex, timeoutLayer, {
               threshold_ms: threshold,

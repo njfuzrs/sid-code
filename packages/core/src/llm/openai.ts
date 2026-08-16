@@ -1093,8 +1093,19 @@ export class OpenAIProvider implements Provider {
         onTimeout: (layer) => {
           // parseSSE 的字节级超时是第一道防线；这里的事件级超时是叠加兜底。
           try {
+            // threshold_ms 必须报**触发的那一层自己的**阈值。
+            //
+            // 本路径两层取的是不同的数：idle 用 `preset.overallTimeoutMs`（刻意放宽，
+            // 见上方 idleTimeoutMs 的注释），overall 用 `streamTimeouts.overallTimeoutMs`
+            // （可被 SID_CODE_OPENAI_OVERALL_TIMEOUT_MS 覆盖）。原来一律报前者，于是
+            // 运维一旦设了那个 env，overall 触发时报的阈值就与真实触发值不符 —— 排查的人
+            // 拿着 600000 去对一条其实 120s 就断了的流，只会得出「看着没超时却断了」的
+            // 错误结论。错误归因比没有归因更坏，这是本仓反复记的教训。
             emitTimeoutFired(obsIndex, layer === "overall" ? "turn_hard_timeout" : "idle_timeout", {
-              threshold_ms: LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
+              threshold_ms:
+                layer === "overall"
+                  ? streamTimeouts.overallTimeoutMs
+                  : LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
               model: attrModel,
             });
           } catch {
