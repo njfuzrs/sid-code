@@ -193,6 +193,24 @@ export interface BackfillResult {
   oldCost?: number;
   /** events 重算 cost */
   recomputedCost?: number;
+  /**
+   * 本次扫描对 `session.traj` 的**损坏判定结论**，供调用方补认领 session-index 的
+   * `traj_corrupt`（P2-14 的度量盲区）。
+   *
+   * - `true`：traj 存在但 `JSON.parse` 失败（情形 A'，下面会备份 + 重建）。
+   * - `false`：traj 存在且解析成功 —— 已检测、未损坏。
+   * - `undefined`：**没检测**（traj 文件不存在，或 events 里没有可重算事件而提前返回）。
+   *   不能兜底成 `false`：那会把「没检测」谎报成「已检测且未损坏」。
+   *
+   * 为什么这个结论必须**返回出去**而不是就地用完扔掉：本函数是崩溃会话
+   * （`kill -9` / OOM，SessionEnd 从未运行）**唯一**还会去读它 traj 的地方，
+   * 而它读完就把损坏文件重建了 —— 证据当场消失。不返回的话，这类会话的损坏状态
+   * 永久无人认领，而它们恰恰是最可能损坏的那批。
+   *
+   * ⚠ 这里报的是**修复前**的状态。重建成功后 traj 已经是好的，事后再去 parse
+   * 一律得到「未损坏」—— 所以损坏率只能在这一刻记账，过了就再也测不到。
+   */
+  trajCorrupt?: boolean;
 }
 
 /**
@@ -223,10 +241,14 @@ export function backfillTrajCost(
 
   const recomputed = recomputeCostFromEvents(sessionDir, availableModels);
   if (!recomputed) {
+    // 没有可重算事件就没往下走，也就**没读过 traj** → 不给损坏结论（不是 false）
     return { backfilled: false, reason: "events.jsonl 无可重算的 AfterModelRaw 事件" };
   }
 
   // ── 情形 A：session.traj 不存在 → 直接据 events 构造一份最小 traj ──
+  // 文件不存在**不算损坏**，也不算「已检测未损坏」：没有文件就没有可判的对象，
+  // 所以 trajCorrupt 留 undefined。把它算成 false 会把「连 traj 都没写出来」
+  // 混进损坏率的分母，那是另一个缺口（该由索引会话数 vs 轨迹会话数的断言去管）。
   if (!existsSync(trajPath)) {
     try {
       const minimalTraj = buildMinimalTrajFromRecompute(sessionDir, recomputed);
@@ -272,18 +294,28 @@ export function backfillTrajCost(
         backfilled: true,
         reason: "traj 损坏（不可解析），据 events 重算重建（原文件已备份 .corrupt）",
         recomputedCost: recomputed.totalCostUSD,
+        // ★ 损坏率的唯一记账时机：下一行代码起 traj 已被重建成好文件，
+        // 事后任何 parse 都只会得到「未损坏」。
+        trajCorrupt: true,
       };
     } catch (err2) {
-      return { backfilled: false, reason: `traj 损坏且重建失败: ${err2}` };
+      // 重建失败**不改变**「它确实是损坏的」这个事实 —— 损坏结论与修复成败无关，
+      // 混在一起会让「修不好的损坏」从损坏率里消失（越坏的越测不到）。
+      return { backfilled: false, reason: `traj 损坏且重建失败: ${err2}`, trajCorrupt: true };
     }
   }
 
+  // 走到这里说明 `JSON.parse` 成功了 —— 这是一次**真实的、结论为「未损坏」的检测**，
+  // 与增量行那种「没检测」有本质区别，所以下面每条返回都带 trajCorrupt: false。
+  // 别把它省掉：漏一条就等于在损坏率的分母上少一个健康样本，比值被抬高。
   const md = obj?.metadata;
-  if (!md) return { backfilled: false, reason: "traj 无 metadata" };
+  if (!md) return { backfilled: false, reason: "traj 无 metadata", trajCorrupt: false };
 
-  // 幂等：已补写过则跳过
+  // 幂等：已补写过则跳过。
+  // 注意 cost 补写幂等**不影响**损坏结论：cost 只需补一次，而「这次扫描时它是好的」
+  // 每次都是一个当场成立的观测，照常返回。
   if (md.cost_recomputed_from_events === true) {
-    return { backfilled: false, reason: "已补写过（幂等跳过）" };
+    return { backfilled: false, reason: "已补写过（幂等跳过）", trajCorrupt: false };
   }
 
   const oldCost = typeof md.total_cost_usd === "number" ? md.total_cost_usd : 0;
@@ -301,6 +333,7 @@ export function backfillTrajCost(
       reason: "traj cost 合理（≥ events 重算值），不覆盖",
       oldCost,
       recomputedCost: newCost,
+      trajCorrupt: false,
     };
   }
   if (newCost <= 0) {
@@ -309,6 +342,7 @@ export function backfillTrajCost(
       reason: "events 重算 cost 为 0，无需补写",
       oldCost,
       recomputedCost: newCost,
+      trajCorrupt: false,
     };
   }
 
@@ -343,6 +377,7 @@ export function backfillTrajCost(
       reason: isMissing ? "traj cost 缺失，据 events 补写" : "traj cost 偏低，据 events 校正",
       oldCost,
       recomputedCost: newCost,
+      trajCorrupt: false,
     };
   } catch (err) {
     return {
@@ -350,6 +385,7 @@ export function backfillTrajCost(
       reason: `写回 traj 失败: ${err}`,
       oldCost,
       recomputedCost: newCost,
+      trajCorrupt: false,
     };
   }
 }

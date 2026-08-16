@@ -3052,12 +3052,28 @@ export class App {
         // 这里据最接近 provider 的原始 usage 做 best-effort 补偿（幂等：补写后打标记，下次跳过）。
         try {
           const { backfillTrajCost } = await import("@sid-code/core/trace/cost-recompute.ts");
+          // P2-14：同一次扫描顺带**认领**这些会话的 traj 损坏状态。
+          //
+          // 崩溃会话（kill -9 / OOM）永远没有 SessionEnd，索引里只有增量行，而增量行
+          // 不跑损坏检测 —— 于是最可能损坏的这批会话的损坏状态此前永久无人认领，
+          // 「轨迹损坏率」在最该报警的场景下系统性偏低。
+          // 这里是唯一可行的认领点：backfillTrajCost 本来就要读它们的 traj 并当场判损坏，
+          // 而且**判完立刻把损坏文件重建了** —— 过了这一刻再也测不到（事后 parse 必得
+          // 「未损坏」）。所以结论必须在这一轮就落进索引。
+          const { claimTrajCorrupt } = await import("@sid-code/core/trace/session-index.ts");
           const sessionsRoot = join(sidPaths.trajectories(), "sessions");
           let backfilledCount = 0;
+          let claimedCorrupt = 0;
           for (const s of stale) {
             if (s.is_process_alive) continue; // 进程还活着，可能正常会话仍在跑，不动
             const sessionDir = join(sessionsRoot, s.session_id);
             const result = backfillTrajCost(sessionDir, this.config.availableModels);
+            // 只在真的检测过时认领（undefined = 没读到 traj，不能当成"未损坏"）。
+            // claimTrajCorrupt 自己保证不覆盖 SessionEnd 的权威结论、不新建行。
+            if (typeof result.trajCorrupt === "boolean") {
+              const claimed = claimTrajCorrupt(s.session_id, result.trajCorrupt);
+              if (claimed && result.trajCorrupt) claimedCorrupt++;
+            }
             if (result.backfilled) {
               backfilledCount++;
               log.info(
@@ -3070,6 +3086,14 @@ export class App {
             log.warn(
               "DIAG",
               `§6.2：已为 ${backfilledCount} 个僵尸会话据 events.jsonl 重算补写 traj cost`,
+            );
+          }
+          // 只在 >0 时报：损坏是稀疏事件，"本次认领 0 条损坏"每次启动打一行就是噪声，
+          // 而它的长期趋势由北极星快照的损坏率负责呈现（那里 0 也会显式打印）。
+          if (claimedCorrupt > 0) {
+            log.warn(
+              "DIAG",
+              `P2-14：${claimedCorrupt} 个崩溃会话的 session.traj 检出损坏，已记入 session-index`,
             );
           }
         } catch (err) {

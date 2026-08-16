@@ -79,6 +79,10 @@ function idx(over: Partial<SessionIndexEntry> = {}): SessionIndexEntry {
     compactions: 0,
     defense_triggered: false,
     traj_corrupt: false,
+    // 默认造「有终态、跑过 digest 的权威行」，所以带 detected_by ——
+    // 它才是"已检测"的判据。不带就等价于修复前那种谎报 false 的存量行，
+    // 拿它验新口径等于验错对象。要造增量行 / 存量行请显式传 undefined。
+    traj_corrupt_detected_by: "session_end",
     ...over,
   };
 }
@@ -294,6 +298,114 @@ describe("northstar · 缓存命中率口径（与 /cache 视图共用聚合器�
     expect(s.cheaper.cache_hit_rate.n).toBe(0);
     const a = s.assertions.find((x) => x.name.startsWith("缓存命中率的 n"));
     expect(a?.ok).toBe(true);
+  });
+});
+
+// ─── P2-14：轨迹损坏率的分母口径（未检测行既不进分子也不进分母） ───
+
+/**
+ * 本组锁的是一个实测到的度量盲区：增量行不跑损坏检测却落 `traj_corrupt: false`，
+ * 而没有 SessionEnd 的会话（崩溃 / kill -9 / OOM）**只有**增量行 ——
+ * 它们恰恰是最可能留下损坏轨迹的一批。旧口径把它们当"未损坏"塞进分母，
+ * 于是崩溃越多、损坏率被稀释得越低：指标在最该报警时反而更好看。
+ */
+describe("P2-14 · 轨迹损坏率分母排除未检测行", () => {
+  /** 增量行形态：没跑过检测，两个字段都不存在 */
+  const incrementalRow = (id: string) =>
+    idx({
+      session_id: id,
+      exit_status: "incomplete",
+      traj_corrupt: undefined,
+      traj_corrupt_detected_by: undefined,
+    });
+
+  /** 修复前的存量行形态：有 false 但说不出是谁检的 */
+  const legacyRow = (id: string) =>
+    idx({ session_id: id, traj_corrupt: false, traj_corrupt_detected_by: undefined });
+
+  test("增量行不进分母：1 损坏 + 3 已检测 + 6 增量 → 1/4 而非 1/10", () => {
+    const s = snap(
+      [
+        idx({ session_id: "bad", traj_corrupt: true }),
+        idx({ session_id: "ok1" }),
+        idx({ session_id: "ok2" }),
+        idx({ session_id: "ok3" }),
+        ...Array.from({ length: 6 }, (_, i) => incrementalRow(`crash${i}`)),
+      ],
+      [],
+    );
+    expect(s.foundation.traj_corrupt_rate.value).toBeCloseTo(0.25, 9);
+    expect(s.foundation.traj_corrupt_rate.n).toBe(4);
+    // 对照口径 = 旧算法，必须**更低** —— 这个差值就是盲区大小
+    expect(s.trajCorruptCaliber.rateCountingUndetectedAsClean).toBeCloseTo(0.1, 9);
+  });
+
+  test("排除量落进快照结构，三类行分开计数", () => {
+    const s = snap(
+      [
+        idx({ session_id: "bad", traj_corrupt: true }),
+        idx({ session_id: "ok" }),
+        incrementalRow("c1"),
+        incrementalRow("c2"),
+        legacyRow("l1"),
+      ],
+      [],
+    );
+    const c = s.trajCorruptCaliber;
+    expect(c.detectedRows).toBe(2);
+    expect(c.corruptRows).toBe(1);
+    expect(c.undetectedRows).toBe(2);
+    expect(c.legacyUnattributedRows).toBe(1);
+  });
+
+  test("存量行（有 false 无 detected_by）不进分母 —— 那个 false 不可信", () => {
+    // 判据是**字段缺失**而非版本号比较：版本号比较要维护一张"哪版起可信"的表，
+    // 而字段在不在是自解释的事实。也不改用户已落盘的数据。
+    const s = snap([legacyRow("l1"), legacyRow("l2")], []);
+    expect(s.foundation.traj_corrupt_rate.value).toBeNull();
+    expect(s.foundation.traj_corrupt_rate.n).toBe(0);
+    expect(s.trajCorruptCaliber.legacyUnattributedRows).toBe(2);
+  });
+
+  test("全是增量行时损坏率为 null，绝不落 0%", () => {
+    // 0% 会被读成"检查过了，一个都没坏"，而真相是"一个都没检查过"。
+    // 这两个结论在告警上是相反的。
+    const s = snap([incrementalRow("c1"), incrementalRow("c2")], []);
+    expect(s.foundation.traj_corrupt_rate.value).toBeNull();
+    expect(s.trajCorruptCaliber.undetectedRows).toBe(2);
+  });
+
+  test("n 不虚报：一致性断言锁住 n === 已检测行数", () => {
+    // 虚报的 n 会让这个数绕过版本对比的样本不足护栏（MIN_SAMPLES_FOR_CONCLUSION=20），
+    // 在两个实际只有 1 个样本的快照之间算出几十个百分点的"改善"。
+    const s = snap(
+      [idx({ session_id: "ok" }), ...Array.from({ length: 30 }, (_, i) => incrementalRow(`c${i}`))],
+      [],
+    );
+    const a = s.assertions.find((x) => x.name.startsWith("轨迹损坏率的 n"));
+    expect(a?.ok).toBe(true);
+    expect(s.foundation.traj_corrupt_rate.n).toBe(1);
+    expect(s.foundation.traj_corrupt_rate.n).not.toBe(31);
+  });
+
+  test("source 串如实反映新口径（口径变了描述必须跟着变）", () => {
+    const src = snap([idx()], []).foundation.traj_corrupt_rate.source;
+    expect(src).toContain("session-index.jsonl");
+    expect(src).toContain("已检测");
+    expect(src).toContain("增量行");
+  });
+
+  test("口径账无条件渲染在损坏率下面，排除量为 0 时也说", () => {
+    const text = renderSnapshot(snap([idx()], []));
+    expect(text).toContain("分母=已检测");
+    expect(text).toContain("排除未检测 0 行");
+    expect(text).toContain("对照:");
+  });
+
+  test("有未检测行时额外给出一条 ⚠ 说明它们不是「已确认没坏」", () => {
+    const text = renderSnapshot(snap([idx(), incrementalRow("c1")], []));
+    expect(text).toContain("排除未检测 1 行");
+    expect(text).toContain("从未跑过损坏检测");
   });
 });
 
