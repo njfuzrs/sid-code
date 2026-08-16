@@ -999,6 +999,42 @@ export class ModelFallback {
                 throw classified;
               }
 
+              // ── 重试耗尽 ──
+              //
+              // S4：这条出口此前**直接** tryFallback（换模型），完整绕过非流式降级。
+              //
+              // 为什么这是缺陷而不是设计：同一个传输层错误，形态不同则命运不同 ——
+              // 以 **throw** 形式到达的走下方 catch → 循环出口 → S4 能降级；
+              // 以**流内 `error` 事件**形式到达的走本分支 → 直接换模型。而「网关回
+              // text/html 错误页」这类 S4 存在理由的故障，在 `openai.ts` 里恰恰是
+              // yield 成 `type:"server_error", streamLevel:true` 的**事件**（见那里
+              // 「伪装成功的错误页」分支），也就是说 S4 最该生效的形态走的正是被绕过的那条路。
+              // 实测对照（同一个 `premature close`）：throw 路径降级 1 次、事件路径 0 次。
+              //
+              // 这与本文件已经修过一次的病同形：401 以「HTTP 200 + 流内 error 事件」到达，
+              // 导致 S5 配额发还在最常见的认证故障上失效（见上方 heldCooldownProbe 那段注释）。
+              // 同一条路径第二次咬人 —— 凡是「只在 catch 里做」的收尾动作，都要问一句
+              // 「流内 error 事件形态会不会绕过它」。
+              //
+              // 留档根因：本分支没走下方那两处赋值，不留档则 S4 的白名单读到的是
+              // **上一次**重试的 reason（或 undefined），判据就与本次失败无关了。
+              ctx.lastRetryError = classified.message;
+              ctx.lastRetryReason =
+                classified instanceof RetryableError ? classified.reason : undefined;
+
+              {
+                const degradeOutcome = { degraded: false };
+                yield* this.tryNonStreamingDegrade(
+                  primaryProvider,
+                  params,
+                  ctx,
+                  hasYieldedContent,
+                  signal,
+                  degradeOutcome,
+                );
+                if (degradeOutcome.degraded) return;
+              }
+
               yield* this.tryFallback(params, signal, ctx);
               return;
             }
