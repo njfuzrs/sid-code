@@ -18,22 +18,47 @@ import {
 } from "@sid-code/core/llm/retry-telemetry.ts";
 import type { StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
 
-/** RetryTelemetryEvent.type 的完整枚举（与 retry-telemetry.ts 的联合类型同步） */
-const ALL_EVENT_TYPES: RetryTelemetryEvent["type"][] = [
-  "retry",
-  "fallback",
-  "529_dropped",
-  "max_tokens_adjust",
-  "persistent_retry_wait",
-  "auth_refresh",
-  "stream_stall",
-  "stream_idle_timeout",
-  "stream_content_progress_timeout",
-  "stream_overall_timeout",
-  "stream_completed",
-];
+/**
+ * RetryTelemetryEvent.type 的完整枚举。
+ *
+ * ⚠️ 这里刻意用 `Record<RetryTelemetryEvent["type"], true>` 而不是数组字面量。
+ *
+ * 教训（本文件自己踩过）：原来是手写数组，于是它作为"反漂移哨兵"**自己漂移了**——
+ * 联合类型后来新增的 `non_streaming_degrade` / `retry_budget_exhausted` /
+ * `shared_cooldown_wait` 三类从未被加进来，哨兵长期只覆盖 11/14 类却始终全绿。
+ * 数组少一项在类型上完全合法（`T[]` 不要求穷尽），所以漏登记时 TS 一声不响。
+ *
+ * 换成以 type 为**键**的 Record 后，漏一个键就是编译期错误——把"记得同步"
+ * 从人的纪律变成类型系统的义务。这正是 PR-1 那条方法论（散写字面量收进 union
+ * 才能让写错变成编译错误）的同型应用。
+ */
+const EVENT_TYPE_TABLE: Record<RetryTelemetryEvent["type"], true> = {
+  retry: true,
+  fallback: true,
+  "529_dropped": true,
+  max_tokens_adjust: true,
+  persistent_retry_wait: true,
+  auth_refresh: true,
+  non_streaming_degrade: true,
+  retry_budget_exhausted: true,
+  shared_cooldown_wait: true,
+  stream_stall: true,
+  stream_idle_timeout: true,
+  stream_content_progress_timeout: true,
+  stream_overall_timeout: true,
+  stream_completed: true,
+};
+
+const ALL_EVENT_TYPES = Object.keys(EVENT_TYPE_TABLE) as RetryTelemetryEvent["type"][];
 
 describe("T8.12 — defaultTelemetryHandler 覆盖所有事件类型", () => {
+  test("哨兵自身覆盖 14 类（漏登记时先在此处红）", () => {
+    // 这条断言与上面 Record 的穷尽性是**两道不同的门**，都要留：
+    // Record 拦"漏写键"（编译期），本断言拦"类型自身被删/被改少"（运行期）——
+    // 后者在删除一个 type 时会让数字对不上，逼人显式确认那是刻意删除。
+    expect(ALL_EVENT_TYPES.length).toBe(14);
+  });
+
   test("每个 type 都不抛异常", () => {
     for (const type of ALL_EVENT_TYPES) {
       const event: RetryTelemetryEvent = {
