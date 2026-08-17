@@ -108,6 +108,34 @@ export async function initTelemetrySystem(
       probe.registerHooks(hookSystem);
       result.telemetryProbe = probe;
       log.info("TELEMETRY", "TelemetryHookProbe 已注册");
+
+      // ── §三 P0-2：重建上一批未正常收尾的会话根 span ──
+      //
+      // 位置有两条硬约束，都不是风格问题：
+      //  1. 必须在**本会话 fire SessionStart 之前** —— 那之后本会话自己的标记就落盘了，
+      //     会被当成残留重建一遍。pid 存活判定挡得住，但不该依赖兜底。
+      //     调用点在 app.ts 里被 initTelemetrySystem / fireSessionStartEvent 的顺序
+      //     保证（那条时序不变量由 PR1 建立，见 app.ts 的注释与
+      //     cli/tests/app/session-start-probe-wiring.test.ts 的静态门禁）。
+      //  2. 必须在 `probe.registerHooks` 之后没有强制要求，但放这里能保证
+      //     「遥测确实启用」——bus 未启用时 enqueueSpan 直接 return，扫一遍纯属白费。
+      try {
+        const { recoverPendingRootSpans } = await import("../telemetry/root-span-recovery.ts");
+        const bus = getTelemetryBus();
+        const r = recoverPendingRootSpans({
+          enqueue: (span) => bus.enqueueSpan(span),
+          availableModels: config.availableModels,
+        });
+        if (r.recovered > 0 || r.pruned > 0) {
+          log.debug(
+            "TELEMETRY",
+            `根 span 重建: 重建 ${r.recovered} / 跳过存活 ${r.skippedAlive} / 清理过期 ${r.pruned}`,
+          );
+        }
+      } catch (err: any) {
+        // 重建失败只是少了历史会话的根 span，绝不影响本会话启动
+        log.debug("TELEMETRY", `根 span 重建跳过: ${err?.message}`);
+      }
     }
 
     // 零依赖事件 API:绑定 Sink + 注册后端(spec 17 §3.1 / §3.2)

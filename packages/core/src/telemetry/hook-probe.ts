@@ -12,6 +12,7 @@ import type { TokenMeter } from "./metrics/token-meter.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
 import { addRequestContent, addResponseContent, addToolContent } from "./content-tracing.ts";
+import { clearPendingRootSpan, writePendingRootSpan } from "./root-span-recovery.ts";
 import { HookEventName } from "../hook/types.ts";
 import type {
   HookInput,
@@ -47,6 +48,15 @@ export class TelemetryHookProbe {
 
   /** invoke_agent 子 span 暂存：key = agent_id（子代理 start/stop 配对） */
   private subagentSpans = new Map<string, SpanHandle>();
+
+  /**
+   * §三 P0-2：本会话「欠一次 end 的根 span」标记所用的轨迹会话 id。
+   *
+   * 与 `config.sessionId` 可能不同（resume 时是 `resumed_from`），所以要单独记住 ——
+   * 删标记时必须用与写时**完全相同**的 key，否则正常收尾的会话也会残留标记，
+   * 下次启动重建出一个重复的根。
+   */
+  private pendingRootSessionId: string | undefined;
 
   /** Harness 扩展点：Span 属性注入器列表 */
   private spanEnrichers: SpanEnricher[] = [];
@@ -161,15 +171,59 @@ export class TelemetryHookProbe {
 
   private handleSessionStart(input: SessionStartInput): void {
     // 创建顶层 invoke_agent span
-    this.bus.startTrace();
-    this.agentSpan = this.bus.startSpan("invoke_agent", `invoke_agent ${this.config.model}`, {
+    const traceContext = this.bus.startTrace();
+    const name = `invoke_agent ${this.config.model}`;
+    const attributes: Attributes = {
       [ATTR.OPERATION_NAME]: "invoke_agent",
       [ATTR.AGENT_NAME]: "sid-code",
       [ATTR.CONVERSATION_ID]: this.config.sessionId,
       [ATTR.REQUEST_MODEL]: this.config.model,
       [ATTR.CWD]: input.cwd,
       ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
-    });
+    };
+    this.agentSpan = this.bus.startSpan("invoke_agent", name, attributes);
+
+    // ── §三 P0-2：落「这个根还欠一次 end」的标记 ──
+    //
+    // 根 span 只在下面 handleSessionEnd 里 end() 入队，而实测 54% 的会话没有
+    // SessionEnd（50 : 23），39% 不是正常收尾。也就是说会话级根节点在最不可靠的
+    // 时刻才落盘，而可观测性最需要看的恰好是没正常结束的那些会话。
+    //
+    // 标记里存的是**身份**（traceId / spanId），不是统计值。理由见
+    // root-span-recovery.ts 头部：events.jsonl 里没有 span 身份，而子 span 早已把
+    // 运行时这个 spanId 写成自己的 parentSpanId 落盘了（实测 traces.jsonl 有 680 个
+    // 解析不到父的 parentSpanId）。只从 events 重建、给根一个新 spanId 的话，
+    // 孤儿子 span 照旧悬空、盘上再多一个谁也不挂的根 —— PR2 的判据①②依然全红。
+    //
+    // 会话正常收尾时标记被删（见 handleSessionEnd），所以正常路径零额外落盘。
+    this.pendingRootSessionId = this.resolveTraceSessionId(input);
+    try {
+      writePendingRootSpan({
+        session_id: this.pendingRootSessionId,
+        trace_id: traceContext.traceId,
+        span_id: this.agentSpan.spanId,
+        name,
+        start_time: Date.now(),
+        attributes,
+        pid: process.pid,
+      });
+    } catch {
+      // 标记写不出去只意味着「这个会话崩了就没有根 span」，退化到改动前的行为，
+      // 绝不能让采集设施本身成为启动失败的原因。
+    }
+  }
+
+  /**
+   * 标记要用**轨迹会话 id**（`trajectories/sessions/<它>/` 的目录名），因为重建时
+   * 要按它去找 events.jsonl。
+   *
+   * resume 续接时该目录名是 `resumed_from`（被恢复的旧 id）而非本进程 id ——
+   * 与 `trace/collector.ts:handleSessionStart` 的 `traceSessionId` 同口径。
+   * 用错就会按新 id 去找目录、找不到、静默退化成「无素材重建」。
+   */
+  private resolveTraceSessionId(input: SessionStartInput): string {
+    if (input.source === "resume" && input.resumed_from) return input.resumed_from;
+    return this.config.sessionId;
   }
 
   private handleBeforeModel(input: BeforeModelInput): void {
@@ -390,5 +444,18 @@ export class TelemetryHookProbe {
     }
     this.agentSpan?.end();
     this.agentSpan = undefined;
+
+    // §三 P0-2：根 span 已入队 → 删标记，下次启动无需重建。
+    //
+    // ⚠ 必须在 `end()` **之后**：end() 是入队的唯一时机（bus.ts:101），
+    // 先删标记再入队意味着「入队失败」这条路径上根 span 与标记同时消失，
+    // 那个会话就永久没有根了。反过来（先入队后删）最坏只是重复落盘一条。
+    //
+    // 这里刻意不判 `enqueueSpan` 是否真落盘：bus 未启用时 enqueueSpan 直接 return，
+    // 但那种情况下重建也不会入队（同一个 bus），留着标记只是让下次启动白扫一遍。
+    if (this.pendingRootSessionId) {
+      clearPendingRootSpan(this.pendingRootSessionId);
+      this.pendingRootSessionId = undefined;
+    }
   }
 }

@@ -55,12 +55,23 @@
  * 显示 PASS。这条门禁抓的是它声称要抓的东西，不是自我感觉。
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
 import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { SpanData, SpanKind, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
+
+/**
+ * 落盘隔离（§三 P0-2 起必需）：`handleSessionStart` 会同步写「根 span 欠一次 end」
+ * 的标记到 `~/.sid-code/telemetry/pending-root-spans/`。本文件 fire 真实 SessionStart，
+ * 不隔离就往用户家目录灌测试标记，而断言照样全绿。
+ */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
+let testHome: string;
 
 // ============================================================
 // 检查器：三条结构性判据，各自返回违规明细（空数组 = 通过）
@@ -272,6 +283,9 @@ describe("span 树成形门禁（§0.3c）", () => {
   let probe: TelemetryHookProbe;
 
   beforeEach(() => {
+    testHome = mkdtempSync(join(tmpdir(), "sid-span-tree-home-"));
+    process.env.SID_CONFIG_DIR = testHome;
+
     const created = createEnabledBus();
     bus = created.bus;
     spans = created.spans;
@@ -280,6 +294,13 @@ describe("span 树成形门禁（§0.3c）", () => {
       provider: "anthropic",
       sessionId: "test-session",
     });
+  });
+
+  afterEach(() => {
+    // 恢复原值而非 delete：同进程多文件跑，delete 会抹掉 preload 的隔离兜底
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    rmSync(testHome, { recursive: true, force: true });
   });
 
   // ── 生产路径：跑真实探针，整棵树体检 ──

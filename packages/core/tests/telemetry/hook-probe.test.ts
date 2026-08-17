@@ -1,14 +1,27 @@
 /**
  * TelemetryHookProbe 单元测试
+ *
+ * ⚠ 落盘隔离（§三 P0-2 起必需）：`handleSessionStart` 现在会同步写一个
+ * 「根 span 欠一次 end」的标记到 `~/.sid-code/telemetry/pending-root-spans/`
+ * （见 telemetry/root-span-recovery.ts）。本文件大量 fire SessionStart，
+ * 不隔离就会往用户真实家目录灌测试标记 —— 而且**测试照样全绿**
+ * （标记写入是 fire-and-forget 且吞异常），正是 CONTRIBUTING.md 那条约定要防的形态。
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
 import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ATTR } from "@sid-code/core/telemetry/types.ts";
 import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
+
+/** 进程原有值（可能是 preload 设的兜底），afterEach 必须还回去而不是 delete */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
+let testHome: string;
 /** 收集 span 的 mock 导出器 */
 function createMockExporter() {
   const spans: SpanData[] = [];
@@ -29,6 +42,20 @@ function createEnabledBus() {
   bus.addExporter(exporter);
   return { bus, spans };
 }
+
+// 文件级隔离：放在 describe 之外，覆盖本文件全部用例（含下方 TokenMeter 那组）。
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), "sid-hook-probe-home-"));
+  process.env.SID_CONFIG_DIR = testHome;
+});
+
+afterEach(() => {
+  // 恢复原值而非无条件 delete：bun test 同进程跑多文件，直接删会把 preload
+  // 设的隔离兜底一起抹掉，后续文件就写进真实 ~/.sid-code 了。
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 // ============================================================
 // TelemetryHookProbe

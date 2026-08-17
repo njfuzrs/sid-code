@@ -79,11 +79,29 @@ import { getSidHome } from "@sid-code/core/config/paths.ts";
  *   ⚠ 这两个是**按名字**能抓到的最外层入口，不代表静态扫描覆盖了它们的全部落盘路径。
  *   真正的兜底是运行时门禁（见下方"本门禁抓不到什么"）。
  *
+ * - writePendingRootSpan / TelemetryHookProbe：**事件驱动即落盘**（§三 P0-2，
+ *   2026-08-17 新增）。这是第三种形态，与前两类都不同：
+ *     · `writePendingRootSpan` 是直白的落盘函数（写
+ *       `~/.sid-code/telemetry/pending-root-spans/<session>.json`），按名字就能抓。
+ *     · `TelemetryHookProbe` 更隐蔽 —— 构造它不落盘，**fire 一次 SessionStart 才落**
+ *       （`handleSessionStart` → `writePendingRootSpan`）。所以它既不是"名字带 write
+ *       的函数"，也不是"构造即落盘的类"，而是"喂它一个 hook 事件才落盘的类"。
+ *       把类名列进来是因为：测试里 `probe.registerHooks(hookSystem)` +
+ *       `fireSessionStartEvent` 这两步之间没有任何字面量提示会写盘。
+ *
+ *   顺带说明这个 sink 为什么必须隔离：标记的语义是「这个根 span 欠一次 end，
+ *   下次启动据 events.jsonl 重建」。测试灌进去的假标记会被**用户下一次真实启动**
+ *   扫到并当成崩溃会话重建，于是 `traces.jsonl` 里凭空多出若干
+ *   `invoke_agent claude-sonnet-4` 根 span —— 污染的正是 PR2 那三条判据要看的数据。
+ *
  * 注：checkResponseForCacheBreak 刻意**不在**此列——它只做检测与归因，
  * 落盘由主循环（query/loop.ts:2453）另行调 recordCacheBreak 完成，
  * 实测调它不写盘。把它加进来会制造假阳性。
  * 同理 readUsageLedger / dedupeBySession / readSessionIndex 是纯读，不在此列；
  * buildSessionIndexEntry 是纯函数（只组装对象、不落盘），也不在此列。
+ * `clearPendingRootSpan` / `recoverPendingRootSpans` 也不在此列：前者只删文件、
+ * 后者只读+删（重建出的 span 交给调用方 enqueue，自己不写盘），
+ * 都不会**新增**用户家目录里的内容。
  */
 const WRITING_EXPORTS = [
   "recordCacheBreak",
@@ -96,6 +114,8 @@ const WRITING_EXPORTS = [
   "MemoryStore",
   "CheckpointManager",
   "getCheckpointManager",
+  "writePendingRootSpan",
+  "TelemetryHookProbe",
 ] as const;
 
 /**
@@ -216,7 +236,17 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
                 ? ["projects/<项目哈希>/memory/", "SID_CONFIG_DIR"]
                 : v.usedExport.includes("Checkpoint")
                   ? ["checkpoints/<sessionId>/", "SID_CONFIG_DIR"]
-                  : ["cache-breaks.jsonl", "SID_CODE_CACHE_BREAKS"];
+                  : // §三 P0-2 的根 span 标记：同样没有专用变量，只能整体改配置根。
+                    // TelemetryHookProbe 要额外点明"fire SessionStart 才落盘"——
+                    // 否则被点名的人会去 probe 构造函数里找落盘、找不到就怀疑门禁误报。
+                    v.usedExport === "writePendingRootSpan"
+                    ? ["telemetry/pending-root-spans/", "SID_CONFIG_DIR"]
+                    : v.usedExport === "TelemetryHookProbe"
+                      ? [
+                          "telemetry/pending-root-spans/（fire SessionStart 时落，非构造时）",
+                          "SID_CONFIG_DIR",
+                        ]
+                      : ["cache-breaks.jsonl", "SID_CODE_CACHE_BREAKS"];
           const [sink, marker] = sinkAndMarker;
           // 专用变量与 SID_CONFIG_DIR 相同时不重复印两遍（"需设 SID_CONFIG_DIR 或
           // SID_CONFIG_DIR" 读起来像提示自身出了 bug，会让人怀疑整条指引的可信度）。

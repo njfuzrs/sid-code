@@ -13,6 +13,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
 import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
@@ -33,6 +36,9 @@ const ENV_KEYS = [
   "SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ];
 let savedEnv: Record<string, string | undefined> = {};
+/** SID_CONFIG_DIR 的原值（可能是 preload 设的隔离兜底），afterEach 要还回去 */
+let savedConfigDir: string | undefined;
+let testHome: string;
 
 function setup() {
   const spans: SpanData[] = [];
@@ -59,6 +65,13 @@ beforeEach(() => {
   savedEnv = {};
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   for (const k of ENV_KEYS) delete process.env[k];
+  // 落盘隔离（§三 P0-2 起必需）：handleSessionStart 会同步写「根 span 欠一次 end」
+  // 的标记到 ~/.sid-code/telemetry/pending-root-spans/。SID_CONFIG_DIR 走
+  // 上面那套「存原值 → afterEach 还回去」的机制（**不是** delete 后重设——
+  // delete 会连 preload 的隔离兜底一起抹掉），所以它不在 ENV_KEYS 里另开一套。
+  savedConfigDir = process.env.SID_CONFIG_DIR;
+  testHome = mkdtempSync(join(tmpdir(), "sid-content-tracing-home-"));
+  process.env.SID_CONFIG_DIR = testHome;
   setConfiguredPrivacyLevel(null);
   __resetFeatureFlagsForTest();
   clearContentTracingState();
@@ -69,6 +82,9 @@ afterEach(() => {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
+  if (savedConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = savedConfigDir;
+  rmSync(testHome, { recursive: true, force: true });
   setConfiguredPrivacyLevel(null);
   __resetFeatureFlagsForTest();
   clearContentTracingState();

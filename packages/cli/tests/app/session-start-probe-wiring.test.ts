@@ -21,9 +21,10 @@
  *    而那正是缺陷本体。
  */
 
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
 import { TelemetryHookProbe } from "@sid-code/core/telemetry/hook-probe.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
@@ -31,6 +32,25 @@ import { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
 
 const MODEL = "claude-sonnet-4";
+
+/**
+ * 落盘隔离（§三 P0-2 起必需）：`handleSessionStart` 会同步写「根 span 欠一次 end」
+ * 的标记到 `~/.sid-code/telemetry/pending-root-spans/`。本文件 fire 真实 SessionStart。
+ */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
+let testHome: string;
+
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), "sid-probe-wiring-home-"));
+  process.env.SID_CONFIG_DIR = testHome;
+});
+
+afterEach(() => {
+  // 恢复原值而非 delete：同进程多文件跑，delete 会抹掉 preload 的隔离兜底
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 /** 启用的 bus + 收集 span 的 mock 导出器（flushIntervalMs 拉大，避免定时器干扰） */
 function createProbe() {
