@@ -61,6 +61,7 @@ import {
   buildStaticItems,
 } from "./history-adapter.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 
 // ── 向后兼容导出（供 app.ts 过渡期使用） ──
 
@@ -1125,7 +1126,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       items.push({
         id: -2,
         type: "app_header",
-        version: require("../../package.json").version,
+        version: getRawVersion(),
       });
     }
 
@@ -1170,8 +1171,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return state.historyItems;
   }, [state.historyItems]);
   const staticItems = useMemo(
-    (): HistoryItem[] =>
-      buildStaticItems(stableHistoryItems, require("../../package.json").version),
+    (): HistoryItem[] => buildStaticItems(stableHistoryItems, getRawVersion()),
     [stableHistoryItems],
   );
 
