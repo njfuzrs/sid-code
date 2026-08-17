@@ -2931,17 +2931,20 @@ export class App {
       }
     }
 
-    // session_start hook（非阻塞）。
-    // Bug3 桥接：resume 时上报 source="resume" + resumedFrom=旧会话 id，
-    // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
-    this.hookSystem
-      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
-        model: this.config.model,
-        resumedFrom: this.resumedSessionId ?? undefined,
-      })
-      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
-
-    // 遥测系统初始化（委托给 init-helpers）
+    // 遥测系统初始化（委托给 init-helpers）。
+    //
+    // ⚠️ 时序不变量：**所有 SessionStart 消费者必须在下面 fireSessionStartEvent 之前注册完**。
+    // 这里的顺序不是风格问题——initTelemetrySystem 内部会 probe.registerHooks(hookSystem)
+    // （init-helpers.ts:108），而 SessionStart 是「一次性事件」：注册晚一步就永远收不到，
+    // 于是 TelemetryHookProbe.handleSessionStart 从不被调用、this.agentSpan 恒 undefined，
+    // **会话根 invoke_agent span 恒不落盘**。后果不是少一个 span，而是整棵 trace 树没有栈底：
+    // chat / execute_tool 找不到父，全部变成孤儿根节点（实测 51 会话窗口 952 个孤儿根
+    // vs 34 个 traceId，导入任何 OTel 后端看到的是 952 条单节点 trace 而不是 34 棵会话树）。
+    // 这是「探针注册晚于事件首次 fire」这一形态的**第三次复现**（前两次见
+    // docs/bugfixes/ 子代理 hook 接线顺序、工具 hookSystem 恒 undefined），
+    // 所以本次把注册与 fire 的先后关系连同理由一起写在这里，而不是只挪代码。
+    // 对照：TraceCollector 的 registerHooks 在上面（本函数更早处）调用，
+    // collector.ts:547 也写了同一条「必须在 SessionStart 之前调用」的要求。
     const telemetryResult = await initTelemetrySystem(
       this.config,
       this.hookSystem,
@@ -2955,6 +2958,18 @@ export class App {
     if (telemetryResult.telemetryProbe) {
       this.telemetryProbe = telemetryResult.telemetryProbe;
     }
+
+    // session_start hook（非阻塞）。
+    // Bug3 桥接：resume 时上报 source="resume" + resumedFrom=旧会话 id，
+    // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
+    // ⚠️ 必须保持在 initTelemetrySystem **之后**（见上面那段时序不变量），
+    // 且必须在 initTraceCollector 之后——两个消费者一前一后夹住这行。
+    this.hookSystem
+      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
+        model: this.config.model,
+        resumedFrom: this.resumedSessionId ?? undefined,
+      })
+      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
 
     // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
