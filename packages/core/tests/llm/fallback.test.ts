@@ -737,9 +737,12 @@ describe("ModelFallback 增强", () => {
     expect(telemetry.some((e) => e.type === "persistent_retry_wait")).toBe(false);
   });
 
-  test("persistent 心跳：长睡眠拆成 10s 分段并 yield 剩余时间进度事件", async () => {
+  test("[slow] persistent 心跳：长睡眠拆成 10s 分段并 yield 剩余时间进度事件", async () => {
     // 真实观测心跳：persistent 等待 5min 被拆成 10s 块，首个心跳进度事件在 ~10s 后到达。
     // 收到即 abort，避免睡满。此测试有意较慢(约 10s)，是心跳机制的正回归。
+    // 标 [slow] 的理由：被测对象**就是**"拆成 10s 块"，而 heartbeatMs = 10_000 是
+    // fallback.ts 里的硬编码常量——要观测到块边界就必须真的跨过它，缩放测试参数无效。
+    // 不要为了提速把那个常量改成可配置：那是拿生产语义换测试便利。
     const fallback = new ModelFallback({
       persistent: true,
       maxRetries: 0,
@@ -960,7 +963,13 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
   }
 
   test("Anthropic 200 + overloaded_error 首事件（消息无关键词）→ 重试后成功", async () => {
-    const fallback = new ModelFallback({ maxRetries: 2, streamTimeoutMs: 60_000 });
+    // 不传 retryBackoffBaseMs 会走 NETWORK_DEFAULTS 的生产值 5_000（network-profile.ts），
+    // 本条重试一次 = 白等 ~5s。T6 测的是"靠结构化 error.type 判可重试"，与退避时长无关。
+    const fallback = new ModelFallback({
+      maxRetries: 2,
+      streamTimeoutMs: 60_000,
+      retryBackoffBaseMs: 1,
+    });
     const events = await collectEvents(
       fallback.executeWithFallback(streamOverloadedThenSuccess(), {
         ...defaultParams,
@@ -999,7 +1008,12 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
         yield { type: "message_stop" };
       },
     };
-    const fallback = new ModelFallback({ maxRetries: 2, streamTimeoutMs: 60_000 });
+    // 同上一条：补 retryBackoffBaseMs，否则吃生产默认 5_000 白等 ~5s。
+    const fallback = new ModelFallback({
+      maxRetries: 2,
+      streamTimeoutMs: 60_000,
+      retryBackoffBaseMs: 1,
+    });
     const events = await collectEvents(
       fallback.executeWithFallback(provider, { ...defaultParams, model: "openai:gpt-x" }),
     );

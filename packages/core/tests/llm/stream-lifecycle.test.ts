@@ -149,7 +149,10 @@ describe("T7 — 三层超时优先级", () => {
 
     async function* silentAfterOne(): AsyncIterable<Evt> {
       yield { type: "message_start" };
-      await new Promise((r) => setTimeout(r, 5_000)); // 长时间无任何事件
+      // 静默 400ms 足以越过下面 80ms 的 idle 闸门（5× 余量，抗 CI 慢机 timer 抖动）。
+      // 原值 5_000 是纯空等：闸门在 80ms 就已触发，多睡的 4.6s 不改变任何断言
+      // （实测 elapsed 与静默严格 1:1；变异掉 idle 闸门后 400ms 版仍然报红）。
+      await new Promise((r) => setTimeout(r, 400)); // 长时间无任何事件
       yield { type: "content_block_delta" };
     }
 

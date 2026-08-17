@@ -169,7 +169,13 @@ describe("回归：子代理首字节等待不被心跳阈值误杀", () => {
 
   test("首字节超过首字节阈值 → 仍须中断（闸门不能被放宽成永不生效）", async () => {
     const turnAbort = new AbortController();
-    const result = await processStream(slowFirstByte(10_000), {
+    // 静默 300ms 足以越过下面 100ms 的首字节闸门（3× 余量）。
+    // 原值 10_000 是纯空等：闸门 100ms 就该开火，多睡的 9.7s 不改变任何断言
+    // （实测 elapsed 与静默严格 1:1；把 FIRST_BYTE_TIMEOUT 变异成永不触发后，
+    // 300ms 版同样翻红，检测力与 10s 版一致）。
+    // ⚠️ 不要再往下压到 150ms：CI 慢机上 timer 抖动可能让它偶发不触发 → flaky。
+    // heartbeatTimeoutMs 必须保持大于静默值，否则变成心跳先开火、测的就不是首字节闸门了。
+    const result = await processStream(slowFirstByte(300), {
       signal: turnAbort.signal,
       getAbortController: () => turnAbort,
       heartbeatTimeoutMs: 10_000,

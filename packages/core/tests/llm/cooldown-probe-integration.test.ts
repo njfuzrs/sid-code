@@ -9,6 +9,13 @@
  *
  * 全部断言都成对写：钉"探针真的放行了"，也钉"它没被顺手放开成人人可探"。
  *
+ * ⚠️ 关于耗时：本文件的被测对象**就是**"探针配额 + 冷却 + 错峰"，所以耗时由源码
+ * 硬编码常量决定（MIN_COOLDOWN_MS = 500 / COOLDOWN_STAGGER_MS = 300），缩小测试
+ * 参数实测几乎零收益（把预置冷却 700 → 550 只省 7%）。逐条实测后只把那条
+ * **6 路并发**（2.2s，耗时主体是 6 × slot × 300ms 错峰）标了 `[slow]`；其余 11 条
+ * 各自只压在一个 500ms 冷却地板上，留在默认套件里——把它们一起移出去省不到多少，
+ * 却会让 9 条真门禁默认不跑。不要为了提速把上述两个常量改成可配置。
+ *
  * fix_type: regression_guard
  */
 
@@ -193,7 +200,7 @@ describe("S5 读侧：探针放行后不等冷却、直接发起", () => {
     expect(events.filter((e) => e.type === "shared_cooldown_wait").length).toBe(1);
   }, 15_000);
 
-  test("6 路并发只有 1 路探针放行，其余全部照旧等（不构成放大）", async () => {
+  test("[slow] 6 路并发只有 1 路探针放行，其余全部照旧等（不构成放大）", async () => {
     const availability = new ModelAvailabilityService();
     availability.markRateLimited("m1", 700, "429", "rate_limit");
     const seen: RetryTelemetryEvent[] = [];

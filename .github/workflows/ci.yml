@@ -105,6 +105,12 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
+      # ⚠️ 这里刻意用裸 `bun test`（**不是** `bun run test`）。
+      # `package.json` 的 `test` 脚本带 `--test-name-pattern '^(?!.*\[slow\])'`，是给
+      # 本地开发用的快通道（跳过 4 条标 [slow] 的真实时钟 case）；CI 必须跑**全部**，
+      # 否则那 4 条就成了没有任何门禁的死测试 —— 正是本仓「建好未接线」那类病灶。
+      # 需要单独跑那 4 条时用 `bun run test:slow`；`bun run test:all` 等价于本行。
+      #
       # 与 release.sh 发布前门禁同源（同一条 `bun test`），前移到 PR 阶段。
       # 不做任何文件排除：5 个依赖 eval-framework 的测试文件
       # （tests/eval/ 下 agent-trace / raw-jsonl-to-trace / baseline-sync-holdout /

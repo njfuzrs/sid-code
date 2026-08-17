@@ -25,6 +25,7 @@ import { runAgentLoop } from "@sid-code/core/agent/agentic-loop.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
+import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { StreamEvent, SendParams } from "@sid-code/core/llm/types.ts";
 import {
@@ -97,6 +98,19 @@ function makeCtxMgr() {
   return ctxMgr;
 }
 
+/**
+ * 一个「不记 429 冷却」的 availability：只让 markRateLimited 变成 no-op，
+ * terminal 拉黑等其余能力保持原样（场景5 判 terminal 那条仍要用到）。
+ *
+ * 为什么需要它：见 baseConfig 里 availability 那行的注释。共享冷却与本文件的被测
+ * 对象无关，却按 500ms 地板 + 300ms 错峰把整份测试拖到 16.9s。
+ */
+function noCooldownAvailability(): ModelAvailabilityService {
+  const svc = new ModelAvailabilityService();
+  svc.markRateLimited = () => {};
+  return svc;
+}
+
 function baseConfig(provider: Provider, overrides: Record<string, unknown> = {}) {
   return {
     provider,
@@ -108,6 +122,21 @@ function baseConfig(provider: Provider, overrides: Record<string, unknown> = {})
     loopDetector: new LoopDetector(),
     // 退避基数压到 1ms，让测试跑得快（生产默认 5s 走 network-profile）
     retryBackoffBaseMs: 1,
+    // ⚠️ 只压 retryBackoffBaseMs 是**不够**的，这一条曾长期骗过所有人：上面那行注释
+    // 写着"让测试跑得快"，而本文件实测 16.9s 全在等**共享冷却**——那是另一条路径，
+    // retryBackoffBaseMs 压的只是指数退避那一项。机理：429 → markRateLimited 内部把
+    // 冷却地板到 MIN_COOLDOWN_MS = 500（availability.ts），重试前再等
+    // slot × COOLDOWN_STAGGER_MS = 300（fallback.ts）。
+    //
+    // 摘掉它的手段是注入一个"不记冷却"的 availability，而**不是**传
+    // respectSharedCooldown: false —— 那个开关只存在于 ModelFallback 自己的配置上，
+    // 既不在 ResilientStreamOptions 也不在 AgentLoopConfig 里，从本测试传下去会被
+    // 静默丢掉（实测耗时一毫秒都不变）。availability 则是真被 agentic-loop 透传的。
+    //
+    // 本文件测的是「限流重试是否发生 + 遥测能否归因」，不是共享冷却本身（全文件零
+    // cooldown 断言）；冷却与错峰由 resilience-b6-gates.test.ts 的 S2 组和
+    // cooldown-probe-integration.test.ts 覆盖。
+    availability: noCooldownAvailability(),
     // B0：permissionChecker 从 AgentLoopConfig 的必填字段，显式声明本测试场景
     // 不需要权限检查（工具集为空 ToolRegistry，无写类工具可测）。
     permissionChecker: undefined,

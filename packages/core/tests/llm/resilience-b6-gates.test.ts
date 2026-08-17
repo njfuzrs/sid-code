@@ -15,6 +15,15 @@
  * 并且按 B5 的成对纪律写：钉修好的方向，也钉**没被顺手放宽**的方向。
  * 只钉前者的话，"把门槛全放开"（什么错误都降级、什么情况都冷却）也能让测试变绿。
  *
+ * ⚠️ 关于本文件的耗时（2026-08-17 逐条实测后定的口径，别再"顺手优化"）：
+ *   - S3 两条用的是**等比缩放 25×** 的退避参数，不是随手调小的数字。
+ *     MIN_USEFUL_ATTEMPT_MS = 5_000（fallback.ts）硬编码不可配置，缩放比例错了会
+ *     静默把 provider 调用从 2 次变 1 次（根本没进重试就停手）而断言仍然全绿——
+ *     所以那条加了 `counts.stream === 2` 锁形态。
+ *   - 两条标 `[slow]` 的 case 受源码硬编码常量地板约束（MIN_COOLDOWN_MS = 500 /
+ *     COOLDOWN_STAGGER_MS = 300），缩小测试参数实测零收益（4011ms → 4006ms）。
+ *     不要为了测试速度把这两个常量改成可配置——那是拿生产语义换测试便利。
+ *
  * fix_type: regression_guard
  */
 
@@ -298,41 +307,50 @@ describe("S4：非流式降级已接线（不再是死代码）", () => {
 describe("S3：时间预算钳制重试", () => {
   test("预算不足以「退避 + 一次请求」→ 提前停手，不睡满", async () => {
     const events: RetryTelemetryEvent[] = [];
-    // 真实退避参数（base 5s / cap 120s），预算只给 20s。
+    // 退避参数按真实生产值（base 5s / cap 120s / 预算 20s）等比缩放 25×。
+    // ⚠️ 不能缩得更小：MIN_USEFUL_ATTEMPT_MS = 5_000（fallback.ts:174）是硬编码不可配置，
+    // 缩到 base50/预算200 会让 provider 调用从 2 次变 1 次（根本没进重试就停手）而断言仍绿。
+    // 本组参数实测 calls 恒为 2，与真实值一致；8 次连跑 501–506ms。
     const fb = new ModelFallback({
       availability: new ModelAvailabilityService(),
-      retryBackoffBaseMs: 5_000,
-      retryBackoffMaxMs: 120_000,
+      retryBackoffBaseMs: 200,
+      retryBackoffMaxMs: 4_800,
       maxRetries: 10,
       streamTimeoutMs: 300_000,
       onTelemetry: (e) => events.push(e),
     });
-    const { provider } = makeProvider(errStream("rate limit exceeded", "rate_limit_error", 429));
+    const { provider, counts } = makeProvider(
+      errStream("rate limit exceeded", "rate_limit_error", 429),
+    );
 
     const t0 = Date.now();
-    await drain(fb, provider, { deadlineAt: Date.now() + 20_000 });
+    await drain(fb, provider, { deadlineAt: Date.now() + 6_000 });
     const elapsed = Date.now() - t0;
 
     const exhausted = events.filter((e) => e.type === "retry_budget_exhausted");
     expect(exhausted.length).toBe(1);
-    // 关键：**没有**睡到预算耗尽才被砍。20s 预算下应远早于 20s 结束。
-    expect(elapsed).toBeLessThan(18_000);
+    // 锁住"重试了一次才停手"这个形态：只断事件数的话，缩放参数一旦失配会退化成
+    // "零重试直接停"而断言仍绿（实测 base50/base500 都是 calls=1 却全绿）。
+    expect(counts.stream).toBe(2);
+    // 关键：**没有**睡到预算耗尽才被砍。6s 预算下应远早于 6s 结束。
+    expect(elapsed).toBeLessThan(5_400);
     // 遥测要能回答"为什么停"：需要多久 vs 还剩多久，两个数都在。
     expect(exhausted[0].delayMs).toBeGreaterThan(0);
     expect(exhausted[0].remainingMs).toBeGreaterThanOrEqual(0);
-  }, 30_000);
+  }, 15_000);
 
   test("留档区分「时间不够」与「次数用尽」（归因不能混）", async () => {
+    // 与上一条同一组缩放参数（25×），理由见那里的注释。
     const fb = new ModelFallback({
       availability: new ModelAvailabilityService(),
-      retryBackoffBaseMs: 5_000,
-      retryBackoffMaxMs: 120_000,
+      retryBackoffBaseMs: 200,
+      retryBackoffMaxMs: 4_800,
       maxRetries: 10,
       streamTimeoutMs: 300_000,
     });
     const { provider } = makeProvider(errStream("rate limit exceeded", "rate_limit_error", 429));
 
-    const out = await drain(fb, provider, { deadlineAt: Date.now() + 20_000 });
+    const out = await drain(fb, provider, { deadlineAt: Date.now() + 6_000 });
 
     // 两者修法完全不同（前者调 timeout / 降退避 cap，后者查网关限流），
     // 文案混淆会把排查方向带偏——这正是 B5 整批在消除的东西。
@@ -341,10 +359,14 @@ describe("S3：时间预算钳制重试", () => {
       .map((e) => (e as any).error?.message ?? "")
       .join(" ");
     expect(errText).toContain("时间预算不足");
-  }, 30_000);
+  }, 15_000);
 
   test("负向：不传 deadlineAt → 行为与 S3 之前一致（纯次数上界）", async () => {
-    const { fb, events } = fastFallback({ maxRetries: 4 });
+    // 关掉共享冷却：本条断的是"重试次数上界"与"不产生预算事件"，冷却只是恰好挡在
+    // 429 重试路径上的副作用。retryBackoffBaseMs:1 压不到它（那是指数退避那一项），
+    // 实测白等 2.0s，且开/关两种情况下 calls 与事件数完全一致（5 / 0）。
+    // 冷却本身由本文件 S2 组与 cooldown-probe-integration.test.ts 覆盖。
+    const { fb, events } = fastFallback({ maxRetries: 4, respectSharedCooldown: false });
     const { provider, counts } = makeProvider(
       errStream("rate limit exceeded", "rate_limit_error", 429),
     );
@@ -357,7 +379,8 @@ describe("S3：时间预算钳制重试", () => {
   });
 
   test("负向：预算充裕 → 不误砍", async () => {
-    const { fb, events } = fastFallback({ maxRetries: 4 });
+    // 同上一条：关共享冷却，理由与实测数据见那里的注释。
+    const { fb, events } = fastFallback({ maxRetries: 4, respectSharedCooldown: false });
     const { provider, counts } = makeProvider(
       errStream("rate limit exceeded", "rate_limit_error", 429),
     );
@@ -393,16 +416,22 @@ describe("S2：availability 上的共享限流冷却", () => {
 
   test("成功产出 → 清除冷却（最强的「窗口已过」信号）", async () => {
     const availability = new ModelAvailabilityService();
-    availability.markRateLimited("m1", 10_000, "先前限流");
+    // ⚠️ MIN_COOLDOWN_MS = 500 是地板，这个 600 不能再降（传更小会被抬到 500，
+    // 反而让下面"预算 < 冷却"的关系变脆）。
+    availability.markRateLimited("m1", 600, "先前限流");
     const { fb } = fastFallback({ availability });
     const { provider } = makeProvider(okStream);
 
-    // 冷却仍在 → 入口会等，但上限被 MAX_COOLDOWN_WAIT 钳住；这里只关心成功后被清除。
-    await drain(fb, provider, { deadlineAt: Date.now() + 600_000 });
+    // 预算刻意小于「冷却 + 错峰」，逼代码走 fallback.ts 的「跳过等待直接发起」分支。
+    // 原写法给 600s 预算 → 入口**等满**了冷却 → remaining 归零是**自然过期**，
+    // 与 clearCooldown 无关：实测移除 fallback.ts 里成功产出后的 clearCooldown，
+    // 本断言**仍然通过**（即这条曾是假门禁，测不出该能力被删）。
+    // 改成紧预算后成功产出时冷却仍在，只有 clearCooldown 能让它归零。
+    await drain(fb, provider, { deadlineAt: Date.now() + 3_000 });
 
     // 不清的话，后续并发路径会守着一段已作废的冷却白等 —— S2 就从"更省"变成纯"更慢"。
     expect(availability.getCooldownRemaining("m1")).toBe(0);
-  }, 40_000);
+  }, 10_000);
 
   test("撞 429 → 写入共享冷却（写侧真的发生）", async () => {
     const availability = new ModelAvailabilityService();
@@ -438,7 +467,7 @@ describe("S2：availability 上的共享限流冷却", () => {
     expect(a.getCooldownRemaining("m1")).toBeGreaterThanOrEqual(MIN_COOLDOWN_MS - 50);
   });
 
-  test("并发多路：冷却真的被读到（首版在此失败：事件数为 0 = 只写不读）", async () => {
+  test("[slow] 并发多路：冷却真的被读到（首版在此失败：事件数为 0 = 只写不读）", async () => {
     const availability = new ModelAvailabilityService();
     const seen: RetryTelemetryEvent[] = [];
     const { provider } = makeProvider(
@@ -464,7 +493,7 @@ describe("S2：availability 上的共享限流冷却", () => {
     expect(seen.filter((e) => e.type === "shared_cooldown_wait").length).toBeGreaterThan(0);
   }, 30_000);
 
-  test("错峰槽位按 agentId 稳定（同一 agent 每次落同一槽 → 时序可复现）", async () => {
+  test("[slow] 错峰槽位按 agentId 稳定（同一 agent 每次落同一槽 → 时序可复现）", async () => {
     const availability = new ModelAvailabilityService();
     const slotsOf = async (agentId: string) => {
       const seen: RetryTelemetryEvent[] = [];
