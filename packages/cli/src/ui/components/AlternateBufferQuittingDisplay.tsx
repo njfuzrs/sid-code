@@ -12,6 +12,7 @@ import React from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
 import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 import type { HistoryItem } from "../types.ts";
 import { QuittingDisplay } from "./QuittingDisplay.tsx";
 import { theme } from "../semantic-colors.ts";
@@ -32,7 +33,7 @@ export const AlternateBufferQuittingDisplay = React.memo(function AlternateBuffe
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
 
   // 简单的 Header
-  const version = require("../../../package.json").version;
+  const version = getRawVersion();
 
   return (
     <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>

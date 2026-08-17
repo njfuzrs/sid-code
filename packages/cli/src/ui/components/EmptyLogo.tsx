@@ -8,6 +8,7 @@
 import React from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 import { ThemedGradient } from "./ThemedGradient.tsx";
 import { theme } from "../semantic-colors.ts";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -80,7 +81,7 @@ interface EmptyLogoProps {
 }
 
 export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }: EmptyLogoProps) {
-  const version = require("../../../package.json").version;
+  const version = getRawVersion();
   const displayCwd = cwd ? shortenPath(cwd) : "";
   const displayProject = cwd ? projectName(cwd) : "sid-code";
 
