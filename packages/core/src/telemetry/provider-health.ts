@@ -10,9 +10,17 @@ import { join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 // P2-8：`ttftByCacheFields` 一并从 digest.ts 引入 —— 分桶字段的构造规则收口到那一份，
 // 本文件此前是内联抄的第二份（详见下方调用点的注释）。
-import { percentile, ttftByCacheFields } from "../trace/digest.ts";
+// P1（§0.1b）：`latencyByModelField` 同理 —— 与分桶字段同源同规则，收口在 digest.ts。
+import { percentile, ttftByCacheFields, latencyByModelField } from "../trace/digest.ts";
 // P2-3：TTFT×缓存分桶与 digest.ts 共用同一实现（方案要求"两处刻意同口径"）
 import { TtftCacheBucketer, formatTtftBucketLine } from "../trace/ttft-cache-buckets.ts";
+// P1（§0.1b）：TTFT/TTFB 按 model 分组，同样与 digest.ts 共用 —— 跨网关路由汇总
+// TTFB 会得出假结论（同模型不同路由 gap 差 17 倍），详见该模块头注释。
+import {
+  aggregateLatencyByModel,
+  formatModelLatencyLine,
+  type ModelLatencyStats,
+} from "../trace/latency-by-model.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -68,6 +76,19 @@ export interface ProviderHealthMetrics {
      * 与 `ttftBucketDropped` 分开：前者是历史空档（预期），后者才是异常信号。
      */
     ttftNoDimension?: number;
+    /**
+     * P1（§0.1b）：**按 model 拆开**的 TTFT/TTFB 分位数 + 路由缓冲指纹。
+     *
+     * 与 `digest.ts` 的 `ProviderDigestStats.latencyByModel` **同口径同构**（都由
+     * `latency-by-model.ts` 产出、都经 `latencyByModelField` 构造）。
+     *
+     * 上面的 `ttft_p50/p95/p99` 是 provider 级的，**不足以下结论**：
+     * `deepseek-v4-pro` 与 `origin-deepseek-v4-pro` 同属 provider `openai` 但走不同
+     * 网关路由，gap 占比 86.77% vs 5.02%，合并后的 TTFB 既不描述前者也不描述后者。
+     *
+     * ⚠️ 刻意**没有** provider 级的 `ttfb_p50` —— 那个数必然是假的（见模块头注释）。
+     */
+    latencyByModel?: Record<string, ModelLatencyStats>;
   };
   timeouts: {
     byLayer: Record<string, number>;
@@ -242,6 +263,15 @@ export function aggregateProviderHealth(options: {
   // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
   const buckets = bucketer.finalize();
 
+  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面已建的 modelToProvider 映射，
+  // 与 digest.aggregateProviderStats 逐字同款调用 —— 同一份 events.jsonl 在
+  // `/trace` 与 `/trace --health` 两个入口必须得出同一个结论。
+  //
+  // 刻意**不**传 filterProvider：过滤在 latencyByModelField 里按 provider 归属做，
+  // 在这里滤会丢掉配对所需的 headers_received（它只带 model，provider 尚未解析），
+  // 让本该配对的样本变成"未闭合"。
+  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
+
   // 生成报告
   const providers: ProviderHealthMetrics[] = [];
   const alerts: HealthAlert[] = [];
@@ -278,6 +308,9 @@ export function aggregateProviderHealth(options: {
         // 改成直接调那个已导出的共享函数，这类漏改从此不可能发生（同 §P2-3 收口到
         // ttft-cache-buckets.ts 的同一条理由）。
         ...ttftByCacheFields(buckets.get(prov)),
+        // P1（§0.1b）：本 provider 名下各 model 的 TTFT/TTFB。同样走共享构造函数，
+        // 不内联 —— 上面那段 P2-8 的教训（"同构靠两份代码各自正确"）就是这么来的。
+        ...latencyByModelField(latencyByModel, prov),
       },
       timeouts: { byLayer: acc.timeoutsByLayer },
       retries: {
@@ -565,6 +598,20 @@ export function renderHealthLines(
         total: p.latency.ttftSampleTotal,
       });
       if (line) out.push(`${"".padStart(18)}└ ${line}`);
+    }
+
+    // P1（§0.1b）：TTFT/TTFB 按 model 拆行。**表格里的 provider 级 TTFT 列不足够**——
+    // 同 provider 下不同网关路由的 TTFB 语义不同，合成一个数就是假结论。
+    // 文案走 formatModelLatencyLine，与 /trace 单会话视图逐字一致（同一函数）。
+    if (p.latency.latencyByModel) {
+      const rows = Object.entries(p.latency.latencyByModel).sort((a, b) => b[1].n - a[1].n);
+      for (const [model, s] of rows) {
+        out.push(
+          `${"".padStart(18)}└ ${formatModelLatencyLine(model, s, {
+            colorize: (kind, text) => c(kind, text),
+          })}`,
+        );
+      }
     }
 
     if (Object.keys(p.timeouts.byLayer).length > 0) {

@@ -30,7 +30,7 @@
 | 层 | 指标 | 状态 / 取数源 |
 | --- | --- | --- |
 | **主口径** | **TTFT** p50/p95/p99 + **端到端耗时**（用户回车 → 最终答复） | ✅ `StreamPhase(first_content).ttft_ms` 是**唯一干净源** |
-| 归因：卡在哪一段 | **TTFB**（首字节，拆「网关握手」vs「模型 prefill」） | ✅ `headers_received.ttfb_ms`，两族已同口径 |
+| 归因：卡在哪一段 | **TTFB**（首字节，拆「网关握手」vs「模型 prefill」） | ⚠️ `headers_received.ttfb_ms`：协议层同口径，**语义受网关缓冲策略影响，跨路由不可比**——必须按 model 分组看（`latencyByModel`） |
 | | **纯生成耗时** gen p50/p95/p99（单次 fetch，不含重试） | ✅ `RetryTelemetry(stream_completed).elapsedMs` |
 | | **整轮 API 耗时**（含握手 + 生成 + 重试） | ⚠️ `AfterModelRaw.elapsed_ms`，**别与 TTFB 混**，渲染必须标「整轮」 |
 | | **工具执行耗时** —— 回答「慢在模型还是慢在工具」 | ✅ `PostToolUse.duration_ms` / `total_tool_duration_ms` |
@@ -40,6 +40,19 @@
 
 **TTFT 的口径铁律**（这条有 P0 bug 教训）：必须是**首个任意内容 chunk**（含 thinking / tool_use），
 且**每次 fetch 单独计、不跨重试累计**。只在可视文本上计 → 对 thinking 模型和纯工具调用轮系统性虚高数十秒。
+
+**TTFB 的口径铁律：禁止跨网关路由汇总**（实测教训，上表那格原写「两族已同口径」是错的）。
+同一底层模型走不同网关路由，`ttfb` 的**语义不同**：一路是「模型开始出字」，另一路是
+「网关接单了」。实测 51 会话 / 1372 对：`deepseek-v4-pro` 的 `ttft − ttfb` gap 占比 p50 = **86.77%**
+（ttfb 484ms → ttft 3983ms），而 `origin-deepseek-v4-pro`（**同底层模型、同属 provider `openai`**）
+只有 **5.02%**——差 17 倍。按 provider 汇总出的 `ttfb p50 = 2665ms` 是个假数，
+它既不描述前者也不描述后者，却会让人下「首字节很快」的结论。
+
+- 判据：`(ttft − ttfb) / ttft` 的中位数就是**路由缓冲指纹**，**> 50% 即该路由在抢先回 header**。
+- 因果方向别搞反：gap 大**恰恰发生在网关响应最快的时候**（gap>50% 的样本 ttfb p50 仅 483ms），
+  所以这个差值**不是**框架开销，是「网关缓冲 + 模型 prefill」。别拿它做「框架 overhead 拆解」。
+- 落地：单一事实源在 `packages/core/src/trace/latency-by-model.ts`，`digest.ts` 与
+  `provider-health.ts` 共用。该模块**刻意不提供跨 model 汇总的 TTFB API**——提供了就会有人用。
 
 #### 更省 —— token / 成本 / 缓存 / 上下文
 

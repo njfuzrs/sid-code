@@ -29,6 +29,13 @@ import {
   formatTtftBucketLine,
   type TtftCacheBucket,
 } from "./ttft-cache-buckets.ts";
+// P1（§0.1b）：TTFT/TTFB 按 model 分组的单一事实源，与 provider-health.ts 共用。
+// 跨网关路由汇总 TTFB 会得出假结论（同模型不同路由 gap 差 17 倍），详见该模块头注释。
+import {
+  aggregateLatencyByModel,
+  formatModelLatencyLine,
+  type ModelLatencyStats,
+} from "./latency-by-model.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -237,6 +244,21 @@ export interface ProviderDigestStats {
    * 不变量：`ttftSampleTotal === hit.count + miss.count + ttftBucketDropped + ttftNoDimension`。
    */
   ttftSampleTotal?: number;
+  /**
+   * P1（§0.1b）：**按 model 拆开**的 TTFT/TTFB 分位数 + 路由缓冲指纹。
+   *
+   * 为什么本字段不可省、上面那些 provider 级分位数不足够：`deepseek-v4-pro` 与
+   * `origin-deepseek-v4-pro` 是同一底层模型走不同网关路由，且**同属 provider
+   * `openai`** —— 按 provider 聚合把两者合成一个数，实测 gap 占比 86.77% vs 5.02%
+   * （差 17 倍）被抹平，汇总出的 `ttfb p50=2665ms` 既不描述前者（484ms）也不描述
+   * 后者（3151ms）。**这一行是唯一能拿去下结论的 TTFB 口径。**
+   *
+   * ⚠️ 本结构里**没有** provider 级的 `ttfb_p50` 对应项，是刻意的（见
+   * `latency-by-model.ts` 头注释）：提供了就一定有人用，而那个数必然是假的。
+   *
+   * 无 `headers_received`/`first_content` 事件时不落（老轨迹）。
+   */
+  latencyByModel?: Record<string, ModelLatencyStats>;
   /** 超时率 > 10% 时标记 warning */
   warning?: string;
 }
@@ -2042,6 +2064,20 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
         });
         if (line) L.push(`  ${" ".repeat(12)} └ ${line}`);
       }
+      // P1（§0.1b）：TTFT/TTFB 按 model 拆行。**上面那行的 provider 级 TTFT 不足够**——
+      // 同一 provider 下不同网关路由的 TTFB 语义不同（一路"模型出字"、一路"网关接单"），
+      // 合成一个数就是本 PR 要消灭的假结论。文案走 formatModelLatencyLine（两入口共用）。
+      if (ps.latencyByModel) {
+        // 按样本数降序：n 大的路由才是这个 provider 的主要延迟来源，排前面
+        const rows = Object.entries(ps.latencyByModel).sort((a, b) => b[1].n - a[1].n);
+        for (const [model, s] of rows) {
+          L.push(
+            `  ${" ".repeat(12)} └ ${formatModelLatencyLine(model, s, {
+              colorize: (kind, text) => c(kind, text),
+            })}`,
+          );
+        }
+      }
     }
   }
 
@@ -2482,6 +2518,10 @@ export function aggregateProviderStats(
   // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
   const buckets = bucketer.finalize();
 
+  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面已建好的 modelToProvider 映射
+  //（不在模块内自己再扫一遍 AfterModelRaw —— 两处各建一份映射必然漂移）。
+  const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
+
   const result: ProviderDigestStats[] = [];
   for (const [provider, stats] of map) {
     const timeoutRate = stats.requests > 0 ? stats.timedOut / stats.requests : 0;
@@ -2510,6 +2550,9 @@ export function aggregateProviderStats(
       // P2-3：两桶都为空时整个字段不落（老轨迹没有 cache_hit 维度）——
       // 落一个 count 全 0 的结构会让"数据还没采到"看起来像"命中与未命中一样快"。
       ...ttftByCacheFields(buckets.get(provider)),
+      // P1（§0.1b）：本 provider 名下各 model 的 TTFT/TTFB。空对象不落，理由同上
+      //（落一个 {} 会让"这批轨迹没有 headers_received"读成"没有 model 数据"）。
+      ...latencyByModelField(latencyByModel, provider),
       warning,
     });
   }
@@ -2650,6 +2693,31 @@ export function ttftByCacheFields(
   // 而"有 n 却没有分母"正是这个 bug 的形态（读者只能拿"请求"列去凑）。
   if (bucket.total > 0) out.ttftSampleTotal = bucket.total;
   return out;
+}
+
+/**
+ * P1（§0.1b）：从全量 model 分组里挑出属于某 provider 的部分，转成
+ * {@link ProviderDigestStats.latencyByModel} 可选字段。
+ *
+ * 为什么按 provider 过滤而不是整份塞进每行：`providerStats` 是**按 provider 一行**，
+ * 每行挂全量 model 会让 `anthropic` 那行列出 deepseek 的路由数据。
+ *
+ * 空 → 返回空对象（字段不落）。同 `ttftByCacheFields` 的理由：落一个 `{}` 会把
+ * "这批轨迹早于 headers_received 埋点"读成"这个 provider 没有 model 数据"。
+ *
+ * 导出供 `provider-health.ts` 共用 —— 字段构造规则必须只有一份，否则同一份
+ * events.jsonl 在 `/trace` 与 `/trace --health` 两个入口给出不同结论
+ *（P2-8 就是栽在这上面：注释写着"同构"，实际是两份各自演化的副本）。
+ */
+export function latencyByModelField(
+  all: Map<string, ModelLatencyStats>,
+  provider: string,
+): Pick<ProviderDigestStats, "latencyByModel"> {
+  const mine: Record<string, ModelLatencyStats> = {};
+  for (const [model, s] of all) {
+    if (s.provider === provider) mine[model] = s;
+  }
+  return Object.keys(mine).length > 0 ? { latencyByModel: mine } : {};
 }
 
 // ─────────────────────── 第 5 批：JIT 上下文度量聚合 ───────────────────────
