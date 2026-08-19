@@ -11,6 +11,7 @@
 #      （B7-7 §13.4.4 蒸馏护栏 2，holdout case 入库后会自动激活）
 #   3. oxlint 检查 staged 的 .ts/.tsx（P1-4）
 #   4. oxfmt --check 检查 staged 的代码文件（P2-1；只报错不改文件，理由见该段注释）
+#   5. staged 含 .agents/notes/**.md 时校验 Agent Note 形态（决策留痕反退化，见文末该段）
 #
 # 安装：
 #   bun run install-hooks
@@ -241,6 +242,36 @@ if [ -n "$STAGED_PKG_TS" ]; then
     echo "             低 rank 包不得导入高 rank 包（shared < tui-renderer < core < cli）。"
     echo "             修法：把共享类型下移到 shared，或反转依赖方向；改 rank 表让它变绿是最有害的修法。"
     echo "             细节见 scripts/pkg-boundary-scan.ts 文件头与 tests/build/package-boundary.test.ts"
+    exit 1
+  fi
+fi
+
+# ============================================================================
+# P1-4（AI 并行开发质量门禁）：Agent Note 形态门禁
+#
+# 决策留痕（`.agents/notes/`）是防方向漂移的载体，它比另两个载体强在两点：
+# 进 review、随 PR 走。CLAUDE.md 所有人可读但不随改动走；agent 的记忆目录
+# 只有那一个 harness、那一台机器读得到。
+#
+# 但一个只靠约定的目录会在两三个月内退化：lifecycle 拼错、class 自由发明、
+# 三段结构缺一段、`rejected/` 里躺着 `Status: implemented`（比没有 Note 更坏，
+# 因为它会让人以为某个方案已落地）。这道门禁只拦这类退化。
+#
+# ⚠️ 刻意**只在已有 Note 时校验形态**，不拦「非平凡改动却没写 Note」——
+#    判断"是否非平凡"需要语义理解，机器做不到。硬拦的必然结果是写一份空洞 Note
+#    过闸，或者一路 --no-verify。那一层交人在 PR review 时看，是能力边界不是漏做。
+#
+# 内容同样不查（字数 / 论证是否充分 / 证据是否真实）——内容只有人能审，
+# 与本仓 changelog curated 的哲学一致（必须人工过目才提交）。
+# ============================================================================
+STAGED_NOTES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^\.agents/notes/.*\.md$' || true)
+
+if [ -n "$STAGED_NOTES" ]; then
+  echo "[pre-commit] Agent Note 形态校验 ($(echo "$STAGED_NOTES" | wc -l | tr -d ' ') 个)..."
+  if ! (cd "$REPO_ROOT" && bun run scripts/verify-agent-note.ts); then
+    echo "[pre-commit] ❌ Agent Note 形态不合规，commit 中止"
+    echo "             格式与理由见 .agents/notes/README.md，模板 .agents/notes/_template.md"
+    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
     exit 1
   fi
 fi

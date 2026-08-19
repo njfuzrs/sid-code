@@ -115,6 +115,27 @@
 4. 我引用的「现状」是回源码/轨迹核过的，还是照抄文档的？
 5. 本次有没有碰到**不属于本次任务**的文件？碰之前读过内容、问过我了吗？
    —— 见 §0「⛔ 铁律：不删与本次任务无关的文件和代码」，这条是有过真实数据丢失事故的。
+6. 这次是非平凡改动吗？**Agent Note 写了吗**？—— 见下一节，这是第 1-4 问的落盘载体。
+   写在记忆里不算：那只有一个 harness、一台机器读得到。
+
+### 决策留痕：`.agents/notes/`（防漂移的载体）
+
+**非平凡改动必须在同一个 PR 内加或更新一份 Agent Note。**
+平凡 = 纯机械/局部编辑，不改行为、契约、结构、流程、理由。
+
+路径 `.agents/notes/{proposed,implemented,rejected}/{feature,architecture,bug-fix,simplification,process,testing}/yyyy-mm-dd-标题.md`，
+正文固定三段：**决定了什么 / 放弃了什么（以及为什么不选）/ 拿什么证明它生效了**。
+格式、模板与判断卡不住时的那句自问，见 `.agents/notes/README.md`。
+
+**为什么必须落在仓库里而不是记忆里**：上面自检 1-4 问的答案要能被别的 agent、别的 harness、
+协作者读到，还要随 PR 进 review。`CLAUDE.md` 所有人可读但不随改动走；agent 的记忆目录
+只有那一个实例读得到。最贵的损失在 `rejected/` —— 否决论证只活在记忆里，
+下一个 agent 明天就会重新提议同一件事，而你要把整套论证重做一遍（已经发生过）。
+
+⚠️ `scripts/verify-agent-note.ts`（pre-commit，staged 含 `.agents/notes/**` 时触发）**只查形态**：
+路径 / 闭集 / frontmatter 与目录一致 / 三段非空。**不查内容**，也**不拦「该写没写」** ——
+判断"是否非平凡"需要语义理解，硬拦只会换来一份空洞 Note 或一路 `--no-verify`。
+那一层靠人在 review 时看，是刻意的能力边界。
 
 ## 与 CONTRIBUTING.md 的分工：流程在那边，别在这里重复写
 
