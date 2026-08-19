@@ -75,6 +75,7 @@ import {
   tagDate,
   today,
   isNoiseSubject,
+  HISTORY_WALK_FLAG,
 } from "./lib/changelog-git.ts";
 import { stripUrls } from "./lib/changelog-text.ts";
 import {
@@ -227,14 +228,17 @@ function extractDetails(body: string): string[] {
 /**
  * 采集某区间的提交（含 body 细节），过滤 bump/merge/dashboard 刷盘等噪声。
  *
- * 噪声判据走共享的 `isNoiseSubject`：curate 必须用**同一份**判据，否则 curate 会把
- * `bump v0.1.601` 这种记账提交也喂给 agent，而覆盖率核对又会因为两边分母不同而永远对不上。
+ * 噪声判据走共享的 `isNoiseSubject`、遍历口径走共享的 `HISTORY_WALK_FLAG`：
+ * curate 必须用**同一份**判据，否则 curate 会把 `bump v0.1.601` 这种记账提交也喂给 agent，
+ * 而覆盖率核对又会因为两边分母不同而永远对不上。
  */
 function collectCommits(range: string | null): ParsedCommit[] {
   let raw = "";
   const pretty = `--pretty=format:%h${FS}%s${FS}%b${RS}`;
   try {
-    const args = range ? ["log", range, "--no-merges", pretty] : ["log", "--no-merges", pretty];
+    const args = range
+      ? ["log", range, HISTORY_WALK_FLAG, pretty]
+      : ["log", HISTORY_WALK_FLAG, pretty];
     raw = execFileSync("git", args, { cwd: ROOT, encoding: "utf-8" });
   } catch (err: any) {
     // git 命令真正损坏（非法 range 等）——抛出让 release.sh 的 || warn 接住

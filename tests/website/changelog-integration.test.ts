@@ -19,6 +19,10 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+// ⚠️ 遍历口径与噪声判据一律从生产代码 import，不在测试里复写一份。
+// 原先这里手抄了 `--no-merges` 与三条噪声 regex，于是这份对账断言有了**自己的分母**——
+// 生产改口径它就假红/假绿，而它恰恰是「CHANGELOG 条数 == 真实提交数」的唯一守卫。
+import { HISTORY_WALK_FLAG, isNoiseSubject } from "../../scripts/lib/changelog-git.ts";
 
 const ROOT = resolve(import.meta.dir, "..", "..");
 const DATA_PATH = resolve(ROOT, "website/.vitepress/data/changelog.json");
@@ -198,21 +202,17 @@ describe("CHANGELOG.md · 版本区间不漏提交（回归：补跑会清空当
       const got = countMdCommits(md, version);
       if (got === null) continue;
 
-      // 真实区间提交数，扣掉生成器刻意过滤的噪声（bump / Merge / dashboard 刷盘）
+      // 真实区间提交数，扣掉生成器刻意过滤的噪声（bump / Merge / dashboard 刷盘）。
+      // 遍历口径与噪声判据都走生产代码的共享源，见文件头 import 处的说明。
       const subjects = execFileSync(
         "git",
-        ["log", "--no-merges", "--format=%s", `${prevTag}..${tag}`],
+        ["log", HISTORY_WALK_FLAG, "--format=%s", `${prevTag}..${tag}`],
         { cwd: ROOT, encoding: "utf8" },
       )
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
-      const real = subjects.filter(
-        (s) =>
-          !/^bump\s+v?\d/i.test(s) &&
-          !/^Merge\s/i.test(s) &&
-          !/^ci(?:\([^)]*\))?\s*[:：]\s*refresh dashboard/i.test(s),
-      ).length;
+      const real = subjects.filter((s) => !isNoiseSubject(s)).length;
 
       // 无提交的版本会渲染成「- 无显著变更」一条占位，此时 got=1 而 real=0
       expect(got).toBe(real === 0 ? 1 : real);
@@ -513,5 +513,57 @@ describe("左栏版本时间线", () => {
       { version: "9.9.8", date: "2026-07-31" },
     ]);
     expect(groups.map((g: any) => g.text)).toEqual(["2026 年 8 月（1）", "2026 年 7 月（1）"]);
+  });
+});
+
+// ── 历史遍历口径（2026-08-19，随「squash → merge commit」一起改）──────────────────
+//
+// 仓库改成允许 merge commit（保留 agent 中间提交做 bisect）之后，`--no-merges` 会同时
+// 做错两件事：排除 merge commit → PR 标题（唯一那条人写给人看的摘要）从 CHANGELOG 消失；
+// 放出所有中间提交 → `wip: 第 3 步` 涌进用户可见的 changelog。
+//
+// 这组断言守的是「别退回去」，以及「三处取数不许各有一套口径」。
+// ⚠️ 失效形态是**假绿**：退回 --no-merges 之后 changelog 照样生成、站点照样构建，
+// 只是内容从「13 条 PR 标题」变成「160 条 wip」，没有任何东西会红。
+describe("changelog 取数口径统一走 --first-parent", () => {
+  const GEN = readFileSync(resolve(ROOT, "scripts/generate-changelog.ts"), "utf8");
+  const LIB = readFileSync(resolve(ROOT, "scripts/lib/changelog-git.ts"), "utf8");
+
+  test("共享常量存在且值为 --first-parent", () => {
+    expect(HISTORY_WALK_FLAG).toBe("--first-parent");
+  });
+
+  // ⚠️ 刻意**不扫描本测试文件自己**：断言里的那个字面量就在实义代码里，自扫描恒红
+  // （首次写完就踩了）。本文件的口径由文件头的 import 保证 —— 它根本没有第二个来源可用。
+  test("两个生产取数点都不含裸 --no-merges（只看实义代码，注释里可以复述）", () => {
+    for (const [name, src] of [
+      ["generate-changelog.ts", GEN],
+      ["changelog-git.ts", LIB],
+    ] as const) {
+      const code = src
+        .split("\n")
+        .filter((l) => {
+          const t = l.trim();
+          return !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+        })
+        .join("\n");
+      expect(code, `${name} 不得硬编码 --no-merges`).not.toContain('"--no-merges"');
+    }
+  });
+
+  test("两个生产取数点都引用共享常量，而不是各写一个字面量", () => {
+    // 断言「引用了常量」而非「含有 --first-parent 字符串」：后者允许有人手抄一份字面量，
+    // 那就又回到两头维护——改一处忘另一处时分母静默分叉。
+    expect(GEN).toContain("HISTORY_WALK_FLAG");
+    expect(LIB).toContain("HISTORY_WALK_FLAG");
+  });
+
+  test("Merge 噪声判据仍在（人手工 git merge 造的标题不合 Conventional Commits）", () => {
+    // 仓库设置把 merge_commit_title 定为 PR_TITLE，所以 GitHub 建的 merge commit 标题合规；
+    // 但历史上有一个人手工 merge 的（9eac8c46 `Merge branch 'plan-mode'`），必须仍被滤掉。
+    expect(isNoiseSubject("Merge branch 'plan-mode' into 'master'")).toBe(true);
+    expect(isNoiseSubject("bump v0.1.601")).toBe(true);
+    // 反向：合规的 PR 标题不得被误滤
+    expect(isNoiseSubject("feat(cache): 新增 XXX")).toBe(false);
   });
 });

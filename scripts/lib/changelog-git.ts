@@ -113,11 +113,38 @@ export function versionRange(version: string, tags?: string[]): VersionRange {
 }
 
 /**
+ * git log 的历史遍历口径（2026-08-19 从 `--no-merges` 改成 `--first-parent`）。
+ *
+ * ⚠️ 这个常量必须被**所有** changelog 取数处共用，包括 `generate-changelog.ts` 与
+ * `tests/website/changelog-integration.test.ts` 的对账断言。两边口径一旦不同，
+ * 覆盖率核对就永远对不上——与下面 `isNoiseSubject` 是同一条纪律。
+ *
+ * 为什么必须换掉 `--no-merges`：仓库从 squash-only 改成允许 merge commit 之后
+ * （为了保留 agent 的中间提交做 bisect），`--no-merges` 会同时做错两件事：
+ *   ① **排除掉 merge commit** → PR 标题（唯一那条人写给人看的摘要）从 CHANGELOG 里消失
+ *   ② **放出所有中间提交** → `wip: 第 3 步` 这类过程记录涌进用户可见的 changelog
+ * 实测（临时仓库，1 个 PR / 3 个 wip 提交）：`--no-merges` 出 3 条 wip 且无 PR 标题；
+ * `--first-parent` 恰好 1 条 = PR 标题，且 `%b` 带上 PR 正文的 bullet。
+ *
+ * `--first-parent` 只沿主线走，所以行为与旧的 squash 流程**完全一致**——
+ * 实测 v0.1.599..v0.1.600 两种口径都是 11 条，改动向前兼容。
+ *
+ * ⚠️ 它是**机制**而不是约定：靠「过滤 `wip:` 前缀」需要 agent 的 commit message 自觉，
+ * 而 `--first-parent` 根本不看那些提交。
+ */
+export const HISTORY_WALK_FLAG = "--first-parent";
+
+/**
  * 生成器刻意过滤的噪声提交（bump 记账 / Merge / eval dashboard 刷盘）。
  *
  * curate 与生成器必须用**同一份**判据：否则 curate 会把 `bump v0.1.601` 这种
  * 记账提交也喂给 agent（浪费、且可能被写成一条用户可见变更），而覆盖率核对
  * 又会因为两边的分母不同而永远对不上。
+ *
+ * ⚠️ `^Merge\s` 这条在改用 `--first-parent` 之后仍然要留：仓库设置把
+ * `merge_commit_title` 定为 `PR_TITLE`，所以 GitHub 建的 merge commit 标题是合规的
+ * Conventional Commits；但**人手工 `git merge` 造的** merge commit 标题仍是
+ * `Merge branch 'x'`（历史上有一个：`9eac8c46`），它必须被过滤掉。
  */
 export function isNoiseSubject(subject: string): boolean {
   const s = subject.trim();
@@ -143,7 +170,7 @@ export function collectRawCommits(range: string | null, fallbackRange?: string):
   const pretty = `--pretty=format:%h${FS}%s${FS}%b${RS}`;
   let raw = "";
   const run = (r: string | null): string => {
-    const args = r ? ["log", r, "--no-merges", pretty] : ["log", "--no-merges", pretty];
+    const args = r ? ["log", r, HISTORY_WALK_FLAG, pretty] : ["log", HISTORY_WALK_FLAG, pretty];
     return execFileSync("git", args, { cwd: ROOT, encoding: "utf-8" });
   };
   try {
