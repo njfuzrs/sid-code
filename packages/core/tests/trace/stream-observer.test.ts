@@ -267,6 +267,100 @@ describe("B4 per-agent 快照隔离（附录 A5）", () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// P2 · StreamPhase.attempt —— 修 `(session, index)` 非唯一键
+//
+// 背景（方案 §0.1c）：重试复用同一 index，实测某会话 index=4 下有 7 组完整 phase
+// 序列。没有 attempt 时，dict 式配对会把第 1 次 attempt 的 ttfb 配到第 7 次的 ttft 上，
+// 且"负值 0 条"不构成自洽性证明（后一次的 ttft 通常比前一次的 ttfb 大，错配不产生负值）。
+// ═══════════════════════════════════════════════════════════════════
+describe("StreamPhase.attempt（P2 · 唯一键修复）", () => {
+  const phasesOf = () => eventsOf("StreamPhase").map((e) => e.data as Record<string, unknown>);
+
+  test("单次 fetch 的完整 phase 序列共享同一个 attempt", () => {
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+    emitStreamPhase(4, "headers_received", { ttfb_ms: 100, model: "m" });
+    emitStreamPhase(4, "first_content", { ttft_ms: 900, model: "m" });
+    emitStreamPhase(4, "completed", { model: "m" });
+
+    expect(phasesOf().map((d) => d.attempt)).toEqual([1, 1, 1, 1]);
+  });
+
+  test("openai 形态：fetch_sent 进位，同 index 的 7 次重试拿到 1..7", () => {
+    for (let i = 0; i < 7; i++) {
+      emitStreamPhase(4, "fetch_sent", { model: "m" });
+      emitStreamPhase(4, "headers_received", { ttfb_ms: 10 * i, model: "m" });
+    }
+    const headers = phasesOf().filter((d) => d.phase === "headers_received");
+    expect(headers.map((d) => d.attempt)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  test("anthropic 形态：无 fetch_sent，靠重复的 headers_received 换代", () => {
+    // anthropic.ts 全仓只有 headers_received 与 first_content 两个 emit 点，
+    // 没有 fetch_sent —— 不认这个换代信号则 attempt 会永远停在 1。
+    emitStreamPhase(4, "headers_received", { ttfb_ms: 50, model: "claude" });
+    emitStreamPhase(4, "first_content", { ttft_ms: 800, model: "claude" });
+    emitStreamPhase(4, "headers_received", { ttfb_ms: 60, model: "claude" });
+    emitStreamPhase(4, "first_content", { ttft_ms: 900, model: "claude" });
+
+    expect(phasesOf().map((d) => d.attempt)).toEqual([1, 1, 2, 2]);
+  });
+
+  test("★ 重试前的 clearStreamSnapshot 不得重置 attempt（本实现的要害）", () => {
+    // 快照在每次重试前被主动清掉（loop.ts:2588 等，防看门狗误杀）。若 attempt 计数
+    // 挂在快照上，就会跟着归零 —— 同一 (session,index) 下出现两个 attempt=1，
+    // 键仍不唯一却"看起来像唯一"，比没有这个字段更糟。
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+    emitStreamPhase(4, "headers_received", { ttfb_ms: 100, model: "m" });
+
+    clearStreamSnapshot(4); // ← 重试前的真实调用
+
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+    emitStreamPhase(4, "headers_received", { ttfb_ms: 200, model: "m" });
+
+    const attempts = phasesOf().map((d) => d.attempt);
+    expect(attempts).toEqual([1, 1, 2, 2]);
+    // 判据的核心：清快照后**不允许**再出现一个 attempt=1
+    expect(attempts.filter((a) => a === 1).length).toBe(2);
+  });
+
+  test("主循环与子代理各自独立计数（共享 index 空间不串号）", () => {
+    emitStreamPhase(10001, "fetch_sent", { model: "a" }, "agent-a");
+    emitStreamPhase(10001, "fetch_sent", { model: "a" }, "agent-a");
+    emitStreamPhase(10001, "fetch_sent", { model: "b" }, "agent-b");
+
+    const byAgent = phasesOf().filter((d) => d.agent_id === "agent-a");
+    expect(byAgent.map((d) => d.attempt)).toEqual([1, 2]);
+    expect(phasesOf().filter((d) => d.agent_id === "agent-b")[0].attempt).toBe(1);
+  });
+
+  test("调用方显式传入的 attempt 优先于推导值（agentic-loop 已在传）", () => {
+    // agent/agentic-loop.ts 的 onRetry 拿得到 fallback.ts 的权威 attempt，
+    // 那边传什么就落什么，本模块的推导只是兜底。两者同源，不是两套口径。
+    emitStreamPhase(10001, "fetch_sent", { model: "m", attempt: 0 }, "agent-a");
+    emitStreamPhase(10001, "fetch_sent", { model: "m", attempt: 3 }, "agent-a");
+
+    expect(phasesOf().map((d) => d.attempt)).toEqual([0, 3]);
+  });
+
+  test("首个事件不是开场 phase 时归入 attempt=1，而不是 0", () => {
+    // 老轨迹 / emit 失败漏了开场时：0 会被读成"第 0 次尝试"，
+    // 而事实是"至少发生过一次尝试，只是没观测到开场"。
+    emitStreamPhase(4, "first_content", { ttft_ms: 700, model: "m" });
+    expect(phasesOf()[0].attempt).toBe(1);
+  });
+
+  test("clearAllSnapshots 后同 index 从 1 重新开始（loop 收尾即生命周期终点）", () => {
+    const { loopId } = currentSseDumpContext();
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+    clearAllSnapshots(loopId);
+    emitStreamPhase(4, "fetch_sent", { model: "m" });
+
+    expect(phasesOf().map((d) => d.attempt)).toEqual([1, 2, 1]);
+  });
+});
+
 // ─── 辅助 ───
 function inefFirst(list: Array<{ data: Record<string, unknown> }>) {
   return list[0].data as { layer: string; index: number; reason: string };

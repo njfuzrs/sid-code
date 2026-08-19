@@ -11,6 +11,7 @@ import { parseFrontmatter } from "./frontmatter.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths, getClaudeHome } from "../config/paths.ts";
 import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
+import { isPolicyAllowed } from "../config/policy-limits.ts";
 import type {
   ExtensionSource,
   ParsedExtensionFile,
@@ -103,9 +104,21 @@ export class ExtensionLoader {
     //（strictPluginOnlyCustomization）。锁定时跳过 user/project/additional 三层，
     // 只保留 builtin 与 managed —— 防止未审计的项目级 skill/agent 被自动加载执行。
     // type 与面名同形（skills/commands/agents/hooks），直接透传。
-    const surfaceLocked = isRestrictedToPluginOnly(
-      type as import("../config/plugin-only-policy.ts").CustomizationSurface,
-    );
+    //
+    // P1（policyLimits 接线）：`policyLimits` 此前**只被写入、从不被读取** ——
+    // `setPolicyLimits()` 有调用点，三个判定函数全仓 0 个。企业配了开关却毫无效果，
+    // 而 `website/team/policy.md` 还写着"注入生效"。这里把它接到已有的
+    // surfaceLocked 上，复用同一条跳过逻辑，不新增控制流。
+    //
+    // 两个开关的分工：`strictPluginOnlyCustomization` 限制**来源**（只信管理员的），
+    // `policyLimits` 是**总开关**（这个面整个不要）。取或即可，语义不冲突。
+    // commands 面刻意排除在 `extensions` 之外——它由 `custom_commands` 单独管，
+    // 否则管理员只禁了 extensions 却连斜杠命令一起没了，是个意外行为。
+    const surfaceLocked =
+      isRestrictedToPluginOnly(
+        type as import("../config/plugin-only-policy.ts").CustomizationSurface,
+      ) ||
+      (type !== "commands" && !isPolicyAllowed("extensions"));
     if (surfaceLocked) {
       getLogger().debug(
         "EXTENSION",

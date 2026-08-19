@@ -8,6 +8,7 @@ import type { Command, AppContext, CommandResult } from "./types.ts";
 import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { execSync } from "child_process";
 import { readFileSync } from "fs";
 import { resolve } from "path";
@@ -302,6 +303,16 @@ export class CustomCommandLoader {
     scanOptions?: ScanOptions,
   ): Promise<Array<{ cmd: CustomCommand; source: "user" | "project" }>> {
     const log = getLogger();
+    // P1（policyLimits 接线）：企业策略禁用自定义命令。
+    //
+    // 闸门放在 loadAll 而不是两个调用方（`command/loaders.ts` 的新命令系统 +
+    // `cli.ts` 的 legacy 回退路径）：那样要写两遍，且日后第三个入口会静默绕过。
+    // 返回空数组是**已有的正常路径**（用户没有 commands 目录时就是这个结果），
+    // 上层 `loadAllCommands` 本身也 `.catch(() => [])`，不会崩。内置命令不受影响。
+    if (!isPolicyAllowed("custom_commands")) {
+      log.info("CUSTOM_CMD", "自定义命令已被企业策略禁用，跳过加载");
+      return [];
+    }
     const files = await this.extensionLoader.scan(
       "commands",
       projectDir ?? process.cwd(),

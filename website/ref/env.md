@@ -18,7 +18,7 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **72** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 共 **73** 个环境变量，取自 `sid-code --help` 的环境变量段，
 > 并与源码里实际的 `process.env` 读取点（扫到 86 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
@@ -44,6 +44,7 @@ description: 全部可用环境变量及其作用。
 |---|---|
 | `SID_CODE_TRACE` | 设为 1 或 true 启用轨迹采集 |
 | `SID_CODE_TRACE_OUTPUT_DIR` | 自定义轨迹输出目录 |
+| `SID_CODE_TRACE_NO_RAW` | 设为 1 不把 prompt/响应原文写进 raw.jsonl |
 | `SID_CODE_TRACE_UPLOAD_URL` | 轨迹上传平台地址 |
 | `SID_CODE_TRACE_UPLOAD_TOKEN` | 上传认证 token |
 | `SID_CODE_TRACE_USER_ID` | 用户标识 |

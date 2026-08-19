@@ -657,6 +657,18 @@ export interface TraceConfig {
   outputDir?: string;
   /** 本地最大保留会话数（默认 100，超过自动清理最旧的） */
   maxSessionsRetained?: number;
+  /**
+   * 是否把**请求/响应原文**写进 `raw.jsonl`（默认 `true`，保持既有行为）。
+   *
+   * 置 `false` 时不再落 system prompt / 完整 messages / 工具定义 / 响应全文，
+   * 但保留 `request_sent` 那行计数记录（会话续接的 index 靠它，见
+   * `trace/writer.ts` 的 `appendRaw` 注释）。env 兜底：`SID_CODE_TRACE_NO_RAW=1`。
+   *
+   * **这是隐私开关，不是性能开关**：实测 48 个会话共 16MB、单会话最大 1.2MB，
+   * 省磁盘的收益≈0。它存在的理由是企业要求「不落 prompt 原文」时，
+   * 此前只能整体关掉 trace —— 那会连带失去 `/trace` 的排查能力。
+   */
+  recordRawPayloads?: boolean;
   /** 上传配置 */
   upload?: TraceUploadConfig;
 }

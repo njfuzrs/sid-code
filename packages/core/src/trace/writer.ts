@@ -141,9 +141,23 @@ function maskJsonSafe(content: string, indent: number, what: string): string {
 export class TraceWriter {
   private sessionDir: string;
   private initialized = false;
+  private readonly recordRawPayloads: boolean;
 
-  constructor(baseDir: string, sessionId: string) {
+  /**
+   * @param opts.recordRawPayloads 是否落 raw.jsonl 的**内容型**记录（默认 true）。
+   *   传 `false` 时 {@link appendRaw} 静默跳过，但 {@link appendRawJsonl} 仍可写
+   *   ——两者的区别见 appendRaw 的注释，那是本开关唯一容易搞错的地方。
+   */
+  constructor(baseDir: string, sessionId: string, opts?: { recordRawPayloads?: boolean }) {
     this.sessionDir = join(baseDir, "sessions", sessionId);
+    // `!== false`：undefined（既有的两参构造，含 20+ 处测试）与 null 都按"记录"处理，
+    // 只有显式 false 才关。默认开是兼容性要求。
+    this.recordRawPayloads = opts?.recordRawPayloads !== false;
+  }
+
+  /** 内容型 raw 记录是否启用（供 collector 决定要不要构造大对象） */
+  isRecordingRawPayloads(): boolean {
+    return this.recordRawPayloads;
   }
 
   /** 获取输出目录路径 */
@@ -225,8 +239,27 @@ export class TraceWriter {
   /**
    * 序列化并追加一行到 raw.jsonl
    * @param entry - 请求/响应对数据
+   *
+   * ## 为什么开关拦在这里，而不是在 {@link appendRawJsonl}
+   *
+   * raw.jsonl 里有**两种形态的记录**，隐私属性完全不同：
+   *
+   * | 记录 | 内容 | 谁写 |
+   * |---|---|---|
+   * | `{type:"request_sent", index, model, msg_count, estimated_input_tokens}` | **无任何 prompt 原文**，只有计数 | `collector` 直接调 `appendRawJsonl` |
+   * | 完整 pair（system prompt + messages + tools + 响应全文） | **全是原文** | 本函数 |
+   *
+   * 企业诉求是「不落 prompt 原文」，拦住后者就够了。而前者必须留着：
+   * `collector.countExistingPairs()` 靠数「没有 type 字段的行」来续接会话的
+   * index —— 两种记录一起关掉，续接就只剩 `metadata.json` 一条回退路，
+   * 而那个文件**只有 uploader 会写**（实测全仓仅 `uploader.ts` 一处）。
+   * 没配上传的用户续接会话时 index 会从 1 重号，与远端历史冲突。
+   *
+   * 换句话说：**这个开关关的是内容，不是文件**。想连文件都不要，
+   * 关掉整个 trace 即可（那会连带失去 `/trace` 排查能力，是另一个取舍）。
    */
   appendRaw(entry: RawJsonlEntry): void {
+    if (!this.recordRawPayloads) return;
     const line = JSON.stringify(entry);
     this.appendRawJsonl(line);
   }

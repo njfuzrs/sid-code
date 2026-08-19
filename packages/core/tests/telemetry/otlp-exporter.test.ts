@@ -298,10 +298,96 @@ describe("OtlpTelemetryExporter metrics payload", () => {
     expect(payload.resourceMetrics[0].scopeMetrics[0].metrics[0].gauge).toBeDefined();
   });
 
-  test("histogram 按 gauge 上报（MetricPoint 无分桶数据，硬造边界会得出错误分布）", () => {
+  test("histogram 无分桶时仍按 gauge 上报（硬造边界会得出错误分布）", () => {
+    // 降级分支刻意保留：老调用点与任何忘记传 buckets 的新调用点仍然只有单值，
+    // 对它们硬造 bucket 边界得出的分布是错的。按 gauge 报形态诚实。
     const e = new OtlpTelemetryExporter();
     const metric = (e.buildMetricsPayload([point({ type: "histogram" })]) as any).resourceMetrics[0]
       .scopeMetrics[0].metrics[0];
+    expect(metric.gauge).toBeDefined();
+    expect(metric.histogram).toBeUndefined();
+  });
+
+  test("histogram 带分桶 → 真 histogram（count/sum/bucketCounts/explicitBounds）", () => {
+    const e = new OtlpTelemetryExporter();
+    const bounds = [100, 500, 1000];
+    const metric = (
+      e.buildMetricsPayload([
+        point({ name: "ttft", type: "histogram", value: 50, buckets: { bounds } }),
+        point({ name: "ttft", type: "histogram", value: 300, buckets: { bounds } }),
+        point({ name: "ttft", type: "histogram", value: 2000, buckets: { bounds } }),
+      ]) as any
+    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+
+    expect(metric.gauge).toBeUndefined();
+    const dp = metric.histogram.dataPoints[0];
+    expect(metric.histogram.aggregationTemporality).toBe(1);
+    expect(dp.explicitBounds).toEqual(bounds);
+    // n 条边界 → n+1 个桶；50→桶0，300→桶1，2000→溢出桶3
+    expect(dp.bucketCounts).toEqual([1, 1, 0, 1]);
+    expect(dp.count).toBe(3);
+    expect(dp.sum).toBe(2350);
+    expect(dp.min).toBe(50);
+    expect(dp.max).toBe(2000);
+    // 单值字段不该出现在 histogram data point 上
+    expect(dp.asDouble).toBeUndefined();
+  });
+
+  test("histogram 落桶用左开右闭 (lo, hi]：正好等于边界值落进该桶而非下一个", () => {
+    const e = new OtlpTelemetryExporter();
+    const metric = (
+      e.buildMetricsPayload([
+        point({ name: "h", type: "histogram", value: 100, buckets: { bounds: [100, 500] } }),
+      ]) as any
+    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+    expect(metric.histogram.dataPoints[0].bucketCounts).toEqual([1, 0, 0]);
+  });
+
+  test("histogram 按 attributes 分组成多个 data point（不同标签不得合并）", () => {
+    const e = new OtlpTelemetryExporter();
+    const bounds = [1000];
+    const metric = (
+      e.buildMetricsPayload([
+        point({
+          name: "ttft",
+          type: "histogram",
+          value: 10,
+          attributes: { "gen_ai.request.model": "a" },
+          buckets: { bounds },
+        }),
+        point({
+          name: "ttft",
+          type: "histogram",
+          value: 20,
+          attributes: { "gen_ai.request.model": "b" },
+          buckets: { bounds },
+        }),
+      ]) as any
+    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+
+    // 跨 model 汇总 TTFT 分位是假数（同底层模型不同网关路由差 17 倍），
+    // 所以标签不同必须分成两个 data point 交给后端切分。
+    expect(metric.histogram.dataPoints.length).toBe(2);
+  });
+
+  test("bounds 不同的同名点不合并（合了等于把两套坐标系的计数相加）", () => {
+    const e = new OtlpTelemetryExporter();
+    const metric = (
+      e.buildMetricsPayload([
+        point({ name: "h", type: "histogram", value: 5, buckets: { bounds: [10] } }),
+        point({ name: "h", type: "histogram", value: 5, buckets: { bounds: [10, 20] } }),
+      ]) as any
+    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
+    expect(metric.histogram.dataPoints.length).toBe(2);
+  });
+
+  test("空 bounds 视同无分桶 → 降级 gauge（只有一个 (-∞,+∞) 桶无意义）", () => {
+    const e = new OtlpTelemetryExporter();
+    const metric = (
+      e.buildMetricsPayload([
+        point({ name: "h", type: "histogram", value: 5, buckets: { bounds: [] } }),
+      ]) as any
+    ).resourceMetrics[0].scopeMetrics[0].metrics[0];
     expect(metric.gauge).toBeDefined();
     expect(metric.histogram).toBeUndefined();
   });

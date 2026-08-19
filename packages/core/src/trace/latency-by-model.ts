@@ -42,14 +42,22 @@
  * ## 配对规则：按时间序，不按 (session, index)
  *
  * `(session_id, index)` **不是唯一键** —— 重试复用同一 index，实测
- * `20260806-182533-a927c544` 的 `index=4` 下有 **7 组**完整 phase 序列，而
- * `StreamPhase` 当前没有 `attempt` 字段。dict 式配对会把第 1 次 attempt 的 ttfb
- * 配到第 7 次的 ttft 上，且**"负值 0 条"不构成自洽性证明**（后一次 attempt 的
- * ttft 通常比前一次的 ttfb 大，错配不产生负值）。
+ * `20260806-182533-a927c544` 的 `index=4` 下有 **7 组**完整 phase 序列。
+ * dict 式配对会把第 1 次 attempt 的 ttfb 配到第 7 次的 ttft 上，且**"负值 0 条"
+ * 不构成自洽性证明**（后一次 attempt 的 ttft 通常比前一次的 ttfb 大，错配不产生负值）。
  *
  * 故这里用「组内按到达顺序，`headers_received` → 其后第一个 `first_content`」配对，
  * 未闭合的 headers（重试/error 中断）计入 {@link ModelLatencyStats.unpairedHeaders}
  * 而不是硬凑。实测该法得 1372 对 / 0 负值 / 36 个未配对。
+ *
+ * ⚠️ **`StreamPhase` 现在带 `attempt` 字段了**（见 `trace/stream-observer.ts` 的
+ * `_attempts`），但**本模块刻意继续用时序配对，没有改成按 attempt 建键**。两条理由：
+ *   1. 老轨迹没有这个字段。改成按 attempt 建键会让历史数据整体退化为"全部未配对"，
+ *      而时序配对对新老轨迹一视同仁。
+ *   2. 上面那组 1372/0/36 是**已核过的基线**。换键 = 换分母，得先重新核一遍才能
+ *      比较版本间趋势；在没有实测收益的前提下换掉一把量过的尺子，是净损失。
+ * `attempt` 的价值在**离线分析**（人拿 jq 配对时不必再自己推时序），
+ * 那正是它被提出来的场景。要在本模块用它，请先拿新老两批轨迹跑一次对照。
  *
  * 同病见 `ttft-cache-buckets.ts` 文件头："`index` 与 usage 是 1:N，按 index 硬关联
  * 得出的结论是假的" —— 那里已经刻意拒绝按 index 关联，本模块沿用同一条纪律。

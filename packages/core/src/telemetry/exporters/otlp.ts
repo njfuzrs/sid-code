@@ -317,12 +317,94 @@ export class OtlpTelemetryExporter implements TelemetryExporter {
     }
 
     if (type === "histogram") {
-      // 我们的 MetricPoint 只带单值、无分桶。硬造分桶边界会得出错误的分布，
-      // 所以按 gauge 上报——形态诚实，聚合端可自行做直方图。
+      const histogram = this.toHistogramDataPoints(points);
+      // 带分桶 → 真 histogram；不带 → 维持原降级。
+      //
+      // ⚠️ 降级分支**刻意保留**，不要因为"现在支持分桶了"就删掉它：
+      // 老调用点、以及任何忘记传 buckets 的新调用点，仍然只有单值。
+      // 对它们硬造 bucket 边界得出的分布是错的 —— 按 gauge 报形态诚实，
+      // 聚合端可自行做直方图。
+      if (histogram) {
+        return {
+          name,
+          histogram: { dataPoints: histogram, aggregationTemporality: 1 },
+        };
+      }
       return { name, gauge: { dataPoints } };
     }
 
     return { name, gauge: { dataPoints } };
+  }
+
+  /**
+   * 把一组带分桶的 histogram 点聚合成 OTLP HistogramDataPoint。
+   *
+   * 聚合键是 **(attributes, bounds)**：同名 metric 下不同标签组合各自成一个 data point
+   * （OTLP 语义），而 bounds 不同的点不能合并 —— 合了等于把两套坐标系的计数相加，
+   * 得出的分布没有任何含义。实践中同一 metric 的 bounds 是常量，这里只是不赌它。
+   *
+   * 返回 null 表示"这批点里没有一个带可用分桶"，调用方据此走降级分支。
+   */
+  private toHistogramDataPoints(points: MetricPoint[]): Array<Record<string, unknown>> | null {
+    interface Acc {
+      attributes: MetricPoint["attributes"];
+      bounds: number[];
+      bucketCounts: number[];
+      count: number;
+      sum: number;
+      min: number;
+      max: number;
+      startTime: number;
+      endTime: number;
+    }
+    const groups = new Map<string, Acc>();
+
+    for (const p of points) {
+      const bounds = p.buckets?.bounds;
+      // 空 bounds 划不出有意义的桶（只有一个 (-∞,+∞)），与"没传"同等对待
+      if (!bounds || bounds.length === 0) continue;
+      const key = `${JSON.stringify(p.attributes)}|${bounds.join(",")}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          attributes: p.attributes,
+          bounds,
+          // n 条边界 → n+1 个桶，最后一个是 (bounds[n-1], +∞)
+          bucketCounts: new Array(bounds.length + 1).fill(0),
+          count: 0,
+          sum: 0,
+          min: p.value,
+          max: p.value,
+          startTime: p.timestamp,
+          endTime: p.timestamp,
+        };
+        groups.set(key, g);
+      }
+      // 落桶：找到第一个 value <= bound 的桶（OTLP 的桶是左开右闭 (lo, hi]）
+      let idx = bounds.findIndex((b) => p.value <= b);
+      if (idx === -1) idx = bounds.length; // 超出最后一条边界 → 溢出桶
+      g.bucketCounts[idx]++;
+      g.count++;
+      g.sum += p.value;
+      if (p.value < g.min) g.min = p.value;
+      if (p.value > g.max) g.max = p.value;
+      if (p.timestamp < g.startTime) g.startTime = p.timestamp;
+      if (p.timestamp > g.endTime) g.endTime = p.timestamp;
+    }
+
+    if (groups.size === 0) return null;
+
+    return Array.from(groups.values(), (g) => ({
+      attributes: toKeyValues(g.attributes),
+      startTimeUnixNano: toUnixNano(g.startTime),
+      timeUnixNano: toUnixNano(g.endTime),
+      count: g.count,
+      sum: g.sum,
+      bucketCounts: g.bucketCounts,
+      explicitBounds: g.bounds,
+      min: g.min,
+      max: g.max,
+    }));
   }
 
   private async post(url: string, payload: Record<string, unknown>): Promise<void> {

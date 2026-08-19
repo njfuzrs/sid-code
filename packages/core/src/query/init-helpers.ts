@@ -57,11 +57,22 @@ export async function initTraceCollector(
     }
 
     const collector = new TraceCollector(
-      { outputDir: traceConfig.outputDir, maxSessionsRetained: traceConfig.maxSessionsRetained },
+      {
+        outputDir: traceConfig.outputDir,
+        maxSessionsRetained: traceConfig.maxSessionsRetained,
+        // 不传（undefined）时由 collector 侧解析 env 兜底 SID_CODE_TRACE_NO_RAW，
+        // 所以这里原样透传而不是先 `?? true` —— 提前定死会把 env 通道堵掉。
+        recordRawPayloads: traceConfig.recordRawPayloads,
+      },
       uploader,
     );
     collector.registerHooks(hookSystem);
     log.info("TRACE", "轨迹采集已启用");
+    if (!collector.isRecordingRawPayloads()) {
+      // 显式说出来：raw.jsonl 变小/无内容行是**配置生效**，不是采集坏了。
+      // 不打这行的话，排查者看到空 raw.jsonl 的第一反应必然是去查 bug。
+      log.info("TRACE", "raw.jsonl 内容记录已关闭（仅保留请求计数行）");
+    }
     return collector;
   } catch (err: any) {
     log.warn("TRACE", `轨迹采集初始化失败: ${err.message}`);

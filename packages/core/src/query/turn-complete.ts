@@ -51,6 +51,7 @@
 
 import type { LoopState, QueryDeps } from "./types.ts";
 import type { SessionState } from "../session/state.ts";
+import { recordTurnsHistogram } from "../telemetry/metrics/latency-histograms.ts";
 
 /**
  * HITL（需用户确认的权限弹窗）**累计**次数在 SessionState 上的键。
@@ -185,11 +186,21 @@ export function emitTurnComplete(
   if (state.turnCompleteEmitted) return;
   state.turnCompleteEmitted = true;
   try {
-    if (!deps.traceAppendEvent) return;
-    const startedAt = state.turnStartedAtMs;
     const hitlNow = readHitlPromptCount(sessionState);
     const hadHitl =
       state.hadHitlThisTurn === true || hitlNow > (state.hitlCountAtTurnStart ?? hitlNow);
+
+    // P1（turns Histogram）：**必须在下面 traceAppendEvent 的早退之前**记录。
+    // metric 与 events.jsonl 是两条独立通道 —— 放到早退之后，任何没接 trace sink 的
+    // 场景（无头、trace 未开）都会静默丢掉这个指标，而它恰恰是"更省"方向的
+    // 最大杠杆（实测轮数 vs e2e r = 0.767，2× 轮数 ≈ 3–4× 成本）。
+    //
+    // 位置也在幂等闸门（上面两行）之后：queryLoop 有 20+ 个 `yield done; return`
+    // 出口外加 finally 兜底，不受闸门保护就会重复计数。
+    recordTurnsHistogram(state.turnCount, args.stopReason, { hadHitl });
+
+    if (!deps.traceAppendEvent) return;
+    const startedAt = state.turnStartedAtMs;
     const payload: TurnCompletePayload = {
       turn: state.turnCount,
       absoluteTurn: args.absoluteTurn,

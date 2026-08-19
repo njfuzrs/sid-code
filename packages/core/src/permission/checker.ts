@@ -35,7 +35,9 @@ import {
   recordDenial,
   recordSuccess,
   shouldFuse,
+  DENIAL_LIMITS,
 } from "./denial-tracking.ts";
+import { recordDefenseTrigger } from "../telemetry/metrics/defense-metrics.ts";
 import { RuleLoader } from "./rule-loader.ts";
 import { getShadowedRulesForTool } from "./shadowed-rules.ts";
 import type { SandboxManager } from "./sandbox.ts";
@@ -410,6 +412,17 @@ export class PermissionChecker implements Checker {
       "PERMISSION",
       `同一操作（${req.toolName} ${String(resource).slice(0, 60)}）连续 ${consecutive} 次被拒绝，熔断→回退人工确认`,
     );
+    // P1（防线可观测）：本函数是两条熔断路径（hard deny / ask 后处理）的**唯一汇聚点**，
+    // 埋在这里就不会漏记也不会重复记。埋在 `shouldFuse()` 里则是错的——那是个
+    // 每次拒绝都跑的纯谓词，绝大多数返回 false，记的会是"判定次数"而非"触发次数"。
+    //
+    // 只落 tool 名不落 resource：resource 是文件路径/命令行，基数无上界，
+    // 做 metric 标签会把后端的时间序列打爆（tool 名是闭集，安全）。
+    recordDefenseTrigger("denial_tracking", "tripped", {
+      tool: req.toolName,
+      count: consecutive,
+      threshold: DENIAL_LIMITS.maxConsecutive,
+    });
     const decision: Decision = {
       allowed: false,
       needsConfirmation: true,

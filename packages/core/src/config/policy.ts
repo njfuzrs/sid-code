@@ -19,8 +19,19 @@ export interface PolicySettings {
     deny?: string[];
     ask?: string[];
   };
-  /** 功能级开关 */
-  policyLimits?: Record<string, { allowed: boolean }>;
+  /**
+   * 功能级开关。
+   *
+   * `reason` 是管理员可填的禁用理由，会由 `policy-limits.ts` 的
+   * `getPolicyDenialReason()` 原样展示给用户（"为什么这个功能没了"）。
+   *
+   * 补这个字段是**类型对齐，不是修 bug**：`policy-limits.ts` 侧一直声明了
+   * `reason?: string`，而这边漏了。运行时的值本来就能流通
+   *（`PolicyManager.load()` 走 `JSON.parse` + 展开，不做 schema 剥离），
+   * 所以补之前管理员写的 reason 也能生效 —— 只是这里的类型在说谎，
+   * 任何按它写代码的人都会以为没有这个字段。
+   */
+  policyLimits?: Record<string, { allowed: boolean; reason?: string }>;
   /** 是否只允许企业策略中的规则 */
   allowManagedPermissionRulesOnly?: boolean;
   /** G13：禁用所有 Hook（企业管控最强档，任何来源的 hook 都不执行） */

@@ -162,6 +162,7 @@ Worktree 隔离:
   轨迹采集:
   SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
   SID_CODE_TRACE_OUTPUT_DIR     自定义轨迹输出目录
+  SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
   SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
   SID_CODE_TRACE_UPLOAD_TOKEN   上传认证 token
   SID_CODE_TRACE_USER_ID        用户标识

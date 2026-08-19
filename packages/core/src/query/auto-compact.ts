@@ -12,6 +12,11 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/index.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { AutoCompactCircuitBreaker } from "./circuit-breaker.ts";
+import {
+  recordDefenseTrigger,
+  recordDefenseTokens,
+  recordDefenseDuration,
+} from "../telemetry/metrics/defense-metrics.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline, SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
@@ -163,6 +168,18 @@ async function doAutoCompact(
   // 熔断器检查：如果熔断中，直接降级为简单截断
   if (!circuitBreaker.canExecute()) {
     log.warn("COMPACT", "autoCompact 熔断中，降级为简单截断");
+    // P1（防线可观测）：「被熔断挡下」与「熔断触发」是两件事——一次 tripped 可以
+    // 挡掉后续 N 次调用，混成一个数会让"触发了几次"没有确定答案。
+    //
+    // ⚠️ 这里**只记 metric，不碰 logContextCompact**：下面那条 `outcome: "truncated"`
+    // 是对的（它确实压了），`events.ts` 的 CompactSkipReason 注释明确警告过别为
+    // circuit_open 再补一个 skip 上报——那会让同一次熔断同时记进 compact 与
+    // skipped 两个计数，分母直接被污染。两条通道各记各的，不互相污染。
+    recordDefenseTrigger("compact_breaker", "blocked", { reason: "circuit_open" });
+    // 「这道防线花了多少钱」：被挡下时上下文有多大，即这次降级截断处理的规模。
+    // 三层里只有这一层拿得到真实 token（权限层与策略层对 token 无感）。
+    recordDefenseTokens("compact_breaker", "blocked", tokensBefore, { reason: "circuit_open" });
+    const blockedStartedAt = Date.now();
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
     deps.ctxMgr.compactWithSummary(simpleSummary);
     await postCompactReattachAndNotify(
@@ -173,6 +190,18 @@ async function doAutoCompact(
       tokensBefore,
       false,
     );
+    // 三层里**只有这条路径**有真实可测的耗时，所以 duration 只埋在这里。
+    // 量的是「熔断降级这条替代路径花了多少墙钟」——截断 + 附件重注入 + 通知，
+    // 不是 `canExecute()` 那个纯内存判定（那个是纳秒级，测它没有意义）。
+    //
+    // ⚠️ 另两层刻意不埋：`isPolicyAllowed` 是同步布尔查表；权限层的熔断
+    // （`checker.ts` 的 `fuseDecision`）落地为 needsConfirmation 后就返回了，
+    // **「等用户确认」的墙钟不在它的作用域内** —— 那个数要埋得到 HITL 的
+    // 应答回路上（当前 trace 层无权限决策埋点，是已知缺口）。
+    // 在这里硬凑一个"判定耗时"只会得到一列恒等于 0 的假数据。
+    recordDefenseDuration("compact_breaker", "blocked", Date.now() - blockedStartedAt, {
+      reason: "circuit_open",
+    });
     // 熔断降级：结果是 truncated（确实压了，但是靠粗暴截断而非摘要）。
     // 这一档单独可见很重要——"压缩成功率" 里混入截断会掩盖摘要链路已经在连续失败。
     logContextCompact({

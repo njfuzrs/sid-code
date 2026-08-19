@@ -73,6 +73,29 @@ export interface CollectorOptions {
   outputDir?: string;
   /** 本地最大保留会话数（默认 100） */
   maxSessionsRetained?: number;
+  /**
+   * 是否把请求/响应原文写进 `raw.jsonl`（默认 true）。
+   * 不传时由 {@link resolveRecordRawPayloads} 解析 env 兜底。
+   */
+  recordRawPayloads?: boolean;
+}
+
+/** 关闭 raw.jsonl 内容记录的环境变量（兜底通道，优先级低于显式配置） */
+const ENV_NO_RAW = "SID_CODE_TRACE_NO_RAW";
+
+/**
+ * 解析「是否记录 raw 原文」。优先级：显式配置 > env > 默认 true。
+ *
+ * **每次调用都读 env**（而不是模块加载时读一次）：与
+ * `telemetry/content-tracing.ts` 的 `isContentTracingEnabled()` 同形态 ——
+ * 那样测试能在用例之间改 `process.env` 而不必清模块缓存。
+ *
+ * env 判据写成 `=== "1"` 而非真值判断：这是本仓少见的**反向**开关
+ * （设了才关，不设是开），未设 / 空串 / `"0"` 都必须保持默认的"记录"。
+ */
+export function resolveRecordRawPayloads(explicit?: boolean): boolean {
+  if (typeof explicit === "boolean") return explicit;
+  return process.env[ENV_NO_RAW] !== "1";
 }
 
 /**
@@ -163,6 +186,8 @@ export class TraceCollector {
   private readonly outputDir: string;
   /** 本地最大保留会话数（LRU 清理用，默认 100） */
   private readonly maxSessionsRetained: number;
+  /** 是否把请求/响应原文写进 raw.jsonl（默认 true；env `SID_CODE_TRACE_NO_RAW=1` 可关） */
+  private readonly recordRawPayloads: boolean;
   private initialized = false;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
@@ -248,6 +273,7 @@ export class TraceCollector {
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir ?? sidPaths.trajectories();
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
+    this.recordRawPayloads = resolveRecordRawPayloads(options.recordRawPayloads);
     this.uploader = uploader;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
@@ -261,6 +287,16 @@ export class TraceCollector {
       this.syncSideCallMetadata();
       void this.forceRebuildTraj();
     });
+  }
+
+  /**
+   * 是否记录 raw.jsonl 的内容型记录（供启动日志与测试断言）。
+   *
+   * 读的是构造时**已解析完毕**的值（显式配置 > env > 默认 true），
+   * 而不是当场再读一次 env —— 会话中途改环境变量不应该让同一份轨迹半程换口径。
+   */
+  isRecordingRawPayloads(): boolean {
+    return this.recordRawPayloads;
   }
 
   /**
@@ -686,7 +722,9 @@ export class TraceCollector {
       side_tokens_received: 0,
     };
 
-    this.writer = new TraceWriter(this.outputDir, traceSessionId);
+    this.writer = new TraceWriter(this.outputDir, traceSessionId, {
+      recordRawPayloads: this.recordRawPayloads,
+    });
     this.initialized = true;
 
     // 修复问题一续：resume 复用旧目录时，把已存在的历史 pair 数读回，

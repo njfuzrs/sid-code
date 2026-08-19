@@ -17,6 +17,9 @@ import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core
 import type { Config } from "@sid-code/core/config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "@sid-code/core/debug/index.ts";
 import { clearFileIntent } from "@sid-code/core/session/file-intent.ts";
+// P1（policyLimits 接线）：两个 gate 点（sub_agent 工具注册 / MCP 服务器集合）都在
+// 下方 `setPolicyLimits(policy.policyLimits)` **之后**执行，读得到已注入的策略。
+import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
@@ -1527,8 +1530,15 @@ export async function main(): Promise<void> {
     }
 
     // 注册子代理工具
-    const { SubAgentTool } = await import("@sid-code/core/agent/tool.ts");
-    toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
+    // P1（policyLimits 接线）：企业策略禁用子代理时**不注册**该工具（形态同上方
+    // isHypothesisEnabled 那段）。不注册即模型看不见，比注册后运行时报错干净——
+    // 系统提示词已经在按"工具是否存在"决定要不要注入子代理指引
+    // （`config/system-prompt.ts` 的 `ctx.tools.some(t => t.name() === "sub_agent")`），
+    // 所以缺席是它已经支持的状态，不会留下一段悬空的提示词。
+    if (isPolicyAllowed("sub_agent")) {
+      const { SubAgentTool } = await import("@sid-code/core/agent/tool.ts");
+      toolRegistry.register(new SubAgentTool(providerRegistry, toolRegistry));
+    }
 
     // 注册工具搜索工具（延迟加载机制的调出入口，alwaysLoad 强制首轮可见）
     const { ToolSearchTool } = await import("@sid-code/core/tool/tool-search.ts");
@@ -1948,6 +1958,20 @@ export async function main(): Promise<void> {
         "MCP",
         `严格 MCP 配置模式（--strict-mcp-config）：仅加载 --mcp-config 指定的 ${Object.keys(mcpConfigServers).length} 个服务器。`,
       );
+    }
+    // P1（policyLimits 接线）：企业策略禁用 MCP 时，把服务器集合清空。
+    //
+    // 清集合而不是跳过 `if`：IDE 自动连接也走 mcpManager，两者是独立诉求
+    // （禁 MCP 服务器 ≠ 禁 IDE 集成），直接跳过整个 if 会把 IDE 一起关掉。
+    // 清空后 `Object.keys(allMcpServers).length > 0` 自然为假，
+    // connectAll 不会被调用，而 IDE 那条路径不受影响。
+    const mcpAllowedByPolicy = isPolicyAllowed("mcp");
+    if (!mcpAllowedByPolicy && Object.keys(allMcpServers).length > 0) {
+      getLogger().info(
+        "MCP",
+        `MCP 已被企业策略禁用，忽略 ${Object.keys(allMcpServers).length} 个已配置的服务器`,
+      );
+      for (const key of Object.keys(allMcpServers)) delete allMcpServers[key];
     }
     let mcpManager: import("@sid-code/core/mcp/manager.ts").MCPManager | undefined;
 
