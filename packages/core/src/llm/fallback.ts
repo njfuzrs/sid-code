@@ -271,7 +271,11 @@ export interface FallbackConfig {
   /** 不确定-2/3：单次 executeWithFallback 调用内"连接阶段 + 流式阶段"重试的共享总上界。
    *  防止两阶段各自独立计数叠加成退避风暴。默认由 network-profile 的 maxRetriesPerCall 注入。 */
   maxRetriesPerCall?: number;
-  /** 流式整体超时（毫秒，默认 5 分钟） */
+  /** 流式**无内容进展**超时（毫秒，默认 5 分钟）。
+   *
+   *  PR2 起谓词从"attempt 绝对计时"改为"距上次内容进展"：每收到一个业务内容事件
+   *  （`content_block_delta` / `content_block_start` / `message_delta`）就重排定时器。
+   *  改名成本大于收益，故沿用旧字段名，但**语义已变**——它不再是 attempt 的绝对上限。 */
   streamTimeoutMs?: number;
   /** 配置-1：退避基数（毫秒）。默认由 network-profile 的 retryBackoffBaseMs 注入 */
   retryBackoffBaseMs?: number;
@@ -739,6 +743,14 @@ export class ModelFallback {
     // ═══════════════════════════════════════════════════════════════
     // 流超时保护：AbortController 主动中断 HTTP 连接
     // ═══════════════════════════════════════════════════════════════
+    //
+    // PR2：本层谓词是「距上次**内容进展**多久」，不是「这次 attempt 跑了多久」。
+    //
+    // 改这个谓词的理由（实测，非推理）：GLM-5.3 长思考场景下模型持续吐
+    // reasoning_content，但旧实现的定时器只在 attempt 边界重排 → 一条**一直有进展**
+    // 的健康流被固定 300s 无差别掐断，已累积的思考内容全部作废、被迫从零重来。
+    // 上下文越大思考越慢 → 越容易触顶 → 恶性循环。轨迹实证：24 次 TimeoutFired
+    // 100% 是本层，`elapsed_ms` 全部精确落在 300000±300（绝对计时器的指纹）。
     const streamTimeoutMs = this.config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
     let streamTimeoutCtl = new AbortController();
     let streamTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -746,9 +758,19 @@ export class ModelFallback {
     // 若 5s 内 abort 未能中断已进入的 SSE 消费（parseSSE hang 场景）→ TimeoutIneffective。
     let disarmStreamIneffective: (() => void) | null = null;
 
+    const clearStreamTimeout = () => {
+      if (streamTimeoutId !== null) {
+        clearTimeout(streamTimeoutId);
+        streamTimeoutId = null;
+      }
+      // 缺口 2 进阶：旧超时窗口作废 → disarm 其未生效检查（避免误报）。
+      (disarmStreamIneffective as (() => void) | null)?.();
+      disarmStreamIneffective = null;
+    };
+
     const startStreamTimeout = () => {
       streamTimeoutId = setTimeout(() => {
-        log.warn("FALLBACK", `流式整体超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
+        log.warn("FALLBACK", `流式无进展超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
         // 缺口 2：记录 fallback 流式整体超时触发
         // B4：带 agentId —— 漏斗这层用的是 ambient `turnIndex`（主循环轮次），子代理调用
         // 也会拿到同一个 turnIndex。不带身份时，子代理的 fallback 超时会被写进**主循环那份
@@ -772,21 +794,56 @@ export class ModelFallback {
       }, streamTimeoutMs);
       // 不调 unref()：fdb47f30 教训——index 23 请求发出后 hang 死,若定时器被 unref,
       // 在事件循环空闲时 Node/Bun 不保证它按时 fire,整体超时形同虚设、无法自愈。
-      // 这里是"受管理的非 unref 定时器"：resetStreamTimeout / 正常收尾路径都会 clearTimeout,
+      // 这里是"受管理的非 unref 定时器"：renewStreamTimeout / 正常收尾路径都会 clearTimeout,
       // 不会泄漏阻止进程退出。宁可让它确实持有事件循环,也要保证超时一定触发。
     };
 
+    /**
+     * **续命**：内容进展到达时只重排定时器，**复用同一个 `streamTimeoutCtl`**。
+     *
+     * ⛔ 这里绝对不能 `new AbortController()`（PR2 的核心约束，破了比不改更糟）：
+     * `makeCombinedSignal()` 只在 `openStream` 时**取一次** signal，在飞的 fetch 持有的
+     * 是**旧** controller 的 signal。attempt 中途换 controller → 新 controller 的
+     * `abort()` 到不了那个 fetch、旧 timer 又已被 clear → **这一层超时被彻底解除**，
+     * 真半开连接再也没人回收（退回 0 层状态，比 300s 误杀更坏）。
+     * 负向对照测试：`fallback-content-progress-timeout.test.ts` 的
+     * 「续命不得重建 AbortController」用例钉住这一点。
+     */
+    const renewStreamTimeout = () => {
+      clearStreamTimeout();
+      startStreamTimeout();
+    };
+
+    /**
+     * **换 controller**：只在真正重开流（attempt 边界）时做。
+     *
+     * 此处换是安全的：紧随其后就会 `makeCombinedSignal()` 重新取 signal 交给新的
+     * `openStream`，新旧 controller 与各自的 fetch 一一对应。
+     */
     const resetStreamTimeout = () => {
-      if (streamTimeoutId !== null) {
-        clearTimeout(streamTimeoutId);
-        streamTimeoutId = null;
-      }
-      // 缺口 2 进阶：旧超时窗口作废 → disarm 其未生效检查（避免误报）。
-      (disarmStreamIneffective as (() => void) | null)?.();
-      disarmStreamIneffective = null;
+      clearStreamTimeout();
       streamTimeoutCtl = new AbortController();
       startStreamTimeout();
     };
+
+    /**
+     * 「这个事件算不算内容进展」——与 lifecycle 层 `isContentProgress` 同族判据。
+     *
+     * 取并集而非某一条 provider 的定义：本层是**所有** provider 的公共漏斗，
+     * 而各 provider 的 `isContentProgress` 口径不同（anthropic 认
+     * `content_block_delta` + `message_delta`，Responses 只认 `content_block_delta`）。
+     * 这里取窄了会误杀该 provider 的健康流 —— 本层的职责是兜底回收僵死连接，
+     * 判宽一点的代价是"僵死回收慢一档"，判窄的代价是"健康流被杀"，两者不对等。
+     *
+     * `content_block_start` 也算：与下方 `hasYieldedContent` 的 B2 判据保持一致
+     * （无参数工具调用整条流只有 start + stop，零 delta，但它确实是真实进展）。
+     * ping / keep-alive 注释行不算进展 —— 它们在 provider 层就不会转成 StreamEvent，
+     * 那一层由 parseSSE 的字节级 idle 闸门负责（谓词不同、职责不同，见 §2.3.3）。
+     */
+    const isStreamContentProgress = (event: StreamEvent): boolean =>
+      event.type === "content_block_delta" ||
+      event.type === "content_block_start" ||
+      event.type === "message_delta";
 
     const makeCombinedSignal = (): AbortSignal => {
       if (signal && !signal.aborted) {
@@ -1057,6 +1114,13 @@ export class ModelFallback {
               hasYieldedContent = true;
             }
 
+            // PR2：内容进展 → 续命本层定时器（**只重排，不换 controller**，理由见
+            // `renewStreamTimeout` 的注释）。放在 `yield event` 之前是刻意的：
+            // yield 会把控制权交给消费方，消费方可能慢（渲染/落盘），续命不该等它。
+            if (isStreamContentProgress(event)) {
+              renewStreamTimeout();
+            }
+
             yield event;
           }
 
@@ -1193,7 +1257,10 @@ export class ModelFallback {
           }
 
           const classified = isTimeoutAbort
-            ? new RetryableError(`流式整体超时（${streamTimeoutMs / 1000}s 无数据）`, "timeout")
+            ? new RetryableError(
+                `流式无进展超时（${streamTimeoutMs / 1000}s 无内容进展）`,
+                "timeout",
+              )
             : classifyError(err);
 
           // S5 释放点之二（连接/流异常抛出路径）。见 maybeReleaseCooldownProbe 注释。
@@ -1511,13 +1578,7 @@ export class ModelFallback {
         }
       }
     } finally {
-      if (streamTimeoutId !== null) {
-        clearTimeout(streamTimeoutId);
-        streamTimeoutId = null;
-      }
-      // 缺口 2 进阶：流式阶段收尾（正常/异常/fallback）→ disarm 未生效检查兜底。
-      (disarmStreamIneffective as (() => void) | null)?.();
-      disarmStreamIneffective = null;
+      clearStreamTimeout();
     }
 
     // ═══════════════════════════════════════════════════════════════
