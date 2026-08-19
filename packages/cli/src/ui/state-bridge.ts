@@ -134,6 +134,7 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // 审批框不消失（planApprovalRequest 最该修）；加载态/Copy 模式/plan 模式标志亦可能残留。
     planApprovalRequest: null,
     askUserQuestionRequest: null,
+    conflictRequest: null,
     isLoading: false,
     copyModeEnabled: false,
     isPlanMode: false,

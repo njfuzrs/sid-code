@@ -251,6 +251,12 @@ export interface PlanApprovalRequestInfo {
   resolve: (decision: string) => void;
 }
 
+/** 并发冲突请求信息（Phase 2.1） */
+export interface ConflictRequestInfo {
+  conflictReport: import("@sid-code/core/session/conflict-detector.ts").ConflictReport;
+  resolve: (action: import("./components/ConflictDialog.tsx").ConflictAction) => void;
+}
+
 /** AskUserQuestion 单题（投影给 UI 的展示结构，不直接依赖工具层类型） */
 export interface AskQuestionInfo {
   question: string;
@@ -367,6 +373,7 @@ export interface TUIState {
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
   askUserQuestionRequest: AskUserQuestionRequestInfo | null;
+  conflictRequest: ConflictRequestInfo | null;
   debug: boolean;
   lastToolResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
   /** 流式输出的完整文本 */
@@ -1355,6 +1362,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               shellConfirmRequest={state.shellConfirmRequest}
               planApprovalRequest={state.planApprovalRequest}
               askUserQuestionRequest={state.askUserQuestionRequest}
+              conflictRequest={state.conflictRequest}
               isLoading={state.isLoading}
               commands={state.commands}
               cwd={state.cwd}
@@ -1414,6 +1422,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               shellConfirmRequest={state.shellConfirmRequest}
               planApprovalRequest={state.planApprovalRequest}
               askUserQuestionRequest={state.askUserQuestionRequest}
+              conflictRequest={state.conflictRequest}
               isLoading={state.isLoading}
               commands={state.commands}
               cwd={state.cwd}

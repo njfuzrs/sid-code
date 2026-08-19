@@ -38,6 +38,7 @@ import tui from "./tui/index.ts";
 import color from "./color/index.ts";
 import fast from "./fast/index.ts";
 import batch from "./batch/index.ts";
+import conflict from "./conflict/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -69,4 +70,5 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   color,
   fast,
   batch,
+  conflict,
 ];

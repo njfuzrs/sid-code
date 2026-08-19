@@ -125,6 +125,9 @@ export const sidPaths = {
   sessions: () => sidHomePath("sessions"),
   activeSessions: () => sidHomePath("active-sessions"),
 
+  // ── 并发冲突检测 ──
+  fileIntents: () => sidHomePath("file-intents"),
+
   // ── 记忆/项目 ──
   projects: () => sidHomePath("projects"),
 

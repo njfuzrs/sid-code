@@ -1260,10 +1260,21 @@ export class App {
 
   private wireSubAgentSessionId(): void {
     const sessionId = this.getLogicalSessionId();
+    const pid = process.pid;
+    const cwd = process.cwd();
     for (const tool of this.toolRegistry.all()) {
-      const maybe = tool as { setParentSessionId?: (id: string) => void };
-      if (typeof maybe.setParentSessionId === "function") {
-        maybe.setParentSessionId(sessionId);
+      // P1-6：优先注入完整会话上下文（sessionId/pid/cwd），子代理继承父会话的并发冲突检测上下文
+      const maybeContext = tool as {
+        setParentSessionContext?: (ctx: { sessionId: string; pid: number; cwd: string }) => void;
+      };
+      if (typeof maybeContext.setParentSessionContext === "function") {
+        maybeContext.setParentSessionContext({ sessionId, pid, cwd });
+      } else {
+        // 兼容旧路径：只注入 sessionId
+        const maybe = tool as { setParentSessionId?: (id: string) => void };
+        if (typeof maybe.setParentSessionId === "function") {
+          maybe.setParentSessionId(sessionId);
+        }
       }
     }
   }
@@ -6149,6 +6160,7 @@ export class App {
       shellConfirmRequest: null,
       planApprovalRequest: null,
       askUserQuestionRequest: null,
+      conflictRequest: null,
       debug: !!this.config.debug,
       lastToolResult: null,
       streamingText: "",
@@ -6834,6 +6846,25 @@ export class App {
         });
       });
     });
+
+    // 设置并发冲突处理回调（Phase 2.1）
+    if (this.fileReadTracker) {
+      this.fileReadTracker.conflictHandler = async (report) => {
+        return new Promise((resolve) => {
+          log.info("TUI:CONFLICT", `显示并发冲突对话框: ${report.filePath}`);
+          const wrappedResolve = (
+            action: import("./ui/components/ConflictDialog.tsx").ConflictAction,
+          ) => {
+            log.info("TUI:CONFLICT", `并发冲突对话框响应: ${action}`);
+            updateState({ conflictRequest: null });
+            resolve(action);
+          };
+          updateState({
+            conflictRequest: { conflictReport: report, resolve: wrappedResolve },
+          });
+        });
+      };
+    }
 
     // 设置 TUI AskUserQuestion 提问回调（结构化选择题，对标 cc AskUserQuestion）
     {

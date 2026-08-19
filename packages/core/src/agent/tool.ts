@@ -242,6 +242,10 @@ export class SubAgentTool implements Tool {
 
   /** P2-10：主会话 id（由 App 注入），用于给子代理开 sidechain JSONL。未注入时不持久化。 */
   private parentSessionId?: string;
+  /** P1-6：主会话 PID（由 App 注入），用于子代理继承父会话的并发冲突检测上下文。 */
+  private parentPid?: number;
+  /** P1-6：主会话工作目录（由 App 注入），用于子代理继承父会话的并发冲突检测上下文。 */
+  private parentCwd?: string;
 
   constructor(
     providerRegistry: ProviderRegistry,
@@ -256,6 +260,13 @@ export class SubAgentTool implements Tool {
   /** P2-10：注入主会话 id，启用子代理 sidechain 持久化（由 App 在 SessionState 就绪后调用）。 */
   setParentSessionId(sessionId: string | undefined): void {
     this.parentSessionId = sessionId;
+  }
+
+  /** P1-6：注入主会话上下文（sessionId/pid/cwd），子代理继承父会话的会话上下文用于并发冲突检测。 */
+  setParentSessionContext(context: { sessionId: string; pid: number; cwd: string }): void {
+    this.parentSessionId = context.sessionId;
+    this.parentPid = context.pid;
+    this.parentCwd = context.cwd;
   }
 
   /**
@@ -585,7 +596,17 @@ ${typeLines}
       }
 
       const subAgent = this.createSubAgentForType(params.type);
-      subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
+      // P1-6：注入父会话上下文（sessionId/pid/cwd），子代理继承父会话的并发冲突检测上下文
+      if (this.parentSessionId && this.parentPid && this.parentCwd) {
+        subAgent.setParentSessionContext({
+          sessionId: this.parentSessionId,
+          pid: this.parentPid,
+          cwd: this.parentCwd,
+        });
+      } else if (this.parentSessionId) {
+        // 兼容旧路径：只有 sessionId 时仍启用 sidechain 持久化
+        subAgent.setParentSessionId(this.parentSessionId);
+      }
 
       // Fork 模式：继承主对话上下文（prompt cache 友好）
       let forkMessages:
@@ -726,7 +747,17 @@ ${typeLines}
 
     try {
       const subAgent = this.createSubAgentForType(params.type);
-      subAgent.setParentSessionId(this.parentSessionId); // P2-10：启用 sidechain 持久化
+      // P1-6：注入父会话上下文（sessionId/pid/cwd），子代理继承父会话的并发冲突检测上下文
+      if (this.parentSessionId && this.parentPid && this.parentCwd) {
+        subAgent.setParentSessionContext({
+          sessionId: this.parentSessionId,
+          pid: this.parentPid,
+          cwd: this.parentCwd,
+        });
+      } else if (this.parentSessionId) {
+        // 兼容旧路径：只有 sessionId 时仍启用 sidechain 持久化
+        subAgent.setParentSessionId(this.parentSessionId);
+      }
 
       // 传递预创建的 task 信息，execute() 内部不再重复创建
       const result = await subAgent.execute(

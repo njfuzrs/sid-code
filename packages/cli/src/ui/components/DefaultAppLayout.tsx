@@ -74,6 +74,7 @@ interface DefaultAppLayoutProps {
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
   askUserQuestionRequest: AskUserQuestionRequestInfo | null;
+  conflictRequest: import("../App.tsx").ConflictRequestInfo | null;
   isLoading: boolean;
   commands: Array<{ name: string; aliases: string[]; description: string }>;
   cwd: string;
@@ -163,6 +164,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   shellConfirmRequest,
   planApprovalRequest,
   askUserQuestionRequest,
+  conflictRequest,
   isLoading,
   commands,
   cwd,
@@ -310,6 +312,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
             shellConfirmRequest={shellConfirmRequest}
             planApprovalRequest={planApprovalRequest}
             askUserQuestionRequest={askUserQuestionRequest}
+            conflictRequest={conflictRequest}
             activeDialog={activeDialog}
             onDialogClose={onDialogClose}
             availableModels={availableModels}

@@ -16,6 +16,7 @@ import { parseArgs } from "node:util";
 import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "@sid-code/core/debug/index.ts";
+import { clearFileIntent } from "@sid-code/core/session/file-intent.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
@@ -1427,6 +1428,23 @@ export async function main(): Promise<void> {
     // 在注册任何工具前设置即可——isToolDeferred 每次调用时实时读该名单。
     toolRegistry.setKeepLoaded(config.toolSearchKeepLoaded);
     const fileReadTracker = new FileReadTracker();
+    // 设置会话上下文（用于并发冲突检测）
+    fileReadTracker.applySessionContext({
+      sessionId: config.sessionId,
+      pid: process.pid,
+      cwd: process.cwd(),
+    });
+    // Phase 2.4：冲突检测配置
+    fileReadTracker.conflictDetection = config.conflictDetection ?? true; // 默认启用
+    const VALID_SEVERITY = ["warn", "block", "off"] as const;
+    const rawSeverity = config.conflictSeverity;
+    if (rawSeverity && !VALID_SEVERITY.includes(rawSeverity as any)) {
+      const { getLogger } = await import("@sid-code/core/debug/logger.ts");
+      getLogger().warn("CONFIG", `conflictSeverity 非法值 "${rawSeverity}"，已回退 warn`);
+      fileReadTracker.conflictSeverity = "warn";
+    } else {
+      fileReadTracker.conflictSeverity = (rawSeverity as any) ?? "warn"; // 默认弹框
+    }
     const memoryStore = new MemoryStore(process.cwd());
 
     const { BashTool } = await import("@sid-code/core/tool/bash.ts");
@@ -2227,7 +2245,7 @@ export async function main(): Promise<void> {
       });
       scheduler.start();
 
-      // 退出时注销会话 + 停止调度器
+      // 退出时注销会话 + 停止调度器 + 清理文件意图
       const cleanup = () => {
         try {
           unregisterSession(config.sessionId);
@@ -2236,6 +2254,11 @@ export async function main(): Promise<void> {
         }
         try {
           scheduler.stop();
+        } catch {
+          /* 忽略 */
+        }
+        try {
+          clearFileIntent(config.sessionId);
         } catch {
           /* 忽略 */
         }

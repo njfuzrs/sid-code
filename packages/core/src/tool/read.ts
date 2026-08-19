@@ -662,6 +662,18 @@ export class ReadTool implements Tool {
           isPartialView,
           content: isPartialView ? null : text,
         });
+
+        // 声明文件读取意图（并发冲突检测）
+        if (this.tracker.sessionId && this.tracker.pid && this.tracker.cwd) {
+          const { declareFileIntent } = await import("../session/file-intent.ts");
+          declareFileIntent(
+            this.tracker.sessionId,
+            this.tracker.pid,
+            this.tracker.cwd,
+            filePath,
+            "read",
+          );
+        }
       }
 
       // P3: 空文件提示

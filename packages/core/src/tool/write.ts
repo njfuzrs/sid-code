@@ -210,6 +210,84 @@ export class WriteTool implements Tool {
 
     log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
+    // 并发冲突检测（Phase 2.1 + 2.4 配置化）
+    const conflictEnabled = this.tracker?.conflictDetection ?? true;
+    const conflictSeverity = this.tracker?.conflictSeverity ?? "warn";
+
+    if (conflictEnabled && conflictSeverity !== "off" && this.tracker?.sessionId) {
+      const { checkConflict, formatConflictWarning } =
+        await import("../session/conflict-detector.ts");
+      const conflict = checkConflict(filePath, this.tracker.sessionId);
+      if (conflict) {
+        log.warn("TOOL", formatConflictWarning(conflict));
+
+        // P2-14：埋点——记录冲突事件
+        const { recordConflict } = await import("../session/conflict-analytics.ts");
+
+        // Phase 2.4: block 模式直接阻止，不弹框
+        if (conflictSeverity === "block") {
+          recordConflict(
+            filePath,
+            conflict.conflictingSessions.length,
+            conflict.severity,
+            "blocked",
+            "write",
+          );
+          return {
+            output: `错误: 检测到并发冲突（config.conflictSeverity=block），文件 ${filePath} 正被其他会话访问，操作已阻止`,
+            isError: true,
+          };
+        }
+
+        // Phase 2.1: warn 模式弹框让用户选择
+        if (this.tracker.conflictHandler) {
+          const action = await this.tracker.conflictHandler(conflict);
+          log.info("TOOL", `并发冲突用户选择: ${action}`);
+
+          // P2-14：埋点——记录用户选择
+          recordConflict(
+            filePath,
+            conflict.conflictingSessions.length,
+            conflict.severity,
+            action,
+            "write",
+          );
+
+          if (action === "stop") {
+            return {
+              output: `错误: 用户选择停止（检测到并发冲突，文件 ${filePath} 正被其他会话访问）`,
+              isError: true,
+            };
+          }
+          if (action === "skip") {
+            return {
+              output: `跳过: 用户选择跳过冲突文件 ${filePath}`,
+              isError: true,
+            };
+          }
+          // action === "continue" → 继续执行
+        } else {
+          // P1-6：无头模式（SDK/Bridge/--print）下 conflictHandler 为 undefined，
+          // 显式降级：把冲突摘要写入工具输出，让模型知道有冲突但继续执行。
+          // 与 block 模式不同，不阻断操作（无头模式无法弹框等待用户决定）。
+          const warningSummary = formatConflictWarning(conflict);
+          log.warn(
+            "TOOL",
+            `无头模式：并发冲突降级处理，继续执行（${warningSummary.split("\n").slice(1, 4).join(" ")}）`,
+          );
+          // P2-14：埋点——记录无头模式降级
+          recordConflict(
+            filePath,
+            conflict.conflictingSessions.length,
+            conflict.severity,
+            "headless_fallback",
+            "write",
+          );
+          // 不阻断，继续执行（模型会在输出中看到后续正常结果）
+        }
+      }
+    }
+
     try {
       // 确保目录存在
       const dir = dirname(filePath);
@@ -246,6 +324,18 @@ export class WriteTool implements Tool {
           }
         } catch {
           // stat 失败不阻断（文件已成功写入），仅丢失本次新鲜度记录。
+        }
+
+        // 声明文件编辑意图（并发冲突检测）
+        if (this.tracker.sessionId && this.tracker.pid && this.tracker.cwd) {
+          const { declareFileIntent } = await import("../session/file-intent.ts");
+          declareFileIntent(
+            this.tracker.sessionId,
+            this.tracker.pid,
+            this.tracker.cwd,
+            filePath,
+            "write",
+          );
         }
       }
 

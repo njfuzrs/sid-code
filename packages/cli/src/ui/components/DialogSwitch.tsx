@@ -32,6 +32,7 @@ import { ExportDialog } from "./ExportDialog.tsx";
 import { ContextDialog } from "./ContextDialog.tsx";
 import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
+import { ConflictDialog } from "./ConflictDialog.tsx";
 import { TrustDialog } from "./TrustDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
@@ -53,6 +54,7 @@ export interface DialogSwitchProps {
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
   askUserQuestionRequest: AskUserQuestionRequestInfo | null;
+  conflictRequest: import("../App.tsx").ConflictRequestInfo | null;
 
   // 通用对话框系统
   activeDialog: DialogType | null;
@@ -108,6 +110,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   shellConfirmRequest,
   planApprovalRequest,
   askUserQuestionRequest,
+  conflictRequest,
   activeDialog,
   onDialogClose,
   availableModels,
@@ -164,6 +167,21 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         shellConfirmRequest={null}
         planApprovalRequest={null}
         askUserQuestionRequest={askUserQuestionRequest}
+      />
+    );
+  }
+  // Phase 2.1：并发冲突选择框
+  if (conflictRequest) {
+    return (
+      <ConflictDialog
+        report={conflictRequest.conflictReport}
+        onSelect={(action) => {
+          conflictRequest.resolve(action);
+        }}
+        onClose={() => {
+          // Esc 关闭 = 选择 stop（最安全选项）
+          conflictRequest.resolve("stop");
+        }}
       />
     );
   }

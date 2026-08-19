@@ -421,6 +421,10 @@ export class SubAgent {
   /** P2-10：父会话 id（用于给子代理开 sidechain JSONL）。由 SubAgentTool 注入；
    *  未注入时 sidechain 持久化静默禁用（不影响子代理执行）。 */
   private parentSessionId?: string;
+  /** 父会话 PID（用于并发冲突检测，子代理继承父会话的 PID） */
+  private parentPid?: number;
+  /** 父会话工作目录（用于并发冲突检测，子代理继承父会话的 cwd） */
+  private parentCwd?: string;
 
   /** Spawn 模式配置（子进程启动所需的 Provider 信息） */
   private spawnConfig?: { providerName: string; apiKey: string; baseURL?: string };
@@ -445,6 +449,13 @@ export class SubAgent {
   /** P2-10：设置父会话 id，启用子代理 sidechain 持久化（由 SubAgentTool 注入）。 */
   setParentSessionId(sessionId: string | undefined): void {
     this.parentSessionId = sessionId;
+  }
+
+  /** P1-6：设置父会话上下文（sessionId/pid/cwd），子代理继承父会话的会话上下文用于并发冲突检测。 */
+  setParentSessionContext(context: { sessionId: string; pid: number; cwd: string }): void {
+    this.parentSessionId = context.sessionId;
+    this.parentPid = context.pid;
+    this.parentCwd = context.cwd;
   }
 
   /** 获取权限检查器（供 runAgentLoop config 透传） */
@@ -2229,6 +2240,14 @@ export class SubAgent {
    */
   private buildIsolatedToolRegistry(filteredTools: LegacyTool[], agentType?: string): ToolRegistry {
     const subTracker = new FileReadTracker();
+    // P1-6：子代理继承父会话的会话上下文（sessionId/pid/cwd），参与并发冲突检测
+    if (this.parentSessionId && this.parentPid && this.parentCwd) {
+      subTracker.applySessionContext({
+        sessionId: this.parentSessionId,
+        pid: this.parentPid,
+        cwd: this.parentCwd,
+      });
+    }
     const rebuilt = new Map<string, LegacyTool>();
     for (const t of createStatefulTools(subTracker)) rebuilt.set(t.name(), t);
 

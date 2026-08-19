@@ -253,6 +253,21 @@ export interface Config {
   cliAllowRules?: string[];
   cliDenyRules?: string[];
 
+  // 并发冲突检测配置（Phase 2.4）
+  /**
+   * 并发冲突检测开关（settings.json conflictDetection）。
+   * 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。
+   * 设为 false 关闭冲突检测（单用户独占环境 / 不想被打扰）。
+   */
+  conflictDetection?: boolean;
+  /**
+   * 并发冲突严重程度阈值（settings.json conflictSeverity）。
+   * - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree）
+   * - "block"：检测到冲突时直接阻止操作（不弹框，自动按 stop 处理）
+   * - "off"：不检测（等价 conflictDetection=false）
+   */
+  conflictSeverity?: "warn" | "block" | "off";
+
   // 目录白名单/黑名单
   /** 可访问目录白名单（cwd 之外要读写的目录须显式加入；对应 --add-dir） */
   allowedDirectories: string[];

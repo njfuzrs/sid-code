@@ -100,6 +100,7 @@ export type AppState = DeepImmutable<{
   shellConfirmRequest: ShellConfirmRequestInfo | null;
   planApprovalRequest: PlanApprovalRequestInfo | null;
   askUserQuestionRequest: AskUserQuestionRequestInfo | null;
+  conflictRequest: import("../ui/App.tsx").ConflictRequestInfo | null;
 
   mcpConnections: MCPConnectionState[];
   subAgentTasks: Record<string, SubAgentTaskState>;
@@ -144,6 +145,7 @@ export function getDefaultAppState(): AppState {
     shellConfirmRequest: null,
     planApprovalRequest: null,
     askUserQuestionRequest: null,
+    conflictRequest: null,
     mcpConnections: [],
     subAgentTasks: {},
     transientMessage: null,

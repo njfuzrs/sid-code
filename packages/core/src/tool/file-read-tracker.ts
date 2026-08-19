@@ -6,6 +6,7 @@
 
 import { statSync, readFileSync } from "fs";
 import { resolve } from "path";
+import type { ConflictAction, ConflictReport } from "../session/conflict-detector.ts";
 
 /** 文件读取记录 */
 interface ReadRecord {
@@ -33,6 +34,28 @@ interface ReadRecord {
 
 export class FileReadTracker {
   private readFiles = new Map<string, ReadRecord>();
+
+  /**
+   * 会话上下文（用于并发冲突检测）。
+   * 可选，由 cli.ts 在创建 tracker 后设置。
+   */
+  sessionId?: string;
+  pid?: number;
+  cwd?: string;
+
+  /**
+   * 并发冲突检测配置（Phase 2.4）。
+   * 由 cli.ts 设置，控制是否启用冲突检测及严重程度。
+   */
+  conflictDetection?: boolean;
+  conflictSeverity?: "warn" | "block" | "off";
+
+  /**
+   * 并发冲突处理回调（Phase 2.1）。
+   * 由 app.ts 设置，工具检测到冲突时调用，弹框等待用户选择。
+   * 返回用户选择的 action（stop/skip/continue/worktree）。
+   */
+  conflictHandler?: (report: ConflictReport) => Promise<ConflictAction>;
 
   /**
    * 标记文件已被读取。
@@ -167,6 +190,18 @@ export class FileReadTracker {
         // 忽略
       }
     }
+  }
+
+  /**
+   * 统一注入会话上下文（用于并发冲突检测）。
+   * 主会话和子代理都通过此方法设置 sessionId/pid/cwd，避免字段散落。
+   *
+   * @param context 会话上下文（sessionId/pid/cwd）
+   */
+  applySessionContext(context: { sessionId: string; pid: number; cwd: string }): void {
+    this.sessionId = context.sessionId;
+    this.pid = context.pid;
+    this.cwd = context.cwd;
   }
 
   /** 清空所有记录 */
