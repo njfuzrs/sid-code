@@ -184,13 +184,7 @@ derived_payload() {
   # _plan 通常写成相对路径（docs-research/sid-code/...），试几个候选前缀。
   # ⚠️ 找不到时**不静默跳过** —— 传 planDoc=null，核算层会显式告警说「没算过」。
   local resolved=""
-  if [[ -n "$plan_doc_path" ]]; then
-    for cand in "$plan_doc_path" "../docs-research/$plan_doc_path" \
-                "$HOME/Code/person/docs-research/$plan_doc_path" \
-                "$(dirname "$REPO_ROOT")/docs-research/${plan_doc_path#docs-research/}"; do
-      [[ -f "$cand" ]] && { resolved="$cand"; break; }
-    done
-  fi
+  resolved="$(resolve_plan_doc "$plan_doc_path")"
   [[ -n "$resolved" ]] && plan_doc_json="$(jq -Rs . < "$resolved")"
 
   # 本批的 id 与 PR 号/状态
@@ -293,6 +287,56 @@ cd "$REPO_ROOT"
 WT_BASE=".claude/worktrees"
 STATUS_DIR=".pr-batch/status"
 SETTINGS_TEMPLATE=".pr-batch/worktree-settings.template.json"
+
+# ── 需求文档仓库（docs-research）的位置 ────────────────────────────
+# ⚠️ 这三个变量存在的唯一理由：**入库的文件里不许出现任何人的家目录**。
+#    模板与 prompt 都要进 git（见 .gitignore 的 .pr-batch 段），
+#    而它们原先写死了作者的家目录绝对路径 —— 换台机器不报错，
+#    只是权限模板整个失效、变成一直问你确认，属于「绿了但没生效」那一类
+#    （同源：记忆里 explicit-undefined-punches-through-defaults）。
+#    所以入库文件里一律写 $DOCS_ROOT / $REPO_ROOT / $HOME 占位符，喂给
+#    claude / 写进 worktree 之前才由本脚本展开成绝对路径。
+# 覆盖方式：export PR_BATCH_DOCS_ROOT=/path/to/docs-research
+DOCS_ROOT="${PR_BATCH_DOCS_ROOT:-}"
+if [[ -z "$DOCS_ROOT" ]]; then
+  # 两个候选，与 derived_payload 的候选链同源：先找 sid-code 的兄弟目录
+  #（clone 到任何位置都成立），再退回作者本机的固定布局。
+  for cand in "$(dirname "$REPO_ROOT")/docs-research" "$HOME/Code/person/docs-research"; do
+    [[ -d "$cand" ]] && { DOCS_ROOT="$cand"; break; }
+  done
+fi
+
+# 把入库文件里的占位符展开成本机绝对路径。
+# ⚠️ 只展开这三个，且用 | 作分隔符 —— 路径里必然含 /，用 / 当分隔符会当场炸。
+# ⚠️ DOCS_ROOT 为空时**不替换**，让占位符原样留在输出里。理由：一个显眼的
+#    `$DOCS_ROOT/...` 路径会让 agent 立刻报「读不到这个文件」，而替换成空串
+#    得到的 `/sid-code/bugfixes/...` 是个看着像绝对路径的死路 —— 那是静默失败。
+expand_paths() {
+  local s
+  s="$(cat)"
+  s="${s//\$REPO_ROOT/$REPO_ROOT}"
+  s="${s//\$HOME/$HOME}"
+  [[ -n "$DOCS_ROOT" ]] && s="${s//\$DOCS_ROOT/$DOCS_ROOT}"
+  printf '%s' "$s"
+}
+
+# 把 plan.json 的 _plan 字段解析成本机可读的绝对/相对路径；找不到时输出空串。
+# ⚠️ 抽成函数是因为 derived 与 reflow 各有一份候选链拷贝，改一处漏一处。
+# ⚠️ 找不到时**不报错、不猜** —— 调用方各自决定怎么降级（derived 传 null 让核算层
+#    显式告警「没算过」，reflow 打印手工路径）。静默编一个路径出来更糟。
+resolve_plan_doc() {
+  local p="$1" cand
+  [[ -n "$p" ]] || return 0
+  # _plan 有两种写法：带 docs-research/ 前缀的仓库相对路径，或裸的仓内路径，
+  # 所以每个根都要试两种拼法。$DOCS_ROOT 优先（可由 PR_BATCH_DOCS_ROOT 覆盖）。
+  for cand in "$p" \
+              "${DOCS_ROOT:+$DOCS_ROOT/${p#docs-research/}}" \
+              "${DOCS_ROOT:+$DOCS_ROOT/$p}" \
+              "../docs-research/$p" \
+              "$(dirname "$REPO_ROOT")/docs-research/${p#docs-research/}"; do
+    [[ -n "$cand" && -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+}
 
 case "$CMD" in
 
@@ -424,10 +468,14 @@ prepare) # prepare <layer> <slug>...
       # 剥掉 _ 前缀的说明性键（它们是给人看的文档，不是 schema 字段）。
       # 模板里那些 _why / _deliberately_not_allowed 是这份配置最重要的部分 ——
       # 它们记着「为什么 push 和 gh pr create 刻意不放行」，别删模板本身。
+      # ⚠️ 必须过一道 expand_paths：模板入库时路径写成 $REPO_ROOT / $DOCS_ROOT /
+      #    $HOME 占位符（不许写死家目录），而落到 worktree 的 settings.local.json
+      #    必须是绝对路径 —— 权限匹配器不做变量展开，留着 $ 等于这条规则永不命中，
+      #    且**不报错**，只是整套自动化静默退化成逐条问你确认。
       jq 'walk(if type == "object"
                then with_entries(select(.key | startswith("_") | not))
                else . end)' \
-        "$SETTINGS_TEMPLATE" > "$wt/.claude/settings.local.json"
+        "$SETTINGS_TEMPLATE" | expand_paths > "$wt/.claude/settings.local.json"
       echo "       权限已配（acceptEdits + Bash 白名单；push / gh pr create 仍需确认）"
     else
       echo "       ⚠️ 缺 $SETTINGS_TEMPLATE，该 worktree 会逐步询问权限" >&2
@@ -607,8 +655,12 @@ open) # open [--yolo] [--fresh] <slug>
     # 把 id 显式告诉它 —— 协议里的 `from=<你的PR id>` 需要这个值，
     # 而 agent 无从得知自己在编排里叫什么（那是 plan.json 的信息）。
     my_id="$(jq -r '.id // ""' "$REPO_ROOT/$STATUS_DIR/${slug}.json" 2>/dev/null || true)"
+    # ⚠️ prompt 是**手写**文件（全仓无任何代码生成它），且要入库 ——
+    #    所以里面的方案文档路径与 check-gen 调用写成 $DOCS_ROOT / $REPO_ROOT，
+    #    喂给 claude 之前在这里展开。agent 拿到的必须是绝对路径：
+    #    它的 cwd 是 worktree，相对路径解析不到 docs-research。
     exec claude "${perm_args[@]}" \
-      "$(cat "$prompt_file")
+      "$(expand_paths < "$prompt_file")
 
 ---
 
@@ -660,10 +712,11 @@ reperm) # reperm [slug...] —— 把权限模板重新应用到已存在的 wor
     wt="$WT_BASE/$slug"
     [[ -d "$wt" ]] || { echo "SKIP ${slug}（worktree 缺失）"; continue; }
     mkdir -p "$wt/.claude"
+    # 展开路径占位符，理由同 prepare 里那段注释（留着 $ 则规则永不命中）。
     jq 'walk(if type == "object"
              then with_entries(select(.key | startswith("_") | not))
              else . end)' \
-      "$SETTINGS_TEMPLATE" > "$wt/.claude/settings.local.json"
+      "$SETTINGS_TEMPLATE" | expand_paths > "$wt/.claude/settings.local.json"
     echo "配好 $wt/.claude/settings.local.json"
   done
   echo
@@ -823,11 +876,7 @@ reflow) # reflow <issue号> [--synced]
   }
 
   plan_doc="$(jq -r '._plan // ""' .pr-batch/plan.json 2>/dev/null || true)"
-  resolved=""
-  for cand in "$plan_doc" "../docs-research/$plan_doc" "$HOME/Code/person/docs-research/$plan_doc" \
-              "$(dirname "$REPO_ROOT")/docs-research/${plan_doc#docs-research/}"; do
-    [[ -f "$cand" ]] && { resolved="$cand"; break; }
-  done
+  resolved="$(resolve_plan_doc "$plan_doc")"
 
   echo "════════════════════════════════════════════════════════════"
   echo "方案文档回流：#$issue_num → $section"

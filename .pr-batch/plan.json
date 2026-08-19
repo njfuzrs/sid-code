@@ -1,0 +1,134 @@
+{
+  "_comment": "阶段一（分层）的产出。由 2 个 Explore 子代理提足迹 + 按方法论 §3.3 判据算出。",
+  "_methodology": "docs-research/sid-code/bugfixes/todo/一个方案多个PR的并行编排方法论.md",
+  "_plan": "docs-research/sid-code/bugfixes/todo/20260818-模型元数据体系重构-数据源选错档位与投票规则反向-彻底修复方案.md",
+  "_base": "origin/main @ be8ebbb5 —— 所有行号都在这个 base 上取，换 base 则行号不可比",
+  "_base_note": "⚠️ 分层时 origin/main 是 46574b25，prepare 里 git fetch 后变成 be8ebbb5（多出 #62 并发冲突检测）。已复核：该提交未触及 model-capabilities.ts，五个关键符号行号全部不变（154/218/282/388/397），所以 C3 判定仍然成立。这正是 §3.3 末尾『行号必须在同一 base 上取』那条约束该被执行的地方 —— 如果那个提交动了本文件，分层就必须重算。",
+  "_trial_run": "这是方法论的首次试跑（§8.2 判据 5）。13 个 PR 里只挑 2 个，见 selection_rationale。",
+
+  "selection_rationale": {
+    "总PR数": 13,
+    "本次只做": 2,
+    "为什么是2个": "§11.1：合并队列（落地清单第 11 项）未启用前，G1 的唯一对策是「合并后在 main 上跑门禁 + revert」，路数越多暴露面越大。首跑限 2 路。",
+    "为什么挑这两个": [
+      "① 依赖图里都在「独立可穿插」，无 PR1 前置 —— 不受方案两条硬约束影响",
+      "② 同一个文件且判成 C3 —— 满足 §11.1「必须让判据做一次真实的、可能错的判断」。全零重叠(C4)验证不到任何东西",
+      "③ 改动小、可回滚、不碰发布链 —— 因为 G1 的对策是「合并后发现 + revert」"
+    ],
+    "刻意不选": {
+      "PR1/PR2/PR3": "P0 且 PR1 是一切的起点（PR1→PR2、PR1→PR6 两条硬约束）。首跑不该拿关键路径当试验品",
+      "PR6": "方案里最大的一个，有不可跳的前置门（§7.2 复算脚本四条）",
+      "PR12/PR13": "需要 issue 先行（修订职责边界），流程外的额外环节会污染试跑的耗时观测"
+    }
+  },
+
+  "footprints": [
+    {
+      "id": "PR10",
+      "branch": "fix-openrouter-filter-non-chat",
+      "branch_declared_in_plan_doc": "fix/openrouter-filter-non-chat",
+      "branch_deviation_note": "⚠️ 方案文档声明的是斜杠形式。编排早期把 slug 同时当目录名和分支名，带 / 会造成嵌套目录，于是替成了 -。已修（prepare 现在收 <id>:<branch>，目录名单独派生），但这一路的分支已建、不改名。下一份方案会用声明值。",
+      "dir": "fix-openrouter-filter-non-chat",
+      "title": "fix(llm): OpenRouter 目录源过滤非对话模型",
+      "files": [
+        {
+          "path": "packages/core/src/llm/model-capabilities.ts",
+          "symbols": ["OpenRouterEntry", "parseOpenRouter"],
+          "lines": [388, 402],
+          "lines_note": "388 = interface OpenRouterEntry 起（加 mode?: unknown 字段）；402 = parseOpenRouter 的入口校验行，过滤逻辑插在它之后。参照 parseLitellm:374 的同类过滤",
+          "regeneratesRef": false
+        }
+      ],
+      "evidence": "git show origin/main:packages/core/src/llm/model-capabilities.ts | grep -n（子代理提取 + 主会话复核）"
+    },
+    {
+      "id": "PR11",
+      "branch": "fix-catalog-concurrent-write-merge",
+      "branch_declared_in_plan_doc": "fix/catalog-concurrent-write-merge",
+      "branch_deviation_note": "⚠️ 同 PR10。此路已开出 PR#63，绝不改名（会断掉 CI 与 review 历史）。",
+      "dir": "fix-catalog-concurrent-write-merge",
+      "github_pr": 63,
+      "title": "fix(llm): 目录缓存写盘前重读合并，防并发进程丢更新",
+      "files": [
+        {
+          "path": "packages/core/src/llm/model-capabilities.ts",
+          "symbols": ["persist"],
+          "lines": [232],
+          "lines_note": "persist() 在 218-237。原子写在 232(writeFileSync)/233(renameSync)，重读+乐观合并插在 232 之前。会读 readCacheFile()(:154) 但不改它",
+          "regeneratesRef": false
+        }
+      ],
+      "evidence": "同上。persist 函数体已逐行读过（sed -n '218,237p'）"
+    }
+  ],
+
+  "conflict_analysis": {
+    "pair": "PR10 × PR11",
+    "same_file": "packages/core/src/llm/model-capabilities.ts",
+    "symbol_overlap": "无。{OpenRouterEntry, parseOpenRouter} ∩ {persist} = ∅",
+    "min_line_gap": 156,
+    "min_gap_calc": "min(|388-232|, |402-232|) = min(156, 170) = 156",
+    "CONFLICT_LINE_GAP": 2,
+    "level": "C3",
+    "verdict": "可并行，后合入者 rebase",
+    "confidence_note": "156 远大于阈值 2，是判据里最宽松的一档。⚠️ 这也意味着本次试跑对「阈值准不准」的检验力有限 —— 它检验的是「同文件也能并行」这个结论，不是阈值的精确边界（那个已由 §3.0 的 merge 矩阵验过）",
+    "G_generated_artifact": {
+      "triggered": false,
+      "reason": "两者都只改 packages/core/src/llm/，不在 pre-commit.sh:62 的六个数据源锚点内（help.ts / cli.ts / tool/ / command/ / config/ / hook/）",
+      "expectation": "check-gen 两边都应走 skip 分支。⚠️ 这正好验证 §3.2 那个 7.5% 分母（观测项：skip 是否真的命中）"
+    },
+    "S_semantic_prereq": {
+      "triggered": false,
+      "reason": "方案 P.2 依赖图里 PR10/PR11 同在「独立可穿插」，均无 PR1 前置"
+    }
+  },
+
+  "layers": [
+    {
+      "layer": 1,
+      "parallel": ["fix-openrouter-filter-non-chat", "fix-catalog-concurrent-write-merge"],
+      "note": "C3 可并行。后合入者 rebase（§3.0 实测：差 >=2 时 rebase 无需人工干预）"
+    }
+  ],
+
+  "derived_issues": {
+    "_what": "交付过程中派生的问题（首次试跑：PR#63 派生 #64/#65）。⚠️ 这里**只存不可派生的东西** —— issue 的标题/状态/是否已回流一律现查 gh（`bun run pr-batch derived`），本节存的是**分层决策**：足迹行号与 C 级判定。那两样只有人/agent 取过 grep -n 才有，gh 里没有。",
+    "_why_here": "派生问题是**下一轮分层的输入**，与方案文档里的 PR 同等对待。原来它们只活在 GitHub 上，不翻 issue 列表就看不见 —— 而『我还有什么没做』这个问题的答案必须在编排里。",
+    "_guard": "prepare 会 hard-stop：本次要开的 PR 若与**还开着**的派生 issue 同文件，直接拒绝（除非 PR_BATCH_IGNORE_DERIVED=1）。实测：`prepare 2 PR12:...` 被 #64 拦住。",
+
+    "items": [
+      {
+        "issue": 64,
+        "from": "PR11",
+        "from_github_pr": 63,
+        "files": ["packages/core/src/llm/gateway-pricing.ts"],
+        "collides_with": ["PR6", "PR12"],
+        "layering": "未算",
+        "layering_note": "⚠️ 这对冲突**诞生在分层之后**，判据从没算过它。要真正定级必须回 origin/main 取 grep -n 行号：#64 的足迹是 recordFailure():313/:329 与 syncGatewayPricing():701/:737；PR12 的足迹要等它开工时才确定（方案 §6.1 说是『在已有 /api/pricing 采集里顺带记字段』，大概率落在 syncGatewayPricing 的解析段 —— **与 #64 的 :737 写点很可能近**）。PR6 那对是注释改动（gateway-pricing.ts:379-380），足迹远。",
+        "plan_doc_correction": "§6.2",
+        "plan_doc_correction_synced": "现查 GitHub 标签 plan-doc-synced（已于 2026-08-19 回流并打标）",
+        "why_not_in_pr63": "另一个模块，塞进去会让 PR#63 变成三件事"
+      },
+      {
+        "issue": 65,
+        "from": "PR11",
+        "from_github_pr": 63,
+        "files": ["packages/core/src/llm/model-capabilities.ts"],
+        "collides_with": ["PR1"],
+        "layering": "未算",
+        "layering_note": "#65 改的是 persistDisabled（:215 附近）与测试专用导出；PR1 改的是投票规则（parseXxx / 累加器）。同文件但可能远 —— **未取行号，不许当成已判 C3**。",
+        "plan_doc_correction": null,
+        "why_not_in_pr63": "测试基建，PR#63 已用 __enablePersistForTest 绕过，够它自己验收"
+      }
+    ],
+
+    "_iron_rule": "『未算』这两个字不许在没取行号的情况下改成 C1/C2/C3。方法论 §3.3 的判据输入是 grep -n 的行号；没有行号就编一个出来，是伪造判据输入 —— 比不判更糟，因为它会让人以为算过。"
+  },
+
+  "post_merge_gate": {
+    "required": true,
+    "why": "层内 2 路 → G1 暴露面存在。判据只保证 git 合得上，不保证合起来对",
+    "command": "git switch main && git pull && bun test && make build && bun run lint && bun run format:check && bun run lint:boundary",
+    "extra": "两者同改 model-capabilities.ts，建议额外跑一次 bun test packages/core/tests/llm/ 看该模块测试"
+  }
+}

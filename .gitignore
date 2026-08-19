@@ -138,7 +138,31 @@ scheduled_tasks.lock
 # 放行目录这一行后 git 会下降进去，内部文件自动可追踪（`.claude/*` 的 `*` 只匹配第一层）。
 !.claude/skills/
 
-# 多 PR 并行编排（scripts/pr-batch.sh）的本机调度状态：
-# plan.json（分层结果）/ status/*.json（缓存，权威在 GitHub）/ prompts/*.md（按方案生成）。
-# 全部是**一次性的本地状态**，换台机器重新分层即可，入库只会与在途工作撞车。
-.pr-batch/
+# 多 PR 并行编排（scripts/pr-batch.sh）的目录，**分文件**处置而不是一刀切。
+# 判据是一句话：「GitHub / 磁盘上发生一件事，它会变吗」——
+#   会变 = 状态，不入库；不会变 = 判断或配置，必须入库。
+#
+# 不入库（本机状态）：
+#   status/*.json  gh 的缓存，权威在 GitHub（见 pr-batch.sh 头部「状态派生，不维护」）
+#   locks/         pid 是本机进程号，入库等于把别人机器的锁带过来
+#   timing.tsv     本机耗时观测
+# 入库：
+#   plans/ + plan.json  分层结论（足迹行号、C 级判定、base commit）是子代理取
+#                       grep -n 算出来的，**重算成本高且可能算出不同结果** ——
+#                       「换台机器重新分层即可」这个旧理由站不住
+#   prompts/**          PR 的任务定义，与 plans 同寿命；**手写**文件，不是生成物
+#   worktree-settings.template.json
+#                       它**不是状态，是配置**。原先被 ignore 是分类错误，
+#                       后果是 clone 到新机器后 prepare 打「缺模板，该 worktree
+#                       会逐步询问权限」——整套自动化静默降级成手点确认。
+#
+# ⚠️ 入库的这三样里**不许出现任何人的家目录**，一律写 $REPO_ROOT / $DOCS_ROOT / $HOME
+#    占位符，由 pr-batch.sh 的 expand_paths 在下发时展开（防漂移门禁见
+#    tests/scripts/pr-batch-path-derivation.test.ts）。
+# 放行目录这一行后 git 会下降进去，手法与上面的 !.claude/skills/ 完全相同
+#（`.pr-batch/*` 的 `*` 只匹配第一层）。
+.pr-batch/*
+!.pr-batch/plans/
+!.pr-batch/prompts/
+!.pr-batch/plan.json
+!.pr-batch/worktree-settings.template.json

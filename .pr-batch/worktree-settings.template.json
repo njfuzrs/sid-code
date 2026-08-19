@@ -1,0 +1,96 @@
+{
+  "_comment": "pr-batch prepare 会把这份文件拷进每个 worktree 的 .claude/settings.local.json。",
+  "_why": "worktree 从 origin/main 切出，而 .claude/* 是 gitignored → worktree 一份权限配置都不继承，于是每个 Read/Edit/Bash 都要人点一次。2 路并行时这不叫自动化。这与 G7（worktree 里没有 pr-batch.sh）是同一类自举缺口：凡是主仓里未入库的东西，worktree 都没有。",
+  "_scope": "只覆盖这两个 PR 的任务真正需要的命令。刻意不用 bypassPermissions —— 理由见 _deliberately_not_allowed。",
+  "_paths": "⚠️ 本文件**入库**，所以路径一律写 $REPO_ROOT / $DOCS_ROOT / $HOME 占位符，绝不写死家目录。prepare / reperm 拷进 worktree 时由 pr-batch.sh 的 expand_paths 展开成绝对路径。改这些行时别顺手换回绝对路径 —— 权限匹配器不做变量展开，但那个错误**不报错**，只是规则永不命中、整套自动化静默退化成逐条询问你确认。注意 Read() 的绝对路径语法要两个斜杠，所以写成 Read(/$HOME/...)。",
+
+  "permissions": {
+    "defaultMode": "acceptEdits",
+
+    "allow": [
+      "Bash(bun test)",
+      "Bash(bun test:*)",
+      "Bash(bun install)",
+      "Bash(bun run lint)",
+      "Bash(bun run lint:fix)",
+      "Bash(bun run lint:boundary)",
+      "Bash(bun run format)",
+      "Bash(bun run format:check)",
+      "Bash(bun run typecheck)",
+      "Bash(bun run docs:gen-reference)",
+      "Bash(bun run:*)",
+      "Bash(bun x:*)",
+      "Bash(make build)",
+      "Bash(make:*)",
+
+      "Bash(bash $REPO_ROOT/scripts/pr-batch.sh check-gen)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git blame:*)",
+      "Bash(git stash list)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rebase origin/main)",
+
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(jq:*)",
+      "Bash(sed -n:*)",
+      "Bash(awk:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(mktemp:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(true)",
+      "Bash(pwd)",
+
+      "Read(/$DOCS_ROOT/**)",
+
+      "Edit",
+      "Write",
+      "MultiEdit",
+      "NotebookEdit",
+      "Glob",
+      "Grep",
+      "TodoWrite",
+      "Task",
+      "WebFetch",
+      "WebSearch"
+    ],
+
+    "_deliberately_not_allowed": {
+      "_rule": "下面这些**故意不进 allow**，所以它们仍会弹确认。这不是遗漏。",
+      "git push / git push --force": "有外部副作用且难撤回。层内两路并行时，一次误 push 会污染共享远端。方法论 §10 明确禁止对这类操作免确认。",
+      "gh pr create / gh pr merge": "创建 PR 是对外发布；merge 更是绕过 review —— 而 review 是本方法论唯一不该自动化的环节（§1）。prompt 里也写了「停下等我 review，不要自己 merge」，光靠 prompt 约定不够，权限层要一起兜住。",
+      "git reset --hard / git clean / rm -rf / git checkout --": "CLAUDE.md 铁律，2026-07-28 有真实数据丢失事故。worktree 里同样适用：这三条能一次抹掉别人的在途工作。",
+      "git rebase -i / git commit --amend": "会重写历史。层内第二路合入时的 rebase 已单独放行（git rebase origin/main），交互式和 amend 仍需人看着。"
+    },
+
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -f:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Read(/$HOME/.sid-code/settings.json)",
+      "Read(/$HOME/**/.env)",
+      "Read(/$HOME/.ssh/**)"
+    ],
+    "_deny_why": "deny 优先于 allow，是**硬拦**不是询问。只放真正不可逆的破坏性操作，以及可能回显凭据的读取（~/.sid-code/settings.json 含真实 API key，方案 §6.1 那个探测脚本刻意不回显 key 就是这个原因）。注意 git push 不在 deny 里 —— 它该「问」而不是「禁」，禁了第二路就没法交付。"
+  }
+}
