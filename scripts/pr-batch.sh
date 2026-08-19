@@ -237,10 +237,16 @@ cleanable() {
 
   # 证据 1：PR 已 MERGED，且 mergeCommit 确实在 main 上。
   # ⚠️ 不能用 `git merge-base --is-ancestor origin/<branch> origin/main` ——
-  #    本仓用 squash merge，squash 后**分支 SHA 不在 main 的祖先链里**，
-  #    那条判据会永远返回「未合入」。实测：PR#34 四天前就合了，
-  #    旧 cleanup 至今说它「有未合入提交」→ worktree 永不被清理。
+  #    squash 合入时**分支 SHA 不在 main 的祖先链里**，那条判据会永远返回「未合入」。
+  #    实测：PR#34 四天前就合了，旧 cleanup 至今说它「有未合入提交」→ worktree 永不被清理。
   #    那 3.9G 不是「人忘了清」，是判据本身错了。
+  #
+  # ⚠️ 2026-08-19 补：仓库默认合并方式已从 squash-only 改成 **merge commit**
+  #    （squash 仍允许，所以两种历史会混在一起）。
+  #    **本函数三条证据在两种方式下都成立，不需要改** —— 这不是巧合，是因为它们
+  #    一律以 `gh` 给的 mergeCommit / commits[].oid 为准，而不是去猜 git 的拓扑。
+  #    ⛔ 别因为「现在有 merge commit 了」就把上面那条 is-ancestor 判据换回分支 SHA：
+  #    squash 的 PR 还在（#72 之前全是），换回去会让它们全部判成「未合入」。
   [[ "$pr_state" == "MERGED" ]] || { printf 'NO\tPR 未合并（%s）\n' "${pr_state:-无 PR}"; return; }
   [[ -n "$merge_oid" ]] || { printf 'NO\t%s\n' "PR 标记 MERGED 但拿不到 mergeCommit"; return; }
   git merge-base --is-ancestor "$merge_oid" origin/main 2>/dev/null \
@@ -263,6 +269,17 @@ cleanable() {
   #    实测：PR#19 的 3 个提交明明都在 PR 里且已合并，cherry 却报 3 个 `+` ——
   #    那是**假阴性**，会让已完成的 worktree 永远无法清理（3.9G 的另一半来源）。
   #    而 gh 给的 .commits[].oid 就是这个 PR 收录的原始提交 SHA，比对它才准。
+  #
+  # ⚠️ 2026-08-19：改用 merge commit 之后这条判据**变得更强，不是更弱**。
+  #    merge commit 把原始提交 SHA 原样带进 main，squash 不会。实测对照：
+  #      · #70 / #72（merge，parents=2）→ 原始提交 88ab53c5 / f388245f **是** origin/main 的祖先
+  #      · #66 / #63 / #61（squash，parents=1）→ 原始提交 e2b812bb / a9298b2f / 8733ce1a **都不在** main
+  #    所以 merge 之后 `rev-list origin/main..` 直接就是空集，`comm -23` 成了精确匹配；
+  #    squash 时它靠的是「PR 的 oid 列表」这个外部真值。两种方式都不需要改代码。
+  #
+  # ⚠️ **两种历史会长期混在一起**（#66 之前全是 squash，#70 起是 merge），
+  #    所以判据必须对两种都成立 —— 这正是「以 gh 的 oid 列表为准、不猜 git 拓扑」
+  #    这个设计的价值：它对合并方式不敏感。别为了「现在有 merge commit 了」去简化它。
   local pr_shas local_shas extra
   pr_shas="$(gh pr view "$pr_num_for_cleanable" --json commits --jq '.commits[].oid' 2>/dev/null | sort || true)"
   local_shas="$(git -C "$wt" rev-list origin/main.. 2>/dev/null | sort || true)"
