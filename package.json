@@ -32,6 +32,7 @@
     "changelog:check": "bun run scripts/changelog-curate.ts --check",
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
+    "catalog:coverage": "bun run scripts/catalog-coverage.ts",
     "pr-batch": "bash scripts/pr-batch.sh",
     "lint": "oxlint packages tests scripts evals website",
     "lint:fix": "oxlint packages tests scripts evals website --fix",

@@ -15,11 +15,23 @@
  *
  * ── 三个数据来源（互补，全部可选、全部可失败） ──────────────────────
  *
- * 1. **外部目录同步**（syncExternalCatalogs）：litellm + OpenRouter 多源投票。
- *    实测覆盖公司网关 127 个模型中的 93 个（73%）：litellm 88、OpenRouter 61、并集 93。
- *    两源打架时取「更保守的窗口 + 更大的输出上限」，宁可低估窗口也不高估（高估直接 400）。
- *    ⚠ 国内可达性是选源的硬约束：litellm 官方 raw.githubusercontent.com 不可达，
- *    故走 jsdelivr CDN 镜像；OpenRouter 官方域直连可达。已实测排除的源见 CATALOG_SOURCES 注释。
+ * 1. **外部目录同步**（syncExternalCatalogs）：models.dev 双镜像 + litellm + OpenRouter，
+ *    多源**众数**投票（见 voteTokenLimit —— 曾经取 min，方向是反的，2026-08-18 实测推翻）。
+ *
+ *    覆盖率（2026-08-20 实测，**复现见 `bun run scripts/catalog-coverage.ts`**）：
+ *    分母 = `~/.sid-code/gateway-pricing.json` 跨端点桶去重的网关模型数 135（对话模型 113）。
+ *      litellm 89 / OpenRouter 67 / 两者并集 94（83.2%）/ 三源并集 105（**92.9%**，对话模型口径）。
+ *      三源 + 归一化后仍查不到的真实缺口只剩 8 个，全是厂商变体后缀（-maxthink / -wot /
+ *      -thinking / -lite / -turbo / -preview / -non-thinking），能力可能真的不同，
+ *      刻意不靠剥后缀去借基础名的窗口（会高估），交给 400 自愈。
+ *    ⚠ 声称实测的数字必须带日期与复现方式：上一版注释写死的「127 个中 93 个（73%）」在网关
+ *    新上模型后分母失真，却让「选源没问题」这个判断多躺了很久没被复查 —— 一行让人放心的
+ *    过期注释比没有注释更糟。
+ *
+ *    ⚠ 国内可达性是选源的硬约束，但**它只保证「能拿到数据」，不保证「数据里有你要的模型」**——
+ *    选源必须同时考「对国内厂商的收录率」。litellm/OpenRouter 对智谱/字节/阿里系统性偏弱
+ *    （glm-5.3 与 5 个 doubao 只有 models.dev 有），而企业网关恰好大量代理国内模型。
+ *    详见 CATALOG_SOURCES 各源注释。
  *
  * 2. **运行时探针**（probeEffortValues）：故意发一个非法 `reasoning_effort` 值，
  *    从 400 错误里抽取服务端自报的支持档位。不依赖任何外部源，也不含模型名判据。
@@ -44,6 +56,8 @@ import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { getLogger } from "../debug/logger.ts";
 // 上下文超限判定的唯一事实源（见 learnFromError 第 3 段的委托说明）
 import { isPromptTooLong } from "../api/errors.ts";
+// 「写哪些键」与「查哪些键」的唯一事实源（互为镜像，对称性由单测锁住）
+import { expandKeys, normalizeCandidates } from "./model-name-normalize.ts";
 
 /**
  * ⚠ 每次调用时取 logger，不可模块级捕获——与 gateway-pricing.ts 同理：
@@ -71,6 +85,20 @@ export interface ModelCapabilityEntry {
   source?: "catalog" | "probe" | "healed";
   /** 采集时间戳（ms）。用于 TTL 与「哪条更新」判定。 */
   fetchedAt?: number;
+  /**
+   * 窗口投票分布：`"<窗口值>" → 该值被报了几次`。**只为可复算而存在**（北极星「可观测」）。
+   *
+   * 没有它就看不出一个窗口是怎么投出来的——而众数投票恰恰是本模块最容易被「以保守为直觉」
+   * 改错的地方（曾经取 min，系统性低估，最坏 30.5 倍，潜伏很久没人发现）。排障时有这张分布，
+   * 「这个值是众数还是无众数取的 max」一眼可判。
+   *
+   * 刻意存「值 → 次数」而不是「源 → 该源报的每个值」：后者对 glm-5.2 这类模型要存 68 个数字，
+   * 乘上数千条目会让缓存文件膨胀数倍；而次数分布已经是投票函数的**全部输入**，足够复算。
+   * 参与投票的源名另记在 voteSources。
+   */
+  contextWindowVotes?: Record<string, number>;
+  /** 本条窗口投票的参与源名（去重，按 CATALOG_SOURCES 顺序）。与 contextWindowVotes 配对使用。 */
+  voteSources?: string[];
 }
 
 interface CapabilityCacheFile {
@@ -82,7 +110,15 @@ interface CapabilityCacheFile {
   catalog_fail_count?: number;
 }
 
-const SCHEMA_VERSION = 1;
+/**
+ * 缓存 schema 版本。**不匹配即视为空并重新采集**（见 readCacheFile）。
+ *
+ * 1 → 2（2026-08-18）：窗口投票规则从 min 改成众数，且条目新增 contextWindowVotes /
+ * voteSources。bump 它是**必须的**，不只是为了新字段：磁盘上存量的窗口值全是 min 投出来的
+ * 错值（实测 79 个有真值的模型上 min 只对 41.8%，错的 46 个全是低估），不作废就得靠人记得
+ * 手删缓存文件才能生效。让版本号把「换了投票规则必须重采」变成机械行为。
+ */
+const SCHEMA_VERSION = 2;
 
 /**
  * 缓存条目数上限（安全护栏，非正常场景会触及）。
@@ -103,8 +139,8 @@ const MAX_CACHE_ENTRIES = 20_000;
  * 代价评估（结论：可接受）：
  * - 流量：两源合计约 2.7MB/天/机器（litellm 1.67MB + OpenRouter），fire-and-forget
  *   不在启动关键路径上，用户不可感知。
- * - 上游坏数据传播更快：由 sanitizeEntry（拦 Infinity/NaN/非正/非整）+ voteMerge
- *   （窗口取两源最小值）两道防线兜住，与拉取频率无关。
+ * - 上游坏数据传播更快：由 sanitizeEntry（拦 Infinity/NaN/非正/非整）+ 多源众数投票
+ *   （voteTokenLimit —— 少数源的离群值构不成众数）两道防线兜住，与拉取频率无关。
  * - 失败不会因变频而变吵：全源失败仍走指数退避（30min 起、封顶 24h）+ debug 级日志。
  */
 const DEFAULT_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
@@ -119,17 +155,55 @@ function resolveCatalogTtlMs(): number {
 const FAIL_BACKOFF_BASE_MS = 30 * 60 * 1000;
 const FAIL_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
 
+/** 单个目录源的形态。`decompress` 缺省即裸 JSON。 */
+interface CatalogSource {
+  name: string;
+  url: string;
+  parse: (raw: unknown) => Record<string, ModelCapabilityEntry[]>;
+  decompress?: "zstd";
+}
+
 /**
- * 外部模型目录源。顺序即优先级（靠前者在投票平局时胜出）。
+ * 外部模型目录源。顺序即优先级（靠前者在**平局无法用数值决出**时先被记入分布）。
  *
  * ⚠ 这里出现的是**数据源域名**，不是模型名判据——不违反「不按模型名硬编码」原则。
  * 新增模型无需改这里；只有数据源本身失效才需要维护。
  *
- * 选源的硬约束是**国内可达性**，不是数据质量——曾有两个候选源因 DNS 不可解析 / 请求超时
- * 且无可用 CDN 镜像而实测排除（已从方案中彻底移除，不再列具体域名以免被误当候选重试）。
- * 新增源前先在国内网络实测直连与 jsdelivr 镜像两条路径，再谈字段覆盖率。
+ * 选源的两个维度（缺一不可，只看第一个会重复本次的错误）：
+ * 1. **国内可达性**：曾有两个候选源因 DNS 不可解析 / 请求超时且无可用 CDN 镜像而实测排除
+ *    （不再列具体域名以免被误当候选重试）。新增源前先在国内网络实测直连与镜像两条路径。
+ * 2. **对国内厂商的收录率**：可达只保证「能拿到数据」，不保证「数据里有你要的模型」。
+ *    实测 litellm/OpenRouter 对智谱/字节/阿里系统性偏弱，漏 glm-5.3 与 5 个 doubao；
+ *    国内模型最集中的那个网关端点桶覆盖率只有 61.3%，是全部桶里最低的。
  */
-const CATALOG_SOURCES = [
+const CATALOG_SOURCES: readonly CatalogSource[] = [
+  {
+    // models.dev 镜像（主）。
+    // ⚠ models.dev **官方域国内不可达**（实测 curl 12s 超时、http=000），但它有两个可达的
+    // 第三方出口 —— 当初选源时把整个 models.dev 排除掉，就是因为只测了官方域。
+    // 本源是 opencode 自建镜像（裸 JSON，2026-08-20 实测 200 / 4.0MB / 0.69s）。
+    //
+    // 收录质量显著优于 litellm/OpenRouter：单源覆盖网关模型 75.0%，高于那两者的并集 69.1%，
+    // 且对国内厂商收录完整（glm-5.3 与 5 个 doubao 只有这里有）。
+    // 还额外提供两个此前采不到的字段：reasoning_options.values（effort 档位 —— 之前只能靠
+    // probeEffortValues 发一个非法请求去换）与 interleaved.field（协议层字段名，暂未消费）。
+    name: "models-dev-opencode",
+    url: "https://models.opencode.ai/api.json",
+    parse: parseModelsDev,
+  },
+  {
+    // models.dev 镜像（备）。oh-my-pi 用的出口，zstd 压缩（2026-08-20 实测 140KB vs 4.0MB，
+    // 省 28 倍带宽），用 Bun.zstdDecompressSync 解压（Bun 1.3.14 已内置，无需额外依赖）。
+    //
+    // 与主源实测**逐对完全相等**（192 providers / 6834 models，(provider,model) 对集合相同），
+    // 所以它纯粹是故障转移：正常情况下主源成功，这一份的数据只会与主源重复。
+    // ⚠ 重复本身无害（同值只会加固众数），但两个源都算进 voteSources 会让「几个源报了这个值」
+    // 看起来比实际独立源数多一个 —— 排障读 voteSources 时要知道这两个是同一份上游。
+    name: "models-dev-stencil",
+    url: "https://catalog.stencil.so/models.json.zstd",
+    parse: parseModelsDev,
+    decompress: "zstd",
+  },
   {
     name: "litellm",
     // 官方 raw.githubusercontent.com 国内不可达，走 jsdelivr CDN 镜像（实测 200 / 1.67MB）。
@@ -141,7 +215,7 @@ const CATALOG_SOURCES = [
     url: "https://openrouter.ai/api/v1/models",
     parse: parseOpenRouter,
   },
-] as const;
+];
 
 // ─────────────────────────────────────────────────────────────
 // 内存缓存
@@ -261,6 +335,14 @@ function persist(): void {
       // 显式 undefined 必须跳过——`{...disk, ...mem}` 会让 mem 里一个显式 undefined
       // 击穿磁盘上的真实值（把「未知」当成了「已知为空」）。
       const merged: Record<string, unknown> = { ...(models[key] ?? {}) };
+      // ⚠ 投票诊断字段是逐字段合并的一个例外：它描述「这一次同步的投票现场」，与同一条里的
+      // contextWindow 是**一体的**。若磁盘上留着别的进程上一轮的分布、而本进程这轮投出了新窗口，
+      // 逐字段合并会拼出一份分布与窗口对不上的记录 —— 排障的人对着它做判断会得出错结论。
+      // 本进程有窗口时，分布只以本进程的为准（没有就抹掉，不留旧的）。
+      if (mine.contextWindow !== undefined) {
+        delete merged.contextWindowVotes;
+        delete merged.voteSources;
+      }
       for (const [field, value] of Object.entries(mine)) {
         if (value !== undefined) merged[field] = value;
       }
@@ -299,9 +381,14 @@ function persist(): void {
 /**
  * 查询模型能力（**只读内存，绝不触网**——可安全用于热路径）。
  *
- * 归一化匹配：精确 → 剥离渠道前缀（ali-/tx-/volc-…）→ 剥离 vendor 路径前缀（kimi/xxx）。
+ * 归一化匹配委托给 model-name-normalize.ts 的 `normalizeCandidates`（与采集侧的
+ * `expandKeys` 互为镜像，对称性由单测锁住）：
+ *   精确 → 剥 vendor 路径前缀（kimi/xxx）→ 剥渠道前缀（ali-/tx-/volc-…）→ 剥日期后缀。
+ *
  * 与 model-registry 的匹配策略同构，但**不做**模糊前缀匹配（避免把 gpt-5.4-mini 的
  * 400K 窗口糊给 gpt-5.4 那种跨档误配——缓存条目来自第三方，精度不如手工注册表）。
+ * 日期后缀剥离不属于模糊前缀匹配：`deepseek-v3-250324` 与 `deepseek-v3` 是同一模型的
+ * 两个发布批次，不是两个档位的不同模型。
  */
 export function lookupCapability(model: string): ModelCapabilityEntry | null {
   if (memModels === null) loadCapabilityCache();
@@ -313,31 +400,6 @@ export function lookupCapability(model: string): ModelCapabilityEntry | null {
   return null;
 }
 
-/**
- * 生成模型名的归一化候选键（由精确到宽松）。
- *
- * 渠道前缀白名单与 model-registry 的 ROUTE_PREFIXES 同源语义：网关给模型名加连字符
- * 供应商前缀（ali- / tx- / volc- 等），这些前缀不影响模型固有能力，可安全剥离。
- * 绝不盲目按 "-" 拆分（否则误伤 gpt-5.6-luna / claude-sonnet-5 这类正规名）。
- */
-function normalizeCandidates(model: string): string[] {
-  const out: string[] = [];
-  const push = (s: string) => {
-    const v = s.trim().toLowerCase();
-    if (v && !out.includes(v)) out.push(v);
-  };
-  push(model);
-  // vendor 路径前缀（OpenRouter 风格 "deepseek/deepseek-v4"、网关 "kimi/kimi-k2.6"）
-  if (model.includes("/")) push(model.slice(model.lastIndexOf("/") + 1));
-  // 渠道路由前缀
-  const stripped = model.replace(/^(ali|tx|volc|origin|hw|az)-/i, "");
-  if (stripped !== model) {
-    push(stripped);
-    if (stripped.includes("/")) push(stripped.slice(stripped.lastIndexOf("/") + 1));
-  }
-  return out;
-}
-
 /** 合并一条能力记录进缓存（逐字段合并——新数据不得把已知字段覆盖成 undefined）。 */
 function mergeEntry(model: string, patch: ModelCapabilityEntry): void {
   if (memModels === null) loadCapabilityCache();
@@ -346,7 +408,15 @@ function mergeEntry(model: string, patch: ModelCapabilityEntry): void {
   const clean = sanitizeEntry(patch);
   if (!clean) return; // patch 全部字段都非法 → 无新信息，不动缓存
   const prev = (memModels ??= {})[key] ?? {};
-  const next: ModelCapabilityEntry = { ...prev, ...clean };
+  // 投票诊断字段是「上一次目录同步的投票现场」，一次采集一整份，不能逐字段沉淀 ——
+  // 否则上游改了数据、这轮只投出一个值时，旧的分布会留在条目里，排障的人看到的是一份
+  // 与当前 contextWindow 对不上的分布。所以 catalog 来源的 patch 先清掉旧的诊断字段。
+  const base: ModelCapabilityEntry = { ...prev };
+  if (clean.source === "catalog") {
+    delete base.contextWindowVotes;
+    delete base.voteSources;
+  }
+  const next: ModelCapabilityEntry = { ...base, ...clean };
   next.fetchedAt = clean.fetchedAt ?? Date.now();
   memModels[key] = next;
 }
@@ -407,12 +477,54 @@ function sanitizeEntry(raw: unknown): ModelCapabilityEntry | null {
     out.fetchedAt = r.fetchedAt;
   }
 
-  return Object.keys(out).length === 0 ? null : out;
+  // 投票分布是纯诊断字段，但仍走同样的严格校验：它会被渲染给人看，一个 NaN 键或负计数
+  // 会让排障的人对着一份自相矛盾的分布做判断，比没有分布更糟。
+  if (r.contextWindowVotes && typeof r.contextWindowVotes === "object") {
+    const votes: Record<string, number> = {};
+    for (const [k, v] of Object.entries(r.contextWindowVotes as Record<string, unknown>)) {
+      if (isPositiveInt(Number(k)) && isPositiveInt(v)) votes[k] = v;
+    }
+    if (Object.keys(votes).length > 0) out.contextWindowVotes = votes;
+  }
+  if (Array.isArray(r.voteSources)) {
+    const names = (r.voteSources as unknown[]).filter(
+      (s): s is string => typeof s === "string" && s.length > 0 && s.length <= 64,
+    );
+    if (names.length > 0) out.voteSources = [...new Set(names)];
+  }
+
+  // ⚠ 判「是否还有内容」时必须**排除新增的两个诊断字段**，不能沿用「out 非空即采信」——
+  // 否则一条只剩投票分布的记录会被当成有效条目留下，lookupCapability 返回一个非 null
+  // 但能力字段全 undefined 的对象，调用方据「非 null」判定「已知」就跳过了兜底。
+  const substantive = Object.keys(out).filter(
+    (k) => k !== "contextWindowVotes" && k !== "voteSources",
+  );
+  return substantive.length === 0 ? null : out;
 }
 
 // ─────────────────────────────────────────────────────────────
 // 数据源 1：外部目录同步（多源投票）
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * 把一条解析结果登记到**全部**归一化键上（append，不是覆盖也不是先到先得）。
+ *
+ * ⚠ 必须 append 的理由（这是三个 parse 里最容易做错的一处）：同一个裸名可能来自多个
+ * provider —— `azure_ai/deepseek-v3` 与 `deepinfra/deepseek-ai/DeepSeek-V3` 是**两个部署**、
+ * 两个真实窗口值。用「先到先得」（`if (!(key in out))`）等于在 parse 内部就把分布收敛成
+ * 一个任选值，多源众数投票拿不到分布也就无从投票 —— 那正是本模块历史上系统性低估的形态。
+ *
+ * 写哪些键由 expandKeys 统一决定（与查询侧 normalizeCandidates 互为镜像）。
+ */
+function appendUnderKeys(
+  out: Record<string, ModelCapabilityEntry[]>,
+  rawId: string,
+  entry: ModelCapabilityEntry,
+): void {
+  for (const key of expandKeys(rawId)) {
+    (out[key] ??= []).push(entry);
+  }
+}
 
 /** litellm 单条（仅声明消费字段）。 */
 interface LitellmEntry {
@@ -423,14 +535,23 @@ interface LitellmEntry {
   mode?: unknown;
 }
 
-/** 解析 litellm 目录：`{ "<model>": {...} }` 扁平字典。 */
-function parseLitellm(raw: unknown): Record<string, ModelCapabilityEntry> {
-  const out: Record<string, ModelCapabilityEntry> = {};
+/**
+ * 解析 litellm 目录：`{ "<model>": {...} }` 扁平字典。
+ *
+ * ⚠ litellm 以 `provider/model` 为主键组织（实测 3040 键里 2471 个带 `/`，占 81.3%；其中
+ * 1848 个的裸名在 litellm 里根本不存在，占带前缀键的 74.8%），而企业网关暴露的是裸名。
+ * 早先这里只写全名键（`out[name.toLowerCase()] = entry`），等于把 74.8% 的 litellm 数据存成
+ * 永远查不到的形态 —— 实测 17 个网关模型（8 个对话模型）纯因此漏采，`deepseek-v3` 明明有
+ * `azure_ai/deepseek-v3` 的数据却查出 null。现由 appendUnderKeys/expandKeys 统一写键。
+ */
+function parseLitellm(raw: unknown): Record<string, ModelCapabilityEntry[]> {
+  const out: Record<string, ModelCapabilityEntry[]> = {};
   if (!raw || typeof raw !== "object") return out;
   for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
     if (!v || typeof v !== "object") continue;
     const e = v as LitellmEntry;
-    // 只收对话类模型（embedding/rerank/image 的窗口语义不同，混入会误导 compact 阈值）。
+    // 只收对话类模型（embedding/rerank/image 的窗口语义不同，混入会误导 compact 阈值，
+    // 也会污染众数投票 —— 同名的对话/非对话条目混在一起投出来的是个语义混杂的值）。
     if (e.mode !== undefined && e.mode !== "chat" && e.mode !== "responses") continue;
     const cw = pickInt(e.max_input_tokens) ?? pickInt(e.max_tokens);
     const out2 = pickInt(e.max_output_tokens);
@@ -439,7 +560,7 @@ function parseLitellm(raw: unknown): Record<string, ModelCapabilityEntry> {
     if (cw !== undefined) entry.contextWindow = cw;
     if (out2 !== undefined) entry.maxOutputTokens = out2;
     if (typeof e.supports_reasoning === "boolean") entry.supportsReasoning = e.supports_reasoning;
-    out[name.toLowerCase()] = entry;
+    appendUnderKeys(out, name, entry);
   }
   return out;
 }
@@ -454,8 +575,8 @@ interface OpenRouterEntry {
 }
 
 /** 解析 OpenRouter 目录：`{ data: [...] }`。它额外提供 effort 档位——外部源里唯一有此字段的。 */
-function parseOpenRouter(raw: unknown): Record<string, ModelCapabilityEntry> {
-  const out: Record<string, ModelCapabilityEntry> = {};
+function parseOpenRouter(raw: unknown): Record<string, ModelCapabilityEntry[]> {
+  const out: Record<string, ModelCapabilityEntry[]> = {};
   const items = (raw as { data?: unknown })?.data;
   if (!Array.isArray(items)) return out;
   for (const it of items as OpenRouterEntry[]) {
@@ -471,13 +592,86 @@ function parseOpenRouter(raw: unknown): Record<string, ModelCapabilityEntry> {
     if (Array.isArray(it.supported_parameters)) {
       entry.supportsReasoning = (it.supported_parameters as unknown[]).includes("reasoning");
     }
-    // 同时登记全名与尾段（"deepseek/deepseek-v4" → 也按 "deepseek-v4" 可查）。
-    const id = it.id.toLowerCase();
-    out[id] = entry;
-    const tail = id.slice(id.lastIndexOf("/") + 1);
-    if (tail && !(tail in out)) out[tail] = entry;
+    appendUnderKeys(out, it.id, entry);
   }
   return out;
+}
+
+/** models.dev 单条（仅声明消费字段）。 */
+interface ModelsDevEntry {
+  limit?: { context?: unknown; output?: unknown };
+  reasoning?: unknown;
+  reasoning_options?: unknown;
+  modalities?: { input?: unknown; output?: unknown };
+}
+
+/**
+ * 解析 models.dev（镜像）目录：`{ [providerId]: { models: { [modelId]: {...} } } }`。
+ *
+ * ⚠ 与 litellm/OpenRouter 的**关键结构差异**：同一个模型在多个 provider 下各有一条
+ * （实测 192 providers / 6834 条，其中 734 个模型出现在 ≥2 个 provider 上）。
+ * 这些条目**不是重复数据，是不同部署** —— 第三方托管常阉割上下文：实测
+ * `digitalocean/glm-5.2`=262144、`scaleway/glm-5.2`=256000、`routing-run/glm-5.2`=200000，
+ * 而第一方 `zai/glm-5.2`=1000000（分歧 5.2 倍）。统计口径上，多 provider 模型里
+ * 26.0% 的窗口分歧 ≥2 倍，这是数据的常态而非异常。
+ *
+ * 所以本函数必须把同名模型的**所有值都交给投票函数**，绝不在这里先 min/first 收敛 ——
+ * 否则众数拿不到分布，投票就退化成「任选一个部署的值」。
+ *
+ * 非对话模型过滤：镜像没有 litellm 的 `mode` 字段，改用 `modalities.output` 不含 `"text"`
+ * 判定（`["audio"]` / `["image"]` 之类）。实测约 140 条非对话条目**确实带 context 值**
+ * （如 `nvidia/llama-nemotron-rerank-vl-1b-v2` ctx=128000），混进来会污染同名对话模型的投票。
+ * 加源必须同时加它的过滤器 —— 分两次做就是「已知会污染投票还先合」。
+ */
+function parseModelsDev(raw: unknown): Record<string, ModelCapabilityEntry[]> {
+  const out: Record<string, ModelCapabilityEntry[]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const provider of Object.values(raw as Record<string, unknown>)) {
+    if (!provider || typeof provider !== "object") continue;
+    const models = (provider as { models?: unknown }).models;
+    if (!models || typeof models !== "object") continue;
+    for (const [modelId, v] of Object.entries(models as Record<string, unknown>)) {
+      if (!v || typeof v !== "object") continue;
+      const e = v as ModelsDevEntry;
+
+      // 非对话模型过滤：output 模态明确存在且不含 text → 不是对话模型。
+      // 缺字段时**放行**（未知不等于非对话，宁可多收一条也不要漏掉正常模型）。
+      const outputModalities = e.modalities?.output;
+      if (Array.isArray(outputModalities) && !outputModalities.includes("text")) continue;
+
+      const cw = pickInt(e.limit?.context);
+      const mo = pickInt(e.limit?.output);
+      const efforts = extractModelsDevEfforts(e.reasoning_options);
+      if (cw === undefined && mo === undefined && !efforts) continue;
+
+      const entry: ModelCapabilityEntry = { source: "catalog" };
+      if (cw !== undefined) entry.contextWindow = cw;
+      if (mo !== undefined) entry.maxOutputTokens = mo;
+      if (efforts) entry.effortValues = efforts;
+      if (typeof e.reasoning === "boolean") entry.supportsReasoning = e.reasoning;
+      appendUnderKeys(out, modelId, entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 models.dev 的 `reasoning_options` 抽 effort 档位。
+ *
+ * 形态：`[{ type: "effort", values: ["low","high","max"] }]`。只认 `type === "effort"` 的那项 ——
+ * 该数组将来可能新增别的 reasoning 选项类型（如 token 预算档），按位置取会取错。
+ * 这个字段是 litellm/OpenRouter 都没有的：拿到它就等于**不必再发一个非法请求去探档位**。
+ */
+function extractModelsDevEfforts(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  for (const opt of v) {
+    if (!opt || typeof opt !== "object") continue;
+    const o = opt as { type?: unknown; values?: unknown };
+    if (o.type !== "effort") continue;
+    const words = sanitizeEffortWords(o.values);
+    if (words) return words;
+  }
+  return undefined;
 }
 
 function pickInt(v: unknown): number | undefined {
@@ -520,9 +714,10 @@ export function shouldSyncCatalogs(now = Date.now()): boolean {
 /**
  * 同步外部模型目录 → 合并进能力缓存。
  *
- * 多源投票：两源都有该模型时，取**更保守的 contextWindow**（min）与**更大的
- * maxOutputTokens**（max）。理由不对称——窗口高估会直接吃 400（实测 deepseek-v4-pro
- * 两源打架：litellm 1M vs OpenRouter 1.048M），输出上限低估只是白白限制生成长度。
+ * ⚠ 累加器是「一个键 → 一组候选」（`Record<string, {entry, source}[]>`），**不是**逐条两两折叠。
+ * 这个形态是**众数投票强制要求的**：min/max 可结合（`min(min(a,b),c) === min(a,b,c)`），
+ * 所以两两折叠算得对；**众数不可结合** —— `mode(mode(a,b),c)` 无意义，它必须看到完整分布。
+ * 谁把这里改回折叠，投票就会静默退化，而测试与类型都不会报错。
  *
  * @returns 采集统计。任何源失败都不抛异常（记退避后返回）。
  */
@@ -534,21 +729,27 @@ export async function syncExternalCatalogs(opts?: {
   const timeoutMs = opts?.timeoutMs ?? resolveSideCallTimeouts().gatewayPricingMs;
   const now = opts?.now ?? Date.now();
 
-  const merged: Record<string, ModelCapabilityEntry> = {};
+  const candidates: Record<string, CandidateEntry[]> = {};
   const okSources: string[] = [];
   const failed: string[] = [];
 
   for (const src of CATALOG_SOURCES) {
-    const parsed = await fetchCatalog(src.url, src.parse, timeoutMs);
+    const parsed = await fetchCatalog(src, timeoutMs);
     if (!parsed) {
       failed.push(src.name);
       continue;
     }
     okSources.push(src.name);
-    for (const [name, entry] of Object.entries(parsed)) {
-      const prev = merged[name];
-      merged[name] = prev ? voteMerge(prev, entry) : entry;
+    for (const [name, entries] of Object.entries(parsed)) {
+      const bucket = (candidates[name] ??= []);
+      for (const entry of entries) bucket.push({ entry, source: src.name });
     }
+  }
+
+  const merged: Record<string, ModelCapabilityEntry> = {};
+  for (const [name, bucket] of Object.entries(candidates)) {
+    const voted = voteEntries(bucket);
+    if (voted) merged[name] = voted;
   }
 
   if (okSources.length === 0) {
@@ -576,32 +777,203 @@ export async function syncExternalCatalogs(opts?: {
   return { updated: Object.keys(merged).length, sources: okSources, failed };
 }
 
-/** 两源投票合并：窗口取小（保守），输出上限取大，effort 档位取已有的（OpenRouter 独有）。 */
-function voteMerge(a: ModelCapabilityEntry, b: ModelCapabilityEntry): ModelCapabilityEntry {
-  const out: ModelCapabilityEntry = { ...a };
-  if (isPositiveInt(b.contextWindow)) {
-    out.contextWindow = isPositiveInt(a.contextWindow)
-      ? Math.min(a.contextWindow, b.contextWindow)
-      : b.contextWindow;
+/** 一个候选值及其来源（来源只为诊断，不参与选值）。 */
+interface CandidateEntry {
+  entry: ModelCapabilityEntry;
+  source: string;
+}
+
+/**
+ * 多源 token 上限选值（contextWindow 与 maxOutputTokens 共用）：取**众数**，而不是最小值。
+ *
+ * 两个字段共用一个函数是刻意的：它们的数据形态相同（按 provider 分条的同一模型多条），
+ * 失败模式也相同（少数源报离群值 —— 窗口那边是阉割部署，输出那边是把 context 填进了 output）。
+ * 让它们分叉只会得到两套各自演化、各自出错的规则。
+ *
+ * ── 为什么不是 min（2026-08-18 实测推翻了原设计）────────────────────
+ *
+ * 原设计取 min 的理由是「窗口高估会吃 400，保守更安全」，它隐含一个前提：
+ * **源之间的分歧是测量噪声**（如 1M vs 1.048M，差 4.8%）。这个前提不成立。
+ *
+ * 源数据是**按 provider 分条**的，同一模型在不同 provider 上是不同部署，第三方托管常阉割
+ * 上下文（实测 glm-5.2：digitalocean 262144 / scaleway 256000 / routing-run 200000，
+ * 而第一方 zai 是 1000000 —— 差 5.2 倍）。分歧是真实的部署差异，量级是数量级的，不是噪声。
+ *
+ * min 于是**系统性地选中最阉割的那个部署**。2026-08-20 实测（复现见
+ * `bun run scripts/catalog-coverage.ts`，真值 = 内置注册表，5% 容差，
+ * 分母 = 77 个「有真值且有 ≥2 个候选值」的模型）：
+ *
+ *     min   42.9% 正确 —— 错的 44 个**全部方向是低估**，高估 0
+ *     众数  92.2% 正确 —— 低估 4 / 高估 2
+ *
+ * 最坏案例 `deepseek-v4-flash`：69 个候选值，min 给出 32768，众数给出 1000000（**30.5 倍**）。
+ *
+ * 众数为什么对：第一方与多数正规托管会报同一个真值，形成尖峰；阉割部署各家数值分散，
+ * 构不成众数。
+ *
+ * ── 平局取大 / 无众数取 max：宁可高估（这个不对称是刻意的）──────────
+ *
+ * 高估 → 吃一次 400 → learnFromError 学到真值 → 自愈，**一次性代价且有信号**；
+ * 低估 → 零报错零信号，过早触发 auto-compact，每一轮都多烧 token，**永久性代价**。
+ *
+ * ⚠ 不要以「保守 = 安全」的直觉把它改回 min。上一版就是那个直觉的产物，
+ * 而它**没有任何报错**，所以在几十个模型上产生错值却潜伏了很久没被发现。
+ */
+export function voteTokenLimit(values: number[]): number | undefined {
+  const valid = values.filter(isPositiveInt);
+  if (valid.length === 0) return undefined; // 空集不得产出 0/NaN —— 未知就该是未知
+  const cnt = new Map<number, number>();
+  for (const v of valid) cnt.set(v, (cnt.get(v) ?? 0) + 1);
+  let best = 0;
+  for (const c of cnt.values()) best = Math.max(best, c);
+  if (best >= 2) {
+    // 有众数：同票时取大（同上，宁可高估）
+    let pick = 0;
+    for (const [v, c] of cnt) if (c === best) pick = Math.max(pick, v);
+    return pick;
   }
-  if (isPositiveInt(b.maxOutputTokens)) {
-    out.maxOutputTokens = isPositiveInt(a.maxOutputTokens)
-      ? Math.max(a.maxOutputTokens, b.maxOutputTokens)
-      : b.maxOutputTokens;
+  return Math.max(...valid); // 全不相同 → 无众数 → 取大，交给 400 自愈
+}
+
+/**
+ * 把一个键上的全部候选投成一条记录。
+ *
+ * - `contextWindow`：众数（见 voteTokenLimit）。
+ * - `maxOutputTokens`：**同样走众数**，再钳制到不超过投出来的 contextWindow。
+ *
+ *   ⚠ 这里原本是取 max，加了第三个源之后**它成了一个净退步**，必须一并改。
+ *   2026-08-20 实测（同一个脚本 `bun run scripts/catalog-coverage.ts` 的 maxOutputTokens 段，
+ *   已含下面那道钳制，真值 = 内置注册表，5% 容差）：
+ *
+ *     旧两源 max  64.3% 正确（13 高估）   →   三源 max   31.1% 正确（**47 高估**）
+ *     旧两源 众数 73.2% 正确              →   三源 众数  74.3% 正确（7 高估）
+ *
+ *   原因是**有些源把 output 字段填成了 context 值**（gpt-4.1 真值 128K，某些源报 1047576；
+ *   gpt-4o 真值 16384，某些源报 128000）。两个源时这种条目是少数，取 max 只偶尔踩到；
+ *   加到 30+ provider 后，**取 max 几乎必然捞到那条错的**。众数不受少数离群值影响。
+ *
+ *   这是一个「加源」连带出来的回归：如果只按方案改窗口投票、把 output 留在 max 上，
+ *   本 PR 会一边修好窗口一边把输出上限打坏 —— 而输出上限打高的症状同样是 400。
+ *
+ *   钳制仍然保留（众数也可能选中一个 output==context 的值）：大于窗口的输出上限一定是错的，
+ *   输出装不进窗口，下发出去就是一次必然的 400。
+ * - `effortValues` / `supportsReasoning`：取第一个报了该字段的源（顺序即 CATALOG_SOURCES
+ *   优先级）。刻意不对它们投票：effort 档位是**集合**不是标量，各源观测口径不同
+ *   （网关字段级并集 vs 模型级真值），投票会拼出一个没有任何源真正声明过的档位集合。
+ */
+function voteEntries(candidates: CandidateEntry[]): ModelCapabilityEntry | null {
+  if (candidates.length === 0) return null;
+
+  const windows: number[] = [];
+  const voteCount = new Map<number, number>();
+  const voteSources = new Set<string>();
+  for (const { entry, source } of candidates) {
+    if (isPositiveInt(entry.contextWindow)) {
+      windows.push(entry.contextWindow);
+      voteCount.set(entry.contextWindow, (voteCount.get(entry.contextWindow) ?? 0) + 1);
+      voteSources.add(source);
+    }
   }
-  if (b.effortValues && !a.effortValues) out.effortValues = b.effortValues;
-  if (typeof b.supportsReasoning === "boolean" && typeof a.supportsReasoning !== "boolean") {
-    out.supportsReasoning = b.supportsReasoning;
+
+  const out: ModelCapabilityEntry = { source: "catalog" };
+  const votedWindow = voteTokenLimit(windows);
+  if (votedWindow !== undefined) {
+    out.contextWindow = votedWindow;
+    // 诊断字段：只在确实有多个不同候选值时才存 —— 单一值的分布是 `{"1000000":7}`，
+    // 复算价值为零，却要在数千条目上各占一份，白白让缓存文件变大。
+    if (voteCount.size > 1) {
+      out.contextWindowVotes = Object.fromEntries(
+        [...voteCount].sort((a, b) => b[1] - a[1] || b[0] - a[0]).map(([v, c]) => [String(v), c]),
+      );
+      out.voteSources = [...voteSources];
+    }
+  }
+
+  const outputs: number[] = [];
+  for (const { entry } of candidates) {
+    if (isPositiveInt(entry.maxOutputTokens)) outputs.push(entry.maxOutputTokens);
+  }
+  // 与窗口共用同一个投票函数：规则相同（众数 → 平局取大 → 无众数取 max），
+  // 失败模式也相同（少数源把 output 填成了 context 值），没有理由让两者分叉。
+  const maxOut = voteTokenLimit(outputs);
+  if (maxOut !== undefined) {
+    out.maxOutputTokens = votedWindow !== undefined ? Math.min(maxOut, votedWindow) : maxOut;
+  }
+
+  for (const { entry } of candidates) {
+    if (out.effortValues === undefined && entry.effortValues !== undefined) {
+      out.effortValues = entry.effortValues;
+    }
+    if (out.supportsReasoning === undefined && typeof entry.supportsReasoning === "boolean") {
+      out.supportsReasoning = entry.supportsReasoning;
+    }
+  }
+
+  // 一条都没投出可用能力字段（例如全部候选的窗口都非法）→ 不写入，交给兜底。
+  return out.contextWindow === undefined &&
+    out.maxOutputTokens === undefined &&
+    out.effortValues === undefined &&
+    out.supportsReasoning === undefined
+    ? null
+    : out;
+}
+
+/**
+ * 单个目录源响应体的字节上限。
+ *
+ * 为什么需要（不是理论风险）：本模块此前直接 `await resp.json()`，一个畸形的超大响应
+ * （或被中间人替换的响应）会让运行时在解析前就把整份 payload 缓冲进内存。模块头部与
+ * CLAUDE.md 都写了「第三方 HTTP 属不可信数据」，但此前的不可信处理只做到**字段级校验**
+ * （isPositiveInt 那一层），没有**体积级**防护。加 models.dev 镜像后最大响应从 1.7MB 抬到
+ * 4.0MB，体积敏感度上升，顺手补齐成本最低。
+ *
+ * ⚠ 32MiB 是**按余量推的，不是压测出来的**：镜像实测 4.0MB / litellm 1.7MB /
+ * OpenRouter 0.68MB，留 8 倍余量（够上游翻三轮），同时远低于会打爆 Bun 默认堆的量级。
+ * 对标 openclaw 同类端点用 16MiB，我们取 2 倍是因为 models.dev 镜像本身就比 OpenRouter 大 5.9 倍。
+ */
+const CATALOG_BODY_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 读响应体并强制字节上限。超限即抛（由 fetchCatalog 统一按「该源失败」处理）。
+ *
+ * 必须流式读 + 边读边计数：先 `arrayBuffer()` 再看长度等于已经把超大 payload 收进内存了，
+ * 上限也就白设。`content-length` 也不能单独作为判据 —— 它由对端提供，可以撒谎或缺失。
+ */
+async function readBodyCapped(resp: Response): Promise<Uint8Array> {
+  const declared = Number(resp.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > CATALOG_BODY_MAX_BYTES) {
+    throw new Error(`响应体声明 ${declared} 字节，超过上限 ${CATALOG_BODY_MAX_BYTES}`);
+  }
+  const reader = resp.body?.getReader();
+  if (!reader) return new Uint8Array(await resp.arrayBuffer());
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > CATALOG_BODY_MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`响应体超过上限 ${CATALOG_BODY_MAX_BYTES} 字节，已中断`);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
   }
   return out;
 }
 
-/** 拉取并解析单个目录源。任何失败（网络/超时/非 JSON/schema 异常）返回 null。 */
+/** 拉取并解析单个目录源。任何失败（网络/超时/超限/解压失败/非 JSON/schema 异常）返回 null。 */
 async function fetchCatalog(
-  url: string,
-  parse: (raw: unknown) => Record<string, ModelCapabilityEntry>,
+  src: CatalogSource,
   timeoutMs: number,
-): Promise<Record<string, ModelCapabilityEntry> | null> {
+): Promise<Record<string, ModelCapabilityEntry[]> | null> {
   const ctl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -609,22 +981,29 @@ async function fetchCatalog(
     ctl.abort();
   }, timeoutMs);
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(src.url, {
       method: "GET",
-      headers: { accept: "application/json" },
+      // zstd 源返回的是 application/octet-stream 一类，别声明只接受 JSON。
+      headers: { accept: src.decompress ? "*/*" : "application/json" },
       signal: ctl.signal,
     });
     if (!resp.ok) {
-      log().debug("MODEL-CAP", `目录源 HTTP ${resp.status}`, { url });
+      log().debug("MODEL-CAP", `目录源 HTTP ${resp.status}`, { url: src.url });
       return null;
     }
-    const parsedJson = (await resp.json()) as unknown;
-    const out = parse(parsedJson);
+    const body = await readBodyCapped(resp);
+    // 解压后的体积不再设第二道上限：zstd 源实测 140KB → 4.0MB（约 29 倍），而压缩包本身
+    // 已经过 32MiB 门。真要防 zip bomb 需要解压时流式限额，Bun.zstdDecompressSync 做不到；
+    // 该源是已知镜像、非用户可控输入，这个残余风险按可接受处理。
+    const text = new TextDecoder().decode(
+      src.decompress === "zstd" ? Bun.zstdDecompressSync(body) : body,
+    );
+    const out = src.parse(JSON.parse(text) as unknown);
     return Object.keys(out).length > 0 ? out : null;
   } catch (e) {
     // 与 gateway-pricing 同理：这是纯优化项，失败对用户不可行动 → debug 级，不惊扰终端。
     log().debug("MODEL-CAP", timedOut ? `目录源超时 ${timeoutMs}ms` : `目录源失败: ${String(e)}`, {
-      url,
+      url: src.url,
     });
     return null;
   } finally {
@@ -946,4 +1325,49 @@ export function __persistForTest(): void {
  */
 export function __sanitizeEntryForTest(raw: unknown): ModelCapabilityEntry | null {
   return sanitizeEntry(raw);
+}
+
+/**
+ * 直接走 mergeEntry 写一条记录（仅测试用）。
+ *
+ * 用它测「一条采集结果落进已有缓存」的合并语义（尤其是投票诊断字段与窗口的一体性），
+ * 不必为此触网跑一整轮 syncExternalCatalogs。
+ */
+export function __applyCatalogEntryForTest(model: string, patch: ModelCapabilityEntry): void {
+  mergeEntry(model, patch);
+}
+
+/**
+ * 当前缓存 schema 版本（仅测试用）。
+ *
+ * 测试构造磁盘 fixture 时**必须**用它，不要硬编码字面量：schema 每 bump 一次，硬编码的
+ * fixture 就会被 readCacheFile 当成过期版本整份丢弃，于是一批与版本毫无关系的用例
+ * （并发写合并、字段保留）集体报红。那种红是 fixture 陈旧，不是被测行为坏了 ——
+ * 排查它纯属浪费，而且容易被误判成「合并逻辑回归了」。
+ */
+export const __SCHEMA_VERSION_FOR_TEST = SCHEMA_VERSION;
+
+/**
+ * 暴露三个 parse 函数（仅测试用）。
+ *
+ * 为什么必须直接测它们而不是只测 syncExternalCatalogs：后者要触网。写键形态（一条记录登记
+ * 到哪些键上）曾因为「只有走网络才能观察」而长期漏采 74.8% 的 litellm 数据 —— 不方便测，
+ * 于是没测。parse 是纯函数，用 fixture 直接锁住写键与多值形态是最短的验证路径。
+ */
+export const __parsersForTest = {
+  litellm: parseLitellm,
+  openrouter: parseOpenRouter,
+  modelsDev: parseModelsDev,
+} as const;
+
+/**
+ * 暴露 voteEntries（仅测试用）—— 「一组候选 → 一条记录」的投票现场。
+ *
+ * `voteTokenLimit` 已经是导出的纯函数，但它只覆盖窗口选值这一步；
+ * maxOutputTokens 的钳制、诊断字段的写入条件、effort 的「取第一个报了的源」都在这一层。
+ */
+export function __voteEntriesForTest(
+  candidates: Array<{ entry: ModelCapabilityEntry; source: string }>,
+): ModelCapabilityEntry | null {
+  return voteEntries(candidates);
 }

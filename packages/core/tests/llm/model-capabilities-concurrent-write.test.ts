@@ -23,6 +23,9 @@ import {
   __resetCapabilityCacheForTest,
   __enablePersistForTest,
   __persistForTest,
+  // ⚠ 从源码取版本号，不要硬编码字面量：schema bump 一次，硬编码 fixture 会被
+  // readCacheFile 当成过期版本整份丢弃，这一批与版本无关的用例就会集体报红。
+  __SCHEMA_VERSION_FOR_TEST as SCHEMA_VERSION,
   type ModelCapabilityEntry,
 } from "@sid-code/core/llm/model-capabilities.ts";
 
@@ -68,7 +71,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
   test("核心断言：磁盘上的条目 A 与内存态的条目 B 写盘后都在", () => {
     // 「另一个进程」刚采到 A 并落盘。
     writeDiskFile({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       models: { "model-a": { contextWindow: 128_000, source: "catalog", fetchedAt: 1_000 } },
       catalog_synced_at: 1_000,
       catalog_fail_count: 0,
@@ -91,17 +94,20 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     // 这个用例锁的是「差异存在」——直接模拟旧实现（整份覆盖）在同样输入下的结果，
     // 证明上一个用例的断言不是恒真的：没有合并，A 一定丢。
     writeDiskFile({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       models: { "model-a": { contextWindow: 128_000 } },
     });
-    const overwritten = { schema_version: 1, models: { "model-b": { contextWindow: 256_000 } } };
+    const overwritten = {
+      schema_version: SCHEMA_VERSION,
+      models: { "model-b": { contextWindow: 256_000 } },
+    };
     writeFileSync(sidPaths.modelCapabilities(), JSON.stringify(overwritten), "utf8");
     expect(Object.keys(readDiskFile().models)).toEqual(["model-b"]);
   });
 
   test("同一个键：内存态覆盖磁盘（内存态不可能比磁盘旧）", () => {
     writeDiskFile({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       models: { "model-x": { contextWindow: 100_000, source: "catalog", fetchedAt: 1_000 } },
     });
     __resetCapabilityCacheForTest({
@@ -118,7 +124,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
   test("同一个键：磁盘独有的字段被保留（逐字段合并，不整条替换）", () => {
     // 别的进程用探针学到了 effortValues，本进程只采到窗口 —— 两边的信息都该留下。
     writeDiskFile({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       models: {
         "model-y": { effortValues: ["low", "high"], supportsReasoning: true, fetchedAt: 1_000 },
       },
@@ -137,7 +143,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     // `{...disk, ...mem}` 式展开会让一个显式 undefined 覆盖掉磁盘真值，
     // 把「未知」错记成「已知为空」。
     writeDiskFile({
-      schema_version: 1,
+      schema_version: SCHEMA_VERSION,
       models: { "model-z": { contextWindow: 32_000, maxOutputTokens: 8_192 } },
     });
     __resetCapabilityCacheForTest({
@@ -154,9 +160,11 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
   test("磁盘上的毒数据不被合并回写（Infinity 等仍走 sanitizeEntry）", () => {
     // JSON 里的 1e400 解析后是 Infinity：typeof === "number" 且 > 0，
     // 放过它会让上下文预算永远「还有空间」，auto-compact 彻底失效。
+    // ⚠ 这里必须走裸字符串写盘（不能 JSON.stringify 一个对象）：`1e400` 只有在 JSON 文本里
+    // 才能表达出「解析后是 Infinity」这个形态，stringify(Infinity) 会得到 `null`。
     writeFileSync(
       sidPaths.modelCapabilities(),
-      '{"schema_version":1,"models":{"poison":{"contextWindow":1e400},"ok":{"contextWindow":8000}}}',
+      `{"schema_version":${SCHEMA_VERSION},"models":{"poison":{"contextWindow":1e400},"ok":{"contextWindow":8000}}}`,
       "utf8",
     );
     __resetCapabilityCacheForTest({ mine: { contextWindow: 4_000 } });
@@ -184,7 +192,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
   describe("元数据字段（catalog_synced_at / catalog_fail_count）整对取更新的那一份", () => {
     test("磁盘更新 → 整对取磁盘（不与内存态的 failCount 拼接）", () => {
       writeDiskFile({
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         models: {},
         catalog_synced_at: 9_000,
         catalog_fail_count: 0, // 别的进程刚同步成功
@@ -200,7 +208,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
 
     test("内存态更新 → 整对取内存态", () => {
       writeDiskFile({
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         models: {},
         catalog_synced_at: 1_000,
         catalog_fail_count: 0,
@@ -219,7 +227,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
       //（磁盘的成功计数）=「9000 时刻同步成功」——退避被取消、TTL 从 9000 重新起算，
       // 最坏把采集抑制整整一天。
       writeDiskFile({
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         models: {},
         catalog_synced_at: 1_000,
         catalog_fail_count: 0,
@@ -234,7 +242,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     });
 
     test("磁盘无 catalog_synced_at → 用内存态（缺值不算更新）", () => {
-      writeDiskFile({ schema_version: 1, models: { a: { contextWindow: 1_000 } } });
+      writeDiskFile({ schema_version: SCHEMA_VERSION, models: { a: { contextWindow: 1_000 } } });
       __resetCapabilityCacheForTest({});
       __enablePersistForTest({ syncedAt: 5_000, failCount: 1 });
       __persistForTest();
@@ -246,7 +254,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
 
     test("时间戳平局 → 用内存态（本进程的判断至少不比磁盘旧）", () => {
       writeDiskFile({
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         models: {},
         catalog_synced_at: 7_000,
         catalog_fail_count: 0,
