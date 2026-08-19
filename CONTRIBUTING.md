@@ -292,6 +292,31 @@ bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
 **五条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
 排版或跨包导入不合规照样拦。
 
+### 开发过程中用选择性测试，最后一次再跑全量
+
+改一个文件却等全量（实测 127.5s）是不划算的，所以日常迭代用：
+
+```bash
+bun run affected-tests       # 只打印判定与命令，不执行（先看一眼选了什么）
+bun run affected-tests:run   # 执行选出来的最小测试集
+```
+
+它按 diff 触及的路径选测（`packages/core/src/<domain>/` → `packages/core/tests/<domain>/`），
+实测 **0.19s–14.5s**。碰到 `bunfig.toml` / `package.json` / `Makefile` / `tests/build/`
+这类仓库级文件，或同时改 ≥3 个包，它会自动判定为全量 —— 不需要你记住这些例外。
+
+两条使用约定：
+
+- **提 PR 前仍要跑一次全量 `bun test`。** 选测是给开发过程用的，不替代提交前的完整验证；
+  它换来的「快」是以「本地覆盖面变窄」为代价的，补偿是 CI 在合并前跑全量。
+- **base 默认是 `origin/main`**，所以本地要先 `git fetch origin main`，
+  否则脚本会明确报错而不是猜一个 base（猜错会让选测范围静默变错）。
+
+⚠️ 有一个 bun 陷阱值得知道，因为它会让人误判选测「又慢又没省」：
+`bun test` 的位置参数是**完整路径子串匹配**，不是目录。`bun test tests/` 实测搜 692 个文件
+（匹配所有路径含 `tests/` 的），`bun test ./tests/` 才是 38 个。脚本输出的路径一律带 `./`，
+自己手敲时也要带。
+
 ### 另有两个 git hook 门禁（跑 `bun run install-hooks` 安装）
 
 它们**不在 CI 里**，只在本地拦，所以更容易忘记装：

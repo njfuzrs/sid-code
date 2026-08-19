@@ -138,7 +138,11 @@
 
 - **语言**：所有回复、代码注释、文档均用中文。
 - **联网工具**：遇到不熟悉的 API / 库 / 报错信息时，主动用 tavily-mcp / context7-mcp 查最新文档，不要凭记忆猜。
-- **构建验证**：task 完成后跑 `bun test`（全量单测，以实际输出为准）以及跑 `make build` 验证构建成功，**不可跳过，必须执行**。
+- **构建验证**：task 完成后跑 `bun run affected-tests:run`（覆盖本次 diff 的最小测试集）以及跑 `make build` 验证构建成功，**不可跳过，必须执行**。
+  - **全量 `bun test` 只在三种情况下跑**：① CI（合并前必跑，见下）；② 用户显式要求；③ `affected-tests` 自己判定为仓库级改动（此时它输出的就是全量命令）。
+  - 先看判定再跑：`bun run affected-tests` 只打印命令不执行，`:run` 才执行。实测选测耗时 **0.19s–14.5s**，全量 **127.5s**。
+  - ⚠️ **这一步拿「更安全」换「更快」，补偿是 CI 在合并前跑全量**（`ci.yml` 的 `test` job 用裸 `bun test`）。只做本地选测而不走 PR，等于把风险从本地挪到 main 上——所以**选测与 PR 化必须成对**，直推 main 时不许用选测。
+  - 判定逻辑与逃逸阀在 `scripts/affected-tests.ts`（映射依据是 `packages/core/` 的 `src/` ↔ `tests/` 目录名重名命中 33/36）。改它必须过 `tests/scripts/affected-tests.test.ts`——那里有 5 条变异自证，专防「选了个空集然后全绿」。
   - 日常开发只用 `make build`（不动版本号）。**不要**用 `make build-bump`，它会把版本号 +1。
   - CI（`.github/workflows/ci.yml`）除这两条外还有一个独立的 `lint` job：`bun run lint`（oxlint）与 `bun run lint:boundary`（包边界扫描）。动了跨包导入就跑一次后者，否则 PR 会在 CI 才红。
 - **改了参考页数据源要重新生成官网参考页**：动过 `packages/cli/src/help.ts`、`packages/cli/src/cli.ts`、`packages/core/src/tool/`、`packages/cli/src/command/`、`packages/core/src/config/`、`packages/core/src/hook/` 之后，跑一次 `bun run docs:gen-reference`，并把 `website/ref/` 与 `website/public/llms.txt` 的改动一并提交。
