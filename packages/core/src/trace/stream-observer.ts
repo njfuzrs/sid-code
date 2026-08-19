@@ -392,8 +392,19 @@ export function emitTimeoutRetryExhausted(data: {
 // ─── 快照更新（供 openai.ts 内部调用） ───
 
 /**
- * 更新流状态快照的 chunk 统计。
+ * 更新流状态快照的 chunk 统计（**字节级**）。
  * 调用点：openai.ts parseSSE 循环中。
+ *
+ * P0-1 起本函数与 {@link recordStreamProgress}（事件级）并存，两者写同一份快照。
+ * `chunksReceived` / `lastContentProgressAt` 因此改为**单调取大**：两个写入方的
+ * 计数口径不同（chunk 数 vs 事件数，一个 chunk 可产出多个事件），直接赋值会让
+ * 这两个字段在两个数之间来回跳。一个诊断计数器时大时小，会被读成「快照错乱」，
+ * 比数字略偏更难排查。取大后语义退化为「至少收到过这么多 / 最近一次进展不早于」，
+ * 谁也不会让它倒退。
+ *
+ * 单调是安全的：快照按 index 建、每次重试前由 `clearStreamSnapshot` 清掉
+ * （`query/loop.ts:2588` 等），所以一份快照的生命周期内计数本就只增不减。
+ * `emptyChunks` / `abortSignalAborted` 保持直接赋值 —— 它们只有 parseSSE 一个写入方。
  */
 export function updateStreamStats(
   index: number,
@@ -409,12 +420,55 @@ export function updateStreamStats(
     const key = makeSnapshotKey(loopId, index);
     const snapshot = _snapshots.get(key);
     if (snapshot) {
-      if (update.chunksReceived !== undefined) snapshot.chunksReceived = update.chunksReceived;
+      if (update.chunksReceived !== undefined && update.chunksReceived > snapshot.chunksReceived)
+        snapshot.chunksReceived = update.chunksReceived;
       if (update.emptyChunks !== undefined) snapshot.emptyChunks = update.emptyChunks;
-      if (update.lastContentProgressAt !== undefined)
+      if (
+        update.lastContentProgressAt !== undefined &&
+        update.lastContentProgressAt > snapshot.lastContentProgressAt
+      )
         snapshot.lastContentProgressAt = update.lastContentProgressAt;
       if (update.abortSignalAborted !== undefined)
         snapshot.abortSignalAborted = update.abortSignalAborted;
+    }
+  } catch {
+    /* 静默 */
+  }
+}
+
+/**
+ * P0-1：记录一次**事件级**业务进展（唯一咽喉 `llm/stream-lifecycle.ts` 调用）。
+ *
+ * 与 {@link updateStreamStats} 的分工 —— 两者都写同一份快照，但语义与写法都不同：
+ *
+ * | | `updateStreamStats` | 本函数 |
+ * | --- | --- | --- |
+ * | 调用方 | `openai.ts` parseSSE（**字节级**，仅 Chat Completions 一条路径） | lifecycle（**事件级**，四条 provider 路径） |
+ * | 计数口径 | 收到的 SSE chunk 数 | 解析后 yield 出的事件数 |
+ * | 写法 | 直接赋值（parseSSE 是那条路径的权威计数） | **单调取大**，见下 |
+ *
+ * 为什么必须单调取大：Chat Completions 路径上两个写入方并存，事件数 ≤ chunk 数
+ * （空 chunk / usage-only chunk 不产事件），直接赋值会让 `chunksReceived` 在两个
+ * 数之间来回跳 —— 一个诊断计数器时大时小，会被读成「快照错乱」，比数字略偏更难排查。
+ * 取大后它退化为「至少收到过这么多」，两个写入方都不会让它倒退。
+ *
+ * `lastContentProgressAt` 则是直接推进（同样只前进不后退）：它是
+ * `query/loop.ts` watchdog 唯一的无进展判据，两个写入方写的是同一个语义
+ * （「最近一次真内容到达的时刻」），谁更晚谁对。
+ */
+export function recordStreamProgress(
+  index: number,
+  progress: { at: number; eventCount?: number },
+): void {
+  try {
+    const { loopId } = currentSseDumpContext();
+    const snapshot = _snapshots.get(makeSnapshotKey(loopId, index));
+    if (!snapshot) return;
+    if (progress.at > snapshot.lastContentProgressAt) {
+      snapshot.lastContentProgressAt = progress.at;
+    }
+    if (progress.eventCount !== undefined && progress.eventCount > snapshot.chunksReceived) {
+      snapshot.chunksReceived = progress.eventCount;
     }
   } catch {
     /* 静默 */

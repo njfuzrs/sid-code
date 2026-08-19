@@ -32,6 +32,7 @@
 import { getLogger } from "../debug/logger.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
+import { recordStreamProgress } from "../trace/stream-observer.ts";
 
 /** 超时层枚举（onTimeout 回调用于区分是哪一层触发） */
 export type StreamTimeoutLayer = "idle" | "content_progress" | "overall";
@@ -90,6 +91,31 @@ export interface StreamLifecycleOptions<T = unknown> {
    * 从而把 TTFT 追踪统一收敛到 lifecycle 层——所有接入 lifecycle 的 provider 自动获得 first_content emit。
    */
   onFirstContentProgress?: (ttftMs: number) => void;
+  /**
+   * P0-1：把「事件级业务进展」写进 `trace/stream-observer` 的 per-index 快照。
+   *
+   * 为什么必须在这一层写（不是逐 provider 补调用）：`query/loop.ts` 的 watchdog 把
+   * `snapshot.lastContentProgressAt` 当作**全 provider 通用**的权威无进展判据，而
+   * `updateStreamStats` 全仓原先只有 2 个调用点、都在 `openai.ts` 的 `parseSSE` 内。
+   * anthropic / Responses / ollama 三条路径的快照由 `emitStreamPhase("headers_received")`
+   * **建出来了**、但 `lastContentProgressAt` 恒为建快照时刻 —— 而 watchdog 只对
+   * **快照缺失**有兜底（退化用 headerTimeoutMs + grace），对「快照存在却字段不刷新」
+   * 没有任何兜底，于是把它当成「已收首字节、确实 N 秒无进展」直接强杀。
+   * 这不是诊断能力弱，是三条路径各自带一个隐形硬顶（能力的伪装比能力的缺失更危险）。
+   *
+   * 修法落在 lifecycle 是因为四条路径都已包在 `createStreamLifecycle` 里，且本层
+   * 本就在逐事件判 `isContentProgress` —— 在这个唯一咽喉写一次，四条路径一次全好，
+   * 新增 provider 默认继承，不再是「手写清单式」修法（那种必然漏项）。
+   *
+   * 传值 = 该请求的 observer index（provider 侧一律取
+   * `currentSseDumpContext().turnIndex`，与同路径 `emitStreamPhase` 用的是同一个）。
+   * 不传则完全不写快照（side-call / 子代理流处理器等不参与 watchdog 判定的路径）。
+   *
+   * ⚠️ **刻意不接受 agentId**：`makeSnapshotKey` 的 agentId 是第三个维度，
+   * 主循环侧与 watchdog 都是「无 agentId」调用，多传一个 id 就会拼出另一把 key，
+   * 写进去也读不到（写了还不如不写：假装刷新过）。
+   */
+  progressObsIndex?: number;
   /** stall 告警阈值（毫秒）。超过此间隔记录 warning 但不中断。默认 30_000 */
   stallWarnMs?: number;
   /** provider / 消费点标签（日志/遥测用），如 "ANTHROPIC" | "OPENAI" | "SUB-AGENT" | "SIDE-CALL" */
@@ -235,6 +261,7 @@ async function* streamLifecycleImpl<T>(
     isFirstContent,
     requestStartTimeMs,
     onFirstContentProgress,
+    progressObsIndex,
     stallWarnMs = 30_000,
     label,
     onTimeout,
@@ -310,6 +337,21 @@ async function* streamLifecycleImpl<T>(
       });
       onTimeout?.("idle");
     }, limit);
+  };
+
+  /**
+   * P0-1：把本层的进展事实同步给 `trace/stream-observer` 的 per-index 快照。
+   *
+   * 只在传了 `progressObsIndex` 时才写（不传即完全不碰快照），因此 side-call /
+   * 子代理流处理器这些不参与主循环 watchdog 判定的路径行为逐字节不变。
+   * 写入本身在 recordStreamProgress 内 try-catch 静默，可观测性绝不影响流。
+   */
+  const publishProgressToObserver = () => {
+    if (progressObsIndex === undefined) return;
+    recordStreamProgress(progressObsIndex, {
+      at: Date.now(),
+      eventCount: snapshot.totalEvents,
+    });
   };
 
   // content progress timer——独立于 idle timer，只在业务内容到达时重置。
@@ -418,10 +460,24 @@ async function* streamLifecycleImpl<T>(
       if (snapshot.firstEventAt === null) snapshot.firstEventAt = Date.now();
       // idle timer 对任何事件都 reset（保护"TCP 连接彻底断开"场景，含 ping）
       resetIdle();
+      // 「这个事件算不算业务进展」——本层的判据只有一份，两个消费方共用：
+      // ① content progress timer 重排（仅在该层启用时）；
+      // ② P0-1 写 observer 快照（**与该层是否启用无关**）。
+      //
+      // ⚠️ 两者必须解耦，这正是原缺陷的形状：openai Chat Completions 路径**没传**
+      // contentProgressTimeoutMs（它依赖 parseSSE 的字节级 content 超时，见
+      // `openai.ts:1066-1071` 的注释），于是 contentProgressEnabled 恒 false。
+      // 若把快照写入挂在 `contentProgressEnabled &&` 后面，主循环最常用的那条路径
+      // 一个字节都不会写 —— 修了三条路径、漏掉出问题的那条。
+      //
+      // 不传 isContentProgress 时退化为「所有事件都算进展」，与
+      // `isContentProgress` 选项自身的文档语义一致（见其注释）。
+      const isProgressEvent = isContentProgress ? isContentProgress(event) : true;
       // content progress timer 只对"业务进展"事件 reset（ping 不续命）
-      if (contentProgressEnabled && isContentProgress!(event)) {
+      if (contentProgressEnabled && isProgressEvent) {
         resetContentProgress();
       }
+      if (isProgressEvent) publishProgressToObserver();
       // T14.6：首个 first-content 事件到达时回调一次（幂等）。
       // isFirstContent 不传则回退 isContentProgress；两者都不传则首个事件即触发。
       if (onFirstContentProgress && !firstContentFired) {

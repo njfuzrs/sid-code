@@ -1076,6 +1076,12 @@ export class OpenAIProvider implements Provider {
         // 配置-3：overall 阈值走 network-profile 统一解析（env override > 默认），
         // 不再就地 Number(process.env)。env 名保留 SID_CODE_OPENAI_OVERALL_TIMEOUT_MS。
         overallTimeoutMs: streamTimeouts.overallTimeoutMs,
+        // P0-1：事件级进展写进 observer 快照，供 loop.ts 的 watchdog 读。
+        // 与 parseSSE 内的字节级 updateStreamStats 是两层、都要（字节级能检测
+        // 「零字节到达」的 TCP 半开，事件级负责把「有业务进展」广播给外层）。
+        // obsIndex 与本路径 emitStreamPhase 用的是同一个，且不带 agentId ——
+        // 否则拼出的 snapshot key 与 watchdog 读的不是同一把。
+        progressObsIndex: obsIndex,
         stallWarnMs: 30_000,
         label: "OPENAI",
         // T14.6：收敛 first_content emit 到 lifecycle 层
@@ -1399,6 +1405,10 @@ export class OpenAIProvider implements Provider {
         contentProgressTimeoutMs: streamTimeouts.contentProgressTimeoutMs,
         // 配置-3：overall 阈值走 network-profile 统一解析（复用上方 streamTimeouts）
         overallTimeoutMs: streamTimeouts.overallTimeoutMs,
+        // P0-1：本路径的解析器**没有**字节级看门狗（见上方长注释），所以事件级是
+        // 这条路径唯一的进展信号源 —— 不写，watchdog 就只能读到建快照那一刻的
+        // lastContentProgressAt，把任何超过阈值的正常长流当成「已收首字节、彻底无进展」强杀。
+        progressObsIndex: obsIndex,
         stallWarnMs: 30_000,
         label: "OPENAI-RESPONSES",
         // T14.6：收敛 first_content emit 到 lifecycle 层
@@ -1852,6 +1862,21 @@ export class OpenAIProvider implements Provider {
     let stallEmitted = false; // 缺口 1：每次流只发一次 StreamStall 事件（避免 events.jsonl 膨胀）
     const stallLogger = setInterval(() => {
       const elapsed = Date.now() - lastContentProgressAt;
+      // P0-1：**无条件**每 tick 写一次快照，不再被 `elapsed >= STALL_LOG_MS` 门控。
+      //
+      // 原写法把「要不要告警」与「要不要更新快照」压在同一个 if 里，后果是一条
+      // 一直有进展的慢流（reasoning_content 每 10~25s 吐一批，elapsed 永远到不了 30s）
+      // **一次都不会写快照** —— 于是 `query/loop.ts` 的 watchdog 读到的永远是建快照时
+      // 的初始值 `chunksReceived: 0` / `lastContentProgressAt = 建快照时刻`，
+      // 判成「彻底卡死」强杀。实测形态：WatchdogKill 报 total_chunks=0，
+      // 而同一条流的 RetryTelemetry 录得 11183 个 SSE 事件。
+      //
+      // stall 判定继续保留，但**只决定要不要发 StreamStall / 写调试日志**。
+      updateStreamStats(parseObsIndex, {
+        chunksReceived: totalChunks,
+        emptyChunks,
+        lastContentProgressAt,
+      });
       if (elapsed >= STALL_LOG_MS) {
         dbg(
           `stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`,
@@ -1865,12 +1890,6 @@ export class OpenAIProvider implements Provider {
             empty_chunks: emptyChunks,
           });
         }
-        // 更新快照统计
-        updateStreamStats(parseObsIndex, {
-          chunksReceived: totalChunks,
-          emptyChunks,
-          lastContentProgressAt,
-        });
       }
     }, STALL_LOG_MS);
 

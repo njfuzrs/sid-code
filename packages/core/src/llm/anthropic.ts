@@ -349,6 +349,17 @@ export class AnthropicProvider implements Provider {
         contentProgressTimeoutMs: anthropicStreamTimeouts.contentProgressTimeoutMs,
         // T7 overall timeout：请求级绝对上限，不因任何事件重置。
         overallTimeoutMs: anthropicStreamTimeouts.overallTimeoutMs,
+        // P0-1：事件级进展写进 observer 快照（本路径此前 `updateStreamStats` 零调用）。
+        //
+        // 缺陷形态比「诊断能力弱」严重得多：上方 emitStreamPhase("headers_received")
+        // 已经把快照**建出来了**，但 lastContentProgressAt 恒为建快照那一刻。而
+        // `query/loop.ts:2364` 只对**快照缺失**有兜底（退化用 headerTimeoutMs + grace），
+        // 对「快照存在却字段不刷新」没有任何兜底 → 任何超过 watchdogNoProgressMs 的
+        // Claude 请求都会被 watchdog 强杀，与具体模型无关。
+        //
+        // index 取 currentSseDumpContext().turnIndex（与本路径 emitStreamPhase /
+        // emitTimeoutFired 同源）；不带 agentId，否则拼出的 key 与 watchdog 读的不是同一把。
+        progressObsIndex: currentSseDumpContext().turnIndex,
         isContentProgress: (event: any) =>
           event?.type === "content_block_delta" || event?.type === "message_delta",
         stallWarnMs: 30_000,
