@@ -201,6 +201,59 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
     expect(types).toContain("synchronize");
     expect(types).toContain("reopened");
   });
+
+  // 2026-08-19 实测事故（PR #66，run 32229207101）：ubuntu runner 上
+  // `sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep` 挂死 25 分 12 秒，
+  // 撞爆 job 的 timeout-minutes: 25。后果不是「装 rg 慢了」而是**全量单测一次都没跑到**，
+  // PR 上只留一个 canceled；同 run 的 macOS 腿正常、前三次 run 的 ubuntu 腿都 ~160s，
+  // 所以它是 runner 侧网络/apt 锁 flake。
+  //
+  // 修法是把网络依赖整个拿掉：仓内已提交 4 平台预编译 rg，改成本地 copy + 挂 PATH。
+  // 这几条断言守的是「别退回去」—— 退回联网装的代价是一个极难归因的偶发 canceled，
+  // 而且它长得不像失败（没有红叉指向任何一条测试）。
+  describe("rg 准备步骤不得依赖网络（否则偶发挂死会撞爆 job 超时）", () => {
+    // 否定式断言必须只看**可执行内容**：本文件注释密度极高，且刻意在注释里复述了
+    // 被废弃的旧命令（「以前是 apt-get install ripgrep，为什么不能退回去」）。
+    // 直接扫全文会把这类记录教训的散文误判成配置本身 —— 那等于逼人删掉注释才能过门禁。
+    const CI_CODE = CI.split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+
+    test("不得用包管理器装 ripgrep", () => {
+      // 只拦「装 ripgrep」这件事，不拦 apt/brew 本身——将来可能有别的合理用途。
+      expect(CI_CODE).not.toMatch(/apt-get\s+install[^\n]*ripgrep/);
+      expect(CI_CODE).not.toMatch(/brew\s+install[^\n]*ripgrep/);
+    });
+
+    test("从仓内 vendor 目录取产物，且版本号不硬编码", () => {
+      expect(CI_CODE).toMatch(/packages\/core\/vendor\/ripgrep\//);
+      // 版本号走 fetch-ripgrep.ts --print-version（与 release.sh 同一取数口径）。
+      // 硬编码的话 DEFAULT_RG_VERSION 一 bump，这里就静默指向不存在的目录。
+      expect(CI_CODE).toMatch(/fetch-ripgrep\.ts\s+--print-version/);
+      expect(CI_CODE).not.toMatch(/vendor\/ripgrep\/\d+\.\d+\.\d+/);
+    });
+
+    test("产物缺失时硬失败，不回落到包管理器", () => {
+      // 回落 = 把刚拿掉的挂死风险请回来，且「vendor 少提交一个平台」这种事会被藏起来。
+      expect(CI).toMatch(/::error::仓内缺少/);
+    });
+
+    test("rg 步骤排在全量单测之前（否则测试起手就 rg not found）", () => {
+      const rgPos = CI.indexOf("挂载仓内 ripgrep 到 PATH");
+      const testPos = CI.search(/run:\s*bun test\s*$/m);
+      expect(rgPos).toBeGreaterThan(0);
+      expect(testPos).toBeGreaterThan(0);
+      expect(rgPos).toBeLessThan(testPos);
+    });
+
+    test("该步骤依赖 bun，必须排在 Setup Bun 之后", () => {
+      // --print-version 是 bun 跑的；顺序颠倒就是 `bun: command not found`。
+      const bunPos = CI.indexOf("oven-sh/setup-bun");
+      const rgPos = CI.indexOf("挂载仓内 ripgrep 到 PATH");
+      expect(bunPos).toBeGreaterThan(0);
+      expect(bunPos).toBeLessThan(rgPos);
+    });
+  });
 });
 
 // 2026-08-15 顺带查出的文档漂移：CONTRIBUTING.md「不要直接 push 到 main」那节，

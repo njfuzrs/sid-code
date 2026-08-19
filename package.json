@@ -28,6 +28,7 @@
     "changelog:curate": "bun run scripts/changelog-curate.ts",
     "changelog:check": "bun run scripts/changelog-curate.ts --check",
     "install-hooks": "sh scripts/install-git-hooks.sh",
+    "pr-batch": "bash scripts/pr-batch.sh",
     "lint": "oxlint packages tests scripts evals website",
     "lint:fix": "oxlint packages tests scripts evals website --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",

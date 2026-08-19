@@ -137,3 +137,8 @@ scheduled_tasks.lock
 # （grep -c "eval-session" builtin-embedded.generated.ts = 0），出库就是真的丢了。
 # 放行目录这一行后 git 会下降进去，内部文件自动可追踪（`.claude/*` 的 `*` 只匹配第一层）。
 !.claude/skills/
+
+# 多 PR 并行编排（scripts/pr-batch.sh）的本机调度状态：
+# plan.json（分层结果）/ status/*.json（缓存，权威在 GitHub）/ prompts/*.md（按方案生成）。
+# 全部是**一次性的本地状态**，换台机器重新分层即可，入库只会与在途工作撞车。
+.pr-batch/

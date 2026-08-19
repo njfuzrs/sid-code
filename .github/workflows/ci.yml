@@ -76,25 +76,57 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ⚠️ runner 默认**不带 ripgrep**，而 GrepTool / hasRipgrep / ripGrep 这些测试调的是
-      # PATH 上的系统 `rg`（不是 packages/core/vendor 里那份内嵌产物 —— 内嵌那份只在编译后
-      # 的二进制里用）。不装就是 `Executable not found in $PATH: "rg"`，同样是首次真跑才暴露。
-      - name: 安装 ripgrep（测试按 PATH 调系统 rg）
-        shell: bash
-        run: |
-          if command -v rg >/dev/null 2>&1; then
-            echo "已存在：$(rg --version | head -1)"
-          elif [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
-          else
-            brew install ripgrep
-          fi
-          rg --version | head -1
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      # ⚠️ runner 默认**不带 ripgrep**，而 GrepTool / hasRipgrep / ripGrep 这些测试调的是
+      # PATH 上的系统 `rg`（不是编译产物里内嵌的那份）。不装就是
+      # `Executable not found in $PATH: "rg"`，这是 2026-08-12 首次真跑 CI 才暴露的。
+      #
+      # 2026-08-19 从「联网装」改成「把仓内 vendor 产物挂上 PATH」，起因是一次实测事故：
+      # `sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep` 在 ubuntu runner 上
+      # 挂死 25 分 12 秒，直接撞爆 job 的 timeout-minutes: 25（PR #66，run 32229207101）。
+      # 后果不是「装 rg 慢了」而是**全量单测一次都没跑到**，PR 上显示的是一个 canceled，
+      # 归因还得回日志一行行看时间戳；`-qq` 又把输出静音了，连挂在哪句都看不出来。
+      # 同一 run 的 macOS 腿正常（brew 装到 15.2.0），前三次 run 的 ubuntu 腿也都 ~160s，
+      # 所以它是 runner 侧的网络/apt 锁 flake —— 而 flake 的修法不是重跑，是把网络依赖拿掉。
+      #
+      # 仓内已提交 4 平台预编译 rg（packages/core/vendor/ripgrep/<version>/rg-<platform>，
+      # linux-x64 那份是 static-pie、无动态库依赖），随 clone 直接可用。所以这步现在是
+      # 纯本地 copy + chmod：离线、确定性、亚秒级，且两条矩阵腿跑的是**同一个 rg 版本**
+      # —— 以前一边是 apt 的、一边是 brew 的，版本相关的失败只会在单腿上冒出来。
+      #
+      # 版本号走 `--print-version`（与 release.sh:145 同一个取数口径），不在这里硬编码，
+      # 否则 DEFAULT_RG_VERSION 一 bump 这里就静默指向不存在的目录。
+      #
+      # 找不到产物时**硬失败、不回落到包管理器**：回落等于把刚拿掉的挂死风险又请回来，
+      # 而这里的失败恰恰是「vendor 少提交了一个平台」这种该当场看见的事（同 CLAUDE.md
+      # 「bun install 失败必须 hard-stop 而不是降级」——降级的后果是一个看起来绿的假成功）。
+      - name: 挂载仓内 ripgrep 到 PATH（测试按 PATH 调系统 rg）
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(bun run scripts/fetch-ripgrep.ts --print-version)"
+          os="$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
+          [ "$os" = "macos" ] && os="darwin"
+          arch="$(echo "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+          src="packages/core/vendor/ripgrep/${version}/rg-${os}-${arch}"
+
+          if [ ! -f "$src" ]; then
+            echo "::error::仓内缺少 $src（runner=$RUNNER_OS/$RUNNER_ARCH，version=$version）"
+            echo "::error::补齐方式：bun run scripts/fetch-ripgrep.ts --all 后 git add packages/core/vendor/ripgrep/${version}/"
+            ls -la "packages/core/vendor/ripgrep/${version}/" 2>/dev/null || true
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/rg-bin"
+          cp "$src" "$RUNNER_TEMP/rg-bin/rg"
+          chmod +x "$RUNNER_TEMP/rg-bin/rg"
+          echo "$RUNNER_TEMP/rg-bin" >> "$GITHUB_PATH"
+          # 当步的 PATH 还没生效，这里直接按绝对路径自证产物可执行（跨平台产物错配会在此暴露）
+          "$RUNNER_TEMP/rg-bin/rg" --version | head -1
 
       # ⚠️ 这一步能成功的前提是 `packages/eval-framework/` 已入库。
       # 它曾是 `file:../eval-framework` 仓库外依赖（P1-5），那时 fresh clone 上
