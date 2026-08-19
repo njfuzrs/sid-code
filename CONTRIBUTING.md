@@ -332,7 +332,7 @@ bun run affected-tests:run   # 执行选出来的最小测试集
 
 | hook | 门禁 |
 | --- | --- |
-| pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移） |
+| pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移）+ Agent Note 形态校验 |
 | pre-push | holdout 泄露检测、`holdout/real-tasks` 永封校验、website 站点构建（死链检测）、北极星生成块陈旧检测（30 天） |
 
 没装 hook 的话，参考页漂移和站点死链会一路带到 PR 里才被发现。
@@ -486,6 +486,35 @@ PR 要求：
   （仓库设置 `merge_commit_title: PR_TITLE`），格式不对就污染 changelog。
 - 正文说清三件事：改了什么、为什么这么改、怎么验证的（贴 `bun test` 与 `make build` 结果）。
 - 用 [PR 模板](./.github/pull_request_template.md)，它就是这三件事的清单。
+
+### 非平凡改动要在同一个 PR 内带一份 Agent Note
+
+> **非平凡改动必须在同一个 PR 内加或更新一份 `.agents/notes/` 下的 Agent Note。**
+> 平凡 = 纯机械/局部编辑，不改行为、契约、结构、流程、理由。
+
+一份 Note 回答三件事，和上面 PR 正文要求的三件事**是同一组问题**（所以不是额外负担，
+是把它落到一个能长期检索的位置）：**决定了什么 / 放弃了什么（以及为什么不选）/ 拿什么证明它生效了**。
+
+```
+.agents/notes/{proposed,implemented,rejected}/{feature,architecture,bug-fix,simplification,process,testing}/yyyy-mm-dd-标题.md
+```
+
+lifecycle 与 class 都是**闭集**，模板在 `.agents/notes/_template.md`，
+完整格式与理由在 `.agents/notes/README.md`。
+
+判断卡不住时问一句：**半年后有人问"当时为什么这么定"，答案在哪？**
+只在你脑子里 → 需要一份 Note；代码里一目了然（改拼写、提取变量）→ 不需要。
+
+三段里第三段最容易糊过去，也最重要：写**跑了什么命令、看到什么输出**，
+不写"机理上讲得通"。这条有教训 —— 目标指标改善 + 测试全绿 + 机理讲得通，
+三者同时成立时结论仍然可能是错的。
+
+`rejected/` 那一格别省。**否决论证是最贵的资产**：它防的是下一个人（或下一个 agent）
+重新提议同一件事，然后把整套论证重做一遍。
+
+门禁只查形态（`bun run verify:agent-note`，pre-commit 在 staged 含 `.agents/notes/**` 时触发）：
+路径、闭集、frontmatter 的 `Status` 与所在目录一致、三段都在且非空。
+**内容不查，"该写没写"也不拦** —— 那需要语义判断，交 review。
 
 ### issue 先行：什么时候需要
 
