@@ -258,13 +258,22 @@ pending）。现在加 job 只改 `all-checks-passed` 的 `needs` 一行，不�
 
 - **auto-merge**：`gh pr merge <n> --auto --merge` 挂上之后，CI 绿了自动合，
   不用盯着 CI 等。
-- **strict 必需检查**：分支必须与 `main` 最新才能合并，保证 CI 跑的是合并后的内容。
+- **strict 必需检查**：分支必须与 `main` 最新才能合并，所以 CI 跑的是
+  「最新的 `main` + 你的改动」，而不是一个过期的 base。
 
-⚠️ **合并队列（merge queue）用不了**：GitHub 官方限制「仅组织拥有的公共仓库，
-或用 Enterprise Cloud 的组织的私有仓库」，本仓 owner 是个人账户（REST API 返回
-422 `Invalid rule 'merge_queue'`）。所以「各自绿、合起来红」这类语义冲突**没有
-合并前的机制对策**，只能靠上面的 strict 策略 + 合并后在 `main` 上跑一次门禁。
-并行开多路时这一点要记着。
+⚠️ **合并队列（merge queue）用不了**：GitHub 官方限制「仅**组织拥有**的公共仓库，
+或用 Enterprise Cloud 的组织的私有仓库」，本仓 owner 是个人账户（往 ruleset 加
+merge_queue 规则返回 `422 Invalid rule 'merge_queue'`，2026-08-19 实测）。
+
+⚠️ **strict 不等价于队列，别把它当替代品**：strict 保证你的 CI 跑在最新 main 上，
+但**两个 PR 都通过 strict 之后先后合入时，后合的那个的 CI 结论仍然是合并前的**
+（它跑的时候前一个还没进 main）。所以「各自绿、合起来红」这类语义冲突在本仓
+**没有合并前的机制对策**，只能靠合并后在 `main` 上跑一次门禁、必要时 revert。
+
+**这一条直接影响并行策略**：同时开多路时，如果几路在语义上有耦合（改同一个子系统的
+不同角落），把它们放到不同批次串行做，比并行更省——并行省下的等待，会被
+「合起来红 → 归因 → revert → 重做」吃掉。`ci.yml` 已预置 `merge_group` trigger，
+哪天仓库转到组织下，开队列只需在 ruleset 加一条规则。
 
 ### 已按旧判据拆好的方案文档怎么办
 
