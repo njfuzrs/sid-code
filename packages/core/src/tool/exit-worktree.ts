@@ -38,8 +38,10 @@ const exitWorktreeSchema = lazySchema(() =>
 
 export class ExitWorktreeTool implements Tool {
   readonly zodSchema = exitWorktreeSchema();
-  /** 长尾工具：worktree 隔离低频使用，延迟加载，由 tool_search 按需调出 */
-  readonly shouldDefer = true;
+  // ⚠️ 刻意**不声明** shouldDefer —— 与 `exit_plan_mode` 共享 `exit_` 前缀（prefix=5），
+  // 是 enter_worktree/enter_plan_mode 那对碰撞的同构形态（当前仅存的第二对）。
+  // 完整论证见 enter-worktree.ts 同位置注释；防回退断言见
+  // packages/core/tests/tool/worktree-tools-not-deferred.test.ts。
   readonly searchHint = "git worktree exit cleanup 隔离 工作树 退出 清理";
 
   name(): string {

@@ -2870,6 +2870,10 @@ export class App {
           availableModels: this.config.availableModels,
           // 缺口 E：CLAUDE.md 重建路径同样收集 skill 摘要，避免重建后丢失 skill 列表
           skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
+          // 延迟工具呈现（见 core/config/deferred-tool-view.ts）：重建路径漏传会让
+          // 一次 CLAUDE.md 变更把分区标注抹掉，故三处 buildSystemPrompt 都必须带上
+          toolSearchKeepLoaded: this.config.toolSearchKeepLoaded,
+          toolSearchDisabled: this.config.toolSearch === false,
           // 缺口 D：CLAUDE.md 可能改写 deny 规则，重建时刷新约束摘要
           denyRulesSummary:
             this.permissionChecker &&
@@ -3599,6 +3603,9 @@ export class App {
           typeof (this.permissionChecker as any).describeDenyRules === "function"
             ? (this.permissionChecker as any).describeDenyRules() || undefined
             : undefined,
+        // 延迟工具呈现（见 core/config/deferred-tool-view.ts）
+        toolSearchKeepLoaded: this.config.toolSearchKeepLoaded,
+        toolSearchDisabled: this.config.toolSearch === false,
         // §12 P0-1：运行时偏好变更（/language 等）后同步刷新记忆分段记账
         onSectionTokens: (s) => this.setBaseMemoryTokens(s.memory),
       });

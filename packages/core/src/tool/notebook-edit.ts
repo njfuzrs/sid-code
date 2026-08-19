@@ -20,7 +20,7 @@ import type {
 import { readFileSync, writeFileSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
-import { normalizeToolPath } from "./path-utils.ts";
+import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -163,7 +163,9 @@ export class NotebookEditTool implements Tool {
       notebook = JSON.parse(raw);
     } catch (err: any) {
       if (err.code === "ENOENT") {
-        return { output: `错误: notebook 文件不存在: ${filePath}`, isError: true };
+        // 与 read/glob/edit/grep 统一走 formatPathNotFoundError：原文案不报当前工作目录，
+        // 而相对路径是按会跟随 bash `cd` 的全局 cwd 解析的，模型看不出"路径是被哪个 cwd 拼出来的"。
+        return { output: formatPathNotFoundError(filePath), isError: true };
       }
       return { output: `错误: 读取/解析 notebook 失败: ${err.message}`, isError: true };
     }

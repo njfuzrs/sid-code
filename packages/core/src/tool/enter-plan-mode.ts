@@ -19,6 +19,22 @@ const enterPlanModeSchema = lazySchema(() =>
   }),
 );
 
+/**
+ * 工具名混淆纠偏句。
+ *
+ * 2026-08-17 的事故形态：模型想创建隔离工作区（`enter_worktree`），但那个工具当时声明了
+ * `shouldDefer=true`、不在本轮 schema 里，生成阶段坍缩成唯一共享 `enter_` 前缀的
+ * `enter_plan_mode` —— 连续 5 次，每次先 `exit_plan_mode` 再 `enter_plan_mode`（所以
+ * `isActive()` 恒 false、重入拦截恒不命中），产出 4 份无用 plan 文件，最后靠用户手动打断。
+ *
+ * 根因已在两处修掉（系统提示词按延迟分区 + worktree 工具改回首轮可见），本句是顺带的
+ * **措辞纠偏**：把正确的下一步写进模型此刻正在读的那段文本，零新增机制、零误判风险。
+ * 刻意**不做**"检测 enter/exit 振荡并阻断"那种外部防线 —— 本项目的启发式防线实测
+ * 误判率≈100%（循环检测因此默认关闭），加防线不是修复。
+ */
+const WORKTREE_CONFUSION_HINT =
+  "若你的意图是创建/进入隔离的 Git 工作区，要调的是 `enter_worktree`（本工具只切换计划模式，不创建工作区）。";
+
 export class EnterPlanModeTool implements Tool {
   readonly zodSchema = enterPlanModeSchema();
   /** P2-3：模式切换类工具，进入计划模式是一次性状态跃迁，豁免循环检测 */
@@ -108,7 +124,12 @@ export class EnterPlanModeTool implements Tool {
     }
 
     if (this.planManager.isActive()) {
-      return { output: "已经在计划模式中", isError: true };
+      // 措辞带纠偏信息：原文案只说状态（"已经在计划模式中"），不说"你想做的事该怎么做"，
+      // 对模型没有信息量。见下方 confusionHint 的完整理由。
+      return {
+        output: `已经在计划模式中。${WORKTREE_CONFUSION_HINT}`,
+        isError: true,
+      };
     }
 
     const topic = typeof inp?.topic === "string" ? inp.topic : undefined;
@@ -117,6 +138,10 @@ export class EnterPlanModeTool implements Tool {
       return { output: "无法进入计划模式", isError: true };
     }
 
+    // topic 缺失或明显无意义时，模型很可能并不是真想进计划模式 —— 实测那 5 次误触里
+    // 有两次的 topic 直接是 `noop` / `noop2`（模型自己都没编出主题）。此时补一句纠偏。
+    const topicLooksEmpty = !topic || topic.trim().length === 0 || /^noop\d*$/i.test(topic.trim());
+
     const planPath = this.planManager.getPlanFilePath();
     // 复活完整工作流引导（缺陷修复）：原先这段引导通过重建 system prompt 注入，
     // 重建逻辑删除后丢失。现作为 tool_result 返回——走消息通道不破坏 Prompt Caching，
@@ -124,8 +149,9 @@ export class EnterPlanModeTool implements Tool {
     const { existsSync } = await import("fs");
     const planExists = planPath ? existsSync(planPath) : false;
     const { buildPlanModePrompt } = await import("../plan/prompt.ts");
+    const base = buildPlanModePrompt(planPath || "", planExists);
     return {
-      output: buildPlanModePrompt(planPath || "", planExists),
+      output: topicLooksEmpty ? `${base}\n\n注意：${WORKTREE_CONFUSION_HINT}` : base,
     };
   }
 }

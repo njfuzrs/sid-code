@@ -122,14 +122,23 @@ export function buildToolGuideSectionEn(parts: {
   toolList: string;
   customGuides: string;
   hypothesisDiscipline: string;
+  /**
+   * 延迟工具分区（含逐行 `[activate first]` 标注），排在本段末尾。
+   * 已由 deferred-tool-view.ts 渲染完毕，无延迟工具时为空串。
+   * **不能与 toolList 混排** —— 混排就是本段修复要消灭的事故形态
+   * （模型调一个不在本轮 schema 里的名字，生成阶段坍缩成前缀相近的真实工具）。
+   */
+  deferredSection?: string;
+  /** 紧跟 toolList 的一行警告指针（警告必须贴着清单，模型是在读清单时决定调哪个名字的） */
+  deferredPointer?: string;
 }): string {
   return `
 <tool-guide>
 ## Available tools
-You can use the following tools to get work done:
+You can use the following tools to get work done (callable in this turn):
 
 ${parts.toolList}
-
+${parts.deferredPointer ?? ""}
 ### Tool usage principles
 1. **Prefer the dedicated tool**: use \`read\` to read files, not \`bash cat\`.
 2. **Run read-only tools in parallel**: multiple \`read\`/\`grep\`/\`glob\` calls can go out together.
@@ -166,7 +175,7 @@ ${parts.hypothesisDiscipline}
 - **Plan first when the approach is unclear**: when there is genuine architectural ambiguity (several reasonable designs, unclear requirements, a risky refactor), use \`enter_plan_mode\` to agree on the approach before coding. For everyday tasks, lean toward starting work and asking when you hit a specific decision point — "start, then ask" beats "plan every task".
 - **Divide large tasks**: when a task splits into relatively independent sub-directions (an investigation spanning several modules, an audit across several dimensions, searching several sources at once), use \`sub_agent\` to dispatch parallel sub-agents that each hold their own context without polluting yours. Rule of thumb: 3 or more sub-directions, or a single direction big enough to blow up your context, means divide. Type selection: \`explore\` for read-only investigation, \`task\` for changing files or running commands, \`verify\` for checking whether a conclusion holds. Note this is different from "call read-only tools in parallel" above — parallel \`read\`/\`grep\` is several read-only calls in one context; dividing hands a whole sub-task *and its context* to an independent agent. Sub-agents cannot spawn further sub-agents; only the main thread can divide.
 - **But do not divide work whose edits affect each other**: the rule in one line — **dividing requires that the sub-tasks can actually be cut apart**. **Do not divide same-root errors**: a chain of errors caused by tightening one type / interface / signature is a single change point even when it spans dozens of files; fix that one place and the rest disappear. Handing it to several agents that each edit an interdependent definition guarantees duplicated work and conflicts. So when you see "N errors across M files", read the errors and decide whether they share one root first — do not size the job by file count. The same applies when: several sub-tasks would write the same module or adjacent files (overlapping target files means do it serially); the change cannot be judged without a global view, so the context does not split; or the output shape is "continuous edits that only converge by re-running tsc/test" (only a full run tells you whether it is right). Do those serially yourself, with the observation method below.
-</tool-guide>`;
+${parts.deferredSection ?? ""}</tool-guide>`;
 }
 
 /** 上下文与记忆管理（机制告知，英文版）。对应中文版 buildContextManagementSection。 */
@@ -202,12 +211,20 @@ Sub-agent (\`sub_agent\`) output comes back into your context as a \`<task-notif
 }
 
 /** 定时与轮询能力（英文版）。对应中文版 buildSchedulingSection。 */
-export function buildSchedulingSectionEn(): string {
+export function buildSchedulingSectionEn(schedulingDeferred = false): string {
+  // 见中文版 buildSchedulingSection 的 L3 注释：这段是"主动命令模型调用延迟工具"的形态，
+  // 修法是改措辞而非删段。
+  const activationNote = schedulingDeferred
+    ? `\n⚠️ The scheduling tools below are **not loaded** into this turn's context: activate one with \`tool_search\` first (e.g. \`select:cron_create\`), then map onto it. **Never call a name that has not been activated**, and do not confuse them with other tools sharing a prefix.\n`
+    : "";
+  const mapVerb = schedulingDeferred
+    ? "activate the matching tool first and then map onto the calls below — do not just verbally agree"
+    : "map it onto these tools — do not just verbally agree";
   return `
 <scheduling-capability>
 ## Scheduling and polling
-You have in-session scheduling tools that turn "run this later", "repeat on an interval", and "keep going until a condition holds" into real behaviour. When the user expresses timing intent in natural language, map it onto these tools — do not just verbally agree:
-
+You have in-session scheduling tools that turn "run this later", "repeat on an interval", and "keep going until a condition holds" into real behaviour. When the user expresses timing intent in natural language, ${mapVerb}:
+${activationNote}
 - **One-shot reminder** ("remind me at 3 to check the deploy", "check CI in 45 minutes") → \`cron_create\` with a cron expression pinned to that moment and \`recurring=false\` (it self-deletes after firing). For short relative delays like 45 minutes, \`schedule_wakeup(delaySeconds)\` also works.
 - **Fixed interval** ("check every 5 minutes", "sweep daily at 9") → \`cron_create\` with \`recurring=true\`. Add \`durable=true\` to survive across sessions.
 - **Adaptive polling** ("keep going until CI is green", "tell me when the deploy is done") → after each check, pick the next delay yourself with \`schedule_wakeup\` (clamped to 60–3600 seconds). Stop scheduling once the goal is met; never poll forever.

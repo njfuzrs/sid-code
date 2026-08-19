@@ -15,6 +15,14 @@ interface Tool {
   name(): string;
   description(context?: ToolDescriptionContext): string;
   usageGuide?(): string;
+  /**
+   * 延迟加载声明。本模块**只读它做呈现分区**（延迟工具不在首轮 schema 里，
+   * 必须与可调用工具视觉区分，否则模型会调一个它见不到 schema 的名字）。
+   * 判据细节见 deferred-tool-view.ts。
+   */
+  shouldDefer?: boolean;
+  /** 强制首轮可见（`shouldDefer` 的反向豁免） */
+  alwaysLoad?: boolean;
 }
 import {
   isCoordinatorMode,
@@ -43,6 +51,15 @@ import {
 } from "./attachments.ts";
 import { getLogger } from "../debug/logger.ts";
 import { DYNAMIC_BOUNDARY } from "../api/cache-strategy.ts";
+import {
+  isStaticallyDeferred,
+  partitionByDeferral,
+  renderDeferredPointer,
+  renderDeferredSection,
+  DEFERRED_MARK,
+  DEFERRED_MARK_EN,
+  type DeferralJudgeOptions,
+} from "./deferred-tool-view.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
 import {
   buildConstraintsSectionEn,
@@ -139,6 +156,21 @@ export interface SystemPromptContext {
    *  不传时按当前模型 contextWindow 的 90% 动态推导（见 resolvePromptMaxTokens），
    *  而非写死 180000（那是 Claude 200K 窗口时代的预留值，对 1M 窗口模型只用到 18% 就截断）。 */
   maxTokens?: number;
+
+  // 延迟工具呈现（见 deferred-tool-view.ts 文件头）
+  /**
+   * 用户配置的延迟加载豁免名单（`config.toolSearchKeepLoaded`）。
+   * 命中的工具首轮即可见，故在提示词里按"已加载"呈现。
+   */
+  toolSearchKeepLoaded?: string[];
+  /**
+   * 用户是否**恒关**延迟加载（`config.toolSearch === false`）。
+   *
+   * 恒关时首轮发全量工具，所有工具都真实可调用，此时再标注"需先 tool_search 激活"
+   * 就是假信息。只接受配置层的 false —— 运行时定档结果（`loop.ts:715`）晚于提示词构建，
+   * 读它必然恒 false，见 deferred-tool-view.ts 文件头约束 1。
+   */
+  toolSearchDisabled?: boolean;
 
   /**
    * §12 P0-1 完整版：分段 token 记账回调（供 /context 把 system prompt 拆成命名类别）。
@@ -361,9 +393,21 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     buildEnvironmentSection(ctx.workingDir, ctx.preferredLanguage),
   ];
 
+  // 延迟工具呈现判据：只取会话内不变的静态配置。**绝不读 registry 的运行时态**
+  // （isToolSearchEnabled 在提示词构建时恒 false、isDeferred 含 activatedTools），
+  // 理由见 deferred-tool-view.ts 文件头两条约束。
+  const deferral: DeferralJudgeOptions = {
+    keepLoaded: ctx.toolSearchKeepLoaded,
+    toolSearchDisabled: ctx.toolSearchDisabled,
+  };
+
   if (ctx.tools.length > 0) {
     coreParts.push(
-      buildToolGuideSection(ctx.tools, { excludeMcp: true, language: ctx.preferredLanguage }),
+      buildToolGuideSection(ctx.tools, {
+        excludeMcp: true,
+        language: ctx.preferredLanguage,
+        deferral,
+      }),
     );
   }
 
@@ -380,8 +424,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // 调度能力引导（缺口 A）：仅在 cron 调度工具可用时注入，
   // 让模型把自然语言时间请求映射到 cron_create / schedule_wakeup。
-  if (ctx.tools.some((t) => t.name() === "cron_create")) {
-    coreParts.push(buildSchedulingSection(ctx.preferredLanguage));
+  const cronCreateTool = ctx.tools.find((t) => t.name() === "cron_create");
+  if (cronCreateTool) {
+    // 门禁保持"cron_create 已注册"不变（删段会丢能力可发现性），但要把
+    // "这些工具需先激活"的事实一起给模型 —— 否则这一段就是在命令它调一个
+    // 不在本轮 schema 里的名字（L3，本次事故的最强形态）。
+    coreParts.push(
+      buildSchedulingSection(ctx.preferredLanguage, isStaticallyDeferred(cronCreateTool, deferral)),
+    );
   }
 
   // Coordinator 模式（子 Agent 生态）：开启后把主循环角色从"执行者"切为"协调者"，
@@ -389,6 +439,15 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 让模型知道派生的 worker 能用哪些工具。仅在 sub_agent 工具可用时才注入
   // （没有 sub_agent 谈不上协调）。
   if (isCoordinatorMode() && ctx.tools.some((t) => t.name() === "sub_agent")) {
+    // ⚠️ 这里**刻意不按延迟过滤**，与 L1–L4 的处理相反，理由是判据不同：
+    // L1–L4 描述的是"主循环本轮能调什么"，而这一段描述的是"派生出去的 worker 能用什么"。
+    // 子代理的工具定义走 `registry.definitions()`（`agent/agentic-loop.ts:425`、
+    // `agent/sub-agent.ts` 的隔离 registry），**不经 activeDefinitions 的延迟过滤** ——
+    // 即延迟工具对 worker 是真实可调用的（`BUILTIN_AGENT_ALLOWED_TOOLS.task` 里就含
+    // `task_create`/`task_update` 两个 shouldDefer 工具，`general-purpose` 更是不限制）。
+    // 所以在这里剔除或标注"需先 tool_search 激活"会给 coordinator **假信息**。
+    // （原方案 L5 要求按同一套过滤，核实后驳回；防回退断言见
+    //  tests/config/deferred-tools-in-prompt.test.ts 的 coordinator 一例。）
     const workerToolNames = ctx.tools
       .map((t) => t.name())
       .filter((n) => !COORDINATOR_ONLY_TOOLS.has(n));
@@ -411,7 +470,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // G11：MCP 工具列表（动态区）。MCP 工具随 server 连接/断开动态变化，
   // 放入静态区会击穿 prompt cache 前缀，单独作为动态附件注入。
-  const mcpToolSection = buildMcpToolGuideSection(ctx.tools);
+  const mcpToolSection = buildMcpToolGuideSection(ctx.tools, deferral);
   if (mcpToolSection) {
     attachments.push(
       DANGEROUS_dynamicAttachment(
@@ -934,41 +993,63 @@ function buildEnvironmentSection(workingDir?: string, language?: LanguagePref): 
 </environment>`;
 }
 
+/** 一行工具摘要：`  - name: 首句`（延迟工具带 [需激活] 前缀标记） */
+function renderToolLine(t: Tool, deferredMark?: string): string {
+  const desc = t.description();
+  // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
+  const firstSentence = desc.split(/[。\n;；]/)[0].trim();
+  const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
+  return `  - ${t.name()}: ${deferredMark ? `${deferredMark} ` : ""}${brief}`;
+}
+
+/** 工具自带使用指南整段（标题本地化，正文由工具契约提供） */
+function renderToolGuide(t: Tool, isEn: boolean, deferredMark?: string): string | null {
+  if (!t.usageGuide) return null;
+  const guide = t.usageGuide();
+  if (!guide) return null;
+  const mark = deferredMark ? ` ${deferredMark}` : "";
+  return isEn
+    ? `\n### ${t.name()} usage guide${mark}\n${guide}`
+    : `\n### ${t.name()} 工具使用指南${mark}\n${guide}`;
+}
+
 /** 构建工具使用指南部分 */
 function buildToolGuideSection(
   tools: Tool[],
-  options?: { excludeMcp?: boolean; language?: LanguagePref },
+  options?: { excludeMcp?: boolean; language?: LanguagePref; deferral?: DeferralJudgeOptions },
 ): string {
   // P1a：工具列表只保留首句摘要（一行简介），完整 description 已在 tools 数组里。
   // 消除"system prompt toolList + tools 数组"的双重注入（实测省 ~12k 字符 / ~4k token）。
   const filtered = options?.excludeMcp ? tools.filter((t) => !t.name().startsWith("mcp__")) : tools;
 
-  const toolList = filtered
-    .map((t) => {
-      const desc = t.description();
-      // 取首句：第一个句号/换行/分号前的内容，或截取前 80 字符
-      const firstSentence = desc.split(/[。\n;；]/)[0].trim();
-      const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
-      return `  - ${t.name()}: ${brief}`;
-    })
-    .join("\n");
+  // L1/L2：延迟工具不在首轮 schema 里，必须与可调用工具分区 + 逐行标注。
+  // 混排的后果是模型调一个它从未见过 schema 的名字，生成阶段坍缩成前缀相近的真实工具
+  // （2026-08-17 事故：enter_worktree → enter_plan_mode，5 次误触 + 任务卡死）。
+  // 刻意**不从清单剔除**延迟工具：剔除会让模型完全失去"这个能力存在、需先 tool_search"
+  // 的线索，比现状更差（它至少知道名字，只是不知道要激活）。
+  const isEn = options?.language === "en";
+  const mark = isEn ? DEFERRED_MARK_EN : DEFERRED_MARK;
+  const { live, deferred } = partitionByDeferral(filtered, options?.deferral);
+
+  const toolList = live.map((t) => renderToolLine(t)).join("\n");
+  const deferredList = deferred.map((t) => renderToolLine(t, mark));
 
   // 收集工具自带的使用指南。
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
-  const isEn = options?.language === "en";
+  // 延迟工具的整段指南同样进延迟分区 —— 不做这条则泄漏面从"一行工具名"扩大到
+  // 近 800 字符的完整教程（实测 workflow 的 usageGuide 783 字符）。
   const customGuides: string[] = [];
-  for (const tool of filtered) {
-    if (tool.usageGuide) {
-      const guide = tool.usageGuide();
-      if (guide) {
-        customGuides.push(
-          isEn
-            ? `\n### ${tool.name()} usage guide\n${guide}`
-            : `\n### ${tool.name()} 工具使用指南\n${guide}`,
-        );
-      }
-    }
+  for (const tool of live) {
+    const rendered = renderToolGuide(tool, isEn);
+    if (rendered) customGuides.push(rendered);
   }
+  const deferredGuides: string[] = [];
+  for (const tool of deferred) {
+    const rendered = renderToolGuide(tool, isEn, mark);
+    if (rendered) deferredGuides.push(rendered);
+  }
+  const deferredSection = renderDeferredSection(deferredList, deferredGuides, isEn);
+  const deferredPointer = renderDeferredPointer(deferred.length, isEn);
 
   // 2026-08-01：假设纪律那段常驻引导按 hypothesis_register **是否真的注册**决定去留。
   // 机制默认关闭（SID_ENABLE_HYPOTHESIS=1 才注册），此时这段静态文案若照旧注入，
@@ -994,6 +1075,8 @@ function buildToolGuideSection(
       toolList,
       customGuides: customGuides.length > 0 ? "\n" + customGuides.join("\n") : "",
       hypothesisDiscipline: hypothesisDisciplineEn,
+      deferredSection,
+      deferredPointer,
     });
   }
 
@@ -1013,10 +1096,10 @@ function buildToolGuideSection(
   return `
 <tool-guide>
 ## 可用工具
-你可以使用以下工具完成任务：
+你可以使用以下工具完成任务（本轮可直接调用）：
 
 ${toolList}
-
+${deferredPointer}
 ### 工具使用原则
 1. **优先使用专用工具**：例如用 read 读文件，不要用 bash cat
 2. **并行执行只读工具**：多个 read/grep/glob 可以并行调用
@@ -1053,7 +1136,7 @@ ${hypothesisDiscipline}
 - **方案不确定先规划**: 当实现路径存在真实架构歧义（多种合理方案、需求不明确、高风险重构）时，用 enter_plan_mode 先对齐方案再编码。日常任务拿不准时倾向于直接开始工作，遇到具体选择点再问用户——「先动手再问」比「每个任务都 plan」更高效
 - **大任务先分治**: 当任务可拆成多个相对独立的子方向（如系统排查要过多个模块、审计要查多个维度、需要同时搜索多处来源）时，用 sub_agent 工具分派多个子代理并行深挖，每个子代理有独立上下文、互不污染。判据：子方向 ≥ 3 个，或单个方向读起来会撑爆主上下文时，优先分治，而不是自己一个个串行读。类型选择：只读探查派 explore，要改文件 / 跑命令派 task，验证某个结论是否成立派 verify。注意这与上面「并行调只读工具」是两回事——并行 read/grep 只是同一上下文里多发几个只读调用，分治是把整段子任务连同其上下文交给独立子代理；方向多、单方向重时用分治。子代理内部不能再派子代理，分治只能由主线程发起
 - **但改动互相影响的任务不要分治**: 一句话判据——**分治的前提是子任务可切开**。**同源错误不要分治**：一处类型/接口/签名收紧引发的连锁报错，哪怕跨几十个文件也只是一个改动点，改那一处其余报错集体消失，派多个子代理各改一份互相影响的定义必然重复劳动 + 冲突。所以看到"N 个错误跨 M 个文件"时先读报错、判断它们是否同源，不要按文件数估算规模。同理不该分治的还有：多个子任务会写同一模块或相邻文件（目标文件集有交集就串行做）；需要全局视野才能判断改法、上下文切不开；产出形态是"反复跑 tsc/test 才能收敛的连续编辑"（只有全量验证才知道对不对）。这类任务自己串行做，配合下面的观测方式收敛更快
-</tool-guide>`;
+${deferredSection}</tool-guide>`;
 }
 
 /**
@@ -1061,30 +1144,37 @@ ${hypothesisDiscipline}
  * MCP 工具随 server 连接/断开动态变化，放入静态区会击穿 prompt cache 前缀。
  * 单独输出为动态附件，与内置工具列表（静态区）分离。
  */
-function buildMcpToolGuideSection(tools: Tool[]): string | null {
+function buildMcpToolGuideSection(tools: Tool[], deferral?: DeferralJudgeOptions): string | null {
   const mcpTools = tools.filter((t) => t.name().startsWith("mcp__"));
   if (mcpTools.length === 0) return null;
 
-  const toolList = mcpTools
-    .map((t) => {
-      const desc = t.description();
-      const firstSentence = desc.split(/[。\n;；]/)[0].trim();
-      const brief = firstSentence.length > 80 ? firstSentence.slice(0, 80) + "…" : firstSentence;
-      return `  - ${t.name()}: ${brief}`;
-    })
-    .join("\n");
+  // L4：MCP 工具**默认全部延迟**（registry.ts:356），所以这一段如果不分区，
+  // 整段就是一份"看得见、调不动"的清单——与内置工具那边（L1/L2）同构的 bug。
+  // keepLoaded 豁免的 MCP 工具（用户把高频工具钉在首轮）仍按已加载呈现。
+  const { live, deferred } = partitionByDeferral(mcpTools, deferral);
 
+  const toolList = live.map((t) => renderToolLine(t)).join("\n");
   const customGuides: string[] = [];
-  for (const tool of mcpTools) {
-    if (tool.usageGuide) {
-      const guide = tool.usageGuide();
-      if (guide) {
-        customGuides.push(`\n### ${tool.name()} 工具使用指南\n${guide}`);
-      }
-    }
+  for (const tool of live) {
+    const rendered = renderToolGuide(tool, false);
+    if (rendered) customGuides.push(rendered);
   }
 
-  return `<mcp-tools>\n## MCP 工具\n以下工具来自已连接的 MCP Server（动态变化）：\n\n${toolList}${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}\n</mcp-tools>`;
+  const deferredList = deferred.map((t) => renderToolLine(t, DEFERRED_MARK));
+  const deferredGuides: string[] = [];
+  for (const tool of deferred) {
+    const rendered = renderToolGuide(tool, false, DEFERRED_MARK);
+    if (rendered) deferredGuides.push(rendered);
+  }
+  const deferredSection = renderDeferredSection(deferredList, deferredGuides, false);
+
+  // 全部 MCP 工具都延迟时不留空的"以下工具..."引导段（否则是一句指向空清单的废话）
+  const liveBlock =
+    live.length > 0
+      ? `以下工具来自已连接的 MCP Server（动态变化），本轮可直接调用：\n\n${toolList}${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}\n`
+      : `以下工具来自已连接的 MCP Server（动态变化）。\n`;
+
+  return `<mcp-tools>\n## MCP 工具\n${liveBlock}${deferredSection}\n</mcp-tools>`;
 }
 
 /**
@@ -1119,13 +1209,24 @@ function buildSubagentResultBoundarySection(language?: LanguagePref): string {
  * 调度能力引导（缺口 A：让模型把自然语言时间请求映射到调度工具）。
  * 仅在 cron 调度工具可用时注入，避免精简模式平白多一段 prompt。
  */
-function buildSchedulingSection(language?: LanguagePref): string {
-  if (language === "en") return buildSchedulingSectionEn();
+function buildSchedulingSection(language?: LanguagePref, schedulingDeferred = false): string {
+  if (language === "en") return buildSchedulingSectionEn(schedulingDeferred);
+  // L3：这一段是同类 bug 的**最强形态** —— 它不是被动列名，而是**主动命令**模型
+  // "主动映射到下列工具，不要只是口头答应"，而它推荐的四个工具（cron_create /
+  // schedule_wakeup / cron_list / cron_delete）全部声明 shouldDefer=true。
+  // 于是用户一说"5 分钟后提醒我"，这段就驱动模型去调一个不在本轮 schema 里的名字。
+  // 修法是**改措辞而不是删段**：删段会丢掉真实能力的可发现性（同 L1 不剔除清单的理由）。
+  const activationNote = schedulingDeferred
+    ? `\n⚠️ 下列调度工具**尚未加载**到本轮上下文：使用前先用 \`tool_search\` 激活（如 \`select:cron_create\`），激活后再按下面的映射调用。**不要直接调用未激活的名字**，也不要与其它同前缀工具混淆。\n`
+    : "";
+  const mapVerb = schedulingDeferred
+    ? "先激活对应工具、再映射到下列调用，不要只是口头答应"
+    : "主动映射到下列工具，不要只是口头答应";
   return `
 <scheduling-capability>
 ## 定时与轮询能力
-你有一套会话内调度工具，可把「未来某时执行」「按间隔重复」「跑到某条件满足为止」的请求落地。当用户用自然语言表达时间意图时，主动映射到下列工具，不要只是口头答应：
-
+你有一套会话内调度工具，可把「未来某时执行」「按间隔重复」「跑到某条件满足为止」的请求落地。当用户用自然语言表达时间意图时，${mapVerb}：
+${activationNote}
 - **一次性提醒**（「3 点提醒我看部署」「45 分钟后检查 CI」）→ 用 \`cron_create\`，cron 表达式定到那个具体时刻，配 \`recurring=false\`（触发一次后自删）。45 分钟后这类相对短延迟也可用 \`schedule_wakeup(delaySeconds)\`。
 - **固定间隔重复**（「每 5 分钟查一次」「每天 9 点巡检」）→ 用 \`cron_create\`，\`recurring=true\`。跨会话存活再加 \`durable=true\`。
 - **自适应轮询**（「跑到 CI 过为止」「等部署好了告诉我」这类不定期检查）→ 每轮检查后用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒），目标达成后停止安排，不要无限轮询。

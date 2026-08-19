@@ -19,6 +19,7 @@ import { generateTmuxSessionName, createTmuxSessionForWorktree } from "../worktr
 import type { WorktreeSession } from "../worktree/types.ts";
 import { generateWordSlug } from "../plan/slug.ts";
 import { getCwd } from "../bootstrap/state.ts";
+import { formatPathNotFoundError } from "./path-utils.ts";
 import { getLogger } from "../debug/logger.ts";
 import { existsSync, readFileSync } from "fs";
 import { join, basename, resolve } from "path";
@@ -44,8 +45,24 @@ const enterWorktreeSchema = lazySchema(() =>
 
 export class EnterWorktreeTool implements Tool {
   readonly zodSchema = enterWorktreeSchema();
-  /** 长尾工具：worktree 隔离低频使用，延迟加载，由 tool_search 按需调出 */
-  readonly shouldDefer = true;
+  // ⚠️ 刻意**不声明** shouldDefer（2026-08-17 事故后从 true 改掉，不要改回去）。
+  //
+  // 全仓 38 个内置工具两两算公共前缀，「always-live × deferred 且前缀 ≥4」的组合只有两对：
+  //   enter_plan_mode / enter_worktree (prefix=6)、exit_plan_mode / exit_worktree (prefix=5)
+  // 而这正是生成期坍缩的必要条件：延迟工具不在本轮 schema 里，模型"想调"它时会坍缩成
+  // 当轮唯一共享前缀的真实工具 —— 实测 enter_worktree → enter_plan_mode 误触 5 次、
+  // 产出 4 份无用 plan 文件、任务卡死到用户手动打断。去掉这两个 shouldDefer 后
+  // 当前碰撞面直接归零。
+  //
+  // 成本实测可忽略：两个 description 合计约 450 字符，对照首轮 25 个工具 schema
+  // 共 29596 字节 ≈ 1.5%。且 CLAUDE.md 把 worktree 并行开发写成常规工作流，
+  // 它本不属于 cron_*/team_* 那种真正的长尾（延迟机制服务的是"单个 MCP server
+  // 动辄几十个工具"那种规模）。
+  //
+  // 注意这只是**即时止血**，不替代系统提示词侧的分区修复
+  // （config/deferred-tool-view.ts）：下一个新增的延迟工具只要凑巧与某个 always-live
+  // 工具共享前缀，同样的故障会复发。防回退断言见
+  // packages/core/tests/tool/worktree-tools-not-deferred.test.ts。
   readonly searchHint = "git worktree isolation branch 隔离 工作树 分支";
 
   name(): string {
@@ -157,9 +174,20 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
     const worktreePath = resolve(rawPath);
 
     // 1. 验证目录存在且是 worktree（.git 是 pointer file）
+    //
+    // 两种失败**必须分开报**：原实现把它们合成一句"路径不存在或不是 Git worktree"，
+    // 于是既不告诉模型当前工作目录（相对路径按会跟随 bash cd 的全局 cwd 解析），
+    // 也分不清"路径打错了"和"路径对但不是 worktree"这两件需要不同下一步的事。
+    // 反过来也不能一律套通用函数：目录确实存在时报一段"目录中存在相似文件"是纯误导。
     const gitPointer = join(worktreePath, ".git");
-    if (!existsSync(worktreePath) || !existsSync(gitPointer)) {
-      return { output: `路径不存在或不是 Git worktree: ${worktreePath}`, isError: true };
+    if (!existsSync(worktreePath)) {
+      return { output: formatPathNotFoundError(worktreePath), isError: true };
+    }
+    if (!existsSync(gitPointer)) {
+      return {
+        output: `路径存在但不是 Git worktree（缺少 .git 指针文件）: ${worktreePath}`,
+        isError: true,
+      };
     }
     let pointerContent = "";
     try {

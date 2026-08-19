@@ -302,6 +302,7 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
 export async function buildInitialSystemPrompt(
   config: Config,
   tools: import("../tool/types.ts").LegacyTool[],
+
   denyRulesSummary?: string,
   onSectionTokens?: (s: import("../config/system-prompt.ts").PromptSectionTokens) => void,
 ): Promise<string> {
@@ -396,6 +397,11 @@ export async function buildInitialSystemPrompt(
     skillEntries: collectSkillListingEntries(tools),
     // 缺口 D：deny 规则约束摘要（前置告知模型哪些操作必被拒绝）
     denyRulesSummary,
+    // 延迟工具呈现：延迟工具不在首轮 schema 里，提示词必须与可调用工具分区标注，
+    // 否则模型会调一个它见不到 schema 的名字（见 config/deferred-tool-view.ts）。
+    // 两个字段都取**配置层**的值：运行时定档结果晚于本函数，读它必然恒 false。
+    toolSearchKeepLoaded: config.toolSearchKeepLoaded,
+    toolSearchDisabled: config.toolSearch === false,
     // 审计第 22 条：IDE 选区/@提及**不再**从这里注入。
     // 原先 `...collectIDEContext()` 在此展开，但 IDE 连接是后台异步的（轮询至 30s 超时），
     // 而本函数只在启动瞬间跑一次 → 那一刻 status 必然还不是 connected，恒返回 {}；

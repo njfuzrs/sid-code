@@ -12,7 +12,7 @@ import type {
 import { ripGrep, hasRipgrep, RipgrepTimeoutError } from "./ripgrep.ts";
 import { resolveGrepType } from "./grep-type-alias.ts";
 import { getLogger } from "../debug/logger.ts";
-import { normalizeToolPath } from "./path-utils.ts";
+import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
 import { statSync, existsSync } from "node:fs";
 import { relative, resolve, normalize } from "node:path";
@@ -214,12 +214,16 @@ export class GrepTool implements Tool {
     const headLimit = params.head_limit ?? params.total_max_matches ?? DEFAULT_HEAD_LIMIT;
     const offset = params.offset ?? 0;
 
-    // 路径存在性校验（对标 CC validateInput）
+    // 路径存在性校验（对标 CC validateInput）。
+    //
+    // 复用 formatPathNotFoundError 而不是手写文案：相对路径是按**全局 cwd** 解析的
+    // （bash 的 `cd` 会持久化它，见 path-utils.ts:24-27 的刻意设计），所以 `cd` 到子目录后
+    // 再传一个仓库根相对路径，会拼出 `packages/shared/src/packages/cli/src/cli.ts` 这种
+    // 压根不存在的路径。原文案只回显拼接结果、不报 cwd，模型要花两轮试错才反应过来
+    // 是上一条 cd 的锅。通用函数会一并给出 `当前工作目录: X` 与相似文件名建议，
+    // 与 read/glob/edit 的同类失败对齐。
     if (!existsSync(searchPath)) {
-      return {
-        output: `错误: 路径不存在 "${searchPath}"。请确认路径正确，或使用默认当前目录（不传 path 参数）。`,
-        isError: true,
-      };
+      return { output: formatPathNotFoundError(searchPath), isError: true };
     }
 
     log.info("TOOL", `▶ 搜索 "${params.pattern}" in ${searchPath}`);

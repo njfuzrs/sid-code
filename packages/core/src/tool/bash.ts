@@ -363,6 +363,33 @@ function formatSpawnError(err: any, cwd: string): string {
   return `执行命令失败: ${msg}`;
 }
 
+/**
+ * 工作目录变更告知（追加到本次 bash 的 tool_result 末尾）。
+ *
+ * 为什么需要它：模型对"当前有效 cwd"**没有任何主动信号源**。`<environment>` 段里的
+ * 工作目录只在会话启动（或提示词重建）时取一次 `process.cwd()`，此后 bash 怎么 `cd`
+ * 都不变；而真正驱动 read/edit/grep/glob/ls 相对路径解析的是会跟随 `cd` 的全局
+ * `getCwd()`。两套状态永久发散，模型唯一的发现途径是踩坑报错。
+ *
+ * 为什么落在 tool_result 而不是 `<environment>` 或新增一条 per-turn reminder：
+ * - `<environment>` 在 `DYNAMIC_BOUNDARY` **之前**且入 `generateCacheKey`，让它跟随 cwd
+ *   等于"任意 cd + 任意重建 = 静态前缀击穿"，而重建每会话通常一次都不发生 —— 纯亏。
+ * - tool_result 本就是每轮新增内容，零 cache 影响；且它天然只在真的 cd 了时出现一次，
+ *   不需要自建去重状态；位置还正好是模型此刻在读的那条结果。
+ * - 信号源早就在 `setCwd` 那一刻存在，这里只是把它接出来，不新建任何机制。
+ */
+function cwdChangeNotice(newCwd: string): string {
+  return (
+    `\n[工作目录已切换] 当前工作目录: ${newCwd}\n` +
+    `（后续 read/edit/grep/glob/ls 等工具的相对路径均以此为基准；如需回到原目录请显式 cd）`
+  );
+}
+
+/** 把 cwd 变更告知拼到结果末尾；未发生切换时原样返回 */
+function withCwdNotice(output: string, switchedCwd: string | undefined): string {
+  return switchedCwd ? `${output}${cwdChangeNotice(switchedCwd)}` : output;
+}
+
 export class BashTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = bashSchema();
@@ -538,15 +565,22 @@ export class BashTool implements Tool {
   /**
    * 命令成功完成后读取 cwd 临时文件并写回全局 cwd 状态；无论成功与否都清理临时文件。
    * @param success 命令是否成功（exitCode===0 且未被取消）。仅成功时才写回，失败时 pwd -P 未执行。
+   * @returns 真的切换了工作目录时返回新的绝对路径，否则 undefined。
+   *
+   * 返回值供调用方在 tool_result 末尾追加一行变更告知（见 cwdChangeNotice）。
+   * 判据刻意就取"`setCwd` 实际执行"这一件事、不另算一次 diff —— 两处判据必然漂移，
+   * 这是本仓反复踩过的坑。
    */
-  private applyCwdTracking(cwdFile: string | undefined, success: boolean): void {
-    if (!cwdFile) return;
+  private applyCwdTracking(cwdFile: string | undefined, success: boolean): string | undefined {
+    if (!cwdFile) return undefined;
+    let switched: string | undefined;
     try {
       if (success) {
         // 裸 readFileSync 需自行 NFC 归一化（normalizeToolPath 内部已做，但此处直读文件）
         const newCwd = readFileSync(cwdFile, "utf8").trim().normalize("NFC");
         if (newCwd && newCwd !== getCwd() && existsSync(newCwd)) {
           setCwd(newCwd);
+          switched = newCwd;
         }
       }
     } catch {
@@ -558,6 +592,7 @@ export class BashTool implements Tool {
         /* 忽略 */
       }
     }
+    return switched;
   }
 
   async execute(
@@ -841,7 +876,11 @@ export class BashTool implements Tool {
             }
 
             // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
-            this.applyCwdTracking(cwdFile, !aborted && !timedOut && exitCode === 0);
+            // 返回值非空 = 真的切换了目录 → 结果末尾追加一行告知（见 cwdChangeNotice）。
+            const switchedCwd = this.applyCwdTracking(
+              cwdFile,
+              !aborted && !timedOut && exitCode === 0,
+            );
 
             // 方向 3（git-status 快照冻结死循环修复）：非只读命令成功执行后失效 git 状态缓存。
             // git add/commit/restore/checkout、release.sh 等改动工作区的命令跑完后，下一次
@@ -939,16 +978,18 @@ export class BashTool implements Tool {
             const conflictHint = detectMergeConflictHint(params.command, output);
             if (conflictHint) {
               const base = output === "(命令无输出)" ? "" : `${output}\n`;
-              return { output: `${base}${conflictHint}` };
+              return { output: withCwdNotice(`${base}${conflictHint}`, switchedCwd) };
             }
 
             // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
             if (exitCode !== 0 && interp.message) {
               const note =
                 output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
-              return { output: note };
+              // 这一路 exitCode !== 0，applyCwdTracking 不会写回，switchedCwd 必为 undefined；
+              // 仍然穿一次 withCwdNotice，避免将来放宽写回条件时这里成为唯一漏掉告知的分支。
+              return { output: withCwdNotice(note, switchedCwd) };
             }
-            return { output };
+            return { output: withCwdNotice(output, switchedCwd) };
           } catch (err) {
             // 已转后台时，pump/exited 阶段的异常记为任务失败（对齐 spawnShellTask 的
             // child.on("error")），不再向外抛——execute() 已经通过 detachPromise 返回过了。
