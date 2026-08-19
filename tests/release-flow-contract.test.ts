@@ -362,4 +362,46 @@ describe("CONTRIBUTING 对 workflow 触发条件的断言不漂移", () => {
     expect(t).toContain("pull_request");
     expect(t).toContain("push");
   });
+
+  // ── 2026-08-19：合并方式与必需检查一起改了，文档里的对应描述必须跟着走 ──────────
+  //
+  // 这三条锁的是「文档说的合并机制 == 仓库实际配置」。它们不查 GitHub API（单测必须
+  // 离线且确定性），改锁**文档内部自洽 + 与本仓代码自洽**：
+  // 文档说 changelog 走 --first-parent，那 scripts/ 里就必须真的是它。
+  test("不得再声称用 squash merge（已改为默认 merge commit）", () => {
+    // 允许提到 squash（「squash 仍然允许」是事实），但不许出现「用 squash merge」这个规定式说法
+    expect(CONTRIBUTING).not.toMatch(/用\s*\*\*squash merge\*\*/);
+    // 正向：必须写明默认 merge commit
+    expect(CONTRIBUTING).toMatch(/默认用 merge commit/);
+  });
+
+  test("必需检查的描述与汇聚门一致（不得再列三个具体 job 名当必需检查）", () => {
+    expect(CONTRIBUTING).toContain("all-checks-passed");
+    // 文档里仍可以复述那次事故（「事故当时绑的是三个 job 名」），但不许把它写成**现状要求**。
+    // 判据：「要求的三个检查」这个现在时说法必须消失。
+    expect(CONTRIBUTING).not.toMatch(/要求的三个检查/);
+  });
+
+  test("文档说 changelog 走 --first-parent，代码里就必须是（跨文件自洽）", () => {
+    expect(CONTRIBUTING).toContain("--first-parent");
+    const lib = readFileSync(join(ROOT, "scripts/lib/changelog-git.ts"), "utf8");
+    expect(lib).toMatch(/HISTORY_WALK_FLAG\s*=\s*"--first-parent"/);
+  });
+
+  // PR 标题会成为 merge commit 的 subject，这个链条依赖仓库设置 merge_commit_title=PR_TITLE。
+  // 设置本身查不到（离线），但能锁住文档把这个依赖**写出来**——它是隐式契约里最容易被忘的一环：
+  // 默认值 MERGE_MESSAGE 会生成 "Merge pull request #N from ..."，不合 Conventional Commits。
+  test("文档点明了 merge_commit_title=PR_TITLE 这个隐式依赖", () => {
+    expect(CONTRIBUTING).toContain("merge_commit_title");
+    expect(CONTRIBUTING).toContain("PR_TITLE");
+  });
+
+  // 新拆分判据（2026-08-19）：旧规则「互不依赖的缺陷各自一个 PR」被读成「必须各自一个」，
+  // 实测在 11 个缺陷的方案上产出 13 个 PR。这条锁住旧措辞不回来。
+  test("拆分判据已换成「可独立上线/回滚/一次 review」，旧措辞不得复现", () => {
+    expect(CONTRIBUTING).not.toMatch(/\*\*互不依赖的缺陷各自一个 PR\*\*/);
+    expect(CONTRIBUTING).toMatch(/能独立上线/);
+    expect(CONTRIBUTING).toMatch(/能独立回滚/);
+    expect(CONTRIBUTING).toMatch(/能一次 review 完/);
+  });
 });
