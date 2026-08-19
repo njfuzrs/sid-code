@@ -254,6 +254,73 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
       expect(bunPos).toBeLessThan(rgPos);
     });
   });
+
+  // ── 汇聚门 all-checks-passed（2026-08-19 接入）───────────────────────────────────
+  //
+  // ruleset protect-main 的必需检查从三个具体 job 名换成了这一个汇聚 job。
+  // 这组断言守的是**它不会静默变成假绿**——这道门禁的三种失效方式全都不报红：
+  //   ① 新增 job 忘了加进 needs → 新 job 红了，汇聚门照样绿
+  //   ② 丢掉 if: always() → 上游失败时本 job 变 skipped，而 GitHub 把 skipped 的
+  //      必需检查算作**通过**
+  //   ③ 判据写成「全部 == success」→ 将来任何带 if 条件的 job 被跳过就整体卡死
+  describe("汇聚门 all-checks-passed 不得静默变成假绿", () => {
+    /** 解析后的 jobs 映射；YAML 1.1 会把裸 `on` 当布尔真键，这里只取 jobs 不受影响。 */
+    function jobsOf(): Record<string, Record<string, unknown>> {
+      const doc = parseYaml(CI) as Record<string, unknown>;
+      return doc.jobs as Record<string, Record<string, unknown>>;
+    }
+
+    test("汇聚 job 存在", () => {
+      expect(Object.keys(jobsOf())).toContain("all-checks-passed");
+    });
+
+    // 这是本组最重要的一条：它把「ruleset 只绑一个检查」这个决定，
+    // 与「所有 job 都真的被那个检查覆盖」这件事机械地绑在一起。
+    // 没有它，加一个 job 就等于开了一个绕过分支保护的后门，且 PR 页面一片绿。
+    test("needs 覆盖除自己以外的全部 job（新增 job 忘了登记即判红）", () => {
+      const jobs = jobsOf();
+      const needs = jobs["all-checks-passed"]?.needs as string[] | undefined;
+      expect(Array.isArray(needs)).toBe(true);
+
+      const others = Object.keys(jobs)
+        .filter((k) => k !== "all-checks-passed")
+        .sort();
+      expect([...(needs as string[])].sort()).toEqual(others);
+    });
+
+    test("if: always() 在（skipped 的必需检查会被算作通过）", () => {
+      expect(jobsOf()["all-checks-passed"]?.if).toBe("always()");
+    });
+
+    test("判据看 failure/cancelled，不看「全部 success」", () => {
+      const steps = jobsOf()["all-checks-passed"]?.steps as Array<Record<string, string>>;
+      const script = steps.map((s) => s.run ?? "").join("\n");
+      expect(script).toContain("contains(needs.*.result, 'failure')");
+      expect(script).toContain("contains(needs.*.result, 'cancelled')");
+      expect(script).toMatch(/exit 1/);
+    });
+  });
+
+  // ── 合并队列（2026-08-19 接入）─────────────────────────────────────────────────
+  //
+  // 队列解决的是 PR 级门禁**测不到**的一类失败：两个 PR 各自对着自己的 base 绿了，
+  // 合到一起却红（git 无冲突但语义冲突）。并行开发时这是必然而非偶发。
+  describe("合并队列触发与不取消", () => {
+    test("merge_group 在 on 里", () => {
+      const doc = parseYaml(CI) as Record<string, unknown>;
+      const on = (doc.on ?? doc[true as unknown as keyof typeof doc]) as Record<string, unknown>;
+      expect(Object.keys(on)).toContain("merge_group");
+    });
+
+    // merge_group 的 run 是「合并后状态」的唯一验证结论，取消掉就拿不到判据，
+    // 表现为 PR 莫名其妙地入队又被弹出——这个现象不长得像 CI 配置问题。
+    test("cancel-in-progress 对 merge_group 关闭", () => {
+      const doc = parseYaml(CI) as Record<string, unknown>;
+      const cancel = (doc.concurrency as Record<string, unknown>)?.["cancel-in-progress"];
+      // 断言表达式而非布尔：写死 true/false 都会让 merge_group 走错分支。
+      expect(String(cancel)).toContain("merge_group");
+    });
+  });
 });
 
 // 2026-08-15 顺带查出的文档漂移：CONTRIBUTING.md「不要直接 push 到 main」那节，

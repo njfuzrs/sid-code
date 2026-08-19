@@ -46,11 +46,21 @@ on:
     types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
+  # 合并队列（2026-08-19 接入）。队列把「各自绿、合起来红」这一类失败挪到合并**之前**：
+  # 两个 PR 各自对着自己的 base 绿了，不代表合到一起还绿（git 无冲突但语义冲突）。
+  # 并行开发时这类失败是必然而非偶发，而它在 PR 级门禁里**测不到**——PR 的 CI 跑的是
+  # 「我的分支」，不是「我合进 main 之后的 main」。队列会为每个待合 PR 造一个临时的
+  # merge_group ref（含前面所有排队项），在那上面跑本文件，绿了才真合。
+  merge_group:
 
-# 同一分支的旧 run 自动取消，避免连续 push 时排队浪费 runner
+# 同一分支的旧 run 自动取消，避免连续 push 时排队浪费 runner。
+#
+# ⚠️ merge_group 的 run **不能被取消**（抄 gemini-cli）：它是「合并后状态」的唯一验证结论，
+# 取消掉队列就拿不到判据，只能把 PR 踢出队列——表现为莫名其妙的「入队又被弹出」。
+# 而 PR 分支的 run 取消掉无所谓，下一次 push 会重跑。
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   test:
@@ -214,6 +224,39 @@ jobs:
       # 两者共用同一个扫描器，职责不同：这里给出快速失败，那里守扫描器自身不空转。
       - name: 包边界扫描
         run: bun run lint:boundary
+
+  # ── 汇聚门（2026-08-19 接入，抄 langfuse pipeline.yml 的 all-checks-passed）──────────
+  #
+  # 它自己不跑任何检查，只把上面所有 job 的结论收成**一个**必需检查。
+  #
+  # 为什么需要这一层间接：ruleset protect-main 原先把 `test (ubuntu-latest)` /
+  # `test (macos-latest)` / `lint` 三个**具体 job 名**绑成必需检查，于是分支保护与
+  # workflow 的内部结构耦合在一起。已经因此踩过两个坑，且两个都是「不报红只转圈」的形态：
+  #   · 改默认分支名 master→main：workflow 的 branches 没跟着改 → CI 不触发而 PR 显绿
+  #   · stacked PR 改 base：发 edited 事件不在 types 默认值里 → 三个检查恒 pending
+  # 换成一个汇聚 job 之后，job 的增删改名再也不需要动 ruleset —— 只改下面这行 needs。
+  #
+  # ⚠️ `if: always()` 不可省：默认的隐式 success() 会让上游失败时本 job 直接 skipped，
+  # 而 GitHub 把 skipped 的必需检查算作**通过**——那正好是最危险的假绿。
+  # 必须无条件运行，然后自己判 needs 的结果。
+  #
+  # ⚠️ 判据用「不含 failure/cancelled」而不是「全部 == success」：skipped 也要算通过，
+  # 否则将来任何一个带 if 条件的 job 被跳过都会把整道门禁卡死。
+  all-checks-passed:
+    # 加 job 只改这一行，不动分支保护
+    needs: [test, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict
+        run: |
+          echo "test=${{ needs.test.result }}  lint=${{ needs.lint.result }}"
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::上游 job 有失败或被取消，拒绝放行"
+            exit 1
+          fi
+          echo "✅ 全部检查通过"
 
   # 面向用户的文档门禁不在这里：那部分在 website/，由 pre-commit 的
   # `docs-gen-reference.ts --check` 与 pre-push 的站点构建（死链检查）守着。
