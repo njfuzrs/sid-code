@@ -16,7 +16,7 @@ import type {
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
-import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
+import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -276,9 +276,7 @@ export async function processStream(
           // rawOutputTokensZero 复位：它是"本次响应 output 为 0"的结构信号，
           // 由作废尝试置位后若不清，会让下一次完整响应被误判成"未答复 end_turn"。
           rawOutputTokensZero = false;
-          if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
-            log.warn("STREAM", describeStreamRestart(event, outcome));
-          }
+          recordStreamRestart(event, outcome, "main");
           try {
             options?.onStreamRestart?.({
               reason: event.reason,

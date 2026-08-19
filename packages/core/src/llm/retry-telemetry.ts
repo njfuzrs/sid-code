@@ -92,6 +92,20 @@ export interface RetryTelemetryEvent {
    * 重复开流是 idle 超时、内容进展超时、还是网络抖动导致。
    */
   reopenReason?: string;
+  /**
+   * PR6：本次重开**扔掉了多少已产出字符** —— 「丢弃已累积内容」的权威计数。
+   *
+   * 为什么钉在 `retry` 事件上而不是消费方的 `stream_restart`：实测一次会话 24 次超时
+   * 重开，消费方只留下 **2** 条记录（8%）。不是漏记，是竞态 —— fallback 要先睡
+   * 4.3~5.7s 退避才广播作废，而 watchdog 在 56~163ms 内就把生成器杀了，那句广播
+   * 根本执行不到。本字段在退避**之前**写，实测 24/24 全覆盖。
+   *
+   * 与消费方 `StreamRestart` 事件的差额本身就是诊断信号：
+   * 差额 = 被 watchdog 抢先杀掉、连作废广播都没发出去的那些。
+   */
+  discardedChars?: number;
+  /** PR6：上面那些字符里属于**思考**的部分（`discardedChars` 的子集） */
+  discardedThinkingChars?: number;
   /** 降级目标模型 */
   fallbackModel?: string;
   /** 查询来源（后台 529 丢弃时） */

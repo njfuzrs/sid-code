@@ -40,6 +40,7 @@ import {
   getDialectWire,
   getToolSchemaDialect,
   isChatCompletionsFamily,
+  isThinkingAlwaysOn,
   sanitizeToolSchema,
 } from "./dialect/catalog.ts";
 import {
@@ -441,7 +442,31 @@ export class OpenAIProvider implements Provider {
     // （Anthropic 是 `{budget_tokens}`），瞎猜结构的 400 风险远高于一个标量字段，
     // 且无法从错误文本反推正确结构 —— 自愈救不回来。
     if (wire.thinkingToggle === "type-enum" && params.thinking && !thinkingToggleBlocked) {
-      requestBody.thinking = { type: params.thinking.enabled ? "enabled" : "disabled" };
+      // ── 恒思考模型：请求关思考时降级为「不下发」，而不是发一个必被拒的 disabled ──
+      //
+      // 2026-08-17 实证（会话 `20260817-135824-fcf863e1`）：GLM-5.3 恒思考，
+      // 收到 `thinking:{type:"disabled"}` 直接 400「该模型始终思考，不支持关闭思考」，
+      // 且该错误被分类为 TerminalError("invalid_request") → **零重试**直接判主 Provider 失败。
+      // 而全部 side-call（压缩/目标评估/工具分类/记忆召回，14 个调用点）都无条件套用
+      // `SIDE_CALL_NO_THINK = { enabled: false }` → **每一次 side-call 都必然失败**。
+      //
+      // 降级语义照搬同文件 `applyToolChoice` 对 GLM `auto-only` 的处置：
+      // **不下发 = 服务端默认**（这里即"思考开启"），而不是冒一个确定被拒的值。
+      // side-call 关思考的原始意图（省 token + 不撞 side-call 硬超时）在恒思考模型上
+      // 本就无法达成，正确处置是**接受它会思考**——而不是让整条调用链失败。
+      //
+      // ⚠ 只降级 `enabled === false` 这一支：`enabled === true` 照常下发
+      // （主循环路径实测 `thinking:{type:"enabled"}` 返回 200）。
+      const alwaysThinking = compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model);
+      if (params.thinking.enabled === false && alwaysThinking) {
+        getLogger().warn(
+          "LLM:OPENAI",
+          `模型「${params.model ?? this._model}」恒思考（不支持关闭思考），` +
+            `已将 thinking:{type:"disabled"} 降级为不下发（等价服务端默认=思考开启）`,
+        );
+      } else {
+        requestBody.thinking = { type: params.thinking.enabled ? "enabled" : "disabled" };
+      }
     }
 
     // ── 思考强度 ──

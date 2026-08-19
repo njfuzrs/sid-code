@@ -307,6 +307,37 @@ export interface BeforeModelInput extends HookInput {
     system?: unknown;
     /** 工具定义列表（完整 tool schema） */
     tools?: unknown[];
+    /**
+     * 本次请求解析后的**思考开关**（内部表示，非 wire body）。
+     *
+     * ## 为什么要采（2026-08-17 的教训，代价是整整一轮方向被带偏）
+     *
+     * 排查 GLM-5.3 的 400「该模型始终思考」时，查 `raw.jsonl` 得到
+     * `thinking=None reasoning_effort=None`，据此判定"两个字段都没下发"，
+     * 于是一路查到"模型未注册 → 能力退化"这个**错误根因**上。
+     *
+     * 真相是：**这个采集点的 schema 里从来就没有这两个字段位**。
+     * "没在这里出现"被读成了"没发到线上"—— 仪器空洞被当成了事实。
+     * 补上字段位，下次同类问题不必再靠 `bun -e` 重放生产序列化函数才能定位。
+     *
+     * ## ⚠ 它是**内部表示**，不是线上请求体，两者不可互推
+     *
+     * 真正发到线上的形状由各族方言决定：`{enabled:false}` 在 GLM/DeepSeek 线上
+     * 序列化成 `thinking:{type:"disabled"}`，在 Grok/o-series 线上**根本不发**，
+     * 在恒思考模型上（见 `dialect/always-thinking.ts`）会被降级为不发。
+     * 判"线上到底发了什么"仍需看 provider 侧，别拿这个字段当 wire body 的替身 ——
+     * 那正是上面那个坑的同型错误。
+     *
+     * ## ⚠ 覆盖面：side-call **不经过**本 hook
+     *
+     * 压缩 / 目标评估 / 工具分类 / 记忆召回这些辅助调用是影子调用，不触发
+     * BeforeModel（见 `trace/side-call-sink.ts` 的模块注释）。而 2026-08-17 那 11 次
+     * 400 恰恰**全部来自 side-call** —— 所以本字段能防的是"下次别再把仪器空洞当事实"，
+     * **不是**"下次能直接看到那 11 次请求"。side-call 的请求参数采集是另一个缺口。
+     */
+    thinking?: { enabled: boolean; budgetTokens?: number };
+    /** 本次请求解析后的推理强度档位（内部表示，注意事项同 `thinking`） */
+    reasoning_effort?: string;
   };
 
   // ── Harness 扩展点 ──

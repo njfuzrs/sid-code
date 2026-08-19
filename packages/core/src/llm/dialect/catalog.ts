@@ -84,6 +84,7 @@ const WIRE_DIALECTS: Record<ProtocolFamily, WireDialect> = {
 };
 
 export { classifyProtocolFamily, isChatCompletionsFamily } from "./classify.ts";
+export { isThinkingAlwaysOn } from "./always-thinking.ts";
 export type { ClassifyInput } from "./classify.ts";
 export {
   getToolSchemaDialect,

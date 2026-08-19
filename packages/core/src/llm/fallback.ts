@@ -904,6 +904,40 @@ export class ModelFallback {
     // 流式消费（唯一的重试点）
     // ═══════════════════════════════════════════════════════════════
     let hasYieldedContent = false;
+    /**
+     * PR6：本次 attempt **已产出多少内容** —— 重试决策的输入，不只是一个"空不空"的 bool。
+     *
+     * ## 为什么 `hasYieldedContent` 一个 bool 不够
+     *
+     * 它当前的唯一用途是空响应校验（下方 `if (!hasYieldedContent) throw 响应为空`），
+     * **不参与任何重试决策**。于是本层的默认行为是：超时切断一条已经吐了两万字思考的流，
+     * 睡个退避，重开一个全新请求，从零再想一遍 —— 而这一层**看不见它扔掉了什么**，
+     * 所以"丢弃"既是它的默认行为，也**不可能被它自己发现**。
+     * 这正是本文档标题「丢弃已累积内容」的结构性根因。
+     *
+     * ## 为什么记在这一层，而不是只靠消费方的 `stream_restart` 统计
+     *
+     * 实测（会话 `20260817-135824-fcf863e1`）：24 次超时重开，消费方只留下 **2** 条记录。
+     * 原因不是漏记，是**竞态** —— 本层要先睡 4.3~5.7s 退避才 `yield stream_restart`，
+     * 而 `loop.ts` 的 watchdog 在 56~163ms 内就把这个生成器杀掉了，那句作废广播
+     * **根本没机会执行**。所以「消费方视角的丢弃量」结构性地只能看到 8%。
+     *
+     * 本计数器记在**退避之前**（与 `retry` 遥测同一位置，实测 24/24 全部落盘），
+     * 与消费方的 `StreamRestart` 事件是**两个视角、互为对照**：
+     * 两者数量对不上，差额就是被 watchdog 抢先杀掉的那些。
+     */
+    const produced = { chars: 0, thinkingChars: 0, thinkingIdx: new Set<number>() };
+    /**
+     * 三个"本次 attempt 的产出状态"必须同生同灭。
+     * 分开重置迟早漏一个 —— 而漏掉的那个会让下一次 attempt 带着上一次的计数，
+     * 是最难查的那种脏数据（本仓「手写清单必漂移」的同型）。
+     */
+    const resetAttemptProduction = (): void => {
+      hasYieldedContent = false;
+      produced.chars = 0;
+      produced.thinkingChars = 0;
+      produced.thinkingIdx.clear();
+    };
     const streamMaxRetries = perCall.maxRetries ?? STREAM_RETRY.maxRetries;
 
     try {
@@ -1114,6 +1148,26 @@ export class ModelFallback {
               hasYieldedContent = true;
             }
 
+            // PR6：在同一处把"产出了多少"也记下来。与上面那个 bool 共用判据、共用重置
+            // （`resetAttemptProduction`），避免两套语义各自漂移。
+            //
+            // 思考块的识别：GLM/DeepSeek 的 `reasoning_content` 在 `openai.ts` 里被转成
+            // `content_block_start{type:"text", _raw_block:{type:"thinking"}}` + text_delta，
+            // 只有 `content_block_stop` 到达后才会被消费方就地转型成 thinking 块 ——
+            // 而流被掐死在思考中途时那个 stop 永远不会来。所以必须在 start 事件上就记住
+            // 「这个 index 是思考」，否则本层永远报不出"丢掉的是思考内容"。
+            if (event.type === "content_block_start") {
+              const rawBlock = (event as { _raw_block?: { type?: string } })._raw_block;
+              if (rawBlock?.type === "thinking" || event.content_block.type === "thinking") {
+                produced.thinkingIdx.add(event.index);
+              }
+            } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              produced.chars += event.delta.text.length;
+              if (produced.thinkingIdx.has(event.index)) {
+                produced.thinkingChars += event.delta.text.length;
+              }
+            }
+
             // PR2：内容进展 → 续命本层定时器（**只重排，不换 controller**，理由见
             // `renewStreamTimeout` 的注释）。放在 `yield event` 之前是刻意的：
             // yield 会把控制权交给消费方，消费方可能慢（渲染/落盘），续命不该等它。
@@ -1217,7 +1271,7 @@ export class ModelFallback {
                 ? { ...params, maxTokens: ctx.maxTokensOverride }
                 : params;
               stream = primaryProvider.sendMessageStream(retryParams, makeCombinedSignal());
-              hasYieldedContent = false;
+              resetAttemptProduction();
               // 不消耗 attempt 预算：retry-once 闸门自带"只一次"上界（needsAuthRefresh
               // 已置位），且不退避——与 CC withRetry 的 401 刷新重试同语义。
               attempt--;
@@ -1528,9 +1582,32 @@ export class ModelFallback {
               error: classified.message,
               phase: "stream",
               reopenReason,
+              // PR6：把"这次重开扔掉了多少已产出内容"钉进同一条遥测。
+              // 放这里而不是放在下面 `yield stream_restart` 旁边，是因为**那行常常执行不到**：
+              // watchdog 会在退避睡眠期间（56~163ms vs 4.3~5.7s）把生成器杀掉。
+              // 这一条在退避**之前**发，实测 24/24 全部落盘。
+              discardedChars: produced.chars,
+              discardedThinkingChars: produced.thinkingChars,
             },
             perCall.agentId,
           );
+
+          // PR6：重试决策**读到**"上一次 attempt 已经产出了多少"这个事实。
+          //
+          // 现状是照旧重试（不改重试策略——那是行为变更，需单独讨论），
+          // 但代价从此是**显式的、可检索的**，而不是像改造前那样连本层自己都不知道。
+          // 这是 Reasonix `retry.go:277`「once the body streams, mid-stream failures are
+          // not retried」那套裁决的前置条件：先让这一层看得见，才谈得上让它做选择。
+          //
+          // ⚠ 零产出的 attempt 一个字都不打印，也照常重试 —— 别把重试关死。
+          if (produced.chars > 0) {
+            log.warn(
+              "FALLBACK",
+              `重开将丢弃本次尝试已产出的 ${produced.chars} 字符` +
+                (produced.thinkingChars > 0 ? `（其中思考 ${produced.thinkingChars} 字符）` : "") +
+                `，模型需从零重新生成（原因=${reopenReason}）`,
+            );
+          }
 
           // S2：睡 `effectiveDelayMs`（已向共享冷却对齐），不是原始 delayMs。
           // 这一行是 S2 从"写了个字段"变成"真的少发一发请求"的落点。
@@ -1574,7 +1651,7 @@ export class ModelFallback {
             signal,
           );
           // 清空内容标志（新流需要重新检测）
-          hasYieldedContent = false;
+          resetAttemptProduction();
         }
       }
     } finally {

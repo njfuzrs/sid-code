@@ -30,6 +30,14 @@ export interface RequestResponsePair {
     _messages_count?: number;
     /** 原始完整 messages（仅内存使用，不写入 raw.jsonl，供 findToolResult 搜索） */
     raw_messages?: unknown[];
+    /**
+     * P1-6：本次请求解析后的思考开关（**内部表示，不是 wire body**）。
+     * 缺席 = 本轮没解析出该旋钮，**不等于**"线上没发 thinking" ——
+     * 把两者混为一谈正是 2026-08-17 那轮排查跑偏的原因，详见 `hook/types.ts`。
+     */
+    thinking?: { enabled: boolean; budgetTokens?: number };
+    /** P1-6：本次请求解析后的推理强度档位（内部表示，注意事项同 `thinking`） */
+    reasoning_effort?: string;
   };
   response: {
     content: unknown[];

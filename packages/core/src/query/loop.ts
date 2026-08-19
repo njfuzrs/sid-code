@@ -1892,6 +1892,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             raw_messages: sendParams.messages,
             system: sendParams.system,
             tools: sendParams.tools,
+            // P1-6：把解析后的推理旋钮一并交给采集器。它们此前完全不在采集范围内，
+            // 而排查 400 时「raw.jsonl 里没有 thinking 字段」被误读成「没下发 thinking」，
+            // 带偏了整整一轮。注意这是**内部表示**，线上形状由各族方言决定（见 hook/types.ts）。
+            ...(sendParams.thinking ? { thinking: sendParams.thinking } : {}),
+            ...(sendParams.reasoningEffort ? { reasoning_effort: sendParams.reasoningEffort } : {}),
           },
           {
             // 发现 1 修复：把 StreamPhase 快照的 key 组件（turnCount + loopId）透传给采集器，

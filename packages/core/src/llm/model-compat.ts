@@ -82,6 +82,21 @@ export interface ModelCompat {
    */
   supportsThinkingToggle?: boolean;
   /**
+   * 该模型是否**恒思考**（服务端不接受关闭思考）。`true` → 请求关思考时
+   * **不下发** `thinking` 字段（等价服务端默认 = 思考开启），而不是发一个必被拒的
+   * `thinking:{type:"disabled"}`。
+   *
+   * 与 `supportsThinkingToggle: false` 的区别是**方向相反**，两者不能互相替代：
+   * 前者是"这家没有思考开关这个概念"（Grok / o-series，两个方向都不发）；
+   * 本字段是"有这个开关、但只能开不能关"（GLM-5.3）。用 `supportsThinkingToggle:false`
+   * 代替本字段会连 `enabled` 也一起不发，丢掉主循环显式开思考的能力。
+   *
+   * 依据：GLM-5.3 实测 400「该模型始终思考，不支持关闭思考」。内置名单见
+   * `dialect/always-thinking.ts`；本字段是**用户对这条渠道的覆盖**，用于网关改名
+   * （`origin-glm-5.3` 之类）导致内置名单匹配不到的情形。
+   */
+  thinkingAlwaysOn?: boolean;
+  /**
    * 是否接受 `max` 这一档 effort。`false` → `max` 钳到 `high`。
    *
    * 依据：Grok 只有 none/low/medium/high（`grok-api.md:30`）、o-series 只有 low/medium/high，
@@ -119,6 +134,7 @@ export interface ModelCompat {
 export const MODEL_COMPAT_KEYS: readonly (keyof ModelCompat)[] = [
   "supportsReasoningEffort",
   "supportsThinkingToggle",
+  "thinkingAlwaysOn",
   "supportsMaxEffort",
   "supportsToolChoice",
   "toolChoiceAutoOnly",
@@ -138,6 +154,7 @@ export const COMPAT_KEY_SET: ReadonlySet<string> = new Set(MODEL_COMPAT_KEYS);
 export const COMPAT_KEY_ALIASES: Record<string, keyof ModelCompat> = {
   supports_reasoning_effort: "supportsReasoningEffort",
   supports_thinking_toggle: "supportsThinkingToggle",
+  thinking_always_on: "thinkingAlwaysOn",
   supports_max_effort: "supportsMaxEffort",
   supports_tool_choice: "supportsToolChoice",
   tool_choice_auto_only: "toolChoiceAutoOnly",

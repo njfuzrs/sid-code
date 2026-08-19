@@ -11,7 +11,7 @@ import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
-import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
+import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { emitTimeoutFired } from "../trace/stream-observer.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
 import { resolveHeaderTimeoutMs } from "../config/network-profile.ts";
@@ -159,9 +159,7 @@ export async function processStream(
         // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
         case "stream_restart": {
           const outcome = resetOnStreamRestart({ content, jsonAccumulators });
-          if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
-            getLogger().warn("AGENT_STREAM", describeStreamRestart(event, outcome));
-          }
+          recordStreamRestart(event, outcome, "subagent");
           break;
         }
 

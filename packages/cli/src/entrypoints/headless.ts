@@ -26,7 +26,7 @@ import { describeToolActivity } from "@sid-code/core/agent/progress.ts";
 import type { ContentBlock, StreamEvent, Usage } from "@sid-code/core/llm/types.ts";
 import { accumulateUsage } from "@sid-code/core/llm/types.ts";
 import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
-import { resetOnStreamRestart, describeStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
+import { resetOnStreamRestart, recordStreamRestart } from "@sid-code/core/llm/stream-restart.ts";
 import { getLogger } from "@sid-code/core/debug/index.ts";
 import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
 import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
@@ -398,9 +398,7 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
       // 无头/评估模式尤其要修：错乱响应会静默污染评估样本，而这里没有人盯着屏幕。
       case "stream_restart": {
         const outcome = resetOnStreamRestart({ content, jsonAccumulators });
-        if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
-          getLogger().warn("STREAM", describeStreamRestart(event, outcome));
-        }
+        recordStreamRestart(event, outcome, "headless");
         break;
       }
 

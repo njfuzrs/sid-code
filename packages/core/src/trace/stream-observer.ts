@@ -367,6 +367,61 @@ export function emitTimeoutRetry(data: {
   }
 }
 
+// ─── StreamRestart 事件（PR4：内容丢弃的唯一度量口径） ───
+
+/**
+ * 记录一次流重开（`stream_restart`）作废掉多少已产出内容。
+ *
+ * ## 为什么必须是**结构化事件**，而不是继续用那条 `log.warn`
+ *
+ * 改造前唯一的留痕是 `stream-processor.ts` 的一行 `log.warn`，且**带条件**
+ * （`discardedBlocks > 0 || discardedTextLength > 0`）。两个后果：
+ *
+ * 1. **没有分母**。零产出的重开一行不记，于是「一共重开了几次」「其中几次真丢了东西」
+ *    都算不出来。本仓铁律：**分母比分子重要** —— 只有分子时，分子变小既可能是
+ *    "丢得少了"，也可能是"重开得少了"，两者修法完全不同。
+ * 2. **离线分析拿不到**。`warn.log` 是非结构化文本，`events.jsonl` 里一个字都没有，
+ *    所以任何基于轨迹的复算（§6.3 的收尾验收）都只能靠 grep 日志行数，
+ *    而那个数字**系统性偏小**（实测一次会话 23 次重开只留 2 行）。
+ *
+ * 本事件**无条件发**（含零丢弃的重开），分母由此成立。日志那行仍然保持有条件 ——
+ * 零丢弃的重开不是"警告"，把它也打成 warn 只会淹掉真正有损失的那几条。
+ *
+ * ## 与 `TimeoutFired` 的分工
+ *
+ * `TimeoutFired` 回答"哪一层闸门开了枪"，本事件回答"那一枪打掉了多少内容"。
+ * 两者按 `index` + 时间戳可以拼起来，正是 §6.3 要求的
+ * 「用新口径确认内容丢弃真的减少」的取数源。
+ */
+export function emitStreamRestart(data: {
+  reason: string;
+  attempt?: number;
+  /** 作废的内容块数 */
+  discarded_blocks: number;
+  /** 作废的字符总数（可见文本 + 思考文本，与旧 `discardedTextLength` 同口径） */
+  discarded_chars: number;
+  /** 其中属于**思考**的字符数（`discarded_chars` 的子集） */
+  discarded_thinking_chars: number;
+  /** 被截断的工具入参 JSON 字符数 —— 改造前完全不可观测 */
+  discarded_tool_json_chars: number;
+  /** 哪个消费者（主循环 / 子代理 / forked / 无头），四条路径各自累加、口径可能不同 */
+  consumer: string;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      const { turnIndex, loopId } = currentSseDumpContext();
+      _eventWriter({
+        event: "StreamRestart",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { index: turnIndex, loop_id: loopId, ...data } as unknown as Record<string, unknown>,
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
 /**
  * 记录超时重试耗尽事件。
  */

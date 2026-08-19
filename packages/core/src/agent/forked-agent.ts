@@ -19,7 +19,7 @@ import type { LegacyTool, PermissionResult } from "../tool/types.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
-import { resetOnStreamRestart, describeStreamRestart } from "../llm/stream-restart.ts";
+import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { ModelAvailabilityService } from "../llm/availability.ts";
@@ -116,9 +116,7 @@ async function accumulate(
       // 与子代理/无头路径同构（按 index 落位 → 重开后残留高位块）。
       case "stream_restart": {
         const outcome = resetOnStreamRestart({ content, jsonAccumulators: partialJson });
-        if (outcome.discardedBlocks > 0 || outcome.discardedTextLength > 0) {
-          getLogger().warn("STREAM", describeStreamRestart(event, outcome));
-        }
+        recordStreamRestart(event, outcome, "forked");
         break;
       }
       case "content_block_start":

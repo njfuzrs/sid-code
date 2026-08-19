@@ -880,6 +880,12 @@ export class TraceCollector {
       new_messages: newMessages,
     };
 
+    // P1-6：推理旋钮**每次请求都记**（不像 system/tools 只记首次）——它是逐轮可变的：
+    // side-call 关思考、主循环开思考、用户中途 `/think off`，都会让同一会话里不同请求
+    // 拿到不同的值。只记首次等于记了一个会漂移的快照，比不记更容易误导。
+    if (req.thinking !== undefined) requestSide.thinking = req.thinking;
+    if (req.reasoning_effort !== undefined) requestSide.reasoning_effort = req.reasoning_effort;
+
     if (index === 1) {
       // 首次请求保存完整数据
       requestSide.system = req.system;
