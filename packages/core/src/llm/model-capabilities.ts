@@ -214,17 +214,77 @@ export function loadCapabilityCache(): void {
  */
 let persistDisabled = false;
 
-/** 落盘（失败静默——缓存是纯优化项）。 */
+/**
+ * 落盘（失败静默——缓存是纯优化项）。
+ *
+ * ⚠ 写盘前**重读一次磁盘并与内存态合并**，因为原子写与丢更新是两件不同的事：
+ * 下面的 `tmp → rename` 防的是「半截文件」，**完全不防「丢更新」**。两个 sid-code
+ * 进程并存时（用户开两个终端、`sc-dev` 与 `sc` 并存、子代理并发），后写的那个会把
+ * 前一个刚采到的条目整份覆盖掉——而轨迹上看两边采集都成功了，于是「明明采到了却
+ * 没生效」变成一个查不出来的问题（方案 §6.2 / D7）。
+ *
+ * 刻意不引 flock / proper-lockfile（opencode 的 models-dev.ts 走的是跨进程锁这条路）：
+ * 能力缓存是纯优化项，为它加一个跨进程锁依赖，代价大于乐观合并残留的那点风险。
+ * 乐观合并的残余窗口只有「重读 → rename」之间（微秒级），且真撞上的后果仅是
+ * 下次 TTL 到期重采一遍，不会产生错数字。
+ */
 function persist(): void {
   if (persistDisabled) return; // 测试态：绝不碰用户真实文件
   try {
     const path = sidPaths.modelCapabilities();
     mkdirSync(dirname(path), { recursive: true });
+
+    // ── per-model 合并：以磁盘为底，本进程内存态覆盖上去 ──
+    // 方向的理由：内存态 = 「启动时读到的磁盘内容」∪「本进程新采到的」，所以对同一个
+    // 键它不可能比磁盘旧；而磁盘上多出来的键只能是别的进程在我们载入之后采的，本进程
+    // 对它一无所知，直接采纳。反方向（磁盘盖内存）会把本次刚采到的结果原地扔掉。
+    const disk = readCacheFile(); // schema 不匹配时返回 null → 退化成整份覆盖，符合预期
+    const models: Record<string, ModelCapabilityEntry> = {};
+    const memKeys = new Set(Object.keys(memModels ?? {}));
+    // 条目数护栏：不设上限的话，一个被篡改成异常大的磁盘文件会被我们合并后又写回去、
+    // 从此自我延续（原来的整份覆盖反而能「治好」它）。只砍磁盘独有键，本进程确实采到
+    // 的键一个不丢。
+    let diskBudget = Math.max(0, MAX_CACHE_ENTRIES - memKeys.size);
+    for (const [key, raw] of Object.entries(disk?.models ?? {})) {
+      const isNewKey = !memKeys.has(key);
+      if (isNewKey && diskBudget <= 0) continue;
+      // 磁盘一律视为不可信（可能被手工改坏、被旧版本写入、被外部工具篡改），走与
+      // loadCapabilityCache 同源的校验——不校验就等于把 Infinity 这类毒数据原样再写回一遍。
+      const clean = sanitizeEntry(raw);
+      if (!clean) continue;
+      if (isNewKey) diskBudget--;
+      models[key] = clean;
+    }
+    for (const [key, mine] of Object.entries(memModels ?? {})) {
+      // 逐字段覆盖而非整条替换：磁盘那条可能带着本进程没采到的字段（别的进程探针/自愈
+      // 学到的），保留它不会丢失任何本进程已知的信息。
+      // 显式 undefined 必须跳过——`{...disk, ...mem}` 会让 mem 里一个显式 undefined
+      // 击穿磁盘上的真实值（把「未知」当成了「已知为空」）。
+      const merged: Record<string, unknown> = { ...(models[key] ?? {}) };
+      for (const [field, value] of Object.entries(mine)) {
+        if (value !== undefined) merged[field] = value;
+      }
+      models[key] = merged as ModelCapabilityEntry;
+    }
+
+    // ── 元数据字段不能逐字段合并 ──
+    // catalog_synced_at / catalog_fail_count 不是 per-model 的，两者共同描述**同一个
+    // 事件**：「上一次外部目录同步发生在何时、结果如何」。各自取 max/min 会拼出一个
+    // 从未发生过的事件——拿我们的失败时刻配上磁盘的 failCount=0，就成了「T 时刻同步
+    // 成功」，于是退避被取消、TTL 又从 T 重新起算，最坏把采集抑制整整一天。
+    // 故按 catalog_synced_at 谁新取谁**整对**（平局或磁盘无值时用内存态）。这个方向的
+    // 失败模式也更安全：多退避一次的代价只是 30min 后多发一次 fire-and-forget 请求。
+    const diskAt = disk?.catalog_synced_at;
+    const useDiskMeta =
+      typeof diskAt === "number" &&
+      Number.isFinite(diskAt) &&
+      (memMeta.syncedAt === undefined || diskAt > memMeta.syncedAt);
+
     const file: CapabilityCacheFile = {
       schema_version: SCHEMA_VERSION,
-      models: memModels ?? {},
-      catalog_synced_at: memMeta.syncedAt,
-      catalog_fail_count: memMeta.failCount,
+      models,
+      catalog_synced_at: useDiskMeta ? diskAt : memMeta.syncedAt,
+      catalog_fail_count: useDiskMeta ? disk?.catalog_fail_count : memMeta.failCount,
     };
     // 原子写：先写临时文件再 rename，避免进程在 writeFileSync 中途被杀导致
     // 半截 JSON 落盘（下次启动 JSON.parse 失败 → 整份缓存作废、退回兜底）。
@@ -850,6 +910,30 @@ export function __resetCapabilityCacheForTest(seed?: Record<string, ModelCapabil
 /** 读当前内存态（仅测试/诊断用）。 */
 export function __getCapabilityCacheForTest(): Record<string, ModelCapabilityEntry> {
   return { ...(memModels ?? {}) };
+}
+
+/**
+ * 重新打开写盘并（可选）注入目录同步元数据 —— **仅测试用**。
+ *
+ * ⚠⚠ 调用它之前**必须**先把 `SID_CONFIG_DIR` 指到临时目录。
+ * `persistDisabled` 是单向开关（`__resetCapabilityCacheForTest` 只会置位、永不复位），
+ * 那是为了兜住「曾把 2919 条真实数据抹成 1 条」那次事故。但正因为单向，persist() 的
+ * 写盘合并语义在测试里根本走不到——D7 并发写合并没有它就无法验证。
+ * 用完在 afterEach 调 `__resetCapabilityCacheForTest()` 即可复位（它会重新置位）。
+ */
+export function __enablePersistForTest(meta?: { syncedAt?: number; failCount?: number }): void {
+  persistDisabled = false;
+  if (meta) memMeta = { ...meta };
+}
+
+/**
+ * 直接触发一次落盘 —— **仅测试用**，且必须先调 `__enablePersistForTest`。
+ *
+ * 为什么不借生产入口（recordEffortRejected / syncExternalCatalogs）触发：前者会顺手把
+ * `effortValues` 改成 `[]`，后者要触网。两者都会把「合并语义」这个被测对象搅进无关变量里。
+ */
+export function __persistForTest(): void {
+  persist();
 }
 
 /**
