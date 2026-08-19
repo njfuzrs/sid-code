@@ -396,6 +396,25 @@ describe("CONTRIBUTING 对 workflow 触发条件的断言不漂移", () => {
     expect(CONTRIBUTING).toContain("PR_TITLE");
   });
 
+  // ⚠️ 这条锁的是一处**已经写错过一次**的表述：strict 必需检查策略被写成
+  // 「保证 CI 跑的是合并后的内容」——那是合并队列的能力，strict 做不到。
+  // 两个 PR 都通过 strict 后先后合入时，后合那个的 CI 结论仍然是合并前的。
+  // 把 strict 当队列的替代品会让人放心地并行开多路，而语义冲突在本仓
+  // **没有合并前的机制对策**（队列在个人账户仓库开不了，422）。
+  // 失效形态是**假安全**：什么都不会红，直到某次合起来炸在 main 上。
+  test("不得声称 strict 策略等价于合并队列（它保证不了「合并后的内容」）", () => {
+    expect(CONTRIBUTING).not.toMatch(/strict[^\n]*保证 CI 跑的是合并后的内容/);
+    // 正向：必须写明两者不等价
+    expect(CONTRIBUTING).toMatch(/strict 不等价于队列/);
+  });
+
+  test("ci.yml 里的 merge_group 注释必须说明它当前开不了（否则读者以为队列在生效）", () => {
+    // 本 describe 的作用域里没有 CI 常量（它在上一个 describe 里），就地读。
+    const ci = readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8");
+    expect(ci).toMatch(/本仓目前开不了队列/);
+    expect(ci).toContain("Invalid rule 'merge_queue'");
+  });
+
   // 新拆分判据（2026-08-19）：旧规则「互不依赖的缺陷各自一个 PR」被读成「必须各自一个」，
   // 实测在 11 个缺陷的方案上产出 13 个 PR。这条锁住旧措辞不回来。
   test("拆分判据已换成「可独立上线/回滚/一次 review」，旧措辞不得复现", () => {
