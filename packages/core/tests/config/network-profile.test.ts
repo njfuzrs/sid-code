@@ -161,9 +161,14 @@ describe("resolveProviderStreamTimeouts — provider 流式看门狗（配置-3 
   test("无覆盖 → 全部取统一默认值（不按模型分档）", () => {
     const t = resolveProviderStreamTimeouts({ providerKind: "openai" });
     expect(t).toEqual({ ...PROVIDER_STREAM_DEFAULTS });
-    // 回归保护：不再有 deepseek(180/300) vs default(90/120) 的分档，一律取够宽的 300s
-    expect(t.idleTimeoutMs).toBe(300_000);
-    expect(t.contentProgressTimeoutMs).toBe(300_000);
+    // 回归保护：不再有 deepseek(180/300) vs default(90/120) 的分档，一律取一套够宽的值。
+    //
+    // PR10 后这里**不再钉具体数字**：档① 240s / 档② 480s 的取值归
+    // `tests/config/timeout-ladder-sentinel.test.ts` 管（它同时钉数值阶梯与谓词阶梯）。
+    // 两处都钉同一个字面量，只会在调档时同时红两处、其中一处的注释还落后于事实。
+    // 本用例要守的是"不分档"这个不变量，所以断言形态改成：档① < 档②、且都足够宽。
+    expect(t.idleTimeoutMs).toBeLessThan(t.contentProgressTimeoutMs);
+    expect(t.idleTimeoutMs).toBeGreaterThanOrEqual(180_000);
   });
 
   test("openai idle / content-progress env 覆盖", () => {

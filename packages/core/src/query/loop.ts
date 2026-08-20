@@ -26,6 +26,7 @@ import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
+import { takeLastRequestId } from "../api/request-id.ts";
 import { resolveWireModel } from "../llm/wire-model.ts";
 import { resolveLoopTimeouts, computeBackoffMs } from "../config/network-profile.ts";
 import {
@@ -2377,8 +2378,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               const noProgressMs =
                 Date.now() - lastProgressAt - humanInputPauseAccumMs - sleepPauseAccumMs;
               // ─── P2：静默期半程告警（借鉴 claude-code STREAM_IDLE_WARNING_MS）───
-              // 阈值本身不动（保活优先，见 network-profile.ts:58-62 的多 provider 立场），
-              // 但 300s 全程零信号会让用户以为"卡死了/自己停了"。半程先落一条 warn +
+              // 阈值本身不动（保活优先，见 network-profile.ts DEFAULTS 的多 provider 立场），
+              // 但整个静默期零信号会让用户以为"卡死了/自己停了"（阈值越宽这点越明显 ——
+              // PR10 把它从 300s 抬到 720s 之后，半程告警比改造前更有必要）。半程先落一条 warn +
               // 给 UI 一个可见提示，把"还在等"与"已经死"区分开。只报一次，避免刷屏。
               if (
                 !streamIdleWarned &&
@@ -3024,6 +3026,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             ttft_ms: ttftMs,
             provider: config.provider, // T12.3：Provider 维度标记
             base_url: config.baseURL, // 端点维度：区分同模型不同渠道，便于排查 + 重算精确计费
+            // P2-6：取走 provider 侧暂存的网关请求标识（读一次即清，见 api/request-id.ts）。
+            // 取走时机必须是**本轮组装 AfterModel 时**：早了拿不到（响应头还没来），
+            // 晚了会被下一轮的请求覆盖。
+            gateway_request_id: takeLastRequestId(),
           },
         );
         if (afterModelResult.finalOutput?.isBlockingDecision()) {

@@ -403,6 +403,15 @@ export interface AfterModelInput extends HookInput {
     /** 端点维度：本次请求实际走的 base_url，区分同模型不同渠道（如公司网关 vs 官方），
      *  供轨迹排查 + cost-recompute 按 (model, endpoint) 复合键精确重算成本。 */
     base_url?: string;
+    /**
+     * P2-6：网关下发的请求标识（`{ header, value }`），供怀疑"网关在排队/限流/丢包"时
+     * 拿去找网关方核对**具体是哪一次请求**。
+     *
+     * 头名必须与值一起留：本仓两族网关的头名不同（`x-oneapi-request-id` /
+     * `x-shellapi-request-id`），只留值就分不清该找哪一方对账。
+     * 缺席 = 该端点没下发这类头（合法情况，不要填空串）。
+     */
+    gateway_request_id?: { header: string; value: string };
   };
 
   // ── Harness 扩展点 ──

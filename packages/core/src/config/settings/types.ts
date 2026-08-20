@@ -168,6 +168,23 @@ const NetworkTimeoutsSchema = lazySchema(() =>
       maxRetriesPerCall: z.number().nonnegative().optional(),
       retryBackoffBaseMs: z.number().nonnegative().optional(),
       retryBackoffMaxMs: z.number().positive().optional(),
+      // ── Provider 层流式三档 + 冗余第四层（P0-4）──
+      //
+      // 这四项此前**只认 env**（network-profile.ts 的 resolveProviderStreamTimeouts），
+      // schema 里没有字段位 → 用户改 settings.json 完全调不动，包括本次咬人的
+      // fetchAbsoluteTimeoutMs。属"有生产调用方、但用户侧没有入口"的伪配置变体
+      // （memory: hardcoded-60s-heartbeat-kills-slow-first-byte 记的是同型教训）。
+      /** 档①字节级 idle：reader 收不到任何字节的上限 */
+      idleTimeoutMs: z.number().positive().optional(),
+      /** 档②事件级无进展：有字节但无有效内容的上限（keep-alive 不续命） */
+      contentProgressTimeoutMs: z.number().positive().optional(),
+      // nonnegative 而非 positive：**0 = 显式关闭**这层 fetch 绝对硬顶（默认即关闭，
+      // 见 network-profile.ts 该字段注释）。settings.json 里 undefined 与 0 都表示关闭，
+      // 但两者语义不同：省略 = 用默认（关），写 0 = 我明确要它关。用 positive 会让
+      // 显式写 0 的配置被 Zod 拒掉，用户只剩"删掉这一行"一种表达方式。
+      fetchAbsoluteTimeoutMs: z.number().nonnegative().optional(),
+      /** ②的请求级软兜底（lifecycle Layer 3，不因事件重置） */
+      overallTimeoutMs: z.number().positive().optional(),
     })
     .passthrough(),
 );

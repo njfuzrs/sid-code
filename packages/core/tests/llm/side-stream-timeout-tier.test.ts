@@ -53,11 +53,17 @@ describe("P2-6 · 子代理路径缺省流超时取 overall 档而非 idle 档",
     expect(resolveSideStreamTimeoutMs(0)).toBe(0);
   });
 
-  test("主循环路径仍为 300s（不得回归）", () => {
+  test("主循环路径显式注入值原样透传（不得回归）", () => {
     // 主循环走 app.ts 显式注入 `fallbackNetTimeouts.watchdogNoProgressMs`，
-    // 不吃本文件这个缺省。断言注入源的量级未被本次改动带偏。
-    expect(NETWORK_DEFAULTS.watchdogNoProgressMs).toBe(300_000);
-    expect(resolveSideStreamTimeoutMs(NETWORK_DEFAULTS.watchdogNoProgressMs)).toBe(300_000);
+    // 不吃本文件这个缺省。断言注入值被原样采用、没被缺省档盖掉。
+    //
+    // PR10 把 watchdogNoProgressMs 从 300s 抬到 720s（档② 放宽的连带项，
+    // 理由见 network-profile.ts 的 DEFAULTS 注释）。所以这里**不再钉具体数字** ——
+    // 数值归 `tests/config/timeout-ladder-sentinel.test.ts` 管，本用例只钉
+    // "显式注入 → 原样生效"这个透传关系（那才是本文件要守的不变量）。
+    expect(resolveSideStreamTimeoutMs(NETWORK_DEFAULTS.watchdogNoProgressMs)).toBe(
+      NETWORK_DEFAULTS.watchdogNoProgressMs,
+    );
     // 三档相对关系：子代理该比主循环短，但不该短到误杀。
     expect(DEFAULT_SIDE_STREAM_TIMEOUT_MS).toBeLessThan(NETWORK_DEFAULTS.watchdogNoProgressMs);
   });

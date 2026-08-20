@@ -19,6 +19,7 @@ import type { SendParams, StreamEvent, ContentBlock, Usage, AccumulatedResponse 
 import { getLogger } from "../debug/logger.ts";
 import { generateClientRequestId } from "../api/api-log.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
+import { recordRequestId } from "../api/request-id.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -307,6 +308,9 @@ export class AnthropicProvider implements Provider {
       // 从 response headers 提取速率限制状态
       try {
         updateRateLimitStatus(response.headers);
+        // P2-6：网关请求标识（三条 provider 路径同口径）。实测 anthropic 族两个网关
+        // 分别下发 x-oneapi-request-id（uniapi）/ x-shellapi-request-id（ppchat）。
+        recordRequestId(response.headers);
       } catch {
         /* headers 提取失败不影响主流程 */
       }

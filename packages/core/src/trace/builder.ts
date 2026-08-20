@@ -48,6 +48,14 @@ export interface RequestResponsePair {
       cache_read_input_tokens: number;
       cache_creation_input_tokens: number;
     };
+    /**
+     * P2-6：网关下发的请求标识（`raw.jsonl` 此前**一个响应头都不留**，见 §4.1）。
+     *
+     * 形状是 `{ header, value }` 而非裸字符串：本仓两族网关头名不同
+     * （`x-oneapi-request-id` / `x-shellapi-request-id`），只留值就分不清
+     * 该拿它找哪一方对账。缺席 = 该端点未下发此类头。
+     */
+    gateway_request_id?: { header: string; value: string };
   };
   usage: {
     input_tokens: number;

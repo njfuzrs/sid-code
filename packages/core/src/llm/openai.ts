@@ -52,11 +52,18 @@ import {
 import { extractHTTPStatus } from "../api/error-utils.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
+import { recordRequestId } from "../api/request-id.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { getKeepAliveFetchOptions } from "./keepalive.ts";
 import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
+// PR9：parseSSE 的字节级判据（idle timer / contentElapsed）统一扣除休眠。
+import {
+  createSleepAwareDeadline,
+  startSleepObserver,
+  getSleepLedger,
+} from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   resolveHeaderTimeoutMs,
   resolveProviderStreamTimeouts,
@@ -933,26 +940,36 @@ export class OpenAIProvider implements Provider {
       }, headerTimeoutMs);
       // 注意：不调 unref()。fdb47f30 的教训正是 fallback 的整体超时定时器 unref 后
       // 在 hang 场景疑似未按时 fire；响应头超时是关键防线，宁可让它保持进程活跃。
-      // T1.2：fetch 兜底硬超时。header timeout 是"等响应头"的第一道防线，
-      // 但一旦响应头已到、SSE 流进入半开 TCP 且底层 reader 永不 settle 时，header timeout
-      // 已被 clearTimeout 释放，不再保护。这里用 AbortSignal.timeout 给整个 fetch
-      // 生命周期加一个绝对上限——即便 SSE 流 hang，超时后底层 fetch 也会被 runtime abort，
-      // 让 reader.read() 以 AbortError settle，打破 hang。与 header timeout 独立并存。
-      // 配置-3：阈值走 network-profile 统一解析（与 headerTimeoutMs 同值），
-      // 不再是独立字面量 300_000（原"改一个不改另一个"的隐患）。
+      // ── fetch 绝对硬顶：**默认不装**（P0-3，2026-08-18 改向）──
+      //
+      // 原注释的理由是"响应头已到、SSE 进半开、reader 永不 settle 时 header timeout
+      // 已被 clearTimeout 释放，需要一个绝对上限打破 hang"。这个 hang 确实存在，
+      // 但**用绝对计时器去打破它是错的工具**：
+      //   ① 半开时正是「零字节到达」，那是 parseSSE 字节级 idle 闸门（本文件
+      //      IDLE_TIMEOUT_MS，档①）的领地，且它的归因是 `idle_timeout`
+      //      —— 说得出是哪一层、哪个阈值、收了多少 chunk；
+      //   ② 任何未知挂起根因的兜底是 `maxTurnDurationMs`（档③，query/loop.ts 有生产调用方）。
+      // 而 `AbortSignal.timeout` 的语义是**整个 fetch 生命周期的绝对上限**，
+      // 它不关心 body 是否还在正常产出 —— 实测（tests/llm/fetch-absolute-timeout-cuts-progressing-stream.test.ts）
+      // 一条每 200ms 稳定产出 chunk 的健康流照样被它掐断，且抛出的
+      // DOMException("TimeoutError") 由 runtime 发出、**不带可归因 reason**、
+      // **不经 emitTimeoutFired**（轨迹里查不到是它开的枪）。
+      //
+      // 所以默认 undefined = 不装这个 signal，仅在用户显式配置
+      // （SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS / settings.json 的 network.fetchAbsoluteTimeoutMs）
+      // 时启用。配置入口保留而非删代码：与 loop-detection / maxSessionDurationMs 的
+      // 既有范式一致（翻默认值、留旋钮）。一旦开启，归因必须是对的 —— 所以
+      // classifyError 仍把 TimeoutError 归成 RetryableError("timeout")（见 llm/errors.ts）。
+      //
       // 一次解析，fetch 硬顶与下方 lifecycle overall 复用。
       const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
       const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
-      const fetchSignal = signal
-        ? AbortSignal.any([
-            signal,
-            headerTimeoutCtl.signal,
-            AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
-          ])
-        : AbortSignal.any([
-            headerTimeoutCtl.signal,
-            AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
-          ]);
+      const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
+      if (signal) fetchSignals.unshift(signal);
+      if (FETCH_ABSOLUTE_TIMEOUT_MS !== undefined) {
+        fetchSignals.push(AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS));
+      }
+      const fetchSignal = AbortSignal.any(fetchSignals);
 
       let response: Response;
       // 缺口 1：记录 fetch 发出阶段
@@ -1021,6 +1038,9 @@ export class OpenAIProvider implements Provider {
       // G8：提取 OpenAI 系 rate-limit header（此前只有 anthropic.ts 提取，OpenAI-wire
       // provider 限流状态永远显示 ok）。extractRateLimitFromHeaders 已兼容 x-ratelimit-*。
       updateRateLimitStatus(response.headers);
+      // P2-6：留网关请求标识，供 raw.jsonl 落盘后拿去找网关方核对具体是哪次请求
+      // （实测本仓两族网关分别下发 x-oneapi-request-id / x-shellapi-request-id）。
+      recordRequestId(response.headers);
       // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码、Content-Type 和 TTFB）
       const ttfbMs = Date.now() - requestStartTime;
       const contentType = response.headers.get("content-type") ?? undefined;
@@ -1338,16 +1358,18 @@ export class OpenAIProvider implements Provider {
       headerTimeoutCtl.abort();
     }, headerTimeoutMs);
 
-    // fetch 绝对上限兜底（配置-3：走 network-profile 统一解析，Responses 路径与 overall 复用）
+    // fetch 绝对上限兜底：**默认不装**（P0-3，理由见 Chat Completions 路径同名段落的长注释）。
+    // 本路径的 idle 覆盖来自 lifecycle 的 idleTimeoutMs（档①，见下方 createStreamLifecycle
+    // 的 idleTimeoutMs），不依赖这层 fetch 硬顶 —— 该路径的解析器
+    // （parseResponsesStream → readSSEEvents）里一个定时器都没有，所以事件级 idle 就是它的档①。
     const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
     const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
-    const fetchSignal = signal
-      ? AbortSignal.any([
-          signal,
-          headerTimeoutCtl.signal,
-          AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS),
-        ])
-      : AbortSignal.any([headerTimeoutCtl.signal, AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS)]);
+    const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
+    if (signal) fetchSignals.unshift(signal);
+    if (FETCH_ABSOLUTE_TIMEOUT_MS !== undefined) {
+      fetchSignals.push(AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS));
+    }
+    const fetchSignal = AbortSignal.any(fetchSignals);
 
     let response: Response;
     emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel });
@@ -1384,6 +1406,8 @@ export class OpenAIProvider implements Provider {
     emitHttpConnected(obsIndex, { status: response.status, model: attrModel });
     // G8：Responses API 路径同样提取 rate-limit header
     updateRateLimitStatus(response.headers);
+    // P2-6：网关请求标识（同 Chat Completions 路径）
+    recordRequestId(response.headers);
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
@@ -1852,6 +1876,21 @@ export class OpenAIProvider implements Provider {
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const requestStartAt = Date.now();
     let lastContentProgressAt = Date.now();
+    /**
+     * PR9：`lastContentProgressAt` 那一刻的休眠账本读数。
+     *
+     * 两个变量必须成对更新（`markContentProgress()` 是唯一入口），否则扣减会算错方向：
+     * 账本是**进程级累计值**，只记起点不更新 → 之后每次核对都把这次进展之前的历史休眠
+     * 又减一遍，越睡越"欠"，判据永远到不了点（把误杀换成漏杀，一样是缺陷）。
+     */
+    let sleepAtLastProgress = getSleepLedger().getTotalMs();
+    const markContentProgress = () => {
+      lastContentProgressAt = Date.now();
+      sleepAtLastProgress = getSleepLedger().getTotalMs();
+    };
+    // 休眠观测器：本函数内的字节级判据依赖账本，账本要有人来记
+    // （一次性 setTimeout 自己观测不到休眠，理由见 sleep-detect.ts 的 startSleepObserver）。
+    const releaseSleepObserver = startSleepObserver();
     /** 诊断日志：SID_CODE_DEBUG_SSE=1 启用，打印关键事件到 stderr */
     const debugSse = process.env.SID_CODE_DEBUG_SSE === "1";
     const dbg = (msg: string) => {
@@ -1876,8 +1915,10 @@ export class OpenAIProvider implements Provider {
     //   - idle：N 秒内 reader 无任何 chunk → 断开（半开 TCP 兜底）
     //   - content progress：即使 reader 持续 settle（空行/ping），无有效内容进展也超时中断
     // 不再按 /deepseek/i 分档（原 90/180s、120/300s 违反 network-profile 顶部原则，
-    // 且非 deepseek 慢模型 qwen/kimi/glm 长文会被偏紧的 90s 误杀）。统一取够宽的默认值
-    // （300s），env 覆盖保留：SID_CODE_IDLE_TIMEOUT_MS / SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS。
+    // 且非 deepseek 慢模型 qwen/kimi/glm 长文会被偏紧的 90s 误杀）。统一取一套够宽的默认值。
+    // 覆盖顺序 env > settings.network > 默认（PR10：此前 settings 那层不存在，四项是伪配置）。
+    // 具体取值见 network-profile.ts 的档①/档② 注释 —— 这里刻意不重复数字，
+    // 免得注释与唯一真相源各说一套。
     const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
     const IDLE_TIMEOUT_MS = streamTimeouts.idleTimeoutMs;
     const CONTENT_PROGRESS_TIMEOUT_MS = streamTimeouts.contentProgressTimeoutMs;
@@ -1886,7 +1927,13 @@ export class OpenAIProvider implements Provider {
     const STALL_LOG_MS = 30_000;
     let stallEmitted = false; // 缺口 1：每次流只发一次 StreamStall 事件（避免 events.jsonl 膨胀）
     const stallLogger = setInterval(() => {
-      const elapsed = Date.now() - lastContentProgressAt;
+      // PR9：stall 口径同样扣休眠。它只记不杀，但记错了一样有害 ——
+      // 一次长休眠会让 events.jsonl 里凭空多出一条"无进展 281s"的 StreamStall，
+      // 而那 281s 机器根本没在跑。排查的人拿它当卡死证据就会追错方向。
+      const elapsed =
+        Date.now() -
+        lastContentProgressAt -
+        Math.max(0, getSleepLedger().getTotalMs() - sleepAtLastProgress);
       // P0-1：**无条件**每 tick 写一次快照，不再被 `elapsed >= STALL_LOG_MS` 门控。
       //
       // 原写法把「要不要告警」与「要不要更新快照」压在同一个 if 里，后果是一条
@@ -1951,33 +1998,61 @@ export class OpenAIProvider implements Provider {
         let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
         // 缺口 2 进阶：idle 超时 fire 后武装未生效检查；race settle 时 disarm。
         let disarmIdleIneffective: (() => void) | null = null;
+        // PR9：本次 read 的休眠感知窗口（每次 read 新建一个 —— 字节级 idle 的语义就是
+        // "这一次 read 挂起了多久"）。回调里必须二次核对：休眠后 setTimeout 会被
+        // 唤醒即补发，"fire 了"≠"真过了 IDLE_TIMEOUT_MS"。
+        const readDeadline = createSleepAwareDeadline(IDLE_TIMEOUT_MS);
+        // idle 真到点时的开枪动作。抽成闭包（不是 function 声明——那会丢掉 `this`）：
+        // 让"休眠补发→重排"与"真到点→开枪"两条分支共用同一份 log/emit/reject 代码，
+        // 避免两份副本各自演化成"改一处漏一处"。
+        const fireIdleTimeout = (reject: (e: Error) => void) => {
+          // 升 warn：debug:false 下经 logger 的 ERROR/WARN→stderr 兜底留痕（见 logger.ts log()）。
+          // 空闲超时是关键异常信号，事故复盘必须可见，不能只靠 SID_CODE_DEBUG_SSE 开关。
+          getLogger().warn(
+            "SSE",
+            `空闲超时 ${IDLE_TIMEOUT_MS / 1000}s 无 chunk（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
+          );
+          // 缺口 2：记录 idle 超时触发
+          emitTimeoutFired(parseObsIndex, "idle_timeout", {
+            threshold_ms: IDLE_TIMEOUT_MS,
+            chunks: totalChunks,
+            empty_chunks: emptyChunks,
+            model: this._model,
+          });
+          // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
+          disarmIdleIneffective = armIneffectiveCheck(
+            parseObsIndex,
+            "idle_timeout",
+            "read_race_not_settled_after_5s",
+          );
+          reject(
+            new Error(
+              `SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`,
+            ),
+          );
+        };
         const timeoutPromise = new Promise<never>((_resolve, reject) => {
-          timeoutId = setTimeout(() => {
-            // 升 warn：debug:false 下经 logger 的 ERROR/WARN→stderr 兜底留痕（见 logger.ts log()）。
-            // 空闲超时是关键异常信号，事故复盘必须可见，不能只靠 SID_CODE_DEBUG_SSE 开关。
-            getLogger().warn(
-              "SSE",
-              `空闲超时 ${IDLE_TIMEOUT_MS / 1000}s 无 chunk（chunks=${totalChunks} empty=${emptyChunks}），中断流`,
-            );
-            // 缺口 2：记录 idle 超时触发
-            emitTimeoutFired(parseObsIndex, "idle_timeout", {
-              threshold_ms: IDLE_TIMEOUT_MS,
-              chunks: totalChunks,
-              empty_chunks: emptyChunks,
-              model: this._model,
-            });
-            // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
-            disarmIdleIneffective = armIneffectiveCheck(
-              parseObsIndex,
-              "idle_timeout",
-              "read_race_not_settled_after_5s",
-            );
-            reject(
-              new Error(
-                `SSE 流空闲超时：${IDLE_TIMEOUT_MS / 1000} 秒无 chunk chunks=${totalChunks} empty=${emptyChunks}`,
-              ),
-            );
-          }, IDLE_TIMEOUT_MS);
+          const armRead = (delayMs: number) => {
+            timeoutId = setTimeout(() => {
+              const remaining = readDeadline.remainingMs();
+              if (remaining > 0) {
+                getLogger().warn(
+                  "SSE",
+                  `idle 定时器被休眠补发（已剔除 ${(readDeadline.sleepMs() / 1000).toFixed(0)}s），` +
+                    `距真正到期还有 ${(remaining / 1000).toFixed(0)}s，重排而非中断`,
+                );
+                armRead(remaining);
+                // cancel 定时器同步顺延，否则它会在 reject 之前把 reader 关掉。
+                if (cancelTimeoutId !== null) clearTimeout(cancelTimeoutId);
+                cancelTimeoutId = setTimeout(() => {
+                  reader.cancel().catch(() => {});
+                }, remaining + 100);
+                return;
+              }
+              fireIdleTimeout(reject);
+            }, delayMs);
+          };
+          armRead(IDLE_TIMEOUT_MS);
           // 超时后 cancel reader，释放底层 TCP 连接（+100ms 确保 reject 先传播）
           cancelTimeoutId = setTimeout(() => {
             reader.cancel().catch(() => {});
@@ -2009,7 +2084,7 @@ export class OpenAIProvider implements Provider {
 
           const data = line.slice(6);
           if (data === "[DONE]") {
-            lastContentProgressAt = Date.now();
+            markContentProgress();
             dbg(
               `[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`,
             );
@@ -2100,7 +2175,7 @@ export class OpenAIProvider implements Provider {
             const hasReasoning =
               typeof delta?.reasoning_content === "string" && delta.reasoning_content.length > 0;
             if (hasContent || hasToolCalls || hasReasoning || finishReason) {
-              lastContentProgressAt = Date.now();
+              markContentProgress();
             } else {
               emptyChunks++;
             }
@@ -2171,7 +2246,7 @@ export class OpenAIProvider implements Provider {
                 index: textBlockIndex,
                 delta: { type: "text_delta", text: delta.refusal },
               };
-              lastContentProgressAt = Date.now();
+              markContentProgress();
             }
 
             // 工具调用（支持多个并行）
@@ -2311,7 +2386,13 @@ export class OpenAIProvider implements Provider {
 
         // Fix 2: content progress timeout — 每次 reader.read() settle 后检查
         // 即使 TCP 层有字节到达（空行/ping），只要无有效内容进展就超时中断
-        const contentElapsed = Date.now() - lastContentProgressAt;
+        //
+        // PR9：扣除休眠。本处是**同步核对**（不是定时器回调），所以不存在"补发的一枪"，
+        // 但挂钟差值同样会把休眠算进去 —— 一次 281s 的休眠足以让一条真实无进展 3.4s 的
+        // 健康流在这里被判超时。判据统一成 `now - start - sleepPause`，与
+        // loop.ts 的 businessElapsedMs 同口径。
+        const sleptSinceProgress = Math.max(0, getSleepLedger().getTotalMs() - sleepAtLastProgress);
+        const contentElapsed = Date.now() - lastContentProgressAt - sleptSinceProgress;
         if (contentElapsed >= CONTENT_PROGRESS_TIMEOUT_MS) {
           getLogger().warn(
             "SSE",
@@ -2330,6 +2411,8 @@ export class OpenAIProvider implements Provider {
       }
     } finally {
       clearInterval(stallLogger);
+      // PR9：释放休眠观测器引用（引用计数归零才真的停 interval）。
+      releaseSleepObserver();
       chunkDumper.flush(); // 5.2：流结束（正常/异常/取消）都 flush 采样
       // 清理 signal listener，避免 Promise 泄漏
       if (signal && signalAbortHandler) {

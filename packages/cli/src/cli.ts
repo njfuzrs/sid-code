@@ -23,7 +23,7 @@ import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
-import { isAbortError } from "@sid-code/core/llm/errors.ts";
+import { isAbortError, isRuntimeTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
 import {
   LANGUAGE_PREFS,
@@ -919,6 +919,24 @@ function registerGlobalErrorHandlers(): void {
       return;
     }
 
+    // P0-3 连带：runtime 级超时（`AbortSignal.timeout` 抛的
+    // DOMException("TimeoutError")）也是"内部自愈机制的自我中断"，不是真故障。
+    //
+    // 为什么它没被上面那句兜住：`isAbortError` 刻意**不认** TimeoutError
+    // （它不是用户取消，不该被当成取消而静默吞掉），而两个 abort reason 白名单
+    // 也管不到它 —— 白名单认的是 `abort("字符串reason")` 冒泡出的裸字符串，
+    // 而 `AbortSignal.timeout` 的 reason 是个 DOMException 对象。
+    // 于是它此前会一路走到下面 `process.exit(1)`：一次可自愈的本地超时把整个进程杀掉，
+    // 与 memory `esc-abort-reason-crash-coupling` 记的是同型缺陷
+    // （新增 abort 通道未登记 → 要么崩溃、要么被误判为用户取消）。
+    //
+    // 该硬顶现已默认关闭，但用户可显式开启（network.fetchAbsoluteTimeoutMs），
+    // 所以这条兜底必须在。仅记录、不退出 —— 真正的重试决策由
+    // `classifyError` 归的 RetryableError("timeout") 在 fallback 层完成。
+    if (isRuntimeTimeoutError(reason)) {
+      return;
+    }
+
     process.stderr.write(`[sid-code] unhandledRejection: ${msg}\n`);
     if (stack) process.stderr.write(`${stack}\n`);
     // 非 abort 的未处理拒绝：保留原有兜底（紧急 SessionEnd + 退出）
@@ -945,6 +963,11 @@ function registerGlobalErrorHandlers(): void {
     // 携带裸 reason 字符串（如 "user-cancel"）。此前缺 isAbortError 短路 →
     // 这些路径仍会 process.exit(1) 崩溃。这里补齐，保持两个全局处理器一致。
     if (isAbortError(err)) {
+      return;
+    }
+
+    // P0-3 连带：与 unhandledRejection 对称（理由见那边的长注释）。
+    if (isRuntimeTimeoutError(err)) {
       return;
     }
 

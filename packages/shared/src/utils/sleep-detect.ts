@@ -136,6 +136,143 @@ export function getSleepLedger(): SleepLedger {
 /** 重置全局账本（仅测试用） */
 export function __resetSleepLedgerForTest(): void {
   ledger.reset();
+  __stopSleepObserverForTest();
+}
+
+// ─── 休眠观测器（P0-6：让流式路径也能拿到休眠账本） ───
+
+/**
+ * 观测器 tick 间隔。与 loop.ts 的 watchdog 同量级（5s）：
+ * 判据 `isSleepGap(actual, 5000)` = 迟到超过 max(50s, 30s) 才算休眠，
+ * 因此它能识别的最短休眠约 50s —— 远小于实测最短真实休眠（900s+），
+ * 也远大于任何正常调度抖动。
+ */
+const SLEEP_OBSERVER_INTERVAL_MS = 5_000;
+
+let observerTimer: ReturnType<typeof setInterval> | null = null;
+let observerRefs = 0;
+let observerLastTickAt = 0;
+
+/**
+ * 启动进程级休眠观测器（引用计数），返回 release 函数。
+ *
+ * ## 为什么流式路径需要它（2026-08-18，P0-6）
+ *
+ * 休眠扣减此前是 `query/loop.ts` 的局部能力：只有它的 `setInterval` 在每 tick
+ * 比对挂钟、把跳跃记进账本。流式各层（`fallback.ts` 的流超时、`stream-lifecycle`
+ * 三层、`openai.ts` parseSSE 的字节级检查）用的都是**一次性 setTimeout**，
+ * 既不观测休眠、也无处可查 —— 于是同一时刻两套判据结论相反：轨迹实证一次
+ * `sleep_ms ≈ 281s` 的休眠让 fallback 杀掉了一条**真实无进展仅 3.4 秒**的健康流，
+ * 而同一时刻 loop 的 watchdog（扣了休眠）判定正常。
+ *
+ * 为什么不让各层自己用比率判据自测：一次性定时器的 expected 就是它自己的阈值
+ * （如 300s），`isSleepGap(actual, 300_000)` 要求迟到超过 3000s 才命中 ——
+ * 对 281s 的休眠**恒为 false**。判据必须来自一个 tick 间隔足够短的观测者，
+ * 这正是本观测器存在的理由（也是它必须独立于任何一层阈值的理由）。
+ *
+ * 引用计数而非每层各起一个：休眠是进程级物理事件，一个观测者足够，
+ * 且账本 `record()` 天然去重（同一段休眠只被最先醒来的 tick 记一次）。
+ */
+export function startSleepObserver(): () => void {
+  observerRefs += 1;
+  if (observerTimer === null) {
+    observerLastTickAt = Date.now();
+    observerTimer = setInterval(() => {
+      const now = Date.now();
+      const actual = now - observerLastTickAt;
+      observerLastTickAt = now;
+      ledger.record(actual, SLEEP_OBSERVER_INTERVAL_MS);
+    }, SLEEP_OBSERVER_INTERVAL_MS);
+    // unref：本观测器纯观测、不保护任何动作，绝不该因为它而阻止进程退出。
+    // 与 loop.ts 那个「宁可持有事件循环也要保证 fire」的看门狗不同——那层是防线，
+    // 这层只是仪器；仪器漏采一次的代价是「这次休眠没扣到」，而各层定时器回调里
+    // 还有一次挂钟复核兜底（见 createSleepAwareDeadline）。
+    (observerTimer as unknown as { unref?: () => void }).unref?.();
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    observerRefs -= 1;
+    if (observerRefs <= 0) {
+      observerRefs = 0;
+      if (observerTimer !== null) {
+        clearInterval(observerTimer);
+        observerTimer = null;
+      }
+    }
+  };
+}
+
+/** 停止观测器并清零引用计数（仅测试用） */
+export function __stopSleepObserverForTest(): void {
+  observerRefs = 0;
+  if (observerTimer !== null) {
+    clearInterval(observerTimer);
+    observerTimer = null;
+  }
+}
+
+/** 观测器当前是否在跑（供测试与自检断言） */
+export function isSleepObserverRunning(): boolean {
+  return observerTimer !== null;
+}
+
+// ─── 休眠感知的到期判据 ───
+
+export interface SleepAwareDeadline {
+  /**
+   * 距**真正**到期还剩多少毫秒。0 表示该开枪，>0 表示定时器是被休眠"补发"的，
+   * 应当按这个剩余量重排而不是开枪。
+   */
+  remainingMs(): number;
+  /** 本窗口已剔除的休眠时长（毫秒），供日志/埋点说明"为什么没开枪" */
+  sleepMs(): number;
+  /** 重排窗口起点（内容进展到达、续命时调用） */
+  restart(): void;
+  /** 窗口起点（挂钟毫秒） */
+  startedAt(): number;
+}
+
+/**
+ * 创建一个休眠感知的到期判据：`effectiveElapsed = 挂钟差值 − 本窗口内的休眠时长`。
+ *
+ * 用法（与"一次性 setTimeout + 回调复核"配套，**不改成轮询**以保留既有定时精度）：
+ * ```ts
+ * const dl = createSleepAwareDeadline(timeoutMs);
+ * const arm = (ms: number) => setTimeout(() => {
+ *   const remaining = dl.remainingMs();
+ *   if (remaining > 0) { arm(remaining); return; }  // 休眠补发的一枪 → 重排
+ *   fire();
+ * }, ms);
+ * arm(timeoutMs);
+ * ```
+ *
+ * ⚠️ `setTimeout` 在休眠后是**唤醒即补发**：定时器 fire 了**不等于**真的过了那么久。
+ * 这是本判据存在的全部理由 —— 回调里必须重新核对挂钟差值，不满足则重排定时器
+ * 而非开枪（`query/loop.ts` 用周期 tick + 每 tick 核对，同一范式的另一种写法）。
+ */
+export function createSleepAwareDeadline(timeoutMs: number): SleepAwareDeadline {
+  let armedAt = Date.now();
+  let ledgerAtArm = ledger.getTotalMs();
+  return {
+    remainingMs(): number {
+      const actual = Date.now() - armedAt;
+      const slept = Math.max(0, ledger.getTotalMs() - ledgerAtArm);
+      const effective = actual - slept;
+      return Math.max(0, timeoutMs - effective);
+    },
+    sleepMs(): number {
+      return Math.max(0, ledger.getTotalMs() - ledgerAtArm);
+    },
+    restart(): void {
+      armedAt = Date.now();
+      ledgerAtArm = ledger.getTotalMs();
+    },
+    startedAt(): number {
+      return armedAt;
+    },
+  };
 }
 
 /**

@@ -1150,6 +1150,16 @@ export class TraceCollector {
           provider: resp.provider, // T12.4：Provider 维度标记
           // 端点维度：区分同模型不同渠道，供排查 + cost-recompute 按 (model, endpoint) 精确重算
           ...(resp.base_url ? { base_url: resp.base_url } : {}),
+          // P2-6：网关请求标识也落进 events.jsonl（不止 raw.jsonl）。
+          // 理由是 raw.jsonl 可以被 SID_CODE_TRACE_NO_RAW=1 整体关掉，而
+          // events.jsonl 恒在 —— "怀疑网关排队"恰恰是最需要它、又最可能已经关了 raw 的场景。
+          // 落成两个平铺字段而非嵌套对象：events.jsonl 的消费方多是 grep/jq 一行流。
+          ...(resp.gateway_request_id
+            ? {
+                gateway_request_id: resp.gateway_request_id.value,
+                gateway_request_id_header: resp.gateway_request_id.header,
+              }
+            : {}),
           ttft_ms: (resp as any).ttft_ms, // T14.4：TTFT 持久化
           // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
           ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
@@ -1231,6 +1241,11 @@ export class TraceCollector {
         content: contentBlocks,
         stop_reason: stopReason,
         usage: usageNormalized,
+        // P2-6：网关请求标识落进 raw.jsonl（此前 response 里一个响应头都没有 →
+        // 怀疑网关排队/限流时拿不出任何标识去核对具体哪次请求，见 §4.1）。
+        // 条件展开而非直接赋 undefined：端点没下发时字段**缺席**，
+        // 不留一个 `"gateway_request_id": null` 让分析侧误以为"采到了但是空"。
+        ...(resp.gateway_request_id ? { gateway_request_id: resp.gateway_request_id } : {}),
       },
       usage: usageNormalized,
       stop_reason: stopReason,

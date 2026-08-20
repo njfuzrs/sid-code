@@ -25,6 +25,11 @@ import {
   getStreamSnapshot,
 } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
+// PR9：休眠扣减下沉到流式路径（此前是 query/loop.ts 的局部能力）。
+import {
+  createSleepAwareDeadline,
+  startSleepObserver,
+} from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   classifyError,
   classifyStreamError,
@@ -120,7 +125,7 @@ const STREAM_RETRY = {
 
 /** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
  *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。 */
-const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.watchdogNoProgressMs; // 300s
+const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.watchdogNoProgressMs;
 
 /** max_tokens 溢出恢复：安全余量 */
 const SAFETY_BUFFER = 1_000;
@@ -768,8 +773,39 @@ export class ModelFallback {
       disarmStreamIneffective = null;
     };
 
-    const startStreamTimeout = () => {
+    /**
+     * PR9：休眠感知的到期判据。定时器仍是一次性 `setTimeout`（保留既有精度与语义），
+     * 但**回调里必须二次核对挂钟差值** —— 见下方 `startStreamTimeout` 的长注释。
+     */
+    const streamDeadline = createSleepAwareDeadline(streamTimeoutMs);
+    // 休眠观测器：本层的判据依赖账本，而账本要有人来记（一次性定时器自己观测不到休眠，
+    // 理由见 sleep-detect.ts 的 startSleepObserver 注释）。整个 executeWithFallback
+    // 期间持有，finally 里 release。
+    const releaseSleepObserver = startSleepObserver();
+
+    const startStreamTimeout = (delayMs: number = streamTimeoutMs) => {
       streamTimeoutId = setTimeout(() => {
+        // ─── 休眠二次校验（PR9）：这一枪是"真超时"还是"休眠补发"？ ───
+        //
+        // `setTimeout` 在系统休眠后是**唤醒即补发**：定时器 fire 了**不等于**真的过了
+        // 那么久。轨迹实证：一次 `sleep_ms ≈ 281s` 的休眠让本层杀掉了一条**真实无进展
+        // 仅 3.4 秒**的健康流，而同一时刻 `loop.ts` 的 watchdog（扣了休眠）判定正常
+        // —— 同一时刻两套判据结论相反。
+        //
+        // 为什么抬阈值治不了它：历史记录里单次休眠达 939~946s
+        // （`shared/utils/prevent-sleep.ts`），任何固定阈值都会被足够长的休眠击穿。
+        // 正确修法是把休眠时长从判据里剔除，并在"没到点"时**重排定时器而非开枪**
+        // （`loop.ts` 用周期 setInterval + 每 tick 核对，是同一范式的另一种写法）。
+        const remaining = streamDeadline.remainingMs();
+        if (remaining > 0) {
+          log.warn(
+            "FALLBACK",
+            `流超时定时器被休眠补发（已剔除 ${(streamDeadline.sleepMs() / 1000).toFixed(0)}s 休眠，` +
+              `距真正到期还有 ${(remaining / 1000).toFixed(0)}s），重排而非中断`,
+          );
+          startStreamTimeout(remaining);
+          return;
+        }
         log.warn("FALLBACK", `流式无进展超时: ${streamTimeoutMs / 1000}s，主动中断连接`);
         // 缺口 2：记录 fallback 流式整体超时触发
         // B4：带 agentId —— 漏斗这层用的是 ambient `turnIndex`（主循环轮次），子代理调用
@@ -791,7 +827,7 @@ export class ModelFallback {
           "abort_not_observed_by_stream_after_5s",
         );
         streamTimeoutCtl.abort();
-      }, streamTimeoutMs);
+      }, delayMs);
       // 不调 unref()：fdb47f30 教训——index 23 请求发出后 hang 死,若定时器被 unref,
       // 在事件循环空闲时 Node/Bun 不保证它按时 fire,整体超时形同虚设、无法自愈。
       // 这里是"受管理的非 unref 定时器"：renewStreamTimeout / 正常收尾路径都会 clearTimeout,
@@ -811,6 +847,9 @@ export class ModelFallback {
      */
     const renewStreamTimeout = () => {
       clearStreamTimeout();
+      // PR9：续命同时重置休眠窗口起点。不重置会让上一段窗口里记到的休眠被反复减一次
+      // （账本是**累计值**），越睡越"欠"，最终判据永远到不了点 —— 那是把误杀换成了漏杀。
+      streamDeadline.restart();
       startStreamTimeout();
     };
 
@@ -823,6 +862,8 @@ export class ModelFallback {
     const resetStreamTimeout = () => {
       clearStreamTimeout();
       streamTimeoutCtl = new AbortController();
+      // PR9：同 renewStreamTimeout，attempt 边界也要重置休眠窗口起点。
+      streamDeadline.restart();
       startStreamTimeout();
     };
 
@@ -1656,6 +1697,8 @@ export class ModelFallback {
       }
     } finally {
       clearStreamTimeout();
+      // PR9：释放休眠观测器引用（引用计数归零时才真的停 interval）。
+      releaseSleepObserver();
     }
 
     // ═══════════════════════════════════════════════════════════════

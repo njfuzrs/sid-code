@@ -803,8 +803,15 @@ export class App {
     // 配置-1：统一超时/重试解析（与 loop.ts 同一 resolveLoopTimeouts 入口，env > settings > 默认）。
     const {
       resolveLoopTimeouts: resolveFallbackTimeouts,
+      registerNetworkTimeoutSettings,
     } = require("@sid-code/core/config/network-profile.ts");
     const fallbackNetTimeouts = resolveFallbackTimeouts({ network: opts.config.network });
+    // P0-4：把 network 块注册给 provider 侧的流式超时解析。
+    // provider 实例只持有 baseURL/apiKey、读不到 settings，此前那四项
+    // （idle / contentProgress / fetchAbsolute / overall）只认 env —— 用户改
+    // settings.json 完全调不动（§4.6 的"伪配置"）。注册点选在这里是因为它是
+    // 唯一同时持有 `opts.config.network` 且早于任何 provider 发起请求的位置。
+    registerNetworkTimeoutSettings(opts.config.network);
 
     this.fallback = new ModelFallback(
       {

@@ -33,6 +33,12 @@ import { getLogger } from "../debug/logger.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { recordStreamProgress } from "../trace/stream-observer.ts";
+// PR9：休眠扣减下沉到流式路径（三层判据统一 `now - start - sleepPause`）。
+import {
+  createSleepAwareDeadline,
+  startSleepObserver,
+  getSleepLedger,
+} from "@sid-code/shared/utils/sleep-detect.ts";
 
 /** 超时层枚举（onTimeout 回调用于区分是哪一层触发） */
 export type StreamTimeoutLayer = "idle" | "content_progress" | "overall";
@@ -157,17 +163,34 @@ export interface StreamLifecycleSnapshot {
 /**
  * 三层超时预设配置（按场景分级：主循环宽松 / 子代理适中 / side-call 激进）。
  *
- * 配置-2：基准量级从 network-profile 的统一默认值 `DEFAULTS.watchdogNoProgressMs`（BASE=300s）
- * 派生，不再是独立硬编码字面量——把"保活优先"的基准锚点收敛到单一真相源，改基准只需改
- * network-profile 一处，三档同步跟随。**分级比例（tiering policy）**留在本层，因为"主循环 vs
- * 子代理 vs side-call 谁该更激进"是 lifecycle 的职责，与网络超时基准是两个正交维度。
+ * ## 主循环档从 network BASE 派生，子代理/side-call 档**不派生**（P0-4 的连带修正）
  *
- * 派生关系（相对 BASE=watchdogNoProgressMs 的倍率，与迁移前既有实测值一一对应）：
- *   mainLoop : idle 0.3× (90s)  / content 1.0× (5min)  / overall 2.0× (10min)
- *   subAgent : idle 0.2× (60s)  / content 0.6× (3min)  / overall 0.6× (3min)
- *   sideCall : idle 0.1× (30s)  / content 0.2× (60s)   / overall 0.2× (60s)
+ * 配置-2 原来三档全从 `DEFAULTS.watchdogNoProgressMs` 按倍率派生，理由是"把保活优先的
+ * 基准锚点收敛到单一真相源"。这个理由对**主循环档**成立（它和 watchdog 守的是同一条
+ * 主链路的同一批慢流），但对另外两档是**错的耦合**：
+ *
+ * BASE 从 300s 抬到 720s（P0-4 的档②放宽）时，原倍率会把
+ * `sideCall.overall` 60s → 144s、`subAgent.overall` 180s → 432s 一起放大 ——
+ * **方向与设计意图相反**：side-call（压缩 / 分类 / 召回）是"锦上添花、失败即静默降级"
+ * 的旁路，它本就该比主链路**更激进**地放弃；让一次工具分类调用卡 144s，
+ * 是把"主循环要容忍慢思考"这条理由错误地传导给了根本不该容忍的一层。
+ *
+ * 所以现在的形态是：
+ *   - `mainLoop`：仍从 BASE 派生（与 watchdog 同源，改基准两处同步跟随，这是想要的）。
+ *   - `subAgent` / `sideCall`：**显式绝对值**，与 BASE 解耦。它们的取值依据是
+ *     "这类调用多久没产出就该放弃"，与网关排队/长思考的容忍度无关。
+ *     数值沿用解耦前 BASE=300s 时的实测档位（即行为不变），
+ *     此后 BASE 再动也不会连带漂移。
+ *
+ * 派生/取值关系：
+ *   mainLoop : idle 0.3×BASE / content 1.0×BASE / overall 2.0×BASE  （跟随 BASE）
+ *   subAgent : idle 60s  / content 180s / overall 180s               （固定）
+ *   sideCall : idle 30s  / content 60s  / overall 60s                （固定）
+ *
+ * ⚠️ 哨兵 `tests/config/timeout-ladder-sentinel.test.ts` 断言后两档**不随 BASE 放大**。
+ * 它红了要补清单/改这里的显式值，不是删断言。
  */
-const BASE = NETWORK_DEFAULTS.watchdogNoProgressMs; // 300_000（保活优先基准，唯一真相源）
+const BASE = NETWORK_DEFAULTS.watchdogNoProgressMs; // 保活优先基准（唯一真相源，仅主循环档用）
 export const LIFECYCLE_PRESETS = {
   /** 主循环：大上下文/慢模型处理慢，最宽松。idle 0.3× / content 1.0× / overall 2.0× */
   mainLoop: {
@@ -175,17 +198,17 @@ export const LIFECYCLE_PRESETS = {
     contentProgressTimeoutMs: BASE * 1.0,
     overallTimeoutMs: BASE * 2.0,
   },
-  /** 子代理：应比主循环短。idle 0.2× / content 0.6× / overall 0.6× */
+  /** 子代理：应比主循环短。与 BASE 解耦的显式绝对值（理由见上方注释）。 */
   subAgent: {
-    idleTimeoutMs: BASE * 0.2,
-    contentProgressTimeoutMs: BASE * 0.6,
-    overallTimeoutMs: BASE * 0.6,
+    idleTimeoutMs: 60_000,
+    contentProgressTimeoutMs: 180_000,
+    overallTimeoutMs: 180_000,
   },
-  /** side-call（recall/compact 等轻量调用）：最激进。idle 0.1× / content 0.2× / overall 0.2× */
+  /** side-call（recall/compact 等轻量调用）：最激进。与 BASE 解耦的显式绝对值。 */
   sideCall: {
-    idleTimeoutMs: BASE * 0.1,
-    contentProgressTimeoutMs: BASE * 0.2,
-    overallTimeoutMs: BASE * 0.2,
+    idleTimeoutMs: 30_000,
+    contentProgressTimeoutMs: 60_000,
+    overallTimeoutMs: 60_000,
   },
 } as const;
 
@@ -316,27 +339,66 @@ async function* streamLifecycleImpl<T>(
       ? firstByteTimeoutMs
       : idleTimeoutMs;
 
+  // ─── PR9：三层判据统一扣除休眠（`now - start - sleepPause`）───
+  //
+  // 三层用的都是一次性 `setTimeout`，而 `setTimeout` 在系统休眠后是**唤醒即补发** ——
+  // "定时器 fire 了"不等于"真的过了那么久"。轨迹实证一次 281s 的休眠让 fallback 层
+  // 杀掉了真实无进展仅 3.4s 的健康流；本层三个定时器同型（改造前 `sleepPause` 在
+  // fallback / lifecycle / parseSSE 三处 grep 命中均为 0，那就是这条缺陷的判据）。
+  //
+  // 修法：每层各自持有一个休眠感知 deadline，回调里先问 `remainingMs()`——
+  // >0 说明是休眠补发的一枪，**重排而非开枪**。定时器形态刻意不动
+  // （不改成 setInterval 轮询）：本文件顶部"行为等价铁律"要求 idle/content timer
+  // 保持 setTimeout 的语义与精度，既有单测依赖细粒度定时（idle=100ms 在 500ms 间隔上触发）。
+  // idle 层不建 deadline 对象：它的窗口长度在"等首字节"与"已建流"两档之间切换
+  // （effectiveFirstByteMs vs idleTimeoutMs），而 deadline 是按固定 timeoutMs 建的。
+  // 该层在 resetIdle 内就地记窗口起点 + 读账本增量，见那里的注释。
+  const contentDeadline = contentProgressEnabled
+    ? createSleepAwareDeadline(contentProgressTimeoutMs!)
+    : null;
+  const overallDeadline = overallEnabled ? createSleepAwareDeadline(overallTimeoutMs!) : null;
+  const releaseSleepObserver = startSleepObserver();
+
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     snapshot.lastEventAt = Date.now();
     // 首个事件尚未到达 → 用（通常更宽的）首字节阈值；到达后各次 reset 用 idle 阈值。
     // 判据取 snapshot.firstEventAt：它在主循环收到首个事件时置值，是本层唯一的结构事实。
     const limit = snapshot.firstEventAt === null ? effectiveFirstByteMs : idleTimeoutMs;
-    idleTimer = setTimeout(() => {
-      if (!fireTimeout("idle")) return;
-      log.warn(
-        `LLM:${label}`,
-        `流式${snapshot.firstEventAt === null ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
-        { totalEvents: snapshot.totalEvents },
-      );
-      onTelemetry?.({
-        type: "stream_idle_timeout",
-        provider: providerTag,
-        timeoutMs: limit,
-        totalEvents: snapshot.totalEvents,
-      });
-      onTimeout?.("idle");
-    }, limit);
+    // PR9：本层 deadline 的窗口长度是 `limit`（首字节档与 idle 档不同值），
+    // 而 createSleepAwareDeadline 是按固定 timeoutMs 建的 —— 所以这里自己记窗口起点，
+    // 用账本的增量做扣减，不复用 idleDeadline 的 timeoutMs。
+    const armedAt = Date.now();
+    const sleptAtArm = getSleepLedger().getTotalMs();
+    const arm = (delayMs: number) => {
+      idleTimer = setTimeout(() => {
+        const slept = Math.max(0, getSleepLedger().getTotalMs() - sleptAtArm);
+        const remaining = limit - (Date.now() - armedAt - slept);
+        if (remaining > 0) {
+          log.warn(
+            `LLM:${label}`,
+            `idle 定时器被休眠补发（已剔除 ${(slept / 1000).toFixed(0)}s），` +
+              `距真正到期还有 ${(remaining / 1000).toFixed(0)}s，重排而非中断`,
+          );
+          arm(remaining);
+          return;
+        }
+        if (!fireTimeout("idle")) return;
+        log.warn(
+          `LLM:${label}`,
+          `流式${snapshot.firstEventAt === null ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
+          { totalEvents: snapshot.totalEvents },
+        );
+        onTelemetry?.({
+          type: "stream_idle_timeout",
+          provider: providerTag,
+          timeoutMs: limit,
+          totalEvents: snapshot.totalEvents,
+        });
+        onTimeout?.("idle");
+      }, delayMs);
+    };
+    arm(limit);
   };
 
   /**
@@ -360,39 +422,74 @@ async function* streamLifecycleImpl<T>(
     if (!contentProgressEnabled) return;
     if (contentTimer) clearTimeout(contentTimer);
     snapshot.lastProgressAt = Date.now();
-    contentTimer = setTimeout(() => {
-      if (!fireTimeout("content_progress")) return;
-      log.warn(
-        `LLM:${label}`,
-        `业务内容进展超时 ${contentProgressTimeoutMs! / 1000}s（可能只有 keep-alive/ping，无实际内容），中断`,
-        { totalEvents: snapshot.totalEvents },
-      );
-      onTelemetry?.({
-        type: "stream_content_progress_timeout",
-        provider: providerTag,
-        timeoutMs: contentProgressTimeoutMs!,
-        totalEvents: snapshot.totalEvents,
-      });
-      onTimeout?.("content_progress");
-    }, contentProgressTimeoutMs!);
+    // PR9：休眠补发的一枪要重排（理由见上方三层判据的总注释）。
+    contentDeadline!.restart();
+    const armContent = (delayMs: number) => {
+      contentTimer = setTimeout(() => {
+        const remaining = contentDeadline!.remainingMs();
+        if (remaining > 0) {
+          log.warn(
+            `LLM:${label}`,
+            `content-progress 定时器被休眠补发（已剔除 ${(contentDeadline!.sleepMs() / 1000).toFixed(0)}s），` +
+              `距真正到期还有 ${(remaining / 1000).toFixed(0)}s，重排而非中断`,
+          );
+          armContent(remaining);
+          return;
+        }
+        if (!fireTimeout("content_progress")) return;
+        log.warn(
+          `LLM:${label}`,
+          `业务内容进展超时 ${contentProgressTimeoutMs! / 1000}s（可能只有 keep-alive/ping，无实际内容），中断`,
+          { totalEvents: snapshot.totalEvents },
+        );
+        onTelemetry?.({
+          type: "stream_content_progress_timeout",
+          provider: providerTag,
+          timeoutMs: contentProgressTimeoutMs!,
+          totalEvents: snapshot.totalEvents,
+        });
+        onTimeout?.("content_progress");
+      }, delayMs);
+    };
+    armContent(contentProgressTimeoutMs!);
   };
 
   // overall timer——请求级整体上限，从流开始计时，**不因任何事件重置**。
+  // 注意"不因事件重置"≠"不扣休眠"：绝对上限说的是"业务时间的绝对上限"，
+  // 而机器睡觉的那段不是业务时间（同 loop.ts 的 turn_hard 从 businessElapsedMs 里
+  // 扣 sleepPause 的口径）。休眠 939s 的历史记录足以击穿任何固定绝对值。
   const startOverall = () => {
     if (!overallEnabled) return;
-    overallTimer = setTimeout(() => {
-      if (!fireTimeout("overall")) return;
-      log.warn(`LLM:${label}`, `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`, {
-        totalEvents: snapshot.totalEvents,
-      });
-      onTelemetry?.({
-        type: "stream_overall_timeout",
-        provider: providerTag,
-        timeoutMs: overallTimeoutMs!,
-        totalEvents: snapshot.totalEvents,
-      });
-      onTimeout?.("overall");
-    }, overallTimeoutMs!);
+    const armOverall = (delayMs: number) => {
+      overallTimer = setTimeout(() => {
+        const remaining = overallDeadline!.remainingMs();
+        if (remaining > 0) {
+          log.warn(
+            `LLM:${label}`,
+            `overall 定时器被休眠补发（已剔除 ${(overallDeadline!.sleepMs() / 1000).toFixed(0)}s），` +
+              `距真正到期还有 ${(remaining / 1000).toFixed(0)}s，重排而非中断`,
+          );
+          armOverall(remaining);
+          return;
+        }
+        if (!fireTimeout("overall")) return;
+        log.warn(
+          `LLM:${label}`,
+          `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`,
+          {
+            totalEvents: snapshot.totalEvents,
+          },
+        );
+        onTelemetry?.({
+          type: "stream_overall_timeout",
+          provider: providerTag,
+          timeoutMs: overallTimeoutMs!,
+          totalEvents: snapshot.totalEvents,
+        });
+        onTimeout?.("overall");
+      }, delayMs);
+    };
+    armOverall(overallTimeoutMs!);
   };
 
   // stall 心跳：每 stallWarnMs 检查一次，如果期间无事件则告警（只记不杀）。
@@ -497,6 +594,8 @@ async function* streamLifecycleImpl<T>(
     }
   } finally {
     clearTimers();
+    // PR9：释放休眠观测器引用（引用计数归零才真的停 interval）。
+    releaseSleepObserver();
     const elapsedMs = Date.now() - streamStartTime;
     const ttftMs = snapshot.firstEventAt ? snapshot.firstEventAt - streamStartTime : undefined;
     log.debug(`LLM:${label}`, `流结束`, { totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });

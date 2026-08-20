@@ -14,7 +14,7 @@
  *
  * ── 为什么这是缺陷而不是风格问题 ──
  *
- * 默认配置下两者恰好相等（`PROVIDER_STREAM_DEFAULTS.overallTimeoutMs === BASE * 2.0`），
+ * 缺陷引入时默认配置下两者恰好相等（`PROVIDER_STREAM_DEFAULTS.overallTimeoutMs === BASE * 2.0`），
  * 所以**测试全绿、日志好看、机理讲得通** —— 直到有人设了
  * `SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS=120000`：流 120s 就断，事件里却写着
  * `threshold_ms: 600000`。排查的人拿这个从未生效过的数字去对时间线，只会得出
@@ -113,12 +113,21 @@ describe("OpenAI Chat Completions：两层阈值上报与 lifecycle 配置同源
 });
 
 describe("为什么默认值下看不出问题（这个缺陷的潜伏机制）", () => {
-  test("默认配置下 env 解析值与 preset 恰好相等 —— 所以静态相等测不出脱节", () => {
+  test("解析值来自 PROVIDER_STREAM_DEFAULTS，与 preset **不再**恰好同值", () => {
     const resolved = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
-    // 这条相等是**事实陈述**，不是要求。它解释了为什么缺陷能潜伏：
-    // 默认档位下两个来源同值，任何"跑一遍看数字对不对"的验证都会通过。
+    // 上报必须与配进 lifecycle 的来源同源 —— 这是本文件的主张，与档位数值无关。
     expect(resolved.overallTimeoutMs).toBe(PROVIDER_STREAM_DEFAULTS.overallTimeoutMs);
-    expect(resolved.overallTimeoutMs).toBe(LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs);
+
+    // ⚠️ 这一条曾经断言 `=== LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs`，
+    // 作为"为什么缺陷能潜伏"的**事实陈述**：默认档位下两个来源恰好同值，
+    // 于是任何"跑一遍看数字对不对"的验证都会通过。
+    //
+    // PR10 之后这个巧合**没有了**：provider 层 overall 走
+    // PROVIDER_STREAM_DEFAULTS（解除 300s 删失后的独立取值），而 preset 那档仍从
+    // watchdogNoProgressMs 按 2.0× 派生 —— 两者不再相等。
+    // 潜伏条件消失是好事（默认配置下脱节就能被看见），所以把断言翻过来钉住这个新事实：
+    // 谁把两者改回同值，就等于把潜伏机制又装回来了。
+    expect(resolved.overallTimeoutMs).not.toBe(LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs);
   });
 
   test("设了 env 之后两者分叉 —— 这才是缺陷发作的条件", () => {

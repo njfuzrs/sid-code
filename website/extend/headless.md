@@ -366,12 +366,24 @@ CI 里要用得显式打开信任（`~/.sid-code/app.json`）：
 
 不会，但兜底的**不是**一个总时长闸门。挂起类根因由几层按「有没有进展」判定的防线覆盖：
 
-| 防线 | 默认值 | 覆盖什么 |
+| 防线 | 默认值 | 覆盖什么（谓词） |
 | --- | --- | --- |
 | `network.headerTimeoutMs` | 300s | 请求发出后拿不到首字节 |
-| `network.watchdogNoProgressMs` | 300s | 已建连但中途静默（半开连接、网关卡住） |
-| `network.maxTurnDurationMs` | 30min | 单轮硬顶，兜任何单次挂起根因 |
+| `network.idleTimeoutMs` | 240s | 连一个字节都收不到（真半开 TCP） |
+| `network.contentProgressTimeoutMs` | 480s | 有字节但无有效内容（keep-alive / ping 续命也不算进展） |
+| `network.overallTimeoutMs` | 1500s | 单次请求的软兜底，不因事件重置 |
+| `network.watchdogNoProgressMs` | 720s | 外层复核「已建连但中途静默」，比上面 provider 层更宽 |
+| `network.maxTurnDurationMs` | 90min | 单轮硬顶，兜任何单次挂起根因（不感知进展） |
 | `network.maxTimeoutRetries` | 10 次 | 上面几层判超时后的重试上限（指数退避） |
+
+几层的**谓词互不相同**（收不到字节 / 收到字节但没内容 / 整轮兜底），不是同一个判断
+复制几遍——所以数值上它们严格递增：越靠外的层掌握的信息越少，就该越宽松。
+`network.fetchAbsoluteTimeoutMs`（整个 HTTP 请求的绝对上限）**默认关闭**：它与单轮硬顶
+判的是同一件事，且它由 runtime 直接中断、不带可归因信息，会把一条持续有输出的慢流
+一并掐断。确有需要时显式设一个毫秒值即可开启。
+
+上面这些**都能写进 `settings.json` 的 `network` 块**，也都有对应的 `SID_CODE_*` 环境变量
+（env 优先于 settings）。
 
 **会话级硬顶默认关闭**（`network.maxSessionDurationMs = 0`）。它按挂钟计「一次输入触发的连续
 自动执行」总时长，跑满即中断本轮、要人再敲一句才继续——这与无人值守跑长任务直接冲突，而且它

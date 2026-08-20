@@ -454,6 +454,30 @@ export function parseRateLimitReset(error: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * 判断错误是否为 **runtime 级超时**（`AbortSignal.timeout` 到点时抛出的
+ * `DOMException("...", "TimeoutError")`）。
+ *
+ * 判据是结构性字段 `name`，**不看消息文本**：runtime 的文案随引擎/版本/locale 变，
+ * 而 `name` 是 WHATWG DOM 规范固定的（`AbortSignal.timeout` → `"TimeoutError"`）。
+ * memory `stream-timeout-misclassified-as-cancel-rootcause` 记的就是靠文本判超时
+ * 被一个措辞通用的错误抢先命中的事故。
+ *
+ * ## 它与 `isAbortError` 刻意**互斥**
+ *
+ * 两者结论相反且都必须成立：
+ *   · `isAbortError(TimeoutError) === false` —— 它不是"用户/上层主动中断"，
+ *     不该被当成取消而静默吞掉（那正是 §2.3.2 那类"任务中断、没有报错"的体感来源）；
+ *   · `classifyError(TimeoutError)` = `RetryableError("timeout")` —— 它是**可自愈**的
+ *     本地超时，该重试。
+ * 这个互斥关系由 `tests/llm/fetch-absolute-timeout-classification.test.ts` 钉住。
+ */
+export function isRuntimeTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  if (!("name" in error)) return false;
+  return String((error as { name?: unknown }).name ?? "") === "TimeoutError";
+}
+
 /** 判断错误是否由 abort/signal 中断引起 */
 export function isAbortError(error: unknown): boolean {
   if (error instanceof RequestAbortedError) return true;
@@ -600,6 +624,30 @@ export function classifyError(error: unknown): TerminalError | RetryableError | 
   const lowerMsg = msg.toLowerCase();
   // 结构化状态码只算一次，供下面所有 matchesHttpStatus 调用复用。
   const structuredStatus = getHTTPStatus(error);
+
+  // ─── 0.0 runtime 级 TimeoutError（AbortSignal.timeout）→ 可重试 ───
+  //
+  // `AbortSignal.timeout(ms)` 到点时由 runtime 抛
+  // `DOMException("The operation timed out.", "TimeoutError")`。它此前**既不是**
+  // RetryableError **也不是** TerminalError：
+  //   · `isAbortError()` 不认它（name 是 TimeoutError，不是 AbortError），
+  //     两个 abort reason 白名单里也没有它；
+  //   · 下面第 2 段那条 `lowerMsg.includes("timeout")` 看似能兜住，但那是**文本匹配**，
+  //     一旦 runtime 换文案（各引擎/各版本措辞不同、非英文 locale 更是）就落空。
+  // 于是它落到 `fallback.ts` 的 fail-fast 零重试分支：一条被 fetch 绝对硬顶掐断的流
+  // **一次重试都没有**。这层硬顶现已默认关闭（见 network-profile.ts 的
+  // fetchAbsoluteTimeoutMs），但用户可以显式开 —— 那时归因必须是对的，
+  // 所以这条分类不能随"默认关闭"一起省掉。
+  //
+  // 判据用**结构性信号** `err.name === "TimeoutError"`，不靠消息文本 ——
+  // memory `stream-timeout-misclassified-as-cancel-rootcause` 记的正是
+  // "判断是否该按超时/中断分类绝不能只靠错误消息文本"这条教训（上一次栽在
+  // 一个措辞通用的 RequestAbortedError 抢先命中文本正则上）。
+  // 放在最前面（连 x-should-retry 之前）：它是 runtime 抛的本地错误，
+  // 不带任何 HTTP 响应/响应头，下面所有基于 status/header 的分支对它都无意义。
+  if (isRuntimeTimeoutError(error)) {
+    return new RetryableError(msg, "timeout");
+  }
 
   // 0. 服务端 x-should-retry header 优先（B5-3：现在能区分三态，见 parseXShouldRetry）
   const serverRetryHint = parseXShouldRetry(error);
