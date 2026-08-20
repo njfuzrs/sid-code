@@ -760,36 +760,98 @@ const ROUTE_PREFIXES = [
 ] as const;
 
 /**
- * 统一查找引擎。
- * 匹配策略：精确 → 最长前缀 → 剥离 "/" 路由前缀 → 剥离供应商连字符前缀 → 大小写不敏感 → 家族匹配 → null
+ * **精确**查找：只做「注册表里确实有这个键」的匹配，绝不猜。
+ *
+ * 层级仅两级，都不越过「同一个模型」的边界：
+ *   1. 精确键；
+ *   2. 大小写不敏感（注册表里 `deepseek-v4-pro` 与 `DeepSeek-V4-Pro` 是分开登记的两个键，
+ *      但它们指的确实是同一个模型，大小写差异不构成「猜」）。
+ *
+ * ── 为什么必须把它从 lookupRegistry 里拆出来（2026-08-20）────────────
+ *
+ * 拆分的维度是**匹配精度**，不是数据来源。原先 `lookupRegistry` 是一个六级瀑布
+ * （精确 + 最长前缀 + 路由剥离 + 供应商前缀剥离 + 大小写 + 家族），任何一级命中就返回；
+ * 而调用链把它整个排在采集缓存（`lookupCapability`，~3000 条、刻意只做精确匹配）**之前**。
+ * 于是「一个 90 条、带模糊匹配的手写表」压在「一个数千条、精确匹配的采集表」上面 ——
+ * 谨慎的那一方被排到了激进的那一方后面。
+ *
+ * 实测受害形态：`glm-5.3` 在注册表里不存在，但它 startsWith `glm-5`（200K）→ 前缀命中 →
+ * 直接 return，采集到的真实 1M 窗口**永远看不到**（低估 5 倍）。同一个模型在探针门禁上
+ * 二次受害：门禁 `if (lookupRegistry(x)) return` 把「猜到」当成「知道」，于是它的 effort
+ * 档位永远探不到。
+ *
+ * 正确的优先级是：**所有精确匹配排在所有模糊匹配之前，无论数据来自哪一层**。
+ *   用户配置 → 别名解析 → 本函数（registry 精确）→ lookupCapability（采集精确）
+ *   → lookupRegistryFuzzy（registry 模糊）→ 兜底
+ * 两条理由都成立且不矛盾：精确的手写表比第三方采集准；第三方**精确命中**比手写表**猜的**准。
+ *
+ * 用它做布尔判定（「这个模型我们确实知道吗」）是安全的 —— 这正是
+ * `gateway-pricing.ts::isBareVendorName` 当年不得不绕开 `lookupRegistry` 的原因，
+ * 那条踩坑记录现在由本函数在类型层面兜住，不必每个调用点各自绕。
  */
-export function lookupRegistry(model: string): ModelRegistryEntry | null {
-  // 1. 精确匹配
+export function lookupRegistryExact(model: string): ModelRegistryEntry | null {
   if (REGISTRY[model]) return REGISTRY[model];
+  const lower = model.toLowerCase();
+  for (const [key, entry] of Object.entries(REGISTRY)) {
+    if (key.toLowerCase() === lower) return entry;
+  }
+  return null;
+}
 
-  // 2. 最长前缀匹配（覆盖 deepseek-v4-flash-maxthink 等变体）
+/**
+ * **模糊**查找：精确层全部 miss 之后的最后近似，会跨模型借值。
+ *
+ * 匹配策略（精度从高到低）：最长前缀 → 剥离 "/" 路由前缀 → 剥离供应商连字符前缀
+ * → 大小写不敏感 → 版本感知借用（同主版本、只向下）→ 家族匹配。
+ *
+ * ⚠ 定位很重要：它在新链路里排在**采集缓存之后**，所以只服务「三层数据全 miss」的模型
+ * （实测三源 + 归一化后剩 8 个厂商变体后缀）。它的边界条件错了不再直接产出 5 倍失真 ——
+ * 这正是「不打补丁」与「打补丁」的区别：让 D1–D3 承担主责，本函数退化成低频兜底。
+ *
+ * 行为与拆分前的 `lookupRegistry` 等价（回归锁在 model-registry.test.ts），
+ * 唯一新增的是版本感知那一级。
+ */
+export function lookupRegistryFuzzy(model: string): ModelRegistryEntry | null {
+  // 1. 最长前缀匹配（覆盖 deepseek-v4-flash-maxthink 等变体）
   let best: ModelRegistryEntry | null = null;
   let bestLen = 0;
   for (const [key, entry] of Object.entries(REGISTRY)) {
-    if (model.startsWith(key) && key.length > bestLen) {
+    if (isVariantSuffixOf(model, key) && key.length > bestLen) {
       best = entry;
       bestLen = key.length;
     }
   }
   if (best) return best;
 
-  // 3. 剥离路由前缀后重试（如 "kim/kimi-k2.6" → "kimi-k2.6"）
+  // 1.5 版本感知借用（同主版本、只向下）——必须在**前缀匹配之后、路由剥离之前**。
+  // 位置的理由：前缀命中是「同一个模型的变体后缀」（`gpt-5.4-mini-xxx` → `gpt-5.4-mini` 的
+  // 400K），比跨版本借用可信 —— 反过来先跑版本借用会让它退到 `gpt-5.4` 的 1050K，
+  // 把一个 mini 模型按满血款估算。而它必须先于路由剥离，否则 `z-ai/glm-5.3` 这类形态
+  // 在剥离后的递归里会走完整条链路，版本借用反而拿不到机会（见下方第二处调用点）。
+  const versioned = lookupVersionAware(model);
+  if (versioned) return versioned;
+
+  // 2. 剥离路由前缀后重试（如 "kim/kimi-k2.6" → "kimi-k2.6"）
   const slashIdx = model.indexOf("/");
   if (slashIdx !== -1) {
     const bare = model.slice(slashIdx + 1);
     if (REGISTRY[bare]) return REGISTRY[bare];
     for (const [key, entry] of Object.entries(REGISTRY)) {
-      if (bare.startsWith(key) && key.length > bestLen) {
+      // 与上面第 1 级同一条边界约束：必须是变体后缀形态。裸 startsWith 会让
+      // `z-ai/glm-5.3` 剥离后命中 `glm-5`，版本借用又一次拿不到机会 ——
+      // 这正是「修 A 漏 B」那个陷阱的实体：两处前缀循环必须同步改，漏一处
+      // 带 vendor 前缀的三种形态（z-ai/ zai/ openrouter/）就会全部绕过修复。
+      if (isVariantSuffixOf(bare, key) && key.length > bestLen) {
         best = entry;
         bestLen = key.length;
       }
     }
     if (best) return best;
+    // ⚠ 剥离后**也要**走一次版本感知：`z-ai/glm-5.3` / `openrouter/glm-5.3` 这类带 vendor
+    // 前缀的形态在上面那次调用里 miss（整串不以任何 registry 键开头）。
+    // 只改一处的话这三种形态会绕过整个修复 —— 实测它们当前全部错配到 glm-5 的 200K。
+    const bareVersioned = lookupVersionAware(bare);
+    if (bareVersioned) return bareVersioned;
   }
 
   // 3.5 剥离已知供应商路由前缀后重试（如 "ali-deepseek-v4-pro" → "deepseek-v4-pro"）
@@ -806,7 +868,9 @@ export function lookupRegistry(model: string): ModelRegistryEntry | null {
   // 都套成官方价），是「查无此模型」的下策兜底，不是精确计费路径。
   for (const prefix of ROUTE_PREFIXES) {
     if (model.startsWith(prefix) && model.length > prefix.length) {
-      const hit = lookupRegistry(model.slice(prefix.length));
+      // 递归进**完整**链路（精确 + 模糊）：剥掉 `ali-` 之后剩下的可能是一个精确键。
+      const rest = model.slice(prefix.length);
+      const hit = lookupRegistryExact(rest) ?? lookupRegistryFuzzy(rest);
       if (hit) return hit;
     }
   }
@@ -835,6 +899,128 @@ export function lookupRegistry(model: string): ModelRegistryEntry | null {
     }
   }
   return best;
+}
+
+/**
+ * 兼容包装：**精确优先，再模糊**，行为与拆分前的六级瀑布等价。
+ *
+ * ⚠ 新代码不要用它。它存在的唯一理由是那批「窗口无关」的调用点（协议判定、纯展示）——
+ * 对它们而言拆 exact/fuzzy 没有语义收益，改动只增加 diff 面。
+ *
+ * 需要「这个模型我们确实知道吗」的布尔判定，一律用 `lookupRegistryExact`；
+ * 需要窗口 / 输出上限 / 价格，一律显式写成
+ * `lookupRegistryExact(x) → lookupCapability(x) → lookupRegistryFuzzy(x)` 三段，
+ * 让「采集精确数据」有机会插在中间 —— 那才是本次拆分的全部意义。
+ */
+export function lookupRegistry(model: string): ModelRegistryEntry | null {
+  return lookupRegistryExact(model) ?? lookupRegistryFuzzy(model);
+}
+
+/**
+ * 版本感知借用：`glm-5.3` 在表里没有时，借**同主版本、版本号不高于它**的最近条目。
+ *
+ * ── 三条约束，每条都对应一个具体的错值 ────────────────────────────────
+ *
+ * 1. **同主版本才借**。`kimi-k3` 不得借 `kimi-k2.6` —— 跨主版本是重新设计的模型，
+ *    实测借了会把 kimi-k3 的 1M 窗口缩成 262K。
+ * 2. **只向下借，不向上借**。`glm-5.1` 不得借 `glm-5.2` 的 1M（5.1 真实窗口 200K，
+ *    向上借就是高估）。取「≤ 目标版本的最大已知版本」。
+ * 3. **只借同一个前缀家族**。`glm-` 与 `gpt-` 各自成族，靠「去掉版本号后的前缀相等」判定，
+ *    不做任何跨厂商联想。
+ *
+ * ── 为什么它排在最后一层（这个定位是本次修复改过来的）──────────────
+ *
+ * 旧方案让版本感知承担主要修复责任，于是它的每一个边界条件都是生产风险。
+ * D1（加 models.dev 镜像）之后 `glm-5.3` 在**采集精确**那一层就命中 1M，
+ * 根本走不到这里。所以它的实际受益面只剩：三层数据全 miss 的模型、以及完全离线
+ * 且快照过期的场景。保留它是为了「猜也要猜得有约束」，不是为了修 glm-5.3。
+ *
+ * 变体后缀（`glm-5.3-air`）能借，是因为前缀家族判定天然把后缀归进同一族。
+ */
+function lookupVersionAware(model: string): ModelRegistryEntry | null {
+  const target = parseFamilyVersion(model);
+  if (!target) return null;
+
+  let best: { entry: ModelRegistryEntry; major: number; minor: number } | null = null;
+  for (const [key, entry] of Object.entries(REGISTRY)) {
+    const cand = parseFamilyVersion(key);
+    if (!cand) continue;
+    if (cand.family !== target.family) continue;
+    if (cand.vprefix !== target.vprefix) continue; // 约束 3：同一条版本序列（k3 与 3 不是）
+    if (cand.major !== target.major) continue; // 约束 1：跨主版本禁借
+    // 约束 2：只向下借。同主版本内按 minor 比较，等于也可以（那是变体后缀借基础名的情形）。
+    if (cand.minor > target.minor) continue;
+    if (!best || cand.minor > best.minor) best = { entry, major: cand.major, minor: cand.minor };
+  }
+  if (!best) return null;
+
+  // ⚠ 只投影窗口 / 输出上限，**不带 protocolKind / pricing / 任何协议能力声明**。
+  //
+  // 这不是疏忽可以省的字段，是这一层"猜"与前缀/家族匹配那两层"知道"之间的边界。
+  // `classifyProtocolFamily`（dialect/classify.ts）的设计前提是「注册表声明 = 精确」，
+  // 未注册的 gpt-5.x 系模型**必须**落 unknown、交给 shouldUseResponsesAPI 按协议事实裁决——
+  // 若这里把借来的 `gpt-5.6` 整条 entry（含 protocolKind: "openai-responses"）返回，
+  // `gpt-5.9-unreleased` 会被误判成走 Responses API，那是「按模型名硬编码分档」的老路
+  // 复发，且复发在一个连测试都锁着"不能这样"的地方。
+  // 窗口 / 输出上限则是模型固有的数值容量，借用的风险已经被上面三条版本约束兜住。
+  return { contextWindow: best.entry.contextWindow, maxOutputTokens: best.entry.maxOutputTokens };
+}
+
+/**
+ * 从模型名里切出「家族前缀 + 版本字母前缀 + 主版本 + 次版本」。
+ *
+ * 形态：
+ *   `glm-5.3`     → `{family:"glm", vprefix:"", major:5, minor:3}`
+ *   `glm-5`       → minor 0
+ *   `glm-5.3-air` → 同 `glm-5.3`（变体后缀不参与版本比较，家族仍是 glm）
+ *   `kimi-k3`     → `{family:"kimi", vprefix:"k", major:3, minor:0}`
+ *
+ * `vprefix` 存在的理由：`kimi-k3` 的版本号带一个字母前缀，不认它就等于这一族根本不参与
+ * 版本借用 —— 那么「`kimi-k3` 不得借 `kimi-k2.6`」这条判据就是靠"没解析出来"侥幸成立的，
+ * 而不是靠跨主版本约束。认了它才是真的在执行那条约束（k3 vs k2 主版本不同 → 拒借）。
+ * 比较时 `vprefix` 必须相等：`text-embedding-3-large`（无前缀）与 `text-embedding-v4`
+ * （前缀 v）不是同一条版本序列。
+ *
+ * ── 两类刻意不认的形态（认了就会产生新的跨档误配）─────────────────
+ *
+ * 1. **版本段后面又跟数字段**：`claude-sonnet-4-6`、`claude-sonnet-4-20250514`。
+ *    这类多段/日期版本一律返回 null，交给既有的家族匹配层处理。
+ *    实测反例：若把 `claude-sonnet-4-20260101` 认成「major 4 / minor 0」，它会借到
+ *    `claude-sonnet-4-6` 的 1M，而正确答案是家族匹配到 `claude-sonnet-4-20250514` 的 200K
+ *    （既有回归测试锁着这一条）。
+ * 2. **`gpt-4o` / `o3-mini` 这种数字后面直接跟字母的**：版本与后缀无法切开，返回 null。
+ */
+function parseFamilyVersion(
+  model: string,
+): { family: string; vprefix: string; major: number; minor: number } | null {
+  // 家族段：字母开头的连字符分段；版本段：可选单字母前缀 + 数字[.数字]；
+  // 尾部：要么结束，要么是 `-` 接一个**非数字**开头的变体后缀。
+  const m =
+    /^([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)-([a-z]?)(\d{1,3})(?:\.(\d{1,3}))?(-(?!\d).*)?$/.exec(
+      model.toLowerCase(),
+    );
+  if (!m) return null;
+  const major = Number(m[3]);
+  const minor = m[4] === undefined ? 0 : Number(m[4]);
+  if (!Number.isInteger(major) || !Number.isInteger(minor)) return null;
+  return { family: m[1]!, vprefix: m[2] ?? "", major, minor };
+}
+
+/**
+ * `model` 是否是 `key` 的**变体后缀形态**（`deepseek-v4-flash-maxthink` vs `deepseek-v4-flash`）。
+ *
+ * ⚠ 这是给最长前缀匹配加的边界约束，不是可有可无的收紧。裸 `startsWith` 会让
+ * `glm-5.3` 命中 `glm-5`（余部 `.3`）—— 一个**更高版本**被当成"某个已知模型的变体"，
+ * 直接套上 200K，而它真实是 1M。这正是本次要修的 5 倍低估形态，也是版本感知借用
+ * （lookupVersionAware）拿不到执行机会的原因：前缀层先返回了。
+ *
+ * 要求余部为空或以 `-` 开头，即只承认「同一模型名 + 连字符变体后缀」。
+ * `.` / 直接接数字这类"看起来像同一个前缀"的形态一律不算。
+ */
+function isVariantSuffixOf(model: string, key: string): boolean {
+  if (!model.startsWith(key)) return false;
+  const rest = model.slice(key.length);
+  return rest.length === 0 || rest.startsWith("-");
 }
 
 /** 获取完整注册表（只读用途，如 /model discover 展示） */

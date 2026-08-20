@@ -14,7 +14,7 @@
 
 import type { Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
-import { lookupRegistry } from "../llm/model-registry.ts";
+import { lookupRegistryExact, lookupRegistryFuzzy } from "../llm/model-registry.ts";
 import { sameEndpoint } from "../llm/endpoint-key.ts";
 import { lookupGatewayPricing } from "../llm/gateway-pricing.ts";
 
@@ -102,6 +102,14 @@ export function resolvePricing(
 
   // 4. 从统一注册表查找（前缀剥离在此仅作「查无此模型」的最后兜底）。
   //
+  // ⚠ 这一步**刻意只拆 exact/fuzzy，不在中间插采集缓存的价格层** —— 与
+  // token-estimator / config.ts 那两条链路的关键区别，别照着它们"补齐"：
+  //   - **能力**（窗口 / 输出上限）是模型固有属性，跨端点复用安全 → 采集缓存按模型名单键；
+  //   - **价格**随渠道变，同名不同价 → 必须按「模型名 + 端点」，这是步骤 3 网关采集价的职责。
+  // 实测：models.dev 镜像里 glm-5.3 有 4 条不同的价（1.4 / 1.4 / 0 / 0，后两个是订阅制），
+  // 而我们网关实采价是 1.0959 —— 网关价才是对的，把 catalog 价接进来只会引入错算。
+  // catalog 的 cost 字段可以采集入库供 /model list 展示，但优先级必须低于注册表兜底。
+  //
   // ⚠ 只有**这一步**按真名查，步骤 1-3 一律按别名 —— 两者不矛盾，是分工：
   //   - 步骤 1/2（用户手写 pricing）与步骤 3（网关采集价）是「这条渠道的价」，
   //     必须按别名，否则两个渠道的差价被抹平（§2.1「计价留在别名侧」正是指这几步）；
@@ -111,8 +119,8 @@ export function resolvePricing(
   //     直接污染「更省」方向的度量底座。
   // 别名与真名相同时 resolveWireModel 原样返回，行为不变。
   const { resolveWireModel } = require("../llm/wire-model.ts");
-  const entry = lookupRegistry(resolveWireModel(model, availableModels));
-  return entry?.pricing ?? null;
+  const wire = resolveWireModel(model, availableModels);
+  return (lookupRegistryExact(wire) ?? lookupRegistryFuzzy(wire))?.pricing ?? null;
 }
 
 /**

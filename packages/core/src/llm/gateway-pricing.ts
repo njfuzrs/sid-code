@@ -37,7 +37,7 @@ import { sidPaths } from "../config/paths.ts";
 import { normalizeBaseURL } from "./endpoint-key.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import type { ModelPricing } from "../api/cost-tracker.ts";
-import { getRegistryEntries } from "./model-registry.ts";
+import { lookupRegistryExact } from "./model-registry.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
@@ -381,22 +381,15 @@ export function loadGatewayCache(): void {
  *   禁止它跨桶兜底 → 反而复发它本要修的「渠道名套官方价、**低估** 3.7 倍」。
  *   实测：`ali-deepseek-v4-pro` exactKey=false 但 lookupRegistry=0.435。
  *
+ * ⚠ 上面那条约束（2026-08-20）已从「注释里的警告」升级为**类型层面的选择**：
+ * `lookupRegistryExact` 只做精确 + 大小写不敏感，模糊兜底在 `lookupRegistryFuzzy` 里。
+ * 这里改用前者，语义与「注册表精确键」严格一致，且不必再自己维护键集合缓存。
  * 大小写各自登记（注册表里 `deepseek-v4-pro` 与 `DeepSeek-V4-Pro` 是两个键），
- * 故先精确查、再不区分大小写查一次，避免仅因大小写写法不同而漏判成渠道名。
+ * 这一层由 `lookupRegistryExact` 内部覆盖，避免仅因写法不同而漏判成渠道名。
  */
 function isBareVendorName(model: string): boolean {
-  if (bareVendorKeys === null) {
-    const entries = getRegistryEntries();
-    bareVendorKeys = new Set(entries.map(([k]) => k));
-    bareVendorKeysLower = new Set(entries.map(([k]) => k.toLowerCase()));
-  }
-  if (bareVendorKeys.has(model)) return true;
-  return bareVendorKeysLower!.has(model.toLowerCase());
+  return lookupRegistryExact(model) !== null;
 }
-
-/** 注册表键集合缓存（注册表是编译期常量，只需构建一次）。 */
-let bareVendorKeys: Set<string> | null = null;
-let bareVendorKeysLower: Set<string> | null = null;
 
 /**
  * 厂商**官方**端点白名单（host 后缀匹配）。

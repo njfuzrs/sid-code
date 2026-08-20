@@ -76,6 +76,14 @@ scheduled_tasks.lock
 /vendor/rg-*
 /packages/core/vendor/rg-*
 
+# 模型目录编译期快照（D4 §5.3）：`scripts/gen-model-catalog-snapshot.ts` 在 `make build`
+# 前生成，`packages/core/src/llm/model-catalog-snapshot-embedded.ts` 用
+# `with { type: "file" }` 嵌进 --compile 产物。走的是 opencode 路线（编译期注入），
+# 刻意不选 oh-my-pi 的「JSON 入库」路线——2.3MB 的 JSON 每次再生成都是一个巨大 diff，
+# 与仓库「保持 review 可读」的习惯冲突（§5.3 已论证）。纯本地构建物，不入库，
+# 缺失时 make build 仍能成功（占位为空快照，见生成脚本头部注释）。
+/packages/core/vendor/model-catalog-snapshot.json
+
 # eval 真实会话原始输出（P0-4 开源脱敏）
 #
 # 这三类是**跑评测时产生的运行时产物**，内容是真实用户会话的逐字转储：本机绝对路径、

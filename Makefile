@@ -61,6 +61,7 @@ help:
 build:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
+	-$(BUN) run scripts/gen-model-catalog-snapshot.ts
 	$(BUN) build --compile $(BUILD_DEFINES) --outfile $(BINARY) packages/cli/src/entrypoints/bootstrap.ts
 	@./$(BINARY) --self-check
 

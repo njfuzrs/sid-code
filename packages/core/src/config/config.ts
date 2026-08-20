@@ -1666,14 +1666,24 @@ export function resolveMaxOutputTokensForModel(
     const modelConfig = availableModels.find((m) => m.name === model);
     if (modelConfig?.maxOutputTokens) return modelConfig.maxOutputTokens;
   }
-  // 兜底：从内置模型注册表获取（避免用户未配置时退化到硬编码 32768）。
-  // 这一步必须换成**真名**——lookupRegistry 是精确/前缀/家族匹配，喂本地别名
+  // 兜底：从内置模型注册表 + 采集缓存获取（避免用户未配置时退化到硬编码 32768）。
+  // 这一步必须换成**真名**——三个查询函数都是按名匹配，喂本地别名
   // （claude-sonnet-5-gateway）会 miss 到 undefined → 不钳制 → 把主模型的高 maxTokens
   // 原样发出去吃 400。别名与真名相同时 resolveWireModel 原样返回，行为不变。
-  const { lookupRegistry } = require("../llm/model-registry.ts");
+  //
+  // 三段顺序与 token-estimator.getMaxOutputTokens 严格同构（registry 精确 → 采集精确 →
+  // registry 模糊），见那里的注释：所有精确匹配必须排在所有模糊匹配之前。原先这里是一次
+  // `lookupRegistry` 调用（内含六级模糊）且**完全不查采集缓存**，于是注册表靠前缀猜出来的
+  // 上限会盖掉采集到的真值，而采集覆盖不到时又直接落 undefined。
+  const { lookupRegistryExact, lookupRegistryFuzzy } = require("../llm/model-registry.ts");
+  const { lookupCapability } = require("../llm/model-capabilities.ts");
   const { resolveWireModel } = require("../llm/wire-model.ts");
-  const entry = lookupRegistry(resolveWireModel(model, availableModels));
-  return entry?.maxOutputTokens || undefined;
+  const wire = resolveWireModel(model, availableModels);
+  const exact = lookupRegistryExact(wire)?.maxOutputTokens;
+  if (exact) return exact;
+  const dynamic = lookupCapability(wire)?.maxOutputTokens;
+  if (dynamic) return dynamic;
+  return lookupRegistryFuzzy(wire)?.maxOutputTokens || undefined;
 }
 
 /** 从 availableModels 中查找当前模型的 maxOutputTokens，

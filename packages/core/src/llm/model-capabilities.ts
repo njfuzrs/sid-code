@@ -58,6 +58,7 @@ import { getLogger } from "../debug/logger.ts";
 import { isPromptTooLong } from "../api/errors.ts";
 // 「写哪些键」与「查哪些键」的唯一事实源（互为镜像，对称性由单测锁住）
 import { expandKeys, normalizeCandidates } from "./model-name-normalize.ts";
+import { IS_DEV_MODE } from "../bootstrap/resolve-executable.ts";
 
 /**
  * ⚠ 每次调用时取 logger，不可模块级捕获——与 gateway-pricing.ts 同理：
@@ -108,6 +109,17 @@ interface CapabilityCacheFile {
   /** 外部目录上次同步时间（成功/失败都记，用于 TTL 与退避）。 */
   catalog_synced_at?: number;
   catalog_fail_count?: number;
+  /**
+   * 各源上次成功响应的 HTTP validator（`{ [源名]: { etag?, lastModified? } }`），用于条件请求。
+   *
+   * ⚠ 只有**本地确实存有该源解析出来的正文**时才允许下发 validator。304 意味着「你手上那份
+   * 还有效」——若我们手上其实没有正文（缓存被删、schema bump 作废、或换了源名），
+   * 下发 validator 换回一个 304 就等于把覆盖层变成空的，而且没有任何报错。
+   * 判据落在 `catalog_body_present` 上，与本字段配对使用，缺一不可。
+   */
+  catalog_validators?: Record<string, { etag?: string; lastModified?: string }>;
+  /** 上一轮同步中「确实解析出过非空正文」的源名集合。condition 请求的放行判据，见上。 */
+  catalog_body_present?: string[];
 }
 
 /**
@@ -222,7 +234,12 @@ const CATALOG_SOURCES: readonly CatalogSource[] = [
 // ─────────────────────────────────────────────────────────────
 
 let memModels: Record<string, ModelCapabilityEntry> | null = null;
-let memMeta: { syncedAt?: number; failCount?: number } = {};
+let memMeta: {
+  syncedAt?: number;
+  failCount?: number;
+  validators?: Record<string, { etag?: string; lastModified?: string }>;
+  bodyPresent?: string[];
+} = {};
 
 /** 读缓存文件（含 schema 校验）。失败返回 null。 */
 function readCacheFile(): CapabilityCacheFile | null {
@@ -245,7 +262,12 @@ export function loadCapabilityCache(): void {
   if (memModels !== null) return;
   memModels = {};
   const file = readCacheFile();
-  if (!file) return;
+  if (!file) {
+    // 磁盘缓存不存在（首次安装/被清空）：用编译期快照兜底，跳过磁盘那一层的时间戳比较——
+    // 没有磁盘数据可比，快照就是当前唯一的数据源。
+    applyBuildTimeSnapshot(undefined);
+    return;
+  }
 
   // ⚠ 关键：磁盘数据一律视为不可信（可能被手工改坏、被旧版本写入、或被外部工具篡改），
   // 必须逐条过一遍与 mergeEntry 同源的校验，不能直接 `memModels = file.models`。
@@ -270,11 +292,88 @@ export function loadCapabilityCache(): void {
   }
 
   memModels = sanitized;
-  memMeta = { syncedAt: file.catalog_synced_at, failCount: file.catalog_fail_count };
+  memMeta = {
+    syncedAt: file.catalog_synced_at,
+    failCount: file.catalog_fail_count,
+    validators: sanitizeValidators(file.catalog_validators),
+    bodyPresent: sanitizeSourceNames(file.catalog_body_present),
+  };
   log().debug(
     "MODEL-CAP",
     `载入模型能力缓存 ${Object.keys(sanitized).length} 条${dropped > 0 ? `（丢弃 ${dropped} 条非法数据）` : ""}`,
   );
+
+  // 磁盘缓存存在，但快照可能比它更新（用户很久没启动过，或磁盘缓存是旧版本采的）。
+  // 传入 catalog_synced_at 供时间戳比较，见 applyBuildTimeSnapshot 头部注释。
+  applyBuildTimeSnapshot(file.catalog_synced_at);
+}
+
+/**
+ * 加载顺序第三层：编译期快照（D4 §5.3）。只填补 `memModels` 里**缺失**的键，
+ * 从不覆盖已有条目——这一步发生在磁盘缓存已经载入之后，磁盘数据永远更权威
+ * （用户本机真实同步过，比编译时打进二进制的那份更新）。
+ *
+ * ⚠ 时间戳判定（§5.3 配套事 2，对标 pi 的 localGeneratedAt）：**只有磁盘从未同步过
+ * 或快照比磁盘更新时才使用快照**。理由：一个装了很久没升级的二进制，其快照可能
+ * 早于用户本机已经采集到的数据；反过来判定（无条件优先快照）会用旧数据覆盖新数据，
+ * 这正是 opencode 那套 `loadFromDisk` 无条件优先的弱点，§5.3 明确指出不要照抄。
+ *
+ * `diskSyncedAt` 为 `undefined` 表示磁盘缓存本身不存在/从未同步过外部目录 ——
+ * 此时快照必然「更新」（没有基线可比），直接全量填补。
+ */
+function applyBuildTimeSnapshot(diskSyncedAt: number | undefined): void {
+  if (IS_DEV_MODE) return; // dev 模式没有嵌入的快照，见 model-catalog-snapshot-embedded.ts
+  let snapshot: { generatedAt: number; models: Record<string, unknown> } | null = null;
+  try {
+    // 动态 require：避免 dev 模式静态解析 vendor/model-catalog-snapshot.json（守卫已在
+    // 上方拦住 dev）。与 ensure-ripgrep.ts 对 rg-embedded.ts 的引用方式同构。
+    const { snapshotPath } = require("./model-catalog-snapshot-embedded.ts") as {
+      snapshotPath: string;
+    };
+    const text = readFileSync(snapshotPath, "utf8");
+    if (text.length > 0) snapshot = JSON.parse(text);
+  } catch {
+    return; // 嵌入缺失/为空/损坏：静默跳过，不影响磁盘缓存 + 联网同步这两层
+  }
+  mergeSnapshotIntoMemory(snapshot, diskSyncedAt);
+}
+
+/**
+ * 快照 → 内存的合并逻辑，从 `applyBuildTimeSnapshot` 拆出来是为了**可测**：
+ * `IS_DEV_MODE` 在 `bun test` 下恒为 true（跑的是源码，不是编译产物），
+ * 意味着 `applyBuildTimeSnapshot` 整个函数体在单测里永远短路 —— 与 rg-embedded 那条
+ * 「光跑测试测不出来」的注释是同一个成因。把「判定 + 合并」这个纯逻辑单独拆出来，
+ * 单测才能绕开 IS_DEV_MODE 直接喂一份构造的快照验证边界条件（不覆盖磁盘 / 时间戳判定）。
+ */
+function mergeSnapshotIntoMemory(
+  snapshot: { generatedAt: number; models: Record<string, unknown> } | null,
+  diskSyncedAt: number | undefined,
+): void {
+  if (!snapshot || typeof snapshot.generatedAt !== "number" || !snapshot.models) return;
+  if (diskSyncedAt !== undefined && snapshot.generatedAt <= diskSyncedAt) return; // 快照不比磁盘新
+
+  const models = memModels ?? (memModels = {});
+  let filled = 0;
+  for (const [key, raw] of Object.entries(snapshot.models)) {
+    if (models[key]) continue; // 磁盘已有这个模型的数据，不覆盖（磁盘更权威）
+    const clean = sanitizeEntry({ ...(raw as object), source: "catalog" });
+    if (clean) {
+      models[key] = clean;
+      filled++;
+    }
+  }
+  if (filled > 0) {
+    log().debug("MODEL-CAP", `编译期快照补齐 ${filled} 条（磁盘缓存未覆盖的模型）`);
+  }
+}
+
+/** 仅测试用：绕开 IS_DEV_MODE + require 嵌入文件，直接对内存态应用一份构造的快照。 */
+export function __applySnapshotForTest(
+  snapshot: { generatedAt: number; models: Record<string, unknown> } | null,
+  diskSyncedAt: number | undefined,
+): void {
+  if (memModels === null) loadCapabilityCache();
+  mergeSnapshotIntoMemory(snapshot, diskSyncedAt);
 }
 
 /**
@@ -362,11 +461,16 @@ function persist(): void {
       Number.isFinite(diskAt) &&
       (memMeta.syncedAt === undefined || diskAt > memMeta.syncedAt);
 
+    // validator 与 bodyPresent 跟着 catalog_synced_at 那一对整体走，理由同上：它们描述的也是
+    // 「上一次同步这个事件」。把我们的 validator 配上别人的 syncedAt，会让下一轮拿一个过期
+    // validator 去请求，换回 304 之后以为「还有效」——而本地那份正文其实来自另一次同步。
     const file: CapabilityCacheFile = {
       schema_version: SCHEMA_VERSION,
       models,
       catalog_synced_at: useDiskMeta ? diskAt : memMeta.syncedAt,
       catalog_fail_count: useDiskMeta ? disk?.catalog_fail_count : memMeta.failCount,
+      catalog_validators: useDiskMeta ? disk?.catalog_validators : memMeta.validators,
+      catalog_body_present: useDiskMeta ? disk?.catalog_body_present : memMeta.bodyPresent,
     };
     // 原子写：先写临时文件再 rename，避免进程在 writeFileSync 中途被杀导致
     // 半截 JSON 落盘（下次启动 JSON.parse 失败 → 整份缓存作废、退回兜底）。
@@ -397,6 +501,9 @@ export function lookupCapability(model: string): ModelCapabilityEntry | null {
     const hit = models[key];
     if (hit) return hit;
   }
+  // miss：异步补一次目录同步（异步 + 防抖 + 尊重失败退避，见 maybeTriggerMissRefresh）。
+  // 本次查询仍走调用方的兜底，不因这次 miss 而阻塞或改变返回值。
+  maybeTriggerMissRefresh(Date.now());
   return null;
 }
 
@@ -419,6 +526,39 @@ function mergeEntry(model: string, patch: ModelCapabilityEntry): void {
   const next: ModelCapabilityEntry = { ...base, ...clean };
   next.fetchedAt = clean.fetchedAt ?? Date.now();
   memModels[key] = next;
+}
+
+/**
+ * 校验磁盘上的 validator 表。
+ *
+ * validator 会被原样塞进出网请求头，所以它是**磁盘 → 请求头**的一条数据通路，必须当不可信
+ * 输入处理：长度封顶、剔掉含 CR/LF 的值（否则一个被手工改坏的缓存文件能做请求头注入）。
+ */
+function sanitizeValidators(
+  raw: unknown,
+): Record<string, { etag?: string; lastModified?: string }> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, { etag?: string; lastModified?: string }> = {};
+  const okHeader = (v: unknown): v is string =>
+    typeof v === "string" && v.length > 0 && v.length <= 256 && !/[\r\n]/.test(v);
+  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!name || name.length > 64 || !v || typeof v !== "object") continue;
+    const r = v as { etag?: unknown; lastModified?: unknown };
+    const one: { etag?: string; lastModified?: string } = {};
+    if (okHeader(r.etag)) one.etag = r.etag;
+    if (okHeader(r.lastModified)) one.lastModified = r.lastModified;
+    if (one.etag || one.lastModified) out[name] = one;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** 校验源名列表（磁盘不可信；只做长度与类型约束）。 */
+function sanitizeSourceNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names = (raw as unknown[]).filter(
+    (s): s is string => typeof s === "string" && s.length > 0 && s.length <= 64,
+  );
+  return names.length > 0 ? [...new Set(names)] : undefined;
 }
 
 /** 严格数值校验：第三方数据不可信，非有限/非正/非整一律丢弃（含 Infinity/NaN）。 */
@@ -712,6 +852,57 @@ export function shouldSyncCatalogs(now = Date.now()): boolean {
 }
 
 /**
+ * miss 触发刷新的最小间隔（防抖）。**这个值没有实测依据，是按「不至于让一个错模型名把我们
+ * 打成 DDoS 客户端」的直觉定的，不是测的**——诚实标注，不要把它当成经过压测的结论。
+ * 不经 env 开放覆盖：这是内部节流参数，不是用户需要调的旋钮，开放了只会多一个「新增
+ * SID_* 就要同步 help.ts + docs:gen-reference」的负担，收益却很小。
+ */
+const MISS_REFRESH_DEBOUNCE_MS = 10 * 60 * 1000;
+
+/** 上一次因 miss 触发刷新的时间（进程内状态，不落盘——重启即重置，可接受）。 */
+let lastMissTriggerAt: number | undefined;
+/** 当前是否有一次 miss 触发的刷新正在飞行（避免同一进程内并发发起多个刷新请求）。 */
+let missRefreshInFlight = false;
+
+/**
+ * miss 触发刷新：查询未命中时，异步 + 防抖地补一次外部目录同步，把「新模型上线 → 我们知道」
+ * 的窗口从最坏 1 天（TTL）压到 ~10 分钟。
+ *
+ * 三条约束缺一不可，否则一个不存在的模型名会让我们每轮都触发全量拉取，被当成 DDoS 客户端：
+ * 1. **异步**：fire-and-forget，不阻塞调用方（本次查询仍走兜底）；
+ * 2. **防抖**：同一进程 10 分钟内最多触发一次，不因反复查同一个/不同的未知模型名而叠加；
+ * 3. **尊重现有失败退避**：`computeCatalogBackoffMs`——连续失败时防抖间隔之外还要再等退避期。
+ *
+ * 命中 TTL 正常同步周期时不重复触发（`shouldSyncCatalogs` 已经会同步，本函数只覆盖
+ * TTL 还没到但用户查了一个我们没有的模型这种情况）。
+ */
+function maybeTriggerMissRefresh(now: number): void {
+  // 测试态（persistDisabled）绝不触网：lookupCapability 在单测里被大量喂未知模型名，
+  // 若不挡住，每个查 miss 的用例都会在后台发起一次真实 HTTP 请求 —— 慢、不确定、
+  // 且会把网络故障伪装成测试 flake。生产路径从不置位 persistDisabled，不受影响。
+  if (persistDisabled) return;
+  if (missRefreshInFlight) return;
+  if (lastMissTriggerAt !== undefined && now - lastMissTriggerAt < MISS_REFRESH_DEBOUNCE_MS) return;
+  const fails = memMeta.failCount ?? 0;
+  if (fails > 0 && now - (memMeta.syncedAt ?? 0) < computeCatalogBackoffMs(fails)) return;
+  lastMissTriggerAt = now;
+  missRefreshInFlight = true;
+  void syncExternalCatalogs({ now })
+    .catch(() => {
+      /* 失败已在 syncExternalCatalogs 内部记退避，这里无需重复处理 */
+    })
+    .finally(() => {
+      missRefreshInFlight = false;
+    });
+}
+
+/** 仅测试用：重置 miss 触发刷新的防抖状态。 */
+export function __resetMissRefreshStateForTest(): void {
+  lastMissTriggerAt = undefined;
+  missRefreshInFlight = false;
+}
+
+/**
  * 同步外部模型目录 → 合并进能力缓存。
  *
  * ⚠ 累加器是「一个键 → 一组候选」（`Record<string, {entry, source}[]>`），**不是**逐条两两折叠。
@@ -731,15 +922,35 @@ export async function syncExternalCatalogs(opts?: {
 
   const candidates: Record<string, CandidateEntry[]> = {};
   const okSources: string[] = [];
+  const notModifiedSources: string[] = [];
   const failed: string[] = [];
+  const nextValidators: Record<string, { etag?: string; lastModified?: string }> = {
+    ...memMeta.validators,
+  };
+  const bodyPresent = new Set(memMeta.bodyPresent ?? []);
 
   for (const src of CATALOG_SOURCES) {
-    const parsed = await fetchCatalog(src, timeoutMs);
+    // 条件请求：只有「上一轮这个源确实解析出过正文」时才带 validator ——
+    // 否则本地其实没有那份数据，304 会让覆盖层变空（见 fetchCatalog 头部注释）。
+    const { parsed, notModified, validator } = await fetchCatalog(src, timeoutMs, {
+      allowConditional: bodyPresent.has(src.name),
+      validator: memMeta.validators?.[src.name],
+    });
+    if (validator) nextValidators[src.name] = validator;
+
+    if (notModified) {
+      // 304：本地这份仍有效，既不是失败也不产出新候选，但要保留在 bodyPresent 里
+      // （下一轮还可以继续带 validator），且不牵连整体判定为失败。
+      notModifiedSources.push(src.name);
+      continue;
+    }
     if (!parsed) {
       failed.push(src.name);
+      bodyPresent.delete(src.name); // 这轮没拿到正文，下一轮不能再假装有 validator 可用
       continue;
     }
     okSources.push(src.name);
+    bodyPresent.add(src.name);
     for (const [name, entries] of Object.entries(parsed)) {
       const bucket = (candidates[name] ??= []);
       for (const entry of entries) bucket.push({ entry, source: src.name });
@@ -752,7 +963,12 @@ export async function syncExternalCatalogs(opts?: {
     if (voted) merged[name] = voted;
   }
 
-  if (okSources.length === 0) {
+  memMeta.validators = Object.keys(nextValidators).length > 0 ? nextValidators : undefined;
+  memMeta.bodyPresent = bodyPresent.size > 0 ? [...bodyPresent] : undefined;
+
+  // 「有效」= 拿到新数据的源 + 确认未变更的源。两者都说明这个源本身是健康的，
+  // 只统计 okSources.length === 0 会把「全员 304」误判成「全部失败」并触发退避。
+  if (okSources.length === 0 && notModifiedSources.length === 0) {
     // 全部失败：记退避，保留旧缓存（能力查询继续用上次的数据）。
     memMeta.failCount = (memMeta.failCount ?? 0) + 1;
     memMeta.syncedAt = now;
@@ -772,7 +988,8 @@ export async function syncExternalCatalogs(opts?: {
   persist();
   log().debug(
     "MODEL-CAP",
-    `外部目录同步完成：${Object.keys(merged).length} 条 / 源 ${okSources.join("+")}`,
+    `外部目录同步完成：${Object.keys(merged).length} 条 / 源 ${okSources.join("+")}` +
+      (notModifiedSources.length > 0 ? ` / 未变更 ${notModifiedSources.join("+")}` : ""),
   );
   return { updated: Object.keys(merged).length, sources: okSources, failed };
 }
@@ -969,11 +1186,32 @@ async function readBodyCapped(resp: Response): Promise<Uint8Array> {
   return out;
 }
 
-/** 拉取并解析单个目录源。任何失败（网络/超时/超限/解压失败/非 JSON/schema 异常）返回 null。 */
+/** 单源拉取结果。`notModified` 与 `parsed === null` 是两件事，调用方必须区分。 */
+interface FetchCatalogResult {
+  /** 解析出的多值条目表。304 或失败时为 null。 */
+  parsed: Record<string, ModelCapabilityEntry[]> | null;
+  /** 服务端返回 304：本地那份仍然有效，不是失败（不计退避、不清 validator）。 */
+  notModified: boolean;
+  /** 本次响应带回的 validator，供下一轮条件请求使用。 */
+  validator?: { etag?: string; lastModified?: string };
+}
+
+/**
+ * 拉取并解析单个目录源。任何失败（网络/超时/超限/解压失败/非 JSON/schema 异常）→
+ * `{ parsed: null, notModified: false }`。
+ *
+ * ── 条件请求（If-None-Match / If-Modified-Since）─────────────────────
+ *
+ * 只在 `allowConditional` 为真时下发 validator。调用方据「本地是否确实存有该源解析出来的
+ * 正文」来决定 —— 这条判据不能省：304 的语义是「你手上那份还有效」，而如果我们手上其实
+ * 没有正文（缓存文件被删、schema bump 作废、源名改过），下发 validator 换回 304 就等于
+ * 把覆盖层变成空的，**且没有任何报错**。对标 pi 的同名注释。
+ */
 async function fetchCatalog(
   src: CatalogSource,
   timeoutMs: number,
-): Promise<Record<string, ModelCapabilityEntry[]> | null> {
+  opts?: { allowConditional?: boolean; validator?: { etag?: string; lastModified?: string } },
+): Promise<FetchCatalogResult> {
   const ctl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -981,15 +1219,27 @@ async function fetchCatalog(
     ctl.abort();
   }, timeoutMs);
   try {
-    const resp = await fetch(src.url, {
-      method: "GET",
-      // zstd 源返回的是 application/octet-stream 一类，别声明只接受 JSON。
-      headers: { accept: src.decompress ? "*/*" : "application/json" },
-      signal: ctl.signal,
-    });
+    // zstd 源返回的是 application/octet-stream 一类，别声明只接受 JSON。
+    const headers: Record<string, string> = {
+      accept: src.decompress ? "*/*" : "application/json",
+    };
+    if (opts?.allowConditional && opts.validator) {
+      if (opts.validator.etag) headers["if-none-match"] = opts.validator.etag;
+      else if (opts.validator.lastModified) {
+        headers["if-modified-since"] = opts.validator.lastModified;
+      }
+    }
+    const resp = await fetch(src.url, { method: "GET", headers, signal: ctl.signal });
+    const validator = readValidator(resp);
+    if (resp.status === 304) {
+      // 本地那份仍有效。不读正文、不解析，也**不算失败** —— 计进退避会让「数据没变」
+      // 被当成「源挂了」，几轮之后把 TTL 拖到 24h 封顶。
+      log().debug("MODEL-CAP", `目录源 304 未变更，沿用本地数据`, { url: src.url });
+      return { parsed: null, notModified: true, validator };
+    }
     if (!resp.ok) {
       log().debug("MODEL-CAP", `目录源 HTTP ${resp.status}`, { url: src.url });
-      return null;
+      return { parsed: null, notModified: false };
     }
     const body = await readBodyCapped(resp);
     // 解压后的体积不再设第二道上限：zstd 源实测 140KB → 4.0MB（约 29 倍），而压缩包本身
@@ -999,16 +1249,36 @@ async function fetchCatalog(
       src.decompress === "zstd" ? Bun.zstdDecompressSync(body) : body,
     );
     const out = src.parse(JSON.parse(text) as unknown);
-    return Object.keys(out).length > 0 ? out : null;
+    return {
+      parsed: Object.keys(out).length > 0 ? out : null,
+      notModified: false,
+      // 解析为空时不留 validator：留了下一轮就会拿它换一个 304，把「解析不出东西」
+      // 固化成「本地那份还有效」，而本地并没有那份东西。
+      validator: Object.keys(out).length > 0 ? validator : undefined,
+    };
   } catch (e) {
     // 与 gateway-pricing 同理：这是纯优化项，失败对用户不可行动 → debug 级，不惊扰终端。
     log().debug("MODEL-CAP", timedOut ? `目录源超时 ${timeoutMs}ms` : `目录源失败: ${String(e)}`, {
       url: src.url,
     });
-    return null;
+    return { parsed: null, notModified: false };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 从响应头读 validator（两者都缺则 undefined，代表该源不支持条件请求）。 */
+function readValidator(resp: Response): { etag?: string; lastModified?: string } | undefined {
+  const etag = resp.headers.get("etag") ?? undefined;
+  const lastModified = resp.headers.get("last-modified") ?? undefined;
+  if (!etag && !lastModified) return undefined;
+  const out: { etag?: string; lastModified?: string } = {};
+  // 与磁盘侧同一套约束（长度 + 无 CR/LF）：这个值会被写盘、下一轮再塞进请求头。
+  if (etag && etag.length <= 256 && !/[\r\n]/.test(etag)) out.etag = etag;
+  if (lastModified && lastModified.length <= 256 && !/[\r\n]/.test(lastModified)) {
+    out.lastModified = lastModified;
+  }
+  return out.etag || out.lastModified ? out : undefined;
 }
 
 // ─────────────────────────────────────────────────────────────

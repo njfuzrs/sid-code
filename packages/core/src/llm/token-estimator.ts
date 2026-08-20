@@ -4,7 +4,7 @@
  */
 
 import type { Message, ToolDefinition } from "./types.ts";
-import { lookupRegistry } from "./model-registry.ts";
+import { lookupRegistryExact, lookupRegistryFuzzy } from "./model-registry.ts";
 import { lookupCapability } from "./model-capabilities.ts";
 import { resolveWireModel } from "./wire-model.ts";
 // 审计第 21 条：收敛到 context/token.ts 的统一块估算（补全 thinking/redacted_thinking/mediaBlocks）。
@@ -94,10 +94,19 @@ export class TokenEstimator {
   /**
    * 获取模型的上下文窗口大小。
    *
-   * 优先级（SSOT）：
+   * 优先级（SSOT）—— 判据一句话：**所有精确匹配排在所有模糊匹配之前，无论数据来自哪一层**：
    *   1. 用户配置 availableModels[].contextWindow —— 权威来源，用户自己声明的最准
-   *   2. 内置静态表精确匹配 / 最长前缀 / 家族匹配
-   *   3. 兜底 SID_FALLBACK_CONTEXT_WINDOW / 默认 1M（2026 年主流模型普遍 1M）
+   *   2. 别名 → 真名（resolveWireModel）
+   *   3. 内置注册表**精确**命中（lookupRegistryExact）
+   *   4. 采集缓存**精确**命中（lookupCapability，~3000 条，本身只做精确匹配）
+   *   5. 内置注册表**模糊**兜底（lookupRegistryFuzzy：前缀 / 路由剥离 / 版本借用 / 家族）
+   *   6. 兜底 SID_FALLBACK_CONTEXT_WINDOW / 默认 1M（2026 年主流模型普遍 1M）
+   *
+   * ⚠ 第 3–5 步的顺序是本函数最容易被改坏的地方（2026-08-20 修正）。原先第 3/5 步是**合在
+   * 一起的一次 `lookupRegistry` 调用**且整体排在第 4 步之前，于是一个 90 条、带六级模糊匹配
+   * 的手写表压在数千条精确采集数据上面：`glm-5.3` 靠前缀命中 `glm-5` 的 200K 就 return，
+   * 采集到的真实 1M 永远看不到（低估 5 倍）。两条理由支撑现在这个顺序，且互不矛盾：
+   * 精确的手写表比第三方采集准（3 在 4 前）；第三方**精确命中**比手写表**猜的**准（4 在 5 前）。
    *
    * @param model 模型名
    * @param availableModels 可选，用户配置的模型列表（携带权威 contextWindow）
@@ -124,11 +133,11 @@ export class TokenEstimator {
     // 塞太多 token 吃 400，且不报错。用户配了 contextWindow 时上面已返回，走不到这里。
     const wire = resolveWireModel(model, availableModels);
 
-    // 2. 从统一注册表查找（替代旧的 MODEL_CONTEXT_LIMITS 静态表）
-    const entry = lookupRegistry(wire);
-    if (entry) return entry.contextWindow;
+    // 3. 注册表**精确**命中：手写表的精确键比第三方采集准，所以排在采集之前。
+    const exact = lookupRegistryExact(wire);
+    if (exact) return exact.contextWindow;
 
-    // 2.5 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得）。
+    // 4. 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得），本身只做精确匹配。
     //     这是「未知模型也有准确窗口」的关键一环：注册表覆盖不到的新模型（网关先上线、
     //     或用户自配的任意模型）在这里拿到真实窗口，而不是落到 1M 兜底。
     //     实测意义：gpt-5.3-codex 真实窗口 272K，兜底 1M 会高估 3.8 倍——高估直接导致
@@ -142,6 +151,11 @@ export class TokenEstimator {
     const dynamic = lookupCapability(wire)?.contextWindow;
     if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
 
+    // 5. 注册表**模糊**兜底：前缀 / 路由剥离 / 版本借用 / 家族匹配。三层精确数据全 miss
+    //    才走到这里，此时「猜一个有约束的值」优于直接落 1M 兜底。
+    const fuzzy = lookupRegistryFuzzy(wire);
+    if (fuzzy) return fuzzy.contextWindow;
+
     // 兜底：未知模型回退到可配置的默认值（1M）。
     // 详见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md
     return resolveFallbackWindow();
@@ -150,9 +164,10 @@ export class TokenEstimator {
   /**
    * §12 P3-2：获取模型单次响应的最大输出 token 数（完成缓冲区的「输出预留」分量）。
    *
-   * 优先级与 getContextLimit 一致：用户配置 availableModels[].maxOutputTokens > 内置注册表。
-   * 两者都拿不到时返回 undefined——由 ContextManager 用默认预留兜底，而不是在这里编一个数字
-   * （编出来的值会被当成"已知事实"参与阈值计算，比明确的 undefined 更危险）。
+   * 优先级与 getContextLimit **完全同构**（用户配置 → registry 精确 → 采集精确 → registry 模糊），
+   * 同构是刻意的：两个字段来自同一批数据源、同一套匹配规则，让它们分叉只会得到两套各自
+   * 演化各自出错的优先级。全部 miss 时返回 undefined —— 由 ContextManager 用默认预留兜底，
+   * 而不是在这里编一个数字（编出来的值会被当成"已知事实"参与阈值计算，比明确的 undefined 更危险）。
    */
   getMaxOutputTokens(
     model: string,
@@ -168,14 +183,19 @@ export class TokenEstimator {
     }
     // 与 getContextLimit 同源：注册表 / 动态缓存按真名查，别名会静默 miss。
     const wire = resolveWireModel(model, availableModels);
-    const entry = lookupRegistry(wire);
-    if (entry && Number.isFinite(entry.maxOutputTokens) && entry.maxOutputTokens > 0) {
-      return entry.maxOutputTokens;
+    const exact = lookupRegistryExact(wire);
+    if (exact && Number.isFinite(exact.maxOutputTokens) && exact.maxOutputTokens > 0) {
+      return exact.maxOutputTokens;
     }
-    // 动态能力缓存兜底（与 getContextLimit 的优先级 2.5 同源）。仍拿不到才返回 undefined
-    // ——由 ContextManager 用默认预留兜底，而不是在这里编一个数字。
+    // 采集缓存精确命中（与 getContextLimit 第 4 步同源）。
     const dynamic = lookupCapability(wire)?.maxOutputTokens;
     if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
+    // 注册表模糊兜底（与 getContextLimit 第 5 步同源）。仍拿不到才返回 undefined
+    // ——由 ContextManager 用默认预留兜底，而不是在这里编一个数字。
+    const fuzzy = lookupRegistryFuzzy(wire);
+    if (fuzzy && Number.isFinite(fuzzy.maxOutputTokens) && fuzzy.maxOutputTokens > 0) {
+      return fuzzy.maxOutputTokens;
+    }
     return undefined;
   }
 

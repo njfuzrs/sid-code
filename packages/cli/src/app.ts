@@ -1747,10 +1747,23 @@ export class App {
     const wireModel: string = resolveWireModel(model, this.config.availableModels);
     if (this.probedModels.has(wireModel)) return;
     try {
-      const { lookupRegistry } = require("@sid-code/core/llm/model-registry.ts");
-      if (lookupRegistry(wireModel)) return;
+      // 门禁只认「精确掌握」的模型：registry 精确命中，或采集缓存里确实有 effort 档位。
+      //
+      // ⚠ 不能用 lookupRegistry（带前缀 / 版本借用 / 家族等模糊兜底）—— 它会把「猜到」
+      // 误判成「知道」，让新模型永远探不到自己的 effort 档位。实测 glm-5.3：注册表里没有它，
+      // 但它前缀命中 glm-5 → 门禁放行 → 零探针，于是这个模型在窗口之外二次受害。
+      // 同形踩坑见 gateway-pricing.ts::isBareVendorName 的注释（那里当年是在单个调用点绕开
+      // lookupRegistry，本次改成从函数层面拆开 exact/fuzzy，不必每处各自绕）。
+      // 对标 openclaw：miss 才触发刷新，「猜到」在它那里也不算 found。
+      //
+      // 条件里用 `?.effortValues` 而不是整条 entry：探针要学的就是 effort 档位，
+      // **采到了窗口但没采到档位时仍应探一次**。models.dev 镜像会直接提供
+      // reasoning_options.values，所以这个探针的实际触发率会下降 —— 那是好事（省一次请求），
+      // 但门禁语义必须先修对，否则省下的是「本该探的那一次」。
+      const { lookupRegistryExact } = require("@sid-code/core/llm/model-registry.ts");
+      if (lookupRegistryExact(wireModel)) return;
       const { lookupCapability } = require("@sid-code/core/llm/model-capabilities.ts");
-      if (lookupCapability(wireModel)) return;
+      if (lookupCapability(wireModel)?.effortValues) return;
     } catch {
       return; // 判断本身失败就不冒险探，探针是纯优化项
     }
