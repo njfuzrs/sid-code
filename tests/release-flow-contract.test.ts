@@ -174,6 +174,54 @@ describe("github-release.ts：正文取自 curated，且不建错 tag", () => {
   });
 });
 
+/**
+ * 发布流程与分支保护的冲突（2026-08-21 裁决）。
+ *
+ * CLAUDE.md 的铁律写「先提交再发布」，标准顺序最后一步是 `git push`。但 main 受
+ * ruleset `protect-main` 保护（PR + all-checks-passed），直推被 **GH013** 拒。
+ * 撞上时的状态是：**制品已上线、tag 已推送、bump 提交还在本地** —— 正是铁律要防的
+ * 「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。
+ *
+ * 裁决：**改文档 + 脚本给出能跑通的指引**，不开 ruleset bypass（bypass 是给人/应用
+ * 开的口子而非给某个提交，开了任何直推都能绕过汇聚门，而全量 CI 与 GitHub Release
+ * 都挂在那道门上）。
+ */
+describe("发布流程 ↔ 分支保护冲突（2026-08-21 裁决）", () => {
+  const CLAUDE_MD = readFileSync(join(ROOT, "CLAUDE.md"), "utf8");
+
+  test("CLAUDE.md 的收尾步骤不再是裸 git push（那条命令在本仓必然被 GH013 拒）", () => {
+    // 取「发布上线」到下一个二级标题之间那段
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
+    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    expect(body).toContain("GH013");
+    expect(body).toMatch(/gh pr (create|merge)/);
+    // 反向断言：不许再出现「独占一行的 git push」作为收尾指引
+    expect(body).not.toMatch(/^git push\s*$/m);
+  });
+
+  test("文档写明必须 merge 不能 squash（tag 已打在 bump 提交上）", () => {
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
+    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    expect(body).toMatch(/squash/i);
+    expect(body).toContain("--merge");
+    // 必须给出可核验的判据，而不是只写一句"要用 merge"
+    expect(body).toContain("merge-base --is-ancestor");
+  });
+
+  test("release.sh 收尾指引提到保护与 PR 路径（不让人先撞一次 GH013）", () => {
+    const seg = RELEASE_SH.slice(posOf("官网 /changelog 是站点构建期快照"));
+    expect(seg).toMatch(/protect-main|GH013/);
+    expect(seg).toMatch(/gh pr create/);
+    expect(seg).toMatch(/--merge/);
+  });
+
+  test("文档说明 northstar/ 是要求入库的产物，不是脏数据", () => {
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
+    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    expect(body).toContain("northstar/");
+  });
+});
+
 describe("release.sh：工作区洁净门禁（缺陷④）", () => {
   test("支持 --allow-dirty，且默认为 false", () => {
     expect(RELEASE_SH).toContain("--allow-dirty");

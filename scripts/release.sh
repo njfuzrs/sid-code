@@ -906,8 +906,45 @@ done"
     echo "  📄 更新日志（文本）: ${PUBLIC_BASE_URL}/releases/sid-code/CHANGELOG.md"
     echo ""
     echo "  ⚠️  官网 /changelog 是站点构建期快照，本次发布还没上线到站点。"
-    echo "      按铁律补完 bump 提交后，再跑一次："
-    echo "          ./scripts/website-deploy.sh"
+    echo ""
+
+    # ─── 收尾指引：bump 提交怎么进 main ───
+    #
+    # 这一段 2026-08-21 加。此前脚本只说「按铁律补完 bump 提交后跑 website-deploy.sh」，
+    # 而铁律写的是 `git push` —— 那条命令在本仓**必然失败**：ruleset `protect-main`
+    # 要求 PR + all-checks-passed，直推被 GH013 拒
+    # （`Changes must be made through a pull request`）。
+    #
+    # 后果不是"多打几条命令"那么轻：此刻**制品已上线、tag 已推送，而 bump 提交还在本地**，
+    # 正是铁律要防的「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。
+    # 照着一条注定失败的指引走，人会在这个窗口里卡住 —— 所以这里按实际保护状态给出
+    # **能跑通**的命令，而不是让人先撞一次 GH013 再自己想办法。
+    #
+    # ⚠ 合并方式必须是 merge 不能 squash：tag 已经打在 bump 提交上，squash 会另造一个
+    # 提交、原提交不进 main，于是 tag 指向一个游离提交 —— `git checkout <tag>` 仍能用，
+    # 但 `git merge-base --is-ancestor <tag> main` 会失败，"产物对应确切 commit"这条
+    # 就退化成"对应一个不在主线上的 commit"。本仓 allow_merge_commit=true，用 --merge。
+    _release_branch="chore/release-${VERSION}"
+    if git remote get-url origin >/dev/null 2>&1 &&
+        git ls-remote --exit-code --heads origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 &&
+        [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then
+        echo "  ⚠️  main 受 ruleset protect-main 保护，\`git push\` 会被 GH013 拒绝。"
+        echo "      bump 提交（tag 就打在它上面）需要走 PR 才能进 main："
+        echo ""
+        echo "          git switch -c ${_release_branch}"
+        echo "          git push -u origin ${_release_branch}"
+        echo "          gh pr create --base main --fill"
+        echo "          gh pr merge --auto --merge   # ⚠ 必须 --merge，不能 squash（见下）"
+        echo ""
+        echo "      squash 会另造提交，tag 就指向一个不在 main 上的游离提交。"
+        echo "      合并后回到 main 并同步，再发布官网："
+        echo ""
+        echo "          git switch main && git pull"
+        echo "          ./scripts/website-deploy.sh"
+    else
+        echo "      按铁律补完 bump 提交后，再跑一次："
+        echo "          git push && ./scripts/website-deploy.sh"
+    fi
 else
     echo ""
     echo "  提示：加 --upload 参数可上传到服务器（凭据读自 scripts/deploy.env）"

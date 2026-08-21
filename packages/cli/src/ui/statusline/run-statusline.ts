@@ -52,7 +52,13 @@ export interface StatusLineSessionData {
  */
 export type { StatusLineConfig } from "@sid-code/core/config/statusline-types.ts";
 
-/** 默认脚本超时（ms）。坏脚本超时即回退，绝不卡 UI。 */
+/**
+ * 默认脚本超时（ms）。坏脚本超时即回退，绝不卡 UI。
+ *
+ * ⚠️ 这是**生产常量**，测试不该直接吃它 —— 见 `runStatusLine` 的 `timeoutMs` 参数。
+ * 1s 对交互式 UI 是对的（再长用户就感到卡顿），但对满载 CI runner 上 spawn
+ * 一个子进程来说余量极小，测试撞线过三次（见 tests/ui/run-statusline.test.ts 文件头）。
+ */
 export const STATUSLINE_TIMEOUT_MS = 1000;
 /** 节流窗口（ms）：同指纹结果复用，避免高频 spawn 外部进程。 */
 export const STATUSLINE_THROTTLE_MS = 300;
@@ -89,11 +95,24 @@ function fingerprint(command: string, data: StatusLineSessionData): string {
  * @param config settings.statusLine 配置
  * @param data   会话数据（序列化为 stdin JSON）
  * @param nowMs  当前时间戳（ms）。由调用方传入（避免模块内直接读时钟，便于测试）。
+ * @param timeoutMs 脚本超时（ms），默认 `STATUSLINE_TIMEOUT_MS`。
+ *
+ *   **只为测试而存在**，生产调用方（`useCustomStatusLine.ts`）不传 —— 与上面 `nowMs`
+ *   同一个套路：把环境相关的量收到参数上，测试才能不受它摆布。
+ *
+ *   为什么需要它：1s 是**交互式 UI 的正确取值**（再长用户就感到卡顿），但测试
+ *   「用真实 shell 命令验证 spawn 路径」时余量完全取决于 runner 负载。实测撞线三次：
+ *   2026-08-13 ubuntu 上 `node -e` 耗时 **1002.91ms**（精确撞线）、
+ *   2026-08-21 ubuntu 上缓存复用那条、同日 macOS 上 `echo` 透传那条。
+ *
+ *   ⚠️ **验证超时行为本身的那条用例必须继续用默认值**，否则这道「坏脚本不卡 UI」
+ *   的保护就没有测试覆盖了 —— 那才是放宽断言的真正代价。
  */
 export async function runStatusLine(
   config: StatusLineConfig | undefined,
   data: StatusLineSessionData,
   nowMs: number,
+  timeoutMs: number = STATUSLINE_TIMEOUT_MS,
 ): Promise<string | null> {
   const command = config?.command?.trim();
   if (!config || config.type !== "command" || !command) return null;
@@ -137,14 +156,14 @@ export async function runStatusLine(
 
     // 超时保护：到点强杀，回退内置。
     const timer = setTimeout(() => {
-      log.warn("UI:STATUSLINE", `脚本超时 ${STATUSLINE_TIMEOUT_MS}ms，回退内置状态栏`);
+      log.warn("UI:STATUSLINE", `脚本超时 ${timeoutMs}ms，回退内置状态栏`);
       try {
         child.kill("SIGKILL");
       } catch {
         /* 已退出 */
       }
       finish(null);
-    }, STATUSLINE_TIMEOUT_MS);
+    }, timeoutMs);
 
     child.on("error", (err) => {
       clearTimeout(timer);
