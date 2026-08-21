@@ -1,0 +1,112 @@
+{
+  "appVersion": "0.1.601",
+  "scope": "version",
+  "generatedAt": "2026-08-21T04:16:32.348Z",
+  "windowDays": null,
+  "denominators": {
+    "activeSessions": 2,
+    "trajValidSessions": 51,
+    "ledgerSessions": 0,
+    "indexSessions": 0
+  },
+  "faster": {
+    "e2e_p50": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:e2e_p50",
+      "unit": "ms"
+    },
+    "e2e_p95": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:e2e_p95",
+      "unit": "ms"
+    },
+    "ttft_p50": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:ttft_p50",
+      "unit": "ms"
+    },
+    "ttft_p95": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:ttft_p95",
+      "unit": "ms"
+    }
+  },
+  "cheaper": {
+    "cost_per_session": {
+      "value": null,
+      "n": 0,
+      "source": "usage-ledger.jsonl:costUSD",
+      "unit": "usd"
+    },
+    "cache_hit_rate": {
+      "value": null,
+      "n": 0,
+      "source": "usage-ledger.jsonl:cacheHit÷promptTotal（按 sessionId 去重 · 排除 untrusted 渠道 · 排除无 appVersion 存量行）",
+      "unit": "ratio"
+    },
+    "turns_per_session": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:turns",
+      "unit": "count"
+    },
+    "compactions_per_session": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:compactions",
+      "unit": "count"
+    }
+  },
+  "cacheHitCaliber": {
+    "cleanPromptTotal": 0,
+    "cleanCacheHit": 0,
+    "hitRateIncludingLegacy": null,
+    "legacyHitRate": null,
+    "duplicateRows": 0,
+    "untrustedRows": 0,
+    "rowsWithoutHost": 0,
+    "legacyRows": 0,
+    "countedSessions": 0
+  },
+  "fewerRedos": {
+    "real_errors_per_session": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:real_errors（仅有终态会话）",
+      "unit": "count"
+    },
+    "pathological_session_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:pathological（仅有终态会话）",
+      "unit": "ratio"
+    }
+  },
+  "foundation": {
+    "defense_trigger_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:defense_triggered",
+      "unit": "ratio"
+    },
+    "traj_corrupt_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:traj_corrupt（仅已检测行 · 排除增量行与无 detected_by 的存量行）",
+      "unit": "ratio"
+    },
+    "rows_without_version": 0
+  },
+  "trajCorruptCaliber": {
+    "detectedRows": 0,
+    "corruptRows": 0,
+    "undetectedRows": 0,
+    "legacyUnattributedRows": 0,
+    "rateCountingUndetectedAsClean": null
+  },
+  "assertions": []
+}
