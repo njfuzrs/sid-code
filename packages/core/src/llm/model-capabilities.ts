@@ -712,15 +712,46 @@ interface OpenRouterEntry {
   top_provider?: { context_length?: unknown; max_completion_tokens?: unknown };
   reasoning?: { supported_efforts?: unknown; default_effort?: unknown };
   supported_parameters?: unknown;
+  architecture?: { output_modalities?: unknown };
 }
 
-/** 解析 OpenRouter 目录：`{ data: [...] }`。它额外提供 effort 档位——外部源里唯一有此字段的。 */
+/**
+ * 解析 OpenRouter 目录：`{ data: [...] }`。它额外提供 effort 档位——外部源里唯一有此字段的。
+ *
+ * 非对话模型过滤：与 models.dev 同判据（`architecture.output_modalities` 不含 `"text"`），
+ * 补齐三个源里唯一缺过滤器的一个。litellm 看 `mode`、models.dev 看 `modalities.output`、
+ * 本源看 `architecture.output_modalities` —— 字段名各不相同，语义一致。
+ *
+ * ⚠ **实测它今天命中 0 条**（2026-08-21，417 条全部 output 含 "text"，复现见下方脚本）。
+ * 落它的理由是**对称性**而非当下的错数字：三个源里两个有过滤器、一个没有，
+ * 下一个加源的人照着 parseOpenRouter 抄就会漏掉过滤，而 OpenRouter 上游随时可能
+ * 开始铺 embedding/rerank 条目（models.dev 镜像里就有约 140 条，且**确实带 context 值**，
+ * 混进来会污染同名对话模型的众数投票）。不要把这个函数的注释写成「修掉了 N 条污染」。
+ *
+ * ```bash
+ * curl -s https://openrouter.ai/api/v1/models | python3 -c '
+ * import json,sys; d=json.load(sys.stdin)["data"]
+ * bad=[m["id"] for m in d if isinstance((m.get("architecture") or {}).get("output_modalities"),list)
+ *      and "text" not in m["architecture"]["output_modalities"]]
+ * print(len(d), "条，其中 output 不含 text 的：", len(bad))'
+ * ```
+ *
+ * ⚠⚠ 判据**必须是黑名单形态**（数组存在且不含 `"text"` 才拒），不能写成
+ * 「output 必须恰好等于 `["text"]`」—— 后者会误杀 15 个**合法对话模型**：
+ * `openai/gpt-audio`（`["text","audio"]`，ctx 128K）、`google/gemini-3-pro-image`
+ * （`["image","text"]`，ctx 131K）这类多模态**输出**的模型是对话模型，窗口值是对的。
+ * 「输出里有别的模态」与「不是对话模型」是两件事，前者不构成排除理由。
+ */
 function parseOpenRouter(raw: unknown): Record<string, ModelCapabilityEntry[]> {
   const out: Record<string, ModelCapabilityEntry[]> = {};
   const items = (raw as { data?: unknown })?.data;
   if (!Array.isArray(items)) return out;
   for (const it of items as OpenRouterEntry[]) {
     if (!it || typeof it !== "object" || typeof it.id !== "string") continue;
+    // 非对话模型过滤：output 模态明确存在且不含 text → 不是对话模型。
+    // 缺字段时**放行**（未知不等于非对话），与 parseModelsDev 同口径。
+    const outputModalities = it.architecture?.output_modalities;
+    if (Array.isArray(outputModalities) && !outputModalities.includes("text")) continue;
     const cw = pickInt(it.top_provider?.context_length) ?? pickInt(it.context_length);
     const mo = pickInt(it.top_provider?.max_completion_tokens);
     const efforts = sanitizeEffortWords(it.reasoning?.supported_efforts);
@@ -762,6 +793,8 @@ interface ModelsDevEntry {
  * 判定（`["audio"]` / `["image"]` 之类）。实测约 140 条非对话条目**确实带 context 值**
  * （如 `nvidia/llama-nemotron-rerank-vl-1b-v2` ctx=128000），混进来会污染同名对话模型的投票。
  * 加源必须同时加它的过滤器 —— 分两次做就是「已知会污染投票还先合」。
+ * 三个源现在都有过滤器（litellm 看 `mode`、本源看 `modalities.output`、
+ * OpenRouter 看 `architecture.output_modalities`），字段名不同但语义与「缺字段放行」一致。
  */
 function parseModelsDev(raw: unknown): Record<string, ModelCapabilityEntry[]> {
   const out: Record<string, ModelCapabilityEntry[]> = {};

@@ -53,9 +53,18 @@ const offline = args.includes("--offline");
  * 非对话模型的名字判据（启发式，仅用于分母口径）。
  *
  * 为什么按名字判而不是按字段判：分母来自网关的**价格**表，那张表没有 mode / modalities
- * 一类能力字段（实测该网关 `/api/pricing` 与 `/v1/models` 两个接口都不提供）。
- * 采集侧的过滤是按字段做的（litellm 看 `mode`、models.dev 看 `modalities.output`），
- * 与这里不是一套 —— 这里只影响「分母里算不算这个模型」，不影响任何入库数据。
+ * 一类**模态**字段（实测该网关 `/api/pricing` 与 `/v1/models` 两个接口都不提供 —— 这也是
+ * 为什么窗口必须靠外部目录，见 gateway-pricing.ts 头部那条否定性结论）。
+ *
+ * ⚠ 唯一沾边的是 `supported_endpoint_types`（如 `["openai","embeddings"]`），
+ * 它现在会被 gateway-pricing.ts 采下来。**刻意不拿它替换这里的名字判据**：它描述的是
+ * 「这个端点为该模型开了哪些协议」，不是「这个模型是不是对话模型」——
+ * 实测 5 条带 `embeddings` 的条目里就有同时带 `openai` 的，用它当判据会误伤。
+ * 真要切换判据，得先拿本机 135 条做一次逐条比对，那是另一件事。
+ *
+ * 采集侧的过滤是按字段做的（litellm 看 `mode`、models.dev 看 `modalities.output`、
+ * OpenRouter 看 `architecture.output_modalities`），与这里不是一套 ——
+ * 这里只影响「分母里算不算这个模型」，不影响任何入库数据。
  */
 const NON_CHAT_RE =
   /embedding|rerank|seedream|seedance|tts|whisper|veo-|-image\b|hy-image|realtime/;

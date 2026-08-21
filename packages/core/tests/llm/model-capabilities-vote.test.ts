@@ -348,6 +348,97 @@ describe("parseOpenRouter — 写键行为不回归", () => {
   });
 });
 
+/**
+ * 三个源的非对话过滤器补齐到 OpenRouter（D9 的 OpenRouter 那一半）。
+ *
+ * ⚠ 这组用例锁的是**判据形态**，不是「修掉了 N 条污染」——
+ * 实测 2026-08-21 OpenRouter 417 条**全部** output 含 "text"，过滤器今天命中 0 条。
+ * 落它的理由是对称性（三源里它是唯一没过滤器的）+ 上游随时可能铺 embedding/rerank。
+ *
+ * 真正值得钉住的是**下面那条误杀用例**：判据必须是黑名单（不含 text 才拒），
+ * 写成白名单（output 必须恰好 ["text"]）会误杀 15 个合法对话模型。
+ */
+describe("parseOpenRouter — 非对话模型过滤（与另两源同判据）", () => {
+  test("output 模态不含 text → 丢弃（即便带合法 context 值）", () => {
+    const parsed = __parsersForTest.openrouter({
+      data: [
+        {
+          id: "some/audio-only-gen",
+          context_length: 1_048_576,
+          architecture: { output_modalities: ["audio"] },
+        },
+        {
+          id: "some/image-only-gen",
+          context_length: 131_072,
+          architecture: { output_modalities: ["image"] },
+        },
+      ],
+    });
+    expect(parsed["audio-only-gen"]).toBeUndefined();
+    expect(parsed["image-only-gen"]).toBeUndefined();
+  });
+
+  test("⚠ 多模态**输出**的对话模型必须放行 —— 白名单判据会误杀这 15 个", () => {
+    // 全部取自 2026-08-21 实测的真实条目：它们是对话模型，窗口值是对的。
+    // 判据若写成「output 必须恰好等于 ["text"]」，这三条会全部消失。
+    const parsed = __parsersForTest.openrouter({
+      data: [
+        {
+          id: "openai/gpt-audio",
+          context_length: 128_000,
+          architecture: { output_modalities: ["text", "audio"] },
+        },
+        {
+          id: "google/gemini-3-pro-image",
+          context_length: 131_072,
+          architecture: { output_modalities: ["image", "text"] },
+        },
+        {
+          id: "openai/gpt-5-image",
+          context_length: 400_000,
+          architecture: { output_modalities: ["image", "text"] },
+        },
+      ],
+    });
+    expect(windowsAt(parsed, "gpt-audio")).toEqual([128_000]);
+    expect(windowsAt(parsed, "gemini-3-pro-image")).toEqual([131_072]);
+    expect(windowsAt(parsed, "gpt-5-image")).toEqual([400_000]);
+  });
+
+  test("缺 architecture / 缺 output_modalities → 放行（未知不等于非对话）", () => {
+    const parsed = __parsersForTest.openrouter({
+      data: [
+        { id: "a/no-arch", context_length: 262_144 },
+        { id: "b/arch-no-modalities", context_length: 200_000, architecture: {} },
+        // 类型不对（不是数组）也放行 —— 只有「明确是数组且不含 text」才构成排除理由。
+        { id: "c/bad-type", context_length: 128_000, architecture: { output_modalities: "text" } },
+      ],
+    });
+    expect(windowsAt(parsed, "no-arch")).toEqual([262_144]);
+    expect(windowsAt(parsed, "arch-no-modalities")).toEqual([200_000]);
+    expect(windowsAt(parsed, "bad-type")).toEqual([128_000]);
+  });
+
+  test("被过滤的条目不进投票分布（这才是它的实际危害）", () => {
+    const parsed = __parsersForTest.openrouter({
+      data: [
+        {
+          id: "x/dual-use",
+          context_length: 1_000_000,
+          architecture: { output_modalities: ["text"] },
+        },
+        // 同裸名的非对话条目：混进来会把分布搅成两个值，众数拿到的就不是真值了。
+        {
+          id: "y/dual-use",
+          context_length: 32_768,
+          architecture: { output_modalities: ["audio"] },
+        },
+      ],
+    });
+    expect(windowsAt(parsed, "dual-use")).toEqual([1_000_000]);
+  });
+});
+
 describe("parseModelsDev — 镜像结构（同一模型多 provider 多条）", () => {
   // 真实镜像片段（2026-08-20 实测，字段已裁剪到我们消费的那几个）。
   const FIXTURE = {

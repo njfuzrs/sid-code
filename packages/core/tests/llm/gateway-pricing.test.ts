@@ -10,7 +10,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path"; // mkdtemp 前缀拼接用
 import {
@@ -75,6 +83,88 @@ describe("convertRawEntry — 换算公式", () => {
 
   test("quota_type=1 缺 model_price → null", () => {
     expect(convertRawEntry({ model_name: "x", quota_type: 1 })).toBeNull();
+  });
+});
+
+/**
+ * D6：采集端点自报的 `supported_endpoint_types`（零新增请求，同一个 /api/pricing）。
+ *
+ * 取值形态取自 2026-08-21 实测（该网关 68 条，7 种取值：`["openai"]` ×44、
+ * `["openai","openai-response"]` ×7、`["anthropic","openai"]` ×4、`["gemini","openai"]` ×3，
+ * 另有 embeddings / image-generation / jina-rerank 各若干）。
+ */
+describe("convertRawEntry — supported_endpoint_types（D6）", () => {
+  test("原样采集网关词汇，不翻译成 protocolKind", () => {
+    const r = convertRawEntry({
+      model_name: "gpt-5.6-sol",
+      quota_type: 0,
+      model_ratio: 1,
+      supported_endpoint_types: ["openai", "openai-response"],
+    });
+    expect(r!.entry.supportedEndpointTypes).toEqual(["openai", "openai-response"]);
+  });
+
+  test("排序归一化 —— 网关返回顺序抖动不得改变内容指纹", () => {
+    const a = convertRawEntry({
+      model_name: "m",
+      quota_type: 0,
+      model_ratio: 1,
+      supported_endpoint_types: ["openai", "anthropic"],
+    });
+    const b = convertRawEntry({
+      model_name: "m",
+      quota_type: 0,
+      model_ratio: 1,
+      supported_endpoint_types: ["anthropic", "openai"],
+    });
+    expect(a!.entry.supportedEndpointTypes).toEqual(["anthropic", "openai"]);
+    expect(a!.entry.supportedEndpointTypes).toEqual(b!.entry.supportedEndpointTypes);
+  });
+
+  test("按次计费（quota_type=1）同样带上 —— 协议类型与计价口径无关", () => {
+    const r = convertRawEntry({
+      model_name: "veo-3",
+      quota_type: 1,
+      model_price: 0.5,
+      supported_endpoint_types: ["openai", "image-generation"],
+    });
+    expect(r!.entry.supportedEndpointTypes).toEqual(["image-generation", "openai"]);
+  });
+
+  test("⚠ 缺失/非法一律 undefined，**绝不是** [] —— 空数组是个更强的错断言", () => {
+    // `[]` 会被读成「这个模型不支持任何协议」，而事实只是「我们没采到」。
+    for (const raw of [undefined, null, "openai", 42, {}, [], ["", "  "], [1, 2]]) {
+      const r = convertRawEntry({
+        model_name: "m",
+        quota_type: 0,
+        model_ratio: 1,
+        supported_endpoint_types: raw,
+      });
+      expect(r!.entry.supportedEndpointTypes).toBeUndefined();
+    }
+  });
+
+  test("混合数组只留合法字符串项并去重", () => {
+    const r = convertRawEntry({
+      model_name: "m",
+      quota_type: 0,
+      model_ratio: 1,
+      supported_endpoint_types: ["openai", 1, null, " openai ", "anthropic", ""],
+    });
+    expect(r!.entry.supportedEndpointTypes).toEqual(["anthropic", "openai"]);
+  });
+
+  test("不越界去碰能力字段 —— 采了协议类型不等于开了窗口的口子", () => {
+    // 头部职责边界：采端点自报的事实，不采模型固有能力。实测该网关两个接口都不提供
+    // contextWindow，所以这里断言的是「本模块永远不产出这个字段」。
+    const r = convertRawEntry({
+      model_name: "glm-5.3",
+      quota_type: 0,
+      model_ratio: 0.5479452,
+      supported_endpoint_types: ["openai"],
+    });
+    expect(r!.entry).not.toHaveProperty("contextWindow");
+    expect(r!.entry).not.toHaveProperty("maxOutputTokens");
   });
 });
 
@@ -617,5 +707,198 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
     globalThis.fetch = (async () => ({ ok: true, json: async () => ({ data: [] }) })) as any;
     await syncGatewayPricing({ baseURL: "https://empty.example.com" });
     expect(getFailureCooldownRemainingMs("https://empty.example.com")).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * D7：原子落盘（tmp → rename）。
+ *
+ * ⚠ 这一组锁的是「半截 JSON 不会落到目标路径」，**不是**「并发不丢更新」——
+ * 那是两件不同的事。本模块两个写点本来就是 read-modify-write（读盘 → 只改本端点桶 → 写回），
+ * 缺的一直只是原子写；`model-capabilities.ts` 的缺口正好相反（早有原子写、从不重读）。
+ * 别照着方案文档 §6.2 原文给这里补重读，那是补一个它已经有的东西。
+ *
+ * 半截 JSON 的实际后果是**整份缓存作废**（含所有其他端点桶），因为 readCacheFile 的
+ * JSON.parse 一抛错就 return null → 全部渠道退回兜底计价，且不报错。
+ */
+describe("原子落盘 tmp → rename（D7）", () => {
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+  let origFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "gw-atomic-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    __resetGatewayPricingForTest();
+    origFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  /**
+   * 判据是 **inode 必须变**，不是「.tmp 不残留」。
+   *
+   * ⚠ 「.tmp 不残留」是个 false gate：直写路径也不会留下 .tmp，所以那个断言在退回
+   * `writeFileSync(path, ...)` 之后照样全绿（实测变异 40 pass / 0 fail）。
+   * `rename` 是把新文件**替换**上去，目标路径换成一个新 inode；直写是在原 inode 上
+   * truncate + 写入 —— 那个 truncate 到写完之间的窗口正是半截 JSON 的来源。
+   * 所以 inode 变化是唯一能机械区分两种写法的可观测量。
+   */
+  test("采集成功走 rename：目标 inode 必须变（直写会保持原 inode）", async () => {
+    const path = sidPaths.gatewayPricing();
+    mkdirSync(tmpDir, { recursive: true });
+    // 先放一个占位文件，拿到写入前的 inode。
+    writeFileSync(path, JSON.stringify({ schema_version: 2, endpoints: {} }), "utf8");
+    const inodeBefore = statSync(path).ino;
+
+    const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            model_name: "m1",
+            quota_type: 0,
+            model_ratio: 1,
+            completion_ratio: 2,
+            supported_endpoint_types: ["openai", "openai-response"],
+          },
+        ],
+      }),
+    })) as any;
+    await syncGatewayPricing({ baseURL: "https://atomic.example.com" });
+
+    expect(statSync(path).ino).not.toBe(inodeBefore);
+    expect(existsSync(`${path}.tmp`)).toBe(false); // rename 后临时文件不该留下
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    expect(parsed.schema_version).toBe(2);
+    // D6 字段必须真的落到磁盘（只在内存里等于没采，见 computeVersion 的注释）。
+    expect(parsed.endpoints["https://atomic.example.com"].models.m1.supportedEndpointTypes).toEqual(
+      ["openai", "openai-response"],
+    );
+  });
+
+  test("失败负缓存（recordFailure）同样走 rename：inode 必须变", async () => {
+    const path = sidPaths.gatewayPricing();
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(path, JSON.stringify({ schema_version: 2, endpoints: {} }), "utf8");
+    const inodeBefore = statSync(path).ino;
+
+    const { syncGatewayPricing, getFailureCooldownRemainingMs } =
+      await import("@sid-code/core/llm/gateway-pricing.ts");
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as any;
+    await syncGatewayPricing({ baseURL: "https://down.example.com" });
+
+    expect(statSync(path).ino).not.toBe(inodeBefore);
+    expect(existsSync(`${path}.tmp`)).toBe(false);
+    expect(() => JSON.parse(readFileSync(path, "utf8"))).not.toThrow();
+    expect(getFailureCooldownRemainingMs("https://down.example.com")).toBeGreaterThan(0);
+  });
+
+  test("半截 JSON 会让整份缓存作废 —— 这就是原子写要防的后果（现状锁定）", () => {
+    // 手工制造一个被截断的文件，模拟「写到一半被杀」。断言的是**后果**而非实现：
+    // 一个端点桶的半截文件会让所有端点桶一起查不到。
+    mkdirSync(tmpDir, { recursive: true });
+    const full = JSON.stringify({
+      schema_version: 2,
+      endpoints: {
+        "https://a.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: { "ali-m1": { input: 1, output: 2, quotaType: 0 } },
+        },
+        "https://b.example.com": {
+          source_url: "y",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: { "tx-m2": { input: 3, output: 4, quotaType: 0 } },
+        },
+      },
+    });
+    writeFileSync(sidPaths.gatewayPricing(), full.slice(0, Math.floor(full.length / 2)), "utf8");
+    __resetGatewayPricingForTest();
+    loadGatewayCache();
+    // 两个桶都查不到 —— 一次误杀换来所有渠道的错价。
+    expect(lookupGatewayPricing("ali-m1", "https://a.example.com")).toBeNull();
+    expect(lookupGatewayPricing("tx-m2", "https://b.example.com")).toBeNull();
+    expect(getGatewayCacheMeta()).toBeNull();
+  });
+
+  test("supportedEndpointTypes 变了必须触发写盘 —— 否则新字段永远进不了磁盘", async () => {
+    const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
+    const mk = (types?: string[]) =>
+      (async () => ({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              model_name: "m1",
+              quota_type: 0,
+              model_ratio: 1,
+              completion_ratio: 2,
+              ...(types ? { supported_endpoint_types: types } : {}),
+            },
+          ],
+        }),
+      })) as any;
+
+    // 第一次：不带该字段（模拟老用户盘上已有的缓存）。
+    globalThis.fetch = mk();
+    const first = await syncGatewayPricing({ baseURL: "https://ver.example.com" });
+    expect(first.updated).toBe(true);
+
+    // 第二次：价格完全不变，只多了协议类型。指纹若不覆盖这个字段，
+    // 就会走「版本未变，跳过写盘」→ 磁盘上永远没有它。
+    globalThis.fetch = mk(["openai", "openai-response"]);
+    const second = await syncGatewayPricing({ baseURL: "https://ver.example.com" });
+    expect(second.updated).toBe(true);
+    expect(second.version).not.toBe(first.version);
+
+    const parsed = JSON.parse(readFileSync(sidPaths.gatewayPricing(), "utf8"));
+    expect(parsed.endpoints["https://ver.example.com"].models.m1.supportedEndpointTypes).toEqual([
+      "openai",
+      "openai-response",
+    ]);
+  });
+
+  test("同一份数据重复采集仍判「未变」—— 排序归一化保证指纹稳定", async () => {
+    const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
+    const mk = (types: string[]) =>
+      (async () => ({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              model_name: "m1",
+              quota_type: 0,
+              model_ratio: 1,
+              completion_ratio: 2,
+              supported_endpoint_types: types,
+            },
+          ],
+        }),
+      })) as any;
+
+    globalThis.fetch = mk(["openai", "anthropic"]);
+    const first = await syncGatewayPricing({ baseURL: "https://stable.example.com" });
+    // 网关换了个返回顺序：内容没变，不该触发无谓写盘。
+    globalThis.fetch = mk(["anthropic", "openai"]);
+    const second = await syncGatewayPricing({ baseURL: "https://stable.example.com" });
+    expect(second.version).toBe(first.version);
+    expect(second.updated).toBe(false);
   });
 });

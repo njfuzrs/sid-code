@@ -44,7 +44,7 @@ import {
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
-import { lookupRegistry } from "./model-registry.ts";
+import { resolveRegistryMaxOutputTokens } from "./model-lookup.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
@@ -1950,11 +1950,14 @@ export class ModelFallback {
       isStreamingTransportError(new Error(ctx.lastRetryError ?? ""));
     if (!transportish) return;
 
-    // 与下方 fbCeiling 同口径：注册表兜底必须按真名查（别名会 miss → 不钳制 → 400）。
+    // 与下方 fbCeiling 同口径：兜底必须按真名查（别名会 miss → 不钳制 → 400）。
+    // resolveRegistryMaxOutputTokens 走「registry 精确 → 采集精确 → registry 模糊」三段：
+    // 原先这里是一次 lookupRegistry（六级模糊内联），采集到的真值会被前缀猜测盖掉。
     const ceiling =
       this.config.resolveMaxOutputTokens?.(params.model) ??
-      lookupRegistry(params.wireModel ?? lookupWireModelAlias(params.model) ?? params.model)
-        ?.maxOutputTokens;
+      resolveRegistryMaxOutputTokens(
+        params.wireModel ?? lookupWireModelAlias(params.model) ?? params.model,
+      );
     const nonStreamMaxTokens = Math.min(
       ctx.maxTokensOverride ?? params.maxTokens,
       // 非流式无增量，过大容易整体超时；与 stream-handler 的默认上限同源。
@@ -2050,12 +2053,14 @@ export class ModelFallback {
     // 注：第一分支（resolveMaxOutputTokens 回调，app.ts 注入）内部已走
     // resolveMaxOutputTokensForModel —— 它「先按别名查用户显式声明、注册表兜底按真名查」，
     // 口径正确。第二分支是回调缺失时的兜底（直接 new ModelFallback 的测试路径），
-    // 必须自己把别名翻成真名：lookupRegistry 是精确/前缀/家族匹配，喂别名必然 miss
+    // 必须自己把别名翻成真名：三段查询全按名匹配，喂别名必然 miss
     // → fbCeiling=undefined → 不钳制 → 把主模型的高 maxTokens 原样发给 fallback 吃 400。
     // 这里拿不到 availableModels（ModelFallback 只持有回调），故走进程级别名表。
+    // 三段（registry 精确 → 采集精确 → registry 模糊）见 model-lookup.ts：fallback 目标常是
+    // 注册表外的网关模型，只查 registry 会 miss 掉采集缓存里已有的真实上限。
     const fbCeiling =
       this.config.resolveMaxOutputTokens?.(fallbackModel) ??
-      lookupRegistry(lookupWireModelAlias(fallbackModel) ?? fallbackModel)?.maxOutputTokens;
+      resolveRegistryMaxOutputTokens(lookupWireModelAlias(fallbackModel) ?? fallbackModel);
     if (fbCeiling && fallbackParams.maxTokens && fallbackParams.maxTokens > fbCeiling) {
       log.info(
         "FALLBACK",

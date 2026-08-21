@@ -2,9 +2,10 @@
  * 网关定价自动采集 — 从 new-api 类网关（企业自建的 LLM 中转站常用这类实现）的
  * `/api/pricing` 接口采集**价格**，与官方注册表（model-registry.ts）的**能力字段**互补。
  *
- * 职责边界（严格）：
- * - **只采价格**。contextWindow / supportsThinking / protocolKind / maxOutputTokens 等能力字段
- *   永远以官方注册表为准，本模块绝不触碰。
+ * 职责边界（严格）—— 2026-08-21 显式修订，见下方「边界为什么从『只采价格』改口」：
+ * - **采端点自报的一切事实**：价格 + 该端点支持的协议类型（`supported_endpoint_types`）。
+ * - **不采模型固有能力**：contextWindow / maxOutputTokens / supportsThinking
+ *   永远以官方注册表 + `model-capabilities.ts` 的采集为准，本模块绝不触碰。
  * - 采集结果按「模型名」做键（网关渠道名天然带前缀 ali-/tx-/origin- 区分渠道，
  *   同名不同渠道价格不同——这正是计费复合键要解决的问题）。
  * - 在 resolvePricing（cost-tracker.ts）中的优先级：用户手写 > **网关采集** > 内置注册表 > FALLBACK。
@@ -29,9 +30,32 @@
  *
  * 容错：第三方 HTTP 属**不可信数据**——严格数值校验（有限、非负），非法条目丢弃；网络/解析失败
  * 静默保留旧缓存 + 回退注册表，绝不阻塞启动或计费。
+ *
+ * ── 边界为什么从「只采价格」改口（2026-08-21）────────────────────────────
+ *
+ * 旧边界写的是「只采价格，protocolKind 等能力字段永远以官方注册表为准，本模块绝不触碰」。
+ * 按那句话采 `supported_endpoint_types` 是违规的，所以这里显式改口而不是偷偷加字段。
+ *
+ * 新切分的判据是**「谁自报的」而不是「叫什么名字」**：
+ * - 端点自报的事实（价格、该端点支持的协议类型）→ 归本模块，天然按端点分桶；
+ * - 模型固有属性（窗口、输出上限）→ 归 model-registry / model-capabilities，按模型名单键。
+ *
+ * 这个切分比「只采价格」更准确：`supported_endpoint_types` 确实属于 protocolKind 范畴，
+ * 但它是**这个端点上**的事实（同一模型在另一个网关上支持的协议可能不同），
+ * 没有任何官方注册表能回答它 —— 硬把它排除在外，等于让一个只有端点知道的事实无处安放。
+ *
+ * ⚠ **否定性结论（写在这里避免下一个人重复探索）**：这个网关（new-api 类实现）的
+ * `/v1/models` 与 `/api/pricing` **两个接口都不提供 contextWindow**。实测
+ * `/v1/models` 76 条，全部条目的键并集只有 `created / id / object / owned_by /
+ * supported_endpoint_types`，context/token/limit/window/length/max 一类字段**一个都没有**；
+ * `/api/pricing` 的字段并集里同样没有。
+ *
+ * 所以「问端点自己拿窗口」这条路在当前企业网关上**走不通**，本模块不能当作
+ * 「新模型窗口低估」的替代方案 —— 那件事只能靠外部目录（models.dev / litellm / OpenRouter）。
+ * 这是个否定性结论，但它把「为什么必须依赖外部目录」从设计选择变成了客观约束。
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import { normalizeBaseURL } from "./endpoint-key.ts";
@@ -58,6 +82,9 @@ interface RawPricingEntry {
   completion_ratio?: number;
   cache_ratio?: number;
   create_cache_ratio?: number;
+  /** 该端点上这个模型支持的协议类型，如 `["openai"]` / `["openai","openai-response"]`。
+   *  类型故意宽成 unknown：第三方 HTTP 不可信，校验在 sanitizeEndpointTypes 里做。 */
+  supported_endpoint_types?: unknown;
 }
 
 /** 换算后的网关定价条目（缓存与内存态）。 */
@@ -66,6 +93,24 @@ export interface GatewayPricingEntry extends ModelPricing {
   quotaType: number;
   /** 按次单价（USD/次），仅 quotaType=1 有值 */
   perCallUSD?: number;
+  /**
+   * 该端点自报的、这个模型支持的协议类型（原样保留网关词汇，不翻译成我们的 protocolKind）。
+   *
+   * 实测形态（2026-08-21，企业网关 68 条，7 种取值）：`["openai"]` ×44、
+   * `["openai","openai-response"]` ×7、`["anthropic","openai"]` ×4、
+   * `["gemini","openai"]` ×3，另有 `embeddings` / `image-generation` / `jina-rerank`。
+   * 每条都有这个字段，且都是字符串数组。
+   *
+   * ⚠ **当前只采集、不消费**。协议族判定仍走 `classify.ts` 的正则 —— 把判定切到这个字段是
+   * 另一件事（要处理「网关词汇 → protocolKind」的映射、缓存过期时的降级、以及与
+   * `protocol-sentinel.ts` 的关系），不在本次范围内。先把已经拿到手却被丢掉的权威事实存下来，
+   * 是为那件事准备依据，不是替它下结论。
+   *
+   * 为什么它属于本模块而不是 model-capabilities.ts：这是「**这个端点上**的事实」
+   * （同一模型在另一个网关上可能支持的协议不同），天然按端点分桶，与价格同构；
+   * 而窗口/输出上限是模型固有属性，按模型名单键。见头部职责边界。
+   */
+  supportedEndpointTypes?: string[];
 }
 
 /** 单个端点桶：该端点采集到的全部模型价 + 元信息。 */
@@ -180,6 +225,28 @@ function isFiniteNonNeg(n: unknown): n is number {
 }
 
 /**
+ * 校验并归一化 `supported_endpoint_types`（不可信数据网关）。
+ *
+ * 只接受「非空字符串数组」，逐项 trim 后丢掉空串；拿不到合法值返回 undefined
+ * （**不返回 `[]`**——空数组会被读成「这个模型不支持任何协议」，那是个比缺失更强的断言，
+ * 而我们其实只是没采到）。不做去重排序之外的语义改写：原样保留网关词汇，
+ * 翻译成 protocolKind 是消费侧的事，在这里翻译等于把一个未定的映射固化进缓存。
+ *
+ * 排序是为了让 computeVersion 的内容指纹稳定：网关返回顺序抖动不该被当成「价格变了」
+ * 而触发一次无谓写盘。
+ */
+function sanitizeEndpointTypes(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    const t = v.trim();
+    if (t) seen.add(t);
+  }
+  return seen.size > 0 ? [...seen].sort() : undefined;
+}
+
+/**
  * 把一条原始 pricing 换算成 GatewayPricingEntry。非法数据返回 null（调用方丢弃）。
  */
 export function convertRawEntry(
@@ -189,22 +256,23 @@ export function convertRawEntry(
   if (!name || typeof name !== "string") return null;
 
   const quotaType = raw.quota_type === 1 ? 1 : 0;
+  // 与计价口径无关，两种 quotaType 都要带上（按次计费的模型同样有协议类型）。
+  const endpointTypes = sanitizeEndpointTypes(raw.supported_endpoint_types);
 
   if (quotaType === 1) {
     // 按次计费：只保留 perCallUSD，token 价置 0。
     const perCall = raw.model_price;
     if (!isFiniteNonNeg(perCall)) return null;
-    return {
-      name,
-      entry: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        quotaType: 1,
-        perCallUSD: perCall,
-      },
+    const perCallEntry: GatewayPricingEntry = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      quotaType: 1,
+      perCallUSD: perCall,
     };
+    if (endpointTypes) perCallEntry.supportedEndpointTypes = endpointTypes;
+    return { name, entry: perCallEntry };
   }
 
   // 按 token 计费。
@@ -226,18 +294,25 @@ export function convertRawEntry(
   if (cacheRatio !== undefined) entry.cacheRead = input * cacheRatio;
   if (createCacheRatio !== undefined) entry.cacheWrite = input * createCacheRatio;
   else entry.cacheWrite = 0; // 网关未给 create_cache_ratio 时按 0（多数网关缓存写入不额外计费）
+  if (endpointTypes) entry.supportedEndpointTypes = endpointTypes;
 
   return { name, entry };
 }
 
-/** 计算聚合版本哈希（内容指纹，用于「变了才写盘」）。 */
+/** 计算聚合版本哈希（内容指纹，用于「变了才写盘」）。
+ *
+ *  ⚠ **指纹必须覆盖每一个会落盘的字段**。`supportedEndpointTypes` 加入采集时如果漏掉这里，
+ *  会得到一个很隐蔽的失效形态：老用户盘上已有缓存，价格没变 → 指纹相同 →
+ *  `syncGatewayPricing` 走「版本未变，跳过写盘」分支 → **新字段永远写不进磁盘**，
+ *  而内存里有、日志显示采集成功、下次启动又没了。不写盘就等于没采。
+ *  该字段已在 sanitizeEndpointTypes 里排序，所以网关返回顺序抖动不会让指纹无谓变化。 */
 function computeVersion(models: Record<string, GatewayPricingEntry>): string {
   // 简单稳定哈希：排序后 JSON 的 djb2。避免依赖 crypto，纯确定性。
   const keys = Object.keys(models).sort();
   let str = "";
   for (const k of keys) {
     const m = models[k];
-    str += `${k}:${m.input},${m.output},${m.cacheRead ?? ""},${m.cacheWrite ?? ""},${m.quotaType},${m.perCallUSD ?? ""}|`;
+    str += `${k}:${m.input},${m.output},${m.cacheRead ?? ""},${m.cacheWrite ?? ""},${m.quotaType},${m.perCallUSD ?? ""},${m.supportedEndpointTypes?.join("+") ?? ""}|`;
   }
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -324,9 +399,8 @@ function recordFailure(endpointKey: string, url: string): void {
     // 内存侧同步失败计数：本次会话内该桶立刻停止对外借价（跨桶兜底判据）。
     // 不同步会留下"盘上已记失败、内存仍当健康桶借价"的窗口，直到下次进程重启才生效。
     memBucketFailCount[endpointKey] = file.endpoints[endpointKey].fail_count ?? 1;
-    const path = sidPaths.gatewayPricing();
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(file, null, 2), "utf8");
+    // 原子写：半截 JSON 会让整份缓存（含其他端点桶）作废，见 writeCacheFileAtomic。
+    writeCacheFileAtomic(file);
   } catch {
     /* 负缓存写入失败：退化为旧行为，不影响启动与计费 */
   }
@@ -340,6 +414,42 @@ function readCacheFile(): GatewayCacheFile | null {
     return parseCacheFile(JSON.parse(readFileSync(path, "utf8")));
   } catch {
     return null;
+  }
+}
+
+/**
+ * 原子落盘：先写 `.tmp` 再 `rename`。两个写点（recordFailure / syncGatewayPricing）共用。
+ *
+ * ── 原子写与「丢更新」是两件不同的事，本函数只解决前者 ──────────────────
+ *
+ * 修前两处都是裸 `writeFileSync(path, ...)` 直写目标文件。进程在写入中途被杀
+ * （Ctrl+C / OOM / kill）会留下**半截 JSON** → 下次 `readCacheFile()` 的 `JSON.parse`
+ * 抛错 → catch 返回 null → **整份价格缓存作废（含所有其他端点桶）**，全部退回兜底计价。
+ * 一次误杀换来所有渠道的错价，而且不报错。
+ *
+ * 本模块**不需要**补「写盘前重读磁盘」那一半：两个写点本来就是 read-modify-write
+ * （`readCacheFile() ?? {...}` → 只改本端点桶 → 写回），跨端点桶的丢更新已由多端点
+ * 分桶那次修复顺手治掉。这与 `model-capabilities.ts` 的缺口正好互补 ——
+ * 那边从不重读、但早有原子写；这边一直重读、却没有原子写。
+ * ⚠ 别照着方案文档 §6.2 的原文给这里补重读，那是在补一个它已经有的东西。
+ *
+ * 残留窗口（次要，但不声称为零）：`readCacheFile()` 到 `rename` 之间仍有丢更新窗口，
+ * `syncGatewayPricing` 在读盘之前刚做完一次网络 fetch，窗口宽于 `recordFailure`。
+ * 刻意不引 flock：价格缓存是纯优化项，真撞上的后果仅是下次 TTL 到期重采，不产生错数字，
+ * 为它加一个跨进程锁依赖代价更大（与 model-capabilities.ts::persist 同一取舍）。
+ *
+ * @returns 是否写成功。失败只记日志——写不进去顶多退化成旧行为，绝不能反过来影响启动或计费。
+ */
+function writeCacheFileAtomic(file: GatewayCacheFile): boolean {
+  try {
+    const path = sidPaths.gatewayPricing();
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(file, null, 2), "utf8");
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -724,13 +834,10 @@ export async function syncGatewayPricing(opts?: {
   };
   file.schema_version = 2;
 
-  try {
-    const path = sidPaths.gatewayPricing();
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(file, null, 2), "utf8");
-  } catch (e) {
-    log().warn("GATEWAY-PRICING", "写缓存失败", { error: String(e) });
-    // 写盘失败仍刷新内存，本次会话可用。
+  // 原子写：半截 JSON 会让整份缓存（含其他端点桶）作废，见 writeCacheFileAtomic。
+  // 写盘失败仍继续刷新内存，本次会话可用。
+  if (!writeCacheFileAtomic(file)) {
+    log().warn("GATEWAY-PRICING", "写缓存失败", { endpoint: endpointKey });
   }
 
   memBuckets[endpointKey] = models;
