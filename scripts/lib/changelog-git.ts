@@ -161,6 +161,63 @@ export interface RawCommit {
 }
 
 /**
+ * 每条提交在预抓 stat 里最多列出多少个文件，超出折叠成一行「…及其他 N 个文件」。
+ *
+ * 为什么要截断而不是给完整 stat：本仓有单个提交动 1777 个文件的历史
+ * （`8ae3472e` 分包那次）。v0.1.600..HEAD 这 131 条提交的完整 stat 是 **307KB**
+ * （≈77k token），其中绝大部分被那几条大重构占掉；截到 12 个文件是 **97KB**。
+ *
+ * 为什么是 12 而不是更小：curate 的判据是「这次改动对用户有什么影响」，
+ * 而**改了哪些模块**是唯一能从 stat 层面看出这件事的信号（提示词第 3 条要求
+ * 反向警惕「看着像内部改动的其实影响用户」，只给汇总行就退化成只能看 commit 标题了）。
+ * 12 个文件足够看出改动落在哪几个子系统；再多就只是同一模块里的更多文件。
+ */
+export const STAT_TOP_FILES = 12;
+
+/**
+ * 预抓某条提交的 diff stat，**截断到 STAT_TOP_FILES 个文件**。
+ *
+ * ── 为什么要有这个函数（这是 curate 成本的主要杠杆）──
+ *   提示词原本要求 agent「对每条打算保留的提交先跑 `git show --stat`」。
+ *   131 条提交 = 主循环里 131+ 轮 bash 往返，而每轮都要重发完整对话历史，
+ *   token 成本是 **O(n²)**，且 `MAX_TURNS` 会先被耗尽（40 轮根本不够 131 条）。
+ *   由脚本一次性抓好塞进提示词，同样的信息量只付一次 input 成本。
+ *
+ * `--stat=200` 而非默认宽度：默认按终端宽度截断路径，长路径会被中间省略成
+ * `packages/core/src/.../foo.ts`，恰好把「改了哪个子系统」这个唯一有用的信号删掉。
+ */
+export function commitStatBlock(hash: string, subject: string): string {
+  let raw = "";
+  try {
+    raw = execFileSync("git", ["show", "--stat=200", "--format=", hash], {
+      cwd: ROOT,
+      encoding: "utf-8",
+      // 单条提交的 stat 上限 4MB：1777 文件那条实测约 130KB，留足余量。
+      // 不设上限时 execFileSync 默认 1MB，超了会抛 ENOBUFS 而不是截断。
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch (err: any) {
+    // 单条抓不到不该让整个 curate 失败：把失败如实写进块里，
+    // agent 看到「stat 不可用」会退回读 commit 标题，而不是拿到一个静默的空块。
+    return `== ${hash} ${subject}\n   （stat 读取失败：${err?.message ?? err}）`;
+  }
+
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim());
+  // 最后一行是 `N files changed, ...` 汇总行；merge commit 的 stat 可能整块为空
+  const summary = lines.length > 0 ? lines[lines.length - 1]! : "（无文件变更）";
+  const files = lines.slice(0, -1);
+  const shown = files.slice(0, STAT_TOP_FILES);
+  const rest = files.length - shown.length;
+
+  return [`== ${hash} ${subject}`, ...shown, rest > 0 ? `   …及其他 ${rest} 个文件` : "", summary]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
  * 采集某区间的原始提交（已过滤噪声）。
  *
  * @param range null = 全部历史

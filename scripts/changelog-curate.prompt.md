@@ -8,6 +8,7 @@
     {{VERSION}}       版本号（如 0.1.601）
     {{RANGE}}         提交区间（如 v0.1.600..HEAD）
     {{COMMIT_LIST}}   本区间的提交清单（hash + 标题，已过滤 bump/Merge 噪声）
+    {{DIFF_STATS}}    **预抓好的**每条提交的 diff stat（截断到前 12 个文件）
     {{OUTPUT_PATH}}   要写到的绝对路径
     {{SECTION_TITLES}} 受控分组词表（从 changelog-curated-schema.ts 注入，不在这里手写）
     {{MAX_ITEM_LEN}}  单条长度上限
@@ -34,6 +35,14 @@ sid-code 是一个命令行 coding agent。它的用户是开发者，但读更�
 {{COMMIT_LIST}}
 ```
 
+- 每条提交的 **diff stat 已经预先抓好**（下面这段），你**不需要**再逐条跑 `git show --stat`。
+  每块的形态是 `== <hash> <标题>`，接着是改动的文件清单（**只列前 12 个**，
+  其余折叠成「…及其他 N 个文件」），最后一行是 `N files changed` 汇总。
+
+```
+{{DIFF_STATS}}
+```
+
 ## 输出
 
 用 `write` 工具把结果写到：`{{OUTPUT_PATH}}`
@@ -43,10 +52,14 @@ sid-code 是一个命令行 coding agent。它的用户是开发者，但读更�
 
 ## 硬性规则
 
-1. **先看真实 diff 再动笔。** 对每条你打算保留的提交，先跑
-   `git show --stat --format='' <hash>`，必要时 `git show --format='' <hash>` 看正文。
-   commit message 可能是**误导性的** —— 它写的是作者当时关心的事，
-   不一定是这次改动对用户的实际影响。
+1. **先看真实 diff 再动笔。** commit message 可能是**误导性的** —— 它写的是作者当时
+   关心的事，不一定是这次改动对用户的实际影响。所以判据是**改动落在哪些文件上**
+   （上面那段 stat），而不是标题怎么写的。
+
+   stat 已经给全了，**不要再逐条跑 `git show --stat`** —— 那会把同样的信息取第二遍，
+   而你的轮数有限（跑光了这一版的工作全部作废）。
+   只在某一条你**确实拿不准**、且它看起来可能是用户可见变更时，才去
+   `git show --format='' <hash>` 看正文；这种情况应该是个别几条，不是几十条。
 
 2. **只写用户可见的变更。** 纯内部重构、CI、测试、构建脚本、文档改动一律丢弃。
 
