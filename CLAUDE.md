@@ -225,7 +225,7 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 - `release.sh` 开头有**工作区洁净门禁**，脏就直接拒绝发布（确认无碍加 `--allow-dirty`）。
 - bump 提交与 tag 都由 `release.sh` 自己完成，且 tag 打在 bump 提交上、当场校验对齐。以前是「tag 打在 bump 前的 HEAD、bump 提交人工补做」，导致 tag 指向的 commit 里版本号比 tag 低一位（实测 v0.1.591…v0.1.596 **六个 tag 全部错位**，`git checkout <tag>` 重建不出对应二进制）。
 
-标准顺序（脚本接管了原来的第 4/5 步，现在只有 4 步）：
+标准顺序（脚本接管了 bump 与 tag，人负责前两步和收尾的 PR）：
 
 ```bash
 # 1. 验证构建（全量单测由 release.sh 门禁负责，此处不重复跑）
@@ -239,10 +239,28 @@ git commit -m "feat: ..."
 #    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → push tag
 ./scripts/release.sh --upload
 
-# 4. 推送 + 发布官网（/changelog 是站点构建期快照，release.sh 只生成数据不发站点）
-git push
+# 4. bump 提交走 PR 进 main（main 受保护，直推会被拒；见下方 ⚠）
+git switch -c chore/release-<version>
+git push -u origin chore/release-<version>
+gh pr create --base main --fill
+gh pr merge --auto --merge          # ⚠ 必须 --merge，squash 会让 tag 指向游离提交
+
+# 5. 合并后同步 + 发布官网（/changelog 是站点构建期快照，release.sh 只生成数据不发站点）
+git switch main && git pull
 ./scripts/website-deploy.sh
 ```
+
+**⚠️ 第 4 步为什么不是 `git push`**：main 受 ruleset `protect-main` 保护（要求 PR + `all-checks-passed`），直推被 **GH013** 拒（`Changes must be made through a pull request`）。而此刻**制品已上线、tag 已推送、bump 提交还在本地** —— 正是上面那条铁律要防的「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。所以这一步是**必经**的，不是可选的收尾。`release.sh` 跑完会按实际保护状态把这几条命令打出来。
+
+曾考虑给 `release.sh` 开 ruleset bypass 让它能直推，**否决**：bypass 是给「人/应用」开的口子而非给某个提交，一旦开了任何直推都能绕过汇聚门 —— 而全量 CI 与 GitHub Release 那一步都挂在那道门上。用它换掉「每次发版一个 PR」的成本不值。
+
+**⚠️ 合并必须用 merge 不能 squash**：tag 已经打在 bump 提交上。squash 会另造一个提交、原提交不进 main，于是 tag 指向一个**游离提交** —— `git checkout <tag>` 仍能用，但 `git merge-base --is-ancestor <tag> main` 会失败，「产物对应确切 commit」这条铁律就退化成「对应一个不在主线上的 commit」。核验方式：
+
+```bash
+git merge-base --is-ancestor v<version> main && echo OK
+```
+
+**发版后 `git status` 会多出 `northstar/`**：那是 `release.sh` 设计上就要求入库的指标快照（见 `scripts/release.sh` 中 northstar 一节），**不是脏数据**，跟 bump 一起提交进同一个 PR。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
