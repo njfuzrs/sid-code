@@ -53,6 +53,7 @@ import {
   listSemverTags,
   versionRange,
   collectRawCommits,
+  commitStatBlock,
   GENESIS_LOOKBACK,
 } from "./lib/changelog-git.ts";
 import {
@@ -68,10 +69,43 @@ import {
 const CURATED_DIR = resolve(ROOT, "changelog/curated");
 const PROMPT_PATH = resolve(ROOT, "scripts/changelog-curate.prompt.md");
 
-/** 单个版本的 agent 超时。跑 git show 读几十个 diff 是真的慢，给足时间。 */
+/** 单个版本的 agent 超时。diff stat 已由脚本预抓，但长上下文单次调用仍可能几分钟。 */
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
-/** agent 的最大轮数：要逐条 git show，40 轮是实测下来够用的量级 */
-const MAX_TURNS = 40;
+/**
+ * agent 的最大轮数。
+ *
+ * 预抓 stat 之前这里是 40，配的是「agent 逐条 `git show`」那套流程 ——
+ * 而 v0.1.600..HEAD 有 131 条提交，40 轮**根本不够**，它会在读完三成提交时被截断。
+ * 现在 stat 由脚本一次性塞进提示词，正常路径是「读提示词 → write 落盘」两三轮；
+ * 留 12 轮是给「个别提交想 `git show` 看正文」和一次校验重试的余量。
+ */
+const MAX_TURNS = 12;
+
+/**
+ * curate 用的模型与推理档位 —— **不写死具体模型名**，走 env 覆盖 + 空缺回落。
+ *
+ * ── 为什么要专门指定，而不是继承默认配置 ──
+ *   这个脚本 spawn 的是一个独立的 sid-code 主进程，它会继承用户级 settings.json 的
+ *   `model` 与 `effortLevel`。实测那两个值是 `glm-5.3` + `effortLevel: max` ——
+ *   而 curate 干的是「读一批 diff stat、按规则改写成几十字一条的文案」，
+ *   属于**长输入、短输出、判断规则已在提示词里写全**的活，不需要高推理档，
+ *   跑在 max 档上纯烧思考 token。
+ *
+ * ── 为什么用 env 而不是硬编码常量 ──
+ *   模型可用性是**机器/账号级别的事实**（谁的 availableModels 里有哪些名字），
+ *   不是仓库级事实。硬编码一个名字，换台机器就是 404 或静默 fallback。
+ *   所以：env 给了就用，没给就完全不传 `--model`，回落到用户自己的配置 ——
+ *   后者是「一定能跑」的那个选择，只是贵一些。
+ *
+ *   ⚠️ 刻意**不设默认模型名**。给个默认值等于把「我这台机器有 deepseek-v4-flash」
+ *   写成仓库约定，别人 clone 下来跑就断，而断的形态是 404 或静默降级 —— 都不好归因。
+ */
+const CURATE_MODEL = process.env.SID_CODE_CURATE_MODEL?.trim() || undefined;
+/**
+ * 推理档位默认给 `low`：判断规则全在提示词里，不需要模型自己推演。
+ * 想覆盖就设 `SID_CODE_CURATE_EFFORT`（合法值见 `--effort` 的档位表）。
+ */
+const CURATE_EFFORT = process.env.SID_CODE_CURATE_EFFORT?.trim() || "low";
 
 export function curatedPath(version: string): string {
   return resolve(CURATED_DIR, `v${version}.json`);
@@ -136,6 +170,8 @@ function buildPrompt(
   version: string,
   range: string,
   commits: Array<{ hash: string; subject: string }>,
+  /** 预抓好的 diff stat 块（见 commitStatBlock）。空串 = 不注入，agent 自己去 git show */
+  diffStats: string,
 ): string {
   const tpl = loadPromptTemplate();
   const commitList = commits.map((c) => `${c.hash}  ${c.subject}`).join("\n");
@@ -143,6 +179,7 @@ function buildPrompt(
     .replace(/\{\{VERSION\}\}/g, version)
     .replace(/\{\{RANGE\}\}/g, range)
     .replace(/\{\{COMMIT_LIST\}\}/g, commitList)
+    .replace(/\{\{DIFF_STATS\}\}/g, diffStats)
     .replace(/\{\{OUTPUT_PATH\}\}/g, curatedPath(version))
     .replace(/\{\{SECTION_TITLES\}\}/g, SECTION_TITLES.join(" / "))
     .replace(/\{\{MAX_ITEM_LEN\}\}/g, String(MAX_ITEM_LEN))
@@ -169,6 +206,8 @@ interface SpawnResult {
  * 3. **--permission-mode 用 acceptEdits。** curate 要写文件。⚠ 不用 always-allow /
  *    dontAsk —— 这是个会执行 git show 的 agent，放开全部权限没有必要。
  * 4. **工具名是小写**（已用 --dump-tools 核对）：写成 `Write`/`Read` 会静默匹配不上。
+ * 5. **显式传 --model / --effort**（见 CURATE_MODEL 的注释）：不传就会继承用户级
+ *    settings.json 的主模型与 effortLevel，而那套配置是给交互式编码用的。
  */
 function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
   const env = {
@@ -188,6 +227,10 @@ function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
     "acceptEdits",
     "--allowed-tools",
     "read,glob,grep,bash,write",
+    "--effort",
+    CURATE_EFFORT,
+    // 只在 env 给了模型名时才传 —— 没给就回落到用户自己的配置（见 CURATE_MODEL）
+    ...(CURATE_MODEL ? ["--model", CURATE_MODEL] : []),
     prompt,
   ];
 
@@ -196,6 +239,23 @@ function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
     let stdout = "";
     let stderr = "";
     const killTimer = setTimeout(() => proc.kill("SIGTERM"), timeoutMs);
+
+    /**
+     * 心跳：每 15s 在同一行打一个「已跑 Ns」。
+     *
+     * 为什么需要它：stdout/stderr 都被 buffer 进字符串**从不透传**（这是刻意的，
+     * 见文件头「不解析 stdout」那段 —— stderr 恒有 60 个短横线的会话摘要噪音）。
+     * 于是终端在 agent 跑的整个过程里一个字都没有，而这个过程是分钟级的。
+     * 实测有人因此以为脚本卡死并中断了它 —— 静默的进度条与真的卡住无法区分。
+     */
+    const t0 = Date.now();
+    const heartbeat = setInterval(() => {
+      const secs = Math.round((Date.now() - t0) / 1000);
+      process.stderr.write(
+        `\r     … agent 运行中（${secs}s / 上限 ${Math.round(timeoutMs / 1000)}s）`,
+      );
+    }, 15_000);
+
     proc.stdout.on("data", (c) => {
       stdout += c.toString();
     });
@@ -204,6 +264,8 @@ function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
     });
     proc.on("close", (code) => {
       clearTimeout(killTimer);
+      clearInterval(heartbeat);
+      process.stderr.write("\r\x1b[K"); // 擦掉心跳行，别让它留在最终输出里
       // code === null 即被 SIGTERM 杀掉 = 超时
       res({ code, stdout, stderr });
     });
@@ -424,7 +486,15 @@ async function curateOne(version: string, opts: CurateOptions): Promise<boolean>
   console.log(`>>> curate v${version}（${rangeLabel}，${commits.length} 条提交）...`);
   mkdirSync(CURATED_DIR, { recursive: true });
 
-  const prompt = buildPrompt(version, rangeLabel, commits);
+  // 预抓全部 diff stat（见 commitStatBlock 的注释：这是成本的主要杠杆）。
+  // 纯本地 git 调用，131 条实测 < 2s，所以不做并发 —— 并发只会抢 CPU 且让失败难定位。
+  const diffStats = commits.map((c) => commitStatBlock(c.hash, c.subject)).join("\n\n");
+  console.log(
+    `    已预抓 ${commits.length} 条 diff stat（${(Buffer.byteLength(diffStats) / 1024).toFixed(0)} KB）` +
+      `，模型 ${CURATE_MODEL ?? "（用户默认）"} / effort ${CURATE_EFFORT}`,
+  );
+
+  const prompt = buildPrompt(version, rangeLabel, commits, diffStats);
   const t0 = Date.now();
   const res = await runAgent(prompt, opts.timeoutMs);
   const secs = ((Date.now() - t0) / 1000).toFixed(0);
@@ -533,7 +603,14 @@ function usage(): void {
   --force            已有 curated 文件时也重跑（genesis 版本也会真调 LLM）
   --timeout <秒>     单个版本的 agent 超时（默认 ${DEFAULT_TIMEOUT_MS / 1000}s）
   --limit <n>        backfill 时只跑前 n 个（分批 review 用，见方案 §5.4）
-  --retries <n>      校验失败后回喂错误重试的次数（默认 1）`);
+  --retries <n>      校验失败后回喂错误重试的次数（默认 1）
+
+环境变量:
+  SID_CODE_CURATE_MODEL   指定 curate 用的模型名（须在你的 availableModels 里）。
+                          不设则回落到用户级 settings.json 的主模型。
+                          curate 是「长输入 + 短输出 + 规则已写全」的活，配个便宜模型就够。
+  SID_CODE_CURATE_EFFORT  推理档位，默认 low（不设会继承 settings 里的 effortLevel，
+                          那通常是给交互式编码用的高档位，在这里纯烧思考 token）。`);
 }
 
 async function main(): Promise<void> {
