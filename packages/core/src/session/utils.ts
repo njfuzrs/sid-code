@@ -4,6 +4,7 @@
  */
 
 import type { Message } from "../llm/types.ts";
+import { stripDateSuffix } from "../llm/model-name-normalize.ts";
 import { join } from "path";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
@@ -194,6 +195,12 @@ export function formatAbsoluteTime(timestamp: string): string {
 /**
  * 把模型 ID 缩短为可读短名，用于列表元信息行。
  * 去掉 provider 前缀与常见冗余后缀（日期戳、[1m]、括号说明），过长再截断。
+ *
+ * ⚠ 日期后缀走 `stripDateSuffix`（`llm/model-name-normalize.ts`），不要在这里重写正则。
+ * 这里原先是 `/-\d{8}$/` + `/-\d{4}-\d{2}-\d{2}$/` 两条，**缺 6 位（YYMMDD）那一支**，
+ * 于是 `doubao-seed-1-8-251228` 这类国内厂商命名在会话列表里不会被缩短 —— 一处纯显示的
+ * 漂移，但它与查询链路上那处真正会借错值的漂移是同一个成因（同一条规则被写了三遍）。
+ * 复用共享函数后长度判据只有一处，改一次三处同步。
  */
 export function shortenModel(model: string | undefined): string {
   if (!model) return "";
@@ -202,8 +209,8 @@ export function shortenModel(model: string | undefined): string {
   m = m.replace(/^[^/:]+[/:]/, "");
   // 去掉尾部 [1m]、(xxx) 之类修饰
   m = m.replace(/\s*\[[^\]]*\]\s*$/, "").replace(/\s*\([^)]*\)\s*$/, "");
-  // 去掉结尾的日期戳（-20250101 / -2025-01-01）
-  m = m.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  // 去掉结尾的日期戳（-YYMMDD / -YYYYMMDD / -YYYY-MM-DD，判据与采集/查询两侧同源）
+  m = stripDateSuffix(m);
   if (m.length > 28) m = m.slice(0, 27) + "…";
   return m;
 }

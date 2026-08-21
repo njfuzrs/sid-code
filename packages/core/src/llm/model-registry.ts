@@ -7,7 +7,14 @@
  * - 支持精确匹配 + 最长前缀 + 路由剥离 + 大小写不敏感 + 家族匹配
  *
  * 数据来源：各厂商官方文档 / API 返回值，更新时间 2026-06
+ *
+ * ⚠ 依赖约束：本文件曾是**零 import 的纯数据表**，`telemetry/cache-bench-core.ts:15`
+ * 的「静态引入不成环」判断引用了这个性质。现在它 import 了 `model-name-normalize.ts` ——
+ * 那个模块**自身零 import**（有专门的门禁断言锁住），所以不成环的结论仍然成立。
+ * 再往这里加 import 之前，先确认新依赖也是叶子模块，否则要重新核 cache-bench 那条路径。
  */
+
+import { familyBaseName } from "./model-name-normalize.ts";
 
 /** 定价（每百万 token，USD） */
 export interface RegistryPricing {
@@ -881,17 +888,21 @@ export function lookupRegistryFuzzy(model: string): ModelRegistryEntry | null {
     if (key.toLowerCase() === lower) return entry;
   }
 
-  // 5. 家族匹配（剥离尾部日期/版本号后精确匹配家族基名）
-  // 例如 "claude-sonnet-4-20260101" 的 familyBase = "claude-sonnet-4"
-  // 匹配表中 "claude-sonnet-4-20250514" 的 familyBase = "claude-sonnet-4"（精确相等）
-  // 但不会误匹配 "claude-sonnet-4-6"（其 familyBase = "claude-sonnet-4-6"，不等）
-  const familyBase = (m: string) => m.replace(/-\d{4,}.*$/, "");
-  const modelBase = familyBase(model);
+  // 5. 家族匹配（剥离尾部日期/批次后缀后精确匹配家族基名）
+  // 例如 "claude-sonnet-4-20260101" 的家族基名 = "claude-sonnet-4"
+  // 匹配表中 "claude-sonnet-4-20250514" 的家族基名 = "claude-sonnet-4"（精确相等）
+  // 但不会误匹配 "claude-sonnet-4-6"（其家族基名仍是 "claude-sonnet-4-6"，不等）
+  //
+  // ⚠ 判据来自 `model-name-normalize.ts` 的 `familyBaseName`，**不再在这里内联正则**。
+  // 此前这里是 `/-\d{4,}.*$/`（4 位起），与查询侧 `normalizeCandidates` 的日期规则
+  // （恰好 6 或 8 位）实质不同 —— 同一个模型名在两条链路上被判成不同的家族，
+  // 且分叉不报错，只会静默借错窗口。见该模块头部「为什么家族基名也归这里」。
+  const modelBase = familyBaseName(model);
   if (modelBase.length > 0 && modelBase !== model) {
     // 仅当 familyBase 确实剥离了尾部时才做家族匹配
     bestLen = 0;
     for (const [key, entry] of Object.entries(REGISTRY)) {
-      const keyBase = familyBase(key);
+      const keyBase = familyBaseName(key);
       if (keyBase === modelBase && keyBase.length > bestLen) {
         best = entry;
         bestLen = keyBase.length;

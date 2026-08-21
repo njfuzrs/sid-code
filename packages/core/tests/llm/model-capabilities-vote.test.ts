@@ -30,7 +30,12 @@ import {
   expandKeys,
   normalizeCandidates,
   stripDateSuffix,
+  familyBaseName,
 } from "@sid-code/core/llm/model-name-normalize.ts";
+import { lookupRegistry } from "@sid-code/core/llm/model-registry.ts";
+import { shortenModel } from "@sid-code/core/session/utils.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 beforeEach(() => {
   __resetCapabilityCacheForTest({});
@@ -269,6 +274,95 @@ describe("日期后缀归一化 —— 15 个真实缺口里 7 个只差这一�
       "deepseek-v3-250324": { contextWindow: 64_000 },
     });
     expect(lookupCapability("deepseek-v3-250324")?.contextWindow).toBe(64_000);
+  });
+});
+
+/**
+ * 日期规则的**单一事实源**不变式（2026-08-21 补齐）。
+ *
+ * 此前这条规则在仓库里有三份各自演化的实现：
+ *   `model-name-normalize.ts`  恰好 6/8 位、锚定结尾   ← 采集 + 查询两侧
+ *   `model-registry.ts`        `/-\d{4,}.*$/`         ← 家族匹配（4 位起、贪吃到结尾）
+ *   `session/utils.ts`         只有 8 位与 YYYY-MM-DD  ← 会话列表显示（缺 6 位那一支）
+ *
+ * 前两者的分歧是**实质的**：同一个模型名在查询链路与家族借用链路上被判成不同的家族，
+ * 且没有任何报错，只会在某一条链路上静默借错一个窗口值。
+ *
+ * 下面这组断言把「三处必须同源」变成机械判据 —— 光靠"记得同步改"是这个缺陷的成因本身。
+ */
+describe("日期规则单一事实源 —— 三处消费者必须同源", () => {
+  test("不变式：凡 stripDateSuffix 会剥的，familyBaseName 必须剥到同一个结果", () => {
+    // 两个函数**语义不同**（一个锚定结尾用于精确查，一个允许尾随变体后缀用于同家族借值），
+    // 但「什么算日期段」这条长度判据必须完全一致。机械枚举而不是挑几个例子：
+    // 挑例子挡不住「把 familyBaseName 的 \d{6} 改成 \d{4,}」这种放宽。
+    for (const len of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      const name = `some-model-${"1".repeat(len)}`;
+      const stripped = stripDateSuffix(name);
+      if (stripped !== name) {
+        expect(familyBaseName(name), `${len} 位：strip 剥了，famBase 必须剥到同一结果`).toBe(
+          stripped,
+        );
+      } else {
+        expect(familyBaseName(name), `${len} 位：strip 不剥，famBase 也不许剥`).toBe(name);
+      }
+    }
+    // YYYY-MM-DD 形态同理
+    expect(familyBaseName("qwen3.6-plus-2026-04-02")).toBe(
+      stripDateSuffix("qwen3.6-plus-2026-04-02"),
+    );
+  });
+
+  test("familyBaseName 比 stripDateSuffix 多的那一条：日期后面还能挂变体后缀", () => {
+    // 这是两者唯一允许分歧的地方，也正是家族匹配存在的理由：
+    // `claude-sonnet-4-20260101` 要能与表里 `claude-sonnet-4-20250514` 算成同一家族，
+    // 而锚定结尾的 stripDateSuffix 算不出这种相等。
+    expect(familyBaseName("claude-sonnet-4-20250514-preview")).toBe("claude-sonnet-4");
+    expect(stripDateSuffix("claude-sonnet-4-20250514-preview")).toBe(
+      "claude-sonnet-4-20250514-preview",
+    );
+  });
+
+  test("familyBaseName 同样不剥版本号（与 stripDateSuffix 共享的真风险）", () => {
+    for (const name of ["minimax-m2.5", "gpt-4.1", "glm-5.3", "claude-sonnet-4-6", "kimi-k2.6"]) {
+      expect(familyBaseName(name), name).toBe(name);
+    }
+  });
+
+  test("registry 家族匹配走的就是 familyBaseName（不再内联 /-\\d{4,}.*$/）", () => {
+    // 正向：8 位日期的未知批次仍能借到同家族（既有行为，回归锁）。
+    expect(lookupRegistry("claude-sonnet-4-20260101")?.contextWindow).toBe(200_000);
+    // 反向：4 位批次号不再被当日期剥掉。旧的 `/-\d{4,}.*$/` 会把
+    // `grok-4.20-0309-reasoning` 的家族基名算成 `grok-4.20`，于是任何 `grok-4.20-*`
+    // 都能借到它的 1M —— 而 `-reasoning` / `-non-reasoning` 是**能力变体**（行为不同），
+    // `0309` 是 4 位批次号而非 6/8 位日期。收紧后这类名字落兜底 / 400 自愈，
+    // 与剩下 8 个变体后缀缺口同一处置。这是本次唯一的行为变化，刻意如此。
+    expect(lookupRegistry("grok-4.20-0310")).toBeNull();
+    // 但精确键本身当然仍命中。
+    expect(lookupRegistry("grok-4.20-0309-reasoning")?.contextWindow).toBe(1_000_000);
+  });
+
+  test("shortenModel 复用同一条规则 —— 补上此前缺失的 6 位（YYMMDD）分支", () => {
+    // 这处是纯显示，不产生错数字，但成因与上面那处相同（同一条规则写了三遍）。
+    // 修前 `doubao-seed-1-8-251228` 在会话列表里完全不被缩短。
+    expect(shortenModel("doubao-seed-1-8-251228")).toBe("doubao-seed-1-8");
+    expect(shortenModel("deepseek-v3-250324")).toBe("deepseek-v3");
+    // 既有行为不变
+    expect(shortenModel("claude-sonnet-4-20250514")).toBe("claude-sonnet-4");
+    expect(shortenModel("anthropic/claude-opus-4-8-20260101")).toBe("claude-opus-4-8");
+    expect(shortenModel("minimax-m2.5")).toBe("minimax-m2.5");
+  });
+
+  test("门禁：model-name-normalize.ts 必须保持零 import", () => {
+    // registry 现在 import 它，而 `telemetry/cache-bench-core.ts:15` 的「静态引入不成环」
+    // 判断依赖 registry 侧的依赖是叶子模块。这条断言把那个前提变成机械的 ——
+    // 有人给归一化模块加一个 import 时，在这里红，而不是在某条运行时路径上成环。
+    const src = readFileSync(
+      join(import.meta.dir, "../../src/llm/model-name-normalize.ts"),
+      "utf8",
+    );
+    const imports = src.match(/^\s*(?:import|export)\s+.*\bfrom\s+["']/gm) ?? [];
+    expect(imports, `不该有 import：${imports.join(" | ")}`).toEqual([]);
+    expect(src).not.toMatch(/\brequire\s*\(/);
   });
 });
 
