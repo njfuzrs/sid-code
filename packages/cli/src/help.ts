@@ -158,6 +158,7 @@ Worktree 隔离:
   SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
   SID_CODE_THINKING             思考开关覆盖 (on/off/auto)
   SID_MAX_OUTPUT_TOKENS         最大输出 token 数覆盖（缺省 32768）
+  SID_MODEL_CATALOG_TTL_MS      外部模型目录同步 TTL 毫秒（缺省 86400000，即 1 天）；设小值可强制重新采集模型能力
 
   轨迹采集:
   SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
@@ -176,6 +177,8 @@ Worktree 隔离:
   SID_CODE_DISABLE_TELEMETRY    设为 1 禁用遥测
   SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 禁用非必要网络流量
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
+  SID_CODE_AUTO_MEMORY          后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory)
+  SID_MAX_TURNS                 单条用户消息的软轮次阈值（正整数，缺省不启用）：达阈值时提醒模型收尾，不强制中断
   SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启
   SID_ENABLE_BARE_ELLIPSIS_CHECK  裸符号省略号检测 [...]/(...)  默认关闭（实测真阳性 0、误报高），设为 1 可显式开启
   SID_ENABLE_HYPOTHESIS         假设登记表（含矛盾中断/交付门禁）默认关闭：受控 A/B 实测 ON/OFF 准确率同为 5.00/5，ON 却多花 +75% input、+61% 耗时，设为 1 可显式开启
@@ -183,6 +186,8 @@ Worktree 隔离:
   系统路径:
   SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code）
   SID_CODE_TMPDIR               临时目录覆盖（沙箱/测试用）
+  SID_RIPGREP_PATH              指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源）
+  SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）
 
   颜色控制:
   NO_COLOR                      禁用颜色输出（标准约定）
@@ -200,6 +205,8 @@ Worktree 隔离:
 
   子代理/工作流:
   SID_SUBAGENT_MAX_CONCURRENT   子代理并发上限（缺省 3）
+  SID_CODE_SUBAGENT_TIMEOUT_MS  子代理超时毫秒统一覆盖（缺省按 agent 声明值与实测 p95 派生）
+  SID_TOOL_MAX_CONCURRENT       工具并发上限（缺省 10）
   SID_WORKFLOW_MAX_CONCURRENT   工作流并发上限（缺省 min(16, cpu核数-2)）
   SID_WORKFLOW_SYNC_TIMEOUT_MS  工作流同步超时毫秒
 
@@ -208,6 +215,7 @@ Worktree 隔离:
   SID_KEEP_RECENT_OUTPUTS       保留最近输出个数（缺省 6）
   SID_FALLBACK_CONTEXT_WINDOW   未知模型的保守上下文窗口 token 数（缺省 128000）
   SID_RECOVERY_FLOOR_TOKENS     溢出恢复最小输出 token 下限（缺省 3000）
+  SID_CODE_MAX_MCP_OUTPUT_TOKENS  MCP 工具输出 token 上限（缺省 25000）；兼容无前缀的 MAX_MCP_OUTPUT_TOKENS
 
   高级/实验性:
   SID_CODE_PROTOCOL_STRICT      设为 1 启用协议严格模式（默认宽容模式只告警）
@@ -224,7 +232,7 @@ Worktree 隔离:
   SID_LOOP_EXHAUSTED_ACTION     循环耗尽动作（terminate 时回退旧行为）
   SID_STRUCTURED_OUTPUT_MAX_RETRIES  结构化输出最大重试次数（缺省 5）
   SID_DISABLE_TAB_STATUS        设为 1 禁用终端 Tab 状态指示
-  SID_CODE_DISABLE_MOUSE_CLICKS 设为 1 禁用鼠标点击
+  SID_CODE_DISABLE_MOUSE_CLICKS  设为 1 禁用鼠标点击
   SID_CODE_VERSION              版本号覆盖（缺省读 package.json）
   SID_CODE_FLAG_<NAME>          Feature Flag 动态覆盖（如 SID_CODE_FLAG_LOOP_DETECTION）
 
