@@ -27,6 +27,8 @@ import {
   armIneffectiveCheck,
   emitHttpConnected,
   cacheDimsFor,
+  chunkCountFields,
+  makeFetchAbsoluteTimeoutSignal,
 } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
@@ -895,6 +897,9 @@ export class OpenAIProvider implements Provider {
     // 不匹配 /^o[0-9]/，applyMaxTokens 会误写 max_tokens，靠此 filter 纠正为 max_completion_tokens。
     filterParamsForModel(effectiveModel, requestBody);
 
+    // PR11：提到 try 之外，好让 finally 能 disarm（见那里的注释）。
+    // 声明在这里而不是赋值：真正的构造在拿到 streamTimeouts 之后。
+    let fetchAbs: { signal: AbortSignal; disarm: () => void } | undefined;
     try {
       const log = getLogger();
       const requestStartTime = Date.now();
@@ -962,13 +967,21 @@ export class OpenAIProvider implements Provider {
       // classifyError 仍把 TimeoutError 归成 RetryableError("timeout")（见 llm/errors.ts）。
       //
       // 一次解析，fetch 硬顶与下方 lifecycle overall 复用。
-      const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+      // PR12：带 modelName → lifecycle 的 overall 也吃 per-model 覆盖（不只字节级两档）。
+      const streamTimeouts = resolveProviderStreamTimeouts({
+        providerKind: "openai",
+        modelName: params.model ?? this._model,
+      });
       const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
       const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
       if (signal) fetchSignals.unshift(signal);
-      if (FETCH_ABSOLUTE_TIMEOUT_MS !== undefined) {
-        fetchSignals.push(AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS));
-      }
+      // PR11（§4.5）：走 makeFetchAbsoluteTimeoutSignal 而非裸 AbortSignal.timeout ——
+      // 计时机制完全不变，只是 abort 时补一条 TimeoutFired，让这一层不再隐身。
+      fetchAbs = makeFetchAbsoluteTimeoutSignal(FETCH_ABSOLUTE_TIMEOUT_MS, obsIndex, {
+        model: attrModel,
+        path: "chat_completions",
+      });
+      if (fetchAbs) fetchSignals.push(fetchAbs.signal);
       const fetchSignal = AbortSignal.any(fetchSignals);
 
       let response: Response;
@@ -1172,7 +1185,10 @@ export class OpenAIProvider implements Provider {
           }
         },
       });
-      for await (const event of lifecycle.guard(this.parseSSE(response.body!, signal))) {
+      // PR12：把渠道别名传进 parseSSE，让字节级两档能吃到 per-model 覆盖。
+      for await (const event of lifecycle.guard(
+        this.parseSSE(response.body!, signal, params.model ?? this._model),
+      )) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
           // 缺口 1：用户中断记录 aborted 阶段
@@ -1244,6 +1260,12 @@ export class OpenAIProvider implements Provider {
         type: "error",
         error: { message: err.message || String(err) },
       };
+    } finally {
+      // PR11：流结束（正常/异常/调用方提前 break 都会走到这里）→ disarm fetch 硬顶的留痕。
+      // 不 disarm 的话，`AbortSignal.timeout` 到点仍会 abort（它不知道自己已经没人用了），
+      // 于是一条 20s 读完的流会在第 1800s 落一条 fetch_absolute_timeout ——
+      // 一个从未发生的超时。假事件比缺数据更糟：噪声量正比于成功请求数。
+      fetchAbs?.disarm();
     }
   }
 
@@ -1362,13 +1384,23 @@ export class OpenAIProvider implements Provider {
     // 本路径的 idle 覆盖来自 lifecycle 的 idleTimeoutMs（档①，见下方 createStreamLifecycle
     // 的 idleTimeoutMs），不依赖这层 fetch 硬顶 —— 该路径的解析器
     // （parseResponsesStream → readSSEEvents）里一个定时器都没有，所以事件级 idle 就是它的档①。
-    const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    // PR12：本路径的档① 就是 lifecycle 的 idleTimeoutMs，所以 modelName 对它尤其重要 ——
+    // 不传的话 Responses 路径会成为四条路径里唯一吃不到 per-model 覆盖的那条。
+    const streamTimeouts = resolveProviderStreamTimeouts({
+      providerKind: "openai",
+      modelName: params.model ?? this._model,
+    });
     const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
     const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
     if (signal) fetchSignals.unshift(signal);
-    if (FETCH_ABSOLUTE_TIMEOUT_MS !== undefined) {
-      fetchSignals.push(AbortSignal.timeout(FETCH_ABSOLUTE_TIMEOUT_MS));
-    }
+    // PR11（§4.5）：同 Chat Completions 路径，留痕但不动计时机制。
+    // `path` 维度是必要的：两条路径共用同一个 layer，没有它就分不清
+    // 是 /chat/completions 还是 /responses 上开的枪（TimeoutFired 无 provider 字段）。
+    const fetchAbs = makeFetchAbsoluteTimeoutSignal(FETCH_ABSOLUTE_TIMEOUT_MS, obsIndex, {
+      model: attrModel,
+      path: "responses",
+    });
+    if (fetchAbs) fetchSignals.push(fetchAbs.signal);
     const fetchSignal = AbortSignal.any(fetchSignals);
 
     let response: Response;
@@ -1556,6 +1588,10 @@ export class OpenAIProvider implements Provider {
         type: "error",
         error: { message: err.message || String(err) },
       };
+    } finally {
+      // PR11：同 Chat Completions 路径 —— 流结束即 disarm，否则成功的流会在
+      // 阈值到点时落一条"从未发生的超时"（见 makeFetchAbsoluteTimeoutSignal 注释）。
+      fetchAbs?.disarm();
     }
   }
 
@@ -1864,6 +1900,14 @@ export class OpenAIProvider implements Provider {
   private async *parseSSE(
     stream: ReadableStream<Uint8Array>,
     signal?: AbortSignal,
+    /**
+     * PR12：本次请求的**渠道别名**（`params.model`），用于查 per-model 超时覆盖。
+     *
+     * ⚠️ 必须传别名而不是 `this._model`：per-model 表按渠道别名键（同 ModelCompat 的
+     * 口径），而 `this._model` 是构造时固化的主模型名 —— 子代理/fallback 切模型后
+     * 两者会分裂（本文件 :197 那条注释记的正是同型坑）。
+     */
+    modelName?: string,
   ): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -1916,16 +1960,43 @@ export class OpenAIProvider implements Provider {
     //   - content progress：即使 reader 持续 settle（空行/ping），无有效内容进展也超时中断
     // 不再按 /deepseek/i 分档（原 90/180s、120/300s 违反 network-profile 顶部原则，
     // 且非 deepseek 慢模型 qwen/kimi/glm 长文会被偏紧的 90s 误杀）。统一取一套够宽的默认值。
-    // 覆盖顺序 env > settings.network > 默认（PR10：此前 settings 那层不存在，四项是伪配置）。
+    // 覆盖顺序（PR12 起五层）：调用方 options > env > settings.network > per-model > 默认。
     // 具体取值见 network-profile.ts 的档①/档② 注释 —— 这里刻意不重复数字，
     // 免得注释与唯一真相源各说一套。
-    const streamTimeouts = resolveProviderStreamTimeouts({ providerKind: "openai" });
+    const streamTimeouts = resolveProviderStreamTimeouts({
+      providerKind: "openai",
+      modelName,
+    });
     const IDLE_TIMEOUT_MS = streamTimeouts.idleTimeoutMs;
     const CONTENT_PROGRESS_TIMEOUT_MS = streamTimeouts.contentProgressTimeoutMs;
 
     /** 30s stall 日志（只记不杀，对齐 claude-code，给弱模型喘息空间） */
     const STALL_LOG_MS = 30_000;
-    let stallEmitted = false; // 缺口 1：每次流只发一次 StreamStall 事件（避免 events.jsonl 膨胀）
+    /**
+     * PR11（§4.7）：stall 事件改为**每流每档位各一次**，替代原来的"每流只发一次"。
+     *
+     * ## 原形态的缺陷
+     *
+     * 原来是一个 `stallEmitted` 布尔：首次越过 30s 就置位、此后永不再发。实测
+     * `StreamStall=1` 而 `WatchdogKill=23` —— 23 次长时间无进展，`events.jsonl`
+     * 里只有 1 条记录。想回答"每次卡了多久"只能从 WatchdogKill 侧拼，
+     * 而那份数据当时又因快照 bug 是假的。
+     *
+     * ## 为什么是"档位"而不是"每 tick 都发"
+     *
+     * "避免 events.jsonl 膨胀"这个取向是对的：30s tick 无脑发，一条卡死 10 分钟的流
+     * 就是 20 条重复事件。改为按档位去重后，一条流最多发 `STALL_TIERS.length` 条，
+     * 每条对应一个**量级不同**的事实（"卡过 30s"和"卡过 5 分钟"是两回事），
+     * 而同一档内的重复被吃掉。上界固定、信息量单调递增。
+     *
+     * 档位取 30s / 120s / 300s：30s 是既有告警线（保持不变，老轨迹可比），
+     * 300s 是本文档主问题的量级（旧硬顶），120s 填中间那个数量级。
+     */
+    const STALL_TIERS = [30_000, 120_000, 300_000] as const;
+    /** 已发过事件的最高档位下标（-1 = 一条都没发）。单调递增，不复位。 */
+    let stallTierEmitted = -1;
+    /** 本流见过的最长无进展间隔，用于流结束时补发汇总（见 clearInterval 处）。 */
+    let maxStallGapMs = 0;
     const stallLogger = setInterval(() => {
       // PR9：stall 口径同样扣休眠。它只记不杀，但记错了一样有害 ——
       // 一次长休眠会让 events.jsonl 里凭空多出一条"无进展 281s"的 StreamStall，
@@ -1949,17 +2020,24 @@ export class OpenAIProvider implements Provider {
         emptyChunks,
         lastContentProgressAt,
       });
+      if (elapsed > maxStallGapMs) maxStallGapMs = elapsed;
       if (elapsed >= STALL_LOG_MS) {
         dbg(
           `stall: ${(elapsed / 1000).toFixed(0)}s 无内容进展 chunks=${totalChunks} empty=${emptyChunks}`,
         );
-        // 缺口 1：每 60s 记录一次 StreamStall 事件（首次 30s 触发后不重复）
-        if (!stallEmitted) {
-          stallEmitted = true;
+        // PR11（§4.7）：每档位各发一次。找出 elapsed 越过的最高档，
+        // 若高于已发过的最高档就发一条并推进游标（同档内重复 tick 被吃掉）。
+        let tier = -1;
+        for (let i = 0; i < STALL_TIERS.length; i++) {
+          if (elapsed >= STALL_TIERS[i]!) tier = i;
+        }
+        if (tier > stallTierEmitted) {
+          stallTierEmitted = tier;
           emitStreamStall(parseObsIndex, {
             no_content_progress_ms: elapsed,
             total_chunks: totalChunks,
             empty_chunks: emptyChunks,
+            tier_ms: STALL_TIERS[tier]!,
           });
         }
       }
@@ -2018,6 +2096,8 @@ export class OpenAIProvider implements Provider {
             chunks: totalChunks,
             empty_chunks: emptyChunks,
             model: this._model,
+            // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+            ...chunkCountFields(totalChunks, "chunks"),
           });
           // 缺口 2 进阶：武装未生效检查（reject 后若 race 未 settle → TimeoutIneffective）
           disarmIdleIneffective = armIneffectiveCheck(
@@ -2092,6 +2172,8 @@ export class OpenAIProvider implements Provider {
             emitStreamPhase(parseObsIndex, "completed", {
               chunks: totalChunks,
               empty_chunks: emptyChunks,
+              // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+              ...chunkCountFields(totalChunks, "chunks"),
               duration_ms: Date.now() - requestStartAt,
               model: this._model,
               // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
@@ -2404,6 +2486,8 @@ export class OpenAIProvider implements Provider {
             chunks: totalChunks,
             empty_chunks: emptyChunks,
             model: this._model,
+            // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+            ...chunkCountFields(totalChunks, "chunks"),
           });
           reader.cancel().catch(() => {});
           throw new Error(`SSE 内容进展超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容`);
@@ -2411,6 +2495,23 @@ export class OpenAIProvider implements Provider {
       }
     } finally {
       clearInterval(stallLogger);
+      // PR11（§4.7）：流结束时补发一条"本流最长无进展间隔"的汇总。
+      //
+      // 为什么档位事件之外还要这条：档位是**离散**的，一条卡了 119s 的流只会
+      // 落一条"越过 30s 档"，读者无从知道它其实差 1 秒就到 120s 档。汇总给的是
+      // 连续量，两者互补 —— 档位回答"卡过几个量级"，汇总回答"最坏多久"。
+      //
+      // 只在真越过首档时发（`maxStallGapMs >= STALL_TIERS[0]`）：一条健康流的
+      // 最长间隔可能只有几百毫秒，为它落一条事件纯属噪声。这个门槛也保证了
+      // "有汇总 = 这条流确实 stall 过"，可以直接当筛选条件用。
+      if (maxStallGapMs >= STALL_TIERS[0]) {
+        emitStreamStall(parseObsIndex, {
+          no_content_progress_ms: maxStallGapMs,
+          total_chunks: totalChunks,
+          empty_chunks: emptyChunks,
+          summary: true,
+        });
+      }
       // PR9：释放休眠观测器引用（引用计数归零才真的停 interval）。
       releaseSleepObserver();
       chunkDumper.flush(); // 5.2：流结束（正常/异常/取消）都 flush 采样

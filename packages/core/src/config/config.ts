@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { getSidHome } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
-import type { NetworkTimeoutSettings } from "./network-profile.ts";
+import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
 
 /**
@@ -148,6 +148,26 @@ export interface ModelConfig {
    * 缺省（不配）时行为与此前**完全一致**：全部回落内置判定。`undefined` ≠ `false`。
    */
   compat?: ModelCompat;
+  /**
+   * 可选：这条渠道的**流式超时覆盖**（PR12，见 `config/network-profile.ts` 的
+   * `PerModelStreamTimeouts`）。三项：`idleTimeoutMs` / `contentProgressTimeoutMs` /
+   * `overallTimeoutMs`。
+   *
+   * 存在的理由：慢是**模型的属性**，不是全局属性。实测 50 会话最长无进展间隔集中在
+   * 两个模型上（glm-5.3 284.5s、origin-deepseek-v4-pro 293.1s），其余模型 p95 仅 83.7s。
+   * 没有这个出口时，唯一的补救是把全局默认再抬一档 —— 那会让**所有**模型的真僵死
+   * 回收一起变慢，拿两个慢模型当理由放宽全部模型，作用面不匹配。
+   *
+   * 与 `compat` 拆开而不复用同一个对象：`ModelCompat` 是纯布尔位，
+   * `normalizeModelCompat` 明文只接受真布尔（字符串一律丢弃），塞 number 进去要在
+   * 归一化/校验/别名/跨进程播种四处开特例。
+   *
+   * 按**渠道别名**（name）生效，同 `compat` / `supportsThinking` 的口径：同一真名接
+   * 官方端点与公司网关时，慢的往往是网关那条（排队 + 缓冲），不是模型本身。
+   *
+   * 缺省时行为逐字节不变（回落 env > settings.network > 全局默认）。
+   */
+  streamTimeouts?: PerModelStreamTimeouts;
 }
 
 /** 应用配置 */
@@ -1594,6 +1614,12 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
   // 会让新配置按旧声明发字段，且不报错。setModelCompat(空) 即清空，无条件调用是安全的。
   const { setModelCompat } = require("../llm/model-compat.ts");
   setModelCompat(config.availableModels);
+
+  // PR12：per-model 流式超时表刷新。挂在这里的理由与上面两张表**逐条相同**
+  // （共同咽喉 + 两条 early-return 前必须先清空，否则旧覆盖残留会让新配置按旧阈值跑）。
+  // registerPerModelStreamTimeouts(空/undefined) 即清空，无条件调用是安全的。
+  const { registerPerModelStreamTimeouts } = require("./network-profile.ts");
+  registerPerModelStreamTimeouts(config.availableModels);
 
   if (!config.availableModels?.length) return;
 

@@ -137,6 +137,13 @@ export async function processStream(
   //   ③ 由 app.ts 显式把 resolveLoopTimeouts 的结果传进来（见 app.ts processStream），
   //      避免"选项声明了但没人传"这类死配置再次发生。
   const netTimeouts = resolveLoopTimeouts({ network: options?.network });
+  // PR12 已知缺口（**刻意留下，不是漏了**）：这里不传 `modelName`，所以本层的
+  // OVERALL_TIMEOUT 吃不到 per-model 覆盖。原因是 `processStream` 的签名里根本没有
+  // 模型身份（它拿到的是一个已经建好的流），硬要接就得从 loop 一路透传下来。
+  //
+  // 影响面可接受：per-model 的三项覆盖在 **provider 内部**（openai/anthropic 的四条路径）
+  // 都已生效，那才是真正开枪杀流的地方；本层是外层软兜底，且默认值 1500s 远宽于
+  // 任何 per-model 会调的量级。真需要时再透传，别为了"看起来接全了"提前加参数。
   const providerTimeouts = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
   const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? netTimeouts.watchdogNoProgressMs;
   const FIRST_BYTE_TIMEOUT = options?.firstByteTimeoutMs ?? netTimeouts.headerTimeoutMs;

@@ -34,6 +34,8 @@ export interface NetworkTimeoutSettings {
   watchdogHeaderGraceMs?: number;
   maxTurnDurationMs?: number;
   maxSessionDurationMs?: number;
+  /** PR14：fallback attempt 级无进展上限（独立于 watchdog，见 ResolvedLoopTimeouts 同名字段） */
+  fallbackStreamTimeoutMs?: number;
   maxTimeoutRetries?: number;
   maxRetriesPerCall?: number;
   retryBackoffBaseMs?: number;
@@ -49,6 +51,36 @@ export interface ResolvedLoopTimeouts {
   headerTimeoutMs: number;
   watchdogCheckIntervalMs: number;
   watchdogNoProgressMs: number;
+  /**
+   * PR14：`fallback.ts` attempt 级"无内容进展"上限，**与 watchdog 分开的独立一档**。
+   *
+   * ## 为什么必须拆（这是 PR14 的全部内容）
+   *
+   * 拆之前 `app.ts` 把 `watchdogNoProgressMs` 同时注入 fallback 的 `streamTimeoutMs`，
+   * `fallback.ts` 的兜底常量也 `= NETWORK_DEFAULTS.watchdogNoProgressMs`。于是这两层
+   * **同值 720s 且同谓词**（PR2 之后 fallback 那层也读内容进展）——正是 PR10 判定为
+   * "病"的那个形态，只不过 PR10 收敛了三档、漏掉了这一对。
+   *
+   * 同值同谓词的代价已实测过一次：两层几乎同时开枪，先到的那层背全部锅，
+   * 而轨迹里 `Counter({'fallback_stream_timeout': 24})` 看似铁证，
+   * 实际只是"它比 watchdog 早 70ms"。
+   *
+   * ## 取值 600s：来自**已解除删失**的新分布，不是拍的
+   *
+   * PR1/PR2/PR10 合入后重算 50 会话 / 1370 条成功流：
+   * `p50=3.9s p95=83.7s p99=294.2s max=507.8s`，其中 `>600s: 0/1370`。
+   * 而"无内容进展"间隔（`RetryTelemetry.stream_stall` 的 gapMs）实测最大
+   * **293.1s**（origin-deepseek-v4-pro）与 **284.5s**（glm-5.3）。
+   *
+   * 关键是这份分布**不再被删失**：旧分布 max=296.6s 紧贴 300s 硬顶、296.x 挤了一堆
+   * （更长的流全被杀掉、根本没机会以 completed 落盘），新分布 max 已跑到 507.8s
+   * 且 296.x 那个聚集消失 —— 说明右尾是真的，不是被截断的。
+   *
+   * 所以 600s ≈ 观测 idle max 的 2 倍，且落在 480s（档②）与 720s（watchdog）之间，
+   * 三档间距各 120s。**§5.A 那组"上限护栏"数字不需要动到**：把谓词改对之后，
+   * 值本来就够用（四家竞品都停在 ~300s 作为 idle 门槛）。
+   */
+  fallbackStreamTimeoutMs: number;
   watchdogHeaderGraceMs: number;
   maxTurnDurationMs: number;
   maxSessionDurationMs: number;
@@ -62,12 +94,13 @@ export interface ResolvedLoopTimeouts {
  * 统一默认值表（唯一真相源）。按"保活优先 + 覆盖网关排队"校准：
  *   - headerTimeoutMs 300s：网关鉴权+排队后首字节可达 2-4 分钟属正常，给足余量。
  *   - watchdogNoProgressMs 720s：外层复核层的"无进展"上限。**必须比 provider 层的
- *     档②（contentProgressTimeoutMs 480s）更宽**：watchdog 是远端观察者，读的是
- *     provider 广播出来的快照，掌握的信息严格少于 provider 自己 —— 信息更少的一层
- *     更激进，就会在 provider 还没判定之前先开枪，且开的枪归因更差
- *     （只写 `WatchdogKill`，不写哪一档、哪个阈值）。
- *     ⚠️ 这个值同时是 `fallback.ts` 流超时（`app.ts` 注入 `streamTimeoutMs`）与
- *     `LIFECYCLE_PRESETS` 的 BASE，改它牵动三处，见下方两条注释。
+ *     档②（contentProgressTimeoutMs 480s）与 fallback 层（600s）都更宽**：
+ *     watchdog 是远端观察者，读的是 provider 广播出来的快照，掌握的信息严格少于
+ *     provider 自己 —— 信息更少的一层更激进，就会在 provider 还没判定之前先开枪。
+ *     ⚠️ 它仍是 `LIFECYCLE_PRESETS` 的 BASE（改它牵动那三档，见下方注释），
+ *     但 **PR14 起不再兼任 `fallback.ts` 的流超时** —— 那一层已拆成
+ *     `fallbackStreamTimeoutMs`（600s）。此前二者同值 720s 且同谓词，
+ *     是 PR10 收敛三档时漏掉的最后一对伪阶梯。
  *   - maxTurnDurationMs 90min：档③单轮硬顶（覆盖任何未知挂起根因，不感知进展）。
  *     **必须与上面的放宽同批次抬**，否则 `fallback.ts` 的 S3 判据
  *     （`remaining <= effectiveDelayMs + MIN_USEFUL_ATTEMPT_MS` → 停止重试）
@@ -90,6 +123,11 @@ export interface ResolvedLoopTimeouts {
 export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   headerTimeoutMs: 300_000,
   watchdogNoProgressMs: 720_000,
+  // PR14：fallback attempt 级无进展上限，独立于 watchdog（此前二者同为 720s 同谓词）。
+  // 600s 的依据是**已解除删失**的新分布（>600s: 0/1370，实测 idle gap max 293.1s），
+  // 详见 ResolvedLoopTimeouts.fallbackStreamTimeoutMs 的注释。
+  // 位置刻意在 ② 480s 与 watchdog 720s 之间：provider 内层先判、外层复核后判。
+  fallbackStreamTimeoutMs: 600_000,
   watchdogCheckIntervalMs: 5_000,
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 90 * 60_000,
@@ -170,10 +208,15 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
  * **默认关闭**（见该字段注释）。
  *
  * 数值取向（保活优先，与本文件顶部原则一致；严格递增便于"哪一档开的枪"一眼可辨）：
- *   ① 240s < ② 480s < overall 1500s < ③ 5400s
- * 三档差值均 ≥ 120s，不是同值错开的伪阶梯 —— 数值哨兵与**谓词哨兵**都在
+ *   ① 240s < ② 480s < fallback 600s < watchdog 720s < overall 1500s < ③ 5400s
+ * 相邻差值均 ≥ 120s，不是同值错开的伪阶梯 —— 数值哨兵与**谓词哨兵**都在
  * `tests/config/timeout-ladder-sentinel.test.ts`（后者更重要：数值哨兵拦不住
  * "三个绝对计时器错开成 240/480/600"这种形态）。
+ *
+ * PR14 补进这条链的是 `fallback 600s` 与 `watchdog 720s` 之间的分离：
+ * 那两层此前同为 720s 且同谓词（PR2 之后 fallback 也读内容进展），
+ * 而"档②/overall/档③ 严格递增"这个自检**结构性地看不到它们** ——
+ * 因为它们根本没在被检查的那张表里。哨兵已补上这一对。
  */
 export interface ProviderStreamTimeouts {
   /** 档①：字节级 idle —— reader 收不到任何字节（真半开 TCP） */
@@ -305,6 +348,128 @@ export function resolveSideCallTimeouts(): SideCallTimeouts {
 let _providerStreamSettings: NetworkTimeoutSettings | undefined;
 
 /**
+ * PR12：**单模型**的流式超时覆盖（`ModelConfig.streamTimeouts`，按渠道别名 `name` 键）。
+ *
+ * ## 为什么需要它，而不是把全局默认再抬一档
+ *
+ * 慢是**模型的属性**，不是全局属性。实测（50 会话 / 1370 条成功流）最长无进展间隔
+ * 落在两个模型上：`glm-5.3` 284.5s、`origin-deepseek-v4-pro` 293.1s；
+ * 其余模型的 p95 只有 83.7s。全局抬阈值会让**所有**模型的真僵死回收一起变慢 ——
+ * 拿"两个慢模型"当理由去放宽"全部模型"，代价与收益的作用面不匹配。
+ *
+ * 横向对标同一结论：oh-my-pi 的 `compat.streamIdleTimeoutMs` 注释写明是为
+ * "Bedrock 推理模型思考中途安静几分钟"加的，解法就是模型目录里的单模型覆盖。
+ *
+ * ## 为什么不塞进 `ModelCompat`
+ *
+ * `ModelCompat` 是**纯布尔位**：`normalizeModelCompat` 明文只接受真布尔、
+ * 字符串一律丢弃（"两个方向猜错的后果相反"）。塞一个 number 进去会破掉那条不变量，
+ * 于是归一化、校验、别名表、跨进程播种四处都要开特例。独立一张表更便宜也更诚实。
+ *
+ * ## 按**渠道别名**而非模型真名键
+ *
+ * 与 `ModelCompat` / `supportsThinking` 同一口径：同一个真名接官方端点与公司网关时，
+ * 慢的往往是网关那条（排队 + 缓冲），不是模型本身。按真名键会把两条渠道一起放宽。
+ */
+const _perModelStreamTimeouts = new Map<string, PerModelStreamTimeouts>();
+
+/**
+ * 单模型可覆盖的流式超时项。刻意**只开档①/档②/overall 三项**：
+ *
+ * - `fetchAbsoluteTimeoutMs` 不开：它已默认关闭且谓词与档③重合（PR7 的结论），
+ *   给一个"应当关掉的层"加单模型旋钮等于给它续命。
+ * - 档③ `maxTurnDurationMs` 不开：它是**整轮**硬顶（跨模型、跨 fallback 切换、
+ *   含重试与退避），一轮里可能用过多个模型 —— "这一轮属于哪个模型"没有唯一答案，
+ *   按模型覆盖一个整轮预算在语义上就讲不通。
+ */
+export interface PerModelStreamTimeouts {
+  idleTimeoutMs?: number;
+  contentProgressTimeoutMs?: number;
+  overallTimeoutMs?: number;
+}
+
+/** `PerModelStreamTimeouts` 的全部合法键（归一化与校验共用，避免两处手写清单漂移）。 */
+export const PER_MODEL_STREAM_TIMEOUT_KEYS: readonly (keyof PerModelStreamTimeouts)[] = [
+  "idleTimeoutMs",
+  "contentProgressTimeoutMs",
+  "overallTimeoutMs",
+];
+
+/** snake_case → camelCase 别名（settings.json 两种风格都要认，同 COMPAT_KEY_ALIASES 的理由）。 */
+const PER_MODEL_KEY_ALIASES: Record<string, keyof PerModelStreamTimeouts> = {
+  idle_timeout_ms: "idleTimeoutMs",
+  content_progress_timeout_ms: "contentProgressTimeoutMs",
+  overall_timeout_ms: "overallTimeoutMs",
+};
+
+/**
+ * 把用户手写的 `streamTimeouts` 对象归一化，非法内容一律丢弃（不抛）。
+ *
+ * **必须容错到不抛**：本函数在 `loadConfig` 链上，抛出即整个进程起不来 ——
+ * 用户把一个值写成字符串就完全无法启动，比"该字段不生效"严重得多。
+ * 与 `normalizeModelCompat` 同一口径：就地容错。
+ *
+ * 只认**有限正数**：0 与负数不是"关闭"（关闭一个 idle 闸门没有合理用例，
+ * 那会退回半开连接永久挂起的 0 层状态），是配错；`NaN`/`Infinity` 传给定时器
+ * 会得到未定义行为。返回 `undefined` 表示"没有任何有效声明"。
+ */
+export function normalizePerModelStreamTimeouts(raw: unknown): PerModelStreamTimeouts | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: PerModelStreamTimeouts = {};
+  for (const [rawKey, value] of Object.entries(raw as Record<string, unknown>)) {
+    const key =
+      PER_MODEL_KEY_ALIASES[rawKey] ??
+      ((PER_MODEL_STREAM_TIMEOUT_KEYS as readonly string[]).includes(rawKey)
+        ? (rawKey as keyof PerModelStreamTimeouts)
+        : undefined);
+    if (!key) continue;
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * 注册 per-model 流式超时表。由 `resolveCurrentModelConfig` 那条咽喉调用
+ * （与 `setModelCompat` 同一处），幂等、可重复调。
+ *
+ * 传 `undefined` 或空列表即**清空** —— 与 `setModelCompat` 同一条硬要求：
+ * 切到"没有任何覆盖"的状态时必须真清掉，否则上一份配置的覆盖残留，
+ * 会让新配置按旧阈值跑且不报错。
+ */
+export function registerPerModelStreamTimeouts(
+  models?: readonly { name?: string; streamTimeouts?: unknown }[],
+): void {
+  _perModelStreamTimeouts.clear();
+  if (!models) return;
+  for (const m of models) {
+    if (!m?.name) continue;
+    // 归一化在**注册时**做（同 setModelCompat 的口径）：`streamTimeouts` 声明为 unknown，
+    // 因为它可能来自用户手写 settings.json（snake_case、字符串数字、负数都可能），
+    // schema 的 `.passthrough()` 不会把这些挡住。查询侧因此永远拿到干净的形状。
+    const t = normalizePerModelStreamTimeouts(m.streamTimeouts);
+    if (!t) continue;
+    // 同名重复以**首条**为准（同 setModelCompat：`/model` 按 name 也是选中第一条，
+    // 两处口径必须一致，否则"选中的那条"与"生效的覆盖"会来自不同条目）。
+    if (!_perModelStreamTimeouts.has(m.name)) {
+      _perModelStreamTimeouts.set(m.name, t);
+    }
+  }
+}
+
+/** 查询某渠道别名的 per-model 覆盖（无覆盖返回 undefined）。 */
+export function lookupPerModelStreamTimeouts(
+  modelName: string | undefined,
+): PerModelStreamTimeouts | undefined {
+  if (!modelName || _perModelStreamTimeouts.size === 0) return undefined;
+  return _perModelStreamTimeouts.get(modelName);
+}
+
+/** 清空 per-model 覆盖（仅测试用，避免用例间串味）。 */
+export function __resetPerModelStreamTimeoutsForTest(): void {
+  _perModelStreamTimeouts.clear();
+}
+
+/**
  * 注册 settings.json 的 network 块，让 provider 内部的流式超时解析能读到它。
  * 由启动路径（`app.ts` 的各入口）调用一次；重复调用以最后一次为准。
  */
@@ -319,8 +484,23 @@ export function __resetNetworkTimeoutSettingsForTest(): void {
 
 /**
  * 面向 provider 内部（openai/anthropic）的流式看门狗解析：
- * **env override > settings.network > 统一默认值**（三层，settings 层由
- * `registerNetworkTimeoutSettings` 注入，见其注释）。
+ * **调用方 options > env override > per-model > settings.network > 统一默认值**
+ * （五层；settings 层由 `registerNetworkTimeoutSettings` 注入，
+ * per-model 层由 `registerPerModelStreamTimeouts` 注入，见各自注释）。
+ *
+ * ## 顺序判据：范围越窄越优先，env 例外（PR12）
+ *
+ *   - `opts.timeouts`（调用方显式传）：最强。代码当场决定，没有更上层可申诉。
+ *   - env：**唯一的例外**，压过所有配置文件。理由是它是运维/测试的一次性注入 ——
+ *     "临时压到毫秒级复现一个 bug"必须做得到，多个现存测试正依赖这条。
+ *   - per-model（`availableModels[].streamTimeouts`）：比全局窄，所以压过全局。
+ *     ⚠️ 这一层曾被我排在 settings.network **之后**，理由是"用户的全局声明不该被
+ *     模型级建议否决" —— 那是**错的**：per-model 同样是用户写在同一个 settings.json
+ *     里的显式声明，不是我们的建议。而且排在全局之后会让它几乎永不生效
+ *     （只要用户碰过一次全局 `network.idleTimeoutMs`，per-model 就彻底失效且不报错），
+ *     等于把这一层做成死配置。这个错误是 PR13 那条对照用例抓出来的。
+ *   - `settings.network.*`：用户对全局的显式声明。
+ *   - 默认值：最后。
  *
  * 统一入口替代此前散落在 openai.ts/anthropic.ts 的 `Number(process.env.X)`/`parseInt` 就地解析
  * （配置-3）。所有 env 都走 readEnvMs 校验（非法值静默回退默认，而非把 NaN 传给定时器）。
@@ -340,9 +520,21 @@ export function resolveProviderStreamTimeouts(opts?: {
    * 供已持有 config 的调用方（如 `query/stream-processor.ts`）直连，不必依赖注册时序。
    */
   network?: NetworkTimeoutSettings;
+  /**
+   * PR12：本次请求走的**渠道别名**（`ModelConfig.name`），用于查 per-model 覆盖。
+   * 不传 = 不查 per-model（行为与 PR12 之前逐字节相同）。
+   */
+  modelName?: string;
+  /**
+   * PR12：调用方显式指定的超时（最高优先级，压过 env / settings / per-model）。
+   * 供 side-call 等"我知道自己该多快"的路径直接指定，不必绕 env。
+   */
+  timeouts?: PerModelStreamTimeouts;
 }): ProviderStreamTimeouts {
   const kind = opts?.providerKind ?? "openai";
   const n = opts?.network ?? _providerStreamSettings;
+  const perModel = lookupPerModelStreamTimeouts(opts?.modelName);
+  const explicit = opts?.timeouts;
   const contentProgressEnv =
     kind === "anthropic"
       ? "SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS"
@@ -360,18 +552,30 @@ export function resolveProviderStreamTimeouts(opts?: {
     n?.fetchAbsoluteTimeoutMs ??
     PROVIDER_STREAM_DEFAULTS.fetchAbsoluteTimeoutMs;
   return {
+    // PR12：五层链 —— 调用方 options > env > per-model > settings.network > 默认值。
+    // 顺序判据见函数头注释（范围越窄越优先，env 是唯一例外）。
     idleTimeoutMs:
+      explicit?.idleTimeoutMs ??
       readEnvMs("SID_CODE_IDLE_TIMEOUT_MS") ??
+      perModel?.idleTimeoutMs ??
       n?.idleTimeoutMs ??
       PROVIDER_STREAM_DEFAULTS.idleTimeoutMs,
     contentProgressTimeoutMs:
+      explicit?.contentProgressTimeoutMs ??
       readEnvMs(contentProgressEnv) ??
+      perModel?.contentProgressTimeoutMs ??
       n?.contentProgressTimeoutMs ??
       PROVIDER_STREAM_DEFAULTS.contentProgressTimeoutMs,
+    // fetchAbsolute 刻意**不接** per-model / explicit：它已默认关闭且谓词与档③重合，
+    // 给一个应当关掉的层加旋钮等于给它续命（见 PerModelStreamTimeouts 的注释）。
     fetchAbsoluteTimeoutMs:
       typeof fetchAbsRaw === "number" && fetchAbsRaw > 0 ? fetchAbsRaw : undefined,
     overallTimeoutMs:
-      readEnvMs(overallEnv) ?? n?.overallTimeoutMs ?? PROVIDER_STREAM_DEFAULTS.overallTimeoutMs,
+      explicit?.overallTimeoutMs ??
+      readEnvMs(overallEnv) ??
+      perModel?.overallTimeoutMs ??
+      n?.overallTimeoutMs ??
+      PROVIDER_STREAM_DEFAULTS.overallTimeoutMs,
   };
 }
 
@@ -404,6 +608,12 @@ export function resolveLoopTimeouts(input: LoopTimeoutInputs): ResolvedLoopTimeo
       readEnvMs("SID_CODE_WATCHDOG_NO_PROGRESS_MS") ??
       n?.watchdogNoProgressMs ??
       DEFAULTS.watchdogNoProgressMs,
+    // PR14：独立解析，**不再回落 watchdogNoProgressMs**。
+    // 回落会让"用户只调了 watchdog"变成"两层一起动"，同值同谓词的老形态就回来了。
+    fallbackStreamTimeoutMs:
+      readEnvMs("SID_CODE_FALLBACK_STREAM_TIMEOUT_MS") ??
+      n?.fallbackStreamTimeoutMs ??
+      DEFAULTS.fallbackStreamTimeoutMs,
     watchdogHeaderGraceMs:
       readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ??
       n?.watchdogHeaderGraceMs ??

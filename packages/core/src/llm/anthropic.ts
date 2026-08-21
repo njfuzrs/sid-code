@@ -342,7 +342,12 @@ export class AnthropicProvider implements Provider {
       // 从 guardedStream 升级为 createStreamLifecycle，额外获得 Layer 3 请求级整体超时，
       // 对齐官方 SDK 的 request-level timeout。
       // 配置-3：content-progress / overall 阈值走 network-profile 统一解析（不再就地读 env）。
-      const anthropicStreamTimeouts = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
+      // PR12：带 modelName（渠道别名，非 wire 真名）让本路径也吃 per-model 覆盖 ——
+      // 四条 provider 路径必须都接上，只接 openai 那条等于把 anthropic 族留在旧行为里。
+      const anthropicStreamTimeouts = resolveProviderStreamTimeouts({
+        providerKind: "anthropic",
+        modelName: params.model ?? this._model,
+      });
       const lifecycle = createStreamLifecycle<any>({
         // idle timeout（90s）：任何数据包（含 ping keep-alive）都 reset，保护"TCP 彻底断开"场景。
         idleTimeoutMs: LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs,

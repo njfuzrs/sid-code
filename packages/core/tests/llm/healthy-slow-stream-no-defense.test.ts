@@ -20,11 +20,40 @@
  * fix_type: case_design
  */
 
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import { OpenAIProvider } from "@sid-code/core/llm/openai.ts";
 import type { SendParams } from "@sid-code/core/llm/types.ts";
+import { initStreamObserver, resetStreamObserver } from "@sid-code/core/trace/stream-observer.ts";
+import {
+  registerNetworkTimeoutSettings,
+  registerPerModelStreamTimeouts,
+  __resetNetworkTimeoutSettingsForTest,
+  __resetPerModelStreamTimeoutsForTest,
+} from "@sid-code/core/config/network-profile.ts";
 
 const realFetch = globalThis.fetch;
+
+/**
+ * PR13：捕获落到 `events.jsonl` 的事件。
+ *
+ * ## 为什么"没抛错"不够，必须看事件
+ *
+ * 原用例只断言 `errorEvent === null` + 走到 `message_stop`。那拦得住"防线把流杀了"，
+ * 但**拦不住"防线开了枪却没杀死"** —— 而后者恰好是本文档记录的真实形态：
+ * `TimeoutFired` 触发了、`abort()` 调了，但 `Promise.race` 没 settle，流继续跑完
+ * （这正是 `TimeoutIneffective` 那个埋点存在的原因）。那种情况下流看起来是健康的，
+ * 用例全绿，而生产里已经在往轨迹写误杀记录、且下一次它可能就真杀掉了。
+ *
+ * 所以判据要收紧成"**一枪都没开**"，不只是"没死"。
+ */
+let captured: Array<{ event: string; data: Record<string, unknown> }> = [];
+
+beforeEach(() => {
+  captured = [];
+  initStreamObserver("healthy-slow-test", "/tmp/healthy-slow-test", (ev) => {
+    captured.push({ event: ev.event, data: ev.data });
+  });
+});
 const ENV_KEYS = [
   "SID_CODE_IDLE_TIMEOUT_MS",
   "SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS",
@@ -40,12 +69,23 @@ function setEnv(k: string, v: string) {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  resetStreamObserver();
+  // 两张注册表都要清，否则用例间串味（本文件故意把阈值压到毫秒级，泄漏出去会杀别人的流）
+  __resetNetworkTimeoutSettingsForTest();
+  __resetPerModelStreamTimeoutsForTest();
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
     delete saved[k];
   }
 });
+
+/** 本流触发过的防线事件（PR13 的核心判据：这个数组必须是空的）。 */
+function defenseEvents() {
+  return captured.filter((e) =>
+    ["TimeoutFired", "WatchdogKill", "StreamStall", "TimeoutIneffective"].includes(e.event),
+  );
+}
 
 const params: SendParams = {
   model: "glm-5.3",
@@ -123,6 +163,74 @@ describe("常驻回归 — 健康的慢流不被任何一层杀掉", () => {
     expect(elapsed).toBeGreaterThan(80);
     // ④ 进展确实是靠 reasoning 维持的（deltas 数量 ≈ chunk 数）
     expect(reasoningDeltas).toBeGreaterThan(CHUNKS / 2);
+    // ⑤ PR13：**一枪都没开**（比 ① 更强）。
+    //    ① 只能证明"没被杀死"，而实测形态是"开了枪但 race 没 settle、流照样跑完" ——
+    //    那时 ①②③④ 全绿，轨迹里却已经在写误杀记录。
+    expect(
+      defenseEvents().map((e) => `${e.event}:${JSON.stringify(e.data)}`),
+      "健康慢流不该让任何一层防线开枪（含开枪未生效）",
+    ).toEqual([]);
+    // ⑥ 正向对照：流确实走到了 completed（证明事件通道本身是通的 ——
+    //    否则 ⑤ 的"零事件"可能只是因为 observer 根本没接上，那是假绿）。
+    expect(captured.some((e) => e.event === "StreamPhase" && e.data.phase === "completed")).toBe(
+      true,
+    );
+  });
+
+  test("PR12+PR13：per-model 放宽后，原本会被全局默认杀掉的慢流能活下来", async () => {
+    // PR12 的 per-model 覆盖最可能的失败形态是"配了却不生效"（接线接在 provider
+    // 用不到的那一层）—— 症状是流仍按全局值被杀，而配置看起来完全正确。
+    // 拦它需要一对用例：同一条流，只改 per-model 配置，一次死一次活。
+    //
+    // ⚠️ 这里用 `settings.network` 而不是 env 压全局：**env 的优先级高于 per-model**
+    // （设计如此，见 resolveProviderStreamTimeouts 的优先级注释），
+    // 用 env 压全局会让 per-model 永远没机会生效，用例就成了自证不能。
+    const CHUNKS = 20;
+    const GAP_MS = 12;
+    // 全局 idle 压到 5ms（< 12ms 间隔 → 必杀）；per-model 放宽到 5000ms（→ 必活）。
+    registerNetworkTimeoutSettings({ idleTimeoutMs: 5, overallTimeoutMs: 5000 });
+
+    // ① 无 per-model 覆盖 → 应被杀（前提确认，否则下半段证不了任何事）
+    registerPerModelStreamTimeouts([]);
+    mockReasoningStream(CHUNKS, GAP_MS);
+    let errWithout: string | null = null;
+    try {
+      for await (const ev of new OpenAIProvider(
+        "k",
+        "https://example.invalid/v1",
+        "glm-5.3",
+      ).sendMessageStream(params)) {
+        if ((ev as any).type === "error") errWithout = (ev as any).error?.message ?? "error";
+      }
+    } catch (e: any) {
+      errWithout = e?.message ?? String(e);
+    }
+    expect(errWithout, "全局 idle=5ms 必须能杀掉 12ms 间隔的流（前提确认）").not.toBeNull();
+
+    // ② 只加 per-model 覆盖，别的都不动 → 应活下来且一枪未开
+    captured = [];
+    registerPerModelStreamTimeouts([{ name: "glm-5.3", streamTimeouts: { idleTimeoutMs: 5000 } }]);
+    mockReasoningStream(CHUNKS, GAP_MS);
+    let errWith: string | null = null;
+    let sawStop = false;
+    try {
+      for await (const ev of new OpenAIProvider(
+        "k",
+        "https://example.invalid/v1",
+        "glm-5.3",
+      ).sendMessageStream(params)) {
+        if ((ev as any).type === "error") errWith = (ev as any).error?.message ?? "error";
+        if ((ev as any).type === "message_stop") sawStop = true;
+      }
+    } catch (e: any) {
+      errWith = e?.message ?? String(e);
+    }
+    expect(errWith, "per-model 放宽后这条流不该再被杀").toBeNull();
+    expect(sawStop).toBe(true);
+    expect(
+      defenseEvents().map((e) => e.event),
+      "per-model 生效后不该有任何一层开枪",
+    ).toEqual([]);
   });
 
   test("负向对照：真僵死（零字节到达）仍被 idle 闸门回收", async () => {

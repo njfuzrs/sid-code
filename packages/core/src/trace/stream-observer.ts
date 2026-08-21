@@ -45,8 +45,109 @@ export function cacheDimsFor(cacheReadTokens: number | undefined): {
   return { cache_hit: cacheReadTokens > 0, cache_read: cacheReadTokens };
 }
 
+// ─── 字段归一：chunk 计数的唯一规范名（PR11 / §4.3）───
+
+/**
+ * PR11：「这次流收到了多少个 chunk」的**规范字段名**。
+ *
+ * ## 缺陷形态
+ *
+ * 同一个语义此前有四个名字，散在四类事件里：
+ * `RetryTelemetry.totalEvents` / `StreamPhase.chunks` / `WatchdogKill.total_chunks` /
+ * `ModelCallUnpaired.stream_snapshot.chunks_received`。三轮排查里相当一部分工作量
+ * 花在"按时间戳手工交叉比对"上，因为没有一个字段能跨事件类型 group by。
+ *
+ * ## 为什么是"新增规范名"而不是"重命名四处"
+ *
+ * 重命名会让**全部历史轨迹**（本机 50 个会话）在新读取方眼里变成零值 ——
+ * 而零值同时满足所有健康检查，是本仓记过教训的失效形态
+ * （memory `instrument-only-records-hit-not-write`：仪器少记一字段 →
+ * 两故障塌缩成一观测）。所以做法是**加一个各事件都带的 `chunk_count`**，
+ * 老字段原样保留：
+ *
+ * - 新读取方（时间线脚本）一律读 `chunk_count`，一个名字覆盖四类事件；
+ * - 老读取方（`digest.ts` 的 detail 文案等）继续读老字段，逐字节不变；
+ * - 老轨迹缺 `chunk_count` 时读取方回退老字段，**不会静默变 0**。
+ *
+ * ⚠️ 三套计数口径**没有**被统一（那是另一件事，且不该由"改字段名"顺手做）：
+ * `totalEvents` 是解析后事件数、`total_chunks`/`chunks_received` 是快照里的
+ * chunk 数、`StreamPhase.chunks` 是 parseSSE 本地计数。所以 `chunk_count`
+ * 必须与 `chunk_count_kind` 成对出现，否则会把三个不同口径的数字混着算 ——
+ * 那比四个名字更糟：四个名字至少一眼能看出"这是不同的东西"。
+ */
+export const CHUNK_COUNT_FIELD = "chunk_count" as const;
+
+/** `chunk_count` 的口径标注（与它必须成对出现，见 {@link CHUNK_COUNT_FIELD}）。 */
+export type ChunkCountKind =
+  /** 解析后 yield 出的事件数（lifecycle `snapshot.totalEvents`） */
+  | "events"
+  /** SSE chunk 数（parseSSE 本地计数 / 快照 `chunksReceived`） */
+  | "chunks";
+
+/**
+ * 构造归一后的 chunk 计数字段对。各 emit 点展开进 data 即可：
+ * `{ ...chunkCountFields(n, "chunks") }`。
+ *
+ * 返回**新对象**而非改传入对象：emit 点的 data 常含调用方自带的 `...extra`，
+ * 原地改会让"谁覆盖谁"依赖展开顺序。
+ */
+export function chunkCountFields(
+  count: number | undefined,
+  kind: ChunkCountKind,
+): Record<string, unknown> {
+  if (typeof count !== "number" || !Number.isFinite(count)) return {};
+  return { [CHUNK_COUNT_FIELD]: count, chunk_count_kind: kind };
+}
+
+/**
+ * 读取一条事件里的 chunk 计数，优先规范名、回退四个历史名。
+ *
+ * 回退顺序按"口径可靠性"排：规范名 > 快照类（`total_chunks` / `chunks_received`，
+ * 同一个 `snapshot.chunksReceived`）> parseSSE 本地计数（`chunks`）>
+ * 事件数（`totalEvents`，口径不同，最后才用）。
+ *
+ * 返回 `undefined` 而非 0 表示"这条事件没有这个语义" —— 0 会被读成
+ * "收到 0 个 chunk"，那是个结论，不是缺数据。
+ */
+export function readChunkCount(
+  data: Record<string, unknown> | undefined,
+): { count: number; kind: ChunkCountKind; field: string } | undefined {
+  if (!data) return undefined;
+  const canonical = data[CHUNK_COUNT_FIELD];
+  if (typeof canonical === "number") {
+    const k = data.chunk_count_kind;
+    return {
+      count: canonical,
+      kind: k === "events" ? "events" : "chunks",
+      field: CHUNK_COUNT_FIELD,
+    };
+  }
+  const legacy: [string, ChunkCountKind][] = [
+    ["total_chunks", "chunks"],
+    ["chunks_received", "chunks"],
+    ["chunks", "chunks"],
+    ["totalEvents", "events"],
+  ];
+  for (const [field, kind] of legacy) {
+    const v = data[field];
+    if (typeof v === "number") return { count: v, kind, field };
+  }
+  return undefined;
+}
+
 // ─── 超时层枚举 ───
 
+/**
+ * 超时防线的层标识（闭集）。
+ *
+ * ⚠️ **PR11 的硬要求：任何能掐断流的防线都必须在这里有一格，并真的 emit 一条
+ * `TimeoutFired`。** 这不是命名整洁问题 —— 上一轮排查方向被带偏整整一轮，
+ * 成因就是两层防线开枪不留痕：`Counter({'fallback_stream_timeout': 24})`
+ * 看似铁证"100% 是这一层触发"，实则**结构性地只能看到三个闸门中的一个**。
+ *
+ * 新增 layer 时必须同步 `scripts/telemetry-trigger-rate.ts` 的 `TIMEOUT_LAYERS`
+ * 清单（那是手写数组，会漂移；有哨兵测试机械核对两处一致）。
+ */
 export type TimeoutLayer =
   | "header_timeout"
   | "idle_timeout"
@@ -54,7 +155,25 @@ export type TimeoutLayer =
   | "fallback_stream_timeout"
   | "turn_hard_timeout"
   | "agent_heartbeat_timeout"
-  | "agent_overall_timeout";
+  | "agent_overall_timeout"
+  /**
+   * PR11（§4.5）：loop 层 watchdog 强杀。
+   *
+   * 此前它只发 `WatchdogKill`、并往快照里 push `turn_hard_timeout` 冒充档③。
+   * 那个复用有害：`turn_hard_timeout` 是**整轮**硬顶（`maxTurnDurationMs`，
+   * 谓词是"不感知进展的绝对计时"），而 watchdog 的谓词是"快照里的无进展时长"
+   * —— 两者是不同的失效模式。混成一个名字后，"档③开枪了几次"这个问题
+   * 永远算不对，而它正是判断"新阶梯有没有被架空"的关键数。
+   */
+  | "watchdog_kill"
+  /**
+   * PR11（§4.5）：`fetchAbsoluteTimeoutMs` 那个默认关闭的第四层。
+   *
+   * 它把 deadline 委托给 runtime（`AbortSignal.timeout`），runtime 的 abort
+   * 不带可归因 reason、也不经本模块 —— 于是它是唯一**完全隐身**的一层。
+   * 用户显式开启后它仍会掐断健康流，那时至少要能查出是谁开的枪。
+   */
+  | "fetch_absolute_timeout";
 
 // ─── 流状态快照（per-index） ───
 
@@ -77,8 +196,54 @@ export interface StreamSnapshot {
   chunksReceived: number;
   emptyChunks: number;
   lastContentProgressAt: number;
+  /**
+   * PR11（§4.2）：**这份快照自身最后被写入的时刻**，与业务语义无关。
+   *
+   * ## 为什么必须与 `lastContentProgressAt` 分开
+   *
+   * 这两个数在健康流上几乎相等，所以很容易被当成一个 —— 但它们在**故障时**
+   * 恰好分道扬镳，而故障时才是要读它们的时候：
+   *
+   * | 场景 | lastContentProgressAt | statsUpdatedAt |
+   * | --- | --- | --- |
+   * | 流真卡死（写入方还在 tick） | 停在最后一次内容 | 持续前进 |
+   * | **写入方自己没在写**（本仓真实缺陷） | 停在建快照时刻 | 同样停住 |
+   *
+   * 第二行是上一轮排查绕大圈的成因：`chunksReceived: 0` 看起来是权威实时状态，
+   * 实际是一份几分钟没人更新的陈旧快照，而**没有任何字段能区分这两种情况**。
+   * 有了本字段，`Date.now() - statsUpdatedAt` 就是快照年龄 —— 它大于 tick 周期
+   * 即说明「读到的数字不可信」，而不是「流没有进展」。
+   *
+   * 刻意**不叫** `updatedAt`：`phase` / `httpStatus` 等字段由 `emitStreamPhase` 写，
+   * 与计数字段不是同一条写入路径；这个名字限定它只描述**计数**（chunks/empty/progress）
+   * 的新鲜度，避免读的人以为整份快照都是这个时刻的。
+   */
+  statsUpdatedAt: number;
   timeoutsFired: TimeoutLayer[];
   abortSignalAborted: boolean;
+}
+
+/**
+ * PR11（§4.2）：判定快照计数是否已陈旧的默认阈值。
+ *
+ * 取 90s = 字节级写入方 tick 周期（`openai.ts` 的 `STALL_LOG_MS` 30s）的 3 倍。
+ * 与 `TIMER_DRIFT_RATIO` 同一个取值理由：正常调度抖动落在 1~2 倍内，3 倍才算真异常，
+ * 既能稳定抓住"写入方彻底没在写"，又不会因一次 GC 抖动就把健康快照标成陈旧。
+ */
+export const SNAPSHOT_STALE_MS = 90_000;
+
+/**
+ * 计算快照计数的年龄（毫秒）与是否陈旧。供 `ModelCallUnpaired` / heartbeat /
+ * WatchdogKill 三个消费面共用一套口径 —— 各自算会漂移成三个数。
+ *
+ * `now` 可注入，仅为测试可确定性；生产一律不传。
+ */
+export function snapshotStaleness(
+  snapshot: Pick<StreamSnapshot, "statsUpdatedAt">,
+  now: number = Date.now(),
+): { ageMs: number; stale: boolean } {
+  const ageMs = Math.max(0, now - snapshot.statsUpdatedAt);
+  return { ageMs, stale: ageMs >= SNAPSHOT_STALE_MS };
 }
 
 // ─── 事件写入回调类型 ───
@@ -239,6 +404,9 @@ export function emitStreamPhase(
         chunksReceived: 0,
         emptyChunks: 0,
         lastContentProgressAt: Date.now(),
+        // 建快照时刻即第一次"写入"：此刻计数确实是最新的（就是 0）。
+        // 置 0 会让刚建的快照立刻显示为陈旧 —— 那是假阳性。
+        statsUpdatedAt: Date.now(),
         timeoutsFired: [],
         abortSignalAborted: false,
       };
@@ -333,6 +501,75 @@ export function emitTimeoutFired(
   } catch {
     /* 可观测性不影响正常流程 */
   }
+}
+
+/**
+ * PR11（§4.5）：给 `fetchAbsoluteTimeoutMs` 那个默认关闭的第四层装上留痕。
+ *
+ * ## 问题
+ *
+ * 它用 `AbortSignal.timeout(ms)` 把 deadline 交给 runtime。runtime 到点直接
+ * abort，**不经本模块任何 emit**，抛出的 `DOMException("TimeoutError")` 也不带
+ * 可归因 reason。于是它是唯一**完全隐身**的一层：用户显式开启后它照样能掐断
+ * 一条一直在产出的健康流，而轨迹里查不到是谁开的枪。
+ *
+ * ## 做法：不改计时机制，只挂一个监听器
+ *
+ * 仍然返回 `AbortSignal.timeout` 本体（计时精度、abort 语义、与 `AbortSignal.any`
+ * 的组合行为逐字节不变），只在它 abort 时补发一条 `TimeoutFired`。
+ *
+ * 刻意**不**换成 `setTimeout` + 自建 `AbortController`：那会把这一层从
+ * "runtime 计时"改成"事件循环计时"，而本仓已有教训 —— 事件循环被半开 TCP 的 IO
+ * 占满时 `setTimeout` 可能延迟数分钟才 fire（`emitTimerDrift` 的文档记着实测
+ * 300s 阈值迟到到 899s）。这一层的**唯一价值**恰恰是它不依赖事件循环，
+ * 为了留痕把它换掉等于拆了它存在的理由。
+ *
+ * ## ⚠️ 必须 disarm，否则会记出**假超时**
+ *
+ * `AbortSignal.timeout(ms)` 到点**一定**会 abort，与 fetch 是否早已成功结束无关
+ * （signal 不知道自己被谁用过）。所以只挂监听器不解除，会出现这种轨迹：
+ * 一条 20s 就正常读完的流，在第 1800s 落一条 `fetch_absolute_timeout` ——
+ * **一个从未发生过的超时**。那比"没有留痕"更糟：没留痕只是缺数据，
+ * 假事件会让"这一层开了几枪"变成一个纯噪声的数，且噪声量正比于成功请求数。
+ *
+ * 因此返回 `{signal, disarm}`：调用方必须在流结束（正常/异常/取消都算）时
+ * 调用 `disarm()`。disarm 幂等，多次调用无副作用。
+ *
+ * 返回 `undefined` 表示"未配置，不装" —— 调用方据此决定是否 push 进 signal 数组。
+ */
+export function makeFetchAbsoluteTimeoutSignal(
+  timeoutMs: number | undefined,
+  index: number,
+  extra?: Record<string, unknown>,
+): { signal: AbortSignal; disarm: () => void } | undefined {
+  if (timeoutMs === undefined) return undefined;
+  const signal = AbortSignal.timeout(timeoutMs);
+  let armed = true;
+  const disarm = () => {
+    armed = false;
+  };
+  try {
+    signal.addEventListener(
+      "abort",
+      () => {
+        // 已 disarm = 流早就结束了，这次 abort 是 runtime 到点的空放，不是它杀的。
+        if (!armed) return;
+        armed = false;
+        emitTimeoutFired(index, "fetch_absolute_timeout", {
+          threshold_ms: timeoutMs,
+          // 点破归因短板：这一层的 abort 由 runtime 发出，reason 是个 DOMException
+          // 而非我们的白名单字符串。标注出来，免得读轨迹的人以为是用户取消
+          // （那个误判本仓记过：memory `stream-timeout-misclassified-as-cancel-rootcause`）。
+          runtime_abort: true,
+          ...extra,
+        });
+      },
+      { once: true },
+    );
+  } catch {
+    /* 监听器挂不上时退化为原行为（无留痕），绝不能因此让 fetch 起不来 */
+  }
+  return { signal, disarm };
 }
 
 /**
@@ -576,6 +813,10 @@ export function updateStreamStats(
         snapshot.lastContentProgressAt = update.lastContentProgressAt;
       if (update.abortSignalAborted !== undefined)
         snapshot.abortSignalAborted = update.abortSignalAborted;
+      // PR11：**无条件**刷新，即使上面每个字段都因单调取大而没变。
+      // 这正是本字段的意义：它回答"写入方还在写吗"，不是"数字变了吗"。
+      // 只在数字变化时刷新，就退回到"陈旧与无进展分不开"的老问题上。
+      snapshot.statsUpdatedAt = Date.now();
     }
   } catch {
     /* 静默 */
@@ -616,6 +857,9 @@ export function recordStreamProgress(
     if (progress.eventCount !== undefined && progress.eventCount > snapshot.chunksReceived) {
       snapshot.chunksReceived = progress.eventCount;
     }
+    // PR11：事件级写入方同样刷新新鲜度（理由同 updateStreamStats）。
+    // 两个写入方都刷，快照年龄才等于"最近一次有人写"，而不是"最近一次某一条路径写"。
+    snapshot.statsUpdatedAt = Date.now();
   } catch {
     /* 静默 */
   }
@@ -756,16 +1000,43 @@ export function emitWatchdogKill(
     const { loopId } = currentSseDumpContext();
     const key = makeSnapshotKey(loopId, index);
     const snapshot = _snapshots.get(key);
-    if (snapshot) {
-      // 复用 turn_hard_timeout 层标记，便于 digest 统一按超时层聚合
-      snapshot.timeoutsFired.push("turn_hard_timeout");
-    }
+    // ⚠️ 这里**刻意不自己 push `timeoutsFired`**：下面的 `emitTimeoutFired` 已经在
+    // 同一把 key 上 push 了。两处都写会让同一次强杀在数组里出现两次，
+    // 而 `fallback.ts` 的 reopenReason 只读末元素、看不出重复 ——
+    // 于是"这一层开了几枪"会被系统性翻倍，是那种全绿且看着合理的错数。
+    //
+    // PR11：层名改用 `watchdog_kill`，不再复用 `turn_hard_timeout` 冒充档③。
+    // 理由见 TimeoutLayer 的 `watchdog_kill` 注释。
+    //
+    // PR11（§4.5）：watchdog 此前**只发 WatchdogKill、不写 TimeoutFired** ——
+    // 于是 `digest.ts` 的超时防线汇总与 `telemetry-trigger-rate.ts` 的 layer 分布
+    // 里它完全隐身（两者都只扫 TimeoutFired）。补一条同层事件，两个视图立即可见。
+    // 刻意**不**把 WatchdogKill 换成 TimeoutFired：后者的 data 形状是通用的
+    // `{index, layer, ...extra}`，装不下迟判归因三件套（raw_no_progress_ms /
+    // human_input_pause_accum_ms / effective_threshold_ms），而那三个字段是
+    // 分辨"定时器没 tick"与"扣减吃掉时长"的唯一依据。两条事件各有职责。
+    emitTimeoutFired(index, "watchdog_kill", {
+      threshold_ms: data.effective_threshold_ms,
+      elapsed_ms: data.elapsed_ms,
+      model: data.model,
+      last_content_progress_ms: data.last_content_progress_ms,
+      ...chunkCountFields(data.total_chunks, "chunks"),
+    });
     if (_eventWriter && _sessionId) {
       _eventWriter({
         event: "WatchdogKill",
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
-        data: { index, ...data },
+        // PR11：补规范 chunk 字段（老 `total_chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+        // + 快照新鲜度：`total_chunks: 0` 到底是"真没收到"还是"快照没人写"，
+        // 此前无法分辨，而这正是上一轮把 11183 个事件读成 0 的那个坑。
+        data: {
+          index,
+          ...data,
+          ...chunkCountFields(data.total_chunks, "chunks"),
+          ...(snapshot ? { snapshot_age_ms: snapshotStaleness(snapshot).ageMs } : {}),
+          ...(snapshot && snapshotStaleness(snapshot).stale ? { snapshot_stale: true } : {}),
+        },
       });
     }
   } catch {
@@ -864,6 +1135,18 @@ export function emitStreamStall(
     no_content_progress_ms: number;
     total_chunks: number;
     empty_chunks: number;
+    /**
+     * PR11（§4.7）：本条对应的档位阈值（30s / 120s / 300s）。
+     * 有它才能回答"这条流卡到过哪几个量级"—— 按 `tier_ms` group by 即可，
+     * 不必拿 `no_content_progress_ms` 去猜分桶（那会因 tick 抖动落在档位边界两侧）。
+     */
+    tier_ms?: number;
+    /**
+     * PR11（§4.7）：本条是流结束时的"最长无进展间隔"汇总，而非某一档的实时告警。
+     * 与 `tier_ms` **互斥**：档位事件带 `tier_ms`、汇总带 `summary`。
+     * 聚合时必须按这个字段排除汇总条，否则同一次 stall 会被数两次。
+     */
+    summary?: boolean;
   },
 ): void {
   try {
@@ -872,7 +1155,8 @@ export function emitStreamStall(
         event: "StreamStall",
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
-        data: { index, ...data },
+        // PR11：补规范 chunk 字段（老 `total_chunks` 原样保留）
+        data: { index, ...data, ...chunkCountFields(data.total_chunks, "chunks") },
       });
     }
   } catch {

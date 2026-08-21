@@ -98,6 +98,30 @@ const ModelConfigSchema = lazySchema(() =>
       supportsThinking: z.boolean().optional(),
       /** 可选：用户自配价格。配了则优先使用，未配则回退内置定价表兜底 */
       pricing: ModelPricingSchema().optional(),
+      /**
+       * PR12：这条渠道的流式超时覆盖（见 `config/network-profile.ts` 的
+       * `PerModelStreamTimeouts`）。慢是模型属性而非全局属性，没有这个出口时唯一的
+       * 补救是抬全局默认 —— 那会让所有模型的真僵死回收一起变慢。
+       *
+       * 三项都 `.positive()`：0 / 负数不是"关闭"（关掉 idle 闸门会退回半开连接
+       * 永久挂起的 0 层状态），是配错，应当报出来而不是当成一种意图。
+       *
+       * 刻意**不收** `fetchAbsoluteTimeoutMs`（已默认关闭且谓词与档③重合，
+       * 给应当关掉的层加旋钮等于续命）与 `maxTurnDurationMs`（整轮硬顶跨模型，
+       * 按模型覆盖在语义上讲不通）。
+       *
+       * ⚠️ 两种命名风格都认（`idleTimeoutMs` / `idle_timeout_ms`），由
+       * `normalizePerModelStreamTimeouts` 归一 —— 这里只做类型校验，
+       * snake_case 经 `.passthrough()` 通过，运行时再归一。
+       */
+      streamTimeouts: z
+        .object({
+          idleTimeoutMs: z.number().positive().optional(),
+          contentProgressTimeoutMs: z.number().positive().optional(),
+          overallTimeoutMs: z.number().positive().optional(),
+        })
+        .passthrough()
+        .optional(),
     })
     .passthrough(),
 );
@@ -164,6 +188,9 @@ const NetworkTimeoutsSchema = lazySchema(() =>
       // nonnegative 而非 positive：0 = 关闭会话级硬顶（默认值即 0，见 network-profile.ts
       // DEFAULTS.maxSessionDurationMs 的说明）。用 positive 会让显式写 0 的配置被 Zod 拒掉。
       maxSessionDurationMs: z.number().nonnegative().optional(),
+      // PR14：fallback attempt 级无进展上限。必须**独立于** watchdogNoProgressMs 可调 ——
+      // 此前二者同值同谓词（都 720s、都读内容进展），是 PR10 收敛三档时漏掉的那一对。
+      fallbackStreamTimeoutMs: z.number().positive().optional(),
       maxTimeoutRetries: z.number().nonnegative().optional(),
       maxRetriesPerCall: z.number().nonnegative().optional(),
       retryBackoffBaseMs: z.number().nonnegative().optional(),

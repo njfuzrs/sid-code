@@ -124,8 +124,14 @@ const STREAM_RETRY = {
 };
 
 /** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
- *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。 */
-const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.watchdogNoProgressMs;
+ *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。
+ *
+ *  PR14：从 `watchdogNoProgressMs`（720s）改指 `fallbackStreamTimeoutMs`（600s）。
+ *  这一层与 watchdog **谓词相同**（PR2 之后都读内容进展），同值就是伪阶梯：
+ *  两层几乎同时开枪，先到的那层背全部锅，而"先到"只是 70ms 的偶然。
+ *  兜底常量也必须跟着改 —— 否则直接 `new ModelFallback()` 的路径（测试、SDK）
+ *  仍是旧的同值形态，而那正是回归会漏掉的地方。 */
+const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.fallbackStreamTimeoutMs;
 
 /** max_tokens 溢出恢复：安全余量 */
 const SAFETY_BUFFER = 1_000;

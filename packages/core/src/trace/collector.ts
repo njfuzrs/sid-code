@@ -56,6 +56,8 @@ import {
   getStreamSnapshot,
   getActiveStreamSnapshots,
   clearStreamSnapshot,
+  chunkCountFields,
+  snapshotStaleness,
 } from "./stream-observer.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
@@ -788,6 +790,11 @@ export class TraceCollector {
                   last_progress_ms: Date.now() - picked.lastContentProgressAt,
                   chunks: picked.chunksReceived,
                   empty_chunks: picked.emptyChunks,
+                  // PR11：补规范 chunk 字段 + 快照新鲜度。心跳是"进程 hang 时唯一还在写的
+                  // 东西"，它报的 chunks 却可能来自一份没人更新的快照 —— 那时 age 会持续
+                  // 增长，而 chunks 一动不动，两格合起来才说得清"卡在哪一侧"。
+                  ...chunkCountFields(picked.chunksReceived, "chunks"),
+                  snapshot_age_ms: snapshotStaleness(picked).ageMs,
                   timeouts_fired: picked.timeoutsFired,
                   ...(picked.agentId ? { agent_id: picked.agentId } : {}),
                   ...(activeSnapshots.length > 1 ? { active_count: activeSnapshots.length } : {}),
@@ -1047,7 +1054,16 @@ export class TraceCollector {
               http_status: snapshot.httpStatus,
               chunks_received: snapshot.chunksReceived,
               empty_chunks: snapshot.emptyChunks,
+              // PR11：补规范 chunk 字段（老 `chunks_received` 原样保留）
+              ...chunkCountFields(snapshot.chunksReceived, "chunks"),
               last_content_progress_ms: lastProgressMs,
+              // PR11（§4.2）：快照自身的新鲜度。这是本条记录里最容易误读的一格 ——
+              // `chunks_received: 0` 看着像"这条连接一个 chunk 都没收到"，
+              // 但也可能是"写入方几分钟没写了，这个 0 是建快照时的初始值"。
+              // 上一轮排查正是在这里绕的大圈子（实测 0 vs 真实 11183 个事件）。
+              // 有了这两格，两种情况一眼可分：age 小 → 数字可信；age 大 → 数字过期。
+              snapshot_age_ms: snapshotStaleness(snapshot).ageMs,
+              snapshot_stale: snapshotStaleness(snapshot).stale,
               timeouts_fired: snapshot.timeoutsFired,
               abort_signal_aborted: snapshot.abortSignalAborted,
               still_progressing: stillProgressing,
@@ -2623,7 +2639,11 @@ export class TraceCollector {
         event: "RetryTelemetry",
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
-        data: event,
+        // PR11：补规范 chunk 字段（老 `totalEvents` 原样保留，见 CHUNK_COUNT_FIELD）。
+        // ⚠️ 口径标 `"events"` 而不是 `"chunks"` —— 这个数是解析后 yield 出的**事件数**，
+        // 与快照里的 chunk 数不是一个东西（事件数 ≤ chunk 数）。标错会让按
+        // `chunk_count` 汇总时把两个口径混着平均，得出一个谁也不描述的数。
+        data: { ...event, ...chunkCountFields(event.totalEvents as number | undefined, "events") },
       });
       // 缺口分析（一类·输出吞吐）：stream_completed.elapsedMs 是"单次 fetch 从连接到流结束
       // 的纯生成耗时"（不含握手/重试/等待），是 tokens/sec 唯一正确的分母。

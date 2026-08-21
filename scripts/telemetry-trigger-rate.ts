@@ -71,6 +71,12 @@ const EVENT_CATALOG: Record<string, { emitter: string; kind: "normal" | "excepti
 };
 
 /** TimeoutFired 的 layer 枚举（用于交叉核验：哪一层的超时真的在生产里赢过 race）。 */
+/**
+ * ⚠️ 这是手写副本，必须与 `trace/stream-observer.ts` 的 `TimeoutLayer` 联集一致。
+ * 有哨兵测试（`tests/trace/timeout-layer-catalog-sync.test.ts`）机械核对两处 ——
+ * 手写清单在本仓有多次漂移前科，漏一层的后果是"那一层永远显示零触发"，
+ * 而零触发看起来完全正常（就像它从没出过故障），是最难发现的那类缺陷。
+ */
 const TIMEOUT_LAYERS = [
   "header_timeout",
   "idle_timeout",
@@ -79,6 +85,10 @@ const TIMEOUT_LAYERS = [
   "turn_hard_timeout",
   "agent_heartbeat_timeout",
   "agent_overall_timeout",
+  // PR11（§4.5）：此前这两层开枪不留痕（watchdog 只发 WatchdogKill、
+  // fetchAbsolute 把 abort 委托给 runtime），于是本脚本结构性地看不到它们。
+  "watchdog_kill",
+  "fetch_absolute_timeout",
 ];
 
 interface Scan {

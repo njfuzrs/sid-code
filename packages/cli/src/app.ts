@@ -821,7 +821,10 @@ export class App {
         // 配置-1：streamTimeoutMs/maxRetries 从 resolveLoopTimeouts 注入（此前未传，fallback 各自
         // 维护平行常量 CONNECTION_RETRY.maxRetries=3 / DEFAULT_STREAM_TIMEOUT_MS=300s）。
         // 注入后 fallback 与 loop 层超时/重试对齐——改 settings.json 的 network.* 或 env 一处生效。
-        streamTimeoutMs: fallbackNetTimeouts.watchdogNoProgressMs,
+        // PR14：改注入独立的 fallbackStreamTimeoutMs（600s），不再复用 watchdog 的 720s。
+        // 复用会让这两层同值 + 同谓词（PR2 后 fallback 那层也读内容进展）——
+        // 两层几乎同时开枪，先到的背全部锅（实测 70ms 间隔的掩盖）。
+        streamTimeoutMs: fallbackNetTimeouts.fallbackStreamTimeoutMs,
         maxRetries: fallbackNetTimeouts.maxTimeoutRetries,
         // 不确定-2/3：单次调用连接+流式两阶段共享重试上界，防退避风暴。
         maxRetriesPerCall: fallbackNetTimeouts.maxRetriesPerCall,
