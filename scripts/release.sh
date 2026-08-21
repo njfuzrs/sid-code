@@ -37,8 +37,13 @@
 #      （只 add package.json / changelog 产物 / builtin-embedded.generated.ts）
 #   ③ 把 annotated tag vX.Y.Z 打在**这个 bump 提交**上，并当场校验
 #      `git show <tag>:package.json` 的版本号与 tag 一致
-#   --upload 时额外把 CHANGELOG.md 传到服务器顶层、并在上传成功后 push tag。
-#   changelog 失败不阻断发布（非致命 warn）；tag/changelog 幂等，--no-bump 复用版本安全。
+#   ④ --upload 时额外把 CHANGELOG.md 传到服务器顶层、上传成功后 push tag，
+#      再调 scripts/github-release.ts 建 GitHub Release（正文取自同一份 curated 文案）。
+#      Release 这一步 2026-08-21 才补上 —— 在此之前流程里根本没有它，仓库现有的
+#      v0.1.591…v0.1.600 那 10 个 Release 全是开源首发时一次性人工回填的，
+#      而 GitHub 仓库首页把最新 Release 当"当前版本"展示，于是页面长期停在旧版本。
+#      未装 gh CLI 或建失败都只 warn：制品此刻已上线且校验过，不该因此判定发布失败。
+#   changelog 失败不阻断发布（非致命 warn）；tag/changelog/Release 幂等，--no-bump 复用版本安全。
 #
 #   ★ 为什么②③要这么排：旧流程把 tag 打在 bump **之前**的 HEAD 上，bump 提交留给用户
 #   事后手工补。结果 tag 指向的 commit 里 package.json 比 tag 低一位——实测 v0.1.591…
@@ -872,6 +877,25 @@ done"
     if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
         info "推送 tag $TAG 到 origin ..."
         git push origin "$TAG" || warn "tag 推送失败，可稍后手动 git push origin $TAG"
+
+        # ─── 建 GitHub Release（正文取自 curated 文案）───
+        # 补的是一个真实缺口：这一步以前**根本不存在**，仓库里 v0.1.591…v0.1.600 那 10 个
+        # Release 全部创建于 2026-08-13T02:22 那两分钟内（开源首发时一次性人工回填），
+        # 之后每次发版 tag 都推了、Release 却没人建 —— 而 GitHub 仓库首页把最新 Release
+        # 当作"当前版本"展示，于是页面上长期停在一个旧版本。
+        #
+        # 必须放在 tag 推送**之后**：Release 挂在 tag 上，tag 不在远端时 gh 会自建一个
+        # 指向默认分支 HEAD 的 tag（脚本里也另有一道显式检查兜这个）。
+        #
+        # 失败一律 warn 不阻断：制品此刻已经上线且 sha256 校验过了，
+        # 一个没建成的 Release 页不该让发布流程判定为失败（手动补跑一行就行）。
+        info "建 GitHub Release $TAG ..."
+        if command -v gh >/dev/null 2>&1; then
+            bun run "$ROOT/scripts/github-release.ts" "$VERSION" --create \
+                || warn "GitHub Release 创建失败（不阻断发布）：可手动补跑 bun run scripts/github-release.ts ${VERSION} --create"
+        else
+            warn "未装 gh CLI，跳过 GitHub Release（可稍后手动补跑 bun run scripts/github-release.ts ${VERSION} --create）"
+        fi
     fi
 
     echo ""

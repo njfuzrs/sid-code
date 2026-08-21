@@ -111,6 +111,69 @@ describe("release.sh：上传原子性（缺陷③）", () => {
   });
 });
 
+/**
+ * GitHub Release 这一步 2026-08-21 才补进流程 —— 在此之前它**根本不存在**：
+ * 仓库里 v0.1.591…v0.1.600 那 10 个 Release 全部创建于 2026-08-13T02:22 那两分钟内
+ * （开源首发时一次性人工回填），之后每次发版 tag 都推了、Release 却没人建。
+ * 而 GitHub 仓库首页把最新 Release 当作「当前版本」展示，于是页面长期停在一个旧版本 ——
+ * **没有任何报错，只是页面上的版本号不对**，这类缺口只能靠断言防复发。
+ */
+describe("release.sh：建 GitHub Release（2026-08-21 补的流程缺口）", () => {
+  test("--upload 路径会调 github-release.ts", () => {
+    expect(RELEASE_SH).toContain("scripts/github-release.ts");
+    expect(RELEASE_SH).toMatch(/github-release\.ts["']?\s+"\$VERSION"\s+--create/);
+  });
+
+  test("建 Release 在 push tag 之后（Release 挂在 tag 上，tag 不在远端时 gh 会自建错的）", () => {
+    const pushTagPos = posOf('git push origin "$TAG"');
+    // ⚠ 不能用 posOf("scripts/github-release.ts") —— 文件头注释里也提到了这个路径，
+    // 那处偏移远小于 push tag 的位置，断言会假红。锚在**可执行调用**的形态上。
+    const releasePos = posOf("--create \\");
+    expect(pushTagPos).toBeGreaterThan(0);
+    expect(releasePos).toBeGreaterThan(pushTagPos);
+  });
+
+  test("未装 gh 或建失败都不阻断发布（制品此刻已上线且校验过）", () => {
+    // 两条兜底都要在：command -v gh 的存在性检查，以及失败时的 warn 而非 fail
+    expect(RELEASE_SH).toMatch(/command -v gh/);
+    const seg = RELEASE_SH.slice(posOf("建 GitHub Release"));
+    expect(seg).toMatch(/\|\|\s*warn/);
+    // 反向断言：这一段里不许出现 fail —— 用 fail 会让一个没建成的 Release 页
+    // 把整次发布判定为失败，而制品其实已经好了
+    expect(seg.slice(0, 900)).not.toMatch(/\|\|\s*fail/);
+  });
+});
+
+describe("github-release.ts：正文取自 curated，且不建错 tag", () => {
+  const GH_RELEASE = readFileSync(join(ROOT, "scripts/github-release.ts"), "utf8");
+
+  test("读 curated 文案而不是 CHANGELOG.md（Release 页读者是用户，与官网同源）", () => {
+    expect(GH_RELEASE).toContain("changelog/curated");
+    expect(GH_RELEASE).toContain("toRenderSections");
+    // CHANGELOG.md 是全量原始提交（含 hash、docs 分组），不该是 Release 正文的源
+    expect(GH_RELEASE).not.toMatch(/readFileSync\([^)]*CHANGELOG\.md/);
+  });
+
+  test("建 Release 前校验远端 tag 存在（否则 gh 自建指向默认分支 HEAD 的 tag 且不报错）", () => {
+    expect(GH_RELEASE).toMatch(/git\/ref\/tags/);
+  });
+
+  test("已存在时幂等跳过，不是报错（release.sh 可能被重跑）", () => {
+    expect(GH_RELEASE).toContain("releaseExists");
+    expect(GH_RELEASE).toMatch(/已存在，跳过/);
+  });
+
+  test("不上传制品附件（制品在自建服务器，两处都放会出现双轨）", () => {
+    // 现有 10 个 Release 的 assets 都是 0 个，保持一致
+    expect(GH_RELEASE).not.toMatch(/release["'\s,\]]+upload/);
+    expect(GH_RELEASE).not.toMatch(/\.tar\.gz/);
+  });
+
+  test("curated 缺失/不合规时什么都不建（空正文的 Release 比不建更糟）", () => {
+    expect(GH_RELEASE).toMatch(/if \(!entry\) process\.exit\(1\)/);
+  });
+});
+
 describe("release.sh：工作区洁净门禁（缺陷④）", () => {
   test("支持 --allow-dirty，且默认为 false", () => {
     expect(RELEASE_SH).toContain("--allow-dirty");
