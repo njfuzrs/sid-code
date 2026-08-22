@@ -489,6 +489,11 @@ async function runAgentLoopInner(
       retryBackoffMaxMs: config.retryBackoffMaxMs,
       availability,
       agentId: config.agentId,
+      // PR2：把本子代理已有的号段传进漏斗，让 provider 内部的 emit 与上面这些
+      // `emitStreamPhase(agentStreamIndex, …, observerAgentId)` 落在**同一把快照键**上。
+      // 不传则漏斗自行分配一个号，同一条流会在两把键上各写一半 —— 归因被拆散，
+      // 且其中一半再也清不掉（上面 clearStreamSnapshot 只清 agentStreamIndex 那把）。
+      observerIndex: agentStreamIndex,
       // S3：把外层 wall-clock 硬顶透进漏斗，让它在"退避完也来不及发请求"时提前收手。
       deadlineAt: config.deadlineAt,
       // B5-4：经 tap 转发（数重试次数），行为对调用方不变。
@@ -984,6 +989,8 @@ async function runAgentLoopInner(
           retryBackoffMaxMs: config.retryBackoffMaxMs,
           availability,
           agentId: config.agentId,
+          // PR2：同主流 —— 把总结轮已有的 20000 号段传进漏斗，两侧拼出同一把快照键。
+          observerIndex: summaryStreamIndex,
           // S3：总结轮同样受时间预算约束——而且它比主流更需要。它是**最后一次**机会
           // 把前面 maxTurns 轮的产出落地成结论，在这里睡满 120s 再被外层砍掉，
           // 等于整个子代理白跑。提前收手至少还能把已有内容交出去。

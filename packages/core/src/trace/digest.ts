@@ -494,9 +494,22 @@ export interface ProcessPathologyStats {
    * 数据缺失（无 HttpConnected 或无 AfterModelRaw）时为 undefined。
    */
   retryWastedTokens?: number;
-  /** 白建连接次数（HttpConnected − AfterModelRaw），负数归 0 */
+  /** 白建连接次数（HttpConnected − AfterModelRaw），负数归 0。**含两个成因，见下两个字段** */
   extraConnections: number;
-  /** retryWastedTokens 占已记账 input 的比例 */
+  /**
+   * §5.4：差额中由**其它调用链**（fork / side-call / 子代理）贡献的条数。
+   *
+   * 这些流通常 `http_status=200` 正常完成，**不是失败重试** —— 它们只是不经
+   * `AfterModelRaw` 入账。实测 2026-08-21 那次会话的 22 个差额全部属于这一类，
+   * 而当时它们被报成"重试白烧"，把排查引向了 `fallback.ts`（那里没有问题）。
+   *
+   * 判据是 StreamPhase 上的 `agent_id` / `caller` 字段（PR2 起 provider 侧落）。
+   * 老轨迹无该字段 → 恒 0，全部差额归入 `retryConnections`（与改造前口径一致）。
+   */
+  otherChainConnections: number;
+  /** §5.4：差额中归因为**真·重试**的条数（= extraConnections − otherChainConnections） */
+  retryConnections: number;
+  /** retryWastedTokens 占已记账 input 的比例（分子只含 retryConnections，不含其它调用链） */
   retryWastedRatio?: number;
   /** retryWastedRatio > 0.20 */
   retryWastedPathological: boolean;
@@ -3096,18 +3109,48 @@ export function computeProcessPathology(
   // ── 指标 6：retryWastedTokens ──
   // HttpConnected = 真实建连次数，AfterModelRaw = 成功记账的轮次。差值即白建的连接。
   // 实测 254 − 153 = 101 次重连，乘以每轮均值 134,379 ≈ 13.6M token 白烧。
+  //
+  // ⚠ **归因铁律（2026-08-21 事故教训，§5.4）**：这个差值**不全是"重试"**。
+  // 它至少有两个成因，性质完全不同：
+  //   ① 真·重试白烧 —— 同一条调用链的流失败后重发（`RetryTelemetry` 有对应记录）；
+  //   ② **另一条调用链的成功流** —— fork / side-call 发的流，`http_status=200`
+  //      全部正常完成，只是从未进过 `AfterModelRaw`。
+  // 实测那次 22 个差额**全部是 ②**（39 个流无一抛错），却被这个指标报成"重试白烧"，
+  // 于是照着标签排查会走到 `fallback.ts` 的重试逻辑上 —— 而那里没有问题。
+  // **错误归因比没有归因更坏**，这是本仓反复记的教训。
+  //
+  // 所以这里按 `agent_id` / `caller` 把两者拆开：带身份的流归 ②（其它调用链），
+  // 不带身份的差额才算 ①（主循环重试）。拆分依赖 PR2 起 provider 侧落的 agent_id 字段，
+  // 老轨迹无该字段 → 全部落进 ①（与改造前行为一致，不会把历史数据算成新口径）。
   const httpConnected = events.filter((e) => e.event === "HttpConnected").length;
   const afterModelRaw = events.filter((e) => e.event === "AfterModelRaw");
   const inputsPerTurn = afterModelRaw
     .map((e) => num(((e.data as any)?.usage ?? {}).input_tokens))
     .filter((n) => n > 0);
   const extraConnections = Math.max(0, httpConnected - afterModelRaw.length);
+  // 非主循环调用链发出的流数：按 StreamPhase(fetch_sent/headers_received) 上的身份计。
+  // 用 Set 去重到"流"粒度（一条流会发多个 phase），键取 `agent_id + index`。
+  const sideStreamKeys = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "StreamPhase") continue;
+    const d = e.data as any;
+    const id = d?.agent_id ?? d?.caller;
+    if (!id) continue;
+    if (d?.phase !== "fetch_sent" && d?.phase !== "headers_received") continue;
+    sideStreamKeys.add(`${id}:${d?.index}:${d?.attempt ?? 0}`);
+  }
+  // ② 的条数不得超过总差额（防止身份齐全但 AfterModelRaw 也齐全时算出负数的 ①）
+  const otherChainConnections = Math.min(extraConnections, sideStreamKeys.size);
+  const retryConnections = Math.max(0, extraConnections - otherChainConnections);
   const recordedInput = inputsPerTurn.reduce((a, b) => a + b, 0);
   const avgInput = inputsPerTurn.length > 0 ? recordedInput / inputsPerTurn.length : 0;
   // 两个数据源都得有才给数：只有 HttpConnected 没有 usage 时算不出 token 量，
   // 此时给 0 会被误读成"没有浪费"，给 undefined 才诚实。
+  //
+  // ⚠ 分子只用 ①（真·重试）：把 fork 的流算进"重试白烧"就是上面那条归因错误。
+  // ② 的量由 `otherChainConnections` 单独暴露，消费侧自行决定怎么展示。
   const retryWastedTokens =
-    extraConnections > 0 && avgInput > 0 ? Math.round(extraConnections * avgInput) : undefined;
+    retryConnections > 0 && avgInput > 0 ? Math.round(retryConnections * avgInput) : undefined;
   const retryWastedRatio =
     retryWastedTokens !== undefined && recordedInput > 0
       ? retryWastedTokens / recordedInput
@@ -3133,6 +3176,9 @@ export function computeProcessPathology(
     observationEntropyPathological: maxUnchangedObservationRun >= UNCHANGED_OBSERVATION_THRESHOLD,
     retryWastedTokens,
     extraConnections,
+    // §5.4：差额的两个成因分开暴露 —— 混成一个数就必然被读成"重试"（见上方归因铁律）。
+    otherChainConnections,
+    retryConnections,
     retryWastedRatio,
     retryWastedPathological:
       retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
@@ -3224,13 +3270,24 @@ function describePathology(
   if (p.retryWastedPathological) {
     push(
       "retry_wasted_tokens",
-      `${p.extraConnections} 次建连未产生记账轮次，按每轮均值估算白烧约 ` +
+      // §5.4：文案必须把两个成因分开报。原文案只说"建连未产生记账轮次"，
+      // 读者（和 anomaly 名 `retry_wasted_tokens`）都会理解成"重试"，
+      // 而实测那 22 次其实是 fork 的成功流 —— 归因错了，排查就会走到错的地方。
+      `${p.extraConnections} 次建连未产生记账轮次` +
+        (p.otherChainConnections > 0
+          ? `（其中 ${p.otherChainConnections} 次来自其它调用链（fork/子代理/影子调用）的**成功**流，非重试；` +
+            `${p.retryConnections} 次归因为重试）`
+          : "") +
+        `，按每轮均值估算重试白烧约 ` +
         `${(p.retryWastedTokens! / 1e6).toFixed(2)}M token（占已记账 input ` +
         `${(p.retryWastedRatio! * 100).toFixed(1)}%，阈值 20%）。估算值，不可用于对账`,
       {
         sourceFile: eventsPath,
-        lineRef: "event=HttpConnected 数 − event=AfterModelRaw 数，乘 usage.input_tokens 均值",
-        rawValue: `extra_conn=${p.extraConnections} wasted≈${p.retryWastedTokens}`,
+        lineRef:
+          "event=HttpConnected 数 − event=AfterModelRaw 数，按 StreamPhase.agent_id 拆分成因后乘 usage.input_tokens 均值",
+        rawValue:
+          `extra_conn=${p.extraConnections} other_chain=${p.otherChainConnections} ` +
+          `retry=${p.retryConnections} wasted≈${p.retryWastedTokens}`,
         mtime: fileMtimeIso(eventsPath),
         lossy: true, // 均值估算，非精确重发量：见 ProcessPathologyStats.retryWastedTokens 注释
       },

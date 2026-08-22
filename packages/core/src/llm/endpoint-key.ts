@@ -17,6 +17,10 @@
  */
 export function normalizeBaseURL(baseURL?: string | null): string {
   if (!baseURL) return "";
+  // 类型之外的防御：baseURL 的实际来源包括 settings.json / 网关采集缓存等**无类型保证**
+  // 的通道，一个手写错的配置（数字、对象）会让 `.trim()` 抛 TypeError，
+  // 而本函数在计价热路径上 —— 崩在这里等于整次计价失败。归一化为"无端点"是安全降级。
+  if (typeof baseURL !== "string") return "";
   const trimmed = baseURL.trim();
   if (!trimmed) return "";
 

@@ -13,7 +13,7 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
-import type { Message, ContentBlock, ToolDefinition } from "../llm/types.ts";
+import type { Message, ContentBlock, ToolDefinition, Usage } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { LegacyTool, PermissionResult } from "../tool/types.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
@@ -77,7 +77,7 @@ export interface ForkedAgentOptions {
 /** Forked Agent 执行结果 */
 export interface ForkedAgentResult {
   messages: Message[];
-  usage: { inputTokens: number; outputTokens: number };
+  usage: Usage;
   turns: number;
   /** 被 canUseTool 拒绝的工具调用次数 */
   deniedToolCalls: number;
@@ -95,11 +95,20 @@ async function accumulate(
 ): Promise<{
   content: ContentBlock[];
   stopReason: string | null;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: Usage;
 }> {
   const content: ContentBlock[] = [];
   let stopReason: string | null = null;
-  const usage = { inputTokens: 0, outputTokens: 0 };
+  // §5.2.2 ③ 顺带修：cache 字段此前**全部丢弃**（只累加 in/out）。
+  // 计费已由发生侧负责（llm/billing-sink.ts），所以这个值只用于日志与返回值；
+  // 但仍必须带上 cache —— 一个"显示 in/out 却看不到命中"的数字与账本对不上，
+  // 而"两个数字都对不上"比"没有数字"更难排查。
+  const usage: Usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
   const partialJson = new Map<number, string>();
 
   for await (const event of stream) {
@@ -109,9 +118,16 @@ async function accumulate(
       return { content: content.filter(Boolean), stopReason: "error", usage };
     }
     switch (event.type) {
-      case "message_start":
-        usage.inputTokens += event.message?.usage?.inputTokens ?? 0;
+      case "message_start": {
+        const u = event.message?.usage;
+        usage.inputTokens += u?.inputTokens ?? 0;
+        // cache 两段一并累加（此前丢弃，见上方 usage 声明处的注释）。
+        usage.cacheReadInputTokens =
+          (usage.cacheReadInputTokens ?? 0) + (u?.cacheReadInputTokens ?? 0);
+        usage.cacheCreationInputTokens =
+          (usage.cacheCreationInputTokens ?? 0) + (u?.cacheCreationInputTokens ?? 0);
         break;
+      }
       // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
       // 与子代理/无头路径同构（按 index 落位 → 重开后残留高位块）。
       case "stream_restart": {
@@ -252,6 +268,18 @@ export async function runForkedAgent(
           querySource: "agent:fork",
           switchMode: "auto",
           availability: mainContext.availability,
+          // PR2/PR3：给 fork 的流一个**自己的身份**。
+          //
+          // 不传的后果（实测，本次事故第 3 层）：fork 的流继承主循环最后登记的
+          // turnIndex，与主循环共用同一个 attempt 计数器 —— 两个 fork 交替发请求时
+          // attempt 单调涨到 8，在轨迹里长得完全就是"一个请求重试了 8 次"。
+          // 于是 digest 把它算成 `retryWastedTokens`（重试白烧），**归因指向了错的地方**，
+          // 照那个标签排查会走到 fallback 的重试逻辑上，而那里没有问题。
+          //
+          // 有了 agentId，漏斗会用它建立请求级上下文（见 resilient-stream.ts），
+          // provider 侧的计费事件与 StreamPhase 都能归到具体是哪个 fork。
+          // querySource 已经带了任务标签（`agent:fork`），这里用它区分两个 fork 实例。
+          agentId: `fork:${options.querySource}`,
           // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
           // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
           maxRetries: 2,

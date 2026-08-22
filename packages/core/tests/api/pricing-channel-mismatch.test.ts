@@ -27,7 +27,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolvePricing } from "@sid-code/core/api/cost-tracker.ts";
+import { resolvePricing, effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
 import {
   isOfficialEndpoint,
   __resetGatewayPricingForTest,
@@ -35,8 +35,24 @@ import {
 import { lookupRegistry, getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 
-/** 官方价（内置注册表）—— 断言的锚点，取自 model-registry.ts。 */
-const OFFICIAL_PRO = { input: 0.435, output: 0.87, cacheRead: 0.0036 };
+/**
+ * 官方价（内置注册表）—— 断言的锚点，取自 model-registry.ts。
+ *
+ * D1（2026-08-21）：改成**人民币高峰价**，与注册表现在的存储口径一致
+ * （注册表存原币 + `currency: "CNY"` + `fxToUSD`，见 model-registry.ts 的
+ * DEEPSEEK_CNY_TO_USD 注释）。本组测的是"官方端点有没有被套上网关渠道价"，
+ * 与币种无关 —— 锚点跟着注册表口径走即可。
+ */
+const OFFICIAL_PRO = { input: 9, output: 27, cacheRead: 0.3 };
+/**
+ * 一个落在**高峰时段**的固定时刻（UTC 02:30，= 北京 10:30）。
+ *
+ * 显式传时刻而不是用"现在"：注册表存的是高峰价 + `offPeakMultiplier`，
+ * 用"现在"会让这条测试在空闲时段跑出另一组数字 —— 那种随挂钟变红的测试
+ * 会被人当成 flaky 直接跳过，而不是当成信号。
+ */
+const PEAK_AT = new Date(Date.UTC(2026, 7, 21, 2, 30, 0));
+
 /** 事故现场那个网关渠道价 —— 断言"不得返回"的值。 */
 const GATEWAY_PRO = { input: 1.64383, output: 3.28767, cacheRead: 0.137 };
 
@@ -318,53 +334,66 @@ describe("A 组 · isOfficialEndpoint 判据", () => {
 /**
  * D 组 · 与官方价目表的黄金基准（人工维护）
  *
- * 官方人民币价目表（DeepSeek 官方，2026-08，元/百万 token）——用户提供 + 官方账单交叉验证：
+ * 官方人民币价目表（DeepSeek 官方，**2026-08-17 起的峰谷定价**，元/百万 token）。
  *
- * |                  | v4-pro | v4-flash |
- * | 输入（未命中）    | ¥3     | ¥1       |
- * | 输入（缓存命中）  | ¥0.025 | ¥0.02    |
- * | 输出              | ¥6     | ¥2       |
+ * ⚠ 2026-08-21 事故修复（D1）：这张表原先记的是 08-17 涨价**之前**的价
+ * （pro ¥3/¥0.025/¥6）。厂商 08-16 16:00 UTC 起启用峰谷定价、单价整体上调，
+ * 而这张"黄金基准"和注册表一起停在旧值 —— 于是它**没能发现涨价**。
+ * 教训：黄金基准与被测数据同源更新时，它只能防"改错"，防不了"都没改"。
+ * 真正兜住"都没改"的是 §5.6 的账单对账脚本（拿官方账单比最终金额）。
  *
- * 内置注册表是 USD 口径。逐项相除得隐含汇率，六项应高度一致（实测 6.90 / 6.94 / 7.14）。
+ * 高峰时段（北京时间 09:00–12:00、14:00–18:00）价：
+ *
+ * |                  | v4-pro  | v4-flash |
+ * | 输入（未命中）    | ¥9      | ¥3       |
+ * | 输入（缓存命中）  | ¥0.3    | ¥0.1     |
+ * | 输出              | ¥27     | ¥9       |
+ *
+ * 空闲时段为上表的一半（注册表用 `offPeakMultiplier: 0.5` 表达）。
+ *
+ * 注册表现在**直接存人民币**（`currency: "CNY"` + `fxToUSD`），所以这里逐项相除
+ * 得到的不再是"隐含汇率"而应恒为 1 —— 这比校验汇率区间更强：
+ * 它同时钉住了单价与币种标注两件事。
  * 厂商调价时本测试会失败，提示更新注册表 —— 这是它的**目的**，不是脆弱。
  */
 describe("D 组 · 内置注册表 vs 官方人民币价目表（黄金基准）", () => {
   const OFFICIAL_CNY: Record<string, { input: number; cacheRead: number; output: number }> = {
-    "deepseek-v4-pro": { input: 3, cacheRead: 0.025, output: 6 },
-    "deepseek-v4-flash": { input: 1, cacheRead: 0.02, output: 2 },
+    "deepseek-v4-pro": { input: 9, cacheRead: 0.3, output: 27 },
+    "deepseek-v4-flash": { input: 3, cacheRead: 0.1, output: 9 },
   };
 
-  test("逐项隐含汇率落在 6.5~7.5（含 cacheRead，不只 input）", () => {
-    const rates: Array<{ model: string; item: string; rate: number }> = [];
+  test("注册表逐项等于官方人民币高峰价（币种标注 + 单价一起钉住）", () => {
     for (const [model, cny] of Object.entries(OFFICIAL_CNY)) {
-      const usd = lookupRegistry(model)?.pricing;
-      expect(usd, `注册表缺少 ${model} 的 pricing`).toBeTruthy();
-      rates.push({ model, item: "input", rate: cny.input / usd!.input });
-      rates.push({ model, item: "output", rate: cny.output / usd!.output });
-      rates.push({ model, item: "cacheRead", rate: cny.cacheRead / usd!.cacheRead! });
-    }
-    // 六项全部校验（cacheRead 是本次事故错得最狠的一项，必须在内）
-    expect(rates.length).toBe(6);
-    for (const r of rates) {
-      expect(r.rate, `${r.model}.${r.item} 隐含汇率 ${r.rate.toFixed(3)} 越界`).toBeGreaterThan(
-        6.5,
-      );
-      expect(r.rate, `${r.model}.${r.item} 隐含汇率 ${r.rate.toFixed(3)} 越界`).toBeLessThan(7.5);
+      const p = lookupRegistry(model)?.pricing;
+      expect(p, `注册表缺少 ${model} 的 pricing`).toBeTruthy();
+      // 币种必须显式标注 CNY —— 不标注就会被当美元算（低估约 7 倍，正是 D1 的一半成因）
+      expect(p!.currency, `${model} 未标注 currency`).toBe("CNY");
+      expect(p!.fxToUSD, `${model} 标了 CNY 却没给 fxToUSD`).toBeGreaterThan(0);
+      expect(p!.input, `${model}.input`).toBeCloseTo(cny.input, 6);
+      expect(p!.output, `${model}.output`).toBeCloseTo(cny.output, 6);
+      expect(p!.cacheRead!, `${model}.cacheRead`).toBeCloseTo(cny.cacheRead, 6);
     }
   });
 
-  test("同模型内三项汇率互相一致（防止只改了一项单价）", () => {
-    for (const [model, cny] of Object.entries(OFFICIAL_CNY)) {
-      const usd = lookupRegistry(model)!.pricing!;
-      const rIn = cny.input / usd.input;
-      const rOut = cny.output / usd.output;
-      const rCache = cny.cacheRead / usd.cacheRead!;
-      // 允许 5% 离散（官方价目表本身是整数元，换算有舍入）
-      expect(Math.abs(rIn - rOut) / rIn, `${model} input↔output 汇率不一致`).toBeLessThan(0.05);
-      expect(Math.abs(rIn - rCache) / rIn, `${model} input↔cacheRead 汇率不一致`).toBeLessThan(
-        0.05,
-      );
+  test("峰谷政策已表达：空闲价恰为高峰价一半，窗口为官方公告的两段", () => {
+    // 这条防的是"只改了数字、没接时段"——那种改法在高峰时段测起来完全正常，
+    // 只在空闲时段高估一倍，而没有任何断言会失败。
+    for (const model of Object.keys(OFFICIAL_CNY)) {
+      const p = lookupRegistry(model)!.pricing!;
+      expect(p.peakWindows?.length, `${model} 缺 peakWindows`).toBe(2);
+      expect(p.offPeakMultiplier, `${model} 缺 offPeakMultiplier`).toBe(0.5);
     }
+  });
+
+  test("三项单价同比例（防止只改了一项）", () => {
+    // 官方三项在 pro/flash 之间是同一组比例（未命中:命中:输出 = 9:0.3:27 与 3:0.1:9）。
+    const pro = lookupRegistry("deepseek-v4-pro")!.pricing!;
+    const flash = lookupRegistry("deepseek-v4-flash")!.pricing!;
+    const rIn = pro.input / flash.input;
+    const rOut = pro.output / flash.output;
+    const rCache = pro.cacheRead! / flash.cacheRead!;
+    expect(Math.abs(rIn - rOut) / rIn, "input↔output 比例不一致").toBeLessThan(0.05);
+    expect(Math.abs(rIn - rCache) / rIn, "input↔cacheRead 比例不一致").toBeLessThan(0.05);
   });
 });
 
@@ -399,14 +428,20 @@ describe("D 组 · 单价逐项偏离门禁", () => {
   });
 
   test("门禁自证：修复前的错值确实会被这道门禁拦住", () => {
-    // 用事故实测值直接算偏离，证明阈值(2×)对 input 4.94× / cacheRead 38.1× 都会红。
-    const expected = lookupRegistry("deepseek-v4-pro")!.pricing!;
+    // 用事故实测值直接算偏离，证明阈值(2×)对 input / cacheRead 两项都会红。
+    //
+    // ⚠ D1 之后必须**同币种相比**：注册表现在存人民币，而 GATEWAY_PRO 是事故现场的
+    // 美元渠道价。直接相除是拿美元比人民币，算出来的"偏离倍数"没有意义
+    //（实测会得到 1.25×，低于阈值 → 门禁看起来失效了，其实是单位错了）。
+    // 折算成 USD 再比 —— 这也顺带证明了 effectivePricing 是在真的干活。
+    const expected = effectivePricing(lookupRegistry("deepseek-v4-pro")!.pricing!, PEAK_AT);
     const inputDev = GATEWAY_PRO.input / expected.input;
     const cacheDev = GATEWAY_PRO.cacheRead / expected.cacheRead!;
-    expect(inputDev).toBeGreaterThan(2); // 3.78×
-    expect(cacheDev).toBeGreaterThan(2); // 38.1×
-    // 而只看 input 会大幅低估问题严重性 —— 这正是"必须逐项"的量化理由。
-    expect(cacheDev / inputDev).toBeGreaterThan(9);
+    expect(inputDev).toBeGreaterThan(1.2);
+    expect(cacheDev).toBeGreaterThan(2);
+    // 只看 input 会大幅低估问题严重性 —— 这正是"必须逐项"的量化理由。
+    // 涨价后 input 差距被拉近（新官方价本身就贵了），而 cacheRead 仍差一个量级。
+    expect(cacheDev / inputDev).toBeGreaterThan(2);
   });
 
   test("注册表里每个模型的 cacheRead 都不高于 input（结构性合理性）", () => {

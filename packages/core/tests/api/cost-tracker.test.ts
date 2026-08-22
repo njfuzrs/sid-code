@@ -7,9 +7,23 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { calculateUSDCost, resolvePricing, CostTracker } from "@sid-code/core/api/cost-tracker.ts";
+import {
+  calculateUSDCost,
+  resolvePricing,
+  effectivePricing,
+  CostTracker,
+} from "@sid-code/core/api/cost-tracker.ts";
+import { lookupRegistry } from "@sid-code/core/llm/model-registry.ts";
 import { __resetGatewayPricingForTest } from "@sid-code/core/llm/gateway-pricing.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
+
+/**
+ * 固定的高峰时刻（UTC 02:30 = 北京 10:30）。
+ *
+ * 分时段定价下，任何不传时刻的成本断言都会随挂钟在高峰/空闲之间跳变一倍 ——
+ * 那种测试会被当成 flaky 跳过，而不是当成信号。所以显式钉一个时刻。
+ */
+const PEAK_AT = new Date(Date.UTC(2026, 7, 21, 2, 30, 0));
 
 // 隔离：把配置目录指向空临时目录，避免读到本机真实 ~/.sid-code/gateway-pricing.json。
 // 否则 dev 机上 deepseek-v4-pro 会命中网关渠道价，覆盖注册表价，本文件的计费断言必挂
@@ -154,16 +168,33 @@ describe("calculateUSDCost", () => {
   });
 
   test("OpenAI/DeepSeek：prompt_tokens 含命中，需扣减命中（与 Anthropic 口径相反）", () => {
-    // deepseek-v4-pro: input 0.435 / cacheRead 0.0036 per M。inputTokens=prompt_tokens 本就含命中，
-    // 归一化后 uncached = input − hit，验证 provider 区分确实生效（同样的原始字段，口径不同结果不同）。
+    // inputTokens=prompt_tokens 本就含命中，归一化后 uncached = input − hit。
+    // 验证 provider 区分确实生效（同样的原始字段，口径不同结果不同）。
+    //
+    // ⚠ 断言**从注册表取价**而不是写死数字（D1 教训）：写死会让每次厂商调价都
+    // 连带改一批与定价无关的测试，改的人很容易顺手把断言调成"实际算出来的值"，
+    // 于是这条测试从"校验归一化口径"退化成"校验代码等于代码"。
+    // 这里要钉的是 uncached = input − hit 这个**口径**，与具体单价无关。
     const usage: Usage = {
       inputTokens: 1_000_000,
       outputTokens: 0,
       cacheReadInputTokens: 500_000,
     };
-    const cost = calculateUSDCost("deepseek-v4-pro", usage);
-    // uncached = 1M − 500k = 500k → 500k * 0.435/M = 0.2175；hit = 500k * 0.0036/M = 0.0018
-    expect(cost).toBeCloseTo(0.2175 + 0.0018, 5);
+    const p = effectivePricing(lookupRegistry("deepseek-v4-pro")!.pricing!, PEAK_AT);
+    const cost = calculateUSDCost(
+      "deepseek-v4-pro",
+      usage,
+      undefined,
+      undefined,
+      undefined,
+      PEAK_AT,
+    );
+    // uncached = 1M − 500k = 500k（**不是** 1M —— 那才是这条测试要防的错）
+    const expected = (500_000 / 1e6) * p.input + (500_000 / 1e6) * p.cacheRead!;
+    expect(cost).toBeCloseTo(expected, 8);
+    // 反向断言：若误用 Anthropic 口径（input 不扣减命中）会明显更贵。
+    const wrong = (1_000_000 / 1e6) * p.input + (500_000 / 1e6) * p.cacheRead!;
+    expect(cost).toBeLessThan(wrong * 0.9);
   });
 });
 

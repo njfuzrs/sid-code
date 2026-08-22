@@ -37,6 +37,7 @@ import {
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { TokenEstimator } from "./token-estimator.ts";
+import { streamInRequestContext, type RequestContext } from "./request-context.ts";
 
 /**
  * 非主循环路径的单次尝试流超时缺省值（P2-6）。
@@ -124,6 +125,38 @@ export interface ResilientStreamOptions {
   onRetry?: (attempt: number, error: string, delayMs: number) => void;
   /** 复用已有漏斗实例（主循环路径）。给了就不再构造新实例。 */
   fallback?: ModelFallback;
+  /**
+   * PR2：本次调用的 observer index（快照 / attempt / StreamPhase 的第二维）。
+   *
+   * 调用方**已经在用自己的号段** emit StreamPhase 时必须传（`agent/agentic-loop.ts`
+   * 的 `10000 + turns` / `20000 + turns`）：不传则 provider 内部另取一个号，
+   * 同一条流会在两把快照键上各写一半 —— 归因被拆散，且其中一半再也清不掉（泄漏）。
+   *
+   * 不传时由本模块从独立号段分配（见 {@link nextSideObserverIndex}），
+   * 保证至少不与主循环的轮次号相撞。
+   */
+  observerIndex?: number;
+}
+
+/**
+ * 非主循环路径的 observer index 号段基址。
+ *
+ * 取 `900_000` 是为了与既有约定**全部**错开：主循环用轮次号（个位到百位），
+ * 子代理用 `10000 + turns` 与 `20000 + turns`，`agent/stream-processor.ts` 用 `-1`。
+ * 留出的空档远大于任何真实会话的轮数，所以"号段相撞"这件事不需要靠人记着避开。
+ */
+const SIDE_OBSERVER_INDEX_BASE = 900_000;
+let sideObserverSeq = 0;
+
+/**
+ * 分配一个非主循环路径的 observer index。
+ *
+ * 单调递增、进程内唯一：每次 `streamWithResilience` 调用一个号，
+ * 该次调用内的重试共用它（attempt 由 observer 进位）。
+ */
+export function nextSideObserverIndex(): number {
+  sideObserverSeq += 1;
+  return SIDE_OBSERVER_INDEX_BASE + sideObserverSeq;
 }
 
 /**
@@ -152,8 +185,41 @@ export function streamWithResilience(
     deadlineAt: opts.deadlineAt,
   };
 
+  // ─── PR2/PR3：在漏斗这个唯一咽喉给整条调用链打上身份 ───
+  //
+  // 为什么在这里而不是逐个调用方补：本函数**就是**"所有非主循环路径的收口点"
+  // （文件头写的那件事）。9 个调用方（fork / 子代理 / recall / 三种压缩 / hook /
+  // goal-eval …）全部经过，在这里包一次 = 全部拿到身份，且**新增调用链天然继承**。
+  // 逐个调用方补就是"每个作者记得传一个参数"的形态 —— 与 `recordSideCall` 那 18 个
+  // 手写调用点同型，而那正是本次漏 22 次记账的根因。
+  //
+  // 身份的两个用途：
+  //   ① 计费归因 —— provider 的计费事件据此判"这笔钱是谁花的"，
+  //      并据此决定是否入账（主循环已由 updateUsage 入账，见 billing-sink.ts）；
+  //   ② attempt / 快照隔离 —— 不打身份时这些流会落在主循环当前轮的 index 上，
+  //      与主循环共用 attempt 计数器，在轨迹里长得像"一个请求重试了 8 次"（实测）。
+  //
+  // `turnIndex` 的取值：调用方已有自己号段约定时用它的（`observerIndex`），
+  // 否则从本模块的独立号段分配。
+  //
+  // 为什么要让调用方能覆盖：`agent/agentic-loop.ts` 已经在按
+  // `10000 + turns` / `20000 + turns` 给自己的 `emitStreamPhase` 编号。如果 provider
+  // 内部用另一个号，同一条流会在**两个不同的快照键**上各写一半 —— 那比不隔离更糟
+  // （既拆散了归因，又让 `clearStreamSnapshot` 清不掉其中一半，成为泄漏）。
+  // 让调用方传自己的号，两侧才拼出同一把 key。
+  //
+  // 同一次 `streamWithResilience` 调用内的多次重试**沿用同一个 index**，
+  // attempt 由 observer 按 phase 序列自行进位 —— 那才是"重试"的真实语义。
+  const reqCtx: RequestContext = {
+    turnIndex: opts.observerIndex ?? nextSideObserverIndex(),
+    agentId: opts.agentId,
+    callerLabel: opts.querySource,
+  };
+
   if (opts.fallback) {
-    return opts.fallback.executeWithFallback(provider, params, signal, perCall);
+    return streamInRequestContext(reqCtx, () =>
+      opts.fallback!.executeWithFallback(provider, params, signal, perCall),
+    );
   }
 
   // 缺省：构造一次性实例（见文件头注释——B1 之后实例只剩不可变配置）。
@@ -191,5 +257,7 @@ export function streamWithResilience(
     opts.onRetry ? { onRetry: opts.onRetry } : undefined,
   );
 
-  return fallback.executeWithFallback(provider, params, signal, perCall);
+  return streamInRequestContext(reqCtx, () =>
+    fallback.executeWithFallback(provider, params, signal, perCall),
+  );
 }

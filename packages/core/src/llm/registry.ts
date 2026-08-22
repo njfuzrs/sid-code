@@ -8,7 +8,7 @@ import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
-import { resolvePricing } from "../api/cost-tracker.ts";
+import { resolvePricingUSD } from "../api/cost-tracker.ts";
 import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
 import { buildModelCompatMap } from "./model-compat.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
@@ -226,7 +226,10 @@ export class ProviderRegistry {
     const priced: Array<{ name: string; input: number }> = [];
     for (const m of models) {
       if (!m.name) continue;
-      const pricing = resolvePricing(m.name, models, m.baseURL);
+      // D1：**必须过 effectivePricing** —— 本函数跨模型比单价大小，而注册表里
+      // 各模型的 pricing 可能是不同币种 / 高峰价。不折算就是拿人民币和美元比大小，
+      // cheap/strong 档会选错模型（一个人民币标价 9 的便宜模型会被判成比美元标价 3 的贵）。
+      const pricing = resolvePricingUSD(m.name, models, m.baseURL);
       if (pricing && pricing.input > 0) {
         priced.push({ name: m.name, input: pricing.input });
       }
@@ -234,7 +237,7 @@ export class ProviderRegistry {
     if (priced.length === 0) return null;
 
     // 主模型的价格作为参照：cheap 档必须严格更便宜，strong 档必须严格更贵，否则宁可回退主模型。
-    const mainPricing = resolvePricing(this.config.model, models, this.config.baseURL);
+    const mainPricing = resolvePricingUSD(this.config.model, models, this.config.baseURL);
     const mainInput = mainPricing && mainPricing.input > 0 ? mainPricing.input : null;
 
     if (tier === "cheap") {

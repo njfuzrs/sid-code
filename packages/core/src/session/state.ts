@@ -11,7 +11,7 @@
 import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { resolvePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
+import { resolvePricing, effectivePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
 
 /** 单个模型的用量统计 */
 export interface ModelUsageStats {
@@ -411,7 +411,14 @@ export class SessionState {
    * @param usage 原始用量
    * @param provider provider 名（"anthropic"/"openai"/...）。不传时按模型名推断（claude* → anthropic）。
    */
-  calculateCost(model: string, usage: Usage, provider?: string, baseURL?: string): number {
+  calculateCost(
+    model: string,
+    usage: Usage,
+    provider?: string,
+    baseURL?: string,
+    /** D1：计价时刻（分时段定价输入）。缺省"现在"；重算历史会话须传那次请求的时刻。 */
+    at?: Date,
+  ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
 
     // 本地推理 provider（ollama 等）不产生真金白银费用，恒 0。
@@ -421,7 +428,11 @@ export class SessionState {
       return 0;
     }
 
-    const pricing = resolvePricing(model, this.availableModels, baseURL);
+    // D1：分时段折扣 + 币种换算在这里统一应用（`effectivePricing` 是唯一解析入口）。
+    // 与 cost-tracker.ts 的 calculateUSDCost 同源 —— 两处若各写一份换算，
+    // 必然漂移，而漂移的症状是"两个地方对同一次请求给出不同费用"。
+    const rawPricing = resolvePricing(model, this.availableModels, baseURL);
+    const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
     if (!pricing) {
       // P1-4：未知模型不静默归零（否则换个模型名费用立刻变 0，costLimit 守卫被绕过，
       // 用户以为"免费"实际在烧钱）。记 WARN 一次（按模型去重），用保守兜底价估算成本，
@@ -464,11 +475,24 @@ export class SessionState {
    * savingsUSD=0，这是其中一条独立成因（另外三条：本地 provider、无命中时数学恒 0、
    * Math.max 钳位，都是正确行为，只有这条是缺陷）。
    */
-  calculateSavings(model: string, usage: Usage, provider?: string, baseURL?: string): number {
+  calculateSavings(
+    model: string,
+    usage: Usage,
+    provider?: string,
+    baseURL?: string,
+    /** D1：计价时刻。**必须与同一次调用的 calculateCost 传同一个值** —— 见下方注释。 */
+    at?: Date,
+  ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 本地 provider 无费用 → 无"节省"概念，恒 0
     if (SessionState.isLocalProvider(prov)) return 0;
-    const pricing = resolvePricing(model, this.availableModels, baseURL);
+    // D1：全价假设必须与实际成本走**同一份生效价**。
+    //
+    // 不折算的后果是本函数末尾那个减法两边口径不同：`hypothetical` 用高峰价、
+    // `actual`（走 calculateCost）用空闲价，于是空闲时段的"节省"里混进了一半的
+    // 时段折扣 —— 那不是缓存省下来的钱，把它算进 savingsUSD 就是虚报缓存收益。
+    const rawPricing = resolvePricing(model, this.availableModels, baseURL);
+    const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
     const n = normalizeCacheUsage(usage, prov);
     // pricing 缺失时与 calculateCost 走同一套兜底价（该函数会记 WARN，此处不重复告警）
     const inputPrice = pricing?.input ?? SessionState.FALLBACK_PRICING.input;
@@ -476,7 +500,8 @@ export class SessionState {
     // 全价成本：promptTotal 全按未命中输入 + 输出
     const hypothetical =
       (n.promptTotal / 1_000_000) * inputPrice + (n.outputTokens / 1_000_000) * outputPrice;
-    const actual = this.calculateCost(model, usage, prov, baseURL);
+    // 传同一个 `at`：两边必须是同一时刻的价，否则减法两边口径不同（见上方注释）。
+    const actual = this.calculateCost(model, usage, prov, baseURL, at);
     return Math.max(0, hypothetical - actual);
   }
 

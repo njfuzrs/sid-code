@@ -107,6 +107,12 @@ import {
   getSideStats,
 } from "@sid-code/core/trace/side-call-sink.ts";
 import {
+  addBillingObserver,
+  shouldChargeBilledRequest,
+  getPeakRatio,
+  type BilledRequest,
+} from "@sid-code/core/llm/billing-sink.ts";
+import {
   buildJitEventData,
   emitJitEvent,
   setJitTraceSink,
@@ -633,11 +639,67 @@ export class App {
     } catch {
       /* 能力采集不可用不影响启动 */
     }
-    // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）
-    setSideCostCalculator((model, usage) => this.sessionState.calculateCost(model, usage));
+    // 注册辅助调用成本计算函数（复用 SessionState.calculateCost）。
+    //
+    // ⚠️ baseURL 必须传（PR3 连带修正）：计价按 (model, endpoint) 复合键，
+    // 不传会让辅助调用落进空 key 桶（"官方默认端点"），于是**同一个模型**在主循环与
+    // 辅助调用两条路径上取到不同价格桶 —— 同一会话内的费用口径自相矛盾。
+    // 这与 `wireSubAgentUsageSink` 里那条同型注释是同一个坑，那边已经修过一次。
+    setSideCostCalculator((model, usage) => {
+      const mc = this.config.availableModels?.find((m) => m.name === model);
+      return this.sessionState.calculateCost(
+        model,
+        usage,
+        undefined,
+        mc?.baseURL ?? this.config.baseURL,
+      );
+    });
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
     // 使 TUI 费用列 / /cost 命令 / quota 守卫看到主+辅助的真实总花费
     setSideCostObserver((costUSD) => this.sessionState.addSideCost(costUSD));
+    // ─── PR3（档 A）：计费发生侧入账 —— D2「22 次真实计费请求完全未入账」的根治点 ───
+    //
+    // provider 每完成一次 fetch 就发一条权威计费事件（见 llm/billing-sink.ts）。
+    // 这里把**主循环之外**的那些（fork / 未接 recordSideCall 的调用链）落进
+    // sideCostUSD，于是它们第一次出现在 TUI 费用列 / /cost / quota 守卫 / 账本里。
+    //
+    // 为什么只收 `accounted === false`：主循环已经经 `updateUsage` + `AfterModelRaw`
+    // 入账，而它上报的是「本轮所有 attempt 之和」（`accumulateUsage` 跨 attempt 累加），
+    // 与本事件的「每次 fetch 一条」口径不同 —— 直接相加会双记。
+    // 这个判据写在事件的 `accounted` 字段里而不是这里猜，见 billing-sink.ts。
+    //
+    // 与 `recordSideCall` 的分工：那 18 个手写调用点继续负责**归因标签**
+    // （byLabel 统计、失败/超时记录），本通道负责**钱有没有记上**。
+    // 其中 6 条链既自己 recordSideCall 又走漏斗，会被记两次成本 —— 判据收在
+    // `shouldChargeBilledRequest` 里（含 BILLING_SELF_REPORTED_LABELS 白名单），
+    // 不在这里拼条件：判据只有一份实现，才不会出现"TUI 扣了、账本没扣"。
+    addBillingObserver((req: BilledRequest) => {
+      try {
+        if (!shouldChargeBilledRequest(req)) return;
+        const cost = this.sessionState.calculateCost(
+          req.model,
+          req.usage,
+          req.provider,
+          req.baseURL,
+        );
+        // ⚠️ **不要**在这里直接 addSideCost：`recordSideCall` 内部就会触发
+        // 上面注册的 setSideCostObserver → addSideCost。两处都加就是双记
+        // （本文件此前的一版正是这个 bug）。这里只走 recordSideCall 一条路，
+        // costUSD 显式传入（已按 (model, endpoint) 算过），避免 sink 再算一遍。
+        recordSideCall({
+          label: req.callerLabel ?? (req.agentId ? `agent:${req.agentId}` : "provider-billed"),
+          model: req.model,
+          inputTokens: req.usage.inputTokens ?? 0,
+          outputTokens: req.usage.outputTokens ?? 0,
+          cacheReadTokens: req.usage.cacheReadInputTokens ?? 0,
+          cacheCreationTokens: req.usage.cacheCreationInputTokens ?? 0,
+          durationMs: 0,
+          costUSD: cost,
+        });
+      } catch {
+        /* 计费入账失败不影响主流程 */
+      }
+    });
     // P2-3：git 操作使用度量观察者。bash 成功执行 commit/push/PR 创建等操作后，
     // 把事件写入 trace 的 events.jsonl（git_operation 事件），供后续可观测性分析。
     //
@@ -5561,6 +5623,11 @@ export class App {
       // 而「缺失」本身正是消费侧用来识别存量数据的信号。
       // env 覆盖与 `analytics/metadata.ts:184`、`trace/collector.ts` 同一口径。
       appVersion: process.env.SID_CODE_VERSION ?? getRawVersion(),
+      // D1 / §5.5：本会话请求落在高峰时段的比例。采集点在 `llm/billing-sink.ts`
+      // （唯一必然经过的点 —— 挂消费侧只数得到 fork，是个偏样本）。
+      // `undefined` = 本会话没有任何分时段模型，此时**不落字段**（落 0 会与
+      // "全部落在空闲时段"这个真实的好结果混在一起）。
+      ...(getPeakRatio() !== undefined ? { peakRatio: getPeakRatio() } : {}),
     };
   }
 

@@ -41,6 +41,7 @@ import {
   clearStreamSnapshot,
   clearAllSnapshots,
 } from "../trace/stream-observer.ts";
+import { runBackgroundTask } from "../agent/background-task-gate.ts";
 import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
@@ -3841,16 +3842,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         state.emptyParamRetryCount = 0;
         // 方案②：正常收尾（含续命耗尽放行），清零未答复连续计数
         state.unansweredRetryCount = 0;
-        // Step 0：end_turn 是自然断点——触发 Session Memory 提取（fire-and-forget），
-        // 把本轮终态沉淀进笔记，下次压缩可优先用它而非从头 LLM 摘要。
-        deps.updateSessionMemory?.().catch(() => {
-          /* 提取失败不阻断收尾 */
-        });
-        // 后台记忆提取：end_turn 后扫描本轮对话，提取值得长期记住的信息写入 MEMORY.md
-        // （fire-and-forget，内部互斥判断本轮主代理是否已写记忆，未写才跑 forked agent）。
-        deps.extractMemories?.().catch(() => {
-          /* 提取失败不阻断收尾 */
-        });
+        // Step 0：end_turn 是自然断点——触发 Session Memory 提取，把本轮终态沉淀进笔记，
+        // 下次压缩可优先用它而非从头 LLM 摘要；随后跑后台记忆提取写 MEMORY.md。
+        //
+        // ⚠️ PR1（幽灵流白烧修复）：这两条**必须过 `runBackgroundTask` 单飞闸门**，
+        // 不能各自裸 fire-and-forget。它们各自内部的 `pending` 互斥只防"同一个任务重入"，
+        // 完全不防"两个不同任务并发" —— 实测 `TurnComplete(end_turn)` 之后两个 fork
+        // 交替发了 7 次十万 token 级请求、跑了 44 秒，用户为一个已答完的任务多付约 ¥2.3。
+        // 闸门语义是**串行 + 丢弃**（不排队）：被拒的提取下一个 end_turn 还会再来，
+        // 排队只会把并发换成"攒一串请求一次性烧掉"。详见 background-task-gate.ts 文件头。
+        //
+        // 仍不 await：await 会把用户可感知的收尾延迟拉长到实测 44s（方案 §5.1 B3 已否决）。
+        if (deps.updateSessionMemory) {
+          runBackgroundTask("session-memory-update", () => deps.updateSessionMemory!());
+        }
+        if (deps.extractMemories) {
+          runBackgroundTask("memory-extract", () => deps.extractMemories!());
+        }
         // P1-4：唯一的"模型正常说完了"出口。归一化而非透传 stopReason ——
         // end_turn / stop / stop_sequence 三值同义，透传等于把归一责任推给每个消费方。
         turnStopReason = normalizeTurnStopReason(response.stopReason);
@@ -4196,11 +4204,20 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 方案②：工具成功执行 → 模型已在正常推进（非"只思考不答复"），清零未答复计数
         state.unansweredRetryCount = 0;
 
-        // Step 0：本轮工具结果已入历史，触发 Session Memory 提取（fire-and-forget，
-        // 内部按双阈值决定是否真正提取，未达阈值/进行中则直接跳过，不阻塞主循环）。
-        deps.updateSessionMemory?.().catch(() => {
-          /* 提取失败不阻断主循环 */
-        });
+        // ⚠️ PR1（§5.1 B1 / §5.7）：这里**原先**还有一处 `deps.updateSessionMemory?.()`
+        // 的工具轮触发（"本轮工具结果已入历史，增量提取"），**已刻意删除**。
+        //
+        // 删的理由是它与主循环下一轮请求**并发**：实测同一会话的 index 8/9/11/12/14/15
+        // 全部出现多流抢跑（`fetch_sent` 2–5 次），成因就是这处触发。而 fork 继承主对话
+        // 全历史，每个请求十万 token 级 —— 一次工具轮增量提取的代价，与一次完整的
+        // end_turn 提取相同。
+        //
+        // 取舍如实标注（拿"更省"换掉一点"更准"）：删掉之后 Session Memory 只在
+        // `end_turn` 更新，于是**长工具链会话在首个 end_turn 之前压缩时拿不到笔记**，
+        // `auto-compact` 会回退传统 LLM 摘要（`trySessionMemoryCompaction` 命中失败即回退，
+        // 是既有的降级路径，不是新增故障）。代价是那一次压缩多一次摘要调用；
+        // 收益是每个工具轮不再各自烧一次十万 token 的 fork。
+        // 提取本身没有丢：`end_turn` 那处（本文件上方）仍在，且双阈值判断不变。
 
         // P1-2/P2-2：本轮工具输入喂给 skill 激活协调器（条件激活 + 动态发现）。
         // 新激活/发现的 skill 会在下一轮开始经 drainSkillListingDelta → reminderParts 增量注入。

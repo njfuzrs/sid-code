@@ -62,7 +62,9 @@ describe("lookupRegistry 匹配策略", () => {
     test("ali-deepseek-v4-pro → deepseek-v4-pro", () => {
       const entry = lookupRegistry("ali-deepseek-v4-pro");
       expect(entry?.contextWindow).toBe(1_000_000);
-      expect(entry?.pricing?.input).toBe(0.435);
+      // 断言"剥离后拿到的就是裸名那一条"，而不是写死单价 —— 写死会让每次厂商调价
+      // 都连带改一批与前缀剥离无关的测试（D1 教训）。
+      expect(entry?.pricing?.input).toBe(lookupRegistry("deepseek-v4-pro")!.pricing!.input);
     });
 
     test("volc-deepseek-v4-flash → deepseek-v4-flash", () => {

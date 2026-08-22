@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { mkdirSync, existsSync, appendFileSync } from "node:fs";
 import { sidHomePath } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
+import { getRequestContext } from "./request-context.ts";
 
 /** 单个采样 chunk 的落盘格式 */
 interface DumpedChunk {
@@ -66,8 +67,41 @@ export function setSseDumpContext(
   ambientCtx = { sessionId, turnIndex, loopId: loopId ?? ambientCtx.loopId };
 }
 
-/** parseSSE 内构造采样器时读取当前环境上下文。 */
-export function currentSseDumpContext(): { sessionId?: string; turnIndex: number; loopId: string } {
+/**
+ * parseSSE 内构造采样器时读取当前环境上下文。
+ *
+ * ## PR2：优先读请求级 ALS 身份，其次才是这个模块级全局量
+ *
+ * 上面那个 `ambientCtx` **只有主循环写**（全仓唯一调用点 `query/loop.ts`）。
+ * 于是 fork / 子代理 / side-call 发的流全都继承主循环最后登记的 `turnIndex`，
+ * 与主循环共用同一个 attempt 计数器 —— 实测两个 fork 的 7 个流全落在 `index=17` 上，
+ * attempt 涨到 8，在轨迹里长得就像"一个请求重试了 8 次"。
+ *
+ * 现在改成：有 ALS 身份就用它（`withRequestContext` 包过的路径），
+ * 没有则原样返回 `ambientCtx`。**主循环不进 ALS，行为逐字节不变。**
+ *
+ * `agentId` 也一并透出：`emitStreamPhase` / `emitTimeoutFired` 早就支持这个第三维，
+ * 只是 provider 侧一直拿不到它，于是永远传不进去（能力在、接线断）。
+ */
+export function currentSseDumpContext(): {
+  sessionId?: string;
+  turnIndex: number;
+  loopId: string;
+  agentId?: string;
+  callerLabel?: string;
+} {
+  const req = getRequestContext();
+  if (req) {
+    return {
+      sessionId: req.sessionId ?? ambientCtx.sessionId,
+      turnIndex: req.turnIndex,
+      // loopId 缺省沿用全局量：fork 属于同一个 queryLoop 的生命周期，
+      // 换 namespace 会让 `clearAllSnapshots(loopId)` 收不到它的快照（泄漏）。
+      loopId: req.loopId ?? ambientCtx.loopId,
+      agentId: req.agentId,
+      callerLabel: req.callerLabel,
+    };
+  }
   return ambientCtx;
 }
 

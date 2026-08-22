@@ -31,6 +31,7 @@ import {
   makeFetchAbsoluteTimeoutSignal,
 } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
@@ -1461,9 +1462,13 @@ export class OpenAIProvider implements Provider {
       return;
     }
 
+    // PR3：计费收口所需的两个变量提到 try 之外 —— finally 里要读它们。
+    // 提出来而不是在 finally 内重算：usage 只有流消费过程能聚合出来。
+    let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
+    const billingFetchId = nextFetchId();
+
     try {
       // 累积变量
-      let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let accumulatedOutputText = "";
 
       // StreamLifecycle 事件级兜底。
@@ -1589,6 +1594,29 @@ export class OpenAIProvider implements Provider {
         error: { message: err.message || String(err) },
       };
     } finally {
+      // PR3（档 A）：第三条协议路径同样收口。三条路径（Chat Completions / Responses /
+      // Anthropic）必须全接，漏一条就等于给"新增调用链自动入账"这个保证开了个洞 ——
+      // 而洞在哪条路径上，取决于用户当时走了哪个协议，无法解释也无法复现。
+      //
+      // 本路径的 usage 只在 message_delta 上给（`accumulatedUsage = event.usage`），
+      // 流结束时它就是最终值。
+      try {
+        const bctx = currentSseDumpContext();
+        recordBilledRequest({
+          fetchId: billingFetchId,
+          model: params.model ?? effectiveModel,
+          provider: this.name(),
+          baseURL: this.baseURL,
+          usage: accumulatedUsage,
+          index: obsIndex,
+          agentId: bctx.agentId,
+          callerLabel: bctx.callerLabel,
+          atMs: Date.now(),
+          accounted: !bctx.agentId && !bctx.callerLabel,
+        });
+      } catch {
+        /* 计费上报绝不影响流 */
+      }
       // PR11：同 Chat Completions 路径 —— 流结束即 disarm，否则成功的流会在
       // 阈值到点时落一条"从未发生的超时"（见 makeFetchAbsoluteTimeoutSignal 注释）。
       fetchAbs?.disarm();
@@ -1954,6 +1982,9 @@ export class OpenAIProvider implements Provider {
     const chunkDumper = new SseChunkDumper(dumpCtx.sessionId, dumpCtx.turnIndex, requestStartAt);
     // 缺口 1：parseSSE 内的 turn index（用于 StreamPhase/TimeoutFired/StreamStall 事件）
     const parseObsIndex = dumpCtx.turnIndex;
+    // PR3：本次 fetch 的计费去重键。**必须在这里生成**（每次 parseSSE = 一次 fetch），
+    // 不能用轮粒度：主循环的 usage 是跨 attempt 累加的，用轮粒度做键会与主循环双记。
+    const billingFetchId = nextFetchId();
 
     // 流式看门狗阈值统一走 network-profile（必删-1/-2 + 配置-3）：
     //   - idle：N 秒内 reader 无任何 chunk → 断开（半开 TCP 兜底）
@@ -2495,6 +2526,38 @@ export class OpenAIProvider implements Provider {
       }
     } finally {
       clearInterval(stallLogger);
+      // ─── PR3（档 A）：计费发生侧收口 —— 「钱花了」的权威事实源 ───
+      //
+      // 为什么挂在 `finally` 而不是 `[DONE]` 分支：厂商按**收到的 prompt** 计费，
+      // 与客户端后来是否读完流无关。挂在 `[DONE]` 只覆盖"正常读完"这一种出口，
+      // 超时中断 / 内容进展超时 / 调用方提前 break / abort 全部漏采 —— 而那几种
+      // 恰恰是白烧最集中的地方。`finally` 是本函数唯一覆盖全部出口的位置，
+      // 与上面 `chunkDumper.flush()` 选在这里同理。
+      //
+      // 为什么挂在 provider 内部：`HttpConnected` 之所以能数准 39 次，正因为它在这里 ——
+      // **所有**调用链（主循环 / fork / 子代理 / 18 条 side-call）都必然经过。
+      // 入账挂在消费侧时，消费侧有 N 个入口，漏一个就静默丢钱（实测漏 22/39）。
+      //
+      // `accounted` 的口径见 billing-sink.ts：主循环（无 agentId 且无 callerLabel）
+      // 已由 `updateUsage` + `AfterModelRaw` 入账，本事件只作恒等式核对与归因，
+      // 消费侧不得再加一次钱；其余调用链本事件是**唯一**入账口。
+      try {
+        const isMainLoop = !dumpCtx.agentId && !dumpCtx.callerLabel;
+        recordBilledRequest({
+          fetchId: billingFetchId,
+          model: modelName ?? this._model,
+          provider: this.name(),
+          baseURL: this.baseURL,
+          usage,
+          index: parseObsIndex,
+          agentId: dumpCtx.agentId,
+          callerLabel: dumpCtx.callerLabel,
+          atMs: Date.now(),
+          accounted: isMainLoop,
+        });
+      } catch {
+        /* 计费上报绝不影响流（本仓可观测性一贯口径） */
+      }
       // PR11（§4.7）：流结束时补发一条"本流最长无进展间隔"的汇总。
       //
       // 为什么档位事件之外还要这条：档位是**离散**的，一条卡了 119s 的流只会

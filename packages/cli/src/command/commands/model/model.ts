@@ -1,6 +1,6 @@
 import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
-import { resolvePricing } from "@sid-code/core/api/cost-tracker.ts";
+import { resolvePricing, effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
 import { lookupRegistry, getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
 import { getGatewayCacheMeta, getAllGatewayEntries } from "@sid-code/core/llm/gateway-pricing.ts";
 import { lookupGatewayPricing } from "@sid-code/core/llm/gateway-pricing.ts";
@@ -295,8 +295,11 @@ function getGatewayPerCall(name: string, baseURL?: string): number | undefined {
 
 /** 格式化一行价格（in/out/cacheRead/cacheWrite，$/1M）。 */
 function formatPriceLine(name: string, availableModels: any[], baseURL?: string): string {
-  const p = resolvePricing(name, availableModels, baseURL);
-  if (!p) return "价格: (未知，走兜底估算 in $2 / out $10)";
+  const raw = resolvePricing(name, availableModels, baseURL);
+  if (!raw) return "价格: (未知，走兜底估算 in $2 / out $10)";
+  // D1：注册表可能存原币（DeepSeek 存人民币）+ 分时段价。展示前必须过 effectivePricing，
+  // 否则 `in $9/M` 这种把人民币当美元的数字会直接显示给用户。
+  const p = effectivePricing(raw);
   const parts = [`in $${p.input}/M`, `out $${p.output}/M`];
   if (p.cacheRead !== undefined) parts.push(`cacheRead $${p.cacheRead}/M`);
   if (p.cacheWrite !== undefined) parts.push(`cacheWrite $${p.cacheWrite}/M`);
@@ -441,7 +444,9 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
     lines.push("  (未配置 availableModels)");
   } else {
     for (const m of ctx.config.availableModels) {
-      const p = resolvePricing(m.name, ctx.config.availableModels, m.baseURL);
+      const rawP = resolvePricing(m.name, ctx.config.availableModels, m.baseURL);
+      // D1：同 formatPriceLine —— 折算成 USD 当前生效价再展示。
+      const p = rawP ? effectivePricing(rawP) : null;
       const src = detectPricingSource(ctx, m.name, m.baseURL);
       const current = m.name === ctx.config.model ? " ✓" : "";
       lines.push(`  ${m.name}${current}`);
@@ -465,7 +470,8 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
   if (all) {
     lines.push("", "─────────────", "内置注册表全量定价（官方，$/1M token）:", "");
     for (const [name, entry] of getRegistryEntries()) {
-      const p = entry.pricing;
+      // D1：注册表原值可能是人民币 / 高峰价，折算成当前生效的 USD 价再展示。
+      const p = entry.pricing ? effectivePricing(entry.pricing) : undefined;
       if (!p) {
         lines.push(`  ${name}: (无定价)`);
         continue;

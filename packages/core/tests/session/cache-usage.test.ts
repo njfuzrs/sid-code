@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeCacheUsage, accumulateUsage } from "@sid-code/core/llm/types.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
+import { effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
+import { lookupRegistry } from "@sid-code/core/llm/model-registry.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { __resetGatewayPricingForTest } from "@sid-code/core/llm/gateway-pricing.ts";
 
@@ -125,12 +127,16 @@ describe("SessionState.calculateCost — 口径修复", () => {
       outputTokens: 200,
       cacheReadInputTokens: 5000, // 命中
     };
-    const cost = ss.calculateCost("deepseek-v4-pro", usage, "openai");
-    // deepseek-v4-pro: input=0.435, output=0.87, cacheHit=0.0036, cacheWrite=0
+    // 固定高峰时刻：分时段定价下不传时刻会让断言随挂钟跳变一倍（D1）。
+    const at = new Date(Date.UTC(2026, 7, 21, 2, 30, 0));
+    const cost = ss.calculateCost("deepseek-v4-pro", usage, "openai", undefined, at);
+    // 单价从注册表取，不写死数字 —— 这条测试要钉的是**三段拆分口径**
+    // （uncached = prompt − hit，命中走命中价），与具体单价无关。
+    const p = effectivePricing(lookupRegistry("deepseek-v4-pro")!.pricing!, at);
     const expected =
-      (1000 / 1e6) * 0.435 + // uncached = 6000 − 5000
-      (5000 / 1e6) * 0.0036 + // 命中固定价
-      (200 / 1e6) * 0.87; // 输出
+      (1000 / 1e6) * p.input + // uncached = 6000 − 5000
+      (5000 / 1e6) * p.cacheRead! + // 命中固定价
+      (200 / 1e6) * p.output; // 输出
     expect(cost).toBeCloseTo(expected, 10);
   });
 

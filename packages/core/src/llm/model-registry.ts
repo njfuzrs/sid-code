@@ -15,14 +15,55 @@
  */
 
 import { familyBaseName } from "./model-name-normalize.ts";
+import type { ModelPricing } from "../api/cost-tracker.ts";
 
 /** 定价（每百万 token，USD） */
-export interface RegistryPricing {
-  input: number;
-  output: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-}
+/**
+ * 注册表定价条目。
+ *
+ * D1：直接复用 `ModelPricing`，**不再维护一份平行的窄类型**。
+ *
+ * 原来这里是四个裸数字的独立 interface，与 `api/cost-tracker.ts` 的 `ModelPricing`
+ * 结构相同但类型不同。于是给 `ModelPricing` 补了币种/时段/as-of 三个维度之后，
+ * 注册表里**填不进去**（类型不认），而注册表恰恰是这些维度最需要落的地方。
+ *
+ * 用 type alias 而不是 `extends`：两者本就该是同一个东西，
+ * 留两个名字只会让下一个人问"该用哪个"。`RegistryPricing` 这个名字保留是为了
+ * 不动既有 import（本文件导出它，有外部消费方）。
+ */
+export type RegistryPricing = ModelPricing;
+
+/**
+ * DeepSeek 高峰时段（UTC，半开区间）。
+ *
+ * 抽成常量而不是在 4 处各写一遍：分时段政策是**厂商级**的，不是模型级的 ——
+ * 写 4 遍等于给"下次政策调整只改对其中 3 处"留了个必然会踩的坑。
+ * 官方公告口径为 UTC，见各条 pricing 的 `source`。
+ */
+const DEEPSEEK_PEAK_WINDOWS = [
+  // 北京时间 09:00–12:00 → UTC 01:00–04:00
+  { startHour: 1, endHour: 4 },
+  // 北京时间 14:00–18:00 → UTC 06:00–10:00
+  { startHour: 6, endHour: 10 },
+] as const satisfies ReadonlyArray<{ startHour: number; endHour: number }>;
+
+/**
+ * DeepSeek 计价币种换算率（1 CNY = ? USD），as-of 2026-08-21。
+ *
+ * ## 为什么 DeepSeek 的价存人民币而不是折算好的美元
+ *
+ * 厂商的计价币种**就是人民币**（官方价目表与账单都是元）。改造前我们存折算后的美元，
+ * 而中间那个汇率既没记下来也没有 as-of —— 于是「汇率漂移」与「厂商涨价」
+ * 在表里长得一模一样，**无法归因**。本次事故排查时正是卡在这一步：
+ * 自报 $0.2234 与账单 ¥7.23 差 4.56 倍，无从判断哪部分是汇率、哪部分是单价。
+ *
+ * 存原币 + 显式汇率之后，两者各自可查、各自可更新。
+ *
+ * ⚠ 这是**固定快照**，不是实时汇率。取整数 7.1 而非某天的精确中间价：
+ * 精确值会给人"这是实时汇率"的错觉，而它其实和单价一样需要人来更新。
+ * 汇率日常波动（±2%）远小于本次事故的量级（456%），不值得引入一个网络依赖。
+ */
+const DEEPSEEK_CNY_TO_USD = 1 / 7.1;
 
 /** 模型完整参数定义 */
 export interface ModelRegistryEntry {
@@ -209,13 +250,43 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // DeepSeek
   // ══════════════════════════════════════════════════════════════════
   // DeepSeek V4（V3.2 起）：thinking 模式支持工具调用，tool-call 轮必须回传 reasoning_content。
+  //
+  // ── D1（2026-08-21 事故修复）：单价已按 2026-08-16 16:00 UTC 生效的新政策更新 ──
+  //
+  // 旧值（`input: 0.435 / output: 0.87 / cacheRead: 0.0036`）是 08-16 涨价**之前**的价，
+  // 涨价后一直没人发现，直到用户拿 DeepSeek 开放平台账单来对：我们自报 $0.2234、
+  // 官方 ¥7.23，差 4.56 倍，其中 3.21 倍就是这张表过期造成的。
+  //
+  // 新政策有两个我们原来表达不了的维度，现在靠 `peakWindows` / `offPeakMultiplier` 表达：
+  //   · 分高峰 / 空闲两档，空闲价恰为高峰价的一半（`offPeakMultiplier: 0.5`）；
+  //   · 高峰时段 = 01:00–04:00 与 06:00–10:00 UTC，其余为空闲。
+  // `input`/`output`/`cacheRead` 存**高峰价**（保守：宁可高估触发预算守卫，不低估放任烧钱）。
+  //
+  // ⚠️ 涨幅最大的是**缓存命中**（V4-Pro 命中价 0.003625 → 0.044，12.1x）。
+  // 这一条最容易被忽略，因为"命中几乎免费"曾经是对的 —— 而本仓的 cache 命中率目标是
+  // >70%，命中量占输入的大头，所以命中价涨 12 倍对我们的影响**大于**输出价涨 4.6 倍。
+  // 别照着旧印象做容量假设。
+  //
+  // `cacheWrite: 0` 保留：DeepSeek 无缓存写入计费概念（不是"免费"，是这个维度不存在）。
   "deepseek-v4-pro": {
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
-    pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 },
+    pricing: {
+      // 高峰价，人民币（厂商计价币种，见 DEEPSEEK_CNY_TO_USD）
+      input: 9,
+      output: 27,
+      cacheRead: 0.3,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
   "deepseek-v4-flash": {
     contextWindow: 1_000_000,
@@ -223,7 +294,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
-    pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+    pricing: {
+      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 3,
+      output: 9,
+      cacheRead: 0.1,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
   "DeepSeek-V4-Flash": {
     contextWindow: 1_000_000,
@@ -231,7 +314,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
-    pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+    pricing: {
+      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 3,
+      output: 9,
+      cacheRead: 0.1,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
   "DeepSeek-V4-Pro": {
     contextWindow: 1_000_000,
@@ -239,13 +334,42 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
-    pricing: { input: 0.435, output: 0.87, cacheRead: 0.0036, cacheWrite: 0 },
+    // 与 `deepseek-v4-pro` 同一个模型、大小写不同的另一个键（注册表按精确名分开登记，
+    // 见 lookupRegistryExact 注释）。**两条必须同步改** —— 只改一条的后果是
+    // 用户按哪种写法配模型名，决定了他拿到新价还是旧价。
+    pricing: {
+      // 高峰价，人民币（厂商计价币种，见 DEEPSEEK_CNY_TO_USD）
+      input: 9,
+      output: 27,
+      cacheRead: 0.3,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
+  // `deepseek-chat` / `deepseek-reasoner` 是**弃用别名**，现指向 V4-Flash 的
+  // 非思考 / 思考两种模式，因此计价随 V4-Flash（不是停留在它们自己的历史价）。
   "deepseek-chat": {
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
     supportsThinking: false,
-    pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+    pricing: {
+      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 3,
+      output: 9,
+      cacheRead: 0.1,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
   // 旧 deepseek-reasoner（R1 系）：输入携带 reasoning_content 会触发旧协议 400，保持不回传（缺省 false）。
   "deepseek-reasoner": {
@@ -254,7 +378,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: false,
     reasoningLanguageDrift: true,
-    pricing: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+    pricing: {
+      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 3,
+      output: 9,
+      cacheRead: 0.1,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-08-21",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
   },
 
   // ══════════════════════════════════════════════════════════════════

@@ -33,6 +33,7 @@ import {
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
+import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import {
@@ -467,6 +468,8 @@ export class AnthropicProvider implements Provider {
       // PARSE-2：Anthropic 的 message_delta.usage.output_tokens 是**累积值**
       let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       let emittedOutputTokens = 0;
+      // PR3：本次 fetch 的计费去重键（单次 fetch 粒度，理由见 billing-sink.ts）。
+      const billingFetchId = nextFetchId();
 
       // § content block 拼接与 tool input 自管
       interface InternalBlock {
@@ -680,6 +683,35 @@ export class AnthropicProvider implements Provider {
           }
         }
       } finally {
+        // ─── PR3（档 A）：计费发生侧收口，与 openai.ts 同口径 ───
+        //
+        // 方案 §5.2.2 ② 明确要求两族 provider 一并改：只改 openai 会让 Anthropic 族
+        // 继续走旧路，形成"两条协议路径各写一份"的漂移形态 —— 这正是
+        // `resilient-stream.ts` 文件头批判过的东西（R1 的做法制造第二份平行实现）。
+        //
+        // 挂 `finally` 的理由同 openai：厂商按收到的 prompt 计费，与客户端是否读完流无关；
+        // 只有 `finally` 覆盖全部出口（正常 / 抛错 / abort / 调用方提前 break）。
+        // `accumulatedUsage` 在此已聚合完毕（message_start 拿 input+cache，
+        // message_delta 累加 output），是本路径的完整 usage。
+        try {
+          const bctx = currentSseDumpContext();
+          recordBilledRequest({
+            fetchId: billingFetchId,
+            model: params.model ?? this._model,
+            provider: this.name(),
+            // 端点取 SDK client 的 baseURL（本类不自持该字段，构造时透给了 SDK）。
+            // 计价按 (model, endpoint) 复合键，缺它会落进空 key 桶 —— 与主循环不同价桶。
+            baseURL: this.client.baseURL,
+            usage: accumulatedUsage,
+            index: bctx.turnIndex,
+            agentId: bctx.agentId,
+            callerLabel: bctx.callerLabel,
+            atMs: Date.now(),
+            accounted: !bctx.agentId && !bctx.callerLabel,
+          });
+        } catch {
+          /* 计费上报绝不影响流 */
+        }
         // § 显式资源清理（对齐 Claude Code 的 releaseStreamResources）
         // 防止 TLS/socket 泄漏
         try {

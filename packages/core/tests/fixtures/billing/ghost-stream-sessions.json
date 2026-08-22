@@ -1,0 +1,34 @@
+{
+  "20260821-140626-4fd1f34e": {
+    "model": "deepseek-v4-pro",
+    "httpConnected": 39,
+    "afterModelRaw": 17,
+    "ghostStreams": 22,
+    "billedCacheRead": 831872,
+    "billedInputTokens": 1277363,
+    "streamPhaseCount": 195,
+    "streamPhasesWithAgentId": 0,
+    "streamPhasesWithUsage": 0,
+    "allStreamCacheRead": 0,
+    "maxAttempt": 8,
+    "busiestIndex": 17,
+    "busiestIndexPhases": 40,
+    "reportedCostUSD": 0.22344534419999998
+  },
+  "20260821-115135-bcfeb51e": {
+    "model": "deepseek-v4-flash",
+    "httpConnected": 13,
+    "afterModelRaw": 6,
+    "ghostStreams": 7,
+    "billedCacheRead": 392320,
+    "billedInputTokens": 627238,
+    "streamPhaseCount": 63,
+    "streamPhasesWithAgentId": 0,
+    "streamPhasesWithUsage": 0,
+    "allStreamCacheRead": 0,
+    "maxAttempt": 7,
+    "busiestIndex": 6,
+    "busiestIndexPhases": 33,
+    "reportedCostUSD": 0.04542361600000001
+  }
+}
