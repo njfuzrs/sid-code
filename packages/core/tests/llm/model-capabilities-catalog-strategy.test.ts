@@ -17,7 +17,8 @@ import {
   syncExternalCatalogs,
   __resetCapabilityCacheForTest,
   __resetMissRefreshStateForTest,
-  __enablePersistForTest,
+  __allowMissRefreshInTest,
+  __setCatalogMetaForTest,
   __persistForTest,
   __getCapabilityCacheForTest,
 } from "@sid-code/core/llm/model-capabilities.ts";
@@ -26,9 +27,11 @@ let origFetch: typeof globalThis.fetch;
 let tmpDir: string;
 let prevConfigDir: string | undefined;
 
-// ⚠ 落盘隔离：本文件多个用例要真正打开 persist()（验证「触发了刷新」就是验证「真的
-// 发起了写盘请求」），必须把 SID_CONFIG_DIR 指到临时目录，否则会碰用户真实缓存文件
-// （见 model-capabilities-concurrent-write.test.ts 头部同款注释与事故记录）。
+// ⚠ 落盘隔离：本文件多个用例会走到 persist()（syncExternalCatalogs 落盘），必须把
+// SID_CONFIG_DIR 指到临时目录，否则会碰用户真实缓存文件（见
+// model-capabilities-concurrent-write.test.ts 头部同款注释与事故记录）。
+// issue #65 之后这个重定向**就是**写盘许可本身：守卫判的是"测试态 + 目标是真实家目录"，
+// 不再有需要手工开关的布尔。
 beforeEach(() => {
   prevConfigDir = process.env.SID_CONFIG_DIR;
   tmpDir = mkdtempSync(join(tmpdir(), "model-cap-strategy-"));
@@ -42,7 +45,11 @@ afterEach(() => {
   globalThis.fetch = origFetch;
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
-  __resetCapabilityCacheForTest({}); // 重新置位 persistDisabled，避免泄漏到同批其它文件
+  __resetCapabilityCacheForTest({}); // 清内存态，避免 fixture 条目泄漏到同批其它文件
+  // ⚠ 必须在 afterEach 也调一次：它关掉 miss 触网许可。本文件是全仓唯一放开那个许可的地方，
+  // 漏了就会让同批后续测试文件里任何一次 miss 查询发起真实 HTTP —— 慢、不确定，
+  // 且把网络故障伪装成别人的 flake。
+  __resetMissRefreshStateForTest();
   try {
     rmSync(tmpDir, { recursive: true, force: true });
   } catch {
@@ -67,9 +74,13 @@ describe("miss 触发刷新 — 异步 + 防抖 + 尊重失败退避", () => {
   test("查询未知模型会触发一次后台刷新（异步，不阻塞本次查询）", async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
     globalThis.fetch = fakeFetchAlwaysFresh(calls);
-    // 生产路径 persistDisabled 恒为 false；单测默认置位是为了防止其它用例的海量未知模型名
-    // 意外触网，本用例就是要验证触发本身，显式解锁（写盘目标已在 beforeEach 指到临时目录）。
-    __enablePersistForTest();
+    // 测试态默认不许 miss 触发刷新（否则每个查未知模型名的用例都会在后台真发一次 HTTP）。
+    // 本用例要验证的就是「触发」本身，显式放开这一条路径 —— fetch 已换成假实现，
+    // 放开的只是"可以走"，不是"可以打真网"。
+    //
+    // ⚠ 这里以前调的是 `__enablePersistForTest()`：触网许可与写盘许可曾共用一个布尔，
+    // 于是为了验证触网必须顺带打开写盘（issue #65 的两种相反语义之一）。现在两者分开了。
+    __allowMissRefreshInTest();
 
     const result = lookupCapability("brand-new-unknown-model");
     expect(result).toBeNull(); // 本次查询仍是同步 miss，不等刷新结果
@@ -80,7 +91,7 @@ describe("miss 触发刷新 — 异步 + 防抖 + 尊重失败退避", () => {
   });
 
   test("防抖：10 分钟内重复 miss 查询只触发一次刷新", async () => {
-    __enablePersistForTest();
+    __allowMissRefreshInTest();
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
     globalThis.fetch = fakeFetchAlwaysFresh(calls);
 
@@ -101,7 +112,10 @@ describe("miss 触发刷新 — 异步 + 防抖 + 尊重失败退避", () => {
     globalThis.fetch = fakeFetchAlwaysFresh(calls);
     __resetCapabilityCacheForTest({ "known-model": { contextWindow: 128_000 } });
     __resetMissRefreshStateForTest();
-    __enablePersistForTest();
+    // ⚠ 顺序要紧：`__resetMissRefreshStateForTest` 会把许可关掉，放开必须在它之后。
+    // 而这条用例**必须**放开许可 —— 否则 `calls.length === 0` 会由守卫本身恒真，
+    // 变成一条 false gate（把命中判断整个删掉它照样绿）。
+    __allowMissRefreshInTest();
 
     lookupCapability("known-model");
     await new Promise((r) => setTimeout(r, 20));
@@ -109,7 +123,9 @@ describe("miss 触发刷新 — 异步 + 防抖 + 尊重失败退避", () => {
   });
 
   test("连续失败退避期内，miss 也不触发刷新（防止把失败源当成 DDoS 靶子反复打）", async () => {
-    __enablePersistForTest({ syncedAt: Date.now(), failCount: 3 });
+    // 同上：许可必须放开，否则「零调用」这个断言由测试态守卫恒真，退避逻辑压根没被测到。
+    __allowMissRefreshInTest();
+    __setCatalogMetaForTest({ syncedAt: Date.now(), failCount: 3 });
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
     globalThis.fetch = fakeFetchAlwaysFresh(calls);
 
@@ -171,7 +187,7 @@ describe("条件请求 — 只在本地确实有正文时才带 validator", () =
 
   test("304 视为成功（不记退避），且不清空已有缓存", async () => {
     __resetCapabilityCacheForTest({ "kept-model": { contextWindow: 999_999, source: "catalog" } });
-    __enablePersistForTest({
+    __setCatalogMetaForTest({
       syncedAt: Date.now() - 1000,
       failCount: 0,
     });
