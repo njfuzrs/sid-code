@@ -51,7 +51,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import { sidPaths } from "../config/paths.ts";
+import { isRealUserSidHome, sidPaths } from "../config/paths.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 import { getLogger } from "../debug/logger.ts";
 // 上下文超限判定的唯一事实源（见 learnFromError 第 3 段的委托说明）
@@ -377,15 +377,40 @@ export function __applySnapshotForTest(
 }
 
 /**
- * 测试隔离开关 —— 置位后所有写盘变为 no-op。
+ * 落盘守卫：**测试进程不得写用户真实的 `~/.sid-code/model-capabilities.json`**。
  *
  * ⚠ 存在原因（真实事故）：单测调 learnFromError / probeModelCapability 会触发 persist()，
- * 而 persist 写的是**用户真实缓存文件** `~/.sid-code/model-capabilities.json`。
- * 一次 `bun test` 就把开发机上已采集的 2919 条能力数据抹成了测试残留的 1 条
- * （测试用 __resetCapabilityCacheForTest 清空内存 → persist 把空表写回磁盘）。
- * 由 __resetCapabilityCacheForTest 自动置位，生产路径永不置位。
+ * 而 persist 写的是用户真实缓存文件。一次 `bun test` 就把开发机上已采集的 2919 条能力
+ * 数据抹成了测试残留的 1 条（测试用 __resetCapabilityCacheForTest 清空内存 → persist
+ * 把空表写回磁盘）。
+ *
+ * ## 为什么判据是「测试态 ∧ 目标是真实家目录」，而不是一个进程级布尔开关
+ *
+ * 原实现是布尔 `persistDisabled`，由 `__resetCapabilityCacheForTest()` **单向**置位、
+ * 没有任何复位路径。它防住了事故，但代价是**反过来的**：`bun test` 同批多文件跑在同一
+ * 进程里，任何一个测试文件调过一次 reset，本进程 `persist()` 就永久变成 no-op ——
+ * 于是**写盘路径在整个测试套件里从来没被执行过**。D7 那个丢更新 bug 能潜伏到现在，
+ * 部分原因就是「不方便测，于是没测」（与 `__sanitizeEntryForTest` 那次 Infinity 校验
+ * 漏洞同一个病灶）。PR #63 加 `__enablePersistForTest()` 绕过它，又引入两个新问题：
+ * 复位靠调用方在 afterEach 里自觉（漏写就泄漏到同批后续文件，正是当年事故的形态），
+ * 且同一个开关有了「单向永久关闭」与「可复位打开」两种相反语义。
+ *
+ * 现在换成**无状态的路径判据**：
+ *   - 测试态（`NODE_ENV==="test"`，`bun test` 自动设置）**且** 落盘目标解析下来正好是
+ *     用户真实 `~/.sid-code` → 拒绝写盘；
+ *   - 测试态但已重定向（`SID_CONFIG_DIR` 指向 tmpdir，这是测试本来就该做的，
+ *     `bunfig.toml` 的 preload 还给了兜底）→ **正常写**，写盘路径因此天然可测；
+ *   - 生产态 → 永远正常写。生产二进制里 `--define process.env.NODE_ENV='"production"'`
+ *     把这个比较**编译期**折成 `false`（见 `tests/build/node-env-define.test.ts`），
+ *     所以哪怕有用户把 `SID_CONFIG_DIR` 指回真实 `~/.sid-code`（等价于不设），也照写。
+ *
+ * 判据里那个 `NODE_ENV` 条件不能省。只用路径判据的话，测试**默认**就是安全的
+ * （preload 已重定向），但一个显式 `delete process.env.SID_CONFIG_DIR` 的测试会立刻
+ * 恢复成能写用户真实文件 —— 而那正是事故的原始形态。两个条件都要。
  */
-let persistDisabled = false;
+function isPersistBlocked(): boolean {
+  return process.env.NODE_ENV === "test" && isRealUserSidHome();
+}
 
 /**
  * 落盘（失败静默——缓存是纯优化项）。
@@ -402,7 +427,7 @@ let persistDisabled = false;
  * 下次 TTL 到期重采一遍，不会产生错数字。
  */
 function persist(): void {
-  if (persistDisabled) return; // 测试态：绝不碰用户真实文件
+  if (isPersistBlocked()) return; // 测试态且未重定向：绝不碰用户真实文件（见 isPersistBlocked）
   try {
     const path = sidPaths.modelCapabilities();
     mkdirSync(dirname(path), { recursive: true });
@@ -896,6 +921,15 @@ const MISS_REFRESH_DEBOUNCE_MS = 10 * 60 * 1000;
 let lastMissTriggerAt: number | undefined;
 /** 当前是否有一次 miss 触发的刷新正在飞行（避免同一进程内并发发起多个刷新请求）。 */
 let missRefreshInFlight = false;
+/**
+ * 测试态是否允许 miss 触发刷新（默认否，见 maybeTriggerMissRefresh 里的守卫）。
+ *
+ * 只由 `__allowMissRefreshInTest()` 打开，并由 `__resetMissRefreshStateForTest()` 关回去 ——
+ * 那个 reset 是验证防抖/退避的测试**本来就必须**在 beforeEach 调的（否则上一个用例的
+ * `lastMissTriggerAt` 会让本用例的期望值错位），所以复位挂在它上面不新增任何"记得清理"的负担。
+ * 与落盘守卫不同，这里没有路径判据可用：「要不要发真实 HTTP」和写到哪个目录无关。
+ */
+let missRefreshTestOptIn = false;
 
 /**
  * miss 触发刷新：查询未命中时，异步 + 防抖地补一次外部目录同步，把「新模型上线 → 我们知道」
@@ -910,10 +944,15 @@ let missRefreshInFlight = false;
  * TTL 还没到但用户查了一个我们没有的模型这种情况）。
  */
 function maybeTriggerMissRefresh(now: number): void {
-  // 测试态（persistDisabled）绝不触网：lookupCapability 在单测里被大量喂未知模型名，
-  // 若不挡住，每个查 miss 的用例都会在后台发起一次真实 HTTP 请求 —— 慢、不确定、
-  // 且会把网络故障伪装成测试 flake。生产路径从不置位 persistDisabled，不受影响。
-  if (persistDisabled) return;
+  // 测试态默认绝不触网：lookupCapability 在单测里被大量喂未知模型名，若不挡住，每个查 miss
+  // 的用例都会在后台发起一次真实 HTTP 请求 —— 慢、不确定、且会把网络故障伪装成测试 flake。
+  //
+  // ⚠ 这道守卫**刻意与落盘守卫分开**（原先两者共用 `persistDisabled` 一个布尔）：
+  // 「别写用户真实文件」的判据是**路径**，「别在单测里发真实 HTTP」的判据是**测试态本身**，
+  // 两件事没有共同的判据。共用一个开关的后果是：测试为了验证写盘而打开它，就顺带把触网
+  // 也打开了（反之亦然），于是两个不变量互相绑架 —— 而这正是 issue #65 要拆掉的东西。
+  // 生产态 NODE_ENV 由 `--define` 折成 "production"，这一支编译期即消失。
+  if (process.env.NODE_ENV === "test" && !missRefreshTestOptIn) return;
   if (missRefreshInFlight) return;
   if (lastMissTriggerAt !== undefined && now - lastMissTriggerAt < MISS_REFRESH_DEBOUNCE_MS) return;
   const fails = memMeta.failCount ?? 0;
@@ -929,10 +968,29 @@ function maybeTriggerMissRefresh(now: number): void {
     });
 }
 
-/** 仅测试用：重置 miss 触发刷新的防抖状态。 */
+/**
+ * 仅测试用：重置 miss 触发刷新的防抖状态，**并关掉触网许可**。
+ *
+ * 复位放在这里而不是单独一个 API：验证 miss 刷新的测试本来就必须在 beforeEach 调它
+ * （防抖是进程内状态，不清就会让下一个用例的期望值错位），所以顺带复位许可不新增负担 ——
+ * 与被拆掉的 `persistDisabled` 相反，那个的复位挂在一个语义不相干的 reset 上，
+ * 漏调就是静默泄漏。
+ */
 export function __resetMissRefreshStateForTest(): void {
   lastMissTriggerAt = undefined;
   missRefreshInFlight = false;
+  missRefreshTestOptIn = false;
+}
+
+/**
+ * 仅测试用：允许本进程在测试态发起 miss 触发的目录同步。
+ *
+ * 只有「验证 miss 真的触发了刷新」这一小批用例需要它，而它们无一例外会把 `fetch`
+ * 替换成假实现（本函数不放开真实网络，只放开"这条路径可以走"）。
+ * afterEach 调 `__resetMissRefreshStateForTest()` 关回去。
+ */
+export function __allowMissRefreshInTest(): void {
+  missRefreshTestOptIn = true;
 }
 
 /**
@@ -1580,11 +1638,14 @@ export function learnFromError(model: string, errorMessage: string): HealAdvice 
 /**
  * 重置内存态（仅测试用）。
  *
- * 同时**永久关闭本进程的写盘**——测试进程绝不允许改用户真实缓存文件。
- * 见 persistDisabled 的事故说明（曾把 2919 条真实数据抹成 1 条）。
+ * ⚠ 它**不再**顺手关闭写盘。原实现会置位一个单向布尔 `persistDisabled`，于是任何测试
+ * 文件调过一次它，本进程的 `persist()` 就永久 no-op（`bun test` 同批多文件同进程）——
+ * 写盘路径整套测试里一次都没被执行过，D7 丢更新 bug 因此潜伏至今。
+ * 落盘安全现在由 `isPersistBlocked()` 的路径判据负责，与本函数无关：
+ * 只要 `SID_CONFIG_DIR` 指向临时目录（`bunfig.toml` 的 preload 已给了兜底），
+ * 写盘既安全又可测；只要它没被重定向，测试态一律拒写。
  */
 export function __resetCapabilityCacheForTest(seed?: Record<string, ModelCapabilityEntry>): void {
-  persistDisabled = true;
   memModels = seed ? { ...seed } : {};
   memMeta = {};
 }
@@ -1595,27 +1656,31 @@ export function __getCapabilityCacheForTest(): Record<string, ModelCapabilityEnt
 }
 
 /**
- * 重新打开写盘并（可选）注入目录同步元数据 —— **仅测试用**。
+ * 注入目录同步元数据（仅测试用）—— 只改内存态，不涉及任何开关。
  *
- * ⚠⚠ 调用它之前**必须**先把 `SID_CONFIG_DIR` 指到临时目录。
- * `persistDisabled` 是单向开关（`__resetCapabilityCacheForTest` 只会置位、永不复位），
- * 那是为了兜住「曾把 2919 条真实数据抹成 1 条」那次事故。但正因为单向，persist() 的
- * 写盘合并语义在测试里根本走不到——D7 并发写合并没有它就无法验证。
- * 用完在 afterEach 调 `__resetCapabilityCacheForTest()` 即可复位（它会重新置位）。
+ * 曾叫 `__enablePersistForTest`，那个名字里的"enable persist"部分连同 `persistDisabled`
+ * 一起删掉了：写盘许可现在由落盘目标是不是用户真实家目录决定，不是由某次函数调用决定。
  */
-export function __enablePersistForTest(meta?: { syncedAt?: number; failCount?: number }): void {
-  persistDisabled = false;
-  if (meta) memMeta = { ...meta };
+export function __setCatalogMetaForTest(meta: { syncedAt?: number; failCount?: number }): void {
+  memMeta = { ...meta };
 }
 
 /**
- * 直接触发一次落盘 —— **仅测试用**，且必须先调 `__enablePersistForTest`。
+ * 直接触发一次落盘 —— **仅测试用**。
  *
  * 为什么不借生产入口（recordEffortRejected / syncExternalCatalogs）触发：前者会顺手把
  * `effortValues` 改成 `[]`，后者要触网。两者都会把「合并语义」这个被测对象搅进无关变量里。
+ *
+ * 调用方仍须把 `SID_CONFIG_DIR` 指到临时目录 —— 不是为了"解锁"（不需要解锁了），而是
+ * 因为不指的话 `isPersistBlocked()` 会拒写，断言会拿到一个不存在的文件。
  */
 export function __persistForTest(): void {
   persist();
+}
+
+/** 仅测试用：暴露落盘守卫的判定结果，供门禁直接断言判据本身（而不是只断言副作用）。 */
+export function __isPersistBlockedForTest(): boolean {
+  return isPersistBlocked();
 }
 
 /**

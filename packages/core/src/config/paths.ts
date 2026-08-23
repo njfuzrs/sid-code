@@ -38,6 +38,28 @@ export function sidHomePath(...segments: string[]): string {
 }
 
 /**
+ * 当前解析出的配置根目录**就是用户真实的 `~/.sid-code`** 吗？
+ *
+ * 用途：给「测试进程绝不允许改用户真实数据」这类守卫提供**路径判据**，
+ * 取代进程级布尔开关。布尔开关的病灶是它与"写到哪里"这件事无关：
+ * 置位了就连重定向到 tmpdir 的合法写盘也一起禁掉（于是写盘路径长期不可测），
+ * 复位了又要靠调用方自觉关回去（漏写就泄漏到同批后续测试文件）。
+ * 路径判据没有状态，不需要复位，也不会泄漏。
+ *
+ * ⚠ 判据是**相等**而不是"落在其下"：`SID_CONFIG_DIR=~/.sid-code/some-sandbox` 写的是
+ * 另一个目录里的另一份文件，不会覆盖用户那份，没有理由拦它。用前缀判会把这种合法的
+ * 沙箱用法也一并拒掉。要判"落在其下"用 `isInsideSidHome()`（那是另一个问题：自嵌套）。
+ *
+ * ⚠ `homedir()` 在进程内**不随 `process.env.HOME` 改变**（实测：进程内改 HOME 后
+ * `homedir()` 仍返回原值；只有以新 HOME **启动**的进程才会变）。所以想在测试里让本函数
+ * 返回 true，只能起一个 `HOME=<临时目录>` 的子进程 —— 见
+ * `packages/core/tests/llm/model-capabilities-persist-guard.test.ts` 的三个场景。
+ */
+export function isRealUserSidHome(): boolean {
+  return resolve(getSidHome()) === resolve(join(homedir(), ".sid-code"));
+}
+
+/**
  * 返回 CC 兼容配置根目录（~/.claude），用于读取从 Claude Code 迁移的扩展。
  * 优先级：CLAUDE_CONFIG_DIR 环境变量 > ~/.claude
  *

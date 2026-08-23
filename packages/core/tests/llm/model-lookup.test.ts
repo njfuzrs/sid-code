@@ -9,8 +9,11 @@
  * 用例锁的是**顺序**而不是某个具体数字：顺序错了不报错、测试也能全绿，
  * 只是钳制会用一个偏小的猜测值 —— 正是那类「不报错的错数字」。
  *
- * 落盘隔离：全部走 `__resetCapabilityCacheForTest`（它同时置位 persistDisabled），
- * 否则会抹掉用户真实的 `~/.sid-code/model-capabilities.json`（有事故记录）。
+ * 落盘隔离：本文件只读缓存（`resolveRegistryMaxOutputTokens` 不落盘），`__resetCapabilityCacheForTest`
+ * 只负责清内存态、不再兼任写盘开关（issue #65 把那个单向布尔换成了 `isPersistBlocked()` 的
+ * 路径判据）。真正兜住「抹掉用户真实 `~/.sid-code/model-capabilities.json`」那条事故的是
+ * 那个判据 + `bunfig.toml` preload 的 `SID_CONFIG_DIR` 兜底，门禁在
+ * `model-capabilities-persist-guard.test.ts`。
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";

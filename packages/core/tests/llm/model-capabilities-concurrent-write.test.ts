@@ -11,6 +11,11 @@
  * 而不是无条件 delete —— `bun test` 同批多文件跑在同一进程里，直接删会把
  * `bunfig.toml` preload 的兜底一起抹掉。期望路径一律走 `sidPaths.modelCapabilities()`
  * 派生，不硬编码 `join(homedir(), ".sid-code", ...)`。
+ *
+ * 这个重定向现在**同时是写盘许可**（issue #65）：`persist()` 的守卫是路径判据 ——
+ * 测试态 + 目标是用户真实 `~/.sid-code` 才拒写。所以本文件不需要任何"解锁"调用，
+ * 也不需要在 afterEach 把开关关回去；把 `SID_CONFIG_DIR` 恢复原值就已经恢复了守卫。
+ * 判据本身由 `model-capabilities-persist-guard.test.ts` 单独立门禁（含变异自证）。
  */
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
@@ -21,7 +26,7 @@ import { tmpdir } from "node:os";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import {
   __resetCapabilityCacheForTest,
-  __enablePersistForTest,
+  __setCatalogMetaForTest,
   __persistForTest,
   // ⚠ 从源码取版本号，不要硬编码字面量：schema bump 一次，硬编码 fixture 会被
   // readCacheFile 当成过期版本整份丢弃，这一批与版本无关的用例就会集体报红。
@@ -58,7 +63,8 @@ afterEach(() => {
   // ⚠ 存/恢复原值，不无条件 delete（见文件头注释）。
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
-  // 重新置位 persistDisabled，避免本文件的开关泄漏到同批其它测试文件。
+  // 清内存态，避免本文件塞的 fixture 条目被同批后续文件查到。
+  // （不再需要"关回写盘开关"——开关已被路径判据取代，恢复 SID_CONFIG_DIR 即恢复守卫。）
   __resetCapabilityCacheForTest({});
   try {
     rmSync(tmpDir, { recursive: true, force: true });
@@ -81,7 +87,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     __resetCapabilityCacheForTest({
       "model-b": { contextWindow: 256_000, source: "probe", fetchedAt: 2_000 },
     });
-    __enablePersistForTest({ syncedAt: 2_000, failCount: 0 });
+    __setCatalogMetaForTest({ syncedAt: 2_000, failCount: 0 });
     __persistForTest();
 
     const disk = readDiskFile();
@@ -113,7 +119,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     __resetCapabilityCacheForTest({
       "model-x": { contextWindow: 200_000, source: "healed", fetchedAt: 9_000 },
     });
-    __enablePersistForTest({ syncedAt: 9_000 });
+    __setCatalogMetaForTest({ syncedAt: 9_000 });
     __persistForTest();
 
     const entry = readDiskFile().models["model-x"]!;
@@ -130,7 +136,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
       },
     });
     __resetCapabilityCacheForTest({ "model-y": { contextWindow: 64_000, fetchedAt: 5_000 } });
-    __enablePersistForTest({ syncedAt: 5_000 });
+    __setCatalogMetaForTest({ syncedAt: 5_000 });
     __persistForTest();
 
     const entry = readDiskFile().models["model-y"]!;
@@ -149,7 +155,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     __resetCapabilityCacheForTest({
       "model-z": { contextWindow: undefined, maxOutputTokens: 16_384 },
     });
-    __enablePersistForTest({ syncedAt: 1 });
+    __setCatalogMetaForTest({ syncedAt: 1 });
     __persistForTest();
 
     const entry = readDiskFile().models["model-z"]!;
@@ -168,7 +174,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
       "utf8",
     );
     __resetCapabilityCacheForTest({ mine: { contextWindow: 4_000 } });
-    __enablePersistForTest({ syncedAt: 1 });
+    __setCatalogMetaForTest({ syncedAt: 1 });
     __persistForTest();
 
     const disk = readDiskFile();
@@ -179,7 +185,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
   test("磁盘 JSON 损坏 / schema 版本不匹配 → 退化成整份覆盖，不抛异常", () => {
     writeFileSync(sidPaths.modelCapabilities(), "{ 半截 JSON", "utf8");
     __resetCapabilityCacheForTest({ "model-b": { contextWindow: 256_000 } });
-    __enablePersistForTest({ syncedAt: 3_000 });
+    __setCatalogMetaForTest({ syncedAt: 3_000 });
     expect(() => __persistForTest()).not.toThrow();
     expect(Object.keys(readDiskFile().models)).toEqual(["model-b"]);
 
@@ -198,7 +204,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
         catalog_fail_count: 0, // 别的进程刚同步成功
       });
       __resetCapabilityCacheForTest({});
-      __enablePersistForTest({ syncedAt: 1_000, failCount: 3 }); // 本进程是旧的失败态
+      __setCatalogMetaForTest({ syncedAt: 1_000, failCount: 3 }); // 本进程是旧的失败态
       __persistForTest();
 
       const disk = readDiskFile();
@@ -214,7 +220,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
         catalog_fail_count: 0,
       });
       __resetCapabilityCacheForTest({});
-      __enablePersistForTest({ syncedAt: 9_000, failCount: 2 });
+      __setCatalogMetaForTest({ syncedAt: 9_000, failCount: 2 });
       __persistForTest();
 
       const disk = readDiskFile();
@@ -233,7 +239,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
         catalog_fail_count: 0,
       });
       __resetCapabilityCacheForTest({});
-      __enablePersistForTest({ syncedAt: 9_000, failCount: 4 });
+      __setCatalogMetaForTest({ syncedAt: 9_000, failCount: 4 });
       __persistForTest();
 
       const disk = readDiskFile();
@@ -244,7 +250,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     test("磁盘无 catalog_synced_at → 用内存态（缺值不算更新）", () => {
       writeDiskFile({ schema_version: SCHEMA_VERSION, models: { a: { contextWindow: 1_000 } } });
       __resetCapabilityCacheForTest({});
-      __enablePersistForTest({ syncedAt: 5_000, failCount: 1 });
+      __setCatalogMetaForTest({ syncedAt: 5_000, failCount: 1 });
       __persistForTest();
 
       const disk = readDiskFile();
@@ -260,7 +266,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
         catalog_fail_count: 0,
       });
       __resetCapabilityCacheForTest();
-      __enablePersistForTest({ syncedAt: 7_000, failCount: 5 });
+      __setCatalogMetaForTest({ syncedAt: 7_000, failCount: 5 });
       __persistForTest();
       expect(readDiskFile().catalog_fail_count).toBe(5);
     });
@@ -268,7 +274,7 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
 
   test("原子写行为没被破坏：仍是 tmp → rename，落地后不留 .tmp", () => {
     __resetCapabilityCacheForTest({ m: { contextWindow: 1_000 } });
-    __enablePersistForTest({ syncedAt: 1 });
+    __setCatalogMetaForTest({ syncedAt: 1 });
     __persistForTest();
 
     const path = sidPaths.modelCapabilities();
@@ -278,12 +284,18 @@ describe("persist() — 写盘前重读磁盘并合并（防并发进程丢更�
     expect(readdirSync(tmpDir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
-  test("persistDisabled 为真时一个字节都不写", () => {
-    // __resetCapabilityCacheForTest 会置位 persistDisabled，这里刻意不调
-    // __enablePersistForTest —— 模拟普通单测路径。
+  test("普通单测路径（只 reset、不做任何解锁调用）也能落盘 —— 写盘路径不再需要后门", () => {
+    // 这条替换了原来的「persistDisabled 为真时一个字节都不写」。
+    // 那条断言的是**旧守卫的机制**（一个被 reset 单向置位的进程级布尔），而正是那个机制
+    // 让写盘路径在整个测试套件里从来没被执行过（issue #65）。守卫换成路径判据之后，
+    // 「测试态 + 已重定向 → 照常写」是新的正确行为，所以这里把断言方向反过来。
+    //
+    // 「未重定向时一个字节都不写」这条不变量没有丢，只是搬到了守卫自己的门禁里
+    // （`model-capabilities-persist-guard.test.ts`，用假 HOME 起子进程验证）——
+    // 在本文件里根本验不了它：`homedir()` 不随进程内改 HOME 而变。
     __resetCapabilityCacheForTest({ m: { contextWindow: 1_000 } });
     __persistForTest();
-    expect(existsSync(sidPaths.modelCapabilities())).toBe(false);
-    expect(readdirSync(tmpDir)).toEqual([]);
+    expect(existsSync(sidPaths.modelCapabilities())).toBe(true);
+    expect(readDiskFile().models["m"]!.contextWindow).toBe(1_000);
   });
 });
