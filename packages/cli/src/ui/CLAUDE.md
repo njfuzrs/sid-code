@@ -268,7 +268,20 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 - **破坏性命令额外标红警告** ⚠️：`rm -rf`、`git reset --hard`、批量删除等，在确认框里额外标红（cc 的 `destructiveCommandWarning`），不能和普通确认长一个样。项目已有命令危险性检测能力（`src/permission/`、`src/tool/bash/read-only-validation.ts`），但 **UI 层的差异化警示尚未接全**，补确认框时接上。
 - **安全默认聚焦** ⚠️：危险操作的确认框**默认聚焦"拒绝/取消"**，让手滑回车不造成破坏（cc 的 `defaultFocusValue` 指向 No）。危险确认按钮文案要有仪式感（"Yes, I accept" 而非 "OK"）。
-- **权限按键语义用颜色区分** ✅：y 绿 / n 红 / a 蓝，高频决策一眼可辨（`PermissionPrompt.tsx`）。
+- **权限按键语义用颜色区分** ✅：允许绿 / 拒绝红 / 会话档黄 / 持久档蓝，高频决策一眼可辨
+  （色角色定义在 `components/permission-choices.ts` 的 `ChoiceTone`，映射在 `shared/HotkeyChoiceList.tsx` 的 `toneColor`）。
+- **确认框必须「三条路径并存」**：↑↓ + Enter / 数字直达 / 字母直达，一条都不能少 ✅
+  （`shared/HotkeyChoiceList.tsx`，权限框与 Shell 确认框共用）。
+  只给字母会逼用户记键位（原状态：`if (!key.insertable) return false` 把方向键在第一步就挡掉，
+  于是同一个 TUI 里 `ask_user_question` 能上下选、确认框却不能，是两套交互模型）；
+  只给方向键则丢掉 y/n/a 的既有肌肉记忆和官网文档写明的契约。**新增确认类弹窗一律复用该组件**，
+  不要再在组件里手写 `key.name === "y"` 分支。
+  ⚠️ 快捷键**大小写敏感**（`A` = Shift+A 持久档 ≠ `a` 会话档）：终端上报 Shift+A 时 `key.name`
+  仍是 `"a"`、靠 `key.shift` 区分，所以匹配必须同时比对字母与 shift（`matchHotkey`），
+  否则裸 `a` 会把 Shift+A 截胡。
+- **Esc 在确认框里要有明确语义** ✅：一律等价于「保守选项」（权限框=拒绝、Shell 框=取消），
+  与 app.ts 里 signal abort 的处理同口径——不放行未确认的工具。缺了它用户只能靠 Ctrl+C
+  退出整个会话（L4-B：中断要给出路）。
 - **批量销毁类操作两击确认** ⚠️：如"杀掉所有 agent / 清空队列"，cc 用两击确认——第一击提示"再按一次"（3 秒窗口），第二击才执行。本项目如有此类操作可对齐。
 
 ### F. 键盘可达 + 一致

@@ -35,6 +35,14 @@ import {
 } from "../constants/figures.ts";
 import { renderMarkdown } from "../markdown.ts";
 import { inspectToolCall, inspectCommand } from "../utils/danger-detect.ts";
+import { HotkeyChoiceList, choiceListHint } from "./shared/HotkeyChoiceList.tsx";
+import {
+  buildPermissionChoices,
+  buildShellConfirmChoices,
+  initialPermissionChoiceIndex,
+  initialShellChoiceIndex,
+  type PermissionAnswer,
+} from "./permission-choices.ts";
 
 /**
  * 识别选项 label 是否带「推荐」后缀（(推荐) / (Recommended)，大小写不敏感、容忍首尾空白）。
@@ -44,7 +52,19 @@ export function isRecommendedLabel(label: string): boolean {
   return /[（(]\s*(推荐|recommended)\s*[)）]\s*$/i.test(label.trim());
 }
 
-/** 权限确认对话框 */
+/**
+ * 权限确认对话框。
+ *
+ * 交互三条路径并存（对齐 ask_user_question 的选择式体验）：
+ * ↑↓ 移动 + Enter 确认 / 1-4 数字直达 / y-n-a-A 字母直达。
+ * 键盘处理与选项渲染都交给 HotkeyChoiceList，本组件只负责「展示什么 + 决策后干什么」。
+ *
+ * 原先只有字母一条路径（且 `if (!key.insertable) return false` 把方向键在第一步就挡掉了），
+ * 用户必须记住三个字母才能操作；同时线上这份组件缺 `always-persist` 档，而 app.ts 的整条
+ * 持久化链路（persistBashAllowRule → project settings）早已实现，只是按不出来。两者一并修掉。
+ *
+ * Esc = 拒绝（保守）：与 app.ts 里 signal abort 的处理一致——不放行未确认的工具。
+ */
 function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   // 权限框是授权决策入口，必须让用户看清完整命令/路径，不截断（长则换行）。
   const detail = getToolDetailFull(request.toolName, request.toolInput);
@@ -52,27 +72,17 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
   // 危险操作差异化：破坏性命令标红 + 警告行 + 仪式感文案（对标 cc destructiveCommandWarning）
   const danger = inspectToolCall(request.toolName, request.toolInput);
 
-  useKeypress(KeypressPriority.Critical, (key) => {
-    if (resolvedRef.current) return false;
-    if (!key.insertable) return false;
-    const lower = key.name;
-    if (lower === "y") {
-      resolvedRef.current = true;
-      request.resolve("yes");
-      return true;
-    }
-    if (lower === "n") {
-      resolvedRef.current = true;
-      request.resolve("no");
-      return true;
-    }
-    if (lower === "a") {
-      resolvedRef.current = true;
-      request.resolve("always");
-      return true;
-    }
-    return false;
+  const choices = buildPermissionChoices({
+    toolName: request.toolName,
+    isDangerous: danger.isDangerous,
   });
+  const initialIndex = initialPermissionChoiceIndex(choices, danger.isDangerous);
+
+  const decide = (answer: PermissionAnswer) => {
+    if (resolvedRef.current) return;
+    resolvedRef.current = true;
+    request.resolve(answer);
+  };
 
   // 危险时整体切到 error 红，标题加警告标记；普通时维持 warning 黄。
   const accentColor = danger.isDangerous ? theme.status.error : theme.status.warning;
@@ -127,49 +137,28 @@ function PermissionDialog({ request }: { request: PermissionRequestInfo }) {
           </Box>
         )}
       </Box>
-      {/* 安全默认：危险操作把「拒绝」放在最前并标红强调，避免手滑误允许 */}
-      {danger.isDangerous ? (
-        <Box marginTop={0}>
-          <Text color={theme.status.error} bold>
-            {" "}
-            (n)
-          </Text>
-          <Text>拒绝（推荐） </Text>
-          <Text color={theme.status.success} bold>
-            {" "}
-            (y)
-          </Text>
-          <Text>确认执行 </Text>
-          <Text color={theme.status.warning} bold>
-            {" "}
-            (a)
-          </Text>
-          <Text>始终允许</Text>
-        </Box>
-      ) : (
-        <Box marginTop={0}>
-          <Text color={theme.status.success} bold>
-            {" "}
-            (y)
-          </Text>
-          <Text>允许 </Text>
-          <Text color={theme.status.error} bold>
-            {" "}
-            (n)
-          </Text>
-          <Text>拒绝 </Text>
-          <Text color={theme.status.warning} bold>
-            {" "}
-            (a)
-          </Text>
-          <Text>始终允许</Text>
-        </Box>
-      )}
+      {/* 选项区：安全默认由 initialIndex 落在「拒绝」上实现（危险操作时），不靠文案暗示 */}
+      <Box marginTop={1} paddingLeft={1}>
+        <HotkeyChoiceList<PermissionAnswer>
+          choices={choices}
+          initialIndex={initialIndex}
+          onSelect={decide}
+          escapeValue="no"
+        />
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.text.secondary}>{choiceListHint(choices.map((c) => c.hotkey))}</Text>
+      </Box>
     </Box>
   );
 }
 
-/** Shell 命令确认对话框 */
+/**
+ * Shell 命令确认对话框。
+ *
+ * 与权限框同一套交互（↑↓/Enter/数字/字母），共用 HotkeyChoiceList——两个确认框长得像却
+ * 只有一个能用方向键，是比两个都不能用更糟的不一致。Esc = 取消（保守，不执行）。
+ */
 function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   const resolvedRef = useRef(false);
   // 逐条检测命令危险性，任一命中即整体进入危险态
@@ -177,22 +166,14 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
   const dangerIndex = verdicts.findIndex((v) => v.isDangerous);
   const isDangerous = dangerIndex >= 0;
 
-  useKeypress(KeypressPriority.Critical, (key) => {
-    if (resolvedRef.current) return false;
-    if (!key.insertable) return false;
-    const lower = key.name;
-    if (lower === "y") {
-      resolvedRef.current = true;
-      request.resolve(true);
-      return true;
-    }
-    if (lower === "n") {
-      resolvedRef.current = true;
-      request.resolve(false);
-      return true;
-    }
-    return false;
-  });
+  const choices = buildShellConfirmChoices(isDangerous);
+  const initialIndex = initialShellChoiceIndex(choices, isDangerous);
+
+  const decide = (confirmed: boolean) => {
+    if (resolvedRef.current) return;
+    resolvedRef.current = true;
+    request.resolve(confirmed);
+  };
 
   const accentColor = isDangerous ? theme.status.error : theme.text.accent;
   const title = isDangerous ? `${WARNING_MARK} 危险 Shell 命令确认` : `${BULLET} Shell 命令确认`;
@@ -216,33 +197,17 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
           </Text>
         </Box>
       )}
-      {isDangerous ? (
-        <Box marginTop={0}>
-          <Text color={theme.status.error} bold>
-            {" "}
-            (n)
-          </Text>
-          <Text>取消（推荐） </Text>
-          <Text color={theme.status.success} bold>
-            {" "}
-            (y)
-          </Text>
-          <Text>确认执行</Text>
-        </Box>
-      ) : (
-        <Box marginTop={0}>
-          <Text color={theme.status.success} bold>
-            {" "}
-            (y)
-          </Text>
-          <Text>确认执行 </Text>
-          <Text color={theme.status.error} bold>
-            {" "}
-            (n)
-          </Text>
-          <Text>取消</Text>
-        </Box>
-      )}
+      <Box marginTop={1} paddingLeft={1}>
+        <HotkeyChoiceList<boolean>
+          choices={choices}
+          initialIndex={initialIndex}
+          onSelect={decide}
+          escapeValue={false}
+        />
+      </Box>
+      <Box marginTop={1}>
+        <Text color={theme.text.secondary}>{choiceListHint(choices.map((c) => c.hotkey))}</Text>
+      </Box>
     </Box>
   );
 }
