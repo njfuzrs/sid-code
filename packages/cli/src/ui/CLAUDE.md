@@ -311,7 +311,22 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 ### 5.2 验证视觉改动的正确姿势
 
-本项目 ink 是 fork（`src/ink/`，render 入口在 `render-to-screen.ts` / `root.ts`，非标准 `index.js`），一次性脚本难拼全 context provider 链来渲染组件预览。**验证视觉改动改用 `bun -e` 打印**，比拼渲染环境可靠：
+两条路子，**按改动性质选，涉及布局的一律选第一条**：
+
+**① 整帧渲染（首选，涉及对齐 / 列宽 / 换行时必须用）**：
+`@sid-code/tui-renderer/_vendor/testing.tsx` 的 `render()` 能在测试里真渲染组件并用
+`lastFrame()` 取整帧字符串（PassThrough 假 stdout，非 TTY 下 ink 输出整帧）。
+配 `{ columns }` 可指定终端宽度，`strip-ansi` 去色后逐行断言。**仓库里已有 10+ 个组件这么测**
+（`tests/ui/components/*.test.tsx`），不是新路子。
+
+- 用它测什么：各列起始位置是否一致、行宽是否超出终端、窄终端下会不会塌版。
+  这类缺陷**纯函数单测全绿也照样存在**，只有整帧能看出来。
+- ⚠ 坑：组件用 `useKeypress` 时必须包 `KeypressProvider`，否则它 throw、React 把整帧
+  吞成 `"\n"` —— 表现是"渲染不出内容"，很容易误判成组件坏了。同理其它 context provider。
+- ⚠ 坑：断言别用 `frame.includes(模型名)` 之类全帧搜，标题区常含同样的字符串，
+  会量到错误的行（本仓踩过：误判成列宽 bug）。先按行过滤出目标行再断言。
+
+**② `bun -e` 打印（够用时更快）**：不涉及布局的改动用它。
 
 - 字形：打印 `figures.ts` 的常量，确认字符对。
 - 颜色：`themeManager.getSemanticColors()` 看**实际解析出的值**（定义 ≠ 生效）。

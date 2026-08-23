@@ -1,10 +1,12 @@
 import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
 import { resolvePricing, effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
-import { lookupRegistry, getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
+import { getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
 import { getGatewayCacheMeta, getAllGatewayEntries } from "@sid-code/core/llm/gateway-pricing.ts";
-import { lookupGatewayPricing } from "@sid-code/core/llm/gateway-pricing.ts";
-import { normalizeBaseURL } from "@sid-code/core/llm/endpoint-key.ts";
+import {
+  detectPricingSource as detectPricingSourceCore,
+  getPerCallUSD,
+} from "@sid-code/core/llm/model-profile.ts";
 
 /**
  * /model 命令实现（按需加载）
@@ -260,37 +262,35 @@ function buildInvalidTypeError(type: string): string {
 }
 
 /**
- * 判定某模型在某端点下的定价来源（与 resolvePricing 优先级链一致）：
- * 用户手写复合键 > 用户手写仅名 > 网关采集 > 注册表 > 兜底。
+ * 判定某模型在某端点下的定价来源，输出为本命令的中文标签。
+ *
+ * 判定逻辑本身已下沉到 `llm/model-profile.ts` 的 {@link detectPricingSourceCore }
+ * —— `/model` 弹窗要显示同一件事，两份实现必然分叉（且分叉的形态是「命令说注册表价、
+ * 面板说网关价」，用户无从判断哪个对）。这里只做「来源档位 → 本命令文案」的翻译。
+ *
+ * ⚠ 顺手修正了一处真 bug：原实现第 4 步 `lookupRegistry(name)` 传的是**别名**，
+ * 而 `resolvePricing` 第 4 步传的是**真名**（`resolveWireModel`）。后缀式别名
+ * （`claude-opus-4-8-gateway`）靠注册表的模糊前缀匹配碰巧也能命中，所以问题一直没暴露；
+ * 但**前缀式或完全自定义的别名**（`gw-claude-opus-4-8` / `company-fast`）在模糊匹配里
+ * 一样 miss —— 实测旧写法返回「兜底估算」而实际用的是注册表价。
+ * 错的不是钱（取价一直按真名），是**来源标注与实际取价不一致**。下沉后两者同口径。
  */
-function detectPricingSource(
+function detectPricingSourceLabel(
   ctx: CommandContext,
   name: string,
   baseURL?: string,
 ): "用户手写" | "网关采集" | "内置注册表" | "兜底估算" {
-  const models = ctx.config.availableModels;
-  const exact = models.find(
-    (m) => m.name === name && normalizeBaseURL(m.baseURL) === normalizeBaseURL(baseURL),
-  );
-  if (exact?.pricing && exact.pricing.input > 0) return "用户手写";
-  const byName = models.find((m) => m.name === name);
-  if (byName?.pricing && byName.pricing.input > 0) return "用户手写";
-  if (lookupGatewayPricing(name, baseURL)) return "网关采集";
-  if (lookupRegistry(name)?.pricing) return "内置注册表";
-  return "兜底估算";
-}
-
-/**
- * 查网关采集缓存里某模型（某端点）的按次单价（quota_type=1）。
- * 命中返回 perCallUSD，否则 undefined（非按次计费 / 未采集）。
- */
-function getGatewayPerCall(name: string, baseURL?: string): number | undefined {
-  // 端点桶优先，未命中回退合并视图（兼容用户配置端点与采集端点归一化后不完全一致的情况）。
-  const scoped = getAllGatewayEntries(baseURL)[name] ?? getAllGatewayEntries()[name];
-  if (scoped && scoped.quotaType === 1 && typeof scoped.perCallUSD === "number") {
-    return scoped.perCallUSD;
+  // 参数顺序与 resolvePricing 一致（model, availableModels, baseURL），刻意不换序
+  switch (detectPricingSourceCore(name, ctx.config.availableModels, baseURL)) {
+    case "user":
+      return "用户手写";
+    case "gateway":
+      return "网关采集";
+    case "registry":
+      return "内置注册表";
+    case "unknown":
+      return "兜底估算";
   }
-  return undefined;
 }
 
 /** 格式化一行价格（in/out/cacheRead/cacheWrite，$/1M）。 */
@@ -316,7 +316,7 @@ function buildAvailableModels(ctx: CommandContext): string {
     lines.push(`\n${idx + 1}. ${m.name}${current}`);
     if (m.provider) lines.push(`   提供商: ${m.provider}`);
     if (m.baseURL) lines.push(`   API 地址: ${m.baseURL}`);
-    const src = detectPricingSource(ctx, m.name, m.baseURL);
+    const src = detectPricingSourceLabel(ctx, m.name, m.baseURL);
     lines.push(
       `   ${formatPriceLine(m.name, ctx.config.availableModels, m.baseURL)}（来源: ${src}）`,
     );
@@ -447,13 +447,13 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
       const rawP = resolvePricing(m.name, ctx.config.availableModels, m.baseURL);
       // D1：同 formatPriceLine —— 折算成 USD 当前生效价再展示。
       const p = rawP ? effectivePricing(rawP) : null;
-      const src = detectPricingSource(ctx, m.name, m.baseURL);
+      const src = detectPricingSourceLabel(ctx, m.name, m.baseURL);
       const current = m.name === ctx.config.model ? " ✓" : "";
       lines.push(`  ${m.name}${current}`);
       lines.push(`    端点: ${m.baseURL || "(默认/官方)"}`);
       // 按次计费（quota_type=1）模型：resolvePricing 对其返回 null（token 价不适用），
       // 直接显示网关采到的按次单价，避免误示为「in $0 / out $0」。
-      const perCall = getGatewayPerCall(m.name, m.baseURL);
+      const perCall = getPerCallUSD(m.name, m.baseURL);
       if (perCall !== undefined) {
         lines.push(`    按次计费 $${perCall}/次  [网关采集]`);
       } else if (p) {

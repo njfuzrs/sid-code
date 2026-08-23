@@ -13,6 +13,34 @@ import { estimateBlockTokens } from "../context/token.ts";
 /** 超过此长度使用快速近似（性能优化） */
 const MAX_CHARS_FOR_FULL_HEURISTIC = 100_000;
 
+/**
+ * 一个模型元数据值（窗口 / 输出上限）**来自哪一层**。
+ *
+ * 存在的唯一理由是「展示给用户时必须区分事实与猜测」：前四档都是某个数据源真的
+ * 报过这个值，`fuzzy` 是按名字借了另一个模型的值，`fallback` 是一个常量。
+ * 后两档印给用户时要标出来，否则就是拿兜底常量冒充事实（本仓已有的同形教训见
+ * `model-capabilities.ts` 关于「未知即 null，绝不臆测」的整节注释）。
+ *
+ * 取值顺序与 {@link TokenEstimator.resolveContextLimit} 的优先级链一一对应，
+ * 别在中间插新档而不改那条链——两者必须是同一件事的两种说法。
+ */
+export type ModelMetaSource =
+  /** 用户在 settings.json 的 availableModels[] 里自己声明的 */
+  | "user"
+  /** 内置注册表精确命中（手写表，人工核对过） */
+  | "registry"
+  /** 外部目录采集缓存精确命中（models.dev 等，按天刷新） */
+  | "catalog"
+  /** 注册表模糊匹配（前缀 / 版本借用 / 家族）——**是猜的** */
+  | "fuzzy"
+  /** 什么都没查到，用的是兜底常量——**是猜的** */
+  | "fallback";
+
+/** 这个来源档位是不是「猜的」（展示时必须标注不确定性）。 */
+export function isGuessedMetaSource(s: ModelMetaSource): boolean {
+  return s === "fuzzy" || s === "fallback";
+}
+
 /** 未知模型 + 未声明 contextWindow 时的兜底窗口（tokens）。
  *  默认 1M（2026 年主流大模型上下文窗口普遍达 1M：Claude/GPT/DeepSeek/Kimi/Qwen/GLM/Gemini 全系）。
  *  可经 SID_FALLBACK_CONTEXT_WINDOW 覆盖。非法值（NaN/≤0）静默回退默认，绝不更紧。
@@ -115,6 +143,25 @@ export class TokenEstimator {
     model: string,
     availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>,
   ): number {
+    return this.resolveContextLimit(model, availableModels).value;
+  }
+
+  /**
+   * 同 {@link getContextLimit}，但**连带返回这个数字是哪一层给的**。
+   *
+   * 为什么要有它：`getContextLimit` 永远返回一个数，`fallback` 那一档（1M）是**猜的**，
+   * 而调用方拿到的 `1000000` 与精确命中的 `1000000` 在类型上毫无区别。计价 / 预算判定
+   * 不需要区分（都得有个数才能算），但**任何把这个数展示给用户的地方都必须区分** ——
+   * 把猜出来的 1M 印成「上下文 1M」是在拿兜底常量冒充事实，用户会据此判断"这个模型装得下"。
+   *
+   * 实现上刻意让 `getContextLimit` 委托到本函数，而不是各写一遍优先级链：
+   * 这条链已经被改坏过一次（见上方 2026-08-20 那段注释），存两份必然漂移，
+   * 而漂移的形态是「展示的来源与实际取值的层不一致」——比没有来源标注更糟。
+   */
+  resolveContextLimit(
+    model: string,
+    availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>,
+  ): { value: number; source: ModelMetaSource } {
     // 1. 用户配置优先：availableModels 里同名模型声明的 contextWindow 是权威值，
     //    避免内置静态表与用户真实部署（自建/代理/新版本）漂移。
     //    Number.isFinite 防手改 settings.json 写出 1e400 之类溢出成 Infinity 的值——
@@ -125,7 +172,7 @@ export class TokenEstimator {
       Number.isFinite(userModel.contextWindow) &&
       userModel.contextWindow > 0
     ) {
-      return userModel.contextWindow;
+      return { value: userModel.contextWindow, source: "user" };
     }
 
     // 别名 → 厂商真名：下面的注册表 / 动态能力缓存全是按模型名做前缀与家族匹配，
@@ -135,7 +182,7 @@ export class TokenEstimator {
 
     // 3. 注册表**精确**命中：手写表的精确键比第三方采集准，所以排在采集之前。
     const exact = lookupRegistryExact(wire);
-    if (exact) return exact.contextWindow;
+    if (exact) return { value: exact.contextWindow, source: "registry" };
 
     // 4. 动态能力缓存（外部目录同步 / 探针 / 400 自愈采得），本身只做精确匹配。
     //     这是「未知模型也有准确窗口」的关键一环：注册表覆盖不到的新模型（网关先上线、
@@ -149,16 +196,18 @@ export class TokenEstimator {
     //     变成 Infinity）能一路传到这里——`Infinity > 0` 为 true，旧检查完全放行，
     //     导致「上下文永远没满」的静默失效（不报错，比报错更难发现）。两道关卡都要拦。
     const dynamic = lookupCapability(wire)?.contextWindow;
-    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
+    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) {
+      return { value: dynamic, source: "catalog" };
+    }
 
     // 5. 注册表**模糊**兜底：前缀 / 路由剥离 / 版本借用 / 家族匹配。三层精确数据全 miss
     //    才走到这里，此时「猜一个有约束的值」优于直接落 1M 兜底。
     const fuzzy = lookupRegistryFuzzy(wire);
-    if (fuzzy) return fuzzy.contextWindow;
+    if (fuzzy) return { value: fuzzy.contextWindow, source: "fuzzy" };
 
     // 兜底：未知模型回退到可配置的默认值（1M）。
     // 详见 docs/bugfixes/done/20260730-未知模型contextWindow兜底失真-根因与修复记录.md
-    return resolveFallbackWindow();
+    return { value: resolveFallbackWindow(), source: "fallback" };
   }
 
   /**
@@ -173,30 +222,47 @@ export class TokenEstimator {
     model: string,
     availableModels?: Array<{ name?: string; modelId?: string; maxOutputTokens?: number }>,
   ): number | undefined {
+    return this.resolveMaxOutputTokens(model, availableModels)?.value;
+  }
+
+  /**
+   * 同 {@link getMaxOutputTokens}，但连带返回来源档位。理由同
+   * {@link resolveContextLimit}：展示给用户时要能区分「注册表里写着 64K」与
+   * 「按名字借了同族另一个模型的 64K」。
+   *
+   * 与窗口的关键差异：这里**没有 `fallback` 档** —— 全 miss 返回 `null` 而不是编一个数，
+   * 这是上面那段注释里已经定下的口径，别在这里补一个兜底值。
+   */
+  resolveMaxOutputTokens(
+    model: string,
+    availableModels?: Array<{ name?: string; modelId?: string; maxOutputTokens?: number }>,
+  ): { value: number; source: ModelMetaSource } | null {
     const userModel = availableModels?.find((m) => m.name === model);
     if (
       typeof userModel?.maxOutputTokens === "number" &&
       Number.isFinite(userModel.maxOutputTokens) &&
       userModel.maxOutputTokens > 0
     ) {
-      return userModel.maxOutputTokens;
+      return { value: userModel.maxOutputTokens, source: "user" };
     }
     // 与 getContextLimit 同源：注册表 / 动态缓存按真名查，别名会静默 miss。
     const wire = resolveWireModel(model, availableModels);
     const exact = lookupRegistryExact(wire);
     if (exact && Number.isFinite(exact.maxOutputTokens) && exact.maxOutputTokens > 0) {
-      return exact.maxOutputTokens;
+      return { value: exact.maxOutputTokens, source: "registry" };
     }
     // 采集缓存精确命中（与 getContextLimit 第 4 步同源）。
     const dynamic = lookupCapability(wire)?.maxOutputTokens;
-    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) return dynamic;
-    // 注册表模糊兜底（与 getContextLimit 第 5 步同源）。仍拿不到才返回 undefined
+    if (typeof dynamic === "number" && Number.isFinite(dynamic) && dynamic > 0) {
+      return { value: dynamic, source: "catalog" };
+    }
+    // 注册表模糊兜底（与 getContextLimit 第 5 步同源）。仍拿不到才返回 null
     // ——由 ContextManager 用默认预留兜底，而不是在这里编一个数字。
     const fuzzy = lookupRegistryFuzzy(wire);
     if (fuzzy && Number.isFinite(fuzzy.maxOutputTokens) && fuzzy.maxOutputTokens > 0) {
-      return fuzzy.maxOutputTokens;
+      return { value: fuzzy.maxOutputTokens, source: "fuzzy" };
     }
-    return undefined;
+    return null;
   }
 
   /**

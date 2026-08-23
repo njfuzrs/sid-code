@@ -135,6 +135,16 @@ export interface TUICallbacks {
     applied: boolean;
     capability: import("@sid-code/core/llm/effort.ts").EffortCapability;
   };
+  /**
+   * 读取各模型的展示级画像（窗口 / 价格 / 档位 / 数据来源），键为模型别名（name）。
+   *
+   * 命令式回调而非 state 字段：网关价与能力缓存都在启动后异步刷新，随 state 推下去的
+   * 快照会停在启动那一刻，让面板显示的价与实际计费的价不一致。见 app.ts getModelProfiles。
+   */
+  getModelProfiles?: () => Record<
+    string,
+    import("@sid-code/core/llm/model-profile.ts").ModelProfile
+  >;
   /** Hook 系统引用（/hooks 面板用；稳定引用） */
   hookSystem?: import("@sid-code/core/hook/system.ts").HookSystem;
   /** 应用配置引用（/config 面板用；稳定引用） */

@@ -23,7 +23,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Box from "@sid-code/tui-renderer/components/Box.tsx";
 import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import stringWidth from "string-width";
+import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
 import { theme } from "../semantic-colors.ts";
 import {
   TODO_COMPLETED,
@@ -31,6 +31,7 @@ import {
   EFFORT_GLYPHS,
   SEARCH_MARK,
   WARNING_MARK,
+  TREE_BRANCH,
 } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import {
@@ -47,9 +48,20 @@ import {
   indexOfModel,
   nextSelectableIndex,
   firstSelectableIndex,
+  parseModelDescription,
   type ModelOption,
   type ModelRow,
+  type ModelEntryRow,
 } from "./model-grouping.ts";
+import {
+  formatTokensSourced,
+  formatPriceColumn,
+  formatCapabilityLine,
+  formatPricingLine,
+  metaSourceLabel,
+} from "./model-meta-format.ts";
+import type { ModelProfile } from "@sid-code/core/llm/model-profile.ts";
+import { computeMetaColumns, padTo, type MetaColumnPlan } from "./model-meta-layout.ts";
 
 interface EffortState {
   runtime: EffortSetting;
@@ -72,6 +84,11 @@ interface ModelDialogProps {
    * 的 effort 下发被 thinking 门控）。缺省则不显示该提示，不影响其它功能。
    */
   getThinkingState?: () => { runtime: ThinkingSetting; applied: boolean };
+  /**
+   * 读取各模型的价格 / 窗口 / 档位画像（键 = 模型别名）。**缺省时面板退化成改动前的形态**
+   * ——少两列、无详情行，但选模型这件事完全不受影响（价格是辅助信息，不是前置条件）。
+   */
+  getModelProfiles?: () => Record<string, ModelProfile>;
 }
 
 /** 列表可视行数（含分组标题行，故比旧值放宽） */
@@ -107,12 +124,25 @@ export function computeScrollStart(
 export const ModelDialog: React.FC<ModelDialogProps> = ({
   onClose,
   currentModel,
-  availableModels,
+  availableModels: rawModels,
   onModelSelect,
   getEffortState,
   setEffort,
   getThinkingState,
+  getModelProfiles,
 }) => {
+  // 画像在面板挂载时读一次并挂到每个条目上。
+  //
+  // 只读一次（而非每帧）是刻意的：面板存活期间价格与窗口不会变（网关刷新是异步后台行为，
+  // 中途变了也不该让列宽和数字在用户眼前跳动——那会让正在比价的人看错行）。
+  // 依赖 getModelProfiles 引用而非 [] ：app.ts 传的是稳定箭头函数，等价于挂载时一次，
+  // 但万一上层换了实现（比如换模型后重建 callbacks），这里能跟着重读而不是拿着旧画像。
+  const profiles = useMemo(() => getModelProfiles?.() ?? {}, [getModelProfiles]);
+  const availableModels = useMemo(
+    (): ModelOption[] => rawModels.map((m) => ({ ...m, profile: profiles[m.name] })),
+    [rawModels, profiles],
+  );
+
   // effort 状态自持一份 state，按键后主动重读 —— 这是 ←/→ 只能在两档间跳的根因修复。
   //
   // getEffortState 是**命令式回调**（读 App 的 runtimeEffort），不是 prop：effort 变了
@@ -142,6 +172,12 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
     getThinkingState &&
     getThinkingState().applied === false
   );
+
+  // 终端宽度：新增的上下文 / 价格两列放不下时要能自动裁掉（见 model-meta-layout.ts）。
+  // 走 _vendor/use-stdout 的响应式 columns（跟随 ink 的 TerminalSizeContext 重渲染），
+  // 不读 process.stdout.columns —— 后者不随 resize 触发 React 更新，拖窗口后列宽不跟。
+  const { stdout } = useStdout();
+  const termWidth = stdout.columns || 80;
 
   const [query, setQuery] = useState("");
   // 分组后的扁平行序列（含分组标题），随查询实时重算
@@ -255,15 +291,26 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
     );
   }
 
-  // 名称 / provider 列宽（用 stringWidth 处理 CJK/全角），让右侧各列对齐成列（L2.3）。
-  // 按全量模型算而非当前过滤结果——否则打字过滤时列宽会跟着跳动。
-  const nameColWidth = availableModels.reduce((w, m) => Math.max(w, stringWidth(m.name)), 0);
-  const providerColWidth = availableModels.reduce(
-    (w, m) => Math.max(w, stringWidth(m.provider)),
-    0,
+  // 列宽预算：名称 / provider / 端点 / 上下文 / 价格，全部用 stringWidth 处理 CJK（L2.3）。
+  // 按**全量模型**算而非当前过滤结果——否则打字过滤时列宽会跟着结果集跳动，每敲一个字
+  // 整个列表横向抖一下。窄终端下新增的两列会被自动裁掉（详见 model-meta-layout.ts）。
+  const cols = computeMetaColumns(
+    availableModels.map((m) => ({
+      name: m.name,
+      provider: m.provider,
+      endpoint: parseModelDescription(m.description, m.provider).endpoint,
+      context: m.profile ? formatTokensSourced(m.profile.contextWindow) : undefined,
+      price: m.profile ? formatPriceColumn(m.profile) : undefined,
+    })),
+    termWidth,
   );
 
   const currentOption = availableModels.find((m) => m.name === currentModel);
+
+  // 光标所在的模型行（详情区的数据源）。标题行 / 空列表时为 undefined，详情区整块省掉。
+  const selectedRowCandidate = rows[safeIndex];
+  const selectedRow: ModelEntryRow | undefined =
+    selectedRowCandidate?.kind === "model" ? selectedRowCandidate : undefined;
 
   // effort 展示态：显示当前生效档位 + 字形；auto 态标注跟随默认。
   const effortDisplayLevel = resolveDisplayedEffort(effortState);
@@ -340,8 +387,7 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
               key={row.key}
               row={row}
               isSelected={effectiveStart + i === safeIndex}
-              nameColWidth={nameColWidth}
-              providerColWidth={providerColWidth}
+              cols={cols}
             />
           ))}
           {rows.length > MAX_ROWS && (
@@ -351,6 +397,10 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
           )}
         </Box>
       )}
+
+      {/* 光标所在模型的完整参数与价格。始终在（不靠按键切换）：用户在列表里上下移动的
+          过程本身就是在比较模型，此刻要看的正是这两行——放到 Tab 后面等于每比一次多按一次键。 */}
+      {selectedRow && <ModelDetail row={selectedRow} />}
 
       <Box marginTop={1}>
         <Text italic>
@@ -369,9 +419,8 @@ export const ModelDialog: React.FC<ModelDialogProps> = ({
 const ModelRowView: React.FC<{
   row: ModelRow;
   isSelected: boolean;
-  nameColWidth: number;
-  providerColWidth: number;
-}> = ({ row, isSelected, nameColWidth, providerColWidth }) => {
+  cols: MetaColumnPlan;
+}> = ({ row, isSelected, cols }) => {
   if (row.kind === "header") {
     return (
       <Box>
@@ -383,31 +432,47 @@ const ModelRowView: React.FC<{
     );
   }
 
-  // 名称列、provider 列各自 pad 到列宽，端点/描述才能对齐成列（L2.3）。
+  // 每列都 pad 到预算宽度，右侧各列才能对齐成列（L2.3）。宽度为 0 的列整列不渲染。
   // 「当前」徽章放到行尾——放在中间会把它右侧的列整体推移，各行对不齐。
-  const namePad = " ".repeat(Math.max(1, nameColWidth - stringWidth(row.name) + 2));
-  const providerPad = " ".repeat(Math.max(1, providerColWidth - stringWidth(row.provider) + 1));
+  const p = row.profile;
+  const contextText = cols.contextWidth && p ? formatTokensSourced(p.contextWindow) : "";
+  const priceText = cols.priceWidth && p ? formatPriceColumn(p) : "";
   return (
     <Box>
       <Box width={2} flexShrink={0}>
         <Text color={theme.ui.focus}>{isSelected ? ARROW_PROMPT : " "}</Text>
       </Box>
       <Text color={isSelected ? theme.ui.focus : theme.text.primary} bold={isSelected}>
-        {row.name}
+        {padTo(row.name, cols.nameWidth)}
       </Text>
       <Text color={theme.text.secondary}>
-        {namePad}
-        {row.provider}
+        {"  "}
+        {padTo(row.provider, cols.providerWidth)}
       </Text>
-      {row.endpoint && (
+      {cols.endpointWidth > 0 && row.endpoint && (
         <Text color={theme.text.secondary}>
-          {providerPad}
-          {row.endpoint}
+          {"  "}
+          {padTo(row.endpoint, cols.endpointWidth)}
         </Text>
       )}
-      {row.note && (
+      {cols.endpointWidth > 0 && row.note && (
         <Text color={theme.text.secondary}>
-          {providerPad}— {row.note}
+          {"  "}
+          {padTo(`— ${row.note}`, cols.endpointWidth)}
+        </Text>
+      )}
+      {/* 上下文与价格列：dim 到次要色，它们是辅助决策的参考量而不是行的主体（L2.1 克制点睛）。
+          价格用 text.primary 稍重一档——它是"选贵的还是便宜的"这个决策的直接依据。 */}
+      {cols.contextWidth > 0 && (
+        <Text color={theme.text.secondary}>
+          {"  "}
+          {padTo(contextText, cols.contextWidth)}
+        </Text>
+      )}
+      {cols.priceWidth > 0 && (
+        <Text color={priceText && priceText !== "—" ? theme.text.primary : theme.text.secondary}>
+          {"  "}
+          {padTo(priceText, cols.priceWidth)}
         </Text>
       )}
       {row.isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
@@ -415,6 +480,38 @@ const ModelRowView: React.FC<{
         // 同名条目按名切换命中不到，诚实告知而不是让它看着能选（选了会静默切到第一条）
         <Text color={theme.status.warning}> {WARNING_MARK} 同名被遮蔽</Text>
       )}
+    </Box>
+  );
+};
+
+/**
+ * 光标所在模型的详情区：两行给出**完整**参数与价格（列表里被压缩 / 被裁掉的都在这里）。
+ *
+ * 为什么必须有它，而不是只加两列：列宽有限，缓存价 / 输出上限 / 档位集合 / 价格来源
+ * 全塞进列里必然溢出。而「裁掉的信息还能拿到」是允许裁列的前提（L3.3 折叠要给摘要
+ * 而不是完全隐藏）——详情行独占整行，横向压力小得多，是这些信息的正确落点。
+ *
+ * 用 `⎿` 树枝前缀而不是 `───` 分隔线：它与消息流里「结果区缩进」是同一个语义
+ * （这一块从属于上面那个列表项），且不占独立一行（L2.2 分隔线优先级低于留白/字形）。
+ */
+const ModelDetail: React.FC<{ row: ModelEntryRow }> = ({ row }) => {
+  const p = row.profile;
+  // 画像解析不到时整块省掉，而不是印一堆「—」：一行全是破折号不传递任何信息，
+  // 只是在告诉用户"这里本该有东西"。
+  if (!p) return null;
+  // 猜测值的解释语：只在确实是猜的时候出现（精确命中不需要解释它为什么可信）。
+  const ctxNote = metaSourceLabel(p.contextWindow.source);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box>
+        <Text color={theme.text.secondary}>{TREE_BRANCH} </Text>
+        <Text color={theme.text.primary}>{formatCapabilityLine(p)}</Text>
+        {ctxNote && <Text color={theme.status.warning}> ({ctxNote})</Text>}
+      </Box>
+      <Box>
+        <Text>{"  "}</Text>
+        <Text color={theme.text.secondary}>{formatPricingLine(p)}</Text>
+      </Box>
     </Box>
   );
 };

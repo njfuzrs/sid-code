@@ -17,6 +17,14 @@
 export interface ModelOption {
   name: string;
   /**
+   * 该模型的价格 / 窗口 / 档位画像（`buildModelProfile` 产出）。
+   *
+   * 可选是刻意的：**解析不到就是 undefined，面板照常渲染，只是不显示这几列**。
+   * 让它必填会把「元数据链路任一层出问题」升级成「模型选不了」——而选模型是
+   * 用户此刻真正要做的事，价格只是辅助信息。缺省时列宽算出来是 0，整列自然消失。
+   */
+  profile?: import("@sid-code/core/llm/model-profile.ts").ModelProfile;
+  /**
    * 厂商真实模型 id（availableModels[].modelId），缺省 = name。
    *
    * 只用于**族识别**：别名可能带渠道后缀/前缀（claude-sonnet-5-gateway、gw-glm-5），
@@ -50,6 +58,8 @@ export interface ModelEntryRow {
   endpoint?: string;
   /** 非标准 description（用户自定义文案）原样透传，与 endpoint 互斥 */
   note?: string;
+  /** 价格 / 窗口 / 档位画像，原样从 {@link ModelOption.profile} 透传（可能 undefined） */
+  profile?: import("@sid-code/core/llm/model-profile.ts").ModelProfile;
   isCurrent: boolean;
   /**
    * 同名条目被前序条目「遮蔽」：按名切换永远命中第一条，本条选不到。
@@ -193,6 +203,7 @@ export function buildModelRows(
       family: family.label,
       endpoint,
       note,
+      profile: m.profile,
       // 「当前」只标可达的那条：同名被遮蔽的条目即使名字相同也不是当前生效的那个端点，
       // 否则两行同时显示 ● 当前，用户无法判断实际在用哪个渠道。
       isCurrent: m.name === currentModel && !shadowed,

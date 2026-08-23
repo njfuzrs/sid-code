@@ -1495,6 +1495,37 @@ export class App {
     });
   }
 
+  /**
+   * 逐条构建 availableModels 的展示级画像（窗口 / 价格 / 档位 / 来源），供 /model 面板显示。
+   *
+   * 为什么是**命令式回调**而不是随 TUI state 一起推下去（对齐 getEffortState 的形态）：
+   * 网关价是启动后 fire-and-forget 异步刷新的（`refreshGatewayPricingOnStartup`），
+   * 能力缓存也可能在首次真实请求后被 400 自愈更新。构造期算好一份塞进 state，
+   * 面板打开时拿到的就是**启动那一刻**的旧值——用户看到的价格会与实际计费的价不一致，
+   * 而这正是「更省」方向最不能出错的地方。开面板时现算，读的一定是当前缓存。
+   *
+   * 单次开销：N 条模型 × 各自查内存缓存（无 IO、无网络），N 是十几到几十，可忽略。
+   */
+  private getModelProfiles(): Record<
+    string,
+    import("@sid-code/core/llm/model-profile.ts").ModelProfile
+  > {
+    const { buildModelProfile } = require("@sid-code/core/llm/model-profile.ts");
+    const out: Record<string, import("@sid-code/core/llm/model-profile.ts").ModelProfile> = {};
+    for (const m of this.config.availableModels) {
+      // 同名条目按名切换只会命中第一条（见 model-grouping.ts 的 shadowed 注释），
+      // 所以画像也按 name 单键、首条为准——与「哪一条真的会生效」保持一致。
+      if (out[m.name]) continue;
+      try {
+        out[m.name] = buildModelProfile(m, this.config.availableModels, this.config.provider);
+      } catch (err) {
+        // 单条解析失败不能拖垮整个面板：缺画像的行只是少显示几列，仍然可选可切。
+        getLogger().debug("MODEL_PROFILE", `构建画像失败: ${m.name} — ${err}`);
+      }
+    }
+    return out;
+  }
+
   /** 读取 effort 运行时态 + 展示档位（/effort 无参展示用）。 */
   private getEffortState() {
     const eff = require("@sid-code/core/llm/effort.ts");
@@ -8236,6 +8267,7 @@ export class App {
       getVimMode: () => !!this.config.vimMode,
       renameSession: (name?: string) => this.renameSession(name),
       getEffortState: () => this.getEffortState(),
+      getModelProfiles: () => this.getModelProfiles(),
       getThinkingState: () => this.getThinkingState(),
       // /hooks、/config、/permissions、/skills、/commands、/help 面板依赖的稳定引用
       hookSystem: this.hookSystem,

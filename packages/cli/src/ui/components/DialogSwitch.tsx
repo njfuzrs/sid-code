@@ -46,7 +46,7 @@ import type { DialogType } from "../../command/types.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { SessionState } from "@sid-code/core/session/state.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
-import { resolvePricing } from "@sid-code/core/api/cost-tracker.ts";
+import { resolvePricingUSD } from "@sid-code/core/api/cost-tracker.ts";
 
 export interface DialogSwitchProps {
   // 高优先级请求（覆盖 activeDialog）
@@ -195,6 +195,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         getEffortState={callbacks.getEffortState}
         setEffort={callbacks.setEffort}
         getThinkingState={callbacks.getThinkingState}
+        getModelProfiles={callbacks.getModelProfiles}
       />
     );
   }
@@ -309,7 +310,12 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         model={model}
         provider={provider}
         sessionState={sessionState}
-        pricing={resolvePricing(model, availableModels) ?? undefined}
+        // 必须走 resolvePricingUSD（= resolvePricing + effectivePricing）而不是裸
+        // resolvePricing：后者返回**原样存储值**，可能是人民币、可能是高峰价。
+        // 实测 bug：deepseek-v4-pro 注册表里存的是 ¥9/M（currency:"CNY"），
+        // StatsDialog 的 fmtPrice 直接按美元印成 "$9.00/M" —— 高估 7.1 倍。
+        // 这正是 cost-tracker.ts 里 resolvePricingUSD 的文件注释点名的那个坑。
+        pricing={resolvePricingUSD(model, availableModels) ?? undefined}
       />
     );
   }
