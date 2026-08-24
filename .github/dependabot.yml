@@ -13,6 +13,32 @@
 #
 # open-pull-requests-limit 刻意压低：依赖更新 PR 必须人工过目
 # （CI 只跑 bun test + make build，测不出上游的行为变更），一次来 10 个没人看得完。
+#
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ 2026-08-24 重新定向：这个文件管的是**常规版本更新**，它不是本仓依赖安全的主力。
+#
+# 真正的安全防线是仓库设置里那两个开关（不在本文件内，`gh api` 可查）：
+#   - Dependabot alerts        → repos/:owner/:repo/vulnerability-alerts
+#   - Dependabot security updates → repos/:owner/:repo/automated-security-fixes
+# 两者在 2026-08-24 之前**一直是 disabled**，而本文件的版本更新从 2026-08-10 就开着。
+# 于是拿到了全部噪音、没拿到任何安全收益 —— 正好装反。翻转之后本文件才有资格收窄。
+# 改动本文件前先确认那两个开关仍是 enabled，否则收窄 = 单纯少更新。
+#
+# 收窄的三条具体理由（都是这批 6 个 PR 实测出来的，见 PR #100）：
+#
+#  1. **weekly → monthly**。常规补丁滞后一个月无害，而 weekly 的成本不是"多几个 PR"：
+#     必需检查开了 strict（分支必须与 main 最新），合一个其余全部 BEHIND 要重跑全量
+#     CI（约 200s/轮）。6 个 PR 逐个合就是 6 轮，且期间任何 main 提交都会让它们再次
+#     BEHIND。真实 CVE 走上面那两个开关，它们**不受这里的 interval 约束**。
+#
+#  2. **catch-all group**。原配置只给 react / types 分了组，其余每个依赖一个 PR。
+#     结果 yaml 2.9.0 一次升级来了 #52（子包）和 #55（根+子包+lock）两个 PR，内容
+#     互相覆盖。一个 group 收成一个 PR 就没有这个问题。
+#
+#  3. **oxlint 单独成组**。`.oxlintrc.json` 把 4 个平台 binding 钉成直接 devDependency，
+#     Dependabot 把它们当 5 个独立依赖 → 一次 oxlint 升级拆 5 个 PR（实测 #51/#56 就是
+#     其中两个）。它们**必须同版本落地**，分开合会在 main 上留下 binding 1.78 / oxlint
+#     1.77 的错配窗口。所以按 `oxlint*` + `@oxlint/binding-*` 归一组，原子升级。
 
 version: 2
 updates:
@@ -20,9 +46,10 @@ updates:
   - package-ecosystem: "bun"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-      # 避开整点，也避开周一上班第一件事
+      # monthly：理由见文件头第 1 条（strict 让每次合并都要重跑全量 CI）。
+      # 安全更新不走这条通道，不受这个间隔影响。
+      interval: "monthly"
+      # 避开整点。monthly 不需要 day（那是 weekly 的字段）。
       time: "10:30"
       timezone: "Asia/Shanghai"
     open-pull-requests-limit: 5
@@ -47,6 +74,21 @@ updates:
           - "@types/*"
         exclude-patterns:
           - "@types/react*"
+      # oxlint 与它的 4 个平台 binding 必须同版本落地 —— 理由见文件头第 3 条。
+      # `.oxlintrc.json` 把 binding 钉成直接 devDependency，所以 Dependabot 视其为
+      # 5 个独立依赖；不归组就是一次升级 5 个 PR，而且分开合会留错配窗口。
+      # ⚠️ 往 package.json 加新平台 binding 时不用改这里（通配已覆盖），
+      # 但**加平台要同时改 .oxlintrc.json 顶部那份清单**。
+      oxlint:
+        patterns:
+          - "oxlint"
+          - "@oxlint/binding-*"
+      # catch-all：必须放在最后 —— Dependabot 按声明顺序匹配，一个依赖只进第一个
+      # 命中的组。放前面会把 react / types / oxlint 三组全部吞掉。
+      # 上面三组是「必须原子升级」的语义分组，这一组只是「其余的别一个一个来」。
+      rest:
+        patterns:
+          - "*"
     ignore:
       # 这三个被 package.json 的 overrides 显式锁在精确版本上（0.33.0 / 0.27.0），
       # 让 Dependabot 提 PR 只会制造需要手工关掉的噪音。要升就手工连带 overrides 一起改。
@@ -58,11 +100,26 @@ updates:
   # 为什么要单独一条：Dependabot 的 `directory` 不递归 —— 上面 directory: "/" 只读根
   # package.json，读不到 workspace 子包自己声明的 dependencies。不加这条，子包的
   # @anthropic-ai/sdk / yaml / typescript 就永远收不到安全更新（静默失守，不会报错）。
+  #
+  # ⚠️ 这一条产出的 PR **有可能 CI 必红，需要人工补 bun.lock**。
+  # 实测（2026-08-17 的 #52 / #54）：Dependabot 只改了
+  # `packages/eval-framework/package.json`，**没有重新生成根 `bun.lock`**，于是 CI 第一步
+  # `bun install --frozen-lockfile` 直接
+  # `error: lockfile had changes, but lockfile is frozen` —— 三个 job 全红，且**永远不会
+  # 自己变绿**（没有任何后续事件会补那个 lock）。
+  #
+  # 这**不是**结构性不可能：2026-08-13 的 #3 / #4 / #6 同样是子包 bump，那三个 PR 的
+  # lock 改了、也合进去了。是 Dependabot 对 bun workspace 的支持不稳定（同类问题在
+  # pnpm workspace 上有长期未关的 issue：dependabot-core#11135）。
+  #
+  # 所以看到这条通道的 PR 报 `lockfile is frozen` 时：**不要**去查依赖本身有什么问题，
+  # 直接在本地 `bun install` 重生成 lock 推上去，或者关掉它、把版本变更并进主包那批。
   - package-ecosystem: "bun"
     directory: "/packages/eval-framework"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      # 与主包同为 monthly：这两条通道产出的 PR 经常涉及同一个依赖（yaml 就是实例），
+      # 间隔不同会让它们错峰出现、互相覆盖，正是 #52 与 #55 那次的形态。
+      interval: "monthly"
       time: "10:30"
       timezone: "Asia/Shanghai"
     # 评测框架不在发行二进制里，升级风险比主包低，但仍要人工过目
@@ -70,6 +127,11 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    groups:
+      # 同上：收成一个 PR。子包只有 4 个依赖，没有需要拆开的语义分组。
+      rest:
+        patterns:
+          - "*"
 
   # ─── GitHub Actions ───
   - package-ecosystem: "github-actions"
