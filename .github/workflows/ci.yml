@@ -67,6 +67,21 @@ on:
   # 所以语义冲突在本仓**没有合并前的机制对策**，只能靠合并后在 main 上跑一次门禁。
   merge_group:
 
+# ─── 最小权限（2026-08-24 补，G1）───────────────────────────────────────────────
+#
+# 治的是什么：workflow 不写 `permissions:` 时，GITHUB_TOKEN 拿的是**仓库默认**权限。
+# 那个默认值在仓库设置里（Settings → Actions → Workflow permissions），本仓 6 个
+# workflow 此前**顶层一个都没声明**（只有 eval-pr-smoke.yml 在 job 级写了）——
+# 也就是说权限边界完全由一个我们没在代码里写下来的仓库设置决定，而那个设置可以被
+# 任何有 admin 的人改，改了之后**没有任何 diff、没有任何检查会红**。
+#
+# 本文件只读代码 + 跑测试，不需要任何写权限，所以在顶层写死只读。
+# 顶层声明对本文件所有 job 生效；哪个 job 将来真需要写（比如回帖 PR 评论），
+# 就在那个 job 里单独加一个更宽的 `permissions:` 覆盖，而不是把顶层放宽 ——
+# 顶层放宽是不可见的扩权，job 级覆盖在 diff 里一眼可见。
+permissions:
+  contents: read
+
 # 同一分支的旧 run 自动取消，避免连续 push 时排队浪费 runner。
 #
 # ⚠️ merge_group 的 run **不能被取消**（抄 gemini-cli）：它是「合并后状态」的唯一验证结论，
@@ -96,12 +111,18 @@ jobs:
       # ⚠️ fetch-depth: 0 不是「顺手要全量」：tests/website/changelog-integration.test.ts
       # 的两条断言要用 `git tag` 算版本区间的真实提交数，而 checkout 默认 depth=1 且不取
       # tag —— 区间恒为空，`toBeGreaterThan(0)` 必失败。2026-08-12 首次真跑 CI 时实测到。
-      - uses: actions/checkout@v7
+      # ⚠️ action 一律钉 commit SHA，不用 `@v7` 这类可移动 tag（2026-08-24，G1）。
+      # tag 在上游是**可移动引用**：`actions/checkout@v7` 指向的代码可以在我们不改一个
+      # 字符的情况下被换掉（上游被入侵、或维护者自己重打 tag），而 CI 的 token 能读全仓。
+      # 钉 SHA 之后升级是一次显式的 diff（dependabot 的 github-actions 生态会自动提 PR
+      # 并把注释里的版本号一起改），而不是一次静默的代码替换。
+      # 注释里的 `# vX.Y.Z` 是给人读的，唯一事实源是 SHA 本身。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -207,10 +228,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 

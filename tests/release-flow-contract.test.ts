@@ -16,7 +16,7 @@
  * 而这些结构一旦退回去，上面四个缺陷立刻复活，且失败现场都极难归因。
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
@@ -103,11 +103,15 @@ describe("release.sh：上传原子性（缺陷③）", () => {
     expect(RELEASE_SH).toContain("_cleanup_remote_staging");
   });
 
-  test("latest.txt 仍在版本目录切换之后上传（指向的版本必须已完整）", () => {
+  // 2026-08-24（A2）：本条原先锁的是 latest.txt。通道机制落地后 `--upload` 写的是
+  // beta.txt（latest.txt 改由 --promote 独占），所以判据对象跟着换 ——
+  // **不变量本身没变**：通道指针必须在版本目录完整就位之后才写，否则指针会在一段时间里
+  // 指向一个只上传了一半的目录。谁是那个指针是另一件事。
+  test("通道指针在版本目录切换之后才上传（指向的版本必须已完整）", () => {
     const swapPos = posOf("原子切换到");
-    const latestPos = posOf('latest.txt" "${DEPLOY_SSH_USER}');
+    const pointerPos = posOf('beta.txt" "${DEPLOY_SSH_USER}');
     expect(swapPos).toBeGreaterThan(0);
-    expect(latestPos).toBeGreaterThan(swapPos);
+    expect(pointerPos).toBeGreaterThan(swapPos);
   });
 });
 
@@ -268,6 +272,96 @@ describe("fetch-ripgrep.ts：嵌入路径不继承脏值（跨命令平台污染
     // linux-arm64 二进制存活下来，被嵌进 mac 产物后静默降级——极难发现。
     expect(FETCH_RG).not.toMatch(/if\s*\(!existsSync\(embedPath\)\)\s*\{\s*await mkdir/);
     expect(FETCH_RG).toMatch(/hadStale/);
+  });
+});
+
+// ── A1（2026-08-24）：供应链 —— action 钉 SHA + 每个 workflow 声明最小 permissions ──
+//
+// 为什么这必须是门禁而不是"改完了事"：两条都是**加一行就退化、且不会有任何信号**的东西。
+//   · 新写一个 step 时顺手抄 `actions/checkout@v7`（网上到处是这个写法），
+//     那一个 step 就回到"上游 tag 一动我们的代码就变"的状态，CI 照样全绿。
+//   · 新建一个 workflow 忘了写 permissions，它就静默继承仓库默认权限
+//     （很可能 write-all）—— 这一条尤其阴：权限边界跑到了仓库设置里，
+//     而仓库设置改动不产生 diff、不进 review、不会让任何检查变红。
+//
+// 判据刻意是"全仓扫描 + 数量断言"而不是逐文件枚举：枚举会在新增 workflow 时漏掉它，
+// 而漏掉的那个恰好就是没被审过的那个。
+describe("A1 供应链：GitHub Actions 全部钉 SHA + 全部声明 permissions", () => {
+  const WF_DIR = join(ROOT, ".github/workflows");
+  const files = readdirSync(WF_DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+
+  test("workflow 目录非空（防这一组断言在空集上全绿）", () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  test("零个 action 用可移动 tag 钉（@v7 / @v2 这类）", () => {
+    const offenders: string[] = [];
+    for (const f of files) {
+      const src = readFileSync(join(WF_DIR, f), "utf8");
+      for (const line of src.split("\n")) {
+        // 只看 uses: 行本身，注释里的 `# v7.0.1` 不算
+        const m = line.match(/^\s*(?:-\s*)?uses:\s*(\S+)/);
+        if (!m) continue;
+        const ref = m[1];
+        // 本仓内的复用 workflow（./.github/...）没有 ref 可钉，豁免
+        if (ref.startsWith("./")) continue;
+        if (!/@[0-9a-f]{40}$/.test(ref.replace(/\s+#.*$/, ""))) {
+          offenders.push(`${f}: ${ref}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("每个 uses 的 SHA 后面带 # vX.Y.Z 注释（给人读版本，SHA 仍是唯一事实源）", () => {
+    const missing: string[] = [];
+    for (const f of files) {
+      const src = readFileSync(join(WF_DIR, f), "utf8");
+      for (const line of src.split("\n")) {
+        if (!/^\s*(?:-\s*)?uses:\s*\S+@[0-9a-f]{40}/.test(line)) continue;
+        if (!/#\s*v?\d+\.\d+/.test(line)) missing.push(`${f}: ${line.trim()}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("每个 workflow 都有顶层 permissions 声明", () => {
+    const missing = files.filter((f) => {
+      const doc = parseYaml(readFileSync(join(WF_DIR, f), "utf8")) as Record<string, unknown>;
+      return doc.permissions === undefined;
+    });
+    expect(missing).toEqual([]);
+  });
+
+  test("只有真需要写的 workflow 才有 write 权限（当前仅 judge-calibration 推提交）", () => {
+    // 这条不是形态检查，是**清单锁定**：新出现一个带 write 的 workflow 会让它红，
+    // 迫使那次扩权在 review 里被看见一次。judge-calibration.yml 的 write 来自
+    // "Commit calibration report" 那步真的 git push（不是顺手放宽）。
+    const withWrite = files.filter((f) => {
+      const doc = parseYaml(readFileSync(join(WF_DIR, f), "utf8")) as Record<string, unknown>;
+      const perms = doc.permissions;
+      if (!perms || typeof perms !== "object") return false;
+      return Object.values(perms as Record<string, string>).includes("write");
+    });
+    expect(withWrite.sort()).toEqual(["judge-calibration.yml"]);
+  });
+
+  test("judge-calibration 的 write 与它真的 git push 这件事对得上", () => {
+    // 反向自证：哪天那个 push 步骤被删掉（改成 artifact 或改成开 PR），
+    // 上面那条清单断言仍会绿 —— 它只看有没有 write，不看还需不需要。
+    // 这条把"需要"钉住：没有 push 却留着 contents: write 就该红。
+    const src = readFileSync(join(WF_DIR, "judge-calibration.yml"), "utf8");
+    expect(src).toMatch(/git push/);
+  });
+
+  test("dependabot 覆盖 github-actions 生态（SHA 钉住后升级不再自动发生）", () => {
+    // 钉 SHA 的代价是"上游修了漏洞我们也不会自动拿到，且没有信号"。
+    // 这条通道是它唯一的补偿；删了它，SHA 会一直停在钉住那天。
+    const doc = parseYaml(readFileSync(join(ROOT, ".github/dependabot.yml"), "utf8")) as {
+      updates?: Array<{ "package-ecosystem"?: string }>;
+    };
+    const ecosystems = (doc.updates ?? []).map((u) => u["package-ecosystem"]);
+    expect(ecosystems).toContain("github-actions");
   });
 });
 
