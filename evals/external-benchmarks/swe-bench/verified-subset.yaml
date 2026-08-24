@@ -10,7 +10,7 @@
 # 数据隔离铁律(CLAUDE.md §0.4 + §9.3):
 #   - 不写自家 baseline_scores
 #   - 不进自家 grader registry
-#   - 报告独立到 _reports/external/inspect-{date}.md
+#   - 报告独立到 evals/_reports/external/
 #
 # ⚠ 注意：本文件是 B8-1 骨架阶段产出，instance_id 基于公开 SWE-bench Verified 仓库
 #         实际跑前 S8 实施者必须用 `python -c "from datasets import load_dataset; ds = load_dataset('princeton-nlp/SWE-bench_Verified', split='test'); print([r['instance_id'] for r in ds])"` 校验
@@ -147,5 +147,6 @@ source:
 # === 数据隔离声明 ===
 isolation:
   baseline_scores: "禁止写入自家 case yaml 的 baseline_scores"
-  grader_registry: "不进 evals/_graders/registry.ts，独立走 inspect_ai scorer"
-  reports: "独立到 _reports/external/inspect-{date}.md"
+  # 2026-08-24：路径 A(Inspect AI) 已否决，判分改走官方 `swebench eval`（接入计划.md §1）
+  grader_registry: "不进 evals/_graders/registry.ts，判分交给官方 swebench eval"
+  reports: "独立到 evals/_reports/external/（不是仓库根的 _reports/，后者不入 git）"
