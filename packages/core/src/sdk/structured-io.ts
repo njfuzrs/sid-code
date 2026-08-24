@@ -10,7 +10,7 @@
  */
 
 import type { Readable, Writable } from "node:stream";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import type {
   SDKControlRequest,
   SDKControlRequestInner,

@@ -5,7 +5,7 @@
  * 避免 TypeScript 类型与运行时 Schema 漂移（Schema-First，spec §7.4）。
  */
 
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import type * as schemas from "./schemas.ts";
 import type * as controlSchemas from "./control-schemas.ts";
 

@@ -11,7 +11,7 @@
  * 设计：纯函数，不读文件、不依赖 React，完全可单测。
  */
 
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { Keystroke } from "./chord.ts";
 import type { KeyBinding } from "./defaultBindings.ts";
 import { strokeSignature, isReservedStroke } from "./reservedShortcuts.ts";

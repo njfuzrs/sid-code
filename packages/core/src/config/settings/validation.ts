@@ -5,7 +5,7 @@
  * 容错策略：单条坏权限规则不毒化整个文件（预过滤），单字段失败不影响其他字段。
  */
 
-import type { z } from "zod";
+import type { z } from "zod/v3";
 
 /** 结构化验证错误 */
 export interface ValidationError {

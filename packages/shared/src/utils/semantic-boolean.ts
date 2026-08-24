@@ -15,7 +15,7 @@
  * 客户端的隐式兜底，不会「教」模型去发送字符串。
  */
 
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export function semanticBoolean<T extends z.ZodType = z.ZodBoolean>(
   inner: T = z.boolean() as unknown as T,

@@ -12,7 +12,7 @@
  * 3. 类型从 Schema 推导——消除手动维护接口与验证逻辑不同步的风险
  */
 
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** 延迟求值包装器——避免模块加载阶段的 CPU 开销 */
 export function lazySchema<T extends z.ZodType>(factory: () => T): () => T {

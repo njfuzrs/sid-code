@@ -9,7 +9,7 @@
  * 内部 QueryEngineEvent → SDKMessage 的映射见 message-converter.ts。
  */
 
-import { z } from "zod";
+import { z } from "zod/v3";
 import { lazySchema } from "./lazy-schema.ts";
 
 // ─── 基础类型 ───

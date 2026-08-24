@@ -21,7 +21,7 @@ import {
   SDKControlPermissionResponseSchema,
 } from "@sid-code/core/sdk/control-schemas.ts";
 import { lazySchema } from "@sid-code/core/sdk/lazy-schema.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 describe("lazySchema", () => {
   test("首次调用构造，后续返回同一实例", () => {
