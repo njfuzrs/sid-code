@@ -34,6 +34,11 @@ on:
         default: ""
         required: false
 
+# 最小权限（2026-08-24，G1）：只读代码 + 跑 canary + 发飞书 webhook + 上传 artifact。
+# webhook 走的是 secrets 里的外部 URL，与 GITHUB_TOKEN 无关，所以这里仍只需 read。
+permissions:
+  contents: read
+
 jobs:
   canary-and-vcr:
     runs-on: ubuntu-latest
@@ -54,10 +59,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -107,7 +112,7 @@ jobs:
       # ── 结果归档 ──
       - name: Upload Results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: canary-results-${{ github.run_number }}
           path: canary-results.jsonl

@@ -25,6 +25,12 @@ on:
         default: "sid-code,claude-code"
         required: false
 
+# 最小权限（2026-08-24，G1）：本 workflow 只读代码 + 跑评测 + 上传 artifact，
+# 三件事都不需要写仓库。checkout 那步显式传了 `token: ${{ secrets.GITHUB_TOKEN }}`，
+# 传的就是这里限定过的 token —— 不写这一段的话它拿的是仓库默认权限（可能 write-all）。
+permissions:
+  contents: read
+
 jobs:
   full-eval:
     runs-on: ubuntu-latest
@@ -81,12 +87,12 @@ jobs:
           echo "✅ 两个 API key 均已配置（只验非空，不验有效性）"
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -105,7 +111,7 @@ jobs:
 
       - name: Upload reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: weekly-eval-reports
           retention-days: 90

@@ -47,6 +47,10 @@ concurrency:
   group: northstar-weekly-${{ github.ref }}
   cancel-in-progress: true
 
+# 最小权限（2026-08-24，G1）：只跑 --self-test 与生成块自检，不写仓库、不发通知。
+permissions:
+  contents: read
+
 jobs:
   self-check:
     runs-on: ubuntu-latest
@@ -60,9 +64,9 @@ jobs:
     if: ${{ github.event.repository.fork == false || github.event_name != 'schedule' }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 

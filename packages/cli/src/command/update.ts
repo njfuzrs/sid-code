@@ -44,6 +44,11 @@ function printHelp(): void {
   等价于重新执行安装命令：
     curl -fsSL ${INSTALL_URL} | bash
   已有的 ~/.sid-code/ 配置与会话数据不受影响，只替换二进制本身。
+
+发布通道:
+  缺省更新到稳定版（服务器 latest.txt）。想留在抢先版通道要显式带上：
+    SID_CODE_CHANNEL=beta sid-code update
+  通道**不写进本地配置**，所以不带这个变量就会回到稳定版。
   更新后首次启动时，会把新增的团队默认配置字段（如 subAgentModels/search/trace 等）
   自动补进 settings.json —— 仅追加你尚未拥有的顶层字段，绝不覆盖你已有的任何配置。
   同时会自动从网关（/api/pricing）刷新一次各端点的模型定价，无需手动执行
@@ -56,7 +61,12 @@ export async function handleUpdateCommand(args: string[]): Promise<void> {
     return;
   }
 
-  console.log(`正在更新 sid-code（${INSTALL_URL}）...`);
+  // 通道不在这里解析，也不在这里校验 —— install.sh 是唯一事实源（它认 stable/beta，
+  // 未知值硬失败）。SID_CODE_CHANNEL 经 execFileSync 默认继承的 env 自然传给子进程，
+  // 不需要显式转发；这里只把它回显出来，让人一眼看到自己更新的是哪个通道。
+  // 在两处都做解析会立刻产生"两份要保持同步的通道清单"，加通道时必漏一处。
+  const channel = process.env.SID_CODE_CHANNEL?.trim();
+  console.log(`正在更新 sid-code（${INSTALL_URL}${channel ? `，通道: ${channel}` : ""}）...`);
   try {
     execFileSync("bash", ["-c", `curl -fsSL ${INSTALL_URL} | bash`], { stdio: "inherit" });
   } catch (err: any) {

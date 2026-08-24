@@ -22,6 +22,16 @@ on:
         default: "claude-sonnet-4-5-20250929"
         required: false
 
+# 最小权限（2026-08-24，G1）：本文件是 6 个 workflow 里**唯一真需要写权限**的一个 ——
+# 下方 "Commit calibration report" 步骤会 `git commit && git push` 把月度校准报告推回仓库。
+# 所以这里给 `contents: write` 而不是 read；其余权限（pull-requests / issues / packages …）
+# 一律不给，未列出的项在显式声明 permissions 后就是 none。
+#
+# ⚠️ 这个 write 是当前形态的必然结果，不是"顺手放宽"。哪天把报告改成 artifact 或改成开 PR，
+# 这里就该降回 read（PR 路径要的是 pull-requests: write，仍不需要 contents: write）。
+permissions:
+  contents: write
+
 jobs:
   calibrate:
     runs-on: ubuntu-latest
@@ -37,12 +47,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -68,7 +78,7 @@ jobs:
 
       - name: Upload calibration artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: judge-calibration-${{ github.run_id }}
           path: evals/_judge/calibration-set/
