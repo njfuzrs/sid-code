@@ -67,20 +67,22 @@ const PREFLIGHT: PreflightCheck[] = [
       return { ok: true };
     },
   },
+  // ⛔ 原先这里还有两项断言：`sid_code_solver.py 存在` 与 `requirements.txt 存在`。
+  // 两个文件是路径 A（Inspect AI）的脚手架，2026-08-24 路径 A 被否决后已删除
+  // （见 evals/external-benchmarks/swe-bench/接入计划.md §1）。
+  // 断言留着会让 preflight 恒 exit 1 —— 拦住的不是"环境没到位"，而是"决策已变"。
+  //
+  // 路径 B 的五项防作弊断言（网络隔离 / 出网策略分离 / 镜像内无 fix commit /
+  // 镜像可构建性计时 / flag 真被接受）已落地在
+  // `evals/external-benchmarks/swe-bench/preflight.ts`，**刻意不在此处调用**：
+  // 那五项需要 docker network 名、image key、base_commit 等参数，而本脚本还是骨架
+  // （runExecTrack 硬编码 pass: 0）。在一个产不出真数字的链路上跑防作弊断言，
+  // 只会让它看起来已经接上了。接实跑那个 PR 负责串起来。
   {
-    name: "swe-bench/sid_code_solver.py 存在",
+    name: "swe-bench/preflight.ts 存在（路径 B 五项断言的实现）",
     required_for: ["exec", "both"],
     check: () => {
-      const path = join(SWE_BENCH_DIR, "sid_code_solver.py");
-      if (!existsSync(path)) return { ok: false, reason: `缺文件: ${path}` };
-      return { ok: true };
-    },
-  },
-  {
-    name: "swe-bench/requirements.txt 存在",
-    required_for: ["exec", "both"],
-    check: () => {
-      const path = join(SWE_BENCH_DIR, "requirements.txt");
+      const path = join(SWE_BENCH_DIR, "preflight.ts");
       if (!existsSync(path)) return { ok: false, reason: `缺文件: ${path}` };
       return { ok: true };
     },
@@ -174,9 +176,11 @@ interface ReportTrackSummary {
 }
 
 function runExecTrack(args: CliArgs): ExecTrackSummary {
-  console.log(`[external/exec] 调用 swe-bench/runner.ts --model ${args.model}`);
-  console.log(`  ⚠ 骨架占位:S8 实施者跑通 sid_code_solver.py 后取消注释:`);
-  console.log(`  // execSync("bun run evals/external-benchmarks/swe-bench/runner.ts ...")`);
+  console.log(`[external/exec] 骨架占位,未实跑 (model=${args.model})`);
+  console.log(`  ⛔ 原先这里指向 swe-bench/runner.ts + sid_code_solver.py —— 两者是路径 A`);
+  console.log(`     (Inspect AI) 的脚手架,2026-08-24 路径 A 已否决并删除。`);
+  console.log(`  → 路径 B 的实跑入口见 evals/external-benchmarks/swe-bench/接入计划.md §4`);
+  console.log(`  ⚠ 下面 pass=0 是硬编码占位,不是跑分结果 —— 别当数据读。`);
   return {
     track: "exec",
     total: 10,

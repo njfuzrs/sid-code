@@ -1,8 +1,27 @@
 # Inspect AI Spike — 评估结论
 
+> ## ⛔ 路径 A（Inspect AI）已于 2026-08-24 否决。本目录是 spike 的历史记录，不是在用的方案。
+>
+> SWE-bench 接入定为**路径 B（官方 `swebench eval`）**，完整论证见
+> `evals/external-benchmarks/swe-bench/接入计划.md §1` 与
+> `.agents/notes/rejected/architecture/2026-08-24-swe-bench-接入路径a-inspect-否决.md`。
+>
+> **本目录刻意保留**：它是当初「已过 spike 验证」那句结论的唯一实证载体。
+> 未来有人要核验「当年 spike 到底验到了什么程度」（比如想重开路径 A），
+> 答案在这里。删掉它，否决理由就没有落点。
+>
+> **下面正文按 2026-05-21 原样保留**（除一处实测纠错，见 ⚠️ 标注），
+> 其中「下一步建议」一节的第 3 条（复用 inspect_evals 的 SWE-bench）**已被上述裁决否决**。
+
 > 时间: 2026-05-21
 > 范围: 2 条 case (case_001 / case_002 P0 代码理解)
-> 模型: anthropic/claude-sonnet-4-6 (经 LiteLLM 代理 http://127.0.0.1:4000)
+> 模型: anthropic/claude-sonnet-4-6 (经本机 127.0.0.1:4000 的代理)
+>
+> ⚠️ **纠错（2026-08-24 实测）**：原文写这个端口是「LiteLLM 代理」。
+> **当前 4000 端口的监听者是 `claude-trace`**（`lsof -nP -iTCP:4000 -sTCP:LISTEN` 实测），
+> 不是 LiteLLM。所以下面「坑 1」那段 LiteLLM 报错是 **2026-05-21 当时**的环境事实，
+> 照着它去 debug 今天的 4000 端口会走错方向 —— 端口上跑什么进程会变，
+> 该段的可迁移结论只有最后那句「不要假设代理支持所有模型，先 curl ping 一下」。
 
 ## TL;DR
 
@@ -124,8 +143,9 @@ case_002: score=0 — 未命中 6 个内置工具路径
 2. **`.eval` → `_scores/wNN/case_NNN.yaml` 转换器**
    让 inspect 跑分能进 dashboard 时序图。约 1h 工作量。
 
-3. **复用 inspect_evals 仓库 SWE-bench / GAIA**
-   想做"sid-code 与公开 benchmark 对比"时再考虑。
+3. ~~**复用 inspect_evals 仓库 SWE-bench / GAIA**~~
+   ⛔ **已否决（2026-08-24）**：SWE-bench 接入走路径 B（官方 `swebench eval`），
+   不经 inspect_evals。理由见顶部否决框。
 
 ---
 

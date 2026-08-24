@@ -16,6 +16,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /**
  * launchd 服务标签（同时是 plist 文件名）。
@@ -96,8 +97,16 @@ function plistPath(): string {
   return join(homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
 }
 
+/**
+ * 守护进程日志目录。走 `sidPaths.logs()`（尊重 SID_CONFIG_DIR），不自行拼 homedir()。
+ *
+ * ⚠ 值会被**写死进 plist / systemd unit 文件**：安装时解析一次，此后由 OS 拉起
+ * 守护进程时不再重算。所以在非默认 `SID_CONFIG_DIR` 下装的服务，日志固定落在
+ * 安装当时那个目录 —— 这是"安装快照"语义，与 `sid-code daemon` 的其他参数
+ * （interval / max-concurrent，见 daemonArgs）一致，不是缺陷。
+ */
 function logDir(): string {
-  return join(homedir(), ".sid-code", "logs");
+  return sidPaths.logs();
 }
 
 function buildPlist(opts: ServiceInstallOptions): string {

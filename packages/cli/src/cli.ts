@@ -20,6 +20,7 @@ import { clearFileIntent } from "@sid-code/core/session/file-intent.ts";
 // P1（policyLimits 接线）：两个 gate 点（sub_agent 工具注册 / MCP 服务器集合）都在
 // 下方 `setPolicyLimits(policy.policyLimits)` **之后**执行，读得到已注入的策略。
 import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
@@ -1251,7 +1252,8 @@ export async function main(): Promise<void> {
       initLogger({
         enabled: true,
         level: LogLevel.WARN,
-        logFile: config.auditLogFile ?? "~/.sid-code/audit.log",
+        // 兜底走 sidPaths（尊重 SID_CONFIG_DIR），不写 "~/.sid-code/audit.log" 字面量
+        logFile: config.auditLogFile ?? sidPaths.auditLog(),
         console: false,
         fileOnly: true,
         append: true,
@@ -1334,7 +1336,7 @@ export async function main(): Promise<void> {
         }
         const logPath = config.debug
           ? config.debugLogFile
-          : (config.auditLogFile ?? "~/.sid-code/audit.log");
+          : (config.auditLogFile ?? sidPaths.auditLog());
         console.error(`详情见 ${logPath}`);
       }
     }

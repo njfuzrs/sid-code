@@ -25,7 +25,7 @@ import {
   copyFileSync,
 } from "fs";
 import { join } from "path";
-import { getSidHome } from "./paths.ts";
+import { getSidHome, sidPaths } from "./paths.ts";
 
 /** 项目级配置（按项目路径索引） */
 export interface ProjectConfig {
@@ -131,7 +131,9 @@ export function createDefaultAppConfig(): AppConfig {
     numStartups: 0,
     debug: false,
     debugLevel: "INFO",
-    debugLogFile: "~/.sid-code/debug.log",
+    // 走 sidPaths 派生，不写 "~/.sid-code/debug.log" 字面量：字面量的展开侧
+    // （debug/logger.ts）用 homedir()，于是 SID_CONFIG_DIR 管不到日志落点。
+    debugLogFile: sidPaths.debugLog(),
   };
 }
 

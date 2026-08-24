@@ -63,6 +63,48 @@ export const STATUSLINE_TIMEOUT_MS = 1000;
 /** 节流窗口（ms）：同指纹结果复用，避免高频 spawn 外部进程。 */
 export const STATUSLINE_THROTTLE_MS = 300;
 
+/** `attachPipeErrorHandlers` 需要的最小子进程形态（只要三个管道，便于测试直接喂假对象）。 */
+interface PipeErrorTarget {
+  stdin?: { on(event: "error", cb: (err: Error) => void): unknown } | null;
+  stdout?: { on(event: "error", cb: (err: Error) => void): unknown } | null;
+  stderr?: { on(event: "error", cb: (err: Error) => void): unknown } | null;
+}
+
+/**
+ * 给子进程的三个管道挂 `'error'` 监听。**这不是可选的加固，是防 CI flake 的必需项。**
+ *
+ * 背景（2026-08-24，本文件 flake 的第四种变体，与前三次的「超时撞线」根因不同）：
+ * Node/Bun 的 stream 约定是写/读失败经 `'error'` **事件**上报，而 `'error'` 事件
+ * **没有监听器时会升级成 `uncaughtException`**。写 stdin 处原本只有一个同步 try/catch，
+ * 它只盖得住 `write()` 同步抛的情况；流在 `end()` 之后于 finish/destroy 阶段**异步**发的
+ * `'error'`（CI 栈形态 `finish → finishMaybe → destroy → _destroy → end`）抓不到，
+ * 于是逃到顶层。生产里 TUI 有顶层兜底（顶多这一帧回退内置），但在 `bun test` 进程里
+ * 它会被计成失败、让整个 job exit 1，而且**报红的用例往往不是出问题的那个**
+ * —— 异常来自上一个用例遗留的子进程收尾，恰好落在下一个用例执行期间。这解释了为什么
+ * 两次复现报红的是不同用例（PR #96 是「复用缓存」、#100 是「超出节流窗口」）。
+ *
+ * ⚠️ **写端与读端刻意不同处理，别统一成一种**：
+ * - 写端（stdin）**只丢弃**：脚本不读 stdin 就退出（`echo a`）是完全合法的用法，
+ *   此时 stdout 已经拿到了，`child.on("exit")` 会正常 `finish(text)`。
+ *   把写端 EPIPE 当失败处理 → 这类脚本的状态栏无谓回退内置，是**行为回退**而非修复。
+ * - 读端（stdout/stderr）走 `onReadError`：读不到内容这一帧就没有状态栏可显示，回退内置是唯一正确结果。
+ *
+ * ⚠️ **必须在 `write()` 之前调用**：挂在后面存在"同步 `write()` 就触发 error 时监听器还不存在"的窗口。
+ *
+ * 抽成独立导出函数是为了能被单测直接锁形态（喂一个假 child 断言三个管道都挂上了），
+ * 不必去 mock `node:child_process.spawn` —— 那会污染同进程的其它测试文件。
+ */
+export function attachPipeErrorHandlers(
+  child: PipeErrorTarget,
+  onReadError: (which: "stdout" | "stderr", err: Error) => void,
+): void {
+  child.stdin?.on("error", () => {
+    /* 脚本可能不读 stdin 就退出，EPIPE 属预期，丢弃 —— 理由见上方注释 */
+  });
+  child.stdout?.on("error", (err) => onReadError("stdout", err));
+  child.stderr?.on("error", (err) => onReadError("stderr", err));
+}
+
 interface CacheEntry {
   fingerprint: string;
   output: string;
@@ -154,16 +196,30 @@ export async function runStatusLine(
       /* 丢弃 */
     });
 
-    // 超时保护：到点强杀，回退内置。
-    const timer = setTimeout(() => {
-      log.warn("UI:STATUSLINE", `脚本超时 ${timeoutMs}ms，回退内置状态栏`);
+    /** 强杀子进程（幂等，已退出时 kill 会抛，吞掉）。 */
+    const killChild = () => {
       try {
         child.kill("SIGKILL");
       } catch {
         /* 已退出 */
       }
+    };
+
+    // 超时保护：到点强杀，回退内置。
+    const timer = setTimeout(() => {
+      log.warn("UI:STATUSLINE", `脚本超时 ${timeoutMs}ms，回退内置状态栏`);
+      killChild();
       finish(null);
     }, timeoutMs);
+
+    // 给三个管道挂 'error' 监听：没有监听器的 'error' 会升级成 uncaughtException。
+    // 必须在下方 write() 之前 —— 完整理由见 attachPipeErrorHandlers 的文档注释。
+    attachPipeErrorHandlers(child, (which, err) => {
+      clearTimeout(timer);
+      log.warn("UI:STATUSLINE", `${which} 读取错误: ${String(err)}，回退内置状态栏`);
+      killChild();
+      finish(null);
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -184,11 +240,15 @@ export async function runStatusLine(
     });
 
     // 写 stdin 后关闭，触发脚本读取。
+    //
+    // 这个 try/catch 只盖 `write()` **同步**抛错那条路径；流在 `end()` 之后**异步**发的
+    // `'error'` 它抓不到（同步块早已走完），由上面 attachPipeErrorHandlers 挂的监听兜住。
+    // **两者都需要，删任何一个都会漏一条路径。**
     try {
       child.stdin?.write(payload);
       child.stdin?.end();
     } catch {
-      // 脚本可能不读 stdin 就退出，忽略 EPIPE。
+      // 脚本可能不读 stdin 就退出，忽略 EPIPE（与 stdin 的 error 监听同口径）。
     }
   });
 

@@ -20,7 +20,7 @@ CLAUDE.md §0.4 评测纪律不变量第 5 条："自家 bench 偏向防护"—�
 
 | Benchmark | 域 | 工时（含接入） | 优先级 | 备注 |
 |---|---|---|---|---|
-| **SWE-bench Verified subset (10)** | coding agent | 5 人日 | ★★★ | 业界标准；可走 [[T-21]] Inspect AI |
+| **SWE-bench Verified subset (10)** | coding agent | 5 人日 | ★★★ | 业界标准；**走路径 B 官方 harness**（2026-08-24 定，见下方「集成路径」） |
 | **MT-Bench Hard** | LLM judge 校准 | 3 人日 | ★★★ | 校准 sid-code judge 而非 sid-code agent 自身 |
 | **HumanEval+** | 代码生成 | 2 人日 | ★★ | 最简单接入；但和 coding agent 痛点不完全重合 |
 | **GAIA** | 通用 agent | 5 人日 | ★ | 工具调用 + 多步推理；与 PR-to-Prod 主线偏离 |
@@ -34,9 +34,10 @@ CLAUDE.md §0.4 评测纪律不变量第 5 条："自家 bench 偏向防护"—�
 evals/external-benchmarks/
 ├── README.md                          # 本文件
 ├── swe-bench/
+│   ├── 接入计划.md                     # 路径 B 方案（事实源）
 │   ├── verified-subset.yaml           # 选 10 个 SWE-bench Verified case 的 instance_id
-│   ├── runner.ts                      # 跑 SWE-bench 的 wrapper（走 Inspect AI 或自研）
-│   └── results-{date}.jsonl           # 跑分历史
+│   ├── prompt-v1.txt                  # 阶段 A 产出：带版本号的 prompt 契约
+│   └── runs/{run_id}/                 # 三字段 jsonl + 官方 report.json
 ├── mt-bench/
 │   ├── hard-subset.yaml               # MT-Bench Hard 子集
 │   ├── runner.ts                      # 跑 judge 自校准的 wrapper
@@ -50,7 +51,8 @@ evals/external-benchmarks/
 - ❌ **不写** case yaml 的 baseline_scores（external-benchmarks 数据完全独立）
 - ❌ **不进** 自家 grader 注册表（rubric_5d / binary_redline 等都不评 external case）
 - ✅ **独立** results-{date}.jsonl，按时间戳归档
-- ✅ **独立** 报告 `_reports/external/`，与自家 case 分离呈现
+- ✅ **独立** 报告 `evals/_reports/external/`（见该目录 README；⚠️ 是 `evals/` 下那个，
+  不是仓库根的 `_reports/` —— 后者不在 git 追踪范围，写进去等于产物丢失）
 
 ## 何时跑
 
@@ -62,35 +64,31 @@ evals/external-benchmarks/
 
 ## 集成路径
 
-### 路径 A：通过 Inspect AI（推荐）
+> **⚠️ SWE-bench 的路径已定，下面两条不再是「待选」**：
+> **2026-08-24 裁决走路径 B（官方 `swebench eval`），路径 A（Inspect AI）否决。**
+> 完整论证见 `swe-bench/接入计划.md §1`。本节保留两条路径的对比是为了让后来者看到
+> 当时在比什么 —— **不要照「当前决策」那行去开工，它已被下面的裁决取代。**
 
-Inspect AI 有现成 SWE-bench / MT-Bench / GAIA / HumanEval 的 task 实现（200+ benchmarks）：
+### ~~路径 A：通过 Inspect AI~~（⛔ 已否决）
 
-```bash
-# 详见 docs/eval/inspect-ai-integration-plan.md
-cd evals/inspect
-source .venv/bin/activate
-inspect eval tasks/swe_bench_verified.py --model anthropic/claude-sonnet-4-5 --limit 10
-```
+Inspect AI 有现成 SWE-bench / MT-Bench / GAIA / HumanEval 的 task 实现。
 
-**优点**：实现质量好、社区维护、与业界对齐
-**缺点**：Python venv 依赖；需要先做 [[T-21]] Inspect AI 接入
+**当时认为的优点**：实现质量好、社区维护、与业界对齐、可复用已有 spike 脚手架
+**否决理由**：「复用现有脚手架」实测值为 0（三个文件是伪代码：判分硬编码返 0、
+`git clone` 是注释、四个 CLI flag 不存在），而这是 A 的唯一实质优势；
+剩下「sandbox 由上游维护」也大半不成立（同样要配 docker、同样的 arm64 问题）。
+代价是多两层 Python 框架 + 一个**仓外 venv**。
 
-### 路径 B：自研最小适配器
+### ✅ 路径 B：官方 harness（已选）
 
-只接 SWE-bench docker container，不依赖 Inspect AI：
+sid-code 在容器里产出 `git diff` → 三字段 jsonl → 官方 `swebench eval` 判分并读回
+`report.json`。**不自己写 scorer、不自己判对错。**
 
-```typescript
-// evals/external-benchmarks/swe-bench/runner.ts
-// 1. clone SWE-bench-Verified instances（一次性）
-// 2. 每个 instance：起 docker → mount sid-code → spawn provider → 跑测试
-// 3. 写 results-{date}.jsonl
-```
+**优点**：只要 `swebench` 一个 pip 包；判分权交给上游，我们只负责「交答案」
+**代价**：runner / patch 提取 / 防作弊 preflight 要自己写 —— 但这些**本来也没写**
 
-**优点**：无 Python 依赖，与 sid-code 1271 单测主栈一致
-**缺点**：要自己维护 docker 镜像、SWE-bench 数据下载、测试 runner
-
-**当前决策**：默认路径 A（Inspect AI），路径 B 作为 fallback（如果 Inspect AI 接入受阻）。
+⚠️ **MT-Bench / HumanEval 的路径未裁决**。上面这条裁决的作用域**只有 SWE-bench**，
+别把它推广成「本仓一律不用 Inspect」。
 
 ## 与自家 case 的差异化报告
 

@@ -11,9 +11,8 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { getLogger } from "../../debug/index.ts";
+import { getSidHome, sidHomePath } from "../../config/paths.ts";
 
 /** 单次压缩特征 */
 export interface CompactFeature {
@@ -43,9 +42,9 @@ const MAX_RECENT = 50;
 const LOW_COVERAGE = 0.5;
 const LOW_SAVED = 0.15;
 
+/** 走 sidHomePath（尊重 SID_CONFIG_DIR），不自行 join(homedir(), ".sid-code")。 */
 function statsPath(): string {
-  const dir = join(homedir(), ".sid-code");
-  return join(dir, "compact-stats.json");
+  return sidHomePath("compact-stats.json");
 }
 
 function loadStats(): CompactStats {
@@ -61,7 +60,7 @@ function loadStats(): CompactStats {
 
 function saveStats(stats: CompactStats): void {
   try {
-    const dir = join(homedir(), ".sid-code");
+    const dir = getSidHome();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(statsPath(), JSON.stringify(stats), "utf-8");
   } catch (err: any) {
