@@ -82,6 +82,13 @@ export interface PreflightArgs {
   image?: string;
   /** ④ 需要：要真构建计时的 instance_id */
   buildInstance?: string;
+  /**
+   * ④ 可选：逐实例 Dockerfile 的 task repo（本地目录或 owner/repo）。
+   *
+   * 5.0.2 用它替代了已删除的 `--namespace ''`。不传 = 默认拉 registry 镜像，
+   * 而官方镜像名硬编码 `x86_64`，在 arm64 上会 404（实测）。
+   */
+  taskRepo?: string;
   /** ⑤ 用：sid-code 二进制路径 */
   bin: string;
   json: boolean;
@@ -113,6 +120,7 @@ export function parseArgs(argv: string[]): PreflightArgs {
     else if (a === "--base-commit") args.baseCommit = argv[++i];
     else if (a === "--image") args.image = argv[++i];
     else if (a === "--build-instance") args.buildInstance = argv[++i];
+    else if (a === "--task-repo") args.taskRepo = argv[++i];
     else if (a === "--bin") args.bin = argv[++i];
     else if (a === "--json") args.json = true;
   }
@@ -469,33 +477,60 @@ function check4ImageBuildable(args: PreflightArgs, runner: Runner, dockerUp: boo
   }
 
   const t0 = runner.now();
-  // ⚠️ `--namespace ''` 才是本地重建（D3）。默认 namespace 会去 pull x86_64 镜像，
-  // 在 arm64 上是 manifest 不匹配，而不是「构建慢」。
-  const built = runner.run(
-    [
-      "swebench",
-      "eval",
-      "verified",
-      "--gold",
-      "-i",
-      args.buildInstance,
-      "--run-id",
-      `preflight-build-${args.buildInstance}`,
-      "--namespace",
-      "",
-    ],
-    { timeoutMs: 6 * 60 * 60 * 1000 },
-  );
+  // ⚠️⚠️ 这里原先传的是 `--namespace ''`（方案文档 §5 与官方 README 都这么写），
+  // **实测在 swebench 5.0.2 上该选项已不存在**：
+  //
+  //     Error: No such option: --namespace (Possible options: --instance)
+  //
+  // 5.0.2 的替代品是 `--task-repo`（"Build images from this task repo instead of
+  // trusting the registry"），语义还更强 —— 它显式说明了不传的后果：
+  // "Without it images are pulled, so a stale published image can mask a broken build."
+  //
+  // 但 `--task-repo` 需要一个**逐实例 Dockerfile 的外部仓库**，官方没给默认值，
+  // 本仓也还没有那份 task repo。所以这里的做法是：
+  //   - 不传任何构建相关选项（默认行为 = pull registry 镜像）；
+  //   - 由调用方通过 --task-repo 传入（下方 taskRepo 参数），传了就带上。
+  // 这样 preflight 测的是**当前实际可跑的那条路**，而不是一个已被删掉的选项。
+  const cmd = [
+    "swebench",
+    "eval",
+    "verified",
+    "--gold",
+    "-i",
+    args.buildInstance,
+    "--run-id",
+    `preflight-build-${args.buildInstance}`,
+    "-j",
+    "1",
+  ];
+  if (args.taskRepo) cmd.push("--task-repo", args.taskRepo);
+  const built = runner.run(cmd, { timeoutMs: 6 * 60 * 60 * 1000 });
   const elapsedMs = Math.round(runner.now() - t0);
 
+  // ⚠️⚠️ **退出码不能当判据。** 实测 `swebench eval` 在整个实例报错时依然 **exit 0**，
+  // 而摘要里写的是 `Instances resolved: 0` + `Instances with errors: 1`：
+  //
+  //     Error in evaluation for pytest-dev__pytest-7982: 404 ... no matching manifest
+  //       for linux/arm64/v8 ...
+  //     Instances resolved: 0
+  //     Instances with errors: 1
+  //
+  // 只看退出码 → 判 pass；只看 resolved → 判「没解出」。两者都错：真相是
+  // **镜像根本没跑起来**。这正是 §4.1 那条「`0 failed` 与 `errors: 1` 可同时成立」
+  // 的坑，也是路径 A 那个 `Score(value=0)` 的同型 —— 仪器没接上，却给了个数字。
+  const verdict = judgeBuildOutcome(built);
   return {
     ...base,
-    status: built.code === 0 ? "pass" : "fail",
-    reason:
-      built.code === 0
-        ? undefined
-        : `构建/gold 跑失败（exit ${built.code}）。若是缺 arm64 wheel 或耗时失控，` +
-          `兜底是借一台 x86_64 linux 机器本地跑，**不上云**：${built.out.trim().slice(-400)}`,
+    status: verdict.ok ? "pass" : "fail",
+    reason: verdict.ok
+      ? undefined
+      : `${verdict.reason}${
+          verdict.reason?.includes("manifest")
+            ? "。⚠️ 5.0.2 已删 --namespace，没有「本地重建」这条退路了；" +
+              "要么给 --task-repo（逐实例 Dockerfile 仓库），要么按 D3 兜底" +
+              "借一台 x86_64 linux 机器本地跑（**不上云**）"
+            : ""
+        }`,
     detail: {
       instance_id: args.buildInstance,
       elapsed_ms: elapsedMs,
@@ -503,6 +538,47 @@ function check4ImageBuildable(args: PreflightArgs, runner: Runner, dockerUp: boo
       ...capacity,
     },
   };
+}
+
+/**
+ * 判定一次 `swebench eval` 到底成没成。
+ *
+ * 判据是**报告里的计数**，不是退出码（见调用处注释：报错时 exit 仍是 0）。
+ * 三个信号都要看：
+ *   - `Instances with errors: N>0` → 实例根本没跑起来（镜像/环境问题），fail
+ *   - `Instances completed: 0`     → 一个都没完成，fail
+ *   - 都不满足才算真跑通
+ */
+export function judgeBuildOutcome(built: { code: number; out: string }): {
+  ok: boolean;
+  reason?: string;
+} {
+  const out = built.out;
+  const num = (label: string): number | undefined => {
+    const m = out.match(new RegExp(`${label}:\\s*(\\d+)`));
+    return m ? Number(m[1]) : undefined;
+  };
+  const errors = num("Instances with errors");
+  const completed = num("Instances completed");
+
+  // 连摘要都没打出来 → 命令层面就失败了（选项不存在、命令找不到等）
+  if (errors === undefined && completed === undefined) {
+    return {
+      ok: false,
+      reason: `swebench eval 没产出摘要（exit ${built.code}）：${out.trim().slice(-400)}`,
+    };
+  }
+  if (errors !== undefined && errors > 0) {
+    const detail = out.match(/Error in evaluation for [^\n]+/)?.[0] ?? "";
+    return {
+      ok: false,
+      reason: `harness 报 ${errors} 个实例出错（注意此时进程 exit=${built.code}，退出码不可信）：${detail.slice(0, 300)}`,
+    };
+  }
+  if (completed !== undefined && completed === 0) {
+    return { ok: false, reason: `没有任何实例完成（completed=0，exit=${built.code}）` };
+  }
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

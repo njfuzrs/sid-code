@@ -174,3 +174,20 @@ scheduled_tasks.lock
 !.pr-batch/prompts/
 !.pr-batch/plan.json
 !.pr-batch/worktree-settings.template.json
+
+# ─── Python 侧依赖（SWE-bench 官方 harness）────────────────────────────────
+# swebench 是 pip 包，装在仓内 venv 里。**落点必须在仓内**：P1-5 修过一次
+# 「依赖挂在仓外 venv」（eval-framework 从 file:../ 改 workspace），
+# 复用任何仓外 venv 都是把那个修好的问题重新引进来。
+# 建法见 evals/external-benchmarks/swe-bench/setup-env.sh（uv venv --python 3.11）。
+/evals/external-benchmarks/swe-bench/.venv/
+__pycache__/
+*.py[cod]
+
+# ─── SWE-bench 跑分产物 ────────────────────────────────────────────────────
+# runs/{run_id}/ 里是 predictions.jsonl（**含 agent 产出的完整 patch**）、
+# 逐条题面副本与官方 report.json。三个理由都不能入库：
+#   1. 题面副本入库 = 外部数据在仓内定居，且会与 dataset 漂移（见 接入计划.md §3）；
+#   2. patch 是**跑分产物**，入库会让 diff 里出现大段与本仓无关的第三方代码；
+#   3. 报告的正式落点是 evals/_reports/external/，不是这里 —— 两处都留会有两个事实源。
+/evals/external-benchmarks/swe-bench/runs/
