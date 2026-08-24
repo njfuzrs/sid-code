@@ -19,7 +19,7 @@ import { execFileSync } from "child_process";
 import { existsSync, watch, realpathSync } from "fs";
 import type { FSWatcher } from "fs";
 import { getLogger } from "../debug/logger.ts";
-import { sidHomePath } from "./paths.ts";
+import { sidHomePath, getClaudeHome } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
 import { getOriginalCwd } from "../bootstrap/state.ts";
 
@@ -88,9 +88,12 @@ export function resetLargeMemoryFiles(): void {
 /**
  * M6：用户级规则目录候选（~/.claude/rules 优先，回退 ~/.sid-code/rules）。
  * 优先级介于 user 层（全局 CLAUDE.md）之后、project 层之前。
+ *
+ * 两条都走 paths.ts 的权威解析（分别尊重 CLAUDE_CONFIG_DIR / SID_CONFIG_DIR），
+ * 不自行 join(homedir(), ...) —— 否则配置目录重定向时这一层规则静默读的还是真实 HOME。
  */
 function userRulesDirs(): string[] {
-  return [join(homedir(), ".claude", "rules"), join(homedir(), ".sid-code", "rules")];
+  return [join(getClaudeHome(), "rules"), sidHomePath("rules")];
 }
 
 /**

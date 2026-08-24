@@ -184,7 +184,8 @@ Worktree 隔离:
   SID_ENABLE_HYPOTHESIS         假设登记表（含矛盾中断/交付门禁）默认关闭：受控 A/B 实测 ON/OFF 准确率同为 5.00/5，ON 却多花 +75% input、+61% 耗时，设为 1 可显式开启
 
   系统路径:
-  SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code）
+  SID_CONFIG_DIR                配置根目录覆盖（缺省 ~/.sid-code；含 debug.log/audit.log/轨迹等全部落盘）
+  SID_CODE_HOME                 SID_CONFIG_DIR 的兼容别名（历史上仅轨迹子系统读它）；新配置请用 SID_CONFIG_DIR
   SID_CODE_TMPDIR               临时目录覆盖（沙箱/测试用）
   SID_RIPGREP_PATH              指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源）
   SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）

@@ -135,7 +135,7 @@ function main() {
   if (all.length === 0) {
     process.stderr.write(
       `未找到任何会话轨迹 (${paths.sessionsDir})。\n` +
-        `可能原因: 还没跑过 sid-code,或 SID_CODE_HOME 指向了别处。\n`,
+        `可能原因: 还没跑过 sid-code,或 SID_CONFIG_DIR / SID_CODE_HOME 指向了别处。\n`,
     );
     process.exitCode = 1;
     return;

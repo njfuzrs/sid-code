@@ -7,7 +7,7 @@
  *   - src/command/builtins.ts TraceCommand —— sid-code 内置 /trace 命令
  *
  * 本模块是纯逻辑:不读 process.argv、不直接写 stdout/stderr、不调 process.exit。
- * 所有路径通过 resolvePaths(root) 注入(默认从环境变量/homedir 推导),便于测试与隔离。
+ * 所有路径通过 resolvePaths(root) 注入(默认走 config/paths.ts 的 getSidHome()),便于测试与隔离。
  *
  * 数据来源(全部只读,绝不修改):
  *   {root}/trajectories/sessions/{id}/session.traj   主轨迹(TAO 步骤+metadata)
@@ -20,8 +20,8 @@
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
+import { getSidHome } from "../config/paths.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -47,14 +47,20 @@ export interface DigestPaths {
 }
 
 /**
- * 解析所有数据路径。root 缺省时按 SID_CODE_HOME → ~/.sid-code 推导。
+ * 解析所有数据路径。root 缺省时走 `getSidHome()`
+ *（优先级：SID_CONFIG_DIR > SID_CODE_HOME 兼容别名 > ~/.sid-code）。
+ *
+ * ⚠ 此处曾自己写 `process.env.SID_CODE_HOME || join(homedir(), ".sid-code")`，
+ * **不认 `SID_CONFIG_DIR`** —— 于是同一个"配置根目录"概念有两个互不认识的 env 名：
+ * 设了 `SID_CONFIG_DIR` 的人发现轨迹还在老地方，设了 `SID_CODE_HOME` 的人发现
+ * 配置还在老地方。现在两个名字都由 `getSidHome()` 一处解析，不再有第二份判据。
  *
  * 账本路径的环境变量覆盖走 `applyLedgerPathOverride`（写侧同一个函数，P3-3）——
  * 此处曾自己写第二份 `process.env.SID_CODE_USAGE_LEDGER || ...`，与写侧语义不一致
  *（写侧把空串视为未设置，这边不做 trim 判断），会造成"写进去了却读不到"。
  */
 export function resolvePaths(root?: string): DigestPaths {
-  const r = root || process.env.SID_CODE_HOME || join(homedir(), ".sid-code");
+  const r = root || getSidHome();
   return {
     root: r,
     sessionsDir: join(r, "trajectories", "sessions"),

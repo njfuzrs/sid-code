@@ -20,14 +20,24 @@ import { join, resolve, sep } from "path";
 
 /**
  * 返回 sid-code 配置根目录。
- * 优先级：SID_CONFIG_DIR 环境变量 > ~/.sid-code
+ * 优先级：SID_CONFIG_DIR 环境变量 > SID_CODE_HOME 环境变量（兼容别名）> ~/.sid-code
  *
  * 每次调用都重新读取 env（不缓存）——使测试可在 beforeEach 中切换目录。
+ *
+ * ⚠ 为什么要读两个 env 名：轨迹子系统（`trace/digest.ts`、`scripts/trace-digest.ts`、
+ * `/trace` 命令的报错文案）历史上自己写了一份 `process.env.SID_CODE_HOME ||
+ * join(homedir(), ".sid-code")`，与本函数的 `SID_CONFIG_DIR` **互不认识** ——
+ * 设了 `SID_CONFIG_DIR` 的人会发现轨迹还在老地方，设了 `SID_CODE_HOME` 的人会发现
+ * 配置还在老地方。收敛方向是 `SID_CONFIG_DIR`（本模块的权威定义，且与
+ * `getClaudeHome()` 的 `CLAUDE_CONFIG_DIR` 对称），但直接删掉 `SID_CODE_HOME`
+ * 会静默打断既有用户脚本，所以在这里一并读、留作兼容别名。
+ * **新代码一律用 `SID_CONFIG_DIR`。**
  */
 export function getSidHome(): string {
-  const override = process.env.SID_CONFIG_DIR;
-  if (override && override.trim() !== "") {
-    return override;
+  for (const override of [process.env.SID_CONFIG_DIR, process.env.SID_CODE_HOME]) {
+    if (override && override.trim() !== "") {
+      return override;
+    }
   }
   return join(homedir(), ".sid-code");
 }
@@ -35,6 +45,41 @@ export function getSidHome(): string {
 /** 返回配置目录下的文件路径 */
 export function sidHomePath(...segments: string[]): string {
   return join(getSidHome(), ...segments);
+}
+
+/**
+ * 历史上散落在各处的配置根目录字面量前缀。
+ *
+ * `debugLogFile` / `auditLogFile` 的默认值曾是字面量 `"~/.sid-code/debug.log"`，
+ * 而展开侧（`debug/logger.ts`）用 `homedir()` 展开 `~` —— 于是
+ * **`SID_CONFIG_DIR` 管不到日志落点**：配置目录被重定向到 tmpdir，debug.log 仍写真实 HOME。
+ */
+const LEGACY_SID_HOME_PREFIXES = ["~/.sid-code/", "~\\.sid-code\\"] as const;
+
+/**
+ * 展开配置里的 `~` 路径，并把遗留的 `~/.sid-code/xxx` 字面量重定向到 `getSidHome()`。
+ *
+ * 两条语义，顺序不能反：
+ * 1. `~/.sid-code/xxx` → `sidHomePath("xxx")` —— 尊重 `SID_CONFIG_DIR`。
+ *    这一条**必须存在**而不能只改默认值：老用户的 `~/.sid-code/app.json` 里
+ *    已经存着那个字面量（`createDefaultAppConfig()` 的默认值会被 `saveAppConfig`
+ *    连带写进磁盘），磁盘值优先于新默认值 —— 只改默认值对他们完全无效。
+ * 2. 其余 `~/xxx` → `homedir()/xxx` —— 用户手写 `"~/somewhere/x.log"` 的语义不变。
+ *
+ * ⚠ 展开逻辑集中在此一处。此前 `logger.ts` 自己写了一份（`join(homedir(), p.slice(1))`），
+ * 那种写法对 `~foo` 这类非 `~/` 开头的串会拼出 `<home>foo`，是错的。
+ */
+export function expandSidHomePath(p: string): string {
+  for (const prefix of LEGACY_SID_HOME_PREFIXES) {
+    if (p.startsWith(prefix)) {
+      return sidHomePath(p.slice(prefix.length));
+    }
+  }
+  if (p === "~") return homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    return join(homedir(), p.slice(2));
+  }
+  return p;
 }
 
 /**
@@ -130,6 +175,16 @@ export const sidPaths = {
   // ── 日志归拢：logs/ ──
   logs: () => sidHomePath("logs"),
   log: (name: string) => sidHomePath("logs", name),
+  /**
+   * `--debug` 的日志落点（配置项 `debugLogFile` 的默认值）。
+   *
+   * ⚠ 刻意**不放进 `logs/`**：`~/.sid-code/debug.log` 这个路径写进了 `--help`、
+   * `website/ref/cli.md`、`website/use/troubleshooting.md` 与大量注释，本次是修
+   * 「不尊重 SID_CONFIG_DIR」这一个缺陷，顺手挪目录会让所有文档同时失准。
+   */
+  debugLog: () => sidHomePath("debug.log"),
+  /** 零配置审计日志落点（配置项 `auditLogFile` 的默认值）。同上，不挪目录。 */
+  auditLog: () => sidHomePath("audit.log"),
 
   // ── 状态归拢：state/ ──
   state: () => sidHomePath("state"),
