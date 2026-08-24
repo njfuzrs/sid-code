@@ -11,7 +11,7 @@
  * - MCP 跨进程消息桥接（mcp_message）
  */
 
-import { z } from "zod";
+import { z } from "zod/v3";
 import { lazySchema } from "./lazy-schema.ts";
 
 // ─── 控制请求类型 ───

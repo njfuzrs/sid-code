@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { semanticBoolean, coerceSemanticBoolean } from "@sid-code/shared/utils/semantic-boolean.ts";
 import { asSessionId, asAgentId, asToolCallId } from "@sid-code/shared/types/ids.ts";
 

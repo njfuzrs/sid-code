@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { PassThrough } from "node:stream";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { StructuredIO } from "@sid-code/core/sdk/structured-io.ts";
 import { ndjsonStringify } from "@sid-code/core/sdk/ndjson.ts";
 import type { SDKMessage } from "@sid-code/core/sdk/types.ts";
