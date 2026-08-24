@@ -14,8 +14,8 @@ import {
   type WriteStream,
 } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { maskSensitiveData } from "../permission/sensitive.ts";
+import { expandSidHomePath } from "../config/paths.ts";
 
 export enum LogLevel {
   ERROR = 0,
@@ -142,9 +142,11 @@ class Logger {
     this.currentLogSize = 0;
 
     if (this.options.enabled && this.options.logFile) {
-      this.logFilePath = this.options.logFile.startsWith("~")
-        ? join(homedir(), this.options.logFile.slice(1))
-        : this.options.logFile;
+      // `~` 展开统一走 config/paths.ts 的 expandSidHomePath：它同时把遗留的
+      // `~/.sid-code/xxx` 字面量重定向到 getSidHome()，使 SID_CONFIG_DIR 管得住日志落点。
+      // 此前这里自己写 `join(homedir(), logFile.slice(1))`，不读 env → 配置目录重定向到
+      // tmpdir 时 debug.log 仍写真实 HOME（容器/评测/测试隔离场景全部漏这条落盘路径）。
+      this.logFilePath = expandSidHomePath(this.options.logFile);
 
       // 确保日志目录存在
       const logDir = join(this.logFilePath, "..");

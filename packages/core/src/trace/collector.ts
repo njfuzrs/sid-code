@@ -1934,7 +1934,8 @@ export class TraceCollector {
       if (!existsSync(trajPath)) return;
 
       // 复用 digest 引擎。digest.ts 是纯只读逻辑（无副作用），静态导入（见文件头）。
-      // resolvePaths() 不传参——与 /trace 命令一致，从 SID_CODE_HOME → ~/.sid-code 推导 root。
+      // resolvePaths() 不传参——与 /trace 命令一致，走 getSidHome()
+      // （SID_CONFIG_DIR > SID_CODE_HOME 兼容别名 > ~/.sid-code）推导 root。
       // 不能传 this.outputDir：它已是 .../trajectories，而 resolvePaths 会再拼一层 trajectories/sessions。
       const paths = resolvePaths();
       const ref = {

@@ -25,8 +25,8 @@
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { diagnoseInvestigationContext } from "@sid-code/core/query/hypothesis-guide.ts";
+import { getSidHome } from "@sid-code/core/config/paths.ts";
 
 interface SessionRow {
   id: string;
@@ -40,9 +40,12 @@ interface SessionRow {
   hypothesisChallengeCalls: number;
 }
 
+/**
+ * 走 core 的 `getSidHome()`（SID_CONFIG_DIR > SID_CODE_HOME > ~/.sid-code），
+ * 不自己写第二份判据 —— 此前只认 SID_CODE_HOME，设了 SID_CONFIG_DIR 的人在这里找不到轨迹。
+ */
 function resolveSessionsDir(): string {
-  const root = process.env.SID_CODE_HOME || join(homedir(), ".sid-code");
-  return join(root, "trajectories", "sessions");
+  return join(getSidHome(), "trajectories", "sessions");
 }
 
 /** 从 trajectory[].action（"toolName({...})" 字符串）统计指定工具调用次数 */

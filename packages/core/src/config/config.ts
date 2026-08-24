@@ -7,7 +7,7 @@
 import { join } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
-import { getSidHome } from "./paths.ts";
+import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
@@ -869,10 +869,13 @@ export function defaultConfig(): Config {
     systemPromptFile: "",
     debug: true,
     debugLevel: "DEBUG",
-    debugLogFile: "~/.sid-code/debug.log",
+    // 两条日志落点走 sidPaths 派生，不写 "~/.sid-code/*.log" 字面量：
+    // 字面量的展开侧（debug/logger.ts）曾用 homedir()，于是 SID_CONFIG_DIR
+    // 管不到日志落点（配置目录重定向到 tmpdir，日志仍写真实 HOME）。
+    debugLogFile: sidPaths.debugLog(),
     trace: { enabled: true },
     audit: true,
-    auditLogFile: "~/.sid-code/audit.log",
+    auditLogFile: sidPaths.auditLog(),
     hooks: {},
     mcpServers: {},
     showLineNumbers: true,

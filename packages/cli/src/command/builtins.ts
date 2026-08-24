@@ -1884,7 +1884,7 @@ export class TraceCommand implements Command {
     if (all.length === 0) {
       return {
         kind: "message",
-        message: `未找到任何会话轨迹 (${paths.sessionsDir})。可能还没产生轨迹,或 SID_CODE_HOME 指向了别处。`,
+        message: `未找到任何会话轨迹 (${paths.sessionsDir})。可能还没产生轨迹,或 SID_CONFIG_DIR / SID_CODE_HOME 指向了别处。`,
       };
     }
 

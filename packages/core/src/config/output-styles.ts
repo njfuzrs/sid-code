@@ -23,8 +23,8 @@
 
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join, basename } from "path";
-import { homedir } from "os";
 import { getLogger } from "../debug/logger.ts";
+import { sidHomePath } from "./paths.ts";
 
 export interface OutputStyleDef {
   /** 风格名（frontmatter name 字段，或不带扩展名的文件名） */
@@ -95,7 +95,8 @@ function loadStylesFromDir(dir: string): OutputStyleDef[] {
  * 加载全部可用的输出风格（项目级 > 全局级，同名项目级覆盖）。
  */
 export function loadAllOutputStyles(): OutputStyleDef[] {
-  const globalDir = join(homedir(), ".sid-code", "output-styles");
+  // 走 sidHomePath（尊重 SID_CONFIG_DIR），不自行 join(homedir(), ".sid-code", ...)
+  const globalDir = sidHomePath("output-styles");
   const projectDir = join(process.cwd(), ".sid-code", "output-styles");
 
   const globalStyles = loadStylesFromDir(globalDir);

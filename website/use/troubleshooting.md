@@ -242,7 +242,8 @@ export PATH="$HOME/.local/bin:$PATH"
 sid-code --debug
 ```
 
-日志落在 `~/.sid-code/debug.log`。想换地方用 `--debug-log-file <path>`。
+日志落在 `~/.sid-code/debug.log`（设了 `SID_CONFIG_DIR` 则跟着走那个目录）。
+想换地方用 `--debug-log-file <path>`。
 也可以用环境变量：
 
 ```bash
