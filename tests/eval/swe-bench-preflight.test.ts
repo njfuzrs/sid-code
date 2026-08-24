@@ -26,6 +26,7 @@ import {
   renderReport,
   probeDockerUp,
   probeDaemonCapacity,
+  judgeBuildOutcome,
   REQUIRED_FLAGS,
   KNOWN_UNUSABLE_FLAGS,
   PROBE_CANARY_FLAG,
@@ -300,11 +301,21 @@ describe("check ④：默认 skip，开启后必须落下耗时", () => {
     expect(probeDaemonCapacity(fakeRunner([])).capacity).toContain("取不到");
   });
 
+  // 摘要用真实格式（下面几例的 out 都抄自 swebench 5.0.2 的实际输出）
+  const SUMMARY_OK = [
+    "All instances run.",
+    "Total instances: 1",
+    "Instances submitted: 1",
+    "Instances completed: 1",
+    "Instances resolved: 1",
+    "Instances with errors: 0",
+  ].join("\n");
+
   test("⭐ 构建成功 → pass，且 elapsed_ms 必须是正数（这一项的产出主要是那个数字）", () => {
     const runner = fakeRunner([
       { match: (c) => c[0] === "docker" && c[1] === "info", code: 0, out: "27.0" },
       { match: (c) => c[0] === "swebench" && c[1] === "--help", code: 0 },
-      { match: (c) => c[0] === "swebench" && c[1] === "eval", code: 0, out: "resolved 1" },
+      { match: (c) => c[0] === "swebench" && c[1] === "eval", code: 0, out: SUMMARY_OK },
     ]);
     const c4 = runPreflight({ ...args, buildInstance: "sympy__sympy-13647" }, runner).find(
       (c) => c.id === "4",
@@ -319,8 +330,11 @@ describe("check ④：默认 skip，开启后必须落下耗时", () => {
       { match: (c) => c[0] === "swebench" && c[1] === "--help", code: 0 },
       {
         match: (c) => c[0] === "swebench" && c[1] === "eval",
-        code: 1,
-        out: "no matching arm64 wheel",
+        // 实测形态：**exit 0**，但摘要里 errors=1（见 judgeBuildOutcome 的注释）
+        code: 0,
+        out:
+          "Error in evaluation for pytest-dev__pytest-7982: 404 Client Error ... " +
+          "no matching manifest for linux/arm64/v8 ...\nInstances completed: 0\nInstances with errors: 1",
       },
     ]);
     const c4 = runPreflight({ ...args, buildInstance: "x" }, runner).find((c) => c.id === "4")!;
@@ -329,17 +343,82 @@ describe("check ④：默认 skip，开启后必须落下耗时", () => {
     expect(c4.reason).toContain("不上云");
   });
 
-  test("构建命令必须带 --namespace ''（默认 namespace 会去 pull x86_64 镜像）", () => {
+  test("⭐⭐ 构建命令**不得**带 --namespace（5.0.2 已删除该选项，传了直接 exit 2）", () => {
     const runner = fakeRunner([
       { match: (c) => c[0] === "docker" && c[1] === "info", code: 0, out: "27.0" },
       { match: (c) => c[0] === "swebench" && c[1] === "--help", code: 0 },
-      { match: (c) => c[0] === "swebench" && c[1] === "eval", code: 0 },
+      { match: (c) => c[0] === "swebench" && c[1] === "eval", code: 0, out: SUMMARY_OK },
     ]);
     runPreflight({ ...args, buildInstance: "x" }, runner);
     const evalCall = runner.calls.find((c) => c[0] === "swebench" && c[1] === "eval")!;
-    const nsIdx = evalCall.indexOf("--namespace");
-    expect(nsIdx).toBeGreaterThan(-1);
-    expect(evalCall[nsIdx + 1]).toBe("");
+    // 这条断言是**反向**的：上一版断言「必须带 --namespace ''」，而那个选项在真 CLI 上
+    // 根本不存在 —— 假 Runner 照样让它通过，只有真跑才暴露。
+    expect(evalCall).not.toContain("--namespace");
+  });
+
+  test("给了 --task-repo 才带上它（5.0.2 用它替代 --namespace）", () => {
+    const mk = () =>
+      fakeRunner([
+        { match: (c) => c[0] === "docker" && c[1] === "info", code: 0, out: "27.0" },
+        { match: (c) => c[0] === "swebench" && c[1] === "--help", code: 0 },
+        { match: (c) => c[0] === "swebench" && c[1] === "eval", code: 0, out: SUMMARY_OK },
+      ]);
+    const without = mk();
+    runPreflight({ ...args, buildInstance: "x" }, without);
+    expect(without.calls.find((c) => c[1] === "eval")!).not.toContain("--task-repo");
+
+    const withRepo = mk();
+    runPreflight({ ...args, buildInstance: "x", taskRepo: "/tmp/tasks" }, withRepo);
+    const call = withRepo.calls.find((c) => c[1] === "eval")!;
+    expect(call[call.indexOf("--task-repo") + 1]).toBe("/tmp/tasks");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// judgeBuildOutcome —— 退出码不可信，判据是报告计数
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("judgeBuildOutcome：exit 0 也可能是失败", () => {
+  test("⭐⭐ exit 0 但 errors=1 → 不 ok（实测形态，只看退出码会误判为通过）", () => {
+    const j = judgeBuildOutcome({
+      code: 0,
+      out:
+        "Error in evaluation for pytest-dev__pytest-7982: 404 ... no matching manifest for linux/arm64/v8\n" +
+        "Instances completed: 0\nInstances resolved: 0\nInstances with errors: 1",
+    });
+    expect(j.ok).toBe(false);
+    expect(j.reason).toContain("退出码不可信");
+  });
+
+  test("completed=1 / errors=0 → ok", () => {
+    expect(
+      judgeBuildOutcome({ code: 0, out: "Instances completed: 1\nInstances with errors: 0" }).ok,
+    ).toBe(true);
+  });
+
+  test("⭐ completed=0 且 errors=0 → 不 ok（一个都没完成，不能算通过）", () => {
+    const j = judgeBuildOutcome({
+      code: 0,
+      out: "Instances completed: 0\nInstances with errors: 0",
+    });
+    expect(j.ok).toBe(false);
+    expect(j.reason).toContain("completed=0");
+  });
+
+  test("⭐ 连摘要都没有 → 不 ok（命令层失败，如选项不存在）", () => {
+    const j = judgeBuildOutcome({ code: 2, out: "No such option: --namespace" });
+    expect(j.ok).toBe(false);
+    expect(j.reason).toContain("没产出摘要");
+  });
+
+  test("gold 跑「解出 0 条」不等于失败：completed>0 就算跑通（判分归官方 harness）", () => {
+    // 这一项测的是「链路通不通」，不是「解出几条」——后者由官方 report.json 说话
+    expect(
+      judgeBuildOutcome({
+        code: 0,
+        out: "Instances completed: 1\nInstances resolved: 0\nInstances with errors: 0",
+      }).ok,
+    ).toBe(true);
   });
 });
 
