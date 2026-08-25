@@ -24,8 +24,13 @@ const REPO_ROOT = resolve(__dirname, "../..");
 const EXTERNAL_DIR = join(REPO_ROOT, "evals/external-benchmarks");
 const SWE_BENCH_DIR = join(EXTERNAL_DIR, "swe-bench");
 const CR_SAMPLES_DIR = join(EXTERNAL_DIR, "cr-samples");
-const REPORTS_DIR = join(REPO_ROOT, "_reports/external");
-const TEMPLATE_PATH = join(REPO_ROOT, "_reports/templates/inspect-baseline.md");
+// ⚠️ 落点必须是 `evals/_reports/external/`，**不是仓库根的 `_reports/external/`**。
+// 根 `_reports/` 不在 git 追踪范围（`evals/_reports/` 才是资产目录，见 .gitignore 注释），
+// 写到那里等于产物静默丢失 —— 而脚本会打印「报告已落: ...」，看不出丢了。
+// 这条漂移原先只登记在 evals/_reports/external/README.md 的「已知漂移」表里，
+// 现在直接改对：登记一个已知错误路径，等于把踩坑留给下一个人。
+const REPORTS_DIR = join(REPO_ROOT, "evals/_reports/external");
+const TEMPLATE_PATH = join(REPO_ROOT, "evals/_reports/templates/inspect-baseline.md");
 
 type Track = "exec" | "report" | "both";
 
@@ -175,43 +180,58 @@ interface ReportTrackSummary {
   }>;
 }
 
+/**
+ * ⛔ **执行轨未接线：直接抛，绝不返回一个数字。**
+ *
+ * 这个函数原来返回 `pass: 0 / pass_at_1: 0` 并打一行「⚠ 是硬编码占位」的提示。
+ * 那个形态是**被否决的路径 A 那个 `Score(value=0)` 的同型** ——
+ * 一个「判分没发生」被表达成「一条都没解出」：
+ *
+ * - 数字**长得完全正常**（`pass: 0` 是合法取值，报告渲染、下游 gap 计算全都照跑）；
+ * - 那行 warning 只在**终端**里，一旦有人只看落盘的 md/json 就完全看不到；
+ * - 于是「链路没接」会被读成「模型能力差」。这正是本仓反复踩的
+ *   「无结果伪装成有结果」，也是 ZZZ.5 第 5 条点出的那个陷阱。
+ *
+ * 判据很简单：**产不出真数字时唯一正确的行为是拒绝产出**，不是产出 0 加免责声明。
+ * 所以这里 throw —— 调用方要么处理，要么整个命令失败退出，两种都比静默出 0 好。
+ *
+ * ## 接线时改什么
+ *
+ * 本轮（2026-08-25）真正跑通的是**路径 B**：
+ * `evals/external-benchmarks/swe-bench/exec-swebench.sh` + 官方 harness，
+ * 产物在 `evals/_reports/external/swe-bench-verified.<run_id>.json`
+ * （字段见 `swe-bench/grade.ts` 的 `Acceptance`）。
+ * 接线 = 读那份 json，而不是在这里重新实现一遍跑分。
+ *
+ * ⚠️ 接线时注意两族口径不同：`Acceptance` **刻意没有百分比字段**（D2），
+ * 而这里的 `ExecTrackSummary` 有 `pass_at_1`。别把 10 题的绝对数换算成比率填进去 ——
+ * 那会绕开 D2 那道「不许把 10 题比例画成 release 曲线」的约束。
+ */
 function runExecTrack(args: CliArgs): ExecTrackSummary {
-  console.log(`[external/exec] 骨架占位,未实跑 (model=${args.model})`);
-  console.log(`  ⛔ 原先这里指向 swe-bench/runner.ts + sid_code_solver.py —— 两者是路径 A`);
-  console.log(`     (Inspect AI) 的脚手架,2026-08-24 路径 A 已否决并删除。`);
-  console.log(`  → 路径 B 的实跑入口见 evals/external-benchmarks/swe-bench/接入计划.md §4`);
-  console.log(`  ⚠ 下面 pass=0 是硬编码占位,不是跑分结果 —— 别当数据读。`);
-  return {
-    track: "exec",
-    total: 10,
-    pass: 0,
-    pass_at_1: 0,
-    avg_steps: null,
-    avg_tools: null,
-    avg_duration_s: null,
-    per_instance: [],
-  };
+  void args;
+  throw new Error(
+    "[external/exec] 执行轨未接线 —— 拒绝产出占位数字。\n" +
+      "  原实现返回 pass: 0，那是「判分没发生」被表达成「一条都没解出」，\n" +
+      "  与被否决的路径 A 那个 Score(value=0) 同型（假 0 伪装成没解出）。\n" +
+      "  路径 B 已跑通，接线应改为读 evals/_reports/external/swe-bench-verified.<run_id>.json；\n" +
+      "  只想校验前置就位请用 --validate（那条路不会走到这里）。",
+  );
 }
 
+/**
+ * ⛔ **报告轨未接线：同样直接抛。**
+ *
+ * 与 `runExecTrack` 完全同型的问题，而且这一路更坏：它还带一个
+ * `pass_rate: 0` —— 一个**比率字段**，落盘之后就是一份「通过率 0」的报告，
+ * 谁也看不出那是占位。理由与判据见 `runExecTrack` 的注释。
+ */
 function runReportTrack(_args: CliArgs): ReportTrackSummary {
-  console.log(`[external/report] 调用 cr-samples runner --judge config multi-judge-config.yaml`);
-  console.log(
-    `  ⚠ 骨架占位:S8 实施者按 cr-samples/README.md §6 跑分流程实现 cr-samples runner.ts:`,
+  throw new Error(
+    "[external/report] 报告轨未接线 —— 拒绝产出占位数字。\n" +
+      "  原实现返回 pass: 0 / pass_rate: 0，落盘就是一份「通过率 0」的假报告。\n" +
+      "  接线方式见 evals/external-benchmarks/cr-samples/README.md §6；\n" +
+      "  只想校验前置就位请用 --validate。",
   );
-  console.log(
-    `  // execSync("bun run evals/external-benchmarks/cr-samples/runner.ts --judge ...")`,
-  );
-  return {
-    track: "report",
-    total: 20,
-    pass: 0,
-    pass_rate: 0,
-    avg_total_score: null,
-    avg_must_flag_recall: null,
-    avg_should_flag_recall: null,
-    avg_precision: null,
-    per_sample: [],
-  };
 }
 
 function renderReport(

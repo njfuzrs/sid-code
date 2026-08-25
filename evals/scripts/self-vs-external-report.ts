@@ -24,8 +24,10 @@ import { resolve, join } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "../..");
 const RUNS_DIR = join(REPO_ROOT, "evals/_runs");
-const REPORTS_DIR = join(REPO_ROOT, "_reports/external");
-const TEMPLATE_PATH = join(REPO_ROOT, "_reports/templates/self-vs-external.md");
+// ⚠️ 落点必须是 `evals/_reports/external/`，不是仓库根的 `_reports/external/`。
+// 理由同 run-external-baseline.ts：根 `_reports/` 不入 git，写过去就是静默丢产物。
+const REPORTS_DIR = join(REPO_ROOT, "evals/_reports/external");
+const TEMPLATE_PATH = join(REPO_ROOT, "evals/_reports/templates/self-vs-external.md");
 
 interface CliArgs {
   sprint: string; // 如 "S8"

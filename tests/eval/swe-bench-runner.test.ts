@@ -24,6 +24,8 @@ import {
   buildPrompt,
   isTestPath,
   parseNumstatZ,
+  newFilePaths,
+  patchOnlyAddsFiles,
   splitExtractOutput,
   normalizePatch,
   deriveOutcome,
@@ -224,6 +226,105 @@ describe("parseNumstatZ", () => {
     expect(parseNumstatZ("")).toEqual([]);
     expect(parseNumstatZ("\0\0")).toEqual([]);
   });
+
+  /**
+   * ⛔ 这一组防的是一道**被静默架空的门禁**（2026-08-25 复核 smoke-2 数据时发现）。
+   *
+   * 提取那步在 shell 里是 `extract_out="$(docker exec ...)"`，
+   * 而 **bash 命令替换会丢弃 NUL 字节**。于是 `--numstat -z` 的多条记录
+   * 落盘时首尾相接、没有任何分隔符：
+   *
+   *   "5\t0\tsrc/foo.py3\t1\ttests/test_foo.py2\t0\tsrc/bar.py"
+   *
+   * 旧实现按 NUL 切 → 只得到 1 条，path 是把后面全部记录粘成的怪串 →
+   * `isTestPath` 匹配不上 → **`patch_touches_tests` 恒为 false**，
+   * 「禁改测试文件」这道硬检查就没了。全程 exit 0、字段自洽。
+   *
+   * 实测代价：smoke-2 报告里 `patch_touches_tests: 0` 是个**假阴性** ——
+   * `matplotlib-20488` 的 patch 里确实有 `repro_test.py`。
+   *
+   * 现在容器侧把 NUL 转成 RS(\x1e)（活得过命令替换），TS 侧三种形态都收：
+   * NUL（原生）/ RS（转译后）/ 粘连（旧数据仍要能读）。
+   */
+  test("NUL 被 shell 吃掉后仍能切对 —— 否则 patch_touches_tests 恒 false", () => {
+    const glued = "\n5\t0\tsrc/foo.py3\t1\ttests/test_foo.py2\t0\tsrc/bar.py\n";
+    const files = parseNumstatZ(glued);
+    expect(files.map((f) => f.path)).toEqual(["src/foo.py", "tests/test_foo.py", "src/bar.py"]);
+    // 门禁必须真的能命中那个测试文件
+    expect(files.map((f) => f.path).filter(isTestPath)).toEqual(["tests/test_foo.py"]);
+  });
+
+  test("RS(\\x1e) 分隔（容器侧 tr 转译后的形态）等价于 NUL", () => {
+    const rs = "5\t0\tsrc/foo.py\x1e3\t1\ttests/test_foo.py\x1e";
+    const nul = "5\t0\tsrc/foo.py\x003\t1\ttests/test_foo.py\x00";
+    expect(parseNumstatZ(rs)).toEqual(parseNumstatZ(nul));
+    expect(parseNumstatZ(rs)).toHaveLength(2);
+  });
+
+  test("粘连形态下二进制标记仍分得清", () => {
+    // NUL 丢失 + 混有二进制文件（core dump 那种）
+    const files = parseNumstatZ("-\t-\tcore5\t0\tsrc/a.py");
+    expect(files).toEqual([
+      { path: "core", binary: true },
+      { path: "src/a.py", binary: false },
+    ]);
+  });
+
+  /** 反向断言：路径里含 TAB 时不许被当成字段分隔切断（`-z` 存在的理由） */
+  test("路径含 TAB 也不切断（只有 `数字TAB数字TAB` 才是记录头）", () => {
+    const files = parseNumstatZ("5\t0\ta b/c\td.py\x001\t0\tsrc/x.py\x00");
+    expect(files.map((f) => f.path)).toEqual(["a b/c\td.py", "src/x.py"]);
+  });
+});
+
+describe("newFilePaths / patchOnlyAddsFiles：区分「新建调试脚本」与「改了源码」", () => {
+  /**
+   * 实测背景（2026-08-25 smoke-2）：`django-15128` 与 `matplotlib-20488` 的 patch 里
+   * **只有 agent 自建的复现脚本**（`repro/*.py` / `repro_test.py`），一行源码没改 ——
+   * agent 卡在复现阶段。而这在 `patch_bytes=3412` / `outcome=patch_produced` 上
+   * 完全看不出来。
+   *
+   * ⛔ 刻意**不**在提取时滤掉这些文件（ZZZ.5 第 3 条已否决「提取时排除」）：
+   * 滤掉后那两条会变成干净的 `no_patch`，而 `no_patch` 读起来像「没想出办法」——
+   * 与「想了、试了、卡在复现」是两件不同的事。这个字段只标注，不改判定。
+   */
+  const mkDiff = (entries: { path: string; isNew: boolean }[]) =>
+    entries
+      .map(
+        (e) =>
+          `diff --git a/${e.path} b/${e.path}\n` +
+          (e.isNew ? "new file mode 100644\nindex 0000000..e69de29\n" : "index aaa..bbb 100644\n") +
+          `--- ${e.isNew ? "/dev/null" : `a/${e.path}`}\n+++ b/${e.path}\n@@ -0,0 +1 @@\n+x\n`,
+      )
+      .join("");
+
+  test("全是新建文件 → true（就是那两条 repro 的形态）", () => {
+    const paths = ["repro/run.py", "repro/settings.py"];
+    const diff = mkDiff(paths.map((p) => ({ path: p, isNew: true })));
+    expect(newFilePaths(diff).sort()).toEqual([...paths].sort());
+    expect(patchOnlyAddsFiles(diff, paths)).toBe(true);
+  });
+
+  test("改了既有源码 → false（哪怕同时也新建了调试脚本）", () => {
+    const diff = mkDiff([
+      { path: "django/db/models/base.py", isNew: false },
+      { path: "repro_test_tmp.py", isNew: true },
+    ]);
+    const paths = ["django/db/models/base.py", "repro_test_tmp.py"];
+    expect(patchOnlyAddsFiles(diff, paths)).toBe(false);
+  });
+
+  test("纯改源码 → false，且 newFilePaths 为空", () => {
+    const diff = mkDiff([{ path: "src/_pytest/pathlib.py", isNew: false }]);
+    expect(newFilePaths(diff)).toEqual([]);
+    expect(patchOnlyAddsFiles(diff, ["src/_pytest/pathlib.py"])).toBe(false);
+  });
+
+  /** 空 patch 不许判 true —— 否则一个 no_patch 会被贴上「只新建文件」的标签 */
+  test("空 patch / 空文件列表 → false", () => {
+    expect(patchOnlyAddsFiles("", [])).toBe(false);
+    expect(patchOnlyAddsFiles(mkDiff([{ path: "a.py", isNew: true }]), [])).toBe(false);
+  });
 });
 
 describe("splitExtractOutput", () => {
@@ -415,6 +516,45 @@ describe("buildAcceptance：§6 五个验收字段", () => {
   });
 
   /**
+   * link_ok 的**口径**测试（2026-08-25 补，对应 ZZZ.5 第 2 条）。
+   *
+   * 它是「单次跑完的成功率」，**不合并复跑**。实测背景：smoke-2 有两条零 patch
+   * 让 link_ok=FAIL，各自复跑一次都产出了 patch —— 所以那次 FAIL 是偶发故障。
+   *
+   * ⛔ 这条测试防的是「为了让 link_ok 变绿而在这里合并复跑结果」：
+   * 那会让一条「跑三次才成一次」的链路显示 PASS，而链路不稳正是阶段 A 要发现的。
+   */
+  test("link_ok 是单次口径：只看本次 patch 字节，不因'复跑能成'而转真", () => {
+    const a = buildAcceptance({
+      ...base,
+      patchBytesById: { a: 100, b: 0 }, // b 本次零 patch（复跑能成也不算）
+      report: { resolved_ids: ["a"], unresolved_ids: ["b"] },
+    });
+    expect(a.link_ok).toBe(false);
+    // 反向断言：本次两条都有 patch 才为真（防「恒 false」式误改）
+    expect(buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } }).link_ok).toBe(true);
+  });
+
+  test("link_ok=FAIL 时报告必须点破'单次'与'不等于做不出来'", () => {
+    const md = renderReport(
+      buildAcceptance({
+        ...base,
+        patchBytesById: { a: 100, b: 0 },
+        report: { resolved_ids: ["a"], unresolved_ids: ["b"] },
+      }),
+    );
+    expect(md).toContain("单次");
+    expect(md).toContain("不合并复跑");
+    // 关键的那句免责：FAIL ≠ 能力不足
+    expect(md).toContain("不等于 agent 做不出来");
+    // 变异自证：PASS 时不该出现那段免责（否则这条断言恒真）
+    const okMd = renderReport(buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } }));
+    expect(okMd).not.toContain("不等于 agent 做不出来");
+    // 但「单次」口径的标注在两种情况下都要在
+    expect(okMd).toContain("单次");
+  });
+
+  /**
    * ⚠️ 最关键的一条：report 读不回来时**不许**产出「solved_count: 0 + 一切正常」。
    * 那正是被否决的路径 A 那个 `Score(value=0)` 的同型 ——
    * 它长得和一个真实的 0 分完全一样，但含义是「仪器没接上」。
@@ -580,10 +720,71 @@ describe("normalizePatch：patch 末尾换行", () => {
     expect(normalizePatch(d)).toBe(d + "\n");
   });
 
-  test("多余的尾部空白/多换行 → 收敛成恰好一个换行", () => {
+  test("多余的**换行** → 收敛成恰好一个", () => {
     const core = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1";
-    for (const tail of ["\n", "\n\n\n", "\n  \n\t", "   "]) {
+    for (const tail of ["\n", "\n\n\n", "\n\n\n\n\n"]) {
       expect(normalizePatch(core + tail)).toBe(core + "\n");
+    }
+  });
+
+  /**
+   * ⛔ 这一组是**第二次修**（2026-08-25）加的，它推翻了第一版的一条断言。
+   *
+   * 第一版写 `trimEnd()`，于是这条测试原本断言
+   * `core + "\n  \n\t"` 和 `core + "   "` 都收敛成 `core + "\n"` ——
+   * **那个断言本身是错的，它把 bug 固化成了"正确行为"**。
+   *
+   * 在 unified diff 里 `" "` 开头的行是**合法上下文行**，
+   * 一个仅含单空格的行就是「上下文里的空行」。剥掉它 → hunk body 比
+   * `@@ -a,b +c,d @@` 声明的行数少 → patch 自相矛盾 →
+   * `git apply` 报 `corrupt patch`（实测 exit=128）。
+   *
+   * 容器内三格变异自证（同一份 astropy-12907 patch、同一个官方镜像）：
+   *   trimEnd()            → exit=128 corrupt patch at line 12
+   *   trimEnd() + 补 \n    → exit=128 corrupt patch at line 13   ← 第一版"修复"没修好
+   *   只规范换行（现在）    → exit=0   Applied patch ... cleanly
+   *
+   * 所以不变量是「**除末尾换行之外逐字不变**」，而不是「末尾清干净」。
+   */
+  test("末尾的空上下文行（单空格行）不许被吃掉 —— 吃掉就 corrupt patch", () => {
+    // 真实形态：hunk 声明 7 行上下文，最后一行是内容仅一个空格的上下文行
+    const d =
+      "diff --git a/x.py b/x.py\n" +
+      "--- a/x.py\n+++ b/x.py\n" +
+      "@@ -1,3 +1,3 @@\n" +
+      " a\n-b\n+c\n \n";
+    const out = normalizePatch(d);
+    expect(out).toBe(d); // 逐字不变（本来就是恰好一个尾换行）
+    // 关键断言：末尾那个 " " 上下文行还在
+    expect(out.split("\n").at(-2)).toBe(" ");
+    // 行数不变 —— 少一行就是 hunk 与 header 对不上
+    expect(out.split("\n").length).toBe(d.split("\n").length);
+  });
+
+  test("末尾非换行空白（空格/tab）不许剥 —— 它可能是上下文行的内容", () => {
+    const core = "diff --git a/x b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n";
+    // "\n  \n\t" 这种尾巴里，" " / "\t" 都可能是合法上下文行的行内内容
+    expect(normalizePatch(core + "  ")).toBe(core + "  \n");
+    expect(normalizePatch(core + " \n")).toBe(core + " \n");
+    expect(normalizePatch(core + " \n\n\n")).toBe(core + " \n");
+    // 反向断言（防「改成什么都不做也能过」）：多余换行仍然被收敛
+    expect(normalizePatch(core + "\n\n\n")).toBe(core);
+  });
+
+  /**
+   * 不变量的机械表述，直接锁住"只许动换行"这件事：
+   * 输出去掉尾部换行后，必须与输入去掉尾部换行后**逐字相同**。
+   */
+  test("不变量：除尾部换行外，输出与输入逐字相同", () => {
+    const samples = [
+      "diff --git a/x b/x\n@@ -1,3 +1,3 @@\n a\n-b\n+c\n \n",
+      "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1",
+      "diff --git a/x b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n\t\n\n",
+      "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x\n\\ No newline at end of file\n",
+    ];
+    for (const s of samples) {
+      const strip = (v: string) => v.replace(/\n+$/, "");
+      expect(strip(normalizePatch(s))).toBe(strip(s));
     }
   });
 

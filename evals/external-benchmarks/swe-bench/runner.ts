@@ -75,6 +75,14 @@ export interface RunRecord {
   patch_touches_tests: boolean;
   /** 触及的测试文件路径（便于人工复核，不参与判分） */
   test_files_touched: string[];
+  /**
+   * patch 里**只有新建文件**、一行既有源码都没改。
+   *
+   * 观测字段，**不参与任何判定**（判分仍归官方 harness）。存在的理由见
+   * `patchOnlyAddsFiles`：这个形态在 `patch_bytes` / `outcome` 上完全看不出来，
+   * 而它与「做出了修复」是两件事。
+   */
+  patch_only_adds_files: boolean;
   /** harness 自己的时钟，不是 agent 自报（§6.3 诚实字段） */
   wall_ms: number;
   /** agent 退出码；非 0 → agent_error */
@@ -233,19 +241,116 @@ export function isTestPath(path: string): boolean {
  * `-z` 的记录格式：`add TAB del TAB path NUL`，二进制文件的 add/del 是 `-`。
  * ⚠️ 用 `-z` 是必须的：路径含空格/中文时非 `-z` 输出会被 quote 成 `"a\tb"`，
  * 按 TAB 切会切错。renames 用 `--no-renames` 关掉（否则一条记录里有两个路径）。
+ *
+ * ## ⚠️ 但**实际拿到的输入里 NUL 已经没了**（2026-08-25 实测）
+ *
+ * 提取那一步在 shell 里是 `extract_out="$(docker exec ... )"` ——
+ * **bash 命令替换会丢弃 NUL 字节**（POSIX 行为，还会打 warning 但被 2>&1 吞了）。
+ * 所以本函数收到的是多条记录**首尾相接、没有分隔符**的一坨：
+ *
+ *     "5\t0\tsrc/foo.py3\t1\ttests/test_foo.py2\t0\tsrc/bar.py"
+ *
+ * 按 `\0` 切只得到 **1 条**记录，`path` 是把后面所有记录粘在一起的怪串。
+ * 危害不是「少报几个文件名」：`isTestPath` 对那个怪串**匹配不上**，于是
+ * **`patch_touches_tests` 恒为 false —— 那道防作弊硬检查被静默架空**
+ * （实测：NUL 完好时判 true 的同一份输入，NUL 丢失后判 false）。
+ *
+ * 修法是**不再依赖 NUL 分隔**，改用「`add TAB del TAB` 前缀」本身做记录边界：
+ * 那个前缀的形态（两个数字或 `-`，各跟一个 TAB）足以定位下一条记录的起点。
+ * NUL 若还在也照样能切（下面先按 NUL 拆一层）—— 两种输入都对，
+ * 因为**不能假设上游哪天不会把 NUL 修回来**。
+ *
+ * ⛔ 不要「改成不带 `-z`」来绕开：那会把带空格/中文的路径 quote 掉（本函数注释
+ * 第一段就是为此存在的），等于用一个新错换掉旧错。
  */
 export function parseNumstatZ(out: string): { path: string; binary: boolean }[] {
   const files: { path: string; binary: boolean }[] = [];
-  for (const rec of out.split("\0")) {
-    if (!rec) continue;
-    const parts = rec.split("\t");
-    if (parts.length < 3) continue;
-    const [add, , ...rest] = parts;
-    const path = rest.join("\t");
-    if (!path) continue;
-    files.push({ path, binary: add === "-" });
+  // ① 先按记录分隔符拆：NUL（原生 `-z`）或 RS `\x1e`（提取脚本转译后的，见那边注释）。
+  //    NUL 被 shell 吃掉时这一层只会得到一段，交给 ② 兜住。
+  for (const chunk of out.split(/[\0\x1e]/)) {
+    if (!chunk.trim()) continue;
+    files.push(...splitGluedNumstat(chunk));
   }
   return files;
+}
+
+/**
+ * 把一段（可能是多条粘连的）numstat 切开。
+ *
+ * 判据是记录头的形态 `<add>TAB<del>TAB`，其中 add/del 是数字或 `-`（二进制）。
+ * 路径里可以有空格、TAB、中文，但**不会**出现这个形态的字段头 ——
+ * 所以拿它当边界是可靠的。只有一条记录时这就退化成一次匹配。
+ */
+function splitGluedNumstat(chunk: string): { path: string; binary: boolean }[] {
+  const heads = [...chunk.matchAll(/(\d+|-)\t(?:\d+|-)\t/g)];
+  const out: { path: string; binary: boolean }[] = [];
+  for (let i = 0; i < heads.length; i++) {
+    const h = heads[i];
+    const from = h.index + h[0].length;
+    // 路径一直延伸到下一条记录头的起点（最后一条到末尾）
+    const to = i + 1 < heads.length ? heads[i + 1].index : chunk.length;
+    const path = chunk.slice(from, to).replace(/\n+$/, "");
+    if (path) out.push({ path, binary: h[1] === "-" });
+  }
+  return out;
+}
+
+/**
+ * 从 diff 文本里取出**新建**文件的路径（`new file mode` 那种）。
+ *
+ * numstat 分不出「新建」与「改了已有文件」—— 两者都是 add/del 计数。
+ * 而这个区分是下面 `patchOnlyAddsFiles` 的判据基础，所以只能从 diff 正文取。
+ */
+export function newFilePaths(diff: string): string[] {
+  const paths: string[] = [];
+  const lines = diff.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(lines[i]);
+    if (!m) continue;
+    // `new file mode` 紧跟在 `diff --git` 之后（可能隔着 old/new mode 行），
+    // 但一定在下一个 `diff --git` 之前。
+    for (let j = i + 1; j < lines.length && !lines[j].startsWith("diff --git "); j++) {
+      if (lines[j].startsWith("new file mode ")) {
+        paths.push(m[2]);
+        break;
+      }
+    }
+  }
+  return paths;
+}
+
+/**
+ * 「这份 patch **只新建了文件**，一行既有源码都没改」。
+ *
+ * ## 为什么需要这个信号（实测，2026-08-25 smoke-2）
+ *
+ * `django-15128` 与 `matplotlib-20488` 两条的 patch 里**只有 agent 自己建的
+ * 复现脚本**（`repro/*.py`、`repro_test.py`），一行源码都没动 ——
+ * agent 卡在「复现问题」这一步，没走到修复。
+ *
+ * 但这件事**在现有字段里完全看不出来**：`patch_bytes=3412` 看着很像正经修复，
+ * `outcome=patch_produced` 也是正常值。要发现它只能人去读 diff。
+ *
+ * ## 它**不改变**任何判定，只是把事实标出来
+ *
+ * ⛔ 刻意**不**在提取时把这些文件滤掉（ZZZ.5 第 3 条已裁决否决「提取时排除」）：
+ * 滤掉之后那两条会变成干净的 `no_patch`，而 `no_patch` 读起来像
+ * 「没想出办法」—— 和「想了、试了、**卡在复现阶段**」是两件不同的事。
+ * 提取时替 agent 打扫会掩盖它的行为特征，那是在伪造一个更好看的过程。
+ *
+ * ⛔ 也**不**据此判失败：新建文件里可能就有正经修复
+ * （比如题目要求新增一个模块）。所以判据是「只新建、且新建的全部不是源码修改」，
+ * 结论只进 `unaccounted` 供人复核。
+ *
+ * ⚠️ 同样**不改 prompt-v1**：`prompt-v1` 是入库写死不再改的契约（D17 第 3 条），
+ * 改它意味着起 `prompt-v2` 并**重跑一轮基线**（之前所有分数不可比）。
+ * 先用这个字段量出「这个形态到底多常见」，再决定值不值得付那个代价。
+ */
+export function patchOnlyAddsFiles(diff: string, allPaths: string[]): boolean {
+  if (allPaths.length === 0) return false;
+  const created = new Set(newFilePaths(diff));
+  // 每一个被改的文件都是新建的 → 没有任何既有文件被修改
+  return allPaths.every((p) => created.has(p));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -387,10 +492,49 @@ export function deriveOutcome(input: {
  *
  * 空 diff 保持空字符串：给空串补换行会让 `patchBytes` 从 0 变 1，
  * `deriveOutcome` 就会把一个 no_patch 误判成「有 patch」。
+ *
+ * ## ⛔ 只许动换行，**绝不许动最后一行的内容**（2026-08-25 第二次修，教训在此）
+ *
+ * 第一版写的是 `diff.trimEnd()` 再补一个 `\n`。它**同时**做了两件事，
+ * 而第二件是错的：`trimEnd()` 剥的是「全部尾部空白」，
+ * 于是把 diff 末尾那些**内容只有一个空格的行**也一起吃掉了 ——
+ * 而在 unified diff 里，`" "` 开头的行是**合法的上下文行**，
+ * 一个仅含单空格的行就是「上下文里的空行」。
+ *
+ * 吃掉它之后 hunk body 比 `@@ -a,b +c,d @@` 声明的行数**少**，patch 自相矛盾：
+ *
+ *     error: corrupt patch at line 12        (git apply, exit=128)
+ *
+ * 三格变异自证（同一份 astropy-12907 的 patch，同一个官方镜像容器内）：
+ *
+ * | 版本 | `git apply` |
+ * | --- | --- |
+ * | `trimEnd()`（第一版） | exit=128 `corrupt patch at line 12` |
+ * | `trimEnd()` + 补 `\n`（第一版的"修复"） | exit=128 `corrupt patch at line 13` ← **没修好** |
+ * | 只规范换行、保留末尾上下文行（现在） | **exit=0** `Applied patch ... cleanly` |
+ *
+ * ⚠️ **为什么第一版看起来是修好了**：官方 harness 的打补丁链路是四级回落
+ * （`git apply` → `--3way` → `--reject` → `patch --batch --forward --fuzz=5`）。
+ * 前三级全挂之后，最后那级 GNU patch 会**带 fuzz 模糊匹配**把行数不对的 hunk
+ * 硬塞进去（日志里是 `Hunk #1 succeeded at 242 with fuzz 2`）。
+ * 实测 smoke-2 那 6 条 solved **全部**是这么进去的 —— 它们并不是"恰好没踩到"，
+ * 而是**踩到了但被最后一级兜住**。所以「解出来了」推不出「patch 是好的」，
+ * 判据必须看日志里 `git apply` 那一级是否 exit=0，不能只看 resolved_ids。
+ *
+ * ⚠️ 同样别指望 mac 上能测出来：这条与缺尾换行那条一样只在容器里的
+ * GNU patch / 严格 `git apply` 下暴露。单测因此断言的是**字节形态不变量**
+ * （「除末尾换行外与输入逐字相同」），不是去跑 patch 命令。
  */
 export function normalizePatch(diff: string): string {
-  const trimmed = diff.trimEnd();
-  return trimmed.length > 0 ? `${trimmed}\n` : "";
+  // 「没有任何实质内容」必须归零，否则 `patchBytes` 会从 0 变成正数，
+  // `deriveOutcome` 把 no_patch 误判成 patch_produced —— 又一次「无结果伪装成有结果」。
+  // ⚠️ 判据用 `trim()` 只是**判空**，不参与产出（产出仍逐字保留原内容）：
+  // 一份只有空白的 diff 不可能是有效补丁，但一份有效补丁的**末尾**完全可以是空白行。
+  if (diff.trim().length === 0) return "";
+  // ⛔ 只塌陷末尾的**换行符本身**，不碰任何其他字符 ——
+  // 尤其不能用 trimEnd()/正则 `\s*$`：`\s` 含空格与 \t，
+  // 会吃掉合法的上下文行（`" "` 开头）与行内缩进。
+  return `${diff.replace(/\n+$/, "")}\n`;
 }
 
 export function splitExtractOutput(out: string): { numstat: string; diff: string } {

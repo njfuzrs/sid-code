@@ -10,9 +10,11 @@
 
 ⚠️ **落点是 `evals/_reports/external/`，不是仓库根的 `_reports/external/`。**
 根 `_reports/` 不在 git 追踪范围内（`evals/_reports/` 才是资产目录，见 `.gitignore` 注释），
-写到那里等于产物丢失。`evals/scripts/run-external-baseline.ts` 与
-`evals/scripts/self-vs-external-report.ts` 当前**都指向根 `_reports/`**，
-它们本身还是骨架（预期返回值硬编码为 0），接入实跑时必须把落点改到这里 —— 见下方「已知漂移」。
+写到那里等于产物丢失，而脚本还会打印「报告已落: ...」—— 看不出丢了。
+
+✅ **2026-08-25 已改对**：`evals/scripts/run-external-baseline.ts` 与
+`self-vs-external-report.ts` 的落点都指到了本目录（原先指向根 `_reports/`）。
+它们仍未接线，但**不再产出占位数字**——见下方「已知漂移」。
 
 ## 三条隔离铁律
 
@@ -50,13 +52,25 @@ patch_touches_tests : n     ← 「禁改测试文件」那道硬检查的计数
 
 ## 已知漂移（接实跑前必须处理）
 
-| 文件 | 问题 |
+| 文件 | 状态 |
 | --- | --- |
-| `evals/scripts/run-external-baseline.ts` | 落点写的是根 `_reports/external`（`:27`）；preflight 仍断言已删除的 3 个 Inspect 文件存在 |
-| `evals/scripts/self-vs-external-report.ts` | 同样指向根 `_reports/external`（`:27`）；依赖不存在的 `_reports/templates/` 模板 |
+| `evals/scripts/run-external-baseline.ts` | ✅ 落点已改到 `evals/_reports/external/`；✅ 两条轨未接线时**直接抛**，不再返回 `pass: 0`；⚠️ 仍依赖不存在的 `evals/_reports/templates/` 模板（只在 `--validate` 的 report 轨断言里用到） |
+| `evals/scripts/self-vs-external-report.ts` | ✅ 落点已改到 `evals/_reports/external/`；⚠️ 同样依赖不存在的模板 |
 
-两个脚本都还是骨架（`runExecTrack` 硬编码返回 `pass: 0`），**当前跑出来的数字没有意义**，
-所以本次不改它们的逻辑，只在此登记。接实跑那个 PR 一并修。
+**这两个脚本属于路径 A（Inspect），本轮跑通的全部是路径 B**
+（`swe-bench/exec-swebench.sh` + 官方 harness）。所以它们**仍未接线** ——
+但接线前调用它们现在会**非 0 退出并说明原因**，而不是产出一份「通过率 0」的假报告。
+
+> ⛔ 为什么不是「打个 warning 然后返回 0」（原来就是这么写的）：
+> `pass: 0` / `pass_rate: 0` 都是**合法取值**，落盘后渲染、下游 gap 计算全都照跑，
+> 而那行 warning 只在终端里 —— 只看 md/json 的人完全看不到。
+> 于是「链路没接」被读成「模型能力差」。这与被否决的路径 A 那个
+> `Score(value=0)` 是同一个陷阱换了位置。
+> **产不出真数字时唯一正确的行为是拒绝产出。**
+>
+> 接线时注意：路径 B 的 `Acceptance`（`swe-bench/grade.ts`）**刻意没有百分比字段**（D2），
+> 而 `ExecTrackSummary` 有 `pass_at_1`。别把 10 题的绝对数换算成比率填进去 ——
+> 那会绕开「不许把 10 题比例画成 release 曲线」那道约束。
 
 ## 相关文档
 
