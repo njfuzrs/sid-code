@@ -35,6 +35,12 @@ on:
         default: "0.5"
         required: false
 
+# 顶层最小权限（2026-08-24，G1）：下方 job 已有同款 job 级声明，这里再写一遍顶层
+# 是为了「没写 permissions 的 job 也不会继承仓库默认」—— 将来往本文件加第二个 job
+# 时，忘记写 job 级声明的那个 job 会落到这个只读顶层上，而不是落到仓库默认（可能 write-all）。
+permissions:
+  contents: read
+
 jobs:
   smoke-eval:
     runs-on: ubuntu-latest
@@ -69,11 +75,11 @@ jobs:
 
       - name: Checkout
         if: steps.guard.outputs.has_key == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
         if: steps.guard.outputs.has_key == 'true'
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
 
@@ -102,7 +108,7 @@ jobs:
       # 找不到 path 而报 warning 甚至失败 —— 又是一条「跳过反而制造噪声」的坑。
       - name: Upload smoke results
         if: steps.smoke.outcome != 'skipped'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smoke-eval-results
           path: |

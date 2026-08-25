@@ -3,7 +3,8 @@
 #
 # 用法：
 #   ./scripts/release.sh                        # 门禁(bun test)+bump 版本号+构建 4 目标并打包到 dist/release/
-#   ./scripts/release.sh --upload                # 打包后上传到服务器
+#   ./scripts/release.sh --upload                # 打包后上传到服务器（发到 beta 通道，见下方「发布通道」）
+#   ./scripts/release.sh --promote <version>     # 把 stable 通道指向某个已上传版本（纯指针，不构建）
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
@@ -11,7 +12,30 @@
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
 #
-# 发布前门禁：默认先跑 `bun test` 全量单测，失败即中止（坏版本不会推到 latest.txt）。
+# ─── 发布通道（2026-08-24 接入，A2）────────────────────────────────────────────
+#
+# 服务器顶层现在有**两个指针文件**，两者都只写一行版本号：
+#   · beta.txt    抢先通道。`--upload` 每次都写它。
+#   · latest.txt  稳定通道。**只有 `--promote <version>` 会动它。**
+#
+# 用户侧：`sid-code update` / install.sh 缺省读 latest.txt；
+#         `SID_CODE_CHANNEL=beta` 读 beta.txt。
+#
+# 治的是什么：此前 `--upload` 直接写 latest.txt —— 一次发布，全部用户下次 update 立刻
+# 拿到，中间没有任何真实使用的观察期。而自动化门禁（bun test / 冒烟 / --self-check）
+# 全是确定性检查，测不出 UX 回归、交互卡死这类只有真用才暴露的问题。
+#
+# ⚠️ 两个通道共用**同一批版本目录** `<DEPLOY_PATH>/<version>/`，promote 只挪指针、
+# 不重新构建、不复制文件。这是这个设计的核心：用户装到的字节与 beta 期被测的字节
+# 是同一份。若给 beta 单独一套目录，promote 就要复制或重建，"泡制期测的就是要发的
+# 东西"这个唯一价值当场消失。
+#
+# ⚠️ 旧版本清理（RELEASE_KEEP_VERSIONS）现在按 **mtime 保留最近 N 个之外，额外保护
+# 两个指针指向的版本**。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
+# 那版挤出保留窗口删掉 —— 而 latest.txt 还在指着它，形态是**所有稳定版用户装不上**
+# （404），且服务器上什么都不会报错。
+#
+# 发布前门禁：默认先跑 `bun test` 全量单测，失败即中止（坏版本不会推到任何通道）。
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
 #   加 --skip-test 可跳过单测（救急用），冒烟测试始终执行、不可跳过。
 #
@@ -193,10 +217,18 @@ DO_BUMP=true
 DO_TEST=true
 ALLOW_DIRTY=false
 NO_COMMIT=false
+DO_PROMOTE=false
+PROMOTE_VERSION=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --upload) DO_UPLOAD=true; shift ;;
+        --promote)
+            DO_PROMOTE=true
+            PROMOTE_VERSION="${2:-}"
+            [ -n "$PROMOTE_VERSION" ] || { echo "错误: --promote 需要传入版本号: --promote 0.1.601"; exit 1; }
+            shift 2
+            ;;
         --no-bump) DO_BUMP=false; shift ;;
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
@@ -383,6 +415,108 @@ on_exit() {
 }
 
 trap on_exit EXIT
+
+# ─── 促升：把 stable 通道（latest.txt）指向某个已上传版本（不涉及构建）───────────
+#
+# 纯指针操作，刻意**不重新构建、不重新上传任何产物**：被促升的版本目录就是 beta 期
+# 用户真正装过的那一份字节。这一条正是 A2 与"再发一版给 stable"的本质区别 ——
+# 后者会让稳定版用户装到一份从未被任何人跑过的新构建。
+#
+# 三道前置校验，缺一个这条命令就可能把 latest.txt 指到一个装不上的版本：
+#   ① 版本目录在服务器上存在；
+#   ② 目录内 4 个平台的 tarball 与 .sha256 都在（半成品目录也可能存在）；
+#   ③ 服务器端 sha256 复核通过（与上传时同一套判据，防"传上去之后坏了"）。
+#
+# 促升前的 CUJ 人工验收清单是 B1 的范围（本批不做），这里只在开头提醒一句 ——
+# 提醒不是门禁，写死一道"清单已勾"的机械检查需要先有清单这个载体。
+if [ "$DO_PROMOTE" = true ]; then
+    require_ssh_user
+    echo "=== 促升到稳定通道：v${PROMOTE_VERSION} ==="
+    echo ""
+    echo "  ⓘ 促升前应已完成人工验收（beta 通道实际使用过）。"
+    echo "    本命令只挪指针，不重新构建 —— 用户装到的字节与 beta 期被测的完全一致。"
+    echo ""
+
+    _promote_remote_dir="${DEPLOY_PATH}/${PROMOTE_VERSION}"
+
+    # ① + ② 目录存在且产物齐全（按 TARGETS 的平台清单逐个点名，不数文件个数：
+    # 数个数会被残留的 .part / 旧命名文件糊弄过去）
+    _check_cmd="set -e
+[ -d '${_promote_remote_dir}' ] || { echo __NO_DIR__; exit 0; }
+cd '${_promote_remote_dir}'
+_missing=''
+for p in $(for t in "${TARGETS[@]}"; do echo "${t#*:}"; done | tr '\n' ' '); do
+    f=\"sid-code-${PROMOTE_VERSION}-\$p.tar.gz\"
+    [ -f \"\$f\" ] || _missing=\"\$_missing \$f\"
+    [ -f \"\$f.sha256\" ] || _missing=\"\$_missing \$f.sha256\"
+done
+if [ -n \"\$_missing\" ]; then echo \"__MISSING__\$_missing\"; exit 0; fi
+echo __COMPLETE__"
+    _check_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_check_cmd" 2>&1)" \
+        || fail "无法检查服务器上的 v${PROMOTE_VERSION}：${_check_out}"
+    case "$_check_out" in
+        *__NO_DIR__*)
+            fail "服务器上没有 v${PROMOTE_VERSION} 的版本目录（${_promote_remote_dir}）—— 先跑一次 --upload，或确认版本号"
+            ;;
+        *__MISSING__*)
+            fail "v${PROMOTE_VERSION} 产物不完整，拒绝促升（缺：${_check_out#*__MISSING__}）"
+            ;;
+        *__COMPLETE__*)
+            ok "v${PROMOTE_VERSION} 产物齐全（${#TARGETS[@]} 个平台）"
+            ;;
+        *)
+            fail "产物完整性检查输出异常：${_check_out}"
+            ;;
+    esac
+
+    # ③ sha256 复核（与上传路径同一套写法与降级判据）
+    info "服务器端复核 sha256 ..."
+    _promote_verify_cmd="cd '${_promote_remote_dir}' || exit 1
+for s in *.sha256; do
+    [ -e \"\$s\" ] || continue
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
+    else
+        echo \"__NO_SHA_TOOL__\"; exit 0
+    fi
+done
+echo __SHA_OK__"
+    _promote_verify_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_promote_verify_cmd" 2>&1)" \
+        || fail "促升前 sha256 复核失败，latest.txt 未改动：${_promote_verify_out}"
+    case "$_promote_verify_out" in
+        *__SHA_OK__*)      ok "sha256 复核通过" ;;
+        *__NO_SHA_TOOL__*) warn "服务器上没有 sha256sum/shasum，跳过复核" ;;
+        *)                 fail "sha256 复核输出异常：${_promote_verify_out}" ;;
+    esac
+
+    # 记录促升前的 latest，打进日志 —— 回滚时要用它，而出事时人不会记得上一版是几
+    _prev_latest="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cat '${DEPLOY_PATH}/latest.txt' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]')"
+
+    # 写指针：本地生成再 scp，与 --upload 路径同一套写法（不用 ssh echo 重定向，
+    # 那样引号层数一多就容易在远端 shell 里被吃掉）
+    _promote_tmp="$(mktemp)"
+    echo "$PROMOTE_VERSION" > "$_promote_tmp"
+    run_scp "$_promote_tmp" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/latest.txt" \
+        || { rm -f "$_promote_tmp"; fail "写 latest.txt 失败（稳定通道保持在 v${_prev_latest:-未知}）"; }
+    rm -f "$_promote_tmp"
+
+    echo ""
+    ok "稳定通道已指向 v${PROMOTE_VERSION}${_prev_latest:+（原为 v${_prev_latest}）}"
+    echo ""
+    echo "  验证："
+    echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/latest.txt"
+    echo ""
+    if [ -n "$_prev_latest" ]; then
+        echo "  出问题回滚（秒级，纯指针）："
+        echo "    ./scripts/rollback.sh ${_prev_latest}"
+        echo ""
+    fi
+    RELEASE_OK=true
+    exit 0
+fi
 
 # ─── 单独上传团队默认配置（不涉及版本构建）───
 
@@ -746,6 +880,14 @@ echo ""
 sed "s#https://www\.sid-code\.cc#${PUBLIC_BASE_URL}#g" \
     "$SCRIPT_DIR/install-template.sh" > "$RELEASE_DIR/install.sh"
 chmod +x "$RELEASE_DIR/install.sh"
+
+# 通道指针（A2）：本次构建的版本进 **beta**，稳定通道由 --promote 单独挪。
+#
+# 本地 dist/release/ 仍写一份 latest.txt，但它是**本地验证专用**：
+# `RELEASE_BASE="file://$RELEASE_DIR" bash install.sh` 不带 SID_CODE_CHANNEL 时读的就是它，
+# 缺了这份文件本地验证会直接失败。上传时**不传它**（见下方上传段）——
+# 服务器上的 latest.txt 是稳定通道的唯一权威，只能被 --promote 改写。
+echo "$VERSION" > "$RELEASE_DIR/beta.txt"
 echo "$VERSION" > "$RELEASE_DIR/latest.txt"
 
 # 把仓库根 CHANGELOG.md 纳入发布产物（服务器顶层），让 file://$RELEASE_DIR
@@ -761,6 +903,7 @@ ls -1 "$VERSION_DIR"
 echo ""
 echo "  本地验证（不碰真实服务器）："
 echo "    RELEASE_BASE=\"file://$RELEASE_DIR\" bash $RELEASE_DIR/install.sh"
+echo "    SID_CODE_CHANNEL=beta RELEASE_BASE=\"file://$RELEASE_DIR\" bash $RELEASE_DIR/install.sh"
 
 # ─── 北极星指标快照（P1-5 第一层：版本间对比）───────────────────────────────
 #
@@ -885,21 +1028,43 @@ fi"
         run_scp "$RELEASE_DIR/CHANGELOG.md" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/CHANGELOG.md"
     fi
 
-    # latest.txt 放最后：确保它指向的版本此时已经完整上传
-    run_scp "$RELEASE_DIR/latest.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/latest.txt"
+    # ─── 通道指针：只写 beta.txt，**绝不动 latest.txt**（A2）───────────────────
+    #
+    # 放最后的理由与原先一样：指针指向的版本此时已完整上传并校验过。
+    #
+    # ⚠️ 这里不再上传 latest.txt —— 那是 A2 的全部意义所在。改回去（或顺手加一行
+    # "反正是同一个版本号"）就等于取消整个通道机制：一次 --upload 立刻全量放量，
+    # 泡制期归零，而**不会有任何东西报错**。反漂移断言在
+    # tests/release-flow-contract.test.ts「发布通道」那组。
+    run_scp "$RELEASE_DIR/beta.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/beta.txt"
+    ok "beta 通道已指向 v${VERSION}（稳定通道未改动，需 --promote 显式促升）"
 
     # ─── 服务器端清理旧版本：保留最近 RELEASE_KEEP_VERSIONS 个版本目录 ───
-    # 只删除形如 <path>/<x.y.z>/ 的版本目录，install.sh / latest.txt / team-defaults.json 不受影响。
-    info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个）..."
+    # 只删除形如 <path>/<x.y.z>/ 的版本目录，install.sh / 两个指针 / team-defaults.json 不受影响。
+    #
+    # ⚠️ 通道指向的版本额外豁免（A2 的必要配套，不是保险起见）：
+    # beta 泡制期连发几版会把 stable 指向的那版挤出「最近 N 个」窗口。删掉之后
+    # latest.txt 还在指着它，形态是**全部稳定版用户 404 装不上**，而服务器端
+    # 什么都不会报错、清理日志看起来一切正常。这是 A2 引入的新失效模式 ——
+    # 单通道时代 latest 永远是最新的那个，不可能被自己的保留窗口挤掉。
+    #
+    # 判据取「两个指针文件的当前内容」而不是「最近 N 个」：指针是权威，mtime 不是。
+    info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本）..."
     # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
     # 本地展开：DEPLOY_PATH / 保留数量；远程展开：$d 等（用 \$ 转义留给远端 shell）。
     _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
     CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
+_pinned=\"\$(cat latest.txt 2>/dev/null | tr -d '[:space:]') \$(cat beta.txt 2>/dev/null | tr -d '[:space:]')\"
 ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     d=\"\${d%/}\"
     case \"\$d\" in
-        *[0-9].*[0-9].*[0-9]) rm -rf -- \"\$d\" && echo \"  已删除旧版本 \$d\" ;;
+        *[0-9].*[0-9].*[0-9]) ;;
+        *) continue ;;
     esac
+    case \" \$_pinned \" in
+        *\" \$d \"*) echo \"  保留 \${d}（通道指针指向它）\"; continue ;;
+    esac
+    rm -rf -- \"\$d\" && echo \"  已删除旧版本 \$d\"
 done"
     run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
 
@@ -931,7 +1096,16 @@ done"
     fi
 
     echo ""
-    ok "发布完成！安装命令："
+    ok "已发布到 beta 通道（v${VERSION}）。稳定通道用户**还拿不到它**。"
+    echo ""
+    echo "  装 beta 版验收："
+    echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash"
+    echo "    SID_CODE_CHANNEL=beta sid-code update    # 已装过 beta 的机器"
+    echo ""
+    echo "  验收通过后促升到稳定通道（纯指针，不重新构建）："
+    echo "    ./scripts/release.sh --promote ${VERSION}"
+    echo ""
+    echo "  稳定通道当前安装命令（未受本次发布影响）："
     echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/install.sh | bash"
     echo ""
     echo "  📄 更新日志（官网）: ${PUBLIC_BASE_URL}/changelog"

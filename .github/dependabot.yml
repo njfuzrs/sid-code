@@ -134,6 +134,13 @@ updates:
           - "*"
 
   # ─── GitHub Actions ───
+  #
+  # ⚠️ 这一条是 SHA 钉法（2026-08-24，G1）能长期成立的前提，别删。
+  # 全部 action 现在钉的是 40 位 commit SHA 而不是 `@v7`：安全性来自"上游动不了我们的代码"，
+  # 代价是**升级不再自动发生** —— 没有这条通道，SHA 会一直停在钉住那天的版本，
+  # 上游修了漏洞我们也拿不到，而且**不会有任何信号**（tag 钉法至少会自动跟进 patch）。
+  # Dependabot 的 github-actions 生态认得 SHA 钉法，提 PR 时会把 SHA 与后面
+  # `# vX.Y.Z` 注释一起改，所以那行注释不会与 SHA 脱节。
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

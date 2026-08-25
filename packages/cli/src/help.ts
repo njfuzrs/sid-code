@@ -190,6 +190,11 @@ Worktree 隔离:
   SID_RIPGREP_PATH              指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源）
   SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）
 
+  安装与更新:
+  SID_CODE_CHANNEL              发布通道 stable|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带
+  SID_CODE_RELEASE_HOST         发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https）
+  SID_CODE_INSTALL_URL          install.sh 完整 URL 覆盖（非标准路径时用）
+
   颜色控制:
   NO_COLOR                      禁用颜色输出（标准约定）
   FORCE_COLOR                   强制颜色级别 (0-3)
@@ -234,7 +239,7 @@ Worktree 隔离:
   SID_STRUCTURED_OUTPUT_MAX_RETRIES  结构化输出最大重试次数（缺省 5）
   SID_DISABLE_TAB_STATUS        设为 1 禁用终端 Tab 状态指示
   SID_CODE_DISABLE_MOUSE_CLICKS  设为 1 禁用鼠标点击
-  SID_CODE_VERSION              版本号覆盖（缺省读 package.json）
+  SID_CODE_VERSION              版本号覆盖（缺省读 package.json）；⚠️ install.sh 也读它，但语义是"锁定安装哪个版本"——两处同名不同义，别在长期 shell 里 export 它
   SID_CODE_FLAG_<NAME>          Feature Flag 动态覆盖（如 SID_CODE_FLAG_LOOP_DETECTION）
 
   Hook 脚本可访问的环境变量（运行时注入）:

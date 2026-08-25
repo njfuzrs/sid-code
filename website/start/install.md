@@ -97,9 +97,33 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSI
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `SID_CODE_VERSION` | 锁定安装版本，默认读服务器 `latest.txt` |
+| `SID_CODE_VERSION` | 锁定安装版本，默认读服务器通道指针 |
+| `SID_CODE_CHANNEL` | 发布通道 `stable`（默认）/ `beta`，见下节 |
 | `SID_CONFIG_DIR` | 配置目录，默认 `~/.sid-code` |
 | `RELEASE_BASE` | 下载地址前缀，默认内置团队服务器 |
+
+## 抢先版（beta 通道）
+
+新版本先发到 `beta` 通道泡一段时间，验收没问题才促升到稳定版。
+想提前拿到新功能、并且愿意帮忙暴露问题，就装 beta：
+
+```bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash
+```
+
+两个通道装到的是**同一批产物**，promote 只是把稳定通道的指针挪过去 —— 也就是说
+你在 beta 期跑的二进制，与之后所有人拿到的是同一份字节，没有"再构建一次"这一步。
+
+::: warning 通道不会被记住
+通道靠环境变量决定，**不写进本地配置**。下次更新不带变量就会回到稳定版：
+
+```bash
+SID_CODE_CHANNEL=beta sid-code update    # 继续留在 beta
+sid-code update                          # 回到稳定版
+```
+:::
+
+想退回稳定版随时可以，装一次不带变量的即可，配置和会话都不受影响。
 
 ## 升级与卸载
 

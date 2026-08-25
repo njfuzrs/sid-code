@@ -235,8 +235,9 @@ make build
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布：门禁(bun test) → bump → changelog → 4 平台构建 → 冒烟+自检
-#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → push tag
+# 3. 发布到 **beta 通道**：门禁(bun test) → bump → changelog → 4 平台构建 → 冒烟+自检
+#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → 写 beta.txt → push tag
+#    ⚠️ 这一步**不再改 latest.txt**，稳定版用户拿不到它（见下方「发布通道」）
 ./scripts/release.sh --upload
 
 # 4. bump 提交走 PR 进 main（main 受保护，直推会被拒；见下方 ⚠）
@@ -248,6 +249,10 @@ gh pr merge --auto --merge          # ⚠ 必须 --merge，squash 会让 tag 指
 # 5. 合并后同步 + 发布官网（/changelog 是站点构建期快照，release.sh 只生成数据不发站点）
 git switch main && git pull
 ./scripts/website-deploy.sh
+
+# 6. 装 beta 自己用一段时间，验收通过后再促升到稳定通道（纯指针，不重新构建）
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash
+./scripts/release.sh --promote <version>
 ```
 
 **⚠️ 第 4 步为什么不是 `git push`**：main 受 ruleset `protect-main` 保护（要求 PR + `all-checks-passed`），直推被 **GH013** 拒（`Changes must be made through a pull request`）。而此刻**制品已上线、tag 已推送、bump 提交还在本地** —— 正是上面那条铁律要防的「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。所以这一步是**必经**的，不是可选的收尾。`release.sh` 跑完会按实际保护状态把这几条命令打出来。
@@ -265,6 +270,45 @@ git merge-base --is-ancestor v<version> main && echo OK
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
 配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
 `cp scripts/deploy.env.example scripts/deploy.env` 后填入真实值。
+
+#### 发布通道：beta 泡制 → promote 促升 → rollback 回滚
+
+服务器顶层有**两个指针文件**，各一行版本号，两个通道**共用同一批版本目录**：
+
+| 指针 | 通道 | 谁会改它 | 用户怎么装 |
+| --- | --- | --- | --- |
+| `beta.txt` | 抢先版 | 每次 `--upload` | `SID_CODE_CHANNEL=beta` |
+| `latest.txt` | 稳定版 | **只有** `--promote <version>` | 缺省 |
+
+```bash
+./scripts/release.sh --upload              # 发到 beta（不动 latest.txt）
+./scripts/release.sh --promote 0.1.601     # 稳定通道指过去（前置：自己用过 beta）
+./scripts/rollback.sh                      # 看两个通道现指向谁 + 有哪些版本可回
+./scripts/rollback.sh 0.1.600              # 稳定通道回指旧版（秒级）
+./scripts/rollback.sh 0.1.600 --channel beta
+```
+
+三条不能改回去的设计（改回去都**不会报错**，只会静默失去价值）：
+
+- **promote 是纯指针操作，不重新构建**。用户装到的字节 = beta 期被测的字节。给 beta
+  单独一套目录的话，promote 就要复制或重建，"泡制期测的就是要发的东西"当场失效。
+- **`--upload` 绝不写 `latest.txt`**。顺手加回那一行 = 取消整个通道机制（一发布即全量
+  放量），而发布日志与从前一模一样。反漂移断言在 `tests/release-channel.test.ts`。
+- **旧版本清理要豁免两个指针指向的版本**。beta 泡制期连发几版会把 stable 指向的那版
+  挤出 `RELEASE_KEEP_VERSIONS=5` 窗口；删掉之后 latest.txt 还指着它 ——
+  形态是**全部稳定版用户 404 装不上**，服务器端零报错。
+
+⚠️ **回滚不会让已装坏版本的用户自动降级**，他们要各自再跑一次 `sid-code update`。
+`rollback.sh` 挡住的只是「还没更新的人不再踩坑」，这是它能做到的全部。
+它**不碰 git**（版本号 / tag / 提交全不动）：回滚的是「用户拿到哪一版」，
+不是「仓库停在哪一版」，混在一起会让一次秒级止血变成一次要 review 的改动。
+
+⚠️ **通道靠环境变量记住，人不会记得自己上次装的是哪个**。beta 用户下次不带变量跑
+`sid-code update` 会静默回到稳定版 —— install.sh 装完 beta 会显式提示这件事。
+
+**这段泡制期只有在真有人用 beta 时才有价值。** 建好而没人装，它就退化成第二个
+「防线全在、调用全 0」。所以 A2 的验收判据不是"通道能用"，而是
+**至少有一次真实回归是在 beta 期被发现、没有流到 latest**。
 
 #### Changelog + Tag
 

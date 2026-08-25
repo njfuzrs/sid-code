@@ -7,6 +7,7 @@
 #
 # 全程非交互，不依赖 jq/python3：
 #   - 版本默认取服务器 latest.txt，可用 SID_CODE_VERSION=x.y.z 锁定版本
+#   - 通道：SID_CODE_CHANNEL=beta 改读 beta.txt（抢先版）；缺省 stable 读 latest.txt
 #   - 团队默认 provider 配置仅在 ~/.sid-code/settings.json 不存在时才写入，
 #     已有配置的机器（含升级场景）完全不动
 #
@@ -36,7 +37,8 @@ for arg in "$@"; do
             echo "用法: curl -fsSL <url>/install.sh | bash"
             echo ""
             echo "环境变量："
-            echo "  SID_CODE_VERSION   锁定安装版本（默认读取服务器 latest.txt）"
+            echo "  SID_CODE_VERSION   锁定安装版本（默认读取服务器通道指针）"
+            echo "  SID_CODE_CHANNEL   发布通道 stable|beta（默认 stable；beta 是抢先版）"
             echo "  SID_CONFIG_DIR     配置目录（默认 ~/.sid-code，与 sid-code 本体一致）"
             echo "  RELEASE_BASE       下载地址前缀（默认内置团队服务器）"
             exit 0
@@ -138,14 +140,42 @@ trap 'rm -rf "$TMPDIR_DL"' EXIT
 
 # ─── 解析版本 ───
 
+# ─── 通道 → 指针文件（2026-08-24，A2）─────────────────────────────────────────
+#
+# 通道只改「读哪个指针文件」，**不改**下载路径、不改校验、不改安装位置：
+# 两个通道的版本目录是同一批 `<RELEASE_BASE>/<version>/`。
+# 这是刻意的 —— promote 因此是纯指针操作（把 latest.txt 指过去），用户装到的字节
+# 与 beta 期被测的字节**同一份**，不重新构建。若给 beta 单独一套目录，promote 就得
+# 复制或重建，那就失去了"泡制期测的就是要发的东西"这个唯一价值。
+#
+# 未知通道值一律**硬失败**，不静默回落 stable：`SID_CODE_CHANNEL=Beta`（大写 B）
+# 若被当 stable 处理，用户会以为自己在跑 beta 而实际装的是稳定版 ——
+# 而这个误解要等到"beta 期没发现任何回归"时才暴露，那时归因已经没法做了。
+CHANNEL="${SID_CODE_CHANNEL:-stable}"
+case "$CHANNEL" in
+    stable) CHANNEL_POINTER="latest.txt" ;;
+    beta)   CHANNEL_POINTER="beta.txt" ;;
+    *)      fail "未知通道 SID_CODE_CHANNEL=${CHANNEL}（可选：stable / beta）" ;;
+esac
+
 VERSION="${SID_CODE_VERSION:-}"
 if [ -z "$VERSION" ]; then
-    info "解析最新版本..."
-    VERSION="$(curl -fsSL "$RELEASE_BASE/latest.txt" 2>/dev/null || true)"
+    info "解析最新版本（通道: ${CHANNEL}）..."
+    VERSION="$(curl -fsSL "$RELEASE_BASE/$CHANNEL_POINTER" 2>/dev/null || true)"
     VERSION="$(echo "$VERSION" | tr -d '[:space:]')"
-    [ -n "$VERSION" ] || fail "无法从 $RELEASE_BASE/latest.txt 解析版本号"
+    if [ -z "$VERSION" ]; then
+        # beta 指针可能根本不存在（还没发过 beta），这时给出可执行的下一步，
+        # 而不是让用户去猜是网络问题还是通道问题。
+        if [ "$CHANNEL" = "beta" ]; then
+            fail "无法从 $RELEASE_BASE/beta.txt 解析版本号（该通道可能还没发过版；去掉 SID_CODE_CHANNEL 即装稳定版）"
+        fi
+        fail "无法从 $RELEASE_BASE/$CHANNEL_POINTER 解析版本号"
+    fi
 fi
-info "目标版本: v$VERSION"
+# ⚠ 变量必须写成 ${VAR}：macOS 自带 bash 3.2 会把紧随其后的**全角字符**字节当成变量名的
+# 一部分（`$VERSION（` → 变量名 "VERSION（"），`set -u` 下直接 unbound variable 致命退出。
+# 同款坑与同款修法见 scripts/release.sh 的 on_exit（那次是 `$code）`）。
+info "目标版本: v${VERSION}（通道: ${CHANNEL}）"
 
 # ─── 下载 + 校验 ───
 
@@ -335,6 +365,16 @@ echo "╔═══════════════════════�
 echo "║   安装完成！v$VERSION"
 echo "╚══════════════════════════════════════╝"
 echo ""
+# beta 装完必须显式说一句：通道靠环境变量记住，而人不会记得自己上次装的是哪个通道。
+# 不说的话，beta 用户下次 `sid-code update`（不带变量）会静默掉回 stable，
+# 而 §7 那条验收判据（"至少一次真实回归在 beta 期被发现"）依赖 beta 用户**持续**在 beta 上。
+if [ "$CHANNEL" = "beta" ]; then
+    echo "  🧪 当前通道: beta（抢先版）。后续更新需继续带上通道变量，否则会回到稳定版："
+    echo "    SID_CODE_CHANNEL=beta sid-code update"
+    echo ""
+    echo "  发现回归请回报 —— beta 期发现的问题不会流到稳定版，这正是这个通道存在的意义。"
+    echo ""
+fi
 echo "  现在可以运行："
 echo "    sc                   # 启动（推荐，跳过权限确认）"
 echo "    sid-code             # 启动（需逐条确认权限）"
