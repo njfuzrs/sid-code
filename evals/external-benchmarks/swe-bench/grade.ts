@@ -83,7 +83,30 @@ export interface Acceptance {
    */
   model: string | null;
   gateway_host: string | null;
-  /** 10/10 instance 产出非空 patch ← 二值 */
+  /**
+   * 10/10 instance 产出非空 patch ← 二值
+   *
+   * ## ⚠️ 口径定死：这是「**单次**跑完的成功率」，不是「重试后的成功率」
+   *
+   * 它只看本次 run 目录里的 patch 字节数，**不合并任何复跑结果**。
+   * 这个区分有实测背景（2026-08-25 smoke-2）：`django-13964`（1min exit 1）与
+   * `matplotlib-26466`（6min exit 1）两条零 patch 让 link_ok=FAIL，
+   * 而各自复跑一次**都产出了 patch**（1931B / 1417B）——
+   * 所以那次 FAIL 反映的是**偶发故障**，不是「agent 做不出来」。
+   *
+   * 两种口径都有意义，但**混用会得到一个谁也不是的数**：
+   *
+   * - 单次口径（现在这个）度量的是**链路稳定性** —— 它该在偶发故障时报 FAIL，
+   *   那正是它的用处：把「设施抖了」这件事暴露出来而不是被重试掩盖。
+   * - 重试后口径度量的是**能力可达性**，属于阶段 C 的 pass^k 范畴（D2 已裁决不在阶段 A 上）。
+   *
+   * ⛔ **不要为了让 link_ok 变绿而在这里合并复跑**：那会让一条
+   * 「跑三次才成功一次」的链路显示为 PASS，而链路不稳恰恰是阶段 A 要发现的东西。
+   * 复跑结论应该写进 `unaccounted` / 报告正文，不改这个字段。
+   *
+   * 报告渲染层会把「单次」这两个字打出来 —— 只在类型注释里写不够，
+   * 读报告的人看不到注释，会默认理解成"重试后仍失败"（那是更严重的结论）。
+   */
   link_ok: boolean;
   /** 10/10 拿到 report.json（无 ungraded）← 二值 */
   graded_ok: boolean;
@@ -272,7 +295,17 @@ export function renderReport(a: Acceptance): string {
     `- prompt 版本：\`${a.prompt_version}\``,
     `- 被测模型：\`${a.model ?? "未记录（该分数不可与其他 run 并排）"}\``,
     `- 网关 host：\`${a.gateway_host ?? "未记录"}\``,
-    `- link_ok（产出非空 patch）：**${b(a.link_ok)}**`,
+    // ⚠️ 「单次」两个字必须出现在报告正文里：这个字段是单次口径（不合并复跑），
+    // 而读的人默认会理解成「重试后仍失败」—— 那是严重得多的结论。
+    // 详见 Acceptance.link_ok 的注释。
+    `- link_ok（**单次**跑完即产出非空 patch；不合并复跑）：**${b(a.link_ok)}**`,
+    ...(a.link_ok
+      ? []
+      : [
+          "  > ⚠️ FAIL 只说明**这一次**有实例零 patch，**不等于 agent 做不出来**。",
+          "  > 偶发故障（网关抖动、容器起不来）与能力不足在这个字段上长得一样，",
+          "  > 要分开必须复跑那几条并把结论写进正文 —— 见 ZZ.5 第 4 条。",
+        ]),
     `- graded_ok（拿到 report 且无 ungraded）：**${b(a.graded_ok)}**`,
     `- gold_ok（环境自检）：**${b(a.gold_ok)}**`,
     `- solved_count：**${a.solved_count} / ${a.total_count}**（绝对数）`,

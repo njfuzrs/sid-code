@@ -530,7 +530,26 @@ cd /testbed
 rm -f core core.[0-9]* qemu_*.core vgcore.* 2>/dev/null || true
 git add -A >/dev/null 2>&1 || true
 echo '===NUMSTAT==='
-git --literal-pathspecs diff --cached --no-renames --numstat -z
+# ## ⚠️ NUL 必须在容器内就转成 RS(\x1e)，否则记录分隔符会被 shell 吃掉
+#
+# 实测踩到（2026-08-25，复核 smoke-2 数据时）：外层拿输出用的是
+# `extract_out="$(docker exec ...)"`，而**bash 命令替换会丢弃 NUL 字节**
+# （POSIX 行为；bash 会打 warning，但被 2>&1 一起吞了）。
+# 于是 `--numstat -z` 的多条记录在落盘时**首尾相接、没有任何分隔符**：
+#
+#   5<TAB>0<TAB>src/foo.py3<TAB>1<TAB>tests/test_foo.py2<TAB>0<TAB>src/bar.py
+#
+# 后果不是「少报几个文件名」而是**一道防作弊门禁被静默架空**：
+# 按 NUL 切只得到 1 条记录，path 是把后面全部记录粘成的怪串，
+# `isTestPath` 对它匹配不上 → **`patch_touches_tests` 恒为 false**。
+# 实测同一份输入：NUL 完好判 true，NUL 丢失判 false。
+# 全程 exit 0、字段自洽、报告挑不出毛病 —— 又一例「绿了但没测到」。
+#
+# ⛔ 不要改成不带 `-z` 来绕：那会把含空格/中文的路径 quote 成 "a\tb"，
+# 按 TAB 切就切错了 —— `-z` 本来就是为此而用的。
+# RS(\x1e) 能活过命令替换，且它不可能出现在 git 的路径里。
+# （TS 侧 `parseNumstatZ` 两种分隔符都收，所以这一改不破旧数据。）
+git --literal-pathspecs diff --cached --no-renames --numstat -z | tr '\0' '\036'
 echo ''
 echo '===DIFF==='
 git --literal-pathspecs diff --cached --no-renames

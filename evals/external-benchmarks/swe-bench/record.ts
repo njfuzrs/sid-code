@@ -28,6 +28,7 @@ import {
   type RunRecord,
   type Prediction,
   normalizePatch,
+  patchOnlyAddsFiles,
 } from "./runner.ts";
 
 function arg(name: string, argv: string[]): string | undefined {
@@ -74,12 +75,24 @@ if (agentExit !== 0 && !timedOut) notes.push(`agent 非 0 退出：${agentExit}`
 if (files.length > 0 && patchBytes === 0) {
   notes.push(`numstat 报 ${files.length} 个文件有改动但 diff 为空 —— 提取链路可能出了问题`);
 }
+// 「只新建文件、一行既有源码都没改」= agent 大概率卡在复现阶段。
+// 这个形态在 patch_bytes / outcome 上完全看不出来（实测 smoke-2 两条 3412B / 967B
+// 全是 agent 自建的 repro 脚本）。**只标注、不改判定、不过滤** —— 理由见
+// runner.ts 的 patchOnlyAddsFiles（提取时滤掉等于替 agent 打扫，掩盖行为特征）。
+const onlyAdds = patchBytes > 0 && patchOnlyAddsFiles(patch, textFiles);
+if (onlyAdds) {
+  notes.push(
+    `patch 只新建文件、未修改任何既有源码（${textFiles.length} 个新文件：${textFiles.join(", ")}）` +
+      ` —— 大概率卡在复现阶段而非做出修复。**这不影响判分**，判分仍由官方 harness 做`,
+  );
+}
 
 const record: RunRecord = {
   instance_id: instanceId,
   patch_bytes: patchBytes,
   patch_touches_tests: testFiles.length > 0,
   test_files_touched: testFiles,
+  patch_only_adds_files: onlyAdds,
   wall_ms: wallMs,
   agent_exit: agentExit,
   outcome,
