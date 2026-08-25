@@ -1,0 +1,20 @@
+{
+  "run_id": "smoke-1",
+  "prompt_version": "prompt-v1",
+  "model": "claude-sonnet-5-ppchat",
+  "gateway_host": "code.ppchat.vip",
+  "link_ok": true,
+  "graded_ok": true,
+  "gold_ok": true,
+  "solved_count": 1,
+  "total_count": 1,
+  "patch_touches_tests": 0,
+  "outcomes": {
+    "pytest-dev__pytest-7982": "solved"
+  },
+  "unaccounted": "只跑了 1/10 条 —— solved_count 的分母是前者，不要与全量口径混用",
+  "wall_ms": 316060,
+  "meter": null,
+  "meter_note": "无中立计价源；成本数字为 agent 自报，未交叉校验",
+  "partial": true
+}

@@ -58,6 +58,23 @@ PROXY_PORT=8080
 # 写死的话换 provider 就会静默失效（agent 连不上模型，但报错长得像模型问题）。
 ALLOWLIST_DEFAULT="uniapi.ruijie.com.cn"
 
+# ## SWE_ALLOWLIST：显式指定要放开的网关（空格分隔），优先于 settings.json 现取
+#
+# 为什么需要这个覆盖口：settings.json 里通常配了**很多个** provider
+# （本机实测 4 个 host、20+ 个 model 条目），而一次 run 只用其中一个。
+# 全都放开有两个坏处：
+# 1. **放开面比需要的大** —— allowlist 越长，防作弊的收窄程度越低；
+# 2. **连通性门禁会被无关的 host 拖红** —— 实测 `api.deepseek.com` 在本网络下
+#    经 tinyproxy 隧道超时（隧道建得起来但数据不通，代理日志里是
+#    `Established connection` 后 20s `Closed connection`），
+#    而本次真正要用的 `code.ppchat.vip` 是 200。
+#    只探第一个 host 时，排序后恰好是 deepseek，于是**门禁红在一个本次用不到的网关上**。
+#
+# 用法：`SWE_ALLOWLIST="code.ppchat.vip" bash net-setup.sh --up`
+# 建议与 `SC_BASE_URL` 保持一致 —— 两者不一致时 agent 连不上模型，
+# 而症状长得像模型问题（超时/空回复），排查方向会跑偏。
+ALLOWLIST_OVERRIDE="${SWE_ALLOWLIST:-}"
+
 ok() { printf '  \033[32m✅\033[0m %s\n' "$1"; }
 bad() { printf '  \033[31m❌\033[0m %s\n' "$1"; }
 info() { printf '  \033[36m→\033[0m %s\n' "$1"; }
@@ -91,10 +108,14 @@ FAILED=0
 echo "防作弊网络设施（run=$RUN_NET / build=$BUILD_NET / proxy=$PROXY_NAME:${PROXY_PORT}）"
 echo
 
-# 取 allowlist：从 settings.json 的 base_url 抽 host。**不打印任何 key**。
+# 取 allowlist：SWE_ALLOWLIST 优先，否则从 settings.json 的 base_url 抽 host。
+# **不打印任何 key**。
 ALLOWLIST="$ALLOWLIST_DEFAULT"
 SETTINGS="${SID_CONFIG_DIR:-$HOME/.sid-code}/settings.json"
-if [[ -f "$SETTINGS" ]]; then
+if [[ -n "$ALLOWLIST_OVERRIDE" ]]; then
+  ALLOWLIST="$ALLOWLIST_OVERRIDE"
+  info "allowlist（SWE_ALLOWLIST 显式指定）: $ALLOWLIST"
+elif [[ -f "$SETTINGS" ]]; then
   hosts="$(python3 -c "
 import json,re,sys
 try:
@@ -108,8 +129,10 @@ for m in d.get('availableModels',[]):
 print(' '.join(sorted(out)))
 " 2>/dev/null || true)"
   [[ -n "$hosts" ]] && ALLOWLIST="$hosts"
+  info "allowlist（从 settings.json 的 base_url 现取）: $ALLOWLIST"
+else
+  info "allowlist（内置默认）: $ALLOWLIST"
 fi
-info "allowlist（从 settings.json 的 base_url 现取）: $ALLOWLIST"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. 两个 network
@@ -171,12 +194,54 @@ echo "[2/3] allowlist 代理"
 
 proxy_running() { docker ps --filter "name=^${PROXY_NAME}$" --filter "status=running" -q | grep -q .; }
 
-if proxy_running; then
-  ok "代理容器已在运行"
+# ## ⚠️ 「容器在跑」不等于「它的 allowlist 是你要的那份」
+#
+# 实测踩到（2026-08-25）：先用 settings.json 现取的 4 个 host 起了代理，
+# 之后改用 `SWE_ALLOWLIST="code.ppchat.vip"` 再跑 `--up`，
+# 因为容器还在跑，**这一步直接跳过了重建**，容器里的 filter 仍是那 4 行。
+# 于是 `--up` 打印「allowlist（SWE_ALLOWLIST 显式指定）: code.ppchat.vip」、
+# 连通性探测也 PASS —— **一片绿，但实际放开的面比声明的大 3 个网关**。
+#
+# 这正是「绿了但没测到」那一类：门禁只验证了「声明里那个能通」，
+# 没验证「声明外的都拦着」。防作弊设施上这个差别是致命的 ——
+# 多放开的那几个 host 里任何一个能到 GitHub 镜像，分数就不可信。
+#
+# 所以判据必须是**容器里的 filter 内容 == 本次期望的 filter 内容**，
+# 不一致就重建（重建很便宜，几秒）。
+expected_filter() {
+  local h
+  for h in $ALLOWLIST; do
+    printf '(^|\\.)%s$\n' "$(echo "$h" | sed 's/\./\\./g')"
+  done
+}
+
+proxy_filter_matches() {
+  local have want
+  have="$(docker exec "$PROXY_NAME" cat /etc/tinyproxy/filter 2>/dev/null || true)"
+  want="$(expected_filter)"
+  [[ -n "$have" && "$have" == "$want" ]]
+}
+
+if proxy_running && proxy_filter_matches; then
+  ok "代理容器已在运行，且 allowlist 与本次期望一致"
 elif [[ "$MODE" == "check" ]]; then
-  bad "代理容器未运行"
+  # check 模式不改状态，只报告。两种失败要分开说 ——
+  # 「没跑」和「跑着但名单不对」的处置不同，混成一句会让人只去 --up 而不看名单。
+  if proxy_running; then
+    bad "代理在跑，但 allowlist 与期望不一致 —— 放开面可能比声明的大，分数不可信"
+    bad "  容器内: $(docker exec "$PROXY_NAME" cat /etc/tinyproxy/filter 2>/dev/null | tr '\n' ' ')"
+    bad "  本次期望: $(expected_filter | tr '\n' ' ')"
+    bad "  跑一次 net-setup.sh --up 重建"
+  else
+    bad "代理容器未运行"
+  fi
   FAILED=1
 else
+  if proxy_running; then
+    info "代理在跑但 allowlist 与本次期望不一致 —— 重建（否则放开面比声明的大）"
+    info "  容器内: $(docker exec "$PROXY_NAME" cat /etc/tinyproxy/filter 2>/dev/null | tr '\n' ' ')"
+    info "  本次期望: $(expected_filter | tr '\n' ' ')"
+  fi
   docker rm -f "$PROXY_NAME" >/dev/null 2>&1 || true
   info "起 tinyproxy（allowlist 模式）..."
 
@@ -268,7 +333,6 @@ else
     FAILED=1
   else
     ok "代理在 $RUN_NET 上的地址: $proxy_ip:$PROXY_PORT"
-    allowed_host="$(echo "$ALLOWLIST" | awk '{print $1}')"
 
     # ⚠️ 探测镜像也**本地构建**，不用 `curlimages/curl`。两个实测理由：
     #   1. 拉外部镜像在本网络不稳（官方 per-instance 镜像连续两次 `unexpected EOF`）；
@@ -318,7 +382,17 @@ DOCKERFILE
       fi
     }
 
-    probe "名单内可达: $allowed_host" ok "https://$allowed_host/"
+    # ⚠️ **遍历全部 allowlist host，不能只探第一个。**
+    # 旧写法只探 `$allowed_host`（= 排序后的第一个），有两个失败形态：
+    # ① 第一个恰好不可达 → 门禁红在一个本次用不到的网关上
+    #    （实测 `api.deepseek.com` 经 tinyproxy 隧道超时，而本次真正用的
+    #    `code.ppchat.vip` 是 200）；
+    # ② 第一个可达但**本次要用的那个**不可达 → 门禁绿、run 起来才发现
+    #    agent 连不上模型，而症状长得像模型问题。②比①危险得多，
+    #    因为它是「绿了但没测到」。
+    for h in $ALLOWLIST; do
+      probe "名单内可达: $h" ok "https://$h/"
+    done
     # github 是这套设施最要防的目标：放开它 = agent 能读上游修复
     probe "github.com 被拦" deny "https://github.com/"
     probe "pypi.org 被拦" deny "https://pypi.org/simple/"

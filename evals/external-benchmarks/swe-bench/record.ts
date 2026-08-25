@@ -27,6 +27,7 @@ import {
   MODEL_NAME,
   type RunRecord,
   type Prediction,
+  normalizePatch,
 } from "./runner.ts";
 
 function arg(name: string, argv: string[]): string | undefined {
@@ -58,7 +59,9 @@ const binaries = files.filter((f) => f.binary).map((f) => f.path);
 const textFiles = files.filter((f) => !f.binary).map((f) => f.path);
 const testFiles = textFiles.filter(isTestPath);
 
-const patch = diff.trimEnd();
+// patch 末尾必须恰好一个换行，否则容器里的 GNU patch 拒收整份补丁。
+// 完整理由（含变异自证与「本机 BSD patch 测不出来」）见 runner.ts 的 normalizePatch。
+const patch = normalizePatch(diff);
 const patchBytes = patch.length;
 const outcome = deriveOutcome({ agentExit, patchBytes, timedOut });
 

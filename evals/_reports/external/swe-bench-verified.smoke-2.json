@@ -1,0 +1,29 @@
+{
+  "run_id": "smoke-2",
+  "prompt_version": "prompt-v1",
+  "model": "claude-sonnet-5-ppchat",
+  "gateway_host": "code.ppchat.vip",
+  "link_ok": false,
+  "graded_ok": true,
+  "gold_ok": true,
+  "solved_count": 6,
+  "total_count": 10,
+  "patch_touches_tests": 0,
+  "outcomes": {
+    "astropy__astropy-12907": "solved",
+    "astropy__astropy-8872": "solved",
+    "django__django-13964": "no_patch",
+    "django__django-15128": "grader_error",
+    "matplotlib__matplotlib-20488": "grader_error",
+    "matplotlib__matplotlib-26466": "no_patch",
+    "pydata__xarray-4075": "solved",
+    "pydata__xarray-6461": "solved",
+    "pytest-dev__pytest-10081": "solved",
+    "pytest-dev__pytest-7982": "solved"
+  },
+  "unaccounted": null,
+  "wall_ms": 10449795,
+  "meter": null,
+  "meter_note": "无中立计价源；成本数字为 agent 自报，未交叉校验",
+  "partial": false
+}
