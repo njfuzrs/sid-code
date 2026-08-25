@@ -97,18 +97,45 @@ describe("shell 门禁：$VAR 后不许紧跟全角标点", () => {
 
     /**
      * 最直接的一条：真的用 bash 跑一遍，证明这不是「理论上的问题」。
-     * 拿不到 bash 就跳过（不让门禁在没有 bash 的环境里假失败）。
+     *
+     * ⚠️ 这条**必须先探测平台**，不能直接断言「裸写法一定失败」——
+     * 该行为是 **libc 相关**的，不是 bash 版本相关，也不是 locale 相关
+     * （2026-08-25 实测，本条曾让 PR #116 的 CI 在 ubuntu 上红而 macOS 绿）：
+     *
+     *   - macOS（bash 3.2 与 5.3 均同）：全角字节被吞进变量名 → `set -u` 下退出 1
+     *   - Linux glibc（bash 5.1）：变量名解析到 `$code` 就停 → 正常输出、退出 0
+     *     且 `LC_ALL` 取 unset / `C` / `C.UTF-8` / `en_US.UTF-8` **四种都一样**，
+     *     所以不是「CI 里 locale 没设」造成的，改 env 修不了它。
+     *
+     * 于是本条按「当前平台是否真的会吞」分流断言。**门禁本身（上面那条全仓扫描）
+     * 仍然全平台生效**：维护者在 macOS 上开发、脚本也要在 macOS 上跑，
+     * 一处违规就够让 `release.sh` 中途退出，不能因为 Linux 上碰巧无害就放过。
      */
-    test("bash 实测：裸写法在 set -u 下失败，${} 写法正常", () => {
+    test("bash 实测：会吞全角的平台上裸写法失败，${} 写法在所有平台都正常", () => {
       const run = (script: string) =>
         spawnSync("bash", ["-c", script], { encoding: "utf8", timeout: 10_000 });
       const probe = run("echo ok");
       if (probe.error) return; // 没有 bash，跳过
 
-      const bare = run('set -euo pipefail; code=7; echo "exit=$code，不可信"');
-      expect(bare.status).not.toBe(0);
-      expect(bare.stderr).toContain("unbound variable");
+      // 平台探测：刻意**不带** set -u，只看变量名边界怎么切。
+      // 吞了 → `$code，` 整体成为未定义变量名 → 展开为空，输出里没有 7。
+      const sniff = run('code=7; echo "[$code，]"');
+      const swallowsFullwidth = !sniff.stdout.includes("7");
 
+      const bare = run('set -euo pipefail; code=7; echo "exit=$code，不可信"');
+      if (swallowsFullwidth) {
+        // macOS / BSD libc：这就是三次现场的真实故障形态。
+        // ⚠️ 只断言「报错且点到了变量名」，**不断言 "unbound variable" 这个英文原文** ——
+        // bash 的诊断文案会跟着 LC_MESSAGES 走，中文 locale 下是「未绑定的变量」。
+        // 断言文案等于把测试绑死在开发机的语言设置上（本条实测踩到过）。
+        expect(bare.status).not.toBe(0);
+        expect(bare.stderr).toContain("code");
+      } else {
+        // Linux glibc：裸写法在这里无害，但也别把「无害」写成「正确」
+        expect(bare.status).toBe(0);
+      }
+
+      // 这一半是跨平台恒定的：${} 写法到哪儿都对。
       const braced = run('set -euo pipefail; code=7; echo "exit=${code}，不可信"');
       expect(braced.status).toBe(0);
       expect(braced.stdout.trim()).toBe("exit=7，不可信");

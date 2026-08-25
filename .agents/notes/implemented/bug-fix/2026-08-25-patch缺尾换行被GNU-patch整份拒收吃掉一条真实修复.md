@@ -52,7 +52,50 @@ rg 的 vendor 文件按平台命名、没有 baseline 变体；不剥的话会�
 （`malformed patch` 只出现在 `run_instance.log` 里，`report.json` 的
 `failure_reasons` 是空的）。
 
+### 5. 全角标点门禁的「bash 实测」那条，改成先探测平台再分流断言
+
+本 PR 新加的 `tests/scripts/shell-fullwidth-var.test.ts` 最后一条断言了
+「裸 `$VAR` 紧跟全角标点在 `set -u` 下**一定**失败」。**这个前提是错的**，
+它让 PR #116 的 CI 在 ubuntu 上红、macOS 上绿（`expect(bare.status).not.toBe(0)`
+实际收到 0）。
+
+真相是这个行为**由 libc 决定**，既不是 bash 版本、也不是 locale：
+
+| 平台 | bash | 裸写法 + `set -u` |
+| --- | --- | --- |
+| macOS | 3.2 与 5.3 **都一样** | 全角字节被吞进变量名 → exit 1 |
+| Linux glibc | 5.1 | 变量名解析到 `$code` 就停 → 正常输出、exit 0 |
+
+Linux 侧在 `LC_ALL` 取 unset / `C` / `C.UTF-8` / `en_US.UTF-8` **四种下全部 exit 0**，
+所以它不是「CI 里 locale 没设」，**改 env 修不了**。
+
+改法是先用**不带 `set -u`** 的探针看当前平台怎么切变量名边界
+（吞了 → `$code，` 整体成为未定义变量名 → 展开为空、输出里没有 `7`），再按平台分流断言。
+**全仓扫描那条门禁保持全平台生效** —— 维护者在 macOS 上开发、`release.sh` 也在
+macOS 上跑，一处违规就够让它中途退出，不能因为 Linux 上碰巧无害就放过。
+
+连带修掉同一条里第二个环境依赖：原本断言 `stderr` 含 `"unbound variable"`，
+而 bash 的诊断文案跟着 `LC_MESSAGES` 走 —— 中文 locale 下是「未绑定的变量」，
+在维护者本机直接失败。改为只断言「报错且点到了变量名」，不断言英文原文。
+
 ## 放弃了什么（以及为什么不选）
+
+**放弃「给 CI 统一设 `LANG=C.UTF-8` 把两个平台对齐」。**
+这是看到「macOS 绿 / ubuntu 红」时最自然的猜测，但实测直接否掉了它：
+Linux 上四种 locale 全部 exit 0，差异根本不在 locale 层。
+真按这个思路改，会得到一条「设了 env 但依然红」的提交，
+以及一个从此与真实原因脱节的 CI 配置。
+
+**放弃直接删掉这条 bash 实测、只留静态扫描。**
+删了最省事，CI 立刻绿。但这条是整份门禁里**唯一**证明
+「这不是理论问题、真的会炸」的证据 —— 静态扫描只能证明「仓库里没有这种写法」，
+证明不了「这种写法有害」。下一个人完全可以质疑门禁本身是不是过度谨慎，
+那时需要的就是这条能跑的实测。
+
+**放弃 `if (process.platform === "darwin")` 这种按平台名硬编码分流。**
+判据应当是**行为**而不是平台名：真正决定结果的是 libc 怎么切变量名边界，
+而 platform 名与 libc 只是相关、不是等价（musl、FreeBSD、将来的 CI 镜像都可能打破它）。
+探针只多花一次 `spawnSync`，换来的是「换了环境自动跟着走」而不是「换了环境静默判错」。
 
 **放弃「提取 patch 时排除 agent 自建的调试脚本」。**
 `smoke-2` 那两条 `grader_error`（django-15128 / matplotlib-20488）的 patch 里
@@ -121,6 +164,31 @@ rg 的 vendor 文件按平台命名、没有 baseline 变体；不剥的话会�
   `SELF_PLATFORM` 冒烟只匹配本机平台。
 - `bash -n scripts/release.sh` 通过；`tests/build/` + `tests/release-flow-contract.test.ts`
   **114 例全绿**。
+
+### 全角标点门禁：两个平台的分支都实际走过一遍
+
+macOS 侧（本机，bash 3.2 与 homebrew 5.3）：
+
+```
+$ bash -c 'code=7; echo "[$code，]"'      →  [??]      （吞了，探针判 swallows=true）
+$ bash -c 'set -euo pipefail; code=7; echo "exit=$code，不可信"'
+   → exit 1, stderr: bash: 行 1: code<乱码>: 未绑定的变量
+```
+
+Linux 侧（glibc bash 5.1，容器内逐条复算测试的三个断言输入）：
+
+```
+sniff.stdout=[[7，]]     → includes('7')=true  => swallowsFullwidth=FALSE（走 else 分支）
+bare.status=0                                  （else 分支要求 === 0）✓
+braced.status=0  braced.stdout=[exit=7，不可信] （跨平台恒定那半）✓
+```
+
+`bun test ./tests/scripts/shell-fullwidth-var.test.ts` 在 macOS 上
+**7 pass / 0 fail**（修改前是 6 pass / 1 fail，失败的正是这条）。
+
+⚠️ 一条自我限制要写明：Linux 分支是在容器里**逐条复算断言输入**验证的，
+不是在容器里真跑 `bun test`（那个镜像没有 bun）。所以「Linux 上这条测试通过」
+这个结论的最终证据是 CI 本身 —— 见本 PR 修复后的那次 run。
 
 ### 一条口径澄清（不是 bug，是报告没写明）
 
