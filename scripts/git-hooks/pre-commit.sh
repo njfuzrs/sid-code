@@ -213,12 +213,38 @@ if [ -n "$STAGED_FMT" ]; then
     ABS_FMT="$ABS_FMT $REPO_ROOT/$f"
   done
 
+  # ## ⚠️ 「全部被 ignore 排除」不是格式违规，必须与真违规分开
+  #
+  # 实测踩到（2026-08-25，提交一份纯 `_reports/` 报告时）：
+  # `.oxfmtrc.json` 的 ignorePatterns 里有 `evals/_reports/**`，
+  # 当本次 staged 的可格式化文件**全部**落在 ignore 范围内时，oxfmt 拿不到目标，
+  # **exit=2** 并打印 `Expected at least one target file.` ——
+  # 旧写法只判「非 0 即失败」，于是报成「格式不符合 .oxfmtrc.json，commit 中止」，
+  # 而实际上一个字节都没问题、也无从修（`bun run format` 同样不碰被 ignore 的文件）。
+  #
+  # 这条路径**平时撞不到**：只要顺带改了一个 .ts，oxfmt 就有目标、exit=0。
+  # 所以它只在「只提交报告/只提交生成物」时暴露 —— 上一份报告之所以过了，
+  # 是因为那个 commit 里恰好还有 4 个 .ts 文件。
+  #
+  # 判据分两档：exit=2 且输出含那句话 → 无目标可查，跳过（不是违规）；
+  # 其余非 0 → 真违规，照旧中止。**不改成「非 0 一律放过」** ——
+  # 那会把真的格式违规也一起放过，等于把门拆了。
+  FMT_OUT=""
+  FMT_RC=0
   # shellcheck disable=SC2086
-  if ! (cd "$REPO_ROOT" && ./node_modules/.bin/oxfmt --check $ABS_FMT); then
-    echo "[pre-commit] ❌ 格式不符合 .oxfmtrc.json，commit 中止"
-    echo "             修复：bun run format && git add <改动文件>"
-    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
-    exit 1
+  FMT_OUT=$(cd "$REPO_ROOT" && ./node_modules/.bin/oxfmt --check $ABS_FMT 2>&1) || FMT_RC=$?
+  if [ "$FMT_RC" -ne 0 ]; then
+    if [ "$FMT_RC" -eq 2 ] && echo "$FMT_OUT" | grep -q 'Expected at least one target file'; then
+      echo "[pre-commit] oxfmt 跳过：staged 的可格式化文件全部被 .oxfmtrc.json 的 ignorePatterns 排除"
+    else
+      echo "$FMT_OUT"
+      echo "[pre-commit] ❌ 格式不符合 .oxfmtrc.json，commit 中止"
+      echo "             修复：bun run format && git add <改动文件>"
+      echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
+      exit 1
+    fi
+  else
+    echo "$FMT_OUT"
   fi
 fi
 
