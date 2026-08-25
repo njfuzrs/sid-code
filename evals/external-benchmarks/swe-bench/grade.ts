@@ -31,6 +31,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parseSubset } from "./runner.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const SWE_DIR = import.meta.dir;
@@ -72,6 +73,16 @@ export type GradedOutcome = "solved" | "wrong_patch" | "no_patch" | "grader_erro
 export interface Acceptance {
   run_id: string;
   prompt_version: string;
+  /**
+   * 被测模型名与网关 host（**不含 key**）。
+   *
+   * ⚠️ 这两个字段是**可比性的前提，不是元数据装饰**：换了模型或换了网关的两次 run，
+   * `solved_count` 之间没有可比性，而分数本身看不出来这件事。
+   * null 表示这次 run 没记（旧 run 的兼容值）—— 读到 null 就该知道
+   * **这个分数不能和别的 run 并排放**，而不是当作「默认模型」。
+   */
+  model: string | null;
+  gateway_host: string | null;
   /** 10/10 instance 产出非空 patch ← 二值 */
   link_ok: boolean;
   /** 10/10 拿到 report.json（无 ungraded）← 二值 */
@@ -153,6 +164,18 @@ export function buildAcceptance(input: {
   goldOk: boolean | null;
   wallMs: number;
   expectedTotal: number;
+  /** 被测模型名。缺省 null，且此时 unaccounted 会写明「不可与别的 run 并排」 */
+  model?: string | null;
+  /** 网关 host（**只要 host，不要完整 URL、绝不要 key**） */
+  gatewayHost?: string | null;
+  /**
+   * subset 读不回来、`expectedTotal` 退化成 `submitted.length` 时置 true。
+   *
+   * 必须点破的理由：退化之后 `partial` **恒为 false**（分母 == 分子），
+   * 于是一个可能只跑了三条的 run 看起来像「跑满了」。
+   * 这是「账没算平却装作算平了」，正是 unaccounted 这个字段存在的意义。
+   */
+  subsetReadFailed?: boolean;
 }): Acceptance {
   const notes: string[] = [];
 
@@ -176,6 +199,13 @@ export function buildAcceptance(input: {
     notes.push(`${ungradedIds.length} 条 ungraded（不计入未解出）：${ungradedIds.join(", ")}`);
   }
 
+  if (input.subsetReadFailed) {
+    notes.push(
+      "读不到 verified-subset.yaml —— expectedTotal 退化成本次提交条数，" +
+        "**`partial` 因此恒为 false，不能当作「跑满了」**",
+    );
+  }
+
   const nonEmpty = input.submitted.filter((id) => (input.patchBytesById[id] ?? 0) > 0);
   const partial = input.submitted.length < input.expectedTotal;
   if (partial) {
@@ -185,9 +215,19 @@ export function buildAcceptance(input: {
     );
   }
 
+  // 模型名缺失时**必须在 unaccounted 里点破**。只把字段记成 null 是不够的：
+  // 读报告的人会自动把 null 读成「默认那个」，而两次 run 用的模型可能压根不同。
+  if (!input.model) {
+    notes.push(
+      "未记录被测模型名 —— 这份 solved_count **不能与其他 run 并排比较**（不知道跑的是哪个模型）",
+    );
+  }
+
   return {
     run_id: input.runId,
     prompt_version: input.promptVersion,
+    model: input.model ?? null,
+    gateway_host: input.gatewayHost ?? null,
     link_ok: nonEmpty.length === input.submitted.length && input.submitted.length > 0,
     graded_ok: !!input.report && ungradedIds.length === 0,
     gold_ok: input.goldOk,
@@ -230,6 +270,8 @@ export function renderReport(a: Acceptance): string {
     "> percent 字段是同一件事，而只拦字段名拦不住前者。)",
     "",
     `- prompt 版本：\`${a.prompt_version}\``,
+    `- 被测模型：\`${a.model ?? "未记录（该分数不可与其他 run 并排）"}\``,
+    `- 网关 host：\`${a.gateway_host ?? "未记录"}\``,
     `- link_ok（产出非空 patch）：**${b(a.link_ok)}**`,
     `- graded_ok（拿到 report 且无 ungraded）：**${b(a.graded_ok)}**`,
     `- gold_ok（环境自检）：**${b(a.gold_ok)}**`,
@@ -283,6 +325,42 @@ export function findReport(dir: string, runId: string): OfficialReport | null {
   }
 }
 
+/**
+ * 从 `runs/gold/` 里读 gold 自检结果，判断**本次提交的这批实例**是否都过了 gold。
+ *
+ * ⚠️ 判据是「submitted 的每一条都有 gold 通过记录」，不是「gold 目录里有东西」：
+ * gold 是逐题跑的（`exec-swebench.sh gold <iid>`，一个文件一题），
+ * 少跑了哪题就说明**那题的环境没验证过**。少一条就返 null（= 未跑），
+ * 不返 false —— false 的语义是「跑了且失败」，那是要停下来查环境的信号；
+ * 把「没跑」记成 false 会让人去查一个根本没发生的失败。
+ *
+ * 反过来，把「没跑」当成 true 更糟：gold_ok 的全部意义就是把
+ * **环境错**与**能力差**分开，默认 true 等于放弃这个区分。
+ */
+export function readGoldOk(goldDir: string, submitted: string[]): boolean | null {
+  if (!existsSync(goldDir) || submitted.length === 0) return null;
+  const files = readdirSync(goldDir).filter((f) => f.endsWith(".json"));
+  if (files.length === 0) return null;
+
+  const resolved = new Set<string>();
+  const attempted = new Set<string>();
+  for (const f of files) {
+    let rep: OfficialReport;
+    try {
+      rep = JSON.parse(readFileSync(join(goldDir, f), "utf8")) as OfficialReport;
+    } catch {
+      continue;
+    }
+    for (const id of rep.submitted_ids ?? []) attempted.add(id);
+    for (const id of rep.resolved_ids ?? []) resolved.add(id);
+  }
+
+  // 有实例压根没跑过 gold → 未跑（null），不是失败
+  if (submitted.some((id) => !attempted.has(id))) return null;
+  // 全都跑过了，那么判据就是「是否全部 resolved」
+  return submitted.every((id) => resolved.has(id));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,16 +395,64 @@ async function main() {
   );
 
   const recPath = join(runDir, "records.jsonl");
-  const touchesTestsIds: string[] = existsSync(recPath)
+  const records: Array<{
+    instance_id?: string;
+    patch_touches_tests?: boolean;
+    wall_ms?: number;
+  }> = existsSync(recPath)
     ? readFileSync(recPath, "utf8")
         .split("\n")
         .filter(Boolean)
         .map((l) => JSON.parse(l))
-        .filter((r) => r.patch_touches_tests)
-        .map((r) => r.instance_id)
     : [];
+  const touchesTestsIds: string[] = records
+    .filter((r) => r.patch_touches_tests)
+    .map((r) => r.instance_id ?? "")
+    .filter(Boolean);
+  // 逐题 wall_ms 累加 = 这一轮真正花在跑 agent 上的时间（harness 自己的时钟，
+  // 由 exec-swebench.sh 的 now_ms() 量，不是 agent 自报）。
+  const recordsWallMs = records.reduce((sum, r) => sum + (r.wall_ms ?? 0), 0);
 
-  const t0 = performance.now();
+  // run-meta.json 由 exec-swebench.sh 的 run 步写。读不到就传 null ——
+  // buildAcceptance 会在 unaccounted 里写明「该分数不可与其他 run 并排」，
+  // **不做任何猜测式的默认值**。
+  let metaModel: string | null = null;
+  let metaHost: string | null = null;
+  const metaPath = join(runDir, "run-meta.json");
+  if (existsSync(metaPath)) {
+    try {
+      const m = JSON.parse(readFileSync(metaPath, "utf8")) as {
+        model?: string;
+        gateway_host?: string;
+      };
+      metaModel = m.model ?? null;
+      metaHost = m.gateway_host ?? null;
+    } catch {
+      // 读坏了也走 null 那条路：一个残缺的 meta 不比没有 meta 更可信
+    }
+  }
+
+  // ## expectedTotal 从 subset 现取，**不硬编码 10**
+  //
+  // 它是 `partial` 的分母。硬编码的话，改了 subset 大小之后 `partial` 会**静默说谎**：
+  // subset 缩到 5 条、5 条全跑完了，`5 < 10` 仍判 partial=true，
+  // 报告里写「只跑了 5/10」—— 一个已经跑满的 run 被记成跑了一半。
+  // 反过来 subset 扩到 15 条时更坏：跑了 10 条会判 partial=false（看着像跑满），
+  // **一个只覆盖三分之二的 run 被记成全量。**
+  //
+  // 读不到 subset 时回落到 `submitted.length`（= 就按这次提交的当分母），
+  // 并在 unaccounted 里点破 —— **不静默假装 10**。
+  let expectedTotal = submitted.length;
+  let subsetReadFailed = false;
+  try {
+    const n = parseSubset(readFileSync(join(SWE_DIR, "verified-subset.yaml"), "utf8")).length;
+    if (n === 0) throw new Error("subset instances 段为空");
+    expectedTotal = n;
+  } catch {
+    expectedTotal = submitted.length;
+    subsetReadFailed = true;
+  }
+
   if (!reportOnly) {
     console.error("⚠️ 判分需要官方 harness（起容器）。用 exec-swebench.sh grade 走那一步，");
     console.error("本文件的 --report-only 负责把已产出的 report.json 映射成验收字段。");
@@ -341,9 +467,16 @@ async function main() {
     submitted,
     patchBytesById,
     touchesTestsIds,
-    goldOk: null,
-    wallMs: Math.round(performance.now() - t0),
-    expectedTotal: 10,
+    goldOk: readGoldOk(join(SWE_DIR, "runs", "gold"), submitted),
+    // ⚠️ wall_ms 必须是**跑 agent 的累计耗时**（从 records.jsonl 汇总），
+    // 不是这个判分脚本自己的耗时。旧写法是 `performance.now() - t0`，
+    // 而 t0 到这里只隔了几行纯 I/O —— 实测输出 `wall_ms: 0`。
+    // 一个恒为 0 的「耗时」字段比没有这个字段更坏：它看起来像「快到测不出」。
+    wallMs: recordsWallMs,
+    expectedTotal,
+    model: metaModel,
+    gatewayHost: metaHost,
+    subsetReadFailed,
   });
 
   mkdirSync(REPORT_DIR, { recursive: true });

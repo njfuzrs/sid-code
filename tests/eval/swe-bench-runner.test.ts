@@ -16,14 +16,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   parseSubset,
   buildPrompt,
   isTestPath,
   parseNumstatZ,
   splitExtractOutput,
+  normalizePatch,
   deriveOutcome,
   pickArtifact,
   parseArgs,
@@ -34,6 +36,7 @@ import {
   buildAcceptance,
   renderReport,
   findReport,
+  readGoldOk,
   METER_NOTE,
   type OfficialReport,
 } from "../../evals/external-benchmarks/swe-bench/grade.ts";
@@ -385,6 +388,8 @@ describe("buildAcceptance：§6 五个验收字段", () => {
     goldOk: true,
     wallMs: 1234,
     expectedTotal: 2,
+    model: "claude-sonnet-5-ppchat",
+    gatewayHost: "code.ppchat.vip",
   };
 
   test("全解出：link_ok / graded_ok / gold_ok 三个二值都真", () => {
@@ -462,6 +467,232 @@ describe("buildAcceptance：§6 五个验收字段", () => {
     });
     expect(a.patch_touches_tests).toBe(1);
     expect(a.solved_count).toBe(2); // 不因触及测试而被静默扣掉
+  });
+
+  /**
+   * 模型名是**可比性的前提**：换了模型的两次 run 的 solved_count 之间没有可比性，
+   * 而分数本身看不出这件事。所以缺 model 时必须在 unaccounted 里点破 ——
+   * 只把字段记成 null 不够，读报告的人会自动把 null 读成「默认那个模型」。
+   */
+  test("model 缺失 → 字段为 null 且 unaccounted 点明不可并排比较", () => {
+    const { model: _m, gatewayHost: _g, ...noModel } = base;
+    const a = buildAcceptance({ ...noModel, report: { resolved_ids: ["a", "b"] } });
+    expect(a.model).toBeNull();
+    expect(a.gateway_host).toBeNull();
+    expect(a.unaccounted).toContain("不能与其他 run 并排比较");
+    // 变异自证：**有** model 时这句话不该出现，否则这条断言是恒真的
+    const withModel = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
+    expect(withModel.unaccounted).toBeNull();
+  });
+
+  test("model / gateway_host 原样进 Acceptance，且渲染进报告", () => {
+    const a = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
+    expect(a.model).toBe("claude-sonnet-5-ppchat");
+    expect(a.gateway_host).toBe("code.ppchat.vip");
+    const md = renderReport(a);
+    expect(md).toContain("claude-sonnet-5-ppchat");
+    expect(md).toContain("code.ppchat.vip");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// readGoldOk：三态判据（未跑 / 通过 / 失败）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("readGoldOk：gold 自检的三态", () => {
+  /**
+   * ⚠️ 三态而不是二值，是因为「没跑 gold」与「跑了但失败」的处置完全不同：
+   *   - null（未跑）→ 这一轮没有环境背书，分数要打折看，但没有具体故障要查；
+   *   - false（失败）→ **停下来查环境**，此时任何 solved_count 都不可信；
+   *   - true（通过）→ 环境可信，剩下的差异才可以归因到能力。
+   * 把 null 折叠成 false 会让人去查一个没发生的失败；
+   * 折叠成 true 更糟 —— 那等于放弃「环境错 vs 能力差」这个区分本身。
+   */
+  const mkdirTmp = () => {
+    const d = join(tmpdir(), `gold-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const writeRep = (dir: string, name: string, rep: OfficialReport) =>
+    writeFileSync(join(dir, name), JSON.stringify(rep));
+
+  test("目录不存在 → null（未跑），不是 false", () => {
+    expect(readGoldOk(join(tmpdir(), "definitely-not-here-xyz"), ["a"])).toBeNull();
+  });
+
+  test("目录空 → null", () => {
+    expect(readGoldOk(mkdirTmp(), ["a"])).toBeNull();
+  });
+
+  test("submitted 全部跑过且全 resolved → true", () => {
+    const d = mkdirTmp();
+    writeRep(d, "gold.a.json", { submitted_ids: ["a"], resolved_ids: ["a"] });
+    writeRep(d, "gold.b.json", { submitted_ids: ["b"], resolved_ids: ["b"] });
+    expect(readGoldOk(d, ["a", "b"])).toBe(true);
+  });
+
+  test("有一条没跑过 gold → null（未跑），**不是 false**", () => {
+    const d = mkdirTmp();
+    writeRep(d, "gold.a.json", { submitted_ids: ["a"], resolved_ids: ["a"] });
+    // b 压根没有 gold 记录
+    expect(readGoldOk(d, ["a", "b"])).toBeNull();
+  });
+
+  test("全跑过但有一条没 resolved → false（环境有问题，要停下来查）", () => {
+    const d = mkdirTmp();
+    writeRep(d, "gold.a.json", { submitted_ids: ["a"], resolved_ids: ["a"] });
+    writeRep(d, "gold.b.json", { submitted_ids: ["b"], resolved_ids: [], unresolved_ids: ["b"] });
+    expect(readGoldOk(d, ["a", "b"])).toBe(false);
+  });
+
+  test("坏 json 被跳过，不让一个坏文件把整个判据变成 false", () => {
+    const d = mkdirTmp();
+    writeFileSync(join(d, "broken.json"), "{ not json");
+    writeRep(d, "gold.a.json", { submitted_ids: ["a"], resolved_ids: ["a"] });
+    expect(readGoldOk(d, ["a"])).toBe(true);
+  });
+
+  test("submitted 为空 → null（没有可判的对象）", () => {
+    const d = mkdirTmp();
+    writeRep(d, "gold.a.json", { submitted_ids: ["a"], resolved_ids: ["a"] });
+    expect(readGoldOk(d, [])).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// normalizePatch：末尾必须恰好一个换行（GNU patch 的硬要求）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("normalizePatch：patch 末尾换行", () => {
+  /**
+   * 实测背景（2026-08-25 的 10 题跑分）：原来是 `diff.trimEnd()`，
+   * 容器里的 GNU patch 2.7.6 因此报
+   * `patch unexpectedly ends in middle of line` / `malformed patch` / exit=2，
+   * 补一个 `\n` 就 exit=0 —— 差别一个字节。
+   *
+   * ⚠️ 这个 bug 在 macOS 上跑不出来（BSD patch 容忍缺尾换行），
+   * 所以这里断言的是**字节形态**，不去跑 patch 命令 ——
+   * 跑命令的话这条测试在 mac 上会假绿。
+   */
+  test("缺尾换行 → 补上恰好一个", () => {
+    const d = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1";
+    expect(normalizePatch(d).endsWith("\n")).toBe(true);
+    expect(normalizePatch(d)).toBe(d + "\n");
+  });
+
+  test("多余的尾部空白/多换行 → 收敛成恰好一个换行", () => {
+    const core = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1";
+    for (const tail of ["\n", "\n\n\n", "\n  \n\t", "   "]) {
+      expect(normalizePatch(core + tail)).toBe(core + "\n");
+    }
+  });
+
+  /**
+   * 变异自证的关键一条：空 diff **不许**变成 "\n"。
+   * 变了的话 `patchBytes` 从 0 变 1，`deriveOutcome` 会把一个
+   * 真实的 no_patch 误判成「产出了 patch」—— 那正是本轮踩的那类
+   * 「环境/工具故障伪装成有结果」。
+   */
+  test("空 diff 保持空（否则 patchBytes 0→1，no_patch 被误判成有 patch）", () => {
+    expect(normalizePatch("")).toBe("");
+    expect(normalizePatch("   \n\n")).toBe("");
+    expect(normalizePatch("").length).toBe(0);
+    // 串到 deriveOutcome 上确认这个不变量真的守住了
+    expect(
+      deriveOutcome({ agentExit: 0, patchBytes: normalizePatch("").length, timedOut: false }),
+    ).toBe("no_patch");
+  });
+
+  test("已经正好一个换行 → 幂等", () => {
+    const d = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1\n";
+    expect(normalizePatch(d)).toBe(d);
+    expect(normalizePatch(normalizePatch(d))).toBe(d);
+  });
+
+  test("`\\ No newline at end of file` 标记不被吃掉（它是 diff 语义的一部分）", () => {
+    const d = "diff --git a/x b/x\n@@ -0,0 +1 @@\n+x = 1\n\\ No newline at end of file\n";
+    const out = normalizePatch(d);
+    expect(out).toContain("No newline at end of file");
+    expect(out.endsWith("\n")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// expectedTotal / partial：分母不许静默说谎
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("partial 的分母口径", () => {
+  const base = {
+    runId: "t1",
+    promptVersion: "prompt-v1",
+    touchesTestsIds: [] as string[],
+    goldOk: true,
+    wallMs: 1,
+    model: "m",
+    gatewayHost: "h",
+  };
+
+  /**
+   * expectedTotal 曾是 grade.ts 里硬编码的 10。硬编码的两个失败方向都会说谎：
+   *   - subset 缩到 5：5 条全跑完仍判 partial=true（「只跑了 5/10」）——
+   *     一个跑满的 run 被记成跑了一半；
+   *   - subset 扩到 15：跑 10 条判 partial=false —— **更坏**，
+   *     一个只覆盖三分之二的 run 被记成全量。
+   */
+  test("跑满 subset → partial 假", () => {
+    const a = buildAcceptance({
+      ...base,
+      submitted: ["a", "b", "c"],
+      patchBytesById: { a: 1, b: 1, c: 1 },
+      expectedTotal: 3,
+      report: { resolved_ids: ["a", "b", "c"] },
+    });
+    expect(a.partial).toBe(false);
+    expect(a.unaccounted).toBeNull();
+  });
+
+  test("subset 扩大后只跑一部分 → partial 真（不因分母变大而看起来跑满）", () => {
+    const a = buildAcceptance({
+      ...base,
+      submitted: ["a", "b", "c"],
+      patchBytesById: { a: 1, b: 1, c: 1 },
+      expectedTotal: 15,
+      report: { resolved_ids: ["a", "b", "c"] },
+    });
+    expect(a.partial).toBe(true);
+    expect(a.unaccounted).toContain("3/15");
+  });
+
+  /**
+   * subset 读失败时 expectedTotal 退化成 submitted.length，于是 partial **恒为 false**。
+   * 这一步本身没错（没有别的分母可用），但必须点破 ——
+   * 否则「读不到 subset」这个事实会被一个绿色的 partial=false 吞掉。
+   */
+  test("subsetReadFailed → partial 恒假，但 unaccounted 必须点破", () => {
+    const a = buildAcceptance({
+      ...base,
+      submitted: ["a"],
+      patchBytesById: { a: 1 },
+      expectedTotal: 1, // 退化后的值
+      subsetReadFailed: true,
+      report: { resolved_ids: ["a"] },
+    });
+    expect(a.partial).toBe(false);
+    expect(a.unaccounted).toContain("读不到 verified-subset.yaml");
+    // 变异自证：不置 subsetReadFailed 时这句话不该出现
+    const clean = buildAcceptance({
+      ...base,
+      submitted: ["a"],
+      patchBytesById: { a: 1 },
+      expectedTotal: 1,
+      report: { resolved_ids: ["a"] },
+    });
+    expect(clean.unaccounted).toBeNull();
+  });
+
+  test("parseSubset 现取的条数就是真实 subset 大小（与 grade.ts 用的同一函数）", () => {
+    const n = parseSubset(readFileSync(join(SWE_DIR, "verified-subset.yaml"), "utf8")).length;
+    expect(n).toBe(10); // §4.1：阶段 A 就是 10 条
   });
 });
 

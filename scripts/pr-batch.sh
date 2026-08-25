@@ -495,7 +495,7 @@ prepare) # prepare <layer> <slug>...
         "$SETTINGS_TEMPLATE" | expand_paths > "$wt/.claude/settings.local.json"
       echo "       权限已配（acceptEdits + Bash 白名单；push / gh pr create 仍需确认）"
     else
-      echo "       ⚠️ 缺 $SETTINGS_TEMPLATE，该 worktree 会逐步询问权限" >&2
+      echo "       ⚠️ 缺 ${SETTINGS_TEMPLATE}，该 worktree 会逐步询问权限" >&2
     fi
 
     # ⚠️ **刻意不再写 state 字段**。
@@ -783,7 +783,7 @@ list|sync) # list —— 各路的**当前**状态 + 建议的下一步。
     # 建议的下一步：**这一列才是人真正要看的东西**。
     # 前一版让人自己从 ready/OPEN/MERGED 推断该干什么 —— 那是把派生工作推给人。
     if [[ -z "${pr_num:-}" ]]; then
-      if [[ -n "$session" ]]; then nxt="$session，等它提 PR"
+      if [[ -n "$session" ]]; then nxt="${session}，等它提 PR"
       elif [[ -n "$dirty" ]]; then nxt="有改动未提交 → open 续上"
       else nxt="未开工 → bun run pr-batch open $id"; fi
     elif [[ "$pr_state" == "MERGED" ]]; then
@@ -799,7 +799,7 @@ list|sync) # list —— 各路的**当前**状态 + 建议的下一步。
         PENDING) nxt="CI 跑着 → gh pr checks $pr_num --watch" ;;
         *)       nxt="无 CI → 检查 workflow 触发条件" ;;
       esac
-      [[ -n "$session" ]] && nxt="$session；$nxt"
+      [[ -n "$session" ]] && nxt="${session}；$nxt"
     fi
 
     printf '%-6s %-38s %-7s %-9s %-9s %s\n' \
@@ -914,7 +914,7 @@ reflow) # reflow <issue号> [--synced]
     fi
   else
     echo "⚠️ 找不到方案文档（plan.json 的 _plan = '${plan_doc:-空}'）。"
-    echo "   人工找到它，把下面的块贴进 $section。"
+    echo "   人工找到它，把下面的块贴进 ${section}。"
   fi
   echo
   echo "── 贴到 $section 末尾（原描述**保留并标注**，不要删）─────────"

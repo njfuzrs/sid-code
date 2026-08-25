@@ -174,10 +174,36 @@ RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
 RG_VERSION="$(bun run "$SCRIPT_DIR/fetch-ripgrep.ts" --print-version)"
 
 # bun-<os>-<arch> target → 打包命名用的 <os>-<arch>
+#
+# ## 为什么有一条 `linux-x64-baseline`
+#
+# Bun 默认编译的 x64 产物**要求 AVX2 等较新指令**，在 qemu-x86_64 下一启动就
+# `Illegal instruction (core dumped)`（进程 exit 132 = 128+SIGILL）。
+# 而 SWE-bench 官方 per-instance 镜像**只发布 amd64**，
+# 所以 arm64 机器上跑评测必须走 qemu —— 常规 x64 产物在那里一题都跑不了。
+#
+# ⚠️ 这个失败形态在评测里会**伪装成 agent 能力差**，而且伪装得很好：
+# qemu 的 core dump 掉在工作目录里被 `git add -A` 收走，于是「patch」是两个
+# core 文件的二进制 diff，`patch_bytes` 看着还挺正常
+# （详见方案文档 `01-coding-agent评测集全景与sid-code接入方案.md` §附录 ZZ.2 第 4 条）。
+#
+# `bun-linux-x64-baseline` 编出来的产物在同一 qemu 容器里 `--version` 与
+# `--self-check` 全过（含内嵌 ripgrep 可执行）。
+#
+# 体积代价实测是**负的**：baseline 104.7M vs 常规 105.6M（少 0.9M，2026-08-25 实测，
+# bun 1.3.14）—— 所以「多一个 target 会让发布变重」这个直觉在这里不成立，
+# 不要拿体积当理由把它删掉。
+#
+# 且**不影响原生 x64 用户**：那条常规 `linux-x64` 仍在，
+# `install-template.sh` 只按 `uname` 拼 `linux-x64` / `linux-arm64`，
+# 永远不会拼出 `-baseline` —— 它是**给评测显式取用的**（见
+# `evals/external-benchmarks/swe-bench/exec-swebench.sh` 的 `artifact_for()` 查找路径 ②，
+# 那条路径在这个 target 加进来之前指向一个**没有任何东西会产出的文件**）。
 TARGETS=(
     "bun-darwin-arm64:darwin-arm64"
     "bun-darwin-x64:darwin-x64"
     "bun-linux-x64:linux-x64"
+    "bun-linux-x64-baseline:linux-x64-baseline"
     "bun-linux-arm64:linux-arm64"
 )
 
@@ -696,13 +722,19 @@ for entry in "${TARGETS[@]}"; do
     # ─── 切换嵌入的 rg 二进制为当前 target 对应平台 ───
     # packages/core/vendor/rg-embed 是 bun --compile 的固定嵌入 import 路径（见 packages/core/src/tool/rg-embedded.ts）。
     # 明确置空（而非跳过）以避免复用上一个 target 残留的错误平台二进制。
-    RG_VENDOR_FILE="$VENDOR_DIR/ripgrep/${RG_VERSION}/rg-${PLATFORM}"
+    # ⚠️ rg 的 vendor 文件按**平台**命名（rg-linux-x64），没有 baseline 变体 ——
+    # baseline 只是 CPU 指令集基线的差别，同一平台的 rg 二进制通用。
+    # 不剥这个后缀的话会去找不存在的 `rg-linux-x64-baseline`，
+    # 然后走到下面那个 warn 分支：产物**静默不含内嵌 rg**，
+    # 而症状要等到运行时才出现（回退系统 rg，容器里通常没装）。
+    RG_PLATFORM="${PLATFORM%-baseline}"
+    RG_VENDOR_FILE="$VENDOR_DIR/ripgrep/${RG_VERSION}/rg-${RG_PLATFORM}"
     if [ -f "$RG_VENDOR_FILE" ]; then
         cp "$RG_VENDOR_FILE" "$VENDOR_DIR/rg-embed"
         chmod +x "$VENDOR_DIR/rg-embed"
     else
         : > "$VENDOR_DIR/rg-embed"
-        warn "未找到 packages/core/vendor/ripgrep/${RG_VERSION}/rg-${PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
+        warn "未找到 packages/core/vendor/ripgrep/${RG_VERSION}/rg-${RG_PLATFORM}，本次 ${PLATFORM} 产物不含内嵌 rg（运行时回退系统 rg）"
     fi
 
     # --define process.env.NODE_ENV：必须带，别删（与 Makefile 的 BUILD_DEFINES 同源同理由）。

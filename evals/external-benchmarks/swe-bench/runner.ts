@@ -364,6 +364,35 @@ export function deriveOutcome(input: {
 }
 
 /** 从提取脚本的输出里切出 numstat 段与 diff 段。 */
+/**
+ * 把提取到的 diff 归一化成**可被 GNU patch 接受**的形态：末尾恰好一个换行。
+ *
+ * ## 为什么必须有这一步（实测，2026-08-25 的 10 题跑分抓到）
+ *
+ * 原来 `record.ts` 写的是 `diff.trimEnd()`，把末尾换行一起剥了。
+ * 容器里的 **GNU patch 2.7.6** 因此拒收整个补丁：
+ *
+ *     patch unexpectedly ends in middle of line
+ *     patch: **** malformed patch at line 34        (exit=2)
+ *
+ * 只在末尾补一个 `\n`，同一份 patch 就 `exit=0`。差别是一个字节。
+ *
+ * ⚠️ **这个 bug 在 macOS 上测不出来**：宿主自带 BSD patch，它容忍缺尾换行
+ * （实测两个版本都 exit=0）。判分发生在容器里，所以「本地跑通」在这件事上
+ * 没有说服力 —— 这也是为什么单测里要显式断言「末尾必须是 \n」，
+ * 而不是靠跑一遍 patch 命令。
+ *
+ * ⚠️ 危害不止「几条题挂了」：一份**正确的修复**末尾没换行也会被整份拒收，
+ * 于是记成 grader_error / wrong_patch —— 又是「工具链故障伪装成能力差」。
+ *
+ * 空 diff 保持空字符串：给空串补换行会让 `patchBytes` 从 0 变 1，
+ * `deriveOutcome` 就会把一个 no_patch 误判成「有 patch」。
+ */
+export function normalizePatch(diff: string): string {
+  const trimmed = diff.trimEnd();
+  return trimmed.length > 0 ? `${trimmed}\n` : "";
+}
+
 export function splitExtractOutput(out: string): { numstat: string; diff: string } {
   const nIdx = out.indexOf("===NUMSTAT===");
   const dIdx = out.indexOf("===DIFF===");
