@@ -411,6 +411,16 @@ export class QueryEngine {
             log.warn("ENGINE", `assistant 消息持久化失败（不阻断）: ${(e as Error)?.message}`);
           }
         }
+        // 轮次用尽：把控制流事实告知 collector，让 exit_status 落 `max_turns`
+        // 而不是掉进 `user_interrupt` 兜底桶（实测 smoke-9 两条撞顶题都被误记成
+        // "会话被中断"，而没有任何人中断过）。成因与判据见
+        // `trace/collector.ts` recordMaxTurns 的注释。
+        //
+        // 埋在这里而不是 loop.ts：collector 的引用在 deps 上，engine 是唯一
+        // 既拿得到它、又能看见 loop 全部 yield 的位置。
+        if (event.kind === "max_turns") {
+          this.deps.traceCollector?.recordMaxTurns?.();
+        }
         yield event;
         if (event.kind === "done") {
           return;

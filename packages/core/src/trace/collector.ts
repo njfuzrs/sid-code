@@ -191,6 +191,15 @@ export class TraceCollector {
   /** 是否把请求/响应原文写进 raw.jsonl（默认 true；env `SID_CODE_TRACE_NO_RAW=1` 可关） */
   private readonly recordRawPayloads: boolean;
   private initialized = false;
+  /**
+   * 本会话是否发生过「轮次用尽」（`loop.ts` 的 `yield { kind: "max_turns" }`）。
+   * 由 {@link recordMaxTurns} 置位，收尾时用于把 exit_status 落成 `max_turns`
+   * 而不是掉进 `user_interrupt` 兜底桶 —— 详见 handleSessionEnd 里那段注释。
+   *
+   * 单向置位、不重置：一个会话里只要撞过一次顶，这个事实就成立。
+   * （SessionStart 重建 collector 状态时会连它一起重置，见那里。）
+   */
+  private hitMaxTurns = false;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
   /** 心跳定时器：每 10 秒写 heartbeat.txt */
@@ -667,6 +676,8 @@ export class TraceCollector {
     // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
     this.prefixTracker.reset();
     this.currentPair = null;
+    // 撞顶标志随会话重置：上个会话撞过顶，不能让这个会话的 exit_status 也落 max_turns。
+    this.hitMaxTurns = false;
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
@@ -1654,14 +1665,34 @@ export class TraceCollector {
 
     // 推断 exit_status
     // reason 语义：
-    //   exit/other → 看最后一次 stop_reason，end_turn 即正常结束，否则视为 user_interrupt
+    //   exit/other → 先看有没有 max_turns 真实信号，没有再看最后一次 stop_reason
     //   clear → /clear 上下文清除
     //   abort → 用户主动 Ctrl-C 或外部 SIGTERM
     //   error → runtime 抛出异常（流式中断 / API 错误 / 上下文溢出兜底失败）
+    //
+    // ## `max_turns` 必须先判，且必须用真实信号
+    //
+    // 轮次用尽走的是 `loop.ts` 的 `yield { kind: "max_turns" }` → 收尾 reason 落 `exit`，
+    // 而此刻最后一次 `stop_reason` 是 `tool_use`（模型正想调下一个工具）——
+    // 于是它以前被归到 `user_interrupt`，**而没有任何人中断过**。
+    //
+    // 后果不是显示难看，是归因方向错了一步：`digest.ts` 把 `user_interrupt` 算进
+    // `abnormal`，排查时看到的是"会话被中断"，真相却是"预算花完了"。
+    // 这两件事的处置完全不同（一个查中断源、一个调预算）。
+    // 实测（smoke-9）：两条撞顶的 SWE-bench 题都是 `exit_status=user_interrupt`，
+    // 而 `grep -c 达到最大轮次限制` = 2。
+    //
+    // ⛔ **判据必须是 `max_turns` 事件本身**（由 engine.ts 经 recordMaxTurns 上报），
+    // 不是"`stop_reason !== end_turn` 就当撞顶"那类粗糙代理 ——
+    // 后者正是这个 bug 的成因，换一个同样粗糙的代理只是把错误挪个位置。
+    // 这与「归因与真实信号脱节」那条反模式同型（判据优先级：结构化信号 > 数字边界 > 裸子串）。
     const lastPair = this.pairs[this.pairs.length - 1];
     if (input.reason === "exit" || input.reason === "other") {
-      this.metadata.exit_status =
-        lastPair?.stop_reason === "end_turn" ? "end_turn" : "user_interrupt";
+      this.metadata.exit_status = this.hitMaxTurns
+        ? "max_turns"
+        : lastPair?.stop_reason === "end_turn"
+          ? "end_turn"
+          : "user_interrupt";
     } else {
       this.metadata.exit_status = input.reason;
     }
@@ -2136,7 +2167,10 @@ export class TraceCollector {
       input.reason === "abort" ||
       exitStatus === "user_interrupt" ||
       exitStatus === "error" ||
-      exitStatus === "abort";
+      exitStatus === "abort" ||
+      // max_turns 保持 abnormal：它以前就被算在里面（那时被误记成 user_interrupt），
+      // 这次只修正原因、不改判据松紧。判据与 digest.ts 的两处 abnormal 名单同源。
+      exitStatus === "max_turns";
 
     // 最后一个被调用的工具名（从消息历史里找最后一个 tool_use）
     let lastTool: string | null = null;
@@ -2531,6 +2565,30 @@ export class TraceCollector {
       is_partial: pair.is_partial,
       ...(compactBoundary ? { compact_boundary: compactBoundary } : {}),
     };
+  }
+
+  /**
+   * 记录「本轮轮次用尽」。由 `engine.ts` 在收到 `max_turns` 事件时调用。
+   *
+   * 存在的唯一目的：让 exit_status 能落成 `max_turns` 而不是 `user_interrupt`
+   * （成因与后果见 handleSessionEnd 里那段注释）。
+   *
+   * ## 为什么要单独开一个上报口，而不是在 collector 里推断
+   *
+   * `max_turns` 是 queryLoop 的**控制流事实**，它不在任何 hook 事件里 ——
+   * collector 只订阅 hook（BeforeModel/AfterModel/PostToolUse/SessionEnd…），
+   * 从这些事件里看不出"预算耗尽"与"模型还想调工具但被叫停"的区别。
+   * 唯一能区分的地方就是 loop 里那个 yield，所以信号必须从那里传过来。
+   *
+   * 不落 events.jsonl 一条独立事件：`TurnComplete` 已经带了
+   * `stop_reason: "max_turns"`（见 query/turn-complete.ts），再写一条是重复记账。
+   * 这里只更新收尾判据用的那一位状态。
+   *
+   * 不检查 `initialized`：置一个布尔位不写文件，未初始化时也无害；
+   * 而 initialized 恰好可能在极早期的撞顶场景里为 false —— 那时漏掉才是真丢信号。
+   */
+  recordMaxTurns(): void {
+    this.hitMaxTurns = true;
   }
 
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───
