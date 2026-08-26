@@ -1,0 +1,115 @@
+{
+  "run_id": "smoke-9",
+  "prompt_version": "prompt-v1",
+  "model": "claude-sonnet-5-ppchat",
+  "gateway_host": "code.ppchat.vip",
+  "sid_code_version": "0.1.601",
+  "git_commit": "454cf79c90c5b83655effdcd032cb3630364c9a6",
+  "git_dirty": true,
+  "artifact_sha256": "b634e8f9149d4be54ecdc748fae6972a5b415362a20058b1237150988843a665",
+  "effort_level": "max",
+  "cost_limit_usd": 0,
+  "jobs": 1,
+  "link_ok": false,
+  "graded_ok": true,
+  "gold_ok": true,
+  "solved_count": 8,
+  "total_count": 10,
+  "patch_touches_tests": 0,
+  "outcomes": {
+    "astropy__astropy-12907": "solved",
+    "astropy__astropy-8872": "solved",
+    "django__django-13964": "no_patch",
+    "django__django-15128": "solved",
+    "matplotlib__matplotlib-20488": "solved",
+    "matplotlib__matplotlib-26466": "wrong_patch",
+    "pydata__xarray-4075": "solved",
+    "pydata__xarray-6461": "solved",
+    "pytest-dev__pytest-10081": "solved",
+    "pytest-dev__pytest-7982": "solved"
+  },
+  "unaccounted": "工作区不干净（git_dirty=true）—— 产物与 454cf79c 不完全对应，这一轮**只可自比，不可与其他 run 外比**",
+  "wall_ms": 5114441,
+  "meter": null,
+  "meter_note": "无中立计价源；成本数字为 agent 自报，未交叉校验",
+  "partial": false,
+  "timing": {
+    "per_instance": [
+      {
+        "instance_id": "django__django-13964",
+        "wall_ms": 968880,
+        "setup_ms": 471,
+        "agent_ms": 966358,
+        "extract_ms": 2051
+      },
+      {
+        "instance_id": "pydata__xarray-6461",
+        "wall_ms": 814479,
+        "setup_ms": 586,
+        "agent_ms": 812717,
+        "extract_ms": 1176
+      },
+      {
+        "instance_id": "django__django-15128",
+        "wall_ms": 796575,
+        "setup_ms": 473,
+        "agent_ms": 793682,
+        "extract_ms": 2420
+      },
+      {
+        "instance_id": "matplotlib__matplotlib-20488",
+        "wall_ms": 658988,
+        "setup_ms": 486,
+        "agent_ms": 657095,
+        "extract_ms": 1407
+      },
+      {
+        "instance_id": "matplotlib__matplotlib-26466",
+        "wall_ms": 507591,
+        "setup_ms": 506,
+        "agent_ms": 506051,
+        "extract_ms": 1034
+      },
+      {
+        "instance_id": "pytest-dev__pytest-10081",
+        "wall_ms": 407722,
+        "setup_ms": 536,
+        "agent_ms": 406075,
+        "extract_ms": 1111
+      },
+      {
+        "instance_id": "pydata__xarray-4075",
+        "wall_ms": 371153,
+        "setup_ms": 493,
+        "agent_ms": 369652,
+        "extract_ms": 1008
+      },
+      {
+        "instance_id": "pytest-dev__pytest-7982",
+        "wall_ms": 284457,
+        "setup_ms": 515,
+        "agent_ms": 282927,
+        "extract_ms": 1015
+      },
+      {
+        "instance_id": "astropy__astropy-12907",
+        "wall_ms": 184829,
+        "setup_ms": 565,
+        "agent_ms": 182378,
+        "extract_ms": 1886
+      },
+      {
+        "instance_id": "astropy__astropy-8872",
+        "wall_ms": 119767,
+        "setup_ms": 490,
+        "agent_ms": 118373,
+        "extract_ms": 904
+      }
+    ],
+    "total_wall_ms": 5114441,
+    "total_setup_ms": 5121,
+    "total_agent_ms": 5095308,
+    "total_extract_ms": 14012,
+    "serial_penalty_x": 5.278714598299067
+  }
+}
