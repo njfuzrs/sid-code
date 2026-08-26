@@ -664,18 +664,39 @@ export class AnthropicProvider implements Provider {
               yield { type: "message_stop" };
               break;
 
-            case "error":
+            case "error": {
               // T6：透传上游结构化 error.type（如 overloaded_error）+ streamLevel 标记，
               // 让 fallback.ts 按结构化字段而非消息文本关键词判定重试。
+              //
+              // 空 type / 空 message 的归一与下方 catch 分支同口径（见那里的注释）：
+              // 网关会回 `"type": ""` 把可用信息塞进 `code`，`""` 传下去等于没传，
+              // 而 `classifyStreamError` 对空 type 会一路落到"按 server_error 重试"的
+              // 兜底 —— 明明是 429（该读 Retry-After）却被当成 5xx 退避，判据失真。
+              const raw = (event as any).error;
+              // ⚠️ message 与 type 用**两个**判据，不要图省事共用一个。
+              //   - type/code：空串要当"没给"，且字面 `"error"` 是外层 sentinel
+              //     （`{type:"error", error:{…}}` 的那个 type），不是成因标签。
+              //   - message：只有"空"才算没给。一条正文恰好是 `"error"` 的消息
+              //     是**有效信息**，用 type 的判据去过滤它会把它替换成
+              //     "Unknown error" —— 丢掉上游原话，而排查时那就是唯一线索。
+              const tag = (v: unknown): string | undefined =>
+                typeof v === "string" && v.trim() !== "" && v !== "error" ? v : undefined;
+              const nonEmpty = (v: unknown): string | undefined =>
+                typeof v === "string" && v.trim() !== "" ? v : undefined;
+              const upstreamTag = tag(raw?.type) ?? tag(raw?.code);
               yield {
                 type: "error",
                 error: {
-                  message: (event as any).error?.message || "Unknown error",
-                  type: (event as any).error?.type,
+                  message: nonEmpty(raw?.message) ?? "Unknown error",
+                  ...(upstreamTag && { type: upstreamTag }),
+                  // 流内 error 事件本身不带 HTTP 状态；上游若给了就透传，
+                  // 让下游拿到无歧义判据而不必猜。
+                  ...(typeof raw?.status === "number" && { statusCode: raw.status }),
                   streamLevel: true,
                 },
               };
               break;
+            }
 
             default:
               // 处理未知事件类型
@@ -755,14 +776,30 @@ export class AnthropicProvider implements Provider {
       // `err.error` 是 SDK 保留的**已解析** body（`core/error.js` 的 `this.error = error`），
       // 对流内 error 就是 `{type:"error", error:{type,message}}`，故取两层 `.error.type`。
       const parsedBody = err?.error;
+      // ⚠️ 空字符串必须归一成 undefined，不能当"拿到了 type"。
+      //
+      // 事故 smoke-8（2026-08-25）：公司网关的 429 body 是
+      //   {"error":{"message":"当前分组上游负载已饱和…","type":"","code":"rate_limited"}}
+      // —— `type` 是**空字符串**。此前判据只看 `typeof === "string"`，于是
+      // `upstreamType = ""`（falsy）：`...(upstreamType && {...})` 三处展开全部落空，
+      // `type` 和 `streamLevel` 都不带上，事件退化成"只有 message + statusCode"。
+      // 下游 fallback.ts 于是走 `classifyError` 的文本匹配路径，而 message 用的是
+      // 上游中文文案（无 "429" 无 "rate_limit"）→ **429 被判成无法分类 → 零重试终止整轮**。
+      //
+      // 顺带把 `code` 收进来作为次选：这个网关把可用信息放在 `code: "rate_limited"`，
+      // 而 `classifyStreamError` 的 `type.includes("rate_limit")` 正好认它。
+      // 优先级 type > code：type 是 Anthropic 官方字段，code 是网关扩展。
+      const pickUpstreamTag = (v: unknown): string | undefined =>
+        typeof v === "string" && v.trim() !== "" && v !== "error" ? v : undefined;
       const upstreamType =
-        typeof parsedBody?.error?.type === "string"
-          ? parsedBody.error.type
-          : typeof parsedBody?.type === "string" && parsedBody.type !== "error"
-            ? parsedBody.type
-            : undefined;
+        pickUpstreamTag(parsedBody?.error?.type) ??
+        pickUpstreamTag(parsedBody?.error?.code) ??
+        pickUpstreamTag(parsedBody?.type) ??
+        undefined;
       const upstreamMessage =
-        typeof parsedBody?.error?.message === "string" ? parsedBody.error.message : undefined;
+        typeof parsedBody?.error?.message === "string" && parsedBody.error.message.trim() !== ""
+          ? parsedBody.error.message
+          : undefined;
       yield {
         type: "error",
         error: {

@@ -29,6 +29,7 @@ import {
   type Prediction,
   normalizePatch,
   patchOnlyAddsFiles,
+  extractAgentLogSignals,
 } from "./runner.ts";
 
 function arg(name: string, argv: string[]): string | undefined {
@@ -87,12 +88,52 @@ if (onlyAdds) {
   );
 }
 
+// ── ZZZZ.11 P2：把 no_patch 桶里的「非能力原因」标出来 ──
+//
+// agent.log 由 exec-swebench.sh 在调本脚本**之前**落盘（同一个 run 目录），
+// 所以这里读得到。读不到就当全 false —— 不猜、不报错：
+// 轨迹/日志缺失本身会在下面的 unaccounted 里点破，
+// 而让一条本来有效的记录因为"日志没找到"变成失败，方向是反的。
+const agentLogPath = join(runDir, `${instanceId}.agent.log`);
+const agentLog = existsSync(agentLogPath) ? readFileSync(agentLogPath, "utf8") : "";
+const signals = extractAgentLogSignals(agentLog);
+if (!agentLog) {
+  notes.push(`agent.log 不存在（${agentLogPath}）—— hit_max_turns / llm_fatal 无法归因`);
+}
+if (patchBytes === 0 && signals.hitMaxTurns) {
+  notes.push(`零 patch 且**轮次预算用尽**（达到 max-turns）—— 这不是"想不出来"，是预算不够`);
+}
+if (patchBytes === 0 && signals.llmFatal) {
+  notes.push(
+    `零 patch 且被 **LLM 致命错误**打断（限流/5xx）—— 这条题连"跑完"的机会都没拿到，` +
+      `不该计入能力账`,
+  );
+}
+// 权限拒绝：不限于零 patch —— 有 patch 的实例被拒同样意味着它是"带着镣铐做完的"。
+if (signals.permissionDenials > 0) {
+  notes.push(
+    `被权限层拒绝 ${signals.permissionDenials} 次工具调用 —— 每次都烧掉一轮而未做成任何事。` +
+      `若这个数显著大于 0，本轮分数掺了非能力因素（查 --permission-mode 配置）`,
+  );
+}
+// 零 patch 但两个信号都没命中 → **才有可能**是能力问题。显式说出来，
+// 免得"没有归因"被默读成"已确认是能力不足"。
+if (patchBytes === 0 && !signals.hitMaxTurns && !signals.llmFatal && agentLog) {
+  notes.push(
+    `零 patch 且未命中轮次用尽/LLM 致命错误两个信号 —— 原因未归因，` +
+      `需人工读 agent.log 与轨迹确认是否为能力问题`,
+  );
+}
+
 const record: RunRecord = {
   instance_id: instanceId,
   patch_bytes: patchBytes,
   patch_touches_tests: testFiles.length > 0,
   test_files_touched: testFiles,
   patch_only_adds_files: onlyAdds,
+  hit_max_turns: signals.hitMaxTurns,
+  llm_fatal: signals.llmFatal,
+  permission_denials: signals.permissionDenials,
   wall_ms: wallMs,
   agent_exit: agentExit,
   outcome,
@@ -112,7 +153,14 @@ appendFileSync(join(runDir, "records.jsonl"), JSON.stringify(record) + "\n");
 appendFileSync(join(runDir, "predictions.jsonl"), JSON.stringify(prediction) + "\n");
 
 const flag = record.patch_touches_tests ? " ⚠️ 触及测试文件" : "";
+// 两个机械信号进终端行：跑的时候就能看出「这条是没跑完，不是没做出来」，
+// 不必等报告。permission_denials 只在 >0 时显示 —— 正常配置下它该是 0，
+// 恒显示一个 0 会让它变成噪声、真出问题时反而被忽略。
+const sig =
+  (signals.hitMaxTurns ? " [轮次用尽]" : "") +
+  (signals.llmFatal ? " [LLM致命错误]" : "") +
+  (signals.permissionDenials > 0 ? ` [权限拒绝×${signals.permissionDenials}]` : "");
 console.log(
-  `  ${instanceId}: ${outcome}  patch=${patchBytes}B  wall=${wallMs}ms${flag}` +
+  `  ${instanceId}: ${outcome}  patch=${patchBytes}B  wall=${wallMs}ms${flag}${sig}` +
     (record.unaccounted ? `\n    unaccounted: ${record.unaccounted}` : ""),
 );

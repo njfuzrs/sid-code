@@ -1050,6 +1050,38 @@ export class ModelFallback {
                 throw new RetryableError(event.error.message, "server_error");
               }
 
+              // ═══════════════════════════════════════════════════════
+              // 分类入参必须带上 statusCode —— 否则 429 落进"无法分类"
+              // ═══════════════════════════════════════════════════════
+              //
+              // 事故 smoke-8（xarray-6461 / pytest-10081，2026-08-25）：headless 评测跑
+              // 到一半撞网关 429，**一次重试都没有**就终止整轮（19 次请求里
+              // `流式阶段尝试` 全是 `1/11`，重试计数器从没涨到 2）。
+              //
+              // 根因是这一行此前写 `classifyError(new Error(event.error.message))` ——
+              // **只把 message 传下去，把事件里明明有的 `statusCode` 丢了**。于是 429
+              // 的识别退化成对 message 做文本匹配（`errors.ts` 的 `hasBoundaryDigits`），
+              // 而 `anthropic.ts` 优先用上游给的人类可读文案（那条是网关的中文
+              // 「当前分组上游负载已饱和，请稍后再试」），里面既没有 "429" 也没有
+              // "rate_limit" → `classifyError` 返回**裸 Error** → 下方
+              // `classified instanceof RetryableError` 为 false → 跳过全部重试 →
+              // 落到"重试耗尽"出口 → tryFallback → 无备用模型 → abort → 整轮 fatal。
+              //
+              // 为什么 `streamLevel` 那条分支没接住它：`anthropic.ts` 置位 streamLevel 的
+              // 条件是 `upstreamType &&`，而这个网关回的 body 里 `"type": ""` 是**空字符串**
+              // （falsy）→ streamLevel 不置位 → 走 else 分支。`openai.ts` 的 Responses
+              // `!response.ok` 分支同样只带 statusCode 不带 streamLevel。**两族都会踩。**
+              //
+              // ⛔ 不要改成"把 streamLevel 无脑置位"来绕：那会让纯网络异常
+              // （ECONNRESET 等）也走流内错误分类器，而 `classifyStreamError` 的兜底是
+              // 「无法归类 → 按 server_error 重试」—— 等于把确定性故障也拖进 11 次退避。
+              // statusCode 是**权威且无歧义**的判据（`matchesHttpStatus` 拿到结构化状态码
+              // 就不再回退文本匹配），从它入手才是根治。
+              //
+              // 防复发：`tests/llm/status-code-classification.test.ts` 钉住"流内 error
+              // 事件带 statusCode 但不带 streamLevel"这个**生产真实形态**。此前全部
+              // fallback 测试的 mock 都显式写 `streamLevel: true`，恰好绕过了出问题的
+              // 这条分支 —— 又一例「绿了但没测到」。
               const classified = event.error.streamLevel
                 ? classifyStreamError(
                     params.model.split(":")[0] || params.model,
@@ -1057,7 +1089,16 @@ export class ModelFallback {
                     event.error.type,
                     event.error.statusCode,
                   )
-                : classifyError(new Error(event.error.message));
+                : classifyError(
+                    // 把结构化状态码挂到 Error 上：`getHTTPStatus` 会读 `.status`
+                    // （见 errors.ts 那个 cause 链遍历），于是 `matchesHttpStatus` 能
+                    // 直接用它判定，不再依赖 message 里恰好有没有那三位数字。
+                    event.error.statusCode !== undefined
+                      ? Object.assign(new Error(event.error.message), {
+                          status: event.error.statusCode,
+                        })
+                      : new Error(event.error.message),
+                  );
 
               // ═══════════════════════════════════════════════════════
               // S5 释放点之一（**流内 error 事件**路径）

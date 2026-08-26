@@ -31,6 +31,7 @@ import {
   deriveOutcome,
   pickArtifact,
   parseArgs,
+  extractAgentLogSignals,
   MODEL_NAME,
 } from "../../evals/external-benchmarks/swe-bench/runner.ts";
 import {
@@ -1079,7 +1080,13 @@ describe("exec-swebench.sh：三条实测约束不许回退", () => {
    * 而 grep 源码 / `--help` 都看不出来（它在源码里是声明着的）。
    */
   test("不许出现 --no-session-persistence", () => {
-    expect(sh).not.toContain("--no-session-persistence");
+    // 只查**可执行行**，注释里提它是允许的 —— 那正是记录"为什么不能加"的地方，
+    // 而把知识写下来不该让门禁转红。与下面 `--namespace` 那条同款处理。
+    const body = sh
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+    expect(body).not.toContain("--no-session-persistence");
   });
 
   test("必须激活 conda testbed（不激活 import 全挂）", () => {
@@ -1127,5 +1134,163 @@ describe("exec-swebench.sh：三条实测约束不许回退", () => {
       .filter((l) => !l.trimStart().startsWith("#"))
       .join("\n");
     expect(body).not.toContain("--namespace");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// agent.log 机械信号（ZZZZ.11 P2）—— 把 no_patch 桶里的非能力原因标出来
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 样本全部是 **smoke-8 真实 agent.log 的片段**（含 ANSI 色码剥离后的形态），
+// 不是我照着实现编的字符串 —— 后者只能证明"函数按我写的方式工作"，
+// 证明不了"它认得真实日志"。这个区别在本仓踩过：判据用文案匹配时，
+// 唯一可信的样本来源是真实轨迹。
+describe("extractAgentLogSignals", () => {
+  // smoke-8 matplotlib-26466 的真实尾部（轮次撞顶）
+  const HIT_MAX_TURNS = `
+[07:33:38] ● [QUERY_LOOP] 工具调用: grep
+[07:33:39] ● [QUERY_LOOP] P1-1：达到最大轮次 40，请求强制总结
+[07:34:09] ⚠ [QUERY_LOOP] 达到最大轮次限制: 40
+`;
+
+  // smoke-8 xarray-6461 的真实尾部（429 未重试即终止）
+  const LLM_FATAL_429 = `
+[07:46:43] · [FALLBACK] 流式阶段尝试 1/11
+[07:46:46] ⚠ [AUDIT:API] ✗ Anthropic 请求异常 model=claude-sonnet-5-ppchat err=429 {"error":{"message":"当前分组上游负载已饱和，请稍后再试","code":"rate_limited"}}
+[07:46:46] ● [FALLBACK] 无交互通道，降级为自动切换默认 fallback
+[07:46:46] ⚠ [FALLBACK] 用户/钩子选择不切换，终止本轮
+[07:46:46] ✗ [ENGINE] queryLoop 异常，封装为 fatal_error: LLM 错误: 主模型请求失败，已终止本轮。
+`;
+
+  // smoke-8 matplotlib-20488 的真实权限拒绝片段
+  const PERMISSION_DENIED = `
+[07:10:46] ● [PERMISSION] write(/tmp/repro.py) → 需确认(路径验证: 写入路径在工作区外: /tmp/repro.py)
+[07:10:46] ● [PERMISSION] write(/tmp/repro.py) → 拒绝(非交互模式)
+[07:10:46] ⚠ [PERMISSION] 权限拒绝: write - 拒绝 — 非交互模式
+[07:11:02] ● [PERMISSION] bash(cd /testbed && python3 -m pytest lib/matplotlib/tests/test_image.py) → 拒绝(非交互模式)
+[07:11:02] ⚠ [PERMISSION] 权限拒绝: bash - 拒绝 — 非交互模式
+`;
+
+  test("轮次撞顶 → hitMaxTurns", () => {
+    expect(extractAgentLogSignals(HIT_MAX_TURNS).hitMaxTurns).toBe(true);
+    expect(extractAgentLogSignals(HIT_MAX_TURNS).llmFatal).toBe(false);
+  });
+
+  test("429 打断 → llmFatal", () => {
+    const s = extractAgentLogSignals(LLM_FATAL_429);
+    expect(s.llmFatal).toBe(true);
+    expect(s.hitMaxTurns).toBe(false);
+  });
+
+  test("权限拒绝按次计数", () => {
+    expect(extractAgentLogSignals(PERMISSION_DENIED).permissionDenials).toBe(2);
+  });
+
+  test("正常跑完的日志 → 三个信号全静默", () => {
+    const clean = `
+[06:22:51] ● [AUDIT:TOOL] ▶ bash id=toolu_01
+[06:22:56] ● [AUDIT:TOOL] ✓ bash id=toolu_01
+[06:23:10] ● [QUERY_LOOP] 轮次 12/40，消息数 23，上下文 3%
+`;
+    const s = extractAgentLogSignals(clean);
+    expect(s.hitMaxTurns).toBe(false);
+    expect(s.llmFatal).toBe(false);
+    expect(s.permissionDenials).toBe(0);
+  });
+
+  test("空日志不抛、全静默（agent.log 缺失时的兜底路径）", () => {
+    const s = extractAgentLogSignals("");
+    expect(s.hitMaxTurns).toBe(false);
+    expect(s.llmFatal).toBe(false);
+    expect(s.permissionDenials).toBe(0);
+  });
+
+  // ── 关键负向断言：这条防的是我第一版差点犯的错 ──
+  //
+  // 若 llmFatal 的状态码判据写成 `/429|502|504/` 直接扫全文，会把
+  // request-id 与 token 计数里的数字全扫进来。smoke-8 实测：10 条实例里
+  // grep 到 "429" 的有 6 条，而**真实限流只有 2 次** —— 其余全是
+  // `cacheCreationInputTokens: 12429` / `缓存命中下降 17% (3429 tokens)`
+  // 这类巧合。误判的后果很具体：把一条**正常跑完**的实例标成"被限流打断"，
+  // 于是"零 patch 里没有基础设施原因"这条收口判据永远过不了，
+  // 而人会以为是网关在抖。
+  test("token 计数/request-id 里的数字不许被当成状态码", () => {
+    const decoys = `
+[07:10:08] ⚠ [CACHE_BREAK] 缓存命中下降 17% (3429 tokens): 本地前缀 hash 未变（1180f65848e83719）
+[07:24:11] ● [LLM] ← tool_use in=231 out=489 23.4s $1.1195
+      "cacheCreationInputTokens": 12429,
+      "clientRequestId": "d61ce6ea-e9ea-4297-923e-3b0957d4a366"
+[06:52:56] · [LLM:ANTHROPIC] 首 token 延迟: 4292ms
+`;
+    // 连 fatal_error 都没有，llmFatal 必须为 false
+    expect(extractAgentLogSignals(decoys).llmFatal).toBe(false);
+    // 就算硬塞一个 fatal_error（但没有真正的上游错误行），也不该判 llmFatal ——
+    // 那意味着致命错误另有成因，不该记到"网关/限流"账上。
+    // ⚠️ 这里刻意不含 "限流"/"overloaded" 等词，只有巧合数字。
+    expect(extractAgentLogSignals(decoys + "\nfatal_error: 别的原因\n").llmFatal).toBe(false);
+  });
+
+  test("agent.log 缺失时 record.ts 走兜底而不是抛", () => {
+    // 与上面那条空日志用例互补：这条测的是**契约**（返回三个 boolean/number
+    // 而不是 undefined），因为 record.ts 会直接把它们塞进 RunRecord。
+    const s = extractAgentLogSignals("");
+    expect(typeof s.hitMaxTurns).toBe("boolean");
+    expect(typeof s.llmFatal).toBe("boolean");
+    expect(typeof s.permissionDenials).toBe("number");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 评测配置的必控变量（ZZZZ.11 P1 + 本轮新增）
+// ═══════════════════════════════════════════════════════════════════════════
+describe("exec-swebench.sh 的必控变量与容器配置", () => {
+  const sh = readFileSync(
+    join(import.meta.dir, "../../evals/external-benchmarks/swe-bench/exec-swebench.sh"),
+    "utf8",
+  );
+
+  test("权限模式不许再用 acceptEdits（headless 下会拒掉 pytest/write）", () => {
+    // 实测 smoke-8：acceptEdits 导致 113 次权限拒绝，三条实例过半轮次白烧。
+    // 只放行 FILE_TOOLS + cwd 内 7 个 fs 命令，python/pytest 全落 ask → headless 拒绝。
+    expect(sh).toContain("bypassPermissions");
+    // 命令行里不许出现硬编码的 acceptEdits（注释里作为历史说明可以有）
+    const body = sh
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+    expect(body).not.toContain("acceptEdits");
+  });
+
+  test("max_turns / permission_mode 必须进 run-meta.json", () => {
+    // 它们和模型一样是必控变量：换了值分数不可并排，而分数本身看不出来。
+    expect(sh).toContain('"max_turns"');
+    expect(sh).toContain('"permission_mode"');
+  });
+
+  test("轨迹必须在 docker rm 之前取回", () => {
+    // ⚠️ 必须只看**可执行行**。第一版这条断言用 `sh.lastIndexOf("docker rm -f")`
+    // 扫全文，而注释里也提到 `docker rm -f`（解释轨迹为什么会丢）——
+    // 于是 lastIndexOf 命中的是**注释**，把 cp 挪到真正的 rm 之后测试照样全绿。
+    // 变异自证抓出来的：这正是本文件开头那条纪律要防的形态。
+    const lines = sh.split("\n").filter((l) => !l.trimStart().startsWith("#"));
+    const cpIdx = lines.findIndex((l) => l.includes("sid-traj/."));
+    // run_instance 收尾那个 rm（可执行行里的最后一个）
+    const rmIdx = lines.reduce((acc, l, i) => (l.includes("docker rm -f") ? i : acc), -1);
+    expect(cpIdx).toBeGreaterThan(0);
+    expect(rmIdx).toBeGreaterThan(0);
+    // 取回必须发生在收尾 docker rm 之前，否则容器已经没了
+    expect(cpIdx).toBeLessThan(rmIdx);
+  });
+
+  test("settings.json 必须占住团队默认模板会 merge 进来的顶层键", () => {
+    // backfill-team-defaults 迁移会把编译进二进制的 team-defaults.template.json
+    // 里**用户缺失的顶层键**补进 settings.json。缺 fallbackModel 就会被塞
+    // ali-deepseek-v4-flash（评测里出现第二个模型 = 必控变量失控），
+    // 缺 trace 就会被塞指向线上平台的 upload 配置（容器无外网，白跑重试队列）。
+    for (const key of ["fallbackModel", "subAgentModels", "trace", "mcpServers", "hooks"]) {
+      expect(sh).toContain(key);
+    }
+    // fallbackModel 必须显式为空：评测只许一个模型
+    expect(sh).toMatch(/"fallbackModel":\s*""/);
   });
 });

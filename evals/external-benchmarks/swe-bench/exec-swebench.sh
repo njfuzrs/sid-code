@@ -42,6 +42,26 @@
 #   SWE_ARCH                   amd64|arm64，默认按 daemon 实测
 #   SWE_MAX_TURNS              默认 40
 #   SWE_TIMEOUT                单实例秒数，默认 1800
+#   SWE_PERMISSION_MODE        默认 bypassPermissions（**必控变量**，见 build_agent_script ①）
+#                              ⚠️ 曾用 acceptEdits，实测让 agent 在 headless 下被拒 113 次、
+#                              三条实例过半轮次白烧（详见那里的注释）。改这个值分数不可比。
+#
+# ## 容器内 agent 脚本的四条实测约束（§4.5）—— 少一条就起不来或跑歪
+#
+# 这四条原本记在 `runner.ts` 一个平行实现 `containerScript()` 的 docblock 里，
+# 而那个函数零引用、已与本脚本漂移（详见 runner.ts 里删除它的说明）。
+# 唯一被真实执行的容器脚本是下面的 `build_agent_script`，所以约束记在这里：
+#
+#   1. **必须激活 conda testbed**（`source /opt/miniconda3/bin/activate` +
+#      `conda activate testbed`）—— 不激活 import 全挂，而 agent 会把
+#      「环境没激活」当成代码 bug 去修，白烧十几轮。
+#   2. **必须写 settings.json** —— `config.ts` 那道门禁在 `--print` 下
+#      `!config.model && availableModels.length === 0` 直接抛。光 cp 二进制起不来。
+#   3. **不带 `--no-session-persistence`** —— 编译产物里报「未知选项」
+#      （bun parseArgs 不收 `no-` 前缀声明名）。会话隔离靠 `SID_CONFIG_DIR`。
+#   4. **HOME 必须可写** —— `SID_CONFIG_DIR` 不覆盖 `debug.log`；且
+#      `ensure-ripgrep.ts` 在只读 HOME 下会**静默降级**到系统 rg
+#      （静默 = 你不会知道 grep 行为变了）。
 
 set -euo pipefail
 
@@ -54,6 +74,7 @@ PROXY_NAME="${SWE_PROXY:-sid-swebench-proxy}"
 MODEL_NAME="sid-code"
 MAX_TURNS="${SWE_MAX_TURNS:-40}"
 TIMEOUT_SEC="${SWE_TIMEOUT:-1800}"
+PERMISSION_MODE="${SWE_PERMISSION_MODE:-bypassPermissions}"
 
 # ⚠️ 镜像 registry 前缀，**默认必须留空**（2026-08-25 从 `docker.1ms.run` 改过来）。
 #
@@ -295,10 +316,14 @@ cmd_run() {
   # `docker exec -e`，既不进 argv 也不进任何落盘文件。
   local gw_host
   gw_host="$(printf '%s' "$SC_BASE_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')"
+  # ⚠️ 预算闸门与权限模式**也是必控变量**，此前漏记（ZZZZ.11 P1 点出过 max_turns 缺项）。
+  # 它们和模型一样：换了值两轮分数就不可比，而分数本身看不出来。
+  # `permission_mode` 尤其关键 —— acceptEdits 与 bypassPermissions 之间差的不是
+  # "严格程度"，是 agent **能不能跑测试**（实测 113 次拒绝，见 build_agent_script）。
   "$VENV_PY" - "$out_dir/run-meta.json" "$SC_MODEL" "${SC_MODEL_ID:-}" "$gw_host" \
-    "${SC_PROVIDER:-openai}" <<'PY'
+    "${SC_PROVIDER:-openai}" "$MAX_TURNS" "$PERMISSION_MODE" "$TIMEOUT_SEC" <<'PY'
 import json, sys
-out, model, model_id, host, provider = sys.argv[1:6]
+out, model, model_id, host, provider, max_turns, perm_mode, timeout_sec = sys.argv[1:9]
 # model_id 缺省时等于 model —— 记的是**实际发给网关的那个值**，
 # 不是「用户填了什么」。事后复算看的是 wire model，别名对不上厂商侧的任何东西。
 json.dump(
@@ -307,6 +332,10 @@ json.dump(
         "model_id": model_id or model,
         "gateway_host": host,
         "provider": provider,
+        # ── 必控变量（D17）：任一项变化都让分数不可与其他 run 并排 ──
+        "max_turns": int(max_turns),
+        "permission_mode": perm_mode,
+        "timeout_sec": int(timeout_sec),
     },
     open(out, "w"),
     indent=2,
@@ -490,19 +519,113 @@ PY
     --agent-exit "$agent_exit" --timed-out "$timed_out" \
     --wall-ms "$((t1 - t0))" || bad "$iid: 记录落盘失败"
 
+  # ## 轨迹取回 —— 必须在 docker rm 之前，且失败不许中断整轮
+  #
+  # 轨迹一直在生成（容器日志有 `轨迹采集已启用`，digest 自检还报过
+  # `检出 5 条[高]级异常`），但从没被拷出来 → `docker rm -f` 一删，
+  # **结构化的 StreamPhase / RetryTelemetry / exit_status 全部消失**，
+  # 排查只能退化成 grep agent.log。ZZZZ.10 归因那两条 429 就是这么啃的。
+  #
+  # ⚠️ `|| true`：取轨迹是**观测**，不是判分依赖。这一步失败（目录不存在、
+  # agent 在建轨迹前就崩了）绝不能让一条本来有效的记录变成 bad ——
+  # 否则会为了"日志齐全"丢掉真数据，方向正好反了。
+  # 取不到时显式打一行，别让"没有轨迹目录"看起来像"轨迹是空的"。
+  local traj_dst="$out_dir/$iid.trajectories"
+  if docker cp "$cname:/tmp/sid-traj/." "$traj_dst" >/dev/null 2>&1; then
+    :
+  else
+    printf '  ⚠️  %s: 轨迹取回失败（容器内 /tmp/sid-traj 不存在？agent 可能在建轨迹前就退了）\n' "$iid" >&2
+  fi
+
   docker rm -f "$cname" >/dev/null 2>&1 || true
 }
 
 build_agent_script() {
+  # ## ⚠️ 三件事必须一起做对，少一件这一轮数据就有系统性偏差
+  #
+  # ### ① 权限模式：`acceptEdits` 在 headless 下会把 agent 打残
+  #
+  # 实测（smoke-8，2026-08-25）：10 条实例共 **113 次权限拒绝**，
+  # django-13964 / matplotlib-20488 / django-15128 三条**过半轮次**是被拒绝烧掉的
+  # （58% / 58% / 55%）。被拒的都是做题必需的动作：
+  #
+  #     bash(python3 -m pytest lib/matplotlib/tests/test_image.py::…) → 拒绝(非交互模式)  ×3
+  #     write(/tmp/repro.py) → 需确认(路径验证: 写入路径在工作区外) → 拒绝              ×5
+  #     bash(python -c "import numpy; print(numpy.__version__)")     → 拒绝              ×2
+  #
+  # 成因：`acceptEdits` 只自动放行 FILE_TOOLS 与 **cwd 内**的 7 个 fs 命令
+  # （`checker.ts` 的 ACCEPT_EDITS_FS_COMMANDS：mkdir/touch/rm/rmdir/mv/cp/sed）。
+  # `python` / `pytest` / `git log` 全部落到默认 ask → headless 无交互 → **直接拒绝**。
+  #
+  # 于是 matplotlib 两条被记成「40 轮预算用尽」，读起来像"能力不够/在绕圈"，
+  # 真相是**它一直在试着跑测试验证自己的修复，被拦了 23 次**。
+  # ⚠️ 这正是「非能力原因混进能力账」那一类，与 fuzz 兜底、NUL 吞字段同型。
+  #
+  # 改用 `bypassPermissions` 而不是"逐条加 allow 规则"，两个理由：
+  #   - **容器本身就是沙箱**：无外网（走 proxy 白名单）、跑完即 `docker rm -f`、
+  #     里面只有一个 testbed 仓库。权限层在这里防的不是攻击者，是它自己的默认保守。
+  #   - **allow 白名单会变成新的必控变量**：写多一条少一条都改变 agent 能做什么，
+  #     而"这一轮放行了哪些命令"极难在报告里说清。`bypassPermissions` 是**一个**
+  #     可记录、可复现的取值。
+  # ⚠️ 它是必控变量，已记进 run-meta.json（permission_mode），换值即分数不可比。
+  #
+  # ### ② 轨迹必须捞出来 —— 它一直在生成，只是随容器销毁了
+  #
+  # 容器内日志明确写着 `轨迹采集已启用`，digest 自检甚至报了
+  # `会话 20260825-074654-f959d79e 检出 5 条[高]级异常：exit_status_error, …`
+  # —— **而那 5 条谁也没看见过**，因为轨迹写在容器内、`docker rm -f` 直接删掉。
+  # 于是 ZZZZ.10 归因那两条 429 时只能靠 grep agent.log 硬啃，
+  # 而轨迹里本来就有结构化的 StreamPhase / RetryTelemetry / exit_status。
+  # 落到固定路径 /tmp/sid-traj，由外层 `docker cp` 取回（见 run_instance）。
+  #
+  # ### ③ 关掉轨迹上传 —— 评测容器没有外网，每条实例都在白跑重试
+  #
+  # 10/10 实例都有这两行：
+  #     [TRACE] 上传已启用: https://www.sid-code.cc/traj
+  #     [TRACE] 服务端不可达，上传任务进入重试队列
+  # 上传配置**不是**这个脚本写的，是 `backfill-team-defaults` 迁移把编译进二进制的
+  # `scripts/team-defaults.template.json` merge 进了 `$SID_CONFIG_DIR/settings.json`
+  # （模板里 `trace.upload.url` / `token` 都有值）。同一个 merge 还带进了
+  # `subAgentModels` / `fallbackModel: ali-deepseek-v4-flash` ——
+  # 日志里那 4 条 `模型 "ali-deepseek-v4-flash" 未在 availableModels 中找到` 就是它。
+  #
+  # 所以 settings.json **必须自己写全这些顶层键**：迁移只补"用户缺失的顶层键"，
+  # 我们显式给了值它就不会覆盖。这比"跑完再删"可靠 ——
+  # 后者要赌迁移的执行时机，而顶层键是否存在是确定的。
   cat <<SCRIPT
 set -e
 source /opt/miniconda3/bin/activate
 conda activate testbed
 cd /testbed
 export SID_CONFIG_DIR=/tmp/sid-cfg
-mkdir -p "\$SID_CONFIG_DIR"
-python -c 'import json,os; m=os.environ["SC_MODEL"]; json.dump({"availableModels":[{"name":m,"model_id":os.environ.get("SC_MODEL_ID") or m,"provider":os.environ.get("SC_PROVIDER","openai"),"api_key":os.environ["SC_API_KEY"],"base_url":os.environ["SC_BASE_URL"]}],"model":m}, open(os.environ["SID_CONFIG_DIR"]+"/settings.json","w"))'
-/usr/local/bin/sid-code -p --max-turns $MAX_TURNS --permission-mode acceptEdits -- "\$(cat /tmp/prompt.txt)"
+mkdir -p "\$SID_CONFIG_DIR" /tmp/sid-traj
+python - <<'PYCFG'
+import json, os
+m = os.environ["SC_MODEL"]
+cfg = {
+    "model": m,
+    "availableModels": [{
+        "name": m,
+        "model_id": os.environ.get("SC_MODEL_ID") or m,
+        "provider": os.environ.get("SC_PROVIDER", "openai"),
+        "api_key": os.environ["SC_API_KEY"],
+        "base_url": os.environ["SC_BASE_URL"],
+    }],
+    # ── 下面这些键存在的唯一目的：占住位置，别让团队默认模板 merge 进来 ──
+    # 缺哪个，backfill-team-defaults 就会把模板里那个键补进来（模板里
+    # fallbackModel=ali-deepseek-v4-flash、trace.upload 指向线上平台）。
+    # D17 必控变量表不允许评测里出现第二个模型，所以 fallbackModel 必须显式为空。
+    "fallbackModel": "",
+    "fallbackSwitchMode": "off",
+    "subAgentModels": {},
+    "mcpServers": {},
+    "hooks": {},
+    # 轨迹：本地留存（要它来排查），上传关掉（容器无外网，传了只会白跑重试队列）
+    "trace": {"enabled": True, "outputDir": "/tmp/sid-traj"},
+}
+json.dump(cfg, open(os.environ["SID_CONFIG_DIR"] + "/settings.json", "w"))
+PYCFG
+/usr/local/bin/sid-code -p --max-turns $MAX_TURNS --permission-mode $PERMISSION_MODE -- "\$(cat /tmp/prompt.txt)"
 SCRIPT
 }
 
