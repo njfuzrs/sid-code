@@ -1,3 +1,7 @@
 {problem_statement}
 
 Do not modify any test files.
+
+You have no internet access. Work only from the local repository: read the code,
+reproduce the issue with a script if useful, then fix it. Do not try to look up
+upstream tickets, changelogs, or published patches — those requests will fail.

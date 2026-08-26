@@ -1907,6 +1907,35 @@ export async function main(): Promise<void> {
       );
     }
 
+    // disallowedTools：从工具集里**裁掉**，而不只是在权限层拒绝。
+    //
+    // ## 这条以前是个静默空操作
+    //
+    // `disallowedTools` 原先唯一的落点是权限层（`checker.ts` Step 3）。而 `check()`
+    // 在入口就对 `skipPermissions`（`--dangerously-skip-permissions`）早退 ——
+    // 早退在 Step 3 **之前**，于是两个配置一起用时被禁工具照常可调，且不打任何日志。
+    // 实测（2026-08-26，直接调 PermissionChecker.check）：
+    //   skipPermissions=true  → { allowed: true }        ← 禁不掉
+    //   skipPermissions=false → 工具已被禁用
+    // 现场是 SWE-bench 评测容器（无外网 + skip-permissions）：给它配了
+    // disallowedTools:["web_search","web_fetch"] 而完全没生效，一道题 40 轮零编辑，
+    // 其中 7 步烧在注定失败的外网工具上。详见 registry.ts `removeByNames` 的注释。
+    //
+    // ## 为什么是"裁剪"而不是"把权限判据挪到早退之前"
+    //
+    // 后者模型仍看得见工具、仍会调用、每次换回一条拒绝 —— **一轮一轮地烧**。
+    // 判据必须是"工具不可用"（schema 都不进上下文），不是"调了会被拒"。
+    //
+    // 权限层那条判据保留不动：CLAUDE.md 规则可能在会话中途合并进新的 disallowedTools
+    // （app.ts applyProjectRules），那时工具已注册完，权限层是那条路径的兜底。两层都在才 fail-closed。
+    if (config.disallowedTools && config.disallowedTools.length > 0) {
+      const removed = toolRegistry.removeByNames(config.disallowedTools);
+      getLogger().info(
+        "CONFIG",
+        `disallowedTools 裁剪：移除 ${removed.length} 个工具${removed.length > 0 ? `（${removed.join(", ")}）` : ""}；名单共 ${config.disallowedTools.length} 项，后续注册（含 MCP）一并拒收`,
+      );
+    }
+
     // P1-10 --agent（单数，会话级主代理人格）：让整个会话以指定子代理的人格运行。
     // 时序关键：必须在**所有** agent 来源（built-in / 自定义 / 插件 / --agents 注入）都
     // 已 registerDynamicAgents 之后再解析，否则 --agent 指向 --agents 注入的代理时会解析不到。

@@ -114,6 +114,20 @@ export class Registry {
     // ["旧名", "新名"]
   ]);
   /**
+   * `disallowedTools` 名单（小写）。由 {@link removeByNames} 写入，{@link register} 据此拒收。
+   *
+   * ## 为什么"移除一次"不够，必须让注册端也认它
+   *
+   * 裁剪时机（cli.ts 启动阶段）**早于** MCP 工具注册（`mcpManager.connect()` 之后
+   * 异步回填，还有 `onToolsRefresh` 会在运行中重新注册）。只做一次性 `delete`，
+   * 被禁的 MCP 工具会在裁剪之后**若无其事地回来** —— 而且 registry 不会打任何日志，
+   * 用户看到的就是「配了 disallowedTools，工具还在」。
+   *
+   * 所以名单留在 registry 上，注册端成为唯一咽喉：不管工具从哪条路径、什么时候进来，
+   * 命中名单就进不来。这与「修法写进唯一咽喉而非逐 provider 补」是同一条原则。
+   */
+  private disallowedNames = new Set<string>();
+  /**
    * 运行时激活集合（ToolSearch 调出）。
    *
    * 工具默认延迟（静态 shouldDefer 字段 或 deferredTools 名单）后，模型经 tool_search
@@ -175,6 +189,12 @@ export class Registry {
    */
   register(tool: LegacyTool): void {
     const name = tool.name();
+    // disallowedTools 拒收（见 disallowedNames 注释）：MCP 工具在裁剪之后才异步注册，
+    // 不在这里拦就会静默回来。打 info 而非 warn —— 这是用户显式配置的预期行为，不是异常。
+    if (this.disallowedNames.has(name.toLowerCase())) {
+      getLogger().info("TOOL", `工具 "${name}" 在 disallowedTools 名单中，拒绝注册`);
+      return;
+    }
     const target = name.startsWith("mcp__") ? this.mcpTools : this.builtInTools;
     if (target.has(name)) {
       getLogger().warn("TOOL", `工具名冲突: "${name}" 已注册，跳过重复注册（先到先得，保留首个）`);
@@ -313,6 +333,71 @@ export class Registry {
       if (!keep) {
         this.builtInTools.delete(name);
         removed.push(name);
+      }
+    }
+    return removed;
+  }
+
+  /**
+   * `disallowedTools` 的**工具集裁剪**端：按名移除工具，使被禁工具的 schema 根本不进上下文。
+   *
+   * 同时把名单**记进 `disallowedNames`**，让后续 `register()` 也拒收 —— 见那里的注释：
+   * MCP 工具是异步连接后回填的，只做一次性移除会漏掉它们（而且漏得毫无声响）。
+   *
+   * ## 为什么必须在这一层做，而不是只靠权限层
+   *
+   * `disallowedTools` 原先**只有**权限层一个落点（`checker.ts` Step 3）。而 `check()` 在
+   * 入口就对 `skipPermissions`（`--dangerously-skip-permissions`）早退 —— 早退发生在
+   * Step 3 **之前**，于是这两个配置一起用时 `disallowedTools` 是**静默空操作**：
+   * 工具照常可调、照常执行，日志里一个字都不打。
+   *
+   * 实测（2026-08-26，直接调 PermissionChecker.check）：
+   *
+   *     disallowedTools=["web_search"], skipPermissions=true  → { allowed: true }   ←禁不掉
+   *     disallowedTools=["web_search"], skipPermissions=false → { allowed: false, "工具已被禁用" }
+   *
+   * 现场是 SWE-bench 评测容器：它无外网（只放行网关），跑的是
+   * `--dangerously-skip-permissions`。django-13964 那一轮 40 轮全部用完、**零编辑**，
+   * 其中 7 步打在 web_search / web_fetch 上 —— 模型在反复找上游 ticket 的修复 diff。
+   * 于是给容器配了 `disallowedTools: ["web_search","web_fetch"]`，而它什么也没做。
+   *
+   * ## 裁剪 ≠ 拒绝：判据必须是「工具不可用」
+   *
+   * 只在权限层补一刀（让 Step 3 跑在早退之前）是不够的：那样模型仍会看到工具、
+   * 仍会调用、每次调用换回一条拒绝 —— **一轮一轮地烧**。裁剪掉之后工具不进 schema，
+   * 模型根本不知道它存在，这才是"不可用"。
+   * （同一条判据也是 `--tools` 白名单存在的理由，见上面 `retainBuiltInByNames`。）
+   *
+   * ## 与 `retainBuiltInByNames` 的三处差异
+   *
+   * 1. 语义相反：这是黑名单（移除命中的），那是白名单（保留命中的）。
+   * 2. **MCP 工具也移除**：`disallowedTools` 是用户显式点名要禁的东西，
+   *    用户写 `mcp__foo__bar` 的意图不可能是"只禁内置的同名工具"。
+   *    （`--tools` 刻意不碰 MCP，因为白名单枚举不到未连接的 MCP 工具，一刀切会全裁掉。）
+   * 3. 走 `get()` 解析别名：用户按旧名禁用时也要真的禁掉，否则改名一次就漏一个。
+   *
+   * 权限层那条判据**刻意保留**（不改成"裁剪之后就不必查了"）：`disallowedTools` 也可能
+   * 在会话中途由 CLAUDE.md 规则合并进来（`app.ts` applyProjectRules），
+   * 而那时工具已经注册完了。两层都在才是 fail-closed。
+   *
+   * @returns 实际被移除的工具名列表（原名，非用户输入的别名），供调用方日志/诊断。
+   */
+  removeByNames(names: string[]): string[] {
+    const removed: string[] = [];
+    for (const raw of names) {
+      const n = raw.trim();
+      if (!n) continue;
+      // 先记名单，再删已注册的。顺序无所谓（两步互不依赖），但**两步都要做**：
+      // 名单管未来注册的，删除管已经注册的。
+      this.disallowedNames.add(n.toLowerCase());
+      // 经 get() 解析别名 → 拿真实工具名，再按真实名删。
+      // 不能直接 delete(用户输入)：别名对不上 key，会静默删不掉。
+      const tool = this.get(n);
+      if (!tool) continue;
+      const real = tool.name();
+      this.disallowedNames.add(real.toLowerCase());
+      if (this.builtInTools.delete(real) || this.mcpTools.delete(real)) {
+        removed.push(real);
       }
     }
     return removed;
