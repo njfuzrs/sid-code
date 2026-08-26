@@ -472,13 +472,25 @@ cmd_run() {
   else
     artifact_sha="unknown"
   fi
+  # 题面模板指纹（必控变量）。**提示词是必控变量，改一个字分数就不可外比** ——
+  # 而它此前完全没记：smoke-10 给 prompt-v1.txt 加了「无外网」那句，
+  # 如果不记这个指纹，事后没有任何办法区分「smoke-9 与 smoke-10 用的是同一份题面模板」。
+  # 记 sha256 而不是全文：全文进 run-meta 会把每份 meta 撑大且不便 diff，
+  # 而判据只需要「两轮是否同一份」。
+  local prompt_sha="unknown"
+  if command -v shasum >/dev/null 2>&1; then
+    prompt_sha="$(shasum -a 256 "$SWE_DIR/prompt-v1.txt" | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    prompt_sha="$(sha256sum "$SWE_DIR/prompt-v1.txt" | awk '{print $1}')"
+  fi
   "$VENV_PY" - "$out_dir/run-meta.json" "$SC_MODEL" "${SC_MODEL_ID:-}" "$gw_host" \
     "${SC_PROVIDER:-openai}" "$MAX_TURNS" "$PERMISSION_MODE" "$TIMEOUT_SEC" \
     "$EFFORT_LEVEL" "$COST_LIMIT" "$sc_version" "$sc_commit" "$sc_dirty" \
-    "$(basename "$artifact")" "$artifact_sha" "$jobs" <<'PY'
+    "$(basename "$artifact")" "$artifact_sha" "$jobs" "$prompt_sha" <<'PY'
 import json, sys
 (out, model, model_id, host, provider, max_turns, perm_mode, timeout_sec,
- effort, cost_limit, version, commit, dirty, artifact, artifact_sha, jobs) = sys.argv[1:17]
+ effort, cost_limit, version, commit, dirty, artifact, artifact_sha, jobs,
+ prompt_sha) = sys.argv[1:18]
 # model_id 缺省时等于 model —— 记的是**实际发给网关的那个值**，
 # 不是「用户填了什么」。事后复算看的是 wire model，别名对不上厂商侧的任何东西。
 json.dump(
@@ -500,6 +512,8 @@ json.dump(
         # 每条实例的 agent_ms 都被别的实例拖长 → **与串行 run 分数不可并排**，
         # 而分数本身看不出来。grade.ts 在 jobs > 1 时会在 unaccounted 里点破。
         "jobs": int(jobs),
+        # 题面模板指纹：提示词改一个字分数就不可外比，而它此前没记（见上面取值处）。
+        "prompt_template_sha256": prompt_sha,
         # ── 被测代码的身份 ──
         "sid_code_version": version,
         "git_commit": commit,
@@ -956,14 +970,45 @@ build_agent_script() {
   # 反漂移门禁在 `tests/eval/swe-bench-runner.test.ts`：它从
   # `scripts/team-defaults.template.json` **现取**顶层键清单来比对，
   # 不是手写一份 —— 手写的清单会在模板加键时静默过期。
-  cat <<SCRIPT
+  # ## ⑤ heredoc 必须**加引号**（`<<'SCRIPT'`），宿主变量走 printf 注入
+  #
+  # 这里原先是 `cat <<SCRIPT`（未加引号），于是**整个脚本体都在宿主 bash 里做一次展开**
+  # —— 包括下面 Python 注释里的反引号。实测每题固定刷 5 行（smoke-9）：
+  #
+  #     exec-swebench.sh: 行 955: yield: 未找到命令
+  #     exec-swebench.sh: 行 955: quota.ts: 未找到命令
+  #     exec-swebench.sh: 行 955: ≥0: 未找到命令
+  #
+  # 成因是三行 Python 注释里写了 `` `yield done; return` `` 这类反引号。
+  # smoke-9 那轮**侥幸没造成损坏**（settings.json 20 键实测齐全），但最小复现证实
+  # 同一形态能做到两件事：
+  #
+  #     cat <<SCRIPT                      # 未加引号
+  #     # 注释里带反引号：`echo INJECTED`
+  #     SCRIPT
+  #     → 输出 "# 注释里带反引号：INJECTED"   ← 命令真的被执行了
+  #     # 注释：判 `costLimit <= 0` 为错
+  #     → 输出 "# 注释：判  为错"             ← 整段被静默吞掉
+  #
+  # 第二种形态是真正危险的那个：**它会静默改写 settings.json 的内容**
+  # （吞掉的若不是注释而是一行配置，就是一个未记录的必控变量）。
+  #
+  # ⛔ 不要用"把那几处反引号改成单引号"来修 —— 那修的是**症状**，
+  # 下一个人（或下一个 agent）在这个 heredoc 里写注释时会再踩一次。
+  # 本文件的注释密度极高，这条几乎必然复发。加引号才是修病因。
+  # 反漂移门禁在 `tests/scripts/shell-heredoc-backtick.test.ts`。
+  #
+  # 代价：加引号后宿主变量不再展开，所以 $MAX_TURNS / $PERMISSION_FLAG 改为 printf 注入
+  # （见函数末尾）。同时 `\$SID_CONFIG_DIR` 这类**给容器用**的变量不必再转义 ——
+  # 少一层转义规则，也就少一个"转义漏了但不报错"的入口。
+  cat <<'SCRIPT'
 set -e
 source /opt/miniconda3/bin/activate
 conda activate testbed
 cd /testbed
 export SID_CONFIG_DIR=/tmp/sid-cfg
 # ⚠️ 末级目录名必须是 trajectories（见 ② 那段：collector 不再拼这一层，而 digest 硬拼它）
-mkdir -p "\$SID_CONFIG_DIR" /tmp/sid-traj/trajectories
+mkdir -p "$SID_CONFIG_DIR" /tmp/sid-traj/trajectories
 python - <<'PYCFG'
 import json, os
 m = os.environ["SC_MODEL"]
@@ -995,13 +1040,41 @@ cfg = {
     # 万一哪天 CLI 那条失效了，失败形态是"被拒"而不是"静默全放行"。
     "permissionMode": "default",
     "allowedTools": [],
-    "disallowedTools": [],
+    # ## 禁掉外网工具 —— 这是 smoke-9 唯一那条退步的直接成因
+    #
+    # 容器无外网（只放行网关），但 web 工具一直是可用的。smoke-9 的 django-13964
+    # **40 轮全部用完、零编辑**，80 步里 7 步（8.8%）打在 web_search / web_fetch 上：
+    # 模型在反复找 Django 上游 ticket 的修复 diff，连试了 32335/32340/32360/32365/32369
+    # 五个编号，还试了 pip download django==3.2.13。这不是能力问题，是**它不知道自己没网**。
+    #
+    # ⚠️ smoke-8 这条题反而是 solved —— 因为那时 113 次权限拒绝把它逼回了只读代码库
+    # 这条正确路径。**权限一放开，浪费也放开了**：一个约束在被解除之前，
+    # 可能正意外地承担着另一个约束的职责。
+    #
+    # ## 第二条理由（比"省轮数"更硬）：查上游 = 看答案
+    #
+    # SWE-bench 的题面本来就不该允许查上游 fix diff。现在查不到只是因为容器无外网 ——
+    # **那是运气不是设计**（同 permissionMode 那格）。allowlist 代理哪天放宽一点，
+    # 它就变成数据泄漏，而且泄漏时没有任何东西会红。所以这里要的是硬约束。
+    #
+    # ## ⚠️ 这个键在 2026-08-26 之前是个静默空操作
+    #
+    # `disallowedTools` 原先唯一落点是权限层（`checker.ts` Step 3），而 `check()` 对
+    # `skipPermissions` 的早退发生在 Step 3 **之前** —— 我们跑的正是
+    # `--dangerously-skip-permissions`，于是这一格填什么都不生效、且零日志。
+    # 实测：`{disallowedTools:["web_search"], skipPermissions:true}` → `{allowed:true}`。
+    # 已在产品侧修掉（`registry.ts` removeByNames + register 拒收，见那里的注释），
+    # 判据是**工具不进 schema**，不是"调了会被拒" —— 后者每次都要烧一轮才知道。
+    #
+    # 验收判据（smoke-10）：逐题 web_search / web_fetch 调用数**全 0**。
+    # 不为 0 说明产品侧那条裁剪没生效，别去改提示词凑数。
+    "disallowedTools": ["web_search", "web_fetch"],
     "disabledSkills": [],
     "trustProjectExtensions": False,
     "allowedDirectories": [],
     "blockedDirectories": [],
     # search 后端指向线上 searxng（容器无外网）。占住它没让 web_search 变可用
-    # —— 那条路由由 allowlist 代理拦，这里只是不让模板值渗进来。
+    # —— 那条路由由 allowlist 代理拦，且上面 disallowedTools 已把工具整个裁掉。
     "search": {},
     # ## 成本闸门：0 = 不限
     #
@@ -1024,8 +1097,12 @@ cfg = {
 }
 json.dump(cfg, open(os.environ["SID_CONFIG_DIR"] + "/settings.json", "w"))
 PYCFG
-/usr/local/bin/sid-code -p --max-turns $MAX_TURNS $PERMISSION_FLAG -- "\$(cat /tmp/prompt.txt)"
 SCRIPT
+  # 宿主变量注入（heredoc 已加引号，见上面 ⑤）。只有这两个是刻意要在宿主侧展开的：
+  # MAX_TURNS 是必控变量、PERMISSION_FLAG 写死成布尔 flag（见文件头那段）。
+  # 用 printf '%s' 而不是 echo：值里若含反斜杠，echo 在部分 shell 下会做转义解释。
+  printf '/usr/local/bin/sid-code -p --max-turns %s %s -- "$(cat /tmp/prompt.txt)"\n' \
+    "$MAX_TURNS" "$PERMISSION_FLAG"
 }
 
 build_extract_script() {
@@ -1112,8 +1189,29 @@ cmd_grade() {
   fi
   # 同上：`${grade_jobs}` 带花括号，否则全角括号被吃进变量名
   ((grade_jobs > 1)) && info "判分并发 -j ${grade_jobs}（判分是纯函数，不影响可比性；但吃 N 倍内存）"
-  "$SWEBENCH" eval verified -p "$preds" --run-id "$run_id" -j "$grade_jobs" \
-    --report-dir "$out_dir" --timeout "$TIMEOUT_SEC" 2>&1 | tail -30
+  # ## ⚠️ 判分也必须 HF 离线，否则卡死在 SYN_SENT
+  #
+  # `HF_HUB_OFFLINE=1` 原先只加在取题面那一处（run_one 里的 fetch-instance.py），
+  # 判分这条 `$SWEBENCH eval` 没有 —— 于是 harness 去打 HuggingFace 拿 dataset，
+  # 而 dataset **本地早就缓存好了**（~/.cache/huggingface/datasets/SWE-bench___swe-bench_verified）。
+  # 实测（smoke-9）：25 分钟零输出、零 eval 容器，`lsof` 显示进程停在
+  # `TCP …->104.244.43.229:https (SYN_SENT)`。加上这两个变量后 8 分钟跑完。
+  #
+  # ⚠️ 用 `${VAR:-1}` 而不是硬编码 1：留一个逃生舱给"确实需要更新 dataset"的场合
+  # （`HF_HUB_OFFLINE=0 ./exec-swebench.sh grade …`），否则下一个人会直接删掉这两行。
+  #
+  # ## 输出走 tee 而不是裸 `| tail -30`
+  #
+  # 上面那个故障之所以难归因，是 `| tail -30` 在 buffer 满之前**一个字都不出来** ——
+  # 于是"卡在网络"看起来像"判分很慢"。tee 到文件后，卡住时可以另开一个终端 tail 那个文件，
+  # 立刻看得出它停在哪一步。终端仍只显示末 30 行（判分正常输出很长，全刷屏没意义）。
+  local grade_log="$out_dir/grade.log"
+  # `${grade_log}` 带花括号：裸 $VAR 后紧跟全角括号会被吞进变量名（set -u 下直接退出）。
+  # 门禁 tests/scripts/shell-fullwidth-var.test.ts 刚拦下这一行 —— 写的时候又踩了第四次。
+  info "判分日志: ${grade_log}（卡住时可另开终端 tail 它）"
+  HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}" \
+    "$SWEBENCH" eval verified -p "$preds" --run-id "$run_id" -j "$grade_jobs" \
+    --report-dir "$out_dir" --timeout "$TIMEOUT_SEC" 2>&1 | tee "$grade_log" | tail -30
   set -e
   # 映射成验收字段 —— report 缺失时 grade.ts 会 exit 3 而**不是**报 0 分
   bun run "$SWE_DIR/grade.ts" --run-id "$run_id" --report-only
