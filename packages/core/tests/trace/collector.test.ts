@@ -838,6 +838,72 @@ describe("TraceCollector", () => {
     expect(traj.metadata.tool_source).toBe("sid-code");
   });
 
+  /**
+   * 轮次用尽 → `exit_status = "max_turns"`，**不再落 `user_interrupt`**
+   *
+   * ## 这组测试锁的是"归因"，不是"字段存在"
+   *
+   * 修复前：轮次用尽走 `loop.ts` 的 `yield { kind: "max_turns" }` → 收尾 reason 落 `exit`，
+   * 而最后一次 `stop_reason` 是 `tool_use`（模型正想调下一个工具）→ 被兜底归到
+   * `user_interrupt`，**而没有任何人中断过**。实测 smoke-9 两条撞顶的 SWE-bench 题都是
+   * 这个形态，排查时读到"会话被中断"，真相是"预算花完了" —— 处置完全不同。
+   *
+   * ⚠️ 第 2 条是**反向自证**（`exit_status` 是字符串，很容易写出一条"断言它等于当前
+   * 错误值"的假门禁）：不上报 max_turns 时必须仍是 `user_interrupt`。
+   * 若哪天有人把判据改回 `stop_reason !== "end_turn"` 那类粗糙代理，第 1 条会红。
+   */
+  describe("exit_status = max_turns（轮次用尽不再误记成 user_interrupt）", () => {
+    test("上报了 max_turns → exit_status 落 max_turns（哪怕末轮 stop_reason 是 tool_use）", async () => {
+      await fireSessionStart(hookSystem);
+      // 生产形态：撞顶那一刻模型正想调下一个工具，故 stop_reason 是 tool_use 而非 end_turn
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      // engine.ts 在收到 max_turns 事件时调它
+      collector.recordMaxTurns();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("max_turns");
+    });
+
+    test("反向自证：没上报 max_turns 时，同样的输入仍落 user_interrupt", async () => {
+      // 缺了这条，一个"无条件返回 max_turns"的实现也能让上面那条通过。
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("user_interrupt");
+    });
+
+    test("正常收尾不受影响：end_turn 仍是 end_turn", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "end_turn" });
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("end_turn");
+    });
+
+    test("abort 优先级更高：真被中断时不因撞过顶就记成 max_turns", async () => {
+      // reason=abort 是"用户 Ctrl-C / 外部 SIGTERM"的真实信号，比撞顶更确定。
+      // 撞顶之后用户又按了 Ctrl-C，该记的是中断。
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordMaxTurns();
+      await hookSystem.fireSessionEndEvent("abort");
+
+      expect(collector.getMetadata()!.exit_status).toBe("abort");
+    });
+
+    test("max_turns 落进 session.traj（内存里有、落盘没有等于没采）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordMaxTurns();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+      expect(traj.metadata.exit_status).toBe("max_turns");
+    });
+  });
+
   // ─── D3-1 / D3-3：退出落 messages.json + 异常归因 ───
 
   test("D3-1：SessionEnd 落 messages.json，含完整消息历史", async () => {

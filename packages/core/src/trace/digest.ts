@@ -1134,8 +1134,32 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // ── 退出状态判定 ──
+  //
+  // `max_turns` 在名单里：它**以前就被算作 abnormal**（那时它被误记成 `user_interrupt`），
+  // 所以留在名单里是让 abnormal 总数保持不变、只修正原因 —— 这次改的是归因，不是判据松紧。
+  // 而它确实不是干净收尾：预算耗尽 = 任务没做完。
   const exitStatus = meta.exit_status || traj.info?.exit_status || "unknown";
-  const abnormal = ["error", "abort", "user_interrupt"].includes(exitStatus);
+  const abnormal = ["error", "abort", "user_interrupt", "max_turns"].includes(exitStatus);
+  if (exitStatus === "max_turns") {
+    // L0：字面值是客观事实，带出处。
+    // 与 user_interrupt 分开成两条的意义在**处置不同**：撞顶要调预算 / 查它为什么绕圈，
+    // 中断要查中断源。混成一条时排查会往错的方向走一步（实测 smoke-9 就走错了）。
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "exit_status_max_turns",
+      detail: `exit_status = "max_turns"（轮次预算耗尽，非用户中断）`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: meta.exit_status ? "metadata.exit_status" : "info.exit_status",
+          rawValue: "max_turns",
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
+      pointer: `工具序列（看它这些轮次花在哪 —— 撞顶本身不说明题难）`,
+    });
+  }
   if (exitStatus === "error") {
     // L0:exit_status 的字面值是客观事实,带出处。
     anomalies.push({
@@ -2382,7 +2406,10 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
     // 损坏文件要在列表里就能看出来，否则与"正常但缺 exit_status"混成同一个 `?`，
     // 用户会一直挑到它、一直看不出问题在文件本身。
     const exit = read.corrupt ? "corrupt" : meta.exit_status || traj?.info?.exit_status || "?";
-    const abnormal = read.corrupt || ["error", "abort", "user_interrupt"].includes(exit);
+    // 名单与上面 buildDigest 的 abnormal 判据同源（含 max_turns，见那里的注释）。
+    // 两处必须一致：会话列表标红、详情页不标，用户会以为自己挑错了会话。
+    const abnormal =
+      read.corrupt || ["error", "abort", "user_interrupt", "max_turns"].includes(exit);
     const when = new Date(ref.mtimeMs).toISOString().slice(5, 16).replace("T", " ");
     const prompt = read.corrupt
       ? c("gray", "session.traj 无法解析（文件损坏）")
