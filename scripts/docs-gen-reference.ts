@@ -605,6 +605,12 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   "max-concurrent": "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   json: "agents / mcp / auth 子命令参数",
   scope: "mcp 子命令参数（packages/cli/src/command/mcp-cli.ts）",
+  // bootstrap 零导入快速路径（与 --version / --self-check 同层），刻意不进顶层 parseArgs。
+  // 理由：门禁要在**任何环境**下都能问构建身份 —— 配置缺失、~/.sid-code/ 不存在、
+  // 网关不可达时都得能读出来。进 parseArgs 就意味着完整 CLI 会"接受"它，
+  // 而完整 CLI 那条路会读配置、注册工具；更糟的是它会**静默忽略**这个请求，
+  // 而"看起来正常但其实没量到"正是构建溯源整件事要消灭的形态。
+  "build-info": "bootstrap 零导入快速路径（同 --self-check），不进顶层 parseArgs",
 };
 
 /** 顶层 parseArgs 声明了但刻意不写进 --help 的 flag —— 内部出口，不是用户功能 */

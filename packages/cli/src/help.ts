@@ -123,6 +123,8 @@ Worktree 隔离:
 其他:
   -h, --help                  显示帮助信息
   -v, --version               显示版本信息
+  --build-info [--json]       显示构建身份（编进二进制的 commit/branch/dirty/built_at）
+                                版本号一个值对应几十个 commit，问"这个包是哪来的"要用它
 
 子命令:
   review                      代码审查（从 stdin 或 --diff 文件读取 unified diff）

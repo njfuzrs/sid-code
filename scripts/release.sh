@@ -706,6 +706,23 @@ VERSION_DIR="$RELEASE_DIR/$VERSION"
 rm -rf "$BUILD_DIR" "$RELEASE_DIR"
 mkdir -p "$BUILD_DIR" "$VERSION_DIR"
 
+# ─── 构建身份（origin=release）───
+#
+# 在循环**外**取一次数，让本次发布的全部平台产物共享同一行身份（同一个 built_at）。
+#
+# ⚠️ 此刻的真实状态（已核实本脚本执行顺序：洁净门禁 → bump → 构建 → 提交 → 打 tag）：
+#   git rev-parse HEAD  = bump 提交的**父**提交（bump 提交此刻还不存在）
+#   git status --porcelain = **非空**（package.json 刚被 bump 改过）
+# 所以编进产物的 commit 是 `v<ver>^`、dirty 是 true、dirty_files 恰好是 package.json。
+# 发布通道门禁（本方案 PR-C）必须按这个事实写判据 —— 照直觉写成
+# `dirty == false` 或 `commit == tag 所指提交` 会 100% 误拦每一次真实发版，
+# 然后被人加 flag 绕过，那就等于没有门禁。
+
+BUILD_INFO_LINE="$("$SCRIPT_DIR/build-info-line.sh" release)" ||
+    fail "拼构建身份失败（scripts/build-info-line.sh）—— 产物会没有身份，发布中止"
+echo "  构建身份: $(printf '%s' "$BUILD_INFO_LINE" | cut -c1-100)..."
+echo ""
+
 # ─── 循环交叉编译 4 个目标 ───
 
 SELF_PLATFORM="$(self_platform)"
@@ -742,8 +759,14 @@ for entry in "${TARGETS[@]}"; do
     # react-reconciler 会因此加载 development build，其 console.error(
     # "Maximum update depth exceeded ... setState inside useEffect ...") 会直接刷用户的屏
     # （不 throw → 错误边界抓不到、进程不崩、日志无痕）。详见 Makefile 中 BUILD_DEFINES 的注释。
+    #
+    # --define process.env.SID_CODE_BUILD_INFO：把构建身份编进字节，origin=release。
+    # 这 5 个 target 的身份行**故意共用一次取数**（BUILD_INFO_LINE 在循环外算，见上），
+    # 否则同一次发布的 4 个平台产物会有不同的 built_at —— 那让"这 4 个包是同一次发布的吗"
+    # 变成一个要人肉比较时间戳的问题。
     bun build --compile --target="$BUN_TARGET" \
         --define process.env.NODE_ENV='"production"' \
+        --define process.env.SID_CODE_BUILD_INFO="\"$BUILD_INFO_LINE\"" \
         --outfile "$OUT_DIR/sid-code" \
         packages/cli/src/entrypoints/bootstrap.ts
 

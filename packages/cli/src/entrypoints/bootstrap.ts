@@ -30,6 +30,35 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 1.5: --build-info — 输出编进字节的构建身份（commit/branch/dirty/...）
+  //
+  // 为什么必须在这个零导入快速路径里（和 --version / --self-check 同层）：
+  // 门禁要在**任何环境**下都能问它 —— 配置缺失、~/.sid-code/ 不存在、网关不可达时
+  // 都得能读出身份。走完整 CLI 会读配置、可能落盘，那时"读一下身份"就成了有副作用的操作。
+  //
+  // 与 --version 的分工：--version 是给人看的版本号，身份是另一件事，刻意不混。
+  // 把 commit 拼进 getVersion() 会误触发网关定价的全端点强制刷新
+  // （app.ts 用版本号做刷新水位线），且没人会想到是这里。
+  if (
+    args[0] === "--build-info" &&
+    (args.length === 1 || (args.length === 2 && args[1] === "--json"))
+  ) {
+    profileCheckpoint("bootstrap_route_resolved");
+    const [{ getBuildInfo, formatBuildInfoText, formatBuildInfoJson }, { getRawVersion }] =
+      await Promise.all([
+        import("@sid-code/shared/build-info.ts"),
+        import("@sid-code/shared/version.ts"),
+      ]);
+    const info = getBuildInfo();
+    const version = getRawVersion();
+    console.log(
+      args[1] === "--json"
+        ? formatBuildInfoJson(info, version)
+        : formatBuildInfoText(info, version),
+    );
+    return;
+  }
+
   // 快速路径 2: --help — 只加载帮助文本
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     profileCheckpoint("bootstrap_route_resolved");

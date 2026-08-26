@@ -30,7 +30,24 @@ BUN=bun
 # 新增构建入口（新 target / 新脚本）必须带上这个变量，否则那条产物又会退回
 # development build。防漂移门禁见 tests/build/node-env-define.test.ts。
 # ─────────────────────────────────────────────────────────────────────────────
-BUILD_DEFINES=--define process.env.NODE_ENV='"production"'
+# ─────────────────────────────────────────────────────────────────────────────
+# 编译期把构建身份（commit/branch/dirty/built_at/builder/origin）编进二进制
+#
+# 为什么必须编进字节而不是放旁路文件：版本号**不是身份**。实测 2026-08-26，
+# `package.json` 是 0.1.601、tag v0.1.601 打在 8月21，而 8月26 的两个修复都不在里面；
+# 而 `make build` 刻意不 bump 版本号，所以「重新构建」不会改变评测挑产物的那个路径 ——
+# 「跑评测验证本轮修复」于是静默跑成「跑 5 天前的代码」，分数/日志/version 全部正常，
+# 没有任何一处会报错。旁路文件挡不住这个：`docker cp` 只 cp 二进制。
+#
+# 新增构建入口（新 target / 新脚本）必须带上这个 define，否则那条产物会**没有身份**，
+# 而下游门禁会把它读成 commit=unknown 然后一律退化到 mtime 兜底 ——
+# 形态是「门禁看起来在跑、实际全在走兜底路径」。防漂移门禁见
+# tests/build/build-info-define.test.ts；格式与约束的事实源在 packages/shared/src/build-info.ts。
+# ─────────────────────────────────────────────────────────────────────────────
+# `:=` 而不是 `=`：立即展开，一次 make 里只取一次数。用递归展开的话每次引用都重跑
+# 一遍脚本，built_at 会在同一次构建里取到不同的值。
+BUILD_INFO_LINE:=$(shell ./scripts/build-info-line.sh local)
+BUILD_DEFINES=--define process.env.NODE_ENV='"production"' --define process.env.SID_CODE_BUILD_INFO='"$(BUILD_INFO_LINE)"'
 
 .PHONY: help build rebuild build-bump release run test test-providers clean deps lint canary stability-test stress-test provider-health
 
