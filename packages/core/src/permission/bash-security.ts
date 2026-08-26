@@ -743,8 +743,30 @@ export function validateBackslashEscapedOperators(command: string): InjectionFin
     // 无真实操作符：转义操作符多半是 find -exec \; 之类的合法参数，放行
     return null;
   }
-  // 已是复合命令，又出现反斜杠转义操作符 → 解析歧义，拦
-  if (/\\(?:&&|\|\||;|&|\|)/.test(command)) {
+  // ═══════════════════════════════════════════════════════════════════
+  // 检测面必须是 `fullyUnquoted`，不能是原始 command
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // 实测误判（smoke-8 评测轨迹，2026-08-25）：这一行此前扫的是**原始 command**，
+  // 而上面的 `hasRealOperator` 扫的是**剥掉引号后**的 `fullyUnquoted` —— 两个判据
+  // 作用在不同字符串上，于是引号内的转义字符被当成引号外的解析歧义。
+  //
+  // 打到的是最常见的日常命令：
+  //   grep -n "empty_values\|class ForeignKey" /testbed/x.py   # BRE 的"或"
+  //   grep -rn "a\|b" . --include="*.py" 2>/dev/null | head    # 同上 + 管道
+  //   sed -n "s/a\|b/c/p" f.py | wc -l
+  // 这里的 `\|` 是 **grep/sed 基础正则(BRE)的或操作符**，在双引号里对 shell
+  // 毫无语法意义，不可能造成任何解析歧义。实测这一类占 smoke-8 全部 25 次
+  // 「注入防护」拒绝中的主要一类，headless 下直接变成工具调用被拒、轮次白烧。
+  //
+  // 换成 `fullyUnquoted` 之所以是**根治而非放宽**：`extractQuotedContent` 在
+  // 引号外遇到 `\` 时会把反斜杠和被转义字符**都写进** fullyUnquoted（见其
+  // escaped 分支），所以 `ls | cat \| sh` 这类真实威胁一个都不会漏 —— 变的只是
+  // "引号内的字符不再参与判定"，而那正是本检查从一开始就该有的边界。
+  //
+  // 防复发：`tests/permission/backslash-escaped-operator.test.ts` 里同时钉住
+  // 4 条 BRE 放行 + 4 条引号外转义拦截，任一方向改回去都会转红。
+  if (/\\(?:&&|\|\||;|&|\|)/.test(fullyUnquoted)) {
     return {
       id: "backslash-escaped-operator",
       severity: "ask",

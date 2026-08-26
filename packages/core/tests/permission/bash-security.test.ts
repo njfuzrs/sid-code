@@ -269,6 +269,50 @@ describe("validateBackslashEscapedOperators", () => {
   test("普通单命令 → 放行", () => {
     expect(validateBackslashEscapedOperators("ls -la")).toBeNull();
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 回归：引号内的转义字符不参与判定（实测误判，smoke-8 2026-08-25）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // 此前检测面是**原始 command**，而 hasRealOperator 用的是剥引号后的
+  // fullyUnquoted —— 两个判据作用在不同字符串上。于是 `grep -n "a\|b" x | head`
+  // 里那个 **grep BRE 的"或"操作符** 被当成引号外的解析歧义拦掉。
+  // headless 下的后果是工具调用直接被拒、轮次白烧（实测 smoke-8 全 10 条实例
+  // 共 25 次「注入防护」拒绝，这一类是主要成因）。
+  //
+  // 下面两组是变异自证的两个方向：把实现改回扫 command，第一组转红；
+  // 把 fullyUnquoted 换成 withDoubleQuotes（只剥单引号），第二组的单引号用例转红。
+  describe("引号内的转义操作符（正则元字符）→ 放行", () => {
+    const legit = [
+      ['grep BRE "或" + 管道', String.raw`grep -rn "a\|b" . --include="*.py" | head -30`],
+      ["grep BRE 双引号内（无管道也不该拦）", String.raw`grep -n "empty_values\|class Foo" x.py`],
+      ["grep BRE 单引号内 + 管道", String.raw`grep -n 'a\|b' file.py | head`],
+      ["sed BRE 替换 + 管道", String.raw`sed -n "s/a\|b/c/p" f.py | wc -l`],
+      ["awk 内转义分号 + 管道", String.raw`awk '{print $1 "\;" $2}' f.txt | sort`],
+    ] as const;
+    for (const [name, cmd] of legit) {
+      test(name, () => {
+        expect(validateBackslashEscapedOperators(cmd)).toBeNull();
+      });
+    }
+  });
+
+  describe("引号外的转义操作符 → 仍然拦住（不得因上面的放宽而漏）", () => {
+    const threats = [
+      ["转义 && ", String.raw`echo hi && ls \&& rm -rf /tmp/x`],
+      ["转义 | ", String.raw`ls | cat \| sh`],
+      ["转义 || ", String.raw`a || b \|| c`],
+      ["转义 ; ", String.raw`echo a; echo b \; rm x`],
+      ["find -exec \\; 但确有真实管道", String.raw`find . -name "*.tmp" -exec rm {} \; | cat`],
+      // 引号闭合后又出现转义操作符：不能因为命令里"有引号"就整条豁免
+      ["引号闭合后再转义 | ", String.raw`grep -n "a\|b" x.py | cat \| sh`],
+    ] as const;
+    for (const [name, cmd] of threats) {
+      test(name, () => {
+        expect(validateBackslashEscapedOperators(cmd)).not.toBeNull();
+      });
+    }
+  });
 });
 
 describe("validateHeredocInSubstitution", () => {

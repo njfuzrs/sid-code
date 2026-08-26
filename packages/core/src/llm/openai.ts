@@ -1257,9 +1257,25 @@ export class OpenAIProvider implements Provider {
         "AUDIT:API",
         `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
+      // ⚠️ statusCode 必须透传 —— 与 anthropic.ts 的 catch 分支同一个坑。
+      //
+      // 此前这里只 yield message，于是 fallback.ts 的 `classifyError` 只能对 message
+      // 做文本匹配来认 HTTP 状态。网关回中文文案（「上游负载已饱和」）时匹配不到任何
+      // 数字 → 裸 Error → **429 零重试直接终止整轮**（事故 smoke-8，2026-08-25）。
+      // `getHTTPStatus` 会遍历 cause 链读 `.status`/`.statusCode`/`.response.status`，
+      // 所以这里把 SDK 的 `err.status` 原样带上就够，不必自己解析 body。
+      //
+      // 不置 streamLevel 是刻意的：这个 catch 同时接住纯网络异常（ECONNRESET 等），
+      // 而 `classifyStreamError` 的兜底是"无法归类即按 server_error 重试"——
+      // 无脑置位会把确定性故障也拖进整轮退避。statusCode 本身已是无歧义判据。
       yield {
         type: "error",
-        error: { message: err.message || String(err) },
+        error: {
+          message: err.message || String(err),
+          ...(typeof err?.status === "number" && { statusCode: err.status }),
+          ...(typeof err?.error?.type === "string" &&
+            err.error.type.trim() !== "" && { type: err.error.type }),
+        },
       };
     } finally {
       // PR11：流结束（正常/异常/调用方提前 break 都会走到这里）→ disarm fetch 硬顶的留痕。
@@ -1589,9 +1605,16 @@ export class OpenAIProvider implements Provider {
         "AUDIT:API",
         `✗ OpenAI Responses API 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
+      // 与上面 Chat Completions 的 catch 同口径透传 statusCode。
+      // 三条协议路径（Chat Completions / Responses / Anthropic）必须全带，
+      // 漏一条就等于"429 在这个协议下不重试"，而漏在哪条取决于用户走了哪个协议 ——
+      // 既无法解释也难以复现。防漂移断言见 tests/llm/status-code-classification.test.ts。
       yield {
         type: "error",
-        error: { message: err.message || String(err) },
+        error: {
+          message: err.message || String(err),
+          ...(typeof err?.status === "number" && { statusCode: err.status }),
+        },
       };
     } finally {
       // PR3（档 A）：第三条协议路径同样收口。三条路径（Chat Completions / Responses /

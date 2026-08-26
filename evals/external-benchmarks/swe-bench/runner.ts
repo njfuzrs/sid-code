@@ -83,6 +83,26 @@ export interface RunRecord {
    * 而它与「做出了修复」是两件事。
    */
   patch_only_adds_files: boolean;
+  /**
+   * agent.log 里出现 `达到最大轮次限制` —— 即**轮次预算用尽**，不是想不出来。
+   * 观测字段，不参与判定（同 `patch_only_adds_files`）。详见 `extractAgentLogSignals`。
+   */
+  hit_max_turns: boolean;
+  /**
+   * LLM 致命错误打断（`fatal_error` + 限流/5xx 指纹）—— 这条题**连跑完的机会都没拿到**。
+   * 观测字段，不参与判定。
+   */
+  llm_fatal: boolean;
+  /**
+   * headless 下被权限层拒绝的工具调用次数。
+   *
+   * 每一次都等于**烧掉一轮而什么也没做成**，且在 outcome / wall_ms / patch_bytes 上
+   * 完全看不出来。实测 smoke-8（`--permission-mode acceptEdits`）共 113 次，
+   * 三条实例过半轮次是这么没的，却被记成"40 轮预算用尽"。
+   * > 这个字段的用处是**验证权限配置是否把 agent 打残** ——
+   * > 正常配置下它该接近 0，显著大于 0 就说明这一轮的分数掺了非能力因素。
+   */
+  permission_denials: number;
   /** harness 自己的时钟，不是 agent 自报（§6.3 诚实字段） */
   wall_ms: number;
   /** agent 退出码；非 0 → agent_error */
@@ -354,43 +374,90 @@ export function patchOnlyAddsFiles(diff: string, allPaths: string[]): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 容器内脚本
+// agent.log 机械信号（ZZZZ.11 P2：把 no_patch 桶里的非能力原因标出来）
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 容器内跑的那段 shell。
+ * 从 agent.log 里提取「这条实例为什么没跑完」的机械信号。
  *
- * 四条实测约束（§4.5），每条少一个就起不来或跑歪：
+ * ## 为什么需要它
  *
- * 1. **必须激活 conda testbed**（`source /opt/miniconda3/bin/activate && conda activate testbed`）
- *    —— 不激活 import 全挂，agent 会把「环境没激活」当成代码 bug 去修。
- * 2. **必须写 settings.json**（`config.ts:1499` 的门禁：`--print` 下
- *    `!config.model && availableModels.length === 0` 直接抛）。光 cp 二进制起不来。
- * 3. **不带 `--no-session-persistence`** —— 编译产物里报「未知选项」（bun parseArgs
- *    不收 `no-` 前缀声明名）。会话隔离靠 `SID_CONFIG_DIR`。
- * 4. **HOME 必须可写** —— `SID_CONFIG_DIR` 不覆盖 `debug.log`（PR2 已修 logger，
- *    但 `ensure-ripgrep.ts` 在只读 HOME 下会静默降级到系统 rg）。
+ * `deriveOutcome` 只看 `agentExit` / `patchBytes` / `timedOut`，于是 `no_patch`
+ * 这一个桶同时装着三种完全不同的东西：
  *
- * ⚠️ **API key 只走 exec env，绝不进 argv**（§6.2）：进 argv 后
- * `docker inspect` / `ps` 都能读到，容器删了还留在 daemon 的记录里。
- * 这段脚本里出现的是 `$SC_API_KEY` 这个**变量名**，值由 docker exec -e 注入。
+ * | 真实原因 | 现在归到 | 是不是能力问题 |
+ * | --- | --- | --- |
+ * | 想不出来 | `no_patch` | ✅ 是 |
+ * | 轮次预算用尽 | `no_patch` | ❌ 不是（我们的配置没定） |
+ * | LLM 致命错误（限流/5xx 打断） | `agent_error` | ❌ 不是（网关或我们的 bug） |
+ *
+ * smoke-8 实测：4 条零 patch **一条都不是能力不足**（2 条 429 未重试即终止、
+ * 2 条 40 轮撞顶），而报告里读起来像"5/10 的能力"。§6.3 阶段 A 的收口判据
+ * 「零 patch 的实例里没有基础设施/harness 侧原因」要能被**机械验证**而不是
+ * 每次人去 grep 四份 agent.log，就必须把这两个信号落进 RunRecord。
+ *
+ * ## ⚠️ 只标注，不参与任何判定
+ *
+ * 与 `patch_only_adds_files` 同款做法（见那里的两条否决理由）。
+ * `deriveOutcome` 一行不改 —— 一旦让它读这些信号，`outcome` 就从
+ * 「机械可复算的四态」变成「依赖日志文案的启发式」，而日志文案会变。
+ *
+ * ## ⚠️ 判据是中文日志文案，这是刻意的取舍
+ *
+ * 用 `达到最大轮次限制` 而不是解析结构化字段，因为 agent.log 就是终端输出，
+ * 没有结构化通道。**代价是文案一改这个字段就静默失效** —— 所以
+ * `tests/eval/swe-bench-runner.test.ts` 里钉了真实日志片段做样本，
+ * 且报告侧在「零 patch 但两个信号都 false」时会显式说"原因未归因"，
+ * 而不是默认它就是能力问题。轨迹取回（本次一并接上）是这层的长期替代：
+ * 轨迹里有结构化的 `exit_status` / `RetryTelemetry`，不必猜文案。
  */
-export function containerScript(promptPath: string, maxTurns: number): string {
-  return [
-    "set -e",
-    // ① conda testbed —— 不激活 import 全挂
-    "source /opt/miniconda3/bin/activate",
-    "conda activate testbed",
-    "cd /testbed",
-    // ② settings.json —— 不写起不来。key 从 env 取，不落在 argv 里
-    "export SID_CONFIG_DIR=/tmp/sid-cfg",
-    'mkdir -p "$SID_CONFIG_DIR"',
-    // 用 python 生成 JSON：shell 里插值 key 会在出错时把它打进日志
-    'python -c \'import json,os,sys; json.dump({"availableModels":[{"name":"m","provider":"openai","api_key":os.environ["SC_API_KEY"],"base_url":os.environ["SC_BASE_URL"]}],"model":"m"}, open(os.environ["SID_CONFIG_DIR"]+"/settings.json","w"))\'',
-    // ③ 跑 agent。`--` 之后是题面，题面以 `-` 开头也不会被当选项
-    `/usr/local/bin/sid-code -p --max-turns ${maxTurns} --permission-mode acceptEdits -- "$(cat ${promptPath})"`,
-  ].join("\n");
+export function extractAgentLogSignals(agentLog: string): {
+  hitMaxTurns: boolean;
+  llmFatal: boolean;
+  permissionDenials: number;
+} {
+  // 轮次撞顶：queryLoop 在放弃前会打这一行（`达到最大轮次限制: 40`）。
+  const hitMaxTurns = agentLog.includes("达到最大轮次限制");
+
+  // LLM 致命错误：`fatal_error` 是 queryLoop 的封装标记，单独出现还不够 ——
+  // 它也可能是别的成因，所以要求同时出现"限流/服务端错误"的指纹。
+  //
+  // ⛔ 不要用 `/429|502|503|504/` 直接扫全文：实测会把 request-id 与
+  // token 计数里的数字全扫进来（smoke-8 里 10 条实例 grep 到的 "429" 大多是
+  // `cacheCreationInputTokens: 12429` 这类巧合）。必须锚定在错误行的形态上。
+  const hasFatal = agentLog.includes("fatal_error");
+  const hasUpstreamError =
+    /(?:AUDIT:API|LLM:[A-Z]+)[^\n]*\b(?:429|500|502|503|504|529)\b/.test(agentLog) ||
+    /rate_limit|rate limit|overloaded|Bad Gateway|上游负载|限流/.test(agentLog);
+  const llmFatal = hasFatal && hasUpstreamError;
+
+  // 权限拒绝次数：headless 下每一次都等于**烧掉一轮**而 agent 什么也没做成。
+  // 实测 smoke-8 共 113 次，三条实例过半轮次是这么没的 —— 而这在
+  // `outcome` / `wall_ms` / `patch_bytes` 上一个字都看不出来。
+  const permissionDenials = (agentLog.match(/权限拒绝/g) ?? []).length;
+
+  return { hitMaxTurns, llmFatal, permissionDenials };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 容器内脚本 —— **不在本文件**，见 exec-swebench.sh 的 build_agent_script
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ## 这里曾有一份 `containerScript()`，2026-08-25 删掉了
+//
+// 它**零引用、零测试**（全仓 grep 只有它自己的定义），是 shell 那份的平行实现，
+// 而两份已经漂移到了危险的程度：它硬编码 `--permission-mode acceptEdits`
+// （实测会让 agent 在 headless 下被拒 113 次工具调用）、写的还是
+// `"name":"m"` 那版无效模型名（网关会拿默认模型顶上 → **跑的是哪个模型不可知**，
+// 这个坑 exec-swebench.sh 的注释里已记录并修过）。
+//
+// 留着它的危害不是"多了几行死代码"，是**下一个人可能改对了它而没改 shell**，
+// 或者读它当成事实来源。删掉比同步更安全 —— 唯一的容器脚本就在 shell 里，
+// 且那里的注释才是被真实执行、真实踩过坑的那份。
+//
+// 它 docblock 里那四条实测约束（conda testbed / settings.json 门禁 /
+// 不带 --no-session-persistence / HOME 必须可写）**没有丢**，
+// 都在 `exec-swebench.sh` 的 `build_agent_script` 与文件头注释里。
 
 /**
  * 提取 patch 的那段 shell。**与 agent 那段分开跑**，理由是 agent 段可能非 0 退出
