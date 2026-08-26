@@ -457,4 +457,59 @@ describe("Config Validation", () => {
       expect(result.warnings.some((w) => w.path.startsWith("sessionRetention"))).toBe(false);
     });
   });
+
+  /**
+   * costLimit = 0 是「不限」，不是错误。
+   *
+   * ## 三处曾互相矛盾，只有校验器把 0 当错（2026-08-26 修）
+   *
+   *   - 运行时 `llm/quota.ts`：`if (this.costLimit <= 0) return null` —— 0 = 不限；
+   *   - 文档 `website/ref/settings.md`：`costLimit | number | ≥0`；
+   *   - 校验器：`<= 0` → errors。
+   *
+   * 后果不是"配不上"，而是**每次启动产出一条自己造的假红**
+   * （`✗ costLimit: costLimit 必须是正数`）。它非致命（只有 provider/model 会 throw），
+   * 所以不拦人 —— 只在排查别的问题时把人往错方向带一步。
+   *
+   * 实测场合：SWE-bench 评测容器必须显式占住 costLimit，防 backfill-team-defaults
+   * 把模板里的 100 merge 进来（撞上会让整轮在 exceeded 处静默 return、
+   * 被记成零 patch —— 一个预算闸门伪装成能力问题）。占位的正确值就是 0。
+   */
+  describe("costLimit：0 = 不限", () => {
+    test("顶层 costLimit = 0 不产出 error", () => {
+      const result = validateConfig({ ...baseConfig, costLimit: 0 });
+      expect(result.errors.some((e) => e.path === "costLimit")).toBe(false);
+    });
+
+    test("quota.costLimit = 0 不产出 warning", () => {
+      const result = validateConfig({ ...baseConfig, quota: { costLimit: 0 } });
+      expect(result.warnings.some((w) => w.path === "quota.costLimit")).toBe(false);
+    });
+
+    test("负数仍然是错 —— 它既不是「不限」的规范写法也不是有意义的预算", () => {
+      // 变异自证的另一半：若把判据放宽成"只查类型"，这两条会转绿，
+      // 于是 `costLimit: -1` 会被静默接受（而 quota.ts 会把它当不限）。
+      expect(
+        validateConfig({ ...baseConfig, costLimit: -1 }).errors.some((e) => e.path === "costLimit"),
+      ).toBe(true);
+      expect(
+        validateConfig({ ...baseConfig, quota: { costLimit: -1 } }).warnings.some(
+          (w) => w.path === "quota.costLimit",
+        ),
+      ).toBe(true);
+    });
+
+    test("非数字仍然是错", () => {
+      const result = validateConfig({
+        ...baseConfig,
+        costLimit: "100" as unknown as number,
+      });
+      expect(result.errors.some((e) => e.path === "costLimit")).toBe(true);
+    });
+
+    test("正数照常放行（防把判据改成「只收 0」）", () => {
+      const result = validateConfig({ ...baseConfig, costLimit: 100 });
+      expect(result.errors.some((e) => e.path === "costLimit")).toBe(false);
+    });
+  });
 });

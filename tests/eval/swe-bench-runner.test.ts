@@ -41,6 +41,8 @@ import {
   findReport,
   readGoldOk,
   METER_NOTE,
+  buildTimingProfile,
+  renderTimingSection,
   type OfficialReport,
 } from "../../evals/external-benchmarks/swe-bench/grade.ts";
 
@@ -492,6 +494,15 @@ describe("buildAcceptance：§6 五个验收字段", () => {
     expectedTotal: 2,
     model: "claude-sonnet-5-ppchat",
     gatewayHost: "code.ppchat.vip",
+    // 被测代码身份 + 必控变量：一份"干净的 run"必须记全这些，
+    // 所以基线 fixture 也得带上 —— 否则下面几条断言 unaccounted 为 null 的
+    // 用例其实在测"缺字段时的样子"，而它们的名字写的是"全解出/跑满"。
+    sidCodeVersion: "0.1.601",
+    gitCommit: "b19927eb00000000000000000000000000000000",
+    gitDirty: false,
+    artifactSha256: "a".repeat(64),
+    effortLevel: "max",
+    costLimitUsd: 0,
   };
 
   test("全解出：link_ok / graded_ok / gold_ok 三个二值都真", () => {
@@ -624,6 +635,108 @@ describe("buildAcceptance：§6 五个验收字段", () => {
     // 变异自证：**有** model 时这句话不该出现，否则这条断言是恒真的
     const withModel = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
     expect(withModel.unaccounted).toBeNull();
+  });
+
+  /**
+   * ## 被测代码身份：为什么判据是 git_commit 而不是 sid_code_version
+   *
+   * 实测（2026-08-26）：`package.json` 停在 `0.1.601`，而 tag `v0.1.601` 打在
+   * 8月21 的提交上；此后合入的 429 重试修复、权限修复**都不在那个 tag 里**
+   * （`git merge-base --is-ancestor <fix> v0.1.601` 失败）。
+   * 也就是说**同一个版本号对应过多个 commit** —— 只记 version 等于没记。
+   *
+   * 配套的失败形态：`make build` 不 bump 版本号，所以
+   * `artifact_for()` 会静默复用 `dist/release/<ver>/` 下那份 8月21 的产物 ——
+   * 「跑评测验证本轮修复」跑成「跑 5 天前的代码」，而分数、日志、version 全正常。
+   */
+  test("git_commit 缺失 → 点破「不知道跑的是哪份代码」；有 version 也不算", () => {
+    const { gitCommit: _c, ...noCommit } = base;
+    const a = buildAcceptance({ ...noCommit, report: { resolved_ids: ["a", "b"] } });
+    expect(a.git_commit).toBeNull();
+    // ⚠️ 关键：version 还在（"0.1.601"），但仍然要报缺 —— 版本号顶不了 commit
+    expect(a.sid_code_version).toBe("0.1.601");
+    expect(a.unaccounted).toContain("未记录 git_commit");
+    // 变异自证：有 commit 时这句不该出现
+    const withCommit = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
+    expect(withCommit.unaccounted).toBeNull();
+  });
+
+  test("git_dirty=true → 点破「只可自比不可外比」", () => {
+    const a = buildAcceptance({
+      ...base,
+      gitDirty: true,
+      report: { resolved_ids: ["a", "b"] },
+    });
+    expect(a.git_dirty).toBe(true);
+    expect(a.unaccounted).toContain("只可自比");
+    // 变异自证：干净时不报
+    expect(
+      buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } }).unaccounted,
+    ).toBeNull();
+  });
+
+  test("git_dirty 缺省是 null（不知道），不是 false（断言干净）", () => {
+    // 旧 run 没这个字段时是"不知道脏不脏"。记成 false 就是替它断言"干净"——
+    // 那正是这个字段要防的事。所以 grade.ts 里必须是 `?? null` 不是 `?? false`。
+    const { gitDirty: _d, ...noDirty } = base;
+    const a = buildAcceptance({ ...noDirty, report: { resolved_ids: ["a", "b"] } });
+    expect(a.git_dirty).toBeNull();
+    // null 不该触发 dirty 那条 note（它只在确认脏时报）
+    expect(a.unaccounted).toBeNull();
+  });
+
+  test("成本闸门 > 0 → 点破「零 patch 的归因需先排除它」", () => {
+    // loop.ts 在 quota exceeded 处 `yield done; return` —— **整轮静默结束**，
+    // 被记成 no_patch，读起来像能力问题。团队默认模板的值正是 100。
+    const a = buildAcceptance({
+      ...base,
+      costLimitUsd: 100,
+      report: { resolved_ids: ["a", "b"] },
+    });
+    expect(a.cost_limit_usd).toBe(100);
+    expect(a.unaccounted).toContain("成本闸门开启");
+    // 变异自证：0（不限）时不报 —— 否则这条断言对任何取值都成立
+    expect(
+      buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } }).unaccounted,
+    ).toBeNull();
+  });
+
+  test("effort_level 缺失 → 点破它是必控变量", () => {
+    const { effortLevel: _e, ...noEffort } = base;
+    const a = buildAcceptance({ ...noEffort, report: { resolved_ids: ["a", "b"] } });
+    expect(a.effort_level).toBeNull();
+    expect(a.unaccounted).toContain("effort_level");
+  });
+
+  /**
+   * 并发跑的 run 与串行 run **不可并排** —— 而这在分数上完全看不出来。
+   *
+   * 成因：并发下多个容器争 docker daemon、宿主 CPU、同一份网关配额，
+   * 每条实例的 agent_ms 都被别的实例拖长；限流概率也随请求速率抬升
+   * （ZZZZZ 那个 P0 就是一次 429 终止整轮）。
+   *
+   * ⚠️ 与判分并发（`SWE_GRADE_JOBS`）区分开：判分不碰网关、是纯函数
+   * （同一份 predictions 判两次结论必须一样），所以它不影响可比性、不记这里。
+   */
+  test("jobs > 1 → 点破「不可与串行 run 并排」", () => {
+    const a = buildAcceptance({ ...base, jobs: 4, report: { resolved_ids: ["a", "b"] } });
+    expect(a.jobs).toBe(4);
+    expect(a.unaccounted).toContain("不可与串行 run 并排");
+    // 渲染里也要带警告（JSON 字段没人逐个读，报告正文才是入口）
+    expect(renderReport(a)).toContain("不可与串行 run 并排");
+  });
+
+  test("jobs === 1（串行）不报警告 —— 否则这条断言恒真", () => {
+    const a = buildAcceptance({ ...base, jobs: 1, report: { resolved_ids: ["a", "b"] } });
+    expect(a.jobs).toBe(1);
+    expect(a.unaccounted).toBeNull();
+  });
+
+  test("jobs 缺失 → null（旧 run），不报警告也不假设是 1", () => {
+    // 记成 1 就是替旧 run 断言"它是串行跑的"，而那件事无从确认。
+    const a = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
+    expect(a.jobs).toBeNull();
+    expect(a.unaccounted).toBeNull();
   });
 
   test("model / gateway_host 原样进 Acceptance，且渲染进报告", () => {
@@ -832,6 +945,12 @@ describe("partial 的分母口径", () => {
     wallMs: 1,
     model: "m",
     gatewayHost: "h",
+    // 见上一个 describe 的同款注释：这些 fixture 要代表"干净的 run"，
+    // 否则测 partial 的用例会顺带被身份字段缺失的 note 干扰。
+    gitCommit: "c".repeat(40),
+    gitDirty: false,
+    effortLevel: "max",
+    costLimitUsd: 0,
   };
 
   /**
@@ -1241,6 +1360,139 @@ describe("extractAgentLogSignals", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 耗时归因：wall_ms 一个数回答不了「慢在哪」
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ## 为什么这组测试存在
+ *
+ * 「10 题跑 2-3 小时，定位不到哪道题慢」—— 而 `wall_ms` 从 smoke-1 起就逐题落盘了，
+ * 只是报告只渲染了**总和**。数据一直在，没人看得到。
+ *
+ * 实测（smoke-8 记录重新汇总）：最慢 22.2min / 最快 1.8min，**差 12 倍**。
+ * 这个分布形态直接决定优化方向（并发压墙钟 vs 调 max-turns 只影响长尾），
+ * 所以报告必须逐题渲染、按耗时降序。
+ *
+ * 三段分解（setup/agent/extract）防的是另一件事：`wall_ms` 的边界是
+ * `docker run` 前 → 收尾 `rm` 后，它把**起容器 + cp 40MB 产物 + 取回轨迹**
+ * 都算进了"这道题花的时间"。不拆开的话，"该优化 harness 还是调 prompt"
+ * 这个问题没有判据。
+ */
+describe("buildTimingProfile：耗时归因", () => {
+  const full = [
+    {
+      instance_id: "slow",
+      wall_ms: 600_000,
+      setup_ms: 30_000,
+      agent_ms: 560_000,
+      extract_ms: 10_000,
+    },
+    {
+      instance_id: "mid",
+      wall_ms: 300_000,
+      setup_ms: 20_000,
+      agent_ms: 275_000,
+      extract_ms: 5_000,
+    },
+    { instance_id: "fast", wall_ms: 60_000, setup_ms: 15_000, agent_ms: 40_000, extract_ms: 5_000 },
+  ];
+
+  test("按 wall_ms 降序 —— 最慢的排最前（那是唯一值得先看的）", () => {
+    // 输入故意乱序：若实现忘了 sort，这条会红
+    const t = buildTimingProfile([full[2]!, full[0]!, full[1]!]);
+    expect(t.per_instance.map((r) => r.instance_id)).toEqual(["slow", "mid", "fast"]);
+  });
+
+  test("三段合计正确，且 setup+agent+extract === wall", () => {
+    const t = buildTimingProfile(full);
+    expect(t.total_wall_ms).toBe(960_000);
+    expect(t.total_setup_ms).toBe(65_000);
+    expect(t.total_agent_ms).toBe(875_000);
+    expect(t.total_extract_ms).toBe(20_000);
+    // 不变量：三段之和 == wall。它防的是"挪动某个 now_ms 调用点，
+    // 于是某一段耗时掉在所有字段之外"—— record.ts 落盘原先就在取回轨迹之前。
+    expect(t.total_setup_ms! + t.total_agent_ms! + t.total_extract_ms!).toBe(t.total_wall_ms);
+  });
+
+  test("串行代价 = 总和 / 最慢单条（并发的上界）", () => {
+    const t = buildTimingProfile(full);
+    expect(t.serial_penalty_x).toBeCloseTo(960_000 / 600_000, 5);
+  });
+
+  test("只有一条时串行代价是 null，不是 1.0", () => {
+    // 1.0 会被读成「并发也没用」，而真相是「这个样本量说不了这件事」。
+    // 这两个结论在决策上完全相反，所以不能用同一个值表示。
+    expect(buildTimingProfile([full[0]!]).serial_penalty_x).toBeNull();
+    expect(buildTimingProfile([]).serial_penalty_x).toBeNull();
+  });
+
+  /**
+   * ## 缺分解时必须全部为 null，不许 `?? 0` 混着算
+   *
+   * 旧 run 没有这三个字段。用 `?? 0` 求和会得到
+   * 「setup 合计 = 只有那 2 条有值的和」，而报告里它长得和完整分解一模一样。
+   * **一个残缺的分解比没有分解更坏** —— 它看起来是个可用的数。
+   */
+  test("任一条缺分解 → 三段合计全为 null（不做部分汇总）", () => {
+    const mixed = [full[0]!, { instance_id: "old", wall_ms: 120_000 }];
+    const t = buildTimingProfile(mixed);
+    expect(t.total_setup_ms).toBeNull();
+    expect(t.total_agent_ms).toBeNull();
+    expect(t.total_extract_ms).toBeNull();
+    // wall 仍然可用（它老 run 也有），逐题也仍然给出 —— 只是分解不给
+    expect(t.total_wall_ms).toBe(720_000);
+    expect(t.per_instance).toHaveLength(2);
+    // 变异自证：全员都有分解时才非 null
+    expect(buildTimingProfile(full).total_setup_ms).not.toBeNull();
+  });
+
+  test("空 records → 三段为 null 而不是 0（0 会被读成「什么都没花时间」）", () => {
+    const t = buildTimingProfile([]);
+    expect(t.total_setup_ms).toBeNull();
+    expect(t.total_wall_ms).toBe(0);
+    expect(t.per_instance).toEqual([]);
+  });
+
+  test("setup_ms 为 0 是合法值，不等于「没量」", () => {
+    // `typeof === "number"` 与 `?? 0` 的区别就在这条：一个真的 0（快到测不出）
+    // 不该被当成缺字段。用 `??` 的实现在这条上表现一样，
+    // 但在上面那条 mixed 用例上会红 —— 两条一起才锁住语义。
+    const zero = [{ instance_id: "z", wall_ms: 100, setup_ms: 0, agent_ms: 100, extract_ms: 0 }];
+    expect(buildTimingProfile(zero).total_setup_ms).toBe(0);
+  });
+
+  test("渲染：逐题一行、降序、不出现百分号", () => {
+    const md = renderTimingSection(buildTimingProfile(full)).join("\n");
+    // 逐题都在
+    for (const id of ["slow", "mid", "fast"]) expect(md).toContain(id);
+    // 降序：slow 出现在 fast 之前
+    expect(md.indexOf("slow")).toBeLessThan(md.indexOf("fast"));
+    // ## 不许出现「数字+%」
+    //
+    // §6 那条门禁只扫 renderReport()，技术上这里写 % 不会被它抓到。
+    // 但那条门禁的理由（「在正文里现算一个比例和加一个 percent 字段是同一件事」）
+    // 对耗时同样成立 —— n=10 的耗时方差极大（模型延迟本身抖动就有数倍），
+    // 两轮百分比作差说明不了任何因果。所以这里补一条同形态的断言。
+    expect(md).not.toMatch(/\d+(\.\d+)?%/);
+    // 也不许有 percent/ratio 这类词混进来
+    expect(md).not.toMatch(/percent|占比/);
+  });
+
+  test("渲染：缺分解时点破「不用 wall 顶替 agent」", () => {
+    const md = renderTimingSection(
+      buildTimingProfile([full[0]!, { instance_id: "old", wall_ms: 1000 }]),
+    ).join("\n");
+    expect(md).toContain("缺三段分解");
+    // 表头只有 wall 一列（不能凭空造出搬运/模型/收尾三列）
+    expect(md).not.toContain("| 搬运 |");
+  });
+
+  test("渲染：空输入返回空数组（不产出一个空段落）", () => {
+    expect(renderTimingSection(buildTimingProfile([]))).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 评测配置的必控变量（ZZZZ.11 P1 + 本轮新增）
 // ═══════════════════════════════════════════════════════════════════════════
 describe("exec-swebench.sh 的必控变量与容器配置", () => {
@@ -1249,22 +1501,76 @@ describe("exec-swebench.sh 的必控变量与容器配置", () => {
     "utf8",
   );
 
-  test("权限模式不许再用 acceptEdits（headless 下会拒掉 pytest/write）", () => {
-    // 实测 smoke-8：acceptEdits 导致 113 次权限拒绝，三条实例过半轮次白烧。
-    // 只放行 FILE_TOOLS + cwd 内 7 个 fs 命令，python/pytest 全落 ask → headless 拒绝。
-    expect(sh).toContain("bypassPermissions");
-    // 命令行里不许出现硬编码的 acceptEdits（注释里作为历史说明可以有）
-    const body = sh
-      .split("\n")
-      .filter((l) => !l.trimStart().startsWith("#"))
-      .join("\n");
-    expect(body).not.toContain("acceptEdits");
+  /**
+   * 可执行行（剥掉注释）。多条断言共用：注释里必然会提到那些被禁的字面量
+   * （作为"为什么不能用它"的说明），扫全文会把说明本身当成违规。
+   * 这与本文件「轨迹 cp 必须在 rm 之前」那条踩的是同一个坑，只是方向相反。
+   */
+  const shBody = sh
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("#"))
+    .join("\n");
+
+  test("权限只能用 --dangerously-skip-permissions 布尔 flag", () => {
+    // ## 这条断言的上一版是错的，且错得全绿
+    //
+    // 上一版写的是 `expect(sh).toContain("bypassPermissions")` ——
+    // 而 `bypassPermissions` **不是 sid-code 的合法权限模式名**
+    // （`config/schema.ts` 的 VALID_PERMISSION_MODES 只有 9 个值，不含它）。
+    // 传进去只得到一条 warn 而非错误，然后 checker 的 `=== "always-allow"`
+    // 精确匹配不命中 → 落默认 ask → headless 直接拒绝。
+    // 实测三模式对照：bypassPermissions 连**工作区内**的 write 都拒，
+    // 比它要修的 acceptEdits 更差。
+    //
+    // 于是那条断言把一个错误取值**锁定成了正确行为**，并躲过了全量 11033 个测试。
+    // 这正是本文件开头那条纪律要防的形态，而它出现在防它的测试里。
+    expect(shBody).toContain("--dangerously-skip-permissions");
+    // 三个已知的错误取值一律不许出现在可执行行里
+    for (const wrong of ["bypassPermissions", "acceptEdits", "always-allow"]) {
+      expect(shBody).not.toContain(wrong);
+    }
+    // ⚠️ 必须是布尔 flag，不能是 `--permission-mode <值>`：
+    // 实测 `--permission-mode dangerously-skip-permissions` 三项全 false ——
+    // cli.ts 把布尔 flag 映射到 config.skipPermissions，而 checker 的早退判据
+    // 就是它；只设 permissionMode 字符串碰不到那条早退。
+    expect(shBody).not.toMatch(/--permission-mode\s/);
   });
 
-  test("max_turns / permission_mode 必须进 run-meta.json", () => {
-    // 它们和模型一样是必控变量：换了值分数不可并排，而分数本身看不出来。
-    expect(sh).toContain('"max_turns"');
-    expect(sh).toContain('"permission_mode"');
+  test("run-meta.json 必须记全必控变量与被测代码身份", () => {
+    // 它们和模型一样：换了值分数不可并排，而分数本身看不出来。
+    for (const key of ['"max_turns"', '"permission_mode"', '"timeout_sec"']) {
+      expect(sh).toContain(key);
+    }
+    // effort_level / cost_limit_usd：此前完全没记，而它们是被团队默认模板
+    // 悄悄塞进来的（effortLevel=max / costLimit=100）——
+    // 也就是说前几轮跑的是谁也没选过的值。
+    for (const key of ['"effort_level"', '"cost_limit_usd"']) {
+      expect(sh).toContain(key);
+    }
+    // ## git_commit 是被测代码的**唯一**身份，version 不是
+    //
+    // 实测（2026-08-26）：package.json 停在 0.1.601，而 tag v0.1.601 打在 8月21；
+    // 此后合入的 429 修复、权限修复都不在那个 tag 里
+    // （`git merge-base --is-ancestor <fix> v0.1.601` 失败）。
+    // 同一个版本号对应过多个 commit → 只记 version 等于没记。
+    for (const key of ['"git_commit"', '"git_dirty"', '"artifact_sha256"']) {
+      expect(sh).toContain(key);
+    }
+    // 取 commit 必须真的调 git，不能只声明字段名
+    expect(shBody).toContain("rev-parse HEAD");
+    expect(shBody).toContain("status --porcelain");
+  });
+
+  test("产物比 HEAD 老时必须拦住（make build 不 bump，旧路径会被静默复用）", () => {
+    // 失败形态：跑评测想验证本轮修复，实际跑的是 5 天前的产物 ——
+    // 分数正常、日志正常、run-meta 里的 version 也正常。
+    expect(shBody).toContain("warn_if_stale_artifact");
+    // 必须在 cmd_run 里真的被调用，不是只定义（"函数零调用"这个坑本仓踩过）
+    const calls = shBody.split("warn_if_stale_artifact").length - 1;
+    expect(calls).toBeGreaterThanOrEqual(2); // 1 处定义 + ≥1 处调用
+    // 判据必须是 mtime 与 HEAD 提交时间比，不是解包读版本号 ——
+    // 版本号在两次发布之间不动，正是它骗人的地方。
+    expect(shBody).toContain("log -1 --format=%ct");
   });
 
   test("轨迹必须在 docker rm 之前取回", () => {
@@ -1292,5 +1598,143 @@ describe("exec-swebench.sh 的必控变量与容器配置", () => {
     }
     // fallbackModel 必须显式为空：评测只许一个模型
     expect(sh).toMatch(/"fallbackModel":\s*""/);
+  });
+
+  test("占位必须覆盖团队默认模板的**全部**顶层键（清单从模板现取）", () => {
+    // ## 为什么现取而不是手写一份清单
+    //
+    // 上一版只手写了 5 个键（fallbackModel/subAgentModels/trace/mcpServers/hooks），
+    // 而实测（2026-08-26，照抄 PYCFG 跑真二进制）迁移**仍然**补进 12 个：
+    //   language, permissionMode, allowedTools, disallowedTools, quota, costLimit,
+    //   search, disabledSkills, trustProjectExtensions, allowedDirectories,
+    //   blockedDirectories, effortLevel
+    // 手写清单会在模板加键时**静默过期** —— 门禁还绿着，而评测里又多了一个
+    // 谁也没选过的变量。所以清单必须从模板现取：模板加键，这条自动开始要求。
+    const tpl = JSON.parse(
+      readFileSync(join(import.meta.dir, "../../scripts/team-defaults.template.json"), "utf8"),
+    ) as Record<string, unknown>;
+    // model / availableModels 由脚本按 SC_MODEL 自己构造，不是"占位"
+    const skip = new Set(["model", "availableModels"]);
+    const missing = Object.keys(tpl).filter((k) => !skip.has(k) && !sh.includes(`"${k}"`));
+    expect(missing).toEqual([]);
+  });
+
+  test("成本闸门必须显式为 0（不限），否则整轮会静默结束并被记成零 patch", () => {
+    // 模板值 costLimit=100。撞上时 loop.ts 在 exceeded 处 `yield done; return` ——
+    // **整轮静默结束**，被记成 no_patch，读起来像能力问题。
+    // quota.ts 的判据是 `costLimit <= 0` 直接 return null（= 不限）。
+    expect(shBody).toContain('COST_LIMIT="${SWE_COST_LIMIT:-0}"');
+    // 顶层 costLimit 与 quota.costLimit 是两个互不影响的字段（config/schema.ts），
+    // 只占一个另一个照样被塞 100。
+    expect(shBody).toMatch(/"costLimit":\s*float\(/);
+    expect(shBody).toMatch(/"quota":\s*\{"costLimit":\s*float\(/);
+  });
+
+  test("trace outputDir 末级必须是 trajectories，否则取回来 digest 读不到", () => {
+    // ## 一个"取回成功但读不了"的缝（2026-08-26 实测）
+    //
+    //   - collector.ts 是 `outputDir ?? sidPaths.trajectories()` —— 显式给了
+    //     outputDir 时它**就是** sessions 的父目录，不再拼一层 trajectories/；
+    //   - 而 trace/digest.ts 的 resolvePaths 硬拼 `{root}/trajectories/sessions`。
+    // 于是 outputDir=/tmp/sid-traj 产出 `/tmp/sid-traj/sessions/<id>/`，
+    // SID_CODE_HOME 指过去 digest 报「未找到任何会话轨迹」——
+    // 文件都在、cp 也成功，**排查工具一条都读不到**。
+    expect(shBody).toMatch(/"outputDir":\s*"\/tmp\/sid-traj\/trajectories"/);
+    // mkdir 也要建到那一层，否则首次写入要靠 collector 自己兜
+    expect(shBody).toContain("/tmp/sid-traj/trajectories");
+    // cp 的源必须是 /tmp/sid-traj/. —— 多一层或少一层都让落地形状对不上 digest
+    expect(shBody).toContain("/tmp/sid-traj/.");
+  });
+
+  test("三段计时必须都量到，且 record.ts 落盘在最后（否则又漏一段）", () => {
+    // wall_ms 的边界是 docker run 前 → 收尾 rm 后。record.ts 原先在提取之后、
+    // 取回轨迹**之前**跑 —— 于是 cp 40MB 轨迹的耗时掉在所有字段之外。
+    for (const flag of ["--setup-ms", "--agent-ms", "--extract-ms"]) {
+      expect(shBody).toContain(flag);
+    }
+    // 三个时间点都要真的调 now_ms
+    for (const v of ["t_setup_done=$(now_ms)", "t_agent_done=$(now_ms)", "t1=$(now_ms)"]) {
+      expect(shBody).toContain(v);
+    }
+    // ⚠️ t1 必须在 docker rm 之后取 —— 否则收尾搬运不计入
+    const lines = shBody.split("\n");
+    const rmIdx = lines.reduce((acc, l, i) => (l.includes("docker rm -f") ? i : acc), -1);
+    const t1Idx = lines.findIndex((l) => l.includes("t1=$(now_ms)"));
+    expect(t1Idx).toBeGreaterThan(rmIdx);
+  });
+
+  test("产物只解压一次（不是每题一次），且解出的目录不许在 run_one 里删", () => {
+    // 每题各自 tar -xzf 一份 40MB 产物 = 纯浪费，并发下还会几个 tar 抢磁盘 IO。
+    expect(shBody).toContain("resolve_binary");
+    expect(shBody).toContain("RESOLVED_BIN");
+    // ⛔ run_one 里不许再有 tar 解压或 rm -rf tmp_extract：
+    // 并发下"一条删掉了另一条正在 cp 的文件"，失败形态是随机的 cp 报文件不存在。
+    expect(shBody).not.toContain('rm -rf "$tmp_extract"');
+    // tar 只在 resolve_binary 里出现一次
+    expect(shBody.split("tar -xzf").length - 1).toBe(1);
+  });
+
+  test("SWE_JOBS 默认 1，非法值在起容器前就停", () => {
+    // 默认必须是 1：并发是必控变量，smoke-9 要能与串行的 smoke-8 并排读。
+    expect(shBody).toContain('jobs="${SWE_JOBS:-1}"');
+    // 校验在 run-meta 之前（否则会跑掉半轮才发现 meta 是坏的）
+    const lines = shBody.split("\n");
+    const chk = lines.findIndex((l) => l.includes("SWE_JOBS 必须是"));
+    const meta = lines.findIndex((l) => l.includes("run-meta.json"));
+    expect(chk).toBeGreaterThan(-1);
+    expect(chk).toBeLessThan(meta);
+    // jobs 必须进 run-meta（它改变可比性，而分数上看不出来）
+    expect(sh).toContain('"jobs"');
+  });
+
+  test("并发下不许直接 append 共享 jsonl —— 必须走 .parts/ 再合并", () => {
+    // ## 失败形态：并发 append 几 KB 的 model_patch 不保证原子
+    //
+    // 两条记录交错成一行连合法 JSON 都不是的东西，官方 harness 读到坏行
+    // 的反应是跳过 → 一个跑完了的实例看起来像"没提交" → 被记成 no_patch。
+    // **并发把有效数据变成了能力问题**，而这在分数上完全看不出来。
+    expect(shBody).toContain(".parts");
+    // 合并顺序按 subset 而不是完成顺序（让两次 run 的 jsonl 可以直接 diff）
+    expect(shBody).toMatch(/for iid in \$ids; do[\s\S]{0,400}\.parts/);
+    // 缺分片不许静默跳过 —— 那正是"一条实例悄悄没进 predictions"的形态
+    expect(shBody).toContain("缺 record/prediction 分片");
+  });
+
+  test("record.ts 写每题独立文件，不 appendFileSync 共享 jsonl", () => {
+    const rec = readFileSync(join(SWE_DIR, "record.ts"), "utf8");
+    const recBody = rec
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("//") && !l.trimStart().startsWith("*"))
+      .join("\n");
+    expect(recBody).not.toContain("appendFileSync");
+    expect(recBody).toContain(".record.json");
+    expect(recBody).toContain(".prediction.json");
+  });
+
+  test("判分并发独立于 SWE_JOBS，且默认 1", () => {
+    // 判分不碰模型网关且是纯函数（同一份 predictions 判两次结论必须一样），
+    // 所以它**不影响可比性** —— 不该和 SWE_JOBS 共用一个开关，
+    // 否则"想让判分快点"会连带把跑 agent 也改成并发、静默破坏可比性。
+    expect(shBody).toContain('grade_jobs="${SWE_GRADE_JOBS:-1}"');
+    expect(shBody).toContain('-j "$grade_jobs"');
+    // 判分那一处不许再有硬编码的 -j 1。
+    // ⚠️ 判据必须限定在 `-p "$preds"` 那条命令上 —— gold 自检
+    // （`eval verified --gold -i "$iid"`）也是 `-j 1`，而那里**本该**是 1：
+    // 它一次只判一条实例，并发没有意义。扫全文会把它误当违规。
+    expect(shBody).not.toMatch(/eval verified -p "\$preds"[\s\S]{0,120}-j 1/);
+    // 反向锁住 gold 自检仍是 -j 1（防有人"顺手统一"把它也改成变量）
+    expect(shBody).toMatch(/eval verified --gold[\s\S]{0,80}-j 1/);
+  });
+
+  test("$SID_CONFIG_DIR 侧的遥测也要取回，且不许把 settings.json 带出来", () => {
+    // telemetry/events.jsonl、session-index.jsonl、sessions/ 落在 SID_CONFIG_DIR，
+    // **不随 trace.outputDir 走** —— 上面那条轨迹 cp 一个都带不到。
+    for (const rel of ["telemetry", "session-index.jsonl", "sessions"]) {
+      expect(shBody).toContain(rel);
+    }
+    // ⛔ 不许整个 cp 配置目录：settings.json 里有 api_key，
+    // 而纪律是 key 只走 exec env、绝不落盘。
+    expect(shBody).not.toMatch(/docker cp\s+"\$cname:\/tmp\/sid-cfg"/);
+    expect(shBody).not.toMatch(/docker cp\s+"\$cname:\/tmp\/sid-cfg\/\."/);
   });
 });

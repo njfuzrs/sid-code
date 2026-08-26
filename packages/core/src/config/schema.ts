@@ -618,11 +618,27 @@ export function validateConfig(config: Config): ValidationResult {
   }
 
   // 验证 costLimit
+  //
+  // ## ⚠️ 0 是合法的「不限」，不是错误（2026-08-26 修）
+  //
+  // 三处此前互相矛盾，而只有校验器这一处把 0 当错：
+  //   - 运行时 `llm/quota.ts`：`if (this.costLimit <= 0) return null` —— 0 = 不限；
+  //   - 文档 `website/ref/settings.md`：`costLimit | number | ≥0`；
+  //   - 校验器（这里）：`<= 0` → **errors**。
+  // 于是「显式关掉成本闸门」这个正当配置每次启动都产出一条自己造的假红
+  // （`✗ costLimit: costLimit 必须是正数`）。它非致命（只有 provider/model 会 throw），
+  // 所以不会拦住任何人 —— **只会在排查别的问题时把人往错方向带一步**。
+  //
+  // 实测踩到的场合：SWE-bench 评测容器必须显式占住 costLimit 防团队默认模板
+  // merge 进 100（撞上会让整轮在 exceeded 处静默 return、被记成零 patch，
+  // 一个预算闸门伪装成能力问题）。占位的正确值就是 0。
+  //
+  // 负数仍然是错：它既不是「不限」的规范写法，也不是任何有意义的预算。
   if (config.costLimit !== undefined) {
-    if (typeof config.costLimit !== "number" || config.costLimit <= 0) {
+    if (typeof config.costLimit !== "number" || config.costLimit < 0) {
       errors.push({
         path: "costLimit",
-        message: "costLimit 必须是正数",
+        message: "costLimit 必须是非负数（0 = 不限）",
         value: config.costLimit,
       });
     }
@@ -631,8 +647,10 @@ export function validateConfig(config: Config): ValidationResult {
   // 验证 quota（配额管控增强版；注意与顶层 costLimit 是不同字段，互不影响）
   if (config.quota) {
     const q = config.quota;
-    if (q.costLimit !== undefined && (typeof q.costLimit !== "number" || q.costLimit <= 0)) {
-      warnings.push({ path: "quota.costLimit", message: "必须是正数" });
+    // 同顶层 costLimit：0 = 不限（quota.ts 的判据就是 `<= 0` → return null），
+    // 只有负数才是错。这里是 warning 而非 error，所以它制造的假红更隐蔽。
+    if (q.costLimit !== undefined && (typeof q.costLimit !== "number" || q.costLimit < 0)) {
+      warnings.push({ path: "quota.costLimit", message: "必须是非负数（0 = 不限）" });
     }
     if (
       q.requestsPerMinute !== undefined &&
