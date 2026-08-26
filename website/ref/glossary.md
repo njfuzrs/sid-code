@@ -399,9 +399,13 @@ sid-code 默认会 symlink `node_modules`（比 git 原生行为激进），
 
 **定义**：成本与速率的硬上限：`costLimit`（花费）、`requestsPerMinute`、
 `tokensPerMinute`、`budgetRules`。撞到上限会终止而不是继续跑。
+`costLimit: 0` = **不限**（顶层与 `quota.costLimit` 同义），负数才是配错。
 
 **你什么时候碰到它**：给团队人均成本设天花板时。
 **有个坑**：`quota.costLimit` 会静默盖掉命令行的 `--max-budget-usd`。
+**另一个坑**：撞上限时是**静默终止本轮**，不会有醒目报错。在批量/无人值守场景
+（评测、CI）里这会被读成"任务没做出来"，而真实原因是预算用完了 ——
+所以那类场景要么显式设 0，要么把取值记进产物元数据。
 
 **相关**：[配额与成本控制](/team/quota) · [成本与用量](/use/cost)
 

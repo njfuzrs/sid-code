@@ -103,8 +103,33 @@ export interface RunRecord {
    * > 正常配置下它该接近 0，显著大于 0 就说明这一轮的分数掺了非能力因素。
    */
   permission_denials: number;
-  /** harness 自己的时钟，不是 agent 自报（§6.3 诚实字段） */
+  /**
+   * harness 自己的时钟，不是 agent 自报（§6.3 诚实字段）。
+   * 口径 = `docker run` 前 → 收尾 `docker rm` 后，即 setup + agent + extract 之和。
+   */
   wall_ms: number;
+  /**
+   * 三段耗时分解 —— **`wall_ms` 一个数回答不了「慢在哪」**。
+   *
+   * smoke-8 报了 94.2 分钟，而其中多少是搬运、多少是模型在想，
+   * 在 `wall_ms` 上一个字看不出来（它把起容器 + cp 40MB 产物 + 取回轨迹
+   * 全算进了"这道题花的时间"）。
+   *
+   *   setup_ms    docker run + tar 解压 + cp 产物/题面（基础设施，与模型无关）
+   *   agent_ms    docker exec 跑 sid-code（真正的能力 + 延迟账）
+   *   extract_ms  git add/diff 提取 patch + 取回轨迹与遥测（收尾搬运）
+   *
+   * ⚠️ 旧 run 没有这三个字段，读到 0 表示**没量**，不是"零耗时"。
+   * grade.ts 据此跳过分解，**不做假汇总** —— 用 `wall_ms` 顶替 `agent_ms`
+   * 会凭空造出一份"全是 agent 时间"的分解，比没有分解更坏。
+   *
+   * 不变量：`setup_ms + agent_ms + extract_ms === wall_ms`（有单测守着）。
+   * 它防的是"挪动某个 now_ms 调用点，于是某一段耗时掉在所有字段之外"——
+   * 这个坑本来就踩过一次（record.ts 落盘原先在取回轨迹**之前**）。
+   */
+  setup_ms?: number;
+  agent_ms?: number;
+  extract_ms?: number;
   /** agent 退出码；非 0 → agent_error */
   agent_exit: number;
   /** 过程类结论。solved / wrong_patch / ungraded 不在这里判 —— 那是官方 harness 的事 */

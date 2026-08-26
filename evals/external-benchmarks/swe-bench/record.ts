@@ -17,7 +17,7 @@
  *     --agent-exit N --timed-out 0|1 --wall-ms N
  */
 
-import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   isTestPath,
@@ -43,6 +43,22 @@ const runDir = arg("run-dir", argv);
 const agentExit = Number(arg("agent-exit", argv) ?? -1);
 const timedOut = arg("timed-out", argv) === "1";
 const wallMs = Number(arg("wall-ms", argv) ?? 0);
+// ## 三段耗时：wall_ms 一个数回答不了「慢在哪」
+//
+// `wall_ms` 的边界是 docker run 前 → 收尾 rm 后，也就是说它把
+// **起容器 + cp 40MB 产物 + 取回轨迹**全算进了「这道题花的时间」。
+// smoke-8 报了 94.2 分钟，而其中多少是搬运、多少是模型在想，一个字看不出来。
+//
+//   setup_ms    docker run + tar 解压 + cp 产物/题面（基础设施，与模型无关）
+//   agent_ms    docker exec 跑 sid-code（真正的能力 + 延迟账）
+//   extract_ms  git add/diff 提取 patch + 取回轨迹与遥测（收尾搬运）
+//
+// ⚠️ 缺省 0 而不是 `wallMs`：旧 run 没有这三个字段，用 wallMs 顶替会
+// **凭空造出一份"全是 agent 时间"的分解**，比没有分解更坏。
+// 0 表示"没量"，grade.ts 侧据此跳过分解不做假汇总。
+const setupMs = Number(arg("setup-ms", argv) ?? 0);
+const agentMs = Number(arg("agent-ms", argv) ?? 0);
+const extractMs = Number(arg("extract-ms", argv) ?? 0);
 
 if (!instanceId || !runDir) {
   console.error("需要 --instance 与 --run-dir");
@@ -135,6 +151,9 @@ const record: RunRecord = {
   llm_fatal: signals.llmFatal,
   permission_denials: signals.permissionDenials,
   wall_ms: wallMs,
+  setup_ms: setupMs,
+  agent_ms: agentMs,
+  extract_ms: extractMs,
   agent_exit: agentExit,
   outcome,
   meter: null,
@@ -149,8 +168,25 @@ const prediction: Prediction = {
   model_patch: patch,
 };
 
-appendFileSync(join(runDir, "records.jsonl"), JSON.stringify(record) + "\n");
-appendFileSync(join(runDir, "predictions.jsonl"), JSON.stringify(prediction) + "\n");
+// ## 并发安全：先写**每题各自的文件**，最后由 shell 侧合并
+//
+// 原先两行都是 `appendFileSync` 直接追加到共享的 jsonl。串行下没问题，
+// 但 `SWE_JOBS>1` 时多个 record.ts 进程同时 append —— 而 `model_patch`
+// 动辄几 KB，**超过 PIPE_BUF 的写入不保证原子**，两条记录会交错成
+// 一行合法 JSON 都不是的东西。
+//
+// 失败形态最坑的地方：`predictions.jsonl` 被官方 harness 读，
+// 它对坏行的反应是**跳过或整体报错**，于是一个跑完了的实例
+// 看起来像"没提交" → 被记成 no_patch。**并发把有效数据变成了能力问题。**
+//
+// 每题一个文件则天然无竞争（文件名互不相同），合并在 `run_one` 全部结束后
+// 单线程做，顺序按 subset 顺序而不是完成顺序 —— 顺带让两次 run 的
+// jsonl 可以直接 diff（并发下完成顺序是随机的，append 版本 diff 不了）。
+const perInstDir = join(runDir, ".parts");
+mkdirSync(perInstDir, { recursive: true });
+// 文件名用 instance_id：它在一轮里唯一，且含 `__` 不含路径分隔符。
+writeFileSync(join(perInstDir, `${instanceId}.record.json`), JSON.stringify(record) + "\n");
+writeFileSync(join(perInstDir, `${instanceId}.prediction.json`), JSON.stringify(prediction) + "\n");
 
 const flag = record.patch_touches_tests ? " ⚠️ 触及测试文件" : "";
 // 两个机械信号进终端行：跑的时候就能看出「这条是没跑完，不是没做出来」，

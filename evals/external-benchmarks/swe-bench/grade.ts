@@ -84,6 +84,42 @@ export interface Acceptance {
   model: string | null;
   gateway_host: string | null;
   /**
+   * 被测代码的身份 —— **`git_commit` 才是事实源，`sid_code_version` 不是**。
+   *
+   * 实测背景（2026-08-26）：`package.json` 停在 `0.1.601`，而 tag `v0.1.601` 打在
+   * 8月21 的提交上；此后合入的 429 重试修复、权限修复都不在那个 tag 里。
+   * 也就是说**同一个版本号对应了几十个不同的 commit** —— 只记 version 等于没记。
+   *
+   * `git_dirty=true` 时连 commit 也不能完全描述产物，报告要点破"只可自比"。
+   * `artifact_sha256` 是最后一道：上面三项都对但产物是旧的（`make build` 不 bump
+   * 版本号，所以旧路径会被静默复用）时，只有字节指纹能发现。
+   *
+   * 全部 null = 旧 run 的兼容值，读到 null 就该知道**不知道这个分数是哪份代码跑的**。
+   */
+  sid_code_version: string | null;
+  git_commit: string | null;
+  git_dirty: boolean | null;
+  artifact_sha256: string | null;
+  /**
+   * 必控变量：推理档位与成本闸门。
+   *
+   * 这两项此前完全没记，而它们是被 `backfill-team-defaults` 悄悄塞进来的
+   * （模板里 effortLevel=max / costLimit=100）—— 也就是说前几轮跑的是**谁也没选过**
+   * 的值。`cost_limit_usd > 0` 时整轮可能在 exceeded 处静默 return，
+   * 被记成 `no_patch`：一个预算闸门伪装成能力问题。
+   */
+  effort_level: string | null;
+  cost_limit_usd: number | null;
+  /**
+   * 跑 agent 的并发度。**必控变量** —— 并发下多个容器争 docker daemon、
+   * 宿主 CPU、同一份网关配额，每条实例的 agent_ms 都被别的实例拖长，
+   * 于是 `solved_count` 与串行 run **不可并排**，而分数本身看不出来。
+   *
+   * ⚠️ 与判分并发（`SWE_GRADE_JOBS`）不同：判分不碰网关且是纯函数
+   * （同一份 predictions 判两次结论必须一样），所以那个不影响可比性、不记在这里。
+   */
+  jobs: number | null;
+  /**
    * 10/10 instance 产出非空 patch ← 二值
    *
    * ## ⚠️ 口径定死：这是「**单次**跑完的成功率」，不是「重试后的成功率」
@@ -171,6 +207,107 @@ export function mapOutcomes(
   return out;
 }
 
+/** 一条实例的耗时（ms）。三段缺失时为 undefined —— 表示"没量"，不是 0。 */
+export interface InstanceTiming {
+  instance_id: string;
+  wall_ms: number;
+  setup_ms?: number;
+  agent_ms?: number;
+  extract_ms?: number;
+}
+
+/**
+ * 这一轮的耗时画像。
+ *
+ * ## 为什么需要它：数据一直都在，只是没人看
+ *
+ * `wall_ms` 从 smoke-1 起就逐题落盘了，但报告只渲染了**总和**
+ * （`- wall_ms（harness 时钟）：5652xxx`）。于是"10 题跑了 2-3 小时、
+ * 定位不到哪道题慢"这个问题的答案一直躺在 `records.jsonl` 里没被读出来。
+ *
+ * 实测（smoke-8 记录，2026-08-26 重新汇总）：
+ *   astropy-8872 22.2min / matplotlib-26466 17.0min / django-13964 12.6min
+ *   … / astropy-12907 1.8min，合计 94.2min
+ * **最慢一条是最快一条的 12 倍** —— 这个分布形态直接决定了优化方向
+ * （并发能把墙钟压到最慢那条附近，而调 max-turns 只影响长尾那几条）。
+ *
+ * ⚠️ 只报绝对数与占比，**不报"提速百分比"** —— 与验收字段同一条纪律：
+ * n=10 的耗时方差极大（模型延迟本身抖动就有数倍），两轮之间的差
+ * 说明不了任何因果。这里的用处是**归因**（哪一段、哪一条），不是打分。
+ */
+export interface TimingProfile {
+  /** 逐题耗时，按 wall_ms 降序 —— 最慢的排最前，那是唯一值得先看的 */
+  per_instance: InstanceTiming[];
+  total_wall_ms: number;
+  /**
+   * 三段各自的合计。**任一条实例缺分解就全部为 null** ——
+   * 混着算会得到一个"部分实例的 setup + 全部实例的 wall"这种谁也不是的数。
+   */
+  total_setup_ms: number | null;
+  total_agent_ms: number | null;
+  total_extract_ms: number | null;
+  /**
+   * 串行跑的墙钟（= total_wall_ms）与"完美并发"下的理论墙钟（= 最慢一条）之比。
+   *
+   * 这是**并发能拿到多少**的上界，不是承诺：实测受 docker daemon、
+   * 网关限流、宿主 CPU 三处制约，拿不到理论值。
+   * 报它的意义是让"要不要开并发"有个数可依，而不是凭感觉。
+   */
+  serial_penalty_x: number | null;
+}
+
+/**
+ * 从 records.jsonl 的原始行汇总耗时画像。
+ *
+ * ⚠️ 判据全部走 `typeof === "number"` 而不是 `?? 0`：
+ * 旧 run 没有三段字段，`?? 0` 会让它们静默参与求和，
+ * 于是报告里出现"setup 合计 3 分钟"（实际是 10 条里只有 2 条有值）——
+ * 一个残缺的分解看起来和完整的一模一样。
+ */
+export function buildTimingProfile(
+  records: Array<{
+    instance_id?: string;
+    wall_ms?: number;
+    setup_ms?: number;
+    agent_ms?: number;
+    extract_ms?: number;
+  }>,
+): TimingProfile {
+  const per: InstanceTiming[] = records
+    .filter((r) => r.instance_id)
+    .map((r) => ({
+      instance_id: r.instance_id!,
+      wall_ms: r.wall_ms ?? 0,
+      setup_ms: typeof r.setup_ms === "number" ? r.setup_ms : undefined,
+      agent_ms: typeof r.agent_ms === "number" ? r.agent_ms : undefined,
+      extract_ms: typeof r.extract_ms === "number" ? r.extract_ms : undefined,
+    }))
+    .sort((a, b) => b.wall_ms - a.wall_ms);
+
+  const totalWall = per.reduce((s, r) => s + r.wall_ms, 0);
+  // 全员都有分解才汇总。空数组也算"没有分解"（不是 0）——
+  // 否则一个空 run 会报出一份"三段全 0"的分解，读起来像"什么都没花时间"。
+  const allHave =
+    per.length > 0 &&
+    per.every(
+      (r) =>
+        typeof r.setup_ms === "number" &&
+        typeof r.agent_ms === "number" &&
+        typeof r.extract_ms === "number",
+    );
+  const slowest = per.length ? per[0]!.wall_ms : 0;
+  return {
+    per_instance: per,
+    total_wall_ms: totalWall,
+    total_setup_ms: allHave ? per.reduce((s, r) => s + r.setup_ms!, 0) : null,
+    total_agent_ms: allHave ? per.reduce((s, r) => s + r.agent_ms!, 0) : null,
+    total_extract_ms: allHave ? per.reduce((s, r) => s + r.extract_ms!, 0) : null,
+    // 只有一条时并发没有意义，报 null 而不是 1.0（1.0 会被读成"并发也没用"，
+    // 而真相是"这个样本量说不了这件事"）。
+    serial_penalty_x: per.length > 1 && slowest > 0 ? totalWall / slowest : null,
+  };
+}
+
 /**
  * 组装验收字段。
  *
@@ -191,6 +328,15 @@ export function buildAcceptance(input: {
   model?: string | null;
   /** 网关 host（**只要 host，不要完整 URL、绝不要 key**） */
   gatewayHost?: string | null;
+  /** 被测代码身份，见 Acceptance 同名字段。缺省 null = 旧 run，unaccounted 会点破 */
+  sidCodeVersion?: string | null;
+  gitCommit?: string | null;
+  gitDirty?: boolean | null;
+  artifactSha256?: string | null;
+  /** 必控变量：推理档位 / 成本闸门 / 并发度，见 Acceptance 同名字段 */
+  effortLevel?: string | null;
+  costLimitUsd?: number | null;
+  jobs?: number | null;
   /**
    * subset 读不回来、`expectedTotal` 退化成 `submitted.length` 时置 true。
    *
@@ -246,11 +392,53 @@ export function buildAcceptance(input: {
     );
   }
 
+  // 同理，被测代码身份缺失也必须点破，理由更强：模型至少还能从网关侧查，
+  // 而"跑的是哪份代码"事后无从追溯。
+  // ⚠️ 判据是 git_commit 而不是 sid_code_version —— 版本号在两次发布之间不动，
+  // 同一个 0.1.601 对应过几十个 commit（2026-08-26 实测），有它等于没有。
+  if (!input.gitCommit) {
+    notes.push(
+      "未记录 git_commit —— 事后无法确定这一轮跑的是哪份代码" +
+        "（版本号不够：`make build` 不 bump，同一版本号对应过多个 commit）",
+    );
+  }
+  if (input.gitDirty) {
+    notes.push(
+      `工作区不干净（git_dirty=true）—— 产物与 ${(input.gitCommit ?? "?").slice(0, 8)} ` +
+        "不完全对应，这一轮**只可自比，不可与其他 run 外比**",
+    );
+  }
+  // 成本闸门开着 = 整轮可能在 exceeded 处静默 return，被记成 no_patch。
+  // 这条必须报出来：它让一个预算问题长得像能力问题。
+  if (typeof input.costLimitUsd === "number" && input.costLimitUsd > 0) {
+    notes.push(
+      `成本闸门开启（cost_limit_usd=${input.costLimitUsd}）—— ` +
+        "撞上时整轮静默结束并被记成零 patch，零 patch 的归因需先排除它",
+    );
+  }
+  if (!input.effortLevel) {
+    notes.push("未记录 effort_level —— 它直接决定推理预算与成本，是必控变量");
+  }
+  // 并发跑的 run 不可与串行 run 并排 —— 这条必须报，因为分数上完全看不出来。
+  if (typeof input.jobs === "number" && input.jobs > 1) {
+    notes.push(
+      `并发跑（jobs=${input.jobs}）—— 多容器争 docker daemon / 宿主 CPU / 网关配额，` +
+        "agent_ms 被互相拖长，**这份 solved_count 不可与串行 run 并排**",
+    );
+  }
+
   return {
     run_id: input.runId,
     prompt_version: input.promptVersion,
     model: input.model ?? null,
     gateway_host: input.gatewayHost ?? null,
+    sid_code_version: input.sidCodeVersion ?? null,
+    git_commit: input.gitCommit ?? null,
+    git_dirty: input.gitDirty ?? null,
+    artifact_sha256: input.artifactSha256 ?? null,
+    effort_level: input.effortLevel ?? null,
+    cost_limit_usd: input.costLimitUsd ?? null,
+    jobs: input.jobs ?? null,
     link_ok: nonEmpty.length === input.submitted.length && input.submitted.length > 0,
     graded_ok: !!input.report && ungradedIds.length === 0,
     gold_ok: input.goldOk,
@@ -276,6 +464,68 @@ export function buildAcceptance(input: {
  * ⚠️ 渲染层同样不许出现百分比 —— 光在 interface 里去掉字段不够，
  * 「在报告里现算一个 6/10 = 60%」是同一件事的另一种写法。
  */
+/**
+ * 渲染耗时画像段。
+ *
+ * ⚠️ **一行一条实例，不做"平均耗时"** —— smoke-8 里最慢/最快差 12 倍，
+ * 均值在这种分布上不描述任何一条题，而报告的用处是"先看哪一条"。
+ * 这与北极星那条「一律看 p95/p99，均值会骗人」同源。
+ */
+export function renderTimingSection(t: TimingProfile): string[] {
+  if (!t.per_instance.length) return [];
+  const min = (ms: number) => (ms / 60000).toFixed(1);
+  const lines: string[] = ["", "## 耗时画像（harness 时钟，非 agent 自报）", ""];
+
+  if (t.total_setup_ms === null) {
+    lines.push(
+      "> ⚠️ 本轮缺三段分解（setup/agent/extract）—— 旧 run 或中途改过计时点。",
+      "> 只报 wall，**不用 wall 顶替 agent**：那会凭空造出一份「全是模型耗时」的分解。",
+      "",
+    );
+  } else {
+    // ## 只报绝对分钟数，**不报占比百分号**
+    //
+    // §6 那条「报告里不许出现 数字+%」的门禁只扫 renderReport()，
+    // 技术上这里写 % 不会红。但那条门禁的理由是「钝是故意的 ——
+    // 在正文里现算一个比例和加一个 percent 字段是同一件事」，
+    // 而耗时同样是 n=10 的高方差量（模型延迟本身抖动就有数倍）。
+    // 三段绝对数已经足够回答「该优化 harness 还是调 prompt」，
+    // 占比只会让人拿两轮的百分比作差 —— 那个差说明不了任何因果。
+    lines.push(
+      `- 合计 **${min(t.total_wall_ms)} min** = ` +
+        `搬运 ${min(t.total_setup_ms)} + 模型 ${min(t.total_agent_ms!)}` +
+        ` + 收尾 ${min(t.total_extract_ms!)}（单位均为 min）`,
+      "  > 搬运 = docker run + 解压 + cp 产物/题面；收尾 = 提取 patch + 取回轨迹。",
+      "  > 这两段与模型能力无关 —— **它们的量级大就说明该优化 harness 而不是调 prompt**。",
+      "",
+    );
+  }
+
+  if (t.serial_penalty_x !== null) {
+    lines.push(
+      `- 串行代价：**${t.serial_penalty_x.toFixed(1)}×** ` +
+        `（串行 ${min(t.total_wall_ms)} min vs 最慢单条 ${min(t.per_instance[0]!.wall_ms)} min）`,
+      "  > 这是并发的**上界不是承诺** —— 实测受 docker daemon、网关限流、宿主 CPU 三处制约。",
+      "  > 报它是为了让「要不要开 SWE_JOBS」有个数可依，而不是凭感觉。",
+      "",
+    );
+  }
+
+  lines.push(
+    "逐题（按耗时降序，**先看最上面那条**）：",
+    "",
+    t.total_setup_ms === null ? "| instance | wall |" : "| instance | wall | 搬运 | 模型 | 收尾 |",
+    t.total_setup_ms === null ? "| --- | --- |" : "| --- | --- | --- | --- | --- |",
+    ...t.per_instance.map((r) =>
+      t.total_setup_ms === null
+        ? `| \`${r.instance_id}\` | ${min(r.wall_ms)} min |`
+        : `| \`${r.instance_id}\` | **${min(r.wall_ms)} min** | ${min(r.setup_ms!)} | ` +
+          `${min(r.agent_ms!)} | ${min(r.extract_ms!)} |`,
+    ),
+  );
+  return lines;
+}
+
 export function renderReport(a: Acceptance): string {
   const b = (v: boolean | null) => (v === null ? "未跑" : v ? "PASS" : "FAIL");
   const counts = Object.values(a.outcomes).reduce<Record<string, number>>((acc, v) => {
@@ -295,6 +545,16 @@ export function renderReport(a: Acceptance): string {
     `- prompt 版本：\`${a.prompt_version}\``,
     `- 被测模型：\`${a.model ?? "未记录（该分数不可与其他 run 并排）"}\``,
     `- 网关 host：\`${a.gateway_host ?? "未记录"}\``,
+    // ⚠️ commit 排在 version 前面，且 version 带「仅供对照」——
+    // 顺序本身在传达哪个是事实源。反过来写会让人拿 version 去复算，
+    // 而同一个版本号对应过多个 commit（2026-08-26 实测）。
+    `- 被测代码：commit \`${a.git_commit ?? "未记录"}\`` +
+      `${a.git_dirty ? " ⚠️ **工作区脏，只可自比**" : ""}` +
+      `（version \`${a.sid_code_version ?? "未记录"}\` 仅供对照，同一版本号可对应多个 commit）`,
+    `- 产物指纹：\`${a.artifact_sha256 ?? "未记录"}\``,
+    `- 必控变量：effort \`${a.effort_level ?? "未记录"}\`，` +
+      `成本闸门 ${a.cost_limit_usd === 0 ? "不限" : `$${a.cost_limit_usd ?? "未记录"}`}，` +
+      `并发 ${a.jobs ?? "未记录"}${a.jobs && a.jobs > 1 ? " ⚠️ **不可与串行 run 并排**" : ""}`,
     // ⚠️ 「单次」两个字必须出现在报告正文里：这个字段是单次口径（不合并复跑），
     // 而读的人默认会理解成「重试后仍失败」—— 那是严重得多的结论。
     // 详见 Acceptance.link_ok 的注释。
@@ -432,6 +692,9 @@ async function main() {
     instance_id?: string;
     patch_touches_tests?: boolean;
     wall_ms?: number;
+    setup_ms?: number;
+    agent_ms?: number;
+    extract_ms?: number;
   }> = existsSync(recPath)
     ? readFileSync(recPath, "utf8")
         .split("\n")
@@ -451,15 +714,38 @@ async function main() {
   // **不做任何猜测式的默认值**。
   let metaModel: string | null = null;
   let metaHost: string | null = null;
+  let metaVersion: string | null = null;
+  let metaCommit: string | null = null;
+  let metaDirty: boolean | null = null;
+  let metaArtifactSha: string | null = null;
+  let metaEffort: string | null = null;
+  let metaCostLimit: number | null = null;
+  let metaJobs: number | null = null;
   const metaPath = join(runDir, "run-meta.json");
   if (existsSync(metaPath)) {
     try {
       const m = JSON.parse(readFileSync(metaPath, "utf8")) as {
         model?: string;
         gateway_host?: string;
+        sid_code_version?: string;
+        git_commit?: string;
+        git_dirty?: boolean;
+        artifact_sha256?: string;
+        effort_level?: string;
+        cost_limit_usd?: number;
+        jobs?: number;
       };
       metaModel = m.model ?? null;
       metaHost = m.gateway_host ?? null;
+      metaVersion = m.sid_code_version ?? null;
+      metaCommit = m.git_commit ?? null;
+      // ⚠️ `?? null` 而不是 `?? false`：旧 run 没这个字段时是"不知道脏不脏"，
+      // 记成 false 就是替它断言"干净"—— 那正是这个字段要防的事。
+      metaDirty = m.git_dirty ?? null;
+      metaArtifactSha = m.artifact_sha256 ?? null;
+      metaEffort = m.effort_level ?? null;
+      metaCostLimit = m.cost_limit_usd ?? null;
+      metaJobs = m.jobs ?? null;
     } catch {
       // 读坏了也走 null 那条路：一个残缺的 meta 不比没有 meta 更可信
     }
@@ -509,15 +795,26 @@ async function main() {
     expectedTotal,
     model: metaModel,
     gatewayHost: metaHost,
+    sidCodeVersion: metaVersion,
+    gitCommit: metaCommit,
+    gitDirty: metaDirty,
+    artifactSha256: metaArtifactSha,
+    effortLevel: metaEffort,
+    costLimitUsd: metaCostLimit,
+    jobs: metaJobs,
     subsetReadFailed,
   });
 
   mkdirSync(REPORT_DIR, { recursive: true });
   const jsonOut = join(REPORT_DIR, `swe-bench-verified.${runId}.json`);
   const mdOut = join(REPORT_DIR, `swe-bench-verified.${runId}.md`);
-  writeFileSync(jsonOut, JSON.stringify(acceptance, null, 2) + "\n");
-  writeFileSync(mdOut, renderReport(acceptance));
-  console.log(renderReport(acceptance));
+  // 耗时画像挂在 JSON 的 timing 下（不进 Acceptance —— 那个类型是**验收字段**，
+  // 加进去会让"验收"与"性能观测"混成一件事，而前者有"不许出现百分比"的硬约束）。
+  const timing = buildTimingProfile(records);
+  writeFileSync(jsonOut, JSON.stringify({ ...acceptance, timing }, null, 2) + "\n");
+  const md = renderReport(acceptance) + renderTimingSection(timing).join("\n") + "\n";
+  writeFileSync(mdOut, md);
+  console.log(md);
   console.log(`\n已写入：\n  ${jsonOut.replace(REPO_ROOT + "/", "")}`);
   console.log(`  ${mdOut.replace(REPO_ROOT + "/", "")}`);
   // report 缺失是**硬失败**，不能 exit 0 —— 那会让 CI/人误读成「判分完成」
