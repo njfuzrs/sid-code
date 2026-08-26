@@ -81,7 +81,7 @@ sid-code 的全部命令行参数与子命令。
 |---|---|
 | `-p, --print` | 无头模式（非交互式，需提供提示词） |
 | `--input-format <fmt>` | 输入格式 (text/stream-json；stream-json 从 stdin 读流式消息) |
-| `--output-format <fmt>` | 输出格式 (text/json) |
+| `--output-format <fmt>` | 输出格式 (text/json/stream-json；stream-json 逐条输出流式消息) |
 | `--include-partial-messages` | stream-json 输出模式下包含部分消息增量 |
 | `--max-turns <n>` | Agent 循环最大轮次 |
 | `--verbose` | 详细输出（无头模式下输出全量消息数组而非仅最终消息） |

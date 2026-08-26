@@ -46,7 +46,7 @@ LLM 配置:
 无头模式:
   -p, --print                 无头模式（非交互式，需提供提示词）
   --input-format <fmt>        输入格式 (text/stream-json；stream-json 从 stdin 读流式消息)
-  --output-format <fmt>       输出格式 (text/json)
+  --output-format <fmt>       输出格式 (text/json/stream-json；stream-json 逐条输出流式消息)
   --include-partial-messages  stream-json 输出模式下包含部分消息增量
   --max-turns <n>             Agent 循环最大轮次
   --verbose                   详细输出（无头模式下输出全量消息数组而非仅最终消息）
@@ -157,8 +157,14 @@ Worktree 隔离:
   SID_CODE_LLM_API_KEY          OpenAI 兼容端点的 API 密钥（仅 sid-code 生效）
   SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
   SID_CODE_THINKING             思考开关覆盖 (on/off/auto)
+  SID_CODE_MAX_THINKING_TOKENS  思考 token 预算上限；兼容 MAX_THINKING_TOKENS，优先于 settings.maxThinkingTokens
   SID_MAX_OUTPUT_TOKENS         最大输出 token 数覆盖（缺省 32768）
   SID_MODEL_CATALOG_TTL_MS      外部模型目录同步 TTL 毫秒（缺省 86400000，即 1 天）；设小值可强制重新采集模型能力
+  SID_LANGUAGE                  输出语言偏好 (zh/en/auto)；兼容 SID_CODE_LANGUAGE，优先级低于 --language
+  ANTHROPIC_AUTH_TOKEN          Anthropic 密钥备用名（ANTHROPIC_API_KEY 优先）
+  OPENAI_BASE_URL               SID_CODE_LLM_BASE_URL 的兼容别名
+  SID_CHEAP_MODEL               廉价档模型覆盖（旁路调用用，最高权威）
+  SID_STRONG_MODEL              强力档模型覆盖（旁路调用用，最高权威）
 
   轨迹采集:
   SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
@@ -216,8 +222,39 @@ Worktree 隔离:
   SID_WORKFLOW_MAX_CONCURRENT   工作流并发上限（缺省 min(16, cpu核数-2)）
   SID_WORKFLOW_SYNC_TIMEOUT_MS  工作流同步超时毫秒
 
+  网络超时与重试:
+  （单一真源 config/network-profile.ts；均可经 settings.json 的 network 段配置，env 优先）
+  SID_CODE_IDLE_TIMEOUT_MS      档①字节级 idle：连一个字节都收不到（缺省 240000）
+  SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS  档②事件级无进展：有字节但无有效内容（缺省 480000）
+  SID_CODE_MAX_TURN_DURATION_MS 档③单轮硬顶，不感知进展（缺省 5400000，即 90 分钟）
+  SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS  fetch 绝对硬顶（缺省关闭；与档③谓词重合，不建议开）
+  SID_CODE_FALLBACK_STREAM_TIMEOUT_MS  fallback attempt 级无进展上限（缺省 600000）
+  SID_CODE_WATCHDOG_NO_PROGRESS_MS  loop 层无进展复核（缺省 720000）
+  SID_CODE_WATCHDOG_CHECK_INTERVAL_MS  看门狗检查间隔（缺省 5000）
+  SID_CODE_WATCHDOG_HEADER_GRACE_MS  首字节余量（缺省 15000）
+  SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  响应头超时（缺省 300000）
+  SID_CODE_MAX_SESSION_DURATION_MS  单次输入的连续执行总时长上限（缺省 0＝关闭）
+  SID_CODE_MAX_TIMEOUT_RETRIES  loop 层重试上限（缺省 10）
+  SID_CODE_MAX_RETRIES_PER_CALL 单次调用内连接+流式重试的共享上界（缺省 12）
+  SID_CODE_RETRY_BACKOFF_BASE_MS  指数退避基数（缺省 5000，带 ±15% jitter）
+  SID_CODE_RETRY_BACKOFF_MAX_MS 退避封顶（缺省 120000）
+  SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS  anthropic 族档②专用覆盖
+  SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS  anthropic 族 overall 专用覆盖
+  SID_CODE_OPENAI_OVERALL_TIMEOUT_MS  openai 族 overall 专用覆盖
+  SID_CODE_MCP_TIMEOUT          MCP 连接/请求超时（缺省 30000；兜底名 MCP_TIMEOUT）
+  SID_CODE_MCP_TOOL_TIMEOUT     MCP 工具调用超时（缺省 120000；兜底名 MCP_TOOL_TIMEOUT）
+
+  旁路调用超时（失败即静默降级，仅 env 可配）:
+  SID_CODE_WARMUP_TIMEOUT_MS    缓存预热（缺省 10000）
+  SID_CODE_COMPACT_TIMEOUT_MS   auto-compact 摘要（缺省 60000）
+  SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS  context-collapse 单段摘要（缺省 45000）
+  SID_CODE_RECALL_TIMEOUT_MS    记忆召回初筛（缺省 15000）
+  SID_CODE_TITLE_TIMEOUT_MS     会话标题生成（缺省 15000）
+  SID_CODE_GATEWAY_PRICING_TIMEOUT_MS  网关定价采集（缺省 15000）
+
   上下文管理:
   SID_OUTPUT_THRESHOLD          工具输出阈值字符数（缺省 30000）
+  SID_CODE_TOOL_SEARCH_KEEP_LOADED  tool search 豁免名单（逗号分隔，列出的工具不 defer）
   SID_KEEP_RECENT_OUTPUTS       保留最近输出个数（缺省 6）
   SID_FALLBACK_CONTEXT_WINDOW   未知模型的保守上下文窗口 token 数（缺省 128000）
   SID_RECOVERY_FLOOR_TOKENS     溢出恢复最小输出 token 下限（缺省 3000）

@@ -328,14 +328,32 @@ export interface Config {
   appendSystemPrompt: string;
   systemPromptFile: string;
 
-  // 调试配置
+  // ─── 调试与审计日志 ───
+  //
+  // 维护提示（勿并入下方任一字段的文档注释）：这一片的每个字段都必须自带 /** */，
+  // 不要退回「一行 `// 调试配置` 管一片」的写法。参考页生成器按字段抽前置/行尾注释
+  // （scripts/docs-gen-reference.ts 的 extractFieldComments），共享块注释只会被
+  // **第一个**字段吃掉，其余字段在 website/ref/settings.md 里描述为空；
+  // tests/website/gen-reference.test.ts 的非空断言会拦住（auditLogFile 曾以此形态失败）。
+  // 同理，写给维护者的话要放在字段**之间**的空行区，别紧贴字段上方——
+  // 紧贴就会被当成该字段的用户可见描述抓进参考页。
+
+  /** 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） */
   debug: boolean;
+  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） */
   debugLevel: string;
+  /** 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） */
   debugLogFile: string;
 
-  // 审计日志（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地，
-  // 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）
+  /**
+   * 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地，
+   * 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。
+   *
+   * ⚠ 与 debug 是 if/else 关系而非并行两条日志（cli.ts:1223-1261）：debug 为真时走
+   * debug logger，**只有 debug 为假**才走审计 logger。
+   */
   audit?: boolean;
+  /** 审计日志落点（缺省 sidPaths.auditLog()，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） */
   auditLogFile?: string;
 
   // UI 渲染配置
