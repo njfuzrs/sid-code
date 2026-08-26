@@ -18,8 +18,8 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **59** 个顶层字段。其中 45 个由
-> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），14 个标 ⚠ 的字段
+> 共 **70** 个顶层字段。其中 45 个由
+> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），25 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
@@ -34,12 +34,21 @@ settings.json 的全部可配字段、类型与默认值。
 | `analytics` ⚠ | object | — | 分析/事件系统配置（spec 17 — analytics 通道） |
 | `anthropicKey` | string | — | Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） |
 | `askUserQuestionTimeout` | string | — | AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应， 按 can… |
+| `audit` ⚠ | boolean | — | 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地， 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。 ⚠ 与 debug 是 if/else 关系而非并行两条日志（cli… |
+| `auditLogFile` ⚠ | string | — | 审计日志落点（缺省 sidPaths.auditLog()，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
+| `autoDream` ⚠ | boolean | — | G10：autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
+| `autoMemory` ⚠ | boolean | — | M2：auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感… |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
 | `checkpoint` ⚠ | object | — | Checkpoint 配置 |
 | `classifierModel` | string | — | LLM 分类器使用的模型（默认复用主循环模型 config.model） |
+| `conflictDetection` ⚠ | boolean | — | 并发冲突检测配置（Phase 2.4） 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲… |
+| `conflictSeverity` ⚠ | string | — | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻… |
 | `costLimit` | number | ≥0 | 成本配额（美元） |
+| `debug` ⚠ | boolean | — | 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） |
+| `debugLevel` ⚠ | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） |
+| `debugLogFile` ⚠ | string | — | 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
 | `disabledHooks` | array | — | 禁用的 Hook 名列表（/hooks disable -p 持久化端） |
 | `disabledSkills` | array | — | Skill 配置 禁用的 Skill 名称列表 |
 | `disallowedTools` | array | — | 禁用工具名单（拒绝优先于 allowedTools） |
@@ -58,6 +67,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。 不设置时… |
 | `maxThinkingTokens` | number | 整数 ≥0 | §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。 env SID_CODE_MAX_THINKING_TOKENS / M… |
 | `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
+| `mcpPolicy` ⚠ | object | — | B1：MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。 |
 | `mcpServers` | object | — | MCP 服务器 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） |
@@ -80,6 +90,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `theme` | string | — | UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 |
 | `thinkingEnabled` | boolean | — | 思考开关初值（/think 持久化端，settings.json thinkingEnabled）。 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。 |
 | `toolSearch` ⚠ | union | — | 工具延迟加载（ToolSearch） 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。 取值： - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。… |
+| `toolSearchKeepLoaded` ⚠ | array | — | 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。 sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己 声明 a… |
 | `trace` ⚠ | object | — | 轨迹采集配置 |
 | `trustProjectExtensions` | boolean | — | 扩展安全配置 是否信任项目级扩展（跳过信任检查，默认 false） |
 | `vimMode` | boolean | — | Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false |

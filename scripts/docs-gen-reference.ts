@@ -484,6 +484,35 @@ const PASSTHROUGH_FIELDS: Array<[string, string]> = [
   ["enableSandbox", "boolean"],
   ["outputStyle", "string"],
   ["speculativeClassifier", "boolean"],
+  // 二次补录（2026-08-26）：同样满足「Config 有声明 + keyMap 已登记（故 settings.json
+  // 写了能生效）+ 有真实消费点 + SettingsSchema 未声明」四条。
+  //
+  // 纳入判据是**持久化配置旋钮**，不是「Config 里所有非 schema 字段」——
+  // print / resume / continue / maxTurns / outputFormat / sessionId 等属**单次调用态**
+  // （每次跑给一次的 CLI 参数），写进 settings.json 会得到"永久无头模式"这类荒谬语义，
+  // 故一律不收。判据与既有条目一致：trace / checkpoint / showLineNumbers 都是 app.json
+  // 侧的持久旋钮，所以 debug / audit 家族同样够格。
+  //
+  // 证据（消费点，均非测试）：
+  //   autoDream            app.ts:3388
+  //   autoMemory           app.ts:3336（经 isAutoMemoryEnabled）
+  //   conflictDetection    cli.ts:1466
+  //   conflictSeverity     cli.ts:1468 + tool/write.ts:237 + tool/edit.ts:514
+  //   mcpPolicy            config.ts:1441 → mcp/policy.ts 三层门控
+  //   toolSearchKeepLoaded query/loop.ts:741 + query/init-helpers.ts:414
+  //   audit / auditLogFile cli.ts:1247 / cli.ts:1256（零配置常驻审计日志）
+  //   debug*               cli.ts:1223 / :1230 / :1236（真正决定开不开调试日志的那一支）
+  ["autoDream", "boolean"],
+  ["autoMemory", "boolean"],
+  ["conflictDetection", "boolean"],
+  ["conflictSeverity", "string"],
+  ["mcpPolicy", "object"],
+  ["toolSearchKeepLoaded", "array"],
+  ["audit", "boolean"],
+  ["auditLogFile", "string"],
+  ["debug", "boolean"],
+  ["debugLevel", "string"],
+  ["debugLogFile", "string"],
 ];
 
 /**
@@ -784,6 +813,25 @@ function parseHelpEnvVars(helpSrc: string): EnvVar[] {
  * 扫源码里实际读取的 SID_* / CLAUDE_CODE_* / *_API_KEY 环境变量，与 help 段对账。
  * 只用来算「代码读了但 help 没写」并列在页尾，不当门禁：源码里有大量内部/测试
  * 用途的 env，全要求写进用户文档不合理。
+ *
+ * ⚠️ 必须认「间接读法」，否则会系统性漏掉整个子系统（2026-08-26 实测教训）。
+ *
+ * 原先只认 `process.env.X` 与 `process.env["X"]` 两种**字面量**，于是三种同样真实的
+ * 读法对扫描器完全隐身，共漏 24 个变量 —— 且**不报错**：页尾"扫到 N 个"照常输出，
+ * 读起来像已穷尽，实则整个超时子系统一个都没扫到。防空转哨兵（下方 scanned < 500）
+ * 只防"一个文件都没读到"，防不住"某种读法一个都没匹配到"。
+ *
+ *   ① helper 传参：`readEnvMs("SID_CODE_IDLE_TIMEOUT_MS")`
+ *      —— network-profile.ts 的 19 个超时/重试旋钮 + mcp-timeout.ts 的 2 个全走这条
+ *   ② 三元选出的字面量：`cond ? "SID_CODE_ANTHROPIC_OVERALL_TIMEOUT_MS" : "SID_CODE_OPENAI_..."`
+ *      —— network-profile.ts:540-545 的两族专用覆盖
+ *   ③ 形参而非 process.env：`resolveLanguageFromEnv(env)` 里的 `env.SID_LANGUAGE`
+ *      —— prompt-lang.ts:100，为可测性把 env 作参数注入（好设计，但扫不到）
+ *
+ * 对策：在 `process.env.X` 之外，补一条「**出现在字符串字面量里、且长得像 env 名**」
+ * 的兜底匹配。它会有少量假阳性（如日志文案里提到某变量名），但方向是对的：
+ * 这份清单的用途是"提醒维护者有变量没写进 --help"，**漏报比误报有害得多**——
+ * 漏报让人以为文档全了，误报只是多一行需要人扫一眼的名字。
  */
 function scanSourceEnvVars(): Set<string> {
   const found = new Set<string>();
@@ -792,6 +840,8 @@ function scanSourceEnvVars(): Set<string> {
   // P2-2 分包：生产源码在 4 个包里。漏一个包 = 页尾「未列入上表的读取点」少列一批，
   // 且不会报错 —— 分包时实测扫到 0 个（原 84 个），整段被静默删掉。
   let scanned = 0;
+  /** 命中「间接读法」兜底分支的数量，供下方哨兵判断该分支是否整体失效。 */
+  let indirectHits = 0;
   for (const dir of PKG_SRC_DIRS) {
     for (const file of glob.scanSync(dir)) {
       scanned++;
@@ -802,7 +852,27 @@ function scanSourceEnvVars(): Set<string> {
       for (const m of src.matchAll(/process\.env\[\s*["']([A-Z][A-Z0-9_]*)["']\s*\]/g)) {
         if (PREFIX.test(m[1])) found.add(m[1]);
       }
+      // 兜底：字符串字面量里的 env 名（覆盖上述 ①②），以及 `env.X` / `env["X"]`
+      // 形参读法（覆盖 ③）。要求 ≥2 个下划线段且全大写，压掉普通字符串的误命中。
+      for (const m of src.matchAll(/["']([A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,})["']/g)) {
+        if (!PREFIX.test(m[1])) continue;
+        if (!found.has(m[1])) indirectHits++;
+        found.add(m[1]);
+      }
+      for (const m of src.matchAll(/\benv(?:\.|\[\s*["'])([A-Z][A-Z0-9_]*)/g)) {
+        if (!PREFIX.test(m[1])) continue;
+        if (!found.has(m[1])) indirectHits++;
+        found.add(m[1]);
+      }
     }
+  }
+  // 防空转（间接分支）：上面两条兜底正则任何一条写坏，都会让 24 个变量重新隐身，
+  // 而页尾照样输出一份"看起来正常"的缩水清单。实测基线远高于 20，取 20 留足余量。
+  if (indirectHits < 20) {
+    throw new Error(
+      `env 间接读法（helper 传参 / 三元字面量 / env 形参）只匹配到 ${indirectHits} 个，预期 >20。\n` +
+        `scanSourceEnvVars 的兜底正则是否写坏？漏掉它们会让整个超时子系统在 ref/env.md 隐身。`,
+    );
   }
   // 防空转：源码根指错时 scanSync 返回空，env 扫描静默归零，
   // 页尾整段消失却一切「正常」。宁可炸响也不要静默出一份缩水文档。
