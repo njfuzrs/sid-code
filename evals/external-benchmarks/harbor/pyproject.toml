@@ -1,0 +1,31 @@
+# sid-code 的 Harbor 接入侧依赖声明。
+#
+# ⚠️ 这**不是**仓库的 Python 包配置,仓库是 TypeScript 项目。
+# 它的作用域只有这一个目录:声明「跑 Harbor 评测需要哪个版本的 harbor」。
+# 仓库的五道门禁(bun test / make build / lint / format:check / lint:boundary)
+# 一道都不认 .py —— 覆盖这份代码的是 `tests/eval/harbor-agent-contract.test.ts`
+# 的 L1 静态层,以及跑评测时的真实失败。README「门禁边界」一节把这条说破了。
+
+[project]
+name = "sid-code-harbor-agent"
+version = "0.1.0"
+description = "在 Harbor 任务容器里运行 sid-code 的自定义 installed agent"
+# Harbor 自己要求 >=3.12(其 pyproject.toml 的 requires-python),这里跟随。
+# 低于它的话装不上 harbor,而报错信息是 pip 的解析失败,不会指向这一行。
+requires-python = ">=3.12"
+
+# ⚠️ **必须 pin 上界。** 这不是保守,是三条实测过的漂移:
+#   · `--agent-import-path` 已 deprecated 且 hidden=True(现在写法是 `-a module:Class`)
+#   · `allow_internet` 字段整个消失(现在是 NetworkMode 三值枚举 + 分阶段网络策略)
+#   · registry.json 从 task 级平铺变成 dataset 级(80 条 / 13.6MB)
+#
+# 不 pin 的失效形态是:某天 `uv tool upgrade` 顺手升了 harbor,
+# 我们的 agent 挂在**半夜的评测里**,而报错是「no such option」/「字段不存在」,
+# 完全不指向「你需要适配新版本」。
+#
+# 升级 harbor 是**一次独立改动**,不是顺手做的事 —— 升完必须重跑 README 的第 1 步冒烟。
+dependencies = ["harbor>=0.22.0,<0.23"]
+
+[tool.uv]
+# 这个目录不是一个可安装的库,只用来锁依赖 —— 不需要 build backend。
+package = false

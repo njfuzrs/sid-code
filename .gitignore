@@ -202,3 +202,16 @@ __pycache__/
 # 只出现在 run_instance.log 里，report.json 的 failure_reasons 是空的）——
 # 所以是「不入库」，不是「可以删」。
 /evals/external-benchmarks/swe-bench/logs/
+
+# ─── Harbor 评测产物 ───────────────────────────────────────────────────────
+# runs/ 是 Harbor 的 jobs_dir：每个 trial 一份容器日志 + agent 的 NDJSON 输出 +
+# 完整 sid-code 轨迹（agent/sid-home/）+ verifier 的测试输出。判据同 swe-bench 那两条：
+# 跑分产物、体积大、由 harness 生成天生可再生，且入库会让 diff 里出现大段第三方测试输出。
+#
+# ⚠️ 不 ignore 的代价不只是「仓库变大」：它会让每次 `git status` 冒出几十个意外文件，
+# 而本仓的铁律正是「git status 里的意外文件默认属于**别人的在途工作**，不许动」。
+# 自己制造噪声会**磨钝那条铁律** —— 下一次真有别人的在途文件时，它已经被当成噪声了。
+#
+# `__pycache__/` 与 `*.py[cod]` 已在上面 swe-bench 那节声明（全局生效），此处不重复。
+/evals/external-benchmarks/harbor/runs/
+/evals/external-benchmarks/harbor/.venv/
