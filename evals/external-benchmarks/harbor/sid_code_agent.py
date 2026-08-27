@@ -43,7 +43,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, override
 
-from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
@@ -124,18 +123,36 @@ class SidCodeAgent(BaseInstalledAgent):
     (需要 `PYTHONPATH` 指到本目录;`--agent-import-path` 已 deprecated 且 hidden,不要用)。
     """
 
-    #: 首版**全部 False,这是刻意的**。
-    #:
-    #: - `resume`:sid-code 有 `--resume`,但恢复路径有实测缺口。声明 True 而实际不可靠,
-    #:   会让 `--resume-trajectory` 的多步任务**静默走错分支**。
-    #: - `atif` / `load_*_trajectory`:要写 sid-code 轨迹 ↔ ATIF 的双向转换器,独立一个 PR 的量。
-    #: - `native_config`:声明 True 才能接 `--ak config=`;首版配置由 `install()` 全权生成。
-    #: - `handoff`:很有用(调试评测失败样本的利器),但**依赖 resume 先可靠**。
-    #: - `windows`:sid-code 没有 Windows 容器路径。
-    #:
-    #: ⚠️ 不要用旧的 `SUPPORTS_*` 类变量 —— 基类会发 DeprecationWarning 并说明
-    #: 「Legacy flags will be removed in the next major release」。
-    capabilities = AgentCapabilities()
+    # ─────────────────────────────────────────────────────── 能力声明(全部关闭)
+    #
+    # 首版**全部 False,这是刻意的**:
+    #
+    # - `RESUME`:sid-code 有 `--resume`,但恢复路径有实测缺口。声明 True 而实际不可靠,
+    #   会让 `--resume-trajectory` 的多步任务**静默走错分支**。
+    # - `ATIF` / `LOAD_*_TRAJECTORY`:要写 sid-code 轨迹 ↔ ATIF 的双向转换器,独立一个 PR 的量。
+    # - `CONFIG`:声明 True 才能接 `--ak config=`;首版配置由 `install()` 全权生成。
+    # - `HANDOFF`:很有用(调试评测失败样本的利器),但**依赖 resume 先可靠**。
+    # - `WINDOWS`:sid-code 没有 Windows 容器路径。
+    #
+    # ⚠️ **不显式赋值,靠基类默认。** 基类 `BaseAgent` 里这七个 ClassVar 全部默认 False
+    # (`harbor/agents/base.py:52-70`),写一遍 `SUPPORTS_X = False` 只是把默认值抄一次,
+    # 而抄来的常量会在基类改默认时静默失配。要打开某个能力才在这里显式写 True。
+    #
+    # ## ⚠️ 版本差异:不要改成 `capabilities = AgentCapabilities()`
+    #
+    # Harbor 主干在 **v0.22.0 发布之后**才引入结构化的 `AgentCapabilities`
+    # (PR #2834,2026-08-24;而 v0.22.0 tag 是 2026-08-21)。
+    # 我们 pin 的是 PyPI 上的 `harbor>=0.22.0,<0.23`,**那里没有
+    # `harbor.agents.capabilities` 这个模块** —— 用它的形态是 harbor 启动即
+    # `ValueError: Failed to import module 'sid_code_agent': No module named
+    # 'harbor.agents.capabilities'`,一个 trial 都跑不起来(2026-08-27 实测踩到)。
+    #
+    # **教训**:那次是照着本地 harbor git checkout 的源码写的,而那个 checkout 的
+    # `pyproject.toml` 里 `version = "0.22.0"` 却已经含有 v0.22.0 发布后的提交
+    # (版本号还没 bump)。「回源码核对」核的必须是**真正会被装上的那份源码**,
+    # 一个 git checkout 的 version 字段不等于它对应某个 PyPI 版本。
+    # 等哪天把 pin 抬到含 #2834 的版本,再一起换成 `AgentCapabilities` ——
+    # 那是「升级 harbor」那次独立改动的一部分,不是顺手做的事。
 
     #: 声明式旋钮。**用它而不是自定义环境变量**:`--ak key=value` 是 Harbor 使用者调 agent
     #: 的唯一标准入口,把 max_turns 藏进私有环境变量等于要求每个跑评测的人先读我们的源码。
@@ -234,11 +251,48 @@ class SidCodeAgent(BaseInstalledAgent):
         await self._write_settings(environment)
         await self._write_build_info(environment)
 
+    #: ELF `e_machine` → 我们的架构名。判架构**只认产物字节**,不认目录名、不认文件名。
+    #: (`x86-64` = 62 = 0x3E,`AArch64` = 183 = 0xB7)
+    _ELF_MACHINE = {62: "x64", 183: "arm64"}
+
+    @classmethod
+    def _elf_arch(cls, binary: Path) -> str | None:
+        """读 ELF 头判产物架构。不是 ELF / 读不出就返回 None(调用方按「未知」处理)。
+
+        为什么必须有这个:见 `_resolve_host_binary` 里那条 arch 校验的注释。
+        """
+        try:
+            with binary.open("rb") as fh:
+                head = fh.read(20)
+        except OSError:
+            return None
+        if len(head) < 20 or head[:4] != b"\x7fELF":
+            return None
+        little = head[5] == 1
+        machine = int.from_bytes(head[18:20], "little" if little else "big")
+        return cls._ELF_MACHINE.get(machine)
+
     def _resolve_host_binary(self, container_arch: str) -> _HostBinary:
         """按三级优先级挑宿主二进制。**找不到就报错,绝不静默回落到别的包。**
 
         回落会让人以为跑的是他点名的那个包,而分数说不出对应哪个 commit 就没有意义 ——
         自建链路的 `exec-swebench.sh` 在同一处写了同一条教训。
+
+        ## ⚠️ 必须校验产物的**实际架构**(2026-08-27 实测缺陷)
+
+        `build-branch-artifact.sh` 的输出目录名是 `<branch-slug>-<commit12>`,
+        **不含架构** —— 同一个 commit 编 arm64 和 x64 会写进**同一个目录**,
+        后编的覆盖前编的。于是「按 commit 匹配」拿到的是「上次编的那个架构」。
+
+        实测形态:Terminal-Bench 的任务镜像**只发 amd64**(arm64 mac 上走 qemu),
+        容器里 `uname -m` = `x86_64`,而 `dist/branch-builds/` 里躺着的是 arm64 包。
+        代码照样上传了它,build.json 还写下 `arch: "x64"`(那是**期望值**不是实测值),
+        然后容器里 `exit 127: not found` ——
+        **报错完全不指向「你上传了错架构的包」**,它长得像「二进制没装上」。
+
+        这正是本方法 docstring 第一行那句话的反面:说好「绝不静默回落到别的包」,
+        实际静默上传了**错架构**的包。所以判架构一律读 ELF 字节,
+        与 commit 一样 —— **目录名和期望值都不是判据**。
         """
         if container_arch in ("aarch64", "arm64"):
             arch, env_name = "arm64", "SID_HARBOR_BINARY_ARM64"
@@ -250,26 +304,54 @@ class SidCodeAgent(BaseInstalledAgent):
                 "(只认 aarch64/arm64 与 x86_64/amd64)"
             )
 
+        target = f"bun-linux-{'arm64' if arch == 'arm64' else 'x64-baseline'}"
+
         # ① 显式点名。点了却不存在 → 报错,不回落(见本方法 docstring)。
         explicit = _env(env_name)
         if explicit:
             path = Path(explicit).expanduser()
             if not path.is_file():
                 raise RuntimeError(f"{env_name}={explicit} 指向的文件不存在")
+            actual = self._elf_arch(path)
+            if actual is not None and actual != arch:
+                # 显式点名的更要报死:他点了名,说明他以为自己知道在跑什么。
+                raise RuntimeError(
+                    f"{env_name}={explicit} 是 {actual} 架构的产物,"
+                    f"而容器是 {container_arch}(需要 {arch})。\n"
+                    f"重编:scripts/build-branch-artifact.sh --target {target}"
+                )
             return _HostBinary(path=path, arch=arch, source=env_name)
 
         # ② 自动发现「当前 HEAD 的包」。目录名 `<branch-slug>-<commit12>` 只是人肉索引,
-        #    判据仍然是产物字节里那 40 位 commit(见 `_read_artifact_identity`)。
+        #    判据是产物字节:commit 见 `_read_artifact_identity`,架构见 `_elf_arch`。
         repo_root = self._repo_root()
         commit12 = self._host_head_commit()[:12]
+        arch_mismatch: list[str] = []
         if repo_root and commit12:
             for candidate in sorted((repo_root / "dist" / "branch-builds").glob(f"*-{commit12}")):
                 binary = candidate / "sid-code"
-                if binary.is_file():
-                    return _HostBinary(path=binary, arch=arch, source="branch-builds")
+                if not binary.is_file():
+                    continue
+                actual = self._elf_arch(binary)
+                if actual is not None and actual != arch:
+                    # 记下来带进 ③ 的报错里 —— 「找不到」和「找到了但架构不对」
+                    # 是两种完全不同的处境,给同一句报错会把人引向重编而不是查架构。
+                    arch_mismatch.append(f"{binary}({actual})")
+                    continue
+                return _HostBinary(path=binary, arch=arch, source="branch-builds")
 
         # ③ 报错,并把构建命令直接打出来 —— 让人不用回去翻文档。
-        target = f"bun-linux-{'arm64' if arch == 'arm64' else 'x64-baseline'}"
+        if arch_mismatch:
+            raise RuntimeError(
+                f"容器架构是 {container_arch}(需要 {arch}),"
+                f"但当前 commit 的包是别的架构:{', '.join(arch_mismatch)}。\n"
+                f"⚠️ `build-branch-artifact.sh` 的输出目录名**不含架构**,"
+                f"同一 commit 编两次会互相覆盖 —— 所以这不是「没编」,是「编的是另一个」。\n"
+                f"  ① 重编成目标架构(会覆盖上面那个包):\n"
+                f"       scripts/build-branch-artifact.sh --target {target}\n"
+                f"  ② 或把两个架构分别存好,再显式点名:\n"
+                f"       export {env_name}=/abs/path/to/sid-code-{arch}"
+            )
         raise RuntimeError(
             f"找不到容器架构 {arch} 可用的 sid-code linux 二进制。两条出路:\n"
             f"  ① 编一个当前 commit 的包:\n"
@@ -348,22 +430,46 @@ class SidCodeAgent(BaseInstalledAgent):
         binary = self._host_binary
         identity = self._read_artifact_identity(binary.path)
 
-        commit = identity.get("artifact_commit")
+        # ⚠️ **不能只判真假。** 脚本在**读不到身份时也返回一个完整的 JSON**,
+        # 只是每个字段填字面量 `"unknown"`(实测:`identity_source: "none"` +
+        # `commit: "unknown"`)。`if not commit` 对 `"unknown"` 是 False,
+        # 于是退化路径永不触发,build.json 会写下
+        # `commit="unknown", commit_source="artifact-bytes"` ——
+        # **一个假的强判据**,而 `commit_source` 这层保护恰好在这时失效。
+        # 所以判据是「40 位十六进制」这个形态,不是「非空」。
+        commit = identity.get("commit")
         commit_source = "artifact-bytes"
-        if not commit:
+        if not (isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit)):
             commit = self._host_head_commit() or "unknown"
             commit_source = "host-head-fallback"
 
         self._build_info = {
+            # ⚠️ **这里一定是 None**,不是遗漏。基类 `setup()` 的顺序是
+            # `install()` → 探版本(`installed/base.py:953,959`),而本方法在 install()
+            # 里调 —— 此刻 `self._version` 还没被填。
+            # 真实版本号在 `result.json` 的 `agent_info.version`(Harbor 自己写),
+            # 那里才是版本的事实源,冒烟第 1 步的判据 1 看的也是它。
+            # 留这个 None 字段而不删是刻意的:删掉会让人以为「build.json 不含版本」,
+            # 而实际是「build.json 拿不到版本、版本在别处」——两者的排查方向不同。
             "version": self.version(),
             "commit": commit,
             "commit_source": commit_source,
             "binary_sha256": self._sha256(binary.path),
+            # `arch` 是**容器要求的**架构(期望值),`arch_actual` 是从 ELF 字节读出的
+            # **产物实际**架构。两个都记是因为 2026-08-27 那次踩到时,build.json 里
+            # 只有前者 —— 它写着 `x64` 而上传的是 arm64 包,**这个字段本身在撒谎**。
+            # 现在 `_resolve_host_binary` 已经拦住不匹配,但字段留着:
+            # 一个只报期望值的字段,在期望与事实分叉时会掩盖分叉。
             "arch": binary.arch,
+            "arch_actual": self._elf_arch(binary.path),
             "binary_source": binary.source,
             "binary_path": str(binary.path),
             "identity_source": identity.get("identity_source", "unknown"),
-            "artifact_dirty": identity.get("artifact_dirty"),
+            # 同上一处的同型错误:脚本吐的键是 `dirty`,不是 `artifact_dirty`
+            # (2026-08-27 实测 build.json 里这一格恒为 null)。
+            # 这一格比 commit 更容易漏:它**本来就允许是 null**,所以「恒 null」
+            # 看起来像正常的缺省值,而实际是键名根本没匹配上。
+            "artifact_dirty": identity.get("dirty"),
             "gateway_url": self._gateway_url,
             "model_name": self.model_name,
         }
@@ -467,11 +573,48 @@ class SidCodeAgent(BaseInstalledAgent):
                 "sid_stop_reason": result.get("stop_reason"),
                 "sid_duration_ms": result.get("duration_ms"),
                 "sid_duration_api_ms": result.get("duration_api_ms"),
-                "sid_is_error": result.get("is_error"),
+                # ⚠️ **不能只读 `is_error`**(2026-08-27 实测)。sid-code 在**错误路径**的
+                # result 事件里**根本不发这个字段**(成功路径才发 `is_error: false`) ——
+                # 实测 `error_during_execution` 那条事件的键只有
+                # {duration_ms, errors, num_turns, session_id, subtype, total_cost_usd,
+                #  type, usage}。于是 `sid_is_error` 变成 `None`,
+                # 而 `None` 在下游一律被当成「不是错误」——
+                # **一个失败的 trial 会被记成正常的 0 分**,直接污染分子。
+                #
+                # 所以判据是 `subtype`:它在错误路径**一定有**
+                # (error_during_execution / error_max_turns / error_max_budget_usd)。
+                # `is_error` 有就用,没有就从 subtype 推,两者都没有才 None。
+                "sid_is_error": self._derive_is_error(result),
+                # 错误原文。少了它,「为什么 0 分」要回容器翻 jsonl ——
+                # 而 R1 的分母铁律要求能区分「没解出来」与「链路/限流坏了」。
+                # 实测价值:靠它当场定位到一题的 0 分其实是**上游 429 限流**,
+                # 不是能力差距。这两类样本混进同一个分母就是虚低。
+                "sid_errors": result.get("errors"),
                 "cache_write_tokens": usage.get("cacheCreationInputTokens"),
             }
         )
         context.metadata = metadata
+
+    @staticmethod
+    def _derive_is_error(result: dict[str, Any]) -> bool | None:
+        """判这一轮是否出错。**不能只信 `is_error` 字段** —— 见调用处那段注释。
+
+        优先级:① 显式 `is_error` → ② 从 `subtype` 推 → ③ None(真的判不出)。
+
+        ③ 保留 None 而不是兜底成 False 是刻意的:判不出时说「没出错」
+        是在编造一个乐观结论,而 None 至少能在下游被识别成「这条不可用」。
+        """
+        explicit = result.get("is_error")
+        if isinstance(explicit, bool):
+            return explicit
+        subtype = result.get("subtype")
+        if isinstance(subtype, str) and subtype:
+            # 约定:成功只有 "success" 一个取值,其余(error_during_execution /
+            # error_max_turns / error_max_budget_usd ...)一律算错。
+            # 用「!= success」而不是枚举 error_* 前缀:新增一种失败 subtype 时
+            # 枚举法会把它静默判成成功,而这个方向的错更贵。
+            return subtype != "success"
+        return None
 
     @staticmethod
     def _last_result_event(path: Path) -> dict[str, Any] | None:
@@ -525,6 +668,19 @@ class SidCodeAgent(BaseInstalledAgent):
         走仓库既有的 `scripts/artifact-identity.ts` —— **不自己写一份嗅探正则**。
         自己重实现是「没用既有口径、自己另找源」那个错误的又一次,
         而两份正则一旦漂移,读出来的 commit 会静默变错。
+
+        ## ⚠️ 字段名是 `commit`,不是 `artifact_commit`(2026-08-27 实测修正)
+
+        初版按 `artifact_commit` 找,而脚本吐的是 `commit` —— 于是**永远匹配不上**,
+        每次都退化到 `host-head-fallback`。这个缺陷**被 fallback 自己掩盖**:
+        宿主 HEAD 通常就是构建那个 commit,所以 `sid_commit` 的**值完全正确**,
+        只有 `commit_source` 这一个字段暴露它。
+        这正是 build.json 为什么必须带 `commit_source`:一个退化路径若不自报身份,
+        它就会冒充强判据 —— 而在别人机器上(HEAD 已经往前走了)读出的 commit 是错的,
+        整轮评测的归因跟着错,且没有任何东西会报错。
+
+        输出是**多行缩进 JSON**(不是 NDJSON),所以逐行 `_loads` 一行都解析不出来,
+        必须整份 parse。这里两种都试:先整份,再逐行 —— 脚本哪天改成 NDJSON 也不会断。
         """
         root = cls._repo_root()
         if root is None:
@@ -533,12 +689,15 @@ class SidCodeAgent(BaseInstalledAgent):
             ["bun", "run", "scripts/artifact-identity.ts", "read", str(binary)],
             cwd=root,
         )
-        for line in out.splitlines():
-            parsed = _loads(line)
-            if parsed and "artifact_commit" in parsed:
-                return parsed
-        # 整份 JSON(非逐行)也试一次:脚本输出格式变了不该让 build.json 直接没身份。
+        # ① 整份 JSON(当前实际形态:多行缩进)
         parsed = _loads(out.strip().replace("\n", ""))
+        if parsed and "commit" in parsed:
+            return parsed
+        # ② 逐行 NDJSON(向后兼容脚本改格式)
+        for line in out.splitlines():
+            candidate = _loads(line)
+            if candidate and "commit" in candidate:
+                return candidate
         return parsed or {}
 
     @staticmethod
