@@ -181,8 +181,15 @@ function findHarborPython(): string | null {
     "python3",
   ].filter((c): c is string => !!c);
   for (const py of candidates) {
-    const p = Bun.spawnSync({ cmd: [py, "-c", "import harbor"], stdout: "pipe", stderr: "pipe" });
-    if ((p.exitCode ?? 1) === 0) return py;
+    // 候选路径(尤其 uv tool 隔离环境那条)在大多数机器/CI runner 上根本不存在,
+    // Bun.spawnSync 对不存在的可执行文件是**同步抛异常**(ENOENT),不是返回非零 exitCode——
+    // 不 catch 就会以「Unhandled error between tests」打断整个文件,而不是走到下一个候选。
+    try {
+      const p = Bun.spawnSync({ cmd: [py, "-c", "import harbor"], stdout: "pipe", stderr: "pipe" });
+      if ((p.exitCode ?? 1) === 0) return py;
+    } catch {
+      continue;
+    }
   }
   return null;
 }
