@@ -17,10 +17,20 @@
  *
  * | 层 | 依赖 | CI 上 | 拦什么 |
  * | --- | --- | --- | --- |
- * | **L1 静态** | 只要 `python3`(stdlib `ast`,**不 import**) | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / 装饰器顺序反了 / 输出格式被改回 json / key 进容器 |
- * | **L2 导入** | 要装 `harbor` | ⚠️ skip | 真 import + issubclass + capabilities 全 False |
+ * | **L1 静态** | 只要 `python3`(stdlib `ast`,**不 import**) | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / 装饰器顺序反了 / 输出格式被改回 json / key 进容器 / **产物身份的键名与架构校验** |
+ * | **L2 导入** | 要装 `harbor` | ⚠️ skip | 真 import + issubclass + 能力全 False + **`_derive_is_error` 的行为** |
  *
  * L1 是主力。它拦得住的恰好是那批**不报错的**失效形态,而这正是延迟到运行时最贵的部分。
+ *
+ * ## ⚠️ L2 的探测方式本身曾经是个缺陷(2026-08-27 修)
+ *
+ * 原先探 `python3 -c "import harbor"`,而 README 教的装法是 `uv tool install`——
+ * **装进隔离环境,系统 python 看不到**。于是 L2 在**本机装了 harbor 的情况下照样 skip**,
+ * 而它本可以直接拦住那次真实失败(import 了 pin 版本里不存在的模块)。
+ *
+ * **形态**:修一个「永远 skip」的门禁时,只改了「谁来跑」,没改「**怎么判断能不能跑**」。
+ * 一个 skip 条件写错的门禁,和一个不存在的门禁,在 CI 上是同一个东西。
+ * 现在按 `SID_HARBOR_PYTHON` → uv tool 隔离环境 → 系统 `python3` 依次探(见 `findHarborPython`)。
  *
  * ## 变异自证(`CLAUDE.md`:新增门禁必做变异自证)
  *
@@ -79,7 +89,16 @@ out = {
     "capabilities_args": None,
     "string_consts": [],
     "flag_pairs": {},
+    # 顶层 import 的模块名(含 from X import ...)。用来对着 pin 的 harbor 版本
+    # 核「这些模块真的存在吗」—— 见 L1「import 的模块都在 pin 的版本里」那条。
+    "imported_modules": [],
 }
+
+for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+        out["imported_modules"].append(node.module)
+    elif isinstance(node, ast.Import):
+        out["imported_modules"] += [a.name for a in node.names]
 
 for node in ast.walk(tree):
     if isinstance(node, ast.ClassDef):
@@ -121,6 +140,7 @@ type L1Facts = {
   capabilities_args: number | null;
   string_consts: string[];
   flag_pairs: Record<string, string[]>;
+  imported_modules: string[];
 };
 
 function runL1(pyFile: string): { code: number; facts: L1Facts | null; stderr: string } {
@@ -141,9 +161,34 @@ function runL1(pyFile: string): { code: number; facts: L1Facts | null; stderr: s
 /** python3 是 macOS 与 GitHub runner 自带的。真缺才 skip —— 这条 skip 是环境问题,不是设计。 */
 const HAS_PYTHON3 = (Bun.spawnSync({ cmd: ["python3", "--version"] }).exitCode ?? 1) === 0;
 
-/** harbor 是可选的本地依赖(`uv pip install 'harbor>=0.22.0,<0.23'`)。 */
-const HAS_HARBOR =
-  HAS_PYTHON3 && (Bun.spawnSync({ cmd: ["python3", "-c", "import harbor"] }).exitCode ?? 1) === 0;
+/**
+ * 找一个 **import 得到 harbor** 的解释器。
+ *
+ * ⚠️ README 教的装法是 `uv tool install harbor`,它把 harbor 装进一个
+ * **独立的隔离环境**(`~/.local/share/uv/tools/harbor/`),系统 `python3`
+ * **看不到它**。原先只探 `python3 -c "import harbor"` 的形态是:
+ * **本机明明装了 harbor,L2 照样 skip** —— 一条永远不跑的门禁,
+ * 而它看起来只是「环境没装」。2026-08-27 实测踩到:那次 L2 本可以拦住
+ * `harbor.agents.capabilities` 不存在这个真缺陷,却因为探测方式而静默让路。
+ *
+ * 所以按顺序试:① `SID_HARBOR_PYTHON` 显式指定 → ② uv tool 的隔离环境
+ * → ③ 系统 `python3`(pip/venv 装法)。找不到才 skip。
+ */
+function findHarborPython(): string | null {
+  const candidates = [
+    process.env.SID_HARBOR_PYTHON,
+    join(process.env.HOME ?? "", ".local", "share", "uv", "tools", "harbor", "bin", "python"),
+    "python3",
+  ].filter((c): c is string => !!c);
+  for (const py of candidates) {
+    const p = Bun.spawnSync({ cmd: [py, "-c", "import harbor"], stdout: "pipe", stderr: "pipe" });
+    if ((p.exitCode ?? 1) === 0) return py;
+  }
+  return null;
+}
+
+const HARBOR_PYTHON = HAS_PYTHON3 ? findHarborPython() : null;
+const HAS_HARBOR = HARBOR_PYTHON !== null;
 
 /** 在 tmpdir 里造一份被改坏的 fixture,用于变异自证。**绝不动真源文件。** */
 function withMutatedFixture<T>(mutate: (src: string) => string, fn: (path: string) => T): T {
@@ -208,13 +253,127 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     expect(facts!.string_consts.join("\n")).not.toContain("dangerously-skip-permissions");
   });
 
-  test("capabilities 是零参 AgentCapabilities()(首版全 False)", () => {
-    // 参数一旦非零就意味着有人打开了某个能力。resume/handoff/atif 各自是独立 PR,
-    // 声明了但不可靠会让多步任务**静默走错分支**,所以这里锁成 0。
-    expect(facts!.class_attrs).toContain("capabilities");
-    expect(facts!.capabilities_args).toBe(0);
-    // 旧的 SUPPORTS_* 类变量会触发 DeprecationWarning,一并锁掉。
+  test("不声明任何能力(首版全 False,靠基类默认)", () => {
+    // 打开任何一项都意味着有人声明了 resume/handoff/atif ——
+    // 声明了但不可靠会让多步任务**静默走错分支**,所以这里锁成「一个都不写」。
+    // 显式写 `SUPPORTS_X = False` 也拦:那只是把基类默认值抄一次,
+    // 抄来的常量会在基类改默认时静默失配。
     expect(facts!.class_attrs.filter((a) => a.startsWith("SUPPORTS_"))).toEqual([]);
+    // `capabilities = AgentCapabilities()` 同样拦 —— 那个类在 pin 的 0.22.0 里
+    // **不存在**(PR #2834 在 v0.22.0 之后才合入),用它 harbor 启动即 import 失败。
+    expect(facts!.class_attrs).not.toContain("capabilities");
+  });
+
+  test("产物身份读的字段名与 artifact-identity.ts 的实际输出一致", () => {
+    // ⚠️ **2026-08-27 用一次真实评测换来的。**
+    // 初版找 `artifact_commit`,而脚本吐的键是 `commit` —— 永远匹配不上,
+    // 每次都退化到 `host-head-fallback`。而这个缺陷**被 fallback 掩盖**:
+    // 宿主 HEAD 通常就是构建 commit,于是 `sid_commit` 的**值完全正确**,
+    // 唯一暴露它的是 `commit_source` 那个字段。在别人机器上(HEAD 已往前走)
+    // 读出的 commit 就是错的,而**没有任何东西会报错**。
+    //
+    // 所以这条不做「源码里出现某个字符串」的形态检查,而是**真的跑一次脚本**
+    // 拿它的键集合来对 —— 字符串检查会在脚本改了输出键名时静默失效。
+    const identityScript = join(import.meta.dir, "..", "..", "scripts", "artifact-identity.ts");
+    const probe = Bun.spawnSync({
+      cmd: ["bun", "run", identityScript, "read", process.execPath],
+      cwd: join(import.meta.dir, "..", ".."),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    // 拿 bun 自己的二进制探:它必然不含 sid-code 的身份块,所以脚本走的是
+    // 「读不到 → 报告缺失」那条路径,而**键名结构与命中时一致**(这是重点)。
+    // 用真实产物会要求先跑一次构建,那让门禁依赖一个几分钟的前置步骤。
+    const out = probe.stdout?.toString() ?? "";
+    let keys: string[] = [];
+    try {
+      keys = Object.keys(JSON.parse(out) as Record<string, unknown>);
+    } catch {
+      // 脚本行为变了(不再吐 JSON)—— 这本身就该红,而不是静默跳过。
+      throw new Error(`artifact-identity.ts read 未输出可解析 JSON。stdout=${out.slice(0, 300)}`);
+    }
+    // agent 侧读的键必须在脚本实际输出的键集合里。
+    expect(keys).toContain("commit");
+    expect(keys).toContain("identity_source");
+    // 反向锁:那个**不存在的键名**不许再出现在**实际取值处**。
+    // ⚠️ 只查「源码里有没有这个词」是不行的 —— 它出现在记录这次教训的注释里,
+    // 而删掉注释来让门禁变绿正是最坏的做法(抹掉的是唯一的溯源线索)。
+    // 所以精确锁 `identity.get(...)` 的实参。
+    const src = readFileSync(AGENT_PY, "utf-8");
+    const identityReads = [...src.matchAll(/identity\.get\(\s*"([^"]+)"/g)].map((m) => m[1]!);
+    expect(identityReads.length).toBeGreaterThan(0);
+    // **每一个**读的键都必须在脚本的输出键集合里 —— 不是只查 commit 那一个。
+    // 同型错误已经发生过两次(`artifact_commit` / `artifact_dirty`),
+    // 而 `artifact_dirty` 那格更隐蔽:它本来就允许是 null,「恒 null」
+    // 看起来像正常缺省值,实际是键名压根没匹配上。逐个核才拦得住下一个。
+    for (const key of identityReads) {
+      expect(keys).toContain(key);
+    }
+
+    // ⚠️ 同一次实测暴露的第二个洞:读不到身份时脚本**照样吐完整 JSON**,
+    // 字段填字面量 "unknown"。所以 `if not commit` 判不出失败,
+    // 退化路径永不触发,会写下一个 `commit="unknown"` 却自称 artifact-bytes
+    // 的 build.json —— `commit_source` 这层保护恰好在最需要它时失效。
+    const missed = JSON.parse(out) as Record<string, unknown>;
+    expect(missed["commit"]).toBe("unknown"); // 锁住「miss 也返回值」这个前提
+    expect(missed["identity_source"]).toBe("none");
+    // 于是 agent 侧必须按**形态**判(40 位十六进制),不能只判真假。
+    expect(src).toMatch(/\[0-9a-f\]\{40\}/);
+  });
+
+  test("二进制选择会校验产物实际架构(读 ELF,不信目录名)", () => {
+    // ⚠️ **2026-08-27 实测缺陷。** `build-branch-artifact.sh` 的输出目录名
+    // `<branch-slug>-<commit12>` **不含架构**,同一 commit 编 arm64/x64 会互相覆盖。
+    // 于是「按 commit 匹配」拿到的是「上次编的那个架构」——
+    // 实测在只发 amd64 的 Terminal-Bench 镜像上上传了 arm64 包,
+    // build.json 写下 `arch: "x64"`(期望值),容器里 `exit 127: not found`,
+    // 而**报错完全不指向架构**。说好「绝不静默回落到别的包」,
+    // 实际静默上传了错架构的包。
+    expect(facts!.members).toContain("_elf_arch");
+    const src = readFileSync(AGENT_PY, "utf-8");
+    // ELF e_machine 的两个取值必须在源码里(x86-64 = 62,AArch64 = 183)。
+    // 断具体数值而不是「有没有叫 _elf_arch 的函数」:一个空壳函数照样能过前一条。
+    expect(src).toMatch(/62:\s*"x64"/);
+    expect(src).toMatch(/183:\s*"arm64"/);
+    // 且必须真的用它比较,不是只定义了。
+    expect(src).toContain("actual != arch");
+  });
+
+  test("import 的模块全部存在于 pin 的 harbor 版本里", () => {
+    // ⚠️ **这条是 2026-08-27 用一次真实失败换来的。**
+    // H1 原始代码 `from harbor.agents.capabilities import AgentCapabilities`,
+    // 而 PyPI 上 pin 的 0.22.0 没有那个模块(它在 v0.22.0 tag 之后才合入主干)。
+    // 形态:harbor 启动即 `ValueError: Failed to import module 'sid_code_agent'`,
+    // **一个 trial 都跑不起来**,而 L1(ast 静态,不 import)与 L2(CI 上 skip)
+    // 当时都拦不到 —— 于是这个缺陷一路合进了 main。
+    //
+    // 这条断言只在**本机装了 harbor 时**能做真实校验(装了才知道模块在不在);
+    // 没装时退化成「模块名清单不为空」的形态检查,并把退化说破 ——
+    // 一个假装自己在校验的断言比没有断言更坏。
+    const mods = facts!.imported_modules.filter((m) => m.startsWith("harbor"));
+    expect(mods.length).toBeGreaterThan(0);
+    if (!HAS_HARBOR) {
+      console.log(
+        `  ℹ️  未装 harbor,跳过 ${mods.length} 个 harbor 模块的存在性校验(仅查清单非空)。` +
+          `真实校验在 L2 与跑评测时`,
+      );
+      return;
+    }
+    const probe = [
+      "import importlib, json, sys",
+      "missing = []",
+      "for m in sys.argv[1:]:",
+      "    try: importlib.import_module(m)",
+      "    except Exception as e: missing.append(f'{m}: {type(e).__name__}')",
+      "print(json.dumps(missing))",
+    ].join("\n");
+    const proc = Bun.spawnSync({
+      cmd: [HARBOR_PYTHON!, "-c", probe, ...mods],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(JSON.parse(proc.stdout!.toString()) as string[]).toEqual([]);
   });
 
   // ── 变异自证:每条判据都要能被改坏并翻红 ──────────────────────────────────
@@ -256,12 +415,54 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
 
     test("加回 MODEL_CONNECTION → key 泄露断言翻红", () => {
       withMutatedFixture(
+        (src) => src.replace("    CLI_FLAGS = [", "    MODEL_CONNECTION = None\n    CLI_FLAGS = ["),
+        (p) => expect(runL1(p).facts!.class_attrs).toContain("MODEL_CONNECTION"),
+      );
+    });
+
+    test("声明 SUPPORTS_RESUME → 能力断言翻红", () => {
+      withMutatedFixture(
+        (src) => src.replace("    CLI_FLAGS = [", "    SUPPORTS_RESUME = True\n    CLI_FLAGS = ["),
+        (p) =>
+          expect(runL1(p).facts!.class_attrs.filter((a) => a.startsWith("SUPPORTS_"))).toEqual([
+            "SUPPORTS_RESUME",
+          ]),
+      );
+    });
+
+    test("import 一个 pin 版本里不存在的模块 → 存在性断言翻红", () => {
+      // 精确复现 2026-08-27 那次真实失败:`harbor.agents.capabilities` 在
+      // pin 的 0.22.0 里不存在。**这条只在装了 harbor 时有判据** ——
+      // 没装时它证明不了任何事,所以直接跳过而不是假装通过。
+      if (!HAS_HARBOR) return;
+      withMutatedFixture(
         (src) =>
           src.replace(
-            "    capabilities = AgentCapabilities()",
-            "    MODEL_CONNECTION = None\n    capabilities = AgentCapabilities()",
+            "from harbor.agents.installed.base import (",
+            "from harbor.agents.capabilities import AgentCapabilities\nfrom harbor.agents.installed.base import (",
           ),
-        (p) => expect(runL1(p).facts!.class_attrs).toContain("MODEL_CONNECTION"),
+        (p) => {
+          const mods = runL1(p).facts!.imported_modules.filter((m) => m.startsWith("harbor"));
+          expect(mods).toContain("harbor.agents.capabilities");
+          const probe = [
+            "import importlib, json, sys",
+            "missing = []",
+            "for m in sys.argv[1:]:",
+            "    try: importlib.import_module(m)",
+            "    except Exception as e: missing.append(m)",
+            "print(json.dumps(missing))",
+          ].join("\n");
+          const proc = Bun.spawnSync({
+            cmd: [HARBOR_PYTHON!, "-c", probe, ...mods],
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          // 判据收紧到「红的是哪一条」:必须恰好是那个不存在的模块,
+          // 而不是「有东西红了」—— 后者分不清是命中了判据还是别处坏了。
+          expect(JSON.parse(proc.stdout!.toString()) as string[]).toEqual([
+            "harbor.agents.capabilities",
+          ]);
+        },
       );
     });
 
@@ -292,16 +493,20 @@ describe.if(HAS_HARBOR)("L2 真实导入契约(需要 harbor)", () => {
       "from harbor.agents.installed.base import BaseInstalledAgent",
       "import sid_code_agent as m",
       "c = m.SidCodeAgent",
-      "caps = c.capabilities.model_dump()",
+      // pin 的 0.22.0 用 SUPPORTS_* ClassVar,不是结构化的 AgentCapabilities
+      // (那个类在 v0.22.0 之后才进主干)。从基类枚举字段名再逐个读回来 ——
+      // 硬编码七个名字会在 harbor 加第八个能力时静默漏掉它。
+      "caps = {k: getattr(c, k) for k in dir(BaseInstalledAgent) if k.startswith('SUPPORTS_')}",
       "print(json.dumps({",
       "  'subclass': issubclass(c, BaseInstalledAgent),",
       "  'name': c.name(),",
+      "  'n_caps': len(caps),",
       // frozenset(bridges) 不是 bool,统一按「非空即 True」折叠
       "  'any_cap': any(bool(v) for v in caps.values()),",
       "}))",
     ].join("\n");
     const proc = Bun.spawnSync({
-      cmd: ["python3", "-c", snippet],
+      cmd: [HARBOR_PYTHON!, "-c", snippet],
       env: {
         ...process.env,
         PYTHONPATH: join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor"),
@@ -314,7 +519,60 @@ describe.if(HAS_HARBOR)("L2 真实导入契约(需要 harbor)", () => {
     const r = JSON.parse(proc.stdout!.toString());
     expect(r.subclass).toBe(true);
     expect(r.name).toBe("sid-code");
+    // 先断「确实枚举到了能力位」再断「全 False」。少了这条,某天 harbor 把
+    // SUPPORTS_* 整体换名(它正在往 AgentCapabilities 迁),caps 会变成空 dict,
+    // 而 `any({}.values())` 是 False —— **门禁会绿着失效**。
+    expect(r.n_caps).toBeGreaterThan(0);
     expect(r.any_cap).toBe(false);
+  });
+
+  test("_derive_is_error:错误路径缺 is_error 字段时从 subtype 推", () => {
+    // ⚠️ **2026-08-27 从真实评测里挖出来的仪器缺陷。**
+    // sid-code 在**错误路径**的 result 事件里**根本不发 `is_error`**
+    // (成功路径才发 `is_error: false`)。实测那条 `error_during_execution`
+    // 事件的键只有 {duration_ms, errors, num_turns, session_id, subtype,
+    // total_cost_usd, type, usage} —— 于是只读 `is_error` 会得到 `None`,
+    // 而 `None` 在下游一律被当成「不是错误」:
+    // **一个失败的 trial 被记成正常的 0 分,直接污染分子。**
+    //
+    // 这条放 L2 而不是 L1:它测的是**行为**(给定事件 → 判定),
+    // 而 L1 只能看到源码形态。形态断言拦不住「函数在但逻辑反了」。
+    const snippet = [
+      "import json",
+      "from sid_code_agent import SidCodeAgent as A",
+      "cases = [",
+      '  {"is_error": False, "subtype": "success"},', // 显式 False 优先
+      '  {"is_error": True, "subtype": "success"},', // 显式 True 优先于 subtype
+      '  {"subtype": "error_during_execution"},', // ← 实测那条事件的形态
+      '  {"subtype": "error_max_turns"},',
+      '  {"subtype": "success"},',
+      '  {"subtype": "some_new_failure_mode"},', // 枚举 error_* 会漏,!=success 不漏
+      "  {},", // 真判不出 → None,不兜底成 False
+      "]",
+      "print(json.dumps([A._derive_is_error(c) for c in cases]))",
+    ].join("\n");
+    const proc = Bun.spawnSync({
+      cmd: [HARBOR_PYTHON!, "-c", snippet],
+      env: {
+        ...process.env,
+        PYTHONPATH: join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.stderr?.toString() ?? "").toBe("");
+    expect(proc.exitCode).toBe(0);
+    expect(JSON.parse(proc.stdout!.toString()) as (boolean | null)[]).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      // ⚠️ 最后一格必须是 null,**不能兜底成 false**。判不出时说「没出错」
+      // 是编造一个乐观结论;null 至少能在下游被识别成「这条不可用」。
+      null,
+    ]);
   });
 });
 
