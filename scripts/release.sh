@@ -39,6 +39,25 @@
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
 #   加 --skip-test 可跳过单测（救急用），冒烟测试始终执行、不可跳过。
 #
+# ─── 发布通道门禁 G2（2026-08-27 接入，构建溯源方案）───────────────────────────
+#
+# 在此之前，本脚本对产物的检查只有「文件存在 + sha256 对得上」。所以一个**手工
+# `bun build` 出来的二进制**被塞进 `dist/release/<ver>/` 再 `--upload`，
+# 是完全可行且无声的 —— 而它可能来自任何 commit、可能带着未提交的改动。
+# PR-A 把 `origin`（local/ci/release）编进产物字节之后，这道检查才可能存在。
+#
+#   --upload  前：三条判据（判定实现在 scripts/lib/artifact-identity.ts）
+#                 · origin == release            拦「手工编的包」
+#                 · dirty 时脏文件只能是 package.json  拦「带着未提交代码发版」
+#                 · commit == v<ver>^            拦「产物与本次 tag 对不上」
+#   --promote 前：产物 commit 必须是 main 的祖先  拦「把分支包促升成稳定版」
+#
+# ⚠️ 上面第 2、3 条按直觉写会 **100% 误拦每一次真实发版**。本脚本的顺序是
+# 洁净门禁 → bump（改 package.json → 工作区变脏）→ 构建 → 提交 → 打 tag，
+# 所以**构建那一刻** `git status` 必非空、HEAD 是 bump 提交的**父**提交。
+# 写成 `dirty == false` 或 `commit == tag` 的后果不是"报个错"：是每次发版都被拦、
+# 然后被人加 flag 绕过 —— 那就等于没有门禁。
+#
 # 内嵌 ripgrep（仓库本地优先，联网仅作缺失时回退，best-effort 不阻断发布）：
 #   packages/core/vendor/ripgrep/<version>/rg-<platform> 已 git 提交入库，`fetch-ripgrep.ts --all`
 #   优先直接复用（全程不联网）；仓库内缺失（如刚 bump 版本号还没提交）才回退联网下载。
@@ -422,10 +441,12 @@ trap on_exit EXIT
 # 用户真正装过的那一份字节。这一条正是 A2 与"再发一版给 stable"的本质区别 ——
 # 后者会让稳定版用户装到一份从未被任何人跑过的新构建。
 #
-# 三道前置校验，缺一个这条命令就可能把 latest.txt 指到一个装不上的版本：
+# 四道前置校验，缺一个这条命令就可能把 latest.txt 指到一个装不上或不该发的版本：
 #   ① 版本目录在服务器上存在；
 #   ② 目录内 4 个平台的 tarball 与 .sha256 都在（半成品目录也可能存在）；
 #   ③ 服务器端 sha256 复核通过（与上传时同一套判据，防"传上去之后坏了"）。
+#   ④ 产物 commit 在 main 上（G2）—— 拦「把一个分支包 promote 成稳定版」。
+#      ①②③ 全过而 ④ 不过是**完全可能**的：一个分支包也可以四平台齐全、sha256 全对。
 #
 # 促升前的 CUJ 人工验收清单是 B1 的范围（本批不做），这里只在开头提醒一句 ——
 # 提醒不是门禁，写死一道"清单已勾"的机械检查需要先有清单这个载体。
@@ -490,6 +511,45 @@ echo __SHA_OK__"
         *__NO_SHA_TOOL__*) warn "服务器上没有 sha256sum/shasum，跳过复核" ;;
         *)                 fail "sha256 复核输出异常：${_promote_verify_out}" ;;
     esac
+
+    # ④ G2 促升门禁：被促升的那份字节必须编自 **main 上的** commit。
+    #
+    # 拦的是「把一个分支包 promote 成稳定版」。这把 CLAUDE.md 里那句人工核验
+    # （`git merge-base --is-ancestor v<version> main`）变成机械断言 ——
+    # 那条人工核验的问题不是判据错，是**它靠人记得跑**。
+    #
+    # ## 两条通道，语义不同，必须区分而不是取其一
+    #
+    #   本地还有 dist/release/<ver>/ → 读**产物字节**里的 commit（强判据：
+    #                                  它就是用户装到的那份字节自报的身份）
+    #   本地没有（常态：release.sh 每次 `rm -rf dist/release`）
+    #                                → 退化到 **tag** 判据（弱判据：tag 与产物
+    #                                  是否对应本身要靠别的机制保证）
+    #
+    # ⚠️ 退化路径必须**明说自己是退化路径**。写成一句"✅ 校验通过"就是让一个弱判据
+    # 冒充强判据 —— 那正是本方案通篇在消灭的东西。
+    _promote_local_dir="$RELEASE_DIR/${PROMOTE_VERSION}"
+    _promote_pkg=""
+    if [ -d "$_promote_local_dir" ]; then
+        _promote_pkg="$(find "$_promote_local_dir" -maxdepth 1 -name '*.tar.gz' 2>/dev/null |
+            sort | head -1)"
+    fi
+    if [ -n "$_promote_pkg" ]; then
+        info "促升门禁：读产物字节里的 commit（$(basename "$_promote_pkg")）..."
+        bun run "$SCRIPT_DIR/artifact-identity.ts" promote-gate "$_promote_pkg" "$PROMOTE_VERSION" ||
+            fail "促升门禁未通过 —— latest.txt 未改动（稳定通道保持原样）"
+    else
+        info "本地没有 v${PROMOTE_VERSION} 的产物，退化到 **tag 判据**（弱：不是读字节）"
+        if ! git rev-parse -q --verify "refs/tags/v${PROMOTE_VERSION}" >/dev/null 2>&1; then
+            warn "本地没有 tag v${PROMOTE_VERSION} —— **这一条没能校验**（不是通过）。"
+            warn "  先 git fetch --tags，或在发版机上跑这条命令。"
+        elif git merge-base --is-ancestor "v${PROMOTE_VERSION}" main 2>/dev/null; then
+            ok "tag v${PROMOTE_VERSION} 在 main 上（tag 判据，非字节判据）"
+        else
+            fail "tag v${PROMOTE_VERSION} **不在 main 上** —— 那是个分支包/游离提交，拒绝促升成稳定版。
+  （用 merge 而不是 squash 合并 bump PR，squash 会让 tag 指向一个不在主线上的提交）"
+        fi
+    fi
 
     # 记录促升前的 latest，打进日志 —— 回滚时要用它，而出事时人不会记得上一版是几
     _prev_latest="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
@@ -963,6 +1023,31 @@ fi
 if [ "$DO_UPLOAD" = true ]; then
     require_ssh_user
     echo ""
+
+    # ─── G2：发布通道门禁 —— 上通道的产物必须是**发布流程编的** ──────────────────
+    #
+    # 在这之前 release.sh 对产物的检查只有「文件存在」，所以一个手工 `bun build` 出来的
+    # 二进制被塞进 `dist/release/<ver>/` 再 `--upload` 是**完全可行且无声的**。
+    # 有了 `origin` 字段之后这道检查才可能存在。
+    #
+    # 三条判据（每条都按**实测的执行顺序**写，不是按直觉写）：
+    #   origin == release                 拦「手工编的包」
+    #   dirty 时脏文件只能是 package.json  拦「带着未提交代码发版」
+    #   commit == v<ver>^                 拦「产物与本次 tag 对不上」
+    #
+    # ⚠️ 后两条按直觉写会 **100% 误拦每一次真实发版**：本脚本的顺序是
+    # 洁净门禁 → bump（改 package.json → 工作区变脏）→ 构建 → 提交 → 打 tag，
+    # 所以构建那一刻 dirty 必为 true、HEAD 是 bump 提交的**父**提交。
+    # 写成 `dirty == false` 或 `commit == tag` 的后果不是"报个错"，
+    # 是每次发版都被拦、然后被人加 flag 绕过 —— 那就等于没有门禁。
+    # 判据实现与这段推理在 scripts/lib/artifact-identity.ts 的 judgeReleaseUpload。
+    #
+    # 位置：**上传之前**。放上传之后就只是"事后告知"，坏产物已经在服务器上了。
+    echo ">>> 发布通道门禁（G2）：校验产物身份 ..."
+    bun run "$SCRIPT_DIR/artifact-identity.ts" release-gate "$VERSION_DIR" "$VERSION" ||
+        fail "发布通道门禁未通过 —— 未上传任何东西（服务器上的两个通道指针都没动）"
+    echo ""
+
     echo ">>> 上传到 ${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH} ..."
 
     # ─── 版本目录：先传进临时目录，全部就位并校验通过后再原子 mv 到正式路径 ──────────

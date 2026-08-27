@@ -498,6 +498,20 @@ describe("buildAcceptance：§6 五个验收字段", () => {
     // 所以基线 fixture 也得带上 —— 否则下面几条断言 unaccounted 为 null 的
     // 用例其实在测"缺字段时的样子"，而它们的名字写的是"全解出/跑满"。
     sidCodeVersion: "0.1.601",
+    // ⚠️ 产物身份（artifact_*）与宿主状态（git_*）是**两组不同的事实**：
+    // 产物可能是几天前编的，`gitCommit` 记的只是跑评测时宿主的 HEAD。
+    // 一份"干净的 run"现在必须记全产物那一组 —— 否则 unaccounted 会点破
+    // 「只有 host_head_commit，而那不是产物编自哪个 commit」。
+    // 这里让两者**相等**（就是在当前 HEAD 上编的包），因为这条 fixture 描述的
+    // 正是"最干净的那种 run"。两者不等的情形由 artifact-identity.test.ts 覆盖。
+    artifactCommit: "b19927eb00000000000000000000000000000000",
+    artifactBranch: "main",
+    artifactDirty: false,
+    artifactOrigin: "release",
+    artifactIdentitySource: "embedded",
+    artifactGateVerdict: "ok",
+    gateBypassed: [] as string[],
+    hostHeadCommit: "b19927eb00000000000000000000000000000000",
     gitCommit: "b19927eb00000000000000000000000000000000",
     gitDirty: false,
     artifactSha256: "a".repeat(64),
@@ -649,25 +663,31 @@ describe("buildAcceptance：§6 五个验收字段", () => {
    * `artifact_for()` 会静默复用 `dist/release/<ver>/` 下那份 8月21 的产物 ——
    * 「跑评测验证本轮修复」跑成「跑 5 天前的代码」，而分数、日志、version 全正常。
    */
-  test("git_commit 缺失 → 点破「不知道跑的是哪份代码」；有 version 也不算", () => {
-    const { gitCommit: _c, ...noCommit } = base;
+  test("commit 全缺 → 点破「不知道跑的是哪份代码」；有 version 也不算", () => {
+    // ⚠️ 判据是「两个 commit 都没有」。只缺 artifact_commit（旧 run 的形态）
+    // 有单独一条更精确的 note，见下一条测试与 artifact-identity.test.ts。
+    const { gitCommit: _c, artifactCommit: _a, hostHeadCommit: _h, ...noCommit } = base;
     const a = buildAcceptance({ ...noCommit, report: { resolved_ids: ["a", "b"] } });
     expect(a.git_commit).toBeNull();
+    expect(a.artifact_commit).toBeNull();
     // ⚠️ 关键：version 还在（"0.1.601"），但仍然要报缺 —— 版本号顶不了 commit
     expect(a.sid_code_version).toBe("0.1.601");
-    expect(a.unaccounted).toContain("未记录 git_commit");
+    expect(a.unaccounted).toContain("未记录产物 commit");
     // 变异自证：有 commit 时这句不该出现
     const withCommit = buildAcceptance({ ...base, report: { resolved_ids: ["a", "b"] } });
     expect(withCommit.unaccounted).toBeNull();
   });
 
-  test("git_dirty=true → 点破「只可自比不可外比」", () => {
+  test("产物编自脏工作区 → 点破「只可自比不可外比」", () => {
+    // ⚠️ 判据从 gitDirty 换成了 artifactDirty：宿主此刻脏**不说明产物有问题**
+    // （产物的 dirty 编在它自己的字节里）。一个从干净 commit 编出的好产物，
+    // 不该因为宿主有未提交改动而被打上"只可自比"的标签。
     const a = buildAcceptance({
       ...base,
-      gitDirty: true,
+      artifactDirty: true,
       report: { resolved_ids: ["a", "b"] },
     });
-    expect(a.git_dirty).toBe(true);
+    expect(a.artifact_dirty).toBe(true);
     expect(a.unaccounted).toContain("只可自比");
     // 变异自证：干净时不报
     expect(
@@ -947,6 +967,12 @@ describe("partial 的分母口径", () => {
     gatewayHost: "h",
     // 见上一个 describe 的同款注释：这些 fixture 要代表"干净的 run"，
     // 否则测 partial 的用例会顺带被身份字段缺失的 note 干扰。
+    // 产物身份那一组也要给全（与 host 相等 = 就在当前 HEAD 上编的包）。
+    artifactCommit: "c".repeat(40),
+    artifactDirty: false,
+    artifactIdentitySource: "embedded",
+    artifactGateVerdict: "ok",
+    hostHeadCommit: "c".repeat(40),
     gitCommit: "c".repeat(40),
     gitDirty: false,
     effortLevel: "max",
@@ -1561,16 +1587,53 @@ describe("exec-swebench.sh 的必控变量与容器配置", () => {
     expect(shBody).toContain("status --porcelain");
   });
 
-  test("产物比 HEAD 老时必须拦住（make build 不 bump，旧路径会被静默复用）", () => {
+  test("旧产物必须拦住，且判据是产物自报的 commit 而**不是** mtime", () => {
     // 失败形态：跑评测想验证本轮修复，实际跑的是 5 天前的产物 ——
     // 分数正常、日志正常、run-meta 里的 version 也正常。
-    expect(shBody).toContain("warn_if_stale_artifact");
+    //
+    // ## ⚠️ 判据从 mtime 换成了产物自报的 commit（构建溯源方案）
+    //
+    // 上一轮这里断言的是 `warn_if_stale_artifact` + `log -1 --format=%ct`，
+    // 而 mtime 判据**两个方向都会错**（实测）：
+    //   假阴性：`cp old new` 把 mtime 重置成"现在"，内容一字未改 → 放行。
+    //           而 cp / 下载 / docker cp 正是最常见的产物搬运方式。
+    //   假阳性：docs-only 提交推进全仓 HEAD 时间 → 好产物被拦。
+    // 假阳性的代价不是"多敲一次命令"：一道经常误报的门禁会被养成
+    // 「先加 SWE_ALLOW_STALE_ARTIFACT=1 再说」的习惯 —— **误报会训练人绕过门禁**。
+    expect(shBody).toContain("check_artifact_identity");
     // 必须在 cmd_run 里真的被调用，不是只定义（"函数零调用"这个坑本仓踩过）
-    const calls = shBody.split("warn_if_stale_artifact").length - 1;
+    const calls = shBody.split("check_artifact_identity").length - 1;
     expect(calls).toBeGreaterThanOrEqual(2); // 1 处定义 + ≥1 处调用
-    // 判据必须是 mtime 与 HEAD 提交时间比，不是解包读版本号 ——
-    // 版本号在两次发布之间不动，正是它骗人的地方。
-    expect(shBody).toContain("log -1 --format=%ct");
+    // 判定必须走那份唯一实现（scripts/lib/artifact-identity.ts 的桥 CLI），
+    // 不是在 bash 里再写一份 —— 两份会各自漂移，而漂移不报错。
+    expect(shBody).toContain("artifact-identity.ts");
+    // ⚠️ 旧的 mtime 判据必须彻底消失。留着的形态最坑：两套判据并存，
+    // 而 mtime 那套是恒放行的，看起来门禁还在跑。
+    expect(shBody).not.toContain("warn_if_stale_artifact");
+    // 精确到"取 HEAD 提交时间"这条命令：它现在只该出现在
+    // scripts/lib 的 mtime **兜底**路径里，不该在 exec-swebench.sh 里
+    expect(shBody).not.toContain("log -1 --format=%ct");
+  });
+
+  test("run-meta 把产物身份与宿主 HEAD 分开记（F3）", () => {
+    // 旧的 `git_commit` 记的是**跑评测时宿主的 HEAD**，而产物可能是几天前编的 ——
+    // 这两个值不一定相等，**而读报告的人会当它们相等**。
+    // 变异自证：把 artifact_commit 那行从 run-meta 里删掉 → 红
+    for (const key of [
+      '"artifact_commit"',
+      '"host_head_commit"',
+      '"artifact_identity_source"',
+      '"gate_bypassed"',
+    ]) {
+      expect(sh).toContain(key);
+    }
+    // artifact_commit 必须来自**门禁读回的那份 JSON**（产物字节），
+    // 不能是宿主 HEAD 的回填 —— 回填出来的每个字段都正常，而结论是错的。
+    expect(shBody).toContain("GATE_JSON");
+    expect(shBody).toContain('gate.get("artifact_commit"');
+    // 两个逃生舱必须分开接（语义不同：一个是"我要跑旧的"，一个是"我要跑别的分支"）
+    expect(shBody).toContain("SWE_ALLOW_STALE_ARTIFACT");
+    expect(shBody).toContain("SWE_ALLOW_FOREIGN_ARTIFACT");
   });
 
   test("轨迹必须在 docker rm 之前取回", () => {

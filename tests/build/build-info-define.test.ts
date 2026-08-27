@@ -78,37 +78,54 @@ describe("构建身份 define（T7 哨兵）", () => {
     expect(linePos).toBeLessThan(loopPos);
   });
 
-  test("exec-swebench.sh 里打印给人抄的构建命令也带 define", () => {
-    // 这一处最容易漏：它是**字符串不是命令**，语法检查抓不到，
-    // 但人照着抄出来的产物会没有身份，然后评测门禁拦不住它。
-    // 提示语本身也要过这道门禁。
+  test("scripts/build-branch-artifact.sh（第三个构建入口）带齐两个 define", () => {
+    // ## 为什么这个入口在这里单独守一次
+    //
+    // 它存在的**全部理由**就是「手抄那条长命令会漏东西」—— 实测漏过三种，全是静默的：
+    // 漏 baseline target（qemu 里 SIGILL，core dump 被 git add 收进 patch）、
+    // 漏 fetch-ripgrep（产物不含内嵌 rg）、漏这个 define（产物没有身份）。
+    // 所以它自己漏了就更糟：那是把三种静默失败包装成一个"官方"入口。
+    //
+    // 变异自证：删掉任一个 --define → 对应那条红
+    const sh = readFileSync(join(ROOT, "scripts", "build-branch-artifact.sh"), "utf8");
+    const nonComment = sh.split("\n").filter((l) => !l.trimStart().startsWith("#"));
+    const body = nonComment.join("\n");
+
+    // 每条真的 --compile 命令都要带两个 define
+    const compileLines = nonComment.filter((l) => l.includes("bun build --compile"));
+    expect(compileLines.length).toBeGreaterThan(0);
+    expect(body).toContain("process.env.SID_CODE_BUILD_INFO");
+    expect(body).toContain("process.env.NODE_ENV");
+
+    // 身份行必须真的从那个脚本取（不是内联一段 shell —— 内联三份等于给
+    // slug 化那个坑留三个入口，见 build-info-line.sh 文件头）
+    expect(body).toMatch(/build-info-line\.sh["']?\s+local/);
+
+    // 自证：编完必须读回身份才算交付。漏带 define 时**构建照样 exit 0**，
+    // 没有这一步的话要等几天后门禁把产物读成"没有身份"才会发现。
+    // 变异自证：把 identity_source 那段 case 检查删掉 → 红
+    expect(body).toContain("identity_source");
+  });
+
+  test("exec-swebench.sh 不再打印给人抄的裸构建命令（改为指向脚本）", () => {
+    // 上一轮这里守的是「提示语里那条可抄的长命令也要带 define」。
+    // 现在那条提示语被换成了「bash scripts/build-branch-artifact.sh」——
+    // **不留可抄的裸命令**比「守住每条可抄命令都带 define」更强：
+    // 前者从根上消灭了漏带的可能，后者只是让漏带变红。
+    //
+    // 变异自证：往 exec-swebench.sh 的提示语里塞回一条裸 `bun build --compile
+    // --outfile ...` → 红（逼人改成指向脚本，而不是再抄一遍参数）
     const sh = readFileSync(
       join(ROOT, "evals", "external-benchmarks", "swe-bench", "exec-swebench.sh"),
       "utf8",
     );
-
-    // 只看真的在拼构建命令的行（含 --outfile 的那几段提示语），
-    // 说明性注释里提到 `bun build --compile` 不算构建入口。
-    const hintBlocks = sh
-      .split("\n")
-      .filter((l) => !l.trimStart().startsWith("#"))
-      .filter((l) => l.includes("bun build --compile"));
-    expect(hintBlocks.length).toBeGreaterThan(0);
-
-    // 提示语是多行 bad "..." 拼的，按非注释行计数：每个可抄的构建命令都要配一个 define。
-    //
-    // ⚠️ 分母刻意只算**非注释行**：文件里还有一处 `# 解法：bun build --compile ...`
-    // 是散文式的说明（不是能抄的命令），把它算进分母会逼人往注释里塞一个假 define ——
-    // 那会把门禁稀释成噪音。这与 node-env-define.test.ts 剔除注释行是同一个道理。
-    //
-    // 变异自证：删掉任一处提示语里的 SID_CODE_BUILD_INFO 行 → 红
     const nonComment = sh.split("\n").filter((l) => !l.trimStart().startsWith("#"));
-    const occurrences = nonComment.filter((l) => l.includes("bun build --compile")).length;
-    const defineOccurrences = nonComment.filter((l) =>
-      l.includes("process.env.SID_CODE_BUILD_INFO"),
-    ).length;
-    expect(occurrences).toBeGreaterThan(0);
-    expect(defineOccurrences).toBeGreaterThanOrEqual(occurrences);
+    const copyable = nonComment.filter(
+      (l) => l.includes("bun build --compile") || l.includes("--outfile"),
+    );
+    expect(copyable).toEqual([]);
+    // 且必须真的指向那个脚本，否则这条断言用「把提示语整段删掉」也能满足
+    expect(nonComment.join("\n")).toContain("scripts/build-branch-artifact.sh");
   });
 
   test("build-info-line.sh 的 origin 是闭集，越界必须拒绝而不是静默接受", async () => {

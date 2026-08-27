@@ -45,6 +45,15 @@
 
 import { existsSync } from "node:fs";
 import { resolve, join } from "node:path";
+// ⑥ 的判定复用 scripts/lib 里那份唯一实现 —— G1（bash）与本文件（TS）
+// 必须给出相同结论，各写一份的形态是「两处各自漂移、且漂移不报错」。
+import {
+  assessArtifact,
+  artifactMtimeSec,
+  makeGitProbe,
+  sniffArtifactIdentity,
+  verifySidecar,
+} from "../../../scripts/lib/artifact-identity.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 
@@ -56,8 +65,11 @@ const REPO_ROOT = resolve(import.meta.dir, "../../..");
 export type CheckStatus = "pass" | "fail" | "skip";
 
 export interface CheckResult {
-  /** ①–⑤，与 接入计划.md §4.1 的编号一一对应，改编号要同步改文档 */
-  id: "1" | "2" | "3" | "4" | "5";
+  /**
+   * ①–⑥，与 接入计划.md §4.1 的编号一一对应，改编号要同步改文档。
+   * ⑥（产物身份）是后加的，它不在原 §4.1 里 —— 由构建溯源方案引入。
+   */
+  id: "1" | "2" | "3" | "4" | "5" | "6";
   name: string;
   status: CheckStatus;
   /** fail/skip 时必须说清「什么没到位」；pass 时可留空 */
@@ -702,6 +714,128 @@ function check5FlagsAccepted(args: PreflightArgs, runner: Runner): CheckResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ⑥ 产物身份：这个二进制是哪个 commit 编的
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⑥ 的纯判定。
+ *
+ * ## 它与 ⑤ 的分工（两条都要，不重复）
+ *
+ * ⑤ 问「这个二进制能起来吗、要用的 flag 真的被接受吗」——**能力**。
+ * ⑥ 问「这个二进制是**哪份代码**编的」——**身份**。
+ * 一个 8月21 编的产物在 ⑤ 上是满分（起得来、flag 全收），
+ * 而它一行本轮修复都不含 —— 那正是本方案起因的那个事故。
+ *
+ * ## 为什么 fail 而不是 warn
+ *
+ * `stale` 意味着**跑的不是你以为的代码**，而分数会看起来完全正常。
+ * 这与 preflight 里其它 fail 项同级：「带着它往下走，拿到的分数不可信」。
+ *
+ * ## 为什么 `no-identity` 是 skip 而不是 pass
+ *
+ * 读不到身份 = **没量到**，不是"量到了且没问题"。preflight 已经有 `skip`
+ * → `INCOMPLETE` 这条现成的三档语义，正是为了不让「没检查」冒充「检查通过」。
+ * 把它记成 pass 会造出一个绿灯，而绿灯背后是一次没做的检查。
+ */
+export function assessArtifactIdentityCheck(a: {
+  verdict: string;
+  identitySource: string;
+  artifactCommit: string;
+  hostHeadCommit: string | null;
+  changedInputCommits: number;
+}): { status: CheckStatus; reason?: string } {
+  if (a.identitySource === "mtime-fallback") {
+    return {
+      status: "skip",
+      reason:
+        "产物不含构建身份（老产物，或构建时漏带 --define process.env.SID_CODE_BUILD_INFO）—— " +
+        "「跑的是不是当前代码」这件事**没量到**。编一个带身份的包：bash scripts/build-branch-artifact.sh",
+    };
+  }
+  switch (a.verdict) {
+    case "ok":
+      return { status: "pass" };
+    case "stale":
+      return {
+        status: "fail",
+        reason:
+          `产物编自 ${a.artifactCommit.slice(0, 12)}，之后编译输入又改了 ` +
+          `${a.changedInputCommits} 次 —— **跑它就是在跑改动之前的代码，而分数会看起来完全正常**`,
+      };
+    case "foreign":
+      return {
+        status: "fail",
+        reason:
+          `产物编自 ${a.artifactCommit.slice(0, 12)}，它不是当前 HEAD ` +
+          `(${(a.hostHeadCommit ?? "?").slice(0, 12)}) 的祖先 —— 这是另一条线上的包`,
+      };
+    case "unknown-commit":
+      return {
+        status: "fail",
+        reason: `产物自报 commit ${a.artifactCommit.slice(0, 12)} 不在本地对象库 —— 先 git fetch --all`,
+      };
+    case "sidecar-mismatch":
+      return {
+        status: "fail",
+        reason:
+          "旁路 build-info.json 与产物字节里的 commit 不一致 —— 字节才是事实源，那份 json 在骗人",
+      };
+    default:
+      // 未知 verdict **不能当 pass**。判定表将来加了新档而这里忘了同步时，
+      // 落到 pass 就是静默放行；落到 skip 至少会让总判定变成 INCOMPLETE。
+      return { status: "skip", reason: `未知的门禁判定 ${a.verdict} —— 这一项没能判成` };
+  }
+}
+
+function check6ArtifactIdentity(args: PreflightArgs, runner: Runner): CheckResult {
+  const base = { id: "6", name: "产物身份：这个二进制是哪个 commit 编的" } as const;
+
+  if (!existsSync(args.bin)) {
+    return {
+      ...base,
+      status: "skip",
+      reason: `找不到二进制 ${args.bin}（先 bash scripts/build-branch-artifact.sh，或用 --bin 指定）`,
+    };
+  }
+
+  const { info } = sniffArtifactIdentity(args.bin, runner);
+  const assessment = assessArtifact({
+    artifactPath: args.bin,
+    info,
+    probe: makeGitProbe(REPO_ROOT, runner),
+    artifactMtimeSec: artifactMtimeSec(args.bin),
+    sidecar: verifySidecar(args.bin, info),
+  });
+  const judged = assessArtifactIdentityCheck({
+    verdict: assessment.verdict,
+    identitySource: assessment.identitySource,
+    artifactCommit: assessment.info.commit,
+    hostHeadCommit: assessment.hostHeadCommit,
+    changedInputCommits: assessment.changedInputCommits.length,
+  });
+
+  return {
+    ...base,
+    status: judged.status,
+    reason: judged.reason,
+    detail: {
+      artifact: args.bin,
+      artifact_commit: assessment.info.commit,
+      artifact_branch: assessment.info.branch,
+      artifact_origin: assessment.info.origin,
+      artifact_dirty: String(assessment.info.dirty),
+      built_at: assessment.info.built_at,
+      host_head: assessment.hostHeadCommit ?? "unknown",
+      verdict: assessment.verdict,
+      // 产物脏是 warning 不是 fail，但**必须出现在报告里** ——
+      // 只在类型注释里写不够，读报告的人看不到注释。
+      ...(assessment.warnings.length ? { warnings: assessment.warnings } : {}),
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 编排
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -718,6 +852,7 @@ export function runPreflight(args: PreflightArgs, runner: Runner): CheckResult[]
     check3NoFixCommit(args, runner, dockerUp),
     check4ImageBuildable(args, runner, dockerUp),
     check5FlagsAccepted(args, runner),
+    check6ArtifactIdentity(args, runner),
   ];
 }
 
