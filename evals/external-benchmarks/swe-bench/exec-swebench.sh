@@ -755,6 +755,14 @@ PY
   #
   # 所以推荐用法：**smoke-9 用默认 1**，拿到干净基线后再 `SWE_JOBS=4` 跑
   # 后续的迭代轮。开并发时报告里的 jobs 字段会点破"不可与串行 run 并排"。
+  # 挡住宿主休眠。放在这里（起第一个容器之前、跑完所有实例之后停）而不是
+  # 每题各起一个：守卫本身没有成本，而一轮中间的题间空隙同样会触发空闲睡眠。
+  # ⚠️ 起不来不中止本轮 —— 那种场合由 host_slept_ms 兜底（见 start_sleep_inhibitor）。
+  start_sleep_inhibitor
+  # 无论后面怎么退（正常/报错/Ctrl-C）都要收掉守卫，否则它会一直吊在后台
+  # 让这台机器再也不睡 —— 一个"评测跑完了但机器不休眠了"的形态没人会联想到这里。
+  trap 'stop_sleep_inhibitor' EXIT INT TERM
+
   if ((jobs == 1)); then
     for iid in $ids; do
       run_one "$iid" "$run_id" "$arch" "$artifact" "$proxy_ip" "$out_dir" || true
@@ -810,6 +818,38 @@ PY
   done
   ((missing > 0)) && bad "⚠️ $missing 条实例缺分片：predictions 条数 < 请求条数，grade.ts 会判 partial"
   ok "predictions 落盘: ${out_dir#"$REPO_ROOT"/}/predictions.jsonl"
+
+  # ## 全轮休眠汇总：单题的告警会被 10 题的日志刷掉
+  #
+  # 单题那条告警（run_one 里）在跑的时候看得见，但**读报告的人看的是这一行**。
+  # 判据刻意是"任一题 > 0 即点破整轮不可外比"而不是"总和大于某个阈值"：
+  # 717 秒睡在一题里，那一题的 agent_ms 就已经废了，平摊到 10 题看起来会很小。
+  local slept_total slept_worst
+  read -r slept_total slept_worst <<<"$("$VENV_PY" - "$out_dir/records.jsonl" <<'PY'
+import json, sys
+tot = worst = 0
+seen = False
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    v = json.loads(line).get("host_slept_ms")
+    if v is None:      # 没量到 —— 不参与汇总，也不伪造 0
+        continue
+    seen = True
+    tot += v
+    worst = max(worst, v)
+print(f"{tot} {worst}" if seen else "- -")
+PY
+)"
+  if [[ "$slept_total" == "-" ]]; then
+    bad "⚠️ 本轮没有量到宿主休眠（host_slept_ms 全为 null）—— 耗时可信度未知，别拿去与其他 run 并排"
+  elif ((slept_worst > 1000)); then
+    bad "⚠️ 本轮宿主休眠合计 $((slept_total / 1000))s（单题最长 $((slept_worst / 1000))s）"
+    bad "   → 这一轮的 agent_ms / wall_ms **不可与其他 run 并排**；受影响的题的超时闸门也被延长了同样时长"
+  else
+    ok "宿主未休眠（host_slept_ms 全 0）—— 本轮耗时口径干净"
+  fi
 }
 
 # ## 毫秒时钟：不能用 `date +%s%3N`
@@ -860,6 +900,115 @@ resolve_binary() {
 now_ms() {
   perl -MTime::HiRes=time -e 'printf "%.0f", time()*1000' 2>/dev/null ||
     python3 -c 'import time;print(int(time.time()*1000))'
+}
+
+# ## 宿主休眠：既要防止它发生，也要在发生了之后能被看见
+#
+# 实测踩到（2026-08-26，smoke-10）：`django__django-13964` 的 `agent_ms=2009007`
+# （33.5 min）**超过了 SWE_TIMEOUT=1800，而 timed_out 是 None、agent_exit=0**，
+# 看起来像超时闸门坏了。逐层排查后闸门是好的（perl-alarm 兜底与隔着 docker exec
+# 都实测 exit 124），真凶在 `pmset -g log`：**宿主睡了 717 秒，正好在这一题跑的中间。**
+#
+# 根因是一个口径分裂：`alarm()` 按**进程可运行时间**计，休眠期间不推进；
+# 而 `now_ms()` 取**墙钟**。于是同一段休眠同时造成两个后果：
+#
+#   1. **`agent_ms` 被污染** —— 它正是北极星「更快」那条的取数源。
+#      smoke-9 的 85.2 min 与 smoke-10 的 118.9 min **口径不一致**（后者含 717s 休眠），
+#      两轮耗时不可并排，尽管都是 jobs=1。
+#   2. **超时闸门被静默续命** —— 宿主睡得够久，一题可以跑到墙钟 2× 上限还不被杀。
+#      失败形态是"某题墙钟离谱地长"，而 `timed_out=false` 把人引向"agent 慢"。
+#
+# 与记忆里 sleep-deduction-only-in-loop-fallback-false-kills **同源反向**：
+# 那条是"休眠扣减只在一处做 → 误杀健康流"，这条是"休眠不扣减 → 漏杀超长题"。
+# **同一个「墙钟 vs 可运行时间」的分裂，两个方向各产生一个缺陷。**
+#
+# 所以这里做两件事，缺一不可：
+#   ① `start_sleep_inhibitor` —— 防止休眠发生（根治：不发生则两个问题一起没了）
+#   ② `slept_ms_since`        —— 发生了要能被看见（诚实：挡不住的场合也能归因）
+#
+# ⚠️ **只做 ① 是不够的**：跑在别人机器上、caffeinate 被系统忽略、
+# 或 Linux 上没有 systemd-inhibit 时，问题会**静默复发**，
+# 而报告里的耗时数字看起来完全正常。这正是这个缺陷第一次逃过验收的方式。
+
+# 起一个"别睡"的守卫进程，把 pid 写进 SLEEP_INHIBITOR_PID。
+# 拿不到守卫不算失败 —— 那种场合靠 ② 的 host_slept_ms 兜底。
+start_sleep_inhibitor() {
+  SLEEP_INHIBITOR_PID=""
+  SLEEP_INHIBITOR_KIND="none"
+  if command -v caffeinate >/dev/null 2>&1; then
+    # -d 屏幕 -i 空闲睡眠 -m 磁盘 -s 系统睡眠（接电源时才有意义，一并给上）
+    caffeinate -dims &
+    SLEEP_INHIBITOR_PID=$!
+    SLEEP_INHIBITOR_KIND="caffeinate"
+  elif command -v systemd-inhibit >/dev/null 2>&1; then
+    # --what=sleep:idle 只挡睡眠，不挡关机；sleep infinity 由 stop 时杀掉
+    systemd-inhibit --what=sleep:idle --why="sid-code swe-bench run" \
+      --mode=block sleep infinity &
+    SLEEP_INHIBITOR_PID=$!
+    SLEEP_INHIBITOR_KIND="systemd-inhibit"
+  fi
+  if [[ -n "$SLEEP_INHIBITOR_PID" ]]; then
+    # ⚠️ `${VAR}` 必须带花括号：`$VAR）` 会让 bash 把全角右括号吃进变量名
+    # → `set -u` 下直接「未绑定的变量」退出。门禁在 tests/scripts/shell-fullwidth-var.test.ts，
+    # 本仓这是第五次踩同一个坑（前四次记在 ZZ.2d 与 771 行那处）。
+    info "休眠守卫已起（${SLEEP_INHIBITOR_KIND}, pid=${SLEEP_INHIBITOR_PID}）"
+  else
+    bad "⚠️ 未找到 caffeinate / systemd-inhibit —— 本轮不挡宿主休眠，靠 host_slept_ms 兜底"
+  fi
+}
+
+stop_sleep_inhibitor() {
+  [[ -n "${SLEEP_INHIBITOR_PID:-}" ]] || return 0
+  kill "$SLEEP_INHIBITOR_PID" 2>/dev/null || true
+  wait "$SLEEP_INHIBITOR_PID" 2>/dev/null || true
+  SLEEP_INHIBITOR_PID=""
+}
+
+# ## 累计休眠时钟：两个平台的时钟语义**正好相反**，用错一个就恒 0
+#
+# 判据是"墙钟推进了多少 − 可运行时间推进了多少"，难点在于哪个时钟含休眠：
+#
+#   macOS：CLOCK_MONOTONIC     **含**休眠   CLOCK_UPTIME_RAW **不含**
+#   Linux：CLOCK_BOOTTIME      **含**休眠   CLOCK_MONOTONIC  **不含**
+#
+# 本机实测（2026-08-27）：MONOTONIC=3106815s 而 UPTIME_RAW=1337342s ——
+# 差 1769473s，那就是这台机器累计睡过的时间。**若在 macOS 上照 Linux 的写法
+# 用 MONOTONIC 当"不含休眠"的那个，差值恒为 0**，字段在、有值、值是废的
+# （记忆 metric-exists-but-value-is-junk 那一类）。
+#
+# 取不到任何一对时钟时返回空串而不是 0 —— **"没量到"必须与"没休眠"可区分**。
+awake_ms() {
+  python3 -c '
+import sys, time
+# (含休眠, 不含休眠) 按平台取；名字不存在的直接跳过
+pairs = [("CLOCK_UPTIME_RAW", None), ("CLOCK_BOOTTIME", "CLOCK_MONOTONIC")]
+if sys.platform == "darwin":
+    # macOS: MONOTONIC 含休眠，UPTIME_RAW 不含
+    try:
+        print(int(time.clock_gettime(time.CLOCK_UPTIME_RAW) * 1000)); sys.exit(0)
+    except Exception:
+        pass
+else:
+    try:
+        print(int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000)); sys.exit(0)
+    except Exception:
+        pass
+print("")
+' 2>/dev/null
+}
+
+# 从一对 (wall_before, awake_before) 算出这段区间里宿主睡了多少毫秒。
+# 空串输入 → 空串输出（沿着"没量到"往下传，不伪造 0）。
+# 允许负数抖动，clamp 到 0：两个时钟不是同一次系统调用取的，差几毫秒是正常的。
+slept_ms_since() {
+  local wall_before="$1" awake_before="$2" wall_after="$3" awake_after="$4"
+  [[ -n "$wall_before" && -n "$awake_before" && -n "$wall_after" && -n "$awake_after" ]] || {
+    printf ''
+    return 0
+  }
+  local d=$(((wall_after - wall_before) - (awake_after - awake_before)))
+  ((d < 0)) && d=0
+  printf '%d' "$d"
 }
 
 # ## 便携 timeout：macOS 没有 `timeout`
@@ -969,6 +1118,10 @@ PY
   docker cp "$ps_file" "$cname:/tmp/prompt.txt" >/dev/null
   # 搬运结束、模型还没开始 —— 这个点把「基础设施」与「能力」切开
   t_setup_done=$(now_ms)
+  # 休眠只在 agent 段内测：setup/extract 是秒级搬运，睡在那里不影响任何结论，
+  # 而 `agent_ms` 是北极星「更快」的取数源，被污染就直接让曲线说谎（见 awake_ms 上方注释）。
+  local awake_agent_start
+  awake_agent_start=$(awake_ms)
 
   # 跑 agent。API key 走 -e，**不进 argv**（进了 docker inspect 就能读到）
   local agent_out agent_exit=0 timed_out=0
@@ -983,6 +1136,14 @@ PY
   set -e
   [[ $agent_exit == 124 ]] && timed_out=1
   t_agent_done=$(now_ms)
+  local host_slept_ms
+  host_slept_ms="$(slept_ms_since "$t_setup_done" "$awake_agent_start" \
+    "$t_agent_done" "$(awake_ms)")"
+  # 点破，不只落盘：非 0 时这一题的 agent_ms 已不可外比，且超时闸门被续了这么久。
+  # 阈值 1000ms 是为了不被两次时钟调用之间的几毫秒抖动刷屏。
+  if [[ -n "$host_slept_ms" ]] && ((host_slept_ms > 1000)); then
+    bad "$iid: ⚠️ 宿主休眠 $((host_slept_ms / 1000))s —— 本题 agent_ms 含休眠、不可外比；超时闸门实际被延长了同样时长"
+  fi
 
   # ## agent 输出必须落盘 —— 非 0 退出时它是**唯一**的线索
   #
@@ -1065,7 +1226,8 @@ PY
     --wall-ms "$((t1 - t0))" \
     --setup-ms "$((t_setup_done - t0))" \
     --agent-ms "$((t_agent_done - t_setup_done))" \
-    --extract-ms "$((t1 - t_agent_done))" || bad "$iid: 记录落盘失败"
+    --extract-ms "$((t1 - t_agent_done))" \
+    --host-slept-ms "$host_slept_ms" || bad "$iid: 记录落盘失败"
 }
 
 build_agent_script() {

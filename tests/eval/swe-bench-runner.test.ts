@@ -1316,6 +1316,57 @@ describe("extractAgentLogSignals", () => {
 [07:11:02] ⚠ [PERMISSION] 权限拒绝: bash - 拒绝 — 非交互模式
 `;
 
+  // smoke-10 django-13964 的真实片段：编辑 2 次、**全打在 /tmp/repro/**、一次没碰 django/
+  // 这条题 patch_bytes=0 却有 files_edited_count=1，旧判据「edit 调用数 > 0」判它"过了"。
+  const EDITS_ONLY_OUTSIDE_REPO = `
+[13:55:28] ● [PERMISSION] edit(/tmp/repro/test_bug.py) → 允许(skipPermissions)
+[13:55:28] ● [TOOL] ▶ edit {"file_path":"/tmp/repro/test_bug.py","old_string":"from django.core.management import call_command","new_string":"from django.db import connection"}
+[13:55:39] ● [TOOL] ▶ edit {"file_path":"/tmp/repro/test_bug.py","old_string":"call_command('migrate')","new_string":"editor.create_model(Product)"}
+[14:20:11] ⚠ [QUERY_LOOP] 达到最大轮次限制: 40
+`;
+
+  // smoke-10 django-15128 的真实片段：仓库内 + 仓库外都有 → **不该被判成"只改复现脚本"**
+  const EDITS_MIXED = `
+[14:49:27] ● [TOOL] ▶ edit {"file_path":"/testbed/django/db/models/sql/query.py","old_string":"    def change_aliases(self, change_map):","new_string":"    def change_aliases(self, change_map):  # fixed"}
+[14:50:02] ● [TOOL] ▶ edit {"file_path":"/tmp/repro/t.py","old_string":"a","new_string":"b"}
+`;
+
+  test("编辑全在仓库外 → editsOutsideRepo>0 且 editsInsideRepo===0（A7.11.4 的隐身形态）", () => {
+    // 实测踩到：django-13964 的 2 次 edit 全打在 /tmp/repro/test_bug.py，
+    // 而这个形态在 patch_bytes(=0) / patch_only_adds_files(=false) /
+    // numstat-diff 不一致 三个既有字段上**全部隐身**（/tmp 不在 git add -A 范围里）。
+    const s = extractAgentLogSignals(EDITS_ONLY_OUTSIDE_REPO);
+    expect(s.editsInsideRepo).toBe(0);
+    expect(s.editsOutsideRepo).toBe(2);
+    // 去重：同一个文件改 2 次，报告要看的是"哪个文件"不是 2 个重复项
+    expect(s.editPathsOutsideRepo).toEqual(["/tmp/repro/test_bug.py"]);
+  });
+
+  test("仓库内外都有 → 不算「只改复现脚本」（防误报）", () => {
+    // django-15128 实测 in=1 out=2 且 patch_bytes=3099 —— 它是正常修复，
+    // 判据必须是 `outside>0 且 inside===0`，只看 outside>0 会把它误标。
+    const s = extractAgentLogSignals(EDITS_MIXED);
+    expect(s.editsInsideRepo).toBe(1);
+    expect(s.editsOutsideRepo).toBe(1);
+  });
+
+  test("PERMISSION 行不重复计数（判据只认结构化入参那行）", () => {
+    // EDITS_ONLY_OUTSIDE_REPO 里第一次编辑同时有 [PERMISSION] edit(...) 与
+    // [TOOL] ▶ edit {...} 两行。若判据同时匹两种形态，2 次编辑会数成 3 次。
+    // 取 `▶ edit {"file_path":"` 是因为它是 JSON 入参、路径完整；
+    // PERMISSION 行是给人看的、会截断。
+    expect(extractAgentLogSignals(EDITS_ONLY_OUTSIDE_REPO).editsOutsideRepo).toBe(2);
+  });
+
+  test("无编辑的日志 → 两个计数都是 0，不是 undefined", () => {
+    // 下游 record.ts 直接把它们塞进 RunRecord，undefined 会变成 JSON 里的缺字段，
+    // 而缺字段与 0 在读报告时含义不同（没量 vs 没编辑）。
+    const s = extractAgentLogSignals(HIT_MAX_TURNS);
+    expect(s.editsInsideRepo).toBe(0);
+    expect(s.editsOutsideRepo).toBe(0);
+    expect(s.editPathsOutsideRepo).toEqual([]);
+  });
+
   test("轮次撞顶 → hitMaxTurns", () => {
     expect(extractAgentLogSignals(HIT_MAX_TURNS).hitMaxTurns).toBe(true);
     expect(extractAgentLogSignals(HIT_MAX_TURNS).llmFatal).toBe(false);
@@ -1726,6 +1777,41 @@ describe("exec-swebench.sh 的必控变量与容器配置", () => {
     expect(t1Idx).toBeGreaterThan(rmIdx);
   });
 
+  test("宿主休眠：守卫必须起，且休眠时长必须真的量（防 agent_ms 被静默污染）", () => {
+    // 实测踩到（2026-08-26 smoke-10）：django-13964 的 agent_ms=2009007（33.5min）
+    // 超过 SWE_TIMEOUT=1800 而 timed_out=false —— 宿主中途睡了 717s。
+    // alarm() 按可运行时间计、now_ms() 取墙钟，于是同一段休眠**同时**
+    // 污染 agent_ms 并静默给超时闸门续命。
+    //
+    // 两件事都要做，缺任一件这个缺陷都会静默复发：
+    // ① 防止发生（守卫），② 发生了能被看见（host_slept_ms）。
+    expect(shBody).toContain("start_sleep_inhibitor");
+    expect(shBody).toContain("stop_sleep_inhibitor");
+    // 两个平台各自的守卫都要有 —— 只做 macOS 那半，Linux 上会静默不挡
+    expect(shBody).toContain("caffeinate");
+    expect(shBody).toContain("systemd-inhibit");
+    // 守卫必须在 trap 里收掉：吊在后台的 caffeinate 会让这台机器再也不睡，
+    // 而"评测跑完了但机器不休眠"没人会联想到这里
+    expect(shBody).toMatch(/trap 'stop_sleep_inhibitor' EXIT/);
+    // ② 必须真的传给 record.ts，否则量了不落盘等于没量
+    expect(shBody).toContain("--host-slept-ms");
+    expect(shBody).toContain("slept_ms_since");
+
+    // ⚠️ 反漂移的关键一条：**macOS 上必须用 CLOCK_UPTIME_RAW 当"不含休眠"的时钟**。
+    // 两个平台的时钟语义正好相反：
+    //   macOS：CLOCK_MONOTONIC 含休眠 / CLOCK_UPTIME_RAW 不含
+    //   Linux：CLOCK_BOOTTIME  含休眠 / CLOCK_MONOTONIC  不含
+    // 若在 macOS 上照 Linux 写法用 CLOCK_MONOTONIC，差值恒为 0 ——
+    // 字段在、有值、值是废的，而报告会显示"宿主未休眠 ✅"。
+    // 实测本机 MONOTONIC=3106815s 而 UPTIME_RAW=1337342s，差 1769473s。
+    expect(shBody).toContain("CLOCK_UPTIME_RAW");
+    const awakeFn = shBody.slice(shBody.indexOf("awake_ms()"), shBody.indexOf("slept_ms_since()"));
+    expect(awakeFn).toMatch(/darwin/);
+    // darwin 分支里不许出现裸 CLOCK_MONOTONIC（那就是用错时钟的形态）
+    const darwinBranch = awakeFn.slice(awakeFn.indexOf("darwin"), awakeFn.indexOf("else"));
+    expect(darwinBranch).not.toMatch(/CLOCK_MONOTONIC\b/);
+  });
+
   test("产物只解压一次（不是每题一次），且解出的目录不许在 run_one 里删", () => {
     // 每题各自 tar -xzf 一份 40MB 产物 = 纯浪费，并发下还会几个 tar 抢磁盘 IO。
     expect(shBody).toContain("resolve_binary");
@@ -1772,6 +1858,46 @@ describe("exec-swebench.sh 的必控变量与容器配置", () => {
     expect(recBody).not.toContain("appendFileSync");
     expect(recBody).toContain(".record.json");
     expect(recBody).toContain(".prediction.json");
+  });
+
+  test("「编辑全在仓库外」那条 note 必须排在「预算用尽」之前（顺序是判据的一部分）", () => {
+    const rec = readFileSync(join(SWE_DIR, "record.ts"), "utf8");
+    // django-13964 两条同时成立（既撞顶又只改了复现脚本）。此时
+    // "编辑全在仓库外"是更精确的归因 —— 它把人从「抬 max_turns」引向
+    // 「它没留下动手的轮次」，而只看撞顶那条会导向前者。
+    const outsideIdx = rec.indexOf("editsOutsideRepo > 0 && signals.editsInsideRepo === 0");
+    const maxTurnsIdx = rec.indexOf("signals.hitMaxTurns) {");
+    expect(outsideIdx).toBeGreaterThan(-1);
+    expect(maxTurnsIdx).toBeGreaterThan(-1);
+    expect(outsideIdx).toBeLessThan(maxTurnsIdx);
+    // 判据必须是 inside===0，不能只看 outside>0：
+    // django-15128 实测 in=1 out=2 且 patch_bytes=3099，是正常修复
+    expect(rec).toContain("signals.editsInsideRepo === 0");
+    // ⛔ 判据提示必须写在 note 正文里 —— 这个字段的用处一半是提醒
+    // 「edit 调用数 > 0」是个不够的判据（A7.11.8 P1）
+    expect(rec).toContain("edits_inside_repo");
+  });
+
+  test("host_slept_ms 的 null 与 0 语义不许合并（0 是有效值，缺省成 0 会伪造已验证）", () => {
+    const rec = readFileSync(join(SWE_DIR, "record.ts"), "utf8");
+    const recBody = rec
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("//") && !l.trimStart().startsWith("*"))
+      .join("\n");
+    // 这个字段与 setup/agent/extract 三段**语义相反**：那三个用 0 表示"没量"，
+    // 而这里 0 是个有效值（= 量到了、确实没睡）。所以"没量"只能是 null。
+    // 若写成 `Number(arg(...) ?? 0)`，所有旧 run 会被伪装成"已验证没休眠"，
+    // 正是这个缺陷第一次逃过验收的形态。
+    expect(recBody).toContain("host_slept_ms");
+    expect(recBody).toMatch(/hostSleptRaw\s*===\s*undefined/);
+    expect(recBody).toMatch(/hostSleptRaw\s*===\s*""/);
+    expect(recBody).toContain("null");
+    // ⛔ 不许用 ?? 0 缺省
+    expect(recBody).not.toMatch(/arg\("host-slept-ms",\s*argv\)\s*\?\?\s*0/);
+
+    // 汇总侧同理：null 不参与汇总，也不当 0（否则"没量到"会被算成"没睡"）
+    expect(shBody).toContain("host_slept_ms");
+    expect(shBody).toMatch(/if v is None/);
   });
 
   test("判分并发独立于 SWE_JOBS，且默认 1", () => {

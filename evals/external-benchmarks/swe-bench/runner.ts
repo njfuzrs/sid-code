@@ -104,6 +104,32 @@ export interface RunRecord {
    */
   permission_denials: number;
   /**
+   * 编辑落点分解：改的是**被测源码**（`/testbed` 下）还是**自己的复现脚本**（`/tmp` 等）。
+   *
+   * 实测踩到（2026-08-26 smoke-10，A7.11.4）：`django-13964` 有 2 次 edit、
+   * `files_edited_count=1`，看起来像"终于开始改代码了"，
+   * 实际**两次都打在 `/tmp/repro/test_bug.py`**，一次没碰 `django/`。
+   *
+   * ## 为什么必须单独记：这个形态在所有既有字段上都是隐身的
+   *
+   *   `patch_bytes=0`         与「完全没动手」一模一样
+   *   `patch_only_adds_files` false（它连新建文件都没进 patch）
+   *   numstat/diff 不一致那条 不触发（`/tmp` 不在 `git add -A` 范围里）
+   *
+   * 而 `unaccounted` 只会说「轮次预算用尽」，把人引向「抬 max_turns」；
+   * 真实根因是**它把预算花在验证上、没留下动手的轮次**。两者处置完全不同。
+   *
+   * ⚠️ **判据教训（A7.11.8 P1 的落点）**：「edit 调用数 > 0」是个**不够的判据**，
+   * 它把「改复现脚本」与「改被测源码」算成一件事。要看的是
+   * `patch_bytes > 0`（结果）或 `edits_inside_repo > 0`（过程）。
+   *
+   * ⚠️ 观测字段，**不参与判定**（同 `patch_only_adds_files` / `hit_max_turns`）。
+   */
+  edits_inside_repo: number;
+  edits_outside_repo: number;
+  /** 仓库外被编辑的路径（去重排序）—— 有值时说明 agent 在改自己的脚本 */
+  edit_paths_outside_repo: string[];
+  /**
    * harness 自己的时钟，不是 agent 自报（§6.3 诚实字段）。
    * 口径 = `docker run` 前 → 收尾 `docker rm` 后，即 setup + agent + extract 之和。
    */
@@ -130,6 +156,24 @@ export interface RunRecord {
   setup_ms?: number;
   agent_ms?: number;
   extract_ms?: number;
+  /**
+   * `agent_ms` 区间内宿主休眠了多少毫秒（macOS/Linux 都测）。
+   *
+   * 实测踩到（2026-08-26 smoke-10）：`django-13964` 的 `agent_ms=2009007`（33.5min）
+   * **超过 SWE_TIMEOUT=1800 而 timed_out=false**，看起来像超时闸门坏了；
+   * 真凶是宿主中途睡了 717 秒。`alarm()` 按可运行时间计而 `now_ms()` 取墙钟，
+   * 于是同一段休眠**同时污染 agent_ms 并静默给超时闸门续命**
+   * （一题可以跑到墙钟 2× 上限还不被杀，而 timed_out=false 把人引向"agent 慢"）。
+   *
+   * ⚠️ **`null` 与 `0` 语义不同，读的时候别合并**：
+   *   null = 没量到（旧 run，或宿主取不到时钟）→ 该 run 耗时可信度未知
+   *   0    = 量到了、确实没睡 → 耗时干净可外比
+   * 这与上面三段那条「0 表示没量」**正好相反** —— 因为 0 在这里是有效值。
+   *
+   * 不进 `setup+agent+extract===wall` 那条不变量：它是 `agent_ms` 的**成分说明**，
+   * 不是第四段。从 `agent_ms` 里减掉它会破掉那条不变量，且"墙钟耗时"本身也是要看的数。
+   */
+  host_slept_ms?: number | null;
   /** agent 退出码；非 0 → agent_error */
   agent_exit: number;
   /** 过程类结论。solved / wrong_patch / ungraded 不在这里判 —— 那是官方 harness 的事 */
@@ -440,6 +484,9 @@ export function extractAgentLogSignals(agentLog: string): {
   hitMaxTurns: boolean;
   llmFatal: boolean;
   permissionDenials: number;
+  editsInsideRepo: number;
+  editsOutsideRepo: number;
+  editPathsOutsideRepo: string[];
 } {
   // 轮次撞顶：queryLoop 在放弃前会打这一行（`达到最大轮次限制: 40`）。
   const hitMaxTurns = agentLog.includes("达到最大轮次限制");
@@ -461,7 +508,49 @@ export function extractAgentLogSignals(agentLog: string): {
   // `outcome` / `wall_ms` / `patch_bytes` 上一个字都看不出来。
   const permissionDenials = (agentLog.match(/权限拒绝/g) ?? []).length;
 
-  return { hitMaxTurns, llmFatal, permissionDenials };
+  // ## 编辑落点：区分「改被测源码」与「改自己的复现脚本」
+  //
+  // 实测踩到（2026-08-26 smoke-10，A7.11.4）：`django-13964` 编辑了 2 次
+  // （`files_edited_count=1`），看起来像"它终于开始改代码了"，
+  // 查 `messages.json` 的入参才发现**两次都打在 `/tmp/repro/test_bug.py`**，
+  // 一次没碰 `django/` 下的源码。
+  //
+  // 这个形态在所有既有字段上都看不出来：
+  //   `patch_bytes=0`            —— 与"完全没动手"一模一样
+  //   `patch_only_adds_files`    —— false（它连新建文件都没进 patch）
+  //   numstat/diff 不一致那条    —— 也不触发（`/tmp` 不在 `git add -A` 范围里）
+  // 而 unaccounted 只会说"轮次预算用尽"，把人引向"抬 max_turns"，
+  // 实际根因是**它把预算花在验证上、没留下动手的轮次**。两者处置完全不同。
+  //
+  // ## 判据定死：`/testbed` 前缀（官方镜像的仓库路径）
+  //
+  // 取 `▶ edit {"file_path":"..."}` 这个**结构化入参**而不是 `[PERMISSION] edit(...)`
+  // 那行：入参是 JSON、路径完整；PERMISSION 行是给人看的、会截断。
+  // 实测 10/10 题：唯一「有编辑但全在仓库外」的正是 `django-13964`，
+  // 也正是唯一 `patch_bytes=0` 的那条 —— 人工查轨迹的结论被机械复现。
+  //
+  // ⚠️ **同样只标注、不参与判定**（与 `hitMaxTurns` / `patchOnlyAddsFiles` 同款）。
+  // `deriveOutcome` 一行不改：一旦让它读这个，`outcome` 就从机械四态变成
+  // 依赖日志文案的启发式，而文案会变。
+  //
+  // ⚠️ 判据依赖 `/testbed` 这个硬编码前缀。换镜像布局（SWE-bench Pro 等）要重新核，
+  // 否则会**全部落在"仓库外"**而报告显示每题都在改复现脚本 —— 一个安静的假信号。
+  // 门禁在 tests/eval/swe-bench-runner.test.ts（钉了真实日志片段）。
+  const editPaths = [
+    ...agentLog.matchAll(/▶ (?:edit|write|notebook_edit) \{"file_path":"([^"]+)"/g),
+  ].map((m) => m[1]!);
+  const editsInsideRepo = editPaths.filter((p) => p.startsWith("/testbed")).length;
+  const outsidePaths = editPaths.filter((p) => !p.startsWith("/testbed"));
+
+  return {
+    hitMaxTurns,
+    llmFatal,
+    permissionDenials,
+    editsInsideRepo,
+    editsOutsideRepo: outsidePaths.length,
+    // 去重排序：同一个复现脚本被改 5 次，读报告的人要看的是"哪个文件"，不是 5 个重复项
+    editPathsOutsideRepo: [...new Set(outsidePaths)].sort(),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
