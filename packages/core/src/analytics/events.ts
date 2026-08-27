@@ -233,28 +233,106 @@ export function logPermissionPrompt(toolName: string): void {
 /** 权限决策来源。三路竞争（hook / classifier / 用户）各自的胜出比例是真实需要的数。 */
 export type PermissionSource = "user" | "hook" | "classifier" | "timeout" | "rule" | "other";
 
-/** 权限批准。needsPrompt 区分「弹过窗才批」与「规则直接放行」。 */
+/**
+ * 鉴权发生在哪条执行路径上。
+ *
+ * ## 为什么必须分路径：不分就有一整桶拒绝是零 producer
+ *
+ * `logPermissionDeny` 原先只有主循环（`query/tool-executor.ts`）在调，而子代理
+ * （`agent/tool-executor.ts` / `agent/sub-agent.ts`）与 forked agent
+ * （`agent/forked-agent.ts`）各有自己的鉴权分支、各自 `return` error tool_result，
+ * **一条埋点都不发**。于是"子代理被权限层打残"这个形态在 `permission_deny` 上
+ * 完全隐身 —— 与 `logContextCompact` 的 `trigger:"manual"` 曾经零 producer 同型
+ * （见该函数注释）。
+ *
+ * 不复用 `source`：`source` 回答的是「三路竞争谁赢了」，`context` 回答的是
+ * 「这次鉴权发生在谁身上」。合成一个字段会让"子代理里规则直拒"无法表达。
+ */
+export type PermissionContext = "main" | "subagent" | "forked";
+
+/**
+ * 拒绝的结构化成因类型。取自 `PermissionDecisionReason.type`，是**固定枚举**，
+ * 不含规则内容 / 入参片段 / 路径，可安全进遥测。
+ *
+ * ## 为什么光有计数不够（A7.13.2 的实质）
+ *
+ * smoke-8 那 113 次拒绝里，**全部**是「ask 规则命中 → headless 无交互通道 → 自动拒绝」
+ * （`checker.ts` 的 `非交互模式` 分支），处置方式是换 `--dangerously-skip-permissions`；
+ * 而「deny 规则命中」是配置**按预期生效**，处置方式是什么都不做。两者在
+ * `permission_denials` 这个纯计数上长得一模一样，却指向完全相反的动作。
+ *
+ * ⚠️ 主循环侧 `source` 对这两类都填 `"rule"`（走的是同一条 needsConfirmation=false
+ * 分支），所以**只看 source 区分不出来** —— 这正是本字段存在的理由。
+ */
+export type PermissionDenyReasonType =
+  | "rule"
+  | "mode"
+  | "safetyCheck"
+  | "dangerousCommand"
+  | "pathValidation"
+  | "sessionMemory"
+  | "denialTracking"
+  | "other";
+
+/**
+ * 权限批准。needsPrompt 区分「弹过窗才批」与「规则直接放行」。
+ *
+ * `context` 缺省为 `"main"`：本函数在补 context 之前只有主循环在调，
+ * 缺省值取主循环使得既有调用点语义不变（而不是多出一桶 `undefined`）。
+ */
 export function logPermissionAllow(
   toolName: string,
-  opts: { source: PermissionSource; needsPrompt: boolean; durationMs?: number },
+  opts: {
+    source: PermissionSource;
+    needsPrompt: boolean;
+    durationMs?: number;
+    context?: PermissionContext;
+  },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
+    execution_context: v(opts.context ?? "main"),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
 }
 
-/** 权限拒绝。durationMs 含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。 */
+/**
+ * 权限拒绝。durationMs 含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
+ *
+ * ## 这是「被权限层打残了多少次」的**唯一结构化事实源**
+ *
+ * A7.13.2 的实质不是"字段没写入点"，是评测侧的 `permission_denials`
+ * 走的是 `runner.ts` 对 agent.log 数 `权限拒绝` **中文字符串**：
+ * 产品侧改一次日志文案就静默归零，而报告会显示"权限拒绝 0 次 ✅" ——
+ * 一个字符串代理判据在假装是字段判据。所以这条埋点必须做到两件事：
+ *
+ *  1. **覆盖全部鉴权路径**（见 `PermissionContext`）—— 漏一条就是那条路径上的
+ *     拒绝永久隐身，且没有任何东西会红；
+ *  2. **带上结构化成因**（见 `PermissionDenyReasonType`）—— 「deny 规则生效」与
+ *     「headless 把 ask 自动拒了」在纯计数上无法区分，而处置完全相反。
+ *
+ * ⚠️ `reasonType` 只取 `PermissionDecisionReason.type` 这个**固定枚举**，
+ * 绝不带 `reason` / `rule` / `pattern` 的文本：那些含规则内容与入参片段（含路径）。
+ * 这与本文件顶部第 2 条硬约束同源。
+ */
 export function logPermissionDeny(
   toolName: string,
-  opts: { source: PermissionSource; needsPrompt: boolean; durationMs?: number },
+  opts: {
+    source: PermissionSource;
+    needsPrompt: boolean;
+    durationMs?: number;
+    context?: PermissionContext;
+    reasonType?: PermissionDenyReasonType;
+  },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
+    execution_context: v(opts.context ?? "main"),
+    ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
 }

@@ -1120,6 +1120,9 @@ export async function resolveToolPermission(
         source: normalizePermissionSource(result.source),
         needsPrompt: true,
         durationMs: Date.now() - permStartedAt,
+        // 这一路的成因来自**弹窗前**那次 check（是它判定要确认的），
+        // 不是三路竞争的结果 —— 拒绝动作由谁做在 source 里，为什么要问在这里。
+        reasonType: decision.decisionReason?.type,
       });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
       // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
@@ -1150,10 +1153,18 @@ export async function resolveToolPermission(
   // 规则直接拒绝（deny 规则命中，无需确认）。与上面「弹窗后被拒」分开记：
   // 前者是配置生效，后者是用户被打扰后说不，两类信号的含义完全不同。
   // 不上报 explanation 文本——它含规则内容与入参片段。
+  //
+  // reasonType 是这条分支上**唯一**能把两种相反形态分开的字段：
+  //   decisionReason.type="rule"  → deny 规则命中，配置按预期生效，无需动作
+  //   decisionReason.type="other" → headless 把 ask 自动拒了（`checker.ts` 的
+  //                                 「非交互模式」分支），处置是换权限档
+  // 两者 source 都填 "rule"（同一条 needsConfirmation=false 分支），
+  // 纯计数与 source 都区分不出来 —— smoke-8 那 113 次全是后者。
   logPermissionDeny(block.name, {
     source: "rule",
     needsPrompt: false,
     durationMs: Date.now() - permStartedAt,
+    reasonType: decision.decisionReason?.type,
   });
   // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
   firePostToolUseFailure(

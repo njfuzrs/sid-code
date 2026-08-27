@@ -30,6 +30,7 @@ import {
   normalizePatch,
   patchOnlyAddsFiles,
   extractAgentLogSignals,
+  extractPermissionSignals,
 } from "./runner.ts";
 
 function arg(name: string, argv: string[]): string | undefined {
@@ -155,12 +156,73 @@ if (patchBytes === 0 && signals.llmFatal) {
       `不该计入能力账`,
   );
 }
-// 权限拒绝：不限于零 patch —— 有 patch 的实例被拒同样意味着它是"带着镣铐做完的"。
-if (signals.permissionDenials > 0) {
+// ── A7.13.2：权限拒绝改读结构化遥测事件，不再数中文字符串 ──
+//
+// 事实源是 `<iid>.sidcfg/telemetry/events.jsonl` 里的 `permission_deny` 事件，
+// 由 exec-swebench.sh 在调本脚本**之前**从容器取回（与 agent.log 同一时机）。
+//
+// ⚠️ 取不到时落 **null 而不是 0**：0 会把"仪器没接上"伪装成"防线全绿"，
+// 而那正是 A7.13.2 本身的形态（原判据把「字段不存在」读成了「值为 0」）。
+const eventsPath = join(runDir, `${instanceId}.sidcfg`, "telemetry", "events.jsonl");
+const eventsRaw = existsSync(eventsPath) ? readFileSync(eventsPath, "utf8") : null;
+const perm = eventsRaw === null ? null : extractPermissionSignals(eventsRaw);
+
+if (perm === null) {
   notes.push(
-    `被权限层拒绝 ${signals.permissionDenials} 次工具调用 —— 每次都烧掉一轮而未做成任何事。` +
+    `遥测 events.jsonl 未取回（${eventsPath}）—— permission_denials 落 null（"不知道"），` +
+      `**不是 0**。这条 run 的"有没有被权限层打残"无法判定`,
+  );
+} else if (perm.malformedLines > 0) {
+  // 坏行只跳过不抛（遥测是旁路观测），但必须说出来：否则 denials 是个下界却长得像准确值。
+  notes.push(
+    `遥测 events.jsonl 有 ${perm.malformedLines} 行解析失败 —— ` +
+      `permission_denials=${perm.denials} 是**下界**，不是准确值`,
+  );
+}
+
+// 权限拒绝：不限于零 patch —— 有 patch 的实例被拒同样意味着它是"带着镣铐做完的"。
+if (perm && perm.denials > 0) {
+  // 成因分解进正文：这一列才回答「该不该动手」。smoke-8 那 113 次全是
+  // `other`（headless 把 ask 自动拒了 → 换权限档），而 `rule`（deny 规则命中）
+  // 是配置按预期生效、什么都不用做。两者在纯计数上同形，处置相反。
+  const byReason = Object.entries(perm.byReasonType)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${k}×${n}`)
+    .join(", ");
+  const byCtx = Object.entries(perm.byContext)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${k}×${n}`)
+    .join(", ");
+  notes.push(
+    `被权限层拒绝 ${perm.denials} 次工具调用 —— 每次都烧掉一轮而未做成任何事。` +
+      `成因 [${byReason}]、路径 [${byCtx}]。` +
       `若这个数显著大于 0，本轮分数掺了非能力因素（查 --permission-mode 配置）`,
   );
+}
+
+// ## 双源背离 = 有一条链路坏了，两个方向都要报
+//
+// 这条断言存在的唯一目的：`permission_denials` 换源之后，**下一个人新增第四条
+// 鉴权分支而忘了发埋点时，得有东西会说话**。否则新路径上的拒绝永久隐身，
+// 而报告显示"权限拒绝 0 次 ✅" —— 与 A7.13.2 修之前一模一样的失效形态。
+//
+// ⚠️ 不因背离而改 `permission_denials` 的值：字符串**不是** fallback，
+// 回退读它等于把刚拆掉的代理判据又接回去（见 runner.ts 那段）。只报，不改数。
+if (perm !== null && agentLog) {
+  const proxy = signals.permissionDenialsLogProxy;
+  if (proxy > 0 && perm.denials === 0) {
+    notes.push(
+      `🔴 **双源背离**：agent.log 有 ${proxy} 处「权限拒绝」字样，而结构化事件 0 条 —— ` +
+        `大概率是**产品侧新增了一条鉴权路径却没发 permission_deny 埋点**（A7.13.2 的回归）。` +
+        `以结构化源为准的话这条 run 会显示"没被拒"，但它其实被拒了`,
+    );
+  } else if (proxy === 0 && perm.denials > 0) {
+    notes.push(
+      `⚠️ 双源背离：结构化事件 ${perm.denials} 条拒绝，而 agent.log 无「权限拒绝」字样 —— ` +
+        `日志文案大概率改了。**这不影响本字段**（已改读结构化源），` +
+        `记一笔是为了说明旧判据此刻本会静默归零`,
+    );
+  }
 }
 // 零 patch 但两个信号都没命中 → **才有可能**是能力问题。显式说出来，
 // 免得"没有归因"被默读成"已确认是能力不足"。
@@ -179,7 +241,11 @@ const record: RunRecord = {
   patch_only_adds_files: onlyAdds,
   hit_max_turns: signals.hitMaxTurns,
   llm_fatal: signals.llmFatal,
-  permission_denials: signals.permissionDenials,
+  // A7.13.2：权威源是结构化事件；遥测缺失时是 null（"不知道"）而不是 0（"没被拒"）。
+  permission_denials: perm === null ? null : perm.denials,
+  ...(perm ? { permission_denials_by_reason: perm.byReasonType } : {}),
+  ...(perm ? { permission_denials_by_context: perm.byContext } : {}),
+  permission_denials_log_proxy: signals.permissionDenialsLogProxy,
   edits_inside_repo: signals.editsInsideRepo,
   edits_outside_repo: signals.editsOutsideRepo,
   edit_paths_outside_repo: signals.editPathsOutsideRepo,
@@ -226,10 +292,13 @@ const flag = record.patch_touches_tests ? " ⚠️ 触及测试文件" : "";
 // 两个机械信号进终端行：跑的时候就能看出「这条是没跑完，不是没做出来」，
 // 不必等报告。permission_denials 只在 >0 时显示 —— 正常配置下它该是 0，
 // 恒显示一个 0 会让它变成噪声、真出问题时反而被忽略。
+//
+// ⚠️ 但 **null 必须显示**（`[权限?]`）：那是"没量到"，与"量到了是 0"是两件事。
+// 把 null 和 0 一样静默掉，就等于让"仪器没接上"长得跟"防线全绿"一模一样。
 const sig =
   (signals.hitMaxTurns ? " [轮次用尽]" : "") +
   (signals.llmFatal ? " [LLM致命错误]" : "") +
-  (signals.permissionDenials > 0 ? ` [权限拒绝×${signals.permissionDenials}]` : "");
+  (perm === null ? " [权限?未量到]" : perm.denials > 0 ? ` [权限拒绝×${perm.denials}]` : "");
 console.log(
   `  ${instanceId}: ${outcome}  patch=${patchBytes}B  wall=${wallMs}ms${flag}${sig}` +
     (record.unaccounted ? `\n    unaccounted: ${record.unaccounted}` : ""),

@@ -1399,6 +1399,16 @@ export class SubAgent {
       if (!decision.allowed) {
         const reason = decision.reason || "子代理不允许此操作";
         log.info("SUBAGENT:PERM", `权限拒绝 ${name}: ${reason}`);
+        // 漏斗 2：与 `agent/tool-executor.ts` 那条同源同口径（见那里的注释）。
+        // 这是子代理的第二条鉴权分支 —— 漏掉它则「走这条路的子代理」拒绝隐身，
+        // 而两条路对读报告的人是同一件事，不该只有一半可见。
+        const { logPermissionDeny } = await import("../analytics/events.ts");
+        logPermissionDeny(name, {
+          source: "rule",
+          needsPrompt: false,
+          context: "subagent",
+          reasonType: decision.decisionReason?.type,
+        });
         return { content: `权限拒绝: ${reason}`, is_error: true };
       }
     }

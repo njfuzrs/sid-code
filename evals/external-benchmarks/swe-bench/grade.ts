@@ -338,6 +338,65 @@ export function buildTimingProfile(
 }
 
 /**
+ * 把逐题 `records.jsonl` 的权限字段汇总成报告输入（A7.13.2）。
+ *
+ * ## ⚠️ 唯一容易写错的地方：`null` 不是 `0`
+ *
+ * `permission_denials == null` 的两种来源 ——
+ *   `null`      = 本次跑了但遥测取不回（容器崩在建遥测之前）
+ *   `undefined` = 旧 run 压根没这个字段
+ * —— 对读报告的人是**同一件事**：「这条的权限拒绝数不知道」。两者都归 notMeasured。
+ *
+ * ⛔ **不许写 `permTotal += r.permission_denials ?? 0`**。那会把两种"不知道"
+ * 都折成"没被拒"，于是「仪器没接上」伪装成「防线全绿」—— 而那正是 A7.13.2
+ * 这条缺陷本身的形态（原判据把「字段不存在」读成了「值为 0」）。
+ * 在修它的过程里重演一次会格外讽刺，所以本函数**单独抽出来并配了变异测试**：
+ * 内联在 runGrade 里时那个 `?? 0` 的错法能一路通过全部断言（实测过）。
+ */
+export function aggregatePermissionDenials(
+  records: Array<{
+    instance_id?: string;
+    permission_denials?: number | null;
+    permission_denials_by_reason?: Record<string, number>;
+    permission_denials_log_proxy?: number;
+  }>,
+): {
+  total: number;
+  byInstance: Record<string, number>;
+  byReasonType: Record<string, number>;
+  notMeasuredIds: string[];
+  proxyDivergedIds: string[];
+} {
+  const byInstance: Record<string, number> = {};
+  const byReasonType: Record<string, number> = {};
+  const notMeasuredIds: string[] = [];
+  const proxyDivergedIds: string[] = [];
+  let total = 0;
+
+  for (const r of records) {
+    const id = r.instance_id ?? "";
+    if (!id) continue;
+    if (r.permission_denials == null) {
+      notMeasuredIds.push(id);
+      continue;
+    }
+    total += r.permission_denials;
+    if (r.permission_denials > 0) byInstance[id] = r.permission_denials;
+    for (const [k, n] of Object.entries(r.permission_denials_by_reason ?? {})) {
+      byReasonType[k] = (byReasonType[k] ?? 0) + n;
+    }
+    // 双源背离：结构化 0 而日志字符串 >0 → 埋点漏了一条鉴权路径。
+    // 反方向（结构化 >0 而字符串 0，即文案改了）**不进这里** ——
+    // 那不影响本字段的正确性，record.ts 已在逐题 note 里记过一笔。
+    if (r.permission_denials === 0 && (r.permission_denials_log_proxy ?? 0) > 0) {
+      proxyDivergedIds.push(id);
+    }
+  }
+
+  return { total, byInstance, byReasonType, notMeasuredIds, proxyDivergedIds };
+}
+
+/**
  * 组装验收字段。
  *
  * `graded_ok` 的判据是**没有任何 ungraded**，而不是「report 里 total 对得上」——
@@ -391,6 +450,33 @@ export function buildAcceptance(input: {
    * 后者是「不知道从哪下手」（抬轮数只会更贵）。实测见 A7.11.4 的 django-13964。
    */
   editsOnlyOutsideRepoIds?: string[];
+  /**
+   * 权限拒绝汇总（A7.13.2）。取自 `records.jsonl` 的结构化字段，不是数日志字符串。
+   *
+   * ## 为什么必须进报告，而不是只躺在 records.jsonl 里
+   *
+   * 「被权限层打残」是**分数掺了非能力因素**的直接证据：smoke-8 有三条实例过半轮次
+   * 是被拒绝烧掉的，却被记成「40 轮预算用尽」，读起来像能力不够。
+   * 这个信号不进 unaccounted，就要靠每次有人想起来去翻 records.jsonl ——
+   * 而 `grade.ts` 自己在耗时分解那节抱怨过同一件事（「答案一直躺在 records.jsonl 里没被读出来」）。
+   *
+   * ⚠️ `notMeasuredIds` 与 `denials: 0` **不可合并**：
+   *   前者 = 遥测没取回 → **不知道**有没有被拒（该 run 这一项不可信）
+   *   后者 = 量到了、确实没被拒 → 干净
+   * 合并会让「仪器没接上」伪装成「防线全绿」，那正是 A7.13.2 本身的形态。
+   */
+  permissionDenials?: {
+    /** 逐题拒绝数之和（只统计量到的题） */
+    total: number;
+    /** 有拒绝的题 → 次数，用于点出「哪几条被打残了」 */
+    byInstance: Record<string, number>;
+    /** 成因分解合并（reason_type → 次数）：回答「该不该动手」 */
+    byReasonType: Record<string, number>;
+    /** 遥测未取回的题 —— 这几条的「有没有被拒」是未知，不是 0 */
+    notMeasuredIds: string[];
+    /** 双源背离的题（结构化 0 而 agent.log 有「权限拒绝」字样）→ 埋点漏路径 */
+    proxyDivergedIds: string[];
+  };
 }): Acceptance {
   const notes: string[] = [];
 
@@ -430,6 +516,44 @@ export function buildAcceptance(input: {
         `${onlyOutside.join(", ")} —— 与「完全没动手」在 solved_count 上不可区分，` +
         `但成因不同（定位到了却没留下动手的轮次），处置也不同`,
     );
+  }
+
+  // ── A7.13.2：权限拒绝进 unaccounted ──
+  //
+  // 三条各自独立，任一条成立都说明这份报告有它自己知道的不完整之处：
+  //  1. 有拒绝     → 分数掺了非能力因素（该查权限档，不是该抬 max_turns）
+  //  2. 有没量到的 → 那几条的「有没有被打残」是未知；**不许当 0 读**
+  //  3. 有背离的   → 埋点漏了一条鉴权路径，是 A7.13.2 修复的回归
+  const perm = input.permissionDenials;
+  if (perm) {
+    if (perm.total > 0) {
+      const worst = Object.entries(perm.byInstance)
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, n]) => `${id}×${n}`)
+        .join(", ");
+      const byReason = Object.entries(perm.byReasonType)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, n]) => `${k}×${n}`)
+        .join(", ");
+      notes.push(
+        `被权限层拒绝共 ${perm.total} 次工具调用（${worst}）—— 每次都烧掉一轮而未做成任何事，` +
+          `**这一轮的分数掺了非能力因素**。成因 [${byReason}]：` +
+          `\`other\` 多为 headless 把 ask 自动拒了（查权限档），\`rule\` 是 deny 规则按预期生效`,
+      );
+    }
+    if (perm.notMeasuredIds.length) {
+      notes.push(
+        `${perm.notMeasuredIds.length} 条未取回遥测、权限拒绝数为 **null（不知道）而非 0**：` +
+          `${perm.notMeasuredIds.join(", ")} —— 这几条不能当作"没被权限层打残"来读`,
+      );
+    }
+    if (perm.proxyDivergedIds.length) {
+      notes.push(
+        `🔴 ${perm.proxyDivergedIds.length} 条**双源背离**（结构化事件 0 条，而 agent.log 有「权限拒绝」字样）：` +
+          `${perm.proxyDivergedIds.join(", ")} —— 大概率是产品侧新增了鉴权路径却没发 ` +
+          `\`permission_deny\` 埋点（A7.13.2 的回归形态）。这几条的拒绝在结构化源里是隐身的`,
+      );
+    }
   }
 
   const nonEmpty = input.submitted.filter((id) => (input.patchBytesById[id] ?? 0) > 0);
@@ -883,6 +1007,11 @@ async function main() {
     extract_ms?: number;
     edits_inside_repo?: number;
     edits_outside_repo?: number;
+    // A7.13.2：null 是合法值且语义 = "没量到"，与 undefined（旧 run 无此字段）
+    // 在这里刻意都走 `== null` 归到 notMeasured —— 两者对读报告的人是同一件事。
+    permission_denials?: number | null;
+    permission_denials_by_reason?: Record<string, number>;
+    permission_denials_log_proxy?: number;
   }> = existsSync(recPath)
     ? readFileSync(recPath, "utf8")
         .split("\n")
@@ -910,6 +1039,8 @@ async function main() {
     )
     .map((r) => r.instance_id ?? "")
     .filter(Boolean);
+
+  const permissionDenials = aggregatePermissionDenials(records);
 
   // run-meta.json 由 exec-swebench.sh 的 run 步写。读不到就传 null ——
   // buildAcceptance 会在 unaccounted 里写明「该分数不可与其他 run 并排」，
@@ -1030,6 +1161,7 @@ async function main() {
     // 一个恒为 0 的「耗时」字段比没有这个字段更坏：它看起来像「快到测不出」。
     wallMs: recordsWallMs,
     editsOnlyOutsideRepoIds,
+    permissionDenials,
     expectedTotal,
     model: metaModel,
     gatewayHost: metaHost,
