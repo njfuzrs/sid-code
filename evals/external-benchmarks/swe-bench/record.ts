@@ -59,6 +59,22 @@ const wallMs = Number(arg("wall-ms", argv) ?? 0);
 const setupMs = Number(arg("setup-ms", argv) ?? 0);
 const agentMs = Number(arg("agent-ms", argv) ?? 0);
 const extractMs = Number(arg("extract-ms", argv) ?? 0);
+// ## host_slept_ms：`agent_ms` 里有多少是宿主在睡觉
+//
+// 实测踩到（2026-08-26 smoke-10）：`django-13964` 的 `agent_ms=2009007`（33.5min）
+// **超过 SWE_TIMEOUT=1800 而 timed_out=false** —— 看起来像超时闸门坏了，
+// 真凶是宿主中途睡了 717 秒（`pmset -g log`）。`alarm()` 按可运行时间计、
+// `now_ms()` 取墙钟，于是休眠同时**污染 agent_ms** 并**静默给闸门续命**。
+// 详见 exec-swebench.sh 里 awake_ms 上方那段。
+//
+// ⚠️ **`null` 与 `0` 语义必须分开**，这是这个字段唯一容易做错的地方：
+//   null = **没量到**（旧 run、或宿主两个时钟都取不到）→ 耗时可信度未知
+//   0    = **量到了、确实没睡** → 耗时干净，可以外比
+// 缺省成 0 会把所有旧 run 伪装成"已验证没休眠"，正是这个缺陷第一次逃过验收的形态
+// （同 setup/agent/extract 三段那条「缺省 0 而不是 wallMs」的理由，方向相反：
+// 那里 0 表示"没量"，这里 0 是个**有效值**，所以"没量"只能用 null 表示）。
+const hostSleptRaw = arg("host-slept-ms", argv);
+const hostSleptMs = hostSleptRaw === undefined || hostSleptRaw === "" ? null : Number(hostSleptRaw);
 
 if (!instanceId || !runDir) {
   console.error("需要 --instance 与 --run-dir");
@@ -116,6 +132,20 @@ const signals = extractAgentLogSignals(agentLog);
 if (!agentLog) {
   notes.push(`agent.log 不存在（${agentLogPath}）—— hit_max_turns / llm_fatal 无法归因`);
 }
+// ⚠️ 这条必须放在 hitMaxTurns 那条**之前**：两者会同时成立
+// （django-13964 就是既撞顶又只改了复现脚本），而此时"编辑全打在仓库外"
+// 是更精确的归因 —— 它把人从「抬 max_turns」引向「它没留下动手的轮次」。
+// 顺序决定读报告的人先看到哪一条，所以顺序本身是判据的一部分。
+if (patchBytes === 0 && signals.editsOutsideRepo > 0 && signals.editsInsideRepo === 0) {
+  notes.push(
+    `零 patch 但**编辑了 ${signals.editsOutsideRepo} 次、全在仓库外**` +
+      `（${signals.editPathsOutsideRepo.join(", ")}）—— 它在改自己的复现脚本，` +
+      `一次没碰被测源码。**这不是"没动手"，也不只是预算不够**：` +
+      `实测（A7.11.4）此形态下模型已完整定位到根因、连修法都写出来了，` +
+      `但把预算全花在验证与探索上。⚠️ 判据提示：「edit 调用数 > 0」看不出这个，` +
+      `要看 patch_bytes 或 edits_inside_repo`,
+  );
+}
 if (patchBytes === 0 && signals.hitMaxTurns) {
   notes.push(`零 patch 且**轮次预算用尽**（达到 max-turns）—— 这不是"想不出来"，是预算不够`);
 }
@@ -150,10 +180,14 @@ const record: RunRecord = {
   hit_max_turns: signals.hitMaxTurns,
   llm_fatal: signals.llmFatal,
   permission_denials: signals.permissionDenials,
+  edits_inside_repo: signals.editsInsideRepo,
+  edits_outside_repo: signals.editsOutsideRepo,
+  edit_paths_outside_repo: signals.editPathsOutsideRepo,
   wall_ms: wallMs,
   setup_ms: setupMs,
   agent_ms: agentMs,
   extract_ms: extractMs,
+  host_slept_ms: hostSleptMs,
   agent_exit: agentExit,
   outcome,
   meter: null,

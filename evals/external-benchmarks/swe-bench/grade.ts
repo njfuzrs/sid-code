@@ -382,6 +382,15 @@ export function buildAcceptance(input: {
    * 这是「账没算平却装作算平了」，正是 unaccounted 这个字段存在的意义。
    */
   subsetReadFailed?: boolean;
+  /**
+   * 零 patch 且**编辑全打在仓库外**的实例（改自己的复现脚本、没碰被测源码）。
+   *
+   * 为什么要一路带到报告：这个形态在 `solved_count` / `link_ok` 上与
+   * 「完全没动手」一模一样，而两者处置完全不同 ——
+   * 前者是「定位到了但没留下动手的轮次」（抬 max_turns 可能有用），
+   * 后者是「不知道从哪下手」（抬轮数只会更贵）。实测见 A7.11.4 的 django-13964。
+   */
+  editsOnlyOutsideRepoIds?: string[];
 }): Acceptance {
   const notes: string[] = [];
 
@@ -409,6 +418,17 @@ export function buildAcceptance(input: {
     notes.push(
       "读不到 verified-subset.yaml —— expectedTotal 退化成本次提交条数，" +
         "**`partial` 因此恒为 false，不能当作「跑满了」**",
+    );
+  }
+
+  // 零 patch 但改了仓库外的文件 —— 必须点破，否则它在 solved_count / link_ok 上
+  // 与「完全没动手」不可区分（A7.11.4：django-13964 编辑 2 次全在 /tmp/repro/）。
+  const onlyOutside = input.editsOnlyOutsideRepoIds ?? [];
+  if (onlyOutside.length) {
+    notes.push(
+      `${onlyOutside.length} 条零 patch 但**编辑全在仓库外**（改复现脚本、未碰被测源码）：` +
+        `${onlyOutside.join(", ")} —— 与「完全没动手」在 solved_count 上不可区分，` +
+        `但成因不同（定位到了却没留下动手的轮次），处置也不同`,
     );
   }
 
@@ -861,6 +881,8 @@ async function main() {
     setup_ms?: number;
     agent_ms?: number;
     extract_ms?: number;
+    edits_inside_repo?: number;
+    edits_outside_repo?: number;
   }> = existsSync(recPath)
     ? readFileSync(recPath, "utf8")
         .split("\n")
@@ -874,6 +896,20 @@ async function main() {
   // 逐题 wall_ms 累加 = 这一轮真正花在跑 agent 上的时间（harness 自己的时钟，
   // 由 exec-swebench.sh 的 now_ms() 量，不是 agent 自报）。
   const recordsWallMs = records.reduce((sum, r) => sum + (r.wall_ms ?? 0), 0);
+
+  // 「零 patch + 编辑全在仓库外」的实例（A7.11.4 的 django-13964 形态）。
+  // ⚠️ 用 `?? 0` 而不是 `!== undefined` 判在不在：旧 run 没这两个字段，
+  // 缺省成 0 之后 `outside > 0` 恒 false → **旧 run 自然不会被误标**，
+  // 这正是想要的行为（没量到就不声称）。
+  const editsOnlyOutsideRepoIds: string[] = records
+    .filter(
+      (r) =>
+        (patchBytesById[r.instance_id ?? ""] ?? 0) === 0 &&
+        (r.edits_outside_repo ?? 0) > 0 &&
+        (r.edits_inside_repo ?? 0) === 0,
+    )
+    .map((r) => r.instance_id ?? "")
+    .filter(Boolean);
 
   // run-meta.json 由 exec-swebench.sh 的 run 步写。读不到就传 null ——
   // buildAcceptance 会在 unaccounted 里写明「该分数不可与其他 run 并排」，
@@ -993,6 +1029,7 @@ async function main() {
     // 而 t0 到这里只隔了几行纯 I/O —— 实测输出 `wall_ms: 0`。
     // 一个恒为 0 的「耗时」字段比没有这个字段更坏：它看起来像「快到测不出」。
     wallMs: recordsWallMs,
+    editsOnlyOutsideRepoIds,
     expectedTotal,
     model: metaModel,
     gatewayHost: metaHost,
