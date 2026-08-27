@@ -385,9 +385,53 @@ function cwdChangeNotice(newCwd: string): string {
   );
 }
 
-/** 把 cwd 变更告知拼到结果末尾；未发生切换时原样返回 */
-function withCwdNotice(output: string, switchedCwd: string | undefined): string {
-  return switchedCwd ? `${output}${cwdChangeNotice(switchedCwd)}` : output;
+/**
+ * 工作目录已失效告知（追加到本次 bash 的 tool_result 末尾）。
+ *
+ * 触发场景：agent 删掉了自己正站着的目录（`cd x && rm -rf x`，实测出自真实轨迹）。
+ *
+ * ## ⚠️ 真正的危害是**两套 cwd 状态发散**，不是"后续命令会失败"
+ *
+ * 本轮实测（2026-08-27，删掉 cwd 之后）：
+ *
+ * ```
+ * getCwd()                        → /tmp/sidW/x   ← 仍停在**已删除**的路径
+ * bash 里 pwd                      → /Users/.../sid-code  ← resolveCwd 局部回退到启动目录
+ * normalizeToolPath("f.txt")      → /tmp/sidW/x/f.txt     ← 指向不存在的地方
+ * ```
+ *
+ * 成因：`resolveCwd`（上方）在 cwd 不存在时回退到 `getOriginalCwd()`，
+ * 但**只在那一次调用里局部回退、不写回全局** —— 于是 bash 跑在启动目录，
+ * 而 read/edit/grep/glob/ls 经 `normalizeToolPath(getCwd())` 仍解析到已删除的路径。
+ * **后续 bash 命令并不会失败**（这一点我最初写错了，实测纠正），
+ * 它们只是静默跑在了另一个目录里 —— 这比直接报错更难发现。
+ *
+ * 所以文案要说的是「你的两套路径基准已经不一致了，显式 cd 一次把它们对齐」，
+ * 不是「后续命令都会失败」。
+ *
+ * 与 `cwdChangeNotice` 同款理由落在 tool_result 而不是 `<environment>`：
+ * 零 cache 影响、天然只出现一次、位置正好是模型此刻在读的地方。
+ *
+ * ⚠️ 文案必须给出**可执行的下一步**，不能只说"目录不存在了"——
+ * 后者会让模型原地重试同一条命令。
+ */
+function cwdStaleNotice(staleCwd: string): string {
+  return (
+    `\n[工作目录已失效] 当前工作目录 ${staleCwd} 已不存在（很可能是刚才的命令把它删掉了）。\n` +
+    `上面这条命令本身已执行完成。但后续 bash 会静默跑在启动目录，` +
+    `而 read/edit/grep/glob/ls 的相对路径仍以这个已删除的路径为基准 —— 两者不一致。\n` +
+    `请显式 \`cd\` 到一个存在的目录，把两套路径基准对齐。`
+  );
+}
+
+/** 把 cwd 变更/失效告知拼到结果末尾；两者互斥，都没有时原样返回 */
+function withCwdNotice(
+  output: string,
+  cwd: { switched?: string; staleCwd?: string } | undefined,
+): string {
+  if (cwd?.switched) return `${output}${cwdChangeNotice(cwd.switched)}`;
+  if (cwd?.staleCwd) return `${output}${cwdStaleNotice(cwd.staleCwd)}`;
+  return output;
 }
 
 export class BashTool implements Tool {
@@ -537,6 +581,39 @@ export class BashTool implements Tool {
    * - 无快照：原样命令（spawn 时由 getPlatformShell({login:true}) 加 -l 重新 source 配置）
    * - trackCwd：命令末尾追加 `pwd -P >| <临时文件>`（>| 绕过 noclobber），仅前台、非 Windows
    * @returns commandString 拼接后命令；cwdFile 追踪文件路径（undefined 表示不追踪 cwd）
+   *
+   * ## ⚠️ cwd 追踪**不能用 `&&` 接**，否则它会污染用户命令的退出码
+   *
+   * 实测踩到（2026-08-27，从 SWE-bench 轨迹里挖出来的真实产品缺陷）：
+   *
+   * ```
+   * ① cd /tmp && mkdir -p symlink_test/real_dir && cd symlink_test   ← cwd = /tmp/symlink_test
+   * ② rm -rf /tmp/symlink_test                                       ← 把自己站着的目录删了
+   *    ERR: 命令执行失败（退出码 1）:
+   *         pwd: error retrieving current directory: getcwd: cannot access parent directories
+   * ```
+   *
+   * **`rm -rf` 本身是成功的**，失败的是收尾那个 `pwd -P`（cwd 已不存在 → 非 0）。
+   * 用 `&&` 拼接时整条命令的退出码取最后一段，于是**成功的操作被报成失败** ——
+   * 模型收到"我的 rm 失败了"，可能重试或改道，而它其实已经做完了。
+   * 这比反过来（失败报成成功）更难查：日志里那句 `pwd: ...` 看起来像个无关的噪声。
+   *
+   * 既有防线覆盖不到它：`formatSpawnError`（下方）只处理 **spawn 前** cwd 不存在，
+   * 而这条是 **spawn 后、用户命令成功、收尾 `pwd` 失败**。
+   *
+   * 修法：把用户命令的退出码**先存进 `__sc_rc`**，跑完 `pwd` 再用它退出。
+   *
+   * ```sh
+   * <用户命令>; __sc_rc=$?; { pwd -P >| <file>; } 2>/dev/null; exit $__sc_rc
+   * ```
+   *
+   * ⛔ **不要用 `|| true` 兜 `pwd`** —— 实测那会把**用户命令的真失败也吞成成功**
+   * （`false && { pwd; } || true` → exit 0），比原 bug 更坏。
+   *
+   * ⚠️ 一处行为差异（无害，但注释别再写错）：改成 `;` 之后，
+   * **用户命令失败时 `pwd` 也会执行并写文件**（原先 `&&` 会短路）。
+   * 这不影响正确性 —— `applyCwdTracking(cwdFile, success)` 只在 `success` 时读它，
+   * 失败时直接跳过并删掉临时文件。
    */
   private buildCommand(
     rawCommand: string,
@@ -553,26 +630,58 @@ export class BashTool implements Tool {
       parts.push(rawCommand);
     }
 
+    // 用户命令部分：段间仍用 `&&`（source 失败不该继续 eval）
+    const userCommand = parts.join(" && ");
+
     // CWD 追踪仅对前台命令、非 Windows 生效（powershell 无 POSIX pwd -P 语义）
     if (opts.trackCwd && !isWin) {
       cwdFile = join(ensureSidTempDir(), `sid-code-cwd-${process.pid}-${++cwdFileCounter}`);
-      parts.push(`pwd -P >| ${escapeForShell(cwdFile)}`);
+      // ⚠️ 用 `;` + 存退出码，**不是 `&&`** —— 理由见上方长注释（成功的命令被报成失败）。
+      // `2>/dev/null` 吞掉 `pwd: getcwd: ...` 那行噪声：cwd 没了对模型来说不是错误，
+      // 而 applyCwdTracking 读不到文件时本来就会静默保持原 cwd。
+      return {
+        commandString:
+          `${userCommand}; __sc_rc=$?; ` +
+          `{ pwd -P >| ${escapeForShell(cwdFile)}; } 2>/dev/null; exit $__sc_rc`,
+        cwdFile,
+      };
     }
 
-    return { commandString: parts.join(" && "), cwdFile };
+    return { commandString: userCommand, cwdFile };
   }
 
   /**
    * 命令成功完成后读取 cwd 临时文件并写回全局 cwd 状态；无论成功与否都清理临时文件。
-   * @param success 命令是否成功（exitCode===0 且未被取消）。仅成功时才写回，失败时 pwd -P 未执行。
-   * @returns 真的切换了工作目录时返回新的绝对路径，否则 undefined。
+   * @param success 命令是否成功（exitCode===0 且未被取消）。仅成功时才写回。
    *
-   * 返回值供调用方在 tool_result 末尾追加一行变更告知（见 cwdChangeNotice）。
-   * 判据刻意就取"`setCwd` 实际执行"这一件事、不另算一次 diff —— 两处判据必然漂移，
+   * ⚠️ 别再写「失败时 pwd -P 未执行」—— 2026-08-27 起 `buildCommand` 用 `;` 而不是 `&&`
+   * 接 cwd 追踪（理由见那里：`&&` 会让成功的命令被报成失败），
+   * 所以**用户命令失败时 `pwd` 也会执行并写文件**。这里靠 `success` 参数把它挡住，
+   * 而不是靠"文件不存在"。下面 catch 里那句注释同理。
+   * @returns `switched` 真的切换了工作目录时是新的绝对路径；
+   *          `staleCwd` 当前 cwd 已不存在时是那个失效路径（两者互斥）。
+   *
+   * 返回值供调用方在 tool_result 末尾追加一行告知（见 `cwdChangeNotice` / `cwdStaleNotice`）。
+   * 切换判据刻意就取"`setCwd` 实际执行"这一件事、不另算一次 diff —— 两处判据必然漂移，
    * 这是本仓反复踩过的坑。
+   *
+   * ## 为什么要单独报「cwd 失效」（缺陷的另一半）
+   *
+   * 把退出码修对之后，`rm -rf $(pwd)` 会正确地返回成功 —— 但模型**仍然不知道
+   * 自己站的目录没了**。而实测（见 `cwdStaleNotice`）后果不是"后续命令失败"，
+   * 是**两套 cwd 状态静默发散**：bash 经 `resolveCwd` 局部回退到启动目录，
+   * 而 read/edit/grep 经 `normalizeToolPath(getCwd())` 仍指向已删除的路径。
+   * 静默跑在错误目录比直接报错更难发现，所以必须主动告知。
+   *
+   * 判据取「`existsSync(getCwd())` 为假」这个**直接事实**，
+   * 不取「`pwd` 没写文件」—— 后者还可能是磁盘满、临时目录被清，
+   * 拿它当 cwd 失效的证据会造出假信号。
    */
-  private applyCwdTracking(cwdFile: string | undefined, success: boolean): string | undefined {
-    if (!cwdFile) return undefined;
+  private applyCwdTracking(
+    cwdFile: string | undefined,
+    success: boolean,
+  ): { switched?: string; staleCwd?: string } {
+    if (!cwdFile) return {};
     let switched: string | undefined;
     try {
       if (success) {
@@ -584,7 +693,7 @@ export class BashTool implements Tool {
         }
       }
     } catch {
-      /* 文件不存在或读取失败（命令失败时 pwd 未执行），忽略 */
+      /* 文件不存在或读取失败（cwd 被删掉时 `pwd -P` 非 0、不写文件），忽略 —— 保持原 cwd */
     } finally {
       try {
         unlinkSync(cwdFile);
@@ -592,7 +701,11 @@ export class BashTool implements Tool {
         /* 忽略 */
       }
     }
-    return switched;
+    if (switched) return { switched };
+    // 没切换成功时才检查失效 —— 切换成功意味着新 cwd 存在（上面 existsSync 已验），
+    // 两个告知同时出现只会让模型困惑。
+    const cur = getCwd();
+    return existsSync(cur) ? {} : { staleCwd: cur };
   }
 
   async execute(
@@ -876,8 +989,9 @@ export class BashTool implements Tool {
             }
 
             // CWD 追踪写回：仅前台、未取消、未超时、退出码 0 时写回全局 cwd。
-            // 返回值非空 = 真的切换了目录 → 结果末尾追加一行告知（见 cwdChangeNotice）。
-            const switchedCwd = this.applyCwdTracking(
+            // 返回 `{switched}` = 真的切换了目录；`{staleCwd}` = 当前 cwd 已被删掉。
+            // 两者都会在结果末尾追加一行告知（cwdChangeNotice / cwdStaleNotice）。
+            const cwdState = this.applyCwdTracking(
               cwdFile,
               !aborted && !timedOut && exitCode === 0,
             );
@@ -978,18 +1092,19 @@ export class BashTool implements Tool {
             const conflictHint = detectMergeConflictHint(params.command, output);
             if (conflictHint) {
               const base = output === "(命令无输出)" ? "" : `${output}\n`;
-              return { output: withCwdNotice(`${base}${conflictHint}`, switchedCwd) };
+              return { output: withCwdNotice(`${base}${conflictHint}`, cwdState) };
             }
 
             // 非 0 但语义上非错误：附注语义提示（如 "无匹配"），帮助模型正确理解
             if (exitCode !== 0 && interp.message) {
               const note =
                 output === "(命令无输出)" ? interp.message : `${output}\n(${interp.message})`;
-              // 这一路 exitCode !== 0，applyCwdTracking 不会写回，switchedCwd 必为 undefined；
-              // 仍然穿一次 withCwdNotice，避免将来放宽写回条件时这里成为唯一漏掉告知的分支。
-              return { output: withCwdNotice(note, switchedCwd) };
+              // 这一路 exitCode !== 0，`switched` 必为 undefined（不写回）；
+              // ⚠️ 但 `staleCwd` **可以**有值 —— cwd 被删掉且命令本身也失败时就是这一路，
+              // 而那正是最需要告知的场合（否则后续每条命令都 spawn ENOENT）。
+              return { output: withCwdNotice(note, cwdState) };
             }
-            return { output: withCwdNotice(output, switchedCwd) };
+            return { output: withCwdNotice(output, cwdState) };
           } catch (err) {
             // 已转后台时，pump/exited 阶段的异常记为任务失败（对齐 spawnShellTask 的
             // child.on("error")），不再向外抛——execute() 已经通过 detachPromise 返回过了。
