@@ -32,8 +32,10 @@ import {
   pickArtifact,
   parseArgs,
   extractAgentLogSignals,
+  extractPermissionSignals,
   MODEL_NAME,
 } from "../../evals/external-benchmarks/swe-bench/runner.ts";
+import { aggregatePermissionDenials } from "../../evals/external-benchmarks/swe-bench/grade.ts";
 import {
   mapOutcomes,
   buildAcceptance,
@@ -1378,8 +1380,11 @@ describe("extractAgentLogSignals", () => {
     expect(s.hitMaxTurns).toBe(false);
   });
 
-  test("权限拒绝按次计数", () => {
-    expect(extractAgentLogSignals(PERMISSION_DENIED).permissionDenials).toBe(2);
+  // A7.13.2：这个数已从「permission_denials 的事实源」降级为**交叉校验代理**。
+  // 断言保留（它仍要能正确数字符串，否则双源背离检测本身就是坏的），
+  // 但字段名带 LogProxy —— 权威值来自 extractPermissionSignals，见下面那组。
+  test("权限拒绝字符串按次计数（交叉校验代理，非事实源）", () => {
+    expect(extractAgentLogSignals(PERMISSION_DENIED).permissionDenialsLogProxy).toBe(2);
   });
 
   test("正常跑完的日志 → 三个信号全静默", () => {
@@ -1391,14 +1396,14 @@ describe("extractAgentLogSignals", () => {
     const s = extractAgentLogSignals(clean);
     expect(s.hitMaxTurns).toBe(false);
     expect(s.llmFatal).toBe(false);
-    expect(s.permissionDenials).toBe(0);
+    expect(s.permissionDenialsLogProxy).toBe(0);
   });
 
   test("空日志不抛、全静默（agent.log 缺失时的兜底路径）", () => {
     const s = extractAgentLogSignals("");
     expect(s.hitMaxTurns).toBe(false);
     expect(s.llmFatal).toBe(false);
-    expect(s.permissionDenials).toBe(0);
+    expect(s.permissionDenialsLogProxy).toBe(0);
   });
 
   // ── 关键负向断言：这条防的是我第一版差点犯的错 ──
@@ -1432,7 +1437,352 @@ describe("extractAgentLogSignals", () => {
     const s = extractAgentLogSignals("");
     expect(typeof s.hitMaxTurns).toBe("boolean");
     expect(typeof s.llmFatal).toBe("boolean");
-    expect(typeof s.permissionDenials).toBe("number");
+    expect(typeof s.permissionDenialsLogProxy).toBe("number");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A7.13.2：permission_denials 换源 —— 从「数中文字符串」到「读结构化事件」
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ## 这组测试防的是什么
+ *
+ * A7.13.2 的形态：`permission_denials` 的取数源是 `runner.ts` 对 agent.log 数
+ * `权限拒绝` 中文字符串。它能出数，但**产品侧改一次文案就静默归零**，
+ * 而报告会显示「权限拒绝 0 次 ✅」—— 一个字符串代理判据在假装是字段判据。
+ *
+ * 换源之后新的失效路径有三条，每条一组断言：
+ *
+ *  1. **事件形态漂移**（`eventName` 键名变了 / metadata 字段改名）→ 读出 0 而不报错。
+ *     对策：钉住真实落盘形态（下面的样本逐字取自 smoke-10 取回的 events.jsonl）。
+ *  2. **null 被当成 0**：遥测没取回时若落 0，「仪器没接上」就伪装成「防线全绿」——
+ *     与 A7.13.2 本身**完全同型**（原判据把「字段不存在」读成「值为 0」）。
+ *  3. **埋点漏一条鉴权路径**：产品侧新增分支忘了发事件 → 那条路上的拒绝永久隐身。
+ *     对策：双源背离检测（结构化 0 而字符串 >0 时报 P0）。
+ */
+describe("A7.13.2 · permission_deny 结构化信号", () => {
+  // 形态逐字对齐 `analytics/exporters/local.ts` 的 record 构造 +
+  // `analytics/events.ts` 的 logPermissionDeny 字段集。
+  // ⚠️ 顶层键是 `eventName`（不是 `event_name`），metadata 里是 `execution_context`
+  // 与 `reason_type`。改产品侧字段名而不改这里，这组会红 —— 那正是它的用处。
+  const DENY_EVENTS = [
+    // smoke-8 那 113 次的真实形态：headless 把 ask 自动拒了（换权限档就好）
+    JSON.stringify({
+      eventName: "permission_deny",
+      sessionId: "20260826-145314-3de86b3e",
+      timestamp: 1787756010174,
+      metadata: {
+        tool_name: "write",
+        tool_is_mcp: false,
+        source: "rule",
+        needed_prompt: false,
+        execution_context: "main",
+        reason_type: "other",
+        duration_ms: 3,
+      },
+    }),
+    JSON.stringify({
+      eventName: "permission_deny",
+      sessionId: "20260826-145314-3de86b3e",
+      timestamp: 1787756010999,
+      metadata: {
+        tool_name: "bash",
+        tool_is_mcp: false,
+        source: "rule",
+        needed_prompt: false,
+        execution_context: "main",
+        reason_type: "other",
+        duration_ms: 2,
+      },
+    }),
+    // deny 规则命中：配置**按预期生效**，处置是什么都不做 —— 与上面两条计数同形、语义相反
+    JSON.stringify({
+      eventName: "permission_deny",
+      sessionId: "20260826-145314-3de86b3e",
+      timestamp: 1787756011500,
+      metadata: {
+        tool_name: "bash",
+        tool_is_mcp: false,
+        source: "rule",
+        needed_prompt: false,
+        execution_context: "subagent",
+        reason_type: "rule",
+        duration_ms: 1,
+      },
+    }),
+    // 同文件里的其他事件必须被无视（events.jsonl 是全事件混写的）
+    JSON.stringify({
+      eventName: "permission_allow",
+      sessionId: "20260826-145314-3de86b3e",
+      timestamp: 1787756012000,
+      metadata: { tool_name: "grep", source: "rule", needed_prompt: false },
+    }),
+    JSON.stringify({
+      eventName: "tool_call",
+      sessionId: "20260826-145314-3de86b3e",
+      timestamp: 1787756012001,
+      metadata: { tool_name: "read" },
+    }),
+  ].join("\n");
+
+  test("按次计数，且只数 permission_deny（同文件其他事件不许混进来）", () => {
+    const s = extractPermissionSignals(DENY_EVENTS);
+    // 3 条 deny；permission_allow 与 tool_call 不计
+    expect(s.denials).toBe(3);
+  });
+
+  test("成因分解把「headless 自动拒」与「deny 规则生效」分开 —— 这是纯计数做不到的", () => {
+    const s = extractPermissionSignals(DENY_EVENTS);
+    // 这两类在 `denials=3` 这一个数上完全同形，但处置相反：
+    // other → 换 --permission-mode；rule → 配置对了，什么都不用做
+    expect(s.byReasonType).toEqual({ other: 2, rule: 1 });
+  });
+
+  test("路径分解区分主循环与子代理（子代理侧此前一条埋点都不发）", () => {
+    const s = extractPermissionSignals(DENY_EVENTS);
+    expect(s.byContext).toEqual({ main: 2, subagent: 1 });
+  });
+
+  test("分解之和恒等于总数 —— 缺字段落 unknown 而不是丢弃", () => {
+    // 丢弃会让「分解之和 < 总数」，读的人无法判断差额是漏采还是数错了。
+    const partial = JSON.stringify({
+      eventName: "permission_deny",
+      metadata: { tool_name: "edit" }, // 既无 reason_type 也无 execution_context
+    });
+    const s = extractPermissionSignals(partial);
+    expect(s.denials).toBe(1);
+    expect(s.byReasonType).toEqual({ unknown: 1 });
+    expect(s.byContext).toEqual({ unknown: 1 });
+    const sumReason = Object.values(s.byReasonType).reduce((a, b) => a + b, 0);
+    expect(sumReason).toBe(s.denials);
+  });
+
+  test("坏行跳过不抛，但要计数 —— 否则下界会伪装成准确值", () => {
+    const withGarbage = `${DENY_EVENTS}\n{这不是合法 JSON\nnot json at all`;
+    const s = extractPermissionSignals(withGarbage);
+    expect(s.denials).toBe(3); // 有效行照常数出来
+    expect(s.malformedLines).toBe(2);
+  });
+
+  test("空文件 → 全 0 且不抛（0 = 量到了确实没被拒）", () => {
+    const s = extractPermissionSignals("");
+    expect(s.denials).toBe(0);
+    expect(s.malformedLines).toBe(0);
+    expect(s.byReasonType).toEqual({});
+  });
+
+  // ── 变异自证：把实现改回错的写法，这组必须红 ──
+  //
+  // 参照本仓「变异自证」纪律（A7.17）：只断言"现在是对的"挡不住下次改坏，
+  // 必须让每条断言都能指出**它在防哪个具体的错法**。
+  test("反漂移：读 event_name（下划线）而不是 eventName 会得到 0 —— 这组断言就是为此存在", () => {
+    // 这条不测实现，测的是**样本形态本身**：若哪天有人把样本改成 event_name，
+    // 上面所有断言会一起变成"读 0 也通过"的空转。在此钉死顶层键名。
+    const first = JSON.parse(DENY_EVENTS.split("\n")[0]!);
+    expect(Object.keys(first)).toContain("eventName");
+    expect(Object.keys(first)).not.toContain("event_name");
+    // 同理钉死 metadata 里那两个字段名（产品侧改名必须同步改这里，那是刻意的摩擦）
+    expect(Object.keys(first.metadata)).toContain("execution_context");
+    expect(Object.keys(first.metadata)).toContain("reason_type");
+  });
+
+  test("契约：返回值四个字段类型固定（record.ts 直接塞进 RunRecord）", () => {
+    const s = extractPermissionSignals("");
+    expect(typeof s.denials).toBe("number");
+    expect(typeof s.malformedLines).toBe("number");
+    expect(typeof s.byReasonType).toBe("object");
+    expect(typeof s.byContext).toBe("object");
+  });
+});
+
+describe("A7.13.2 · 权限拒绝进 unaccounted（报告侧）", () => {
+  // 与上面 buildAcceptance 那节同款 fixture 的最小子集：这里只关心 permissionDenials。
+  const base = {
+    runId: "t-perm",
+    promptVersion: "prompt-v1",
+    submitted: ["a", "b"],
+    patchBytesById: { a: 100, b: 200 },
+    touchesTestsIds: [] as string[],
+    goldOk: true,
+    wallMs: 1000,
+    expectedTotal: 2,
+    model: "claude-sonnet-5-ppchat",
+    gatewayHost: "code.ppchat.vip",
+    sidCodeVersion: "0.1.601",
+    artifactCommit: "b19927eb00000000000000000000000000000000",
+    artifactBranch: "main",
+    artifactDirty: false,
+    artifactOrigin: "release",
+    artifactIdentitySource: "embedded",
+    artifactGateVerdict: "ok",
+    gateBypassed: [] as string[],
+    hostHeadCommit: "b19927eb00000000000000000000000000000000",
+    gitCommit: "b19927eb00000000000000000000000000000000",
+    gitDirty: false,
+    artifactSha256: "a".repeat(64),
+    effortLevel: "max",
+    costLimitUsd: 0,
+    report: { resolved_ids: ["a", "b"] },
+  };
+
+  test("有拒绝 → unaccounted 点破「分数掺了非能力因素」并带成因分解", () => {
+    const a = buildAcceptance({
+      ...base,
+      permissionDenials: {
+        total: 113,
+        byInstance: { a: 70, b: 43 },
+        byReasonType: { other: 113 },
+        notMeasuredIds: [],
+        proxyDivergedIds: [],
+      },
+    });
+    expect(a.unaccounted).toContain("113");
+    // 必须说出"掺了非能力因素"这层判读 —— 只报数字会被读成能力问题
+    expect(a.unaccounted).toContain("非能力因素");
+    // 成因分解要在正文里，否则读的人分不清该查权限档还是什么都不用做
+    expect(a.unaccounted).toContain("other");
+  });
+
+  test("🔴 null 不许被当成 0：未量到的题必须单独点破", () => {
+    // 这是 A7.13.2 的形态本身（把「字段不存在」读成「值为 0」）。
+    // 若哪天有人把 notMeasuredIds 合进 total（当 0 加），这条会红。
+    const a = buildAcceptance({
+      ...base,
+      permissionDenials: {
+        total: 0,
+        byInstance: {},
+        byReasonType: {},
+        notMeasuredIds: ["a", "b"],
+        proxyDivergedIds: [],
+      },
+    });
+    expect(a.unaccounted).not.toBeNull();
+    expect(a.unaccounted).toContain("不知道");
+    expect(a.unaccounted).toContain("a");
+    // 关键：不许出现"0 次拒绝"这类会被读成"干净"的话
+    expect(a.unaccounted).not.toContain("被权限层拒绝共 0 次");
+  });
+
+  test("双源背离 → 报 P0（这是埋点漏了一条鉴权路径的唯一信号）", () => {
+    const a = buildAcceptance({
+      ...base,
+      permissionDenials: {
+        total: 0,
+        byInstance: {},
+        byReasonType: {},
+        notMeasuredIds: [],
+        proxyDivergedIds: ["b"],
+      },
+    });
+    expect(a.unaccounted).toContain("双源背离");
+    expect(a.unaccounted).toContain("permission_deny");
+  });
+
+  test("全量到且确实 0 次拒绝 → 这一项不进 unaccounted（0 是干净，不是噪声）", () => {
+    const a = buildAcceptance({
+      ...base,
+      permissionDenials: {
+        total: 0,
+        byInstance: {},
+        byReasonType: {},
+        notMeasuredIds: [],
+        proxyDivergedIds: [],
+      },
+    });
+    // 反向断言：恒报一句"权限拒绝 0 次"会让这个信号变成噪声、真出问题时被忽略
+    expect(a.unaccounted).toBeNull();
+  });
+
+  test("旧 run（不传 permissionDenials）→ 不声称任何权限结论", () => {
+    const a = buildAcceptance({ ...base });
+    expect(a.unaccounted).toBeNull();
+  });
+});
+
+/**
+ * A7.13.2 · 汇总层：`null` 不许被折成 `0`
+ *
+ * ## 为什么这组必须直接测 `aggregatePermissionDenials`
+ *
+ * 上一节的 buildAcceptance 断言是**传入已汇总好的对象**，所以它们完全覆盖不到
+ * 「`null` 怎么变成 total」这个决定。实测过：把汇总逻辑内联在 `runGrade` 里时，
+ * 改成 `permTotal += r.permission_denials ?? 0`（即 A7.13.2 的原始错法）
+ * **156 条断言全绿** —— 那个错法当时是零覆盖的。
+ *
+ * 这本身是一条教训：**断言写在哪一层，决定了它能防住哪一层的错**。
+ * 把关键判定抽成可单测的纯函数，比在集成层多写几条断言有效。
+ */
+describe("A7.13.2 · aggregatePermissionDenials：null ≠ 0", () => {
+  test("🔴 null 归 notMeasured，不加进 total（防 `?? 0` 那个错法）", () => {
+    const agg = aggregatePermissionDenials([
+      { instance_id: "a", permission_denials: null },
+      { instance_id: "b", permission_denials: 5, permission_denials_by_reason: { other: 5 } },
+    ]);
+    // a 没量到 → 不进 total（`?? 0` 的写法这里也会得 5，所以下面那条才是关键）
+    expect(agg.total).toBe(5);
+    // 关键断言：a 必须出现在 notMeasuredIds 里。`?? 0` 的写法会让它落空。
+    expect(agg.notMeasuredIds).toEqual(["a"]);
+    expect(agg.byInstance).toEqual({ b: 5 });
+  });
+
+  test("🔴 undefined（旧 run 无字段）与 null 同归 notMeasured", () => {
+    // 两者对读报告的人是同一件事：「这条不知道」。用 `!== null` 判会漏掉 undefined。
+    const agg = aggregatePermissionDenials([
+      { instance_id: "old" }, // 旧 run：压根没这个字段
+      { instance_id: "new", permission_denials: 0 },
+    ]);
+    expect(agg.notMeasuredIds).toEqual(["old"]);
+    // new 量到了且是 0 → **不进** notMeasured（0 是"干净"，与"不知道"不同）
+    expect(agg.notMeasuredIds).not.toContain("new");
+    expect(agg.total).toBe(0);
+  });
+
+  test("量到的 0 不进 byInstance（避免报告里出现一堆 ×0 噪声）", () => {
+    const agg = aggregatePermissionDenials([{ instance_id: "a", permission_denials: 0 }]);
+    expect(agg.byInstance).toEqual({});
+    expect(agg.notMeasuredIds).toEqual([]);
+  });
+
+  test("成因分解跨题合并", () => {
+    const agg = aggregatePermissionDenials([
+      { instance_id: "a", permission_denials: 3, permission_denials_by_reason: { other: 3 } },
+      {
+        instance_id: "b",
+        permission_denials: 4,
+        permission_denials_by_reason: { other: 1, rule: 3 },
+      },
+    ]);
+    expect(agg.total).toBe(7);
+    expect(agg.byReasonType).toEqual({ other: 4, rule: 3 });
+  });
+
+  test("双源背离只认一个方向：结构化 0 且字符串 >0", () => {
+    const agg = aggregatePermissionDenials([
+      // 背离：埋点漏了鉴权路径 → 要报
+      { instance_id: "diverged", permission_denials: 0, permission_denials_log_proxy: 7 },
+      // 反方向（文案改了）：不影响本字段正确性 → 不报
+      { instance_id: "renamed", permission_denials: 9, permission_denials_log_proxy: 0 },
+      // 两者一致 → 不报
+      { instance_id: "agree", permission_denials: 2, permission_denials_log_proxy: 2 },
+    ]);
+    expect(agg.proxyDivergedIds).toEqual(["diverged"]);
+  });
+
+  test("没量到的题不参与背离判定（null 时字符串数说明不了任何事）", () => {
+    const agg = aggregatePermissionDenials([
+      { instance_id: "a", permission_denials: null, permission_denials_log_proxy: 5 },
+    ]);
+    // 遥测缺失时结构化源不可用，拿它与字符串比是无意义的比较
+    expect(agg.proxyDivergedIds).toEqual([]);
+    expect(agg.notMeasuredIds).toEqual(["a"]);
+  });
+
+  test("空 records / 无 instance_id 的行 → 不抛、不产生幽灵条目", () => {
+    expect(aggregatePermissionDenials([]).total).toBe(0);
+    const agg = aggregatePermissionDenials([{ permission_denials: 5 }]);
+    expect(agg.total).toBe(0);
+    expect(agg.notMeasuredIds).toEqual([]);
   });
 });
 

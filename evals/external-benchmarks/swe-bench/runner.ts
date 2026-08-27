@@ -94,15 +94,59 @@ export interface RunRecord {
    */
   llm_fatal: boolean;
   /**
-   * headless 下被权限层拒绝的工具调用次数。
+   * headless 下被权限层拒绝的工具调用次数。**取自结构化遥测事件 `permission_deny`。**
    *
    * 每一次都等于**烧掉一轮而什么也没做成**，且在 outcome / wall_ms / patch_bytes 上
    * 完全看不出来。实测 smoke-8（`--permission-mode acceptEdits`）共 113 次，
    * 三条实例过半轮次是这么没的，却被记成"40 轮预算用尽"。
    * > 这个字段的用处是**验证权限配置是否把 agent 打残** ——
    * > 正常配置下它该接近 0，显著大于 0 就说明这一轮的分数掺了非能力因素。
+   *
+   * ## ⚠️ `null` 与 `0` 语义不同（A7.13.2，同 `host_slept_ms` 那条教训）
+   *
+   *   null = 遥测没取回（旧 run / 容器崩在建遥测之前）→ **不知道**有没有被拒
+   *   0    = 取回了、确实一次没被拒 → 干净，可外比
+   *
+   * 缺省成 0 会把「仪器没接上」伪装成「防线全绿」—— 那正是 A7.13.2 本身的形态。
    */
-  permission_denials: number;
+  permission_denials: number | null;
+  /**
+   * 拒绝成因分解（`reason_type` → 次数）。**这一列才回答「该不该动手」。**
+   *
+   * 光有计数分不清两种相反的形态：
+   *   `other`（headless 把 ask 自动拒了）→ 换权限档，本轮分数掺了非能力因素
+   *   `rule` （deny 规则命中）          → 配置按预期生效，什么都不用做
+   * smoke-8 那 113 次**全部**是前者，而 `permission_denials=113` 这一个数
+   * 既不说明这件事，也不排除后者。
+   *
+   * 遥测未取回时为 undefined（与 `permission_denials: null` 同时出现）。
+   */
+  permission_denials_by_reason?: Record<string, number>;
+  /**
+   * 拒绝路径分解（`execution_context` → 次数）：main / subagent / forked。
+   *
+   * 「主循环被拒」与「子代理被拒」处置不同（后者常是子代理白名单太窄），
+   * 混在一桶里则只能靠读日志区分。
+   */
+  permission_denials_by_context?: Record<string, number>;
+  /**
+   * agent.log 里 `权限拒绝` 字符串的出现次数 —— **交叉校验用，不是事实源**。
+   *
+   * ## 为什么留着一个已被取代的字段
+   *
+   * 它是 `permission_denials` 的**旧取数源**（A7.13.2 前）。留着不是为了向后兼容，
+   * 是为了**互相监视**：两个数应当同向变动，显著背离就说明其中一条链路坏了。
+   *
+   *   结构化 > 0 而字符串 == 0  → 日志文案改了（旧判据本来会静默归零，现在会被看见）
+   *   字符串 > 0 而结构化 == 0  → **埋点漏了一条鉴权路径**，是本次修复的回归
+   *
+   * 第二种形态尤其重要：产品侧将来新增第四条鉴权分支而忘了发埋点时，
+   * 这个背离是唯一会说话的信号。`record.ts` 在两者背离时写进 `unaccounted`。
+   *
+   * ⚠️ 它**不是** `permission_denials` 的 fallback。遥测缺失时后者落 null 而不是
+   * 回退读它 —— 回退等于把刚拆掉的那个代理判据又接回去，且下次没人看得出来。
+   */
+  permission_denials_log_proxy: number;
   /**
    * 编辑落点分解：改的是**被测源码**（`/testbed` 下）还是**自己的复现脚本**（`/tmp` 等）。
    *
@@ -479,11 +523,21 @@ export function patchOnlyAddsFiles(diff: string, allPaths: string[]): boolean {
  * 且报告侧在「零 patch 但两个信号都 false」时会显式说"原因未归因"，
  * 而不是默认它就是能力问题。轨迹取回（本次一并接上）是这层的长期替代：
  * 轨迹里有结构化的 `exit_status` / `RetryTelemetry`，不必猜文案。
+ *
+ * ## ✅ 权限拒绝已经走完那条「长期替代」路（A7.13.2，2026-08-27）
+ *
+ * 上面那段说的替代对**权限拒绝**这一项已经落地：产品侧三条鉴权路径现在都发
+ * `permission_deny` 事件，评测侧改读 `extractPermissionSignals`。
+ * 本函数里剩下的 `permissionDenialsLogProxy` 只作交叉校验。
+ *
+ * ⚠️ `hitMaxTurns` / `llmFatal` **仍是文案判据**，上面那段取舍对它们照旧成立。
+ * 别因为看到这一节就以为整个函数已经不靠文案了 —— 它们的结构化替代还没做。
  */
 export function extractAgentLogSignals(agentLog: string): {
   hitMaxTurns: boolean;
   llmFatal: boolean;
-  permissionDenials: number;
+  /** ⚠️ 字符串代理，**不是** `permission_denials` 的事实源（A7.13.2）。见下方注释。 */
+  permissionDenialsLogProxy: number;
   editsInsideRepo: number;
   editsOutsideRepo: number;
   editPathsOutsideRepo: string[];
@@ -506,7 +560,13 @@ export function extractAgentLogSignals(agentLog: string): {
   // 权限拒绝次数：headless 下每一次都等于**烧掉一轮**而 agent 什么也没做成。
   // 实测 smoke-8 共 113 次，三条实例过半轮次是这么没的 —— 而这在
   // `outcome` / `wall_ms` / `patch_bytes` 上一个字都看不出来。
-  const permissionDenials = (agentLog.match(/权限拒绝/g) ?? []).length;
+  //
+  // ⚠️ **A7.13.2 起这个数不再是事实源**，只作交叉校验（字段名带 LogProxy 是刻意的：
+  // 不改名的话下一个人会继续把它当权威值用）。权威值来自结构化遥测事件
+  // `permission_deny`，见 `extractPermissionSignals`。
+  // 这里保留它的唯一理由是**互相监视** —— 两个数背离即说明有一条链路坏了，
+  // 详见 `RunRecord.permission_denials_log_proxy` 那段。
+  const permissionDenialsLogProxy = (agentLog.match(/权限拒绝/g) ?? []).length;
 
   // ## 编辑落点：区分「改被测源码」与「改自己的复现脚本」
   //
@@ -545,12 +605,88 @@ export function extractAgentLogSignals(agentLog: string): {
   return {
     hitMaxTurns,
     llmFatal,
-    permissionDenials,
+    permissionDenialsLogProxy,
     editsInsideRepo,
     editsOutsideRepo: outsidePaths.length,
     // 去重排序：同一个复现脚本被改 5 次，读报告的人要看的是"哪个文件"，不是 5 个重复项
     editPathsOutsideRepo: [...new Set(outsidePaths)].sort(),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 结构化权限信号（A7.13.2）—— 取代「数中文字符串」那个代理判据
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 从取回的 `telemetry/events.jsonl` 读权限拒绝。**这是 `permission_denials` 的权威源。**
+ *
+ * ## A7.13.2 的真问题：一个字符串代理判据在假装是字段判据
+ *
+ * 原先 `permission_denials` 来自 `extractAgentLogSignals` 数 agent.log 里的
+ * `权限拒绝` 中文字符串。它**能出数**（smoke-8 实测 113 次都是真的），但：
+ *
+ *   - 产品侧改一次日志文案 → 这个数**静默归零**，而报告显示「权限拒绝 0 次 ✅」；
+ *   - 数不出**为什么**被拒 —— 而 smoke-8 那 113 次全是「headless 把 ask 自动拒了」
+ *     （换权限档就好），与「deny 规则按预期生效」（什么都不用做）在纯计数上同形；
+ *   - 数不出**谁**被拒 —— 主循环与子代理混在一桶里。
+ *
+ * 现在产品侧三条鉴权路径都发 `permission_deny` 事件（主循环 / 子代理 / forked，
+ * 见 `packages/core/src/analytics/events.ts` 的 `PermissionContext`），
+ * 本函数直接读那个事件。文案改动不再影响这个数。
+ *
+ * ## ⚠️ 三条口径，改之前先读
+ *
+ * 1. **`null` 与 `0` 语义必须分开**（同 `host_slept_ms` 那条教训，方向一致）：
+ *      null = 遥测没取回（旧 run、容器崩在建遥测之前）→ **不知道**有没有被拒
+ *      0    = 取回了、确实一次没被拒 → 干净
+ *    缺省成 0 会把「仪器没接上」伪装成「防线全绿」—— 这正是 A7.13.2 的形态本身，
+ *    在修它的过程里重演一次会格外讽刺。
+ * 2. **不做 sessionId 过滤**。一题一个容器一个会话，目录本身就是隔离边界；
+ *    按 sessionId 过滤需要先知道 id，而那要再读一个文件 —— 多一处会错的地方。
+ * 3. **坏行跳过而不是抛**。遥测是旁路观测，一行 JSON 坏了不该让一条有效记录变成失败
+ *    （与 exec-swebench.sh 里轨迹取回那条 `|| true` 同一条纪律）。
+ *    但坏行要计数并报出来，否则「全跳过了」与「本来就没有」不可分辨。
+ */
+export function extractPermissionSignals(eventsJsonl: string): {
+  /** 拒绝总次数 */
+  denials: number;
+  /** 按 `reason_type` 分解 —— 回答「该不该动手」的那一列 */
+  byReasonType: Record<string, number>;
+  /** 按 `execution_context` 分解（main / subagent / forked） */
+  byContext: Record<string, number>;
+  /** 解析失败的行数（>0 时这个数是下界，不是准确值） */
+  malformedLines: number;
+} {
+  let denials = 0;
+  let malformedLines = 0;
+  const byReasonType: Record<string, number> = {};
+  const byContext: Record<string, number> = {};
+
+  for (const line of eventsJsonl.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let rec: any;
+    try {
+      rec = JSON.parse(trimmed);
+    } catch {
+      malformedLines++;
+      continue;
+    }
+    // 事件名字段是 `eventName`（见 analytics/exporters/local.ts 的 record 构造）。
+    // ⚠️ 别顺手兼容 `event_name`：那个键在本仓不存在，写了它等于给一个
+    // 永远不成立的分支，下一个人会以为两种形态都在用。
+    if (rec?.eventName !== "permission_deny") continue;
+    denials++;
+    const meta = rec.metadata ?? {};
+    // 缺字段落到 "unknown" 而不是跳过：跳过会让分解之和小于总数，
+    // 读的人无法判断差额是"漏采"还是"我数错了"。
+    const reasonType = typeof meta.reason_type === "string" ? meta.reason_type : "unknown";
+    const context = typeof meta.execution_context === "string" ? meta.execution_context : "unknown";
+    byReasonType[reasonType] = (byReasonType[reasonType] ?? 0) + 1;
+    byContext[context] = (byContext[context] ?? 0) + 1;
+  }
+
+  return { denials, byReasonType, byContext, malformedLines };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

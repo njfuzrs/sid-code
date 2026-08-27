@@ -23,6 +23,8 @@ import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { ModelAvailabilityService } from "../llm/availability.ts";
+// 漏斗 2 · 权限：走门面而非直调 logEvent（门面强制脱敏工具名）。
+import { logPermissionDeny } from "../analytics/events.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -311,6 +313,19 @@ export async function runForkedAgent(
         const decision = await options.canUseTool(tu.name, tu.input);
         if (decision.behavior !== "allow") {
           deniedToolCalls++;
+          // 漏斗 2：`deniedToolCalls` 只进返回值与一行日志，出不了聚合口径 ——
+          // 调用方拿到它多半就丢了（实测唯一去处是那句 log）。补一条结构化埋点，
+          // 让 forked 路径的拒绝与主循环/子代理在同一张表里可比。
+          //
+          // reasonType 固定 "other"：这条路走的是调用方注入的 `canUseTool` 回调，
+          // 拿不到 `PermissionDecisionReason` —— **不猜**。填一个像模像样的
+          // "rule" 会让读数的人以为有规则参与，而那是编的。
+          logPermissionDeny(tu.name, {
+            source: "other",
+            needsPrompt: false,
+            context: "forked",
+            reasonType: "other",
+          });
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

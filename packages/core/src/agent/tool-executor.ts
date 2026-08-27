@@ -26,6 +26,10 @@ import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
+// 漏斗 2 · 权限：子代理侧此前**一条埋点都不发**，于是"子代理被权限层打残"
+// 在 `permission_deny` 上完全隐身。走门面而非直调 logEvent —— 门面强制脱敏工具名
+// （MCP 工具名含用户私有服务名），业务侧拿不到裸传接口。
+import { logPermissionDeny } from "../analytics/events.ts";
 
 /**
  * GAP-07（子代理侧补齐）：子代理工具进度回调。
@@ -274,6 +278,17 @@ async function executeSingleTool(
       // 子代理无 UI 通道，needsConfirmation 也直接 deny（dontAsk 语义）
       const reason = decision.reason || "子代理不允许此操作";
       log.info("SUBAGENT:PERM", `权限拒绝 ${block.name}: ${reason}`);
+      // 漏斗 2：结构化记一笔。`context:"subagent"` 是必须的 ——
+      // 不分路径则子代理的拒绝与主循环的混在一桶里，"子代理被打残"这个形态
+      // 只能靠 grep 中文日志看出来，而那正是 A7.13.2 要消灭的判据形态。
+      // needsPrompt:false：子代理结构上没有弹窗通道（ask 在此直接降级为 deny）。
+      logPermissionDeny(block.name, {
+        source: "rule",
+        needsPrompt: false,
+        durationMs: Date.now() - toolStartedAt,
+        context: "subagent",
+        reasonType: decision.decisionReason?.type,
+      });
       // Pre/Post 配对：权限拒绝也要补 Failure 收尾。
       firePostToolUseFailure(
         hookSystem,
@@ -308,6 +323,17 @@ async function executeSingleTool(
         "SUBAGENT:PERM",
         `权限拒绝 ${block.name}: 未配置权限检查器，写类操作默认拒绝（fail-closed）`,
       );
+      // 漏斗 2：fail-closed 拒绝**必须**也记 —— 它是"调用方漏传 permissionChecker"
+      // 的唯一可观测信号（那是本仓修过的一个 P0 缺口：自定义子代理路径漏传检查器，
+      // 权限层被整体绕过）。source:"other" 而非 "rule"：这里根本没有规则参与，
+      // 是缺依赖时的兜底档 —— 填 "rule" 会让它伪装成"配置生效"。
+      logPermissionDeny(block.name, {
+        source: "other",
+        needsPrompt: false,
+        durationMs: Date.now() - toolStartedAt,
+        context: "subagent",
+        reasonType: "other",
+      });
       // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
       firePostToolUseFailure(
         hookSystem,
