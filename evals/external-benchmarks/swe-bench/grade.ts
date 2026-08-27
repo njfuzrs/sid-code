@@ -84,19 +84,48 @@ export interface Acceptance {
   model: string | null;
   gateway_host: string | null;
   /**
-   * 被测代码的身份 —— **`git_commit` 才是事实源，`sid_code_version` 不是**。
+   * 被测代码的身份 —— **`artifact_commit` 才是事实源**。
    *
    * 实测背景（2026-08-26）：`package.json` 停在 `0.1.601`，而 tag `v0.1.601` 打在
    * 8月21 的提交上；此后合入的 429 重试修复、权限修复都不在那个 tag 里。
    * 也就是说**同一个版本号对应了几十个不同的 commit** —— 只记 version 等于没记。
    *
-   * `git_dirty=true` 时连 commit 也不能完全描述产物，报告要点破"只可自比"。
-   * `artifact_sha256` 是最后一道：上面三项都对但产物是旧的（`make build` 不 bump
-   * 版本号，所以旧路径会被静默复用）时，只有字节指纹能发现。
+   * ## ⚠️ 为什么 `git_commit` 不够，非要加 `artifact_commit`（F3）
+   *
+   * `git_commit` 记的是**跑评测时宿主的 HEAD**，而产物可能是任意时候编的 ——
+   * 这两个值不一定相等，**而读报告的人会当它们相等**。F1 那个场景里
+   * `git_commit` 是 8月26 的 HEAD、产物是 8月21 编的，于是 run-meta.json
+   * 从"事实源"退化成了"一个看起来很可靠的错值"。
+   *
+   * 所以身份字段现在是两组：
+   *   `artifact_commit` / `artifact_dirty` / `artifact_origin`  产物**自报**（编在字节里）
+   *   `host_head_commit` / `git_dirty`                          宿主状态，仅供对照
+   *
+   * `artifact_identity_source` 是最要紧的一个：`mtime-fallback` 意味着这一轮
+   * **没量到**产物身份（老产物或漏带 define），判据退化成了时间戳。
+   * 它与 `embedded` 的区别绝不能塌掉 —— 「没量到」冒充「量到了且没变」正是
+   * 本仓反复踩的那类假结论。
+   *
+   * `artifact_sha256` 仍是最后一道：上面全部字段都对而产物仍是旧的时，只有字节指纹能发现。
    *
    * 全部 null = 旧 run 的兼容值，读到 null 就该知道**不知道这个分数是哪份代码跑的**。
    */
   sid_code_version: string | null;
+  /** 产物自报的 40 位 commit。**事实源。** null = 旧 run 没记。 */
+  artifact_commit: string | null;
+  artifact_branch: string | null;
+  /** 产物构建时工作区是否脏。三态：`"unknown"` ≠ false（后者是替它断言"干净"）。 */
+  artifact_dirty: boolean | "unknown" | null;
+  /** `local` / `ci` / `release` / `source` —— 「本地随手编的」与「发布流水线出的」要分得开。 */
+  artifact_origin: string | null;
+  /** `embedded` = 真读到了身份；`mtime-fallback` = **没量到**，判据退化成时间戳。 */
+  artifact_identity_source: string | null;
+  /** G1 判定：ok / stale / foreign / no-identity / ...。非 ok 说明这一轮带着已知问题跑。 */
+  artifact_gate_verdict: string | null;
+  /** 用了哪些逃生舱（stale / foreign）。非空 = 这份分数不可与没用逃生舱的 run 并排。 */
+  gate_bypassed: string[] | null;
+  /** 跑评测时宿主的 HEAD。**不是产物身份**，仅供对照。旧字段 `git_commit` 的新名字。 */
+  host_head_commit: string | null;
   git_commit: string | null;
   git_dirty: boolean | null;
   artifact_sha256: string | null;
@@ -330,6 +359,14 @@ export function buildAcceptance(input: {
   gatewayHost?: string | null;
   /** 被测代码身份，见 Acceptance 同名字段。缺省 null = 旧 run，unaccounted 会点破 */
   sidCodeVersion?: string | null;
+  artifactCommit?: string | null;
+  artifactBranch?: string | null;
+  artifactDirty?: boolean | "unknown" | null;
+  artifactOrigin?: string | null;
+  artifactIdentitySource?: string | null;
+  artifactGateVerdict?: string | null;
+  gateBypassed?: string[] | null;
+  hostHeadCommit?: string | null;
   gitCommit?: string | null;
   gitDirty?: boolean | null;
   artifactSha256?: string | null;
@@ -394,19 +431,80 @@ export function buildAcceptance(input: {
 
   // 同理，被测代码身份缺失也必须点破，理由更强：模型至少还能从网关侧查，
   // 而"跑的是哪份代码"事后无从追溯。
-  // ⚠️ 判据是 git_commit 而不是 sid_code_version —— 版本号在两次发布之间不动，
+  // ⚠️ 判据是 commit 而不是 sid_code_version —— 版本号在两次发布之间不动，
   // 同一个 0.1.601 对应过几十个 commit（2026-08-26 实测），有它等于没有。
-  if (!input.gitCommit) {
+  //
+  // ⚠️ 判据优先 artifact_commit（产物自报）而不是 host_head_commit：
+  // 后者是"跑评测时宿主在哪个 commit"，与"跑的是哪份代码"是两件事（F3）。
+  if (!input.artifactCommit && !input.gitCommit) {
     notes.push(
-      "未记录 git_commit —— 事后无法确定这一轮跑的是哪份代码" +
+      "未记录产物 commit —— 事后无法确定这一轮跑的是哪份代码" +
         "（版本号不够：`make build` 不 bump，同一版本号对应过多个 commit）",
     );
-  }
-  if (input.gitDirty) {
+  } else if (!input.artifactCommit || input.artifactCommit === "unknown") {
+    // 有 host HEAD 但没有产物 commit = 旧 run（本机制上线之前跑的）。
+    // 这不是"通过"，是**这一轮的身份没量到** —— 必须与量到了的 run 区分开。
     notes.push(
-      `工作区不干净（git_dirty=true）—— 产物与 ${(input.gitCommit ?? "?").slice(0, 8)} ` +
-        "不完全对应，这一轮**只可自比，不可与其他 run 外比**",
+      "未记录 artifact_commit（产物自报的 commit）—— " +
+        `只有 host_head_commit=${(input.hostHeadCommit ?? input.gitCommit ?? "?").slice(0, 8)}，` +
+        "而那是**跑评测时宿主的 HEAD**，不是产物编自哪个 commit。" +
+        "产物可能是几天前编的，这两个值不一定相等",
     );
+  }
+
+  // 身份"没量到"必须与"量到了且没变"分开。塌成一个的后果：一个跑了旧产物的 run
+  // 看起来与跑了当前代码的 run 一样干净。
+  if (input.artifactIdentitySource === "mtime-fallback") {
+    notes.push(
+      "产物身份**没量到**（artifact_identity_source=mtime-fallback）—— " +
+        "老产物或构建时漏带 --define，本轮判据退化成 mtime。" +
+        "⚠️ mtime 两个方向都会错（`cp` 重置成「现在」、docs 提交推进 HEAD 时间），" +
+        "所以「产物是新的」这件事本轮**没有得到验证**",
+    );
+  }
+
+  // 逃生舱留痕。逃生舱本身不是问题，**用了却不留痕**才是 —— 一个用了
+  // SWE_ALLOW_STALE_ARTIFACT 的 run 与一个正常 run 在分数上完全看不出区别。
+  if (input.gateBypassed && input.gateBypassed.length > 0) {
+    const which = input.gateBypassed.join(", ");
+    notes.push(
+      `产物身份门禁被绕过（gate_bypassed=[${which}]）—— ` +
+        (input.gateBypassed.includes("stale")
+          ? "**这一轮测的不是当前代码**（产物编出来之后编译输入又改过）；"
+          : "") +
+        (input.gateBypassed.includes("foreign")
+          ? "产物来自另一条线（不在当前 HEAD 的历史里）；"
+          : "") +
+        "这份 solved_count 不可与未绕过门禁的 run 并排",
+    );
+  } else if (
+    input.artifactGateVerdict &&
+    !["ok", "no-identity"].includes(input.artifactGateVerdict)
+  )
+    notes.push(`产物身份门禁判定 ${input.artifactGateVerdict} —— 这一轮带着已知的产物问题跑`);
+
+  // 产物**构建时**工作区脏 → commit 只描述基线，改动内容无记录。
+  // ⚠️ 与宿主脏（git_dirty）刻意分开：一个从干净 commit 编出的好产物，
+  // 不该因为宿主此刻有未提交改动而被打上"只可自比"的标签。
+  if (input.artifactDirty === true) {
+    notes.push(
+      `产物编自脏工作区（artifact_dirty=true，基线 ${(input.artifactCommit ?? "?").slice(0, 8)}）` +
+        "—— commit 只描述了基线、改动内容无记录，这一轮**只可自比，不可与其他 run 外比**",
+    );
+  } else if (input.artifactDirty === undefined || input.artifactDirty === null) {
+    if (input.gitDirty) {
+      // 旧 run 的路径：只有宿主脏这一个信号，语义弱得多但仍要点破。
+      notes.push(
+        `宿主工作区不干净（git_dirty=true，HEAD ${(input.gitCommit ?? "?").slice(0, 8)}）—— ` +
+          "旧 run 没有 artifact_dirty，无法区分「产物编自脏工作区」与「只是宿主此刻脏」，" +
+          "保守起见按只可自比处理",
+      );
+    }
+  }
+
+  // 发布制品跑的评测与本地包跑的评测是两件事，值得能看出来 —— 但都不拦。
+  if (input.artifactOrigin === "source") {
+    notes.push("artifact_origin=source（源码直跑，不是编译产物）—— 与产物 run 的耗时不可并排");
   }
   // 成本闸门开着 = 整轮可能在 exceeded 处静默 return，被记成 no_patch。
   // 这条必须报出来：它让一个预算问题长得像能力问题。
@@ -433,6 +531,14 @@ export function buildAcceptance(input: {
     model: input.model ?? null,
     gateway_host: input.gatewayHost ?? null,
     sid_code_version: input.sidCodeVersion ?? null,
+    artifact_commit: input.artifactCommit ?? null,
+    artifact_branch: input.artifactBranch ?? null,
+    artifact_dirty: input.artifactDirty ?? null,
+    artifact_origin: input.artifactOrigin ?? null,
+    artifact_identity_source: input.artifactIdentitySource ?? null,
+    artifact_gate_verdict: input.artifactGateVerdict ?? null,
+    gate_bypassed: input.gateBypassed ?? null,
+    host_head_commit: input.hostHeadCommit ?? input.gitCommit ?? null,
     git_commit: input.gitCommit ?? null,
     git_dirty: input.gitDirty ?? null,
     artifact_sha256: input.artifactSha256 ?? null,
@@ -526,6 +632,65 @@ export function renderTimingSection(t: TimingProfile): string[] {
   return lines;
 }
 
+/**
+ * 身份那几行。抽出来是因为它有 6 个分支，内联进 renderReport 的数组字面量里读不动。
+ *
+ * ## 渲染层的三条硬约束（都是"注释里写了不够"那一类）
+ *
+ * 1. **`mtime-fallback` 必须在正文里写「没量到」这三个字**，不能只显示字段值。
+ *    读报告的人看不到类型注释，看到一个填着值的字段就会当它是量到的结果。
+ * 2. **产物 commit 与宿主 HEAD 分两行**，且不一致时明确标出来。
+ * 3. **逃生舱要显眼**。一个用了 `SWE_ALLOW_STALE_ARTIFACT` 的 run 与正常 run
+ *    在分数上完全看不出区别，这一行是唯一的区别。
+ */
+export function renderIdentityLines(a: Acceptance): string[] {
+  const lines: string[] = [];
+  const measured = a.artifact_identity_source === "embedded";
+  const noIdentity = a.artifact_identity_source === "mtime-fallback";
+
+  if (measured && a.artifact_commit) {
+    lines.push(
+      `- **被测产物**：commit \`${a.artifact_commit}\`` +
+        `（分支 \`${a.artifact_branch ?? "?"}\`，origin \`${a.artifact_origin ?? "?"}\`）` +
+        `${a.artifact_dirty === true ? " ⚠️ **产物编自脏工作区，只可自比**" : ""}` +
+        " ← 产物自报，**事实源**",
+    );
+  } else if (noIdentity) {
+    lines.push(
+      "- **被测产物**：⚠️ **身份没量到**（产物不含构建身份 —— 老产物，或构建时漏带 " +
+        "`--define process.env.SID_CODE_BUILD_INFO`）。本轮判据退化成 mtime，" +
+        "而 mtime 两个方向都会错 —— **「跑的是当前代码」这件事没有得到验证**",
+    );
+  } else {
+    lines.push(
+      `- **被测产物**：commit 未记录（本机制上线之前的 run）—— ` + "不知道这个分数是哪份代码跑的",
+    );
+  }
+
+  const host = a.host_head_commit ?? a.git_commit;
+  lines.push(
+    `- 宿主 HEAD：\`${host ?? "未记录"}\`` +
+      `${a.git_dirty ? " ⚠️ 宿主工作区脏" : ""}` +
+      "（跑评测时宿主在哪个 commit，**不是产物身份**，仅供对照）" +
+      (measured && a.artifact_commit && host && a.artifact_commit !== host
+        ? " ⚠️ **与产物 commit 不一致**（在 PR 分支上验证改动时这是正常的）"
+        : ""),
+  );
+
+  if (a.gate_bypassed && a.gate_bypassed.length > 0) {
+    lines.push(
+      `- ⛔ **产物身份门禁被绕过**：\`${a.gate_bypassed.join(", ")}\` —— ` +
+        "这份 solved_count **不可与未绕过门禁的 run 并排**",
+    );
+  }
+
+  lines.push(
+    `- 版本号：\`${a.sid_code_version ?? "未记录"}\`（**仅供对照** —— ` +
+      "`make build` 不 bump，同一版本号对应过几十个 commit）",
+  );
+  return lines;
+}
+
 export function renderReport(a: Acceptance): string {
   const b = (v: boolean | null) => (v === null ? "未跑" : v ? "PASS" : "FAIL");
   const counts = Object.values(a.outcomes).reduce<Record<string, number>>((acc, v) => {
@@ -545,12 +710,13 @@ export function renderReport(a: Acceptance): string {
     `- prompt 版本：\`${a.prompt_version}\``,
     `- 被测模型：\`${a.model ?? "未记录（该分数不可与其他 run 并排）"}\``,
     `- 网关 host：\`${a.gateway_host ?? "未记录"}\``,
-    // ⚠️ commit 排在 version 前面，且 version 带「仅供对照」——
-    // 顺序本身在传达哪个是事实源。反过来写会让人拿 version 去复算，
-    // 而同一个版本号对应过多个 commit（2026-08-26 实测）。
-    `- 被测代码：commit \`${a.git_commit ?? "未记录"}\`` +
-      `${a.git_dirty ? " ⚠️ **工作区脏，只可自比**" : ""}` +
-      `（version \`${a.sid_code_version ?? "未记录"}\` 仅供对照，同一版本号可对应多个 commit）`,
+    // ⚠️ 顺序本身在传达哪个是事实源：产物 commit 第一、宿主 HEAD 第二、version 最后
+    // 且带「仅供对照」。反过来写会让人拿 version 去复算，而同一个版本号
+    // 对应过多个 commit（2026-08-26 实测）。
+    //
+    // ⚠️ 「产物 commit」与「宿主 HEAD」必须分两行印（F3）。合成一行的旧写法
+    // 让读者把它们当成同一件事 —— 而产物可能是几天前编的。
+    ...renderIdentityLines(a),
     `- 产物指纹：\`${a.artifact_sha256 ?? "未记录"}\``,
     `- 必控变量：effort \`${a.effort_level ?? "未记录"}\`，` +
       `成本闸门 ${a.cost_limit_usd === 0 ? "不限" : `$${a.cost_limit_usd ?? "未记录"}`}，` +
@@ -718,6 +884,14 @@ async function main() {
   let metaCommit: string | null = null;
   let metaDirty: boolean | null = null;
   let metaArtifactSha: string | null = null;
+  let metaArtifactCommit: string | null = null;
+  let metaArtifactBranch: string | null = null;
+  let metaArtifactDirty: boolean | "unknown" | null = null;
+  let metaArtifactOrigin: string | null = null;
+  let metaIdentitySource: string | null = null;
+  let metaGateVerdict: string | null = null;
+  let metaGateBypassed: string[] | null = null;
+  let metaHostHead: string | null = null;
   let metaEffort: string | null = null;
   let metaCostLimit: number | null = null;
   let metaJobs: number | null = null;
@@ -734,6 +908,14 @@ async function main() {
         effort_level?: string;
         cost_limit_usd?: number;
         jobs?: number;
+        artifact_commit?: string;
+        artifact_branch?: string;
+        artifact_dirty?: boolean | string;
+        artifact_origin?: string;
+        artifact_identity_source?: string;
+        artifact_gate_verdict?: string;
+        gate_bypassed?: string[];
+        host_head_commit?: string;
       };
       metaModel = m.model ?? null;
       metaHost = m.gateway_host ?? null;
@@ -743,6 +925,25 @@ async function main() {
       // 记成 false 就是替它断言"干净"—— 那正是这个字段要防的事。
       metaDirty = m.git_dirty ?? null;
       metaArtifactSha = m.artifact_sha256 ?? null;
+      // 产物身份（本机制上线之后的 run 才有）。**"unknown" 一律折成 null** ——
+      // 让下游只需判 null，不必在每个消费点各自记得 "unknown" 也算没有。
+      const nn = (v: string | undefined): string | null => (v && v !== "unknown" ? v : null);
+      metaArtifactCommit = nn(m.artifact_commit);
+      metaArtifactBranch = nn(m.artifact_branch);
+      metaArtifactOrigin = nn(m.artifact_origin);
+      metaIdentitySource = nn(m.artifact_identity_source);
+      metaGateVerdict = nn(m.artifact_gate_verdict);
+      metaGateBypassed = Array.isArray(m.gate_bypassed) ? m.gate_bypassed : null;
+      metaHostHead = nn(m.host_head_commit);
+      // artifact_dirty 是**三态**：true / false / "unknown"。
+      // 这里刻意保留 "unknown" 那一档（不折成 null）—— 它的语义是
+      // 「产物里就是没记 dirty」，与「旧 run 没有这个字段」不是一回事。
+      metaArtifactDirty =
+        typeof m.artifact_dirty === "boolean"
+          ? m.artifact_dirty
+          : m.artifact_dirty === "unknown"
+            ? "unknown"
+            : null;
       metaEffort = m.effort_level ?? null;
       metaCostLimit = m.cost_limit_usd ?? null;
       metaJobs = m.jobs ?? null;
@@ -796,6 +997,14 @@ async function main() {
     model: metaModel,
     gatewayHost: metaHost,
     sidCodeVersion: metaVersion,
+    artifactCommit: metaArtifactCommit,
+    artifactBranch: metaArtifactBranch,
+    artifactDirty: metaArtifactDirty,
+    artifactOrigin: metaArtifactOrigin,
+    artifactIdentitySource: metaIdentitySource,
+    artifactGateVerdict: metaGateVerdict,
+    gateBypassed: metaGateBypassed,
+    hostHeadCommit: metaHostHead,
     gitCommit: metaCommit,
     gitDirty: metaDirty,
     artifactSha256: metaArtifactSha,

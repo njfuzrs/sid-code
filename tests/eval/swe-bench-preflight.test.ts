@@ -516,9 +516,12 @@ describe("契约", () => {
     expect(PROBE_CANARY_FLAG.startsWith("--")).toBe(true);
   });
 
-  test("五项断言编号 1-5 齐全且不重复（与 接入计划.md §4.1 一一对应）", () => {
+  test("六项断言编号 1-6 齐全且不重复（1-5 对应 接入计划.md §4.1，⑥ 由构建溯源方案加）", () => {
+    // ⑥（产物身份）不在原 §4.1 里。它与 ⑤ 的分工：⑤ 问「这个二进制能不能起、
+    // flag 收不收」（能力），⑥ 问「它是**哪份代码**编的」（身份）——
+    // 一个 5 天前编的产物在 ⑤ 上是满分，而它一行本轮修复都不含。
     const ids = runPreflight({ bin: "/nope", json: false }, fakeRunner([])).map((c) => c.id);
-    expect(ids).toEqual(["1", "2", "3", "4", "5"]);
+    expect(ids).toEqual(["1", "2", "3", "4", "5", "6"]);
   });
 
   test("probeDockerUp：docker info 非 0 → false（不把「问不到」当「起着」）", () => {

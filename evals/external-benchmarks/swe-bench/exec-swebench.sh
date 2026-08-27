@@ -53,7 +53,17 @@
 #                              之后的迭代轮再开并发。
 #   SWE_GRADE_JOBS             判分并发，默认 1。判分不碰网关且是纯函数，
 #                              **不影响可比性**（与 SWE_JOBS 不同）；代价是 N 倍内存。
-#   SWE_ALLOW_STALE_ARTIFACT   跳过「产物比 HEAD 老」门禁（做旧产物对照时才用）
+#   SWE_ARTIFACT               显式指定产物（tar.gz 或裸二进制都收），跳过全部自动查找
+#   SWE_BUILD_REF              点名 dist/branch-builds/ 里的一个包（commit 前缀或分支 slug）。
+#                              ⚠️ 点名了却找不到时**直接失败，不静默回落** ——
+#                              回落会让人以为跑的是他点名的那个包。
+#   SWE_ALLOW_STALE_ARTIFACT   放行「产物编出来之后编译输入又改了」（做旧产物对照时才用）。
+#                              会记进 run-meta 的 gate_bypassed，报告里会点破"不可与其他 run 并排"。
+#   SWE_ALLOW_FOREIGN_ARTIFACT 放行「产物来自另一条线（不是当前 HEAD 的祖先）」（跨分支 A/B）。
+#                              ⚠️ 与上一个**语义不同，刻意不合成一个**：想做对照实验的人
+#                              不该顺手把"别的分支"也放过去，这两件事在报告里的解读完全不同。
+#                              （unknown-commit / sidecar-mismatch **没有**逃生舱：
+#                               那两个是"数据本身有问题"，放行等于允许在不知道跑的是什么时出分数。）
 #
 # ⚠️ 权限**没有** SWE_PERMISSION_MODE 这个开关了 —— 唯一取值是
 #    `--dangerously-skip-permissions`（写死，见 build_agent_script ①）。
@@ -218,26 +228,95 @@ image_name() {
 #
 # 查找顺序（**baseline 优先**，因为跑 evals 的场景就是 qemu）：
 #   ① SWE_ARTIFACT 显式指定（tar.gz 或裸二进制都收）
-#   ② dist/release/<ver>/sid-code-<ver>-linux-x64-baseline.tar.gz
-#   ③ dist/release/<ver>/sid-code-<ver>-linux-x64.tar.gz（原生 x64 机器上就该用这个）
-# 找到 ③ 而没有 ② 时**不静默接受** —— cmd_run 会警告「qemu 下大概率 SIGILL」，
+#   ② SWE_BUILD_REF=<commit前缀|分支slug> → dist/branch-builds/ 里点名一个分支包
+#   ③ dist/branch-builds/<当前分支slug>-<当前HEAD的commit12>/  ← 默认找「当前状态的包」
+#   ④ dist/release/<ver>/sid-code-<ver>-linux-x64-baseline.tar.gz
+#   ⑤ dist/release/<ver>/sid-code-<ver>-linux-x64.tar.gz（原生 x64 机器上就该用这个）
+# 找到 ⑤ 而没有 ④ 时**不静默接受** —— cmd_run 会警告「qemu 下大概率 SIGILL」，
 # 否则下一个人要把上面这段重新debug一遍。
+#
+# ## ③ 是关键：默认行为从「找版本号对应的包」变成「找当前 commit 对应的包」
+#
+# 旧默认（只有 ④⑤）挑的是 `dist/release/<ver>/`，而 `<ver>` 来自 package.json、
+# `make build` 刻意不 bump 它 —— 所以「重新构建」不会改变挑中的路径。
+# F1 那个事故就是这样发生的：评测静默挑到 5 天前的产物，而 version / 分数 / 日志全部正常。
+# 换成按 commit 找之后，那个形态在**挑选阶段**就不会发生：找不到就报
+# 「当前 commit 没有包，先编一个」，而不是静默退回一个旧包。
+#
+# ⚠️ **④⑤ 必须保留**：删掉会让发布制品突然不可用于评测，而「用发布制品跑一轮」
+# 是个合法且重要的场景（验证用户真正拿到的字节）。走到 ④⑤ 时会打一行提示。
+#
+# ⚠️ 目录名（`<slug>-<commit12>`）只是**人肉可读的索引**，不是身份。
+# 门禁（G1）一律读产物字节里那 40 位 commit，绝不解析目录名 ——
+# 目录名撞了最多是覆盖一个包（重编即可），判据读错 commit 会让整轮评测的归因错掉。
+#
+# ## ⚠️ 输出格式是 `<source>\t<path>`，不是「路径 + 一个全局变量」
+#
+# 第一版写成「echo 路径 + 顺手设 ARTIFACT_SOURCE=...」，实测**那个变量恒为空**：
+# 调用方是 `artifact="$(artifact_for "$arch")"`，命令替换起的是**子 shell**，
+# 里面的赋值不会回到父 shell。
+# 失败形态：run-meta 里 `artifact_source` 永远是 `unknown`，而这个字段
+# 恰恰是"这个包是怎么挑中的"的唯一记录 —— 一个字段在、有值、看起来正常，
+# 但值是废的（本仓 metric-exists-but-value-is-junk 的同型）。
+# 所以两个值一起从 stdout 出来，由调用方拆开。
+artifact_source_of() { printf '%s' "${1%%$'\t'*}"; }
+artifact_path_of() { printf '%s' "${1#*$'\t'}"; }
 artifact_for() {
   local arch="$1" ver suffix
   if [[ -n "${SWE_ARTIFACT:-}" ]]; then
-    echo "$SWE_ARTIFACT"
+    printf 'SWE_ARTIFACT\t%s\n' "$SWE_ARTIFACT"
     return
   fi
+
+  local bb="$REPO_ROOT/dist/branch-builds"
+
+  # ② 显式点名一个分支包。匹配「目录名含这个串」—— commit 前缀与分支 slug 都能用。
+  if [[ -n "${SWE_BUILD_REF:-}" ]]; then
+    local hit
+    hit="$(find "$bb" -maxdepth 1 -type d -name "*${SWE_BUILD_REF}*" 2>/dev/null | sort | head -1)"
+    if [[ -n "$hit" ]]; then
+      local pkg
+      pkg="$(find "$hit" -maxdepth 1 -name '*.tar.gz' 2>/dev/null | sort | head -1)"
+      [[ -z "$pkg" && -f "$hit/sid-code" ]] && pkg="$hit/sid-code"
+      if [[ -n "$pkg" ]]; then
+        printf 'SWE_BUILD_REF\t%s\n' "$pkg"
+        return
+      fi
+    fi
+    # 点名了却找不到 → **不静默回落**。回落会让人以为跑的是他点名的那个包。
+    bad "SWE_BUILD_REF=${SWE_BUILD_REF} 在 dist/branch-builds/ 里没有匹配的包"
+    bad "   现有的包：$(find "$bb" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null | tr '\n' ' ')"
+    return 1
+  fi
+
+  # ③ 当前分支 + 当前 HEAD 的包
+  local cur_commit12 cur_slug cur_dir
+  cur_commit12="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null | cut -c1-12)"
+  cur_slug="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null |
+    tr -c 'A-Za-z0-9' '-' | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-32)"
+  if [[ -n "$cur_commit12" && -n "$cur_slug" ]]; then
+    cur_dir="$bb/${cur_slug}-${cur_commit12}"
+    if [[ -d "$cur_dir" ]]; then
+      local pkg
+      pkg="$(find "$cur_dir" -maxdepth 1 -name '*.tar.gz' 2>/dev/null | sort | head -1)"
+      [[ -z "$pkg" && -f "$cur_dir/sid-code" ]] && pkg="$cur_dir/sid-code"
+      if [[ -n "$pkg" ]]; then
+        printf 'branch-builds/current-commit\t%s\n' "$pkg"
+        return
+      fi
+    fi
+  fi
+
   ver="$(node -e 'console.log(require("'"$REPO_ROOT"'/package.json").version)' 2>/dev/null ||
     grep -m1 '"version"' "$REPO_ROOT/package.json" | sed 's/.*"version": *"\([^"]*\)".*/\1/')"
   suffix="linux-x64"
   [[ "$arch" == "arm64" ]] && suffix="linux-arm64"
   local baseline="$REPO_ROOT/dist/release/$ver/sid-code-$ver-$suffix-baseline.tar.gz"
   [[ -f "$baseline" ]] && {
-    echo "$baseline"
+    printf 'dist/release\t%s\n' "$baseline"
     return
   }
-  echo "$REPO_ROOT/dist/release/$ver/sid-code-$ver-$suffix.tar.gz"
+  printf 'dist/release\t%s\n' "$REPO_ROOT/dist/release/$ver/sid-code-$ver-$suffix.tar.gz"
 }
 
 # ## ⚠️ `dist/release/<ver>/` 里的产物可能比 HEAD 老很多天，而版本号看不出来
@@ -250,34 +329,83 @@ artifact_for() {
 # 分数正常、日志正常、run-meta 里的 version 也正常。
 #
 # 这就是 run-meta 必须记 `git_commit` + `artifact_sha256` 而不是只记 version 的原因
-# （同一个版本号能对应几十个 commit）。这里再加一道**主动的时间戳比对**：
-# 产物比 HEAD 的提交时间还早 → 大概率不含最近的改动，直接停。
+# （同一个版本号能对应几十个 commit）。
 #
-# ⚠️ 判据用 mtime 而不是解包读版本号：版本号在两次发布之间不动，
-# 正是它骗人的地方；mtime 是"这份字节什么时候产生的"，与 bump 无关。
-# 逃生舱 SWE_ALLOW_STALE_ARTIFACT=1（比如你确实想复跑一个旧产物做对照）。
-warn_if_stale_artifact() {
+# ## ⚠️ 上一轮用 mtime 当判据，两个方向都会错（已实测，别改回去）
+#
+# **假阴性（严重，正是门禁本该抓的场景）**：`cp old new` 会把 mtime 重置成"现在"，
+# 内容一字未改，门禁放行。而 `cp` / 下载 / `docker cp` 是最常见的产物搬运方式
+# （实测 `tar -xzf` 反而**保留**原 mtime，这一条是好的）。
+# **假阳性**：docs-only 提交（只碰 website/、.agents/）会推进全仓 HEAD 时间，
+# 于是一个含全部代码改动的好产物被拦。
+#
+# ⚠️ 假阳性的代价不是"多敲一次命令"：一道经常误报的门禁会被养成
+# 「先加 SWE_ALLOW_STALE_ARTIFACT=1 再说」的习惯，于是它真正该拦的那次也被放过去了。
+# **误报会训练人绕过门禁。**
+#
+# ## 现在的判据：产物自报 commit，走三步 git 验证
+#
+# 判据**不是**「产物含 main 最新」，而是
+# **「产物的 commit ∈ 当前工作副本的历史，且此后没有改动过任何编译输入」**。
+# 这个区别是全部设计的核心 —— 「必须含 main 最新」会拦住三种合法场景
+# （在 PR 分支上验证自己的改动 / main 刚合了别人一个无关 PR / 故意用旧产物做对照）。
+#
+# 判定逻辑（形态校验、`^{commit}`、编译输入路径清单）全在
+# `scripts/lib/artifact-identity.ts` —— **刻意不在这里写 bash 版**：
+# 两份会各自漂移，而漂移的形态是「门禁看起来在跑、实际全在放行」。
+#
+# 退出码是跨语言契约（对齐 lib 里的 EXIT_CODE 表）：
+#   0 放行（含「读不到身份 → 已退化到 mtime 兜底」，那不是通过而是没量到）
+#   2 stale   3 foreign   4 unknown-commit   5 sidecar-mismatch
+#
+# 两个逃生舱**语义不同，刻意不合成一个**：
+#   SWE_ALLOW_STALE_ARTIFACT=1    「我知道它旧，我就要跑旧的」（对照实验、复算历史 run）
+#   SWE_ALLOW_FOREIGN_ARTIFACT=1  「我知道它是别的分支编的」（跨分支 A/B）
+# 合成一个的后果：想做对照实验的人顺手把「别的分支」也放过去了，
+# 而这两件事在报告里的解读完全不同。任一逃生舱被用时必须记进
+# run-meta 的 `gate_bypassed` —— 逃生舱本身不是问题，**用了却不留痕**才是。
+#
+# 结果通过全局变量带出（bash 没有多返回值），供 run-meta 落盘：
+GATE_JSON=""
+GATE_VERDICT=""
+GATE_BYPASSED=""
+check_artifact_identity() {
   local artifact="$1"
   [[ -f "$artifact" ]] || return 0
-  local head_ts art_ts
-  head_ts="$(git -C "$REPO_ROOT" log -1 --format=%ct 2>/dev/null || echo 0)"
-  [[ "$head_ts" == "0" ]] && return 0
-  # stat 的 -c/-f 在 GNU/BSD 上互不兼容，两个都试（失败就放弃这道检查，不误停）
-  art_ts="$(stat -f %m "$artifact" 2>/dev/null || stat -c %Y "$artifact" 2>/dev/null || echo 0)"
-  [[ "$art_ts" == "0" ]] && return 0
-  ((art_ts >= head_ts)) && return 0
-  bad "⚠️ 产物比 HEAD 还老 —— 它**不含**最近的代码改动，而分数会看起来完全正常。"
-  bad "   产物: $(basename "$artifact")  ($(date -r "$art_ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$art_ts"))"
-  bad "   HEAD: $(git -C "$REPO_ROOT" log -1 --format='%h %s' | cut -c1-60)  ($(date -r "$head_ts" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$head_ts"))"
-  bad "   ⚠️ make build 不 bump 版本号，所以重新构建**不会**换掉这个路径。编一个新产物："
-  bad "     bun build --compile --target=bun-linux-x64-baseline \\"
-  bad "       --define process.env.NODE_ENV='\"production\"' \\"
-  bad "       --define process.env.SID_CODE_BUILD_INFO=\"\\\"\$(scripts/build-info-line.sh local)\\\"\" \\"
-  bad "       --outfile /tmp/sc-baseline/sid-code \\"
-  bad "       packages/cli/src/entrypoints/bootstrap.ts"
-  bad "   然后 SWE_ARTIFACT=/tmp/sc-baseline/sid-code 再跑。"
-  bad "   确认要用旧产物（如做对照）：SWE_ALLOW_STALE_ARTIFACT=1"
-  return 1
+  local rc=0
+  # JSON 走 stdout、人读文本走 stderr（CLI 侧刻意分流）—— 所以这里只捕获 stdout，
+  # 人读部分直接流到终端。混在一起时 JSON 里会掺进中文，而 json.load 报的错
+  # 完全看不出成因是这个。
+  GATE_JSON="$(bun run "$REPO_ROOT/scripts/artifact-identity.ts" gate "$artifact")" || rc=$?
+  GATE_VERDICT="$(printf '%s' "$GATE_JSON" |
+    sed -n 's/.*"verdict":"\([a-z-]*\)".*/\1/p')"
+  case "$rc" in
+  0) return 0 ;;
+  2)
+    if [[ -n "${SWE_ALLOW_STALE_ARTIFACT:-}" ]]; then
+      GATE_BYPASSED="stale"
+      bad "   SWE_ALLOW_STALE_ARTIFACT=1 已设 —— 继续，但**这一轮测的不是当前代码**（已记进 run-meta.gate_bypassed）"
+      return 0
+    fi
+    return 1
+    ;;
+  3)
+    if [[ -n "${SWE_ALLOW_FOREIGN_ARTIFACT:-}" ]]; then
+      GATE_BYPASSED="foreign"
+      bad "   SWE_ALLOW_FOREIGN_ARTIFACT=1 已设 —— 继续，产物来自另一条线（已记进 run-meta.gate_bypassed）"
+      return 0
+    fi
+    return 1
+    ;;
+  *)
+    # unknown-commit / sidecar-mismatch / CLI 自己挂了：**没有逃生舱**。
+    # 前两者都是"数据本身有问题"（取不到那个 commit / 索引在骗人），
+    # 给逃生舱等于允许在不知道跑的是什么的情况下出一个分数。
+    # CLI 挂了也必须停 —— 那是"门禁没跑成"，把它当放行就是本仓反复踩的
+    # 「『没检查』冒充『检查通过』」。
+    return 1
+    ;;
+  esac
 }
 
 # 宿主是 arm64 但产物是非 baseline 的 x64 → qemu 下必 SIGILL。**先警告，别等它崩**。
@@ -290,12 +418,9 @@ warn_if_non_baseline() {
   esac
   bad "⚠️ 宿主是 arm64、产物是**非 baseline** 的 x64 —— qemu 下大概率一启动就 SIGILL(132)，"
   bad "   而它会被记成 agent_error 甚至 patch_produced（core dump 被 git add 收进 patch）。"
-  bad "   编一个 baseline 产物：bun build --compile --target=bun-linux-x64-baseline \\"
-  bad "     --define process.env.NODE_ENV='\"production\"' \\"
-  bad "     --define process.env.SID_CODE_BUILD_INFO=\"\\\"\$(scripts/build-info-line.sh local)\\\"\" \\"
-  bad "     --outfile <path>/sid-code \\"
-  bad "     packages/cli/src/entrypoints/bootstrap.ts"
-  bad "   然后 SWE_ARTIFACT=<path>/sid-code 再跑。"
+  bad "   编一个 baseline 分支包（默认就是 baseline target，且自带两个 define）："
+  bad "     bash scripts/build-branch-artifact.sh"
+  bad "   它会放进 dist/branch-builds/<分支>-<commit12>/，artifact_for() 会自动挑到。"
   return 1
 }
 
@@ -383,10 +508,18 @@ cmd_run() {
   shift || true
   local arch
   arch="$(detect_arch)"
-  local artifact
-  artifact="$(artifact_for "$arch")"
+  # 一次命令替换取回两个值（`<source>\t<path>`）。理由见 artifact_for 上方注释：
+  # 在子 shell 里设全局变量**不会回到父 shell**，那条路会让 run-meta 的
+  # artifact_source 恒为 unknown（字段在、有值、值是废的）。
+  local artifact artifact_pick
+  artifact_pick="$(artifact_for "$arch")" || exit 1
+  ARTIFACT_SOURCE="$(artifact_source_of "$artifact_pick")"
+  artifact="$(artifact_path_of "$artifact_pick")"
   [[ -f "$artifact" ]] || {
-    bad "产物不存在: ${artifact}（先 make build 或从 dist/release 取）"
+    bad "产物不存在: ${artifact}"
+    bad "   编一个当前 commit 的评测产物（linux-x64-baseline + 两个 define + 3 个生成脚本）："
+    bad "     bash scripts/build-branch-artifact.sh"
+    bad "   或用发布制品：./scripts/release.sh --upload 之后 dist/release/<ver>/ 下那份"
     exit 1
   }
   # arm64 + 非 baseline x64 产物 = qemu 下必崩，**且崩得像 agent 能力差**。
@@ -399,11 +532,12 @@ cmd_run() {
     }
     bad "   SWE_ALLOW_NON_BASELINE=1 已设 —— 继续，但这一轮的分数请当作不可信"
   }
-  # 产物比 HEAD 老 = 跑的不是本轮代码，而分数看起来完全正常（见 warn_if_stale_artifact）
-  warn_if_stale_artifact "$artifact" || {
-    [[ -n "${SWE_ALLOW_STALE_ARTIFACT:-}" ]] || exit 1
-    bad "   SWE_ALLOW_STALE_ARTIFACT=1 已设 —— 继续，但这一轮测的不是 HEAD 的代码"
-  }
+  # G1：产物必须包含被测 commit。判据是产物**自报的 commit**（编在字节里，`cp` 改不了它），
+  # 不是 mtime —— 见 check_artifact_identity 上方那段为什么 mtime 两个方向都会错。
+  # 走到 ④⑤（dist/release）时提示一句：那是发布制品，不一定含当前分支的改动。
+  [[ "$ARTIFACT_SOURCE" == "dist/release" ]] &&
+    info "产物来自 dist/release（发布制品）—— 若要测当前分支的改动，先 bash scripts/build-branch-artifact.sh"
+  check_artifact_identity "$artifact" || exit 1
   : "${SC_BASE_URL:?必须设 SC_BASE_URL（模型网关）}"
   : "${SC_API_KEY:?必须设 SC_API_KEY —— 只走 exec env，绝不进 argv}"
   # ⚠️ SC_MODEL 必填、**不给默认值**。给了默认值就会出现「以为在测 A 实际在测 B」，
@@ -454,6 +588,20 @@ cmd_run() {
   #   git_commit      **唯一身份**
   #   git_dirty       工作区脏 → commit 也不能完全描述产物，报告里要点破
   #   artifact_sha256 产物字节指纹 —— 上面三项都对但产物是旧的时唯一能发现的途径
+  #
+  # ## ⚠️ 但 `git_commit` 记的是**宿主 HEAD**，不是产物的 commit（F3，本轮修）
+  #
+  # 产物可能是任意时候编的，**这两个值不一定相等，而读报告的人会当它们相等**。
+  # F1 那个场景里 `git_commit` 是 8月26 的 HEAD、产物是 8月21 的 ——
+  # run-meta.json 从"事实源"退化成了"一个看起来很可靠的错值"。
+  #
+  # 所以从本轮起两者分开记，且**语义写在字段名上**：
+  #   artifact_commit    产物**自报**的 commit（编在字节里，`cp` 改不了它）← 事实源
+  #   host_head_commit   跑评测时宿主的 HEAD（此前那个 git_commit 记的就是它）
+  #   artifact_identity_source  embedded / mtime-fallback ← **没量到 ≠ 没变化**
+  #   gate_bypassed      用了哪个逃生舱（逃生舱本身不是问题，用了不留痕才是）
+  # `git_commit` 保留为 host_head_commit 的别名（旧报告与 grade.ts 的兼容路径），
+  # 但**报告渲染一律以 artifact_commit 为准** —— 见 grade.ts 的 renderReport。
   local sc_version sc_commit sc_dirty artifact_sha
   sc_version="$(grep -m1 '"version"' "$REPO_ROOT/package.json" |
     sed 's/.*"version": *"\([^"]*\)".*/\1/')"
@@ -483,14 +631,25 @@ cmd_run() {
   elif command -v sha256sum >/dev/null 2>&1; then
     prompt_sha="$(sha256sum "$SWE_DIR/prompt-v1.txt" | awk '{print $1}')"
   fi
+  # 产物身份：`check_artifact_identity` 已经把 CLI 的 JSON 存进 GATE_JSON。
+  # 这里**原样透传给 python 解析**，不在 bash 里 sed 出每个字段 ——
+  # 两处解析同一份 JSON 就会有两套口径，而口径漂移不报错。
   "$VENV_PY" - "$out_dir/run-meta.json" "$SC_MODEL" "${SC_MODEL_ID:-}" "$gw_host" \
     "${SC_PROVIDER:-openai}" "$MAX_TURNS" "$PERMISSION_MODE" "$TIMEOUT_SEC" \
     "$EFFORT_LEVEL" "$COST_LIMIT" "$sc_version" "$sc_commit" "$sc_dirty" \
-    "$(basename "$artifact")" "$artifact_sha" "$jobs" "$prompt_sha" <<'PY'
+    "$(basename "$artifact")" "$artifact_sha" "$jobs" "$prompt_sha" \
+    "${GATE_JSON:-}" "${GATE_BYPASSED:-}" "${ARTIFACT_SOURCE:-unknown}" <<'PY'
 import json, sys
 (out, model, model_id, host, provider, max_turns, perm_mode, timeout_sec,
  effort, cost_limit, version, commit, dirty, artifact, artifact_sha, jobs,
- prompt_sha) = sys.argv[1:18]
+ prompt_sha, gate_json, gate_bypassed, artifact_source) = sys.argv[1:21]
+
+# 门禁 JSON 解析失败时**一律落 unknown，绝不回填宿主 HEAD**。
+# 回填的后果正是本方案要消灭的那个形态：每个字段看起来都正常，而结论是错的。
+try:
+    gate = json.loads(gate_json) if gate_json else {}
+except Exception:
+    gate = {}
 # model_id 缺省时等于 model —— 记的是**实际发给网关的那个值**，
 # 不是「用户填了什么」。事后复算看的是 wire model，别名对不上厂商侧的任何东西。
 json.dump(
@@ -515,7 +674,36 @@ json.dump(
         # 题面模板指纹：提示词改一个字分数就不可外比，而它此前没记（见上面取值处）。
         "prompt_template_sha256": prompt_sha,
         # ── 被测代码的身份 ──
+        #
+        # ⚠️ artifact_commit 与 host_head_commit **必须分开**（F3）：产物可能是任意时候
+        # 编的，两者不一定相等，而读报告的人会当它们相等。事实源是前者。
         "sid_code_version": version,
+        "artifact_commit": gate.get("artifact_commit", "unknown"),
+        "artifact_branch": gate.get("artifact_branch", "unknown"),
+        "artifact_describe": gate.get("artifact_describe", "unknown"),
+        "artifact_built_at": gate.get("artifact_built_at", "unknown"),
+        "artifact_builder": gate.get("artifact_builder", "unknown"),
+        "artifact_origin": gate.get("artifact_origin", "unknown"),
+        # 产物构建时的工作区是否脏（≠ 跑评测时宿主脏不脏，见下面 host_dirty）。
+        # 三态：读不到时是字符串 "unknown"，**不塌成 False** —— 塌成 False
+        # 就是替它断言"构建时是干净的"，而那正是这个字段要防的事。
+        "artifact_dirty": gate.get("artifact_dirty", "unknown"),
+        # 身份到底量到了没有。mtime-fallback = 老产物，本轮判据退化成时间戳 ——
+        # **那不是"通过"，是"没量到"**，报告必须点破而不是显示一个绿灯。
+        "artifact_identity_source": gate.get("identity_source", "unknown"),
+        "artifact_gate_verdict": gate.get("verdict", "unknown"),
+        # 产物 commit 与宿主 HEAD 是否一致。不一致不一定是问题（PR 分支上验证
+        # 自己的改动就是这样），但要能看见。
+        "commit_matches_host": gate.get("commit_matches_host"),
+        # 逃生舱：stale / foreign / 空。用了逃生舱的 run **不可与没用的 run 并排**。
+        "gate_bypassed": [gate_bypassed] if gate_bypassed else [],
+        # 产物是怎么挑中的（SWE_ARTIFACT / SWE_BUILD_REF / branch-builds / dist/release）
+        "artifact_source": artifact_source,
+        # 跑评测时宿主的 HEAD 与工作区状态。**不是**产物的身份，仅供对照。
+        "host_head_commit": commit,
+        "host_dirty": dirty == "true",
+        # 旧字段名，保留为 host_head_commit 的别名（旧报告 / 旧脚本的兼容路径）。
+        # ⚠️ 语义是"宿主 HEAD"而不是"跑的是这份代码"—— 新代码一律读 artifact_commit。
         "git_commit": commit,
         "git_dirty": dirty == "true",
         "artifact": artifact,
@@ -525,8 +713,14 @@ json.dump(
     indent=2,
 )
 PY
+  # ⚠️ 这条警告的主语从"产物"改成了"宿主"（本轮修）。
+  # 宿主工作区脏**不说明产物有问题** —— 产物的 commit 与 dirty 都编在它自己的字节里，
+  # 由上面的 G1 单独判（artifact_dirty）。旧文案写成"产物与 <host HEAD> 不完全对应"
+  # 是把两件事混成一件：一个从干净 commit 编出的好产物，会因为宿主此刻有未提交改动
+  # 而被打上"只可自比"的标签，而那个标签本该留给**产物**真的编自脏工作区的那种情况。
   if [[ "$sc_dirty" == "true" ]]; then
-    bad "⚠️ 工作区不干净（git_dirty=true）—— 产物与 ${sc_commit:0:8} 不完全对应，这一轮只可自比不可外比"
+    bad "⚠️ 宿主工作区不干净（host_dirty=true）—— 产物身份另判（见上面 G1 的 artifact_dirty），"
+    bad "   这里只是说宿主 ${sc_commit:0:8} 之外还有未提交改动，它们**不一定**在产物里"
   fi
 
   local proxy_ip=""

@@ -265,6 +265,12 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANN
 git merge-base --is-ancestor v<version> main && echo OK
 ```
 
+**这条核验现在是机械的**（2026-08-27）：`release.sh --promote` 会自己跑它，
+判据优先读**产物字节里那 40 位 commit**（`dist/release/<ver>/` 还在时），
+本地没有产物才退化到 tag 判据 —— 而退化路径会明说自己是弱判据，不冒充强判据。
+上面这条命令保留作人肉复核，但**不再是唯一防线**：一条靠人记得跑的核验，
+在忘记跑的那一次恰好是最需要它的那一次。
+
 **发版后 `git status` 会多出 `northstar/`**：那是 `release.sh` 设计上就要求入库的指标快照（见 `scripts/release.sh` 中 northstar 一节），**不是脏数据**，跟 bump 一起提交进同一个 PR。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
