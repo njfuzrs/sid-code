@@ -35,6 +35,7 @@ import {
   parseDiffPaths,
   buildMiniRecord,
   buildMiniRunMeta,
+  buildMiniGradeMeta,
   findTraj,
   EXPECTED_STEP_LIMIT,
 } from "../../evals/external-benchmarks/swe-bench/mini-adapt.ts";
@@ -370,6 +371,66 @@ describe("口径差异点破", () => {
 // ⑦ 驱动脚本的四个陷阱：机械断言，防有人"顺手简化"
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `grade.ts` 只读 `runs/<id>/run-meta.json` 这个**固定文件名**。适配器原先只写
+ * `run-meta.mini.json`，于是模型名/网关/必控变量全都在文件里，而报告写着
+ * 「被测模型：未记录（该分数不可与其他 run 并排）」——
+ * **两份产物各自都对，合起来的结论是错的**，且没有任何一层报错。
+ * 这条正好打在 A7.18 的验收判据上（两侧 grade.ts 报告能并排）。
+ */
+describe("grade.ts 认的 run-meta 形状", () => {
+  test("model 与必控变量都落进 grade.ts 读的键名", () => {
+    const meta = buildMiniRunMeta([traj()], [{ model_name_or_path: "anthropic/claude-sonnet-5" }]);
+    const g = buildMiniGradeMeta(meta, "code.ppchat.vip");
+    // 键名必须与 grade.ts:1065 那段解构一致，否则等于没写。
+    expect(g.model).toBe("anthropic/claude-sonnet-5");
+    expect(g.gateway_host).toBe("code.ppchat.vip");
+    expect(g.max_turns).toBe(EXPECTED_STEP_LIMIT);
+    expect(g.cost_limit_usd).toBe(0);
+  });
+
+  test("取不到模型名时**不写 model 键**，不落 'unknown' 占位串", () => {
+    // grade.ts 的判据是 `if (!input.model)` —— 任何非空串（含 "unknown"）
+    // 都会**抑制**那条「不可与其他 run 并排比较」的点破。
+    // 这条断言是变异自证抓出来的：第一版实现落的就是 "unknown"，
+    // 而当时的注释还写着"既触发点破又可读"（那句是错的）。
+    const g = buildMiniGradeMeta(buildMiniRunMeta([], []), "h");
+    expect("model" in g).toBe(false);
+    // 反向自证：占位串会被 grade.ts 判成"已记录"，所以它必须不出现。
+    expect(g.model).not.toBe("unknown");
+  });
+
+  test("不传网关时**不写那个键**，而不是落占位串", () => {
+    const g = buildMiniGradeMeta(buildMiniRunMeta([traj()], [{ model_name_or_path: "m" }]));
+    // 键不存在 → grade.ts 报"网关 host：未记录"，那是诚实的。
+    // 落 "n/a" 会让那条点破消失，把「没量到」伪装成「已记录且没问题」（同 A7.13.2）。
+    expect("gateway_host" in g).toBe(false);
+  });
+
+  test("不冒充 sid-code 的身份字段：没有 sid_code_version / artifact_commit", () => {
+    const g = buildMiniGradeMeta(
+      buildMiniRunMeta([traj()], [{ model_name_or_path: "m" }]),
+      "h",
+    ) as unknown as Record<string, unknown>;
+    // mini 是 pip 装的包，没有"我们编的产物"这个概念。
+    // 塞 mini 的版本号进 sid_code_version 是张冠李戴，
+    // 而塞一个假 commit 会让报告里「未记录产物 commit」那条点破消失。
+    expect("sid_code_version" in g).toBe(false);
+    expect("artifact_commit" in g).toBe(false);
+    expect("artifact_sha256" in g).toBe(false);
+    // mini 自己的版本走独立键名，语义不混。
+    expect(g.mini_version).toBe("1.14.0");
+    expect(g.harness).toBe("mini-swe-agent");
+  });
+
+  test("jobs 落 null 而不是硬编码 1", () => {
+    const g = buildMiniGradeMeta(buildMiniRunMeta([traj()], [{ model_name_or_path: "m" }]));
+    // 硬编码 1 = 宣称"一定是串行跑的"，而 MINI_WORKERS 是环境变量。
+    // 宣称一件没核过的事正是本文件在防的形态。
+    expect(g.jobs).toBeNull();
+  });
+});
+
 describe("run-mini.sh 的必控变量固化", () => {
   const sh = readFileSync(join(SWE_DIR, "run-mini.sh"), "utf8");
 
@@ -453,6 +514,16 @@ describe("变异自证：错写法必须被上面的断言抓住", () => {
     // 若实现改成 `step_limit: EXPECTED_STEP_LIMIT`，这条会红。
     expect(meta.step_limit).not.toBe(EXPECTED_STEP_LIMIT);
     expect(meta.step_limit).toBe(250);
+  });
+
+  test("变异 E：把缺失字段落成占位串 → ⑤组两条会红", () => {
+    // 取到时必须写进去（否则 grade.ts 报"未记录"→ 否掉 A7.18 验收判据）。
+    const got = buildMiniGradeMeta(buildMiniRunMeta([traj()], [{ model_name_or_path: "m" }]));
+    expect(got.model).toBe("m");
+    // 取不到时必须**不写键**。若实现改成 `?? "unknown"`，
+    // grade.ts 会把它当"已记录"→ 点破被抑制，而报告看起来更干净。
+    const missing = buildMiniGradeMeta(buildMiniRunMeta([], []));
+    expect("model" in missing).toBe(false);
   });
 
   test("变异 D：用 +++ 解析路径 → ④组「纯删除」那条会红", () => {

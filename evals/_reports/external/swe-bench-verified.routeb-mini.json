@@ -1,0 +1,103 @@
+{
+  "run_id": "routeb-mini",
+  "prompt_version": "prompt-v1",
+  "model": "anthropic/claude-sonnet-5",
+  "gateway_host": "code.ppchat.vip",
+  "sid_code_version": null,
+  "artifact_commit": null,
+  "artifact_branch": null,
+  "artifact_dirty": null,
+  "artifact_origin": null,
+  "artifact_identity_source": null,
+  "artifact_gate_verdict": null,
+  "gate_bypassed": null,
+  "host_head_commit": null,
+  "git_commit": null,
+  "git_dirty": null,
+  "artifact_sha256": null,
+  "effort_level": null,
+  "cost_limit_usd": 0,
+  "jobs": null,
+  "link_ok": false,
+  "graded_ok": true,
+  "gold_ok": true,
+  "solved_count": 8,
+  "total_count": 10,
+  "patch_touches_tests": 0,
+  "outcomes": {
+    "astropy__astropy-12907": "solved",
+    "astropy__astropy-8872": "solved",
+    "django__django-13964": "solved",
+    "django__django-15128": "solved",
+    "matplotlib__matplotlib-20488": "no_patch",
+    "matplotlib__matplotlib-26466": "wrong_patch",
+    "pydata__xarray-4075": "solved",
+    "pydata__xarray-6461": "solved",
+    "pytest-dev__pytest-10081": "solved",
+    "pytest-dev__pytest-7982": "solved"
+  },
+  "unaccounted": "10 条未取回遥测、权限拒绝数为 **null（不知道）而非 0**：astropy__astropy-12907, astropy__astropy-8872, django__django-13964, django__django-15128, matplotlib__matplotlib-20488, matplotlib__matplotlib-26466, pydata__xarray-4075, pydata__xarray-6461, pytest-dev__pytest-10081, pytest-dev__pytest-7982 —— 这几条不能当作\"没被权限层打残\"来读 | 未记录产物 commit —— 事后无法确定这一轮跑的是哪份代码（版本号不够：`make build` 不 bump，同一版本号对应过多个 commit） | 未记录 effort_level —— 它直接决定推理预算与成本，是必控变量",
+  "wall_ms": 0,
+  "meter": null,
+  "meter_note": "无中立计价源；成本数字为 agent 自报，未交叉校验",
+  "partial": false,
+  "timing": {
+    "per_instance": [
+      {
+        "instance_id": "astropy__astropy-12907",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "astropy__astropy-8872",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "django__django-13964",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "django__django-15128",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "matplotlib__matplotlib-20488",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "matplotlib__matplotlib-26466",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "pydata__xarray-4075",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "pydata__xarray-6461",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "pytest-dev__pytest-10081",
+        "wall_ms": 0,
+        "agent_ms": 0
+      },
+      {
+        "instance_id": "pytest-dev__pytest-7982",
+        "wall_ms": 0,
+        "agent_ms": 0
+      }
+    ],
+    "total_wall_ms": 0,
+    "total_setup_ms": null,
+    "total_agent_ms": null,
+    "total_extract_ms": null,
+    "serial_penalty_x": null
+  }
+}
