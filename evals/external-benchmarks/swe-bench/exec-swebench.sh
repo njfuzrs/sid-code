@@ -723,11 +723,30 @@ PY
     bad "   这里只是说宿主 ${sc_commit:0:8} 之外还有未提交改动，它们**不一定**在产物里"
   fi
 
+  # ## ⚠️ 判据必须是「像一个 IPv4」，不是「非空」（实测烧掉整轮，2026-08-28）
+  #
+  # `docker inspect` 对一个**已停止**的容器**不报错**：它按 Go 模板求值，
+  # 网络已解绑时 `(index …).IPAddress` 打印字符串 **`invalid IP`** 且 **exit 0**。
+  # 于是旧判据 `-n "$proxy_ip"` 为真、门禁放行，
+  # `http_proxy=http://invalid IP:8080` 被注进每一个 agent 容器。
+  #
+  # 实测形态（路 B 我方侧那一轮，`runs/routeb-sid80-aborted-proxy-down/`）：
+  # 10 条**逐条** `agent_error patch=0B wall=11–17s`、`api_calls=0`，
+  # agent.log 里是 `Connection error.`。而 unaccounted 写的是
+  # 「原因未归因，需人工确认**是否为能力问题**」——
+  # 一份 solved_count=0 的报告会照常生成，唯一线索是 `代理=` 那行里的两个字。
+  # 与「字段在、有值、值是废的」同型，但毁的是整轮而不是一个指标。
+  #
+  # ⚠️ 刻意用**白名单式**判据（必须像 IPv4），不是黑名单 `!= "invalid IP"`：
+  # docker 在别的解绑状态下会打印什么我们并不知道，
+  # 按见过的那一个坏值写判据 = 只覆盖今天这一个（同「密钥正则的前缀盲区」）。
   local proxy_ip=""
   proxy_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$RUN_NET\").IPAddress}}" \
     "$PROXY_NAME" 2>/dev/null || true)"
-  [[ -n "$proxy_ip" ]] || {
-    bad "取不到 allowlist 代理在 $RUN_NET 上的 IP。先跑 net-setup.sh"
+  [[ "$proxy_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || {
+    bad "取不到 allowlist 代理在 $RUN_NET 上的 IP（拿到的是 '${proxy_ip}'）。先跑 net-setup.sh"
+    bad "⚠️ 容器**停掉**时 docker inspect 会返回字符串 'invalid IP' 且 exit 0 ——"
+    bad "   先看一眼 docker ps -a | grep ${PROXY_NAME} 的状态"
     bad "⚠️ 没有代理 = agent 自由出网 = 它会去读上游修复，**分数不可信**（§5.1：实测 25% rollout 试图 git log 找答案）"
     exit 1
   }

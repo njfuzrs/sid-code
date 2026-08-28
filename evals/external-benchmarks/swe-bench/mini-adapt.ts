@@ -316,6 +316,67 @@ export function buildMiniRecord(input: {
  */
 export const EXPECTED_STEP_LIMIT = 80;
 
+/**
+ * `grade.ts` 认的那份 run-meta（它只读 `runs/<id>/run-meta.json` 这个**固定文件名**）。
+ *
+ * ## 为什么必须单独产出这一份，而不是让 grade.ts 去读 run-meta.mini.json
+ *
+ * 实测踩到（2026-08-28，路 B 第一次真跑）：mini 侧 `run-meta.mini.json` 里
+ * 模型名、网关、必控变量**全都在**，而 `grade.ts` 产出的报告却写着
+ *
+ *   - 被测模型：`未记录（该分数不可与其他 run 并排）`
+ *   - 网关 host：`未记录`
+ *   - 必控变量：effort `未记录`，成本闸门 $未记录，并发 未记录
+ *
+ * 成因是纯文件名错配：`grade.ts:1065` 读 `run-meta.json`，
+ * 而适配器写的是 `run-meta.mini.json`。
+ *
+ * **这条正好打在 A7.18 的验收判据上**：「两侧 grade.ts 报告能并排」——
+ * 而 mini 侧报告自己声明"不可与其他 run 并排比较"。
+ * 形态是**两份产物各自都对，合起来的结论是错的**，且没有任何一层报错。
+ *
+ * ## 为什么不改 grade.ts 去认第二个文件名
+ *
+ * `grade.ts` 的职责是「把官方 report 翻译成验收字段，一个数都不自己算」。
+ * 让它按 harness 分支去找不同文件名，等于把「谁产出的」这件事塞进翻译层 ——
+ * 下一个对照 harness 又要在那里加一个分支。
+ * **适配器的职责本来就是"产出下游认的形状"**，文件名是形状的一部分。
+ *
+ * ## ⚠️ 缺的字段一律**不写这个键**，不是写 null 或占位串
+ *
+ * `grade.ts` 对缺失字段的处理是「在 unaccounted 里点破」，那正是我们要的：
+ * mini 没有"产物 commit"这个概念（它是 pip 装的包，不是我们编的二进制），
+ * 所以报告里就该出现「未记录产物 commit」。
+ * 塞一个 `"n/a"` 进去会让那条点破**消失**，于是
+ * 「这个 harness 没有这个概念」被伪装成「已记录且没问题」——
+ * 与 A7.13.2（null vs 0）完全同型。
+ */
+export interface MiniGradeMeta {
+  /**
+   * mini 的模型名（`anthropic/claude-sonnet-5`）。grade.ts 用它判"可否并排"。
+   *
+   * ⚠️ **取不到就不写这个键**，不要落 `"unknown"` 之类的占位串 ——
+   * grade.ts 的判据是 `!input.model`，任何非空串都会**抑制**
+   * 那条「不可与其他 run 并排比较」的点破。见 buildMiniGradeMeta 里的说明。
+   */
+  model?: string;
+  /** 网关 host。**只要 host，绝不要完整 URL、绝不要 key**。同上：取不到就不写 */
+  gateway_host?: string;
+  /** 必控变量：mini 的 step_limit ↔ 我方 SWE_MAX_TURNS（A7.14.8 裁决数值相等） */
+  max_turns: number | null;
+  /** mini 的 cost_limit（0 = 不限）。语义与我方 cost_limit_usd 一致 */
+  cost_limit_usd: number | null;
+  /** mini 串行跑（-w 1）时为 1。>1 时 grade.ts 会点破"不可与串行 run 并排" */
+  jobs: number | null;
+  /** 本 harness 标识，进报告便于人一眼看出这不是 sid-code 那一侧 */
+  harness: "mini-swe-agent";
+  /**
+   * mini 的版本号。**刻意不填 `sid_code_version`** —— 那个字段的语义是
+   * "被测 sid-code 的版本"，填 mini 的版本进去是张冠李戴。
+   */
+  mini_version: string | null;
+}
+
 /** mini 侧 run-meta：必控变量落盘。缺任何一项都要能看出来是"缺"。 */
 export interface MiniRunMeta {
   harness: "mini-swe-agent";
@@ -385,6 +446,39 @@ export function buildMiniRunMeta(trajs: Array<MiniTraj | null>, preds: MiniPred[
   };
 }
 
+/**
+ * 把 mini 侧 run-meta 翻成 `grade.ts` 认的形状（见 `MiniGradeMeta` 的长注释）。
+ *
+ * `gatewayHost` 由调用方传入（跑 mini 时用的网关，`run-mini.sh` 已对账过与
+ * smoke-10 同源）——**不从 traj 里猜**：mini 的 traj 只记 `model_name`，
+ * 不记 base_url，猜一个出来就是造数据。传 undefined 时该键不写，
+ * 于是报告里出现「网关 host：未记录」，那是诚实的。
+ */
+export function buildMiniGradeMeta(meta: MiniRunMeta, gatewayHost?: string | null): MiniGradeMeta {
+  const out: MiniGradeMeta = {
+    max_turns: meta.step_limit,
+    cost_limit_usd: meta.cost_limit,
+    // mini 由 run-mini.sh 写死 `-w 1`（并发会污染耗时口径，见那里的注释）。
+    // 这里不硬编码 1，而是留 null —— 硬编码等于宣称"一定是串行跑的"，
+    // 而 MINI_WORKERS 是个环境变量，宣称一件没核过的事正是本文件在防的形态。
+    jobs: null,
+    harness: "mini-swe-agent",
+    mini_version: meta.mini_version,
+  };
+  // ⚠️ `model` 与 `gateway_host` 都是**取到才写这个键**，取不到就不写。
+  //
+  // 这里曾写成 `model: meta.model_name ?? "unknown"`，理由是"unknown 既触发点破又可读"
+  // —— **那句理由是错的，且变异自证当场抓到了它**：`grade.ts` 的判据是
+  // `if (!input.model)`，而 `"unknown"` 是 truthy，于是那条
+  // 「不可与其他 run 并排比较」的点破**被抑制掉**。
+  // 形态正是本文件通篇在防的那个：把「没取到」伪装成「取到了且没问题」（A7.13.2）。
+  //
+  // 判据统一成"键在不在"之后，缺失一律走 grade.ts 的点破分支，两个字段同一套语义。
+  if (meta.model_name) out.model = meta.model_name;
+  if (gatewayHost) out.gateway_host = gatewayHost;
+  return out;
+}
+
 /** 读一条实例的 traj。找不到返回 null（**不抛**）—— 缺 traj 只让过程字段不可用，patch 仍有效。 */
 export function findTraj(miniDir: string, instanceId: string): MiniTraj | null {
   // mini 的落点：`<output>/<instance_id>/<instance_id>.traj.json`
@@ -408,9 +502,13 @@ async function main() {
   const argv = process.argv.slice(2);
   const miniDir = arg("mini-dir", argv);
   const runId = arg("run-id", argv);
+  // 跑 mini 时用的网关 host。**不给就不写那个键**（报告里显示"未记录"）——
+  // 从 traj 里猜不出来（mini 只记 model_name，不记 base_url），猜就是造数据。
+  const gatewayHost = arg("gateway-host", argv);
   if (!miniDir || !runId) {
     console.error(
       "用法：bun run mini-adapt.ts --mini-dir <mini 的 -o 目录> --run-id <本仓 run id>\n" +
+        "        [--gateway-host <host>]   跑 mini 时用的网关 host（缺则报告显示未记录）\n" +
         "  产物写进 runs/<run-id>/，之后跑 grade.ts --run-id <run-id>",
     );
     process.exit(2);
@@ -472,10 +570,25 @@ async function main() {
 
   const meta = buildMiniRunMeta(trajs, preds);
   writeFileSync(join(outDir, "run-meta.mini.json"), JSON.stringify(meta, null, 2) + "\n");
+  // ⚠️ 第二份**不是冗余**：grade.ts 只读 `run-meta.json` 这个固定文件名。
+  // 少了它，mini 侧报告会写"被测模型未记录 → 不可与其他 run 并排比较"，
+  // 而那恰好否掉 A7.18 的验收判据（两侧报告能并排）。详见 MiniGradeMeta 的注释。
+  writeFileSync(
+    join(outDir, "run-meta.json"),
+    JSON.stringify(buildMiniGradeMeta(meta, gatewayHost), null, 2) + "\n",
+  );
 
   const missingTraj = trajs.filter((t) => t === null).length;
   console.log(`✅ 已转换 ${ids.length} 条 → ${outDir.replace(process.cwd() + "/", "")}`);
-  console.log(`   predictions.jsonl / records.jsonl / run-meta.mini.json`);
+  console.log(
+    `   predictions.jsonl / records.jsonl / run-meta.mini.json / run-meta.json（grade.ts 认这个名）`,
+  );
+  if (!gatewayHost) {
+    console.log(
+      `   ⚠️ 未传 --gateway-host —— 报告里网关会显示"未记录"。` +
+        `路 B 要求两边同网关，建议补上（run-mini.sh 打印过它）`,
+    );
+  }
   if (missingTraj > 0) {
     console.log(`   ⚠️ ${missingTraj} 条缺 traj.json —— 那几条过程字段不可用（patch 仍有效）`);
   }

@@ -202,6 +202,18 @@ __pycache__/
 # 只出现在 run_instance.log 里，report.json 的 failure_reasons 是空的）——
 # 所以是「不入库」，不是「可以删」。
 /evals/external-benchmarks/swe-bench/logs/
+#
+# ⚠️⚠️ 上面那条**不够**：官方 harness 的落点是 **cwd 相对**的，不是脚本相对的。
+# 源码 `swebench/harness/constants/__init__.py:26`：
+#     RUN_EVALUATION_LOG_DIR = Path("logs/run_evaluation")
+# 所以从**仓库根**跑 `swebench eval`（或从根跑 exec-swebench.sh grade）时，
+# 7MB 判分日志会落在 `<repo>/logs/`，而上面那条精确路径**覆盖不到它**。
+# 实测踩到（2026-08-28，路 B 真跑）：根目录冒出 97 个文件 / 7.1MB 未被忽略。
+#
+# 为什么这件事值得单独一条：本仓铁律是「git status 里的意外文件默认属于
+# **别人的在途工作**，不许动」。自己制造 97 个噪声文件会**磨钝那条铁律** ——
+# 下一次真有别人的在途文件时，它已经被当成噪声了。（同 Harbor 那节的理由。）
+/logs/run_evaluation/
 
 # ─── Harbor 评测产物 ───────────────────────────────────────────────────────
 # runs/ 是 Harbor 的 jobs_dir：每个 trial 一份容器日志 + agent 的 NDJSON 输出 +
