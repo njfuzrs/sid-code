@@ -76,10 +76,31 @@ scripts/build-branch-artifact.sh --target bun-linux-arm64
 
 ---
 
-## 宿主环境的两个坑（2026-08-27 实测，都挡在第 0 步之前）
+## 宿主环境的五个坑（2026-08-28 更新，都挡在第 0 步之前）
 
-两条都**不指向本接入**，但不解决一个 trial 都跑不起来。放在这里是因为
+都**不指向本接入**，但不解决一个 trial 都跑不起来。放在这里是因为
 排查它们花掉的时间远多于读这一节。
+
+> ### 先读：宿主网络三条硬约束的**现状**（2026-08-28 复核，全部推翻旧记录）
+>
+> 旧记录（`02-Harbor接入方案设计.md` §13.5）列了三条「本机硬约束」。
+> 开了宿主全局代理 + TUN 之后**逐条实测复核，三条全部不再成立**：
+>
+> | 旧约束（第三棒记） | 2026-08-28 实测 |
+> | --- | --- |
+> | Docker Hub 不可达 | ✅ **已通**。给 dockerd 配 proxy 即可，见坑 ② |
+> | `downloads.claude.ai` 不可达 → claude-code 装不上 | ✅ **已通**。容器内 `claude-code-releases/bootstrap.sh` 返 200；二进制 278MB @ 0.93MB/s ≈ **300s**，所以 `--agent-setup-timeout-multiplier` 要给足 |
+> | `releases/download/` 时通时不通（1/3） | ✅ **单发已稳**（容器内 10/10、5/5）。**但并发下仍会坏**，见坑 ⑤ —— 这条从「随机」变成了「与 `-n` 强相关」 |
+>
+> ⚠️ **两条判读教训**：
+> 1. 旧记录里 claude-code 的域名写成 `downloads.claude.ai/.../bootstrap.sh` 之后
+>    我实测 404，一度以为「域名活着但路径没了」。**真实路径是
+>    `/claude-code-releases/bootstrap.sh`**（`harbor/agents/installed/claude_code.py:456`）——
+>    **拿一个猜的 URL 去测，404 会被误读成「不可达」**。要测就从源码里取那条 URL。
+> 2. 「VM 里 curl 通」与「dockerd 能拉」**是两条不同的路**，见坑 ②。
+>    只测前者会得出「网络没问题」的错误结论。
+>
+> **换机器时这三条都要重新确认**，判据就是上表右列那几条命令。
 
 ### ① `docker compose` 插件不在 docker CLI 的搜索路径里
 
@@ -98,6 +119,10 @@ docker compose version    # 必须有输出，这才是 Harbor 调的那条
 
 ### ② colima 里连不上 Docker Hub（但 ghcr.io 是通的）
 
+> ✅ **2026-08-28 已解决，根因已找到。** 下面保留原症状与「宿主搬运」那条绕路，
+> 是因为**它在没有宿主代理的机器上仍然是唯一的办法**。有代理的机器直接看
+> 「治因：给 dockerd 配 proxy」那一段。
+
 ⚠️ **先分清是哪个 registry 不通，别一概而论。** 实测同一个 VM 里：
 `registry-1.docker.io` i/o timeout，而 `ghcr.io/v2/` 返回 401（= 连上了）。
 Terminal-Bench 的任务镜像在 **ghcr**，所以那批**不需要**下面这套搬运；
@@ -110,12 +135,47 @@ colima ssh -p <profile> -- curl -s -m 8 -o /dev/null -w '%{http_code}\n' https:/
 docker pull ubuntu:24.04     # 这条超时才需要下面的搬运
 ```
 
+症状：`failed to resolve reference "docker.io/library/ubuntu:24.04": dial tcp ... i/o timeout`
+（另一个等价形态是 `net/http: TLS handshake timeout`）。
 
-症状：`failed to resolve reference "docker.io/library/ubuntu:24.04": dial tcp ... i/o timeout`。
-VM 里的 dockerd **没有代理配置**（`systemctl show docker --property=Environment` 为空）。
+#### 治因：给 dockerd 配 proxy（**2026-08-28 实测有效**）
 
-⚠️ **别急着改 VM 里的 dockerd 配置**：那要重启 daemon，而自建 SWE-bench 链路的
-`sid-swebench-proxy` 容器正跑在同一个 daemon 上。宿主侧拉好再灌进去，
+根因不是「网络慢」，是两件事叠加：
+
+1. `registry-1.docker.io` 的 DNS 在本网络被**污染**到 `199.59.150.45`（Twitter 段），
+   TCP 握手成功但 TLS 无响应 —— 所以 `nc -z` 会报 OPEN，**连通性探测会骗你**；
+2. **lima 把宿主代理写进了 `/etc/environment`，但 systemd 服务不读那个文件**，
+   于是 VM 里 `curl` 走代理一切正常、`dockerd` 却完全没有代理。
+   这就是为什么「VM 里 curl 得通、docker pull 超时」这个矛盾形态会出现 ——
+   **它们走的不是同一条路**。
+
+```bash
+colima ssh -p <profile> -- sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'
+[Service]
+Environment="HTTP_PROXY=http://192.168.5.2:<宿主代理端口>"
+Environment="HTTPS_PROXY=http://192.168.5.2:<宿主代理端口>"
+Environment="NO_PROXY=localhost,127.0.0.1,192.168.5.0/24,10.0.0.0/8,172.16.0.0/12,*.local,ghcr.io,pkg-containers.githubusercontent.com,*.githubusercontent.com"
+EOF
+colima ssh -p <profile> -- sudo systemctl daemon-reload
+colima ssh -p <profile> -- sudo systemctl restart docker
+```
+
+三条**必须照抄**的细节：
+
+- **`ghcr.io` 与 `*.githubusercontent.com` 要进 `NO_PROXY`。** 两条路都通，
+  但实测直连 blob **3.3 MB/s** vs 走代理 **2.6 MB/s**，而 terminal-bench 全部镜像
+  都在 ghcr 上（单个 260MB+）。只有 `docker.io` 需要代理。
+- **`/etc/systemd/system/docker.service.d/` 落在 `/dev/vda1`（ext4），跨 VM 重启保留** ——
+  实测过，这不是 `/tmp` 那种「每一棒重建一次」的债。
+- 这一层**只作用于 dockerd 自己拉镜像**，**不会**传给容器里的进程。
+  容器里的 `curl` 要走代理是另一件事，见下面 ④。
+
+⚠️ **重启 daemon 会影响同一个 daemon 上的其他容器**（自建 SWE-bench 链路的
+`sid-swebench-proxy` 就在上面）。重启后记得跑一次
+`net-setup.sh --check` 确认那套设施还在。
+
+#### 绕路：宿主搬运（没有宿主代理时用）
+
 **完全不动 daemon**：
 
 ```bash
@@ -141,6 +201,97 @@ README 原先只说「Linux 宿主上不存在」。实测 **colima 同样不存
 export SID_HARBOR_GATEWAY_URL=http://192.168.5.2:<网关端口>
 harbor run ... --allow-agent-host 192.168.5.2
 ```
+
+### ④ Harbor 数据集注册中心会**随机在第 0 秒杀掉整个 run**（2026-08-28 新增）
+
+症状：`ValueError: Error getting dataset terminal-bench-sample@2.0`，
+**一个 trial 都没起就退出**。它长得像「数据集名字写错了」，实际是网络。
+
+根因：`-d <name>@<version>` 默认走 Harbor 官方的 Supabase 注册中心
+（`hlqxxzsirfrgeqasvaps.supabase.co` 的 `get_dataset` RPC）。
+**实测 15 次采样 14 通 1 挂（curl 000，约 7%），而 `harbor` 那一层没有任何重试** ——
+`registry/client/harbor/harbor.py:128` 把所有异常吞掉换成一句 `Error getting dataset`，
+**连原始异常都不透出**，所以从报错完全看不出是网络。
+
+⚠️ **这条比看起来更要紧**：它挡在跑之前，所以只会浪费你的时间；
+但它**同类的读取侧形态**（跑到一半某个远端调用挂掉）就会变成 reward 异常。
+判据：**报 `Error getting dataset` 时先复跑一次，不要去查数据集名字。**
+
+治法：把 spec 落成本地 `registry.json`，用 `--registry-path` 完全绕开远端。
+仓库里已备好 `registry.local.json`（terminal-bench-sample@2.0，10 个任务）：
+
+```bash
+harbor run -d terminal-bench-sample@2.0 --registry-path registry.local.json ...
+```
+
+两条细节**照抄，别自己推**：
+
+- **文件格式是一个裸的 JSON 数组**（`[{name, version, description, tasks, metrics}]`），
+  **不是**带 `datasets` 键的对象。写成对象会得到一个 pydantic
+  `Input should be a valid dictionary ... input_value='name'` ——
+  它在报「数组元素类型不对」，但读起来像在说字段名有问题。
+- **`metrics` 上游确实是空数组**（已核 RPC 原始响应），所以本地文件里的 `[]`
+  不是偷懒省掉的。换数据集时要重新从 RPC 取，别照抄这份的 `[]`。
+
+刷新它（换数据集或上游改了版本时）：
+
+```bash
+SB=https://hlqxxzsirfrgeqasvaps.supabase.co
+KEY=$(grep -oE 'sb_publishable_[A-Za-z0-9_]+' \
+  ~/.local/share/uv/tools/harbor/lib/python*/site-packages/harbor/registry/client/harbor/config.py)
+curl -s -X POST -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"p_name":"terminal-bench-sample","p_version":"2.0"}' \
+  "$SB/rest/v1/rpc/get_dataset" > /tmp/spec.json
+# 再按上面那个「裸数组」格式转一次（转换脚本见 git 历史里这一节的提交）
+```
+
+⚠️ **本地 registry 只固定「哪些任务、哪个 commit」，不固定镜像。**
+任务仓库（`terminal-bench-2-0-sample.git`）和 ghcr 镜像仍要联网拉。
+所以它消除的是「第 0 秒随机死」，**不是**让整条链路离线可跑。
+
+### ⑤ 🔴 **`-n`（并发）直接决定 verifier 坏掉的比例** —— 慢网络下必须 `-n 1`
+
+这一条是本机**最大的单一失真源**，而且它伪装成能力差。四轮 `nop` 对照
+（同一批 10 个任务，`nop` 不解题所以 reward 必然全 0，
+唯一的观测量是「verifier 有没有跑成」）：
+
+| 配置 | verifier 坏掉 |
+| --- | --- |
+| **`-n 1` 直连** | **1 / 10** |
+| `-n 1` 直连 + 本地 registry | **1 / 10**（复现，同上） |
+| `-n 3` 直连 | **4 / 10** |
+| `-n 3` + 容器走宿主代理 | **6 / 10** ← 最差 |
+
+`-n` 从 1 调到 3，坏掉的从 1 变 4。**Terminal-Bench 的 `tests/test.sh` 每一个都要
+现装 uv（`https://astral.sh/uv/0.7.13/install.sh` → GitHub release 17MB）**，
+10 个任务下载的是**同一个 tarball**；并发一上去就在抢同一条出口带宽，
+失败散布在三个不同域名上（`github.com` / `releases.astral.sh` /
+`archive.ubuntu.com`），curl 错误码也各不相同（7 / 18 / 35）——
+**这个「多域名 + 多错误码」的形态本身就是带宽争抢的指纹**，不是某个域名被墙。
+
+⚠️ **Harbor 的 `-n` 默认是 4**，比实测安全值大 4 倍。不显式写 `-n 1`
+就等于默认踩这个坑。
+
+两条被实测**否决**的治法，别再试（各花了半小时）：
+
+- ❌ **容器走宿主 HTTP 代理**（`--extra-docker-compose` 注入 `*_proxy`）。
+  小规模探针上看着很好（6 路 6/6、8 路 8/8），**真跑却是四种配置里最差的 6/10**。
+  形态教训：**探针的并发形态与真实 run 不同** —— 真实 run 里同时还有
+  镜像拉取、agent 自己的模型调用、多个容器的 apt，探针只测了下载这一条。
+  「小规模探针全绿」不能外推到真实 run。
+- ❌ **squid 缓存代理**（想让 10 个任务共享一份 uv tarball）。
+  下载走的是 **HTTPS**，squid 只能看到 `CONNECT` 隧道、**缓存不了隧道内容**；
+  要缓存就得 MITM，那需要往**每一个任务镜像**里塞 CA 证书 ——
+  改被测环境去迁就基础设施，不做。
+
+**当前的做法就是 `-n 1`，并接受剩下那 1/10。** 配套判据（已在
+「reward=0 的三种可能」一节）：**任何 reward=0 先看
+`verifier/test-stdout.txt` 尾部有没有 `command not found`**。
+
+> 真正的治法是一台网络干净的机器，或者在镜像里预装 uv（要改上游任务，
+> 会破坏「同题同 verifier」的可比性，所以不做）。
+> **在本机上，这一项是已知残余误差，不是已解决问题。**
 
 ---
 
@@ -645,8 +796,8 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
 | A12 | 产物架构与容器架构一致 | build.json 的 `arch == arch_actual` | ✅ 实测（新增判据，来自缺陷 #5） |
 | A13 | 真实 benchmark 上至少一题 reward > 0 | 第 2 步 | ✅ **2 题**（Terminal-Bench 10 题里，见上「第 2 步实测数据」） |
 | A14 | 失败样本可被识别（不被记成 0 分） | `sid_is_error` / `sid_errors` 非 None | ✅ **已在真实 trial 上回归**（2026-08-28）：抓到一个 `reward=0` 而 `sid_is_error=False` 的样本，查下去是 **verifier 自己坏了**（详见下方「A10 首次对照」） |
-| A10 | 三 agent 对照产出三份 results.json | 第 3 步 | 🟡 **两个 agent**（2026-08-28）：sid-code ↔ mini-swe-agent 均 reward 1.0、可比；claude-code 在本机不可解（装它要 `downloads.claude.ai`，不可达） |
-| A15 | `reward=0` 的样本已排除「判分未发生」 | `verifier/test-stdout.txt` 尾部无 `command not found` | 🟡 新增判据（来自 A14 回归）。本机 verifier 下载 uv 实测 **3 次只成功 1 次** |
+| A10 | 三 agent 对照产出三份 results.json | 第 3 步 | 🟡 **两个 agent**（2026-08-28）：sid-code ↔ mini-swe-agent 均 reward 1.0、可比。claude-code **本机已解除封锁**（2026-08-28 复核：`downloads.claude.ai` 现可达，见「宿主网络三条硬约束」），未重跑 |
+| A15 | `reward=0` 的样本已排除「判分未发生」 | `verifier/test-stdout.txt` 尾部无 `command not found` | 🟡 判据仍然必需。**残余误差已量化**：`-n 1` 时 verifier 坏掉 **1/10**、`-n 3` 时 **4/10**（2026-08-28 四轮 nop 对照，见坑 ⑤）。旧记的「3 次只成功 1 次」是**代理开启前**的数字，已不适用 |
 | **A11** | **Harbor 数据驱动了一次真实的 harness 决策** | 一份 Agent Note：「因为看到 X 数据，所以改了 Y」 | 🟡 **有线索、判据不足**：静态前缀占 sid-code 成本 75%、输入 token 19.7× 于 mini-swe-agent —— 但只在一道 trivial 题上量过 |
 
 > ⚠️ **A11 与「挖出 5 个缺陷」不是一回事。** 那 5 个是**接入自身**的缺陷
