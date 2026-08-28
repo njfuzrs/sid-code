@@ -555,7 +555,7 @@ HARBOR_TELEMETRY=0 harbor run ... --allow-agent-host 192.168.5.2
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `HARBOR_TELEMETRY` | *（Harbor 侧默认开）* | 设 `0` 关闭 Harbor 遥测。**每条命令都要带** |
-| `SID_HARBOR_GATEWAY_URL` | `http://host.docker.internal:4000` | 容器内 `baseURL` 指向的宿主网关 |
+| `SID_HARBOR_GATEWAY_URL` | `http://host.docker.internal:4000` | 容器内 `baseURL` 指向的宿主网关。⚠️ colima 下用 `http://192.168.5.2:<port>` —— **不是**容器默认路由 `172.17.0.1`（那是 VM 内的 docker bridge，宿主服务不在那上面；实测容器侧 connection refused） |
 | `SID_HARBOR_BINARY_ARM64` / `_X64` | 空 | 显式点名要上传的 linux 二进制。**不设则按当前 HEAD 自动发现** |
 | `SID_HARBOR_MODEL_ALIAS` | `harbor-gateway` | 容器内渠道别名（`availableModels[].name` 与顶层 `model`） |
 | `SID_HARBOR_PROVIDER` | 从 `-m provider/model` 推 | 覆盖 provider（闭集：`anthropic`/`openai`/`ollama`/`replay`） |
@@ -644,14 +644,96 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
 | A9 | oracle 满分 / nop 零分 | R1 双向对照 | ✅ 实测 oracle `1.0` / nop `0.0`，且 `ctrf.json` 显示 2 个测试真跑真 fail |
 | A12 | 产物架构与容器架构一致 | build.json 的 `arch == arch_actual` | ✅ 实测（新增判据，来自缺陷 #5） |
 | A13 | 真实 benchmark 上至少一题 reward > 0 | 第 2 步 | ✅ **2 题**（Terminal-Bench 10 题里，见上「第 2 步实测数据」） |
-| A14 | 失败样本可被识别（不被记成 0 分） | `sid_is_error` / `sid_errors` 非 None | ✅ 修复后（新增判据，来自缺陷 #6）。⚠️ **修复本身尚未在真实 trial 上回归验证** —— L2 的 7 个用例覆盖了行为，但下次跑评测时要回看一眼 |
-| A10 | 三 agent 对照产出三份 results.json | 第 3 步 | ⬜ **待实测** |
-| **A11** | **Harbor 数据驱动了一次真实的 harness 决策** | 一份 Agent Note：「因为看到 X 数据，所以改了 Y」 | ⬜ **唯一的最终判据** |
+| A14 | 失败样本可被识别（不被记成 0 分） | `sid_is_error` / `sid_errors` 非 None | ✅ **已在真实 trial 上回归**（2026-08-28）：抓到一个 `reward=0` 而 `sid_is_error=False` 的样本，查下去是 **verifier 自己坏了**（详见下方「A10 首次对照」） |
+| A10 | 三 agent 对照产出三份 results.json | 第 3 步 | 🟡 **两个 agent**（2026-08-28）：sid-code ↔ mini-swe-agent 均 reward 1.0、可比；claude-code 在本机不可解（装它要 `downloads.claude.ai`，不可达） |
+| A15 | `reward=0` 的样本已排除「判分未发生」 | `verifier/test-stdout.txt` 尾部无 `command not found` | 🟡 新增判据（来自 A14 回归）。本机 verifier 下载 uv 实测 **3 次只成功 1 次** |
+| **A11** | **Harbor 数据驱动了一次真实的 harness 决策** | 一份 Agent Note：「因为看到 X 数据，所以改了 Y」 | 🟡 **有线索、判据不足**：静态前缀占 sid-code 成本 75%、输入 token 19.7× 于 mini-swe-agent —— 但只在一道 trivial 题上量过 |
 
 > ⚠️ **A11 与「挖出 5 个缺陷」不是一回事。** 那 5 个是**接入自身**的缺陷
 > （评测跑不起来），修它们不等于用评测数据改进了 harness。
 > A11 要的是「Harbor 上的对照数据让我们改了 sid-code 的某个决策」——
 > 那需要先有 A10 的对照。**不要把「链路通了」记成 A11。**
+
+---
+
+## A10 首次对照（2026-08-28）：拿到第一份可比数据
+
+同题（`hello-world`）、同模型（`claude-sonnet-5`）、同容器、同 verifier、
+**都不传提示模板**（两份 `config.json` 的 `prompt_template` 均为 null，R5 的必控变量成立）：
+
+| | reward | 总输入 tok | 输出 tok | cost | 轮数 | agent 执行墙钟 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **sid-code** | 1.0 | **45,803** | 62 | **$0.0374** | 2 turns | **12.0s** |
+| **mini-swe-agent** | 1.0 | **2,328** | 83 | **$0.0049** | 4 steps | 15.3s |
+
+**同样解对，sid-code 花了 19.7× 输入 token、7.6× 成本**（但快 3.3s ——
+是**用 token 换速度**，不是又慢又贵）。归因：
+
+```
+45,803 输入 = fresh 1,005 + cache_write 11,212 + cache_read 33,586
+                            ~~~~~~~~~~~~~~~~~~
+                            系统提示 + 23 个工具定义 = 静态前缀
+```
+
+静态前缀 ≈ 11,212 tok，**比 mini-swe-agent 全程总输入还多 4.8 倍**；
+按 sonnet 标准价复算，它占 sid-code 本次成本的 **75%**。
+
+⚠️ **缓存是在正常工作的**（命中率 73.3%，达标）。所以这**不是缓存缺陷，
+是「被缓存的东西本身太大」**。这一条值得单独记住：
+**缓存命中率达标可以与「成本高 7.6 倍」同时成立** ——
+命中率只说明「重复部分没重复付全价」，说不出「重复部分该不该这么大」。
+
+⚠️ **不要拿这个数去改代码。** `hello-world` 是 trivial 题（2 turns 解完），
+短任务会系统性放大静态前缀占比。要在真实 benchmark 上复核（方案文档 §13.5 有命令）。
+
+### 跑对照必须补的两个开关（§12.5 的命令里没有）
+
+- **`--agent-setup-timeout-multiplier 8`** —— mini-swe-agent 要装 uv + 3 个包，
+  默认 360s 在慢网络下不够（实测 `AgentSetupTimeoutError`）。**和
+  `--verifier-timeout-multiplier` 一样，它不是可选的。**
+- **`--ae "ANTHROPIC_API_KEY=..."` + `--ae "ANTHROPIC_BASE_URL=..."`** ——
+  mini-swe-agent 的 `MODEL_CONNECTION` 只映射 `MSWEA_API_KEY`，
+  但它内部的 litellm 认 `ANTHROPIC_API_KEY`。只设前者会失败，
+  而**报错藏在 25k 字符 traceback 的尾部**。
+
+⚠️ **对照 agent 会把真实 key 注入容器**（Harbor 官方 `MODEL_CONNECTION` 的既有行为），
+而 sid-code 侧仍只带占位 token。这个不对称是刻意接受的（认证路径不影响解题能力），
+**但跑完应轮换那把 key** —— 容器里 benchmark 的任意代码都能读到它。
+
+### ⚠️ 本机 verifier 会随机坏掉，形态是 reward 0
+
+`hello-world` 的 `/tests/test.sh` 要下载 uv（`github.com/astral-sh/uv/releases/...`），
+本机实测 **3 次只成功 1 次**。失败时 `uvx: command not found` →
+**一个测试都没跑** → reward 0。
+
+抓到过一个 `reward=0` 而 `sid_is_error=False` / `sid_subtype=success` 的样本：
+**sid-code 真的解对了，是判分没发生。** 只看 reward 的话，
+它和「没解出来」**逐字节相同**。
+
+> **口径铁律（A15）**：`reward=0` 且 `sid_is_error=False` 的样本
+> **必须单独分桶，不许计入分母**。它既不是「解出来了」也不是「没解出来」，
+> 是**判分未发生**。混进分母 = 分数虚低，而虚低的原因与被测对象无关。
+>
+> 判据：任何 reward=0 的样本，**先看 `verifier/test-stdout.txt` 尾部
+> 有没有 `command not found`，再谈能力**。
+
+⚠️ 顺带一处易踩的误读：`sid_*` 字段在 **`agent_result.metadata`** 下，
+不是顶层 `metadata`。查顶层会看到 `{}`，**长得像接缝断了**，实际完好
+（两个对照 agent 的顶层 `metadata` 也都是 `{}`，那是 Harbor 的正常形态）。
+
+### 网关 shim 的落点已从 `/tmp` 改到 `~/.local/share/`
+
+`/tmp` 那个落点保证了「每一棒都要重建一次」（第三棒接手时实测已丢失）。
+现在在 `~/.local/share/sid-harbor-gateway/gateway.py`，**仍然不入库**
+（宿主侧基础设施；入库会引诱人把开发期 shim 当生产网关用）。
+
+⚠️ **上游选择有坑**：本机两个可用上游里，`uniapi` 在**容器发起的真实请求**上
+持续吐 Cloudflare 502（`__stats` 的 `upstream_502` 计数 6 次），
+而宿主侧用相同 payload 复现**全部 200**。换到 `ppchat` 上游一次就通。
+
+> **形态：宿主侧复现全绿，不等于容器侧那条路健康。**
+> 判据应该是网关计数器（`GET /__stats` 的 `upstream_502`），
+> 不是「再试一次看看」——按后者判断会白跑两轮（3m08s + 8m44s）。
 
 ---
 
