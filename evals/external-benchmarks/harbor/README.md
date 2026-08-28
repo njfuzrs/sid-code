@@ -829,6 +829,17 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
 静态前缀 ≈ 11,212 tok，**比 mini-swe-agent 全程总输入还多 4.8 倍**；
 按 sonnet 标准价复算，它占 sid-code 本次成本的 **75%**。
 
+> ⛔ **上面这个 11,212 口径错了（2026-08-29 纠正），且整条线索已被真实数据否决。**
+> `cache_write_tokens` 是**整个 session 的 cache 写入累加**，不是首调用的前缀。
+> 同一道 hello-world 连跑三次：**首调用总 prompt 恒 22,950**，
+> 而 `cache_creation` 摆动 3,442 / 8,491 / 4,360（**2.5 倍**）——
+> 因为 read/write 的切分由服务端缓存还热不热决定，与前缀大小无关。
+>
+> **静态前缀只能用首调用的总 prompt**（`input_tokens + cache_read + cache_creation`）。
+> 换成这个口径后，真实 benchmark 10 题上它占总输入的**中位数 2.4%**（判据要 >50%），
+> 所以「砍工具定义」这个改动**不做**。详见方案文档 §15.1，
+> 算法落在同目录 `analyze-prefix.py`。
+
 ⚠️ **缓存是在正常工作的**（命中率 73.3%，达标）。所以这**不是缓存缺陷，
 是「被缓存的东西本身太大」**。这一条值得单独记住：
 **缓存命中率达标可以与「成本高 7.6 倍」同时成立** ——
@@ -861,16 +872,134 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
 **sid-code 真的解对了，是判分没发生。** 只看 reward 的话，
 它和「没解出来」**逐字节相同**。
 
-> **口径铁律（A15）**：`reward=0` 且 `sid_is_error=False` 的样本
-> **必须单独分桶，不许计入分母**。它既不是「解出来了」也不是「没解出来」，
-> 是**判分未发生**。混进分母 = 分数虚低，而虚低的原因与被测对象无关。
+> **口径铁律（A15，2026-08-29 已改写 —— 旧版判据在下方，别用）**：
+> 判据是**正面证据** —— `verifier/test-stdout.txt` 里**有没有 pytest 收尾行**
+> （`\d+ (?:failed|passed|error)`）：
 >
-> 判据：任何 reward=0 的样本，**先看 `verifier/test-stdout.txt` 尾部
-> 有没有 `command not found`，再谈能力**。
+> - **有收尾行 → 判分发生了**。无论 reward 是几、无论 agent 自述什么，**一律计分**。
+> - **没有收尾行 → 判分未发生**，单独分桶、不进分母。
+>
+> ⛔ **旧版判据是「`reward=0` 且 `sid_is_error=False` → 排除」，它错了。**
+> 方向对（reward 0 有两种，别混），但**主语选错**：`sid_is_error` 是 agent 的自述，
+> 拿它推断 verifier 的状态是跨主语推断。那个条件同时覆盖两件语义相反的事 ——
+> ① verifier 没跑成（该排除）；② **verifier 跑了判 0，而 agent 自我报喜**（该计分）。
+> 实测踩到 ②：`configure-git-webserver` 上 sid-code 只写了一篇「怎么配置」的说明文字、
+> 一步没执行，然后 `subtype=success` 收工，而 verifier 好好地跑完报了
+> `1 failed in 22.79s`。**照旧判据会把它排除，等于给 sid-code 白送一分,
+> 送的恰好是它最该被扣分的地方**（方案文档 §15.3 / §15.4）。
+>
+> `command not found` 那条判据**保留但要加前提**：`and not verifier_ran` ——
+> 那些关键词可能只是某一个测试里的噪声，别的测试照样判了分。
 
 ⚠️ 顺带一处易踩的误读：`sid_*` 字段在 **`agent_result.metadata`** 下，
 不是顶层 `metadata`。查顶层会看到 `{}`，**长得像接缝断了**，实际完好
 （两个对照 agent 的顶层 `metadata` 也都是 `{}`，那是 Harbor 的正常形态）。
+
+## A11 真实 benchmark 全量对照（2026-08-28/29）：10 题 × 2 agent
+
+`terminal-bench-sample@2.0` 全 10 题，`-n 1 -k 1`，同模型/同容器/同 verifier、
+都不传提示模板。两个 run 各自跑完（sid-code 4h10m、mini-swe-agent 约 5h30m）。
+
+| | 判了分的题 | reward mean | 成本 |
+| --- | --- | --- | --- |
+| **sid-code** | 10/10 | **0.100** | $7.18 |
+| **mini-swe-agent** | 7/10（3 题 agent 侧环境异常，已排除） | **0.714** | $4.92 |
+
+⚠️ **两边分母不等**（mswea 有 3 题是 `AgentSetupTimeoutError` /
+`NonZeroAgentExitCodeError`，它自己的环境失败，不是能力差）。
+所以这组数**能**支持「同题上 sid 明显更弱」，**不能**支持 `0.100 vs 0.714` 这个比值本身。
+
+同题逐条（两边都判了分的 7 题：**sid 赢 0、mswea 赢 5、2 题都是 0**）：
+
+| task | sid reward | sid turns | mswea reward | mswea steps |
+| --- | --- | --- | --- | --- |
+| polyglot-c-py | 0.0 | 34 (max_turns) | **1.0** | **10** |
+| regex-log | 0.0 | 34 (max_turns) | **1.0** | **10** |
+| sqlite-with-gcov | 0.0 | 41 (max_turns) | **1.0** | 34 |
+| fix-code-vulnerability | — (AgentTimeout) | — | **1.0** | 38 |
+| chess-best-move | 0.0 | 40 (max_turns) | **1.0** | 55 |
+| build-cython-ext | 0.0 | 40 (max_turns) | 0.0 | 127 |
+| configure-git-webserver | 0.0 | 2 (**success**) | 0.0 | 25 |
+| log-summary-date-ranges | **1.0** | 9 | — (环境异常) | — |
+
+**混淆变量已拆开**：mswea 不受 40 步限制（用到 127 步）。按它解出时用了多少步分类 ——
+**4 题它在 40 步内就解出**（两题只用 10 步），**只有 1 题（chess）超过 40**。
+所以「40 上限」只能解释 5 题里的 1 题，**其余 4 题上限不是借口**。
+
+⚠️ **34 轮不是空转**：`polyglot-c-py` / `regex-log` 各 33 次工具调用里 **32 个不重复**
+（最多重复 2 次）。它每一步都在做新动作，只是**走的路比对照长得多** ——
+方向不是「加循环检测」，是「为什么要走这么多步」。
+
+⚠️ **`turns` 跨 agent 口径不同**：sid 的 `sid_num_turns` vs mswea 的 `total_steps`，
+「10 步 vs 34 轮」**不是精确倍数**；但「40 装不装得下」这个同量级判断不受影响。
+
+### 这批数据挖出的三个 harness 缺陷（都有 file:line 判据，均未修）
+
+**① 🔴 被 watchdog 杀掉的轮次悄悄吃掉轮数预算**
+
+全部 7 个 `error_max_turns` 样本上有一个严丝合缝的不变式：
+
+```
+num_turns + WatchdogKill 次数 = 41      （7/7 全部成立）
+```
+
+`regex-log` 报 `error_max_turns` 但 `num_turns` 只有 **34**，因为它有 **7 次
+WatchdogKill**。根因是两个计数器各数各的：
+
+- `packages/core/src/query/loop.ts:751-752` —— `while` 进来**第一件事**就
+  `state.turnCount++`，**在发请求之前**；
+- `packages/core/src/sdk/query-engine.ts:120-123` —— `num_turns` 只在
+  `event.kind === "assistant_message"` 时 `++`。
+
+于是被杀的轮次**占掉一格 maxTurns 预算、但在 `num_turns` 里完全隐身**。
+后果：`regex-log` 实际只拿到 34 次真正的模型交互机会，却被报成「打满 40 轮」——
+**「打满上限」与「上限够不够用」之间插了一层网络故障。**
+
+**② 🟠 watchdog 与内层 retry 预算互相架空**
+
+`regex-log` 第一次调用连着失败 7 个完整 watchdog 周期、零内容产出（`chunk_count: 0`）：
+
+| watchdog 周期 | 内层 retry 最高用到 | 内层退避累计 | 被杀于 |
+| --- | --- | --- | --- |
+| 1 | **5 / 11** | 154s | 315,788ms |
+| 2–6 | **4 / 11** | 75–78s | ~315,500ms |
+
+**315s 的 watchdog 在内层 retry 只用掉 4–5/11 个 attempt 时就杀掉整个调用，
+外层 `TimeoutRetry` 从 attempt 1 重开 —— 那 11 次预算永远用不完，
+而每周期固定烧 315s。** 7 个周期 ≈ 37 分钟零产出（这就是那两题跑 50–60 分钟的来源）。
+
+⚠️ 修它**别只是把 315s 改大** —— 仓库里已有「多层超时同为 300s，单点修复只换杀手」
+「抬阈值治不了」两条教训。
+
+**③ 🟡 超时的 trial 报 `cost_usd: null`，不是报已花的部分**
+
+`fix-code-vulnerability` 撞 `AgentTimeoutError`，`result.json` 里 token / cost 全是
+`null`（`sid_cost_source: "missing"`），但轨迹里有 **3 次成功调用、75,732 prompt tokens**
+（按 sonnet 标准价 ≈ **$0.0807**）。
+
+本次量级小（$7.18 → 真实 ≈ $7.26，低报 1.1%），**但低报幅度与超时 trial 比例成正比**，
+而 `cost_usd: null` 会被下游求和**当成 0**。可修：兜底源 `AfterModelRaw.usage` 是完好的。
+
+### 分析脚本：`analyze-prefix.py`
+
+```bash
+python3 analyze-prefix.py runs/a11-sid runs/a11-mswea-r2
+```
+
+它把 Harbor 产物与 trial 内 sid-code 轨迹汇总成那两个比值，
+**每个数字都指到一个源字段**（运行时会打印 `FIELD_SOURCES`），
+并机械执行分桶规则。**它不重算 sid-code 已有的任何指标** ——
+digest 的输入是宿主 `~/.sid-code/`，而 trial 轨迹是 10 份互不相干的 session。
+
+⚠️ **`colima` 有两个 profile，别启错**：`colima start` 默认起 `default`（空的、19G root），
+而镜像和 dockerd 的 proxy drop-in 都在 **`swebench`** profile（157G/45G）。
+起错的形态是「零镜像 + proxy 配置消失」，**看起来像整个环境丢了**。正确姿势：
+
+```bash
+colima start swebench && docker context use colima-swebench
+```
+
+---
 
 ### 网关 shim 的落点已从 `/tmp` 改到 `~/.local/share/`
 
