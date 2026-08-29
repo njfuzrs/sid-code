@@ -1924,6 +1924,38 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       }
 
+      // 网络超时体系统一由 resolveLoopTimeouts 解析（单套保活优先默认值，可经
+      // settings.json network.* 或 SID_CODE_* 环境变量覆盖），详见
+      // src/config/network-profile.ts 的优先级链说明。
+      //
+      // ⚠️ 声明位置刻意在**建流之前**（2026-08-29 上移）：下方 `deps.sendWithRetry`
+      // 要用它算 `deadlineAt`。原先它声明在建流之后、`try` 之前 ——
+      // 那时它只服务于 catch 里的超时重试分支，够用；接了 deadlineAt 之后就不够了。
+      // 仍在 `try` 之外，故 catch 块（超时重试分支）读到的仍是同一份解析结果。
+      const netTimeouts = resolveLoopTimeouts({ network: config.network });
+
+      // ─── 两层重试预算共享：把外层 watchdog 的时间预算告诉内层 fallback ───
+      //
+      // 内层 `fallback.ts` 有 11 次重试预算；外层 watchdog 在「无首字节
+      // headerTimeoutMs + grace」或「无内容进展 watchdogNoProgressMs」时强杀整个调用。
+      // 不告诉内层这个截止时刻，两层预算就是**相乘**而不是共享：实测上游饱和时
+      // 内层每次只用到 attempt 4–5/11 就被外层杀掉，外层再从 attempt 1 重新数，
+      // 7 个周期烧掉约 37 分钟、零内容产出（详见 QueryDeps.sendWithRetry 的注释）。
+      //
+      // 取两条防线里**先开枪的那个**（Math.min）：deadline 的语义是"外层还能容忍多久"，
+      // 取大的那个会让内层以为自己还有时间、继续睡退避，然后照样被先到的那层杀掉 ——
+      // 等于没修。两个阈值本身一个都没动。
+      //
+      // ⚠️ 这里刻意**不**把 maxTurnDurationMs（档③单轮硬顶，90min）算进来：
+      // 它是"整轮"预算（跨多次 fetch、跨降级切换），而 deadlineAt 是"这一次调用"的。
+      // 混进来会让内层以为自己有 90 分钟，那正是本缺陷的形态。
+      const streamDeadlineAt =
+        Date.now() +
+        Math.min(
+          netTimeouts.headerTimeoutMs + netTimeouts.watchdogHeaderGraceMs,
+          netTimeouts.watchdogNoProgressMs,
+        );
+
       // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
       let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;
       // Fix 3（回归根治）：每轮创建独立的「turn 级子 AbortController」，级联父（会话级）signal。
@@ -2033,7 +2065,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
         // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
         setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
-        stream = deps.sendWithRetry(sendParams, composedSignal);
+        stream = deps.sendWithRetry(sendParams, composedSignal, {
+          deadlineAt: streamDeadlineAt,
+        });
       } catch (err: any) {
         // 优化 1：连接阶段异常落 errors.jsonl。此 catch 的所有处理路径都是降级重试
         //（prompt-too-long 响应式压缩 continue / 上下文溢出调 maxTokens 或 autoCompact continue），
@@ -2090,7 +2124,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`,
           );
           sendParams.maxTokens = adjusted;
-          stream = deps.sendWithRetry(sendParams, composedSignal);
+          // 同上：重开流也要带 deadline，否则「调 maxTokens 后重试」那条路又退回相乘形态。
+          stream = deps.sendWithRetry(sendParams, composedSignal, {
+            deadlineAt: streamDeadlineAt,
+          });
         } else {
           // P2-2 熔断（连接阶段）：与流式阶段同一道闸。此前本分支既不计失败也不看熔断计数，
           // 于是「压不动 + 无法调 maxTokens」会一路 continue 到 max_turns 才停——每轮都白发
@@ -2138,11 +2175,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const ttftStart = performance.now();
 
       let response: import("../llm/types.ts").AccumulatedResponse;
-      // 网络超时体系统一由 resolveLoopTimeouts 解析（单套保活优先默认值，可经
-      // settings.json network.* 或 SID_CODE_* 环境变量覆盖），详见
-      // src/config/network-profile.ts 的优先级链说明。声明在 try 之外，
-      // 使下方 catch 块（超时重试分支）也能读到同一份解析结果。
-      const netTimeouts = resolveLoopTimeouts({ network: config.network });
       // 本轮耗时基准与两类「非业务时长」扣除量。同 netTimeouts 声明在 try 之外，
       // 让 catch 的超时重试分支也能算出真实已耗时（见 emitTimeoutRetry 处说明）。
       const turnStartedAt = Date.now();
