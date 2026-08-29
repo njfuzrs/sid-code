@@ -1057,6 +1057,79 @@ WatchdogKill**。根因是两个计数器各数各的：
 本次量级小（$7.18 → 真实 ≈ $7.26，低报 1.1%），**但低报幅度与超时 trial 比例成正比**，
 而 `cost_usd: null` 会被下游求和**当成 0**。可修：兜底源 `AfterModelRaw.usage` 是完好的。
 
+### 换档对照的六个脚本（2026-08-29/30）：判据都收敛到 `verifier_health.py`
+
+```bash
+bash run-permission-switch.sh <job名> [题名...]      # 跑（不给题名=全部 10 题）
+python3 progress-permission-switch.py runs/<job>    # 跑动时看进度，每题当场报健康
+python3 analyze-permission-switch.py runs/<job> [补跑job...]   # 判据①②③④⑤
+python3 compare-paired.py runs/a11-sid runs/<job>   # 判据②：配对对照
+python3 analyze-retry-cost.py runs/<job>            # 判据④：重试墙钟
+python3 check-comparison-parity.py runs/<job> runs/a11-mswea   # 跨 agent 对照口径
+```
+
+**`verifier_health.py` 是三个判据的唯一定义处**，消费者一律 import，不许各写一份
+（踩过：进度脚本与复算脚本各写一份 verifier 判据，同一题一个报 ✅ 一个报 ⛔）：
+
+| 函数 | 问的是 | 取数源 |
+| --- | --- | --- |
+| `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
+| `agent_ran` | **agent** 跑过没有（三态，`None`=采集缺失） | `agent_result` 的 in/out token |
+| `llm_fatal` | 是不是**被上游打断**的 | `sid_errors` + 日志里的重试链耗尽 |
+
+#### 分桶规则有五条，后两条是 2026-08-30 实测补的
+
+`reward=0` 有**五种**语义完全不同的来源，混在一起就是「非能力原因记进能力账」：
+
+| 规则 | 排除什么 | 为什么 |
+| --- | --- | --- |
+| ① | verifier 没判分 | 判分未发生 ≠ 没解出来 |
+| ② | `reward` 缺失 | 没有分可算 |
+| ③ | — | 逐题表才是结论，别只看均值 |
+| ④ | **agent 零 API 调用** | 网关 502 / 上游 403 额度耗尽，压根没碰过题 |
+| ⑤ | **上游打断** | 跑了 3-8 轮（共 40）被 429 打空重试链，没机会做完 |
+
+⚠️ 规则 ① **不能**照 §13.2 的字面写（`reward=0` 且 `sid_is_error=False`）——
+那会错杀「agent 自我报喜但其实没做完」，而那正是最该扣分的一类失败。
+⚠️ 规则 ④ 判据用 **token 不用 turns**（token 来自 Harbor 侧，turns 来自 agent 自述，
+取观测方不取自述方），且 `None` 与 `0` 必须分开（用 falsy 会让基线 0.100 变成 0.111）。
+⚠️ 规则 ⑤ 判据**不能只看 `subtype`**：`error_during_execution` 也包含 agent 自身崩溃
+（真实缺陷，必须计分）。
+
+#### ⛔ 两个均值不能直接并列 —— 用 `compare-paired.py`
+
+复算脚本对两轮各自算出基线 **0.100（分母 10）**、换档后 **0.750（分母 4）**。
+并列成「0.100 → 0.750」是**错的**：被规则 ④⑤ 排除的 4 题不在换档后分母里，
+却**在基线分母里且全是 0.0** —— 两个均值的题目集不是同一批题。
+`compare-paired.py` 强制**整对退出**（任一侧被排除，整对退出）、把「尚未跑」与
+「跑了被排除」分开报、未跑完时**拒绝给结论**，并在结论行强制打印 n。
+
+#### 跑前两道闸，第 2 道现在会自动执行
+
+第 1 道（uv 下载速率 ≥500KB/s）见 `run-permission-switch.sh` 头注释。
+第 2 道**上游错误率**原来只是一句「curl /__stats 看看」，没有任何东西真的去测 ——
+那一轮直接开跑，**10 题里 4 题报废**（实测当时错误率 35%）。现在脚本会自动跑：
+20 连、间隔 3s，非 200 占比 **> 20% 直接拒绝启动**。
+
+- ⚠️ **别测「能不能连上」**：单发探针几乎总是 200，要测的是错误率。
+- ⚠️ **别指望重试链兜住**：同一轮 `fix-code-vulnerability` 吃了 39 次 429 仍拿 1.0，
+  `build-cython-ext` 吃了 30 次就死了 —— 35% 下能不能活是抛硬币，不是阈值。
+- 强跑：`SID_HARBOR_SKIP_PREFLIGHT=1`（脚本会警告本轮数据可能混入故障样本）。
+- 自证这道闸时用 `SID_HARBOR_PREFLIGHT_N=5 SID_HARBOR_PREFLIGHT_GAP=0`
+  （默认 60s，反复自证会把验证本身跑超时）。
+
+#### 补跑：基础设施故障不必重跑全部 10 题
+
+```bash
+bash run-permission-switch.sh permswitch-r3 polyglot-c-py regex-log   # ~$1，而非 ~$7
+python3 analyze-permission-switch.py runs/permswitch-r2 runs/permswitch-r3
+```
+
+多 job 合并时**同题靠后覆盖靠前**，且表里会多出「出处」列。
+不标出处就是把两批不同时间、不同上游状态的数据无声混进同一个分母。
+
+---
+
 ### 分析脚本：`analyze-prefix.py`
 
 ```bash
