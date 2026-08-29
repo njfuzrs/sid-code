@@ -156,6 +156,8 @@ export class SDKQueryEngine {
           errors: [runError.message],
           duration_ms: this.now() - this.startTime,
           num_turns: this.turnCount,
+          // 同 message-converter：非 max_turns 路径恒 0，但字段必须在（见那里的注释）。
+          num_turns_without_model_interaction: 0,
           total_cost_usd: this.driver.getCostUsd(),
           usage: this.driver.getUsage(),
           session_id: this.config.sessionId,

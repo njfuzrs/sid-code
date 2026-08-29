@@ -75,7 +75,16 @@ export function formatHeadlessEvent(event: QueryEngineEvent): HeadlessEventOutpu
       return { stderr: `⛔ Hook 阻止执行: ${event.reason}` };
 
     case "max_turns":
-      return { stderr: `⚠️  达到最大轮次限制: ${event.maxTurns}` };
+      // 归因随事件一起说出来：被超时/看门狗杀在零产出上的轮次也花掉了预算，
+      // 不点破就会把人引向"调大 --max-turns"，而真凶可能在网关。
+      return {
+        stderr:
+          `⚠️  达到最大轮次限制: ${event.maxTurns}` +
+          (event.turnsConsumedWithoutAssistant > 0
+            ? `（其中 ${event.turnsConsumedWithoutAssistant} 轮被超时/看门狗杀在零产出上，` +
+              `实际只发生了 ${event.maxTurns - event.turnsConsumedWithoutAssistant} 次模型交互）`
+            : ""),
+      };
 
     case "loop_detected":
       return { stderr: `⚠️  检测到循环模式: ${event.detail}` };

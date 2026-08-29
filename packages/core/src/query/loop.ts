@@ -2551,6 +2551,21 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
           if (timeoutRetryCount < maxRetries) {
             state.timeoutRetryCount = timeoutRetryCount + 1;
+            // ─── 轮数预算被网络故障偷走：记账（Harbor A11 实测，2026-08-29）───
+            //
+            // 走到这里意味着：本轮**零内容产出**（被 watchdog / 硬超时 / 心跳杀掉），
+            // 下面 `continue` 会退回 while 顶部再 `turnCount++` —— 即这一格 maxTurns
+            // 预算被花掉了，却换不来一次模型交互，也不会产出 assistant_message，
+            // 于是在 SDK 的 `num_turns` 里完全隐身。
+            //
+            // 实测不变式：`num_turns + WatchdogKill = maxTurns + 1`（7/7 个
+            // error_max_turns 样本成立），其中两题 40 格只换来 34 次交互。
+            //
+            // ⚠️ 只在**重试真的会发生**的这一支记（`timeoutRetryCount < maxRetries`）。
+            // 记在 `isTimeoutError` 那个 if 的外层会把「重试耗尽、随后 return 收尾」
+            // 那一次也算进去 —— 而那一格并没有被"偷"，它是本轮的正常终点。
+            // 判据必须与"下面会 continue"逐字同源，否则计数会系统性高一。
+            state.turnsConsumedWithoutAssistant++;
             setTransition(state, { type: "timeout_retry" }, deps, sessionState.sessionId);
             log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxRetries}`);
             // 缺口 4：记录超时重试事件
@@ -4806,8 +4821,22 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   // 达到最大轮次
   if (state.turnCount >= state.maxTurns) {
-    log.warn("QUERY_LOOP", `达到最大轮次限制: ${state.maxTurns}`);
-    yield { kind: "max_turns", maxTurns: state.maxTurns };
+    // 归因必须与"上限"一起说出来：实测 7/10 题报 error_max_turns，其中两题的 40 格
+    // 里有 7 格是被上游掉流杀在零产出上的（见 LoopState.turnsConsumedWithoutAssistant）。
+    // 只打"达到最大轮次"会把人引向调大 --max-turns，而真凶在网关。
+    const stolen = state.turnsConsumedWithoutAssistant;
+    log.warn(
+      "QUERY_LOOP",
+      `达到最大轮次限制: ${state.maxTurns}` +
+        (stolen > 0
+          ? `（其中 ${stolen} 轮被超时/看门狗杀在零产出上，实际只发生了 ${state.maxTurns - stolen} 次模型交互）`
+          : ""),
+    );
+    yield {
+      kind: "max_turns",
+      maxTurns: state.maxTurns,
+      turnsConsumedWithoutAssistant: stolen,
+    };
   }
   // P1-4：强制总结轮跑完后的补发点。上方 finally 对这条路径刻意让位（见那里的注释），
   // 否则端到端耗时会漏掉整个总结轮 —— 而它恰好只发生在最长的那些轮次上。

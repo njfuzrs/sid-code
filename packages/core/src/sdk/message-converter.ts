@@ -103,6 +103,10 @@ export function convertToSDKMessage(
         errors: [`达到最大轮次限制: ${event.maxTurns}`],
         duration_ms: nowOf(ctx) - ctx.startTime,
         num_turns: ctx.turnCount,
+        // 唯一有非零取值的地方：轮数预算被超时/watchdog 偷走的格数。
+        // 见 schemas.ts 该字段的注释——它让 `num_turns=34 + error_max_turns` 这对
+        // 自相矛盾的数字有了解释，否则消费侧只能猜。
+        num_turns_without_model_interaction: event.turnsConsumedWithoutAssistant,
         total_cost_usd: ctx.totalCostUsd,
         usage: { ...ctx.totalUsage },
         session_id: ctx.sessionId,
@@ -175,6 +179,10 @@ export function convertToSDKMessage(
         errors: event.stack ? [`${event.message}\n${event.stack}`] : [event.message],
         duration_ms: nowOf(ctx) - ctx.startTime,
         num_turns: ctx.turnCount,
+        // 非 max_turns 路径恒 0：这条链上没有"预算被偷"的语义。
+        // 填 0 而不是省略，是为了让字段在所有 error result 上**结构性存在** ——
+        // 可选字段会让消费侧无法区分"没被偷"与"这版还没这个字段"。
+        num_turns_without_model_interaction: 0,
         total_cost_usd: ctx.totalCostUsd,
         usage: { ...ctx.totalUsage },
         session_id: ctx.sessionId,

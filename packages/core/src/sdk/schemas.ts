@@ -125,6 +125,30 @@ export const SDKResultErrorSchema = lazySchema(() =>
     errors: z.array(z.string()),
     duration_ms: z.number(),
     num_turns: z.number(),
+    /**
+     * `subtype: "error_max_turns"` 时：`--max-turns` 那些格预算里，有几格**没换来一次
+     * 模型交互**（被超时 / watchdog 杀在零产出上）。其余 subtype 下为 0。
+     *
+     * ## 为什么它必须出现在 result 事件里，而不只是 stderr 上的一行字
+     *
+     * `num_turns` 只在 `assistant_message` 上自增，而 `maxTurns` 预算在**发请求之前**
+     * 就被扣掉了。于是一个零产出的轮次在 `num_turns` 里完全隐身 ——
+     * 外部消费者（Harbor / 评测脚本）看到的是 `num_turns: 34` + `error_max_turns`，
+     * 两个数字自相矛盾，而**没有任何字段能解释那 6 格去哪了**。
+     *
+     * 实测（Harbor A11，2026-08-29）：7 个 error_max_turns 样本全部满足
+     * `num_turns + 本字段 = maxTurns + 1`。有了它，消费侧才能把
+     * 「上限不够用」与「上游掉流偷走预算」分开 —— 两者修法完全相反。
+     *
+     * ⚠️ **`.default(0)` 不是随手加的**：没有它，这个字段就是**必填**，
+     * 于是**修复前产出的、以及任何旧版本产出的 result 事件全部解析失败** ——
+     * 一个「让成本/轮数更可观测」的改动会变成「旧轨迹读不进来」的 breaking change。
+     * （本仓自检第 2 问的同型：新增字段时先问"没有它的那些数据怎么办"。）
+     *
+     * `.default(0)` 让输入可省、输出恒为 number：老数据解析成 0（= 没被偷，
+     * 与它的真实语义一致），消费侧不必到处判 undefined。
+     */
+    num_turns_without_model_interaction: z.number().default(0),
     total_cost_usd: z.number(),
     usage: UsageSchema(),
     session_id: z.string(),
