@@ -384,6 +384,38 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
   });
 
   // ── 变异自证:每条判据都要能被改坏并翻红 ──────────────────────────────────
+  test("成本兜底源存在,且取的是 flow 口径而非 total_tokens_sent", () => {
+    // ⚠️ **2026-08-29 从 A11 真实 benchmark 里挖出来的口径缺陷。**
+    // trial 撞 Harbor 的 agent 硬顶被 SIGKILL 时,`result` 事件从未发出 →
+    // `cost_usd: null` / `sid_cost_source: "missing"`,而轨迹里明明有
+    // 3 次成功调用、75,732 prompt tokens、$0.0538 的真实花费。
+    // 那笔钱没进任何账,且**它不报错** —— `null` 被下游求和当成 0。
+    // 低报幅度与超时 trial 的比例成正比:10 题 1 超时 = 1.1%,跑 500 题就系统性偏低。
+    expect(facts!.members).toContain("_recover_usage_from_traj");
+
+    const src = readFileSync(AGENT_PY, "utf-8");
+    // ⛔ 最关键的一条:`n_input_tokens` 必须取 flow 口径。
+    // `total_tokens_sent` 是**末次快照值**(stock,含全历史),而 cost 是逐次累加(flow);
+    // stock ÷ flow 会算出一个错的单价,**且它不报错**,只是让"每 token 花多少钱"整体偏移。
+    // 同源教训:§15.1 的静态前缀曾误用 cache_write_tokens,得到一个每跑一次变 2.5 倍的数。
+    expect(src).toContain("total_cumulative_prompt_tokens");
+    // ⚠️ 断的是「**有没有真的去读**那个字段」,不是「源文件里有没有出现这串字符」——
+    // 源码里那条 ⛔ 注释本身就写着 `total_tokens_sent`(在解释为什么不能用它),
+    // 按裸字符串断会把**警告注释自己**判成违规。这正是本仓「判据写错的门禁
+    // 与不存在的门禁等价」那一类:第一版就是这么写的,它红了,而被测代码是对的。
+    // 所以按取数形态断:`_num("…")` / `.get("…")` 才算真的读了它。
+    expect(src).toMatch(/_num\("total_cumulative_prompt_tokens"\)/);
+    expect(src).not.toMatch(/_num\("total_tokens_sent"\)/);
+    expect(src).not.toMatch(/\.get\(\s*"total_tokens_sent"\s*\)/);
+
+    // 兜底源与权威源的口径标记**必须不同**:兜底值可能偏低(最后 ≤30s 的调用
+    // 没来得及落盘),混成同一个标签就等于宣称"补全了",而它只是"比 null 准"。
+    expect(facts!.string_consts).toContain("session-traj-fallback");
+    expect(facts!.string_consts).toContain("stream-json-result");
+    // 两个源都拿不到时仍要落 missing —— 绝不填 0(填 0 让"没采到"伪装成"没花钱")。
+    expect(facts!.string_consts).toContain("missing");
+  });
+
   describe("变异自证(fixture 在 tmpdir,不动真源文件)", () => {
     test("name() 改名 → 四成员断言翻红", () => {
       // 用**改名**而不是整段删掉:删掉方法体会留下悬空的 @staticmethod/@override,
@@ -580,6 +612,100 @@ describe.if(HAS_HARBOR)("L2 真实导入契约(需要 harbor)", () => {
       // 是编造一个乐观结论;null 至少能在下游被识别成「这条不可用」。
       null,
     ]);
+  });
+
+  test("_recover_usage_from_traj:result 事件缺失时从 session.traj 兜底取到真实花费", () => {
+    // ⚠️ **2026-08-29 从 A11 真实 benchmark 里挖出来的成本低报缺陷。**
+    // 本 test 用的数字**全部取自真实那一题**(`fix-code-vulnerability`,撞 3600s 硬顶
+    // 被 SIGKILL):cost=0.05377850000000001 / cumulative_prompt=1146 /
+    // cache_read=59195 / cache_creation=15391 / received=117 / api_calls=3。
+    // (prompt 总量 1146+59195+15391 = 75,732,与 §15.7 记的一致。)
+    //
+    // 放 L2 而不是 L1,理由同 `_derive_is_error`:测的是**行为**(给定磁盘布局 → 回填值),
+    // 而 L1 只能看到源码形态 —— 形态断言拦不住「函数在但读错了字段」。
+    const snippet = [
+      "import json, os, tempfile, types",
+      "from pathlib import Path",
+      "from sid_code_agent import SidCodeAgent as A",
+      "",
+      "def probe(md, *, mtimes=None):",
+      "    root = Path(tempfile.mkdtemp())",
+      "    sess = root / 'sid-home' / 'trajectories' / 'sessions'",
+      "    if md is not None:",
+      "        for name, meta in md.items():",
+      "            d = sess / name",
+      "            d.mkdir(parents=True)",
+      "            (d / 'session.traj').write_text(json.dumps({'metadata': meta}))",
+      "            if mtimes and name in mtimes:",
+      "                os.utime(d / 'session.traj', (mtimes[name], mtimes[name]))",
+      "    else:",
+      "        sess.mkdir(parents=True)",
+      // 不实例化 SidCodeAgent（它的 __init__ 要 Harbor 的完整 config）：
+      // 造一个只带 logs_dir 的替身，把未绑定方法挂上去调用。
+      // 这样测的仍是**真实那段实现**，而不是它的复制品。
+      "    stub = types.SimpleNamespace(logs_dir=root)",
+      "    return A._recover_usage_from_traj(stub)",
+      "",
+      "REAL = {",
+      "  'total_cost_usd': 0.05377850000000001,",
+      "  'total_cumulative_prompt_tokens': 1146,",
+      "  'total_tokens_received': 117,",
+      "  'total_cache_read_tokens': 59195,",
+      "  'total_cache_creation_tokens': 15391,",
+      "  'total_api_calls': 3,",
+      "  'total_steps': 38,",
+      "  'session_id': '20260828-145335-3b0a5194',",
+      "}",
+      "",
+      "out = {}",
+      "out['real'] = probe({'20260828-145335-3b0a5194': REAL})",
+      // 目录不存在 / 空目录 / cost 缺失 / cost=0 → 一律 None（绝不填 0）
+      "out['no_dir'] = probe(None)",
+      "out['zero_cost'] = probe({'s': dict(REAL, total_cost_usd=0)})",
+      "out['null_cost'] = probe({'s': {k: v for k, v in REAL.items() if k != 'total_cost_usd'}})",
+      // 两个会话时取 mtime 最新的那个（install 阶段的自检可能留下第二个）
+      "out['newest'] = probe(",
+      "  {'old': dict(REAL, total_cost_usd=0.11, session_id='old'),",
+      "   'new': dict(REAL, total_cost_usd=0.22, session_id='new')},",
+      "  mtimes={'old': 1_000_000, 'new': 2_000_000},",
+      ")",
+      "print(json.dumps(out))",
+    ].join("\n");
+    const proc = Bun.spawnSync({
+      cmd: [HARBOR_PYTHON!, "-c", snippet],
+      env: {
+        ...process.env,
+        PYTHONPATH: join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.stderr?.toString() ?? "").toBe("");
+    expect(proc.exitCode).toBe(0);
+    const r = JSON.parse(proc.stdout!.toString());
+
+    // ① 真实那一题:修复前这里全是 null,那 $0.0538 没进任何账。
+    expect(r.real).not.toBeNull();
+    expect(r.real.cost_usd).toBeCloseTo(0.0537785, 7);
+    // ⛔ flow 口径:1146(cumulative_prompt),**不是** stock 的 total_tokens_sent。
+    expect(r.real.n_input_tokens).toBe(1146);
+    expect(r.real.n_output_tokens).toBe(117);
+    expect(r.real.n_cache_tokens).toBe(59195);
+    expect(r.real.cache_write_tokens).toBe(15391);
+    expect(r.real.total_api_calls).toBe(3);
+    expect(r.real.session_id).toBe("20260828-145335-3b0a5194");
+    // §15.7 的判据:三段相加 = 75,732
+    expect(r.real.n_input_tokens + r.real.n_cache_tokens + r.real.cache_write_tokens).toBe(75_732);
+
+    // ② 拿不到时**必须** None,绝不 0 —— 填 0 会让「没采到」伪装成「没花钱」,
+    // 而这两件事在数据上不可区分。这三条是本修复最容易被"优化"掉的部分。
+    expect(r.no_dir).toBeNull();
+    expect(r.zero_cost).toBeNull();
+    expect(r.null_cost).toBeNull();
+
+    // ③ 多会话取最新:挑错会让 sid_session_id 与轨迹对不上,而那是唯一的反查接缝。
+    expect(r.newest.session_id).toBe("new");
+    expect(r.newest.cost_usd).toBeCloseTo(0.22, 6);
   });
 });
 

@@ -95,7 +95,21 @@ export type QueryLoopYield =
       savedTokens?: number;
     }
   | { kind: "context_warning"; remaining: number }
-  | { kind: "max_turns"; maxTurns: number }
+  | {
+      kind: "max_turns";
+      maxTurns: number;
+      /**
+       * 这 `maxTurns` 格预算里，有几格**没换来一次模型交互**（被超时/watchdog 杀在
+       * 零产出上）。见 `LoopState.turnsConsumedWithoutAssistant` 的完整说明。
+       *
+       * 存在的理由：`error_max_turns` 单看是「上限不够用」，而实测它可能是
+       * 「上游掉流偷走了预算」—— 两者修法完全相反（前者调 `--max-turns`，
+       * 后者查网关）。带上这个数，`error_max_turns` 就能自证是哪一种。
+       *
+       * 0 = 没有一格被偷（真的是上限不够用）。
+       */
+      turnsConsumedWithoutAssistant: number;
+    }
   | { kind: "loop_detected"; detail: string }
   | { kind: "loop_recovery"; attempt: number; maxAttempts: number }
   | { kind: "tombstone"; message: Message; reason: string }
@@ -242,6 +256,37 @@ export interface LoopState {
    * 保证当前请求的重试计数正确递增、且不会"一次超时永久丧失后续轮次的重试能力"。
    */
   timeoutRetryCount: number;
+  /**
+   * 被网络故障吞掉的轮次数 —— 「轮数预算被偷走」那个缺陷的修复载体。
+   *
+   * ## 它修的是什么（Harbor A11 实测，2026-08-29）
+   *
+   * `queryLoop` 的 `while (turnCount < maxTurns)` 一进来就 `turnCount++`，是在**发请求
+   * 之前**；而 SDK 侧的 `num_turns` 只在 `assistant_message` 事件上 `++`。于是一个被
+   * watchdog 强杀、零内容产出的轮次：**占掉一格 maxTurns 预算，却在 `num_turns` 里完全隐身**。
+   *
+   * 真实 benchmark 上 7 个 `error_max_turns` 样本全部满足
+   * `num_turns + WatchdogKill 次数 = 41`（7/7）—— 其中两题 `num_turns` 只有 **34**，
+   * 各被 watchdog 杀了 7 次。它们实际只拿到 34 次真正的模型交互机会，
+   * 却被报成"打满了 40 轮上限"。
+   *
+   * **两个后果，第二个更贵**：
+   * 1. 本该解出的题因预算被偷而解不出（服务「更准」）。
+   * 2. **"打满上限"与"上限够不够用"之间插了一层网络故障** —— 看到
+   *    `error_max_turns` 的人会去调 `--max-turns`，而真凶是上游掉流。
+   *
+   * ## 为什么记数而不是「不让它占预算」
+   *
+   * 曾考虑「被杀的轮次不 `turnCount++`」。**否决**：那样上游持续故障时循环
+   * 永不收敛（每次都退回同一格），把一个「预算被偷」的缺陷换成一个「无限重试」的缺陷 ——
+   * 而后者在无头评测里会一路烧到 1 小时硬顶。所以预算照扣（保留收敛性），
+   * 但**把被偷的格数如实记下来并透出**，让 `error_max_turns` 能自证
+   * 「40 格里有几格根本没换来一次模型交互」。
+   *
+   * 由 `loop.ts` 在超时重试分支递增（那是唯一"本轮零产出、即将重开"的出口），
+   * 随 `LoopState` 每条用户消息重建而天然归零。
+   */
+  turnsConsumedWithoutAssistant: number;
   // ─── 2026-08-01：`lastTodoReminderTurn` 已删除 ───
   // 它是"上次回注是哪轮"的锚点，但挂在 LoopState 上就等于**每条用户消息归零**，
   // 于是每条新消息的前 8 轮永远算不出"到期"。锚点已上移到 SessionState
@@ -538,6 +583,7 @@ export function createInitialLoopState(maxTurns: number): LoopState {
     hasAttemptedReactiveCompact: false,
     transition: undefined,
     timeoutRetryCount: 0,
+    turnsConsumedWithoutAssistant: 0,
     repeatedReadonly: { repeatCount: 0, reminderCount: 0 },
   };
 }
@@ -547,7 +593,39 @@ export function createInitialLoopState(maxTurns: number): LoopState {
 /** queryLoop 的可 mock 依赖 */
 export interface QueryDeps {
   /** 调用 LLM（含重试和回退） */
-  sendWithRetry: (params: SendParams, signal?: AbortSignal) => AsyncIterable<StreamEvent>;
+  /**
+   * 调用 LLM（含重试和回退）。
+   *
+   * `opts.deadlineAt` 是**本次调用的 wall-clock 截止时刻**（epoch ms），用于让
+   * fallback 内层的重试退避与外层 watchdog **共享同一个时间预算**。
+   *
+   * ## 不传它会发生什么（Harbor A11 实测，2026-08-29）
+   *
+   * 内层 `fallback.ts` 有 11 次重试预算，外层 `loop.ts` 的 watchdog 在
+   * `headerTimeoutMs + grace = 315s` 无首字节时强杀整个调用。上游饱和时实测形态：
+   *
+   * | watchdog 周期 | 内层 attempt 最高用到 | 被杀于 |
+   * | --- | --- | --- |
+   * | 1 | **5 / 11** | 315,788ms |
+   * | 2–6 | **4 / 11** | ~315,500ms |
+   *
+   * 内层永远用不完那 11 次预算（每次刚到 4–5 就被外层杀掉），而外层的
+   * `TimeoutRetry` 从 attempt 1 重新数 —— **两层预算不是共享，是相乘**。
+   * 7 个周期 = 约 37 分钟、零内容产出（`chunk_count: 0`）。
+   *
+   * 传了之后，内层在每次退避**前**自查「这次退避 + 一次最小请求，还塞得进剩余预算吗」，
+   * 塞不进就立即停止重试转降级 —— 把本会白等的时间还给"至少留个能落地的结论"。
+   *
+   * ⚠️ **这不是"把 315s 改大"**（记忆里那条「抬阈值治不了、多层超时同值只换杀手」）。
+   * 阈值一个都没动，动的是**两层之间要不要交换"还剩多少时间"这个事实**。
+   *
+   * 可选：不传则逐字节退化为原有的纯次数上界（子代理/side-call 路径已各自传）。
+   */
+  sendWithRetry: (
+    params: SendParams,
+    signal?: AbortSignal,
+    opts?: { deadlineAt?: number },
+  ) => AsyncIterable<StreamEvent>;
   /** 处理流式响应，累积内容块。onThinking 对标 Claude Code 的独立思考流通道 */
   processStream: (
     stream: AsyncIterable<StreamEvent>,

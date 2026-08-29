@@ -539,10 +539,48 @@ class SidCodeAgent(BaseInstalledAgent):
         }
 
         if result is None:
-            # ⚠️ **拿不到时绝不填 0。** 填 0 会让「没采到」伪装成「没花钱」,
+            # ── 兜底源:轨迹的 session.traj(2026-08-29 接入) ──
+            #
+            # 走到这里 = `result` 事件从未发出。**最常见的成因不是"没花钱",
+            # 而是 trial 撞上 Harbor 的 agent 硬顶被 SIGKILL** —— 那一刻 sid-code
+            # 已经跑了 1 小时、花掉了真金白银,但它没机会打印终止事件。
+            #
+            # 实测(A11 第五棒,`fix-code-vulnerability`):
+            # `cost_usd: null` 而轨迹里有 3 次成功调用、75,732 prompt tokens、
+            # `total_cost_usd: 0.0538` —— 这笔钱没进任何账。
+            # 该题当次量级很小(全局 $7.18 → 真实 ≈ $7.26,低报 1.1%),
+            # **但低报幅度与超时 trial 的比例成正比**:跑 500 题时超时比例一上去,
+            # 成本口径就系统性偏低,而它**不报错**——`null` 被下游求和当成 0。
+            #
+            # `session.traj` 为什么可信:`collector.ts` 每轮 AfterModel 就把
+            # `total_cost_usd` 增量累加进 metadata 并节流重写 traj(≤30s 一次),
+            # **不依赖 SessionEnd 干净触发** —— 正是为进程被杀这一类场景准备的。
+            #
+            # ⚠️ **它仍然可能偏低**(最后 ≤30s 的调用没来得及落盘),所以口径标记
+            # 必须与权威源**区分开**(`session-traj-fallback` ≠ `stream-json-result`)。
+            # 混成同一个标签就等于宣称"补全了",而它只是"比 null 准"。
+            traj = self._recover_usage_from_traj()
+            if traj is not None:
+                context.cost_usd = traj["cost_usd"]
+                context.n_input_tokens = traj["n_input_tokens"]
+                context.n_output_tokens = traj["n_output_tokens"]
+                context.n_cache_tokens = traj["n_cache_tokens"]
+                metadata["sid_cost_source"] = "session-traj-fallback"
+                metadata["sid_session_id"] = traj["session_id"]
+                metadata["sid_num_turns"] = traj["total_steps"]
+                metadata["cache_write_tokens"] = traj["cache_write_tokens"]
+                metadata["sid_traj_api_calls"] = traj["total_api_calls"]
+                # 归因不能丢:这类样本**没有** subtype(事件没发出),
+                # 与 `--max-turns` 耗尽是两类不同样本,下游不能混算(见下方 sid_subtype 注释)。
+                metadata["sid_result_event_missing"] = True
+                context.metadata = metadata
+                return
+
+            # ⚠️ **两个源都拿不到时绝不填 0。** 填 0 会让「没采到」伪装成「没花钱」,
             # 而这两件事在数据上不可区分。留 None + 显式标记,
             # 让下游能把这类样本单独摘出来(它是「被外部 kill」的判据输入之一)。
             metadata["sid_cost_source"] = "missing"
+            metadata["sid_result_event_missing"] = True
             context.metadata = metadata
             return
 
@@ -633,6 +671,82 @@ class SidCodeAgent(BaseInstalledAgent):
                 if event and event.get("type") == "result":
                     last = event
         return last
+
+    def _recover_usage_from_traj(self) -> dict[str, Any] | None:
+        """`result` 事件缺失时,从 `session.traj` 兜底取用量与成本。
+
+        只在 `populate_context_post_run` 的 `result is None` 分支调用 —— 它是
+        「trial 被 SIGKILL,钱花了但终止事件没发出」那个成本低报缺陷的兜底源。
+
+        ## 口径(每一项都指到源字段,不重算)
+
+        | 回填字段 | traj 源字段 | 口径 |
+        | --- | --- | --- |
+        | `cost_usd` | `metadata.total_cost_usd` | flow,逐次累加 |
+        | `n_input_tokens` | `metadata.total_cumulative_prompt_tokens` | **flow** |
+        | `n_output_tokens` | `metadata.total_tokens_received` | flow |
+        | `n_cache_tokens` | `metadata.total_cache_read_tokens` | flow |
+
+        ⛔ **`n_input_tokens` 绝不能取 `total_tokens_sent`。** 那是**末次快照值**
+        (stock,含全部历史),而 `total_cost_usd` 是逐次累加(flow)。
+        stock ÷ flow 会算出一个**错的单价**,且它不报错 —— 只是让"每 token 花多少钱"
+        整体偏移。`builder.ts` 那两个字段的注释把这条写死了,这里逐字遵守。
+        (同源教训:§15.1 的静态前缀曾误用 `cache_write_tokens`,得到一个每跑一次
+        变 2.5 倍的数,而它也不报错。)
+
+        ## 为什么按 mtime 挑最新的那个目录
+
+        `SID_CONFIG_DIR` 是 per-trial 独立挂载目录,正常只有一个会话;
+        但 install 阶段的探活/自检**可能**留下第二个。取最新的那个 ——
+        它才是 `run()` 那次。若挑错,`sid_session_id` 会与轨迹对不上,
+        所以把 session_id 一并回填,让下游能自证挑对了没有。
+
+        返回 None 的情形:目录不存在 / 没有 traj / traj 坏了 / cost 不是数
+        —— 一律**不猜、不填 0**,交回上层落 `missing`。
+        """
+        sessions_dir = self.logs_dir / SID_HOME_DIRNAME / "trajectories" / "sessions"
+        if not sessions_dir.is_dir():
+            return None
+
+        candidates = [d for d in sessions_dir.iterdir() if (d / "session.traj").is_file()]
+        if not candidates:
+            return None
+        newest = max(candidates, key=lambda d: (d / "session.traj").stat().st_mtime)
+
+        try:
+            with (newest / "session.traj").open(errors="replace") as fh:
+                traj = json.load(fh)
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(traj, dict):
+            return None
+
+        md = traj.get("metadata")
+        if not isinstance(md, dict):
+            return None
+
+        cost = md.get("total_cost_usd")
+        # cost 必须是**非零**数字才算兜底成功:0 与 None 在这里语义相同
+        # (都代表"没采到"),而填 0 正是本缺陷要消灭的那种伪装。
+        if not isinstance(cost, (int, float)) or cost <= 0:
+            return None
+
+        def _num(key: str) -> int | None:
+            value = md.get(key)
+            return int(value) if isinstance(value, (int, float)) else None
+
+        return {
+            "cost_usd": float(cost),
+            # ⛔ flow 口径,不是 total_tokens_sent(见上方表格)。
+            "n_input_tokens": _num("total_cumulative_prompt_tokens"),
+            "n_output_tokens": _num("total_tokens_received"),
+            "n_cache_tokens": _num("total_cache_read_tokens"),
+            "cache_write_tokens": _num("total_cache_creation_tokens"),
+            "total_api_calls": _num("total_api_calls"),
+            "total_steps": _num("total_steps"),
+            # 目录名即 session_id;用它自证挑对了哪个会话。
+            "session_id": md.get("session_id") or newest.name,
+        }
 
     # ─────────────────────────────────────────────────────────── 宿主侧小工具
 

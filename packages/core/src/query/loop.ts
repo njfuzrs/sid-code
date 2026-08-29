@@ -1924,6 +1924,38 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       }
 
+      // 网络超时体系统一由 resolveLoopTimeouts 解析（单套保活优先默认值，可经
+      // settings.json network.* 或 SID_CODE_* 环境变量覆盖），详见
+      // src/config/network-profile.ts 的优先级链说明。
+      //
+      // ⚠️ 声明位置刻意在**建流之前**（2026-08-29 上移）：下方 `deps.sendWithRetry`
+      // 要用它算 `deadlineAt`。原先它声明在建流之后、`try` 之前 ——
+      // 那时它只服务于 catch 里的超时重试分支，够用；接了 deadlineAt 之后就不够了。
+      // 仍在 `try` 之外，故 catch 块（超时重试分支）读到的仍是同一份解析结果。
+      const netTimeouts = resolveLoopTimeouts({ network: config.network });
+
+      // ─── 两层重试预算共享：把外层 watchdog 的时间预算告诉内层 fallback ───
+      //
+      // 内层 `fallback.ts` 有 11 次重试预算；外层 watchdog 在「无首字节
+      // headerTimeoutMs + grace」或「无内容进展 watchdogNoProgressMs」时强杀整个调用。
+      // 不告诉内层这个截止时刻，两层预算就是**相乘**而不是共享：实测上游饱和时
+      // 内层每次只用到 attempt 4–5/11 就被外层杀掉，外层再从 attempt 1 重新数，
+      // 7 个周期烧掉约 37 分钟、零内容产出（详见 QueryDeps.sendWithRetry 的注释）。
+      //
+      // 取两条防线里**先开枪的那个**（Math.min）：deadline 的语义是"外层还能容忍多久"，
+      // 取大的那个会让内层以为自己还有时间、继续睡退避，然后照样被先到的那层杀掉 ——
+      // 等于没修。两个阈值本身一个都没动。
+      //
+      // ⚠️ 这里刻意**不**把 maxTurnDurationMs（档③单轮硬顶，90min）算进来：
+      // 它是"整轮"预算（跨多次 fetch、跨降级切换），而 deadlineAt 是"这一次调用"的。
+      // 混进来会让内层以为自己有 90 分钟，那正是本缺陷的形态。
+      const streamDeadlineAt =
+        Date.now() +
+        Math.min(
+          netTimeouts.headerTimeoutMs + netTimeouts.watchdogHeaderGraceMs,
+          netTimeouts.watchdogNoProgressMs,
+        );
+
       // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
       let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;
       // Fix 3（回归根治）：每轮创建独立的「turn 级子 AbortController」，级联父（会话级）signal。
@@ -2033,7 +2065,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
         // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
         setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
-        stream = deps.sendWithRetry(sendParams, composedSignal);
+        stream = deps.sendWithRetry(sendParams, composedSignal, {
+          deadlineAt: streamDeadlineAt,
+        });
       } catch (err: any) {
         // 优化 1：连接阶段异常落 errors.jsonl。此 catch 的所有处理路径都是降级重试
         //（prompt-too-long 响应式压缩 continue / 上下文溢出调 maxTokens 或 autoCompact continue），
@@ -2090,7 +2124,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`,
           );
           sendParams.maxTokens = adjusted;
-          stream = deps.sendWithRetry(sendParams, composedSignal);
+          // 同上：重开流也要带 deadline，否则「调 maxTokens 后重试」那条路又退回相乘形态。
+          stream = deps.sendWithRetry(sendParams, composedSignal, {
+            deadlineAt: streamDeadlineAt,
+          });
         } else {
           // P2-2 熔断（连接阶段）：与流式阶段同一道闸。此前本分支既不计失败也不看熔断计数，
           // 于是「压不动 + 无法调 maxTokens」会一路 continue 到 max_turns 才停——每轮都白发
@@ -2138,11 +2175,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const ttftStart = performance.now();
 
       let response: import("../llm/types.ts").AccumulatedResponse;
-      // 网络超时体系统一由 resolveLoopTimeouts 解析（单套保活优先默认值，可经
-      // settings.json network.* 或 SID_CODE_* 环境变量覆盖），详见
-      // src/config/network-profile.ts 的优先级链说明。声明在 try 之外，
-      // 使下方 catch 块（超时重试分支）也能读到同一份解析结果。
-      const netTimeouts = resolveLoopTimeouts({ network: config.network });
       // 本轮耗时基准与两类「非业务时长」扣除量。同 netTimeouts 声明在 try 之外，
       // 让 catch 的超时重试分支也能算出真实已耗时（见 emitTimeoutRetry 处说明）。
       const turnStartedAt = Date.now();
@@ -2551,6 +2583,21 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
           if (timeoutRetryCount < maxRetries) {
             state.timeoutRetryCount = timeoutRetryCount + 1;
+            // ─── 轮数预算被网络故障偷走：记账（Harbor A11 实测，2026-08-29）───
+            //
+            // 走到这里意味着：本轮**零内容产出**（被 watchdog / 硬超时 / 心跳杀掉），
+            // 下面 `continue` 会退回 while 顶部再 `turnCount++` —— 即这一格 maxTurns
+            // 预算被花掉了，却换不来一次模型交互，也不会产出 assistant_message，
+            // 于是在 SDK 的 `num_turns` 里完全隐身。
+            //
+            // 实测不变式：`num_turns + WatchdogKill = maxTurns + 1`（7/7 个
+            // error_max_turns 样本成立），其中两题 40 格只换来 34 次交互。
+            //
+            // ⚠️ 只在**重试真的会发生**的这一支记（`timeoutRetryCount < maxRetries`）。
+            // 记在 `isTimeoutError` 那个 if 的外层会把「重试耗尽、随后 return 收尾」
+            // 那一次也算进去 —— 而那一格并没有被"偷"，它是本轮的正常终点。
+            // 判据必须与"下面会 continue"逐字同源，否则计数会系统性高一。
+            state.turnsConsumedWithoutAssistant++;
             setTransition(state, { type: "timeout_retry" }, deps, sessionState.sessionId);
             log.warn("QUERY_LOOP", `流式超时，重试 ${timeoutRetryCount + 1}/${maxRetries}`);
             // 缺口 4：记录超时重试事件
@@ -4806,8 +4853,22 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   // 达到最大轮次
   if (state.turnCount >= state.maxTurns) {
-    log.warn("QUERY_LOOP", `达到最大轮次限制: ${state.maxTurns}`);
-    yield { kind: "max_turns", maxTurns: state.maxTurns };
+    // 归因必须与"上限"一起说出来：实测 7/10 题报 error_max_turns，其中两题的 40 格
+    // 里有 7 格是被上游掉流杀在零产出上的（见 LoopState.turnsConsumedWithoutAssistant）。
+    // 只打"达到最大轮次"会把人引向调大 --max-turns，而真凶在网关。
+    const stolen = state.turnsConsumedWithoutAssistant;
+    log.warn(
+      "QUERY_LOOP",
+      `达到最大轮次限制: ${state.maxTurns}` +
+        (stolen > 0
+          ? `（其中 ${stolen} 轮被超时/看门狗杀在零产出上，实际只发生了 ${state.maxTurns - stolen} 次模型交互）`
+          : ""),
+    );
+    yield {
+      kind: "max_turns",
+      maxTurns: state.maxTurns,
+      turnsConsumedWithoutAssistant: stolen,
+    };
   }
   // P1-4：强制总结轮跑完后的补发点。上方 finally 对这条路径刻意让位（见那里的注释），
   // 否则端到端耗时会漏掉整个总结轮 —— 而它恰好只发生在最长的那些轮次上。

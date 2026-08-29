@@ -7322,7 +7322,15 @@ export class App {
               );
               break;
             case "max_turns": {
-              const maxTurnsText = `达到最大轮次限制: ${event.maxTurns}`;
+              // 同 headless：把"有几格预算没换来模型交互"一并说出来（见
+              // LoopState.turnsConsumedWithoutAssistant）。省掉它，用户唯一能想到的
+              // 处置就是调大轮次上限，而那治不了上游掉流。
+              const maxTurnsText =
+                `达到最大轮次限制: ${event.maxTurns}` +
+                (event.turnsConsumedWithoutAssistant > 0
+                  ? `（其中 ${event.turnsConsumedWithoutAssistant} 轮被超时/看门狗杀在零产出上，` +
+                    `实际只发生了 ${event.maxTurns - event.turnsConsumedWithoutAssistant} 次模型交互）`
+                  : "");
               addStatusMessage("max_turns", maxTurnsText);
               const maxTurnsDisplay = [
                 ...bridge.current.displayItems,
