@@ -69,14 +69,21 @@ preflight_upstream() {
   # 连数与间隔可覆盖 —— 这是为了**这道闸自己能被便宜地自证**:
   # 默认 20 连 × 3s = 60s,自证时跑两遍就 2 分钟,曾把验证本身跑超时。
   local n="${SID_HARBOR_PREFLIGHT_N:-20}" gap="${SID_HARBOR_PREFLIGHT_GAP:-3}" ok=0 codes=""
+  PREFLIGHT_STATS_BEFORE=$(curl -s -m 10 "${SID_HARBOR_GATEWAY_URL/192.168.5.2/127.0.0.1}/__stats" 2>/dev/null || true)
   echo "--- 闸 2:上游错误率(${n} 连,间隔 ${gap}s)"
   for _ in $(seq $n); do
     local c
-    c=$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+    # ⚠️ **必须用流式请求**,而且 max_tokens 不能是 8。2026-08-30 实测:同一时刻
+    # 「max_tokens=8 非流式」探 5 次全 200,而「流式」探 5 次只有 3 次 200 ——
+    # **闸用错了请求形态,就会在上游已经劣化时报绿**。那次它报 10% 放行,
+    # 随后补跑的两题双双一次 API 调用都没成功(各 19 次 `Remote end closed` / err=502)。
+    # agent 真实发的是 `stream:true` + `max_tokens=128000`(见 trial 日志的
+    # `maxTokens` 字段),所以闸必须贴着这个形态探。
+    c=$(curl -s -o /dev/null -w '%{http_code}' -m 40 \
       -X POST "${SID_HARBOR_GATEWAY_URL/192.168.5.2/127.0.0.1}/v1/messages" \
       -H 'content-type: application/json' -H 'x-api-key: no-auth-dummy' \
       -H 'anthropic-version: 2023-06-01' \
-      -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+      -d '{"model":"claude-sonnet-5","max_tokens":2048,"stream":true,"messages":[{"role":"user","content":"Briefly explain a C/Python polyglot file."}]}' \
       2>/dev/null || echo 000)
     [ "$c" = "200" ] && ok=$((ok + 1))
     codes="$codes $c"
@@ -84,6 +91,30 @@ preflight_upstream() {
   done
   local fail_pct=$(( (n - ok) * 100 / n ))
   echo "    码:$codes"
+  # 网关自己的计数器是**累积值(stock)**,直接当当前健康度用是错的(evals/CLAUDE.md §1.6)。
+  # 这里只报**探测窗口内的差值(flow)**,与上面的探针互为交叉校验:
+  # 探针看的是「我发的请求成不成」,__stats 看的是「网关到上游那一跳成不成」。
+  local s1="${PREFLIGHT_STATS_BEFORE:-}" s2
+  s2=$(curl -s -m 10 "${SID_HARBOR_GATEWAY_URL/192.168.5.2/127.0.0.1}/__stats" 2>/dev/null || true)
+  if [ -n "$s1" ] && [ -n "$s2" ]; then
+    python3 - "$s1" "$s2" <<'PYSTATS' || true
+import json, sys
+def agg(t):
+    try: d = json.loads(t).get("stats", {})
+    except Exception: return None
+    ok = d.get("200_/v1/messages", 0)
+    bad = d.get("upstream_error", 0) + d.get("upstream_429", 0) + d.get("upstream_403", 0)
+    return ok, bad
+a, b = agg(sys.argv[1]), agg(sys.argv[2])
+if a and b:
+    dok, dbad = b[0] - a[0], b[1] - a[1]
+    tot = dok + dbad
+    if tot > 0:
+        print(f"    网关→上游(本窗口 flow):成功 {dok} / 失败 {dbad} → {dbad * 100 // tot}%")
+    else:
+        print("    网关→上游(本窗口 flow):窗口内无新请求")
+PYSTATS
+  fi
   echo "    200=${ok}/${n}  失败率=${fail_pct}%"
   if [ "$fail_pct" -gt 20 ]; then
     echo "    ⛔ 失败率 ${fail_pct}% > 20% —— **拒绝启动**。"
