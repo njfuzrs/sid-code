@@ -805,6 +805,41 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
     }
   });
 
+  test("agent 侧健康判据同样只有一处定义 —— 不许自己数 token", () => {
+    // 2026-08-29 本轮实测新增的规则 ④。`polyglot-c-py` 拿到 `reward=0.0` 且
+    // verifier **判分正常**,于是所有 verifier 侧判据都放它进分母 —— 而真实形态是
+    // 网关 502 挡了 277 秒、**一次 API 调用都没成功**,压根没碰过那道题。
+    // 把它当真实 0 分,就是把一次基础设施故障记进能力账。
+    //
+    // 判据落在 `verifier_health.agent_ran`(与 `verifier_ran` 同一个定义处),
+    // 这条门禁拦的是「消费者自己再数一遍 token」—— 那就是第二份拷贝,
+    // 而两份拷贝迟早分叉,分歧还会在无人看的时候发生。
+    const HEALTH = "verifier_health.py";
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+
+    // 定义处必须有这个函数,且它必须**区分三态**(None = 采集缺失)。
+    // ⚠️ `\(` 不能省:初版写的是 `/def agent_ran/`,而它是**子串匹配** ——
+    // 把定义改名成 `agent_ran_RENAMED`(消费者 import 当场就会 ImportError)
+    // 依然能匹配上,变异自证时这条**没有翻红**。一个静默失效的门禁。
+    expect(health).toMatch(/def agent_ran\(/);
+    expect(
+      /is None and .*is None|return None/.test(health),
+      "agent_ran 必须把「键不存在」判成 None —— 用 falsy 会把基线 fix-code-vulnerability 一起吞掉,把 0.100 变成 0.111",
+    ).toBe(true);
+
+    // 消费者:自己数 in/out token 的,必须 import 共享模块。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      const countsTokensItself = /n_input_tokens[\s\S]{0,200}n_output_tokens/.test(code);
+      if (!countsTokensItself) continue;
+      expect(
+        /from verifier_health import[^\n]*agent_ran|import verifier_health/.test(code),
+        `${f} 自己数 in/out token 判 agent 跑没跑,却没 import agent_ran —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
   test("用 `command not found` 的脚本必须同时有**正向**判据(pytest 结论行)", () => {
     // ## 这条断言的措辞被改过一次,改的理由比断言本身重要
     //

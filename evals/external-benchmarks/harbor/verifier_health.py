@@ -10,6 +10,16 @@
 
 判据只能有一个定义处。**这个文件就是那个定义处。**
 
+## 这里放两个判据,它们问的是**两个不同主语**
+
+| 函数 | 问题 | 取数源 |
+| --- | --- | --- |
+| `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
+| `agent_ran` | **agent** 跑过没有 | `agent_result` 的 in/out token 数 |
+
+两者都可能单独为假,而组合起来的语义完全不同:agent 没跑过而 verifier 判了分,
+形态就是「拿到一个 reward=0,看起来像没解出来,实际压根没碰过这道题」。
+
 ## 判据本身:正向,不对"怎么坏的"做假设
 
 `verifier/*stdout*` 里出现 pytest 的结论行(`N passed` / `N failed`)⟺ 判分发生了。
@@ -69,3 +79,39 @@ def verifier_note(trial_dir: str) -> str:
     if "downloading uv" in blob:
         return "⛔未判分(下载中被杀)"
     return "⛔未判分(原因待查)"
+
+
+def agent_ran(result: dict) -> bool | None:
+    """agent 到底有没有真的跑过。**None = 采集缺失,不可判**(与 False 严格区分)。
+
+    ## 为什么需要这一条(2026-08-29 本轮实测)
+
+    `polyglot-c-py` 拿到 `reward=0.0` 且 verifier **判分正常** —— 于是所有
+    verifier 侧的判据都放它进分母。而它的真实形态是:
+
+        [AUDIT:API] ✗ 请求异常 err=502 Remote end closed connection
+        [FALLBACK] S3:剩余预算不足以「退避 + 一次请求」,停止重试
+        {"num_turns":0,"total_cost_usd":0,"usage":{"inputTokens":0,"outputTokens":0}}
+
+    网关 502 挡了 277 秒,**一次 API 调用都没成功,压根没碰过这道题**。
+    把它当真实 0 分,就是把一次基础设施故障记进能力账。
+
+    ## 判据为什么用 token 而不用 `turns`
+
+    - `turns` 来自 **agent 自述**的 result 事件;token 来自 Harbor 侧的
+      `agent_result` —— **取观测方,不取自述方**(跨主语推断是本仓反复踩的坑)。
+    - `turns == 0` 理论上还能是「一轮就答完」;in/out token 双 0 只有
+      「一次调用都没发生」这一种解释。
+
+    ## ⚠️ `None`(键不存在)与 `0`(显式为零)必须分开
+
+    基线 `fix-code-vulnerability` 整份 metadata 缺失 → 两个键都是 `None`,
+    但它 verifier 判了分、reward 有值,属于「采集缺失但题跑过了」。
+    用 falsy 判断会把它一起吞掉,**让文档基线 0.100 变成 0.111**(实测)。
+    所以这里返回三态:True / False / None,由调用方决定 None 怎么处理。
+    """
+    a = result.get("agent_result") or {}
+    tin, tout = a.get("n_input_tokens"), a.get("n_output_tokens")
+    if tin is None and tout is None:
+        return None
+    return not ((tin or 0) == 0 and (tout or 0) == 0)

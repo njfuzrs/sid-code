@@ -16,7 +16,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import verifier_note  # noqa: E402
+from verifier_health import agent_ran, verifier_note  # noqa: E402
 
 RUN = sys.argv[1] if len(sys.argv) > 1 else "runs/permswitch-r2"
 
@@ -41,9 +41,17 @@ for f in sorted(glob.glob(os.path.join(RUN, "*", "result.json"))):
                 except Exception:
                     pass
             deny = f"{c.get('deny', 0)}(日志)"
+    # ⚠️ agent 侧健康也要**当场**报,理由与 verifier 那格完全相同:
+    # 本轮 `polyglot-c-py` 被网关 502 挡死、一次 API 调用都没成功,
+    # 而它的 `reward=0.0` 与「真的没解出来」**逐字节一样**。
+    # 进度里不报,就要等复算时才发现这一题白跑了。
+    # 判据来自 `verifier_health.agent_ran`,与复算脚本**同一个定义处**。
+    ar = agent_ran(d)
+    agent_tag = {True: "", False: " ⛔agent零API调用", None: " ⚠️agent用量未采到"}[ar]
     print(
         f"{task} reward={reward} subtype={md.get('sid_subtype')} "
         f"turns={md.get('sid_num_turns')} deny={deny} "
         f"verifier={verifier_note(tdir)} "
         f"cost={(d.get('agent_result') or {}).get('cost_usd')}"
+        f"{agent_tag}"
     )

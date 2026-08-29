@@ -33,7 +33,7 @@ import json, glob, sys, os, collections, statistics
 # 曾经进度脚本与本脚本各写一份(一份还多要求 uv 装上),于是同一题可能
 # 一个报 ✅ 一个报 ⛔ —— 两处判据不一致,而分歧在无人看的时候发生。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import verifier_ran  # noqa: E402
+from verifier_health import agent_ran, verifier_ran  # noqa: E402
 
 run = sys.argv[1]
 rows = []
@@ -80,6 +80,12 @@ for f in sorted(glob.glob(os.path.join(run, "*", "result.json"))):
         md_deny=md.get("sid_permission_denials"),
         commit=(md.get("sid_commit") or "")[:12],
         verifier_broken=verifier_broken,
+        # ── 规则 ④:agent 到底有没有跑过 ────────────────────────────────────
+        # ⚠️ **判据本体在 `verifier_health.agent_ran`,这里只存它的结果。**
+        # 曾经在这里自己写过一份 `tok_in == 0 and tok_out == 0` —— 那就是
+        # 「同一判据两份拷贝」,而进度脚本还需要同一个判断。三态:
+        # True 跑过 / False 零调用 / None 采集缺失(不可判,见该函数注释)。
+        agent_ran=agent_ran(d),
     ))
 
 def excluded(r):
@@ -105,11 +111,39 @@ def excluded(r):
 
     所以这里只保留一条实质判据:**verifier 到底判分了没有**(正向证据)。
     `sid_is_error` 不再参与分母决策。
+
+    ## 规则 ④:agent 一次 API 调用都没发生 → 排除(2026-08-29 本轮实测新增)
+
+    本轮 `polyglot-c-py` 拿到 `reward=0.0`、verifier **判分正常**,
+    于是上面三条规则全部放它进分母 —— 而它的真实形态是:
+
+        [AUDIT:API] ✗ Anthropic 请求异常 err=502 Remote end closed connection
+        [FALLBACK] S3:剩余预算 37543ms 不足以「退避 37043ms + 一次请求」,停止重试
+        {"subtype":"error_during_execution","num_turns":0,"total_cost_usd":0,
+         "usage":{"inputTokens":0,"outputTokens":0}}
+
+    **网关 502 挡了 277 秒,agent 连第一次调用都没成功,压根没碰过这道题。**
+    把它当成一个真实的 0 分,等于把**一次基础设施故障记进能力账** ——
+    这与本 Note 主体在修的那件事(权限拒绝混进能力账)**是同一类错误**,
+    只不过混进来的是网关而不是权限层。
+
+    ⚠️ 判据用 **token 数**,不用 `turns`:
+      - `turns == 0` 也可能是 agent 一轮就答完(理论上),而 in/out token 双 0
+        只有「一次调用都没发生」这一种解释;
+      - 且 token 来自 Harbor 侧的 `agent_result`,`turns` 来自 agent 自述的
+        result 事件 —— **取观测方、不取自述方**。
+
+    ⚠️ 必须是 `== 0` 而非 falsy:`None` 表示这两个键**没采到**
+    (基线 `fix-code-vulnerability` 整份 metadata 缺失,但它 verifier 判了分、
+    reward 有值,属于「采集缺失但题跑过了」),把 None 也排除会**改动文档基线 0.100**。
+    这一条踩过:`if not r["tok_in"]` 会同时吞掉 None,让分母从 10 掉到 9。
     """
     if r["verifier_broken"]:
         return "verifier未判分(无pytest结论行)"
     if r["reward"] is None:
         return "无reward"
+    if r["agent_ran"] is False:
+        return "agent零API调用(基础设施故障,未碰过题)"
     return None
 
 
