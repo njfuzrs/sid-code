@@ -79,43 +79,43 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 180,
-    anchor: 'default="acceptEdits"',
-    what: "⛔ harbor 权限档（现存缺陷）",
+    line: 170,
+    anchor: "skip_permissions",
+    what: "✅ harbor 权限档（2026-08-30 已与 swe-bench 对齐）",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 256,
+    line: 345,
     anchor: "_ELF_MACHINE",
     what: "§3.3 按 ELF e_machine 判架构",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 441,
+    line: 526,
     anchor: "artifact-bytes",
     what: "§3.1/§3.2 产物身份与 commit_source",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 645,
+    line: 757,
     anchor: "_derive_is_error",
     what: "§3.7 判成败用 subtype 不用 is_error",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 505,
+    line: 590,
     anchor: "stream-json",
     what: "§3.8 输出格式",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 761,
+    line: 862,
     anchor: "total_cumulative_prompt_tokens",
     what: "§1.6 stock vs flow",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 486,
+    line: 575,
     anchor: "提示模板**静默失效**",
     what: "§2.3 提示模板静默失效",
   },
@@ -160,12 +160,12 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   {
     file: "tests/eval/harbor-agent-contract.test.ts",
     line: 259,
-    anchor: "不出现 dangerously-skip-permissions",
-    what: "§1.3/§4.4 判据错了的那道门禁本体",
+    anchor: "权限档是显式的、可观测的",
+    what: "§1.3/§4.4 那道门禁的**新判据**(旧判据已于 2026-08-30 换掉,门没拆)",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 706,
+    line: 862,
     anchor: "**flow**",
     what: "§1.6 stock/flow 口径表",
   },
@@ -216,14 +216,22 @@ describe("evals/CLAUDE.md 的出处必须都能追到（防规则与源码静默
   });
 
   test("⛔ 现存缺陷标记必须还指着真的缺陷（修好了要来改这里）", () => {
-    // 这三处在文中标了 ⛔「现存缺陷」。它们一旦被修，本条会红 ——
+    // 这几处在文中标了 ⛔「现存缺陷」。它们一旦被修，本条会红 ——
     // 提醒来人把 CLAUDE.md 从「现存缺陷」改成「已修 + 出处」。
     // 一份把已修缺陷写成现存的文档，会让下一个人重新"修"一遍。
+    //
+    // ✅ **这条断言在 2026-08-30 真的红了一次，而它红得完全正确**：第八棒把
+    // harbor 权限档换成了 `--dangerously-skip-permissions`，于是
+    // `default="acceptEdits"` 不复存在。**那次红是「文档该更新了」的信号，
+    // 不是缺陷**——处理方式是改 CLAUDE.md 的措辞（§1.3 / §2.1 / §3.5 / 事实源表），
+    // 而不是把这条断言删掉或加豁免。现在这里反过来锁「不许回退」。
     const harborPy = readFileSync(
       join(REPO_ROOT, "evals/external-benchmarks/harbor/sid_code_agent.py"),
       "utf-8",
     );
-    expect(harborPy).toContain('default="acceptEdits"');
+    // 权限档已修：锁住不许退回 acceptEdits，也不许 skip 变成非布尔。
+    expect(harborPy).not.toContain('default="acceptEdits"');
+    expect(harborPy).toContain("skip_permissions");
 
     const sidLive = readFileSync(join(REPO_ROOT, "evals/providers/sid-code-live.ts"), "utf-8");
     expect(sidLive).not.toContain("skipPermissions");
