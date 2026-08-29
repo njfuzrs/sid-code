@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # 换档重测那 10 题(§17.5 第一优先)。除权限档外,所有变量与第五棒(§14.7/§15)一致。
 #
-# 用法:  caffeinate -dimsu bash run-permission-switch.sh [job-name]
+# 用法:  caffeinate -dimsu bash run-permission-switch.sh [job-name] [题名...]
+#
+# 不给题名 = 跑全部 10 题。给题名 = 只跑这几题(每个都变成 harbor 的 `-i`,支持 glob):
+#
+#     bash run-permission-switch.sh permswitch-r3 polyglot-c-py regex-log
+#
+# **补跑存在的意义**:基础设施故障(上游额度耗尽 / 网关 502)会让某题
+# `num_turns=0`、一次 API 调用都没发生,而它的 `reward=0.0` 与真的没解出来
+# **逐字节一样**(判据见 `verifier_health.agent_ran`)。这种题必须补跑,
+# 但为此重跑全部 10 题要花 ~$7 且把已经跑好的样本也一起换掉 ——
+# 换掉就意味着**分母里混进两批不同时间、不同上游状态的数据**。
+# 补跑只花 ~$1,且只补该补的那几题。
+#
+# ⚠️ 补跑结果**落在新 job 目录**,不覆盖原目录。复算时要么整体用新 job,
+# 要么明确写清"某题取自哪个 job" —— 别让两批数据在同一张表里不加标注地混着。
 #
 # ⚠️ 跑之前必须过的两道闸(都踩过,都不报错):
 #
@@ -18,6 +32,10 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 JOB="${1:-permswitch-$(date +%m%d-%H%M)}"
+shift || true
+# 剩下的位置参数都是题名 → 每个拼成一个 `-i`。空数组时不加任何 -i,即跑全部。
+TASK_FILTER=()
+for t in "$@"; do TASK_FILTER+=(-i "$t"); done
 
 export SID_HARBOR_GATEWAY_URL=http://192.168.5.2:4100   # colima host-gateway,⚠️ 不是 172.17.0.1
 # ⚠️ 必须指向当前 HEAD 编出来的包。缺口 B 的教训:TS 改了不重编 = 改了等于没改,且不报错。
@@ -34,6 +52,7 @@ COMMON=(-d terminal-bench-sample@2.0 -m anthropic/claude-sonnet-5 -n 1 -k 1
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4
         --environment-build-timeout-multiplier 3 -y)
 
-echo "=== 启动 $(date '+%F %T')  job=$JOB ==="
-harbor run "${COMMON[@]}" -a sid_code_agent:SidCodeAgent --job-name "$JOB"
+echo "=== 启动 $(date '+%F %T')  job=$JOB ${TASK_FILTER[*]:+(只跑 ${TASK_FILTER[*]})} ==="
+harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
+  -a sid_code_agent:SidCodeAgent --job-name "$JOB"
 echo "=== 结束 $(date '+%F %T') rc=$? ==="

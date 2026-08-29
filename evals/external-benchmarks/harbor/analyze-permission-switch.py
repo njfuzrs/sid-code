@@ -10,6 +10,17 @@
 用法:
     python3 analyze-permission-switch.py runs/a11-sid          # 换档前基线
     python3 analyze-permission-switch.py runs/baton8-skipperm  # 换档后
+    python3 analyze-permission-switch.py runs/permswitch-r2 runs/permswitch-r3  # 主 run + 补跑
+
+## 多 job 合并:**后者补前者,且每题都标出处**
+
+基础设施故障(上游额度耗尽 / 网关 502)会让某题一次 API 调用都没发生,
+而它的 `reward=0.0` 与真的没解出来**逐字节一样**。补跑那几题会落在**新 job 目录**,
+于是复算必须能把两批拼起来 —— 但拼的时候有一条不能省:
+
+**同一题在多个 job 里都有 → 取最后一个给出的(命令行靠后的 job 覆盖靠前的),
+并在表里标明它来自哪个 job。** 不标就是把两批不同时间、不同上游状态的数据
+无声混进同一个分母,而**混完之后没有任何东西会报错**。
 
 ## ⚠️ 三条分桶规则必须机械执行(§14.7),否则分数失真
 
@@ -35,12 +46,22 @@ import json, glob, sys, os, collections, statistics
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verifier_health import agent_ran, verifier_ran  # noqa: E402
 
-run = sys.argv[1]
+runs_arg = sys.argv[1:]
+if not runs_arg:
+    sys.exit("用法: analyze-permission-switch.py <run目录> [补跑run目录...]")
+run = " + ".join(runs_arg)
+
+# 同题去重:靠后的 job 覆盖靠前的(补跑语义)。**出处必须留下**,见上方 docstring。
+by_task: dict[str, tuple[str, str]] = {}
+for rd in runs_arg:
+    for f in sorted(glob.glob(os.path.join(rd, "*", "result.json"))):
+        by_task[os.path.basename(os.path.dirname(f)).split("__")[0]] = (f, os.path.basename(rd.rstrip("/")))
+
 rows = []
-for f in sorted(glob.glob(os.path.join(run, "*", "result.json"))):
+for task in sorted(by_task):
+    f, src_job = by_task[task]
     d = json.load(open(f))
     tdir = os.path.dirname(f)
-    task = os.path.basename(tdir).split("__")[0]
     md = ((d.get("agent_result") or {}).get("metadata")) or {}
     reward = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward")
 
@@ -86,6 +107,7 @@ for f in sorted(glob.glob(os.path.join(run, "*", "result.json"))):
         # 「同一判据两份拷贝」,而进度脚本还需要同一个判断。三态:
         # True 跑过 / False 零调用 / None 采集缺失(不可判,见该函数注释)。
         agent_ran=agent_ran(d),
+        src_job=src_job,
     ))
 
 def excluded(r):
@@ -148,7 +170,12 @@ def excluded(r):
 
 
 print(f"=== {run}  ({len(rows)} 题) ===\n")
-hdr = f'{"题":<28}{"rew":>5}{"deny":>6}{"allow":>6}{"turns":>6}{"stolen":>7}  {"subtype":<22}{"$":>8}'
+# 合并多个 job 时才加「出处」列 —— 单 job 时每行都一样,那列只是噪音。
+# ⚠️ 但合并时它**不是可选的**:不标出处就是把两批不同时间、不同上游状态的
+# 数据无声混进同一个分母,而混完之后没有任何东西会报错(见 docstring)。
+MERGED = len(runs_arg) > 1
+src_hdr = f'{"出处":<18}' if MERGED else ""
+hdr = f'{"题":<28}{"rew":>5}{"deny":>6}{"allow":>6}{"turns":>6}{"stolen":>7}  {"subtype":<22}{"$":>8}  {src_hdr}'
 print(hdr); print("-" * len(hdr))
 for r in rows:
     # ⚠️ 这一格必须**从 `excluded()` 推**,不许照抄一份条件。
@@ -160,7 +187,8 @@ for r in rows:
     excl = f"  ⛔不进分母({why})" if why and not r["verifier_broken"] else ""
     print(f'{r["task"]:<28}{str(r["reward"]):>5}{str(r["deny"]):>6}{str(r["allow"]):>6}'
           f'{str(r["turns"]):>6}{str(r["stolen"]):>7}  {str(r["subtype"]):<22}'
-          f'{(f"{r['cost']:.4f}" if isinstance(r["cost"],(int,float)) else "None"):>8}{flag}{excl}')
+          f'{(f"{r['cost']:.4f}" if isinstance(r["cost"],(int,float)) else "None"):>8}'
+          f'{("  " + f"{r['src_job']:<18}") if MERGED else ""}{flag}{excl}')
 
 # ── 分母(判据定义在文件上方的 `excluded()`,此处只消费,不重复条件)──
 kept = [r for r in rows if not excluded(r)]
