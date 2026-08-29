@@ -27,7 +27,17 @@
 #        -w "%{speed_download}B/s\n" \
 #        https://github.com/astral-sh/uv/releases/download/0.7.13/uv-x86_64-unknown-linux-gnu.tar.gz'
 #    基线(能跑那次)verifier 全程 24-56s;降速那次是 103-413s 后放弃。
-# 2. **上游掉流率**:curl http://127.0.0.1:4100/__stats(§15.6:单次故障烧 315s)
+# 2. **上游错误率**(2026-08-30 从「10 题里 4 题被上游打死」改成可执行判据)。
+#    原来这条只写着「curl /__stats 看看」——**没有任何东西真的去测**,
+#    于是那一轮直接开跑,结果 4/10 题报废:2 题一次 API 调用都没成功
+#    (403 额度耗尽 / 502 断连),2 题跑到第 3、8 轮被 429 打空重试链。
+#    实测当时上游错误率 **35%**(20 连:13×200 / 7×429)。
+#    ⚠️ 判据不是「能不能连上」——单发探针几乎总是 200。要测**错误率**。
+#    ⚠️ 也不要指望重试链兜住:同一轮里 `fix-code-vulnerability` 吃了 39 次
+#    429 仍拿到 1.0,而 `build-cython-ext` 吃了 30 次就死了 ——
+#    **35% 下能不能活是抛硬币,不是阈值**。所以宁可等上游恢复再开跑。
+#    本脚本会**自动跑这道闸**(下面的 preflight_upstream),超阈值直接拒绝启动;
+#    确实要在劣化的上游上跑,用 SID_HARBOR_SKIP_PREFLIGHT=1 显式跳过。
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -51,6 +61,46 @@ COMMON=(-d terminal-bench-sample@2.0 -m anthropic/claude-sonnet-5 -n 1 -k 1
         --jobs-dir runs --agent-setup-timeout-multiplier 8
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4
         --environment-build-timeout-multiplier 3 -y)
+
+# ── 闸 2:上游错误率 ────────────────────────────────────────────────────────
+# 判据:20 连、间隔 3s(贴近真实调用节奏),非 200 占比 > 20% 即拒绝启动。
+# 20% 这个线来自实测:35% 时 4/10 题报废;10% 左右那一轮(基线)10 题全跑完。
+preflight_upstream() {
+  # 连数与间隔可覆盖 —— 这是为了**这道闸自己能被便宜地自证**:
+  # 默认 20 连 × 3s = 60s,自证时跑两遍就 2 分钟,曾把验证本身跑超时。
+  local n="${SID_HARBOR_PREFLIGHT_N:-20}" gap="${SID_HARBOR_PREFLIGHT_GAP:-3}" ok=0 codes=""
+  echo "--- 闸 2:上游错误率(${n} 连,间隔 ${gap}s)"
+  for _ in $(seq $n); do
+    local c
+    c=$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
+      -X POST "${SID_HARBOR_GATEWAY_URL/192.168.5.2/127.0.0.1}/v1/messages" \
+      -H 'content-type: application/json' -H 'x-api-key: no-auth-dummy' \
+      -H 'anthropic-version: 2023-06-01' \
+      -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+      2>/dev/null || echo 000)
+    [ "$c" = "200" ] && ok=$((ok + 1))
+    codes="$codes $c"
+    sleep "$gap"
+  done
+  local fail_pct=$(( (n - ok) * 100 / n ))
+  echo "    码:$codes"
+  echo "    200=${ok}/${n}  失败率=${fail_pct}%"
+  if [ "$fail_pct" -gt 20 ]; then
+    echo "    ⛔ 失败率 ${fail_pct}% > 20% —— **拒绝启动**。"
+    echo "       实测 35% 时 10 题里 4 题被上游打死(2 题零调用 / 2 题重试链耗尽),"
+    echo "       而那 4 题的 reward=0.0 与真的没解出来逐字节一样。等上游恢复再跑。"
+    echo "       确实要在劣化的上游上跑:SID_HARBOR_SKIP_PREFLIGHT=1 bash $0 ..."
+    return 1
+  fi
+  echo "    ✅ 失败率 ${fail_pct}% ≤ 20%"
+  return 0
+}
+
+if [ "${SID_HARBOR_SKIP_PREFLIGHT:-0}" = "1" ]; then
+  echo "⚠️ 已显式跳过跑前闸(SID_HARBOR_SKIP_PREFLIGHT=1)——本轮数据可能混入上游故障样本。"
+elif ! preflight_upstream; then
+  exit 1
+fi
 
 echo "=== 启动 $(date '+%F %T')  job=$JOB ${TASK_FILTER[*]:+(只跑 ${TASK_FILTER[*]})} ==="
 harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
