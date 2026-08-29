@@ -27,6 +27,10 @@ mswea 跑在 `mode: yolo`(零确认),我们跑在 `acceptEdits`(144 次拒绝)�
 """
 import json, glob, os, sys, collections
 
+# ⚠️ 「agent 到底跑过没有」只在 verifier_health 里定义一处 —— 本文件不重复实现。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verifier_health import agent_ran  # noqa: E402
+
 
 def sid_side(run):
     """sid-code 侧:每题的 deny/allow 实际条数 + metadata 里的请求值。"""
@@ -48,8 +52,13 @@ def sid_side(run):
             req = md.get("sid_permission_mode_requested")
         except Exception:
             pass
+        ran = None
+        try:
+            ran = agent_ran(json.load(open(f)))
+        except Exception:
+            pass
         out[task] = {"deny": c.get("deny", 0), "allow": c.get("allow", 0),
-                     "have_log": os.path.isfile(a), "requested": req}
+                     "have_log": os.path.isfile(a), "requested": req, "agent_ran": ran}
     return out
 
 
@@ -80,9 +89,18 @@ if not common:
 hdr = f'  {"题":<26}{"sid deny":>9}{"sid allow":>10}  {"mswea mode":<12}  判定'
 print(hdr); print("  " + "-" * (len(hdr) - 2))
 bad = []
+skipped = []   # 零调用:不参与对照,也**不算**档位不一致
 for t in common:
     s, m = S[t], M[t]
-    if not s["have_log"]:
+    # ⚠️ 这一条必须排在「无审计日志」**之前**。零调用的题**必然**没有审计日志
+    # (agent 压根没起来),于是会被上一版误判成「⚠️ 无审计日志」并计入 bad ——
+    # 结论行就会写成「N/M 题的权限档不同源，两轮分数不可互比」。
+    # 那是**归因错误**:这题的问题不是权限档,是它压根没跑过(网关 502 / 上游额度耗尽)。
+    # 实测:polyglot-c-py 曾让结论报「1/3 题权限档不同源」,而它的真实状态是零调用。
+    # 权限档对照**排除**这种样本,而不是把它算成一次档位不一致。
+    if s["agent_ran"] is False:
+        verdict = "➖ 不参与对照:agent 零 API 调用(基础设施故障)"; skipped.append(t)
+    elif not s["have_log"]:
         verdict = "⚠️ 无审计日志(未采到,≠零拒绝)"; bad.append(t)
     elif s["deny"] > 0 and m["mode"] == "yolo":
         verdict = "⛔ 不可比:我们有拒绝、对方零确认"; bad.append(t)
@@ -97,11 +115,20 @@ if only_s or only_m:
     print(f"\n  ⚠️ 题目不对齐:仅 sid 有 {only_s}；仅 mswea 有 {only_m}")
 
 print(f"\n=== 结论 ===")
-if bad:
-    print(f"  ⛔ {len(bad)}/{len(common)} 题的权限档不同源 —— **这两轮的分数不可互比**")
+# ⚠️ 分母必须是「参与对照的题数」,不是 len(common)。零调用的题被排除在对照之外,
+# 留在分母里会把比例稀释 —— 而「分母比分子重要」是本仓的通用铁律。
+judged = len(common) - len(skipped)
+if skipped:
+    print(f"  ➖ {len(skipped)} 题不参与对照(agent 零 API 调用,基础设施故障): {skipped}")
+    print(f"     它们**不算**档位不一致 —— 归因是网关/上游,不是权限档。要补跑见 run-permission-switch.sh。")
+if judged <= 0:
+    print(f"  ⛔ 参与对照的题数为 0 —— 这不是「✅ 全部同档」,是没有任何样本可比。")
+    print(f"     (空集上 all() 恒真:这一条专防「零样本报全绿」。)")
+elif bad:
+    print(f"  ⛔ {len(bad)}/{judged} 题的权限档不同源 —— **这两轮的分数不可互比**")
     print(f"     涉及: {bad}")
 else:
-    print(f"  ✅ {len(common)}/{len(common)} 题双方均零拦阻 —— 权限层已不再是混入的变量")
+    print(f"  ✅ {judged}/{judged} 题双方均零拦阻 —— 权限层已不再是混入的变量")
     print(f"     (⚠️ 这只解决了权限这一个变量,同题/同模型/同容器/同 verifier 仍需各自核)")
 
 # 请求值只作参考:它证明不了生效,所以单独一行、且明确标注
