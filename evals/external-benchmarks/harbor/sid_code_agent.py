@@ -604,6 +604,26 @@ class SidCodeAgent(BaseInstalledAgent):
                 "sid_session_id": result.get("session_id"),
                 # turns per task:「更省」的最大杠杆(2× 轮数 ≈ 3-4× 成本)。
                 "sid_num_turns": result.get("num_turns"),
+                # `num_turns` 那些格里有几格**没换来一次模型交互**(被超时 / watchdog
+                # 杀在零产出上)。⚠️ **它不是锦上添花,是 `sid_num_turns` 的必要注解**:
+                # 没有它,`num_turns: 34` + `error_max_turns` 是一对自相矛盾的数字,
+                # 消费侧只能猜那几格去哪了 —— 而「上限不够用」与「上游掉流偷走预算」
+                # 两种成因的修法完全相反(前者抬 `--max-turns`,后者治网络/重试)。
+                #
+                # 实测(A11 第五棒):7 个 error_max_turns 样本全部满足
+                # `num_turns + 本字段 = maxTurns + 1`。
+                #
+                # ⚠️ **这一行是第七棒补的,第六棒漏了 —— 形态值得记住**:
+                # sid-code 侧 SDK 忠实地报了这个字段(`message-converter.ts` →
+                # `schemas.ts` 都在,还带测试),Harbor 侧**一句不落地丢掉** ——
+                # 于是 `result.json` 里查不到,跑完与修复前**逐字节一样**,
+                # 而**任何日志都不会报错**。这是本仓「代码在、测试绿、真实路径不经过」
+                # 的同型第三例(另两例:钳制不传参、TS 改了不重编二进制)。
+                # 拦它的是 L1 那条「事件字段 ↔ metadata 键一一对应」的**形态**断言,
+                # 不是这一行本身 —— 只补这一行,下一个新字段还会掉在同一条边界上。
+                "sid_num_turns_without_model_interaction": result.get(
+                    "num_turns_without_model_interaction"
+                ),
                 # 归因判据:success / error_max_turns / error_max_budget_usd /
                 # error_during_execution。缺失 + cost_source=missing → 判「被外部 kill」,
                 # 与 --max-turns 耗尽是**两类不同样本,不能混算**。

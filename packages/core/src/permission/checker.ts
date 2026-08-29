@@ -1292,10 +1292,43 @@ export class PermissionChecker implements Checker {
         result.reason || "",
         resource,
       );
+      // ⚠️ **`decisionReason.reason` 必须带上真实成因，不能只写「非交互模式」。**
+      //
+      // 这里曾经写死 `reason: "非交互模式"`，而**模型看到的就是这一句**：
+      // `tool-executor.ts` 走 `explainDecision(decision)`，它优先读
+      // `decisionReason`（`decision.reason` 只在 decisionReason 缺失时才兜底），
+      // 于是那条带着真实成因的长文本**只进审计日志，从不进对话**。
+      // 形态：`权限拒绝: 拒绝 — 非交互模式`——一句**不含任何可行动信息**的话。
+      //
+      // ## 实测代价（Harbor A11，两题逐轨迹复算，2026-08-29）
+      //
+      // `polyglot-c-py` 18/33、`regex-log` 14/33 次工具调用被拒（合计 34/66 = 52%），
+      // 而审计日志里成因是**三类语义完全不同**的东西：
+      //   21× 白名单外需确认  |  8× injection 启发式命中  |  3× 写入路径在工作区外
+      // 三类在对话里**长得一模一样**。于是模型无法判断「是我的命令形态有问题」
+      // 还是「这类工具一律不给」，只能盲试：
+      //   · 环境探测型动作占 30%（`polyglot`）/ 39%（`regex-log`）
+      //     ——`pwd` / `which` / `echo test` / `touch` 反复确认「我到底能干什么」；
+      //   · **同一条 heredoc 原样重发两次**（步 2/3、8/10）——它不知道触发物是引号；
+      //   · 往 `/tmp` 写 9 次、9 次全拒——它始终没被告知 `/tmp` 在工作区外，
+      //     而只要说一句，改写 `/app` 即可（该题 `write` 工具在工作区内是放行的）。
+      // 结果：对照 mini-swe-agent **8 步提交**，我们 33 次调用撞满 `--max-turns` 未解出。
+      //
+      // **它不是「在原地打转」**（重复最多 2 次，循环检测拦不到），是**每一步都在做
+      // 新动作、但都在试探一堵看不见的墙**——所以修法不是加循环检测，是把墙照亮。
+      //
+      // 与本仓「可见性」那批教训同型：**信息在系统里，只是没送到需要它的那一侧。**
+      // 保留 `reason` 字段原文不动 —— 审计日志格式是既有数据源（上面那份复算就是
+      // 从它取的），改它会让历史轨迹与新轨迹不同口径。
       const nonInteractiveDecision: Decision = {
         allowed: false,
         reason: `非交互模式下自动拒绝: ${result.reason}`,
-        decisionReason: { type: "other", reason: "非交互模式" },
+        decisionReason: {
+          type: "other",
+          // 「重试相同输入不会改变结果」是刻意加的：上面那两处原样重发证明模型
+          // 会把静默拒绝当成偶发失败。说破它，等于把一次白烧的轮次换成一次改道。
+          reason: `非交互模式下自动拒绝（无人可确认，重试相同输入不会改变结果）：${result.reason}`,
+        },
       };
       this.auditLogger.log({
         timestamp: new Date().toISOString(),

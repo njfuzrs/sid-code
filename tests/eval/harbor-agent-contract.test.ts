@@ -416,6 +416,85 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     expect(facts!.string_consts).toContain("missing");
   });
 
+  test("result 事件的每个字段都被 metadata 消费,或在豁免名单里(跨语言边界形态门禁)", () => {
+    // ⚠️ **2026-08-29 第七棒补。这是本文件里唯一拦「跨语言边界丢键」的断言,
+    // 而它比它当初要补的那一个字段重要得多。**
+    //
+    // 形态(已真实发生一次):第六棒给 result 事件加了
+    // `num_turns_without_model_interaction`,TS 侧三处齐全 ——
+    // `message-converter.ts` 发、`schemas.ts` 认(`.default(0)`)、还带单测,全绿。
+    // 但 `sid_code_agent.py` **一句不落地丢掉** → `result.json` 里查不到,
+    // 跑完与修复前**逐字节一样**,而**任何日志都不会报错**。
+    // 于是那次 run 会产出「修复没效果」这个**错误结论**。
+    //
+    // 这是本仓「代码在、测试绿、真实路径不经过」的同型第三例:
+    // ① 钳制实现了但生产调用点少传一个参数;② 本条,跨语言边界丢一个键;
+    // ③ TS 改了但没重编二进制,容器里跑的是旧字节。三者**都不报错**。
+    //
+    // 所以这条断言拦的是**形态**,不是那一个字段:schemas.ts 上新增任何字段,
+    // 只要 Python 侧既不读、也不显式豁免,这里就红。
+    // 只补一行 metadata 而不加这条断言,下一个新字段会掉在同一条边界上。
+    const schemaSrc = readFileSync(
+      join(import.meta.dir, "..", "..", "packages", "core", "src", "sdk", "schemas.ts"),
+      "utf-8",
+    );
+    const agentSrc = readFileSync(AGENT_PY, "utf-8");
+
+    /** 抠出一个 schema 的顶层字段名。**先去注释** —— 注释里的散字会被当成字段。 */
+    const schemaKeys = (name: string, endMark: string): string[] => {
+      const start = schemaSrc.indexOf(`export const ${name}`);
+      expect(start).toBeGreaterThan(-1);
+      const end = schemaSrc.indexOf(endMark, start);
+      expect(end).toBeGreaterThan(start);
+      const body = schemaSrc
+        .slice(start, end)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*/g, "");
+      // 顶层字段固定 4 空格缩进(z.object({ 内一层)
+      return [...body.matchAll(/^ {4}([a-z_][a-z0-9_]*):/gm)].map((m) => m[1]!);
+    };
+
+    const keys = [
+      ...schemaKeys("SDKResultSuccessSchema", "export const SDKResultErrorSchema"),
+      ...schemaKeys("SDKResultErrorSchema", "/** 结果消息（成功或错误） */"),
+    ];
+    // 先证明真的抠到了字段。抠空了的话下面的 for 循环是空转,**门禁会绿着失效**
+    // —— 与本文件 L2 那条 `n_caps > 0` 同一个道理。
+    expect(keys.length).toBeGreaterThanOrEqual(9);
+    expect(keys).toContain("num_turns_without_model_interaction");
+
+    /**
+     * 显式豁免:**不消费是刻意的**,每条都要有理由。
+     * 名单必须是白名单而不是黑名单 —— 新字段的默认命运是「必须被消费」,
+     * 而不是「默认放过、等人想起来」。
+     */
+    const WAIVED: Record<string, string> = {
+      type: "判别式常量('result'),`_last_result_event` 已用它筛事件,回填无意义",
+      result: "最终答复正文。判分由 verifier 做,把模型自述塞进 metadata 反而会被当判据",
+      structured_output: "sid-code 侧当前不产出;真要用了它就该落 metadata,所以留在名单里显式记着",
+    };
+
+    const consumed = (key: string): boolean =>
+      // `result.get("k")` —— 允许换行(长键名会被 formatter 折行)
+      new RegExp(String.raw`result\.get\(\s*\n?\s*"${key}"`).test(agentSrc) ||
+      // usage 是嵌套读的:`usage.get(...)` + `raw_usage = result.get("usage")`
+      new RegExp(String.raw`raw_usage\s*=\s*result\.get\(\s*"${key}"`).test(agentSrc);
+
+    const dropped = keys.filter((k) => !consumed(k) && !(k in WAIVED));
+    // 失败信息直接点名是哪个键掉了 —— 不然下一个人要自己去比两份文件。
+    expect(dropped).toEqual([]);
+
+    // 豁免名单不许发霉:名单里却已经被消费了的键要清掉,否则名单会渐渐变成
+    // 一份「谁也不敢删的历史遗留」,失去「新字段默认必须消费」这层语义。
+    expect(Object.keys(WAIVED).filter((k) => consumed(k))).toEqual([]);
+    // 名单里的键也必须真的在 schema 上(改名/删字段后名单要跟着改)。
+    expect(Object.keys(WAIVED).filter((k) => !keys.includes(k))).toEqual([]);
+
+    // 最后钉住这一次的那个字段本身(上面是形态,这条是本次的具体判据):
+    // 缺陷 1(§15.5)的唯一结构化判据就是它,读不到就等于那次修复无法验证。
+    expect(agentSrc).toContain("sid_num_turns_without_model_interaction");
+  });
+
   describe("变异自证(fixture 在 tmpdir,不动真源文件)", () => {
     test("name() 改名 → 四成员断言翻红", () => {
       // 用**改名**而不是整段删掉:删掉方法体会留下悬空的 @staticmethod/@override,
