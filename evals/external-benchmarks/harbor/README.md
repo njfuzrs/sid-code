@@ -293,6 +293,38 @@ curl -s -X POST -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
 > 会破坏「同题同 verifier」的可比性，所以不做）。
 > **在本机上，这一项是已知残余误差，不是已解决问题。**
 
+#### ⚠️ 2026-08-29 补充：`-n 1` **也保不住** —— 出口带宽本身会劣化到 0/3
+
+上面那张表的前提是「出口带宽正常，只是并发在抢」。这天遇到的是**另一种**：
+`-n 1`、无并发、单任务独占带宽，**verifier 仍然 3/3 全坏**。
+量出来的差别只有一个数 —— 宿主到 GitHub CDN 的吞吐：
+
+| | verifier 全程耗时 | uv 下载吞吐 | 结果 |
+| --- | --- | --- | --- |
+| 8/28 基线 | **24–56s** | 正常 | **10/10 判分成功** |
+| 8/29 劣化 | **103 / 243 / 413s 后放弃** | **70 KB/s** | **0/3**（`curl: (7)` / `(56)`） |
+| 8/29 换代理节点后 | — | **1.02–1.10 MB/s** | 同一命令、同一镜像立刻恢复 |
+
+**所以 `-n 1` 不是判据，吞吐才是判据。** 跑前必测（已写进
+`run-permission-switch.sh` 的头注释）：
+
+```bash
+docker run --rm alpine:3 sh -c 'apk add -q curl; curl -sL -o /dev/null -m 30 \
+  -w "%{speed_download}B/s\n" \
+  https://github.com/astral-sh/uv/releases/download/0.7.13/uv-x86_64-unknown-linux-gnu.tar.gz'
+```
+
+**要 ≥ 500KB/s**（17.8MB / 35s，留出 pytest 的余量）。⚠️ **必须在容器里测，
+不是宿主** —— TUN 模式的代理可能覆盖宿主而漏掉 colima VM。
+核「代理有没有真的覆盖容器」用出口 IP 对照：
+`curl -s https://api.ipify.org` 在宿主与 `docker run --rm alpine:3` 里应该一致。
+
+**这条为什么值 $3.12**：它坏得**不报错**。`reward=0` 与真的没解出来
+**逐字节一样**，而 `sid_subtype` 还写着 `success` 给它背书 ——
+一整轮「换档没用」的假结论就是这么产生的。
+挡住它的是 §14.7 规则 ②（verifier 坏掉的样本不进分母）：复算脚本把 3 题全排除，
+分母落到 0/3，于是得到「没有结论」而**不是**「一个假结论」。
+
 ---
 
 ## 网关：透传代理**不满足**这个设计（2026-08-27 实测）
@@ -635,8 +667,16 @@ sid-code 内部看不到。
 
 | 层 | 依赖 | CI 上 | 拦什么 |
 | --- | --- | --- | --- |
-| **L1 静态** | 只要 `python3`（stdlib `ast` 解析，**不 import**） | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / **装饰器顺序反了** / 输出格式被改回 `json` / `MODEL_CONNECTION` 被加回 / `dangerously-skip-permissions` 出现 |
+| **L1 静态** | 只要 `python3`（stdlib `ast` 解析，**不 import**） | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / **装饰器顺序反了** / 输出格式被改回 `json` / `MODEL_CONNECTION` 被加回 / **权限档形态**（skip 必须是 `type="bool"`、互斥校验与观测计数在位） |
 | **L2 导入** | 要装 `harbor` | ⚠️ **skip** | 真 `import` + `issubclass` + `capabilities` 全 False |
+
+⚠️ **L1 那条权限档断言的判据在 2026-08-29 被整个换掉过**，理由值得留：
+原判据是「源码里不许出现 `dangerously-skip-permissions`」，它**忠实地执行了一个错误的
+决定** —— 自建 swe-bench 链路早已用 113 次权限拒绝实测出「`acceptEdits` 不可用」，
+而 Harbor 侧引用**同一个数字**得出了相反结论，再用这道门禁把错的那侧钉死。
+本机 10 题全量实测确认同一形态：**144 次拒绝 / 178 次放行**，其中 77% 是
+`acceptEdits` 不放行普通 bash（`nproc` / `which git` / `qemu-img info`）。
+**一道门禁的注释理由正当，不代表它守的判据正确；修法是改判据，不是拆门。**
 
 拆两层的理由：只做 L2 的话，CI 上**永远 skip** → 门禁形同不存在，而 PR 页面一片绿。
 L1 拦得住的恰好是那批**不报错的**失效形态。
@@ -712,6 +752,43 @@ HARBOR_TELEMETRY=0 harbor run ... --allow-agent-host 192.168.5.2
 | `SID_HARBOR_PROVIDER` | 从 `-m provider/model` 推 | 覆盖 provider（闭集：`anthropic`/`openai`/`ollama`/`replay`） |
 | `SID_HARBOR_MAX_TURNS` | 40 | 等价 `--ak max_turns=` |
 | `SID_HARBOR_MAX_BUDGET_USD` | 空 | 等价 `--ak max_budget_usd=`，per-trial 成本上限 |
+| `SID_HARBOR_SKIP_PERMISSIONS` | **`true`** | 等价 `--ak skip_permissions=`。默认全放开（见下方「权限档」）。设 `false` 才走确认层 |
+
+### 权限档：默认全放开，且这个代价必须说破
+
+默认传 `--dangerously-skip-permissions`（布尔 flag）。**代价是这一轮评测测不到权限层** ——
+skip 同时跳过 safetyCheck 与危险命令检测，它只是一个被记进 metadata 的必控变量，
+**不是一条通过了的验证**。可接受的理由：容器无外网（走宿主网关）、跑完即销毁、
+里面只有一个 benchmark 仓库。
+
+为什么默认不是 `acceptEdits`：本机 10 题全量实测（源 `logs/permissions-audit.log`）
+是 **144 次拒绝 / 178 次放行**，其中 111 次（77%）是 `acceptEdits` 不放行普通 bash
+（`nproc` / `which git` / `qemu-img info` / `apt-get install` 全被拒）。
+于是「40 轮预算用尽」读起来像能力不足，**真相是非能力原因混进了能力账**。
+
+想专门观察防线（两者互斥，同时传会**拒绝启动**）：
+
+```bash
+harbor run ... --ak skip_permissions=false --ak permission_mode=acceptEdits
+```
+
+**判据一律看观测值，不看命令行。** 每个 trial 的 metadata 自带两组键：
+`sid_permission_mode_requested`（我请求了什么，可能没生效）与
+`sid_permission_denials` / `_allows` / `_decisions_total`（checker 实际判了多少次）。
+零成本自证：
+
+```bash
+jq -r '.agent_result.metadata
+       | [.sid_permission_mode_requested, .sid_permission_denials] | @tsv' \
+  runs/<run>/*/result.json | sort | uniq -c
+```
+
+⚠️ 三个坑全是「请求了但没生效**且不报错**」，此时命令行看起来完全正确：
+`bypassPermissions` 不是合法模式名（只 warn）、`always-allow` 绕不过路径验证、
+`--permission-mode dangerously-skip-permissions` 碰不到 `config.skipPermissions`
+（只有布尔 flag 会设它）。所以**只有审计日志的 deny 条数能证明档位真的生效了**。
+日志缺失时落 `sid_permission_audit_missing=True`，与「零拒绝」严格区分 ——
+后者是换档成功的判据，让一次采集失败伪装成它是最坏的。
 
 **二进制来源是三级优先级，且第三级报错而不回落**：
 ① `SID_HARBOR_BINARY_*` 显式点名 → ② `dist/branch-builds/*-<当前 commit12>/sid-code`
