@@ -29,6 +29,10 @@
      照字面做会把 `configure-git-webserver` 错杀 —— 它的 verifier 跑得好好的,
      那是一例真实的「以为自己做完了」失败,必须计分。详见 `excluded()` 的 docstring。
   ② `reward` 缺失 → 不进分母
+  ⑤ **上游打断** → 不进分母(2026-08-30 新增,判据在 `verifier_health.llm_fatal`)
+     `build-cython-ext` 跑了 8 轮(共 40)后被 429 打空重试链,`agent_ran` 判 True
+     (它确实跑过)于是被当成真实 0 分 —— 而它压根没机会用完轮预算。
+     ⚠️ 两轮分布**不对称**(基线 0/10、本轮 3/7),不排除会系统性压低本轮。
   ③ **不要只看均值**(§12.1.1)—— 逐题表才是结论,n=10 时均值极易被一题带偏
 
 ## ⚠️ 两处「空集恒真」的坑(都踩过)
@@ -44,7 +48,7 @@ import json, glob, sys, os, collections, statistics
 # 曾经进度脚本与本脚本各写一份(一份还多要求 uv 装上),于是同一题可能
 # 一个报 ✅ 一个报 ⛔ —— 两处判据不一致,而分歧在无人看的时候发生。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import agent_ran, verifier_ran  # noqa: E402
+from verifier_health import agent_ran, llm_fatal, verifier_ran  # noqa: E402
 
 runs_arg = sys.argv[1:]
 if not runs_arg:
@@ -107,6 +111,8 @@ for task in sorted(by_task):
         # 「同一判据两份拷贝」,而进度脚本还需要同一个判断。三态:
         # True 跑过 / False 零调用 / None 采集缺失(不可判,见该函数注释)。
         agent_ran=agent_ran(d),
+        # 规则 ⑤:跑起来了又被上游打断(与 agent_ran 的「压根没跑」是两种形态)。
+        llm_fatal=llm_fatal(d, tdir),
         src_job=src_job,
     ))
 
@@ -166,6 +172,8 @@ def excluded(r):
         return "无reward"
     if r["agent_ran"] is False:
         return "agent零API调用(基础设施故障,未碰过题)"
+    if r["llm_fatal"]:
+        return "上游打断(重试链耗尽,未用完轮预算)"
     return None
 
 

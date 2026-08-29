@@ -840,6 +840,37 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
     }
   });
 
+  test("上游打断判据只有一处定义,且不许退化成只看 subtype", () => {
+    // 2026-08-30 实测的第三种形态:`build-cython-ext` 跑了 8 轮(共 40)后被 429
+    // 打空重试链。它 `agent_ran` 判 True(确实跑过),于是被当成一个真实 0 分 ——
+    // 而它压根没机会用完轮预算。两轮分布还**不对称**(基线 0/10、本轮 3/7),
+    // 不排除会系统性压低带故障的那一轮。
+    const HEALTH = "verifier_health.py";
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+    expect(health).toMatch(/def llm_fatal\(/);
+
+    // ⛔ 判据不许**只**看 subtype:`error_during_execution` 也包含 agent 自身崩溃
+    //(真实缺陷,必须计分)。已用 fixture 验过:一个 TypeError 崩溃样本在正确判据下
+    // 留在分母(1/1),改成只看 subtype 就被错误排除(0/1)。
+    const codeH = codeOnly(health);
+    const fatalFn = codeH.slice(codeH.indexOf("def llm_fatal("));
+    expect(
+      /sid_errors/.test(fatalFn),
+      "llm_fatal 必须读 sid_errors —— 只看 subtype 会把 agent 自身崩溃(真 bug)一起排除",
+    ).toBe(true);
+
+    // 消费者不许自己写这句错误文本的匹配。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      if (!/主模型请求失败/.test(code)) continue;
+      expect(
+        /from verifier_health import[^\n]*llm_fatal|import verifier_health/.test(code),
+        `${f} 自己匹配「主模型请求失败」却没 import llm_fatal —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
   test("用 `command not found` 的脚本必须同时有**正向**判据(pytest 结论行)", () => {
     // ## 这条断言的措辞被改过一次,改的理由比断言本身重要
     //

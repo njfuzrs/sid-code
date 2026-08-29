@@ -16,7 +16,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import agent_ran, verifier_note  # noqa: E402
+from verifier_health import agent_ran, llm_fatal, verifier_note  # noqa: E402
 
 RUN = sys.argv[1] if len(sys.argv) > 1 else "runs/permswitch-r2"
 
@@ -48,6 +48,10 @@ for f in sorted(glob.glob(os.path.join(RUN, "*", "result.json"))):
     # 判据来自 `verifier_health.agent_ran`,与复算脚本**同一个定义处**。
     ar = agent_ran(d)
     agent_tag = {True: "", False: " ⛔agent零API调用", None: " ⚠️agent用量未采到"}[ar]
+    # 第三种形态:跑起来了又被上游打断(`build-cython-ext` 8/40 轮就被 429 打空重试链)。
+    # 它 `agent_ran` 判 True,所以上面那格是空的 —— 不单独报就会被当成一个真实 0 分。
+    if ar is not False and llm_fatal(d, tdir):
+        agent_tag += " ⛔上游打断(未用完轮预算)"
     print(
         f"{task} reward={reward} subtype={md.get('sid_subtype')} "
         f"turns={md.get('sid_num_turns')} deny={deny} "

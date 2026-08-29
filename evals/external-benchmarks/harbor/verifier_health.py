@@ -115,3 +115,60 @@ def agent_ran(result: dict) -> bool | None:
     if tin is None and tout is None:
         return None
     return not ((tin or 0) == 0 and (tout or 0) == 0)
+
+
+#: agent 自己在 `metadata.sid_errors` 里落的致命错前缀。**只盯这一句的稳定部分**:
+#: 后半句「可重新发送消息重试,或用 /model 切换模型」是给人看的提示,会改。
+LLM_FATAL_MARK = "主模型请求失败"
+
+
+def llm_fatal(result: dict, trial_dir: str | None = None) -> bool:
+    """True = 这一题**是被上游打断的**,不是能力不足。
+
+    ## 为什么 `agent_ran` 不够(2026-08-30 实测第三种形态)
+
+    `agent_ran` 只认得「一次调用都没发生」(token 双 0)。但 `build-cython-ext`
+    的形态是**跑起来了又被打断**:
+
+        turns = 8 / max 40      ← 只用掉 20% 轮预算
+        tok_in/out = 4375 / 435 ← 确实跑过,agent_ran 判 True
+        [AUDIT:API] ✗ err=429 当前分组上游负载已饱和
+        [FALLBACK] S3:剩余预算 129397ms 不足以「退避 138615ms + 一次请求」,停止重试
+        subtype = error_during_execution
+
+    于是它被当成一个真实的 0 分。**而它压根没机会用完轮预算** ——
+    这与本仓在修的「非能力原因混进能力账」是同一件事,只不过混进来的是上游限流。
+
+    ## 为什么这条不能省:两轮的分布是**不对称**的
+
+        基线 runs/a11-sid       : LLM 致命错 0/10 题
+        本轮 runs/permswitch-r2 : LLM 致命错 3/7 题
+
+    只有一轮带这种样本,却把它们计进分母 → **这一轮被系统性压低**,
+    而压低的方向恰好会让「换档有效」这个结论看起来更弱(或者反过来,
+    如果排除得太宽就看起来更强)。两个方向都是造假,所以判据必须窄且可自证。
+
+    ## 判据:两个源都要,且**不用 subtype 单独判**
+
+    - `sid_errors` 里有 `主模型请求失败`(agent 自己落的结构化错误列表);
+    - 若给了 `trial_dir`,再要求 agent 日志里有**重试链耗尽**的痕迹。
+
+    ⛔ **不拿 `subtype == "error_during_execution"` 单独判**:那个值也包含
+    agent 自身崩溃(真实缺陷,必须计分)。只用它会把真 bug 一起排除掉 ——
+    那是比不排除更坏的错误。
+    """
+    md = ((result.get("agent_result") or {}).get("metadata")) or {}
+    errs = " ".join(md.get("sid_errors") or [])
+    if LLM_FATAL_MARK not in errs:
+        return False
+    if trial_dir is None:
+        return True
+    # 佐证:重试链真的被打空了(不是随便一次 LLM 报错)。找不到日志时**不降级放行**,
+    # 以 sid_errors 为准 —— 采集缺失不该让判据翻面。
+    for cand in glob.glob(os.path.join(trial_dir, "agent", "sid-code.jsonl")):
+        try:
+            blob = open(cand, errors="replace").read()
+        except OSError:
+            continue
+        return "停止重试" in blob or "不足以" in blob
+    return True
