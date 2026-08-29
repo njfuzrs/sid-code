@@ -92,8 +92,10 @@ function setup({ maxTurns, timeoutTurns = [] }: { maxTurns: number; timeoutTurns
     handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
-    // 超时重试的退避会读 network 配置；给一组极小值让测试不真的睡。
-    network: { retryBackoffBaseMs: 1, retryBackoffMaxMs: 2 },
+    // ⚠️ 退避配置**只能放 config.network**（`loop.ts` 走
+    // `resolveLoopTimeouts({ network: config.network })`）。这里曾经也写过一份
+    // `deps.network` —— `QueryDeps` 上没有这个字段，没人读，而它看起来像在生效：
+    // 正是本仓「伪配置」那一类。删掉，只留 config 上那一份唯一事实源。
   } as unknown as QueryDeps;
 
   const loopConfig: QueryLoopConfig = {
