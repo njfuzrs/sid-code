@@ -61,7 +61,7 @@ grep -rn '113 次' evals/ --include='*.sh' --include='*.py' --include='*.ts' --i
 ✅ **已修（2026-08-30，第八棒）**：判据整个换掉了，**门没拆**。现在锁的是四件事 ——
 skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 `bypassPermissions` / 两档互斥校验存在 / 权限档观测值落 metadata。
-出处：`tests/eval/harbor-agent-contract.test.ts:259`（`权限档是显式的、可观测的`）。
+出处：`tests/eval/harbor-agent-contract.test.ts:281`（`权限档是显式的、可观测的`）。
 
 ### 1.4 「代码在」≠「生效」——判据是**生产调用点**，不是「有没有实现」
 
@@ -89,7 +89,7 @@ skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 
 ⛔ `n_input_tokens` **绝不能取 `total_tokens_sent`** —— 那是**末次快照值**，
 除以累加的 `total_cost_usd` 得到的是错数。要用累积字段
-`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:862-917`）。
+`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:930-985`）。
 
 ### 1.7 每个数字必须能指到源字段
 
@@ -112,9 +112,9 @@ skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 
 | 项 | swe-bench 自建 | harbor | providers/ 横评 |
 | --- | --- | --- | --- |
-| **权限档** | `--dangerously-skip-permissions` 布尔 flag（`exec-swebench.sh:150`） | ✅ **已对齐**（2026-08-30）：`--dangerously-skip-permissions` 布尔 flag（`sid_code_agent.py:170`） | ⛔ **不对称**：claude-code 默认 `skipPermissions=true`（`providers/claude-code.ts:27`），sid-code-live **无此选项**，不传即 `default` 档（`providers/sid-code-live.ts:30`） |
+| **权限档** | `--dangerously-skip-permissions` 布尔 flag（`exec-swebench.sh:150`） | ✅ **已对齐**（2026-08-30）：`--dangerously-skip-permissions` 布尔 flag（`sid_code_agent.py:241`） | ⛔ **不对称**：claude-code 默认 `skipPermissions=true`（`providers/claude-code.ts:27`），sid-code-live **无此选项**，不传即 `default` 档（`providers/sid-code-live.ts:30`） |
 | **超时** | 1800s（`exec-swebench.sh:100`） | Harbor agent 硬顶 1 小时 | ⛔ **不对称且无注释理由**：sid-code-live 480s（`providers/sid-code-live.ts:28`）vs claude-code 360s（`providers/claude-code.ts:25`） |
-| **max_turns** | 40（`exec-swebench.sh:99`） | 40（`sid_code_agent.py:177`） | 不传则不限 |
+| **max_turns** | 40（`exec-swebench.sh:99`） | 40（`sid_code_agent.py:201`） | 不传则不限 |
 
 ⚠️ **权限档那条的后果最重**：headless 下 `default` 与 `acceptEdits` 都会把普通 bash
 拒掉（实测 `nproc` / `pytest -q` / `git log` / `ls` 四条全 DENY），
@@ -156,7 +156,7 @@ grep -c '"decision":"deny"' <run>/<task>/agent/sid-home/logs/permissions-audit.l
 ### 2.3 提示模板不一致 → 跨 agent 对照失效
 
 Harbor 侧 `instruction` 透传，模板顺序反了**不会报错，只是模板静默失效**
-（`external-benchmarks/harbor/sid_code_agent.py:575`）。
+（`external-benchmarks/harbor/sid_code_agent.py:643`）。
 swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示。**
 
 ---
@@ -174,7 +174,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | 容器里跑的是上一版字节，结果与修复前**逐字节一样**，而人会读成「修复没效果」 |
 | **判据** | `jq -r '.agent_result.metadata \| [.sid_commit, .sid_commit_source] \| @tsv' runs/<run>/*/result.json \| sort -u` —— 期望是**新** commit + `artifact-bytes` |
-| **出处** | `external-benchmarks/harbor/sid_code_agent.py:526-530` |
+| **出处** | `external-benchmarks/harbor/sid_code_agent.py:594-598` |
 
 ⚠️ **这是「代码在≠生效」的第三种断点**（见 §1.4）。它比另两种更隐蔽：
 测试全绿、二进制存在、`sid_commit` 字段也**有值** —— 只是那个值是旧的。
@@ -187,7 +187,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | `if not commit` 对 `"unknown"` 是 False → 退化路径**永不触发** → 写下 `commit="unknown"` 却自称 `commit_source="artifact-bytes"`。**这层保护恰好在最需要它时失效** |
 | **判据** | 门禁断言 `identity.get(...)` 的每个实参都在脚本输出键集合里，且源码里有 `[0-9a-f]{40}` 形态判定 |
-| **出处** | `sid_code_agent.py:519-530`；门禁 `tests/eval/harbor-agent-contract.test.ts` |
+| **出处** | `sid_code_agent.py:587-598`；门禁 `tests/eval/harbor-agent-contract.test.ts` |
 
 ⚠️ 同型错误已发生两次（`artifact_commit` / `artifact_dirty` 键名错配）。
 `artifact_dirty` 那格更隐蔽：**它本来就允许是 null**，「恒 null」看起来像正常缺省值。
@@ -200,7 +200,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | `build-branch-artifact.sh` 输出目录名 `<branch-slug>-<commit12>` **不含架构**，同一 commit 编 arm64/x64 会互相覆盖。于是「按 commit 匹配」拿到的是「上次编的那个架构」→ 容器里 `exit 127: not found`，而 `build.json` 写着期望的架构 |
 | **判据** | `_elf_arch()` 读 ELF：`x86-64 = 62 (0x3E)`、`AArch64 = 183 (0xB7)` |
-| **出处** | `sid_code_agent.py:345-362` |
+| **出处** | `sid_code_agent.py:369-386` |
 
 ### 3.4 🔴 `-n`（并发）直接决定 verifier 坏掉比例，且**伪装成能力差**
 
@@ -225,7 +225,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | **失效形态** | `acceptEdits` / `default` 档下普通 bash 全被拒（`nproc` / `pytest -q` / `git log` / `ls` 实测四条全 DENY），而模型只收到「拒绝 — 非交互模式」这句**不含可行动信息**的话 → 它反复盲试 → 撞满 `--max-turns` → 被记成「能力不够/在绕圈」 |
 | **判据** | `grep -c '"decision":"deny"' <run>/<task>/agent/sid-home/logs/permissions-audit.log` |
 | **实测** | Harbor A11 10 题共 **144 次**被拒（7 个 `error_max_turns` 样本拒绝率中位数 **56%**）；swe-bench smoke-8 **113 次**，三条实例过半轮次被烧掉 |
-| **出处** | `exec-swebench.sh:1255-1280`（已修）、`sid_code_agent.py:170`（**2026-08-30 已修**，第八棒） |
+| **出处** | `exec-swebench.sh:1255-1280`（已修）、`sid_code_agent.py:241`（**2026-08-30 已修**，第八棒） |
 
 ⚠️ **这个文件（`permissions-audit.log`）前六棒没人读过。**
 它是唯一能把「能力不足」与「被防线拦住」分开的源。
@@ -249,7 +249,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | sid-code 只在**成功**路径发 `is_error: false`；`error_during_execution` 那条事件的键只有 `{duration_ms, errors, num_turns, session_id, subtype, total_cost_usd, type, usage}`。于是 `sid_is_error` 变成 `None` → 下游当"不是错误" → **一个失败的 trial 被记成正常的 0 分**，直接污染分母 |
 | **判据** | `subtype` 在错误路径**一定有**（`error_during_execution` / `error_max_turns` / `error_max_budget_usd`）。`is_error` 有就用，没有从 subtype 推 |
-| **出处** | `sid_code_agent.py:757`（判据），`:813`（`_derive_is_error` 定义） |
+| **出处** | `sid_code_agent.py:825`（判据），`:881`（`_derive_is_error` 定义） |
 
 ### 3.8 ⛔ 输出格式必须是 `stream-json`，不是 `json`
 
@@ -258,7 +258,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | | |
 | --- | --- |
 | **失效形态** | 两者是**分叉的两条实现**：只有 stream-json 的 result 事件带 `total_cost_usd` / `num_turns` / `subtype`。用 `json` 则成本与轮数**全部拿不到**，而不报错 |
-| **出处** | `sid_code_agent.py:590-594`、README 第 3 条；门禁锁死这一项 |
+| **出处** | `sid_code_agent.py:658-662`、README 第 3 条；门禁锁死这一项 |
 
 ### 3.9 ⛔ 团队默认模板会补 `costLimit=100`，撞上就**静默结束整轮**
 
@@ -415,8 +415,8 @@ harbor run -a sid_code_agent:SidCodeAgent \
 | --- | --- |
 | 权限档三个坑（`bypassPermissions` 不合法 / `always-allow` 不够 / 必须布尔 flag） | `external-benchmarks/swe-bench/exec-swebench.sh:106-150` |
 | 113 次拒绝实测与归因 | `exec-swebench.sh:1255-1280` |
-| Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:170-240` |
-| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:345`、`:526-530`、`:757`、`:862-917` |
+| Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:241-320` |
+| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:369`、`:594-598`、`:825`、`:930-985` |
 | `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:253-275` |
 | L1/L2 双层门禁与变异自证 | `tests/eval/harbor-agent-contract.test.ts:1-46` |
 | 横评 provider 不对称（⛔ 现存缺陷） | `providers/claude-code.ts:27`、`providers/sid-code-live.ts:28-30` |
