@@ -125,7 +125,21 @@ export type QueryLoopYield =
        */
       terminal?: boolean;
     }
-  | { kind: "done"; turns: number };
+  | {
+      kind: "done";
+      turns: number;
+      /**
+       * §20.5（2026-08-30）：轮数预算被超时/watchdog 偷走的格数。
+       *
+       * 此前**只有** `max_turns` 与 `error_during_execution` 两条路径带这个字段，
+       * `success`（`case "done":`）压根没有这个键 —— 于是「正常收尾 + 预算被偷」这种组合
+       * 在 `result.json` 里完全不可见，排除规则 ⑤ 在 success 路径上永远瞎。
+       *
+       * ⚠️ 与 `max_turns` 同源同口径：都取 `LoopState.turnsConsumedWithoutAssistant`，
+       * 不另算一份（本仓教训：已有的口径重实现一遍就是重踩一遍）。
+       */
+      turnsConsumedWithoutAssistant?: number;
+    };
 
 // ─── 循环继续原因 ───
 

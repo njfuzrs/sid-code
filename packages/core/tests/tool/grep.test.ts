@@ -425,7 +425,22 @@ describe("GrepTool", () => {
     });
 
     const parsed = parseOutput(result.output);
-    const content = parsed.content as string;
+    // ⚠️ 断言前必须把**文件路径剥掉**，只留每行的正文。
+    //
+    // 根因（2026-08-30 CI ubuntu 实测）：`tempDir` 由
+    // `mkdtempSync("/tmp/grep-tool-test-")` 生成，而 rg 的 content 模式输出里
+    // **每行都带绝对路径**。那次 CI 的随机后缀恰好是 `L73Fkg` ——
+    // 于是 `not.toContain("L7")` 命中的是**路径**，不是文件内容，测试变红，
+    // 而被测行为完全正确（content 就是 L3/TARGET/L5）。
+    //
+    // 这是一个**按概率触发**的假红：mkdtemp 的 6 位随机后缀里出现 `L1`/`L7`
+    // 就炸，macOS 那次抽到别的后缀所以是绿的 —— 同一 commit 两个平台不同结果。
+    // 只把断言从 `L7` 改成别的字符串是治不了的（下次换个后缀照样撞），
+    // 所以这里从**取数**上根治：路径不是本测试要断言的对象，剥掉它。
+    const content = (parsed.content as string)
+      .split("\n")
+      .map((line) => line.replace(tempDir, ""))
+      .join("\n");
     expect(content).toContain("L3");
     expect(content).toContain("L5");
     // context=1 生效 → 不应带出更远的 L1 / L7

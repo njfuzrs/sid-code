@@ -251,7 +251,34 @@ describe("发现 1：repeated-readonly-guard 触发埋点", () => {
     const emitIdx = loopSrc.indexOf('action: "terminate"');
     expect(emitIdx).toBeGreaterThan(-1);
     // 从埋点往后找最近的 yield done —— 必须存在，即埋点在它前面。
-    const doneIdx = loopSrc.indexOf('yield { kind: "done"', emitIdx);
-    expect(doneIdx).toBeGreaterThan(emitIdx);
+    //
+    // ⚠️ 匹配必须**容忍换行**：`yield { kind: "done" ... }` 在 2026-08-30 加了
+    // `turnsConsumedWithoutAssistant` 字段后被 oxfmt 拆成多行，原先那句写死单行的
+    // `indexOf('yield { kind: "done"')` 于是找不到任何一处、断言当场变红 ——
+    // 而被测的**代码顺序压根没变**。一条会被无关格式化打红的门禁，
+    // 训练出来的反应是「去改门禁让它闭嘴」，而不是去看代码，所以这里改成 \s* 容忍。
+    //
+    // ⚠️ 判据要锚在**这个分支自己的唯一串**上，不能「从埋点往后找最近的 yield done」。
+    // 后者有两处退化，都实测过：
+    //   ① `loop.ts` 里有 22 处 `yield done`，无界搜索让断言退化成
+    //      「文件里存在 yield done」——那恒为真；
+    //   ② 把埋点挪到 `return;` 之后（正是本条要拦的回归），`indexOf` 会重新锚到
+    //      挪动后的那个字面量，再往后又能匹配到**别的分支**的 yield done，于是照样通过。
+    // 所以改成：以该分支唯一的告警文案定位，断言埋点在它**之前**、
+    // 且两者之间没有 `return;`（有就说明埋点已经在不可达位置）。
+    const WARN = "连续空转于同一只读命令";
+    const warnIdx = loopSrc.indexOf(WARN);
+    expect(warnIdx, `找不到该分支的唯一锚点：${WARN}`).toBeGreaterThan(-1);
+    expect(emitIdx < warnIdx, "terminate 埋点排到了 yield done 之后（埋点将永远不会执行）").toBe(
+      true,
+    );
+    expect(
+      loopSrc.slice(emitIdx, warnIdx).includes("return;"),
+      "terminate 埋点与收尾之间出现了 return —— 埋点已在不可达位置",
+    ).toBe(false);
+    // 该分支确实以 yield done 收尾（锚点之后、本分支 return 之前）。
+    const branchEnd = loopSrc.indexOf("return;", warnIdx);
+    expect(branchEnd).toBeGreaterThan(warnIdx);
+    expect(/yield\s*\{\s*kind:\s*"done"/.test(loopSrc.slice(warnIdx, branchEnd))).toBe(true);
   });
 });

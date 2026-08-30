@@ -1911,7 +1911,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             "HOOK",
             `BeforeModel hook 阻止 LLM 请求: ${beforeModelResult.finalOutput.getEffectiveReason()}`,
           );
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
         if (beforeModelResult.finalOutput?.shouldStopExecution()) {
@@ -1919,7 +1924,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             "HOOK",
             `BeforeModel hook 停止执行: ${beforeModelResult.finalOutput.getEffectiveReason()}`,
           );
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
       }
@@ -2145,7 +2155,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
                 `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
             };
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           }
           log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
@@ -2676,7 +2691,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 level: isSessionTimeoutAbortReason(r) || r === "user-cancel" ? "info" : "error",
                 text: sleepNote ? `${reasonText}\n${sleepNote}。` : reasonText,
               };
-              yield { kind: "done", turns: state.turnCount };
+              yield {
+                kind: "done",
+                turns: state.turnCount,
+                // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+                turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              };
               return;
             }
             continue;
@@ -2701,7 +2721,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               `请重新发送消息继续。`,
           };
           // 优雅退出：yield done 让 TUI 正确切换回"等待输入"状态
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
 
@@ -2756,7 +2781,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
                 `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
             };
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           }
           const beforeFallback = ctxMgr.messageCount();
@@ -2836,7 +2866,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
           log.info("QUERY_LOOP", "流式响应后检测到 abort，优雅收尾（reason=aborted_streaming）");
           yield { kind: "system", level: "info", text: "请求已被取消" };
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
       }
@@ -2917,7 +2952,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               terminal: true,
               text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}），自动停止`,
             };
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           } else if (budgetAlert.level === "critical" || budgetAlert.level === "warning") {
             const pct = (budgetAlert.percentage * 100).toFixed(0);
@@ -2937,7 +2977,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (quotaResult) {
           if (quotaResult.level === "exceeded") {
             yield { kind: "system", level: "warning", terminal: true, text: quotaResult.message };
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
             yield { kind: "system", level: "warning", text: quotaResult.message };
@@ -3085,7 +3130,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             "HOOK",
             `AfterModel hook 阻止响应: ${afterModelResult.finalOutput.getEffectiveReason()}`,
           );
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
         if (afterModelResult.finalOutput?.shouldStopExecution()) {
@@ -3093,7 +3143,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             "HOOK",
             `AfterModel hook 停止执行: ${afterModelResult.finalOutput.getEffectiveReason()}`,
           );
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
       }
@@ -3260,7 +3315,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           level: "warning",
           text: `工具调用参数持续为空（已重试 ${MAX_EMPTY_PARAM_RETRIES} 次），模型在当前上下文下无法正常生成工具参数，停止重试。`,
         };
-        yield { kind: "done", turns: state.turnCount };
+        yield {
+          kind: "done",
+          turns: state.turnCount,
+          // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+          turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+        };
         return;
       }
 
@@ -3293,7 +3353,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       if (responseText && loopDetector.recordContent(responseText)) {
         const recovered = await recoverFromLoop(loopDetector, ctxMgr, "内容重复模式");
         if (!recovered) {
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
         yield { kind: "loop_detected", detail: "内容重复模式" };
@@ -3909,7 +3974,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // P1-4：唯一的"模型正常说完了"出口。归一化而非透传 stopReason ——
         // end_turn / stop / stop_sequence 三值同义，透传等于把归一责任推给每个消费方。
         turnStopReason = normalizeTurnStopReason(response.stopReason);
-        yield { kind: "done", turns: state.turnCount };
+        yield {
+          kind: "done",
+          turns: state.turnCount,
+          // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+          turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+        };
         return;
       }
 
@@ -3945,7 +4015,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (loopDetected) {
           const recovered = await recoverFromLoop(loopDetector, ctxMgr, "工具调用重复");
           if (!recovered) {
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           }
           yield { kind: "loop_detected", detail: "工具调用重复" };
@@ -3964,7 +4039,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           if (llmLoopDetected) {
             const recovered = await recoverFromLoop(loopDetector, ctxMgr, "LLM 认知检测到循环模式");
             if (!recovered) {
-              yield { kind: "done", turns: state.turnCount };
+              yield {
+                kind: "done",
+                turns: state.turnCount,
+                // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+                turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              };
               return;
             }
             yield { kind: "loop_detected", detail: "LLM 认知检测到循环模式" };
@@ -4065,7 +4145,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               "QUERY_LOOP",
               "工具执行被用户取消，已补 cancel result，优雅收尾（reason=aborted_tools）",
             );
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           }
           // AGENT-2 双重防护：非 abort 异常会 throw 穿透，但此时 assistant(含 tool_use) 已入历史，
@@ -4493,7 +4578,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               level: "warning",
               text: `连续空转于同一只读命令，已强制结束以避免无限循环`,
             };
-            yield { kind: "done", turns: state.turnCount };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
             return;
           }
         }
@@ -4580,7 +4670,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             level: "info",
             text: `输出续写已达上限（${diminishingDetector.count} 次），自动停止`,
           };
-          yield { kind: "done", turns: state.turnCount };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
           return;
         }
 
@@ -4661,7 +4756,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           terminal: true,
           text: `[安全策略拒答] ${refusalText}`,
         };
-        yield { kind: "done", turns: state.turnCount };
+        yield {
+          kind: "done",
+          turns: state.turnCount,
+          // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+          turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+        };
         return;
       }
 
@@ -4758,7 +4858,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           text: `模型以未识别的停止原因结束本轮（stopReason: ${response.stopReason ?? "null"}）。若回答不完整，请重新发送消息继续。`,
         };
       }
-      yield { kind: "done", turns: state.turnCount };
+      yield {
+        kind: "done",
+        turns: state.turnCount,
+        // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+        turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+      };
       return;
     }
   } finally {
@@ -4815,18 +4920,120 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         },
       ],
     });
+    // ─── §20.4（2026-08-30 实测）：本轮必须入账 ───
+    // 缺陷形态：P1-1 走 deps.sendWithRetry/processStream，但它在 while 循环**之外**，
+    // 于是不经过循环内的 BeforeModel/AfterModel 发射点。后果是**同一轮在三处同时漏**：
+    //   ① `metadata.total_tokens_received` / `total_cache_read_tokens`（累加在
+    //      collector.handleAfterModel 内，而它 `!this.currentPair` 就 early-return）；
+    //   ② `raw.jsonl` 不落这一条；
+    //   ③ digest 首行的 `API N 次`（取数自上面两者）。
+    // 实测判据：`HttpConnected=41` 而 `BeforeModel=40`、`raw.jsonl` 只 40 条，
+    // 且 harbor 侧读数与 40 条 raw 的合计**逐字节相等** —— 不是少算一点，是整轮不在分母里。
+    // ⚠️ 偏差**有方向**：只有撞满上限的题才有 P1-1 轮，而那正是最贵的一批
+    //（实测一道 $3.54 的题漏掉 cache_read=122594），所以「更省」曲线是系统性偏低。
+    //
+    // 修法就是补发这两个 hook，让它走与循环内完全相同的入账路径 —— 不另造一条统计口径
+    //（本仓教训：仓库里已有的口径重实现一遍就是重踩一遍）。
+    const summaryParams = {
+      model: config.model,
+      messages: ctxMgr.getMessages(),
+      system: ctxMgr.getSystemPrompt(),
+      maxTokens: config.maxTokens,
+      // 不传 tools，禁止模型继续调工具（对齐 agentic-loop.ts 强制总结轮的做法）。
+    };
+    if (hookSystem) {
+      try {
+        // ⚠️ 刻意**不检查** blocking/stopExecution 返回值：这里已在收尾路径上，
+        // 主循环该跑的都跑完了，此时"阻止"没有可阻止的对象；而按循环内那套 return 掉，
+        // 会跳过下方 max_turns yield 与 emitTurnCompleteHere() —— 用一个观测点换掉两个收尾信号。
+        await hookSystem.fireBeforeModelEvent(
+          {
+            model: summaryParams.model,
+            messages: summaryParams.messages.map((m) => ({
+              role: m.role,
+              content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+            })),
+            config: { maxTokens: summaryParams.maxTokens },
+            raw_messages: summaryParams.messages,
+            system: summaryParams.system,
+            // tools 刻意不传：本轮真的没下发工具，传了就是让轨迹撒谎。
+          },
+          {
+            // ⚠️ `turn_index` 必须是 maxTurns + 1 而不是复用 maxTurns。
+            // 复用正是"一个 index 出现两次 first_content"的成因（实测 idx=40 有两条，
+            // ttft 12803 与 23657），按 index 聚合 TTFT 的脚本会把两次不同调用叠在一格里，
+            // 而 P1-1 那次 ttft 高达 23s 量级、恰好落在 P95/P99 的尾部。
+            stream_snapshot_ref: { turn_index: state.turnCount + 1, loop_id: loopId },
+          },
+        );
+      } catch {
+        /* 观测点失败绝不阻断收尾 */
+      }
+    }
     try {
-      const summaryStream = deps.sendWithRetry(
-        {
-          model: config.model,
-          messages: ctxMgr.getMessages(),
-          system: ctxMgr.getSystemPrompt(),
-          maxTokens: config.maxTokens,
-          // 不传 tools，禁止模型继续调工具（对齐 agentic-loop.ts 强制总结轮的做法）。
-        },
-        deps.getAbortSignal?.(),
-      );
+      // 与上面 stream_snapshot_ref 同一个口径：让 provider 侧 StreamPhase/HttpConnected
+      // 也带 41，而不是继续沿用主循环最后登记的 40。
+      setSseDumpContext(sessionState.sessionId, state.turnCount + 1, loopId);
+    } catch {
+      /* 快照定位失败绝不影响收尾 */
+    }
+    try {
+      const summaryStream = deps.sendWithRetry(summaryParams, deps.getAbortSignal?.());
       const summaryResponse = await deps.processStream(summaryStream);
+      // ─── §20.4：用量入账（在 hook 之前，与循环内同序）───
+      // updateUsage 是 cost 的来源；不调它，这一轮的钱就只出现在网关账单上、不出现在我们账里。
+      try {
+        sessionState.updateUsage(
+          config.model,
+          summaryResponse.usage,
+          0, // apiDuration：本轮没有 perfHandle，填 0 而不是猜一个值（宁可缺，不可假）
+          config.provider,
+          config.baseURL,
+        );
+      } catch {
+        /* 入账失败不阻断收尾 */
+      }
+      if (hookSystem) {
+        try {
+          await hookSystem.fireAfterModelEvent(
+            {
+              model: summaryParams.model,
+              messages: summaryParams.messages.map((m) => ({
+                role: m.role,
+                content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+              })),
+              raw_messages: summaryParams.messages,
+              system: summaryParams.system,
+            },
+            {
+              text: summaryResponse.content
+                .filter((b) => b.type === "text")
+                .map((b) => (b.type === "text" ? b.text : ""))
+                .join(""),
+              content_blocks: summaryResponse.content,
+              stop_reason: summaryResponse.stopReason ?? undefined,
+              usage: {
+                inputTokens: summaryResponse.usage.inputTokens,
+                outputTokens: summaryResponse.usage.outputTokens,
+                cacheReadInputTokens: (summaryResponse.usage as any).cacheReadInputTokens,
+                cacheCreationInputTokens: (summaryResponse.usage as any).cacheCreationInputTokens,
+                reasoningTokens: (summaryResponse.usage as any).reasoningTokens,
+              },
+              cost_usd: sessionState.calculateCost(
+                config.model,
+                summaryResponse.usage,
+                config.provider,
+                config.baseURL,
+              ),
+              provider: config.provider,
+              base_url: config.baseURL,
+              gateway_request_id: takeLastRequestId(),
+            },
+          );
+        } catch {
+          /* 观测点失败绝不阻断收尾 */
+        }
+      }
       if (summaryResponse.content.length > 0) {
         // P1-1 是"禁止调工具的总结轮"（sendWithRetry 未传 tools），但响应仍可能含
         // tool_use（mock 忽略 tools 参数 / 模型异常）。tool_use 在此轮无法执行（既不走
@@ -4848,6 +5055,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
     } catch (err: any) {
       log.warn("QUERY_LOOP", `P1-1：强制总结轮失败（不影响收尾）: ${err?.message ?? String(err)}`);
+      // §20.4：此前这里**只有**这一行 warn —— 本轮既不进 raw.jsonl 也不进 hook，
+      // 于是"总结轮失败"在轨迹里几乎不可见（实测三题都成功了，所以它尚未造成误判，
+      // 但那是运气，不是防线）。落 errors.jsonl 让它至少有一个可查的落点。
+      // index 用 maxTurns + 1，与上方 stream_snapshot_ref / setSseDumpContext 同口径。
+      deps.recordError?.({
+        phase: "stream",
+        index: state.maxTurns + 1,
+        error: (err as Error)?.message ?? String(err),
+        stack: (err as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
+        context: { forcedSummaryRound: true, maxTurns: state.maxTurns },
+      });
     }
   }
 
@@ -4874,7 +5092,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 否则端到端耗时会漏掉整个总结轮 —— 而它恰好只发生在最长的那些轮次上。
   // 幂等位保证：走到这里若 finally 已发过（例如总结轮判据在两处之间变了），不会重复。
   emitTurnCompleteHere();
-  yield { kind: "done", turns: state.turnCount };
+  yield {
+    kind: "done",
+    turns: state.turnCount,
+    // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+    turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+  };
 }
 
 // ─── 辅助函数 ───
