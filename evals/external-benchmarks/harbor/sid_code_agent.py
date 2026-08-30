@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, override
@@ -90,6 +91,29 @@ VALID_PROVIDERS = ("anthropic", "openai", "ollama", "replay")
 def _env(name: str, default: str = "") -> str:
     value = os.environ.get(name)
     return value if value is not None and value != "" else default
+
+
+def _int_env(name: str, default: int) -> int:
+    """读整数环境变量。**取不到或非法一律回落到 default,并把理由打到 stderr。**
+
+    ⚠️ 刻意不静默:这个值会写进容器 settings.json 的 `network` 块,
+    写错(比如 `SID_HARBOR_RETRY_BACKOFF_MAX_MS=30s`)的形态是
+    **配置里出现一个非法值,而 Zod 校验把整个 network 块丢掉** ——
+    于是退避 cap 悄悄回到 120s 默认,而人以为自己已经调过它了。
+    那正是本仓「字段在、值是废的」那一类,所以宁可吵一声。
+    """
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"[sid-code-agent] ⚠ {name}={raw!r} 不是整数,回落到 {default}", file=sys.stderr)
+        return default
+    if value <= 0:
+        print(f"[sid-code-agent] ⚠ {name}={value} 必须为正,回落到 {default}", file=sys.stderr)
+        return default
+    return value
 
 
 def _loads(line: str) -> dict[str, Any] | None:
@@ -506,6 +530,50 @@ class SidCodeAgent(BaseInstalledAgent):
                     "apiKey": PLACEHOLDER_API_KEY,
                 }
             ],
+            # ── 下面三块**不是可选的**:不显式写,团队默认模板会把悬空引用填进来 ──
+            #
+            # ⛔ 2026-08-30 实测的死亡链(`build-cython-ext`,第 8 轮死于 40 轮预算):
+            #      ⚠ fallback_model "ali-deepseek-v4-flash" 不在 available_models 中,已忽略
+            #      流式重试 1..5,退避 5.4s→10.2s→23.4s→41.2s→83.7s
+            #      ⚠ S3:剩余预算 129397ms 不足以「退避 138615ms + 一次请求」,停止重试
+            #      ● 无交互通道,降级为自动切换默认 fallback
+            #      ⚠ 用户/钩子选择不切换,终止本轮
+            #
+            # 成因是**两层叠加**,少修一层都不够:
+            #   ① 容器 settings 只有 1 条 availableModels,而**二进制内联的团队默认模板**
+            #      (`scripts/team-defaults.template.json`)会在容器内首启时把
+            #      `fallbackModel` / `subAgentModels` 补成 `ali-deepseek-*` ——
+            #      那是公司网关的模型名,容器里既不在 availableModels 里、也连不上,
+            #      于是主模型一挂**无处可退**直接终止。
+            #      ⚠️ 迁移只补**用户缺失的顶层键**(`mergeMissingTopLevelKeys`),
+            #      所以**这里显式写死就能压住它** —— 这也正是本修法的判据。
+            #   ② 退避 cap 120s 让 11 次重试预算只跑到第 6 次就被 wall-clock 钳死。
+            #      复算(base 5s / 300s 预算):cap=120s→6 次、cap=30s→**11 次**。
+            #
+            # ⚠️ 别把 ① 读成「上游不稳」:上游确实不稳(ppchat 实测额度耗尽 + 分组饱和),
+            # 但**把「跑到一半」变成「整轮报废」的是我们自己这两处配置**。
+            #
+            # 降级目标指回**别名自己**:容器里只有这一个可达上游,写别的都是悬空引用。
+            # 它的作用不是"换个模型",是**让 app.ts 那条 `已忽略` 分支不再命中**,
+            # 从而保住「重试耗尽 → 换连接重来」这条路,而不是直接 terminate。
+            "fallbackModel": self._model_alias,
+            # auto:容器里没有交互通道。留 "ask" 会走到「无交互→降级为自动」那一步,
+            # 多绕一层且日志更难判读(实测那行 `用户/钩子选择不切换` 就是这么来的)。
+            "fallbackSwitchMode": "auto",
+            # 子代理三档同样必须指回别名 —— 悬空时子代理会**拿别名外的名字请求网关**,
+            # 得到 503 model_not_found(registry.ts:63 那段注释记的就是这个生产事故)。
+            "subAgentModels": {
+                "default": self._model_alias,
+                "task": self._model_alias,
+                "verify": self._model_alias,
+            },
+            # 退避 cap 从 120s 收到 30s:同一 300s 预算内可完成的重试从 6 次抬到 11 次。
+            # ⚠️ 这是拿「单次重试等得更久的耐心」换「总重试次数」,在**分组饱和**这种
+            # 秒级恢复的故障上是对的;若上游是**长时间**不可用,两者都救不了 ——
+            # 那种情况该由跑前闸拦住,不该在这里堆参数。
+            "network": {
+                "retryBackoffMaxMs": _int_env("SID_HARBOR_RETRY_BACKOFF_MAX_MS", 30_000),
+            },
         }
 
     async def _write_build_info(self, environment: BaseEnvironment) -> None:
