@@ -293,6 +293,38 @@ curl -s -X POST -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
 > 会破坏「同题同 verifier」的可比性，所以不做）。
 > **在本机上，这一项是已知残余误差，不是已解决问题。**
 
+#### ⚠️ 2026-08-29 补充：`-n 1` **也保不住** —— 出口带宽本身会劣化到 0/3
+
+上面那张表的前提是「出口带宽正常，只是并发在抢」。这天遇到的是**另一种**：
+`-n 1`、无并发、单任务独占带宽，**verifier 仍然 3/3 全坏**。
+量出来的差别只有一个数 —— 宿主到 GitHub CDN 的吞吐：
+
+| | verifier 全程耗时 | uv 下载吞吐 | 结果 |
+| --- | --- | --- | --- |
+| 8/28 基线 | **24–56s** | 正常 | **10/10 判分成功** |
+| 8/29 劣化 | **103 / 243 / 413s 后放弃** | **70 KB/s** | **0/3**（`curl: (7)` / `(56)`） |
+| 8/29 换代理节点后 | — | **1.02–1.10 MB/s** | 同一命令、同一镜像立刻恢复 |
+
+**所以 `-n 1` 不是判据，吞吐才是判据。** 跑前必测（已写进
+`run-permission-switch.sh` 的头注释）：
+
+```bash
+docker run --rm alpine:3 sh -c 'apk add -q curl; curl -sL -o /dev/null -m 30 \
+  -w "%{speed_download}B/s\n" \
+  https://github.com/astral-sh/uv/releases/download/0.7.13/uv-x86_64-unknown-linux-gnu.tar.gz'
+```
+
+**要 ≥ 500KB/s**（17.8MB / 35s，留出 pytest 的余量）。⚠️ **必须在容器里测，
+不是宿主** —— TUN 模式的代理可能覆盖宿主而漏掉 colima VM。
+核「代理有没有真的覆盖容器」用出口 IP 对照：
+`curl -s https://api.ipify.org` 在宿主与 `docker run --rm alpine:3` 里应该一致。
+
+**这条为什么值 $3.12**：它坏得**不报错**。`reward=0` 与真的没解出来
+**逐字节一样**，而 `sid_subtype` 还写着 `success` 给它背书 ——
+一整轮「换档没用」的假结论就是这么产生的。
+挡住它的是 §14.7 规则 ②（verifier 坏掉的样本不进分母）：复算脚本把 3 题全排除，
+分母落到 0/3，于是得到「没有结论」而**不是**「一个假结论」。
+
 ---
 
 ## 网关：透传代理**不满足**这个设计（2026-08-27 实测）
@@ -635,8 +667,16 @@ sid-code 内部看不到。
 
 | 层 | 依赖 | CI 上 | 拦什么 |
 | --- | --- | --- | --- |
-| **L1 静态** | 只要 `python3`（stdlib `ast` 解析，**不 import**） | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / **装饰器顺序反了** / 输出格式被改回 `json` / `MODEL_CONNECTION` 被加回 / `dangerously-skip-permissions` 出现 |
+| **L1 静态** | 只要 `python3`（stdlib `ast` 解析，**不 import**） | ✅ **真的在跑** | 语法坏了 / 四成员缺失 / **装饰器顺序反了** / 输出格式被改回 `json` / `MODEL_CONNECTION` 被加回 / **权限档形态**（skip 必须是 `type="bool"`、互斥校验与观测计数在位） |
 | **L2 导入** | 要装 `harbor` | ⚠️ **skip** | 真 `import` + `issubclass` + `capabilities` 全 False |
+
+⚠️ **L1 那条权限档断言的判据在 2026-08-29 被整个换掉过**，理由值得留：
+原判据是「源码里不许出现 `dangerously-skip-permissions`」，它**忠实地执行了一个错误的
+决定** —— 自建 swe-bench 链路早已用 113 次权限拒绝实测出「`acceptEdits` 不可用」，
+而 Harbor 侧引用**同一个数字**得出了相反结论，再用这道门禁把错的那侧钉死。
+本机 10 题全量实测确认同一形态：**144 次拒绝 / 178 次放行**，其中 77% 是
+`acceptEdits` 不放行普通 bash（`nproc` / `which git` / `qemu-img info`）。
+**一道门禁的注释理由正当，不代表它守的判据正确；修法是改判据，不是拆门。**
 
 拆两层的理由：只做 L2 的话，CI 上**永远 skip** → 门禁形同不存在，而 PR 页面一片绿。
 L1 拦得住的恰好是那批**不报错的**失效形态。
@@ -712,6 +752,43 @@ HARBOR_TELEMETRY=0 harbor run ... --allow-agent-host 192.168.5.2
 | `SID_HARBOR_PROVIDER` | 从 `-m provider/model` 推 | 覆盖 provider（闭集：`anthropic`/`openai`/`ollama`/`replay`） |
 | `SID_HARBOR_MAX_TURNS` | 40 | 等价 `--ak max_turns=` |
 | `SID_HARBOR_MAX_BUDGET_USD` | 空 | 等价 `--ak max_budget_usd=`，per-trial 成本上限 |
+| `SID_HARBOR_SKIP_PERMISSIONS` | **`true`** | 等价 `--ak skip_permissions=`。默认全放开（见下方「权限档」）。设 `false` 才走确认层 |
+
+### 权限档：默认全放开，且这个代价必须说破
+
+默认传 `--dangerously-skip-permissions`（布尔 flag）。**代价是这一轮评测测不到权限层** ——
+skip 同时跳过 safetyCheck 与危险命令检测，它只是一个被记进 metadata 的必控变量，
+**不是一条通过了的验证**。可接受的理由：容器无外网（走宿主网关）、跑完即销毁、
+里面只有一个 benchmark 仓库。
+
+为什么默认不是 `acceptEdits`：本机 10 题全量实测（源 `logs/permissions-audit.log`）
+是 **144 次拒绝 / 178 次放行**，其中 111 次（77%）是 `acceptEdits` 不放行普通 bash
+（`nproc` / `which git` / `qemu-img info` / `apt-get install` 全被拒）。
+于是「40 轮预算用尽」读起来像能力不足，**真相是非能力原因混进了能力账**。
+
+想专门观察防线（两者互斥，同时传会**拒绝启动**）：
+
+```bash
+harbor run ... --ak skip_permissions=false --ak permission_mode=acceptEdits
+```
+
+**判据一律看观测值，不看命令行。** 每个 trial 的 metadata 自带两组键：
+`sid_permission_mode_requested`（我请求了什么，可能没生效）与
+`sid_permission_denials` / `_allows` / `_decisions_total`（checker 实际判了多少次）。
+零成本自证：
+
+```bash
+jq -r '.agent_result.metadata
+       | [.sid_permission_mode_requested, .sid_permission_denials] | @tsv' \
+  runs/<run>/*/result.json | sort | uniq -c
+```
+
+⚠️ 三个坑全是「请求了但没生效**且不报错**」，此时命令行看起来完全正确：
+`bypassPermissions` 不是合法模式名（只 warn）、`always-allow` 绕不过路径验证、
+`--permission-mode dangerously-skip-permissions` 碰不到 `config.skipPermissions`
+（只有布尔 flag 会设它）。所以**只有审计日志的 deny 条数能证明档位真的生效了**。
+日志缺失时落 `sid_permission_audit_missing=True`，与「零拒绝」严格区分 ——
+后者是换档成功的判据，让一次采集失败伪装成它是最坏的。
 
 **二进制来源是三级优先级，且第三级报错而不回落**：
 ① `SID_HARBOR_BINARY_*` 显式点名 → ② `dist/branch-builds/*-<当前 commit12>/sid-code`
@@ -979,6 +1056,89 @@ WatchdogKill**。根因是两个计数器各数各的：
 
 本次量级小（$7.18 → 真实 ≈ $7.26，低报 1.1%），**但低报幅度与超时 trial 比例成正比**，
 而 `cost_usd: null` 会被下游求和**当成 0**。可修：兜底源 `AfterModelRaw.usage` 是完好的。
+
+### 换档对照的六个脚本（2026-08-29/30）：判据都收敛到 `verifier_health.py`
+
+```bash
+bash run-permission-switch.sh <job名> [题名...]      # 跑（不给题名=全部 10 题）
+python3 progress-permission-switch.py runs/<job>    # 跑动时看进度，每题当场报健康
+python3 analyze-permission-switch.py runs/<job> [补跑job...]   # 判据①②③④⑤
+python3 compare-paired.py runs/a11-sid runs/<job>   # 判据②：配对对照
+python3 analyze-retry-cost.py runs/<job>            # 判据④：重试墙钟
+python3 check-comparison-parity.py runs/<job> runs/a11-mswea   # 跨 agent 对照口径
+```
+
+**`verifier_health.py` 是三个判据的唯一定义处**，消费者一律 import，不许各写一份
+（踩过：进度脚本与复算脚本各写一份 verifier 判据，同一题一个报 ✅ 一个报 ⛔）：
+
+| 函数 | 问的是 | 取数源 |
+| --- | --- | --- |
+| `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
+| `agent_ran` | **agent** 跑过没有（三态，`None`=采集缺失） | `agent_result` 的 in/out token |
+| `llm_fatal` | 是不是**被上游打断**的 | `sid_errors` + 日志里的重试链耗尽 |
+
+#### 分桶规则有五条，后两条是 2026-08-30 实测补的
+
+`reward=0` 有**五种**语义完全不同的来源，混在一起就是「非能力原因记进能力账」：
+
+| 规则 | 排除什么 | 为什么 |
+| --- | --- | --- |
+| ① | verifier 没判分 | 判分未发生 ≠ 没解出来 |
+| ② | `reward` 缺失 | 没有分可算 |
+| ③ | — | 逐题表才是结论，别只看均值 |
+| ④ | **agent 零 API 调用** | 网关 502 / 上游 403 额度耗尽，压根没碰过题 |
+| ⑤ | **上游打断** | 跑了 3-8 轮（共 40）被 429 打空重试链，没机会做完 |
+
+⚠️ 规则 ① **不能**照 §13.2 的字面写（`reward=0` 且 `sid_is_error=False`）——
+那会错杀「agent 自我报喜但其实没做完」，而那正是最该扣分的一类失败。
+⚠️ 规则 ④ 判据用 **token 不用 turns**（token 来自 Harbor 侧，turns 来自 agent 自述，
+取观测方不取自述方），且 `None` 与 `0` 必须分开（用 falsy 会让基线 0.100 变成 0.111）。
+⚠️ 规则 ⑤ 判据**不能只看 `subtype`**：`error_during_execution` 也包含 agent 自身崩溃
+（真实缺陷，必须计分）。
+
+#### ⛔ 两个均值不能直接并列 —— 用 `compare-paired.py`
+
+复算脚本对两轮各自算出基线 **0.100（分母 10）**、换档后 **0.750（分母 4）**。
+并列成「0.100 → 0.750」是**错的**：被规则 ④⑤ 排除的 4 题不在换档后分母里，
+却**在基线分母里且全是 0.0** —— 两个均值的题目集不是同一批题。
+`compare-paired.py` 强制**整对退出**（任一侧被排除，整对退出）、把「尚未跑」与
+「跑了被排除」分开报、未跑完时**拒绝给结论**，并在结论行强制打印 n。
+
+#### 跑前两道闸，第 2 道现在会自动执行
+
+第 1 道（uv 下载速率 ≥500KB/s）见 `run-permission-switch.sh` 头注释。
+第 2 道**上游错误率**原来只是一句「curl /__stats 看看」，没有任何东西真的去测 ——
+那一轮直接开跑，**10 题里 4 题报废**（实测当时错误率 35%）。现在脚本会自动跑：
+20 连、间隔 3s，非 200 占比 **> 20% 直接拒绝启动**。
+
+- 🔴 **探针必须贴着真实请求形态：流式**。这道闸第一版探的是 `max_tokens=8` 的
+  **非流式**小请求，于是补跑那轮它报 **10% 放行**，随后两题双双一次 API 调用都没
+  成功（各 19 次 `Remote end closed`）。同一时刻实测：小请求非流式 5 连**全 200**，
+  而流式 5 连只有 **3 次 200**。agent 真实发的是 `stream:true` + `max_tokens=128000`
+  （见 trial 日志的 `maxTokens`）——**闸用错形态就会在上游已劣化时报绿**。
+- ⚠️ **别测「能不能连上」**：单发探针几乎总是 200，要测的是错误率。
+- ⚠️ **两个源交叉校验**：探针看「我发的请求成不成」，`GET /__stats` 看「网关到上游
+  那一跳成不成」。⛔ `__stats` 是**累积值（stock）**，直接当当前健康度用就是
+  `evals/CLAUDE.md` §1.6 那条「stock ÷ flow = 错数」的重演 ——
+  闸只取**探测窗口内两次快照的差（flow）**。实测过一次两者背离：闸报 10%，
+  而 `__stats` 累积失败率是 31%。
+- ⚠️ **别指望重试链兜住**：同一轮 `fix-code-vulnerability` 吃了 39 次 429 仍拿 1.0，
+  `build-cython-ext` 吃了 30 次就死了 —— 35% 下能不能活是抛硬币，不是阈值。
+- 强跑：`SID_HARBOR_SKIP_PREFLIGHT=1`（脚本会警告本轮数据可能混入故障样本）。
+- 自证这道闸时用 `SID_HARBOR_PREFLIGHT_N=5 SID_HARBOR_PREFLIGHT_GAP=0`
+  （默认 60s，反复自证会把验证本身跑超时）。
+
+#### 补跑：基础设施故障不必重跑全部 10 题
+
+```bash
+bash run-permission-switch.sh permswitch-r3 polyglot-c-py regex-log   # ~$1，而非 ~$7
+python3 analyze-permission-switch.py runs/permswitch-r2 runs/permswitch-r3
+```
+
+多 job 合并时**同题靠后覆盖靠前**，且表里会多出「出处」列。
+不标出处就是把两批不同时间、不同上游状态的数据无声混进同一个分母。
+
+---
 
 ### 分析脚本：`analyze-prefix.py`
 

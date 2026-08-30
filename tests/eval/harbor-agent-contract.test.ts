@@ -43,7 +43,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -256,8 +256,61 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     expect(facts!.class_attrs).not.toContain("MODEL_CONNECTION");
   });
 
-  test("不出现 dangerously-skip-permissions —— 它会关掉我们想测的那层防线", () => {
-    expect(facts!.string_consts.join("\n")).not.toContain("dangerously-skip-permissions");
+  test("权限档是显式的、可观测的,且 skip 用布尔 flag(判据已于 2026-08-29 纠正)", () => {
+    // ⚠️ **这条断言的判据被整个换掉过一次,换掉的理由比断言本身重要。**
+    //
+    // 原判据是「源码里不许出现 `dangerously-skip-permissions` —— 它会关掉我们想测的
+    // 那层防线」。它**忠实地执行了一个错误的决定**:自建 swe-bench 链路早在
+    // 2026-08-25 就用 113 次权限拒绝的实测得出「acceptEdits 不可用,必须换 skip」,
+    // 而 Harbor 侧引用**同一个数字**得出了相反结论(「正好观察防线」),
+    // 然后用这道门禁把错的那一侧钉死 —— 任何人想改回与 swe-bench 一致,
+    // 都会被一道**注释理由读起来完全正当**的绿色门禁拦住。
+    //
+    // 本机 10 题全量实测(源:`logs/permissions-audit.log`)确认了同一形态:
+    // **144 次拒绝 / 178 次放行**,其中 111 次(77%)是 acceptEdits 不放行普通 bash
+    // (`nproc` / `which git` / `qemu-img info` 全被拒)。于是「40 轮预算用尽」
+    // 被读成能力不足,而真相是非能力原因混进了能力账。
+    //
+    // **教训(本仓判读纪律)**:一道门禁的注释理由正当,不代表它守的判据正确。
+    // 修法是**改判据,不是拆门** —— 反向锁的价值仍在(防止有人无意识地把权限档
+    // 改成一个静默失效的形态),所以这里换成锁「显式 + 可观测 + 形态正确」三件事。
+    const src = readFileSync(AGENT_PY, "utf-8");
+
+    // ① skip 必须是**布尔** CliFlag。这一条是三个实测坑里最隐蔽的那个:
+    //    `--permission-mode dangerously-skip-permissions` **不生效**(checker 判的是
+    //    `config.skipPermissions`,只有布尔 flag 会设它),而它**不报错** ——
+    //    命令行看起来完全正确,容器里照样被拒 144 次。
+    //    Harbor 侧只有 `type == "bool"` 才输出裸 flag(`installed/base.py:723-725`),
+    //    写成 str 会拼出 `--dangerously-skip-permissions True`。
+    const skipFlag = /CliFlag\(\s*\n\s*"skip_permissions",[\s\S]*?\n\s*\)/.exec(src)?.[0] ?? "";
+    expect(skipFlag).not.toBe("");
+    expect(skipFlag).toContain('cli="--dangerously-skip-permissions"');
+    expect(skipFlag).toMatch(/type="bool"/);
+
+    // ② `permission_mode` 的 choices 里**不许**出现 skip 的模式名。
+    //    传它进 --permission-mode 是那条静默失效路径,把它列进 choices 等于把坑
+    //    做成一个官方旋钮。同理 `bypassPermissions` 压根不是合法模式名(只 warn)。
+    const modeFlag = /CliFlag\(\s*\n\s*"permission_mode",[\s\S]*?\n\s*\)/.exec(src)?.[0] ?? "";
+    expect(modeFlag).not.toBe("");
+    expect(modeFlag).not.toContain('"dangerously-skip-permissions"');
+    expect(modeFlag).not.toContain("bypassPermissions");
+
+    // ③ **两个都传时必须硬失败。** sid-code 侧 skip 优先(`config.ts:1557` 覆盖
+    //    permissionMode),所以同时给出时 `--ak permission_mode=acceptEdits` 是个
+    //    假开关:metadata 如实记下 acceptEdits,实际全放开,**跑完没有东西会报错**。
+    //    这一层要在起容器之前拦,不是在读结果时才发现整轮数据不可用。
+    expect(facts!.members).toContain("_assert_permission_flags_coherent");
+
+    // ④ **观测值必须落 metadata,且与请求值分成两个键。**
+    //    「命令行传了什么」只证明我请求了全放开;三个坑全是「请求了但没生效且不报错」。
+    //    所以判据必须是审计日志里 deny 的**观测**条数 —— 而六棒无人读过那份日志,
+    //    正是 §17.3 那次错能活这么久的原因。
+    expect(facts!.members).toContain("_count_permission_decisions");
+    expect(src).toContain("sid_permission_mode_requested");
+    expect(src).toContain("sid_permission_denials");
+    // 日志缺失要与「零拒绝」区分:后者是换档成功的判据,混在一起会让一次
+    // 采集失败伪装成一次成功换档(与成本那处「绝不填 0」同一条纪律)。
+    expect(src).toContain("sid_permission_audit_missing");
   });
 
   test("不声明任何能力(首版全 False,靠基类默认)", () => {
@@ -531,6 +584,65 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
       );
     });
 
+    test("skip 改成非布尔 type → 权限档形态断言翻红", () => {
+      // 精确复现三个坑里最隐蔽的那个:`type` 不是 bool 时 Harbor 拼出
+      // `--dangerously-skip-permissions True`,**不报错、也不生效**。
+      // 用 str 而不是删掉整条 flag:删掉会让「skipFlag 抠不到」先红,
+      // 那报的是「flag 缺失」不是「形态错了」—— 两者的排查方向不同。
+      withMutatedFixture(
+        (s) =>
+          s.replace(
+            '            type="bool",\n            default=True,',
+            '            type="str",\n            default=True,',
+          ),
+        (pth) => {
+          const s = readFileSync(pth, "utf-8");
+          const skipFlag = /CliFlag\(\s*\n\s*"skip_permissions",[\s\S]*?\n\s*\)/.exec(s)?.[0] ?? "";
+          expect(skipFlag).not.toBe("");
+          // 判据翻红:不再是 bool
+          expect(skipFlag).not.toMatch(/type="bool"/);
+        },
+      );
+    });
+
+    test("把 skip 模式名列进 permission_mode 的 choices → 断言翻红", () => {
+      // 那是「把一条静默失效的路径做成官方旋钮」。
+      withMutatedFixture(
+        (s) =>
+          s.replace(
+            'choices=["default", "acceptEdits", "plan", "always-allow"],',
+            'choices=["default", "acceptEdits", "plan", "dangerously-skip-permissions"],',
+          ),
+        (pth) => {
+          const s = readFileSync(pth, "utf-8");
+          const modeFlag = /CliFlag\(\s*\n\s*"permission_mode",[\s\S]*?\n\s*\)/.exec(s)?.[0] ?? "";
+          expect(modeFlag).toContain('"dangerously-skip-permissions"');
+        },
+      );
+    });
+
+    test("删掉互斥校验 / 观测计数 → 对应断言翻红", () => {
+      // 这两个是「跑完才发现整轮不可用」与「读配置以为自己知道实际行为」两条的对策,
+      // 删掉任一条都不会让 harbor 报错 —— 所以必须有门禁盯着它们存在。
+      withMutatedFixture(
+        (s) =>
+          s
+            .replace(
+              "    def _assert_permission_flags_coherent(self) -> None:",
+              "    def _disabled_coherence_check(self) -> None:",
+            )
+            .replace(
+              "    def _count_permission_decisions(self) -> dict[str, Any] | None:",
+              "    def _disabled_decision_count(self) -> dict[str, Any] | None:",
+            ),
+        (pth) => {
+          const f = runL1(pth).facts!;
+          expect(f.members).not.toContain("_assert_permission_flags_coherent");
+          expect(f.members).not.toContain("_count_permission_decisions");
+        },
+      );
+    });
+
     test("加回 MODEL_CONNECTION → key 泄露断言翻红", () => {
       withMutatedFixture(
         (src) => src.replace("    CLI_FLAGS = [", "    MODEL_CONNECTION = None\n    CLI_FLAGS = ["),
@@ -597,6 +709,201 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
         },
       );
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L1b:harbor 目录下**其余** .py 的语法与判据单源性。
+//
+// ⚠️ 为什么单独一层:上面那 27 条只认 `sid_code_agent.py`,而这个目录里还有 7 个
+// 复算/进度脚本。仓库五道门禁一道都不认 `.py` —— 于是它们的语法错误会**延迟到
+// 跑评测时才暴露**,而那时已经起了容器、拉了镜像、花了钱。这正是本文件开头那条
+// 「补上 .py 门禁」的理由,只是当初只覆盖了 agent 那一个文件。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
+  const HARBOR_DIR = join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor");
+
+  /** 目录里所有 .py(不含 agent 本体 —— 它由上面那 27 条覆盖)。 */
+  const scripts = readdirSync(HARBOR_DIR)
+    .filter((f) => f.endsWith(".py") && f !== "sid_code_agent.py")
+    .sort();
+
+  /**
+   * 剥掉注释**与 docstring**,只留真正会执行的代码。
+   *
+   * ⚠️ 这个函数本身是踩出来的:初版只过滤 `#` 开头的行,于是
+   * `verifier_health.py` 与 `analyze-permission-switch.py` 的 **docstring** 里
+   * 那句「别拿 `command not found` 当判据」的教训**被当成了判据本体**,
+   * 门禁把两个正确的文件判成了违规 —— 一个假红。
+   *
+   * 而「把教训从文档字符串里删掉让门禁变绿」正是最坏的做法:抹掉的是唯一的溯源线索。
+   * 所以要剥的是 docstring,不是教训。
+   */
+  const TRIPLE_D = '"' + '""';
+  const TRIPLE_S = "'" + "''";
+  const codeOnly = (src: string): string => {
+    // 三引号块(docstring 与多行字符串)整段去掉,非贪婪
+    const stripBlocks = (text: string, fence: string): string => {
+      const re = new RegExp(fence + "[\\s\\S]*?" + fence, "g");
+      return text.replace(re, "");
+    };
+    return stripBlocks(stripBlocks(src, TRIPLE_D), TRIPLE_S)
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+  };
+
+  test("目录里确实有复算脚本(空集会让下面每条都空转通过)", () => {
+    // 没有这条的话,`scripts` 变成空数组时 for 循环一次都不执行,
+    // 整个 describe 看起来「全部通过」—— 与真的通过完全一样。
+    expect(scripts.length).toBeGreaterThan(0);
+  });
+
+  test("每个脚本都能被 python 编译(拦语法错误,不 import 所以零依赖)", () => {
+    // 用 py_compile 而不是 import:import 会执行模块顶层代码(有的脚本读 argv),
+    // 而我们只想知道「语法坏了没有」。
+    for (const f of scripts) {
+      const r = Bun.spawnSync({
+        cmd: [
+          "python3",
+          "-c",
+          "import py_compile,sys; py_compile.compile(sys.argv[1], doraise=True)",
+          join(HARBOR_DIR, f),
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(r.exitCode, `${f} 编译失败:\n${r.stderr.toString()}`).toBe(0);
+    }
+  });
+
+  test("verifier 判据只有一处定义 —— 消费者一律 import,不许各写一份", () => {
+    // ⚠️ 这一条是 2026-08-29 自己踩出来的:进度脚本与复算脚本各写了一份判据
+    //(一份还多要求 `installing to /root/.local/bin`),于是**同一题可能一个报 ✅
+    // 一个报 ⛔**,而分歧会在无人看的时候发生。判据只能有一个定义处。
+    const HEALTH = "verifier_health.py";
+    expect(scripts).toContain(HEALTH);
+
+    // 定义处:正则必须在这里,且只在这里。
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+    expect(health).toMatch(/passed\|failed/);
+
+    // 消费者:凡是判 verifier 健康的脚本,必须 import 共享模块,
+    // **不许自己写 pytest 结论行的正则**。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const src = readFileSync(join(HARBOR_DIR, f), "utf-8");
+      const usesHealth = /from verifier_health import|import verifier_health/.test(src);
+      // 只在**代码里**找:注释与 docstring 里提到不算
+      //(记录教训的文字必须能安全地留着)。
+      const ownRegex = /passed\|failed/.test(codeOnly(src));
+      expect(
+        !ownRegex || usesHealth,
+        `${f} 自己写了 pytest 结论行判据却没 import verifier_health —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
+  test("agent 侧健康判据同样只有一处定义 —— 不许自己数 token", () => {
+    // 2026-08-29 本轮实测新增的规则 ④。`polyglot-c-py` 拿到 `reward=0.0` 且
+    // verifier **判分正常**,于是所有 verifier 侧判据都放它进分母 —— 而真实形态是
+    // 网关 502 挡了 277 秒、**一次 API 调用都没成功**,压根没碰过那道题。
+    // 把它当真实 0 分,就是把一次基础设施故障记进能力账。
+    //
+    // 判据落在 `verifier_health.agent_ran`(与 `verifier_ran` 同一个定义处),
+    // 这条门禁拦的是「消费者自己再数一遍 token」—— 那就是第二份拷贝,
+    // 而两份拷贝迟早分叉,分歧还会在无人看的时候发生。
+    const HEALTH = "verifier_health.py";
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+
+    // 定义处必须有这个函数,且它必须**区分三态**(None = 采集缺失)。
+    // ⚠️ `\(` 不能省:初版写的是 `/def agent_ran/`,而它是**子串匹配** ——
+    // 把定义改名成 `agent_ran_RENAMED`(消费者 import 当场就会 ImportError)
+    // 依然能匹配上,变异自证时这条**没有翻红**。一个静默失效的门禁。
+    expect(health).toMatch(/def agent_ran\(/);
+    expect(
+      /is None and .*is None|return None/.test(health),
+      "agent_ran 必须把「键不存在」判成 None —— 用 falsy 会把基线 fix-code-vulnerability 一起吞掉,把 0.100 变成 0.111",
+    ).toBe(true);
+
+    // 消费者:自己数 in/out token 的,必须 import 共享模块。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      const countsTokensItself = /n_input_tokens[\s\S]{0,200}n_output_tokens/.test(code);
+      if (!countsTokensItself) continue;
+      expect(
+        /from verifier_health import[^\n]*agent_ran|import verifier_health/.test(code),
+        `${f} 自己数 in/out token 判 agent 跑没跑,却没 import agent_ran —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
+  test("上游打断判据只有一处定义,且不许退化成只看 subtype", () => {
+    // 2026-08-30 实测的第三种形态:`build-cython-ext` 跑了 8 轮(共 40)后被 429
+    // 打空重试链。它 `agent_ran` 判 True(确实跑过),于是被当成一个真实 0 分 ——
+    // 而它压根没机会用完轮预算。两轮分布还**不对称**(基线 0/10、本轮 3/7),
+    // 不排除会系统性压低带故障的那一轮。
+    const HEALTH = "verifier_health.py";
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+    expect(health).toMatch(/def llm_fatal\(/);
+
+    // ⛔ 判据不许**只**看 subtype:`error_during_execution` 也包含 agent 自身崩溃
+    //(真实缺陷,必须计分)。已用 fixture 验过:一个 TypeError 崩溃样本在正确判据下
+    // 留在分母(1/1),改成只看 subtype 就被错误排除(0/1)。
+    const codeH = codeOnly(health);
+    const fatalFn = codeH.slice(codeH.indexOf("def llm_fatal("));
+    expect(
+      /sid_errors/.test(fatalFn),
+      "llm_fatal 必须读 sid_errors —— 只看 subtype 会把 agent 自身崩溃(真 bug)一起排除",
+    ).toBe(true);
+
+    // 消费者不许自己写这句错误文本的匹配。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      if (!/主模型请求失败/.test(code)) continue;
+      expect(
+        /from verifier_health import[^\n]*llm_fatal|import verifier_health/.test(code),
+        `${f} 自己匹配「主模型请求失败」却没 import llm_fatal —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
+  test("用 `command not found` 的脚本必须同时有**正向**判据(pytest 结论行)", () => {
+    // ## 这条断言的措辞被改过一次,改的理由比断言本身重要
+    //
+    // 初版断言的是「代码里**不许出现** `command not found`」。它把
+    // `analyze-prefix.py`(前一棒的脚本)判成了违规 —— 而那个脚本**是对的**:
+    // 它的排除决策由 `verifier_ran`(正向判据)把关,
+    // `command not found` 只用来在标签里说明**是哪一种坏法**:
+    //
+    //     elif broken_hit and not verifier_ran:   ← 决策看的是 verifier_ran
+    //         bucket = f"excluded:verifier-broken({broken_hit.group(0)})"
+    //
+    // **一个假红。** 而假红的代价不只是浪费时间:它会训练人「让门禁闭嘴」,
+    // 而闭嘴最省事的做法恰好是删掉那段记录教训的文字。
+    //
+    // 所以判据从「禁止这个词」改成「**用了它就必须同时有正向判据**」——
+    // 拦的是「只靠症状做判定」这个**形态**,不是某个字符串。
+    //
+    // 被拦住的真实坏法(2026-08-29 实测):`polyglot-c-py` 的 verifier 是在
+    // 下载 uv 的**中途被超时杀掉**的,日志停在 `downloading uv 0.7.13`,
+    // 那句 `command not found` 压根没来得及打印。只认症状的判据漏了它 ——
+    // 它只是**恰好**因为 `reward=None` 才被排除(运气,不是判据)。
+    for (const f of scripts) {
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      if (!/command not found/.test(code)) continue;
+      // 正向判据:要么自己有 pytest 结论行的正则,要么 import 共享模块。
+      const hasPositive =
+        /passed\|failed|failed\|passed|passed\|error|failed\|error/.test(code) ||
+        /from verifier_health import|import verifier_health/.test(code);
+      expect(
+        hasPositive,
+        `${f} 用 command not found 做判定却没有正向判据(pytest 结论行 / verifier_ran)`,
+      ).toBe(true);
+    }
   });
 });
 

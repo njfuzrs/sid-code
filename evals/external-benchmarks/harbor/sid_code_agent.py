@@ -64,6 +64,11 @@ OUTPUT_FILENAME = "sid-code.jsonl"
 #: 「这是哪个 commit 的 sid-code」,这个分数没有意义。
 BUILD_INFO_FILENAME = "sid-code-build.json"
 
+#: 权限审计日志(相对 SID_HOME_DIRNAME)。**它是权限档到底生效没有的唯一观测源**:
+#: 命令行上传了什么只是「我请求了什么」,而这份日志记的是 checker 真的判了什么。
+#: 两者必须分开记 —— §17.3 那次错正是「读配置以为自己知道实际行为」。
+PERMISSIONS_AUDIT_RELPATH = "logs/permissions-audit.log"
+
 #: 容器内 SID_CONFIG_DIR 指向的子目录名(在 environment_logs_dir 下)。
 #: 落在挂载目录里是为了把**完整轨迹**带回宿主 —— `AgentContext` 只有 5 个字段,
 #: 而 TTFT / 缓存命中 / retry 白烧 / compaction 全在 `session.traj` 里。
@@ -160,7 +165,9 @@ class SidCodeAgent(BaseInstalledAgent):
     #: ⚠️ **`--output-format` 刻意不做成旋钮** —— 它是这个 agent 的实现细节,
     #: 改成 `json` 后 `populate_context_post_run` 就解析不了(两条输出路径是分叉的实现)。
     #: 把它做成可调是给自己埋坑。
-    #: ⚠️ **`--dangerously-skip-permissions` 连旋钮都不给**:它会关掉我们想测的那层防线。
+    #: ⚠️ **权限档:默认 `--dangerously-skip-permissions`,且必须是布尔 flag。**
+    #: 这是 2026-08-29 从「同一份实测、两条链路得出相反结论」那次纠偏里改过来的,
+    #: 完整论证见方案文档 §17.3,判据见下方 `skip_permissions` 那条注释。
     CLI_FLAGS = [
         # 默认 40 与自建链路对齐(`../swe-bench/runner.ts`),便于两条链路的样本互相参照。
         CliFlag(
@@ -170,14 +177,64 @@ class SidCodeAgent(BaseInstalledAgent):
             default=40,
             env_fallback="SID_HARBOR_MAX_TURNS",
         ),
-        # acceptEdits **不是拍的**:自建链路实测在此模式下**仍有 113 次权限拒绝**,
-        # 说明它不等于全放开 —— 评测里需要观察这层防线的触发情况。
+        # ## ⛔ 权限档:默认全放开,**且只能用布尔 flag**
+        #
+        # ### 为什么默认不是 `acceptEdits`(这一条是纠正,不是新决定)
+        #
+        # 初版默认 `acceptEdits`,理由写的是「自建链路实测此模式下仍有 113 次权限拒绝,
+        # 说明它不等于全放开 —— 评测里需要观察这层防线的触发情况」。
+        # **那个理由把同一份实测读反了。** 自建链路(`../swe-bench/exec-swebench.sh:106-150`)
+        # 用这 113 次得出的结论是**「这档不可用,必须换 skip」** ——
+        # 因为那些拒绝落在**做题的正常动作**上(跑测试验证自己的修复被拦 23 次),
+        # 于是「40 轮预算用尽」读起来像能力不足,**真相是非能力原因混进了能力账**。
+        #
+        # Harbor 侧本机实测(2026-08-29,10 题全量,源:`logs/permissions-audit.log`)
+        # 复现了同一形态,而且更极端:**144 次拒绝 / 178 次放行**,
+        # 其中 **111 次(77%)** 是 `acceptEdits` 不放行普通 bash ——
+        # `nproc` / `which git` / `qemu-img info` / `apt-get install` 全被拒。
+        # 7 个 `error_max_turns` 样本的拒绝率中位数 56%,而唯一解出的那题最低(25%)。
+        #
+        # **代价必须点破**(与 swe-bench 侧同一句):skip 同时跳过 safetyCheck 与危险命令
+        # 检测,所以**这一轮评测测不到权限层** —— 它只是一个被记进 metadata 的必控变量,
+        # 不是一条通过了的验证。想专门观察防线,显式传 `--ak permission_mode=acceptEdits`
+        # (那时必须同时 `--ak skip_permissions=false`,否则 `__init__` 的互斥校验会拒绝启动)。
+        #
+        # ### 三个坑都是 swe-bench 实测过的,别重新踩
+        #
+        # 1. ⛔ `bypassPermissions` **不是合法模式名**(合法值见 `config/schema.ts` 的
+        #    `VALID_PERMISSION_MODES`),传它只得到一条 **warn 而非错误**,然后落到默认
+        #    ask → headless 无交互 → 直接拒绝,**比 acceptEdits 更差**(连改工作区内的文件
+        #    都不放行)。
+        # 2. ⛔ `always-allow` **不够**:`checker.ts` 的顺序是「Step 4 路径验证 → …
+        #    → Step 8 bypass/always-allow」,于是「写入路径在工作区外」绕不过。
+        #    本机 144 次里有 3 次正是往 `/tmp` 写复现脚本被拦 —— 那是做题的标准动作。
+        # 3. ⛔ **必须布尔 flag,`--permission-mode dangerously-skip-permissions` 不生效**:
+        #    `checker.ts:1023` 判的是 `config.skipPermissions`,而只有布尔 flag 会由
+        #    `cli.ts:555` 设它。反向:布尔 flag 会让 `config.ts:1557` 把 permissionMode
+        #    同步成同名字符串,**所以两者在状态栏/metadata 里看起来一样,但只有布尔 flag
+        #    那条真的放行** —— 这正是「字段在、值是废的」那一类,靠读配置核不出来。
+        CliFlag(
+            "skip_permissions",
+            cli="--dangerously-skip-permissions",
+            # ⚠️ `bool` 不是随手写的:Harbor 的 `build_cli_flags` 只对 `type == "bool"`
+            # 输出**裸 flag**(`installed/base.py:723-725`),其余一律输出 `--flag value`。
+            # 改成 `str` 会拼出 `--dangerously-skip-permissions True`,
+            # 而 sid-code 的 parseArgs 把它当布尔 flag + 一个多余位置参数 ——
+            # **不报错、也不生效**,于是又回到 144 次拒绝那个形态。上面的坑 3 是同一件事。
+            type="bool",
+            default=True,
+            env_fallback="SID_HARBOR_SKIP_PERMISSIONS",
+        ),
+        # 仅在**显式关掉 skip** 时才有意义(互斥校验在 `__init__`)。默认 None = 不传这个 flag:
+        # 留一个 `acceptEdits` 默认值会与 skip 同时出现在命令行上,而 sid-code 侧
+        # skip 优先(`config.ts:1557` 直接覆盖 permissionMode)——
+        # 那样这个旋钮就成了一个**看起来生效、实际被覆盖**的假开关。
         CliFlag(
             "permission_mode",
             cli="--permission-mode",
             type="enum",
-            choices=["default", "acceptEdits", "plan"],
-            default="acceptEdits",
+            choices=["default", "acceptEdits", "plan", "always-allow"],
+            default=None,
         ),
         # per-trial 成本上限。超限以 `subtype: "error_max_budget_usd"` **干净终止**,
         # 比事后看 exception_stats 早一步 —— 这是「-k × -n 的乘法把成本打飞」的直接对策。
@@ -191,6 +248,7 @@ class SidCodeAgent(BaseInstalledAgent):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self._assert_permission_flags_coherent()
         self._home: str = "/root"
         self._bin: str = ""
         self._host_binary: _HostBinary | None = None
@@ -199,6 +257,37 @@ class SidCodeAgent(BaseInstalledAgent):
         # 渠道别名:容器内 settings.json 的 `availableModels[].name` 与顶层 `model`。
         # 两者必须一致,否则 provider 回填落空(见 `_render_settings`)。
         self._model_alias = _env("SID_HARBOR_MODEL_ALIAS", "harbor-gateway")
+
+    def _assert_permission_flags_coherent(self) -> None:
+        """skip 与 permission_mode 同时给出时**拒绝启动**,不静默择一。
+
+        ## 为什么必须硬失败,而不是「skip 优先」了事
+
+        sid-code 侧 skip **确实**优先(`config.ts:1557` 直接把 permissionMode 覆盖成
+        `dangerously-skip-permissions`)。所以两个都传时,`--ak permission_mode=acceptEdits`
+        是一个**看起来生效、实际被覆盖**的假开关 —— 而 metadata 里
+        `sid_permission_mode_requested` 会如实记下 `acceptEdits`,
+        于是**跑完之后没有任何东西会报错**,只有一份写着 acceptEdits、
+        实际全放开的结果。那正是本仓「字段在、值是废的」那一类。
+
+        评测里这个错的代价是**整轮数据不可用且不自知**:权限档是能力账的必控变量
+        (§17.3 就是因为它混进来才让 0.100 vs 0.714 那个对照失效)。
+        所以这里选择**启动即失败** —— 在花钱起容器之前,而不是在读结果时。
+
+        ⚠️ 只在**两者都显式给出**时拒绝。`skip_permissions=False` +
+        `permission_mode=acceptEdits` 是合法组合(那正是"专门观察防线"那条路径),
+        `skip_permissions=True` + 不给 mode 是默认路径。
+        """
+        skip = self._resolved_flags.get("skip_permissions")
+        mode = self._resolved_flags.get("permission_mode")
+        if skip and mode is not None:
+            raise ValueError(
+                "权限档冲突:同时给了 --dangerously-skip-permissions 与 "
+                f"--permission-mode {mode}。sid-code 侧 skip 优先,后者会被静默覆盖 —— "
+                "而 metadata 会如实记下你请求的那个值,于是整轮结果读起来是 "
+                f"'{mode}' 而实际全放开。要观察防线请显式传 "
+                f"`--ak skip_permissions=false --ak permission_mode={mode}`。"
+            )
 
     # ───────────────────────────────────────────────────────────── 身份 / 版本
 
@@ -536,7 +625,30 @@ class SidCodeAgent(BaseInstalledAgent):
             "sid_commit": self._build_info.get("commit"),
             "sid_commit_source": self._build_info.get("commit_source"),
             "sid_binary_sha256": self._build_info.get("binary_sha256"),
+            # ── 权限档:请求值与观测值**分两个键** ────────────────────────────
+            # 这两个键回答的是不同问题,合成一个就丢掉了 §17.3 那个教训:
+            #   requested → 「我在命令行上要了什么」(可能没生效)
+            #   denials   → 「checker 实际判了多少次拒绝」(观测,来自审计日志)
+            # 权限档是能力账的**必控变量**:它混进来时 reward 差异会被读成能力差异,
+            # 而 0.100 vs 0.714 那个对照就是这么失效的。所以每个 trial 都要自带这两格,
+            # 让下游**不必信任跑评测那个人的记忆**就能判出这一轮是哪个档。
+            "sid_permission_mode_requested": (
+                "dangerously-skip-permissions"
+                if self._resolved_flags.get("skip_permissions")
+                else self._resolved_flags.get("permission_mode") or "default"
+            ),
         }
+        # 观测值:None 表示日志缺失(≠ 零拒绝),所以只在拿到时才写这几格。
+        decisions = self._count_permission_decisions()
+        if decisions is not None:
+            metadata["sid_permission_denials"] = decisions["denials"]
+            metadata["sid_permission_allows"] = decisions["allows"]
+            metadata["sid_permission_decisions_total"] = decisions["total"]
+            metadata["sid_permission_by_decision"] = decisions["by_decision"]
+        else:
+            # 显式标记「没采到」,与「零拒绝」区分开 —— 后者是换档成功的判据,
+            # 混在一起会让一次采集失败伪装成一次成功换档。
+            metadata["sid_permission_audit_missing"] = True
 
         if result is None:
             # ── 兜底源:轨迹的 session.traj(2026-08-29 接入) ──
@@ -652,6 +764,50 @@ class SidCodeAgent(BaseInstalledAgent):
             }
         )
         context.metadata = metadata
+
+    def _count_permission_decisions(self) -> dict[str, Any] | None:
+        """数 `permissions-audit.log` 里各 decision 的次数。**这是换档生效的观测判据。**
+
+        ## 为什么不能用「命令行上传了 --dangerously-skip-permissions」当判据
+
+        那只证明**我请求了**全放开。三个已实测的坑(见 CLI_FLAGS 那段注释)全都是
+        「请求了但没生效,且不报错」的形态:非法模式名只 warn、`always-allow` 绕不过
+        路径验证、非布尔 flag 静默失效。这三种情况下命令行**看起来完全正确**,
+        而容器里照样被拒 144 次。
+
+        所以判据必须是**观测值**:审计日志里 `decision == "deny"` 的条数。
+        换档成功的形态是它**趋近 0**;若跑完仍是几十,说明 flag 没真的生效 ——
+        这条零成本自证正是 §17.3 那次错误缺的东西(六棒无人读过这份日志)。
+
+        ⚠️ 返回 None(而不是 0)表示**日志不存在**。两者语义完全不同:
+        「没有拒绝」和「没采到」在数据上不可区分时,填 0 就是让后者伪装成前者 ——
+        与本文件成本兜底那处 `绝不填 0` 是同一条纪律。
+        """
+        audit = self.logs_dir / SID_HOME_DIRNAME / PERMISSIONS_AUDIT_RELPATH
+        if not audit.is_file():
+            return None
+        counts: dict[str, int] = {}
+        total = 0
+        # 逐行读、不整份 load:跑飞的会话这份日志可以很大。
+        with audit.open(errors="replace") as fh:
+            for line in fh:
+                event = _loads(line)
+                if event is None:
+                    continue
+                decision = event.get("decision")
+                if isinstance(decision, str) and decision:
+                    counts[decision] = counts.get(decision, 0) + 1
+                    total += 1
+        if total == 0:
+            return None
+        return {
+            "denials": counts.get("deny", 0),
+            "allows": counts.get("allow", 0),
+            "total": total,
+            # 全量分布:出现 deny/allow 之外的取值时不至于静默丢掉
+            # (闭集是我们**假设**的,不是核过的)。
+            "by_decision": counts,
+        }
 
     @staticmethod
     def _derive_is_error(result: dict[str, Any]) -> bool | None:
