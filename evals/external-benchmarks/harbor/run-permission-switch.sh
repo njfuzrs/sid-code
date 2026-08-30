@@ -49,8 +49,8 @@ for t in "$@"; do TASK_FILTER+=(-i "$t"); done
 
 export SID_HARBOR_GATEWAY_URL=http://192.168.5.2:4100   # colima host-gateway,⚠️ 不是 172.17.0.1
 # ⚠️ 必须指向当前 HEAD 编出来的包。缺口 B 的教训:TS 改了不重编 = 改了等于没改,且不报错。
-export SID_HARBOR_BINARY_ARM64=~/.local/share/sid-harbor-gateway/bins/sid-code-arm64-7f437eb84e7a
-export SID_HARBOR_BINARY_X64=~/.local/share/sid-harbor-gateway/bins/sid-code-x64-7f437eb84e7a
+export SID_HARBOR_BINARY_ARM64=~/.local/share/sid-harbor-gateway/bins/sid-code-arm64-30586ff003c9
+export SID_HARBOR_BINARY_X64=~/.local/share/sid-harbor-gateway/bins/sid-code-x64-30586ff003c9
 export SID_HARBOR_PROVIDER=anthropic
 export HARBOR_TELEMETRY=0
 export PYTHONPATH="$(pwd)"
@@ -126,6 +126,77 @@ PYSTATS
   echo "    ✅ 失败率 ${fail_pct}% ≤ 20%"
   return 0
 }
+
+# ── 闸 0:点名的二进制必须**含有本次要验的改动**(2026-08-30 第十二棒实测差点踩死)─────
+#
+# 形态:上面 `SID_HARBOR_BINARY_*` 是**写死的路径**,里面嵌着一个 commit12。
+# 修完代码若忘了重编 + 改这两行,评测跑的就是**旧字节** —— 而这件事
+# **不报任何错**:harbor 正常跑完、10 题都有分、build.json 里 commit 字段
+# 老老实实写着那个旧 commit(没人会去看)。于是判据全部"不成立",
+# 结论是「修复没生效」,而真相是「修复没进二进制」。
+#
+# ⚠️ 第十二棒撞到的正是这一形态:HEAD=30586ff(含 P1-1 入账修复),
+# 而这两行还指着 7f437eb(修复前一个 commit)。若照着跑那一次 $7,
+# 拿到的会是「三个数仍是 41/40/40」→ 误判成「②那条修复是错的」。
+#
+# 判据用**产物字节**里内联的 commit(与 `_write_build_info` 同一口径,
+# 走 `scripts/artifact-identity.ts`),**不是**路径里那串文件名 ——
+# 文件名是人写的,会撒谎;字节不会。判「是不是当前 HEAD 的祖先且 != HEAD」
+# 即为陈旧。⚠️ 只报警不拦:有意跑旧版做 A/B 是正当用法(本棒就做了),
+# 拦死会把一个正当用法变成必须绕过的门。
+preflight_binary_freshness() {
+  local repo head warned=0
+  repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo" ] || { echo "--- 闸 0:不在 git 仓库内,跳过二进制新鲜度检查"; return 0; }
+  head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$head" ] || return 0
+  command -v bun >/dev/null 2>&1 || { echo "--- 闸 0:没有 bun,跳过二进制新鲜度检查"; return 0; }
+  echo "--- 闸 0:二进制新鲜度(判据=产物字节内联 commit,非文件名)"
+  local var path c checked=0
+  for var in SID_HARBOR_BINARY_ARM64 SID_HARBOR_BINARY_X64; do
+    eval "path=\${$var:-}"
+    [ -n "$path" ] || continue
+    checked=$((checked + 1))
+    path="${path/#\~/$HOME}"
+    if [ ! -f "$path" ]; then
+      echo "    ⛔ $var 指向的文件不存在:$path"; warned=1; continue
+    fi
+    c=$(cd "$repo" && bun run scripts/artifact-identity.ts read "$path" 2>/dev/null \
+        | tr -d ' \n' | sed -n 's/.*"commit":"\([0-9a-f]\{40\}\)".*/\1/p')
+    if [ -z "$c" ]; then
+      echo "    ⚠️ $var 读不出内联 commit(可能是老产物)——无法判新鲜度:$(basename "$path")"
+      warned=1; continue
+    fi
+    if [ "$c" = "$head" ]; then
+      echo "    ✅ $var = HEAD(${c:0:12})"
+    elif git -C "$repo" merge-base --is-ancestor "$c" "$head" 2>/dev/null; then
+      echo "    ⛔ $var 是**陈旧产物**:${c:0:12} 落后 HEAD(${head:0:12}) $(git -C "$repo" rev-list --count "$c..$head" 2>/dev/null) 个提交"
+      echo "       本次改动若在这些提交里,评测跑的是旧字节,而**不会报任何错**。重编:"
+      echo "         bash scripts/build-branch-artifact.sh --target bun-linux-arm64 --no-tarball"
+      echo "         cp dist/branch-builds/*-${head:0:12}/sid-code <bins>/sid-code-arm64-${head:0:12}"
+      echo "         bash scripts/build-branch-artifact.sh --target bun-linux-x64-baseline --no-tarball"
+      echo "         cp dist/branch-builds/*-${head:0:12}/sid-code <bins>/sid-code-x64-${head:0:12}"
+      echo "       然后把本脚本顶部那两行 SID_HARBOR_BINARY_* 改成新路径。"
+      warned=1
+    else
+      echo "    ⚠️ $var 的 commit ${c:0:12} 不是 HEAD 的祖先(另一条分支/更新的产物)"
+      warned=1
+    fi
+  done
+  # ⚠️ **不能在 checked=0 时报绿**(本棒自证变异 ④ 揪出的、我自己写的 bug):
+  # 两个变量都没设时原文案打「两个架构的产物都与 HEAD 对齐」——
+  # 它一个文件都没读却报了绿,而这恰好是 §21.5-1 那条教训(假绿比不做更坏)。
+  # 未点名不是错(agent 会按 commit 自动发现),但必须说清"这道闸没生效",
+  # 而不是冒充"检查通过"。
+  if [ "$checked" = 0 ]; then
+    echo "    ⚠️ 未点名任何 SID_HARBOR_BINARY_*(本闸未生效)——二进制由 agent 按 commit 自动发现,新鲜度由那条路径自己保证"
+  elif [ "$warned" = 0 ]; then
+    echo "    ✅ 已点名的 $checked 个产物都与 HEAD 对齐"
+  fi
+  return 0   # 只报警不拦(见上方注释:跑旧版做 A/B 是正当用法)
+}
+
+preflight_binary_freshness
 
 if [ "${SID_HARBOR_SKIP_PREFLIGHT:-0}" = "1" ]; then
   echo "⚠️ 已显式跳过跑前闸(SID_HARBOR_SKIP_PREFLIGHT=1)——本轮数据可能混入上游故障样本。"
