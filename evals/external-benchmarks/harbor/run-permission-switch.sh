@@ -136,4 +136,80 @@ fi
 echo "=== 启动 $(date '+%F %T')  job=$JOB ${TASK_FILTER[*]:+(只跑 ${TASK_FILTER[*]})} ==="
 harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
   -a sid_code_agent:SidCodeAgent --job-name "$JOB"
-echo "=== 结束 $(date '+%F %T') rc=$? ==="
+RUN_RC=$?
+echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
+
+# ── 跑完自动嚼一遍轨迹(§20.10 第五优先,本轮补上)────────────────────────────
+#
+# 为什么要接进流程:digest 在第九棒就存在,而**九棒里零次被跑过** ——
+# 一个「跑完手工再跑一下」的步骤,等于没有这个步骤。第十棒第一次跑了它,
+# 当场推翻两处判读、挖出两个缺陷($0)。价值不在工具,在**它被真的执行**。
+#
+# ⚠️ 它是**只读旁路**:失败一律不改 $RUN_RC。评测结果不能因为分析步骤炸了而变色 ——
+# 那会把「分析脚本有 bug」伪装成「这轮评测失败」。
+#
+# ⚠️ 逐题落盘再读,**不在管道里边跑边抽字段**(§19.7 的告诫,第十棒验证过它是对的):
+# 边跑边 grep 时,输出被截断/顺序错乱都不会报错,而你以为自己读全了。
+digest_all() {
+  local run_dir="runs/$JOB" d name home out n_ok=0 n_skip=0
+  [ -d "$run_dir" ] || { echo "  ⚠️ 找不到 $run_dir,跳过 digest"; return 0; }
+  local dig_dir="$run_dir/_digests"
+  mkdir -p "$dig_dir" || return 0
+  echo "--- digest:逐题嚼轨迹 → $dig_dir/"
+  for d in "$run_dir"/*__*/; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d" | sed 's/__.*//')
+    home="$d/agent/sid-home"
+    out="$dig_dir/$name.txt"
+    # 零调用的题没有会话轨迹(实测 regex-log 就是),它 rc=1 是**预期**,
+    # 不是 digest 坏了 —— 所以这里区分「跳过」与「跑成」,别把两者混成一个数。
+    #
+    # ⚠️ 判据必须是「**有没有会话子目录**」,不是「sessions 目录在不在」。
+    # 初版写的是 `[ ! -d .../sessions ]` —— 实测 regex-log 的 `sessions/` 目录
+    # **建出来了但是空的**,于是这条跳不过去,digest 照跑并 rc=1,
+    # 一个**预期内的空轨迹**被报成了 `⚠️ digest rc≠0`(假红)。
+    if ! compgen -G "$home/trajectories/sessions/*/" >/dev/null 2>&1; then
+      echo "    - $name: NO_TRAJ(零调用,预期)"
+      n_skip=$((n_skip + 1))
+      continue
+    fi
+    if SID_CONFIG_DIR="$(pwd)/$home" bun "$SID_CODE_REPO/scripts/trace-digest.ts" \
+         >"$out" 2>"$out.stderr"; then
+      n_ok=$((n_ok + 1))
+      # 只把 L0 高危摘出来当一行提要,详情在落盘文件里。
+      # ⚠️ 不要据此直接下结论:实测 max_turns 题的 `tool_use_without_result`
+      # 曾是**假阳性**(§20.3 已修为 L0 低危),而当时它挂着 🔴 高危。
+      #
+      # ⚠️ 不能写 `$(grep -c ... || echo 0)`:`grep -c` 无匹配时
+      # **既打印 `0` 又以 1 退出**,于是 `|| echo 0` 再补一个 `0`,
+      # 变量变成两行 `0\n0`,输出里就出现「高危 0(换行)0 条」。
+      # 实测踩到(4/9 题都这样)。用 `|| true` 兜退出码,不要再补打印。
+      local hi
+      hi=$(grep -c '^  \[高\]' "$out" 2>/dev/null || true)
+      hi=${hi:-0}
+      echo "    ✓ $name: 高危 $hi 条 → $(basename "$out")"
+    else
+      echo "    ⚠️ $name: digest rc≠0(详见 $out.stderr)"
+    fi
+  done
+  echo "  digest 完成:跑成 $n_ok / 跳过 $n_skip"
+}
+
+# 仓库根:digest 脚本在 sid-code 仓里,而本脚本的 cwd 是 harbor 目录。
+# ⚠️ 用 git rev-parse 而不是写死相对层数 —— 目录挪动时后者会静默指向不存在的路径。
+SID_CODE_REPO="${SID_CODE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+if [ -z "$SID_CODE_REPO" ] || [ ! -f "$SID_CODE_REPO/scripts/trace-digest.ts" ]; then
+  echo "⚠️ 找不到 scripts/trace-digest.ts,跳过 digest(可用 SID_CODE_REPO=... 指定仓库根)"
+elif ! command -v bun >/dev/null 2>&1; then
+  echo "⚠️ 没有 bun,跳过 digest"
+else
+  digest_all || true
+fi
+
+# 跑完顺手报一遍逐题进度(含「自报成功却 0 分」那格)。同样是只读旁路。
+if [ -f progress-permission-switch.py ]; then
+  echo "--- 逐题进度(判据见 verifier_health.py)"
+  python3 progress-permission-switch.py "runs/$JOB" 2>&1 | sed 's/^/    /' || true
+fi
+
+exit $RUN_RC

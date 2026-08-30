@@ -172,6 +172,66 @@ describe("buildDigest 异常检测", () => {
     expect(d.toolSequence[0].orphan).toBe(true);
   });
 
+  // ── §20.3（permswitch-r4 实测）：撞 maxTurns 时的末轮孤儿是结构性伴生产物 ──
+  // 三条测试是一组：降级 / 位置证伪 / 退出状态证伪。任一条单独存在都不足以证明判据接对了。
+  it("max_turns + 孤儿全在尾部 → 降为 L0 low 且**不发**崩溃假设", () => {
+    // 形态：末轮并行下发 3 个 tool_use，全部执行过，结果因撞上限被丢弃。
+    const steps: unknown[] = [
+      { message_type: "action", tool_name: "read", tool_input: { file_path: "/a.ts" } },
+      { message_type: "observation", content: "ok" },
+    ];
+    for (let i = 0; i < 3; i++) {
+      steps.push({ message_type: "action", tool_name: "bash", tool_input: { command: `c${i}` } });
+      steps.push({ message_type: "observation", content: "[no result]", _orphan: true });
+    }
+    writeSession("mturn001", { trajectory: steps, metadata: { exit_status: "max_turns" } });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+
+    const fact = d.anomalies.find((a) => a.kind === "tool_use_without_result");
+    expect(fact?.layer).toBe("L0");
+    expect(fact?.severity).toBe("low"); // 原先无条件 high
+    expect(fact?.detail).toContain("maxTurns");
+    // 计数是事实，降级只改判读——不许把 3 这个数字弄丢。
+    expect(fact?.detail).toContain("3");
+    expect(fact?.provenance?.[0]?.rawValue).toContain("trailingOnly=true");
+    // ⚠️ 关键：崩溃假设必须**整条消失**，而不是降一级继续报。
+    expect(d.anomalies.some((a) => a.kind === "hypothesis_crash_or_violation")).toBe(false);
+  });
+
+  it("max_turns 但孤儿在轨迹中间 → 仍是 high + 崩溃假设（位置证伪）", () => {
+    // 中途崩溃与"撞上限丢结果"在 orphanCount 上完全同形，只有位置能区分。
+    writeSession("mturn002", {
+      trajectory: [
+        { message_type: "action", tool_name: "bash", tool_input: { command: "x" } },
+        { message_type: "observation", content: "[no result]", _orphan: true },
+        // 孤儿之后又有正常 observation → 不是尾部连续段
+        { message_type: "action", tool_name: "read", tool_input: { file_path: "/b.ts" } },
+        { message_type: "observation", content: "ok" },
+      ],
+      metadata: { exit_status: "max_turns" },
+    });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const fact = d.anomalies.find((a) => a.kind === "tool_use_without_result");
+    expect(fact?.severity).toBe("high");
+    expect(fact?.provenance?.[0]?.rawValue).toContain("trailingOnly=false");
+    expect(d.anomalies.some((a) => a.kind === "hypothesis_crash_or_violation")).toBe(true);
+  });
+
+  it("end_turn + 尾部孤儿 → 仍是 high + 崩溃假设（退出状态证伪）", () => {
+    // 实测 6 道 end_turn 题孤儿数全为 0，所以这里出现孤儿本身就是异常信号，不能降级。
+    writeSession("mturn003", {
+      trajectory: [
+        { message_type: "action", tool_name: "bash", tool_input: { command: "x" } },
+        { message_type: "observation", content: "[no result]", _orphan: true },
+      ],
+      metadata: { exit_status: "end_turn" },
+    });
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const fact = d.anomalies.find((a) => a.kind === "tool_use_without_result");
+    expect(fact?.severity).toBe("high");
+    expect(d.anomalies.some((a) => a.kind === "hypothesis_crash_or_violation")).toBe(true);
+  });
+
   it("工具失败 → 标记 isError 并产出 L0 事实", () => {
     writeSession("toolerr1", {
       trajectory: [

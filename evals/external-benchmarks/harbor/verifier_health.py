@@ -117,6 +117,50 @@ def agent_ran(result: dict) -> bool | None:
     return not ((tin or 0) == 0 and (tout or 0) == 0)
 
 
+def self_reported_success(result: dict) -> bool:
+    """True = agent **自报做完了,而 verifier 判 0 分**(「以为自己做完了」那一类)。
+
+    ## ⚠️ 这一条**不是排除规则**,方向恰好相反
+
+    它是**真实的能力失败,必须计分** —— 而且是最该被扣分的那一类。
+    §13.2 的字面写法(`reward=0 且 not-error` → 不进分母)会把它排除掉,
+    那等于给自己白送一分,且送的恰好是最该扣的地方(实测:照字面做复算出 0.111,
+    真实基线 0.100,差的那 0.011 就是 `configure-git-webserver` 这一分)。
+
+    所以这个函数**只负责让它在结果表里自己站出来**,不参与 `excluded()`。
+    不报的话它会一直伪装成「一个普通的 0 分」,只能靠人逐题读 verifier stdout ——
+    实测已三棒没人做这件事。
+
+    ## 判据(窄且机械)
+
+    `sid_subtype == "success"` 且 `reward == 0.0`。两个源分属不同主语:
+    subtype 是 **agent 自述**「我做完了」,reward 是 **verifier 观测**「没通过」——
+    正是这两者的**冲突**构成信号。单看任何一个都得不到它。
+
+    实测两例(permswitch-r4,2/9),都是「差最后一步」而非方向错:
+      - `configure-git-webserver`:success / 33 轮,verifier `HTTP 404`(没真配好服务器);
+      - `polyglot-c-py`:success / 9 轮「文件已就位」,verifier
+        `found: ['main.py.c', 'cmain']`(自己编译的产物没删)。
+
+    ## 三处取数口径都踩过坑,逐字照抄下面这几行,别"顺手简化"
+
+    - `metadata` 在 **`agent_result` 下**,不是顶层 `result["metadata"]`;
+    - reward 在 **`rewards`(复数)** 下:`verifier_result.rewards.reward`;
+    - 字段名是 `sid_subtype`,**不是** `sid_result_subtype`。
+
+    ⚠️ `reward` 必须严格判 `== 0.0` 而不是 falsy:`None` 表示**没判分**
+    (那是 `verifier_ran` 管的事),把 None 也算进来会让「verifier 坏了」
+    伪装成「agent 自报喜」—— 两者的处置完全相反。
+    """
+    md = ((result.get("agent_result") or {}).get("metadata")) or {}
+    if md.get("sid_subtype") != "success":
+        return False
+    rewards = (result.get("verifier_result") or {}).get("rewards") or {}
+    reward = rewards.get("reward")
+    # 严格 0.0,不接受 None(未判分)
+    return isinstance(reward, (int, float)) and float(reward) == 0.0
+
+
 #: agent 自己在 `metadata.sid_errors` 里落的致命错前缀。**只盯这一句的稳定部分**:
 #: 后半句「可重新发送消息重试,或用 /model 切换模型」是给人看的提示,会改。
 LLM_FATAL_MARK = "主模型请求失败"

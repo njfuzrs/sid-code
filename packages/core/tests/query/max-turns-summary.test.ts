@@ -65,9 +65,13 @@ function summaryResp(): AccumulatedResponse {
 function setup({
   maxTurns,
   summary = summaryResp() as AccumulatedResponse | null,
+  hookSystem,
+  onRecordError,
 }: {
   maxTurns: number;
   summary?: AccumulatedResponse | null;
+  hookSystem?: unknown;
+  onRecordError?: (input: any) => void;
 }) {
   const ctxMgr = new ContextManager({ maxTokens: 200000 });
   ctxMgr.setSystemPrompt("test");
@@ -92,18 +96,47 @@ function setup({
     handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
+    ...(onRecordError ? { recordError: onRecordError } : {}),
   };
 
+  const sessionState = new SessionState("test-max-turns-summary");
   const loopConfig: QueryLoopConfig = {
     config: makeConfig({ maxTurns }),
     ctxMgr,
     toolRegistry: new ToolRegistry(),
-    sessionState: new SessionState("test-max-turns-summary"),
+    sessionState,
     fallback: new ModelFallback(),
     deps,
+    ...(hookSystem ? { hookSystem: hookSystem as QueryLoopConfig["hookSystem"] } : {}),
   };
 
-  return { loopConfig, ctxMgr };
+  return { loopConfig, ctxMgr, sessionState };
+}
+
+/**
+ * 只实现 loop.ts 会调到的两个发射点，其余成员按需补空实现。
+ * 返回值形状对齐 HookResult（loop 只读 `finalOutput?.isBlockingDecision()` 等可选方法）。
+ */
+function makeRecordingHookSystem() {
+  const before: any[] = [];
+  const after: any[] = [];
+  const system = new Proxy(
+    {
+      fireBeforeModelEvent: async (req: any, opts: any) => {
+        before.push({ req, opts });
+        return {};
+      },
+      fireAfterModelEvent: async (req: any, resp: any) => {
+        after.push({ req, resp });
+        return {};
+      },
+    } as Record<string, unknown>,
+    {
+      // 其余 fire*/get* 一律降级为无副作用空实现 —— 本测试只关心上面两个。
+      get: (target, prop: string) => (prop in target ? target[prop] : async () => ({}) as unknown),
+    },
+  );
+  return { system, before, after };
 }
 
 async function drainLoop(loopConfig: QueryLoopConfig) {
@@ -159,5 +192,60 @@ describe("P1-1：主循环达到 maxTurns 时追加强制总结轮", () => {
     expect(findSummaryEvent(events)).toBeUndefined();
     expect(kinds).toContain("max_turns");
     expect(kinds).toContain("done");
+  });
+
+  // ── §20.4（permswitch-r4 实测）：这一轮此前整轮不进任何仪器 ──
+  // 缺陷形态：P1-1 在 while 循环之外，不经过循环内的 BeforeModel/AfterModel 发射点，
+  // 于是 token / 成本 / `API N 次` **三处同时漏**同一轮（实测 HttpConnected=41 而
+  // BeforeModel=40，且 harbor 侧读数与 40 条 raw 的合计逐字节相等）。
+  //
+  // ⚠️ 断言刻意分成两条：「hook 发了」与「token 进账了」是**两件事**。
+  // 只验前者就是「改了等于没改」—— 交接文档点名的坑。
+  describe("§20.4：强制总结轮必须入账", () => {
+    test("补发 BeforeModel/AfterModel，且 index 自增而非复用 maxTurns", async () => {
+      const { system, before, after } = makeRecordingHookSystem();
+      const { loopConfig } = setup({ maxTurns: 4, hookSystem: system });
+      await drainLoop(loopConfig);
+
+      // 4 个常规轮 + 1 个总结轮 = 5
+      expect(before.length).toBe(5);
+      expect(after.length).toBe(5);
+
+      // ⚠️ 关键：turn_index 必须是 maxTurns + 1。复用 maxTurns 正是
+      // 「一个 index 出现两次 first_content」的成因，会让按 index 聚合的 TTFT
+      // 把两次不同调用叠在一格里 —— 而总结轮那次恰好落在 P95/P99 的尾部。
+      expect(before[4].opts?.stream_snapshot_ref?.turn_index).toBe(5);
+      expect(before[3].opts?.stream_snapshot_ref?.turn_index).toBe(4);
+
+      // 本轮真的没下发工具，传了 tools 就是让轨迹撒谎。
+      expect(before[4].req.tools).toBeUndefined();
+    });
+
+    test("总结轮的 usage 真的进了账（不只是 hook 发了）", async () => {
+      const { loopConfig, sessionState } = setup({ maxTurns: 4 });
+      await drainLoop(loopConfig);
+
+      // 4 个常规轮各 out=20 → 80；总结轮 out=50。判据是**等式**而非 ">0"：
+      // 后者在漏计时同样成立（80 > 0），测不出这个缺陷。
+      expect(sessionState.getTotalUsage().outputTokens).toBe(4 * 20 + 50);
+      // input 同理：4 * 100 + 200（flow 累计口径）
+      expect(sessionState.getTotalUsage().inputTokens).toBe(4 * 100 + 200);
+    });
+
+    test("总结轮失败落 errors.jsonl（此前只有一行 warn）", async () => {
+      const recorded: any[] = [];
+      const { loopConfig } = setup({
+        maxTurns: 4,
+        summary: null,
+        onRecordError: (input) => recorded.push(input),
+      });
+      await drainLoop(loopConfig);
+
+      const summaryErr = recorded.find((e) => e.context?.forcedSummaryRound === true);
+      expect(summaryErr).toBeDefined();
+      // index 与上面 stream_snapshot_ref 同口径，便于与轨迹对账
+      expect(summaryErr.index).toBe(5);
+      expect(summaryErr.error).toContain("模拟总结轮调用失败");
+    });
   });
 });

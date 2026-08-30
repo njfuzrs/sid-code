@@ -1210,6 +1210,10 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const thinkingHighlights: string[] = [];
   let orphanCount = 0;
   let toolErrorCount = 0;
+  // §20.3：孤儿是否**只**出现在轨迹尾部。判读需要它 —— 撞 maxTurns 时末轮 tool_use
+  // 全部执行过、只是结果没机会回灌（尾部连续段）；真正的中途崩溃/协议违规则会在中间留孤儿。
+  // 两者在 orphanCount 上长得一模一样，只有位置能区分，所以这个标记不能省。
+  let sawObservationAfterOrphan = false;
 
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
@@ -1225,6 +1229,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     }
     if (s.message_type === "observation") {
       const last = toolSequence[toolSequence.length - 1];
+      // 先判「孤儿之后又出现了正常 observation」再累加 —— 顺序反了会把当前这条
+      // 孤儿自己算成"孤儿的后继"，于是 trailingOnly 恒为 false，判据静默失效。
+      if (orphanCount > 0 && !s._orphan) sawObservationAfterOrphan = true;
       if (s._orphan) {
         orphanCount++;
         if (last) last.orphan = true;
@@ -1249,35 +1256,63 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   if (orphanCount > 0) {
+    // §20.3（2026-08-30 实测）：撞 maxTurns 时末轮孤儿是**结构性伴生产物**，不是协议缺陷。
+    //
+    // 机理：末次响应并行下发 N 个 tool_use → 它们**全部执行了**（PreToolUse/PostToolUse 齐全）
+    // → 但 `while (turnCount < maxTurns)`（loop.ts:751）不再进下一轮，结果没机会回灌进 history。
+    // 实测判据（permswitch-r4，9 题）：孤儿与退出状态**完全相关** —— 3 道 max_turns 题
+    // 各 11/1/1 个孤儿且全部落在尾部连续段，6 道 end_turn 题**一个都没有**。
+    //
+    // 为什么必须区分：原先无条件 high + `hypothesis_crash_or_violation`，让三道
+    // 「只是撞了上限」的题各挂一条 🔴 高危 + 崩溃假设，把排查引向一个不存在的协议缺陷
+    //（本仓反复记的「归因与真实信号脱节」）。
+    //
+    // ⚠️ `trailingOnly` 不能省：真正的中途崩溃会在轨迹**中间**留孤儿，它在 orphanCount 上
+    // 与本形态长得一模一样，只有位置能区分。所以两个条件必须同时成立才降级。
+    const trailingOnlyOrphans = !sawObservationAfterOrphan;
+    const orphansExplainedByMaxTurns = exitStatus === "max_turns" && trailingOnlyOrphans;
+
     // L0:tool_use 无对应 tool_result 是可数的客观事实。
+    // ⚠️ 计数照旧保留（它是事实），降级只改**判读**：严重度 + 措辞。
     anomalies.push({
       layer: "L0",
-      severity: "high",
+      severity: orphansExplainedByMaxTurns ? "low" : "high",
       kind: "tool_use_without_result",
-      detail: `${orphanCount} 个 tool_use 在轨迹中无对应 tool_result`,
+      detail: orphansExplainedByMaxTurns
+        ? `末轮 ${orphanCount} 个 tool_use 的结果因撞上 maxTurns 被丢弃（已执行，非协议违规）`
+        : `${orphanCount} 个 tool_use 在轨迹中无对应 tool_result`,
       provenance: [
         {
           sourceFile: join(ref.dir, "session.traj"),
           lineRef: "trajectory[].observation 缺失",
-          rawValue: `orphanCount=${orphanCount}`,
+          rawValue: `orphanCount=${orphanCount} exit_status=${exitStatus} trailingOnly=${trailingOnlyOrphans}`,
           mtime: fileMtimeIso(ref.trajPath),
         },
       ],
-      pointer: `protocol-violations/ 目录 + messages.json`,
+      pointer: orphansExplainedByMaxTurns
+        ? `events.jsonl 的 PreToolUse/PostToolUse（核它们确实执行过）`
+        : `protocol-violations/ 目录 + messages.json`,
     });
     // L1:由它推断"中途崩溃/协议违规",配证伪条件。
     // 这正是 fdb47f30 缺的那条:末个 tool_use 在等响应时会话停住,自然没有 tool_result——
     // 这是"卡住"的症状,不是"崩溃"的病因。证伪条件强制模型去查进程是否还活着。
-    anomalies.push({
-      layer: "L1",
-      severity: "medium",
-      kind: "hypothesis_crash_or_violation",
-      detail: `假设:tool_use 缺 result 是会话中途崩溃或协议违规所致。`,
-      falsifier:
-        `若产生该 tool_use 的进程仍存活(ps 查 PID)、或它是末次调用且其后正在等模型响应,` +
-        `则它只是"尚未返回",不能据此判定崩溃。需先排除"进程存活/正在等待"再采信。`,
-      pointer: `protocol-violations/ + messages.json + 用 ps 查会话进程是否存活`,
-    });
+    //
+    // ⚠️ §20.3：`orphansExplainedByMaxTurns` 成立时**整条假设不发**，而不是降一级严重度。
+    // 那条证伪条件（"它是末次调用且其后正在等模型响应"）在这里**已经被数据满足了** ——
+    // 既然证伪条件成立，假设就该被推翻，而不是带着更低的严重度继续报。
+    // 只降级会让同一个错结论换个层级继续误导排查（这是交接文档点名的坑）。
+    if (!orphansExplainedByMaxTurns) {
+      anomalies.push({
+        layer: "L1",
+        severity: "medium",
+        kind: "hypothesis_crash_or_violation",
+        detail: `假设:tool_use 缺 result 是会话中途崩溃或协议违规所致。`,
+        falsifier:
+          `若产生该 tool_use 的进程仍存活(ps 查 PID)、或它是末次调用且其后正在等模型响应,` +
+          `则它只是"尚未返回",不能据此判定崩溃。需先排除"进程存活/正在等待"再采信。`,
+        pointer: `protocol-violations/ + messages.json + 用 ps 查会话进程是否存活`,
+      });
+    }
   }
   if (toolErrorCount > 0) {
     anomalies.push({

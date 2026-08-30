@@ -38,6 +38,7 @@ import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { convertToSDKMessage } from "@sid-code/core/sdk/message-converter.ts";
+import { SDKResultSuccessSchema } from "@sid-code/core/sdk/schemas.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 
@@ -203,5 +204,103 @@ describe("缺陷 1：轮数预算被超时偷走时必须如实记账", () => {
     // 收尾文案要说得出「超时」，否则这条样本在轨迹里与「模型没话说」同形
     const sys = events.filter((e) => e.kind === "system").map((e) => e.text ?? "");
     expect(sys.join("\n")).toMatch(/超时/);
+  });
+});
+
+// ── §20.5（第十一棒，2026-08-30）：success 路径此前压根没有这个键 ──
+//
+// 上面那组测试只覆盖 `error_max_turns`。实测（permswitch-r4）发现
+// `case "done":`（subtype=success）**没有** `num_turns_without_model_interaction` 这个键，
+// 于是「正常收尾（end_turn）+ 预算被偷」这个组合在 result.json 里完全不可见。
+//
+// ⚠️ 它**不是**用来把 success 移出评测分母的：实测唯一带 watchdog 的 success 样本
+// 剩 31 轮预算未用，那是一次真实的能力失败。这个字段只让「被偷了几格」可见。
+describe("§20.5：success 结果也要带得出被偷的格数", () => {
+  test("done 事件把计数透出（此前只有 max_turns 路径带）", async () => {
+    // 前两次调用被"watchdog"杀掉，第 3 次正常收尾 —— 即 end_turn + 预算被偷的组合。
+    const { loopConfig } = setup({ maxTurns: 10, timeoutTurns: [0, 1] });
+    // 让第 3 次返回 end_turn（不再 tool_use），走 success 收尾而非撞上限。
+    const deps = loopConfig.deps as any;
+    let call = 0;
+    deps.processStream = async () => {
+      const n = call++;
+      if (n < 2) throw new Error("流式超时：stream timeout (simulated watchdog kill)");
+      return {
+        role: "assistant",
+        content: [{ type: "text", text: "做完了" }],
+        stopReason: "end_turn",
+        usage: { inputTokens: 100, outputTokens: 20 },
+      };
+    };
+
+    const events = await drain(loopConfig);
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    // 没撞上限 → 确实走的是 success 那条路径
+    expect(events.some((e) => e.kind === "max_turns")).toBe(false);
+    // ⚠️ 判据是**等式**而非 `toBeDefined()`：后者在恒填 0 时同样成立，测不出这个缺陷。
+    expect(done.turnsConsumedWithoutAssistant).toBe(2);
+  });
+
+  test("SDK 的 success 结果带得出这个数，且缺字段时降级为 0 而非 undefined", async () => {
+    const ctx = {
+      sessionId: "s1",
+      totalUsage: { inputTokens: 0, outputTokens: 0 },
+      startTime: 0,
+      turnCount: 3,
+      totalCostUsd: 0,
+      now: () => 1000,
+      uuid: () => "u1",
+    };
+
+    const withStolen = convertToSDKMessage(
+      { kind: "done", turns: 3, turnsConsumedWithoutAssistant: 2 },
+      ctx,
+    ) as any;
+    expect(withStolen.subtype).toBe("success");
+    expect(withStolen.num_turns_without_model_interaction).toBe(2);
+
+    // ⚠️ 老 loop 不带这个字段时必须落 0（结构性存在），否则消费侧无法区分
+    // 「没被偷」与「这版还没这个字段」—— 那正是 error_during_execution 那格注释里
+    // 点破的坑，本路径当时漏了。
+    const withoutField = convertToSDKMessage({ kind: "done", turns: 3 } as any, ctx) as any;
+    expect(withoutField.num_turns_without_model_interaction).toBe(0);
+  });
+
+  test("success schema 接受这个字段（不加进 schema 就会被静默剥掉）", () => {
+    // 这条钉的是"死接线"的一种形态：字段发了、类型也过了，但 schema 不认它 →
+    // 解析后消失，而全链路零报错。
+    const parsed = SDKResultSuccessSchema().parse({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 3,
+      result: "",
+      stop_reason: "end_turn",
+      num_turns_without_model_interaction: 2,
+      total_cost_usd: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      session_id: "s1",
+    });
+    expect(parsed.num_turns_without_model_interaction).toBe(2);
+
+    // 老数据（无该键）解析成 0，而不是整条解析失败 —— 否则这个"可观测性改动"
+    // 会变成"旧轨迹读不进来"的 breaking change。
+    const legacy = SDKResultSuccessSchema().parse({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 3,
+      result: "",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      session_id: "s1",
+    });
+    expect(legacy.num_turns_without_model_interaction).toBe(0);
   });
 });

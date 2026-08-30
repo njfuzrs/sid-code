@@ -1033,6 +1033,127 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// L1c:判据的**行为**层。`verifier_health.py` 只用 stdlib(glob/os/re),
+// 可以直接 import 跑真实输入 —— 所以它属于 L1(CI 上真的在跑),不需要 harbor。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.if(HAS_PYTHON3)("L1c 判据的行为(直接喂样本,不只查正则)", () => {
+  const HARBOR_DIR = join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor");
+
+  /**
+   * ## 这一层为什么必须存在(2026-08-30 亲自踩到)
+   *
+   * 上面 L1b 那几条查的是**源码形态**(有没有这个函数、有没有 import 共享模块)。
+   * 它们拦不住**判据本身算错**。
+   *
+   * 实测:我把 `self_reported_success` 里严格的 `float(reward) == 0.0` 改成
+   * `return not reward`(falsy),**拿真实 r4 数据跑,输出一模一样** ——
+   * 因为 r4 里恰好没有「subtype=success 且 reward=None」这种样本。
+   * 于是那次变异自证**没有翻红**,而缺陷是真的:falsy 会把 `reward=None`
+   *(= verifier 压根没判分)也算成「自报成功却 0 分」,
+   * 而这两者的处置完全相反 —— 一个要修 verifier,一个是真实能力失败要计分。
+   *
+   * **教训**:真实数据只能证明判据在**它覆盖到的那些形态**上对。
+   * 缺失的形态要靠合成样本补,否则变异自证会假绿。
+   */
+  const runHealth = (snippet: string) => {
+    const r = Bun.spawnSync({
+      cmd: ["python3", "-c", snippet],
+      cwd: HARBOR_DIR,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return { code: r.exitCode ?? 1, out: r.stdout.toString().trim(), err: r.stderr.toString() };
+  };
+
+  /** 造一个 Harbor result.json 的最小形状。三处取数口径都容易写错,见函数 docstring。 */
+  const mkResult = (subtype: unknown, reward: unknown) =>
+    JSON.stringify({
+      agent_result: { metadata: { sid_subtype: subtype } },
+      verifier_result: { rewards: { reward } },
+    });
+
+  const CASES: Array<[string, unknown, unknown, boolean]> = [
+    // 命中:agent 自述做完了,verifier 判 0 —— 两个主语冲突才构成信号。
+    ["自报成功 + 判 0 分", "success", 0.0, true],
+    ["自报成功 + 判 0(整数 0)", "success", 0, true],
+    // ⚠️ 这条是 falsy 变异唯一能被抓住的地方,r4 真实数据里没有这种样本。
+    ["自报成功 + reward=None(verifier 未判分)", "success", null, false],
+    // 解出来了,不是失败。
+    ["自报成功 + 判 1 分", "success", 1.0, false],
+    // agent 自己就报错了,不算"自报成功"。
+    ["error_max_turns + 判 0 分", "error_max_turns", 0.0, false],
+    ["error_during_execution + 判 0 分", "error_during_execution", 0.0, false],
+    // subtype 缺失 → 不可判,不许当成 success。
+    ["subtype 缺失 + 判 0 分", null, 0.0, false],
+  ];
+
+  test("self_reported_success 在 7 种形态上判对(含真实数据缺失的那两种)", () => {
+    const payload = JSON.stringify(CASES.map(([, sub, rew]) => JSON.parse(mkResult(sub, rew))));
+    const snippet = [
+      "import json,sys",
+      "from verifier_health import self_reported_success as f",
+      `print(json.dumps([f(r) for r in json.loads(${JSON.stringify(payload)})]))`,
+    ].join("\n");
+    const r = runHealth(snippet);
+    expect(r.code, `python 失败:\n${r.err}`).toBe(0);
+    const got = JSON.parse(r.out) as boolean[];
+    for (let i = 0; i < CASES.length; i++) {
+      const [name, , , want] = CASES[i];
+      expect(got[i], `${name}:期望 ${want},实得 ${got[i]}`).toBe(want);
+    }
+  });
+
+  test("取数口径:metadata 在 agent_result 下、reward 在 rewards(复数)下", () => {
+    // 这三处**每一处都踩过**(交接文档逐条点名)。把 metadata 放到顶层、
+    // 或把 reward 放到 verifier_result 下(少一层 rewards),判据必须**判不出来**
+    // —— 而不是碰巧仍然命中。碰巧命中意味着它在读别的东西。
+    const wrongShapes = [
+      // metadata 挂顶层(应在 agent_result 下)
+      { metadata: { sid_subtype: "success" }, verifier_result: { rewards: { reward: 0.0 } } },
+      // reward 少一层 rewards
+      { agent_result: { metadata: { sid_subtype: "success" } }, verifier_result: { reward: 0.0 } },
+      // 字段名写成 sid_result_subtype
+      {
+        agent_result: { metadata: { sid_result_subtype: "success" } },
+        verifier_result: { rewards: { reward: 0.0 } },
+      },
+    ];
+    const snippet = [
+      "import json,sys",
+      "from verifier_health import self_reported_success as f",
+      `print(json.dumps([f(r) for r in json.loads(${JSON.stringify(JSON.stringify(wrongShapes))})]))`,
+    ].join("\n");
+    const r = runHealth(snippet);
+    expect(r.code, `python 失败:\n${r.err}`).toBe(0);
+    expect(JSON.parse(r.out)).toEqual([false, false, false]);
+  });
+
+  test("它**不在**排除规则里 —— 排除掉它等于白送最该扣的那一分", () => {
+    // ⛔ 这条钉的是设计决策,不是实现细节。§13.2 的字面写法会把
+    // `configure-git-webserver` 排除掉(它 verifier 跑得好好的、判了 0),
+    // 而那正是「以为自己做完了」这类最该计分的失败。
+    // 实测:照字面排除后复算出 0.111,真实基线是 0.100,差的就是这一分。
+    const analyze = readFileSync(join(HARBOR_DIR, "analyze-permission-switch.py"), "utf-8");
+    const codeOnly = analyze
+      .replace(/"""[\s\S]*?"""/g, "")
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+    // 判据必须被消费(否则它是死代码,等于没做)
+    expect(codeOnly).toMatch(/self_reported_success/);
+    // 但**不许**出现在 excluded() 的函数体里
+    const i = codeOnly.indexOf("def excluded(");
+    expect(i).toBeGreaterThan(-1);
+    const body = codeOnly.slice(i, codeOnly.indexOf("\nprint(", i));
+    expect(
+      /self_report/.test(body),
+      "excluded() 里出现了 self_reported —— 它是真实能力失败,必须计分,不能排除",
+    ).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // L2:导入层。装了 harbor 才跑;CI 上 skip,这是已知且被说破的边界(见 README)。
 // ─────────────────────────────────────────────────────────────────────────────
 

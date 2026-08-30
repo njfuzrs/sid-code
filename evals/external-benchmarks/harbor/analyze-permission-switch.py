@@ -48,7 +48,12 @@ import json, glob, sys, os, collections, statistics
 # 曾经进度脚本与本脚本各写一份(一份还多要求 uv 装上),于是同一题可能
 # 一个报 ✅ 一个报 ⛔ —— 两处判据不一致,而分歧在无人看的时候发生。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import agent_ran, llm_fatal, verifier_ran  # noqa: E402
+from verifier_health import (  # noqa: E402
+    agent_ran,
+    llm_fatal,
+    self_reported_success,
+    verifier_ran,
+)
 
 runs_arg = sys.argv[1:]
 if not runs_arg:
@@ -113,6 +118,9 @@ for task in sorted(by_task):
         agent_ran=agent_ran(d),
         # 规则 ⑤:跑起来了又被上游打断(与 agent_ran 的「压根没跑」是两种形态)。
         llm_fatal=llm_fatal(d, tdir),
+        # ⚠️ 「自报做完了但判 0 分」——**不进 `excluded()`**,它是真实能力失败,必须计分。
+        # 这里只把它标出来,否则它会一直伪装成「一个普通的 0 分」(实测已三棒没人发现)。
+        self_reported=self_reported_success(d),
         src_job=src_job,
     ))
 
@@ -193,10 +201,13 @@ for r in rows:
     flag = "  ⚠️verifier未判分" if r["verifier_broken"] else ""
     why = excluded(r)
     excl = f"  ⛔不进分母({why})" if why and not r["verifier_broken"] else ""
+    # ⚠️ 刻意与 excl 并列而非互斥:它**计分**,只是要让人看见「agent 以为自己做完了」。
+    # 措辞不用 ⛔(那是"不进分母"的符号),避免被读成排除。
+    selfrep = "  🙈自报成功却0分" if r.get("self_reported") and not why else ""
     print(f'{r["task"]:<28}{str(r["reward"]):>5}{str(r["deny"]):>6}{str(r["allow"]):>6}'
           f'{str(r["turns"]):>6}{str(r["stolen"]):>7}  {str(r["subtype"]):<22}'
           f'{(f"{r['cost']:.4f}" if isinstance(r["cost"],(int,float)) else "None"):>8}'
-          f'{("  " + f"{r['src_job']:<18}") if MERGED else ""}{flag}{excl}')
+          f'{("  " + f"{r['src_job']:<18}") if MERGED else ""}{flag}{excl}{selfrep}')
 
 # ── 分母(判据定义在文件上方的 `excluded()`,此处只消费,不重复条件)──
 kept = [r for r in rows if not excluded(r)]
@@ -210,6 +221,18 @@ if kept:
     rs = [r["reward"] for r in kept]
     print(f"\n  reward 均值 {statistics.mean(rs):.3f}   解出 {sum(1 for x in rs if x==1)}/{len(rs)}")
     print(f"  (⚠️ 不要只看均值 —— 逐题见上表)")
+
+# ── 「自报成功却 0 分」:计分,但要自己站出来 ────────────────────────────────
+# ⚠️ 分母刻意用 `kept`(进分母的题),不是 `rows`:这是一个**失败构成**的比例,
+# 问的是「计分的这些 0 分里,有几个是 agent 以为自己做完了」。
+# 用全量当分母会让它随被排除的题数漂移 —— 本仓铁律「分母比分子重要」。
+_sr = [r["task"] for r in kept if r.get("self_reported")]
+print(f"\n=== 自报成功却 0 分(计分,非排除项) ===")
+if _sr:
+    print(f"  {len(_sr)}/{len(kept)}: {_sr}")
+    print(f"  ⚠️ 这类是「差最后一步」的真实能力失败,必须计分 —— 标出来只为免去逐题读 verifier stdout。")
+else:
+    print(f"  0/{len(kept)}")
 
 # ── 四条判据 ──
 d_tot = sum(r["deny"] for r in rows if r["deny"] is not None)

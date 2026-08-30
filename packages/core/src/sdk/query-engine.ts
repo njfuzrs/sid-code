@@ -173,6 +173,9 @@ export class SDKQueryEngine {
           num_turns: this.turnCount,
           result: "",
           stop_reason: "end_turn",
+          // §20.5：这条是"没有 done 事件"的合成路径，拿不到 LoopState，故恒 0。
+          // 填 0 而不是省略 —— 字段必须在所有 result 上结构性存在（同下方那条注释）。
+          num_turns_without_model_interaction: 0,
           total_cost_usd: this.driver.getCostUsd(),
           usage: this.driver.getUsage(),
           session_id: this.config.sessionId,

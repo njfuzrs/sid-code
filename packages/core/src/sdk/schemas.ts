@@ -110,6 +110,23 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
+    /**
+     * §20.5（2026-08-30）：轮数预算里有几格**没换来一次模型交互**（被超时/watchdog
+     * 杀在零产出上）。语义与 `SDKResultErrorSchema` 的同名字段逐字一致，见那里的长注释。
+     *
+     * ## 为什么 success 也需要它
+     *
+     * 此前它**只在错误结果上存在**，success 结果压根没这个键。于是
+     * 「正常收尾（end_turn）+ 预算被偷」这个组合在 `result.json` 里完全不可见 ——
+     * 评测侧的排除规则想问「这题被打废是不是非能力原因」，在 success 路径上永远问不出来。
+     *
+     * ⚠️ 它**不是**用来把 success 移出分母的：实测唯一带 watchdog 的 success 样本
+     * 剩 31 轮预算未用，那是一次真实的能力失败。这个字段只负责让「被偷了几格」
+     * 这个事实可见，判读仍然要看「那个约束是不是真的绑住了」。
+     *
+     * `.default(0)` 同错误结果那侧：老轨迹缺这个键时解析成 0，而不是整条解析失败。
+     */
+    num_turns_without_model_interaction: z.number().default(0),
     total_cost_usd: z.number(),
     usage: UsageSchema(),
     session_id: z.string(),

@@ -16,7 +16,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import agent_ran, llm_fatal, verifier_note  # noqa: E402
+from verifier_health import (  # noqa: E402
+    agent_ran,
+    llm_fatal,
+    self_reported_success,
+    verifier_note,
+)
 
 RUN = sys.argv[1] if len(sys.argv) > 1 else "runs/permswitch-r2"
 
@@ -52,6 +57,12 @@ for f in sorted(glob.glob(os.path.join(RUN, "*", "result.json"))):
     # 它 `agent_ran` 判 True,所以上面那格是空的 —— 不单独报就会被当成一个真实 0 分。
     if ar is not False and llm_fatal(d, tdir):
         agent_tag += " ⛔上游打断(未用完轮预算)"
+    # 第四种形态:agent 自报做完了,而 verifier 判 0 分(「以为自己做完了」)。
+    # ⚠️ 措辞刻意不用 ⛔ —— 那是"不进分母"的符号,而这一类**必须计分**。
+    # 报它的理由与上面几格不同:不是"这题白跑了",而是"这题真失败了,但失败在最后一步",
+    # 否则它会一直伪装成一个普通的 0 分(实测已三棒没人逐题去读 verifier stdout)。
+    if self_reported_success(d):
+        agent_tag += " 🙈自报成功却0分"
     print(
         f"{task} reward={reward} subtype={md.get('sid_subtype')} "
         f"turns={md.get('sid_num_turns')} deny={deny} "

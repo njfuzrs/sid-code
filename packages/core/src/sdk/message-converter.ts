@@ -122,6 +122,13 @@ export function convertToSDKMessage(
         num_turns: event.turns,
         result: "", // 由 SDKQueryEngine 填充最终文本
         stop_reason: "end_turn",
+        // §20.5（2026-08-30 实测）：此前这条路径**没有这个键**，而另两条 result 路径都有。
+        // 后果是「正常收尾 + 预算被超时/watchdog 偷走」这种组合在 result.json 里不可见 ——
+        // 消费侧读不到 0 也读不到实际值，只能读到 undefined，于是无法区分
+        // 「没被偷」与「这版还没这个字段」（正是 error_during_execution 那格注释里
+        // 点破的那个坑，本路径当时漏了）。
+        // ⚠️ `?? 0` 是为了让字段**结构性存在**：老 loop 不带这个字段时也落 0，而不是消失。
+        num_turns_without_model_interaction: event.turnsConsumedWithoutAssistant ?? 0,
         total_cost_usd: ctx.totalCostUsd,
         usage: { ...ctx.totalUsage },
         session_id: ctx.sessionId,
