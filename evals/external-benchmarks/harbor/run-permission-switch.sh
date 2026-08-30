@@ -65,6 +65,60 @@ COMMON=(-d terminal-bench-sample@2.0 -m anthropic/claude-sonnet-5 -n 1 -k 1
 # ── 闸 2:上游错误率 ────────────────────────────────────────────────────────
 # 判据:20 连、间隔 3s(贴近真实调用节奏),非 200 占比 > 20% 即拒绝启动。
 # 20% 这个线来自实测:35% 时 4/10 题报废;10% 左右那一轮(基线)10 题全跑完。
+# ── 闸 1:verifier 的 uv 下载速率(2026-08-31 第十二棒补:原来这条**只是注释**)────
+#
+# §21.9 交接里写着「跑前那两道闸**脚本会自己跑**」——**那句话不准**:
+# 脚本自动跑的只有闸 2(上游错误率),闸 1 一直只是文件头的一段注释。
+# 而本棒开跑前手动探它,第一次拿到 **38KB/s**(判据要求 ≥500KB/s)——
+# 比 2026-08-29 那次烧掉 $3.12 的 70KB/s **还差**,30s 只下到 1.15MB/17.8MB。
+# 那一轮的形态是:verifier 在 103/243/413 秒后放弃、reward 全写 0,
+# 而 `sid_subtype` 照样是 `success` —— **一轮"绿着坏掉"的假数据**。
+#
+# 所以把它变成真的会跑的代码。判据与文件头注释同源(≥500KB/s),
+# 探针**必须在容器内跑**:verifier 是在容器里下 uv 的,宿主链路好不代表容器好
+#(本棒实测两者接近,但那是事实不是保证 —— colima 的 VM 有自己的网络栈)。
+#
+# ⚠️ 与闸 0 不同,这道闸**拦**:闸 0 拦不住的是"人有意跑旧版",而这里没有
+# 任何正当理由在 70KB/s 的链路上开跑 —— 那只会产出假数据。
+# 确实要跑用 SID_HARBOR_SKIP_PREFLIGHT=1(与闸 2 同一个开关)。
+preflight_uv_speed() {
+  local min="${SID_HARBOR_UV_MIN_BPS:-500000}" url speed
+  url="${SID_HARBOR_UV_URL:-https://github.com/astral-sh/uv/releases/download/0.7.13/uv-x86_64-unknown-linux-gnu.tar.gz}"
+  echo "--- 闸 1:verifier 的 uv 下载速率(容器内探,判据 ≥$((min / 1000))KB/s)"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "    ⚠️ 没有 docker,跳过本闸(无法在容器内探)"; return 0
+  fi
+  # ⚠️ 速率与 http_code **必须一起取**(变异 ③ 揪出的、我自己写的归因 bug):
+  # URL 打不通时 curl 也吐 `speed_download=0`,只判速率会把它归因成"链路太慢、
+  # 等恢复再跑",而真相是"探针根本没连上"——两者的下一步动作完全不同
+  #(等 vs 查网络/镜像)。**错误归因比没有归因更坏**是本仓反复记的教训。
+  local probe code
+  probe=$(docker run --rm alpine:3 sh -c \
+    "apk add -q curl; curl -sL -o /dev/null -m 30 -w '%{speed_download} %{http_code}' '$url'" 2>/dev/null \
+    | tr -d '\n')
+  speed=$(printf '%s' "$probe" | awk '{print $1}' | cut -d. -f1)
+  code=$(printf '%s' "$probe" | awk '{print $2}')
+  if [ -z "$speed" ] || ! [ "$speed" -ge 0 ] 2>/dev/null; then
+    echo "    ⛔ 探针没拿到速率(容器起不来 / docker 不可用)——**不放绿**,这与「很慢」同样致命"
+    echo "       手动复核:docker run --rm alpine:3 sh -c 'apk add -q curl; curl -sL -o /dev/null -m 30 -w \"%{speed_download}B/s http=%{http_code}\\n\" $url'"
+    return 1
+  fi
+  if [ "$code" != "200" ]; then
+    echo "    ⛔ 探针未取到文件(http=${code:-000},speed=${speed}B/s)——**这不是「链路慢」**,"
+    echo "       是探针没连上(URL 变了 / 容器无外网 / DNS)。别当成"等一会儿就好"去等。"
+    echo "       手动复核同上;确实要跳过:SID_HARBOR_SKIP_PREFLIGHT=1"
+    return 1
+  fi
+  if [ "$speed" -lt "$min" ]; then
+    echo "    ⛔ ${speed}B/s < ${min}B/s —— verifier 会在 103~413s 后放弃并把 reward 全写 0,"
+    echo "       而 sid_subtype 照样是 success(2026-08-29 实测,烧掉 \$3.12 的假数据)。"
+    echo "       等链路恢复再跑;确实要跑:SID_HARBOR_SKIP_PREFLIGHT=1 bash $0 ..."
+    return 1
+  fi
+  echo "    ✅ ${speed}B/s ≥ ${min}B/s"
+  return 0
+}
+
 preflight_upstream() {
   # 连数与间隔可覆盖 —— 这是为了**这道闸自己能被便宜地自证**:
   # 默认 20 连 × 3s = 60s,自证时跑两遍就 2 分钟,曾把验证本身跑超时。
@@ -200,6 +254,8 @@ preflight_binary_freshness
 
 if [ "${SID_HARBOR_SKIP_PREFLIGHT:-0}" = "1" ]; then
   echo "⚠️ 已显式跳过跑前闸(SID_HARBOR_SKIP_PREFLIGHT=1)——本轮数据可能混入上游故障样本。"
+elif ! preflight_uv_speed; then
+  exit 1
 elif ! preflight_upstream; then
   exit 1
 fi
