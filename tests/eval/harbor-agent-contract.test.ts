@@ -197,6 +197,28 @@ function findHarborPython(): string | null {
 const HARBOR_PYTHON = HAS_PYTHON3 ? findHarborPython() : null;
 const HAS_HARBOR = HARBOR_PYTHON !== null;
 
+/**
+ * 抠出 `_render_settings` 的方法体。
+ *
+ * 用「下一个 `\n    def ` 」当右界:方法体内部的缩进都更深,所以这是该文件里
+ * 唯一稳定的方法边界。传 `src` 是为了让变异自证能对 fixture 复用同一个抠法 ——
+ * 若变异用的是另一套抠法,自证证的就不是同一件事。
+ */
+function renderSettingsBody(src: string = readFileSync(AGENT_PY, "utf-8")): string {
+  return /def _render_settings\(self\)[\s\S]*?\n    def /.exec(src)?.[0] ?? "";
+}
+
+/**
+ * 去掉 Python 注释与 docstring。
+ *
+ * ⚠️ **反向断言(`not.toContain`)必须先过这一层。** 本仓踩过两次:注释里写着
+ * 被禁的那个字眼,于是「不许出现 X」拿注释当配置红了 —— 而解释缺陷成因的注释
+ * 里出现 X 恰恰是常态(`schemaKeys` 那处的 `先去注释` 记的是同一个坑)。
+ */
+function stripComments(src: string): string {
+  return src.replace(/"""[\s\S]*?"""/g, "").replace(/#.*/g, "");
+}
+
 /** 在 tmpdir 里造一份被改坏的 fixture,用于变异自证。**绝不动真源文件。** */
 function withMutatedFixture<T>(mutate: (src: string) => string, fn: (path: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "harbor-agent-mutation-"));
@@ -548,6 +570,62 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     expect(agentSrc).toContain("sid_num_turns_without_model_interaction");
   });
 
+  test("容器 settings 的降级链不许悬空 —— 三处都必须指回别名本身", () => {
+    // ⛔ 2026-08-30 实测:这一条缺失让 `build-cython-ext` 死在第 8 轮(40 轮预算)。
+    //
+    // 机理是**两层叠加**,而两层都不报错:
+    //   ① `_render_settings` 只产 model + availableModels,于是容器首启时
+    //      `backfill-team-defaults` 迁移把**二进制内联的团队默认模板**里的
+    //      `fallbackModel: ali-deepseek-v4-flash` / `subAgentModels: ali-deepseek-*`
+    //      补进 settings.json(实测日志:`已补全团队默认配置字段(未覆盖任何已有配置): fallbackModel, ...`)。
+    //   ② 那些名字**不在容器的 availableModels 里**,于是 app.ts:860 走
+    //      `fallback_model "..." 不在 available_models 中或缺少 provider,已忽略`
+    //      —— 主模型被上游打挂时**无处可退**,直接 terminate。
+    //
+    // ⚠️ 判据落在「指回别名」而不是「非空」:写一个别的非空名字同样是悬空引用,
+    // 而它看起来更像「已经配过了」。别名是容器里**唯一可达**的上游。
+    //
+    // 迁移只补「用户缺失的顶层键」(`mergeMissingTopLevelKeys`),所以显式写死即可压住它 ——
+    // 这也是本断言成立的前提:一旦这三个键被删掉,模板值会立刻回来。
+    const renderBody = renderSettingsBody();
+    expect(renderBody).not.toBe("");
+    for (const key of ["fallbackModel", "subAgentModels"]) {
+      expect(renderBody).toContain(`"${key}"`);
+    }
+    // 三个子代理档 + fallbackModel 全部取 `self._model_alias`,不许是字面量模型名。
+    expect(renderBody).toContain('"fallbackModel": self._model_alias');
+    for (const slot of ["default", "task", "verify"]) {
+      expect(renderBody).toContain(`"${slot}": self._model_alias`);
+    }
+    // 容器里没有交互通道:留 "ask" 会多绕一层「无交互→降级为自动」(实测日志里那句
+    // `用户/钩子选择不切换,终止本轮` 就是这么来的),判读成本高且没有收益。
+    expect(renderBody).toContain('"fallbackSwitchMode": "auto"');
+    // 反向判据:**去掉注释后**不许出现公司网关的模型名 —— 它们在容器里一律不可达。
+    // ⚠️ 必须先去注释:上面那段解释死亡链的注释里就写着 `ali-deepseek`,
+    // 不去注释这条断言会拿注释当配置,红得毫无意义(与 `schemaKeys` 同一个坑)。
+    expect(stripComments(renderBody)).not.toContain("ali-deepseek");
+  });
+
+  test("退避 cap 必须被显式收窄 —— 否则 11 次重试预算只跑得到第 6 次", () => {
+    // ⛔ 同一条死亡链的第二层。实测退避序列 5.4s→10.2s→23.4s→41.2s→83.7s,
+    // 然后 S3 时间预算钳制报:
+    //   `剩余预算 129397ms 不足以「退避 138615ms + 一次请求」,停止重试(已重试 6 次)`
+    //
+    // 用生产函数复算(base 5s / 300s 预算):cap=120s → **6** 次;cap=30s → **11** 次。
+    // 即「11 次重试预算」在默认 cap 下是个幻觉,近半数预算被指数退避吃掉。
+    //
+    // ⚠️ 这条**不是**「调大重试就好」:它是拿「单次等待的耐心」换「总次数」,
+    // 只在**分组饱和**这类秒级恢复的故障上成立。上游长时间不可用该由跑前闸拦,
+    // 不该在这里堆参数 —— 所以判据是「显式写过且 ≤ 默认值」,不是「越小越好」。
+    const renderBody = renderSettingsBody();
+    expect(renderBody).toContain('"network"');
+    expect(renderBody).toContain("retryBackoffMaxMs");
+    // 取出实际写进去的默认值,并断言它真的收窄了(120_000 是 network-profile 的默认 cap)。
+    const cap = /retryBackoffMaxMs"[^)]*?,\s*([0-9_]+)\s*\)/.exec(renderBody)?.[1];
+    expect(cap).toBeDefined();
+    expect(Number(cap!.replace(/_/g, ""))).toBeLessThan(120_000);
+  });
+
   describe("变异自证(fixture 在 tmpdir,不动真源文件)", () => {
     test("name() 改名 → 四成员断言翻红", () => {
       // 用**改名**而不是整段删掉:删掉方法体会留下悬空的 @staticmethod/@override,
@@ -657,6 +735,53 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
           expect(runL1(p).facts!.class_attrs.filter((a) => a.startsWith("SUPPORTS_"))).toEqual([
             "SUPPORTS_RESUME",
           ]),
+      );
+    });
+
+    test("删掉 fallbackModel → 降级链断言翻红(回到 2026-08-30 那个死亡链)", () => {
+      // 删掉这一行 = 精确复现修之前的状态:迁移会把模板的 `ali-deepseek-v4-flash`
+      // 补回来,主模型被上游打挂时命中 app.ts:860 的 `已忽略` 分支直接 terminate。
+      withMutatedFixture(
+        (src) => src.replace('            "fallbackModel": self._model_alias,\n', ""),
+        (p) => {
+          const body = renderSettingsBody(readFileSync(p, "utf-8"));
+          expect(body).not.toBe(""); // 先证明抠到了方法体 —— 抠空会让下面这条假绿
+          expect(body).not.toContain('"fallbackModel": self._model_alias');
+        },
+      );
+    });
+
+    test("subAgentModels 指回公司网关模型 → 反向断言翻红", () => {
+      // 用**换成一个别的非空名字**而不是删掉:悬空引用最危险的形态恰恰是
+      // 「配了个看起来正常的名字」,它比留空更像「已经配过了」。
+      withMutatedFixture(
+        (src) =>
+          src.replace('"default": self._model_alias,', '"default": "ali-deepseek-v4-flash",'),
+        (p) => {
+          const body = stripComments(renderSettingsBody(readFileSync(p, "utf-8")));
+          expect(body).not.toBe("");
+          expect(body).toContain("ali-deepseek"); // 反向断言在真源文件上是 not.toContain
+          expect(body).not.toContain('"default": self._model_alias');
+        },
+      );
+    });
+
+    test("退避 cap 改回 120s → 收窄断言翻红", () => {
+      // 改成 120_000(= network-profile 的默认 cap)而不是删掉整个 network 块:
+      // 删掉会先让 `toContain('"network"')` 红,那报的是「块缺失」不是「没收窄」——
+      // 而本条判据要守的正是后者(写了但等于默认值 = 白写)。
+      withMutatedFixture(
+        (src) =>
+          src.replace(
+            '"SID_HARBOR_RETRY_BACKOFF_MAX_MS", 30_000)',
+            '"SID_HARBOR_RETRY_BACKOFF_MAX_MS", 120_000)',
+          ),
+        (p) => {
+          const body = renderSettingsBody(readFileSync(p, "utf-8"));
+          const cap = /retryBackoffMaxMs"[^)]*?,\s*([0-9_]+)\s*\)/.exec(body)?.[1];
+          expect(cap).toBeDefined();
+          expect(Number(cap!.replace(/_/g, ""))).toBe(120_000); // 不再 < 120_000
+        },
       );
     });
 
