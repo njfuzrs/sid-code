@@ -229,11 +229,11 @@ else
       vm_code=$(colima ssh -p "$PROFILE" -- curl -s -o /dev/null -w '%{http_code}' \
         -m 8 -x "$WANT_PROXY" https://registry-1.docker.io/v2/ 2>/dev/null || echo 000)
       if [[ $vm_code == 000 ]]; then
-        bad "VM 侧连不上 $WANT_PROXY（代理可能只绑了 127.0.0.1）—— 不写配置"
+        bad "VM 侧连不上 ${WANT_PROXY}（代理可能只绑了 127.0.0.1）—— 不写配置"
         info "飞鸟云需开「允许局域网连接」(allow-lan)，VM 才够得着"
         FAILED=1
       else
-        info "VM 侧实证可达（http=$vm_code，401 也算通：那是未带凭据的正常应答）"
+        info "VM 侧实证可达（http=${vm_code}，401 也算通：那是未带凭据的正常应答）"
         # ⚠️ ghcr.io 与 *.githubusercontent.com 刻意走 NO_PROXY：两条路都通，
         # 但实测直连 3.3MB/s vs 走代理 2.6MB/s，而 terminal-bench 全部镜像都在
         # ghcr 上（单个 260MB+）。**只有 docker.io 需要代理。**
@@ -256,7 +256,7 @@ EOF
         else
           colima ssh -p "$PROFILE" -- sudo systemctl restart docker
           sleep 5
-          ok "dockerd 代理: ${CUR_PROXY:-<未设置>} → $WANT_PROXY（已重启）"
+          ok "dockerd 代理: ${CUR_PROXY:-<未设置>} → ${WANT_PROXY}（已重启）"
         fi
       fi
     fi
