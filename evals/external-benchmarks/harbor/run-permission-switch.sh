@@ -47,7 +47,12 @@ shift || true
 TASK_FILTER=()
 for t in "$@"; do TASK_FILTER+=(-i "$t"); done
 
-export SID_HARBOR_GATEWAY_URL=http://192.168.5.2:4100   # colima host-gateway,⚠️ 不是 172.17.0.1
+# 网关地址。`192.168.5.2` = colima host-gateway,⚠️ **不是** 172.17.0.1
+# (那是 VM 内的 docker bridge,宿主服务不在上面;实测容器侧 connection refused)。
+# 端口默认 4100 = shim 的 `--port` 默认值。⚠️ 别填 4000 —— 那上面是
+# claude-trace-proxy(透传),占位 token 会被原样转给上游 → 401,而 401 长得像
+# 「key 不对」,排查方向会跑偏(见 sid_code_agent.py 的 DEFAULT_GATEWAY_PORT 注释)。
+export SID_HARBOR_GATEWAY_URL="http://192.168.5.2:${SID_HARBOR_GATEWAY_PORT:-4100}"
 # ⚠️ 必须指向当前 HEAD 编出来的包。缺口 B 的教训:TS 改了不重编 = 改了等于没改,且不报错。
 export SID_HARBOR_BINARY_ARM64=~/.local/share/sid-harbor-gateway/bins/sid-code-arm64-30586ff003c9
 export SID_HARBOR_BINARY_X64=~/.local/share/sid-harbor-gateway/bins/sid-code-x64-30586ff003c9
@@ -250,10 +255,55 @@ preflight_binary_freshness() {
   return 0   # 只报警不拦(见上方注释:跑旧版做 A/B 是正当用法)
 }
 
+# ── 闸 3:网关端点必须是**我们的 shim**,不是别的服务 ─────────────────────────
+#
+# 2026-08-31 实测踩到:`SID_HARBOR_GATEWAY_URL` 的默认端口原是 `4000`,
+# 而 shim 在 `4100`;4000 上跑的是 claude-trace-proxy —— 一个**透传**代理。
+# 打过去的结果是 **401**,而 401 的字面意思是「凭据不对」,人会去翻 key、
+# 翻 settings.json,查不到真因是「网关指错了一个端口」。
+#
+# 判据不是「端口连得上」(透传代理也连得上),而是 **`/__stats` 返回 shim 的
+# 那个 JSON 结构**。实测区分度:shim 的 `/__stats` 回
+# `{"stats":{...},"upstream_model":...}`;claude-trace 的 `/__stats` 回一个
+# **HTML 页面且 http=200** —— 所以**只看状态码会被骗过**,必须验结构。
+# 同理不存在的路径:shim 回 403(端点收窄),claude-trace 回 200(万能透传)。
+#
+# 这道闸**拦**:网关指错时整轮数据全是废的,没有任何正当理由继续。
+preflight_gateway_identity() {
+  local url="${SID_HARBOR_GATEWAY_URL/192.168.5.2/127.0.0.1}"
+  echo "--- 闸 3:网关身份(判据=/__stats 是 shim 的 JSON 结构,非仅状态码)"
+  local body
+  body=$(curl -s -m 10 "${url}/__stats" 2>/dev/null || true)
+  if [ -z "$body" ]; then
+    echo "    ❌ ${url}/__stats 无响应 —— shim 没在跑?"
+    echo "       起它: python3 ~/.local/share/sid-harbor-gateway/gateway.py --port 4100 --model-name <上游模型名>"
+    return 1
+  fi
+  # 用 python 验结构而不是 grep 字符串:HTML 里也可能恰好含 "stats" 字样。
+  if ! printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)          # 不是 JSON(claude-trace 会回 HTML)
+sys.exit(0 if isinstance(d.get("stats"), dict) and "upstream_model" in d else 1)
+' 2>/dev/null; then
+    echo "    ❌ ${url}/__stats 有响应但**不是 shim 的结构**(很可能是透传代理,如 :4000 的 claude-trace)"
+    echo "       症状预告:占位 token 会被原样转给上游 → 401,报错长得像「key 不对」"
+    return 1
+  fi
+  local model
+  model=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("upstream_model",""))' 2>/dev/null)
+  echo "    ✅ ${url} 是 shim(上游模型=${model:-?}）"
+  return 0
+}
+
 preflight_binary_freshness
 
 if [ "${SID_HARBOR_SKIP_PREFLIGHT:-0}" = "1" ]; then
   echo "⚠️ 已显式跳过跑前闸(SID_HARBOR_SKIP_PREFLIGHT=1)——本轮数据可能混入上游故障样本。"
+elif ! preflight_gateway_identity; then
+  exit 1
 elif ! preflight_uv_speed; then
   exit 1
 elif ! preflight_upstream; then
