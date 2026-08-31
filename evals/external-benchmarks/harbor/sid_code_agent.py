@@ -79,9 +79,17 @@ SID_HOME_DIRNAME = "sid-home"
 #: `TEMPLATE_PLACEHOLDER_PATTERN = /^__.+__$/` 校验,会报「apiKey 仍是模板占位符」。
 PLACEHOLDER_API_KEY = "no-auth-dummy"
 
+#: 注入式网关 shim 的默认监听端口(`gateway.py` 的 `--port` 默认值)。
+#: ⚠️ **必须与 shim 一致**。2026-08-31 实测:这里原是 `4000`,而 shim 在 `4100`,
+#: 4000 上跑的是 claude-trace-proxy —— 一个**透传**代理。忘设
+#: `SID_HARBOR_GATEWAY_URL` 时,占位 token 被原样转给上游 → 上游拒 → **401**,
+#: 而 401 的字面意思是「凭据不对」,人会去查 key,查不到「网关指错了」。
+#: 这正是本仓「报错指向错误方向」那一类,所以默认值必须指向 shim 自己。
+DEFAULT_GATEWAY_PORT = 4100
+
 #: 网关地址默认值。⚠️ `host.docker.internal` 是 Docker Desktop 的特性,
 #: **Linux 宿主上不存在** —— 那里要传 `SID_HARBOR_GATEWAY_URL=http://172.17.0.1:PORT`。
-DEFAULT_GATEWAY_URL = "http://host.docker.internal:4000"
+DEFAULT_GATEWAY_URL = f"http://host.docker.internal:{DEFAULT_GATEWAY_PORT}"
 
 #: sid-code 的 provider 闭集(`packages/core/src/config/schema.ts` 的 `VALID_PROVIDERS`)。
 #: 填闭集外的值 → 启动期 schema 校验直接报错。

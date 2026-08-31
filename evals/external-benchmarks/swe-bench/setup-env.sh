@@ -65,7 +65,7 @@ echo
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. colima profile：独立，不碰 default
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[1/4] colima profile"
+echo "[1/5] colima profile"
 
 if ! command -v colima >/dev/null 2>&1; then
   bad "未装 colima（brew install colima）"
@@ -106,7 +106,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 修 guest 内的 DNS 与 registry 镜像
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[2/4] guest 网络（DNS + registry 镜像）"
+echo "[2/5] guest 网络（DNS + registry 镜像）"
 
 if profile_running; then
   # DNS 判据：**能解析 registry 镜像域名**，不是「文件存在」，也不只是能解析 Docker Hub。
@@ -175,9 +175,98 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. 容量核验（判据取 daemon 侧，不是宿主机）
+# 3. dockerd 的代理（端口**探测**得来，不许写死）
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[3/4] 容量（daemon 侧）"
+#
+# ## 为什么这一步必须存在，而且必须探测
+#
+# `registry-1.docker.io` 的 DNS 在本网络被污染到 199.59.150.45（Twitter 段），
+# **TCP 握手成功但 TLS 无响应** —— 所以 `nc -z` 会报 OPEN，连通性探测会骗你。
+# 上面第 2 步配的 registry-mirrors 能绕开一部分，但 mirror 自己也会挂
+# （实测 `docker.1ms.run` 直连 http=000，走代理才 401），所以 dockerd 仍需要代理。
+#
+# ⚠️ 代理配置**必须落 systemd drop-in，不能落 /etc/environment**：
+# lima 已把代理写进后者，但 **systemd 服务不读它**，dockerd 拿不到 →
+# 形态是「VM 里 curl 通、docker pull 却 TLS 超时」，两者走的不是同一条路。
+#
+# ⚠️⚠️ **端口不许写死**（2026-08-31 教训）：原先手工写的 `192.168.5.2:7881`
+# 在飞鸟云换口到 7890 后让 `docker pull` 全线失败，报错是
+# `proxyconnect tcp: dial tcp 192.168.5.2:7881: connect: connection refused` ——
+# 它指向 registry，不指向「端口变了」。同一天另外两处写死点（`~/.gitconfig`、
+# `~/.local/bin/gh`）同时失效，其中 gh 的症状是 **`gh auth status` 谎报
+# "The token in keyring is invalid"**，把基础设施故障翻译成了凭据故障。
+echo "[3/5] dockerd 代理（端口探测，不写死）"
+
+DETECTOR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/detect-proxy-port.sh"
+if [[ ! -f $DETECTOR ]]; then
+  bad "缺少 $DETECTOR"
+  FAILED=1
+elif ! profile_running; then
+  bad "profile 未运行，跳过 dockerd 代理检查"
+  FAILED=1
+else
+  # shellcheck source=/dev/null
+  . "$DETECTOR"
+  if ! HOST_PROXY_PORT=$(detect_proxy_port 127.0.0.1); then
+    # 探不到时**不猜一个端口写进去** —— 那只会把故障挪到 docker pull 里。
+    bad "宿主上没有可用 HTTP 代理；先确认代理软件在跑"
+    info "docker.io 拉镜像会失败（ghcr.io 走 NO_PROXY，不受影响）"
+    FAILED=1
+  else
+    # VM 看宿主用 192.168.5.2（lima host-gateway）。⚠️ **不是** 172.17.0.1
+    # （那是 VM 内的 docker bridge，宿主服务不在上面）。
+    WANT_PROXY="http://192.168.5.2:${HOST_PROXY_PORT}"
+    CUR_PROXY=$(colima ssh -p "$PROFILE" -- sudo systemctl show docker --property=Environment 2>/dev/null |
+      tr ' ' '\n' | sed -n 's/^Environment=HTTP_PROXY=//p;s/^HTTP_PROXY=//p' | head -1)
+    if [[ $CUR_PROXY == "$WANT_PROXY" ]]; then
+      ok "dockerd 代理已是 $WANT_PROXY"
+    elif [[ $CHECK_ONLY == 1 ]]; then
+      bad "dockerd 代理 = ${CUR_PROXY:-<未设置>}，应为 $WANT_PROXY"
+      FAILED=1
+    else
+      # 判据是**从 VM 侧**实证可达：宿主可达不等于 VM 可达 —— 只绑
+      # 127.0.0.1 的代理，VM 根本够不着（实测 nc 从 VM 报 DEAD）。
+      vm_code=$(colima ssh -p "$PROFILE" -- curl -s -o /dev/null -w '%{http_code}' \
+        -m 8 -x "$WANT_PROXY" https://registry-1.docker.io/v2/ 2>/dev/null || echo 000)
+      if [[ $vm_code == 000 ]]; then
+        bad "VM 侧连不上 ${WANT_PROXY}（代理可能只绑了 127.0.0.1）—— 不写配置"
+        info "飞鸟云需开「允许局域网连接」(allow-lan)，VM 才够得着"
+        FAILED=1
+      else
+        info "VM 侧实证可达（http=${vm_code}，401 也算通：那是未带凭据的正常应答）"
+        # ⚠️ ghcr.io 与 *.githubusercontent.com 刻意走 NO_PROXY：两条路都通，
+        # 但实测直连 3.3MB/s vs 走代理 2.6MB/s，而 terminal-bench 全部镜像都在
+        # ghcr 上（单个 260MB+）。**只有 docker.io 需要代理。**
+        colima ssh -p "$PROFILE" -- sudo mkdir -p /etc/systemd/system/docker.service.d
+        colima ssh -p "$PROFILE" -- sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf >/dev/null <<EOF
+# 由 setup-env.sh 生成 —— **端口探测得来，不要手工写死**。
+# 写死的教训见本文件 [3/5] 段注释。
+[Service]
+Environment="HTTP_PROXY=${WANT_PROXY}"
+Environment="HTTPS_PROXY=${WANT_PROXY}"
+Environment="NO_PROXY=localhost,127.0.0.1,192.168.5.0/24,10.0.0.0/8,172.16.0.0/12,*.local,ghcr.io,pkg-containers.githubusercontent.com,*.githubusercontent.com"
+EOF
+        colima ssh -p "$PROFILE" -- sudo systemctl daemon-reload
+        # ⚠️ 重启 dockerd 会打断同 daemon 上在跑的容器（自建 SWE-bench 链路的
+        # sid-swebench-proxy 就在上面）。有容器在跑时只写配置、不重启。
+        running=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+        if [[ ${running:-0} != 0 ]]; then
+          bad "有 $running 个容器在跑 —— 已写配置但**未重启 dockerd**"
+          info "空闲时执行: colima ssh -p $PROFILE -- sudo systemctl restart docker"
+        else
+          colima ssh -p "$PROFILE" -- sudo systemctl restart docker
+          sleep 5
+          ok "dockerd 代理: ${CUR_PROXY:-<未设置>} → ${WANT_PROXY}（已重启）"
+        fi
+      fi
+    fi
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. 容量核验（判据取 daemon 侧，不是宿主机）
+# ─────────────────────────────────────────────────────────────────────────────
+echo "[4/5] 容量（daemon 侧）"
 
 if profile_running; then
   export DOCKER_HOST="unix://$DOCKER_SOCK"
@@ -213,9 +302,9 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Python venv + swebench
+# 5. Python venv + swebench
 # ─────────────────────────────────────────────────────────────────────────────
-echo "[4/4] Python venv + swebench"
+echo "[5/5] Python venv + swebench"
 
 if ! command -v uv >/dev/null 2>&1; then
   bad "未装 uv（brew install uv）。用 uv 而非系统 python 的理由见下方注释"
