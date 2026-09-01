@@ -390,7 +390,7 @@ fi
 # 都不会报错，而你以为自己读全了。
 digest_all() {
   local run_dir="runs/$JOB" d name home out n_ok=0 n_skip=0
-  [ -d "$run_dir" ] || { echo "  ⚠️ 找不到 $run_dir，跳过 digest"; return 0; }
+  [ -d "$run_dir" ] || { echo "  ⚠️ 找不到 ${run_dir}，跳过 digest"; return 0; }
   local dig_dir="$run_dir/_digests"
   mkdir -p "$dig_dir" || return 0
   echo "--- digest：逐题嚼轨迹 → $dig_dir/"
