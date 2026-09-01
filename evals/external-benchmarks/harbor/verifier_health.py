@@ -165,6 +165,28 @@ def self_reported_success(result: dict) -> bool:
 #: 后半句「可重新发送消息重试,或用 /model 切换模型」是给人看的提示,会改。
 LLM_FATAL_MARK = "主模型请求失败"
 
+#: 上游**硬拒**的 HTTP 状态码 —— 这类错误重试链救不了,所以 agent 不会走
+#: 「退避→耗尽→主模型请求失败」那条路,`LLM_FATAL_MARK` 对它们**恒不命中**。
+#:
+#: ⚠️ 2026-09-01 实测踩到:`modelswitch-ds` 的 `qemu-alpine-ssh` 在第 29 轮吃到
+#: **402 Insufficient Balance**(deepseek 余额耗尽,该题日志里 13 次),
+#: `sid_errors` 里明明白白写着它,但 `llm_fatal` 判 **False** ——
+#: 于是一次**账户余额耗尽**被记进了能力账,而 `分析报告写着「重试链打空 0/10」`。
+#:
+#: 这与 429 那条是同一件事(非能力原因混进能力账),只是**换了族就换了措辞**:
+#: 429 走降级链留下中文痕迹,402/401/403 是一次性硬拒、直接抛 provider 原文。
+#: **判据只认一族的措辞,换个 provider 就静默失效** —— 这正是本仓
+#: 「防线还在,但它当初要防的条件变了」那一类。
+#:
+#: ⛔ **不放 5xx / 429**:那些是**可重试**的,重试链耗尽后会正常落
+#: `LLM_FATAL_MARK`,由上面那条判据管。放进来会与它重复,而重复判据迟早分叉。
+#: ⛔ **不放 400**:那是请求本身不合法(我们自己发错了),属于真实缺陷,必须计分。
+UPSTREAM_HARD_REJECT_CODES = ("401", "402", "403")
+
+#: 上游硬拒的**语义**佐证。只用状态码会误伤 —— 题目输出里恰好出现 "402"
+#: (比如某个测试断言的数字)就会命中。所以要求「provider 错误 + 硬拒码」同时成立。
+UPSTREAM_ERROR_MARK = "API 错误"
+
 
 def llm_fatal(result: dict, trial_dir: str | None = None) -> bool:
     """True = 这一题**是被上游打断的**,不是能力不足。
@@ -203,6 +225,17 @@ def llm_fatal(result: dict, trial_dir: str | None = None) -> bool:
     """
     md = ((result.get("agent_result") or {}).get("metadata")) or {}
     errs = " ".join(md.get("sid_errors") or [])
+
+    # 形态二:上游**硬拒**(402/401/403)。这类重试救不了,所以不会留下
+    # `LLM_FATAL_MARK`,必须单独认 —— 见 UPSTREAM_HARD_REJECT_CODES 的注释。
+    # ⚠️ 判据是「provider 错误标记 + 硬拒码」**同时**成立,不是只看数字:
+    # 只看 "402" 会被题目输出里恰好出现的数字命中。
+    if UPSTREAM_ERROR_MARK in errs and any(
+        f" {code} " in errs or f": {code} " in errs
+        for code in UPSTREAM_HARD_REJECT_CODES
+    ):
+        return True
+
     if LLM_FATAL_MARK not in errs:
         return False
     if trial_dir is None:

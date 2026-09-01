@@ -1175,6 +1175,45 @@ colima start swebench && docker context use colima-swebench
 > 判据应该是网关计数器（`GET /__stats` 的 `upstream_502`），
 > 不是「再试一次看看」——按后者判断会白跑两轮（3m08s + 8m44s）。
 
+### ⭐ shim 已支持双协议族（2026-09-01）—— 换模型评测走这条
+
+原版只支持 anthropic 族，openai 族的 `/v1/chat/completions` 会被
+`_deny_non_model_endpoint` 判 403。现在按族分白名单 + 分族注入认证头：
+
+```bash
+# anthropic 族（sonnet 基线）
+python3 ~/.local/share/sid-harbor-gateway/gateway.py --port 4100 --model-name claude-sonnet-5-ppchat
+# openai 族（deepseek）
+python3 ~/.local/share/sid-harbor-gateway/gateway.py --port 4101 --model-name deepseek-v4-pro
+```
+
+跑评测（两侧脚本同一份，只切 `SID_MODELSWITCH_FAMILY`）：
+
+```bash
+bash run-model-switch.sh modelswitch-ds                              # deepseek / 4101
+SID_MODELSWITCH_FAMILY=anthropic bash run-model-switch.sh mysonnet   # sonnet / 4100
+python3 analyze-model-switch.py runs/modelswitch-ds runs/mysonnet    # 并排（会核同档）
+```
+
+**四条要点**（每条都是踩出来的）：
+
+1. 🔴 **协议族的权威来源是 `settings.json` 的 `provider`，不是请求路径。**
+   靠路径猜 = 让调用方决定注入什么凭据。
+2. ⚠️ **改了 `gateway.py` 必须重起进程** —— 改文件不重启跑的是旧字节，
+   而两侧 shim 字节不同就破了「同一个网关程序」这条必控变量。
+3. ⚠️ **两种 403 分开看**：`403_family_mismatch_*` 是**配置错**（`--model-name`
+   与 `-m` 的 provider 段配不上），`403_POST_*` 是端点越界（安全类）。
+   **排查方向相反**，别混着读。
+4. ⚠️ **base_url 的 `/v1` 由 shim 去重**：settings 里 openai 族条目形态不统一
+   （`api.deepseek.com` 不带、`uniapi.../v1` 带），朴素拼接得 `/v1/v1/...`
+   → 上游 **404**，而 sid-code 收到 404 会**静默 fallback** ⇒
+   两层静默叠成「跑完了、0 分、什么都没报错」。
+
+**判据是机理不是分数**：`analyze-model-switch.py` 只报 deny 数/撞满轮数/
+重试链打空/仪器落盘，reward 打在「仅供参考」区且**不做两侧差值判定** ——
+换模型同时换掉了「模型能力」这个我们控制不了的变量。
+它还会在两侧 `-n`、题目集、wire model 任一不一致时**拒绝并排**（`rc=1`）。
+
 ---
 
 ## 设计决策的事实源
