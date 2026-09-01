@@ -958,8 +958,18 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
       const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
       const countsTokensItself = /n_input_tokens[\s\S]{0,200}n_output_tokens/.test(code);
       if (!countsTokensItself) continue;
+      // ⚠️ `[^\n]*` 不够:4 个以上名字时 ruff/black 会格式化成**多行括号 import**
+      // (`from verifier_health import (\n  agent_ran,\n  ...)`),而它满足本门禁的
+      // **意图**(确实 import 了共享判据)却不匹配单行假设 —— 2026-09-01 实测,
+      // `analyze-model-switch.py` 就这样被判红。**假红比不做更坏**:它会训练人
+      // 忽略这条门禁,或把代码扭成非惯用格式去迁就正则。
+      // 所以放行两种形态,但**要求仍然一样**:agent_ran 必须来自 verifier_health。
+      const importsAgentRan =
+        /from verifier_health import[^\n]*agent_ran/.test(code) ||
+        /from verifier_health import\s*\([^)]*\bagent_ran\b[^)]*\)/.test(code) ||
+        /import verifier_health/.test(code);
       expect(
-        /from verifier_health import[^\n]*agent_ran|import verifier_health/.test(code),
+        importsAgentRan,
         `${f} 自己数 in/out token 判 agent 跑没跑,却没 import agent_ran —— 判据会分叉`,
       ).toBe(true);
     }
