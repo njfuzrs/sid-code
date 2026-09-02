@@ -62,6 +62,38 @@ class ClaudeCodeNpm(ClaudeCode):
     _NODE_VERSION = "22.20.0"
 
     @override
+    def _resolved_model_name(self) -> str | None:
+        """发往上游的 wire model：**剥掉 Harbor 的 `provider/` 前缀**。
+
+        ⚠️ 2026-09-02 实测的第一必控变量破口，而且**两侧不对称是父类主动造成的**：
+        `claude_code.py:1695` 在「配了自定义 base_url」时**原样返回**
+        `anthropic/claude-sonnet-5`（只有没配 base_url 才 split），
+        而 sid 侧 `sid_code_agent.py:518` 一直是显式映射
+        `provider/model` → `modelId`，发出去的是裸 `claude-sonnet-5`。
+
+        ⇒ 同一个 `-m anthropic/claude-sonnet-5`，两侧发往**同一个 shim**
+        的 body 里 `model` 却不同名。上游（ppchat）对带前缀的那个没有通道：
+
+            upstream 503: "Current group code has no available channels
+                           for model anthropic/claude-sonnet-5"
+
+        形态之所以要命：**cc 侧渲染成 `terminal_reason:api_error`，
+        既不提 503 也不提模型名**，与「网络不通」「余额耗尽」逐字节同形；
+        `-n 6` 下 6 题会同时静默空转，10 题跑完拿回全 0 分。
+        真因只有 shim 的 `upstream_503` 计数键 + 日志原文能指出来
+        （再次印证：判据用网关计数器，不是「再试一次看看」）。
+
+        ⛔ **这不算改被测 agent 的行为**：只做命名空间映射，与 sid 侧那段
+        「两套命名空间必须显式映射，不能假设同名」是同一条规则的两个实现。
+        agent 循环 / 工具 / 权限 / 轮数一律没碰 —— 反而是不改才让
+        「同模型」这条必控变量静默破掉。
+        """
+        resolved = super()._resolved_model_name()
+        if resolved and "/" in resolved:
+            return resolved.split("/")[-1]
+        return resolved
+
+    @override
     async def install(self, environment: BaseEnvironment) -> None:
         # 已经装好且版本符合就不重装（沿用父类判据，避免每题白装一次）。
         if await self._installed_claude_satisfies_version(environment):
