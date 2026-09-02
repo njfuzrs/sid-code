@@ -51,6 +51,10 @@ set -uo pipefail
 # 在 `set -u` 下当场 unbound variable 而死。本仓 release.sh 踩过同一个坑。
 # ⇒ 中文文案里的变量**一律写 `${var}`**。
 
+# 本脚本所在目录。用于定位同目录的 uv-mirror-server.py —— 调用方的 cwd 不固定
+# （harbor/ 下的三条 runner 用的是 `bash ../lib/uv-mirror.sh`），所以不能用相对路径。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 MIRROR_DIR="${SID_UV_MIRROR_DIR:-$HOME/.cache/sid-uv-mirror}"
 MIRROR_PORT="${SID_UV_MIRROR_PORT:-18077}"
 # colima host-gateway。⚠️ 见文件头：host.docker.internal 在任务镜像里不解析。
@@ -110,7 +114,13 @@ start() {
   if curl -fsS -o /dev/null -m 3 "$probe_url" 2>/dev/null; then
     log "✅ 端口 ${MIRROR_PORT} 上已有可用镜像服务，复用"
   else
-    python3 -m http.server "$MIRROR_PORT" --bind 0.0.0.0 --directory "$MIRROR_DIR" \
+    # ⛔ **不要**换回 `python3 -m http.server --bind 0.0.0.0`：它在本机**必然超时**，
+    # 因为 stdlib 的 `HTTPServer.server_bind()` 在 bind() 与 listen() **之间**调
+    # `socket.getfqdn(host)`，而本机 `getfqdn("0.0.0.0")` 实测 **128.8s**
+    # （`getfqdn("127.0.0.1")` 只 0.0s）⇒ 套接字卡在 `(CLOSED)` 而非 `(LISTEN)`，
+    # 进程活着、http.log 空着、curl 只能超时 —— 三个信号都像"没起来"。
+    # 完整根因与判据见 uv-mirror-server.py 的模块头注释。
+    python3 "$SCRIPT_DIR/uv-mirror-server.py" "$MIRROR_PORT" "$MIRROR_DIR" \
       >"$MIRROR_DIR/http.log" 2>&1 &
     pid=$!
     sleep 1.5
