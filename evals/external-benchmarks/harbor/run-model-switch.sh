@@ -100,6 +100,38 @@ COMMON=(-d terminal-bench-sample@2.0 -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4
         --environment-build-timeout-multiplier 3 -y)
 
+# ── E1：verifier 的 uv 走宿主本地镜像（2026-09-02 接入）───────────────────────
+#
+# 为什么：`runs/modelswitch-base` 里 **5/10 题的 reward=0 是假 0** —— verifier 没判分，
+# 死因是下 uv tarball 时 curl 打不通 github.com（`Failed to connect ... after 75015 ms`）。
+# ⚠️ 05 号文档曾把真因写成「QEMU 下 /proc/self/exe 坏 → 判不出位宽」，**那是错的**：
+# `unknown platform bitness` 这行在两个基线的 **10/10 题全都出现**，含正常判分的题
+# ⇒ 它不预测失败；且同夜同 QEMU 的 `modelswitch-ds` 是 **verifier 10/10、uv 失败 0 题**。
+#
+# 闸 1（preflight_uv_speed）只**测**这条链路快不快，测不出它会不会中途断。
+# 网络抖动是概率性的 ⇒「重跑一次就好」没有保障。E1 把那次外网下载整个消灭掉。
+#
+# ⚠️ 失败**不阻断**：镜像起不来时退回原行为（直连 github），这与本轮之前的形态一致，
+# 不比原来更坏。但会显式打出来 —— 静默退化才是本仓最贵的那类错。
+UV_MIRROR_PID=""
+if [ "${SID_HARBOR_SKIP_UV_MIRROR:-0}" = "1" ]; then
+  echo "--- E1：已显式跳过 uv 本地镜像（SID_HARBOR_SKIP_UV_MIRROR=1）——verifier 将直连 github"
+else
+  echo "--- E1：起 uv 本地镜像（消灭 verifier 的外网下载）"
+  if _uv_mirror_env="$(bash ../lib/uv-mirror.sh start)"; then
+    eval "$_uv_mirror_env"
+    # `--ve` 只注入 verifier 阶段（harbor cli/jobs.py:2724 → verifier.py:159 merged_env
+    # → environment.exec(env=env)），正好是需要的那一层，不碰 agent 环境。
+    # ⚠️ 用 UV_INSTALLER_GITHUB_BASE_URL 而非 INSTALLER_DOWNLOAD_URL：后者把版本号锁死在
+    # URL 里，而题目实测在用两个版本（10 题 0.7.13 + hello-world 0.9.7）。
+    COMMON+=(--ve "UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}")
+    echo "    ✅ 已注入 --ve UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}"
+  else
+    echo "    ⚠️ uv 镜像未起成 —— 退回直连 github（= 本轮之前的行为，不更坏）。"
+    echo "       但那正是基线 5 题假 0 的成因，本轮仍可能复发。"
+  fi
+fi
+
 # ── 闸 1：verifier 的 uv 下载速率（与 run-permission-switch.sh 同源同判据）─────
 #
 # 判据 ≥500KB/s。低于它的形态是 verifier 在 103~413s 后放弃、reward 全写 0，
@@ -364,6 +396,8 @@ RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 
 kill "$MEM_PID" 2>/dev/null || true
+# E1 镜像服务收尾。⚠️ 不用 trap：镜像是 warm 后落盘的，进程停掉不影响下次复用。
+bash ../lib/uv-mirror.sh stop "${UV_MIRROR_PID:-}" >/dev/null 2>&1 || true
 # 内存峰值：把 MiB/GiB 归一到 MiB 再取每行合计的最大值。
 if [ -s "$MEM_LOG" ]; then
   echo "--- 内存峰值（容器合计，判据：接近 15.58GiB 即须复核 OOM）"

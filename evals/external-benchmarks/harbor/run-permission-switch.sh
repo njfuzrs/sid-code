@@ -311,9 +311,33 @@ elif ! preflight_upstream; then
 fi
 
 echo "=== 启动 $(date '+%F %T')  job=$JOB ${TASK_FILTER[*]:+(只跑 ${TASK_FILTER[*]})} ==="
+# ── E1：verifier 的 uv 走宿主本地镜像（2026-09-02 接入）───────────────────────
+#
+# 与 run-model-switch.sh / run-claude-code-contrast.sh 同一套（共用 lib/uv-mirror.sh）。
+# 理由与判据见 lib/uv-mirror.sh 头注释：verifier 下 uv tarball 时 curl 打不通
+# github.com，会让 reward=0 变成**假 0**（没判分），而它与"没解出来"逐字节相同。
+# ⚠️ 三条 runner 必须同时接 —— 只接一部分就是不受控变量。门禁：
+# tests/eval/harbor-uv-mirror-parity.test.ts
+UV_MIRROR_PID=""
+if [ "${SID_HARBOR_SKIP_UV_MIRROR:-0}" = "1" ]; then
+  echo "--- E1：已显式跳过 uv 本地镜像（SID_HARBOR_SKIP_UV_MIRROR=1）——verifier 将直连 github"
+else
+  echo "--- E1：起 uv 本地镜像（消灭 verifier 的外网下载）"
+  if _uv_mirror_env="$(bash ../lib/uv-mirror.sh start)"; then
+    eval "$_uv_mirror_env"
+    COMMON+=(--ve "UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}")
+    echo "    ✅ 已注入 --ve UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}"
+  else
+    echo "    ⚠️ uv 镜像未起成 —— 退回直连 github（= 本轮之前的行为，不更坏）。"
+    echo "       但那正是基线 5 题假 0 的成因，本轮仍可能复发。"
+  fi
+fi
+
 harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
   -a sid_code_agent:SidCodeAgent --job-name "$JOB"
 RUN_RC=$?
+# E1 镜像服务收尾（tarball 已落盘，停进程不影响下次复用）。
+bash ../lib/uv-mirror.sh stop "${UV_MIRROR_PID:-}" >/dev/null 2>&1 || true
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 
 # ── 跑完自动嚼一遍轨迹(§20.10 第五优先,本轮补上)────────────────────────────
