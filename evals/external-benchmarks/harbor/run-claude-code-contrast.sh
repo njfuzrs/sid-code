@@ -185,6 +185,30 @@ MEM_PID=$!
 # shellcheck disable=SC2064  # 刻意现在展开 PID
 trap "kill $MEM_PID 2>/dev/null || true" EXIT
 
+# ── E1：verifier 的 uv 走宿主本地镜像（2026-09-02 接入）───────────────────────
+#
+# 🔴 **必须与 sid 侧同时启用**，否则它是一个不受控变量：verifier 的判分可靠性
+# 两侧不同，而 verifier 坏掉的样本与"没解出来"**逐字节相同**（reward=0）。
+# sid 侧接在 run-model-switch.sh 的 COMMON 里，判据与理由见那里和 lib/uv-mirror.sh 头注释。
+#
+# ⚠️ 本轮 cc 侧 verifier 恰好 10/10 都判成了（uv 全下成功）—— 那是**运气**，不是
+# 结构性差异：同一批题在 sid 基线那晚 5 题栽在同一个下载上。别把"这次没坏"当成"不会坏"。
+UV_MIRROR_ARGS=()
+UV_MIRROR_PID=""
+if [ "${SID_HARBOR_SKIP_UV_MIRROR:-0}" = "1" ]; then
+  echo "--- E1：已显式跳过 uv 本地镜像（SID_HARBOR_SKIP_UV_MIRROR=1）——verifier 将直连 github"
+else
+  echo "--- E1：起 uv 本地镜像（消灭 verifier 的外网下载）"
+  if _uv_mirror_env="$(bash ../lib/uv-mirror.sh start)"; then
+    eval "$_uv_mirror_env"
+    UV_MIRROR_ARGS=(--ve "UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}")
+    echo "    ✅ 已注入 --ve UV_INSTALLER_GITHUB_BASE_URL=${UV_MIRROR_BASE_URL}"
+  else
+    echo "    ⚠️ uv 镜像未起成 —— 退回直连 github（= 本轮之前的行为，不更坏）。"
+    echo "       ⛔ 但若 sid 侧起成了而这边没起成，**两侧就不可比了**，别当无事发生。"
+  fi
+fi
+
 rm -rf "runs/$JOB"
 echo "=== 启动 $(date '+%F %T') ==="
 caffeinate -dimsu harbor run \
@@ -194,11 +218,14 @@ caffeinate -dimsu harbor run \
   --ak "version=$CC_VERSION" --ak "max_turns=$MAX_TURNS" \
   --agent-setup-timeout-multiplier 8 --environment-build-timeout-multiplier 3 \
   --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4 -y \
+  "${UV_MIRROR_ARGS[@]+"${UV_MIRROR_ARGS[@]}"}" \
   --job-name "$JOB"
 RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 
 kill "$MEM_PID" 2>/dev/null || true
+# E1 镜像服务收尾（tarball 已落盘，停进程不影响下次复用）。
+bash ../lib/uv-mirror.sh stop "${UV_MIRROR_PID:-}" >/dev/null 2>&1 || true
 
 # ── 收尾：并发实证 + 内存峰值 ────────────────────────────────────────────────
 echo
