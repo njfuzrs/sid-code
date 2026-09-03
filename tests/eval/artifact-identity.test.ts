@@ -31,6 +31,7 @@ import { parseBuildInfoLine } from "@sid-code/shared/build-info.ts";
 import {
   BUILD_INPUT_PATHS,
   EXIT_CODE,
+  RELEASE_COMMIT_PATHS,
   assessArtifact,
   judgePromote,
   judgeReleaseUpload,
@@ -385,21 +386,64 @@ describe("T10 身份跟着字节走（cp 改不了它）", () => {
 describe("G2 发布通道门禁", () => {
   const NAME = "sid-code-0.1.602-linux-x64.tar.gz";
 
-  test("按 release.sh 真实执行顺序的产物 → 通过（dirty=true 且只脏 package.json）", () => {
+  test("按 release.sh 真实执行顺序的产物 → 通过（dirty=true，脏的是 changelog 产物 + package.json）", () => {
     // ⚠️ 这条是整个 G2 里最容易写错的一格。真实顺序是
-    // 洁净门禁 → bump（package.json 变脏）→ 构建 → 提交 → 打 tag，
+    // 洁净门禁 → bump（package.json 变脏）→ **生成 changelog（又变脏 2 个文件）**
+    // → 构建 → 提交（这批文件一起进 bump 提交）→ 打 tag，
     // 所以构建那一刻 dirty **必为 true**、HEAD 是 bump 提交的**父**提交。
     // 写成 `dirty == false` 会 100% 误拦每一次真实发版，然后被人加 flag 绕过。
     //
-    // 变异自证：把 judgeReleaseUpload 里 dirty 那一支改成「dirty 即拒」→ 红
+    // ⚠️ 这条曾把 dirty_files 写成 `"package.json"` 一个文件 —— 那是**想象中的
+    // release.sh**。真实产出（2026-09-03 发 v0.1.602 从产物字节里读到的）是下面这个，
+    // 于是 G2 首次真实运行即 5/5 全拦。单测绿而发布全红，因为两边假设不同。
+    //
+    // 变异自证：把 judgeReleaseUpload 里的白名单改回 `f !== "package.json"` → 红
     const r = judgeReleaseUpload({
       info: parseBuildInfoLine(
-        line({ origin: "release", dirty: "true", dirty_files: "package.json" }),
+        line({
+          origin: "release",
+          dirty: "true",
+          dirty_files: "CHANGELOG.md+package.json+website/.vitepress/data/changelog.json",
+        }),
       ),
       expectedCommit: C_ART,
       artifactName: NAME,
     });
     expect(r.ok).toBe(true);
+  });
+
+  test("真带着未提交代码发版 → 拒（白名单放宽后这条必须仍然红）", () => {
+    // 白名单从 1 个文件放宽到 4 个，最该担心的是「放过了真问题」。
+    // 源码脏就是那个真问题：它进了产物字节却不会进 bump 提交。
+    // 变异自证：把 unexpected 判据整段删掉 → 红
+    const r = judgeReleaseUpload({
+      info: parseBuildInfoLine(
+        line({
+          origin: "release",
+          dirty: "true",
+          dirty_files: "package.json+packages/core/src/query/loop.ts",
+        }),
+      ),
+      expectedCommit: C_ART,
+      artifactName: NAME,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join("\n")).toContain("packages/core/src/query/loop.ts");
+  });
+
+  test("T8：白名单与 release.sh 的 RELEASE_COMMIT_FILES 逐条相等（漂移哨兵）", () => {
+    // 为什么要机械比：漂移不报错，且两个方向的后果都很坏 ——
+    // 放宽了 = 真带着未提交代码发版也放行；收窄了 = 每次发版全拦（就是本次事故）。
+    // 变异自证：往 RELEASE_COMMIT_PATHS 里加一个 release.sh 没有的路径 → 红
+    const sh = readFileSync(join(ROOT, "scripts", "release.sh"), "utf8");
+    const m = sh.match(/RELEASE_COMMIT_FILES=\(([\s\S]*?)\n\)/);
+    expect(m).not.toBeNull();
+    const fromSh = (m![1] ?? "")
+      .split("\n")
+      .map((l) => l.replace(/#.*$/, "").trim())
+      .filter(Boolean);
+    expect(fromSh.length).toBeGreaterThan(0);
+    expect([...fromSh].sort()).toEqual([...RELEASE_COMMIT_PATHS].sort());
   });
 
   test("origin=local 的手工包 → 拒（这是 G2 存在的首要理由）", () => {

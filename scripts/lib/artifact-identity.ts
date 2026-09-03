@@ -79,6 +79,37 @@ export const BUILD_INPUT_PATHS = [
   "Makefile",
 ] as const;
 
+/**
+ * bump 提交会把哪些文件收进历史 —— G2 的 dirty 白名单**只能**是这一份清单。
+ *
+ * 判据的正确形态不是「脏文件只有 package.json」，而是
+ * **「构建那一刻的工作区 == tag v<ver> 的 tree」**：release.sh 在构建**之前**
+ * 就生成了 changelog 产物（`:718` 生成 changelog、`:723` 生成内嵌 skill），
+ * 而它们在构建**之后**的第 6 步随 bump 一起 commit（`RELEASE_COMMIT_FILES`）。
+ * 所以这些文件在构建时必然是脏的，却**照样有 git 引用能重建** —— 就是 v<ver> 本身。
+ *
+ * ⚠️ 这里曾硬编码成 `f !== "package.json"`，后果是 **G2 首次真实运行即 5/5 全拦**
+ * （2026-09-03 发 v0.1.602 实测：产物记的
+ * `dirty_files=CHANGELOG.md+package.json+website/.vitepress/data/changelog.json`）。
+ * 讽刺的是该函数文件头已经警告过这个失败模式（「按直觉写会 100% 误拦每一次真实发版，
+ * 然后被人加 flag 绕过」），而单测把假设锁成了 `dirty_files: "package.json"` 一个文件
+ * —— **测试锁住的是想象中的 release.sh，不是真的那个**。它在 v0.1.601 之后才引入，
+ * 所以在此之前没有任何一次真实发布能暴露它。
+ *
+ * ⚠️ 与 `scripts/release.sh` 的 `RELEASE_COMMIT_FILES` 必须逐条相等，漂移不会报错
+ * （放宽了 = 真带着未提交代码发版也放行；收窄了 = 每次发版全拦）。
+ * 漂移门禁见 `tests/eval/artifact-identity.test.ts` 的 T8。
+ */
+export const RELEASE_COMMIT_PATHS: readonly string[] = [
+  // bump 本体
+  "package.json",
+  // generate-changelog.ts 的两份产物（构建前生成、构建后提交）
+  "CHANGELOG.md",
+  "website/.vitepress/data/changelog.json",
+  // embed-builtin-skills.ts 的产物：内容变了才会脏，没变时不出现在 dirty_files 里
+  "packages/core/src/skill/builtin-embedded.generated.ts",
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 取数：字节嗅探（通道 B）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -474,7 +505,7 @@ export interface ReleaseGateResult {
  *
  * | 直觉写法（❌） | 为什么必错 | 正确写法 |
  * | --- | --- | --- |
- * | `dirty == false` | 构建发生在 bump 之后，package.json 必脏 | 脏的**唯一**文件是 package.json |
+ * | `dirty == false` | 构建发生在 bump 之后，package.json 必脏 | 脏文件都在 {@link RELEASE_COMMIT_PATHS} 里 |
  * | `commit == 本次 bump 提交` | bump 提交在构建之后才创建 | `commit == v<ver>^` |
  *
  * 照直觉写的后果不是"报个错" —— 是每次发版都被拦、然后被人加 flag 绕过，
@@ -526,10 +557,12 @@ export function judgeReleaseUpload(input: {
           "无法区分「bump 造成的脏」与「带着未提交代码发版」，拒绝",
       );
     } else {
-      const unexpected = files.filter((f) => f !== "package.json");
+      // 白名单 = bump 提交会收进历史的那批文件（见 RELEASE_COMMIT_PATHS 的注释）。
+      // 判的是「这些脏改动有没有 git 引用能重建」，不是「工作区有没有脏」。
+      const unexpected = files.filter((f) => !RELEASE_COMMIT_PATHS.includes(f));
       if (unexpected.length > 0) {
         reasons.push(
-          `${artifactName}: 构建时工作区有未提交改动（除 package.json 之外还有：` +
+          `${artifactName}: 构建时工作区有未提交改动（不在发布提交清单里的：` +
             `${unexpected.join(", ")}）—— 这些改动进了产物但没进任何 commit，` +
             "发布出去就没有任何 git 引用能重建它",
         );
