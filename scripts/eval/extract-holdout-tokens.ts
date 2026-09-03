@@ -49,6 +49,25 @@ const BLACKLIST = new Set<string>([
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "process.env",
+  // 2026-09-03：博客新增「Agent Runtime 从零到一」25 篇后浮现的两处误报。
+  //
+  // "no such file" 来自 case_025 的 must_include_any_of —— 那道题考的是
+  // **agent 找不到文件时要老实说找不到、不要编造**，而这一项只是「老实说」的
+  // 六种可接受措辞之一。同一个列表里的 "not found" 早已在上方豁免（T-3.7 之前），
+  // 两者性质完全相同，漏掉它只是因为当时没有文档命中过它。
+  // 它是 Node 的 ENOENT 标准错误文本（`Error: ENOENT: no such file or directory`），
+  // 任何讲错误分类的技术文章都会原样引用它。
+  //
+  // "WorkspaceProvider" 来自 arch_platform_006 的 user_query，而那道题是
+  // **静态结构断言**（题面自己写着「不依赖 agent 输出」）：它断言的是「CLI 默认行为
+  // 不被服务化模块破坏」，考的是仓库结构而非模型知不知道这个类名。
+  // 与已豁免的 LoopDetector / QuotaManager 同类：一个模块名不构成题面。
+  //
+  // 判据与 T-3.7 那三处一致：**泄露它不透露任何 holdout 题目信息**。
+  // 反过来说，如果哪天要豁免的是 case_025 的 must_not_include（"FoobarRouter 实现了"
+  // 这种编造出来的假类名），那就必须拒绝——那个串是题面独有的，命中它意味着真泄露。
+  "no such file",
+  "WorkspaceProvider",
 ]);
 
 const tokens = new Set<string>();
