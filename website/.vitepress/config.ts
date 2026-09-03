@@ -409,7 +409,7 @@ export default defineConfig({
      *   这条断了不会让 CI 变红，只会静默把访客送到 404。
      */
     socialLinks: [
-      { icon: "github", link: "https://github.com/rushengzhou/sid-code", ariaLabel: "GitHub 仓库" },
+      { icon: "github", link: "https://github.com/njfuzrs/sid-code", ariaLabel: "GitHub 仓库" },
     ],
 
     /**

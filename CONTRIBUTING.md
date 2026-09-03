@@ -8,22 +8,13 @@
 
 ---
 
-## ⚠️ 先读这一条：本项目当前的许可状态
+## 许可
 
 本仓库的 [LICENSE](./LICENSE) 是 **MIT**，你的贡献将按同一许可分发。
 没有 CLA，提 PR 即视为同意按该许可授权。
 
-但**本项目自身的许可不等于整个仓库都干净**，有一条必须在你动手前知道：
-
-> 第三方代码的来源与许可记录在 [NOTICE](./NOTICE)。其中终端渲染底座（现 `packages/tui-renderer/src/`）
-> **含有我们未获授权的第三方增量修改**，正在被重构掉。
-> **改动 `packages/tui-renderer/src/` 之前请先读 NOTICE 第 1 节**与
-> [`packages/tui-renderer/src/README.md`](./packages/tui-renderer/src/README.md)。
-> （分包前它在 `src/ink/`。）
-
-我们宁愿在这里如实说明现状，也不想让你在不知情的前提下贡献代码。
-如果你发现 NOTICE 里的描述与事实不符（低估了外部来源比例、漏记来源），
-请指出来，我们会更正。
+随附的第三方资产（入库的 `ripgrep` 二进制、npm 运行时依赖）来源与条款记录在
+[NOTICE](./NOTICE)。如果你发现其中描述与事实不符，请指出来，我们会更正。
 
 ---
 
@@ -523,7 +514,7 @@ lifecycle 与 class 都是**闭集**，模板在 `.agents/notes/_template.md`，
 | 情况 | 要求 |
 | --- | --- |
 | 新功能、改变现有行为、动架构 | **先开 issue 讨论**再写代码。否则可能做完才发现方向不对，白费你的时间 |
-| 改动跨多个包 / 涉及 `packages/tui-renderer/src/` | 先开 issue（后者还要先读 [NOTICE](./NOTICE) 第 1 节） |
+| 改动跨多个包 | 先开 issue，说明跨包影响面 |
 | bug 修复、文档、拼写、路径漂移、加测试 | 直接提 PR 即可，正文说清根因就行 |
 
 PR 正文里用 `Fixes #123` 关联 issue —— 合并时 issue 会自动关闭，也让「为什么做这个」
@@ -553,9 +544,7 @@ PR 正文里用 `Fixes #123` 关联 issue —— 合并时 issue 会自动关闭
 - **bug / 功能请求**：用 [issue 模板](./.github/ISSUE_TEMPLATE/)，
   带上 `sid-code --version`、操作系统、可复现步骤。
 - **安全漏洞**：**不要开公开 issue**，按 [SECURITY.md](./SECURITY.md) 私下上报。
-- **版权 / 归属问题**（尤其涉及 `packages/tui-renderer/src/`，分包前的 `src/ink/`）：见 [NOTICE](./NOTICE) 第 1 节，
-  或直接联系维护者。如果你发现 NOTICE 里的描述与事实不符（低估了外部来源比例、
-  漏记来源、修改描述不准），**请指出来，我们会更正**——
-  我们宁愿披露过度，也不要披露不足。
+- **版权 / 归属问题**：第三方资产来源见 [NOTICE](./NOTICE)，或直接联系维护者。
+  如果你发现其中描述与事实不符（漏记来源、修改描述不准），**请指出来，我们会更正**。
 
 参与本项目需遵守 [行为准则](./CODE_OF_CONDUCT.md)。

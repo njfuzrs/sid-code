@@ -1,7 +1,7 @@
 # sid-code
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![CI](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml)
+[![CI](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml)
 [![文档](https://img.shields.io/badge/%E6%96%87%E6%A1%A3-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Linux-lightgrey)](#安装)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
@@ -74,7 +74,7 @@ $ sc
 
 | 项 | 现状 |
 | --- | --- |
-| 自研代码 | `packages/` 下 20 万行以上 TypeScript（不含 vendor 的 ink fork） |
+| 自研代码 | `packages/` 下 20 万行以上 TypeScript |
 | 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
 | 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
 | 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
@@ -83,9 +83,9 @@ $ sc
   数字口径（发版前人工核对一次，写约数不写精确值）：
     ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
        下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 —— 复核命令静默失效比数字过期更糟，
-       因为下一个人会以为自己核对过了。ink fork 现在自成一包，用排包代替原先的 grep -v '/ink/'。
+       因为下一个人会以为自己核对过了。
     代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                （2026-08-11 实测 203,533 行，不含 vendor 进来的 ink fork = packages/tui-renderer）
+                （2026-08-11 实测 203,533 行）
     ⚠️ P1-2 测试分包（2026-08-13）：测试搬到了 packages/<包>/tests/，只覆盖 packages/*/src
        的命令会数出 30 而不是 644 —— **不报错，只静默少数 95%**。这正是本注释块想防的那类
        故障，却还是又发生了一次：测试目录一动，这里的路径清单必须跟着动。下面同时保留
@@ -138,11 +138,5 @@ bun run website:build    # 构建（死链检测在此生效）
 
 自研代码采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
 
-仓库内的第三方代码各依其自身条款，MIT 无法授予我们本来就不持有的权利。其中一条值得
-在这里直接说明：`packages/tui-renderer/`（终端渲染底座）**不是本项目原创** —— 它 fork 自
-MIT 许可的 [`ink`](https://github.com/vadimdemedes/ink)，但引入途径是一份第三方快照，
-其中携带的修改我们并未获得授权。这部分代码正在被重构掉，上文的代码行数口径已将其排除。
-
-每一个第三方组件的来源、许可条款与我们所做的修改，完整记录在 **[NOTICE](./NOTICE)** ——
-分发或再利用本仓代码前，请与 `LICENSE` 一并阅读。如果你是权利人、对本仓中的任何内容
-有疑虑，提一个 issue，我们会回应。
+仓库内随附的第三方资产（入库的 `ripgrep` 二进制、npm 运行时依赖）各依其自身许可，
+记录在 **[NOTICE](./NOTICE)**。

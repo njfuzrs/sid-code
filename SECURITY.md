@@ -5,7 +5,7 @@
 **请不要用公开 issue 上报安全漏洞。** 公开 issue 在修复发布前就把问题暴露给了所有人。
 
 请用 GitHub 的私密上报通道：
-**[Security → Report a vulnerability](https://github.com/rushengzhou/sid-code/security/advisories/new)**
+**[Security → Report a vulnerability](https://github.com/njfuzrs/sid-code/security/advisories/new)**
 
 走这个入口而不是邮箱，是因为它对双方都更省事：上报内容在草案阶段只有你和维护者可见，
 修复过程、CVE 申请与最终公开都在同一个页面里，不需要交换任何邮箱地址。
@@ -65,10 +65,6 @@ sid-code 是一个**在你本机上读写文件、执行 shell 命令、访问�
 这些是我们**已经知道且已公开记录**的问题，不需要重复上报
 （但如果你发现我们低估了影响，欢迎指出）：
 
-- **`packages/tui-renderer/src/`（分包前的 `src/ink/`）含未获授权的第三方代码**。这是版权/合规问题而非技术漏洞，
-  已在 [NOTICE](./NOTICE) 第 1 节如实披露，正在重构移除。
-- **`src/command/commands/claude-api/reference/` 下两份入库的 Anthropic API 参考资料
-  许可未确认**（[NOTICE](./NOTICE) 第 5 节）。
 - **权限规则层有已知缺陷**，例如 Bash 规则的通配符匹配语义与预期不一致
   （用 `minimatch`，`*` 不跨 `/`）。这类**已记录但未修**的缺陷，
   如果你有具体的绕过构造，仍然欢迎上报——具体构造比「有缺陷」这个结论有用得多。

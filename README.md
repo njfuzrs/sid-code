@@ -1,7 +1,7 @@
 # sid-code
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![CI](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/rushengzhou/sid-code/actions/workflows/ci.yml)
+[![CI](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#installation)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
@@ -87,7 +87,7 @@ Coming from Claude Code, migration is close to zero-cost — see the
 
 | Item | Status |
 | --- | --- |
-| First-party code | 200k+ lines of TypeScript under `packages/` (excludes the vendored ink fork) |
+| First-party code | 200k+ lines of TypeScript under `packages/` |
 | Engineering loop | 600+ test files, 8000+ unit tests; the full suite runs on every change and must be green before commit |
 | Surface area | 44 built-in tools, 32 hook event types, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | 30 eval cases (including a holdout set), run before each release to catch regressions |
@@ -99,10 +99,9 @@ Coming from Claude Code, migration is close to zero-cost — see the
                    packages/{shared,tui-renderer,core,cli}/src/, so the commands below were
                    updated too. A stale `find src` does not error — it just counts 0, and a
                    silently broken verification command is worse than a stale number, because
-                   the next person believes they verified it. The ink fork is now its own
-                   package, so we exclude a package instead of the previous grep -v '/ink/'.
+                   the next person believes they verified it.
     lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                   (2026-08-11: 203,533 lines, excluding the vendored ink fork = packages/tui-renderer)
+                   (2026-08-11: 203,533 lines)
     NOTE (P1-2, 2026-08-13): tests were split into packages/<pkg>/tests/, so a command
                    covering only `packages/*/src` counts 30 instead of 644 — it does NOT error,
                    it just silently undercounts by 95%. That is the exact failure this comment
@@ -165,14 +164,6 @@ in [CLAUDE.md](./CLAUDE.md) — the single source of truth (there is deliberatel
 
 **[MIT](./LICENSE)** for our own code. Non-commercial: not sold, not operated for profit.
 
-Third-party code in this repository is governed by its own terms, and MIT cannot grant
-rights we do not hold. One item is worth stating plainly here: `packages/tui-renderer/`
-(the terminal rendering layer) is **not original to this project** — it is a fork of the
-MIT-licensed [`ink`](https://github.com/vadimdemedes/ink) that reached us through a
-third-party snapshot carrying modifications we hold no rights to. It is being refactored
-out, and the line-count figures above exclude it.
-
-Provenance, license terms, and our modifications for every third-party component are
-recorded in **[NOTICE](./NOTICE)** — read it alongside `LICENSE` before redistributing
-or reusing this code. If you are a rights holder with a concern about anything in this
-repository, open an issue and we will respond.
+Third-party assets that ship with this repository (the vendored `ripgrep` binaries and
+the npm runtime dependencies) are governed by their own licenses, recorded in
+**[NOTICE](./NOTICE)**.

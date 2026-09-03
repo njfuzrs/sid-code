@@ -942,7 +942,7 @@ reflow) # reflow <issue号> [--synced]
     echo "> **请打开 issue 自己摘一段贴在这里**，不要就这样提交（空块比没有更糟）。"
   fi
   echo ">"
-  echo "> 出处: https://github.com/rushengzhou/sid-code/issues/$issue_num"
+  echo "> 出处: https://github.com/njfuzrs/sid-code/issues/$issue_num"
   echo
   echo "──────────────────────────────────────────────────────────"
   echo "贴完并保存后跑: bun run pr-batch reflow $issue_num --synced"

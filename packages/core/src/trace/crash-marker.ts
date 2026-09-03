@@ -107,8 +107,8 @@ function findCrashedSessions(): string[] {
  * 但它进了 crash.json，于是「崩溃率」这个指标里混进了「用户正常关窗口」。
  *
  * 为什么判据放在这里、而不是去 tui-renderer 的 writeSync 外面包 try/catch：
- * 1. `packages/tui-renderer/src/` 是未获授权的第三方增量修改（见 NOTICE 第 1 节），
- *    改动要最小化；而 EIO 的**危害**是污染崩溃统计，统计的入口就是本文件。
+ * 1. `packages/tui-renderer/src/` 是 vendor 进来的渲染底座，改动要最小化；
+ *    而 EIO 的**危害**是污染崩溃统计，统计的入口就是本文件。
  * 2. writeSync 直写 fd 1，绕过了 stream 对象，
  *    `registerProcessOutputErrorHandlers()` 注册的 'error' 事件处理器**保护不到它**
  *    （那道防线只对 `process.stdout.write` 生效）。所以 EIO 源头不止 root.ts 一处

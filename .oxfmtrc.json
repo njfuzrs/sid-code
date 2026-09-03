@@ -58,7 +58,7 @@
   // oxfmt 默认还会读 .gitignore / .prettierignore，所以被 ignore 的构建物自动不碰。
   "ignorePatterns": [
     // 第三方 vendor 代码：保持与上游可比对，套本仓风格会让 diff 失去意义。
-    // 这条与 .editorconfig 末尾那段同源，且 NOTICE 第 1 节要求不改动其形态。
+    // 这条与 .editorconfig 末尾那段同源：保持其形态不变，便于与上游比对。
     "packages/tui-renderer/src/_vendor/**",
 
     // 生成物：格式由生成器决定，格式化它等于让下次生成结果与工作区不一致

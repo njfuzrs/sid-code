@@ -53,8 +53,6 @@ CI 有两个 job、五道门禁，上面五条本地全跑绿基本就不会红�
       并提交了 `website/ref/` 与 `website/public/llms.txt` 的改动
 - [ ] 测试若会写 `~/.sid-code/`，已重定向到 tmpdir
       （见 [CONTRIBUTING.md](../CONTRIBUTING.md) 的测试约定——违反它的测试**会全绿**）
-- [ ] 改动涉及 `packages/tui-renderer/src/`（分包前的 `src/ink/`）的话，
-      读过 [NOTICE](../NOTICE) 第 1 节
 - [ ] 分支不是 `main`（从 `main` 切出的 `<type>/<描述>` 短命分支），且已装 git hook
       （`bun run install-hooks`）
 

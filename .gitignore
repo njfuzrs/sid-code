@@ -227,3 +227,25 @@ __pycache__/
 # `__pycache__/` 与 `*.py[cod]` 已在上面 swe-bench 那节声明（全局生效），此处不重复。
 /evals/external-benchmarks/harbor/runs/
 /evals/external-benchmarks/harbor/.venv/
+
+# ─── vendor 进来的终端渲染底座（不入库、不推远端） ─────────────────────────
+# packages/tui-renderer/src/ 是 fork 进来的第三方渲染代码，本仓不再把它纳入版本控制。
+#
+# ⚠️ 两件必须知道的事，不然会误判：
+# 1. **gitignore 只挡「未追踪」的文件。** 这些文件此前是已追踪状态，
+#    是先跑了 `git rm -r --cached packages/tui-renderer/src` 撤销追踪，这条才生效。
+#    以后若有人 `git add -f`，仍然能强行入库 —— ignore 不是权限控制。
+# 2. **文件仍在磁盘上，构建依赖它。** `packages/cli/src` 下 102 个文件从
+#    `@sid-code/tui-renderer` 导入，缺了它 `make build` 直接失败。
+#    所以这不是「删掉」，是「本地保留、不入库」。
+#    ⇒ 新克隆一份仓库是**构建不出来的**，需要另外拿到这个目录。
+/packages/tui-renderer/src/
+
+# ─── 入库的第三方 API 参考资料（不入库、不推远端） ───────────────────────────
+# 这两份是第三方 API 文档的摘录，许可未确认，本仓不再纳入版本控制。
+#
+# ⚠️ 它们是**编译期依赖**，不是普通参考资料：
+# `packages/cli/src/command/commands/claude-api/claude-api.ts` 用 Bun 的
+# `with { type: "text" }` 把原文内联进单二进制，缺了就编译不过。
+# 与上面 tui-renderer 那条同理：本地保留、不入库，新克隆需另外拿到。
+/packages/cli/src/command/commands/claude-api/reference/
