@@ -1,0 +1,23 @@
+# 身份归并表（git 原生机制，`git shortlog` / `%aN` / `%aE` 会自动应用）
+#
+# 为什么需要它:仓库里同一个人有两个 author 身份,不是配置错误,是两条不同的提交路径:
+#
+#   ① rushengzhou <272990952+rushengzhou@users.noreply.github.com>  —— 本地 git 直接提交
+#      这是 GitHub 的**私有域** noreply 邮箱(`users.noreply.github.com`)。
+#   ② 周如生 <rushengzhou3@gmail.com>                               —— GitHub 网页端合并 PR 时生成
+#      committer 一律是 `GitHub <noreply@github.com>`,author 用的是账号主邮箱。
+#
+# 两者都是同一个人。把 ① 归并到 ②,理由:
+#   - `users.noreply.github.com` 是 GitHub 私有域,**任何非 GitHub 平台都无法绑定它**
+#     (Gitee 的贡献度统计要求 commit 邮箱是本账号已确认绑定的邮箱)。
+#   - `rushengzhou3@gmail.com` 是真实可绑定邮箱,在哪个平台都能认领。
+#
+# ⚠️ 这只改变**读取时的展示**(shortlog / blame / %aN),不改写任何 commit 对象。
+# 提交历史与 hash 完全不变 —— 这是它相对 `git filter-repo` 的全部价值:
+# 本仓已发布的二进制把 40 位 commit SHA 编进了字节里(见 packages/shared/src/build-info.ts),
+# 重写历史会让所有已发布产物的身份判据当场失效,且 22 个 tag 全部要重打。
+#
+# 已知边界:**Gitee / GitHub 的网页贡献者列表不读 .mailmap**,它们按 commit 里的
+# author email 自行归并。平台侧要合并只能靠「在账号里绑定这两个邮箱」,而 ① 那个
+# 域名绑不了 —— 所以平台页面上的两条身份,靠这个文件消不掉。
+周如生 <rushengzhou3@gmail.com> <272990952+rushengzhou@users.noreply.github.com>
