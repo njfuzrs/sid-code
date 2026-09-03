@@ -2,6 +2,78 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.602 (2026-09-03)
+
+### 新功能
+- **evals** · claude-code 真跑对照 —— 闸 3 把「有没有 AVX」变成机械判据 (#152) `e01b321b`
+- **evals** · claude-code 对照 agent 装得上 —— 安装走 npm，而非官方 bootstrap.sh (#151) `0e440cbe`
+- **evals** · 换模型验证 —— 补上「修复是否与模型有关」这个空白维度 (#150) `8146d0b8`
+- **evals** · 路 B 对照侧接入 mini-SWE-agent（只做准备，未跑真实评测） (#133) `e539ca7e`
+- **evals** · 接入 Harbor 评测底座 (#130) `3a80644a`
+- **build** · 三道门禁把构建身份接成判据——编进去了不等于有人在读 (#128) `fe8deffc`
+- **build** · 把构建身份编进二进制 —— 版本号不是身份，commit 才是 (#123) `84c3c3b5`
+- **release** · beta/stable 发布通道 + 回滚脚本 + action 钉 SHA（P0 三项） (#114) `bf3109fe`
+- **evals** · SWE-bench Verified 阶段 A 链路与判分落地（10 题） (#113) `8e55c939`
+- **evals** · SWE-bench preflight 五项断言（失败即停） (#112) `bfb0a567`
+- **cli** · /model 面板新增价格/上下文窗口画像列 (#98) `f9aba60c`
+- **ui** · 权限确认框改为可选择式交互（↑↓/Enter/数字/字母三路并存） (#97) `c91cb44c`
+
+### 修复
+- **release** · G2 门禁首次真实运行即 5/5 全拦 —— 单测锁住了想象中的 release.sh `99e28297`
+- **evals** · 卡死在启动里的题进了配对分母 —— 新增 agent_started 判据 (#157) `389fed6a`
+- **evals** · E1 镜像必然起不来 —— http.server 在 bind 与 listen 之间做反向 DNS (#156) `c5961834`
+- **evals** · verifier 假 0 分的真因是网络不是 QEMU —— 用宿主本地 uv 镜像(E1)修根因 (#155) `9091227a`
+- **evals** · 代理端口一律探测，不许写死；网关默认值指向 shim (#146) `7d4ef4fd`
+- **evals** · 跑前闸 1（uv 速率）原来只是一段注释 (#145) `f45c21b3`
+- **evals** · Harbor 跑前加闸 0 —— 二进制陈旧时评测跑旧字节且不报错 (#144) `cfac2261`
+- **trace,eval** · 修 Harbor 评测四处仪器偏差 + 加「自报成功却 0 分」判据 (#143) `30586ff0`
+- **evals** · 容器降级链悬空让上游抖动放大成整轮报废 (#142) `07907aa9`
+- **evals** · Harbor 权限档配错让 144 次拒绝混进了能力账 (#141) `f6d1dba8`
+- **permission** · headless 拒绝把真实成因说给模型，不再只报「非交互模式」 (#139) `7f437eb8`
+- Harbor A11 挖出的三个 harness 缺陷（轮数预算 / 重试预算 / 成本兜底） (#138) `29576cc8`
+- **evals** · 路 B 真跑挖出的两个「不报错」缺陷 + 根 logs 未忽略 (#135) `9689ff5b`
+- **evals** · 修 Harbor 接入的 6 个缺陷（首次真实评测挖出） (#132) `abb8233e`
+- **telemetry** · permission_denials 换掉字符串代理判据，补齐三条鉴权路径埋点 (#131) `aa61b3cf`
+- 三个从 SWE-bench 轨迹挖出的缺陷（1 个产品缺陷 + 2 个仪器缺陷） (#129) `f199c642`
+- **trace** · 轮次用尽被记成 exit_status=user_interrupt，而没有任何人中断过 (#126) `0f22c47a`
+- **tools** · disallowedTools 遇 skipPermissions 静默失效，裁工具集而非只拒权限 (#125) `1c89ef18`
+- **evals** · 评测前置四个阻塞 + 耗时归因（权限修复实测比它要修的更差） (#122) `454cf79c`
+- **permission** · 子代理 checker 规则整段短路，deny/allow 均失效 (#120) `2c278117`
+- **llm** · 429 零重试终止整轮 —— 判据从错误文案改回结构化状态码 (#119) `0f3a12c6`
+- **evals** · 两个仪器 bug —— 正确 patch 被拒收 + 防作弊门禁恒为 false (#117) `1c98dceb`
+- **evals** · patch 缺尾换行被 GNU patch 整份拒收，吃掉一条真实修复 (#116) `b28cacbf`
+- **config** · SID_CONFIG_DIR 未覆盖 debug.log 落盘路径 (#111) `933437d8`
+- **statusline** · 给子进程三个管道挂 error 监听，修 EPIPE 逃顶层拖红 CI (#110) `ff0aa507`
+- **deps** · 升 @anthropic-ai/sdk 到 0.120.0 修两个 moderate 告警 (#106) `6ba643f5`
+- **cost** · 修成本口径失效与幽灵流白烧三缺陷（D1/D2/D3） (#96) `3f321514`
+- **tool** · bash 重定向漏提取导致权限确认绕过 (#95) `3285b782`
+- **statusline,release** · 修 flake 根因与发布流程门禁冲突 (#94) `a32188d5`
+- **release** · 发布流程补上建 GitHub Release (#93) `25a8d0e9`
+
+### 文档
+- **changelog** · v0.1.602 用户视角文案 `ee2c2db8`
+- **blog** · 新增「Agent Runtime 从零到一」系列 25 篇 (#158) `320be42b`
+- **evals** · 修正 7c 真因表述 —— 是环境问题（重跑即可），不是要改代码 (#154) `0b25ebe0`
+- **evals** · 加一份判读纪律 + 出处门禁，防「同一份实测两处结论相反」 (#140) `e1933d2d`
+- **evals** · Harbor A11 真实 benchmark 结案（否决）+ 挖出三个 harness 缺陷 (#137) `fcf16cf8`
+- **evals** · Harbor 跑前环境复核——三条硬约束全部推翻，挖出并发这条失真源 (#136) `0d4c6a29`
+- **evals** · Harbor A10 首次跨 agent 对照（只出数据与判据） (#134) `fc19bb65`
+- **evals** · 补 smoke-10 判分产物 —— 四个缺陷实测生效而分数未动 (#127) `f27df64e`
+- **evals** · smoke-9 跑通 —— 权限修复实测 113→0，暴露 web 工具白烧整轮 (#124) `b8b80a9a`
+- **ref** · 参考页三处缺口 —— env 扫描盲区致整个超时子系统隐身 (#121) `b19927eb`
+- **evals** · SWE-bench 接入定为路径 B，弃用 Inspect 脚手架 (#109) `2528f228`
+- **notes** · 补上 SDK 告警清零的实测复核 (#107) `6dfa4e8e`
+
+### 其他
+- Feat/claude code contrast node22 shim query (#153) `92025087`
+- **evals** · smoke-8 报告 + pre-commit 修复 + 主循环 bug 交接 (#118) `abd2edd5`
+- **deps** · bump the rest group across 1 directory with 11 updates (#108) `e0bc4b38`
+- **deps-dev** · bump @types/bun from 1.3.10 to 1.4.0 in the types group (#103) `0e434ca6`
+- bump actions/checkout from 4 to 7 (#101) `4a6facf6`
+- **deps** · 依赖批量升级并翻转 Dependabot 安全开关 (#100) `a98df87e`
+- **llm** · persist 落盘守卫改用路径判据，写盘路径由此可测 (#99) `46209cc8`
+- **release** · bump v0.1.601 + 北极星快照基线 (#92) `607464af`
+
 ## v0.1.601 (2026-08-21)
 
 ### 新功能
