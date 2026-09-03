@@ -10,15 +10,21 @@
 
 判据只能有一个定义处。**这个文件就是那个定义处。**
 
-## 这里放两个判据,它们问的是**两个不同主语**
+## 这里放几个判据,它们问的是**不同主语**
 
 | 函数 | 问题 | 取数源 |
 | --- | --- | --- |
 | `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
-| `agent_ran` | **agent** 跑过没有 | `agent_result` 的 in/out token 数 |
+| `agent_ran` | **agent** 发出过调用没有 | `agent_result` 的 in/out token 数 |
+| `agent_started` | **agent** 走完启动没有 | `agent/sid-home/debug.log` |
 
-两者都可能单独为假,而组合起来的语义完全不同:agent 没跑过而 verifier 判了分,
+它们都可能单独为假,而组合起来的语义完全不同:agent 没跑过而 verifier 判了分,
 形态就是「拿到一个 reward=0,看起来像没解出来,实际压根没碰过这道题」。
+
+⚠️ `agent_ran` 与 `agent_started` **不是**同一件事的两种写法,缺一不可:
+metadata 整份缺失时 `agent_ran` 只能返回 `None`(采集缺失,不可判),
+此时唯一能区分「跑过但没采到」与「卡死在启动里」的就是 `agent_started`
+—— 2026-09-03 实测有一题正是靠它才没被记进能力账。
 
 ## 判据本身:正向,不对"怎么坏的"做假设
 
@@ -115,6 +121,63 @@ def agent_ran(result: dict) -> bool | None:
     if tin is None and tout is None:
         return None
     return not ((tin or 0) == 0 and (tout or 0) == 0)
+
+
+#: agent 走完启动流程的标志。取 `[PERF] startup` 而不是别的行,因为它是
+#: **启动阶段的最后一行**(其后紧接 `[APP] 开始初始化`),出现即说明进程活到了
+#: "可以开始干活"那一刻。⚠️ 改这个串等于改判据。
+AGENT_STARTUP_MARK = "[PERF] startup"
+
+
+def agent_started(trial_dir: str) -> bool | None:
+    """agent 有没有**走完启动**。**None = 没有 agent 日志,不可判**。
+
+    ## 为什么 `agent_ran` 不够(2026-09-03 实测第四种形态)
+
+    `modelswitch-base-rerun` 的 `fix-code-vulnerability` 拿到 `reward=0.0`、
+    verifier **判分正常**,而 `agent_ran` 返回的是 **None**(不是 False)——
+    因为它整份 metadata 缺失(`sid_result_event_missing=True`),两个 token 键都是
+    `None`。于是 `compare-paired.py` 的 `agent_ran(d) is False` **不成立**,
+    这一题被**当成真实 0 分放进了配对分母**。
+
+    它的真实形态是**卡死在启动里、一次 API 都没发出**:
+
+        debug.log     : 134 行,时间戳首末**都是** 16:25:57(healthy 题是 522~3419 行)
+        最后一行       : `[SKILL] 加载了 8 个 Skill` —— 再也没有下一行
+        `[PERF] startup`: **没有**(其余 90 题全都有)
+        trajectories/ : **目录都没建出来**(healthy 题都有)
+        exception     : AgentTimeoutError after 3600.0s ← 60 分钟全耗在没动的进程上
+
+    ⇒ 与 cc 侧对照时,这一题在 cc 上是 **1.0**、在我们这侧被记成 **0.0**,
+    直接把配对均值从 `0.250 → 0.125` 拉出一个「退步」——而它压根没跑。
+    **这正是本仓「非能力失败混进能力账」的第四种形态**,前三种见
+    `agent_ran` 与 `llm_fatal` 的 docstring。
+
+    ## 判据为什么用 debug.log,而不是 metadata
+
+    metadata **恰恰是缺失的那一份**(所以 `agent_ran` 才判不出来)——
+    判据必须取一个**不依赖被怀疑那条链路**的源。`debug.log` 是 agent 直接写
+    文件、不经 stdout 重定向,所以它不会因为进程被 kill 而丢缓冲(实测:
+    `sid-code.jsonl` 与 `debug.log` 两个独立文件都停在同一秒)。
+
+    ## ⚠️ 三态,且 `None` 必须与 `False` 分开
+
+    没有 `debug.log` 的题(mini-swe-agent / claude-code / nop 侧)返回 `None`,
+    调用方**不能**把它当 False —— 否则会把整个 cc 侧全部排除掉。
+
+    ⛔ **不用 `AUDIT:API` 计数当判据**(2026-09-03 差点用它):旧基线
+    `modelswitch-base` 的同一题 `AUDIT:API=0` 却跑了 **31 轮 / 2372 行**,
+    因为它的权限审计日志是缺失的(`sid_permission_audit_missing=True`)。
+    那是一个**裸子串代理判据**,在多数情况下巧合正确,而出错那次恰好是最该拦的那次。
+    """
+    cands = glob.glob(os.path.join(trial_dir, "agent", "sid-home", "debug.log"))
+    if not cands:
+        return None
+    try:
+        blob = open(cands[0], encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    return AGENT_STARTUP_MARK in blob
 
 
 def self_reported_success(result: dict) -> bool:

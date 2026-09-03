@@ -29,7 +29,12 @@
 import json, glob, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verifier_health import agent_ran, llm_fatal, verifier_ran  # noqa: E402
+from verifier_health import (  # noqa: E402
+    agent_ran,
+    agent_started,
+    llm_fatal,
+    verifier_ran,
+)
 
 
 def load(run):
@@ -46,6 +51,16 @@ def load(run):
             excl = "无reward"
         elif agent_ran(d) is False:
             excl = "零调用"
+        # ⚠️ 这一条必须在 llm_fatal **之前**,且**不能**与「零调用」合并:
+        # metadata 整份缺失时 agent_ran 返回 None(不是 False),上面那条判据
+        # 判不出来,而 llm_fatal 读的也是同一份缺失的 metadata ⇒ 两条都放行。
+        # 2026-09-03 实测:`fix-code-vulnerability` 就这样带着一个
+        # **卡死在启动里、一次 API 都没发**的 reward=0.0 进了配对分母,
+        # 把均值从 0.250 拉到 0.125,读起来像「换档退步了」。
+        # `is False` 而不是 `not`:没有 debug.log 的题(cc / mswea 侧)返回 None,
+        # 用 `not` 会把整个对照侧一起排除掉。
+        elif agent_started(td) is False:
+            excl = "启动未完成"
         elif llm_fatal(d, td):
             excl = "上游打断"
         else:

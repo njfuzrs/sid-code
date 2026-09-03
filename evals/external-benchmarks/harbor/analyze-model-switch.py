@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # ⚠️ import 在 sys.path 之后，是刻意的（要先把本目录加进去）。
 from verifier_health import (
     agent_ran,
+    agent_started,
     llm_fatal,
     self_reported_success,
     verifier_ran,
@@ -137,6 +138,10 @@ def load_run(run_dir: str) -> tuple[list[dict], dict]:
                 tok_out=ar.get("n_output_tokens"),
                 verifier_broken=not verifier_ran(tdir),
                 agent_ran=agent_ran(d),
+                # ⚠️ 与 agent_ran 并列而**不是**替代它:metadata 整份缺失时
+                # agent_ran 只能给 None,此刻唯一能区分「跑过但没采到」与
+                # 「卡死在启动里」的就是这一条(2026-09-03 实测,见其 docstring)。
+                agent_started=agent_started(tdir),
                 llm_fatal=llm_fatal(d, tdir),
                 self_reported=self_reported_success(d),
             )
@@ -253,10 +258,18 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
     # ── 判据 ③：上游打断（#142 降级链 / #119 429）───────────────────────────
     fatal = [r["task"] for r in rows if r["llm_fatal"]]
     zero = [r["task"] for r in rows if r["agent_ran"] is False]
+    # ⚠️ `is False` 而非 `not`:没有 debug.log 的题(cc / mswea / nop 侧)返回
+    # None,用 `not` 会把整个对照侧一起排除掉 —— 那比不排除更坏。
+    nostart = [r["task"] for r in rows if r["agent_started"] is False]
     unknown_ran = [r["task"] for r in rows if r["agent_ran"] is None]
     print(f"\n=== 判据 ③：上游打断 / 零调用（**这些不是能力失败**）===")
     print(f"  重试链打空 {len(fatal)}/{n} {fatal if fatal else ''}")
     print(f"  一次调用都没发生 {len(zero)}/{n} {zero if zero else ''}")
+    # ⚠️ 单独一行,**不与「零调用」合并计数**:两者的下一步不同 ——
+    # 零调用要看上游失败率(闸 2),启动未完成要看 agent 自己卡在哪一步。
+    if nostart:
+        print(f"  🔴 启动未完成 {len(nostart)}/{n} {nostart} —— agent 卡死在启动里、"
+              f"**一次 API 都没发出**，reward=0 是假的（判据 agent_started）")
     if unknown_ran:
         print(f"  ⚠️ {len(unknown_ran)} 题 token 字段缺失、**不可判**（三态的 None，"
               f"不要当成「跑过了」）: {unknown_ran}")
@@ -303,7 +316,7 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
                 maxed=len(maxed), fatal=len(fatal), zero=len(zero),
                 # ⚠️ **题名**必须带出来，不能只带计数 —— 见并排处那段注释：
                 # 两侧各排除 1 题但**排除的是不同的题**时，只比数量会报"对称"。
-                excluded=sorted(set(fatal) | set(zero)),
+                excluded=sorted(set(fatal) | set(zero) | set(nostart)),
                 reward_mean=(sum(rw) / len(rw)) if rw else None,
                 cost=sum(tc), conc=conc,
                 models=sorted({str(r["model"]) for r in rows}),
