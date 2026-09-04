@@ -31,8 +31,33 @@ bun --version                                # 开发用 1.3.x，CI 用 latest
 git clone <仓库地址>
 cd sid-code
 bun install
+bun run vendor:fetch  # 取回构建期 vendor 源码（新克隆必做，见下）
 make build            # 构建开发版二进制（不改版本号）
 ```
+
+### 新克隆必须先 `bun run vendor:fetch`
+
+两个目录**不入库但是编译期依赖**，缺了它们编译不过：
+
+| 目录 | 为什么是编译期依赖 |
+| --- | --- |
+| `packages/tui-renderer/src/` | `packages/cli/src` 下 102 个文件按 `@sid-code/tui-renderer/*` 导入 |
+| `packages/cli/src/command/commands/claude-api/reference/` | `claude-api.ts` 用 Bun 的 `with { type: "text" }` 把原文内联进二进制 |
+
+不取回来的实测形态是 `Cannot find module '@sid-code/tui-renderer/stringWidth.ts'`
+与 `ENOENT: scandir '.../packages/tui-renderer/src'`。
+
+机制与入库的 `ripgrep` 同源（`scripts/fetch-ripgrep.ts` 是先例）：
+**本地已有则跳过、全程不联网**；缺失才下载 tar.gz + sha256 校验后解包。
+
+```bash
+bun run vendor:check   # 只检查是否齐全（缺则退 1）
+bun run vendor:fetch   # 缺则取回
+bun run vendor:pack    # 反向：改了本地 vendor 源码后打包，供上传新版本
+```
+
+⚠️ **`make build` 会自动跑这一步，但单独跑 `bun test` 不会。**
+克隆后只跑测试会红一片，先手动跑一次 `vendor:fetch`。
 
 ### `eval-framework` 是仓内 workspace 包，不是外部依赖
 

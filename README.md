@@ -139,10 +139,18 @@ Two binaries with **different names** coexist locally; they are not disambiguate
 git clone <repository-url>
 cd sid-code
 bun install
+bun run vendor:fetch  # fetch build-time vendor sources (see the note below)
 make build            # build the dev binary (does not bump the version — use this daily)
 sc-dev                # run the dev build
 bun test              # full unit test suite
 ```
+
+> ⚠️ `bun run vendor:fetch` is required on a fresh clone. Two directories
+> (`packages/tui-renderer/src/` and `packages/cli/src/command/commands/claude-api/reference/`)
+> are not tracked in git but *are* build-time dependencies, so a clone without them fails to
+> compile (`Cannot find module '@sid-code/tui-renderer/...'`). `make build` runs the fetch on
+> its own; a bare `bun test` does not — run it once after cloning. Same mechanism as the
+> vendored `ripgrep`: local copy wins, otherwise download + sha256 verify.
 
 > ⚠️ To verify a code change you must run `sc-dev`. `sc` points at the released build and
 > will not reflect any local change. When in doubt, run

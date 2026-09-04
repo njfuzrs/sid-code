@@ -117,10 +117,18 @@ $ sc
 git clone <仓库地址>
 cd sid-code
 bun install
+bun run vendor:fetch  # 取回构建期 vendor 源码（见下方说明）
 make build            # 构建开发版二进制（版本号不变，日常就用这个）
 sc-dev                # 启动开发版
 bun test              # 全量单测
 ```
+
+> ⚠️ **新克隆必须先跑 `bun run vendor:fetch`**。两个目录
+> （`packages/tui-renderer/src/` 与 `packages/cli/src/command/commands/claude-api/reference/`）
+> **不入库但是编译期依赖**，缺了它们编译直接失败
+> （`Cannot find module '@sid-code/tui-renderer/...'`）。
+> `make build` 会自动跑这一步，但**单独跑 `bun test` 不会** —— 克隆后先手动跑一次。
+> 机制与入库的 `ripgrep` 同源：本地有则用本地，缺失则下载 + sha256 校验。
 
 > ⚠️ 改了代码要验证，必须跑 `sc-dev`。`sc` 指向线上稳定版，跑它验证不到任何本地改动。
 > 拿不准时先 `which sid-code-dev sid-code` 确认指向。
