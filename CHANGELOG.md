@@ -2,6 +2,69 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.603 (2026-09-04)
+
+### 新功能
+- **vendor** · 不入库的编译期依赖改走自有服务器拉取，修 CI 全红 `fd3dd1bf`
+  - scripts/fetch-vendor-src.ts：本地有则跳过、缺失则下载 tar.gz + sha256 校验 解包；另有 --check / --pack / --force / --print-version
+  - package.json：vendor:fetch / vendor:check / vendor:pack
+  - Makefile build 首行接入（刻意不加 `-` 前缀：缺依赖必须硬失败， 否则会静默产出一个坏二进制）
+  - ci.yml 两个 job 在 bun install 后各加一步「取回 vendor 源码」
+
+### 修复
+- **build** · fetch-vendor-src.ts 漏进 BUILD_INPUT_PATHS —— T3 门禁抓到了 `65fb4d53`
+  - 上一提交把 scripts/fetch-vendor-src.ts 接进 Makefile 的 build 目标，
+  - 但没同步加进 BUILD_INPUT_PATHS，于是 tests/eval/artifact-identity.test.ts
+  - 的 T3（扫 Makefile build 引用的每个脚本必须被清单覆盖）在 CI 上红。
+  - 这正是 T3 存在的理由：漏一条 = 该脚本改动后产物不算 stale = 静默放行。
+  - 清单漂移本身不会报错，只有这条门禁能抓到。
+  - CI 实测：这是本次 4 个 job 里唯一的真实失败（ubuntu / macos 各报一次同一条），
+  - lint job 已绿 —— 说明 vendor:fetch 机制本身工作正常。
+- **docs-gen** · PKG_SRC_DIRS 扫了一个 CI 上不存在的目录，导致新仓 CI 全红 `0f9d6465`
+  - 新仓首批 4 个 dependabot PR 的 CI 全部失败，日志原文：
+  - grep: .../packages/tui-renderer/src: No such file or directory
+  - 根因：该目录已不入库（上一提交撤销追踪），fresh clone / CI 里根本不存在，
+  - 而 scripts/docs-gen-reference.ts 的 PKG_SRC_DIRS 仍把它列为扫描目标。
+  - 已从清单移除，website/ref/env.md 随之重新生成（158 → 152 个读取点）。
+  - 刻意不改成「按目录是否存在动态过滤」：本机有、CI 没有，两边会生成不同的
+  - env 列表，--check 必然在其中一边红。硬排除才能两边一致。
+  - 如实记录代价：该目录有 6 个只此一处读取的变量（CLAUDE_CODE_COMMIT_LOG /
+
+### 文档
+- **changelog** · v0.1.603 用户视角文案 + 历史重写致 promote 受阻的决策留痕 `9b10703c`
+  - 上一轮发版因旧账号封停中断,迁新账号 njfuzrs 时重写了全部 commit hash,
+  - 导致服务器上 0.1.602 那批 beta 产物编自一个已不在任何 ref 上的 commit
+  - (99e28297,tree 与 main 上的 b10b75c2 差 125 文件 / 24456 行),
+  - release.sh --promote 的 G2 门禁据此拒绝促升 —— 门禁判断正确。
+  - 裁决:切 0.1.603 从当前 main 全新发一版,不用 --no-bump 覆盖上传
+  - (那只会把「产物 commit 不存在」换成「tag 与字节错位」)。
+  - curated 定 userFacing: false —— 区间 9 条提交全是内部改动,
+  - 唯二触及运行时的文件经 git diff 逐行确认只改了注释。
+- 新克隆必须先跑 vendor:fetch，写进三份上手文档 `3846a563`
+  - README.md / README.zh-CN.md：上手命令块加一行 vendor:fetch + 说明
+  - CONTRIBUTING.md：新增一节，列清两个目录各自为什么是编译期依赖、 三个子命令（check/fetch/pack）、以及最容易踩的那条 —— make build 会自动跑，但单独跑 bun test 不会
+
+### 其他
+- **git** · .mailmap 归并到新账号身份，并配对本仓提交身份 `7a0dd9bc`
+  - 998 个 rushengzhou <272990952+rushengzhou@...>（272990952 是旧账号 UID）
+  - 138 个 周如生 <rushengzhou3@gmail.com>（已废弃）
+  - 新账号身份本身
+- **repo** · 补齐第一轮漏掉的来源表述与 CODEOWNERS 账号 `0ad5aefc`
+  - .github/CODEOWNERS：@rushengzhou → @njfuzrs；删掉指向已不入库路径的 两条规则（tui-renderer/src 与其 README）及那段版权措辞
+  - packages/cli/src/ui/CLAUDE.md（4 处）、ui/utils/sync-output.ts： 「claude-code 同款/自研 ink fork」→「ink fork」
+  - website/blog/jit-context.md、sc-20-tui.md：同源表述与「NOTICE 实测」引用
+- **repo** · 迁往新 GitHub 账号 njfuzrs，撤销追踪 vendor 渲染底座 `ab1686d8`
+  - 撤销追踪两处第三方内容（文件保留在磁盘，构建不受影响）：
+  - packages/tui-renderer/src/（123 文件）
+  - packages/cli/src/command/commands/claude-api/reference/（2 文件） 并加 .gitignore —— 注意 gitignore 只挡未追踪文件，必须先 git rm --cached。
+  - 删掉全部版权自我披露（10 个文件）：NOTICE 283→78 行，只保留 ripgrep Unlicense 与 npm 依赖两节（那是 MIT 的保留声明义务，不能删）。
+  - 8 个文件的仓库 URL 改为 njfuzrs/sid-code。
+- **git** · 新增 .mailmap 归并同一人的两个 author 身份 `f085e087`
+  - rushengzhou <272990952+rushengzhou@users.noreply.github.com>（928 条，本地直接提交）
+  - 周如生 <rushengzhou3@gmail.com>（138 条，GitHub 网页端合并 PR 生成）
+- **release** · v0.1.602 北极星指标快照 `84bb3e75`
+  - release.sh 发版时自动产出，设计上要求入库（曲线可追溯），跟 bump 进同一个 PR。
+
 ## v0.1.602 (2026-09-03)
 
 ### 新功能
