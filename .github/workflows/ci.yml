@@ -182,6 +182,17 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
+      # ⚠️ 这一步不能省，也不能加 `continue-on-error`。
+      # `packages/tui-renderer/src/` 与 `.../claude-api/reference/` **不入库**（见 .gitignore），
+      # 但它们是**编译期依赖**：前者被 packages/cli/src 下 102 个文件按
+      # `@sid-code/tui-renderer/*` 导入，后者被 claude-api.ts 用 `with { type: "text" }` 内联。
+      # 不取回来的实测后果是**全红**（2026-09-04 新仓首批 4 个 dependabot PR）：
+      #   Cannot find module '@sid-code/tui-renderer/stringWidth.ts'
+      #   ENOENT: no such file or directory, scandir '.../packages/tui-renderer/src'
+      # 机制与仓内 ripgrep 同源（fetch-ripgrep.ts）：本地有则跳过，缺失则下载 + sha256 校验。
+      - name: 取回 vendor 源码（不入库的编译期依赖）
+        run: bun run vendor:fetch
+
       # ⚠️ 这里刻意用裸 `bun test`（**不是** `bun run test`）。
       # `package.json` 的 `test` 脚本带 `--test-name-pattern '^(?!.*\[slow\])'`，是给
       # 本地开发用的快通道（跳过 4 条标 [slow] 的真实时钟 case）；CI 必须跑**全部**，
@@ -237,6 +248,17 @@ jobs:
 
       - name: Install deps
         run: bun install --frozen-lockfile
+
+      # ⚠️ 这一步不能省，也不能加 `continue-on-error`。
+      # `packages/tui-renderer/src/` 与 `.../claude-api/reference/` **不入库**（见 .gitignore），
+      # 但它们是**编译期依赖**：前者被 packages/cli/src 下 102 个文件按
+      # `@sid-code/tui-renderer/*` 导入，后者被 claude-api.ts 用 `with { type: "text" }` 内联。
+      # 不取回来的实测后果是**全红**（2026-09-04 新仓首批 4 个 dependabot PR）：
+      #   Cannot find module '@sid-code/tui-renderer/stringWidth.ts'
+      #   ENOENT: no such file or directory, scandir '.../packages/tui-renderer/src'
+      # 机制与仓内 ripgrep 同源（fetch-ripgrep.ts）：本地有则跳过，缺失则下载 + sha256 校验。
+      - name: 取回 vendor 源码（不入库的编译期依赖）
+        run: bun run vendor:fetch
 
       - name: oxlint
         run: bun run lint

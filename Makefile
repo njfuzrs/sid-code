@@ -76,6 +76,7 @@ help:
 # 日常开发构建：不动版本号，跑多少次都一样。
 # 拉完代码、改完代码都用它——CLAUDE.md §0 的"改完必须验证构建"指的就是这个。
 build:
+	$(BUN) run scripts/fetch-vendor-src.ts
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	-$(BUN) run scripts/gen-model-catalog-snapshot.ts
