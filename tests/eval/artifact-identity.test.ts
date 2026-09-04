@@ -35,6 +35,7 @@ import {
   assessArtifact,
   judgePromote,
   judgeReleaseUpload,
+  pickMainRef,
   sniffArtifactIdentity,
   verifySidecar,
   type GitProbe,
@@ -553,6 +554,43 @@ describe("G2 发布通道门禁", () => {
     });
     expect(r.ok).toBe(true);
     expect(r.reasons.join(" ")).toContain("未验证");
+  });
+
+  // ── pickMainRef：G2 问哪个 ref ────────────────────────────────────────────
+  //
+  // 这一组防的是一个**静默**漏洞（2026-09-04 实测踩到）：release.sh 自己提交的
+  // `bump vX.Y.Z` 先落在本地 main，要走 PR 才进远端 main。先问本地 main 的话，
+  // 「upload 完、PR 未合」那段窗口里 promote 会放行一个尚未进主线的版本，
+  // 而日志显示的是一句 ✅。所以顺序本身必须被断言锁住。
+  const probeWith = (refs: Record<string, string | null>): Pick<GitProbe, "revParse"> => ({
+    revParse: (ref: string) => refs[ref] ?? null,
+  });
+
+  test("pickMainRef：两个都在时选 origin/main（顺序反了就是那个静默漏洞）", () => {
+    // 变异自证：把 pickMainRef 的两个 if 调换 → 这条红
+    const r = pickMainRef(probeWith({ "origin/main": "aaa1111", main: "bbb2222" }));
+    expect(r.ref).toBe("origin/main");
+    expect(r.degraded).toBe(false);
+  });
+
+  test("pickMainRef：只有本地 main 时退化，且必须自报 degraded", () => {
+    // 变异自证：把 degraded 恒设为 false → 这条红（弱判据就会冒充强判据）
+    const r = pickMainRef(probeWith({ "origin/main": null, main: "bbb2222" }));
+    expect(r.ref).toBe("main");
+    expect(r.degraded).toBe(true);
+  });
+
+  test("pickMainRef：两个都取不到 → degraded，交给 judgePromote 报「未验证」", () => {
+    const r = pickMainRef(probeWith({}));
+    expect(r.degraded).toBe(true);
+    // 此时调用方的 revParse 会落到 null，judgePromote 放行但明说没验证 —— 不是绿灯
+    const j = judgePromote({
+      info: parseBuildInfoLine(line({ origin: "release" })),
+      isAncestorOfMain: null,
+      version: "0.1.603",
+    });
+    expect(j.ok).toBe(true);
+    expect(j.reasons.join(" ")).toContain("未验证");
   });
 });
 

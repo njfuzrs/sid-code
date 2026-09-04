@@ -33,6 +33,7 @@ import {
   judgeReleaseUpload,
   makeCmdRunner,
   makeGitProbe,
+  pickMainRef,
   sniffArtifactIdentity,
   verifySidecar,
   EXIT_CODE,
@@ -185,8 +186,12 @@ function main(argv: string[]): number {
     }
     const { info } = sniffArtifactIdentity(artifact, runner);
     const probe = makeGitProbe(REPO_ROOT, runner);
-    // main 可能只在远端（发版机上通常两者都有）。两个都试，都取不到就传 null 并点破。
-    const mainRef = probe.revParse("main") !== null ? "main" : "origin/main";
+    // 判据问 origin/main 而不是本地 main —— 理由与实测教训见 pickMainRef 的注释。
+    const { ref: mainRef, degraded } = pickMainRef(probe);
+    if (degraded) {
+      console.error("     ⚠️ 取不到 origin/main，退化到**本地 main**（弱判据：本地 main");
+      console.error("        可能含尚未推送/尚未合并的提交）。先跑 git fetch origin main。");
+    }
     const isAncestor =
       info.identity_source === "embedded" && probe.commitExists(info.commit)
         ? probe.revParse(mainRef) !== null

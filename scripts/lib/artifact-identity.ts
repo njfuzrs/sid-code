@@ -595,6 +595,35 @@ export function judgeReleaseUpload(input: {
 }
 
 /**
+ * G2 问哪个 ref —— **`origin/main` 优先，本地 `main` 只作退化路径。**
+ *
+ * 顺序反过来会开一个真实漏洞，而且它不报错：发布流程里 release.sh 自己把
+ * `bump vX.Y.Z` 提交到**本地** main，那个提交要走 PR 才进远端 main
+ * （CLAUDE.md 发版第 4 步）。于是「upload 跑完、PR 还没合」这段窗口里，
+ * 产物 commit 已在本地 main、却**还不在远端主线**上 —— 先问本地 main 就会放行，
+ * `latest.txt` 因此指向一份「对应 commit 尚未进 main」的字节。
+ * 形态与「分支包」不同（那是永远不会进 main），但违反的是同一条铁律。
+ *
+ * 实测（2026-09-04，v0.1.603）：upload 结束 16:39:23、PR #13 合并 16:48:20，
+ * 中间 9 分钟里产物 commit `9b10703c` 在本地 main = YES、在 origin/main = NO。
+ *
+ * 退化路径必须保留（离线发版机 / fork 里没有 origin），但**必须自报是弱判据** ——
+ * 让一个弱判据冒充强判据，正是本模块通篇在消灭的东西。
+ *
+ * 返回 `degraded: true` 时调用方要把「这是弱判据」打出来，不能静默。
+ */
+export function pickMainRef(probe: Pick<GitProbe, "revParse">): {
+  ref: string;
+  degraded: boolean;
+} {
+  if (probe.revParse("origin/main") !== null) return { ref: "origin/main", degraded: false };
+  if (probe.revParse("main") !== null) return { ref: "main", degraded: true };
+  // 两个都取不到：仍返回 origin/main，让调用方的 revParse 检查落到 null 分支，
+  // judgePromote 会因 isAncestorOfMain=null 放行并明说"未验证"。
+  return { ref: "origin/main", degraded: true };
+}
+
+/**
  * `--promote` 前：目标版本的产物 commit 必须是 main 的祖先。
  *
  * 拦的是「把一个分支包 promote 成稳定版」。这条把 `CLAUDE.md` 里那句人工核验
@@ -602,6 +631,9 @@ export function judgeReleaseUpload(input: {
  *
  * ⚠️ `merge-base --is-ancestor` 是**自反的**（实测：一个提交是它自己的祖先，返回 0），
  * 这正是这里要的语义 —— tag 就在 main 上时也该通过。
+ *
+ * ⚠️ 传进来的 `isAncestorOfMain` 必须是对 `pickMainRef()` 选出的 ref 求的值，
+ * 不是对本地 `main` —— 见 `pickMainRef` 的文件注释。
  */
 export function judgePromote(input: {
   info: BuildInfo;
