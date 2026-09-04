@@ -1,7 +1,7 @@
 {
   "generatedAt": "2026-09-04",
-  "currentVersion": "0.1.602",
-  "totalVersions": 21,
+  "currentVersion": "0.1.603",
+  "totalVersions": 22,
   "totalItems": 208,
   "sectionMeta": [
     {
@@ -22,6 +22,14 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.603",
+      "date": "2026-09-04",
+      "highlight": null,
+      "userFacing": false,
+      "count": 0,
+      "sections": []
+    },
     {
       "version": "0.1.602",
       "date": "2026-09-03",
