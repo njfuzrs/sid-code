@@ -38,10 +38,23 @@ const REF = join(WEBSITE, "ref");
  * ⚠️ 漏一个包不会报错，只会让统计数字变小、文档少列一批条目 ——
  * 分包时实测 env 扫描一度归零、整段「未列入上表的读取点」被静默删掉。
  * 新增包时同步这里。
+ *
+ * ⚠️ 刻意不含 `tui-renderer`：它已不入库（见 .gitignore），fresh clone / CI 里
+ * **这个目录根本不存在**，grep 会以 `No such file or directory` 让整条门禁失败 ——
+ * 实测新仓首批 4 个 dependabot PR 的 CI 全红就是这个原因。
+ *
+ * ⚠️ **不要改成「按目录是否存在动态过滤」**：本机有这个目录、CI 没有，
+ * 两边会生成不同的 env 列表，`--check` 必然在其中一边红。硬排除才能两边一致。
+ *
+ * 代价（如实记录，不是「无影响」）：该目录里有 6 个只此一处读取的变量
+ * （`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS` /
+ * `CLAUDE_CODE_TMUX_TRUECOLOR` / `CLAUDE_CODE_ACCESSIBILITY` /
+ * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS`），
+ * 它们**在运行时仍然生效**（代码编进了二进制），但从此不再出现在 `website/ref/env.md`。
+ * 这是「代码不入库」的连带代价，不是 bug。
+ * 剩余 3 包共 931 个 .ts 文件，远高于下方 scanned < 500 哨兵。
  */
-const PKG_SRC_DIRS = ["shared", "tui-renderer", "core", "cli"].map((p) =>
-  join(ROOT, "packages", p, "src"),
-);
+const PKG_SRC_DIRS = ["shared", "core", "cli"].map((p) => join(ROOT, "packages", p, "src"));
 
 const CHECK = process.argv.includes("--check");
 const STALE = process.argv.includes("--stale");
