@@ -28,7 +28,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, lstatSync, readlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -120,5 +120,122 @@ describe("vendor 位置与 ignore 锚点（P2-3）", () => {
     const entries = readdirSync(VENDOR_DIR);
     // ripgrep/ 是入库目录，必须在
     expect(entries).toContain("ripgrep");
+  });
+});
+
+/**
+ * ⑯ vendor 真实字节挪进 `.vendor-src/` + symlink —— 防线的形态门禁。
+ *
+ * ## 治的是什么
+ *
+ * 一次真实事故：`git rm --cached` + `.gitignore` 之后 125 个 vendor 文件从磁盘消失。
+ * 机理是 `.gitignore` 只挡「未追踪文件不被 add」，**不挡「已记录删除的文件不被
+ * checkout 删掉」** —— 仓库里 37+ 个分支仍把那两个路径记为已追踪。
+ *
+ * 根治办法是把真实字节挪到一个**在任何 ref 里都不存在**的路径（`.vendor-src/`），
+ * 规范路径只留一个 symlink。这样 checkout 能动的只有那个几十字节的链接。
+ *
+ * ## 为什么这些断言不是形式主义 —— 三条都是**静默**失效
+ *
+ * 1. `.gitignore` 的尾斜杠只匹配目录、不匹配 symlink。写成 `.../src/` 时
+ *    `git check-ignore` 不命中，两个 symlink 出现在 git status 里，
+ *    而**构建、测试、脚本全都照样绿** —— 唯一症状是可能被 `git add -A` 带走。
+ * 2. `.vendor-src/` 一旦被某个分支入库，整条防线当场失效，同样没有任何东西报错。
+ * 3. `--pack` 少了 `tar -h` 只会把 2 个 symlink 打进包（而不是 125 个文件），
+ *    tar 退出码 0、sha256 算得出、上传成功 —— 下一个 fresh clone 才炸。
+ *
+ * ⇒ 三条的共同点：跑一次测试看绿测不出来，必须静态断言。
+ */
+describe("vendor 真实字节与 symlink 防线（⑯）", () => {
+  const CACHE_DIR = ".vendor-src";
+
+  test(".gitignore 用不带尾斜杠的形态，能同时挡住真目录与 symlink", () => {
+    // 核心断言。用 `git check-ignore` 而不是自己解析 .gitignore ——
+    // 尾斜杠"只匹配目录"这类语义只有 git 自己算得准（这正是坑 2 的成因）。
+    const paths = [
+      "packages/tui-renderer/src",
+      "packages/cli/src/command/commands/claude-api/reference",
+      CACHE_DIR,
+    ];
+    const notIgnored: string[] = [];
+    for (const rel of paths) {
+      try {
+        git("check-ignore", "-q", rel);
+      } catch {
+        notIgnored.push(rel);
+      }
+    }
+    expect(notIgnored).toEqual([]);
+
+    // 形态也钉一下：带尾斜杠的旧写法必须已消失，否则 symlink 会漏出来。
+    const gitignore = readFileSync(join(REPO_ROOT, ".gitignore"), "utf-8");
+    expect(gitignore).toContain("/packages/tui-renderer/src\n");
+    expect(gitignore).not.toContain("/packages/tui-renderer/src/\n");
+  });
+
+  test("`.vendor-src/` 在任何 ref 里都不存在 —— 这是整条防线的机理", () => {
+    // 防线成立的**唯一前提**：git 的任何 ref 都不含这个路径，于是
+    // checkout / merge / reset 都不会碰它。谁把它入库一次，防线就静默失效。
+    const refs = git("for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags")
+      .split("\n")
+      .filter(Boolean);
+    expect(refs.length).toBeGreaterThan(0); // 自证：真的扫到了 ref，不是空集全绿
+
+    const polluted: string[] = [];
+    for (const ref of refs) {
+      let tree = "";
+      try {
+        tree = execFileSync("git", ["ls-tree", "-r", "--name-only", ref], {
+          cwd: REPO_ROOT,
+          encoding: "utf-8",
+          maxBuffer: 64 * 1024 * 1024,
+        });
+      } catch {
+        continue; // 个别 ref（如指向非 commit 的 tag）读不到，跳过
+      }
+      if (tree.split("\n").some((l) => l.startsWith(`${CACHE_DIR}/`))) polluted.push(ref);
+    }
+    expect(polluted).toEqual([]);
+  });
+
+  test("fetch-vendor-src.ts 的 --pack 带 -h，否则只会打包 symlink 本身", () => {
+    const src = readFileSync(join(REPO_ROOT, "scripts", "fetch-vendor-src.ts"), "utf-8");
+    // 只在**代码**里找，不在注释里找：注释里必然出现 "-h" 与 "tar" 这些词，
+    // 拿全文做断言会让"把 -h 从参数表里删掉"仍然全绿
+    //（同 evals/CLAUDE.md §4.4：判据读了不该读的文本）。
+    const code = src
+      .split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+    // runTar 的参数数组里必须有独立的 "-h" 这一项
+    expect(code).toMatch(/"-h",/);
+    expect(code).toContain('"--format=ustar"');
+  });
+
+  test("脚本把缓存目录与 symlink 目标定在 .vendor-src/，且解包不穿过 symlink", () => {
+    const src = readFileSync(join(REPO_ROOT, "scripts", "fetch-vendor-src.ts"), "utf-8");
+    const code = src
+      .split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+
+    expect(code).toContain(`const CACHE_DIR = "${CACHE_DIR}"`);
+    // 相对 symlink（仓库整体搬家不断）：目标由 relative() 算，不是硬编码绝对路径
+    expect(code).toContain("relative(join(ROOT, dirname(rel)), cacheAbs(rel))");
+    // 坑 3：tar 必须解到 stage 临时目录，不能解到 ROOT
+    expect(code).toContain('runTar(["-xzf", tmp], stage)');
+    expect(code).not.toContain('runTar(["-xzf", tmp], ROOT)');
+  });
+
+  test("工作区里规范路径确实是指向缓存的 symlink（本机可用性回归）", () => {
+    // fresh clone / CI 上跑过 vendor:fetch 之后才有意义；没有则跳过，避免无意义地红。
+    const rel = join("packages", "tui-renderer", "src");
+    const abs = join(REPO_ROOT, rel);
+    if (!existsSync(abs)) return;
+    if (!lstatSync(abs).isSymbolicLink()) return; // 老克隆尚未迁移，vendor:fetch 会就地迁
+
+    expect(readlinkSync(abs)).toBe(join("..", "..", CACHE_DIR, "tui-renderer-src"));
+    // 经 symlink 必须真能读到内容（空目录比不存在更危险：grep 静默返回 0 命中）
+    expect(readdirSync(abs).length).toBeGreaterThan(0);
   });
 });

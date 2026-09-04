@@ -239,7 +239,11 @@ __pycache__/
 #    `@sid-code/tui-renderer` 导入，缺了它 `make build` 直接失败。
 #    所以这不是「删掉」，是「本地保留、不入库」。
 #    ⇒ 新克隆一份仓库是**构建不出来的**，需要另外拿到这个目录。
-/packages/tui-renderer/src/
+# ⚠️ 不带尾斜杠：这个路径现在是**指向 .vendor-src/ 的 symlink**，而尾斜杠形态
+# （`.../src/`）只匹配目录、**不匹配 symlink** —— 实测加了尾斜杠时
+# `git check-ignore` 不命中，两个 symlink 会出现在 git status 里并可能被
+# `git add -A` 入库。两种形态都要挡，所以写成不带尾斜杠的。
+/packages/tui-renderer/src
 
 # ─── 入库的第三方 API 参考资料（不入库、不推远端） ───────────────────────────
 # 这两份是第三方 API 文档的摘录，许可未确认，本仓不再纳入版本控制。
@@ -248,4 +252,19 @@ __pycache__/
 # `packages/cli/src/command/commands/claude-api/claude-api.ts` 用 Bun 的
 # `with { type: "text" }` 把原文内联进单二进制，缺了就编译不过。
 # 与上面 tui-renderer 那条同理：本地保留、不入库，新克隆需另外拿到。
-/packages/cli/src/command/commands/claude-api/reference/
+# 同上：不带尾斜杠，才能同时挡住真目录与 symlink 两种形态。
+/packages/cli/src/command/commands/claude-api/reference
+
+# ─── vendor 真实字节的缓存（不入库、不推远端） ─────────────────────────────
+# `.vendor-src/` 存放上面两个路径的**真实字节**，规范路径只是指向这里的 symlink。
+#
+# 为什么要多这一层（治的是一次真实事故，125 个文件曾从磁盘消失）：
+# `.gitignore` 只挡「未追踪文件不被 add」，**不挡「已记录删除的文件不被 checkout
+# 删掉」**。仓库里 37+ 个分支仍把那两个路径记为已追踪，切过去再切回来 git 就按索引
+# 把工作区文件删了。把字节挪到一个**在任何 ref 里都不存在**的路径上，
+# checkout / merge / reset 就再也碰不到它。
+#
+# ⚠️ 所以这条路径**必须保持在所有分支里都不存在**。谁把它入库一次，
+# 这条防线就当场失效（而且不会有任何东西报错）。
+# 门禁在 tests/build/vendor-location.test.ts。
+/.vendor-src/

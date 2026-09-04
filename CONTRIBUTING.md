@@ -52,12 +52,51 @@ make build            # 构建开发版二进制（不改版本号）
 
 ```bash
 bun run vendor:check   # 只检查是否齐全（缺则退 1）
-bun run vendor:fetch   # 缺则取回
+bun run vendor:fetch   # 缺则取回；字节已在时只补 symlink，不联网
 bun run vendor:pack    # 反向：改了本地 vendor 源码后打包，供上传新版本
 ```
 
 ⚠️ **`make build` 会自动跑这一步，但单独跑 `bun test` 不会。**
 克隆后只跑测试会红一片，先手动跑一次 `vendor:fetch`。
+
+#### 那两个路径是 symlink，真实字节在 `.vendor-src/`
+
+上面两个路径**不是真目录，是指向 `.vendor-src/` 的相对 symlink**：
+
+```
+packages/tui-renderer/src                       → ../../.vendor-src/tui-renderer-src
+packages/cli/src/command/commands/claude-api/reference → ../../../../../../.vendor-src/claude-api-reference
+```
+
+**为什么要多这一层** —— 治的是一次真实事故（125 个文件曾从磁盘上消失）：
+`.gitignore` 只挡「未追踪文件不被 add」，**完全不挡「已记录删除的文件不被 checkout
+删掉」**。仓库里 37+ 个分支仍把那两个路径记为已追踪，切过去再切回来，
+git 就按索引把工作区文件删了。而 `.vendor-src/` **在全部 371 个 ref 里都不存在**，
+所以任何 checkout / merge / reset 都碰不到它。
+
+实测两种情形：
+
+| 操作 | symlink | `.vendor-src/` 里的字节 |
+| --- | --- | --- |
+| `git checkout <仍追踪该路径的分支>` | git **直接拒绝**并中止 | 完好 |
+| `git checkout -f`（强制） | 会被替换成空真目录 | **完好** |
+
+⇒ 这条防线的边界是**「真实字节不会丢」**，不是「symlink 不会被动」。
+`-f` 之后规范路径会变空，跑一次 `bun run vendor:fetch` 即复原（**不联网**，
+它认得出"字节在、只是链断了"这种状态）。
+
+**三条改之前必读的约束**（每条都会**静默**出错，测试照样绿）：
+
+1. **缓存必须在仓库内。** 挪到 `~/.cache/` 会让 `make build` 当场失败
+   （`Could not resolve: "react"`）——  bun 按 **realpath** 向上找 `node_modules`，
+   而那条链路上一个都没有。bun 也没有 `--preserve-symlinks`。
+   ⇒ 「挪到仓库外」这个直觉方案在 bun 下不可行。
+2. **`.gitignore` 里那几条不能加尾斜杠。** 尾斜杠只匹配目录、**不匹配 symlink**，
+   加了之后 `git check-ignore` 不再命中，两个 symlink 会出现在 `git status` 里
+   并可能被 `git add -A` 带走。
+3. **`.vendor-src/` 一旦被任何分支入库，整条防线当场失效**，且不会有任何东西报错。
+
+门禁在 `tests/build/vendor-location.test.ts`（四条断言都做过变异自证）。
 
 ### `eval-framework` 是仓内 workspace 包，不是外部依赖
 

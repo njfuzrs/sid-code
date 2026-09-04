@@ -129,6 +129,11 @@ bun test              # 全量单测
 > （`Cannot find module '@sid-code/tui-renderer/...'`）。
 > `make build` 会自动跑这一步，但**单独跑 `bun test` 不会** —— 克隆后先手动跑一次。
 > 机制与入库的 `ripgrep` 同源：本地有则用本地，缺失则下载 + sha256 校验。
+>
+> 这两个路径是**指向 `.vendor-src/` 的 symlink**，真实字节存在那里。该路径不在任何
+> git ref 里，所以 `checkout` / `merge` / `reset` 都删不掉这些文件（`git checkout -f`
+> 可能把 symlink 换掉，但 `bun run vendor:fetch` 会不联网复原）。
+> 机理与三条不能破的约束见 [CONTRIBUTING.md](./CONTRIBUTING.md#新克隆必须先-bun-run-vendorfetch)。
 
 > ⚠️ 改了代码要验证，必须跑 `sc-dev`。`sc` 指向线上稳定版，跑它验证不到任何本地改动。
 > 拿不准时先 `which sid-code-dev sid-code` 确认指向。
