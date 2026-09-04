@@ -71,6 +71,9 @@ export const BUILD_INPUT_PATHS = [
   "scripts/gen-model-catalog-snapshot.ts",
   // 编译前放置内嵌 rg
   "scripts/fetch-ripgrep.ts",
+  // 编译前取回不入库的 vendor 源码（tui-renderer/src、claude-api/reference）——
+  // 它改了就意味着取的是另一个版本的 vendor 快照，产物字节随之变
+  "scripts/fetch-vendor-src.ts",
   // 被 backfill-team-defaults.ts 直接 import（编进二进制）
   "scripts/team-defaults.template.json",
   // 拼身份行的脚本 —— 它的输出直接进字节
