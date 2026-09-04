@@ -629,3 +629,59 @@ describe("CONTRIBUTING 对 workflow 触发条件的断言不漂移", () => {
     expect(CONTRIBUTING).toMatch(/能一次 review 完/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 被 `./` 直接调用的脚本必须保住可执行位（2026-09-04 实测踩到）
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 踩法：用 `grep -v old > /tmp/mut.sh && mv /tmp/mut.sh scripts/release.sh` 这种
+// 「重定向到新文件再覆盖」的手法改脚本 —— 新文件按 umask 建出来是 644，
+// **可执行位就这么丢了**，而 `git diff` 只显示一行 `mode change 100755 => 100644`，
+// 混在正经改动里极易划过去。它一路过了 pre-commit、CI、review，合进了 main。
+//
+// 失效形态是**发版当场炸**：`./scripts/release.sh --upload` → Permission denied。
+// 而此刻人正准备发版，最不需要的就是排查一个与发布内容无关的权限问题。
+//
+// 为什么现有门禁一个都没拦住：oxlint / oxfmt 只看**文本内容**，
+// 契约测试断言的是脚本里有没有某段字符串 —— 没有任何一条看文件**模式**。
+// 内容全对、模式全错，是这道门禁存在的唯一理由。
+//
+// 判据取 `git ls-files -s` 的模式位而不是文件系统的 `-x`：
+// git 记录的模式才是**会被别人 clone 到**的那个。工作区 chmod 对了但没
+// `git update-index --chmod=+x`，下一个克隆照样是 644。
+describe("被 ./ 直接调用的脚本保住可执行位", () => {
+  // 只列**文档/Makefile/其它脚本里以 `./scripts/x.sh` 形式调用**的那些。
+  // `bash scripts/x.sh` 那种调法不需要可执行位（build-branch-artifact.sh 就是），
+  // 所以刻意不做成「scripts/*.sh 全都要 755」—— 那会把一条真判据变成一条教条。
+  const MUST_BE_EXECUTABLE = [
+    "scripts/release.sh",
+    "scripts/website-deploy.sh",
+    "scripts/rollback.sh",
+    "scripts/build-info-line.sh",
+  ] as const;
+
+  test("git 记录的模式必须是 100755", () => {
+    const out = Bun.spawnSync({
+      cmd: ["git", "-C", ROOT, "ls-files", "-s", ...MUST_BE_EXECUTABLE],
+      stdout: "pipe",
+    });
+    const modes = new Map<string, string>();
+    for (const line of out.stdout.toString().trim().split("\n")) {
+      const m = /^(\d{6})\s+\S+\s+\d+\t(.+)$/.exec(line);
+      if (m?.[1] && m[2]) modes.set(m[2], m[1]);
+    }
+    // 先确认取数成功 —— 否则一个空 Map 会让下面的循环零断言地"通过"
+    expect(modes.size).toBe(MUST_BE_EXECUTABLE.length);
+    for (const path of MUST_BE_EXECUTABLE) {
+      // 变异自证：git update-index --chmod=-x scripts/release.sh → 这条红
+      expect(modes.get(path)).toBe("100755");
+    }
+  });
+
+  test("每个都有 shebang（没有 shebang 的话可执行位也没意义）", () => {
+    for (const path of MUST_BE_EXECUTABLE) {
+      const first = readFileSync(join(ROOT, path), "utf8").split("\n")[0] ?? "";
+      expect(first.startsWith("#!")).toBe(true);
+    }
+  });
+});
