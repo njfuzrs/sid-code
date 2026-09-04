@@ -1,27 +1,34 @@
-# 身份归并表（git 原生机制，`git shortlog` / `%aN` / `%aE` 会自动应用）
+# 身份归并表 —— **已于 2026-09-04 失效，刻意保留为空表 + 这段说明。**
 #
-# 为什么需要它：同一个人在本仓有**三个** author 身份，不是配置错误，是三段不同的历史：
+# ## 为什么是空的
 #
-#   ① rushengzhou <272990952+rushengzhou@users.noreply.github.com>  —— 本地 git 直接提交
-#      998 个提交。`users.noreply.github.com` 是 GitHub **私有域**，
-#      而 `272990952` 是**旧账号 rushengzhou 的 UID**（该账号已于 2026-09-03 被封停）。
-#   ② 周如生 <rushengzhou3@gmail.com>                               —— GitHub 网页端合并 PR 生成
-#      138 个提交，committer 一律是 `GitHub <noreply@github.com>`。**该邮箱已废弃。**
-#   ③ njfuzrs <324656762+njfuzrs@users.noreply.github.com>          —— 迁新账号后的提交
-#      `324656762` 是**新账号 njfuzrs 的 UID**，这是从 2026-09-04 起的规范身份。
+# 本文件原有两条归并规则，把旧账号的两个 author 身份
+# （`272990952+rushengzhou@users.noreply.github.com` 与 `rushengzhou3@gmail.com`）
+# 映射到新账号 `njfuzrs <324656762+njfuzrs@users.noreply.github.com>`。
 #
-# 全部归并到 ③（新账号），因为它是唯一还能认领的身份。
+# 2026-09-04 跑了 `git filter-repo`，把**全部历史**里的这两个身份直接改写成新账号
+# （1136 个提交，author 与 committer 两侧同时改）。改写后仓库里只剩三个身份：
+# `njfuzrs`、`dependabot[bot]`、外部贡献者 `tyli_official` ——
+# **归并表没有东西可归并了**，留着规则只会让人以为仓库里还有旧身份。
 #
-# ⚠️ 这只改变**读取时的展示**（shortlog / blame / `%aN`），不改写任何 commit 对象。
-# 提交历史与 hash 完全不变 —— 这是它相对 `git filter-repo` 的全部价值：
-# 本仓已发布的二进制把 40 位 commit SHA 编进了字节里（见 packages/shared/src/build-info.ts），
-# 重写历史会让所有已发布产物的身份判据当场失效，且 22 个 tag 全部要重打。
+# ## 为什么保留文件而不删掉
 #
-# ⚠️ **已知边界，且这次是真的疼**：GitHub / Gitee 的网页贡献者列表与**贡献热力图
-# 都不读 `.mailmap`**，它们按 commit 里的 author email 反查已验证邮箱。
-# 实测（2026-09-04，`gh api repos/njfuzrs/sid-code/commits/<sha>`）：
-# ① 与 ② 两类提交的 `author.login` 都仍是 `rushengzhou`，**不是 njfuzrs** ——
-# 所以那 1136 个历史提交不进新账号热力图，本文件消不掉这件事。
-# 详细分析与三条修复路径见 docs-research/github-account-recovery/ 那份文档的 §9。
-njfuzrs <324656762+njfuzrs@users.noreply.github.com> <272990952+rushengzhou@users.noreply.github.com>
-njfuzrs <324656762+njfuzrs@users.noreply.github.com> <rushengzhou3@gmail.com>
+# 多处文档与两份 Agent Note 引用了本文件的存在与内容
+# （`.agents/notes/implemented/process/2026-09-04-mailmap归并双身份而非重写历史.md`、
+#  `website/blog/ref-hermes-agent.md`、`docs-research` 那份账号恢复文档）。
+# 删文件会让那些引用指向虚空；留一份说明，读者能立刻知道"归并已被改写取代"。
+#
+# ## ⚠️ 那份 Agent Note 的结论已被推翻，别照它办
+#
+# `2026-09-04-mailmap归并双身份而非重写历史.md` 当时的裁决是
+# **"用 .mailmap 归并，不重写历史"**，理由是重写会让已发布产物的 commit 判据失效
+# 且 22 个 tag 要重打。这个代价评估是对的，但结论后来被用户改判：
+# 因为 `.mailmap` **修不了贡献热力图**（GitHub / Gitee 的贡献图不读它，
+# 按 commit 里的 author email 反查已验证邮箱），而热力图正是当初要解决的问题。
+#
+# 所以最终走了重写。代价如实付了：全部提交换 hash、22 个 tag 重打、
+# 线上 0.1.601 / 0.1.602 产物锚定的旧 SHA 已不在历史里（下次发版自然修好）。
+# 收益已实测：`gh api repos/njfuzrs/sid-code/commits/<sha> --jq .author.login`
+# 对改写后的提交（含最老的两个）返回 `njfuzrs`，此前返回已封停的 `rushengzhou`。
+#
+# 完整过程见 docs-research/github-account-recovery/ 那份文档的 §10.5。
