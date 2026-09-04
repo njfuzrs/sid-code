@@ -295,6 +295,34 @@ PR 数本身有固定成本（分支、CI 一轮、review 的上下文切换、�
   改回 `--no-merges` 会同时丢掉 PR 标题、放出所有 `wip:` 中间提交，
   而且**产物照样生成、站点照样构建，没有任何东西会红**。
 
+> ⚠️ **换仓库 / 换账号之后必须重新核这几项设置** —— 它们存在 GitHub 侧，
+> **不在代码里，`git push` 带不过去**。2026-09-04 迁到新账号 `njfuzrs` 后实测漂移 4 项:
+> `merge_commit_title=MERGE_MESSAGE`(应为 `PR_TITLE`)、
+> `merge_commit_message=PR_TITLE`(应为 `PR_BODY`)、
+> `allow_auto_merge=false`、`delete_branch_on_merge=false`;
+> 且 ruleset `protect-main` 只剩 `deletion` + `non_fast_forward` ——
+> **PR 要求和必需检查全丢了**，即那段时间任何人都能直推 `main`。
+> 已发生的后果：PR #13 在 `main` 上的 merge commit subject 是
+> `Merge pull request #13 from ...`，被 `isNoiseSubject()` 的 `^Merge\s` 整条过滤掉,
+> 那个 PR 标题**没能进 `CHANGELOG.md`**。
+>
+> 一条命令核完(输出与下面这份期望不符就是漂了)：
+>
+> ```bash
+> gh api repos/<owner>/<repo> \
+>   -q '{title:.merge_commit_title, msg:.merge_commit_message,
+>        auto:.allow_auto_merge, del:.delete_branch_on_merge}'
+> # 期望 {"title":"PR_TITLE","msg":"PR_BODY","auto":true,"del":true}
+>
+> gh api repos/<owner>/<repo>/rulesets -q '.[].id' \
+>   | xargs -I{} gh api repos/<owner>/<repo>/rulesets/{} -q '.rules[].type'
+> # 期望含 pull_request 与 required_status_checks（缺了 = main 没被保护）
+> ```
+>
+> 为什么不做成自动门禁：CI 跑在仓库**内部**，而这些是仓库**自身**的配置 ——
+> 一个能改仓库设置的 token 权限远大于 CI 该有的权限，用它换一道每年触发一次的检查不值。
+> 这属于「迁仓 checklist」，靠这段文档记，不靠脚本。
+
 ### 必需检查只有一个：`all-checks-passed`
 
 ruleset `protect-main` 只绑这**一个**汇聚检查（`ci.yml` 的 `all-checks-passed` job），

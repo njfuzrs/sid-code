@@ -185,6 +185,34 @@ describe("A2 release.sh：--upload 只写 beta，promote 才动 stable", () => {
     // RELEASE_OK 必须置 true，否则 EXIT trap 会把它当"发布中断"去回滚本地文件
     expect(seg).toContain("RELEASE_OK=true");
   });
+
+  // ── G2 问哪个 ref（2026-09-04 实测踩到的静默漏洞）────────────────────────
+  //
+  // release.sh 自己把 `bump vX.Y.Z` 提交到**本地** main，该提交要走 PR 才进远端 main。
+  // 所以「upload 完、PR 未合」那段窗口里，产物 commit 在本地 main = YES、
+  // 在 origin/main = NO。判据问本地 main 就会放行一个尚未进主线的版本，
+  // 而输出是一句 ✅ —— 没有任何报错。实测 v0.1.603 该窗口长 9 分钟。
+  //
+  // 字节判据那条在 pickMainRef 的单测里锁住（tests/eval/artifact-identity.test.ts），
+  // 这里锁的是 release.sh **退化路径**（本地没产物时的 tag 判据）那一段 shell。
+  test("promote 的 tag 退化判据问 origin/main，不是本地 main", () => {
+    const start = RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then');
+    const seg = RELEASE_SH.slice(start, RELEASE_SH.indexOf("单独上传团队默认配置", start));
+    // 变异自证：把 _promote_main_ref 的初值改成 "main" → 这条红
+    expect(seg).toMatch(/_promote_main_ref="origin\/main"/);
+    // is-ancestor 必须用那个变量，而不是硬写 main —— 硬写就绕过了整个选择逻辑
+    expect(seg).toMatch(/merge-base --is-ancestor "v\$\{PROMOTE_VERSION\}" "\$_promote_main_ref"/);
+    // 退化到本地 main 时必须自报是弱判据，不能静默
+    expect(seg).toMatch(/退化到\*\*本地 main\*\*/);
+  });
+
+  test("promote 前先 fetch 远端主线（陈旧 origin/main 会让门禁误拒且难归因）", () => {
+    const start = RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then');
+    const seg = RELEASE_SH.slice(start, RELEASE_SH.indexOf("单独上传团队默认配置", start));
+    expect(seg).toMatch(/git fetch origin main/);
+    // fetch 失败不能阻断：离线发版机是合法场景，退化路径会自报弱判据
+    expect(seg).not.toMatch(/git fetch origin main[^\n]*\|\|\s*fail/);
+  });
 });
 
 describe("A2 旧版本清理必须豁免通道指向的版本", () => {

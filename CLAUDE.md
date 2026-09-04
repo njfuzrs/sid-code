@@ -225,6 +225,35 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 - `release.sh` 开头有**工作区洁净门禁**，脏就直接拒绝发布（确认无碍加 `--allow-dirty`）。
 - bump 提交与 tag 都由 `release.sh` 自己完成，且 tag 打在 bump 提交上、当场校验对齐。以前是「tag 打在 bump 前的 HEAD、bump 提交人工补做」，导致 tag 指向的 commit 里版本号比 tag 低一位（实测 v0.1.591…v0.1.596 **六个 tag 全部错位**，`git checkout <tag>` 重建不出对应二进制）。
 
+#### 先决定走哪条路：不是每次发版都要泡 beta
+
+**`--promote` 与 `--upload` 之间没有任何时长门禁**（实测 `release.sh` 里 0 处
+`sleep`/`mtime`/`age` 判据），所以「泡多久」完全是人的判断，不是流程强制。
+两条路都合法，按**改动风险**选，别按习惯选：
+
+| | 快车道（常规） | 泡制道（高风险） |
+| --- | --- | --- |
+| 什么时候用 | 文档、CI、内部重构、单点修复 —— 即**出问题也能秒级回滚**的改动 | 动了主循环 / 权限 / 网络重试 / 上下文压缩 / TUI 渲染，或一次发很多东西 |
+| 怎么做 | 第 3 步之后直接接第 6 步 `--promote`（中间不等） | 第 6 步先装 beta 自己用一段时间，再 `--promote` |
+| 用户拿到新版 | 当次发布即可 | 你验收之后 |
+| 兜底 | `rollback.sh` 秒级回指旧版 | beta 期就发现问题，不流到 stable |
+
+**判据是「回滚够不够快」，不是「改动大不大」**：制品全在自有服务器、
+`rollback.sh` 是纯指针操作(秒级)，所以绝大多数改动的正确答案是**快车道**。
+泡制道换来的是「stable 用户一次都没踩到」，代价是发布周期从分钟级变成天级 ——
+只有当"踩到了再回滚"这件事本身不可接受时(数据损坏、权限放开、无法察觉的静默错误)
+才值得付。
+
+⚠️ **两条路的命令序列完全一样，唯一区别是第 6 步前面等不等。**
+不存在"跳过 beta 的专用命令" —— `--upload` 永远只写 `beta.txt`，
+`--promote` 永远是唯一能动 `latest.txt` 的入口，这个结构不因走哪条路而变
+（理由见下方「发布通道」三条不能改回去的设计）。
+
+⚠️ **泡制期只有真有人装 beta 才有价值。** 建好而没人装，它就退化成
+「防线全在、调用全 0」。实测：beta 通道 2026-08-25 建立，此后 v0.1.602、v0.1.603
+两次发布**都没有真实 beta 使用记录** —— 所以现在诚实的说法是
+「机制可用、尚未被真实回归验证过」，别把它当成已经在起作用的防线。
+
 标准顺序（脚本接管了 bump 与 tag，人负责前两步和收尾的 PR）：
 
 ```bash
@@ -232,28 +261,56 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 make build
 
 # 2. 提交功能代码（工作区必须干净，否则 release.sh 会拒绝）
+#    ⚠️ 含 changelog/curated/v<下一个版本>.json —— 缺了 release.sh 会交互确认一次，
+#    非交互环境（管道 / CI）会降级为 warn 直接过，于是官网那一版没有变更说明。
+#    先跑 `bun run changelog:curate` 起草并过目；纯内部版本写 userFacing:false 即可。
 git add <改动文件>
 git commit -m "feat: ..."
 
-# 3. 发布到 **beta 通道**：门禁(bun test) → bump → changelog → 4 平台构建 → 冒烟+自检
-#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → 写 beta.txt → push tag
-#    ⚠️ 这一步**不再改 latest.txt**，稳定版用户拿不到它（见下方「发布通道」）
+# 3. 发布到 **beta 通道**：门禁(bun test) → bump → changelog → 5 平台构建 → 冒烟+自检
+#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → 服务器端 sha256 复核
+#    → 写 beta.txt → push tag → 建 GitHub Release
+#    ⚠️ 这一步**不改 latest.txt**，稳定版用户拿不到它（见下方「发布通道」）
+#    实测耗时 5m25s（其中全量 bun test 183s 占 56%）
 ./scripts/release.sh --upload
 
-# 4. bump 提交走 PR 进 main（main 受保护，直推会被拒；见下方 ⚠）
+# 4. bump 提交走 PR 进 main（main 受 ruleset 保护，直推被 GH013 拒；见下方 ⚠）
 git switch -c chore/release-<version>
 git push -u origin chore/release-<version>
 gh pr create --base main --fill
 gh pr merge --auto --merge          # ⚠ 必须 --merge，squash 会让 tag 指向游离提交
+                                    #   CI 实测 3m52s
 
-# 5. 合并后同步 + 发布官网（/changelog 是站点构建期快照，release.sh 只生成数据不发站点）
+# 5. 合并后同步 + 核验 + 清分支 + 发布官网
 git switch main && git pull
-./scripts/website-deploy.sh
+git merge-base --is-ancestor v<version> main && echo OK   # 铁律的人肉复核（--promote 也会自己跑）
+git push origin --delete chore/release-<version>          # 删远端分支（合并后就是残留）
+git branch -d chore/release-<version>                     # 删本地分支（-d 会拒绝删未合并的）
+./scripts/website-deploy.sh   # /changelog 是站点构建期快照，release.sh 只生成数据不发站点
 
-# 6. 装 beta 自己用一段时间，验收通过后再促升到稳定通道（纯指针，不重新构建）
-curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash
+# 6. 促升到稳定通道（纯指针，不重新构建，实测 5s）
+#    ↑ 高风险改动走泡制道时，在这一步之前先装 beta 自己用一段时间：
+#      curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash
 ./scripts/release.sh --promote <version>
+
+# 7. 端到端核验：稳定通道用户真能升上来（不看脚本自报，看用户链路）
+curl -fsSL https://www.sid-code.cc/releases/sid-code/latest.txt   # 应等于 <version>
+sid-code update && sid-code --version                            # 应升到 <version>
 ```
+
+**⚠️ 第 4 步的 PR 必须先合并，第 6 步才能跑。** 顺序反了会被门禁拦住:
+`--promote` 的 G2 门禁问的是 **`origin/main`**，而 `release.sh` 自己提交的 `bump`
+先落在**本地** main —— PR 未合并时产物 commit「在本地 main = YES、在 origin/main = NO」。
+这个窗口是真实存在的(实测 v0.1.603:upload 结束 16:39:23、PR 合并 16:48:20，
+窗口 9 分钟)，而在 2026-09-04 修掉之前，门禁问的是本地 main，
+**那段窗口里 promote 会放行一个尚未进主线的版本，且输出是一句 ✅**。
+
+**⚠️ 第 5 步删分支不是可选的洁癖。** 合并后的 `chore/release-*` 留着就是残留,
+下次发版 `git branch` 里会堆一串同名前缀的死分支，
+而**判断"哪个是本次的"要靠版本号比对** —— 这正是 §0 铁律里「不确定就别动」
+最容易被违反的场景。用 `git branch -d`(小写)而不是 `-D`:前者会拒绝删未合并的分支,
+是免费的保险。仓库已开 `delete_branch_on_merge`，走 GitHub 网页合并会自动删远端，
+但**命令行 `gh pr merge` 之后本地那条仍要自己删**。
 
 **⚠️ 第 4 步为什么不是 `git push`**：main 受 ruleset `protect-main` 保护（要求 PR + `all-checks-passed`），直推被 **GH013** 拒（`Changes must be made through a pull request`）。而此刻**制品已上线、tag 已推送、bump 提交还在本地** —— 正是上面那条铁律要防的「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。所以这一步是**必经**的，不是可选的收尾。`release.sh` 跑完会按实际保护状态把这几条命令打出来。
 
@@ -288,7 +345,9 @@ git merge-base --is-ancestor v<version> main && echo OK
 
 ```bash
 ./scripts/release.sh --upload              # 发到 beta（不动 latest.txt）
-./scripts/release.sh --promote 0.1.601     # 稳定通道指过去（前置：自己用过 beta）
+./scripts/release.sh --promote 0.1.601     # 稳定通道指过去
+                                           # 快车道：紧跟 --upload 就跑，不必等（无时长门禁）
+                                           # 泡制道：先装 beta 用一段时间再跑（高风险改动）
 ./scripts/rollback.sh                      # 看两个通道现指向谁 + 有哪些版本可回
 ./scripts/rollback.sh 0.1.600              # 稳定通道回指旧版（秒级）
 ./scripts/rollback.sh 0.1.600 --channel beta
@@ -315,6 +374,19 @@ git merge-base --is-ancestor v<version> main && echo OK
 **这段泡制期只有在真有人用 beta 时才有价值。** 建好而没人装，它就退化成第二个
 「防线全在、调用全 0」。所以 A2 的验收判据不是"通道能用"，而是
 **至少有一次真实回归是在 beta 期被发现、没有流到 latest**。
+
+⚠️ **这条判据到 2026-09-04 仍未满足,如实记在这里**:beta 通道 2026-08-25 建立,
+此后发过 v0.1.602、v0.1.603 两版,**没有一次有真实 beta 使用记录**
+(v0.1.602 更是因账号封停 + 历史重写而作废)。所以现在只能说
+「机制可用、判据未验证」——不要在文档或 PR 里把它写成一道正在起作用的防线。
+
+**这不代表通道机制该撤掉**,但它确实意味着:**默认走快车道是当前的诚实选择**。
+理由是不对称的——泡制道的收益依赖"有人真的装 beta 去用"这个尚未发生的前提,
+而快车道的兜底(`rollback.sh` 秒级指针回滚)是已经实测过的。
+把每次发布都当高风险来泡,只会把流程拖长而换不到任何已验证的保护。
+真正能让这条判据被满足的动作不是「继续要求每次泡 beta」,
+而是**给 beta 找到至少一个固定的真实使用场景**(例如自己日常就用 beta 二进制),
+在那之前,泡制道留给你判断为高风险的那几次。
 
 #### Changelog + Tag
 
@@ -349,7 +421,7 @@ bun run changelog:check             # 不调 LLM，只校验已入库的全部�
 | --- | --- | --- |
 | `make build` | 不变 | **日常开发（99% 的场合）**：改完 / 拉完代码重建二进制 |
 | `make build-bump` | +1 | 少见：想本地自测一个带新版本号的二进制 |
-| `./scripts/release.sh --upload` | +1 | 正式发布：构建 4 平台制品并上传到服务器 |
+| `./scripts/release.sh --upload` | +1 | 正式发布：构建 5 平台制品并上传到服务器 |
 
 **选哪个：默认 `make build`。** 只要你不是在专门测「版本号本身」，就用它。
 `make rebuild` 保留为 `make build` 的别名（历史文档里到处是它），敲了也不会出错，

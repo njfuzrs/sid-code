@@ -528,6 +528,15 @@ echo __SHA_OK__"
     #
     # ⚠️ 退化路径必须**明说自己是退化路径**。写成一句"✅ 校验通过"就是让一个弱判据
     # 冒充强判据 —— 那正是本方案通篇在消灭的东西。
+    # 先把远端主线拉到最新 —— 下面两条判据（字节判据与 tag 判据）都问 `origin/main`，
+    # 而 `origin/main` 是**远端跟踪引用**，不 fetch 就停在上次 fetch 的位置。
+    # 陈旧的 origin/main 只会让门禁**误拒**（安全方向），但那个假红很难归因
+    # （"tag 明明在 main 上啊"），所以主动 fetch 一次，让判据问的是真实远端状态。
+    # 失败不阻断：离线发版机拿不到远端时，下面的退化路径会自报自己是弱判据。
+    info "拉取远端主线（判据要问 origin/main，不是本地 main）..."
+    git fetch origin main --tags --quiet 2>/dev/null ||
+        warn "git fetch origin main 失败 —— 下面的判据将基于**可能陈旧**的 origin/main"
+
     _promote_local_dir="$RELEASE_DIR/${PROMOTE_VERSION}"
     _promote_pkg=""
     if [ -d "$_promote_local_dir" ]; then
@@ -540,13 +549,21 @@ echo __SHA_OK__"
             fail "促升门禁未通过 —— latest.txt 未改动（稳定通道保持原样）"
     else
         info "本地没有 v${PROMOTE_VERSION} 的产物，退化到 **tag 判据**（弱：不是读字节）"
+        # 这里也必须问 origin/main 而不是本地 main，理由与字节判据那条完全相同：
+        # release.sh 自己提交的 `bump` 在本地 main 上、要走 PR 才进远端 main，
+        # 问本地 main 会在「PR 未合」的窗口里放行一个还没进主线的版本。
+        _promote_main_ref="origin/main"
+        git rev-parse --verify -q "$_promote_main_ref" >/dev/null 2>&1 || {
+            _promote_main_ref="main"
+            warn "取不到 origin/main，退化到**本地 main**（弱判据：可能含未推送/未合并的提交）"
+        }
         if ! git rev-parse -q --verify "refs/tags/v${PROMOTE_VERSION}" >/dev/null 2>&1; then
             warn "本地没有 tag v${PROMOTE_VERSION} —— **这一条没能校验**（不是通过）。"
             warn "  先 git fetch --tags，或在发版机上跑这条命令。"
-        elif git merge-base --is-ancestor "v${PROMOTE_VERSION}" main 2>/dev/null; then
-            ok "tag v${PROMOTE_VERSION} 在 main 上（tag 判据，非字节判据）"
+        elif git merge-base --is-ancestor "v${PROMOTE_VERSION}" "$_promote_main_ref" 2>/dev/null; then
+            ok "tag v${PROMOTE_VERSION} 在 ${_promote_main_ref} 上（tag 判据，非字节判据）"
         else
-            fail "tag v${PROMOTE_VERSION} **不在 main 上** —— 那是个分支包/游离提交，拒绝促升成稳定版。
+            fail "tag v${PROMOTE_VERSION} **不在 ${_promote_main_ref} 上** —— 那是个分支包/游离提交，或 bump PR 还没合并，拒绝促升成稳定版。
   （用 merge 而不是 squash 合并 bump PR，squash 会让 tag 指向一个不在主线上的提交）"
         fi
     fi
