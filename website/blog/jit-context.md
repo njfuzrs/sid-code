@@ -419,7 +419,7 @@ hit=false  loaded=0  elapsed=0.25ms
 `jrichman）。**cc` 显然不是路径。源头在 `src/ui/CLAUDE.md` 的一句 prose 里：
 
 ```markdown
-把 claude-code 自研 ink 整套 vendor 进了仓库（……`node_modules` 已无 ink /
+ink fork 整套 vendor 进了仓库（……`node_modules` 已无 ink /
 @jrichman）。**cc 的渲染能力本项目基本都有**……
 ```
 

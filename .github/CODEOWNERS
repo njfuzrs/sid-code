@@ -5,39 +5,34 @@
 # 才开始生效（此前 remote 是内网 GitLab，它不读这个文件）。
 
 # ⚠️ 路径必须与 packages/ 分包后的真实结构一致。P1-2/P2-2 分包后曾残留
-# /src/ink/ 与 /src/permission/ 这类**匹配不到任何文件**的规则（2026-08-12 P2-6 顺手修）——
+# /src/permission/ 这类**匹配不到任何文件**的规则（2026-08-12 P2-6 顺手修）——
 # 失效时没有任何报错，只是 review 请求静默不再发出，是最难发现的一类漂移。
 # 改动目录结构时，把这个文件一起 grep 一遍。
 
 # 兜底：所有文件
-*                           @rushengzhou
+*                           @njfuzrs
 
 # ─── 需要格外谨慎的路径 ───
 
-# 第三方归属声明：改动这里等于改动版权事实陈述，必须维护者过目。
-# 尤其不要以「清理痕迹 / 统一措辞 / 看着不专业」为由删掉来源事实。
-/NOTICE                     @rushengzhou
-/packages/tui-renderer/src/README.md    @rushengzhou
-
-# 未获授权的第三方代码，正在重构移除。改动前先读 NOTICE 第 1 节。
-/packages/tui-renderer/src/             @rushengzhou
+# 第三方归属声明：随附资产的来源与许可，改动需维护者过目。
+/NOTICE                     @njfuzrs
 
 # 发布链路：脚本改错会污染版本号、打错 tag、或让线上二进制对不上 commit。
-/scripts/release.sh         @rushengzhou
-/scripts/website-deploy.sh  @rushengzhou
-/scripts/generate-changelog.ts  @rushengzhou
-/Makefile                   @rushengzhou
+/scripts/release.sh         @njfuzrs
+/scripts/website-deploy.sh  @njfuzrs
+/scripts/generate-changelog.ts  @njfuzrs
+/Makefile                   @njfuzrs
 
 # 安全与权限：绕过一条规则就是一个漏洞。
 # path-validator.ts 与 bash-security.ts 都在这个目录下，无需单列。
-/packages/core/src/permission/          @rushengzhou
+/packages/core/src/permission/          @njfuzrs
 
 # CI 门禁与治理文件
-/.github/                   @rushengzhou
-/CONTRIBUTING.md            @rushengzhou
+/.github/                   @njfuzrs
+/CONTRIBUTING.md            @njfuzrs
 # 对外第一入口：主 README 是英文（P2-6，2026-08-12），中文翻译在 README.zh-CN.md。
 # 两份都列，避免只改一份造成中英不一致（2026-08-10 就发生过工具数只改一处的事故）。
-/README.md                  @rushengzhou
-/README.zh-CN.md            @rushengzhou
-/SECURITY.md                @rushengzhou
-/CODE_OF_CONDUCT.md         @rushengzhou
+/README.md                  @njfuzrs
+/README.zh-CN.md            @njfuzrs
+/SECURITY.md                @njfuzrs
+/CODE_OF_CONDUCT.md         @njfuzrs

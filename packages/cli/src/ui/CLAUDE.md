@@ -30,7 +30,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - ✅ **已落地**：代码里已实现，照着用、改到时对齐，别推翻。
 - ⚠️ **待补**：方向认可但还没做全，新需求碰到了就补上，补时遵循这里的设计。
 
-> 注：渲染底座是 vendor 进 `src/ink/` 的 claude-code 同款 ink fork（已脱离 npm 包），cc 的渲染能力基本都有，**不存在"受 ink 限制做不了"的硬边界**。遇 cc 做法默认能搬，先去 `src/ink` 找——详见 L5.3。
+> 注：渲染底座是 vendor 进 `src/ink/` 的 ink fork（已脱离 npm 包），cc 的渲染能力基本都有，**不存在"受 ink 限制做不了"的硬边界**。遇 cc 做法默认能搬，先去 `src/ink` 找——详见 L5.3。
 
 **元原则（贯穿五层，记不住别的就记这三条）：**
 
@@ -206,7 +206,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 ### 3.4 流式渲染：逐字可见，已完成与进行中分离 ✅
 
-> **渲染底座 = vendor 进 `src/ink` 的 claude-code 同款 ink fork**（已脱离 node_modules 的 `@jrichman/ink`）。cc 的渲染能力**本项目都有**，不是"做不了"——见 L5.3。
+> **渲染底座 = vendor 进 `src/ink` 的 ink fork**（已脱离 node_modules 的 `@jrichman/ink`）。cc 的渲染能力**本项目都有**，不是"做不了"——见 L5.3。
 
 - **逐字输出可见** ✅，不要憋到结束才一次性吐出（`StreamingMessage.tsx`）。
 - **已完成消息走 Static + blit 缓存，进行中消息重渲** ✅：`src/ink/_vendor/Static.tsx` 承载已完成消息（`MainScreenLayout.tsx` 已用），items 引用不变时 memo 跳过重渲；`src/ink/node-cache.ts` 用 WeakMap 缓存各节点 layout bounds 做 blit + 局部清除（O(dirty) 而非 O(mounted)）。新组件让"已完成区"items 引用稳定即可吃到这套缓存，不要每帧重建数组。
@@ -332,9 +332,9 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - 颜色：`themeManager.getSemanticColors()` 看**实际解析出的值**（定义 ≠ 生效）。
 - 关键计算：进度条 0/1 边界、`stringWidth` 对齐、tail 截断行数等纯函数直接打印验证。
 
-### 5.3 渲染底座：vendor 进 `src/ink` 的 claude-code 同款 ink fork ✅
+### 5.3 渲染底座：vendor 进 `src/ink` 的 ink fork ✅
 
-**现状（2026-06，已脱离 node_modules）**：组件 import 的不是 npm 包，而是本地 `src/ink/`——把 claude-code 自研 ink 整套 vendor 进了仓库（import 路径形如 `"../../ink/components/Box.js"`，`node_modules` 已无 ink / @jrichman）。**cc 的渲染能力本项目基本都有**，遇到 cc 做法默认"能搬"，先去 `src/ink` 找对应文件，别假设做不了：
+**现状（2026-06，已脱离 node_modules）**：组件 import 的不是 npm 包，而是本地 `src/ink/`——ink fork 整套 vendor 进了仓库（import 路径形如 `"../../ink/components/Box.js"`，`node_modules` 已无 ink / @jrichman）。**cc 的渲染能力本项目基本都有**，遇到 cc 做法默认"能搬"，先去 `src/ink` 找对应文件，别假设做不了：
 
 | 能力 | 位置 | 状态 |
 |------|------|------|
