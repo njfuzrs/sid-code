@@ -439,14 +439,19 @@ describe("handleGoalGate · 评估器故障熔断（P0-1）", () => {
   });
 });
 
-// ─── P1-1：报告型任务 fast-path ───
+// ─── P1-1：报告型任务放行（F3 后降级为「评估器不可用时的兜底」）───
+//
+// 语义变更（F3，2026-09-03）：这段放行原先在 tryFastPathEval 最前面、抢在评估器之前，
+// 于是评估器健康时也会被它判定完成，且连 Evidence Log 都不看。现已移到评估器失败后的
+// catch 分支——能力保留（这类任务没有客观完成信号，评估器一挂就没出路），抢跑消除。
+// 下面两条用 failingProvider() 恰好落在「评估器不可用」这个前提上，故仍应放行。
 
-describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
-  test("目标含'汇总/报告' + end_turn + 实质文本 → 快速满足（不调 LLM）", async () => {
+describe("evaluateGoal · 报告型任务兜底放行（P1-1 / F3）", () => {
+  test("评估器不可用 + 目标含'汇总告诉我' + 实质文本 → 兜底放行", async () => {
     const { evaluateGoal } = await import("@sid-code/core/goal/evaluator.ts");
     const goal = createGoal("检查文档一致性并汇总告诉我审计结果");
     goal.objective = "检查文档一致性并汇总告诉我审计结果";
-    // provider 抛错——若命中 fast-path 就不会走到 LLM，故此处不应抛出
+    // provider 抛错 → 走 catch → 报告型兜底判据成立 → 放行（保住 P1-1 的原能力）
     const result = await evaluateGoal(
       goal,
       "占位上下文",
@@ -455,13 +460,15 @@ describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
     );
     expect(result.satisfied).toBe(true);
     expect(result.progress).toBe(100);
+    // 必须是兜底路径给的结论，不是 fast-path 抢跑
+    expect(result.reason).toContain("兜底");
   });
 
-  test("报告型目标但 assistant 文本过短 → 不命中 fast-path", async () => {
+  test("报告型目标但 assistant 文本过短 → 不放行（阈值 500 不变）", async () => {
     const { evaluateGoal } = await import("@sid-code/core/goal/evaluator.ts");
     const goal = createGoal("汇总告诉我结果");
     goal.objective = "汇总告诉我结果";
-    // 文本仅 100 字符 < 500 阈值 → 不命中 fast-path → 走 LLM（失败降级为未满足）
+    // 文本仅 100 字符 < 500 阈值 → 兜底判据不成立 → 降级为未满足
     const result = await evaluateGoal(
       goal,
       "占位",
@@ -469,6 +476,26 @@ describe("evaluateGoal · 报告型任务 fast-path（P1-1）", () => {
       { stopReason: "end_turn", assistantTextLength: 100 },
     );
     expect(result.satisfied).toBe(false);
+  });
+
+  test("评估器健康时，报告型目标由评估器判定，不被兜底抢跑（F3 变异自证）", async () => {
+    const { evaluateGoal } = await import("@sid-code/core/goal/evaluator.ts");
+    const goal = createGoal("审计文档一致性并汇总告诉我");
+    goal.objective = "审计文档一致性并汇总告诉我";
+    // 评估器可用且明确判「未完成」——旧实现会被 fast-path 抢在它前面判成完成。
+    const result = await evaluateGoal(
+      goal,
+      "占位上下文",
+      {
+        model: "x",
+        provider: mockProvider('{"satisfied": false, "reason": "报告缺少结论章节"}'),
+        timeout: 1000,
+        minTurnsBeforeEval: 2,
+      },
+      { stopReason: "end_turn", assistantTextLength: 3000 },
+    );
+    expect(result.satisfied).toBe(false);
+    expect(result.reason).toContain("结论章节");
   });
 });
 
