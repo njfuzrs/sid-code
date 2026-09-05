@@ -19,6 +19,8 @@ let instance: LSPServerManager | undefined;
 let diagnosticRegistry: DiagnosticRegistry | undefined;
 let initState: InitState = "not-started";
 let initGeneration = 0; // 代数计数器（对标 Claude Code）
+/** lsp.json 的配置错误摘要（面向用户），并入 getLSPHealthWarning 的一次性告警 */
+let configErrors: string[] = [];
 
 /**
  * 初始化 LSP 系统（懒初始化）。
@@ -31,6 +33,7 @@ export function initializeLSP(workspaceFolder: string): void {
   if (initState === "failed") {
     instance = undefined;
     diagnosticRegistry = undefined;
+    configErrors = [];
   }
 
   instance = new LSPServerManager();
@@ -40,8 +43,11 @@ export function initializeLSP(workspaceFolder: string): void {
   const currentGen = ++initGeneration;
 
   void loadLSPConfigs(workspaceFolder)
-    .then(async (configs) => {
+    .then(async ({ configs, errors }) => {
       if (currentGen !== initGeneration) return; // 过期的初始化
+      // 配置错误先存下来：即便没有任何可用配置（下面提前 return），用户也该看到
+      // "你的 lsp.json 没生效"，而不是以为自己配对了。
+      configErrors = errors;
       if (Object.keys(configs).length === 0) {
         initState = "success"; // 无配置也算成功
         return;
@@ -72,6 +78,32 @@ export function getDiagnosticRegistry(): DiagnosticRegistry | undefined {
 /** 当前初始化状态（供调试） */
 export function getLSPInitState(): InitState {
   return initState;
+}
+
+/**
+ * 已注册的 LSP 服务器数量（同步读，供 tool/lsp.ts 的 isEnabled 使用）。
+ *
+ * 为什么需要它：`initState === "success"` **不代表有服务器可用** ——
+ * 上面 initializeLSP 里"无配置也算成功"（一台没装任何 language server 的机器就是这种），
+ * 于是仅凭 initState 判定会让 `lsp` 工具常驻工具列表，每轮白付一份工具定义的 token，
+ * 而模型看到的是一个**一调用就必然失败**（getServerForFile 未命中 → 安装引导）的工具，
+ * 还要额外浪费一轮工具调用。
+ *
+ * 刻意不复用 getLSPHealth()：那个要遍历所有实例、构造快照数组，而这里只要一个数字，
+ * 且调用点在每次工具组装的热路径上。
+ */
+export function getLSPServerCount(): number {
+  return instance?.getAllServers().size ?? 0;
+}
+
+/**
+ * lsp.json 的配置错误摘要（面向用户）。
+ *
+ * 与日志的区别：日志给排查者，这个给"以为自己配对了"的用户 —— 见
+ * config.ts 的 LSPConfigLoadResult 注释。
+ */
+export function getLSPConfigErrors(): string[] {
+  return configErrors;
 }
 
 /** 单个 LSP 服务器的健康快照（G4） */
@@ -128,6 +160,11 @@ export function getLSPHealthWarning(): string | null {
       )
       .join("、");
     return `LSP 服务器异常：${detail}。相关语言的代码智能功能可能不可用。`;
+  }
+  // 配置错误排在服务器异常之后：后者是"已经在用但坏了"，更紧急；
+  // 但配置错误也必须有出口，否则 best-effort 降级对用户完全不可见。
+  if (configErrors.length > 0) {
+    return `LSP 配置有 ${configErrors.length} 处问题被跳过：${configErrors.join("；")}`;
   }
   return null;
 }
@@ -272,6 +309,7 @@ export function reinitializeLSP(workspaceFolder: string): void {
   diagnosticRegistry = undefined;
   initState = "not-started";
   initGeneration++;
+  configErrors = [];
 
   initializeLSP(workspaceFolder);
 }
@@ -283,6 +321,7 @@ export async function shutdownLSP(): Promise<void> {
   instance = undefined;
   diagnosticRegistry = undefined;
   initState = "not-started";
+  configErrors = [];
 }
 
 /** 重置单例（测试用） */
@@ -291,4 +330,5 @@ export function resetLSPForTest(): void {
   diagnosticRegistry = undefined;
   initState = "not-started";
   initGeneration++;
+  configErrors = [];
 }

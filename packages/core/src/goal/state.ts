@@ -21,6 +21,14 @@ export interface EvidenceEntry {
   summary: string;
   /** 原始输出片段（最长 2000 字符，截断保留头尾） */
   raw?: string;
+  /**
+   * 产生该证据的工具调用是否失败（取自 tool_result.is_error）。
+   *
+   * F2（2026-09-03）：fast-path 判「测试是否通过」不能只看输出文本里有没有 `0 fail`
+   * ——测试是否通过本质由退出码定义。缺省（旧会话恢复、非 bash 证据）视为未知，
+   * 按 fail-open 处理，不因缺字段就把历史证据判成失败。
+   */
+  isError?: boolean;
 }
 
 export type GoalStatus =
@@ -87,9 +95,51 @@ export function createGoal(objective: string, options?: CreateGoalOptions): Goal
 
 // ─── 序列化 / 反序列化 ───
 
-/** 序列化 GoalState 为 JSON 可存储格式 */
+/** 序列化 GoalState 为 JSON 可存储格式（全量，内存/调试用） */
 export function serializeGoalState(goal: GoalState): string {
   return JSON.stringify(goal);
+}
+
+/** 落盘时保留的证据条数（评估器只读最近 20 条，留 30 条有余量） */
+const PERSIST_KEEP_RECENT_EVIDENCE = 30;
+
+/** 落盘时保留 `raw` 的最近条数（更早的只留 summary） */
+const PERSIST_KEEP_RAW_RECENT = 5;
+
+/**
+ * 序列化 GoalState **用于落盘**：内存保留全量，落盘只写最近 N 条 + 总数。
+ *
+ * ## 为什么需要跟 serializeGoalState 分开（F6，2026-09-03 排查）
+ *
+ * `appendMetadata` 是 **append 语义**——每次 persist 都把当时的完整 GoalState 再写一条。
+ * 而 `evidenceLog` 无上限，于是第 N 轮那一次写入就带着 N 条证据的完整体积：
+ * 150 轮实测**单次序列化 328KB、累计约 24MB**，而**评估器真正读的只有最近 20 条**。
+ * 副作用是 session JSONL 膨胀 → 会话恢复要解析这坨东西。
+ *
+ * 改法刻意**不裁内存**：设计稿写的是「评估者输入取最近 20 条 / GoalState 保留全量
+ * （用于持久化和 resume）」——全量保留是有意的，不是漏了裁剪。所以这里只治写放大：
+ * - `evidenceLog` 落盘裁到最近 30 条（评估器窗口 20，留余量）
+ * - `evidenceTotalCount` 记真实总数，`/goal status` 的「证据 N 条」不至于变成被裁后的数
+ * - 较早证据剥掉 `raw`（2000 字符上限，量大且评估器对旧证据只看 summary），
+ *   最近 5 条保留——`summary` 一条都不剥，它才是主判据
+ *
+ * resume 侧安全性已确认：`buildResumeTurnPrompt` 只读 `turnsUsed` 与 `lastEvalReason`，
+ * 不读 `evidenceLog`。
+ */
+export function serializeGoalStateForPersist(
+  goal: GoalState,
+  keepRecent = PERSIST_KEEP_RECENT_EVIDENCE,
+): string {
+  const total = goal.evidenceLog.length;
+  const kept = goal.evidenceLog.slice(-keepRecent);
+  const rawCutoff = kept.length - PERSIST_KEEP_RAW_RECENT;
+  const evidenceLog = kept.map((e, i) => {
+    if (i >= rawCutoff) return e;
+    // 剥 raw：保留其余字段（含 isError，fast-path 的退出码前提依赖它）
+    const { raw: _raw, ...withoutRaw } = e;
+    return withoutRaw;
+  });
+  return JSON.stringify({ ...goal, evidenceLog, evidenceTotalCount: total });
 }
 
 /** 从 JSON 字符串反序列化 GoalState */
