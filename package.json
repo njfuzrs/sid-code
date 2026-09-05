@@ -40,6 +40,7 @@
     "lint": "oxlint packages tests scripts evals website",
     "lint:fix": "oxlint packages tests scripts evals website --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",
+    "lint:command-system": "bun run scripts/command-system-gate.ts",
     "format": "oxfmt packages tests scripts evals website",
     "format:check": "oxfmt --check packages tests scripts evals website",
     "eval:run": "bun run packages/eval-framework/core/runner.ts",

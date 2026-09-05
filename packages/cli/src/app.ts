@@ -2217,7 +2217,14 @@ export class App {
    * 无新注册表时回退旧 Registry.all()。
    */
   private async loadCommandList(): Promise<
-    Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>
+    Array<{
+      name: string;
+      aliases: string[];
+      description: string;
+      requiresArgs?: boolean;
+      immediate?: boolean;
+      type?: string;
+    }>
   > {
     // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
     if (this.config.disableSlashCommands) return [];
@@ -2240,6 +2247,13 @@ export class App {
               aliases: c.aliases ?? [],
               description: c.description,
               requiresArgs: c.requiresArgs,
+              // P0-1/P0-2：immediate 与 type 透传给 UI，让「流式中是否允许插队」这个
+              // 判断能在提交那一刻做出来。此前 27 条命令声明 immediate、0 处读取，
+              // 于是 /compact 等会改写消息历史的命令也一律直送，与流式写入构成
+              // 读-改-写竞争。判据必须落在 UI 提交路径上（App.tsx handleSubmit），
+              // 那里是唯一能决定「直送还是入队」的地方。
+              immediate: c.immediate,
+              type: c.type,
             }))
         );
       } catch (err: any) {
@@ -6347,6 +6361,30 @@ export class App {
       });
       bridge.update(patch);
     };
+
+    // ── P1-2：补全列表随注册表变更自动刷新 ──
+    //
+    // 修复前 `state.commands` 全仓只被赋值一次（上面那次 await loadCommandList），
+    // 于是三条动态来源在补全里全部失效：MCP 中途连上/断开、/reload-plugins 热更新、
+    // /skills 禁用某 skill。执行路径每次都重新 getCommands，所以症状是
+    // 「盲敲全名能跑，补全里找不到」——看起来像"不支持"而不是"有 bug"。
+    //
+    // 这里订阅注册表的广播而不是在每个变更点各自补一次 updateState：变更点会增加，
+    // 靠人记就会漏，而漏掉时不会有任何东西报错。刷新是幂等的，重复广播只是多一次
+    // 轻量重算（loadCommandList 走 getCommands，本身有 cwd 缓存）。
+    if (this.unifiedRegistry) {
+      this.unifiedRegistry.onCommandsChanged(() => {
+        // fire-and-forget：刷新失败不能影响触发变更的那个操作（如 /reload-plugins 本身）。
+        void this.loadCommandList()
+          .then((cmds) => {
+            updateState({ commands: cmds });
+            log.debug("TUI:CMD", `补全命令列表已刷新: ${cmds.length} 个`);
+          })
+          .catch((err: any) => {
+            log.warn("TUI:CMD", `刷新补全命令列表失败: ${err?.message}`);
+          });
+      });
+    }
 
     // ── 会话任务名（终端标题用）──
     // 首条用户消息时：① 本地启发式即时设标题（零延迟,多窗口立刻可区分）;
