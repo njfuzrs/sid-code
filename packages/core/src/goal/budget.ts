@@ -17,23 +17,49 @@ export interface TurnUsage {
 }
 
 /**
+ * 无条件累加本轮用量到 goal.tokensUsed（含 cache_creation，Anthropic 对其收费高于 input）。
+ *
+ * ## 为什么这一步必须与预算门控分开（F1，2026-09-03 排查）
+ *
+ * 原先累加写在 `checkGoalBudget` 里、并且在 `if (!goal.tokenBudget) return "ok"` 之后，
+ * 而 `DEFAULT_GOAL_CONFIG.defaultTokenBudget = 0`、`createGoal` 又把 0 转成 undefined
+ * ——**默认配置下 tokensUsed 恒为 0**，四处展示（/goal status、reminder 注入、
+ * GOAL_LIFECYCLE 日志、/goal budget 回显）全在报错数。
+ *
+ * 最尖锐的后果不是显示：用户跑到一半执行 `/goal budget 100k` 时，这 100k 会
+ * **从 0 重新计**而不是从已消耗量算起。排查实测「设 100k 上限、实际花掉 780k」。
+ *
+ * 所以「记账」是无条件的事实采集，「门控」才依赖是否设了预算——两者解耦。
+ */
+export function accumulateGoalTokens(goal: GoalState, currentTurnUsage: TurnUsage): void {
+  goal.tokensUsed +=
+    currentTurnUsage.inputTokens +
+    currentTurnUsage.outputTokens +
+    (currentTurnUsage.cacheCreationTokens ?? 0);
+}
+
+/**
  * 检查目标预算状态，并累加本轮用量到 goal.tokensUsed。
  * 返回：
  * - "ok": 预算充足
  * - "warning": 已用 ≥85%（预警）
  * - "exceeded": 已用 ≥100%（耗尽）
+ *
+ * ⚠️ 本函数**自带累加**（保持既有调用方语义不变）。调用方若已自行调过
+ * `accumulateGoalTokens`，**不得**再调本函数，否则同一轮用量入账两次、预算上限被腰斩。
+ * goal-gate 的做法是「无条件 accumulate → 有预算才走这里的判定分支」，见该处注释。
  */
 export function checkGoalBudget(
   goal: GoalState,
   currentTurnUsage: TurnUsage,
 ): "ok" | "warning" | "exceeded" {
-  if (!goal.tokenBudget) return "ok";
+  if (!goal.tokenBudget) {
+    // 无预算也要记账：门控不生效 ≠ 不统计用量（F1）。
+    accumulateGoalTokens(goal, currentTurnUsage);
+    return "ok";
+  }
 
-  // 累加本轮用量（含 cache_creation，因为 Anthropic 对其收费高于 input）
-  goal.tokensUsed +=
-    currentTurnUsage.inputTokens +
-    currentTurnUsage.outputTokens +
-    (currentTurnUsage.cacheCreationTokens ?? 0);
+  accumulateGoalTokens(goal, currentTurnUsage);
 
   const ratio = goal.tokensUsed / goal.tokenBudget;
   if (ratio >= 1.0) {

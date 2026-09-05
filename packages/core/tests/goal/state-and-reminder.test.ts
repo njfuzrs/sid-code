@@ -9,7 +9,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { createGoal, serializeGoalState, deserializeGoalState } from "@sid-code/core/goal/state.ts";
+import {
+  createGoal,
+  serializeGoalState,
+  serializeGoalStateForPersist,
+  deserializeGoalState,
+} from "@sid-code/core/goal/state.ts";
 import {
   buildGoalReminder,
   buildFirstTurnPrompt,
@@ -116,5 +121,92 @@ describe("buildResumeTurnPrompt", () => {
     const prompt = buildResumeTurnPrompt(goal);
     expect(prompt).toContain("迁移到新 API");
     expect(prompt).toContain("还有 3 个文件未迁移");
+  });
+});
+
+// ─── F6：evidenceLog 写放大（2026-09-03 排查）───
+//
+// 缺陷形态：`evidenceLog` 无上限 + 每次变更**全量序列化**落盘（appendMetadata 是
+// append 语义），于是第 N 轮那一次写入就有 N 条证据的完整体积。实测 150 轮：
+// 单次序列化 328KB、累计写入约 24MB，而**评估器真正读的只有最近 20 条**。
+//
+// 修法刻意不裁内存（原设计「全量保留用于持久化和 resume」是有意的），只裁落盘：
+// 内存全量不变，落盘写「最近 N 条 + 总数」。
+describe("F6：持久化与内存分离", () => {
+  /** 造一条约 2.2KB 的证据（summary 500 + raw 2000 是字段上限） */
+  const makeEvidence = (turn: number) => ({
+    turn,
+    timestamp: Date.now(),
+    type: "test_result" as const,
+    summary: `第 ${turn} 轮测试结果 `.padEnd(500, "x"),
+    raw: `原始输出 ${turn} `.padEnd(2000, "y"),
+  });
+
+  test("落盘只写最近 N 条，内存保持全量（变异自证：修复前必失败）", () => {
+    const goal = createGoal("长任务");
+    for (let t = 1; t <= 150; t++) goal.evidenceLog.push(makeEvidence(t));
+
+    const persisted = JSON.parse(serializeGoalStateForPersist(goal, 30));
+    // 落盘被裁
+    expect(persisted.evidenceLog).toHaveLength(30);
+    // 内存不受影响（原设计意图：resume 侧保留全量的可能性）
+    expect(goal.evidenceLog).toHaveLength(150);
+    // 保留的是**最近**的 30 条，不是最早的
+    expect(persisted.evidenceLog[29].turn).toBe(150);
+    expect(persisted.evidenceLog[0].turn).toBe(121);
+  });
+
+  test("总数单独留字段，/goal status 仍能显示真实条数", () => {
+    const goal = createGoal("长任务");
+    for (let t = 1; t <= 150; t++) goal.evidenceLog.push(makeEvidence(t));
+    const persisted = JSON.parse(serializeGoalStateForPersist(goal, 30));
+    expect(persisted.evidenceTotalCount).toBe(150);
+  });
+
+  test("150 轮单次落盘体积 < 100KB（原为 328KB）", () => {
+    const goal = createGoal("长任务");
+    for (let t = 1; t <= 150; t++) goal.evidenceLog.push(makeEvidence(t));
+    const full = serializeGoalState(goal).length;
+    const trimmed = serializeGoalStateForPersist(goal, 30).length;
+    expect(trimmed).toBeLessThan(100_000);
+    // 相对全量必须有量级差，否则这条修复没意义
+    expect(trimmed).toBeLessThan(full / 3);
+  });
+
+  test("只对较早的证据剥 raw，最近 5 条保留（评估器输入不回退）", () => {
+    // 方案 C：raw 是 2000 字符上限，20 条 × 2000 = 40K 字符对小模型上下文已不小。
+    const goal = createGoal("长任务");
+    for (let t = 1; t <= 40; t++) goal.evidenceLog.push(makeEvidence(t));
+    const persisted = JSON.parse(serializeGoalStateForPersist(goal, 30));
+    const kept = persisted.evidenceLog;
+    // 最后 5 条留 raw
+    expect(kept[kept.length - 1].raw).toBeDefined();
+    // 更早的只留 summary
+    expect(kept[0].raw).toBeUndefined();
+    // summary 一条都不能丢——它才是评估器的主判据
+    expect(kept.every((e: { summary?: string }) => typeof e.summary === "string")).toBe(true);
+  });
+
+  test("证据少于上限时行为与全量序列化一致（不引入差异）", () => {
+    const goal = createGoal("短任务");
+    for (let t = 1; t <= 3; t++) goal.evidenceLog.push(makeEvidence(t));
+    const persisted = JSON.parse(serializeGoalStateForPersist(goal, 30));
+    expect(persisted.evidenceLog).toHaveLength(3);
+    expect(persisted.evidenceTotalCount).toBe(3);
+    // 短 goal 的 raw 全部保留
+    expect(persisted.evidenceLog[0].raw).toBeDefined();
+  });
+
+  test("裁剪后的记录仍能被 deserializeGoalState 正常读回", () => {
+    const goal = createGoal("长任务", { tokenBudget: 50000 });
+    goal.turnsUsed = 150;
+    goal.tokensUsed = 987654;
+    for (let t = 1; t <= 150; t++) goal.evidenceLog.push(makeEvidence(t));
+
+    const restored = deserializeGoalState(serializeGoalStateForPersist(goal, 30));
+    expect(restored.turnsUsed).toBe(150);
+    expect(restored.tokensUsed).toBe(987654);
+    expect(restored.tokenBudget).toBe(50000);
+    expect(restored.evidenceLog).toHaveLength(30);
   });
 });
