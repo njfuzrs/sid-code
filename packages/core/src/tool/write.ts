@@ -302,8 +302,18 @@ export class WriteTool implements Tool {
         oldContent = await targetFile.text();
       }
 
+      // D1：写盘**之前**在 IDE 里协商最终内容。这是一次阻塞的内容协商而非展示——
+      // 用户可在 diff 视图里继续手改再保存，此时该落盘的是**用户改过的版本**。
+      // 无 IDE / 未开启 / 出错一律返回"照原样写"——IDE 是可选增强。
+      const { negotiateContentViaIDE } = await import("../ide/tool-hooks.ts");
+      const negotiated = await negotiateContentViaIDE(filePath, oldContent, params.content);
+      if (!negotiated.proceed) {
+        return { output: `已取消: ${negotiated.reason}`, isError: true };
+      }
+      const contentToWrite = negotiated.content;
+
       // 写入文件
-      await Bun.write(filePath, params.content);
+      await Bun.write(filePath, contentToWrite);
 
       // BUG1 修复 + 内容快照同步：写入后回写 tracker，让紧接的 edit 不因"没读过"被拒，
       // 且记录刚写入的完整内容——否则下次 validateForWrite/validateForEdit 的内容比对会
@@ -315,11 +325,13 @@ export class WriteTool implements Tool {
         try {
           const mtime = statSync(filePath).mtimeMs;
           if (this.tracker.hasBeenRead(filePath)) {
-            this.tracker.updateMtime(filePath, params.content);
+            // 必须记 contentToWrite 而非 params.content：用户在 IDE 的 diff 里改过时
+            // 两者不同，记错会让下次 edit 把用户自己的改动误判为"外部修改"。
+            this.tracker.updateMtime(filePath, contentToWrite);
           } else {
             this.tracker.markAsRead(filePath, mtime, {
               isPartialView: false,
-              content: params.content,
+              content: contentToWrite,
             });
           }
         } catch {
@@ -349,7 +361,7 @@ export class WriteTool implements Tool {
       let lineDropWarning = "";
       if (oldContent) {
         const oldLines = oldContent.split("\n").length;
-        const newLines = params.content.split("\n").length;
+        const newLines = contentToWrite.split("\n").length;
         if (oldLines > 50 && newLines < oldLines * 0.8) {
           const dropPct = Math.round((1 - newLines / oldLines) * 100);
           lineDropWarning =
@@ -364,8 +376,10 @@ export class WriteTool implements Tool {
       // output 仅一句话摘要,不含完整 diff —— 对齐 claude-code 省 token。
       const action = oldContent ? "已写入" : "已创建";
       return {
-        output: `文件${action}: ${filePath}${lineDropWarning}`,
-        structuredPatch: buildStructuredPatch(filePath, oldContent, params.content),
+        output:
+          `文件${action}: ${filePath}${lineDropWarning}` +
+          (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : ""),
+        structuredPatch: buildStructuredPatch(filePath, oldContent, contentToWrite),
       };
     } catch (err: any) {
       // errno 友好化：把裸系统错误翻译成模型可操作的中文提示，避免弱模型

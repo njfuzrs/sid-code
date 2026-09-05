@@ -8,6 +8,8 @@
 
 import type { MCPClient } from "../mcp/client.ts";
 import { getLogger } from "../debug/logger.ts";
+import { IDE_NOTIFY } from "./protocol.ts";
+import { windowsPathToWSL } from "./wsl.ts";
 
 /** 选区过期时间（5 分钟） */
 const SELECTION_TTL_MS = 5 * 60 * 1000;
@@ -43,44 +45,46 @@ export class IDESelectionSync {
   register(client: MCPClient): void {
     this.unsubscribe?.();
 
-    this.unsubscribe = client.onNotification(
-      "notifications/selection_changed",
-      (params: unknown) => {
-        try {
-          const p = params as {
-            selection: {
-              start: { line: number; character: number };
-              end: { line: number; character: number };
-            };
-            text: string;
-            filePath: string;
+    // ⛔ 方法名必须来自 IDE_NOTIFY，不许在此处写字面量：这里曾写成
+    // "notifications/selection_changed"，多一个 MCP 标准前缀导致订阅永久静默匹配不上
+    // （不报错、不打日志、/ide status 照样显示已连接）。理由详见 protocol.ts 顶部注释。
+    this.unsubscribe = client.onNotification(IDE_NOTIFY.selectionChanged, (params: unknown) => {
+      try {
+        const p = params as {
+          selection: {
+            start: { line: number; character: number };
+            end: { line: number; character: number };
           };
-          if (!p?.selection || typeof p.filePath !== "string") return;
+          text: string;
+          filePath: string;
+        };
+        if (!p?.selection || typeof p.filePath !== "string") return;
 
-          const { start, end } = p.selection;
-          let lineCount = end.line - start.line + 1;
-          // 对标 Claude Code：如果光标落在行首（character === 0），不计入该行
-          if (end.character === 0 && lineCount > 1) {
-            lineCount--;
-          }
-
-          this.currentSelection = {
-            filePath: p.filePath,
-            text: p.text ?? "",
-            lineStart: start.line,
-            lineCount,
-            updatedAt: Date.now(),
-          };
-
-          getLogger().debug(
-            "IDE",
-            `选区更新: ${p.filePath}:${start.line + 1}-${start.line + lineCount}`,
-          );
-        } catch (err) {
-          getLogger().error("IDE", "解析选区通知失败", err);
+        const { start, end } = p.selection;
+        let lineCount = end.line - start.line + 1;
+        // 对标 Claude Code：如果光标落在行首（character === 0），不计入该行
+        if (end.character === 0 && lineCount > 1) {
+          lineCount--;
         }
-      },
-    );
+
+        this.currentSelection = {
+          // 入向路径归一（D8）：Windows 侧扩展报的是 `C:\...`，我们在 WSL 里
+          // 只认 `/mnt/c/...`。非 WSL 环境下这是严格的 no-op（逐字节不变）。
+          filePath: windowsPathToWSL(p.filePath),
+          text: p.text ?? "",
+          lineStart: start.line,
+          lineCount,
+          updatedAt: Date.now(),
+        };
+
+        getLogger().debug(
+          "IDE",
+          `选区更新: ${p.filePath}:${start.line + 1}-${start.line + lineCount}`,
+        );
+      } catch (err) {
+        getLogger().error("IDE", "解析选区通知失败", err);
+      }
+    });
   }
 
   /** 取消注册 */

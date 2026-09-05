@@ -629,6 +629,17 @@ export interface IDEConfig {
   discoveryTimeout?: number;
   /** 是否自动安装 IDE 扩展（默认 false，扩展尚未发布） */
   autoInstallExtension?: boolean;
+  /**
+   * 写盘前在 IDE 中展示 diff 并等待用户确认/手改（默认 **false**）。
+   *
+   * ⚠️ 默认关闭是刻意的：开启后每次 edit/write 都变成**一次等人的交互**
+   * （最长等 30 分钟，见 integration.ts 的 IDE_RPC_TIMEOUT_MS）。
+   * 无人值守 / 批量 / CI 场景下会直接把 agent 挂住 ——
+   * 让一个便利功能默认开启，等于把它变成一个卡死风险。
+   *
+   * 仅在 IDE 已连接时生效；未连接时静默无效果（IDE 是可选增强）。
+   */
+  diffPreview?: boolean;
 }
 
 /**
