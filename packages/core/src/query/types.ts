@@ -766,6 +766,17 @@ export interface QueryDeps {
    */
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
   /**
+   * 按模型名解析 Provider（读 availableModels 的 per-model provider/apiKey/baseURL）。
+   *
+   * F4（2026-09-03）：goal 评估器原先在 loop.ts 里手工 new provider，只按主
+   * `config.provider` 二选一并复用主模型的 key 与 baseURL；而评估器模型取自
+   * `subAgentModels.default`，可能在另一个网关上 → 协议/端点/key 三重错配，每轮必 4xx。
+   *
+   * 实现由 `ProviderRegistry.getProviderForModelName` 提供（分类逻辑只有一份）。
+   * 未注入时 loop.ts 回落到主 provider——功能不变，只是失去跨 provider 的正确性。
+   */
+  getProviderForModel?: (model: string) => import("../llm/provider.ts").Provider | undefined;
+  /**
    * G2：获取 cachedMicrocompact 状态机（provider 感知的缓存友好压缩）。
    * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，
    * 将产出的 pendingCacheEdits 注入 sendParams.cacheEdits。可选——未注入则跳过。

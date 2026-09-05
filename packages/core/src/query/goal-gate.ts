@@ -129,8 +129,13 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   };
 
   // 1. 预算检查（在评估之前，省下评估调用费用）
+  //
+  // F1（2026-09-03）：这里**不能**再包 `if (goal.tokenBudget)`。记账是无条件的，
+  // 门控才依赖是否设了预算——包住会让默认配置（defaultTokenBudget=0 → undefined）下
+  // tokensUsed 恒为 0，四处展示报错数，且中途 /goal budget 时上限从 0 重算而失真。
+  // checkGoalBudget 两条分支都会累加，无预算时它必返回 "ok"，故下面两个分支自然不触发。
+  const budgetStatus = checkGoalBudget(goal, turnUsage);
   if (goal.tokenBudget) {
-    const budgetStatus = checkGoalBudget(goal, turnUsage);
     if (budgetStatus === "exceeded") {
       goal.status = "budget_limited";
       log.warn(

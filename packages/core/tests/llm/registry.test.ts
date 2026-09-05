@@ -305,3 +305,63 @@ describe("跨进程 wireModel（spawn 子代理别名泄漏防回退）", () => 
     expect(registry.resolveWireModelForAlias("unknown")).toBe("unknown");
   });
 });
+
+// ─── F4：按模型名解析 provider（评估器 provider 错配）───
+//
+// 缺陷形态：loop.ts 为 goal 评估器**手工 new** 了一个 provider，只按主 config.provider
+// 二选一，并复用主模型的 key 与 baseURL；而评估器模型取自 subAgentModels.default，
+// 完全可能属于另一个 provider / 另一个网关 / 另一把 key。于是「把 deepseek 模型名，
+// 用 Anthropic 协议、Anthropic 的 key，发到 Anthropic 端点」→ 每轮必 4xx。
+//
+// 这与 20260707 那次事故同源（评估器 6 次调用 0 成功、任务从第 16 轮空转到第 31 轮）。
+// registry 本来就会读 per-model 的 provider/apiKey/baseURL，缺的只是「按模型名」这个入口
+// ——原有 getProviderForSubAgent 是按**子代理类型**查的，而这里手上已经是模型名了。
+describe("F4：getProviderForModelName 按模型名解析 per-model 连接配置", () => {
+  const CROSS = testConfig({
+    provider: "anthropic",
+    model: "claude-sonnet-4",
+    anthropicKey: "sk-ant-xxx",
+    openaiKey: undefined,
+    baseURL: "https://api.anthropic.com",
+    availableModels: [
+      { name: "claude-sonnet-4", provider: "anthropic", apiKey: "sk-ant-xxx" },
+      {
+        name: "ali-deepseek-v4-flash",
+        provider: "openai",
+        apiKey: "sk-gw-yyy",
+        baseURL: "https://gateway.corp/v1",
+      },
+    ],
+  });
+
+  test("跨 provider 子模型 → 构造出该模型自己的 provider（变异自证：修复前必失败）", () => {
+    const registry = new ProviderRegistry(CROSS);
+    const provider = registry.getProviderForModelName("ali-deepseek-v4-flash");
+    // 主 provider 是 anthropic，但这个模型声明了 openai —— 必须按模型走
+    expect(provider.name()).toBe("openai");
+  });
+
+  test("主模型仍解析为主 provider（不回退）", () => {
+    const registry = new ProviderRegistry(CROSS);
+    expect(registry.getProviderForModelName("claude-sonnet-4").name()).toBe("anthropic");
+  });
+
+  test("未在 availableModels 声明的模型 → 回落主 provider，不臆测", () => {
+    const registry = new ProviderRegistry(CROSS);
+    expect(registry.getProviderForModelName("never-configured").name()).toBe("anthropic");
+  });
+
+  test("空模型名 → 回落主 provider，不抛异常", () => {
+    const registry = new ProviderRegistry(CROSS);
+    expect(registry.getProviderForModelName("").name()).toBe("anthropic");
+    expect(registry.getProviderForModelName(undefined).name()).toBe("anthropic");
+  });
+
+  test("与 getProviderForSubAgent 同源：同一模型经两条入口得到同一实例", () => {
+    // 分类逻辑只能有一份。若这条失败，说明按模型名的解析又写了第二份实现。
+    const registry = new ProviderRegistry(CROSS, { default: "ali-deepseek-v4-flash" });
+    const viaType = registry.getProviderForSubAgent("default");
+    const viaName = registry.getProviderForModelName("ali-deepseek-v4-flash");
+    expect(viaName).toBe(viaType); // 同一缓存实例
+  });
+});

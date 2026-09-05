@@ -188,6 +188,26 @@ export async function filterGitignored(
   return ignored;
 }
 
+/**
+ * `lsp` 工具的启用判据（纯函数，与单例解耦）。
+ *
+ * 单独提出来是为了**可确定地测**：判据依赖"有几个 language server"，而那取决于
+ * 运行机器的 PATH —— 直接测 isEnabled() 在装了 server 的机器上永远走不到
+ * "success 且零服务器"这一支，用例会看起来通过却什么都没断言（实测本机 5 个，
+ * 首版用例正是这样悄悄失效的）。这里把判据与"读单例"拆开，两半各自可测：
+ * 判据由本函数的用例穷举，接线由"isEnabled() 与本函数同结论"的一致性用例守。
+ *
+ * @param initState LSP 系统初始化状态
+ * @param serverCount 已注册服务器数量
+ */
+export function lspToolEnabledFor(initState: string, serverCount: number): boolean {
+  // pending 放行是刻意的"早可见"语义，真正的就绪由 execute 的 waitForLSPReady 兜底。
+  if (initState === "pending") return true;
+  // success 必须附加"有服务器"：manager 里无配置也算 success（见 initializeLSP），
+  // 仅凭 initState 会让工具在没装任何 server 的机器上白占上下文。
+  return initState === "success" && serverCount > 0;
+}
+
 export class LSPTool implements Tool {
   readonly zodSchema = lspSchema();
 
@@ -239,22 +259,46 @@ export class LSPTool implements Tool {
   }
 
   /**
-   * 启用条件：LSP 初始化成功且有可用服务器。
+   * 启用条件：LSP 初始化成功**且确实注册到了服务器**。
    * 自动检测，无需环境变量门控——有 LSP 就启用（零配置体验，差异化于 CC 的 ENABLE_LSP_TOOL）。
+   *
+   * 判据本身在 {@link lspToolEnabledFor}（纯函数），这里只负责读单例后转交。
    */
   isEnabled(): boolean {
-    // 同步检查，不能 await。getLSPInitState/getLSPManager 都是同步读单例。
+    // 同步检查，不能 await。getLSPInitState/getLSPServerCount 都是同步读单例。
     // 注意：isEnabled 在工具组装时调用，此时 LSP 可能仍在 pending；返回 false 不影响
     // 后续——LSP 就绪后下次组装即启用。但为了让工具"早可见"（pending 也算潜在可用），
     // 这里只要不是明确 failed/not-started 就放行，真正的就绪由 execute 的 waitForLSPReady 兜底。
+    //
+    // ⚠️ 放行 pending 是**刻意的，别改**；缺的只是 success 这一半：manager 里
+    // "无配置也算成功"（见 initializeLSP），所以一台没装任何 language server 的机器上
+    // initState 同样是 success。仅凭它放行会让工具常驻上下文白烧 token，且模型拿到的是
+    // 一个必然失败的工具。故 success 额外要求"服务器数量 > 0"。
+    //
+    // 已知边界：pending 仍放行 ⇒ 没装 server 的机器在初始化完成前的头几轮仍会短暂出现
+    // 该工具。这可以接受（初始化是几百毫秒级）；要彻底干净得让工具列表在 LSP 就绪后
+    // 重新组装一次，成本高于收益。
     try {
-      // 用 require 同步引入，避免 isEnabled 变 async（接口是同步的）
-      const { getLSPInitState } = require("../lsp/manager.ts");
-      const state = getLSPInitState();
-      return state === "success" || state === "pending";
+      const { initState, serverCount } = this.readGateInputs();
+      return lspToolEnabledFor(initState, serverCount);
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 门控输入的**唯一读取点**：把"读单例"从"判据"里分出来。
+   *
+   * 为什么值得多这一层：判据的零服务器分支在装了 language server 的机器上根本走不到
+   * （本机实测 5 个），于是"isEnabled 与判据同结论"这种一致性断言在这里
+   * `success && 5>0` 恒等于 `success` —— **判据被整个摘掉它也照样绿**（实测确认过）。
+   * 有了这个可覆写的读取点，测试才能确定地构造 `success + 零服务器`，
+   * 从而真正守住"判据接进了 isEnabled"这件事。
+   */
+  protected readGateInputs(): { initState: string; serverCount: number } {
+    // 用 require 同步引入，避免 isEnabled 变 async（接口是同步的）
+    const { getLSPInitState, getLSPServerCount } = require("../lsp/manager.ts");
+    return { initState: getLSPInitState(), serverCount: getLSPServerCount() };
   }
 
   /**
