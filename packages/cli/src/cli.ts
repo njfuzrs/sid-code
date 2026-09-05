@@ -2323,6 +2323,14 @@ export async function main(): Promise<void> {
     // 在 TUI 里既不补全也执行不了（getCommands 返回的是启动时的 cwd 缓存）。
     skillManager.onSkillsChanged(() => unifiedRegistry.invalidateSkillCommands());
 
+    // P1-2：MCP prompt / 连接态变更 → 广播命令集合变更，让补全列表跟上。
+    // MCP prompt 不进 cwd 缓存（getCommands 每次现场构建），所以这里不需要清缓存，
+    // 只需把"变了"这件事转发出去；订阅方在 app.ts 里重新 loadCommandList。
+    // 覆盖 UI 调用点覆盖不到的那部分：心跳失败自动重连、子进程退出、退避重连成功。
+    if (mcpManager) {
+      mcpManager.onPromptsChanged = () => unifiedRegistry.notifyExternalChange();
+    }
+
     // 预加载插件命令快照（custom/skill/builtin 由 getCommands 按 cwd 懒加载并缓存）
     try {
       await unifiedRegistry.loadPlugins();

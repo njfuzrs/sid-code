@@ -1,0 +1,5 @@
+{
+  "deadExports": 37,
+  "legacyBuiltins": 35,
+  "note": "2026-09-05 首次接入（命令系统七处缺陷修复）。37 条死导出是存量，不是本次引入——本次新增的 streaming-gate.ts 里两个无外部消费者的符号已改为不导出，而非加进豁免名单。棘轮只允许收紧：清理存量后跑 --update-baseline。legacyBuiltins=35 对应 builtins.ts 的旧体系命令数（新体系已 30 个目录），只允许减少。"
+}

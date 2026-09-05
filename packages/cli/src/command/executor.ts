@@ -21,7 +21,7 @@ import type {
   PromptCommand,
   UnifiedCommand,
 } from "./types.ts";
-import { parseSlashCommand, looksLikeCommand } from "./parser.ts";
+import { parseSlashCommand, looksLikeCommand, isFilePath } from "./parser.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 // P0-1 漏斗 4：斜杠命令使用分布，回答「哪些功能是死功能」。
 // 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
@@ -52,8 +52,15 @@ export class CommandExecutor {
 
     const cmd = this.findCommand(parsed.commandName, commands);
     if (!cmd) {
-      // 像命令名（仅字母数字连字符）→ 报未知命令；否则当作普通文本
-      if (looksLikeCommand(parsed.commandName)) {
+      // 像命令名（仅字母数字连字符）→ 报未知命令；否则当作普通文本。
+      //
+      // P1-1：正则那一道拦不住**单段的真实目录**——`/tmp` `/usr` `/etc` 只含字母，
+      // 正则判定为"像命令名"，于是用户想让模型看 `/tmp` 下的东西却得到「未知命令」。
+      // （含 `/` 的 `/var/log/syslog` 正则本就不过，一直是正常 passthrough。）
+      // `isFilePath` 定义在 parser.ts 却零调用，正是它该被用上的地方。
+      // 取舍：给**未命中**的斜杠命令加一次 stat()，只在这条冷路径上，
+      // 不在补全热路径；换掉一个纯字符串判定判不了的事实（这个路径在不在磁盘上）。
+      if (looksLikeCommand(parsed.commandName) && !(await isFilePath(parsed.commandName))) {
         // unknown_command 的分布能直接看出「用户以为存在但其实没有」的功能——
         // 这是功能缺口的一手信号。刻意**不上报用户输入的那个名字**：它是自由文本，
         // 可能含路径或私有名称。要看具体名字请查本地日志。
@@ -63,6 +70,22 @@ export class CommandExecutor {
       return { type: "passthrough", value: input };
     }
 
+    const gateError = this.checkGates(cmd);
+    if (gateError) return gateError;
+
+    return this.dispatch(cmd, parsed.args);
+  }
+
+  /**
+   * 两道门控的**唯一实现**：用户可调用性 + 启用性。
+   *
+   * P2-2：这两道检查原本只写在 `executeSlashCommand` 里，`executeImmediate` 是裸
+   * `dispatch`，两个入口的门控不一致。抽成一个私有方法而不是在第二个入口复制一遍，
+   * 是因为「共享的必须是实现，不是约定」—— 复制一遍的话，第三个入口出现时会再漏一次。
+   *
+   * 返回 null 表示放行；返回 CommandExecutionResult 表示拒绝（调用方直接返回它）。
+   */
+  private checkGates(cmd: UnifiedCommand): CommandExecutionResult | null {
     // 用户可调用性检查
     if (cmd.userInvocable === false) {
       logCommandRejected("not_user_invocable");
@@ -84,14 +107,21 @@ export class CommandExecutor {
       };
     }
 
-    return this.dispatch(cmd, parsed.args);
+    return null;
   }
 
   /**
    * immediate 命令的即时执行（模型运行时插队用）
-   * 仅分发，不做 passthrough 判断
+   * 不做 passthrough 判断，但**必须过与 executeSlashCommand 相同的两道门控**。
+   *
+   * P2-2：修复前这里是裸 `dispatch`，两道门控全无。在 immediate 未接线的年代它
+   * 不可达，所以不是活缺陷；但 P0-1 让 immediate 真正生效后，这条路径就成了
+   * 「被 /skills 禁用的 skill、或未触发的条件 skill，只要标了 immediate 就能按名直呼」
+   * 的绕过口。修 P0-1 必须同时补这里，否则等于用一个缺陷换另一个。
    */
   async executeImmediate(cmd: UnifiedCommand, args: string): Promise<CommandExecutionResult> {
+    const gateError = this.checkGates(cmd);
+    if (gateError) return gateError;
     return this.dispatch(cmd, args);
   }
 

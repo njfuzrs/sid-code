@@ -213,6 +213,17 @@ export class MCPManager {
   /** 工具变更时的回调（供外部刷新工具列表） */
   onToolsRefresh?: (serverName: string, tools: Tool[]) => void;
   /**
+   * prompt 集合 / 连接状态变更时的回调（P1-2，供外部刷新斜杠命令补全列表）。
+   *
+   * 为什么必须由 manager 广播而不是 UI 在调用处自己刷：连接状态变化有一部分
+   * **没有任何 UI 调用点**——心跳失败后的自动重连、子进程退出、指数退避成功，
+   * 都发生在 manager 内部。让消费方"记得在每个入口刷一次"结构上覆盖不到这些。
+   *
+   * MCP prompt 会被投影成 `mcp__<server>__<prompt>` 斜杠命令（见 mcp-prompt-commands.ts），
+   * 所以 prompt 集合变了等于可用命令变了。
+   */
+  onPromptsChanged?: () => void;
+  /**
    * OAuth 需要用户授权时的回调（供 UI 展示授权 URL / 打开浏览器）。
    * 返回的 Promise 由实现方决定何时 resolve（通常立即 resolve，授权在后台完成）。
    * 未设置时，OAuth 流程会把 URL 写入日志，用户需手动打开。
@@ -576,6 +587,8 @@ export class MCPManager {
       if (prompts.length > 0) {
         log.info("MCP", `${name} 发现 ${prompts.length} 个提示词`);
       }
+      // P1-2：prompt 集合即可用斜杠命令，变了要让补全列表跟上。
+      this.notifyPromptsChanged();
     } catch {
       // 服务器可能不支持 prompts，静默忽略
     }
@@ -733,11 +746,28 @@ export class MCPManager {
 
   private setStatus(name: string, status: MCPConnectionStatus, error?: string): void {
     const state = this.getState(name);
+    const prev = state.status;
     state.status = status;
     if (error !== undefined) {
       state.error = error;
     } else if (status === MCPConnectionStatus.CONNECTED) {
       state.error = undefined;
+    }
+    // P1-2：状态真的变了才广播（避免重连退避期反复同值刷新）。
+    // 断开时 getAllPrompts 不再返回该服务器的 prompt，补全里那些命令应当消失。
+    if (prev !== status) this.notifyPromptsChanged();
+  }
+
+  /** 广播 prompt/连接态变更（监听器异常不影响主流程） */
+  private notifyPromptsChanged(): void {
+    if (!this.onPromptsChanged) return;
+    try {
+      this.onPromptsChanged();
+    } catch (err) {
+      getLogger().debug(
+        "MCP",
+        `prompt 变更回调异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
