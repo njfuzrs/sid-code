@@ -103,10 +103,10 @@
     "scheduler": "0.27.0"
   },
   "devDependencies": {
-    "@oxlint/binding-darwin-arm64": "1.78.0",
-    "@oxlint/binding-darwin-x64": "1.78.0",
-    "@oxlint/binding-linux-arm64-gnu": "1.78.0",
-    "@oxlint/binding-linux-x64-gnu": "1.78.0",
+    "@oxlint/binding-darwin-arm64": "1.80.0",
+    "@oxlint/binding-darwin-x64": "1.80.0",
+    "@oxlint/binding-linux-arm64-gnu": "1.80.0",
+    "@oxlint/binding-linux-x64-gnu": "1.80.0",
     "@types/bun": "latest",
     "@types/diff": "^8.0.0",
     "@types/hast": "^3.0.5",
@@ -120,7 +120,7 @@
     "@types/tinycolor2": "^1.4.6",
     "eval-framework": "workspace:*",
     "oxfmt": "0.64.0",
-    "oxlint": "1.78.0",
+    "oxlint": "1.80.0",
     "type-fest": "^5.8.0"
   },
   "engines": {
