@@ -8,8 +8,17 @@
 
 import { readdir, readFile, unlink, stat } from "fs/promises";
 import { join } from "path";
+import { createConnection } from "net";
 import { sidPaths } from "../config/paths.ts";
 import type { IDELockfileContent } from "./types.ts";
+
+/**
+ * 端口探活超时。取 300ms 的理由：探的是 **127.0.0.1**，正常情形下
+ * TCP 握手在个位数毫秒内完成或立刻 ECONNREFUSED；300ms 已是极宽的上界。
+ * 而 cleanupStaleLockfiles 在 detectIDEs 里被**每秒轮询一次**地调用
+ * （见 detect.ts 的 findAvailableIDE），超时值定大了会直接拖慢 IDE 发现。
+ */
+const PORT_PROBE_TIMEOUT_MS = 300;
 
 /** Lockfile 目录 */
 export function getIDELockfileDir(): string {
@@ -66,18 +75,83 @@ export async function getSortedIDELockfiles(): Promise<
 }
 
 /**
- * 清理过期 lockfile
- * 检查 PID 是否存活，不存活则删除。
+ * 探测某个本地端口是否真的有人在监听。
+ *
+ * 为什么光验 PID 不够（D7）：IDE **进程活着**但扩展的监听端口已经没了
+ * 是很常见的一种状态 —— 扩展崩了 / 被禁用 / 正在重载。这种 lockfile 用
+ * PID 判据清不掉，于是 agent 会去连一个不响应的端口，症状是连接挂到超时。
+ *
+ * 只做一次短超时的 TCP 连接尝试，连上立刻拆掉（不发任何字节）：
+ * 这里要回答的问题只是"有没有人 listen"，不是"对端是不是我们要的那个扩展"
+ * （后者由 MCP 握手负责）。
+ *
+ * 判据是**三态**而不是布尔，这一点是刻意的：`unknown` 用于"探测本身出岔子"
+ * （比如 fd 耗尽）。把 unknown 折叠成 false 会导致删掉本来健康的 lockfile ——
+ * 清理动作必须**保守**：留一个过期文件的代价是一次连接失败并重试，
+ * 删一个健康文件的代价是 IDE 明明开着却再也发现不了。
+ */
+export async function isPortListening(
+  port: number,
+  timeoutMs: number = PORT_PROBE_TIMEOUT_MS,
+): Promise<boolean | "unknown"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result: boolean | "unknown") => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        /* 已经关了 */
+      }
+      resolve(result);
+    };
+
+    const socket = createConnection({ host: "127.0.0.1", port });
+    socket.setTimeout(timeoutMs);
+
+    socket.once("connect", () => done(true));
+    // 超时不等于"没人听" —— 也可能是对端 accept 了但迟迟不回。
+    // 但对 127.0.0.1 而言这已经足够异常，按"不可用"处理（清掉重新发现比连着挂住好）。
+    socket.once("timeout", () => done(false));
+    socket.once("error", (err: NodeJS.ErrnoException) => {
+      // ECONNREFUSED / EADDRNOTAVAIL = 明确没人监听
+      if (err.code === "ECONNREFUSED" || err.code === "EADDRNOTAVAIL") return done(false);
+      // 其余（EMFILE 等）是**我们这边**的问题，不能据此判定对端死了
+      done("unknown");
+    });
+  });
+}
+
+/**
+ * 清理过期 lockfile。
+ *
+ * 两道判据，任一确定性地指向"死了"就删：
+ *   ① PID 不存活 —— IDE 进程本身没了
+ *   ② PID 活着但端口没人监听 —— 扩展崩了/被禁用/重载中（D7）
+ *
+ * 探测失败（`unknown`）时**保留**文件：见 isPortListening 的注释，
+ * 清理动作必须保守。
  */
 export async function cleanupStaleLockfiles(): Promise<void> {
   const lockfiles = await getSortedIDELockfiles();
 
-  for (const { port, content } of lockfiles) {
-    if (content.pid && !isProcessRunning(content.pid)) {
+  await Promise.all(
+    lockfiles.map(async ({ port, content }) => {
       const filePath = join(getIDELockfileDir(), `${port}.lock`);
-      await unlink(filePath).catch(() => {});
-    }
-  }
+
+      if (content.pid && !isProcessRunning(content.pid)) {
+        await unlink(filePath).catch(() => {});
+        return;
+      }
+
+      // 端口探活：PID 活着不代表扩展还在听
+      const listening = await isPortListening(port);
+      if (listening === false) {
+        await unlink(filePath).catch(() => {});
+      }
+    }),
+  );
 }
 
 /** 检查进程是否存活 */

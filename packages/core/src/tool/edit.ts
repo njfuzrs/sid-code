@@ -632,14 +632,25 @@ export class EditTool implements Tool {
           return { output: `错误: ${guardErr}`, isError: true };
         }
 
+        // D1：写盘**之前**在 IDE 里协商最终内容（用户可在 diff 视图里手改再保存）。
+        // 无 IDE / 未开启 / 出错一律返回"照原样写"——IDE 是可选增强。
+        const { negotiateContentViaIDE } = await import("../ide/tool-hooks.ts");
+        const negotiated = await negotiateContentViaIDE(filePath, "", newString);
+        if (!negotiated.proceed) {
+          return { output: `已取消: ${negotiated.reason}`, isError: true };
+        }
+        const contentToWrite = negotiated.content;
+
         const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-        await Bun.write(filePath, newString);
+        await Bun.write(filePath, contentToWrite);
         log.info("TOOL", `✓ 创建新文件 ${filePath}`);
         // 结构化 diff(全 + 行)直传 UI;output 仅摘要,不含完整内容。
         return {
-          output: `文件已创建: ${filePath}`,
-          structuredPatch: buildStructuredPatch(filePath, "", newString),
+          output:
+            `文件已创建: ${filePath}` +
+            (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : ""),
+          structuredPatch: buildStructuredPatch(filePath, "", contentToWrite),
         };
       }
 
@@ -710,6 +721,17 @@ export class EditTool implements Tool {
         return { output: `错误: ${guardErr}`, isError: true };
       }
 
+      // D1：写盘**之前**在 IDE 里协商最终内容。这是一次阻塞的内容协商而非展示——
+      // 用户在 diff 视图里手改后保存时，该落盘的是**用户改过的版本**。
+      const { negotiateContentViaIDE } = await import("../ide/tool-hooks.ts");
+      const negotiated = await negotiateContentViaIDE(filePath, rawContent, finalContent);
+      if (!negotiated.proceed) {
+        return { output: `已取消: ${negotiated.reason}`, isError: true };
+      }
+      // 用户改过时以用户版本为准；secret 守卫已在上方对 finalContent 校验过，
+      // 用户版本是人当面写的、且不经模型，不再重复拦（守卫针对的是模型误写）。
+      finalContent = negotiated.content;
+
       await Bun.write(filePath, finalContent);
 
       if (this.tracker) {
@@ -737,7 +759,9 @@ export class EditTool implements Tool {
       // 结构化 diff 直传 UI 渲染(独立于回传 LLM 的文本);给 LLM 的 output 仅一句话摘要,
       // 不再拼接完整 diff —— 对标 claude-code 省 token,且大文件 diff 不受 content 压缩影响。
       return {
-        output: `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）`,
+        output:
+          `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）` +
+          (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : ""),
         structuredPatch: buildStructuredPatch(filePath, rawContent, finalContent),
       };
     } catch (err: any) {
