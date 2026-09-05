@@ -2173,11 +2173,30 @@ export async function main(): Promise<void> {
 
     // LSP 代码智能系统懒初始化（后台进行，不阻塞启动）
     // 无 LSP 配置或语言服务器不可用时自动降级为无操作
-    try {
-      const { initializeLSP } = await import("@sid-code/core/lsp/manager.ts");
-      initializeLSP(process.cwd());
-    } catch (err: any) {
-      getLogger().debug("LSP", `LSP 初始化跳过: ${err.message}`);
+    //
+    // ⚠️ D16：**按运行形态门控**，不只看配置。无头（--print）与 Bridge 模式下没有
+    // 交互式编辑，起语言服务器并索引整个项目是**纯浪费**（大项目可能是几十秒 CPU
+    // + 几百 MB 内存），而这两种形态恰恰常出现在 CI / 批量脚本里 —— 那里最在意启动
+    // 开销，也最不需要代码智能。
+    //
+    // 判据：**能力要不要启用，看这次运行的形态，不只看配置。**
+    // （LSP 工具本身仍在 registry 里；真被调用时 manager 会按 not-started 走降级路径，
+    //  `/lsp status` 也会说清为什么没启动，而不是让用户以为坏了。）
+    const lspSkipReason = config.print
+      ? "无头模式（--print）"
+      : cliArgs.bridgeUrl
+        ? "Bridge 模式（--bridge）"
+        : null;
+
+    if (lspSkipReason) {
+      getLogger().debug("LSP", `跳过 LSP 初始化：${lspSkipReason}下无交互式编辑，索引开销无收益`);
+    } else {
+      try {
+        const { initializeLSP } = await import("@sid-code/core/lsp/manager.ts");
+        initializeLSP(process.cwd());
+      } catch (err: any) {
+        getLogger().debug("LSP", `LSP 初始化跳过: ${err.message}`);
+      }
     }
 
     // 记录注册的工具
