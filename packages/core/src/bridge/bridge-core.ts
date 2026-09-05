@@ -83,10 +83,28 @@ export class BridgeCore {
     getLogger().info("BRIDGE", "Bridge 已启动");
   }
 
-  /** 停止 Bridge */
+  /**
+   * 停止 Bridge。
+   *
+   * ⚠️ **顺序与"尽力发完有上限"这两点都是刻意的**（D9）：
+   *
+   * `flush()` 原本无条件等到队列空，而断连时 `sendBatch()` 必然抛错、
+   * `drain()` 又无限重试同一批 ⇒ `flush()` 永不返回 ⇒ 本方法永不返回。
+   * 实际表现是"Ctrl+C 后卡一下然后退出"，因为 `app.ts` 有 1.5 秒强杀兜底 ——
+   * 而那个兜底把 `runShutdownSequence()` / `mcpManager.closeAll()`（排在
+   * `runner.stop()` 之后）一起截断了，退出码 130 还让它看起来像"用户中断"。
+   *
+   * 现在 `flush()` 自带时限并返回是否真的排空。**关停时"尽力发完"必须有上限** ——
+   * 无限等待不是更可靠，是挂死。
+   */
   async stop(): Promise<void> {
     if (!this.started) return;
-    await this.transport.flush().catch(() => {});
+
+    const flushed = await this.transport.flush().catch(() => false);
+    if (flushed === false) {
+      getLogger().warn("BRIDGE", "关停时仍有未发送的消息（已放弃等待）");
+    }
+
     this.transport.close();
     this.permissionProxy.cleanup();
     this.started = false;

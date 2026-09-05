@@ -193,6 +193,8 @@ export const sidPaths = {
   commandUsage: () => sidHomePath("state", "command-usage.json"),
   trustedExtensions: () => sidHomePath("state", "trusted-extensions.json"),
   trustedProjects: () => sidHomePath("state", "trusted-projects.json"),
+  /** 已确认过的 Bridge 中继 URL（D14：--bridge 的一次性准入确认） */
+  trustedBridgeUrls: () => sidHomePath("state", "trusted-bridge-urls.json"),
 
   // ── 检查点 ──
   checkpointsRoot: () => sidHomePath("checkpoints"),

@@ -9,6 +9,7 @@ import type {
   BridgeTransport,
   BridgeOutMessage,
   BridgeInMessage,
+  BridgeTransportStats,
 } from "@sid-code/core/bridge/types.ts";
 
 /** 最小 mock 传输：记录写出的消息，可手动注入响应 */
@@ -34,7 +35,18 @@ class MockTransport implements BridgeTransport {
   setOnClose(): void {}
   setOnConnect(): void {}
   async connect(): Promise<void> {}
-  async flush(): Promise<void> {}
+  async flush(): Promise<boolean> {
+    return true;
+  }
+  getStats(): BridgeTransportStats {
+    return {
+      droppedBatchCount: 0,
+      droppedItemCount: 0,
+      reconnectCount: 0,
+      halfOpenDetectedCount: 0,
+      permanentFailureCount: 0,
+    };
+  }
 
   /** 取出最近一条 permission_request 的 id */
   lastRequestId(): string | undefined {
