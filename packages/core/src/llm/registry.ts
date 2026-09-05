@@ -344,10 +344,31 @@ export class ProviderRegistry {
 
   /** 获取子代理 Provider（根据模型在 availableModels 中的配置自动选择） */
   getProviderForSubAgent(type: string): Provider {
-    const model = this.getModelForSubAgent(type);
+    return this.getProviderForModelName(this.getModelForSubAgent(type));
+  }
 
-    // 如果模型跟主模型一样，直接返回主 Provider
-    if (model === this.config.model) {
+  /**
+   * 按**模型名**解析 Provider，读该模型在 `availableModels` 里声明的
+   * provider / apiKey / baseURL。
+   *
+   * ## 为什么需要「按模型名」这个入口（F4，2026-09-03）
+   *
+   * 已有的 `getProviderForSubAgent(type)` 是按**子代理类型**查的，而有些调用方
+   * （goal 评估器）手上已经是模型名了。缺这个入口的后果是它们各自手工 new provider：
+   * `loop.ts` 原先只按主 `config.provider` 二选一、复用主模型的 key 与 baseURL，
+   * 而评估器模型取自 `subAgentModels.default`，完全可能在另一个网关上——于是
+   * 「deepseek 模型名 + Anthropic 协议 + Anthropic key + Anthropic 端点」，每轮必 4xx。
+   *
+   * 这与 20260707 那次事故同源：评估器 6 次调用 0 成功、被静默降级成「目标未满足」，
+   * 逼着任务从第 16 轮空转到第 31 轮（40 分钟 / $2.53）。那次修的是超时与选模型，
+   * **provider 错配这条路径当时还在**。
+   *
+   * `getProviderForSubAgent` 现在委托到这里，保证分类逻辑只有一份。
+   *
+   * @param model 模型名（别名）。空值或未声明的模型回落主 Provider，不臆测。
+   */
+  getProviderForModelName(model: string | undefined): Provider {
+    if (!model || model === this.config.model) {
       return this.getProvider();
     }
 
