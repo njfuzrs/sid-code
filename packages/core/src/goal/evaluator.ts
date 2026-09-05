@@ -55,37 +55,56 @@ export interface LastTurnSignals {
 
 // ─── 快速路径 ───
 
-/** 成本优化：Evidence Log 快速路径，省下明确满足时的 LLM 调用 */
-export function tryFastPathEval(
-  goal: GoalState,
-  lastStopReason?: string,
-  lastAssistantTextLength?: number,
-): GoalEvalResult | null {
+/**
+ * 「报告型交付物」的措辞判据（F3 收窄后）。
+ *
+ * 只留**明确以文本为交付物**的措辞。原表含 `分析` / `总结` / `review` / `检查.*结果`，
+ * 这些词大量出现在实干型目标里（"分析并修复…"、"检查并确认 tsc 结果为空"），
+ * 于是「干完才停」退化成「说满 500 字就停」——差两个字，语义完全反转。
+ */
+const REPORT_DELIVERABLE_RE =
+  /汇总告诉我|告诉我结果|写一份报告|出一份报告|产出报告|审计.*(汇总|报告)|(汇总|报告).*审计|write\s+(a\s+)?report|summari[sz]e\s+(it|the|your)/i;
+
+/**
+ * 实干型目标的否决词：出现即**不是**纯报告任务，无论还含什么报告类词（F3）。
+ *
+ * 判据方向刻意做成「否决优先」：报告型放行是终局判定（一放行任务就结束），
+ * 而漏判只是退回评估器多跑一轮——两个方向的代价不对称。
+ */
+const HANDS_ON_OBJECTIVE_RE =
+  /修复|修好|改好|修掉|解决|实现|重构|补齐|补上|删除|新增|加一个|接上|接线|跑绿|全绿|通过测试|测试通过|让.*(通过|绿)|fix|implement|refactor|migrate|make .* pass/i;
+
+/** 证据里「明确失败」的形态：非零 failed / error 计数 */
+const NON_ZERO_FAILURE_RE = /\b(?!0\b)\d+\s*(failed|failing|failures?|errors?)\b/i;
+
+/** 证据里「零失败」的形态 */
+const ZERO_FAILURE_RE = /\b0\s*(fail|error|failure)/i;
+
+/**
+ * 成本优化：Evidence Log 快速路径，省下明确满足时的 LLM 调用。
+ *
+ * ⚠️ 这里**不含**报告型放行——它已降级为「评估器不可用时的兜底」，见
+ * {@link tryReportFallbackEval}。理由（F3，2026-09-03）：报告型 fast-path 的初衷是
+ * 「评估器挂了至少有出路」，但它排在最前面且连 Evidence Log 都不看，于是
+ * **评估器健康时也被它抢跑** —— 哪怕证据里最后一条写着「12 个测试仍失败」。
+ */
+export function tryFastPathEval(goal: GoalState): GoalEvalResult | null {
   const lastEvidence = goal.evidenceLog[goal.evidenceLog.length - 1];
 
-  // P1-1: "报告型任务已交付"快速路径
-  // 对「汇总告诉我/检查结果/报告」类无客观完成信号的任务，评估器 LLM 是唯一判据。
-  // 当评估器不可用（P0-1）或看不全（P0-3），就彻底没兜底。
-  // 新增：目标含报告类词 + 最后一轮 end_turn + assistant 产出实质文本 → 直接放行。
-  if (
-    lastStopReason === "end_turn" &&
-    lastAssistantTextLength != null &&
-    lastAssistantTextLength > 500 &&
-    /告诉我|汇总|报告|说明|检查.*结果|审计|分析|总结|review|summarize|report/i.test(goal.objective)
-  ) {
-    return {
-      satisfied: true,
-      reason: "报告型任务已产出实质文本并 end_turn",
-      progress: 100,
-    };
-  }
-
   if (!lastEvidence) return null;
+
+  // 该工具调用本身就失败了 → 任何"看起来成功"的文本都不足以放行（F2）。
+  // 测试是否通过本质由退出码定义，不由输出文本定义。
+  if (lastEvidence.isError) return null;
 
   // 目标含"测试通过"类关键词 + 最后证据是测试全绿 → 快速满足
   if (
     lastEvidence.type === "test_result" &&
-    /\b0\s*(fail|error|failure)/i.test(lastEvidence.summary) &&
+    ZERO_FAILURE_RE.test(lastEvidence.summary) &&
+    // F2 否决项：summary 里若同时有非零 failed，一律不放行。
+    // jest/vitest 的两级计数（Test Suites: 3 failed / Tests: 0 failed）现已全部
+    // 保留在 summary 里（见 evidence-collector 的 MAX_SUMMARY_LINES），这条才生效。
+    !NON_ZERO_FAILURE_RE.test(lastEvidence.summary) &&
     /test|测试|spec/i.test(goal.objective)
   ) {
     return {
@@ -112,6 +131,51 @@ export function tryFastPathEval(
   return null; // 无法快速判定，走正常评估
 }
 
+/**
+ * 报告型任务的**兜底**放行判据（F3 方案 C）。
+ *
+ * ## 它为什么不在 tryFastPathEval 里
+ *
+ * 原先它是 fast-path 的第一段，排在 `if (!lastEvidence) return null` **之前**——
+ * 于是评估器健康时也会被它抢跑，且连 Evidence Log 都不看。实测三条放行里两条是
+ * 实干型目标（"分析并修复…直到 bun test 全绿" + 720 字废话 → 判定完成）。
+ *
+ * 初衷（P1-1）是对的：「汇总告诉我」这类任务没有客观完成信号，评估器 LLM 是唯一判据，
+ * 它一挂就彻底没出路。所以保留能力、但**只在评估器确实失败后**才启用。
+ *
+ * 三道判据，全部要过：
+ * 1. objective 明确以文本为交付物（收窄后的词表），且不含实干型否决词；
+ * 2. 最后一轮 end_turn 且 assistant 产出 > 500 字符；
+ * 3. Evidence Log 最后一条不是「明确失败」——有客观失败信号时，报告写得再长也不算完成。
+ *
+ * @param lastStopReason 最后一轮的 stop_reason
+ * @param lastAssistantTextLength 最后一条 assistant 文本长度
+ */
+export function tryReportFallbackEval(
+  goal: GoalState,
+  lastStopReason?: string,
+  lastAssistantTextLength?: number,
+): GoalEvalResult | null {
+  if (lastStopReason !== "end_turn") return null;
+  if (lastAssistantTextLength == null || lastAssistantTextLength <= 500) return null;
+  if (!REPORT_DELIVERABLE_RE.test(goal.objective)) return null;
+  // 否决优先：实干型措辞一出现就不是纯报告任务（F3）。
+  if (HANDS_ON_OBJECTIVE_RE.test(goal.objective)) return null;
+
+  // 有客观失败证据时不放行——这正是原实现"连 Evidence Log 都不看"的漏洞。
+  const lastEvidence = goal.evidenceLog[goal.evidenceLog.length - 1];
+  if (lastEvidence) {
+    if (lastEvidence.isError) return null;
+    if (NON_ZERO_FAILURE_RE.test(lastEvidence.summary)) return null;
+  }
+
+  return {
+    satisfied: true,
+    reason: "报告型任务已产出实质文本并 end_turn（评估器不可用，兜底放行）",
+    progress: 100,
+  };
+}
+
 // ─── 核心评估函数 ───
 
 /** 调用独立评估者判定目标是否达成 */
@@ -121,12 +185,9 @@ export async function evaluateGoal(
   config: EvalConfig,
   lastTurnSignals?: LastTurnSignals,
 ): Promise<GoalEvalResult> {
-  // 1. 先尝试快速路径（含 P1-1 报告型任务放行）
-  const fastResult = tryFastPathEval(
-    goal,
-    lastTurnSignals?.stopReason,
-    lastTurnSignals?.assistantTextLength,
-  );
+  // 1. 先尝试快速路径（客观信号：测试全绿 / 构建成功）
+  //    报告型放行不在这里——它是评估器失败后的兜底，见下方 catch 分支（F3）。
+  const fastResult = tryFastPathEval(goal);
   if (fastResult) {
     log.info("GOAL_EVAL", `快速路径命中: ${fastResult.reason}`, {
       goalId: goal.id,
@@ -166,6 +227,22 @@ export async function evaluateGoal(
       durationMs,
       model: config.model,
     });
+
+    // F3：报告型任务的兜底放行只在**这里**——评估器确实失败之后。
+    // 「汇总告诉我」这类目标没有客观完成信号，评估器是唯一判据，它一挂就彻底没出路；
+    // 但放在 fast-path 里会让评估器健康时也被抢跑（实测实干型目标 + 720 字废话即收尾）。
+    const reportFallback = tryReportFallbackEval(
+      goal,
+      lastTurnSignals?.stopReason,
+      lastTurnSignals?.assistantTextLength,
+    );
+    if (reportFallback) {
+      log.info("GOAL_EVAL", `评估器不可用，报告型兜底放行: ${reportFallback.reason}`, {
+        goalId: goal.id,
+      });
+      return reportFallback;
+    }
+
     // P0-1 修复：评估失败设 blockerKey="__evaluator_unavailable__"，复用 BlockedDetector 做熔断。
     // 方向反转：评估器坏了 ≠ "目标未满足"，而是"无法判定"——连续失败达阈值后由 blocked 路径放行。
     return {

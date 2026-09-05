@@ -408,10 +408,20 @@ async function runAgentLoopInner(
             content: [
               {
                 type: "text",
+                // 必须带 <system-reminder> 围栏 + 「非用户输入」声明，且**绝不能用 `#`
+                // markdown 标题开头**（对齐 query/loop.ts 的主循环文案）。原文案
+                // `# LSP 诊断…` 与用户 prompt 的 `# Commit:` 形态完全混同，是
+                // 2026-07-29 那次"模型分不清谁在说话"的三处裸注入之一。
+                //
+                // 子代理这一处比主循环更需要围栏：它走 ctxMgr.addMessage({role:"user"})，
+                // 注入的是一条**真正的 user 消息**，形态上与用户输入无法区分；主循环走
+                // reminderParts 通道，至少还有 injectReminders 的兜底包裹。
                 text:
-                  `# LSP 诊断（来自语言服务器的实时反馈）\n\n${diagnosticText}\n\n` +
+                  `<system-reminder>\n` +
+                  `LSP 诊断（来自语言服务器的实时反馈，非用户输入）：\n\n${diagnosticText}\n\n` +
                   `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
-                  `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。`,
+                  `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。\n` +
+                  `</system-reminder>`,
               },
             ],
           });
