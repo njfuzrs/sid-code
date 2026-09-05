@@ -8,7 +8,43 @@
  */
 
 import { spawn, type ChildProcess } from "child_process";
+import { StringDecoder } from "string_decoder";
 import { getLogger } from "../debug/logger.ts";
+
+/** LSP 帧头与消息体的分隔符（4 字节 ASCII，按字节检索） */
+const HEADER_SEPARATOR = "\r\n\r\n";
+
+/**
+ * 单条 LSP 消息体的字节上限。
+ *
+ * LSP 规范没有上限，但真实响应（哪怕是大文件的 documentSymbol / 几百条 findReferences）
+ * 也在百 KB 量级，32MB 比它们大两个数量级。超过即视为畸形帧。
+ *
+ * 为什么必须有这条：`Content-Length` 来自服务器，此前被无条件信任。一旦它大于服务器
+ * 实际会发送的总字节数，"消息体未完整"就永远成立，而 `contentLength` 只在成功截取
+ * 消息体后才重置 —— 解析器进入**不可恢复**状态：进程还活着、state 还是 running、
+ * onCrash 不触发，但这条连接上后续所有响应永远到不了 handleMessage，全部等到 30s 超时。
+ * 这比崩溃更坏（崩溃有 handleCrash 重启兜底，这个状态没有任何机制能检测）。
+ */
+const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 接收缓冲的字节上限，必须显著大于 MAX_MESSAGE_BYTES（否则合法的大消息会被误杀）。
+ *
+ * 它挡的是 MAX_MESSAGE_BYTES 挡不住的另一类情形：服务器持续往 stdout 写非协议内容、
+ * 始终凑不出一个 `\r\n\r\n`，于是 buffer 只增不减。
+ */
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 半截帧的最长容忍时间：头部声明了 N 字节但迟迟收不齐。
+ *
+ * 上界校验只挡"声明值过大"，挡不住"声明 1000 字节却只发了 900 就再也不发"——
+ * 后者同样让解析器永久停在等待态。这里用**数据驱动**的检查（下次收到数据时才判定），
+ * 刻意不起定时器：定时器要跟进程生命周期一起摘，是新的泄漏来源，而数据驱动
+ * 已经足够拿到关键性质 —— 从"永久报废"变成"下一批数据到达即重新同步"。
+ */
+const STALE_FRAME_TIMEOUT_MS = 60_000;
 
 export class LSPClient {
   private process: ChildProcess | null = null;
@@ -21,8 +57,18 @@ export class LSPClient {
     }
   >();
   private notificationHandlers = new Map<string, Array<(params: unknown) => void>>();
-  private buffer = "";
+  /**
+   * 接收缓冲。**必须是 Buffer 而不是 string** —— 帧协议的 Content-Length 是字节数，
+   * 用字符串累积就要在"字符索引"和"字节长度"两套坐标之间来回换算，而入口处
+   * 逐 chunk 解码本身还会损坏跨 chunk 的多字节字符（见 stdout 监听处的注释）。
+   * 全程按字节走，两个问题一起消失，且省掉每个 chunk 一次全量 Buffer.from（O(n²)）。
+   */
+  private buffer: Buffer = Buffer.alloc(0);
   private contentLength = -1;
+  /** 当前帧头被解析出来的时刻，供半截帧看门狗判定（contentLength < 0 时无意义） */
+  private frameStartedAt = 0;
+  /** stderr 也可能含中文（诊断/堆栈），同样按流解码，避免日志里出现 `?` */
+  private stderrDecoder = new StringDecoder("utf8");
   private isStopping = false;
   private serverName: string;
 
@@ -72,13 +118,23 @@ export class LSPClient {
     });
 
     // 监听 stdout（JSON-RPC 消息）
+    //
+    // ⚠️ 这里**直接把 Buffer 交给 handleData，绝不能先 chunk.toString()**。
+    // data 事件的切分点由内核/流缓冲决定，与字符边界无关：一个汉字 3 字节、emoji 4 字节，
+    // 边界完全可能落在字符的字节中间。逐 chunk 独立解码会把不完整的字节序列**不可逆地**
+    // 替换成 U+FFFD，下一个 chunk 里的续字节又被解成第二个 U+FFFD —— 于是内容损坏、
+    // 字节数也变了，Content-Length 校验从此错位，一次损坏污染后续所有消息（并直接
+    // 级联触发"声明长度大于实际字节数"的永久卡死）。触发条件只要两条同时成立：
+    // 消息里有多字节字符 + 单条消息跨越 chunk 边界（大响应必然发生）——
+    // 「中文代码库 + 较大 LSP 响应」正是本项目的目标场景。
     this.process.stdout!.on("data", (chunk: Buffer) => {
-      this.handleData(chunk.toString());
+      this.handleData(chunk);
     });
 
-    // 监听 stderr（调试日志）
+    // 监听 stderr（调试日志）。同样按流解码，否则中文日志会被切成 `?`。
     this.process.stderr!.on("data", (chunk: Buffer) => {
-      log.debug("LSP", `[${this.serverName}] stderr: ${chunk.toString().trim()}`);
+      const text = this.stderrDecoder.write(chunk).trim();
+      if (text) log.debug("LSP", `[${this.serverName}] stderr: ${text}`);
     });
 
     // 监听进程退出
@@ -179,34 +235,87 @@ export class LSPClient {
     this.process?.stdin?.write(payload);
   }
 
-  /** 处理 stdout 数据（解析 Content-Length 帧） */
-  private handleData(data: string): void {
-    this.buffer += data;
+  /**
+   * 丢弃已污染的缓冲并让解析器回到"等待下一个帧头"的状态。
+   *
+   * `contentLength` 的重置是关键：只加校验而不重置，解析器一样卡死在等待态。
+   */
+  private resetParser(): void {
+    this.buffer = Buffer.alloc(0);
+    this.contentLength = -1;
+    this.frameStartedAt = 0;
+  }
+
+  /**
+   * 处理 stdout 数据（解析 Content-Length 帧）。
+   *
+   * 入参是 **Buffer**（不是 string）：解码只发生在按 Content-Length 精确切出完整消息体
+   * 之后，所以跨 chunk 的多字节字符天然无损。
+   */
+  private handleData(chunk: Buffer): void {
+    // 防线一：半截帧看门狗。上一个帧头声明的字节数迟迟收不齐时重新同步，
+    // 而不是永远停在等待态（此时新数据往往正是一条完整的新帧）。
+    if (this.contentLength >= 0 && Date.now() - this.frameStartedAt > STALE_FRAME_TIMEOUT_MS) {
+      getLogger().error(
+        "LSP",
+        `[${this.serverName}] 帧体 ${STALE_FRAME_TIMEOUT_MS}ms 未收齐` +
+          `（已收 ${this.buffer.length}/${this.contentLength} 字节），重置解析器并重新同步`,
+      );
+      this.resetParser();
+    }
+
+    // 空 buffer 时直接接管 chunk，省掉一次拷贝（stream 不复用 chunk，且我们只读不写）
+    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+
+    // 防线二：缓冲上限。挡住"始终凑不出帧头"（服务器把非协议内容写进 stdout）这类只增不减。
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      getLogger().error(
+        "LSP",
+        `[${this.serverName}] 接收缓冲超过 ${MAX_BUFFER_BYTES} 字节，丢弃并重置解析器状态`,
+      );
+      this.resetParser();
+      return;
+    }
 
     while (true) {
       if (this.contentLength < 0) {
-        // 寻找头部结束标记
-        const headerEnd = this.buffer.indexOf("\r\n\r\n");
+        // 寻找头部结束标记（字节索引）
+        const headerEnd = this.buffer.indexOf(HEADER_SEPARATOR);
         if (headerEnd === -1) return; // 头部未完整
 
-        const header = this.buffer.slice(0, headerEnd);
+        // 头部是 ASCII；用 latin1 逐字节映射，前置垃圾里的多字节序列也不会影响匹配
+        const header = this.buffer.subarray(0, headerEnd).toString("latin1");
         const match = header.match(/Content-Length:\s*(\d+)/i);
         if (!match) {
-          // 头部损坏，跳过
-          this.buffer = this.buffer.slice(headerEnd + 4);
+          // 头部损坏，跳过（实测这条路径能正确恢复：后续帧照常解析）
+          this.buffer = this.buffer.subarray(headerEnd + HEADER_SEPARATOR.length);
           continue;
         }
-        this.contentLength = parseInt(match[1]!, 10);
-        this.buffer = this.buffer.slice(headerEnd + 4);
+
+        // 防线三：上界 + 合理性校验。声明值不可信，超限就丢帧重新同步。
+        const declared = Number.parseInt(match[1]!, 10);
+        if (!Number.isSafeInteger(declared) || declared < 0 || declared > MAX_MESSAGE_BYTES) {
+          getLogger().error(
+            "LSP",
+            `[${this.serverName}] 畸形 Content-Length: ${match[1]}` +
+              `（上限 ${MAX_MESSAGE_BYTES} 字节），丢弃该帧并重置解析器`,
+          );
+          this.resetParser();
+          return;
+        }
+
+        this.contentLength = declared;
+        this.frameStartedAt = Date.now();
+        this.buffer = this.buffer.subarray(headerEnd + HEADER_SEPARATOR.length);
       }
 
-      // 按字节长度截取消息体
-      const bodyBytes = Buffer.from(this.buffer, "utf-8");
-      if (bodyBytes.length < this.contentLength) return; // 消息体未完整
+      // 按字节长度截取消息体（buffer 本身就是字节，无需再转换）
+      if (this.buffer.length < this.contentLength) return; // 消息体未完整
 
-      const body = bodyBytes.slice(0, this.contentLength).toString("utf-8");
-      this.buffer = bodyBytes.slice(this.contentLength).toString("utf-8");
+      const body = this.buffer.subarray(0, this.contentLength).toString("utf-8");
+      this.buffer = this.buffer.subarray(this.contentLength);
       this.contentLength = -1;
+      this.frameStartedAt = 0;
 
       try {
         const msg = JSON.parse(body);
