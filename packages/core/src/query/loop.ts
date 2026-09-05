@@ -24,6 +24,10 @@ import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { stripReadEfficiencyHint } from "../tool/read.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { ModelFallback } from "../llm/fallback.ts";
+// F4 顺带（原为 require()）：两个 package 都是 "type": "module"，require 在 Bun 下
+// 实测可用，但换到 Node ESM 会 ReferenceError。这里只作 getProviderForModel 未注入时的兜底。
+import { AnthropicProvider } from "../llm/anthropic.ts";
+import { OpenAIProvider } from "../llm/openai.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { takeLastRequestId } from "../api/request-id.ts";
@@ -2053,6 +2057,42 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         );
       }
 
+      // ─── F5：本地速率限制（RPM/TPM）主动节流 ───
+      //
+      // 缺陷形态（2026-09-03 排查）：`QuotaManager.checkRateLimit()` 的**生产调用点 = 0**。
+      // 每轮都在 `recordRequest()` 往滑动窗口写数据（见响应后那处），但从来没人问
+      // 「超了吗」——**只记不查**，用户配的 requestsPerMinute / tokensPerMinute 静默失效。
+      //
+      // 注意别与 app.ts 的 `syncRateLimitStatus` 混为一谈：那个读的是**服务端返回的
+      // 429/ratelimit 响应头**（被动感知服务端限流），这里是**本地滑动窗口主动节流**。
+      // 两者是两套东西，缺的一直是后者。
+      //
+      // 等待用 sleepUnlessAborted 而非裸 setTimeout：ESC 期间必须能立刻醒
+      // （否则最坏空等 60s 才响应中断）。醒来后复检 abort，由下方既有逻辑收尾。
+      if (loopConfig.quotaManager) {
+        const waitMs = loopConfig.quotaManager.checkRateLimit();
+        if (waitMs > 0) {
+          const waitSec = Math.ceil(waitMs / 1000);
+          log.info("QUOTA_RATE_LIMIT", `本地速率限制触发，等待 ${waitSec}s 后再发请求`);
+          yield {
+            kind: "system",
+            level: "info",
+            text: `已达本地速率限制，等待 ${waitSec}s 后继续（可按 ESC 中断）`,
+          };
+          await sleepUnlessAborted(waitMs, deps.getAbortSignal?.());
+          if (deps.getAbortSignal?.()?.aborted) {
+            log.info("QUOTA_RATE_LIMIT", "速率限制等待期间被中断，收尾");
+            yield { kind: "system", level: "info", text: "请求已被取消" };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
+            return;
+          }
+        }
+      }
+
       // ─── G9：请求前快照 prompt 状态（与响应后 checkResponse 配对的两阶段检测） ───
       // 必须在发送前记录，否则检测器无基线可比，cache break 归因永远为空。
       // agentId="main"：主循环源，与子代理（独立上下文）的基线隔离（G10）。
@@ -3852,23 +3892,25 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 effectiveGoalConfig.evaluatorModel ||
                 config.subAgentModels?.default ||
                 config.model;
+              // F4（2026-09-03）：provider 按**评估器模型名**解析，读该模型在
+              // availableModels 里声明的 provider/apiKey/baseURL。
+              //
+              // 原实现在这里手工 new：只按主 config.provider 二选一，并复用主模型的
+              // key 与 baseURL。而 evaluatorModel 取自 subAgentModels.default，完全可能
+              // 属于另一个 provider / 另一个网关 / 另一把 key —— 于是「deepseek 模型名，
+              // 用 Anthropic 协议、Anthropic 的 key，发到 Anthropic 端点」，评估器每轮必 4xx。
+              // 与 20260707 事故同源（6 次调用 0 成功 → 静默降级成「未满足」→ 空转 15 轮）。
+              //
+              // 兜底：未注入 getProviderForModel（极简/测试路径）时用主 provider——
+              // 与改动前的同 provider 行为一致，不因缺注入而崩。
+              const evaluatorProvider =
+                deps.getProviderForModel?.(evaluatorModel) ??
+                (config.provider === "anthropic"
+                  ? new AnthropicProvider(config.anthropicKey, evaluatorModel, config.baseURL)
+                  : new OpenAIProvider(config.openaiKey, evaluatorModel, config.baseURL));
               const evalConfig = {
                 model: evaluatorModel,
-                provider: (() => {
-                  // 尝试获取评估者对应的 provider（简化：直接用主 provider）
-                  // 完整实现应通过 ProviderRegistry.getProviderForSubAgent("verify")
-                  // 这里的 deps.sendWithRetry 内部已封装了 provider，我们直接构造一个轻量 provider 接口
-                  const { AnthropicProvider } = require("../llm/anthropic.ts");
-                  const { OpenAIProvider } = require("../llm/openai.ts");
-                  if (config.provider === "anthropic") {
-                    return new AnthropicProvider(
-                      config.anthropicKey,
-                      evaluatorModel,
-                      config.baseURL,
-                    );
-                  }
-                  return new OpenAIProvider(config.openaiKey, evaluatorModel, config.baseURL);
-                })(),
+                provider: evaluatorProvider,
                 timeout: effectiveGoalConfig.evaluatorTimeout,
                 minTurnsBeforeEval: effectiveGoalConfig.minTurnsBeforeEval,
               };
@@ -4279,6 +4321,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                   return {
                     toolName,
                     result: typeof r.content === "string" ? r.content : JSON.stringify(r.content),
+                    // F2：把 is_error 一并带进证据。fast-path 判「测试是否通过」不能只看
+                    // 输出文本里有没有 `0 fail`——那是文本形态，退出码才是语义。
+                    isError: r.is_error === true,
                   };
                 });
               const newEvidence = collectEvidenceFromTurn(toolResultTexts, goal.turnsUsed);

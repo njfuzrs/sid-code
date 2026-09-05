@@ -107,6 +107,11 @@ export interface QueryEngineDeps {
   /** /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。 */
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
   /**
+   * F4：按模型名解析 Provider（读 availableModels 的 per-model provider/apiKey/baseURL）。
+   * goal 评估器用它取代原先手工 new provider 的写法（跨 provider 配置必然错配）。
+   */
+  getProviderForModel?: (model: string) => import("../llm/provider.ts").Provider | undefined;
+  /**
    * 上报重试状态到 TUI（app.ts 注入 → 写 TUIState.retryStatus，由 RetryStatus 组件渲染）。
    * queryLoop 的超时重试路径用它替代 yield system 文本，与 fallback 引擎的 onRetry/onFallback
    * 统一走同一个 RetryStatus 通道，避免消息流出现重复的重试提示（见 TUI 去重方案）。可选。
@@ -354,6 +359,8 @@ export class QueryEngine {
       // /goal：目标驱动持续执行——转发到 queryLoop deps
       getGoalState: this.deps.getGoalState,
       updateGoalState: this.deps.updateGoalState,
+      // F4：转发到 queryLoop，供 goal 评估器按模型名取 provider。漏转发 = 又变回主 provider 错配。
+      getProviderForModel: this.deps.getProviderForModel,
       // TUI 去重：超时重试上报 RetryStatus 通道（转发到 queryLoop deps）
       reportRetryStatus: this.deps.reportRetryStatus,
       // /goal：Trace 事件写入端（Goal Gate 决策事件）

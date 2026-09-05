@@ -727,14 +727,29 @@ export class App {
       getLogger().info("APP", "会话持久化已禁用（--no-session-persistence）：本次会话不写 jsonl。");
     }
     // 成本配额管理（合并 costLimit 和 quota 配置）
+    //
+    // F5②（2026-09-03）：实例化条件原为 `if (effectiveCostLimit > 0)`，于是**只配
+    // requestsPerMinute / tokensPerMinute、不配 costLimit 的用户压根拿不到 QuotaManager**
+    // ——速率限制配置静默失效、无任何警告。三者任一有值就该创建：QuotaManager 内部
+    // 对未配项一律按 0 处理（costLimit<=0 时 check() 恒返回 null），互不依赖。
     const quotaConfig = opts.config.quota;
     const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
-    if (effectiveCostLimit && effectiveCostLimit > 0) {
+    const rpmLimit = quotaConfig?.requestsPerMinute;
+    const tpmLimit = quotaConfig?.tokensPerMinute;
+    const hasAnyQuota = (effectiveCostLimit ?? 0) > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
+    if (hasAnyQuota) {
       this.quotaManager = new QuotaManager({
         costLimit: effectiveCostLimit,
-        requestsPerMinute: quotaConfig?.requestsPerMinute,
-        tokensPerMinute: quotaConfig?.tokensPerMinute,
+        requestsPerMinute: rpmLimit,
+        tokensPerMinute: tpmLimit,
       });
+    } else if ((rpmLimit ?? 0) < 0 || (tpmLimit ?? 0) < 0) {
+      // 配了但值非法（负数）→ 机制不会生效，必须说出来而不是静默。
+      // 「配了却不生效」是本类缺陷的病根形态，宁可吵一句。
+      getLogger().warn(
+        "QUOTA_RATE_LIMIT_INERT",
+        `速率限制配置值非法（requestsPerMinute=${rpmLimit}, tokensPerMinute=${tpmLimit}），本次会话不生效。`,
+      );
     }
 
     // Token 计量器（依赖 telemetry bus，延迟到 init() 中创建）
@@ -1203,6 +1218,9 @@ export class App {
           this.tuiStateUpdater?.({ goalDisplay: this.buildGoalDisplay() });
         }
       },
+      // F4：goal 评估器按模型名解析 provider（读 availableModels 的 per-model
+      // provider/apiKey/baseURL）。不注入时 loop.ts 回落主 provider，跨 provider 配置会错配。
+      getProviderForModel: (model) => this.providerRegistry?.getProviderForModelName(model),
       // TUI 去重：超时重试（loop.ts）上报同一个 retryStatus 通道，与 fallback 引擎的
       // onRetry/onFallback（line 381 附近）共用 RetryStatus 组件，不再各自 yield 消息流文本。
       reportRetryStatus: (info) => {
@@ -5468,8 +5486,10 @@ export class App {
         return;
       }
       if (!this.goalState) return;
-      const { serializeGoalState } = require("@sid-code/core/goal/state.ts");
-      this.sessionStore.appendMetadata("goal_state", serializeGoalState(this.goalState));
+      // F6：落盘走裁剪版（内存仍全量）。appendMetadata 是 append 语义，用全量序列化
+      // 会让第 N 轮那一次写入带 N 条证据的完整体积——150 轮实测单次 328KB / 累计 24MB。
+      const { serializeGoalStateForPersist } = require("@sid-code/core/goal/state.ts");
+      this.sessionStore.appendMetadata("goal_state", serializeGoalStateForPersist(this.goalState));
     } catch {
       /* 持久化失败不阻断 */
     }
