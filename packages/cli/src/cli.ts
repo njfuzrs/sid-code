@@ -50,6 +50,12 @@ type CLIArgs = Partial<Config> & {
   bridgeUrl?: string;
   /** Bridge 远程控制：认证令牌 */
   bridgeToken?: string;
+  /**
+   * Bridge 远程控制：显式接受明文 ws:// 连接（D14）。
+   * 明文链路上跑的是认证 token 与远端指令，同网段任何人都能读到并伪造，
+   * 所以必须让用户显式 opt-in，而不是默默允许。
+   */
+  bridgeInsecure?: boolean;
   /** --worktree [name]：启动时自动创建并进入 worktree（缺省值表示自动命名） */
   worktree?: string | boolean;
   /**
@@ -307,6 +313,7 @@ function parseCLIArgs(): CLIArgs {
         // Bridge 远程控制（spec 16 §7）
         bridge: { type: "string" }, // 中继 WebSocket URL，提供即进入 Bridge 模式
         "bridge-token": { type: "string" },
+        "bridge-insecure": { type: "boolean" }, // 显式接受明文 ws://（D14 准入）
 
         // UI 渲染（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口）
         inline: { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
@@ -599,6 +606,7 @@ function parseCLIArgs(): CLIArgs {
     dumpTools: values["dump-tools"],
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
+    bridgeInsecure: values["bridge-insecure"] as boolean | undefined,
     // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
     worktree: values.worktree !== undefined ? values.worktree || true : undefined,
     // UI 渲染模式（幽灵残留根治方案乙）：默认全屏 alt-screen 有界视口（config 默认 true）。
@@ -900,6 +908,28 @@ export function setLastApp(app: import("./app.ts").App): void {
 }
 
 /** 全局异常兜底处理器 */
+/**
+ * 极简 yes/no 交互确认（走 stdin，不依赖 TUI）。
+ *
+ * 为什么不复用 TUI 的确认组件：这里是**建连之前**、TUI 还没起来的时刻，
+ * 而 Bridge 模式根本不进 TUI（它是与 runTUI / runHeadless 平级的第三种形态）。
+ *
+ * 默认答案是 **no**：空回车、EOF、读取出错一律当拒绝。准入这类判定必须
+ * fail-closed —— 默认放行等于没有这道门。
+ */
+async function promptYesNo(message: string): Promise<boolean> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await rl.question(`${message}\n\n继续吗？[y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } catch {
+    return false; // EOF / 中断 → 拒绝
+  } finally {
+    rl.close();
+  }
+}
+
 function registerGlobalErrorHandlers(): void {
   process.on("unhandledRejection", (reason: unknown, _promise: Promise<unknown>) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
@@ -2560,6 +2590,26 @@ export async function main(): Promise<void> {
     // 根据模式路由
     if (cliArgs.bridgeUrl) {
       // Bridge 远程控制模式（spec 16 §7）：常驻进程，接受远程客户端连接
+      //
+      // ⚠️ D14：**连接之前必须过准入**。这个参数一开就意味着接受远端下发的指令在本机
+      // 执行文件读写与 shell 命令，而工具权限确认会被转发到那个远端 ——
+      // 批准者就是它自己，权限体系在这条路径上是**自证的**。所以防线必须在
+      // 建连之前、由本机的人给出。
+      const { checkBridgeAdmission } = await import("@sid-code/core/bridge/admission.ts");
+      const admission = await checkBridgeAdmission({
+        url: cliArgs.bridgeUrl,
+        allowInsecure: cliArgs.bridgeInsecure,
+        policyEnabled: config.bridge?.enabled,
+        // 只在真有 TTY 时提供 confirm：没有 TTY 就让 admission 走 fail-closed，
+        // 而不是在这里"默认放行"——默认放行等于没有这道门。
+        confirm: process.stdin.isTTY ? (prompt) => promptYesNo(prompt) : undefined,
+      });
+
+      if (!admission.allowed) {
+        console.error(`\n${admission.message}\n`);
+        process.exit(1);
+      }
+
       startupTimer.end();
       await app.runBridge({
         url: cliArgs.bridgeUrl,

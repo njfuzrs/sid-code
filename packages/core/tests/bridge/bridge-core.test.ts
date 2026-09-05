@@ -5,7 +5,11 @@
 
 import { describe, test, expect } from "bun:test";
 import { BridgeCore } from "@sid-code/core/bridge/bridge-core.ts";
-import type { BridgeTransport, BridgeOutMessage } from "@sid-code/core/bridge/types.ts";
+import type {
+  BridgeTransport,
+  BridgeOutMessage,
+  BridgeTransportStats,
+} from "@sid-code/core/bridge/types.ts";
 
 /** 可注入入站数据的 mock 传输 */
 class MockTransport implements BridgeTransport {
@@ -43,7 +47,18 @@ class MockTransport implements BridgeTransport {
     this.connected = true;
     this.onConnectCb?.();
   }
-  async flush(): Promise<void> {}
+  async flush(): Promise<boolean> {
+    return true;
+  }
+  getStats(): BridgeTransportStats {
+    return {
+      droppedBatchCount: 0,
+      droppedItemCount: 0,
+      reconnectCount: 0,
+      halfOpenDetectedCount: 0,
+      permanentFailureCount: 0,
+    };
+  }
 
   /** 模拟从远程收到一条消息 */
   inject(obj: unknown): void {
