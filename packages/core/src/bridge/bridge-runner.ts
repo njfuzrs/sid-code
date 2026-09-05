@@ -7,7 +7,8 @@
  *
  * 数据流：
  *   远程客户端 ──ws──▶ BridgeCore.onUserMessage ──▶ submitMessage()
- *   submitMessage() 的事件流 ──▶ isEligibleForBridge 过滤 ──▶ BridgeCore.send ──ws──▶ 远程
+ *   submitMessage() 的事件流 ──▶ forwardEvent（入口即 isEligibleForBridge 过滤）
+ *                            ──▶ BridgeCore.send ──ws──▶ 远程
  *   工具权限确认 ──▶ checker.bridgePermissionDelegate ──▶ PermissionProxy ──ws──▶ 远程
  *
  * 设计要点：
@@ -24,6 +25,7 @@ import {
   formatToolUseMessage,
   formatToolResultMessage,
   formatStatusMessage,
+  isEligibleForBridge,
 } from "./bridge-messaging.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -148,8 +150,27 @@ export class BridgeRunner {
     }
   }
 
-  /** 将内核事件转换为 Bridge 消息发送给远程客户端 */
+  /**
+   * 将内核事件转换为 Bridge 消息发送给远程客户端。
+   *
+   * ⚠️ **入口过滤必须走 `isEligibleForBridge`，不许在 switch 里"顺手也判一下"**（D13）：
+   * 此前本方法是一个手写 switch、从不调用那个白名单函数，于是过滤规则有**两个**
+   * 实现并存。它们今天恰好一致，但会各自漂移，**而漂移时不会有任何东西变红** ——
+   * 查覆盖率：白名单有测试且全绿；读代码找链路：本文件顶部的数据流图注释明确
+   * 声称它在链路上；跑一遍看行为：两套判断一致所以行为正确。三种常规排查手段
+   * 同时失效。
+   *
+   * （顺带一提：那份白名单当时说的是一套**不存在的方言** —— 六个 kind 全都不是
+   * 真实的 `QueryEngineEvent.kind`。所以缺陷清单建议的"switch 前加一行"若照抄，
+   * 会把 100% 的事件过滤掉。词汇已在 bridge-messaging.ts 里按真实联合体重写。）
+   *
+   * 过滤规则只允许有一个真实入口。
+   */
   private forwardEvent(event: QueryEngineEvent): void {
+    // 唯一入口过滤：不在白名单里的内部事件（compact / context_warning /
+    // loop_detected / tombstone / user_message_added / retry …）直接丢弃。
+    if (!isEligibleForBridge(event.kind)) return;
+
     switch (event.kind) {
       case "tool_start":
         void this.core.send(formatToolUseMessage(event.toolName, event.toolInput));
