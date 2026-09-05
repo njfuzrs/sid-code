@@ -39,6 +39,16 @@ export interface MCPClientOptions {
 /** 服务器请求处理器类型（method → handler） */
 type RequestHandler = (params: unknown) => Promise<unknown>;
 
+/**
+ * 由 handleNotification 的 switch 直接消费、本就不走通用 handler 注册表的标准通知。
+ * 用于把「无订阅者」debug 日志限定在**真正意外**的 method 上（见 handleNotification 末尾）。
+ */
+const HANDLED_BY_SWITCH = new Set([
+  "notifications/tools/list_changed",
+  "notifications/resources/list_changed",
+  "notifications/prompts/list_changed",
+]);
+
 export class MCPClient {
   private transport: Transport;
   private nextId = 1;
@@ -153,6 +163,30 @@ export class MCPClient {
     };
   }
 
+  /**
+   * 主动向服务器发一条 JSON-RPC 通知（无 id、不等响应）。
+   *
+   * 用于 agent → IDE 方向的私有通知（如 `ide_connected`）。传输层没有
+   * `sendNotification` 能力时静默跳过 —— 通知是单向的尽力而为语义，
+   * 发不出去不该影响主流程（IDE 是可选增强）。
+   *
+   * @returns 是否真的发出去了（供调用方打日志/测试断言，不作错误处理用）
+   */
+  notify(method: string, params?: Record<string, unknown>): boolean {
+    const notification: JsonRpcNotification = { jsonrpc: "2.0", method };
+    if (params !== undefined) notification.params = params;
+    try {
+      if (this.transport.sendNotification) {
+        this.transport.sendNotification(notification);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      getLogger().debug("MCP", `发送通知 ${method} 失败: ${err?.message ?? err}`);
+      return false;
+    }
+  }
+
   /** 处理服务器通知 */
   private handleNotification(notification: JsonRpcNotification): void {
     switch (notification.method) {
@@ -169,7 +203,7 @@ export class MCPClient {
 
     // 分发到通用通知处理器（IDE 选区 / @提及等）
     const handlers = this.notificationHandlers.get(notification.method);
-    if (handlers) {
+    if (handlers && handlers.length > 0) {
       for (const handler of handlers) {
         try {
           handler(notification.params);
@@ -177,6 +211,25 @@ export class MCPClient {
           // 单个处理器失败不影响其他处理器
         }
       }
+      return;
+    }
+
+    // ⚠️ 这条日志是 D2 那一整类 bug 的**唯一可见性**（成本一行，收益覆盖一整类）。
+    //
+    // 本路由器直接把 method 字符串当 key，无前缀归一化。method 名一旦失配
+    // （多/少一个 `notifications/` 前缀、拼错、上游改名），后果是**完全静默**：
+    // 不报错（JSON-RPC 通知不需要回复，没有"等不到响应"这个信号）、
+    // 连接照样是健康的、`/ide status` 照样显示已连接。唯一症状是"功能就是不工作"。
+    //
+    // 打一条 debug 让它从"完全不可见"变成"开 debug 就能看见"。
+    // 标准的 list_changed 三兄弟由上面的 switch 消费、本就没有通用 handler，
+    // 所以排掉它们，否则这条日志会被例行噪声淹没（噪声大到没人看 = 等于没有）。
+    if (!HANDLED_BY_SWITCH.has(notification.method)) {
+      getLogger().debug(
+        "MCP",
+        `收到无订阅者的通知: ${notification.method}` +
+          `（已注册: ${[...this.notificationHandlers.keys()].join(", ") || "无"}）`,
+      );
     }
   }
 

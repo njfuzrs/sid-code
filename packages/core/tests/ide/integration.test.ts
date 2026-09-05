@@ -13,6 +13,7 @@ import { IDESelectionSync } from "@sid-code/core/ide/selection.ts";
 import { IDEMentionManager } from "@sid-code/core/ide/mention.ts";
 import { isProcessRunning, readIDELockfile } from "@sid-code/core/ide/lockfile.ts";
 import { shouldAutoConnect, isSupportedTerminal } from "@sid-code/core/ide/integration.ts";
+import { IDE_NOTIFY } from "@sid-code/core/ide/protocol.ts";
 
 // ───────────────────────────── isSubPath ─────────────────────────────
 
@@ -142,7 +143,7 @@ describe("IDESelectionSync", () => {
     const client = makeFakeClient();
     sync.register(client as any);
 
-    client.emit("notifications/selection_changed", {
+    client.emit(IDE_NOTIFY.selectionChanged, {
       filePath: "/a/b.ts",
       text: "const x = 1;",
       selection: {
@@ -168,7 +169,7 @@ describe("IDESelectionSync", () => {
     const client = makeFakeClient();
     sync.register(client as any);
 
-    client.emit("notifications/selection_changed", {
+    client.emit(IDE_NOTIFY.selectionChanged, {
       filePath: "/a/b.ts",
       text: "x",
       selection: {
@@ -185,7 +186,7 @@ describe("IDESelectionSync", () => {
     const client = makeFakeClient();
     sync.register(client as any);
 
-    client.emit("notifications/selection_changed", {
+    client.emit(IDE_NOTIFY.selectionChanged, {
       filePath: "/a/b.ts",
       text: "   ",
       selection: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
@@ -200,7 +201,7 @@ describe("IDESelectionSync", () => {
     sync.register(client as any);
     sync.unregister();
 
-    expect(client.handlerCount("notifications/selection_changed")).toBe(0);
+    expect(client.handlerCount(IDE_NOTIFY.selectionChanged)).toBe(0);
     expect(sync.getSelection()).toBeNull();
   });
 });
@@ -213,8 +214,8 @@ describe("IDEMentionManager", () => {
     const client = makeFakeClient();
     mgr.register(client as any);
 
-    client.emit("notifications/at_mentioned", { filePath: "/a.ts", lineStart: 0, lineEnd: 2 });
-    client.emit("notifications/at_mentioned", { filePath: "/b.ts" });
+    client.emit(IDE_NOTIFY.atMentioned, { filePath: "/a.ts", lineStart: 0, lineEnd: 2 });
+    client.emit(IDE_NOTIFY.atMentioned, { filePath: "/b.ts" });
 
     expect(mgr.peekMentions().length).toBe(2);
     const consumed = mgr.consumeMentions();
@@ -230,7 +231,7 @@ describe("IDEMentionManager", () => {
     mgr.register(client as any);
 
     for (let i = 0; i < 15; i++) {
-      client.emit("notifications/at_mentioned", { filePath: `/f${i}.ts` });
+      client.emit(IDE_NOTIFY.atMentioned, { filePath: `/f${i}.ts` });
     }
     const mentions = mgr.peekMentions();
     expect(mentions.length).toBe(10);
@@ -242,7 +243,7 @@ describe("IDEMentionManager", () => {
     const mgr = new IDEMentionManager();
     const client = makeFakeClient();
     mgr.register(client as any);
-    client.emit("notifications/at_mentioned", { lineStart: 1 });
+    client.emit(IDE_NOTIFY.atMentioned, { lineStart: 1 });
     expect(mgr.peekMentions().length).toBe(0);
   });
 });

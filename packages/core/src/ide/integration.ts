@@ -15,6 +15,7 @@ import { IDEMentionManager } from "./mention.ts";
 import type { MCPManager } from "../mcp/manager.ts";
 import type { MCPServerConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
+import { AGENT_NOTIFY } from "./protocol.ts";
 
 /** IDE MCP server 在 MCPManager 中的固定名称 */
 export const IDE_SERVER_NAME = "ide";
@@ -113,6 +114,15 @@ export class IDEIntegration {
       if (client) {
         this.selection.register(client);
         this.mentions.register(client);
+
+        // D5：告诉 IDE 是哪个 CLI 进程连上来了，IDE 侧的连接状态指示器靠它点亮。
+        // 必须排在两个 register 之后：IDE 可能在收到本通知后立刻回推一次当前选区，
+        // 订阅还没挂上就会丢掉那一次（且丢得完全静默）。
+        // 发不出去只记 debug —— 通知是尽力而为，IDE 是可选增强，不该因此判连接失败。
+        const sent = client.notify(AGENT_NOTIFY.ideConnected, { pid: process.pid });
+        if (!sent) {
+          log.debug("IDE", `传输层不支持发送通知，已跳过 ${AGENT_NOTIFY.ideConnected}`);
+        }
       }
 
       log.info("IDE", `已连接到 ${ide.name}`);
