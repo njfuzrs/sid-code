@@ -16,15 +16,27 @@ import type { MCPManager } from "../mcp/manager.ts";
 import type { MCPServerConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { AGENT_NOTIFY } from "./protocol.ts";
+import { setIDEDiffRuntime } from "./runtime.ts";
 
 /** IDE MCP server 在 MCPManager 中的固定名称 */
 export const IDE_SERVER_NAME = "ide";
+
+/**
+ * IDE RPC 超时（30 分钟）。
+ *
+ * 这个值和别的 MCP server 不是一个量级，因为 IDE 的 `openDiff` 是**等人**的：
+ * 用户要读完 diff、可能手改几行、再保存。默认的 30 秒会让 diff 预览在
+ * "用户去接了杯水"这种最普通的情形下必然失败，且失败方式是**静默丢掉用户的手改**。
+ */
+const IDE_RPC_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** IDE 集成管理器 */
 export class IDEIntegration {
   private mcpManager: MCPManager;
   private cwd: string;
   private discoveryTimeout: number;
+  /** 写盘前 diff 预览开关（来自 config.ide.diffPreview，默认关） */
+  private diffPreview: boolean;
   private currentIDE: DetectedIDE | null = null;
   private status: IDEConnectionStatus = null;
 
@@ -33,10 +45,16 @@ export class IDEIntegration {
   /** @提及管理（Phase 2） */
   readonly mentions = new IDEMentionManager();
 
-  constructor(mcpManager: MCPManager, cwd: string, options?: { discoveryTimeout?: number }) {
+  constructor(
+    mcpManager: MCPManager,
+    cwd: string,
+    options?: { discoveryTimeout?: number; diffPreview?: boolean },
+  ) {
     this.mcpManager = mcpManager;
     this.cwd = cwd;
     this.discoveryTimeout = options?.discoveryTimeout ?? 30_000;
+    // 默认关：开启后每次编辑都变成一次等人的交互，无人值守场景会挂住（见 IDEConfig）
+    this.diffPreview = options?.diffPreview ?? false;
   }
 
   /** 获取当前连接状态 */
@@ -96,6 +114,20 @@ export class IDEIntegration {
         ideName: ide.name,
         ideRunningInWindows: ide.ideRunningInWindows,
         scope: "dynamic",
+        // ⚠️ 必须显式给一个长超时，否则 diff 预览（D1）注定失败。
+        //
+        // IDE 此前不带 timeout，于是走 getMcpTimeout 的 **30 秒**默认值，而传输层对
+        // 超时的处理是**硬 reject**（transport.ts 的 setTimeout → `MCP 请求超时`）。
+        // 但 `openDiff` 等的是**一个人**在编辑器里读完 diff、可能还手改几行再保存 ——
+        // 30 秒是"用户去接了杯水就必然失败"的量级。
+        //
+        // 这类超时失败还**特别难归因**：diff 明明弹出来了，用户改完保存，
+        // 而 CLI 侧早已 reject，编辑被当作"IDE 不可用"照原样写掉，
+        // 用户的手改**静默丢失**。所以这不是"调大一点更宽松"，是功能能否成立的前提。
+        //
+        // 取 30 分钟：足够任何真人看完并修改，又不至于在 IDE 真的失联时永久挂住
+        // （AbortSignal 仍能随时取消，用户 Ctrl+C 立即生效）。
+        timeout: IDE_RPC_TIMEOUT_MS,
       };
 
       await this.mcpManager.addServer(IDE_SERVER_NAME, config);
@@ -125,6 +157,13 @@ export class IDEIntegration {
         }
       }
 
+      // D1：把 mcpManager 交给编辑工具能读到的 holder —— 这就是那条死链缺的那一环。
+      // enabled=false 时 getIDEDiffRuntime() 返回 null，编辑工具行为逐字节不变。
+      setIDEDiffRuntime({ mcpManager: this.mcpManager, enabled: this.diffPreview });
+      if (this.diffPreview) {
+        log.info("IDE", "已启用写盘前 diff 预览（编辑将等待你在 IDE 中确认）");
+      }
+
       log.info("IDE", `已连接到 ${ide.name}`);
       return true;
     } catch (err: any) {
@@ -138,6 +177,9 @@ export class IDEIntegration {
   async disconnect(): Promise<void> {
     this.selection.unregister();
     this.mentions.unregister();
+    // 必须撤销：否则 holder 继续握着一个 server 已被移除的 manager，
+    // 编辑工具每次都要白跑一趟 isConnected 判断（且语义上是"IDE 还在"的假象）。
+    setIDEDiffRuntime(null);
     if (this.currentIDE) {
       await this.mcpManager.removeServer(IDE_SERVER_NAME);
       this.currentIDE = null;
