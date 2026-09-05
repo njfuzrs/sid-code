@@ -24,12 +24,20 @@ import {
 } from "@sid-code/core/ide/integration.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { MCPClient } from "@sid-code/core/mcp/client.ts";
+import { IDE_NOTIFY } from "@sid-code/core/ide/protocol.ts";
 
 /** 通知回调表：method → handlers */
 type Handlers = Map<string, ((params: unknown) => void)[]>;
 
-function makeFakeClient(handlers: Handlers): MCPClient {
+function makeFakeClient(
+  handlers: Handlers,
+  sent?: Array<{ method: string; params?: unknown }>,
+): MCPClient {
   return {
+    notify(method: string, params?: Record<string, unknown>) {
+      sent?.push({ method, params });
+      return true;
+    },
     onNotification(method: string, handler: (params: unknown) => void) {
       const list = handlers.get(method) ?? [];
       list.push(handler);
@@ -63,7 +71,7 @@ function notify(method: string, params: unknown): void {
 }
 
 function emitSelection(filePath: string, text: string, startLine = 0): void {
-  notify("notifications/selection_changed", {
+  notify(IDE_NOTIFY.selectionChanged, {
     filePath,
     text,
     selection: {
@@ -155,7 +163,7 @@ describe("drainIDEContextDelta — 选区", () => {
 describe("drainIDEContextDelta — @提及（消费语义）", () => {
   test("有提及 → 注入 <ide-mentions> 并清空", async () => {
     await connect();
-    notify("notifications/at_mentioned", { filePath: "/tmp/y.ts", lineStart: 2, lineEnd: 8 });
+    notify(IDE_NOTIFY.atMentioned, { filePath: "/tmp/y.ts", lineStart: 2, lineEnd: 8 });
 
     const delta = drainIDEContextDelta();
     expect(delta!).toContain("<ide-mentions>");
@@ -167,7 +175,7 @@ describe("drainIDEContextDelta — @提及（消费语义）", () => {
   test("选区与提及同轮 → 两块都注入", async () => {
     await connect();
     emitSelection("/tmp/x.ts", "sel-text");
-    notify("notifications/at_mentioned", { filePath: "/tmp/y.ts" });
+    notify(IDE_NOTIFY.atMentioned, { filePath: "/tmp/y.ts" });
 
     const delta = drainIDEContextDelta()!;
     expect(delta).toContain("<ide-selection>");

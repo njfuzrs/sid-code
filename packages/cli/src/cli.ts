@@ -2132,6 +2132,9 @@ export async function main(): Promise<void> {
       const { getIDEIntegration } = await import("@sid-code/core/ide/integration.ts");
       const ideIntegration = getIDEIntegration(mcpManager, process.cwd(), {
         discoveryTimeout: config.ide?.discoveryTimeout,
+        // D1：写盘前 diff 预览。默认关 —— 开启后每次编辑都变成一次等人的交互，
+        // 无人值守/批量场景会把 agent 挂住（见 IDEConfig.diffPreview 的注释）。
+        diffPreview: config.ide?.diffPreview,
       });
       void ideIntegration?.startAutoConnect().catch((err: any) => {
         getLogger().debug("IDE", `自动连接失败: ${err.message}`);

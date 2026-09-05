@@ -8,6 +8,8 @@
 
 import type { MCPClient } from "../mcp/client.ts";
 import { getLogger } from "../debug/logger.ts";
+import { IDE_NOTIFY } from "./protocol.ts";
+import { windowsPathToWSL } from "./wsl.ts";
 
 /** @提及信息 */
 export interface IDEMention {
@@ -43,7 +45,8 @@ export class IDEMentionManager {
   register(client: MCPClient): void {
     this.unsubscribe?.();
 
-    this.unsubscribe = client.onNotification("notifications/at_mentioned", (params: unknown) => {
+    // ⛔ 方法名必须来自 IDE_NOTIFY（同 selection.ts：曾多一个 notifications/ 前缀 → 永久静默）
+    this.unsubscribe = client.onNotification(IDE_NOTIFY.atMentioned, (params: unknown) => {
       try {
         const p = params as {
           filePath: string;
@@ -53,7 +56,8 @@ export class IDEMentionManager {
         if (typeof p?.filePath !== "string") return;
 
         this.mentions.push({
-          filePath: p.filePath,
+          // 入向路径归一（D8，同 selection.ts；非 WSL 下为 no-op）
+          filePath: windowsPathToWSL(p.filePath),
           lineStart: p.lineStart,
           lineEnd: p.lineEnd,
           timestamp: Date.now(),
