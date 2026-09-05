@@ -18,7 +18,7 @@ description: 交互模式里可用的全部斜杠命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **63** 个内置斜杠命令，从运行时命令注册表导出。
+> 共 **64** 个内置斜杠命令，从运行时命令注册表导出。
 > 在交互模式输入 `/` 会看到同一份列表（补全列表与本表同源）。
 
 | 命令 | 说明 | 别名 | 参数 |
@@ -60,6 +60,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/keybindings` | 查看键位绑定 / 创建 keybindings.json 模板 | `/keys` | `[init]` |
 | `/language` | 显示或切换输出语言偏好（-p 持久化） | `/lang` | `[zh\|en\|auto\|unset\|status] [-p]` |
 | `/loop` | 按间隔重复运行 prompt：/loop 5m &lt;任务>（固定节奏）或 /loop &lt;任务>（自适应轮询） | — | `[间隔如 5m] <要重复的任务>` |
+| `/lsp` | LSP 代码智能管理（status/reload） | — | — |
 | `/mcp` | MCP 服务器管理 | — | — |
 | `/memory` | 管理记忆（auto/external/set/get/delete/list/search/show/reload） | `/mem` | — |
 | `/model` | 显示或切换模型（主模型 / fallback / 子代理，-p 持久化） | `/m` | `[name\|fallback <name>\|sub <type> <name>] [-p]` |
