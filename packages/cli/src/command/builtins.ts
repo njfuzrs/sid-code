@@ -1952,6 +1952,10 @@ export async function registerBuiltins(registry: import("./registry.ts").Registr
   const { IDECommand } = await import("./ide.ts");
   registry.register(new IDECommand());
 
+  // LSP 代码智能命令（D15：reinitializeLSP 此前零生产调用，改 lsp.json 只能重启进程）
+  const { LSPCommand } = await import("./lsp.ts");
+  registry.register(new LSPCommand());
+
   // 注册扩展管理命令
   const { SkillsCommand, AgentsCommand, CommandsListCommand } = await import("./extensions.ts");
   registry.register(new SkillsCommand());

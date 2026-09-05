@@ -18,9 +18,9 @@ sid-code 的全部命令行参数与子命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **66** 个参数条目、**6** 个子命令。
+> 共 **67** 个参数条目、**6** 个子命令。
 > 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
-> （**参数能不能用的唯一权威**，共 65 个 flag）交叉对账：
+> （**参数能不能用的唯一权威**，共 66 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
 
 ## 子命令
@@ -180,6 +180,7 @@ sid-code 的全部命令行参数与子命令。
 |---|---|
 | `--bridge <ws-url>` | 进入 Bridge 模式，连接中继服务器接受远程客户端操控（ws:// 或 wss://） |
 | `--bridge-token <token>` | Bridge 连接认证令牌 |
+| `--bridge-insecure` | 允许明文 ws:// 连接（远端指令与 token 会明文过网，仅限可信内网） |
 
 ## Worktree 隔离
 

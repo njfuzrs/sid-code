@@ -103,8 +103,13 @@ describe("消息协议格式化", () => {
 });
 
 describe("isEligibleForBridge", () => {
+  // ⚠️ 这组用例原本喂的是 text / text_delta / tool_use / tool_result / turn_complete /
+  // error —— **六个全都不是真实的 QueryEngineEvent.kind**（那是 BridgeOutMessage.type
+  // 与状态字符串），却全绿。这就是 D13 能漂到完全脱离现实还没人发现的原因之一：
+  // 测试和实现说的是同一套不存在的方言，互相自证（与 D4 同型）。
+  // 词汇正确性的门禁在 eligibility-single-source.test.ts（从 query/types.ts 抽真值比对）。
   test("用户可见事件通过", () => {
-    for (const k of ["text", "text_delta", "tool_use", "tool_result", "turn_complete", "error"]) {
+    for (const k of ["stream_text", "tool_start", "tool_end", "done", "system", "fatal_error"]) {
       expect(isEligibleForBridge(k)).toBe(true);
     }
   });

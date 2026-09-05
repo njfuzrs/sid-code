@@ -7,7 +7,7 @@
  *   /plugin enable <name>         - 启用插件
  *   /plugin disable <name>        - 禁用插件（--force 忽略反向依赖）
  *
- *   /reload-plugins               - 重新加载所有插件组件
+ *   /reload-plugins               - 重新加载所有插件组件（含 LSP 配置重载）
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
@@ -205,6 +205,23 @@ export class ReloadPluginsCommand implements Command {
       `  ${result.mcpToolsLoaded} 个 MCP 工具`,
     ];
     if (result.hooksRefreshed) lines.push("  Hooks 已刷新");
+
+    // D15：顺手重载 LSP。插件可能带来新的项目文件/语言，且用户改 lsp.json 后最容易
+    // 想到的就是"刷新一下"。reinitializeLSP 在 LSP 未启动（--print / --bridge，见 D16）
+    // 时是空操作，所以这里无条件调用是安全的。
+    //
+    // ⚠️ 但这**不是**唯一入口 —— 专门的 `/lsp reload` 才是。触发重载的真实场景是
+    // "我刚改了 lsp.json"，那和"我刚装了插件"是两件不同的事，把 LSP 重载只藏在
+    // 插件命令里，等于让用户猜。
+    try {
+      const { reinitializeLSP, getLSPInitState } = await import("@sid-code/core/lsp/manager.ts");
+      if (getLSPInitState() !== "not-started") {
+        reinitializeLSP(process.cwd());
+        lines.push("  LSP 配置已重载");
+      }
+    } catch {
+      // LSP 是可选增强：重载失败不该让 /reload-plugins 整体报错
+    }
 
     if (result.loadResult.errors.length > 0) {
       lines.push("", "加载警告:");

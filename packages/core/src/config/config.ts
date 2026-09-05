@@ -591,6 +591,9 @@ export interface Config {
   // IDE 集成配置
   ide?: IDEConfig;
 
+  /** Bridge 远程控制配置（D14 准入） */
+  bridge?: BridgeConfig;
+
   // 配置校验诊断结果（loadConfig 阶段 logger 尚未就绪，暂存于此，
   // 由上层在 initLogger 之后统一输出：warnings 降 debug、非致命 errors 打 warn）。
   // 不写入磁盘配置，仅运行时携带。
@@ -626,6 +629,35 @@ export interface IDEConfig {
   discoveryTimeout?: number;
   /** 是否自动安装 IDE 扩展（默认 false，扩展尚未发布） */
   autoInstallExtension?: boolean;
+  /**
+   * 写盘前在 IDE 中展示 diff 并等待用户确认/手改（默认 **false**）。
+   *
+   * ⚠️ 默认关闭是刻意的：开启后每次 edit/write 都变成**一次等人的交互**
+   * （最长等 30 分钟，见 integration.ts 的 IDE_RPC_TIMEOUT_MS）。
+   * 无人值守 / 批量 / CI 场景下会直接把 agent 挂住 ——
+   * 让一个便利功能默认开启，等于把它变成一个卡死风险。
+   *
+   * 仅在 IDE 已连接时生效；未连接时静默无效果（IDE 是可选增强）。
+   */
+  diffPreview?: boolean;
+}
+
+/**
+ * Bridge 远程控制配置（D14）。
+ *
+ * 只有一个字段，且**刻意用 `enabled?: boolean` 而不是 `disabled?: boolean`**：
+ * `undefined` 必须表示"未配置 = 不拦"（否则所有现存用户升级即被拦），
+ * 而企业侧要关掉它就写 `false`。用 disabled 语义会让"未配置"和"显式允许"
+ * 在类型上无法区分。
+ *
+ * 放在 managed-settings.json 里即为企业级不可覆盖策略。
+ */
+export interface BridgeConfig {
+  /**
+   * 是否允许使用 Bridge 远程控制。
+   * `undefined` = 未配置（允许，但仍需首次交互确认）；`false` = 企业禁用（直接拒绝）。
+   */
+  enabled?: boolean;
 }
 
 /** 轨迹上传配置 */
