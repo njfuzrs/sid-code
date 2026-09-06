@@ -13,7 +13,7 @@
 # | 变量 | 怎么对齐 | 判据 |
 # | 模型 | `ANTHROPIC_BASE_URL` 指向我们的 shim（选项 A） | 闸 0 验 `/__stats` 结构 |
 # | 网关 | 与 sid 侧**同一个 shim 实例**（同端口） | 同上 |
-# | 容器 | 同 `-d terminal-bench-sample@2.0` 同镜像 | harbor 保证 |
+# | 容器 | 同 `-d "$DATASET"`（两侧必须同一个值）同镜像 | harbor 保证 |
 # | verifier | 同 dataset 自带 verifier | harbor 保证 |
 # | **轮数** | **必须显式 `--ak max_turns=40`** | 见下，这条会静默破 |
 # | 权限档 | cc 侧 default 已是 `bypassPermissions`，与我们 skip 同档 | 闸 2 静态复核 |
@@ -211,9 +211,16 @@ fi
 
 rm -rf "runs/$JOB"
 echo "=== 启动 $(date '+%F %T') ==="
+# 数据集可切换（默认 10 题 sample，保既有结论可复算）。扩规模用
+#   SID_HARBOR_DATASET=terminal-bench-local@2.0 —— 那是本地镜像就绪的 72 题，
+# 由 gen-local-registry.py 按 docker images 实况生成。
+# ⛔ 别用官方 89 题 registry：缺镜像的题会在环境构建阶段失败，形态是
+#    reward=0 + status 正常，与「能力不行」不可区分。
+DATASET="${SID_HARBOR_DATASET:-terminal-bench-sample@2.0}"
+
 caffeinate -dimsu harbor run \
   -a claude_code_agent:ClaudeCodeNpm -m anthropic/claude-sonnet-5 \
-  -d terminal-bench-sample@2.0 "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
+  -d "$DATASET" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
   -n "$N" -k 1 --registry-path registry.local.json --jobs-dir runs \
   --ak "version=$CC_VERSION" --ak "max_turns=$MAX_TURNS" \
   --agent-setup-timeout-multiplier 8 --environment-build-timeout-multiplier 3 \
