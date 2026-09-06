@@ -183,7 +183,12 @@ function tryParseTaskNotifications(msg: Message): {
   const otherBlocks: import("@sid-code/core/llm/types.ts").ContentBlock[] = [];
 
   for (const block of msg.content) {
-    if (block.type === "text" && block.text.trimStart().startsWith(TASK_NOTIFICATION_OPEN)) {
+    // 判据是「文本里含 <task-notification> 开标签」，**不是「以它开头」**。
+    // formatNotification 在 XML 前置了一段纯文本「非用户输入」声明（见 core/task/notification.ts
+    // 的 NOT_USER_INPUT_PREAMBLE），startsWith 会因此漏判 → 通知退化成 `>` 前缀的普通 user
+    // 消息全量灌屏，声明文本本身也一并显示给用户。改 includes 后前缀多少行都不影响识别，
+    // 而下面的 match 只抽 XML 块、声明文本天然不进 TUI。
+    if (block.type === "text" && block.text.includes(TASK_NOTIFICATION_OPEN)) {
       notifTexts.push(block.text);
     } else {
       otherBlocks.push(block);
