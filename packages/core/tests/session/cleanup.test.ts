@@ -8,7 +8,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
-import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, existsSync, writeFileSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { SessionStore } from "@sid-code/core/session/store.ts";
 import { getAllSessionFiles } from "@sid-code/core/session/utils.ts";
@@ -138,5 +138,161 @@ describe("会话清理与 jsonl 列表", () => {
     // 不抛异常即可，会话仍被删
     expect(existsSync(sessionFile)).toBe(false);
     expect(result.failed).toBe(0);
+  });
+});
+
+/**
+ * D3 / D4：清理的两条保护缺口。
+ *
+ * 两条缺陷共享一个后果形态：**用户的会话历史被静默删掉**，且清理侧零报错
+ * （`.catch()` 只在 debug 时记日志），用户只会觉得"怎么少了个会话"。
+ */
+describe("D3/D4：清理的保护边界", () => {
+  let testDir: string;
+  let origHome: string | undefined;
+  let origConfigDir: string | undefined;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `sid-cleanup-p0-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(testDir, ".sid-code", "sessions"), { recursive: true });
+    origHome = process.env.HOME;
+    process.env.HOME = testDir;
+    origConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(testDir, ".sid-code");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = origConfigDir;
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true });
+  });
+
+  const OLD_TS = "2000-01-01T00:00:00.000Z";
+
+  /** 写一个"很旧"的合法 jsonl 会话（够老，不受 minRetention 保护）。 */
+  function writeOldSession(id: string): string {
+    const file = join(sidPaths.sessions(), `${id}.jsonl`);
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: "session_start",
+          sessionId: id,
+          model: "m",
+          provider: "p",
+          cwd: "/c",
+          timestamp: OLD_TS,
+        }),
+        JSON.stringify({
+          type: "user_message",
+          message: { role: "user", content: [{ type: "text", text: "历史内容" }] },
+          timestamp: OLD_TS,
+        }),
+      ].join("\n") + "\n",
+    );
+    return file;
+  }
+
+  /**
+   * D3：**被恢复的会话必须免于清理。**
+   *
+   * 根因是「逻辑会话 id ≠ 进程会话 id」：`currentSessionId` 传的恒是本进程新生成的 id，
+   * 而被恢复会话用的是旧 id —— 保护名单里根本没有它。启动时自动清理是 fire-and-forget，
+   * 与 await 的 restoreSession 并发，删在读之前则用户历史永久消失。
+   *
+   * 判据刻意分两个断言：受保护的那个必须活着，**同时**另一个同样过期的必须真被删 ——
+   * 否则「清理什么都没干」也能让第一个断言变绿（假绿）。
+   */
+  test("D3：protectedSessionIds 里的会话不被清理（同期其他过期会话照删）", async () => {
+    const protectedFile = writeOldSession("resumed-old");
+    const otherFile = writeOldSession("other-old");
+
+    const result = await cleanupExpiredSessions(
+      {} as any,
+      { enabled: true, maxAge: "1h", minRetention: "1h", maxCount: 1 },
+      "brand-new-process-id", // 进程新 id：它对应的文件都还不存在，保护它毫无意义
+      ["resumed-old"], // 真正需要保护的：被恢复会话的旧 id
+    );
+
+    expect(existsSync(protectedFile)).toBe(true);
+    // 反向自证：清理确实在工作（否则上一条断言是假绿）
+    expect(existsSync(otherFile)).toBe(false);
+    expect(result.deletedIds).not.toContain("resumed-old");
+  });
+
+  /**
+   * D4：**空会话不是「损坏文件」，不能被无条件删除。**
+   *
+   * `sessionInfo: null` 有 6 种成因，其中「空会话」「子代理会话」明确不是损坏，
+   * 「读文件抛异常」可能是瞬时故障。旧实现把这个信号一律当成「可以删」，
+   * 且走的是一条**绕过 minRetention / currentSessionId / maxAge / maxCount 全部保护**的旁路。
+   */
+  test("D4：空会话（无 user/assistant 消息）不被当成损坏文件删除", async () => {
+    const file = join(sidPaths.sessions(), "empty-session.jsonl");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "session_start",
+        sessionId: "empty-session",
+        model: "m",
+        provider: "p",
+        cwd: "/c",
+        timestamp: OLD_TS,
+      }) + "\n",
+    );
+
+    await cleanupExpiredSessions({} as any, {
+      enabled: true,
+      maxAge: "1h",
+      minRetention: "1h",
+      maxCount: 1,
+    });
+
+    expect(existsSync(file)).toBe(true);
+  });
+
+  /**
+   * D4：**真损坏的文件也要过 minRetention。**
+   *
+   * minRetention 是防误删的最后兜底，而「刚写到一半的会话」被并发读到半行时
+   * 恰好呈现为损坏 —— 与 D3 的竞争窗口叠加时，这会让一个**完全健康**的会话被删掉。
+   * 刚写出的损坏文件（mtime = now）必须留着。
+   */
+  test("D4：minRetention 内的损坏文件不被删除", async () => {
+    const file = join(sidPaths.sessions(), "corrupt-fresh.jsonl");
+    writeFileSync(file, "{ 这不是合法 json\n");
+
+    await cleanupExpiredSessions({} as any, {
+      enabled: true,
+      maxAge: "1h",
+      minRetention: "1d", // 文件刚写出，落在保留期内
+      maxCount: 1,
+    });
+
+    expect(existsSync(file)).toBe(true);
+  });
+
+  /**
+   * D4 的另一侧：**真损坏且已过最小保留期的文件仍然要被清掉。**
+   *
+   * 缺了这条，上面两个断言可以靠「干脆不删任何损坏文件」变绿 ——
+   * 那是把一个缺陷换成另一个（垃圾永久堆积）。
+   */
+  test("D4：过了 minRetention 的真损坏文件仍被清理", async () => {
+    const file = join(sidPaths.sessions(), "corrupt-old.jsonl");
+    writeFileSync(file, "{ 这不是合法 json\n");
+    // 把 mtime 推到很久以前，跳出 minRetention
+    const past = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    utimesSync(file, past, past);
+
+    await cleanupExpiredSessions({} as any, {
+      enabled: true,
+      maxAge: "1h",
+      minRetention: "1d",
+      maxCount: 1,
+    });
+
+    expect(existsSync(file)).toBe(false);
   });
 });

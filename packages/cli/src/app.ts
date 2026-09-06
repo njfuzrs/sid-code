@@ -84,7 +84,7 @@ import {
   collectJitAccessedPaths,
   resolveJitPathExtractor,
 } from "@sid-code/core/tool/jit-affected-paths.ts";
-import { estimateTextTokens } from "@sid-code/core/context/token.ts";
+import { estimateTextTokens, estimateMessagesTokens } from "@sid-code/core/context/token.ts";
 import {
   isAbortError,
   isInternalTimeoutAbortReason,
@@ -2948,10 +2948,32 @@ export class App {
     // P1-4a：注入压缩事件观察者，让 compactWithSummary 完成后把 context_compact 记录落盘。
     // 此前 SessionStore.appendCompact 定义了却从不被调用（死代码），JSONL 里从无压缩记录。
     // 观察者转调 appendCompact，使压缩状态可观测（诊断/展示用；恢复不据此截断历史）。
+    //
+    // ─────────────────────────────────────────────────────────────
+    // D2：同一个观察者顺便补上**会话摘要的写入端**。
+    //
+    // `SessionStore.saveSummary()` 此前全仓零生产调用点（唯一调用者是一个测试），
+    // 磁盘上 34 个项目目录下的 summaries/ 全部为空。后果不是「少一个功能」，
+    // 而是 restoreSession 的摘要路径**恒不可达** → 所有长会话都掉进最差的截断分支（D1）。
+    // 三样东西本来都在（SessionSummary 接口、saveSummary 实现、loadSummary 三级兜底查找），
+    // **缺的只是「谁来生成摘要并调用它」**。
+    //
+    // 为什么挂在压缩上，而不是会话结束时另起一次 LLM 调用：
+    //   1. **摘要已经现成**。compactWithSummary 生成的就是「这段历史讲了什么」，
+    //      正是恢复时需要的东西 —— 复用它是 0 额外成本、0 额外延迟、0 额外失败面。
+    //   2. **触发时机语义正好对上**。会话被压缩 ⇔ 历史超出了窗口预算 ⇔ 恢复时也装不下
+    //      ⇔ 正是需要摘要补偿的那种会话。没被压缩过的会话，D1 修完后本就全量恢复，
+    //      不需要摘要。
+    //   3. 退出路径上加一次 LLM 调用会拖慢退出，且失败无处可报（finalizeSessionStore
+    //      是同步 best-effort），那才是真正容易变成死接线的位置。
+    //
+    // 落盘用逻辑会话 id（resume 后仍写回被恢复会话的 summaries/），否则摘要会挂在
+    // 本进程新 id 下，下次恢复旧会话时又找不到 —— 那等于换一种方式继续断线。
+    // ─────────────────────────────────────────────────────────────
     try {
-      this.ctxMgr.setCompactObserver((summary, removedCount) => {
-        this.sessionStore?.appendCompact(summary, removedCount);
-      });
+      this.ctxMgr.setCompactObserver((summary, removedCount) =>
+        this.onContextCompacted(summary, removedCount),
+      );
     } catch {
       /* 观察者注入失败不影响启动，压缩仍正常执行只是不落盘诊断记录 */
     }
@@ -4058,9 +4080,9 @@ export class App {
   ): Promise<void> {
     const log = getLogger();
     const { SessionStore } = await import("@sid-code/core/session/store.ts");
-    // 安全尾部切片：保证切片起点不落在游离 tool_result 上（Session 0427d1bd 400 根因）。
-    // slice(-N) 固定数量截断会切断 tool_use/tool_result 配对，留下游离 tool_result → 400。
-    const { safeSliceTail } = await import("@sid-code/core/agent/message-invariants.ts");
+    // D1：安全尾部切片已下沉到 sliceRestoreTailWithinBudget（它自己 import safeSliceTail）——
+    // 本函数不再直接按条数切片，故此处不再需要该导入。
+    // 切片仍保证起点不落在游离 tool_result 上（Session 0427d1bd 400 根因）。
 
     log.info("APP", `恢复会话: ${sessionData.id}, 消息数 ${sessionData.messages.length}`);
 
@@ -4410,9 +4432,31 @@ export class App {
       }
     };
 
-    // 如果消息数量不多，直接恢复
-    const SUMMARY_THRESHOLD = 20;
-    if (cleanedMessages.length <= SUMMARY_THRESHOLD) {
+    // ─────────────────────────────────────────────────────────────
+    // D1：恢复历史的截断口径 —— 从「条数」改为「上下文预算」。
+    //
+    // 旧实现按消息**条数**分三路：≤20 全量；>20 有摘要留 10 条；>20 无摘要留 15 条。
+    // 而摘要写入端从来不存在（D2），所以每个超过 20 条的会话都掉进最差那条路 ——
+    // 实测本机 36/51 个会话命中，2465 条消息恢复后只剩 540 条，**丢弃 78.1%**，
+    // 最极端的一个 406 条只恢复 15 条。这就是用户报告的「恢复后 TUI 显示不全」：
+    // TUI 是 ctxMgr 的忠实投影，投影没问题，**被投影的东西在灌进去之前就少了**。
+    //
+    // 同时它与 sid-code 自己的明文不变量直接冲突 —— store.ts 写了三处注释捍卫
+    // 「resume 永不丢失真实历史」，存储层也确实守住了（实测 51 个文件链式重建 100% 全采纳），
+    // 却被应用层这一行 `safeSliceTail(cleanedMessages, 15)` 破掉。
+    // **注释拦不住另一个文件里的一行代码。**
+    //
+    // 为什么可以放心恢复全量：上下文压力**已经有专门的一层在管**，且比按条数瞎砍更好 ——
+    // query/loop.ts 在每轮开始、发送之前跑分级压缩（soft/hard/emergency/blocking），
+    // 超预算时用**带摘要的压缩**替代历史，信息有损但不缺失。而旧逻辑是无补偿的直接丢弃。
+    // 所以这里的正确职责是：**尽可能多带**，只在真的装不下时才退让，且退让也走摘要路径。
+    //
+    // 现在的口径：按 token 预算保留尾部，预算 = 上下文窗口 × RESTORE_BUDGET_RATIO。
+    // 留出余量给系统提示词、工具 schema 与本轮输出，其余全部给历史。
+    // 条数不再参与判断 —— 它与「装不装得下」没有关系（一条 tool_result 可能比 50 条问答还大）。
+    // ─────────────────────────────────────────────────────────────
+    const restoreOutcome = this.planRestoreBudget(cleanedMessages);
+    if (restoreOutcome.kind === "full") {
       // 缺口 B 路径 1（最常见的短会话续接）：整体恢复清洗后的完整历史，再追加续接信号。
       // 若历史末尾恰是未应答的 tool_use，追加 user marker 会形成孤儿 tool_use——由发送前的
       // backfillOrphanToolResults 补占位 tool_result（它会把占位并入紧邻的下一条 user 消息，
@@ -4429,7 +4473,12 @@ export class App {
 
     if (summary) {
       // 路径 2（有摘要）：已有续接提示（buildResumeMessage 含摘要）。
-      const recentMessages = safeSliceTail(cleanedMessages, 10);
+      // D1：条数常数（原为固定 10 条）换成预算算出的尾部窗口。摘要本身也占预算，
+      // 故 planRestoreBudget 已把它的估算扣掉（见 summaryTokens 入参）。
+      const recentMessages = await this.sliceRestoreTailWithinBudget(
+        cleanedMessages,
+        summary.summary,
+      );
       const resumeMsg = SessionStore.buildResumeMessage(summary.summary);
       this.ctxMgr.addMessage({
         role: "user",
@@ -4465,12 +4514,158 @@ export class App {
       }
       log.info("APP", `恢复会话：摘要 + 最近 ${recentMessages.length} 条消息`);
     } else {
-      // 缺口 B 路径 3（无摘要长会话）：安全截断后整体替换，再追加续接信号。
-      const recentMessages = safeSliceTail(cleanedMessages, 15);
+      // 缺口 B 路径 3（无摘要长会话）：预算内保留尾部，再追加续接信号。
+      //
+      // D1：这里原本是 `safeSliceTail(cleanedMessages, 15)` —— 用户数据丢失的确切位置。
+      // 关键在于它与路径 2 的差别**不只是 10 与 15**：路径 2 被截掉的历史由摘要替代
+      // （信息有损但不缺失），路径 3 被截掉的历史**什么都没留下，直接消失**。
+      // 语义上该反过来：无补偿时本该留得更多，而不是只比有补偿多留 5 条。
+      //
+      // 现在两条路径共用同一套预算口径，差别退回到「有没有摘要补偿被裁掉的部分」这一件事上。
+      const recentMessages = await this.sliceRestoreTailWithinBudget(cleanedMessages);
       this.ctxMgr.setMessages(recentMessages);
       appendContinuation();
-      log.warn("APP", `无摘要，仅恢复最近 ${recentMessages.length} 条消息 + 续接信号`);
+      if (recentMessages.length < cleanedMessages.length) {
+        log.warn(
+          "APP",
+          `无摘要长会话：按上下文预算恢复最近 ${recentMessages.length}/${cleanedMessages.length} 条消息 + 续接信号`,
+        );
+      } else {
+        log.info("APP", `恢复全部 ${recentMessages.length} 条消息 + 续接信号`);
+      }
     }
+  }
+
+  /**
+   * D2：把压缩产出的摘要落盘为**会话摘要**，接上 saveSummary 缺失的写入端。
+   *
+   * best-effort：失败只记日志。摘要是恢复时的补偿手段，写不进去只会退回
+   * 「按预算截断且无补偿」——不该因此影响正在进行的会话。
+   *
+   * 幂等语义：同 id 覆盖写（saveSummary 用 `Bun.write`）。多次压缩时后一次覆盖前一次，
+   * 这是想要的行为 —— 最后一次压缩的摘要覆盖面最广。
+   */
+  /**
+   * 压缩完成后的落盘副作用（compactObserver 的实体）。
+   *
+   * 抽成命名方法而非内联箭头函数，是为了让**接线本身可被测试** ——
+   * D2 的教训正是「两头都活着、中间没人接」，而内联闭包只能靠跑一次真实压缩才能覆盖到。
+   *
+   * 两件事都是 best-effort，互不阻断：
+   * - `appendCompact`：往 JSONL 落一条 context_compact 诊断记录（P1-4a）
+   * - `persistSessionSummary`：把摘要落成会话摘要，供下次恢复补偿被裁掉的历史（D2）
+   */
+  private onContextCompacted(summary: string, removedCount: number): void {
+    try {
+      this.sessionStore?.appendCompact(summary, removedCount);
+    } catch (e) {
+      getLogger().warn("APP", `压缩记录落盘失败: ${(e as Error)?.message}`);
+    }
+    this.persistSessionSummary(summary, removedCount);
+  }
+
+  private persistSessionSummary(summary: string, removedCount: number): void {
+    if (!summary || !summary.trim()) return;
+    void (async () => {
+      try {
+        const { SessionStore } = await import("@sid-code/core/session/store.ts");
+        const store = new SessionStore();
+        await store.saveSummary({
+          // D2：必须是逻辑会话 id —— resume 后摘要要写回被恢复会话的 summaries/，
+          // 写到本进程新 id 下等于下次恢复又找不到（换一种方式继续断线）。
+          sessionId: this.getLogicalSessionId(),
+          summary,
+          model: this.config.model ?? "unknown",
+          provider: this.config.provider ?? "unknown",
+          createdAt: new Date().toISOString(),
+          messageCount: removedCount,
+          estimatedTokens: estimateTextTokens(summary),
+        });
+        getLogger().debug("APP", `D2：会话摘要已落盘（覆盖被压缩的 ${removedCount} 条消息）`);
+      } catch (e) {
+        getLogger().warn("APP", `会话摘要落盘失败（不影响压缩）: ${(e as Error)?.message}`);
+      }
+    })();
+  }
+
+  /**
+   * D1：恢复历史的 token 预算比例 —— 上下文窗口中允许分给「被恢复历史」的份额。
+   *
+   * 为什么是 0.6 而不是 1.0：窗口还要装系统提示词、工具 schema、本轮输出预留，
+   * 而且恢复完通常紧接着就要发一轮请求。留 40% 余量使「恢复即溢出」不会发生。
+   *
+   * 为什么不更小：更小就等于回到 D1 的老问题（无补偿地丢历史）。超出预算的部分
+   * 由 query/loop.ts 每轮开始的分级压缩接管 —— 那条路径用**带摘要的压缩**替代历史，
+   * 信息有损但不缺失，严格优于在这里直接丢弃。
+   */
+  private static readonly RESTORE_BUDGET_RATIO = 0.6;
+
+  /**
+   * D1：恢复历史的最低保底条数。
+   *
+   * 预算再紧也至少带这么多条尾部消息 —— 否则窗口极小的模型（或单条巨大的
+   * tool_result）会把恢复压成几乎空白，那比旧的固定 15 条更糟。
+   * 取 15 与旧实现的最差分支对齐：**这条修复在任何配置下都不会比修复前更少**。
+   */
+  private static readonly RESTORE_MIN_TAIL_MESSAGES = 15;
+
+  /** D1：估算一组消息的 token 数（含每条消息约 4 token 的结构开销，与 ctxMgr 口径一致）。 */
+  private estimateRestoreTokens(messages: import("@sid-code/core/llm/types.ts").Message[]): number {
+    return estimateMessagesTokens(messages) + messages.length * 4;
+  }
+
+  /** D1：可分给被恢复历史的 token 预算。summaryText 存在时先扣掉它自身的占用。 */
+  private computeRestoreBudget(summaryText?: string): number {
+    const window = this.ctxMgr.getMaxTokens();
+    const budget = Math.floor(window * App.RESTORE_BUDGET_RATIO);
+    const summaryTokens = summaryText ? estimateTextTokens(summaryText) : 0;
+    return Math.max(0, budget - summaryTokens);
+  }
+
+  /**
+   * D1：判断整段历史是否能全量恢复。
+   *
+   * 返回 `full` 时调用方直接 setMessages(全量)；返回 `truncate` 时才需要去找摘要、
+   * 按预算裁尾。**注意这里不再看消息条数** —— 条数与「装不装得下」无关。
+   */
+  private planRestoreBudget(messages: import("@sid-code/core/llm/types.ts").Message[]): {
+    kind: "full" | "truncate";
+  } {
+    const used = this.estimateRestoreTokens(messages);
+    const budget = this.computeRestoreBudget();
+    return used <= budget ? { kind: "full" } : { kind: "truncate" };
+  }
+
+  /**
+   * D1：在预算内取尾部消息。
+   *
+   * 从最后一条往前累加，装不下就停；再交给 safeSliceTail 把切点对齐到协议安全边界
+   * （不落在游离 tool_result 上，Session 0427d1bd 400 根因）。
+   *
+   * ⚠️ safeSliceTail 保证的是**协议合法性**，不是**信息完整性** —— 它只保证「切完不会 400」，
+   * 完全不保证「切完还剩多少信息」。这两件事此前被这个函数名混同了，是 D1 长期没被发现的
+   * 原因之一（它不报错，只是少了东西）。所以「留多少」必须由本函数的预算口径负责。
+   */
+  private async sliceRestoreTailWithinBudget(
+    messages: import("@sid-code/core/llm/types.ts").Message[],
+    summaryText?: string,
+  ): Promise<import("@sid-code/core/llm/types.ts").Message[]> {
+    const budget = this.computeRestoreBudget(summaryText);
+
+    let kept = 0;
+    let used = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const cost = this.estimateRestoreTokens([messages[i]]);
+      if (used + cost > budget && kept >= App.RESTORE_MIN_TAIL_MESSAGES) break;
+      used += cost;
+      kept++;
+    }
+
+    // 保底：预算再紧也不少于 RESTORE_MIN_TAIL_MESSAGES 条（不超过总条数）。
+    kept = Math.min(messages.length, Math.max(kept, App.RESTORE_MIN_TAIL_MESSAGES));
+
+    const { safeSliceTail } = await import("@sid-code/core/agent/message-invariants.ts");
+    return safeSliceTail(messages, kept);
   }
 
   /** 处理流式响应，委托给 stream-processor */

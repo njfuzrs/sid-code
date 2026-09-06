@@ -63,14 +63,61 @@ export interface SessionInfo {
   dirPath?: string;
 }
 
+/**
+ * D4：`sessionInfo === null` 的成因分类。
+ *
+ * 这个字段的存在是为了修一个**信号复用**缺陷：`sessionInfo: null` 原本只表达
+ * 「这条不要显示在会话列表里」，而 cleanup 把它重新解释成「这个文件可以删」——
+ * 两个语义在下面 6 种成因里只有 2 种重合。实测该复用会导致**空会话与子代理会话
+ * 被自动清理当成「损坏文件」无条件删除**（绕过 minRetention / currentSessionId 全部保护）。
+ *
+ * 所以判「能不能删」**必须看本字段，不能只看 sessionInfo 是否为 null**。
+ *
+ * - `not-a-file`   —— 目录项不是普通文件（目录等）。不是文件，谈不上删。
+ * - `missing-fields` —— 缺 id/messages/createdAt/updatedAt 任一。**真损坏**。
+ * - `empty`        —— 无任何 user/assistant 消息。**不是损坏**，只是空。
+ * - `subagent`     —— `kind === "subagent"`，刻意不进列表。**不是损坏**。
+ * - `read-error`   —— 读文件抛异常。**可能是瞬时故障**（并发写入 / NFS 抖动 / 权限抖动），
+ *                     一次读失败就永久删用户数据，代价与成因严重不匹配 → 不删。
+ * - `parse-error`  —— 解析器明确返回 null。**真损坏**。
+ */
+export type SessionExcludeReason =
+  | "not-a-file"
+  | "missing-fields"
+  | "empty"
+  | "subagent"
+  | "read-error"
+  | "parse-error";
+
+/**
+ * D4：可被清理逻辑当作「损坏」删除的成因白名单（**闭集，只有这两个**）。
+ *
+ * 刻意用白名单而非黑名单：将来 scanSessionDir 新增一种排除成因时，默认落在
+ * 「不删」这一侧。反过来（黑名单）会让新成因默认可删——那正是本缺陷的形态。
+ */
+export const DELETABLE_EXCLUDE_REASONS: readonly SessionExcludeReason[] = [
+  "missing-fields",
+  "parse-error",
+];
+
+/** D4：该排除成因是否可被清理逻辑当作「损坏文件」删除。 */
+export function isDeletableExcludeReason(reason: SessionExcludeReason | undefined): boolean {
+  return reason !== undefined && DELETABLE_EXCLUDE_REASONS.includes(reason);
+}
+
 /** 会话文件条目 */
 export interface SessionFileEntry {
   /** 完整文件名 */
   fileName: string;
   /** P0-1：文件所在目录绝对路径（跨项目扫描时各条目可能来自不同项目子目录）。 */
   dirPath: string;
-  /** 会话信息（损坏文件为 null） */
+  /** 会话信息（未通过校验/刻意排除时为 null，成因见 excludeReason） */
   sessionInfo: SessionInfo | null;
+  /**
+   * D4：`sessionInfo === null` 的具体成因。`sessionInfo !== null` 时为 undefined。
+   * **清理逻辑必须据此判断能否删除**（见 isDeletableExcludeReason）。
+   */
+  excludeReason?: SessionExcludeReason;
 }
 
 /** 获取会话选项 */
@@ -234,7 +281,12 @@ async function scanSessionDir(
     try {
       // 目录项可能是子目录（如 summaries/ 已被上面过滤，但防御性再判一次）。
       if (!statSync(filePath).isFile()) {
-        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        return {
+          fileName: file,
+          dirPath: sessionDir,
+          sessionInfo: null,
+          excludeReason: "not-a-file",
+        };
       }
       const content = await Bun.file(filePath).text();
       // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
@@ -251,7 +303,12 @@ async function scanSessionDir(
         !data.createdAt ||
         !data.updatedAt
       ) {
-        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        return {
+          fileName: file,
+          dirPath: sessionDir,
+          sessionInfo: null,
+          excludeReason: data ? "missing-fields" : "parse-error",
+        };
       }
 
       // 跳过空会话（只有系统消息）
@@ -259,12 +316,19 @@ async function scanSessionDir(
         (msg) => msg.role === "user" || msg.role === "assistant",
       );
       if (!hasUserOrAssistant) {
-        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        // D4：空会话**不是损坏**，只是不进列表。带上成因让 cleanup 不把它当损坏文件删。
+        return { fileName: file, dirPath: sessionDir, sessionInfo: null, excludeReason: "empty" };
       }
 
       // 跳过子代理会话
       if (data.kind === "subagent") {
-        return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+        // D4：子代理会话是**刻意跳过**，不是损坏。同上，成因必须传出去。
+        return {
+          fileName: file,
+          dirPath: sessionDir,
+          sessionInfo: null,
+          excludeReason: "subagent",
+        };
       }
 
       const firstUserMessage = extractFirstUserMessage(data.messages);
@@ -313,8 +377,14 @@ async function scanSessionDir(
 
       return { fileName: file, dirPath: sessionDir, sessionInfo };
     } catch {
-      // 文件损坏
-      return { fileName: file, dirPath: sessionDir, sessionInfo: null };
+      // D4：读取/解析抛异常。**可能是瞬时故障**（被并发写入、NFS 抖动、权限抖动），
+      // 故归为 read-error（不可删），而非与「解析器明确判损」混为一谈。
+      return {
+        fileName: file,
+        dirPath: sessionDir,
+        sessionInfo: null,
+        excludeReason: "read-error",
+      };
     }
   });
 
