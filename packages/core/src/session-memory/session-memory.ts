@@ -50,6 +50,13 @@ export interface InitSessionMemoryOptions {
   filePath?: string;
   /** 覆盖工作目录（用于派生文件路径） */
   cwd?: string;
+  /**
+   * 会话 id（P0-4）。**必须传**，否则派生出的是跨会话共享的旧路径 ——
+   * 并发会话与 `--resume` 会互相覆盖彼此的笔记，压缩时还会把别人的笔记
+   * 当作「本次会话」的历史替代品注入（详见 `getSessionMemoryPath` 注释）。
+   * 只有显式传 `filePath` 的测试可以省略它。
+   */
+  sessionId?: string;
 }
 
 /**
@@ -58,7 +65,15 @@ export interface InitSessionMemoryOptions {
 export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemoryHandle {
   const log = getLogger();
   const config: SessionMemoryConfig = { ...DEFAULT_SESSION_MEMORY_CONFIG, ...opts.config };
-  const filePath = opts.filePath ?? getSessionMemoryPath(opts.cwd);
+  const filePath = opts.filePath ?? getSessionMemoryPath(opts.cwd, opts.sessionId);
+  if (!opts.filePath && !opts.sessionId) {
+    // 不静默降级：这条路径是跨会话共享的，接线漏传 sessionId 必须留下痕迹，
+    // 否则「两个会话互相覆盖笔记」在日志里看不出任何异常（缺陷 12：零埋点）。
+    log.warn(
+      "SESSION_MEM",
+      `未传 sessionId，回退到跨会话共享的旧路径（并发/resume 会互相污染）: ${filePath}`,
+    );
+  }
   const state = initialSessionMemoryState();
   let pending: Promise<void> | null = null;
 

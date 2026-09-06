@@ -24,6 +24,9 @@ import { getAutoMemPath } from "./paths.ts";
 import { sidHomePath } from "../config/paths.ts";
 import { MEMORY_LIMITS, MEMORY_TYPES, isMemoryType, type MemoryType } from "./types.ts";
 import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
+// P0-3：freshness 此前唯一的生产引用在 recall.ts 内，而 recall 自己零接线 ⇒ 整条不可达。
+// 索引注入是主路径，把它接到这里，freshness 才第一次真正到达模型。
+import { memoryAge, memoryAgeDays } from "./freshness.ts";
 
 /** 单条记忆（向后兼容旧结构，新增可选 type/description） */
 export interface MemoryEntry {
@@ -279,6 +282,57 @@ function serializeMemoryFile(entry: MemoryEntry): string {
   ].join("\n");
 }
 
+/**
+ * 给索引正文逐行补上「这条记忆多久之前写的」（P0-3 的第一半）。
+ *
+ * ─── 为什么这一行时间戳是整条读取侧防线里最便宜、最该先做的一步 ───
+ *
+ * 参考文档的主线论点是：**漂移不可能在存储层根治，防御全部押在读取侧**。
+ * 而 sid-code 主路径（MEMORY.md 索引全量注入 + 模型按需 Read）此前**完全不带年龄信息**：
+ *
+ * - 索引行是 `- [key](file) — 一句话摘要`，没有 mtime、没有「N 天前」；
+ * - 模型 `Read` 出正文时，`stripFrontmatter` 又把 `updated:` 一起剥掉了 ——
+ *   frontmatter 里那个时间戳**读到模型眼前时已经不在了**。
+ *
+ * 净效果：模型看到的每条记忆都是**无时间戳的陈述句**，与「刚刚核实过的事实」不可区分。
+ * 这正是文档 §1.2「有害记忆伪装成已验证结论」的形态 —— 它消灭的是**求证的动作**。
+ *
+ * cc 的做法是在每条被注入的记忆正文前加年龄，理由写在它的 `memoryAge.ts`：
+ * 模型不擅长算日期差，「47 天前」比 ISO 时间戳更能触发过时警觉。
+ * 所以这里给的是 `memoryAge()` 的人类可读相对时间，**不是**裸时间戳。
+ *
+ * 实现上刻意选了「逐行注解」而不是「另起一段警告」：
+ * - 警告段落与具体某条记忆之间没有绑定关系，模型读到第 40 行时早忘了段首那句；
+ * - 逐行注解让年龄与摘要**同处一行**，引用哪条就看到哪条的年龄。
+ *
+ * 只给超过 1 天的条目加（`buildFreshnessWarning` 的同一判据，见 freshness.ts）：
+ * 今天刚写的记忆加「today」纯属噪声，还会每天击穿一次 prompt cache 前缀。
+ *
+ * ⚠️ cache 影响是刻意接受的 trade-off（北极星「更安全 ↔ 更省」）：
+ * 相对天数每天会变一次，所以这段内容**按天漂移**、跨天会击穿一次静态前缀。
+ * 代价上界是「每天一次」而非「每轮一次」——因为注解粒度是天，不是小时或毫秒。
+ * 换来的是模型每轮都能看见「这条 47 天前写的」。
+ *
+ * @param text    索引正文（`- [key](file) — desc` 逐行）
+ * @param entries 该 scope 的内存条目（key → entry，取 `updatedAt`）
+ */
+export function annotateIndexAges(text: string, entries: Map<string, MemoryEntry>): string {
+  const now = Date.now();
+  return text
+    .split("\n")
+    .map((line) => {
+      // 只处理索引条目行；段标题、空行、截断警告原样保留
+      const m = line.match(/^(\s*-\s*\[([^\]]*)\]\([^)]*\))(.*)$/);
+      if (!m) return line;
+      const entry = entries.get(m[2]);
+      if (!entry) return line; // 索引里有、内存里没有（孤儿行）：不编造年龄
+      const days = memoryAgeDays(entry.updatedAt, now);
+      if (days < 1) return line; // 与 buildFreshnessWarning 同判据：1 天内不加噪声
+      return `${m[1]} ⏳${memoryAge(entry.updatedAt, now)}${m[3]}`;
+    })
+    .join("\n");
+}
+
 export class MemoryStore {
   private globalDir: string;
   private projectDir: string | null;
@@ -290,6 +344,16 @@ export class MemoryStore {
   private globalFiles: Map<string, string> = new Map();
   private projectFiles: Map<string, string> = new Map();
   private loaded = false;
+  /**
+   * P0-1：因 frontmatter `name:` 重名而被遮蔽的文件（磁盘上有、索引里没有）。
+   * 每次 `loadDir` 前清空，由 `listShadowedFiles()` 对外暴露。
+   */
+  private shadowedFiles: Array<{
+    dir: string;
+    filename: string;
+    key: string;
+    scope: "global" | "project";
+  }> = [];
 
   constructor(
     projectRoot?: string,
@@ -335,6 +399,8 @@ export class MemoryStore {
       ? await this.migrateDoublePrefixNames(this.projectDir)
       : false;
 
+    // 重名清单按「本次加载」重算，否则重复 load 会把同一条重复计入
+    this.shadowedFiles = [];
     await this.loadDir(this.globalDir, "global", this.globalEntries, this.globalFiles);
     if (this.projectDir) {
       await this.loadDir(this.projectDir, "project", this.projectEntries, this.projectFiles);
@@ -444,7 +510,30 @@ export class MemoryStore {
     return renamed;
   }
 
-  /** 扫描目录加载所有记忆 .md 文件到内存缓存 */
+  /**
+   * 扫描目录加载所有记忆 .md 文件到内存缓存。
+   *
+   * ─── P0-1：重名 `name:` 不再静默丢一半 ───
+   *
+   * `entries` 的主键是 frontmatter 的 `name:`，而落盘时的**文件名**另有一套去重
+   * （撞名加 `-1` 后缀）。两套 key 不同源 ⇒ 「两个不同文件、同一个 `name:`」在磁盘上
+   * 完全合法。旧实现在这里直接 `entries.set(entry.key, ...)`，于是：
+   *
+   * 1. **留下哪条取决于 `readdir` 返回顺序** —— 非确定性，同一份磁盘两次加载可能不同结果；
+   * 2. 被覆盖的那个文件从此无人引用，索引重建后它**永久不进上下文**（孤儿记忆）。
+   *
+   * 这不是构造出来的边界场景：本仓库自己的记忆库就命中过（111 个 `.md` / 索引 110 条指针，
+   * 丢掉的那半条恰是「问题现象与复现方式」，留下的是「已修复」—— 下一个 agent 读到
+   * 结论却看不到依据）。而 `list()` / `getStats()` 报的都是内存视角的 110，
+   * **任何基于 store API 的自检都发现不了**，只有直接比对磁盘与索引才暴露。
+   *
+   * 修法两条，都不删用户数据：
+   * - **确定性**：文件名排序后加载，撞 key 时按 `updatedAt` 取新（同值则按文件名字典序），
+   *   结果不再随文件系统顺序漂移；
+   * - **可见性**：被遮蔽的文件记进 `shadowedFiles`，`log.warn` 点名两个文件，
+   *   并经 `listShadowedFiles()` 暴露给自检 / `/memory` 侧。
+   *   刻意**不自动合并、不自动删**：哪一半该留是语义判断，只能由人决定。
+   */
   private async loadDir(
     dir: string,
     scope: "global" | "project",
@@ -458,7 +547,9 @@ export class MemoryStore {
     } catch {
       return;
     }
-    for (const filename of names) {
+    const log = getLogger();
+    // 排序 = 确定性的前提：readdir 不保证顺序，撞 key 时的胜者不能取决于文件系统实现
+    for (const filename of [...names].sort()) {
       if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
       const filePath = join(dir, filename);
       try {
@@ -466,14 +557,103 @@ export class MemoryStore {
         if (!st.isFile()) continue;
         const text = await Bun.file(filePath).text();
         const entry = parseMemoryFile(text, filename, scope, st.mtimeMs);
-        if (entry) {
-          entries.set(entry.key, entry);
-          files.set(entry.key, filename);
+        if (!entry) continue;
+
+        const prev = entries.get(entry.key);
+        if (prev) {
+          const prevFile = files.get(entry.key);
+          // 取新：updatedAt 更大者胜；相等时按文件名字典序取前者（纯为确定性，无语义）
+          const incomingWins =
+            entry.updatedAt > prev.updatedAt ||
+            (entry.updatedAt === prev.updatedAt && filename < (prevFile ?? ""));
+          const loser = incomingWins ? prevFile : filename;
+          if (loser) {
+            this.shadowedFiles.push({ dir, filename: loser, key: entry.key, scope });
+            log.warn(
+              "MEMORY",
+              `记忆 key 重名（${entry.key}）：保留 ${incomingWins ? filename : prevFile}、` +
+                `遮蔽 ${loser} —— 被遮蔽的文件不会进索引，需人工合并或改名（scope=${scope}）`,
+            );
+          }
+          if (!incomingWins) continue;
         }
+
+        entries.set(entry.key, entry);
+        files.set(entry.key, filename);
       } catch {
         // 跳过损坏文件
       }
     }
+  }
+
+  /**
+   * 把一条超限记忆移进 `archive/` 子目录（P0-2）。返回归档后的文件名，失败返回 null。
+   *
+   * 为什么是 `rename` 而不是 `unlink`：淘汰口径（LWU，见 types.ts `STORE_MAX_ENTRIES`）
+   * 与记忆价值无关，所以这个判断**没有资格删用户数据**——它只有资格「移出索引」。
+   * `archive/` 在 `scan.ts` 的 `SKIP_DIRS` 里，移进去即不再被扫描与索引，
+   * 但字节还在，用户 / 下一个 agent 能捞回来。
+   *
+   * 撞名时加 `-N` 后缀：归档区可能已经有同名文件（同一条记忆被淘汰两次），
+   * 覆盖它等于在「不删数据」的路径上又删一次。
+   */
+  private async archiveMemoryFile(dir: string, filename: string): Promise<string | null> {
+    const src = join(dir, filename);
+    if (!existsSync(src)) return null;
+    try {
+      const archiveDir = join(dir, "archive");
+      if (!existsSync(archiveDir)) mkdirSync(archiveDir, { recursive: true });
+      let target = filename;
+      let i = 1;
+      while (existsSync(join(archiveDir, target))) {
+        target = filename.replace(/\.md$/, `-${i}.md`);
+        i++;
+      }
+      await rename(src, join(archiveDir, target));
+      return target;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 读磁盘上某个记忆文件的 frontmatter `name:`（P0-1 写入侧判据）。
+   *
+   * 返回 null = 文件不存在 / 读不动 / 没有 `name:`。**只读 frontmatter 那几行**
+   * （4KB 上限，与 `scanMemoryFiles` 同口径），不整文件读——这条在 `set()` 的
+   * 撞名循环里可能被调用多次。
+   *
+   * 为什么不能省掉这次 I/O 直接信内存：`files` 映射只覆盖 `loadDir` 认得的文件，
+   * 磁盘上完全可能有它不知道的同名记忆（子目录、解析失败、模型用 Write 直写），
+   * 而正是这些「内存看不见、磁盘上有」的文件让旧代码造出了重名。
+   */
+  private async diskNameOf(dir: string, filename: string): Promise<string | null> {
+    const filePath = join(dir, filename);
+    if (!existsSync(filePath)) return null;
+    try {
+      const head = (await Bun.file(filePath).text()).slice(0, 4096);
+      const m = head.match(FRONTMATTER_RE);
+      if (!m) return null;
+      const nameM = m[1].match(/^name:\s*(.+)$/m);
+      const raw = nameM?.[1]?.trim().replace(/^["']|["']$/g, "");
+      return raw || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 列出因 `name:` 重名而被遮蔽的记忆文件（P0-1 的可见性出口）。
+   *
+   * 这些文件真实存在于磁盘、但不在索引里，所以模型永远读不到它们。
+   * 返回空数组 = 无重名。**这是唯一能发现该状态的 store API**——
+   * `list()` / `getStats()` 都是内存视角，重名时报的是去重后的数字。
+   */
+  async listShadowedFiles(): Promise<
+    ReadonlyArray<{ dir: string; filename: string; key: string; scope: "global" | "project" }>
+  > {
+    await this.load();
+    return this.shadowedFiles;
   }
 
   /** 设置记忆（key-value，向后兼容签名） */
@@ -516,9 +696,31 @@ export class MemoryStore {
     if (!filename) {
       filename = memoryFilename(entry.type!, key);
       // 避免文件名冲突（不同 key 派生出同名）
+      //
+      // ─── P0-1 写入侧：加 `-N` 后缀前必须先问「磁盘上那个文件是不是同一个 key」 ───
+      //
+      // 旧实现只查内存里的 `files.values()`。而 `files` 只装得下 `loadDir` 认得的文件：
+      // 子目录里的记忆（缺陷 6）、frontmatter 解析失败的、以及模型用 Write 工具直接写的，
+      // 都不在其中。于是「磁盘上已有 reference_x.md（`name: x`），但 files 里没有 x」时，
+      // 旧代码走新建分支 → 撞名 → 加 `-1` → 落出**第二个 `name: x`**，
+      // 也就是加载侧刚修的那个孤儿状态的**生产路径**。
+      //
+      // 修法：候选文件名若已在磁盘上，就读它的 `name:`——
+      // 同 key ⇒ 认领它（这本来就是这条记忆的文件，正常更新即可）；
+      // 不同 key ⇒ 才继续加后缀。只有「磁盘上没有」或「同 key」两种情况会落笔。
+      const taken = new Set(files.values());
       let candidate = filename;
       let i = 1;
-      while ([...files.values()].includes(candidate)) {
+      // 每轮只读一次磁盘（diskNameOf 有 I/O，别在同一轮里问两遍同一个文件）
+      for (;;) {
+        if (taken.has(candidate)) {
+          candidate = filename.replace(/\.md$/, `-${i}.md`);
+          i++;
+          continue;
+        }
+        const onDisk = await this.diskNameOf(dir, candidate);
+        // 磁盘上没有，或那个文件就是本 key 的记忆 ⇒ 用它（后者是「认领并更新」）
+        if (onDisk === null || onDisk === key) break;
         candidate = filename.replace(/\.md$/, `-${i}.md`);
         i++;
       }
@@ -528,18 +730,35 @@ export class MemoryStore {
 
     await Bun.write(join(dir, filename), serializeMemoryFile(entry));
 
-    // 超过上限时移除最旧条目
-    if (entries.size > MEMORY_LIMITS.SCAN_MAX_FILES) {
+    // ─── P0-2：超过上限时**归档**最旧条目，不再静默删除 ───
+    //
+    // 旧实现在这里 `unlink` + `catch { /* ignore */ }`：真删、无备份、无告警，
+    // 连失败都不报（同函数截断 value 时反倒会 log.warn）。三个理由让它必须改：
+    //
+    // 1. **淘汰口径与价值无关**。排序键 `updatedAt` 只在 `set()` 时更新 ⇒ 这是
+    //    LWU 而非 LRU：被频繁召回但从不重写的记忆恒为「最旧」，优先被删的恰是
+    //    「写下来之后一直有用、只是没人改过」的那些。
+    // 2. **无法事后追溯**。记忆子系统零埋点，删了也不知道删的是什么。
+    // 3. 上限借用的是**扫描用**常量（见 types.ts `SCAN_MAX_FILES` 注释），
+    //    语义本就不符——现已分成两个常量。
+    //
+    // 归档目标 `archive/` 是 `scan.ts` 的 `SKIP_DIRS` 成员，所以归档过的文件
+    // 既不再进索引、也不再被扫描计数，但**字节还在**、用户能自己捞回来。
+    if (entries.size > MEMORY_LIMITS.STORE_MAX_ENTRIES) {
       const sorted = [...entries.values()].sort((a, b) => a.updatedAt - b.updatedAt);
-      const toRemove = sorted.slice(0, entries.size - MEMORY_LIMITS.SCAN_MAX_FILES);
+      const toRemove = sorted.slice(0, entries.size - MEMORY_LIMITS.STORE_MAX_ENTRIES);
       for (const old of toRemove) {
         const fn = files.get(old.key);
         if (fn) {
-          try {
-            await unlink(join(dir, fn));
-          } catch {
-            /* ignore */
-          }
+          const archived = await this.archiveMemoryFile(dir, fn);
+          log.warn(
+            "MEMORY",
+            archived
+              ? `记忆条数超过 ${MEMORY_LIMITS.STORE_MAX_ENTRIES}（scope=${scope}），` +
+                  `已归档最旧的一条: ${old.key} → archive/${archived}（未删除，可人工恢复）`
+              : `记忆条数超过 ${MEMORY_LIMITS.STORE_MAX_ENTRIES}（scope=${scope}），` +
+                  `归档 ${old.key}（${fn}）失败——该文件保留在原处，仅从索引移除`,
+          );
         }
         entries.delete(old.key);
         files.delete(old.key);
@@ -705,7 +924,9 @@ export class MemoryStore {
       }
       if (!text) continue;
       // 目录必须是绝对路径且与链接可直接拼接：模型拿 `${dir}/${链接}` 就能 Read。
-      sections.push(`#### ${label}（目录：${dir}）\n\n${text}`);
+      // P0-3：正文逐行补「多久之前」，让 freshness 真的到达模型眼前（见 annotateIndexAges）。
+      const entries = dir === this.globalDir ? this.globalEntries : this.projectEntries;
+      sections.push(`#### ${label}（目录：${dir}）\n\n${annotateIndexAges(text, entries)}`);
     }
 
     return sections.length > 0 ? sections.join("\n\n") : null;

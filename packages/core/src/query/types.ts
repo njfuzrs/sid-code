@@ -821,6 +821,24 @@ export interface QueryDeps {
   onSkillToolResults?: (toolInputs: unknown[]) => Promise<void>;
   drainSkillListingDelta?: () => string | null;
   /**
+   * P0-3：语义召回接线点（`SID_CODE_MEMORY_RECALL=1` 才启用）。
+   *
+   * 在**每条用户消息的首轮**调用一次，传入该消息文本；返回值经 reminderParts
+   * 注入 user 消息（与 IDE / skill 增量同通道，cache-friendly）。
+   *
+   * 修复前 `recall.ts` 的文档注释写着「此时**应**在主循环每轮调用
+   * `findRelevantMemories`」——用的是「应」，即接线本身没写。净效果是设了那个环境变量
+   * **什么都不会发生**：`isMemoryRecallEnabled()` 返回的 true 无人查询，
+   * `recalledMemories` 字段生产零赋值，`PRIORITY.MEMORY_RECALLED = 32` 无附件使用。
+   * 三个模块都满足「build 过 + 单测过」，都不满足「真实会话里被触发过」。
+   *
+   * 为什么走 reminderParts 而不是 system prompt 的 `recalledMemories` 字段：
+   * 召回结果**每条用户消息都不同**，塞进 system prompt 会每轮击穿静态前缀
+   *（北极星「更省」：cache 命中率是主口径之一）。走消息通道则只增量追加。
+   * 未注入 = 不召回（默认行为，向后兼容）。
+   */
+  drainRecalledMemories?: (query: string) => Promise<string | null>;
+  /**
    * Trace 事件写入（Goal Gate、评估器等关键决策写入结构化事件到 events.jsonl）。
    * 可选——未注入则不写 trace 事件。
    */

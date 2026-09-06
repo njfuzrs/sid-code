@@ -362,3 +362,68 @@ describe("不越界：本模块不碰 settings 与记忆", () => {
     expect(readdirSync(memDir)).toContain("MEMORY.md");
   });
 });
+
+describe("过期 Session Memory 会话笔记回收（阈值 30 天，按 mtime 判）", () => {
+  /**
+   * 这条是 P0-4 的配套：把 `.session_memory.md` 从「按项目一个」改成「按会话一个」
+   * 修掉了并发/resume 互相覆盖，代价是文件一个会话攒一个 —— 那个修复必须配回收，
+   * 否则治好污染换来无界增长。
+   *
+   * 同样两侧都断言（超期删 / 未超期留）：这是用户的会话笔记，
+   * `--resume` 时要靠它接上上次的上下文，删早了等于让 resume 失忆。
+   */
+  function seedSessionMemory(projectKey: string, sessionId: string, daysAgo: number): string {
+    const dir = join(sidPaths.projects(), projectKey, "session-memory");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${sessionId}.md`);
+    writeFileSync(file, "# Session Title\n\n笔记正文\n");
+    ageBy(file, daysAgo);
+    return file;
+  }
+
+  test("超 30 天的删、30 天内的留", () => {
+    const stale = seedSessionMemory("proj-a", "20260101-000000-aaaaaaaa", 40);
+    const fresh = seedSessionMemory("proj-a", "20260906-000000-bbbbbbbb", 3);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(stale)).toBe(false);
+    // 未超期的必须留着 —— 只断言"删了"的测试对"删太多"是盲的
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  test("跨多个项目目录都会扫到", () => {
+    const a = seedSessionMemory("proj-a", "20260101-000000-aaaaaaaa", 40);
+    const b = seedSessionMemory("proj-b", "20260101-000000-cccccccc", 40);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(a)).toBe(false);
+    expect(existsSync(b)).toBe(false);
+  });
+
+  test("不碰旧的项目级 .session_memory.md（修复前的存量数据）", () => {
+    // 它不随会话增长（就一个文件），不构成膨胀；用户可能还想看，所以刻意豁免。
+    const projDir = join(sidPaths.projects(), "proj-a");
+    mkdirSync(projDir, { recursive: true });
+    const legacy = join(projDir, ".session_memory.md");
+    writeFileSync(legacy, "# 旧的项目级笔记\n");
+    ageBy(legacy, 400);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(legacy)).toBe(true);
+  });
+
+  test("非 .md 文件不动（只回收笔记本身）", () => {
+    const dir = join(sidPaths.projects(), "proj-a", "session-memory");
+    mkdirSync(dir, { recursive: true });
+    const other = join(dir, "notes.txt");
+    writeFileSync(other, "x");
+    ageBy(other, 400);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(other)).toBe(true);
+  });
+});

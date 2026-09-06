@@ -171,11 +171,72 @@ export function getMemoryIndexPath(cwd: string = process.cwd(), override?: strin
   return join(getAutoMemPath(cwd, override), "MEMORY.md");
 }
 
-/** Session Memory 文件路径：~/.sid-code/projects/<hash>/.session_memory.md */
-export function getSessionMemoryPath(cwd: string = process.cwd()): string {
+/**
+ * 把会话 id 收成文件名安全的 slug（防路径穿越）。
+ * 只保留 [a-zA-Z0-9._-]，其余替换为 `-`，截断到 64 字符；空/全非法时返回 null
+ * （调用方据此回退到项目级旧路径，而不是拼出一个 `.session_memory-.md`）。
+ */
+function sanitizeSessionId(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const slug = String(raw)
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .replace(/-+/g, "-")
+    .slice(0, 64);
+  return slug || null;
+}
+
+/**
+ * Session Memory 文件路径。
+ *
+ * ─── P0-4：必须按**会话**分文件，不能只按项目 ───
+ *
+ * 旧实现只由项目键派生（`.session_memory.md`），于是同一项目的每一个会话
+ * ——并发开两个终端、`--resume` 旧会话、同一仓库的多个 worktree——
+ * 都在读写**同一个物理文件**，且无锁、无 session 校验、无启动重置。
+ * 三个已知故障形态：
+ *
+ * 1. **并发交叉写入**：两个提取代理都被授权编辑这一个文件
+ *    （`createSessionMemoryPermissions` 只校验路径相等），而 `session-memory.ts`
+ *    的互斥只是**进程内**的 `pending` 变量，跨进程无效 ⇒ `# Current State`
+ *    被两个不相干任务交替覆盖。
+ * 2. **压缩时注入错任务的笔记**：A 会话触发 autoCompact，读到的可能是 B 会话
+ *    刚写的内容，然后被当作 A 会话被丢弃历史的替代品塞进压缩结果。
+ *    这比「压缩后失忆」更糟——**压缩后记成了别人的事**，而注入文案还写着
+ *    「以下是本次会话的结构化笔记」，一句「本次」把跨会话污染断言成了本会话事实。
+ * 3. **resume 读到别人的笔记**：恢复一个两周前的会话，文件里躺的是这两周内
+ *    其它会话留下的内容，与恢复出来的对话历史完全不对应。
+ *
+ * 注意 `resolveProjectRoot` 取的是 git toplevel，所以旧路径连**同仓库的多个
+ * worktree** 也共用一份。那对长期记忆是刻意设计（见本文件头部注释），
+ * 但对会话级笔记是错的：worktree 的存在意义就是并行做不同的事。
+ *
+ * 新布局：`~/.sid-code/projects/<key>/session-memory/<sessionId>.md`。
+ * 单独一层子目录（而不是 `.session_memory-<id>.md` 平铺）是为了让清理能
+ * 整目录扫描，也不会与 `memory/` 或索引文件混在一起。
+ *
+ * @param cwd       工作目录（默认 process.cwd()）
+ * @param sessionId 会话 id。**强烈建议传**：不传则回退到旧的项目级单文件路径，
+ *                  行为与修复前一致（含上述三个故障形态）。保留这个回退是为了
+ *                  兼容仍在读旧文件的存量数据，不是推荐用法。
+ */
+export function getSessionMemoryPath(cwd: string = process.cwd(), sessionId?: string): string {
   const root = resolveProjectRoot(cwd);
   const key = sanitizeProjectKey(root);
-  return join(projectsRoot(), key, ".session_memory.md");
+  const sid = sanitizeSessionId(sessionId);
+  if (!sid) {
+    // 回退：旧的项目级单文件（跨会话共享，见上面三个故障形态）
+    return join(projectsRoot(), key, ".session_memory.md");
+  }
+  return join(projectsRoot(), key, "session-memory", `${sid}.md`);
+}
+
+/** Session Memory 目录（按会话分文件后的父目录），供清理与枚举使用 */
+export function getSessionMemoryDir(cwd: string = process.cwd()): string {
+  const root = resolveProjectRoot(cwd);
+  const key = sanitizeProjectKey(root);
+  return join(projectsRoot(), key, "session-memory");
 }
 
 /**
