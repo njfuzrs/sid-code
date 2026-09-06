@@ -94,7 +94,18 @@ export PYTHONPATH="$(pwd)"
 #（nop 的 agent_execution 恒为 0），所以**真 agent 在 -n 6 下的墙钟收益本轮才第一次被测到**。
 # 🔴 首次用真 agent 上 -n 6 **必须盯内存**：W0 那 714MiB 峰值只对 nop 成立
 #（nop 不解题、qemu 那两题的 qemu 没真跑起来）。见收尾的内存采样。
-COMMON=(-d terminal-bench-sample@2.0 -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:-6}" -k 1
+# ── 数据集：默认仍是 10 题的 sample（保持既有结论可复算），扩规模时显式切换 ──
+#
+# `terminal-bench-local@2.0` = 本地镜像已就绪的那 72 题，由 `gen-local-registry.py`
+# 按 `docker images` 实况生成。⚠️ **别改成 `-d terminal-bench@2.0` + 官方 registry**：
+# 官方是 89 题，而本地只有 72 张镜像 ⇒ 缺的 17 题会在环境构建阶段失败，
+# 形态是 `reward=0` + status 正常 —— **与「能力不行」不可区分**。
+# 让分母在入口处就等于真实可跑题数，比事后靠判据摘出去更稳。
+#
+#   SID_HARBOR_DATASET=terminal-bench-local@2.0 bash run-model-switch.sh w3-sid-72
+DATASET="${SID_HARBOR_DATASET:-terminal-bench-sample@2.0}"
+
+COMMON=(-d "$DATASET" -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:-6}" -k 1
         --registry-path registry.local.json
         --jobs-dir runs --agent-setup-timeout-multiplier 8
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4

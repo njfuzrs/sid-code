@@ -61,7 +61,14 @@ export HARBOR_TELEMETRY=0
 export PYTHONPATH="$(pwd)"
 # 权限档:**不显式传** —— 默认已是 skip 布尔 flag。显式传会撞 __init__ 的互斥校验。
 
-COMMON=(-d terminal-bench-sample@2.0 -m anthropic/claude-sonnet-5 -n 1 -k 1
+# 数据集可切换（默认 10 题 sample，保既有结论可复算）。扩规模用
+#   SID_HARBOR_DATASET=terminal-bench-local@2.0 —— 那是本地镜像就绪的 72 题，
+# 由 gen-local-registry.py 按 docker images 实况生成。
+# ⛔ 别用官方 89 题 registry：缺镜像的题会在环境构建阶段失败，形态是
+#    reward=0 + status 正常，与「能力不行」不可区分。
+DATASET="${SID_HARBOR_DATASET:-terminal-bench-sample@2.0}"
+
+COMMON=(-d "$DATASET" -m anthropic/claude-sonnet-5 -n 1 -k 1
         --registry-path registry.local.json
         --jobs-dir runs --agent-setup-timeout-multiplier 8
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4
