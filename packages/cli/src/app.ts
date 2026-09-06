@@ -33,6 +33,7 @@ import { ThinkingManager } from "@sid-code/core/llm/thinking.ts";
 import {
   lookupErrorMessage,
   inferErrorCode,
+  codeFromStructured,
   stableErrorId,
   isTransientErrorCode,
 } from "@sid-code/core/llm/error-messages.ts";
@@ -88,6 +89,7 @@ import {
   isAbortError,
   isInternalTimeoutAbortReason,
   isSessionTimeoutAbortReason,
+  LLMStreamError,
 } from "@sid-code/core/llm/errors.ts";
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
@@ -316,9 +318,28 @@ export interface AppOptions {
  * - 其余 → retry（通用网络/超时/5xx）
  */
 export function classifyRetryKind(error: string): "retry" | "rate_limit" | "overloaded" {
-  const e = (error || "").toLowerCase();
-  if (/429|rate.?limit|quota|too many requests/.test(e)) return "rate_limit";
-  if (/529|overload|503|capacity/.test(e)) return "overloaded";
+  // 2026-09-06：改为**复用** inferErrorCode，不再自带一套正则。
+  //
+  // 原实现 `/429|rate.?limit|quota|too many requests/` 与 error-messages.ts 的关键词表
+  // 是两套平行判据，于是同一个错误在"提示条语气"和"错误面板标题"上会给出不同结论 ——
+  // 两个方向都实测错过：
+  //   · 猜不出：网关中文「当前分组上游负载已饱和」→ 落到 retry，于是 CM4 的
+  //     「用 /model 切换模型 / 查配额」建议**不出现**，而它恰恰是限流时最该给的建议；
+  //   · 猜错：`"耗时 4291ms 后失败"` 里的裸 `429` 命中 → 一个超时被说成"触发限流"。
+  // 裸子串那半边正是 errors.ts 里 hasBoundaryDigits 注释记的 2026-07-13 事故同形。
+  //
+  // 收敛到单一事实源后，往 inferErrorCode 里补一种措辞，提示条与面板同时受益。
+  // 映射只保留本组件需要的三档语气：限流 / 过载 / 其余。
+  const code = inferErrorCode(error || "");
+  if (code === "rate_limit") return "rate_limit";
+  if (code === "overloaded") return "overloaded";
+  // 用量上限（会话/周额度用尽）也按限流语气呈现：CM4 那句「换模型或查配额」
+  // 正是此时该给的动作，比通用「正在重试」有用。
+  // quota_exhausted 同理（原正则里的 `quota` 走的就是 rate_limit 语气）：本函数只在
+  // **确实正在重试**时被调用，此时若错误提到配额/额度，给「换模型 / 查配额」远比
+  // 通用「正在重试」有用。注意这只影响提示条语气，不影响错误面板的终态判定
+  // （那里由 isTransientErrorCode 按 code 决定，quota_exhausted 仍是终态、不会被自动清）。
+  if (code === "usage_limit_reached" || code === "quota_exhausted") return "rate_limit";
   return "retry";
 }
 
@@ -7493,7 +7514,10 @@ export class App {
                 { kind: "system" as const, text: fatalText },
               ];
               // 推入统一错误面板（常驻，用户手动关闭）
-              const fatalCode = inferErrorCode(event.message);
+              // 结构化 code 优先（2026-09-06）：event.errorCode 由 engine.ts 从
+              // LLMStreamError 的 statusCode/error.type 归一而来，是上游**明确给出**的；
+              // inferErrorCode 是关键词猜测，只作兜底。顺序反了就等于继续猜。
+              const fatalCode = event.errorCode ?? inferErrorCode(event.message);
               const fatalMsg = lookupErrorMessage(event.message, fatalCode);
               pushErrorPanel({
                 id: fatalCode || stableErrorId("fatal", event.message),
@@ -7911,7 +7935,13 @@ export class App {
             // 与 fatal_error 的处理不一致，导致这类真故障（含内部超时泄漏）用户在
             // 常驻面板里完全看不到，回神时无从排查。
             const rawMessage = err?.message ?? String(err);
-            const gapCode = inferErrorCode(rawMessage);
+            // 结构化 code 优先（2026-09-06）：这条 catch 同样会接到 LLMStreamError
+            // （流内 error 事件穿透到 onUserInput 的路径），它带着上游明确给出的
+            // statusCode/error.type。与 fatal_error 分支同口径，避免只修一边。
+            const gapCode =
+              err instanceof LLMStreamError
+                ? (codeFromStructured(err.statusCode, err.errorType) ?? inferErrorCode(rawMessage))
+                : inferErrorCode(rawMessage);
             const gapMsg = lookupErrorMessage(rawMessage, gapCode);
             pushErrorPanel({
               id: gapCode || stableErrorId("onuserinput-error", rawMessage),

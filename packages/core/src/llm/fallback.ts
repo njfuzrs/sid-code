@@ -1847,9 +1847,14 @@ export class ModelFallback {
     if (mode === "ask" && this.config.onFallbackDecision) {
       let decision: FallbackDecision;
       try {
+        // reason 带上真实根因（2026-09-06）：此前是常量 "主模型重试耗尽"，而这个
+        // 弹窗正是用户决定「等一等重试」还是「换模型」的地方 —— 限流(等)与配额耗尽
+        // (必须换)的正确动作相反，只说"重试耗尽"等于让用户抛硬币。
         decision = await this.config.onFallbackDecision({
           failedModel: params.model,
-          reason: "主模型重试耗尽",
+          reason: ctx?.lastRetryError
+            ? `${ctx.lastRetryReason ? `${ctx.lastRetryReason}: ` : ""}${ctx.lastRetryError}`
+            : "主模型重试耗尽",
           defaultFallbackModel: cfgFallbackModel || undefined,
           signal,
         });
@@ -1867,10 +1872,16 @@ export class ModelFallback {
       }
       if (decision.action === "abort") {
         log.warn("FALLBACK", "用户/钩子选择不切换，终止本轮");
+        // 2026-09-06：这条出口此前是**四条耗尽出口里唯一漏拼 rootCause 的**，
+        // 而它恰好是生产默认路径（fallbackSwitchMode 默认 "ask"，钩子返回 abort）。
+        // 实测轨迹 20260905-215535-664d3239：RetryTelemetry 逐条记着
+        // 「当前分组上游负载已饱和 / reopenReason: rate_limit」共 6 次重试，
+        // 而 TurnError 只留下这句无信息量的通用文案 —— 用户既看不到 429，
+        // 也无从判断"该等一会儿"还是"该换模型"。
         yield {
           type: "error",
           error: {
-            message: "主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。",
+            message: `主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。${rootCause}`,
           },
         };
         return;
