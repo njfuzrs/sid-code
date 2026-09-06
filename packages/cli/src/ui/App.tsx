@@ -53,6 +53,8 @@ import { deriveStreamingState } from "./derive-streaming-state.ts";
 import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { parseShellInput } from "./shell-input.ts";
+// P0-1/P0-2：流式中「直送 vs 入队」的唯一判据，让 immediate 字段真正生效。
+import { canRunDuringStreaming } from "../command/streaming-gate.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import {
   messagesToHistoryItems,
@@ -405,8 +407,22 @@ export interface TUIState {
   copyModeEnabled: boolean;
   /** Vim 输入模式开关（/vim 切换）。状态栏显示 ·v 标记，运行时由 setVimMode 推送。 */
   vimMode: boolean;
-  /** 所有已注册命令（补全用） */
-  commands: Array<{ name: string; aliases: string[]; description: string; requiresArgs?: boolean }>;
+  /**
+   * 所有已注册命令（补全用 + 流式插队判定用）。
+   *
+   * P0-1/P0-2：`immediate` 与 `type` 不是补全需要的字段，是 handleSubmit 判断
+   * 「流式中这条斜杠命令能不能直送」所需 —— 详见 `canRunDuringStreaming`。
+   * 放在这份轻量结构里而不是现场去 `unifiedRegistry.getCommands()`：
+   * 提交路径是同步的，而 getCommands 是 async，在那里 await 会让判定晚于渲染。
+   */
+  commands: Array<{
+    name: string;
+    aliases: string[];
+    description: string;
+    requiresArgs?: boolean;
+    immediate?: boolean;
+    type?: string;
+  }>;
   /** 当前工作目录（@ 文件补全用） */
   cwd: string;
   /**
@@ -1042,9 +1058,14 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       // 用户提交输入 → 取消任何待确认的 Ctrl+C 退出意图（对标 cc：继续操作即视为放弃退出）。
       cancelCtrlCConfirm();
 
-      // 流式进行中：斜杠命令仍直送（/exit、/clear 等需即时生效），普通输入入队接续。
+      // 流式进行中：只有**显式标了 immediate** 的斜杠命令才直送，其余（含普通输入）入队接续。
+      //
+      // P0-1/P0-2：这里原本写的是 `busy && !text.startsWith("/")`，那个否定条件让所有
+      // 斜杠命令一律穿透直送 —— 包括 /compact、/btw、/loop 这三条刻意**不**标 immediate 的。
+      // /compact 与流式写入构成读-改-写竞争（读快照 → 调模型数秒 → 写回），
+      // 症状是「模型说过的话凭空消失」。判据下沉到 canRunDuringStreaming，见那里的注释。
       const busy = streamingStateRef.current !== StreamingState.Idle;
-      if (busy && !text.startsWith("/")) {
+      if (busy && !canRunDuringStreaming(text, state.commands)) {
         log.info("UI:INPUT", `流式中，输入入队等待接续（${priority}）`);
         enqueue(text, priority);
         return;
@@ -1059,7 +1080,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         isSubmittingRef.current = false;
       }
     },
-    [dispatchInput, enqueue, cancelCtrlCConfirm],
+    [dispatchInput, enqueue, cancelCtrlCConfirm, state.commands],
   );
 
   const isEmpty = state.historyItems.length === 0 && !state.isStreaming;

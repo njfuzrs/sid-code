@@ -55,6 +55,10 @@ export function looksLikeCommand(name: string): boolean {
  * 用于区分 /var/log/syslog 这类路径与命令
  */
 export async function isFilePath(name: string): Promise<boolean> {
+  // 空名直接否决：否则 stat("/") 必然成功，于是"没有命令名"会被判成"根目录路径"。
+  // 生产路径上 parseSlashCommand 已先拦掉空名（`/` 单独一个字符返回 null），
+  // 所以这不是活缺陷；但把判定写成对空输入 fail-closed，比依赖"上游永远会先拦"更稳。
+  if (!name) return false;
   try {
     const fs = await import("node:fs/promises");
     await fs.stat(`/${name}`);

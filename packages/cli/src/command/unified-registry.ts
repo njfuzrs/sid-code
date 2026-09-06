@@ -51,8 +51,60 @@ export class UnifiedCommandRegistry {
    */
   private pluginCommands: UnifiedCommand[] = [];
 
+  /** 命令集合变更订阅者（P1-2，见 onCommandsChanged） */
+  private changeListeners: Array<() => void> = [];
+
   constructor(loadOptions: UnifiedRegistryLoadOptions = {}) {
     this.loadOptions = loadOptions;
+  }
+
+  /**
+   * 订阅命令集合变更（P1-2）。
+   *
+   * 动机：补全菜单与 /help 读的是 `TUIState.commands`，那份 state 修复前
+   * **全仓只被赋值一次**（启动时 await 一次 loadCommandList），此后没有任何路径会更新它。
+   * 于是注册表这边的动态来源全部在补全里失效：MCP 中途连上/断开、`/reload-plugins`
+   * 热更新、`/skills` 禁用某 skill —— `getCommands` 都会正确反映，**补全菜单看不到**。
+   * 执行路径是好的（每次执行都重新 getCommands），所以症状是「盲敲全名能跑，
+   * 但补全里找不到」，表现为"这个功能好像不支持"而不是"有个 bug"。
+   *
+   * 为什么做成广播而不是"在每个变更点各自记得刷一次"：后者靠人记，第五个变更点
+   * 出现时会漏，而漏掉不会有任何东西报错（补全少一条命令没人会红）。让**唯一持有
+   * 变更事实的一方**主动广播，消费侧订阅即可 —— 与 SkillManager.onSkillsChanged 同构。
+   *
+   * @returns 取消订阅函数
+   */
+  onCommandsChanged(listener: () => void): () => void {
+    this.changeListeners.push(listener);
+    return () => {
+      this.changeListeners = this.changeListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /**
+   * 外部来源发生变更时手动广播（P1-2）。
+   *
+   * 用于**不进本注册表缓存**的动态来源：MCP prompt 命令由 getCommands 的
+   * `mcpCommands` 参数每次现场传入（见 mcp-prompt-commands.ts），所以它变了
+   * 不需要清缓存，只需把"变了"这件事转发给订阅方。
+   * 由 cli.ts 接到 `MCPManager.onPromptsChanged` 上。
+   */
+  notifyExternalChange(): void {
+    this.notifyCommandsChanged();
+  }
+
+  /** 广播命令集合变更（监听器异常不影响其他监听器与主流程） */
+  private notifyCommandsChanged(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        getLogger().debug(
+          "COMMAND",
+          `命令变更监听器异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   /**
@@ -136,6 +188,9 @@ export class UnifiedCommandRegistry {
   async loadPlugins(): Promise<number> {
     this.pluginCommands = await loadPluginCommands();
     getLogger().info("COMMAND", `插件命令加载完成: ${this.pluginCommands.length} 个`);
+    // P1-2：启动期也广播 —— 首屏 state 是在 loadPlugins 之后 await 填入的，
+    // 这次广播通常没有订阅者，但不能靠"启动顺序恰好如此"来保证正确性。
+    this.notifyCommandsChanged();
     return this.pluginCommands.length;
   }
 
@@ -149,6 +204,8 @@ export class UnifiedCommandRegistry {
   async reloadPlugins(): Promise<number> {
     this.pluginCommands = await loadPluginCommands();
     getLogger().info("COMMAND", `插件命令已重新加载: ${this.pluginCommands.length} 个`);
+    // P1-2：广播给补全菜单等消费方，否则 /reload-plugins 装上的新命令在补全里看不见。
+    this.notifyCommandsChanged();
     return this.pluginCommands.length;
   }
 
@@ -162,6 +219,8 @@ export class UnifiedCommandRegistry {
   /** 清除缓存（当命令来源变化时调用，如重新加载扩展） */
   clearCache(): void {
     this.cache.clear();
+    // P1-2：清缓存本身就意味着"命令集合可能变了"，一并广播。
+    this.notifyCommandsChanged();
   }
 
   /**
@@ -174,6 +233,7 @@ export class UnifiedCommandRegistry {
    */
   invalidateSkillCommands(): void {
     this.cache.clear();
+    this.notifyCommandsChanged();
   }
 
   /**
@@ -187,6 +247,7 @@ export class UnifiedCommandRegistry {
   setDisabledSkills(names: string[]): void {
     this.loadOptions.disabledSkills = names;
     this.cache.clear();
+    this.notifyCommandsChanged();
   }
 
   /**
