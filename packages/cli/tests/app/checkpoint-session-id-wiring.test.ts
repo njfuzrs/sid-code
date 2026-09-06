@@ -25,9 +25,38 @@
  * 但门禁不该依赖这一点保持为真。
  */
 
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+/**
+ * 落盘隔离。本文件是**纯静态扫描**（只 readFileSync app.ts 的文本，不 import 也不调用
+ * 任何落盘导出），所以它自己一个字节都不写 —— 但 `no-real-path-writes.test.ts` 那道
+ * 防复发哨兵按 `\bgetCheckpointManager\b` 扫**全文**，而本文件的断言字符串里必须出现
+ * 这个符号（那正是它要锁的东西），于是被判为「用了构造即落盘的导出」。
+ *
+ * 这里选择**满足哨兵**而不是去放宽哨兵的判据：那道门禁的宽口径是刻意的
+ * （见其注释「宽判据 + preload 兜底」），为了一个假阳性去收窄它，
+ * 换来的是所有真阳性的漏检面变大。而这条重定向本身也不是纯装饰 ——
+ * 将来若有人在此文件补一条真会建 CheckpointManager 的行为层用例，隔离已经就位。
+ *
+ * 存/恢复原值而非无条件 delete：bun test 同进程跑多文件，delete 会把 preload
+ * 的兜底一起抹掉（CONTRIBUTING.md 测试约定第 1 条）。
+ */
+const prevConfigDir = process.env.SID_CONFIG_DIR;
+let testHome: string;
+
+beforeAll(() => {
+  testHome = mkdtempSync(join(tmpdir(), "sid-cp-wiring-home-"));
+  process.env.SID_CONFIG_DIR = testHome;
+});
+
+afterAll(() => {
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 const appSrc = readFileSync(join(import.meta.dir, "..", "..", "src", "app.ts"), "utf-8");
 
