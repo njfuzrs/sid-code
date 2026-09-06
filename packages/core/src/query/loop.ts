@@ -1673,6 +1673,35 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       }
 
+      // ─── P0-3：语义召回注入（`SID_CODE_MEMORY_RECALL=1` 才有 dep 注入）───
+      //
+      // 只在**每条用户消息的首轮**召回一次（turnCount===1），不是每轮：
+      // 召回要花一次 sideQuery，而同一条用户消息的后续轮次查询意图没变，
+      // 每轮都召回等于把 token 成本乘上轮数，却拿不到新信息（北极星「更省」）。
+      //
+      // 走 reminderParts（user 消息尾部）而不是 system prompt 的 recalledMemories 字段：
+      // 召回结果随每条用户消息变化，塞静态前缀会击穿 prompt cache。
+      //
+      // 失败不阻断：召回是增强项，`findRelevantMemories` 内部已把 sideQuery 失败
+      // 降级为返回空数组，这里再兜一层异常（与 IDE 增量同处理方式）。
+      if (state.turnCount === 1 && deps.drainRecalledMemories) {
+        try {
+          const recallQuery = extractLastUserInput(ctxMgr);
+          if (recallQuery.trim()) {
+            const recalled = await deps.drainRecalledMemories(recallQuery);
+            if (recalled) {
+              reminderParts.push(recalled);
+              log.info("QUERY_LOOP", "注入语义召回记忆（SID_CODE_MEMORY_RECALL）");
+            }
+          }
+        } catch (e) {
+          log.warn(
+            "QUERY_LOOP",
+            `语义召回注入异常（忽略）: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+
       // ─── IDE 上下文增量注入（审计第 22 条，与上面 MCP instructions 同一模式）───
       // IDE 选区 / @提及 原先只在 buildInitialSystemPrompt 采集一次，而 IDE 连接是后台异步的
       // （轮询至 30s 超时）→ 启动瞬间必然未连上，两处 rebuildSystemPrompt 也不采集，
