@@ -879,4 +879,14 @@ export type QueryEngineEvent =
   // engine.ts 的 for-await，跳过 done 收尾。现统一封装为此事件走 yield 通道，
   // 让 done 收尾可达、app 层把具体错误持久化展示（对标 §3.3）。
   // recoverable=false 表示本轮已无法继续（与用户 ESC 主动中断区分）。
-  | { kind: "fatal_error"; message: string; stack?: string; recoverable: boolean };
+  // errorCode（2026-09-06）：底层若抛的是 LLMStreamError（流内 error 事件），
+  // 把它的结构化 statusCode/type 归一成分类码一并带上。app.ts 优先用它查文案表，
+  // 只有缺失时才回落 inferErrorCode 的文本猜测——猜错与猜不出都实测发生过
+  // （见 llm/errors.ts 的 LLMStreamError 注释）。
+  | {
+      kind: "fatal_error";
+      message: string;
+      stack?: string;
+      recoverable: boolean;
+      errorCode?: string;
+    };

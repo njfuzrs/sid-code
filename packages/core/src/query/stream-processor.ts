@@ -18,7 +18,7 @@ import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
-import { RequestAbortedError } from "../llm/errors.ts";
+import { RequestAbortedError, LLMStreamError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
@@ -444,7 +444,16 @@ export async function processStream(
           break;
 
         case "error":
-          throw new Error(`LLM 错误: ${event.error.message}`);
+          // 结构化字段随异常一路带到 UI（2026-09-06）：此前是 `new Error(...)`，
+          // `event.error` 上的 statusCode/type/streamLevel 在抛出的那一刻全部丢弃，
+          // TUI 只能从文本里猜状态码（猜错与猜不出都实测发生过，见 LLMStreamError 注释）。
+          // message 与旧行为逐字节一致，只读 .message 的调用方不受影响。
+          throw new LLMStreamError(
+            `LLM 错误: ${event.error.message}`,
+            event.error.statusCode,
+            event.error.type,
+            event.error.streamLevel,
+          );
 
         case "system_api_error":
           // 重试进度提示统一由 RetryStatus 组件承载（app.ts onRetry/onFallback 回调 →

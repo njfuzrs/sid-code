@@ -27,6 +27,28 @@ export function remainingSeconds(retryAtMs: number, nowMs: number): number {
   return Math.max(0, Math.ceil((retryAtMs - nowMs) / 1000));
 }
 
+/**
+ * 单行摘要上限（字符数）。超出即尾部省略。
+ *
+ * 为什么要截断而不是 wrap="wrap"：这条提示挂在动态区（流式区上方），每 500ms 重渲一次。
+ * 网关错误文本常带 request id，实测长度 80+ 字符，wrap 后会占 2-3 行并随倒计时抖动 ——
+ * 而重试期间用户真正需要的只是"哪一类错误"。完整原文由错误面板（ErrorPanel）承载。
+ */
+export const RETRY_ERROR_MAX_CHARS = 96;
+
+/**
+ * 把原始错误文本压成单行摘要：折叠空白 + 超长尾部省略。
+ *
+ * 抽成导出纯函数是为了让截断边界可被直接测试（见 §"关键计算…纯函数直接打印验证"），
+ * 而不是去断言渲染树。
+ */
+export function summarizeRetryError(raw: string, maxChars = RETRY_ERROR_MAX_CHARS): string {
+  const oneLine = raw.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= maxChars) return oneLine;
+  // 留一个字符给省略号，保证结果恰好不超过 maxChars。
+  return `${oneLine.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
 /** 各类重试的主提示文案。 */
 function headline(status: RetryStatusInfo, secs: number): string {
   switch (status.kind) {
@@ -86,6 +108,17 @@ export const RetryStatus: React.FC<RetryStatusProps> = ({ status, nowMs }) => {
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text color={color}>{headline(status, secs)}</Text>
+      {/*
+        真实错误文本（2026-09-06 修）：`RetryStatusInfo.error` 此前**从未被读取** ——
+        app.ts 的 onRetry 一直在往里写（`error` 字段），组件里唯一形似的匹配是
+        `theme.status.error`（一个颜色），于是这份数据是死接线。
+        后果：重试期间用户只看到「请求失败（第 2 次重试）」，而网关明明回了
+        「当前分组上游负载已饱和」——是该等一等还是该换模型，无从判断。
+        单行截断见 summarizeRetryError；完整原文在错误面板里。
+      */}
+      {status.error ? (
+        <Text color={theme.text.secondary}>{summarizeRetryError(status.error)}</Text>
+      ) : null}
       {status.kind === "rate_limit" ? (
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>

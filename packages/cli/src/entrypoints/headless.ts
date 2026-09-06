@@ -30,6 +30,7 @@ import { resetOnStreamRestart, recordStreamRestart } from "@sid-code/core/llm/st
 import { getLogger } from "@sid-code/core/debug/index.ts";
 import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
 import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
+import { LLMStreamError } from "@sid-code/core/llm/errors.ts";
 
 // ============================================================
 // 主线
@@ -461,7 +462,15 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
         break;
 
       case "error":
-        throw new Error(`LLM 错误: ${event.error.message}`);
+        // 与 query/stream-processor.ts 同口径（2026-09-06）：结构化字段随异常带出，
+        // 不在抛出点丢弃。无头模式虽无 TUI 面板，但 --output-format json 的错误体
+        // 同样受益，且两条路径保持一致避免下次只改一边。
+        throw new LLMStreamError(
+          `LLM 错误: ${event.error.message}`,
+          event.error.statusCode,
+          event.error.type,
+          event.error.streamLevel,
+        );
     }
   }
 

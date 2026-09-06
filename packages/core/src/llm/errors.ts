@@ -91,6 +91,36 @@ export class StreamLevelError extends RetryableError {
 }
 
 /** 用户或系统主动中断请求 */
+/**
+ * 流内 `error` 事件抛到上层时的结构化载体（2026-09-06）。
+ *
+ * 根因：`query/stream-processor.ts` 与 `entrypoints/headless.ts` 遇到流内 error 事件时
+ * 都写 `throw new Error(\`LLM 错误: ${event.error.message}\`)` —— `event.error` 上的
+ * `statusCode` / `type` / `streamLevel` **在抛的那一刻全部丢弃**。而 TUI 侧
+ * （app.ts 的 pushErrorPanel）只能拿到一个字符串，于是被迫用 `inferErrorCode` 从
+ * 文本里"猜"状态码。子代理路径（`agent/stream-processor.ts`）反而是对的：它用
+ * `errorMeta` 把三个字段原样带出。同一份数据，两条路径一条留一条丢。
+ *
+ * 猜的代价是真实的：网关文本「当前分组上游负载已饱和」既无 429 也无 "rate limit"，
+ * 猜不出来就退化成通用「运行错误」（轨迹 20260905-215535-664d3239）；反向还会猜错 ——
+ * `"gateway trace 5024"` 里的 `502` 曾被当成 server_error。
+ *
+ * 所以这里把结构化字段挂在 Error 上一路带到 UI：**有结构化 code 时优先用它**，
+ * 文本推断只作兜底。`message` 保持与旧行为完全一致（含 `LLM 错误: ` 前缀），
+ * 任何只读 `.message` 的既有调用方不受影响。
+ */
+export class LLMStreamError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly errorType?: string,
+    public readonly streamLevel?: boolean,
+  ) {
+    super(message);
+    this.name = "LLMStreamError";
+  }
+}
+
 export class RequestAbortedError extends Error {
   /**
    * 触发中断的 abort reason（若可得）。用于下游结构性区分"内部超时自愈中断"
@@ -546,8 +576,13 @@ export function toAbortError(error?: unknown): RequestAbortedError {
  *
  * 数字边界匹配保留 "HTTP 404" "code=404" "(404)" 等合法场景，排除被更长数字
  * 串"吞掉"的巧合命中（如 "1340438" 里的 "404"）。
+ *
+ * 导出理由（2026-09-06）：`error-messages.ts` 的 `inferErrorCode` 原先用裸
+ * `.includes("400"/"429"/"502")` 判状态码，踩的是同一个坑的另一半 —— 实测
+ * `"gateway trace 5024 内部错误"` → `server_error`、`"耗时 4001ms 后失败"` →
+ * `invalid_request`。两处判据必须共用同一个实现，各写一份就会像这次一样只修一边。
  */
-function hasBoundaryDigits(msg: string, digits: string): boolean {
+export function hasBoundaryDigits(msg: string, digits: string): boolean {
   return new RegExp(`(?<!\\d)${digits}(?!\\d)`).test(msg);
 }
 

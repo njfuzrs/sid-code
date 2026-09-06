@@ -24,7 +24,8 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import { queryLoop } from "./loop.ts";
-import { isAbortError } from "../llm/errors.ts";
+import { isAbortError, LLMStreamError } from "../llm/errors.ts";
+import { codeFromStructured } from "../llm/error-messages.ts";
 import type { QueryDeps, QueryEngineEvent } from "./types.ts";
 // P0-1 漏斗 5：错误分型埋点。分类走既有 classifyAPIError（动态 import，见调用点注释）。
 import { logError } from "../analytics/events.ts";
@@ -491,11 +492,21 @@ export class QueryEngine {
         });
       }
 
+      // errorCode（2026-09-06）：底层抛的若是 LLMStreamError，它带着上游明确给出的
+      // statusCode / error.type —— 归一成分类码随事件送到 app.ts，让面板不必再从
+      // 文本里猜（网关中文限流文案就是猜不出来的那一类，见 LLMStreamError 注释）。
+      // 非 LLMStreamError（工具异常等）不带此字段，app.ts 回落 inferErrorCode，行为不变。
+      const structuredCode =
+        err instanceof LLMStreamError
+          ? codeFromStructured(err.statusCode, err.errorType)
+          : undefined;
+
       yield {
         kind: "fatal_error",
         message: e?.message ?? String(err),
         stack: e?.stack,
         recoverable: false,
+        errorCode: structuredCode,
       };
       return;
     }
