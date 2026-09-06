@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { join } from "path";
+import { join, dirname } from "path";
 import { mkdirSync, rmSync, existsSync, writeFileSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { SessionStore } from "@sid-code/core/session/store.ts";
@@ -294,5 +294,155 @@ describe("D3/D4：清理的保护边界", () => {
     });
 
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+/**
+ * D7 / D8：**会话被删除时，按会话 id 分文件/分目录的「兄弟存储」必须一起回收。**
+ *
+ * 缺陷形态：`deleteSessionArtifacts()` 清了 jsonl 本体 / summaries / sidechain / trajectories
+ * 四样，漏了 `checkpoints/<id>/`（实测 27/68 孤儿，40%）与 `progress/<id>.md`（114/196，58%）。
+ *
+ * 为什么别的路径兜不住：三条既有清理路径（会话清理 / CheckpointManager.cleanupOldSessions /
+ * startup-housekeeping）**没有一条以「会话文件已不存在」为判据**，全是 mtime 超期或总量 LRU ——
+ * 所以「够新的孤儿」永远留着，孤儿是必然结果不是偶发。
+ *
+ * 每条断言都配了反向自证（另一个会话的同类存储必须活着），否则「helper 把整个
+ * checkpoints/ 根目录删了」这种更糟的实现也能让断言变绿。
+ */
+describe("D7/D8：兄弟存储的对称清理", () => {
+  let testDir: string;
+  let origHome: string | undefined;
+  let origConfigDir: string | undefined;
+
+  beforeEach(() => {
+    testDir = join(
+      tmpdir(),
+      `sid-cleanup-sib-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(join(testDir, ".sid-code", "sessions"), { recursive: true });
+    origHome = process.env.HOME;
+    process.env.HOME = testDir;
+    origConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(testDir, ".sid-code");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = origConfigDir;
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true });
+  });
+
+  const OLD_TS = "2000-01-01T00:00:00.000Z";
+
+  function writeOldSession(id: string): string {
+    const file = join(sidPaths.sessions(), `${id}.jsonl`);
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: "session_start",
+          sessionId: id,
+          model: "m",
+          provider: "p",
+          cwd: "/c",
+          timestamp: OLD_TS,
+        }),
+        JSON.stringify({
+          type: "user_message",
+          message: { role: "user", content: [{ type: "text", text: "历史内容" }] },
+          timestamp: OLD_TS,
+        }),
+      ].join("\n") + "\n",
+    );
+    return file;
+  }
+
+  /** 造 checkpoints/<id>/index.json —— 真实结构里它内联着改动前的用户源码全文。 */
+  function writeCheckpointDir(id: string): string {
+    const dir = sidPaths.checkpoints(id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.json"),
+      JSON.stringify({ sessionId: id, nextId: 2, snapshots: [{ id: "cp-1" }] }),
+    );
+    return dir;
+  }
+
+  /** 造 progress/<id>.md（路径口径必须与写入端一致，见 progressFilePath）。 */
+  async function writeProgressFile(id: string): Promise<string> {
+    const { progressFilePath } = await import("@sid-code/core/query/work-log.ts");
+    const file = progressFilePath(id);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "# 进度\n- 已完成: x\n");
+    return file;
+  }
+
+  test("D7/D8：自动清理删除会话时，连带删除 checkpoints/<id>/ 与 progress/<id>.md", async () => {
+    const oldFile = writeOldSession("sib-old");
+    const oldCp = writeCheckpointDir("sib-old");
+    const oldProgress = await writeProgressFile("sib-old");
+
+    // 反向自证用：一个**不该被删**的会话（受 protectedSessionIds 保护），它的兄弟存储必须活着。
+    // 缺了这一组，「helper 把 checkpoints/ 整个根目录 rm 掉」也能让上面三条断言全绿。
+    writeOldSession("sib-keep");
+    const keepCp = writeCheckpointDir("sib-keep");
+    const keepProgress = await writeProgressFile("sib-keep");
+
+    expect(existsSync(oldCp)).toBe(true);
+    expect(existsSync(oldProgress)).toBe(true);
+
+    const result = await cleanupExpiredSessions(
+      {} as any,
+      { enabled: true, maxAge: "1h", minRetention: "1h", maxCount: 1 },
+      undefined,
+      ["sib-keep"],
+    );
+
+    // 会话本体被删 → 兄弟存储必须一起走
+    expect(existsSync(oldFile)).toBe(false);
+    expect(existsSync(oldCp)).toBe(false);
+    expect(existsSync(oldProgress)).toBe(false);
+
+    // 反向自证：没被删的会话，兄弟存储原样保留
+    expect(existsSync(keepCp)).toBe(true);
+    expect(existsSync(keepProgress)).toBe(true);
+    expect(result.deletedIds).toContain("sib-old");
+  });
+
+  test("D7/D8：兄弟存储不存在时清理不报错（best-effort，不阻断删会话）", async () => {
+    const file = writeOldSession("sib-none");
+
+    const result = await cleanupExpiredSessions({} as any, {
+      enabled: true,
+      maxAge: "1h",
+      minRetention: "1h",
+      maxCount: 1,
+    });
+
+    expect(existsSync(file)).toBe(false);
+    expect(result.failed).toBe(0);
+  });
+
+  /**
+   * `--delete-session` 是删除会话的**第二个入口**，此前它只 unlink jsonl 本体。
+   * 两个入口各自罗列「要删什么」，同一条缺陷就会存在两份 —— 所以它们共用
+   * `deleteSessionSiblingStores()`，这条测试锁住那次接线。
+   */
+  test("D7/D8：deleteSessionSiblingStores 只删指定 id，不波及其他会话", async () => {
+    const targetCp = writeCheckpointDir("target-id");
+    const targetProgress = await writeProgressFile("target-id");
+    const otherCp = writeCheckpointDir("other-id");
+    const otherProgress = await writeProgressFile("other-id");
+
+    const { deleteSessionSiblingStores } = await import("@sid-code/core/session/cleanup.ts");
+    await deleteSessionSiblingStores("target-id");
+
+    expect(existsSync(targetCp)).toBe(false);
+    expect(existsSync(targetProgress)).toBe(false);
+    // 反向自证：同级目录里别的会话不受影响（否则就是把根目录删了）
+    expect(existsSync(otherCp)).toBe(true);
+    expect(existsSync(otherProgress)).toBe(true);
   });
 });

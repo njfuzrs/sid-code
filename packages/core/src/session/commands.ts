@@ -53,6 +53,11 @@ export async function handleDeleteSession(sessionId: string): Promise<void> {
 
     if (existsSync(sessionPath)) {
       unlinkSync(sessionPath);
+      // D7/D8：`--delete-session` 是删除会话的**第二个入口**，此前它只 unlink jsonl 本体，
+      // 兄弟存储（checkpoints/<id>/、progress/<id>.md）原地留成孤儿。走与自动清理同一个
+      // helper，而不是在这里再抄一遍要删什么——抄一遍就意味着下次新增同类存储会再漏一次。
+      const { deleteSessionSiblingStores } = await import("./cleanup.ts");
+      await deleteSessionSiblingStores(session.id);
       console.log(`已删除会话: ${session.id} (${session.displayName})`);
     } else {
       console.error(`错误: 会话文件不存在: ${session.fileName}`);
