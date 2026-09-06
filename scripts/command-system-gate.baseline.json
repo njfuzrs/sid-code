@@ -1,5 +1,5 @@
 {
   "deadExports": 37,
-  "legacyBuiltins": 35,
-  "note": "2026-09-05 首次接入（命令系统七处缺陷修复）。37 条死导出是存量，不是本次引入——本次新增的 streaming-gate.ts 里两个无外部消费者的符号已改为不导出，而非加进豁免名单。棘轮只允许收紧：清理存量后跑 --update-baseline。legacyBuiltins=35 对应 builtins.ts 的旧体系命令数（新体系已 30 个目录），只允许减少。"
+  "legacyBuiltins": 36,
+  "note": "2026-09-05 首次接入（命令系统七处缺陷修复）。37 条死导出是存量，不是本次引入——本次新增的 streaming-gate.ts 里两个无外部消费者的符号已改为不导出，而非加进豁免名单。棘轮只允许收紧：清理存量后跑 --update-baseline。legacyBuiltins=36 对应 builtins.ts 的旧体系命令数（新体系已 30 个目录），只允许减少。⚠️ 这个数字从 35 改成 36 过一次，理由必须留痕：接入时按当时 main 写的是 35，随后 PR #20（/lsp 命令，a07c34e9）往 builtins.ts 加了 LSPCommand，实测变 36 —— 门禁在自己的 PR 上当场红。这不是「加了死代码顺手放宽额度」（脚本第 206 行禁的正是那件事）：LSPCommand 合入时这道门禁还不存在，棘轮只能从接入那一刻起约束新增，接入时刻的实测值就是它的存量起点。判据：本 PR 全程没碰过 builtins.ts（git show --stat 906c40ce -- builtins.ts 为空）。往后再想调高这个数，先用同样的口径举证「劣化不是本次引入」，举不出来就该去接线或删代码，而不是改这里。"
 }
