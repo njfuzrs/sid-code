@@ -4,10 +4,10 @@
  */
 
 import { join } from "path";
-import { existsSync, unlinkSync, rmSync } from "fs";
+import { existsSync, unlinkSync, rmSync, statSync } from "fs";
 import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
-import { getAllSessionFiles } from "./utils.ts";
+import { getAllSessionFiles, isDeletableExcludeReason } from "./utils.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 
@@ -72,6 +72,7 @@ export async function identifySessionsToDelete(
   allFiles: SessionFileEntry[],
   retentionConfig: SessionRetentionSettings,
   currentSessionId?: string,
+  protectedSessionIds?: readonly string[],
 ): Promise<SessionFileEntry[]> {
   const toDelete: SessionFileEntry[] = [];
   const now = Date.now();
@@ -111,6 +112,26 @@ export async function identifySessionsToDelete(
       continue;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // D3：跳过**被恢复的会话**。
+    //
+    // 为什么 currentSessionId 保护不到它：`config.sessionId` 恒是本进程新生成的 id
+    // （config.ts 两处赋值都是 generateSessionId()），resume 流程刻意不改写它
+    // （trajectory / PID / crash marker 仍用新 id 避免跨进程冲突，只让
+    // SessionStore.currentFile 指向旧 jsonl）。于是保护机制看的是「本进程新 id」，
+    // 而那个 id 对应的文件此刻还不存在 —— 保护它毫无意义；真正需要保护的
+    // 「被恢复会话的旧 id」不在名单里。
+    //
+    // 后果是真实的：启动时自动清理是 fire-and-forget（不 await），与 await 的
+    // restoreSession 并发跑，相对时序完全由事件循环决定。被恢复的会话若落在淘汰名单里
+    // （实测本机 51 个文件 > maxCount 50，最旧会话 16 天已超 minRetention=1d），
+    // 会在恢复读取的同时被 unlinkSync —— 删在读之前则用户历史永久消失，
+    // 删在读之后则续写走「无 jsonl 新建续写文件」兜底，历史碎片成两个文件。
+    // ─────────────────────────────────────────────────────────────
+    if (protectedSessionIds && protectedSessionIds.includes(session.id)) {
+      continue;
+    }
+
     // 跳过最小保留时间内的会话
     if (minRetentionDate && lastUpdated > minRetentionDate) {
       continue;
@@ -129,9 +150,61 @@ export async function identifySessionsToDelete(
     }
   }
 
-  // 添加损坏文件
-  const corruptedFiles = allFiles.filter((entry) => entry.sessionInfo === null);
-  toDelete.push(...corruptedFiles);
+  // ─────────────────────────────────────────────────────────────
+  // D4：损坏文件此前走一条**完全没有保护的旁路** ——
+  // `filter(sessionInfo === null)` 后直接 push，绕过 currentSessionId / minRetention /
+  // maxAge / maxCount 全部条件。两个独立的问题叠在一起：
+  //
+  //   1. **判损面比名字宽得多**：`sessionInfo: null` 有 6 种成因，其中「空会话」
+  //      「子代理会话」明确不是损坏，「读文件抛异常」可能是瞬时故障（并发写入 /
+  //      NFS 抖动）。一次读失败就永久删用户数据，代价与成因严重不匹配。
+  //      → 现在只删 isDeletableExcludeReason 白名单内的成因（missing-fields / parse-error）。
+  //   2. **连真损坏的文件也不该绕过 minRetention**：minRetention 是防误删的最后兜底，
+  //      而「刚写到一半的当前会话」被读到半行时恰好呈现为损坏。
+  //      → 现在真损坏文件同样要过 minRetention 与 currentSessionId。
+  //
+  // 与 D3 叠加时这一条尤其重要：清理与恢复并发读同一个文件可能读到半行 →
+  // 判成损坏 → 旧逻辑无条件删除一个**完全健康**的会话。
+  // ─────────────────────────────────────────────────────────────
+  const log = getLogger();
+  for (const entry of allFiles) {
+    if (entry.sessionInfo !== null) continue;
+
+    if (!isDeletableExcludeReason(entry.excludeReason)) {
+      log.debug(
+        "CLEANUP",
+        `跳过非损坏的排除项（${entry.excludeReason ?? "unknown"}）: ${entry.fileName}`,
+      );
+      continue;
+    }
+
+    // 损坏文件解析不出 id，无法与 currentSessionId 比对 id；改用文件名匹配
+    // （会话文件名恒为 `<id>.jsonl`，见 store.ts 落盘路径），保护正在写入的当前会话。
+    const nameGuards = [currentSessionId, ...(protectedSessionIds ?? [])].filter(
+      (id): id is string => !!id,
+    );
+    if (nameGuards.some((id) => entry.fileName.startsWith(id))) {
+      log.debug("CLEANUP", `跳过受保护会话的损坏判定: ${entry.fileName}`);
+      continue;
+    }
+
+    // minRetention 兜底：损坏文件同样受最小保留期保护。解析不出 lastUpdated，
+    // 退回文件 mtime —— 这正是「刚被写坏/正在被写」的最好判据。
+    if (minRetentionDate !== null) {
+      try {
+        const mtime = statSync(join(entry.dirPath, entry.fileName)).mtimeMs;
+        if (mtime > minRetentionDate) {
+          log.debug("CLEANUP", `跳过 minRetention 内的损坏文件: ${entry.fileName}`);
+          continue;
+        }
+      } catch {
+        // 连 stat 都失败 → 无法证明它过了最小保留期 → 保守不删。
+        continue;
+      }
+    }
+
+    toDelete.push(entry);
+  }
 
   return toDelete;
 }
@@ -204,6 +277,7 @@ export async function cleanupExpiredSessions(
   config: Config,
   retentionConfig: SessionRetentionSettings,
   currentSessionId?: string,
+  protectedSessionIds?: readonly string[],
 ): Promise<CleanupResult> {
   const log = getLogger();
 
@@ -238,7 +312,12 @@ export async function cleanupExpiredSessions(
   const scanned = allFiles.length;
 
   // 识别待删除会话
-  const toDelete = await identifySessionsToDelete(allFiles, retentionConfig, currentSessionId);
+  const toDelete = await identifySessionsToDelete(
+    allFiles,
+    retentionConfig,
+    currentSessionId,
+    protectedSessionIds,
+  );
 
   const result: CleanupResult = {
     scanned,

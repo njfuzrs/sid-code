@@ -131,7 +131,55 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
     expect(checkMessageHistoryIntegrity(restored).dangling.length).toBe(0);
   });
 
-  test("路径 2（>20 条有摘要）：恢复后含恢复提示（buildResumeMessage）", async () => {
+  /**
+   * D1 回归：**恢复不再按条数丢历史**。
+   *
+   * 这是用户报告「恢复后 TUI 显示不全」的确切位置。旧实现对任何 >20 条的会话，
+   * 在无摘要时砍到最近 15 条且无任何补偿（实测本机 36/51 个会话命中，丢弃 78.1%，
+   * 最极端的 406 条只恢复 15 条）。
+   *
+   * 判据刻意用「恢复后条数 ≥ 原始条数」而不是「> 15」：
+   * 后者在旧实现下只要把常数从 15 改成 16 就能变绿，测不到真正的语义
+   * （「装得下就必须全带」）。50 条小消息在 1M 窗口下远未触及预算，
+   * 所以正确行为是**一条都不丢**。
+   */
+  test("D1：装得下的长会话（50 条）必须全量恢复，不按条数截断", async () => {
+    const app = makeApp();
+    const messages: Message[] = [];
+    for (let i = 0; i < 25; i++) {
+      messages.push(userMsg(`问题${i}`));
+      messages.push(asstMsg(`回答${i}`));
+    }
+    const data: SessionData = {
+      id: "long-nosummary-full",
+      messages,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as unknown as SessionData;
+
+    await app.restoreSession(data);
+    const restored = (app as any).ctxMgr.getMessages() as Message[];
+
+    // 恢复的历史 + 续接标记 ⇒ 至少与原始条数相等（标记是额外追加的）
+    expect(restored.length).toBeGreaterThanOrEqual(messages.length);
+
+    // 首条历史必须在（旧实现下第 1..35 条全部消失）
+    expect(allText(restored)).toContain("问题0");
+    expect(allText(restored)).toContain("回答0");
+    // 中段也不能缺
+    expect(allText(restored)).toContain("问题12");
+    // 尾部当然在
+    expect(allText(restored)).toContain("问题24");
+  });
+
+  /**
+   * D1：摘要路径的触发条件从「条数 > 20」改成「**真的超出 token 预算**」。
+   *
+   * 所以这个用例必须造出确实装不下的历史（而不是 50 条小消息 —— 那在 1M 窗口下
+   * 完全装得下，正确行为是全量恢复，见上一个用例）。
+   * 每条约 12 万字符 × 20 条 ≈ 远超 0.6 × 1M 的预算。
+   */
+  test("路径 2（超预算 + 有摘要）：恢复后含恢复提示（buildResumeMessage）", async () => {
     const store = new SessionStore();
     await store.saveSummary({
       sessionId: "long-summary",
@@ -141,10 +189,11 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
     } as any);
 
     const app = makeApp();
+    const bulk = "临".repeat(120_000); // 非 ASCII，token 估算取较高系数
     const messages: Message[] = [];
-    for (let i = 0; i < 25; i++) {
-      messages.push(userMsg(`问题${i}`));
-      messages.push(asstMsg(`回答${i}`));
+    for (let i = 0; i < 10; i++) {
+      messages.push(userMsg(`问题${i}${bulk}`));
+      messages.push(asstMsg(`回答${i}${bulk}`));
     }
     const data: SessionData = {
       id: "long-summary",
@@ -157,6 +206,37 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
     const restored = (app as any).ctxMgr.getMessages() as Message[];
     expect(allText(restored)).toContain("恢复");
     expect(allText(restored)).toContain("摘要内容XYZ");
+    expect(checkMessageHistoryIntegrity(restored).orphans.length).toBe(0);
+    expect(checkMessageHistoryIntegrity(restored).dangling.length).toBe(0);
+  });
+
+  /**
+   * D1：超预算且**无摘要**时仍要裁剪 —— 但保底不少于修复前的 15 条。
+   *
+   * 这条守的是修复的下界：「任何配置下都不会比修复前更少」。
+   */
+  test("D1：超预算无摘要时按预算裁剪，且不少于保底条数", async () => {
+    const app = makeApp();
+    const bulk = "临".repeat(120_000);
+    const messages: Message[] = [];
+    for (let i = 0; i < 20; i++) {
+      messages.push(userMsg(`问题${i}${bulk}`));
+      messages.push(asstMsg(`回答${i}${bulk}`));
+    }
+    const data: SessionData = {
+      id: "over-budget-nosummary",
+      messages,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    } as unknown as SessionData;
+
+    await app.restoreSession(data);
+    const restored = (app as any).ctxMgr.getMessages() as Message[];
+
+    // 确实裁掉了（否则这个用例没测到超预算分支）
+    expect(restored.length).toBeLessThan(messages.length);
+    // 但不少于旧实现的最差分支（15 条）——修复不允许在任何配置下更差
+    expect(restored.length).toBeGreaterThanOrEqual(15);
     expect(checkMessageHistoryIntegrity(restored).orphans.length).toBe(0);
     expect(checkMessageHistoryIntegrity(restored).dangling.length).toBe(0);
   });

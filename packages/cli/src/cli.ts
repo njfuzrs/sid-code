@@ -2410,25 +2410,44 @@ export async function main(): Promise<void> {
       process.once("exit", cleanup);
     }
 
+    // ─────────────────────────────────────────────────────────────
     // 启动时自动清理过期会话（后台静默执行）
-    if (!config.print) {
+    //
+    // D3：**这里只定义，不启动** —— 必须等「要恢复哪个会话」已知之后再跑。
+    //
+    // 原实现在此处直接 fire-and-forget（不 await），而恢复流程在下方几百行之后才
+    // 解析出目标会话 id（--resume 的 id/索引/搜索词、-c 的 loadLatest、选择器）。
+    // 两者并发，相对时序完全由事件循环决定：被恢复的会话若落在淘汰名单里，
+    // 会在恢复读取的同时被 unlinkSync —— 删在读之前则用户历史永久消失。
+    //
+    // 传 config.sessionId 挡不住这件事：它恒是本进程**新生成**的 id，不是被恢复
+    // 会话的 id（详见 cleanup.ts identifySessionsToDelete 里 D3 那段注释）。
+    // 所以修法不是「多传一个参数」，而是**把清理挪到恢复目标已知之后**，
+    // 再把那个 id 作为受保护名单传进去。
+    //
+    // 清理本身仍是后台 fire-and-forget（它不是关键路径，不该拖慢启动）——
+    // 改变的只是**启动时机**。
+    // ─────────────────────────────────────────────────────────────
+    let resumedSessionIdForCleanup: string | undefined;
+    const startBackgroundSessionCleanup = async (): Promise<void> => {
+      if (config.print) return;
       const { cleanupExpiredSessions, getRetentionSettings } =
         await import("@sid-code/core/session/cleanup.ts");
       const retentionSettings = getRetentionSettings(config);
-      if (retentionSettings.enabled) {
-        cleanupExpiredSessions(config, retentionSettings, config.sessionId)
-          .then((result) => {
-            if (result.deleted > 0 && config.debug) {
-              getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
-            }
-          })
-          .catch((err: any) => {
-            if (config.debug) {
-              getLogger().error("CLEANUP", `自动清理失败: ${err.message}`);
-            }
-          });
-      }
-    }
+      if (!retentionSettings.enabled) return;
+      const protectedIds = resumedSessionIdForCleanup ? [resumedSessionIdForCleanup] : undefined;
+      cleanupExpiredSessions(config, retentionSettings, config.sessionId, protectedIds)
+        .then((result) => {
+          if (result.deleted > 0 && config.debug) {
+            getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
+          }
+        })
+        .catch((err: any) => {
+          if (config.debug) {
+            getLogger().error("CLEANUP", `自动清理失败: ${err.message}`);
+          }
+        });
+    };
 
     // 启动时恢复并清理 Worktree（P0-1 / P1-9 / D16），以及 --worktree 启动 flag（P1-2）
     if (!config.print) {
@@ -2611,8 +2630,13 @@ export async function main(): Promise<void> {
       // 不再 console.log：TUI 渲染前的裸输出会留在 banner 上方的终端 scrollback 里，
       // 用户看到一行游离的「恢复会话: …」。恢复进度只写日志，TUI 首屏会自然呈现历史消息。
       getLogger().info("CLI", `恢复会话: ${session.id} (${session.messages.length} 条消息)`);
+      // D3：登记被恢复的会话 id，供随后启动的自动清理列入受保护名单。
+      resumedSessionIdForCleanup = session.id;
       await app.restoreSession(session);
     }
+
+    // D3：恢复目标已确定（或本次不恢复），此刻才启动后台清理。
+    await startBackgroundSessionCleanup();
 
     // 根据模式路由
     if (cliArgs.bridgeUrl) {
