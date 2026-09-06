@@ -78,6 +78,19 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * Session Memory 单会话笔记的过期阈值：30 天。
+ *
+ * P0-4 把 `.session_memory.md` 从「按项目一个」改成「按会话一个」，修掉了并发/resume
+ * 互相覆盖，代价是文件会**一个会话攒一个**。所以那个修复必须配一条回收，
+ * 否则治好污染换来无界增长。
+ *
+ * 阈值与 trajectory 对齐（30 天）**不是巧合**：这份笔记的用途是 `--resume` 时接上
+ * 上次的上下文，而 trajectory 过期后那个会话本来就 resume 不回来了，
+ * 留着笔记也无从挂靠。两个数字应一起改。
+ */
+const SESSION_MEMORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
  * shell 快照的孤儿回收阈值：24 小时。
  *
  * ## 为什么必须按 mtime 判、**绝不能**按 pid 存活判
@@ -181,6 +194,8 @@ export function runStartupHousekeeping(
     const snapshotsCleaned = cleanupOrphanedShellSnapshots(now);
     const taskOutputsCleaned = cleanupOrphanedTaskOutputs(now);
     const checkpointsCleaned = cleanupStaleCheckpoints(now, opts.selfSessionId);
+    // 10. P0-4 的配套回收：按会话分文件后，笔记会一个会话攒一个
+    const sessionMemoriesCleaned = cleanupStaleSessionMemories(now);
     writeWatermark(now);
     if (removed > 0) {
       getLogger().info("CLEANUP", `启动清理：移除 ${removed} 个过期 trajectory 会话目录`);
@@ -201,6 +216,12 @@ export function runStartupHousekeeping(
       getLogger().info(
         "CLEANUP",
         `启动清理：移除 ${checkpointsCleaned} 个过期 checkpoint 会话目录`,
+      );
+    }
+    if (sessionMemoriesCleaned > 0) {
+      getLogger().info(
+        "CLEANUP",
+        `启动清理：移除 ${sessionMemoriesCleaned} 个过期 Session Memory 会话笔记`,
       );
     }
   } catch (err) {
@@ -228,6 +249,59 @@ function writeWatermark(now: number): void {
   } catch {
     // 写水位线失败不致命：最坏下次启动再尝试清理
   }
+}
+
+/**
+ * 回收过期的 Session Memory 单会话笔记
+ * （`~/.sid-code/projects/<key>/session-memory/<sessionId>.md`）。
+ *
+ * 只按 mtime 判、只删该目录下的 `.md`：不去猜「这个会话还活着吗」——
+ * 判活需要读 PID/crash marker，而那套判据本身就是另一处会失效的触发条件。
+ * 30 天没被写过的笔记，对应的会话早已不可 resume（见 SESSION_MEMORY_MAX_AGE_MS）。
+ *
+ * 刻意**不碰**旧的项目级 `.session_memory.md`：它是修复前的存量数据，用户可能
+ * 还想看，而且它不随会话增长（就一个文件），不构成膨胀。
+ *
+ * @returns 删除的文件数
+ */
+function cleanupStaleSessionMemories(now: number): number {
+  const projectsRoot = sidPaths.projects();
+  if (!existsSync(projectsRoot)) return 0;
+
+  let removed = 0;
+  let projectDirs: string[];
+  try {
+    projectDirs = readdirSync(projectsRoot, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return 0;
+  }
+
+  for (const projectKey of projectDirs) {
+    const dir = join(projectsRoot, projectKey, "session-memory");
+    if (!existsSync(dir)) continue;
+    let files: string[];
+    try {
+      files = readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.endsWith(".md"))
+        .map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const name of files) {
+      const file = join(dir, name);
+      try {
+        if (now - statSync(file).mtimeMs > SESSION_MEMORY_MAX_AGE_MS) {
+          rmSync(file, { force: true });
+          removed++;
+        }
+      } catch {
+        // 单个文件失败（并发删除、权限）不影响其余
+      }
+    }
+  }
+  return removed;
 }
 
 /**

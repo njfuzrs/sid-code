@@ -489,6 +489,11 @@ export class App {
     | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
   private announcedMcpServers = new Set<string>();
+  /**
+   * P0-3：本会话已注入过的召回记忆文件名（去重，防多轮重复注入同一条）。
+   * 与 announcedMcpServers 同模式：会话内一次即够，重复注入纯烧 token。
+   */
+  private surfacedRecalledMemories = new Set<string>();
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
@@ -1227,6 +1232,47 @@ export class App {
           const { drainIDEContextDelta } = require("@sid-code/core/ide/integration.ts");
           return drainIDEContextDelta();
         } catch {
+          return null;
+        }
+      },
+      // ─── P0-3：语义召回接线（`SID_CODE_MEMORY_RECALL=1` 才真正干活）───
+      //
+      // 修复前 recall.ts / freshness.ts / recalledMemories 三者构成一条**完整但零调用者**
+      // 的链路：`isMemoryRecallEnabled()` 返回的 true 无人查询，`recalledMemories` 生产零赋值，
+      // `PRIORITY.MEMORY_RECALLED = 32` 无附件使用。三个模块都「build 过 + 单测过」，
+      // 都不满足 CLAUDE.md 北极星那条验收判据：「真实会话里被触发过」。
+      //
+      // 这里是那条链路缺的**唯一一环**。默认仍关闭（与 cc 默认全量注入一致），
+      // 但打开 flag 后行为是真的：召回 → 附新鲜度警告 → 经 reminderParts 进 user 消息。
+      drainRecalledMemories: async (query: string) => {
+        try {
+          const { isMemoryRecallEnabled, findRelevantMemories, makeSideQuery } =
+            await import("@sid-code/core/memory/recall.ts");
+          if (!isMemoryRecallEnabled()) return null;
+
+          const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+          const memStore = new MemoryStore(process.cwd());
+          const memoryDir = memStore.getProjectMemoryDir();
+          if (!memoryDir) return null;
+
+          const sideQuery = makeSideQuery(this.provider, this.config.model);
+          const recalled = await findRelevantMemories(query, memoryDir, sideQuery, {
+            // 同一会话内已注入过的不再重复注入（多轮重复注入纯烧 token）
+            alreadySurfaced: this.surfacedRecalledMemories,
+          });
+          if (recalled.length === 0) return null;
+          for (const m of recalled) this.surfacedRecalledMemories.add(m.filename);
+
+          const { generateRecalledMemoryAttachment } =
+            await import("@sid-code/core/config/attachments.ts");
+          const att = generateRecalledMemoryAttachment(
+            recalled.map((m) => ({ filename: m.filename, content: m.content })),
+          );
+          // 复用附件的 content（含 <recalled-memory> 包裹与新鲜度警告），
+          // 但走消息通道而非 system prompt —— 召回结果每条消息都不同，进静态前缀会击穿 cache。
+          return att ? `<system-reminder>\n${att.content}\n</system-reminder>` : null;
+        } catch (e) {
+          getLogger().debug("APP", `语义召回跳过: ${(e as Error)?.message}`);
           return null;
         }
       },
@@ -2954,7 +3000,11 @@ export class App {
       const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
       const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
       const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
-      const sessionMemoryFile = getSessionMemoryPath(process.cwd());
+      // P0-4：按**逻辑会话 id** 分文件。用 getLogicalSessionId()（resume 时是被恢复
+      // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
+      // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
+      const sessionMemorySessionId = this.getLogicalSessionId();
+      const sessionMemoryFile = getSessionMemoryPath(process.cwd(), sessionMemorySessionId);
       this.sessionMemory = initSessionMemory({
         getMainContext: () => ({
           systemPrompt: this.ctxMgr.getSystemPrompt(),
@@ -2969,6 +3019,7 @@ export class App {
         }),
         canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
         cwd: process.cwd(),
+        sessionId: sessionMemorySessionId,
       });
       // 把 handle 暴露给 queryLoop（经 QueryEngine），用于每轮收尾触发提取 + 记录工具调用。
       this.queryEngine.setSessionMemory(this.sessionMemory);

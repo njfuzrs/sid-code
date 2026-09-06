@@ -70,8 +70,29 @@ export const MEMORY_LIMITS = {
   INDEX_MAX_BYTES: 25_000,
   /** 单条记忆正文最大字符数 */
   ENTRY_MAX_CHARS: 10_000,
-  /** 扫描时最多处理的记忆文件数（防目录膨胀） */
+  /**
+   * 扫描时最多处理的记忆文件数（防目录膨胀）。
+   *
+   * ⚠️ 契约是「一次扫描最多**读**几个」——截断的是读取结果，**不动磁盘**
+   * （`scan.ts` 的 `headers.slice(0, SCAN_MAX_FILES)`）。调大它只多一点 I/O。
+   *
+   * **不要**再把它复用成「磁盘上最多留几个」：那是 `STORE_MAX_ENTRIES`，
+   * 语义相反——那个调小会动用户的文件。P0-2 之前两者共用本常量，
+   * 于是改任何一处都会误伤另一处。门禁见 `tests/memory/store.test.ts`。
+   */
   SCAN_MAX_FILES: 200,
+  /**
+   * 单个 scope（global / project 各自计）在磁盘上保留的记忆条数上限。
+   *
+   * 超限时**归档而非删除**：最旧的条目移到 `archive/` 子目录并 `log.warn` 点名
+   * （P0-2）。旧实现在这里直接 `unlink`，且异常被 `catch {}` 吞掉——
+   * 成功不报、失败也不报，用户数据静默消失。
+   *
+   * 排序键是 `updatedAt`，而它只在 `set()` 时更新 ⇒ 这是 LWU（least-recently-**written**）
+   * 而非 LRU：「写下来之后一直有用、但没人改过」的记忆在这个口径下恒为「最旧」。
+   * 正是因为淘汰口径与价值无关，所以只能归档、不能删。
+   */
+  STORE_MAX_ENTRIES: 200,
   /** 单次召回最多返回的记忆数 */
   RECALL_MAX: 5,
 } as const;

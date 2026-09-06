@@ -103,6 +103,11 @@ export interface QueryEngineDeps {
   getMcpInstructionsDelta?: () => string[] | null;
   /** 审计第 22 条：IDE 选区/@提及 增量拉取（经 reminderParts 注入，不进静态 system prompt）。可选 */
   drainIDEContextDelta?: () => string | null;
+  /**
+   * P0-3：语义召回（`SID_CODE_MEMORY_RECALL=1` 才由 app 层注入）。
+   * 每条用户消息首轮调用一次，返回值经 reminderParts 注入。未注入 = 不召回。
+   */
+  drainRecalledMemories?: (query: string) => Promise<string | null>;
   /** /goal：读取当前活跃目标状态。返回 null 表示无目标。queryLoop 在 reminder 管道和 Goal Gate 中使用。 */
   getGoalState?: () => import("../goal/state.ts").GoalState | null;
   /** /goal：更新目标状态（由 Goal Gate 在判定 complete/blocked/budget_limited 时调用）。 */
@@ -343,6 +348,8 @@ export class QueryEngine {
       getMcpInstructionsDelta: this.deps.getMcpInstructionsDelta,
       // 审计第 22 条：IDE 选区/@提及 增量注入（与上面 MCP instructions 同一模式）
       drainIDEContextDelta: this.deps.drainIDEContextDelta,
+      // P0-3：语义召回（flag 门控；未注入则 loop 那段整体跳过）
+      drainRecalledMemories: this.deps.drainRecalledMemories,
       // G7：异步 hook rewake 回灌——每轮开始排空后台 hook 的 exit-2 反馈，格式化为文本块
       drainAsyncHookRewakes: hookSystem
         ? () => {
