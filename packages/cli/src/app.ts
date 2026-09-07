@@ -611,14 +611,32 @@ export class App {
           this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
         getLatestSnapshotId: () => this.latestCheckpointSnapshotId,
         restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
+          // D5：checkpoint 必须跟随**逻辑会话 id**，不能用构造期捕获的 `sessionId`。
+          // 构造函数比 restoreSession() 早跑，那时 resumedSessionId 还是 null，闭包一旦
+          // 捕获局部变量就把「进程新 id」定死了。而建快照走的是 getLogicalSessionId()
+          // （见 recordFileChanges / commandContext），快照实际落在 checkpoints/<被恢复会话 id>/。
+          // 写对读错的后果：resume 后 /undo 找得到快照，Esc+Esc 面板找不到——同一批快照两个入口
+          // 一个能用一个不能用。这里必须延迟到调用时再取，闭包不能捕获 id 本身。
+          const logicalSessionId = this.getLogicalSessionId();
           try {
             const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
-            const cpMgr = await getCheckpointManager(sessionId, this.config.checkpoint);
+            const cpMgr = await getCheckpointManager(logicalSessionId, this.config.checkpoint);
             const result = await cpMgr.restoreToSnapshot(snapshotId);
-            if (!result) return null;
+            if (!result) {
+              // D5 加重项：此前 `return null` 与「本会话确实没有快照」完全无法区分，
+              // 且不打日志——UI 只显示「跳过文件回滚」，排查时没有任何线索。
+              getLogger().warn(
+                "REWIND",
+                `文件回滚未命中快照: snapshotId=${snapshotId} sessionId=${logicalSessionId}`,
+              );
+              return null;
+            }
             return result.files?.length ?? 0;
           } catch (e) {
-            getLogger().warn("REWIND", `文件回滚失败: ${(e as Error)?.message}`);
+            getLogger().warn(
+              "REWIND",
+              `文件回滚失败: ${(e as Error)?.message}（sessionId=${logicalSessionId}）`,
+            );
             return null;
           }
         },
@@ -5042,7 +5060,12 @@ export class App {
         this.statusNotifier?.(`tool_progress_${toolUseId}`, `${toolName}: ${msg}`, 2000);
       },
       // P1-7：把工具修改的文件落盘到会话 JSONL metadata，供 resume 重建文件修改上下文。
-      recordFileChanges: (files, toolName) => this.recordFileChanges(files, toolName),
+      // D6：第三个形参 snapshotId 必须一路转发。此前这里只写两个形参，把 tool-executor
+      // 传来的第三个实参吃掉了——上下游四处（生产端传 3 个 / 接口声明 3 个 / 实现方处理 3 个 /
+      // 恢复端消费 snapshotIds）全部正确，却因这一行断线而集体空转：实测 152 条 file_changes
+      // 里 0 条带 lastSnapshotId 或 snapshotIds，恢复端的 for 循环从未执行过一次。
+      recordFileChanges: (files, toolName, snapshotId) =>
+        this.recordFileChanges(files, toolName, snapshotId),
       // P2-1：记录最新快照 id，作为下一轮回退点的文件锚点。
       onSnapshotCreated: (snapshotId) => {
         this.latestCheckpointSnapshotId = snapshotId;
