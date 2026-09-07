@@ -59,6 +59,11 @@ export const EVENT_NAMES = {
 
   // ── 漏斗 5 · 错误：哪类错误最高频 ──
   ERROR_OCCURRED: "error_occurred",
+
+  // ── 漏斗 6 · 记忆：写进去的记忆有没有被读到（P1-12）──
+  MEMORY_INDEX_HEALTH: "memory_index_health",
+  MEMORY_INJECT: "memory_inject",
+  MEMORY_GUARD: "memory_guard",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -366,10 +371,19 @@ export function logContextCompact(opts: {
   tokensBefore: number;
   tokensAfter?: number;
   durationMs?: number;
+  /**
+   * 摘要由谁产出（P1-5 ②）。省略 = `"compact"`（LLM 摘要）。
+   *
+   * 这一维的意义是让「Session Memory 压缩用了几次、省得比 LLM 摘要多还是少」
+   * 可被回答 —— 两条路径此前在事件里**完全同形**，聚合出来的 `tokens_before/after`
+   * 是两种机制的混合，既不描述前者也不描述后者。
+   */
+  source?: "compact" | "session_memory";
 }): void {
   emit(EVENT_NAMES.CONTEXT_COMPACT, {
     outcome: v(opts.outcome),
     trigger: v(opts.trigger),
+    source: v(opts.source ?? "compact"),
     messages_before: opts.messagesBefore,
     tokens_before: opts.tokensBefore,
     ...(opts.tokensAfter !== undefined ? { tokens_after: opts.tokensAfter } : {}),
@@ -508,6 +522,98 @@ export function logError(opts: {
       opts.extra,
     ),
   );
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 6 · 记忆（P1-12）：写进去的记忆有没有被读到
+// ─────────────────────────────────────────────────────────────
+//
+// 记忆子系统此前**零埋点**：`grep -rniE "memory_(hit|recall|write|count|inject)"
+// src/trace src/session` 无输出。唯一带 memory 字样的是 crash-marker 的 `memory_mb`
+// （进程内存，无关）与 billing-sink 的 `memory_recall` label（记的是召回那次 LLM
+// 调用的钱，而召回本身零接线 ⇒ 该 label 恒无数据）。
+//
+// 同仓库的压缩子系统埋点齐全（logContextCompact 连「被 hook 阻止」都记），
+// 对比之下这是明确的覆盖缺口而非「还没想清楚要记什么」。
+//
+// 三个指标按缺陷清单 §12「最小可用」那三条落地，不多记：
+//  1. `memory_index_health` —— 目录 .md 数 vs 索引指针数，差值非 0 即异常。
+//     **这一个指标就能自动发现 P0-1（重名遮蔽）、P1-6（子目录分裂）、
+//     P1-7①（配额少 2 条）、P1-10（写空残留）** —— 它们的共同表征都是
+//     「磁盘上有、索引里没有」。此前发现 P0-1 靠的是手工 `comm` 比对。
+//  2. `memory_inject` —— 每次注入的索引条目数（分母）与真被 Read 的条数（分子）。
+//     回答 §12.2「写进去了 ≠ 被召回过」。
+//  3. `memory_guard` —— 各道防线的触发次数。**恒 0 的曲线本身就是信号** ——
+//     P1-8（secret 闸门缺三条线）与 P1-9（scope 越权）之所以长期无人知情，
+//     正是因为没有这条线：防线不存在与防线从未被触发，在轨迹里长得一模一样。
+//
+// ⚠️ 三个事件都**不记记忆内容、不记 key、不记文件名** —— 记忆正文是用户数据，
+// 且 P0-3 的事故（生产 IP + root 写进 description）说明这类内容天然可能含敏感信息。
+// 只记计数与分类，`filePathFields` 那套「只出扩展名」的原则在这里收得更紧：连路径都不出。
+
+/** 记忆一致性快照：磁盘条目数 vs 索引指针数（分母写死为 fileCount） */
+export function logMemoryIndexHealth(opts: {
+  /** 记忆 scope：project / global / agent / team */
+  scope: string;
+  /** 目录下应被索引的 .md 文件数（枚举口径见 memory/scan.ts） */
+  fileCount: number;
+  /** MEMORY.md 里实际列出的指针条数 */
+  indexEntryCount: number;
+  /** 因 key 重名被遮蔽的文件数（P0-1） */
+  shadowedCount?: number;
+  /** 本次索引是否发生截断（P1-7） */
+  truncated?: boolean;
+}): void {
+  emit(EVENT_NAMES.MEMORY_INDEX_HEALTH, {
+    memory_scope: v(opts.scope),
+    file_count: opts.fileCount,
+    index_entry_count: opts.indexEntryCount,
+    // 差值单独出一列：告警规则直接判它 !== 0，不必在查询侧再算一次减法
+    orphan_count: opts.fileCount - opts.indexEntryCount,
+    ...(opts.shadowedCount !== undefined ? { shadowed_count: opts.shadowedCount } : {}),
+    ...(opts.truncated !== undefined ? { truncated: opts.truncated } : {}),
+  });
+}
+
+/** 记忆注入：本轮注入了多少条索引指针（§12.2 的分母） */
+export function logMemoryInject(opts: {
+  /** 注入的索引条目总数 —— 这是「被召回率」的分母，口径必须与指标一起写死 */
+  indexEntryCount: number;
+  /** 注入内容的估算 token 数（索引常驻每轮，属「更省」曲线上的固定成本） */
+  tokens?: number;
+  /** 带了年龄标注的条目数（P0-3 的 freshness 到达率） */
+  agedEntryCount?: number;
+}): void {
+  emit(EVENT_NAMES.MEMORY_INJECT, {
+    index_entry_count: opts.indexEntryCount,
+    ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
+    ...(opts.agedEntryCount !== undefined ? { aged_entry_count: opts.agedEntryCount } : {}),
+  });
+}
+
+/** 记忆防线触发（secret 拒绝 / scope 越权拒绝 / 超限归档 / 写空归档） */
+export type MemoryGuardKind =
+  | "secret_rejected"
+  | "scope_denied"
+  | "evicted_to_archive"
+  | "empty_archived"
+  | "shadowed";
+
+export function logMemoryGuard(opts: {
+  kind: MemoryGuardKind;
+  /**
+   * 触发防线的路径类型：save_memory / write / edit / agent_store / store /
+   * team_pull（P2-14：共享目录 → 本地，反向流入闸门）。
+   */
+  via: string;
+  /** 记忆 scope（可得时） */
+  scope?: string;
+}): void {
+  emit(EVENT_NAMES.MEMORY_GUARD, {
+    guard_kind: v(opts.kind),
+    guard_via: v(opts.via),
+    ...(opts.scope !== undefined ? { memory_scope: v(opts.scope) } : {}),
+  });
 }
 
 /**

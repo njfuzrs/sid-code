@@ -5,6 +5,8 @@
 
 import type { Message } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
+// P1-5 ②：压缩来源的取值域（type-only，不引入运行时依赖，无循环风险）。
+import type { CompactSource } from "./auto-compact.ts";
 import { estimateTextTokens, estimateBlockTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
 import {
@@ -996,15 +998,6 @@ export class Manager {
   // ─── compact_boundary 支持 ───
 
   /**
-   * 插入 compact_boundary 标记
-   *
-   * 在消息列表中插入一条特殊消息，标记该点之前的内容已被压缩。
-   * 使用 Message._meta 字段而非新增 ContentBlock 类型，保持向后兼容。
-   *
-   * @param summary 压缩摘要
-   * @param messageCountBefore 压缩前的消息数
-   */
-  /**
    * D10：落盘一条「由外部压缩管道造成的」压缩记录（渐进式压缩管道路径）。
    *
    * 为什么需要一个显式方法，而不是把通知塞进 `addCompactBoundary`：
@@ -1029,7 +1022,22 @@ export class Manager {
     });
   }
 
-  addCompactBoundary(summary: string, messageCountBefore: number): void {
+  /**
+   * 插入 compact_boundary 标记
+   *
+   * 在消息列表中插入一条特殊消息，标记该点之前的内容已被压缩。
+   * 使用 Message._meta 字段而非新增 ContentBlock 类型，保持向后兼容。
+   *
+   * @param summary 压缩摘要
+   * @param messageCountBefore 压缩前的消息数
+   * @param source 摘要的来源（P1-5 ②）。默认 `"compact"` = LLM 摘要；
+   *   Session Memory 压缩必须显式传 `"session_memory"`，否则事后无法区分两者。
+   */
+  addCompactBoundary(
+    summary: string,
+    messageCountBefore: number,
+    source: CompactSource = "compact",
+  ): void {
     const boundaryMsg: Message = {
       role: "user",
       content: [{ type: "text", text: `[压缩边界] ${summary}` }],
@@ -1039,7 +1047,7 @@ export class Manager {
           messageCountBefore,
           timestamp: Date.now(),
         },
-        compact_source: "compact",
+        compact_source: source,
       },
     };
 
@@ -1958,10 +1966,19 @@ export class Manager {
    * @param summary 压缩摘要正文
    * @param extraReattach 可选的压缩后重注入消息（文件恢复 / 决策点恢复等，§2.1 / §4.3）。
    *   插入到 Skill 消息之后、保留消息之前。这些消息应自带 _meta.origin 标记以便 TUI 隐藏。
+   * @param source 摘要来源（P1-5 ②）。默认 `"compact"`（LLM 摘要）；
+   *   Session Memory 压缩传 `"session_memory"`。它会被打进摘要消息的
+   *   `_meta.compact_source`，让两种压缩产物**在事后可区分** ——
+   *   此前两条路径都硬编码 `"compact"`，于是「Session Memory 压缩用了几次、
+   *   效果如何」在轨迹里答不出来（关联 P1-12）。
    * @returns P0-1：压缩实测结果。`success` 由「消息数是否真的下降」唯一决定——
    *   调用方**必须**据此判断，不得自行宣告成功（见 CompactionOutcome 的事故背景）。
    */
-  compactWithSummary(summary: string, extraReattach?: Message[]): CompactionOutcome {
+  compactWithSummary(
+    summary: string,
+    extraReattach?: Message[],
+    source: CompactSource = "compact",
+  ): CompactionOutcome {
     const log = getLogger();
     const messageCountBefore = this.messages.length;
     const tokensBefore = this.estimateTokens();
@@ -1996,7 +2013,9 @@ export class Manager {
       content: [{ type: "text", text: `[对话摘要]\n${summary}` }],
       // 标记内部来源:此摘要 user 消息仅供 LLM 续接上下文,不应在 TUI 渲染
       //(history-adapter.isHiddenFromDisplay 按 _meta.origin 隐藏)。
-      _meta: { origin: "compact-summary" },
+      // P1-5 ②：compact_source 记「这份摘要是谁产的」——LLM 摘要还是 Session Memory 笔记。
+      // 它同时让 isCompactSourceMessage 认得这条消息（压缩产物不应再次触发压缩）。
+      _meta: { origin: "compact-summary", compact_source: source },
     };
     const ackMsg: Message = {
       role: "assistant",

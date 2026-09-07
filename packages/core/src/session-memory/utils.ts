@@ -9,6 +9,8 @@ import type { Message } from "../llm/types.ts";
 import { estimateTextTokens } from "../context/token.ts";
 // 审计第 21 条：收敛到 token.ts 的统一实现（补全 thinking/redacted_thinking/mediaBlocks）。
 import { estimateMessagesTokens as estimateMessagesTokensUnified } from "../context/token.ts";
+// P1-5 ③：让 SESSION_MEMORY_SECTIONS 真正参与截断决策（此前它零使用）。
+import { isKnownSessionMemorySection } from "./prompts.ts";
 
 /** Session Memory 配置 */
 export interface SessionMemoryConfig {
@@ -143,13 +145,27 @@ export function isSessionMemoryEmpty(content: string | null | undefined): boolea
 /**
  * 按 section 截断 Session Memory，每个 section 不超过 perSectionTokens，
  * 保留标题和结构，不切断语义单元。
+ *
+ * P1-5 ③：预算紧张时**先牺牲模型自己加的 section**。更新提示词第 4 条明确要求
+ * 「不要添加新的 section」，所以非模板 section 一律是违规产物；而模板 section
+ * （尤其 `Current State` / `Task specification`）正是压缩后模型最需要的部分。
+ * 旧实现按**文件顺序**逐个塞、超预算就 break —— 于是一个被塞在前面的违规 section
+ * 会把后面的 `Worklog` / `Key results` 整个挤掉。
+ *
+ * 排序是**稳定**的：模板 section 保持它们在文件里的相对顺序（不重排成常量表顺序 ——
+ * 模型是按文件顺序写的，重排会让 Worklog 这类时序内容错位），只是把非模板 section
+ * 整体移到末尾。`SESSION_MEMORY_SECTIONS` 由此第一次有了运行时消费者。
  */
 export function truncateSessionMemory(
   content: string,
   maxTokens = 12_000,
   perSectionTokens = 2_000,
 ): string {
-  const sections = splitSessionMemorySections(content);
+  const parsed = splitSessionMemorySections(content);
+  // 稳定分区：模板 section 保持原相对顺序在前，模型自加的在后（预算不够时先掉它们）
+  const known = parsed.filter((s) => isKnownSessionMemorySection(s.title));
+  const unknown = parsed.filter((s) => !isKnownSessionMemorySection(s.title));
+  const sections = [...known, ...unknown];
   const out: string[] = [];
   let used = 0;
   for (const sec of sections) {

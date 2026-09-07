@@ -27,6 +27,12 @@ import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 // P0-3：freshness 此前唯一的生产引用在 recall.ts 内，而 recall 自己零接线 ⇒ 整条不可达。
 // 索引注入是主路径，把它接到这里，freshness 才第一次真正到达模型。
 import { memoryAge, memoryAgeDays } from "./freshness.ts";
+// P1-7：索引截断口径（条数 / 真字节 / 行边界）的单一事实源，与 agent 记忆线共用。
+import { buildTruncatedIndex } from "./index-budget.ts";
+// P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
+import { enumerateMemoryFiles, readFrontmatterFields } from "./scan.ts";
+// P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
+import { logMemoryGuard } from "../analytics/events.ts";
 
 /** 单条记忆（向后兼容旧结构，新增可选 type/description） */
 export interface MemoryEntry {
@@ -53,6 +59,53 @@ const INDEX_FILE = "MEMORY.md";
 /** 模块级摘要缓存（预取和正式调用共享） */
 let summaryCacheEntry: { summary: string | null; timestamp: number; key: string } | null = null;
 const SUMMARY_CACHE_TTL = 30_000; // 30 秒
+
+/**
+ * 模块级「记忆已被写过」代数（P1-11）。
+ *
+ * ─── 为什么必须是模块级的，而不是实例字段 ───
+ *
+ * 生产代码里 `new MemoryStore(...)` 有 **9 处**（init-helpers、cli.ts、app.ts ×4、
+ * deferred-prefetch、builtins ×2），每个用途各建一个实例，各自持有一份
+ * `globalEntries` / `projectEntries` / `globalFiles` / `projectFiles` 内存缓存。
+ * 而 `loaded` 旧实现是**单向锁死**的：唯一的写点是 `load()` 末尾的 `= true`，
+ * 全文件没有任何地方把它置回 false，也没有基于 mtime 的重读。后果有三个，
+ * 前两个是用户能直接感知的：
+ *
+ * 1. **长会话中 `save_memory` 之后，注入侧索引不更新。** 写入的是
+ *    `cli.ts` 那个实例（注入 registry 的 `MemoryTool` 持有它），而已经构建进
+ *    system prompt 的索引快照不会变 —— 新记忆要等下次重建系统提示词才可能被看见。
+ * 2. **后台提取代理写入的记忆，本会话内注入侧完全不可见。** 模型被告知
+ *    「已保存 3 条」，却在索引里找不到它们 —— 只能靠那条 system message 猜文件名。
+ * 3. 两个实例在时间上重叠时（A 已 load 缓存了旧快照、B 写入了新文件），
+ *    A 再写同 key 时 `files.get(key)` 返回的是**过时**映射，正是 P0-1 重名的成因之一。
+ *
+ * 设计者其实已经意识到了跨实例失效这件事 —— `summaryCacheEntry` 就是模块级的、
+ * 且 `set()`/`delete()` 后会 `clearMemorySummaryCache()`。但它**只清摘要，
+ * 不清条目缓存**：同一个问题解决了一半。这个代数就是把另一半补上。
+ *
+ * 用「代数 + 各实例记住自己加载时的代数」而不是「直接遍历所有实例清缓存」：
+ * 后者要维护一份实例注册表（弱引用 / 手动注销），而这里要的语义很简单 ——
+ * **加载之后如果有人写过盘，就重读一次**。代数比较是 O(1)，且不持有任何实例引用。
+ *
+ * ⚠️ 这只覆盖**本进程内**的写入。别的进程（并发的另一个 sid-code）写盘不会推进
+ * 本进程的代数 —— 那需要 mtime 轮询或文件锁，成本远高于它治的问题（并发会话
+ * 各自有各自的项目目录时根本不冲突）。这条边界是刻意的，不是漏掉的。
+ */
+let memoryWriteGeneration = 0;
+
+/**
+ * 声明「记忆盘上内容已变」，让所有实例的下一次 `load()` 重读（P1-11）。
+ *
+ * 由 `set()` / `delete()` 在写盘后调用。导出是给两类外部写入方用的：
+ * 经 write/edit 工具直接改记忆文件的路径（提取代理走的就是这条），
+ * 以及 `/memory` 命令那类绕过 store 落盘的操作 —— 它们不推进代数的话，
+ * 本进程里已 load 过的实例就继续拿旧快照，形态与本条缺陷一模一样。
+ */
+export function invalidateMemoryCaches(): void {
+  memoryWriteGeneration++;
+  clearMemorySummaryCache();
+}
 
 /** 清除摘要缓存（写入记忆后调用） */
 export function clearMemorySummaryCache(): void {
@@ -214,12 +267,22 @@ export function inferMemoryType(key: string, value: string): MemoryType {
   return "project";
 }
 
-/** 解析记忆 .md 文件正文为 MemoryEntry（含 created/updated） */
+/**
+ * 解析记忆 .md 文件正文为 MemoryEntry（含 created/updated）。
+ *
+ * 返回 `null` = 这个文件不该作为记忆条目进内存。P1-10 起 `null` 有两种成因，
+ * 调用方需要区分（一种要归档、一种什么都不做），所以额外用 `out.emptyBody`
+ * 回传判据 —— 由本函数自己算出的 `body` 决定。
+ *
+ * ⚠️ 别在调用方另写一遍「正文是否为空」的判断（比如再 strip 一次 frontmatter）：
+ * 那会造出第二套口径，而两套口径迟早不一致 —— 正文的定义只能有一个，就是这里的 `body`。
+ */
 function parseMemoryFile(
   text: string,
   filename: string,
   scope: "global" | "project",
   mtimeMs: number,
+  out?: { emptyBody?: boolean },
 ): MemoryEntry | null {
   const m = text.match(FRONTMATTER_RE);
   let name: string | undefined;
@@ -230,17 +293,15 @@ function parseMemoryFile(
   let body: string;
 
   if (m) {
-    for (const line of m[1].split("\n")) {
-      const fm = line.match(/^(\w+):\s*(.+?)\s*$/);
-      if (!fm) continue;
-      const k = fm[1];
-      const v = fm[2].trim().replace(/^["']|["']$/g, "");
-      if (k === "name") name = v;
-      else if (k === "description") description = v;
-      else if (k === "type" && isMemoryType(v)) type = v as MemoryType;
-      else if (k === "created") created = Number(v) || undefined;
-      else if (k === "updated") updated = Number(v) || undefined;
-    }
+    // P2-13：与 scan.ts 共用同一个 frontmatter 读取口径。这里曾自己写一遍逐行
+    // `^(\w+):` 匹配 —— 两份实现读同一批文件却各有各的盲区，正是「两套口径」
+    // 那类缺陷的温床（索引侧认得的字段，store 侧读不到）。
+    const fields = readFrontmatterFields(m[1]);
+    if (fields.name !== undefined) name = fields.name;
+    if (fields.description !== undefined) description = fields.description;
+    if (fields.type !== undefined && isMemoryType(fields.type)) type = fields.type as MemoryType;
+    if (fields.created !== undefined) created = Number(fields.created) || undefined;
+    if (fields.updated !== undefined) updated = Number(fields.updated) || undefined;
     body = text
       .replace(FRONTMATTER_RE, "")
       .replace(/^\s*\n/, "")
@@ -249,8 +310,14 @@ function parseMemoryFile(
     body = text.trim();
   }
 
-  const key = name || filename.replace(/\.md$/, "");
-  if (!body) return null;
+  // P1-6：loadDir 现在传的是**相对路径**（可能含 `sub/`），而 key 是记忆的逻辑标识，
+  // 不该带目录层级 —— 用 basename 兜底，`sub/x.md` 与平铺 `x.md` 得到同一个 key `x`。
+  const key = name || basename(filename).replace(/\.md$/, "");
+  if (!body) {
+    // P1-10：告诉调用方「这条 null 是因为正文空」——那是模型的删除手势，要归档。
+    if (out) out.emptyBody = true;
+    return null;
+  }
   return {
     key,
     value: body,
@@ -316,21 +383,40 @@ function serializeMemoryFile(entry: MemoryEntry): string {
  * @param text    索引正文（`- [key](file) — desc` 逐行）
  * @param entries 该 scope 的内存条目（key → entry，取 `updatedAt`）
  */
-export function annotateIndexAges(text: string, entries: Map<string, MemoryEntry>): string {
+export function annotateIndexAges(
+  text: string,
+  entries: Map<string, MemoryEntry>,
+  /**
+   * P1-12 指标 ②的取数出口：回传「这段注入里有几条指针、其中几条带了年龄标注」。
+   *
+   * 用 out 参数而不是改返回类型：本函数有多个调用点（含测试），
+   * 改签名会波及全部，而这两个数只有注入路径需要。
+   */
+  out?: { entryCount?: number; agedCount?: number },
+): string {
   const now = Date.now();
-  return text
+  let entryCount = 0;
+  let agedCount = 0;
+  const result = text
     .split("\n")
     .map((line) => {
       // 只处理索引条目行；段标题、空行、截断警告原样保留
       const m = line.match(/^(\s*-\s*\[([^\]]*)\]\([^)]*\))(.*)$/);
       if (!m) return line;
+      entryCount++;
       const entry = entries.get(m[2]);
       if (!entry) return line; // 索引里有、内存里没有（孤儿行）：不编造年龄
       const days = memoryAgeDays(entry.updatedAt, now);
       if (days < 1) return line; // 与 buildFreshnessWarning 同判据：1 天内不加噪声
+      agedCount++;
       return `${m[1]} ⏳${memoryAge(entry.updatedAt, now)}${m[3]}`;
     })
     .join("\n");
+  if (out) {
+    out.entryCount = entryCount;
+    out.agedCount = agedCount;
+  }
+  return result;
 }
 
 export class MemoryStore {
@@ -344,6 +430,14 @@ export class MemoryStore {
   private globalFiles: Map<string, string> = new Map();
   private projectFiles: Map<string, string> = new Map();
   private loaded = false;
+  /**
+   * 本实例上次 `load()` 时的模块级写入代数（P1-11）。
+   *
+   * `loaded` 单独不足以判断缓存是否还有效：它只回答「加载过没有」。
+   * 这个字段回答的是「加载**之后**有没有别人写过盘」—— 两者都满足才复用缓存。
+   * 初值 -1 保证首次 `load()` 一定真加载（代数从 0 起）。
+   */
+  private loadedGeneration = -1;
   /**
    * P0-1：因 frontmatter `name:` 重名而被遮蔽的文件（磁盘上有、索引里没有）。
    * 每次 `loadDir` 前清空，由 `listShadowedFiles()` 对外暴露。
@@ -374,9 +468,27 @@ export class MemoryStore {
     return this.globalDir;
   }
 
-  /** 加载记忆数据（含旧 JSON 迁移） */
+  /**
+   * 加载记忆数据（含旧 JSON 迁移）。
+   *
+   * P1-11：早退判据是「加载过 **且** 加载之后没人写过盘」。旧实现只判 `loaded`，
+   * 而它单向锁死 ⇒ 实例一旦加载，此后**永远**返回同一份快照，
+   * 于是 `save_memory` 写入的记忆在本会话的注入侧不可见（详见
+   * `memoryWriteGeneration` 的注释）。重读前必须清空内存映射，
+   * 否则「已删除的记忆」会作为残留留在 entries 里 —— 那比陈旧更糟。
+   */
   async load(): Promise<void> {
-    if (this.loaded) return;
+    if (this.loaded && this.loadedGeneration === memoryWriteGeneration) return;
+    if (this.loaded) {
+      // 代数变了 ⇒ 磁盘是事实源，内存快照整份丢弃后重建（不做增量 diff：
+      // 增量要处理「文件被删」「key 改名」「文件移进 archive/」三类事件，
+      // 而全量重读的成本只是一次目录扫描，记忆条数上限 200）。
+      this.globalEntries.clear();
+      this.projectEntries.clear();
+      this.globalFiles.clear();
+      this.projectFiles.clear();
+      this.loaded = false;
+    }
 
     await this.migrateLegacyIfNeeded(this.globalDir, "global");
     if (this.projectDir) {
@@ -406,6 +518,9 @@ export class MemoryStore {
       await this.loadDir(this.projectDir, "project", this.projectEntries, this.projectFiles);
     }
     this.loaded = true;
+    // P1-11：记住「这份快照对应哪一代磁盘状态」。必须在**本次加载读盘之后**取，
+    // 而不是函数开头 —— 否则加载途中别人写盘会让这份快照冒充新代数，永不重读。
+    this.loadedGeneration = memoryWriteGeneration;
 
     // 改过名就必须重建索引：索引行里的链接是文件名，改名后旧索引整行都指向
     // 不存在的文件——那正是本次要修的「Read 报文件不存在」，不能自己再造一遍。
@@ -541,23 +656,69 @@ export class MemoryStore {
     files: Map<string, string>,
   ): Promise<void> {
     if (!existsSync(dir)) return;
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch {
-      return;
-    }
+    // P1-6：枚举走 scan.ts 的共享实现 ⇒ **递归**，且与提取/dream 的 manifest 同口径。
+    // 旧实现是平铺 `readdir(dir)`，于是子目录里的记忆「manifest 里有、索引里没有」——
+    // 提取代理据此判定「已存在，不重复保存」，而注入侧永远看不见它：
+    // 那条记忆既不会被重新保存，也不会被读到。
+    //
+    // ⚠️ 换成递归之后，**skip 名单变成了正确性的一部分**（此前平铺读碰不到目录名，
+    // 所以缺名单也无害）：`archive/` 必须被排除，否则 P0-2 归档掉的记忆会重新进索引，
+    // 而淘汰循环又会把它再归档一次 —— 来回震荡。名单在 scan.ts，两条线共用。
+    const names = await enumerateMemoryFiles(dir);
     const log = getLogger();
     // 排序 = 确定性的前提：readdir 不保证顺序，撞 key 时的胜者不能取决于文件系统实现
     for (const filename of [...names].sort()) {
-      if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
+      if (!filename.endsWith(".md") || basename(filename) === INDEX_FILE) continue;
       const filePath = join(dir, filename);
       try {
         const st = await stat(filePath);
         if (!st.isFile()) continue;
         const text = await Bun.file(filePath).text();
-        const entry = parseMemoryFile(text, filename, scope, st.mtimeMs);
-        if (!entry) continue;
+        const parseInfo: { emptyBody?: boolean } = {};
+        const entry = parseMemoryFile(text, filename, scope, st.mtimeMs, parseInfo);
+        if (!entry) {
+          // ─── P1-10：把「写空」这个约定俗成的删除手势收成一个确定状态 ───
+          //
+          // dream 的 prune 指令教模型「用 write 写空或 edit 移除对应条目」来删记忆
+          // （`dream/prompts.ts`），但写空在实现里**不等于删除**，而是一个半死状态：
+          //
+          // | 视角 | 写空后 |
+          // | --- | --- |
+          // | `parseMemoryFile` | `if (!body) return null` ⇒ 不进内存 |
+          // | `MEMORY.md` 索引 | 下次重建时没有这一行 ✅ |
+          // | 磁盘 | **文件还在**（0 字节或只剩 frontmatter） |
+          // | `scanMemoryFiles` | **仍然列出它**（只看 frontmatter，不看 body） |
+          // | 提取 / dream 的 manifest | **仍然列出它** |
+          //
+          // 两个真实后果：
+          // 1. **下一次 dream 会反复「删」同一批记忆** —— manifest 里还在，模型看到
+          //    「这条该删」，再写一次空 ⇒ 又一次无效操作，白烧一整轮 dream 配额。
+          // 2. **提取代理把它当成「已存在」** —— prompt 明确要求「检查现有记忆清单，
+          //    避免重复保存已有内容」，于是一条**已被判定为过时、应删除**的记忆，
+          //    反而**阻止了正确内容的重新写入**。
+          //
+          // 处置：搬进 `archive/`（P0-2 已建立的归档区，在 `scan.ts` 的 SKIP_DIRS 里）。
+          // 于是三个视角终于一致 —— 索引没有、manifest 没有、字节还在。
+          //
+          // 为什么是归档而不是 `unlink`：**这里无从区分「模型故意写空」与「写坏了」**
+          // （写入中断、编码错误、edit 把整段删光都会产出空 body）。真删就把
+          // 一次可能的意外变成不可逆的数据丢失，而归档两种情况都对。
+          // 这也让 prompt 里那句 prune 指令第一次真正生效，无需改动工具 schema。
+          if (parseInfo.emptyBody) {
+            const archived = await this.archiveMemoryFile(dir, filename);
+            log.info(
+              "MEMORY",
+              archived
+                ? `记忆正文为空（视作删除手势）：${filename} → archive/${archived}` +
+                    `（字节保留，可人工恢复）`
+                : `记忆正文为空但归档失败，文件留在原处：${filename}`,
+            );
+            // P1-12 指标 ③：写空归档计数。这条线还回答「dream 的 prune 到底删了多少条」——
+            // P1-10 之前那个动作既不生效也不留痕，两件事都查不出来。
+            logMemoryGuard({ kind: "empty_archived", via: "store", scope });
+          }
+          continue;
+        }
 
         const prev = entries.get(entry.key);
         if (prev) {
@@ -574,6 +735,10 @@ export class MemoryStore {
               `记忆 key 重名（${entry.key}）：保留 ${incomingWins ? filename : prevFile}、` +
                 `遮蔽 ${loser} —— 被遮蔽的文件不会进索引，需人工合并或改名（scope=${scope}）`,
             );
+            // P1-12 指标 ③：重名遮蔽计数。P0-1 那条缺陷在本仓库真实发生过，
+            // 而当时唯一的发现手段是手工 `comm` 比对磁盘与索引 ——
+            // 有了这条线，同样的状态下次会自己冒出来。
+            logMemoryGuard({ kind: "shadowed", via: "store", scope });
           }
           if (!incomingWins) continue;
         }
@@ -602,11 +767,16 @@ export class MemoryStore {
     if (!existsSync(src)) return null;
     try {
       const archiveDir = join(dir, "archive");
+      // P1-6 配套：`filename` 现在可能是**相对路径**（`sub/x.md`）——枚举改递归之后
+      // 子目录里的记忆也进得来。归档目标一律拍平成 basename：`archive/` 里再复刻一层
+      // 原目录结构没有价值（归档区不被扫描，层级只增加捞回的难度），
+      // 但**拍平会引入撞名**，所以下面那个 `-N` 后缀循环从「可选的谨慎」变成了必需。
+      const base = basename(filename);
       if (!existsSync(archiveDir)) mkdirSync(archiveDir, { recursive: true });
-      let target = filename;
+      let target = base;
       let i = 1;
       while (existsSync(join(archiveDir, target))) {
-        target = filename.replace(/\.md$/, `-${i}.md`);
+        target = base.replace(/\.md$/, `-${i}.md`);
         i++;
       }
       await rename(src, join(archiveDir, target));
@@ -624,8 +794,9 @@ export class MemoryStore {
    * 撞名循环里可能被调用多次。
    *
    * 为什么不能省掉这次 I/O 直接信内存：`files` 映射只覆盖 `loadDir` 认得的文件，
-   * 磁盘上完全可能有它不知道的同名记忆（子目录、解析失败、模型用 Write 直写），
+   * 磁盘上完全可能有它不知道的同名记忆（解析失败的、`archive/` 里的、模型用 Write 直写的），
    * 而正是这些「内存看不见、磁盘上有」的文件让旧代码造出了重名。
+   * （P1-6 让子目录进了枚举，所以「子目录」不再属于这个盲区 —— 但盲区本身还在。）
    */
   private async diskNameOf(dir: string, filename: string): Promise<string | null> {
     const filePath = join(dir, filename);
@@ -634,9 +805,11 @@ export class MemoryStore {
       const head = (await Bun.file(filePath).text()).slice(0, 4096);
       const m = head.match(FRONTMATTER_RE);
       if (!m) return null;
-      const nameM = m[1].match(/^name:\s*(.+)$/m);
-      const raw = nameM?.[1]?.trim().replace(/^["']|["']$/g, "");
-      return raw || null;
+      // P2-13：必须与 `parseMemoryFile` 用**同一个**读取口径。这里曾自己写
+      // `/^name:/m` —— 于是撞名判据看到的 name 与 loader 实际用作 key 的 name
+      // 可能不是同一个值（嵌套格式文件上尤其如此），而两者不一致时 P0-1 的
+      // 撞名循环就会漏判：判据说「不撞」，loader 却把两条并成同一个 key。
+      return readFrontmatterFields(m[1]).name || null;
     } catch {
       return null;
     }
@@ -700,8 +873,9 @@ export class MemoryStore {
       // ─── P0-1 写入侧：加 `-N` 后缀前必须先问「磁盘上那个文件是不是同一个 key」 ───
       //
       // 旧实现只查内存里的 `files.values()`。而 `files` 只装得下 `loadDir` 认得的文件：
-      // 子目录里的记忆（缺陷 6）、frontmatter 解析失败的、以及模型用 Write 工具直接写的，
-      // 都不在其中。于是「磁盘上已有 reference_x.md（`name: x`），但 files 里没有 x」时，
+      // frontmatter 解析失败的、以及模型用 Write 工具直接写的，都不在其中
+      // （子目录曾是这个盲区最大的一块，P1-6 已让它进枚举）。
+      // 于是「磁盘上已有 reference_x.md（`name: x`），但 files 里没有 x」时，
       // 旧代码走新建分支 → 撞名 → 加 `-1` → 落出**第二个 `name: x`**，
       // 也就是加载侧刚修的那个孤儿状态的**生产路径**。
       //
@@ -759,6 +933,9 @@ export class MemoryStore {
               : `记忆条数超过 ${MEMORY_LIMITS.STORE_MAX_ENTRIES}（scope=${scope}），` +
                   `归档 ${old.key}（${fn}）失败——该文件保留在原处，仅从索引移除`,
           );
+          // P1-12 指标 ③：驱逐计数。P0-2 之前这条路径是**完全静默**的 unlink，
+          // 「记忆被淘汰了多少条」在轨迹里查不到；现在归档了，但没有计数一样查不到。
+          logMemoryGuard({ kind: "evicted_to_archive", via: "store", scope });
         }
         entries.delete(old.key);
         files.delete(old.key);
@@ -766,7 +943,11 @@ export class MemoryStore {
     }
 
     await this.writeIndex(dir, entries);
-    clearMemorySummaryCache();
+    // P1-11：推进写入代数（内含 clearMemorySummaryCache）——让**其它 8 个实例**的
+    // 下一次 load() 重读。只清摘要缓存是旧行为，条目缓存留着陈旧的那半是本条缺陷本身。
+    // 本实例自己的 loadedGeneration 一并跟上：内存已是最新，不必自我重读。
+    invalidateMemoryCaches();
+    this.loadedGeneration = memoryWriteGeneration;
     log.debug("MEMORY", `记忆已保存: [${scope}] ${key}`);
   }
 
@@ -807,7 +988,12 @@ export class MemoryStore {
     if (!scope || scope === "global") {
       await tryDelete(this.globalEntries, this.globalFiles, this.globalDir);
     }
-    if (deleted) clearMemorySummaryCache();
+    if (deleted) {
+      // P1-11：删除同样要推进代数——否则别的实例缓存里那条已被 unlink 的记忆还在，
+      // 索引重建时会把它写回去（指向一个不存在的文件）。
+      invalidateMemoryCaches();
+      this.loadedGeneration = memoryWriteGeneration;
+    }
     return deleted;
   }
 
@@ -909,6 +1095,9 @@ export class MemoryStore {
     await this.load();
 
     const sections: string[] = [];
+    // P1-12 指标 ②：跨 scope 累加「注入了几条指针 / 其中几条带年龄」
+    let injectedEntries = 0;
+    let injectedAged = 0;
     for (const [dir, label] of [
       [this.projectDir, "项目记忆"] as const,
       [this.globalDir, "全局记忆"] as const,
@@ -926,10 +1115,37 @@ export class MemoryStore {
       // 目录必须是绝对路径且与链接可直接拼接：模型拿 `${dir}/${链接}` 就能 Read。
       // P0-3：正文逐行补「多久之前」，让 freshness 真的到达模型眼前（见 annotateIndexAges）。
       const entries = dir === this.globalDir ? this.globalEntries : this.projectEntries;
-      sections.push(`#### ${label}（目录：${dir}）\n\n${annotateIndexAges(text, entries)}`);
+      const stat: { entryCount?: number; agedCount?: number } = {};
+      const annotated = annotateIndexAges(text, entries, stat);
+      injectedEntries += stat.entryCount ?? 0;
+      injectedAged += stat.agedCount ?? 0;
+      sections.push(`#### ${label}（目录：${dir}）\n\n${annotated}`);
     }
 
-    return sections.length > 0 ? sections.join("\n\n") : null;
+    if (sections.length === 0) return null;
+    const content = sections.join("\n\n");
+
+    // ─── P1-12 指标 ②：注入命中的**分母** ───
+    //
+    // 「写进去的记忆有没有被召回过」这个问题，分子（模型真去 Read 了哪几条）
+    // 由 read 工具侧的 tool_call 轨迹提供，而分母只能在这里取 ——
+    // 注入了多少条指针、其中多少条带上了年龄标注（= P0-3 freshness 的到达率）。
+    //
+    // 北极星「分母比分子重要」：分母口径一变，命中率整条曲线就平移。
+    // 所以口径在此写死为「本次注入进 system prompt 的索引指针行数」，
+    // 不是记忆总数、不是磁盘文件数 —— 截断掉的那些没进上下文，不该进分母。
+    try {
+      const { logMemoryInject } = await import("../analytics/events.ts");
+      logMemoryInject({
+        indexEntryCount: injectedEntries,
+        tokens: Math.ceil(content.length / 4),
+        agedEntryCount: injectedAged,
+      });
+    } catch {
+      /* 埋点失败不影响注入 */
+    }
+
+    return content;
   }
 
   /** 获取统计信息 */
@@ -944,7 +1160,8 @@ export class MemoryStore {
   /**
    * 写入 / 重建 MEMORY.md 索引。
    * 格式：- [name](file.md) — description
-   * 截断：≤200 行、≤25KB，超限附加警告。
+   * 截断口径（≤200 条指针 / ≤25KB 真字节 / 只在行边界停）见 `index-budget.ts` ——
+   * P1-7 修的三个错都在那里，agent 记忆线共用同一份实现，别在这里另写一份。
    */
   private async writeIndex(dir: string, entries: Map<string, MemoryEntry>): Promise<void> {
     const indexPath = join(dir, INDEX_FILE);
@@ -962,26 +1179,44 @@ export class MemoryStore {
     }
 
     const sorted = [...entries.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-    const lines: string[] = ["# Memory Index", ""];
-    let truncated = false;
-    for (const e of sorted) {
-      if (lines.length >= MEMORY_LIMITS.INDEX_MAX_LINES) {
-        truncated = true;
-        break;
-      }
+    const entryLines = sorted.map((e) => {
       const fn = files.get(e.key) ?? memoryFilename(e.type || "project", e.key);
       const desc = normalizeMemoryDesc(e.description, e.value);
-      lines.push(`- [${e.key}](${fn}) — ${desc}`);
-    }
-    let content = lines.join("\n") + "\n";
-    if (content.length > MEMORY_LIMITS.INDEX_MAX_BYTES) {
-      content = content.slice(0, MEMORY_LIMITS.INDEX_MAX_BYTES);
-      truncated = true;
-    }
+      return `- [${e.key}](${fn}) — ${desc}`;
+    });
+    const { content, entryCount, truncated } = buildTruncatedIndex(entryLines);
     if (truncated) {
-      content += "\n> ⚠️ 索引已截断（超过 200 行 / 25KB 上限），部分记忆未列出。\n";
+      getLogger().warn(
+        "MEMORY",
+        `索引已截断：${entries.size} 条记忆只列出 ${entryCount} 条（scope 目录 ${dir}）——` +
+          `未列出的记忆在磁盘上但不进上下文，模型看不见它们`,
+      );
     }
     await Bun.write(indexPath, content);
+
+    // ─── P1-12 指标 ①：索引一致性 ───
+    //
+    // 分母是**磁盘上应被索引的 .md 数**（枚举口径与 loadDir 同源），分子是索引指针数。
+    // 差值非 0 就意味着「磁盘上有、模型看不见」，而那是 P0-1（重名遮蔽）、
+    // P1-6（子目录分裂）、P1-7①（配额少 2）、P1-10（写空残留）的**共同表征** ——
+    // 一个指标兜住四个缺陷，这也是缺陷清单把它排在「先于其余功能性修复」的原因。
+    //
+    // 放在写完索引之后取数：此刻两个数都是刚落盘的事实，不是推算值。
+    // 埋点失败绝不能影响索引写入（索引是功能，埋点是观测），故整段包 try。
+    try {
+      const scope = dir === this.globalDir ? "global" : "project";
+      const diskFiles = await enumerateMemoryFiles(dir);
+      const { logMemoryIndexHealth } = await import("../analytics/events.ts");
+      logMemoryIndexHealth({
+        scope,
+        fileCount: diskFiles.length,
+        indexEntryCount: entryCount,
+        shadowedCount: this.shadowedFiles.filter((s) => s.scope === scope).length,
+        truncated,
+      });
+    } catch {
+      /* 埋点失败不影响索引写入 */
+    }
   }
 
   /** 若目录下存在旧 memories.json，迁移为 .md 文件 */

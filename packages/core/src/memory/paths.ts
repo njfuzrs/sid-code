@@ -112,14 +112,47 @@ export function findLegacyProjectKey(raw: string): string | undefined {
 }
 
 /**
+ * `resolveProjectRoot` 的进程内缓存（P2-15）。
+ *
+ * key 是 `cwd \0 sidHome`，**不是**裸 cwd —— 结果依赖这两者：
+ * `isInsideSidHome` 那道防御会因配置根不同而给出不同答案，而测试正是靠
+ * 改 `SID_CONFIG_DIR` 来重定向落盘的。只用 cwd 做 key，第一个测试的结果
+ * 会被后面用不同配置根的测试读到（`bun test` 同批多文件跑在同一进程里）。
+ *
+ * 缓存的是 git toplevel 查询结果。同一进程内一个目录的 git 归属几乎不变，
+ * 但**不是绝对不变**（对某个目录先查后 `git init`），所以给测试留了
+ * `clearProjectRootCache()`。生产侧没有清除时机也不需要 —— 真发生了
+ * 目录被 git init，重启进程即可。
+ */
+const projectRootCache = new Map<string, string>();
+
+/** 清空项目根缓存（供测试在改 SID_CONFIG_DIR / git 状态后复位） */
+export function clearProjectRootCache(): void {
+  projectRootCache.clear();
+}
+
+/**
  * 解析项目的 canonical root。
  * 优先取 git 顶层目录（同仓库多 worktree 共享记忆），失败时回退传入路径。
  *
  * 防御（P0-2）：若解析结果落在配置根 ~/.sid-code 之内（典型场景：进程 cwd
  * 恰为 ~/.sid-code，git 顶层或 resolve(cwd) 都会指向配置目录），则拒绝该根，
  * 改回退到 homedir()，避免项目级 ".sid-code/" 叠加出 ~/.sid-code/.sid-code/ 自嵌套。
+ *
+ * 结果按 `cwd + 配置根` 缓存（P2-15）：内部要 fork 一个 git 进程，实测单次 5.4ms，
+ * 而它落在 write/edit 的**每次调用**路径上。
  */
 export function resolveProjectRoot(cwd: string = process.cwd()): string {
+  const cacheKey = `${cwd}\0${getSidHome()}`;
+  const cached = projectRootCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const resolved = resolveProjectRootUncached(cwd);
+  projectRootCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+function resolveProjectRootUncached(cwd: string): string {
   let root: string;
   try {
     const top = execSync("git rev-parse --show-toplevel", {
@@ -289,6 +322,59 @@ export function isAutoMemPath(absolutePath: string, memoryDir: string): boolean 
   const normalizedTarget = resolve(absolutePath);
   const normalizedDir = resolve(memoryDir);
   return normalizedTarget === normalizedDir || normalizedTarget.startsWith(normalizedDir + sep);
+}
+
+/**
+ * 判断绝对路径是否落在**任何一条私有记忆线**的目录内（P1-8 的路径判据）。
+ *
+ * 覆盖三处，缺一处就是一个没有 secret 闸门的写入口：
+ * - `~/.sid-code/projects/<key>/memory/` —— 项目私有记忆（`getAutoMemPath`）
+ * - `~/.sid-code/memory/` —— 全局私有记忆（`MemoryStore` 的 globalDir）
+ * - `~/.sid-code/memory/agents/<type>/` —— agent 记忆（含在上一条里，但显式列出
+ *   是因为它由 `saveAgentMemory` 单独落盘，容易在审计时被当成第四条线漏掉）
+ *
+ * ⚠️ **刻意不含团队记忆目录**：那条线由 `isTeamMemPath` 管，且它的闸门语义不同
+ * （团队记忆未启用时不拦 —— 此时那只是个普通本地目录）。两个判据合并成一个的话，
+ * 「未启用团队记忆」这个豁免会漏到私有记忆上，而私有记忆的闸门**不应该有豁免**。
+ *
+ * ⚠️ 与 `isAutoMemPath` 的区别：那个要调用方传 `memoryDir`（提取代理的权限校验用，
+ * 目标目录由调用方决定）；这个自己派生全部已知记忆目录，供**工具层**在不知道
+ * 「这次写的是哪条线」时判断「这是不是一次记忆写入」。
+ */
+export function isAnyPrivateMemPath(absolutePath: string, cwd: string = process.cwd()): boolean {
+  const target = resolve(absolutePath);
+
+  // ─── P2-15：先做纯字符串的廉价否定，再考虑昂贵解析 ───
+  //
+  // 这个判据落在 write/edit 的**每次调用**上（`checkPrivateMemSecrets` 没有
+  // enabled 开关 —— 私有记忆一直在写，见 write-guard.ts 的说明），而下面
+  // `getAutoMemPath` 会经 `resolveProjectRoot` fork 一个 git 进程：实测单次
+  // 5.4ms，edit 一次编辑调两次。改一个普通源码文件本来与记忆毫无关系，
+  // 却要为此付两次 git 启动。
+  //
+  // 两条记忆线**都**在配置根之下（`projectsRoot()` 与 `agentsMemRoot()` 都
+  // 从 `getSidHome()` 拼出），所以「目标不在配置根内」⇒ 一定不是私有记忆路径。
+  // 这是个只用 `resolve` + 前缀比较的判断，不碰磁盘、不 fork 进程。
+  //
+  // ⚠️ 这条捷径的正确性依赖「记忆目录必在配置根内」这个不变量。`getAutoMemPath`
+  // 的 `override` 参数是唯一能打破它的入口 —— 当前生产零调用方传它（实测
+  // `grep AutoMemPath(` 只有 paths.ts 自身与 app.ts 的单参调用），
+  // 而该参数的来源被刻意限定为「非 projectSettings 的可信配置」。
+  // **哪天真要接通 override，这里必须一起改**，否则闸门会在自定义记忆目录上
+  // 静默失效（是"漏拦"而非"误拦"，测试不会红）。门禁见
+  // `tests/memory/hot-path-p2.test.ts` 的「override 目录仍被判为记忆路径」一条。
+  const home = resolve(getSidHome());
+  if (target !== home && !target.startsWith(home + sep)) return false;
+
+  const dirs = [
+    getAutoMemPath(cwd),
+    // 全局记忆根（`~/.sid-code/memory/`）—— agent 记忆目录是它的子目录
+    join(getSidHome(), "memory"),
+  ];
+  return dirs.some((d) => {
+    const nd = resolve(d);
+    return target === nd || target.startsWith(nd + sep);
+  });
 }
 
 /**

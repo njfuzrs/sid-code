@@ -64,9 +64,25 @@ export interface RelevantMemory {
 
 /** 记忆存储限制（对齐 Claude Code） */
 export const MEMORY_LIMITS = {
-  /** MEMORY.md 索引最大行数 */
-  INDEX_MAX_LINES: 200,
-  /** MEMORY.md 索引最大字节数 */
+  /**
+   * MEMORY.md 索引最多列出的**指针条数**（P1-7 ①）。
+   *
+   * ⚠️ 数的是条目，**不含 `# Memory Index` + 空行那两行表头**。旧常量叫
+   * `INDEX_MAX_LINES` 且循环判的是总行数 ⇒ 表头挤占配额，200 只放得下 198 条。
+   *
+   * 这个数必须与 `STORE_MAX_ENTRIES`（磁盘保留线）**同值**：低于它，稳态下
+   * 就永远有几条记忆在磁盘上、不在索引里 —— 表现成「孤儿」，与 P0-1 的重名遮蔽
+   * **症状同形、成因不同**，排查时会互相冒充。门禁见 `tests/memory/store.test.ts`。
+   */
+  INDEX_MAX_ENTRIES: 200,
+  /**
+   * MEMORY.md 索引最大**字节数**（真 UTF-8 字节，不是 `.length`）。
+   *
+   * ⚠️ 单位就是字节，别再用 `content.length` 比它：那是 UTF-16 code unit 数，
+   * 中文 1 字符 = 3 字节，实测 190 条纯中文摘要 `char 25041 / utf8 67725`（超标 2.7×）。
+   * 索引每个会话全量常驻 system prompt，量错单位就是每轮都在付的隐形成本。
+   * 唯一正确的量法是 `Buffer.byteLength(s, "utf8")`（store.ts 的 `utf8Bytes`）。
+   */
   INDEX_MAX_BYTES: 25_000,
   /** 单条记忆正文最大字符数 */
   ENTRY_MAX_CHARS: 10_000,
