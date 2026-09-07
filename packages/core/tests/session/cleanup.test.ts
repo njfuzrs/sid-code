@@ -446,3 +446,212 @@ describe("D7/D8：兄弟存储的对称清理", () => {
     expect(existsSync(otherProgress)).toBe(true);
   });
 });
+
+/**
+ * D9：**子代理 sidechain 文件不是「损坏文件」，不能被清理删掉。**
+ *
+ * sidechain（`<sessionId>-<agentId>.jsonl`）没有 `session_start` 记录 ⇒ parseSessionJsonl
+ * 返回 null ⇒ 落到 `parse-error`，而 parse-error 在可删白名单里 ⇒ **一个活着的会话的
+ * 子代理对话记录被当成损坏文件静默删除**，删除理由是「文件损坏」，而它没坏。
+ *
+ * 注：缺陷报告把这条写成「kind 过滤空转、当前危害为零」。实测危害已在发生，
+ * 且补 `kind` 的写入端救不了这条路径 —— sidechain 走不到那个 if，前面的判空就拦住了。
+ * 所以判据落在「按内容识别 sidechain」，见 utils.ts 的 isSidechainContent 接入点。
+ */
+describe("D9：sidechain 文件不被当成损坏文件清理", () => {
+  let testDir: string;
+  let origHome: string | undefined;
+  let origConfigDir: string | undefined;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `sid-cleanup-d9-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(testDir, ".sid-code", "sessions"), { recursive: true });
+    origHome = process.env.HOME;
+    process.env.HOME = testDir;
+    origConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(testDir, ".sid-code");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = origConfigDir;
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true });
+  });
+
+  const OLD_TS = "2000-01-01T00:00:00.000Z";
+  /** 很旧的 mtime（秒）：过掉 D4 给损坏文件加的 minRetention 兜底，否则测不到判损分支。 */
+  const OLD_MTIME_SEC = new Date(OLD_TS).getTime() / 1000;
+
+  function writeSidechain(sessionId: string, agentId: string): string {
+    const file = join(sidPaths.sessions(), `${sessionId}-${agentId}.jsonl`);
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: "sidechain_start",
+          sessionId,
+          agentId,
+          agentType: "general",
+          description: "子代理任务",
+          model: "m",
+          timestamp: OLD_TS,
+        }),
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "子代理的工作内容" }],
+          turn: 1,
+          timestamp: OLD_TS,
+        }),
+      ].join("\n") + "\n",
+    );
+    utimesSync(file, OLD_MTIME_SEC, OLD_MTIME_SEC);
+    return file;
+  }
+
+  /** 真损坏的文件（能解析出行，但没有 session_start ⇒ 解析返回 null）。 */
+  function writeCorrupt(name: string): string {
+    const file = join(sidPaths.sessions(), name);
+    writeFileSync(file, JSON.stringify({ type: "user_message", message: {} }) + "\n");
+    utimesSync(file, OLD_MTIME_SEC, OLD_MTIME_SEC);
+    return file;
+  }
+
+  test("D9：扫描把 sidechain 归为 sidechain 成因（不是 parse-error），因而不可删", async () => {
+    writeSidechain("20260101-000000-parent01", "agentX");
+    const entries = await getAllSessionFiles(sidPaths.sessions());
+    const entry = entries.find((e) => e.fileName.endsWith("-agentX.jsonl"));
+
+    expect(entry).toBeDefined();
+    expect(entry!.excludeReason).toBe("sidechain");
+
+    const { isDeletableExcludeReason } = await import("@sid-code/core/session/utils.ts");
+    expect(isDeletableExcludeReason(entry!.excludeReason)).toBe(false);
+  });
+
+  test("D9：清理不删 sidechain，但同期真损坏文件照删（反向自证清理在工作）", async () => {
+    const sidechainFile = writeSidechain("20260101-000000-parent01", "agentX");
+    const corruptFile = writeCorrupt("really-broken.jsonl");
+
+    await cleanupExpiredSessions(
+      {} as any,
+      { enabled: true, maxAge: "1h", minRetention: "1h" },
+      "brand-new-process-id",
+    );
+
+    expect(existsSync(sidechainFile)).toBe(true);
+    // 反向自证：不加这条，「清理什么都没干」也能让上一条变绿
+    expect(existsSync(corruptFile)).toBe(false);
+  });
+});
+
+/**
+ * D12：**`maxCount` 的语义是「磁盘上最多留这么多个会话」，判据用遍历下标 `i` 是对的。**
+ *
+ * 这组测试是一道**反向门禁**：缺陷报告主张把 `i` 换成「独立 kept 计数器（只在真正保留时
+ * 递增）」，而实测那样改会让总保留数**突破** maxCount —— 受保护会话不再计入配额，
+ * 配额被不受保护的会话独占。报告给的例子（55 个会话 / 最新 5 个在 minRetention 内 /
+ * maxCount=50）自己就能证伪它：报告预言「实际只保留 45 个」，实跑保留**恰好 50 个**，
+ * 因为那 5 个被保护的会话本身也在保留之列（45 + 5 = 50），没有缺口。
+ *
+ * 所以这里锁的不是「修好了」，是「别按那个方案改」。
+ */
+describe("D12：maxCount 淘汰的下标口径（反向门禁）", () => {
+  let testDir: string;
+  let origHome: string | undefined;
+  let origConfigDir: string | undefined;
+
+  beforeEach(() => {
+    testDir = join(
+      tmpdir(),
+      `sid-cleanup-d12-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(join(testDir, ".sid-code", "sessions"), { recursive: true });
+    origHome = process.env.HOME;
+    process.env.HOME = testDir;
+    origConfigDir = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = join(testDir, ".sid-code");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = origConfigDir;
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true });
+  });
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * 造 total 个会话条目，前 freshCount 个「很新」（落在 minRetention=1d 内、受保护），
+   * 其余每个间隔 2 天（都过了 minRetention）。最新在前 —— 与被测函数的排序一致。
+   */
+  function buildEntries(total: number, freshCount: number) {
+    const now = Date.now();
+    return Array.from({ length: total }, (_, i) => {
+      const t = i < freshCount ? now - i * 60_000 : now - (i + 2) * 2 * DAY_MS;
+      return {
+        fileName: `s${i}.jsonl`,
+        dirPath: sidPaths.sessions(),
+        sessionInfo: {
+          id: `s${i}`,
+          file: `s${i}`,
+          fileName: `s${i}.jsonl`,
+          startTime: new Date(t).toISOString(),
+          lastUpdated: new Date(t).toISOString(),
+          messageCount: 5,
+          firstUserMessage: "",
+          isCurrentSession: false,
+          index: i,
+        },
+      } as any;
+    });
+  }
+
+  test("D12：报告给的场景下总保留数恰为 maxCount，而非报告预言的 maxCount - 受保护数", async () => {
+    const { identifySessionsToDelete } = await import("@sid-code/core/session/cleanup.ts");
+    const all = buildEntries(55, 5);
+
+    const toDelete = await identifySessionsToDelete(all, {
+      enabled: true,
+      maxCount: 50,
+      minRetention: "1d",
+    });
+
+    // 报告预言「实际只保留了 45 个」；实测保留 50 = maxCount。
+    expect(all.length - toDelete.length).toBe(50);
+    // 反向自证：淘汰确实发生了（否则上一条在 total<=maxCount 时也会绿）
+    expect(toDelete.length).toBe(5);
+  });
+
+  test("D12：受保护会话计入配额 —— 总保留数不得突破 maxCount", async () => {
+    const { identifySessionsToDelete } = await import("@sid-code/core/session/cleanup.ts");
+
+    // 遍历「minRetention 内的会话数」，检查总保留数始终不超过 maxCount。
+    // 换成 kept 计数器后，fresh>0 的场景会保留 maxCount + fresh 个 —— 这条会红。
+    for (const fresh of [0, 1, 5, 9]) {
+      const all = buildEntries(60, fresh);
+      const toDelete = await identifySessionsToDelete(all, {
+        enabled: true,
+        maxCount: 10,
+        minRetention: "1d",
+      });
+      const retained = all.length - toDelete.length;
+      expect(retained).toBe(10);
+    }
+  });
+
+  test("D12：受保护会话数超过 maxCount 时，保护优先于配额（不许为凑配额删掉它们）", async () => {
+    const { identifySessionsToDelete } = await import("@sid-code/core/session/cleanup.ts");
+    // 20 个会话全部落在 minRetention 内，maxCount=10：保护必须赢，一个都不删。
+    // 这是 D3/D4 的同一条底线 —— 配额绝不能删掉正在用/刚用过的会话。
+    const all = buildEntries(20, 20);
+    const toDelete = await identifySessionsToDelete(all, {
+      enabled: true,
+      maxCount: 10,
+      minRetention: "1d",
+    });
+    expect(toDelete.length).toBe(0);
+  });
+});

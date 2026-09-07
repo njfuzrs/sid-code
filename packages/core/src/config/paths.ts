@@ -203,6 +203,18 @@ export const sidPaths = {
   // ── 会话 ──
   sessions: () => sidHomePath("sessions"),
   activeSessions: () => sidHomePath("active-sessions"),
+  /**
+   * D11：`sessions/` 根目录下**非会话裸文件**的隔离区。
+   *
+   * 为什么是"隔离"而不是"删除"：实测残留的两个裸文件（`第` 0 字节、`只有第` 7452 字节）
+   * 里含**真实用户提示词全文**。它是一次写入事故的物证，删掉就再也查不到那条路径；
+   * 但留在 `sessions/` 根目录下又是数据主权口径下的真实问题（未加密、无归属的
+   * 用户内容裸放在磁盘上）。移到隔离区两头都占：物证还在，且不再混在会话数据里。
+   *
+   * 刻意放在 `sessions/` **之外**：放在里面会被 listAllSessionDirs 当成项目子目录扫描，
+   * 于是隔离区自己变成下一个要处理的东西。
+   */
+  quarantine: () => sidHomePath("quarantine"),
 
   // ── 并发冲突检测 ──
   fileIntents: () => sidHomePath("file-intents"),

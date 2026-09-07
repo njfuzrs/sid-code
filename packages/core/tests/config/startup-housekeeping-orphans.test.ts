@@ -427,3 +427,95 @@ describe("过期 Session Memory 会话笔记回收（阈值 30 天，按 mtime �
     expect(existsSync(other)).toBe(true);
   });
 });
+
+/**
+ * D11：`sessions/` 根目录的非会话裸文件移入隔离区。
+ *
+ * 实测残留物是两个裸文件（`第` 0 字节 / `只有第` 7452 字节），后者含**真实用户提示词全文**
+ * —— 引号被剥、`\n` 被字面化的 JSON 残骸，不是 JSONL 写入路径能产生的形态。
+ *
+ * 这组用例的核心判据是**「移动」而不是「删除」**：那个文件既是写入事故的物证
+ * （删了就查不到产生它的路径），又是不该裸放在会话目录里的用户内容。所以每条用例都同时
+ * 断言「原位置没了」**和**「隔离区里还在、内容一字不差」—— 只断言前者的话，
+ * 把它改成 rmSync 也能变绿，而那就丢了物证。
+ */
+describe("D11：sessions 根目录裸文件隔离", () => {
+  /** 隔离区里的文件列表（名字带时间戳前缀，故按后缀匹配）。 */
+  function quarantined(): string[] {
+    const dir = sidPaths.quarantine();
+    return existsSync(dir) ? readdirSync(dir) : [];
+  }
+
+  test("裸文件被移入 quarantine/ 而非删除，内容一字不差", () => {
+    const sessions = sidPaths.sessions();
+    mkdirSync(sessions, { recursive: true });
+    // 复刻实测残留物：含用户提示词的 JSON 残骸 + 一个 0 字节文件
+    const strayBody = "{type:user_message,message:{role:user,content:[{type:text,text:你在为";
+    writeFileSync(join(sessions, "只有第"), strayBody);
+    writeFileSync(join(sessions, "第"), "");
+
+    runStartupHousekeeping(Date.now());
+
+    // 原位置清空
+    expect(existsSync(join(sessions, "只有第"))).toBe(false);
+    expect(existsSync(join(sessions, "第"))).toBe(false);
+
+    // 隔离区里两个都在 —— 这条是「移而不删」的承重断言
+    const moved = quarantined();
+    expect(moved.length).toBe(2);
+    const bodyFile = moved.find((n) => n.endsWith("只有第"));
+    expect(bodyFile).toBeDefined();
+    expect(readFileSync(join(sidPaths.quarantine(), bodyFile!), "utf-8")).toBe(strayBody);
+  });
+
+  test("项目子目录与会话文件一律不动（判据是结构性的，不猜内容）", () => {
+    const sessions = sidPaths.sessions();
+    const projDir = join(sessions, "Users-someone-Code-proj");
+    mkdirSync(projDir, { recursive: true });
+    const realSession = join(projDir, "20260101-000000-abcd1234.jsonl");
+    writeFileSync(realSession, JSON.stringify({ type: "session_start" }) + "\n");
+    // 根级历史遗留目录也必须留（仍被读取路径引用）
+    mkdirSync(join(sessions, "summaries"), { recursive: true });
+    mkdirSync(join(sessions, "_legacy"), { recursive: true });
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(realSession)).toBe(true);
+    expect(existsSync(join(sessions, "summaries"))).toBe(true);
+    expect(existsSync(join(sessions, "_legacy"))).toBe(true);
+    expect(quarantined().length).toBe(0);
+  });
+
+  test("点文件不搬（.DS_Store 之类不是我们的产物）", () => {
+    const sessions = sidPaths.sessions();
+    mkdirSync(sessions, { recursive: true });
+    const dsStore = join(sessions, ".DS_Store");
+    writeFileSync(dsStore, "x");
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(dsStore)).toBe(true);
+    expect(quarantined().length).toBe(0);
+  });
+
+  test("同名裸文件二次出现时不互相覆盖（物证不能被后一次隔离抹掉）", () => {
+    const sessions = sidPaths.sessions();
+    mkdirSync(sessions, { recursive: true });
+
+    writeFileSync(join(sessions, "第"), "first");
+    runStartupHousekeeping(Date.now());
+    // 水位线已写入 → 第二轮需要跳过节流，用一天后的时间戳
+    writeFileSync(join(sessions, "第"), "second");
+    runStartupHousekeeping(Date.now() + 25 * 3600_000);
+
+    const moved = quarantined();
+    expect(moved.length).toBe(2);
+    const bodies = moved.map((n) => readFileSync(join(sidPaths.quarantine(), n), "utf-8")).sort();
+    expect(bodies).toEqual(["first", "second"]);
+  });
+
+  test("sessions 目录不存在时不抛异常（首次启动路径）", () => {
+    expect(existsSync(sidPaths.sessions())).toBe(false);
+    expect(() => runStartupHousekeeping(Date.now())).not.toThrow();
+  });
+});

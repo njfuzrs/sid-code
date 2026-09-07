@@ -160,6 +160,34 @@ export interface CompactionOutcome {
   reason?: "no_split_point" | "invalid_result_rolled_back" | "no_reduction";
 }
 
+/**
+ * D10：压缩落盘记录的附加元数据。
+ *
+ * 为什么需要它、而不是只传 `(summary, removedCount)`：观察者的实体同时干两件事
+ * （app.ts `onContextCompacted`）——落 `context_compact` 诊断记录，以及把摘要存成
+ * **会话摘要**供下次 resume 补偿被裁掉的历史（D2）。这两件事对「摘要」的要求不同：
+ *
+ * - 诊断记录要的是「这次压缩发生了什么」，任何字符串都合法；
+ * - 会话摘要要的是「被压掉的历史讲了什么」，且 `saveSummary` 是**按会话 id 覆盖写**。
+ *
+ * 于是把紧急截断的 miniSummary（「截断 N 条，涉及文件 X」这类操作性文本）
+ * 也喂给 saveSummary 会**覆盖掉之前那条真正的内容摘要** —— 恢复质量反而变差，
+ * 而且是静默变差。`summaryIsRestorable` 就是这条边界：只有它为 true 时才动会话摘要。
+ */
+export interface CompactionRecordMeta {
+  /**
+   * 压缩来源。`summary`=LLM/文本摘要压缩（compactWithSummary）；
+   * `emergency`=紧急截断；`pipeline`=渐进式压缩管道（工具结果裁剪/裁最早消息等）。
+   */
+  source: "summary" | "emergency" | "pipeline";
+  /**
+   * 该 summary 是否可作为**恢复用会话摘要**。
+   * 只有 compactWithSummary 传入的摘要满足（它就是「这段历史讲了什么」）；
+   * 紧急截断与管道压缩产出的是操作性描述，为 false —— 不得覆盖已有会话摘要。
+   */
+  summaryIsRestorable: boolean;
+}
+
 /** 压缩级别 */
 export type CompactionLevel =
   | "none" // 不需要压缩
@@ -270,13 +298,21 @@ export class Manager {
    */
   private transcriptPath?: string;
   /**
-   * P1-4a：压缩事件观察者。compactWithSummary 完成后回调，把「摘要 + 被移除消息数」
+   * P1-4a：压缩事件观察者。压缩完成后回调，把「摘要 + 被移除消息数」
    * 落盘到会话 JSONL（context_compact 记录）。由 App 在 SessionStore 就绪后注入
    * （sessionStore.appendCompact）。未注入时压缩仅改内存态、不落盘——保持向后兼容。
    * 注意：sid-code 的不变量是 resume 永不据 compact boundary 截断历史（见 store.ts 顶部说明），
    * 此记录仅作诊断/可观测用途。
+   *
+   * D10：此前只有 compactWithSummary 一条路径回调，另外两条（emergencyTruncate、
+   * 渐进式压缩管道）不回调 ⇒ 磁盘 `context_compact` 记录恒为 0。现三条都回调，
+   * 统一经 notifyCompacted() 这一处出口。
    */
-  private compactObserver?: (summary: string, removedCount: number) => void;
+  private compactObserver?: (
+    summary: string,
+    removedCount: number,
+    meta: CompactionRecordMeta,
+  ) => void;
   /** 已调用的 Skill 记录（压缩时保留其 prompt 上下文） */
   private invokedSkills: InvokedSkill[] = [];
   /**
@@ -506,9 +542,35 @@ export class Manager {
    * 传 undefined 可解除观察者。
    */
   setCompactObserver(
-    observer: ((summary: string, removedCount: number) => void) | undefined,
+    observer:
+      | ((summary: string, removedCount: number, meta: CompactionRecordMeta) => void)
+      | undefined,
   ): void {
     this.compactObserver = observer;
+  }
+
+  /**
+   * D10：通知观察者「压缩已发生」的**唯一出口**。
+   *
+   * 抽成一处而非在每条压缩路径各写一遍 try/catch，是因为这条缺陷的形态正是
+   * 「三个入口只接了一个」——注释宣称接线已完成，实测磁盘 `context_compact` 记录 0 条。
+   * 复制粘贴式接线必然再漏一次：新增第四条压缩路径时，抄漏就是又一次静默断线。
+   *
+   * 三条约束：
+   * - **没真压动就不落盘**：判据与 settleCompaction 的横幅判据一致（after < before），
+   *   否则日志/记录会宣告一次没发生的压缩（2026-07-29 假压缩误报事故的同类形态）。
+   * - **落盘失败绝不影响已完成的内存压缩**：包在 try 里，只 warn。
+   * - **removedCount 取实际减少的条数**，不取 splitPoint —— 压缩会重注入摘要+ack，
+   *   splitPoint 是「切掉多少」，实际净减少比它少 1~2 条。诊断口径要能对上消息数变化。
+   */
+  private notifyCompacted(summary: string, removedCount: number, meta: CompactionRecordMeta): void {
+    if (!this.compactObserver) return;
+    if (removedCount <= 0) return;
+    try {
+      this.compactObserver(summary, removedCount, meta);
+    } catch (e) {
+      getLogger().warn("CONTEXT", `压缩记录落盘失败（不影响压缩）: ${(e as Error)?.message}`);
+    }
   }
 
   /**
@@ -942,6 +1004,31 @@ export class Manager {
    * @param summary 压缩摘要
    * @param messageCountBefore 压缩前的消息数
    */
+  /**
+   * D10：落盘一条「由外部压缩管道造成的」压缩记录（渐进式压缩管道路径）。
+   *
+   * 为什么需要一个显式方法，而不是把通知塞进 `addCompactBoundary`：
+   * 三条 loop 路径（blocking / emergency / hard）**都**调 addCompactBoundary，而前两条
+   * 走的是 `emergencyTruncate()`，那里已经通知过一次。挂在 addCompactBoundary 上会给
+   * 紧急路径记两条 —— 诊断记录里出现一次不存在的压缩，正是这类记录最不该有的错。
+   *
+   * 调用时机要求：必须在 `setMessages(pipelineResult.messages)` **之后、autoCompact/
+   * collapse 之前**。那两者内部各自走 compactWithSummary 会自己通知，晚调会把它们的
+   * 压缩量算进管道账上。
+   *
+   * summaryIsRestorable=false：入参是「toolResultBudget: 截断 3 个 → snipCompact: 裁剪 8 条」
+   * 这类步骤描述，不是历史内容摘要，不能覆盖会话摘要（见 CompactionRecordMeta）。
+   *
+   * @param summary 管道步骤描述（用于诊断记录正文）
+   * @param messageCountBefore 管道执行前的消息数
+   */
+  recordPipelineCompaction(summary: string, messageCountBefore: number): void {
+    this.notifyCompacted(summary, messageCountBefore - this.messages.length, {
+      source: "pipeline",
+      summaryIsRestorable: false,
+    });
+  }
+
   addCompactBoundary(summary: string, messageCountBefore: number): void {
     const boundaryMsg: Message = {
       role: "user",
@@ -1637,6 +1724,18 @@ export class Manager {
       // 极端情况：截断后反而没变少（摘要+ack 抵消了裁掉的量）。如实报失败，不谎报。
       log.warn("CONTEXT", `紧急截断未减少消息数（${before} → ${after}），视为未生效`);
     }
+
+    // D10：紧急截断此前**完全不落盘** —— 三个压缩入口只接了 compactWithSummary 一个，
+    // 于是「这个会话被紧急截断过、丢了多少」在会话文件里查不到。notifyCompacted 自带
+    // 「没真压动就不落盘」判据，故这里无条件调用即可（after >= before 时它自己跳过）。
+    //
+    // summaryIsRestorable=false：miniSummary 是纯本地提取的操作性描述（「截断 N 条、
+    // 涉及文件 X」），不是「这段历史讲了什么」。拿它去覆盖会话摘要会让 resume 的
+    // 补偿质量**静默变差**（saveSummary 按会话 id 覆盖写），所以它只进诊断记录。
+    this.notifyCompacted(miniSummary, before - after, {
+      source: "emergency",
+      summaryIsRestorable: false,
+    });
     return {
       success: after < before,
       messageCountBefore: before,
@@ -1982,15 +2081,14 @@ export class Manager {
     // 记录压缩到会话指标
     getSessionMetrics().recordCompact();
 
-    // P1-4a：通知观察者落盘 context_compact 记录（summary + 被移除消息数=splitPoint）。
-    // 放在最后、包在 try 里：落盘失败绝不能影响已完成的内存压缩。
-    if (this.compactObserver) {
-      try {
-        this.compactObserver(summary, splitPoint);
-      } catch (e) {
-        getLogger().warn("CONTEXT", `压缩记录落盘失败（不影响压缩）: ${(e as Error)?.message}`);
-      }
-    }
+    // P1-4a：通知观察者落盘 context_compact 记录。
+    // D10：removedCount 从 splitPoint 改为**实际净减少条数** —— 本函数会重注入摘要+ack，
+    // splitPoint 是「切掉多少」而非「净少了多少」，用它记账会与消息数变化对不上。
+    // 这条路径的摘要是「这段历史讲了什么」，故 summaryIsRestorable=true（可存为会话摘要）。
+    this.notifyCompacted(summary, messageCountBefore - messageCountAfter, {
+      source: "summary",
+      summaryIsRestorable: true,
+    });
 
     return {
       success: true,

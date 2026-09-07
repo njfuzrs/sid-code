@@ -893,6 +893,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
             if (pipelineResult.steps.length > 0) {
               ctxMgr.setMessages(pipelineResult.messages);
+              // D10：渐进式管道是三条压缩入口里第三条**此前完全不落盘**的。
+              // 必须在这里调（setMessages 之后、下方 autoCompact/collapse 之前）——
+              // 那两者内部走 compactWithSummary 会自己落盘，晚调会把它们的压缩量算到管道账上。
+              ctxMgr.recordPipelineCompaction(pipelineResult.steps.join(" → "), msgCountBefore);
               log.info(
                 "QUERY_LOOP",
                 `渐进式压缩: ${pipelineResult.steps.join(" → ")}，节省 ${pipelineResult.totalSavedChars} 字符`,

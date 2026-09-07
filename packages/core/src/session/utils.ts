@@ -9,6 +9,8 @@ import { join } from "path";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
 import { parseSessionJsonl, flushPendingSessionWrites, listAllSessionDirs } from "./store.ts";
+// D9：sidechain 的识别判据只在 sidechain.ts 一处（那里也是写入端），不在本文件复刻。
+import { isSidechainContent } from "./sidechain.ts";
 import { sidPaths } from "../config/paths.ts";
 
 /** 文本匹配结果 */
@@ -77,6 +79,10 @@ export interface SessionInfo {
  * - `missing-fields` —— 缺 id/messages/createdAt/updatedAt 任一。**真损坏**。
  * - `empty`        —— 无任何 user/assistant 消息。**不是损坏**，只是空。
  * - `subagent`     —— `kind === "subagent"`，刻意不进列表。**不是损坏**。
+ * - `sidechain`    —— D9：子代理 sidechain 文件（`<sessionId>-<agentId>.jsonl`）。
+ *                     **不是损坏**，是另一种格式。此前它落在 `parse-error`（无 session_start
+ *                     记录 ⇒ 解析返回 null），而 parse-error 可删 ⇒ 活会话的子代理对话
+ *                     被当损坏文件删掉。判据见 sidechain.ts 的 isSidechainContent。
  * - `read-error`   —— 读文件抛异常。**可能是瞬时故障**（并发写入 / NFS 抖动 / 权限抖动），
  *                     一次读失败就永久删用户数据，代价与成因严重不匹配 → 不删。
  * - `parse-error`  —— 解析器明确返回 null。**真损坏**。
@@ -86,6 +92,7 @@ export type SessionExcludeReason =
   | "missing-fields"
   | "empty"
   | "subagent"
+  | "sidechain"
   | "read-error"
   | "parse-error";
 
@@ -289,6 +296,34 @@ async function scanSessionDir(
         };
       }
       const content = await Bun.file(filePath).text();
+
+      // ─────────────────────────────────────────────────────────────
+      // D9：sidechain 文件（子代理对话，`<sessionId>-<agentId>.jsonl`）必须在**解析之前**
+      // 就被判出来，因为它根本不是主会话格式：没有 session_start 记录，于是
+      // parseSessionJsonl 返回 null → 落到 `parse-error`，而 parse-error 在
+      // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ **被自动清理当成损坏文件删除**。
+      //
+      // 这与文档 D9 的原判断（「当前危害为零，只是 kind 过滤空转」）不同，实测确认危害
+      // 已在发生：造一个 20 天前的主会话 + 它的 sidechain（两者 mtime 都过 minRetention），
+      // 清理输出是「父会话保留，sidechain 进待删清单」—— 一个**活着的**会话的子代理
+      // 对话记录被静默删掉，而删除理由是「文件损坏」。它没坏，只是格式不同。
+      //
+      // 原先那道 `data.kind === "subagent"` 判据接不上这条路径，有两层原因：
+      //   1. `appendMetadata("kind", …)` 全仓零调用点 ⇒ `data.kind` 恒 undefined（断线）；
+      //   2. 即便补上写入端也救不了 sidechain —— 它压根走不到那个 if，
+      //      前面的 `!data` 判空就已经把它拦成 parse-error 了。
+      // 所以修法不是「补 kind 的写入端」，而是**在解析前按内容识别 sidechain**。
+      // kind 判据保留在下方：它是为「主会话格式但标记为子代理」这另一种形态留的位置。
+      // ─────────────────────────────────────────────────────────────
+      if (file.endsWith(".jsonl") && isSidechainContent(content)) {
+        return {
+          fileName: file,
+          dirPath: sessionDir,
+          sessionInfo: null,
+          excludeReason: "sidechain",
+        };
+      }
+
       // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
       const data = file.endsWith(".jsonl")
         ? parseSessionJsonl(content)

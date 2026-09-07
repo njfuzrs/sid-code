@@ -115,6 +115,12 @@ type SessionRecordInput =
       removedCount: number;
       timestamp: string;
       isBoundary?: boolean;
+      /**
+       * D10：压缩来源。`summary`=摘要压缩（有内容补偿）/`emergency`=紧急截断
+       * （只有极简本地摘要）/`pipeline`=渐进式管道（裁剪工具结果与最早消息）。
+       * **可选**：D10 之前落的记录没有这个字段，读取方不得假设它存在。
+       */
+      source?: "summary" | "emergency" | "pipeline";
     }
   | { type: "metadata"; key: string; value: unknown; timestamp: string }
   | { type: "session_end"; totalCostUSD: number; totalMessages: number; timestamp: string };
@@ -584,7 +590,11 @@ export class SessionStore {
    * 文本兜底），保留完整真实消息流才是"最忠实、无损"的恢复方式。见 parseSessionJsonl
    * 顶部注释与 rebuildRecordOrder 的实现说明。
    */
-  appendCompact(summary: string, removedCount: number): void {
+  appendCompact(
+    summary: string,
+    removedCount: number,
+    source?: "summary" | "emergency" | "pipeline",
+  ): void {
     if (!this.currentFile) return;
     this.appendRecord({
       type: "context_compact",
@@ -592,6 +602,10 @@ export class SessionStore {
       removedCount,
       timestamp: new Date().toISOString(),
       isBoundary: true,
+      // D10：压缩来源。三条入口对历史的损耗程度完全不同（摘要压缩有内容补偿，
+      // 紧急截断只有极简本地摘要，管道压缩是裁剪工具结果），不记来源则事后无法区分。
+      // 可选字段：老文件无此字段，读取方不得假设它存在。
+      ...(source ? { source } : {}),
     } as SessionRecordInput);
   }
 
