@@ -58,6 +58,42 @@ describe("状态持久化新特性", () => {
     expect(loaded!.messages.length).toBe(1);
   });
 
+  /**
+   * D10：`source` 字段真的落到了 JSONL 行里。
+   *
+   * 三条压缩入口对历史的损耗程度完全不同（摘要压缩有内容补偿、紧急截断只有极简本地摘要、
+   * 管道压缩是裁剪工具结果）。不记来源，则事后拿着会话文件也分不出「这个会话被压过几次、
+   * 每次是哪种」—— 而这正是 D10 要补的那个采集缺口。所以断言落在**磁盘原文**上，
+   * 不是「函数被调用过」。
+   */
+  test("D10: appendCompact 落盘 source 字段（区分三条压缩入口）", async () => {
+    const store = new SessionStore();
+    store.startSession("compact-source-001", "m", "p", "/cwd");
+    store.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
+    store.appendCompact("摘要压缩", 5, "summary");
+    store.appendCompact("紧急截断", 9, "emergency");
+    store.appendCompact("管道压缩", 3, "pipeline");
+    // 兼容：不传 source 时不写该字段（老文件形态）
+    store.appendCompact("无来源", 1);
+    SessionStore.flushPendingWrites();
+
+    const file = store.getCurrentFile()!;
+    const records = readFileSync(file, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.type === "context_compact");
+
+    expect(records.length).toBe(4);
+    expect(records.map((r) => r.source)).toEqual([
+      "summary",
+      "emergency",
+      "pipeline",
+      undefined, // 不传则不写，读取方不得假设它存在
+    ]);
+    expect(records[1].removedCount).toBe(9);
+  });
+
   // ─── P1-4b: agent_setting 持久化 ───
 
   test("P1-4b: appendMetadata('agent_setting',...) 可被 load 恢复", async () => {

@@ -96,8 +96,8 @@ describe("D2：会话摘要写入端（compactObserver → saveSummary）", () =
     // 复现 doInit() 里的注入，再从 ctxMgr 存下的那个回调触发 ——
     // compactWithSummary 完成时调的就是这个字段（manager.ts 的 `this.compactObserver(...)`）。
     // 刻意不为测试在生产代码上开触发口子：直接取存下的回调，测的就是真实那一条。
-    (app as any).ctxMgr.setCompactObserver((s: string, n: number) =>
-      (app as any).onContextCompacted(s, n),
+    (app as any).ctxMgr.setCompactObserver((s: string, n: number, meta: any) =>
+      (app as any).onContextCompacted(s, n, meta),
     );
     const observer = (app as any).ctxMgr.compactObserver;
     expect(typeof observer).toBe("function"); // 接线存在性本身就是判据
@@ -141,5 +141,65 @@ describe("D2：会话摘要写入端（compactObserver → saveSummary）", () =
     // 反向自证：不该写到进程新 id 下
     const store = new SessionStore();
     expect(await store.loadSummary("process-new-id")).toBeNull();
+  });
+
+  /**
+   * D10 与 D2 的交界：**只有内容摘要能存成会话摘要。**
+   *
+   * D10 把压缩落盘从 1 条路径扩到 3 条，而这个观察者同时是 D2 的会话摘要写入端。
+   * 若不区分来源，紧急截断的 miniSummary（「截断 N 条、涉及文件 X」）与管道的步骤描述
+   * （「snipCompact: 裁剪 8 条」）都会被 `saveSummary` **覆盖写**进会话摘要 ——
+   * 把一条真正的内容摘要换成一句操作日志。下次 resume 时摘要路径虽然可达，
+   * 补偿内容却毫无信息量，而且完全静默。
+   *
+   * 这是「修好可观测性、顺手弄坏恢复质量」的典型形态，所以单独钉一条。
+   */
+  test("D10：紧急截断/管道压缩的摘要只进诊断记录，不覆盖会话摘要", async () => {
+    const app = makeApp();
+    const sessionId = "d10-not-restorable";
+    (app as any).sessionState.sessionId = sessionId;
+
+    // 先落一条真正的内容摘要（compactWithSummary 那条路径）
+    (app as any).onContextCompacted("【内容摘要】用户在重构会话持久化", 20, {
+      source: "summary",
+      summaryIsRestorable: true,
+    });
+    const first = await waitForSummary(sessionId);
+    expect(first).not.toBeNull();
+
+    // 再来一次紧急截断与管道压缩 —— 它们**不得**覆盖上面那条
+    (app as any).onContextCompacted("紧急截断 30 条，涉及文件 a.ts", 30, {
+      source: "emergency",
+      summaryIsRestorable: false,
+    });
+    (app as any).onContextCompacted("snipCompact: 裁剪 8 条", 8, {
+      source: "pipeline",
+      summaryIsRestorable: false,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const store = new SessionStore();
+    const after = await store.loadSummary(sessionId);
+    expect(after).not.toBeNull();
+    // 承重断言：内容摘要仍在，没被操作性文本换掉
+    expect(after!.summary).toContain("【内容摘要】用户在重构会话持久化");
+    expect(after!.summary).not.toContain("紧急截断");
+    expect(after!.summary).not.toContain("snipCompact");
+  });
+
+  /**
+   * 向后兼容：`meta` 缺省时按「可作会话摘要」处理，保持 D10 之前的行为。
+   * 老调用方（两参签名）不会因为 D10 新增的第三个参数而静默失去摘要写入。
+   */
+  test("D10：meta 缺省时仍写会话摘要（不破坏 D2 的既有行为）", async () => {
+    const app = makeApp();
+    const sessionId = "d10-meta-absent";
+    (app as any).sessionState.sessionId = sessionId;
+
+    (app as any).onContextCompacted("没有 meta 的摘要GHI", 9);
+
+    const saved = await waitForSummary(sessionId);
+    expect(saved).not.toBeNull();
+    expect(saved.summary).toContain("没有 meta 的摘要GHI");
   });
 });

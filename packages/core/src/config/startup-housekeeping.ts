@@ -62,7 +62,16 @@
  * 真实会话里，它会被触发吗」。上面三处都是单测过、真实会话零触发。
  */
 
-import { existsSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync } from "fs";
+import {
+  existsSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  rmSync,
+  mkdirSync,
+  renameSync,
+} from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "./paths.ts";
@@ -110,6 +119,17 @@ const SHELL_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** task `.output` 文件的孤儿回收阈值：7 天（与 tool-outputs 同口径） */
 const TASK_OUTPUT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * D11：`sessions/` 根目录下允许存在的**非会话**条目名单。
+ *
+ * 根目录的正常内容只有两类：按项目分的子目录（`Users-xxx-Code-yyy/`）与下面这几个
+ * 已知辅助目录。除此之外的**文件**都是异常写入的产物 —— 会话文件恒落在项目子目录里
+ * （`store.ts` 的 `currentProjectSessionDir()`），不会平铺在根上。
+ *
+ * `_legacy` 与 `summaries` 是历史遗留的根级目录，仍在被读取路径引用，必须排除。
+ */
+const SESSIONS_ROOT_ALLOWED_ENTRIES = new Set(["_legacy", "summaries"]);
 
 /**
  * checkpoints 孤儿会话目录的兜底回收阈值：30 天。
@@ -196,6 +216,8 @@ export function runStartupHousekeeping(
     const checkpointsCleaned = cleanupStaleCheckpoints(now, opts.selfSessionId);
     // 10. P0-4 的配套回收：按会话分文件后，笔记会一个会话攒一个
     const sessionMemoriesCleaned = cleanupStaleSessionMemories(now);
+    // 11. D11：sessions/ 根目录的非会话裸文件移入隔离区（含用户提示词内容，不删只移）
+    const strayQuarantined = quarantineStraySessionFiles();
     writeWatermark(now);
     if (removed > 0) {
       getLogger().info("CLEANUP", `启动清理：移除 ${removed} 个过期 trajectory 会话目录`);
@@ -222,6 +244,13 @@ export function runStartupHousekeeping(
       getLogger().info(
         "CLEANUP",
         `启动清理：移除 ${sessionMemoriesCleaned} 个过期 Session Memory 会话笔记`,
+      );
+    }
+    if (strayQuarantined > 0) {
+      // 用 info 而非 debug：移动了用户可能在意的文件，得让人在日志里查得到去哪了。
+      getLogger().info(
+        "CLEANUP",
+        `启动清理：${strayQuarantined} 个 sessions 根目录裸文件已移入 quarantine/（未删除）`,
       );
     }
   } catch (err) {
@@ -563,6 +592,82 @@ function cleanupStaleCheckpoints(now: number, selfSessionId?: string): number {
  * 本函数在启动时检测当前 cwd 下是否存在 .sid-code/tool-results/ 目录，
  * 存在则递归删除。幂等：不存在则无操作。fire-and-forget：失败不阻塞启动。
  */
+/**
+ * D11：把 `sessions/` 根目录下的**非会话裸文件**移进隔离区。
+ *
+ * ## 现场
+ *
+ * 实测本机根目录残留两个裸文件：`第`（0 字节）与 `只有第`（7452 字节）。后者内容是
+ * **引号被剥掉、`\n` 被字面化**的 JSON 残骸，含一次 changelog 生成任务的完整用户提示词。
+ * 这不是 JSONL 写入路径能产生的形态（`appendRecord` 用 `JSON.stringify`，不可能剥引号），
+ * 更像某条 shell 命令把 JSON 通过管道/重定向写出时被二次处理 —— 文件名 `第` / `只有第`
+ * 也正是中文串被 shell 按空格切词后当成了输出路径（提示词模板里确有以「第」「只有第」
+ * 开头的续行）。
+ *
+ * ## 为什么"移"而不是"删"
+ *
+ * 两个理由都成立，所以两个都要照顾：
+ * - 它是**写入事故的物证**。产生它的那条路径可能还在，删掉就再也查不到。
+ * - 但它含**真实用户提示词全文**，以未加密、无归属的裸文件形式混在会话数据里 ——
+ *   数据主权口径下的真实问题。
+ *
+ * 移进 `quarantine/` 两头都占。**刻意不做内容判断**：不去解析它、不猜它是什么，
+ * 判据只有结构性的两条 —— 在 sessions 根目录、且是文件（不是项目子目录）。
+ * 猜内容就会有猜错的那次，而这里猜错的代价是移走用户的会话数据。
+ *
+ * ## 为什么当前"不可见"仍要处理
+ *
+ * 这两个文件对所有扫描路径都不可见（无 `.json`/`.jsonl` 扩展名 → `scanSessionDir` 的
+ * filter 排除；非目录 → `listAllSessionDirs` 的 `isDirectory()` 跳过）。但同一条写入
+ * 路径下次可能写出**带 `.jsonl` 扩展名**的同类文件 —— 那时它会被扫描到、解析失败，
+ * 落入「损坏文件」判定并被自动清理删除（D4 的判损面）。此时移走的是无害的存量，
+ * 顺带让「根目录出现裸文件」这件事有个固定去处。
+ *
+ * best-effort：任一步失败只 debug 记一行。这是维护动作，不该影响启动。
+ *
+ * @returns 移入隔离区的文件数
+ */
+function quarantineStraySessionFiles(): number {
+  const sessionsRoot = sidPaths.sessions();
+  if (!existsSync(sessionsRoot)) return 0;
+
+  const log = getLogger();
+  let moved = 0;
+
+  let entries: import("fs").Dirent[];
+  try {
+    entries = readdirSync(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  for (const entry of entries) {
+    // 只碰**文件**：项目子目录是正常内容，一律不动。
+    if (!entry.isFile()) continue;
+    if (SESSIONS_ROOT_ALLOWED_ENTRIES.has(entry.name)) continue;
+    // 点文件（.DS_Store / .gitignore 之类）不是我们的产物，也不该被我们搬走。
+    if (entry.name.startsWith(".")) continue;
+
+    const src = join(sessionsRoot, entry.name);
+    try {
+      const quarantineDir = sidPaths.quarantine();
+      mkdirSync(quarantineDir, { recursive: true });
+      // 目标名带时间戳前缀：同名裸文件可能被多次写出，直接 rename 会互相覆盖 ——
+      // 那等于一边隔离一边丢物证。
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      renameSync(src, join(quarantineDir, `${stamp}-${entry.name}`));
+      moved++;
+    } catch (err: any) {
+      log.debug(
+        "CLEANUP",
+        `隔离 sessions 根目录裸文件失败: ${entry.name} - ${err?.message ?? err}`,
+      );
+    }
+  }
+
+  return moved;
+}
+
 function cleanupLegacyToolResults(): void {
   const legacyDir = join(process.cwd(), ".sid-code", "tool-results");
   if (!existsSync(legacyDir)) return;

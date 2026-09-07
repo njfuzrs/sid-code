@@ -4586,13 +4586,33 @@ export class App {
    * - `appendCompact`：往 JSONL 落一条 context_compact 诊断记录（P1-4a）
    * - `persistSessionSummary`：把摘要落成会话摘要，供下次恢复补偿被裁掉的历史（D2）
    */
-  private onContextCompacted(summary: string, removedCount: number): void {
+  private onContextCompacted(
+    summary: string,
+    removedCount: number,
+    meta?: import("@sid-code/core/context/manager.ts").CompactionRecordMeta,
+  ): void {
     try {
-      this.sessionStore?.appendCompact(summary, removedCount);
+      // 诊断记录：三条压缩路径都落（D10）。带上 source 便于事后区分
+      // 「摘要压缩」「紧急截断」「渐进式管道」——它们对历史的损耗程度完全不同。
+      this.sessionStore?.appendCompact(summary, removedCount, meta?.source);
     } catch (e) {
       getLogger().warn("APP", `压缩记录落盘失败: ${(e as Error)?.message}`);
     }
-    this.persistSessionSummary(summary, removedCount);
+
+    // ─────────────────────────────────────────────────────────────
+    // D10 的边界：**只有内容摘要才能存成会话摘要**。
+    //
+    // D10 把落盘从 1 条路径扩到 3 条，而观察者同时还是 D2 的会话摘要写入端。
+    // 若不加这道判据，紧急截断的 miniSummary（「截断 N 条，涉及文件 X」）与管道的
+    // 步骤描述（「snipCompact: 裁剪 8 条」）都会被 saveSummary **覆盖写**进会话摘要，
+    // 把一条真正的内容摘要换成一句操作日志 —— 下次 resume 时摘要路径虽然可达，
+    // 补偿内容却毫无信息量。那是"修好可观测性、顺手弄坏恢复质量"，且完全静默。
+    //
+    // meta 缺省（老调用方/测试直接调两参版本）时按 true 处理，保持 D2 的原有行为。
+    // ─────────────────────────────────────────────────────────────
+    if (meta?.summaryIsRestorable ?? true) {
+      this.persistSessionSummary(summary, removedCount);
+    }
 
     // ─── P1-5 ①：压缩后把 Session Memory 笔记注入为**常驻**附件 ───
     //

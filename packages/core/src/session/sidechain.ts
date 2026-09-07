@@ -61,6 +61,30 @@ export interface UnfinishedSidechain {
   filePath: string;
 }
 
+/**
+ * D9：判定一段 JSONL 首行是否为 sidechain 文件（**主会话扫描器据此把它排除**）。
+ *
+ * 为什么判据取「首行 type === sidechain_start」而不是文件名：
+ * 文件名 `<sessionId>-<agentId>.jsonl` 与主会话名 `<sessionId>.jsonl` 只差一个后缀段，
+ * 而 sessionId 本身就含两个 `-`（`YYYYMMDD-HHMMSS-<hex>`）。靠数横线/切段来区分，
+ * 会在「agentId 恰好像 hex」时误判，而误判方向是**把主会话当 sidechain 跳过** ——
+ * 那是比本缺陷更严重的形态。首行是 sidechain_start 则是写入端的**结构事实**
+ * （SidechainWriter.start() 恒先落这一条，见 write()），不依赖命名约定。
+ *
+ * 只读首行、不解析全文：这个判定跑在扫描每个会话文件的热路径上。
+ */
+export function isSidechainContent(content: string): boolean {
+  // 只取第一个换行之前的部分——不对整个文件做 split，避免大文件白切一次。
+  const nl = content.indexOf("\n");
+  const firstLine = (nl === -1 ? content : content.slice(0, nl)).trim();
+  if (!firstLine.startsWith("{")) return false;
+  try {
+    return (JSON.parse(firstLine) as { type?: unknown }).type === "sidechain_start";
+  } catch {
+    return false;
+  }
+}
+
 /** 时间戳（sidechain 写入频率低，直接用 ISO 串；测试可注入固定值）。 */
 function nowIso(): string {
   return new Date().toISOString();
