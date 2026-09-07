@@ -24,6 +24,12 @@ import {
 } from "./paths.ts";
 import { MEMORY_LIMITS, isMemoryType, type MemoryType } from "./types.ts";
 import { normalizeMemoryDesc } from "./store.ts";
+// P1-7：索引截断口径的单一事实源（此前这里有一份同样三处口径错的副本）。
+import { buildTruncatedIndex } from "./index-budget.ts";
+// P1-8：agent 记忆线此前整条无 secret 闸门；判据与 save_memory / 私有记忆守卫同源。
+import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
+// P1-12 指标 ③：防线触发计数。
+import { logMemoryGuard } from "../analytics/events.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
@@ -188,23 +194,21 @@ async function rebuildAgentIndex(dir: string): Promise<void> {
   if (heads.length === 0) return;
 
   heads.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const lines: string[] = ["# Memory Index", ""];
-  let truncated = false;
-  for (const h of heads) {
-    if (lines.length >= MEMORY_LIMITS.INDEX_MAX_LINES) {
-      truncated = true;
-      break;
-    }
+  // P1-7：截断口径走 index-budget.ts 的共享实现。
+  // 这里**曾经有一份逐字符雷同的副本**，三个口径（表头挤占条数配额 / 拿 char 数当字节 /
+  // 硬切出半行链接后再追加警告顶破上限）与 store.ts 一模一样。只修 store 会留下一份
+  // 「已知坏的副本」，而它服务子代理跨会话记忆、更少有人看，坏得更久。
+  const entryLines = heads.map((h) => {
     const desc = (h.description || "").replace(/\n/g, " ").slice(0, 150);
-    lines.push(`- [${h.key}](${h.filename}) — ${desc}`);
-  }
-  let content = lines.join("\n") + "\n";
-  if (content.length > MEMORY_LIMITS.INDEX_MAX_BYTES) {
-    content = content.slice(0, MEMORY_LIMITS.INDEX_MAX_BYTES);
-    truncated = true;
-  }
+    return `- [${h.key}](${h.filename}) — ${desc}`;
+  });
+  const { content, entryCount, truncated } = buildTruncatedIndex(entryLines);
   if (truncated) {
-    content += "\n> ⚠️ 索引已截断（超过上限），部分记忆未列出。\n";
+    getLogger().warn(
+      "MEMORY",
+      `agent 记忆索引已截断：${heads.length} 条只列出 ${entryCount} 条（${dir}）——` +
+        `未列出的记忆在磁盘上但不进上下文`,
+    );
   }
   await Bun.write(indexPath, content);
 }
@@ -234,6 +238,31 @@ export async function saveAgentMemory(
   if (cleanValue.length > MEMORY_LIMITS.ENTRY_MAX_CHARS) {
     cleanValue = cleanValue.slice(0, MEMORY_LIMITS.ENTRY_MAX_CHARS);
     log.warn("MEMORY", `agent 记忆值超长，已截断: ${cleanKey}`);
+  }
+
+  // ─── P1-8：agent 记忆线此前**整条没有 secret 闸门** ───
+  //
+  // 四条记忆线里 save_memory（任意 scope）、team store、team 目录 write/edit、
+  // team push 都有闸门，唯独这里 `grep -n 'secret|detect|scanFor' agent-store.ts`
+  // 零命中。而 agent 记忆的写入方是**子代理**（同样是无人监督的 LLM），
+  // 内容来自它这一轮看到的对话与工具输出——报错栈里的连接串正是最常见的来源。
+  //
+  // 判据与 `save_memory` / 私有记忆守卫**同一个实现**（getSharedSecretRedactHook），
+  // 刻意不另立一套：同一个代理换条路就能绕过的闸门等于没有闸门。
+  // 抛错而非静默跳过：调用方（tool/memory.ts 的 agent 分支）会把它转成工具错误回给模型，
+  // 让模型知道「这条没存成，因为含凭证」——静默丢弃会让模型以为存好了。
+  {
+    const hits = getSharedSecretRedactHook().detect(cleanValue);
+    if (hits.length > 0) {
+      const categories = Array.from(new Set(hits.map((h) => h.category))).join(", ");
+      log.warn("MEMORY", `✗ 拒绝保存含 secret 的 agent 记忆 [${agentType}] ${cleanKey}`);
+      // P1-12 指标 ③：防线触发计数（不记 key、不记内容、不记 agentType —— 都是用户数据）
+      logMemoryGuard({ kind: "secret_rejected", via: "agent_store", scope: "agent" });
+      throw new Error(
+        `检测到内容包含敏感信息 (${categories})，拒绝写入 agent 记忆。` +
+          `凭证应放在 .env / 环境变量，运行时经 process.env 读取，不要写入记忆。`,
+      );
+    }
   }
 
   const dir = ensureAgentMemPath(agentType);

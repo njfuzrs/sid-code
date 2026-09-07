@@ -232,7 +232,9 @@ async function doAutoCompact(
         const { trySessionMemoryCompaction } = await import("../session-memory/compact.ts");
         const smResult = await trySessionMemoryCompaction(deps.sessionMemory);
         if (smResult) {
-          deps.ctxMgr.compactWithSummary(smResult.summary);
+          // P1-5 ②：显式标 session_memory —— 这是 `compact_source` 那一档
+          // **唯一的生产写入方**。不传的话默认 "compact"，两种压缩产物事后无法区分。
+          deps.ctxMgr.compactWithSummary(smResult.summary, undefined, "session_memory");
           recordSuccess();
           log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
           await postCompactReattachAndNotify(
@@ -244,9 +246,12 @@ async function doAutoCompact(
             false,
           );
           // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
+          // P1-5 ②：`source` 让这次压缩在轨迹里与 LLM 摘要压缩可分 ——
+          // 两者的 tokens_before/after 混在一起聚合，出来的数既不描述前者也不描述后者。
           logContextCompact({
             outcome: "summarized",
             trigger: "auto",
+            source: "session_memory",
             messagesBefore,
             tokensBefore,
             tokensAfter: deps.ctxMgr.estimateTokens(),

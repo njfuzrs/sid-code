@@ -292,6 +292,36 @@ export function isAutoMemPath(absolutePath: string, memoryDir: string): boolean 
 }
 
 /**
+ * 判断绝对路径是否落在**任何一条私有记忆线**的目录内（P1-8 的路径判据）。
+ *
+ * 覆盖三处，缺一处就是一个没有 secret 闸门的写入口：
+ * - `~/.sid-code/projects/<key>/memory/` —— 项目私有记忆（`getAutoMemPath`）
+ * - `~/.sid-code/memory/` —— 全局私有记忆（`MemoryStore` 的 globalDir）
+ * - `~/.sid-code/memory/agents/<type>/` —— agent 记忆（含在上一条里，但显式列出
+ *   是因为它由 `saveAgentMemory` 单独落盘，容易在审计时被当成第四条线漏掉）
+ *
+ * ⚠️ **刻意不含团队记忆目录**：那条线由 `isTeamMemPath` 管，且它的闸门语义不同
+ * （团队记忆未启用时不拦 —— 此时那只是个普通本地目录）。两个判据合并成一个的话，
+ * 「未启用团队记忆」这个豁免会漏到私有记忆上，而私有记忆的闸门**不应该有豁免**。
+ *
+ * ⚠️ 与 `isAutoMemPath` 的区别：那个要调用方传 `memoryDir`（提取代理的权限校验用，
+ * 目标目录由调用方决定）；这个自己派生全部已知记忆目录，供**工具层**在不知道
+ * 「这次写的是哪条线」时判断「这是不是一次记忆写入」。
+ */
+export function isAnyPrivateMemPath(absolutePath: string, cwd: string = process.cwd()): boolean {
+  const target = resolve(absolutePath);
+  const dirs = [
+    getAutoMemPath(cwd),
+    // 全局记忆根（`~/.sid-code/memory/`）—— agent 记忆目录是它的子目录
+    join(getSidHome(), "memory"),
+  ];
+  return dirs.some((d) => {
+    const nd = resolve(d);
+    return target === nd || target.startsWith(nd + sep);
+  });
+}
+
+/**
  * 校验显式记忆目录覆盖路径的合法性。
  * 拒绝：相对路径、根路径、null 字节、UNC 路径。
  * 合法时返回规范化绝对路径，非法时返回 undefined。

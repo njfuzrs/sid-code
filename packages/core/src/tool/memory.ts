@@ -118,6 +118,15 @@ export class MemoryTool implements Tool {
     if (secretHits.length > 0) {
       const categories = Array.from(new Set(secretHits.map((h) => h.category))).join(", ");
       log.warn("TOOL", `✗ 拒绝保存含 secret 的记忆 [${scope}] ${key} — 命中: ${categories}`);
+      // P1-12 指标 ③：这条防线**本来就在**（ADR-026），此前只是没有计数 ——
+      // 于是「secret 闸门拦下过几次」这个问题在轨迹里答不出来，
+      // 也就无从对比 P1-8 新补的两条线是否真的开始工作。
+      try {
+        const { logMemoryGuard } = await import("../analytics/events.ts");
+        logMemoryGuard({ kind: "secret_rejected", via: "save_memory", scope });
+      } catch {
+        /* 埋点失败不影响拒绝行为 */
+      }
       return {
         output:
           `错误: 检测到 value 中包含敏感信息 (${categories}), 拒绝写入持久化存储.\n` +

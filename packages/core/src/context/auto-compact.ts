@@ -119,6 +119,20 @@ export class TokenFreedTracker {
 // ─── 压缩来源标记 ───
 
 /**
+ * 压缩产物的来源（`_meta.compact_source` 的取值域）。
+ *
+ * P1-5 ②：`"session_memory"` 这一档此前**无写入方** —— `addCompactBoundary`
+ * 无论摘要来自 LLM 还是 Session Memory 都硬编码 `"compact"`，
+ * 于是 `isCompactSourceMessage` 判 session_memory 那一支永远走不到，
+ * 且两种压缩产物**在事后不可区分**：「Session Memory 压缩用了多少次、
+ * 效果如何」这个问题在轨迹里答不出来（关联 P1-12 零埋点）。
+ *
+ * 取值收成联合类型而非裸 string，是为了让写入侧漏传时**编译期**就红，
+ * 而不是又养出一个「有消费者、无生产者」的档位。
+ */
+export type CompactSource = "compact" | "session_memory";
+
+/**
  * 检查消息是否为压缩来源（session_memory / compact），
  * 压缩来源的消息不应再次触发压缩。
  */
