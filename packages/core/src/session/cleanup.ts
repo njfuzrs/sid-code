@@ -216,6 +216,17 @@ export async function identifySessionsToDelete(
  * 导致轨迹目录沦为孤儿数据持续堆积（实测 95MB）。这里做对称清理：交互会话被清理时，
  * 连带删除同 id 的 trajectory 目录。
  *
+ * D7/D8：同一个「对称清理」原则此前漏了另外两样按会话 id 分文件/分目录的兄弟存储——
+ * `checkpoints/<id>/`（实测 27/68 孤儿，40%，6.4MB）与 `progress/<id>.md`
+ * （实测 114/196 孤儿，58%）。它们不是被别的路径兜住了：三条既有清理路径
+ * （会话清理 / CheckpointManager.cleanupOldSessions / startup-housekeeping）
+ * **没有一条以「会话文件已不存在」为判据**，全是 mtime 超期或总量 LRU，
+ * 所以「够新的孤儿」永远留着，孤儿是必然结果而非偶发。
+ *
+ * 孤儿 checkpoint 的危害不止占盘：`index.json` 里内联着改动前的**用户源码全文**，
+ * 会话已删、用户以为那段历史清掉了，源码副本却还在磁盘上（数据主权口径下的真实问题）；
+ * 且孤儿会参与 LRU 排序，挤占真正有用的近期快照配额。
+ *
  * 保守边界（避免误删评测/训练资产）：
  * - 只删与被清理「交互会话」**同 id** 的 trajectory 目录。SWE-bench / SFT 等无头评测入口
  *   通常不写 SessionStore（不会出现在 sessions/ 目录），其 id 不会进入本清理流程，天然隔离。
@@ -267,6 +278,51 @@ async function deleteSessionArtifacts(
     }
   } catch (err: any) {
     log.warn("CLEANUP", `删除轨迹目录失败（不阻断）: ${sessionId} - ${err?.message}`);
+  }
+
+  // D7/D8：对称清理 checkpoints/<id>/ 与 progress/<id>.md。
+  // 抽成导出的共享 helper，是因为**删除会话有两个入口**：本函数（自动清理）与
+  // `handleDeleteSession()`（`--delete-session`，在 commands.ts）。原先两处各自罗列要删什么，
+  // 于是同一条「漏了兄弟存储」的缺陷在两个入口分别存在一份。抄一遍就会再漏一次。
+  await deleteSessionSiblingStores(sessionId);
+}
+
+/**
+ * 删除按会话 id 分文件/分目录的**兄弟存储**（checkpoints/ 与 progress/）。
+ *
+ * D7/D8 的单一实现点：`deleteSessionArtifacts()`（自动清理）与 `handleDeleteSession()`
+ * （`--delete-session`）都必须调它，新增同类存储只改这里一处。
+ *
+ * 全程 best-effort：任一项失败只 warn 不抛——删附属数据不该让「删会话」这件事失败。
+ */
+export async function deleteSessionSiblingStores(sessionId: string): Promise<void> {
+  const log = getLogger();
+
+  // D7：checkpoints/<id>/。
+  // 路径必须走 sidPaths.checkpoints() 派生——CheckpointManager 的 baseDir 就是它
+  // （manager.ts 构造函数），自己拼 join(sidHome, "checkpoints", id) 会在 paths 变更时静默错位。
+  try {
+    const cpDir = sidPaths.checkpoints(sessionId);
+    if (existsSync(cpDir)) {
+      rmSync(cpDir, { recursive: true, force: true });
+      log.debug("CLEANUP", `已删除检查点目录: checkpoints/${sessionId}`);
+    }
+  } catch (err: any) {
+    log.warn("CLEANUP", `删除检查点目录失败（不阻断）: ${sessionId} - ${err?.message}`);
+  }
+
+  // D8：progress/<id>.md。
+  // 必须用 work-log 导出的 progressFilePath()，不能自己拼 `${sessionId}.md`——写入端会
+  // sanitizeSessionId()（非法字符替 `_`、截断 128 字），自己拼在被清洗过的 id 上删不中文件。
+  try {
+    const { progressFilePath } = await import("../query/work-log.ts");
+    const progressPath = progressFilePath(sessionId);
+    if (existsSync(progressPath)) {
+      unlinkSync(progressPath);
+      log.debug("CLEANUP", `已删除进度文件: progress/${sessionId}.md`);
+    }
+  } catch (err: any) {
+    log.warn("CLEANUP", `删除进度文件失败（不阻断）: ${sessionId} - ${err?.message}`);
   }
 }
 
