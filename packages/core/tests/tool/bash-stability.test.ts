@@ -319,3 +319,38 @@ describe("P2-11: bash 超时 env 覆盖", () => {
     expect(maxMs).toBe(600000);
   });
 });
+
+describe("usageGuide 不得引导模型用已废弃参数", () => {
+  // 缺陷来源：schema 里 is_background 已标「[已废弃，请用 run_in_background]」
+  // （bash.ts:56），而 usageGuide 却写着「可设置 is_background=true 后台运行」——
+  // 指南与 schema 自相矛盾，模型照指南走就落进旧通道（不进 Task 系统、无 task_id、
+  // 无完成通知）。实测 20260907-155904-69998cf1 里两条 bash 超时后模型都只是干等，
+  // 没有转后台。
+  const guide = new BashTool().usageGuide();
+
+  it("推荐的是 run_in_background，不是 is_background", () => {
+    expect(guide).toContain("run_in_background=true");
+    // is_background 只允许以「已废弃」的形式出现，不能作为推荐用法
+    const recommendsDeprecated = /设置\s*is_background\s*=\s*true/.test(guide);
+    expect(recommendsDeprecated).toBe(false);
+  });
+
+  it("提到后台任务的查询/终止入口（task_output / task_stop）", () => {
+    // 只说"能后台跑"不够：模型还要知道怎么拿输出，否则后台等于丢失结果
+    expect(guide).toContain("task_output");
+    expect(guide).toContain("task_stop");
+  });
+
+  it("超时后给出两条明确出路：转后台 或 缩小范围", () => {
+    expect(guide).toContain("超时被杀");
+    expect(guide).toMatch(/glob|grep/);
+  });
+
+  it("引用的工具名与真实注册名一致（防文档漂移）", async () => {
+    // 指南里点名的工具必须真存在——写错名字比不写更糟（模型会去调一个不存在的工具）
+    const { TaskOutputTool } = await import("@sid-code/core/tool/task-output.ts");
+    const { TaskStopTool } = await import("@sid-code/core/tool/task-stop.ts");
+    expect(new TaskOutputTool().name()).toBe("task_output");
+    expect(new TaskStopTool().name()).toBe("task_stop");
+  });
+});

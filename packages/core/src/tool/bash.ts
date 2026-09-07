@@ -499,8 +499,10 @@ export class BashTool implements Tool {
 - 必须提供 description 参数，用自然语言描述命令意图
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
 - 输出超过 30000 字符会被自动截断
-- 长时间运行的进程（如 dev server）可设置 is_background=true 后台运行
-- 后台进程会返回 PID，可用于后续管理
+- 长时间运行的进程（如 dev server）可设置 run_in_background=true 后台运行（旧名 is_background 已废弃）
+- 后台任务会返回 task_id，可用 task_output 查看输出、task_stop 终止；完成时有通知
+- 命令超时被杀后，不要原样重试——要么用 run_in_background=true 重跑，要么缩小范围（见下条）
+- 全盘/大目录搜索（find / / grep -r ~ 这类）极易超时：优先用 glob / grep 工具并把 path 限定到具体子目录
 - 每条命令在独立 shell 进程中执行。cd 后的目录变更会被自动追踪并对所有工具（read/edit/glob 等）生效，无需每次重复传 cwd；
   但 export、source venv/bin/activate 等动态环境变更不会跨命令保留——需要它们的操作必须写在同一条命令里。
   例：\`cd src\` 后下一条 \`ls\` 会列 src 目录（可拆两条）；但 \`source venv/bin/activate && python foo.py\` 必须写为一条
