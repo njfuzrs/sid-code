@@ -30,7 +30,7 @@ import { memoryAge, memoryAgeDays } from "./freshness.ts";
 // P1-7：索引截断口径（条数 / 真字节 / 行边界）的单一事实源，与 agent 记忆线共用。
 import { buildTruncatedIndex } from "./index-budget.ts";
 // P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
-import { enumerateMemoryFiles } from "./scan.ts";
+import { enumerateMemoryFiles, readFrontmatterFields } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
 import { logMemoryGuard } from "../analytics/events.ts";
 
@@ -293,17 +293,15 @@ function parseMemoryFile(
   let body: string;
 
   if (m) {
-    for (const line of m[1].split("\n")) {
-      const fm = line.match(/^(\w+):\s*(.+?)\s*$/);
-      if (!fm) continue;
-      const k = fm[1];
-      const v = fm[2].trim().replace(/^["']|["']$/g, "");
-      if (k === "name") name = v;
-      else if (k === "description") description = v;
-      else if (k === "type" && isMemoryType(v)) type = v as MemoryType;
-      else if (k === "created") created = Number(v) || undefined;
-      else if (k === "updated") updated = Number(v) || undefined;
-    }
+    // P2-13：与 scan.ts 共用同一个 frontmatter 读取口径。这里曾自己写一遍逐行
+    // `^(\w+):` 匹配 —— 两份实现读同一批文件却各有各的盲区，正是「两套口径」
+    // 那类缺陷的温床（索引侧认得的字段，store 侧读不到）。
+    const fields = readFrontmatterFields(m[1]);
+    if (fields.name !== undefined) name = fields.name;
+    if (fields.description !== undefined) description = fields.description;
+    if (fields.type !== undefined && isMemoryType(fields.type)) type = fields.type as MemoryType;
+    if (fields.created !== undefined) created = Number(fields.created) || undefined;
+    if (fields.updated !== undefined) updated = Number(fields.updated) || undefined;
     body = text
       .replace(FRONTMATTER_RE, "")
       .replace(/^\s*\n/, "")
@@ -807,9 +805,11 @@ export class MemoryStore {
       const head = (await Bun.file(filePath).text()).slice(0, 4096);
       const m = head.match(FRONTMATTER_RE);
       if (!m) return null;
-      const nameM = m[1].match(/^name:\s*(.+)$/m);
-      const raw = nameM?.[1]?.trim().replace(/^["']|["']$/g, "");
-      return raw || null;
+      // P2-13：必须与 `parseMemoryFile` 用**同一个**读取口径。这里曾自己写
+      // `/^name:/m` —— 于是撞名判据看到的 name 与 loader 实际用作 key 的 name
+      // 可能不是同一个值（嵌套格式文件上尤其如此），而两者不一致时 P0-1 的
+      // 撞名循环就会漏判：判据说「不撞」，loader 却把两条并成同一个 key。
+      return readFrontmatterFields(m[1]).name || null;
     } catch {
       return null;
     }

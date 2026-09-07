@@ -601,7 +601,10 @@ export type MemoryGuardKind =
 
 export function logMemoryGuard(opts: {
   kind: MemoryGuardKind;
-  /** 触发防线的写入路径类型：save_memory / write / edit / agent_store / store */
+  /**
+   * 触发防线的路径类型：save_memory / write / edit / agent_store / store /
+   * team_pull（P2-14：共享目录 → 本地，反向流入闸门）。
+   */
   via: string;
   /** 记忆 scope（可得时） */
   scope?: string;
