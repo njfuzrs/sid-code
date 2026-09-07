@@ -19,27 +19,113 @@ import { MEMORY_LIMITS } from "./types.ts";
 /** 匹配 --- 包围的 frontmatter 块（文件开头） */
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
 
+/** 允许从嵌套块里降级取值的父键白名单（当前只有 cc 的 `metadata:`）。 */
+const NESTED_PARENTS = new Set(["metadata"]);
+
 /**
- * 从文本中解析 frontmatter 字段。
- * 用简单正则而非完整 YAML 解析器，避免额外依赖。
- * 支持 `key: value` 行。
+ * 读 frontmatter 块里的字段，返回**扁平字符串映射**（P2-13）。
+ *
+ * ─── 为什么不能只逐行 `key: value` ───
+ *
+ * cc 真实落盘的记忆文件用**嵌套**写法，`type` 在 `metadata:` 之下缩进两格：
+ *
+ * ```yaml
+ * name: some-memory
+ * description: 一行描述
+ * metadata:
+ *   node_type: memory
+ *   type: project              ← 我们要的 type 在这一层
+ *   modified: 2026-09-03T03:38:42.648Z
+ * ```
+ *
+ * 三种错法各自的后果（都不报错，只是结果错）：
+ *
+ * 1. **不认缩进、把子键当顶层读**（`indexOf(":")` 那种写法）：`metadata.name`
+ *    会覆盖顶层 `name` —— 记忆的逻辑标识被子键改写，而 `name` 是 P0-1 的去重键，
+ *    改错它等于把两条记忆并成一条。所以子键**只能降级参与，绝不能覆盖顶层**。
+ * 2. **只认顶层、完全忽略缩进行**（本次修复前的实现）：cc 的 `type` 恒读不到，
+ *    落到 `inferMemoryType` 启发式去猜 —— 猜错会改变文件名前缀与索引分类。
+ * 3. **用 `indexOf(":")` 切值**：ISO 时间戳 `2026-09-03T03:38:42.648Z` 会被截成
+ *    `2026-09-03T03`（取第一个冒号）。此处用非贪婪 `(.+?)` 到行尾，值里的冒号原样保留。
+ *
+ * 所以本函数的口径是：**顶层键优先，白名单父键（`metadata:`）下的子键作降级来源，
+ * 其余缩进行一律丢弃**。丢弃而非提升是刻意的 —— 未知嵌套结构的语义我们不知道，
+ * 猜它等于第 1 种错法。
  */
-export function parseFrontmatter(text: string): Partial<MemoryFrontmatter> {
+export function readFrontmatterFields(block: string): Record<string, string> {
+  const top: Record<string, string> = {};
+  const nested: Record<string, string> = {};
+  /** 当前所处的嵌套父键；null = 在顶层 */
+  let parent: string | null = null;
+
+  for (const line of block.split("\n")) {
+    if (line.trim() === "") continue;
+    const indented = /^\s/.test(line);
+
+    if (!indented) {
+      // 顶层行：无论是否有值，都结束上一个嵌套块
+      const m = line.match(/^([\w-]+):\s*(.*?)\s*$/);
+      if (!m) {
+        parent = null;
+        continue;
+      }
+      const key = m[1];
+      const value = unquote(m[2]);
+      if (value === "") {
+        // `metadata:` 这样的空值顶层键 = 嵌套块开始（白名单内才收子键）
+        parent = NESTED_PARENTS.has(key) ? key : null;
+        continue;
+      }
+      parent = null;
+      // 同名顶层键重复出现时以**首次**为准，避免后文覆盖
+      if (!(key in top)) top[key] = value;
+      continue;
+    }
+
+    // 缩进行：只有在白名单父键之下才作为降级来源
+    if (parent === null) continue;
+    const m = line.match(/^\s+([\w-]+):\s*(.*?)\s*$/);
+    if (!m) continue;
+    const value = unquote(m[2]);
+    if (value === "") continue;
+    if (!(m[1] in nested)) nested[m[1]] = value;
+  }
+
+  // 顶层覆盖嵌套：`metadata.name` 永远盖不住顶层 `name`
+  return { ...nested, ...top };
+}
+
+/** 去掉成对引号 */
+function unquote(v: string): string {
+  return v.trim().replace(/^["']|["']$/g, "");
+}
+
+/**
+ * 从**整篇文件文本**里读 frontmatter 字段，返回扁平映射（无 frontmatter 块 → 空对象）。
+ *
+ * 与 `readFrontmatterFields` 的区别只在入参：那个收 frontmatter **块内容**，
+ * 这个负责先用 `FRONTMATTER_RE` 把块框出来。**框出来这一步不能省** ——
+ * 省掉就退化成对全文做 `/^name:/m` 匹配，正文里任意一行 `name: xxx`
+ * 都会被当成 frontmatter 字段。
+ */
+export function readMemoryFrontmatter(text: string): Record<string, string> {
   const m = text.match(FRONTMATTER_RE);
   if (!m) return {};
-  const block = m[1];
+  return readFrontmatterFields(m[1]);
+}
+
+/**
+ * 从文本中解析记忆 frontmatter。
+ * 用简单正则而非完整 YAML 解析器，避免额外依赖；嵌套写法的兼容口径见
+ * `readFrontmatterFields`。
+ */
+export function parseFrontmatter(text: string): Partial<MemoryFrontmatter> {
+  const fields = readMemoryFrontmatter(text);
   const result: Partial<MemoryFrontmatter> = {};
-  for (const line of block.split("\n")) {
-    const fieldMatch = line.match(/^(\w+):\s*(.+?)\s*$/);
-    if (!fieldMatch) continue;
-    const key = fieldMatch[1];
-    let value = fieldMatch[2].trim();
-    // 去掉成对引号
-    value = value.replace(/^["']|["']$/g, "");
-    if (key === "name") result.name = value;
-    else if (key === "description") result.description = value;
-    else if (key === "type" && isMemoryType(value)) result.type = value as MemoryType;
-  }
+  if (fields.name !== undefined) result.name = fields.name;
+  if (fields.description !== undefined) result.description = fields.description;
+  if (fields.type !== undefined && isMemoryType(fields.type))
+    result.type = fields.type as MemoryType;
   return result;
 }
 

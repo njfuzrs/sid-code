@@ -14,8 +14,14 @@
  *   - 一侧删除 + 另一侧未改        → 传播删除
  *   - 一侧删除 + 另一侧改动        → 复活改动方（改动优先于删除）
  *
- * 安全：push 前对每个本地条目跑 scanForSecrets，命中 secret 的文件**跳过**
- * 同步（绝不外泄到共享目录），并在结果里记录被跳过的文件（仅 ruleId，不含明文）。
+ * 安全（**双向**，P2-14）：
+ *   - push 前对每个本地条目跑 scanForSecrets，命中的文件**跳过**同步
+ *     （绝不外泄到共享目录），结果里记录被跳过的文件（仅 ruleId，不含明文）。
+ *   - pull 前对每个**共享**条目同样跑 scanForSecrets，命中的 key **整轮隔离**：
+ *     既不落到本地，也不参与删除传播（见下面 `quarantined` 的说明）。
+ *     此前 pull 侧完全不扫，共享目录内容被当作可信输入直接落盘 → 进本地
+ *     MEMORY.md → 进每个会话的 system prompt。push 侧那道闸门在这个方向上
+ *     不起作用：它防的是「我泄给别人」，不防「别人泄给我」。
  *
  * checksum 增量：仅当 hash 变化才读写，避免每次全量复制。
  */
@@ -52,8 +58,16 @@ export interface TeamMemorySyncResult {
   deleted: number;
   /** 检测到的冲突数 */
   conflicts: number;
-  /** 因含 secret 跳过 push 的文件 */
+  /** 因含 secret 跳过 push 的**本地**文件（防外泄） */
   skippedSecrets: SkippedSecretFile[];
+  /**
+   * 因含 secret 被拒绝 pull 的**共享**文件（防凭证反向流入，P2-14）。
+   *
+   * 与 `skippedSecrets` 分开两个字段而不是合成一个：两者的处置动作与用户该做的事
+   * 相反 —— 前者是「你自己的记忆别外泄，请你清理」，后者是
+   * 「共享盘里有人放了凭证，请去提醒那个人」。合成一个字段就分不出该找谁。
+   */
+  blockedIncomingSecrets: SkippedSecretFile[];
   /** 失败原因（success=false 时） */
   error?: string;
   /** 失败类型（供 watcher 判断是否永久失败） */
@@ -193,6 +207,7 @@ export async function syncTeamMemory(
     deleted: 0,
     conflicts: 0,
     skippedSecrets: [],
+    blockedIncomingSecrets: [],
   };
 
   if (!opts?.enabled) {
@@ -210,10 +225,24 @@ export async function syncTeamMemory(
     if (!existsSync(sharedDir)) mkdirSync(sharedDir, { recursive: true });
 
     const skippedSecrets: SkippedSecretFile[] = [];
-    // local 端扫描 secret（防外泄）；shared 端不扫描（只读入用于合并判断）
+    // P2-14：**两端都扫**。local 侧防外泄（命中不 push），shared 侧防反向流入
+    // （命中不 pull）。此前 shared 侧传 false —— 共享目录是多人可写的，
+    // 「用户显式配置的目录」只说明它不是任意攻击者可写，不等于里面每个字节可信。
+    const blockedIncomingSecrets: SkippedSecretFile[] = [];
     const localEntries = await readEntries(localDir, true, skippedSecrets);
-    const sharedEntries = await readEntries(sharedDir, false, []);
+    const sharedEntries = await readEntries(sharedDir, true, blockedIncomingSecrets);
     const base = await readManifest(localDir);
+
+    /**
+     * 被隔离的共享 key：本轮**整个跳过**，不只是"不写本地"。
+     *
+     * 为什么不能只是从 sharedEntries 里剔除就完事 —— 剔除后该 key 在合并循环里
+     * 长得和「共享侧已删除」一模一样，于是会走到删除传播分支，把我本地那份
+     * 好端端的记忆删掉。**一个含 secret 的共享文件不该有删我本地文件的权力。**
+     * 同理也不能让它走 push 分支：那会用我的版本覆盖共享侧，等于替对方
+     * "修好"了他的文件，而他的 secret 到底要怎么处理只有他知道。
+     */
+    const quarantined = new Set(blockedIncomingSecrets.map((s) => s.path));
 
     // 所有涉及的 key（local ∪ shared ∪ base）
     const allKeys = new Set<string>([
@@ -229,6 +258,14 @@ export async function syncTeamMemory(
     const nextManifest: SyncManifest = {};
 
     for (const key of allKeys) {
+      // P2-14：共享侧含 secret → 本轮两个方向都不动这个 key。
+      // base 快照原样留存：等对方清理掉 secret 之后，正常规则自然接上
+      // （丢掉 base 会让下一轮变成「双方都改」而造出一次假冲突）。
+      if (quarantined.has(key)) {
+        if (base[key]) nextManifest[key] = base[key];
+        continue;
+      }
+
       const local = localEntries.get(key);
       const shared = sharedEntries.get(key);
       const baseHash = base[key];
@@ -346,6 +383,28 @@ export async function syncTeamMemory(
         `${skippedSecrets.length} 个文件含 secret(${labels})，已跳过同步（未外泄到共享目录）`,
       );
     }
+    // P2-14：反向流入必须**点名告知**，不能只是静默不 pull。
+    // 静默隔离的形态是「同事说他共享了，我这边就是看不到」——查不出原因；
+    // 而这条告警指向的动作在对方那边（请他清理），所以必须说出是哪个文件。
+    if (blockedIncomingSecrets.length > 0) {
+      const labels = Array.from(new Set(blockedIncomingSecrets.map((s) => s.label))).join(", ");
+      const names = blockedIncomingSecrets.map((s) => s.path).join(", ");
+      log.warn(
+        "TEAMMEM",
+        `共享目录中 ${blockedIncomingSecrets.length} 个文件含 secret(${labels})，已拒绝拉取到本地: ${names}。` +
+          `请让写入方移除凭证后重新共享——凭证若拉进本地记忆，会随 MEMORY.md 索引常驻每个会话的系统提示词。`,
+      );
+      // 防线触发计数（P1-12 指标 ③）：恒 0 的曲线本身是信号。
+      // 只记类型与来源，不记路径、不记命中内容。
+      try {
+        const { logMemoryGuard } = await import("../../analytics/events.ts");
+        for (const _ of blockedIncomingSecrets) {
+          logMemoryGuard({ kind: "secret_rejected", via: "team_pull", scope: "team" });
+        }
+      } catch {
+        /* 埋点失败不影响同步 */
+      }
+    }
     if (pulled || pushed || deleted || conflicts) {
       log.info(
         "TEAMMEM",
@@ -353,7 +412,15 @@ export async function syncTeamMemory(
       );
     }
 
-    return { success: true, pulled, pushed, deleted, conflicts, skippedSecrets };
+    return {
+      success: true,
+      pulled,
+      pushed,
+      deleted,
+      conflicts,
+      skippedSecrets,
+      blockedIncomingSecrets,
+    };
   } catch (err: any) {
     log.warn("TEAMMEM", `同步失败: ${err?.message ?? err}`);
     return { ...empty, error: err?.message ?? String(err), errorType: "io" };

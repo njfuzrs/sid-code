@@ -18,6 +18,7 @@ import { scanForSecrets } from "./secret-scanner.ts";
 import { inferMemoryType, normalizeMemoryDesc } from "../store.ts";
 import { memoryFilename } from "../paths.ts";
 import { MEMORY_LIMITS, type MemoryType } from "../types.ts";
+import { readMemoryFrontmatter } from "../scan.ts";
 
 const INDEX_FILE = "MEMORY.md";
 
@@ -80,12 +81,14 @@ export async function rebuildTeamIndex(dir: string): Promise<void> {
     if (filename.startsWith(".") || filename.includes(".conflict-")) continue;
     try {
       const text = await readFile(join(dir, filename), "utf8");
-      const nameM = text.match(/^name:\s*(.+)$/m);
-      const descM = text.match(/^description:\s*(.+)$/m);
-      const name = nameM?.[1]?.trim() || filename.replace(/\.md$/, "");
+      // P2-13：与私有侧共用同一个 frontmatter 读取口径。这里曾用裸 `/^name:/m`
+      // 全文匹配（连 frontmatter 块都不限定），正文里任何一行以 `name:` 开头
+      // 都会被当成记忆名 —— 团队记忆是别人写的文件，格式假设只能更宽不能更窄。
+      const fm = readMemoryFrontmatter(text);
+      const name = fm.name || filename.replace(/\.md$/, "");
       // 读侧也过归一化：既有旧文件的 frontmatter 里可能已存着 `## 标题`（本次修复前
       // 写入的），重建索引时剥掉，否则旧数据的陈述句标题会一直漏进注入侧索引。
-      const desc = normalizeMemoryDesc(descM?.[1]?.trim(), "");
+      const desc = normalizeMemoryDesc(fm.description, "");
       lines.push(`- [${name}](${filename})${desc ? ` — ${desc}` : ""}`);
     } catch {
       /* 跳过损坏文件 */
