@@ -39,6 +39,11 @@ const HARBOR = join(import.meta.dir, "../../evals/external-benchmarks/harbor");
 const HEALTH = join(HARBOR, "verifier_health.py");
 const PAIRED = join(HARBOR, "compare-paired.py");
 const ANALYZE = join(HARBOR, "analyze-model-switch.py");
+/** 第三个消费方（2026-09-07 接入）。它是 W3 续跑的判据，**且会 `rm -rf` trial 目录**
+ *  ⇒ 判错的代价比另两个脚本更高：`not agent_started(td)` 会把 cc 侧（无 sid
+ *  debug.log ⇒ None）**整条臂的产物全删掉**。实测那个变异下 `runs/ccrun-n6`
+ *  被判成 10/10 全部非能力失败。 */
+const W3CLS = join(HARBOR, "w3-classify.py");
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -163,6 +168,7 @@ describe("消费侧：两个脚本都接上了，且用 `is False` 而非 `not`"
   for (const [label, path] of [
     ["compare-paired.py", PAIRED],
     ["analyze-model-switch.py", ANALYZE],
+    ["w3-classify.py", W3CLS],
   ] as const) {
     test(`${label} 从 verifier_health 导入 agent_started（不自己重写一份）`, () => {
       expect(facts(path).imported).toContain("agent_started");
@@ -183,6 +189,24 @@ describe("消费侧：两个脚本都接上了，且用 `is False` 而非 `not`"
       expect(code).not.toMatch(/\bnot\s+(?:agent_started\(|r\["agent_started"\])/);
     });
   }
+
+  test("w3-classify 判为「启动未完成」而不是与「零调用」合并", () => {
+    // 与 compare-paired 同口径：两种故障的下一步动作不同，合并就分不出来。
+    expect(codeOf(W3CLS)).toContain("启动未完成");
+  });
+
+  test("🔴 w3-classify 的删除路径必须有 --apply 门（破坏性操作不许默认执行）", () => {
+    // 这个脚本会 rm -rf trial 目录。默认就删 = 一次误跑抹掉一整条臂的产物，
+    // 而 runs/ 不在版本库里（.gitignore），删了就没了。
+    const code = codeOf(W3CLS);
+    expect(code).toMatch(/shutil\.rmtree/);
+    expect(code).toMatch(/if\s+args\.apply\s*:/);
+  });
+
+  test("🔴 w3-classify 判据抛异常时 fail-closed（不许「判不出来就删」）", () => {
+    // 判据自己坏了却继续删，是本仓最贵的那类：破坏性动作建立在不可信的判断上。
+    expect(codeOf(W3CLS)).toMatch(/return\s+3/);
+  });
 
   test("compare-paired 把它作为独立排除原因，不与「零调用」合并", () => {
     // 合并的话，两种故障的下一步动作会被混成一个：零调用查上游失败率，
