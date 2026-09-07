@@ -227,6 +227,9 @@ __pycache__/
 # `__pycache__/` 与 `*.py[cod]` 已在上面 swe-bench 那节声明（全局生效），此处不重复。
 /evals/external-benchmarks/harbor/runs/
 /evals/external-benchmarks/harbor/.venv/
+# ruff 的增量缓存（跑 `ruff check` 就会生成）。理由同上一段那条铁律：
+# 它每次都出现在 `git status` 里，而 harbor 目录下**真的**会有别人的在途文件。
+/evals/external-benchmarks/harbor/.ruff_cache/
 
 # ─── vendor 进来的终端渲染底座（不入库、不推远端） ─────────────────────────
 # packages/tui-renderer/src/ 是 fork 进来的第三方渲染代码，本仓不再把它纳入版本控制。
