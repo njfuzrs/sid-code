@@ -81,7 +81,9 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
     return { ok: true, data: result.data };
   }
 
-  return { ok: false, message: formatZodError(tool.name(), result.error) };
+  // 传入 normalized（而非原始 input）：它是真正交给 safeParse 的那份，
+  // issue.path 与它一一对应；用原始 input 会在归一改过结构时错位。
+  return { ok: false, message: formatZodError(tool.name(), result.error, normalized) };
 }
 
 /**
@@ -92,7 +94,7 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
  *   - file_path: 期望 string，实际收到 number
  *   - offset: 期望 number，实际收到 string
  */
-function formatZodError(toolName: string, error: unknown): string {
+function formatZodError(toolName: string, error: unknown, input?: unknown): string {
   const issues = (error as { issues?: ZodIssueLike[] })?.issues;
   if (!Array.isArray(issues) || issues.length === 0) {
     return `参数校验失败（工具 ${toolName}）: ${String((error as { message?: string })?.message ?? error)}`;
@@ -100,10 +102,50 @@ function formatZodError(toolName: string, error: unknown): string {
 
   const lines = issues.map((issue) => {
     const path = issue.path && issue.path.length > 0 ? issue.path.join(".") : "(根)";
-    return `- ${path}: ${translateIssue(issue)}`;
+    return `- ${path}: ${translateIssue(issue, input)}`;
   });
 
   return `参数校验失败（工具 ${toolName}）:\n${lines.join("\n")}`;
+}
+
+/**
+ * 「字段缺失」时找出模型实际传的那个近似键名。
+ *
+ * 为什么必须自己找：**zod 对未识别键是静默剥离，不报 `unrecognized_keys`**
+ * （实测 `z.object({a}).safeParse({a,bogus})` → success，data 里没有 bogus）。
+ * 所以模型把 `active_form` 写成 `activeForm` 时，zod 只会说
+ * 「active_form 期望 string，实际收到 undefined」——它**看起来像"你漏传了"，
+ * 而真相是"你传了，只是名字写错了"**。这两句话指向完全不同的修法，
+ * 模型照着前者会去补一个它以为漏掉的字段，而不是改名。
+ *
+ * 实测证据：`20260907-155904-69998cf1` 的 todo_write 连续 2 轮传 camelCase
+ * `activeForm`（5 个 todo 项全中），每轮 5 条一模一样的「实际收到 undefined」。
+ *
+ * 判据：归一化后完全相等（去掉下划线/连字符、转小写）才算命中，即只认
+ * **命名风格差异**（snake_case ↔ camelCase ↔ kebab-case），不做模糊距离匹配——
+ * 模糊匹配会在 `offset`/`limit` 这类短名之间乱指，把一条准确的错误变成误导。
+ */
+function findNearMissKey(
+  input: unknown,
+  path: Array<string | number> | undefined,
+  expectedKey: string | number | undefined,
+): string | undefined {
+  if (typeof expectedKey !== "string" || !path || path.length === 0) return undefined;
+
+  // 沿 path 走到**父容器**（path 最后一段是缺失的字段名本身）
+  let cursor: unknown = input;
+  for (const seg of path.slice(0, -1)) {
+    if (cursor === null || typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string | number, unknown>)[seg];
+  }
+  if (cursor === null || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
+
+  const canon = (k: string) => k.replace(/[_-]/g, "").toLowerCase();
+  const want = canon(expectedKey);
+  for (const actual of Object.keys(cursor as Record<string, unknown>)) {
+    if (actual !== expectedKey && canon(actual) === want) return actual;
+  }
+  return undefined;
 }
 
 /**
@@ -130,10 +172,16 @@ interface ZodIssueLike {
   expected?: string;
   received?: string;
   keys?: string[];
+  /** too_small / too_big 的边界与来源（zod v4 用 origin 区分 array/string/number） */
+  origin?: string;
+  minimum?: number | bigint;
+  maximum?: number | bigint;
+  /** invalid_value（枚举）的合法取值 */
+  values?: unknown[];
 }
 
 /** 单条 issue → 中文描述。优先用 expected/received，回退原始 message */
-function translateIssue(issue: ZodIssueLike): string {
+function translateIssue(issue: ZodIssueLike, input?: unknown): string {
   if (issue.code === "invalid_type" && issue.expected) {
     // ⚠️ zod v4 的 invalid_type issue **不含 `received` 字段**（实测 4.4.3/4.5.4：
     // issue 只有 expected/code/path/message），实际类型只出现在 message 文本里。
@@ -143,11 +191,61 @@ function translateIssue(issue: ZodIssueLike): string {
     const received = issue.received ?? extractReceivedFromMessage(issue.message) ?? "unknown";
     // 附加 zod 原始 message 作为补充信息，帮助模型自我纠正
     const suffix = issue.message ? `（${issue.message}）` : "";
+
+    // 「实际收到 undefined」时先查是不是命名风格写错了（zod 静默剥离未识别键，
+    // 于是"传错名字"与"没传"产生完全相同的报错，见 findNearMissKey 注释）。
+    // 命中时把修法直接写出来：模型不必再猜是漏传还是名字不对。
+    if (received === "undefined") {
+      const expectedKey = issue.path?.[issue.path.length - 1];
+      const actual = findNearMissKey(input, issue.path, expectedKey);
+      if (actual !== undefined) {
+        return (
+          `字段名写错了——你传的是 \`${actual}\`，本工具的参数名是 \`${String(expectedKey)}\`` +
+          `（注意下划线/大小写）。把 \`${actual}\` 改成 \`${String(expectedKey)}\` 重试即可，` +
+          `不要新增字段。`
+        );
+      }
+    }
+
     return `期望 ${issue.expected}，实际收到 ${received}${suffix}`;
+  }
+
+  // ── 数量/长度/范围越界：zod 原文只说"太少了"，不说底线是几、也不说该怎么办 ──
+  // 实测 ask_user_question 收到 `options: [1 项]` 时，模型看到的全部信息是
+  // 「Too small: expected array to have >=2 items」——它不知道上限是 4，
+  // 也不知道"不用自己加'其他'选项"（UI 会自动追加）。补出边界与修法。
+  if ((issue.code === "too_small" || issue.code === "too_big") && issue.origin) {
+    const isSmall = issue.code === "too_small";
+    const bound = isSmall ? issue.minimum : issue.maximum;
+    if (bound !== undefined) {
+      const unit =
+        issue.origin === "array"
+          ? "个元素"
+          : issue.origin === "string"
+            ? "个字符"
+            : issue.origin === "set"
+              ? "个元素"
+              : "";
+      const what = issue.origin === "number" ? "数值" : "长度";
+      const cmp = isSmall ? "至少" : "至多";
+      const detail = unit
+        ? `${cmp}需要 ${String(bound)} ${unit}`
+        : `${what}${cmp}为 ${String(bound)}`;
+      return `${isSmall ? "太少" : "太多"}：${detail}（实际不满足）。请调整该字段后重试${
+        issue.message ? `（${issue.message}）` : ""
+      }`;
+    }
+  }
+
+  // ── 枚举取值非法：把合法取值列出来，省掉模型一轮猜 ──
+  if (issue.code === "invalid_value" && Array.isArray(issue.values) && issue.values.length > 0) {
+    return `取值非法，合法取值为: ${issue.values.map((v) => String(v)).join(" | ")}`;
   }
   if (issue.code === "unrecognized_keys" && issue.keys?.length) {
     return `存在未识别的字段: ${issue.keys.join(", ")}`;
   }
-  // 其余类型（too_small / invalid_enum_value / custom 等）直接透传 zod 的 message
+  // 其余类型（custom / invalid_format / 未带 origin 的 too_small 等）透传 zod 的 message。
+  // 上面几个分支都做了「拿不到结构化字段就落到这里」的降级，所以这条是真兜底，
+  // 不是遗漏——zod 换措辞或新增 code 时行为退化成"照抄原文"，不会变成空消息。
   return issue.message ?? "参数不合法";
 }
