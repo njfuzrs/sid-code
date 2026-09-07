@@ -611,6 +611,12 @@ export class EditTool implements Tool {
       const { checkTeamMemSecrets } = await import("../memory/team/secret-guard.ts");
       const { getTeamMemoryOptions } = await import("../memory/team/runtime.ts");
       const teamOpts = getTeamMemoryOptions();
+      // P1-8：私有 / agent 记忆 secret 守卫。上面那道只管 team 目录（且团队记忆未启用时
+      // 直接放行），私有记忆与 agent 记忆经 edit 写入时此前零闸门——而后台提取代理
+      // 正走这条路。两道守卫在下面**两个写盘分支各调一次**：edit 有
+      // 「old_string='' 创建/填充」与「常规替换」两条出口，只挡一条等于没挡。
+      const { checkPrivateMemSecrets, afterMemoryFileWrite } =
+        await import("../memory/write-guard.ts");
 
       // ── old_string='' 创建新文件或填充空文件 ─────────────────────────────
       if (oldString === "") {
@@ -631,6 +637,11 @@ export class EditTool implements Tool {
           log.warn("TOOL", `✗ 拒绝写入含 secret 的团队记忆: ${filePath}`);
           return { output: `错误: ${guardErr}`, isError: true };
         }
+        // P1-8：私有 / agent 记忆同判据（出口一：old_string='' 创建或填充空文件）
+        const privErr = checkPrivateMemSecrets(filePath, newString);
+        if (privErr) {
+          return { output: `错误: ${privErr}`, isError: true };
+        }
 
         // D1：写盘**之前**在 IDE 里协商最终内容（用户可在 diff 视图里手改再保存）。
         // 无 IDE / 未开启 / 出错一律返回"照原样写"——IDE 是可选增强。
@@ -644,6 +655,8 @@ export class EditTool implements Tool {
         const dir = dirname(filePath);
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         await Bun.write(filePath, contentToWrite);
+        // P1-11：记忆文件被改过 ⇒ 推进缓存代数（非记忆路径 no-op）
+        afterMemoryFileWrite(filePath);
         log.info("TOOL", `✓ 创建新文件 ${filePath}`);
         // 结构化 diff(全 + 行)直传 UI;output 仅摘要,不含完整内容。
         return {
@@ -720,6 +733,14 @@ export class EditTool implements Tool {
         log.warn("TOOL", `✗ 拒绝写入含 secret 的团队记忆: ${filePath}`);
         return { output: `错误: ${guardErr}`, isError: true };
       }
+      // P1-8：私有 / agent 记忆同判据（出口二：常规替换）。
+      // 比的是 `finalContent`（替换后的整份内容）而非 `newString`：凭证可能是
+      // 被替换进来的那一段之外的内容——但那属于「文件本来就有」，
+      // 与 team 那道守卫的口径保持一致，不在这里另立判据。
+      const privErr = checkPrivateMemSecrets(filePath, finalContent);
+      if (privErr) {
+        return { output: `错误: ${privErr}`, isError: true };
+      }
 
       // D1：写盘**之前**在 IDE 里协商最终内容。这是一次阻塞的内容协商而非展示——
       // 用户在 diff 视图里手改后保存时，该落盘的是**用户改过的版本**。
@@ -733,6 +754,8 @@ export class EditTool implements Tool {
       finalContent = negotiated.content;
 
       await Bun.write(filePath, finalContent);
+      // P1-11：记忆文件被改过 ⇒ 推进缓存代数（非记忆路径 no-op）
+      afterMemoryFileWrite(filePath);
 
       if (this.tracker) {
         // 传入新内容，让 tracker 刷新内容快照 —— 否则下次 edit 的外部修改内容比对

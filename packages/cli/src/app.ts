@@ -522,6 +522,16 @@ export class App {
    * Session Memory 句柄（Step 0）：在压缩前持续维护结构化会话笔记，
    * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
    */
+  /**
+   * 压缩后待注入的 Session Memory 笔记正文（P1-5 ①）。
+   *
+   * `rebuildSystemPrompt` 把它作为 `sessionMemoryContent` 传给 `buildSystemPrompt`。
+   * 存成字段而非临时变量，是因为**此后每一次重建都必须继续带上它** ——
+   * `/language`、`/model`、CLAUDE.md 热重载都会覆盖式重建系统提示词，
+   * 漏带一次就等于把压缩后唯一的历史补偿静默丢掉（与 JIT 规则回灌同一类坑，
+   * 见 rebuildSystemPrompt 里那条「覆盖式重建必须回灌」的注释）。
+   */
+  private pendingSessionMemoryContent?: string;
   private sessionMemory:
     | import("@sid-code/core/session-memory/session-memory.ts").SessionMemoryHandle
     | null = null;
@@ -3854,6 +3864,9 @@ export class App {
         permissionMode: this.config.permissionMode,
         gitStatus: true,
         memorySystemPrompt,
+        // P1-5 ①：压缩后注入的 Session Memory 笔记。**每次重建都要带** ——
+        // 这是覆盖式重建，漏传一次就把压缩后唯一的历史补偿静默丢掉。
+        sessionMemoryContent: this.pendingSessionMemoryContent,
         preferredLanguage: this.config.language,
         model: this.config.model,
         availableModels: this.config.availableModels,
@@ -4580,6 +4593,50 @@ export class App {
       getLogger().warn("APP", `压缩记录落盘失败: ${(e as Error)?.message}`);
     }
     this.persistSessionSummary(summary, removedCount);
+
+    // ─── P1-5 ①：压缩后把 Session Memory 笔记注入为**常驻**附件 ───
+    //
+    // 这是 `sessionMemoryContent` 的**唯一生产者**。此前消费侧齐全
+    // （类型、`generateSessionMemoryAttachment`、`PRIORITY.SESSION_MEMORY=33`、
+    // 分段记账全都在），但 cli/ 与 query/ 下没有任何地方给它赋值 ⇒
+    // `<session-memory>` 附件在生产中**从不出现**。
+    //
+    // 参考文档 §9.1 的论点是「Session Memory 的价值在于压缩时注入，
+    // 作为被丢弃历史的替代品」。sid-code 此前只走了一半：
+    // `trySessionMemoryCompaction` 把笔记当**摘要正文**塞进压缩结果，
+    // 那只在压缩那一刻生效一次，之后随对话增长被稀释；
+    // 而**压缩后的常驻注入**才是「常驻一份结构化笔记」——两者不能互相替代。
+    //
+    // 为什么挂在压缩观察者上而不是每轮都注入：笔记本身是**历史的替代品**，
+    // 历史还在的时候注入它纯属重复（同样的信息付两遍 token）。
+    // 只有压缩真的发生过、历史真的被丢了，它才开始有价值。
+    //
+    // 失败不阻断：注入不了就退回「只有摘要、无常驻笔记」，即修复前的行为。
+    void this.injectSessionMemoryAfterCompact();
+  }
+
+  /**
+   * 读当前 Session Memory 笔记，存进 `pendingSessionMemoryContent` 并重建系统提示词
+   * （P1-5 ①）。空笔记 / 无子系统时不动 —— 不会往 prompt 里塞一个空壳附件。
+   */
+  private async injectSessionMemoryAfterCompact(): Promise<void> {
+    const log = getLogger();
+    if (!this.sessionMemory) return;
+    try {
+      const content = await this.sessionMemory.getContent();
+      const { isSessionMemoryEmpty } = await import("@sid-code/core/session-memory/utils.ts");
+      // 只有模板骨架（section 标题 + 斜体占位）时视为空：注入它等于付 token 买一份
+      // 模板复印件，且会让模型以为「笔记里没记什么」而不是「笔记还没开始记」。
+      if (isSessionMemoryEmpty(content)) return;
+      this.pendingSessionMemoryContent = content ?? undefined;
+      await this.rebuildSystemPrompt();
+      log.info(
+        "APP",
+        `Session Memory 已注入为常驻附件（${content!.length} 字符）—— 压缩丢弃的历史由结构化笔记补偿`,
+      );
+    } catch (e) {
+      log.warn("APP", `Session Memory 常驻注入失败（不影响压缩）: ${(e as Error)?.message}`);
+    }
   }
 
   private persistSessionSummary(summary: string, removedCount: number): void {

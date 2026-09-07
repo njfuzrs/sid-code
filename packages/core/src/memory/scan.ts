@@ -51,9 +51,62 @@ export function stripFrontmatter(text: string): string {
     .trimEnd();
 }
 
-/** 应跳过的文件名 / 目录名 */
+/**
+ * 应跳过的文件名 / 目录名（记忆目录枚举的**唯一**口径，P1-6）。
+ *
+ * ⚠️ 这两张表与 `enumerateMemoryFiles` 现在被 `MemoryStore.loadDir` 共用。
+ * 加成员前想清楚**两条线都会受影响**：
+ * - `archive/` 是 P0-2 的归档区，**必须**在 SKIP_DIRS 里。漏了它，被归档的记忆
+ *   会重新进索引 —— 归档等于没归档，且淘汰循环会把它再归档一次，来回震荡。
+ * - `memories.json.bak` 是 legacy 迁移产物。它当前不是 `.md` 所以本来也进不来，
+ *   但迁移逻辑若哪天改成 `.md` 后缀，没有这张表就会被当成记忆条目加载。
+ */
 const SKIP_NAMES = new Set(["MEMORY.md", "memories.json", "memories.json.bak"]);
 const SKIP_DIRS = new Set(["logs", "archive", ".trash"]);
+
+/**
+ * 枚举记忆目录下所有**该被当成记忆条目**的 `.md` 文件，返回相对 `memoryDir` 的路径。
+ *
+ * ─── P1-6：这个函数存在的理由是「同一个目录此前有两套互不兼容的枚举」 ───
+ *
+ * | 枚举方 | 旧实现 | 递归 | 服务对象 |
+ * | --- | --- | --- | --- |
+ * | `scanMemoryFiles` | `readdir(dir, {recursive:true})` | ✅ | 提取/dream manifest、召回候选 |
+ * | `MemoryStore.loadDir` | `readdir(dir)` | ❌ | **MEMORY.md 索引**、`list()`、`get()` |
+ *
+ * 于是放在子目录里的记忆进入一个**自相矛盾**的状态：提取代理的「现有记忆清单」里
+ * 有它（于是判定「已存在，不重复保存」），**但索引里没有它**（注入侧永远看不见）——
+ * 记忆既不会被重新保存，也不会被读到。实测：`scanMemoryFiles` 看到
+ * `[reference_nested.md, reference_top.md]`，`store.list()` 只看到 `[top]`。
+ *
+ * 子目录不是假想场景，三条现实路径都会造出来：
+ * 1. `SKIP_DIRS` 自己就预期了 `archive/` / `logs/` 的存在 —— 而旧 `loadDir`
+ *    **连这张 skip 名单都没有**（平铺读碰不到目录名）。两个模块对「目录长什么样」
+ *    的假设本来就不一致。
+ * 2. dream 的 prune 指令鼓励模型整理记忆库，模型很可能建 `archive/` 搬旧记忆。
+ * 3. 用户手动整理 —— 记忆目录是**明确设计给人直接编辑**的（见 store.ts 头注释）。
+ *
+ * ⚠️ 返回的是**相对路径**（如 `sub/x.md`），不是 basename。索引链接
+ * `- [key](sub/x.md)` 相对 `MEMORY.md` 所在目录解析，模型拿 `${dir}/${链接}` 直接可读；
+ * 换成 basename 会让子目录里的记忆产出**指不到东西的链接**。
+ */
+export async function enumerateMemoryFiles(memoryDir: string): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(memoryDir, { recursive: true });
+  } catch {
+    return [];
+  }
+  return entries.filter((rel) => {
+    if (!rel.endsWith(".md")) return false;
+    const segments = rel.split(/[\\/]/);
+    const base = segments[segments.length - 1];
+    if (SKIP_NAMES.has(base)) return false;
+    // 任一层目录命中 skip 名单即整条排除（`archive/a/b.md` 也要排除）
+    if (segments.slice(0, -1).some((s) => SKIP_DIRS.has(s))) return false;
+    return true;
+  });
+}
 
 /**
  * 扫描记忆目录，提取所有 .md 文件的 frontmatter 头信息。
@@ -68,22 +121,9 @@ export async function scanMemoryFiles(
 ): Promise<MemoryHeader[]> {
   if (!existsSync(memoryDir)) return [];
 
-  let entries: string[];
-  try {
-    entries = await readdir(memoryDir, { recursive: true });
-  } catch {
-    return [];
-  }
-
-  const candidates = entries.filter((rel) => {
-    if (signal?.aborted) return false;
-    if (!rel.endsWith(".md")) return false;
-    const segments = rel.split(/[\\/]/);
-    const base = segments[segments.length - 1];
-    if (SKIP_NAMES.has(base)) return false;
-    if (segments.some((s) => SKIP_DIRS.has(s))) return false;
-    return true;
-  });
+  // P1-6：枚举口径与 MemoryStore.loadDir 共用同一个函数，两条线不再各写一套
+  const all = await enumerateMemoryFiles(memoryDir);
+  const candidates = signal?.aborted ? [] : all;
 
   const settled = await Promise.allSettled(
     candidates.map(async (rel) => {

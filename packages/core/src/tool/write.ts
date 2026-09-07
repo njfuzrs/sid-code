@@ -208,6 +208,18 @@ export class WriteTool implements Tool {
       }
     }
 
+    // P1-8 私有 / agent 记忆 secret 守卫：上面那道**只管 team 目录**，
+    // 私有记忆与 agent 记忆此前经 write 工具写入时零闸门 —— 而后台提取代理正走这条路
+    // （它有 write 权限、被授权写整个记忆目录，且是无人监督的 LLM）。
+    // 同一个代理的 save_memory 路径有闸门、write 路径没有，防护不对称即等于没有。
+    {
+      const { checkPrivateMemSecrets } = await import("../memory/write-guard.ts");
+      const guardErr = checkPrivateMemSecrets(filePath, params.content);
+      if (guardErr) {
+        return { output: `错误: ${guardErr}`, isError: true };
+      }
+    }
+
     log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
     // 并发冲突检测（Phase 2.1 + 2.4 配置化）
@@ -352,6 +364,14 @@ export class WriteTool implements Tool {
       }
 
       log.info("TOOL", `✓ 写入 ${filePath} 完成`);
+
+      // P1-11：写的若是记忆文件，推进记忆缓存代数。这条路**不经过 store.set()**，
+      // 所以旧代码里提取代理写完之后，本会话 9 个 MemoryStore 实例的内存快照全都还是旧的
+      // ——模型被告知「已保存 N 条」，却在索引里找不到它们。非记忆路径自动 no-op。
+      {
+        const { afterMemoryFileWrite } = await import("../memory/write-guard.ts");
+        afterMemoryFileWrite(filePath);
+      }
 
       // P3：行数骤降警告（edit-guard 模式）——覆盖已有文件时，若新内容行数比旧内容
       // 少 20% 以上（且旧文件 >50 行），在 output 里追加警告。这是 lost-in-the-middle

@@ -14,7 +14,8 @@
  * 四道防线，每道针对一个具体的退化路径：
  *  1. 事件名双向对账：EVENT_NAMES 里的名字必须有生产调用点（防死代码），
  *     生产调用点用的名字必须在表里（防绕过常量表硬编码字符串）。
- *  2. 埋点密度下限：五条核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
+ *  2. 埋点密度下限：六条核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
+ *     第六条「记忆」漏斗由 P1-12 补上 —— 记忆子系统此前零埋点。
  *  3. 脱敏强制：业务代码不得绕过门面直调 logEvent（绕过 = 工具名与路径裸传）。
  *  4. 脱敏与门控函数非零消费者：sanitize.ts / privacy.ts / privacy-level.ts 的
  *     关键导出必须真的有人调（这是它们当初变成死代码的那个形态）。
@@ -92,6 +93,11 @@ const FACADE_EMITTERS = [
   "logCommandInvoke",
   "logCommandRejected",
   "logError",
+  // P1-12：记忆漏斗。补进这张表 = 它们此后也受「必须有生产调用点」约束 ——
+  // 记忆子系统这批埋点的成因正是「零埋点」，不上门禁就是等着它退回去。
+  "logMemoryIndexHealth",
+  "logMemoryInject",
+  "logMemoryGuard",
 ] as const;
 
 describe("埋点接线哨兵：事件名双向对账", () => {
@@ -127,7 +133,7 @@ describe("埋点接线哨兵：事件名双向对账", () => {
     expect(uncalled).toEqual([]);
   });
 
-  test("五条核心漏斗各自都有生产调用点", () => {
+  test("六条核心漏斗各自都有生产调用点", () => {
     const sources = readAllSources().filter(({ rel }) => rel !== FACADE_REL);
     const funnels: Record<string, readonly string[]> = {
       工具: ["logToolCall", "logToolSuccess", "logToolFailure"],
@@ -135,6 +141,8 @@ describe("埋点接线哨兵：事件名双向对账", () => {
       上下文: ["logContextCompact", "logContextCompactSkipped"],
       命令: ["logCommandInvoke", "logCommandRejected"],
       错误: ["logError"],
+      // P1-12：第六条漏斗 —— 「写进去的记忆有没有被读到」
+      记忆: ["logMemoryIndexHealth", "logMemoryInject", "logMemoryGuard"],
     };
 
     const missing: string[] = [];
