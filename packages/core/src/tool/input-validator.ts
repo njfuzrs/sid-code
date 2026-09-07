@@ -13,6 +13,7 @@
 
 import type { LegacyTool } from "./types.ts";
 import { normalizeStrictNulls } from "./nullish-normalize.ts";
+import { normalizeNumericStrings } from "./numeric-coerce.ts";
 
 /** 校验结果 */
 export type ToolInputValidation = { ok: true; data: unknown } | { ok: false; message: string };
@@ -67,7 +68,13 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
   // 这里在校验前把这类 null 翻译回 zod 的"未提供"表示法。
   // 只处理「optional 且未显式 nullable」的字段，`.nullable()` 的业务 null 不受影响；
   // 同时拦下 `z.coerce.*` 把 null 静默转成 0 的污染（详见 nullish-normalize.ts）。
-  const normalized = normalizeStrictNulls(schema, input);
+  const nullNormalized = normalizeStrictNulls(schema, input);
+
+  // 数字形态字符串回填：模型逐 token 生成 JSON 时会偶发给 number 字段多打一对引号
+  // （实测 read offset:"117, 130" / "1,1"，schema 明确写了 type:number 仍然发生）。
+  // `"117"`→117 是无损无歧义的转换，判成硬失败等于白烧一轮往返；只接受能确定
+  // 模型意图的形态，`""`/`null`/`true`/`[]` 一律放回让 zod 报错（详见 numeric-coerce.ts）。
+  const normalized = normalizeNumericStrings(schema, nullNormalized);
 
   const result = schema.safeParse(normalized);
   if (result.success) {
@@ -99,6 +106,22 @@ function formatZodError(toolName: string, error: unknown): string {
   return `参数校验失败（工具 ${toolName}）:\n${lines.join("\n")}`;
 }
 
+/**
+ * 从 zod message 里提取实际收到的类型。
+ *
+ * zod v4 的 invalid_type message 形如 `Invalid input: expected number, received string`，
+ * 而 issue 对象本身**没有** `received` 字段（v3 有，v4 移除了）。这个提取是为了让
+ * 「实际收到 X」这句话真的带信息——它是给模型看的自我纠错线索。
+ *
+ * 提不到（zod 换措辞、自定义 message、本地化）时返回 undefined，由调用方退回
+ * "unknown"：这一层只做增强，绝不因为解析失败而让整条错误消息不可用。
+ */
+function extractReceivedFromMessage(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  const m = message.match(/received\s+([A-Za-z_$][\w$]*)/);
+  return m ? m[1] : undefined;
+}
+
 /** zod issue 的结构（v4），只取本模块需要的字段 */
 interface ZodIssueLike {
   code?: string;
@@ -112,7 +135,12 @@ interface ZodIssueLike {
 /** 单条 issue → 中文描述。优先用 expected/received，回退原始 message */
 function translateIssue(issue: ZodIssueLike): string {
   if (issue.code === "invalid_type" && issue.expected) {
-    const received = issue.received ?? "unknown";
+    // ⚠️ zod v4 的 invalid_type issue **不含 `received` 字段**（实测 4.4.3/4.5.4：
+    // issue 只有 expected/code/path/message），实际类型只出现在 message 文本里。
+    // 原实现写 `issue.received ?? "unknown"`，于是所有工具的类型错误都渲染成
+    // 「实际收到 unknown」——这句话对模型零信息量，还会误导它以为参数值本身是
+    // undefined。这里改成从 message 里提取真实类型，提不到才退回 unknown。
+    const received = issue.received ?? extractReceivedFromMessage(issue.message) ?? "unknown";
     // 附加 zod 原始 message 作为补充信息，帮助模型自我纠正
     const suffix = issue.message ? `（${issue.message}）` : "";
     return `期望 ${issue.expected}，实际收到 ${received}${suffix}`;
