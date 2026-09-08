@@ -258,6 +258,54 @@ echo ""
 if ls -d "$JOBDIR"/*__*/ >/dev/null 2>&1; then
   echo "=== 收尾：分母核账（⛔ 引用时别拿 72 当分母）==="
   python3 w3-classify.py "$JOBDIR" 2>&1 | head -5
+
+  # ── 🔴 事后核验「这个 job 到底是哪条臂跑的」——**按内容，不按名字** ──────────
+  #
+  # 上面那道臂闸（§59）只看 job 名里的关键字，是**跑前的启发式**：
+  # 它挡得住「名字像 cc 但 ARM=sid」，挡不住「名字不含 cc、ARM 也没传」——
+  # 那种情况下两道判据都放行，产出一个 sid 跑的、名字中性的 job，
+  # 而到 T5 汇总时它会被当成 cc 臂并排进去（08 号 §9.2-⑦ 那个真错的形态）。
+  #
+  # ⇒ 这一条读 `config.json` 的 `agent.name`（harbor 自己写下的**观测值**），
+  #    与声明的 ARM 对账。它是唯一能在**事后**发现名实不符的判据。
+  ACTUAL_ARM="$(python3 -c "
+import sys; sys.path.insert(0, '.')
+from arm_health import detect_arm
+import glob
+for d in sorted(glob.glob('$JOBDIR/*__*')):
+    a = detect_arm(d)
+    if a: print(a); break
+else: print('UNKNOWN')
+" 2>/dev/null || echo UNKNOWN)"
+  echo ""
+  echo "=== 收尾：臂核验（按 config.json 内容，⛔ 不按目录名）==="
+  echo "    声明 ARM=$ARM   实测 agent=$ACTUAL_ARM"
+  if [ "$ACTUAL_ARM" = UNKNOWN ]; then
+    echo "    ⚠️ 判不出实际臂（config.json 缺 agent.name 或是新 agent）—— ⛔ 别猜，人工核。"
+  elif [ "$ACTUAL_ARM" != "$ARM" ]; then
+    echo "    ⛔ **名实不符**：声明 $ARM，实际跑的是 $ACTUAL_ARM。"
+    echo "       ⇒ 这一份产物**不能**当 $ARM 臂用（08 号 §9.2-⑦：两侧都不报错，"
+    echo "         到汇总才发现「对照」两边是同一个 harness）。"
+    echo "       ⇒ 改个正确的 job 名重跑；⛔ 别把它并排进对照表。"
+  else
+    echo "    ✅ 一致"
+  fi
+
+  # ── 归档：🔴 `runs/` 不入库，这一步是唯一留下第二份的机会 ──────────────────
+  #
+  # 为什么接进流程而不是「跑完手工再跑一下」：`run-model-switch.sh:432` 那段
+  # 注释记着同型教训 —— digest 在第九棒就存在，而**九棒里零次被跑过**。
+  # 价值不在工具，在它被真的执行。T4 一条臂 $36–41，漏采一次就是白花。
+  #
+  # ⚠️ 只读旁路：失败一律不改 RUN_RC（跑分产物已经落盘，汇总失败不该动结论）。
+  echo ""
+  echo "=== 收尾：汇总归档（results/ 不在 gitignore 里 ⇒ 唯一能进版本库的那一份）==="
+  if python3 w3-summary.py "$JOBDIR" -o results/ 2>&1 | tail -22; then
+    echo "    ⚠️ 记得 git add results/ —— runs/ 整个被 ignore，不 commit 就只有本机一份。"
+  else
+    echo "    ⚠️ 汇总失败（不影响已落盘的跑分产物）。手工重跑："
+    echo "       python3 w3-summary.py $JOBDIR -o results/"
+  fi
 else
   echo "=== 收尾：无产物，跳过分母核账 ==="
 fi
