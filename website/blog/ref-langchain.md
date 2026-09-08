@@ -2,7 +2,7 @@
 title: LangChain 深入研究（2026-08 快照）
 description: 15 章逐节成册，按目录跳章查阅——把 LangChain 的包拓扑、API 契约与升级边界交叉核验到版本号级别：一个仓库 21 个包各自独立版本号、`libs/langchain/` 装的包叫 langchain-classic 而 `langchain` 在 langchain_v1/、核心 API 面四个口径差 10 倍、114 处 @deprecated 有 113 处瞄准 2.0.0、langchain 钉住 langgraph<1.3.0 而 langgraph 已到 1.2.10。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 热点开源项目研究
+series: 开源AI项目研究
 audience: engineer
 highlight: 15 章逐节可查 · 核验至 langchain 1.3.14 / langchain-core 1.5.3 · 截至 2026-08-09 快照
 tags: [LangChain, 框架, 深入研究, 包拓扑, 弃用迁移, Agent, 参考]
