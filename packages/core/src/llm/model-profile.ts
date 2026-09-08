@@ -11,7 +11,7 @@
  * 三条职责边界，越过就是把这里变成第二个数据源：
  *
  * 1. **本模块不查任何新数据源**，只调既有的解析入口（`resolveContextLimit` /
- *    `resolvePricing` / `resolveEffortCapability` / `getAllGatewayEntries`）。
+ *    `resolvePricing` / `resolveEffortCapability` / `lookupGatewayPerCallUSD`）。
  *    新数据源要加，加到它该在的那一层，本模块跟着拿。
  * 2. **本模块只服务展示，不参与计价**。计价走 `calculateUSDCost`（它需要传历史时刻 `at`
  *    才能复算旧会话），把计价改成读这里会把「可复现的历史成本」变成「按当前时刻算的数」。
@@ -30,7 +30,7 @@ import {
   type ModelPricing,
   type PricingModelEntry,
 } from "../api/cost-tracker.ts";
-import { lookupGatewayPricing, getAllGatewayEntries } from "./gateway-pricing.ts";
+import { lookupGatewayPricing, lookupGatewayPerCallUSD } from "./gateway-pricing.ts";
 import { lookupRegistry } from "./model-registry.ts";
 import { sameEndpoint } from "./endpoint-key.ts";
 import { TokenEstimator, type ModelMetaSource } from "./token-estimator.ts";
@@ -78,12 +78,14 @@ export interface ModelProfile {
   /**
    * 每百万 token 单价（USD，已折平分时段与币种）。null = 四级全 miss。
    *
-   * 按次计费模型（网关 quota_type=1）这里也是 null —— token 价对它不适用，
-   * 单价看 {@link perCallUSD }。两者互斥，展示层择一。
+   * ⚠ **与 {@link perCallUSD} 不互斥**（修前的注释说互斥，那是 `convertRawEntry`
+   * 把按次条目的 token 价丢掉造成的假象）。实测企业网关的按次条目 14/14 同时带
+   * token 价，此时两个字段都有值：token 价是**我们账本实际用的**，按次价是网关
+   * 自己的计费口径。展示层必须两个都显示，只显示按次价会与账本自相矛盾。
    */
   pricing: ModelPricing | null;
   pricingSource: PricingSource;
-  /** 按次计费单价（USD/次）。仅网关 quota_type=1 的模型有值（如视频类） */
+  /** 网关按次单价（USD/次），仅 quota_type=1 有值。与 {@link pricing} 可并存 */
   perCallUSD?: number;
   /**
    * 这条价原本存的币种（`"CNY"` 表示注册表里存的是人民币，已按 fxToUSD 折算成上面的 USD）。
@@ -126,6 +128,9 @@ export function detectPricingSource(
   availableModels: ProfileModelEntry[] | undefined,
   baseURL?: string,
 ): PricingSource {
+  // 网关采集按**真名**入库，配置侧键是别名 —— 两个网关判定分支都必须带上真名，
+  // 否则「实际取到了网关价、来源却标 unknown」（`resolvePricing` 已按真名兜底查过）。
+  const wire = resolveWireModel(name, availableModels);
   // 1. 用户手写「模型名 + 端点」复合键
   const exact = availableModels?.find((m) => m.name === name && sameEndpoint(m.baseURL, baseURL));
   if (exact?.pricing && exact.pricing.input > 0) return "user";
@@ -133,30 +138,48 @@ export function detectPricingSource(
   const byName = availableModels?.find((m) => m.name === name);
   if (byName?.pricing && byName.pricing.input > 0) return "user";
   // 3. 网关实采价（按端点分桶）
-  if (lookupGatewayPricing(name, baseURL)) return "gateway";
+  if (lookupGatewayPricing(name, baseURL, wire)) return "gateway";
   // 3b. 按次计费（quota_type=1）：`lookupGatewayPricing` 对它**刻意返回 null**
   //     （按次价无法表达成 per-token，见该函数注释），于是光看第 3 步会一路落到注册表。
   //     但按次单价本身确实是**网关实采的** —— 不补这一档，展示出来就是
   //     「$18.00/次（注册表）」：数字来自网关、标签却说注册表，自相矛盾。
   //     实测 gpt-5.4 / claude-opus-4-8 等 4 个企业网关模型命中此分支。
-  if (getPerCallUSD(name, baseURL) !== undefined) return "gateway";
+  //
+  // ⚠ 这一档只在**纯按次**（无 token 价）时才可能被走到：网关同时报 token 价的按次条目
+  //     已在第 3 步命中。修前 `convertRawEntry` 把按次条目的 token 价丢了，才让这一档
+  //     承担了本该属于第 3 步的判定。
+  if (getPerCallUSD(name, baseURL, availableModels) !== undefined) return "gateway";
   // 4. 内置注册表（含模糊兜底；按真名查，与 resolvePricing 第 4 步同源）
-  if (lookupRegistry(resolveWireModel(name, availableModels))?.pricing) return "registry";
+  if (lookupRegistry(wire)?.pricing) return "registry";
   return "unknown";
 }
 
 /**
- * 查网关采集缓存里的按次单价（quota_type=1）。
+ * 查网关采集缓存里的按次单价（USD/次）。委托给 `lookupGatewayPerCallUSD`。
  *
- * 端点桶优先、未命中回退合并视图：用户配置的端点串与采集时归一化后的键可能不完全一致
- * （多一个 `/v1`、大小写不同），只查精确桶会让明明采到的价显示成「未知」。
+ * ⚠ **修前这里是一条绕过全部约束的第二查找路径**，是本次「$36.00/次 张冠李戴」的直接成因：
+ *
+ * ```ts
+ * getAllGatewayEntries(baseURL)[name] ?? getAllGatewayEntries()[name]  // ← 旧实现
+ * ```
+ *
+ * 第二个无参调用返回**全部端点桶的合并视图**，于是按次价可无条件跨端点借用。实测
+ * `claude-sonnet-4-6` 配在 uniapi（该桶里没有它），面板显示的 $36.00/次 来自
+ * **ppchat 桶** —— 而它是注册表裸名（官方 $3/$15），按「裸名禁止跨桶」本就不该借。
+ *
+ * 那句 `?? 合并视图` 当时的理由是「端点归一化可能不一致（多一个 /v1、大小写不同）」，
+ * 但归一化本就是 `normalizeBaseURL` 的职责（它处理末尾斜杠与大小写，且刻意**不剥 `/v1`**
+ * ——同一 host 上带不带 `/v1` 是两个不同部署）。用「无条件跨桶」去补一个归一化问题，
+ * 等于为了修大小写不敏感而放弃端点维度本身。真正的归一化差异归 endpoint-key.ts 治。
+ *
+ * 现在与计价路径共用 `lookupGatewayEntry` 的同一套约束与别名解析，两个消费点不再分叉。
  */
-export function getPerCallUSD(name: string, baseURL?: string): number | undefined {
-  const entry = getAllGatewayEntries(baseURL)[name] ?? getAllGatewayEntries()[name];
-  if (entry && entry.quotaType === 1 && typeof entry.perCallUSD === "number") {
-    return entry.perCallUSD;
-  }
-  return undefined;
+export function getPerCallUSD(
+  name: string,
+  baseURL?: string,
+  availableModels?: ProfileModelEntry[],
+): number | undefined {
+  return lookupGatewayPerCallUSD(name, baseURL, resolveWireModel(name, availableModels));
 }
 
 /** 复用一个 estimator 实例：它无状态，每次 new 只是白付对象分配。 */
@@ -188,7 +211,7 @@ export function buildModelProfile(
   const rawPricing = resolvePricing(name, availableModels, baseURL);
   const pricing = rawPricing ? effectivePricing(rawPricing, at) : null;
   const pricingSource = detectPricingSource(name, availableModels, baseURL);
-  const perCallUSD = getPerCallUSD(name, baseURL);
+  const perCallUSD = getPerCallUSD(name, baseURL, availableModels);
 
   // effort 能力按**真名**解析协议族、按**别名**查 compat 声明 —— 与 app.ts 的
   // resolveEffortCap 同口径。两边口径不一致会出现「面板说支持、请求里没发」的分裂。

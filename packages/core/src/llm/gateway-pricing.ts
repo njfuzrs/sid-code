@@ -24,9 +24,14 @@
  *   output $/1M = input × completion_ratio
  *   cacheRead   = input × cache_ratio
  *   cacheWrite  = input × create_cache_ratio
- *   quota_type=1 → 按次计费（model_price USD/次），本期 per-token 计价无法表达 → 视为「网关未提供
- *                  可用 per-token 价」返回 null，退回注册表兜底（veo 视频类，通常非对话主模型）。
  *   quota_type=0 → 按上面 token 公式。
+ *   quota_type=1 → 网关**自己**按次计费（model_price USD/次）。⚠ 但这**不代表它没有 token 价**：
+ *                  实测企业网关（code.ppchat.vip）14 条 quota_type=1 全部同时带 model_ratio +
+ *                  completion_ratio，按上面公式换算出来正是官方价（claude-opus-5 → $5/$25、
+ *                  claude-sonnet-4-6 → $3/$15）。所以两者都存下来：**token 价进计费**
+ *                  （我们的账本本来就按 token 算），**按次价仅供展示**。
+ *                  只有真正没有 token 价的条目（model_ratio 缺失/为 0，如 doubao-seedream 图片类）
+ *                  才是纯按次模型，此时 input=0 → 计价退回注册表兜底。
  *
  * 容错：第三方 HTTP 属**不可信数据**——严格数值校验（有限、非负），非法条目丢弃；网络/解析失败
  * 静默保留旧缓存 + 回退注册表，绝不阻塞启动或计费。
@@ -78,7 +83,7 @@ interface RawPricingEntry {
   model_name?: string;
   quota_type?: number; // 0=按 token，1=按次
   model_ratio?: number;
-  model_price?: number; // quota_type=1 时的按次单价（USD/次）
+  model_price?: number; // quota_type=1 时的按次单价（USD/次）；与 model_ratio 并存，不互斥
   completion_ratio?: number;
   cache_ratio?: number;
   create_cache_ratio?: number;
@@ -89,9 +94,16 @@ interface RawPricingEntry {
 
 /** 换算后的网关定价条目（缓存与内存态）。 */
 export interface GatewayPricingEntry extends ModelPricing {
-  /** 0=按 token（input/output 有效）；1=按次（perCallUSD 有效，input/output=0） */
+  /**
+   * 网关自报的计费口径：0=按 token；1=网关按次计费。
+   *
+   * ⚠ **它不是「哪个价有效」的判据** —— quotaType=1 的条目照样可能有完整 token 价
+   * （实测 14/14 都有）。判「有没有 token 价」一律看 `input > 0`，判「有没有按次价」
+   * 一律看 `perCallUSD !== undefined`。把 quotaType 当二选一的开关，就是
+   * 「$60.00/次 而账本按 $2/$10 记」那个口径矛盾的成因。
+   */
   quotaType: number;
-  /** 按次单价（USD/次），仅 quotaType=1 有值 */
+  /** 按次单价（USD/次），仅 quotaType=1 有值。与 input/output **可以并存** */
   perCallUSD?: number;
   /**
    * 该端点自报的、这个模型支持的协议类型（原样保留网关词汇，不翻译成我们的 protocolKind）。
@@ -134,8 +146,14 @@ interface EndpointBucket {
  * `endpoints[""]` 表示官方默认端点（无 baseURL）。
  */
 interface GatewayCacheFile {
-  /** 缓存结构版本（区别于内容 pricing_version），便于将来迁移。 */
-  schema_version: 2;
+  /**
+   * 缓存结构版本（区别于内容 pricing_version），便于将来迁移。
+   *
+   * v3（2026-09-08）：`convertRawEntry` 修好「按次条目丢掉 token 价」之前写下的缓存，
+   * 其 `quotaType=1` 条目 `input` 一律是 0 —— 与新语义下「纯按次模型」**字节上无法区分**，
+   * 无法就地修复，只能重采。见 parseCacheFile 里的过期标记处理。
+   */
+  schema_version: 3;
   endpoints: Record<string, EndpointBucket>;
 }
 
@@ -259,26 +277,28 @@ export function convertRawEntry(
   // 与计价口径无关，两种 quotaType 都要带上（按次计费的模型同样有协议类型）。
   const endpointTypes = sanitizeEndpointTypes(raw.supported_endpoint_types);
 
+  // ── 按次单价：仅 quota_type=1 有意义，缺失即这条非法（网关自称按次却不报单价）──
+  let perCallUSD: number | undefined;
   if (quotaType === 1) {
-    // 按次计费：只保留 perCallUSD，token 价置 0。
-    const perCall = raw.model_price;
-    if (!isFiniteNonNeg(perCall)) return null;
-    const perCallEntry: GatewayPricingEntry = {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      quotaType: 1,
-      perCallUSD: perCall,
-    };
-    if (endpointTypes) perCallEntry.supportedEndpointTypes = endpointTypes;
-    return { name, entry: perCallEntry };
+    if (!isFiniteNonNeg(raw.model_price)) return null;
+    perCallUSD = raw.model_price;
   }
 
-  // 按 token 计费。
+  // ── token 价：**两种 quotaType 都要算** ──
+  //
+  // 旧实现在 quotaType===1 时直接把 token 价置 0 并 return，于是网关明明报了
+  // model_ratio / completion_ratio 也被丢掉。后果是三处口径同时错：
+  //   ① `toModelPricing` 拿不到价 → 计价落 FALLBACK_PRICING（$2/$10），实测把
+  //      claude-sonnet-5-ppchat 21 条账本记录全部按兜底价算；
+  //   ② 面板只剩「$60.00/次」可显示，而账本记的是另一套数 —— 展示与计费自相矛盾；
+  //   ③ 因为价「查不到」，跨桶兜底被激活去借**别的端点**的价（见 lookupGatewayEntry）。
+  // 换算公式与 quotaType=0 完全一致，不需要第二套口径。
   const mr = raw.model_ratio;
-  if (!isFiniteNonNeg(mr)) return null;
-  const input = mr * RATIO_TO_USD_PER_M;
+  // 按 token 计费的条目必须有合法 model_ratio —— 它是这条唯一的价，缺了整条无用。
+  // 按次条目允许缺（doubao-seedream 这类纯按次模型），此时 input=0，计价自然退回兜底。
+  if (quotaType === 0 && !isFiniteNonNeg(mr)) return null;
+  const hasTokenPrice = isFiniteNonNeg(mr) && mr > 0;
+  const input = hasTokenPrice ? mr * RATIO_TO_USD_PER_M : 0;
 
   const compRatio = isFiniteNonNeg(raw.completion_ratio) ? raw.completion_ratio : 0;
   const cacheRatio = isFiniteNonNeg(raw.cache_ratio) ? raw.cache_ratio : undefined;
@@ -289,11 +309,12 @@ export function convertRawEntry(
   const entry: GatewayPricingEntry = {
     input,
     output: input * compRatio,
-    quotaType: 0,
+    quotaType,
   };
   if (cacheRatio !== undefined) entry.cacheRead = input * cacheRatio;
   if (createCacheRatio !== undefined) entry.cacheWrite = input * createCacheRatio;
   else entry.cacheWrite = 0; // 网关未给 create_cache_ratio 时按 0（多数网关缓存写入不额外计费）
+  if (perCallUSD !== undefined) entry.perCallUSD = perCallUSD;
   if (endpointTypes) entry.supportedEndpointTypes = endpointTypes;
 
   return { name, entry };
@@ -338,14 +359,27 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Partial<GatewayCacheFile> & LegacyCacheFileV1;
 
-  // 新版 v2：分桶结构。
+  // 新版分桶结构（v2 / v3）。
   if (obj.endpoints && typeof obj.endpoints === "object") {
+    // ⚠ v2 及更早的桶是**被 bug 污染过的产物**：那时 `convertRawEntry` 在 quotaType=1 时
+    // 把 token 价硬置 0，于是「网关同时报了 token 价」这个事实在缓存里已经丢失，
+    // 且与「真的只有按次价」（doubao-seedream 图片类）**字节上完全同形**，无法就地修复。
+    //
+    // 处理方式是 `fetched_at = 0` —— **保留价格、只把桶标记为过期**：
+    //   - 不清空 models：清空会让本该有渠道价的模型在重采完成前落 FALLBACK，
+    //     把一次静默低估换成另一次静默低估，而重采是异步的（端点不可达时可能一直不完成）；
+    //   - 标记过期则 `maybeRefreshGatewayPricing` / `refreshGatewayPricingOnStartup` 的
+    //     TTL 判据（`Date.now() - fetchedAt > ttlMs`）必然成立 → 下次启动立刻后台重采，
+    //     采到即自愈，不必等 24h TTL 自然到期。
+    // 负缓存（failed_at / fail_count）照原样保留：端点可达性与这次的换算 bug 无关，
+    // 抹掉它会让不可达端点重新开始每次启动白烧 socket。
+    const stale = obj.schema_version !== 3;
     const endpoints: Record<string, EndpointBucket> = {};
     for (const [key, bucket] of Object.entries(obj.endpoints)) {
       if (bucket && typeof bucket.models === "object" && bucket.models) {
         endpoints[key] = {
           source_url: bucket.source_url ?? "",
-          fetched_at: bucket.fetched_at ?? 0,
+          fetched_at: stale ? 0 : (bucket.fetched_at ?? 0),
           pricing_version: bucket.pricing_version ?? "",
           models: bucket.models,
           // 负缓存字段（第三方/旧文件可能缺失或类型不对，做有限数值校验后再采纳）。
@@ -354,17 +388,18 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
         };
       }
     }
-    return { schema_version: 2, endpoints };
+    return { schema_version: 3, endpoints };
   }
 
   // 旧版 v1：单端点扁平结构 → 迁移到 endpoints[""]（无端点维度，归一化后为空 key）。
   if (obj.models && typeof obj.models === "object") {
     return {
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "": {
           source_url: obj.source_url ?? "",
-          fetched_at: obj.fetched_at ?? 0,
+          // 同上：v1 比 v2 更旧，一律按过期处理以触发重采。
+          fetched_at: 0,
           pricing_version: obj.pricing_version ?? "",
           models: obj.models,
         },
@@ -385,7 +420,7 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
  */
 function recordFailure(endpointKey: string, url: string): void {
   try {
-    const file: GatewayCacheFile = readCacheFile() ?? { schema_version: 2, endpoints: {} };
+    const file: GatewayCacheFile = readCacheFile() ?? { schema_version: 3, endpoints: {} };
     const prev = file.endpoints[endpointKey];
     file.endpoints[endpointKey] = {
       source_url: prev?.source_url ?? url,
@@ -395,7 +430,7 @@ function recordFailure(endpointKey: string, url: string): void {
       failed_at: Date.now(),
       fail_count: (prev?.fail_count ?? 0) + 1,
     };
-    file.schema_version = 2;
+    file.schema_version = 3;
     // 内存侧同步失败计数：本次会话内该桶立刻停止对外借价（跨桶兜底判据）。
     // 不同步会留下"盘上已记失败、内存仍当健康桶借价"的窗口，直到下次进程重启才生效。
     memBucketFailCount[endpointKey] = file.endpoints[endpointKey].fail_count ?? 1;
@@ -546,15 +581,41 @@ export function isOfficialEndpoint(baseURL?: string): boolean {
 }
 
 /**
- * 计费热路径查询 — 只读内存缓存，**绝不触网**。
+ * 采集条目查询（**唯一入口**）—— 只读内存缓存，**绝不触网**。
  *
- * 端点感知（修复多端点覆盖后）：
+ * ## 为什么必须只有这一个入口
+ *
+ * 修前有两条互不知情的查找路径：本函数（当时叫 `lookupGatewayPricing`，带三条约束）
+ * 与 `model-profile.ts::getPerCallUSD`（**零约束**，直接
+ * `getAllGatewayEntries(baseURL)[name] ?? getAllGatewayEntries()[name]`）。
+ * 第二个参数省掉 baseURL 时返回的是**全部端点桶的合并视图**，于是按次价可以无条件
+ * 跨端点借用：实测 `claude-sonnet-4-6` 配在 uniapi、面板显示的 $36.00/次 来自
+ * **ppchat 桶**——而它是注册表裸名（$3/$15），按约束 (b) 本就不该跨桶借价。
+ *
+ * 三条约束写在一处、两个消费点共用，是这次修复的结构性部分：给第二条路径补一份
+ * 约束副本，下一个新增的消费点还是会漏（本仓「手写字段列表漏字段」有前科）。
+ *
+ * ## 查找顺序
  *   0. 官方厂商端点直接返回 null → 由 resolvePricing 落到内置注册表（权威官方价）。
- *   1. 先查请求端点（normalizeBaseURL(baseURL)）对应桶里的精确渠道价。
- *   2. 未命中再跨桶按名兜底，但受**两条约束**（见下）。
- * 按次计费（quotaType=1）返回 null，由调用方退回注册表兜底。
+ *   1. 请求端点桶（normalizeBaseURL）里的精确渠道条目；别名 miss 后按真名重查一次。
+ *   2. 仍未命中才跨桶按名兜底，受下面两条约束。
  *
- * ── 跨桶兜底的两条约束（2026-08-11 计费错 4.94× 的修复，别放宽）──
+ * ## 别名解析：为什么这一层必须查两次（本次新增）
+ *
+ * 网关采集按**真名**入库（`/api/pricing` 报的是 `claude-sonnet-5`），而配置侧的键是
+ * **别名**（`claude-sonnet-5-ppchat`，靠 `model_id` 指向真名）。修前两条查找路径都只按
+ * 别名查 → 必然 miss → 一路落到注册表；而 `claude-sonnet-5` / `glm-5.3` 这类**新模型
+ * 注册表尚未收录** → 最终落 FALLBACK_PRICING（$2/$10）。
+ *
+ * 实测后果（`usage-ledger.jsonl` 反算）：`claude-sonnet-5-ppchat` 21 条记录里 20 条与
+ * $2/$10 吻合到 1e-6 —— 明明采到了 $1.4/$7 的渠道价，账本却整段按兜底价记。
+ * 四个配了 `model_id` 的模型全部命中（两个 claude + 两个 glm）。
+ *
+ * ⚠ 顺序是**别名优先、真名兜底**，不能反：别名命中的是「这条渠道的价」，而
+ * `wire-model.ts` 的分工表明确写了计价留在别名侧（同一真名接两个渠道时差价不能被抹平）。
+ * 真名只在别名 miss 时补位——那正是"网关按真名入库"造成的 miss。
+ *
+ * ## 跨桶兜底的两条约束（2026-08-11 计费错 4.94× 的修复，别放宽）
  *
  * **(a) 失效桶不参与兜底**：`fail_count > 0` 或 `models` 为空的桶跳过。失败中的端点，
  * 其价格是上一次成功时的旧快照，借给**别的**端点用是双重不确定；而空桶更危险——
@@ -569,13 +630,25 @@ export function isOfficialEndpoint(baseURL?: string): boolean {
  *
  * 注：这条约束**不能**写成「同前缀才可互兜」——本函数按精确名查各桶，跨桶时两边键名
  * 是同一个字符串，前缀比较恒为真，那样写等于没有约束。
+ *
+ * @param model  本地别名（`availableModels[].name`）
+ * @param baseURL 本次请求的端点
+ * @param wireModel 该别名对应的厂商真名（`resolveWireModel` 的结果）。
+ *        与 model 相同或省略时退化为只按别名查，行为与修前一致。
  */
-export function lookupGatewayPricing(model: string, baseURL?: string): ModelPricing | null {
+export function lookupGatewayEntry(
+  model: string,
+  baseURL?: string,
+  wireModel?: string,
+): GatewayPricingEntry | null {
   if (!memLoaded) loadGatewayCache();
 
   // 0. 官方厂商端点：注册表优先级高于网关采集价，直接退出让 resolvePricing 走注册表。
   //    官方端点桶本就采不到东西（无 /api/pricing），留在这里只会被下面的兜底拿去乱借价。
   if (isOfficialEndpoint(baseURL)) return null;
+
+  // 待查的名字：别名优先，真名兜底（真名与别名相同时不重复查）。
+  const names = wireModel && wireModel !== model ? [model, wireModel] : [model];
 
   // 1. 端点精确桶（该端点自己采到的价，最权威；失败态不影响自己的价）。
   //
@@ -586,11 +659,20 @@ export function lookupGatewayPricing(model: string, baseURL?: string): ModelPric
   // 而"没有 baseURL"这件事本身就意味着走厂商官方直连（要用网关必须配 baseURL），
   // 所以裸名撞上空 key 桶时，可信的是注册表而非这桶来源不明的采集价。
   // 带渠道前缀的名字（`ali-…`）不受影响，仍照用空 key 桶里的渠道价。
+  // ⚠ 这一步返回**条目本身**，命中即停 —— 不再像修前那样先过 `toModelPricing` 再决定
+  //   要不要继续跨桶。这是一处刻意的行为变化：本端点桶里有这个模型（哪怕它自报零价）
+  //   就是**这个端点的权威事实**，不该被别的渠道的价盖掉。修前「零价 → 继续跨桶」
+  //   会让一个自报免费的内部渠道静默套上另一个网关的收费价（虚高，且不报错）。
+  //   零价能不能用于计价由 `toModelPricing` 在外层判（`input > 0`），与"要不要借价"无关。
   const key = normalizeBaseURL(baseURL);
-  if (key === "" && isBareVendorName(model)) return null;
-  const primary = memBuckets[key]?.[model];
-  const hit = toModelPricing(primary);
-  if (hit) return hit;
+  const ownBucket = memBuckets[key];
+  if (ownBucket) {
+    for (const n of names) {
+      if (key === "" && isBareVendorName(n)) continue;
+      const hit = ownBucket[n];
+      if (hit) return hit;
+    }
+  }
 
   // 2. 跨桶按名兜底 —— 受「裸名禁止跨桶」+「失效桶不参与」两条约束。
   //
@@ -598,19 +680,65 @@ export function lookupGatewayPricing(model: string, baseURL?: string): ModelPric
   //   本函数按**精确名**查各桶，跨桶时两边键名本就是同一个字符串，
   //   "同前缀才可互兜"在这里恒为真、拦不住任何东西（写成那样是个空判断）。
   //   真正要拦的是：**裸名**（= 厂商官方模型名）不得从别的桶借价，该回落注册表。
-  if (isBareVendorName(model)) return null;
+  //
+  // ⚠ 逐个名字判，不是"任一是裸名就整体放弃"：别名是自定义名（可跨桶）而真名常是裸名
+  //   （不可跨桶），两者约束不同，合并判会同时放错和拦错。
+  const borrowable = names.filter((n) => !isBareVendorName(n));
+  if (borrowable.length === 0) return null;
 
   // 官方端点桶 "" 优先（历史行为保留：它通常是"没配 baseURL"时采到的那份）。
+  //
+  // ⚠ 与步骤 1 相反，这里**跳过零价条目继续找**（`usable` 判 `input > 0`）。两步不对称
+  //   是有理由的，别"统一"成一样：
+  //   - 步骤 1 是**权威事实**——本端点自己报的价，零价也算这个端点的答案，命中即停；
+  //   - 本步是**任选借用**——从哪个桶借都无所谓，借到一条没有 token 价的条目等于没借到，
+  //     停在它上面只会让本可借到的价白白丢掉（保留了修前的语义）。
+  //   纯按次条目（input=0、有 perCallUSD）在这里同样被跳过：按次价是端点自己的计费口径，
+  //   跨端点借用毫无意义 —— 这正是「$36.00/次 张冠李戴」那个缺陷的形态。
+  const usable = (e?: GatewayPricingEntry): boolean => !!e && e.input > 0;
   const orderedKeys = ["", ...Object.keys(memBuckets).filter((k) => k !== "")];
   for (const k of orderedKeys) {
     if (k === key) continue; // 步骤 1 已查过
     const models = memBuckets[k];
     if (!models) continue;
     if (isBucketUnusableForFallback(k, models)) continue; // 约束 (a)
-    const fallback = toModelPricing(models[model]);
-    if (fallback) return fallback;
+    for (const n of borrowable) {
+      const hit = models[n];
+      if (usable(hit)) return hit;
+    }
   }
   return null;
+}
+
+/**
+ * 计费热路径：查这条模型的 **per-token** 渠道价。
+ *
+ * 薄封装在 `lookupGatewayEntry` 之上——约束只有一份（见该函数）。
+ * 拿到条目后由 `toModelPricing` 决定能不能用于计价：`input > 0` 才算有 token 价，
+ * 纯按次条目（图片/视频类）此处返回 null，退回注册表兜底。
+ */
+export function lookupGatewayPricing(
+  model: string,
+  baseURL?: string,
+  wireModel?: string,
+): ModelPricing | null {
+  return toModelPricing(lookupGatewayEntry(model, baseURL, wireModel));
+}
+
+/**
+ * 展示层：查这条模型的**按次单价**（USD/次），没有则 undefined。
+ *
+ * 与 `lookupGatewayPricing` 共用同一套约束与别名解析 —— 这正是修前缺的那一半：
+ * 旧 `getPerCallUSD` 走的是无约束的合并视图，于是显示出别的端点的按次价。
+ */
+export function lookupGatewayPerCallUSD(
+  model: string,
+  baseURL?: string,
+  wireModel?: string,
+): number | undefined {
+  const entry = lookupGatewayEntry(model, baseURL, wireModel);
+  if (entry && typeof entry.perCallUSD === "number") return entry.perCallUSD;
+  return undefined;
 }
 
 /**
@@ -628,11 +756,18 @@ function isBucketUnusableForFallback(
   return (memBucketFailCount[key] ?? 0) > 0;
 }
 
-/** GatewayPricingEntry → ModelPricing（按次计费/零价返回 null，退回兜底）。 */
-function toModelPricing(entry?: GatewayPricingEntry): ModelPricing | null {
+/**
+ * GatewayPricingEntry → ModelPricing（零价返回 null，退回兜底）。
+ *
+ * ⚠ 判据是 **`input > 0`，不是 `quotaType !== 1`**。旧实现按 quotaType 一刀切，
+ * 于是网关同时报了 token 价的按次条目（实测 ppchat 14/14 全部如此）也被判成"无价"
+ * → 计价落 FALLBACK_PRICING $2/$10。现在 quotaType 只描述网关自己的计费口径，
+ * 「有没有 token 价」由 input 说话：纯按次条目 input=0 自然返回 null，
+ * 而带 token 价的按次条目照常进计费。
+ */
+function toModelPricing(entry?: GatewayPricingEntry | null): ModelPricing | null {
   if (!entry) return null;
-  if (entry.quotaType === 1) return null; // 按次计费无 per-token 价，退回兜底
-  if (!(entry.input > 0)) return null; // 免费/零价模型不覆盖注册表
+  if (!(entry.input > 0)) return null; // 免费/零价/纯按次模型不覆盖注册表
   return {
     input: entry.input,
     output: entry.output,
@@ -801,7 +936,7 @@ export async function syncGatewayPricing(opts?: {
   const version = computeVersion(models);
 
   // 读现有缓存文件（含旧版迁移），只更新本端点桶，其余端点桶原样保留（修复互相覆盖）。
-  const file: GatewayCacheFile = readCacheFile() ?? { schema_version: 2, endpoints: {} };
+  const file: GatewayCacheFile = readCacheFile() ?? { schema_version: 3, endpoints: {} };
   const existing = file.endpoints[endpointKey];
 
   // 版本比对：本端点桶内容未变则不写盘（除非 force）。
@@ -832,7 +967,7 @@ export async function syncGatewayPricing(opts?: {
     pricing_version: version,
     models,
   };
-  file.schema_version = 2;
+  file.schema_version = 3;
 
   // 原子写：半截 JSON 会让整份缓存（含其他端点桶）作废，见 writeCacheFileAtomic。
   // 写盘失败仍继续刷新内存，本次会话可用。

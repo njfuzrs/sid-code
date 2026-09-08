@@ -85,19 +85,32 @@ export function formatPricePerM(v: number | undefined): string {
 }
 
 /**
- * 列表行里的紧凑价格列：`$3/$15`（输入/输出）。
+ * 列表行里的紧凑价格列：`$3/$15`（输入/输出），纯按次模型给 `$1.2/次`。
  *
  * 刻意**只给 in/out 两个数、且省掉 `/M`**：列表是横向扫视用的，缓存价与单位在这里
  * 一律是噪音（缓存价恒为 input 的固定倍数，看一眼输入价就知道量级）。完整四项在详情行。
- * 按次计费模型走 `$X/次`——它没有 token 价，印 `in $0/out $0` 是错的（这个坑
- * `/model pricing` 踩过，见 model.ts 里 getGatewayPerCall 的注释）。
+ *
+ * ⚠ **有 token 价就优先印 token 价**，判据是 `input > 0`（与 `toModelPricing` 同一条），
+ * 不是「网关自称按次」也不是「pricing 对象非 null」：
+ *
+ * - 修前是 `perCallUSD !== undefined` 抢先返回，于是企业网关上**同时**报了两种价的
+ *   claude 全系列列表列显示 `$60.00/次`，而账本按 token 记 —— 一屏之内两个口径打架，
+ *   且 `$60/次` 会让人以为问一句话要 $60（实测 17 次调用共 $99.79，不是 $1020）。
+ * - 判据也不能只看 `p.pricing` 非 null：`input === 0` 有两种来源 —— 真免费模型
+ *   （注册表里 `glm-4.7-flash` 确实是 0）与纯按次模型（token 价不适用）。
+ *   前者印「免费」是对的，后者必须印 `$X/次`，靠 `perCallUSD` 有没有值区分。
  */
 export function formatPriceColumn(p: ModelProfile): string {
+  if (p.pricing && p.pricing.input > 0) {
+    const inp = compactPrice(p.pricing.input);
+    const out = compactPrice(p.pricing.output);
+    return `${inp}/${out}`;
+  }
+  // 无可用 token 价：有按次价就印它（纯按次模型），否则回到 pricing 自身的表达
+  // （真免费 → 免费/免费；四级全 miss → 破折号）。
   if (p.perCallUSD !== undefined) return `${formatPricePerM(p.perCallUSD)}/次`;
   if (!p.pricing) return "—";
-  const inp = compactPrice(p.pricing.input);
-  const out = compactPrice(p.pricing.output);
-  return `${inp}/${out}`;
+  return `${compactPrice(p.pricing.input)}/${compactPrice(p.pricing.output)}`;
 }
 
 /**
@@ -157,7 +170,10 @@ export function formatCapabilityLine(p: ModelProfile): string {
  * 按 input×0.1 / ×1.25 近似——把近似值印成事实会让用户以为这是厂商公布的价。
  */
 export function formatPricingLine(p: ModelProfile): string {
-  if (p.perCallUSD !== undefined) {
+  // 纯按次模型（无可用 token 价）：只有这一个数可说。判据与 formatPriceColumn 一致
+  // （`input > 0`），否则 token 价恒 0 的按次模型会被印成「输入 免费 输出 免费」。
+  const hasTokenPrice = p.pricing !== null && p.pricing.input > 0;
+  if (!hasTokenPrice && p.perCallUSD !== undefined) {
     return `按次计费 ${formatPricePerM(p.perCallUSD)}/次（${pricingSourceLabel(p.pricingSource)}）`;
   }
   if (!p.pricing) return `单价未知（${pricingSourceLabel(p.pricingSource)}）`;
@@ -177,6 +193,12 @@ export function formatPricingLine(p: ModelProfile): string {
   // 而未知的不会被误说成免费。
   if (typeof p.pricing.cacheWrite === "number" && p.pricing.cacheWrite > 0) {
     parts.push(`写 ${formatPricePerM(p.pricing.cacheWrite)}`);
+  }
+  // 两种价并存（企业网关的按次条目同时报 token 价，实测 14/14）：**两个都要说**。
+  // 只说 token 价会漏掉网关自己的计费口径；只说按次价则与我们账本的记法矛盾。
+  // 明确点出「账本按 token 记」，因为这正是用户看到 $60/次 时的第一个疑问。
+  if (p.perCallUSD !== undefined) {
+    parts.push(`｜网关另标按次 ${formatPricePerM(p.perCallUSD)}/次（账本按 token 记）`);
   }
   let suffix = pricingSourceLabel(p.pricingSource);
   // 人民币原价：折算用的是**固定汇率快照**不是实时汇率，不点破就等于宣称这是精确美元价。

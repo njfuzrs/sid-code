@@ -26,8 +26,10 @@ import {
   derivePricingURL,
   loadGatewayCache,
   lookupGatewayPricing,
+  lookupGatewayPerCallUSD,
   getAllGatewayEntries,
   getGatewayCacheMeta,
+  getFailureCooldownRemainingMs,
   __resetGatewayPricingForTest,
 } from "@sid-code/core/llm/gateway-pricing.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
@@ -60,7 +62,8 @@ describe("convertRawEntry — 换算公式", () => {
     expect(r!.entry.output).toBeCloseTo(3.28766, 4);
   });
 
-  test("quota_type=1 按次计费 → perCallUSD，token 价置 0", () => {
+  test("纯按次（quota_type=1 且无 model_ratio）→ perCallUSD，token 价 0", () => {
+    // 实测 uniapi 的 doubao-seedream 图片类就是这个形态：只有按次价，没有 token 价。
     const r = convertRawEntry({
       model_name: "veo-3.1-fast-generate-preview",
       quota_type: 1,
@@ -70,6 +73,44 @@ describe("convertRawEntry — 换算公式", () => {
     expect(r!.entry.quotaType).toBe(1);
     expect(r!.entry.perCallUSD).toBe(1.2);
     expect(r!.entry.input).toBe(0);
+  });
+
+  test("⚠ 按次条目同时报 token 价时**两个都要留**（本次账本被兜底价污染的根因）", () => {
+    // 实测 code.ppchat.vip 的 14 条 quota_type=1 全部同时带 model_ratio + completion_ratio，
+    // 换算出来正是官方价。旧实现在 quotaType===1 时直接 return 并把 token 价置 0，于是：
+    //   ① 计价拿不到价 → 落 FALLBACK $2/$10（实测污染 21 条账本记录）；
+    //   ② 面板只剩「$60.00/次」，与账本口径自相矛盾。
+    const r = convertRawEntry({
+      model_name: "claude-opus-5",
+      quota_type: 1,
+      model_price: 60,
+      model_ratio: 2.5,
+      completion_ratio: 5,
+      cache_ratio: 0.1,
+      create_cache_ratio: 1.25,
+    });
+    expect(r).not.toBeNull();
+    // 按次价留着（网关自己的计费口径，展示要用）
+    expect(r!.entry.perCallUSD).toBe(60);
+    expect(r!.entry.quotaType).toBe(1);
+    // token 价也留着，且与 quota_type=0 同一套公式（= 官方价 $5/$25）
+    expect(r!.entry.input).toBeCloseTo(5, 6);
+    expect(r!.entry.output).toBeCloseTo(25, 6);
+    expect(r!.entry.cacheRead).toBeCloseTo(0.5, 6);
+    expect(r!.entry.cacheWrite).toBeCloseTo(6.25, 6);
+  });
+
+  test("按次 + token 价并存时，计价热路径取的是 token 价（不再退回兜底）", () => {
+    const r = convertRawEntry({
+      model_name: "claude-sonnet-4-6",
+      quota_type: 1,
+      model_price: 36,
+      model_ratio: 1.5,
+      completion_ratio: 5,
+    });
+    // quotaType 只描述网关口径，不再是「有没有 token 价」的判据。
+    expect(r!.entry.quotaType).toBe(1);
+    expect(r!.entry.input).toBeCloseTo(3, 6);
   });
 
   test("缺 model_name → null", () => {
@@ -207,7 +248,7 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
 
   test("同名模型不同端点桶各自计价，不互相覆盖", () => {
     writeCache({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://ali.example.com": {
           source_url: "https://ali.example.com/api/pricing",
@@ -238,7 +279,7 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
 
   test("末尾斜杠/大小写归一化后仍命中同一端点桶", () => {
     writeCache({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://ali.example.com": {
           source_url: "x",
@@ -255,7 +296,7 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
 
   test("端点桶未命中时跨桶按模型名兜底（冷门渠道）", () => {
     writeCache({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://a.example.com": {
           source_url: "x",
@@ -272,7 +313,7 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
 
   test("按次计费（quotaType=1）查询返回 null，但 getAllGatewayEntries 保留 perCallUSD", () => {
     writeCache({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://a.example.com": {
           source_url: "x",
@@ -309,7 +350,7 @@ describe("多端点缓存分桶（修复互相覆盖 bug）", () => {
 
   test("零价模型不覆盖注册表（返回 null 退回兜底）", () => {
     writeCache({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://a.example.com": {
           source_url: "x",
@@ -368,7 +409,7 @@ describe("refreshGatewayPricingOnStartup — update 后自动拉取触发策略"
     writeFileSync(
       sidPaths.gatewayPricing(),
       JSON.stringify({
-        schema_version: 2,
+        schema_version: 3,
         endpoints: {
           [endpointKey]: {
             source_url: `${endpointKey}/api/pricing`,
@@ -681,7 +722,7 @@ describe("失败负缓存 — 不可达端点不再每次启动重试", () => {
     writeFileSync(
       sidPaths.gatewayPricing(),
       JSON.stringify({
-        schema_version: 2,
+        schema_version: 3,
         endpoints: {
           "https://clock.example.com": {
             source_url: "x",
@@ -759,7 +800,7 @@ describe("原子落盘 tmp → rename（D7）", () => {
     const path = sidPaths.gatewayPricing();
     mkdirSync(tmpDir, { recursive: true });
     // 先放一个占位文件，拿到写入前的 inode。
-    writeFileSync(path, JSON.stringify({ schema_version: 2, endpoints: {} }), "utf8");
+    writeFileSync(path, JSON.stringify({ schema_version: 3, endpoints: {} }), "utf8");
     const inodeBefore = statSync(path).ino;
 
     const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
@@ -782,7 +823,7 @@ describe("原子落盘 tmp → rename（D7）", () => {
     expect(statSync(path).ino).not.toBe(inodeBefore);
     expect(existsSync(`${path}.tmp`)).toBe(false); // rename 后临时文件不该留下
     const parsed = JSON.parse(readFileSync(path, "utf8"));
-    expect(parsed.schema_version).toBe(2);
+    expect(parsed.schema_version).toBe(3);
     // D6 字段必须真的落到磁盘（只在内存里等于没采，见 computeVersion 的注释）。
     expect(parsed.endpoints["https://atomic.example.com"].models.m1.supportedEndpointTypes).toEqual(
       ["openai", "openai-response"],
@@ -792,7 +833,7 @@ describe("原子落盘 tmp → rename（D7）", () => {
   test("失败负缓存（recordFailure）同样走 rename：inode 必须变", async () => {
     const path = sidPaths.gatewayPricing();
     mkdirSync(tmpDir, { recursive: true });
-    writeFileSync(path, JSON.stringify({ schema_version: 2, endpoints: {} }), "utf8");
+    writeFileSync(path, JSON.stringify({ schema_version: 3, endpoints: {} }), "utf8");
     const inodeBefore = statSync(path).ino;
 
     const { syncGatewayPricing, getFailureCooldownRemainingMs } =
@@ -813,7 +854,7 @@ describe("原子落盘 tmp → rename（D7）", () => {
     // 一个端点桶的半截文件会让所有端点桶一起查不到。
     mkdirSync(tmpDir, { recursive: true });
     const full = JSON.stringify({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         "https://a.example.com": {
           source_url: "x",
@@ -900,5 +941,223 @@ describe("原子落盘 tmp → rename（D7）", () => {
     const second = await syncGatewayPricing({ baseURL: "https://stable.example.com" });
     expect(second.version).toBe(first.version);
     expect(second.updated).toBe(false);
+  });
+});
+
+describe("按次价与 token 价并存 —— 查找 / 约束 / 存量缓存迁移（2026-09-08 修复）", () => {
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+
+  function writeCache(file: unknown): void {
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(sidPaths.gatewayPricing(), JSON.stringify(file), "utf8");
+  }
+
+  /** 造一个 v3 双桶缓存：uniapi 桶没有 sonnet-4-6，ppchat 桶有（按次 $36）。 */
+  function writeTwoBuckets(): void {
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://uniapi.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "u",
+          models: { "claude-opus-5": { input: 3.5, output: 17.5, quotaType: 0 } },
+        },
+        "https://ppchat.example.com": {
+          source_url: "y",
+          fetched_at: Date.now(),
+          pricing_version: "p",
+          models: {
+            "claude-sonnet-4-6": { input: 3, output: 15, quotaType: 1, perCallUSD: 36 },
+            "claude-sonnet-5": { input: 1.4, output: 7, quotaType: 1, perCallUSD: 36 },
+          },
+        },
+      },
+    });
+    loadGatewayCache();
+  }
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "gw-percall-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    __resetGatewayPricingForTest();
+  });
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test("核心回归：按次价查询受「裸名禁止跨桶」约束（修前显示别的端点的 $36/次）", () => {
+    // 实测事故：claude-sonnet-4-6 配在 uniapi（该桶里没有它），面板却显示 $36.00/次
+    // —— 那个数来自 ppchat 桶。它是注册表裸名（官方 $3/$15），本就不该跨桶借价。
+    writeTwoBuckets();
+    expect(
+      lookupGatewayPerCallUSD("claude-sonnet-4-6", "https://uniapi.example.com"),
+    ).toBeUndefined();
+    // 自己端点上仍照常拿到（约束只管跨桶，不影响精确命中）
+    expect(lookupGatewayPerCallUSD("claude-sonnet-4-6", "https://ppchat.example.com")).toBe(36);
+  });
+
+  test("token 价查询与按次价查询共用同一套约束（两条路径不许分叉）", () => {
+    writeTwoBuckets();
+    // 同一个裸名、同一个端点：两个入口必须给出一致的「借不到」结论。
+    expect(lookupGatewayPricing("claude-sonnet-4-6", "https://uniapi.example.com")).toBeNull();
+    expect(
+      lookupGatewayPerCallUSD("claude-sonnet-4-6", "https://uniapi.example.com"),
+    ).toBeUndefined();
+  });
+
+  test("别名 miss 时按真名重查（网关按真名入库，配置侧是别名）", () => {
+    // claude-sonnet-5-ppchat --model_id--> claude-sonnet-5。修前只按别名查 → 必然 miss
+    // → 注册表也没有这个新模型 → 落 FALLBACK $2/$10（实测污染 20/21 条账本记录）。
+    writeTwoBuckets();
+    const ep = "https://ppchat.example.com";
+    expect(lookupGatewayPricing("claude-sonnet-5-ppchat", ep)).toBeNull(); // 不传真名：维持旧行为
+    const withWire = lookupGatewayPricing("claude-sonnet-5-ppchat", ep, "claude-sonnet-5");
+    expect(withWire).not.toBeNull();
+    expect(withWire!.input).toBeCloseTo(1.4, 6);
+    expect(lookupGatewayPerCallUSD("claude-sonnet-5-ppchat", ep, "claude-sonnet-5")).toBe(36);
+  });
+
+  test("别名优先于真名 —— 渠道差价不许被真名抹平", () => {
+    // 两个键都在同一个桶里时，必须命中别名那条（它才是"这条渠道的价"）。
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://gw.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: {
+            "cheap-channel": { input: 0.5, output: 1, quotaType: 0 },
+            "claude-opus-5": { input: 3.5, output: 17.5, quotaType: 0 },
+          },
+        },
+      },
+    });
+    loadGatewayCache();
+    const hit = lookupGatewayPricing("cheap-channel", "https://gw.example.com", "claude-opus-5");
+    expect(hit!.input).toBeCloseTo(0.5, 6); // 别名价，不是真名价
+  });
+
+  test("真名是裸名时仍不得跨桶借价（逐名判，不是「任一裸名就整体放弃」）", () => {
+    // 别名 `gw-claude-sonnet-4-6`（自定义名，可跨桶）+ 真名 `claude-sonnet-4-6`（裸名，不可跨桶）。
+    // 桶里只有真名那条 → 跨桶时必须拦住真名，回落注册表。
+    writeTwoBuckets();
+    expect(
+      lookupGatewayPricing(
+        "gw-claude-sonnet-4-6",
+        "https://uniapi.example.com",
+        "claude-sonnet-4-6",
+      ),
+    ).toBeNull();
+  });
+
+  test("本端点自报零价时不跨桶借价（刻意的行为变化）", () => {
+    // 修前步骤 1 先过 toModelPricing，零价 → 判成"没命中" → 继续跨桶，于是一个
+    // 自报免费的内部渠道会静默套上另一个网关的收费价（虚高且不报错）。
+    // 现在「本桶里有这个模型」就是该端点的权威事实，命中即停。
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://free.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: { "my-channel": { input: 0, output: 0, quotaType: 0 } },
+        },
+        "https://paid.example.com": {
+          source_url: "y",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: { "my-channel": { input: 9, output: 18, quotaType: 0 } },
+        },
+      },
+    });
+    loadGatewayCache();
+    // 零价不能用于计价（toModelPricing 判 input > 0）→ null，但**不是**借来的 $9。
+    expect(lookupGatewayPricing("my-channel", "https://free.example.com")).toBeNull();
+    // 对照：没有这个模型的第三个端点才允许跨桶借价（约束未被放宽）。
+    expect(lookupGatewayPricing("my-channel", "https://other.example.com")!.input).toBe(9);
+  });
+
+  test("纯按次条目：按次价可读，但计价热路径仍返回 null（退回注册表）", () => {
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://a.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "v",
+          models: { "doubao-seedream": { input: 0, output: 0, quotaType: 1, perCallUSD: 2 } },
+        },
+      },
+    });
+    loadGatewayCache();
+    expect(lookupGatewayPricing("doubao-seedream", "https://a.example.com")).toBeNull();
+    expect(lookupGatewayPerCallUSD("doubao-seedream", "https://a.example.com")).toBe(2);
+  });
+
+  test("存量 v2 缓存被标记过期（fetched_at=0）以触发重采，但价格不清空", () => {
+    // v2 是 bug 产物：quotaType=1 条目的 token 价已被置 0，与"真的只有按次价"同形，
+    // 无法就地修复 → 只能标记过期让 TTL 判据触发重采；清空 models 会换来另一次静默低估。
+    writeCache({
+      schema_version: 2,
+      endpoints: {
+        "https://gw.example.com": {
+          source_url: "x",
+          fetched_at: Date.now(),
+          pricing_version: "old",
+          models: { "claude-opus-5": { input: 0, output: 0, quotaType: 1, perCallUSD: 60 } },
+        },
+      },
+    });
+    const meta = getGatewayCacheMeta("https://gw.example.com");
+    expect(meta!.fetchedAt).toBe(0); // 过期 → refreshGatewayPricingOnStartup 必然重采
+    expect(meta!.count).toBe(1); // 价格仍在，重采完成前不至于落兜底
+  });
+
+  test("v3 缓存不被误标过期（迁移只针对旧版本）", () => {
+    const now = Date.now();
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://gw.example.com": {
+          source_url: "x",
+          fetched_at: now,
+          pricing_version: "new",
+          models: { m: { input: 1, output: 2, quotaType: 0 } },
+        },
+      },
+    });
+    expect(getGatewayCacheMeta("https://gw.example.com")!.fetchedAt).toBe(now);
+  });
+
+  test("失败负缓存在 v2 迁移中保留（端点可达性与换算 bug 无关）", () => {
+    writeCache({
+      schema_version: 2,
+      endpoints: {
+        "https://dead.example.com": {
+          source_url: "x",
+          fetched_at: 0,
+          pricing_version: "",
+          models: {},
+          failed_at: Date.now(),
+          fail_count: 7,
+        },
+      },
+    });
+    loadGatewayCache();
+    // 抹掉退避状态会让不可达端点重新每次启动白烧 socket，所以必须留着。
+    expect(getFailureCooldownRemainingMs("https://dead.example.com")).toBeGreaterThan(0);
   });
 });

@@ -141,7 +141,7 @@ describe("formatPriceColumn：列表列的紧凑形态", () => {
     expect(formatPriceColumn(p)).toBe("$0.050/次");
   });
 
-  test("按次价优先于 token 价（两者互斥，择一展示）", () => {
+  test("token 价为 0（纯按次）时印「/次」，判据是 input>0 而不是 pricing 非 null", () => {
     const p = profile({ pricing: { input: 0, output: 0 }, perCallUSD: 0.05 });
     expect(formatPriceColumn(p)).toContain("/次");
   });
@@ -429,5 +429,49 @@ describe("padTo：CJK 安全的列对齐", () => {
 
   test("超宽时原样返回，不截断（截断会让模型名不可读）", () => {
     expect(padTo("verylongname", 4)).toBe("verylongname");
+  });
+});
+
+describe("两种价并存的展示（2026-09-08 修复的回归）", () => {
+  test("核心回归：有 token 价时列表列印 token 价，不再印 $60.00/次", () => {
+    // 实测企业网关的 claude 全系列同时报两种价。修前 perCallUSD 抢先返回，
+    // 列表列显示 `$60.00/次`，而账本按 token 记（17 次调用共 $99.79，不是 $1020）。
+    const p = profile({
+      pricing: { input: 5, output: 25 },
+      perCallUSD: 60,
+      pricingSource: "gateway",
+    });
+    expect(formatPriceColumn(p)).toBe("$5/$25");
+    expect(formatPriceColumn(p)).not.toContain("/次");
+  });
+
+  test("详情行两种价都要说，并点明账本按 token 记", () => {
+    const p = profile({
+      pricing: { input: 5, output: 25, cacheRead: 0.5 },
+      perCallUSD: 60,
+      pricingSource: "gateway",
+    });
+    const line = formatPricingLine(p);
+    expect(line).toContain("输入 $5.00/M");
+    expect(line).toContain("$60.00/次");
+    expect(line).toContain("账本按 token 记"); // 用户看到 $60 时的第一个疑问
+    expect(line).toContain("网关实采");
+  });
+
+  test("真免费模型（input=0 且无按次价）印「免费」，不被误判成未知", () => {
+    // 注册表里 glm-4.7-flash 确实是 0 —— 0 是确定事实，不是"查不到"。
+    const p = profile({ pricing: { input: 0, output: 0 }, perCallUSD: undefined });
+    expect(formatPriceColumn(p)).toBe("免费/免费");
+  });
+
+  test("纯按次模型详情行不印「输入 免费 输出 免费」", () => {
+    const p = profile({
+      pricing: { input: 0, output: 0 },
+      perCallUSD: 2,
+      pricingSource: "gateway",
+    });
+    const line = formatPricingLine(p);
+    expect(line).toContain("按次计费 $2.00/次");
+    expect(line).not.toContain("输入 免费");
   });
 });
