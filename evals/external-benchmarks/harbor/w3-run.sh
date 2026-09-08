@@ -283,7 +283,7 @@ else: print('UNKNOWN')
   if [ "$ACTUAL_ARM" = UNKNOWN ]; then
     echo "    ⚠️ 判不出实际臂（config.json 缺 agent.name 或是新 agent）—— ⛔ 别猜，人工核。"
   elif [ "$ACTUAL_ARM" != "$ARM" ]; then
-    echo "    ⛔ **名实不符**：声明 $ARM，实际跑的是 $ACTUAL_ARM。"
+    echo "    ⛔ **名实不符**：声明 ${ARM}，实际跑的是 ${ACTUAL_ARM}。"
     echo "       ⇒ 这一份产物**不能**当 $ARM 臂用（08 号 §9.2-⑦：两侧都不报错，"
     echo "         到汇总才发现「对照」两边是同一个 harness）。"
     echo "       ⇒ 改个正确的 job 名重跑；⛔ 别把它并排进对照表。"
