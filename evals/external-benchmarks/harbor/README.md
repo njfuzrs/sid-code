@@ -681,6 +681,34 @@ sid-code 内部看不到。
 拆两层的理由：只做 L2 的话，CI 上**永远 skip** → 门禁形同不存在，而 PR 页面一片绿。
 L1 拦得住的恰好是那批**不报错的**失效形态。
 
+### 目录里的 `.py` 被自动纳入，新增文件不必改门禁（2026-09-08 实证）
+
+`harbor-agent-contract.test.ts:853` 按 `readdirSync` 扫**目录里所有 `.py`**
+（除 `sid_code_agent.py`，它由另外 27 条覆盖）⇒ 新加脚本自动受两条单源性断言约束：
+「自己写 pytest 结论行判据 ⇒ 必须 import `verifier_health`」、
+「自己数 in/out token ⇒ 必须 import `agent_ran`」。
+
+⚠️ 这是**实证过的**，不是推断：把 `arm_health.py` 的 `verifier_health` import 拆掉，
+门禁当场翻红（`arm_health.py 自己数 in/out token 判 agent 跑没跑，却没 import agent_ran`），
+还原后 41/0。
+
+📌 加 `arm_health.py` 时**被这条门禁当场拦住，而它拦得对** —— 与 08 号 §4.2 记的
+上一次同型裁决逐字一致：**修法不是放宽门禁，而是让 fixture 用真判据回读自己**。
+⚠️ 但「摆一个 import 让门禁变绿」也不行：`test-arm-health.py` 的 M6 变异一开始是**绿的**，
+证明那个 import 当时不承重。⇒ 必须找到一个**只有它能拦**的真实形态（见上文 M6）。
+
+#### `.py` 的三条手跑门禁（⛔ CI 不认，改了必须自己跑）
+
+```bash
+python3 test-arm-health.py --self-check   # arm_health：32 正向 + 6 变异
+python3 test-w3-classify.py              # w3-classify：24 变异
+env -u no_proxy -u NO_PROXY python3 ~/.local/share/sid-harbor-gateway/test-gateway-retry.py   # 26 变异
+```
+
+📌 一处**不对称仍然存在**：`w3-classify.py` / `arm_health.py` 有 CI 兜着，
+而 **`gateway.py` 没有**（它刻意不入库）⇒ 唯一判据是手跑那条。
+**改过 shim 就必须重跑，且必须重启 shim。**
+
 ⚠️ **它替代不了真实运行验证。** L1 只拦「语法坏了 / 签名漂移 / 关键开关被改」，
 上面那四步冒烟才是真验收。
 
@@ -1068,6 +1096,43 @@ python3 analyze-retry-cost.py runs/<job>            # 判据④：重试墙钟
 python3 check-comparison-parity.py runs/<job> runs/a11-mswea   # 跨 agent 对照口径
 ```
 
+### T4 汇总与归档（2026-09-08 加）：`w3-summary.py`
+
+```bash
+python3 w3-summary.py runs/<job>                       # 单臂：分母 + Wilson CI + 失败构成
+python3 w3-summary.py runs/<sid-job> runs/<cc-job> -o results/    # 两臂：顺带配对对照并归档
+python3 test-arm-health.py [--self-check]              # arm_health 判据自证（32 条 / 变异 6 条）
+```
+
+`w3-run.sh` 收尾**已自动调用**它（只读旁路，失败不改 `RUN_RC`）——
+接进流程而不是「跑完手工再跑一下」，理由同 `run-model-switch.sh:432` 那段注释：
+**digest 在第九棒就存在，而九棒里零次被跑过**。价值不在工具，在它被真的执行。
+
+#### 🔴 为什么必须归档：`runs/` 整个不入库
+
+`.gitignore:228` 排除了 `/evals/external-benchmarks/harbor/runs/` —— 理由正当
+（跑分产物、体积大、天生可再生）。但后果是 **T4 三臂 $108–123 的产出只活在本机磁盘上**。
+一次 `docker prune`、换机器、或 colima 出事，数据就没了。
+
+⚠️ **「可再生」对 $0 的产物成立，对花了钱的产物不成立** —— 重跑一次要再花 $108。
+
+⇒ 产出刻意做得小（逐题表 + 分母 + 口径声明，**不含轨迹/verifier 输出**），
+落在 `results/` 下 —— 那个目录**不在 ignore 里**，所以它是唯一能进版本库、
+能被 review、能跨机器活下来的那一份。实测 10 题×2 臂 = 23.7KB，
+**72 题×2 臂外推 ≈ 166KB**。⇒ 跑完记得 `git add results/`。
+
+#### 置信区间用 Wilson，⛔ 不用 07 号那个 `1.96*sqrt(0.25/n)`
+
+后者是 **p=0.5 的最坏情况半宽**（n=72 ⇒ ±11.5pp），用来做**规划**（「跑多少题够」）
+是对的，但用它报**结果**有两个问题：与实测 p 无关（p=0.3 时真实区间更窄）；
+且 p 靠近 0/1 时会给出**越界**区间 —— 某臂只解出 3/72 就会得到负下界，而 pass@1
+恰恰常在低位。两个都报，标清哪个是规划用、哪个是结果。
+
+⚠️ **分母是 `scored`，⛔ 不是 72。** 拿 72 当分母会把「被排除的基础设施故障」
+算成「答错」，把成绩系统性压低。
+⚠️ reward 非 0/1 时**拒绝给区间**（Wilson 假设二值）——
+⛔ 不悄悄按均值当 p 算，那个区间是错的。
+
 **`verifier_health.py` 是三个判据的唯一定义处**，消费者一律 import，不许各写一份
 （踩过：进度脚本与复算脚本各写一份 verifier 判据，同一题一个报 ✅ 一个报 ⛔）：
 
@@ -1076,6 +1141,85 @@ python3 check-comparison-parity.py runs/<job> runs/a11-mswea   # 跨 agent 对�
 | `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
 | `agent_ran` | **agent** 跑过没有（三态，`None`=采集缺失） | `agent_result` 的 in/out token |
 | `llm_fatal` | 是不是**被上游打断**的 | `sid_errors` + 日志里的重试链耗尽 |
+
+### `arm_health.py` —— **按臂取数**的唯一定义处（2026-09-08 加）
+
+`verifier_health.py` 的判据全读 sid 侧落点（`metadata.sid_*` / `sid-home/debug.log`）。
+cc 臂**天然没有那些键**，于是 `analyze-model-switch.py runs/ccrun-n6` 实测输出是
+`turns / subtype / stop_reason / deny / allow / model → 缺 10/10` ——
+而这些数据**其实全都在** `agent/claude-code.txt` 的 `result` 事件里
+（实测 `turns=41 subtype=error_max_turns`），**只是没有任何消费方去读它**。
+
+> 形态是「防线全在、调用全 0」的同型：数据落盘了，消费方是空的。
+> 而「看着像 0 denials」与「压根没采到」在表格里长得一模一样，**结论却相反**。
+
+| 语义 | sid 侧（`verifier_health` / metadata） | cc 侧（`arm_health`） |
+| --- | --- | --- |
+| 跑了多少轮 | `metadata.sid_num_turns` | `cc_turns()` ← result 事件 `num_turns` |
+| 怎么收尾的 | `metadata.sid_subtype` | `cc_subtype()` ← 同上 `subtype` |
+| 权限拒绝 | `permissions-audit.log` **实数**（观测） | `cc_denials()` ← **agent 自述**，且**无 allow** |
+| 自报喜 | `self_reported_success()` | `self_reported_success_cc()` |
+| 模型名 | `sid_model()` ← 容器 `settings.json` | `cc_model()` ← `modelUsage` 的键 |
+| 这是哪条臂 | `detect_arm()` ← **`config.json` 的 `agent.name`，⛔ 不看目录名** | 同一个函数 |
+
+⚠️ **两侧不是同一个函数的两种写法，取数源不同是本质的。** 尤其两处**不对称**：
+
+- **cc 的 `denials=0` 弱于 sid 的 `deny=0`**：cc 没有 allow 计数 ⇒ 做不到 sid 那条
+  「`allow>0` 反向自证」，区分不出「真零拒绝」与「压根没采到」。
+  ⇒ 报告写「两侧权限层均无拦阻记录」，⛔ **别写「已确认同档」**。
+- **cc 自带 `max_retries=10` 而 sid 零重试** ⇒ 两臂「上游打断题数」⛔ 不可直接并列。
+
+📌 `_model_of` / `_provider_of` 在 `analyze-model-switch.py` 里现在只是**薄转发**，
+判据已上移到 `arm_health.sid_model()` —— 接 cc 臂时那份判据出现了第二份拷贝，
+而「两份拷贝迟早分叉、分歧在无人看的时候发生」是本目录已踩过的错。
+
+#### 🔴 两臂 `n_input_tokens` 语义**相反** —— 裸比会得到方向反的假数
+
+```
+cc : n_input_tokens = fresh + cache_read + cache_write   （harbor `_build_metrics()` 打包）
+sid: n_input_tokens = 只有 fresh                          （cache 另有两格）
+```
+
+实测同一题 `polyglot-c-py`：cc **139541** vs sid **4697** —— 读起来「cc 是 30 倍」，
+而真实 fresh 关系**是反的**（2898 < 4697）。两个数各自都对、都不报错。
+
+⇒ 一律走 `normalized_tokens()` 拆成同口径四格再比。归一后两臂缓存命中率首次可比
+（cc 70.9% / sid 70.7%）。✅ 两侧都是 **flow** 口径这点已实测
+（`n_input == Σsteps.prompt_tokens`，`ccrun-n6` 上 10/10 成立）⇒ 差异只在成分。
+
+⛔ **cc 的 cache 只能取 `trajectory.json`**，取 `modelUsage` 会算出 `fresh=-63320`
+（两个源实测不一致，只有前者与 `n_input` 同源）。`fresh<0` 时 fail-closed 返 `None`，
+⛔ **不许 clamp 成 0** —— 那会把「取数源选错了」抹成一个看起来正常的 0。
+
+#### 隐含单价比值：一个免费的 token 低报检测器
+
+`pricing_ratio()` = `cost_usd` ÷ 按官方价反算的钱。实测 20 题里 **19 题逐题都是 0.6667**
+（官方价 × 2/3 的网关折扣），一致到 4 位小数 ⇒ 先证明了**两臂走同一张定价表**，
+所以**两臂成本真的可比**（这是难得的干净口径）。
+
+唯一例外 `qemu-startup` = **0.7425**，它暴露了一个真缺陷：
+
+| 用哪套 token 反算 | 比值 |
+| --- | --- |
+| cc 自报 `modelUsage` | 0.6667 ✅ |
+| harbor 累加 step | 0.7425 ❌ |
+
+⇒ **cost 是对的，token 是低报的**：harbor 的 ATIF 转换漏了一部分 step
+（实测漏 79891 input / 2185 output = 7.8% / 48%）。
+`token_undercount_suspected()` 把它做成判据。
+⚠️ **只对 sonnet 定价有效** —— deepseek 单价不同，比值会整体偏移到另一个常数，
+⛔ 别把换模型臂的偏离读成 token 低报。
+
+#### 变异自证：`python3 test-arm-health.py [--self-check]`
+
+正向 32 条，反向变异 **6/6 条真的能红**（`--self-check` 会真的改写源码副本再跑，
+⛔ 不是「相信它会红」）。两条值得记的：
+
+- **M1 初版是「崩」不是「红」**：fixture 形态守卫 `raise` 让断言压根没跑到，
+  却因 `rc≠0` 被记成「✅ 红了」。⇒ 自证现在**区分崩与红**（零条断言翻红 = 崩）。
+- **M6 一开始是绿的** ⇒ 说明 CI 门禁逼我加的那个 `agent_ran` import 当时确实**不承重**。
+  找到唯一只有它能拦的形态才让它承重：token 键全缺 + cache 全 0 时，绕开守卫会返回
+  **全 0** 而非 `None`，读起来像「这题真的只用了 0 token」（下游还会拿它稀释命中率）。
 
 #### 分桶规则有五条，后两条是 2026-08-30 实测补的
 
