@@ -29,13 +29,39 @@
 #
 # 第二版让探针等 `apt-get update` 跑完再取 `--print-uris`。
 # 但**那正是本闸要提前预警的那个慢操作** —— 闸跑了 2 分钟还没出判决。
-# ⇒ 现在只测**固定窗口内的字节增量**，下载量用上面那个实证常量（可覆写），
-# 全程封顶 ~40s，绝不等 update 收尾。
+# ⇒ 用 `timeout $WINDOW` 给探针封顶，**跑不完就是判据本身**（rc=124 ⇒ 慢 ⇒ 红），
+# 全程封顶 ~40s。
+#
+# ## ⚠️ 第三个自踩的坑（2026-09-08）：判据挑错了信号，一次挑错两个
+#
+# 第三版（du 首尾差）在**网络变快时假红**：update 4~9s 就收尾（落在窗口内），
+# 之后 apt 清理临时文件让 `du` 变小 ⇒ 首尾差为负 ⇒ 判成"源不可达"，
+# 在链路健康（实测 2132 kB/s）时拦停开跑。
+#
+# 修它的时候我又连写了两条**不承重**的判据，都是反向变异抓出来的：
+#   ✗ `ls /var/lib/apt/lists/*Release | wc -l > 0` 当"真拉到索引"
+#     ⇒ **原始镜像自带 4 个**，`--network internal` 断网容器里**也是 4** ⇒ 永远为真。
+#   ✗ `apt-get update` 的**退出码** = 0 当"成功收尾"
+#     ⇒ 断网容器里 **rc 照样 0** —— apt 把取不到索引降级成 `W:` 警告，不进退出码。
+#
+# > **形态**：两条都"看着像多加了一层校验"，而在真故障下同样绿。
+# > ⇒ **判据要挑「故障时会变」的信号，优先用被测系统自己报的数**，
+# >   别用 `du`、文件存在性、宽松命令退出码这类**副产物代理指标**。
+#
+# ⇒ 现在速率直接取 apt 自己那行 `Fetched 10.7 MB in 5s (2132 kB/s)`，
+#   并对三种成因分别给判据（每条都实测过能红，见下方三个 if）。
+# ⛔ 别退回 du 方案，也别把闸删了：它在**慢**的时候结论是对的（12.8 KB/s 那次）。
 #
 # 用法：
 #   bash preflight-apt-budget.sh                    # 默认题目
 #   bash preflight-apt-budget.sh polyglot-c-py      # 指定题目
 #   SID_CC_APT_BYTES=... 覆写下载量   SID_CC_RATE_WINDOW_SEC=... 覆写窗口
+#
+# 复跑变异自证（改本文件后**必须**重跑这三条，⚠️ 没有 CI 兜着）：
+#   bash preflight-apt-budget.sh polyglot-c-py                        # 期望绿 rc=0
+#   SID_CC_APT_BYTES=212676168000000 bash preflight-apt-budget.sh …   # 期望红（预算不够）
+#   SID_CC_RATE_WINDOW_SEC=2 bash preflight-apt-budget.sh …           # 期望红 rc=124（慢）
+#   # 不可达那条要断网容器：docker network create --internal apt-iso 后手工验 ERRS>0 而 rc=0
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -52,22 +78,70 @@ ARCH=$(docker image inspect "$IMAGE" --format '{{.Architecture}}' 2>/dev/null)
 [ -n "$ARCH" ] || { echo "⛔ 本地无镜像 $IMAGE —— 先 docker pull 或跑一次评测"; exit 1; }
 echo "  镜像架构=$ARCH  本机=$(uname -m)  需下载 $((BYTES / 1024 / 1024))MB"
 
-# ── 测速：固定窗口内的字节增量，**不等 update 收尾** ────────────────────────
-# `timeout` 封顶，避免闸自己变成那个慢操作。
-RATE=$(docker run --rm --platform "linux/$ARCH" "$IMAGE" sh -c "
-  (apt-get update -qq >/dev/null 2>&1 &) 
-  sleep 2
-  a=\$(du -sb /var/lib/apt/lists 2>/dev/null | cut -f1)
-  sleep $WINDOW
-  b=\$(du -sb /var/lib/apt/lists 2>/dev/null | cut -f1)
-  echo \$(( (b - a) / $WINDOW ))" 2>/dev/null | tail -1)
+# ── 测速：直接用 **apt 自报的速率**，不再用 du 当代理指标 ────────────────────
+#
+# 🔴 2026-09-08 重写。原实现取 `/var/lib/apt/lists` 首尾两次 `du` 的差，
+# **网络变快时会假红**：`apt-get update` 现在 4–7s 就收尾（落在 25s 窗口内），
+# 之后 apt 清理临时文件 ⇒ `du` 变小 ⇒ 首尾差为**负**：
+#     a=53969451 b=52924493 delta=-1044958 rate=-41798
+# 而 `! [ "$RATE" -gt 0 ]` 把"非正增长"一律判成"不可达/慢到测不出"，
+# 于是在**链路健康**（实测 2774 kB/s）时拦停开跑。出处见 08 号 §4.3 纠错第 2 条。
+#
+# 🔴 **修这个闸时我自己连踩两条假绿断言，都被反向变异抓出来 —— 记下来别重犯**：
+#   ✗ 第一版用 `LISTS > 0`（`/var/lib/apt/lists/*Release` 文件数）当"真拉到了索引"
+#     ⇒ **原始镜像本来就自带 4 个**，断网容器里照样是 4。**该条件永远为真。**
+#   ✗ 第二版改用 `apt-get update` 的**退出码** ⇒ 断网容器里 **rc 照样是 0**
+#     （apt 把"索引拉不到"降级成 `W:` 警告，不反映在退出码上）。
+#   ⇒ 两个"看着像校验"的条件都不承重。**判据必须自己验证过能红。**
+#
+# ✅ 现在的判据来自 apt 自己的仪器（两条都实测过能区分）：
+#   · 健康：`Fetched 10.7 MB in 4s (2774 kB/s)`  ← 速率直接取这里，不用代理指标
+#   · 不可达：`W: Failed to fetch ...` / `Err:` 行出现（且**没有** Fetched 行）
+#   · 慢：`timeout` 在窗口内没跑完 ⇒ rc=124 ⇒ 必然撞上限
+# ⛔ 别退回 du 方案，也别把闸删了：它在**慢**的时候结论是对的
+#    （2026-09-01 实测 12.8 KB/s 那次就是它拦下来的）。
+PROBE=$(docker run --rm --platform "linux/$ARCH" "$IMAGE" sh -c "
+  out=\$(timeout ${WINDOW} apt-get update 2>&1); rc=\$?
+  # apt 自报速率行（可能不存在：索引全命中时无下载）
+  fetched=\$(printf '%s\n' \"\$out\" | grep -E '^Fetched' | tail -1)
+  # 取网 / DNS 失败的证据行数
+  errs=\$(printf '%s\n' \"\$out\" | grep -cE '^(W: Failed to fetch|Err:|W: Some index files failed)')
+  printf 'RC=%s ERRS=%s FETCHED=%s\n' \"\$rc\" \"\$errs\" \"\$fetched\"" 2>/dev/null | tail -1)
 
-if ! [ "${RATE:-0}" -gt 0 ] 2>/dev/null; then
-  echo "  ⛔ ${WINDOW}s 窗口内字节零增长。"
-  echo "     两种成因下一步动作不同，**别合并**："
-  echo "       · 源不可达 → 查容器出网/DNS/代理（是故障，抬超时无用）"
-  echo "       · 慢到测不出 → 必然撞上限，同样别开跑"
+UPD_RC=$(printf '%s' "$PROBE" | sed -n 's/.*RC=\([0-9]*\).*/\1/p')
+ERRS=$(printf '%s' "$PROBE" | sed -n 's/.*ERRS=\([0-9]*\).*/\1/p')
+FETCHED=$(printf '%s' "$PROBE" | sed -n 's/.*FETCHED=//p')
+echo "  探测: rc=${UPD_RC:-?}  失败行数=${ERRS:-?}  apt 自报: ${FETCHED:-（无 Fetched 行）}"
+
+# ① 慢：窗口内没跑完（timeout 的 rc=124）⇒ 必然撞上限
+if [ "${UPD_RC:-0}" = "124" ]; then
+  echo "  ⛔ apt-get update 在 ${WINDOW}s 内未跑完 ⇒ **慢到必然撞 agent_setup 上限**，别开跑。"
   echo "     复核：docker run --rm --platform linux/$ARCH $IMAGE sh -c 'apt-get update'"
+  exit 1
+fi
+
+# ② 不可达：出现取网失败行（⚠️ 判据是这些行，**不是**退出码 —— 断网时 rc 也是 0）
+if [ "${ERRS:-0}" -gt 0 ] 2>/dev/null; then
+  echo "  ⛔ apt 报告索引取网失败（${ERRS} 行 W:/Err:）⇒ **源不可达**，别开跑。"
+  echo "     ⚠️ 注意 rc=${UPD_RC:-?} —— apt 把这类失败降级成警告，**退出码不可信**。"
+  echo "     下一步：查容器出网 / DNS / 代理（是故障，抬超时无用）。"
+  echo "     复核：docker run --rm --platform linux/$ARCH $IMAGE sh -c 'apt-get update'"
+  exit 1
+fi
+
+# ③ 无 Fetched 行且无失败 ⇒ 索引全命中，本来就没有下载量可测
+if [ -z "${FETCHED:-}" ]; then
+  echo "  ✅ 闸通过（旁路判据）：apt 无下载（索引全命中）、且零失败行。"
+  echo "     ⚠️ 本轮**不做速率外推** —— 没有可信速率就不假装有一个。"
+  exit 0
+fi
+
+# ④ 正常路径：从 apt 自报行取速率，单位 kB/s 或 MB/s
+RATE=$(printf '%s' "$FETCHED" | sed -n 's/.*(\([0-9.]*\) \([kKmM]\)B\/s).*/\1 \2/p' \
+  | awk '{ v=$1; if ($2 ~ /[mM]/) v=v*1024; printf "%d", v*1024 }')
+if ! [ "${RATE:-0}" -gt 0 ] 2>/dev/null; then
+  echo "  ⛔ 解析不出速率（Fetched 行格式变了？）⇒ 停手，别猜。"
+  echo "     原始行：$FETCHED"
   exit 1
 fi
 
