@@ -2,7 +2,7 @@
 title: LangGraph 深入研究（2026-08 快照）
 description: 19 章逐节成册，按目录跳章查阅——把 LangGraph 这个「框架」核验到包名与版本号级别：一个仓库 8 个包 8 组版本号、langgraph 1.2.10 撞在 langchain 钉的 <1.3.0 上界、create_react_agent 已弃用搬去 langchain、docs/ 只剩 294 条重定向的空壳、checkpoint 契约不是 ABC 而是 16 个 NotImplementedError、msgpack 反序列化默认宽松、8 条已公开安全公告。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 热点开源项目研究
+series: 开源AI项目研究
 audience: engineer
 highlight: 19 章逐节可查 · 核验至 langgraph 1.2.10 / 本地检出 d56666f7 · 截至 2026-08-09 快照
 tags: [LangGraph, Agent 框架, 深入研究, Pregel, Checkpoint, 状态持久化, 参考]

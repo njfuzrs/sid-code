@@ -2,7 +2,7 @@
 title: LiteLLM 深入研究（2026-08 快照）
 description: 26 章逐节成册，按目录跳章查阅——把 LiteLLM 的产品形态、架构与实现细节交叉核验到版本号级别：Rust 核心已装进每个 wheel（占体积 84%）却默认关闭、五个数据源给出五个不同的 provider 数、9 种缓存后端、51 个回调白名单、49 个 guardrail、925 个环境变量、616 条代理路由。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 热点开源项目研究
+series: 开源AI项目研究
 audience: engineer
 highlight: 26 章逐节可查 · 核验至 v1.95.0 / 本地源码 v1.97.0-dev.2 · 截至 2026-08-09 快照
 tags: [LiteLLM, AI Gateway, 深入研究, Router, 可观测性, Guardrails, MCP, 参考]

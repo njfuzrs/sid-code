@@ -2,7 +2,7 @@
 title: Langfuse 深入研究（2026-08 快照）
 description: 22 章逐节成册，按目录跳章查阅——把 Langfuse 的产品形态、架构与实现细节交叉核验到版本号级别：一个名字下三个不同的「v4」、v3/v4 两条发布线并行维护、v4 用 events 表取代 traces/observations、37 个队列、79 个 MCP 工具、376 个环境变量、企业许可校验只是一次字符串前缀匹配。这是一份手册，不是读完就走的文章。
 date: "2026-08-09"
-series: 热点开源项目研究
+series: 开源AI项目研究
 audience: engineer
 highlight: 22 章逐节可查 · 核验至服务端 v4.6.0 / 本地源码 4.0.0-rc.3 · 截至 2026-08-09 快照
 tags: [Langfuse, LLM 可观测性, 深入研究, OpenTelemetry, 评测, ClickHouse, MCP, 参考]
