@@ -47,42 +47,43 @@ from verifier_health import (
     verifier_ran,
 )
 
+# cc 臂取数的唯一定义处(同一判据、不同取数源)。⛔ 不在本文件解析 claude-code.txt。
+from arm_health import (
+    cc_denials,
+    cc_model,
+    cc_provider,
+    cc_subtype,
+    cc_turns,
+    detect_arm,
+    self_reported_success_cc,
+    sid_model,
+)
+
 #: 轮数上限。与 `sid_code_agent.py` 的默认预算一致；写死在这里是为了让
 #: 「撞满」这个判据有明确阈值。⚠️ 若哪天改了 agent 的默认值，这里必须同步 ——
 #: 不同步的形态是「撞满题数恒为 0」，一个静默失效的判据。
 MAX_TURNS = int(os.environ.get("SID_MODELSWITCH_MAX_TURNS", "40"))
 
 
-def _settings_of(trial_dir: str) -> dict:
-    """读容器内那份 settings.json（agent 真正用的配置）。
-
-    ⚠️ 取它而不取我们传进去的环境变量：环境变量是**意图**，这份文件是
-    **落到容器里的事实**。两者不一致过（`_render_settings` 的回落值是硬编码的
-    "openai"），而那种不一致只有对比事实侧才发现得了。
-    """
-    f = os.path.join(trial_dir, "agent", "sid-home", "settings.json")
-    if not os.path.isfile(f):
-        return {}
-    try:
-        return json.load(open(f, encoding="utf-8"))
-    except Exception:
-        return {}
+# ── sid 侧模型名：判据已上移到 `arm_health.sid_model`，此处只做转发 ──────────
+#
+# 2026-09-08：本文件原有一份 `_settings_of` / `_model_of` / `_provider_of`。
+# 接 cc 臂时 `arm_health` 需要同一个判据（它要与 `cc_model` 并列，
+# 「同一个问题、不同取数源」是那个模块的组织原则）⇒ 出现了两份拷贝。
+#
+# ⛔ 两份拷贝迟早分叉，而分歧会在无人看的时候发生（`verifier_health.py` 模块头
+# 记着这条：同一题一个报 ✅ 一个报 ⛔，两个都"能自证"）。
+# ⇒ 判据留在 `arm_health.sid_model`（含"不取顶层 model 别名"那条教训），
+#   这里只保留薄转发，让既有调用点不必改。
 
 
 def _model_of(trial_dir: str) -> str | None:
-    """本轮真正发给厂商的 wire model（`availableModels[0].modelId`）。
-
-    ⚠️ 不取顶层 `model` —— 那是**本地别名**（实测恒为 "harbor-gateway"），
-    对「跑的是哪个模型」这个问题恒答错。别名 vs 真名的区分见
-    `packages/core/src/llm/wire-model.ts` 的表。
-    """
-    am = (_settings_of(trial_dir).get("availableModels") or [{}])[0]
-    return am.get("modelId") or None
+    """本轮真正发给厂商的 wire model。判据见 `arm_health.sid_model`。"""
+    return sid_model(trial_dir)[0]
 
 
 def _provider_of(trial_dir: str) -> str | None:
-    am = (_settings_of(trial_dir).get("availableModels") or [{}])[0]
-    return am.get("provider") or None
+    return sid_model(trial_dir)[1]
 
 
 def load_run(run_dir: str) -> tuple[list[dict], dict]:
@@ -109,17 +110,44 @@ def load_run(run_dir: str) -> tuple[list[dict], dict]:
                     pass
             deny, allow = c.get("deny", 0), c.get("allow", 0)
 
+        # ── cc 臂:同一语义、**不同取数源**(2026-09-08 接入)──────────────────
+        #
+        # 🔴 在这之前,`analyze-model-switch.py runs/ccrun-n6` 的实测输出是
+        # `turns / subtype / stop_reason / deny / allow / model → 缺 10/10`,
+        # 而那些数据**其实全都在** `agent/claude-code.txt` 的 result 事件里
+        # (实测 `turns=41 subtype=error_max_turns denials=0`)——
+        # 只是没有任何消费方去读它。形态是表格里一整列 None,
+        # 而「看着像 0 denials」与「压根没采到」长得一模一样,结论却相反。
+        #
+        # ⚠️ 取数一律走 `arm_health`,⛔ 不在本文件解析 claude-code.txt。
+        arm = detect_arm(tdir)
+        if arm == "cc":
+            cc_turns_v, cc_subtype_v = cc_turns(tdir), cc_subtype(tdir)
+            # cc **没有 allow 计数** ⇒ allow 保持 None(不可判),⛔ 不填 0。
+            deny = cc_denials(tdir) if deny is None else deny
+            # cc 无 `stop_reason`;它的 `subtype` 已承载"怎么收尾的"。
+            cc_selfrep = self_reported_success_cc(d, tdir)
+            # 🔴 同模型是必控变量 ⇒ 这一格必须有观测源,不能只有命令行作证。
+            cc_model_v, cc_provider_v = cc_model(tdir), cc_provider(tdir)
+        else:
+            cc_turns_v = cc_subtype_v = None
+            cc_selfrep = None
+            cc_model_v = cc_provider_v = None
+
         rows.append(
             dict(
                 task=task,
+                arm=arm,
                 reward=reward,
                 deny=deny,
                 allow=allow,
                 md_deny=md.get("sid_permission_denials"),
                 req_mode=md.get("sid_permission_mode_requested"),
-                turns=md.get("sid_num_turns"),
+                # ⚠️ `or` 而非 `if arm=="cc"`:两侧只会有一侧有值,
+                # 写成条件表达式会在将来多一条臂时静默漏掉。
+                turns=md.get("sid_num_turns") if cc_turns_v is None else cc_turns_v,
                 stolen=md.get("sid_num_turns_without_model_interaction"),
-                subtype=md.get("sid_subtype"),
+                subtype=md.get("sid_subtype") if cc_subtype_v is None else cc_subtype_v,
                 # ⚠️ 键名是 `sid_stop_reason`，**不是** `sid_exit_status`。
                 # 我第一版写后者，结果「缺 10/10」被打成 🔴 仪器缺失 —— 而真相是
                 # 字段名猜错了。**结论与预期矛盾时先怀疑仪器（含读取仪器的这段代码）**，
@@ -129,8 +157,13 @@ def load_run(run_dir: str) -> tuple[list[dict], dict]:
                 # 模型名**不在 metadata 里**（实测 19 个键里没有），唯一可靠源是
                 # 容器 settings.json 的 availableModels[0]。这一层很重要：它是
                 # 「这一轮到底跑的是哪个模型」的**观测证据**，不是我们自己传了什么。
-                model=_model_of(tdir),
-                provider=_provider_of(tdir),
+                # 两侧都取**观测值**:sid 读容器里那份 settings.json,
+                # cc 读 result 事件的 modelUsage 键(只有真产生用量的模型才在里面)。
+                # ⛔ 两侧都不取 `config.agent.model_name` —— 那是我们传的意图。
+                model=_model_of(tdir) if cc_model_v is None else cc_model_v,
+                provider=(
+                    _provider_of(tdir) if cc_provider_v is None else cc_provider_v
+                ),
                 commit=(md.get("sid_commit") or "")[:12],
                 cost=ar.get("cost_usd"),
                 cost_src=md.get("sid_cost_source"),
@@ -143,7 +176,10 @@ def load_run(run_dir: str) -> tuple[list[dict], dict]:
                 # 「卡死在启动里」的就是这一条(2026-09-03 实测,见其 docstring)。
                 agent_started=agent_started(tdir),
                 llm_fatal=llm_fatal(d, tdir),
-                self_reported=self_reported_success(d),
+                # cc 侧同语义、异取数源(subtype 在 claude-code.txt 而非 metadata)。
+                self_reported=(
+                    self_reported_success(d) if cc_selfrep is None else cc_selfrep
+                ),
             )
         )
 
@@ -223,13 +259,34 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
     # ── 判据 ①：权限 deny（#141 那条 144→0 的因果链，期望与模型无关）──────────
     have = [r for r in rows if r["deny"] is not None]
     d_tot = sum(r["deny"] for r in have)
-    a_tot = sum(r["allow"] for r in have)
+    # 🔴 `allow` 必须**单独过滤**，⛔ 不许写 `sum(r["allow"] or 0 for r in have)`。
+    #
+    # 2026-09-08 接 cc 臂时这里当场抛了 `TypeError: int + NoneType` —— 而那个异常
+    # 是**好事**：它逼我面对一件事实，即 cc 侧 `allow` 是 `None`（cc 只有自述的
+    # `permission_denials`，**没有 allow 计数**）。
+    #
+    # ⚠️ 用 `or 0` 兜住会让报告打印「0 deny / 0 allow」，而下面那条判据正好把
+    # `d_tot==0 and a_tot==0` 判成「⚠️ 审计层可能压根没记」—— 结论文字**恰好是对的**，
+    # 但理由完全错了（cc 不是"没记"，而是"这个指标在 cc 上不存在"）。
+    # 一句偶然正确的话比一句明显错误的话更危险：它不会被复核。
+    have_allow = [r for r in rows if r["allow"] is not None]
+    a_tot = sum(r["allow"] for r in have_allow)
+    arms = {r.get("arm") for r in rows if r.get("arm")}
     print(f"\n=== 判据 ①：权限 deny（期望 0；换档前基线是 144 deny / 178 allow）===")
     if not have:
-        print(f"  ⚠️ **10/10 题都没有审计日志 —— 本判据未生效**，不是「0 deny」。")
+        print(f"  ⚠️ **{n}/{n} 题都没有审计日志 —— 本判据未生效**，不是「0 deny」。")
         print(f"     ⛔ 这两种情况在表格里长得一样（都显示 None），但结论完全相反。")
+    elif not have_allow:
+        # cc 臂走这条：deny 有值（自述），allow 整列不存在。
+        print(f"  {d_tot} deny（{len(have)}/{n} 题有值）；**allow 无此指标**")
+        if arms == {"cc"}:
+            print("  ⚠️ cc 臂只有 agent **自述**的 `permission_denials`，没有 allow 计数 ⇒")
+            print("     它的 `deny=0` **区分不出**「真零拒绝」与「压根没采到」，")
+            print("     ⛔ 不能与 sid 侧那个「deny=0 且 allow>0」的观测自证同等对待。")
+        else:
+            print("  ⚠️ allow 整列缺失但 deny 有值 —— 取数源不对称，人工核。")
     else:
-        print(f"  {d_tot} deny / {a_tot} allow（{len(have)}/{n} 题有审计日志）")
+        print(f"  {d_tot} deny / {a_tot} allow（deny {len(have)}/{n}、allow {len(have_allow)}/{n} 题有值）")
         if d_tot == 0 and a_tot > 0:
             print(f"  ✅ deny=0 且 allow>0 —— allow>0 是**反向自证**：证明审计层真的在记，"
                   f"而不是「日志为空所以数出来是 0」")
@@ -275,13 +332,33 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
               f"不要当成「跑过了」）: {unknown_ran}")
 
     # ── 判据 ④/⑤：仪器（#126 exit_status / #143）────────────────────────────
+    #
+    # 🔴 **「本臂没有这个仪器」与「仪器坏了」必须分开报**（2026-09-08 接 cc 臂时暴露）。
+    #
+    # `stop_reason` 与 `stolen`（被偷轮数）都是 **sid 自己埋的**：前者来自
+    # `metadata.sid_stop_reason`，后者来自 `sid_num_turns_without_model_interaction`
+    # —— cc **压根不产出这两个字段**。把它们报成 🔴 会让读者去查一个不存在的仪器，
+    # 而这个目录已经有过同型的代价：`stop_reason` 那次「缺 10/10」的真相是
+    # **字段名猜错了**（见 load_run 里那条注释），有人为此查过一轮。
+    #
+    # ⇒ 现在按臂声明「该不该有」。⛔ 不许把 ➖ 写成 ✅：
+    #   「本臂无此指标」不是「这一格通过了」，它是一个**对照能力的缺口**
+    #   （cc 侧因此看不到空转轮数，#138 的效果在 cc 上无法对称验证）。
+    SID_ONLY_FIELDS = {"stop_reason", "stolen"}
+    arms_here = {r.get("arm") for r in rows if r.get("arm")}
+    cc_only = arms_here == {"cc"}
     print(f"\n=== 判据 ④/⑤：仪器字段落盘 ===")
     for key, label2 in (("stop_reason", "stop_reason(#126)"), ("subtype", "subtype"),
                         ("stolen", "被偷轮数(#138)"), ("cost", "cost"),
-                        ("model", "wire model(容器实测)"), ("provider", "provider(容器实测)")):
+                        ("model", "wire model(观测)"), ("provider", "provider(观测)")):
         vals = [r[key] for r in rows]
         miss = sum(1 for v in vals if v is None)
         uniq = sorted({str(v) for v in vals if v is not None})
+        if cc_only and key in SID_ONLY_FIELDS and miss == n:
+            # ➖ 而不是 🔴：本臂天生没有这个仪器，⛔ 别去修它。
+            print(f"  ➖ {label2:<20} **cc 臂无此仪器**（sid 专有）"
+                  f" —— ⛔ 不是仪器失效，但它是对照缺口：本臂验不了这一项")
+            continue
         mark = "🔴" if miss == n else ("⚠️" if miss else "✅")
         print(f"  {mark} {label2:<20} 缺 {miss}/{n}"
               + (f"；取值 {uniq[:6]}" if uniq else ""))
