@@ -11,7 +11,12 @@
  *                此前硬编码 5 个内置名，registry 有的类型被命令拒绝。
  *   fallback —— fallback == 主模型时给出「零降级覆盖」告警（此前静默接受）。
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { __resetGatewayPricingForTest } from "@sid-code/core/llm/gateway-pricing.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import mod from "@sid-code/cli/command/commands/model/model.ts";
 import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
@@ -157,5 +162,71 @@ describe("/model fallback：与主模型相同时告警", () => {
     const out = await text("fallback no-such-model", ctx);
     expect(out).toContain("不在可用模型列表中");
     expect(calls.fallback).toHaveLength(0);
+  });
+});
+
+describe("/model pricing 的网关缓存状态行", () => {
+  /**
+   * 隔离 SID_CONFIG_DIR：gateway-pricing 有模块级内存缓存，dev 机上会读到真实
+   * ~/.sid-code 的网关价（本仓踩过这条坑，见 model-profile.test.ts 头部注释）。
+   */
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+
+  function writeCache(schemaVersion: number, fetchedAt: number): void {
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(
+      sidPaths.gatewayPricing(),
+      JSON.stringify({
+        schema_version: schemaVersion,
+        endpoints: {
+          "": {
+            source_url: "https://gw.example.com/api/pricing",
+            fetched_at: fetchedAt,
+            pricing_version: "abcdef123456",
+            models: { "some-model": { input: 1, output: 2, quotaType: 0 } },
+          },
+        },
+      }),
+      "utf8",
+    );
+  }
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "model-pricing-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    __resetGatewayPricingForTest();
+  });
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test("v2 存量缓存（fetched_at 被迁移标记为 0）不显示「496899.2h 前」", async () => {
+    // schema v2→v3 迁移刻意把旧桶标记为过期以触发重采。若照旧按时间差算，会印出
+    // 一个一眼假的数 —— 那不是"很久以前采的"，而是"这份缓存的采集时间已作废"。
+    writeCache(2, Date.now());
+    const { ctx } = makeCtx();
+    const r = await mod.call("pricing", ctx);
+    const text = r.type === "text" ? r.value : "";
+    expect(text).toContain("待自动重采");
+    expect(text).not.toMatch(/\d{4,}\.\dh 前/); // 四位数以上小时数 = 那个假数字
+  });
+
+  test("v3 新鲜缓存正常显示采集时长", async () => {
+    writeCache(3, Date.now() - 2 * 3_600_000);
+    const { ctx } = makeCtx();
+    const r = await mod.call("pricing", ctx);
+    const text = r.type === "text" ? r.value : "";
+    expect(text).toMatch(/采集于 2\.\dh 前/);
+    expect(text).not.toContain("待自动重采");
   });
 });

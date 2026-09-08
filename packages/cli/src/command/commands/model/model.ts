@@ -428,10 +428,14 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
   // ── 网关采集缓存状态 ──
   const meta = getGatewayCacheMeta();
   if (meta) {
-    const ageH = ((Date.now() - meta.fetchedAt) / 3_600_000).toFixed(1);
-    lines.push(
-      `网关定价缓存: ${meta.count} 条，采集于 ${ageH}h 前（version ${meta.version.slice(0, 8)}）`,
-    );
+    // fetchedAt=0 是 schema v2→v3 迁移刻意打的「待重采」标记（旧缓存里按次条目的
+    // token 价已被置 0，无法就地修复）。按时间差算会印出「496899.2h 前」这种
+    // 一眼假的数 —— 那不是"很久以前采的"，而是"这份缓存的采集时间已作废"。
+    const ageText =
+      meta.fetchedAt > 0
+        ? `采集于 ${((Date.now() - meta.fetchedAt) / 3_600_000).toFixed(1)}h 前`
+        : "旧版本缓存，待自动重采（或执行 /model discover --pricing 立即刷新）";
+    lines.push(`网关定价缓存: ${meta.count} 条，${ageText}（version ${meta.version.slice(0, 8)}）`);
   } else {
     lines.push("网关定价缓存: (无，执行 /model discover --pricing 采集)");
   }
