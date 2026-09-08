@@ -451,15 +451,19 @@ function buildPricingTable(ctx: CommandContext, all: boolean): string {
       const current = m.name === ctx.config.model ? " ✓" : "";
       lines.push(`  ${m.name}${current}`);
       lines.push(`    端点: ${m.baseURL || "(默认/官方)"}`);
-      // 按次计费（quota_type=1）模型：resolvePricing 对其返回 null（token 价不适用），
-      // 直接显示网关采到的按次单价，避免误示为「in $0 / out $0」。
-      const perCall = getPerCallUSD(m.name, m.baseURL);
-      if (perCall !== undefined) {
-        lines.push(`    按次计费 $${perCall}/次  [网关采集]`);
-      } else if (p) {
+      // ⚠ token 价优先：网关的按次条目**同时**报 token 价（实测企业网关 14/14），
+      // 而我们的账本一直按 token 记。修前这里 perCall 抢先返回，于是
+      // `/model pricing` 只印「按次计费 $60/次」，与账本口径不一致（同 formatPriceColumn）。
+      // 纯按次模型（图片/视频类，无 token 价）才只印按次价——那时印 in $0/out $0 是错的。
+      const perCall = getPerCallUSD(m.name, m.baseURL, ctx.config.availableModels);
+      if (p) {
+        const perCallNote =
+          perCall !== undefined ? `  ｜网关另标按次 $${perCall}/次（账本按 token 记）` : "";
         lines.push(
-          `    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]`,
+          `    in ${fmtPrice(p.input)}  out ${fmtPrice(p.output)}  cacheRead ${fmtPrice(p.cacheRead)}  cacheWrite ${fmtPrice(p.cacheWrite)}  [${src}]${perCallNote}`,
         );
+      } else if (perCall !== undefined) {
+        lines.push(`    按次计费 $${perCall}/次  [网关采集]`);
       } else {
         lines.push(`    (未知价格，走兜底估算 in $2 / out $10)  [${src}]`);
       }

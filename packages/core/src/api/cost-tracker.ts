@@ -263,7 +263,15 @@ export function resolvePricing(
 
   // 3. 网关采集价：按渠道名精确匹配（ali-/tx-/origin- 前缀天然区分渠道）。
   //    命中即返回，从而根本走不到步骤 4 注册表的前缀剥离——修正「渠道名被剥成官方名套官方价」的低估。
-  const gateway = lookupGatewayPricing(model, baseURL);
+  //
+  // ⚠ 必须**同时**把真名传下去：网关 `/api/pricing` 报的是真名（`claude-sonnet-5`），
+  // 而这里的 `model` 是配置侧别名（`claude-sonnet-5-ppchat`）。只按别名查必然 miss，
+  // 而新模型在注册表里也没有 → 步骤 4 一并 miss → 落 FALLBACK_PRICING $2/$10。
+  // 实测该缺口让 4 个配了 model_id 的模型整段按兜底价记账（见 lookupGatewayEntry 注释）。
+  // 别名优先、真名兜底的顺序在 lookupGatewayEntry 里，这里只负责把真名交出去。
+  const { resolveWireModel } = require("../llm/wire-model.ts");
+  const wire = resolveWireModel(model, availableModels);
+  const gateway = lookupGatewayPricing(model, baseURL, wire);
   if (gateway) return gateway;
 
   // 4. 从统一注册表查找（前缀剥离在此仅作「查无此模型」的最后兜底）。
@@ -276,16 +284,17 @@ export function resolvePricing(
   // 而我们网关实采价是 1.0959 —— 网关价才是对的，把 catalog 价接进来只会引入错算。
   // catalog 的 cost 字段可以采集入库供 /model list 展示，但优先级必须低于注册表兜底。
   //
-  // ⚠ 只有**这一步**按真名查，步骤 1-3 一律按别名 —— 两者不矛盾，是分工：
-  //   - 步骤 1/2（用户手写 pricing）与步骤 3（网关采集价）是「这条渠道的价」，
-  //     必须按别名，否则两个渠道的差价被抹平（§2.1「计价留在别名侧」正是指这几步）；
+  // ⚠ 真名/别名的分工（步骤 3 现在两者都用，别再读成"1-3 一律按别名"）：
+  //   - 步骤 1/2（用户手写 pricing）**只**按别名：那是用户为这条渠道写的价，
+  //     按真名查会把两个渠道的差价抹平（§2.1「计价留在别名侧」正是指这两步）；
+  //   - 步骤 3（网关采集价）**别名优先、真名兜底**：渠道价仍按别名区分，但网关是
+  //     按真名入库的，别名 miss 时必须用真名补位，否则采到的价查不出来（见该处注释）；
   //   - 本步是「这到底是什么模型」的注册表兜底，按 §2.1 就该用真名。喂前缀式别名
   //     （gw-claude-sonnet-4-6）必然 miss → 返回 null → 调用方落 FALLBACK_PRICING，
   //     实测 1M in / 200K out 从 $6.00 算成 $4.00（0.67x），静默少算且不报错，
   //     直接污染「更省」方向的度量底座。
   // 别名与真名相同时 resolveWireModel 原样返回，行为不变。
-  const { resolveWireModel } = require("../llm/wire-model.ts");
-  const wire = resolveWireModel(model, availableModels);
+  // `wire` 已在步骤 3 前解析（那里也要用），此处直接复用，不重复 require。
   return (lookupRegistryExact(wire) ?? lookupRegistryFuzzy(wire))?.pricing ?? null;
 }
 

@@ -30,13 +30,13 @@ const GW = "https://gw.example.com";
 let tmpDir: string;
 let prevConfigDir: string | undefined;
 
-/** 往隔离目录写一份网关价缓存（v2 分桶结构）。 */
+/** 往隔离目录写一份网关价缓存（v3 分桶结构）。 */
 function writeGatewayCache(models: Record<string, unknown>, endpoint = GW): void {
   mkdirSync(tmpDir, { recursive: true });
   writeFileSync(
     sidPaths.gatewayPricing(),
     JSON.stringify({
-      schema_version: 2,
+      schema_version: 3,
       endpoints: {
         [endpoint]: {
           source_url: `${endpoint}/api/pricing`,
@@ -146,10 +146,21 @@ describe("getPerCallUSD：按次计费模型", () => {
     expect(getPerCallUSD("chat-m", GW)).toBeUndefined();
   });
 
-  test("端点桶未精确命中时回退合并视图（用户配置端点与采集端点归一化可能不一致）", () => {
+  test("⚠ 按次价**不得**跨端点借用（原断言锁的正是本次修掉的缺陷）", () => {
+    // 原断言是「精确桶 miss → 回退全端点合并视图」，理由写的是"用户配置端点与采集端点
+    // 归一化可能不一致（多一个 /v1、大小写不同）"。但那个理由不成立：归一化本就是
+    // `normalizeBaseURL` 的职责，用「无条件跨桶」去补归一化差异，等于为了修大小写
+    // 不敏感而放弃端点维度本身 —— 实测后果就是 claude-sonnet-4-6（配在 uniapi）
+    // 显示出 ppchat 桶的 $36.00/次。
     writeGatewayCache({ "video-gen": { quotaType: 1, perCallUSD: 0.07 } }, GW);
-    // 传一个不同的端点：精确桶 miss，但合并视图里有
-    expect(getPerCallUSD("video-gen", "https://other.example.com")).toBe(0.07);
+    expect(getPerCallUSD("video-gen", "https://other.example.com")).toBeUndefined();
+  });
+
+  test("归一化差异（末尾斜杠 / host 大小写）仍能命中 —— 那是 normalizeBaseURL 的职责", () => {
+    // 上一条测试拿掉的能力，真正需要的那部分在这里得到保证：写法不同、端点相同 → 命中。
+    writeGatewayCache({ "video-gen": { quotaType: 1, perCallUSD: 0.07 } }, GW);
+    expect(getPerCallUSD("video-gen", `${GW}/`)).toBe(0.07);
+    expect(getPerCallUSD("video-gen", GW.replace("gw.", "GW."))).toBe(0.07);
   });
 
   test("未采集的模型返回 undefined，不编数字", () => {
@@ -243,7 +254,7 @@ describe("buildModelProfile：聚合与诚实性", () => {
     expect(buildModelProfile(entry, [entry], "anthropic").isPeakNow).toBeUndefined();
   });
 
-  test("按次计费模型：pricing 为 null 但 perCallUSD 有值（两者互斥）", () => {
+  test("纯按次模型：pricing 为 null 但 perCallUSD 有值", () => {
     writeGatewayCache({ "video-gen": { quotaType: 1, perCallUSD: 0.05 } });
     const entry: ProfileModelEntry = { name: "video-gen", provider: "openai", baseURL: GW };
     const p = buildModelProfile(entry, [entry], "openai");
@@ -281,5 +292,75 @@ describe("buildModelProfile：聚合与诚实性", () => {
     };
     const p = buildModelProfile(entry, [entry], "anthropic");
     expect(p.efforts).toEqual([]);
+  });
+});
+
+describe("按次价与 token 价并存 / 别名解析（2026-09-08 修复的回归）", () => {
+  const PP = "https://ppchat.example.com";
+
+  test("核心回归：按次条目的 token 价进计费，不再落 FALLBACK $2/$10", () => {
+    // 实测企业网关 code.ppchat.vip：claude-opus-5 报 quota_type=1 + model_price=60，
+    // 但**同时**报 model_ratio → token 价 $5/$25。修前 token 价被丢掉 →
+    // resolvePricing 返回 null → calculateUSDCost 落 FALLBACK $2/$10。
+    writeGatewayCache({
+      "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, quotaType: 1, perCallUSD: 60 },
+    });
+    const models: ProfileModelEntry[] = [{ name: "claude-opus-5", baseURL: GW }];
+    const p = buildModelProfile(models[0]!, models, "anthropic");
+    // token 价可用（计费走它）
+    expect(p.pricing).not.toBeNull();
+    expect(p.pricing!.input).toBeCloseTo(5, 6);
+    // 按次价也在（展示要用）—— 两者**不再互斥**
+    expect(p.perCallUSD).toBe(60);
+    expect(p.pricingSource).toBe("gateway");
+    // 与实际取价一致：resolvePricing 拿到的就是这份网关价，不是兜底价
+    expect(resolvePricing("claude-opus-5", models, GW)!.input).toBeCloseTo(5, 6);
+  });
+
+  test("核心回归：配了 model_id 的模型按真名命中网关价（修前整段按兜底价记账）", () => {
+    // 网关按真名入库（claude-sonnet-5），配置侧键是别名（claude-sonnet-5-ppchat）。
+    // 修前只按别名查 → miss；而这个新模型注册表里也没有 → 落 FALLBACK $2/$10。
+    // 实测 usage-ledger 反算：21 条记录里 20 条与 $2/$10 吻合到 1e-6。
+    writeGatewayCache(
+      {
+        "claude-sonnet-5": { input: 1.4, output: 7, cacheRead: 0.14, quotaType: 1, perCallUSD: 36 },
+      },
+      PP,
+    );
+    const models: ProfileModelEntry[] = [
+      { name: "claude-sonnet-5-ppchat", modelId: "claude-sonnet-5", baseURL: PP },
+    ];
+    const p = buildModelProfile(models[0]!, models, "anthropic");
+    expect(p.pricing).not.toBeNull();
+    expect(p.pricing!.input).toBeCloseTo(1.4, 6);
+    expect(p.pricingSource).toBe("gateway"); // 修前是 unknown
+    expect(p.perCallUSD).toBe(36);
+    // 计价链同源
+    expect(resolvePricing("claude-sonnet-5-ppchat", models, PP)!.input).toBeCloseTo(1.4, 6);
+  });
+
+  test("核心回归：按次价不得跨端点借用（修前面板显示别的网关的 $36/次）", () => {
+    // claude-sonnet-4-6 只在 ppchat 桶里；它配在另一个端点上时，
+    // 面板不该显示 ppchat 的按次价（它是注册表裸名，该走官方 $3/$15）。
+    writeGatewayCache(
+      { "claude-sonnet-4-6": { input: 3, output: 15, quotaType: 1, perCallUSD: 36 } },
+      PP,
+    );
+    const models: ProfileModelEntry[] = [{ name: "claude-sonnet-4-6", baseURL: GW }];
+    expect(getPerCallUSD("claude-sonnet-4-6", GW, models)).toBeUndefined();
+    const p = buildModelProfile(models[0]!, models, "anthropic");
+    expect(p.perCallUSD).toBeUndefined();
+    // 回落注册表官方价，而不是借来的渠道价
+    expect(p.pricingSource).toBe("registry");
+    expect(p.pricing!.input).toBeCloseTo(3, 6);
+  });
+
+  test("detectPricingSource 的按次档只在纯按次时兜底（有 token 价时第 3 步已命中）", () => {
+    writeGatewayCache({ "img-gen": { input: 0, output: 0, quotaType: 1, perCallUSD: 2 } });
+    const models: ProfileModelEntry[] = [{ name: "img-gen", baseURL: GW }];
+    expect(detectPricingSource("img-gen", models, GW)).toBe("gateway");
+    const p = buildModelProfile(models[0]!, models, "");
+    expect(p.pricing).toBeNull(); // 纯按次：没有可用 token 价
+    expect(p.perCallUSD).toBe(2);
   });
 });
