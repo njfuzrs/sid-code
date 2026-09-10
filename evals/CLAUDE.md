@@ -211,7 +211,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | **失效形态** | verifier 装不上 uv 就坏掉，而坏掉的样本长得和「没解出来」**逐字节相同** → 直接污染分子 |
 | **判据** | 四轮 `nop` 对照（nop 不解题，reward 必然全 0，唯一观测量就是 verifier 成没成）：`-n 1` 坏 **1/10**，`-n 3` 坏 **4/10**，`-n 3`+宿主代理 **6/10** |
 | **指纹** | 失败散布在三个域名（`github.com` / `releases.astral.sh` / `archive.ubuntu.com`）+ 三种 curl 码（7/18/35）—— **多域名多错误码就是带宽争抢，不是某域名被墙** |
-| **出处** | `external-benchmarks/harbor/README.md:253-275` |
+| **出处** | `external-benchmarks/harbor/README.md:278-302` |
 
 ⚠️ **用 `nop` agent 排除能力变量**是这里的关键实验设计：它让「verifier 坏没坏」
 成为唯一变量。**下次怀疑链路问题时先照这个做单变量对照。**
@@ -417,7 +417,7 @@ harbor run -a sid_code_agent:SidCodeAgent \
 | 113 次拒绝实测与归因 | `exec-swebench.sh:1255-1280` |
 | Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:241-320` |
 | 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:369`、`:594-598`、`:825`、`:930-985` |
-| `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:253-275` |
+| `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:278-302` |
 | L1/L2 双层门禁与变异自证 | `tests/eval/harbor-agent-contract.test.ts:1-46` |
 | 横评 provider 不对称（⛔ 现存缺陷） | `providers/claude-code.ts:27`、`providers/sid-code-live.ts:28-30` |
 | 完整棒次执行记录与交接 | `docs-research/.../Evaluation/02-Harbor接入方案设计.md` §11–§17 |

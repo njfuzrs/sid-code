@@ -60,7 +60,15 @@ MIRROR_PORT="${SID_UV_MIRROR_PORT:-18077}"
 # colima host-gateway。⚠️ 见文件头：host.docker.internal 在任务镜像里不解析。
 HOST_ADDR="${SID_UV_MIRROR_HOST:-192.168.5.2}"
 # 题目 test.sh 实测在用的版本。多一个版本只是多一个 17.8MB 文件，宁可多备。
-UV_VERSIONS="${SID_UV_MIRROR_VERSIONS:-0.7.13 0.9.7}"
+# 🔴 2026-09-09 实测：这份清单原先只有 `0.7.13 0.9.7`，是从 **11 个 sample 题**
+# 数出来的；扩到 tb2.0 的 66 题后，`~/.cache/harbor/tasks/*/*/tests/test.sh` 里
+# **66 份要 0.9.5、只有 10 份要 0.7.13、0 份要 0.9.7**。
+# 缺 0.9.5 的形态：verifier 里 `failed to download .../0.9.5/uv-...tar.gz`
+# → `/root/.local/bin/env: No such file or directory` → `uvx: command not found`
+# → 测试一条都没跑 → reward=0.0 且 **status 完全正常** ⇒ 与「能力不行」逐字节一样。
+# w3-classify 会把它判成「verifier未判分」并删掉重跑 ⇒ 每轮重付一次钱，而版本永远还是缺的。
+# ⛔ 别把 0.9.7 删掉：它不在当前题集里，但留着只花 17.8MB，而删了下次踩同一个坑。
+UV_VERSIONS="${SID_UV_MIRROR_VERSIONS:-0.7.13 0.9.5 0.9.7}"
 # 容器是 linux/amd64（--platform 强制），所以只需要 x86_64 这一个三元组。
 UV_TRIPLE="${SID_UV_MIRROR_TRIPLE:-x86_64-unknown-linux-gnu}"
 

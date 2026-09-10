@@ -123,7 +123,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/README.md",
-    line: 253,
+    line: 278,
     anchor: "verifier 坏掉的比例",
     what: "§3.4 -n 并发与 verifier",
   },
