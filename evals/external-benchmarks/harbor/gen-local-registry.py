@@ -32,7 +32,18 @@ import sys
 HERE = pathlib.Path(__file__).parent
 REGISTRY_LOCAL = HERE / "registry.local.json"
 REGISTRY_CACHE = pathlib.Path.home() / ".cache/sid-tb-images/registry.json"
-IMAGE_PREFIX = "ghcr.io/laude-institute/terminal-bench"
+# 🔴 判据必须等于 compose 真正会拉的那个 ref，⛔ 不是「我们当初拉过什么」。
+# 2026-09-09 实测教训：本地有 72 张 `ghcr.io/laude-institute/terminal-bench/<task>:2.0`,
+# 而 tb2.0 在 commit 69671fb 上的 72 份 task.toml **全部**钉
+# `docker_image = "alexgshaw/<task>:20251031"`（另 10 份 sample task.toml 才是 ghcr）。
+# ⇒ 按 ghcr 判「就绪」会写出一个 72 题的 dataset，然后 69/72 题在
+# `docker compose up` 阶段就失败（Error failed to resolve reference ...），
+# 形态是 reward=None + exception，**preflight 却报「本地已有 = 72」**。
+# 那批 ghcr 镜像还自证过不是任务镜像：72 个 tag 只有 67 个不同 image ID，
+# regex-log / torch-pipeline-parallelism / torch-tensor-parallelism 三题共用同一个 ID。
+IMAGE_PREFIX = "ghcr.io/laude-institute/terminal-bench"   # 仅 sample@2.0 用
+TASK_IMAGE_REPO = "alexgshaw"        # local@2.0（commit 69671fb）钉的仓库
+TASK_IMAGE_TAG = "20251031"          # 同上的 tag
 SRC_NAME, SRC_VERSION = "terminal-bench", "2.0"
 OUT_NAME, OUT_VERSION = "terminal-bench-local", "2.0"
 
@@ -67,9 +78,11 @@ def local_images() -> set[str]:
         sys.exit(f"⛔ docker 不可达（rc={p.returncode}）: {p.stderr.strip()[:200]}\n"
                  f"   先跑: docker context use colima-swebench")
     got = set()
+    want_prefix = f"{TASK_IMAGE_REPO}/"
+    want_suffix = f":{TASK_IMAGE_TAG}"
     for line in p.stdout.splitlines():
-        if line.startswith(IMAGE_PREFIX + "/") and line.endswith(":" + SRC_VERSION):
-            got.add(line[len(IMAGE_PREFIX) + 1:-len(SRC_VERSION) - 1])
+        if line.startswith(want_prefix) and line.endswith(want_suffix):
+            got.add(line[len(want_prefix):-len(want_suffix)])
     return got
 
 
@@ -81,6 +94,10 @@ def main() -> None:
     print(f"上游 {SRC_NAME}@{SRC_VERSION} = {len(tasks)} 题")
     print(f"本地镜像就绪               = {len(keep)} 题  ← 这就是 W3 的真实分母")
     print(f"因缺镜像被排除             = {len(missing)} 题")
+    print(f"    判据 = 本地存在 {TASK_IMAGE_REPO}/<task>:{TASK_IMAGE_TAG}"
+          f"（compose 真正会拉的 ref，⛔ 不是 ghcr 那批）")
+    if missing:
+        print(f"    缺的: {', '.join(missing)}")
     if not keep:
         sys.exit("⛔ 一题都没有，不生成（多半是 docker context 不对）")
 
