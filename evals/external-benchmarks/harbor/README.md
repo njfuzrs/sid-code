@@ -218,11 +218,36 @@ harbor run ... --allow-agent-host 192.168.5.2
 判据：**报 `Error getting dataset` 时先复跑一次，不要去查数据集名字。**
 
 治法：把 spec 落成本地 `registry.json`，用 `--registry-path` 完全绕开远端。
-仓库里已备好 `registry.local.json`（terminal-bench-sample@2.0，10 个任务）：
+仓库里已备好 `registry.local.json`，含**三个** dataset：
+
+| dataset | 题数 | 用途 |
+| --- | --- | --- |
+| `terminal-bench-sample@2.0` | 10 | n=10 已发表结论的取数源，⛔ 别动 |
+| `terminal-bench-local@2.0` | 66 | 本地镜像就绪的全部题 |
+| `terminal-bench-w3-54@2.0` | 54 | 🔴 **W3 三臂对照用这个**（指纹 `54:b9c053ee6ba0daa0`） |
 
 ```bash
-harbor run -d terminal-bench-sample@2.0 --registry-path registry.local.json ...
+harbor run -d terminal-bench-w3-54@2.0 --registry-path registry.local.json ...
 ```
+
+🔴 **「镜像就绪」的判据必须数 compose 真正会拉的那个 ref**：
+
+```bash
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -c '^alexgshaw/.*:20251031$'
+```
+
+⛔ **不是** `ghcr.io/laude-institute/terminal-bench/<task>:2.0` ——
+tb2.0 在 commit `69671fb` 上的 72 份 `task.toml` **全部**钉
+`docker_image = "alexgshaw/<task>:20251031"`（只有 10 份 sample task.toml 是 ghcr）。
+2026-09-09 实测：按 ghcr 数会报出一个**假的「本地已有 72」**，而实跑
+**69/72 题在 `docker compose up --wait` 就失败**（`failed to resolve reference`），
+`preflight` 全程绿。那批 ghcr 还自证不是任务镜像：72 个 tag 只有 67 个不同 image ID
+（`regex-log` / `torch-pipeline-parallelism` / `torch-tensor-parallelism` 共用一个）。
+判据已落进 `gen-local-registry.py`（`TASK_IMAGE_REPO`/`TASK_IMAGE_TAG`），详见 08 号 §4.9-①。
+
+⚠️ **缩量要新建 dataset，⛔ 不要给命令加一堆 `-i`**：`w3-run.sh:159` 只把 `$JOB`
+传给下游，额外参数不转发；且按题分批会把分母碎成 N 份。
+生成器：`python3 gen-w3-54-registry.py`（题单 `w3-tasks-54.txt` 从实跑产物导出）。
 
 两条细节**照抄，别自己推**：
 
@@ -264,7 +289,13 @@ curl -s -X POST -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
 | `-n 3` + 容器走宿主代理 | **6 / 10** ← 最差 |
 
 `-n` 从 1 调到 3，坏掉的从 1 变 4。**Terminal-Bench 的 `tests/test.sh` 每一个都要
-现装 uv（`https://astral.sh/uv/0.7.13/install.sh` → GitHub release 17MB）**，
+现装 uv（`https://astral.sh/uv/<版本>/install.sh` → GitHub release 17–21MB）**，
+🔴 **版本不止一个**：2026-09-09 实测 `~/.cache/harbor/tasks/*/*/tests/test.sh`
+（共 82 份，其中 **76 份**会现装 uv）里 **66 份要 `0.9.5`、10 份要 `0.7.13`、
+0 份要 `0.9.7`** ——
+`lib/uv-mirror.sh` 的 `UV_VERSIONS` 必须覆盖全，少一个的形态是
+`uvx: command not found` ⇒ 测试一条没跑 ⇒ `reward=0.0` 且 status 正常，
+**与「能力不行」逐字节一样**（详见 08 号 §4.9-②）。
 10 个任务下载的是**同一个 tarball**；并发一上去就在抢同一条出口带宽，
 失败散布在三个不同域名上（`github.com` / `releases.astral.sh` /
 `archive.ubuntu.com`），curl 错误码也各不相同（7 / 18 / 35）——
@@ -1119,7 +1150,7 @@ python3 test-arm-health.py [--self-check]              # arm_health 判据自证
 ⇒ 产出刻意做得小（逐题表 + 分母 + 口径声明，**不含轨迹/verifier 输出**），
 落在 `results/` 下 —— 那个目录**不在 ignore 里**，所以它是唯一能进版本库、
 能被 review、能跨机器活下来的那一份。实测 10 题×2 臂 = 23.7KB，
-**72 题×2 臂外推 ≈ 166KB**。⇒ 跑完记得 `git add results/`。
+**A2 单臂 54 题实测 = 59.3KB**（60,685 B），三臂外推 ≈ 180KB。⇒ 跑完记得 `git add results/`。
 
 #### 置信区间用 Wilson，⛔ 不用 07 号那个 `1.96*sqrt(0.25/n)`
 
@@ -1296,7 +1327,8 @@ python3 analyze-prefix.py runs/a11-sid runs/a11-mswea-r2
 digest 的输入是宿主 `~/.sid-code/`，而 trial 轨迹是 10 份互不相干的 session。
 
 ⚠️ **`colima` 有两个 profile，别启错**：`colima start` 默认起 `default`（空的、19G root），
-而镜像和 dockerd 的 proxy drop-in 都在 **`swebench`** profile（157G/45G）。
+而镜像和 dockerd 的 proxy drop-in 都在 **`swebench`** profile
+（2026-09-10 扩容后 **295G 总 / 余 154G**，见 08 号 §4.10）。
 起错的形态是「零镜像 + proxy 配置消失」，**看起来像整个环境丢了**。正确姿势：
 
 ```bash
