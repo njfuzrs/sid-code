@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-08T23:35:43.640592+00:00",
-  "sid_code_commit": "d1f3071817fe960b30de00707b661a41ce64e4ba",
+  "generated_at": "2026-09-11T16:18:08.667757+00:00",
+  "sid_code_commit": "bcc978ddd728d5087d89d18d96b156a2904a64e0",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -30,7 +30,7 @@
         "passed": 25,
         "failed_capability": 29,
         "excluded_non_capability": 0,
-        "maxed_turns": 13,
+        "maxed_turns": 12,
         "maxed_turns_tasks": [
           "build-cython-ext",
           "caffe-cifar-10",
@@ -40,7 +40,6 @@
           "dna-insert",
           "financial-document-processor",
           "fix-code-vulnerability",
-          "install-windows-3.11",
           "make-doom-for-mips",
           "password-recovery",
           "path-tracing-reverse",
@@ -86,7 +85,7 @@
       "caveats": [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
         "token:两臂 n_input_tokens 语义相反(cc 含 cache、sid 不含),本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— ⛔ 别回去直接比 result.json 里的 n_input_tokens。",
-        "撞满 40 轮 13 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,它们是用完预算(#138 轮数预算)。",
+        "撞满 40 轮 12 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,它们是用完预算(#138 轮数预算)。",
         "自报成功却 0 分 6 题 ⇒ 这些**是**真实能力失败,必须计分(#143)。",
         "token 低报 3 题 ['build-pov-ray', 'count-dataset-tokens', 'financial-document-processor']:隐含单价偏离 2/3 ⇒ **这些题的 token 不可信,但 cost 可信**(cost 有 agent 自报 + 网关账本两个源,token 只有一条链路)。⛔ 别拿这些题算缓存命中率。"
       ],
@@ -996,7 +995,7 @@
           "reward": 0.0,
           "excluded": null,
           "turns": 42,
-          "maxed": true,
+          "maxed": false,
           "subtype": null,
           "self_reported_success": false,
           "permission_denials": 0,

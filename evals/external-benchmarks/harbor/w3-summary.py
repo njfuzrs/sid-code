@@ -159,6 +159,16 @@ def collect(run_dir: str) -> dict:
             model, provider = cc_model(td), cc_provider(td)
         else:
             turns, subtype = md.get("sid_num_turns"), md.get("sid_subtype")
+            # 🔴 `sid_num_turns` 有**两个语义不同的源**,判「撞满轮数」时必须区分:
+            #   `stream-json-result`   ⇒ result 事件的 `num_turns`(真·API 轮数)
+            #   `session-traj-fallback` ⇒ traj 的 `total_steps`(**步骤数,不是轮数**)
+            # 见 `sid_code_agent.py:821` 与 `trace/collector.ts:2406-2407`
+            # (`turns: apiCalls` vs `total_steps: pairs.length` 是两个字段)。
+            # 实测 A2 三个 fallback 样本的 steps/api 恒为 2.0×、A1 达 2.3–5.3×
+            # ⇒ 拿 total_steps 与 MAX_TURNS 比会**虚报撞满**。
+            # 实测踩到:A2 的 `install-windows-3.11`(steps=42、api_calls=21、
+            # subtype 为 None)被计进「撞满 40 轮」,让已发表的 13/54 多算一题(真值 12)。
+            turns_is_api_calls = md.get("sid_cost_source") == "stream-json-result"
             deny, allow = md.get("sid_permission_denials"), md.get("sid_permission_allows")
             selfrep = self_reported_success(d)
             ttft, api_err = None, None  # sid 侧 TTFT 在 digest 里,不在 result.json
@@ -175,7 +185,15 @@ def collect(run_dir: str) -> dict:
             "reward": reward,
             "excluded": excl,
             "turns": turns,
-            "maxed": (turns is not None and turns >= MAX_TURNS),
+            # ⛔ fail-closed:源不是权威的 result 事件时**一律不判撞满** ——
+            # 宁可漏报(那只是少一条 caveat),也不要虚报(虚报会把一个正常结束的样本
+            # 说成「用完预算」,而那正是这条 caveat 要人别误读的东西)。
+            # ⚠️ cc 臂 `turns_is_api_calls` 恒 False 会让它整臂不判撞满 ——
+            # 所以 cc 分支单独给 True(cc 的 turns 取自 result 事件,同权威)。
+            "maxed": (
+                turns is not None and turns >= MAX_TURNS
+                and (turns_is_api_calls if this_arm != "cc" else True)
+            ),
             "subtype": subtype,
             "self_reported_success": selfrep,
             "permission_denials": deny,
