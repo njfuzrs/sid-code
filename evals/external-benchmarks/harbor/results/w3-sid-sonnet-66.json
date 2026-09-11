@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-11T16:18:08.667757+00:00",
-  "sid_code_commit": "bcc978ddd728d5087d89d18d96b156a2904a64e0",
+  "generated_at": "2026-09-11T16:22:22.586185+00:00",
+  "sid_code_commit": "24499ceb677540333ae6af3939dc0bbb90df25bc",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -58,7 +58,13 @@
         "total": 36.907914,
         "n_with_cost": 54,
         "n_trials": 54,
-        "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)"
+        "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)",
+        "n_traj_fallback": 3,
+        "traj_fallback_tasks": [
+          "gpt2-codegolf",
+          "install-windows-3.11",
+          "model-extraction-relu-logits"
+        ]
       },
       "controlled_variables": {
         "model_observed": ["claude-sonnet-5"],
@@ -85,6 +91,7 @@
       "caveats": [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
         "token:两臂 n_input_tokens 语义相反(cc 含 cache、sid 不含),本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— ⛔ 别回去直接比 result.json 里的 n_input_tokens。",
+        "成本口径混合:3/54 题的 cost 取自 `session-traj-fallback`(result 事件丢了),它**仍可能偏低** ⇒ 本臂成本合计是**下界**。⛔ 与另一臂比成本前先核两侧的这个占比 —— 占比不同时,兜底多的那侧会看起来更省。",
         "撞满 40 轮 12 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,它们是用完预算(#138 轮数预算)。",
         "自报成功却 0 分 6 题 ⇒ 这些**是**真实能力失败,必须计分(#143)。",
         "token 低报 3 题 ['build-pov-ray', 'count-dataset-tokens', 'financial-document-processor']:隐含单价偏离 2/3 ⇒ **这些题的 token 不可信,但 cost 可信**(cost 有 agent 自报 + 网关账本两个源,token 只有一条链路)。⛔ 别拿这些题算缓存命中率。"

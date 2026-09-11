@@ -272,6 +272,15 @@ def collect(run_dir: str) -> dict:
         tok_total["n_trials"] = len(rows)
         tok_total["source"] = sorted({t["source"] for t in toks})
 
+    # 🔴 成本口径的**混合比**:`session-traj-fallback` 那部分是「比 null 准」,
+    # 不是权威值 —— `sid_code_agent.py:810` 注释写明它**仍可能偏低**
+    # (最后 ≤30s 的调用没来得及落盘)。⇒ 兜底占比高时这一臂的成本合计是**下界**。
+    # ⚠️ 这一格必须落盘:两条臂的兜底占比可能差一个数量级(实测 A2 3/54、A1 4/13),
+    # 而「一个下界」与「一个准值」并排比成本时,偏低的那侧会看起来更省 ——
+    # 那正是本仓「非能力差异混进能力账」的同型错。
+    fallback_cost = [r["task"] for r in rows
+                     if r["cost_source"] == "session-traj-fallback"]
+
     maxed = [r["task"] for r in rows if r["maxed"]]
     selfreps = [r["task"] for r in rows if r["self_reported_success"]]
     ttfts = [r["cc_ttft_ms"] for r in rows if isinstance(r["cc_ttft_ms"], int)]
@@ -288,6 +297,14 @@ def collect(run_dir: str) -> dict:
         "本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— "
         "⛔ 别回去直接比 result.json 里的 n_input_tokens。",
     ]
+    if fallback_cost:
+        caveats.append(
+            f"成本口径混合:{len(fallback_cost)}/{len(rows)} 题的 cost 取自 "
+            "`session-traj-fallback`(result 事件丢了),它**仍可能偏低** ⇒ "
+            "本臂成本合计是**下界**。⛔ 与另一臂比成本前先核两侧的这个占比 —— "
+            "占比不同时,兜底多的那侧会看起来更省。"
+        )
+
     if arm == "cc":
         caveats += [
             f"TTFT:{len(rows) - len(ttfts)}/{len(rows)} 题缺失,且缺失**偏在撞满轮数**"
@@ -349,6 +366,9 @@ def collect(run_dir: str) -> dict:
             "n_with_cost": len(costs),
             "n_trials": len(rows),
             "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)",
+            # 🔴 见 fallback_cost 的注释:这几题的成本是**下界**,不是准值。
+            "n_traj_fallback": len(fallback_cost),
+            "traj_fallback_tasks": fallback_cost,
         },
         "controlled_variables": {
             "model_observed": models,
