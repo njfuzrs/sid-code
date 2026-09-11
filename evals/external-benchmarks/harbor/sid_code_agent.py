@@ -101,6 +101,60 @@ def _env(name: str, default: str = "") -> str:
     return value if value is not None and value != "" else default
 
 
+def _host_pricing(wire_model: str) -> dict[str, Any] | None:
+    """从**宿主** settings.json 取这个模型的 `pricing`,原样透传给容器。**None = 没配。**
+
+    ## 为什么必须传,以及为什么不在这里写死价格
+
+    容器里那份 settings.json 是本类**渲染**出来的,此前它不写 `pricing` ⇒
+    容器内的 sid-code 只能顺着 `resolvePricing` 往下找:
+    `availableModels[].pricing`(没有) → **网关采集缓存** → 内置注册表 → 兜底 $2/$10。
+
+    🔴 2026-09-11 实测,那个网关缓存对 `origin-deepseek-v4-1-flash` 存的是
+    **input=75 / output=75 USD/1M** —— new-api 网关对**未定价**渠道回的占位值
+    (`origin-deepseek-v4-flash-vision` 也是同一对 75/75,是它的指纹)。
+    而真实价是 1-2 元 / 4-8 元 per 1M ⇒ 同一份 token 量算出的钱**高报 355 倍**
+    (实测 1M in + 200K out:$90.00 vs $0.2535)。
+
+    ⚠️ 这个错**不会**以任何形式报错:`cost_usd` 照样是个数、汇总照样出表、
+    `pricing_ratio` 那条偏离判据在 `arm_health.py:452` 明确只对 sonnet 定价有效
+    ⇒ 换模型臂的偏离**刻意不判** ⇒ 没有任何一层会拦住它。
+    「更省」方向的主口径就是单位任务成本,这一格错了整条臂的钱都是废数。
+
+    ⛔ **不在本文件里硬编码价格**:宿主 settings.json 已经是 shim 取
+    base_url / api_key 的事实源(`gateway.py:_load_upstream`),价格也放那里
+    ⇒ 只有一份、改一处生效。在这里再抄一份的形态是两处不一致时**静默按错的那份算**,
+    而本仓已有多次「同一事实存两份然后漂移」的前科。
+
+    ⚠️ 按 `modelId`(wire model)查,**不按别名**:容器侧别名恒为 `harbor-gateway`,
+    宿主那边不存在这个名字。这与 `sid_model()` 取 `availableModels[0].modelId`
+    是同一条纪律(见 `arm_health.py:236`)。
+    """
+    path = Path("~/.sid-code/settings.json").expanduser()
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        # 不抛:宿主没配价不该让整轮评测起不来。但**必须吵一声** ——
+        # 静默退化到 75/75 正是这段代码要消灭的东西。
+        print(f"⚠️ 读不到宿主 settings.json({exc})—— 容器将回落网关采集价,成本可能失真", flush=True)
+        return None
+    for entry in cfg.get("availableModels", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("name") == wire_model:
+            pricing = entry.get("pricing")
+            if isinstance(pricing, dict) and pricing:
+                return pricing
+            print(
+                f"⚠️ 宿主 settings.json 里 {wire_model!r} 没有 pricing ——"
+                f" 容器将回落网关采集价。若那是占位值(如 75/75),成本会高报几百倍",
+                flush=True,
+            )
+            return None
+    print(f"⚠️ 宿主 settings.json 里没有 name={wire_model!r} 的条目 —— 无法透传 pricing", flush=True)
+    return None
+
+
 def _int_env(name: str, default: int) -> int:
     """读整数环境变量。**取不到或非法一律回落到 default,并把理由打到 stderr。**
 
@@ -525,19 +579,28 @@ class SidCodeAgent(BaseInstalledAgent):
         if provider == "openai" and not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
 
+        # 🔴 价格必须显式透传,否则容器侧 `resolvePricing` 会往下落到**网关采集缓存**,
+        # 而那里对未定价渠道存的是占位值 75/75 USD/1M(实测高报 355 倍,详见 `_host_pricing`)。
+        # `pricing` 是 `availableModels[]` 的合法字段(`config/settings/types.ts` 的
+        # `ModelConfigSchema`),且内层 schema 带 `.passthrough()` ⇒ `currency` /
+        # `fxToUSD` / `peakWindows` / `offPeakMultiplier` 这些分时段与币种字段能原样通过
+        # (已按 pin 住的那个二进制 30586ff0 核过,⛔ 不是只看 HEAD)。
+        model_entry: dict[str, Any] = {
+            "name": self._model_alias,
+            "modelId": wire_model,
+            "provider": provider,
+            "baseURL": base_url,
+            "apiKey": PLACEHOLDER_API_KEY,
+        }
+        host_pricing = _host_pricing(wire_model)
+        if host_pricing:
+            model_entry["pricing"] = host_pricing
+
         return {
             # 顶层 model **必须**能按 name 在 availableModels 里命中,
             # 否则 provider 回填落空、启动期校验报「模型未在 availableModels 中找到」。
             "model": self._model_alias,
-            "availableModels": [
-                {
-                    "name": self._model_alias,
-                    "modelId": wire_model,
-                    "provider": provider,
-                    "baseURL": base_url,
-                    "apiKey": PLACEHOLDER_API_KEY,
-                }
-            ],
+            "availableModels": [model_entry],
             # ── 下面三块**不是可选的**:不显式写,团队默认模板会把悬空引用填进来 ──
             #
             # ⛔ 2026-08-30 实测的死亡链(`build-cython-ext`,第 8 轮死于 40 轮预算):
