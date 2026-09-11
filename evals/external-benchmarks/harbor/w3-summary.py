@@ -128,6 +128,37 @@ def worst_case_halfwidth_pp(n: int, z: float = 1.96) -> float | None:
 # ── 逐题取数 ────────────────────────────────────────────────────────────────
 
 
+def job_unfinished(run_dir: str) -> tuple[bool | None, int | None]:
+    """这个 job 跑完了没有。→ `(未跑完?, harbor 声明的总题数)`；`None` = 判不出。
+
+    ## 判据是 harbor 自己写的 `finished_at`，⛔ 不是「题数差」
+
+    我第一版判据写的是「dataset 应有题数 − 已落盘 trial 数 > 0 ⇒ 未跑完」，
+    **它在 A2 上假红了**：A2 的 job 声明的是 `terminal-bench-local@2.0`(66 题)，
+    而它**实际只跑并计分 54 题**（§4.8 记载的历史：开跑时题集是 66，
+    sonnet 额度耗尽后收敛到 54）。于是一个**已经跑完并已发表**的 run
+    被判成「还差 12 题」—— 那比不判更坏：它会让人怀疑一份正确的结论。
+
+    ⇒ 正确的源是 job 级 `result.json` 的 `finished_at`：
+    有时间戳 = harbor 认为这轮结束了；`None` = 还在跑。
+    **这是观测值**（harbor 落的），而「题数差」是我自己的推断 ——
+    本仓的纪律是取观测方，不取推断方。
+
+    ⚠️ `n_total_trials` 一并返回但**只用于显示**：它同样是 66/54 这种口径，
+    ⛔ 不能拿它当 pass@1 的分母（分母永远是 `scored`）。
+    """
+    try:
+        with open(os.path.join(run_dir, "result.json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return (None, None)
+    if not isinstance(d, dict):
+        return (None, None)
+    total = d.get("n_total_trials")
+    total = int(total) if isinstance(total, (int, float)) else None
+    return (d.get("finished_at") is None, total)
+
+
 def collect(run_dir: str) -> dict:
     """嚼一个 job 目录 → 汇总 dict(含逐题表)。"""
     arm = None
@@ -281,6 +312,8 @@ def collect(run_dir: str) -> dict:
     fallback_cost = [r["task"] for r in rows
                      if r["cost_source"] == "session-traj-fallback"]
 
+    unfinished, n_declared = job_unfinished(run_dir)
+
     maxed = [r["task"] for r in rows if r["maxed"]]
     selfreps = [r["task"] for r in rows if r["self_reported_success"]]
     ttfts = [r["cc_ttft_ms"] for r in rows if isinstance(r["cc_ttft_ms"], int)]
@@ -297,6 +330,15 @@ def collect(run_dir: str) -> dict:
         "本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— "
         "⛔ 别回去直接比 result.json 里的 n_input_tokens。",
     ]
+    if unfinished:
+        caveats.insert(
+            0,
+            f"🔴 **这一轮还没跑完**(harbor 的 `finished_at` 仍为 None,当前 "
+            f"{len(rows)} 题落盘)⇒ **此处的 pass@1 不是终值**。⛔ 别把它写进文档或"
+            "对照表:先跑完的是**快的那批题**,不是随机子集 —— 实测 A1 跑到 16 题时,"
+            "A2 在**同一批**题上是 62.5%、而它的全集只有 46.3%(偏易 +16.2pp)。",
+        )
+
     if fallback_cost:
         caveats.append(
             f"成本口径混合:{len(fallback_cost)}/{len(rows)} 题的 cost 取自 "
@@ -351,6 +393,12 @@ def collect(run_dir: str) -> dict:
             "pending_or_unjudged": len(rows) - n - len(excluded),
             "by_reason": by_reason,
             "excluded_tasks": sorted(r["task"] for r in excluded),
+            # 🔴 见 expected_task_count:题集应有题数,与已落盘 trial 的差 = 还没跑完。
+            # 缺这一格时 pass@1 会被当成终值引用,而中途子集**偏易**(实测 +16.2pp)。
+            # 🔴 见 job_unfinished:判据是 harbor 的 finished_at,⛔ 不是题数差
+            # (题数差在 A2 这种「66 题 job 实跑 54」的 run 上必然假红)。
+            "job_unfinished": unfinished,
+            "n_total_trials_declared": n_declared,
         },
         "ci": ci,
         "failure_mix": {

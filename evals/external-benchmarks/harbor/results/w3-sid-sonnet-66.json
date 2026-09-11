@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-11T16:22:22.586185+00:00",
-  "sid_code_commit": "24499ceb677540333ae6af3939dc0bbb90df25bc",
+  "generated_at": "2026-09-11T16:32:46.284997+00:00",
+  "sid_code_commit": "086a7a9e0926e0e785a6be9a2866a5acfb7c0bd5",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -13,7 +13,9 @@
         "excluded": 0,
         "pending_or_unjudged": 0,
         "by_reason": {},
-        "excluded_tasks": []
+        "excluded_tasks": [],
+        "job_unfinished": false,
+        "n_total_trials_declared": 66
       },
       "ci": {
         "n": 54,
