@@ -60,6 +60,7 @@ from arm_health import (  # noqa: E402
     detect_arm,
     normalized_tokens,
     pricing_ratio,
+    sid_binary_identity,
     self_reported_success_cc,
     sid_model,
     token_undercount_suspected,
@@ -128,6 +129,37 @@ def worst_case_halfwidth_pp(n: int, z: float = 1.96) -> float | None:
 # ── 逐题取数 ────────────────────────────────────────────────────────────────
 
 
+def job_unfinished(run_dir: str) -> tuple[bool | None, int | None]:
+    """这个 job 跑完了没有。→ `(未跑完?, harbor 声明的总题数)`；`None` = 判不出。
+
+    ## 判据是 harbor 自己写的 `finished_at`，⛔ 不是「题数差」
+
+    我第一版判据写的是「dataset 应有题数 − 已落盘 trial 数 > 0 ⇒ 未跑完」，
+    **它在 A2 上假红了**：A2 的 job 声明的是 `terminal-bench-local@2.0`(66 题)，
+    而它**实际只跑并计分 54 题**（§4.8 记载的历史：开跑时题集是 66，
+    sonnet 额度耗尽后收敛到 54）。于是一个**已经跑完并已发表**的 run
+    被判成「还差 12 题」—— 那比不判更坏：它会让人怀疑一份正确的结论。
+
+    ⇒ 正确的源是 job 级 `result.json` 的 `finished_at`：
+    有时间戳 = harbor 认为这轮结束了；`None` = 还在跑。
+    **这是观测值**（harbor 落的），而「题数差」是我自己的推断 ——
+    本仓的纪律是取观测方，不取推断方。
+
+    ⚠️ `n_total_trials` 一并返回但**只用于显示**：它同样是 66/54 这种口径，
+    ⛔ 不能拿它当 pass@1 的分母（分母永远是 `scored`）。
+    """
+    try:
+        with open(os.path.join(run_dir, "result.json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return (None, None)
+    if not isinstance(d, dict):
+        return (None, None)
+    total = d.get("n_total_trials")
+    total = int(total) if isinstance(total, (int, float)) else None
+    return (d.get("finished_at") is None, total)
+
+
 def collect(run_dir: str) -> dict:
     """嚼一个 job 目录 → 汇总 dict(含逐题表)。"""
     arm = None
@@ -159,6 +191,16 @@ def collect(run_dir: str) -> dict:
             model, provider = cc_model(td), cc_provider(td)
         else:
             turns, subtype = md.get("sid_num_turns"), md.get("sid_subtype")
+            # 🔴 `sid_num_turns` 有**两个语义不同的源**,判「撞满轮数」时必须区分:
+            #   `stream-json-result`   ⇒ result 事件的 `num_turns`(真·API 轮数)
+            #   `session-traj-fallback` ⇒ traj 的 `total_steps`(**步骤数,不是轮数**)
+            # 见 `sid_code_agent.py:821` 与 `trace/collector.ts:2406-2407`
+            # (`turns: apiCalls` vs `total_steps: pairs.length` 是两个字段)。
+            # 实测 A2 三个 fallback 样本的 steps/api 恒为 2.0×、A1 达 2.3–5.3×
+            # ⇒ 拿 total_steps 与 MAX_TURNS 比会**虚报撞满**。
+            # 实测踩到:A2 的 `install-windows-3.11`(steps=42、api_calls=21、
+            # subtype 为 None)被计进「撞满 40 轮」,让已发表的 13/54 多算一题(真值 12)。
+            turns_is_api_calls = md.get("sid_cost_source") == "stream-json-result"
             deny, allow = md.get("sid_permission_denials"), md.get("sid_permission_allows")
             selfrep = self_reported_success(d)
             ttft, api_err = None, None  # sid 侧 TTFT 在 digest 里,不在 result.json
@@ -175,7 +217,23 @@ def collect(run_dir: str) -> dict:
             "reward": reward,
             "excluded": excl,
             "turns": turns,
-            "maxed": (turns is not None and turns >= MAX_TURNS),
+            # ⛔ fail-closed:源不是权威的 result 事件时**一律不判撞满** ——
+            # 宁可漏报(那只是少一条 caveat),也不要虚报(虚报会把一个正常结束的样本
+            # 说成「用完预算」,而那正是这条 caveat 要人别误读的东西)。
+            # ⚠️ cc 臂 `turns_is_api_calls` 恒 False 会让它整臂不判撞满 ——
+            # 所以 cc 分支单独给 True(cc 的 turns 取自 result 事件,同权威)。
+            # 🔴 **三态**:True=撞满 / False=判了但没撞满 / **None=判不出来**。
+            # ⚠️ 初版是二态(不可判折叠成 False),那让「判了没撞满」与「turns 源
+            # 不权威所以判不了」**无法区分** —— 于是想给这条 caveat 补一个
+            # 「可判分母」时,`sum(1 for r in rows if r["maxed"] is not None)`
+            # 恒等于全部题数,分母披露静默失效(2026-09-12 实测,当场踩到)。
+            # 这是本仓那条「一个字段混了两个相反语义」的同型:折叠掉的那一态
+            # 恰恰是引用时最需要知道的一态。
+            "maxed": (
+                None
+                if turns is None or not (turns_is_api_calls if this_arm != "cc" else True)
+                else turns >= MAX_TURNS
+            ),
             "subtype": subtype,
             "self_reported_success": selfrep,
             "permission_denials": deny,
@@ -185,6 +243,11 @@ def collect(run_dir: str) -> dict:
             # 的坑全是「传了但没生效且不报错」。
             "model_observed": model,
             "provider_observed": provider,
+            # 🔴 **真跑二进制**的身份(⛔ 不是归档顶层那个 sid_code_commit ——
+            # 那个是「跑汇总时本仓 HEAD」,即谁做的取数,见 sid_binary_identity 的
+            # docstring:两者都叫 commit、都是合法 sha,看数值分辨不出来)。
+            "sid_binary_commit": sid_binary_identity(d)[0],
+            "sid_binary_sha256": sid_binary_identity(d)[1],
             "cost_usd": ar.get("cost_usd"),
             "cost_source": md.get("sid_cost_source"),
             "tokens": tok,
@@ -254,6 +317,17 @@ def collect(run_dir: str) -> dict:
         tok_total["n_trials"] = len(rows)
         tok_total["source"] = sorted({t["source"] for t in toks})
 
+    # 🔴 成本口径的**混合比**:`session-traj-fallback` 那部分是「比 null 准」,
+    # 不是权威值 —— `sid_code_agent.py:810` 注释写明它**仍可能偏低**
+    # (最后 ≤30s 的调用没来得及落盘)。⇒ 兜底占比高时这一臂的成本合计是**下界**。
+    # ⚠️ 这一格必须落盘:两条臂的兜底占比可能差一个数量级(实测 A2 3/54、A1 4/13),
+    # 而「一个下界」与「一个准值」并排比成本时,偏低的那侧会看起来更省 ——
+    # 那正是本仓「非能力差异混进能力账」的同型错。
+    fallback_cost = [r["task"] for r in rows
+                     if r["cost_source"] == "session-traj-fallback"]
+
+    unfinished, n_declared = job_unfinished(run_dir)
+
     maxed = [r["task"] for r in rows if r["maxed"]]
     selfreps = [r["task"] for r in rows if r["self_reported_success"]]
     ttfts = [r["cc_ttft_ms"] for r in rows if isinstance(r["cc_ttft_ms"], int)]
@@ -263,13 +337,38 @@ def collect(run_dir: str) -> dict:
     models = sorted({r["model_observed"] for r in rows if r["model_observed"]})
     providers = sorted({r["provider_observed"] for r in rows if r["provider_observed"]})
     n_model_missing = sum(1 for r in rows if not r["model_observed"])
+    # 🔴 harness 版本是「换模型对照」的必控变量 —— 两臂必须是同一个二进制。
+    # ⚠️ 多值 ⇒ 这批题不是同一个二进制跑的 ⇒ 整臂不可比,必须显式报出来。
+    bin_commits = sorted({r["sid_binary_commit"] for r in rows if r["sid_binary_commit"]})
+    bin_shas = sorted({r["sid_binary_sha256"] for r in rows if r["sid_binary_sha256"]})
+    n_bin_missing = sum(1 for r in rows if not r["sid_binary_commit"])
 
     caveats = [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
-        "token:两臂 n_input_tokens 语义相反(cc 含 cache、sid 不含),"
-        "本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— "
-        "⛔ 别回去直接比 result.json 里的 n_input_tokens。",
+        "token:`n_input_tokens` 的成分**三态不同** —— cc 含 cache;"
+        "sid+anthropic 不含;sid+openai 族(deepseek 等)**含**(prompt_tokens 口径)。"
+        "本文件的 tokens 已按 arm_health.normalized_tokens 按族归一 —— "
+        "⛔ 别回去直接比 result.json 里的 n_input_tokens。"
+        "⚠️ 第三态是 2026-09-12 才修的:此前 sid 臂无条件按「不含」拆,"
+        "A1 首版归档因此把 fresh 虚报 12.8 倍、缓存命中率 92.2% 假报成 48.0%。",
     ]
+    if unfinished:
+        caveats.insert(
+            0,
+            f"🔴 **这一轮还没跑完**(harbor 的 `finished_at` 仍为 None,当前 "
+            f"{len(rows)} 题落盘)⇒ **此处的 pass@1 不是终值**。⛔ 别把它写进文档或"
+            "对照表:先跑完的是**快的那批题**,不是随机子集 —— 实测 A1 跑到 16 题时,"
+            "A2 在**同一批**题上是 62.5%、而它的全集只有 46.3%(偏易 +16.2pp)。",
+        )
+
+    if fallback_cost:
+        caveats.append(
+            f"成本口径混合:{len(fallback_cost)}/{len(rows)} 题的 cost 取自 "
+            "`session-traj-fallback`(result 事件丢了),它**仍可能偏低** ⇒ "
+            "本臂成本合计是**下界**。⛔ 与另一臂比成本前先核两侧的这个占比 —— "
+            "占比不同时,兜底多的那侧会看起来更省。"
+        )
+
     if arm == "cc":
         caveats += [
             f"TTFT:{len(rows) - len(ttfts)}/{len(rows)} 题缺失,且缺失**偏在撞满轮数**"
@@ -280,10 +379,33 @@ def collect(run_dir: str) -> dict:
             "两臂「上游打断题数」不可直接并列(08 号 §4.1.1)。",
             "digest:cc 侧无轨迹 digest ⇒ 缓存断裂/空转/工具序列这些指标本臂没有对称源。",
         ]
+    # 🔴 「撞满轮数」的分母**不是** len(rows):`maxed` fail-closed 只判 turns 源权威
+    # 那些题,其余题一律不判 ⇒ 报「10 题」而不报可判分母,读者会默认分母是 54。
+    # ⚠️ 两臂的不可判题数差 4 倍(实测 A1 13 题 / A2 3 题,与 cost 兜底逐题同集),
+    # 所以「A1 撞满 10 < A2 撞满 14」这个并列是**假的**:按各自可判分母算是
+    # 24.4%(10/41) vs 27.5%(14/51),而在两侧都可判的 39 题交集上是 **A1 9 > A2 7**
+    # —— 方向反过来。这正是「分母比分子重要」在本臂的形态。
+    n_judgeable_maxed = sum(1 for r in rows if r["maxed"] is not None)
+    if len(bin_commits) > 1:
+        caveats.append(
+            f"🔴 **这批题不是同一个二进制跑的**(观测到 {len(bin_commits)} 个 commit:"
+            f"{bin_commits})⇒ ⛔ 整臂不可比,更不能与另一臂做「只换模型」的对照 ——"
+            "harness 版本本身就动了。"
+        )
+    if n_bin_missing:
+        caveats.append(
+            f"⚠️ {n_bin_missing}/{len(rows)} 题没采到真跑二进制的 commit ⇒ "
+            "这些题「同 harness」这句话只有命令行作证。"
+            "⛔ 别拿归档顶层的 `sid_code_commit` 顶替 —— 那是跑汇总时的仓库 HEAD。"
+        )
     if maxed:
         caveats.append(
             f"撞满 {MAX_TURNS} 轮 {len(maxed)} 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,"
             "它们是用完预算(#138 轮数预算)。"
+            f"⚠️ 分母是**可判的 {n_judgeable_maxed} 题**(其余 "
+            f"{len(rows) - n_judgeable_maxed} 题 turns 源不权威、fail-closed 不判),"
+            "⛔ 不是 scored ——**两臂这个分母不同时,撞满题数不可直接并列**,"
+            "要么各自除以可判分母、要么只在两侧都可判的交集上比。"
         )
     if selfreps:
         caveats.append(
@@ -316,6 +438,12 @@ def collect(run_dir: str) -> dict:
             "pending_or_unjudged": len(rows) - n - len(excluded),
             "by_reason": by_reason,
             "excluded_tasks": sorted(r["task"] for r in excluded),
+            # 🔴 见 expected_task_count:题集应有题数,与已落盘 trial 的差 = 还没跑完。
+            # 缺这一格时 pass@1 会被当成终值引用,而中途子集**偏易**(实测 +16.2pp)。
+            # 🔴 见 job_unfinished:判据是 harbor 的 finished_at,⛔ 不是题数差
+            # (题数差在 A2 这种「66 题 job 实跑 54」的 run 上必然假红)。
+            "job_unfinished": unfinished,
+            "n_total_trials_declared": n_declared,
         },
         "ci": ci,
         "failure_mix": {
@@ -324,6 +452,9 @@ def collect(run_dir: str) -> dict:
             "excluded_non_capability": len(excluded),
             "maxed_turns": len(maxed),
             "maxed_turns_tasks": maxed,
+            # 🔴 引用 maxed_turns 必须同时取这个分母(见同名 caveat)。
+            "maxed_turns_judgeable_denominator": n_judgeable_maxed,
+            "maxed_turns_unjudgeable": len(rows) - n_judgeable_maxed,
             "self_reported_success_but_zero": selfreps,
         },
         "cost_usd": {
@@ -331,11 +462,18 @@ def collect(run_dir: str) -> dict:
             "n_with_cost": len(costs),
             "n_trials": len(rows),
             "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)",
+            # 🔴 见 fallback_cost 的注释:这几题的成本是**下界**,不是准值。
+            "n_traj_fallback": len(fallback_cost),
+            "traj_fallback_tasks": fallback_cost,
         },
         "controlled_variables": {
             "model_observed": models,
             "provider_observed": providers,
             "n_model_missing": n_model_missing,
+            # 真跑二进制(必控变量):⛔ 别用归档顶层的 sid_code_commit 代替它。
+            "sid_binary_commit_observed": bin_commits,
+            "sid_binary_sha256_observed": bin_shas,
+            "n_sid_binary_missing": n_bin_missing,
             "note": (
                 "观测值:cc 取 result.modelUsage 的键、sid 取容器 settings.json 的"
                 " availableModels[0] —— 两侧都**不取** config.agent.model_name(那是意图)。"
@@ -445,6 +583,13 @@ def main() -> int:
     doc = {
         "schema_version": 1,
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        # ⚠️ 这是**跑汇总脚本时本仓的 HEAD**(谁做的取数),
+        # ⛔ **不是**产出这批数据的二进制版本 —— 那个在每臂的
+        # `controlled_variables.sid_binary_commit_observed` 里。
+        # 实测踩到:A2 归档只因重跑一次汇总,这一格就从 d1f30718 变成 92aca39b,
+        # 而 54 份 result.json 一字未动 ⇒ 拿它当「数据是哪个版本跑的」会凭空
+        # 得出「A2 换了 sid 版本」。字段名保留是为了不破坏既有引用。
+        "sid_code_commit_of_analysis": _git_commit(),
         "sid_code_commit": _git_commit(),
         "max_turns_threshold": MAX_TURNS,
         "arms": arms,
@@ -477,6 +622,14 @@ def main() -> int:
         print(f"  必控变量(观测): 模型 {cv['model_observed']} / provider "
               f"{cv['provider_observed']}"
               + (f" / ⚠️ 未采到 {cv['n_model_missing']} 题" if cv["n_model_missing"] else ""))
+        # 🔴 harness 版本也是必控变量 —— 印出来,否则「同 harness」只有命令行作证。
+        _bc = cv["sid_binary_commit_observed"]
+        _bs = cv["sid_binary_sha256_observed"]
+        print(f"  真跑二进制(观测): commit {[c[:12] for c in _bc]} / "
+              f"sha256 {[h[:12] for h in _bs]}"
+              + (f" / 🔴 **{len(_bc)} 个 commit ⇒ 整臂不可比**" if len(_bc) > 1 else "")
+              + (f" / ⚠️ 未采到 {cv['n_sid_binary_missing']} 题"
+                 if cv["n_sid_binary_missing"] else ""))
         t = a["tokens_normalized"]
         if t:
             print(f"  token(归一): fresh {t['fresh']:,} / cache_r {t['cache_read']:,} / "

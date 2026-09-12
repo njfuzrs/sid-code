@@ -56,14 +56,21 @@ TASK_FILTER=()
 for t in "$@"; do TASK_FILTER+=(-i "$t"); done
 
 # ── 协议族：本脚本的开关 ──────────────────────────────────────────────────────
-# openai   → deepseek-v4-pro，shim 实例在 4101（B1 改造后支持 openai 族）
+# openai   → deepseek 系（默认 origin-deepseek-v4-1-flash），shim 实例在 4101
 # anthropic→ claude-sonnet-5，shim 实例在 4100（同档基线用）
+#
+# ⚠️ openai 侧的**模型名**可用 `SID_MODELSWITCH_MODEL` 覆盖，anthropic 侧刻意不给这个
+# 出口：A2/A3 两条臂的 sonnet 是**必控变量**，给它一个旋钮等于给「悄悄改掉基准」开口子。
+# 🔴 换模型时**只改这一个变量**：它同时决定 `-m` 的模型段、shim 的 `--model-name`
+# 与闸 2 探针请求体里的 `model` —— 三处此前各写一遍 `deepseek-v4-pro`，
+# 改一处漏两处的形态是「闸探的是 A 模型、真跑的是 B 模型」，而两侧都不报错。
 FAMILY="${SID_MODELSWITCH_FAMILY:-openai}"
 case "$FAMILY" in
   openai)
     GW_PORT="${SID_MODELSWITCH_PORT:-4101}"
-    HARBOR_MODEL="openai/deepseek-v4-pro"
-    SHIM_MODEL_NAME="deepseek-v4-pro"
+    # 默认值 2026-09-11 从 `deepseek-v4-pro` 改为 `origin-deepseek-v4-1-flash`（A1 臂实跑用它）。
+    SHIM_MODEL_NAME="${SID_MODELSWITCH_MODEL:-origin-deepseek-v4-1-flash}"
+    HARBOR_MODEL="openai/${SHIM_MODEL_NAME}"
     PROBE_PATH="/v1/chat/completions"
     ;;
   anthropic)
@@ -194,7 +201,9 @@ preflight_upstream() {
     body='{"model":"claude-sonnet-5","max_tokens":2048,"stream":true,"messages":[{"role":"user","content":"Briefly explain a C/Python polyglot file."}]}'
   else
     hdr_auth="authorization: Bearer no-auth-dummy"; hdr_extra="x-sid-probe: 1"
-    body='{"model":"deepseek-v4-pro","max_tokens":2048,"stream":true,"messages":[{"role":"user","content":"Briefly explain a C/Python polyglot file."}]}'
+    # 🔴 模型名取 $SHIM_MODEL_NAME，⛔ 别写死：闸探的模型必须就是真跑的那个,
+    # 否则「上游健康」这个结论的主语是另一个模型（此前写死 deepseek-v4-pro）。
+    body="{\"model\":\"${SHIM_MODEL_NAME}\",\"max_tokens\":2048,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Briefly explain a C/Python polyglot file.\"}]}"
   fi
   PREFLIGHT_STATS_BEFORE=$(curl -s -m 10 "${url}/__stats" 2>/dev/null || true)
   local i c

@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-08T23:35:43.640592+00:00",
-  "sid_code_commit": "d1f3071817fe960b30de00707b661a41ce64e4ba",
+  "generated_at": "2026-09-12T01:42:22.952502+00:00",
+  "sid_code_commit_of_analysis": "e8298c6ee29b8a030698467bb95c022ab1744007",
+  "sid_code_commit": "e8298c6ee29b8a030698467bb95c022ab1744007",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -13,7 +14,9 @@
         "excluded": 0,
         "pending_or_unjudged": 0,
         "by_reason": {},
-        "excluded_tasks": []
+        "excluded_tasks": [],
+        "job_unfinished": false,
+        "n_total_trials_declared": 66
       },
       "ci": {
         "n": 54,
@@ -30,7 +33,7 @@
         "passed": 25,
         "failed_capability": 29,
         "excluded_non_capability": 0,
-        "maxed_turns": 13,
+        "maxed_turns": 12,
         "maxed_turns_tasks": [
           "build-cython-ext",
           "caffe-cifar-10",
@@ -40,12 +43,13 @@
           "dna-insert",
           "financial-document-processor",
           "fix-code-vulnerability",
-          "install-windows-3.11",
           "make-doom-for-mips",
           "password-recovery",
           "path-tracing-reverse",
           "path-tracing"
         ],
+        "maxed_turns_judgeable_denominator": 51,
+        "maxed_turns_unjudgeable": 3,
         "self_reported_success_but_zero": [
           "build-pov-ray",
           "db-wal-recovery",
@@ -59,12 +63,29 @@
         "total": 36.907914,
         "n_with_cost": 54,
         "n_trials": 54,
-        "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)"
+        "note": "⛔ None 未按 0 计入 —— 那会低报(见 sid_code_agent 的 traj 兜底注释)",
+        "n_traj_fallback": 3,
+        "traj_fallback_tasks": [
+          "gpt2-codegolf",
+          "install-windows-3.11",
+          "model-extraction-relu-logits"
+        ]
       },
       "controlled_variables": {
-        "model_observed": ["claude-sonnet-5"],
-        "provider_observed": ["anthropic"],
+        "model_observed": [
+          "claude-sonnet-5"
+        ],
+        "provider_observed": [
+          "anthropic"
+        ],
         "n_model_missing": 0,
+        "sid_binary_commit_observed": [
+          "30586ff003c968e111537d5379e79a14a2646855"
+        ],
+        "sid_binary_sha256_observed": [
+          "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9"
+        ],
+        "n_sid_binary_missing": 0,
         "note": "观测值:cc 取 result.modelUsage 的键、sid 取容器 settings.json 的 availableModels[0] —— 两侧都**不取** config.agent.model_name(那是意图)。 ⚠️ provider 取值域两侧不同(cc 是 firstParty 这类内部标签、sid 是族名)⇒ ⛔ 不许比字符串相等。"
       },
       "token_undercount_tasks": [
@@ -81,12 +102,15 @@
         "hit_ratio": 0.7096378146555172,
         "n_with_tokens": 54,
         "n_trials": 54,
-        "source": ["sid-metadata"]
+        "source": [
+          "sid-metadata:anthropic"
+        ]
       },
       "caveats": [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
-        "token:两臂 n_input_tokens 语义相反(cc 含 cache、sid 不含),本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— ⛔ 别回去直接比 result.json 里的 n_input_tokens。",
-        "撞满 40 轮 13 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,它们是用完预算(#138 轮数预算)。",
+        "token:`n_input_tokens` 的成分**三态不同** —— cc 含 cache;sid+anthropic 不含;sid+openai 族(deepseek 等)**含**(prompt_tokens 口径)。本文件的 tokens 已按 arm_health.normalized_tokens 按族归一 —— ⛔ 别回去直接比 result.json 里的 n_input_tokens。⚠️ 第三态是 2026-09-12 才修的:此前 sid 臂无条件按「不含」拆,A1 首版归档因此把 fresh 虚报 12.8 倍、缓存命中率 92.2% 假报成 48.0%。",
+        "成本口径混合:3/54 题的 cost 取自 `session-traj-fallback`(result 事件丢了),它**仍可能偏低** ⇒ 本臂成本合计是**下界**。⛔ 与另一臂比成本前先核两侧的这个占比 —— 占比不同时,兜底多的那侧会看起来更省。",
+        "撞满 40 轮 12 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,它们是用完预算(#138 轮数预算)。⚠️ 分母是**可判的 51 题**(其余 3 题 turns 源不权威、fail-closed 不判),⛔ 不是 scored ——**两臂这个分母不同时,撞满题数不可直接并列**,要么各自除以可判分母、要么只在两侧都可判的交集上比。",
         "自报成功却 0 分 6 题 ⇒ 这些**是**真实能力失败,必须计分(#143)。",
         "token 低报 3 题 ['build-pov-ray', 'count-dataset-tokens', 'financial-document-processor']:隐含单价偏离 2/3 ⇒ **这些题的 token 不可信,但 cost 可信**(cost 有 agent 自报 + 网关账本两个源,token 只有一条链路)。⛔ 别拿这些题算缓存命中率。"
       ],
@@ -104,6 +128,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1596301999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -112,7 +138,7 @@
             "cache_write": 328714,
             "out": 13576,
             "total_in": 1176024,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7050757467534676,
           "pricing_ratio": 0.6666666666666665,
@@ -135,6 +161,8 @@
           "permission_allows": 27,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.8444095000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -143,7 +171,7 @@
             "cache_write": 263283,
             "out": 4482,
             "total_in": 855515,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.677358082558459,
           "pricing_ratio": 0.6666666666666669,
@@ -166,6 +194,8 @@
           "permission_allows": 33,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0023069,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -174,7 +204,7 @@
             "cache_write": 303957,
             "out": 6013,
             "total_in": 1055503,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6951965082050927,
           "pricing_ratio": 0.6666666666666666,
@@ -197,6 +227,8 @@
           "permission_allows": 41,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.2481075000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -205,7 +237,7 @@
             "cache_write": 375817,
             "out": 7355,
             "total_in": 1352028,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7056917460289284,
           "pricing_ratio": 0.6666666666666667,
@@ -228,6 +260,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0165259000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -236,7 +270,7 @@
             "cache_write": 316451,
             "out": 3049,
             "total_in": 1089600,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6890345080763582,
           "pricing_ratio": 0.6666666666666667,
@@ -259,6 +293,8 @@
           "permission_allows": 41,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9755172,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -267,7 +303,7 @@
             "cache_write": 291723,
             "out": 3925,
             "total_in": 1076840,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7125821849114075,
           "pricing_ratio": 0.6791510601305429,
@@ -290,6 +326,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1107705999999997,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -298,7 +336,7 @@
             "cache_write": 332396,
             "out": 4438,
             "total_in": 1301274,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7267900534399365,
           "pricing_ratio": 0.6666666666666665,
@@ -321,6 +359,8 @@
           "permission_allows": 8,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2254955,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -329,7 +369,7 @@
             "cache_write": 62633,
             "out": 2848,
             "total_in": 232344,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7149097889336501,
           "pricing_ratio": 0.6666666666666666,
@@ -352,6 +392,8 @@
           "permission_allows": 99,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.2589092,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -360,7 +402,7 @@
             "cache_write": 723282,
             "out": 4523,
             "total_in": 2594044,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7144678347784386,
           "pricing_ratio": 0.6666666666666669,
@@ -383,6 +425,8 @@
           "permission_allows": 3,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0431419,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -391,7 +435,7 @@
             "cache_write": 12941,
             "out": 91,
             "total_in": 48964,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.705354954660567,
           "pricing_ratio": 0.6666666666666666,
@@ -414,6 +458,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0793199000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -422,7 +468,7 @@
             "cache_write": 317115,
             "out": 7923,
             "total_in": 1156689,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7069246789759391,
           "pricing_ratio": 0.6666666666666667,
@@ -445,6 +491,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1507928,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -453,7 +501,7 @@
             "cache_write": 46858,
             "out": 477,
             "total_in": 149442,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6553646230644665,
           "pricing_ratio": 0.6666666666666666,
@@ -476,6 +524,8 @@
           "permission_allows": 23,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5607939,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -484,7 +534,7 @@
             "cache_write": 166643,
             "out": 3075,
             "total_in": 624592,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7137651458872352,
           "pricing_ratio": 0.6666666666666666,
@@ -507,6 +557,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0813714,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -515,7 +567,7 @@
             "cache_write": 21572,
             "out": 796,
             "total_in": 98207,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7568401437779384,
           "pricing_ratio": 0.6666666666666666,
@@ -538,6 +590,8 @@
           "permission_allows": 14,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.366216,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -546,7 +600,7 @@
             "cache_write": 99824,
             "out": 2131,
             "total_in": 399862,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7291865693664314,
           "pricing_ratio": 0.7053885322935182,
@@ -569,6 +623,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5125155,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -577,7 +633,7 @@
             "cache_write": 156637,
             "out": 1429,
             "total_in": 586023,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7130351539103414,
           "pricing_ratio": 0.6666666666666667,
@@ -600,6 +656,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9424392,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -608,7 +666,7 @@
             "cache_write": 279828,
             "out": 6645,
             "total_in": 1009365,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7059745483546587,
           "pricing_ratio": 0.6666666666666666,
@@ -631,6 +689,8 @@
           "permission_allows": 15,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.4736782,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -639,7 +699,7 @@
             "cache_write": 139184,
             "out": 5557,
             "total_in": 416890,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6466717839238169,
           "pricing_ratio": 0.6666666666666666,
@@ -662,6 +722,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1388632,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -670,7 +732,7 @@
             "cache_write": 340416,
             "out": 8360,
             "total_in": 1180137,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6944668288512266,
           "pricing_ratio": 0.6666666666666667,
@@ -693,6 +755,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.139298,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -701,7 +765,7 @@
             "cache_write": 327989,
             "out": 9185,
             "total_in": 1211235,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7123951999405566,
           "pricing_ratio": 0.6750590885122049,
@@ -724,6 +788,8 @@
           "permission_allows": 23,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.6277504,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -732,7 +798,7 @@
             "cache_write": 191872,
             "out": 3305,
             "total_in": 661521,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6922410626420022,
           "pricing_ratio": 0.6666666666666667,
@@ -755,6 +821,8 @@
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.041441200000000004,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -763,7 +831,7 @@
             "cache_write": 12826,
             "out": 87,
             "total_in": 46573,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7036480364159492,
           "pricing_ratio": 0.6666666666666667,
@@ -786,6 +854,8 @@
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0153265,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -794,7 +864,7 @@
             "cache_write": 3695,
             "out": 43,
             "total_in": 23098,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7972551736081046,
           "pricing_ratio": 0.6666666666666666,
@@ -817,6 +887,8 @@
           "permission_allows": 1,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0249297,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -825,7 +897,7 @@
             "cache_write": 7851,
             "out": 85,
             "total_in": 23092,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.626234193660142,
           "pricing_ratio": 0.6666666666666665,
@@ -848,6 +920,8 @@
           "permission_allows": 69,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.1031024,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -856,7 +930,7 @@
             "cache_write": 651503,
             "out": 5935,
             "total_in": 2352731,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7134853070750545,
           "pricing_ratio": 0.6776506785464678,
@@ -879,6 +953,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1732375999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -887,7 +963,7 @@
             "cache_write": 362460,
             "out": 2327,
             "total_in": 1401818,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7271899775862487,
           "pricing_ratio": 0.6666666666666666,
@@ -910,6 +986,8 @@
           "permission_allows": 12,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.31041529999999995,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -918,7 +996,7 @@
             "cache_write": 90809,
             "out": 2015,
             "total_in": 345454,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7173285010450017,
           "pricing_ratio": 0.6666666666666665,
@@ -941,6 +1019,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.23763350000000003,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -949,7 +1029,7 @@
             "cache_write": 71135,
             "out": 1551,
             "total_in": 242372,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.683494793127919,
           "pricing_ratio": 0.6666666666666667,
@@ -965,13 +1045,15 @@
           "reward": 0.0,
           "excluded": null,
           "turns": 30,
-          "maxed": false,
+          "maxed": null,
           "subtype": null,
           "self_reported_success": false,
           "permission_denials": 0,
           "permission_allows": 15,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.37163460000000004,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -980,7 +1062,7 @@
             "cache_write": 107970,
             "out": 3622,
             "total_in": 383974,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.703922661430201,
           "pricing_ratio": 0.6666666666666667,
@@ -996,13 +1078,15 @@
           "reward": 0.0,
           "excluded": null,
           "turns": 42,
-          "maxed": true,
+          "maxed": null,
           "subtype": null,
           "self_reported_success": false,
           "permission_denials": 0,
           "permission_allows": 21,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5141198,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1011,7 +1095,7 @@
             "cache_write": 159142,
             "out": 1313,
             "total_in": 577085,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.70541428039197,
           "pricing_ratio": 0.6666666666666667,
@@ -1034,6 +1118,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2501421,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1042,7 +1128,7 @@
             "cache_write": 77655,
             "out": 1339,
             "total_in": 253477,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6773119454625074,
           "pricing_ratio": 0.6666666666666665,
@@ -1065,6 +1151,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.19591360000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1073,7 +1161,7 @@
             "cache_write": 56164,
             "out": 955,
             "total_in": 240041,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7447810998954345,
           "pricing_ratio": 0.6666666666666666,
@@ -1096,6 +1184,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2336276,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1104,7 +1194,7 @@
             "cache_write": 69152,
             "out": 1954,
             "total_in": 227814,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6733475554619119,
           "pricing_ratio": 0.6666666666666666,
@@ -1127,6 +1217,8 @@
           "permission_allows": 4,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1192175,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1135,7 +1227,7 @@
             "cache_write": 34195,
             "out": 897,
             "total_in": 123021,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6904512237748027,
           "pricing_ratio": 0.6666666666666667,
@@ -1158,6 +1250,8 @@
           "permission_allows": 53,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.3752358,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1166,7 +1260,7 @@
             "cache_write": 418572,
             "out": 6005,
             "total_in": 1599469,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7269906450203161,
           "pricing_ratio": 0.6666666666666667,
@@ -1189,6 +1283,8 @@
           "permission_allows": 54,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.0234513,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1197,7 +1293,7 @@
             "cache_write": 627057,
             "out": 8457,
             "total_in": 2304043,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.719202723213065,
           "pricing_ratio": 0.6666666666666666,
@@ -1220,6 +1316,8 @@
           "permission_allows": 43,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.7597500000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1228,7 +1326,7 @@
             "cache_write": 550840,
             "out": 6273,
             "total_in": 1951261,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7063586060501389,
           "pricing_ratio": 0.6666666666666667,
@@ -1251,6 +1349,8 @@
           "permission_allows": 30,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9041029,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1259,7 +1359,7 @@
             "cache_write": 279991,
             "out": 3637,
             "total_in": 999374,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7065593061256347,
           "pricing_ratio": 0.6666666666666666,
@@ -1282,6 +1382,8 @@
           "permission_allows": 27,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.7271595999999999,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1290,7 +1392,7 @@
             "cache_write": 217750,
             "out": 4234,
             "total_in": 771356,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6962971701782316,
           "pricing_ratio": 0.6666666666666666,
@@ -1306,13 +1408,15 @@
           "reward": 0.0,
           "excluded": null,
           "turns": 4,
-          "maxed": false,
+          "maxed": null,
           "subtype": null,
           "self_reported_success": false,
           "permission_denials": 0,
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0314458,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1321,7 +1425,7 @@
             "cache_write": 9212,
             "out": 72,
             "total_in": 46089,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7962637505695502,
           "pricing_ratio": 0.6666666666666669,
@@ -1344,6 +1448,8 @@
           "permission_allows": 19,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2745207,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1352,7 +1458,7 @@
             "cache_write": 80993,
             "out": 1566,
             "total_in": 306337,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7150980782602167,
           "pricing_ratio": 0.6666666666666667,
@@ -1375,6 +1481,8 @@
           "permission_allows": 8,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.22741599999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1383,7 +1491,7 @@
             "cache_write": 68542,
             "out": 1730,
             "total_in": 219381,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6658051517679289,
           "pricing_ratio": 0.6666666666666666,
@@ -1406,6 +1514,8 @@
           "permission_allows": 43,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0674070999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1414,7 +1524,7 @@
             "cache_write": 320307,
             "out": 6049,
             "total_in": 1152227,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7028372013500812,
           "pricing_ratio": 0.6666666666666666,
@@ -1437,6 +1547,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1916223,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1445,7 +1557,7 @@
             "cache_write": 347577,
             "out": 9129,
             "total_in": 1324841,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7225765205032151,
           "pricing_ratio": 0.6666666666666666,
@@ -1468,6 +1580,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.5979541000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1476,7 +1590,7 @@
             "cache_write": 487537,
             "out": 5400,
             "total_in": 1898913,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7307222605774988,
           "pricing_ratio": 0.6666666666666667,
@@ -1499,6 +1613,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.11111299999999999,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1507,7 +1623,7 @@
             "cache_write": 34138,
             "out": 310,
             "total_in": 115519,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6737419818384854,
           "pricing_ratio": 0.6666666666666666,
@@ -1530,6 +1646,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0659612,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1538,7 +1656,7 @@
             "cache_write": 18016,
             "out": 290,
             "total_in": 92480,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7863970588235294,
           "pricing_ratio": 0.6666666666666666,
@@ -1561,6 +1679,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.137284,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1569,7 +1689,7 @@
             "cache_write": 43344,
             "out": 424,
             "total_in": 139071,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.6662064700764357,
           "pricing_ratio": 0.6666666666666666,
@@ -1592,6 +1712,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5238276,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1600,7 +1722,7 @@
             "cache_write": 159676,
             "out": 2209,
             "total_in": 577932,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7055466733110469,
           "pricing_ratio": 0.6666666666666665,
@@ -1623,6 +1745,8 @@
           "permission_allows": 30,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.7468532,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1631,7 +1755,7 @@
             "cache_write": 226944,
             "out": 4008,
             "total_in": 804832,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7015700170967357,
           "pricing_ratio": 0.6666666666666666,
@@ -1654,6 +1778,8 @@
           "permission_allows": 13,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.3189844,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1662,7 +1788,7 @@
             "cache_write": 96390,
             "out": 1509,
             "total_in": 338816,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.691841589535323,
           "pricing_ratio": 0.6666666666666667,
@@ -1685,6 +1811,8 @@
           "permission_allows": 1,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.018987,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1693,7 +1821,7 @@
             "cache_write": 5792,
             "out": 81,
             "total_in": 23170,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7447129909365559,
           "pricing_ratio": 0.6666666666666667,
@@ -1716,6 +1844,8 @@
           "permission_allows": 38,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0374937,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1724,7 +1854,7 @@
             "cache_write": 320739,
             "out": 2502,
             "total_in": 1209359,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7196713300186297,
           "pricing_ratio": 0.6666666666666666,
@@ -1747,6 +1877,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2187504,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1755,7 +1887,7 @@
             "cache_write": 63248,
             "out": 1837,
             "total_in": 238631,
-            "source": "sid-metadata"
+            "source": "sid-metadata:anthropic"
           },
           "cache_hit_ratio": 0.7182302383177375,
           "pricing_ratio": 0.6666666666666667,

@@ -81,6 +81,8 @@ def _trial(
     n_cache: int | None = None,
     cache_write: int | None = None,
     sid_meta: dict | None = None,
+    sid_provider: str | None = None,
+    sid_model_id: str = "fixture-model",
 ) -> str:
     """造一个 trial 目录。返回它的路径。
 
@@ -89,6 +91,12 @@ def _trial(
       - token 在 **`agent_result.n_*`**(不是 metadata.total_*)
       - reward 在 **`verifier_result.rewards.reward`**(rewards 是复数)
       - sid 的 metadata 在 **`agent_result.metadata`**(不是顶层)
+      - sid 的 provider 在 **`agent/sid-home/settings.json`** 的
+        `availableModels[0].provider`(容器里那份**事实**,⛔ 不是我们传进去的意图)
+
+    ⚠️ `sid_provider=None` 时**刻意不写** settings.json —— 那对应真实的
+    「采集缺失」态,而 `normalized_tokens` 在那种情况下必须 fail-closed 返回 None
+    (族未知时猜 fresh 口径,错的形态是 cache_read 被重复计进总入且不报错)。
     """
     td = os.path.join(root, f"{task}__fixture")
     os.makedirs(os.path.join(td, "agent"), exist_ok=True)
@@ -121,6 +129,14 @@ def _trial(
         ) as fh:
             for ev in cc_events:
                 fh.write(json.dumps(ev) + "\n")
+    if sid_provider is not None:
+        sh = os.path.join(td, "agent", AH.SID_HOME_DIRNAME)
+        os.makedirs(sh, exist_ok=True)
+        with open(os.path.join(sh, "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump(
+                {"availableModels": [{"modelId": sid_model_id, "provider": sid_provider}]},
+                fh,
+            )
     if cc_traj_extra is not None:
         with open(
             os.path.join(td, "agent", AH.CC_TRAJECTORY_FILENAME), "w", encoding="utf-8"
@@ -346,6 +362,8 @@ def run_tests(root: str) -> None:
     ok(t is not None and t["fresh"] == 2898, "cc: fresh = 139541-102559-34084 = 2898")
     ok(t is not None and t["total_in"] == 139541, "cc: total_in 就是 n_input(已含 cache)")
 
+    # 🔴 sid 臂**内部还要再分族**(2026-09-12 在 A1 换模型臂上实测抓到):
+    #    anthropic 的 input_tokens 是未命中余量;openai 族的 prompt_tokens 含命中。
     sidj = _trial(
         root,
         "sidtok",
@@ -354,12 +372,71 @@ def run_tests(root: str) -> None:
         n_out=1462,
         n_cache=187957,
         cache_write=74779,
+        sid_provider="anthropic",
     )
     t2 = AH.normalized_tokens(json.load(open(os.path.join(sidj, "result.json"))), sidj)
-    ok(t2 is not None and t2["fresh"] == 4697, "sid: fresh 就是 n_input(本来纯 fresh)")
+    ok(t2 is not None and t2["fresh"] == 4697, "sid/anthropic: fresh 就是 n_input(未命中余量)")
     ok(
         t2 is not None and t2["total_in"] == 4697 + 187957 + 74779,
-        "sid: total_in 归一成 fresh+read+write ⇒ 与 cc 同口径",
+        "sid/anthropic: total_in 归一成 fresh+read+write ⇒ 与 cc 同口径",
+    )
+
+    # A1 真实数(break-filter-js-from-html):n_input=298906 含 cache_read=286080
+    sidoa = _trial(
+        root,
+        "sidtok-oa",
+        agent_name="sid_code_agent:SidCodeAgent",
+        n_in=298906,
+        n_out=50154,
+        n_cache=286080,
+        cache_write=0,
+        sid_provider="openai",
+    )
+    t3 = AH.normalized_tokens(json.load(open(os.path.join(sidoa, "result.json"))), sidoa)
+    ok(
+        t3 is not None and t3["fresh"] == 298906 - 286080,
+        "🔴 sid/openai: fresh = prompt_tokens − cache_read = 12826(⛔ 不是 298906)",
+    )
+    ok(
+        t3 is not None and t3["total_in"] == 298906,
+        "sid/openai: total_in 就是 prompt_tokens(本就是完整输入)",
+    )
+    # ⇒ 修前那份 48.0% 的命中率就是这么来的:cache_read 被重复计进了 fresh。
+    ok(
+        t3 is not None and abs(AH.cache_hit_ratio(t3) - 286080 / 298906) < 1e-12,
+        "🔴 sid/openai 命中率分母是 prompt_tokens ⇒ 95.7%,⛔ 不是重复计入后的 48.9%",
+    )
+
+    # ⛔ 族未知时 fail-closed:猜错的形态是 cache_read 被重复计入且不报错
+    sidnp = _trial(
+        root,
+        "sidtok-noprov",
+        agent_name="sid_code_agent:SidCodeAgent",
+        n_in=4697,
+        n_out=1462,
+        n_cache=187957,
+        cache_write=74779,
+    )
+    ok(
+        AH.normalized_tokens(json.load(open(os.path.join(sidnp, "result.json"))), sidnp)
+        is None,
+        "🔴 sid 无 settings.json(族未知)⇒ None,⛔ 不默认按某一族拆",
+    )
+    # openai 族算出负 fresh ⇒ 与 cc 分支同一条纪律,不 clamp
+    sidneg = _trial(
+        root,
+        "sidtok-oaneg",
+        agent_name="sid_code_agent:SidCodeAgent",
+        n_in=1000,
+        n_out=10,
+        n_cache=5000,
+        cache_write=0,
+        sid_provider="openai",
+    )
+    ok(
+        AH.normalized_tokens(json.load(open(os.path.join(sidneg, "result.json"))), sidneg)
+        is None,
+        "🔴 sid/openai fresh<0 ⇒ None,⛔ 不许 clamp 成 0",
     )
     # 🔴 归一化的意义:裸比会得到方向相反的结论
     ok(
@@ -457,6 +534,44 @@ def run_tests(root: str) -> None:
     ok(AH.cache_hit_ratio(None) is None, "拆不出 token ⇒ None")
     ok(AH.cache_hit_ratio({"total_in": 0, "cache_read": 0}) is None, "总入 0 ⇒ None(不除零)")
 
+    print("\n⑥ pricing_ratio / token_undercount —— 🔴 分母是写死的 sonnet 价 ⇒ 必须按族门控")
+    ok(AH.observed_model_family(sidj) == "anthropic", "族取自容器 settings.json 的 provider")
+    ok(AH.observed_model_family(sidoa) == "openai", "同上:openai 族")
+    ok(AH.observed_model_family(sidnp) is None, "无 settings.json ⇒ 族 None(⛔ 不猜)")
+
+    # 换模型臂(openai 族)上这条判据**无意义**:它的分母是 sonnet 官方价。
+    # 🔴 A1 实测后果:54/54 题全部被标成「token 低报」,并连带作废整臂缓存口径。
+    #    一个在整条臂上恒真的缺陷判据,比没有判据更坏。
+    _oa = json.load(open(os.path.join(sidoa, "result.json")))
+    _oa["agent_result"]["cost_usd"] = 0.03086811267605634  # A1 首题真实实付
+    with open(os.path.join(sidoa, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump(_oa, fh)
+    ok(
+        AH.pricing_ratio(_oa, sidoa) is None,
+        "🔴 openai 族 ⇒ pricing_ratio=None(判不出来),⛔ 不返回一个恒偏离的数",
+    )
+    ok(
+        AH.token_undercount_suspected(_oa, sidoa) is None,
+        "🔴 openai 族 ⇒ undercount=None,⛔ 不是恒真的 True(A1 首版归档 54/54 命中)",
+    )
+
+    # anthropic 族上它必须仍然工作 —— 否则「加门控」就退化成「把判据关掉」。
+    _an = json.load(open(os.path.join(sidj, "result.json")))
+    _tok = AH.normalized_tokens(_an, sidj)
+    _pred = sum(_tok[k] * AH._SONNET_PRICE[k] for k in AH._SONNET_PRICE) / 1e6
+    _an["agent_result"]["cost_usd"] = _pred * (2.0 / 3.0)  # 正好落在网关折扣价上
+    with open(os.path.join(sidj, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump(_an, fh)
+    _r = AH.pricing_ratio(_an, sidj)
+    ok(
+        _r is not None and abs(_r - 2.0 / 3.0) < 1e-9,
+        "anthropic 族 ⇒ 判据照常算出 0.6667(门控只挡不该判的族)",
+    )
+    ok(
+        AH.token_undercount_suspected(_an, sidj) is False,
+        "anthropic 族 + 比值正常 ⇒ False(不是 None,也不是 True)",
+    )
+
 
 # ── 反向变异:把判据改坏,上面的断言必须红 ────────────────────────────────────
 
@@ -499,6 +614,30 @@ MUTATIONS = [
         # 于是 fixture 形态守卫里那条 agent_ran 断言应当翻红。
         "M6 normalized_tokens 绕开 agent_ran 自己判三态",
         r"    if agent_ran\(result\) is None:\n        return None",
+        "    if False:\n        return None",
+    ),
+    (
+        # 🔴 这一条正是 2026-09-12 修掉的真 bug 本身:sid 臂无条件按
+        # 「n_input 是纯 fresh」拆分。它只对 anthropic 族成立,在 openai 族上
+        # 会把 cache_read 重复计进 fresh(A1 实测 fresh 虚高 12.8 倍、
+        # 命中率从 92.2% 假报成 48.0%),而两个数各自都是数、都不报错。
+        # ⇒ 把 bug 复原,断言必须红。
+        "M7 sid 分支退回「无条件纯 fresh」(2026-09-12 修掉的真 bug)",
+        r"            fresh = raw_in - cache_read - cache_write",
+        "            fresh = raw_in",
+    ),
+    (
+        # 族未知时的 fail-closed 必须自己承重:默认按 anthropic 猜的形态是
+        # 「大部分时候看起来对」(A2 臂全是 anthropic),只在换模型臂上错。
+        "M8 族未知时默认猜 anthropic 而不是 None",
+        r"        if provider is None:\n(?:.*\n)*?            return None",
+        '        if provider is None:\n            provider = "anthropic"',
+    ),
+    (
+        # 门控被拿掉 ⇒ 换模型臂上 pricing_ratio 又开始返回一个恒偏离的数,
+        # token_undercount 随之恒真。这就是 A1 首版归档 54/54 命中的成因。
+        "M9 拿掉 pricing_ratio 的族门控",
+        r'    if observed_model_family\(trial_dir\) != "anthropic":\n        return None',
         "    if False:\n        return None",
     ),
 ]

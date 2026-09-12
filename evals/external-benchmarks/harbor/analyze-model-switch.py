@@ -146,6 +146,18 @@ def load_run(run_dir: str) -> tuple[list[dict], dict]:
                 # ⚠️ `or` 而非 `if arm=="cc"`:两侧只会有一侧有值,
                 # 写成条件表达式会在将来多一条臂时静默漏掉。
                 turns=md.get("sid_num_turns") if cc_turns_v is None else cc_turns_v,
+                # 🔴 `sid_num_turns` 有**两个语义不同的源**,判「撞满轮数」必须区分:
+                #   `stream-json-result`    ⇒ result 事件 `num_turns`(真·API 轮数)
+                #   `session-traj-fallback` ⇒ traj `total_steps`(**步骤数,不是轮数**)
+                # 见 `sid_code_agent.py:821` 与 `trace/collector.ts:2406-2407`
+                # (`turns: apiCalls` vs `total_steps: pairs.length` 是两个字段)。
+                # 实测 fallback 样本 steps/api = 2.0×(A2) / 2.3-5.3×(A1)
+                # ⇒ 拿 total_steps 比 MAX_TURNS 会**虚报撞满**(A2 已发表的 13 实为 12)。
+                # cc 侧 turns 取自 result 事件,同权威 ⇒ 恒 True。
+                turns_authoritative=(
+                    True if cc_turns_v is not None
+                    else md.get("sid_cost_source") == "stream-json-result"
+                ),
                 stolen=md.get("sid_num_turns_without_model_interaction"),
                 subtype=md.get("sid_subtype") if cc_subtype_v is None else cc_subtype_v,
                 # ⚠️ 键名是 `sid_stop_reason`，**不是** `sid_exit_status`。
@@ -250,7 +262,9 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
             flags += " ⚠上游打断"
         if r["self_reported"]:
             flags += " ⚠自报成功却0分"
-        if isinstance(r["turns"], int) and r["turns"] >= MAX_TURNS:
+        # ⛔ fail-closed:源不权威时不判撞满(见 turns_authoritative)。
+        if (isinstance(r["turns"], int) and r["turns"] >= MAX_TURNS
+                and r["turns_authoritative"]):
             flags += f" ⚠撞满{MAX_TURNS}轮"
         print(f'{r["task"]:<26}{str(r["reward"]):>5}{str(r["deny"]):>6}{str(r["allow"]):>6}'
               f'{str(r["turns"]):>6}{str(r["stolen"]):>7}  {str(r["subtype"]):<22}'
@@ -306,7 +320,10 @@ def summarize(label: str, rows: list[dict], job: dict, run_dir: str) -> dict:
         print(f"  ⚠️ 无法比对 metadata deny 与审计实数（至少一侧全缺）")
 
     # ── 判据 ②：轮数（#138）────────────────────────────────────────────────
-    maxed = [r["task"] for r in rows if isinstance(r["turns"], int) and r["turns"] >= MAX_TURNS]
+    # ⛔ 同上 fail-closed:`total_steps` 不是轮数,不许进这个计数。
+    maxed = [r["task"] for r in rows
+             if isinstance(r["turns"], int) and r["turns"] >= MAX_TURNS
+             and r["turns_authoritative"]]
     turns = [r["turns"] for r in rows if isinstance(r["turns"], int)]
     print(f"\n=== 判据 ②：轮数预算（上限 {MAX_TURNS}）===")
     print(f"  撞满 {len(maxed)}/{n} 题 {maxed if maxed else ''}"

@@ -73,7 +73,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   // ── Harbor 侧 ──
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 201,
+    line: 263,
     anchor: "default=40",
     what: "harbor max_turns 默认 40",
   },
@@ -81,43 +81,43 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
     // 指 `CliFlag("skip_permissions", ...)` 本体,不指上方那条提到它的注释 ——
     // 注释会随论证改写移动,而 flag 定义才是这条规则真正的出处。
-    line: 241,
+    line: 303,
     anchor: "skip_permissions",
     what: "✅ harbor 权限档（2026-08-30 已与 swe-bench 对齐）",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 369,
+    line: 431,
     anchor: "_ELF_MACHINE",
     what: "§3.3 按 ELF e_machine 判架构",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 594,
+    line: 665,
     anchor: "artifact-bytes",
     what: "§3.1/§3.2 产物身份与 commit_source",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 825,
+    line: 896,
     anchor: "_derive_is_error",
     what: "§3.7 判成败用 subtype 不用 is_error",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 658,
+    line: 729,
     anchor: "stream-json",
     what: "§3.8 输出格式",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 930,
+    line: 1001,
     anchor: "total_cumulative_prompt_tokens",
     what: "§1.6 stock vs flow",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 643,
+    line: 714,
     anchor: "提示模板**静默失效**",
     what: "§2.3 提示模板静默失效",
   },
@@ -167,7 +167,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 930,
+    line: 1001,
     anchor: "**flow**",
     what: "§1.6 stock/flow 口径表",
   },

@@ -76,9 +76,16 @@
     //   _reports / _diagnoses/runs  ← 评测跑批的转储
     //   tests/fixtures/vcr  ← 录制下来的 SSE 回放数据，要与真实 wire 内容保持可比对
     //     （见 content-tracing 的设计：raw.jsonl 已是录制源，VCR 只做回放）
+    //   harbor/results/*.json  ← evals/.../harbor/w3-summary.py（`json.dump(indent=2)`）
+    //     ⚠️ 这一条是 2026-09-12 被 pre-commit 当场拦下来才补的：oxfmt 会把
+    //     `["origin-deepseek-v4-1-flash"]` 这种短数组折成一行，而生成器只会写回
+    //     展开形态 ⇒ 每次重新汇总 git status 就脏一次。而这些 JSON 恰恰是
+    //     **唯一入库的评测产出**（`runs/` 整个在 .gitignore 里），重跑一次要再花钱，
+    //     所以「让生成器听 formatter 的」这个方向不可行：它得能被原样复现。
     "website/.vitepress/data/changelog.json",
     "evals/_reports/**",
     "evals/_diagnoses/runs/**",
+    "evals/external-benchmarks/harbor/results/**",
     "packages/core/tests/fixtures/vcr/**",
 
     // 快照由测试生成（当前为 0 个，先立规则免得将来有人踩）。
