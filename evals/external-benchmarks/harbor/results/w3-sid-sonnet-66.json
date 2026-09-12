@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-12T01:29:11.465277+00:00",
-  "sid_code_commit": "92aca39b519a9136fbc0b52f419faa21bfc323d9",
+  "generated_at": "2026-09-12T01:42:22.952502+00:00",
+  "sid_code_commit_of_analysis": "e8298c6ee29b8a030698467bb95c022ab1744007",
+  "sid_code_commit": "e8298c6ee29b8a030698467bb95c022ab1744007",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -78,6 +79,13 @@
           "anthropic"
         ],
         "n_model_missing": 0,
+        "sid_binary_commit_observed": [
+          "30586ff003c968e111537d5379e79a14a2646855"
+        ],
+        "sid_binary_sha256_observed": [
+          "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9"
+        ],
+        "n_sid_binary_missing": 0,
         "note": "观测值:cc 取 result.modelUsage 的键、sid 取容器 settings.json 的 availableModels[0] —— 两侧都**不取** config.agent.model_name(那是意图)。 ⚠️ provider 取值域两侧不同(cc 是 firstParty 这类内部标签、sid 是族名)⇒ ⛔ 不许比字符串相等。"
       },
       "token_undercount_tasks": [
@@ -120,6 +128,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1596301999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -151,6 +161,8 @@
           "permission_allows": 27,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.8444095000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -182,6 +194,8 @@
           "permission_allows": 33,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0023069,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -213,6 +227,8 @@
           "permission_allows": 41,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.2481075000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -244,6 +260,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0165259000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -275,6 +293,8 @@
           "permission_allows": 41,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9755172,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -306,6 +326,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1107705999999997,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -337,6 +359,8 @@
           "permission_allows": 8,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2254955,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -368,6 +392,8 @@
           "permission_allows": 99,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.2589092,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -399,6 +425,8 @@
           "permission_allows": 3,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0431419,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -430,6 +458,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0793199000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -461,6 +491,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1507928,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -492,6 +524,8 @@
           "permission_allows": 23,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5607939,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -523,6 +557,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0813714,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -554,6 +590,8 @@
           "permission_allows": 14,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.366216,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -585,6 +623,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5125155,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -616,6 +656,8 @@
           "permission_allows": 36,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9424392,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -647,6 +689,8 @@
           "permission_allows": 15,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.4736782,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -678,6 +722,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1388632,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -709,6 +755,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.139298,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -740,6 +788,8 @@
           "permission_allows": 23,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.6277504,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -771,6 +821,8 @@
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.041441200000000004,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -802,6 +854,8 @@
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0153265,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -833,6 +887,8 @@
           "permission_allows": 1,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0249297,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -864,6 +920,8 @@
           "permission_allows": 69,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.1031024,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -895,6 +953,8 @@
           "permission_allows": 39,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1732375999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -926,6 +986,8 @@
           "permission_allows": 12,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.31041529999999995,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -957,6 +1019,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.23763350000000003,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -988,6 +1052,8 @@
           "permission_allows": 15,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.37163460000000004,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1019,6 +1085,8 @@
           "permission_allows": 21,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5141198,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1050,6 +1118,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2501421,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1081,6 +1151,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.19591360000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1112,6 +1184,8 @@
           "permission_allows": 9,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2336276,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1143,6 +1217,8 @@
           "permission_allows": 4,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1192175,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1174,6 +1250,8 @@
           "permission_allows": 53,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.3752358,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1205,6 +1283,8 @@
           "permission_allows": 54,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 2.0234513,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1236,6 +1316,8 @@
           "permission_allows": 43,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.7597500000000001,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1267,6 +1349,8 @@
           "permission_allows": 30,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.9041029,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1298,6 +1382,8 @@
           "permission_allows": 27,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.7271595999999999,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1329,6 +1415,8 @@
           "permission_allows": 2,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0314458,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1360,6 +1448,8 @@
           "permission_allows": 19,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2745207,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1391,6 +1481,8 @@
           "permission_allows": 8,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.22741599999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1422,6 +1514,8 @@
           "permission_allows": 43,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0674070999999998,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1453,6 +1547,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.1916223,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1484,6 +1580,8 @@
           "permission_allows": 40,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.5979541000000002,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1515,6 +1613,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.11111299999999999,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1546,6 +1646,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0659612,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1577,6 +1679,8 @@
           "permission_allows": 5,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.137284,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1608,6 +1712,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5238276,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1639,6 +1745,8 @@
           "permission_allows": 30,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.7468532,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1670,6 +1778,8 @@
           "permission_allows": 13,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.3189844,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1701,6 +1811,8 @@
           "permission_allows": 1,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.018987,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1732,6 +1844,8 @@
           "permission_allows": 38,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 1.0374937,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1763,6 +1877,8 @@
           "permission_allows": 22,
           "model_observed": "claude-sonnet-5",
           "provider_observed": "anthropic",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2187504,
           "cost_source": "stream-json-result",
           "tokens": {

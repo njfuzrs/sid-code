@@ -60,6 +60,7 @@ from arm_health import (  # noqa: E402
     detect_arm,
     normalized_tokens,
     pricing_ratio,
+    sid_binary_identity,
     self_reported_success_cc,
     sid_model,
     token_undercount_suspected,
@@ -242,6 +243,11 @@ def collect(run_dir: str) -> dict:
             # 的坑全是「传了但没生效且不报错」。
             "model_observed": model,
             "provider_observed": provider,
+            # 🔴 **真跑二进制**的身份(⛔ 不是归档顶层那个 sid_code_commit ——
+            # 那个是「跑汇总时本仓 HEAD」,即谁做的取数,见 sid_binary_identity 的
+            # docstring:两者都叫 commit、都是合法 sha,看数值分辨不出来)。
+            "sid_binary_commit": sid_binary_identity(d)[0],
+            "sid_binary_sha256": sid_binary_identity(d)[1],
             "cost_usd": ar.get("cost_usd"),
             "cost_source": md.get("sid_cost_source"),
             "tokens": tok,
@@ -331,6 +337,11 @@ def collect(run_dir: str) -> dict:
     models = sorted({r["model_observed"] for r in rows if r["model_observed"]})
     providers = sorted({r["provider_observed"] for r in rows if r["provider_observed"]})
     n_model_missing = sum(1 for r in rows if not r["model_observed"])
+    # 🔴 harness 版本是「换模型对照」的必控变量 —— 两臂必须是同一个二进制。
+    # ⚠️ 多值 ⇒ 这批题不是同一个二进制跑的 ⇒ 整臂不可比,必须显式报出来。
+    bin_commits = sorted({r["sid_binary_commit"] for r in rows if r["sid_binary_commit"]})
+    bin_shas = sorted({r["sid_binary_sha256"] for r in rows if r["sid_binary_sha256"]})
+    n_bin_missing = sum(1 for r in rows if not r["sid_binary_commit"])
 
     caveats = [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
@@ -375,6 +386,18 @@ def collect(run_dir: str) -> dict:
     # 24.4%(10/41) vs 27.5%(14/51),而在两侧都可判的 39 题交集上是 **A1 9 > A2 7**
     # —— 方向反过来。这正是「分母比分子重要」在本臂的形态。
     n_judgeable_maxed = sum(1 for r in rows if r["maxed"] is not None)
+    if len(bin_commits) > 1:
+        caveats.append(
+            f"🔴 **这批题不是同一个二进制跑的**(观测到 {len(bin_commits)} 个 commit:"
+            f"{bin_commits})⇒ ⛔ 整臂不可比,更不能与另一臂做「只换模型」的对照 ——"
+            "harness 版本本身就动了。"
+        )
+    if n_bin_missing:
+        caveats.append(
+            f"⚠️ {n_bin_missing}/{len(rows)} 题没采到真跑二进制的 commit ⇒ "
+            "这些题「同 harness」这句话只有命令行作证。"
+            "⛔ 别拿归档顶层的 `sid_code_commit` 顶替 —— 那是跑汇总时的仓库 HEAD。"
+        )
     if maxed:
         caveats.append(
             f"撞满 {MAX_TURNS} 轮 {len(maxed)} 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,"
@@ -447,6 +470,10 @@ def collect(run_dir: str) -> dict:
             "model_observed": models,
             "provider_observed": providers,
             "n_model_missing": n_model_missing,
+            # 真跑二进制(必控变量):⛔ 别用归档顶层的 sid_code_commit 代替它。
+            "sid_binary_commit_observed": bin_commits,
+            "sid_binary_sha256_observed": bin_shas,
+            "n_sid_binary_missing": n_bin_missing,
             "note": (
                 "观测值:cc 取 result.modelUsage 的键、sid 取容器 settings.json 的"
                 " availableModels[0] —— 两侧都**不取** config.agent.model_name(那是意图)。"
@@ -556,6 +583,13 @@ def main() -> int:
     doc = {
         "schema_version": 1,
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        # ⚠️ 这是**跑汇总脚本时本仓的 HEAD**(谁做的取数),
+        # ⛔ **不是**产出这批数据的二进制版本 —— 那个在每臂的
+        # `controlled_variables.sid_binary_commit_observed` 里。
+        # 实测踩到:A2 归档只因重跑一次汇总,这一格就从 d1f30718 变成 92aca39b,
+        # 而 54 份 result.json 一字未动 ⇒ 拿它当「数据是哪个版本跑的」会凭空
+        # 得出「A2 换了 sid 版本」。字段名保留是为了不破坏既有引用。
+        "sid_code_commit_of_analysis": _git_commit(),
         "sid_code_commit": _git_commit(),
         "max_turns_threshold": MAX_TURNS,
         "arms": arms,
@@ -588,6 +622,14 @@ def main() -> int:
         print(f"  必控变量(观测): 模型 {cv['model_observed']} / provider "
               f"{cv['provider_observed']}"
               + (f" / ⚠️ 未采到 {cv['n_model_missing']} 题" if cv["n_model_missing"] else ""))
+        # 🔴 harness 版本也是必控变量 —— 印出来,否则「同 harness」只有命令行作证。
+        _bc = cv["sid_binary_commit_observed"]
+        _bs = cv["sid_binary_sha256_observed"]
+        print(f"  真跑二进制(观测): commit {[c[:12] for c in _bc]} / "
+              f"sha256 {[h[:12] for h in _bs]}"
+              + (f" / 🔴 **{len(_bc)} 个 commit ⇒ 整臂不可比**" if len(_bc) > 1 else "")
+              + (f" / ⚠️ 未采到 {cv['n_sid_binary_missing']} 题"
+                 if cv["n_sid_binary_missing"] else ""))
         t = a["tokens_normalized"]
         if t:
             print(f"  token(归一): fresh {t['fresh']:,} / cache_r {t['cache_read']:,} / "

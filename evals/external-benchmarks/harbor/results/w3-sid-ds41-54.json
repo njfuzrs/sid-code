@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-12T01:29:11.309727+00:00",
-  "sid_code_commit": "92aca39b519a9136fbc0b52f419faa21bfc323d9",
+  "generated_at": "2026-09-12T01:42:22.787210+00:00",
+  "sid_code_commit_of_analysis": "e8298c6ee29b8a030698467bb95c022ab1744007",
+  "sid_code_commit": "e8298c6ee29b8a030698467bb95c022ab1744007",
   "max_turns_threshold": 40,
   "arms": [
     {
@@ -84,6 +85,13 @@
           "openai"
         ],
         "n_model_missing": 0,
+        "sid_binary_commit_observed": [
+          "30586ff003c968e111537d5379e79a14a2646855"
+        ],
+        "sid_binary_sha256_observed": [
+          "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9"
+        ],
+        "n_sid_binary_missing": 0,
         "note": "观测值:cc 取 result.modelUsage 的键、sid 取容器 settings.json 的 availableModels[0] —— 两侧都**不取** config.agent.model_name(那是意图)。 ⚠️ provider 取值域两侧不同(cc 是 firstParty 这类内部标签、sid 是族名)⇒ ⛔ 不许比字符串相等。"
       },
       "token_undercount_tasks": [],
@@ -121,6 +129,8 @@
           "permission_allows": 39,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.3760551042253521,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -152,6 +162,8 @@
           "permission_allows": 39,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.11475940845070422,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -183,6 +195,8 @@
           "permission_allows": 17,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.03086811267605634,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -214,6 +228,8 @@
           "permission_allows": 94,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.10676803943661974,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -245,6 +261,8 @@
           "permission_allows": 26,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.017548247887323943,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -276,6 +294,8 @@
           "permission_allows": 69,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.04195667605633803,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -307,6 +327,8 @@
           "permission_allows": 49,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.07389353802816902,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -338,6 +360,8 @@
           "permission_allows": 9,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.09284532394366198,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -369,6 +393,8 @@
           "permission_allows": 40,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.20132719436619723,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -400,6 +426,8 @@
           "permission_allows": 43,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5867764507042253,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -431,6 +459,8 @@
           "permission_allows": 54,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1352534253521127,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -462,6 +492,8 @@
           "permission_allows": 41,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.13076427323943665,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -493,6 +525,8 @@
           "permission_allows": 29,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.10063239154929578,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -524,6 +558,8 @@
           "permission_allows": 10,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.021602354929577464,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -555,6 +591,8 @@
           "permission_allows": 49,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.07984503661971831,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -586,6 +624,8 @@
           "permission_allows": 33,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.017540197183098585,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -617,6 +657,8 @@
           "permission_allows": 17,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.02017105915492958,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -648,6 +690,8 @@
           "permission_allows": 7,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.02905883943661972,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -679,6 +723,8 @@
           "permission_allows": 32,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.5290925633802818,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -710,6 +756,8 @@
           "permission_allows": 13,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.029214394366197185,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -741,6 +789,8 @@
           "permission_allows": 42,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.20472521690140846,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -772,6 +822,8 @@
           "permission_allows": 6,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.03397063661971832,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -803,6 +855,8 @@
           "permission_allows": 4,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.01645518309859155,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -834,6 +888,8 @@
           "permission_allows": 36,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.6486678704225353,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -865,6 +921,8 @@
           "permission_allows": 68,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.12161591830985916,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -896,6 +954,8 @@
           "permission_allows": 28,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.020875442253521122,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -927,6 +987,8 @@
           "permission_allows": 19,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0397115323943662,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -958,6 +1020,8 @@
           "permission_allows": 18,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.01754283943661972,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -989,6 +1053,8 @@
           "permission_allows": 29,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.12997354366197184,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1020,6 +1086,8 @@
           "permission_allows": 55,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.08167648450704226,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1051,6 +1119,8 @@
           "permission_allows": 17,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.013853611267605636,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1082,6 +1152,8 @@
           "permission_allows": 48,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.19910420845070426,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1113,6 +1185,8 @@
           "permission_allows": 34,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2223228112676056,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1144,6 +1218,8 @@
           "permission_allows": 9,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.005951723943661972,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1175,6 +1251,8 @@
           "permission_allows": 61,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.3179659549295774,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1206,6 +1284,8 @@
           "permission_allows": 128,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.184533385915493,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1237,6 +1317,8 @@
           "permission_allows": 68,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.3348033014084507,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1268,6 +1350,8 @@
           "permission_allows": 47,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.05101735774647888,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1299,6 +1383,8 @@
           "permission_allows": 32,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.04787781971830986,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1330,6 +1416,8 @@
           "permission_allows": 25,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2887390028169014,
           "cost_source": "session-traj-fallback",
           "tokens": {
@@ -1361,6 +1449,8 @@
           "permission_allows": 23,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.016536822535211267,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1392,6 +1482,8 @@
           "permission_allows": 12,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.01765176338028169,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1423,6 +1515,8 @@
           "permission_allows": 32,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.09046149295774648,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1454,6 +1548,8 @@
           "permission_allows": 38,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.31041290140845074,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1485,6 +1581,8 @@
           "permission_allows": 51,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.40872889577464794,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1516,6 +1614,8 @@
           "permission_allows": 29,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2596812901408451,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1547,6 +1647,8 @@
           "permission_allows": 24,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.18264860281690143,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1578,6 +1680,8 @@
           "permission_allows": 7,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.008763295774647887,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1609,6 +1713,8 @@
           "permission_allows": 18,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.01975047887323944,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1640,6 +1746,8 @@
           "permission_allows": 35,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.04532225915492958,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1671,6 +1779,8 @@
           "permission_allows": 57,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.1420839661971831,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1702,6 +1812,8 @@
           "permission_allows": 37,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.21506938591549296,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1733,6 +1845,8 @@
           "permission_allows": 55,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.0855969690140845,
           "cost_source": "stream-json-result",
           "tokens": {
@@ -1764,6 +1878,8 @@
           "permission_allows": 77,
           "model_observed": "origin-deepseek-v4-1-flash",
           "provider_observed": "openai",
+          "sid_binary_commit": "30586ff003c968e111537d5379e79a14a2646855",
+          "sid_binary_sha256": "4e51bda52f9c2fceed73134e77c749b126ed304043ad3a3ae92f75dd59927cd9",
           "cost_usd": 0.2911462929577465,
           "cost_source": "stream-json-result",
           "tokens": {

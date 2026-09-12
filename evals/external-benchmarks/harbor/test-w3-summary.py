@@ -63,6 +63,8 @@ def _trial(
     n_cache: int = 90_000,
     n_out: int = 5_000,
     cost: float = 0.01,
+    sid_commit: str | None = "30586ff003c968e111537d5379e79a14a2646855",
+    sid_binary_sha256: str | None = "4e51bda52f9c" + "0" * 52,
 ) -> str:
     """造一个 sid 臂 trial。字段位置逐字对齐真实数据(见 arm_health 的 fixture 注释)。
 
@@ -83,6 +85,12 @@ def _trial(
     }
     if turns is not None:
         md["sid_num_turns"] = turns
+    # 🔴 真跑二进制的身份(必控变量)。⚠️ 与归档顶层的 `sid_code_commit` 是两件事:
+    # 那个是「跑汇总时本仓 HEAD」,只因重跑一次汇总就会变(实测踩到)。
+    if sid_commit is not None:
+        md["sid_commit"] = sid_commit
+    if sid_binary_sha256 is not None:
+        md["sid_binary_sha256"] = sid_binary_sha256
     if subtype is not None:
         md["sid_subtype"] = subtype
     res = {
@@ -204,6 +212,51 @@ def run_tests(root: str, src: str = SRC) -> None:
     ok(tna["fresh"] == 4_697, f"anthropic: fresh 就是 n_input(未命中余量),得 {tna['fresh']}")
     ok(tna["total_in"] == 4_697 + 187_957, "anthropic: total_in 归一成 fresh+read+write")
 
+    # ── ⑤ 真跑二进制身份:必控变量,且⛔ 不能被顶层 sid_code_commit 顶替 ──────
+    print("\n⑤ 真跑二进制:harness 版本是「换模型对照」的必控变量")
+    cv = a["controlled_variables"]
+    ok(
+        cv["sid_binary_commit_observed"] == ["30586ff003c968e111537d5379e79a14a2646855"],
+        f"🔴 归档记下真跑二进制的 commit(⛔ 不是跑汇总时的仓库 HEAD),得 "
+        f"{[c[:12] for c in cv['sid_binary_commit_observed']]}",
+    )
+    ok(cv["n_sid_binary_missing"] == 0, "5 题全采到 ⇒ 缺失 0")
+
+    # 顶层那一格答的是**另一个问题**(谁做的取数)⇒ 两者必须不同源。
+    with open(os.path.join(out, f"{os.path.basename(job)}.json"), encoding="utf-8") as fh:
+        top = json.load(fh)
+    ok(
+        top["sid_code_commit_of_analysis"] != cv["sid_binary_commit_observed"][0],
+        "🔴 顶层 commit(取数时 HEAD)与真跑二进制 commit **不是同一个值** —— "
+        "两者都叫 commit、都是合法 sha,看数值分辨不出来,所以必须分成两格",
+    )
+
+    # 🔴 多个 commit ⇒ 整臂不可比,必须显式报出来(⛔ 不许取第一个当代表)。
+    jmix = _job(root, "binmix")
+    _trial(jmix, "t1", turns=10)
+    _trial(jmix, "t2", turns=10, sid_commit="d1f3071817fe960b30de00707b661a41ce64e4ba")
+    amix = _run(jmix, out, src)
+    ok(
+        len(amix["controlled_variables"]["sid_binary_commit_observed"]) == 2,
+        "两个 commit 都留在归档里(⛔ 不取第一个)",
+    )
+    ok(
+        any("不是同一个二进制跑的" in c for c in amix["caveats"]),
+        "🔴 混了两个二进制 ⇒ caveat 明说「整臂不可比」",
+    )
+
+    jmiss = _job(root, "binmiss")
+    _trial(jmiss, "t1", turns=10, sid_commit=None, sid_binary_sha256=None)
+    amiss = _run(jmiss, out, src)
+    ok(
+        amiss["controlled_variables"]["n_sid_binary_missing"] == 1,
+        "没采到时如实计入缺失(⛔ 不静默当成「同一个」)",
+    )
+    ok(
+        any("只有命令行作证" in c for c in amiss["caveats"]),
+        "⚠️ 缺失时 caveat 说清「同 harness」失去了证据",
+    )
+
     # ── ④ undercount 判据必须按族门控 ────────────────────────────────────
     print("\n④ token_undercount:分母是写死的 sonnet 价 ⇒ 换模型臂上必须不判")
     ok(
@@ -232,6 +285,25 @@ MUTATIONS = [
         "V3 可判分母改成全部题数(caveat 说「其余 0 题」)",
         r'n_judgeable_maxed = sum\(1 for r in rows if r\["maxed"\] is not None\)',
         "n_judgeable_maxed = len(rows)",
+    ),
+    (
+        # 🔴 正是 2026-09-12 踩到的形态:拿「跑汇总时的仓库 HEAD」冒充
+        # 「产出这批数据的二进制」。两者都叫 commit、都是合法 sha ⇒ 看数值分辨不出来。
+        "V4 用顶层取数 commit 冒充真跑二进制 commit",
+        r'        "sid_binary_commit": sid_binary_identity\(d\)\[0\],',
+        '        "sid_binary_commit": _git_commit(),',
+    ),
+    (
+        # 多个二进制混在一臂里时取第一个当代表 ⇒ 一次 harness 换版被伪装成
+        # 一次干净的单版本运行,而「换模型对照」的必控变量已经动了。
+        "V5 多二进制时只留第一个(把换版伪装成干净运行)",
+        r'    bin_commits = sorted\(\{r\["sid_binary_commit"\] for r in rows if r\["sid_binary_commit"\]\}\)',
+        '    bin_commits = sorted({r["sid_binary_commit"] for r in rows if r["sid_binary_commit"]})[:1]',
+    ),
+    (
+        "V6 没采到二进制身份时静默当成「同一个」(缺失计数归零)",
+        r'    n_bin_missing = sum\(1 for r in rows if not r\["sid_binary_commit"\]\)',
+        "    n_bin_missing = 0",
     ),
 ]
 

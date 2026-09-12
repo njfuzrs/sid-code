@@ -249,6 +249,38 @@ def sid_model(trial_dir: str) -> tuple[str | None, str | None]:
     return (am.get("modelId") or None, am.get("provider") or None)
 
 
+def sid_binary_identity(result: dict) -> tuple[str | None, str | None, str | None]:
+    """**真正跑出这份数据的那个二进制**是谁:`(commit, binary_sha256, commit_source)`。
+
+    取 `agent_result.metadata` 的 `sid_commit` / `sid_binary_sha256` /
+    `sid_commit_source` —— 三格都是 agent 自己在容器里写下的**事实**。
+
+    ## 🔴 为什么必须单独有它:归档顶层那个 `sid_code_commit` 答的是另一个问题
+
+    `w3-summary._git_commit()` 记的是**跑汇总脚本时本仓的 HEAD**,即
+    「谁做的取数」。它与「谁产出的数据」是两件事,而两者都叫 commit、
+    长度一样、都是合法 sha ⇒ **看数值分辨不出来**。
+
+    实测(2026-09-12 当场踩到):A2 的归档在 2026-09-09 首次生成时顶层记
+    `d1f30718`,今天只因为**重新跑了一次汇总**就变成 `92aca39b` ——
+    而那 54 份 `result.json` 一个字节都没动。若拿它当「这批数据是哪个版本跑的」,
+    就会得出「A2 换了 sid 版本」这个纯属虚构的结论。
+
+    真跑的二进制两臂都是 `30586ff003c9`(sha256 `4e51bda52f9c`,54/54 题一致)——
+    这才是**必控变量**:两条臂比的是「换模型」,harness 版本必须相同。
+    ⛔ 没有这一格,「同 harness」这句话就只有命令行作证。
+
+    ⚠️ 多值 ⇒ 这批题**不是同一个二进制跑的**,那种情况下整臂不可比,
+    调用方必须显式报出来(⛔ 不许取第一个)。
+    """
+    md = (result.get("agent_result") or {}).get("metadata") or {}
+    return (
+        md.get("sid_commit") or None,
+        md.get("sid_binary_sha256") or None,
+        md.get("sid_commit_source") or None,
+    )
+
+
 def cc_model(trial_dir: str) -> str | None:
     """cc 本轮真正被调用的模型。**None = 没采到**。
 
