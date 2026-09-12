@@ -329,7 +329,38 @@ def normalized_tokens(result: dict, trial_dir: str) -> dict[str, Any] | None:
     | 臂 | `n_input_tokens` 的成分 | 取数源 |
     | --- | --- | --- |
     | cc  | fresh **+ cache_read + cache_write**(打包) | `harbor/agents/installed/claude_code.py:_build_metrics()` |
-    | sid | **只有 fresh**(cache 另有两格)         | `sid_code_agent.py:993` 取 `total_cumulative_prompt_tokens` |
+    | sid | **按族不同**(见下节)                    | `sid_code_agent.py:993` 取 `total_cumulative_prompt_tokens` |
+
+    ## 🔴 sid 臂内部还要再分族 —— 「按 arm 分支」不够(2026-09-12 实测)
+
+    本函数原先对 sid 臂无条件按「`n_input_tokens` 是纯 fresh」处理。
+    **那只对 anthropic 族成立**,因为它累加的 `usage.inputTokens` 直接来自厂商:
+
+        Anthropic  `input_tokens`  = 未命中余量(**不含** cache_read)
+        OpenAI 族  `prompt_tokens` = 完整输入(**含** cached_tokens)
+
+    这不是猜的,是 pin 住的那个二进制里的显式分族逻辑
+    (`git show 30586ff003c9:packages/core/src/llm/types.ts` 的
+    `normalizeCacheUsage()`:anthropic 走 `uncached = input`,
+    openai 族走 `uncached = input - hit - write`)——
+    **成本那一侧一直是对的**,错的只有本函数。
+
+    ⇒ A1 臂(`origin-deepseek-v4-1-flash`, provider=`openai`)上的实测后果:
+
+        修前:fresh 56,621,493 / cache_read 52,210,549 ⇒ 命中率 48.0%
+        修后:fresh  4,410,944 / cache_read 52,210,549 ⇒ 命中率 92.2%
+
+    fresh 虚高 **12.8 倍** —— cache_read 被重复计进了 fresh。而
+    A2 臂(sonnet, provider=`anthropic`)不受影响,两臂的差异本身就是这个 bug 的指纹:
+    ⛔ 修前那份 48% 与 92.2% 若并列写成「换模型后缓存命中率翻倍」,
+    读到的是一个纯粹由取数口径造出来的假变化。
+
+    **判据(逐位复算,⛔ 不是"机理讲得通")**:按族修正后拿 token 反算实付,
+    A1 臂 **52/54 题逐位闭合**(相对误差中位 1.11e-16,浮点级)。
+    修前用同一份价表算,54 题**一题都不闭合**(比值散在 0.14–0.87,CV 0.42)。
+    残差那 2 题(`count-dataset-tokens` +7.7%、`fix-code-vulnerability` +3.7%)
+    方向都是**实付高于按累计 token 的预测** ⇒ 疑似有未进 token 累加的额外请求,
+    不是本函数的口径问题(口径错会让全部 54 题同向偏移,而不是 2 题)。
 
     同一题 `polyglot-c-py` 实测:
 
@@ -388,14 +419,31 @@ def normalized_tokens(result: dict, trial_dir: str) -> dict[str, Any] | None:
             return None
         source = "cc-trajectory-final-metrics"
     elif arm == "sid":
-        # sid 侧 `n_input_tokens` 已经是纯 fresh,cache 两格分列。
+        # 🔴 sid 侧 `n_input_tokens` 的成分**按厂商族不同**,⛔ 不是无条件的纯 fresh
+        # (2026-09-12 在 A1 换模型臂上实测抓到,详见下方 "sid 臂内部还要再分族")。
         cache_read = ar.get("n_cache_tokens")
         cache_write = ((ar.get("metadata") or {}).get("cache_write_tokens"))
         if not isinstance(cache_read, int) or not isinstance(cache_write, int):
             return None
-        fresh = total_in or 0
-        total_in = fresh + cache_read + cache_write  # 归一成「与 cc 同口径的总入」
-        source = "sid-metadata"
+        _, provider = sid_model(trial_dir)
+        if provider is None:
+            # fail-closed:族未知时**不猜**。猜错的形态是 cache_read 被重复计入总入,
+            # 而两个数各自都对、都不报错(正是本函数存在的理由)。
+            return None
+        raw_in = total_in or 0
+        if provider == "anthropic":
+            # Anthropic:`input_tokens` 本就是未命中余量 ⇒ 直接是 fresh。
+            fresh = raw_in
+            total_in = fresh + cache_read + cache_write
+        else:
+            # OpenAI 族(deepseek/glm/qwen/…):`prompt_tokens` **含命中** ⇒ 要减掉。
+            fresh = raw_in - cache_read - cache_write
+            if fresh < 0:
+                # 与 cc 分支同一条纪律:⛔ 不 clamp 成 0,那会把「族判错了」
+                # 抹成一个看起来正常的数。
+                return None
+            total_in = raw_in
+        source = f"sid-metadata:{provider}"
     else:
         # mswea / 未知臂:⛔ 不猜成分。归一化的前提是知道哪一族口径。
         return None
@@ -408,6 +456,33 @@ def normalized_tokens(result: dict, trial_dir: str) -> dict[str, Any] | None:
         "total_in": total_in or 0,
         "source": source,
     }
+
+
+def observed_model_family(trial_dir: str) -> str | None:
+    """这一题**实际**跑的厂商族:`"anthropic"` / `"openai"` / `None`(没采到)。
+
+    两臂各有取数源,都取**观测值**(与 `sid_model` / `cc_model` 同一条纪律):
+      - sid:容器 `settings.json` 的 `availableModels[0].provider`(族名,直接就是答案);
+      - cc :`modelUsage[m].provider` 是 `firstParty` 这类**内部标签**,不是族名 ⇒
+             退回按模型名判(cc 臂在本方案里只跑 `claude-*`)。
+
+    🔴 存在的理由:多条判据的口径**按族不同**(见 `normalized_tokens` 与
+    `pricing_ratio`),而"记得按族分支"这件事原先只写在 docstring 里靠调用方自觉,
+    实测没被遵守。有了这个函数,门控才能落在被判据自己身上。
+    """
+    arm = detect_arm(trial_dir)
+    if arm == "sid":
+        return sid_model(trial_dir)[1]
+    if arm == "cc":
+        m = cc_model(trial_dir)
+        if not m:
+            return None
+        # 多模型(降级链动过)时:全部都得是 claude 才敢答 anthropic。
+        names = [x.strip() for x in m.split(",") if x.strip()]
+        if names and all(n.lower().startswith("claude") for n in names):
+            return "anthropic"
+        return None
+    return None
 
 
 #: sonnet 官方单价(USD / 百万 token):fresh in / cache write / cache read / out。
@@ -449,10 +524,28 @@ def pricing_ratio(result: dict, trial_dir: str) -> float | None:
     比值偏离 `2/3` ⇒ **那一题的 token 不可信,但 cost 可信**。
     ⛔ 别反过来:cost 有独立权威源(agent 自报 + 网关账本),token 只有一条链路。
 
-    ⚠️ 这一条**只对 sonnet 定价有效**。换模型臂(deepseek)单价不同,
-    比值会整体偏移到另一个常数 —— 那不是缺陷,所以调用方要按模型分组看,
-    ⛔ 别把 deepseek 臂的偏离读成 token 低报。
+    ## ⚠️ 只对 sonnet 定价有效 —— 而这条纪律现在**落在代码里**,不再靠调用方记
+
+    换模型臂单价不同,比值不再落在 2/3 附近。原先这里只写了一句"调用方要按模型
+    分组看",结果 2026-09-12 的 A1 归档里 `token_undercount_tasks` **命中全部 54 题**,
+    并附带一句"⛔ 别拿这些题算缓存命中率" ⇒ 等于把整臂的缓存口径作废掉。
+
+    ⚠️ 而且原文说的"偏移到另一个常数"**也不对**:A1 实测比值散在 0.006–0.034
+    (CV 0.39),不是常数 —— 因为偏离量取决于每题的 cache 占比,而两族的单价结构
+    差异不是等比的。所以「按模型分组看比值」这个原计划本身也行不通。
+    ⇒ 现在改成 `observed_model_family() != "anthropic"` 直接返回 None(判不出来)。
+
+    📌 换模型臂上「token 是否低报」这个问题**当前没有判据**,如实标成 None,
+    ⛔ 不用一个恒真的判据冒充它 —— 那比没有判据更坏(见 CLAUDE.md「零触发」那节的同型)。
     """
+    # 🔴 门控:这条判据的分母是**写死的 sonnet 官方价**,换模型臂上算出来的
+    # 比值与 2/3 无关(A1 实测散在 0.006–0.034),再拿 `_RATIO_TOL` 去比
+    # 就是 54/54 全部命中 —— 一个在整条臂上恒真的"缺陷判据"什么也没判。
+    # docstring 末尾那句"⛔ 别在那里用这一条"原先只是**注释**,靠调用方记得,
+    # 而调用方(`w3-summary.py`)没有分支 ⇒ 2026-09-12 在 A1 归档里如实发生了。
+    # ⇒ 把纪律落进代码:族不对就返回 None(= 判不出来),⛔ 不返回一个数。
+    if observed_model_family(trial_dir) != "anthropic":
+        return None
     tok = normalized_tokens(result, trial_dir)
     if not tok:
         return None
@@ -469,7 +562,9 @@ def token_undercount_suspected(result: dict, trial_dir: str) -> bool | None:
     """True = 这一题的 **token 低报**(cost 仍可信)。**None = 判不出来**。
 
     判据:`pricing_ratio` 偏离 2/3 超过 1%。见 `pricing_ratio` 的 docstring ——
-    ⚠️ 仅对 sonnet 定价成立,换模型臂会整体偏移,⛔ 别在那里用这一条。
+    仅对 sonnet 定价成立,**换模型臂上 `pricing_ratio` 自己返回 None**
+    (2026-09-12 起门控落进代码),所以这里会如实给出 None = 判不出来,
+    ⛔ 不再像 A1 首版归档那样输出一个恒真的 True。
     """
     r = pricing_ratio(result, trial_dir)
     if r is None:

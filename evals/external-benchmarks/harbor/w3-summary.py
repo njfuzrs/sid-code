@@ -221,9 +221,17 @@ def collect(run_dir: str) -> dict:
             # 说成「用完预算」,而那正是这条 caveat 要人别误读的东西)。
             # ⚠️ cc 臂 `turns_is_api_calls` 恒 False 会让它整臂不判撞满 ——
             # 所以 cc 分支单独给 True(cc 的 turns 取自 result 事件,同权威)。
+            # 🔴 **三态**:True=撞满 / False=判了但没撞满 / **None=判不出来**。
+            # ⚠️ 初版是二态(不可判折叠成 False),那让「判了没撞满」与「turns 源
+            # 不权威所以判不了」**无法区分** —— 于是想给这条 caveat 补一个
+            # 「可判分母」时,`sum(1 for r in rows if r["maxed"] is not None)`
+            # 恒等于全部题数,分母披露静默失效(2026-09-12 实测,当场踩到)。
+            # 这是本仓那条「一个字段混了两个相反语义」的同型:折叠掉的那一态
+            # 恰恰是引用时最需要知道的一态。
             "maxed": (
-                turns is not None and turns >= MAX_TURNS
-                and (turns_is_api_calls if this_arm != "cc" else True)
+                None
+                if turns is None or not (turns_is_api_calls if this_arm != "cc" else True)
+                else turns >= MAX_TURNS
             ),
             "subtype": subtype,
             "self_reported_success": selfrep,
@@ -326,9 +334,12 @@ def collect(run_dir: str) -> dict:
 
     caveats = [
         "分母:引用 pass 率必须带 n=scored,⛔ 别拿 72 当分母。",
-        "token:两臂 n_input_tokens 语义相反(cc 含 cache、sid 不含),"
-        "本文件的 tokens 已按 arm_health.normalized_tokens 归一 —— "
-        "⛔ 别回去直接比 result.json 里的 n_input_tokens。",
+        "token:`n_input_tokens` 的成分**三态不同** —— cc 含 cache;"
+        "sid+anthropic 不含;sid+openai 族(deepseek 等)**含**(prompt_tokens 口径)。"
+        "本文件的 tokens 已按 arm_health.normalized_tokens 按族归一 —— "
+        "⛔ 别回去直接比 result.json 里的 n_input_tokens。"
+        "⚠️ 第三态是 2026-09-12 才修的:此前 sid 臂无条件按「不含」拆,"
+        "A1 首版归档因此把 fresh 虚报 12.8 倍、缓存命中率 92.2% 假报成 48.0%。",
     ]
     if unfinished:
         caveats.insert(
@@ -357,10 +368,21 @@ def collect(run_dir: str) -> dict:
             "两臂「上游打断题数」不可直接并列(08 号 §4.1.1)。",
             "digest:cc 侧无轨迹 digest ⇒ 缓存断裂/空转/工具序列这些指标本臂没有对称源。",
         ]
+    # 🔴 「撞满轮数」的分母**不是** len(rows):`maxed` fail-closed 只判 turns 源权威
+    # 那些题,其余题一律不判 ⇒ 报「10 题」而不报可判分母,读者会默认分母是 54。
+    # ⚠️ 两臂的不可判题数差 4 倍(实测 A1 13 题 / A2 3 题,与 cost 兜底逐题同集),
+    # 所以「A1 撞满 10 < A2 撞满 14」这个并列是**假的**:按各自可判分母算是
+    # 24.4%(10/41) vs 27.5%(14/51),而在两侧都可判的 39 题交集上是 **A1 9 > A2 7**
+    # —— 方向反过来。这正是「分母比分子重要」在本臂的形态。
+    n_judgeable_maxed = sum(1 for r in rows if r["maxed"] is not None)
     if maxed:
         caveats.append(
             f"撞满 {MAX_TURNS} 轮 {len(maxed)} 题 ⇒ ⛔ 别把这些 0 分读成「能力不行」,"
             "它们是用完预算(#138 轮数预算)。"
+            f"⚠️ 分母是**可判的 {n_judgeable_maxed} 题**(其余 "
+            f"{len(rows) - n_judgeable_maxed} 题 turns 源不权威、fail-closed 不判),"
+            "⛔ 不是 scored ——**两臂这个分母不同时,撞满题数不可直接并列**,"
+            "要么各自除以可判分母、要么只在两侧都可判的交集上比。"
         )
     if selfreps:
         caveats.append(
@@ -407,6 +429,9 @@ def collect(run_dir: str) -> dict:
             "excluded_non_capability": len(excluded),
             "maxed_turns": len(maxed),
             "maxed_turns_tasks": maxed,
+            # 🔴 引用 maxed_turns 必须同时取这个分母(见同名 caveat)。
+            "maxed_turns_judgeable_denominator": n_judgeable_maxed,
+            "maxed_turns_unjudgeable": len(rows) - n_judgeable_maxed,
             "self_reported_success_but_zero": selfreps,
         },
         "cost_usd": {
