@@ -583,6 +583,27 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         /* 静默失败 */
       });
 
+    // 自动更新检查（与 deferred-prefetch 同层 fire-and-forget）
+    // 消费 pendingNotice（下次启动提示）+ 启动后台检查（24h 节流）
+    import("@sid-code/core/update/notify.ts")
+      .then(({ consumePendingNotice, formatNoticeText }) => {
+        const notice = consumePendingNotice();
+        if (notice) {
+          const { TransientMessageType } = require("./contexts/UIStateContext.tsx");
+          showTransientMessage(formatNoticeText(notice), TransientMessageType.Hint);
+        }
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
+    import("@sid-code/core/update/index.ts")
+      .then(({ startAutoUpdateCheck }) => {
+        startAutoUpdateCheck();
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
+
     // 标记首屏渲染完成
     import("@sid-code/shared/utils/startup-profiler.ts")
       .then(({ profileCheckpoint }) => {

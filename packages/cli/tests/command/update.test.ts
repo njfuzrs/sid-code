@@ -71,9 +71,10 @@ describe("sid-code update 子命令 - 行为契约", () => {
     expect(content).toMatch(/install\.sh/);
   });
 
-  test("update.ts 支持 SID_CODE_INSTALL_URL 环境变量覆盖安装地址", () => {
+  test("update.ts 支持 SID_CODE_INSTALL_URL 环境变量覆盖安装地址（通过 core 模块）", () => {
     const content = readFileSync(UPDATE_TS, "utf-8");
-    expect(content).toMatch(/SID_CODE_INSTALL_URL/);
+    // 重构后从 core 模块导入，环境变量在 core/update/config.ts 中处理
+    expect(content).toMatch(/INSTALL_URL.*from.*@sid-code\/core\/update\/config/);
   });
 
   test("update.ts 含 --help / -h 帮助处理，且不发起网络请求", async () => {
