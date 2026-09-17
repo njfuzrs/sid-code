@@ -45,13 +45,18 @@ export function spawnBackgroundInstall(
   const logPath = getLogPath();
   const statePath = getStatePath();
 
-  // 子进程脚本：跑 install.sh，然后根据退出码写 state + pendingNotice + 释放锁
+  // 子进程脚本：参数全部通过 positional parameters 传入，避免 URL/路径进入 shell 代码
   const childScript = `
 set -o pipefail
-${INSTALL_URL_CMD} | bash > "${logPath}" 2>&1
+install_url="$1"
+log_path="$2"
+state_path="$3"
+lock_dir="$4"
+current_version="$5"
+target_version="$6"
+curl -fsSL --connect-timeout 10 --max-time 600 "$install_url" | bash > "$log_path" 2>&1
 code=$?
 
-# 判定成败
 if [ $code -eq 0 ]; then
   status=success
   reason=""
@@ -60,31 +65,28 @@ else
   reason="install-exit:$code"
 fi
 
-# 写 state.json（原子：tmp + rename）
-tmp_state="${statePath}.tmp.$$"
+tmp_state="\${state_path}.tmp.\$\$"
 cat > "$tmp_state" <<EOF
 {
   "lastCheckAt": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
   "consecutiveFailures": $([ "$status" = "failed" ] && echo 1 || echo 0),
   "lastAttempt": {
     "at": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
-    "fromVersion": "${currentVersion}",
-    "toVersion": "${targetVersion}",
+    "fromVersion": "$current_version",
+    "toVersion": "$target_version",
     "status": "$status",
     "reason": "$reason"
   },
   "pendingNotice": {
     "type": "$([ "$status" = "success" ] && echo updated || echo failed)",
-    "fromVersion": "${currentVersion}",
-    "toVersion": "${targetVersion}",
+    "fromVersion": "$current_version",
+    "toVersion": "$target_version",
     "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
   }
 }
 EOF
-mv -f "$tmp_state" "${statePath}"
-
-# 释放锁
-rm -rf "${lockDir}"
+mv -f "$tmp_state" "$state_path"
+rm -rf "$lock_dir"
 `;
 
   // env 净化：显式设 SID_CODE_CHANNEL="stable"，删除 SID_CODE_VERSION
@@ -103,11 +105,25 @@ rm -rf "${lockDir}"
   }
 
   try {
-    const child = spawn("bash", ["-c", childScript], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-      env,
-    });
+    const child = spawn(
+      "bash",
+      [
+        "-c",
+        childScript,
+        "sid-code-auto-update",
+        INSTALL_URL,
+        logPath,
+        statePath,
+        lockDir,
+        currentVersion,
+        targetVersion,
+      ],
+      {
+        detached: true,
+        stdio: ["ignore", logFd, logFd],
+        env,
+      },
+    );
 
     log().info("AUTO_UPDATE", `spawn 子进程 pid=${child.pid}，目标版本 v${targetVersion}`);
     child.unref();
@@ -119,6 +135,3 @@ rm -rf "${lockDir}"
     } catch {}
   }
 }
-
-// install.sh 的 URL 命令（curl）
-const INSTALL_URL_CMD = `curl -fsSL --connect-timeout 10 --max-time 600 "${INSTALL_URL}"`;

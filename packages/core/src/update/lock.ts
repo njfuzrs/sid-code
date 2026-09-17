@@ -10,7 +10,7 @@
  */
 
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { getSidHome } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -52,6 +52,7 @@ function getMetaPath(lockDir: string): string {
  */
 export function acquireLock(): LockHandle | null {
   const lockDir = getLockDir();
+  mkdirSync(dirname(lockDir), { recursive: true });
 
   // 第一次尝试
   try {

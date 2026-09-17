@@ -6,6 +6,8 @@ Scope: packages/core/src/update/, packages/cli/src/command/update.ts, packages/c
 Dependencies: []
 ---
 
+# 自动更新机制
+
 ## 决定了什么
 
 实现 sid-code 自动更新机制，采用「薄编排层 + 复用 install.sh」架构：
@@ -16,6 +18,9 @@ Dependencies: []
 4. **mkdir 锁 + 30 分钟 stale 回收**：多实例同时启动时只有一个执行更新，其余静默跳过
 5. **通知机制**：更新结果写入 `state.json` 的 `pendingNotice` 字段，下次启动时消费并显示 transient message
 6. **通道隔离**：默认使用稳定版通道（`latest.txt`），beta 通道通过 `SID_CODE_CHANNEL=beta` 显式指定
+7. **手动指定版本**：实现 `sid-code update --version x.y.z`，严格限制为稳定三段版本；拒绝 `--list`，因为发布服务器只有 stable/beta 指针，没有历史版本清单
+8. **命令安全**：CLI 和后台 installer 都通过 shell positional parameters 传递 URL、路径和版本数据，避免环境变量进入 shell 代码
+9. **自动安装环境净化**：后台安装强制 `SID_CODE_CHANNEL=stable`、`SID_CODE_AUTO_UPDATE=1`，并删除继承的 `SID_CODE_VERSION`
 
 核心模块拆分：
 - `versions.ts`：版本号比较与校验（纯函数）
@@ -44,38 +49,29 @@ Dependencies: []
 
 ### 候选方案 D：用 `getVersion()` 而非 `getRawVersion()`
 
-**放弃理由**：`getVersion()` 返回 `"sid-code v0.1.603 (TypeScript)"`（带前缀），`getRawVersion()` 返回 `"0.1.603"`（裸版本号）。版本比较需要裸版本号，用 `getVersion()` 会静默破坏比较逻辑。这是设计文档审查时发现的 bug。
+**放弃理由**：`getVersion()` 返回带前缀的展示文本，`getRawVersion()` 返回裸版本号。版本比较需要裸版本号，用展示文本会静默破坏比较逻辑。
+
+### 候选方案 E：把 INSTALL_URL 直接插入 `bash -c` 字符串
+
+**放弃理由**：`SID_CODE_INSTALL_URL` 可由用户环境覆盖，直接拼接会让 URL 中的 shell 元字符被解释。改为 `bash -c 'curl -fsSL "$1" | bash' ... URL`，后台 installer 的 URL、路径和版本也统一使用 positional parameters。
 
 ## 拿什么证明它生效了
 
-### 单元测试覆盖
+### 自动化测试
 
-45 个测试用例覆盖全部核心模块：
-- `versions.test.ts`：版本号校验与比较（17 个用例）
-- `config.test.ts`：`resolveAutoUpdateMode()` 优先级与非法值回退（9 个用例）
-- `throttle.test.ts`：24 小时节流与 env 覆盖（7 个用例）
-- `state.test.ts`：原子写入与损坏恢复（6 个用例）
-- `lock.test.ts`：mkdir 锁与 stale 回收（7 个用例，含 30 分钟边界）
-- `notify.test.ts`：pendingNotice 读写与消费（6 个用例）
+- `packages/core/tests/update/`：70 个自动更新相关测试通过，覆盖版本、配置、节流、状态、锁、通知、checker、编排和 detached installer。
+- `packages/cli/tests/command/update.test.ts`：CLI 参数校验、指定版本环境变量、拒绝 `--list`/未知参数和 URL 参数化测试通过。
+- `tests/update-auto-e2e.test.ts`：离线真实运行 `latest.txt → install-template.sh`，验证 stable/beta 指针解析、SHA256、解压、冒烟、原子切换和失败时旧入口保留。
 
-全部测试通过，耗时 131ms。
+### 门禁
 
-### 集成验证
-
-1. **构建通过**：`make build` 成功，产物自检通过（git-status 锚点、止损阀、skill 嵌入、ripgrep 平台匹配）
-2. **门禁通过**：
-   - `bun run lint`：0 错误
-   - `bun run format:check`：全部文件格式正确
-   - `bun run lint:boundary`：包边界干净，0 处越界依赖
-3. **文档同步**：
-   - `bun run docs:gen-reference` 重新生成 `website/ref/settings.md`（含新增 `autoUpdate` 字段）
-   - `website/guide/auto-update.md` 用户指南已创建
-4. **选择性测试通过**：`bun run affected-tests:run` 覆盖本次 diff 触及的测试，3499 pass / 5 fail（3 个 fail 为既存问题：harbor Python 语法错误、holdout 超时；2 个 fail 已修复：update.test.ts 与 swe-bench-runner.test.ts）
+最终门禁命令及结果以本次验证输出为准：自动更新测试、离线 E2E、`affected-tests:run`、`make build`、`bun run lint`、`bun run format:check`、`bun run lint:boundary`。若某条门禁受仓库既有问题影响，必须在交付说明中列出具体命令和失败输出，不将其描述为全绿。
 
 ### 手动验证步骤
 
 1. `sc-dev` 启动开发版，观察是否显示 transient message（首次启动无 pendingNotice，应无消息）
 2. 设 `SID_CODE_AUTO_UPDATE=notify`，检查 settings.json 解析是否正确
-3. 设 `SID_CODE_UPDATE_CHECK_INTERVAL_HOURS=0.001`（3.6 秒），等待 24 小时后再次启动，检查是否触发新版本检查
+3. 设 `SID_CODE_UPDATE_CHECK_INTERVAL_HOURS=0.001`（3.6 秒），确认检查节流行为
 4. 查看 `~/.sid-code/updates/state.json`，确认 `lastCheckAt` / `consecutiveFailures` / `pendingNotice` 字段正确写入
-5. 同时启动两个 `sc-dev` 实例，检查只有一个执行更新检查（另一个日志应显示「锁已被持有」）
+5. 同时启动两个 `sc-dev` 实例，检查只有一个执行安装，另一个日志显示锁已被持有
+6. 在隔离 HOME 下人工执行真实 stable 更新 smoke，确认当前版本、配置保留和失败保护

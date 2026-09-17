@@ -4,7 +4,7 @@
  * 仅验证 dispatch 接线 + 帮助文本契约，不真跑 curl|bash（不发真实网络请求）。
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +64,15 @@ describe("sid-code update 子命令 - 文件契约", () => {
 });
 
 describe("sid-code update 子命令 - 行为契约", () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
   test("update.ts 通过 curl|bash 复用 install.sh，不重新实现下载/校验逻辑", () => {
     const content = readFileSync(UPDATE_TS, "utf-8");
     expect(content).toMatch(/execFileSync/);
@@ -71,12 +80,41 @@ describe("sid-code update 子命令 - 行为契约", () => {
     expect(content).toMatch(/install\.sh/);
   });
 
-  test("update.ts 支持 SID_CODE_INSTALL_URL 环境变量覆盖安装地址（通过 core 模块）", () => {
+  test("update.ts 通过参数化 URL 调用 curl，避免 shell 注入", () => {
     const content = readFileSync(UPDATE_TS, "utf-8");
-    // 重构后从 core 模块导入，环境变量在 core/update/config.ts 中处理
-    expect(content).toMatch(/INSTALL_URL.*from.*@sid-code\/core\/update\/config/);
+    expect(content).toContain('curl -fsSL "$1" | bash');
+    expect(content).not.toMatch(/curl -fsSL \$\{INSTALL_URL\}/);
   });
 
+  test("--version 参数校验并传入环境变量", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => {
+      calls.push(args);
+      return Buffer.from("");
+    };
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    await handleUpdateCommand(["--version", "0.1.602"], execute as never);
+    expect(calls).toHaveLength(1);
+    const options = calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+    expect(options.env.SID_CODE_VERSION).toBe("0.1.602");
+  });
+
+  test("非法 --version、--list 和未知参数拒绝执行安装", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => {
+      calls.push(args);
+      return Buffer.from("");
+    };
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    await expect(handleUpdateCommand(["--version", "invalid"], execute as never)).rejects.toThrow(
+      "版本号非法",
+    );
+    await expect(handleUpdateCommand(["--list"], execute as never)).rejects.toThrow(
+      "不支持 --list",
+    );
+    await expect(handleUpdateCommand(["--unknown"], execute as never)).rejects.toThrow("未知参数");
+    expect(calls).toHaveLength(0);
+  });
   test("update.ts 含 --help / -h 帮助处理，且不发起网络请求", async () => {
     const content = readFileSync(UPDATE_TS, "utf-8");
     expect(content).toMatch(/printHelp|--help|"-h"/);

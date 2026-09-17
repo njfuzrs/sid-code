@@ -28,26 +28,52 @@ const log = () => getLogger();
 
 const FAILURE_NOTIFICATION_THRESHOLD = 3;
 
-/**
- * 启动自动更新检查（fire-and-forget，不阻塞启动）
- *
- * 该函数同步返回，内部所有操作异步执行。任何异常都被捕获并记录到日志，
- * 不会上抛到主流程。
- */
-export function startAutoUpdateCheck(): void {
-  // 整个流程包在 async IIFE 里，确保任何异常都被捕获
-  void (async () => {
-    try {
-      await doCheck();
-    } catch (err) {
-      log().error("AUTO_UPDATE", `检查流程异常: ${err}`);
-    }
-  })();
+export interface AutoUpdateDependencies {
+  getCurrentVersion?: () => string;
+  getSettings?: () => ReturnType<typeof getSettings>;
+  fetchLatestVersion?: () => Promise<string | null>;
+  readState?: typeof readUpdateState;
+  patchState?: typeof patchUpdateState;
+  shouldCheck?: typeof shouldCheck;
+  acquireLock?: typeof acquireLock;
+  spawnInstall?: typeof spawnBackgroundInstall;
+  writeNotice?: typeof writePendingNotice;
 }
 
-async function doCheck(): Promise<void> {
+const defaultDependencies: Required<AutoUpdateDependencies> = {
+  getCurrentVersion: getRawVersion,
+  getSettings: () => getSettings(),
+  fetchLatestVersion,
+  readState: readUpdateState,
+  patchState: patchUpdateState,
+  shouldCheck,
+  acquireLock,
+  spawnInstall: spawnBackgroundInstall,
+  writeNotice: writePendingNotice,
+};
+
+/**
+ * 启动自动更新检查（fire-and-forget，不阻塞启动）
+ */
+export function startAutoUpdateCheck(): void {
+  void runAutoUpdateCheck();
+}
+
+/**
+ * 执行一次自动更新检查。公开该边界供测试验证编排逻辑，生产入口仍是 fire-and-forget。
+ */
+export async function runAutoUpdateCheck(dependencies: AutoUpdateDependencies = {}): Promise<void> {
+  const deps = { ...defaultDependencies, ...dependencies };
+  try {
+    await doCheck(deps);
+  } catch (err) {
+    log().error("AUTO_UPDATE", `检查流程异常: ${err}`);
+  }
+}
+
+async function doCheck(deps: Required<AutoUpdateDependencies>): Promise<void> {
   // 1. 读取当前版本
-  const currentVersion = getRawVersion();
+  const currentVersion = deps.getCurrentVersion();
 
   // 2. 检测 prerelease / dev 版本
   if (isPrereleaseVersion(currentVersion)) {
@@ -61,39 +87,39 @@ async function doCheck(): Promise<void> {
   }
 
   // 3. 读取 settings 和状态
-  const settings = getSettings().merged;
+  const settings = deps.getSettings().settings;
   const mode = resolveAutoUpdateMode(settings.autoUpdate);
   if (mode === "off") {
     log().info("AUTO_UPDATE", "自动更新已关闭（settings.autoUpdate=off）");
     return;
   }
 
-  const state = readUpdateState();
+  const state = deps.readState();
 
   // 4. 节流判定
-  if (!shouldCheck(state)) {
+  if (!deps.shouldCheck(state)) {
     log().info("AUTO_UPDATE", "距上次检查不足 24h，跳过");
     return;
   }
 
   // 5. 更新 lastCheckAt（即使后续失败也算检查过）
-  patchUpdateState({ lastCheckAt: new Date().toISOString() });
+  deps.patchState({ lastCheckAt: new Date().toISOString() });
 
   // 6. 拉取 latest.txt
-  const latestVersion = await fetchLatestVersion();
+  const latestVersion = await deps.fetchLatestVersion();
   if (!latestVersion) {
     // 网络失败或格式非法，静默退出
     const nextFailures = state.consecutiveFailures + 1;
-    patchUpdateState({ consecutiveFailures: nextFailures });
+    deps.patchState({ consecutiveFailures: nextFailures });
     if (nextFailures >= FAILURE_NOTIFICATION_THRESHOLD) {
       log().warn("AUTO_UPDATE", `连续失败 ${nextFailures} 次，写入 pendingNotice(failed)`);
-      writePendingNotice({
+      deps.writeNotice({
         type: "failed",
         fromVersion: currentVersion,
         createdAt: new Date().toISOString(),
       });
       // 归零，避免反复打扰
-      patchUpdateState({ consecutiveFailures: 0 });
+      deps.patchState({ consecutiveFailures: 0 });
     }
     return;
   }
@@ -107,7 +133,7 @@ async function doCheck(): Promise<void> {
       `线上 v${latestVersion} ${cmp === 0 ? "=" : "<"} 当前 v${currentVersion}，不更新`,
     );
     // 成功路径：重置失败计数
-    patchUpdateState({ consecutiveFailures: 0 });
+    deps.patchState({ consecutiveFailures: 0 });
     return;
   }
 
@@ -116,30 +142,30 @@ async function doCheck(): Promise<void> {
 
   if (mode === "notify") {
     // notify 模式：只提示，不下载
-    writePendingNotice({
+    deps.writeNotice({
       type: "available",
       fromVersion: currentVersion,
       toVersion: latestVersion,
       createdAt: new Date().toISOString(),
     });
-    patchUpdateState({ consecutiveFailures: 0 });
+    deps.patchState({ consecutiveFailures: 0 });
     return;
   }
 
   // 9. auto 模式：抢锁 + spawn 子进程
-  const lock = acquireLock();
+  const lock = deps.acquireLock();
   if (!lock) {
     log().info("AUTO_UPDATE", "锁已被其他实例持有，跳过");
     return;
   }
 
   try {
-    spawnBackgroundInstall(latestVersion, currentVersion, lock.lockDir);
-    patchUpdateState({ consecutiveFailures: 0 });
+    deps.spawnInstall(latestVersion, currentVersion, lock.lockDir);
+    deps.patchState({ consecutiveFailures: 0 });
   } catch (err) {
     log().error("AUTO_UPDATE", `spawn 子进程失败: ${err}`);
     lock.release(); // spawn 失败时主动释放锁（成功时子进程负责释放）
     const nextFailures = state.consecutiveFailures + 1;
-    patchUpdateState({ consecutiveFailures: nextFailures });
+    deps.patchState({ consecutiveFailures: nextFailures });
   }
 }

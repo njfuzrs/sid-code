@@ -74,6 +74,14 @@ sid-code update
 SID_CODE_CHANNEL=beta sid-code update
 ```
 
+也可以通过 CLI 参数安装指定的稳定版本：
+
+```bash
+sid-code update --version 0.1.602
+```
+
+版本号必须是完整的 `x.y.z` 稳定版格式。`--list` 当前不受支持，因为发布服务器只提供稳定版和 beta 通道指针，不提供历史版本清单。
+
 ## 更新失败怎么办
 
 自动更新失败时，sid-code 会保持当前版本不变，并在下次启动时显示失败通知。
@@ -94,17 +102,21 @@ cat ~/.sid-code/updates/last-update.log
 
 ## 回滚到旧版本
 
-如果新版本出现问题，可以回滚到之前的版本：
+如果新版本出现问题，可以通过环境变量指定一个已发布的稳定版本：
 
 ```bash
-# 查看可用的历史版本
-sid-code update --list
-
-# 安装指定版本
-sid-code update --version 0.1.602
+SID_CODE_VERSION=0.1.602 sid-code update
 ```
 
-回滚操作会切换到指定版本的二进制文件，配置和状态数据保持不变。
+版本号必须是完整的 `x.y.z` 稳定版本号。当前发布服务器只提供稳定版和 beta 通道指针，不提供历史版本清单，因此 `sid-code update --list` 不受支持。
+
+如果需要体验 beta 版本：
+
+```bash
+SID_CODE_CHANNEL=beta sid-code update
+```
+
+回滚或切换通道不会修改配置和状态数据。
 
 ## 技术细节
 
