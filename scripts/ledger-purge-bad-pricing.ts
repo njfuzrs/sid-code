@@ -161,7 +161,11 @@ async function main(): Promise<number> {
   }
 
   // 备份必须成功才允许写 —— 删除不可逆。
-  const backup = `${path}.bak-${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15)}`;
+  // `YYYYMMDDHHMMSS`（14 位）。⚠ 别写 slice(0, 15)：`replace` 把 `T` 也删了，
+  // 所以第 15 个字符已经是毫秒前的那个 `.` ⇒ 文件名会带个尾点
+  // （实测产出 `usage-ledger.jsonl.bak-20260917031817.`）。
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const backup = `${path}.bak-${stamp}`;
   try {
     copyFileSync(path, backup);
   } catch (e) {
