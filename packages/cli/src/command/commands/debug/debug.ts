@@ -113,6 +113,32 @@ const mod: LocalCommandModule = {
         }
         lines.push(`平台地址   : ${uploadUrl}`);
       }
+
+      // ── 上传积压体检 ──
+      //
+      // 这一段存在的理由是「上传静默失效藏了九天」那次事故：本地 52 个会话
+      // 一个都没上云，而**没有任何地方会说出这个数字**。debug.log 只打
+      // 「上传已启用」；`delete_after_upload: false` 让会话目录看起来一切正常
+      // （traj/raw/events 都在、都是新的），肉眼分辨不出没上传。
+      // 真正的信号是 `.uploaded` 标记缺失 —— 现在它有地方可看了。
+      try {
+        const { getUploadBacklog } = await import("@sid-code/core/trace/backfill.ts");
+        const { sidPaths } = await import("@sid-code/core/config/paths.ts");
+        const outputDir = ctx.config.trace?.outputDir ?? sidPaths.trajectories();
+        const b = getUploadBacklog({ outputDir, currentSessionId: sessionId });
+        lines.push(
+          `本地会话   : ${b.totalSessions} 个（已上传 ${b.uploaded}，待补传 ${b.pending}）`,
+        );
+        lines.push(
+          `重试队列   : ${b.queueEntries === null ? "读取失败" : `${b.queueEntries} 条`}` +
+            (b.ghost > 0 ? `　幽灵目录 ${b.ghost} 个` : ""),
+        );
+        if (b.pending > 10) {
+          lines.push(`            ⚠ 待补传偏多，可运行 sid-code --upload-traces 立即补传`);
+        }
+      } catch {
+        /* 体检失败不影响 /debug 主体输出 */
+      }
     }
 
     lines.push(sep);

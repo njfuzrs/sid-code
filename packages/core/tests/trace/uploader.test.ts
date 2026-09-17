@@ -622,9 +622,14 @@ describe("UploadManager", () => {
       return new Response("{}", { status: 200 });
     }) as any;
 
-    await mgr.processRetryQueue();
+    const result = await mgr.processRetryQueue();
 
     globalThis.fetch = origFetch;
+
+    // 「条目被清除」与「静默丢弃」的区别正是本次修复的核心：清除必须留下计数，
+    // 否则 CLI 无法区分"传成功了 N 个"和"丢了 N 个"（实测 1267 条即为后者）。
+    expect(result.droppedMissingFile).toBe(1);
+    expect(result.uploaded).toBe(0);
 
     // 文件不存在，不调用 fetch，条目被清除
     expect(fetchCalled).toBe(false);
@@ -643,8 +648,14 @@ describe("UploadManager", () => {
     // 设置一个不存在的队列路径
     (mgr as any).retryQueuePath = join(tmpDir, "nonexistent_queue.jsonl");
 
-    // 不应抛异常
-    await expect(mgr.processRetryQueue()).resolves.toBeUndefined();
+    // 不应抛异常。
+    // ⚠️ 此处原为 `resolves.toBeUndefined()` —— 它锁死的是"返回 void"这个旧契约，
+    // 而 void 返回正是「静默丢数据」的载体：实测队列 1267 条清空到 0、云端一条没增，
+    // 调用方却只能打印「处理完成」。现在返回全 0 统计，语义是"确实什么都没处理"。
+    const r = await mgr.processRetryQueue();
+    expect(r.total).toBe(0);
+    expect(r.remaining).toBe(0);
+    expect(r.droppedMissingFile).toBe(0);
   });
 
   // ─── 心跳检测 ───

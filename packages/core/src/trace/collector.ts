@@ -66,6 +66,17 @@ export interface TraceUploaderInterface {
   uploadSession(sessionDir: string, sessionId: string): Promise<{ allConfirmed: boolean }>;
   /** 获取上传平台基础 URL（/debug 显示用，可选实现） */
   getBaseUrl?(): string;
+  /**
+   * 启动补传：扫描缺 `.uploaded` 标记的历史会话并补传（可选实现）。
+   * 由 collector 在 SessionStart 末尾 fire-and-forget 触发 —— 只有那里才有
+   * resume 感知的权威 trace session id 可以传给 `currentSessionId`。
+   */
+  backfillPendingSessions?(opts: {
+    currentSessionId?: string;
+    signal?: AbortSignal;
+  }): Promise<{ pending: number; attempted: number; uploaded: number }>;
+  /** 停止周期性队列扫描（可选实现，退出时清理定时器） */
+  stopQueueScan?(): void;
 }
 
 // ─── 采集器选项 ───
@@ -188,6 +199,30 @@ export class TraceCollector {
   private readonly outputDir: string;
   /** 本地最大保留会话数（LRU 清理用，默认 100） */
   private readonly maxSessionsRetained: number;
+  /**
+   * SessionEnd 里等待上传的时间预算（毫秒）。0 = 不在退出路径等上传。
+   *
+   * 为什么要可调而不是写死 10 秒：**不同退出路径的预算差两个数量级**。
+   *   - 评测 / headless：进程跑完自然退出，愿意等，10s 合适（这也是过去唯一能传成功的路径）；
+   *   - 信号退出（Ctrl-C / SIGTERM / SIGHUP）：调用方 1.2s 后就 `process.exit()`，
+   *     给 10s 预算等于**必然被杀在半路**，白建一次连接还让退出多卡 1.2s。
+   * 所以由退出路径自己声明预算，collector 不猜。
+   */
+  private uploadBudgetMs = 10_000;
+  /**
+   * 会话目录已被判定为空壳并删除 —— 此后**任何**落盘都必须被拒绝。
+   *
+   * ⚠️ 不加这个闸会产出「幽灵目录」（实测 2026-09-16，inode 从 102766900 变成
+   * 102766946 —— 目录是被删掉又重建的）：`cleanupIfBlankSession()` 删完目录 return 后，
+   * side-call 观察者仍可能触发 `forceRebuildTraj()`，而落盘走的是
+   * `Bun.write()` —— **它会自动创建缺失的父目录**。于是盘上重新出现一个
+   * 只含 `session.traj`、没有 `events.jsonl` 的空壳目录，而且：
+   *   - 启动清理放它过（`pruneStaleBlankSessions` 的 IGNORABLE_FILES 只含
+   *     events/warn/heartbeat，见到 `session.traj` 就判「有数据，保留」）→ 永久堆积；
+   *   - 补传会把它当正经会话传上云 → 正是空壳判定想避免的噪音。
+   * 这个坑在 SIGHUP 修复后才变得常见（此前 handleSessionEnd 根本跑不到空壳判定）。
+   */
+  private sessionDisposed = false;
   /** 是否把请求/响应原文写进 raw.jsonl（默认 true；env `SID_CODE_TRACE_NO_RAW=1` 可关） */
   private readonly recordRawPayloads: boolean;
   private initialized = false;
@@ -294,7 +329,7 @@ export class TraceCollector {
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
     // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
     setSideStatsObserver(() => {
-      if (!this.initialized) return;
+      if (!this.initialized || this.sessionDisposed) return;
       this.syncSideCallMetadata();
       void this.forceRebuildTraj();
     });
@@ -308,6 +343,16 @@ export class TraceCollector {
    */
   isRecordingRawPayloads(): boolean {
     return this.recordRawPayloads;
+  }
+
+  /**
+   * 设置 SessionEnd 等待上传的预算（毫秒）。传 0 表示退出路径完全不等上传，
+   * 数据交由下次启动的补传（backfill.ts）兜住。
+   *
+   * 由退出路径在 fire SessionEnd **之前**调用。负数/非法值归一到 0。
+   */
+  setUploadBudgetMs(ms: number): void {
+    this.uploadBudgetMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
   }
 
   /**
@@ -875,6 +920,54 @@ export class TraceCollector {
       }
     } catch {
       /* 静默：索引是辅助功能 */
+    }
+
+    // ── P0 最后一道防线：启动补传缺 `.uploaded` 标记的历史会话 ──
+    //
+    // 为什么补传必须存在（2026-09-16 实测 52 个本机会话）：
+    //   - 上传成功 0/52，`.uploaded` 标记 0/52；
+    //   - `events.jsonl` 里有 SessionEnd 的只有 13/52，且**全是 reason=error**（崩溃兜底）；
+    //   - `messages.json`（handleSessionEnd 在上传**之前**写）0/52 —— 连上传前的落盘都没到；
+    //   - `heartbeat.txt`（SessionEnd 末尾会删）残留 52/52 —— 独立佐证收尾从未完成。
+    // 也就是说「退出时上传」这条唯一自动路径，在日常交互里**基本不执行**。
+    // 补传只依赖磁盘现状（目录在、traj 在、标记缺），与退出路径是否跑到完全解耦。
+    //
+    // 这里是唯一正确的触发点：`traceSessionId` 已做过 resume 归一（isResume 时等于
+    // `resumed_from`，即真实轨迹目录名）。用进程 id 当护栏会空转 —— 见 init-helpers 注释。
+    //
+    // fire-and-forget + 全量 catch：采集永不阻塞主循环（不变量 1）。
+    if (this.uploader?.backfillPendingSessions) {
+      void this.uploader
+        .backfillPendingSessions({ currentSessionId: traceSessionId })
+        .then((r) => {
+          if (!r || r.pending === 0) return;
+          getLogger().info(
+            "TRACE",
+            `启动补传：待补传 ${r.pending}，本轮尝试 ${r.attempted}，成功 ${r.uploaded}`,
+          );
+          // 积压偏多时升级为 WARN。
+          //
+          // ⚠️ 判据是**补传后仍未成功的数量**，不是补传前的待传数 —— 后者在正常恢复
+          // 期（比如这次修复上线后第一次启动，盘上躺着 51 个历史会话）也会很大，
+          // 拿它告警等于在"系统正在自愈"时刷红，几次之后就没人看了。
+          // 真正值得报的是「传了但没传上去」：那才说明通道有问题。
+          //
+          // 这条告警存在的理由：上一次事故里告警系统**已经看见了**症状，却把它判成
+          // 无害 —— warn.log 里写着「发现 51 个未正常收尾的历史会话（…非 hang）」。
+          // 「非 hang」是对的，但它同时也是「51 个会话没上传」，那句话把唯一的线索
+          // 标成了背景噪音。所以这里必须说出"没上云"这个后果，而不只是描述现象。
+          const stuck = r.failed + r.errors + r.deferred;
+          if (stuck > 10) {
+            getLogger().warn(
+              "TRACE",
+              `有 ${stuck} 个会话的轨迹仍未上云（失败 ${r.failed}、异常 ${r.errors}、` +
+                `顺延 ${r.deferred}）。数据仍在本地，可运行 sid-code --upload-traces 立即补传。`,
+            );
+          }
+        })
+        .catch((err) => {
+          getLogger().warn("TRACE", `启动补传失败（不影响会话）: ${err}`);
+        });
     }
   }
 
@@ -1587,8 +1680,36 @@ export class TraceCollector {
     // 将在途 pair 标记为 partial 塞进 pairs，使 rebuildTraj 能写出 traj（哪怕只有请求侧）。
     // 若不处理，中断会话 pairs.length=0 → traj 无任何轮次信息，诊断全盲。
     if (this.currentPair) {
+      // ⚠️ 抢救「这一轮到底收到过内容吗」的证据。
+      //
+      // 为什么必须在这里做：下面 `content: []` 把响应侧清空，而 `isBlankSession()`
+      // 的放宽分支正是用 `response.content.length === 0` 判「从未收到任何内容 → 空壳可删」。
+      // 于是**判据与它想表达的语义相互矛盾**：无论真实情况如何，中断轮的 content 恒为空，
+      // 那条「只要有一轮收到过内容就保留」的例外**永远不会成立**。
+      //
+      // 实测后果（2026-09-16，SIGHUP 修好后才暴露）：一个已经流出内容
+      // （events.jsonl 里有 `first_content`、raw.jsonl 有记录）的会话，
+      // 被 SIGHUP 中断后整个目录被当空壳删掉 —— 网关已计费、内容已产出，诊断数据却没了。
+      // 这比"没上传"严重一个量级：没上传的数据还在本地，这个是直接消失。
+      //
+      // 证据取自流观测器快照（chunksReceived > 0 = 确实收到过 chunk）。
+      // 快照可能取不到（非 queryLoop 来源 / 已被清理），取不到时**按保守方向处理**：
+      // 记为 undefined，由 isBlankSession 走「拿不到证据就保留」的分支。
+      let receivedContent: boolean | undefined;
+      try {
+        const ref = this.streamSnapshotRefs.get(this.currentPair.index);
+        const snap = ref
+          ? getStreamSnapshot(ref.turn_index, ref.loop_id)
+          : getStreamSnapshot(this.currentPair.index);
+        // 三态：true=确实收到过；false=有快照且明确 0 chunk；undefined=无快照，不可判。
+        // 别把「无快照」压成 false —— 那是"二态布尔吞掉不可判态"，本仓踩过同型的坑。
+        receivedContent = snap ? snap.chunksReceived > 0 : undefined;
+      } catch {
+        receivedContent = undefined;
+      }
       const partialPair: RequestResponsePair = {
         ...(this.currentPair as RequestResponsePair),
+        stream_received_content: receivedContent,
         response: {
           content: [],
           stop_reason: "interrupted",
@@ -1779,29 +1900,56 @@ export class TraceCollector {
       return;
     }
 
-    // 触发上传（有限等待）
+    // ── 触发上传（有限等待，预算由调用方通过 uploadBudgetMs 决定） ──
+    //
+    // ⚠️ 这里原先写死等 10 秒，注释还写着「超时后上传继续在后台运行」——
+    // **在信号/退出路径上那句话是假的**：调用方 race 完就主动 `process.exit()`，
+    // 进程直接消失，没有任何「后台」可言。那句注释让排查者以为数据最终会传上去，
+    // 是这个 bug 藏了这么久的原因之一（见 backfill.ts 头部的实测数据）。
+    //
+    // 现在的语义是诚实的：
+    //   - 预算内传完就传完（正常/评测路径给足预算，行为不变）；
+    //   - 传不完不再假装「后台继续」，而是**明确交给下次启动的补传**
+    //     （backfill.ts，判据是 `.uploaded` 标记缺失，与退出路径解耦）。
+    // 这样退出快 + 不丢数据同时成立，而不是用体验换正确性。
     if (this.uploader) {
-      try {
-        const uploadPromise = this.uploader.uploadSession(
-          this.writer.getSessionDir(),
-          this.metadata.session_id,
-        );
-        // 最多等 10 秒，超时后上传继续在后台运行
-        const result = await Promise.race([
-          uploadPromise,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
-        ]);
+      const budgetMs = this.uploadBudgetMs;
+      if (budgetMs <= 0) {
+        // 预算为 0 = 调用方明确要求不在退出路径等上传（如信号退出）。
+        // 不发起请求：发了也会被 process.exit 杀在半路，只是白建一次连接。
+        getLogger().info("TRACE", "退出路径不等待上传，已交由下次启动补传");
+      } else {
+        try {
+          const uploadPromise = this.uploader.uploadSession(
+            this.writer.getSessionDir(),
+            this.metadata.session_id,
+          );
+          const result = await Promise.race([
+            uploadPromise,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs)),
+          ]);
 
-        if (result === null) {
-          getLogger().info("TRACE", "上传超时，任务将在后台继续或由重试队列处理");
-        } else if (!result.allConfirmed) {
-          getLogger().warn("TRACE", "部分文件上传失败，已加入重试队列");
-        } else {
-          getLogger().info("TRACE", "上传完成，本地文件已清理");
+          if (result === null) {
+            getLogger().info(
+              "TRACE",
+              `上传未在 ${budgetMs}ms 预算内完成，已交由重试队列/下次启动补传`,
+            );
+          } else if (!result.allConfirmed) {
+            getLogger().warn("TRACE", "部分文件上传失败，已加入重试队列");
+          } else {
+            getLogger().info("TRACE", "上传完成");
+          }
+        } catch (err: any) {
+          getLogger().warn("TRACE", `上传异常: ${err.message}`);
         }
-      } catch (err: any) {
-        getLogger().warn("TRACE", `上传异常: ${err.message}`);
       }
+    }
+
+    // 停掉周期性队列扫描（退出后没有意义，且定时器虽 unref 也应显式清理）
+    try {
+      this.uploader?.stopQueueScan?.();
+    } catch {
+      /* 清理失败静默 */
     }
 
     // 停止心跳并清理 heartbeat.txt
@@ -1882,6 +2030,16 @@ export class TraceCollector {
     if (!this.currentPair && this.pairs.length > 0) {
       const allInterruptedEmpty = this.pairs.every((p) => {
         const contentLen = Array.isArray(p.response?.content) ? p.response!.content.length : 0;
+        // `stream_received_content` 三态，但这里只**新增一条保留规则**，不改其余行为：
+        //   true      → 有正面证据收到过内容 → 不是空壳（有诊断价值 + 网关可能已计费）→ 保留
+        //   false/undefined → 回落到原判据（content 为空即空壳）
+        //
+        // ⚠️ 刻意写 `=== true` 而不是 `!== false`。写成 `!== false` 会把「没有快照」
+        // （undefined，例如直接 fire hook 的路径、快照已被清理）也判成保留，
+        // 于是「敲一句 hi 随即 Ctrl-C」这类噪音会话（实测全天 18 条）从此永不清理 ——
+        // 那是把「缺证据」当成「证据表明有内容」，方向反了，且会让盘上堆满空壳。
+        // 现在的性质是**单调的**：老代码保留的仍然保留，只把老代码误删的那类救回来。
+        if (p.stream_received_content === true) return false;
         return p.is_partial === true && p.stop_reason === "interrupted" && contentLen === 0;
       });
       if (allInterruptedEmpty) return true;
@@ -1897,6 +2055,15 @@ export class TraceCollector {
   private cleanupIfBlankSession(): void {
     try {
       if (!this.isBlankSession()) return;
+      // 先置位再删：置位后所有落盘路径（flushTraj / side-call 观察者）都会拒写，
+      // 避免删完又被 Bun.write 的「自动建父目录」重建成幽灵目录。
+      this.sessionDisposed = true;
+      // 摘掉 side-call 观察者：它持有 this，且会在删目录后继续触发落盘。
+      try {
+        setSideStatsObserver(null);
+      } catch {
+        /* 摘除失败不影响删除 */
+      }
       const dir = this.writer.getSessionDir();
       if (existsSync(dir)) {
         rmSync(dir, { recursive: true, force: true });
@@ -2436,6 +2603,8 @@ export class TraceCollector {
 
   /** 实际执行 buildTrajectory + 落盘（节流与强制路径共用）。 */
   private async flushTraj(): Promise<void> {
+    // 目录已被空壳清理删除：绝不能再写，否则 Bun.write 会把目录重建成幽灵目录。
+    if (this.sessionDisposed) return;
     this.trajDirty = false;
     try {
       const traj = buildTrajectory(this.pairs, this.metadata);

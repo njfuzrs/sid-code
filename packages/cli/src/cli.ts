@@ -883,16 +883,50 @@ async function handleUploadTraces(config: Config): Promise<void> {
     compress: traceUpload.compress,
     deleteAfterUpload: traceUpload.deleteAfterUpload ?? false,
     outputDir,
+    maxQueueRetries: traceUpload.maxQueueRetries ?? 50,
     // §6.4：手动补传队列时也据 events.jsonl 校正历史会话 cost=0
     availableModels: config.availableModels,
   });
 
+  // ── ① 处理持久化重试队列 ──
+  //
+  // ⚠️ 这里原本只打印「正在处理待上传队列... / 处理完成」两行，而 processRetryQueue()
+  // 返回 void —— 于是「成功传了 1267 个」和「静默丢了 1267 个」**在输出上完全一样**。
+  // 2026-09-16 实测就是后者：队列从 1267 条清空到 0，云端轨迹一条没增加。
+  // 排查者看到「处理完成」会认为补传成功了，这比没有输出更糟。
   console.log("正在处理待上传队列...");
   try {
-    await mgr.processRetryQueue();
-    console.log("处理完成");
+    const r = await mgr.processRetryQueue();
+    const { UploadManager: UM } = await import("@sid-code/core/trace/uploader.ts");
+    console.log(UM.formatQueueResult(r));
+    if (r.droppedMissingFile > 0) {
+      console.log(
+        `⚠ 其中 ${r.droppedMissingFile} 条的会话目录已不存在（多为本地 LRU 轮转清理），` +
+          `本地已无副本，无法再补传。`,
+      );
+    }
   } catch (err: any) {
     console.error(`处理失败: ${err.message}`);
+    process.exit(1);
+  }
+
+  // ── ② 扫描并补传「目录还在但缺 .uploaded 标记」的会话 ──
+  //
+  // 这一步是队列**替代不了**的：队列条目只在"上传失败过"时才会写入，而实测的故障形态是
+  // 上传**从未被执行到**（52 个会话里 39 个连 SessionEnd 都没触发），队列里因此一条都没有。
+  // 判据改成只看磁盘现状（目录在、traj 在、标记缺），与退出路径是否跑到完全解耦。
+  //
+  // 手动命令给足额度：用户显式跑这条命令就是要补传，不该只传 20 个就停。
+  console.log("正在扫描未上传的历史会话...");
+  try {
+    const { formatBackfillResult } = await import("@sid-code/core/trace/backfill.ts");
+    const b = await mgr.backfillPendingSessions({
+      maxSessions: Number.POSITIVE_INFINITY,
+      concurrency: 3,
+    });
+    console.log(formatBackfillResult(b));
+  } catch (err: any) {
+    console.error(`补传扫描失败: ${err.message}`);
     process.exit(1);
   }
 }
