@@ -41,7 +41,10 @@ function makeRelease(): FakeRelease {
   const tarRoot = join(root, "payload", "sid-code");
   mkdirSync(tarRoot, { recursive: true });
   writeFileSync(join(tarRoot, "sid-code"), "#!/bin/bash\necho new\n", { mode: 0o700 });
-  const tarball = join(versionDir, `sid-code-${version}-darwin-arm64.tar.gz`);
+  const tarball = join(
+    versionDir,
+    `sid-code-${version}-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`,
+  );
   const archive = spawnSync("tar", ["-czf", tarball, "-C", join(root, "payload"), "sid-code"], {
     encoding: "utf8",
   });

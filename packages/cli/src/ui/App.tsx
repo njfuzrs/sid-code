@@ -589,7 +589,6 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       .then(({ consumePendingNotice, formatNoticeText }) => {
         const notice = consumePendingNotice();
         if (notice) {
-          const { TransientMessageType } = require("./contexts/UIStateContext.tsx");
           showTransientMessage(formatNoticeText(notice), TransientMessageType.Hint);
         }
       })

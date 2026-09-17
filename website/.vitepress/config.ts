@@ -69,6 +69,7 @@ const GUIDE_SIDEBAR = [
     items: [
       { text: "交互模式与键位", link: "/use/interactive" },
       { text: "会话管理", link: "/use/sessions" },
+      { text: "自动更新", link: "/use/auto-update" },
     ],
   },
   {

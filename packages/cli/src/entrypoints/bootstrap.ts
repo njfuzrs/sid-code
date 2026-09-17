@@ -104,7 +104,12 @@ async function main(): Promise<void> {
   if (args[0] === "update") {
     profileCheckpoint("bootstrap_route_resolved");
     const { handleUpdateCommand } = await import("../command/update.ts");
-    await handleUpdateCommand(args.slice(1));
+    try {
+      await handleUpdateCommand(args.slice(1));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
     return;
   }
 
