@@ -24,12 +24,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePricing, effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
 import {
   isOfficialEndpoint,
+  convertRawEntry,
+  parseBillingExpr,
+  loadGatewayCache,
   __resetGatewayPricingForTest,
 } from "@sid-code/core/llm/gateway-pricing.ts";
 import { lookupRegistry, getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
@@ -452,5 +455,178 @@ describe("D 组 · 单价逐项偏离门禁", () => {
       if (p.cacheRead > p.input) bad.push(`${name}: cacheRead ${p.cacheRead} > input ${p.input}`);
     }
     expect(bad).toEqual([]);
+  });
+});
+
+/**
+ * D 组扩展 · 网关渠道条目的**同记录自比**门禁（2026-09-17）
+ *
+ * ## 为什么原来那道 D 组门禁一次都没拦住本次事故
+ *
+ * 原门禁只有一处 `deviations("deepseek-v4-pro", "https://api.deepseek.com")` ——
+ * **主语是「官方端点 + 单个模型」**，任何网关渠道条目（`ali-` / `tx-` / `origin-` 前缀）
+ * 从不进入。而本次 12 条受损条目**全部**是网关渠道条目。
+ *
+ * 更深一层：`deviations` 的期望值取自 `lookupRegistry(model)?.pricing`，而 12 条里
+ * **9 条根本不在注册表**。那种情况下 `if (!actual || !expected) return ` 返回空对象，
+ * `for` 循环零次迭代，**一条断言都不执行而测试全绿** —— 与记忆库那条
+ * 「`if(环境状态)` 包住断言 → 本机零断言全绿」同形。
+ * ⇒ 所以这道门禁不能只是"多传几个模型名"，必须换一个**不依赖注册表**的期望值来源。
+ *
+ * ## 换成什么：同一条记录内部自比
+ *
+ * 每条 `tiered_expr` 记录里并列着两套价（残留旧字段 + 当前生效 expr）。判据是
+ * **「解析结果必须等于 expr、且在两套价分歧时不等于 legacy」** —— 不需要任何外部黄金基准。
+ *
+ * ⚠ 判据刻意**不是**"12 条全部自洽"：上游哪天把旧字段修对了，那种断言会变绿，
+ * 而"我们究竟读了哪一套字段"就再也测不出来了。要钉住的是**取数口径**，不是上游的数据质量。
+ */
+describe("D 组扩展 · 网关渠道 tiered_expr 条目（同记录自比）", () => {
+  /** 实拉原始记录（2026-09-17，12 条）。手编夹具测不出本次 bug，见夹具文件头注释。 */
+  const FIXTURE = JSON.parse(
+    readFileSync(join(import.meta.dir, "../fixtures/gateway-pricing-tiered-expr.json"), "utf8"),
+  ) as { data: Array<Record<string, unknown>> };
+
+  /** 旧字段换算值（修复前的口径）：`model_ratio × 2`，output/cacheRead 按比例派生。 */
+  function legacyPricing(raw: Record<string, unknown>) {
+    const mr = raw.model_ratio as number | undefined;
+    if (typeof mr !== "number") return null;
+    const input = mr * 2;
+    const comp = typeof raw.completion_ratio === "number" ? raw.completion_ratio : 0;
+    const cache = typeof raw.cache_ratio === "number" ? raw.cache_ratio : undefined;
+    return {
+      input,
+      output: input * comp,
+      // 缺 cache_ratio 时下游落 `input × 0.1` 兜底 —— 这正是本次的主放大器，
+      // 所以复刻修复前口径时必须把兜底也算进来，否则门禁自证会低估问题。
+      cacheRead: cache !== undefined ? input * cache : input * 0.1,
+    };
+  }
+
+  test("夹具形态自证：12 条、全部 tiered_expr、且含两条缺 cache_ratio 的", () => {
+    // 没有这条，夹具被误改成空数组时下面所有 for 循环都会零次迭代而全绿
+    //（本仓已经吃过一次「过滤后清单为空 → 打出 ✅」的亏）。
+    expect(FIXTURE.data.length).toBe(12);
+    expect(FIXTURE.data.every((e) => e.billing_mode === "tiered_expr")).toBe(true);
+    const missingCache = FIXTURE.data.filter((e) => e.cache_ratio === undefined);
+    expect(missingCache.map((e) => e.model_name).sort()).toEqual([
+      "origin-deepseek-v4-1-flash",
+      "origin-deepseek-v4-flash-vision",
+    ]);
+  });
+
+  test("门禁自证：修复前的口径确实会被这道门禁拦住", () => {
+    // 判据是「红的是哪条」：逐条算旧口径 vs expr 的偏离，证明阈值(2×)在多条上会红。
+    // 没有这一步，下面那些断言可能是在锁一个想象中的实现。
+    const flagged: string[] = [];
+    let worst = 1;
+    for (const raw of FIXTURE.data) {
+      const expr = parseBillingExpr(raw.billing_expr)!;
+      const legacy = legacyPricing(raw)!;
+      for (const [item, a, b] of [
+        ["input", legacy.input, expr.input],
+        ["output", legacy.output, expr.output],
+        ["cacheRead", legacy.cacheRead, expr.cacheRead],
+      ] as const) {
+        const ratio = a / b;
+        if (ratio > 2 || ratio < 1 / 2) flagged.push(`${raw.model_name as string}.${item}`);
+        worst = Math.max(worst, ratio);
+      }
+    }
+    // 实测：12 条里 11 条至少一项超阈值（唯一自洽的是 tx-deepseek-v4-flash）。
+    expect(new Set(flagged.map((f) => f.split(".")[0])).size).toBeGreaterThanOrEqual(10);
+    // 最离谱那一格（origin-deepseek-v4-1-flash 的 cacheRead：7.5 兜底 vs 0.00548）远超千倍。
+    expect(worst).toBeGreaterThan(1000);
+  });
+
+  test("有 expr 时解析结果逐项等于 expr，且分歧项不等于 legacy", () => {
+    // 这是本组的核心断言。**逐项**（input/output/cacheRead）比，不看总额 ——
+    // 本次偏差有正有负（7 个有账本记录的模型里 4 个是低报），
+    // 任何"只看最终金额"的校验都会被方向相反的错误互相掩护骗过。
+    let divergentItems = 0;
+    for (const raw of FIXTURE.data) {
+      const name = raw.model_name as string;
+      const expr = parseBillingExpr(raw.billing_expr)!;
+      const converted = convertRawEntry(raw)!;
+      expect(converted.entry.priceSource, `${name} 未走 expr 口径`).toBe("expr");
+      // expr 系数是**空闲价**，存储口径是**高峰价**（空闲由 offPeakMultiplier 派生）。
+      const mult = converted.entry.peakWindows?.length ? 2 : 1;
+      expect(converted.entry.input, `${name}.input`).toBeCloseTo(expr.input, 9);
+      expect(converted.entry.output, `${name}.output`).toBeCloseTo(expr.output, 9);
+      expect(converted.entry.cacheRead!, `${name}.cacheRead`).toBeCloseTo(expr.cacheRead, 11);
+      // cacheRead 绝不能缺失：缺了就会落 input×0.1 兜底（本次主放大器，高报 2738×）。
+      expect(converted.entry.cacheRead, `${name}.cacheRead 缺失`).toBeDefined();
+
+      const legacy = legacyPricing(raw);
+      if (legacy && Math.abs(legacy.input / expr.input - 1) > 0.01) {
+        divergentItems++;
+        expect(converted.entry.input, `${name} 读成了停止维护的 legacy 值`).not.toBeCloseTo(
+          legacy.input,
+          6,
+        );
+      }
+      expect(mult).toBeGreaterThan(0);
+    }
+    // 分母自证：若夹具里两套价恰好全一致，上面那条 not.toBeCloseTo 会一次都不执行。
+    expect(divergentItems, "夹具里没有任何分歧项，本门禁失去意义").toBeGreaterThanOrEqual(9);
+  });
+
+  test("窗口是渠道级事实：ali-* 与其余渠道的窗口不同（不能用厂商级常量）", () => {
+    const byName = new Map(FIXTURE.data.map((e) => [e.model_name as string, e]));
+    const ali = convertRawEntry(byName.get("ali-deepseek-v4-pro")!)!.entry;
+    const other = convertRawEntry(byName.get("deepseek-v4-pro")!)!.entry;
+    // 北京 8-22 → UTC 0-14 单窗口；北京 9-12/14-18 → UTC 1-4 / 6-10 两段。
+    expect(ali.peakWindows).toEqual([{ startHour: 0, endHour: 14 }]);
+    expect(other.peakWindows).toEqual([
+      { startHour: 1, endHour: 4 },
+      { startHour: 6, endHour: 10 },
+    ]);
+    expect(ali.peakWindows).not.toEqual(other.peakWindows);
+  });
+
+  test("网关渠道价经 resolvePricing 生效（端到端，不只是 convertRawEntry）", () => {
+    // 门禁必须落在**真实取价入口**上：只测 convertRawEntry 会漏掉
+    // 「解析对了但没透传到 ModelPricing」那一族死接线（toModelPricing 曾丢掉窗口两格）。
+    const EP = "https://gw-expr.example.com";
+    const models: Record<string, unknown> = {};
+    for (const raw of FIXTURE.data) {
+      const r = convertRawEntry(raw)!;
+      models[r.name] = r.entry;
+    }
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(
+      sidPaths.gatewayPricing(),
+      JSON.stringify({
+        schema_version: 3,
+        endpoints: {
+          [EP]: {
+            source_url: `${EP}/api/pricing`,
+            fetched_at: Date.now(),
+            pricing_version: "expr",
+            models,
+          },
+        },
+      }),
+      "utf8",
+    );
+    loadGatewayCache();
+
+    const M = "origin-deepseek-v4-1-flash";
+    const stored = resolvePricing(M, undefined, EP)!;
+    expect(stored, `${M} 取不到网关价`).toBeTruthy();
+    // 修复前这里是 75（旧字段 37.5 × 2）。
+    expect(stored.input).toBeCloseTo(0.2739726, 9);
+    expect(stored.input).not.toBeCloseTo(75, 1);
+    expect(stored.peakWindows?.length, "窗口未透传到 resolvePricing").toBe(2);
+
+    // 分时段两档都验：只验一档会漏掉「窗口丢了 ⇒ 整条按高峰算」（空闲时段高报一倍）。
+    const PEAK = new Date(Date.UTC(2026, 8, 17, 2, 30)); // 北京 10:30
+    const IDLE = new Date(Date.UTC(2026, 8, 17, 5, 0)); // 北京 13:00
+    expect(effectivePricing(stored, PEAK).input).toBeCloseTo(0.2739726, 9);
+    expect(effectivePricing(stored, IDLE).input).toBeCloseTo(0.1369863, 9);
+
+    // ali 渠道在北京 13:00 仍是高峰（8-22 单窗口）—— 渠道级窗口的端到端判据。
+    const ali = resolvePricing("ali-deepseek-v4-pro", undefined, EP)!;
+    expect(effectivePricing(ali, IDLE).input).toBeCloseTo(1.232876712, 9);
   });
 });

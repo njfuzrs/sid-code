@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path"; // mkdtemp 前缀拼接用
 import {
   convertRawEntry,
+  parseBillingExpr,
+  syncGatewayPricing,
   derivePricingURL,
   loadGatewayCache,
   lookupGatewayPricing,
@@ -1159,5 +1161,410 @@ describe("按次价与 token 价并存 —— 查找 / 约束 / 存量缓存迁�
     loadGatewayCache();
     // 抹掉退避状态会让不可达端点重新每次启动白烧 socket，所以必须留着。
     expect(getFailureCooldownRemainingMs("https://dead.example.com")).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `billing_expr` 口径迁移 —— 回归 + 门禁（2026-09-17）
+ *
+ * 事故：`origin-deepseek-v4-1-flash` 采到 `$75/$75`（比 Claude Opus 贵 15 倍的不可能价），
+ * 且 `cacheRead` 整格缺失 → 下游落 `input × 0.1` 兜底 = $7.5，而真值 $0.00274 ⇒ 该格高报 2738×。
+ *
+ * 根因不是"上游给了占位假数"，是**上游给了真数、而我们读的是另一个字段**：网关已把计费
+ * 口径迁到 `billing_mode: "tiered_expr"` + `billing_expr`，旧字段 `model_ratio` 一族
+ * 停止维护（实测 12 条里旧值与 expr 三格全一致的只剩 1 条）。
+ *
+ * 下面的夹具全部是 **2026-09-17 从网关 `/api/pricing` 实拉的原始记录**（未改一位数字）——
+ * 手编夹具测不出这个 bug：它的形态恰恰是"两套价并列，我们读了停止维护的那套"。
+ */
+describe("billing_expr 口径（tiered_expr）", () => {
+  // 落盘隔离：本组会写 ~/.sid-code/gateway-pricing.json。重定向 SID_CONFIG_DIR 到 tmpdir，
+  // 且**存/恢复原值**而非无条件 delete —— 同批多文件跑在同一进程里，无条件 delete
+  // 会把 bunfig preload 的兜底一起抹掉（见 CONTRIBUTING.md 测试约定）。
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "gw-expr-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    __resetGatewayPricingForTest();
+  });
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响断言 */
+    }
+  });
+
+  function writeCache(file: unknown): void {
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(sidPaths.gatewayPricing(), JSON.stringify(file), "utf8");
+  }
+
+  /**
+   * 取「这批 models 落盘后的内容指纹」—— 经 syncGatewayPricing 的真实路径拿版本号。
+   *
+   * ⚠ 刻意不直接测 computeVersion（它没导出，也不该为测试而导出）：指纹的意义在于
+   * **决定要不要写盘**，所以判据必须落在那条真实路径上。这里拦 fetch 喂原始记录，
+   * 读回落盘文件里的 pricing_version。
+   */
+  async function versionOf(raws: unknown[]): Promise<string> {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: raws }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof globalThis.fetch;
+    try {
+      const { syncGatewayPricing } = await import("@sid-code/core/llm/gateway-pricing.ts");
+      const r = await syncGatewayPricing({ baseURL: "https://ver.example.com", force: true });
+      return r.version;
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  /** 实拉原始记录：`model_ratio: 37.5` ⇒ 旧公式算出 $75/1M，且**无 cache_ratio**。 */
+  const RAW_FLASH_1 = {
+    model_name: "origin-deepseek-v4-1-flash",
+    quota_type: 0,
+    model_ratio: 37.5,
+    completion_ratio: 1,
+    billing_mode: "tiered_expr",
+    billing_expr:
+      '(tier("base", p * 0.1369863 + c * 0.547945205 + cr * 0.00273972602)) * (hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? 2 : 1) * (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18 ? 2 : 1)',
+  };
+  /** 实拉原始记录：`ali-*` 渠道是**8-22 单窗口**，与厂商级 9-12/14-18 完全不同。 */
+  const RAW_ALI_PRO = {
+    model_name: "ali-deepseek-v4-pro",
+    quota_type: 0,
+    model_ratio: 0.452054795,
+    completion_ratio: 2,
+    cache_ratio: 0.083333337942,
+    billing_mode: "tiered_expr",
+    billing_expr:
+      '(tier("base", p * 0.616438356 + c * 1.849315068 + cr * 0.061643835)) * (hour("Asia/Shanghai") >= 8 && hour("Asia/Shanghai") < 22 ? 2 : 1)',
+  };
+
+  test("门禁自证：修复前的错值确实会被这组断言拦住", () => {
+    // 没有这条自证，下面那些 toBeCloseTo 可能是在锁一个想象中的实现 ——
+    // 判据是「旧口径算出来的数是多少」，而它必须与新断言的期望值差到离谱。
+    const legacyInput = RAW_FLASH_1.model_ratio * 2; // 旧公式：model_ratio × 2
+    expect(legacyInput).toBe(75);
+    const parsed = parseBillingExpr(RAW_FLASH_1.billing_expr)!;
+    // 高报 273×：任何"量级哨兵"之外的判据都必须能区分这两个数。
+    expect(legacyInput / parsed.input).toBeGreaterThan(200);
+    // 旧字段**没有** cache_ratio ⇒ 修复前 cacheRead 缺失 ⇒ 下游落 input×0.1 = 7.5。
+    expect((RAW_FLASH_1 as { cache_ratio?: number }).cache_ratio).toBeUndefined();
+    expect((legacyInput * 0.1) / parsed.cacheRead).toBeGreaterThan(1000);
+  });
+
+  test("有 expr 时以 expr 为准（而不是等于 legacy 值）", () => {
+    // ⚠ 判据刻意写成「等于 expr、且不等于 legacy」两条 ——
+    // 只断言"等于 expr"的话，上游哪天把旧字段修对了这条测试仍绿，
+    // 但我们究竟读了哪一套字段就再也测不出来了。
+    const r = convertRawEntry(RAW_FLASH_1)!;
+    expect(r.entry.priceSource).toBe("expr");
+    // 高峰价 = 空闲系数 × 2（存高峰、空闲由 offPeakMultiplier 派生，与 ModelPricing 口径一致）
+    expect(r.entry.input).toBeCloseTo(0.2739726, 9);
+    expect(r.entry.output).toBeCloseTo(1.09589041, 9);
+    expect(r.entry.cacheRead!).toBeCloseTo(0.00547945204, 11);
+    expect(r.entry.input).not.toBeCloseTo(75, 1);
+  });
+
+  test("⛔ 不套 RATIO_TO_USD_PER_M：expr 系数已是 USD/1M", () => {
+    // 套上去会让 12 条整体**高报一倍**，且方向一致、不被"正负抵消"掩护 ——
+    // 比现状（高报 500 倍）更难发现，因为看起来只是"贵了点"。
+    const r = convertRawEntry(RAW_FLASH_1)!;
+    const idleCoef = 0.1369863;
+    expect(r.entry.input).toBeCloseTo(idleCoef * 2, 9); // ×2 是**高峰倍率**，不是基准单位
+    expect(r.entry.input).not.toBeCloseTo(idleCoef * 4, 6); // 若误套基准单位就会是这个数
+  });
+
+  test("cacheRead 不再缺失 —— 下游 input×0.1 兜底不再触发", () => {
+    // 这是本次事故的**主放大器**：实测某会话 cache 命中占 95.7% token，
+    // 成本几乎完全由这一格决定。
+    const r = convertRawEntry(RAW_FLASH_1)!;
+    expect(r.entry.cacheRead).toBeDefined();
+    expect(r.entry.cacheRead!).toBeLessThan(r.entry.input * 0.1);
+  });
+
+  test("窗口逐条从 expr 解，渠道级而非厂商级（ali-* 是 8-22 单窗口）", () => {
+    const flash = convertRawEntry(RAW_FLASH_1)!;
+    // 北京 9-12 / 14-18 → UTC 1-4 / 6-10
+    expect(flash.entry.peakWindows).toEqual([
+      { startHour: 1, endHour: 4 },
+      { startHour: 6, endHour: 10 },
+    ]);
+    const ali = convertRawEntry(RAW_ALI_PRO)!;
+    // 北京 8-22 → UTC 0-14（单窗口）。用厂商级常量套这条会让北京 12-14 与 18-22
+    // 判成空闲按半价记，而网关按高峰收全价。
+    expect(ali.entry.peakWindows).toEqual([{ startHour: 0, endHour: 14 }]);
+    expect(ali.entry.offPeakMultiplier).toBe(0.5);
+  });
+
+  test("窗口与折扣透传到 ModelPricing（防「采到了但没接进消费路径」）", () => {
+    // 漏掉透传的失效是静默的：缓存里字段齐全、日志报成功，计价侧却拿不到窗口
+    // ⇒ 整条按高峰价算。所以判据必须落在**计价入口**上，不能只看 entry。
+    writeCache({
+      schema_version: 3,
+      endpoints: {
+        "https://gw.example.com": {
+          source_url: "https://gw.example.com/api/pricing",
+          fetched_at: Date.now(),
+          pricing_version: "expr",
+          models: { [RAW_FLASH_1.model_name]: convertRawEntry(RAW_FLASH_1)!.entry },
+        },
+      },
+    });
+    loadGatewayCache();
+    const p = lookupGatewayPricing(RAW_FLASH_1.model_name, "https://gw.example.com")!;
+    expect(p.peakWindows?.length, "窗口未透传到计价路径").toBe(2);
+    expect(p.offPeakMultiplier).toBe(0.5);
+  });
+
+  test("无 expr 的条目行为逐字节不变（56/68 条走旧公式）", () => {
+    // 这条钉住"不回归"：绝大多数条目根本没有 expr，旧公式对它们仍然成立。
+    const r = convertRawEntry({
+      model_name: "claude-opus-4-8",
+      quota_type: 0,
+      model_ratio: 2.5,
+      completion_ratio: 5,
+      cache_ratio: 0.1,
+    })!;
+    expect(r.entry.input).toBeCloseTo(5, 6);
+    expect(r.entry.output).toBeCloseTo(25, 6);
+    expect(r.entry.cacheRead!).toBeCloseTo(0.5, 6);
+    expect(r.entry.priceSource).toBe("legacy_ratio");
+    expect(r.entry.peakWindows).toBeUndefined();
+  });
+
+  test("解析失败退回旧字段，而不是丢弃整条", () => {
+    // 丢弃会让这批模型集体落 FALLBACK $2/$10 —— 把一次静默错算换成另一次。
+    const r = convertRawEntry({
+      model_name: "weird",
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 2,
+      billing_mode: "tiered_expr",
+      billing_expr: "something we do not understand",
+    })!;
+    expect(r.entry.input).toBeCloseTo(2, 6); // 1 × RATIO_TO_USD_PER_M
+    expect(r.entry.priceSource).toBe("legacy_ratio");
+  });
+
+  describe("parseBillingExpr — 拒绝解析的边界（每条都对应一个静默错算）", () => {
+    test("三格不全 → null（缺 cr 时若部分成功，下游落 input×0.1 高报数千倍）", () => {
+      expect(
+        parseBillingExpr(
+          '(tier("base", p * 0.1 + c * 0.2)) * (hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? 2 : 1)',
+        ),
+      ).toBeNull();
+    });
+
+    test("时区不是 Asia/Shanghai → null（当 +8 硬算等于用编造假设覆盖「我不知道」）", () => {
+      expect(
+        parseBillingExpr(
+          '(tier("base", p * 0.1 + c * 0.2 + cr * 0.01)) * (hour("America/New_York") >= 9 && hour("America/New_York") < 12 ? 2 : 1)',
+        ),
+      ).toBeNull();
+    });
+
+    test("多窗口倍率不一致 → null（那是「分档」而非「分时段」，本模型表达不了）", () => {
+      expect(
+        parseBillingExpr(
+          '(tier("base", p * 0.1 + c * 0.2 + cr * 0.01)) * (hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? 2 : 1) * (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18 ? 3 : 1)',
+        ),
+      ).toBeNull();
+    });
+
+    test("input 系数为 0 → null（入库会顶掉注册表兜底，让计费静默归零）", () => {
+      expect(parseBillingExpr('(tier("base", p * 0 + c * 0.2 + cr * 0.01))')).toBeNull();
+    });
+
+    test("无窗口段 → 系数即唯一价，倍率 1（不是拒绝解析）", () => {
+      const r = parseBillingExpr('(tier("base", p * 0.5 + c * 1.5 + cr * 0.05))')!;
+      expect(r.input).toBeCloseTo(0.5, 9);
+      expect(r.peakWindows).toEqual([]);
+      expect(r.offPeakMultiplier).toBe(1);
+    });
+
+    test("非字符串 / 空串 → null", () => {
+      expect(parseBillingExpr(undefined)).toBeNull();
+      expect(parseBillingExpr("")).toBeNull();
+      expect(parseBillingExpr(42)).toBeNull();
+    });
+  });
+
+  test("新增字段进内容指纹（否则窗口永远写不进磁盘）", async () => {
+    // 失效形态：上游把口径切到 expr，而换算出的三格价恰好与旧字段一致 → 指纹相同 →
+    // 走「版本未变，跳过写盘」→ 窗口与 priceSource 永远不落盘，
+    // 内存里有、日志报成功、下次启动又没了。
+    //
+    // 夹具刻意构造成「三格价完全相同、只差有没有窗口」：这正是漏掉指纹字段时
+    // 唯一测不出来的那种差异。
+    const SAME_PRICE_NO_WINDOW = {
+      model_name: "same-price",
+      quota_type: 0,
+      billing_mode: "tiered_expr",
+      billing_expr: '(tier("base", p * 1.2 + c * 3.6 + cr * 0.12))',
+    };
+    const SAME_PRICE_WITH_WINDOW = {
+      model_name: "same-price",
+      quota_type: 0,
+      billing_mode: "tiered_expr",
+      // 系数减半 + ×2 高峰倍率 ⇒ 三格高峰价与上面逐位相同，唯一差别是多了窗口。
+      billing_expr:
+        '(tier("base", p * 0.6 + c * 1.8 + cr * 0.06)) * (hour("Asia/Shanghai") >= 8 && hour("Asia/Shanghai") < 22 ? 2 : 1)',
+    };
+    const a = convertRawEntry(SAME_PRICE_NO_WINDOW)!.entry;
+    const b = convertRawEntry(SAME_PRICE_WITH_WINDOW)!.entry;
+    // 先证明夹具确实"只差窗口"—— 否则这条测试可能是靠价格差通过的（假绿）。
+    expect(b.input).toBeCloseTo(a.input, 9);
+    expect(b.output).toBeCloseTo(a.output, 9);
+    expect(b.cacheRead!).toBeCloseTo(a.cacheRead!, 9);
+    expect(a.peakWindows).toBeUndefined();
+    expect(b.peakWindows).toEqual([{ startHour: 0, endHour: 14 }]);
+
+    const verA = await versionOf([SAME_PRICE_NO_WINDOW]);
+    const verB = await versionOf([SAME_PRICE_WITH_WINDOW]);
+    expect(verA).not.toBe(verB);
+  });
+});
+
+/**
+ * 量级哨兵（D4）+ 上游 pricing_version（D7）—— 2026-09-17
+ *
+ * 两者都是**防线加固**，不是主修法：主修法是认 `billing_expr`（见上一组）。
+ * 分开测是因为它们各自能兜住的东西不同，混在一起会让"哪条防线在起作用"说不清。
+ */
+describe("量级哨兵与上游口径版本", () => {
+  let tmpDir: string;
+  let prevConfigDir: string | undefined;
+  let origFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    tmpDir = mkdtempSync(join(tmpdir(), "gw-sentinel-"));
+    process.env.SID_CONFIG_DIR = tmpDir;
+    origFetch = globalThis.fetch;
+    __resetGatewayPricingForTest();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    __resetGatewayPricingForTest();
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响断言 */
+    }
+  });
+
+  /** 拦 fetch 返回给定 body（模拟网关 /api/pricing）。 */
+  function stubPricing(body: unknown): void {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof globalThis.fetch;
+  }
+
+  function readBucket(endpointKey: string): Record<string, any> {
+    const file = JSON.parse(readFileSync(sidPaths.gatewayPricing(), "utf8"));
+    return file.endpoints[endpointKey];
+  }
+
+  test("量级可疑的条目不入库（$75/1M 比 Opus 贵 15 倍，物理不可能）", async () => {
+    // 这一条模拟"expr 解析失败 + 旧字段也离谱"的复合场景 —— 哨兵存在的唯一理由。
+    // 没有 billing_mode，所以走 legacy 口径，37.5 × 2 = 75。
+    stubPricing({
+      data: [
+        { model_name: "insane-price", quota_type: 0, model_ratio: 37.5, completion_ratio: 1 },
+        { model_name: "sane-price", quota_type: 0, model_ratio: 2.5, completion_ratio: 5 },
+      ],
+    });
+    const r = await syncGatewayPricing({ baseURL: "https://s.example.com", force: true });
+    expect(r.count, "可疑条目应被丢弃，只剩 1 条").toBe(1);
+    loadGatewayCache();
+    expect(lookupGatewayPricing("insane-price", "https://s.example.com")).toBeNull();
+    // 合法条目不受影响 —— 哨兵不能顺手把正常价也拦掉。
+    expect(lookupGatewayPricing("sane-price", "https://s.example.com")?.input).toBeCloseTo(5, 6);
+  });
+
+  test("哨兵阈值对当前最贵的合法价留有余量（防误伤）", async () => {
+    // 误伤形态比不加哨兵更隐蔽：合法的贵模型被丢 → 落注册表兜底 → 按 FALLBACK $2/$10
+    // 静默记账。实测网关非 expr 条目最贵是 input $10/1M（gpt-6-astra，output $50）。
+    stubPricing({
+      data: [
+        // input $10 / output $50 —— 实测存在的合法最贵条目，必须通过。
+        { model_name: "gpt-6-astra-like", quota_type: 0, model_ratio: 5, completion_ratio: 5 },
+      ],
+    });
+    const r = await syncGatewayPricing({ baseURL: "https://m.example.com", force: true });
+    expect(r.count, "当前最贵的合法价被误伤了").toBe(1);
+    loadGatewayCache();
+    expect(lookupGatewayPricing("gpt-6-astra-like", "https://m.example.com")?.input).toBeCloseTo(
+      10,
+      6,
+    );
+  });
+
+  test("上游 pricing_version 落盘，且与自算哈希是两个不同的值", async () => {
+    // 本次事故的结构性盲区：自算哈希的输入全是"我们已经解析出来的字段"，
+    // 所以它无法反映"上游多了我们看不见的东西"。两个版本号必须各存一份。
+    stubPricing({
+      pricing_version: "a42d372ccf0b5dd13ecf71203521f9d2",
+      data: [{ model_name: "m", quota_type: 0, model_ratio: 1, completion_ratio: 2 }],
+    });
+    await syncGatewayPricing({ baseURL: "https://v.example.com", force: true });
+    const b = readBucket("https://v.example.com");
+    expect(b.upstream_pricing_version).toBe("a42d372ccf0b5dd13ecf71203521f9d2");
+    expect(b.pricing_version).not.toBe(b.upstream_pricing_version);
+  });
+
+  test("上游版本变了必须落盘一次，即使换算出的价一个字节都没变", async () => {
+    // ⚠ 这是 D7 的**核心判据**，也是本次事故潜伏下来的确切机制：
+    // 网关新增 billing_mode/billing_expr 而旧字段没动 ⇒ 自算哈希不变 ⇒
+    // 走「版本未变，跳过写盘」⇒ 上游换口径这件事没有任何痕迹。
+    const ENTRIES = [{ model_name: "m", quota_type: 0, model_ratio: 1, completion_ratio: 2 }];
+    stubPricing({ pricing_version: "v1", data: ENTRIES });
+    const first = await syncGatewayPricing({ baseURL: "https://c.example.com", force: true });
+
+    // 同一批条目、同一个上游版本 → 应当短路（这条是对照，证明短路本身没坏）。
+    stubPricing({ pricing_version: "v1", data: ENTRIES });
+    const same = await syncGatewayPricing({ baseURL: "https://c.example.com" });
+    expect(same.updated, "价与上游版本都没变，本该跳过写盘").toBe(false);
+    expect(same.version).toBe(first.version);
+
+    // 价格逐字节相同，只有上游版本号变了 → 必须落盘（否则新版本号永远记不下来）。
+    stubPricing({ pricing_version: "v2", data: ENTRIES });
+    const changed = await syncGatewayPricing({ baseURL: "https://c.example.com" });
+    expect(changed.updated, "上游口径版本变了却跳过了写盘（D7 盲区复现）").toBe(true);
+    // 自算哈希不变，证明这次落盘**只**由上游版本驱动 —— 两个版本号各管一件事。
+    expect(changed.version).toBe(first.version);
+    expect(readBucket("https://c.example.com").upstream_pricing_version).toBe("v2");
+  });
+
+  test("上游不报版本号时保留上次存的值（拿不到 ≠ 上游没有）", async () => {
+    stubPricing({
+      pricing_version: "keep-me",
+      data: [{ model_name: "m", quota_type: 0, model_ratio: 1, completion_ratio: 2 }],
+    });
+    await syncGatewayPricing({ baseURL: "https://k.example.com", force: true });
+    // 第二次返回不带 pricing_version（网关抖动 / 换实现），价格也改一下以触发写盘。
+    stubPricing({
+      data: [{ model_name: "m", quota_type: 0, model_ratio: 3, completion_ratio: 2 }],
+    });
+    await syncGatewayPricing({ baseURL: "https://k.example.com" });
+    expect(readBucket("https://k.example.com").upstream_pricing_version).toBe("keep-me");
   });
 });
