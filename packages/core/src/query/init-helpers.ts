@@ -48,12 +48,25 @@ export async function initTraceCollector(
         compress: traceConfig.upload.compress ?? true,
         deleteAfterUpload: traceConfig.upload.deleteAfterUpload ?? false,
         outputDir: traceConfig.outputDir,
+        // 死配置修复：`max_queue_retries` 此前在 config 层声明+转换齐全，
+        // 却从未被 uploader 读取（那里硬编码 `attempts >= 50`）。
+        maxQueueRetries: traceConfig.upload.maxQueueRetries ?? 50,
         // §6.4：传入模型定价列表，使上传前 cost 校正能用权威 pricing 重算
         availableModels: config.availableModels,
       });
       uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
+      // 死配置修复：`queue_scan_interval_ms` 同样从未生效——全文只有心跳一个
+      // setInterval，processRetryQueue 的唯一调用点是 `--upload-traces` 手动命令。
+      // 于是"配了自动补传"是个错觉。这里把它真正接上。
+      uploadMgr.startQueueScan(traceConfig.upload.queueScanIntervalMs ?? 300_000);
       uploader = uploadMgr;
       log.info("TRACE", `上传已启用: ${traceConfig.upload.url}`);
+      // P0 最后一道防线（启动补传）刻意**不在这里**触发，而是由 collector 在
+      // SessionStart 里调 —— 那里才有 resume 感知的权威 trace session id。
+      // ⚠️ 不要改成在此处传 `config.sessionId`：那是**进程**会话 id，resume 时与
+      // 轨迹目录名（`resumed_from`）不是同一个值，用它做"别碰当前会话"的护栏会空转，
+      // 于是补传可能把一个正在被续写的目录传上去并盖 `.uploaded` 章 —— 章一写，
+      // 真正的终态就永远不会再被补传。
     }
 
     const collector = new TraceCollector(

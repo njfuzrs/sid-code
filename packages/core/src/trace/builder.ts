@@ -63,6 +63,18 @@ export interface RequestResponsePair {
     cache_read_input_tokens: number;
     cache_creation_input_tokens: number;
   };
+  /**
+   * 中断轮（`is_partial`）在被清空 `response.content` **之前**，流观测器是否见过内容。
+   *
+   * 三态，缺一不可：`true`=确实收到过 chunk；`false`=有快照且明确 0 chunk；
+   * `undefined`=拿不到快照，**不可判**。
+   *
+   * 存在的唯一理由：`handleSessionEnd` 把中断轮的 `response.content` 置为 `[]`，
+   * 于是 `isBlankSession()` 里「只要有一轮收到过内容就保留」这条例外**永远无法成立** ——
+   * 实测一个已流出内容的会话被 SIGHUP 中断后整目录被当空壳删除。
+   * 判据必须读本字段而不是 `response.content.length`。详见 collector.ts 两处注释。
+   */
+  stream_received_content?: boolean;
   stop_reason: string;
   is_partial: boolean;
   /** thinking blocks（从 AfterModel hook 的 _thinkingBlocks 获取） */

@@ -2477,7 +2477,16 @@ export class App {
         // D3-4：/quit 退出前必须 fireSessionEndEvent，保证 transcript 落盘（纪律不变量第 1 条）。
         void (async () => {
           try {
-            // hook 卡死时不阻塞退出（对齐 signal 路径 1.2s 上限）：SessionEnd 可能跑用户命令长时间无响应。
+            // /quit 与信号路径不同：**没有人在 1.2s 后 process.exit**，
+            // 所以这里不必也不该把上传预算归零。但 1.2s 的 race 上限仍然远小于
+            // 一次上传（10s 量级）——原实现"对齐 signal 路径 1.2s"的结果是
+            // 优雅退出同样传不上去，用户没有任何可用的正常路径。
+            //
+            // 取舍：本地落盘实测 ~30ms，1.2s 对它绰绰有余；上传不在此处硬等，
+            // 交给下次启动补传（backfill.ts）。想让 /quit 也当场传完，
+            // 就得让用户按完 /quit 再等十几秒 —— 那是用体验换一个补传已经保证的东西。
+            this.traceCollector?.setUploadBudgetMs?.(0);
+            // hook 卡死时不阻塞退出：SessionEnd 可能跑用户命令长时间无响应。
             await Promise.race([
               this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
               new Promise((resolve) => setTimeout(resolve, 1200)),
@@ -3751,18 +3760,39 @@ export class App {
     }
   }
 
-  /** 注册信号处理：SIGINT/SIGTERM 时同步触发 SessionEnd，避免 trajectory 丢失 */
+  /**
+   * 注册信号处理：SIGINT/SIGTERM/SIGHUP 时同步触发 SessionEnd，避免 trajectory 丢失。
+   *
+   * ⚠️ SIGHUP 曾经完全没有处理（全仓检索 0 命中）：关终端窗口 / SSH 断连时进程收到
+   * SIGHUP 后**默认终止**，SessionEnd 一次都不触发，连那 1.2s 都没有。
+   * 而关终端恰恰是日常最常见的退出方式之一 —— 实测 52 个会话里 39 个
+   * `events.jsonl` 完全没有 SessionEnd 事件，这是其中一个主要来源。
+   */
   private signalHandlersRegistered = false;
   private registerSignalHandlers(): void {
     if (this.signalHandlersRegistered) return;
     this.signalHandlersRegistered = true;
 
     const log = getLogger();
-    const onSignal = async (signal: "SIGINT" | "SIGTERM") => {
+    /** 各信号的退出码：SIGINT=130 / SIGTERM=143 / SIGHUP=129（128+signum 惯例） */
+    const exitCodeOf = (signal: "SIGINT" | "SIGTERM" | "SIGHUP"): number =>
+      signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
+
+    const onSignal = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
       log.warn("APP", `收到 ${signal}，触发 SessionEnd(reason=abort) 后退出`);
+      // 信号路径**不在退出关键路径上等上传**：这里 1.2s 后就 process.exit()，
+      // 而一次上传要 10s 量级 —— 给预算等于必然被杀在半路，白建连接还多卡 1.2s。
+      // 数据由下次启动的补传兜住（判据是 `.uploaded` 标记缺失，与退出路径解耦）。
+      // 退出路径只保证**本地落盘**完成，那部分实测 ~30ms（traj 重建 7.5ms + digest 18ms），
+      // 1.2s 预算对它绰绰有余。
+      try {
+        this.traceCollector?.setUploadBudgetMs?.(0);
+      } catch {
+        /* ignore */
+      }
       // 兜底退出:无论落盘是否 hang,最多 1.5s 后强制退出。
       // 提前注册(在 await 之前),避免 fireSessionEndEvent 永久挂起时此兜底永远不执行(ASYNC-7)。
-      const forceExitTimer = setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 1500);
+      const forceExitTimer = setTimeout(() => process.exit(exitCodeOf(signal)), 1500);
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
       try {
         this.abortController?.abort();
@@ -3795,7 +3825,7 @@ export class App {
       }
       // 落盘已完成(或超时),清掉兜底并立即退出
       clearTimeout(forceExitTimer);
-      process.exit(signal === "SIGINT" ? 130 : 143);
+      process.exit(exitCodeOf(signal));
     };
 
     // 用 once 防止 SIGTERM 风暴下重入；fire-and-forget 让 process.on 不卡死
@@ -3804,6 +3834,11 @@ export class App {
     });
     process.once("SIGTERM", () => {
       void onSignal("SIGTERM");
+    });
+    // SIGHUP：关终端窗口 / SSH 断连。不注册的话进程被默认处置直接终止，
+    // SessionEnd 一次都不触发 —— 轨迹连"这个会话怎么结束的"都写不下来。
+    process.once("SIGHUP", () => {
+      void onSignal("SIGHUP");
     });
   }
 
@@ -8560,7 +8595,11 @@ export class App {
             // 导致 messages.json / trajectory 不落盘（违反纪律不变量第 1 条「transcript 必落盘」）。
             void (async () => {
               try {
-                // hook 卡死时不阻塞退出（对齐 signal 路径 1.2s 上限）：SessionEnd 可能跑用户命令长时间无响应。
+                // 与 signal 路径不同：/quit 没有人在 1.2s 后 process.exit。但 1.2s 的
+                // race 上限仍远小于一次上传（10s 量级），所以上传不在此处硬等，
+                // 交给下次启动补传（backfill.ts）。本地落盘实测 ~30ms，预算足够。
+                this.traceCollector?.setUploadBudgetMs?.(0);
+                // hook 卡死时不阻塞退出：SessionEnd 可能跑用户命令长时间无响应。
                 await Promise.race([
                   this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
                   new Promise((resolve) => setTimeout(resolve, 1200)),
@@ -8830,7 +8869,14 @@ export class App {
     }, 5000);
     forceExitTimer.unref();
 
-    // SessionEnd hook 卡死时不拖死退出(对齐 signal 路径的 Promise.race 1.2s 上限):
+    // 正常退出（Ctrl+D / TUI 退出 / 两次 Ctrl+C 走 triggerQuit）——注意 TUI 是
+    // `exitOnCtrlC:false`，所以 Ctrl+C 走的是**这条**路径而非 SIGINT。
+    //
+    // 这条路径的 forceExitTimer 是 5s（不是信号路径的 1.5s），所以这里的 1.2s race
+    // 上限并非硬约束。但上传要 10s 量级，硬等会让用户按完退出还要干等十几秒 ——
+    // 不划算，交给下次启动补传（backfill.ts）。落盘实测 ~30ms，1.2s 对它绰绰有余。
+    this.traceCollector?.setUploadBudgetMs?.(0);
+    // SessionEnd hook 卡死时不拖死退出:
     // hook 可能跑用户自定义命令而长时间无响应,不能让它永久阻塞退出。
     try {
       await Promise.race([

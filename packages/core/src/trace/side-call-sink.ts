@@ -79,8 +79,14 @@ export function setSideCostObserver(fn: (costUSD: number) => void): void {
  * trajectory 中永久丢失，即便 provider 已经计费。注册此观察者后，TraceCollector 能在
  * 每次辅助调用落定的瞬间就把最新汇总同步进 metadata 并重建 session.traj，
  * 不必等待（可能永远不会到来的）SessionEnd。
+ *
+ * 传 `null` 摘除观察者。摘除是必需能力而非对称性洁癖：会话目录被判空壳删除后，
+ * 观察者若仍在，下一次 side-call 落定会触发 `forceRebuildTraj()`，而 `Bun.write()`
+ * **会自动重建缺失的父目录** —— 于是盘上冒出一个只含 `session.traj` 的幽灵目录
+ * （实测 inode 变化可证是删后重建），启动清理还会放它过。详见 collector.ts
+ * `sessionDisposed` 字段注释。
  */
-export function setSideStatsObserver(fn: () => void): void {
+export function setSideStatsObserver(fn: (() => void) | null): void {
   _statsObserver = fn;
 }
 
