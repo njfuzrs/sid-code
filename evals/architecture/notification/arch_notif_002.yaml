@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_notif_002
 category: 架构通知协作
 priority: P1

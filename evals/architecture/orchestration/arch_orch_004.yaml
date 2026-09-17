@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_orch_004
 category: 架构编排
 priority: P1

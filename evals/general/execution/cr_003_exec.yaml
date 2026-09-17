@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: cr_003_exec
 category: code-review issue_detection bug (execution variant)
 priority: P0

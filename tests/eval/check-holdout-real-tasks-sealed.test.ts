@@ -5,7 +5,10 @@
  *   1. 永封完整（200 行 + sha256 匹配）→ exit 0
  *   2. 行数被改 → exit 1
  *   3. 内容被改（行数对但 sha256 变）→ exit 1
- *   4. 公开页面（CASES.md）含 holdout sid → exit 1
+ *   4. 公开页面含 holdout sid → exit 1
+ *      （探针仍写 evals/CASES.md：checker 的 PUBLIC_FILES 还列着它，
+ *       直到泄露检测链整条下线。CASES.md 本体已于 2026-09-18 删除，
+ *       本探针在文件不存在时现场创建、测完删掉。）
  */
 import { describe, test, expect, beforeAll } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -57,7 +60,9 @@ describe("B7-3 holdout-real-tasks 永封校验", () => {
     // ⚠ 必须用「包含」而非「整行相等」：下面的泄露测试写入的是
     // `${sid} leaked here`，整行 !== sid，所以 has(line.trim()) 永远匹配不上——
     // 这道防御网原本有个洞，一旦残留就再也清不掉，导致「永封完整 → exit 0」
-    // 在后续每次运行里都失败，且脏数据留在**已被 git 追踪**的 evals/CASES.md 里。
+    // 在后续每次运行里都失败。⚠️ CASES.md 已于 2026-09-18 删除，不再被追踪；
+    // 本探针仍可能把它写出来（checker 的 PUBLIC_FILES 还列着它），所以清残留的
+    // 必要性没变，只是残留形态从「改脏一个追踪文件」变成「留下一个未追踪文件」。
     const cleanLines = lines.filter(
       (line) => !Array.from(holdoutSids).some((sid) => line.includes(sid)),
     );

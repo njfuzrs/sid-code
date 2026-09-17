@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_011
 category: 重构
 priority: P1

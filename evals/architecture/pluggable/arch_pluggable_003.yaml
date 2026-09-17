@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_pluggable_003
 category: 架构可拔插
 priority: P0

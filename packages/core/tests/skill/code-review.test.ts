@@ -186,7 +186,7 @@ describe("code-review Skill - baseline case yaml 结构契约", () => {
         expect((input.user_query as string).length).toBeGreaterThan(20);
       });
 
-      test("含 expected 段 + must_not_include 反例字段（_template.yaml 强制）", () => {
+      test("含 expected 段 + must_not_include 反例字段（evals/README.md 关键铁律 3 强制）", () => {
         const expected = yaml.expected as Record<string, unknown>;
         expect(Array.isArray(expected.must_not_include)).toBe(true);
       });

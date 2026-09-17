@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_024
 category: 超长上下文
 priority: P2

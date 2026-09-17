@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_meta_003
 category: 架构评测自检
 priority: P0

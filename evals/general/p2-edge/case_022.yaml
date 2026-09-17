@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_022
 category: 歧义查询
 priority: P2

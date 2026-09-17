@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_milestone_002
 category: 架构里程碑
 priority: P1

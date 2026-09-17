@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_029
 category: 对抗性prompt
 priority: P2

@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_kernel_004
 category: 架构内核
 priority: P0

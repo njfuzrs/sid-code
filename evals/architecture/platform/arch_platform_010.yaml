@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_platform_010
 category: 架构平台
 priority: P1

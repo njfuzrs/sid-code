@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_017
 category: 依赖管理
 priority: P1
