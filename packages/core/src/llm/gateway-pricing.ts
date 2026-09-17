@@ -87,6 +87,18 @@ interface RawPricingEntry {
   completion_ratio?: number;
   cache_ratio?: number;
   create_cache_ratio?: number;
+  /**
+   * 网关自报的**当前生效**计费口径。已知取值：`"tiered_expr"`（价写在 `billing_expr` 里）。
+   * 缺失 = 老口径，按 `model_ratio` / `completion_ratio` / `cache_ratio` 换算。
+   *
+   * ⚠ 它不是"附加信息"，是**权威口径的开关**：网关迁到 expr 之后就不再维护上面那套旧字段，
+   * 旧字段停在迁移前的某个时点（实测 12 条里旧值与 expr 三格全一致的只有 1 条）。
+   */
+  billing_mode?: string;
+  /** 分时段计费表达式，形如
+   *  `(tier("base", p * A + c * B + cr * C)) * (hour("Asia/Shanghai") >= 9 && ... ? 2 : 1) * ...`。
+   *  见 parseBillingExpr。 */
+  billing_expr?: string;
   /** 该端点上这个模型支持的协议类型，如 `["openai"]` / `["openai","openai-response"]`。
    *  类型故意宽成 unknown：第三方 HTTP 不可信，校验在 sanitizeEndpointTypes 里做。 */
   supported_endpoint_types?: unknown;
@@ -105,6 +117,27 @@ export interface GatewayPricingEntry extends ModelPricing {
   quotaType: number;
   /** 按次单价（USD/次），仅 quotaType=1 有值。与 input/output **可以并存** */
   perCallUSD?: number;
+  /**
+   * 这条价的口径来源：`"expr"` = 网关 `billing_expr`（当前生效）；
+   * `"legacy_ratio"` = `model_ratio` 一族旧字段（网关迁到 expr 后已不再维护）。
+   *
+   * 存它不是为了展示，是为了**归因**：账本里一条离谱的价到底来自哪套口径，
+   * 事后只能靠这个字段回答 —— 两套口径在缓存里的数值形态完全同形，分不开。
+   */
+  priceSource?: "expr" | "legacy_ratio";
+  /**
+   * 高峰窗口（UTC 半开区间）与空闲折扣 —— 从 `billing_expr` 逐条解出，**渠道级事实**。
+   *
+   * ⚠ 不能退回 model-registry 的厂商级 `DEEPSEEK_PEAK_WINDOWS`：实测同厂商不同渠道的窗口
+   * 不同（`ali-*` 是北京 8-22 单窗口，其余是 9-12/14-18 两段）。用厂商级常量套渠道价，
+   * 会让 12-14 点与 18-22 点的请求判成空闲按半价记，而网关按高峰收全价。
+   *
+   * 两个字段必须**成对透传到 ModelPricing**（见 toModelPricing）：只存不透传的话，
+   * 计价侧拿不到窗口 → 整条按高峰价算（高报一倍），而缓存文件里字段齐全、无人报错。
+   */
+  peakWindows?: Array<{ startHour: number; endHour: number }>;
+  /** 空闲价 = 高峰价 × 本系数（expr 的 `? M : 1` ⇒ `1/M`，实测 0.5）。 */
+  offPeakMultiplier?: number;
   /**
    * 该端点自报的、这个模型支持的协议类型（原样保留网关词汇，不翻译成我们的 protocolKind）。
    *
@@ -131,6 +164,25 @@ interface EndpointBucket {
   fetched_at: number;
   /** 聚合哈希，用于版本比对（内容不变则不写盘） */
   pricing_version: string;
+  /**
+   * **上游自报**的 `pricing_version`（网关 `/api/pricing` 顶层字段）。与上面那个自算哈希
+   * 是两个不同的东西，**刻意不合并**：
+   *
+   * | 版本号 | 来源 | 用途 |
+   * | --- | --- | --- |
+   * | `pricing_version` | `computeVersion()` 自算 | 变了 → 写盘 |
+   * | `upstream_pricing_version` | 网关顶层字段 | 变了 → 记一条日志/trace（口径变更可察） |
+   *
+   * 为什么必须存它：`computeVersion` 的输入**全部是我们已经解析出来的字段**，
+   * 所以它结构上只能反映"我们看得见的东西变没变"，无法反映"上游多了我们看不见的东西"。
+   * 本次事故正是这个盲区 —— 网关新增 `billing_mode`/`billing_expr` 而旧字段没动，
+   * 自算哈希完全不变 ⇒ 走「版本未变，跳过写盘」⇒ 采集日志报成功、缓存内容不变、
+   * **没有任何一处显示上游换了计费口径**。
+   *
+   * ⚠ 它**不能当"要不要写盘"的判据**：上游哈希的变化粒度是整份返回（68 条里任何一条
+   * 改动都会变），拿它做写盘判据会导致频繁无谓写盘。
+   */
+  upstream_pricing_version?: string;
   models: Record<string, GatewayPricingEntry>;
   /**
    * 最近一次采集**失败**的时间戳（负缓存）。0/缺失 = 没有未恢复的失败。
@@ -167,6 +219,49 @@ interface LegacyCacheFileV1 {
 
 /** new-api 基准单位换算系数：model_ratio × 2 = input $/1M。 */
 const RATIO_TO_USD_PER_M = 2;
+
+/**
+ * 绝对量级哨兵上限（USD/1M）—— **最后一道网**，不是主修法。
+ *
+ * ## 它兜住什么、兜不住什么（必须说清，否则会被当成"已经防住了"）
+ *
+ * 兜住的是「旧字段算出物理上不可能的价」这一种：实测 `origin-deepseek-v4-1-flash` 与
+ * `origin-deepseek-v4-flash-vision` 的 `model_ratio: 37.5` ⇒ $75/1M，
+ * 比 Claude Opus 5（$5/$25）还贵 15 倍。
+ *
+ * **兜不住**同批另外 10 条：它们的偏离在 0.2x–5.2x，每一条的绝对值都落在正常价区间，
+ * 任何量级判据都拦不住。那 10 条只能靠认 `billing_expr`（本文件的主修法）。
+ * ⇒ 别把这个哨兵当主防线：它绿着的时候，10 条错价照样能静默入库。
+ *
+ * ## 阈值怎么定的（不是拍脑袋）
+ *
+ * 实测 2026-09-17 网关 68 条返回中**非 expr 条目**的最贵合法价：
+ * input 最高 $10/1M（`gpt-6-astra`）、output 最高 $50/1M（同条）。
+ * 取 input $40 / output $200 ⇒ 对当前最贵合法条目留 4 倍余量，同时能拦住 $75。
+ *
+ * ⚠ **误伤形态比不加哨兵更隐蔽**：合法新模型（将来真出现 $50/1M 的旗舰）被丢 →
+ * 落注册表兜底 → 静默按 FALLBACK $2/$10 记账。所以命中时必须 **WARN + 计入可观测**，
+ * 绝不静默丢弃 —— 一条日志是这个哨兵误伤时唯一的线索。
+ */
+const SUSPICIOUS_INPUT_USD_PER_M = 40;
+const SUSPICIOUS_OUTPUT_USD_PER_M = 200;
+
+/**
+ * 这条价的量级是否可疑（超过量级哨兵上限）。
+ *
+ * 判据只看 input/output 两格：cacheRead/cacheWrite 是从 input 派生的比例值，
+ * 它们离谱一定伴随 input 离谱（唯一例外是 cacheRead 缺失走下游兜底，那由
+ * 「expr 三格必须全齐」那条约束治，不该在这里重复一遍判据）。
+ */
+function isSuspiciousMagnitude(entry: GatewayPricingEntry): string | null {
+  if (entry.input > SUSPICIOUS_INPUT_USD_PER_M) {
+    return `input $${entry.input}/1M 超过量级上限 $${SUSPICIOUS_INPUT_USD_PER_M}/1M`;
+  }
+  if (entry.output > SUSPICIOUS_OUTPUT_USD_PER_M) {
+    return `output $${entry.output}/1M 超过量级上限 $${SUSPICIOUS_OUTPUT_USD_PER_M}/1M`;
+  }
+  return null;
+}
 
 /** 默认采集 TTL：24h。缓存超此时长则后台静默刷新。 */
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -265,6 +360,134 @@ function sanitizeEndpointTypes(raw: unknown): string[] | undefined {
 }
 
 /**
+ * `billing_expr` 解析结果 —— 网关自报的**当前生效**价（USD/1M）+ 分时段窗口。
+ *
+ * 三格价一律是**高峰价**，与 `ModelPricing.input` 的既有口径一致（空闲价由
+ * `offPeakMultiplier` 派生，见 cost-tracker.ts 的 ModelPricing 注释）。
+ */
+export interface ParsedBillingExpr {
+  /** 未命中输入价（高峰，USD/1M） */
+  input: number;
+  /** 输出价（高峰，USD/1M） */
+  output: number;
+  /** 缓存命中价（高峰，USD/1M） */
+  cacheRead: number;
+  /** 高峰窗口（UTC 半开区间），由 expr 里的 `hour("Asia/Shanghai")` 段转换而来 */
+  peakWindows: Array<{ startHour: number; endHour: number }>;
+  /** 空闲价 = 高峰价 × 本系数。expr 的 `? M : 1` 取 `1/M`，实测 M=2 ⇒ 0.5 */
+  offPeakMultiplier: number;
+}
+
+/** expr 里 `tier("base", p * A + c * B + cr * C)` 的三个系数。顺序不敏感，按变量名取。 */
+const EXPR_COEF_RE = {
+  p: /\bp\s*\*\s*([0-9]*\.?[0-9]+)/,
+  c: /\bc\s*\*\s*([0-9]*\.?[0-9]+)/,
+  cr: /\bcr\s*\*\s*([0-9]*\.?[0-9]+)/,
+} as const;
+
+/**
+ * expr 里的一个分时段乘子段：
+ * `(hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? 2 : 1)`
+ *
+ * ⚠ 时区名捕获出来是**为了校验**，不是为了忽略：实测 12/12 全是 `Asia/Shanghai`，
+ * 出现别的时区说明网关换了口径，此时必须整条丢弃而不是当 +8 硬算（见 parseBillingExpr）。
+ */
+const EXPR_WINDOW_RE =
+  /hour\(\s*"([^"]+)"\s*\)\s*>=\s*(\d{1,2})\s*&&\s*hour\(\s*"[^"]+"\s*\)\s*<\s*(\d{1,2})\s*\?\s*([0-9]*\.?[0-9]+)\s*:\s*1/g;
+
+/** expr 系数的时区基准 —— 只认这一个，其余一律拒绝解析。 */
+const EXPR_EXPECTED_TZ = "Asia/Shanghai";
+/** `Asia/Shanghai` → UTC 的小时偏移（中国无夏令时，常量安全）。 */
+const SHANGHAI_UTC_OFFSET_HOURS = 8;
+
+/**
+ * 解析 `billing_expr` —— 网关**当前生效**计费口径的唯一入口。
+ *
+ * 为什么必须认它：网关已把计费迁到 `billing_mode: "tiered_expr"` + `billing_expr`，
+ * 而 `model_ratio` / `completion_ratio` / `cache_ratio` 变成了**无人维护的残留字段**
+ * （实测 2026-09-17，12 条 tiered_expr 里旧值与 expr 三格全一致的只有 `tx-deepseek-v4-flash`
+ * 一条；`origin-deepseek-v4-1-flash` 与 `origin-deepseek-v4-flash-vision` 的
+ * `model_ratio: 37.5` 换算出 $75/1M —— 比 Claude Opus 还贵 15 倍的不可能价）。
+ *
+ * ── 四条必须守住的约束，每条都对应一个已实测的坑 ──
+ *
+ * 1. **⛔ 不套 `RATIO_TO_USD_PER_M`**。expr 系数**已经是 USD/1M**，再 ×2 会让 12 条
+ *    整体高报一倍。这个错方向一致、不会被"总额正负抵消"掩护，反而比现状（高报 500 倍）
+ *    更难发现 —— 看起来只是"贵了点"。
+ *
+ * 2. **⛔ 三格必须全齐才入库**（`p`/`c`/`cr` 任一缺失即整条丢弃）。解出 `p` 却没解出 `cr`
+ *    时若照样入库，`cacheRead` 缺失 → 下游 cost-tracker 落 `input × 0.1` 兜底，
+ *    而 expr 真值是 input 的 2%–3.3% ⇒ 那一格高报数千倍。本次事故的主放大器正是这一格
+ *    （实测某会话 cache 命中占 95.7% token，单题成本被它主导）。
+ *
+ * 3. **⛔ 系数存高峰价，不是 expr 里的裸系数**。expr 的形状是
+ *    `系数 × (高峰?M:1)`，所以裸系数是**空闲价**。而 `ModelPricing.input` 的既有口径是
+ *    **高峰价 + offPeakMultiplier 派生空闲价**。直接把裸系数填进 input 会让 12 条
+ *    全部按半价记账 —— 又一个"方向一致、不被抵消掩护"的静默低报。
+ *    ⇒ 存 `系数 × M`，并置 `offPeakMultiplier = 1/M`。
+ *
+ * 4. **⛔ 窗口逐条从 expr 解，不用全局 `DEEPSEEK_PEAK_WINDOWS`**。窗口是**渠道级事实**
+ *    而非厂商级：实测 10 条是北京 9-12/14-18，而 `ali-deepseek-v4-pro` /
+ *    `ali-deepseek-v4-flash` 两条是 **8-22 单窗口**。按厂商硬编码会让这两条在
+ *    12-14 点与 18-22 点判成"空闲"按半价算，而网关按高峰收全价。
+ *
+ * 无 expr / 形状不认 / 三格不全 / 时区不是 Asia/Shanghai / 数值非法 → 返回 null，
+ * 调用方退回旧字段口径（**不是**丢弃整条：56 条无 expr 的条目旧公式仍然成立）。
+ */
+export function parseBillingExpr(expr: unknown): ParsedBillingExpr | null {
+  if (typeof expr !== "string" || expr.length === 0) return null;
+
+  // ── 三格系数：全齐才算解析成功（约束 2）──
+  const coefs: Record<"p" | "c" | "cr", number> = { p: NaN, c: NaN, cr: NaN };
+  for (const key of ["p", "c", "cr"] as const) {
+    const m = EXPR_COEF_RE[key].exec(expr);
+    if (!m) return null;
+    const v = Number(m[1]);
+    if (!isFiniteNonNeg(v)) return null;
+    coefs[key] = v;
+  }
+  // 单价全 0 视为无效：入库会顶掉注册表兜底价，让计费静默归零。
+  if (!(coefs.p > 0)) return null;
+
+  // ── 分时段窗口：可以没有（则无分时段政策），但有就必须能完整解出来 ──
+  const windows: Array<{ startHour: number; endHour: number }> = [];
+  let multiplier: number | null = null;
+  EXPR_WINDOW_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = EXPR_WINDOW_RE.exec(expr)) !== null) {
+    const [, tz, startRaw, endRaw, multRaw] = m;
+    // 时区不认就整条拒绝：当 +8 硬算等于用一个编造的假设覆盖"我不知道"。
+    if (tz !== EXPR_EXPECTED_TZ) return null;
+    const startLocal = Number(startRaw);
+    const endLocal = Number(endRaw);
+    const mult = Number(multRaw);
+    if (!Number.isInteger(startLocal) || startLocal < 0 || startLocal > 23) return null;
+    if (!Number.isInteger(endLocal) || endLocal < 0 || endLocal > 24) return null;
+    if (!(mult > 0) || !Number.isFinite(mult)) return null;
+    // 多个窗口段的倍率必须一致 —— 不一致意味着"分档"而非"分时段"，本函数的模型表达不了，
+    // 与其猜一个不如整条拒绝（约束：解析失败退回旧字段，而不是部分成功）。
+    if (multiplier === null) multiplier = mult;
+    else if (Math.abs(multiplier - mult) > 1e-9) return null;
+    // 北京时间 → UTC。取模保留跨零点形态（priceTierAt 支持 startHour > endHour）。
+    windows.push({
+      startHour: (startLocal - SHANGHAI_UTC_OFFSET_HOURS + 24) % 24,
+      endHour: (endLocal - SHANGHAI_UTC_OFFSET_HOURS + 24) % 24,
+    });
+  }
+
+  // 无窗口段 = 无分时段政策：系数本身就是唯一价，倍率取 1。
+  const M = multiplier ?? 1;
+  return {
+    // 约束 3：存高峰价 = 空闲系数 × 倍率。
+    input: coefs.p * M,
+    output: coefs.c * M,
+    cacheRead: coefs.cr * M,
+    peakWindows: windows,
+    offPeakMultiplier: 1 / M,
+  };
+}
+
+/**
  * 把一条原始 pricing 换算成 GatewayPricingEntry。非法数据返回 null（调用方丢弃）。
  */
 export function convertRawEntry(
@@ -293,6 +516,37 @@ export function convertRawEntry(
   //   ② 面板只剩「$60.00/次」可显示，而账本记的是另一套数 —— 展示与计费自相矛盾；
   //   ③ 因为价「查不到」，跨桶兜底被激活去借**别的端点**的价（见 lookupGatewayEntry）。
   // 换算公式与 quotaType=0 完全一致，不需要第二套口径。
+  // ── 口径分叉：网关自报 tiered_expr 时，expr 才是**当前生效**的价 ──
+  //
+  // 为什么以 expr 为准而不是"两者取其一较合理者"：旧字段在迁移后已停止维护，
+  // 它不是"另一个可能对的价"，而是**历史残留**。实测 12 条里旧值与 expr 三格全一致的
+  // 只有 1 条，其余偏离 0.2x–5.2x，且有 2 条旧字段算出 $75/1M 的不可能价。
+  // 任何"挑一个看起来正常的"启发式都会在那 10 条上挑错 —— 它们看上去都像正常价。
+  //
+  // ⚠ expr 解析失败**不丢弃整条**，退回旧字段：56/68 条根本没有 expr，
+  // 对它们旧公式仍然成立。丢弃会让这批模型集体落 FALLBACK $2/$10（又一次静默错算）。
+  const parsedExpr = raw.billing_mode === "tiered_expr" ? parseBillingExpr(raw.billing_expr) : null;
+  if (parsedExpr) {
+    const entry: GatewayPricingEntry = {
+      // ⛔ 这三格**不乘** RATIO_TO_USD_PER_M：expr 系数已是 USD/1M（见 parseBillingExpr 约束 1）。
+      input: parsedExpr.input,
+      output: parsedExpr.output,
+      cacheRead: parsedExpr.cacheRead,
+      // 实测 12/12 条 expr 的变量全集只有 p/c/cr，**没有 cw 项** ⇒ 本网关不提供缓存写入价。
+      // 写 0 而不是留空：留空会让下游落 `input × 1.25` 兜底，凭空造出一笔网关不收的钱。
+      cacheWrite: 0,
+      quotaType,
+      priceSource: "expr",
+    };
+    if (parsedExpr.peakWindows.length > 0) {
+      entry.peakWindows = parsedExpr.peakWindows;
+      entry.offPeakMultiplier = parsedExpr.offPeakMultiplier;
+    }
+    if (quotaType === 1 && perCallUSD !== undefined) entry.perCallUSD = perCallUSD;
+    if (endpointTypes) entry.supportedEndpointTypes = endpointTypes;
+    return { name, entry };
+  }
+
   const mr = raw.model_ratio;
   // 按 token 计费的条目必须有合法 model_ratio —— 它是这条唯一的价，缺了整条无用。
   // 按次条目允许缺（doubao-seedream 这类纯按次模型），此时 input=0，计价自然退回兜底。
@@ -310,10 +564,19 @@ export function convertRawEntry(
     input,
     output: input * compRatio,
     quotaType,
+    priceSource: "legacy_ratio",
   };
   if (cacheRatio !== undefined) entry.cacheRead = input * cacheRatio;
   if (createCacheRatio !== undefined) entry.cacheWrite = input * createCacheRatio;
-  else entry.cacheWrite = 0; // 网关未给 create_cache_ratio 时按 0（多数网关缓存写入不额外计费）
+  // 网关未给 `create_cache_ratio` 时按 0。
+  //
+  // ⚠ 「多数网关不额外计费」这个旧说法**没有依据**，已删。实测判据（2026-09-17，
+  // 本网关 68 条返回）：`create_cache_ratio` 字段一条都没有，且 12 条 `billing_expr`
+  // 的变量全集只有 `p`/`c`/`cr`、**没有 `cw` 项** ⇒ 本网关确实不提供缓存写入价。
+  // 所以 0 是"上游无此维度"的如实表达，不是"我们假设它免费"。
+  // 写 0 而不是留空：留空会让下游落 `input × 1.25` 兜底，凭空造出一笔网关不收的钱。
+  // 将来 expr 里出现 `cw` 变量项时需要在 parseBillingExpr 里一并支持。
+  else entry.cacheWrite = 0;
   if (perCallUSD !== undefined) entry.perCallUSD = perCallUSD;
   if (endpointTypes) entry.supportedEndpointTypes = endpointTypes;
 
@@ -333,7 +596,11 @@ function computeVersion(models: Record<string, GatewayPricingEntry>): string {
   let str = "";
   for (const k of keys) {
     const m = models[k];
-    str += `${k}:${m.input},${m.output},${m.cacheRead ?? ""},${m.cacheWrite ?? ""},${m.quotaType},${m.perCallUSD ?? ""},${m.supportedEndpointTypes?.join("+") ?? ""}|`;
+    // ⚠ 新增的 priceSource / peakWindows / offPeakMultiplier 必须进指纹（见上方警告）：
+    // 漏了会让"上游把口径切到 expr、但换算出的三格价恰好没变"的场景走「版本未变，跳过写盘」
+    // 分支 —— 窗口与口径来源永远写不进磁盘，内存里有、日志报成功、下次启动又没了。
+    const win = m.peakWindows?.map((w) => `${w.startHour}-${w.endHour}`).join(",") ?? "";
+    str += `${k}:${m.input},${m.output},${m.cacheRead ?? ""},${m.cacheWrite ?? ""},${m.quotaType},${m.perCallUSD ?? ""},${m.supportedEndpointTypes?.join("+") ?? ""},${m.priceSource ?? ""},${win},${m.offPeakMultiplier ?? ""}|`;
   }
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -381,6 +648,11 @@ function parseCacheFile(raw: unknown): GatewayCacheFile | null {
           source_url: bucket.source_url ?? "",
           fetched_at: stale ? 0 : (bucket.fetched_at ?? 0),
           pricing_version: bucket.pricing_version ?? "",
+          // 必须原样读回：丢了它会让每次启动都判成"上游版本变了"，白打一条日志 + 白写一次盘。
+          upstream_pricing_version:
+            typeof bucket.upstream_pricing_version === "string"
+              ? bucket.upstream_pricing_version
+              : undefined,
           models: bucket.models,
           // 负缓存字段（第三方/旧文件可能缺失或类型不对，做有限数值校验后再采纳）。
           failed_at: isFiniteNonNeg(bucket.failed_at) ? bucket.failed_at : undefined,
@@ -773,6 +1045,14 @@ function toModelPricing(entry?: GatewayPricingEntry | null): ModelPricing | null
     output: entry.output,
     cacheRead: entry.cacheRead,
     cacheWrite: entry.cacheWrite,
+    // ⚠ 分时段两格**必须透传**。漏掉的失效形态是静默的：缓存文件里窗口字段齐全、
+    // 采集日志报成功，但计价侧拿不到窗口 ⇒ 整条按高峰价算（空闲时段高报一倍），
+    // 没有任何一处会报错。这是"采到了但没接进消费路径"那一族死接线。
+    ...(entry.peakWindows && entry.peakWindows.length > 0
+      ? { peakWindows: entry.peakWindows, offPeakMultiplier: entry.offPeakMultiplier ?? 1 }
+      : {}),
+    // 归因用：账本里一条价来自 expr 还是残留旧字段，事后只能靠它回答。
+    ...(entry.priceSource ? { source: `gateway:${entry.priceSource}` } : {}),
   };
 }
 
@@ -859,7 +1139,7 @@ export async function syncGatewayPricing(opts?: {
     controller.abort();
   }, timeoutMs);
 
-  let raw: { data?: RawPricingEntry[] };
+  let raw: { data?: RawPricingEntry[]; pricing_version?: unknown };
   try {
     const resp = await fetch(url, {
       method: "GET",
@@ -879,7 +1159,7 @@ export async function syncGatewayPricing(opts?: {
       });
       return { updated: false, count: 0, version: "", reason: `HTTP ${resp.status}` };
     }
-    raw = (await resp.json()) as { data?: RawPricingEntry[] };
+    raw = (await resp.json()) as { data?: RawPricingEntry[]; pricing_version?: unknown };
   } catch (e) {
     // 超时说人话（含阈值与可调环境变量），其余错误保留原文。
     const reason = timedOut
@@ -906,12 +1186,35 @@ export async function syncGatewayPricing(opts?: {
   }
 
   const list = Array.isArray(raw?.data) ? raw.data : [];
+  // 上游自报的口径版本（顶层字段）。只接受非空字符串——第三方 HTTP 不可信。
+  const upstreamVersion =
+    typeof raw?.pricing_version === "string" && raw.pricing_version.trim()
+      ? raw.pricing_version.trim()
+      : undefined;
   const models: Record<string, GatewayPricingEntry> = {};
   let dropped = 0;
+  let suspicious = 0;
   for (const item of list) {
     const converted = convertRawEntry(item);
     if (!converted) {
       dropped++;
+      continue;
+    }
+    // 量级哨兵（最后一道网，见 SUSPICIOUS_INPUT_USD_PER_M）：物理上不可能的价不入库。
+    //
+    // ⚠ 命中必须**说话**。静默丢弃会让误伤（合法的贵模型被拦）退化成
+    // 「落注册表兜底 → 按 FALLBACK $2/$10 静默记账」—— 那比不加哨兵更难查，
+    // 因为账本照样出数、没有任何一处显示这条价被丢过。
+    const why = isSuspiciousMagnitude(converted.entry);
+    if (why) {
+      suspicious++;
+      dropped++;
+      log().warn(
+        "GATEWAY-PRICING",
+        `丢弃可疑定价条目 ${converted.name}：${why}（口径=${converted.entry.priceSource}）。` +
+          `该模型将退回内置注册表估价；若这是合法涨价，请调整 SUSPICIOUS_INPUT_USD_PER_M。`,
+        { endpoint: endpointKey, model: converted.name },
+      );
       continue;
     }
     models[converted.name] = converted.entry;
@@ -943,7 +1246,31 @@ export async function syncGatewayPricing(opts?: {
   // 例外：桶里还挂着未清的失败态（failed_at/fail_count）时必须落盘一次把它清掉 ——
   // 否则「端点已恢复但价格恰好没变」会让退避状态永久留存，之后每次都被冷却挡住不再采集。
   const hasStaleFailure = !!(existing?.failed_at || existing?.fail_count);
-  if (!opts?.force && existing && existing.pricing_version === version && !hasStaleFailure) {
+
+  // 上游口径变更检测（D7）——「跳过写盘」这条捷径的**唯一**盲区补丁。
+  //
+  // 自算哈希只覆盖我们已经解析出来的字段，所以「上游换了计费口径但旧字段没动」时它不变，
+  // 于是走 unchanged 分支、一切看起来正常。本次事故就是这么潜伏下来的。
+  // 现在：上游版本号变了就必须落盘一次（把新版本号记下来）并打一条 info ——
+  // 它不参与"价格变没变"的判断，只保证这件事**有痕迹**。
+  const upstreamChanged =
+    upstreamVersion !== undefined && existing?.upstream_pricing_version !== upstreamVersion;
+  if (upstreamChanged && existing?.upstream_pricing_version) {
+    log().info(
+      "GATEWAY-PRICING",
+      `上游计费口径版本变更：${existing.upstream_pricing_version} → ${upstreamVersion}。` +
+        `若同期出现单价异常，优先查网关是否新增了计费字段（如 billing_mode/billing_expr）。`,
+      { endpoint: endpointKey },
+    );
+  }
+
+  if (
+    !opts?.force &&
+    existing &&
+    existing.pricing_version === version &&
+    !hasStaleFailure &&
+    !upstreamChanged
+  ) {
     memBuckets[endpointKey] = models;
     // 采集成功 → 清内存失败计数，桶重新可用于跨桶兜底（与写盘处"成功即清零"同口径）。
     memBucketFailCount[endpointKey] = 0;
@@ -965,6 +1292,13 @@ export async function syncGatewayPricing(opts?: {
     source_url: url,
     fetched_at: Date.now(),
     pricing_version: version,
+    // 上游没报就保留上次存的值：拿不到不等于"上游没有"，覆盖成 undefined 会把
+    // 「这个网关不报版本号」与「这次没读到」混成一个状态。
+    ...(upstreamVersion !== undefined
+      ? { upstream_pricing_version: upstreamVersion }
+      : existing?.upstream_pricing_version
+        ? { upstream_pricing_version: existing.upstream_pricing_version }
+        : {}),
     models,
   };
   file.schema_version = 3;
@@ -981,8 +1315,8 @@ export async function syncGatewayPricing(opts?: {
   memLoaded = true;
   log().info(
     "GATEWAY-PRICING",
-    `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目）` : ""}`,
-    { version, endpoint: endpointKey },
+    `采集完成 ${count} 条${dropped > 0 ? `（丢弃 ${dropped} 非法条目${suspicious > 0 ? `，其中 ${suspicious} 条量级可疑` : ""}）` : ""}`,
+    { version, endpoint: endpointKey, upstreamVersion: upstreamVersion ?? "" },
   );
   emit({
     endpoint: endpointKey,

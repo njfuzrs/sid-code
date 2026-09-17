@@ -111,10 +111,10 @@ def _host_pricing(wire_model: str) -> dict[str, Any] | None:
     `availableModels[].pricing`(没有) → **网关采集缓存** → 内置注册表 → 兜底 $2/$10。
 
     🔴 2026-09-11 实测,那个网关缓存对 `origin-deepseek-v4-1-flash` 存的是
-    **input=75 / output=75 USD/1M** —— new-api 网关对**未定价**渠道回的占位值
-    (`origin-deepseek-v4-flash-vision` 也是同一对 75/75,是它的指纹)。
-    而真实价是 1-2 元 / 4-8 元 per 1M ⇒ 同一份 token 量算出的钱**高报 355 倍**
-    (实测 1M in + 200K out:$90.00 vs $0.2535)。
+    **input=75 / output=75 USD/1M**,而真实价是 1-2 元 / 4-8 元 per 1M
+    ⇒ 同一份 token 量算出的钱**高报 355 倍**(实测 1M in + 200K out:$90.00 vs $0.2535)。
+    ⚠️ **归因勘误 2026-09-17**:原写「是 new-api 对未定价渠道回的占位值」是**错的** ——
+    真相是上游给了真数、我们读错了字段,详见本仓 §勘误注释与 `parseBillingExpr`。
 
     ⚠️ 这个错**不会**以任何形式报错:`cost_usd` 照样是个数、汇总照样出表、
     `pricing_ratio` 那条偏离判据在 `arm_health.py:452` 明确只对 sonnet 定价有效
@@ -579,8 +579,8 @@ class SidCodeAgent(BaseInstalledAgent):
         if provider == "openai" and not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
 
-        # 🔴 价格必须显式透传,否则容器侧 `resolvePricing` 会往下落到**网关采集缓存**,
-        # 而那里对未定价渠道存的是占位值 75/75 USD/1M(实测高报 355 倍,详见 `_host_pricing`)。
+        # 🔴 价格能透传就透传。⚠️ 2026-09-17 后前提变了:采集器已认 `billing_expr`,
+        # 网关缓存那 12 条价已是对的;宿主手抄价已删 ⇒ 本函数对该模型返回 None(见其勘误)。
         # `pricing` 是 `availableModels[]` 的合法字段(`config/settings/types.ts` 的
         # `ModelConfigSchema`),且内层 schema 带 `.passthrough()` ⇒ `currency` /
         # `fxToUSD` / `peakWindows` / `offPeakMultiplier` 这些分时段与币种字段能原样通过
