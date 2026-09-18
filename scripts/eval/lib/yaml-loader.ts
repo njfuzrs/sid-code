@@ -2,7 +2,7 @@
  * yaml-loader.ts — 共享 schema 归一化层
  *
  * 同时消费 sid-code 与 code-graph 两个项目的 evals/ 数据:
- *   - case yaml: real-tasks（PR3b 起 architecture 已删；PR3a 起 general 与 holdout 题面 yaml 已删）
+ *   - case yaml: 四组已于 2026-09-18 全部删除（PR3a–3d）；loadAllCases 对缺失目录返回 []
  *   - 外部周分数: _scores/wNN/case_NNN.yaml(code-graph 模式, W7-W10 单通道 / W11+ 双通道)
  *   - 内联周分数: case yaml 的 code_graph_scores 嵌套段(code-graph 历史遗留)
  *   - sid-code baseline_scores: 每条 case 内联多 tool 快照(无时序)
@@ -63,7 +63,7 @@ export interface WeekScore {
  * Bucket：case 所在桶（用于分组统计 / dashboard 双指标）。
  *
  * 当前支持：
- *   - real-tasks/<cat>：trajectory case
+ *   - real-tasks/<cat>：原 trajectory case 桶名（PR3d 起仓内 yaml 已删，list* 返回 []）
  *   - holdout/real-tasks：永封 sid 名单所在目录（无 yaml）
  *
  * 历史上还扫过 architecture/<sub>、general/{p0-core,p1-common,p2-edge} 与 holdout 题面 yaml
@@ -101,7 +101,8 @@ export function isExecutionBucket(bucket: string): boolean {
  * B7-1（2026-05-31 / §15.2 ADR-033）：判断 bucket 是否属于 trajectory 轴。
  *
  * trajectory case 走 grader_type=trajectory_match，**M5 前仅作诊断维度，不进总分**。
- * 数据来源：evals/real-tasks/（B6-1 适配器导出）+ evals/holdout/real-tasks/（B7-3 永封）。
+ * 数据来源：原 trajectory 导出桶 + holdout 下同名子目录（B7-3 永封 sid 名单所在；无 yaml）。
+ * PR3d 起仓内 yaml 已删，listRealTaskSubBuckets 对缺失目录返回 []。
  */
 export function isTrajectoryBucket(bucket: string): boolean {
   return (

@@ -24,7 +24,7 @@
  *   （unknown 不计入，避免被刷分母）
  *
  * 用法：
- *   # 校验当前 evals/real-tasks/ 30 条精挑是否符合 ≥ 30% 外部
+ *   # 校验一组 task_id（PR3d 起仓内 yaml 已删，--source-mode real-tasks 扫到 0 条）
  *   bun run evals/scripts/distill-skill-rules.ts --source-mode real-tasks
  *
  *   # 校验任意 task_id 列表
@@ -44,7 +44,7 @@ const REPO_ROOT = resolve(import.meta.dir, "../..");
 // 的约定一致），放在别处用 SID_CODE_TRAJ_BENCH 覆盖。不要写死绝对路径——那只在一台机器上成立。
 const TRAJ_ROOT =
   process.env.SID_CODE_TRAJ_BENCH ?? resolve(REPO_ROOT, "../trajectory-platform/bench");
-const REAL_TASKS_ROOT = join(REPO_ROOT, "evals/real-tasks");
+const REAL_TASKS_ROOT = join(REPO_ROOT, "evals", "real-tasks");
 const REPORT_DIR = join(REPO_ROOT, "_reports");
 
 const THRESHOLD = 0.3;

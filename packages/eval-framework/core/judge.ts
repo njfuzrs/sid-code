@@ -1,8 +1,8 @@
 /**
  * Grader scope（2026-05-26 / 5d-v3）
  *
- * 本文件 grader 评 5 维加权行为分。原先服务的 general 题集已于 2026-09-18 随旧题集删除；
- * architecture/ 已于 PR3b 删除。算法仍被 real-tasks 路径与单测夹具调用。
+ * 本文件 grader 评 5 维加权行为分。原先服务的四组题集已于 2026-09-18 全部删除
+ * （general / architecture / capability / real-tasks）。算法仍被单测夹具调用。
  *
  * 不评（待 S1+ 引入 task-specific scorer 架构）：
  *   - 红线 case（RL-001~011，原 architecture/redline，已随 PR3b 删除）

@@ -12,11 +12,11 @@
 >
 > **本文件作用**：
 > 1. 永封 trajectory-platform 上游 200 条 holdout sid 名单的不可变副本（任何后续 `git pull` 上游 splits 变化都不能影响本文件）
-> 2. 充当 sid → task_id 反查的"答案集"：任何用 sid 派生的 case 进入 `evals/real-tasks/` **必须** grep 本文件确认未命中
+> 2. 充当 sid → task_id 反查的"答案集"：任何用 sid 派生的 case **必须** grep 本文件确认未命中（原落点 `evals/real-tasks/` 已于 2026-09-18 PR3d 删除；新集若重建 holdout，切分方法论见 `../architecture/README.md`）
 > 3. pre-push hook 拦截：`holdout-sids.txt` 被改 → push 中止（sha256 + 行数）
 >
 > **本文件不能改的内容**（路线 §9.1.2 + §9.1.1 铁律）：
-> - 永远不要把 holdout sid 派生 case 落到 `evals/real-tasks/<cat>/`
+> - 永远不要把 holdout sid 派生 case 落到本仓（原落点 `evals/real-tasks/<cat>/` 已删；新集走 `agent-traj-bench`）
 > - 永远不要在公开页面引用本文件中的 sid（`evals/CASES.md` 已于 2026-09-18 删除；公开面现在是 `website/`）
 > - 永远不要在 src/ commit 中以"调试"为名读取 holdout sid 对应的 trajectory（默认 `--skip-holdout=true`）
 

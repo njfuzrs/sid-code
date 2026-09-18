@@ -48,16 +48,19 @@ const PKG_ROOT = resolve(import.meta.dir, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const EVALS_ROOT = join(REPO_ROOT, "evals");
 
-// PR3b（2026-09-18）：architecture 组 113 yaml + 18 README 已删。
-// 扫描面现在只剩 real-tasks/（动态发现子目录）。holdout 题面 yaml 已于 PR3a 删除，
+// PR3d（2026-09-18）：real-tasks 组 27 yaml + 31 setup 脚本已删。四组题集全部下线。
+// 默认扫描面为空（discover* 在目录不存在时返回 []）。holdout 题面 yaml 已于 PR3a 删除，
 // 不再把 HOLDOUT_DIR 推进 dirsToScan。HOLDOUT_DIR 仍存在（README + holdout-sids.txt）。
+// 路径常量仍指向原位置：污染扫描（PR4）与 holdout 升级路径还认这些名字；
+// 目录不存在时所有 discover* 都是空集，不静默读到别的东西。
 const HOLDOUT_DIR = join(EVALS_ROOT, "holdout");
 const REAL_TASKS_ROOT = join(EVALS_ROOT, "real-tasks");
 const HOLDOUT_REAL_TASKS_ROOT = join(EVALS_ROOT, "holdout", "real-tasks");
 
 /**
- * 动态发现 `evals/real-tasks/<cat>/` 下所有子目录（B6-2/3）。
- * scripts/ 子目录存 setup_*.sh，不属于 case 桶。
+ * 动态发现原 trajectory case 子目录（B6-2/3）。
+ * `scripts/` 子目录存 setup_*.sh，不属于 case 桶。
+ * PR3d 起仓内目录已删，existsSync 失败即返回 []。
  */
 function discoverRealTasksSubDirs(root: string): string[] {
   if (!existsSync(root)) return [];
@@ -275,7 +278,7 @@ async function loadCases(
   const wantSet = caseFilter ? new Set(caseFilter) : null;
   const cases: CaseYaml[] = [];
 
-  // --cases-dir 模式：只扫指定目录（含子目录），跳过默认的 real-tasks/holdout 逻辑
+  // --cases-dir 模式：只扫指定目录（含子目录），跳过默认扫描面（PR3d 起默认为空）
   if (casesDir) {
     const absDir = resolve(casesDir);
     if (!existsSync(absDir)) {
@@ -299,9 +302,8 @@ async function loadCases(
     return cases.sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // 默认行为：扫描 real-tasks/<cat>/。
-  // PR3b 起 architecture/ 已删；PR3a 起 general 与 holdout 题面 yaml 已删。
-  // includeHoldout 仍会扫 holdout/real-tasks/（当前无 yaml，discover* 返回空）。
+  // 默认行为：四组题集已全部删除，discover* 在目录不存在时返回 []。
+  // includeHoldout 仍会扫 holdout 下原 trajectory 子目录（当前无 yaml）。
   // hasHoldoutId 仍查询磁盘，显式 --cases 点已删 id 时返回 false，loadCases 得到空集。
   const dirsToScan = [...discoverRealTasksSubDirs(REAL_TASKS_ROOT)];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;

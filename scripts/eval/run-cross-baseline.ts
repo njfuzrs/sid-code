@@ -15,7 +15,8 @@ import {
 import { parseArgs } from "node:util";
 
 const ROOT = join(import.meta.dir, "../..");
-const CASE_ROOTS = [join(ROOT, "evals/real-tasks")];
+// PR3d：四组题集全部删除。Glob 扫不存在的目录得到空集；空数组 = 扫到 0 条。
+const CASE_ROOTS: string[] = [];
 const OUTPUT_DIR = join(ROOT, "evals/raw-outputs");
 
 interface CaseYaml {
