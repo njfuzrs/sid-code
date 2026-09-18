@@ -5,7 +5,8 @@ paths: ["evals/**", "tests/eval/**"]
 # evals/ — 跑评测前必读：**尺子比结论重要**
 
 本文件约束 `evals/` 下**所有**评测链路：`external-benchmarks/`（swe-bench 自建 / harbor）、
-`bench-runner/`、`providers/`、`real-tasks/`，以及 `tests/eval/` 下的配套门禁。
+`bench-runner/`、`providers/`，以及 `tests/eval/` 下的配套门禁。
+（四组自建题集已于 2026-09-18 全部删除；`holdout/real-tasks/holdout-sids.txt` 仍是永封对象。）
 
 ## 0. 为什么会有这份文件（先读这段，它决定你怎么用下面的清单）
 

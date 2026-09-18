@@ -4,7 +4,7 @@
  * 来源: docs/eval/_archive/00-总方案.md §3.5 + _archive/07-执行顺序速查.md §2.4
  *
  * 用法:
- *   bun run eval:list                       # 列出仍在磁盘上的 case（real-tasks）
+ *   bun run eval:list                       # 列出仍在磁盘上的 case（PR3d 起四组已删，期望 0）
  *   bun run eval:list -- --skip-holdout     # 同上（holdout 题面 yaml 已于 2026-09-18 删除）
  *   bun run eval:list -- --priority P0      # 仅 P0
  */
@@ -15,7 +15,8 @@ import { parseArgs } from "node:util";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_ROOTS = ["evals/real-tasks"];
+// PR3d：四组题集全部删除。walkYaml 对不存在的目录返回 []，空数组 = 扫到 0 条。
+const CASE_ROOTS: string[] = [];
 
 function walkYaml(dir: string, out: string[] = []): string[] {
   if (!existsSync(dir)) return out;

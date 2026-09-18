@@ -26,7 +26,8 @@ import { spawn } from "node:child_process";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_ROOTS = ["evals/real-tasks"];
+// PR3d：四组题集全部删除。walkYaml 对不存在的目录返回 []，空数组 = 扫到 0 条。
+const CASE_ROOTS: string[] = [];
 const RAW_DIR = "evals/raw-outputs";
 const REPORTS_DIR = "evals/_reports";
 
