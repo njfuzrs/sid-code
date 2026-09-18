@@ -131,6 +131,9 @@ sid-code update                          # 回到稳定版
 sid-code update    # 升级到最新版（不动 ~/.sid-code/ 里的配置和会话）
 ```
 
+日常启动还会按 `settings.autoUpdate` 后台检查稳定版（默认 `auto`，下次启动才切）。
+三种模式、失败保护、回滚见[自动更新](/use/auto-update)。
+
 卸载没有专门命令，手工删三处即可：
 
 ```bash

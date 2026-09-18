@@ -1,5 +1,5 @@
 ---
-Status: proposed
+Status: implemented
 Class: feature
 Date: 2026-09-14
 Scope: packages/core/src/update/, packages/cli/src/command/update.ts, packages/cli/src/ui/App.tsx
@@ -54,6 +54,14 @@ Dependencies: []
 ### 候选方案 E：把 INSTALL_URL 直接插入 `bash -c` 字符串
 
 **放弃理由**：`SID_CODE_INSTALL_URL` 可由用户环境覆盖，直接拼接会让 URL 中的 shell 元字符被解释。改为 `bash -c 'curl -fsSL "$1" | bash' ... URL`，后台 installer 的 URL、路径和版本也统一使用 positional parameters。
+
+### 候选方案 F：无头模式（`-p`）也跑自动更新
+
+**放弃理由**：无头路径是 CI / 脚本 / 评测在跑任务，不该在任务当口自己改二进制。接线只挂在 TUI（`App.tsx`）；无头要更新就显式 `sid-code update`，或在 settings 里写 `"autoUpdate": "off"`。
+
+### 候选方案 G：用户文档放 `website/guide/`
+
+**放弃理由**：`guide/` 不是站点已有分区，sidebar 绑的是 `/use/` 与 `/extend/`。放那里页面存在但左栏点不到，`llms.txt` 也会因为 `SECTION_NAMES` 没有 `guide` 这个 key 而 extra 出一个英文小写段沉到末尾。用户文档走 `website/use/auto-update.md`。
 
 ## 拿什么证明它生效了
 
