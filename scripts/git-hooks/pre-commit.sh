@@ -1,17 +1,18 @@
 #!/bin/sh
-# pre-commit hook —— B6-10 数据污染防护 + B7-7 SKILL holdout 回归护栏
+# pre-commit hook —— B7-7 SKILL holdout 回归护栏
 #                    + P1-4 lint 门禁 + P2-1 format 门禁
 #
 # 行为：
-#   1. 扫 staged 的 evals/real-tasks/**.yaml 是否含 §9.1.1 黑名单关键词
-#      （tool_result_content / response_content / patch_content / observation_content / completion_text）
-#      命中即 reject commit（B6-10）
-#   2. 扫 staged 的 SKILL.md（packages/core/src/skill/builtin/**/SKILL.md 或 .sid-code/skills/**/*.md）
+#   1. 扫 staged 的 SKILL.md（packages/core/src/skill/builtin/**/SKILL.md 或 .sid-code/skills/**/*.md）
 #      调用 holdout 回归扫描器：holdout 暂无 execution case → INFO skip；有则提示应跑回归
 #      （B7-7 §13.4.4 蒸馏护栏 2，holdout case 入库后会自动激活）
-#   3. oxlint 检查 staged 的 .ts/.tsx（P1-4）
-#   4. oxfmt --check 检查 staged 的代码文件（P2-1；只报错不改文件，理由见该段注释）
-#   5. staged 含 .agents/notes/**.md 时校验 Agent Note 形态（决策留痕反退化，见文末该段）
+#   2. oxlint 检查 staged 的 .ts/.tsx（P1-4）
+#   3. oxfmt --check 检查 staged 的代码文件（P2-1；只报错不改文件，理由见该段注释）
+#   4. staged 含 .agents/notes/**.md 时校验 Agent Note 形态（决策留痕反退化，见文末该段）
+#
+# B6-10（real-tasks yaml 污染扫描）已于 2026-09-18 下线：evals/real-tasks/
+# 随 PR3d 删除后作用域为空集，同等扫描在 agent-traj-bench 的 gate12
+# （scripts/check-contamination.py）。本 hook 管不到另一个仓的提交。
 #
 # 安装：
 #   bun run install-hooks
@@ -24,27 +25,6 @@
 set -e
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
-
-# ============================================================================
-# B6-10: real-tasks yaml 污染扫描
-# ============================================================================
-STAGED_REAL_TASKS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^evals/real-tasks/.*\.ya?ml$' || true)
-
-if [ -n "$STAGED_REAL_TASKS" ]; then
-  echo "[pre-commit] B6-10 扫描 staged real-tasks yaml ($(echo "$STAGED_REAL_TASKS" | wc -l | tr -d ' ') 个文件)..."
-
-  ABS_FILES=""
-  for f in $STAGED_REAL_TASKS; do
-    ABS_FILES="$ABS_FILES $REPO_ROOT/$f"
-  done
-
-  # shellcheck disable=SC2086
-  if ! bun run "$REPO_ROOT/scripts/eval/check-real-tasks-pollution.ts" $ABS_FILES; then
-    echo "[pre-commit] ❌ B6-10 数据污染扫描失败，commit 中止"
-    echo "             如确认误报，可加 --no-verify 跳过单次（不建议）"
-    exit 1
-  fi
-fi
 
 # ============================================================================
 # T-3.8: 参考页反漂移门禁（官网方案 §4.5.2 机制一）

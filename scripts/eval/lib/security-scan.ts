@@ -2,8 +2,9 @@
  * security-scan.ts — real-tasks / trajectory-platform 数据污染与 secret 扫描共享函数
  *
  * 从原 evals/scripts/import-trajectory-platform.ts 抽出（importer 本身已废弃删除，
- * 见 case 生成流程下线说明），供 check-real-tasks-pollution.ts / scan-trajectory-secrets.ts
- * 两个安全扫描脚本复用，避免关键词/正则重复实现导致漂移。
+ * 见 case 生成流程下线说明），供 scan-trajectory-secrets.ts 复用。
+ * check-real-tasks-pollution.ts 已于 2026-09-18 随 PR4 下线：题面不在本仓，
+ * 同等扫描在 agent-traj-bench 的 scripts/check-contamination.py（gate12）。
  */
 
 /**
