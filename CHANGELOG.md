@@ -2,6 +2,282 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.604 (2026-09-18)
+
+### 新功能
+- **blog** · 博客系列名称修改为开源AI项目研究 (#39) `d1f30718`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **eval** · W3 扩规模两前提 —— shim 发头前重试 + 非能力失败自动重跑 (#32) `ef12f3d5`
+  - **靠 harbor 自己重试**（`harbor run -r N` / `resume --filter-error-type`）—— 实测那些 429/502 报废的 trial `exception_info` 是 `None`、`metadata` 整份缺失， 在 harbor 眼里与「能力不行」完全一样，两条原生机制都匹配不到。
+  - **跑前探针判断「现在能不能跑」** —— 探针 12 连 0% 失败而 `/__stats` 累计 29.9%， 两个数都真、口径不同。T2 一到位，「上游变差就直接杀掉」的代价归零。
+  - **默认自动删** —— `runs/` 不在版本库，误删就没了。
+  - **重试只在假上游验过，真流量一次没跑** ⇒ 现在只能说「84.1% 的失败在结构上 可重试，且重试路径有 26/26 变异验收」，**不能说「重试在真实评测里生效了」**。 判据是后续真跑的 \`retry_success\` 增量 > 0。
+  - **cc 的等头容忍度未知**（harbor 的 cc agent 只注入三个 env，没有超时 knob）。 若它 < 240s，cc 臂拿不到 T1 的全部收益 —— 那种情况如实记， ⛔ **别调 cc 参数**（那就改了被测对象）。
+  - [x] \`bun test\` 全绿（0 fail）
+  - [x] \`make build\` 成功（末尾自检通过）
+  - [x] \`bun run lint\` 通过
+- **evals** · W3.0 扩规模先行闸 —— 镜像拉到 72/89 并让 dataset 可切换 (#24) `37a63ac3`
+  - **15 张 `denied`**：`docker pull` 报 `error from registry: denied`，**1s 返回**。 三条判据互证非网络：1s 太快（正常 2–40s）；同期已成功的张复拉仍 200； 报的是 denied 而非 connection/timeout 类。⇒ 权限态，重试轮数救不了。
+  - **体积差 94 倍**：两张 8.5GB + 一张 6.1GB，其余 24 张压缩合计仅 5.4GB （实测膨胀比 ≈2×）。⇒ 3 张巨张要 46G 换 3 道题，24 张小张只要 11G 换 24 道题。 磁盘只剩 31G，最后 2 张（需 34G）装不下 —— ⛔ 不许 prune 腾地方， reclaimable 主要是链路 A 的 SWE-bench 底座。
+  - `tb-image-list.py`：按 `docker images` 实况派生待拉清单（故断点续跑天然成立， 不维护会漂移的进度文件）。按体积从小到大排、跳过已知 denied。
+  - `pull-tb-images.sh`：**停滞检测**看门狗 + 多轮重试 + 逐张记 OK/FAIL/耗时。 ⚠️ 不是墙钟死线：实测 `mteb-leaderboard` 被 600s 死线杀在下载途中， 而那 606s 里磁盘掉了 8G —— 它一直在正常下载。判据改成「有没有进展」 （docker 数据盘用量是否增长），探针失效时 fail-open（误杀一个 8.5GB 下载比多等更…
+  - `gen-local-registry.py`：把「镜像已就绪的 72 题」生成为 `terminal-bench-local@2.0`，原 `terminal-bench-sample@2.0` 逐字节保留 （旧 n=10 结论的取数源）。 ⛔ 不用官方 89 题 registry：缺镜像的题在环境构建阶段失败，形态是 `reward=0` + status 正常，**与「能力不行」不可区分*…
+  - 变异自证 7 条，逐条红在预期断言：磁盘读不出数字→rc=3；阈值 999G→rc=4； docker 不可达→不产出空清单；真卡死→STALLED；**慢但有进展→不杀**； registry 缓存被截断→指出真因；过滤器清空清单→报 ⛔ 而非 ✅。
+  - ⛔ 修掉自己写出的假绿：收尾判据曾复用**被过滤的工作清单** ⇒ 本地仅 71 张 却打出 `✅ 89/89 齐` 且 rc=0（早退处同错）。现改为三笔账各自独立取数， 只有 local≥89 才允许说齐；「能拉的都拉完了」不许报成功。
+  - 通路验证：`harbor run -d terminal-bench-local@2.0` 实跑一题， `verifier_ran=True`、verifier 判 3 个测试 ⇒ 环境构建成功。
+
+### 修复
+- **script** · 账本清理脚本的备份文件名尾部多一个点 (#45) `aa81b3fd`
+  - ## 问题
+  - #44 引入的 `scripts/ledger-purge-bad-pricing.ts` 里，备份文件名的时间戳取多了一位：
+  - ```js
+  - new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15)
+  - ```
+  - `replace` 把 `T` 也删掉了，所以剥完之后是 `20260917031817.123Z` ——
+  - 第 15 个字符已经是毫秒前的那个 `.`：
+  - | | 值 |
+- **pricing** · 网关定价读错字段 —— 认 billing_expr，旧字段降为兜底 (#44) `9f30d4c9`
+  - **没拿官方账单对过账**。全部证据是「我们与网关自报口径一致」，而非「与实付一致」。 expr 是网关自报的，若网关自报与实收不符，本次修不出来。
+  - **Harbor 容器侧未实跑**。删手抄价后容器改走采集路径，要求容器能访问 `/api/pricing`；访问不到会落注册表兜底而非 expr 真价。下次跑 A1 臂前必须先确认。
+  - **D6 `pricing-reconcile.ts` 仍零接线**：它需要 `--bill <官方账单金额>`， 而那个数只能人去后台抄 ⇒ 接 CI 会退化成 n=0 空跑，本次如实留作缺口。
+  - **D9 `group_ratio`**：当前所有分组价格一样，暂不处理。
+  - **D3 的「回填修正」**：改为直接删除错误历史账单（偏差有正有负，这些行没有任何 正确解读方式；删后留下的**缺口是诚实的**，而错数会被当成基线继续用）。
+- **trace** · 轨迹上传静默失效 —— 真根因是 SessionEnd 从未跑到 (#42) `1abc512d`
+  - traj stringify + 落盘：最大 **7.5ms**（6MB traj）
+  - `buildDigest`：最大 **18ms**
+  - **补 SIGHUP**（修复前全仓 0 命中）。关终端 / SSH 断连时进程被默认处置直接终止，退出码按惯例给 129。
+  - **退出路径声明上传预算**（`setUploadBudgetMs`）。信号 / `/quit` / 正常退出传 0（不发请求，交给补传）； **headless / 评测保持 10s 不变** —— 那是修复前唯一一直上传成功的路径，不能被这次修复弄坏。
+  - **新增启动补传 `backfill.ts`**（最后一道防线）。判据只看磁盘现状：目录在、traj 非空、`.uploaded` 缺。 刻意不依赖重试队列（条目随 LRU 轮转失效，实测 1267 条全部指向已删目录）。 带并发/总量上限 + 四重「别碰活会话」护栏（当前会话 / 心跳新 / PID 存活 / 目录太新）。
+  - **队列停止静默丢数据**：`processRetryQueue()` 从 `void` 改为返回九类计数，`--upload-traces` 打印实际统计。
+  - **复活两个死配置**：`queueScanIntervalMs` → 新增 `startQueueScan()`；`maxQueueRetries` 替换硬编码 `50`。
+  - **可观测性**：`/debug` 显示积压（本地/已上传/待补传/队列/幽灵目录），启动积压偏多时 WARN —— 告警说的是**后果**（「N 个会话的轨迹仍未上云」）而非现象。
+- T4开跑前准备 (#37) `80357333`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **pricing** · 迁移标记的缓存不显示「496899.2h 前」 (#36) `07a781ac`
+  - #35 的跟进修复(推上去时 #35 已合并,所以单独开一个)。
+  - ## 问题
+  - #35 的 schema v2→v3 迁移把旧桶的 `fetched_at` 置 0 以触发重采,而 `/model pricing`
+  - 的状态行照旧按时间差算:
+  - ```
+  - 网关定价缓存: 126 条,采集于 496899.2h 前(version f9599c2d)
+  - 那不是「很久以前采的」,是「这份缓存的采集时间已作废」。读者会据此以为缓存坏了,而不是正在自愈。
+  - ## 修复
+- **pricing** · 根治网关按次价的四处口径错误（显示错 + 账本被兜底价污染） (#35) `6d67da5b`
+  - **步骤 1**（本端点桶）命中即停，不再因零价而继续跨桶——端点自报零价是**权威事实**，修前会让自报免费的内部渠道静默套上别的网关的收费价；
+  - **步骤 2**（跨桶借价）则跳过零价/纯按次条目继续找——借用是任选，借到无价条目等于没借到。
+  - `affected-tests` 全量 **3323 pass / 0 fail**（新增 17 条回归，逐缺陷一条 + 迁移 + 两处行为变化）
+  - lint / format / build 自检通过；类型错误 9 个与基线一致，均在本 PR 未触碰的文件
+- **tool** · 校验错误消息带上修法，并修掉 bash 指南推荐已废弃参数 (#34) `2efadd7d`
+  - todos.0.active_form: 期望 string，实际收到 unknown（... received undefined） ```
+  - todos.0.active_form: 字段名写错了——你传的是 `activeForm`，本工具的参数名是 `active_form`（注意下划线/大小写）。把 `activeForm` 改成 `active_form` 重试即可，不要新增字段。 ```
+  - **不改超时逻辑**：那两条命令本来就该超时，挂钟兜底是 20260801 事故的既有修复。 给全盘搜索自动转后台**否决**——模型意图是"现在就要答案"，静默转后台会让它拿到 task_id 却不知道等谁，比超时更糟。修法落在指南（③）。
+  - **不给 `active_form` 加 camelCase 别名**：schema 是给模型的契约，同一个东西两个名字， 下一个模型就会两个都传或跨工具混用（19 个 snake_case 字段都要跟着加）。 **教它改名是一次性成本，别名是永久的契约债。**
+  - **`edit` 缺 `file_path` 不纳入本次**：统计全部 50 个会话发现它 5 次（4 个会话）， 比本次两条都高频；但核过是 `stop_reason=tool_use`（非截断）、input 里只有 `old_string`/`new_string`，**模型真的没传**，无近似键可指，①的机制对它无效。 它需要别的修法，不塞进来凑数——已记在 Agent Note 里，不是…
+- **tool** · 数字形态字符串在协议边界归一为 number，并修掉恒为 unknown 的错误消息 (#33) `011a22a9`
+  - 整串是十进制数：`"117"` / `" 117 "` / `"-3"` / `"1.5"` / `"1e3"`
+  - 逗号/连字符区间取**首个**数：`"117, 130"` → 117（offset 语义就是起点）
+  - **它修不了实际发生的这一例** —— `Number("117, 130")` = NaN，实测 `z.coerce.number().safeParse("117, 130").success === false`。改了等于没改。
+  - **它会静默吞掉危险值** —— `""`→0、`null`→0、`[]`→0、`true`→1，正是 `nullish-normalize.ts` 顶部记录过的污染（grep 一次调用 4 个 coerce 字段全被污染成 0， 无报错无日志）。给 read.offset 加 coerce = 再开一个同样的洞。
+- **session** · 修会话持久化四项 P2 —— 两条真断线 + 两条复核结论 (#31) `6eadd9f7`
+  - `i` 口径 = 「磁盘上最多留 maxCount 个会话」 ← 用户看到的是磁盘文件数，取这条
+  - kept 口径 = 「**不受保护的**会话最多留 maxCount 个」 ← 总量无上限，配置形同失效
+  - **D9**：扫描归因 + 清理不删 sidechain **且**同期真损坏文件照删（反向自证清理在工作）
+  - **D10**：三条入口逐条 + no-op 不记账 + 紧急路径不重复记账 + `source` 落盘原文 + `summaryIsRestorable` 边界 + meta 缺省向后兼容
+  - **D11**：移而不删（断言隔离区内容一字不差，改成 `rmSync` 会红）+ 项目目录/点文件不动 + 同名不覆盖 + 目录缺失不抛
+  - **D12**：反向门禁三条
+- **memory** · 记忆与持久化三项 P2 —— 嵌套格式/反向流入/热路径 git fork (#30) `698b8112`
+  - cc 嵌套格式（`type` 在 `metadata:` 下缩进两格）的 `type` 从「恒读不到、落到 `inferMemoryType` 启发式猜」变成读得到；
+  - 含冒号的值不再被第一个冒号截断（ISO 时间戳 `2026-09-03T03:38:42.648Z` 此前会被截成 `2026-09-03T03`）；
+  - `metadata.name` **不能**覆盖顶层 `name`——它是 P0-1 的去重键，改错它等于把两条记忆并成一条。
+  - `isAnyPrivateMemPath` 开头加一段**纯字符串的廉价否定**——目标不在 `getSidHome()` 之内 ⇒ 一定不是私有记忆路径，直接返回，不碰磁盘不 fork 进程。
+  - `resolveProjectRoot` 加进程内缓存，key 是 `cwd \0 sidHome`（**不是裸 cwd**： `isInsideSidHome` 那道防御会因配置根不同而给出不同答案，而测试正是靠改 `SID_CONFIG_DIR` 重定向落盘的）。
+  - **更安全**：P2-14 补上 secret 闸门的反向方向（此前只防「我泄给别人」，不防「别人泄给我」）。
+  - **更快**：P2-15 把 write/edit 热路径的 5.39ms/次 降到 0.001ms/次，落在 `PostToolUse.duration_ms` 那条工具侧归因曲线上。
+  - **trade-off**：P2-14 拿「更快」换「更安全」——pull 侧多一次全量 secret 扫描； 但它只在团队记忆启用时发生，且同步本来就是 debounce 后的旁路任务，不在 TTFT 路径上。
+- **memory** · 记忆与持久化八项 P1 —— 半接线/口径分裂/安全缺口/零埋点 (#29) `3b517828`
+  - D7 的孤儿症状与 P0-1 的重名遮蔽**同形不同因**，分开修会让排查时两者继续互相冒充；
+  - D6 换成递归后 `archive/` skip 名单**从无害变成正确性的一部分**（否则与 P0-2 的归档 淘汰来回震荡）；
+  - D12 的埋点是 D5②/D10/D11 的**唯一验收手段**，先修后者等于让三条修复合并时都没有判据。
+  - **D5① 存成字段而非临时变量**：`rebuildSystemPrompt` 是覆盖式重建（`/language`、 `/model`、CLAUDE.md 热重载都触发），漏带一次就把压缩后唯一的历史补偿静默丢掉。
+  - **D5① 只在压缩后注入**：笔记是被丢弃历史的替代品，历史还在时注入是同一份信息付两遍 token（伤"更省"），收益为零。
+  - **D7 必须抽成模块**：同样三个 bug 在 `store.ts:writeIndex` 与 `agent-store.ts:rebuildAgentIndex` 有两份逐字符雷同的实现。只修前者会留一份已知坏的 副本，而它服务子代理跨会话记忆、更少人看、坏得更久。
+  - **D9 的旧前提不成立**：旧注释说"落点都在 memoryDir 内、直接放行"，但 scope 四个值里 只有 `project` 在 memoryDir 内。且提取 prompt 里**完全没有 global 的判定标准** —— 模型对它的使用是无指引的自由裁量。
+  - **D11 刻意不覆盖跨进程写入**：那需要 mtime 轮询或文件锁，成本远高于它治的问题 （并发会话各有各的项目目录时根本不冲突）。这条边界写在注释里，不是漏掉的。
+- **session** · 修会话持久化四项 P1 —— 接线断点与兄弟存储清理 (#28) `f02194f9`
+  - **D5**：构造函数比 `restoreSession()` 早跑，那时 `resumedSessionId` 还是 null，闭包一旦捕获 构造期局部变量 `sessionId`，就把「进程新 id」定死了。而**建**快照走的是逻辑 id，快照实际落在 `checkpoints/<被恢复会话 id>/`。写对读错的后果比「都不能用」更隐蔽：resume 后同一批快照 `/undo` 找得到…
+  - **D6**：生产端传 3 个参数、接口声明 3 个、实现方完整处理 3 个、恢复端消费 `snapshotIds`， 四处全对，却因适配器箭头函数只写两个形参而集体空转（实测 152 条 `file_changes` 里 **0 条**带锚点， 恢复端那个 for 循环从未执行过一次）。
+  - **不 import 本次改动的任何模块**：`plan-mode-write-plan-file.test.ts` 只 import `permission/checker.ts` / `plan/state.ts` / `config/config.ts`；本 PR 的 diff 里 没有 `permission/` 或 `plan/` 任何文件。
+  - **换到中性 cwd 单跑即通过**：`cd /tmp/... && bun test <该文件绝对路径>` → **6 pass / 0 fail**。
+  - **具体环境成因已定位**：worktree 路径含 `.claude/`，命中 `permission/checker.ts:198` 的敏感路径拦截（`{ pattern: ".claude/", reason: "Claude 配置目录" }`），在 plan-mode 判定 **之前**就返回。报错原文 `非交互模式下自动拒绝: [安全检查] Claude 配置目录`（期望 `计划模式`…
+  - [x] `bun test` 全量已跑（1 fail 已按三条证据举证为 worktree 环境产物，见上）
+  - [x] `make build` 成功（末尾 self-check 通过，且显式 grep 过 undefined 警告）
+  - [x] `bun run lint` 通过
+- **session** · 修会话恢复与清理四项 P0 —— 恢复不再丢 78% 历史 (#26) `fc7ad626`
+  - **D1 之所以生效是因为 D2**：那条「有摘要则只截断到 10 条、且摘要补偿被截部分」的路径， 写入端从来不存在 → 所有长会话必然掉进最差的「无摘要留 15 条」分支。
+  - **D4 的危害之所以被放大是因为 D3**：清理与恢复并发读同一文件可能读到半行 → 判成「损坏」→ 走无保护旁路 → **删掉一个完全健康的会话**。
+  - **恢复路径的可观测缺口没修**：走了哪条分支、按预算裁掉多少条，目前仍只写 `log.info`/`log.warn`，默认不落盘。也就是说「恢复到底带回多少历史」这条曲线现在仍画不出来 —— 上面的数字靠离线复算脚本，**不是线上轨迹**。补埋点是独立的一件事，没塞进本 PR。
+  - **`RESTORE_BUDGET_RATIO = 0.6` 是个工程取值**，不是实测最优值。它的作用是留出余量给 系统提示词/工具 schema/输出预留；更精确的做法是减去 `ctxMgr` 已知的这几项实测值， 当前用固定比例是为了不把恢复路径与压缩层的预算逻辑耦合起来。
+  - **D12 就在 D4 改动的同一个 for 循环里**（`maxCount` 用遍历下标而非保留计数），一行即可改， 刻意没动 —— 避免把「修 P0」的 PR 悄悄扩成「顺手重构清理逻辑」。
+- **memory** · 记忆与持久化四项 P0 —— 两条丢数据路径 + 读取侧防漂移接线 + 会话笔记隔离 (#27) `50229cd9`
+  - 留下哪条**取决于 `readdir` 返回顺序** —— 同一份磁盘两次加载可能不同结果；
+  - 被覆盖的文件从此无人引用，索引重建后**永久不进上下文**。
+  - **加载侧**：文件名排序后加载（消除顺序不确定性），撞 key 按 `updatedAt` 取新； 被遮蔽的文件记入 `shadowedFiles` + `log.warn` 点名两个文件，经新增 `listShadowedFiles()` 暴露。刻意**不自动合并、不自动删** —— 哪一半该留是语义判断。
+  - **写入侧（重名的生产路径）**：加 `-N` 后缀前先读磁盘上那个文件的 `name:`。 同 key ⇒ 认领并更新；不同 key ⇒ 才让路。旧代码只查内存 `files` 映射， 而它装不下「磁盘上有、内存里没有」的文件（多实例并发、子目录记忆、模型 Write 直写）， 于是会直接覆盖别人的记忆。
+  - 淘汰键 `updatedAt` 只在 `set()` 更新 ⇒ 这是 **LWU 而非 LRU**，优先删掉的恰是 「写下来之后一直有用、只是没人改过」的记忆；
+  - 子系统零埋点，删了也不知道删的是什么；
+  - 上限借用的是**扫描用**常量 `SCAN_MAX_FILES`，语义本就不符。
+  - **年龄进注入**（成本低、直接对上文档 §8）：索引逐行补 `⏳N days ago` （`annotateIndexAges`），提示词里配上「越旧越要先核实」的判据措辞。 此前主路径**完全不带年龄**，而模型 `Read` 正文时 `stripFrontmatter` 又把 `updated:` 剥掉了 ⇒ 模型看到的每条记忆都是**无时间戳的陈述句**， 与「刚刚核实过的事实」不可区分…
+- **prompt** · 修 RL-001 与铁律冲突、补后台通知授权声明、削回答规范冗余 (#25) `61eef94c`
+  - **建议 5**（RL-006/RL-003 搬进 `edit`/`write`/`bash` 的 `usageGuide()`）：**实测否决，不是延后。** 文档的收益前提是「工具描述按工具在场才注入，所以搬过去只在该工具在场时才付 token」。 实测这个前提不成立：`usageGuide()` 的正文经 `buildToolGuideSection` **注入到 system promp…
+  - **建议 6**（行为段 XML → Markdown）：延后。验收判据是「eval 不退步」，且文档写明 **弱 provider 退步则停手**。本机 `DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `GLM_API_KEY` 全部缺失 （实测逐个查环境变量），停手条件根本没法评估。没有 eval 结果就落地等于拿「机理讲得通」当验证， 正是 `CLAUDE.md…
+  - **不照抄 CC「把行为规范 XML 全删掉」**：CC 只服务 3 个自家模型，sid-code 要服务 ≥3 家 provider 的任意模型（轨迹里有 deepseek-v4-pro、glm-5.2、gpt-5.4、qwen-plus 等），弱模型确实吃 XML 结构；而 CC 的解法是**按模型分发两套提示词**，撞上仓库既有偏好「禁按模型硬编码分级」。
+- **error** · 让真实报错到达 TUI —— 修三处「抛出点丢弃」与两套平行判据 (#23) `7dcc2695`
+  - 缺陷 1/2：补 `${rootCause}`、`reason` 透传真实根因
+  - 缺陷 3/4：补网关措辞 + 402/余额族；状态码判定复用 `errors.ts` 的 `hasBoundaryDigits`（导出之，两处共用一个实现）
+  - 缺陷 5：新增 `LLMStreamError` 载体 → `fatal_error.errorCode` → `app.ts` 改为**结构化优先、文本兜底**。`message` 与旧行为逐字节一致，只读 `.message` 的调用方不受影响
+  - 缺陷 6：渲染 `status.error`，`summarizeRetryError` 同步单行截断（提示条在动态区每 500ms 重渲，wrap 会随倒计时抖动；完整原文由错误面板承载）
+  - 缺陷 7：删掉自带正则，收敛为复用 `inferErrorCode`
+  - 收敛 `classifyRetryKind` 时丢了旧正则里的 `capacity` / `quota` 语气 → 既有单测立刻红，补回。
+  - 新增的 `usage_limit_reached` 用子串 `"usage limit"` 匹配，把官方文案 `Server is temporarily limiting requests (not your usage limit)` 判成**终态** —— 而该页明确写着它与配额无关、会自动退避重试。判终态的后果正是本仓库**修过一次**的 「限流卡片不消失」：请求早已恢复，红卡永久悬挂。…
+  - `bun test` 全量 **11684 pass / 1 fail**（789 文件）
+- **command** · 修复命令系统七处缺陷——让 immediate 生效、接线 isFilePath、清死代码簇 (#18) `12688cf6`
+  - **G1** 死导出棘轮（存量 37，只准降不准升；扫描排除定义自身 / 测试 / 注释）
+  - **G2** `builtins.ts` 的 `registry.register` 条数只准减少（防边迁边往旧体系加，`adapter.ts` 自己写着"最终移除本文件"）
+  - **`bun test` 全量：11449 pass / 1 fail**
+  - **`make build` 通过**，并按 CLAUDE.md §「worktree 里 exit 0 不等于可交付」显式 grep 了 `will always be undefined` 警告 → 无
+  - `lint` / `format:check` / `lint:boundary` / `lint:command-system` 全绿
+  - 新增 **43 个测试**
+  - 该测试只 import `permission/checker.ts` / `plan/state.ts` / `config.ts`，本 PR 一个都没碰；
+  - 同一文件在**父仓 main** 单跑 6 pass / 0 fail（已复核）；
+- **lsp** · reinitializeLSP 零生产调用致 lsp.json 只能重启生效，并按形态门控初始化 (#20) `a07c34e9`
+  - **没有只把 `reinitializeLSP` 挂到 `/reload-plugins` 上**（清单给的第一个选项）。 触发重载的真实场景是"我刚改了 lsp.json"，那和"我刚装了插件"是**两件不同的事**， 只藏在插件命令里等于让用户猜。所以 `/lsp reload` 是主入口，`/reload-plugins` 也接上 （插件确实可能带来新语言/文件），但它不是唯一入口。
+  - **`/reload-plugins` 里先判 `getLSPInitState()` 再报「已重载」**。`reinitializeLSP` 在 `not-started` 时是**空操作**（刻意如此），不判就无条件打印"LSP 配置已重载"会是 **假消息** —— 假的成功提示比没有提示更坏。
+  - **D16 门控的是初始化，不是能力本身**。LSP 工具仍留在 registry 里：真被调用时 manager 按 `not-started` 走降级路径，而不是"工具不存在"这种更难解释的失败。
+  - **`/lsp status` 把 `not-started` 当正常态解释**，而不是当错误报 —— `--print` / `--bridge` 下 LSP 被刻意跳过，不说清楚会让用户以为坏了。`reload` 在未启动时也明确说 "无需重载"并给出原因，而不是静默什么都不做。
+  - **D16 的门禁判据没有去匹配某个具体的 `if` 写法**，而是断言"门控变量存在 + 两种形态都 被枚举 + `initializeLSP` 调用排在门控之后"。匹配具体写法会在无害重构时误红。
+  - **`/lsp reload` 让改动后的 lsp.json 真的生效，没有在装了真实 language server 的项目上 端到端验过**。单测用的是无配置目录（`initializeLSP` 立即落 success，即"无配置也算成功" 那条路径），断言的是"走到了真实重载分支而非早退分支"。诚实说法是 「死接线已接上、重载分支可达」，不是「改配置即时生效已验证」。
+  - **D16 的 `--bridge` 分支未端到端跑**（跑它需要过 D14 的准入确认，属另一 PR 的范围）； 该分支与已验证的 `--print` 分支共用同一个门控表达式。
+- **bridge** · 关停 flush 挂起被强杀兜底掩盖，事件白名单说着不存在的方言 (#19) `e55e8d06`
+  - **D11 的永久失败集合刻意不含 1006**。1006（异常关闭、无 close frame）恰恰是网络抖动、 代理超时、进程重启的典型码，是**最该重试**的一类。判据用**状态码**而不是错误消息子串。
+  - **D12 半开时用自定义码 4900 而非 1000**。1000 会被 `onclose` 当成正常关闭从而**不重连**， 那就把一次可恢复的半开变成了永久断线。探活判据是"对端还在说话"而不是"我的 ping 收到了 配对 pong"——后者要求对端实现配对回应，而我们的对端是自托管中继，不能假定它会。
+  - **D10 的丢弃必须留计数**。只加上限不加计数，等于把"卡住"换成"静默丢消息"，后者更难排查。 计数同时给批次数与条目数：批次数不够用，一批可能 1 条也可能 500 条。
+  - **D14 刻意不照搬 CC 的九道准入检查**。其中至少五道（服务端灰度、组织策略下发、强制版本 下限、编译期 flag、组织 UUID 归档）是**它的运营需要**，sid-code 自托管、URL 由用户自己给, 这些门本来就不适用。只做三件事：首次确认并记住 URL、明文要 `--bridge-insecure`、policy 可关。
+  - **D14 的信任键剥掉 query**。认证 token 常挂在那里，写进磁盘上的信任文件等于**把凭据落盘**。 信任的对象是"这个端点"，不是"这次带的 token"。
+  - **D14 无 TTY 时 fail-closed**。默认放行等于没有这道门。`config.bridge.enabled` 用 `enabled?: boolean` 而非 `disabled?`：`undefined` 必须表示"未配置 = 不拦"， 否则现存用户升级即被拦。
+  - **D12 的 30 秒半开判定没有在真实时间尺度上跑过**：单测断言的是探活基线 （`lastInboundAt` 在 onopen 被置位，否则首个周期就误判半开）与计数出口， 而"静默 60s 后真的断开重连"需要等一分钟，未做。诚实说法是「探活机制已接线、 基线与计数有断言」，不是「半开连接已验证能被检出」。
+  - **D11 的 10 分钟重连放弃路径未跑满**（同理）。
+- **ide** · 通知名前缀致选区/@提及永久静默，收口为 wire 协议单一事实源 (#17) `9a553d38`
+  - **D8 不做完整 WSL 支持，但也不删字段**。删字段会连"WSL 用户连不上"这个真实症状 一起删掉；做完整支持要处理交互终端 / 扩展安装 / 文件监听一整套。取中间：只让字段 在**寻址与路径**这两个真正决定"能不能连上"的接点上生效，逻辑全部可注入可单测。
+  - **D7 的 `unknown` 三态没折叠成布尔**。折叠成 `false` 会在探测本身出岔子（fd 耗尽） 时删掉健康的 lockfile。留一个过期文件的代价是一次连接重试，删一个健康文件的代价是 IDE 明明开着却再也发现不了。
+  - **D3 的响应解析刻意宽容**（认内容块数组 / 对象 / 裸字符串三形态）。对端是我们 **不控制的上游扩展**，协议随时可能改且**改了只会静默失配**。
+  - **没有给失配加"前缀归一化"**。在路由器里同时试带/不带前缀能让这次的 bug 自愈， 但代价是把**协议错误**变成**协议模糊**：以后两个不同 method 可能被归一到同一个 handler，且永远发现不了。错误应该被拦住，不是被兼容掉。
+  - D6：先 `expect(NFC).not.toBe(NFD)` 证明两字符串肉眼相同而字节不同，再断言能匹配
+  - D7：用真实 socket（不是 mock）；再用 `pid: process.pid`（**一定活着**，旧 PID 判据 清不掉）写 lockfile，断言被删 —— 直接证明新判据比旧判据严
+  - D5：断言**顺序** `[selectionChanged, atMentioned]` 在通知之前，否则 IDE 收到 `ide_connected` 后立刻回推的那次选区会静默丢掉
+  - **D2/D3/D5 的真实验收判据是「接上真实 CC 扩展后确实收到一次选区通知 / diff 弹出 且手改被拾取」**，需要装 `anthropic.claude-code` 扩展的环境，本次未做。 **测试绿不是这三条的验收判据** —— D4 的教训正是"测试本来就绿"。
+- **lsp** · 帧解析器全字节化 + 补齐三处可观测缺口（七项全修） (#16) `0a390d6e`
+  - **D5 首版用例写成 `if (state === "success") { expect(...) }`，在本机从不进入那个分支。** 探针实测 `initializeLSP` 落地后 `count=5`（PATH 里有 5 个 language server）， `success + 零服务器`这个状态**根本构造不出来** —— 用例绿着，一条断言都没跑。 `PATH=""` 也不管用：…
+  - **M8 暴露第二层**：即便有了纯函数，"isEnabled 与判据同结论"这种一致性断言在有 server 的机器上是 `success && 5>0` ≡ `success` —— **判据整个摘掉照样全绿**。 **修法**：加可覆写的 `readGateInputs()`，让测试确定地构造 `success + 零服务器`。 重跑 M8 → 该用例正确变红。
+  - **更准**（一次做对）：D1/D2 直接消除一类"结果错但不报错"的失效 —— D2 的形态是 连接静默报废、只表现为"LSP 偶尔超时"，会被误归因到性能。
+  - **更省**：D5 去掉零 server 机器上每轮白付的一份工具定义 token，以及模型对必然失败工具的一轮调用。
+  - **可观测**：D6 让配置错误进入用户可见通道（此前唯一线索在用户不会看的 debug 日志里）。
+  - **trade-off**：D3 的 64MB 上限与 60s 看门狗在极端情况下会丢弃**合法但异常巨大/极慢**的响应, 换取"连接不会永久报废"。上限刻意设在真实响应两个数量级之上，代价可接受且已点破。
+  - **中文文案的二进制内联无法用字节扫描验证**：扫 `非用户输入` 等串全为 0， 但**对照组推翻了"没内联"这个结论** —— 改动前就存在、本次完全没碰的 `LSP 系统初始化失败` 同样是 0（utf8 / utf16-le 都试过）。这是 bun `--compile` 存字符串 字面量的形式让平文本扫描看不见，**是测量手段失效，不是代码缺失**。ASCII 符号那组才是有效证据。
+  - **未验证**（与缺陷文档附录 B 一致，本次没缩小）：D1/D2 在**真实 language server** 上的触发频率（只证明了机制成立与修复有效）；`lsp` 工具定义的实际 token 数仍是估算，未过 tokenizer。
+- **goal** · 修掉 Goal & Gates 七项缺陷——三处假阳性收尾、一处必然 4xx、两处静默失效 (#22) `238ce9d4`
+  - summary **保留全部汇总行**（不再只取一行）——真实失败信号进得去，后面的判据才有的可依
+  - fast-path 加「非零 failed 即否决」
+  - 把 `tool_result.is_error` 一路带进证据——**测试是否通过本质由退出码定义，不由输出文本定义**
+  - 主循环发请求前查限流。等待走 `sleepUnlessAborted`（ESC 能立刻醒，否则最坏空等 60s ——这正是 20260707「abort 叫不醒阻塞层」的老坑）
+  - 实例化条件从 `costLimit > 0` 放宽到三者任一：原先**只配 RPM/TPM 的用户压根拿不到 QuotaManager**，配置静默失效
+  - 加 `QUOTA_RATE_LIMIT_INERT` 告警——「配了却不生效」是这类缺陷的病根形态，宁可吵一句
+  - **`fast-path-negatives.test.ts` —— 负例集。** fast-path 一放行任务就结束、没有第二道 兜底，所以只测"该放行时放行"排除不了过度放行这个方向。专收 jest / vitest / pytest 三种**「看起来通过但实际没通过」**的真实输出样本，每发现新形态就往里加一条。
+  - **`quota-rate-limit-wiring.test.ts` —— 接线检查**（形态断言，同 `gateway-request-id.test.ts` 的 PR8 范式）。**单测证明不了"它被接线了吗"**， 这个文件防的正是 F5 那种「仅被测试消费」再次发生。
+- **release** · 恢复 release.sh 可执行位，并加一道门禁拦住它再丢 (#15) `6efba79e`
+  - `oxlint` / `oxfmt` 只看**文本内容**
+  - `tests/release-flow-contract.test.ts` 断言的是脚本里有没有某段字符串
+  - **没有任何一条看文件模式**
+- **release** · promote 门禁问的是本地 main —— 一个 9 分钟宽的静默放行窗口 (#14) `834ae578`
+  - ## 改了什么
+  - **① 修 G2 促升门禁的 ref 选择（核心）**
+  - 原判据 `probe.revParse("main") !== null ? "main" : "origin/main"` **先问本地
+  - main**。
+  - 但 `release.sh` 自己把 `bump vX.Y.Z` 提交到**本地** main，那个提交要走 PR 才进远端 main
+  - (CLAUDE.md 发版第 4 步)。于是「`--upload` 跑完、PR 未合并」这段窗口里：
+  - ```
+  - 产物 commit 在本地 main   = YES   ← 门禁问的是这个，放行
+
+### 文档
+- **changelog** · 起草 v0.1.604 用户视角更新说明 `606fc5b9`
+  - 覆盖自 v0.1.603 起 33 条主线提交：自动更新、会话/记忆恢复、
+  - 真实报错上屏、IDE 选区与 diff 预览等用户可见变更。
+- **evals** · README 状态块从 30 条改为实测 235 条，并写上新题集双指针 (#46) `9915dce3`
+  - **状态块换成实测数，每格附一行复算命令**。⚠️ 同口径比要连 holdout 一起算（旧值 30 是**含** holdout 的）⇒ 差 **205**，⛔ 不是 `222 − 30 = 192`。表里写了三行（四组小计 222 / holdout 13 / 含 holdout 235）并显式标注「222 不含 holdout」。
+  - **写新题集两个 URL，⛔ 不是二选一** —— GitHub `njfuzrs/agent-traj-bench`（题集本体，`tasks/` 39 个题目录）+ HF dataset 同名（快照仓，`tasks.jsonl` / `snapshots.jsonl` 不入 git）。只写一个读者拿不到另一半。并写明**两边判据不兼容、分数不互比**（过程评测 vs 结果评测，0–5 分制 v…
+  - **删三处过期技术描述** —— `eval-runner.ts` / `eval-judge.ts` / `_types.ts` 早已迁到 `packages/eval-framework/core/`，`evals/` 根下零命中。目录树重画成入库快照（681 个文件，675 + 顶层 6 两侧闭合）。
+  - **顺带修同一文件里三处同类失效**（同一个"README 数字与磁盘不符"的关注点）：「25 条非 holdout」实测 `eval:run` 扫 **168** 条；「25 个 `.ts`」实测 **29**；「6 处测试 import」实测 **11 个文件 / 12 条路径**。「出处索引」里 4 个 `docs/eval/*` 不在本仓 ⇒ **标注而非删除**（CONTRIBUTIN…
+
+### 其他
+- Feat/auto update (#43) `cf125bd3`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **evals** · 给 168 条 case 打 lifecycle: frozen 并删除 236 个纯派生物 (#47) `a208d5c0`
+  - **lifecycle 标记看似与删除相反**，但它是给后续 PR3a–3d 分四批走期间的中间态兜底 —— 没有机械标记时，任何脚本扫到 `architecture/` / `real-tasks/` 都当活的。文档层写了"已冻结"不算。
+  - **`capability/` 不标**：已判删，标 `pending-review` 本身就是债务（实测那个状态挂了三个半月）。
+  - **删 `_scores/` 228 + `_runs/` 4**：它们的 `tested_at` 上界 2026-06-01，对应 commit **在删之前就已不可达**。对照能力早就没了，删掉的是"看起来还能对照"的错觉。两者都是 runner 的运行时落点（`mkdirSync recursive`），重跑会重建，删的是过期数据不是写入链。
+  - **删 `_template.yaml`**：实测 `:3` 用法指向 `p0-core/`，字段体系全是旧四组 ⇒ 它是旧体系的模板，不是通用 case schema。留着就是邀请别人写第 223 条。这与姊妹方案（目录标准化）§4.2 冲突，已裁决按删 —— 那份方案的目标树有两行要删掉，`_data/` 桶因此只剩 `raw-outputs/` 一项。
+  - **放弃给 `_scores/` 留说明 README**：它要说的那句话已经写进 PR1 的状态块，再留一份是要维护的重复。
+  - [x] `bun test` 改动面全绿（全量交 CI）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+  - [x] `bun run lint` 通过（oxlint）
+- Fix/harbor a1 pricing passthrough (#41) `80ed285f`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- Eval/w3 a2 sonnet 54 (#40) `f41754e7`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- Fix/t4 arm health metrics (#38) `6005170b`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+
 ## v0.1.603 (2026-09-04)
 
 ### 新功能
