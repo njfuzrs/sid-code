@@ -8,8 +8,8 @@
     "eval:run": "bun run core/runner.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0",
-    "yaml": "^2.9.0"
+    "@anthropic-ai/sdk": "^0.125.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
