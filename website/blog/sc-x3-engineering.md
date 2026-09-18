@@ -477,15 +477,17 @@ fi
 > 更糟的是测试往**用户真实目录**（`~/.sid-code/`）写数据：
 > 那会污染真实遥测数据，且测试**全绿**。本仓为此有一道专门的静态扫描门禁。
 
-**其余 5 个 workflow（都不是必需检查，刻意的）**
+**其余 workflow（都不是必需检查，刻意的）**
 
 | workflow | 频次 | 干什么 | 为什么不当门禁 |
 | --- | --- | --- | --- |
-| `eval-pr-smoke` | PR | P0 冒烟评测 | 要花钱 + 有方差 |
-| `eval-weekly` | 每周 | 完整评测 | 同上，且耗时长 |
+| `eval-weekly` | 每周 | 完整评测 | 要花钱 + 有方差，且耗时长 |
 | `judge-calibration` | 定期 | 校准判分器本身准不准 | 它测的是尺子，不是被测对象 |
 | `provider-daily-canary` | 每天 | 探活各个模型接口 | 上游挂了不是我们的 bug |
 | `northstar-weekly` | 每周 | 指标趋势 | **CI 上没有真实用量数据**（见下） |
+
+> ⚠️ `eval-pr-smoke`（P0 冒烟）已于 2026-09-18 随旧题集 `general/` 整条下线。
+> 新集重建 smoke 时，5 条锚点 case 的选取标准见 git 历史 `evals/_meta/smoke-cases.yaml` 头部注释。
 
 > ⚠️ `northstar-weekly` 有一条必须点破的现实约束，它是「诚实标注」的好例子：
 > CI runner 上没有用户的本地数据目录，所以这个 workflow **只跑自检（验计算逻辑没坏），
@@ -499,7 +501,7 @@ fi
 | hook | 门禁 | 预算 |
 | --- | --- | --- |
 | **pre-commit** | ① 评测数据污染扫描 ② holdout 回归护栏 ③ `oxlint`（只查 staged） ④ `oxfmt --check` ⑤ Agent Note 形态校验 ⑥ 参考页对账（**仅数据源变动时**） ⑦ 叙述覆盖度（告警模式） ⑧ 源码裸 NUL 字节检查 | 几百 ms |
-| **pre-push** | ① holdout 泄露检测 ② holdout 永封校验 ③ 站点构建（死链检测） ④ 指标生成块陈旧检测（30 天） | 几秒 |
+| **pre-push** | ① holdout 永封校验 ② 站点构建（死链检测） ③ 指标生成块陈旧检测（30 天） | 几秒 |
 
 注意 pre-commit 的 ③④ 都写着「只查 staged」——这是**把预算控制在几百毫秒的关键手段**：
 全仓 lint 是秒级，staged 文件通常只有几个，是毫秒级。

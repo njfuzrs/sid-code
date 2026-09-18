@@ -45,16 +45,18 @@ fi
 
 # Step 3: 公开页面不能含任何 holdout sid 短码
 #
-# T-3.7：website/ 一并纳入。它是 2026-07 新增的对外站点，会构建成静态站挂公网，
-# 公开程度高于 evals/CASES.md。参考页虽由脚本从源码生成，但生成器读的就是源码——
+# T-3.7：website/ 是对外站点，会构建成静态站挂公网。
+# 参考页虽由脚本从源码生成，但生成器读的就是源码——
 # 源码里出现过 holdout sid 就会被带出去，正是门禁该守的地方。
 # 用 find 展开而非写死 glob：未匹配的 glob 在 sh 下原样留下成为不存在的文件名，
 # 会被下方 [ -f ] 静默跳过，从而掩盖"目录改名后再也没扫到"的失效。
-PUBLIC_FILES="evals/CASES.md"
+# ⚠️ 2026-09-18：旧公开面那份自动生成页已随旧题集删除，公开面现在只有 website/。
+# 题面泄露检测（另一条链）已整条下线；本脚本守的是 sid 短码，不是题面 token。
+PUBLIC_FILES=""
 if [ -d "website" ]; then
   WEBSITE_PUBLIC=$(find website -name node_modules -prune -o -name '.vitepress' -prune -o -name '*.md' -print 2>/dev/null || true)
   [ -f "website/public/llms.txt" ] && WEBSITE_PUBLIC="$WEBSITE_PUBLIC website/public/llms.txt"
-  PUBLIC_FILES="$PUBLIC_FILES $WEBSITE_PUBLIC"
+  PUBLIC_FILES="$WEBSITE_PUBLIC"
 fi
 # 每个文件只起一次 grep（`-f` 一次性喂全部 200 个 sid），而不是「sid × 文件」两层循环。
 # 纳入 website/ 的 30+ 页后，两层循环会变成 200×36 ≈ 7200 次 grep 进程，实测把本脚本
@@ -117,7 +119,7 @@ fi
 if [ "$LEAKS" -gt 0 ]; then
   echo ""
   echo "[check-holdout-sealed] ❌ 公开页面 $LEAKS 处 holdout sid 泄露，push 中止"
-  echo "  修复：① regen CASES.md（不应渲染 holdout sid）"
+  echo "  修复：① 从公开页去掉该 sid"
   echo "       ② 若 case yaml 误用 holdout sid 作为 anchor，删除该字段"
   exit 1
 fi

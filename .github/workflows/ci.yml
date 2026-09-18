@@ -3,8 +3,8 @@
 # 为什么需要：在此之前仓库有 5 个 workflow，但**没有一个跑全量 bun test**
 #   · docs-lint.yml            只在 docs/ 改动时跑文档规则（现已删除）
 #   · provider-daily-canary.yml 定时任务，且只跑 packages/core/tests/llm/vcr/ 子集
-#   · eval-pr-smoke.yml         只跑 5 个 P0 eval case
 #   · eval-weekly.yml / judge-calibration.yml  定时的评估任务
+#   · eval-pr-smoke.yml 已于 2026-09-18 随 general/ smoke case 整条下线
 # 于是 PR 阶段测试完全不设防，问题一路憋到 `./scripts/release.sh` 的发布前门禁才炸。
 # 那是最糟的暴露时机：门禁在 bump-version **之后**（版本号已经 +1），且此时人已经在
 # 发布流程中间，压力最大、最容易顺手加 --skip-test 绕过。
@@ -70,8 +70,8 @@ on:
 # ─── 最小权限（2026-08-24 补，G1）───────────────────────────────────────────────
 #
 # 治的是什么：workflow 不写 `permissions:` 时，GITHUB_TOKEN 拿的是**仓库默认**权限。
-# 那个默认值在仓库设置里（Settings → Actions → Workflow permissions），本仓 6 个
-# workflow 此前**顶层一个都没声明**（只有 eval-pr-smoke.yml 在 job 级写了）——
+# 那个默认值在仓库设置里（Settings → Actions → Workflow permissions），本仓若干
+# workflow 此前**顶层一个都没声明**（只有已下线的 eval-pr-smoke.yml 在 job 级写了）——
 # 也就是说权限边界完全由一个我们没在代码里写下来的仓库设置决定，而那个设置可以被
 # 任何有 admin 的人改，改了之后**没有任何 diff、没有任何检查会红**。
 #

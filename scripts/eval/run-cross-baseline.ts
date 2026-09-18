@@ -15,11 +15,7 @@ import {
 import { parseArgs } from "node:util";
 
 const ROOT = join(import.meta.dir, "../..");
-const CASE_DIRS = [
-  join(ROOT, "evals/general/p0-core"),
-  join(ROOT, "evals/general/p1-common"),
-  join(ROOT, "evals/general/p2-edge"),
-];
+const CASE_ROOTS = [join(ROOT, "evals/architecture"), join(ROOT, "evals/real-tasks")];
 const OUTPUT_DIR = join(ROOT, "evals/raw-outputs");
 
 interface CaseYaml {
@@ -55,8 +51,8 @@ async function loadCases(): Promise<CaseYaml[]> {
   const { parse } = await import("yaml");
   const cases: CaseYaml[] = [];
 
-  for (const dir of CASE_DIRS) {
-    const files = await Array.fromAsync(new Bun.Glob("*.yaml").scan(dir));
+  for (const dir of CASE_ROOTS) {
+    const files = await Array.fromAsync(new Bun.Glob("**/*.yaml").scan(dir));
     for (const f of files) {
       const content = await Bun.file(join(dir, f)).text();
       const c = parse(content) as CaseYaml;

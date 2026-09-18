@@ -4,23 +4,38 @@
  * 来源: docs/eval/_archive/00-总方案.md §3.5 + _archive/07-执行顺序速查.md §2.4
  *
  * 用法:
- *   bun run eval:list                       # 全部（含 holdout）
- *   bun run eval:list -- --skip-holdout     # 仅日常池（20 条）
+ *   bun run eval:list                       # 列出仍在磁盘上的 case（architecture / real-tasks）
+ *   bun run eval:list -- --skip-holdout     # 同上（holdout 题面 yaml 已于 2026-09-18 删除）
  *   bun run eval:list -- --priority P0      # 仅 P0
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = [
-  "evals/general/p0-core",
-  "evals/general/p1-common",
-  "evals/general/p2-edge",
-  "evals/holdout",
-];
+const CASE_ROOTS = ["evals/architecture", "evals/real-tasks"];
+
+function walkYaml(dir: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(p);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      if (name === "scripts") continue;
+      walkYaml(p, out);
+    } else if (st.isFile() && name.endsWith(".yaml")) {
+      out.push(p);
+    }
+  }
+  return out;
+}
 
 interface CaseSummary {
   id: string;
@@ -35,25 +50,16 @@ interface CaseSummary {
 
 function loadCases(): CaseSummary[] {
   const out: CaseSummary[] = [];
-  for (const dir of CASE_DIRS) {
-    const abs = join(ROOT, dir);
-    let entries: string[] = [];
-    try {
-      entries = readdirSync(abs).filter((f) => f.startsWith("case_") && f.endsWith(".yaml"));
-    } catch {
-      continue;
-    }
-    for (const f of entries) {
-      const p = join(abs, f);
-      if (!statSync(p).isFile()) continue;
+  for (const root of CASE_ROOTS) {
+    for (const p of walkYaml(join(ROOT, root))) {
       const data = yaml.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
       out.push({
-        id: String(data.id ?? f.replace(/\.yaml$/, "")),
+        id: String(data.id ?? p.replace(/.*\//, "").replace(/\.yaml$/, "")),
         category: String(data.category ?? "?"),
         priority: String(data.priority ?? "?"),
         holdout: Boolean(data.holdout),
         target_score: Number(data.target_score ?? 0),
-        dir,
+        dir: root,
         source: String(data.source ?? "?"),
         related_subsystem: Array.isArray(data.related_subsystem)
           ? (data.related_subsystem as string[])

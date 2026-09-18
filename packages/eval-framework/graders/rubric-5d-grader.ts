@@ -3,7 +3,8 @@
  *
  * 本类是 task-specific scorer 注册表的"默认 grader"：
  *   - case yaml 不写 grader_type → fallback 到本类
- *   - 30 条 general case（p0-core / p1-common / p2-edge）继续走本类，行为与 5d-v2 完全一致
+ *   - 默认 grader：case yaml 不写 grader_type 时走本类，行为与 5d-v2 完全一致
+ *     （原先服务的 general 题集已于 2026-09-18 删除；算法仍被夹具与其它桶调用）
  *
  * 实现原则（T-10）：
  *   - 不改 eval-judge.ts 内任何 grade* 函数行为；仅做面向 GraderContext 的适配封装

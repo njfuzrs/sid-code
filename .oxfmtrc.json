@@ -99,10 +99,8 @@
     // ⚠️ 首次接入刻意**只格式化代码**，把 yaml / markdown 排除在外。
     // 这不是"忘了配"，两类都有具体理由，将来要开必须是独立一次改造 + 独立 commit：
     //
-    // yaml（281 个会被改，其中 13 个在 evals/holdout/）：它们不是代码而是**评测 case 数据**，
-    //   ⚠️ 这两个数 2026-09-18 复算过（原写 283 / 14）：删掉 evals/_scores/ 的 228 份周快照与
-    //   _template.yaml 后重数得 281 / 13。复算方式是**摘掉本文件 yaml 两条排除项跑
-    //   `oxfmt --list-different`**，⛔ 不是拿旧值做减法 —— 后者算不出 holdout 那格。
+    // yaml（会被改的数量以摘掉本文件 yaml 两条排除项跑 `oxfmt --list-different` 为准，
+    //   ⛔ 不是拿旧值做减法）。它们不是代码而是**评测 case 数据**，
     //   里面有 baseline_scores 这类会被 runner 读写的字段。格式化它们零收益（没人 review
     //   case 的排版），却会在评测资产里制造一次大规模 diff，并且 evals/holdout/ 是永封集
     //   （check-holdout-real-tasks-sealed.sh 对 holdout-sids.txt 做 sha256 + 行数校验；

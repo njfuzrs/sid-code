@@ -2,8 +2,7 @@
  * baseline-sync.ts — 回写 case yaml `baseline_scores` 字段的共享模块
  *
  * 背景（S0-T02 / docs/eval/plan-capability-baseline-sync.md）：
- *   eval-runner.ts 原本独占 syncBaselineScores 逻辑，硬编码 general case 的 4 个目录
- *   （general/p0-core / general/p1-common / general/p2-edge / holdout，S1-T00 起重组）。
+ *   eval-runner.ts 原本独占 syncBaselineScores 逻辑，硬编码当时 general case 的目录。
  *   plan capability runner 因目录结构不同（evals/capability/plan/），无法复用，导致 capability case
  *   的 baseline 只有 _reports/ 时间戳文件可查，无法通过 eval:tally / dashboard 读取。
  *
@@ -85,7 +84,8 @@ export interface SyncOptions {
   yamlDir?: string;
   /**
    * eval 根目录（general 模式）；与 yamlDir 二选一。
-   * 内部扫 `${baseDir}/general/p0-core`、`${baseDir}/general/p1-common`、`${baseDir}/general/p2-edge`、`${baseDir}/holdout` 四目录。
+   * 内部扫 architecture/ + holdout/（动态）以及历史上 general 的目录名。
+   * 后者在仓库里已空（PR3a 删题），tmpdir fixture 仍按该约定建夹具，所以查找列表不能先于测试改掉。
    */
   baseDir?: string;
   /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" / "eval:plan-capability" */
@@ -126,8 +126,9 @@ function discoverArchitectureSubDirs(absRoot: string): string[] {
 /**
  * general 模式：case yaml 文件名 = `${caseId}.yaml`，按文件名查路径。
  *
- * 这是 evals/general/p0-core/ 等 4 个目录的硬约定（case_001.yaml 内 id: case_001）。
- * 历史上 eval-runner 一直按此假设工作，S1-T00 后路径重组，目录前缀加 general/。
+ * 文件名约定：`${caseId}.yaml`（case_001.yaml 内 id: case_001）。
+ * 历史上 general 子目录用过这个约定；PR3a 起仓库里那些目录已空，但 tmpdir fixture
+ * 仍按同一约定建夹具（tests/eval/eval-runner-e2e.test.ts / baseline-sync-holdout.test.ts）。
  */
 function findGeneralCaseYamlPath(caseId: string, searchDirs: string[]): string | null {
   for (const dir of searchDirs) {

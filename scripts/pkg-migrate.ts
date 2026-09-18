@@ -199,8 +199,8 @@ function main() {
     //   2. **测试夹具**：`jit-boundary-b4.ts` 里 `"cat > src/ui/Badge.tsx"` 是喂给 bash
     //      命令解析器的假路径，断言哪些会被识别为受影响文件。改了就是篡改夹具。
     //      这类路径磁盘上不存在，靠 existsSync 能挡住；
-    //   3. **黑名单 token**：`eval/extract-holdout-tokens.ts` 的 BLACKLIST 是「题面泄露
-    //      检测的公共词表」，里面 `"src/agent/loop-detection"` 与
+    //   3. **黑名单 token**：原 `eval/extract-holdout-tokens.ts` 的 BLACKLIST 是「题面泄露
+    //      检测的公共词表」（该脚本已于 2026-09-18 随 holdout 题面 yaml 下线），里面 `"src/agent/loop-detection"` 与
     //      `"src/agent/loop-detection.ts"` 是两个**独立词条**。改写会把它们折叠成同一条，
     //      而且它们对应的文件**真的存在**，existsSync 挡不住 —— 只能靠白名单排除。
     // 白名单外的裸路径（含注释里的路径、词表）一律不动，需要改的人工处理。

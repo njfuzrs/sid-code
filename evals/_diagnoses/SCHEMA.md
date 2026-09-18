@@ -25,7 +25,7 @@ evals/_diagnoses/
 ```yaml
 diagnosis_id: case_022-2026-05-20            # 唯一标识: <case_id>-<reviewed_at>
 case_id: case_022                             # 关联 case yaml 的 id
-case_path: evals/general/p2-edge/case_022.yaml  # 相对仓库根的路径
+case_path: evals/architecture/meta/arch_meta_001.yaml  # 相对仓库根的路径（示例：一条仍存在的 architecture case）
 
 # === 诊断输入: 当时观测到的维度分数 + sideband ===
 dimensions_snapshot:
@@ -59,7 +59,7 @@ reviewer: zhourusheng
 reviewed_at: 2026-05-20
 sources:                                      # 诊断结论参考的文档 / commit / 报告
   - docs/eval/edd-iteration-playbook.md#案例-1-case_022-anchor-echo-bias
-  - evals/general/p2-edge/case_022.yaml:39-50
+  - evals/architecture/meta/arch_meta_001.yaml:51
 
 # === 修复后验证 ===
 post_fix_verification:

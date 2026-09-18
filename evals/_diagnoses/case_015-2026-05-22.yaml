@@ -1,6 +1,6 @@
 diagnosis_id: case_015-2026-05-22
 case_id: case_015
-case_path: evals/general/p1-common/case_015.yaml
+case_path: "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/general/p1-common/case_015.yaml）"
 
 dimensions_snapshot:
   anchor_hit: 0.85
@@ -45,7 +45,7 @@ extra_signals:
 reviewer: zhourusheng
 reviewed_at: 2026-05-22
 sources:
-  - evals/general/p1-common/case_015.yaml
+  - "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/general/p1-common/case_015.yaml）"
   - docs/weekly-eval-report/sprint-S4.md
 
 post_fix_verification:

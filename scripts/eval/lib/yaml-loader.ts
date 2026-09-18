@@ -2,7 +2,7 @@
  * yaml-loader.ts — 共享 schema 归一化层
  *
  * 同时消费 sid-code 与 code-graph 两个项目的 evals/ 数据:
- *   - case yaml: p0-core / p1-common / p2-edge / holdout 四个目录
+ *   - case yaml: architecture / real-tasks（PR3a 起 general 与 holdout 题面 yaml 已删）
  *   - 外部周分数: _scores/wNN/case_NNN.yaml(code-graph 模式, W7-W10 单通道 / W11+ 双通道)
  *   - 内联周分数: case yaml 的 code_graph_scores 嵌套段(code-graph 历史遗留)
  *   - sid-code baseline_scores: 每条 case 内联多 tool 快照(无时序)
@@ -63,15 +63,14 @@ export interface WeekScore {
  * Bucket：case 所在桶（用于分组统计 / dashboard 双指标）。
  *
  * 当前支持：
- *   - p0-core / p1-common / p2-edge / holdout：S1-T00 之前的扁平结构（向后兼容）
- *   - general/p0-core / general/p1-common / general/p2-edge：S1-T00 起的 general 子目录
- *   - holdout/architecture/<sub>：S1 起架构 holdout（meta/kernel/form/...）
- *   - architecture/<sub>：S1 起 18 类架构 case（redline/kernel/form/discipline/meta/...）
+ *   - architecture/<sub>：18 类架构 case
+ *   - real-tasks/<cat>：trajectory case
+ *   - holdout/real-tasks：永封 sid 名单所在目录（无 yaml）
  *
- * loadAllCases() 同时扫这三种结构，bucket 字段标示 case 实际归属。
+ * 历史上还扫过 general/{p0-core,p1-common,p2-edge} 与 holdout 题面 yaml（PR3a 已删）。
+ * 分类函数 isBehaviorBucket 等仍识别那些名字，因为单测夹具用字符串测分类，不读磁盘。
  */
 const LEGACY_GENERAL_BUCKETS = ["p0-core", "p1-common", "p2-edge", "holdout"];
-const NEW_GENERAL_BUCKETS = ["general/p0-core", "general/p1-common", "general/p2-edge"];
 // B5-6（2026-05-30 / ADR-032）：execution case 单独成桶，与 5d-v3 主表分开展示
 const EXECUTION_BUCKET = "general/execution";
 
@@ -141,13 +140,7 @@ function listRealTaskSubBuckets(evalsDir: string, base: string): string[] {
 export function loadAllCases(evalsDir: string): CaseDoc[] {
   const out: CaseDoc[] = [];
   const buckets = [
-    ...LEGACY_GENERAL_BUCKETS,
-    ...NEW_GENERAL_BUCKETS,
-    EXECUTION_BUCKET,
     ...listArchitectureSubBuckets(evalsDir, "architecture"),
-    ...listArchitectureSubBuckets(evalsDir, "holdout/architecture"),
-    // B6-2/3（2026-05-31 / §15.2 ADR-033）：trajectory case 子桶 evals/real-tasks/<cat>/
-    // 文件名前缀 real_*；trajectory_match grader M5 前仅作诊断维度，不进总分。
     ...listRealTaskSubBuckets(evalsDir, "real-tasks"),
     ...listRealTaskSubBuckets(evalsDir, "holdout/real-tasks"),
   ];

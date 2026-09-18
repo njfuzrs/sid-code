@@ -530,13 +530,9 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
 
 // 2026-08-15 顺带查出的文档漂移：CONTRIBUTING.md「不要直接 push 到 main」那节，
 // 第一条理由原文是「直推绕过 PR，就绕过了 `eval-pr-smoke.yml`（只在 `pull_request` 触发）」，
-// 而该文件的 `on:` 里**只有 `workflow_dispatch`**（cron 与 pull_request 都被注释掉了）。
-// 也就是说这条论据引用了一个不存在的 trigger。
-//
-// 为什么值得立门禁而不是改完了事：这类「文档断言某个 workflow 在某事件上触发」的说法，
-// 一旦 workflow 的 `on:` 被改（本仓已经因为「首发时 secret 未配」注释掉过好几个 trigger），
-// 文档不会跟着变，而读者会照着它做决策 —— 与 `website/ref/` 立 `--check` 门禁同一个理由：
-// **源码改了不同步就是文档骗人**。
+// 而该文件当时的 `on:` 里**只有 `workflow_dispatch`**（cron 与 pull_request 都被注释掉了）。
+// 2026-09-18 PR3a 起该 workflow 整条下线（smoke case 随 general/ 删除），文件不存在。
+// 文档侧「不得声称它在 pull_request 上触发」这条仍要守——文件没了，那句组合说法更不该出现。
 describe("CONTRIBUTING 对 workflow 触发条件的断言不漂移", () => {
   const CONTRIBUTING = readFileSync(join(ROOT, "CONTRIBUTING.md"), "utf8");
 
@@ -550,12 +546,7 @@ describe("CONTRIBUTING 对 workflow 触发条件的断言不漂移", () => {
     return Object.keys(on ?? {});
   }
 
-  test("不得声称 eval-pr-smoke.yml 在 pull_request 上触发（它只有 workflow_dispatch）", () => {
-    // 先锁住事实：这条断言的前提是该文件确实没有 pull_request trigger。
-    // 哪天真给它接上了 pull_request，这里会先红——提醒同步放开下面那条文档断言。
-    expect(triggersOf("eval-pr-smoke.yml")).not.toContain("pull_request");
-
-    // 再锁文档：不得出现「eval-pr-smoke + 只在 pull_request 触发」这个组合说法。
+  test("不得声称已下线的 eval-pr-smoke.yml 在 pull_request 上触发", () => {
     const claim = /eval-pr-smoke[^\n]*只在\s*`?pull_request`?\s*触发/;
     expect(CONTRIBUTING).not.toMatch(claim);
   });

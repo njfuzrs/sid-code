@@ -1,6 +1,6 @@
 diagnosis_id: case_022-2026-05-20
 case_id: case_022
-case_path: evals/general/p2-edge/case_022.yaml
+case_path: "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/general/p2-edge/case_022.yaml）"
 
 dimensions_snapshot:
   anchor_hit: 1.0
@@ -40,7 +40,7 @@ reviewer: zhourusheng
 reviewed_at: 2026-05-20
 sources:
   - docs/eval/edd-iteration-playbook.md
-  - evals/general/p2-edge/case_022.yaml
+  - "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/general/p2-edge/case_022.yaml）"
 
 post_fix_verification:
   fixed_at: 2026-05-21

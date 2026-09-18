@@ -1,7 +1,8 @@
 /**
  * Grader scope（2026-05-26 / 5d-v3）
  *
- * 本文件 grader 仅评 general behavior case（30 条 p0-core / p1-common / p2-edge）。
+ * 本文件 grader 评 5 维加权行为分。原先服务的 general 题集已于 2026-09-18 随旧题集删除；
+ * 算法仍被 architecture / real-tasks 路径与单测夹具调用。
  *
  * 不评（待 S1+ 引入 task-specific scorer 架构）：
  *   - 红线 case（RL-001~011）：需 binary 一票否决 + 语义判定（非字符串黑名单）
