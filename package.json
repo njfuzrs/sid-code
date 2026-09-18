@@ -59,13 +59,13 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
-    "@anthropic-ai/sdk": "^0.120.0",
+    "@anthropic-ai/sdk": "^0.125.0",
     "@sid-code/cli": "workspace:*",
     "@sid-code/core": "workspace:*",
     "@sid-code/shared": "workspace:*",
     "@sid-code/tui-renderer": "workspace:*",
     "auto-bind": "^5.0.1",
-    "bidi-js": "^1.0.3",
+    "bidi-js": "^1.1.0",
     "chalk": "6.0.0",
     "cli-boxes": "4.0.1",
     "cli-highlight": "2.1.11",
@@ -79,7 +79,7 @@
     "indent-string": "^5.0.0",
     "lodash-es": "^4.17.21",
     "lowlight": "^3.3.0",
-    "marked": "^18.0.10",
+    "marked": "^18.0.13",
     "minimatch": "^10.2.6",
     "mnemonist": "0.40.4",
     "react": "^19.2.8",
@@ -96,8 +96,8 @@
     "tinygradient": "^2.0.1",
     "usehooks-ts": "^3.1.0",
     "wrap-ansi": "^10.0.1",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   },
   "overrides": {
     "react-reconciler": "0.33.0",
@@ -120,9 +120,9 @@
     "@types/stack-utils": "^2.0.3",
     "@types/tinycolor2": "^1.4.6",
     "eval-framework": "workspace:*",
-    "oxfmt": "0.64.0",
+    "oxfmt": "0.68.0",
     "oxlint": "1.78.0",
-    "type-fest": "^5.8.0"
+    "type-fest": "^5.9.0"
   },
   "engines": {
     "bun": ">=1.0.0"
