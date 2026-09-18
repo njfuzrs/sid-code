@@ -97,7 +97,8 @@ export interface SyncOptions {
    * 不写入 baseline_scores(防止 holdout 跑分通过 sync 路径泄露到公开 yaml)。
    *
    * 仅 holdout 专用评测脚本(如 m3-gate-eval-runner)可显式 true,
-   * 该脚本应单独写到 `evals/_meta/_private/holdout-baselines.jsonl` 而非公开 yaml。
+   * 结果不得写入公开 yaml。历史上规划过 `evals/_meta/_private/holdout-baselines.jsonl`，
+   * 该路径从未存在；`evals/_meta/` 已于 2026-09-18 随 PR3a 删除。
    */
   allowHoldout?: boolean;
 }
