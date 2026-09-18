@@ -84,8 +84,9 @@ export interface SyncOptions {
   yamlDir?: string;
   /**
    * eval 根目录（general 模式）；与 yamlDir 二选一。
-   * 内部扫 architecture/ + holdout/（动态）以及历史上 general 的目录名。
-   * 后者在仓库里已空（PR3a 删题），tmpdir fixture 仍按该约定建夹具，所以查找列表不能先于测试改掉。
+   * 内部扫历史上 general/ 的目录名 + 若夹具里存在则扫 architecture/ 与 holdout/architecture/
+   * （动态）。仓库里 architecture/ 已于 PR3b 删除、general 已于 PR3a 删除；
+   * tmpdir fixture 仍按旧约定建夹具，所以查找列表不能先于测试改掉。
    */
   baseDir?: string;
   /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" / "eval:plan-capability" */
@@ -106,8 +107,8 @@ const DEFAULT_GENERAL_DIRS = ["general/p0-core", "general/p1-common", "general/p
 
 /**
  * 动态发现 architecture/<sub>/ 与 holdout/architecture/<sub>/ 下所有子目录。
- * S1-T01 起 architecture 类 case 加入 baseline_scores 回写流程；与 eval-runner.ts 的
- * discoverArchitectureSubDirs 同语义。
+ * 仓库里这两个目录已空（PR3a/PR3b），函数在目录不存在时返回 []。
+ * 仍保留：tmpdir fixture 可能按旧约定建同名夹具（baseline-sync-holdout.test.ts）。
  */
 function discoverArchitectureSubDirs(absRoot: string): string[] {
   if (!existsSync(absRoot)) return [];
@@ -179,8 +180,8 @@ export function syncBaselineScores(results: BaselineResult[], opts: SyncOptions)
     const index = buildCapabilityIdIndex(opts.yamlDir);
     resolveYamlPath = (caseId: string) => index.get(caseId) ?? null;
   } else if (opts.baseDir) {
-    // general + architecture 模式：约定文件名 = caseId.yaml
-    // architecture 子目录动态发现 —— S1-T01 起 evals/architecture/<sub>/<case>.yaml 加入 sync
+    // general 模式：约定文件名 = caseId.yaml
+    // architecture 子目录动态发现仍保留：仓库里已空（PR3b），夹具里可能还有
     const archSubs = discoverArchitectureSubDirs(join(opts.baseDir, "architecture"));
     const holdoutArchSubs = discoverArchitectureSubDirs(
       join(opts.baseDir, "holdout", "architecture"),

@@ -48,29 +48,12 @@ const PKG_ROOT = resolve(import.meta.dir, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const EVALS_ROOT = join(REPO_ROOT, "evals");
 
-// PR3a（2026-09-18）：general/{p0-core,p1-common,p2-edge,execution} 28 条 yaml 已删。
-// 扫描面现在只剩 architecture/ + real-tasks/（各自动态发现）；holdout 题面 yaml 同步删除，
+// PR3b（2026-09-18）：architecture 组 113 yaml + 18 README 已删。
+// 扫描面现在只剩 real-tasks/（动态发现子目录）。holdout 题面 yaml 已于 PR3a 删除，
 // 不再把 HOLDOUT_DIR 推进 dirsToScan。HOLDOUT_DIR 仍存在（README + holdout-sids.txt）。
 const HOLDOUT_DIR = join(EVALS_ROOT, "holdout");
-const ARCHITECTURE_ROOT = join(EVALS_ROOT, "architecture");
-const HOLDOUT_ARCHITECTURE_ROOT = join(EVALS_ROOT, "holdout", "architecture");
 const REAL_TASKS_ROOT = join(EVALS_ROOT, "real-tasks");
 const HOLDOUT_REAL_TASKS_ROOT = join(EVALS_ROOT, "holdout", "real-tasks");
-
-/**
- * 动态发现 `evals/architecture/<sub>/` 下所有子目录。
- * S1-T01 起 architecture/ 下有 redline / form / kernel / ... 18 个子目录，
- * 每个子目录都是 case 容器；用动态扫描避免每加一类都改硬编码常量。
- */
-function discoverArchitectureSubDirs(root: string): string[] {
-  if (!existsSync(root)) return [];
-  const dirs: string[] = [];
-  for (const entry of require("node:fs").readdirSync(root)) {
-    const p = join(root, entry);
-    if (require("node:fs").statSync(p).isDirectory()) dirs.push(p);
-  }
-  return dirs;
-}
 
 /**
  * 动态发现 `evals/real-tasks/<cat>/` 下所有子目录（B6-2/3）。
@@ -292,7 +275,7 @@ async function loadCases(
   const wantSet = caseFilter ? new Set(caseFilter) : null;
   const cases: CaseYaml[] = [];
 
-  // --cases-dir 模式：只扫指定目录（含子目录），跳过默认的 general/architecture/holdout 逻辑
+  // --cases-dir 模式：只扫指定目录（含子目录），跳过默认的 real-tasks/holdout 逻辑
   if (casesDir) {
     const absDir = resolve(casesDir);
     if (!existsSync(absDir)) {
@@ -316,14 +299,11 @@ async function loadCases(
     return cases.sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // 默认行为：扫描 architecture/<sub>/ + real-tasks/<cat>/。
-  // PR3a 起 general 与 holdout 题面 yaml 已删；includeHoldout 不再往扫描面加目录
-  // （holdout/ 只剩 README + 永封 sids，discover* 扫不到 yaml）。
+  // 默认行为：扫描 real-tasks/<cat>/。
+  // PR3b 起 architecture/ 已删；PR3a 起 general 与 holdout 题面 yaml 已删。
+  // includeHoldout 仍会扫 holdout/real-tasks/（当前无 yaml，discover* 返回空）。
   // hasHoldoutId 仍查询磁盘，显式 --cases 点已删 id 时返回 false，loadCases 得到空集。
-  const dirsToScan = [
-    ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT),
-    ...discoverRealTasksSubDirs(REAL_TASKS_ROOT),
-  ];
+  const dirsToScan = [...discoverRealTasksSubDirs(REAL_TASKS_ROOT)];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
   if (includeHoldout || explicitlyAskedHoldoutId) {
     dirsToScan.push(...discoverRealTasksSubDirs(HOLDOUT_REAL_TASKS_ROOT));
@@ -337,7 +317,7 @@ async function loadCases(
       const c = parseYaml(content) as CaseYaml;
       // case 在 holdout 目录/子树 或带 holdout=true 标记 → 视为 holdout
       const isHoldout =
-        dir === HOLDOUT_DIR || dir.startsWith(HOLDOUT_ARCHITECTURE_ROOT) || c.holdout === true;
+        dir === HOLDOUT_DIR || dir.startsWith(HOLDOUT_REAL_TASKS_ROOT) || c.holdout === true;
       if (isHoldout && skipHoldout && !includeHoldout && !(wantSet && wantSet.has(c.id))) continue;
       if (wantSet && !wantSet.has(c.id)) continue;
       cases.push(c);
@@ -347,13 +327,13 @@ async function loadCases(
 }
 
 function hasHoldoutId(want: Set<string>): boolean {
+  // 根级 / architecture holdout yaml 已于 PR3a 删除；目录仍在（README + sids）。
   if (existsSync(HOLDOUT_DIR)) {
     for (const id of want) {
       if (existsSync(join(HOLDOUT_DIR, `${id}.yaml`))) return true;
     }
   }
-  // architecture holdout 子目录: evals/holdout/architecture/<sub>/<case>.yaml
-  for (const sub of discoverArchitectureSubDirs(HOLDOUT_ARCHITECTURE_ROOT)) {
+  for (const sub of discoverRealTasksSubDirs(HOLDOUT_REAL_TASKS_ROOT)) {
     for (const id of want) {
       if (existsSync(join(sub, `${id}.yaml`))) return true;
     }
@@ -1026,9 +1006,10 @@ function collectGraderReasons(dims: Record<string, DimScore>): Record<string, st
 }
 
 export function syncBaselineScores(results: TestResult[], baseDir: string = EVALS_ROOT) {
-  // 映射 TestResult → BaselineResult。baseDir 下仍扫 architecture/ + holdout/（动态发现）
-  // 以及历史上 general/ 的目录名（tmpdir fixture / 旧测试仍用这个约定建夹具，见
+  // 映射 TestResult → BaselineResult。baseDir 下仍扫历史上 general/ 的目录名
+  // （tmpdir fixture / 旧测试仍用这个约定建夹具，见
   // tests/eval/baseline-sync-holdout.test.ts 与 eval-runner-e2e.test.ts）。
+  // architecture/ 已于 PR3b 删除，不再进扫描面。
   // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
   // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
   // dashboard 取均值时会把这 2.5 算进去，污染横向对比。

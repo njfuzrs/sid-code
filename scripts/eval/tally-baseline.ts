@@ -18,7 +18,7 @@ import yaml from "yaml";
 import { LATEST_GRADER_VERSION } from "./lib/yaml-loader";
 
 const ROOT = process.cwd();
-const CASE_ROOTS = ["evals/architecture", "evals/real-tasks"];
+const CASE_ROOTS = ["evals/real-tasks"];
 const REPORTS_DIR = "evals/_reports";
 
 interface Case {
