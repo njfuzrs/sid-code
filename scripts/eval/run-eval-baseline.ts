@@ -19,19 +19,14 @@
  *   evals/_reports/baseline-w<N>-raw.json     — 汇总 raw 数据
  */
 
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import yaml from "yaml";
 
 const ROOT = process.cwd();
-const CASE_DIRS = [
-  "evals/general/p0-core",
-  "evals/general/p1-common",
-  "evals/general/p2-edge",
-  "evals/holdout",
-];
+const CASE_ROOTS = ["evals/architecture", "evals/real-tasks"];
 const RAW_DIR = "evals/raw-outputs";
 const REPORTS_DIR = "evals/_reports";
 
@@ -53,21 +48,31 @@ interface Case {
   source: string;
 }
 
-function loadCases(): Case[] {
-  const out: Case[] = [];
-  for (const dir of CASE_DIRS) {
-    const abs = join(ROOT, dir);
-    let entries: string[] = [];
+function walkYaml(dir: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    let st: ReturnType<typeof statSync>;
     try {
-      entries = readdirSync(abs).filter((f) => f.startsWith("case_") && f.endsWith(".yaml"));
+      st = statSync(p);
     } catch {
       continue;
     }
-    for (const f of entries) {
-      const p = join(abs, f);
-      if (!statSync(p).isFile()) continue;
-      const data = yaml.parse(readFileSync(p, "utf-8")) as Case;
-      out.push(data);
+    if (st.isDirectory()) {
+      if (name === "scripts") continue;
+      walkYaml(p, out);
+    } else if (st.isFile() && name.endsWith(".yaml")) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+function loadCases(): Case[] {
+  const out: Case[] = [];
+  for (const root of CASE_ROOTS) {
+    for (const p of walkYaml(join(ROOT, root))) {
+      out.push(yaml.parse(readFileSync(p, "utf-8")) as Case);
     }
   }
   out.sort((a, b) => a.id.localeCompare(b.id));

@@ -34,7 +34,7 @@ import {
  * 历史：vendor 进 workspace 之前 runner 就在 `evals/core/`，`resolve(import.meta.dir, "..")`
  * 天然等于 `evals/`，一个常量够用。P1-5 把框架搬到 `packages/eval-framework/` 后整条链
  * 平移了两级，但这个常量没跟着改 —— 于是 case 扫描去了
- * `packages/eval-framework/general/p0-core/`（根本不存在），`eval:run` 从那时起就是坏的：
+ * `packages/eval-framework/` 下根本不存在的 general 子树，`eval:run` 从那时起就是坏的：
  *
  *     $ bun run eval:run -- --provider sid-code --cases case_001
  *     未找到匹配的 case
@@ -48,12 +48,9 @@ const PKG_ROOT = resolve(import.meta.dir, "..");
 const REPO_ROOT = resolve(PKG_ROOT, "..", "..");
 const EVALS_ROOT = join(REPO_ROOT, "evals");
 
-const CASE_DIRS = [
-  join(EVALS_ROOT, "general", "p0-core"),
-  join(EVALS_ROOT, "general", "p1-common"),
-  join(EVALS_ROOT, "general", "p2-edge"),
-  join(EVALS_ROOT, "general", "execution"),
-];
+// PR3a（2026-09-18）：general/{p0-core,p1-common,p2-edge,execution} 28 条 yaml 已删。
+// 扫描面现在只剩 architecture/ + real-tasks/（各自动态发现）；holdout 题面 yaml 同步删除，
+// 不再把 HOLDOUT_DIR 推进 dirsToScan。HOLDOUT_DIR 仍存在（README + holdout-sids.txt）。
 const HOLDOUT_DIR = join(EVALS_ROOT, "holdout");
 const ARCHITECTURE_ROOT = join(EVALS_ROOT, "architecture");
 const HOLDOUT_ARCHITECTURE_ROOT = join(EVALS_ROOT, "holdout", "architecture");
@@ -319,19 +316,16 @@ async function loadCases(
     return cases.sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // 默认行为：扫描 general (P0/P1/P2) + architecture/<sub>/ 所有子目录 + 过滤 holdout=true 标记。
-  // includeHoldout=true 时，额外扫描 evals/holdout/ + evals/holdout/architecture/<sub>/，且不再过滤 holdout 标记。
-  // 注意：单独传 --cases case_004（在 holdout 目录里）的情况，
-  // 会通过下面的 holdout 目录扫描分支拿到（即便 includeHoldout=false 也允许显式指定）。
+  // 默认行为：扫描 architecture/<sub>/ + real-tasks/<cat>/。
+  // PR3a 起 general 与 holdout 题面 yaml 已删；includeHoldout 不再往扫描面加目录
+  // （holdout/ 只剩 README + 永封 sids，discover* 扫不到 yaml）。
+  // hasHoldoutId 仍查询磁盘，显式 --cases 点已删 id 时返回 false，loadCases 得到空集。
   const dirsToScan = [
-    ...CASE_DIRS,
     ...discoverArchitectureSubDirs(ARCHITECTURE_ROOT),
     ...discoverRealTasksSubDirs(REAL_TASKS_ROOT),
   ];
   const explicitlyAskedHoldoutId = wantSet ? hasHoldoutId(wantSet) : false;
   if (includeHoldout || explicitlyAskedHoldoutId) {
-    dirsToScan.push(HOLDOUT_DIR);
-    dirsToScan.push(...discoverArchitectureSubDirs(HOLDOUT_ARCHITECTURE_ROOT));
     dirsToScan.push(...discoverRealTasksSubDirs(HOLDOUT_REAL_TASKS_ROOT));
   }
 
@@ -1032,7 +1026,9 @@ function collectGraderReasons(dims: Record<string, DimScore>): Record<string, st
 }
 
 export function syncBaselineScores(results: TestResult[], baseDir: string = EVALS_ROOT) {
-  // 映射 TestResult → BaselineResult；general 模式按 EVALS_ROOT 下 4 个目录扫
+  // 映射 TestResult → BaselineResult。baseDir 下仍扫 architecture/ + holdout/（动态发现）
+  // 以及历史上 general/ 的目录名（tmpdir fixture / 旧测试仍用这个约定建夹具，见
+  // tests/eval/baseline-sync-holdout.test.ts 与 eval-runner-e2e.test.ts）。
   // error / timeout 的 baseline score 写 null（不是数值 0、不是 ~2.5）。
   // 旧实现：error case 因为 3 个维度兜底 1.0、rubric 0、anchor 0 → 总分 ~2.5 落入 baseline，
   // dashboard 取均值时会把这 2.5 算进去，污染横向对比。

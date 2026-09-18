@@ -7,40 +7,36 @@
 >
 > 本文专注 evals/ 内部三件事：**目录导航**、**数据资产分层与生命周期**、**case 写作要点**。
 
-## 当前状态（2026-09-17）
+## 当前状态（2026-09-18）
 
-> 🔴 **本目录的四组题集已全部冻结，⛔ 不要拿它们跑回归、也不要在这里加第 223 条。**
-> 上一版状态块写的是 2026-05-25 的 **30 条**（`p0-core 10 + p1-common 9 + p2-edge 6 + holdout 5`），
-> 那个数字从写下之后再没更新过。⚠️ **同口径比要连 holdout 一起算**：旧值 30 是**含** holdout 的，
-> 所以对得上的是磁盘上的 **235**（四组 222 + holdout 13）⇒ **差 205 条**。
-> ⛔ 别用「222 − 30 = 192」—— 那是拿"不含 holdout"减"含 holdout"，两边口径不同。
-> ⚠️ 下表每一格都能一行命令复算（命令附在表后），⛔ 不要照抄它当事实，**自己跑一遍**。
+> 🔴 **本目录的旧题集正在按组删除。** `general/` 28 条 + holdout 13 条 yaml 已于本次删除；
+> smoke / pass-at-k / 题面泄露检测链整条下线。新题集在 `agent-traj-bench`（两个 URL 见下方）。
+> ⚠️ 下表每一格都能一行命令复算，⛔ 不要照抄它当事实，**自己跑一遍**。
 
-> 🔴 **2026-09-18 起冻结是机械的，不只是文档声明**：`general/` `architecture/` `real-tasks/`
-> 的 **168** 条 yaml 首行都带 `lifecycle: frozen`（复算命令见表后）。⚠️ 同批还删掉了 **236** 个
-> 纯派生物（`_scores/` 228 + `_runs/` 4 + `CASES.md` / `gen-cases-md.ts` / `_template.yaml` /
-> `_reports/eval-latest.json` 各 1）⇒ 入库数 **681 → 445**。
+> 入库数 **445 → 398**（−47：`general/` 28 + holdout 13 yaml + `_meta/` 3 + `verify-judge-stability.ts` 1
+> + `scripts/migrate-cost-formula.ts` 1 + `_meta/pass-at-k.test.ts` 1）。
+> ⚠️ 差值账按 `git ls-files evals | wc -l`，与 case 口径不是一回事。
 
 | 组 | 入库 case（`*.yaml`） | 状态 |
 | --- | --- | --- |
-| `general/` | 28 | `frozen`（已带 `lifecycle: frozen` 标记）|
+| ~~`general/`~~ | **0** | 已删（28 条 yaml；题面见 `~/Backups/sid-code-evals-legacy/`）|
 | `architecture/` | 113 | `frozen`（已带 `lifecycle: frozen` 标记）|
-| `capability/` | 54 | `frozen` → **待删除**（已裁决停止该评测线，判据词汇表另行保全；出处见维护者私有文档库 `X2-Evaluation/10-历史评测集清理方案.md` §2.2）|
-| `real-tasks/` | 27 | `frozen`（已带 `lifecycle: frozen` 标记），且**从未可跑**：rubric **27/27** 是 TODO 占位；setup 脚本 **31/31 的 `REPO_URL` 是假值**（30 条 TODO 占位 + 1 条 `https://github.com/example/repo.git`）|
-| **四组小计** | **222** | ⚠️ 这个 222 **不含 holdout** —— 上一版那个 30 里是含的（`holdout 5`），⛔ 两边口径别混 |
-| `holdout/` | 13 | `frozen`（8 条在 `architecture/` 子目录下 + 5 条根级 `case_0NN.yaml`）|
-| **含 holdout 合计** | **235** | |
+| `capability/` | 54 | `frozen` → **待删除**（已裁决停止该评测线，判据词汇表另行保全）|
+| `real-tasks/` | 27 | `frozen`（已带 `lifecycle: frozen` 标记），且**从未可跑** |
+| `holdout/` | **0** yaml | 13 条 yaml 已删；留下 2 个 README（切分方法论）+ `holdout-sids.txt`（⛔ 一字节不许动）|
 
 ```bash
-# 逐格复算（期望与上表逐一相等，⛔ 不是求和相等 —— 见下方「口径」）
-for d in general architecture capability real-tasks holdout; do
+# 逐格复算（期望与上表逐一相等）
+for d in architecture capability real-tasks holdout; do
   printf "%-14s %s\n" "$d" "$(git ls-files "evals/$d" | grep -c '\.yaml$')"
-done                                              # → 28 / 113 / 54 / 27 / 13
-grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 168（general 28 + architecture 113 + real-tasks 27）
+done                                              # → 113 / 54 / 27 / 0
+git ls-files evals/general | wc -l                # → 0
+git ls-files evals | wc -l                        # → 398
+grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 140（architecture 113 + real-tasks 27）
 ```
 
-> ⚠️ **`capability/` 的 54 条刻意没有 `lifecycle:` 标记**，⛔ 别当成漏标：它已判删（见上表），
-> 直接进删除队列 —— 标一个 `pending-review` 之类的中间态本身就是债务（实测那个状态在旧方案里挂了三个半月）。
+> ⚠️ **`capability/` 的 54 条刻意没有 `lifecycle:` 标记**，⛔ 别当成漏标：它已判删，
+> 直接进删除队列 —— 标一个 `pending-review` 之类的中间态本身就是债务。
 
 > **口径**：上表是 **case 口径**（一条 case = 一个 yaml），⛔ 与"文件口径"不是一回事 ——
 > `architecture/` 有 113 个 yaml 但 **131 个入库文件**（多出 18 个子目录 README）。
@@ -50,7 +46,7 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 168（general 28
 
 | 组 | 死因 |
 | --- | --- |
-| `general/` `architecture/` `real-tasks/` | **环境不可重建** —— case 里的 `repo_commit` 指向已不可达的提交，题面依赖当时的仓库结构 |
+| ~~`general/`~~ `architecture/` `real-tasks/` | **环境不可重建** —— case 里的 `repo_commit` 指向已不可达的提交。`general/` 已删 |
 | `capability/` | 🔴 **死于实现，不死于不可重建** —— 它的 `seed` / `setup` / `fixture` / `env` / `repo_commit` 实测**全为 0**，与仓库结构解耦；54 条里只有 **7 条**断言真腐烂、**2 条**是故意虚构路径（测 agent 自纠）、**45 条**技术上仍可跑。停掉它是**方向裁决**（不再用"过程合规"这条论证线），⛔ 别写成技术判决 |
 
 ⚠️ 跑分也早就冻了：`capability/` 最后一次 `tested_at` 是 **2026-05-27**，而 54 条里有 **49 条**
@@ -60,7 +56,7 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 168（general 28
 它们的 `tested_at` 上界是 **2026-06-01**，对应 commit 在**删除之前就已不可达**
 ⇒ ⛔ 别把这次删除读成"丢了跨版本对照能力"：那个能力随 commit 不可达一起消失，
 删掉的只是**看起来还能对照**的错觉。🟢 数据本身在 git 里：`git log -- evals/_scores`。
-⚠️ 两者都是**运行时会重建的目录**（`packages/eval-framework/core/runner.ts:833`/`:923`
+⚠️ 两者都是**运行时会重建的目录**（`packages/eval-framework/core/runner.ts:828`/`:917`
 各有一次 `mkdirSync(..., {recursive:true})`）⇒ 重新跑评测会重新长出来，删的是过期数据不是写入链。
 
 ### 新题集在哪（🔴 两个 URL 都要拿，⛔ 不是二选一）
@@ -74,7 +70,7 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 168（general 28
 
 🔴 **本目录题集与新集判据不兼容，分数不互比。** 两者不是同一件事的新旧两版：
 
-| | 本目录（`general/` `architecture/` `capability/` `real-tasks/`） | `agent-traj-bench` |
+| | 本目录（`architecture/` `capability/` `real-tasks/`；`general/` 已删） | `agent-traj-bench` |
 | --- | --- | --- |
 | 判什么 | **过程**（"过程病态吗"）+ 5 维 rubric 打分 | **结果**（"改对了吗"）|
 | 判分形态 | LLM Judge + `must_include_any_of` / `must_call_tools` 等机械断言 | `tests/{f2p,p2p}.json` + `score.py` → `reward.json` |
@@ -84,50 +80,36 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 168（general 28
 
 ## 目录组织
 
-> ⚠️ 下面这张树是 **2026-09-18** 的入库快照（`git ls-files evals`，**445 个文件**）。
+> ⚠️ 下面这张树是 **2026-09-18 PR3a 之后**的入库快照（`git ls-files evals`，**398 个文件**）。
 > ⛔ 别照抄它当事实 —— 改动前先跑 `git ls-files evals | awk -F/ 'NF>2{print $2}' | sort | uniq -c` 对账。
-> 🔴 上一版是 **681**，差 **236** 全部是本次删掉的纯派生物（明细见顶部状态块）。
+> 🔴 上一版是 **445**，差 **47** 是本次删掉的 general + holdout yaml + smoke/pass-at-k 链路。
 
 ```
-evals/                            # 入库 445 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
+evals/                            # 入库 398 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
 ├── README.md                     # 本文
 ├── CLAUDE.md                     # 面向 agent 的规则（每条带 file:line 出处，有门禁校验）
-├── verify-judge-stability.ts     # judge 稳定性自检
-│                                 #   ⚠️ 题集冻结后它没有输入（拿旧四组 case 跑 judge 自检）
 │
-├── general/            28  # frozen ✅ 已标 lifecycle（p0-core 10 / p1-common 9 / p2-edge 6 / execution 3）
-├── architecture/      131  # frozen ✅ 已标 lifecycle（113 yaml + 18 子目录 README，18 个子目录）
-├── capability/         64  # frozen → 待删除（54 yaml：plan 10 / memory 10 / context 10 / router 13 / harness 11）
-│                          #   ⚠️ 刻意**不标** lifecycle：已判删，标中间态本身就是债务
+├── architecture/      131  # frozen ✅ 已标 lifecycle（113 yaml + 18 子目录 README）
+├── capability/         64  # frozen → 待删除（54 yaml）
+│                          #   ⚠️ 刻意**不标** lifecycle：已判删
 ├── real-tasks/         58  # frozen ✅ 已标 lifecycle（27 yaml + 31 setup 脚本）
-├── holdout/            16  # frozen（13 yaml + 2 README + holdout-sids.txt）
+├── holdout/             3  # 2 README（切分方法论，退役说明）+ holdout-sids.txt
 │                          #   ⛔ holdout-sids.txt 一字节不许动：sha256 永封，pre-push.sh 会拒绝 push
 │
 ├── _judge/             22  # ✅ 在用：prompt-v0~v3 + calibration-v3（κ=0.921）+ gold-cases 10 条
-│                          #   ⛔ 不许归进"历史债务"：实测 12 个代码文件在读它
-│                          #   （packages/eval-framework/ 3 + scripts/eval/ 9），⚠️ 口径=代码引用
 ├── _diagnoses/         12  # ✅ 在用：5 个 fix_type 归因轴的唯一实例化记录 + SCHEMA.md + runs/
-├── _meta/               4  # smoke-cases / critical-cases / holdout-leak-audit / pass-at-k.test.ts
-├── _reports/           24  # capability-plan-w11/w12 4 + external/ 19（swe-bench 外部基线，活的）+ .gitkeep
-│                          #   ⚠️ eval-latest.json 已删（唯一读者是同批删掉的 gen-cases-md.ts:20；
-│                          #   runner.ts:1077 只写不读）
-│                          # ⛔ _runs/（4）与 _scores/（228）已删 —— 见顶部状态块，
-│                          #   两者都是运行时会 mkdir 重建的目录
-│
-├── bench-runner/       10  # 大规模 bench（≠ case eval）：runner + 3 grader + 4 adapter + capability-{grader,shared}
-├── providers/           4  # eval-runner 调用的 wrapper（spawn 入口）
-├── scripts/             4  # evals 专用脚本
+├── _reports/           24  # capability-plan-w11/w12 4 + external/ 19 + .gitkeep
+├── bench-runner/       10  # 大规模 bench：runner + 3 grader + 4 adapter + capability-{grader,shared}
+├── providers/           4  # eval-runner 调用的 wrapper
+├── scripts/             3  # distill-skill-rules / run-external-baseline / self-vs-external-report
 ├── cross-provider/      2  # 横评报告 + 活测试
-├── inspect/             6  # ⚠️ 外部引用 0，但刻意保留 —— "路径 A 已否决"那句结论的唯一实证载体
-│                          #   ⛔ 零引用 ≠ 零价值，别当死目录删
-├── external-benchmarks/ 56 # ✅ 在用：harbor 34 / swe-bench 15 / lib 3 / cr-samples 3（末次改动 2026-09-17）
-└── raw-outputs/         1  # 只剩 .gitkeep —— 它是运行时 transcript 落点，实测 19 个文件引用这个路径
-                           #   ⛔ .gitkeep 别删：它就是为那些引用而存在的
+├── inspect/             6  # ⚠️ 外部引用 0，但刻意保留
+├── external-benchmarks/ 56 # ✅ 在用
+└── raw-outputs/         1  # 只剩 .gitkeep
 ```
 
-> **runner 入口约束**：`packages/eval-framework/core/runner.ts:51` 的 `CASE_DIRS` 只扫
-> `general/{p0-core,p1-common,p2-edge,execution}`；`architecture/` 的 18 个子目录由
-> `discoverArchitectureSubDirs()` 动态发现，`holdout/` `real-tasks/` 各有独立常量。
+> **runner 入口约束**：`packages/eval-framework/core/runner.ts` 现在只扫 `architecture/` + `real-tasks/`
+> （动态发现子目录）。`general/` 与 holdout 题面 yaml 已删。
 > ⚠️ **题集已冻结 ⇒ 这些入口现在扫到的都是死题**，跑出来的分数不代表当前能力。
 
 ## 跑评测
@@ -144,9 +126,7 @@ evals/                            # 入库 445 个文件（⚠️ 运行产物�
 bun run eval:run --cases case_002 --provider sid-code
 
 # "全量"回归（--skip-holdout 默认 true）
-# ⚠️ 上一版这里写「25 条非 holdout」—— 实测 eval:run 扫到 168 条
-#    （general 28 + architecture 113 + real-tasks 27；⛔ capability 54 不在 CASE_DIRS 里，
-#     它走 scripts/eval/run-{plan,memory,context,router,harness}-capability.ts 五个独立入口）
+# ⚠️ 现在扫到 architecture 113 + real-tasks 27；general 已删；capability 54 走五个独立入口
 bun run eval:run --provider sid-code
 
 # 多 provider 横评（不传 --model 时各 provider 用各自的 defaultModel）
@@ -168,7 +148,9 @@ bun run eval:run --provider sid-code,claude-code
 
 | 资产 | 性质 |
 | --- | --- |
-| ~~`general/ architecture/ capability/ real-tasks/ holdout/` 的 yaml~~ | ⚠️ **已冻结，不再是"永久保留"** —— 环境不可重建 / 实现已停（顶部状态块） |
+| ~~`general/` yaml~~ | 已删（2026-09-18）|
+| ~~`architecture/ capability/ real-tasks/` 的 yaml~~ | ⚠️ **已冻结，不再是"永久保留"** |
+| ~~holdout 题面 yaml~~ | 已删；留下 README + `holdout-sids.txt` |
 | ~~`eval-runner.ts` `eval-judge.ts` `_types.ts`~~ | 🔴 **已不在本目录** —— runner 与 judge 迁到 `packages/eval-framework/core/{runner,judge}.ts`，类型定义迁到同目录 `types.ts` |
 | `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | ✅ **在用**：LLM Judge 校准成本极高（κ=0.921 重新校一次要数小时人工标注），删了等于推倒重来。⚠️ 它与题集无关，⛔ 别跟着题集一起清 |
 | `providers/*.ts` | ✅ 在用：`tests/eval/` 有活 import 与出处断言指向它 |
@@ -177,8 +159,7 @@ bun run eval:run --provider sid-code,claude-code
 ⚠️ 曾在这一层、**2026-09-18 已删**的一对：`gen-cases-md.ts` → `CASES.md`
 （CASES.md 头部自陈"自动生成，请勿手动编辑"，而其数据源 `_reports/promptfoo-latest.json`
 **早已不存在** ⇒ 它既不能重新生成、也不该手改 ⇒ 生成器与产物同批下线）。
-`verify-judge-stability.ts` **仍在**（根下唯一 `.ts`），但它拿旧四组 case 跑 judge 自检
-⇒ **题集冻结后它没有输入**。
+`verify-judge-stability.ts` 已于 2026-09-18 随 `general/` 下线（它硬依赖 p0-core / p1-common / p2-edge / holdout）。
 
 ### 测试结果按"未来用途"分四层
 
@@ -290,28 +271,27 @@ bun run eval:run --cases case_NNN --provider sid-code   # 单跑验证
 这一节是 P2-4（2026-08-12）立的，治的是一个反复被问的问题：**为什么 `evals/` 里有代码？**
 
 先说结论：**`evals/` 是「评测这件事」的整体归属地，它可以有代码，这不是历史欠债。**
-实测本目录有 **28 个 `.ts`**（`bench-runner/` 10、`external-benchmarks/` 5、`scripts/` 4、
-`providers/` 4、`_judge/` 2、根下 **1**、`_meta/` 1、`cross-provider/` 1），
-`scripts/eval/` 有 **37 个文件**。两边各放什么，判据如下：
+实测本目录有 **25 个 `.ts`**（`bench-runner/` 10、`external-benchmarks/` 5、`scripts/` 3、
+`providers/` 4、`_judge/` 2、`cross-provider/` 1；根下与 `_meta/` 的 `.ts` 已随 PR3a 下线），
+`scripts/eval/` 有 **33 个文件**（−4：`run-smoke.ts` / `pass-at-k.ts` / `extract-holdout-tokens.ts` / 题面泄露检测脚本）。
 
 ```bash
-# 复算（⚠️ 2026-08-12 写 25、2026-09-17 实测 29，本次删 gen-cases-md.ts 后是 28）
-git ls-files evals | grep -c '\.ts$'                                    # → 28
+git ls-files evals | grep -c '\.ts$'                                    # → 25
 git ls-files evals | grep '\.ts$' | awk -F/ 'NF==2{print "根下"} NF>2{print $2}' | sort | uniq -c
-git ls-files scripts/eval | wc -l                                       # → 37
+git ls-files scripts/eval | wc -l                                       # → 33
 ```
 
 | 目录 | 放什么 | 判据 |
 | --- | --- | --- |
-| **`evals/`** | 评测**体系本身**：case 数据（`general/` `architecture/` `capability/` `real-tasks/` `holdout/`）、judge 与诊断资产（`_judge/` `_diagnoses/` `_meta/`）、报告（`_reports/`；⚠️ `_runs/` `_scores/` 已删，但它们仍是 runner 的**运行时落点**，重跑会重建），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
-| **`scripts/eval/`** | 评测的**工具与门禁**：跑批入口、聚合、泄漏检查、门禁脚本 | **与具体 case 无关、对整个评测集通用的，放这里** |
+| **`evals/`** | 评测**体系本身**：case 数据（`architecture/` `capability/` `real-tasks/`；`holdout/` 只剩 README + 永封 sids）、judge 与诊断资产（`_judge/` `_diagnoses/`）、报告（`_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
+| **`scripts/eval/`** | 评测的**工具与门禁**：跑批入口、聚合、门禁脚本 | **与具体 case 无关、对整个评测集通用的，放这里** |
 
-根下现在只剩 **1 个** `.ts` 按此判据属前者，保持原位：`verify-judge-stability.ts`
-（拿 case 跑 judge 自检）。⚠️ 另一个 `gen-cases-md.ts` 已于 2026-09-18 随 `CASES.md` 一起删除。
+根下 `.ts` 已清零（`verify-judge-stability.ts` 随 general 下线；`gen-cases-md.ts` 随 CASES.md 下线）。
+`_meta/` 四个文件全删 ⇒ 该目录消失。
 
 > ⚠️ **不要"顺手"把 `evals/` 下的代码迁去 `scripts/eval/`。**
 > 曾有一版方案提议只迁根下那 2 个文件、理由是「`evals/` 应该只放数据」。
-> 那条原则与现状冲突：迁完之后这里仍有 **27** 个代码文件，但**看起来像已经治理过了** ——
+> 那条原则与现状冲突：迁完之后这里仍有 **25** 个代码文件，但**看起来像已经治理过了** ——
 > 把不一致从「明显」变成「隐蔽」，下一个人更难发现这里其实没有统一规则。
 > 而且 `tests/eval/` 有 **11 个测试文件**直接 `import ../../evals/...`（共 **12** 条 import 路径：
 > `bench-runner/` 的 capability-grader / capability-shared / runner / trajectory-grader / 2 个 adapter，
@@ -326,8 +306,7 @@ git ls-files scripts/eval | wc -l                                       # → 37
 >
 > 有先例：gemini-cli 的 `evals/` 里同样是 `.eval.ts` 代码 + helper，不是纯数据目录。
 >
-> 若哪天真要统一，那是一次**独立改造**（28 个文件 + 11 个测试文件的 import +
-> `pkg-boundary-scan` 的扫描范围），不要塞进"入库与位置清理"这类任务里。
+> 若哪天真要统一，那是一次**独立改造**，不要塞进"入库与位置清理"这类任务里。
 
 ## 历史：promptfoo 时期的实现（原 `_legacy/README.md`）
 

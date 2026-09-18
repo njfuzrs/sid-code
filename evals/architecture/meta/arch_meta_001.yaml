@@ -18,7 +18,7 @@ input:
     断言：sid-code 评测体系含四层金字塔结构——
     第 1 层 红线 binary（`evals/architecture/redline/`）；
     第 2 层 capability（`evals/capability/<sub>/`）；
-    第 3 层 general 行为（`evals/general/`）；
+    第 3 层 general 行为（原 `evals/general/`，已于 2026-09-18 随旧题集删除）；
     第 4 层 outcome 北极星（S4 阶段在 `evals/architecture/outcome/` 落地，当前占位）。
     出处：H-01 / 08 §5.0。
   repo: sid-code
@@ -44,7 +44,7 @@ arch_assertions:
   - type: file_must_exist
     path: evals/capability/harness/README.md
   - type: file_must_exist
-    path: evals/general/p0-core
+    path: evals/holdout/architecture/README.md
   - type: file_must_exist
     path: evals/architecture/outcome/README.md
 

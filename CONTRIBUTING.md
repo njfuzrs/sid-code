@@ -416,7 +416,7 @@ bun run affected-tests:run   # 执行选出来的最小测试集
 | hook | 门禁 |
 | --- | --- |
 | pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移）+ Agent Note 形态校验 |
-| pre-push | holdout 泄露检测、`holdout/real-tasks` 永封校验、website 站点构建（死链检测）、北极星生成块陈旧检测（30 天） |
+| pre-push | `holdout/real-tasks` 永封校验、website 站点构建（死链检测）、北极星生成块陈旧检测（30 天） |
 
 没装 hook 的话，参考页漂移和站点死链会一路带到 PR 里才被发现。
 **clone 之后第一件事就是 `bun run install-hooks`。**

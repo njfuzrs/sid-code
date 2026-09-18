@@ -40,7 +40,8 @@ jobs:
     # 结果是每个 fork 每周一收到一封无从修复的失败邮件。
     #
     # 判据选型（三种都见过，这里选第三种）：
-    #   · `pull_request.head.repo.full_name == github.repository`（eval-pr-smoke.yml 用的）
+    #   · 曾经用过 `pull_request.head.repo.full_name == github.repository`
+    #     （eval-pr-smoke.yml，已于 2026-09-18 下线）
     #     —— 本 workflow 无 pull_request 触发，该表达式恒 null，用不了
     #   · `github.repository == 'owner/repo'` —— 要写死 slug。2026-08-12 迁到 GitHub 后
     #     slug 已确定（njfuzrs/sid-code），但仍**不选它**：换 owner 就失效

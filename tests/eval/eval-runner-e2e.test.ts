@@ -33,7 +33,8 @@ beforeAll(() => {
   tmpRoot = join(tmpdir(), `eval-runner-e2e-${Date.now()}`);
   mkdirSync(tmpRoot, { recursive: true });
   // 准备 mock case yaml（让 syncBaselineScores 能找到回写目标）
-  // S1-T00 起 general 目录从 evals/p0-core/ 移到 evals/general/p0-core/
+  // 夹具目录名沿用历史上 general 的约定；仓库里那些目录已于 2026-09-18 删除，
+  // 这里是 tmpdir，与仓内路径无关（§5.2.1 假阳性）。
   mkdirSync(join(tmpRoot, "general", "p0-core"), { recursive: true });
   writeFileSync(
     join(tmpRoot, "general", "p0-core", "case_001.yaml"),

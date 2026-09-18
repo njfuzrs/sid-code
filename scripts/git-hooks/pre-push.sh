@@ -2,7 +2,7 @@
 # pre-push hook 受控版本（git track，团队成员安装一次即可同步）
 #
 # 行为：
-#   1. holdout 泄露检测 / 永封校验
+#   1. holdout/real-tasks 永封校验（sha256 + 公开页 sid 泄露）
 #   2. website/ 有变动时跑一次站点构建（死链检测）
 #   3. 北极星指标生成块的陈旧检测（P0-3，阈值 30 天）
 #
@@ -11,15 +11,9 @@
 # 或手动：
 #   cp scripts/git-hooks/pre-push.sh .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 
-# F-H5: holdout 泄露检测(双重防御 L5)
-echo "[pre-push] 跑 holdout 泄露检测 ..."
-if [ -x "scripts/eval/check-holdout-leak.sh" ] || [ -f "scripts/eval/check-holdout-leak.sh" ]; then
-  sh scripts/eval/check-holdout-leak.sh || {
-    echo "[pre-push] ❌ holdout 泄露检测失败,push 中止"
-    exit 1
-  }
-  echo "[pre-push] ✅ 无 holdout 泄露"
-fi
+# 题面泄露检测链已于 2026-09-18 随 holdout 题面 yaml 整条下线。
+# 保护对象没了，留一条 rc=0 空跑的门禁比没有更糟。
+# 新集若重建 holdout，须连题面泄露检测一起重建。永封校验（holdout-sids.txt）是另一条链，留下。
 
 # B7-3 (2026-05-31)：holdout/real-tasks/holdout-sids.txt 永封校验 + 公开页面 sid 泄露检测
 echo "[pre-push] 跑 holdout/real-tasks 永封校验 ..."
