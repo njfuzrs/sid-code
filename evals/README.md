@@ -9,18 +9,19 @@
 
 ## 当前状态（2026-09-18）
 
-> 🔴 **本目录的旧题集正在按组删除。** `general/` 28 条 + holdout 13 条 yaml 已于本次删除；
-> smoke / pass-at-k / 题面泄露检测链整条下线。新题集在 `agent-traj-bench`（两个 URL 见下方）。
+> 🔴 **本目录的旧题集正在按组删除。** `architecture/` 131 文件已于本次删除（113 yaml + 18 README）。
+> `general/` 与 holdout 题面 yaml 已于 PR3a 删除。新题集在 `agent-traj-bench`（两个 URL 见下方）。
 > ⚠️ 下表每一格都能一行命令复算，⛔ 不要照抄它当事实，**自己跑一遍**。
 
-> 入库数 **445 → 398**（−47：`general/` 28 + holdout 13 yaml + `_meta/` 3 + `verify-judge-stability.ts` 1
-> + `scripts/migrate-cost-formula.ts` 1 + `_meta/pass-at-k.test.ts` 1）。
+> 入库数 **398 → 267**（−131：`architecture/` 113 yaml + 18 子目录 README）。
 > ⚠️ 差值账按 `git ls-files evals | wc -l`，与 case 口径不是一回事。
+> ⚠️ 上游 13 号 3b.5 写「399 − 131 = 268」——那是 PR3a 期望 399；PR3a 实测是 **398**，
+> 本格按实测账走（§5.1 留存侧也是 267）。
 
 | 组 | 入库 case（`*.yaml`） | 状态 |
 | --- | --- | --- |
 | ~~`general/`~~ | **0** | 已删（28 条 yaml；题面见 `~/Backups/sid-code-evals-legacy/`）|
-| `architecture/` | 113 | `frozen`（已带 `lifecycle: frozen` 标记）|
+| ~~`architecture/`~~ | **0** | 已删（113 yaml + 18 README；题面见 bundle）|
 | `capability/` | 54 | `frozen` → **待删除**（已裁决停止该评测线，判据词汇表另行保全）|
 | `real-tasks/` | 27 | `frozen`（已带 `lifecycle: frozen` 标记），且**从未可跑** |
 | `holdout/` | **0** yaml | 13 条 yaml 已删；留下 2 个 README（切分方法论）+ `holdout-sids.txt`（⛔ 一字节不许动）|
@@ -29,24 +30,24 @@
 # 逐格复算（期望与上表逐一相等）
 for d in architecture capability real-tasks holdout; do
   printf "%-14s %s\n" "$d" "$(git ls-files "evals/$d" | grep -c '\.yaml$')"
-done                                              # → 113 / 54 / 27 / 0
+done                                              # → 0 / 54 / 27 / 0
 git ls-files evals/general | wc -l                # → 0
-git ls-files evals | wc -l                        # → 398
-grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 140（architecture 113 + real-tasks 27）
+git ls-files evals | wc -l                        # → 267
+grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 27（real-tasks 27；architecture 已删）
 ```
 
 > ⚠️ **`capability/` 的 54 条刻意没有 `lifecycle:` 标记**，⛔ 别当成漏标：它已判删，
 > 直接进删除队列 —— 标一个 `pending-review` 之类的中间态本身就是债务。
 
 > **口径**：上表是 **case 口径**（一条 case = 一个 yaml），⛔ 与"文件口径"不是一回事 ——
-> `architecture/` 有 113 个 yaml 但 **131 个入库文件**（多出 18 个子目录 README）。
+> 已删的 `architecture/` 是 113 个 yaml / **131 个入库文件**（多出 18 个子目录 README）。
 > 引用这些数字时**必须连口径一起引**，否则两处求和永远对不上。
 
 ### 四组为什么冻结（⛔ 不是"断言腐烂"这一条理由通吃）
 
 | 组 | 死因 |
 | --- | --- |
-| ~~`general/`~~ `architecture/` `real-tasks/` | **环境不可重建** —— case 里的 `repo_commit` 指向已不可达的提交。`general/` 已删 |
+| ~~`general/`~~ ~~`architecture/`~~ `real-tasks/` | **环境不可重建** —— case 里的 `repo_commit` 指向已不可达的提交。`general/` `architecture/` 已删 |
 | `capability/` | 🔴 **死于实现，不死于不可重建** —— 它的 `seed` / `setup` / `fixture` / `env` / `repo_commit` 实测**全为 0**，与仓库结构解耦；54 条里只有 **7 条**断言真腐烂、**2 条**是故意虚构路径（测 agent 自纠）、**45 条**技术上仍可跑。停掉它是**方向裁决**（不再用"过程合规"这条论证线），⛔ 别写成技术判决 |
 
 ⚠️ 跑分也早就冻了：`capability/` 最后一次 `tested_at` 是 **2026-05-27**，而 54 条里有 **49 条**
@@ -70,7 +71,7 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 140（architectu
 
 🔴 **本目录题集与新集判据不兼容，分数不互比。** 两者不是同一件事的新旧两版：
 
-| | 本目录（`architecture/` `capability/` `real-tasks/`；`general/` 已删） | `agent-traj-bench` |
+| | 本目录（`capability/` `real-tasks/`；`general/` `architecture/` 已删） | `agent-traj-bench` |
 | --- | --- | --- |
 | 判什么 | **过程**（"过程病态吗"）+ 5 维 rubric 打分 | **结果**（"改对了吗"）|
 | 判分形态 | LLM Judge + `must_include_any_of` / `must_call_tools` 等机械断言 | `tests/{f2p,p2p}.json` + `score.py` → `reward.json` |
@@ -80,16 +81,15 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 140（architectu
 
 ## 目录组织
 
-> ⚠️ 下面这张树是 **2026-09-18 PR3a 之后**的入库快照（`git ls-files evals`，**398 个文件**）。
+> ⚠️ 下面这张树是 **2026-09-18 PR3b 之后**的入库快照（`git ls-files evals`，**267 个文件**）。
 > ⛔ 别照抄它当事实 —— 改动前先跑 `git ls-files evals | awk -F/ 'NF>2{print $2}' | sort | uniq -c` 对账。
-> 🔴 上一版是 **445**，差 **47** 是本次删掉的 general + holdout yaml + smoke/pass-at-k 链路。
+> 🔴 上一版是 **398**，差 **131** 是本次删掉的 `architecture/`（113 yaml + 18 README）。
 
 ```
-evals/                            # 入库 398 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
+evals/                            # 入库 267 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
 ├── README.md                     # 本文
 ├── CLAUDE.md                     # 面向 agent 的规则（每条带 file:line 出处，有门禁校验）
 │
-├── architecture/      131  # frozen ✅ 已标 lifecycle（113 yaml + 18 子目录 README）
 ├── capability/         64  # frozen → 待删除（54 yaml）
 │                          #   ⚠️ 刻意**不标** lifecycle：已判删
 ├── real-tasks/         58  # frozen ✅ 已标 lifecycle（27 yaml + 31 setup 脚本）
@@ -108,8 +108,8 @@ evals/                            # 入库 398 个文件（⚠️ 运行产物�
 └── raw-outputs/         1  # 只剩 .gitkeep
 ```
 
-> **runner 入口约束**：`packages/eval-framework/core/runner.ts` 现在只扫 `architecture/` + `real-tasks/`
-> （动态发现子目录）。`general/` 与 holdout 题面 yaml 已删。
+> **runner 入口约束**：`packages/eval-framework/core/runner.ts` 现在只扫 `real-tasks/`
+> （动态发现子目录）。`general/` `architecture/` 与 holdout 题面 yaml 已删。
 > ⚠️ **题集已冻结 ⇒ 这些入口现在扫到的都是死题**，跑出来的分数不代表当前能力。
 
 ## 跑评测
@@ -126,7 +126,7 @@ evals/                            # 入库 398 个文件（⚠️ 运行产物�
 bun run eval:run --cases case_002 --provider sid-code
 
 # "全量"回归（--skip-holdout 默认 true）
-# ⚠️ 现在扫到 architecture 113 + real-tasks 27；general 已删；capability 54 走五个独立入口
+# ⚠️ 现在扫到 real-tasks 27；general / architecture 已删；capability 54 走五个独立入口
 bun run eval:run --provider sid-code
 
 # 多 provider 横评（不传 --model 时各 provider 用各自的 defaultModel）
@@ -149,7 +149,8 @@ bun run eval:run --provider sid-code,claude-code
 | 资产 | 性质 |
 | --- | --- |
 | ~~`general/` yaml~~ | 已删（2026-09-18）|
-| ~~`architecture/ capability/ real-tasks/` 的 yaml~~ | ⚠️ **已冻结，不再是"永久保留"** |
+| ~~`architecture/` yaml~~ | 已删（2026-09-18 PR3b）|
+| ~~`capability/ real-tasks/` 的 yaml~~ | ⚠️ **已冻结，不再是"永久保留"** |
 | ~~holdout 题面 yaml~~ | 已删；留下 README + `holdout-sids.txt` |
 | ~~`eval-runner.ts` `eval-judge.ts` `_types.ts`~~ | 🔴 **已不在本目录** —— runner 与 judge 迁到 `packages/eval-framework/core/{runner,judge}.ts`，类型定义迁到同目录 `types.ts` |
 | `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | ✅ **在用**：LLM Judge 校准成本极高（κ=0.921 重新校一次要数小时人工标注），删了等于推倒重来。⚠️ 它与题集无关，⛔ 别跟着题集一起清 |
@@ -283,7 +284,7 @@ git ls-files scripts/eval | wc -l                                       # → 33
 
 | 目录 | 放什么 | 判据 |
 | --- | --- | --- |
-| **`evals/`** | 评测**体系本身**：case 数据（`architecture/` `capability/` `real-tasks/`；`holdout/` 只剩 README + 永封 sids）、judge 与诊断资产（`_judge/` `_diagnoses/`）、报告（`_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
+| **`evals/`** | 评测**体系本身**：case 数据（`capability/` `real-tasks/`；`architecture/` `general/` 已删；`holdout/` 只剩 README + 永封 sids）、judge 与诊断资产（`_judge/` `_diagnoses/`）、报告（`_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
 | **`scripts/eval/`** | 评测的**工具与门禁**：跑批入口、聚合、门禁脚本 | **与具体 case 无关、对整个评测集通用的，放这里** |
 
 根下 `.ts` 已清零（`verify-judge-stability.ts` 随 general 下线；`gen-cases-md.ts` 随 CASES.md 下线）。

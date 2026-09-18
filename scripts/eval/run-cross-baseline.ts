@@ -15,7 +15,7 @@ import {
 import { parseArgs } from "node:util";
 
 const ROOT = join(import.meta.dir, "../..");
-const CASE_ROOTS = [join(ROOT, "evals/architecture"), join(ROOT, "evals/real-tasks")];
+const CASE_ROOTS = [join(ROOT, "evals/real-tasks")];
 const OUTPUT_DIR = join(ROOT, "evals/raw-outputs");
 
 interface CaseYaml {

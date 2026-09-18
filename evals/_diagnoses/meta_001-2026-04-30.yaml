@@ -1,6 +1,6 @@
 diagnosis_id: meta_001-2026-04-30
 case_id: case_meta_001
-case_path: evals/architecture/meta/arch_meta_001.yaml
+case_path: "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/architecture/meta/arch_meta_001.yaml）"
 
 dimensions_snapshot:
   anchor_hit: null
