@@ -94,7 +94,7 @@ scheduled_tasks.lock
 # 判据（拿它区分"该出库的产物"与"该入库的资产"）：
 #   出库 = 单次运行的原始转储，含真实会话正文，可重新跑出来；
 #   入库 = 人工编写/审校过的 case 定义、判分体系、聚合报告（如 _reports/*.md 分析报告、
-#          _reports/capability-*.json 与 skill-*.json 这类只有分数没有正文的小聚合文件）。
+#          _reports/skill-*.json 这类只有分数没有正文的小聚合文件）。
 # 所以下面是**精确形态**而不是整个目录：`_reports/` 里除 promptfoo 原始输出外全是资产，
 # 一刀切 `_reports/` 会连人写的横向对比报告一起丢掉。
 #
@@ -105,12 +105,11 @@ scheduled_tasks.lock
 /evals/sample-50.jsonl
 /evals/sample-50.txt
 
-# _reports/ 单次运行的能力/技能评测转储：文件名含 13 位毫秒时间戳 = 机器生成、可重跑、无读取方
-# （2026-08-12 审计确认 `run-*-capability.ts` 只写不读）。判别规则（勿改成一刀切 /evals/_reports/）：
-#   出库 = 名字里有 13 位毫秒时间戳（capability-plan-1779815841472.json）
-#   入库 = 名字里是人工语义锚点（capability-plan-w11.json / eval-latest.json）
+# _reports/ 单次运行的技能评测转储：文件名含 13 位毫秒时间戳 = 机器生成、可重跑、无读取方。
+# 判别规则（勿改成一刀切 /evals/_reports/）：
+#   出库 = 名字里有 13 位毫秒时间戳（skill-review-1779815841472.json）
+#   入库 = 名字里是人工语义锚点（skill-w11.json）
 # gitignore 不支持 {13} 量词，只能用 13 个 [0-9] 字符类；写死 13 位是有意的，不会误伤 w11 这类文件。
-/evals/_reports/capability-*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].json
 /evals/_reports/skill-*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].json
 
 # dashboard 生成机制已整体删除（2026-08-12）：DASHBOARD.md / eval-dashboard.html /

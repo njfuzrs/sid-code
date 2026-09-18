@@ -9,8 +9,8 @@
  *   - 架构 case（原 architecture 组，已随 PR3b 删除）：需 must_exist / must_not_exist 等结构化断言
  *   - Skill 行为 case（CR-001 等）：需 structured scorer（flag_recall / precision / quality / format）
  *   - lint-script / contract-test / integration-test 类：走 CI，不进 eval-runner
- *   - capability 子系统（plan/memory/context/router/harness）：各自有独立 runner
- *     （如 scripts/eval/run-plan-capability.ts），不走本 grader
+ *   - capability 子系统（plan/memory/context/router/harness）：已于 2026-09-18 随旧题集删除
+ *     （当时各有独立 runner，不走本 grader）
  *
  * 业界对齐：Inspect AI Scorer pattern、SWE-bench execution grading、
  * SWE Atlas mandatory + optional rubric。

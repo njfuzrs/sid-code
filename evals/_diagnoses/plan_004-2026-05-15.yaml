@@ -1,6 +1,6 @@
 diagnosis_id: plan_004-2026-05-15
 case_id: plan_004
-case_path: evals/capability/plan/plan_004_context_orphan_bugfix.yaml
+case_path: "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/capability/plan/plan_004_context_orphan_bugfix.yaml）"
 
 dimensions_snapshot:
   anchor_hit: null
@@ -38,7 +38,7 @@ reviewer: zhourusheng
 reviewed_at: 2026-05-15
 sources:
   - docs/adr/ADR-022-capability-eval-plan-generation-题面边界.md
-  - evals/capability/plan/plan_004_long_running.yaml
+  - "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/capability/plan/plan_004_long_running.yaml）"
 
 post_fix_verification:
   fixed_at: 2026-05-16
