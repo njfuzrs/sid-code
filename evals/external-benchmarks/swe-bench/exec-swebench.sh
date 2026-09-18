@@ -1466,6 +1466,8 @@ cfg = {
     "quota": {"costLimit": float(os.environ.get("SC_COST_LIMIT", "0"))},
     # 推理档位：必控变量，由 SWE_EFFORT_LEVEL 给定并记进 run-meta。
     "effortLevel": os.environ.get("SC_EFFORT_LEVEL", "max"),
+    # 自动更新：评测环境禁用，避免评测过程中触发更新干扰结果。
+    "autoUpdate": "off",
     # 轨迹：本地留存（要它来排查），上传关掉（容器无外网，传了只会白跑重试队列）。
     # outputDir 末级 = trajectories，取回后 SID_CODE_HOME 指过去即可跑 trace-digest。
     "trace": {"enabled": True, "outputDir": "/tmp/sid-traj/trajectories"},

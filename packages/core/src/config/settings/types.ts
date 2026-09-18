@@ -316,6 +316,9 @@ export const SettingsSchema = lazySchema(
         // Fast Mode 开关（/fast 持久化端；缺省 = false）。当前网关未提供对等 fast 能力，此开关为预留
         fastMode: z.boolean().optional(),
 
+        // 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭
+        autoUpdate: z.enum(["off", "notify", "auto"]).optional(),
+
         // 权限配置
         permissions: PermissionsSchema().optional(),
         permissionMode: z.string().optional(),

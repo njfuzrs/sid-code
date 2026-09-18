@@ -2,6 +2,7 @@
   "model": "ali-deepseek-v4-pro",
   "fallbackModel": "ali-deepseek-v4-flash",
   "fallbackSwitchMode": "ask",
+  "autoUpdate": "auto",
   "availableModels": [
     {
       "name": "ali-deepseek-v4-pro",

@@ -2,7 +2,7 @@
 
 > 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
 
-本文件是给大模型读的全站索引（共 108 页）。
+本文件是给大模型读的全站索引（共 109 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -30,6 +30,7 @@
 - [Skill](/extend/skills): 把团队的流程与规范封装成可复用的 skill：8 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
 - [子代理](/extend/subagents): 把任务派给子代理，用自定义 agent 固化职责，并按类型分级模型省钱。
 - [Dynamic Workflows](/extend/workflows): 什么时候该用多 agent 编排、pipeline 和 parallel 怎么选、跑挂了怎么 resume。
+- [自动更新](/use/auto-update): 自动检测并安装新版本，支持 auto、notify、off 三种模式以及 stable、beta 通道。
 - [上下文与压缩](/use/context): 上下文窗口如何管理、auto-compact 何时触发、怎么少花 token。
 - [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
 - [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。

@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **70** 个顶层字段。其中 45 个由
+> 共 **71** 个顶层字段。其中 46 个由
 > `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），25 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
@@ -38,6 +38,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `auditLogFile` ⚠ | string | — | 审计日志落点（缺省 sidPaths.auditLog()，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
 | `autoDream` ⚠ | boolean | — | G10：autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
 | `autoMemory` ⚠ | boolean | — | M2：auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感… |
+| `autoUpdate` | enum | `off` / `notify` / `auto` | 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭 |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
