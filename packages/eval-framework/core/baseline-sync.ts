@@ -1,12 +1,11 @@
 /**
  * baseline-sync.ts — 回写 case yaml `baseline_scores` 字段的共享模块
  *
- * 背景（S0-T02 / docs/eval/plan-capability-baseline-sync.md）：
+ * 背景（S0-T02）：
  *   eval-runner.ts 原本独占 syncBaselineScores 逻辑，硬编码当时 general case 的目录。
- *   plan capability runner 因目录结构不同（evals/capability/plan/），无法复用，导致 capability case
- *   的 baseline 只有 _reports/ 时间戳文件可查，无法通过 eval:tally / dashboard 读取。
+ *   当时 plan capability runner 因目录结构不同无法复用（capability 组已于 2026-09-18 删除）。
  *
- * 解法：把回写逻辑抽到本模块，按 SyncOptions 接受 yamlDir（capability 单目录）或 baseDir（general 多目录）。
+ * 解法：把回写逻辑抽到本模块，按 SyncOptions 接受 yamlDir（单目录）或 baseDir（多目录）。
  *   各 runner 把自家 result 类型映射成 BaselineResult 再调用本模块。
  *
  * grader 解冻后约束（CLAUDE.md §0.3.1，2026-05-28 起）：本模块只搬运回写流程，不改 grader 公式 / 权重 / 阈值。
@@ -78,8 +77,8 @@ export interface BaselineResult {
 
 export interface SyncOptions {
   /**
-   * 单一 yaml 目录（capability 模式）；与 baseDir 二选一。
-   * 例：`evals/capability/plan/`、`evals/capability/memory/`。
+   * 单一 yaml 目录；与 baseDir 二选一。
+   * 历史：capability 组（已于 2026-09-18 删除）曾按子系统各传一个目录。
    */
   yamlDir?: string;
   /**
@@ -89,7 +88,7 @@ export interface SyncOptions {
    * tmpdir fixture 仍按旧约定建夹具，所以查找列表不能先于测试改掉。
    */
   baseDir?: string;
-  /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" / "eval:plan-capability" */
+  /** 写到 `baseline_scores[provider].tested_by`，例："eval-runner" */
   testerLabel: string;
   /**
    * F-H4(2026-05-30 起):holdout 双重防御。

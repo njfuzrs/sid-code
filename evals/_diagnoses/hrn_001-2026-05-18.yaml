@@ -1,6 +1,6 @@
 diagnosis_id: hrn_001-2026-05-18
 case_id: case_hrn_001
-case_path: evals/capability/harness/case_hrn_001_loop_read_nonexistent.yaml
+case_path: "该 case 已于 2026-09-18 随旧题集删除，题面见 ~/Backups/sid-code-evals-legacy/ 的 bundle（原路径 evals/capability/harness/case_hrn_001_loop_read_nonexistent.yaml）"
 
 dimensions_snapshot:
   anchor_hit: null

@@ -1,7 +1,8 @@
 /**
  * Router mock-provider 集成测试 (S6-T06)
  *
- * 对应 case yaml: evals/capability/router/mock-provider/case_rtr_009~013
+ * 对应当时 evals/capability/router/mock-provider/case_rtr_009~013 的 5 种失败模式
+ * （yaml 已于 2026-09-18 随 capability 组删除；本测试测的是仓内 mock provider 契约，不读那些 yaml）。
  *
  * 真测目标: 验证 ADR-021 §4.4 mock provider 通过 ProviderRegistry 接入后,
  *          各失败模式 (503 / rate_limit / timeout) 行为符合上层 fallback / quota 期望.

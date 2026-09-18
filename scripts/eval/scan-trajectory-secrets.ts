@@ -134,9 +134,7 @@ function renderReport(results: TaskScanResult[]): string {
   lines.push(
     "> - `unsafe_for_holdout`：命中 contamination（tool_result_content 等）或强 secret（private_key / api_key）—— 严禁进 holdout",
   );
-  lines.push(
-    "> - `needs_sanitization`：命中 email / ip —— 可进 capability/regression，但 holdout 前需脱敏",
-  );
+  lines.push("> - `needs_sanitization`：命中 email / ip —— 可进 regression，但 holdout 前需脱敏");
   lines.push("> - `safe`：无任何命中");
   lines.push("");
 
@@ -171,7 +169,7 @@ function renderReport(results: TaskScanResult[]): string {
   }
   lines.push("");
 
-  lines.push("## 3. needs_sanitization 详情（capability/regression OK，holdout 前需脱敏）");
+  lines.push("## 3. needs_sanitization 详情（regression OK，holdout 前需脱敏）");
   lines.push("");
   const sanitList = results.filter((r) => r.status === "needs_sanitization");
   if (sanitList.length === 0) {

@@ -249,7 +249,7 @@ export function findLatestPlanFile(opts: {
 
 /**
  * 从 trajectory 数 plan 文件被 write/edit 成功的真命中次数
- * （W12.D3 / ADR-017 §2.5：替代 run-plan-capability.ts 的粗估实现）
+ * （W12.D3 / ADR-017 §2.5：替代当时 plan capability runner 的粗估实现）
  *
  * 规则：
  * - 只数 message_type === "action" 且 tool_name in {"write","edit"} 的步骤
