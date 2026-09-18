@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_durable_004
 category: 架构长流程编排
 priority: P1

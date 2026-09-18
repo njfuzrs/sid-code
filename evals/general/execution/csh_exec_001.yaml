@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: csh_exec_001
 category: ci-self-heal execution
 priority: P0

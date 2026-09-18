@@ -107,7 +107,7 @@ describe("ci-self-heal Skill chaos - 边界 case 完整性(S7-T01)", () => {
     expect(mustNot.some((kw) => /test_failure|build_failure|lint_failure/.test(kw))).toBe(true);
   });
 
-  test("所有边界 case 都含 must_not_include 反例字段(_template.yaml 强制)", () => {
+  test("所有边界 case 都含 must_not_include 反例字段(evals/README.md 关键铁律 3 强制)", () => {
     for (const id of [
       "case_csh_011",
       "case_csh_012",

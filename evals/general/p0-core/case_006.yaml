@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_006
 category: bug修复
 priority: P0

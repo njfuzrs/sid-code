@@ -68,7 +68,12 @@
     "packages/core/src/skill/builtin-embedded.generated.ts",
     "website/ref/**",
     "website/public/llms.txt",
-    "evals/CASES.md",
+    // ⚠️ 这里原有一行排除自动生成的 case 详情手册（evals 根下那个 CASES.md）。
+    //    2026-09-18 随 A 类纯派生物一起下线：生成器 gen-cases-md.ts 与
+    //    数据源 _reports/eval-latest.json 同批删除 ⇒ 排除项没有排除对象了。
+    //    留着一条指向不存在文件的排除项，与本仓「出处失效的规则」同型。
+    //    ⛔ 注释里故意不写带引号的路径 —— 判据 14 用正则扫 evals/ 下的引号字面量，
+    //    写进注释会被当成排除项复算，自我打红。
 
     // 机器产出的 JSON 数据（不是源码）—— 格式化它们等于跟生成器打架：
     // 下次生成又写回原样，于是每次跑生成器 git status 就脏一次。
@@ -94,7 +99,10 @@
     // ⚠️ 首次接入刻意**只格式化代码**，把 yaml / markdown 排除在外。
     // 这不是"忘了配"，两类都有具体理由，将来要开必须是独立一次改造 + 独立 commit：
     //
-    // yaml（283 个会被改，其中 14 个在 evals/holdout/）：它们不是代码而是**评测 case 数据**，
+    // yaml（281 个会被改，其中 13 个在 evals/holdout/）：它们不是代码而是**评测 case 数据**，
+    //   ⚠️ 这两个数 2026-09-18 复算过（原写 283 / 14）：删掉 evals/_scores/ 的 228 份周快照与
+    //   _template.yaml 后重数得 281 / 13。复算方式是**摘掉本文件 yaml 两条排除项跑
+    //   `oxfmt --list-different`**，⛔ 不是拿旧值做减法 —— 后者算不出 holdout 那格。
     //   里面有 baseline_scores 这类会被 runner 读写的字段。格式化它们零收益（没人 review
     //   case 的排版），却会在评测资产里制造一次大规模 diff，并且 evals/holdout/ 是永封集
     //   （check-holdout-real-tasks-sealed.sh 对 holdout-sids.txt 做 sha256 + 行数校验；

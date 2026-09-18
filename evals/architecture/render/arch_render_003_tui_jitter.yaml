@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_render_003
 category: 架构渲染
 priority: P1

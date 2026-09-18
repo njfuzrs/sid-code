@@ -20,7 +20,7 @@ export interface CaseYaml {
   id: string;
   category: string;
   priority: string;
-  /** 可选元数据，仅 gen-cases-md.ts 会用 */
+  /** 可选元数据。原唯一读者 gen-cases-md.ts 已于 2026-09-18 随 CASES.md 下线 */
   created_date?: string;
   eval_type?: string;
   target_score?: number;

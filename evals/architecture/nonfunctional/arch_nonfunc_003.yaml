@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_nonfunc_003
 category: 架构非功能
 priority: P1

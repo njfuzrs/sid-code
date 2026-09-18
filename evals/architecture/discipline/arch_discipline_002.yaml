@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_discipline_002
 category: 架构纪律
 priority: P0

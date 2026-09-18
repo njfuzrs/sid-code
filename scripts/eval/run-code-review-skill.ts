@@ -141,7 +141,7 @@ function staticContractCheck(
     const issues: string[] = [];
     if (!c.expected) issues.push("缺 expected 段");
     if (!Array.isArray(c.expected?.must_not_include) || c.expected.must_not_include.length === 0) {
-      issues.push("缺 must_not_include 反例字段（_template.yaml 强制）");
+      issues.push("缺 must_not_include 反例字段（evals/README.md 关键铁律 3 强制）");
     }
     const blocked = c.expected?.must_not_call_tools ?? [];
     if (!blocked.includes("edit") || !blocked.includes("write")) {

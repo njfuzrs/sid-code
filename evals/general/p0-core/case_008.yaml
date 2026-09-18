@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_008
 category: 新功能实现
 priority: P0

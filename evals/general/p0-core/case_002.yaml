@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: case_002
 category: 代码理解
 priority: P0

@@ -1,3 +1,4 @@
+lifecycle: frozen
 id: arch_redline_001
 category: 架构红线
 priority: P0
