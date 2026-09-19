@@ -15,10 +15,10 @@
  *    🔴 改本 prompt 时不会破坏 calibration，但会让"线上分数"和"calibration 基线"
  *       彻底无法对照——这是已知的、当前接受的设计。
  *
- * 2. evals/_legacy/promptfoo/lib/yaml-to-tests.ts: buildRubricValue
- *    promptfoo 时代的旧拷贝。已冻结，禁止修改
- *    （回查线索见 evals/README.md「历史：promptfoo 时期的实现」——
- *     原 evals/_legacy/README.md 已于 2026-08-12 P2-4 并入那里）。
+ * 2. promptfoo 时代的旧拷贝（当时路径 `evals/_legacy/promptfoo/lib/yaml-to-tests.ts` 的 `buildRubricValue`）。
+ *    物理文件已于 2026-05-24 删除，历史见 git；「已冻结，禁止修改」不再适用。
+ *    回查线索见 evals/README.md「历史：promptfoo 时期的实现」
+ *    （原 evals/_legacy/README.md 已于 2026-08-12 P2-4 并入那里）。
  *
  * ─── 何时改这里 ───
  *
