@@ -405,7 +405,7 @@ export default defineConfig({
      *
      * `icon: "github"` 是默认主题内置的图标名，不需要自带 svg。
      *
-     * ⚠ 地址与 README.md / README.zh-CN.md / SECURITY.md / CODE_OF_CONDUCT.md 同源。
+     * ⚠ 地址与 README.md / README.en.md / SECURITY.md / CODE_OF_CONDUCT.md 同源。
      *   仓库改名或转移时这五处要一起改 —— 站点构建**不检查外链**，
      *   这条断了不会让 CI 变红，只会静默把访客送到 404。
      */

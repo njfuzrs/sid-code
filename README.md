@@ -2,181 +2,154 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#installation)
+[![文档](https://img.shields.io/badge/%E6%96%87%E6%A1%A3-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
+[![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Linux-lightgrey)](#安装)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
 
-[中文](./README.zh-CN.md) · **English**
+**中文** · [English](./README.en.md)
 
-**A coding agent that runs in your terminal.** You describe what you want in plain
-language; it reads your code, edits files, runs commands, and then proves the change
-is correct with real compiler and test output.
+**跑在终端的 coding agent。** 你用中文说要干什么，它读你的代码、改文件、跑命令，
+然后用真实的编译和测试结果证明改对了没有。
 
-Built in-house on TypeScript + Bun + Ink, shipped as a single compiled binary — download
-one file and run it. No Node install, no `npm install`.
+TypeScript + Bun + Ink 自研，编译成单文件二进制分发——下载一个文件就能跑，
+不需要装 Node、不需要 `npm install`。
 
-- 📖 **Documentation:** https://www.sid-code.cc/ (Chinese)
-- 📄 **Changelog:** https://www.sid-code.cc/changelog
-- 🤝 **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · 🔒 **Security:** [SECURITY.md](./SECURITY.md)
-
-> **A note on language.** Chinese is this team's working language. The documentation site,
-> most source comments, and the primary README are in Chinese. The CLI itself handles
-> English prompts fine, but if you plan to contribute code you should expect to read
-> Chinese comments. We consider that a fair thing to state up front rather than have you
-> discover it after cloning. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+- 📖 **官方文档：** https://www.sid-code.cc/
+- 📄 **更新日志：** https://www.sid-code.cc/changelog
+- 🤝 **参与贡献：** [CONTRIBUTING.md](./CONTRIBUTING.md) · 🔒 **安全上报：** [SECURITY.md](./SECURITY.md)
 
 ---
 
-## Installation
+## 安装
 
 ```bash
 curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 ```
 
-Then:
+装完直接用：
 
 ```bash
-sc                    # start (recommended)
-sid-code --version    # confirm the version
-sid-code update       # upgrade later
+sc                    # 启动（推荐）
+sid-code --version    # 确认版本
+sid-code update       # 以后升级到最新版
 ```
 
-Prebuilt binaries cover macOS (arm64 / x64) and Linux (x64 / arm64). If the install
-fails or `PATH` isn't picking it up, see the
-[install guide](https://www.sid-code.cc/start/install).
+装不上或 PATH 没生效，见[安装文档](https://www.sid-code.cc/start/install)。
 
-## 30-second example
+## 30 秒示例
 
-Start it and just describe the problem — there are no commands to memorize:
+启动后直接说人话，不需要记命令：
 
 ```text
 $ sc
 
-› The timeout config in this module isn't taking effect, find out why
+› 这个模块的超时配置不生效，查一下为什么
 
-  Searching for timeout-related code…
-  Reading packages/core/src/tool/bash.ts:55-80
-  Found it: parseEnv reads the env var but never passes it to spawn's timeout param
-  Editing packages/core/src/tool/bash.ts
-  Running bun test tests/tool/bash.test.ts  → 12 pass 0 fail
+  搜索 timeout 相关实现…
+  读取 packages/core/src/tool/bash.ts:55-80
+  定位到：parseEnv 读了环境变量但没传给 spawn 的 timeout 参数
+  修改 packages/core/src/tool/bash.ts
+  运行 bun test tests/tool/bash.test.ts  → 12 pass 0 fail
 
-  The timeout was ignored because parseEnv's return value was never wired into spawn.
-  Fixed, and the unit tests pass.
+  超时没生效的原因是 parseEnv 的返回值没接到 spawn 上。已修复并跑过单测。
 ```
 
-Every step is visible in the terminal, and <kbd>Esc</kbd> interrupts at any point.
+每一步都在终端里可见，随时按 <kbd>Esc</kbd> 打断。
 
-## Four things that set it apart
+## 四条差异化能力
 
-On features, this tracks Claude Code closely — agentic loop, tool calling, permission
-gating, hooks, skills, and MCP all have working counterparts. The differences below
-aren't claims of "we did it better"; they're things a **closed-source commercial product
-structurally cannot offer**:
+功能面对标 Claude Code（agentic loop、工具调用、权限门控、Hook、Skill、MCP 都有对应实现），
+差别在下面四条 —— 它们不是"做得更好"，而是**闭源商业产品结构上给不了**：
 
-| Capability | What it means |
+| 能力 | 说明 |
 | --- | --- |
-| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
-| **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (32 hook event types, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
-| **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
-| **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
+| **深度贴合企业环境** | 内部网关计费、内网 GitLab、MCP 接入、团队默认配置分发，按真实企业内网基建做的适配。装上就接得上你公司已有的那套东西 |
+| **模型任你换，harness 整套可改** | 改一行配置换模型（Anthropic / OpenAI / Ollama 三族协议、自动降级），写一个文件加扩展（32 类 Hook 事件、Skill、子代理、MCP），提一个 PR 改内核（44 个内置工具、上下文工程、主循环全部开源） |
+| **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里，不进任何人的训练集。既是合规前提，也是持续优化的燃料 |
+| **每一分钱、每一步决策都查得到** | 耗时、成本、决策全留轨迹，默认就开着；发布前跑评测防回退。它同时是我们按版本复算「更快 / 更省 / 更少返工 / 更安全」的唯一度量来源 |
 
-Coming from Claude Code, migration is close to zero-cost — see the
-[migration guide](https://www.sid-code.cc/team/migrate).
+用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
 
-## Where it stands today
+## 现状
 
-| Item | Status |
+| 项 | 现状 |
 | --- | --- |
-| First-party code | 200k+ lines of TypeScript under `packages/` |
-| Engineering loop | 600+ test files, 8000+ unit tests; the full suite runs on every change and must be green before commit |
-| Surface area | 44 built-in tools, 32 hook event types, LSP code intelligence, permission gating, observable trajectories |
-| Evaluation | 30 eval cases (including a holdout set), run before each release to catch regressions |
+| 自研代码 | `packages/` 下 20 万行以上 TypeScript |
+| 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
+| 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
+| 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
 
 <!--
-  How these numbers are counted (verified by hand before each release; write round
-  numbers, not exact ones):
-    NOTE (P2-2, 2026-08-11): sources moved from a flat src/ into
-                   packages/{shared,tui-renderer,core,cli}/src/, so the commands below were
-                   updated too. A stale `find src` does not error — it just counts 0, and a
-                   silently broken verification command is worse than a stale number, because
-                   the next person believes they verified it.
-    lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                   (2026-08-11: 203,533 lines)
-    NOTE (P1-2, 2026-08-13): tests were split into packages/<pkg>/tests/, so a command
-                   covering only `packages/*/src` counts 30 instead of 644 — it does NOT error,
-                   it just silently undercounts by 95%. That is the exact failure this comment
-                   block was written to prevent, and it still happened: the path list must be
-                   updated whenever tests move. Both paths are kept below because a few
-                   colocated *.test.ts files still live under src/.
-    test files     find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (644)
-    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                   (8,576; `bun test` itself reports ~9,191 across 652 files because it also
-                    counts dynamically generated cases the static grep cannot see)
-    hook events    member count of the HookEventName enum in packages/core/src/hook/types.ts  (32)
-    built-in tools length of the `sid-code --dump-tools` array (44 — same source as the
-                   generated ref/tools.md). Do NOT write "60+"; that was wrong and is
-                   contradicted by the runtime registry.
-    eval cases     the summary line of `bun run eval:list`  (P0=10 holdout=5 P1=9 P2=6 = 30)
-  This table must stay identical in three places: README.md (this file, English),
-  README.zh-CN.md, and website/index.md. Change one, change all three —
-  run the numbers first.
-  (Before 2026-08-12 the English copy lived in README.en.md; P2-6 made English the
-   main README and moved the Chinese copy to README.zh-CN.md. Same three places,
-   different filenames.)
+  数字口径（发版前人工核对一次，写约数不写精确值）：
+    ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
+       下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 —— 复核命令静默失效比数字过期更糟，
+       因为下一个人会以为自己核对过了。
+    代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
+                （2026-08-11 实测 203,533 行）
+    ⚠️ P1-2 测试分包（2026-08-13）：测试搬到了 packages/<包>/tests/，只覆盖 packages/*/src
+       的命令会数出 30 而不是 644 —— **不报错，只静默少数 95%**。这正是本注释块想防的那类
+       故障，却还是又发生了一次：测试目录一动，这里的路径清单必须跟着动。下面同时保留
+       两个路径，因为 src/ 下仍有少量就地放置的 *.test.ts。
+    测试文件    find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 644）
+    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
+                （实测 8,576；`bun test` 自己报 ~9,191 个 / 652 文件，差值是动态生成的用例，
+                  静态 grep 数不到，两个数字都不算错，口径不同而已）
+    Hook 事件   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
+    内置工具    sid-code --dump-tools 数组长度（实测 44，与脚本生成的 ref/tools.md 同源同值。
+                ⚠️ 此处曾写"60+"，与运行时真值不符 —— website/index.md 早已改对而本文漏改，
+                2026-08-10 补齐。写数字前先跑命令，别照抄旧值）
+    eval case   bun run eval:list 的汇总行（实测 P0=10 holdout=5 P1=9 P2=6 = 30）
+  与 website/index.md 的同一张表须一致，改一处要改两处；README.md（中文主入口）是第三处。
+  （2026-08-12 P2-6 曾把英文放到 README.md、中文挪到 README.zh-CN.md，为了 GitHub 默认页给英语读者。
+   2026-09-20 改回：本仓工作语言与兄弟仓库一致，GitHub 默认页展示中文；英文副本在 README.en.md。）
 -->
 
-## Local development
+## 本地开发
 
-Two binaries with **different names** coexist locally; they are not disambiguated by
-`PATH` order:
+本地是**双版本并存**，两个不同的二进制名，不靠 PATH 优先级区分：
 
-| Command | Points to | Use for |
+| 命令 | 指向 | 用途 |
 | --- | --- | --- |
-| `sc` / `sid-code` | `~/.local/bin/sid-code` (released build) | comparing against released behavior |
-| `sc-dev` / `sid-code-dev` | build output in the repo root | **verifying your local changes** |
+| `sc` / `sid-code` | `~/.local/bin/sid-code`（线上下载版） | 对照线上行为 |
+| `sc-dev` / `sid-code-dev` | 仓库根构建产物 | **验证本地改动** |
 
 ```bash
-git clone <repository-url>
+git clone <仓库地址>
 cd sid-code
 bun install
-bun run vendor:fetch  # fetch build-time vendor sources (see the note below)
-make build            # build the dev binary (does not bump the version — use this daily)
-sc-dev                # run the dev build
-bun test              # full unit test suite
+bun run vendor:fetch  # 取回构建期 vendor 源码（见下方说明）
+make build            # 构建开发版二进制（版本号不变，日常就用这个）
+sc-dev                # 启动开发版
+bun test              # 全量单测
 ```
 
-> ⚠️ `bun run vendor:fetch` is required on a fresh clone. Two directories
-> (`packages/tui-renderer/src/` and `packages/cli/src/command/commands/claude-api/reference/`)
-> are not tracked in git but *are* build-time dependencies, so a clone without them fails to
-> compile (`Cannot find module '@sid-code/tui-renderer/...'`). `make build` runs the fetch on
-> its own; a bare `bun test` does not — run it once after cloning. Same mechanism as the
-> vendored `ripgrep`: local copy wins, otherwise download + sha256 verify.
+> ⚠️ **新克隆必须先跑 `bun run vendor:fetch`**。两个目录
+> （`packages/tui-renderer/src/` 与 `packages/cli/src/command/commands/claude-api/reference/`）
+> **不入库但是编译期依赖**，缺了它们编译直接失败
+> （`Cannot find module '@sid-code/tui-renderer/...'`）。
+> `make build` 会自动跑这一步，但**单独跑 `bun test` 不会** —— 克隆后先手动跑一次。
+> 机制与入库的 `ripgrep` 同源：本地有则用本地，缺失则下载 + sha256 校验。
 >
-> Both paths are **symlinks into `.vendor-src/`**, where the real bytes live. That path exists
-> in no git ref, so no `checkout` / `merge` / `reset` can delete the files — a `git checkout -f`
-> may replace the symlink, but `bun run vendor:fetch` restores it offline. Details and the three
-> constraints you must not break: [CONTRIBUTING.md](./CONTRIBUTING.md#新克隆必须先-bun-run-vendorfetch).
+> 这两个路径是**指向 `.vendor-src/` 的 symlink**，真实字节存在那里。该路径不在任何
+> git ref 里，所以 `checkout` / `merge` / `reset` 都删不掉这些文件（`git checkout -f`
+> 可能把 symlink 换掉，但 `bun run vendor:fetch` 会不联网复原）。
+> 机理与三条不能破的约束见 [CONTRIBUTING.md](./CONTRIBUTING.md#新克隆必须先-bun-run-vendorfetch)。
 
-> ⚠️ To verify a code change you must run `sc-dev`. `sc` points at the released build and
-> will not reflect any local change. When in doubt, run
-> `which sid-code-dev sid-code` first.
+> ⚠️ 改了代码要验证，必须跑 `sc-dev`。`sc` 指向线上稳定版，跑它验证不到任何本地改动。
+> 拿不准时先 `which sid-code-dev sid-code` 确认指向。
 
-Documentation site (VitePress, fully static output):
+文档站（VitePress，产物纯静态）：
 
 ```bash
-bun run website:dev      # preview at http://localhost:5173
-bun run website:build    # build (dead-link checking runs here)
+bun run website:dev      # 本地预览 http://localhost:5173
+bun run website:build    # 构建（死链检测在此生效）
 ```
 
-Contribution workflow, the gates your PR must pass, and repo conventions are in
-[CONTRIBUTING.md](./CONTRIBUTING.md); conventions for AI agents working in this repo are
-in [CLAUDE.md](./CLAUDE.md) — the single source of truth (there is deliberately no
-`AGENTS.md`; see the note at the top of `CLAUDE.md`).
+更多约定见 [CLAUDE.md](./CLAUDE.md)。
 
-## License
+## 许可
 
-**[MIT](./LICENSE)** for our own code. Non-commercial: not sold, not operated for profit.
+自研代码采用 **[MIT 许可证](./LICENSE)**。本项目非商业化，不出售、不用于营利。
 
-Third-party assets that ship with this repository (the vendored `ripgrep` binaries and
-the npm runtime dependencies) are governed by their own licenses, recorded in
-**[NOTICE](./NOTICE)**.
+仓库内随附的第三方资产（入库的 `ripgrep` 二进制、npm 运行时依赖）各依其自身许可，
+记录在 **[NOTICE](./NOTICE)**。
