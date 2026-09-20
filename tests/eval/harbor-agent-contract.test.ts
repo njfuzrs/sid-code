@@ -988,11 +988,24 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
     //(真实缺陷,必须计分)。已用 fixture 验过:一个 TypeError 崩溃样本在正确判据下
     // 留在分母(1/1),改成只看 subtype 就被错误排除(0/1)。
     const codeH = codeOnly(health);
-    const fatalFn = codeH.slice(codeH.indexOf("def llm_fatal("));
     expect(
-      /sid_errors/.test(fatalFn),
+      /sid_errors/.test(codeH),
       "llm_fatal 必须读 sid_errors —— 只看 subtype 会把 agent 自身崩溃(真 bug)一起排除",
     ).toBe(true);
+
+    // 2026-09-20 第三次漏判:网关回 `Invalid token` / `Remote end closed`,
+    // 既没有「主模型请求失败」也没有「API 错误」+401。尺子必须**自备**片段表,
+    // ⛔ 不许引用产品 RETRYABLE_CONNECTION_MESSAGES(对不上 A2 六题原文,且过宽)。
+    expect(codeH).toMatch(/LLM_FATAL_FRAGMENTS/);
+    expect(codeH).toMatch(/invalid token/);
+    expect(codeH).toMatch(/remote end closed/);
+    expect(codeH).toMatch(/socket connection was closed/);
+    expect(codeH).not.toMatch(/RETRYABLE_CONNECTION_MESSAGES/);
+    expect(codeH).toMatch(/cc_api_error_status/);
+    expect(codeH).toMatch(/stream-json-result/);
+    // 正分豁免 + 满轮豁免是 08b §4.1 的第 2/3 条,缺一条就会把 build-pmars
+    // 或 make-mips-interpreter 洗成待重跑。
+    expect(codeH).toMatch(/MAX_TURNS/);
 
     // 消费者不许自己写这句错误文本的匹配。
     for (const f of scripts) {
@@ -1112,6 +1125,96 @@ describe.if(HAS_PYTHON3)("L1c 判据的行为(直接喂样本,不只查正则)",
       const [name, , , want] = CASES[i];
       expect(got[i], `${name}:期望 ${want},实得 ${got[i]}`).toBe(want);
     }
+  });
+
+  test("llm_fatal 认尺子片段表;正分 / 满轮 502 / 自报喜 不删", () => {
+    // 08b §4.3。CI 不跑 test-w3-classify.py,行为必须在这一层锁住。
+    // ⛔ 全部合成样本,不读 runs/。
+    const snippet = String.raw`
+import json, os, tempfile, shutil
+from verifier_health import llm_fatal
+import verifier_health as VH
+
+def sid(err, turns, reward, source="stream-json-result"):
+    return {
+        "agent_result": {
+            "n_input_tokens": 100,
+            "n_output_tokens": 9,
+            "metadata": {
+                "sid_errors": [err] if err else [],
+                "sid_num_turns": turns,
+                "sid_cost_source": source,
+            },
+        },
+        "verifier_result": {"rewards": {"reward": reward}},
+    }
+
+def cc_dir(status, turns, reward=0.0):
+    d = tempfile.mkdtemp(prefix="llmf-")
+    os.makedirs(os.path.join(d, "agent"), exist_ok=True)
+    ev = {"type": "result", "subtype": "success",
+          "num_turns": turns, "api_error_status": status}
+    open(os.path.join(d, "agent", "claude-code.txt"), "w").write(json.dumps(ev) + "\n")
+    res = {
+        "agent_result": {"n_input_tokens": 100, "n_output_tokens": 9},
+        "verifier_result": {"rewards": {"reward": reward}},
+    }
+    return d, res
+
+out = {}
+out["invalid"] = llm_fatal(sid("LLM 错误: Invalid token. (request id: x)", 1, 0), None)
+out["remote"] = llm_fatal(sid("LLM 错误: Remote end closed connection without response", 2, 0), None)
+out["socket"] = llm_fatal(sid("LLM 错误: The socket connection was closed unexpectedly", 7, 0), None)
+out["pmars"] = llm_fatal(sid("LLM 错误: The socket connection was closed unexpectedly", 22, 1.0), None)
+out["maxed"] = llm_fatal(sid("达到最大轮次限制: 40", 41, 0), None)
+out["boast"] = llm_fatal(sid("", 13, 0), None)
+out["fallback"] = llm_fatal(sid("LLM 错误: Invalid token. (request id: x)", 1, 0, "session-traj-fallback"), None)
+out["hard402"] = llm_fatal(sid("LLM 错误: OpenAI API 错误: 402 Insufficient Balance", 29, 0), None)
+out["mark"] = llm_fatal(sid("主模型请求失败", 8, 0), None)
+
+d401, r401 = cc_dir(401, 10)
+d502m, r502m = cc_dir(502, 43)
+d502s, r502s = cc_dir(502, 10)
+try:
+    out["cc401"] = llm_fatal(r401, d401)
+    out["cc502max"] = llm_fatal(r502m, d502m)
+    out["cc502short"] = llm_fatal(r502s, d502s)
+finally:
+    shutil.rmtree(d401, ignore_errors=True)
+    shutil.rmtree(d502m, ignore_errors=True)
+    shutil.rmtree(d502s, ignore_errors=True)
+
+saved = VH.LLM_FATAL_FRAGMENTS
+try:
+    VH.LLM_FATAL_FRAGMENTS = ()
+    out["mut_inv"] = llm_fatal(sid("LLM 错误: Invalid token. (request id: x)", 1, 0), None)
+    out["mut_rem"] = llm_fatal(sid("LLM 错误: Remote end closed connection without response", 2, 0), None)
+    out["mut_sock"] = llm_fatal(sid("LLM 错误: The socket connection was closed unexpectedly", 7, 0), None)
+    out["mut_402"] = llm_fatal(sid("LLM 错误: OpenAI API 错误: 402 Insufficient Balance", 29, 0), None)
+finally:
+    VH.LLM_FATAL_FRAGMENTS = saved
+
+print(json.dumps(out))
+`;
+    const r = runHealth(snippet);
+    expect(r.code, `python 失败:\n${r.err}`).toBe(0);
+    const got = JSON.parse(r.out) as Record<string, boolean>;
+    expect(got.invalid, "Invalid token turns=1 ⇒ fatal").toBe(true);
+    expect(got.remote, "Remote end closed ⇒ fatal").toBe(true);
+    expect(got.socket, "socket closed ⇒ fatal").toBe(true);
+    expect(got.pmars, "build-pmars 正分 ⇒ 不是 fatal").toBe(false);
+    expect(got.maxed, "满轮 ⇒ 不是 fatal").toBe(false);
+    expect(got.boast, "自报喜无 LLM 错误 ⇒ 不是 fatal").toBe(false);
+    expect(got.fallback, "total_steps 兜底不许比 MAX_TURNS").toBe(false);
+    expect(got.hard402, "API 错误+402 仍 fatal").toBe(true);
+    expect(got.mark, "主模型请求失败+未满轮 ⇒ fatal").toBe(true);
+    expect(got.cc401, "cc 401 未满轮 ⇒ fatal").toBe(true);
+    expect(got.cc502max, "cc 502 满轮 ⇒ 不是 fatal").toBe(false);
+    expect(got.cc502short, "cc 502 未满轮仍不是 fatal").toBe(false);
+    expect(got.mut_inv, "片段表改空 ⇒ Invalid token 翻 False").toBe(false);
+    expect(got.mut_rem, "片段表改空 ⇒ Remote end closed 翻 False").toBe(false);
+    expect(got.mut_sock, "片段表改空 ⇒ socket closed 翻 False").toBe(false);
+    expect(got.mut_402, "片段表改空 ⇒ 402 仍 fatal").toBe(true);
   });
 
   test("取数口径:metadata 在 agent_result 下、reward 在 rewards(复数)下", () => {
