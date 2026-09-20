@@ -118,3 +118,31 @@ describe("E1 对称性：两条链路必须同时接入（这是必控变量）"
     });
   }
 });
+
+describe("cc runner 默认走 resume，不准无条件抹掉 job", () => {
+  // A3 的目标是「完成一题记一题、额度中断后续跑」。
+  // 旧版 `rm -rf "runs/$JOB"` 在每一轮（含 w3-run.sh 的 classify 后再跑）
+  // 把已计分题连同分母一起清掉，而 sid 臂没有这行 —— 两侧续跑语义不对称。
+  // 判据读 codeOf：注释里会提到这行，读全文会绿着失效。
+  const cc = codeOf(CC_RUNNER);
+  const sid = codeOf(SID_RUNNER);
+
+  test("sid 臂代码路径没有整目录 rm -rf runs/$JOB（续跑基线）", () => {
+    expect(sid).not.toMatch(/rm\s+-rf\s+"runs\/\$JOB"/);
+  });
+
+  test("cc 臂默认不整目录清空；只有 SID_CC_WIPE=1 才 rm -rf", () => {
+    // 无条件 `rm -rf "runs/$JOB"` 必须被 SID_CC_WIPE 包住。
+    // 把那一层 if 拿掉，这条必须红。
+    expect(cc).toMatch(/SID_CC_WIPE/);
+    expect(cc).toMatch(/rm\s+-rf\s+"runs\/\$JOB"/);
+    // rm 出现的那一行，前面必须是 WIP 分支，不能是顶层无条件。
+    const lines = cc.split("\n").filter((l) => /rm\s+-rf\s+"runs\/\$JOB"/.test(l));
+    expect(lines.length).toBeGreaterThan(0);
+    // 同一份 codeOf 里 SID_CC_WIPE 的 if 必须出现在 rm 之前。
+    const wipeAt = cc.indexOf("SID_CC_WIPE");
+    const rmAt = cc.search(/rm\s+-rf\s+"runs\/\$JOB"/);
+    expect(wipeAt).toBeGreaterThanOrEqual(0);
+    expect(rmAt).toBeGreaterThan(wipeAt);
+  });
+});

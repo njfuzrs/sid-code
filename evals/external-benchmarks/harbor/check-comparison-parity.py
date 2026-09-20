@@ -165,7 +165,7 @@ _other_col = "cc denials" if other_arm == "cc" else "mswea mode"
 hdr = f'  {"题":<26}{"sid deny":>9}{"sid allow":>10}  {_other_col:<12}  判定'
 print(hdr); print("  " + "-" * (len(hdr) - 2))
 bad = []
-skipped = []   # 零调用:不参与对照,也**不算**档位不一致
+skipped = []   # 零调用 / cc 无 result 事件:不参与对照,也**不算**档位不一致
 weak = []      # cc 侧:没有反证,但也拿不到 sid 那种反向自证 ⇒ 单独一档
 for t in common:
     s, m = S[t], M[t]
@@ -187,7 +187,15 @@ for t in common:
         other_cell = "None(未采到)" if m["deny"] is None else str(m["deny"])
         if m["deny"] is None:
             # ⛔ 不许当成 0 —— 「看着像 0 denials」正是 08 号 §4.1.1 警告的形态。
-            verdict = "⚠️ cc 侧未采到 denials(≠零拒绝)"; bad.append(t)
+            # 但「没采到」有两种完全不同的原因,混进 bad 就会把超时/被杀
+            # 误判成「权限档不同源」(A3 实测:feal-linear-cryptanalysis 跑了 2h
+            # 被 AgentTimeoutError 杀掉,claude-code.txt 有 517 行 assistant 消息,
+            # **就是没有 type=result 事件** ⇒ cc_denials=None,token 却非 0)。
+            # 权限档对照排除这种样本;它该进「不参与对照」,不是「分数不可互比」。
+            if m.get("agent_ran") is False:
+                verdict = "➖ 不参与对照:cc 零 API 调用(基础设施故障)"; skipped.append(t)
+            else:
+                verdict = "➖ 不参与对照:cc 无 result 事件(超时/被杀,denials 未落盘)"; skipped.append(t)
         elif m["deny"] > 0:
             verdict = f"⛔ 不可比:cc 侧有 {m['deny']} 次拒绝"; bad.append(t)
         elif s["deny"] > 0:
@@ -214,18 +222,21 @@ if only_s or only_m:
     print(f"\n  ⚠️ 题目不对齐:仅 sid 有 {only_s}；仅 {other_label} 有 {only_m}")
 
 print(f"\n=== 结论 ===")
-# ⚠️ 分母必须是「参与对照的题数」,不是 len(common)。零调用的题被排除在对照之外,
-# 留在分母里会把比例稀释 —— 而「分母比分子重要」是本仓的通用铁律。
+# ⚠️ 分母必须是「参与对照的题数」,不是 len(common)。零调用 / 无 result 事件的题
+# 被排除在对照之外,留在分母里会把比例稀释 —— 「分母比分子重要」是本仓铁律。
 judged = len(common) - len(skipped)
+rc = 0
 if skipped:
-    print(f"  ➖ {len(skipped)} 题不参与对照(agent 零 API 调用,基础设施故障): {skipped}")
-    print(f"     它们**不算**档位不一致 —— 归因是网关/上游,不是权限档。要补跑见 run-permission-switch.sh。")
+    print(f"  ➖ {len(skipped)} 题不参与权限档对照: {skipped}")
+    print("     它们**不算**档位不一致 —— 归因是零调用 / 超时未落盘 result 事件,不是权限档。")
 if judged <= 0:
     print(f"  ⛔ 参与对照的题数为 0 —— 这不是「✅ 全部同档」,是没有任何样本可比。")
     print(f"     (空集上 all() 恒真:这一条专防「零样本报全绿」。)")
+    rc = 2
 elif bad:
     print(f"  ⛔ {len(bad)}/{judged} 题的权限档不同源 —— **这两轮的分数不可互比**")
     print(f"     涉及: {bad}")
+    rc = 1
 elif other_arm == "cc":
     # 🔴 cc 侧刻意**不写「已确认同档」**。它拿不到 allow 计数 ⇒ 证不出
     # 「审计层真的在记」,只能说「没有反证」。把这两件事写成同一句话,
@@ -245,3 +256,8 @@ reqs = {v["requested"] for v in S.values() if v["requested"]}
 if reqs:
     print(f"\n  参考(非判据):sid 侧命令行请求的档位 = {reqs}")
     print(f"  ⚠️ 请求值不能当判据 —— 上面的 deny 条数才是观测值。")
+
+# 🔴 「分数不可互比」以前只打印 ⛔、exit 0。CI / 脚本串联会把它当成功。
+# 权限档真的不同源必须非 0;零样本对照必须非 0。skipped(超时未落盘)走 0,
+# 因为它不是档位问题,结论里已经单独披露。
+raise SystemExit(rc)
