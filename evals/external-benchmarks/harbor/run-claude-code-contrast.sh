@@ -209,7 +209,18 @@ else
   fi
 fi
 
-rm -rf "runs/$JOB"
+# 🔴 默认**不**整目录清空。harbor 对同名 job 是 resume 语义
+# （`job.py:_maybe_init_existing_job`：已有 result.json 的 trial 跳过，
+# 没 result.json 的半截目录才 rmtree）。A3 的目标就是「完成一题记一题、
+# 额度中断后续跑」—— 这里 `rm -rf` 会把已计分题连同分母一起抹掉，
+# 下一轮变成全量重跑，对照立刻不可比。
+# 真要重开一个干净 job：SID_CC_WIPE=1（⛔ 只用于确认要丢掉这份产物时）。
+if [ "${SID_CC_WIPE:-0}" = "1" ]; then
+  echo "⚠️ SID_CC_WIPE=1 —— 整目录清空 runs/$JOB 后重开（已完成题一并丢掉）"
+  rm -rf "runs/$JOB"
+elif [ -d "runs/$JOB" ]; then
+  echo "--- 已有 job 目录 runs/$JOB —— 走 harbor 原生 resume（已完成 trial 不重跑）"
+fi
 echo "=== 启动 $(date '+%F %T') ==="
 # 数据集可切换（默认 10 题 sample，保既有结论可复算）。扩规模用
 #   SID_HARBOR_DATASET=terminal-bench-local@2.0 —— 那是本地镜像就绪的 72 题，
