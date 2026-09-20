@@ -244,11 +244,102 @@ LLM_FATAL_MARK = "主模型请求失败"
 #: ⛔ **不放 5xx / 429**:那些是**可重试**的,重试链耗尽后会正常落
 #: `LLM_FATAL_MARK`,由上面那条判据管。放进来会与它重复,而重复判据迟早分叉。
 #: ⛔ **不放 400**:那是请求本身不合法(我们自己发错了),属于真实缺陷,必须计分。
+#: ⛔ **502 尤其不能进**:A3 `make-mips-interpreter` 满轮 + `api_error_status=502`,
+#: 那是真实撞满,不是硬拒(08b §4.1)。
 UPSTREAM_HARD_REJECT_CODES = ("401", "402", "403")
 
 #: 上游硬拒的**语义**佐证。只用状态码会误伤 —— 题目输出里恰好出现 "402"
 #: (比如某个测试断言的数字)就会命中。所以要求「provider 错误 + 硬拒码」同时成立。
 UPSTREAM_ERROR_MARK = "API 错误"
+
+#: 尺子**自己的**最小片段表(大小写不敏感)。2026-09-20 第三次漏判:
+#: A2 六题 `LLM 错误: Invalid token` / `Remote end closed …`、A1 四题
+#: `The socket connection was closed unexpectedly` —— 既没有「主模型请求失败」,
+#: 也没有「API 错误」+ 401/402/403,于是进了能力分母。
+#:
+#: ⛔ **不许把产品 `RETRYABLE_CONNECTION_MESSAGES` 当这张表的唯一来源**。
+#: 那张表对不上 A2 六题原文(08b §4.1 实测零命中),却含 `terminated` /
+#: `failed to fetch` / `network error`;当评分排除太宽,题目输出或崩溃栈
+#: 里出现这些词就会被 `w3-classify --apply` 删掉重跑。
+LLM_FATAL_FRAGMENTS = (
+    "invalid token",
+    "remote end closed",
+    "socket connection was closed",
+)
+
+#: 轮数上限。与 `w3-summary.py` / `analyze-model-switch.py` 同一个环境变量 ——
+#: 两处写死不同值的形态是「满轮豁免」在报告和尺子上分叉,而它不报错。
+MAX_TURNS = int(os.environ.get("SID_MODELSWITCH_MAX_TURNS", "40"))
+
+
+def _sid_errors_text(result: dict) -> str:
+    md = ((result.get("agent_result") or {}).get("metadata")) or {}
+    return " ".join(md.get("sid_errors") or [])
+
+
+def _hard_reject_in_text(errs: str) -> bool:
+    """「API 错误」+ 401/402/403 同时成立。只看数字会被题目输出里的 402 命中。"""
+    if UPSTREAM_ERROR_MARK not in errs:
+        return False
+    return any(
+        f" {code} " in errs or f": {code} " in errs
+        for code in UPSTREAM_HARD_REJECT_CODES
+    )
+
+
+def _fragment_hit(errs: str) -> bool:
+    low = errs.lower()
+    return any(frag in low for frag in LLM_FATAL_FRAGMENTS)
+
+
+def _sid_upstream_hit(errs: str) -> bool:
+    return (
+        LLM_FATAL_MARK in errs
+        or _hard_reject_in_text(errs)
+        or _fragment_hit(errs)
+    )
+
+
+def _cc_hard_reject_status(trial_dir: str | None):
+    """cc 最后一次 API 错误码。None = 没采到。lazy import 避开与 arm_health 的环。"""
+    if not trial_dir:
+        return None
+    from arm_health import cc_api_error_status
+    return cc_api_error_status(trial_dir)
+
+
+def _cc_upstream_hit(trial_dir: str | None) -> bool:
+    """cc 臂硬拒:status ∈ {401,402,403}。⛔ 502 / 429 不是硬拒。"""
+    status = _cc_hard_reject_status(trial_dir)
+    if status is None:
+        return False
+    return str(status).split(".")[0] in UPSTREAM_HARD_REJECT_CODES
+
+
+def _positive_reward(result: dict) -> bool:
+    """reward > 0 → 已经解出,尺子不许当 fatal 去删(`build-pmars`)。"""
+    rewards = (result.get("verifier_result") or {}).get("rewards") or {}
+    reward = rewards.get("reward")
+    return isinstance(reward, (int, float)) and float(reward) > 0
+
+
+def _authoritative_turns(result: dict, trial_dir: str | None) -> int | None:
+    """权威轮数。None = 不可比(⛔ 不许拿 total_steps 兜底去比 MAX_TURNS)。
+
+    sid 只认 `sid_cost_source == "stream-json-result"` 的 `sid_num_turns`
+    (08 §00.4)。cc 认 `claude-code.txt` result 事件的 `num_turns`。
+    """
+    md = ((result.get("agent_result") or {}).get("metadata")) or {}
+    if md.get("sid_cost_source") == "stream-json-result":
+        t = md.get("sid_num_turns")
+        if isinstance(t, int):
+            return t
+    if trial_dir:
+        from arm_health import cc_turns
+        t = cc_turns(trial_dir)
+        if isinstance(t, int):
+            return t
+    return None
 
 
 def llm_fatal(result: dict, trial_dir: str | None = None) -> bool:
@@ -277,38 +368,49 @@ def llm_fatal(result: dict, trial_dir: str | None = None) -> bool:
     而压低的方向恰好会让「换档有效」这个结论看起来更弱(或者反过来,
     如果排除得太宽就看起来更强)。两个方向都是造假,所以判据必须窄且可自证。
 
-    ## 判据:两个源都要,且**不用 subtype 单独判**
+    ## 判据(2026-09-20 第三次漏判之后):三条**同时**成立
 
-    - `sid_errors` 里有 `主模型请求失败`(agent 自己落的结构化错误列表);
-    - 若给了 `trial_dir`,再要求 agent 日志里有**重试链耗尽**的痕迹。
+    1. 命中尺子片段表 / 「主模型请求失败」/ 「API 错误」+401/402/403
+       (sid 读 `sid_errors`;cc 读 `cc_api_error_status` ∈ {401,402,403},
+       **不含 502 / 429**);
+    2. 权威轮数 < `MAX_TURNS`(sid 只认 `stream-json-result`;兜底
+       `total_steps` 不许拿来比。不可比 ⇒ False,fail-closed 不排除);
+    3. reward 不是正分(`build-pmars` socket 关了但已经解出,不许删)。
 
     ⛔ **不拿 `subtype == "error_during_execution"` 单独判**:那个值也包含
     agent 自身崩溃(真实缺陷,必须计分)。只用它会把真 bug 一起排除掉 ——
     那是比不排除更坏的错误。
     """
-    md = ((result.get("agent_result") or {}).get("metadata")) or {}
-    errs = " ".join(md.get("sid_errors") or [])
-
-    # 形态二:上游**硬拒**(402/401/403)。这类重试救不了,所以不会留下
-    # `LLM_FATAL_MARK`,必须单独认 —— 见 UPSTREAM_HARD_REJECT_CODES 的注释。
-    # ⚠️ 判据是「provider 错误标记 + 硬拒码」**同时**成立,不是只看数字:
-    # 只看 "402" 会被题目输出里恰好出现的数字命中。
-    if UPSTREAM_ERROR_MARK in errs and any(
-        f" {code} " in errs or f": {code} " in errs
-        for code in UPSTREAM_HARD_REJECT_CODES
-    ):
-        return True
-
-    if LLM_FATAL_MARK not in errs:
+    # 正分解出 → 不论原文多像上游打断,都 keep。
+    if _positive_reward(result):
         return False
-    if trial_dir is None:
+
+    errs = _sid_errors_text(result)
+    sid_hit = _sid_upstream_hit(errs)
+    cc_hit = _cc_upstream_hit(trial_dir)
+    if not sid_hit and not cc_hit:
+        return False
+
+    turns = _authoritative_turns(result, trial_dir)
+    # 不可比或已满轮 → 不排除。排除会进 w3-classify --apply 的删目录路径。
+    if not isinstance(turns, int) or turns >= MAX_TURNS:
+        return False
+
+    # 「主模型请求失败」且没有片段/硬拒/cc 时,保留重试链佐证:
+    # 日志在且没有耗尽痕迹 → 不是这条路径;找不到日志则不降级放行。
+    if (
+        LLM_FATAL_MARK in errs
+        and not _fragment_hit(errs)
+        and not _hard_reject_in_text(errs)
+        and not cc_hit
+        and trial_dir is not None
+    ):
+        for cand in glob.glob(os.path.join(trial_dir, "agent", "sid-code.jsonl")):
+            try:
+                blob = open(cand, errors="replace").read()
+            except OSError:
+                continue
+            return "停止重试" in blob or "不足以" in blob
         return True
-    # 佐证:重试链真的被打空了(不是随便一次 LLM 报错)。找不到日志时**不降级放行**,
-    # 以 sid_errors 为准 —— 采集缺失不该让判据翻面。
-    for cand in glob.glob(os.path.join(trial_dir, "agent", "sid-code.jsonl")):
-        try:
-            blob = open(cand, errors="replace").read()
-        except OSError:
-            continue
-        return "停止重试" in blob or "不足以" in blob
+
     return True

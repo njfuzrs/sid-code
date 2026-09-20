@@ -203,8 +203,10 @@ def cc_ttft_ms(trial_dir: str) -> int | None:
 def cc_api_error_status(trial_dir: str) -> Any:
     """cc 最后一次 API 错误的状态码(实测 `ccrun-n6` 10/10 都是 None = 无错误)。
 
-    ⚠️ **它不是 sid 侧 `llm_fatal` 的对应物**。cc **自带一层重试**
-    (`max_retries=10`,08 号 §4.1.1 实测)⇒ 这个字段有值意味着
+    消费方:`verifier_health.llm_fatal` 把 ∈ {401,402,403} 当硬拒。
+    ⛔ **502 / 429 不是硬拒**(A3 `make-mips-interpreter` 满轮 502,08b §4.1)。
+
+    ⚠️ cc **自带一层重试**(`max_retries=10`,08 号 §4.1.1 实测)⇒ 这个字段有值意味着
     「shim 重试 + cc 自己重试 **都**没救回来」,门槛比 sid 侧高得多。
     ⇒ ⛔ 不许把两臂的「上游打断题数」直接并列 —— 那会让 cc 看起来更稳,
     而其中一部分是它多一层重试换来的,不是 harness 更好。

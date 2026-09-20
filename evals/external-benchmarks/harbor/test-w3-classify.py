@@ -34,7 +34,13 @@ sys.path.insert(0, HERE)
 # 而 `agent_ran` 读的是 `result.agent_result.n_input_tokens`（Harbor 侧观测）
 # ⇒ 健康 trial 被判「零调用」，两组测试假红。下面的 `_assert_fixture_shape()`
 # 用真判据回读每一个造出来的 fixture，**那个错在今天会当场红**。
-from verifier_health import agent_ran, agent_started, verifier_ran
+from verifier_health import (  # noqa: E402
+    agent_ran,
+    agent_started,
+    llm_fatal,
+    verifier_ran,
+)
+import verifier_health as VH
 
 PASS = FAIL = 0
 
@@ -51,7 +57,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def mk_trial(job: str, task: str, *, reward, tokens=None, metadata=None,
              debug_log: str | None = None, verifier_ok: bool = True,
-             exception=None) -> str:
+             exception=None, sid_meta=None, cc_result=None) -> str:
     r"""造一个假 trial 目录。**形态必须照 verifier_health 真正读的那些字段**。
 
     ⚠️ 这个函数我第一版写错了两处，导致 ① ⑤ 两组变红 —— 而**红的是脚手架，
@@ -78,11 +84,22 @@ def mk_trial(job: str, task: str, *, reward, tokens=None, metadata=None,
                             else None),
         "metadata": metadata if metadata is not None else {},
     }
+    ar: dict = {}
     if tokens is not None:
-        res["agent_result"] = {"n_input_tokens": tokens[0],
-                               "n_output_tokens": tokens[1]}
+        ar["n_input_tokens"] = tokens[0]
+        ar["n_output_tokens"] = tokens[1]
+    if sid_meta:
+        ar["metadata"] = sid_meta
+    if ar:
+        res["agent_result"] = ar
     with open(os.path.join(td, "result.json"), "w", encoding="utf-8") as fh:
         json.dump(res, fh)
+    if cc_result is not None:
+        ev = {"type": "result", "subtype": "success", "num_turns": 7}
+        ev.update(cc_result)
+        with open(os.path.join(td, "agent", "claude-code.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(json.dumps(ev) + "\n")
     if verifier_ok:
         with open(os.path.join(td, "verifier", "verifier-stdout.txt"), "w",
                   encoding="utf-8") as fh:
@@ -253,6 +270,172 @@ def main() -> int:
         check("⛔ 兄弟 job 目录没被碰", os.path.isdir(sibling))
         check("⛔ 兄弟的 result.json 还在",
               os.path.exists(os.path.join(sibling, "result.json")))
+
+        # ── ⑨ llm_fatal 尺子片段表(08b §4.3):全部 tmpdir,⛔ 不打真实 runs/ ──
+        print("\n=== ⑨ llm_fatal 片段表 / 正分豁免 / cc 401 vs 满轮 502 ===")
+        job = os.path.join(tmp, "j9"); os.makedirs(job)
+
+        def sid_fatal(task, err, turns, reward, source="stream-json-result"):
+            return mk_trial(
+                job, task, reward=reward, tokens=(5000, 200),
+                debug_log=HEALTHY_LOG,
+                sid_meta={
+                    "sid_errors": [err],
+                    "sid_num_turns": turns,
+                    "sid_cost_source": source,
+                    "sid_subtype": "error_during_execution",
+                },
+            )
+
+        # A2 原文(08b §2.1),request id 保留是为了锁「子串命中」而不是整句全等
+        t_inv = sid_fatal(
+            "regex-log",
+            "LLM 错误: Invalid token. (request id: 20260920-fixture)",
+            1, 0.0,
+        )
+        t_rem = sid_fatal(
+            "circuit-fibsqrt",
+            "LLM 错误: Remote end closed connection without response",
+            2, 0.0,
+        )
+        t_sock = sid_fatal(
+            "dna-insert",
+            "LLM 错误: The socket connection was closed unexpectedly "
+            "(httpx.RemoteProtocolError)",
+            7, 0.0,
+        )
+        t_pmars = sid_fatal(
+            "build-pmars",
+            "LLM 错误: The socket connection was closed unexpectedly",
+            22, 1.0,
+        )
+        t_maxed = sid_fatal(
+            "maxed-out",
+            "达到最大轮次限制: 40",
+            41, 0.0,
+        )
+        t_boast = mk_trial(
+            job, "feal-diff", reward=0.0, tokens=(8000, 400),
+            debug_log=HEALTHY_LOG,
+            sid_meta={
+                "sid_errors": [],
+                "sid_num_turns": 13,
+                "sid_cost_source": "stream-json-result",
+                "sid_subtype": "success",
+            },
+        )
+        t_fallback = sid_fatal(
+            "fallback-turns",
+            "LLM 错误: Invalid token. (request id: x)",
+            1, 0.0, source="session-traj-fallback",
+        )
+        t_402 = sid_fatal(
+            "qemu-alpine-ssh",
+            "LLM 错误: OpenAI API 错误: 402 Insufficient Balance",
+            29, 0.0,
+        )
+        t_mark = sid_fatal(
+            "build-cython-ext",
+            "主模型请求失败，可重新发送消息重试",
+            8, 0.0,
+        )
+
+        def load(td):
+            with open(os.path.join(td, "result.json"), encoding="utf-8") as fh:
+                return json.load(fh)
+
+        check("Invalid token turns=1 reward=0 ⇒ fatal",
+              llm_fatal(load(t_inv), t_inv) is True)
+        check("Remote end closed turns=2 reward=0 ⇒ fatal",
+              llm_fatal(load(t_rem), t_rem) is True)
+        check("socket closed turns=7 reward=0 ⇒ fatal",
+              llm_fatal(load(t_sock), t_sock) is True)
+        check("🔴 build-pmars socket + reward=1.0 ⇒ ⛔ 不是 fatal",
+              llm_fatal(load(t_pmars), t_pmars) is False)
+        check("撞满 41 轮 + 「达到最大轮次限制」⇒ 不是 fatal",
+              llm_fatal(load(t_maxed), t_maxed) is False)
+        check("自报 success + 0 分 + 无 LLM 错误 ⇒ 不是 fatal(#143)",
+              llm_fatal(load(t_boast), t_boast) is False)
+        check("🔴 total_steps 兜底路径不许拿来比 MAX_TURNS",
+              llm_fatal(load(t_fallback), t_fallback) is False)
+        check("旧路径: API 错误 + 402 + 未满轮 ⇒ fatal",
+              llm_fatal(load(t_402), t_402) is True)
+        check("旧路径: 主模型请求失败 + 未满轮 ⇒ fatal",
+              llm_fatal(load(t_mark), t_mark) is True)
+
+        t_cc401 = mk_trial(
+            job, "cc-401", reward=0.0, tokens=(1200, 80), debug_log=None,
+            cc_result={"api_error_status": 401, "num_turns": 10,
+                       "subtype": "error_during_execution"},
+        )
+        t_cc502_max = mk_trial(
+            job, "make-mips-interpreter", reward=0.0, tokens=(9000, 500),
+            debug_log=None,
+            cc_result={"api_error_status": 502, "num_turns": 43,
+                       "subtype": "success"},
+        )
+        t_cc502_short = mk_trial(
+            job, "cc-502-short", reward=0.0, tokens=(900, 40), debug_log=None,
+            cc_result={"api_error_status": 502, "num_turns": 10,
+                       "subtype": "error_during_execution"},
+        )
+        check("cc 401 + 未满轮 + token>0 ⇒ fatal",
+              llm_fatal(load(t_cc401), t_cc401) is True)
+        check("🔴 cc 502 + 满轮(make-mips-interpreter) ⇒ 不是 fatal",
+              llm_fatal(load(t_cc502_max), t_cc502_max) is False)
+        check("🔴 cc 502 + 未满轮仍不是 fatal(有值 ≠ 硬拒)",
+              llm_fatal(load(t_cc502_short), t_cc502_short) is False)
+
+        # classify 接同一把尺子:Invalid token 在 tmpdir 上 drop;正分 keep。
+        # ⛔ 这是 fixture 目录,不是 runs/。
+        job_cls = os.path.join(tmp, "j9c"); os.makedirs(job_cls)
+        mk_trial(
+            job_cls, "regex-log", reward=0.0, tokens=(5000, 200),
+            debug_log=HEALTHY_LOG,
+            sid_meta={
+                "sid_errors": [
+                    "LLM 错误: Invalid token. (request id: 20260920-fixture)",
+                ],
+                "sid_num_turns": 1,
+                "sid_cost_source": "stream-json-result",
+            },
+        )
+        mk_trial(
+            job_cls, "build-pmars", reward=1.0, tokens=(8000, 300),
+            debug_log=HEALTHY_LOG,
+            sid_meta={
+                "sid_errors": [
+                    "LLM 错误: The socket connection was closed unexpectedly",
+                ],
+                "sid_num_turns": 22,
+                "sid_cost_source": "stream-json-result",
+            },
+        )
+        rc, s = run(job_cls)  # dry-run,连 tmpdir 都不必 --apply
+        check("classify: Invalid token ⇒ drop 上游打断",
+              "regex-log" in (s.get("drop_tasks") or []), f"{s}")
+        check("classify: build-pmars 正分 ⇒ keep",
+              s.get("keep") == 1 and s.get("drop") == 1, f"{s}")
+        check("⛔ dry-run 没删 tmpdir 里的目录",
+              os.path.isdir(os.path.join(job_cls, "regex-log__FAKEabc"))
+              and os.path.isdir(os.path.join(job_cls, "build-pmars__FAKEabc")))
+
+        # 反向变异:片段表改空 → 上三行 0 分原文必须翻成 False。
+        # 硬拒码路径(402)与「主模型请求失败」不走片段表,必须仍然 True,
+        # 否则「改空」只是把整把尺子拆了,红不出「这三行靠的是片段表」。
+        saved = VH.LLM_FATAL_FRAGMENTS
+        try:
+            VH.LLM_FATAL_FRAGMENTS = ()
+            check("变异:片段表改空 ⇒ Invalid token 翻成 False",
+                  llm_fatal(load(t_inv), t_inv) is False)
+            check("变异:片段表改空 ⇒ Remote end closed 翻成 False",
+                  llm_fatal(load(t_rem), t_rem) is False)
+            check("变异:片段表改空 ⇒ socket closed 翻成 False",
+                  llm_fatal(load(t_sock), t_sock) is False)
+            check("变异:片段表改空 ⇒ 402 硬拒仍 fatal(不走片段表)",
+                  llm_fatal(load(t_402), t_402) is True)
+        finally:
+            VH.LLM_FATAL_FRAGMENTS = saved
 
         print(f"\n{'='*56}\n  通过 {PASS} / 失败 {FAIL}")
         return 1 if FAIL else 0
