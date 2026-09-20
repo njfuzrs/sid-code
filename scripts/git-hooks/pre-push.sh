@@ -5,6 +5,7 @@
 #   1. holdout/real-tasks 永封校验（sha256 + 公开页 sid 泄露）
 #   2. website/ 有变动时跑一次站点构建（死链检测）
 #   3. 北极星指标生成块的陈旧检测（P0-3，阈值 30 天）
+#   4. 证据层差集闸（本机有 harbor/runs/ 才跑；CI runner 上没有 runs/ ⇒ 禁止挂 CI）
 #
 # 安装：
 #   bun run scripts/install-git-hooks.sh
@@ -81,6 +82,22 @@ if [ -f "scripts/northstar-snapshot.ts" ]; then
     fi
     echo "[pre-push] ✅ 北极星生成块新鲜"
   fi
+fi
+
+# 11a PR-A：证据层差集闸。判据是集合差，不是时间戳。
+# ⛔ 不许挂 CI：CI runner 上没有 harbor/runs/ ⇒ 差集恒为空、恒绿
+# （evals/CLAUDE.md §4.2「探测依赖失败就 skip = 门禁不存在」的对偶：
+#  无磁盘证据时跑它会得到一份假绿的「全部已归档」）。
+# 所以只在本机真有 runs/ 时跑。清单在 git 里，runs/ 被 gitignore。
+if [ -d "evals/external-benchmarks/harbor/runs" ]; then
+  echo "[pre-push] 跑证据层差集闸 ..."
+  bun run scripts/eval/check-evidence-due.ts || {
+    echo "[pre-push] ❌ 证据层差集非空（磁盘上有未归档单元，或清单 sha256 非法）"
+    echo "    打包并上传：bun run evals/scripts/archive-evidence.ts --out /tmp/evidence --upload"
+    echo "    只看差集：  bun run scripts/eval/check-evidence-due.ts"
+    exit 1
+  }
+  echo "[pre-push] ✅ 证据层差集为空"
 fi
 
 exit 0
