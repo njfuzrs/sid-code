@@ -37,6 +37,9 @@ import { existsSync, readFileSync, mkdirSync, appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const SID_CODE_ROOT = resolve(import.meta.dir, "..", "..");
+// ⚠️ 少了一段 `evals/`：真实报告在 `evals/_reports/external/`。
+// 本脚本从没跑过 `--record`，所以错位置一直没人撞上。
+// 证据层清单**不要抄这一行** —— 用 `lib/evidence-archive.ts` 的 `evidenceReportDir()`。
 const STATE_PATH = join(SID_CODE_ROOT, "_reports", "external", "anchor-runs.jsonl");
 const DEFAULT_WINDOW_DAYS = 90;
 

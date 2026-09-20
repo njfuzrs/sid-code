@@ -50,7 +50,9 @@
     "eval:bench-report": "bun run scripts/eval/bench-report.ts",
     "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts",
     "eval:diagnose": "bun run scripts/eval/diagnose.ts",
-    "eval:verify-diagnosis": "bun run scripts/eval/verify-diagnosis.ts"
+    "eval:verify-diagnosis": "bun run scripts/eval/verify-diagnosis.ts",
+    "eval:archive-evidence": "bun run evals/scripts/archive-evidence.ts",
+    "eval:check-evidence": "bun run scripts/eval/check-evidence-due.ts"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

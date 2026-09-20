@@ -72,6 +72,13 @@ patch_touches_tests : n     ← 「禁改测试文件」那道硬检查的计数
 > 而 `ExecTrackSummary` 有 `pass_at_1`。别把 10 题的绝对数换算成比率填进去 ——
 > 那会绕开「不许把 10 题比例画成 release 曲线」那道约束。
 
+## 证据层清单
+
+跑分报告之外，Harbor / SWE-bench **runs 的归档索引**落在
+[`evidence/`](./evidence/)（`MANIFEST.tsv`）。字节在公开 HF dataset
+[`njfuzrs/sid-code-eval-runs`](https://huggingface.co/datasets/njfuzrs/sid-code-eval-runs)。
+差集闸：`bun run scripts/eval/check-evidence-due.ts`（本机 / pre-push，⛔ 不挂 CI）。
+
 ## 相关文档
 
 - `evals/external-benchmarks/swe-bench/接入计划.md` —— 路径 B 方案（事实源）
