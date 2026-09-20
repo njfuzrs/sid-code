@@ -35,12 +35,14 @@ import {
   classifyStreamError,
   TerminalError,
   RetryableError,
+  StreamLevelError,
   StreamValidationError,
   isAbortError,
   toAbortError,
   RequestAbortedError,
   getNetworkErrorCode,
   is401Error,
+  isGatewayPlaceholderAuthError,
 } from "./errors.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
@@ -122,6 +124,18 @@ const STREAM_RETRY = {
   initialDelayMs: 1000,
   maxDelayMs: 120000,
 };
+
+/**
+ * 16 号 C1：网关 401 占位句（`Invalid token. (request id: …)`）的重试上界。
+ *
+ * 3 而不是 `maxRetriesPerCall`(12)：占位句是网关侧的瞬时抖动，实测恢复窗口在数秒级。
+ * 给它 12 次预算的坏处不是「慢」，是**把这次调用的全部重试预算喂给一个可能压根不会
+ * 恢复的故障** —— 那之后真正该重试的 429/529 一次都轮不到。3 次退避（1s/2s/4s）足以
+ * 穿过实测抖动，穿不过就该交给 fallback / 报错，让人去看网关。
+ *
+ * ⛔ 不要为了「对齐 cc 的 max_retries=10」调大它：16 §6 否决过改被测对象来对齐对照。
+ */
+const GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES = 3;
 
 /** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
  *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。
@@ -477,6 +491,13 @@ interface RetryContext {
    *  在此之前**不可删除**该标志——删了会让首个 401 直接 terminal 拉黑，丧失「瞬时 401 重试一次」
    *  的容错。 */
   needsAuthRefresh: boolean;
+  /** 16 号 C1：本次调用内「网关 401 占位句」已重试的次数（独立封顶，见
+   *  GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES）。
+   *
+   *  为什么不复用 `needsAuthRefresh`：那是「只放一次」的闸门，语义是「刷新凭据后再试
+   *  一次」；占位句根本不是凭据问题，刷新对它无意义，它要的是**多试几次等网关恢复**。
+   *  两个语义挤在一个布尔上，就回到了「第二次 401 立刻 Terminal」的原状。 */
+  gatewayPlaceholderAuthRetries: number;
   /** 是否需要禁用 keep-alive（ECONNRESET 后置位） */
   disableKeepAlive: boolean;
   /** 连续 529 计数 */
@@ -904,6 +925,7 @@ export class ModelFallback {
     // 重试上下文（跨 phase 共享）
     const ctx: RetryContext = {
       needsAuthRefresh: false,
+      gatewayPlaceholderAuthRetries: 0,
       disableKeepAlive: this.config.disableKeepAlive ?? false,
       consecutive529: 0,
       totalRetriesThisCall: 0,
@@ -1119,6 +1141,37 @@ export class ModelFallback {
                 heldCooldownProbe,
               );
 
+              // ── 16 号 C1：网关 401 占位句以**流内 error 事件**到达时不得在此终结 ──
+              //
+              // 这条分支有一个会绕过 catch 的出口（下面那个 TerminalError → return）。
+              // 而占位句正好有两种到达形态：
+              //   · 带 `streamLevel` → classifyStreamError 兜底成 StreamLevelError
+              //     （RetryableError）→ 落到下方 `throw classified` → 进 catch → C1 闸门；
+              //   · **不带** `streamLevel`（本网关的真实形态：`type` 是空字符串，见
+              //     status-code-classification.test.ts）→ classifyError → 401 →
+              //     TerminalError → **在此 return，永远到不了 catch**。
+              // 少这一段，C1 就只修好一半，且单测全绿——本文件上方那段注释点破过同一个
+              // 坑（「凡是只在 catch 里做的收尾动作，都要问一句流内 error 事件会不会绕过它」），
+              // S5 已经被它咬过一次。
+              //
+              // 这里只负责把它**送进 catch**（统一由那道闸门决定重试还是放弃），
+              // 不在此处重试：重试预算、退避、3 次上界全在闸门那一处，两处各写一份必然漂移。
+              if (
+                classified instanceof TerminalError &&
+                isGatewayPlaceholderAuthError(
+                  Object.assign(new Error(event.error.message), {
+                    status: event.error.statusCode,
+                  }),
+                )
+              ) {
+                throw new StreamLevelError(
+                  params.model.split(":")[0] || params.model,
+                  401,
+                  event.error.message,
+                  "server_error",
+                );
+              }
+
               if (classified instanceof TerminalError) {
                 this.availability.markTerminal(params.model, classified.reason);
                 log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
@@ -1298,6 +1351,95 @@ export class ModelFallback {
           }
 
           // ═══════════════════════════════════════════════════════════
+          // 16 号 C1：网关 401 占位句 → 当瞬时 server_error 重试（封顶 3 次）
+          // ═══════════════════════════════════════════════════════════
+          //
+          // **必须置于 B1-b 闸门之前**：占位句也满足 `is401Error`（statusCode=401），
+          // 落到下面那道闸门就退化成「retry-once 后第二次立刻 Terminal」——正是 A2
+          // 五题 1–8 轮就整轮收工的成因（cc 同题 3/5 解出）。
+          //
+          // 与 B1-b 的分工：
+          //   · 占位句（`Invalid token. (request id: …)`）→ 本分支，退避重试至多 3 次；
+          //     凭据是好的，刷新它没有意义，要的是等网关自己恢复。
+          //   · 真 key 作废 / 措辞不透明的 401 → 落下面 B1-b，retry-once 后 Terminal，
+          //     用户立刻看到「去修凭据」，不白等 3 次退避。
+          //
+          // 退避而非立即重试：网关抖动需要时间恢复，`attempt--` 式的立即重试（B1-b 的
+          // 做法，那里是为了让刷新后的新凭据马上生效）在这里只会连打 3 发全部撞墙。
+          // 故这里**消耗 attempt 预算**、走正常退避，并额外受 3 次独立上界约束。
+          if (
+            !isTimeoutAbort &&
+            isGatewayPlaceholderAuthError(err) &&
+            ctx.gatewayPlaceholderAuthRetries < GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES &&
+            attempt < streamMaxRetries
+          ) {
+            ctx.gatewayPlaceholderAuthRetries++;
+            // 取 `.message` 而非 `String(err)`：后者会带上 `StreamLevelError: ` 前缀，
+            // 而这段文字要拼进用户可见的耗尽文案（tryFallback 的 rootCause）。
+            const placeholderRetryable = new RetryableError(
+              err instanceof Error ? err.message : String(err),
+              "server_error",
+            );
+            // 留档根因：耗尽文案要说清「死在网关占位句」，不能只报一句重试用尽。
+            ctx.lastRetryError = placeholderRetryable.message;
+            ctx.lastRetryReason = placeholderRetryable.reason;
+            log.warn(
+              "FALLBACK",
+              `网关 401 占位句（非 key 作废），按瞬时错误重试 ` +
+                `${ctx.gatewayPlaceholderAuthRetries}/${GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES}: ${err}`,
+            );
+            // 用 `retry` 而非 `auth_refresh`：后者的语义是「刷过凭据」，这里一次都没刷。
+            // ⛔ 也正因如此，`RetryTelemetry > 0` 不能当 C1 的验收（16 §2.1：今天
+            // auth_refresh 已经 > 0，那条判据会假绿）。验收看的是**第二次以后仍在重试**。
+            const placeholderDelayMs = this.calculateRetryDelay(
+              err,
+              attempt,
+              placeholderRetryable,
+              STREAM_RETRY.maxDelayMs,
+            );
+            this.emitTelemetry(
+              {
+                type: "retry",
+                model: params.model,
+                attempt: attempt + 1,
+                delayMs: placeholderDelayMs,
+                error: `gateway placeholder 401: ${placeholderRetryable.message}`,
+                provider: primaryProvider.name(),
+                phase: "stream",
+                // 归因钥匙：轨迹里要能把这次重开与「网关占位句」对上，否则它和普通
+                // server_error 重试同形，C1 是否真的在生效就无从事后核查。
+                reopenReason: "gateway_placeholder_auth",
+              },
+              perCall.agentId,
+            );
+            yield* this.sleepWithProgress(
+              placeholderDelayMs,
+              attempt + 1,
+              streamMaxRetries + 1,
+              "retry",
+              signal,
+            );
+            resetStreamTimeout();
+            // 作废语义广播：与 B1-b / 正常重试同理，重开的是**全新请求**。
+            yield { type: "stream_restart", reason: "retry", attempt: attempt + 1 };
+            try {
+              const retryParams = ctx.maxTokensOverride
+                ? { ...params, maxTokens: ctx.maxTokensOverride }
+                : params;
+              stream = primaryProvider.sendMessageStream(retryParams, makeCombinedSignal());
+              resetAttemptProduction();
+              continue;
+            } catch (placeholderErr) {
+              if (signal?.aborted || isAbortError(placeholderErr)) {
+                throw toAbortError(placeholderErr);
+              }
+              log.error("FALLBACK", `网关 401 占位句重试建流失败: ${placeholderErr}`);
+              yield* this.tryFallback(params, signal, ctx);
+              return;
+            }
+          }
+
+          // ═══════════════════════════════════════════════════════════
           // B1-b 复活①：401 retry-once 闸门
           // ═══════════════════════════════════════════════════════════
           //
@@ -1313,7 +1455,16 @@ export class ModelFallback {
           // B5-7：`onAuthRefresh` 注入后，这里不再只是「retry-once 闸门」，而是
           // **先真刷新、再重试**（原 N1 另案的落地点，注释随之更新）。未注入钩子时
           // 完全退化为原语义（旧凭据重试一次），行为逐字节不变。
-          if (!isTimeoutAbort && is401Error(err) && !ctx.needsAuthRefresh) {
+          // 16 号 C1：占位句**不进**这道闸门。它不是凭据问题（刷新无意义），且
+          // 一旦进来就被「只放一次」封住 —— 那正是要修的原状。占位句的重试预算
+          // 由上面那道闸门单独管；3 次用尽后它落 classifyError → Terminal，
+          // 于是总重试次数**恰好封顶 3**，不会既吃 3 次又白吃一次 auth_refresh。
+          if (
+            !isTimeoutAbort &&
+            is401Error(err) &&
+            !isGatewayPlaceholderAuthError(err) &&
+            !ctx.needsAuthRefresh
+          ) {
             // 闸门先置位、再刷新：即便刷新实现里自己抛错或卡住，也不会因为"没走到置位"
             // 而让下一个 401 再刷一次 —— 防无限刷新循环的责任在闸门，不在刷新实现。
             ctx.needsAuthRefresh = true;

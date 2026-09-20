@@ -139,7 +139,23 @@ export type QueryLoopYield =
        * 不另算一份（本仓教训：已有的口径重实现一遍就是重踩一遍）。
        */
       turnsConsumedWithoutAssistant?: number;
+      /**
+       * 16 号 C2：本轮不是「模型正常说完了」，只是 TUI 要回到等待输入。
+       *
+       * `kind: "done"` 对 TUI 是优雅退出；SDK / Harbor 若无条件映射成
+       * `subtype=success`，就会把 `TimeoutRetryExhausted` 标成解出
+       * （`feal-differential-cryptanalysis`：stolen=10、verifier 0 分、
+       * `sid_subtype=success`）。有此字段则 converter 必须走
+       * `error_during_execution`，不得 success。
+       *
+       * ⛔ 不要用 `turnsConsumedWithoutAssistant > 0` 当失败：
+       * `break-filter-js-from-html` stolen=3 却真正写完脚本，reward=1.0。
+       */
+      incompleteReason?: DoneIncompleteReason;
     };
+
+/** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */
+export type DoneIncompleteReason = "timeout_retry_exhausted" | "aborted";
 
 // ─── 循环继续原因 ───
 

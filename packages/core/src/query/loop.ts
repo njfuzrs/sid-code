@@ -2120,6 +2120,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "done",
               turns: state.turnCount,
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              incompleteReason: "aborted",
             };
             return;
           }
@@ -2769,6 +2770,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 turns: state.turnCount,
                 // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
                 turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+                incompleteReason: "aborted",
               };
               return;
             }
@@ -2793,12 +2795,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               `或设置环境变量 SID_CODE_WATCHDOG_NO_PROGRESS_MS / SID_CODE_RESPONSE_HEADER_TIMEOUT_MS 覆盖。\n` +
               `请重新发送消息继续。`,
           };
-          // 优雅退出：yield done 让 TUI 正确切换回"等待输入"状态
+          // 优雅退出：yield done 让 TUI 正确切换回"等待输入"状态。
+          // 16 号 C2：SDK 不得把这次收尾读成 success（Harbor 会记 sid_subtype=success）。
           yield {
             kind: "done",
             turns: state.turnCount,
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            incompleteReason: "timeout_retry_exhausted",
           };
           return;
         }
@@ -2944,6 +2948,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             turns: state.turnCount,
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            incompleteReason: "aborted",
           };
           return;
         }
@@ -4225,6 +4230,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turns: state.turnCount,
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              incompleteReason: "aborted",
             };
             return;
           }

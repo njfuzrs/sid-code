@@ -9,9 +9,19 @@
  * 这里给出结构骨架。
  */
 
-import type { QueryEngineEvent } from "../query/types.ts";
+import type { DoneIncompleteReason, QueryEngineEvent } from "../query/types.ts";
 import type { SDKMessage } from "./types.ts";
 import type { Usage } from "../llm/types.ts";
+
+/** SDK 消费者看得到的中断原因。TUI 仍走 kind:done，不读这段文案。 */
+function incompleteReasonMessage(reason: DoneIncompleteReason): string {
+  switch (reason) {
+    case "timeout_retry_exhausted":
+      return "模型请求超时，重试已耗尽";
+    case "aborted":
+      return "请求被中断";
+  }
+}
 
 export interface ConvertContext {
   sessionId: string;
@@ -113,6 +123,21 @@ export function convertToSDKMessage(
       };
 
     case "done":
+      // 16 号 C2：`kind: "done"` 对 TUI 是「回到等待输入」，不是「任务成功」。
+      // 无条件 subtype=success 会把 TimeoutRetryExhausted / 用户中断标成解出。
+      if (event.incompleteReason) {
+        return {
+          type: "result",
+          subtype: "error_during_execution",
+          errors: [incompleteReasonMessage(event.incompleteReason)],
+          duration_ms: nowOf(ctx) - ctx.startTime,
+          num_turns: event.turns,
+          num_turns_without_model_interaction: event.turnsConsumedWithoutAssistant ?? 0,
+          total_cost_usd: ctx.totalCostUsd,
+          usage: { ...ctx.totalUsage },
+          session_id: ctx.sessionId,
+        };
+      }
       return {
         type: "result",
         subtype: "success",
