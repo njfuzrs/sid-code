@@ -115,7 +115,7 @@ describe("隔离兜底接线（P1-2 测试分包后的防复发门禁）", () =>
     expect(existsSync(join(REPO_ROOT, "packages", "eval-framework", "tests"))).toBe(false);
     expect(
       pkgs,
-      `eval-framework 有 4 个 *.test.ts（平铺在 core/、sandbox/、graders/ 下）但没有 tests/ 目录。\n` +
+      `eval-framework 有 *.test.ts（平铺在 core/、sandbox/、graders/、judge/ 下）但没有 tests/ 目录。\n` +
         `它必须在扫描面内 —— 漏掉它就等于允许 \`cd packages/eval-framework && bun test\` 写用户真实 ~/.sid-code/。`,
     ).toContain("eval-framework");
   });

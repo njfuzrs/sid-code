@@ -4,7 +4,7 @@
 # 根预载文件不生效 → 落盘组件（深层无参构造的 AuditLogger 等）直接写用户真实
 # ~/.sid-code/，且测试全绿、没有任何断言会失败。
 #
-# 本包的 4 个测试平铺在 core/、sandbox/、graders/ 下，没有 tests/ 目录 ——
+# 本包的测试平铺在 core/、sandbox/、graders/、judge/ 下，没有 tests/ 目录 ——
 # 正因如此它曾被接线门禁按"有 tests/ 目录"的旧判据整包跳过。
 # 门禁见 tests/build/test-isolation-preload-wiring.test.ts。
 [test]

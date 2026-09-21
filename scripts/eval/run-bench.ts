@@ -78,7 +78,7 @@ const config: RunConfig = {
     apiKey: process.env.ANTHROPIC_API_KEY || "",
     baseUrl: (process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com") + "/v1",
     model: process.env.JUDGE_MODEL || "claude-sonnet-4-6",
-    promptPath: join(ROOT, "evals/_judge/prompt-v2.md"),
+    promptPath: join(ROOT, "packages/eval-framework/judge/prompt-v2.md"),
   },
 };
 

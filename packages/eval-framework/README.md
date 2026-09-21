@@ -1,10 +1,35 @@
 # eval-framework — 通用 Agent 评测框架
 
+## 三层 provider 边界（⛔ 不许为「统一目录」合并）
+
+本包的 `providers/` **只装 agent-agnostic、零仓库依赖的在线 wrapper**。
+`evals/providers/` 与 `evals/bench-runner/adapters/` 是另外两层，**不是漏搬**。
+
+出处：`core/runner.ts:167-172`（解析 `eval.config.yaml` 的 script 路径时先包内、再仓库根）：
+
+> `evals/providers/` 共性是**依赖仓库自身**（sid-code-live 引 `scripts/eval/raw-jsonl-to-trace.ts`）。
+> 搬进包等于让包反向依赖仓库源码、破坏包边界（`bun run lint:boundary` 会拦），
+> 所以它们**刻意**留在仓库侧。这不是过渡态，是稳定的职责切分 ——
+> 别为了「统一目录」把后两个搬进包。
+
+| 层 | 目录 | 职责 | 判据 |
+| --- | --- | --- | --- |
+| agent-agnostic **在线** | `packages/eval-framework/providers/` | 实时调 agent，随包分发（`_template.ts` / `aider.ts` / `mock-echo.ts`） | 在代码路径上 ∧ 零仓库依赖 |
+| sid-code 特定 **在线** | `evals/providers/` | 实时调，但引仓内脚本 | 在代码路径上 ∧ 依赖本仓 |
+| 🔴 **离线**轨迹解析 | `evals/bench-runner/adapters/` | 从已落盘 trajectory 反解 | **根本不调 agent** |
+
+🔴 **`claude-code.ts` / `sid-code-live.ts` 跨层重名是刻意的，⛔ 不许合并。**
+在线 = spawn 真 agent（重跑）；离线 = 读历史轨迹（复算）。合并会把两者变成同一个入口，
+而「重跑 ≠ 同一份轨迹」（上游非确定性）。
+
+`evals/bench-runner/adapters/codex.ts` 是预留对照位，当前无调用方。
+⛔ 不许因零引用删它。
+
 ## 快速接入（3 步）
 
 ### 1. 写 Provider wrapper
 
-复制 `evals/providers/_template.ts`，实现 `runAgent()` 函数：
+复制 **本包** `providers/_template.ts`（不是 `evals/providers/_template.ts` —— 那个文件不存在），实现 `runAgent()` 函数：
 
 ```typescript
 async function runAgent(args: ProviderArgs): Promise<AgentResult> {
@@ -90,9 +115,8 @@ eval-judge.ts ←──────── ProviderResult
 | `eval-runner.ts` | 调度器 | C 档 |
 | `_graders/` | Grader 注册表 | A 档（可扩展） |
 | `_sandbox/` | Execution grading | A 档 |
-| `_judge/` | LLM judge prompt | B 档 |
-| `_types/` | Trace 格式定义 | B 档 |
-| `providers/` | Provider wrapper | A 档（每个 agent 一个） |
+| `judge/` | LLM judge：agent-agnostic 的 `prompt-v2.md` + pairwise 类型 | B 档 |
+| `providers/` | **仅** agent-agnostic 在线 wrapper | A 档（每个 agent 一个；sid-code 特定的在 `evals/providers/`） |
 | `eval.config.yaml` | Provider 注册配置 | A 档 |
 | `framework/` | 通用组件 re-export 入口 | — |
 

@@ -146,8 +146,10 @@ export function mapPathToTests(p: string): MapResult {
       return [`./${target}`];
     }
 
-    // 其余包体量小（shared 8 文件 / eval-framework 4 文件 / tui-renderer、cli 中等），
-    // 直接整包跑，省掉一张会漂移的映射表。
+    // 其余包体量小（shared 8 文件 / eval-framework 含 judge 下 calibrate-pairwise 等 /
+    // tui-renderer、cli 中等），直接整包跑，省掉一张会漂移的映射表。
+    // ⚠️ eval-framework 的测试平铺在 core/ sandbox/ graders/ judge/，没有 tests/ 目录 ——
+    // 整包跑才能覆盖 judge/ 搬家后的单测；空集 = 改 prompt / calibration 零验证。
     return [`./packages/${pkg}/`];
   }
 
