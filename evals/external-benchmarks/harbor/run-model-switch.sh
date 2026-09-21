@@ -111,6 +111,10 @@ export PYTHONPATH="$(pwd)"
 #
 #   SID_HARBOR_DATASET=terminal-bench-local@2.0 bash run-model-switch.sh w3-sid-72
 DATASET="${SID_HARBOR_DATASET:-terminal-bench-sample@2.0}"
+JOBDIR="runs/$JOB"
+# shellcheck disable=SC1091
+source ./taskset-fp.sh
+taskset_fp_gate || exit 2
 
 COMMON=(-d "$DATASET" -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:-6}" -k 1
         --registry-path registry.local.json
@@ -414,6 +418,7 @@ harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
   -a sid_code_agent:SidCodeAgent --job-name "$JOB"
 RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
+taskset_fp_remember || true
 
 kill "$MEM_PID" 2>/dev/null || true
 # E1 镜像服务收尾。⚠️ 不用 trap：镜像是 warm 后落盘的，进程停掉不影响下次复用。

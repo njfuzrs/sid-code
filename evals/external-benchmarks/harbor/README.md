@@ -224,7 +224,7 @@ harbor run ... --allow-agent-host 192.168.5.2
 | --- | --- | --- |
 | `terminal-bench-sample@2.0` | 10 | n=10 已发表结论的取数源，⛔ 别动 |
 | `terminal-bench-local@2.0` | 66 | 本地镜像就绪的全部题 |
-| `terminal-bench-w3-54@2.0` | 54 | 🔴 **W3 三臂对照用这个**（指纹 `54:b9c053ee6ba0daa0`） |
+| `terminal-bench-w3-54@2.0` | 54 | 🔴 **W3 三臂对照用这个**（指纹 `54:b9c053ee6ba0daa0:44587da4ee10d51b`，第三段是 lock 的 task.digest） |
 
 ```bash
 harbor run -d terminal-bench-w3-54@2.0 --registry-path registry.local.json ...
@@ -1136,8 +1136,26 @@ python3 test-arm-health.py [--self-check]              # arm_health 判据自证
 ```
 
 `w3-run.sh` 收尾**已自动调用**它（只读旁路，失败不改 `RUN_RC`）——
-接进流程而不是「跑完手工再跑一下」，理由同 `run-model-switch.sh:432` 那段注释：
+接进流程而不是「跑完手工再跑一下」，理由同 `run-model-switch.sh:446` 那段注释：
 **digest 在第九棒就存在，而九棒里零次被跑过**。价值不在工具，在它被真的执行。
+
+人读摘要里会多一格 `declared−landed`（只披露，⛔ 不翻红）。期望值可以是 12
+（`w3-sid-sonnet-66`），12 是正确的，⛔ 不是 0。
+
+#### 回归保护两道闸（2026-09-21）：控制变量 + 题集指纹
+
+不是修现存错误：2026-09-20 真跑一遍，A10 / A11 / W3 跨臂 multiplier 已一致；
+题集指纹闸原先只在 `w3-run.sh`、只哈希题名。本轮把两者升成判据。
+
+```bash
+python3 check-controlled-vars.py                 # A10 / A11 / W3，先键存在再取值相等
+python3 test-check-controlled-vars.py            # 改值 / 删键两条变异自证
+# 四条跑法脚本都 source ./taskset-fp.sh
+# 指纹 = 题数:题名sha16:digest_sha16（无 lock 时第三段 nolock）
+python3 test-taskset-fp.py
+```
+
+W3 扫描面含 `w3-cc-sonnet-54`（A3）。缺它 = 把 15 号最关心的那一臂留在扫描面外。
 
 #### 🔴 为什么必须归档：`runs/` 整个不入库
 

@@ -438,10 +438,14 @@ def collect(run_dir: str) -> dict:
             "pending_or_unjudged": len(rows) - n - len(excluded),
             "by_reason": by_reason,
             "excluded_tasks": sorted(r["task"] for r in excluded),
-            # 🔴 见 expected_task_count:题集应有题数,与已落盘 trial 的差 = 还没跑完。
-            # 缺这一格时 pass@1 会被当成终值引用,而中途子集**偏易**(实测 +16.2pp)。
-            # 🔴 见 job_unfinished:判据是 harbor 的 finished_at,⛔ 不是题数差
-            # (题数差在 A2 这种「66 题 job 实跑 54」的 run 上必然假红)。
+            # 只披露,⛔ 不翻红:gap>0 且 finished_at 非 None ⇒ 这些题从未落盘
+            # (额度耗尽/网关故障),判据已主动移出分母 —— 见 gen-w3-54-registry.py:14。
+            # ⛔ 别把它当「未跑完」的判据:那条判据在 A2 上假红过(见 job_unfinished:137)。
+            # 期望值可以是 12（w3-sid-sonnet-66），12 是正确的，⛔ 不是 0。
+            "declared_minus_landed": (n_declared - len(rows)) if n_declared is not None else None,
+            # 判据已按 job_unfinished:137 的教训改为 finished_at；
+            # 上一格只披露不判定。⛔ 同一个数字不许有两个来源。
+            # 拿中途子集当终值会偏易 +16.2pp（:361：A2 在同一批题上 62.5%，全集 46.3%）。
             "job_unfinished": unfinished,
             "n_total_trials_declared": n_declared,
         },
@@ -604,6 +608,9 @@ def main() -> int:
         print(f"  分母: 计分 {d['scored']} / 排除 {d['excluded']} / 未判 {d['pending_or_unjudged']}")
         if d["by_reason"]:
             print(f"        排除构成 {d['by_reason']}")
+        gap = d.get("declared_minus_landed")
+        if gap is not None:
+            print(f"        declared−landed = {gap}（只披露,⛔ 不翻红）")
         ci = a["ci"]
         if "error" in ci:
             print(f"  ⛔ 置信区间: {ci['error']}")

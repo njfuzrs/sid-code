@@ -9,7 +9,7 @@
   source ~/Code/person/trajectory-platform/backend/venv/bin/activate
   cd ~/Code/person/sid-code
   export ANTHROPIC_API_KEY=...
-  inspect eval evals/inspect/tasks/sid_code_understanding.py --model anthropic/claude-haiku-4-5
+  inspect eval evals/_archive/inspect-spike/tasks/sid_code_understanding.py --model anthropic/claude-haiku-4-5
   inspect view  # 启动浏览器 UI
 """
 

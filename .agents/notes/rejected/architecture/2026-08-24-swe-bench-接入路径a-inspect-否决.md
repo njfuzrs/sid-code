@@ -16,7 +16,7 @@ SWE-bench Verified 的接入路径定为 **B：官方 `swebench eval`** —— s
   §1.2 把 SWE-bench Pro 从「M5 Gate 后视情况切换」改为**否决**，§7 风险表去掉「切 Pro」这条缓解措施、
   并明确「路径 A 不再是回滚目标」。
 - 删除 3 个路径 A 脚手架文件：`sid_code_solver.py` / `runner.ts` / `requirements.txt`。
-- `evals/inspect/` **保留**（spike 实证载体），README 顶部加否决框。
+- `evals/inspect/` **保留**（spike 实证载体；2026-09-21 PR-D 迁到 `evals/_archive/inspect-spike/`），README 顶部加否决框。
 - `evals/external-benchmarks/README.md`「集成路径」一节的「当前决策：默认路径 A」被裁决取代。
 - `evals/scripts/run-external-baseline.ts` 摘掉两条断言已删文件存在的 preflight
   （否则该脚本 `--track exec` 恒 `exit 1`）。
@@ -59,7 +59,7 @@ harness 才是 MIT；commercial 276 题来自 18 家初创的私有仓，**天�
 **正是第三条让「先去核实 commercial split 可获取性」这件事失去意义：核实成功也不能用。**
 所以那条待办是**取消**，不是延期。
 
-**保留 `evals/inspect/`（没删）。** 它有 `run_spike.py` + `tasks/` + `lib/` + `logs/`，
+**保留 `evals/inspect/`（没删；2026-09-21 迁到 `evals/_archive/inspect-spike/`）。** 它有 `run_spike.py` + `tasks/` + `lib/` + `logs/`，
 是「已过 spike 验证」那句话的唯一实证载体。删掉它，`接入计划.md` 那句引用变成死链，
 而未来想核验「当年 spike 到底验到什么程度」的人就没有落点。
 按 `CLAUDE.md` 的铁律，这类溯源线索是资产。
@@ -98,7 +98,7 @@ $ lsof -nP -iTCP:4000 -sTCP:LISTEN
 claude-tr 53727 zhourusheng ... TCP 127.0.0.1:4000 (LISTEN)
 ```
 
-监听者是 `claude-trace`，不是 LiteLLM。已在 `evals/inspect/README.md` 标注：
+监听者是 `claude-trace`，不是 LiteLLM。已在 `evals/_archive/inspect-spike/README.md` 标注：
 那段 LiteLLM 报错是 2026-05-21 当时的环境事实，照它 debug 今天的 4000 端口会走错方向。
 
 **④ 门禁**：`bun run affected-tests:run` 与 `make build` 见 PR 正文（本次改动为文档 +

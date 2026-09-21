@@ -67,6 +67,10 @@ export PYTHONPATH="$(pwd)"
 # ⛔ 别用官方 89 题 registry：缺镜像的题会在环境构建阶段失败，形态是
 #    reward=0 + status 正常，与「能力不行」不可区分。
 DATASET="${SID_HARBOR_DATASET:-terminal-bench-sample@2.0}"
+JOBDIR="runs/$JOB"
+# shellcheck disable=SC1091
+source ./taskset-fp.sh
+taskset_fp_gate || exit 2
 
 COMMON=(-d "$DATASET" -m anthropic/claude-sonnet-5 -n 1 -k 1
         --registry-path registry.local.json
@@ -343,6 +347,7 @@ fi
 harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
   -a sid_code_agent:SidCodeAgent --job-name "$JOB"
 RUN_RC=$?
+taskset_fp_remember || true
 # E1 镜像服务收尾（tarball 已落盘，停进程不影响下次复用）。
 bash ../lib/uv-mirror.sh stop "${UV_MIRROR_PID:-}" >/dev/null 2>&1 || true
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="

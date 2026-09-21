@@ -3,7 +3,7 @@
 
 ## 为什么必须是 dataset，而不是 `-i <task>` 子集
 
-`w3-run.sh:159` 只把 `$JOB` 传给下游（`bash run-model-switch.sh "$JOB"`），
+`w3-run.sh:131` 只把 `$JOB` 传给下游（`bash run-model-switch.sh "$JOB"`），
 **额外参数不会被转发** ⇒ 想只跑某个子集，唯一的入口是换 dataset。
 而且按题分批（每批一个 `-i`）会把分母碎成 N 份（理由见 08 号 §2.1），
 本仓已明确禁止。
@@ -26,7 +26,6 @@ A2（sid+sonnet）实跑的结果是 **54 题进分母**：另外 12 题在 2026
     python3 gen-w3-54-registry.py --dry-run   # 只看会写什么
     python3 gen-w3-54-registry.py             # 写入 registry.local.json
 """
-import hashlib
 import json
 import pathlib
 import sys
@@ -70,7 +69,9 @@ def main() -> None:
 
     keep = [by_name[t] for t in want]
     names = sorted(t["name"] for t in keep)
-    fp = f"{len(names)}:{hashlib.sha256(chr(10).join(names).encode()).hexdigest()[:16]}"
+    # 与 taskset_fp.fingerprint_names 同算法（生成时还没有 lock，只有题名两段）。
+    from taskset_fp import fingerprint_names
+    fp = fingerprint_names(names)
 
     entry = {
         "name": OUT_NAME,

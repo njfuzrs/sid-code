@@ -78,14 +78,21 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 0
 
 ## 目录组织
 
-> ⚠️ 下面这张树是 **2026-09-21 PR-B/C 之后**的入库快照（`git ls-files evals`）。
+> ⚠️ 下面这张树是 **2026-09-21 PR-D** 之后的入库快照（`git ls-files evals`）。
 > ⛔ 别照抄它当事实 —— 改动前先跑 `git ls-files evals | awk -F/ '{print $2}' | sort | uniq -c` 对账。
 > 13 号收尾是 **139** @ `007bd481`；#58 加 3 个文件到 **142**；证据层清单再加到开工当日 **147**；
-> 本 PR 搬走 `prompt-v2.md` / `calibration-set/types.ts` / `calibrate-pairwise.test.ts`（−3），
-> 新增 `_judge/README.md` + `_archive/README.md`（+2）→ **146**。
+> PR-B/C 搬走 3 个 + 新增 2 个 → **146**。本 PR `git mv inspect/ → _archive/inspect-spike/`
+> （tracked 数不变）+ 新增 5 个 harbor 闸文件 → **151**。
+>
+> **`_` 前缀 = 不是 case、不是 agent 输入；其后按性质分四个固定桶：**
+> `_archive/`（死了但要留）、`_data/`（跑分产物与校准数据，**逻辑桶，物理未迁**）、
+> `_reports/`（报告落点）、`_judge/`（判分资产）。
+> ⛔ 不许再新增第五个 `_` 桶 —— 要加先证明它不属于这四个。
+> `_runs/` 与 `raw-outputs/` 归入 `_data` 逻辑桶，物理目录名不动
+> （`packages/eval-framework/core/runner.ts` 的 `join(baseDir, "_runs")` 是对外契约）。
 
 ```
-evals/                            # 入库 146 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
+evals/                            # 入库以 `git ls-files evals | wc -l` 为准（⚠️ 运行产物被 .gitignore 挡掉）
 ├── README.md                     # 本文
 ├── CLAUDE.md                     # 面向 agent 的规则（每条带 file:line 出处，有门禁校验）
 │
@@ -94,17 +101,36 @@ evals/                            # 入库 146 个文件（⚠️ 运行产物�
 │
 ├── _judge/             18  # ✅ 在用：prompt-v3 + calibration-v3（κ=0.921）+ gold-cases 10 + README
 │                          #   prompt-v2 / types / pairwise 测试已迁 packages/eval-framework/judge/
-├── _archive/            3  # 退役但要留：judge-prompts/（prompt-v0 / v1）+ README
+├── _archive/            9  # 退役但要留：judge-prompts/ + inspect-spike/ + README（分母 2）
 ├── _diagnoses/         12  # ✅ 在用：5 个 fix_type 归因轴的唯一实例化记录 + SCHEMA.md + runs/
 ├── _reports/           24  # external/（含 evidence 清单）+ .gitkeep
 ├── bench-runner/        8  # 大规模 bench：runner + 3 grader + 4 adapter（capability-{grader,shared} 已删）
 ├── providers/           4  # sid-code 特定的在线 wrapper（⛔ 不是 eval-framework/providers/）
 ├── scripts/             4  # archive-evidence / distill-skill-rules / run-external-baseline / self-vs-external-report
-├── cross-provider/      2  # 横评报告 + 活测试
-├── inspect/             6  # ⚠️ 外部引用 0，但刻意保留（路径 A 否决实证）
-├── external-benchmarks/ 59 # ✅ 在用（入库脚本/子集/报告；⛔ 0 份答案）
-└── raw-outputs/         1  # 只剩 .gitkeep
+├── cross-provider/      2  # 横评报告 + 活测试（⛔ 不进 _archive/，实测 4 pass）
+├── external-benchmarks/ 64 # ✅ 在用（入库脚本/子集/报告；⛔ 0 份答案；+5 闸脚本）
+└── raw-outputs/         1  # 只剩 .gitkeep（物理未迁；README 归入 _data 逻辑桶）
 ```
+
+### `_` 四桶与已消失目录的去向
+
+| 原目录 | 去向 | 依据 |
+| --- | --- | --- |
+| `general/` `architecture/` `real-tasks/` | ❌ 删 | 13 号 PR3a·3b·3d |
+| `capability/` | ❌ 删 | 13 号 PR3c |
+| `_scores/` | ❌ 删 | 13 号 PR2 |
+| `_runs/`（4 个 jsonl） | ❌ **删数据**，⚠️ **目录名不动** | 13 号 PR2 + `runner.ts` 对外契约 |
+| `inspect/` | → `_archive/inspect-spike/` | 本 PR（PR-D）—— 只这一项 |
+| `_diagnoses/` `cross-provider/` | ✅ **留原地（是活的）** | 两个活入口 / 4 pass 活测试 |
+| `verify-judge-stability.ts` | ❌ **删** | 13 号 PR3a |
+| `_template.yaml` | ❌ **删** | 13 号 PR2 |
+| `_judge/prompt-v0.md` `prompt-v1.md` | → `_archive/judge-prompts/` | PR-C |
+| `_runs/` `raw-outputs/` | 🔴 **原地不动** ＋ 归入 `_data` **逻辑桶** | 跨包契约，物理不迁 |
+| `_meta/`（整个目录，4 个文件） | ❌ **全删** | 13 号 PR3a + 裁决一 |
+| `CASES.md` `sample-50.*` `gen-cases-md.ts` | ❌ 删（纯派生物） | 10§3.3 |
+
+⛔ **不许把 `_data` 画成已迁的树** —— `_runs/` / `raw-outputs/` 物理路径没变。
+顶层目录数 **11 → 11**（PR-C +`_archive/`、本 PR −`inspect/`，净零）。⛔ 不是 9。
 
 > **runner 入口约束**：`packages/eval-framework/core/runner.ts` 的默认扫描面已空
 > （四组题集全部删除，`discover*` 对缺失目录返回 `[]`）。`--cases-dir` 仍可扫任意目录。
@@ -136,7 +162,7 @@ evals/                            # 入库 146 个文件（⚠️ 运行产物�
 ⇒ ⛔ **不许说 `providers/` 分裂是 bug**。它的问题曾经是规则没写在 README 里，不是实现错了。
 
 `evals/bench-runner/adapters/codex.ts` 是**预留对照位，当前无调用方**。
-⛔ 不许因此删它 —— 零引用 ≠ 零价值，它是「对照 agent 可插拔」的唯一实证（同 `inspect/`）。
+⛔ 不许因此删它 —— 零引用 ≠ 零价值，它是「对照 agent 可插拔」的唯一实证（同 `_archive/inspect-spike/`）。
 
 ## 跑评测
 
@@ -254,7 +280,7 @@ bun run eval:run --provider sid-code,claude-code
   `capability-plan-w12-d3-preview.md` 正文引用）。⚠️ **两个引用方分别随 PR3a / PR3c 删除** ⇒
   该目录现在入库只剩 `.gitkeep`（`git ls-files evals/raw-outputs` 复算），
   磁盘上的转储本就被 `.gitignore` 挡在索引外
-- **文档同步**：`evals/inspect/README.md:121` 对 `horizontal-comparison-v1.md` 的引用已改为指向 git 历史，不再假装文件还在磁盘上
+- **文档同步**：`evals/_archive/inspect-spike/README.md` 对 `horizontal-comparison-v1.md` 的引用已改为指向 git 历史，不再假装文件还在磁盘上
 
 ### 清理 trigger（什么时候动手）
 
