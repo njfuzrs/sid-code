@@ -11,6 +11,7 @@ import {
   checkMessageHistoryIntegrity,
   describeIntegrityViolation,
 } from "../../agent/message-invariants.ts";
+import { isCompactSourceMessage } from "../../context/auto-compact.ts";
 
 /** snipCompact 配置 */
 export interface SnipCompactOptions {
@@ -66,6 +67,7 @@ export function snipCompact(messages: Message[], options?: SnipCompactOptions): 
       .map((b) => (b.type === "text" ? b.text : ""))
       .join("");
     if (
+      isCompactSourceMessage(messages[0]) ||
       firstText.startsWith("[自动截断]") ||
       firstText.startsWith("[响应式压缩]") ||
       firstText.startsWith("[snipCompact]") ||
