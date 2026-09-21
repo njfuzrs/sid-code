@@ -64,6 +64,21 @@ describe("partitionToolCalls (GAP-03 贪心连续合并)", () => {
     expect(batches[0].isConcurrencySafe).toBe(true);
     expect(batches[1].isConcurrencySafe).toBe(false);
   });
+
+  test("isConcurrencySafe 抛错 fail-closed 当 unsafe（不把整批炸掉）", () => {
+    const exploding = mockTool("read", { safe: true });
+    exploding.isConcurrencySafe = () => {
+      throw new Error("判定炸了");
+    };
+    const items = [
+      { block: block("1", "read"), tool: exploding, idx: 0 },
+      { block: block("2", "read"), tool: mockTool("read", { safe: true }), idx: 1 },
+    ];
+    const batches = partitionToolCalls(items);
+    expect(batches.length).toBe(2);
+    expect(batches[0].isConcurrencySafe).toBe(false);
+    expect(batches[1].isConcurrencySafe).toBe(true);
+  });
 });
 
 describe("StreamingToolExecutor (GAP-01 4 状态状态机)", () => {

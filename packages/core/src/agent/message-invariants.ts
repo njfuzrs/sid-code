@@ -187,6 +187,36 @@ export function assertMessageHistoryIntact(messages: Message[], context = ""): v
 }
 
 /**
+ * F2 白名单：模型以「正常终止」收口，但仍可能在 content 里留下未执行的 tool_use。
+ *
+ * 必须是白名单（fail-closed），不能改成「排除已知错误」——未知 stopReason 流入
+ * 收尾链会重开 CC 那种 error → hook blocking → retry 死亡螺旋。
+ * 主循环与子循环必须共用这一份，避免子代理把 end_turn+tool_use 直接当完成。
+ */
+export function isEndTurnLikeStopReason(stopReason: string | null | undefined): boolean {
+  return stopReason === "end_turn" || stopReason === "stop" || stopReason === "stop_sequence";
+}
+
+/**
+ * 为消息历史中未应答的 tool_use 构造 error 占位 tool_result。
+ *
+ * 循环恢复 / 中断发生在「刚产生 assistant tool_use、还没执行工具」的时刻。
+ * 用全局完整性检查锁定孤儿 id，避免误补历史更早处已正常配对的调用。
+ * 主循环 recoverFromLoop 与子循环 loopDetected 必须走同一份——子循环只注入 prompt
+ * 会留下孤儿，下一轮 OpenAI/Anthropic 400（2026-08-04 事故在子循环的翻版）。
+ */
+export function buildPendingToolResults(messages: Message[], content: string): ContentBlock[] {
+  const integrity = checkMessageHistoryIntegrity(messages);
+  if (integrity.orphans.length === 0) return [];
+  return integrity.orphans.map((o) => ({
+    type: "tool_result" as const,
+    tool_use_id: o.id,
+    content,
+    is_error: true,
+  }));
+}
+
+/**
  * backfill 占位 tool_result 的默认文案（统一事实源，便于测试断言 & 诊断检索）。
  *
  * 成因清单必须与**真实产生端**保持同步（2026-08-04 教训）：旧文案只列了

@@ -1180,6 +1180,14 @@ export class Manager {
    * 找到最近的 compact_boundary，将其之前的所有消息的 content
    * 替换为轻量引用，让 V8 GC 可以回收大对象。
    * 保留消息骨架（role）和 compact_boundary 摘要。
+   *
+   * ⚠️ 调用前提：边界必须插在切点（splitPoint / 管道切点），**不能**贴在数组末尾。
+   * `addCompactBoundary` 是 `this.messages.push(...)`，边界永远贴末尾；此时
+   * `i < boundaryIdx` 覆盖整段历史，含 emergencyTruncate / 渐进管道特意留下的
+   * 保留段。2026-09-20 实证：blocking/hard 在贴末尾后调本方法，近端
+   * RECENT_TAIL 全部变成 `[已释放]` 桩发给 LLM（P0-1）。
+   * 生产路径（loop.ts blocking / hard / emergency）因此**不再调用**本方法——
+   * 近端必须留给模型。本方法保留给「边界真插在切点」的调用方与单测。
    */
   releaseBeforeBoundary(): number {
     // 从后向前找到最近的 compact_boundary

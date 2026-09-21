@@ -403,10 +403,9 @@ describe("D2/D3 接线哨兵（防再抄一份）", () => {
     expect(src).toContain("MAX_EMPTY_PARAM_RETRIES");
   });
 
-  test("F2 白名单含 end_turn / stop / stop_sequence，且 end_turn 不再无条件 return", () => {
-    expect(src).toContain('response.stopReason === "end_turn"');
-    expect(src).toContain('response.stopReason === "stop"');
-    expect(src).toContain('response.stopReason === "stop_sequence"');
+  test("F2 白名单走共享 isEndTurnLikeStopReason，且 end_turn 不再无条件 return", () => {
+    // 判据必须与主循环共用一份，不能在子循环再抄 end_turn/stop/stop_sequence。
+    expect(src).toContain("isEndTurnLikeStopReason(");
     expect(src).toContain("f2FallThrough");
     // 旧代码：`if (end_turn || stop) { return { success: true } }` 无 tool_use 守卫。
     // 新代码必须在收工前看 hasPendingToolUse。

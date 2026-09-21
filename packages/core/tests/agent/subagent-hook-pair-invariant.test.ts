@@ -243,3 +243,81 @@ describe("子代理 Pre/Post hook 配对不变量", () => {
     expectPaired(hookLog, "混合批次");
   });
 });
+
+describe("P0-2 — 子代理 executeTools 走 partitionToolCalls，不打乱 Read→Edit→Read", () => {
+  test("Read(a) Edit(c) Read(d) 不得把后面的 Read 提前到 Edit 之前", async () => {
+    const order: string[] = [];
+    const make = (name: string, safe: boolean) => ({
+      name: () => name,
+      description: () => name,
+      inputSchema: () => ({ type: "object", properties: {} }),
+      readOnly: () => safe,
+      isConcurrencySafe: () => safe,
+      async execute() {
+        order.push(`start:${name}`);
+        // Edit 慢一点：两桶实现会先并行两个 Read，于是 Read(d) 的 start 会早于 Edit 结束。
+        await new Promise((r) => setTimeout(r, name === "edit" ? 40 : 5));
+        order.push(`end:${name}`);
+        return { output: `${name} ok` };
+      },
+    });
+    const tools = makeRegistry([make("read", true), make("edit", false)]);
+    const content: ContentBlock[] = [
+      toolUse("a", "read", { file_path: "/a.ts" }),
+      toolUse("c", "edit", { file_path: "/c.ts" }),
+      toolUse("d", "read", { file_path: "/d.ts" }),
+    ];
+    const results = await executeTools(content, tools, undefined, undefined, allowAll);
+    expect(results).toHaveLength(3);
+    expect(results.map((r) => (r.type === "tool_result" ? r.tool_use_id : ""))).toEqual([
+      "a",
+      "c",
+      "d",
+    ]);
+    // 分区：Read(a) 必须先于 Edit，Edit 必须先于 Read(d)。
+    // 两桶实现会是 start:read, start:read, end:read, end:read, start:edit —— Read(d) 抢跑。
+    const firstEditStart = order.indexOf("start:edit");
+    const firstReadEndAfterA = order.indexOf("end:read");
+    expect(firstReadEndAfterA).toBeGreaterThanOrEqual(0);
+    expect(firstEditStart).toBeGreaterThan(firstReadEndAfterA);
+    const lastReadStart = order.lastIndexOf("start:read");
+    const editEnd = order.indexOf("end:edit");
+    expect(lastReadStart).toBeGreaterThan(editEnd);
+  });
+
+  test("SID_TOOL_MAX_CONCURRENT=1 时并行批次排队，不一次性全发", async () => {
+    const orig = process.env.SID_TOOL_MAX_CONCURRENT;
+    process.env.SID_TOOL_MAX_CONCURRENT = "1";
+    try {
+      let inflight = 0;
+      let peak = 0;
+      const make = (name: string) => ({
+        name: () => name,
+        description: () => name,
+        inputSchema: () => ({ type: "object", properties: {} }),
+        readOnly: () => true,
+        isConcurrencySafe: () => true,
+        async execute() {
+          inflight++;
+          peak = Math.max(peak, inflight);
+          await new Promise((r) => setTimeout(r, 15));
+          inflight--;
+          return { output: "ok" };
+        },
+      });
+      // 同名工具：registry 按 name 取，三个调用都走同一个 read。
+      const tools = makeRegistry([make("read")]);
+      await executeTools(
+        [toolUse("1", "read"), toolUse("2", "read"), toolUse("3", "read")],
+        tools,
+        undefined,
+        undefined,
+        allowAll,
+      );
+      expect(peak).toBe(1);
+    } finally {
+      if (orig === undefined) delete process.env.SID_TOOL_MAX_CONCURRENT;
+      else process.env.SID_TOOL_MAX_CONCURRENT = orig;
+    }
+  });
+});
