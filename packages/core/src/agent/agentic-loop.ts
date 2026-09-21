@@ -30,10 +30,15 @@ import type { QuerySource } from "../llm/fallback.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { executeTools } from "./tool-executor.ts";
-import { isEmptyToolInput, toolHasRequiredParams } from "../query/empty-param.ts";
+import {
+  MAX_EMPTY_PARAM_RETRIES,
+  detectEmptyParamToolUses,
+  replaceEmptyParamToolUses,
+  buildEmptyParamRetryMessage,
+} from "../query/empty-param.ts";
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
-import { reactiveCompact } from "../query/reactive-compact.ts";
+import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
 
 // ============================================================
 // 配置接口
@@ -314,6 +319,9 @@ async function runAgentLoopInner(
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
   let ctxWindowRecoveryCount = 0;
+  // D2：空参数 F1 重试计数。与主循环 `state.emptyParamRetryCount` 同口径——跨轮累计，
+  // 正常 end_turn 收工时清零。弱模型持续吐 input={} 时必须有上限，否则会空转到 maxTurns。
+  let emptyParamRetryCount = 0;
   // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
   // 在所有出口统一回填）。累计而非每轮重置——用户问的是"这个子代理一共重试了多少次"，
   // 而"第 3 轮重试了 2 次"这种粒度已经在遥测（type=retry + agentId）里了。
@@ -662,7 +670,100 @@ async function runAgentLoopInner(
       lastTextOutput = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
     }
 
-    // 添加助手消息到历史
+    // ─── F1：空参数 tool_use 退化检测（不论 stop_reason）───
+    //
+    // D2 / D3（2026-09-21）：子代理此前抄了「检测空参数」半截，没抄主循环的连坐。
+    // 旧路径只给退化块补 tool_result，同轮健康 tool_use 进了历史却没有配对结果 →
+    // 下一轮 OpenAI 族 400。更糟的是 D3：`end_turn` 先于 `tool_use` 判断，
+    // DeepSeek「空参数 + end_turn」连 F1 都进不去，直接 success:true 丢工具。
+    //
+    // 与主循环 query/loop.ts 同一顺序、同一组纯函数：
+    //   ① 不论 stop_reason，命中即连坐（replaceEmptyParamToolUses）——输出保证零 tool_use；
+    //   ② 未耗尽 → 注入 buildEmptyParamRetryMessage 后 continue（不执行任何工具）；
+    //   ③ 耗尽 → 入历史后收工，如实呈现退化，不再无限空转。
+    // 助手消息必须在本分支里以 sanitized 入历史，绝不能先把原始 tool_use 写进去再补半套 result。
+    {
+      const getSchema = (name: string) => tools.get(name)?.inputSchema?.();
+      const emptyParamHits = detectEmptyParamToolUses(response.content, getSchema);
+      if (emptyParamHits.length > 0) {
+        const names = emptyParamHits.map((h) => h.name).join("、");
+        const sanitizedContent = replaceEmptyParamToolUses(response.content, getSchema);
+
+        if (emptyParamRetryCount < MAX_EMPTY_PARAM_RETRIES) {
+          emptyParamRetryCount++;
+          ctxMgr.addMessage({ role: "assistant", content: sanitizedContent });
+
+          // 与主循环 P0-2 同口径：低占用下空参数是偶发退化，压缩既无收益又会给模型
+          // 注入「已精简上下文」假话。门禁走 getCompactionLevel（单一事实源）。
+          const levelBeforeRetry = ctxMgr.getCompactionLevel(tools.size());
+          let compactResult: ReactiveCompactResult = {
+            success: false,
+            messageCountBefore: ctxMgr.messageCount(),
+            messageCountAfter: ctxMgr.messageCount(),
+            strategy: "none",
+          };
+          if (levelBeforeRetry === "none") {
+            log.info(
+              "AGENT_LOOP",
+              `F1：空参数重试跳过压缩——上下文占用未达 soft 档（level=none，${ctxMgr.messageCount()} 条消息）`,
+            );
+          } else {
+            compactResult = reactiveCompact(ctxMgr);
+            if (compactResult.success) {
+              log.info(
+                "AGENT_LOOP",
+                `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条（level=${levelBeforeRetry}）`,
+              );
+            }
+          }
+
+          ctxMgr.addMessage({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: buildEmptyParamRetryMessage(
+                  emptyParamHits,
+                  emptyParamRetryCount,
+                  MAX_EMPTY_PARAM_RETRIES,
+                  compactResult.success,
+                  response.stopReason ?? undefined,
+                ),
+              },
+            ],
+          });
+          log.warn(
+            "AGENT_LOOP",
+            `F1：检测到空参数 tool_use「${names}」（stop=${response.stopReason}），` +
+              `替换为 text 并重试 ${emptyParamRetryCount}/${MAX_EMPTY_PARAM_RETRIES}`,
+          );
+          continue;
+        }
+
+        log.error(
+          "AGENT_LOOP",
+          `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，放行并如实呈现退化`,
+        );
+        ctxMgr.addMessage({ role: "assistant", content: sanitizedContent });
+        config.onTurnEnd?.({
+          turn: turns,
+          textOutput: lastTextOutput,
+          tools: [],
+          tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
+          toolUseCount,
+        });
+        return {
+          success: true,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+        };
+      }
+    }
+
+    // 添加助手消息到历史（走到这里 = 本轮无真退化，content 原样入账）
     ctxMgr.addMessage({ role: "assistant", content: response.content });
 
     // 内容循环检测
@@ -687,8 +788,34 @@ async function runAgentLoopInner(
       continue;
     }
 
-    // 停止原因处理
-    if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+    // ─── 检查停止原因 ───
+    // D3：F2 fall-through。模型有时 stop_reason=end_turn/stop/stop_sequence 却在
+    // content 里留下（非空参数的）tool_use。空参数已被上方 F1 拦截，走到这里的
+    // tool_use 必为合法调用 → 不收工，fall-through 到下方工具分支执行。
+    //
+    // isEndTurnLike 是白名单（不是「排除已知错误」）：未知 stopReason fail-closed，
+    // 与主循环 loop.ts 的 P0-2 死亡螺旋防御同方向。stop_sequence 与 end_turn/stop
+    // 同属正常终止，一并纳入——旧代码漏了它，会落到下方「未知停止原因」带警告收尾。
+    const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
+    const isEndTurnLike =
+      response.stopReason === "end_turn" ||
+      response.stopReason === "stop" ||
+      response.stopReason === "stop_sequence";
+    const f2FallThrough = isEndTurnLike && hasPendingToolUse;
+    if (f2FallThrough) {
+      log.warn(
+        "AGENT_LOOP",
+        "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具）",
+        {
+          stopReason: response.stopReason,
+          toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
+          model,
+        },
+      );
+    }
+
+    if (isEndTurnLike && !hasPendingToolUse) {
+      emptyParamRetryCount = 0;
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
       config.onTurnEnd?.({
         turn: turns,
@@ -707,8 +834,8 @@ async function runAgentLoopInner(
       };
     }
 
-    // 工具调用
-    if (response.stopReason === "tool_use") {
+    // 工具调用：stop_reason=tool_use，或 F2 fall-through（end_turn 仍含未执行 tool_use）
+    if (response.stopReason === "tool_use" || f2FallThrough) {
       // 工具调用循环检测
       let loopDetected = false;
       for (const block of response.content) {
@@ -744,25 +871,14 @@ async function runAgentLoopInner(
       const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
       toolUseCount += toolUseBlocks.length;
 
-      // 空参数检测（对标主循环 F1）：弱模型退化时输出 input={} 的 tool_use，
-      // 直接执行会报参数缺失错误，浪费工具执行 token。检测到后替换为错误提示让模型重试。
-      const emptyParamBlocks = toolUseBlocks.filter((b) => {
-        if (b.type !== "tool_use") return false;
-        if (!isEmptyToolInput(b.input)) return false;
-        const schema = tools.get(b.name)?.inputSchema?.();
-        return toolHasRequiredParams(schema);
-      });
-      if (emptyParamBlocks.length > 0) {
-        log.warn("AGENT_LOOP", `检测到 ${emptyParamBlocks.length} 个空参数 tool_use，注入重试提示`);
-        // 构造 tool_result 错误响应 + 重试提示
-        const errorResults: ContentBlock[] = emptyParamBlocks.map((b) => ({
-          type: "tool_result" as const,
-          tool_use_id: (b as { type: "tool_use"; id: string }).id,
-          content: "错误：工具参数为空。请检查工具定义，提供完整的必需参数后重新调用。",
-          is_error: true,
-        }));
-        ctxMgr.addMessage({ role: "user", content: errorResults });
-        continue;
+      if (response.stopReason !== "tool_use") {
+        const toolNames = toolUseBlocks
+          .map((b) => (b.type === "tool_use" ? b.name : ""))
+          .filter(Boolean);
+        log.info(
+          "AGENT_LOOP",
+          `F2：end_turn(${response.stopReason}) 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`,
+        );
       }
 
       // 执行工具
