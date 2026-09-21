@@ -1,6 +1,9 @@
 /**
  * Phase 3 W7: 三层 Grader — Layer 3 Process Grader
- * 基于 LLM Judge 做语义级评分（调用 prompt-v1.md）
+ * 基于 LLM Judge 做语义级评分。promptPath 由调用方传入：
+ * `run-bench.ts` 用 packages/eval-framework/judge/prompt-v2.md，
+ * `calibrate-judge.ts` / `run-cross-baseline.ts` 用 evals/_judge/prompt-v3.md。
+ * ⛔ 本文件不绑定某一版 prompt —— 写死 v1 是错的（v1 已退役进 _archive）。
  */
 
 import type { GradeResult, TaskExpected } from "./outcome-grader.ts";

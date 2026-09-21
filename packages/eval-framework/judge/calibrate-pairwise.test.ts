@@ -3,7 +3,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { summarize, renderSummaryMd } from "../../../scripts/eval/calibrate-pairwise";
-import type { CalibrationVerdict } from "./types";
+import type { CalibrationVerdict } from "./calibration-types";
 
 function v(opts: Partial<CalibrationVerdict>): CalibrationVerdict {
   return {

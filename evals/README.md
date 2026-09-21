@@ -78,33 +78,65 @@ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l   # → 0
 
 ## 目录组织
 
-> ⚠️ 下面这张树是 **2026-09-18 PR3d 之后**的入库快照（`git ls-files evals`，**139 个文件**）。
-> ⛔ 别照抄它当事实 —— 改动前先跑 `git ls-files evals | awk -F/ 'NF>2{print $2}' | sort | uniq -c` 对账。
-> 🔴 上一版是 **197**，差 **58** 是本次删掉的 `real-tasks/` 组（27 yaml + 31 setup 脚本）。
+> ⚠️ 下面这张树是 **2026-09-21 PR-B/C 之后**的入库快照（`git ls-files evals`）。
+> ⛔ 别照抄它当事实 —— 改动前先跑 `git ls-files evals | awk -F/ '{print $2}' | sort | uniq -c` 对账。
+> 13 号收尾是 **139** @ `007bd481`；#58 加 3 个文件到 **142**；证据层清单再加到开工当日 **147**；
+> 本 PR 搬走 `prompt-v2.md` / `calibration-set/types.ts` / `calibrate-pairwise.test.ts`（−3），
+> 新增 `_judge/README.md` + `_archive/README.md`（+2）→ **146**。
 
 ```
-evals/                            # 入库 139 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
+evals/                            # 入库 146 个文件（⚠️ 运行产物被 .gitignore 挡掉，不在此列）
 ├── README.md                     # 本文
 ├── CLAUDE.md                     # 面向 agent 的规则（每条带 file:line 出处，有门禁校验）
 │
 ├── holdout/             3  # 2 README（切分方法论，退役说明）+ holdout-sids.txt
 │                          #   ⛔ holdout-sids.txt 一字节不许动：sha256 永封，pre-push.sh 会拒绝 push
 │
-├── _judge/             22  # ✅ 在用：prompt-v0~v3 + calibration-v3（κ=0.921）+ gold-cases 10 条
+├── _judge/             18  # ✅ 在用：prompt-v3 + calibration-v3（κ=0.921）+ gold-cases 10 + README
+│                          #   prompt-v2 / types / pairwise 测试已迁 packages/eval-framework/judge/
+├── _archive/            3  # 退役但要留：judge-prompts/（prompt-v0 / v1）+ README
 ├── _diagnoses/         12  # ✅ 在用：5 个 fix_type 归因轴的唯一实例化记录 + SCHEMA.md + runs/
-├── _reports/           20  # external/ 19 + .gitkeep（capability-plan-w11/w12 4 份已随 PR3c 删）
+├── _reports/           24  # external/（含 evidence 清单）+ .gitkeep
 ├── bench-runner/        8  # 大规模 bench：runner + 3 grader + 4 adapter（capability-{grader,shared} 已删）
-├── providers/           4  # eval-runner 调用的 wrapper
-├── scripts/             3  # distill-skill-rules / run-external-baseline / self-vs-external-report
+├── providers/           4  # sid-code 特定的在线 wrapper（⛔ 不是 eval-framework/providers/）
+├── scripts/             4  # archive-evidence / distill-skill-rules / run-external-baseline / self-vs-external-report
 ├── cross-provider/      2  # 横评报告 + 活测试
-├── inspect/             6  # ⚠️ 外部引用 0，但刻意保留
-├── external-benchmarks/ 56 # ✅ 在用
+├── inspect/             6  # ⚠️ 外部引用 0，但刻意保留（路径 A 否决实证）
+├── external-benchmarks/ 59 # ✅ 在用（入库脚本/子集/报告；⛔ 0 份答案）
 └── raw-outputs/         1  # 只剩 .gitkeep
 ```
 
 > **runner 入口约束**：`packages/eval-framework/core/runner.ts` 的默认扫描面已空
 > （四组题集全部删除，`discover*` 对缺失目录返回 `[]`）。`--cases-dir` 仍可扫任意目录。
 > ⚠️ **入口还在、题没了** —— 跑出来是空集，不是静默换分母。
+
+## 三层 provider 边界（⛔ 是三层不是两层）
+
+> 这条规则以前只活在 `packages/eval-framework/core/runner.ts:167-172` 的注释里。
+> 注释拦不住另一个文件 —— 「顺手统一 providers/」会破坏包可分发性（`bun run lint:boundary` 会拦），
+> 也会把「重跑」和「复算历史轨迹」合成同一个入口。CLAUDE.md 已写死「**重跑 ≠ 同一份轨迹**」。
+
+判据是两问都要：① 在代码路径上 ② 是否 agent-agnostic。
+
+| 层 | 目录 | 职责 | 判据 |
+| --- | --- | --- | --- |
+| agent-agnostic **在线** | `packages/eval-framework/providers/` | 实时调 agent，任何人可用（`_template.ts` / `aider.ts` / `mock-echo.ts`） | 在代码路径上 ∧ 零仓库依赖 |
+| sid-code 特定 **在线** | `evals/providers/` | 实时调，但引仓内脚本（`sid-code-live.ts` 引 `scripts/eval/raw-jsonl-to-trace.ts`） | 在代码路径上 ∧ 依赖本仓 |
+| 🔴 **离线**轨迹解析 | `evals/bench-runner/adapters/` | 从**已落盘 trajectory** 反解 agent output | **根本不调 agent** |
+
+🔴 **`claude-code.ts` / `sid-code-live.ts` 跨层重名是刻意的，⛔ 不许合并。**
+在线层 spawn 真 agent；离线层读历史轨迹。合并 ⇒「重跑」与「复算」变成同一个入口。
+
+源码原话（`packages/eval-framework/core/runner.ts:167-172`）：
+
+> `evals/providers/` 共性是**依赖仓库自身**…搬进包等于让包反向依赖仓库源码、
+> 破坏包边界（`bun run lint:boundary` 会拦），所以它们**刻意**留在仓库侧。
+> 这不是过渡态，是稳定的职责切分 —— 别为了「统一目录」把后两个搬进包。
+
+⇒ ⛔ **不许说 `providers/` 分裂是 bug**。它的问题曾经是规则没写在 README 里，不是实现错了。
+
+`evals/bench-runner/adapters/codex.ts` 是**预留对照位，当前无调用方**。
+⛔ 不许因此删它 —— 零引用 ≠ 零价值，它是「对照 agent 可插拔」的唯一实证（同 `inspect/`）。
 
 ## 跑评测
 
@@ -148,8 +180,8 @@ bun run eval:run --provider sid-code,claude-code
 | ~~`real-tasks/` 的 yaml~~ | 已删（2026-09-18 PR3d；27 yaml + 31 setup 脚本）|
 | ~~holdout 题面 yaml~~ | 已删；留下 README + `holdout-sids.txt` |
 | ~~`eval-runner.ts` `eval-judge.ts` `_types.ts`~~ | 🔴 **已不在本目录** —— runner 与 judge 迁到 `packages/eval-framework/core/{runner,judge}.ts`，类型定义迁到同目录 `types.ts` |
-| `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | ✅ **在用**：LLM Judge 校准成本极高（κ=0.921 重新校一次要数小时人工标注），删了等于推倒重来。⚠️ 它与题集无关，⛔ 别跟着题集一起清 |
-| `providers/*.ts` | ✅ 在用：`tests/eval/` 有活 import 与出处断言指向它 |
+| `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | ✅ **在用**：v3 含 sid-code 硬编码 few-shot，**留本目录**（见 `_judge/README.md`）。κ=0.921 重新校一次要数小时人工标注。agent-agnostic 的 `prompt-v2.md` 已迁 `packages/eval-framework/judge/` |
+| `providers/*.ts` | ✅ 在用：sid-code 特定在线 wrapper（见上方「三层 provider 边界」） |
 | `_diagnoses/` | ✅ 在用：5 个 `fix_type` 归因轴的唯一实例化记录 |
 
 ⚠️ 曾在这一层、**2026-09-18 已删**的一对：`gen-cases-md.ts` → `CASES.md`
@@ -276,16 +308,15 @@ bun run eval:run --cases case_NNN --provider sid-code   # 单跑验证
 这一节是 P2-4（2026-08-12）立的，治的是一个反复被问的问题：**为什么 `evals/` 里有代码？**
 
 先说结论：**`evals/` 是「评测这件事」的整体归属地，它可以有代码，这不是历史欠债。**
-实测本目录有 **23 个 `.ts`**（`bench-runner/` 8、`external-benchmarks/` 5、`scripts/` 3、
-`providers/` 4、`_judge/` 2、`cross-provider/` 1；根下与 `_meta/` 的 `.ts` 已随 PR3a 下线，
-`bench-runner/capability-{grader,shared}.ts` 随 PR3c 下线），
-`scripts/eval/` 有 **28 个文件**（PR3a −4：`run-smoke.ts` / `pass-at-k.ts` /
-`extract-holdout-tokens.ts` / 题面泄露检测脚本；PR3c −5：`run-*-capability.ts`）。
+实测本目录有 **22 个 `.ts`**（`bench-runner/` 8、`external-benchmarks/` 5、`scripts/` 4、
+`providers/` 4、`cross-provider/` 1；`_judge/` 的 2 个 `.ts` 已迁 `packages/eval-framework/judge/`，
+根下与 `_meta/` 的 `.ts` 已随 PR3a 下线，`bench-runner/capability-{grader,shared}.ts` 随 PR3c 下线）。
+`scripts/eval/` 文件数以 `git ls-files scripts/eval | wc -l` 为准。
 
 ```bash
-git ls-files evals | grep -c '\.ts$'                                    # → 23
+git ls-files evals | grep -c '\.ts$'                                    # → 22
 git ls-files evals | grep '\.ts$' | awk -F/ 'NF==2{print "根下"} NF>2{print $2}' | sort | uniq -c
-git ls-files scripts/eval | wc -l                                       # → 28
+git ls-files scripts/eval | wc -l
 ```
 
 | 目录 | 放什么 | 判据 |
@@ -298,7 +329,7 @@ git ls-files scripts/eval | wc -l                                       # → 28
 
 > ⚠️ **不要"顺手"把 `evals/` 下的代码迁去 `scripts/eval/`。**
 > 曾有一版方案提议只迁根下那 2 个文件、理由是「`evals/` 应该只放数据」。
-> 那条原则与现状冲突：迁完之后这里仍有 **23** 个代码文件，但**看起来像已经治理过了** ——
+> 那条原则与现状冲突：迁完之后这里仍有 **22** 个代码文件，但**看起来像已经治理过了** ——
 > 把不一致从「明显」变成「隐蔽」，下一个人更难发现这里其实没有统一规则。
 > 而且 `tests/eval/` 有 **9 个测试文件**直接 `import ../../evals/...`（共 **10** 条 import 路径：
 > `bench-runner/` 的 runner / trajectory-grader / 2 个 adapter，
