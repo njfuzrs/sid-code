@@ -24,9 +24,9 @@ function makeTmpDir(): string {
   return d;
 }
 
-/** 等待 WriteStream 异步落盘 */
-async function flushed(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 200));
+/** 等文件 sink 刷到内核。⛔ 不许改回 setTimeout：CI ubuntu 全量并行时 200ms 不够。 */
+async function flushed(lg: { flush(): Promise<void> }): Promise<void> {
+  await lg.flush();
 }
 
 afterEach(() => {
@@ -57,7 +57,7 @@ describe("Logger 落盘级别门控", () => {
     lg.warn("T", "此条 WARN 应落盘");
     lg.info("T", "此条 INFO 不应落盘");
     lg.debug("T", "此条 DEBUG 不应落盘");
-    await flushed();
+    await flushed(lg);
 
     const content = readFileSync(logFile, "utf8");
     expect(content).toContain("此条 ERROR 应落盘");
@@ -88,7 +88,7 @@ describe("Logger 落盘级别门控", () => {
     lg.info("AUDIT", "裸 AUDIT 分类也豁免");
     // 非豁免分类在同一配置下仍被挡住 —— 证明豁免是按分类而非放开整个 INFO 级
     lg.info("T", "普通 INFO 仍不应落盘");
-    await flushed();
+    await flushed(lg);
 
     const content = readFileSync(logFile, "utf8");
     expect(content).toContain("→ BeforeModel index=1 必须落盘");
@@ -113,7 +113,7 @@ describe("Logger 落盘级别门控", () => {
 
     lg.info("AUDIT:TOOL", "被静默的审计条目");
     lg.info("AUDIT:MODEL", "未静默的审计条目");
-    await flushed();
+    await flushed(lg);
 
     const content = readFileSync(logFile, "utf8");
     expect(content).not.toContain("被静默的审计条目");
@@ -136,7 +136,7 @@ describe("Logger 落盘级别门控", () => {
     lg.warn("T", "D-WARN");
     lg.info("T", "D-INFO");
     lg.debug("T", "D-DEBUG");
-    await flushed();
+    await flushed(lg);
 
     // 门控在默认值下是恒等变换——--debug 用户不丢任何现场
     const content = readFileSync(logFile, "utf8");
@@ -157,7 +157,7 @@ describe("Logger 落盘级别门控", () => {
 
     lg.info("T", "I-INFO 应保留");
     lg.debug("T", "I-DEBUG 应过滤");
-    await flushed();
+    await flushed(lg);
 
     const content = readFileSync(logFile, "utf8");
     expect(content).toContain("I-INFO 应保留");
@@ -181,7 +181,7 @@ describe("Logger 落盘级别门控", () => {
 
     lg.warn("T", "warn-log-必须收到");
     lg.error("T", "error-log-必须收到");
-    await flushed();
+    await flushed(lg);
 
     // warn.log 与主文件是独立 sink（logger.ts:287-299），门控不得连带阻断
     const content = readFileSync(warnLog, "utf8");
@@ -211,7 +211,7 @@ describe("Logger append 模式轮转", () => {
     // 写一条 WARN 即应触发轮转：currentLogSize 必须 seed 现有文件大小，
     // 否则每次启动都从 header 字节数重新计数，阈值永远撞不到
     lg.warn("T", "触发轮转");
-    await flushed();
+    await flushed(lg);
 
     expect(existsSync(logFile + ".1")).toBe(true);
     // 轮转后当前文件应远小于阈值

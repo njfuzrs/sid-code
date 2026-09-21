@@ -315,6 +315,41 @@ def run_tests(root: str, src: str = SRC) -> None:
         "E1-4:全文件 0 命中（实现它 = 同一数字两个来源；留在注释里会让验收把注释当函数）",
     )
 
+    # ── ⑦ E1 覆盖闸：已含「当时分母掺了」的归档不许被整文件再生 ──────────────
+    print("\n⑦ E1 覆盖闸:人手补的 caveat 在时,默认拒绝覆盖")
+    protected = os.path.join(out, "mixed.json")
+    with open(protected, encoding="utf-8") as fh:
+        archived = json.load(fh)
+    archived["arms"][0]["caveats"].append(
+        "E1 / 08b §4.4：当时分母掺了 6 个考场 0（fixture）"
+    )
+    with open(protected, "w", encoding="utf-8") as fh:
+        json.dump(archived, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    blocked = subprocess.run(
+        [sys.executable, src, job, "-o", out],
+        capture_output=True, text=True, cwd=HERE,
+    )
+    ok(blocked.returncode == 3, f"默认覆盖必须 rc=3,得 {blocked.returncode}")
+    ok("当时分母掺了" in (blocked.stderr + blocked.stdout), "拒绝文案必须点出那句 caveat")
+    with open(protected, encoding="utf-8") as fh:
+        still = json.load(fh)
+    ok(
+        any("当时分母掺了" in c for c in still["arms"][0]["caveats"]),
+        "🔴 拒绝后 caveat 还在(⛔ 不许先写再拦)",
+    )
+    forced = subprocess.run(
+        [sys.executable, src, job, "-o", out, "--force"],
+        capture_output=True, text=True, cwd=HERE,
+    )
+    ok(forced.returncode == 0, f"--force 才允许覆盖,得 rc={forced.returncode}")
+    with open(protected, encoding="utf-8") as fh:
+        wiped = json.load(fh)
+    ok(
+        not any("当时分母掺了" in c for c in wiped["arms"][0]["caveats"]),
+        "--force 之后 caveat 被再生稿替换(这正是闸要人看见的代价)",
+    )
+
 
 # ── 反向变异:把判据改坏,上面的断言必须红 ────────────────────────────────
 MUTATIONS = [
@@ -355,6 +390,13 @@ MUTATIONS = [
         "V6 没采到二进制身份时静默当成「同一个」(缺失计数归零)",
         r'    n_bin_missing = sum\(1 for r in rows if not r\["sid_binary_commit"\]\)',
         "    n_bin_missing = 0",
+    ),
+    (
+        # 08b §4.4：人手补的「当时分母掺了」是唯一痕迹。拿掉这道闸，
+        # 再跑 w3-summary 会按新 llm_fatal 把 scored 洗成 25/48。
+        "V7 覆盖闸被摘掉(含考场 caveat 的归档仍被整文件再生)",
+        r"        if os\.path\.exists\(path\) and _existing_archive_has_exam_caveat\(path\) and not args\.force:",
+        "        if False and os.path.exists(path) and _existing_archive_has_exam_caveat(path) and not args.force:",
     ),
 ]
 

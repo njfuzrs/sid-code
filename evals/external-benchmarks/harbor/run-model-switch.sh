@@ -402,13 +402,17 @@ fi
 # ⚠️ OOMKill 会**伪装成能力失败**：容器被杀 → 题目 reward=0 → 看起来像"没解出来"。
 # 所以必须留一份带时间戳的采样，事后能把「0 分」与「那一刻内存打满」对上。
 MEM_LOG="runs/${JOB}.mem.log"
+MEM_ROUND="${SID_MEM_ROUND:-$(date +%Y%m%dT%H%M%S)}"
 mkdir -p runs
-( while :; do
-    printf '%s ' "$(date +%FT%T)"
+{
+  echo "ROUND ${MEM_ROUND} start $(date +%FT%T)"
+  while :; do
+    printf 'ROUND %s %s ' "$MEM_ROUND" "$(date +%FT%T)"
     docker stats --no-stream --format '{{.Name}}={{.MemUsage}}' 2>/dev/null | tr '\n' ' '
     echo
     sleep 15
-  done ) > "$MEM_LOG" 2>&1 &
+  done
+} >> "$MEM_LOG" 2>&1 &
 MEM_PID=$!
 # shellcheck disable=SC2064  # 刻意现在展开 PID
 trap "kill $MEM_PID 2>/dev/null || true" EXIT
@@ -435,7 +439,12 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         v = float(val)
         tot += v * (1024 if unit == "GiB" else 1 / 1024 if unit == "KiB" else 1)
     if tot > peak:
-        peak, peak_line = tot, line.split()[0]
+        stamp = ""
+        for tok in line.split():
+            if "T" in tok and tok[0].isdigit():
+                stamp = tok
+                break
+        peak, peak_line = tot, stamp or line.split()[0]
 print(f"    峰值 {peak:.0f} MiB @ {peak_line}（W0 的 nop 基线是 714 MiB，仅供对比）")
 PYMEM
   grep -icE 'oom|killed' "$MEM_LOG" >/dev/null 2>&1 && echo "    ⚠️ 采样日志里出现 oom/killed 字样，须复核" || true

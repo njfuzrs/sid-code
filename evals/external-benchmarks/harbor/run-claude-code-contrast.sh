@@ -173,14 +173,21 @@ fi
 # ── 内存采样：`-n 6` 下真 agent 合计峰值实测 9150MiB/15950MiB（57%）──────────
 # ⚠️ OOMKill 会**伪装成能力失败**：容器被杀 → reward=0 → 看起来像"没解出来"。
 # 所以留一份带时间戳的采样，事后能把「0 分」与「那一刻内存打满」对上。
+#
+# D3（08a §3.5）：旧版 `> "$MEM_LOG"` 每轮覆盖写，resume 第二轮丢掉第一轮采样。
+# 不影响分数，影响事后把 OOM 和 0 分对上。改成 `>>`，行首打 round。
 MEM_LOG="runs/${JOB}.mem.log"
+MEM_ROUND="${SID_MEM_ROUND:-$(date +%Y%m%dT%H%M%S)}"
 mkdir -p runs
-( while :; do
-    printf '%s ' "$(date +%FT%T)"
+{
+  echo "ROUND ${MEM_ROUND} start $(date +%FT%T)"
+  while :; do
+    printf 'ROUND %s %s ' "$MEM_ROUND" "$(date +%FT%T)"
     docker stats --no-stream --format '{{.Name}}={{.MemUsage}}' 2>/dev/null | tr '\n' ' '
     echo
     sleep 15
-  done ) > "$MEM_LOG" 2>&1 &
+  done
+} >> "$MEM_LOG" 2>&1 &
 MEM_PID=$!
 # shellcheck disable=SC2064  # 刻意现在展开 PID
 trap "kill $MEM_PID 2>/dev/null || true" EXIT
@@ -206,6 +213,34 @@ else
   else
     echo "    ⚠️ uv 镜像未起成 —— 退回直连 github（= 本轮之前的行为，不更坏）。"
     echo "       ⛔ 但若 sid 侧起成了而这边没起成，**两侧就不可比了**，别当无事发生。"
+  fi
+fi
+
+# ── D2：cc 每题现装 Node/npm 走宿主本地镜像（08a §3.7）────────────────────────
+#
+# 开跑 25 分钟模型 0 次调用：每题 curl nodejs.org + npm registry，`-n 6` 带宽争抢
+# 出 curl 18/56；另一条独立失败是平台 optional dep 没下到 →
+# `claude native binary not installed`。镜像必须连 linux-x64 / linux-x64-musl 一起托。
+#
+# ⚠️ `--ve` 只进 verifier。agent 安装在 agent 容器里，必须 `--ae`。
+# ⚠️ 没起成时退回直连（= 本轮之前的行为），但必须打出来：静默退化与「一切正常」同形。
+CC_MIRROR_ARGS=()
+SID_CC_MIRROR_PID=""
+if [ "${SID_HARBOR_SKIP_CC_MIRROR:-0}" = "1" ]; then
+  echo "--- D2：已显式跳过 cc 安装镜像（SID_HARBOR_SKIP_CC_MIRROR=1）——每题将直连 nodejs.org + npm"
+else
+  echo "--- D2：起 cc 安装镜像（消灭每题现装的外网下载，含平台 optional dep）"
+  if _cc_mirror_env="$(bash ../lib/cc-install-mirror.sh start)"; then
+    eval "$_cc_mirror_env"
+    CC_MIRROR_ARGS=(
+      --ae "SID_CC_NODE_MIRROR=${SID_CC_NODE_MIRROR}"
+      --ae "SID_CC_NPM_REGISTRY=${SID_CC_NPM_REGISTRY}"
+    )
+    echo "    ✅ 已注入 --ae SID_CC_NODE_MIRROR=${SID_CC_NODE_MIRROR}"
+    echo "    ✅ 已注入 --ae SID_CC_NPM_REGISTRY=${SID_CC_NPM_REGISTRY}"
+  else
+    echo "    ⚠️ cc 安装镜像未起成 —— 退回直连 nodejs.org + npm（= 本轮之前的行为，不更坏）。"
+    echo "       ⛔ 下次 SID_W3_ARM=cc 之前这一层必须先绿。静默退化会让 08a §3.7 原样复发。"
   fi
 fi
 
@@ -241,14 +276,16 @@ caffeinate -dimsu harbor run \
   --agent-setup-timeout-multiplier 8 --environment-build-timeout-multiplier 3 \
   --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4 -y \
   "${UV_MIRROR_ARGS[@]+"${UV_MIRROR_ARGS[@]}"}" \
+  "${CC_MIRROR_ARGS[@]+"${CC_MIRROR_ARGS[@]}"}" \
   --job-name "$JOB"
 RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 taskset_fp_remember || true
 
 kill "$MEM_PID" 2>/dev/null || true
-# E1 镜像服务收尾（tarball 已落盘，停进程不影响下次复用）。
+# E1 / D2 镜像服务收尾（字节已落盘，停进程不影响下次复用）。
 bash ../lib/uv-mirror.sh stop "${UV_MIRROR_PID:-}" >/dev/null 2>&1 || true
+bash ../lib/cc-install-mirror.sh stop "${SID_CC_MIRROR_PID:-}" >/dev/null 2>&1 || true
 
 # ── 收尾：并发实证 + 内存峰值 ────────────────────────────────────────────────
 echo
@@ -265,7 +302,13 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         v = float(val)
         tot += v * (1024 if unit == "GiB" else 1 / 1024 if unit == "KiB" else 1)
     if tot > peak:
-        peak, at = tot, line.split()[0]
+        # 行首可能是 ROUND <id> <iso> …，取第一个 ISO 时间戳，没有就整段前缀。
+        stamp = ""
+        for tok in line.split():
+            if "T" in tok and tok[0].isdigit():
+                stamp = tok
+                break
+        peak, at = tot, stamp or line.split()[0]
 print(f"    峰值 {peak:.0f} MiB @ {at}（真 agent -n 6 实测基线 9150 MiB）")
 PYMEM
 fi
