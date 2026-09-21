@@ -89,39 +89,11 @@ fi
 # **不记题目清单**；不匹配是在逐个比 `TrialConfig`（内含 `task`）时才发现的。
 #
 # ⇒ 这道闸把指纹存进 job 目录，跑前比一次。**报错在 harbor 之前，且说得清是什么变了。**
-FP_FILE="$JOBDIR/.w3-taskset-fingerprint"
-taskset_fp() {
-  python3 - "$DATASET" <<'PYFP'
-import hashlib, json, sys
-name = sys.argv[1].split("@")[0]
-ver = sys.argv[1].split("@")[1] if "@" in sys.argv[1] else None
-for e in json.load(open("registry.local.json")):
-    if e.get("name") == name and (ver is None or str(e.get("version")) == ver):
-        ts = sorted(t["name"] if isinstance(t, dict) else t for t in e["tasks"])
-        print(f"{len(ts)}:{hashlib.sha256(chr(10).join(ts).encode()).hexdigest()[:16]}")
-        break
-else:
-    print("MISSING")
-PYFP
-}
-FP_NOW="$(taskset_fp)"
-if [ "$FP_NOW" = MISSING ]; then
-  echo "⛔ registry.local.json 里找不到 dataset '$DATASET' —— 停手。"
-  echo "   先跑: python3 gen-local-registry.py"
-  exit 2
-fi
-if [ -f "$FP_FILE" ]; then
-  FP_OLD="$(cat "$FP_FILE")"
-  if [ "$FP_NOW" != "$FP_OLD" ]; then
-    echo "⛔ **题集与本 job 首跑时不一致** —— resume 会以 ValueError 失败，停手。"
-    echo "   首跑: $FP_OLD"
-    echo "   现在: $FP_NOW    （格式 = 题数:sha16）"
-    echo "   多半是中途 docker prune / 重新生成了 registry.local.json。"
-    echo "   ⇒ 要么把镜像补回来（bash pull-tb-images.sh）让指纹复原，"
-    echo "     要么换一个新 job 名重跑（⛔ 别把两个题集的结果混进一个分母）。"
-    exit 2
-  fi
-fi
+# 算法已升到「题名 + lock.json 的 task.digest」，四个跑法脚本共用 taskset-fp.sh。
+# 旧两段文件（只含题名）比对时只核前两段，避免在途 job 被新格式误杀。
+# shellcheck disable=SC1091
+source ./taskset-fp.sh
+taskset_fp_gate || exit 2
 
 # ── 磁盘余量闸（72 题的容器持续吃盘）──────────────────────────────────────
 DISK_FREE_G="$(colima ssh -p swebench -- df -BG /var/lib/docker 2>/dev/null \
@@ -230,7 +202,7 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   [ -d "$JOBDIR" ] || { echo "⛔ $JOBDIR 不存在 —— 第一轮就没起来，停手"; exit 1; }
   # 首跑成功后落指纹（⛔ 只写一次，之后只读不覆盖 —— 覆盖就等于把闸拆了：
   # 题集变了也会被"更新"成新指纹，于是下一轮什么都拦不住）。
-  [ -f "$FP_FILE" ] || { echo "$FP_NOW" > "$FP_FILE"; echo "--- 已记题集指纹: $FP_NOW"; }
+  taskset_fp_remember
   [ "$round" = "$MAX_ROUNDS" ] && echo "🛑 已达轮数上限 ${MAX_ROUNDS}，停手。"
 done
 
@@ -293,7 +265,7 @@ else: print('UNKNOWN')
 
   # ── 归档：🔴 `runs/` 不入库，这一步是唯一留下第二份的机会 ──────────────────
   #
-  # 为什么接进流程而不是「跑完手工再跑一下」：`run-model-switch.sh:432` 那段
+  # 为什么接进流程而不是「跑完手工再跑一下」：`run-model-switch.sh:446` 那段
   # 注释记着同型教训 —— digest 在第九棒就存在，而**九棒里零次被跑过**。
   # 价值不在工具，在它被真的执行。T4 一条臂 $36–41，漏采一次就是白花。
   #

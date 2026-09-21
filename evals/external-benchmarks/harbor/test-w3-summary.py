@@ -123,17 +123,25 @@ def _trial(
     return td
 
 
-def _job(root: str, name: str) -> str:
-    """造一个 job 目录 + harbor 的 job metadata(finished_at 非 None = 已跑完)。
+def _job(root: str, name: str, *, finished_at: str | None = "2026-09-12T00:00:00",
+         n_declared: int | None = None) -> str:
+    """造一个 job 目录 + harbor 的 job 级 result.json。
 
     🔴 `finished_at` 不能省:`w3-summary` 有一道「未跑完闸」,缺它会在输出里
     插一条「这一轮还没跑完」的 caveat 并拒绝给终值 —— 那会让本文件的断言
     全部落到那条分支上(即测了个别的东西)。
+    `n_declared` 默认 None：不写 `n_total_trials`，让 declared_minus_landed 为 None
+    （与「判不出」同形）。要测 gap 时显式传入。
     """
     job = os.path.join(root, name)
     os.makedirs(job, exist_ok=True)
     with open(os.path.join(job, "metadata.json"), "w", encoding="utf-8") as fh:
-        json.dump({"finished_at": "2026-09-12T00:00:00", "n_trials": None}, fh)
+        json.dump({"finished_at": finished_at, "n_trials": None}, fh)
+    payload: dict = {"finished_at": finished_at}
+    if n_declared is not None:
+        payload["n_total_trials"] = n_declared
+    with open(os.path.join(job, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
     return job
 
 
@@ -262,6 +270,49 @@ def run_tests(root: str, src: str = SRC) -> None:
     ok(
         aoa.get("token_undercount_tasks") == [],
         f"🔴 openai 族 ⇒ 一题都不标(A1 首版归档曾 54/54 全标),得 {aoa.get('token_undercount_tasks')}",
+    )
+
+    # ── ⑥ gap 只披露不判定 ────────────────────────────────────────────────
+    print("\n⑥ declared_minus_landed:只披露,期望可以是 12,⛔ 不翻红")
+    jgap = _job(root, "gap12", n_declared=66)
+    for i in range(54):
+        _trial(jgap, f"t{i:02d}", turns=10)
+    agap = _run(jgap, out, src)
+    ok(
+        agap["denominators"]["declared_minus_landed"] == 12,
+        f"🔴 期望值就是 12,⛔ 不是 0,得 {agap['denominators']['declared_minus_landed']}",
+    )
+    ok(
+        agap["denominators"]["job_unfinished"] is False,
+        "finished_at 有值 ⇒ 未跑完 = False（12 不是『还差 12 题』）",
+    )
+
+    print("\n⑥b job_unfinished 三态回归保护")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("w3_summary", src)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ju = mod.job_unfinished
+    missing = os.path.join(root, "no-result")
+    os.makedirs(missing, exist_ok=True)
+    ok(ju(missing) == (None, None), "① 无 result.json → (None, None)")
+    done = _job(root, "finished-empty", finished_at="2026-09-12T00:00:00", n_declared=5)
+    ok(ju(done) == (False, 5), f"② finished_at 有值 → (False, n) 得 {ju(done)}")
+    running = _job(root, "still-running", finished_at=None, n_declared=5)
+    ok(ju(running) == (True, 5), f"③ finished_at=None → (True, n) 得 {ju(running)}")
+    # 本格不许翻红：有 gap 的已完成 job 退出码仍是 0
+    r_gap = subprocess.run(
+        [sys.executable, src, jgap],
+        capture_output=True, text=True, cwd=HERE,
+    )
+    ok(r_gap.returncode == 0, f"有 gap 的已完成 job 退出 0，得 {r_gap.returncode}")
+
+    print("\n⑥c expected_task_count:不实现函数,注释也不留这个名字")
+    src_text = open(src, encoding="utf-8").read()
+    ok(
+        "expected_task_count" not in src_text,
+        "E1-4:全文件 0 命中（实现它 = 同一数字两个来源；留在注释里会让验收把注释当函数）",
     )
 
 

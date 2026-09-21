@@ -3,7 +3,7 @@
 用法:
   source ~/Code/person/trajectory-platform/backend/venv/bin/activate
   cd ~/Code/person/sid-code
-  python evals/inspect/run_spike.py
+  python evals/_archive/inspect-spike/run_spike.py
 """
 
 from __future__ import annotations

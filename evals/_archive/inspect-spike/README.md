@@ -36,7 +36,7 @@ Inspect AI 接入**技术可行**，**学习曲线低于预期**(实际 ~2h 完�
 
 ### 1. `inspect view` 能否清晰展示 message history + tool calls?
 
-**✅ 能**。`inspect view start --log-dir evals/inspect/logs --port 7575` 启动后浏览器访问 7575 端口，返回标准 Inspect View UI（含 sample drill-down / agent message history / score 维度展开）。
+**✅ 能**。`inspect view start --log-dir evals/_archive/inspect-spike/logs --port 7575` 启动后浏览器访问 7575 端口，返回标准 Inspect View UI（含 sample drill-down / agent message history / score 维度展开）。
 
 ### 2. 把 sid-code-live adapter 接成 solver 复杂度多大?
 
@@ -152,7 +152,7 @@ case_002: score=0 — 未命中 6 个内置工具路径
 ## 文件清单
 
 ```
-evals/inspect/
+evals/_archive/inspect-spike/
 ├── README.md                                   ← 本文（spike 总结）
 ├── requirements.txt                            ← inspect-ai>=0.3.0 + pyyaml
 ├── .gitignore                                  ← 忽略 logs/ + __pycache__
@@ -173,9 +173,9 @@ source ../trajectory-platform/backend/venv/bin/activate
 cd "$(git rev-parse --show-toplevel)"
 
 # 跑分(后台 + 写 .eval)
-python evals/inspect/run_spike.py
+python evals/_archive/inspect-spike/run_spike.py
 
 # 启浏览器 UI(端口 7575)
-inspect view start --log-dir evals/inspect/logs --port 7575
+inspect view start --log-dir evals/_archive/inspect-spike/logs --port 7575
 # 访问 http://127.0.0.1:7575/
 ```
