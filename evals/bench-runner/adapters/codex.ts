@@ -1,6 +1,9 @@
 /**
- * Phase 3 W8: Adapter — codex (占位)
- * 后续通过 OpenAI Codex CLI 实时跑 task
+ * Phase 3 W8: Adapter — codex（预留对照位）
+ *
+ * ⚠️ 当前无调用方（import 方 = 0）。这是「对照 agent 可插拔」的唯一实证，
+ * ⛔ 不许因零引用删它 —— 零引用 ≠ 零价值（与 inspect/ 同一条判据）。
+ * 后续若接 OpenAI Codex CLI 实时跑 task，从这里接，不要另起一个同名入口。
  */
 
 import type { AgentOutput } from "../outcome-grader.ts";

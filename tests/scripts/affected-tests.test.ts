@@ -256,3 +256,19 @@ describe("change-scope：四类路径分开报", () => {
     expect(parseArgs(["--base", "abc", "--head", "def"])).toEqual({ base: "abc", head: "def" });
   });
 });
+
+describe("eval-framework/judge 搬家后不得漏测", () => {
+  test("改 packages/eval-framework/judge/ 选出非空集（整包，不是空、也不是全仓）", () => {
+    // 11a PR-C：calibrate-pairwise.test.ts 从 evals/_judge/ 搬进包内。
+    // 若映射漏掉这个包，选测会「全绿但什么都没跑」—— 5 条变异自证要防的正是这个。
+    const r = mapPathToTests("packages/eval-framework/judge/calibrate-pairwise.test.ts");
+    expect(r).not.toBe("full");
+    expect(r).toEqual(["./packages/eval-framework/"]);
+    expect(existsSync(join(ROOT, "packages/eval-framework"))).toBe(true);
+  });
+
+  test("改 packages/eval-framework/judge/prompt-v2.md 同样命中整包（prompt 不是纯文档）", () => {
+    const r = mapPathToTests("packages/eval-framework/judge/prompt-v2.md");
+    expect(r).toEqual(["./packages/eval-framework/"]);
+  });
+});

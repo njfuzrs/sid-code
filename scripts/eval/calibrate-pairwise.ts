@@ -26,7 +26,7 @@ import type {
   CalibrationPair,
   CalibrationVerdict,
   CalibrationSummary,
-} from "../../evals/_judge/calibration-set/types.ts";
+} from "../../packages/eval-framework/judge/calibration-types.ts";
 
 const PAIRS_DEFAULT = "evals/_judge/calibration-set/pairs.jsonl";
 const OUT_DIR = "evals/_judge/calibration-set";

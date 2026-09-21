@@ -75,7 +75,7 @@ async function main() {
 
   console.log(`Judge 校准 v3`);
   console.log(`  模型: ${model}`);
-  console.log(`  Prompt: prompt-v2.md`);
+  console.log(`  Prompt: prompt-v3.md`);
   console.log(`  运行次数: ${RUNS}`);
   console.log(`  校准答案: ${CALIBRATION_FILE}`);
   console.log("");

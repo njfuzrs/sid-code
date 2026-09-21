@@ -108,6 +108,38 @@ sid-code 在容器里产出 `git diff` → 三字段 jsonl → 官方 `swebench 
 - self +0.2 / external +3pp —— 进步同方向，但 external 增幅小，警惕"自家 case 漂移"
 ```
 
+## 入库什么 / 不入库什么
+
+裁决是**不剥离**（11§0.1 / 11§0.2）：本目录进 git 的是接入脚本、子集清单、报告，
+**一份答案都没有**。那是「尺子可以长在被测仓」的核心证据 —— 09§4.2 那条铁律的主语是
+入库的 gold / test patch，不是这些 harness 脚本。
+
+```bash
+git ls-files evals/external-benchmarks | wc -l
+# 2026-09-21 实测 59（13 号收尾后、#58 前是 56；#58 加了 3 个文件）
+git ls-files evals/external-benchmarks | grep -i "gold\|solution\|test_patch"
+# → 无命中。🔴 一份答案都没有。
+```
+
+**15 个测试文件**在断言它（⚠️ 2026-09-21 实测 15；母文档 11§1.2 写 12，
+11a 起草时 13。多出来的是证据层门禁 `archive-evidence` / `check-evidence-due`
+与 shell 夹具）。⛔ 不要把 12 或 13 写死成期望值：
+
+```bash
+grep -rln "external-benchmarks" tests/ | wc -l    # 2026-09-21 → 15
+```
+
+证据层三个来源都被 gitignore（以路径字面量为准，行号会漂）：
+
+| 路径 | 体积量级 | `.gitignore` |
+| --- | --- | --- |
+| `evals/external-benchmarks/harbor/runs/` | ~1.6G | `/evals/external-benchmarks/harbor/runs/` |
+| `evals/external-benchmarks/swe-bench/runs/` | ~29M | `/evals/external-benchmarks/swe-bench/runs/` |
+| `evals/external-benchmarks/swe-bench/logs/` | ~14M | `/evals/external-benchmarks/swe-bench/logs/` |
+
+它们的字节落点是证据层归档（HF `njfuzrs/sid-code-eval-runs` +
+`evals/_reports/external/evidence/MANIFEST.tsv`），不是 git。
+
 ## 与其他 task 的关系
 
 - 上游：[[T-21]] Inspect AI 接入是首选路径
