@@ -13,8 +13,8 @@ import type { PermissionRule, PermissionRequest, Decision } from "./types.ts";
 import { matchShellRulePattern } from "./shell-rule-matching.ts";
 import { matchPathRule, type PathRuleContext } from "./path-rule-matching.ts";
 
-/** 文件路径类工具（走 matchPathRule 做前缀解析） */
-const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
+/** 文件路径类工具（走 matchPathRule 做前缀解析）。含 notebook_edit：路径字段是 notebook_path。 */
+const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "notebook_edit"]);
 
 /**
  * 规则名归一：把 CC 风格的规则名映射到 sid 内部工具名。
@@ -27,6 +27,7 @@ const RULE_NAME_ALIASES: Record<string, string> = {
   agent: "sub_agent",
   webfetch: "web_fetch",
   websearch: "web_search",
+  notebookedit: "notebook_edit",
 };
 
 /** 把规则里的工具名归一到内部工具名（小写） */
@@ -38,7 +39,7 @@ function normalizeRuleToolName(toolName: string): string {
 /**
  * 从请求提取用于匹配的参数值。
  * - bash：command
- * - 文件类：file_path
+ * - 文件类：file_path；notebook_edit 用 notebook_path（P0-2，否则 Edit(.git/hooks/*) 匹配不到）
  * - sub_agent：subagent_type / type（供 Agent(type) 规则匹配）
  * - web_fetch：domain:hostname（供 WebFetch(domain:x) 规则匹配）
  * - web_search：query（供 WebSearch(pattern) 规则匹配）
@@ -63,6 +64,9 @@ function extractMatchValue(req: PermissionRequest): string {
   // web_search 无 URL 可归一，按查询词匹配（`WebSearch` 裸规则不走到这里，仍匹配全部搜索）
   if (tool === "web_search") {
     return input?.query || "";
+  }
+  if (tool === "notebook_edit") {
+    return input?.notebook_path || input?.file_path || "";
   }
   return input?.file_path || input?.command || input?.pattern || "";
 }
@@ -89,7 +93,7 @@ interface RuleMatch {
  * - "mcp__myserver" 匹配 myserver 的所有 MCP 工具（服务器级匹配）
  * - "mcp__*" 匹配所有 MCP 工具
  *
- * @param pathCtx 文件路径类工具（read/write/edit）的前缀解析上下文；不传则退化为 cwd/home 默认
+ * @param pathCtx 文件路径类工具（read/write/edit/notebook_edit）的前缀解析上下文；不传则退化为 cwd/home 默认
  */
 export function matchRule(
   rule: string,
@@ -101,7 +105,7 @@ export function matchRule(
 
   const [, rawToolName, pattern] = match;
 
-  // 规则名归一：Agent→sub_agent、WebFetch→web_fetch，其它转小写
+  // 规则名归一：Agent→sub_agent、WebFetch→web_fetch、NotebookEdit→notebook_edit，其它转小写
   const toolName = normalizeRuleToolName(rawToolName);
   const reqToolLower = req.toolName.toLowerCase();
 
@@ -113,7 +117,8 @@ export function matchRule(
     if (!pattern) return true;
   } else {
     // MCP 服务器级匹配：规则 "mcp__server1" 匹配 "mcp__server1__tool1"
-    if (reqToolLower !== toolName) {
+    // Edit 规则覆盖 notebook_edit：后者整文件原子写盘，与 edit 同类（P0-2）。
+    if (reqToolLower !== toolName && !(toolName === "edit" && reqToolLower === "notebook_edit")) {
       // 检查是否为 MCP 服务器级匹配
       if (toolName.startsWith("mcp__") && reqToolLower.startsWith(toolName + "__")) {
         // 服务器级匹配成功
@@ -133,7 +138,7 @@ export function matchRule(
 
   // 按工具类型选择匹配器：
   // - bash：自研 shell 通配符匹配（`*` 跨 `/`，尾部 ` *` 特判，dotAll）
-  // - 文件类（read/write/edit）：路径前缀解析 + gitignore 风格匹配
+  // - 文件类（read/write/edit/notebook_edit）：路径前缀解析 + gitignore 风格匹配
   // - 其它（sub_agent 的 type、web_fetch 的 domain:、MCP、pattern）：shell 风格通配符
   if (reqToolLower === "bash") {
     return matchShellRulePattern(pattern, value);

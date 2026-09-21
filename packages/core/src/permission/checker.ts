@@ -17,6 +17,7 @@ import type {
   PermissionRequest,
   PermissionRule,
   PermissionCheckOptions,
+  PermissionDecisionReason,
 } from "./types.ts";
 import type { Config } from "../config/config.ts";
 import type { PermissionMode } from "./mode.ts";
@@ -174,8 +175,7 @@ const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
   },
   // 设置文件精细项：settings 可注入 permissionMode/skipPermissions/yesMode 等安全开关，
   // 风险等同上面的 commands/agents/skills，故 classifierApprovable 同样为 false（绝对禁止
-  // 自动审批，必须人工确认）。⚠️ 该字段目前仅作语义标记，尚无运行时消费者；命中后无论
-  // true/false 结果都是 needsConfirmation。改为 false 是为未来分类器审批接线做前置加固。
+  // 自动审批，必须人工确认）。auto 分支读这个字段：false 时分类器结果直接丢弃（P0-1）。
   {
     pattern: ".sid-code/settings.json",
     classifierApprovable: false,
@@ -204,11 +204,43 @@ const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
   { pattern: ".ssh/", classifierApprovable: true, reason: "SSH 配置目录" },
 ];
 
-/** 文件工具（需要路径校验） */
-const FILE_TOOLS = new Set(["read", "write", "edit"]);
+/** 文件工具（需要路径校验）。notebook_edit 路径字段是 notebook_path，见 extractFilePath。 */
+const FILE_TOOLS = new Set(["read", "write", "edit", "notebook_edit"]);
 
-/** 写操作工具 */
-const WRITE_TOOLS = new Set(["write", "edit"]);
+/** 写操作工具。notebook_edit 整文件原子写盘，与 write/edit 同属 safetyCheck 守卫对象。 */
+const WRITE_TOOLS = new Set(["write", "edit", "notebook_edit"]);
+
+/**
+ * 从请求抽出用于路径校验 / safetyCheck 的文件路径。
+ * notebook_edit 的字段是 `notebook_path`，不是 `file_path`；漏这一层会让
+ * Step 4 / Step 6 整段跳过（P0-2）。一处抽取，别在各步骤各写一次。
+ */
+function extractFilePath(req: PermissionRequest): string {
+  const input = req.input as { file_path?: unknown; notebook_path?: unknown } | undefined;
+  const raw = input?.file_path || input?.notebook_path || "";
+  return typeof raw === "string" ? raw : "";
+}
+
+/**
+ * 阶段一给出的确认是否属于「危险来源」：dangerousCommand / safetyCheck。
+ * yesMode、auto、hook allow 三处必须共用——复制粘贴会漏抄（P0-1 就是 auto 漏了这道）。
+ */
+function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boolean {
+  const t = reason?.type;
+  return t === "dangerousCommand" || t === "safetyCheck";
+}
+
+/**
+ * auto 分类器是否允许发言。safetyCheck 命中且 classifierApprovable === false
+ * （hooks / commands / settings）时分类器结果直接丢弃——这是字段存在的唯一理由。
+ * classifierApprovable: true 的项（.git/、.bashrc）才允许分类器放行。
+ */
+function classifierMayApprove(reason: PermissionDecisionReason | undefined): boolean {
+  if (!reason) return true;
+  if (reason.type === "dangerousCommand") return false;
+  if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
+  return true;
+}
 
 /**
  * 只读工具（含低风险工具如 save_memory）。
@@ -509,7 +541,7 @@ export class PermissionChecker implements Checker {
 
   /**
    * 构造路径规则解析上下文（P0-2）。
-   * 文件类工具（read/write/edit）的路径规则前缀（`//` `~/` `/` `./`）需据此归一化。
+   * 文件类工具（read/write/edit/notebook_edit）的路径规则前缀（`//` `~/` `/` `./`）需据此归一化。
    * workspaceRoot=项目根；cwd 优先用 bash 显式 cwd 参数（如有），否则工作区根。
    */
   private buildPathRuleContext(req?: PermissionRequest): PathRuleContext {
@@ -730,7 +762,7 @@ export class PermissionChecker implements Checker {
     toolContext?: ToolUseContext,
   ): Promise<Decision> {
     const log = getLogger();
-    const filePath = (req.input as any)?.file_path || "";
+    const filePath = extractFilePath(req);
     const resource = filePath || (req.input as any)?.command || "";
 
     // Step 1: deny 规则（工具级）
@@ -888,6 +920,23 @@ export class PermissionChecker implements Checker {
         };
       }
       if (toolPermResult.behavior === "allow") {
+        // 工具说「我是只读」只能跳过默认 ask，不能跳过模式硬约束。
+        // 否则 python3 / node / make 这类假只读会在 Step 5.5 直接 return，
+        // plan / deny-write 永远走不到（P0-3）。
+        if (this.config.permissionMode === "plan") {
+          return this.checkPlanMode(req, filePath, resource);
+        }
+        if (this.config.permissionMode === "deny-write") {
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式，工具级allow不越过)`,
+          );
+          return {
+            allowed: false,
+            reason: "deny-write 模式下不允许写操作",
+            decisionReason: { type: "mode", mode: "deny-write" },
+          };
+        }
         log.info(
           "PERMISSION",
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(工具级checkPermissions)`,
@@ -1013,7 +1062,7 @@ export class PermissionChecker implements Checker {
     options?: PermissionCheckOptions,
   ): Promise<Decision> {
     const log = getLogger();
-    const resource = (req.input as any)?.file_path || (req.input as any)?.command || "";
+    const resource = extractFilePath(req) || (req.input as any)?.command || "";
 
     // 跳过权限检查模式
     //   skipPermissions（--dangerously-skip-permissions）：用户显式要求"完全跳过"，原样放行。
@@ -1061,9 +1110,12 @@ export class PermissionChecker implements Checker {
     //   - hook ask 把「本会放行」强制升级为用户确认（needsConfirmation）。
     if (options?.hookPermissionDecision === "allow") {
       const dr = result.decisionReason?.type;
-      const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
       // 仅普通 ask（needsConfirmation 且非安全类确认）可被 hook allow 放行；硬 deny 不放行
-      if (!result.allowed && result.needsConfirmation && !isSafetyConfirmation) {
+      if (
+        !result.allowed &&
+        result.needsConfirmation &&
+        !isSafetyConfirmation(result.decisionReason)
+      ) {
         log.info(
           "PERMISSION",
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`,
@@ -1181,8 +1233,7 @@ export class PermissionChecker implements Checker {
     //   注意：pathValidation（如工作区外写入）属常规确认，yesMode 照常自动批准——不在"危险命令"范畴。
     if (this.config.yesMode) {
       const dr = result.decisionReason?.type;
-      const isSafetyConfirmation = dr === "dangerousCommand" || dr === "safetyCheck";
-      if (!isSafetyConfirmation) {
+      if (!isSafetyConfirmation(result.decisionReason)) {
         log.info(
           "PERMISSION",
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`,
@@ -1220,33 +1271,46 @@ export class PermissionChecker implements Checker {
               classifierInput = undefined;
             }
           }
-          const classifyResult = await toolClassifier.classify({
-            toolName: req.toolName,
-            input: (req.input || {}) as Record<string, unknown>,
-            cwd: this.workspacePath,
-            classifierInput,
-          });
-          if (!classifyResult.classifierUnavailable && classifyResult.safe) {
+          // P0-1：auto 与 yesMode 共用同一道危险确认护栏。
+          // classifierApprovable:false 的 safetyCheck（hooks / commands / settings）
+          // 以及 dangerousCommand，分类器结果直接丢弃——字段存在的理由就是这条路径。
+          if (
+            isSafetyConfirmation(result.decisionReason) &&
+            !classifierMayApprove(result.decisionReason)
+          ) {
             log.info(
               "PERMISSION",
-              `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`,
+              `${req.toolName}(${resource.slice(0, 80)}) → auto 不放行危险确认(${result.decisionReason?.type})`,
             );
-            this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
-            this.auditLogger.log({
-              timestamp: new Date().toISOString(),
-              type: "tool_use",
-              tool: req.toolName,
-              resource,
-              decision: "allow",
-              reason: `auto 模式分类器批准: ${classifyResult.reason}`,
+          } else {
+            const classifyResult = await toolClassifier.classify({
+              toolName: req.toolName,
+              input: (req.input || {}) as Record<string, unknown>,
+              cwd: this.workspacePath,
+              classifierInput,
             });
-            return { allowed: true, decisionReason: { type: "mode", mode: "auto" } };
+            if (!classifyResult.classifierUnavailable && classifyResult.safe) {
+              log.info(
+                "PERMISSION",
+                `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`,
+              );
+              this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
+              this.auditLogger.log({
+                timestamp: new Date().toISOString(),
+                type: "tool_use",
+                tool: req.toolName,
+                resource,
+                decision: "allow",
+                reason: `auto 模式分类器批准: ${classifyResult.reason}`,
+              });
+              return { allowed: true, decisionReason: { type: "mode", mode: "auto" } };
+            }
+            // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
+            log.info(
+              "PERMISSION",
+              `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`,
+            );
           }
-          // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
-          log.info(
-            "PERMISSION",
-            `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`,
-          );
         } catch (err: any) {
           log.warn("PERMISSION", `auto 模式分类器异常(${err.message})，回退人工确认`);
         }

@@ -32,23 +32,13 @@ const READ_ONLY_COMMANDS = new Set([
   "egrep",
   // Git 只读
   "git", // git 子命令单独检查
-  // 版本查询
-  "node",
+  // 包管理器：子命令由 CONDITIONAL_COMMANDS 细化（list/view 才只读）
   "npm",
   "bun",
-  "deno",
-  "python",
-  "python3",
-  "ruby",
-  "go",
-  "rustc",
-  "cargo",
-  "java",
-  "javac",
-  "gcc",
-  "g++",
-  "clang",
-  "make",
+  // 解释器 / 构建器 **不** 进这张表（P0-3）。
+  // 旧表把 python/node/make/gcc/java 当只读 → BashTool.checkPermissions 返回 allow
+  // → checker Step 5.5 直接 return，plan / deny-write 全部打穿。
+  // 版本查询走下方 `--version` / `-v` / `-V` 快速路径，不会因此把 `python3 --version` 误伤成要确认。
   // 系统信息
   "echo",
   "printf",
