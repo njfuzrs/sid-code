@@ -311,6 +311,16 @@ describe("参考页生成器 · CLI 双源交叉对账（§4.5.5）", () => {
     expect(extractHelpFlags(read("packages/cli/src/help.ts"))).not.toContain("dump-tools");
     expect(rec().missingInHelp).not.toContain("dump-tools");
   });
+
+  test("--dump-tools 必须 includeDisabled，否则 CI 零 LSP 时参考页丢掉 lsp", () => {
+    const cli = read("packages/cli/src/cli.ts");
+    const dumpStart = cli.indexOf("if (cliArgs.dumpTools)");
+    expect(dumpStart).toBeGreaterThan(0);
+    const dumpEnd = cli.indexOf("process.exit(0)", dumpStart);
+    const dumpBlock = cli.slice(dumpStart, dumpEnd);
+    expect(dumpBlock).toContain("includeDisabled: true");
+    expect(dumpBlock).toContain("definitions(");
+  });
 });
 
 describe("参考页生成器 · --check 自洽（问题 A：同源性）", () => {

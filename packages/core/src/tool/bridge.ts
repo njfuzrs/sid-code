@@ -86,6 +86,10 @@ export function toLegacyTool<Input = unknown, Output = string>(
     usageGuide() {
       return tool.usageGuide?.() ?? "";
     },
+
+    isEnabled() {
+      return tool.isEnabled();
+    },
   };
 
   // 透传 ToolCapabilityFields

@@ -94,6 +94,15 @@ export interface AssembleOptions {
    * 未提供时按零参调用 description()，与既有实现完全兼容。
    */
   descriptionContext?: ToolDescriptionContext;
+  /**
+   * 文档导出专用：跳过 isEnabled 过滤，把已注册但当前环境不可用的工具也吐出来。
+   *
+   * `--dump-tools` 必须用它。dump 发生在 initializeLSP 之前、且 CI 机器常零
+   * language server；默认过滤会让参考页在每台机器上丢掉 `lsp`，pre-commit
+   * `--check` 就会在「有 LSP 的开发机」和「没 LSP 的 CI」之间给出不同结论。
+   * 运行时发 schema 的路径不要开这个开关。
+   */
+  includeDisabled?: boolean;
 }
 
 /** simple 模式下可用的工具 */
@@ -223,6 +232,17 @@ export class Registry {
     return [...this.builtInTools.values(), ...this.mcpTools.values()];
   }
 
+  /**
+   * 当前环境可用的工具（isEnabled 过滤后）。
+   *
+   * 系统提示词 / SDK listTools 必须走这里而不是 `all()`：否则禁用工具
+   * 会写进「可用工具」清单，模型看见名字却调不到（schema 已经滤掉了）。
+   * `get()` / `all()` 仍保留全量，执行器按名查找不 404。
+   */
+  enabled(): LegacyTool[] {
+    return this.all().filter((t) => this.isCurrentlyEnabled(t));
+  }
+
   // ===== Layer 2：动态过滤与组装 =====
 
   /**
@@ -257,14 +277,41 @@ export class Registry {
     //   内置工具顺序是人工精心编排的（不排序），仅对 MCP 部分排序。
     mcp.sort((a, b) => a.name().localeCompare(b.name()));
 
+    // 4.2 isEnabled：文档要求接在 assemble。生产 definitions() 无 options 时
+    // 走 all()，所以 toDefinitions 还会再滤一次——两处都接才不是死接线。
+    if (!options?.includeDisabled) {
+      builtIn = builtIn.filter((t) => this.isCurrentlyEnabled(t));
+      mcp = mcp.filter((t) => this.isCurrentlyEnabled(t));
+    }
+
     // 5. 内置工具在前（稳定顺序），MCP 工具在后
     return [...builtIn, ...mcp];
+  }
+
+  /**
+   * isEnabled 过滤：未实现 = 可用；返回 false 或抛错 = 不进 schema。
+   *
+   * 必须接在真正发 schema 的入口（definitions / activeDefinitions /
+   * definitionsForTools），不能只接 assembleToolPool——生产路径
+   * `definitions()` 无 options 时走 `all()`，assemble 那层过滤是死接线。
+   */
+  private isCurrentlyEnabled(tool: LegacyTool): boolean {
+    if (typeof tool.isEnabled !== "function") return true;
+    try {
+      return tool.isEnabled() !== false;
+    } catch {
+      return false;
+    }
   }
 
   /** 返回所有工具的 LLM 定义（用于发送给 AI） */
   definitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
-    return this.definitionsForTools(tools, options?.descriptionContext);
+    return this.toDefinitions(
+      tools,
+      options?.descriptionContext,
+      options?.includeDisabled === true,
+    );
   }
 
   /**
@@ -274,9 +321,21 @@ export class Registry {
    * 外部已过滤工具列表的场景复用——杜绝手写 `{name, description, inputSchema}`
    * 三字段映射，那会丢失 `usageGuide()` 拼接（实测丢 86.1% 描述）、`strict`
    * 标记与 `zodSchema` 优先链（审计第 18 条）。
+   *
+   * 同样走 isEnabled 过滤：spawn 路径不经 `definitions()`，漏这里就是第二根死接线。
    */
   definitionsForTools(tools: LegacyTool[], descCtx?: ToolDescriptionContext): ToolDefinition[] {
-    const defs = tools.map((t) => toolToDefinition(t, descCtx));
+    return this.toDefinitions(tools, descCtx, false);
+  }
+
+  private toDefinitions(
+    tools: LegacyTool[],
+    descCtx: ToolDescriptionContext | undefined,
+    includeDisabled: boolean,
+  ): ToolDefinition[] {
+    const defs = tools
+      .filter((t) => includeDisabled || this.isCurrentlyEnabled(t))
+      .map((t) => toolToDefinition(t, descCtx));
     // D2 前缀稳定性：工具定义按 name 固定字典序输出，杜绝注册顺序抖动（尤其 MCP 异步连接顺序）。
     // P2-2: StructuredOutput 始终排最后——其动态 schema 变化只影响自身的 cache 命中，
     // 不影响前面所有工具的 Anthropic Prompt Cache prefix 匹配。
@@ -518,8 +577,9 @@ export class Registry {
   activeDefinitions(options?: AssembleOptions): ToolDefinition[] {
     const tools = options ? this.assembleToolPool(options) : this.all();
     const descCtx = options?.descriptionContext;
+    const includeDisabled = options?.includeDisabled === true;
     const defs = tools
-      .filter((t) => !this.isToolDeferred(t))
+      .filter((t) => (includeDisabled || this.isCurrentlyEnabled(t)) && !this.isToolDeferred(t))
       .map((t) => toolToDefinition(t, descCtx));
     // 10.2：与 definitions() 保持一致的字典序排列，杜绝注册顺序导致的 prompt cache 失效。
     // StructuredOutput 始终排最后（其动态 schema 不影响前面工具的缓存前缀匹配）。
@@ -542,7 +602,7 @@ export class Registry {
    * 这样调用方能拿到完整排序、自行决定展示多少。
    */
   searchDeferredTools(query: string): LegacyTool[] {
-    const deferred = this.all().filter((t) => this.isToolDeferred(t));
+    const deferred = this.all().filter((t) => this.isCurrentlyEnabled(t) && this.isToolDeferred(t));
     const deferredInfo = deferred.map((t) => ({
       name: t.name(),
       description: t.description(),
@@ -601,7 +661,7 @@ export class Registry {
   deferredSize(): number {
     const names = new Set<string>();
     for (const t of this.all()) {
-      if (this.isToolDeferred(t)) names.add(t.name());
+      if (this.isCurrentlyEnabled(t) && this.isToolDeferred(t)) names.add(t.name());
     }
     // 名单里可能有尚未注册的工具名，一并计入
     for (const name of this.deferredTools) names.add(name);
@@ -620,7 +680,7 @@ export class Registry {
   deferredToolNames(): string[] {
     const names = new Set<string>();
     for (const t of this.all()) {
-      if (this.isToolDeferred(t)) names.add(t.name());
+      if (this.isCurrentlyEnabled(t) && this.isToolDeferred(t)) names.add(t.name());
     }
     return [...names].sort();
   }

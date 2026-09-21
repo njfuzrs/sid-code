@@ -1930,7 +1930,9 @@ export async function main(): Promise<void> {
     //
     // 取 definitions() 而非 all()：它就是发给 LLM 的那份定义（含 usageGuide 拼接与
     // zodSchema→JSON Schema 转换），文档因此与模型看到的内容同源。
-    // 不传 AssembleOptions（无 deny/mode 裁剪）= 内置工具全集，与文档语义一致。
+    // 不传 deny/mode 裁剪 = 内置工具全集。includeDisabled 必须开：dump 发生在
+    // initializeLSP 之前，且 CI 常零 language server；默认 isEnabled 过滤会让
+    // 参考页丢掉 `lsp`，pre-commit --check 在有/无 LSP 的机器上结论相反。
     if (cliArgs.dumpTools) {
       // §5.2：MCP 资源工具（ListMcpResources / ReadMcpResource）此刻尚未注册——
       // 它们的真实注册在下方 cli.ts:1715，且受 `if (mcpManager)` 条件包裹（仅配了 MCP
@@ -1946,7 +1948,8 @@ export async function main(): Promise<void> {
         toolRegistry.register(new ListMcpResourcesTool(noop));
         toolRegistry.register(new ReadMcpResourceTool(noop));
       }
-      const json = JSON.stringify(toolRegistry.definitions(), null, 2) + "\n";
+      const json =
+        JSON.stringify(toolRegistry.definitions({ includeDisabled: true }), null, 2) + "\n";
       // 先等 stdout 排空再 exit：产物约 80KB，管道下（`--dump-tools | jq`）单次 write
       // 会遇背压，裸 process.exit() 会截断 JSON——生成器拿到半截 JSON 会解析失败。
       await new Promise<void>((resolve) => {

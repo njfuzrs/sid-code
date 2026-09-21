@@ -2872,7 +2872,7 @@ export class App {
       const { buildInitialSystemPrompt } = await import("@sid-code/core/query/init-helpers.ts");
       systemPrompt = await buildInitialSystemPrompt(
         this.config,
-        this.toolRegistry.all(),
+        this.toolRegistry.enabled(),
         denyRulesSummary,
         // §12 P0-1：记忆/CLAUDE.md 分段记账 → /context 独立类别
         (s) => this.setBaseMemoryTokens(s.memory),
@@ -3136,7 +3136,7 @@ export class App {
           /* 静默降级 */
         }
         const newPrompt = buildSystemPrompt({
-          tools: this.toolRegistry.all(),
+          tools: this.toolRegistry.enabled(),
           projectRules: newRules.rawContent,
           projectRulesPath: newRules.sourcePath,
           appendPrompt: this.config.appendSystemPrompt || undefined,
@@ -3891,7 +3891,7 @@ export class App {
         /* 静默降级 */
       }
       const newPrompt = buildSystemPrompt({
-        tools: this.toolRegistry.all(),
+        tools: this.toolRegistry.enabled(),
         projectRules: rules?.rawContent,
         projectRulesPath: rules?.sourcePath,
         appendPrompt: this.config.appendSystemPrompt || undefined,
@@ -6516,7 +6516,7 @@ export class App {
       getCostUsd: () => this.sessionState.getEffectiveTotalCostUSD(),
       getMessages: () => this.ctxMgr.getMessages(),
       listTools: () =>
-        this.toolRegistry.all().map((t) => ({
+        this.toolRegistry.enabled().map((t) => ({
           name: t.name(),
           description: t.description(),
         })),

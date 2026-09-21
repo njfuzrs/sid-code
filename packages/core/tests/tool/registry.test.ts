@@ -92,6 +92,78 @@ describe("ToolRegistry", () => {
 });
 
 /**
+ * D7：isEnabled 必须接到真正发 schema 的入口。
+ *
+ * 文档建议只在 assembleToolPool 过滤。生产路径 `definitions()` / `activeDefinitions()`
+ * 无 options 时走 `all()`，那一层过滤是死接线——lsp 判据算出来了，模型每轮仍看到 schema。
+ * 判据落在 definitions / activeDefinitions / definitionsForTools / enabled，
+ * 不落在 assemble 单测上（assemble 有 options 时才会走，覆盖不了生产默认路径）。
+ */
+class DisabledMock extends MockTool {
+  isEnabled(): boolean {
+    return false;
+  }
+}
+
+class ThrowingEnabledMock extends MockTool {
+  isEnabled(): boolean {
+    throw new Error("isEnabled 炸了");
+  }
+}
+
+describe("Registry.isEnabled 过滤（D7）", () => {
+  test("isEnabled 返回 false 的工具不进 definitions()（无 options 的生产路径）", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    reg.register(new DisabledMock("ghost"));
+
+    expect(reg.all().map((t) => t.name())).toContain("ghost");
+    expect(reg.get("ghost")).toBeDefined();
+    expect(reg.definitions().map((d) => d.name)).toEqual(["read"]);
+    expect(reg.enabled().map((t) => t.name())).toEqual(["read"]);
+  });
+
+  test("isEnabled 抛错 fail-closed，不进 schema、不炸整批", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    reg.register(new ThrowingEnabledMock("boom"));
+    expect(reg.definitions().map((d) => d.name)).toEqual(["read"]);
+  });
+
+  test("includeDisabled 给 --dump-tools：禁用工具仍出现在 definitions", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    reg.register(new DisabledMock("ghost"));
+    expect(
+      reg
+        .definitions({ includeDisabled: true })
+        .map((d) => d.name)
+        .sort(),
+    ).toEqual(["ghost", "read"]);
+  });
+
+  test("activeDefinitions 同样过滤 isEnabled=false", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    reg.register(new DisabledMock("ghost"));
+    expect(reg.activeDefinitions().map((d) => d.name)).toEqual(["read"]);
+  });
+
+  test("definitionsForTools（spawn 路径）同样过滤，漏这里是第二根死接线", () => {
+    const reg = new Registry();
+    const ghost = new DisabledMock("ghost");
+    const read = new MockTool("read");
+    expect(reg.definitionsForTools([read, ghost]).map((d) => d.name)).toEqual(["read"]);
+  });
+
+  test("未实现 isEnabled 的工具默认可用（绝大多数内置工具）", () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    expect(reg.definitions().map((d) => d.name)).toEqual(["read"]);
+  });
+});
+
+/**
  * `removeByNames`（disallowedTools 的工具集裁剪端）
  *
  * ## 为什么断言的是「schema 不进上下文」而不是「调用被拒」

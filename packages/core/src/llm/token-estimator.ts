@@ -57,9 +57,9 @@ function resolveFallbackWindow(): number {
 }
 
 /** ASCII 字符：英文散文实测 0.17、代码/JSON 偏高，取 0.20 折中 */
-const ASCII_TOKENS_PER_CHAR = 0.2;
+export const ASCII_TOKENS_PER_CHAR = 0.2;
 /** 非 ASCII 字符（中文等）：取 0.65 tok/char（9.4：偏保守，防长中文对话对 Claude 累积低估） */
-const NON_ASCII_TOKENS_PER_CHAR = 0.65;
+export const NON_ASCII_TOKENS_PER_CHAR = 0.65;
 
 /**
  * 对超长文本抽样估算"每字符 token 数"（EST-6）。
