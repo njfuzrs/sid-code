@@ -48,6 +48,51 @@ describe("G11 fire 方法触发对应 hook", () => {
     expect(captured).not.toBeNull();
     expect(captured.sources).toEqual(["/proj/CLAUDE.md"]);
     expect(captured.total_chars).toBe(1234);
+    expect(typeof captured.device_id).toBe("string");
+    expect(captured.device_id.length).toBeGreaterThan(0);
+    expect(captured.device_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  test("身份 env 注入后 hook payload 带 user_id/org_id/team_id", async () => {
+    const savedUser = process.env.SID_CODE_IDENTITY_USER_ID;
+    const savedOrg = process.env.SID_CODE_IDENTITY_ORG_ID;
+    const savedTeam = process.env.SID_CODE_IDENTITY_TEAM_ID;
+    try {
+      process.env.SID_CODE_IDENTITY_USER_ID = "hook-user@corp.com";
+      process.env.SID_CODE_IDENTITY_ORG_ID = "hook-org";
+      process.env.SID_CODE_IDENTITY_TEAM_ID = "hook-team";
+      const { __resetIdentityForTest } = await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+      const system = new HookSystem();
+      let captured: any = null;
+      system.registerHook(
+        {
+          type: "runtime",
+          name: "capture-identity",
+          action: async (input) => {
+            captured = input;
+          },
+        },
+        HookEventName.InstructionsLoaded,
+        { source: ConfigSource.Runtime },
+      );
+      await system.fireInstructionsLoadedEvent(["/proj/CLAUDE.md"], 1);
+      expect(captured.user_id).toBe("hook-user@corp.com");
+      expect(captured.org_id).toBe("hook-org");
+      expect(captured.team_id).toBe("hook-team");
+      expect(typeof captured.device_id).toBe("string");
+    } finally {
+      if (savedUser === undefined) delete process.env.SID_CODE_IDENTITY_USER_ID;
+      else process.env.SID_CODE_IDENTITY_USER_ID = savedUser;
+      if (savedOrg === undefined) delete process.env.SID_CODE_IDENTITY_ORG_ID;
+      else process.env.SID_CODE_IDENTITY_ORG_ID = savedOrg;
+      if (savedTeam === undefined) delete process.env.SID_CODE_IDENTITY_TEAM_ID;
+      else process.env.SID_CODE_IDENTITY_TEAM_ID = savedTeam;
+      const { __resetIdentityForTest } = await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+    }
   });
 
   test("TeammateIdle 触发 runtime hook，input 携带 teammate_id/name", async () => {

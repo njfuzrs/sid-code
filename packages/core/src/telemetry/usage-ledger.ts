@@ -114,6 +114,15 @@ export interface UsageLedgerEntry {
    * （刻意不回填存量：只能靠 mtime 猜，猜错比留空更糟）。
    */
   peakRatio?: number;
+
+  /**
+   * M1 身份三字段。账本要按 org / 团队切片才能做成本归属；deviceId 是本机键。
+   * 旧数据无这些字段。不落空串——缺失表示「当时没注入身份」。
+   */
+  deviceId?: string;
+  userId?: string;
+  orgId?: string;
+  teamId?: string;
 }
 
 /**

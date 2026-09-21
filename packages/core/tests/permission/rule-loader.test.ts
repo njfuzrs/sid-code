@@ -33,6 +33,8 @@ describe("RuleLoader - 权威清单统一", () => {
     expect(SECURITY_SENSITIVE_FIELDS.has("trustProjectExtensions")).toBe(true);
     // 新增
     expect(SECURITY_SENSITIVE_FIELDS.has("enableLLMClassifier")).toBe(true);
+    expect(SECURITY_SENSITIVE_FIELDS.has("identity")).toBe(true);
+    expect(RuleLoader.isProjectSettingTrusted("identity")).toBe(false);
   });
 });
 

@@ -117,6 +117,11 @@ describe("SID_CONFIG_DIR 覆盖日志落盘路径（缺陷 B 本体）", () => {
     expect(sidPaths.debugLog()).toBe(sidHomePath("debug.log"));
     expect(sidPaths.auditLog()).toBe(sidHomePath("audit.log"));
   });
+
+  test("sidPaths.deviceId / deviceCredential 与 sidHomePath 同源", () => {
+    expect(sidPaths.deviceId()).toBe(sidHomePath("device-id"));
+    expect(sidPaths.deviceCredential()).toBe(sidHomePath("device-credential.json"));
+  });
 });
 
 describe("SID_CODE_HOME 收敛为兼容别名（env 名分裂修复）", () => {

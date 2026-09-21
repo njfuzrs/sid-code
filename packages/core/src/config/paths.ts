@@ -277,6 +277,17 @@ export const sidPaths = {
   /** MCP token 刷新跨进程互斥锁目录 */
   mcpOAuthLocks: () => sidHomePath("state", "mcp-oauth-locks"),
 
+  /**
+   * 本机持久 deviceId（M1）。首次启动写入 UUIDv4，权限 0o600。
+   * 事件 / 轨迹 / 账本 / hook 四方共用这一份，不跟 SID_CODE_TRACE_DEVICE_ID 混。
+   */
+  deviceId: () => sidHomePath("device-id"),
+  /**
+   * 设备凭据（M1 PR-1.4）。平台 enroll 签发后落盘，供 M2/M3 控制面带 Authorization。
+   * 档位与 API Key 相同：文件 + 0o600，不进 keychain。
+   */
+  deviceCredential: () => sidHomePath("device-credential.json"),
+
   // ── 持久 Shell 会话：shell 环境快照 ──
   shellSnapshots: () => sidHomePath("shell-snapshots"),
 

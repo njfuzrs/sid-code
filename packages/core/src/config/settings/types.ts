@@ -160,6 +160,17 @@ const QuotaSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/** M1 身份注入段。deviceId 不在 settings 里配（本机持久 UUID）。 */
+const IdentitySettingsSchema = lazySchema(() =>
+  z
+    .object({
+      userId: z.string().optional(),
+      orgId: z.string().optional(),
+      teamId: z.string().optional(),
+    })
+    .passthrough(),
+);
+
 /** 搜索配置 Schema */
 const SearchSchema = lazySchema(() =>
   z
@@ -381,6 +392,9 @@ export const SettingsSchema = lazySchema(
 
         // Git 集成配置（commit / PR 归因，P3-1）
         git: GitSettingsSchema().optional(),
+
+        // M1 身份注入（可注入，非登录）。项目级不可覆盖——见 SECURITY_SENSITIVE_FIELDS。
+        identity: IdentitySettingsSchema().optional(),
 
         // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
         statusLine: StatusLineSchema().optional(),

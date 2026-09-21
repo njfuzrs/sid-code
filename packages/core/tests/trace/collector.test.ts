@@ -183,6 +183,55 @@ describe("TraceCollector", () => {
     });
   });
 
+  describe("M1 身份与 ver 一次落到 traj", () => {
+    const savedUser = process.env.SID_CODE_IDENTITY_USER_ID;
+    const savedOrg = process.env.SID_CODE_IDENTITY_ORG_ID;
+    const savedTeam = process.env.SID_CODE_IDENTITY_TEAM_ID;
+    afterEach(async () => {
+      if (savedUser === undefined) delete process.env.SID_CODE_IDENTITY_USER_ID;
+      else process.env.SID_CODE_IDENTITY_USER_ID = savedUser;
+      if (savedOrg === undefined) delete process.env.SID_CODE_IDENTITY_ORG_ID;
+      else process.env.SID_CODE_IDENTITY_ORG_ID = savedOrg;
+      if (savedTeam === undefined) delete process.env.SID_CODE_IDENTITY_TEAM_ID;
+      else process.env.SID_CODE_IDENTITY_TEAM_ID = savedTeam;
+      const { __resetIdentityForTest } = await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+    });
+
+    test("SessionStart 后 metadata 含 device_id / ver，与 hook input 一致", async () => {
+      process.env.SID_CODE_IDENTITY_USER_ID = "alice@corp.com";
+      process.env.SID_CODE_IDENTITY_ORG_ID = "corp";
+      process.env.SID_CODE_IDENTITY_TEAM_ID = "infra";
+      const { __resetIdentityForTest } = await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+      await fireSessionStart(hookSystem);
+      const meta = collector.getMetadata()!;
+      expect(meta.device_id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      expect(meta.ver).toBe(meta.app_version);
+      expect(meta.user_id).toBe("alice@corp.com");
+      expect(meta.org_id).toBe("corp");
+      expect(meta.team_id).toBe("infra");
+    });
+
+    test("身份字段进 session.traj（不只留在内存）", async () => {
+      process.env.SID_CODE_IDENTITY_ORG_ID = "corp";
+      const { __resetIdentityForTest, getOrCreateDeviceId } =
+        await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+      const deviceId = getOrCreateDeviceId();
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem);
+      await hookSystem.fireSessionEndEvent("exit");
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+      expect(traj.metadata.device_id).toBe(deviceId);
+      expect(traj.metadata.org_id).toBe("corp");
+      expect(traj.metadata.ver).toBe(traj.metadata.app_version);
+    });
+  });
+
   test("SessionStart 创建 writer，后续事件写入 events.jsonl", async () => {
     await fireSessionStart(hookSystem);
     const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");

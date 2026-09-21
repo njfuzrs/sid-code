@@ -78,6 +78,25 @@ describe("Sink 路由层（spec 17 §3.2）", () => {
     expect(pub.events[0].meta.normal).toBe(1);
   });
 
+  test("假后端 stripProtected:true 看不到 org_id / device_id（M1 脱敏反向自证）", () => {
+    const priv = makeBackend("priv", false);
+    const pub = makeBackend("pub", true);
+    registerBackend(priv);
+    registerBackend(pub);
+    const sink = createAnalyticsSink();
+    sink.logEvent("evt", {
+      [`${PROTECTED_PREFIX}device_id`]: "dev-1" as any,
+      [`${PROTECTED_PREFIX}org_id`]: "corp" as any,
+      [`${PROTECTED_PREFIX}user_id`]: "u@corp.com" as any,
+      _ctx_version: "0.1.604" as any,
+    });
+    expect(priv.events[0].meta[`${PROTECTED_PREFIX}org_id`]).toBe("corp" as any);
+    expect(pub.events[0].meta[`${PROTECTED_PREFIX}org_id`]).toBeUndefined();
+    expect(pub.events[0].meta[`${PROTECTED_PREFIX}device_id`]).toBeUndefined();
+    expect(pub.events[0].meta[`${PROTECTED_PREFIX}user_id`]).toBeUndefined();
+    expect(pub.events[0].meta._ctx_version).toBe("0.1.604" as any);
+  });
+
   test("killswitch 关闭的后端不接收事件", () => {
     const a = makeBackend("a", false);
     registerBackend(a);

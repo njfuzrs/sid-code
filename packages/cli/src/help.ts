@@ -175,8 +175,13 @@ Worktree 隔离:
   SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
   SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
   SID_CODE_TRACE_UPLOAD_TOKEN   上传认证 token
-  SID_CODE_TRACE_USER_ID        用户标识
-  SID_CODE_TRACE_DEVICE_ID      设备标识
+  SID_CODE_TRACE_USER_ID        用户标识（仅轨迹上传；未设时回落到 SID_CODE_IDENTITY_USER_ID）
+  SID_CODE_TRACE_DEVICE_ID      设备标识（仅轨迹上传；未设时回落到本机持久 device-id）
+
+  身份（企业注入，非登录）：
+  SID_CODE_IDENTITY_USER_ID     用户标识（如 zhangsan@corp.com）
+  SID_CODE_IDENTITY_ORG_ID      组织标识（如 corp-shanghai）
+  SID_CODE_IDENTITY_TEAM_ID     团队标识（如 infra-platform）
 
   功能开关:
   SID_CODE_TOOL_SEARCH          工具延迟加载模式 (true/false/auto/auto:N)

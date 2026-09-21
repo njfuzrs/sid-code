@@ -277,8 +277,20 @@ export interface TraceMetadata {
    * 四方向的第 3 级都是 release-over-release 曲线，而在此之前轨迹里一个版本字段都没有
    * （实测 `session.traj` 的 metadata 47 个键含 `ver` 的 0 个）——于是任何指标都归属不到
    * 某个 release，第 3 级全部无法起步。由 collector 在会话初始化时兜底填入真值。
+   *
+   * 规划字段名是 `ver`：与 `app_version` **并存**。`ver` 是切片键（M1 出口「按 org/device/ver
+   * 切片」），`app_version` 是既有消费侧已经在读的名字。两个写同一份值。
    */
   app_version?: string;
+  /** M1 切片键。与 app_version 同值；存量 traj 没有这个字段。 */
+  ver?: string;
+  /** M1 本机持久 deviceId（四方落盘共用 getIdentity()）。 */
+  device_id?: string;
+  user_id?: string;
+  org_id?: string;
+  team_id?: string;
+  git_head?: string;
+  git_dirty?: boolean;
   /** Bug3 桥接：resume 时本进程用新 id 写 trajectory，此处记录被恢复的旧会话 id，
    *  使 trajectory 能反查到 SessionStore 的 sessions/{旧id}.jsonl 对话历史。 */
   resumed_from?: string;
@@ -472,6 +484,14 @@ export interface TrajectoryMetaOutput {
    * （见 `explicit-undefined-punches-through-defaults` 那类击穿）。
    */
   app_version?: string;
+  /** M1 切片键。与 app_version 同值。存量 traj 没有这个字段。 */
+  ver?: string;
+  device_id?: string;
+  user_id?: string;
+  org_id?: string;
+  team_id?: string;
+  git_head?: string;
+  git_dirty?: boolean;
   /** Bug3 桥接：被恢复的旧会话 id（resume 场景），用于反查 SessionStore 对话历史。 */
   resumed_from?: string;
   claude_md_hash?: string;
@@ -991,6 +1011,13 @@ export function buildTrajectory(
     // P0-1：版本号。用「有值才写」而非无条件写 undefined —— 后者会让 JSON 里出现
     // `"app_version": undefined` 这类击穿默认值的形态（`explicit-undefined-punches-through-defaults`）。
     ...(metadata.app_version ? { app_version: metadata.app_version } : {}),
+    ...(metadata.ver ? { ver: metadata.ver } : {}),
+    ...(metadata.device_id ? { device_id: metadata.device_id } : {}),
+    ...(metadata.user_id ? { user_id: metadata.user_id } : {}),
+    ...(metadata.org_id ? { org_id: metadata.org_id } : {}),
+    ...(metadata.team_id ? { team_id: metadata.team_id } : {}),
+    ...(metadata.git_head ? { git_head: metadata.git_head } : {}),
+    ...(metadata.git_dirty !== undefined ? { git_dirty: metadata.git_dirty } : {}),
     ...(metadata.resumed_from ? { resumed_from: metadata.resumed_from } : {}),
     ...(claudeMdHash ? { claude_md_hash: claudeMdHash } : {}),
     ...(metadata.error ? { error: metadata.error } : {}),

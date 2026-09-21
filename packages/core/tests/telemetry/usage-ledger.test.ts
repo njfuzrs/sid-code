@@ -114,6 +114,21 @@ describe("usage-ledger 读写", () => {
     expect(all.filter((e) => e.appVersion === "0.1.601").length).toBe(5);
   });
 
+  test("混合固件（有身份字段 + 无）全部解析成功，缺席不落空串", () => {
+    appendUsageLedger(entry({ sessionId: "new", deviceId: "dev-1", orgId: "corp" }));
+    appendUsageLedger(entry({ sessionId: "old" }));
+    const all = readUsageLedger();
+    expect(all.length).toBe(2);
+    const fresh = all.find((e) => e.sessionId === "new")!;
+    const stale = all.find((e) => e.sessionId === "old")!;
+    expect(fresh.deviceId).toBe("dev-1");
+    expect(fresh.orgId).toBe("corp");
+    expect("deviceId" in stale).toBe(false);
+    expect("userId" in stale).toBe(false);
+    expect("orgId" in stale).toBe(false);
+    expect("teamId" in stale).toBe(false);
+  });
+
   test("无 appVersion 的行读回是 undefined —— 不是空串，也不抛错", () => {
     // 这条防的是 explicit-undefined-punches-through-defaults 那类击穿：
     // 落盘时写 `"appVersion": undefined` 或 `""` 都会让消费侧的

@@ -36,6 +36,7 @@ import {
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
@@ -734,6 +735,8 @@ export class TraceCollector {
     // 复用的只是「逻辑会话轨迹目录」，进程级唯一标识不受影响。
     const isResume = input.source === "resume" && !!input.resumed_from;
     const traceSessionId = isResume ? input.resumed_from! : input.session_id;
+    const ident = getIdentity();
+    const git = getGitSnapshot();
 
     this.metadata = {
       session_id: traceSessionId,
@@ -756,6 +759,15 @@ export class TraceCollector {
       // 真值时不该依赖上游 —— 上游漏传就静默丢维度是这类字段最常见的失效方式。
       // env 覆盖保持与 `analytics/metadata.ts:184` 同一口径（灰度/回放时手动打标）。
       app_version: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
+      ver: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
+      // M1：身份与 git 快照。hook input 优先（外部脚本 / 测试可覆盖），否则本机 getIdentity()。
+      // 与事件 / 账本 / hook 共用同一份 deviceId，切片才守恒。
+      device_id: input.device_id ?? ident.deviceId,
+      user_id: input.user_id ?? ident.userId,
+      org_id: input.org_id ?? ident.orgId,
+      team_id: input.team_id ?? ident.teamId,
+      git_head: git.head ?? undefined,
+      git_dirty: git.dirty ?? undefined,
       resumed_from: input.resumed_from,
       total_tokens_sent: 0,
       total_tokens_received: 0,

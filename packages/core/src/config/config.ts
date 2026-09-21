@@ -5,7 +5,7 @@
  */
 
 import { join } from "path";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
@@ -579,6 +579,13 @@ export interface Config {
   // 搜索配置
   search?: SearchConfig;
 
+  /**
+   * M1 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入；
+   * deviceId 不在这里配（本机持久 UUID，见 identity/device-id.ts）。
+   * 未配置时所有功能照常——身份通道 fail-open。
+   */
+  identity?: IdentityConfig;
+
   // 轨迹采集配置
   trace?: TraceConfig;
 
@@ -704,6 +711,19 @@ export interface SearchConfig {
   braveApiKey?: string;
   /** Tavily API Key */
   tavilyApiKey?: string;
+}
+
+/**
+ * M1 身份配置段（可注入，非登录）。
+ * 环境变量 SID_CODE_IDENTITY_{USER,ORG,TEAM}_ID 优先于本段。
+ */
+export interface IdentityConfig {
+  /** 如 zhangsan@corp.com */
+  userId?: string;
+  /** 如 corp-shanghai */
+  orgId?: string;
+  /** 如 infra-platform */
+  teamId?: string;
 }
 
 /** 团队记忆同步配置（E.11，共享目录模型） */
@@ -1023,6 +1043,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     max_thinking_tokens: "maxThinkingTokens",
     speculative_classifier: "speculativeClassifier",
     team_memory: "teamMemory",
+    identity: "identity",
     trace: "trace",
     search: "search",
     telemetry: "telemetry",
@@ -1085,6 +1106,13 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
         compressThresholdKb: value.compress_threshold_kb || value.compressThresholdKb,
         largeFileThresholdLines: value.large_file_threshold_lines || value.largeFileThresholdLines,
         hugeFileThresholdLines: value.huge_file_threshold_lines || value.hugeFileThresholdLines,
+      };
+      // 特殊处理 identity：转换字段名（snake_case → camelCase）
+    } else if (configKey === "identity" && typeof value === "object" && value !== null) {
+      result[configKey] = {
+        userId: value.user_id || value.userId,
+        orgId: value.org_id || value.orgId,
+        teamId: value.team_id || value.teamId,
       };
       // 特殊处理 search：转换字段名（snake_case → camelCase）
     } else if (configKey === "search" && typeof value === "object" && value !== null) {
@@ -1313,6 +1341,16 @@ function loadFromEnv(): Partial<Config> {
     if (patterns.length > 0) base.toolSearchKeepLoaded = patterns;
   }
 
+  // M1 身份 env：与 SID_CODE_TRACE_{USER,DEVICE}_ID 并存。trace 专用变量只覆盖上传字段，
+  // 不进全局 identity——四方落盘必须共用 getIdentity()，否则切片不守恒。
+  {
+    const identity: IdentityConfig = {};
+    if (env.SID_CODE_IDENTITY_USER_ID) identity.userId = env.SID_CODE_IDENTITY_USER_ID;
+    if (env.SID_CODE_IDENTITY_ORG_ID) identity.orgId = env.SID_CODE_IDENTITY_ORG_ID;
+    if (env.SID_CODE_IDENTITY_TEAM_ID) identity.teamId = env.SID_CODE_IDENTITY_TEAM_ID;
+    if (Object.keys(identity).length > 0) base.identity = identity;
+  }
+
   // trace 环境变量
   if (env.SID_CODE_TRACE === "1" || env.SID_CODE_TRACE === "true") {
     const traceConfig: TraceConfig = {
@@ -1425,6 +1463,47 @@ async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
   }
 }
 
+/**
+ * 读企业 managed-settings.json 的 identity 段（first-exists-wins）。
+ * 损坏 / 缺失 / 非对象一律当没配——身份通道 fail-open。
+ * 不走 getSettings()：那条链的 policySettings 仍指向 /etc/sid-code/policy.json，
+ * 跟规划写的 managed-settings.json 不是同一份文件。
+ */
+function pickIdentityString(
+  rec: Record<string, unknown>,
+  camel: string,
+  snake: string,
+): string | undefined {
+  const a = rec[camel];
+  if (typeof a === "string") return a;
+  const b = rec[snake];
+  if (typeof b === "string") return b;
+  return undefined;
+}
+
+function loadManagedIdentity(): IdentityConfig | undefined {
+  // 顺序跟 sidPaths.managedPolicyCandidates 走：/etc 系统管控优先，用户级回退。
+  // 测试把 SID_CONFIG_DIR 指到 tmpdir 时走第二条；本机没有 /etc 文件则跳过。
+  for (const p of sidPaths.managedPolicyCandidates()) {
+    if (!existsSync(p)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(p, "utf-8")) as unknown;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const ident = (raw as { identity?: unknown }).identity;
+      if (!ident || typeof ident !== "object" || Array.isArray(ident)) continue;
+      const rec = ident as Record<string, unknown>;
+      return {
+        userId: pickIdentityString(rec, "userId", "user_id"),
+        orgId: pickIdentityString(rec, "orgId", "org_id"),
+        teamId: pickIdentityString(rec, "teamId", "team_id"),
+      };
+    } catch {
+      getLogger().warn("IDENTITY", `读取 managed-settings identity 失败，已忽略: ${p}`);
+    }
+  }
+  return undefined;
+}
+
 /** 加载完整配置 */
 export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config> {
   const defaults = defaultConfig();
@@ -1435,6 +1514,22 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   let merged = mergeConfig(defaults, fileConfig);
   merged = mergeConfig(merged, envConfig);
   merged = mergeConfig(merged, cliArgs);
+
+  // identity 必须按字段 coalesce：浅合并会让 env 的 {userId} 整段盖掉文件的 {orgId}。
+  // 优先级（低→高）：user settings.json → managed-settings.json → env → CLI。
+  // 项目级 settings 的 identity 不进这里——SECURITY_SENSITIVE_FIELDS 已把它从
+  // projectSettings 滤掉；loadConfigFile 只读 ~/.sid-code/settings.json，本就不会读仓库级。
+  {
+    const { coalesceIdentity, setIdentityConfig } = await import("../identity/index.ts");
+    const identity = coalesceIdentity(
+      (fileConfig as Partial<Config>).identity,
+      loadManagedIdentity(),
+      envConfig.identity,
+      cliArgs.identity,
+    );
+    (merged as Config).identity = identity;
+    setIdentityConfig(identity);
+  }
 
   // B1：多源 MCP 配置合并（user > local > project，签名去重 + policy 过滤）。
   // 三源物理落点：
@@ -1504,6 +1599,19 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   }
 
   const config = merged as Config;
+
+  // trace 上传未显式配 userId / deviceId 时回落到全局 identity。
+  // 不删 SID_CODE_TRACE_*：显式配置仍优先（与规划「并存、不删旧变量」一致）。
+  if (config.trace?.upload) {
+    const { getIdentity } = await import("../identity/index.ts");
+    const ident = getIdentity();
+    if (!config.trace.upload.userId && ident.userId) {
+      config.trace.upload.userId = ident.userId;
+    }
+    if (!config.trace.upload.deviceId) {
+      config.trace.upload.deviceId = ident.deviceId;
+    }
+  }
 
   // 记录用户显式配置的 maxTokens 全局覆盖值——必须在首次 resolveCurrentModelConfig 之前，
   // 否则 resolveCurrentModelConfig 读不到 _explicitMaxTokens 会走「按模型推导」分支，把用户
