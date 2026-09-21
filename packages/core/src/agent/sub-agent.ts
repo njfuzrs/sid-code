@@ -11,6 +11,7 @@ import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
+import { processToolResult } from "../tool/result-storage.ts";
 import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
@@ -1171,6 +1172,8 @@ export class SubAgent {
                   msg.input,
                   tools,
                   signal,
+                  msg.id,
+                  this.deriveSubAgentSessionId(taskId),
                 );
                 // P0-1(b)：喂残卷。只在**执行成功**时记——失败的 write/edit 没有真的改动
                 // 文件，记进"已改动文件清单"就是假信息（与 agentic-loop 只把非 is_error
@@ -1358,6 +1361,8 @@ export class SubAgent {
     input: Record<string, unknown>,
     tools: ToolRegistry,
     signal?: AbortSignal,
+    toolUseId?: string,
+    sessionId?: string,
   ): Promise<{ content: string; is_error: boolean }> {
     const log = getLogger();
     const tool = tools.get(name);
@@ -1438,7 +1443,14 @@ export class SubAgent {
         signal,
       );
       const elapsed = Date.now() - startTime;
-      const truncated = ContextManager.truncateToolOutput(result.output);
+      // D9：spawn 路径工具在父进程执行，同样走 processToolResult，不要只截断丢掉原文。
+      const truncated = processToolResult(
+        name,
+        toolUseId ?? "spawn",
+        result.output,
+        sessionId ?? this.deriveSubAgentSessionId(),
+        tool.maxResultSizeChars,
+      );
       // post_tool_use hook（驱动 execute_tool span）
       if (this.hookSystem) {
         this.hookSystem

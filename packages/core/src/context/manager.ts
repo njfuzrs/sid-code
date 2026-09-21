@@ -538,6 +538,11 @@ export class Manager {
     this.maskingService = new ToolOutputMaskingService(sessionId, this.maxTokens);
   }
 
+  /** 当前会话 ID。未注入时 undefined（调用方回退 "default"，与 processToolResult 缺省同口径）。 */
+  getSessionId(): string | undefined {
+    return this.sessionId;
+  }
+
   /**
    * 设置完整会话转录文件路径（Layer 2）。
    * 由 App 在 SessionStore 启动后注入（jsonl 落盘路径），供压缩摘要提示模型查阅压缩前细节。

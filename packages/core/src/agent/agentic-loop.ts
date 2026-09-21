@@ -909,6 +909,8 @@ async function runAgentLoopInner(
         config.hookSystem,
         config.permissionChecker,
         config.onToolProgress,
+        // D9：落盘目录跟 masking 共用派生 sessionId，与主会话隔离。
+        config.ctxMgr.getSessionId(),
       );
       ctxMgr.addMessage({ role: "user", content: toolResults });
       emptyParamRetryCount = 0;
