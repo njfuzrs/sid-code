@@ -230,17 +230,95 @@ describe("TraceCollector", () => {
       expect(traj.metadata.org_id).toBe("corp");
       expect(traj.metadata.ver).toBe(traj.metadata.app_version);
     });
+
+    test("events.jsonl 磁盘行顶层带身份（不是 HookInput 内存对象）", async () => {
+      // 变异自证：这条以前只 assert first.event === "SessionStart"，故意不写
+      // 身份字段也绿——PR-1.2 绿、真实会话 17 行全空。必须读文件内容。
+      process.env.SID_CODE_IDENTITY_USER_ID = "alice@corp.com";
+      process.env.SID_CODE_IDENTITY_ORG_ID = "corp";
+      process.env.SID_CODE_IDENTITY_TEAM_ID = "infra";
+      const { __resetIdentityForTest, getOrCreateDeviceId } =
+        await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+      const deviceId = getOrCreateDeviceId();
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem);
+      await hookSystem.fireSessionEndEvent("exit");
+
+      const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
+      expect(existsSync(eventsPath)).toBe(true);
+      const rows = readFileSync(eventsPath, "utf-8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(rows.length).toBeGreaterThanOrEqual(3);
+
+      const named = ["SessionStart", "BeforeModel", "SessionEnd"];
+      for (const name of named) {
+        const row = rows.find((r) => r.event === name);
+        expect(row).toBeDefined();
+        expect(row!.device_id).toBe(deviceId);
+        expect(row!.org_id).toBe("corp");
+        expect(row!.user_id).toBe("alice@corp.com");
+        expect(row!.team_id).toBe("infra");
+        const data = row!.data as Record<string, unknown> | undefined;
+        expect(data?.device_id).toBeUndefined();
+        expect(data?.org_id).toBeUndefined();
+      }
+      for (const row of rows) {
+        expect(row.device_id).toBe(deviceId);
+      }
+    });
+
+    test("未注入 org/user/team 时 events.jsonl 不落空串", async () => {
+      delete process.env.SID_CODE_IDENTITY_USER_ID;
+      delete process.env.SID_CODE_IDENTITY_ORG_ID;
+      delete process.env.SID_CODE_IDENTITY_TEAM_ID;
+      const { __resetIdentityForTest, getOrCreateDeviceId } =
+        await import("@sid-code/core/identity/index.ts");
+      __resetIdentityForTest();
+      const deviceId = getOrCreateDeviceId();
+      await fireSessionStart(hookSystem);
+
+      const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
+      const raw = readFileSync(eventsPath, "utf-8").trim().split("\n")[0];
+      const first = JSON.parse(raw) as Record<string, unknown>;
+      expect(first.event).toBe("SessionStart");
+      expect(first.device_id).toBe(deviceId);
+      expect(Object.prototype.hasOwnProperty.call(first, "org_id")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(first, "user_id")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(first, "team_id")).toBe(false);
+      expect(raw).not.toContain('"org_id":""');
+      expect(raw).not.toContain('"user_id":""');
+      expect(raw).not.toContain('"team_id":""');
+    });
   });
 
   test("SessionStart 创建 writer，后续事件写入 events.jsonl", async () => {
-    await fireSessionStart(hookSystem);
-    const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
-    expect(existsSync(eventsPath)).toBe(true);
+    const savedOrg = process.env.SID_CODE_IDENTITY_ORG_ID;
+    const { __resetIdentityForTest, getOrCreateDeviceId } =
+      await import("@sid-code/core/identity/index.ts");
+    try {
+      process.env.SID_CODE_IDENTITY_ORG_ID = "corp";
+      __resetIdentityForTest();
+      const deviceId = getOrCreateDeviceId();
+      await fireSessionStart(hookSystem);
+      const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
+      expect(existsSync(eventsPath)).toBe(true);
 
-    const lines = readFileSync(eventsPath, "utf-8").trim().split("\n");
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    const first = JSON.parse(lines[0]);
-    expect(first.event).toBe("SessionStart");
+      const lines = readFileSync(eventsPath, "utf-8").trim().split("\n");
+      expect(lines.length).toBeGreaterThanOrEqual(1);
+      const first = JSON.parse(lines[0]);
+      expect(first.event).toBe("SessionStart");
+      // 读磁盘行，不是内存 HookInput。故意不写身份字段时这条必须红。
+      expect(first.device_id).toBe(deviceId);
+      expect(first.org_id).toBe("corp");
+      expect(first.data?.device_id).toBeUndefined();
+    } finally {
+      if (savedOrg === undefined) delete process.env.SID_CODE_IDENTITY_ORG_ID;
+      else process.env.SID_CODE_IDENTITY_ORG_ID = savedOrg;
+      __resetIdentityForTest();
+    }
   });
 
   // ─── BeforeModel + AfterModel 配对 ───

@@ -49,7 +49,16 @@ export interface HookEvent {
   timestamp: string;
   /** 工作目录 */
   cwd?: string;
-  /** 事件附加数据 */
+  /**
+   * M1 本机持久 deviceId。与 HookInput 同名、同行顶层，不进 data。
+   * 缺省不写空串（与账本「不落空串」一致）：缺失表示当时没注入身份。
+   * writer 自己不填——由 collector 从会话 metadata 注入。
+   */
+  device_id?: string;
+  user_id?: string;
+  org_id?: string;
+  team_id?: string;
+  /** 事件附加数据（会话身份不放这里，消费方要能一眼区分） */
   data?: Record<string, unknown>;
 }
 
