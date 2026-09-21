@@ -9,6 +9,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildSystemPrompt, clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import { DYNAMIC_BOUNDARY } from "@sid-code/core/api/cache-strategy.ts";
 import type { SkillListingEntry } from "@sid-code/core/skill/budget.ts";
 
 const SKILLS: SkillListingEntry[] = [
@@ -68,5 +69,17 @@ describe("buildSystemPrompt — skill 摘要注入（缺口 E）", () => {
     expect(skillIdx).toBeGreaterThanOrEqual(0);
     expect(claudeMdIdx).toBeGreaterThanOrEqual(0);
     expect(skillIdx).toBeLessThan(claudeMdIdx);
+  });
+
+  test("P0-1：Skill 摘要落在 DYNAMIC_BOUNDARY 之前", () => {
+    clearPromptCache();
+    const prompt = buildSystemPrompt({
+      tools: [],
+      skillEntries: SKILLS,
+      model: "claude-sonnet-4-6",
+    });
+    const idx = prompt.indexOf(DYNAMIC_BOUNDARY);
+    expect(idx).toBeGreaterThan(0);
+    expect(prompt.slice(0, idx)).toContain("code-review");
   });
 });

@@ -12,6 +12,14 @@ import {
   isNonDiscardableTool,
 } from "@sid-code/core/query/compact/microcompact.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
+import { EditTool } from "@sid-code/core/tool/edit.ts";
+import { WriteTool } from "@sid-code/core/tool/write.ts";
+import { MemoryTool } from "@sid-code/core/tool/memory.ts";
+import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
+import { MemoryStore } from "@sid-code/core/memory/store.ts";
+import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 /** 辅助：构建含 tool_result 的消息列表（assistant tool_use(bash) + user tool_result 交替） */
 function makeMessages(count: number, contentLength: number): Message[] {
@@ -91,6 +99,21 @@ describe("isNonDiscardableTool", () => {
     expect(isNonDiscardableTool("write")).toBe(true);
   });
 
+  it("P0-4：名单与真实 tool.name() 归一化后相交（防再写错）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sid-mc-"));
+    const names = [
+      new EditTool().name(),
+      new WriteTool().name(),
+      new MemoryTool(
+        new MemoryStore(undefined, { globalMemoryDir: dir, projectMemoryDir: dir }),
+      ).name(),
+      new AskUserQuestionTool().name(),
+    ];
+    for (const name of names) {
+      expect(isNonDiscardableTool(name)).toBe(true);
+    }
+  });
+
   it("应识别 bash 不是不可丢弃工具", () => {
     expect(isNonDiscardableTool("bash")).toBe(false);
   });
@@ -111,6 +134,30 @@ describe("microcompactMessages", () => {
 
     expect(result.compactedCount).toBeGreaterThan(0);
     expect(result.savedChars).toBeGreaterThan(0);
+  });
+
+  it("P0-4：save_memory 输出应保留前 200 字符摘要（不再当未知工具原样跳过）", () => {
+    const msgs: Message[] = [
+      { role: "user", content: [{ type: "text", text: "padding" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool_mem", name: "save_memory", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool_mem", content: "M".repeat(800) }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "resp 1" }] },
+      { role: "assistant", content: [{ type: "text", text: "resp 2" }] },
+    ];
+
+    const result = microcompactMessages(msgs, { preserveRecentCount: 2, minContentLength: 500 });
+    expect(result.compactedCount).toBe(1);
+    const compacted = result.messages[2].content[0];
+    if (compacted.type === "tool_result" && typeof compacted.content === "string") {
+      expect(compacted.content).toContain("M".repeat(200));
+      expect(compacted.content).toContain("已省略");
+    }
   });
 
   it("不可丢弃工具(edit)输出应保留前 200 字符摘要", () => {

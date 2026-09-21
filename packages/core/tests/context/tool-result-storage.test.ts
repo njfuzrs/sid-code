@@ -227,4 +227,13 @@ describe("ContentReplacementState", () => {
     state.clear();
     expect(state.size).toBe(0);
   });
+
+  it("has 反映是否已生成过稳定占位", () => {
+    const state = new ContentReplacementState();
+    expect(state.has("tool_a")).toBe(false);
+    state.getOrCreate("tool_a", () => "a");
+    expect(state.has("tool_a")).toBe(true);
+    state.clear();
+    expect(state.has("tool_a")).toBe(false);
+  });
 });

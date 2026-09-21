@@ -18,14 +18,19 @@ export interface ToolResultBudgetOptions {
   preserveRecentCount?: number;
   /** 每个字符约等于多少 token（粗略估算） */
   charsPerToken?: number;
+  /**
+   * P0-2：跳过这些 tool_use_id（read/edit/write/read_many）。
+   * 它们走 getCleanedMessages 分级保护，不能在入队时被聚合预算截断。
+   */
+  skipToolUseIds?: Set<string>;
 }
 
-const DEFAULT_OPTIONS: Required<ToolResultBudgetOptions> = {
+const DEFAULT_OPTIONS = {
   maxTokensPerResult: 10000,
   totalBudget: 50000,
   preserveRecentCount: 4,
   charsPerToken: 4,
-};
+} as const;
 
 /** 预算占位符 */
 const BUDGET_PLACEHOLDER = (originalChars: number) =>
@@ -64,6 +69,7 @@ export function applyToolResultBudget(
 
     const newContent: ContentBlock[] = msg.content.map((b) => {
       if (b.type !== "tool_result" || typeof b.content !== "string") return b;
+      if (opts.skipToolUseIds?.has(b.tool_use_id)) return b;
 
       const contentChars = b.content.length;
       const estimatedTokens = Math.ceil(contentChars / opts.charsPerToken);
@@ -94,4 +100,28 @@ export function applyToolResultBudget(
   }
 
   return { messages: result, truncatedCount, savedChars };
+}
+
+/**
+ * P0-2：对**即将入历史的一条消息**做聚合预算（preserveRecentCount=0）。
+ *
+ * `applyToolResultBudget` 原先只挂在 hard 档管线，产生时刻无拦截——
+ * 一轮并行 8 个各 29K 的 bash 结果（单体都未超 30K）可以直接进历史并发给 API。
+ * 入队路径调本函数，把「单条消息内所有 tool_result 之和」卡在 totalBudget。
+ */
+export function applyToolResultBudgetToContent(
+  content: ContentBlock[],
+  options?: ToolResultBudgetOptions,
+): { content: ContentBlock[]; truncatedCount: number; savedChars: number } {
+  const hasToolResult = content.some((b) => b.type === "tool_result");
+  if (!hasToolResult) return { content, truncatedCount: 0, savedChars: 0 };
+  const budgeted = applyToolResultBudget([{ role: "user", content }], {
+    ...options,
+    preserveRecentCount: 0,
+  });
+  return {
+    content: budgeted.messages[0].content,
+    truncatedCount: budgeted.truncatedCount,
+    savedChars: budgeted.savedChars,
+  };
 }

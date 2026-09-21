@@ -11,6 +11,7 @@ import { describe, test, expect } from "bun:test";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { generateDenyRulesAttachment } from "@sid-code/core/config/attachments.ts";
 import { buildSystemPrompt, clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
+import { DYNAMIC_BOUNDARY } from "@sid-code/core/api/cache-strategy.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 
@@ -55,6 +56,7 @@ describe("generateDenyRulesAttachment（缺口 D）", () => {
   test("有摘要时生成 permission-constraints 附件", () => {
     const att = generateDenyRulesAttachment("- 禁用工具：bash");
     expect(att).not.toBeNull();
+    expect(att!.cacheStability).toBe("stable");
     expect(att!.content).toContain("<permission-constraints>");
     expect(att!.content).toContain("禁用工具：bash");
   });
@@ -75,6 +77,9 @@ describe("buildSystemPrompt — deny 规则注入（缺口 D）", () => {
     });
     expect(prompt).toContain("permission-constraints");
     expect(prompt).toContain("禁用工具：bash、write");
+    const idx = prompt.indexOf(DYNAMIC_BOUNDARY);
+    expect(idx).toBeGreaterThan(0);
+    expect(prompt.slice(0, idx)).toContain("permission-constraints");
   });
 
   test("未传 denyRulesSummary 时不注入约束块", () => {

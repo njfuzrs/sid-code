@@ -30,6 +30,7 @@ describe("generateClaudeMdAttachment", () => {
     const attachment = generateClaudeMdAttachment("# 项目规则\n使用 TypeScript");
     expect(attachment.type).toBe("claudeMd");
     expect(attachment.priority).toBe(PRIORITY.CLAUDE_MD);
+    expect(attachment.cacheStability).toBe("stable");
     expect(attachment.content).toContain("<system-reminder>");
     expect(attachment.content).toContain("使用 TypeScript");
     expect(attachment.content).toContain("覆盖任何默认行为");
@@ -54,6 +55,7 @@ describe("generateGitStatusAttachment", () => {
     expect(attachment).not.toBeNull();
     expect(attachment!.type).toBe("gitStatus");
     expect(attachment!.priority).toBe(PRIORITY.GIT_STATUS);
+    expect(attachment!.cacheStability).toBe("stable");
     expect(attachment!.content).toContain("<git-status>");
     // 保留稳定部分：branch（会话内极少变）。
     expect(attachment!.content).toContain("Current branch:");
