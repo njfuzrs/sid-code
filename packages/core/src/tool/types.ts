@@ -302,6 +302,12 @@ export interface LegacyTool extends ToolCapabilityFields {
   ): Promise<LegacyToolResult>;
   readOnly?(): boolean;
   isConcurrencySafe?(input: unknown): boolean;
+  /**
+   * 当前环境是否可用。registry 发 schema 时会问它：false / 抛错都不进
+   * `definitions()` / `activeDefinitions()`。未实现 = 可用（绝大多数工具）。
+   * 生产覆盖目前只有 LSPTool。
+   */
+  isEnabled?(): boolean;
   usageGuide?(): string;
   /**
    * 工具自身的额外权限逻辑（passthrough 语义）。

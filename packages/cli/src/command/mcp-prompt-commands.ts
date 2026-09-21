@@ -12,7 +12,7 @@
 
 import type { UnifiedCommand } from "./types.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
-import { normalizeMcpName } from "@sid-code/core/mcp/normalization.ts";
+import { buildMcpToolName } from "@sid-code/core/mcp/normalization.ts";
 
 /**
  * 按当前 MCP 连接状态构建 prompt slash 命令列表。
@@ -25,7 +25,7 @@ export function buildMcpPromptCommands(manager?: MCPManager): UnifiedCommand[] {
   const commands: UnifiedCommand[] = [];
 
   for (const { serverName, prompt } of prompts) {
-    const name = `mcp__${normalizeMcpName(serverName)}__${normalizeMcpName(prompt.name)}`;
+    const name = buildMcpToolName(serverName, prompt.name);
     const argHint = prompt.arguments
       ?.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`))
       .join(" ");

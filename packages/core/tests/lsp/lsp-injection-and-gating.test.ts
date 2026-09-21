@@ -177,7 +177,57 @@ describe("D5：lsp 工具的启用判据需附加「有服务器」", () => {
     const { getLSPServerCount } = require("@sid-code/core/lsp/manager.ts");
     expect(getLSPServerCount()).toBe(0);
   });
+
+  /**
+   * 接线的后半截：判据算出来了还不够，必须不进 definitions()。
+   * 工具调用层 D7 修的就是「isEnabled 写在接口里、组装路径零调用」。
+   * 只测纯函数 lspToolEnabledFor 会绿着放过那根死接线。
+   */
+  test("success + 零服务器：lsp 不进 definitions()（守组装接线）", () => {
+    const { Registry } = require("@sid-code/core/tool/registry.ts");
+    class ZeroServerLSPTool extends LSPTool {
+      protected override readGateInputs() {
+        return { initState: "success", serverCount: 0 };
+      }
+    }
+    const reg = new Registry();
+    reg.register(new MockEnabled());
+    reg.register(new ZeroServerLSPTool());
+    expect(reg.get("lsp")).toBeDefined();
+    expect(reg.definitions().map((d: { name: string }) => d.name)).not.toContain("lsp");
+    expect(
+      reg.definitions({ includeDisabled: true }).map((d: { name: string }) => d.name),
+    ).toContain("lsp");
+  });
+
+  test("success + 有服务器：lsp 进 definitions()（对照组）", () => {
+    const { Registry } = require("@sid-code/core/tool/registry.ts");
+    class HasServerLSPTool extends LSPTool {
+      protected override readGateInputs() {
+        return { initState: "success", serverCount: 2 };
+      }
+    }
+    const reg = new Registry();
+    reg.register(new HasServerLSPTool());
+    expect(reg.definitions().map((d: { name: string }) => d.name)).toContain("lsp");
+  });
 });
+
+/** 给 LSP 组装用例垫一个不会被 isEnabled 滤掉的内置工具 */
+class MockEnabled {
+  name() {
+    return "read";
+  }
+  description() {
+    return "read";
+  }
+  inputSchema() {
+    return { type: "object", properties: {} };
+  }
+  async execute() {
+    return { output: "ok" };
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // D6：lsp.json 配置错误必须对用户可见

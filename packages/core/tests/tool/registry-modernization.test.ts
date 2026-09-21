@@ -184,6 +184,23 @@ describe("Registry — G19 bridge (toLegacyTool)", () => {
     expect(legacy.searchHint).toBe("file picker");
     expect(legacy.interruptBehavior?.()).toBe("block");
   });
+
+  test("isEnabled 透传到 LegacyTool（D7：新工具经 bridge 注册也要能被组装层问到）", () => {
+    const newTool = buildTool({
+      name: "gated",
+      description: () => "gated",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async () => ({ data: "" }),
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      isEnabled: () => false,
+    });
+    const legacy = toLegacyTool(newTool);
+    expect(legacy.isEnabled?.()).toBe(false);
+    const r = new Registry();
+    r.register(legacy);
+    expect(r.definitions().map((d) => d.name)).not.toContain("gated");
+  });
 });
 
 describe("Registry — 工具名冲突处理 (GAP-14)", () => {
