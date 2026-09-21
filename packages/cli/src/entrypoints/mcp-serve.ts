@@ -72,12 +72,22 @@ async function buildServeTools(allowWrite: boolean): Promise<LegacyTool[]> {
   const { WebSearchTool } = await import("@sid-code/core/tool/web-search.ts");
 
   const tracker = new FileReadTracker();
+  // mcp-serve 没有 PermissionChecker 实例，仍用 PathValidator 的内置敏感文件名单
+  // 过滤 grep/read_many/glob/ls——否则对外暴露的只读工具会把 .env 搜出来。
+  const { PathValidator } = await import("@sid-code/core/permission/path-validator.ts");
+  const sensitive = new PathValidator(process.cwd());
+  const hidden = (absPath: string) => sensitive.isSensitivePath(absPath);
+  const grepTool = new GrepTool(hidden);
+  const globTool = new GlobTool();
+  globTool.setPathHiddenFilter(hidden);
+  const lsTool = new LsTool();
+  lsTool.setPathHiddenFilter(hidden);
   const all: LegacyTool[] = [
-    ...createStatefulTools(tracker), // read / edit / read_many / write
+    ...createStatefulTools(tracker, hidden), // read / edit / read_many / write
     new BashTool(),
-    new GrepTool(),
-    new GlobTool(),
-    new LsTool(),
+    grepTool,
+    globTool,
+    lsTool,
     new WebFetchTool(),
     new LSPTool(),
     new WebSearchTool(createSearchBackend()),

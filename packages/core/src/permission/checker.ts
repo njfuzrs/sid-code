@@ -23,13 +23,14 @@ import type { Config } from "../config/config.ts";
 import type { PermissionMode } from "./mode.ts";
 import type { PlanModeManager } from "../plan/state.ts";
 import type { Tool, ToolUseContext } from "../tool/types.ts";
-import { checkRules } from "./rules.ts";
+import { checkRules, extractMatchValue } from "./rules.ts";
 import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
+import { SAFETY_PROTECTED_PATHS } from "./safety-protected-paths.ts";
 import {
   type DenialTrackingState,
   createDenialTrackingState,
@@ -102,12 +103,21 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "nc 管道外传", pattern: /\|\s*nc\s+/, severity: "high" },
   {
     name: "读取 shell 历史",
-    pattern: /cat\s+.*\.(bash_history|zsh_history|history)/,
+    pattern: /\b(cat|head|tail|less|more|rg|grep)\b.*\.(bash_history|zsh_history|history)/,
+    severity: "high",
+  },
+  // P1-1：读类命令 × 敏感路径，不再只认 `cat` + 特定文件名。
+  // `head ~/.ssh/id_rsa` / `rg -n . ~/.ssh/id_rsa` / `cat .env` 修前全部放行。
+  {
+    name: "读取 SSH 密钥",
+    pattern:
+      /\b(cat|head|tail|less|more|rg|grep|awk|sed|nl|od|hexdump|xxd|strings)\b.*(\.ssh\/|id_rsa|id_ed25519|id_dsa|id_ecdsa|authorized_keys)/,
     severity: "high",
   },
   {
-    name: "读取 SSH 密钥",
-    pattern: /cat\s+.*\.ssh\/(id_rsa|id_ed25519|id_dsa|authorized_keys)/,
+    name: "读取敏感凭证文件",
+    pattern:
+      /\b(cat|head|tail|less|more|rg|grep|awk|sed|nl|od|hexdump|xxd|strings)\b.*(\.env($|[\s./])|\.aws\/(credentials|config)|\.kube\/config|\.docker\/config\.json|\.git-credentials|\.netrc|\.npmrc|\.pypirc)/,
     severity: "high",
   },
 
@@ -128,84 +138,15 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   ...GIT_DANGER_PATTERNS,
 ];
 
-/** safetyCheck 受保护路径（bypass-immune，即使 always-allow 也不可绕过） */
-interface SafetyProtectedPath {
-  pattern: string;
-  /** 是否允许自动模式的分类器审批（false = 绝对禁止） */
-  classifierApprovable: boolean;
-  reason: string;
-}
-
-//
-// ⚠️ 顺序敏感：safetyCheck 首次命中即返回，越具体/越严格的项必须排在越前面。
-// 例如 ".sid-code/commands/"（绝对禁止）必须排在 ".sid-code/"（可审批）之前，
-// 否则 commands 目录会先命中宽松的父目录规则而被错误放行。
-//
-const SAFETY_PROTECTED_PATHS: SafetyProtectedPath[] = [
-  // ── classifierApprovable: false（绝对禁止，不可自动审批）——最具体、最危险，排最前 ──
-  { pattern: ".git/hooks/", classifierApprovable: false, reason: "Git hooks 可执行任意代码" },
-  { pattern: ".husky/", classifierApprovable: false, reason: "Husky hooks 可执行任意代码" },
-  // 斜杠命令目录：命令体可执行任意 shell，等同 hooks 风险，绝对禁止自动审批
-  // （对标 claude-code isClaudeConfigFilePath 对 commands/agents/skills 的精细管控）
-  {
-    pattern: ".sid-code/commands/",
-    classifierApprovable: false,
-    reason: "sid-code 斜杠命令可执行任意代码",
-  },
-  {
-    pattern: ".sid-code/agents/",
-    classifierApprovable: false,
-    reason: "sid-code 子代理定义影响执行",
-  },
-  {
-    pattern: ".sid-code/skills/",
-    classifierApprovable: false,
-    reason: "sid-code Skill 可执行任意代码",
-  },
-  {
-    pattern: ".claude/commands/",
-    classifierApprovable: false,
-    reason: "Claude 斜杠命令可执行任意代码",
-  },
-  { pattern: ".claude/agents/", classifierApprovable: false, reason: "Claude 子代理定义影响执行" },
-  {
-    pattern: ".claude/skills/",
-    classifierApprovable: false,
-    reason: "Claude Skill 可执行任意代码",
-  },
-  // 设置文件精细项：settings 可注入 permissionMode/skipPermissions/yesMode 等安全开关，
-  // 风险等同上面的 commands/agents/skills，故 classifierApprovable 同样为 false（绝对禁止
-  // 自动审批，必须人工确认）。auto 分支读这个字段：false 时分类器结果直接丢弃（P0-1）。
-  {
-    pattern: ".sid-code/settings.json",
-    classifierApprovable: false,
-    reason: "sid-code 设置文件（可影响安全控制）",
-  },
-  {
-    pattern: ".sid-code/settings.local.json",
-    classifierApprovable: false,
-    reason: "sid-code 本地设置文件",
-  },
-  { pattern: ".claude/settings.json", classifierApprovable: false, reason: "Claude 设置文件" },
-  {
-    pattern: ".claude/settings.local.json",
-    classifierApprovable: false,
-    reason: "Claude 本地设置文件",
-  },
-  // ── classifierApprovable: true（分类器可根据上下文判断）——较宽泛的父目录，排后 ──
-  { pattern: ".git/", classifierApprovable: true, reason: "Git 仓库内部文件" },
-  { pattern: ".sid-code/", classifierApprovable: true, reason: "sid-code 配置目录" },
-  { pattern: ".claude/", classifierApprovable: true, reason: "Claude 配置目录" },
-  { pattern: ".vscode/", classifierApprovable: true, reason: "VS Code 配置目录" },
-  { pattern: ".bashrc", classifierApprovable: true, reason: "Shell 配置文件" },
-  { pattern: ".zshrc", classifierApprovable: true, reason: "Shell 配置文件" },
-  { pattern: ".profile", classifierApprovable: true, reason: "Shell 配置文件" },
-  { pattern: ".bash_profile", classifierApprovable: true, reason: "Shell 配置文件" },
-  { pattern: ".ssh/", classifierApprovable: true, reason: "SSH 配置目录" },
-];
-
 /** 文件工具（需要路径校验）。notebook_edit 路径字段是 notebook_path，见 extractFilePath。 */
 const FILE_TOOLS = new Set(["read", "write", "edit", "notebook_edit"]);
+
+/**
+ * P1-1：敏感文件硬 deny 不能只覆盖 read 工具。
+ * grep / read_many 的 `path` 指向凭证文件时，走同一道 PathValidator。
+ * 全树搜索（无 path / path 是目录）在工具执行层按 isPathHidden ∪ isSensitivePath 过滤。
+ */
+const PATH_VALIDATED_READ_TOOLS = new Set(["grep", "read_many"]);
 
 /** 写操作工具。notebook_edit 整文件原子写盘，与 write/edit 同属 safetyCheck 守卫对象。 */
 const WRITE_TOOLS = new Set(["write", "edit", "notebook_edit"]);
@@ -216,9 +157,41 @@ const WRITE_TOOLS = new Set(["write", "edit", "notebook_edit"]);
  * Step 4 / Step 6 整段跳过（P0-2）。一处抽取，别在各步骤各写一次。
  */
 function extractFilePath(req: PermissionRequest): string {
-  const input = req.input as { file_path?: unknown; notebook_path?: unknown } | undefined;
-  const raw = input?.file_path || input?.notebook_path || "";
+  const input = req.input as
+    | {
+        file_path?: unknown;
+        notebook_path?: unknown;
+        path?: unknown;
+      }
+    | undefined;
+  const raw = input?.file_path || input?.notebook_path || input?.path || "";
   return typeof raw === "string" ? raw : "";
+}
+
+/**
+ * P1-2：会话记忆的资源部分。空串表示「禁止写入 / 命中记忆」。
+ *
+ * - 写工具（write/edit/notebook_edit）不做 always 会话记忆：同路径不同内容会串味
+ *   （批准过改注释，再写入 hook 脚本免确认）。
+ * - grep 必须同时有 path 和 pattern，否则「工作区搜 password」会放行 `/etc/passwd`。
+ * - web_fetch 用完整 URL，不用规则匹配的 `domain:`（同域不同路径会串）。
+ * - 空资源（三个字段都缺、notebook/web_fetch 无目标）禁止记忆。
+ */
+function extractMemoryResource(req: PermissionRequest): string {
+  const tool = req.toolName.toLowerCase();
+  const input = (req.input ?? {}) as Record<string, unknown>;
+  if (tool === "write" || tool === "edit" || tool === "notebook_edit") return "";
+  if (tool === "read_many") return "";
+  if (tool === "web_fetch") {
+    return typeof input.url === "string" ? input.url : "";
+  }
+  if (tool === "grep") {
+    const pathVal = typeof input.path === "string" ? input.path : "";
+    const pattern = typeof input.pattern === "string" ? input.pattern : "";
+    if (!pathVal || !pattern) return "";
+    return `${pathVal}\0${pattern}`;
+  }
+  return extractMatchValue(req);
 }
 
 /**
@@ -272,9 +245,13 @@ const MAX_SESSION_MEMORY = 1000;
 
 /**
  * acceptEdits 模式下自动放行的文件系统命令（对齐 CC modeValidation.ts ACCEPT_EDITS_ALLOWED_COMMANDS）。
- * 仅当命令的路径参数都在 cwd 内才自动放行；跨 cwd 的 mv/rm 等仍走确认（刻意的攻击面权衡）。
+ * 仅当命令的路径参数都在 cwd 内才自动放行。
+ * P1-3：`rm`/`rmdir`/`mv` 不在白名单——`rm -rf .` 的 `.` resolve 后就是 cwd，
+ * isWithinWorkspace 为 true，会把工作区（cwd 恰好是家目录时更糟）直接删掉。
  */
-const ACCEPT_EDITS_FS_COMMANDS = new Set(["mkdir", "touch", "rm", "rmdir", "mv", "cp", "sed"]);
+const ACCEPT_EDITS_FS_COMMANDS = new Set(["mkdir", "touch", "cp", "sed"]);
+/** 即使被加回白名单也不得自动放行（第二道闸，防名单回潮）。 */
+const ACCEPT_EDITS_DESTRUCTIVE_COMMANDS = new Set(["rm", "rmdir", "mv"]);
 
 /** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
 const PLAN_MODE_EXTRA_TOOLS = new Set(["enter_plan_mode", "exit_plan_mode", "sub_agent"]);
@@ -573,6 +550,8 @@ export class PermissionChecker implements Checker {
       if (!trimmed) return false;
       const tokens = trimmed.split(/\s+/);
       const baseCmd = tokens[0];
+      // P1-3：rm/rmdir/mv 即使被加回白名单也不得自动放行（第二道闸）。
+      if (ACCEPT_EDITS_DESTRUCTIVE_COMMANDS.has(baseCmd)) return false;
       // baseCmd 必须是白名单 fs 命令
       if (!ACCEPT_EDITS_FS_COMMANDS.has(baseCmd)) return false;
 
@@ -588,7 +567,9 @@ export class PermissionChecker implements Checker {
           continue;
         }
         const resolved = path.isAbsolute(tok) ? tok : path.resolve(cwd, tok);
-        if (!this.pathValidator.isWithinWorkspace(resolved)) {
+        // 必须走 resolveRealPath：macOS 上工作区 realpath 是 /private/var/...，
+        // path.resolve 停在 /var/...，字面 startsWith 会把 cwd 内的 mkdir/touch 误判为区外。
+        if (!this.pathValidator.isWithinWorkspace(this.pathValidator.resolveRealPath(resolved))) {
           return false;
         }
       }
@@ -677,6 +658,15 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * P1-1：路径是否命中敏感文件硬 deny（凭证类）。
+   * 与 isPathHidden 并列：前者是用户 deny 规则，本方法是内置 SENSITIVE_FILES。
+   * grep / read_many 列举过滤时两者都要藏，否则 `Read(.env)` 规则藏了、SENSITIVE_FILES 没藏。
+   */
+  isSensitivePath(absPath: string): boolean {
+    return this.pathValidator.isSensitivePath(absPath);
+  }
+
+  /**
    * 异步初始化：从所有来源加载权限规则（P2-1：单一事实源 = RuleLoader）。
    *
    * 加载顺序与优先级：
@@ -724,23 +714,23 @@ export class PermissionChecker implements Checker {
     this.ruleLoader.importFromPermissionRule(rules, "projectSettings");
   }
 
-  /** 生成会话记忆 key */
-  private getMemoryKey(req: PermissionRequest): string {
-    // 对工具名 + 关键参数做简单 hash
-    const input = req.input as any;
-    const key = input?.file_path || input?.command || input?.pattern || "";
-    return `${req.toolName}:${key}`;
+  /** 生成会话记忆 key。资源为空返回 null，调用方不得写入、也不得命中。 */
+  private getMemoryKey(req: PermissionRequest): string | null {
+    const resource = extractMemoryResource(req);
+    if (!resource) return null;
+    return `${req.toolName}:${resource}`;
   }
 
-  /** 记住会话内权限决策 */
+  /** 记住会话内权限决策。空资源（写工具 / 无 path 的 grep / 无 url 的 web_fetch）不写入。 */
   rememberDecision(req: PermissionRequest, allowed: boolean): void {
+    const memKey = this.getMemoryKey(req);
+    if (!memKey) return;
     // 限制记忆大小
     if (this.sessionMemory.size >= MAX_SESSION_MEMORY) {
       // 删除最早的条目
       const firstKey = this.sessionMemory.keys().next().value;
       if (firstKey) this.sessionMemory.delete(firstKey);
     }
-    const memKey = this.getMemoryKey(req);
     this.sessionMemory.set(memKey, allowed);
   }
 
@@ -824,7 +814,14 @@ export class PermissionChecker implements Checker {
     }
 
     // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
-    if (filePath && FILE_TOOLS.has(req.toolName)) {
+    // P1-1：grep / read_many 的 path 指向敏感文件或敏感目录时走硬 deny（与 read 同口径）。
+    // 普通目录作搜索根不在这里拦——全树命中由工具层 isSensitivePath 过滤。
+    const runPathValidation =
+      !!filePath &&
+      (FILE_TOOLS.has(req.toolName) ||
+        (PATH_VALIDATED_READ_TOOLS.has(req.toolName) &&
+          this.pathValidator.isSensitivePath(filePath)));
+    if (runPathValidation) {
       const operation = WRITE_TOOLS.has(req.toolName) ? ("write" as const) : ("read" as const);
       const pathResult = this.pathValidator.validateAccess(filePath, operation);
       if (!pathResult.allowed) {
@@ -1012,8 +1009,8 @@ export class PermissionChecker implements Checker {
         log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(acceptEdits模式)`);
         return { allowed: true, decisionReason: { type: "mode", mode: "acceptEdits" } };
       }
-      // P1-3：cwd 内的文件系统 bash 命令（mkdir/touch/rm/rmdir/mv/cp/sed）也自动放行。
-      // 危险命令层（Step 2）已在前拦截 rm -rf / 等，跨 cwd 的 mv/rm 由 cwd 路径校验挡下。
+      // P1-3：cwd 内的文件系统 bash 命令（mkdir/touch/cp/sed）也自动放行。
+      // rm/rmdir/mv 已从白名单拿掉——`rm -rf .` 的 `.` 在工作区内，修前会被放行。
       if (req.toolName === "bash") {
         const command = (req.input as { command?: string })?.command ?? "";
         if (command && this.canAutoAllowFsCommandInAcceptEdits(command)) {
@@ -1082,9 +1079,9 @@ export class PermissionChecker implements Checker {
       return { allowed: true };
     }
 
-    // 会话记忆快速路径
+    // 会话记忆快速路径（空 key 不命中：写工具 / 无 path 的 grep / 无 url 的 web_fetch）
     const memKey = this.getMemoryKey(req);
-    if (this.sessionMemory.has(memKey)) {
+    if (memKey && this.sessionMemory.has(memKey)) {
       const allowed = this.sessionMemory.get(memKey)!;
       log.info(
         "PERMISSION",
@@ -1643,6 +1640,8 @@ export class PermissionChecker implements Checker {
     }
 
     // 重定向检测（独立于上述模式）
+    // P1-4：必须带 dangerousCommand，否则 yesMode/auto/hook allow 把「无 decisionReason
+    // 的普通 ask」当可自动批准，`echo x > .git/hooks/pre-commit` 会从另一条路放行。
     const redirectCheck = hasSensitiveRedirection(cmd);
     if (redirectCheck.sensitive) {
       log.info(
@@ -1653,6 +1652,11 @@ export class PermissionChecker implements Checker {
         allowed: false,
         reason: `重定向到敏感路径需要确认: ${redirectCheck.targets.join(", ")}`,
         needsConfirmation: true,
+        decisionReason: {
+          type: "dangerousCommand",
+          pattern: "sensitiveRedirection",
+          severity: "high",
+        },
         metadata: { classifiedBy: "hardcoded" },
       };
     }

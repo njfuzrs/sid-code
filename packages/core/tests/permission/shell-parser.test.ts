@@ -178,6 +178,16 @@ describe("hasSensitiveRedirection", () => {
     expect(result.sensitive).toBe(true);
   });
 
+  test("重定向到 .git/hooks 是敏感的（P1-4）", () => {
+    const result = hasSensitiveRedirection("echo evil > .git/hooks/pre-commit");
+    expect(result.sensitive).toBe(true);
+  });
+
+  test("重定向到 .husky 是敏感的（P1-4）", () => {
+    const result = hasSensitiveRedirection("echo evil > .husky/pre-commit");
+    expect(result.sensitive).toBe(true);
+  });
+
   test("重定向到普通文件不敏感", () => {
     const result = hasSensitiveRedirection("echo hello > /tmp/test.txt");
     expect(result.sensitive).toBe(false);

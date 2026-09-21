@@ -209,3 +209,27 @@ describe("mergeRules", () => {
     expect(merged.ask).toEqual([]);
   });
 });
+
+describe("P1-1 Read 规则覆盖 grep / read_many", () => {
+  test("Read(.env) 匹配 grep path=.env", () => {
+    expect(
+      matchRule("Read(.env)", {
+        toolName: "grep",
+        input: { pattern: ".*", path: ".env" },
+      }),
+    ).toBe(true);
+  });
+
+  test("Read(.env) 不匹配 grep path=src/a.ts", () => {
+    expect(
+      matchRule("Read(.env)", {
+        toolName: "grep",
+        input: { pattern: ".*", path: "src/a.ts" },
+      }),
+    ).toBe(false);
+  });
+
+  test("Read 裸规则匹配全部 grep", () => {
+    expect(matchRule("Read", { toolName: "grep", input: { pattern: "foo" } })).toBe(true);
+  });
+});

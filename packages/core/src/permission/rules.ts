@@ -14,7 +14,13 @@ import { matchShellRulePattern } from "./shell-rule-matching.ts";
 import { matchPathRule, type PathRuleContext } from "./path-rule-matching.ts";
 
 /** 文件路径类工具（走 matchPathRule 做前缀解析）。含 notebook_edit：路径字段是 notebook_path。 */
-const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "notebook_edit"]);
+const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "notebook_edit", "grep", "read_many"]);
+
+/** Read 规则同时挡住 grep / read_many 对同一路径的读（P1-1）。 */
+function isReadFamilyRule(ruleTool: string, reqTool: string): boolean {
+  if (ruleTool !== "read") return false;
+  return reqTool === "read" || reqTool === "grep" || reqTool === "read_many";
+}
 
 /**
  * 规则名归一：把 CC 风格的规则名映射到 sid 内部工具名。
@@ -45,7 +51,7 @@ function normalizeRuleToolName(toolName: string): string {
  * - web_search：query（供 WebSearch(pattern) 规则匹配）
  * - 其它：pattern
  */
-function extractMatchValue(req: PermissionRequest): string {
+export function extractMatchValue(req: PermissionRequest): string {
   const input = req.input as any;
   const tool = req.toolName.toLowerCase();
 
@@ -67,6 +73,9 @@ function extractMatchValue(req: PermissionRequest): string {
   }
   if (tool === "notebook_edit") {
     return input?.notebook_path || input?.file_path || "";
+  }
+  if (tool === "grep" || tool === "read_many") {
+    return input?.path || input?.file_path || "";
   }
   return input?.file_path || input?.command || input?.pattern || "";
 }
@@ -118,7 +127,12 @@ export function matchRule(
   } else {
     // MCP 服务器级匹配：规则 "mcp__server1" 匹配 "mcp__server1__tool1"
     // Edit 规则覆盖 notebook_edit：后者整文件原子写盘，与 edit 同类（P0-2）。
-    if (reqToolLower !== toolName && !(toolName === "edit" && reqToolLower === "notebook_edit")) {
+    // Read 规则覆盖 grep / read_many：同一路径的读旁路（P1-1）。
+    if (
+      reqToolLower !== toolName &&
+      !(toolName === "edit" && reqToolLower === "notebook_edit") &&
+      !isReadFamilyRule(toolName, reqToolLower)
+    ) {
       // 检查是否为 MCP 服务器级匹配
       if (toolName.startsWith("mcp__") && reqToolLower.startsWith(toolName + "__")) {
         // 服务器级匹配成功

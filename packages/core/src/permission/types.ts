@@ -83,6 +83,15 @@ export interface Checker {
    * 新建一个会丢掉本会话的用户授权。
    */
   getPathValidator?(): import("./path-validator.ts").PathValidator;
+  /**
+   * G21：路径是否被 deny 规则隐藏（供 glob/ls/grep 列举过滤）。
+   */
+  isPathHidden?(absPath: string): boolean;
+  /**
+   * P1-1：路径是否命中敏感文件硬 deny（凭证类）。
+   * 与 isPathHidden 并列，供 grep/read_many 列举过滤。
+   */
+  isSensitivePath?(absPath: string): boolean;
 }
 
 /** 权限规则配置 */

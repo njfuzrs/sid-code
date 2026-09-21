@@ -64,7 +64,7 @@ const PROTECTED_WRITE_DIRS = [
 const PROTECTED_READ_DIRS = ["/proc/", "/sys/", "/dev/"];
 
 /** 敏感文件模式 */
-const SENSITIVE_FILES = [
+export const SENSITIVE_FILES = [
   /\.env$/,
   /\.env\..+/,
   /credentials/i,
@@ -141,6 +141,19 @@ function detectUncPath(filePath: string): string | null {
     if (pattern.test(filePath)) return desc;
   }
   return null;
+}
+
+/** 敏感文件匹配：原路径、小写路径、补尾斜杠（目录形态）三路都试。 */
+export function matchesSensitivePath(realPath: string, realPathLower?: string): boolean {
+  const lower = realPathLower ?? normalizeCaseForComparison(realPath);
+  const withSlash = lower.endsWith("/") ? lower : `${lower}/`;
+  for (const pattern of SENSITIVE_FILES) {
+    const target = pattern.flags.includes("i") ? realPath : lower;
+    const fallback = pattern.flags.includes("i") ? null : realPath;
+    if (pattern.test(target) || (fallback !== null && pattern.test(fallback))) return true;
+    if (pattern.test(withSlash)) return true;
+  }
+  return false;
 }
 
 export class PathValidator {
@@ -329,22 +342,27 @@ export class PathValidator {
     // 逃生舱：确实需要访问时，在 settings.json 的 permissions.allow 里显式写
     // `Read(.env)` 这类规则——那是用户**离开对话、在配置文件里**做的决定，
     // 不受当轮对话的话术影响。见 checker.ts Step 4 的 allow 前置检查。
-    for (const pattern of SENSITIVE_FILES) {
-      // 不区分大小写的正则（带 i flag）直接用原路径；其余用归一化路径兜底大小写绕过
-      const target = pattern.flags.includes("i") ? realPath : realPathLower;
-      const fallback = pattern.flags.includes("i") ? null : realPath;
-      if (pattern.test(target) || (fallback !== null && pattern.test(fallback))) {
-        return {
-          allowed: false,
-          reason: `敏感文件（凭证类，默认拒绝）: ${realPath}`,
-          needsConfirmation: false,
-          resolvedPath: realPath,
-          sensitiveFile: true,
-        };
-      }
+    if (matchesSensitivePath(realPath, realPathLower)) {
+      return {
+        allowed: false,
+        reason: `敏感文件（凭证类，默认拒绝）: ${realPath}`,
+        needsConfirmation: false,
+        resolvedPath: realPath,
+        sensitiveFile: true,
+      };
     }
 
     return { allowed: true, resolvedPath: realPath };
+  }
+
+  /**
+   * P1-1：路径是否命中敏感文件硬 deny。grep / read_many 列举过滤与 Step 4 共用。
+   * 目录形态（`~/.ssh` 无尾斜杠）也认——`/\.ssh\//` 否则会漏掉把搜索根指到密钥目录。
+   */
+  isSensitivePath(filePath: string): boolean {
+    const realPath = this.resolveRealPath(filePath);
+    const realPathLower = normalizeCaseForComparison(realPath);
+    return matchesSensitivePath(realPath, realPathLower);
   }
 
   /**
