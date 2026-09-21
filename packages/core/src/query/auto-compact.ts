@@ -47,6 +47,15 @@ export function resetCircuitBreaker(): void {
   globalCircuitBreaker = null;
 }
 
+/** 测试用：读熔断器状态。未创建过则 null。 */
+export function peekCircuitBreaker(): { state: string; failures: number } | null {
+  if (!globalCircuitBreaker) return null;
+  return {
+    state: globalCircuitBreaker.getState(),
+    failures: globalCircuitBreaker.getFailureCount(),
+  };
+}
+
 /** 自动压缩依赖 */
 export interface AutoCompactDeps {
   provider: Provider;
@@ -104,7 +113,7 @@ export interface AutoCompactDeps {
  * autoCompact 的结果，供 loop 层区分处置（静默-9）：
  *   - "summarized"：LLM 摘要压缩成功（无损语义，无需提示）
  *   - "truncated"：摘要失败/熔断，降级为简单截断（**有损**，丢弃老消息，需 yield warning 提示用户）
- *   - "skipped"：消息太少 / 已有压缩在进行，未做任何压缩
+ *   - "skipped"：消息太少 / 已有压缩在进行 / compactWithSummary 切点无效未改消息
  */
 export type AutoCompactOutcome = "summarized" | "truncated" | "skipped";
 
@@ -171,25 +180,27 @@ async function doAutoCompact(
     // P1（防线可观测）：「被熔断挡下」与「熔断触发」是两件事——一次 tripped 可以
     // 挡掉后续 N 次调用，混成一个数会让"触发了几次"没有确定答案。
     //
-    // ⚠️ 这里**只记 metric，不碰 logContextCompact**：下面那条 `outcome: "truncated"`
-    // 是对的（它确实压了），`events.ts` 的 CompactSkipReason 注释明确警告过别为
-    // circuit_open 再补一个 skip 上报——那会让同一次熔断同时记进 compact 与
-    // skipped 两个计数，分母直接被污染。两条通道各记各的，不互相污染。
+    // ⚠️ 这里**只记 metric，不碰 logContextCompact 的 skip 通道**：
+    // `events.ts` 的 CompactSkipReason 注释明确警告过别为 circuit_open 再补一个
+    // skip 上报——那会让同一次熔断同时记进 compact 与 skipped 两个计数。
+    // 下面按 compactWithSummary.success 报 truncated 或 failed，两条通道各记各的。
     recordDefenseTrigger("compact_breaker", "blocked", { reason: "circuit_open" });
     // 「这道防线花了多少钱」：被挡下时上下文有多大，即这次降级截断处理的规模。
     // 三层里只有这一层拿得到真实 token（权限层与策略层对 token 无感）。
     recordDefenseTokens("compact_breaker", "blocked", tokensBefore, { reason: "circuit_open" });
     const blockedStartedAt = Date.now();
     const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。（autoCompact 熔断中）`;
-    deps.ctxMgr.compactWithSummary(simpleSummary);
-    await postCompactReattachAndNotify(
-      deps,
-      messages,
-      simpleSummary,
-      messagesBefore,
-      tokensBefore,
-      false,
-    );
+    const truncatedOutcome = deps.ctxMgr.compactWithSummary(simpleSummary);
+    if (truncatedOutcome.success) {
+      await postCompactReattachAndNotify(
+        deps,
+        messages,
+        simpleSummary,
+        messagesBefore,
+        tokensBefore,
+        false,
+      );
+    }
     // 三层里**只有这条路径**有真实可测的耗时，所以 duration 只埋在这里。
     // 量的是「熔断降级这条替代路径花了多少墙钟」——截断 + 附件重注入 + 通知，
     // 不是 `canExecute()` 那个纯内存判定（那个是纳秒级，测它没有意义）。
@@ -204,14 +215,15 @@ async function doAutoCompact(
     });
     // 熔断降级：结果是 truncated（确实压了，但是靠粗暴截断而非摘要）。
     // 这一档单独可见很重要——"压缩成功率" 里混入截断会掩盖摘要链路已经在连续失败。
+    // P1-5：仍读 compactWithSummary 的 success。压不动不得报 truncated。
     logContextCompact({
-      outcome: "truncated",
+      outcome: truncatedOutcome.success ? "truncated" : "failed",
       trigger: "auto",
       messagesBefore,
       tokensBefore,
       tokensAfter: deps.ctxMgr.estimateTokens(),
     });
-    return "truncated";
+    return truncatedOutcome.success ? "truncated" : "skipped";
   }
 
   // pre_compact hook（blocking 时可阻止压缩）
@@ -234,29 +246,45 @@ async function doAutoCompact(
         if (smResult) {
           // P1-5 ②：显式标 session_memory —— 这是 `compact_source` 那一档
           // **唯一的生产写入方**。不传的话默认 "compact"，两种压缩产物事后无法区分。
-          deps.ctxMgr.compactWithSummary(smResult.summary, undefined, "session_memory");
-          recordSuccess();
-          log.info("COMPACT", `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
-          await postCompactReattachAndNotify(
-            deps,
-            messages,
+          const smOutcome = deps.ctxMgr.compactWithSummary(
             smResult.summary,
-            messagesBefore,
-            tokensBefore,
-            false,
+            undefined,
+            "session_memory",
           );
-          // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
-          // P1-5 ②：`source` 让这次压缩在轨迹里与 LLM 摘要压缩可分 ——
-          // 两者的 tokens_before/after 混在一起聚合，出来的数既不描述前者也不描述后者。
-          logContextCompact({
-            outcome: "summarized",
-            trigger: "auto",
-            source: "session_memory",
-            messagesBefore,
-            tokensBefore,
-            tokensAfter: deps.ctxMgr.estimateTokens(),
-          });
-          return "summarized";
+          // P1-5：无安全切点时 compactWithSummary 返回 success:false 且 no-op。
+          // 不得 recordSuccess / 不得报 summarized，否则熔断器被假成功复位。
+          if (!smOutcome.success) {
+            log.warn(
+              "COMPACT",
+              `Session Memory 压缩未生效（${smOutcome.reason ?? "no_reduction"}），回退 LLM 摘要`,
+            );
+          } else {
+            recordSuccess();
+            log.info(
+              "COMPACT",
+              `Session Memory 压缩完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`,
+            );
+            await postCompactReattachAndNotify(
+              deps,
+              messages,
+              smResult.summary,
+              messagesBefore,
+              tokensBefore,
+              false,
+            );
+            // Session Memory 压缩是结构化笔记，语义无损，等同摘要成功。
+            // P1-5 ②：`source` 让这次压缩在轨迹里与 LLM 摘要压缩可分 ——
+            // 两者的 tokens_before/after 混在一起聚合，出来的数既不描述前者也不描述后者。
+            logContextCompact({
+              outcome: "summarized",
+              trigger: "auto",
+              source: "session_memory",
+              messagesBefore,
+              tokensBefore,
+              tokensAfter: deps.ctxMgr.estimateTokens(),
+            });
+            return "summarized";
+          }
         }
         // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
       } catch (err: any) {
@@ -342,34 +370,43 @@ async function doAutoCompact(
       });
       // §2.1 / §4.3：构造文件恢复 + 决策点重注入消息，随摘要一起注入
       const extraReattach = await buildExtraReattach(deps, toSummarize);
-      deps.ctxMgr.compactWithSummary(formattedSummary, extraReattach);
-      recordSuccess();
-      log.info(
-        "COMPACT",
-        `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`,
-      );
-      await postCompactReattachAndNotify(
-        deps,
-        toSummarize,
-        formattedSummary,
-        messagesBefore,
-        tokensBefore,
-        true,
-      );
-      // 主路径成功：LLM 摘要压缩。tokens_before/after 是「更省」这条北极星
-      // 唯一能直接量出来的信号之一——省了多少 token 就在这两个数的差里。
-      logContextCompact({
-        outcome: "summarized",
-        trigger: "auto",
-        messagesBefore,
-        tokensBefore,
-        tokensAfter: deps.ctxMgr.estimateTokens(),
-      });
-      return "summarized";
+      const llmOutcome = deps.ctxMgr.compactWithSummary(formattedSummary, extraReattach);
+      if (!llmOutcome.success) {
+        // P1-5：摘要生成了但切点无效 → 不得 recordSuccess / 不得报 summarized。
+        log.warn(
+          "COMPACT",
+          `LLM 摘要压缩未生效（${llmOutcome.reason ?? "no_reduction"}），降级简单截断`,
+        );
+        recordFailure();
+      } else {
+        recordSuccess();
+        log.info(
+          "COMPACT",
+          `自动压缩完成，摘要 ${formattedSummary.length} 字符，剩余 ${deps.ctxMgr.messageCount()} 条消息`,
+        );
+        await postCompactReattachAndNotify(
+          deps,
+          toSummarize,
+          formattedSummary,
+          messagesBefore,
+          tokensBefore,
+          true,
+        );
+        // 主路径成功：LLM 摘要压缩。tokens_before/after 是「更省」这条北极星
+        // 唯一能直接量出来的信号之一——省了多少 token 就在这两个数的差里。
+        logContextCompact({
+          outcome: "summarized",
+          trigger: "auto",
+          messagesBefore,
+          tokensBefore,
+          tokensAfter: deps.ctxMgr.estimateTokens(),
+        });
+        return "summarized";
+      }
+    } else {
+      // 空摘要也算失败。有摘要但切点无效时上面已经 recordFailure，这里不能再计一次。
+      recordFailure();
     }
-
-    // 空摘要也算失败
-    recordFailure();
   } catch (err: any) {
     log.warn("COMPACT", `LLM 摘要失败，使用简单截断: ${err.message}`);
     recordFailure();
@@ -390,19 +427,27 @@ async function doAutoCompact(
 
   // 降级：简单截断（有损——丢弃老消息，仅留一句占位）
   const simpleSummary = `[自动截断] 之前有 ${messages.length - 4} 条消息被截断以释放上下文空间。`;
-  deps.ctxMgr.compactWithSummary(simpleSummary);
-  log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
-  await postCompactReattachAndNotify(
-    deps,
-    messages,
-    simpleSummary,
-    messagesBefore,
-    tokensBefore,
-    false,
-  );
+  const fallbackOutcome = deps.ctxMgr.compactWithSummary(simpleSummary);
+  if (fallbackOutcome.success) {
+    log.info("COMPACT", `简单截断完成，剩余 ${deps.ctxMgr.messageCount()} 条消息`);
+    await postCompactReattachAndNotify(
+      deps,
+      messages,
+      simpleSummary,
+      messagesBefore,
+      tokensBefore,
+      false,
+    );
+  } else {
+    log.warn(
+      "COMPACT",
+      `简单截断未生效（${fallbackOutcome.reason ?? "no_reduction"}），消息数未变`,
+    );
+  }
   // 摘要链路失败后的有损降级。上报为 failed 而非 truncated：从"是否省到"的角度它确实
   // 压了，但从"压缩质量"角度这是一次失败——把它记成 truncated 会与熔断降级混同，
   // 掩盖「摘要请求正在连续报错」这个需要立刻看见的信号。
+  // P1-5：切点无效时连消息都没少，outcome 仍是 failed，但返回 skipped 让上层别画「已截断」。
   logContextCompact({
     outcome: "failed",
     trigger: "auto",
@@ -410,7 +455,7 @@ async function doAutoCompact(
     tokensBefore,
     tokensAfter: deps.ctxMgr.estimateTokens(),
   });
-  return "truncated";
+  return fallbackOutcome.success ? "truncated" : "skipped";
 }
 
 /**

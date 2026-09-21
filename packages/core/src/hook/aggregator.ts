@@ -55,6 +55,9 @@ export class HookAggregator {
       case HookEventName.PostToolUseFailure:
       case HookEventName.UserPromptSubmit:
       case HookEventName.AfterAgent:
+      // P1-2：Stop 必须走 OR。last-wins（mergeSimple）会让后一个 allow 覆盖前一个
+      // lint/test 失败——Ralph 验证器互相放行。与 AfterAgent 同一语义：任一 block 即拦。
+      case HookEventName.Stop:
         return this.mergeWithOrDecision(outputs);
 
       // G4：SessionStart/SubagentStart/Setup 忽略 exit2 阻塞（对齐 CC hooksConfigManager）——
