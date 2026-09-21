@@ -24,8 +24,12 @@
 
 ```bash
 curl -fsSL https://bun.sh/install | bash    # 已装可跳过
-bun --version                                # 开发用 1.3.x，CI 用 latest
+bun --version                                # 须 ≥ .bun-version（当前 1.4.2）；CI 读同一文件，禁止 latest
 ```
+
+仓库根 `.bun-version` 是 **CI 与本地的同一下限**。workflow 用 `bun-version-file` 读它，
+不要改回 `bun-version: latest`：2026-09-21 本机 1.3.14 无参数 `bun test` 扫描 800+ 文件后
+spawn 空 stdout（230 fail），同一 HEAD 上 CI 1.4.2 全绿。升级走改这个文件的显式 PR。
 
 ```bash
 git clone <仓库地址>
