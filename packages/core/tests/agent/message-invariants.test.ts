@@ -17,6 +17,8 @@ import {
   assertMessageHistoryIntact,
   describeIntegrityViolation,
   backfillOrphanToolResults,
+  buildPendingToolResults,
+  isEndTurnLikeStopReason,
   safeSliceTail,
   MessageHistoryViolationError,
 } from "@sid-code/core/agent/message-invariants.ts";
@@ -403,5 +405,31 @@ describe("safeSliceTail — 安全尾部切片（保证起点不是游离 tool_r
     const before = messages.length;
     safeSliceTail(messages, 15);
     expect(messages).toHaveLength(before);
+  });
+});
+
+describe("P0-3 共享协议辅助 — isEndTurnLikeStopReason / buildPendingToolResults", () => {
+  test("F2 白名单只认 end_turn / stop / stop_sequence", () => {
+    expect(isEndTurnLikeStopReason("end_turn")).toBe(true);
+    expect(isEndTurnLikeStopReason("stop")).toBe(true);
+    expect(isEndTurnLikeStopReason("stop_sequence")).toBe(true);
+    expect(isEndTurnLikeStopReason("tool_use")).toBe(false);
+    expect(isEndTurnLikeStopReason("max_tokens")).toBe(false);
+    expect(isEndTurnLikeStopReason("error")).toBe(false);
+    expect(isEndTurnLikeStopReason(null)).toBe(false);
+  });
+
+  test("有孤儿时为每个 id 补 error 占位，无孤儿返回空", () => {
+    const orphaned: Message[] = [asst(["c1", "read"], ["c2", "edit"])];
+    const pending = buildPendingToolResults(orphaned, "未执行");
+    expect(pending).toHaveLength(2);
+    expect(pending.map((b) => (b.type === "tool_result" ? b.tool_use_id : ""))).toEqual([
+      "c1",
+      "c2",
+    ]);
+    expect(pending.every((b) => b.type === "tool_result" && b.is_error)).toBe(true);
+
+    const intact: Message[] = [asst(["c1", "read"]), userResults("c1")];
+    expect(buildPendingToolResults(intact, "未执行")).toHaveLength(0);
   });
 });

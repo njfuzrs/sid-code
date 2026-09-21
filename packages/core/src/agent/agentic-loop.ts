@@ -19,7 +19,12 @@ import {
   cleanupAgentSnapshots,
 } from "../trace/stream-observer.ts";
 import type { HookSystem } from "../hook/system.ts";
-import { LoopDetector, LOOP_RECOVERY_PROMPT } from "./loop-detection.ts";
+import {
+  LoopDetector,
+  LOOP_RECOVERY_PROMPT,
+  LOOP_RECOVERY_FINAL_PROMPT,
+  LOOP_RECOVERY_POLLING_PROMPT,
+} from "./loop-detection.ts";
 import { processStream, type StreamProcessResult } from "./stream-processor.ts";
 // B2：错误分类 / 退避计算 / abort reason 归因全部收归漏斗内部实现，
 // 本文件不再直接依赖它们（原 R1 循环的 import 随之删除）。
@@ -36,6 +41,11 @@ import {
   replaceEmptyParamToolUses,
   buildEmptyParamRetryMessage,
 } from "../query/empty-param.ts";
+import {
+  buildPendingToolResults,
+  finalizeMessagesForSend,
+  isEndTurnLikeStopReason,
+} from "./message-invariants.ts";
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
 import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
@@ -319,7 +329,7 @@ async function runAgentLoopInner(
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
   let ctxWindowRecoveryCount = 0;
-  // D2：空参数 F1 重试计数。与主循环 `state.emptyParamRetryCount` 同口径——跨轮累计，
+  // D2 / P0-3：空参数 F1 重试计数。与主循环 `state.emptyParamRetryCount` 同口径——跨轮累计，
   // 正常 end_turn 收工时清零。弱模型持续吐 input={} 时必须有上限，否则会空转到 maxTurns。
   let emptyParamRetryCount = 0;
   // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
@@ -448,6 +458,28 @@ async function runAgentLoopInner(
     // （零依赖纯内存）+ observation masking（构造时传了 sessionId 才启用）。
     // 注意：仅"发给 LLM"这一处换；返回给调用方的 AgentLoopResult.messages 仍用
     // getMessages()（内部逻辑/最终产物需要完整历史，不能是清理后的视图）。
+    //
+    // P0-3：发送前协议兜底。全仓生产调用此前只在主循环 loop.ts；子代理裸发
+    // getCleanedMessages()，协议哨兵只读告警、默认不修。F1/loop_recovery 漏补
+    // 的孤儿会在这里变成 OpenAI/Anthropic 400。
+    {
+      const backfill = finalizeMessagesForSend(ctxMgr.getMessages());
+      if (backfill.changed) {
+        ctxMgr.setMessages(backfill.messages);
+        if (backfill.backfilled.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `发送前孤儿兜底关卡触发：补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result`,
+          );
+        }
+        if (backfill.stripped.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `发送前游离切除关卡触发：切除 ${backfill.stripped.length} 个游离 tool_result`,
+          );
+        }
+      }
+    }
     const sendParams: SendParams = {
       model,
       messages: ctxMgr.getCleanedMessages(),
@@ -766,10 +798,11 @@ async function runAgentLoopInner(
     // 添加助手消息到历史（走到这里 = 本轮无真退化，content 原样入账）
     ctxMgr.addMessage({ role: "assistant", content: response.content });
 
-    // 内容循环检测
+    // 内容循环检测。若本轮已入史的 assistant 带 tool_use，必须先补占位 result，
+    // 否则 continue 之后就是孤儿（与工具循环同一形态）。
     if (lastTextOutput && loopDetector.recordContent(lastTextOutput)) {
-      if (!loopDetector.tryRecover()) {
-        log.warn("AGENT_LOOP", "内容循环恢复次数耗尽，终止");
+      const recovered = injectLoopRecovery(ctxMgr, loopDetector, loopRecoveryPrompt, log);
+      if (!recovered) {
         return {
           success: false,
           turns,
@@ -780,27 +813,20 @@ async function runAgentLoopInner(
           errorMessage: "内容循环恢复次数耗尽",
         };
       }
-      log.info("AGENT_LOOP", "检测到内容循环，注入恢复提示");
-      ctxMgr.addMessage({
-        role: "user",
-        content: [{ type: "text", text: loopRecoveryPrompt }],
-      });
       continue;
     }
 
     // ─── 检查停止原因 ───
-    // D3：F2 fall-through。模型有时 stop_reason=end_turn/stop/stop_sequence 却在
+    // D3 / P0-3 F2 fall-through。模型有时 stop_reason=end_turn/stop/stop_sequence 却在
     // content 里留下（非空参数的）tool_use。空参数已被上方 F1 拦截，走到这里的
     // tool_use 必为合法调用 → 不收工，fall-through 到下方工具分支执行。
     //
     // isEndTurnLike 是白名单（不是「排除已知错误」）：未知 stopReason fail-closed，
     // 与主循环 loop.ts 的 P0-2 死亡螺旋防御同方向。stop_sequence 与 end_turn/stop
     // 同属正常终止，一并纳入——旧代码漏了它，会落到下方「未知停止原因」带警告收尾。
+    // 判据与主循环共用 isEndTurnLikeStopReason，避免子循环再抄一份后漂。
     const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
-    const isEndTurnLike =
-      response.stopReason === "end_turn" ||
-      response.stopReason === "stop" ||
-      response.stopReason === "stop_sequence";
+    const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
     const f2FallThrough = isEndTurnLike && hasPendingToolUse;
     if (f2FallThrough) {
       log.warn(
@@ -847,8 +873,8 @@ async function runAgentLoopInner(
         }
       }
       if (loopDetected) {
-        if (!loopDetector.tryRecover()) {
-          log.warn("AGENT_LOOP", "工具循环恢复次数耗尽，终止");
+        const recovered = injectLoopRecovery(ctxMgr, loopDetector, loopRecoveryPrompt, log);
+        if (!recovered) {
           return {
             success: false,
             turns,
@@ -859,15 +885,9 @@ async function runAgentLoopInner(
             errorMessage: "工具循环恢复次数耗尽",
           };
         }
-        log.info("AGENT_LOOP", "检测到工具循环，注入恢复提示");
-        ctxMgr.addMessage({
-          role: "user",
-          content: [{ type: "text", text: loopRecoveryPrompt }],
-        });
         continue;
       }
 
-      // 统计工具调用次数
       const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
       toolUseCount += toolUseBlocks.length;
 
@@ -891,6 +911,7 @@ async function runAgentLoopInner(
         config.onToolProgress,
       );
       ctxMgr.addMessage({ role: "user", content: toolResults });
+      emptyParamRetryCount = 0;
 
       // P2-1：JIT 上下文发现（子代理侧，独立实例）。放在 addMessage 之后、
       // 与主路径同一位置语义：本轮工具已产出结果，发现的规则供**下一轮**请求携带。
@@ -919,7 +940,6 @@ async function runAgentLoopInner(
         }
       }
 
-      // 每轮结束回调（进度追踪 + 磁盘输出）
       const turnToolInfo = toolUseBlocks.map((b) => ({
         name: b.type === "tool_use" ? b.name : "",
         input: b.type === "tool_use" ? (b.input as Record<string, unknown>) : {},
@@ -1203,4 +1223,63 @@ async function runAgentLoopInner(
     // 非空但未知停止原因：内容已返回（success:true），但附带警告让父级可感知异常收尾
     errorMessage: unknownStopWarning,
   };
+}
+
+/**
+ * P0-3：循环恢复必须先补未执行 tool_use 的占位 result，再注入 prompt。
+ * 旧实现只 addMessage(prompt) 就 continue，assistant 已入史、工具未跑 → 下一轮 400。
+ * 与主循环 recoverFromLoop 共用 buildPendingToolResults。
+ *
+ * @returns true 继续循环；false 应终止（耗尽且策略为 terminate）
+ */
+function injectLoopRecovery(
+  ctxMgr: ContextManager,
+  loopDetector: LoopDetector,
+  loopRecoveryPrompt: string,
+  log: ReturnType<typeof getLogger>,
+): boolean {
+  const canRecover = loopDetector.tryRecover();
+  if (!canRecover) {
+    if (loopDetector.shouldContinueAfterExhausted()) {
+      log.warn("AGENT_LOOP", "循环恢复次数耗尽，注入最终提示后继续放行");
+      const orphanResults = buildPendingToolResults(
+        ctxMgr.getMessages(),
+        "[系统] 检测到非生产性循环，此工具调用未执行；这是最后提醒，请改换思路或如实告知用户。",
+      );
+      if (orphanResults.length > 0) {
+        log.warn(
+          "AGENT_LOOP",
+          `耗尽后继续放行时补齐 ${orphanResults.length} 个未应答 tool_use 的占位 tool_result（防孤儿 → 400）`,
+        );
+      }
+      ctxMgr.addMessage({
+        role: "user",
+        content: [...orphanResults, { type: "text", text: LOOP_RECOVERY_FINAL_PROMPT }],
+      });
+      loopDetector.softResetForContinue();
+      return true;
+    }
+    log.warn("AGENT_LOOP", "循环恢复次数耗尽，终止");
+    const pending = buildPendingToolResults(
+      ctxMgr.getMessages(),
+      "[系统] 循环恢复次数耗尽，此工具调用未执行。",
+    );
+    if (pending.length > 0) {
+      ctxMgr.addMessage({ role: "user", content: pending });
+    }
+    return false;
+  }
+  log.info("AGENT_LOOP", "检测到循环，注入恢复提示");
+  const orphanResults = buildPendingToolResults(
+    ctxMgr.getMessages(),
+    "[系统] 检测到非生产性循环，此工具调用未执行；请改换思路，不要重复等价调用。",
+  );
+  // 与主循环 recoverFromLoop 同口径：同参状态轮询给阻塞等待建议，其它走通用文案。
+  const recoveryPrompt =
+    loopDetector.lastTrigger === "polling" ? LOOP_RECOVERY_POLLING_PROMPT : loopRecoveryPrompt;
+  ctxMgr.addMessage({
+    role: "user",
+    content: [...orphanResults, { type: "text", text: recoveryPrompt }],
+  });
+  return true;
 }

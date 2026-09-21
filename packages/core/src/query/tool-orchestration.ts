@@ -42,9 +42,15 @@ export function partitionToolCalls(
   const batches: ToolBatch[] = [];
   for (const item of checkedTools) {
     const { tool, block } = item;
-    const isSafe = tool.isConcurrencySafe
-      ? tool.isConcurrencySafe(block.input)
-      : (tool.readOnly?.() ?? false);
+    // 判定抛错 fail-closed 当 unsafe：否则主/子分区整批炸掉，而不是串行执行。
+    let isSafe = false;
+    try {
+      isSafe = tool.isConcurrencySafe
+        ? tool.isConcurrencySafe(block.input)
+        : (tool.readOnly?.() ?? false);
+    } catch {
+      isSafe = false;
+    }
     // 连续的并发安全工具合并为一个批次
     if (batches.length > 0 && batches[batches.length - 1].isConcurrencySafe === isSafe && isSafe) {
       batches[batches.length - 1].items.push(item);

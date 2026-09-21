@@ -58,8 +58,9 @@ import {
 } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
 import {
-  checkMessageHistoryIntegrity,
+  buildPendingToolResults,
   finalizeMessagesForSend,
+  isEndTurnLikeStopReason,
 } from "../agent/message-invariants.ts";
 import {
   isAbortError,
@@ -840,7 +841,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         const msgCountBefore = ctxMgr.messageCount();
         const truncated = ctxMgr.emergencyTruncate();
         ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
-        ctxMgr.releaseBeforeBoundary();
+        // P0-1：边界是 push 到数组末尾的。此时 i < boundaryIdx 覆盖的是整段历史，
+        // 含 emergencyTruncate 特意留下的保留段。GC 会把近端 tool_result 换成
+        // `[已释放]` 桩发给 LLM，长会话一压就失忆。emergency 档同套 truncate
+        // 却不 GC——blocking 必须与它对齐，不得在「边界贴末尾」时释放保留段。
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
         state.deferredToolsPendingAfterCompact = true;
@@ -955,7 +959,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               `渐进式压缩: ${pipelineResult.steps.join(" → ")}`,
               msgCountBefore,
             );
-            ctxMgr.releaseBeforeBoundary();
+            // P0-1：同上，边界贴在末尾。管道即便 steps=[]（什么都没压）原先也会
+            // 把保留段整段 GC 掉；用户侧表现为「没压缩、模型突然失忆」。
+            // 近端必须留给模型，旧内容已由 snip/microcompact 原地处理。
             state.goalReminderPendingAfterCompact = true;
             state.todoReminderPendingAfterCompact = true;
             state.deferredToolsPendingAfterCompact = true;
@@ -3538,10 +3544,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 而不是落到下方"未识别停止原因"分支弹 terminal 警告并跳过全部收尾。
       // 对齐 CC：stop_sequence 在 CC 全源码零特殊处理，直接 fall-through 当正常结束。
       // 白名单方向不变（fail-closed 防死亡螺旋，见上方 P0-2 注释），这里只是补齐一个已知的正常终止 reason。
-      const isEndTurnLike =
-        response.stopReason === "end_turn" ||
-        response.stopReason === "stop" ||
-        response.stopReason === "stop_sequence";
+      const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
       const f2FallThrough = isEndTurnLike && hasPendingToolUse;
       if (f2FallThrough) {
         // §2.4：stop_reason 与 content 不一致——声称 end_turn/stop 却仍含 tool_use。
@@ -5271,27 +5274,6 @@ async function recoverFromLoop(
   });
 
   return true;
-}
-
-/**
- * 为消息历史中"末尾 assistant 的未应答 tool_use"构造 error 占位 tool_result。
- *
- * 只看历史末尾这一组孤儿（即最近一条 assistant 的 tool_use 里尚无 tool_result 的），
- * 因为循环恢复/中断发生在"刚产生 assistant tool_use、还没执行工具"的时刻。
- * 用全局完整性检查锁定孤儿 id，避免误补历史更早处已正常配对的调用。
- */
-function buildPendingToolResults(
-  messages: import("../llm/types.ts").Message[],
-  content: string,
-): import("../llm/types.ts").ContentBlock[] {
-  const integrity = checkMessageHistoryIntegrity(messages);
-  if (integrity.orphans.length === 0) return [];
-  return integrity.orphans.map((o) => ({
-    type: "tool_result" as const,
-    tool_use_id: o.id,
-    content,
-    is_error: true,
-  }));
 }
 
 /**

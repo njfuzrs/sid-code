@@ -2,12 +2,12 @@
  * ToolExecutor — 工具执行共享组件
  *
  * 从 sub-agent.ts 提取，统一处理子代理的工具执行：
- * - 工具分类（只读/写入）
- * - 只读工具并行执行
- * - 写入工具串行执行
+ * - 分区调度走主循环 `partitionToolCalls`（连续安全才合并，保留 Read→Edit→Read 顺序）
+ * - 并行批次受 `getMaxToolConcurrency()` 信号量限制（默认 10）
  * - _agentId 注入（防嵌套）
  * - 输出截断
  * - Pre/PostToolUse hook 触发（接通可观测性：execute_tool span 与主循环对齐）
+ * - 出口 N 进 N 出：缺 idx 走 `yieldMissingToolResults`，不再静默跳过
  *
  * hook 缺口修复：此前子代理工具执行完全不触发 hook，导致 TelemetryHookProbe
  * 无法为子代理工具创建 execute_tool span（主循环有、子代理没有，可观测性断层）。
@@ -24,6 +24,8 @@ import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
+import { partitionToolCalls, getMaxToolConcurrency } from "../query/tool-orchestration.ts";
+import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 // 漏斗 2 · 权限：子代理侧此前**一条埋点都不发**，于是"子代理被权限层打残"
@@ -71,82 +73,119 @@ export async function executeTools(
 
   if (toolBlocks.length === 0) return [];
 
-  // 分离只读和写入工具
-  const readOnlyBlocks: typeof toolBlocks = [];
-  const writingBlocks: typeof toolBlocks = [];
-  const notFoundBlocks: typeof toolBlocks = [];
+  // 结果收集（按原始顺序索引存储）
+  const resultMap = new Map<number, ContentBlock>();
+  const checkedTools: Array<{
+    block: ContentBlock & { type: "tool_use" };
+    tool: NonNullable<ReturnType<ToolRegistry["get"]>>;
+    idx: number;
+  }> = [];
 
   for (const item of toolBlocks) {
     const tool = tools.get(item.block.name);
     if (!tool) {
-      notFoundBlocks.push(item);
+      resultMap.set(item.idx, {
+        type: "tool_result",
+        tool_use_id: item.block.id,
+        content: `工具 "${item.block.name}" 未找到`,
+        is_error: true,
+      });
       continue;
     }
-    // GAP-05：对齐主循环——优先 isConcurrencySafe(input) 输入感知判定，回退 readOnly()。
-    // 此前子代理只用 readOnly() 二分，导致只读 bash（如 ls/cat，主循环经 isReadOnlyCommand
-    // 判定可并行）在子代理里被当作非只读串行化，子代理效率低于主循环。
-    const isSafe = tool.isConcurrencySafe
-      ? tool.isConcurrencySafe(item.block.input)
-      : (tool.readOnly?.() ?? false);
-    if (isSafe) {
-      readOnlyBlocks.push(item);
-    } else {
-      writingBlocks.push(item);
-    }
+    checkedTools.push({ block: item.block, tool, idx: item.idx });
   }
 
+  // P0-2：与主循环共用分区。两桶分类会把 Read(a) Edit(c) Read(d) 变成
+  // Read(a)||Read(d) 先于 Edit(c)，验证读到的是改之前的内容。
+  const batches = partitionToolCalls(checkedTools);
+  const maxConcurrency = getMaxToolConcurrency();
   log.debug(
     "SUBAGENT:TOOL",
-    `工具分类: 并发安全 ${readOnlyBlocks.length} 个并行, 其余 ${writingBlocks.length} 个串行`,
+    `分区并发(贪心连续合并): ${batches.length} 个批次 [${batches.map((b) => `${b.isConcurrencySafe ? "‖" : "→"}${b.items.length}`).join(", ")}] cap=${maxConcurrency}`,
   );
 
-  // 结果收集（按原始顺序索引存储）
-  const resultMap = new Map<number, ContentBlock>();
-
-  // 未找到的工具直接返回错误
-  for (const { block, idx } of notFoundBlocks) {
-    resultMap.set(idx, {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: `工具 "${block.name}" 未找到`,
-      is_error: true,
-    });
-  }
-
-  // 并发安全工具并行执行
-  if (readOnlyBlocks.length > 0) {
-    const readResults = await Promise.all(
-      readOnlyBlocks.map(({ block, idx }) =>
-        executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress).then(
-          (r) => ({ idx, result: r }),
+  for (const batch of batches) {
+    if (batch.isConcurrencySafe) {
+      const settled = await runWithConcurrencyLimit(
+        batch.items.map(
+          ({ block, idx }) =>
+            () =>
+              executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress)
+                .then((result) => ({ idx, result }))
+                .catch((err: any) => ({
+                  idx,
+                  result: {
+                    type: "tool_result" as const,
+                    tool_use_id: block.id,
+                    content: `工具执行异常: ${err?.message ?? String(err)}`,
+                    is_error: true,
+                  },
+                })),
         ),
-      ),
-    );
-    for (const { idx, result } of readResults) {
-      resultMap.set(idx, result);
+        maxConcurrency,
+      );
+      for (const { idx, result } of settled) {
+        resultMap.set(idx, result);
+      }
+    } else {
+      for (const { block, idx } of batch.items) {
+        try {
+          const result = await executeSingleTool(
+            block,
+            tools,
+            signal,
+            hookSystem,
+            permissionChecker,
+            onProgress,
+          );
+          resultMap.set(idx, result);
+        } catch (err: any) {
+          resultMap.set(idx, {
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: `工具执行异常: ${err?.message ?? String(err)}`,
+            is_error: true,
+          });
+        }
+      }
     }
   }
 
-  // 非并发安全工具串行执行
-  for (const { block, idx } of writingBlocks) {
-    const result = await executeSingleTool(
-      block,
-      tools,
-      signal,
-      hookSystem,
-      permissionChecker,
-      onProgress,
-    );
-    resultMap.set(idx, result);
-  }
-
-  // 按原始顺序组装结果
+  // 按原始顺序组装；缺 idx 补协议占位，不再静默跳过（N 进必须 N 出）。
   const results: ContentBlock[] = [];
   for (const { idx } of toolBlocks) {
     const result = resultMap.get(idx);
     if (result) results.push(result);
   }
+  if (results.length < toolBlocks.length) {
+    for (const missing of yieldMissingToolResults(
+      [{ role: "assistant", content: toolBlocks.map((t) => t.block) }],
+      collectToolResultIdsFromBlocks(results),
+      "工具执行异常：未产生结果（已由协议兜底补齐）",
+    )) {
+      results.push(missing);
+    }
+  }
 
+  return results;
+}
+
+/** 信号量：并行批次不超过 getMaxToolConcurrency()，超出排队 FIFO。 */
+async function runWithConcurrencyLimit<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<T[]> {
+  if (tasks.length === 0) return [];
+  const results: T[] = new Array(tasks.length);
+  let nextIdx = 0;
+  async function worker(): Promise<void> {
+    while (nextIdx < tasks.length) {
+      const idx = nextIdx++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+  const n = Math.max(1, Math.min(limit, tasks.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
   return results;
 }
 

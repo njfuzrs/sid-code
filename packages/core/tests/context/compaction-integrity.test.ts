@@ -243,3 +243,105 @@ describe("D2-4 闭合 — 压缩边界消息历史完整性", () => {
     expect(count).toBe(1);
   });
 });
+
+describe("P0-1 — blocking/hard 不得把压缩后的保留段 GC 掉", () => {
+  test("emergencyTruncate 后贴末尾边界再 GC，会清掉保留段（这就是生产路径原先的 bug）", () => {
+    const mgr = new ContextManager({ maxTokens: 200_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "请读 config.ts 并改端口" }] });
+    for (let i = 0; i < 12; i++) {
+      mgr.addMessage({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `/tmp/f${i}.ts` } },
+        ],
+      });
+      mgr.addMessage({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: `t${i}`,
+            content: `RECENT_TAIL_${i}_` + "x".repeat(400),
+          },
+        ],
+      });
+    }
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "我刚读完最近的文件，准备改端口。" }],
+    });
+
+    const truncated = mgr.emergencyTruncate();
+    expect(truncated.success).toBe(true);
+    const afterTruncate = mgr
+      .getMessages()
+      .filter((m) =>
+        m.content.some(
+          (b) => b.type === "tool_result" && String(b.content).startsWith("RECENT_TAIL_"),
+        ),
+      ).length;
+    expect(afterTruncate).toBeGreaterThan(0);
+
+    mgr.addCompactBoundary(`阻塞级压缩：剩余 2000 tokens`, truncated.messageCountBefore);
+    mgr.releaseBeforeBoundary();
+    const afterGc = mgr
+      .getMessages()
+      .filter((m) =>
+        m.content.some(
+          (b) => b.type === "tool_result" && String(b.content).startsWith("RECENT_TAIL_"),
+        ),
+      ).length;
+    // 这是 bug 的实证：边界贴末尾时 GC 把保留段清掉。生产路径因此不再调用它。
+    expect(afterGc).toBe(0);
+  });
+
+  test("生产调用序（truncate + 贴末尾边界、不 GC）保留近端 tool_result", () => {
+    const mgr = new ContextManager({ maxTokens: 200_000 });
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "请读 config.ts 并改端口" }] });
+    for (let i = 0; i < 12; i++) {
+      mgr.addMessage({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `/tmp/f${i}.ts` } },
+        ],
+      });
+      mgr.addMessage({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: `t${i}`,
+            content: `RECENT_TAIL_${i}_` + "x".repeat(400),
+          },
+        ],
+      });
+    }
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "我刚读完最近的文件，准备改端口。" }],
+    });
+
+    const truncated = mgr.emergencyTruncate();
+    mgr.addCompactBoundary(`阻塞级压缩：剩余 2000 tokens`, truncated.messageCountBefore);
+    // 与 loop.ts blocking/hard 对齐：不调用 releaseBeforeBoundary
+    const tails = mgr
+      .getMessages()
+      .filter((m) =>
+        m.content.some(
+          (b) => b.type === "tool_result" && String(b.content).startsWith("RECENT_TAIL_"),
+        ),
+      ).length;
+    expect(tails).toBeGreaterThan(0);
+    const piles = mgr
+      .getCleanedMessages()
+      .filter((m) =>
+        m.content.some((b) => b.type === "text" && b.text.startsWith("[已释放]")),
+      ).length;
+    expect(piles).toBe(0);
+  });
+
+  test("loop.ts blocking/hard 路径不得再调 releaseBeforeBoundary", async () => {
+    const src = await Bun.file(new URL("../../src/query/loop.ts", import.meta.url).pathname).text();
+    expect(src.includes("releaseBeforeBoundary(")).toBe(false);
+  });
+});
