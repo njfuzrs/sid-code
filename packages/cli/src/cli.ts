@@ -1552,13 +1552,14 @@ export async function main(): Promise<void> {
     // write 已并入工厂（与 edit 共享 tracker 做先读后写 + 写后回写），不再单独注册。
     for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
     toolRegistry.register(new BashTool());
-    toolRegistry.register(new GrepTool());
-    // G21：glob/ls 需接权限 deny 规则做列举过滤，但 permissionChecker 此刻尚未创建，
-    // 先留引用，待 checker 就绪后 setPathHiddenFilter 后置注入（见下方权限检查器创建处）。
+    // G21 / P1-1：glob/ls/grep 需接权限 deny 规则 + 敏感文件做列举过滤，
+    // 但 permissionChecker 此刻尚未创建，先留引用，待 checker 就绪后 setPathHiddenFilter。
     const globTool = new GlobTool();
     const lsTool = new LsTool();
+    const grepTool = new GrepTool();
     toolRegistry.register(globTool);
     toolRegistry.register(lsTool);
+    toolRegistry.register(grepTool);
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
@@ -2253,14 +2254,21 @@ export async function main(): Promise<void> {
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
 
-    // G21：把权限 deny 规则接入 glob/ls 列举过滤——被 deny 的敏感文件（.env / secrets/**）
-    // 不再出现在列举结果里（对标 claude-code），而非仅在后续 Read 时才被拦。
-    // isPathHidden 仅做静态 deny 规则匹配（无 LLM/交互/副作用），高频调用无成本；
-    // 无 deny 规则时恒 false（零开销、行为不变）。绑定实例方法保留 this。
+    // G21 / P1-1：deny 规则 + 敏感文件接入 glob/ls/grep/read_many 列举过滤。
+    // 被 deny 的敏感文件（.env / secrets/**）和 SENSITIVE_FILES 命中项
+    // 不再出现在列举/搜索结果里（对标 claude-code），而非仅在后续 Read 时才被拦。
+    // isPathHidden 仅做静态匹配（无 LLM/交互/副作用），高频调用无成本；
+    // 无 deny 规则且非敏感路径时恒 false（零开销、行为不变）。绑定实例方法保留 this。
     {
-      const hidden = (absPath: string) => permissionChecker.isPathHidden(absPath);
+      const hidden = (absPath: string) =>
+        permissionChecker.isPathHidden(absPath) || permissionChecker.isSensitivePath(absPath);
       globTool.setPathHiddenFilter(hidden);
       lsTool.setPathHiddenFilter(hidden);
+      grepTool.setPathHiddenFilter(hidden);
+      const readMany = toolRegistry.get("read_many") as
+        | { setPathHiddenFilter?: (fn: (absPath: string) => boolean) => void }
+        | undefined;
+      readMany?.setPathHiddenFilter?.(hidden);
     }
 
     // 注入 LLM 命令风险分类器（P0-3 迭代 II，第二道防线；默认关闭，enableLLMClassifier 开启）

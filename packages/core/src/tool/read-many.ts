@@ -128,6 +128,11 @@ const readManySchema = lazySchema(() =>
 export class ReadManyTool implements Tool {
   private tracker: FileReadTracker | null;
   private stateCache: FileStateCache | null;
+  /**
+   * P1-1：可选的路径隐藏判定（deny 规则 ∪ 敏感文件）。
+   * 命中的文件从批量读取结果剔除，对齐 glob/ls/grep。
+   */
+  private isPathHidden?: (absPath: string) => boolean;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = readManySchema();
@@ -149,7 +154,11 @@ export class ReadManyTool implements Tool {
    * - FileReadTracker（旧版，用于 createStatefulTools 工厂和测试）
    * - FileStateCache（新版，LRU + 内容比对）
    */
-  constructor(trackerOrCache?: FileReadTracker | FileStateCache) {
+  constructor(
+    trackerOrCache?: FileReadTracker | FileStateCache,
+    isPathHidden?: (absPath: string) => boolean,
+  ) {
+    this.isPathHidden = isPathHidden;
     if (!trackerOrCache) {
       this.stateCache = null;
       this.tracker = null;
@@ -160,6 +169,10 @@ export class ReadManyTool implements Tool {
       this.tracker = trackerOrCache as FileReadTracker;
       this.stateCache = null;
     }
+  }
+
+  setPathHiddenFilter(fn: (absPath: string) => boolean): void {
+    this.isPathHidden = fn;
   }
 
   readOnly(): boolean {
@@ -224,6 +237,17 @@ export class ReadManyTool implements Tool {
           nodir: true,
         });
         files.forEach((f) => allFiles.add(f));
+      }
+
+      if (this.isPathHidden) {
+        const fn = this.isPathHidden;
+        for (const f of [...allFiles]) {
+          try {
+            if (fn(f)) allFiles.delete(f);
+          } catch {
+            /* 判定失败则保留 */
+          }
+        }
       }
 
       if (allFiles.size === 0) {

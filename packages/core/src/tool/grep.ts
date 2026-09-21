@@ -15,7 +15,7 @@ import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
 import { statSync, existsSync } from "node:fs";
-import { relative, resolve, normalize } from "node:path";
+import { relative, resolve, normalize, join } from "node:path";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -130,6 +130,20 @@ interface StructuredOutput {
 export class GrepTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = grepSchema();
+
+  /**
+   * P1-1：可选的路径隐藏判定（deny 规则 ∪ 敏感文件）。
+   * 命中的文件从搜索结果剔除，对齐 glob/ls 的 G21 过滤。
+   */
+  private isPathHidden?: (absPath: string) => boolean;
+
+  constructor(isPathHidden?: (absPath: string) => boolean) {
+    this.isPathHidden = isPathHidden;
+  }
+
+  setPathHiddenFilter(fn: (absPath: string) => boolean): void {
+    this.isPathHidden = fn;
+  }
 
   /**
    * P2-9：JIT 上下文发现的路径自报（契约见 types.ts jitAffectedPaths）。
@@ -256,9 +270,10 @@ export class GrepTool implements Tool {
       return result;
     } catch (err: any) {
       if (err instanceof RipgrepTimeoutError) {
-        if (err.partialResults.length > 0) {
+        const visiblePartial = this.filterHiddenLines(err.partialResults, searchPath, mode);
+        if (visiblePartial.length > 0) {
           const { appliedLimit, pagedLines } = this.applyPagination(
-            err.partialResults,
+            visiblePartial,
             mode,
             headLimit,
             offset,
@@ -386,17 +401,18 @@ export class GrepTool implements Tool {
     }
 
     const lines = await ripGrep(args, searchPath, abortSignal);
+    const visible = this.filterHiddenLines(lines, searchPath, mode);
 
     // type 归一/降级的提示前置到输出里：模型必须知道"实际搜的范围与它写的不同"，
     // 否则会把降级后的宽结果当成精确结果，或把 0 命中误判成"确实不存在"。
     const typeNotice = resolvedType.notice ? `（提示）${resolvedType.notice}\n\n` : "";
 
-    if (lines.length === 0) {
+    if (visible.length === 0) {
       return { output: `${typeNotice}未找到匹配的内容` };
     }
 
     // 按 mtime 排序（files_with_matches / count 模式）
-    const sortedLines = this.sortLinesByMtime(lines, searchPath, mode);
+    const sortedLines = this.sortLinesByMtime(visible, searchPath, mode);
 
     // 应用分页
     const { appliedLimit, pagedLines } = this.applyPagination(sortedLines, mode, headLimit, offset);
@@ -564,6 +580,24 @@ export class GrepTool implements Tool {
   }
 
   /**
+   * P1-1：按注入的 isPathHidden 过滤掉被 deny / 敏感文件命中的结果行。
+   * 未注入时原样返回。判定异常保守保留（与 glob/ls 同口径）。
+   */
+  private filterHiddenLines(lines: string[], searchPath: string, mode: string): string[] {
+    if (!this.isPathHidden) return lines;
+    const fn = this.isPathHidden;
+    return lines.filter((line) => {
+      try {
+        const filePath = this.extractFilePath(line, mode);
+        const abs = filePath.startsWith("/") ? filePath : join(searchPath, filePath);
+        return !fn(abs);
+      } catch {
+        return true;
+      }
+    });
+  }
+
+  /**
    * 智能拆分 glob 模式（对标 CC）
    * - 空格分隔多个模式
    * - 花括号内的逗号不拆分（如 '*.{ts,tsx}' 是一个整体）
@@ -665,8 +699,9 @@ export class GrepTool implements Tool {
       }
 
       const lines = stdout.trim().split("\n").filter(Boolean);
+      const visible = this.filterHiddenLines(lines, searchPath, mode);
 
-      const { appliedLimit, pagedLines } = this.applyPagination(lines, mode, headLimit, offset);
+      const { appliedLimit, pagedLines } = this.applyPagination(visible, mode, headLimit, offset);
       const output = this.formatStructuredOutput(
         mode,
         pagedLines,

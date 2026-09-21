@@ -4,6 +4,8 @@
  * 状态机实现，正确处理引号、转义、子 shell
  */
 
+import { SAFETY_PROTECTED_PATHS } from "./safety-protected-paths.ts";
+
 /** 重定向检测结果 */
 export interface RedirectionInfo {
   hasRedirection: boolean;
@@ -169,8 +171,13 @@ function pushPart(parts: string[], part: string): void {
   if (trimmed) parts.push(trimmed);
 }
 
-/** 敏感重定向目标路径 */
-const SENSITIVE_REDIRECT_PATHS = [
+/**
+ * 敏感重定向目标路径。
+ *
+ * 前半：系统目录 / 家目录 dotfiles / 凭证文件（bash 无 file_path，不走 safetyCheck）。
+ * 后半：safetyCheck 名单转成路径段正则——单一事实源，修 write 漏 bash 的洞不会再开（P1-4）。
+ */
+const SENSITIVE_REDIRECT_PATHS: RegExp[] = [
   /^\/etc\//,
   /^\/usr\//,
   /^\/bin\//,
@@ -181,19 +188,19 @@ const SENSITIVE_REDIRECT_PATHS = [
   /^\/Library\//,
   /^~\/\./, // 家目录下的 dotfiles
   /^\$HOME\/\./, // $HOME 下的 dotfiles
-  /\.bashrc$/,
-  /\.zshrc$/,
-  /\.profile$/,
-  /\.bash_profile$/,
-  /\.ssh\//,
   /\.env$/,
   /\.env\./,
-  // sid-code / Claude 配置目录：拦截 `echo ... > /abs/path/.sid-code/settings.json` 这类
-  // 用绝对路径重定向覆盖配置文件的写入（bash 无 file_path，不走 safetyCheck，只能在此拦）。
-  // 匹配路径中任意位置的配置目录段，覆盖绝对路径、相对路径两种形态。
-  /(^|\/)\.sid-code\//,
-  /(^|\/)\.claude\//,
+  ...SAFETY_PROTECTED_PATHS.map(safetyPatternToRedirectRegex),
 ];
+
+/** `.git/hooks/` → `(^|/)\.git/hooks/`；`.bashrc` → `(^|/)\.bashrc$` */
+function safetyPatternToRedirectRegex(sp: { pattern: string }): RegExp {
+  const escaped = sp.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (sp.pattern.endsWith("/")) {
+    return new RegExp(`(^|/)${escaped}`);
+  }
+  return new RegExp(`(^|/)${escaped}$`);
+}
 
 /**
  * 检测命令中的重定向操作
