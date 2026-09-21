@@ -125,9 +125,11 @@ run_once() {
   echo "--- 第 $round 轮 $(date '+%F %T') ---"
   if [ "$ARM" = cc ]; then
     SID_CC_JOB="$JOB" SID_HARBOR_DATASET="$DATASET" \
+      SID_MEM_ROUND="$round" \
       bash run-claude-code-contrast.sh
   else
     SID_HARBOR_DATASET="$DATASET" SID_MODELSWITCH_FAMILY="$FAMILY" \
+      SID_MEM_ROUND="$round" \
       bash run-model-switch.sh "$JOB"
   fi
   echo "--- 第 $round 轮结束 rc=$? $(date '+%F %T') ---"

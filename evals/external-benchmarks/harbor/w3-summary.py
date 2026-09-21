@@ -569,10 +569,30 @@ def _git_commit() -> str | None:
         return None
 
 
+def _existing_archive_has_exam_caveat(path: str) -> bool:
+    """归档里已经有人手补的考场 0 披露 ⇒ 再跑本脚本会覆盖分母（08b §4.4）。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+    marker = "当时分母掺了"
+    for arm in doc.get("arms") or []:
+        for cv in arm.get("caveats") or []:
+            if marker in str(cv):
+                return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("job_dirs", nargs="+", help="一个或两个 job 目录(两个则顺带配对对照)")
     ap.add_argument("-o", "--out-dir", help="落盘目录(建议 results/ —— 它不在 gitignore 里)")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="覆盖已含「当时分母掺了」的归档。默认拒绝 —— 那会把 scored 从 54 洗成 48。",
+    )
     args = ap.parse_args()
 
     for d in args.job_dirs:
@@ -668,6 +688,17 @@ def main() -> int:
         os.makedirs(args.out_dir, exist_ok=True)
         name = "__".join(a["job"] for a in arms) + ".json"
         path = os.path.join(args.out_dir, name)
+        # E1 / 08b §4.4：修完 llm_fatal 再跑本脚本，collect() 会按新 classify
+        # 把 scored 改成 25/48，历史分母被覆盖。人手补的 caveat 是唯一痕迹，
+        # 覆盖它 = 把「当时掺了 6 个考场 0」从归档里抹掉。
+        if os.path.exists(path) and _existing_archive_has_exam_caveat(path) and not args.force:
+            print(
+                f"⛔ 拒绝覆盖 {path}：归档 caveats 已含「当时分母掺了」。\n"
+                "   再跑会按新 llm_fatal 把 scored 洗成 25/48，历史分母没了。\n"
+                "   真要覆盖：加 --force（08b §4.4 / 15 §2.4 E1）。",
+                file=sys.stderr,
+            )
+            return 3
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, ensure_ascii=False, indent=2, sort_keys=False)
             fh.write("\n")

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "kind": "sensitivity-exam-zeros",
+  "generated_at": "2026-09-21",
+  "source": "08b §3 / 15 §2.4 E1",
+  "note": "⛔ 不是新的 pass@1。已发表 46.3% / 50.0% / 51.9% 是当时尺子下的历史事实。本文件只披露：把 A2 那 6 道上游掐死从配对里拿掉之后，方向会反。n 更小、CI 照样跨 0，仍不能写成「sid 更好」。",
+  "exam_zero_tasks": [
+    "regex-log",
+    "circuit-fibsqrt",
+    "polyglot-c-py",
+    "sanitize-git-repo",
+    "polyglot-rust-c",
+    "rstan-to-pystan"
+  ],
+  "official": {
+    "n": 54,
+    "sid_passed": 25,
+    "cc_passed": 27,
+    "sid_p": 0.463,
+    "cc_p": 0.5,
+    "delta_pp": 3.7
+  },
+  "without_exam_zeros": {
+    "n": 48,
+    "sid_passed": 25,
+    "cc_passed": 23,
+    "sid_p": 0.521,
+    "cc_p": 0.479,
+    "delta_pp": -4.2
+  },
+  "a1_socket_closed": {
+    "zero": [
+      "dna-insert",
+      "feal-linear-cryptanalysis",
+      "gpt2-codegolf"
+    ],
+    "solved_keep": [
+      "build-pmars"
+    ]
+  }
+}

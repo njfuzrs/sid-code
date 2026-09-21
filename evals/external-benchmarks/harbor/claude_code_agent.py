@@ -133,6 +133,10 @@ class ClaudeCodeNpm(ClaudeCode):
         # ⚠️ 这段刻意**不改 claude-code 的任何运行时行为** —— 它只保证"跑得起来"
         #    这个前提成立，与 ①‴ 要买的「我们 vs 参考实现」正交。node 版本在
         #    10 题上被统一钉成同一个，反而**少**了一个跨题变量。
+        # D2：Node tarball 默认打 nodejs.org。开跑 25 分钟模型 0 次调用就是
+        # `-n 6` 下这条外网下载（curl 18/56）。宿主镜像通过 --ae SID_CC_NODE_MIRROR
+        # 注入；没注入时行为与本轮之前逐字节相同（退回直连，不更坏）。
+        # ⚠️ `--ve` 只进 verifier，agent 安装读不到它 —— 必须 --ae。
         node_boot = (
             f'if command -v node >/dev/null 2>&1 && '
             f'[ "$(node -v | sed \'s/^v//\' | cut -d. -f1)" -ge {self._NODE_MIN_MAJOR} ] '
@@ -141,8 +145,14 @@ class ClaudeCodeNpm(ClaudeCode):
             f"x86_64) _na=x64 ;; aarch64|arm64) _na=arm64 ;; "
             f'*) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; '
             f"esac; "
-            f'curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v{self._NODE_VERSION}'
+            f'_nm="${{SID_CC_NODE_MIRROR:-}}"; '
+            f'if [ -n "$_nm" ]; then '
+            f'_nu="${{_nm%/}}/node-v{self._NODE_VERSION}-linux-${{_na}}.tar.xz"; '
+            f'else '
+            f'_nu="https://nodejs.org/dist/v{self._NODE_VERSION}'
             f'/node-v{self._NODE_VERSION}-linux-${{_na}}.tar.xz"; '
+            f'fi; '
+            f'curl -fsSL -o /tmp/node.tar.xz "$_nu"; '
             f"mkdir -p /opt/node; "
             f"tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1; "
             f'for _b in node npm npx; do ln -sf "/opt/node/bin/$_b" "/usr/local/bin/$_b"; done; '
@@ -169,7 +179,16 @@ class ClaudeCodeNpm(ClaudeCode):
             command=(
                 "set -euo pipefail; "
                 f"{node_boot}; "
-                f"npm install -g {pkg} && "
+                # D2：平台包（214MB linux-x64）是 optionalDependencies。
+                # npm 拉不到时 rc 仍是 0，随后 `claude --version` 报
+                # `native binary not installed`（08a §3.7 第二条独立失败）。
+                # SID_CC_NPM_REGISTRY 指向宿主镜像；没注入则退回 registry.npmjs.org。
+                '_nr="${SID_CC_NPM_REGISTRY:-}"; '
+                'if [ -n "$_nr" ]; then '
+                f'npm install -g --registry "$_nr" {pkg}; '
+                "else "
+                f"npm install -g {pkg}; "
+                "fi && "
                 "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && "
                 'export PATH="$HOME/.local/bin:$PATH" && '
                 # ⚠️ 顺序很重要：`command -v claude` 在走 tarball 兜底时**必然为空**
