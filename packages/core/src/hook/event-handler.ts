@@ -41,6 +41,7 @@ import {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getIdentity } from "../identity/index.ts";
 
 /**
  * P0-1：本进程的 sid-code 版本号（裸 x.y.z），供 SessionStart/End 两端携带。
@@ -621,12 +622,17 @@ export class HookEventHandler {
 
   /** 构建基础输入 */
   private createBaseInput(eventName: HookEventName): HookInput {
+    const ident = getIdentity();
     return {
       session_id: this.sessionId,
       cwd: this.cwd,
       hook_event_name: eventName,
       timestamp: new Date().toISOString(),
       permission_mode: this.permissionMode || undefined,
+      device_id: ident.deviceId,
+      user_id: ident.userId,
+      org_id: ident.orgId,
+      team_id: ident.teamId,
     };
   }
 

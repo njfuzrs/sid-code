@@ -49,6 +49,7 @@ import {
 import { QuotaManager } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
+import { getIdentity } from "@sid-code/core/identity/index.ts";
 import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
@@ -6062,6 +6063,7 @@ export class App {
     const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
     const model = primary?.[0] ?? this.config.model ?? "unknown";
     const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
+    const ident = getIdentity();
     return {
       ts: Math.floor(Date.now() / 1000),
       sessionId: this.sessionState.sessionId,
@@ -6090,6 +6092,10 @@ export class App {
       // 而「缺失」本身正是消费侧用来识别存量数据的信号。
       // env 覆盖与 `analytics/metadata.ts:184`、`trace/collector.ts` 同一口径。
       appVersion: process.env.SID_CODE_VERSION ?? getRawVersion(),
+      deviceId: ident.deviceId,
+      ...(ident.userId ? { userId: ident.userId } : {}),
+      ...(ident.orgId ? { orgId: ident.orgId } : {}),
+      ...(ident.teamId ? { teamId: ident.teamId } : {}),
       // D1 / §5.5：本会话请求落在高峰时段的比例。采集点在 `llm/billing-sink.ts`
       // （唯一必然经过的点 —— 挂消费侧只数得到 fork，是个偏样本）。
       // `undefined` = 本会话没有任何分时段模型，此时**不落字段**（落 0 会与

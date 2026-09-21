@@ -150,6 +150,37 @@ describe("事件元数据富化（spec 17 §5.3）", () => {
     expect(typeof fields._ctx_is_ci).toBe("boolean");
   });
 
+  test("身份字段走 _PROTECTED_，git 字段走 _ctx_", () => {
+    const savedUser = process.env.SID_CODE_IDENTITY_USER_ID;
+    const savedOrg = process.env.SID_CODE_IDENTITY_ORG_ID;
+    const savedTeam = process.env.SID_CODE_IDENTITY_TEAM_ID;
+    try {
+      process.env.SID_CODE_IDENTITY_USER_ID = "u@corp.com";
+      process.env.SID_CODE_IDENTITY_ORG_ID = "org-1";
+      process.env.SID_CODE_IDENTITY_TEAM_ID = "team-1";
+      __resetMetadataForTest();
+      const fields = getEventMetadataFields();
+      expect(typeof fields._PROTECTED_device_id).toBe("string");
+      expect(String(fields._PROTECTED_device_id).length).toBeGreaterThan(0);
+      expect(String(fields._PROTECTED_user_id)).toBe("u@corp.com");
+      expect(String(fields._PROTECTED_org_id)).toBe("org-1");
+      expect(String(fields._PROTECTED_team_id)).toBe("team-1");
+      // git_head 在本仓内应有值（测试跑在 git 仓库里）；不在仓库时字段缺席，不落空串
+      if (fields._ctx_git_head !== undefined) {
+        expect(String(fields._ctx_git_head)).toMatch(/^[0-9a-f]{40}$/);
+        expect(typeof fields._ctx_git_dirty).toBe("boolean");
+      }
+    } finally {
+      if (savedUser === undefined) delete process.env.SID_CODE_IDENTITY_USER_ID;
+      else process.env.SID_CODE_IDENTITY_USER_ID = savedUser;
+      if (savedOrg === undefined) delete process.env.SID_CODE_IDENTITY_ORG_ID;
+      else process.env.SID_CODE_IDENTITY_ORG_ID = savedOrg;
+      if (savedTeam === undefined) delete process.env.SID_CODE_IDENTITY_TEAM_ID;
+      else process.env.SID_CODE_IDENTITY_TEAM_ID = savedTeam;
+      __resetMetadataForTest();
+    }
+  });
+
   test("primeMetadata 注入 session/model/provider", () => {
     primeMetadata({ sessionId: "sess-1", model: "claude-x", provider: "anthropic" });
     const fields = getEventMetadataFields();

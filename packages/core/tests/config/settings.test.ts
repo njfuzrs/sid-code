@@ -171,9 +171,11 @@ describe("安全边界：项目级配置字段过滤", () => {
       allowedTools: ["Bash"],
       trustProjectExtensions: true,
       allowedDirectories: ["/"],
+      identity: { userId: "attacker@evil", orgId: "evil-org" },
     };
     const filtered = filterProjectSettings(projectSettings);
     expect(filtered.model).toBe("claude-x"); // 非敏感字段保留
+    expect("identity" in filtered).toBe(false);
     for (const field of SECURITY_SENSITIVE_FIELDS) {
       expect(field in filtered).toBe(false);
     }

@@ -8,9 +8,10 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import type { EventMetadata, VerifiedNotCodeOrFilepaths } from "./index.ts";
-import { asVerified } from "./types.ts";
+import { asVerified, asPII } from "./types.ts";
 import { getUserBucket } from "./user-bucket.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 
 interface EventMetadataContext {
   session_id: string;
@@ -26,6 +27,12 @@ interface EventMetadataContext {
   repo_hash: string | null;
   is_interactive: boolean;
   mcp_server_count: number;
+  device_id: string;
+  user_id: string | null;
+  org_id: string | null;
+  team_id: string | null;
+  git_head: string | null;
+  git_dirty: boolean | null;
 }
 
 let cachedContext: EventMetadataContext | null = null;
@@ -92,10 +99,17 @@ export function getEventMetadataFields(): EventMetadata {
     _ctx_provider: v(ctx.provider),
     _ctx_mcp_server_count: ctx.mcp_server_count,
     _ctx_user_bucket: getUserBucket(ctx.session_id),
+    // 身份是 PII：走 _PROTECTED_*，stripProtected（HttpExporter 默认 true）在非特权后端剥离。
+    _PROTECTED_device_id: asPII(ctx.device_id),
   };
   if (ctx.terminal) fields._ctx_terminal = v(ctx.terminal);
   if (ctx.vcs_type) fields._ctx_vcs_type = v(ctx.vcs_type);
   if (ctx.repo_hash) fields._ctx_repo_hash = v(ctx.repo_hash);
+  if (ctx.user_id) fields._PROTECTED_user_id = asPII(ctx.user_id);
+  if (ctx.org_id) fields._PROTECTED_org_id = asPII(ctx.org_id);
+  if (ctx.team_id) fields._PROTECTED_team_id = asPII(ctx.team_id);
+  if (ctx.git_head) fields._ctx_git_head = v(ctx.git_head);
+  if (ctx.git_dirty !== null) fields._ctx_git_dirty = ctx.git_dirty;
   return fields;
 }
 
@@ -107,6 +121,8 @@ export function __resetMetadataForTest(): void {
 // --- 内部实现 ---
 
 function collectMetadata(): EventMetadataContext {
+  const ident = getIdentity();
+  const git = getGitSnapshot();
   return {
     session_id: "unknown",
     platform: process.platform,
@@ -121,6 +137,12 @@ function collectMetadata(): EventMetadataContext {
     vcs_type: detectVCS(),
     repo_hash: computeRepoHash(),
     mcp_server_count: 0,
+    device_id: ident.deviceId,
+    user_id: ident.userId ?? null,
+    org_id: ident.orgId ?? null,
+    team_id: ident.teamId ?? null,
+    git_head: git.head,
+    git_dirty: git.dirty,
   };
 }
 

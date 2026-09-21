@@ -578,6 +578,39 @@ describe("buildTrajectory", () => {
     expect(result.info.has_thinking).toBe(true);
   });
 
+  test("M1 metadata 输出 ver + 身份 + git（有值才写）", () => {
+    const result = buildTrajectory(
+      [],
+      makeMetadata({
+        app_version: "0.1.604",
+        ver: "0.1.604",
+        device_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        user_id: "u@corp.com",
+        org_id: "org-1",
+        team_id: "team-1",
+        git_head: "0123456789abcdef0123456789abcdef01234567",
+        git_dirty: true,
+      }),
+    );
+    expect(result.metadata.ver).toBe("0.1.604");
+    expect(result.metadata.app_version).toBe("0.1.604");
+    expect(result.metadata.device_id).toBe("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    expect(result.metadata.user_id).toBe("u@corp.com");
+    expect(result.metadata.org_id).toBe("org-1");
+    expect(result.metadata.team_id).toBe("team-1");
+    expect(result.metadata.git_head).toBe("0123456789abcdef0123456789abcdef01234567");
+    expect(result.metadata.git_dirty).toBe(true);
+  });
+
+  test("M1 身份字段缺席时不写空键（存量形态）", () => {
+    const result = buildTrajectory([], makeMetadata());
+    expect("ver" in result.metadata).toBe(false);
+    expect("device_id" in result.metadata).toBe(false);
+    expect("user_id" in result.metadata).toBe(false);
+    expect("org_id" in result.metadata).toBe(false);
+    expect("team_id" in result.metadata).toBe(false);
+  });
+
   test("metadata 字段包含 tool_source=sid-code", () => {
     const result = buildTrajectory([], makeMetadata());
     expect(result.metadata.tool_source).toBe("sid-code");

@@ -52,6 +52,8 @@ ide/
 # ── 本地私有凭证（不应进入任何仓库）──
 *.local.json
 managed-settings.json
+device-id
+device-credential.json
 
 # ── 允许提交的配置（显式取消忽略，便于 dotfiles 管理）──
 !settings.json

@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **71** 个顶层字段。其中 46 个由
+> 共 **72** 个顶层字段。其中 47 个由
 > `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），25 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
@@ -64,6 +64,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `goal` ⚠ | object | — | /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG） |
 | `hooks` | object | — | Hook 和 MCP |
 | `ide` ⚠ | object | — | IDE 集成配置 |
+| `identity` | object | — | M1 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入； deviceId 不在这里配（本机持久 UUID，见 identity/device-id.ts）。 未配置时所有功… |
 | `jitContext` | boolean | — | JIT 上下文发现 是否启用 JIT 上下文发现（默认 true） |
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。 不设置时… |
 | `maxThinkingTokens` | number | 整数 ≥0 | §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。 env SID_CODE_MAX_THINKING_TOKENS / M… |

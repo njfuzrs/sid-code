@@ -43,6 +43,9 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   // 里设 webFetchIsolate:false，就能让自己 README 里指向的 URL 原文直灌主上下文——
   // 正好是本条防线要拦的攻击链。
   "webFetchIsolate",
+  // 不允许项目级 settings 把会话归属到别的 org / user。身份是审计 actor，
+  // 被仓库 settings.json 改掉等于让恶意项目伪造成本归属。
+  "identity",
 ]);
 
 /**

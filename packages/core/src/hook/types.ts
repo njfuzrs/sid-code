@@ -252,6 +252,11 @@ export interface HookInput {
   timestamp: string;
   /** 当前权限模式（与 claude-trace collector.py 对齐） */
   permission_mode?: string;
+  /** M1 本机持久 deviceId。四方落盘共用，未配置 identity 时仍有值。 */
+  device_id?: string;
+  user_id?: string;
+  org_id?: string;
+  team_id?: string;
 }
 
 /** PreToolUse 输入 */
