@@ -116,6 +116,9 @@ const WRITING_EXPORTS = [
   "getCheckpointManager",
   "writePendingRootSpan",
   "TelemetryHookProbe",
+  // 超阈值工具输出同步写 trajectories/sessions/{id}/tool-outputs/。
+  // 子代理 D9 把它接到 executeTools 之后，测试若 import 却不隔离会灌假文件进真实轨迹。
+  "processToolResult",
 ] as const;
 
 /**

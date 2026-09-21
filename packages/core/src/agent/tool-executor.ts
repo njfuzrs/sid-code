@@ -5,7 +5,7 @@
  * - 分区调度走主循环 `partitionToolCalls`（连续安全才合并，保留 Read→Edit→Read 顺序）
  * - 并行批次受 `getMaxToolConcurrency()` 信号量限制（默认 10）
  * - _agentId 注入（防嵌套）
- * - 输出截断
+ * - 输出走主循环 `processToolResult`（超阈值落盘，模型侧留摘要 + 路径）
  * - Pre/PostToolUse hook 触发（接通可观测性：execute_tool span 与主循环对齐）
  * - 出口 N 进 N 出：缺 idx 走 `yieldMissingToolResults`，不再静默跳过
  *
@@ -17,7 +17,6 @@
 
 import type { ContentBlock } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import { Manager as ContextManager } from "../context/manager.ts";
 import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -25,6 +24,7 @@ import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "../query/tool-orchestration.ts";
+import { processToolResult } from "../tool/result-storage.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
@@ -52,6 +52,7 @@ export type SubAgentToolProgress = (
  * @param permissionChecker 权限检查器（子代理用 dontAsk 语义）。B0：缺省时改为**分级
  *                          fail-closed**——只读工具放行，写类工具（非 isConcurrencySafe/
  *                          readOnly）直接拒绝，不再是"缺省即不检查"的静默放过。
+ * @param sessionId 超阈值结果落盘目录用。与 ContextManager masking 共用派生 id；缺省 "default"。
  */
 export async function executeTools(
   content: ContentBlock[],
@@ -60,6 +61,8 @@ export async function executeTools(
   hookSystem?: HookSystem,
   permissionChecker?: Checker,
   onProgress?: SubAgentToolProgress,
+  /** 会话 ID，超阈值结果落盘到 trajectories/sessions/{id}/tool-outputs/。缺省回退 "default"。 */
+  sessionId?: string,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -110,7 +113,15 @@ export async function executeTools(
         batch.items.map(
           ({ block, idx }) =>
             () =>
-              executeSingleTool(block, tools, signal, hookSystem, permissionChecker, onProgress)
+              executeSingleTool(
+                block,
+                tools,
+                signal,
+                hookSystem,
+                permissionChecker,
+                onProgress,
+                sessionId,
+              )
                 .then((result) => ({ idx, result }))
                 .catch((err: any) => ({
                   idx,
@@ -137,6 +148,7 @@ export async function executeTools(
             hookSystem,
             permissionChecker,
             onProgress,
+            sessionId,
           );
           resultMap.set(idx, result);
         } catch (err: any) {
@@ -237,6 +249,7 @@ async function executeSingleTool(
   hookSystem?: HookSystem,
   permissionChecker?: Checker,
   onProgress?: SubAgentToolProgress,
+  sessionId?: string,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -445,8 +458,15 @@ async function executeSingleTool(
       }
     }
 
-    // 截断超大输出
-    const truncated = ContextManager.truncateToolOutput(result.output);
+    // D9：与主循环共用 processToolResult。超阈值把完整输出落盘，模型侧留头尾摘要 + 路径；
+    // 只做字符截断会把后半段丢掉，子代理只能再调一次同样的工具——再截断一次。
+    const truncated = processToolResult(
+      block.name,
+      block.id,
+      result.output,
+      sessionId ?? "default",
+      tool.maxResultSizeChars,
+    );
 
     // TUI 呈现档位（见下方 return 处的注释）。解析一次存起来，不在 return 里调两遍
     // ——函数形态的实现（skill）会查 SkillManager，重复调用是白花的开销。
