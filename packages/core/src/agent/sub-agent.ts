@@ -17,6 +17,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../tool/stateful-tools.ts";
 import { TodoWriteTool } from "../tool/todo-write.ts";
+import { ToolSearchTool } from "../tool/tool-search.ts";
 import {
   StructuredOutputTool,
   structuredOutputPromptSuffix,
@@ -25,6 +26,8 @@ import { validateAgainstSchema, formatSchemaErrors } from "../workflow/json-sche
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
+import { logToolCall, logToolSuccess, logToolFailure } from "../analytics/events.ts";
+import { isAbortError } from "../llm/errors.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
@@ -1371,6 +1374,9 @@ export class SubAgent {
       return { content: `工具 "${name}" 未找到`, is_error: true };
     }
 
+    // 调度器视角墙钟锚点：覆盖 hook/权限早退，与进程内 toolStartedAt 同口径。
+    const toolStartedAt = Date.now();
+
     // pre_tool_use hook（spawn 路径同样接入 hook 链，与进程内 / 主循环对齐）。
     let effectiveInput = input;
     let hookPermissionDecision: "allow" | "ask" | undefined;
@@ -1382,6 +1388,16 @@ export class SubAgent {
         const interp = interpretPreToolUse(pre, input);
         if (interp.blocked) {
           log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${interp.blockReason}`);
+          // 漏斗 1：hook 阻止是一次真实调度失败（与进程内 executeSingleTool / 主循环同口径）。
+          // 权限拒绝不在这里——那条走漏斗 2。call + failure 成对。
+          const hookFilePath =
+            typeof input?.file_path === "string" ? (input.file_path as string) : undefined;
+          logToolCall(name, hookFilePath);
+          logToolFailure(name, {
+            kind: "hook_blocked",
+            durationMs: Date.now() - toolStartedAt,
+            filePath: hookFilePath,
+          });
           return { content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`, is_error: true };
         }
         hookPermissionDecision = interp.permissionDecision;
@@ -1418,6 +1434,13 @@ export class SubAgent {
       }
     }
 
+    // 漏斗 1：权限通过之后才记 call。拒绝走上方漏斗 2，不混进 tool_failure。
+    const efFilePath =
+      typeof effectiveInput?.file_path === "string"
+        ? (effectiveInput.file_path as string)
+        : undefined;
+    logToolCall(name, efFilePath);
+
     const startTime = Date.now();
     try {
       // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
@@ -1435,6 +1458,11 @@ export class SubAgent {
               log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
             );
         }
+        logToolFailure(name, {
+          kind: "invalid_input",
+          durationMs: Date.now() - startTime,
+          filePath: efFilePath,
+        });
         return { content: validation.message, is_error: true };
       }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
@@ -1464,8 +1492,22 @@ export class SubAgent {
           )
           .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
       }
+      if (result.isError) {
+        logToolFailure(name, {
+          kind: "tool_error",
+          durationMs: elapsed,
+          filePath: efFilePath,
+        });
+      } else {
+        logToolSuccess(name, {
+          durationMs: elapsed,
+          outputSize: result.output?.length ?? 0,
+          filePath: efFilePath,
+        });
+      }
       return { content: truncated, is_error: result.isError ?? false };
     } catch (err: any) {
+      const elapsed = Date.now() - startTime;
       if (this.hookSystem) {
         this.hookSystem
           .firePostToolUseFailureEvent(
@@ -1474,12 +1516,17 @@ export class SubAgent {
             err.message,
             undefined,
             // 与上方成功路径 duration_ms 同口径（纯执行耗时）
-            { duration_ms: Date.now() - startTime },
+            { duration_ms: elapsed },
           )
           .catch((e: any) =>
             log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
           );
       }
+      logToolFailure(name, {
+        kind: isAbortError(err) ? "aborted" : "exception",
+        durationMs: elapsed,
+        filePath: efFilePath,
+      });
       return { content: `工具执行异常: ${err.message}`, is_error: true };
     }
   }
@@ -2274,7 +2321,15 @@ export class SubAgent {
     for (const t of createStatefulTools(subTracker)) rebuilt.set(t.name(), t);
 
     const tools = new ToolRegistry();
+    let needsIsolatedToolSearch = false;
     for (const t of filteredTools) {
+      // D8：父级 ToolSearchTool 绑的是父 registry。原样拷进隔离池，activate 会写到
+      // 父会话，子代理下一轮 activeDefinitions 仍看不到被调出的工具。循环里跳过，
+      // 结束后挂一份绑本池的新实例。pending MCP 回调不拷——子代理只搜自己池里已有的。
+      if (t.name() === "tool_search") {
+        needsIsolatedToolSearch = true;
+        continue;
+      }
       // 有状态工具用子代理独立 tracker 重建；无状态工具直接复用（安全）
       let replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
       // P1-2：todo_write 持有 currentTodos 内存态（也是"先读后写"外的可变状态载体）。
@@ -2294,6 +2349,9 @@ export class SubAgent {
         replacement = (t as any).withAgentType(agentType) as LegacyTool;
       }
       tools.register(replacement ?? t);
+    }
+    if (needsIsolatedToolSearch) {
+      tools.register(new ToolSearchTool(tools));
     }
     return tools;
   }

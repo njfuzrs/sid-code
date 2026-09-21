@@ -178,11 +178,14 @@ export function logToolSuccess(
  * 这是刻意的：记忆里「归因与真实信号脱节反模式」的判据优先级是
  * 「状态码 / reason 白名单 > 数字边界 > 裸子串」——而调用点自己知道它是
  * hook 阻止还是 zod 校验失败，这是比任何字符串匹配都强的信号，白扔掉才是错。
+ *
+ * 权限拒绝**不在此枚举**。它走漏斗 2（`logPermissionDeny`），不进 tool_failure：
+ * 「拦了多少」和「工具真失败」语义相反，混进同一个成功率分母正是博客 §14 要禁止的。
+ * 枚举里留一个没人调的 `permission_denied` 比没有更糟——会让人以为已经按 kind 拆过了。
  */
 export type ToolFailureKind =
   | "hook_blocked" // PreToolUse hook 阻止
   | "invalid_input" // zod 参数校验失败（含模型漏字段）
-  | "permission_denied" // 权限层拒绝
   | "aborted" // 用户取消 / 内部超时
   | "exception" // 工具内部抛异常
   | "tool_error"; // 工具正常返回但 isError=true

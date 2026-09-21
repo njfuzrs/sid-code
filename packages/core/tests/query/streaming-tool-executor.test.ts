@@ -4,7 +4,10 @@
 
 import { describe, test, expect } from "bun:test";
 import { StreamingToolExecutor } from "@sid-code/core/query/streaming-tool-executor.ts";
-import { partitionToolCalls } from "@sid-code/core/query/tool-orchestration.ts";
+import {
+  partitionToolCalls,
+  judgeConcurrencySafe,
+} from "@sid-code/core/query/tool-orchestration.ts";
 import type { ToolUseBlock } from "@sid-code/core/llm/types.ts";
 import type { LegacyTool as Tool } from "@sid-code/core/tool/types.ts";
 
@@ -78,6 +81,16 @@ describe("partitionToolCalls (GAP-03 贪心连续合并)", () => {
     expect(batches.length).toBe(2);
     expect(batches[0].isConcurrencySafe).toBe(false);
     expect(batches[1].isConcurrencySafe).toBe(true);
+  });
+
+  test("judgeConcurrencySafe 是唯一入口：抛错返回 false，不把调用方炸掉", () => {
+    const exploding = mockTool("edit", { safe: false });
+    exploding.isConcurrencySafe = () => {
+      throw new Error("判定炸了");
+    };
+    expect(judgeConcurrencySafe(exploding, {})).toBe(false);
+    expect(judgeConcurrencySafe(mockTool("read", { safe: true }), {})).toBe(true);
+    expect(judgeConcurrencySafe(mockTool("glob", { readOnly: true }), {})).toBe(true);
   });
 });
 

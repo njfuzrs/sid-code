@@ -90,6 +90,13 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
  */
 const TEAM_COMMUNICATION_TOOLS = new Set(["team_message"]);
 
+/**
+ * D8：延迟加载调度器。自身 alwaysLoad，不进延迟池；缺了它，子代理即便发
+ * activeDefinitions 也激活不了被藏起来的工具（schema 在列表里、激活工具不在）。
+ * 放行条件仍受 Layer 1 硬禁 + Layer 3 用户显式 disallowedTools 约束。
+ */
+const DEFERRED_LOADING_TOOLS = new Set(["tool_search"]);
+
 /** 异步（后台）Agent 的工具白名单 */
 const ASYNC_ALLOWED_TOOLS = new Set([
   "read",
@@ -149,9 +156,13 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
     // P1-3：团队通信工具豁免 Layer 2/4 白名单（见 TEAM_COMMUNICATION_TOOLS 注释）。
     // 仍受 Layer 1 硬禁 + Layer 3 用户显式 disallowedTools 约束（下面的判断在此之前/之后）。
     const isTeamComm = TEAM_COMMUNICATION_TOOLS.has(name);
+    // D8：tool_search 豁免 Layer 2/4。general-purpose / 自定义 `"*"` 子代理要延迟加载
+    // MCP，必须能调它；explore/plan 白名单不含 MCP，调了也搜不到东西，多一个只读
+    // schema 的代价可忽略，换来「子代理循环按池内是否真有 tool_search 定档」一条路。
+    const isDeferredLoader = DEFERRED_LOADING_TOOLS.has(name);
 
     // Layer 2: 角色特定（内置子代理用白名单）
-    if (options.isBuiltIn && options.builtInType && !isTeamComm) {
+    if (options.isBuiltIn && options.builtInType && !isTeamComm && !isDeferredLoader) {
       const allowed = BUILTIN_AGENT_ALLOWED_TOOLS[options.builtInType];
       if (allowed !== undefined && allowed !== null) {
         // P0（多 provider MCP 放行收紧）：只读子代理（explore/plan/verify）的
@@ -176,11 +187,17 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
     if (options.disallowedTools?.includes(name)) return false;
     // 白名单（如果指定了且不是 ["*"]）
     if (options.tools && !options.tools.includes("*")) {
-      if (!isMcp && !options.tools.includes(name)) return false;
+      if (!isMcp && !isDeferredLoader && !options.tools.includes(name)) return false;
     }
 
     // Layer 4: 异步白名单（后台 Agent 只允许安全子集）
-    if (options.isAsync && !isMcp && !isTeamComm && !ASYNC_ALLOWED_TOOLS.has(name)) {
+    if (
+      options.isAsync &&
+      !isMcp &&
+      !isTeamComm &&
+      !isDeferredLoader &&
+      !ASYNC_ALLOWED_TOOLS.has(name)
+    ) {
       return false;
     }
 

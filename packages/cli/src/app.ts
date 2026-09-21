@@ -4821,6 +4821,7 @@ export class App {
     if (isStreamingToolExecEnabled()) {
       const { executeSingleTool, resolveToolPermission } =
         await import("@sid-code/core/query/tool-executor.ts");
+      const { judgeConcurrencySafe } = await import("@sid-code/core/query/tool-orchestration.ts");
       const deps = this.buildToolExecutorDeps();
       const cache = new Map<
         string,
@@ -4832,14 +4833,7 @@ export class App {
         // 仅抢跑并发安全工具（读类）；其余留给 executeTools 批量编排
         const tool = this.toolRegistry.get(block.name);
         if (!tool) return;
-        let safe = false;
-        try {
-          safe = tool.isConcurrencySafe
-            ? tool.isConcurrencySafe(block.input)
-            : (tool.readOnly?.() ?? false);
-        } catch {
-          safe = false;
-        }
+        const safe = judgeConcurrencySafe(tool, block.input);
         if (!safe) return;
         if (cache.has(block.id) || inflight.has(block.id)) return;
         inflight.add(block.id);

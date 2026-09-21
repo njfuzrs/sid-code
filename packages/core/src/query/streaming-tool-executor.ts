@@ -29,6 +29,7 @@
 import type { ToolUseBlock } from "../llm/types.ts";
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import { getLogger } from "../debug/index.ts";
+import { judgeConcurrencySafe } from "./tool-orchestration.ts";
 
 /** 工具执行状态 */
 export type ToolExecState = "queued" | "executing" | "completed" | "yielded";
@@ -50,17 +51,6 @@ interface ToolEntry {
 
 /** 单工具执行回调：复用 tool-executor 的完整管线（权限/hook/校验/执行/序列化） */
 export type ExecuteOne = (block: ToolUseBlock, tool: Tool, idx: number) => Promise<unknown>;
-
-/** 并发安全判定：优先 isConcurrencySafe(input)，回退 readOnly() */
-function judgeConcurrencySafe(tool: Tool, block: ToolUseBlock): boolean {
-  try {
-    return tool.isConcurrencySafe
-      ? tool.isConcurrencySafe(block.input)
-      : (tool.readOnly?.() ?? false);
-  } catch {
-    return false; // 判定异常保守视为非并发安全
-  }
-}
 
 export class StreamingToolExecutor {
   private entries: ToolEntry[] = [];
@@ -108,7 +98,7 @@ export class StreamingToolExecutor {
       block,
       tool,
       idx,
-      isConcurrencySafe: judgeConcurrencySafe(tool, block),
+      isConcurrencySafe: judgeConcurrencySafe(tool, block.input),
       state: "queued",
     });
     this.pump();

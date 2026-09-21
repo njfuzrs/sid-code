@@ -5,6 +5,7 @@
  * 使其可独立测试和替换（如后续 GAP-01 流式执行可替换调度策略而不动执行层）。
  *
  * 当前提取范围：
+ * - judgeConcurrencySafe()：并发安全判定唯一入口（抛错 fail-closed 当 unsafe）
  * - partitionToolCalls()：贪心连续合并分区算法（GAP-03 实现，此处导出为独立函数）
  * - getMaxToolConcurrency()：并发上限配置读取
  *
@@ -25,6 +26,23 @@ export interface ToolBatch {
 }
 
 /**
+ * 并发安全判定唯一入口。
+ *
+ * 优先 `isConcurrencySafe(input)`，回退 `readOnly()`。判定抛错 fail-closed 当
+ * unsafe：否则主/子分区整批炸掉，或子代理 fail-closed 权限把写类工具误放行。
+ *
+ * `input` 缺省 `undefined`：无 input 感知的调用点（fail-closed 权限、流式抢跑）
+ * 与有 input 的分区路径共用同一函数，不另抄一份 try/catch。
+ */
+export function judgeConcurrencySafe(tool: Tool, input?: unknown): boolean {
+  try {
+    return tool.isConcurrencySafe ? tool.isConcurrencySafe(input) : (tool.readOnly?.() ?? false);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * GAP-03 贪心连续合并分区算法。
  *
  * 规则：
@@ -32,7 +50,7 @@ export interface ToolBatch {
  *   - 非并发安全工具各自成为独立的串行批次（或连续非安全工具合成同一串行批次）
  *   - 保留模型的隐式顺序语义（"先 Read → Edit → 再 Read"不被打乱）
  *
- * 并发安全判定：优先 `isConcurrencySafe(input)` 输入感知，回退 `readOnly()`。
+ * 并发安全判定走 `judgeConcurrencySafe`（抛错 fail-closed）。
  *
  * @returns 有序批次数组。调用方按序执行：并行批次并行跑（信号量限流），串行批次逐个跑。
  */
@@ -41,16 +59,7 @@ export function partitionToolCalls(
 ): ToolBatch[] {
   const batches: ToolBatch[] = [];
   for (const item of checkedTools) {
-    const { tool, block } = item;
-    // 判定抛错 fail-closed 当 unsafe：否则主/子分区整批炸掉，而不是串行执行。
-    let isSafe = false;
-    try {
-      isSafe = tool.isConcurrencySafe
-        ? tool.isConcurrencySafe(block.input)
-        : (tool.readOnly?.() ?? false);
-    } catch {
-      isSafe = false;
-    }
+    const isSafe = judgeConcurrencySafe(item.tool, item.block.input);
     // 连续的并发安全工具合并为一个批次
     if (batches.length > 0 && batches[batches.length - 1].isConcurrencySafe === isSafe && isSafe) {
       batches[batches.length - 1].items.push(item);
