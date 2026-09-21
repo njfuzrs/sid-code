@@ -37,7 +37,7 @@ import {
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
-import { TraceWriter, type RawJsonlEntry } from "./writer.ts";
+import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
@@ -892,7 +892,7 @@ export class TraceCollector {
     // unref 确保心跳定时器不阻止进程退出
     this.heartbeatTimer.unref();
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.SessionStart,
       session_id: traceSessionId,
       timestamp: input.timestamp,
@@ -911,7 +911,7 @@ export class TraceCollector {
     // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
     initStreamObserver(traceSessionId, this.writer.getSessionDir(), (event) => {
       try {
-        this.writer.appendEvent(event);
+        this.appendHookEvent(event);
       } catch {
         /* 静默 */
       }
@@ -984,13 +984,48 @@ export class TraceCollector {
   }
 
   /**
+   * events.jsonl 的唯一收口：把会话身份写到行顶层，不进 data。
+   *
+   * writer 是 IO，不调 getIdentity()。身份是 SessionStart 时写入的 this.metadata
+   * （hook input 优先，否则 getIdentity()）。19 处各自抄会漏——stream-observer
+   * 回调、RetryTelemetry、TurnError 都走这里。
+   *
+   * 缺省不写空串（与账本「不落空串」一致）：字段缺失表示当时没注入，不是空身份。
+   */
+  private appendHookEvent(event: HookEvent): void {
+    this.writer.appendEvent({ ...event, ...this.identityFieldsForEvent() });
+  }
+
+  private identityFieldsForEvent(): Pick<
+    HookEvent,
+    "device_id" | "user_id" | "org_id" | "team_id"
+  > {
+    const out: Pick<HookEvent, "device_id" | "user_id" | "org_id" | "team_id"> = {};
+    if (!this.initialized) return out;
+    const take = (value: string | undefined): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed === "" ? undefined : trimmed;
+    };
+    const deviceId = take(this.metadata.device_id);
+    const userId = take(this.metadata.user_id);
+    const orgId = take(this.metadata.org_id);
+    const teamId = take(this.metadata.team_id);
+    if (deviceId) out.device_id = deviceId;
+    if (userId) out.user_id = userId;
+    if (orgId) out.org_id = orgId;
+    if (teamId) out.team_id = teamId;
+    return out;
+  }
+
+  /**
    * 记录一条自定义事件到 events.jsonl（P2-3：git 操作度量等运行时事件的通用入口）。
    * writer 未就绪（SessionStart 之前）或未初始化时静默忽略——度量不阻断主流程。
    */
   recordCustomEvent(event: string, data: Record<string, unknown>): void {
     if (!this.initialized || !this.writer) return;
     try {
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event,
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
@@ -1066,7 +1101,7 @@ export class TraceCollector {
       is_partial: false,
     };
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.BeforeModel,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1186,7 +1221,7 @@ export class TraceCollector {
             }
           : null;
 
-        this.writer.appendEvent({
+        this.appendHookEvent({
           event: "ModelCallUnpaired",
           session_id: this.metadata.session_id,
           timestamp: new Date().toISOString(),
@@ -1259,7 +1294,7 @@ export class TraceCollector {
     // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
     const currentIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
     try {
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event: "AfterModelRaw",
         session_id: this.metadata.session_id,
         timestamp: input.timestamp,
@@ -1416,7 +1451,7 @@ export class TraceCollector {
     // 实测 55 个 SessionStart 只有 25 个 SessionEnd，只挂终态会丢掉 54.5% 的样本。
     this.scheduleSessionIndexFlush();
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.AfterModel,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1461,7 +1496,7 @@ export class TraceCollector {
       updated_at: input.timestamp,
     };
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.PreToolUse,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1513,7 +1548,7 @@ export class TraceCollector {
       this.metadata.tool_duration_samples += 1;
     }
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.PostToolUse,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1545,7 +1580,7 @@ export class TraceCollector {
 
     this.metadata.tools_used.add(input.tool_name);
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.PostToolUseFailure,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1573,7 +1608,7 @@ export class TraceCollector {
       this.metadata.user_prompts.push(input.prompt);
     }
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.UserPromptSubmit,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1606,7 +1641,7 @@ export class TraceCollector {
     // 少掉一个真实且量级很大的来源（与 cache-detection 的 notifyCompaction 抑制
     // 不同：那里抑制的是"告警"，这里统计的是"成本归因"，两者目的相反）。
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.PreCompact,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1628,7 +1663,7 @@ export class TraceCollector {
       description: input.description,
     });
 
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.SubagentStart,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1658,7 +1693,7 @@ export class TraceCollector {
 
     // P1-3: SubagentStop 补全 data（此前 data 恒为空，子代理开销无法从轨迹核算）
     const stopInput = input as any; // SubagentStopInput 字段
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.SubagentStop,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -1858,7 +1893,7 @@ export class TraceCollector {
 
     // 最终写入 events.jsonl
     const sideStats = getSideStats();
-    this.writer.appendEvent({
+    this.appendHookEvent({
       event: HookEventName.SessionEnd,
       session_id: this.metadata.session_id,
       timestamp: input.timestamp,
@@ -2418,7 +2453,7 @@ export class TraceCollector {
       const d = this.prefixTracker.observe(fp);
       if (!d) return; // 首轮
 
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event: "prefix_break" as any,
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
@@ -2807,7 +2842,7 @@ export class TraceCollector {
   recordTurnError(input: { error: string; stack?: string; turn: number }): void {
     if (!this.initialized) return;
     try {
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event: "TurnError",
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
@@ -2875,7 +2910,7 @@ export class TraceCollector {
   writeRetryTelemetry(event: Record<string, unknown>): void {
     if (!this.initialized) return;
     try {
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event: "RetryTelemetry",
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
@@ -2924,7 +2959,7 @@ export class TraceCollector {
   writeGatewayPricingEvent(event: Record<string, unknown>): void {
     if (!this.initialized) return;
     try {
-      this.writer.appendEvent({
+      this.appendHookEvent({
         event: "GatewayPricingSync",
         session_id: this.metadata.session_id,
         timestamp: new Date().toISOString(),
