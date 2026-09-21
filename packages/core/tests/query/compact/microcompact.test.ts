@@ -12,6 +12,8 @@ import {
   isNonDiscardableTool,
 } from "@sid-code/core/query/compact/microcompact.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** 辅助：构建含 tool_result 的消息列表（assistant tool_use(bash) + user tool_result 交替） */
 function makeMessages(count: number, contentLength: number): Message[] {
@@ -91,6 +93,24 @@ describe("isNonDiscardableTool", () => {
     expect(isNonDiscardableTool("write")).toBe(true);
   });
 
+  it("P0-4：名单与真实 tool.name() 归一化后相交（防再写错）", () => {
+    // 读源码 `name()` 的 return，不实例化会落盘的记忆后端——构造即写家目录，
+    // 会绊倒 no-real-path-writes 哨兵（判据是源码字面量，不是运行时副作用）。
+    const toolSrcDir = join(import.meta.dir, "../../../src/tool");
+    const files = {
+      edit: "edit.ts",
+      write: "write.ts",
+      save_memory: "memory.ts",
+      ask_user_question: "ask-user-question.ts",
+    } as const;
+    for (const [expected, file] of Object.entries(files)) {
+      const src = readFileSync(join(toolSrcDir, file), "utf-8");
+      const m = src.match(/name\(\):\s*string\s*\{\s*return\s*"([^"]+)"/);
+      expect(m?.[1]).toBe(expected);
+      expect(isNonDiscardableTool(expected)).toBe(true);
+    }
+  });
+
   it("应识别 bash 不是不可丢弃工具", () => {
     expect(isNonDiscardableTool("bash")).toBe(false);
   });
@@ -111,6 +131,30 @@ describe("microcompactMessages", () => {
 
     expect(result.compactedCount).toBeGreaterThan(0);
     expect(result.savedChars).toBeGreaterThan(0);
+  });
+
+  it("P0-4：save_memory 输出应保留前 200 字符摘要（不再当未知工具原样跳过）", () => {
+    const msgs: Message[] = [
+      { role: "user", content: [{ type: "text", text: "padding" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool_mem", name: "save_memory", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool_mem", content: "M".repeat(800) }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "resp 1" }] },
+      { role: "assistant", content: [{ type: "text", text: "resp 2" }] },
+    ];
+
+    const result = microcompactMessages(msgs, { preserveRecentCount: 2, minContentLength: 500 });
+    expect(result.compactedCount).toBe(1);
+    const compacted = result.messages[2].content[0];
+    if (compacted.type === "tool_result" && typeof compacted.content === "string") {
+      expect(compacted.content).toContain("M".repeat(200));
+      expect(compacted.content).toContain("已省略");
+    }
   });
 
   it("不可丢弃工具(edit)输出应保留前 200 字符摘要", () => {

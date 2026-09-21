@@ -8,6 +8,7 @@ import {
   clearPromptCache,
   resolvePromptMaxTokens,
 } from "@sid-code/core/config/system-prompt.ts";
+import { DYNAMIC_BOUNDARY } from "@sid-code/core/api/cache-strategy.ts";
 /**
  * 创建一个简单的测试工具。返回结构化对象（含 name()/description()/usageGuide()），
  * 不标注具体接口类型——buildSystemPrompt 只按结构消费 name/description/usageGuide，
@@ -92,6 +93,20 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("覆盖任何默认行为");
   });
 
+  test("P0-1：CLAUDE.md 落在 DYNAMIC_BOUNDARY 之前（静态缓存区）", () => {
+    const marker = "CLAUDE_MD_STABLE_CANARY_XYZ";
+    const prompt = buildSystemPrompt({
+      tools: [],
+      projectRules: `# 项目规则\n${marker}`,
+    });
+    const idx = prompt.indexOf(DYNAMIC_BOUNDARY);
+    expect(idx).toBeGreaterThan(0);
+    const staticPart = prompt.slice(0, idx);
+    const dynamicPart = prompt.slice(idx + DYNAMIC_BOUNDARY.length);
+    expect(staticPart).toContain(marker);
+    expect(dynamicPart).not.toContain(marker);
+  });
+
   test("包含项目规则来源路径", () => {
     const prompt = buildSystemPrompt({
       tools: [],
@@ -129,6 +144,18 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("Current branch:");
     // 防死锁哨兵：git-status 块必须带"启动快照、不会更新"的仲裁锚点（对标 CC）。
     expect(prompt).toContain("snapshot in time");
+  });
+
+  test("P0-1：Git 状态落在 DYNAMIC_BOUNDARY 之前（静态缓存区）", () => {
+    const prompt = buildSystemPrompt({
+      tools: [],
+      workingDir: process.cwd(),
+      gitStatus: true,
+    });
+    const idx = prompt.indexOf(DYNAMIC_BOUNDARY);
+    expect(idx).toBeGreaterThan(0);
+    expect(prompt.slice(0, idx)).toContain("<git-status>");
+    expect(prompt.slice(idx + DYNAMIC_BOUNDARY.length)).not.toContain("<git-status>");
   });
 
   test("不请求 Git 状态时不包含", () => {

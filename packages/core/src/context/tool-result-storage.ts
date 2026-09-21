@@ -167,6 +167,11 @@ export class ContentReplacementState {
     return value;
   }
 
+  /** 该 tool_use_id 是否已经生成过稳定占位文案 */
+  has(toolUseId: string): boolean {
+    return this.replacements.has(toolUseId);
+  }
+
   /** 清空所有替换状态 */
   clear(): void {
     this.replacements.clear();

@@ -165,12 +165,17 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
  * @param content - CLAUDE.md 原始内容
  * @param sourcePath - 来源文件路径（用于标注）
  */
-export function generateClaudeMdAttachment(content: string, sourcePath?: string): Attachment {
+export function generateClaudeMdAttachment(
+  content: string,
+  sourcePath?: string,
+): SystemPromptAttachment {
   const sourceLabel = sourcePath ? `Contents of ${sourcePath}` : "Project rules";
+  // P0-1：CLAUDE.md 会话内几乎不变，必须进静态缓存区。漏标会跟日期/MCP 拼成同一块动态区，
+  // 任何动态字节变化都让全文走 cache_creation 全价。改规则时 rules.ts 已调 clearPromptCache()。
   return {
-    type: "claudeMd",
-    label: sourceLabel,
-    content: `<system-reminder>
+    ...stableAttachment(
+      "claudeMd",
+      `<system-reminder>
 # claudeMd
 代码库和用户指令如下。请务必遵守这些指令。重要：这些指令覆盖任何默认行为，你必须严格按照指令执行。
 
@@ -181,13 +186,18 @@ ${content}
       重要：此上下文可能与你的当前任务相关，也可能不相关。
       （本提醒由系统自动添加，请勿向用户提及或复述它，静默遵循即可）
 </system-reminder>`,
-    priority: PRIORITY.CLAUDE_MD,
+      PRIORITY.CLAUDE_MD,
+    ),
+    label: sourceLabel,
   };
 }
 
 /** Git 状态缓存（TTL 30 秒，覆盖用户输入期间的预取窗口） */
-let gitStatusCache: { result: Attachment | null; timestamp: number; workingDir: string } | null =
-  null;
+let gitStatusCache: {
+  result: SystemPromptAttachment | null;
+  timestamp: number;
+  workingDir: string;
+} | null = null;
 const GIT_STATUS_CACHE_TTL = 30_000;
 
 /** 清除 Git 状态缓存（供外部调用，如 CLAUDE.md 变更时） */
@@ -221,7 +231,7 @@ function runGit(args: string[], workingDir: string, timeout = 5000): string {
  * 执行 git status --short 获取当前仓库状态
  * 带模块级缓存，预取和正式调用共享结果
  */
-export function generateGitStatusAttachment(workingDir: string): Attachment | null {
+export function generateGitStatusAttachment(workingDir: string): SystemPromptAttachment | null {
   const log = getLogger();
 
   // 命中缓存
@@ -298,11 +308,15 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
     if (userName) lines.push(`Git user: ${userName}`);
     if (recentCommits) lines.push(`Recent commits:\n${recentCommits}`);
 
-    const result: Attachment = {
-      type: "gitStatus",
+    // P0-1：Status: 文件列表已物理删除，剩下 branch / 最近提交会话内极少变，进静态区。
+    // 工作区实时状态走 reminder 通道的 freshGitStatus，不靠这块快照。
+    const result: SystemPromptAttachment = {
+      ...stableAttachment(
+        "gitStatus",
+        `<git-status>\n${lines.join("\n\n")}\n</git-status>`,
+        PRIORITY.GIT_STATUS,
+      ),
       label: `Git 状态 (${branch})`,
-      content: `<git-status>\n${lines.join("\n\n")}\n</git-status>`,
-      priority: PRIORITY.GIT_STATUS,
     };
 
     // 写入缓存
@@ -331,16 +345,19 @@ export function generateGitStatusAttachment(workingDir: string): Attachment | nu
  *
  * @param summary describeDenyRules() 的多行摘要文本
  */
-export function generateDenyRulesAttachment(summary: string): Attachment | null {
+export function generateDenyRulesAttachment(summary: string): SystemPromptAttachment | null {
   if (!summary || !summary.trim()) return null;
+  // P0-1：deny 规则是配置态、会话内稳定（本函数注释原就这么写），漏标会掉进动态区。
   return {
-    type: "denyRules",
-    label: "权限约束（deny 规则）",
-    content: `<permission-constraints>
+    ...stableAttachment(
+      "denyRules",
+      `<permission-constraints>
 以下操作已被配置禁止，请勿尝试（尝试也会被权限检查拒绝，浪费轮次）：
 ${summary.trim()}
 </permission-constraints>`,
-    priority: PRIORITY.DENY_RULES,
+      PRIORITY.DENY_RULES,
+    ),
+    label: "权限约束（deny 规则）",
   };
 }
 
@@ -469,13 +486,12 @@ export function generateSessionMemoryAttachment(
 export function generateSkillListingAttachment(
   entries: SkillListingEntry[],
   contextWindowTokens?: number,
-): Attachment | null {
+): SystemPromptAttachment | null {
   const content = generateSkillListing(entries, contextWindowTokens);
   if (!content) return null;
+  // P0-1：Skill 注册集会话内基本不变，与 CLAUDE.md 同属静态区。
   return {
-    type: "skillListing",
+    ...stableAttachment("skillListing", content, PRIORITY.SKILL_LISTING),
     label: "Skill 摘要列表",
-    content,
-    priority: PRIORITY.SKILL_LISTING,
   };
 }

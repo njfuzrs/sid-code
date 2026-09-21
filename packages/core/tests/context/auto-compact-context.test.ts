@@ -93,6 +93,14 @@ describe("isCompactSourceMessage", () => {
   });
 });
 
+describe("P0-5 TokenFreedTracker 生产消费", () => {
+  it("recordCompact 的累计值可被读取（getCompactionLevel 扣减依赖此 API）", () => {
+    const tracker = new TokenFreedTracker();
+    tracker.recordCompact(1200, "cleanedMessages");
+    expect(tracker.getTotalFreed()).toBe(1200);
+  });
+});
+
 describe("TOKEN_THRESHOLDS", () => {
   it("§12 P2-2 清理后只保留 blocking 底线（其余死档已删）", () => {
     expect(TOKEN_THRESHOLDS.blocking).toBe(3_000);

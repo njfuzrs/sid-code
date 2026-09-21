@@ -9,7 +9,7 @@
  *
  * 工具类型感知（对标 claude-code COMPACTABLE_TOOLS 白名单）：
  * - 可丢弃工具（输出可重新生成）：read/bash/grep/glob/ls/websearch/webfetch → 完全清空
- * - 不可丢弃工具（输出不可复现）：edit/write/memory/askuser → 保留前 200 字符摘要
+ * - 不可丢弃工具（输出不可复现）：edit/write/save_memory/ask_user_question → 保留前 200 字符摘要
  * - 未分类工具 → 通用占位符（仅标注原始长度，保守清空）
  *
  * 为什么要区分：edit/write 等工具的输出无法靠"重新执行"复现（它们有副作用），
@@ -39,8 +39,10 @@ const DISCARDABLE_TOOLS = new Set([
 ]);
 
 /** 不可丢弃工具（输出不可复现，压缩时保留摘要）。
- * 条目使用去掉下划线和连字符的规范化名称。 */
-const NON_DISCARDABLE_TOOLS = new Set(["edit", "write", "memory", "askuser"]);
+ * 条目必须是真实 `tool.name()` 经 normalizeToolName 之后的值。
+ * 曾写成 `memory` / `askuser`，与 `save_memory` → `savememory`、
+ * `ask_user_question` → `askuserquestion` 永不相等，生产零命中。 */
+const NON_DISCARDABLE_TOOLS = new Set(["edit", "write", "savememory", "askuserquestion"]);
 
 /** 规范化工具名：小写 + 去掉下划线和连字符 */
 function normalizeToolName(toolName: string): string {

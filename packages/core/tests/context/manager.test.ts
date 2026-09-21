@@ -523,3 +523,189 @@ describe("增量压缩", () => {
     expect(bd.categories.length).toBeGreaterThan(0);
   });
 });
+
+describe("P0-2 入队聚合预算", () => {
+  test("一轮多个 bash 结果合计超 totalBudget 时在 addMessage 即截断", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    // 单体 < OUTPUT_THRESHOLD(30K) 不会落盘；8 × 29K 字符 ≈ 58K token > totalBudget 50K。
+    const chunk = "x".repeat(29_000);
+    mgr.addMessage({
+      role: "assistant",
+      content: Array.from({ length: 8 }, (_, i) => ({
+        type: "tool_use" as const,
+        id: `b${i}`,
+        name: "bash",
+        input: { command: `echo ${i}` },
+      })),
+    });
+    mgr.addMessage({
+      role: "user",
+      content: Array.from({ length: 8 }, (_, i) => ({
+        type: "tool_result" as const,
+        tool_use_id: `b${i}`,
+        content: chunk,
+      })),
+    });
+    const results = mgr
+      .getMessages()
+      .flatMap((m) => m.content)
+      .filter((b) => b.type === "tool_result");
+    const truncated = results.filter(
+      (b) => b.type === "tool_result" && String(b.content).includes("工具输出已截断"),
+    );
+    expect(truncated.length).toBeGreaterThan(0);
+    const totalChars = results.reduce(
+      (s, b) => s + (b.type === "tool_result" ? String(b.content).length : 0),
+      0,
+    );
+    expect(totalChars).toBeLessThan(8 * 29_000);
+  });
+
+  test("read 工具结果不受入队聚合预算截断", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "r1", name: "read", input: { file_path: "/tmp/a.ts" } }],
+    });
+    const body = "y".repeat(40_000);
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "r1", content: body }],
+    });
+    const block = mgr.getMessages()[1].content[0];
+    expect(block.type).toBe("tool_result");
+    if (block.type === "tool_result") {
+      expect(block.content).toBe(body);
+      expect(block.content).not.toContain("工具输出已截断");
+    }
+  });
+});
+
+describe("P0-3 KEEP_RECENT 窗口前移不得改写已发送前缀", () => {
+  test("第 1 个大输出完整发送后，第 7 个到来时仍保持原文", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    const bodies: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      bodies.push("z".repeat(40_000) + String(i));
+      mgr.addMessage({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `t${i}`, name: "read", input: { file_path: `/tmp/${i}.txt` } },
+        ],
+      });
+      mgr.addMessage({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `t${i}`, content: bodies[i] }],
+      });
+    }
+    const firstRound = mgr.getCleanedMessages();
+    const firstContent = firstRound
+      .flatMap((m) => m.content)
+      .find((b) => b.type === "tool_result" && b.tool_use_id === "t0");
+    expect(firstContent?.type).toBe("tool_result");
+    if (firstContent?.type === "tool_result") {
+      expect(firstContent.content).toBe(bodies[0]);
+    }
+
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t6", name: "read", input: { file_path: "/tmp/6.txt" } }],
+    });
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t6", content: "z".repeat(40_000) + "6" }],
+    });
+    const secondRound = mgr.getCleanedMessages();
+    const stillFirst = secondRound
+      .flatMap((m) => m.content)
+      .find((b) => b.type === "tool_result" && b.tool_use_id === "t0");
+    expect(stillFirst?.type).toBe("tool_result");
+    if (stillFirst?.type === "tool_result") {
+      expect(stillFirst.content).toBe(bodies[0]);
+      expect(stillFirst.content).not.toContain("已清理");
+    }
+  });
+
+  test("一次堆到 KEEP_RECENT 以上、从未发给 API 的旧输出仍可清理", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    for (let i = 0; i < 8; i++) {
+      mgr.addMessage({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `u${i}`, name: "read", input: { file_path: `/tmp/${i}.txt` } },
+        ],
+      });
+      mgr.addMessage({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `u${i}`, content: "w".repeat(40_000) }],
+      });
+    }
+    const cleaned = mgr.getCleanedMessages();
+    const first = cleaned
+      .flatMap((m) => m.content)
+      .find((b) => b.type === "tool_result" && b.tool_use_id === "u0");
+    expect(first?.type).toBe("tool_result");
+    if (first?.type === "tool_result") {
+      expect(String(first.content)).toContain("已清理");
+    }
+  });
+});
+
+describe("P0-5 压缩来源守卫接到 getCompactionLevel", () => {
+  test("几乎只剩压缩产物时不再报 hard/emergency", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setSystemPrompt("a".repeat(850_000));
+    expect(mgr.getCompactionLevel()).toBe("emergency");
+    mgr.addCompactBoundary("先前摘要", 40);
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "好的，我已了解之前的对话内容。请继续。" }],
+      _meta: { origin: "compact-summary" },
+    });
+    expect(mgr.getCompactionLevel()).toBe("none");
+  });
+
+  test("压缩后再积累新对话，守卫放开", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    mgr.setSystemPrompt("a".repeat(850_000));
+    mgr.addCompactBoundary("先前摘要", 40);
+    for (let i = 0; i < 4; i++) {
+      mgr.addMessage({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: [{ type: "text", text: `新对话 ${i}` }],
+      });
+    }
+    expect(mgr.getCompactionLevel()).toBe("emergency");
+  });
+
+  test("首次清理大输出后重复 getCleanedMessages 不再继续改写", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    for (let i = 0; i < 8; i++) {
+      mgr.addMessage({
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: `c${i}`, name: "read", input: { file_path: `/tmp/${i}.txt` } },
+        ],
+      });
+      mgr.addMessage({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `c${i}`, content: "q".repeat(40_000) }],
+      });
+    }
+    const first = mgr.getCleanedMessages();
+    const firstCleared = first
+      .flatMap((m) => m.content)
+      .filter((b) => b.type === "tool_result" && String(b.content).includes("已清理")).length;
+    expect(firstCleared).toBeGreaterThan(0);
+    const second = mgr.getCleanedMessages();
+    const third = mgr.getCleanedMessages();
+    const snapshot = (msgs: typeof first) =>
+      msgs
+        .flatMap((m) => m.content)
+        .filter((b) => b.type === "tool_result")
+        .map((b) => (b.type === "tool_result" ? `${b.tool_use_id}:${b.content}` : ""))
+        .join("|");
+    expect(snapshot(second)).toBe(snapshot(first));
+    expect(snapshot(third)).toBe(snapshot(first));
+  });
+});

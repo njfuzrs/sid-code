@@ -35,7 +35,9 @@ function pushToolPair(mgr: Manager, id: string, output: string): void {
 describe("_meta 保真", () => {
   test("getCleanedMessages 触发大输出清理后仍保留 _meta", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
-    // KEEP_RECENT_OUTPUTS 默认 6，需要 > 6 个可清理大输出才进清理分支
+    // KEEP_RECENT_OUTPUTS 默认 6，需要 > 6 个可清理大输出才进清理分支。
+    // P0-3 之后：一旦某 id 完整出现在一次 getCleanedMessages 返回值里就被冻结，
+    // 分批发送会让前 6 条全部免清理——必须一次堆到阈值以上再调。
     const PAIRS = 9;
     for (let i = 0; i < PAIRS; i++) {
       pushToolPair(mgr, `t${i}`, "x".repeat(40_000)); // > OUTPUT_THRESHOLD(30000)
