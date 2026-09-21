@@ -535,6 +535,18 @@ class Logger {
     return this.logFilePath;
   }
 
+  /**
+   * 等文件 sink 刷到内核。测试读盘前必须调。
+   *
+   * 不能用 `setTimeout` 代替：`WriteStream.write` 进用户态缓冲，回调才是
+   * 「这块已经交给内核」。CI ubuntu 全量并行时 200ms 睡不够 —— 实测
+   * `logger-level-gate` 同一条测试里第一条 AUDIT:MODEL 落了盘、后两条还在
+   * 缓冲里，断言读到残文件（PR #71 ubuntu job）。
+   */
+  async flush(): Promise<void> {
+    await Promise.all([flushWritable(this.logStream), flushWritable(this.jsonStream)]);
+  }
+
   /** 关闭日志流（进程退出时调用） */
   close(): void {
     if (this.logStream) {
@@ -546,6 +558,14 @@ class Logger {
       this.jsonStream = undefined;
     }
   }
+}
+
+/** write("") 的 callback 在先前缓冲刷到内核后触发；流已毁则立刻结束。 */
+function flushWritable(stream?: WriteStream): Promise<void> {
+  if (!stream || stream.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    stream.write("", (err) => (err ? reject(err) : resolve()));
+  });
 }
 
 // 全局单例
