@@ -12,14 +12,8 @@ import {
   isNonDiscardableTool,
 } from "@sid-code/core/query/compact/microcompact.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
-import { EditTool } from "@sid-code/core/tool/edit.ts";
-import { WriteTool } from "@sid-code/core/tool/write.ts";
-import { MemoryTool } from "@sid-code/core/tool/memory.ts";
-import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
-import { MemoryStore } from "@sid-code/core/memory/store.ts";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 
 /** 辅助：构建含 tool_result 的消息列表（assistant tool_use(bash) + user tool_result 交替） */
 function makeMessages(count: number, contentLength: number): Message[] {
@@ -100,17 +94,20 @@ describe("isNonDiscardableTool", () => {
   });
 
   it("P0-4：名单与真实 tool.name() 归一化后相交（防再写错）", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sid-mc-"));
-    const names = [
-      new EditTool().name(),
-      new WriteTool().name(),
-      new MemoryTool(
-        new MemoryStore(undefined, { globalMemoryDir: dir, projectMemoryDir: dir }),
-      ).name(),
-      new AskUserQuestionTool().name(),
-    ];
-    for (const name of names) {
-      expect(isNonDiscardableTool(name)).toBe(true);
+    // 读源码 `name()` 的 return，不实例化会落盘的记忆后端——构造即写家目录，
+    // 会绊倒 no-real-path-writes 哨兵（判据是源码字面量，不是运行时副作用）。
+    const toolSrcDir = join(import.meta.dir, "../../../src/tool");
+    const files = {
+      edit: "edit.ts",
+      write: "write.ts",
+      save_memory: "memory.ts",
+      ask_user_question: "ask-user-question.ts",
+    } as const;
+    for (const [expected, file] of Object.entries(files)) {
+      const src = readFileSync(join(toolSrcDir, file), "utf-8");
+      const m = src.match(/name\(\):\s*string\s*\{\s*return\s*"([^"]+)"/);
+      expect(m?.[1]).toBe(expected);
+      expect(isNonDiscardableTool(expected)).toBe(true);
     }
   });
 
