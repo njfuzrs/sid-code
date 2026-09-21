@@ -613,6 +613,57 @@ export function is401Error(error: unknown): boolean {
 }
 
 /**
+ * 「真 key 作废」的措辞白名单（小写）。命中即 Terminal，永不当占位句重试。
+ *
+ * 判据是**下一步动作**：命中这些说明要去换凭据，重试一万次也一样。
+ * 与 `isGatewayPlaceholderAuthError` 的关系是「优先否决」——后者只在这批都不命中时才成立。
+ */
+const REAL_AUTH_FAILURE_MESSAGES = [
+  "invalid api key",
+  "invalid x-api-key",
+  "authentication_error",
+  "authentication error",
+  "authentication failed",
+  "x-api-key header is required",
+  "no auth credentials",
+  "credentials expired",
+  "organization has been disabled",
+];
+
+/**
+ * 16 号 C1：判断这是**网关回的 401 占位句**，而不是「我们的 key 真的作废了」。
+ *
+ * 为什么必须拆这两种：A2 五题（`regex-log` / `polyglot-c-py` / `sanitize-git-repo` …）
+ * 的死因是网关回 `Invalid token. (request id: …)` 且带 `statusCode=401`，被
+ * `classifyError` 判成 `TerminalError("auth_failed")` → 第一次 `auth_refresh`
+ * retry-once 之后整轮收工（1–8 轮就死），而 cc 同题 3/5 解出。**key 是好的**，
+ * 网关下一秒就恢复——这种句子该重试。真 key 作废则必须一次到底，否则用户要
+ * 白等满次退避才看到「去换 key」。
+ *
+ * ⛔ 判据必须挂 `statusCode`，不能只在 `is401Error` 的文本表里加 `"invalid token"`：
+ * 生产路径是 `StreamLevelError.statusCode=401`（`classifyStreamError` 兜底分支造的），
+ * 正文里既没有边界 `401` 也没有认证关键词——只改文本表的版本**在生产路径上测不到**。
+ *
+ * ⛔ 刻意用**正向白名单**（占位句形状）而不是「401 且不是真 key 作废」的反向判据：
+ * 反向判据会把一个措辞不透明的 `401 Unauthorized`（多半真是 key 配错了）也拖进
+ * 3 次退避，把「立刻告诉用户去换 key」换成「慢 3 倍再告诉他」。
+ */
+export function isGatewayPlaceholderAuthError(error: unknown): boolean {
+  // 必须是结构化 401：文本里的 401 可能来自 request id（见 hasBoundaryDigits 的事故）。
+  if (getHTTPStatus(error) !== 401) return false;
+
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  // 真 key 作废优先否决。
+  if (REAL_AUTH_FAILURE_MESSAGES.some((m) => msg.includes(m))) return false;
+
+  // 网关占位句的形状：`Invalid token. (request id: 20260908…)`。
+  // `invalid token` 是实测原文；`request id` 是网关自报的转发标记（我们的 key
+  // 若真作废，厂商 SDK 给的是 `invalid x-api-key`，不带这个尾巴）。
+  return msg.includes("invalid token") || msg.includes("invalid_token");
+}
+
+/**
  * 从错误信息中解析 Retry-After（秒 → 毫秒）
  * 优先匹配 headers，回退到消息正则提取
  */
