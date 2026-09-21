@@ -11,6 +11,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
@@ -19,6 +22,7 @@ function buildChecker(opts: { planMode?: boolean; planActive?: boolean }): {
   checker: PermissionChecker;
   planManager: PlanModeManager;
   planFilePath: string | null;
+  workspace: string;
 } {
   const config = { ...defaultConfig() };
   if (opts.planMode) {
@@ -31,13 +35,20 @@ function buildChecker(opts: { planMode?: boolean; planActive?: boolean }): {
     planManager.enter("default");
   }
 
-  const checker = new PermissionChecker(config);
+  // 真实临时目录作 workspace：相对路径会拼到 cwd 上，cwd 含 `.claude/`
+  // （例如 `.claude/worktrees/`）时 safetyCheck 先于 plan mode 命中。
+  // 不用 `/tmp/...` 字面量——macOS 上 `/tmp` 是 `/private/tmp` 的 symlink，
+  // PathValidator 会报「symlink 逃逸」。
+  const workspace = mkdtempSync(join(tmpdir(), "sid-plan-mode-"));
+  mkdirSync(join(workspace, "src"), { recursive: true });
+  const checker = new PermissionChecker(config, undefined, workspace);
   checker.setPlanManager(planManager);
 
   return {
     checker,
     planManager,
     planFilePath: planManager.getPlanFilePath(),
+    workspace,
   };
 }
 
@@ -88,12 +99,16 @@ describe("PermissionChecker — Plan Mode write to plan file (W11.D4)", () => {
   });
 
   test("plan mode + write 到工作区内非 plan 文件 → DENY (plan mode 限制生效)", async () => {
-    const { checker } = buildChecker({ planMode: true, planActive: true });
+    const { checker, workspace } = buildChecker({ planMode: true, planActive: true });
 
-    // 工作区内的文件，能通过 Step 4 路径验证，但应被 Step 9 plan mode 拒
+    // 工作区内的绝对路径：相对路径会拼到 cwd 上，cwd 含 `.claude/` 时
+    // safetyCheck 会先于 plan mode 命中。绝对路径把这条测回「plan mode 限制」。
     const result = await checker.check({
       toolName: "write",
-      input: { file_path: "src/test-not-a-plan.ts", content: "data" },
+      input: {
+        file_path: join(workspace, "src", "test-not-a-plan.ts"),
+        content: "data",
+      },
     });
 
     expect(result.allowed).toBe(false);
