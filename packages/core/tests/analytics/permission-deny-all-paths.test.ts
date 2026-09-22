@@ -218,3 +218,88 @@ describe("字段契约：脱敏与枚举不许退化", () => {
     expect(serialized).not.toContain("工作区外");
   });
 });
+
+describe("D10：权限拒绝不进漏斗 1（tool_call / tool_failure）", () => {
+  function funnel1(seen: Array<{ name: string; meta: EventMetadata }>) {
+    return seen.filter(
+      (e) =>
+        e.name === EVENT_NAMES.TOOL_CALL ||
+        e.name === EVENT_NAMES.TOOL_SUCCESS ||
+        e.name === EVENT_NAMES.TOOL_FAILURE,
+    );
+  }
+
+  test("checker 拒绝 → 有 permission_deny，零 tool_call / tool_failure", async () => {
+    const seen = captureEvents();
+    await executeSubAgentTools(
+      [toolUse("d10a", "bash", { command: "pytest" })],
+      makeRegistry([makeTool({ name: "bash", concurrencySafe: false })]),
+      undefined,
+      undefined,
+      { check: async () => ({ allowed: false, reason: "拒" }) } as any,
+    );
+    expect(denials(seen)).toHaveLength(1);
+    expect(funnel1(seen)).toHaveLength(0);
+  });
+
+  test("fail-closed 拒绝 → 同样零漏斗 1", async () => {
+    const seen = captureEvents();
+    await executeSubAgentTools(
+      [toolUse("d10b", "edit", { file_path: "/tmp/x" })],
+      makeRegistry([makeTool({ name: "edit", concurrencySafe: false })]),
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(denials(seen)).toHaveLength(1);
+    expect(funnel1(seen)).toHaveLength(0);
+  });
+
+  test("放行并执行成功 → 有 tool_call + tool_success，无 tool_failure", async () => {
+    const seen = captureEvents();
+    await executeSubAgentTools(
+      [toolUse("d10c", "read", { file_path: "/tmp/x" })],
+      makeRegistry([makeTool({ name: "read", concurrencySafe: true })]),
+      undefined,
+      undefined,
+      { check: async () => ({ allowed: true }) } as any,
+    );
+    expect(denials(seen)).toHaveLength(0);
+    expect(seen.filter((e) => e.name === EVENT_NAMES.TOOL_CALL)).toHaveLength(1);
+    expect(seen.filter((e) => e.name === EVENT_NAMES.TOOL_SUCCESS)).toHaveLength(1);
+    expect(seen.filter((e) => e.name === EVENT_NAMES.TOOL_FAILURE)).toHaveLength(0);
+  });
+
+  test("ToolFailureKind 不含 permission_denied（枚举与调用一致）", async () => {
+    const src = await Bun.file(new URL("../../src/analytics/events.ts", import.meta.url)).text();
+    const kindBlock = src.match(/export type ToolFailureKind =[\s\S]*?;/)?.[0] ?? "";
+    expect(kindBlock).toContain("hook_blocked");
+    expect(kindBlock).not.toMatch(/"permission_denied"/);
+  });
+
+  test("PreToolUse hook 阻止 → tool_call + tool_failure(kind=hook_blocked)，零 permission_deny", async () => {
+    const seen = captureEvents();
+    const hookSystem = {
+      firePreToolUseEvent: async () => ({
+        finalOutput: {
+          isBlockingDecision: () => true,
+          getEffectiveReason: () => "policy",
+        },
+      }),
+      firePostToolUseEvent: async () => ({ finalOutput: undefined }),
+      firePostToolUseFailureEvent: async () => ({ finalOutput: undefined }),
+    } as any;
+    await executeSubAgentTools(
+      [toolUse("d10h", "read", { file_path: "/tmp/x" })],
+      makeRegistry([makeTool({ name: "read", concurrencySafe: true })]),
+      undefined,
+      hookSystem,
+      { check: async () => ({ allowed: true }) } as any,
+    );
+    expect(denials(seen)).toHaveLength(0);
+    expect(seen.filter((e) => e.name === EVENT_NAMES.TOOL_CALL)).toHaveLength(1);
+    const failures = seen.filter((e) => e.name === EVENT_NAMES.TOOL_FAILURE);
+    expect(failures).toHaveLength(1);
+    expect(String((failures[0]!.meta as any).failure_kind)).toContain("hook_blocked");
+  });
+});

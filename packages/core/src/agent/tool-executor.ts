@@ -17,13 +17,18 @@
 
 import type { ContentBlock } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
+import { isAbortError } from "../llm/errors.ts";
 import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
 import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
-import { partitionToolCalls, getMaxToolConcurrency } from "../query/tool-orchestration.ts";
+import {
+  partitionToolCalls,
+  getMaxToolConcurrency,
+  judgeConcurrencySafe,
+} from "../query/tool-orchestration.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { yieldMissingToolResults, collectToolResultIdsFromBlocks } from "./tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
@@ -31,7 +36,12 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 // 漏斗 2 · 权限：子代理侧此前**一条埋点都不发**，于是"子代理被权限层打残"
 // 在 `permission_deny` 上完全隐身。走门面而非直调 logEvent —— 门面强制脱敏工具名
 // （MCP 工具名含用户私有服务名），业务侧拿不到裸传接口。
-import { logPermissionDeny } from "../analytics/events.ts";
+import {
+  logPermissionDeny,
+  logToolCall,
+  logToolSuccess,
+  logToolFailure,
+} from "../analytics/events.ts";
 
 /**
  * GAP-07（子代理侧补齐）：子代理工具进度回调。
@@ -294,6 +304,18 @@ async function executeSingleTool(
           effectiveInput,
           Date.now() - toolStartedAt,
         );
+        // 漏斗 1：hook 阻止是一次真实调度失败（主循环同口径）。权限拒绝不在这里——
+        // 那条走漏斗 2。call + failure 成对，避免分母只有 failure 没有 call。
+        const hookFilePath =
+          typeof (block.input as Record<string, unknown>)?.file_path === "string"
+            ? ((block.input as Record<string, unknown>).file_path as string)
+            : undefined;
+        logToolCall(block.name, hookFilePath);
+        logToolFailure(block.name, {
+          kind: "hook_blocked",
+          durationMs: Date.now() - toolStartedAt,
+          filePath: hookFilePath,
+        });
         return {
           type: "tool_result",
           tool_use_id: block.id,
@@ -366,10 +388,10 @@ async function executeSingleTool(
     // 权限层被整体绕过（本次修复的 P0 缺口）。分级方案精确命中这一点：
     // 能改代码/执行命令的操作必须有人把关，纯读取操作不受影响。
     //
-    // 判定复用与上方"只读/写入分类"同一套逻辑（isConcurrencySafe 优先，回退 readOnly()）。
-    const isSafe = tool.isConcurrencySafe
-      ? tool.isConcurrencySafe(effectiveInput)
-      : (tool.readOnly?.() ?? false);
+    // 判定走主循环唯一入口 judgeConcurrencySafe：抛错 fail-closed 当 unsafe。
+    // 旧路径直接调 isConcurrencySafe，自定义/插件工具抛了会把整条 fail-closed 炸穿，
+    // 写类工具误放行——正好是这条路径存在的唯一理由。
+    const isSafe = judgeConcurrencySafe(tool, effectiveInput);
     if (!isSafe) {
       log.info(
         "SUBAGENT:PERM",
@@ -403,6 +425,14 @@ async function executeSingleTool(
     }
   }
 
+  // 漏斗 1 · 工具：权限通过之后才记 call。权限拒绝走漏斗 2（logPermissionDeny），
+  // 不进 tool_call / tool_failure——两类语义相反，混进同一个成功率分母正是博客 §14 要禁止的。
+  const efFilePath =
+    typeof effectiveInput?.file_path === "string"
+      ? (effectiveInput.file_path as string)
+      : undefined;
+  logToolCall(block.name, efFilePath);
+
   // zod 运行时校验：用原始 block.input（或 hook 修改后的）校验（不含注入的 _agentId 元字段，
   // 避免严格 schema 的 additionalProperties:false 把 _agentId 当非法字段拒绝）。
   // 校验通过后再注入 _agentId 防套娃。
@@ -418,6 +448,11 @@ async function executeSingleTool(
       effectiveInput,
       Date.now() - toolStartedAt,
     );
+    logToolFailure(block.name, {
+      kind: "invalid_input",
+      durationMs: Date.now() - toolStartedAt,
+      filePath: efFilePath,
+    });
     return {
       type: "tool_result",
       tool_use_id: block.id,
@@ -486,6 +521,20 @@ async function executeSingleTool(
         .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
     }
 
+    if (result.isError) {
+      logToolFailure(block.name, {
+        kind: "tool_error",
+        durationMs: elapsed,
+        filePath: efFilePath,
+      });
+    } else {
+      logToolSuccess(block.name, {
+        durationMs: elapsed,
+        outputSize: result.output?.length ?? 0,
+        filePath: efFilePath,
+      });
+    }
+
     return {
       type: "tool_result",
       tool_use_id: block.id,
@@ -499,6 +548,7 @@ async function executeSingleTool(
       ...(!result.isError && displayMode ? { resultDisplayMode: displayMode } : {}),
     };
   } catch (err: any) {
+    const elapsed = Date.now() - startTime;
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
     // post_tool_use_failure hook（异常路径也接入 hook，与主循环对齐）
     if (hookSystem) {
@@ -510,12 +560,18 @@ async function executeSingleTool(
           block.id,
           // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
           // 慢工具卡很久才抛，正是要看的那个数。
-          { duration_ms: Date.now() - startTime },
+          { duration_ms: elapsed },
         )
         .catch((e: any) =>
           log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
         );
     }
+    // 取消单独分型：它不是「工具不可靠」的证据，混进 exception 会污染失败率。
+    logToolFailure(block.name, {
+      kind: isAbortError(err) ? "aborted" : "exception",
+      durationMs: elapsed,
+      filePath: efFilePath,
+    });
     return {
       type: "tool_result",
       tool_use_id: block.id,

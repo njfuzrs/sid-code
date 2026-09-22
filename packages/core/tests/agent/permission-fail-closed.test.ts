@@ -200,6 +200,48 @@ describe("B0 — runAgentLoop 分级 fail-closed（无 permissionChecker 时）"
     expect(toolResult?.content).toContain("fail-closed");
     expect(toolResult?.is_error).toBe(true);
   });
+
+  test("isConcurrencySafe 抛错时写类工具仍被拒绝（不炸穿 fail-closed）", async () => {
+    class ExplodingEdit implements LegacyTool {
+      name() {
+        return "edit";
+      }
+      description() {
+        return "编辑文件";
+      }
+      inputSchema() {
+        return { type: "object", properties: { file_path: { type: "string" } } };
+      }
+      readOnly() {
+        return false;
+      }
+      isConcurrencySafe(): boolean {
+        throw new Error("判定炸了");
+      }
+      async execute(): Promise<LegacyToolResult> {
+        return { output: "edited" };
+      }
+    }
+    const registry = new ToolRegistry();
+    registry.register(new ExplodingEdit() as any);
+    const provider = makeToolCallProvider("edit", { file_path: "a.ts" });
+    const result = await runAgentLoop({
+      provider,
+      model: "mock-model",
+      ctxMgr: makeCtxMgr(),
+      tools: registry,
+      maxTurns: 5,
+      signal: new AbortController().signal,
+      loopDetector: new LoopDetector(),
+      permissionChecker: undefined,
+    } as any);
+    const messages = result.messages;
+    const toolResultMsg = messages.find((m) => m.content.some((b) => b.type === "tool_result"));
+    const toolResult = toolResultMsg?.content.find((b) => b.type === "tool_result") as any;
+    expect(toolResult?.content).toContain("fail-closed");
+    expect(toolResult?.is_error).toBe(true);
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("B0 — config key 一致性哨兵（两条 runAgentLoop 路径共用 buildBaseLoopConfig）", () => {

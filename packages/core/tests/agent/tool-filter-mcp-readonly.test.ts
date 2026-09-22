@@ -45,6 +45,7 @@ function makeToolPool(): Tool[] {
     mockTool("mcp__master-mcp__mcp_getDsl"),
     mockTool("mcp__lark-mcp__docx_builtin_search"),
     mockTool("mcp__vibe-coding__vibe_search_project_context"),
+    mockTool("tool_search"),
   ];
 }
 
@@ -131,5 +132,24 @@ describe("tool-filter MCP 只读子代理放行收紧", () => {
     const mcpTools = names(result).filter((n) => n.startsWith("mcp__"));
     // 自定义 agent 不进 Layer 2 白名单，MCP 全放行（原行为）
     expect(mcpTools.length).toBeGreaterThan(0);
+  });
+
+  test("D8：explore / task / general-purpose 都放行 tool_search（延迟加载调度器）", () => {
+    for (const builtInType of ["explore", "task", "general-purpose"] as const) {
+      const result = filterToolsForAgent(pool, {
+        isBuiltIn: true,
+        builtInType,
+      });
+      expect(names(result)).toContain("tool_search");
+    }
+  });
+
+  test("D8：用户显式 disallowedTools 仍能裁掉 tool_search", () => {
+    const result = filterToolsForAgent(pool, {
+      isBuiltIn: true,
+      builtInType: "general-purpose",
+      disallowedTools: ["tool_search"],
+    });
+    expect(names(result)).not.toContain("tool_search");
   });
 });

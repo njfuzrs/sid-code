@@ -49,6 +49,7 @@ import {
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
 import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
+import { injectReminders } from "../query/reminder-inject.ts";
 
 // ============================================================
 // 配置接口
@@ -377,6 +378,25 @@ async function runAgentLoopInner(
   const hasEditCapability = !!(tools.get("edit") || tools.get("write"));
   const editedFiles = new Set<string>();
 
+  // D8：子代理延迟加载。门闩是「这个隔离 registry 里真有 tool_search」——
+  // 没有它就发全量，避免「schema 在列表里、激活工具不在、模型盲调」。
+  // 父循环未开延迟时，子代理 registry 的 isToolSearchEnabled 默认 false，
+  // 这条也不会误开（隔离 registry 是新建的，不会继承父循环定档）。
+  const toolSearchEnabled = tools.get("tool_search") !== undefined;
+  if (toolSearchEnabled) {
+    tools.setToolSearchEnabled(true);
+    const deferredNames = tools.deferredToolNames();
+    log.info(
+      "AGENT_LOOP",
+      `延迟加载已启用：首轮发送 ${tools.activeDefinitions().length} 个工具，延迟 ${deferredNames.length} 个`,
+    );
+  }
+  // compact 之后必须重新全量播报延迟工具名单（历史里的播报被裁掉后，模型对延迟
+  // 工具失去感知）。挂循环局部变量，不进 SessionState——子代理没有主循环那套
+  // sessionState，另造一份会漂。
+  let deferredToolsPendingAfterCompact = false;
+  const announcedDeferredTools = new Set<string>();
+
   const totalUsage: Usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -450,7 +470,12 @@ async function runAgentLoopInner(
       }
     }
 
-    const toolDefs = tools.size() > 0 ? tools.definitions() : undefined;
+    const toolDefs =
+      tools.size() > 0
+        ? toolSearchEnabled
+          ? tools.activeDefinitions()
+          : tools.definitions()
+        : undefined;
 
     // 发给 LLM 的消息走 getCleanedMessages()（对标 cc：所有循环共用压缩管道）。
     // 子代理是 token 消耗大户（大量 read/grep/bash），此前裸发 getMessages() 完全没有
@@ -480,9 +505,45 @@ async function runAgentLoopInner(
         }
       }
     }
+
+    // D8：延迟工具名单只进发送副本，永不写回 ctxMgr（reminder-inject 不变量 3）。
+    // 写回去会让压缩把工具列表当用户请求、TUI 泄漏内部文本、reminder 逐轮累积。
+    let messagesForSend = ctxMgr.getCleanedMessages();
+    if (toolSearchEnabled) {
+      const deferredNames = tools.deferredToolNames();
+      if (deferredToolsPendingAfterCompact) {
+        announcedDeferredTools.clear();
+        deferredToolsPendingAfterCompact = false;
+      }
+      const current = new Set(deferredNames);
+      const added = deferredNames.filter((n) => !announcedDeferredTools.has(n));
+      const vanished = [...announcedDeferredTools].filter((n) => !current.has(n));
+      if (added.length > 0) {
+        const isFull = announcedDeferredTools.size === 0;
+        messagesForSend = injectReminders(messagesForSend, {
+          ambient: [
+            `<system-reminder>\n` +
+              `<available-deferred-tools>\n${added.join("\n")}\n</available-deferred-tools>\n` +
+              (isFull
+                ? `以上工具尚未加载到上下文。`
+                : `以上工具**新增**为可延迟加载（此前已播报过的仍然有效）。`) +
+              `需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
+              `或关键词调出，激活后即可在后续轮次正常调用。\n` +
+              `</system-reminder>`,
+          ],
+        });
+        log.info(
+          "AGENT_LOOP",
+          `注入延迟工具${isFull ? "全量" : "增量"}播报（新增 ${added.length}，已播报 ${announcedDeferredTools.size}）`,
+        );
+      }
+      for (const n of added) announcedDeferredTools.add(n);
+      for (const n of vanished) announcedDeferredTools.delete(n);
+    }
+
     const sendParams: SendParams = {
       model,
-      messages: ctxMgr.getCleanedMessages(),
+      messages: messagesForSend,
       system: ctxMgr.getSystemPrompt(),
       // B5-6：依据见 SUBAGENT_DEFAULT_MAX_TOKENS 注释（预算选择，非物理上限；
       // 4096 是注册表全部模型的最小上限，故不会触发 max_tokens out of range）。
@@ -742,6 +803,7 @@ async function runAgentLoopInner(
           } else {
             compactResult = reactiveCompact(ctxMgr);
             if (compactResult.success) {
+              deferredToolsPendingAfterCompact = true;
               log.info(
                 "AGENT_LOOP",
                 `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条（level=${levelBeforeRetry}）`,
@@ -1038,6 +1100,7 @@ async function runAgentLoopInner(
         `撞模型 context window 上限，压缩后续写（第 ${ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERY} 次）：` +
           `${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
       );
+      deferredToolsPendingAfterCompact = true;
 
       config.onTurnEnd?.({
         turn: turns,
