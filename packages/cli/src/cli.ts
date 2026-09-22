@@ -2337,7 +2337,16 @@ export async function main(): Promise<void> {
     if (config.enableSandbox) {
       const { SandboxManager, defaultSandboxConfig } =
         await import("@sid-code/core/permission/sandbox.ts");
-      const sandboxConfig = { ...defaultSandboxConfig(), enabled: true };
+      // P2-3：autoAllowBashIfSandboxed 默认已翻为 false（沙箱不再等于免确认）。
+      // 这里接上 config.sandboxAutoAllowBash 作显式回退通道——不接就等于把新默认值写死，
+      // SandboxConfig 里那个字段会变成生产不可达的死旋钮。
+      const sandboxConfig = {
+        ...defaultSandboxConfig(),
+        enabled: true,
+        ...(config.sandboxAutoAllowBash === undefined
+          ? {}
+          : { autoAllowBashIfSandboxed: config.sandboxAutoAllowBash }),
+      };
       const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
       permissionChecker.setSandboxManager(sandboxManager);
       // 注入到 bash 工具（遍历工具注册表找 BashTool）

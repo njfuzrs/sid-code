@@ -18,8 +18,8 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **72** 个顶层字段。其中 47 个由
-> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），25 个标 ⚠ 的字段
+> 共 **73** 个顶层字段。其中 47 个由
+> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），26 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
@@ -80,6 +80,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `pluginDirs` ⚠ | array | — | 插件配置 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
 | `provider` | string | — | LLM 配置 LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额管控（增强版，向后兼容 costLimit） |
+| `sandboxAutoAllowBash` ⚠ | boolean | — | P2-3：沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 这个开关是 P2-3 把 `autoAllowBashIfSandboxed` 默认值翻成 false 之后的**回退通道**： 不接这一条，新默认值就变成… |
 | `sanitizeEnv` | boolean | — | 环境变量清理 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索配置 |
 | `sessionRetention` ⚠ | object | — | 会话保留配置 |

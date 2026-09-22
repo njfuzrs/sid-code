@@ -494,6 +494,10 @@ const PASSTHROUGH_FIELDS: Array<[string, string]> = [
   // 证据：config.ts:451(enableSandbox)+cli.ts:1808 消费；config.ts:144(outputStyle)+app.ts:2225/2689 消费；
   // config.ts:449(speculativeClassifier)+tool-executor.ts:770/checker.ts:1148 消费。
   ["enableSandbox", "boolean"],
+  // P2-3（2026-09-22）：沙箱自动放行 bash 的显式 opt-in。满足同一四条判据——
+  // Config 有声明（config.ts sandboxAutoAllowBash）+ keyMap 已登记 + 有真实消费点
+  // （cli.ts 构造 SandboxConfig）+ SettingsSchema 未声明（靠 .passthrough() 生效）。
+  ["sandboxAutoAllowBash", "boolean"],
   ["outputStyle", "string"],
   ["speculativeClassifier", "boolean"],
   // 二次补录（2026-08-26）：同样满足「Config 有声明 + keyMap 已登记（故 settings.json

@@ -568,6 +568,17 @@ export interface Config {
   speculativeClassifier?: boolean;
   /** 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） */
   enableSandbox?: boolean;
+  /**
+   * P2-3：沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。
+   *
+   * 这个开关是 P2-3 把 `autoAllowBashIfSandboxed` 默认值翻成 false 之后的**回退通道**：
+   * 不接这一条，新默认值就变成写死的行为，`SandboxConfig` 里那个字段成为
+   * 生产不可达的死旋钮（cli.ts 构造沙箱时只覆盖 `enabled`）。
+   *
+   * 即便开了它，自动放行**仍不越过** plan / deny-write 模式硬约束，也仍在危险命令
+   * 与敏感重定向检测之后（checker Step 7 的注释写了完整判据）。
+   */
+  sandboxAutoAllowBash?: boolean;
 
   // 团队记忆同步（E.11 协作护城河）
   /** 团队记忆同步配置（共享目录模型） */
@@ -1042,6 +1053,10 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
     // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
     max_thinking_tokens: "maxThinkingTokens",
     speculative_classifier: "speculativeClassifier",
+    // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
+    // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
+    enable_sandbox: "enableSandbox",
+    sandbox_auto_allow_bash: "sandboxAutoAllowBash",
     team_memory: "teamMemory",
     identity: "identity",
     trace: "trace",
