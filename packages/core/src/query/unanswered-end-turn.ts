@@ -19,6 +19,7 @@
 
 import type { AccumulatedResponse, ContentBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
+import { isEndTurnLikeStopReason } from "../agent/message-invariants.ts";
 
 /** content 通道思考漂移判定的字符下限（低于此长度视作正常短答复，不疑为思考泄漏） */
 export const DRIFT_MIN_LEN = 2000;
@@ -39,8 +40,11 @@ export function detectUnansweredEndTurn(
 ): void {
   const log = getLogger();
 
-  const isEndTurnLike = response.stopReason === "end_turn" || response.stopReason === "stop";
-  if (!isEndTurnLike) return;
+  // P2-1：判据与 loop.ts 的收尾闸门**共用同一个函数**，不再各抄一份。
+  // 此前这里是就地的 `=== "end_turn" || === "stop"`，漏了 `stop_sequence`——
+  // 而 loop.ts 的白名单含它（isEndTurnLikeStopReason）。后果是 `stop_sequence` +
+  // 空答复会走完整收尾链，`_unansweredEndTurn` 却永不置位：闸门在、检测不到。
+  if (!isEndTurnLikeStopReason(response.stopReason)) return;
 
   const totalTextLen = response.content
     .filter((b) => b.type === "text")
@@ -73,13 +77,42 @@ export function detectUnansweredEndTurn(
     return;
   }
 
-  // ── 形态 B：只思考不答复（唯一 thinking 块，content 通道空） ──
+  // ── 形态 B：只思考不答复（content 通道一字未发） ──
   // 判据从旧防线 A 的"长度≤500 才转正文"改为"是否真答复"：
   // end_turn + 无 text + 无 tool_use → 无论思考块多长都算未答复。
-  if (totalTextLen === 0 && thinkingCount === 1) {
+  //
+  // P2-1：条件从 `thinkingCount === 1` 放宽到「无 text、无 tool_use」，thinking 段数不限。
+  // 旧硬条件漏掉两类同样"空手 end_turn"的形态，而它们与单块形态对用户完全等价：
+  //   - thinkingCount >= 2（模型分多段思考后直接收尾）→ 旧条件不等于 1，整条不进；
+  //   - thinkingCount === 0 且无 text 无 tool（空 content / 只有 redacted_thinking）
+  //     → 形态 A 要求 totalTextLen >= DRIFT_MIN_LEN 也进不去，两形态同时漏。
+  // 「极短 thinking ≤500 转正文」是刻意保留的设计（见 SHORT_ANSWER_LEN），但只在
+  // **唯一一个** thinking 块时才谈得上"把这一句直答转出来"——多块时转哪一块都是猜，
+  // 故多块一律判未答复走重试。
+  if (totalTextLen === 0) {
     const idx = response.content.findIndex((b) => b.type === "thinking");
     const block = idx >= 0 ? response.content[idx] : undefined;
     const thinkingText = block && block.type === "thinking" ? block.thinking.trim() : "";
+    if (thinkingCount === 0) {
+      // 空 content / 只有 redacted_thinking：模型什么都没交付，且没有任何可转正文的东西。
+      response._unansweredEndTurn = true;
+      log.warn(
+        "STREAM",
+        `无任何有效产出(stop=${response.stopReason}, ${response.content.length} 个内容块、` +
+          `0 个 thinking、0 个 text、0 个 tool_use)，判定为未答复，标记 _unansweredEndTurn 交由主循环驱动重试`,
+      );
+      return;
+    }
+    if (thinkingCount > 1) {
+      // 多段思考后空手收尾：整轮没有面向用户的字。转正文无从下手（转哪一段都是猜），直接判未答复。
+      response._unansweredEndTurn = true;
+      log.warn(
+        "STREAM",
+        `仅思考无正文(stop=${response.stopReason}, ${thinkingCount} 个 thinking 块)，判定为未答复，` +
+          `保持思考块折叠并标记 _unansweredEndTurn 交由主循环驱动重试`,
+      );
+      return;
+    }
     if (thinkingText && thinkingText.length <= SHORT_ANSWER_LEN) {
       // 极短思考：多半是被误塞进思考通道的一句直答，转正文让用户看到
       response.content[idx] = { type: "text", text: thinkingText } as ContentBlock;

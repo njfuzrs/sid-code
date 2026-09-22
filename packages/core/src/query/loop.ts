@@ -83,6 +83,7 @@ import {
 import type { ReactiveCompactResult } from "./reactive-compact.ts";
 import {
   parseTokenBudgetDirective,
+  tokenBudgetConsumed,
   buildBudgetContinuationMessage,
   buildBudgetExhaustedNotice,
   buildBudgetDiminishingNotice,
@@ -699,17 +700,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   const parsedTokenBudget = parseTokenBudgetDirective(extractLastUserInput(ctxMgr));
   if (parsedTokenBudget !== undefined) {
     state.tokenBudgetTarget = parsedTokenBudget;
-    const baseline = sessionState.getTotalUsage();
-    state.tokenBudgetBaselineUsage =
-      baseline.inputTokens + baseline.outputTokens + (baseline.cacheCreationInputTokens ?? 0);
+    // P2-4：基线与下方 Gate 的 `consumed` 必须用同一个函数算——两处各写一遍加法，
+    // 改一处漏一处就是「基线含 cacheRead、消耗不含」这类静默偏差（差值直接变成负数或虚高）。
+    state.tokenBudgetBaselineUsage = tokenBudgetConsumed(sessionState.getTotalUsage());
     log.info(
       "QUERY_LOOP",
       `P0-3：检测到 Token Budget 指令，目标 ${parsedTokenBudget.toLocaleString()} tokens`,
     );
   }
+  // P2-4：递减阈值**不再显式写回 500**，与 max_tokens 续写对齐到默认值（150）。
+  //
+  // 500 是 DiminishingReturnsDetector 的**历史**默认值，2026-07-07 已收紧到 150，
+  // 理由写在 reactive-compact.ts 的 DIMINISHING_THRESHOLD 注释里：分段产出每段几百
+  // token 很正常，500 阈值下"连续两段各 <500"极易命中，把正常分段误判为重复/填充。
+  // 这里再写回 500 等于在本路径上把那次修复撤销——典型形态是连续两轮 end_turn 输出
+  // <500 token（「做完了」这种短收尾恰好就是），预算剩得再多也当场判递减收尾、作废。
+  // maxRecoveryCount 仍显式放宽（本场景真正的停止条件是预算耗尽，不是续写次数）。
   const budgetDiminishingDetector = new DiminishingReturnsDetector({
     maxRecoveryCount: 1000,
-    diminishingThreshold: 500,
   });
   // Fix 1：每次 queryLoop 生成唯一 loopId，用于 snapshot namespace 隔离
   const loopId = `loop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2218,6 +2226,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             state.goalReminderPendingAfterCompact = true;
             state.todoReminderPendingAfterCompact = true;
             state.deferredToolsPendingAfterCompact = true;
+            // P2-6：成功即清零（熔断只针对"**连续**"失败）——与流式阶段同一行。
+            // 此前只有流式阶段清零，连接阶段这条成功路径漏了，于是「失败2次 → 连接阶段
+            // 压缩成功 → 再失败1次」会命中 >= 3 熔断，并告诉用户"连续 3 次自动压缩都未能
+            // 减少历史"——其中一次其实成功了。计数器名字里的"连续"被实现悄悄改成了"累计"。
+            state.consecutiveCompactFailures = 0;
             // notifyCompaction 已由 settleCompaction 在确认真压动后统一调用（P1-4）
             const banner = settleCompaction(deps, sessionState.sessionId, {
               trigger: "prompt_too_long",
@@ -2301,7 +2314,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               messageCountBefore: beforeOverflow,
               messageCountAfter: ctxMgr.messageCount(),
             });
-            if (banner) yield banner;
+            // P2-6：banner 非 null ⟺ settleCompaction 确认"真压动了"，是这条路径上唯一
+            // 可靠的成功信号 → 与 reactiveCompact 成功路径同口径清零。只补失败不清成功，
+            // 会把"连续失败"counter 变成"累计失败"counter（见上方连接阶段那段注释）。
+            if (banner) {
+              yield banner;
+              state.consecutiveCompactFailures = 0;
+            }
             // autoCompact 也没压动 → 计入连续失败，让熔断器最终收敛
             else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
           }
@@ -2944,8 +2963,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               messageCountBefore: beforeFallback,
               messageCountAfter: ctxMgr.messageCount(),
             });
-            if (banner) yield banner;
-            else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+            // P2-6：同上——真压动了就清零，否则 counter 名不副实。
+            if (banner) {
+              yield banner;
+              state.consecutiveCompactFailures = 0;
+            } else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
           }
           setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
           continue;
@@ -3319,8 +3341,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 处理：①把空参数 tool_use 替换为 text（消除孤儿，避免 OpenAI 400）；
       //      ②重试前先压缩上下文（reactiveCompact），让 input tokens 单调下降，
       //        直接打击"大上下文"根因，而非原样追加提示重发（那只会加剧退化）；
-      //      ③最多重试 MAX_EMPTY_PARAM_RETRIES 次，耗尽后放行（替换后的 content 已无 tool_use，
-      //        会正常走 end_turn 结束，并如实呈现退化，不假装完成）。
+      //      ③最多重试 MAX_EMPTY_PARAM_RETRIES 次，耗尽后**硬停本轮**（sanitized 后入历史 +
+      //        如实呈现退化 + yield done，不假装完成，也不 fall-through 到收尾闸门链）。
+      //
+      // P2-7：这两行注释此前写的是「耗尽后放行（替换后的 content 已无 tool_use，会正常走
+      // end_turn 结束）」，而实现一直是就地 `yield done; return`。文档与代码不一致，且
+      // 二者的语义差别很实在：走 end_turn 会跑 AfterAgent / Stop Hook / unanswered / todo /
+      // hypothesis / Goal 整条闸门链，硬停一条都不跑。
+      //
+      // 选定**硬停**、改注释对齐实现，而不是反过来让代码 fall-through：
+      //   - 走到这里的事实是「模型连续 MAX_EMPTY_PARAM_RETRIES 次吐不出工具参数」，
+      //     即模型在当前上下文下已退化。闸门链的每一道门（todo/hypothesis/Goal）都是
+      //     **靠注入提示再续一轮**来起作用的 —— 对一个连参数都生成不出来的模型，
+      //     续命只会把同一个退化再跑一遍，这正是 CC「死亡螺旋」那条教训的形态
+      //     （见下方 isEndTurnLike 白名单处的 P0-2 注释）。
+      //   - 本轮 stopReason 并不一定是 end_turn（实测也有 max_tokens/null 走到这里），
+      //     fall-through 还要先伪造一个 end_turn 语义，那是把退化包装成正常收尾。
+      // 唯一真正的缺陷是遥测归因（下方 turnStopReason 处修掉），不是控制流。
       // 注入工具 schema 查询：让检测器结合 required 字段区分"真退化"与"本就无必填参数"
       // （如 enter_plan_mode 的合法 input={} 不应被误判为退化，否则 plan mode 永远进不去）。
       const getSchema = (name: string) => toolRegistry.get(name)?.inputSchema();
@@ -3443,10 +3480,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           continue;
         }
 
-        // 重试耗尽：替换后入历史并放行（sanitizedContent 已无 tool_use，会正常走 end_turn 结束）
+        // 重试耗尽：sanitized 后入历史 + 如实呈现退化 + 硬停本轮（理由见上方 ③ 的 P2-7 注释）
         log.error(
           "QUERY_LOOP",
-          `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，放行并如实呈现退化`,
+          `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，硬停本轮并如实呈现退化`,
         );
         ctxMgr.addMessage({
           role: "assistant",
@@ -3473,6 +3510,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           level: "warning",
           text: `工具调用参数持续为空（已重试 ${MAX_EMPTY_PARAM_RETRIES} 次），模型在当前上下文下无法正常生成工具参数，停止重试。`,
         };
+        // P2-7：显式归因「其它提前收尾」。
+        //
+        // 不赋值的后果是实测过的错账：finally 的统一出口在「未 abort、未打满 maxTurns」时
+        // 兜底归到 `error`（那一档的语义是"抛错穿透 finally"）。于是"模型吐不出参数"这类
+        // **模型退化**会混进 error 样本里，既虚高错误率，又让真正的异常穿透被稀释得看不见。
+        // 选 `other` 而非 `end_turn`：本轮并没有正常说完（见 TurnStopReason 各档注释），
+        // 归 end_turn 会把退化算进正常收尾样本，那是反方向的错账。
+        turnStopReason = "other";
         yield {
           kind: "done",
           turns: state.turnCount,
@@ -3643,12 +3688,44 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
       if (isEndTurnLike && !hasPendingToolUse) {
         // AfterAgent hook
+        //
+        // P2-2：`clearContext` **推迟**到整条闸门链真正放行、`yield done` 之前才执行。
+        // 此前是在这里立刻 `ctxMgr.clear()`（= `this.messages = []`），而它发生在
+        // Stop Hook / unanswered / Todo / Hypothesis / Token Budget / Goal **之前**：
+        // 随后 Stop Hook 往空历史上 addMessage，任何一道门 `continue` 都会把模型送进
+        // 下一轮时只剩几条注入消息——清单还在、历史没了，续命等于把模型丢进失忆。
+        // 置个标志位、由下方唯一收尾出口执行，语义才与 hook 名字（Agent 之后）一致。
+        let afterAgentWantsClearContext = false;
+        /**
+         * P2-2：执行被推迟的 AfterAgent `clearContext`。
+         *
+         * 必须在本块每一个「真正收尾」的出口调用（forceStop / unanswered 耗尽 / 正常收尾），
+         * 且**只能**在这些出口调用——任何 `continue` 分支都不得调用它，否则就退回到
+         * 「闸门链中途清历史」那个 bug。幂等（清完置回 false）。
+         */
+        const applyDeferredClearContext = (): void => {
+          if (!afterAgentWantsClearContext) return;
+          afterAgentWantsClearContext = false;
+          log.info("HOOK", "AfterAgent hook 请求的清除上下文：闸门链已放行，现在执行");
+          ctxMgr.clear();
+        };
         if (hookSystem) {
           const userInput = extractLastUserInput(ctxMgr);
           const afterResult = await hookSystem.fireAfterAgentEvent(userInput, responseText);
+          // P2-2：hook 执行失败此前完全静默——`executeHooks` 内部吞掉异常后返回
+          // `success:false` + errors，而这里既不看 success 也不看 errors，于是
+          // 「hook 崩了」与「没配 hook」在日志里一模一样。AfterAgent 按设计不可 block
+          // （见 hook/types.ts），所以这里**只观测不改控制流**：至少让排查有落点。
+          if (afterResult.success === false) {
+            log.warn(
+              "HOOK",
+              `AfterAgent hook 执行失败（不阻断收尾，按设计不可 block）：` +
+                (afterResult.errors ?? []).map((e) => e?.message ?? String(e)).join("; "),
+            );
+          }
           if (afterResult.finalOutput?.shouldClearContext()) {
-            log.info("HOOK", "AfterAgent hook 请求清除上下文");
-            ctxMgr.clear();
+            log.info("HOOK", "AfterAgent hook 请求清除上下文（推迟到闸门链放行后执行）");
+            afterAgentWantsClearContext = true;
           }
         }
 
@@ -3680,10 +3757,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             continue;
           }
 
+          // P2-3：验证真正跑过且全部通过 → 清零续命预算，与 todoGateRetryCount 在
+          // writeVersion 变化时复位同一取向。不清零的话，同一条用户消息里前面失败 3 次，
+          // 后面每一轮 end_turn 都被当成"预算已耗尽"，即使模型已经修好也不再验证。
+          // 只认 `passed`（真跑过且全通过），不认 `!shouldContinue && !forceStop`——
+          // 后者把「耗尽仍失败」和「hook 抛异常」也算进去，那会让预算永远回满。
+          if (stopResult?.passed === true && (state.stopHookRetryCount ?? 0) > 0) {
+            log.info(
+              "QUERY_LOOP",
+              `Stop Hook 验证通过，清零续命计数（原 ${state.stopHookRetryCount}）`,
+            );
+            state.stopHookRetryCount = 0;
+          }
+
           if (stopResult?.forceStop) {
             // P1-1：forceStop 必须立刻收尾。此前只打日志，后面 Todo/Goal/`+k` 闸门照跑，
             // Stop Hook 明确说停仍会被续到 maxTurns。
             log.info("QUERY_LOOP", "Stop Hook preventContinuation，强制结束");
+            applyDeferredClearContext();
             turnStopReason = "other";
             yield {
               kind: "done",
@@ -3733,6 +3824,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             text: `模型连续 ${MAX_UNANSWERED_RETRIES} 次未产出有效答复（可能陷入思考发散）。建议换个更具体的提问方式，或切换模型重试。`,
           };
           state.unansweredRetryCount = 0;
+          applyDeferredClearContext();
           turnStopReason = normalizeTurnStopReason(response.stopReason);
           yield {
             kind: "done",
@@ -3890,6 +3982,20 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               "QUERY_LOOP",
               `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，放行（模型应已在交付物中如实降级未确认假设）`,
             );
+          } else if (ledger && (state.hypothesisGateRetryCount ?? 0) > 0) {
+            // P2-3：登记表**已结清**（无 unsettled、无"确认后被打脸"）→ 清零续命预算，
+            // 与 todoGateRetryCount 在 writeVersion 变化时复位同一取向。
+            //
+            // 不清零的实测形态：全 refuted 时 cap=1，用掉这一次之后计数永久停在 1；
+            // 后面模型登记了新的 unsettled 假设，`retries < MAX` 从此恒假，门禁**直接放行**
+            // ——一道自称"最后一道闸"的门，在同一条用户消息里只响一次。
+            // 位置在 `else` 而不是收尾出口：这里是"门禁本轮不该拦"的唯一判定点，
+            // 且它与门禁自身共用同一份 hasUnsettled/hasChallengedConfirmed 口径，不会漂。
+            log.info(
+              "QUERY_LOOP",
+              `环节③ 交付门禁：登记表已结清，清零续命计数（原 ${state.hypothesisGateRetryCount}）`,
+            );
+            state.hypothesisGateRetryCount = 0;
           }
 
           // 缺口2 层次1（交付物内容检查）：门禁只看登记表状态，从不看模型实际写出的字
@@ -3962,11 +4068,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           const goalIsActive = activeGoal != null && activeGoal.status === "active";
           if (!goalIsActive) {
             const currentUsage = sessionState.getTotalUsage();
+            // P2-4：`consumed` 口径与基线（tokenBudgetBaselineUsage）**逐字同源**，
+            // 见 tokenBudgetConsumed() 注释里为什么刻意不含 cacheRead。
             const consumed =
-              currentUsage.inputTokens +
-              currentUsage.outputTokens +
-              (currentUsage.cacheCreationInputTokens ?? 0) -
-              (state.tokenBudgetBaselineUsage ?? 0);
+              tokenBudgetConsumed(currentUsage) - (state.tokenBudgetBaselineUsage ?? 0);
             const remaining = state.tokenBudgetTarget - consumed;
 
             if (remaining <= 0) {
@@ -4156,6 +4261,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (deps.extractMemories) {
           runBackgroundTask("memory-extract", () => deps.extractMemories!());
         }
+        // P2-2：AfterAgent 请求的清历史在这里才执行——整条闸门链已放行，不会再有
+        // `continue` 把模型送进下一轮（否则它面对的就是一段空历史）。
+        applyDeferredClearContext();
         // P1-4：唯一的"模型正常说完了"出口。归一化而非透传 stopReason ——
         // end_turn / stop / stop_sequence 三值同义，透传等于把归一责任推给每个消费方。
         turnStopReason = normalizeTurnStopReason(response.stopReason);
@@ -5014,12 +5122,33 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         continue;
       }
 
-      // ─── pause_turn（server tool 暂停，需续接）───
+      // ─── pause_turn（server tool 暂停）───
       // [来源: anthropic-api.md:557]
+      //
+      // P2-5：**不再伪装成 `tool_use` continue**，改为落到下方"未识别停止原因"的显式收尾。
+      //
+      // 旧实现 `setTransition({type:"tool_use"}); continue;` 有三处与事实不符：
+      //   ① 没有 `executeTools`，也没有把未完成的 server tool 结果接回历史 —— 真正的
+      //      server-tool 续接要求把 `server_tool_use` 块原样回传，让上游继续那次调用。
+      //      而本仓 Anthropic 解析对未知块类型（含 `server_tool_use`）直接丢成空 text
+      //      （见 anthropic.ts 的"未知块类型静默忽略"），块早就没了，无从接回。
+      //   ② `continue` 会让 while 顶部再 `turnCount++`，一轮预算白烧在一次什么都没做的往返上；
+      //      上游没拿到任何新输入，大概率原样再回一个 pause_turn → 直到打满 maxTurns。
+      //   ③ 观测上被记成 `LoopTransition.type=tool_use`，离线分析里**像是跑过工具**。
+      //      按 type 统计工具轮次时它是纯噪音，而这正是"归因与真实信号脱节"那类反模式。
+      //
+      // 现状事实：本仓 `web_search` 是本地工具、不是 Anthropic server tool，全仓
+      // 没有任何 server-tool 续接实现，所以这条分支实际是死路径。未实现续接之前，
+      // 正确行为是**如实收尾**（下方分支会 yield 一条 terminal 提示 + done），而不是
+      // 假装推进。真要支持 server tool，改动点是 anthropic.ts 保留 `server_tool_use`
+      // 块 + 此处回传续接，两者缺一不可 —— 届时再开分支，别复活这个 `continue`。
       if (response.stopReason === "pause_turn") {
-        log.info("QUERY_LOOP", "收到 pause_turn（server tool 暂停），作为 tool_use 续接");
-        setTransition(state, { type: "tool_use" }, deps, sessionState.sessionId);
-        continue;
+        log.warn(
+          "QUERY_LOOP",
+          "收到 pause_turn（server tool 暂停）：本仓未实现 server-tool 续接，如实收尾不伪装 tool_use 续接",
+          { contentBlocks: response.content.length },
+        );
+        // 不 continue、不 setTransition —— fall through 到下方未识别停止原因的统一收尾。
       }
 
       // ─── 其他停止原因（含 null）───

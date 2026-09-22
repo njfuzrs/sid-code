@@ -37,6 +37,35 @@ export function parseTokenBudgetDirective(text: string): number | undefined {
   return Math.min(MAX_TOKEN_BUDGET, Math.max(MIN_TOKEN_BUDGET, budget));
 }
 
+/**
+ * P2-4：预算口径的**单一事实源**——「已消耗多少 token」怎么算，只有这一处。
+ *
+ * queryLoop 里有两个调用点（入口记基线、Gate 里算 consumed），此前各写一遍同样的加法。
+ * 两处加法必须逐字一致才有意义：差一项就不是"少算了一点"，而是差值直接失真
+ * （基线含某项、消耗不含 → consumed 恒偏小甚至为负；反之预算瞬间见底）。
+ *
+ * 口径 = 累计 prompt（flow）+ output + cacheCreation，**刻意不含 cacheRead**：
+ *   - 这是"钱"的口径，不是"上下文有多大"的口径。cacheRead 的单价只有正常 input 的
+ *     约 1/10，把它按全价计进预算会让长会话虚耗——预算是给"继续深入"用的额度，
+ *     缓存命中越多本该越划算，不该反过来惩罚。
+ *   - inputTokens 走的是 `getTotalUsage()` 的 flow 累计口径（各模型
+ *     cumulativePromptTokens 之和），与 totalCostUSD 同源可比；**不是**末次快照（stock）。
+ *     用 stock 除/减 flow 是「stock 与 flow 混用」那类错数。
+ *
+ * ⚠️ 代价要点破：不含 cacheRead 意味着在"大上下文 + 高命中"的长工具链里，账面
+ * consumed 明显低于真实喂进去的 token 总量。这是**刻意选择**（按成本而非按体积计价），
+ * 不是漏项——改它之前先想清楚要计价的是钱还是体积，并同步这段注释。
+ */
+export function tokenBudgetConsumed(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+}): number {
+  return (
+    (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0)
+  );
+}
+
 /** 构建预算续写提示：引导模型充分利用剩余预算继续深入，而非当作用户在追问 */
 export function buildBudgetContinuationMessage(consumed: number, remaining: number): string {
   return `<system-reminder>

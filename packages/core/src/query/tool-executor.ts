@@ -356,6 +356,21 @@ export interface ToolExecutorDeps {
    */
   getPrecomputedResult?: (toolUseId: string) => SingleToolOutcome | undefined;
   /**
+   * P2-8：等待某个 tool_use 的流式抢跑**跑完**再读结果（抢跑未开/未命中时立刻 undefined）。
+   *
+   * 为什么必须有这个异步版本：抢跑是 fire-and-forget，它的去重 `inflight` 只活在
+   * app.ts 的 `onToolUseComplete` 闭包里，`executeTools` **看不见**。于是存在一个真实窗口
+   * ——流已结束（processStream 返回）但抢跑还在跑 → 此处 `getPrecomputedResult` 同步读
+   * cache miss → 又跑一遍 `executeSingleTool`。同一个工具执行两次，PreToolUse 也 fire 两次；
+   * 对 bash 这类有副作用的工具（抢跑只挑并发安全工具，但"并发安全"≠"无副作用"）就是
+   * 命令被执行两遍。默认 `SID_ENABLE_STREAMING_TOOL_EXEC` 未开，所以这是 opt-in 路径的
+   * 正确性洞，不是默认行为——但开了就是真的双执行。
+   *
+   * 注入方（app.ts）保存每个抢跑的 promise，这里 await 它之后再读缓存，窗口即闭合。
+   * 未注入时调用方自动退化到同步的 {@link getPrecomputedResult}（行为与此前完全一致）。
+   */
+  awaitPrecomputedResult?: (toolUseId: string) => Promise<SingleToolOutcome | undefined>;
+  /**
    * G3：PreToolUse fire-once 缓存（按 tool_use_id）。
    *
    * 主循环把 PreToolUse **上移**到权限检查之前（resolveToolPermission 内），以便其
@@ -568,7 +583,16 @@ export async function executeTools(
     // GAP-01 + G3：流式预执行已命中的工具，其权限检查与 PreToolUse hook 在抢跑时已完成
     // （precomputed 存在 ⟺ 抢跑通过了权限门并执行成功）。此处跳过重复的 resolveToolPermission，
     // 既避免二次权限检查，也避免 PreToolUse hook 二次 fire（原语义：precomputed 工具只 fire 一次）。
-    if (deps.getPrecomputedResult?.(block.id)) {
+    //
+    // P2-8：这里用**异步**版本等抢跑落地，而不是同步读一眼就判 miss。
+    // 本预检循环跑在所有批次执行**之前**，所以在这一个位置等干净，下面并行/串行批次里
+    // 那两处同步 getPrecomputedResult 读到的就已经是终态（不必逐处改成 await，也不会
+    // 因为漏改某一处而留下窗口）。抢跑未开启时 awaitPrecomputedResult 未注入，
+    // 退化为原来的同步读，零行为变化。
+    const precomputedHit = deps.awaitPrecomputedResult
+      ? await deps.awaitPrecomputedResult(block.id)
+      : deps.getPrecomputedResult?.(block.id);
+    if (precomputedHit) {
       checkedTools.push({ block, tool, idx });
       continue;
     }
@@ -629,6 +653,7 @@ export async function executeTools(
             }
             const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
             // GAP-01：流式预执行命中则复用结果，跳过重复执行（保持编排不变）。
+            // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
             const precomputed = deps.getPrecomputedResult?.(block.id);
             const exec = precomputed
               ? Promise.resolve(precomputed)
@@ -734,6 +759,7 @@ export async function executeTools(
         }
         // GAP-01：流式预执行命中则复用（串行批次通常是写工具，一般不会被流式预执行，
         // 但保留一致性检查——若命中则跳过重复执行）。
+        // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
         const precomputed = deps.getPrecomputedResult?.(block.id);
         const outcome = precomputed ?? (await executeSingleTool(block, tool, deps));
         settle(idx, outcome.block, outcome.elapsedMs);

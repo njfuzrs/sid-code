@@ -439,6 +439,18 @@ export class App {
     import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome
   > | null = null;
   /**
+   * P2-8：当前 turn 的流式抢跑 **in-flight promise** 表（tool_use_id → 该抢跑的 promise）。
+   *
+   * 为什么光有上面那张结果 cache 不够：抢跑是 fire-and-forget，`processStream` 可能在抢跑
+   * 还没 settle 时就返回（流结束 ≠ 抢跑结束）。此时 `executeTools` 同步读 cache 是 miss，
+   * 于是同一个 tool_use 被执行第二遍、PreToolUse 也第二次 fire。原去重集合 `inflight`
+   * 只活在 `onToolUseComplete` 闭包里，`executeTools` 看不见，挡不住这一条。
+   *
+   * 这张表把"抢跑还在跑"这件事暴露给 executeTools（经 deps.awaitPrecomputedResult），
+   * 让它 await 到落地再读缓存。与结果 cache 同生命周期：每轮重建、流重开时一起清。
+   */
+  private _streamingToolInflight: Map<string, Promise<void>> | null = null;
+  /**
    * 流被重开、已流出内容作废时的回调（2026-08-04 事故根因修复）。
    *
    * 由 TUI 层通过 {@link setStreamRestartCallback} 注入，用于**撤回**屏幕上那段
@@ -4878,7 +4890,9 @@ export class App {
         import("@sid-code/core/query/tool-executor.ts").SingleToolOutcome
       >();
       this._streamingToolResults = cache;
-      const inflight = new Set<string>();
+      // P2-8：登记每个抢跑的 promise（executeTools 据此 await 到落地），与 cache 同生命周期。
+      const inflight = new Map<string, Promise<void>>();
+      this._streamingToolInflight = inflight;
       onToolUseComplete = (block) => {
         // 仅抢跑并发安全工具（读类）；其余留给 executeTools 批量编排
         const tool = this.toolRegistry.get(block.name);
@@ -4886,10 +4900,14 @@ export class App {
         const safe = judgeConcurrencySafe(tool, block.input);
         if (!safe) return;
         if (cache.has(block.id) || inflight.has(block.id)) return;
-        inflight.add(block.id);
         // 异步抢跑：先过权限门（拒绝则不缓存，交回 executeTools 统一产出 error tool_result），
         // 通过则执行并缓存结果。异常一律吞掉——executeTools 会正常重跑该工具，绝不影响正确性。
-        void (async () => {
+        //
+        // P2-8：promise **先登记再 await**（登记与启动之间没有 await，故无竞态窗口）。
+        // 注意 finally 里刻意**不** delete：executeTools 要能 await 到一个已 settle 的
+        // promise 才知道"抢跑结束了"；删掉的话它读到 undefined，就退回到"看不见抢跑"的老状态。
+        // 整张表随下一轮 processStream 重建、流重开时 clear，不会跨轮堆积。
+        const run = (async () => {
           try {
             // H7：权限确认可能弹 ask 对话框阻塞等用户作答。抢跑发生在流式接收窗口内（模型仍在
             // 吐后续内容），此时 stream-processor 心跳 / loop 看门狗 / turn_hard 都在计时——
@@ -4904,10 +4922,10 @@ export class App {
             cache.set(block.id, outcome);
           } catch {
             /* 抢跑失败静默：executeTools 会正常执行该工具 */
-          } finally {
-            inflight.delete(block.id);
           }
         })();
+        inflight.set(block.id, run);
+        void run;
       };
     }
 
@@ -4937,6 +4955,9 @@ export class App {
           // 而重开后的新响应会带**全新的** id。留着这些条目虽不会被误命中（id 不同），
           // 但会让 executeTools 读到一份属于已作废轮次的残留，且随重试次数累积。
           this._streamingToolResults?.clear();
+          // P2-8：in-flight 表与结果 cache 同生命周期，一起清——留着会让新响应（全新的
+          // tool_use id）去 await 一批属于已作废轮次的 promise。
+          this._streamingToolInflight?.clear();
           this.onStreamRestartCallback?.(info);
         },
       });
@@ -5172,6 +5193,12 @@ export class App {
       },
       // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
       getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),
+      // P2-8：等抢跑落地再读缓存，闭合「流已结束但抢跑还在跑 → cache miss → 重复执行」窗口。
+      awaitPrecomputedResult: async (toolUseId) => {
+        const pending = this._streamingToolInflight?.get(toolUseId);
+        if (pending) await pending;
+        return this._streamingToolResults?.get(toolUseId);
+      },
       // 增量呈现：单工具结果一落地就翻卡，不等同批次最慢的兄弟。
       // late-bound（在回调内部读 this.liveToolSettledSink，而非在此处判空后固化）：
       // buildToolExecutorDeps 可能早于 setupTUICallbacks 执行（如启动即流式预执行），
