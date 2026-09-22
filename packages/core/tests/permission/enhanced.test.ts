@@ -209,8 +209,8 @@ describe("权限系统增强功能", () => {
       const checker = new PermissionChecker(config, undefined, "/tmp");
 
       const req = {
-        toolName: "write",
-        input: { file_path: "/tmp/test.txt" },
+        toolName: "bash",
+        input: { command: "npm test" },
       };
 
       // 第一次检查：需要确认
@@ -230,8 +230,8 @@ describe("权限系统增强功能", () => {
       const checker = new PermissionChecker(config, undefined, "/tmp");
 
       const req = {
-        toolName: "write",
-        input: { file_path: "/tmp/test.txt" },
+        toolName: "bash",
+        input: { command: "npm test" },
       };
 
       // 记住拒绝决策
@@ -247,8 +247,8 @@ describe("权限系统增强功能", () => {
       const checker = new PermissionChecker(config, undefined, "/tmp");
 
       const req = {
-        toolName: "write",
-        input: { file_path: "/tmp/test.txt" },
+        toolName: "bash",
+        input: { command: "npm test" },
       };
 
       // 记住决策

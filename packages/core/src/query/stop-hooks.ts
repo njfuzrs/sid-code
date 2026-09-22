@@ -59,13 +59,37 @@ export async function* handleStopHooks(
 
   try {
     const stopResult = await hookSystem.fireStopEvent(responseText);
+    const allOutputs = stopResult.allOutputs ?? [];
 
-    // 检查是否有 blocking error
+    // P1-1：continue===false 优先于 decision:block。两者同时出现时，
+    // hook 明确说「别再试」——走 forceStop，不能掉进自动修复 continue。
+    // 既看 finalOutput 也扫 allOutputs：聚合器漏网时仍能停。
+    const stopRequested =
+      stopResult.finalOutput?.shouldStopExecution() === true ||
+      allOutputs.some((o) => o.continue === false);
+    if (stopRequested) {
+      log.info("STOP_HOOKS", "Stop Hook preventContinuation，强制结束");
+      return { shouldContinue: false, forceStop: true, errorMessages: [] };
+    }
+
+    // P1-2：按 allOutputs 收集全部 block，不只信 last-wins 的 finalOutput。
+    const errorMessages: string[] = [];
+    const pushReason = (reason: string) => {
+      if (reason && !errorMessages.includes(reason)) errorMessages.push(reason);
+    };
     if (stopResult.finalOutput?.isBlockingDecision()) {
-      const reason = stopResult.finalOutput.getEffectiveReason();
+      pushReason(stopResult.finalOutput.getEffectiveReason());
+    }
+    for (const output of allOutputs) {
+      if (output.decision === "block" || output.decision === "deny") {
+        pushReason(output.reason || output.stopReason || "Stop Hook 验证失败");
+      }
+    }
+
+    if (errorMessages.length > 0) {
+      const reason = errorMessages.join("\n");
       log.info("STOP_HOOKS", `Stop Hook blocking error: ${reason}`);
 
-      // 注入错误消息到对话
       const errorMsg = `<system-reminder>\n[Stop Hook 检查失败]\n${reason}\n\n请修复上述问题。\n</system-reminder>`;
       ctxMgr.addMessage({
         role: "user",
@@ -81,14 +105,8 @@ export async function* handleStopHooks(
       return {
         shouldContinue: true,
         forceStop: false,
-        errorMessages: [reason],
+        errorMessages,
       };
-    }
-
-    // 检查是否强制结束
-    if (stopResult.finalOutput?.shouldStopExecution()) {
-      log.info("STOP_HOOKS", "Stop Hook preventContinuation，强制结束");
-      return { shouldContinue: false, forceStop: true, errorMessages: [] };
     }
 
     // 全部通过

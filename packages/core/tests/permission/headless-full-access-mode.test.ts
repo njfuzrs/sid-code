@@ -95,7 +95,7 @@ describe("headless 全放行：评测必控变量的三条前提", () => {
   });
 
   test("acceptEdits 拒掉 pytest —— smoke-8 那 113 次拒绝的成因", async () => {
-    // 只放行 FILE_TOOLS 与 cwd 内 7 个 fs 命令（ACCEPT_EDITS_FS_COMMANDS），
+    // 只放行 FILE_TOOLS 与 cwd 内非破坏性 fs 命令（mkdir/touch/cp/sed；rm/rmdir/mv 已剔除），
     // python / pytest / git log 全落默认 ask → headless 无交互 → 直接拒绝。
     expect(await probe(checkerFor("acceptEdits"))).toEqual({
       bash: false,

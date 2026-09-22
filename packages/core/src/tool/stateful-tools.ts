@@ -36,11 +36,11 @@ export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * 已有文件前做先读后写 + 陈旧检测。grep/glob/ls/bash/web_* 等无 per-session 可变
  * 状态，不在此工厂内——复用单例实例即可，无需重建。
  */
-export function createStatefulTools(tracker: FileReadTracker): Tool[] {
-  return [
-    new ReadTool(tracker),
-    new EditTool(tracker),
-    new ReadManyTool(tracker),
-    new WriteTool(tracker),
-  ];
+export function createStatefulTools(
+  tracker: FileReadTracker,
+  isPathHidden?: (absPath: string) => boolean,
+): Tool[] {
+  const readMany = new ReadManyTool(tracker);
+  if (isPathHidden) readMany.setPathHiddenFilter(isPathHidden);
+  return [new ReadTool(tracker), new EditTool(tracker), readMany, new WriteTool(tracker)];
 }

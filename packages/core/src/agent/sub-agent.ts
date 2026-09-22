@@ -16,6 +16,7 @@ import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools, STATEFUL_TOOL_NAMES } from "../tool/stateful-tools.ts";
+import { GrepTool } from "../tool/grep.ts";
 import { TodoWriteTool } from "../tool/todo-write.ts";
 import { ToolSearchTool } from "../tool/tool-search.ts";
 import {
@@ -2317,8 +2318,20 @@ export class SubAgent {
         cwd: this.parentCwd,
       });
     }
+    const checker = this.permissionChecker as
+      | (Checker & {
+          isPathHidden?: (p: string) => boolean;
+          isSensitivePath?: (p: string) => boolean;
+        })
+      | null;
+    const hidden =
+      checker && typeof checker.isSensitivePath === "function"
+        ? (absPath: string) =>
+            (checker.isPathHidden?.(absPath) ?? false) ||
+            (checker.isSensitivePath?.(absPath) ?? false)
+        : undefined;
     const rebuilt = new Map<string, LegacyTool>();
-    for (const t of createStatefulTools(subTracker)) rebuilt.set(t.name(), t);
+    for (const t of createStatefulTools(subTracker, hidden)) rebuilt.set(t.name(), t);
 
     const tools = new ToolRegistry();
     let needsIsolatedToolSearch = false;
@@ -2332,6 +2345,12 @@ export class SubAgent {
       }
       // 有状态工具用子代理独立 tracker 重建；无状态工具直接复用（安全）
       let replacement = STATEFUL_TOOL_NAMES.has(t.name()) ? rebuilt.get(t.name()) : undefined;
+      // P1-1：grep 无 per-session 可变状态，但必须接到同一道敏感文件过滤。
+      // 子代理复用父实例时，父实例可能尚未 setPathHiddenFilter（mcp-serve / 测试装配）；
+      // 有 hidden 就给一份带过滤器的独立实例，避免子代理搜出 .env。
+      if (!replacement && t.name() === "grep" && hidden) {
+        replacement = new GrepTool(hidden);
+      }
       // P1-2：todo_write 持有 currentTodos 内存态（也是"先读后写"外的可变状态载体）。
       // 子代理若复用父级同一实例，并发写会污染主会话清单——给每个子代理一份**独立实例**，
       // 实现进程内 todo 追踪隔离（与 FileReadTracker 工具同构思路，无需跨执行器传 agentId）。

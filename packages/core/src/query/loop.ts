@@ -648,11 +648,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
    */
   let turnStopReason: TurnStopReason | undefined;
   /**
-   * P1-4：是否将要跑「maxTurns 强制总结轮」。判据与下方那段的 `if` 逐字同源 ——
-   * 抄一份判据就是给自己埋一个"两处条件漂移"的坑，所以抽成函数由两处共用。
+   * P1-6：是否将要跑「maxTurns 强制总结轮」。
+   *
+   * 必须与下方 try 外那段 `if` **以及**「函数会不会落到那段」同源。
+   * `yield done; return` 在 try 里会跑 finally，然后函数直接返回，总结轮根本不跑。
+   * 旧判据只看 turnCount>=maxTurns，finally 以为总结还在而跳过 TurnComplete，
+   * 无头评测打满上限的题系统性没锚点。
+   *
+   * `exitedViaReturn` 在每个 `return` 出口置位；自然出 while（turnCount 耗尽、
+   * 没有 return）才可能落到 try 外的总结段。
    */
+  let exitedViaReturn = false;
   const willRunForcedSummary = (): boolean =>
-    state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted;
+    !exitedViaReturn && state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted;
   /**
    * P1-4：发射本轮 `TurnComplete`（幂等，重复调用只生效一次）。
    *
@@ -1960,6 +1968,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
         if (beforeModelResult.finalOutput?.shouldStopExecution()) {
@@ -1973,6 +1982,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
       }
@@ -2128,6 +2138,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
               incompleteReason: "aborted",
             };
+            exitedViaReturn = true;
             return;
           }
         }
@@ -2241,6 +2252,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           }
           log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
@@ -2778,6 +2790,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
                 incompleteReason: "aborted",
               };
+              exitedViaReturn = true;
               return;
             }
             continue;
@@ -2810,6 +2823,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             incompleteReason: "timeout_retry_exhausted",
           };
+          exitedViaReturn = true;
           return;
         }
 
@@ -2870,6 +2884,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           }
           const beforeFallback = ctxMgr.messageCount();
@@ -2956,6 +2971,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             incompleteReason: "aborted",
           };
+          exitedViaReturn = true;
           return;
         }
       }
@@ -3042,6 +3058,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           } else if (budgetAlert.level === "critical" || budgetAlert.level === "warning") {
             const pct = (budgetAlert.percentage * 100).toFixed(0);
@@ -3067,6 +3084,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
             yield { kind: "system", level: "warning", text: quotaResult.message };
@@ -3220,6 +3238,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
         if (afterModelResult.finalOutput?.shouldStopExecution()) {
@@ -3233,6 +3252,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
       }
@@ -3405,6 +3425,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
           turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
         };
+        exitedViaReturn = true;
         return;
       }
 
@@ -3443,6 +3464,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
         yield { kind: "loop_detected", detail: "内容重复模式" };
@@ -3527,8 +3549,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 若仍有 tool_use，说明模型有未执行的工具调用 → 不在此结束，fall-through 到下方 tool_use 分支
       // 正常执行（复用循环检测 / UI 事件 / followup / tool_result 全套，避免重写执行逻辑）。
       const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
-      // F2 fall-through 标记：仅 end_turn/stop 且含（非空）tool_use 时为真。
-      // 限定 stopReason 避免影响 max_tokens 续写 / content_filter 等其他分支的既有语义。
+      // F2 fall-through：end_turn/stop（协议偏差）或 max_tokens/length（截断时已带完整工具）。
+      // content_filter 等其它 reason 仍不进 F2，截断续写只留给无 tool_use 的纯文本。
       //
       // P0-2（对齐 CC 死亡螺旋防御）：isEndTurnLike 是白名单匹配（=== "end_turn" || === "stop"），
       // 不是黑名单匹配（!== "error" 之类）。这是下面 AfterAgent hook / Stop Hooks 只在模型真正
@@ -3545,15 +3567,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 对齐 CC：stop_sequence 在 CC 全源码零特殊处理，直接 fall-through 当正常结束。
       // 白名单方向不变（fail-closed 防死亡螺旋，见上方 P0-2 注释），这里只是补齐一个已知的正常终止 reason。
       const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
-      const f2FallThrough = isEndTurnLike && hasPendingToolUse;
+      // P1-4：max_tokens/length 带着非空 tool_use 时先执行工具，截断续写只留给纯文本截断。
+      // F1 已在上方拦空参数，走到这里的 tool_use 参数非空。content_filter 仍不进 F2。
+      const isTruncatedWithTools =
+        hasPendingToolUse &&
+        (response.stopReason === "max_tokens" || response.stopReason === "length");
+      const f2FallThrough = (isEndTurnLike || isTruncatedWithTools) && hasPendingToolUse;
       if (f2FallThrough) {
-        // §2.4：stop_reason 与 content 不一致——声称 end_turn/stop 却仍含 tool_use。
+        // §2.4 / P1-4：stop_reason 与 content 不一致（end_turn/stop 或 max_tokens 仍含 tool_use）。
         // 功能上 F2 fall-through 已能正确执行工具（不漏调），这里只补一条结构化 warn
-        // 遥测（不改控制流），把"被动兜住"升级为"主动暴露"：便于按 model 聚合发现
-        // 哪家第三方代理有此协议偏差（maximhq/bifrost #3638）。
+        // 遥测（不改控制流），把"被动兜住"升级为"主动暴露"。
         log.warn(
           "QUERY_LOOP",
-          "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具）",
+          `stop_reason 与 content 不一致：声称 ${response.stopReason} 但含 tool_use（已自动兜底执行工具）`,
           {
             stopReason: response.stopReason,
             toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
@@ -3601,7 +3627,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
 
           if (stopResult?.forceStop) {
+            // P1-1：forceStop 必须立刻收尾。此前只打日志，后面 Todo/Goal/`+k` 闸门照跑，
+            // Stop Hook 明确说停仍会被续到 maxTurns。
             log.info("QUERY_LOOP", "Stop Hook preventContinuation，强制结束");
+            turnStopReason = "other";
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
+            exitedViaReturn = true;
+            return;
           }
         }
 
@@ -3630,7 +3667,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             setTransition(state, { type: "unanswered_retry" }, deps, sessionState.sessionId);
             continue;
           }
-          // 续命耗尽：放行，但如实告知用户模型未能正常答复（不假装完成）
+          // P1-3：耗尽后必须直接收尾。旧实现只 yield 警告再 fall-through 到 Goal /
+          // Token Budget，后者会 continue，把「放行结束」做成「放行给下一道续命门」。
           log.warn(
             "QUERY_LOOP",
             `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}，放行但如实呈现`,
@@ -3640,6 +3678,16 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             level: "warning",
             text: `模型连续 ${MAX_UNANSWERED_RETRIES} 次未产出有效答复（可能陷入思考发散）。建议换个更具体的提问方式，或切换模型重试。`,
           };
+          state.unansweredRetryCount = 0;
+          turnStopReason = normalizeTurnStopReason(response.stopReason);
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          };
+          exitedViaReturn = true;
+          return;
         }
 
         // ─── P0-3：end_turn 完成度硬校验（对标 claude-code stopHooks.ts）───
@@ -4063,12 +4111,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
           turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
         };
+        exitedViaReturn = true;
         return;
       }
 
       // ─── 处理工具调用 ───
       // 进入条件：stop_reason=tool_use（正常路径），或 F2 fall-through——
-      // stop_reason=end_turn/stop 但 content 仍有（非空参数）tool_use 未执行。
+      // stop_reason=end_turn/stop 或 max_tokens/length 但 content 仍有（非空参数）tool_use 未执行。
       if (response.stopReason === "tool_use" || f2FallThrough) {
         const toolBlocks = response.content.filter((b) => b.type === "tool_use");
         const toolNames = toolBlocks
@@ -4077,7 +4126,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (response.stopReason !== "tool_use") {
           log.info(
             "QUERY_LOOP",
-            `F2：end_turn(${response.stopReason}) 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`,
+            `F2：${response.stopReason} 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`,
           );
         } else {
           log.info("QUERY_LOOP", `工具调用: ${toolNames.join(", ")}`);
@@ -4104,6 +4153,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           }
           yield { kind: "loop_detected", detail: "工具调用重复" };
@@ -4128,6 +4178,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
                 turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
               };
+              exitedViaReturn = true;
               return;
             }
             yield { kind: "loop_detected", detail: "LLM 认知检测到循环模式" };
@@ -4235,6 +4286,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
               incompleteReason: "aborted",
             };
+            exitedViaReturn = true;
             return;
           }
           // AGENT-2 双重防护：非 abort 异常会 throw 穿透，但此时 assistant(含 tool_use) 已入历史，
@@ -4671,6 +4723,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
             };
+            exitedViaReturn = true;
             return;
           }
         }
@@ -4763,6 +4816,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
           };
+          exitedViaReturn = true;
           return;
         }
 
@@ -4849,6 +4903,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
           turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
         };
+        exitedViaReturn = true;
         return;
       }
 
@@ -4951,6 +5006,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
         turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
       };
+      exitedViaReturn = true;
       return;
     }
   } finally {
