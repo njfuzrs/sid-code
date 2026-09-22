@@ -1176,39 +1176,17 @@ export async function main(): Promise<void> {
       }
     }
 
-    // P2-1 item5 + P2-2：实例化企业策略管理器，读 managed settings，
-    // 把功能开关（policy-limits）与模式管控（mode-policy: disabledModes / disableBypassPermissionsMode）注入全局。
+    // P2-1 item5 + P2-2 + M3：企业策略必须 await。后续 PermissionChecker.initRules()
+    // 读 remote-policy-state；改成 fire-and-forget 会让远程 deny 再次空转。
+    // applyLoadedPolicy 无论 null 都跑——204 / 超时无缓存必须把 applied 拨回 false。
     try {
-      const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
+      const { PolicyManager, applyLoadedPolicy } = await import("@sid-code/core/config/policy.ts");
       const policyManager = new PolicyManager();
       const policy = await policyManager.load();
+      applyLoadedPolicy(policy);
       if (policy) {
-        // 功能级开关
-        if (policy.policyLimits) {
-          const { setPolicyLimits } = await import("@sid-code/core/config/policy-limits.ts");
-          setPolicyLimits(policy.policyLimits);
-        }
-        // 定制化来源锁定（strictPluginOnlyCustomization）：屏蔽用户/项目级自带 skill 等，
-        // 只保留 managed/plugin/builtin。必须在扩展扫描之前注入。
-        {
-          const { setPluginOnlyPolicy } =
-            await import("@sid-code/core/config/plugin-only-policy.ts");
-          setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
-        }
-        // 模式级管控（P2-2）
-        const { setModePolicy, isBypassDisabledByPolicy, isModeDisabledByPolicy } =
+        const { isBypassDisabledByPolicy, isModeDisabledByPolicy } =
           await import("@sid-code/core/permission/mode-policy.ts");
-        setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
-
-        // M3：远程赢了就把 permissions 注入进程内单例（可 undefined = 空远程）。
-        // applied 与「有没有 permissions 对象」分开：空远程也必须挡住 loadPolicyFile。
-        {
-          const { setRemotePolicyPermissions } =
-            await import("@sid-code/core/config/remote-policy-state.ts");
-          if (policy.source === "remote") {
-            setRemotePolicyPermissions(policy.permissions, true);
-          }
-        }
 
         // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
         const cliWantsBypass =

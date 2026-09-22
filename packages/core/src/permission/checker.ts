@@ -1156,6 +1156,7 @@ export class PermissionChecker implements Checker {
         resource,
         decision: "allow",
         reason: "skipPermissions",
+        ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return { allowed: true };
     }
@@ -1207,6 +1208,7 @@ export class PermissionChecker implements Checker {
           decision: "allow",
           reason: "PreToolUse hook allow",
           user_confirmed: false,
+          ...(options?.auditSource ? { source: options.auditSource } : {}),
         });
         return {
           allowed: true,
@@ -1256,6 +1258,7 @@ export class PermissionChecker implements Checker {
         decision: "allow",
         reason: result.reason,
         decisionReason: result.decisionReason,
+        ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return result;
     }
@@ -1298,6 +1301,7 @@ export class PermissionChecker implements Checker {
         decisionReason: result.decisionReason,
         classifiedBy: result.metadata?.classifiedBy as "hardcoded" | "llm" | "both" | undefined,
         llmRisk: result.metadata?.llmRisk as string | undefined,
+        ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return result;
     }
@@ -1421,6 +1425,7 @@ export class PermissionChecker implements Checker {
         decision: "deny",
         reason: dontAskDecision.reason,
         decisionReason: dontAskDecision.decisionReason,
+        ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return dontAskDecision;
     }
@@ -1480,6 +1485,7 @@ export class PermissionChecker implements Checker {
         decision: "deny",
         reason: nonInteractiveDecision.reason,
         decisionReason: nonInteractiveDecision.decisionReason,
+        ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return nonInteractiveDecision;
     }

@@ -4,20 +4,15 @@
  * first-source-wins：只取最高优先级的来源，不合并
  */
 
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
+import { setModePolicy } from "../permission/mode-policy.ts";
 import { sidPaths } from "./paths.ts";
-import type { CustomizationSurface } from "./plugin-only-policy.ts";
+import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
+import { setPolicyLimits } from "./policy-limits.ts";
+import { setRemotePolicyPermissions } from "./remote-policy-state.ts";
 
 /** 策略来源（优先级从高到低，first-source-wins） */
 export type PolicySource = "remote" | "mdm" | "managed_file";
@@ -114,12 +109,16 @@ export class ManagedFileLoader implements PolicyLoader {
 /**
  * 远程策略加载器（M3）。
  *
- * 失败语义（契约写进代码，不要事后改）：
- * - 未设 `SID_CODE_POLICY_ENDPOINT` → 立即 null，零请求（fail-open，不是错误）
+ * 权威 vs 非权威（契约 §5 / §7，禁止再用「fail-open」一个词覆盖）：
+ * - 权威：200 / 204 / 304。以本次响应为准。204 = 无远程策略：写负缓存（无 settings），
+ *   进程内 `remote-policy-state.applied=false`（由 applyLoadedPolicy 同步）。
+ * - 非权威：超时 / 网络错 / 5xx / JSON 坏了 / 401。进程不崩。缓存**可以**用，但必须同时
+ *   满足：① endpoint 一致；② 上次权威是 200（有 settings）；③ `fetched_at` 未过
+ *   `POLICY_CACHE_STALE_MS`。缺一条就当无远程策略，不得续命已撤销的 deny。
+ *
+ * 其它：
+ * - 未设 `SID_CODE_POLICY_ENDPOINT` → 立即 null，零请求（不是错误）
  * - `http://` 且 host 不是 localhost/127.0.0.1 → 拒绝请求并 warn，当 null
- * - 网络 / 5xx / 超时 / JSON 不可解析 → 磁盘缓存 → 再没有则 null
- * - 401 → 告警凭据，退回缓存 / null，不阻塞启动
- * - 204 → 远程明确没有；清缓存、返回 null，让位给 ManagedFileLoader
  * - 200 + 空对象 `{source:"remote"}` 才是「远程明确下发了什么都不禁」（会盖掉本地）
  *
  * `supportsPolling` 保持 true，但 PolicyManager 本里程碑不轮询——生效延迟 = 下次重启。
@@ -148,67 +147,30 @@ export class RemotePolicyLoader implements PolicyLoader {
     if (!token) {
       if (!warnedNoCredential) {
         warnedNoCredential = true;
-        log.warn("POLICY", "无设备凭据，跳过远程策略（fail-open；有磁盘缓存则用缓存）");
+        log.warn("POLICY", "无设备凭据，跳过远程策略（有未过期 200 缓存则用缓存）");
       }
-      return cache?.settings ?? null;
+      return usableCachedSettings(cache, "no_credential");
     }
 
-    const headers = applyDeviceAuth({ Accept: "application/json" });
-    if (cache?.etag) headers["If-None-Match"] = cache.etag;
-
-    let resp: Response;
-    try {
-      resp = await fetch(endpoint, {
-        headers,
-        signal: AbortSignal.timeout(POLICY_FETCH_TIMEOUT_MS),
-      });
-    } catch (err: any) {
-      log.warn("POLICY", `远程策略请求失败（fail-open，回退缓存）: ${err?.message ?? err}`);
-      return cache?.settings ?? null;
-    }
-
-    if (resp.status === 304) {
-      return cache?.settings ?? null;
-    }
-    if (resp.status === 204) {
-      // 远程明确没有。按契约当 null，让位给 ManagedFileLoader。
-      // 不要把「空远程」写入缓存当成有效 settings。
-      clearPolicyCache();
-      return null;
-    }
-    if (resp.status === 401) {
-      log.warn("POLICY", "远程策略 401：设备凭据无效或已吊销（fail-open，回退缓存）");
-      return cache?.settings ?? null;
-    }
-    if (!resp.ok) {
-      log.debug("POLICY", `远程策略 HTTP ${resp.status}（fail-open，回退缓存）`);
-      return cache?.settings ?? null;
-    }
-
-    let json: unknown;
-    try {
-      json = await resp.json();
-    } catch (err: any) {
-      log.warn("POLICY", `远程策略 JSON 不可解析（fail-open，回退缓存）: ${err?.message ?? err}`);
-      return cache?.settings ?? null;
-    }
-
-    const settings = sanitizeRemotePolicy(json);
-    if (!settings) return cache?.settings ?? null;
-
-    const etag = resp.headers.get("ETag") ?? undefined;
-    writePolicyCache({
-      etag,
-      endpoint,
-      fetched_at: new Date().toISOString(),
-      settings,
-    });
-    return settings;
+    const started = Date.now();
+    const result = await fetchRemotePolicyWithRetry(endpoint, cache);
+    const elapsedMs = Date.now() - started;
+    return interpretRemoteResponse(result, cache, endpoint, elapsedMs);
   }
 }
 
-/** 启动路径 5s 超时，与 flag `refreshFromRemote` 一致，不能挂死。 */
-const POLICY_FETCH_TIMEOUT_MS = 5000;
+/**
+ * 单次 fetch 超时。本机生产 HTTPS 握手实测可 >5s（不带 -4 时 17–25s），
+ * 5s 会把权威 204 误判成超时、然后用旧 deny 续命。15s 活过一次慢握手。
+ * 首次失败再试一次（合计预算 ≈ 30s），第二次成功必须按权威响应处理。
+ */
+export const POLICY_FETCH_TIMEOUT_MS = 15_000;
+
+/** 非权威回退 200 缓存的最长寿命。过了就当无远程策略，停用不会永生。 */
+export const POLICY_CACHE_STALE_MS = 10 * 60 * 1000;
+
+/** 启动路径最多打几次网（含首次）。 */
+const POLICY_FETCH_ATTEMPTS = 2;
 
 /** policyLimits 里本模块真正把关的 4 个 key；多的丢掉并 debug，不要整份丢。 */
 const GATED_POLICY_LIMIT_KEYS = new Set(["mcp", "sub_agent", "custom_commands", "extensions"]);
@@ -240,11 +202,21 @@ interface PolicyCacheFile {
   etag?: string;
   fetched_at?: string;
   endpoint?: string;
+  /** 上次权威 HTTP 状态。204 负缓存没有 settings。 */
+  last_status?: number;
   settings?: PolicySettings;
 }
 
+type RemoteFetchOutcome =
+  | { kind: "http"; status: number; etag?: string; json?: unknown }
+  | { kind: "network"; message: string };
+
 let warnedNoCredential = false;
 let warnedCorruptCache = false;
+
+/** 进程内默认链只 fetch 一次：cli 与 app 共用。自定义 loaders 的 PolicyManager 不走这里。 */
+let inFlightDefaultLoad: Promise<PolicySettings | null> | null = null;
+let defaultLoadResult: PolicySettings | null | undefined;
 
 /**
  * 明文 HTTP 且 host 不是 loopback → 拒绝。
@@ -373,13 +345,30 @@ function readPolicyCache(): PolicyCacheFile | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as PolicyCacheFile;
     if (!parsed || typeof parsed !== "object") return null;
+    const lastStatus =
+      typeof parsed.last_status === "number"
+        ? parsed.last_status
+        : parsed.settings
+          ? 200
+          : undefined;
     const settings = parsed.settings ? sanitizeRemotePolicy(parsed.settings) : null;
-    if (!settings) return null;
+    // 204 负缓存合法：无 settings。损坏 = 声称 200 却没有 settings，或 JSON 形状不对。
+    if (lastStatus === 200 && !settings) return null;
+    if (lastStatus === 204 && settings) {
+      // 半写/崩溃留下的矛盾文件：权威是空，丢掉 settings。
+      return {
+        etag: typeof parsed.etag === "string" ? parsed.etag : undefined,
+        fetched_at: typeof parsed.fetched_at === "string" ? parsed.fetched_at : undefined,
+        endpoint: typeof parsed.endpoint === "string" ? parsed.endpoint : undefined,
+        last_status: 204,
+      };
+    }
     return {
       etag: typeof parsed.etag === "string" ? parsed.etag : undefined,
       fetched_at: typeof parsed.fetched_at === "string" ? parsed.fetched_at : undefined,
       endpoint: typeof parsed.endpoint === "string" ? parsed.endpoint : undefined,
-      settings,
+      last_status: lastStatus,
+      ...(settings ? { settings } : {}),
     };
   } catch {
     if (!warnedCorruptCache) {
@@ -394,7 +383,8 @@ function writePolicyCache(cache: {
   etag?: string;
   endpoint: string;
   fetched_at: string;
-  settings: PolicySettings;
+  last_status: number;
+  settings?: PolicySettings;
 }): void {
   const path = sidPaths.policyCache();
   const dir = dirname(path);
@@ -405,7 +395,8 @@ function writePolicyCache(cache: {
         ...(cache.etag ? { etag: cache.etag } : {}),
         fetched_at: cache.fetched_at,
         endpoint: cache.endpoint,
-        settings: cache.settings,
+        last_status: cache.last_status,
+        ...(cache.settings ? { settings: cache.settings } : {}),
       },
       null,
       2,
@@ -421,19 +412,218 @@ function writePolicyCache(cache: {
   }
 }
 
-function clearPolicyCache(): void {
-  const path = sidPaths.policyCache();
-  try {
-    if (existsSync(path)) unlinkSync(path);
-  } catch (err: any) {
-    getLogger().debug("POLICY", `清除远程策略缓存失败: ${err?.message ?? err}`);
+function writeNegativeCache(endpoint: string, etag?: string): void {
+  writePolicyCache({
+    etag,
+    endpoint,
+    fetched_at: new Date().toISOString(),
+    last_status: 204,
+  });
+}
+
+function isCacheFresh(cache: PolicyCacheFile | null): boolean {
+  if (!cache?.fetched_at) return false;
+  const t = Date.parse(cache.fetched_at);
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t <= POLICY_CACHE_STALE_MS;
+}
+
+/**
+ * 非权威路径才能用的缓存：必须是未过期的 200 settings。
+ * 204 负缓存 / 过期 / 无 settings → null（不得复活 deny）。
+ */
+function usableCachedSettings(
+  cache: PolicyCacheFile | null,
+  reason: string,
+): PolicySettings | null {
+  const log = getLogger();
+  if (!cache?.settings || cache.last_status === 204) {
+    log.warn("POLICY", `远程策略 ${reason} 无可用 200 缓存 → 无远程策略`);
+    return null;
   }
+  if (!isCacheFresh(cache)) {
+    log.warn("POLICY", `远程策略 ${reason} 缓存过期 fetched_at=${cache.fetched_at} 已停用约束`);
+    return null;
+  }
+  log.warn(
+    "POLICY",
+    `远程策略 ${reason} 回退缓存 fetched_at=${cache.fetched_at} last_status=${cache.last_status ?? 200}`,
+  );
+  return cache.settings;
+}
+
+async function fetchOnce(
+  endpoint: string,
+  cache: PolicyCacheFile | null,
+): Promise<RemoteFetchOutcome> {
+  const headers = applyDeviceAuth({ Accept: "application/json" });
+  if (cache?.etag) headers["If-None-Match"] = cache.etag;
+  try {
+    const resp = await fetch(endpoint, {
+      headers,
+      signal: AbortSignal.timeout(POLICY_FETCH_TIMEOUT_MS),
+    });
+    const etag = resp.headers.get("ETag") ?? undefined;
+    if (resp.status === 200) {
+      let json: unknown;
+      try {
+        json = await resp.json();
+      } catch (err: any) {
+        return { kind: "network", message: `JSON 不可解析: ${err?.message ?? err}` };
+      }
+      return { kind: "http", status: 200, etag, json };
+    }
+    return { kind: "http", status: resp.status, etag };
+  } catch (err: any) {
+    return { kind: "network", message: String(err?.message ?? err) };
+  }
+}
+
+async function fetchRemotePolicyWithRetry(
+  endpoint: string,
+  cache: PolicyCacheFile | null,
+): Promise<RemoteFetchOutcome> {
+  let last: RemoteFetchOutcome = { kind: "network", message: "未请求" };
+  for (let i = 0; i < POLICY_FETCH_ATTEMPTS; i++) {
+    last = await fetchOnce(endpoint, cache);
+    if (
+      last.kind === "http" &&
+      (last.status === 200 || last.status === 204 || last.status === 304)
+    ) {
+      return last;
+    }
+    // 401 不重试：凭据不会自己变好。
+    if (last.kind === "http" && last.status === 401) return last;
+  }
+  return last;
+}
+
+function interpretRemoteResponse(
+  result: RemoteFetchOutcome,
+  cache: PolicyCacheFile | null,
+  endpoint: string,
+  elapsedMs: number,
+): PolicySettings | null {
+  const log = getLogger();
+
+  if (result.kind === "network") {
+    log.warn("POLICY", `远程策略 超时 elapsed_ms=${elapsedMs} ${result.message}`);
+    return usableCachedSettings(cache, `超时 elapsed_ms=${elapsedMs}`);
+  }
+
+  if (result.status === 304) {
+    if (cache?.settings) {
+      // 304 是权威「内容没变」。刷新 fetched_at，否则紧接着一次超时会把仍有效的策略当过期丢掉。
+      writePolicyCache({
+        etag: result.etag ?? cache.etag,
+        endpoint,
+        fetched_at: new Date().toISOString(),
+        last_status: 200,
+        settings: cache.settings,
+      });
+      log.info(
+        "POLICY",
+        `远程策略 304 用缓存 fetched_at=${cache.fetched_at ?? "?"} elapsed_ms=${elapsedMs}`,
+      );
+      return cache.settings;
+    }
+    log.warn("POLICY", `远程策略 304 但本地无 settings elapsed_ms=${elapsedMs} → 无远程策略`);
+    return null;
+  }
+
+  if (result.status === 204) {
+    writeNegativeCache(endpoint, result.etag);
+    log.info("POLICY", `远程策略 204 无策略 elapsed_ms=${elapsedMs} 已清缓存`);
+    return null;
+  }
+
+  if (result.status === 401) {
+    log.warn("POLICY", `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销`);
+    return usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
+  }
+
+  if (result.status !== 200) {
+    log.warn("POLICY", `远程策略 HTTP ${result.status} elapsed_ms=${elapsedMs}`);
+    return usableCachedSettings(cache, `HTTP ${result.status} elapsed_ms=${elapsedMs}`);
+  }
+
+  const settings = sanitizeRemotePolicy(result.json);
+  if (!settings) {
+    log.warn("POLICY", `远程策略 200 body 无效 elapsed_ms=${elapsedMs}`);
+    return usableCachedSettings(cache, `200 无效 elapsed_ms=${elapsedMs}`);
+  }
+
+  writePolicyCache({
+    etag: result.etag,
+    endpoint,
+    fetched_at: new Date().toISOString(),
+    last_status: 200,
+    settings,
+  });
+  const deny = settings.permissions?.deny?.length ?? 0;
+  log.info(
+    "POLICY",
+    `远程策略 200 etag=${result.etag ?? "—"} deny=${deny} elapsed_ms=${elapsedMs}`,
+  );
+  return settings;
 }
 
 /** 仅测试 */
 export function __resetRemotePolicyLoaderForTest(): void {
   warnedNoCredential = false;
   warnedCorruptCache = false;
+  inFlightDefaultLoad = null;
+  defaultLoadResult = undefined;
+}
+
+async function runLoaders(loaders: PolicyLoader[]): Promise<PolicySettings | null> {
+  for (const loader of loaders) {
+    const settings = await loader.load();
+    if (settings) return settings;
+  }
+  return null;
+}
+
+/**
+ * 进程内默认链只跑一次。cli.ts 与 app.ts 必须调这个，禁止各 `new PolicyManager().load()`
+ * 打两次网（验收 16:01：一次超时回退 deny、一次 204 清盘，进程内 deny 留下）。
+ *
+ * 自定义 loaders 的 PolicyManager 不走去重——测试替身必须每次真的 load。
+ */
+export function loadEnterprisePolicyOnce(): Promise<PolicySettings | null> {
+  if (defaultLoadResult !== undefined) return Promise.resolve(defaultLoadResult);
+  if (inFlightDefaultLoad) return inFlightDefaultLoad;
+  inFlightDefaultLoad = runLoaders([new RemotePolicyLoader(), new ManagedFileLoader()])
+    .then((settings) => {
+      defaultLoadResult = settings;
+      return settings;
+    })
+    .finally(() => {
+      inFlightDefaultLoad = null;
+    });
+  return inFlightDefaultLoad;
+}
+
+/**
+ * 把 PolicyManager.load 的结果同步进进程内单例。
+ *
+ * **无论 policy 是否 null 都要跑**：204 / 超时无可用缓存 / 未配 endpoint 必须把
+ * `applied` 拨回 false。修前 `cli.ts` 用 `if (policy)` 包住，null 不拨状态，
+ * 同进程先超时后 204 就会把旧 deny 留到进程结束。
+ */
+export function applyLoadedPolicy(policy: PolicySettings | null): void {
+  if (policy?.source === "remote") {
+    setRemotePolicyPermissions(policy.permissions, true);
+  } else {
+    setRemotePolicyPermissions(undefined, false);
+  }
+  if (!policy) return;
+
+  if (policy.policyLimits) {
+    setPolicyLimits(policy.policyLimits);
+  }
+  setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
+  setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
 }
 
 /**
@@ -443,8 +633,10 @@ export function __resetRemotePolicyLoaderForTest(): void {
 export class PolicyManager {
   private loaders: PolicyLoader[];
   private cachedSettings: PolicySettings | null = null;
+  private readonly usesDefaultLoaders: boolean;
 
   constructor(loaders?: PolicyLoader[]) {
+    this.usesDefaultLoaders = !loaders;
     this.loaders = loaders || [new RemotePolicyLoader(), new ManagedFileLoader()];
   }
 
@@ -453,18 +645,17 @@ export class PolicyManager {
    *
    * ⚠️ cli 启动路径必须 await 本方法：后续 PermissionChecker.initRules()
    * 依赖 setRemotePolicyPermissions 的进程内状态。改成 fire-and-forget
-   * 会让远程 permissions.deny 再次空转（app.ts 那条异步只影响 hook 门控）。
+   * 会让远程 permissions.deny 再次空转。
+   *
+   * 默认 loaders 走 `loadEnterprisePolicyOnce()`：进程内第二次调用复用第一次的
+   * in-flight / 结果，不再打第二次 HTTPS。
    */
   async load(): Promise<PolicySettings | null> {
-    for (const loader of this.loaders) {
-      const settings = await loader.load();
-      if (settings) {
-        this.cachedSettings = settings;
-        return settings;
-      }
-    }
-    this.cachedSettings = null;
-    return null;
+    const settings = this.usesDefaultLoaders
+      ? await loadEnterprisePolicyOnce()
+      : await runLoaders(this.loaders);
+    this.cachedSettings = settings;
+    return settings;
   }
 
   /** 获取缓存的策略 */

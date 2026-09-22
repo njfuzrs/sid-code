@@ -43,6 +43,11 @@ export interface PermissionRequest {
  */
 export interface PermissionCheckOptions {
   hookPermissionDecision?: "allow" | "ask";
+  /**
+   * 写入 permissions-audit 的 source。`policy-probe` = 不经模型的接线探针，
+   * 触发率脚本必须与真实工具行分开计，避免把 A 刷成 100%。
+   */
+  auditSource?: string;
 }
 
 /** 权限检查器接口 */
@@ -117,6 +122,11 @@ export interface AuditEntry {
   classifiedBy?: "hardcoded" | "llm" | "both";
   /** LLM 分类器给出的风险等级（仅 LLM 参与判定时） */
   llmRisk?: string;
+  /**
+   * 审计来源。缺省 = 真实工具决策；`policy-probe` = 启动探针（不经模型）。
+   * 触发率脚本用它把探针和真实撞墙分行。
+   */
+  source?: string;
 }
 
 // ── 多来源规则系统类型 ──

@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
@@ -14,14 +14,24 @@ import {
   ManagedFileLoader,
   PolicyManager,
   RemotePolicyLoader,
+  applyLoadedPolicy,
   __resetRemotePolicyLoaderForTest,
   isNonLocalHttp,
   sanitizeRemotePolicy,
+  POLICY_CACHE_STALE_MS,
 } from "@sid-code/core/config/policy.ts";
 import {
   __resetCredentialCacheForTest,
   saveDeviceCredential,
 } from "@sid-code/core/identity/index.ts";
+import {
+  getRemotePolicyPermissions,
+  isRemotePolicyApplied,
+  setRemotePolicyPermissions,
+  __resetRemotePolicyPermissionsForTest,
+} from "@sid-code/core/config/remote-policy-state.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 
 let tmpDir: string;
 let prevConfigDir: string | undefined;
@@ -51,6 +61,7 @@ beforeEach(() => {
   process.env.SID_CONFIG_DIR = tmpDir;
   delete process.env.SID_CODE_POLICY_ENDPOINT;
   __resetRemotePolicyLoaderForTest();
+  __resetRemotePolicyPermissionsForTest();
   __resetCredentialCacheForTest();
   origFetch = globalThis.fetch;
 });
@@ -58,6 +69,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = origFetch;
   __resetRemotePolicyLoaderForTest();
+  __resetRemotePolicyPermissionsForTest();
   __resetCredentialCacheForTest();
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
@@ -206,7 +218,7 @@ describe("RemotePolicyLoader.load", () => {
     expect(afterAbort?.permissions?.deny).toEqual(["Bash(curl *)"]);
   });
 
-  test("mock 204 → null，且缓存被清", async () => {
+  test("mock 204 → null，且文件无 settings（负缓存）", async () => {
     enroll();
     process.env.SID_CODE_POLICY_ENDPOINT = "http://127.0.0.1:8900/api/v1/ctl/policy";
     installFetch(
@@ -219,7 +231,10 @@ describe("RemotePolicyLoader.load", () => {
 
     installFetch(mock(async () => emptyResponse(204)) as unknown as typeof fetch);
     expect(await new RemotePolicyLoader().load()).toBeNull();
-    expect(existsSync(sidPaths.policyCache())).toBe(false);
+    expect(existsSync(sidPaths.policyCache())).toBe(true);
+    const cached = JSON.parse(readFileSync(sidPaths.policyCache(), "utf-8"));
+    expect(cached.last_status).toBe(204);
+    expect(cached.settings).toBeUndefined();
   });
 
   test("mock 401 → 返回缓存 / null，不抛", async () => {
@@ -266,6 +281,7 @@ describe("RemotePolicyLoader.load", () => {
         etag: '"v1"',
         endpoint: process.env.SID_CODE_POLICY_ENDPOINT,
         fetched_at: new Date().toISOString(),
+        last_status: 200,
         settings: { source: "remote", permissions: { deny: ["Bash(curl *)"] } },
       }),
       { mode: 0o600 },
@@ -309,5 +325,115 @@ describe("PolicyManager 默认链", () => {
     const policy = await new PolicyManager().load();
     expect(policy?.source).toBe("managed_file");
     expect(policy?.permissions?.deny).toEqual(["Bash(*)"]);
+  });
+});
+
+describe("M3 遗留：权威 204 压过缓存 / stale / once-load", () => {
+  const endpoint = "http://127.0.0.1:8900/api/v1/ctl/policy";
+
+  test("204 后再 abort → null，不得复活 200 deny", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    installFetch(
+      mock(async () =>
+        jsonResponse({ permissions: { deny: ["Bash(curl *)"] } }, { etag: '"v1"' }),
+      ) as unknown as typeof fetch,
+    );
+    expect((await new RemotePolicyLoader().load())?.permissions?.deny).toEqual(["Bash(curl *)"]);
+
+    installFetch(mock(async () => emptyResponse(204)) as unknown as typeof fetch);
+    expect(await new RemotePolicyLoader().load()).toBeNull();
+
+    installFetch(
+      mock(async () => {
+        throw new Error("aborted");
+      }) as unknown as typeof fetch,
+    );
+    expect(await new RemotePolicyLoader().load()).toBeNull();
+  });
+
+  test("stale 窗口到点：abort 不得用旧 deny", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    writeFileSync(
+      sidPaths.policyCache(),
+      JSON.stringify({
+        etag: '"v1"',
+        endpoint,
+        fetched_at: new Date(Date.now() - POLICY_CACHE_STALE_MS - 1000).toISOString(),
+        last_status: 200,
+        settings: { source: "remote", permissions: { deny: ["Bash(curl *)"] } },
+      }),
+      { mode: 0o600 },
+    );
+    installFetch(
+      mock(async () => {
+        throw new Error("aborted");
+      }) as unknown as typeof fetch,
+    );
+    expect(await new RemotePolicyLoader().load()).toBeNull();
+    applyLoadedPolicy(null);
+    expect(isRemotePolicyApplied()).toBe(false);
+    expect(getRemotePolicyPermissions()).toBeUndefined();
+  });
+
+  test("applyLoadedPolicy(null) 必须拨回 applied=false", () => {
+    setRemotePolicyPermissions({ deny: ["Bash(curl *)"] }, true);
+    expect(isRemotePolicyApplied()).toBe(true);
+    applyLoadedPolicy(null);
+    expect(isRemotePolicyApplied()).toBe(false);
+    expect(getRemotePolicyPermissions()).toBeUndefined();
+  });
+
+  test("双 load 竞态：abort 注入 deny 后 204 必须撤掉，checker 不再 rule deny", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    writeFileSync(
+      sidPaths.policyCache(),
+      JSON.stringify({
+        etag: '"v1"',
+        endpoint,
+        fetched_at: new Date().toISOString(),
+        last_status: 200,
+        settings: { source: "remote", permissions: { deny: ["Bash(curl *)"] } },
+      }),
+      { mode: 0o600 },
+    );
+
+    installFetch(
+      mock(async () => {
+        throw new Error("aborted");
+      }) as unknown as typeof fetch,
+    );
+    const first = await new RemotePolicyLoader().load();
+    applyLoadedPolicy(first);
+    expect(isRemotePolicyApplied()).toBe(true);
+    expect(getRemotePolicyPermissions()?.deny).toEqual(["Bash(curl *)"]);
+
+    installFetch(mock(async () => emptyResponse(204)) as unknown as typeof fetch);
+    const second = await new RemotePolicyLoader().load();
+    applyLoadedPolicy(second);
+    expect(second).toBeNull();
+    expect(isRemotePolicyApplied()).toBe(false);
+
+    const checker = new PermissionChecker(defaultConfig(), undefined, tmpDir);
+    await checker.initRules();
+    const d = await checker.check({
+      toolName: "bash",
+      input: { command: "curl https://example.com" },
+    });
+    expect(d.decisionReason?.type).not.toBe("rule");
+  });
+
+  test("进程内第二次 PolicyManager.load() 不发第二次 fetch", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    const fetchMock = mock(async () =>
+      jsonResponse({ permissions: { deny: ["Bash(curl *)"] } }, { etag: '"v1"' }),
+    );
+    installFetch(fetchMock as unknown as typeof fetch);
+    await new PolicyManager().load();
+    await new PolicyManager().load();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
