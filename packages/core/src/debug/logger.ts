@@ -81,7 +81,9 @@ const CAT_COLOR: Record<string, string> = {
 //
 // 判据：豁免的是**分类**而非级别，且只作用于文件 sink（控制台仍受 level 约束，
 // 审计模式本就 fileOnly，不刷屏）。新增豁免分类必须同时满足：低频 + 缺失即致盲。
-const ALWAYS_PERSIST_CATEGORIES = ["AUDIT"] as const;
+// POLICY：远程策略 200/204/304/超时 每进程几行。缺了只能靠 RULE_LOADER 条数反推
+// （M3 验收反向 16:01 就是零 POLICY 行却仍 deny）。与 AUDIT 同档。
+const ALWAYS_PERSIST_CATEGORIES = ["AUDIT", "POLICY"] as const;
 
 // 结构化日志条目
 interface LogEntry {

@@ -1090,8 +1090,8 @@ export class App {
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
 
-    // G13：应用企业策略 Hook 门控（managed-settings.json 的 disableAllHooks / allowManagedHooksOnly）。
-    // fire-and-forget：策略读取失败或缺失时不影响启动（无门控 = 全部 hook 照常执行）。
+    // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
+    // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
     void (async () => {
       try {
         const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
@@ -2903,6 +2903,8 @@ export class App {
       if (this.permissionChecker && "initRules" in this.permissionChecker) {
         await (this.permissionChecker as any).initRules();
         log.info("APP", "多来源权限规则加载完成");
+        const { runRemotePolicyProbe } = await import("@sid-code/core/permission/policy-probe.ts");
+        await runRemotePolicyProbe(this.permissionChecker as any);
       }
 
       // 缺口 D：收集 deny 规则摘要（无 checker 或 describeDenyRules 时为 undefined）
@@ -2929,6 +2931,8 @@ export class App {
       if (this.permissionChecker && "initRules" in this.permissionChecker) {
         await (this.permissionChecker as any).initRules();
         log.info("APP", "多来源权限规则加载完成");
+        const { runRemotePolicyProbe } = await import("@sid-code/core/permission/policy-probe.ts");
+        await runRemotePolicyProbe(this.permissionChecker as any);
       }
     }
 

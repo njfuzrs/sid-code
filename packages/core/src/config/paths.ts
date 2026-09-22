@@ -164,8 +164,9 @@ export const sidPaths = {
   gitignore: () => sidHomePath(".gitignore"),
   lspConfig: () => sidHomePath("lsp.json"),
   /**
-   * 远程企业策略磁盘缓存（M3）。ETag + 上次成功的 PolicySettings。
-   * 离线 / 端点挂了仍能用上次成功的远程策略（fail-open）。权限 0o600。
+   * 远程企业策略磁盘缓存（M3）。ETag + 上次权威响应。
+   * 200 带 settings；204 负缓存（有 endpoint/fetched_at/last_status，无 settings）。
+   * 非权威（超时/5xx）只有未过期的 200 缓存才能继续施加约束。权限 0o600。
    */
   policyCache: () => sidHomePath("policy-cache.json"),
   /** 网关定价采集缓存（全局共享，不随会话；带 pricing_version + fetched_at） */
