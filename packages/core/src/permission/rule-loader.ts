@@ -65,6 +65,11 @@ export class RuleLoader {
   private mergedCache: SourcedPermissionRule[] | null = null;
   /** 工作区路径 */
   private workspacePath: string;
+  /**
+   * 远程策略已通过 setPolicyRules 注入。此后 loadPolicyFile 不得覆盖
+   * policySettings（远程 first-source-wins）。显式空也置位，避免 stale。
+   */
+  private policyRulesFromRemote = false;
 
   constructor(workspacePath?: string) {
     this.workspacePath = workspacePath || process.cwd();
@@ -109,6 +114,9 @@ export class RuleLoader {
    * - 0o600 权限校验：非 600 仅告警不阻塞（对齐原 ManagedFileLoader 语义）。
    */
   private async loadPolicyFile(): Promise<void> {
+    // 远程已注入（含显式空 = 清掉）时不再读本地 managed，否则会盖掉远程。
+    if (this.policyRulesFromRemote) return;
+
     const log = getLogger();
 
     for (const filePath of sidPaths.managedPolicyCandidates()) {
@@ -156,6 +164,24 @@ export class RuleLoader {
       this.sources.set("flagSettings", rules);
       this.invalidateCache();
     }
+  }
+
+  /**
+   * 注入远程策略的 permissions（M3）。对标 setFlagRules，写入可信源 policySettings。
+   *
+   * - 不走 filterUntrustedProjectRules（企业管理员有权自我授权）
+   * - 覆盖，不 append
+   * - 显式空 / undefined = 清掉该源，并置 policyRulesFromRemote，避免 loadPolicyFile 用本地文件把 stale 盖回来
+   */
+  setPolicyRules(perms?: SettingsPermissions): void {
+    this.policyRulesFromRemote = true;
+    if (!perms) {
+      this.clearSource("policySettings");
+      return;
+    }
+    const rules = this.parsePermissions(perms, "policySettings");
+    this.sources.set("policySettings", rules);
+    this.invalidateCache();
   }
 
   /**

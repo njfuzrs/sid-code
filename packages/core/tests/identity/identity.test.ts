@@ -311,6 +311,7 @@ describe("配置目录 .gitignore 排除身份文件", () => {
     const text = readFileSync(sidPaths.gitignore(), "utf-8");
     expect(text).toContain("device-id");
     expect(text).toContain("device-credential.json");
+    expect(text).toContain("policy-cache.json");
   });
 });
 

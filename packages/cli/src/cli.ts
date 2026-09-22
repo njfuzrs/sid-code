@@ -1200,6 +1200,16 @@ export async function main(): Promise<void> {
           await import("@sid-code/core/permission/mode-policy.ts");
         setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
 
+        // M3：远程赢了就把 permissions 注入进程内单例（可 undefined = 空远程）。
+        // applied 与「有没有 permissions 对象」分开：空远程也必须挡住 loadPolicyFile。
+        {
+          const { setRemotePolicyPermissions } =
+            await import("@sid-code/core/config/remote-policy-state.ts");
+          if (policy.source === "remote") {
+            setRemotePolicyPermissions(policy.permissions, true);
+          }
+        }
+
         // P2-2 fail-fast：策略禁用 bypass 时，若 CLI 显式传了 bypass 相关 flag/mode，明确报错退出
         const cliWantsBypass =
           cliArgs.skipPermissions === true ||
