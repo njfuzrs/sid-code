@@ -673,7 +673,9 @@ export class PermissionChecker implements Checker {
    * - 构造器传入的 `rules`（来自 cli.ts loadPermissionRules，B 加载器）仅作**启动占位**，
    *   让 initRules 之前的权限检查有兜底；此处 loadAll 读到真实文件后，以 RuleLoader（A）为准。
    *   为避免 B 的占位 projectSettings 与 A 读到的 projectSettings 重复，先清占位再 loadAll。
-   * - cliArg（--allow-tool/--deny-tool）与 flagSettings 从 config 接线（P2-1 补齐的接线缺口）。
+   * - cliArg（--allow-tool/--deny-tool）与 flagSettings（--settings 的 permissions）从 config 接线。
+   *   ⚠️ 这一行注释在 2026-09-22 之前是**假的**：只有 cliArg 真的接了，flagSettings 零调用方。
+   *   改动这里时请连同下方两处 setXxxRules 一起看——注释与接线必须同时成立。
    */
   async initRules(): Promise<void> {
     // 清除构造器 B 占位的 projectSettings，避免与 loadAll 读到的真实文件重复计数
@@ -686,6 +688,38 @@ export class PermissionChecker implements Checker {
     const cliDeny = (this.config as { cliDenyRules?: string[] }).cliDenyRules;
     if ((cliAllow && cliAllow.length) || (cliDeny && cliDeny.length)) {
       this.ruleLoader.setCliArgRules(cliAllow, cliDeny);
+    }
+
+    // P2-1（2026-09-22）：接线 flagSettings（`--settings` 的 permissions）。
+    //
+    // 修前的形态是「死接线」：上面那行注释早就写了「flagSettings 从 config 接线」，
+    // `RULE_SOURCE_PRIORITY.flagSettings = 6`（比 userSettings/cliArg 都高）、
+    // `setFlagRules` 的实现和单测都在，唯独**没有任何生产调用方**。于是
+    // `sid-code --settings '{"permissions":{"deny":["Bash(*)"]}}'` 这类一次性收紧
+    // checker 完全看不到——企业用 CLI 注入权限规则的通道是断的。
+    //
+    // 两条加载链此前不汇合：`--settings` 走 `setFlagSettings()` 进的是
+    // config/settings 合并器的**内存源**（给 loadConfig 用：模型、开关等），
+    // 而 RuleLoader 只读磁盘上的 user/project/local/policy 文件。这里把内存源那一侧的
+    // `permissions` 取出来喂给 RuleLoader，两链合一。
+    //
+    // 用动态 import 而非顶层 import：settings.ts → permission/sensitive.ts 已有依赖，
+    // checker.ts 顶层再 import settings.ts 会成环（loadPolicyFile 里 `await import("fs")`
+    // 是同一处理法）。initRules 本就是 async，没有额外代价。
+    //
+    // flagSettings 是**可信源**（用户本次命令显式给的，与 policySettings 同列，
+    // 见 settings.ts 的 TRUSTED_SETTING_SOURCES），故不走 projectSettings 那套
+    // 危险 allow 剥离——这一点由 setFlagRules 内部的 parsePermissions 直通体现。
+    try {
+      const { getSettingsForSource } = await import("../config/settings/settings.ts");
+      const flagPerms = getSettingsForSource("flagSettings").settings?.permissions;
+      if (flagPerms) {
+        this.ruleLoader.setFlagRules(flagPerms as Parameters<RuleLoader["setFlagRules"]>[0]);
+      }
+    } catch (err: any) {
+      // 取不到 flagSettings 不应阻塞规则加载（磁盘来源已就绪），但必须留痕——
+      // 静默 catch 会让这条接线退回成「看起来接上了、实际又空转」。
+      getLogger().warn("PERMISSION", `flagSettings 权限规则接线失败: ${err?.message ?? err}`);
     }
 
     // 同步到旧版 rules 字段（兼容 checkRules 消费）
@@ -966,7 +1000,41 @@ export class PermissionChecker implements Checker {
     }
 
     // Step 7: 沙箱自动放行（沙箱启用时 bash 命令可自动放行，减少弹窗）
+    //
+    // P2-3（2026-09-22）：这一步此前是「沙箱开了 = bash 跳过一切后续判定」。
+    // 它的正当性依赖「Seatbelt 真的拦得住」，而 profile 里 `(allow file-write* (subpath cwd))`
+    // 放开了整个工作区——写 `.git/hooks/` 在 OS 层是合法的。即
+    // **保护依赖被保护对象存在，而那个对象不存在**。
+    //
+    // 修法分两层，两层都必要：
+    //
+    // ① 自动放行不得越过**模式硬约束**（本次新发现，文档只记了「跳过确认」）。
+    //    实测 `plan` 模式 + `rm -rf src`：修前 `allowed=true dr=other 沙箱保护下自动放行`，
+    //    无沙箱时是 `allowed=false dr=mode 计划模式下只允许只读操作`。
+    //    也就是说沙箱把 plan / deny-write 这两个**代码级只读**模式也打穿了——
+    //    这比「少弹一次窗」严重得多：用户切到 plan 是为了让 agent 不能改东西。
+    //    处理方式与 Step 5.5 的工具级 allow 完全一致（P0-3 已确立该判据）：
+    //    「谁说安全都不能越过模式硬约束」。
+    //
+    // ② `autoAllowBashIfSandboxed` 默认改 false（见 sandbox.ts defaultSandboxConfig）。
+    //    危险命令（Step 2）与重定向（P1-4）已在此步之前拦住，所以剩下被自动放行的是
+    //    「非危险但也没人看过」的任意 bash。让「少弹窗」变成显式 opt-in。
     if (req.toolName === "bash" && this.sandboxManager?.shouldAutoAllowBash()) {
+      // ① 模式硬约束优先：plan / deny-write 是代码级只读，沙箱不构成放行理由
+      if (this.config.permissionMode === "plan") {
+        return this.checkPlanMode(req, filePath, resource);
+      }
+      if (this.config.permissionMode === "deny-write") {
+        log.info(
+          "PERMISSION",
+          `bash(${resource.slice(0, 80)}) → 拒绝(deny-write模式，沙箱自动放行不越过)`,
+        );
+        return {
+          allowed: false,
+          reason: "deny-write 模式下不允许写操作",
+          decisionReason: { type: "mode", mode: "deny-write" },
+        };
+      }
       log.info(
         "PERMISSION",
         `${req.toolName}(${resource.slice(0, 80)}) → 允许(沙箱保护下自动放行)`,

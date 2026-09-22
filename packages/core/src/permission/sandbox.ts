@@ -11,7 +11,10 @@ import { getLogger } from "../debug/logger.ts";
 export interface SandboxConfig {
   /** 是否启用沙箱 */
   enabled: boolean;
-  /** 沙箱启用时自动放行 Bash（减少弹窗） */
+  /**
+   * 沙箱启用时自动放行 Bash（减少弹窗）。**默认 false**，见 defaultSandboxConfig 的理由。
+   * 放行仍不越过 plan / deny-write 模式硬约束（checker Step 7）。
+   */
   autoAllowBashIfSandboxed: boolean;
   /** 允许写入的额外目录 */
   allowedWritePaths: string[];
@@ -31,11 +34,25 @@ export interface SandboxViolation {
   blocked: boolean;
 }
 
-/** 默认沙箱配置 */
+/**
+ * 默认沙箱配置。
+ *
+ * P2-3（2026-09-22）：`autoAllowBashIfSandboxed` 从 true 改为 **false**。
+ *
+ * 原设计是「开了沙箱就别再弹窗」，它的前提是 Seatbelt 能兜住漏出去的东西。
+ * 实际 profile 里 `(allow file-write* (subpath "<cwd>"))` 放开了整个工作区，
+ * 于是 `echo x > .git/hooks/pre-commit` 在 OS 层完全合法——
+ * 「保护」依赖的那个被保护对象并不存在。
+ *
+ * 危险命令（checker Step 2）与敏感重定向（P1-4）都在自动放行**之前**，所以改默认值
+ * 影响的只是「非危险、但也没有任何人看过」的那批 bash。想回到旧行为，
+ * 在 settings.json / SandboxConfig 里显式写 `autoAllowBashIfSandboxed: true`
+ * ——「少弹窗」值得是一个显式选择，不该是装上就有的隐式行为。
+ */
 export function defaultSandboxConfig(): SandboxConfig {
   return {
     enabled: false,
-    autoAllowBashIfSandboxed: true,
+    autoAllowBashIfSandboxed: false,
     allowedWritePaths: [],
     allowedReadPaths: [],
     allowedHosts: ["localhost"],
