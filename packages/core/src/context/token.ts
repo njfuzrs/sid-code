@@ -129,3 +129,41 @@ export function estimateMessagesTokens(messages: import("../llm/types.ts").Messa
   }
   return total;
 }
+
+/** 未注入真实 schema 时，每个工具定义的粗估开销（与 Manager.rawEstimateTokens 同源） */
+export const TOOL_SCHEMA_TOKENS_FALLBACK = 80;
+/** 每条消息的结构开销（role / 分隔），与 Manager.rawEstimateTokens 同源 */
+export const MESSAGE_STRUCTURAL_TOKENS = 4;
+/** tool_use 块额外结构开销 */
+export const TOOL_USE_STRUCTURAL_TOKENS = 20;
+/** tool_result 块额外结构开销 */
+export const TOOL_RESULT_STRUCTURAL_TOKENS = 10;
+
+/**
+ * 会话级启发式 token 估算（消息 + 结构开销 + 可选 system / 工具 schema）。
+ *
+ * P1-6：管线达标判据与 Manager.rawEstimateTokens 必须走同一份计算——
+ * 旧 `chars/4` 漏 thinking、无 CJK 区分、不含结构开销，中文密集会话上能差出数倍。
+ * 校准系数（calibrationFactor）由 Manager.estimateTokensFor 在这份基线上再乘。
+ */
+export function estimateConversationTokens(
+  messages: import("../llm/types.ts").Message[],
+  opts?: {
+    systemPrompt?: string;
+    toolCount?: number;
+    toolSchemaTokens?: number | null;
+  },
+): number {
+  let total = estimateTextTokens(opts?.systemPrompt ?? "");
+  total += opts?.toolSchemaTokens ?? (opts?.toolCount ?? 0) * TOOL_SCHEMA_TOKENS_FALLBACK;
+  for (const msg of messages) {
+    total += MESSAGE_STRUCTURAL_TOKENS;
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      total += estimateBlockTokens(block);
+      if (block.type === "tool_use") total += TOOL_USE_STRUCTURAL_TOKENS;
+      else if (block.type === "tool_result") total += TOOL_RESULT_STRUCTURAL_TOKENS;
+    }
+  }
+  return total;
+}

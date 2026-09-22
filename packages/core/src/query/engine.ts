@@ -66,6 +66,17 @@ export interface QueryEngineDeps {
    * 可选——未提供时 hard 级压缩直接走 autoCompact（行为同旧版）。
    */
   contextCollapse?: (currentUsageRatio: number) => Promise<boolean>;
+  /**
+   * P1-13/14：压缩后收尾，绑在「压缩真的发生了」这个事件上而非 autoCompact 这个函数上。
+   * reactiveCompact（prompt-too-long 恢复）与 contextCollapse 此前完全不走收尾——
+   * 不重注入最近文件、不重置 microcompact 状态机、不发 PostCompact hook。
+   * 可选——未注入则这两条路径只埋点（行为同旧版）。详见 QueryDeps.postCompactTail。
+   */
+  postCompactTail?: (info: {
+    trigger: "reactive" | "collapse";
+    messagesBefore: number;
+    tokensBefore?: number;
+  }) => Promise<void>;
   /** 处理上下文溢出 */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
@@ -328,6 +339,7 @@ export class QueryEngine {
       executeTools: this.deps.executeTools,
       autoCompact: this.deps.autoCompact,
       contextCollapse: this.deps.contextCollapse,
+      postCompactTail: this.deps.postCompactTail,
       handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       abortCurrentRequest: this.deps.abortCurrentRequest,

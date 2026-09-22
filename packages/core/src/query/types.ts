@@ -686,6 +686,30 @@ export interface QueryDeps {
    * 返回 true 表示已达目标可跳过 autoCompact。可选——不提供则 hard 级压缩直接走 autoCompact。
    */
   contextCollapse?: (currentUsageRatio: number) => Promise<boolean>;
+  /**
+   * P1-13/14：压缩后收尾（文件重注入 / microcompact 状态机重置 / content-tracing 失效 /
+   * PostCompact hook），绑在「压缩真的发生了」这个事件上。
+   *
+   * 为什么需要它：收尾此前绑在 `autoCompact` 这个**函数**上，于是另外两条真的压了上下文的
+   * 路径完全不参与——`reactiveCompact`（prompt-too-long 恢复）与 `contextCollapse`（分段摘要）。
+   * PTL 恰恰是「窗口已经爆了」的恢复路径，压完模型最需要最近文件，偏偏这条路不重注入，
+   * 用户体感就是「报了个超长、压完断片」。
+   *
+   * 走 deps 而不是在 loop 里直接 import runPostCompact：收尾要的 fileReadTracker /
+   * cachedMicrocompactState / sessionDir 都是 App 持有的会话级实例，QueryDeps 里一个都没有。
+   * 可选——未注入则这两条路径只埋点（退回当前行为），不会报错。
+   */
+  postCompactTail?: (info: {
+    trigger: "reactive" | "collapse";
+    messagesBefore: number;
+    /**
+     * 压缩前估算 token。可选：`ReactiveCompactResult.tokensBefore` 本身是可选的
+     * （emergencyTruncate 兜底路径不一定给），所以这里不强求。
+     * 它只喂 runPostCompact 的 savedRatio，而 savedRatio 只随 adaptive 样本入库，
+     * 这两条路径又因拿不到 coverage 而整条不入库——缺它不影响任何统计口径。
+     */
+    tokensBefore?: number;
+  }) => Promise<void>;
   /** 处理上下文溢出，返回调整后的 maxTokens 或 null */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */

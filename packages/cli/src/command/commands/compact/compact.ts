@@ -191,7 +191,14 @@ async function runPartial(
   // 此前手动路径只 fire 了 PostCompact hook，压缩后模型会"忘掉"刚读过的文件——
   // 同一个压缩动作在两条路径上语义不一致。
   await runManualPostCompact(ctx, {
-    originalMessages,
+    // P1-12：覆盖率的分母必须是**真正进了摘要的那一段**，不是压缩前全量消息。
+    // partialCompact 保留了 [splitIndex, end) 的原文，那段内容摘要里天然不含——
+    // 把它算进分母会让 extractAnchors 从保留段提出的路径/用户消息全部命不中，
+    // 覆盖率系统性偏低，且随保留段变大而更低（/compact 0.5 这类 focus 模式失真显著）。
+    // 结果是本该合格的部分压缩被报成「摘要质量塌陷」（阈值 0.5），污染 compact-quality.jsonl。
+    // auto 路径一直传的是 toSummarize，这里对齐它。
+    originalMessages:
+      result.splitIndex > 0 ? originalMessages.slice(0, result.splitIndex) : originalMessages,
     summary: result.summary ?? "",
     messagesBefore: opts.before,
     tokensBefore: opts.tokensBefore,
@@ -238,6 +245,10 @@ async function runManualPostCompact(
       hookSystem: ctx.hookSystem,
       fileReadTracker: ctx.fileReadTracker,
       sessionDir: ctx.sessionDir,
+      // P1-11：此前漏传，runPostCompact 第 2 步（重置 microcompact 状态机）在手动路径上
+      // 永远走不到——CommandContext 类型里甚至没有这个字段。代价不是数据错乱，是
+      // state.tools / state.deleted 跨多次手动压缩无界增长（长会话真实内存泄漏）。
+      cachedMicrocompactState: ctx.cachedMicrocompactState,
       ...args,
     });
   } catch {

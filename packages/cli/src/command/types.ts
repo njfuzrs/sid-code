@@ -130,6 +130,11 @@ export interface AppContext {
   fileReadTracker?: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker;
   /** §12 P2-4 复审：会话级临时目录（手动压缩质量报告落盘）。经 toCommandContext 桥接。 */
   sessionDir?: string;
+  /**
+   * P1-11：cached microcompact 状态机（手动 /compact 收尾要重置它，否则两个 Map/Set
+   * 跨多次手动压缩无界增长）。经 toCommandContext 桥接到 CommandContext。
+   */
+  cachedMicrocompactState?: import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState;
   /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
   commandRegistry?: import("./registry.ts").Registry;
   /**

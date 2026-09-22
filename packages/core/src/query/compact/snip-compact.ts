@@ -10,6 +10,8 @@ import { getLogger } from "../../debug/index.ts";
 import {
   checkMessageHistoryIntegrity,
   describeIntegrityViolation,
+  findSplitThinking,
+  describeSplitThinking,
 } from "../../agent/message-invariants.ts";
 import { isCompactSourceMessage } from "../../context/auto-compact.ts";
 
@@ -126,6 +128,17 @@ export function snipCompact(messages: Message[], options?: SnipCompactOptions): 
     log.warn(
       "SNIP_COMPACT",
       `裁剪后消息历史出现 tool_use/tool_result 配对破缺（将由发送前关卡兜底修复）：${describeIntegrityViolation(integrity)}`,
+    );
+  }
+
+  // P1-15：上面那道只查 tool_use/tool_result 配对。thinking 被整条裁掉此前**零检测**，
+  // 纯静默发生——G26「后置修复即可」这个结论只在 tool 配对上成立，对 thinking 不成立。
+  // 只报不改：thinking 没法像 tool_result 那样补占位，伪造一个 thinking 块是在造假思考。
+  const splitThinking = findSplitThinking(messages, result);
+  if (splitThinking.length > 0) {
+    log.warn(
+      "SNIP_COMPACT",
+      `裁剪切断了 thinking 上下文（不修复，仅显形）：${describeSplitThinking(splitThinking)}`,
     );
   }
 

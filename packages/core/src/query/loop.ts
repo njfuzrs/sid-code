@@ -96,7 +96,7 @@ import {
   OUTPUT_STALL_WINDOW,
   isOutputStallDetectionEnabled,
 } from "./output-stall.ts";
-import { runCompactPipeline } from "./compact/index.ts";
+import { runCompactPipeline, pipelineTargetRatioFrom } from "./compact/index.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
   detectEmptyParamToolUses,
@@ -901,6 +901,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               currentUsageRatio: usagePercent / 100,
               maxTokens: contextMax,
               toolCount,
+              // P1-7：达标比例从 hard 档真实触发点派生，不用历史默认 0.7。
+              // 1M 窗口 hard 约在 82% 进场，压到 70% 会多丢一截历史；反过来
+              // completionBuffer 抬高时 0.7 会让管线第一步就认为"已达标"而空跑。
+              targetUsageRatio: pipelineTargetRatioFrom(ctxMgr),
+              // P1-6：管线逐步替换消息时用与 getCompactionLevel 同一把尺子
+              // （CJK 区分 + calibrationFactor + system/tool schema）。此前管线内部
+              // 用 chars/4，中文密集会话上与触发判据能差出数倍。
+              estimateTokens: (msgs) => ctxMgr.estimateTokensFor(msgs, toolCount),
             });
 
             if (pipelineResult.steps.length > 0) {
@@ -927,10 +935,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               if (deps.contextCollapse) {
                 try {
                   const ratioAfterPipeline = ctxMgr.estimateTokens(toolCount) / contextMax;
+                  // P1-14：collapse 成功会**跳过** autoCompact，于是收尾（绑在 autoCompact 上）
+                  // 整条不执行。这里先抓 before 快照，成功后自己调收尾。
+                  const collapseMsgsBefore = ctxMgr.messageCount();
+                  const collapseTokensBefore = ctxMgr.estimateTokens(toolCount);
                   collapsed = await deps.contextCollapse(ratioAfterPipeline);
                   if (collapsed) {
                     log.info("QUERY_LOOP", "Context Collapse 成功，跳过 autoCompact");
                     yield { kind: "system", level: "info", text: "上下文分段压缩完成" };
+                    // 判据同 P1-13：只有实测消息数真的减少了才算「压缩发生了」。
+                    // collapse 自报 success=true 但消息数未变时不做收尾——重注入文件
+                    // 反而会往一个没腾出空间的上下文里再塞 50K。
+                    if (ctxMgr.messageCount() < collapseMsgsBefore) {
+                      await deps.postCompactTail?.({
+                        trigger: "collapse",
+                        messagesBefore: collapseMsgsBefore,
+                        tokensBefore: collapseTokensBefore,
+                      });
+                    }
                   }
                 } catch (err: any) {
                   log.warn("QUERY_LOOP", `Context Collapse 异常，回退 autoCompact: ${err.message}`);
@@ -2206,6 +2228,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               strategy: compactResult.strategy,
             });
             if (banner) yield banner;
+            // P1-13：reactiveCompact 此前完全绕过压缩后收尾（只埋点 + 抑制 cache-break 误报）。
+            // PTL 恰恰是「窗口已经爆了」的恢复路径，压完模型最需要最近文件，
+            // 偏偏这条路不重注入——用户体感就是「报了个超长、压完断片」。
+            // 放在 banner 之后：settleCompaction 返回非 null 就等于「实测真压动了」，
+            // 是这条路径上唯一可靠的「压缩真的发生了」信号。
+            if (banner) {
+              await deps.postCompactTail?.({
+                trigger: "reactive",
+                messagesBefore: compactResult.messageCountBefore,
+                tokensBefore: compactResult.tokensBefore,
+              });
+            }
             yield {
               kind: "system",
               level: "info",
@@ -2850,6 +2884,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               strategy: compactResult.strategy,
             });
             if (banner) yield banner;
+            // P1-13：reactiveCompact 此前完全绕过压缩后收尾（只埋点 + 抑制 cache-break 误报）。
+            // PTL 恰恰是「窗口已经爆了」的恢复路径，压完模型最需要最近文件，
+            // 偏偏这条路不重注入——用户体感就是「报了个超长、压完断片」。
+            // 放在 banner 之后：settleCompaction 返回非 null 就等于「实测真压动了」，
+            // 是这条路径上唯一可靠的「压缩真的发生了」信号。
+            if (banner) {
+              await deps.postCompactTail?.({
+                trigger: "reactive",
+                messagesBefore: compactResult.messageCountBefore,
+                tokensBefore: compactResult.tokensBefore,
+              });
+            }
             yield {
               kind: "system",
               level: "info",
@@ -3353,6 +3399,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 strategy: compactResult.strategy,
               });
               if (banner) yield banner;
+              // P1-13：同上，reactiveCompact 压动了就走与 auto/manual 同一套收尾。
+              if (banner) {
+                await deps.postCompactTail?.({
+                  trigger: "reactive",
+                  messagesBefore: compactResult.messageCountBefore,
+                  tokensBefore: compactResult.tokensBefore,
+                });
+              }
             } else {
               state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
             }
@@ -4939,6 +4993,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 此前这条路径压缩成功也**不画横幅**（8 处 yield 里独缺这处）——用户看不到上下文
           // 已被压缩，属于反向的"该报不报"。现与其它路径统一：真压动就如实告知。
           if (banner) yield banner;
+          // P1-13：同上，走与 auto/manual 同一套压缩后收尾。
+          if (banner) {
+            await deps.postCompactTail?.({
+              trigger: "reactive",
+              messagesBefore: compactResult.messageCountBefore,
+              tokensBefore: compactResult.tokensBefore,
+            });
+          }
         } else {
           state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
           log.warn(

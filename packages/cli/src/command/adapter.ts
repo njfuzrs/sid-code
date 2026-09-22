@@ -129,6 +129,8 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     // §12 P2-4 复审：手动 /compact 的压缩后收尾依赖这两项（文件重注入 / 质量报告落盘）
     fileReadTracker: appCtx.fileReadTracker,
     sessionDir: appCtx.sessionDir,
+    // P1-11：手动压缩也要重置 microcompact 状态机（漏传则 runPostCompact 第 2 步静默跳过）
+    cachedMicrocompactState: appCtx.cachedMicrocompactState,
     cwd: process.cwd(),
     unifiedRegistry: appCtx.unifiedRegistry,
     // /goal：目标驱动持续执行——桥接到新体系 CommandContext
