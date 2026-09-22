@@ -681,6 +681,19 @@ export class PermissionChecker implements Checker {
     // 清除构造器 B 占位的 projectSettings，避免与 loadAll 读到的真实文件重复计数
     this.ruleLoader.clearSource("projectSettings");
 
+    // M3：远程策略 permissions 必须在 loadAll 之前注入。
+    // loadPolicyFile 见 policyRulesFromRemote 就跳过本地 managed，兑现 first-source-wins。
+    // 独立 state 文件，避免 checker 顶层 import policy.ts 成环。
+    try {
+      const { getRemotePolicyPermissions, isRemotePolicyApplied } =
+        await import("../config/remote-policy-state.ts");
+      if (isRemotePolicyApplied()) {
+        this.ruleLoader.setPolicyRules(getRemotePolicyPermissions());
+      }
+    } catch (err: any) {
+      getLogger().warn("PERMISSION", `远程策略权限规则接线失败: ${err?.message ?? err}`);
+    }
+
     await this.ruleLoader.loadAll();
 
     // P2-1：接线 CLI 规则（cliArg 源）——此前 setCliArgRules 零调用者，--allow/deny-tool 从不生效

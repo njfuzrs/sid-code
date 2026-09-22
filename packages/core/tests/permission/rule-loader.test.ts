@@ -174,4 +174,61 @@ describe("RuleLoader - P2-1 cliArg / flag / policy 三源接线", () => {
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  test("setPolicyRules({deny:['Bash(curl *)']}) 后 getRulesBySource('policySettings') 含该 deny", () => {
+    const loader = new RuleLoader("/tmp/test-ws");
+    loader.setPolicyRules({ deny: ["Bash(curl *)"] });
+    const rules = loader.getRulesBySource("policySettings");
+    expect(rules.find((r) => r.behavior === "deny")?.rawRule).toBe("Bash(curl *)");
+  });
+
+  test("设了 remote 规则后再 loadAll()，本地 managed 文件不能覆盖 policySettings", async () => {
+    const os = await import("os");
+    const fs = await import("fs");
+    const path = await import("path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sid-policy-remote-"));
+    const prev = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = dir;
+    try {
+      fs.writeFileSync(
+        path.join(dir, "managed-settings.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(*)"] } }),
+        { mode: 0o600 },
+      );
+      const loader = new RuleLoader(dir);
+      loader.setPolicyRules({ deny: ["Bash(curl *)"] });
+      await loader.loadAll();
+      const rules = loader.getRulesBySource("policySettings");
+      expect(rules.map((r) => r.rawRule)).toEqual(["Bash(curl *)"]);
+      expect(rules.map((r) => r.rawRule)).not.toContain("Bash(*)");
+    } finally {
+      if (prev === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("setPolicyRules(undefined) 清掉 policySettings 且挡住本地 managed", async () => {
+    const os = await import("os");
+    const fs = await import("fs");
+    const path = await import("path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sid-policy-empty-remote-"));
+    const prev = process.env.SID_CONFIG_DIR;
+    process.env.SID_CONFIG_DIR = dir;
+    try {
+      fs.writeFileSync(
+        path.join(dir, "managed-settings.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(*)"] } }),
+        { mode: 0o600 },
+      );
+      const loader = new RuleLoader(dir);
+      loader.setPolicyRules(undefined);
+      await loader.loadAll();
+      expect(loader.getRulesBySource("policySettings")).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

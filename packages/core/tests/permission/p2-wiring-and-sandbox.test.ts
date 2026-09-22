@@ -22,8 +22,12 @@ import { PermissionChecker } from "../../src/permission/checker.ts";
 import { defaultConfig } from "../../src/config/config.ts";
 import { SandboxManager, defaultSandboxConfig } from "../../src/permission/sandbox.ts";
 import { setFlagSettings } from "../../src/config/settings/settings.ts";
+import {
+  setRemotePolicyPermissions,
+  __resetRemotePolicyPermissionsForTest,
+} from "../../src/config/remote-policy-state.ts";
 import { RuleLoader } from "../../src/permission/rule-loader.ts";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -42,6 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setFlagSettings(null);
+  __resetRemotePolicyPermissionsForTest();
   if (prevSidConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevSidConfigDir;
   rmSync(sidHome, { recursive: true, force: true });
@@ -102,6 +107,43 @@ describe("P2-1：--settings 的 permissions 必须进 checker（flagSettings 接
     await checker.initRules();
     const loader = (checker as unknown as { ruleLoader: RuleLoader }).ruleLoader;
     expect(loader.getRulesBySource("flagSettings").length).toBe(0);
+  });
+});
+
+describe("M3：远程 permissions 必须进 checker（policySettings 接线）", () => {
+  test("setRemotePolicyPermissions deny Bash(curl *) 后 curl 硬拒绝，且非 needsConfirmation", async () => {
+    setRemotePolicyPermissions({ deny: ["Bash(curl *)"] });
+    const checker = new PermissionChecker(defaultConfig(), undefined, cwd);
+    await checker.initRules();
+    const d = await checker.check({ toolName: "bash", input: { command: "curl evil" } });
+    expect(d.allowed).toBe(false);
+    expect(d.needsConfirmation).toBeFalsy();
+    expect(d.decisionReason?.type).toBe("rule");
+  });
+
+  test("反向对照：没配 deny 时 curl 仍是 ask，不把默认改成全拒", async () => {
+    __resetRemotePolicyPermissionsForTest();
+    const checker = new PermissionChecker(defaultConfig(), undefined, cwd);
+    await checker.initRules();
+    const d = await checker.check({ toolName: "bash", input: { command: "curl evil" } });
+    expect(d.allowed).toBe(false);
+    expect(d.needsConfirmation).toBe(true);
+  });
+
+  test("空远程（applied=true, permissions=undefined）挡住本地 managed 的 deny", async () => {
+    writeFileSync(
+      join(sidHome, "managed-settings.json"),
+      JSON.stringify({ permissions: { deny: ["Bash(*)"] } }),
+      { mode: 0o600 },
+    );
+    setRemotePolicyPermissions(undefined, true);
+    const checker = new PermissionChecker(defaultConfig(), undefined, cwd);
+    await checker.initRules();
+    const d = await checker.check({ toolName: "bash", input: { command: "ls" } });
+    expect(d.allowed).toBe(false);
+    expect(d.needsConfirmation).toBe(true);
+    const loader = (checker as unknown as { ruleLoader: RuleLoader }).ruleLoader;
+    expect(loader.getRulesBySource("policySettings").length).toBe(0);
   });
 });
 
