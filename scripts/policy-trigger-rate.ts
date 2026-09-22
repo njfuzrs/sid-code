@@ -7,8 +7,11 @@
  * 两个数字一次打出（契约 §8 / 验收 §3）：
  *
  * | 指标 | 分子 | 分母 | 数据源 |
- * | A 权限 deny | permissions-audit.log 中 decision=deny 且 decisionReason.type=rule | 同窗口同 tool 的决策行（allow+deny） | ~/.sid-code/logs/permissions-audit.log（及 .1） |
+ * | A 权限 deny | permissions-audit.log 中 decision=deny 且 decisionReason.type=rule（不含 policy-probe） | 同窗口同 tool 的决策行（allow+deny） | ~/.sid-code/logs/permissions-audit.log（及 .1） |
  * | B 功能开关 | sidcode.defense.trigger 且 layer=policy_limits 且 outcome=blocked | 相关任务会话（实际调用了被关功能） | events.jsonl / telemetry/metrics.jsonl |
+ *
+ * 窗口：`--limit N` = 最近 N 个会话的时间包络（按 session.traj mtime），A 与 B 共用。
+ * `--all` 才扫全文件，输出 `window.appliedTo=both` 且 `all=true`，那种数不能进北极星。
  *
  * B 的数据若根本没采到（events 里没有 metric 行、telemetry 也没有），打印
  * 「B 无数据，跳过」——不要 0.0% 假装采过。
@@ -23,17 +26,19 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
-import { resolvePaths, listSessions } from "@sid-code/core/trace/digest.ts";
+import { resolvePaths, listSessions, type SessionRef } from "@sid-code/core/trace/digest.ts";
 
 export const KNOWN_FLAGS = new Set(["--json", "--limit", "--all"]);
 
 const DEFENSE_TRIGGER = "sidcode.defense.trigger";
+export const POLICY_PROBE_SOURCE = "policy-probe";
 
 export interface AuditRow {
   timestamp?: string;
   tool?: string;
   decision?: string;
   decisionReason?: { type?: string };
+  source?: string;
 }
 
 export interface RateA {
@@ -41,6 +46,7 @@ export interface RateA {
   decisions_same_tools: number;
   rate_a: number | null;
   tools: string[];
+  probe_denies: number;
 }
 
 export interface RateB {
@@ -61,6 +67,12 @@ export interface PolicyTriggerResult {
     mtime?: string;
     sessionLimit: number | "all";
     sessionsScanned: number;
+    from?: string;
+    to?: string;
+    appliedTo: "A" | "B" | "both";
+    all: boolean;
+    rowsInWindow: number;
+    probe_denies: number;
   };
   b: RateB;
 }
@@ -112,9 +124,58 @@ function readAuditFiles(): { rows: AuditRow[]; files: string[]; lines: number; m
   return { rows, files, lines, mtimeMs };
 }
 
-/** 分子 = deny ∧ reason.type=rule；分母 = 那些 tool 在同期 audit 里的全部决策。 */
+export function parseTimestampMs(ts: string | undefined): number | undefined {
+  if (!ts) return undefined;
+  const ms = Date.parse(ts);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/**
+ * session.traj mtime 是会话结束附近的时间。audit 行写在启动时（探针）可能早几分钟。
+ * 下限向前扩 ENVELOPE_PAD_MS，上限向后扩同样量，避免切掉同一次启动的行。
+ * 这不是把窗口改成「全文件」：旧会话只要 mtime 落在 pad 之外仍进不来。
+ */
+export const ENVELOPE_PAD_MS = 10 * 60 * 1000;
+
+/**
+ * `--limit N` 的时间包络：最近 N 个会话 mtime 的 min..max，再加减 pad。
+ * 没有会话时返回 undefined（调用方按「无窗」处理：A 也不得用全文件当北极星分母）。
+ */
+export function sessionEnvelope(
+  refs: SessionRef[],
+  sessionLimit: number | "all",
+): { fromMs: number; toMs: number; picked: SessionRef[]; all: boolean } | undefined {
+  if (refs.length === 0) return undefined;
+  const all = sessionLimit === "all";
+  const picked = all ? refs : refs.slice(0, sessionLimit === Infinity ? refs.length : sessionLimit);
+  if (picked.length === 0) return undefined;
+  let fromMs = picked[0]!.mtimeMs;
+  let toMs = picked[0]!.mtimeMs;
+  for (const r of picked) {
+    if (r.mtimeMs < fromMs) fromMs = r.mtimeMs;
+    if (r.mtimeMs > toMs) toMs = r.mtimeMs;
+  }
+  fromMs -= ENVELOPE_PAD_MS;
+  toMs += ENVELOPE_PAD_MS;
+  return { fromMs, toMs, picked, all };
+}
+
+export function rowInWindow(row: AuditRow, fromMs: number, toMs: number): boolean {
+  const ms = parseTimestampMs(row.timestamp);
+  // 无时间戳的行进不了 limit 窗。放进去会把历史脏数据混进「最近 N 会话」。
+  if (ms == null) return false;
+  return ms >= fromMs && ms <= toMs;
+}
+
+function isProbe(row: AuditRow): boolean {
+  return row.source === POLICY_PROBE_SOURCE;
+}
+
+/** 分子 = deny ∧ reason.type=rule（不含探针）；分母 = 那些 tool 在同期 audit 里的全部决策（不含探针）。 */
 export function computeRateA(rows: AuditRow[]): RateA {
-  const ruleDenies = rows.filter(
+  const real = rows.filter((r) => !isProbe(r));
+  const probes = rows.filter(isProbe);
+  const ruleDenies = real.filter(
     (r) => r.decision === "deny" && r.decisionReason?.type === "rule" && r.tool,
   );
   const tools = [...new Set(ruleDenies.map((r) => String(r.tool)))];
@@ -122,15 +183,19 @@ export function computeRateA(rows: AuditRow[]): RateA {
   // 还没有任何 rule deny 时，用 bash 决策当相关任务分母（宁可窄），不要拿全量工具行稀释。
   const denomRows =
     toolSet.size > 0
-      ? rows.filter((r) => r.tool && toolSet.has(String(r.tool)))
-      : rows.filter((r) => r.tool === "bash");
+      ? real.filter((r) => r.tool && toolSet.has(String(r.tool)))
+      : real.filter((r) => r.tool === "bash");
   const decisions_same_tools = denomRows.length;
   const denies_by_rule = ruleDenies.length;
+  const probe_denies = probes.filter(
+    (r) => r.decision === "deny" && r.decisionReason?.type === "rule",
+  ).length;
   return {
     denies_by_rule,
     decisions_same_tools,
     rate_a: decisions_same_tools === 0 ? null : denies_by_rule / decisions_same_tools,
     tools: toolSet.size > 0 ? tools : ["bash"],
+    probe_denies,
   };
 }
 
@@ -220,14 +285,20 @@ export function computePolicyTriggerRate(opts: {
   sessionLimit: number | "all";
 }): PolicyTriggerResult {
   const audit = readAuditFiles();
-  const a = computeRateA(audit.rows);
-
   const paths = resolvePaths();
   const refs = listSessions(paths);
-  const picked =
-    opts.sessionLimit === "all"
-      ? refs
-      : refs.slice(0, opts.sessionLimit === Infinity ? refs.length : opts.sessionLimit);
+  const env = sessionEnvelope(refs, opts.sessionLimit);
+  const all = opts.sessionLimit === "all";
+
+  const windowedRows =
+    all || !env
+      ? all
+        ? audit.rows
+        : []
+      : audit.rows.filter((r) => rowInWindow(r, env.fromMs, env.toMs));
+  // `--limit` 但本机没有会话：A 不得退回全文件。空窗比假曲线更诚实。
+  const a = computeRateA(windowedRows);
+  const picked = env?.picked ?? [];
 
   let related = 0;
   let eventsMetric = { sawAnyMetric: false, blocked: 0 };
@@ -251,6 +322,9 @@ export function computePolicyTriggerRate(opts: {
       }
     : { available: false, blocked: 0, related_sessions: related, rate_b: null };
 
+  const from = env ? new Date(env.fromMs).toISOString() : undefined;
+  const to = env ? new Date(env.toMs).toISOString() : undefined;
+
   return {
     denies_by_rule: a.denies_by_rule,
     decisions_same_tools: a.decisions_same_tools,
@@ -262,6 +336,12 @@ export function computePolicyTriggerRate(opts: {
       mtime: audit.mtimeMs ? new Date(audit.mtimeMs).toISOString() : undefined,
       sessionLimit: opts.sessionLimit,
       sessionsScanned: picked.length,
+      from,
+      to,
+      appliedTo: "both",
+      all,
+      rowsInWindow: windowedRows.length,
+      probe_denies: a.probe_denies,
     },
     b,
   };
@@ -295,19 +375,31 @@ function main(): void {
 
   const L: string[] = [];
   L.push("═══ 企业策略触发率 ═══");
+  const fromTo =
+    result.window.from && result.window.to
+      ? `${result.window.from} .. ${result.window.to}`
+      : "（无会话包络）";
   L.push(
-    `窗口：${result.window.source}  行数=${result.window.lines}  mtime=${result.window.mtime ?? "—"}  会话扫描=${result.window.sessionsScanned}`,
+    `窗口：${fromTo}  （${result.window.all ? "--all → 全文件，不能进北极星" : `--limit ${result.window.sessionLimit} → 最近 ${result.window.sessionsScanned} 会话的时间包络`}）`,
+  );
+  L.push(
+    `audit：${result.window.source}  文件行数=${result.window.lines}  窗内行=${result.window.rowsInWindow}  mtime=${result.window.mtime ?? "—"}`,
   );
   if (result.window.files.length === 0) {
     L.push("未找到 permissions-audit.log（及 .1）。先跑一条会被策略拦的会话。");
   }
   L.push("");
   L.push(
-    "A 权限规则拒绝（分子 = denies_by_rule = permissions-audit deny(rule)；分母 = decisions_same_tools = 同期同 tool 决策）：",
+    "A 权限规则拒绝（分子 = denies_by_rule = 窗内 permissions-audit deny(rule)，不含 policy-probe；分母 = decisions_same_tools = 窗内同 tool 决策）：",
   );
   L.push(
     `  权限规则拒绝: ${result.denies_by_rule}/${result.decisions_same_tools}  (permissions-audit deny(rule) / 同期同 tool 决策)  ${result.rate_a == null ? "—" : pct(result.denies_by_rule, result.decisions_same_tools)}`,
   );
+  if (result.window.probe_denies > 0) {
+    L.push(
+      `  探针（source=policy-probe，不计入 A）: ${result.window.probe_denies} 次 rule deny —— 接线健康，不是用户任务撞墙`,
+    );
+  }
   L.push("");
   if (!result.b.available) {
     L.push(
@@ -319,14 +411,20 @@ function main(): void {
     );
   }
   L.push("");
-  if (result.decisions_same_tools === 0) {
+  if (result.window.all) {
+    L.push("判读：window=all，全文件口径，禁止进北极星。要用 --limit 切最近会话。");
+  } else if (result.decisions_same_tools === 0) {
     L.push(
-      "判读：分母=0 → 窗口里没相关任务（没有 bash / 所配 deny 对应工具的决策）。换更大 --limit 或先跑一条 curl 会话。",
+      "判读：分母=0 → 窗内没有相关工具决策，不是「防线空转」。换更大 --limit 或先跑一条 curl 会话。",
     );
   } else if (result.denies_by_rule === 0) {
-    L.push("判读：0 且分母>0 → 防线空转（相关任务里 rule deny 一次都没触发）。");
+    L.push(
+      "判读：分子 0 且分母>0 → 空转，或模型被 <permission-constraints> 劝住没撞墙。看系统提示是否含约束附件；接线健康看探针行。",
+    );
   } else {
-    L.push("判读：A 分子>0，远程/本地 deny 规则在真实决策里被用过。");
+    L.push(
+      `判读：A 分子>0 是窗内数字（${result.denies_by_rule}/${result.decisions_same_tools}），不是被历史稀释的全文件比。`,
+    );
   }
   process.stdout.write(L.join("\n") + "\n");
 }
