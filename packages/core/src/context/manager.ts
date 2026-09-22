@@ -8,7 +8,7 @@ import { MessageValidator } from "./validator.ts";
 // P1-5 ②：压缩来源守卫与 TokenFreedTracker 必须有生产消费方（P0-5），
 // 否则测试绿、主循环零调用，就是「防线全在、调用全 0」。
 import { isCompactSourceMessage, TokenFreedTracker, type CompactSource } from "./auto-compact.ts";
-import { estimateTextTokens, estimateBlockTokens } from "./token.ts";
+import { estimateTextTokens, estimateConversationTokens } from "./token.ts";
 import { ToolOutputMaskingService, TOOL_RESULT_CLEARED_MESSAGE } from "./tool-output-masking.ts";
 import {
   persistLargeOutput,
@@ -1417,36 +1417,31 @@ export class Manager {
   }
 
   /**
+   * P1-6：对任意消息列表做与 estimateTokens 同源的校准估算。
+   *
+   * 管线逐步替换消息后不能再读 this.messages，也不能套 lastActualInputTokens——
+   * 那是压缩前的锚点，当下界会让管线永远认为「还没压够」。
+   */
+  estimateTokensFor(messages: Message[], toolCount: number = 0): number {
+    const raw = this.rawEstimateTokensFrom(messages, toolCount);
+    if (!this.calibrated) return raw;
+    return Math.ceil(raw * this.calibrationFactor);
+  }
+
+  /**
    * 纯启发式 token 估算（未经校准）。calibrationFactor 的分母、estimateTokens 的基线。
    * 单独抽出避免校准自我反馈漂移（用已校准值反推 factor 会发散）。
    */
   private rawEstimateTokens(toolCount: number = 0): number {
-    // 系统提示词
-    let total = estimateTextTokens(this.systemPrompt);
+    return this.rawEstimateTokensFrom(this.messages, toolCount);
+  }
 
-    // 工具定义开销：EST-4 优先用注入的真实 schema token 数；
-    // 未注入时回退每工具 80 token 粗估（schema 大/工具多时偏低）。
-    total += this.toolSchemaTokens ?? toolCount * 80;
-
-    // 消息内容 + 结构开销
-    for (const msg of this.messages) {
-      // 消息结构开销（每条消息约 4 token）
-      total += 4;
-
-      for (const block of msg.content) {
-        // 审计第 21 条：收敛到 estimateBlockTokens 统一块估算
-        // （补全 thinking / redacted_thinking / tool_result.mediaBlocks，此前全漏算）。
-        // 保留各块结构开销常数（tool_use +20 / tool_result +10），这是 rawEstimateTokens
-        // 区别于 estimateMessagesTokens（无结构开销）的地方。本函数有
-        // calibrationFactor + lastActualInputTokens 双层校准护栏（estimateTokens:1056），
-        // 漏算被系数吸收，此处补全分支以缩小校准前的偏差窗口。
-        total += estimateBlockTokens(block);
-        if (block.type === "tool_use") total += 20;
-        else if (block.type === "tool_result") total += 10;
-      }
-    }
-
-    return total;
+  private rawEstimateTokensFrom(messages: Message[], toolCount: number): number {
+    return estimateConversationTokens(messages, {
+      systemPrompt: this.systemPrompt,
+      toolCount,
+      toolSchemaTokens: this.toolSchemaTokens,
+    });
   }
 
   /** 获取上下文窗口最大 token 数 */

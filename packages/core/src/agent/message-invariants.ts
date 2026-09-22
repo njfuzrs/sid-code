@@ -40,6 +40,14 @@ export interface DanglingToolResult {
   messageIndex: number;
 }
 
+/** 一条被切开口的 thinking 记录（thinking 所在消息已被裁掉，后继内容还在） */
+export interface SplitThinking {
+  /** thinking 所在消息在 messages 数组中的下标 */
+  messageIndex: number;
+  /** 被切断的 thinking 块数量 */
+  count: number;
+}
+
 /** 消息历史完整性检查结果 */
 export interface MessageHistoryIntegrity {
   /** 是否完整（无孤儿 tool_use 且无游离 tool_result） */
@@ -166,6 +174,32 @@ export function describeIntegrityViolation(result: MessageHistoryIntegrity): str
     parts.push(`${result.dangling.length} 个游离 tool_result: ${items}`);
   }
   return parts.join("; ");
+}
+
+/**
+ * P1-15：检测 snip 是否把带 thinking 的 assistant 消息整条裁掉。
+ *
+ * G26 后置修复只覆盖 tool_use/tool_result 配对；thinking 被切开口没有任何检测。
+ * 只报不改——thinking 无法像 tool_result 那样补占位，改数据会造假思考。
+ */
+export function findSplitThinking(original: Message[], remaining: Message[]): SplitThinking[] {
+  const remainingSet = new Set(remaining);
+  const out: SplitThinking[] = [];
+  for (let i = 0; i < original.length; i++) {
+    const msg = original[i];
+    if (!msg || remainingSet.has(msg)) continue;
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    const count = msg.content.filter(
+      (b) => b.type === "thinking" || b.type === "redacted_thinking",
+    ).length;
+    if (count > 0) out.push({ messageIndex: i, count });
+  }
+  return out;
+}
+
+export function describeSplitThinking(splits: SplitThinking[]): string {
+  if (splits.length === 0) return "无 thinking 切开口";
+  return splits.map((s) => `${s.count} 个 thinking 块 @msg#${s.messageIndex}`).join(", ");
 }
 
 /**

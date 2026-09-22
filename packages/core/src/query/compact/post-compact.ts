@@ -15,8 +15,17 @@ import type { Manager as ContextManager } from "../../context/manager.ts";
 import type { HookSystem } from "../../hook/system.ts";
 import { getLogger } from "../../debug/index.ts";
 
-/** 压缩触发来源：auto=自动阈值触发，manual=用户 /compact */
-export type CompactTrigger = "auto" | "manual";
+/**
+ * 压缩触发来源。
+ *
+ * P1-13/14：此前只有 auto / manual 两种，因为收尾被绑在 `autoCompact` 这个**函数**上。
+ * 实际还有两条路径真的压了上下文却拿不到收尾：`reactiveCompact`（prompt-too-long 恢复）
+ * 与 `contextCollapse`（分段摘要）。收尾应该绑在「压缩真的发生了」这个**事件**上。
+ *
+ * hook 契约只认 manual / auto（`firePostCompactEvent`），所以非 manual 的一律以 auto 上报，
+ * 只在日志里区分——不改 hook 的对外 schema。
+ */
+export type CompactTrigger = "auto" | "manual" | "reactive" | "collapse";
 
 export interface PostCompactOptions {
   /** 触发来源（决定 PostCompact hook 的 trigger 字段与日志措辞） */
@@ -30,10 +39,23 @@ export interface PostCompactOptions {
   cachedMicrocompactState?: import("./cached-microcompact.ts").CachedMicrocompactState;
   /** §4.1 质量报告落盘目录；未提供则只算覆盖率不落盘 */
   sessionDir?: string;
-  /** 压缩前的原始消息（算摘要覆盖率用） */
-  originalMessages: Message[];
-  /** 生成的摘要正文 */
-  summary: string;
+  /**
+   * 压缩前的原始消息（算摘要覆盖率用）。
+   * P1-13/14：与 `summary` 成对，缺任一则跳过质量校验（见 `summary` 注释）。
+   */
+  originalMessages?: Message[];
+  /**
+   * 生成的摘要正文。
+   *
+   * P1-13/14：reactive / collapse 路径**没有**「一段原文 → 一份摘要」这种可比对的配对
+   * （snip 产出的是裁剪清单，collapse 产出的是多段分段摘要且切分范围不回传），
+   * 所以这两条路径不传它，质量校验与自适应特征记录一并跳过。
+   *
+   * 刻意不传空串糊过去：`checkCompactQuality("")` 会算出覆盖率 0，把「没有可测的摘要」
+   * 伪装成「摘要质量塌陷」，污染 compact-quality.jsonl 与 recommendParams 的均值——
+   * 这正是 P1-12 那类「分母错了，阈值再对也是假数」。
+   */
+  summary?: string;
   /** 压缩前消息条数 */
   messagesBefore: number;
   /** 压缩前 token 估算 */
@@ -103,13 +125,22 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     /* 忽略 */
   }
 
-  // 4. §4.1：质量校验（覆盖率）
-  let coverage = 1;
-  try {
-    const { recordCompactQuality } = await import("./quality-check.ts");
-    coverage = recordCompactQuality(opts.originalMessages, opts.summary, opts.sessionDir).coverage;
-  } catch {
-    /* 忽略 */
+  // 4. §4.1：质量校验（覆盖率）。
+  // P1-13/14：只有拿到「进了摘要的那段原文 + 对应摘要」这对配对时才测。
+  // 缺配对时不测也不记（见 opts.summary 注释：伪造一个 0 比没有数更误导）。
+  const measurable = opts.originalMessages !== undefined && opts.summary !== undefined;
+  let coverage: number | undefined;
+  if (measurable) {
+    try {
+      const { recordCompactQuality } = await import("./quality-check.ts");
+      coverage = recordCompactQuality(
+        opts.originalMessages!,
+        opts.summary!,
+        opts.sessionDir,
+      ).coverage;
+    } catch {
+      /* 忽略 */
+    }
   }
 
   const tokensAfter = ctxMgr.estimateTokens();
@@ -118,24 +149,31 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
   const savedRatio =
     tokensBefore > 0 ? Math.max(0, (tokensBefore - tokensAfter) / tokensBefore) : 0;
 
-  // 5. §4.2：记录压缩特征供后续自适应
-  try {
-    const { recordCompactFeature } = await import("./adaptive-strategy.ts");
-    recordCompactFeature({
-      tokensBefore,
-      tokensAfter,
-      savedRatio,
-      usedLLM: opts.usedLLM,
-      coverage,
-    });
-  } catch {
-    /* 忽略 */
+  // 5. §4.2：记录压缩特征供后续自适应。
+  // coverage 是 recommendParams 的输入（均值 <0.5 会抬 preserveRecent），所以没测到覆盖率的
+  // 样本一律不入库——补一个假的 1 会把均值抬高，正好抵消真实的低覆盖率告警。
+  if (coverage !== undefined) {
+    try {
+      const { recordCompactFeature } = await import("./adaptive-strategy.ts");
+      recordCompactFeature({
+        tokensBefore,
+        tokensAfter,
+        savedRatio,
+        usedLLM: opts.usedLLM,
+        coverage,
+      });
+    } catch {
+      /* 忽略 */
+    }
   }
 
   // 6. §3.2：PostCompact hook
   try {
     await opts.hookSystem?.firePostCompactEvent(
-      trigger,
+      // hook 对外只有 manual / auto 两个值（PostCompactInput.trigger）。
+      // reactive / collapse 归到 auto：它们同样是「系统自己决定压的」，
+      // 而给 hook 加新枚举值是对外 schema 变更，不该由这条缺陷修复顺手带出去。
+      trigger === "manual" ? "manual" : "auto",
       opts.messagesBefore,
       messagesAfter,
       Math.max(0, tokensBefore - tokensAfter),

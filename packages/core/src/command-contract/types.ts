@@ -134,6 +134,16 @@ export interface CommandContext {
    */
   sessionDir?: string;
   /**
+   * P1-11：cached microcompact 状态机。手动 /compact 也要重置它——压缩把消息历史整段换成
+   * 摘要后，旧的 tool_use_id → toolName 映射全部失效。
+   *
+   * 不重置不会造成数据错乱（createCacheEditsBlock 只遍历当前 messages 里实际存在的 id），
+   * 真实代价是 state.tools / state.deleted 两个 Map/Set 跨多次手动压缩无界增长——
+   * 长会话里是真实内存泄漏。此前类型里根本没有这个字段，所以 runPostCompact 第 2 步
+   * 在手动路径上永远走不到。
+   */
+  cachedMicrocompactState?: import("../query/compact/cached-microcompact.ts").CachedMicrocompactState;
+  /**
    * 切换主模型回调。persist=true 时同时写 settings.json 顶层 model（跨会话生效）。
    * 对齐 /effort 的 -p 语义：默认仅当会话生效，-p 才落盘。
    */

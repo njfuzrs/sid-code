@@ -323,6 +323,10 @@ export function generateCacheKey(ctx: SystemPromptContext): string {
   // 协调者提示词，属于影响输出的维度，必须进键。
   snapshot.__coordinatorMode = isCoordinatorMode();
 
+  // P1-10：日期不是 ctx 字段，缓存命中路径不会重算 generateDateAttachment。
+  // 键不含当天日期时，跨午夜且 TTL 未过期会送出昨天的 <current-date>。
+  snapshot.__date = new Date().toISOString().split("T")[0];
+
   const canonical = stableStringify(snapshot);
   // 长度 + 两个独立 hash：见 fnv1aHash 注释（避免静默返回另一份提示词）
   return `${canonical.length}:${simpleHash(canonical)}:${fnv1aHash(canonical)}`;

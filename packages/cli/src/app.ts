@@ -1171,6 +1171,10 @@ export class App {
         this.processStream(stream, onText, onThinking, turnAbortController),
       autoCompact: () => this.autoCompact(),
       contextCollapse: (ratio) => this.contextCollapse(ratio),
+      // P1-13/14：reactive（prompt-too-long 恢复）与 collapse（分段摘要）也走压缩后收尾。
+      // 收尾要的三个会话级实例（fileReadTracker / cachedMicrocompactState / sessionDir）
+      // 只有 App 持有，所以由这里注入，loop 侧只负责在「确认压动了」之后调一次。
+      postCompactTail: (info) => this.runNonSummaryPostCompact(info),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
       // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
@@ -2607,6 +2611,48 @@ export class App {
   }
 
   /** 自动压缩，委托给 auto-compact 模块（返回压缩结果，静默-9：truncated=有损降级） */
+  /**
+   * P1-13/14：非摘要类压缩（reactiveCompact / contextCollapse）的压缩后收尾。
+   *
+   * 与 autoCompact / 手动 `/compact` 共用 `runPostCompact` 这个单一事实源，区别只在
+   * **不传 originalMessages/summary**：这两条路径没有「一段原文 → 一份摘要」的可比对配对
+   * （snip 产出的是裁剪清单；collapse 产出多段分段摘要且切分范围不回传），
+   * 传空串会让覆盖率算出 0，把「没有可测的摘要」伪装成「摘要质量塌陷」。
+   *
+   * 全程 best-effort：收尾任一步失败都不影响已经完成的压缩。
+   */
+  private async runNonSummaryPostCompact(info: {
+    trigger: "reactive" | "collapse";
+    messagesBefore: number;
+    /** 可选：reactiveCompact 的 emergencyTruncate 兜底路径不一定给（见 QueryDeps 注释） */
+    tokensBefore?: number;
+  }): Promise<void> {
+    try {
+      const { runPostCompact } = await import("@sid-code/core/query/compact/post-compact.ts");
+      await runPostCompact({
+        trigger: info.trigger,
+        ctxMgr: this.ctxMgr,
+        hookSystem: this.hookSystem,
+        fileReadTracker: this.fileReadTracker ?? undefined,
+        // 与 /compact 同理：为 null 说明本会话没跑过 microcompact，两个 Map/Set 本就是空的，
+        // 为了重置它而新建一个对象是纯噪音。
+        cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
+        sessionDir: this.resolveSessionDir(),
+        messagesBefore: info.messagesBefore,
+        // 缺 tokensBefore 时退回「压缩后的当前估算」→ savedRatio 算成 0，
+        // 是刻意选的保守值：宁可少报省了多少，也不要凭空造一个压缩前的数。
+        // 它只喂 adaptive 样本，而这两条路径拿不到 coverage、样本整条不入库。
+        tokensBefore: info.tokensBefore ?? this.ctxMgr.estimateTokens(),
+        // reactive 的 snip / collapse 的分段摘要都不是「LLM 把历史压成一段摘要」，
+        // 但 collapse 确实调了 LLM。这个字段只喂 adaptive 的样本分类，而没有 coverage
+        // 时样本整条不入库，所以这里取值不影响任何统计。
+        usedLLM: info.trigger === "collapse",
+      });
+    } catch {
+      // 收尾失败不影响压缩结果本身
+    }
+  }
+
   private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
     const { autoCompact: impl } = await import("@sid-code/core/query/auto-compact.ts");
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
@@ -8474,6 +8520,10 @@ export class App {
           // 与自动压缩共用 query/compact/post-compact.ts。漏传会让手动压缩后模型"忘掉"刚读的文件。
           fileReadTracker: this.fileReadTracker ?? undefined,
           sessionDir: this.resolveSessionDir(),
+          // P1-11：手动 /compact 的收尾也要重置 microcompact 状态机。这里刻意**不**延迟创建
+          // （不写 `?? createCachedMicrocompactState()`）：为 null 说明本会话一次 microcompact
+          // 都没跑过，两个 Map/Set 本就是空的，造一个新对象只为把它重置一遍是纯噪音。
+          cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
           // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
           // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker（经 toCommandContext 桥接）。
           permissionChecker: this.permissionChecker,
