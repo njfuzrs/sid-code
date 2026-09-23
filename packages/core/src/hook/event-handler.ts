@@ -42,6 +42,7 @@ import {
 import { getLogger } from "../debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import { getIdentity } from "../identity/index.ts";
+import { finalizeGuardrailSession } from "../analytics/events.ts";
 
 /**
  * P0-1：本进程的 sid-code 版本号（裸 x.y.z），供 SessionStart/End 两端携带。
@@ -282,6 +283,12 @@ export class HookEventHandler {
       // 的会话也能归因 —— 实测 SessionStart 55 : SessionEnd 25，两侧都有缺失。
       app_version: options?.app_version ?? appVersion(),
     };
+    // M4：护栏误报回填挂在这里，不挂 graceful-shutdown（Ctrl+C 不走那条，R5）。
+    try {
+      finalizeGuardrailSession(reason);
+    } catch {
+      /* 遥测旁路 */
+    }
     return this.executeHooks(HookEventName.SessionEnd, input, { trigger: reason });
   }
 

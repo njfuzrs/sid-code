@@ -473,6 +473,16 @@ describe("增量压缩", () => {
     expect(bd.compactThresholdTokens).toBe(mgr.getCompactionThresholds().compactionTriggerUsed);
     expect(bd.compactThresholdTokens).toBe(40_000);
     expect(bd.calibrated).toBe(false);
+    expect(mgr.isCalibrated()).toBe(false);
+  });
+
+  test("M4 isCalibrated 与 recordActualTokens 同步，O(1) 不走 breakdown", () => {
+    const mgr = new Manager({ maxTokens: 200_000 });
+    expect(mgr.isCalibrated()).toBe(false);
+    mgr.addMessage({ role: "user", content: [{ type: "text", text: "x".repeat(1000) }] });
+    mgr.recordActualTokens(800, 0);
+    expect(mgr.isCalibrated()).toBe(true);
+    expect(mgr.getTokenBreakdown(0).calibrated).toBe(true);
   });
 
   test("§12 复审：/context 展示的触发点 == getCompactionLevel 真实触发点（各窗口）", () => {

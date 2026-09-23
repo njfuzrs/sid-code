@@ -38,6 +38,7 @@
 
 import { getTelemetryBus } from "../index.ts";
 import type { Attributes } from "../types.ts";
+import { logGuardrailTriggered } from "../../analytics/events.ts";
 
 /** 防线层标识（闭集：新增防线时在这里登记，别用裸字符串） */
 export type DefenseLayer =
@@ -119,6 +120,19 @@ export function recordDefenseTrigger(
     });
   } catch {
     /* 可观测性不影响正常流程 */
+  }
+  // M4：瞬时 unknown 条。reason 是管理员自由文本（R7），绝不拷进事件。
+  // feature 是闭集（mcp / sub_agent / …）；tool 只进进程内缓冲做 60s 匹配，不进 metadata。
+  try {
+    logGuardrailTriggered({
+      layer,
+      outcome,
+      falsePositive: "unknown",
+      feature: extra?.feature,
+      tool: extra?.tool,
+    });
+  } catch {
+    /* 遥测旁路 */
   }
 }
 

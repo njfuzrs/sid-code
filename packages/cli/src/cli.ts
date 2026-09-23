@@ -1182,8 +1182,8 @@ export async function main(): Promise<void> {
     try {
       const { PolicyManager, applyLoadedPolicy } = await import("@sid-code/core/config/policy.ts");
       const policyManager = new PolicyManager();
-      const policy = await policyManager.load();
-      applyLoadedPolicy(policy);
+      const { settings: policy, meta } = await policyManager.loadWithMeta();
+      applyLoadedPolicy(policy, meta);
       if (policy) {
         const { isBypassDisabledByPolicy, isModeDisabledByPolicy } =
           await import("@sid-code/core/permission/mode-policy.ts");

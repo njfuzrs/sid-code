@@ -17,8 +17,12 @@ import {
   filePathFields,
   logToolCall,
   logCommandInvoke,
+  logPolicyEnforced,
+  logGuardrailTriggered,
+  logContextAssembled,
   structuredErrorCode,
   EVENT_NAMES,
+  __resetGuardrailBufferForTest,
 } from "@sid-code/core/analytics/events.ts";
 import {
   attachAnalyticsSink,
@@ -208,5 +212,53 @@ describe("P1-8 · essential-traffic 拦住绕过 sink 的外发通道", () => {
     });
     expect(result.sent).toBe(false);
     expect(result.error).toBeUndefined();
+  });
+});
+
+describe("M4 三类事件不含规则文本 / 路径 / 消息内容", () => {
+  beforeEach(() => {
+    __resetAnalyticsForTest();
+    __resetGuardrailBufferForTest();
+  });
+  afterEach(() => {
+    __resetAnalyticsForTest();
+    __resetGuardrailBufferForTest();
+  });
+
+  test("policy_enforced / guardrail_triggered / context_assembled 序列化后无自由文本", () => {
+    const seen = captureEvents();
+    logPolicyEnforced({
+      source: "remote",
+      outcome: "applied",
+      denyRuleCount: 1,
+      allowRuleCount: 0,
+      askRuleCount: 0,
+      disabledFeatures: ["mcp"],
+    });
+    logGuardrailTriggered({
+      layer: "policy_limits",
+      outcome: "blocked",
+      falsePositive: "unknown",
+      feature: "mcp",
+    });
+    logContextAssembled({
+      turn: 1,
+      messageCount: 2,
+      estimatedTokens: 100,
+      maxTokens: 200_000,
+      compactionLevel: "none",
+      blocking: false,
+      calibrated: false,
+      toolCount: 3,
+    });
+    const serialized = JSON.stringify(seen);
+    expect(serialized).not.toContain("Bash(");
+    expect(serialized).not.toContain("/Users/");
+    expect(serialized).not.toContain("M4 验收");
+    expect(seen.map((e) => e.name)).toEqual([
+      EVENT_NAMES.POLICY_ENFORCED,
+      EVENT_NAMES.GUARDRAIL_TRIGGERED,
+      EVENT_NAMES.CONTEXT_ASSEMBLED,
+    ]);
   });
 });

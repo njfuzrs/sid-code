@@ -23,6 +23,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { stripReadEfficiencyHint } from "../tool/read.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
+import { logContextAssembled } from "../analytics/events.ts";
 import { ModelFallback } from "../llm/fallback.ts";
 // F4 顺带（原为 require()）：两个 package 都是 "type": "module"，require 在 Bun 下
 // 实测可用，但换到 Node ESM 会 ReferenceError。这里只作 getProviderForModel 未注入时的兜底。
@@ -855,6 +856,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const isBlocking = remainingTokens <= TOKEN_THRESHOLDS.blocking;
 
       const compactionLevel = ctxMgr.getCompactionLevel(toolCount);
+
+      // M4：每轮组装快照。数字全部来自上面已经算好的局部变量，
+      // 禁止再调 estimateTokens / getTokenBreakdown（热路径禁令）。
+      logContextAssembled({
+        turn: state.turnCount,
+        messageCount: ctxMgr.getMessages().length,
+        estimatedTokens: currentTokens,
+        maxTokens: contextMax,
+        compactionLevel,
+        blocking: isBlocking,
+        calibrated: ctxMgr.isCalibrated(),
+        toolCount,
+      });
 
       // blocking：强制截断（不调用 LLM）
       if (isBlocking) {

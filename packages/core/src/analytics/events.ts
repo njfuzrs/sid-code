@@ -29,14 +29,16 @@ import type { EventMetadata, EventMetadataValue, VerifiedNotCodeOrFilepaths } fr
 import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
+import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
 // ─────────────────────────────────────────────────────────────
 
 /**
- * 五条核心漏斗的事件名。缺陷清单 P0-1 要求「不要抄 1119 个事件名，先覆盖 5 条核心漏斗，
+ * 九条核心漏斗的事件名。缺陷清单 P0-1 要求「不要抄 1119 个事件名，先覆盖核心漏斗，
  * 每条都要能回答一个已经想问但目前答不出的问题」。每个名字后面注明它服务的那个问题。
+ * 漏斗 7–9 是 M4：策略有没有生效、护栏拦对了还是拦错了、每轮真实组装了多少。
  */
 export const EVENT_NAMES = {
   // ── 漏斗 1 · 工具：哪个工具最不可靠 ──
@@ -64,6 +66,13 @@ export const EVENT_NAMES = {
   MEMORY_INDEX_HEALTH: "memory_index_health",
   MEMORY_INJECT: "memory_inject",
   MEMORY_GUARD: "memory_guard",
+
+  // ── 漏斗 7 · 企业策略：远程策略到底有没有在拦东西（M4）──
+  POLICY_ENFORCED: "policy_enforced",
+  // ── 漏斗 8 · 护栏：拦对了还是拦错了（M4，必须能区分误报）──
+  GUARDRAIL_TRIGGERED: "guardrail_triggered",
+  // ── 漏斗 9 · 上下文组装：每轮真实用了多少、压缩档位（M4）──
+  CONTEXT_ASSEMBLED: "context_assembled",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -169,6 +178,7 @@ export function logToolSuccess(
     duration_ms: opts.durationMs,
     ...(opts.outputSize !== undefined ? { output_size: opts.outputSize } : {}),
   });
+  noteGuardrailToolSuccess(toolName);
 }
 
 /**
@@ -616,6 +626,185 @@ export function logMemoryGuard(opts: {
     guard_kind: v(opts.kind),
     guard_via: v(opts.via),
     ...(opts.scope !== undefined ? { memory_scope: v(opts.scope) } : {}),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 7 · 企业策略（M4）：远程策略到底有没有在拦东西
+// ─────────────────────────────────────────────────────────────
+//
+// 回答的问题：M3 管理台能配策略，真实会话里到底有没有被应用？
+// outcome 必须从 PolicyManager.load() 信封传入，不要在 applyLoadedPolicy 里
+// 从 policy == null 猜（那个函数看不到 200/204/304/cache）。
+//
+// 硬约束与 logPermissionDeny 同源：绝不带 reason / rule / pattern 文本。
+// 只出条数与 feature 名（闭集）。
+
+/** 策略加载结果。闭集，对应 interpretRemoteResponse / ManagedFileLoader 的权威路径。 */
+export type PolicyEnforcedOutcome = "applied" | "none" | "unchanged" | "cache_fallback" | "error";
+
+export function logPolicyEnforced(opts: {
+  source: "remote" | "mdm" | "managed_file" | "none";
+  outcome: PolicyEnforcedOutcome;
+  denyRuleCount: number;
+  allowRuleCount: number;
+  askRuleCount: number;
+  disabledFeatures: string[];
+  durationMs?: number;
+}): void {
+  emit(EVENT_NAMES.POLICY_ENFORCED, {
+    source: v(opts.source),
+    outcome: v(opts.outcome),
+    deny_rule_count: opts.denyRuleCount,
+    allow_rule_count: opts.allowRuleCount,
+    ask_rule_count: opts.askRuleCount,
+    disabled_features: v(opts.disabledFeatures.join(",")),
+    ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 8 · 护栏（M4）：拦对了还是拦错了
+// ─────────────────────────────────────────────────────────────
+//
+// 判定必须延迟：拦截瞬间发 unknown（保证不丢；出口三依赖这条），
+// 60s 内同 tool 再次成功 → 修正条 suspected_false_positive，
+// SessionEnd(exit) 仍 unknown → confirmed_true_positive。
+// abort/error 不改写 unknown。
+//
+// 禁止把 extra.reason（管理员自由文本）拷进事件。
+
+/** 护栏误报三态。不是 boolean —— 客户端无法自动判定误报，用 boolean 会逼代码在不知道时猜。 */
+export type FalsePositiveSignal =
+  | "confirmed_true_positive"
+  | "suspected_false_positive"
+  | "unknown";
+
+const GUARDRAIL_FP_WINDOW_MS = 60_000;
+const GUARDRAIL_BUFFER_CAP = 32;
+
+interface PendingGuardrail {
+  layer: DefenseLayer;
+  outcome: DefenseOutcome;
+  feature?: string;
+  tokens?: number;
+  /** 仅内存匹配用，不进事件。MCP 真名也只活在进程内、会话结束即丢。 */
+  tool?: string;
+  ts: number;
+  resolved: boolean;
+}
+
+const pendingGuardrails: PendingGuardrail[] = [];
+
+function pushPendingGuardrail(entry: Omit<PendingGuardrail, "ts" | "resolved">): void {
+  pendingGuardrails.push({ ...entry, ts: Date.now(), resolved: false });
+  while (pendingGuardrails.length > GUARDRAIL_BUFFER_CAP) pendingGuardrails.shift();
+}
+
+export function logGuardrailTriggered(opts: {
+  layer: DefenseLayer;
+  outcome: DefenseOutcome;
+  falsePositive: FalsePositiveSignal;
+  feature?: string;
+  tokens?: number;
+  /** 进程内 60s 同 tool 匹配用，不写入事件 metadata */
+  tool?: string;
+}): void {
+  emit(EVENT_NAMES.GUARDRAIL_TRIGGERED, {
+    layer: v(opts.layer),
+    outcome: v(opts.outcome),
+    false_positive: v(opts.falsePositive),
+    ...(opts.feature ? { feature: v(opts.feature) } : {}),
+    ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
+  });
+  // 瞬时 unknown 条进缓冲，等 60s 同 tool 成功或 SessionEnd 回填。
+  // 修正条 / 确认条本身不再进缓冲，否则会自我匹配。
+  if (opts.falsePositive === "unknown") {
+    pushPendingGuardrail({
+      layer: opts.layer,
+      outcome: opts.outcome,
+      feature: opts.feature,
+      tokens: opts.tokens,
+      tool: opts.tool,
+    });
+  }
+}
+
+/**
+ * 工具执行成功：60s 内同一 tool 的未决护栏记一条 suspected_false_positive。
+ * 挂在 logToolSuccess 里，主循环 / 子代理 / forked 三条路径一处覆盖。
+ */
+export function noteGuardrailToolSuccess(toolName: string): void {
+  if (!toolName) return;
+  const now = Date.now();
+  for (const entry of pendingGuardrails) {
+    if (entry.resolved) continue;
+    if (!entry.tool || entry.tool !== toolName) continue;
+    if (now - entry.ts > GUARDRAIL_FP_WINDOW_MS) continue;
+    entry.resolved = true;
+    logGuardrailTriggered({
+      layer: entry.layer,
+      outcome: entry.outcome,
+      falsePositive: "suspected_false_positive",
+      feature: entry.feature,
+      tokens: entry.tokens,
+    });
+  }
+}
+
+/**
+ * SessionEnd 回填。只在 reason=exit 时把仍为 unknown 的记成 confirmed_true_positive。
+ * abort / error / clear / other 保持 unknown，不再发「已判定」条（R5）。
+ */
+export function finalizeGuardrailSession(reason: string): void {
+  if (reason !== "exit") return;
+  for (const entry of pendingGuardrails) {
+    if (entry.resolved) continue;
+    entry.resolved = true;
+    logGuardrailTriggered({
+      layer: entry.layer,
+      outcome: entry.outcome,
+      falsePositive: "confirmed_true_positive",
+      feature: entry.feature,
+      tokens: entry.tokens,
+    });
+  }
+}
+
+/** 仅测试：清空环形缓冲，避免用例串味。 */
+export function __resetGuardrailBufferForTest(): void {
+  pendingGuardrails.length = 0;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 9 · 上下文组装（M4）：每轮真实组装了什么
+// ─────────────────────────────────────────────────────────────
+//
+// 热路径三条约束：
+// 1. 只传已算好的数；禁止再调 estimateTokens() / getTokenBreakdown()。
+//    calibrated 走 ContextManager.isCalibrated()（O(1) 读 private 字段）。
+// 2. 不带消息内容，只带计数。
+// 3. 默认采样走已有 event_sampling_config。覆盖率分母必须乘采样率。
+
+export function logContextAssembled(opts: {
+  turn: number;
+  messageCount: number;
+  estimatedTokens: number;
+  maxTokens: number;
+  compactionLevel: string;
+  blocking: boolean;
+  calibrated: boolean;
+  toolCount: number;
+}): void {
+  emit(EVENT_NAMES.CONTEXT_ASSEMBLED, {
+    turn: opts.turn,
+    message_count: opts.messageCount,
+    estimated_tokens: opts.estimatedTokens,
+    max_tokens: opts.maxTokens,
+    compaction_level: v(opts.compactionLevel),
+    blocking: opts.blocking,
+    calibrated: opts.calibrated,
+    tool_count: opts.toolCount,
   });
 }
 
