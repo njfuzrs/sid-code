@@ -145,7 +145,17 @@ export async function processStream(
   // 都已生效，那才是真正开枪杀流的地方；本层是外层软兜底，且默认值 1500s 远宽于
   // 任何 per-model 会调的量级。真需要时再透传，别为了"看起来接全了"提前加参数。
   const providerTimeouts = resolveProviderStreamTimeouts({ providerKind: "anthropic" });
-  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? netTimeouts.watchdogNoProgressMs;
+  // P3-5（2026-09-23）：改指独立的 `streamHeartbeatTimeoutMs`（600s），
+  // 不再 `= netTimeouts.watchdogNoProgressMs`（720s）。
+  //
+  // 两层此前同值，但**谓词不同**：本层任意 SSE 事件都续命（下方主循环在 switch 之前
+  // 无条件刷新 lastActivityTime，ping / keep-alive / 空 delta 全算），而 loop.ts 的
+  // watchdog 只认业务内容进展（text_delta / tool_use / reasoning，读快照的
+  // lastContentProgressAt）。于是在最常见的「网关只回 keep-alive、没有内容」形态里，
+  // 本层被每个 ping 续命、**永远不开枪**，真正开枪的只有 watchdog —— 同值让人以为
+  // 有两层防线，那个形态下实际只有一层。拆开后本层比 watchdog 早 120s 到点，
+  // 「连 ping 都断了」时由它先判（信息更多的一层先判），watchdog 退回复核位。
+  const HEARTBEAT_TIMEOUT = options?.heartbeatTimeoutMs ?? netTimeouts.streamHeartbeatTimeoutMs;
   const FIRST_BYTE_TIMEOUT = options?.firstByteTimeoutMs ?? netTimeouts.headerTimeoutMs;
   const OVERALL_TIMEOUT = options?.overallTimeoutMs ?? providerTimeouts.overallTimeoutMs;
   // 检查间隔：此前硬编码 5s，heartbeatCheckIntervalMs 声明了却未接线（死选项）。
@@ -199,8 +209,10 @@ export async function processStream(
     //
     // 首字节前（firstEventReceived=false）：这段等待是"网关鉴权 + 排队 + 模型冷启动"，
     // 慢是常态而非故障，用 FIRST_BYTE_TIMEOUT（= headerTimeoutMs，默认 300s）。
-    // 首字节后：流已建立还中途静默才是真可疑，用 HEARTBEAT_TIMEOUT（默认 300s，
-    // 与 loop.ts 外层看门狗 watchdogNoProgressMs 同源）。
+    // 首字节后：流已建立还中途静默才是真可疑，用 HEARTBEAT_TIMEOUT
+    //（P3-5：默认 600s，独立字段 `streamHeartbeatTimeoutMs`；此前这行写「300s，与
+    // loop.ts 外层看门狗 watchdogNoProgressMs 同源」—— 数值早已随 BASE 抬到 720s，
+    // 注释腐坏，而"同源"本身也是那条缺陷：谓词不同的两层不该同值，见上方说明）。
     //
     // 两者共用 lastActivityTime 作基准是刻意的：首字节前它就是请求发出时刻，
     // 首字节后它是最近一个事件时刻——语义都是"距上次有动静多久"，只是容忍度不同。

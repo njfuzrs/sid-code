@@ -187,14 +187,25 @@ export interface LoopState {
    * P1-4：本轮（= 本条用户消息的本次 API 轮）起点时刻（epoch ms）。
    *
    * 端到端耗时（"用户回车 → 最终答复"，「更快」方向的主口径）的基准点。
-   * 由 `queryLoop` 在 while 循环顶部每轮**重设**，`TurnComplete` 事件发射时当场
-   * 用 `Date.now() - turnStartedAtMs` 算差值 —— 不留给消费侧配对。
+   * 由 `queryLoop` 在**入口**调一次 `beginTurn()` 设定（`loop.ts` 的
+   * `beginTurn(state, sessionState)`，**不是** while 每次迭代），`TurnComplete`
+   * 事件发射时当场用 `Date.now() - turnStartedAtMs` 算差值 —— 不留给消费侧配对。
+   *
+   * ⚠️ P3-4（2026-09-23）：这段注释此前写「由 queryLoop 在 while 循环顶部每轮**重设**」，
+   * 与实现相反 —— 而照它去"修"会把端到端口径改坏：`turnCount` 是**本条用户消息内的
+   * API 迭代数**，在 while 顶部重设会让基准变成"最后一次 API 往返的起点"，
+   * 于是这个字段从「用户回车 → 最终答复」退化成「最后一次 fetch 耗时」，
+   * 工具往返 / JIT 注入 / 权限确认 / 重试等待全部被剔除，p95 系统性虚低。
+   * 这正是 TTFT 那次事故的同形态（口径写反 → 后人照注释改 → 数字看起来更好了）。
+   * 「一轮」的定义见 `turn-complete.ts` 文件头，以那里为准。
    *
    * 两条设计约束（都是踩出来的）：
    *
-   * 1. **每轮重设，绝不跨轮累计**。TTFT 曾栽在这条上：重试循环外只设一次基准，
+   * 1. **每条用户消息重设一次，绝不跨消息累计**。基准天然随每条用户消息重设：
+   *    `LoopState` 由 `createInitialLoopState()` 在每次 queryLoop 调用时重建。
+   *    TTFT 曾栽在这条上：重试循环外只设一次基准，
    *    于是 thinking 模型的首字节延迟被算成"整轮生成耗时"，实测合成 53.7s vs
-   *    真实 4.9s。端到端同理 —— 不重设则第 N 轮的数字里含前 N-1 轮，p95 虚高。
+   *    真实 4.9s。端到端同理 —— 不重设则第 N 条消息的数字里含前 N-1 条，p95 虚高。
    * 2. **不留给消费侧配对**。`watchdog-snapshot-index-mismatch` 的教训：注册用
    *    turnCount、查用 pair index，两套 key 让快照结构性恒 null。所以差值在发事件
    *    的那一刻当场算完落进 data，消费侧只做分位数、不做配对。

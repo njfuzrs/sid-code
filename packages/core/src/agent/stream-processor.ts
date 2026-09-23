@@ -56,6 +56,29 @@ export interface AgentStreamOptions {
   overallTimeoutMs?: number;
   /** 心跳检查间隔（毫秒，默认 5000） */
   heartbeatCheckIntervalMs?: number;
+  /**
+   * P3-6（2026-09-23）：本条流的观测号段（与调用方 `emitStreamPhase` 用的**同一个**值）。
+   *
+   * 此前两处 `emitTimeoutFired` 硬编码 `-1`。`-1` 拼出的快照 key（`makeSnapshotKey`
+   * 是 `loopId:agentId:index`）对不上任何一份快照，于是：
+   *   ① `snapshot.timeoutsFired` 永远 push 不进去 —— 而 `fallback.ts` 的 reopenReason
+   *      正是读这个数组来判「这条流为什么重开」；
+   *   ② 事件落到 events.jsonl 里带着 `index: -1`，与主循环 watchdog / StreamPhase
+   *      的 `turnCount`(+`loopId`/`agentId`) 口径对不上 —— 按 index 聚合时子代理超时
+   *      **像没发生过**（铁律 1「每个指标必须能指到源字段」的弱形式）。
+   *
+   * 不传则退化为旧行为（-1），但生产两条路径都必须传：主流 `10000 + turns`、
+   * 总结轮 `20000 + turns`，与各自的 `emitStreamPhase` 逐字节同源。
+   */
+  observerIndex?: number;
+  /**
+   * P3-6：本子代理的 agentId（与调用方 `emitStreamPhase` 的第四参同源）。
+   *
+   * 缺它的后果不是「少一个字段」而是**记到别人账上**：`makeSnapshotKey` 在无
+   * agentId 时拼的是主循环那把 key，子代理的超时会污染主循环快照，
+   * 同时自己的 `timeoutsFired` 恒空（B4 已在 emitStreamPhase 侧踩过这个坑）。
+   */
+  observerAgentId?: string;
 }
 
 /**
@@ -93,6 +116,8 @@ export async function processStream(
   // idle 档默认仅 60s（BASE*0.2）——用 idle 阈值卡它会把正常排队误杀成流卡死。
   // 默认取 headerTimeoutMs（300s，与主循环同源），可经 options 覆盖。
   const FIRST_BYTE_TIMEOUT = options.firstByteTimeoutMs ?? resolveHeaderTimeoutMs();
+  // P3-6：超时事件的观测身份。未传时退化为 -1（旧行为），生产两条路径都会传。
+  const OBSERVER_INDEX = options.observerIndex ?? -1;
   let timeoutError: Error | null = null;
 
   const lifecycle = createStreamLifecycle<StreamEvent>({
@@ -108,7 +133,12 @@ export async function processStream(
           `sub-agent stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
         );
         getLogger().warn("AGENT_STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
-        emitTimeoutFired(-1, "agent_overall_timeout", { elapsed_ms: OVERALL_TIMEOUT });
+        emitTimeoutFired(
+          OBSERVER_INDEX,
+          "agent_overall_timeout",
+          { elapsed_ms: OVERALL_TIMEOUT },
+          options.observerAgentId,
+        );
         options.getAbortController?.()?.abort("agent-stream-overall-timeout");
       } else {
         // idle 层等价于原"心跳超时"（content_progress 未启用，不会走到该分支）
@@ -116,7 +146,12 @@ export async function processStream(
           `sub-agent stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
         );
         getLogger().warn("AGENT_STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
-        emitTimeoutFired(-1, "agent_heartbeat_timeout", { idle_ms: HEARTBEAT_TIMEOUT });
+        emitTimeoutFired(
+          OBSERVER_INDEX,
+          "agent_heartbeat_timeout",
+          { idle_ms: HEARTBEAT_TIMEOUT },
+          options.observerAgentId,
+        );
         options.getAbortController?.()?.abort("agent-stream-heartbeat-timeout");
       }
     },
