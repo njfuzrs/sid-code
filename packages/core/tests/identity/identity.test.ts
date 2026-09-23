@@ -312,6 +312,8 @@ describe("配置目录 .gitignore 排除身份文件", () => {
     expect(text).toContain("device-id");
     expect(text).toContain("device-credential.json");
     expect(text).toContain("policy-cache.json");
+    expect(text).toContain("failed-usage-ledger.jsonl");
+    expect(text).toContain("usage-ledger.jsonl");
   });
 });
 

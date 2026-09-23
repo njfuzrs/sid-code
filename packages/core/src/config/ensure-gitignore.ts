@@ -55,6 +55,8 @@ managed-settings.json
 device-id
 device-credential.json
 policy-cache.json
+failed-usage-ledger.jsonl
+usage-ledger.jsonl
 
 # ── 允许提交的配置（显式取消忽略，便于 dotfiles 管理）──
 !settings.json

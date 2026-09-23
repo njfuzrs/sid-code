@@ -40,10 +40,12 @@
  */
 
 import { readUsageLedger } from "../packages/core/src/telemetry/usage-ledger.ts";
+import type { UsageLedgerEntry } from "../packages/core/src/telemetry/usage-ledger.ts";
 import { getRegistryEntries } from "../packages/core/src/llm/model-registry.ts";
+import { lookupChannelTrust } from "../packages/core/src/telemetry/channel-trust.ts";
 
-/** 偏差阈值：超过即判"价格口径失效"（方案 §5.6 定的 10%）。 */
-const DEVIATION_THRESHOLD = 0.1;
+/** 偏差阈值：超过即判"价格口径失效"（方案 §5.6 定的 10%）。验收传 --threshold 0.05。 */
+export const DEVIATION_THRESHOLD = 0.1;
 
 /**
  * 对账用汇率（1 CNY = ? USD）。
@@ -63,7 +65,7 @@ const CNY_TO_USD = 1 / 7.1;
  */
 const ASOF_STALE_DAYS = 90;
 
-interface Args {
+export interface Args {
   bill?: number;
   currency: "CNY" | "USD";
   from?: string;
@@ -71,10 +73,15 @@ interface Args {
   model?: string;
   /** 只跑 asOf 陈旧检查，不读账本（给 hook / CI 用） */
   checkAsOfOnly: boolean;
+  /**
+   * 偏差阈值，缺省 {@link DEVIATION_THRESHOLD}（0.1）。
+   * 规划出口是 5%，验收显式传 0.05 —— 不改默认，避免把既有用法变成失败。
+   */
+  threshold: number;
 }
 
-function parseArgs(argv: string[]): Args {
-  const out: Args = { currency: "USD", checkAsOfOnly: false };
+export function parseArgs(argv: string[]): Args {
+  const out: Args = { currency: "USD", checkAsOfOnly: false, threshold: DEVIATION_THRESHOLD };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -84,7 +91,15 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--to") out.to = next();
     else if (a === "--model") out.model = next();
     else if (a === "--check-asof") out.checkAsOfOnly = true;
-    else if (a === "--help" || a === "-h") {
+    else if (a === "--threshold") {
+      const raw = next();
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0 || n > 1) {
+        console.error(`--threshold 必须是 0–1 的数字，收到: ${raw}`);
+        process.exit(2);
+      }
+      out.threshold = n;
+    } else if (a === "--help" || a === "-h") {
       console.log(
         [
           "用法: bun scripts/pricing-reconcile.ts [选项]",
@@ -93,6 +108,7 @@ function parseArgs(argv: string[]): Args {
           "  --from YYYY-MM-DD    区间起（含）",
           "  --to   YYYY-MM-DD    区间止（不含）",
           "  --model <名>         只统计该模型",
+          "  --threshold <0-1>    偏差阈值，默认 0.1（验收出口传 0.05）",
           `  --check-asof         只查注册表 asOf 是否超 ${ASOF_STALE_DAYS} 天（只提示，退出码恒 0）`,
         ].join("\n"),
       );
@@ -111,6 +127,66 @@ function toEpochSec(d?: string): number | undefined {
 
 function fmtUSD(n: number): string {
   return `$${n.toFixed(4)}`;
+}
+
+export interface HostBucket {
+  costUSD: number;
+  sideCostUSD: number;
+  promptTotal: number;
+  output: number;
+  sessions: number;
+  host: string;
+  untrusted: boolean;
+}
+
+/**
+ * 按 模型@host 分桶，并标 untrusted。
+ * unknown 计入偏差（与 cache-report 同款：没探测过当可信，警示才有信号）。
+ */
+export function bucketByModelHost(rows: UsageLedgerEntry[]): Map<string, HostBucket> {
+  const buckets = new Map<string, HostBucket>();
+  for (const e of rows) {
+    const host = e.endpointHost ?? "(默认/官方)";
+    const key = `${e.model}@${host}`;
+    const b = buckets.get(key) ?? {
+      costUSD: 0,
+      sideCostUSD: 0,
+      promptTotal: 0,
+      output: 0,
+      sessions: 0,
+      host,
+      untrusted: lookupChannelTrust(e.endpointHost).verdict === "untrusted",
+    };
+    // ⚠ 口径：`costUSD` 走 getEffectiveTotalCostUSD()，**已含**影子调用成本；
+    // 而 `sideCostUSD` 是其中影子那部分。两者相加会把影子算两遍。
+    b.costUSD += e.costUSD ?? 0;
+    b.sideCostUSD += e.sideCostUSD ?? 0;
+    b.promptTotal += e.promptTotal ?? 0;
+    b.output += e.output ?? 0;
+    b.sessions += 1;
+    buckets.set(key, b);
+  }
+  return buckets;
+}
+
+export function partitionTrusted(buckets: Map<string, HostBucket>): {
+  counted: HostBucket[];
+  excluded: HostBucket[];
+  countedCost: number;
+  excludedCost: number;
+} {
+  const counted: HostBucket[] = [];
+  const excluded: HostBucket[] = [];
+  for (const b of buckets.values()) {
+    if (b.untrusted) excluded.push(b);
+    else counted.push(b);
+  }
+  return {
+    counted,
+    excluded,
+    countedCost: counted.reduce((s, b) => s + b.costUSD, 0),
+    excludedCost: excluded.reduce((s, b) => s + b.costUSD, 0),
+  };
 }
 
 /**
@@ -213,53 +289,38 @@ function main(): void {
   // ── 按 (model, endpoint) 分解 ──
   // 分解维度必须含 endpoint：同一模型名经不同网关是**不同的价**，
   // 合并成一行会让"某一个渠道价错了"被其余渠道的正确值稀释掉。
-  interface Bucket {
-    costUSD: number;
-    sideCostUSD: number;
-    promptTotal: number;
-    output: number;
-    sessions: number;
-  }
-  const buckets = new Map<string, Bucket>();
-  let totalMain = 0;
-  let totalSide = 0;
-  for (const e of rows) {
-    const key = `${e.model}@${e.endpointHost ?? "(默认/官方)"}`;
-    const b = buckets.get(key) ?? {
-      costUSD: 0,
-      sideCostUSD: 0,
-      promptTotal: 0,
-      output: 0,
-      sessions: 0,
-    };
-    // ⚠ 口径：`costUSD` 走 getEffectiveTotalCostUSD()，**已含**影子调用成本；
-    // 而 `sideCostUSD` 是其中影子那部分。两者相加会把影子算两遍。
-    // 这个坑在 usage-ledger.ts 的字段注释里写着，对账时最容易踩。
-    b.costUSD += e.costUSD ?? 0;
-    b.sideCostUSD += e.sideCostUSD ?? 0;
-    b.promptTotal += e.promptTotal ?? 0;
-    b.output += e.output ?? 0;
-    b.sessions += 1;
-    buckets.set(key, b);
-    totalMain += e.costUSD ?? 0;
-    totalSide += e.sideCostUSD ?? 0;
-  }
+  const buckets = bucketByModelHost(rows);
+  const { countedCost, excluded, excludedCost } = partitionTrusted(buckets);
+  const totalSide = [...buckets.values()].reduce((s, b) => s + b.sideCostUSD, 0);
 
   console.log(`\n对账区间: ${args.from ?? "(不限)"} → ${args.to ?? "(不限)"}`);
   console.log(`会话数: ${rows.length}\n`);
   console.log("按 模型@端点 分解:");
   for (const [key, b] of [...buckets.entries()].sort((a, c) => c[1].costUSD - a[1].costUSD)) {
     const sidePct = b.costUSD > 0 ? (b.sideCostUSD / b.costUSD) * 100 : 0;
+    const mark = b.untrusted ? " ⚠不可信（不进偏差）" : "";
     console.log(
-      `  ${key}\n` +
+      `  ${key}${mark}\n` +
         `    会话 ${b.sessions}  成本 ${fmtUSD(b.costUSD)}` +
         `（其中影子调用 ${fmtUSD(b.sideCostUSD)} = ${sidePct.toFixed(1)}%）\n` +
         `    prompt ${(b.promptTotal / 1e6).toFixed(2)}M  output ${(b.output / 1e6).toFixed(2)}M`,
     );
   }
 
-  console.log(`\n账本合计（含影子调用）: ${fmtUSD(totalMain)}`);
-  console.log(`  其中影子调用: ${fmtUSD(totalSide)}`);
+  if (excluded.length > 0) {
+    const hosts = [...new Set(excluded.map((b) => b.host))];
+    const n = excluded.reduce((s, b) => s + b.sessions, 0);
+    console.log(
+      `\n可解释排除（channel-trust=untrusted）：n=${n} 会话 / ${fmtUSD(excludedCost)} / host=${hosts.join(", ")}`,
+    );
+    console.log("  这些行不进偏差分子分母。静默排除会让人以为数据都在。");
+  } else {
+    console.log("\n可解释排除（channel-trust=untrusted）：n=0（没有不可信渠道）");
+  }
+
+  console.log(`\n账本合计（含影子调用，含不可信）: ${fmtUSD(countedCost + excludedCost)}`);
+  console.log(`  计入偏差: ${fmtUSD(countedCost)}`);
+  console.log(`  其中影子调用（全量）: ${fmtUSD(totalSide)}`);
 
   if (args.bill === undefined || !Number.isFinite(args.bill)) {
     console.log("\n未提供 --bill，跳过偏差判定。");
@@ -278,13 +339,13 @@ function main(): void {
     console.log("账单金额 ≤ 0，无法算偏差。");
     process.exit(0);
   }
-  const ratio = totalMain / billUSD;
+  const ratio = countedCost / billUSD;
   const deviation = Math.abs(ratio - 1);
   console.log(
-    `\n我们/官方 = ${ratio.toFixed(4)}（偏差 ${(deviation * 100).toFixed(1)}%，阈值 ${DEVIATION_THRESHOLD * 100}%）`,
+    `\n我们/官方 = ${ratio.toFixed(4)}（偏差 ${(deviation * 100).toFixed(1)}%，阈值 ${args.threshold * 100}%）`,
   );
 
-  if (deviation > DEVIATION_THRESHOLD) {
+  if (deviation > args.threshold) {
     console.error(
       `\n✗ 价格口径失效：偏差 ${(deviation * 100).toFixed(1)}% 超阈值。\n` +
         `  ${ratio < 1 ? "我们低估" : "我们高估"}了 ${(1 / Math.min(ratio, 1 / ratio)).toFixed(2)}×。\n` +
@@ -305,4 +366,4 @@ function main(): void {
   process.exit(0);
 }
 
-main();
+if (import.meta.main) main();

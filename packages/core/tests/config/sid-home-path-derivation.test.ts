@@ -122,6 +122,7 @@ describe("SID_CONFIG_DIR 覆盖日志落盘路径（缺陷 B 本体）", () => {
     expect(sidPaths.deviceId()).toBe(sidHomePath("device-id"));
     expect(sidPaths.deviceCredential()).toBe(sidHomePath("device-credential.json"));
     expect(sidPaths.policyCache()).toBe(sidHomePath("policy-cache.json"));
+    expect(sidPaths.failedUsageLedger()).toBe(sidHomePath("failed-usage-ledger.jsonl"));
   });
 });
 

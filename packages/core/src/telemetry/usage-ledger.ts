@@ -192,8 +192,17 @@ export function upsertUsageLedger(entry: UsageLedgerEntry): void {
     existing.push(entry);
     writeFileSync(path, existing.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
   } catch {
-    // 写盘失败静默忽略（绝不阻断主流程）
+    // 写盘失败静默忽略（绝不阻断主流程）。本地没有可信快照，不发远程。
+    return;
   }
+  // M5：写盘成功后 fire-and-forget 远程 upsert。必须在 try 外、成功路径上；
+  // 调用方（SessionEnd / 每轮 done）假设本函数同步、不抛，所以 void + catch。
+  // 远程失败不影响本地。未配 SID_CODE_USAGE_ENDPOINT 时 push 立即返回。
+  void import("./usage-ledger-remote.ts")
+    .then((m) => m.pushUsageLedgerRemote(entry))
+    .catch(() => {
+      /* 远程失败不阻断；push 内部已按规则写失败盘 */
+    });
 }
 
 /**
