@@ -89,7 +89,14 @@ describe("P1-1 / P1-2 · handleStopHooks", () => {
     } as any;
 
     const result = await drainStop(handleStopHooks(hookSystem, ctx, "做完了", 0));
-    expect(result).toEqual({ shouldContinue: false, forceStop: true, errorMessages: [] });
+    // P2-3：passed 区分"真跑了验证且全通过"与其它 shouldContinue=false 成因。
+    // forceStop 走的是 preventContinuation，不是"验证通过"，故 passed=false。
+    expect(result).toEqual({
+      shouldContinue: false,
+      forceStop: true,
+      errorMessages: [],
+      passed: false,
+    });
     expect(ctx.messageCount()).toBe(before);
   });
 
@@ -152,6 +159,13 @@ describe("P1-1 / P1-2 · handleStopHooks", () => {
     } as any;
 
     const result = await drainStop(handleStopHooks(hookSystem, ctx, "做完了", 0));
-    expect(result).toEqual({ shouldContinue: false, forceStop: false, errorMessages: [] });
+    // P2-3：这是唯一该置 passed=true 的形态（真跑了 hook、全部 allow）——
+    // loop.ts 据此清零 stopHookRetryCount。
+    expect(result).toEqual({
+      shouldContinue: false,
+      forceStop: false,
+      errorMessages: [],
+      passed: true,
+    });
   });
 });

@@ -261,9 +261,15 @@ export function isPromptTooLongError(err: any): boolean {
 
 /** DiminishingReturnsDetector 可选构造配置 */
 export interface DiminishingReturnsOptions {
-  /** 最大续写次数（默认 MAX_RECOVERY_COUNT=3） */
+  /** 最大续写次数（默认 {@link DiminishingReturnsDetector.MAX_RECOVERY_COUNT}=8） */
   maxRecoveryCount?: number;
-  /** 递减收益阈值，token 数（默认 DIMINISHING_THRESHOLD=500） */
+  /**
+   * 递减收益阈值，token 数（默认 {@link DiminishingReturnsDetector.DIMINISHING_THRESHOLD}=150）。
+   *
+   * P2-4：这两行注释原写「默认 3 / 默认 500」，是 2026-07-07 调整**之前**的值——
+   * 而 Token Budget 那个调用点正好照着注释显式传了 500，把那次收紧在该路径上撤销了。
+   * 默认值写死在注释里就会这样漂：改成引用常量，让唯一事实源留在常量的文档注释上。
+   */
   diminishingThreshold?: number;
 }
 

@@ -652,6 +652,17 @@ export class AnthropicProvider implements Provider {
                 delta: { stop_reason: delta?.stop_reason || null },
                 // 只发本次增量（下游 accumulateUsage 会累加）
                 usage: { inputTokens: 0, outputTokens: deltaOutput },
+                // P2-1：透传 provider **原始** output 是否为 0（估算兜底之前的事实）。
+                // 这是 unanswered-end-turn 形态 A（思考漂移进 content 通道）的主判据之一；
+                // 此前只有 openai.ts 发这个标记，stream-processor 的初值恒 false，
+                // 于是形态 A 对 Anthropic 路径**整条死掉**——检测器在、判据永不为真。
+                //
+                // 口径用**累积值** cumulativeOutput 而非本次增量 deltaOutput：
+                // 增量为 0 只说明"这一帧没新增"，不等于"整条响应 output 为 0"。
+                // Anthropic 每条 message 只发一次 message_delta（紧接 message_stop 之前），
+                // 故此刻的累积值就是最终总量；而 stream-processor 是"任一帧报 true 即置位"，
+                // 用增量会让多帧场景误置位。
+                _rawOutputTokensZero: cumulativeOutput === 0,
               };
               break;
             }
