@@ -1450,6 +1450,14 @@ export class Manager {
   }
 
   /**
+   * M4：O(1) 读校准旗标。热路径埋点禁止再走 getTokenBreakdown()
+   *（那会再遍历一遍消息，与 estimateTokens 同量级）。
+   */
+  isCalibrated(): boolean {
+    return this.calibrated;
+  }
+
+  /**
    * P3-2：设置模型单次响应最大输出 token（完成缓冲区的输出预留分量）。
    * 模型切换时由上层重设，使缓冲区跟随新模型的输出能力。
    */

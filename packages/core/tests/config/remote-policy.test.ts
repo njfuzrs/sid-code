@@ -15,6 +15,7 @@ import {
   PolicyManager,
   RemotePolicyLoader,
   applyLoadedPolicy,
+  getLastPolicyLoad,
   __resetRemotePolicyLoaderForTest,
   isNonLocalHttp,
   sanitizeRemotePolicy,
@@ -435,5 +436,46 @@ describe("M3 遗留：权威 204 压过缓存 / stale / once-load", () => {
     await new PolicyManager().load();
     await new PolicyManager().load();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("M4：200 信封 outcome=applied；204 信封 outcome=none", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    installFetch(
+      mock(async () =>
+        jsonResponse({ permissions: { deny: ["Bash(curl *)"] } }, { etag: '"v1"' }),
+      ) as unknown as typeof fetch,
+    );
+    const applied = await new PolicyManager().loadWithMeta();
+    expect(applied.settings?.permissions?.deny).toEqual(["Bash(curl *)"]);
+    expect(applied.meta.outcome).toBe("applied");
+    expect(applied.meta.source).toBe("remote");
+    expect(getLastPolicyLoad()?.outcome).toBe("applied");
+
+    __resetRemotePolicyLoaderForTest();
+    installFetch(mock(async () => emptyResponse(204)) as unknown as typeof fetch);
+    const none = await new PolicyManager().loadWithMeta();
+    expect(none.settings).toBeNull();
+    expect(none.meta.outcome).toBe("none");
+  });
+
+  test("M4：5xx 无缓存信封 outcome=error；有缓存 outcome=cache_fallback", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = endpoint;
+    installFetch(mock(async () => emptyResponse(503)) as unknown as typeof fetch);
+    const err = await new RemotePolicyLoader().load();
+    expect(err).toBeNull();
+    expect(getLastPolicyLoad()?.outcome).toBe("error");
+
+    installFetch(
+      mock(async () =>
+        jsonResponse({ permissions: { deny: ["Bash(curl *)"] } }, { etag: '"v1"' }),
+      ) as unknown as typeof fetch,
+    );
+    await new RemotePolicyLoader().load();
+    installFetch(mock(async () => emptyResponse(500)) as unknown as typeof fetch);
+    const cached = await new RemotePolicyLoader().load();
+    expect(cached?.permissions?.deny).toEqual(["Bash(curl *)"]);
+    expect(getLastPolicyLoad()?.outcome).toBe("cache_fallback");
   });
 });

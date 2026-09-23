@@ -13,6 +13,7 @@ import { sidPaths } from "./paths.ts";
 import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
 import { setPolicyLimits } from "./policy-limits.ts";
 import { setRemotePolicyPermissions } from "./remote-policy-state.ts";
+import { logPolicyEnforced, type PolicyEnforcedOutcome } from "../analytics/events.ts";
 
 /** 策略来源（优先级从高到低，first-source-wins） */
 export type PolicySource = "remote" | "mdm" | "managed_file";
@@ -73,6 +74,33 @@ export interface PolicyLoader {
   pollingInterval?: number;
 }
 
+/**
+ * M4：PolicyManager.load 的信封。settings 形状不变（测试 / loader 链不改），
+ * outcome 从 interpretRemoteResponse / ManagedFileLoader 的真实路径来，
+ * 不要在 applyLoadedPolicy 里从 policy == null 猜（那个函数看不到 200/204/304）。
+ */
+export interface PolicyLoadMeta {
+  source: PolicySource | "none";
+  outcome: PolicyEnforcedOutcome;
+  durationMs: number;
+}
+
+export interface PolicyLoadResult {
+  settings: PolicySettings | null;
+  meta: PolicyLoadMeta;
+}
+
+let lastPolicyLoadMeta: PolicyLoadMeta | null = null;
+
+function rememberLoadMeta(meta: PolicyLoadMeta): void {
+  lastPolicyLoadMeta = meta;
+}
+
+/** 最近一次 PolicyManager / loader 链记下的信封。测试与 applyLoadedPolicy 缺省时用。 */
+export function getLastPolicyLoad(): PolicyLoadMeta | null {
+  return lastPolicyLoadMeta;
+}
+
 /** 本地文件策略加载器 */
 export class ManagedFileLoader implements PolicyLoader {
   supportsPolling = false;
@@ -98,9 +126,11 @@ export class ManagedFileLoader implements PolicyLoader {
       const content = await Bun.file(filePath).text();
       const parsed = JSON.parse(content);
       log.info("POLICY", `加载本地策略: ${filePath}`);
+      rememberLoadMeta({ source: "managed_file", outcome: "applied", durationMs: 0 });
       return { source: "managed_file", ...parsed };
     } catch (err: any) {
       log.warn("POLICY", `读取策略文件失败: ${err.message}`);
+      rememberLoadMeta({ source: "managed_file", outcome: "error", durationMs: 0 });
       return null;
     }
   }
@@ -137,6 +167,7 @@ export class RemotePolicyLoader implements PolicyLoader {
         "POLICY",
         `SID_CODE_POLICY_ENDPOINT 拒绝明文非本地地址（只允许 https:// 或 http://127.0.0.1|localhost）: ${endpoint}`,
       );
+      rememberLoadMeta({ source: "none", outcome: "error", durationMs: 0 });
       return null;
     }
 
@@ -149,7 +180,13 @@ export class RemotePolicyLoader implements PolicyLoader {
         warnedNoCredential = true;
         log.warn("POLICY", "无设备凭据，跳过远程策略（有未过期 200 缓存则用缓存）");
       }
-      return usableCachedSettings(cache, "no_credential");
+      const cached = usableCachedSettings(cache, "no_credential");
+      rememberLoadMeta({
+        source: cached ? "remote" : "none",
+        outcome: cached ? "cache_fallback" : "error",
+        durationMs: 0,
+      });
+      return cached;
     }
 
     const started = Date.now();
@@ -508,7 +545,13 @@ function interpretRemoteResponse(
 
   if (result.kind === "network") {
     log.warn("POLICY", `远程策略 超时 elapsed_ms=${elapsedMs} ${result.message}`);
-    return usableCachedSettings(cache, `超时 elapsed_ms=${elapsedMs}`);
+    const cached = usableCachedSettings(cache, `超时 elapsed_ms=${elapsedMs}`);
+    rememberLoadMeta({
+      source: cached ? "remote" : "none",
+      outcome: cached ? "cache_fallback" : "error",
+      durationMs: elapsedMs,
+    });
+    return cached;
   }
 
   if (result.status === 304) {
@@ -525,32 +568,53 @@ function interpretRemoteResponse(
         "POLICY",
         `远程策略 304 用缓存 fetched_at=${cache.fetched_at ?? "?"} elapsed_ms=${elapsedMs}`,
       );
+      rememberLoadMeta({ source: "remote", outcome: "unchanged", durationMs: elapsedMs });
       return cache.settings;
     }
     log.warn("POLICY", `远程策略 304 但本地无 settings elapsed_ms=${elapsedMs} → 无远程策略`);
+    rememberLoadMeta({ source: "none", outcome: "none", durationMs: elapsedMs });
     return null;
   }
 
   if (result.status === 204) {
     writeNegativeCache(endpoint, result.etag);
     log.info("POLICY", `远程策略 204 无策略 elapsed_ms=${elapsedMs} 已清缓存`);
+    rememberLoadMeta({ source: "none", outcome: "none", durationMs: elapsedMs });
     return null;
   }
 
   if (result.status === 401) {
     log.warn("POLICY", `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销`);
-    return usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
+    const cached = usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
+    rememberLoadMeta({
+      source: cached ? "remote" : "none",
+      outcome: cached ? "cache_fallback" : "error",
+      durationMs: elapsedMs,
+    });
+    return cached;
   }
 
   if (result.status !== 200) {
     log.warn("POLICY", `远程策略 HTTP ${result.status} elapsed_ms=${elapsedMs}`);
-    return usableCachedSettings(cache, `HTTP ${result.status} elapsed_ms=${elapsedMs}`);
+    const cached = usableCachedSettings(cache, `HTTP ${result.status} elapsed_ms=${elapsedMs}`);
+    rememberLoadMeta({
+      source: cached ? "remote" : "none",
+      outcome: cached ? "cache_fallback" : "error",
+      durationMs: elapsedMs,
+    });
+    return cached;
   }
 
   const settings = sanitizeRemotePolicy(result.json);
   if (!settings) {
     log.warn("POLICY", `远程策略 200 body 无效 elapsed_ms=${elapsedMs}`);
-    return usableCachedSettings(cache, `200 无效 elapsed_ms=${elapsedMs}`);
+    const cached = usableCachedSettings(cache, `200 无效 elapsed_ms=${elapsedMs}`);
+    rememberLoadMeta({
+      source: cached ? "remote" : "none",
+      outcome: cached ? "cache_fallback" : "error",
+      durationMs: elapsedMs,
+    });
+    return cached;
   }
 
   writePolicyCache({
@@ -565,6 +629,7 @@ function interpretRemoteResponse(
     "POLICY",
     `远程策略 200 etag=${result.etag ?? "—"} deny=${deny} elapsed_ms=${elapsedMs}`,
   );
+  rememberLoadMeta({ source: "remote", outcome: "applied", durationMs: elapsedMs });
   return settings;
 }
 
@@ -574,12 +639,18 @@ export function __resetRemotePolicyLoaderForTest(): void {
   warnedCorruptCache = false;
   inFlightDefaultLoad = null;
   defaultLoadResult = undefined;
+  lastPolicyLoadMeta = null;
 }
 
 async function runLoaders(loaders: PolicyLoader[]): Promise<PolicySettings | null> {
+  lastPolicyLoadMeta = null;
   for (const loader of loaders) {
     const settings = await loader.load();
     if (settings) return settings;
+  }
+  // 链上全 null：未配 endpoint 且无本地文件。loader 自己没记信封时补 none。
+  if (!lastPolicyLoadMeta) {
+    rememberLoadMeta({ source: "none", outcome: "none", durationMs: 0 });
   }
   return null;
 }
@@ -610,20 +681,45 @@ export function loadEnterprisePolicyOnce(): Promise<PolicySettings | null> {
  * **无论 policy 是否 null 都要跑**：204 / 超时无可用缓存 / 未配 endpoint 必须把
  * `applied` 拨回 false。修前 `cli.ts` 用 `if (policy)` 包住，null 不拨状态，
  * 同进程先超时后 204 就会把旧 deny 留到进程结束。
+ *
+ * 第二参是 M4 信封。生产路径必须传；测试里直接调可以缺省——无 meta 时仍 apply
+ * 状态机，**不 emit**（避免单测污染 events.jsonl）。
  */
-export function applyLoadedPolicy(policy: PolicySettings | null): void {
+export function applyLoadedPolicy(policy: PolicySettings | null, meta?: PolicyLoadMeta): void {
   if (policy?.source === "remote") {
     setRemotePolicyPermissions(policy.permissions, true);
   } else {
     setRemotePolicyPermissions(undefined, false);
   }
-  if (!policy) return;
-
-  if (policy.policyLimits) {
-    setPolicyLimits(policy.policyLimits);
+  if (policy) {
+    if (policy.policyLimits) {
+      setPolicyLimits(policy.policyLimits);
+    }
+    setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
+    setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
   }
-  setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
-  setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
+  emitPolicyEnforced(policy, meta);
+}
+
+function emitPolicyEnforced(policy: PolicySettings | null, meta?: PolicyLoadMeta): void {
+  if (!meta) return;
+  try {
+    logPolicyEnforced({
+      source: meta.source,
+      outcome: meta.outcome,
+      denyRuleCount: policy?.permissions?.deny?.length ?? 0,
+      allowRuleCount: policy?.permissions?.allow?.length ?? 0,
+      askRuleCount: policy?.permissions?.ask?.length ?? 0,
+      disabledFeatures: policy
+        ? Object.entries(policy.policyLimits ?? {})
+            .filter(([, v]) => v && v.allowed === false)
+            .map(([k]) => k)
+        : [],
+      durationMs: meta.durationMs,
+    });
+  } catch {
+    /* 遥测旁路 */
+  }
 }
 
 /**
@@ -656,6 +752,17 @@ export class PolicyManager {
       : await runLoaders(this.loaders);
     this.cachedSettings = settings;
     return settings;
+  }
+
+  /** 加载并带上信封（生产路径用这个再交给 applyLoadedPolicy）。 */
+  async loadWithMeta(): Promise<PolicyLoadResult> {
+    const settings = await this.load();
+    const meta = lastPolicyLoadMeta ?? {
+      source: (settings?.source ?? "none") as PolicySource | "none",
+      outcome: settings ? "applied" : "none",
+      durationMs: 0,
+    };
+    return { settings, meta };
   }
 
   /** 获取缓存的策略 */

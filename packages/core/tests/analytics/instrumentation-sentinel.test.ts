@@ -14,8 +14,8 @@
  * 四道防线，每道针对一个具体的退化路径：
  *  1. 事件名双向对账：EVENT_NAMES 里的名字必须有生产调用点（防死代码），
  *     生产调用点用的名字必须在表里（防绕过常量表硬编码字符串）。
- *  2. 埋点密度下限：六条核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
- *     第六条「记忆」漏斗由 P1-12 补上 —— 记忆子系统此前零埋点。
+ *  2. 埋点密度下限：九条核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
+ *     第六条「记忆」漏斗由 P1-12 补上；第七–九条（策略 / 护栏 / 上下文组装）由 M4 补上。
  *  3. 脱敏强制：业务代码不得绕过门面直调 logEvent（绕过 = 工具名与路径裸传）。
  *  4. 脱敏与门控函数非零消费者：sanitize.ts / privacy.ts / privacy-level.ts 的
  *     关键导出必须真的有人调（这是它们当初变成死代码的那个形态）。
@@ -98,6 +98,10 @@ const FACADE_EMITTERS = [
   "logMemoryIndexHealth",
   "logMemoryInject",
   "logMemoryGuard",
+  // M4：企业策略 / 护栏 / 上下文组装。补进这张表 = 它们此后也受「必须有生产调用点」约束。
+  "logPolicyEnforced",
+  "logGuardrailTriggered",
+  "logContextAssembled",
 ] as const;
 
 describe("埋点接线哨兵：事件名双向对账", () => {
@@ -133,7 +137,7 @@ describe("埋点接线哨兵：事件名双向对账", () => {
     expect(uncalled).toEqual([]);
   });
 
-  test("六条核心漏斗各自都有生产调用点", () => {
+  test("九条核心漏斗各自都有生产调用点", () => {
     const sources = readAllSources().filter(({ rel }) => rel !== FACADE_REL);
     const funnels: Record<string, readonly string[]> = {
       工具: ["logToolCall", "logToolSuccess", "logToolFailure"],
@@ -143,6 +147,10 @@ describe("埋点接线哨兵：事件名双向对账", () => {
       错误: ["logError"],
       // P1-12：第六条漏斗 —— 「写进去的记忆有没有被读到」
       记忆: ["logMemoryIndexHealth", "logMemoryInject", "logMemoryGuard"],
+      // M4：第七–九条 —— 策略生效 / 护栏误报 / 每轮组装
+      策略: ["logPolicyEnforced"],
+      护栏: ["logGuardrailTriggered"],
+      上下文组装: ["logContextAssembled"],
     };
 
     const missing: string[] = [];
@@ -157,7 +165,7 @@ describe("埋点接线哨兵：事件名双向对账", () => {
 });
 
 describe("埋点接线哨兵：密度下限", () => {
-  test("门面调用点总数不低于 30（缺陷清单验收判据 1 的等价形态）", () => {
+  test("门面调用点总数不低于 33（缺陷清单验收判据 1 的等价形态；M4 把阈值从 30 提到 33）", () => {
     const sources = readAllSources().filter(({ rel }) => rel !== FACADE_REL);
     let total = 0;
     for (const { text } of sources) {
@@ -169,7 +177,7 @@ describe("埋点接线哨兵：密度下限", () => {
     // 文档原文写的是 `rg -a -c "logEvent\\(" src/ ≥ 30`。本实现刻意不让业务代码直调
     // logEvent（那样脱敏就无法强制，见门面顶部注释），所以按字面跑那条命令数字很低，
     // 但埋点密度这个**意图**不变，在此以门面调用点计数落地同一条判据。
-    expect(total).toBeGreaterThanOrEqual(30);
+    expect(total).toBeGreaterThanOrEqual(33);
   });
 });
 
