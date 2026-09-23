@@ -40,6 +40,13 @@ class TestableOpenAIProvider extends OpenAIProvider {
   static testToToolChoice(tc: any) {
     return (OpenAIProvider as any).toToolChoice(tc);
   }
+  /** P2-19：跑真实的 applyToolChoice，返回它对请求体做的改动（含 tools 是否被撤）。 */
+  testApplyToolChoice(params: any, model: string, tools?: unknown[]) {
+    const body: any = {};
+    if (tools && tools.length > 0) body.tools = tools;
+    (this as any).applyToolChoice(body, params, model);
+    return body;
+  }
 }
 
 // model 是构造函数的必填第二参（src/llm/openai.ts:119）。与同款 mock
@@ -284,6 +291,63 @@ describe("§4.2 tool_choice 映射", () => {
       type: "function",
       function: { name: "read" },
     });
+  });
+});
+
+describe("P2-19：toolChoice=none 无法下发时必须撤掉 tools（约束不得反转）", () => {
+  const TOOLS = [{ type: "function", function: { name: "read" } }];
+
+  test("能下发的族（gpt）：tool_choice=none 照常下发，tools 保留", () => {
+    const body = provider.testApplyToolChoice({ toolChoice: "none" }, "gpt-4o-mini", TOOLS);
+    expect(body.tool_choice).toBe("none");
+    expect(body.tools).toEqual(TOOLS);
+  });
+
+  test("GLM 族（auto-only）：none 下发不了 → 撤掉 tools，模型结构上无工具可调", () => {
+    const body = provider.testApplyToolChoice({ toolChoice: "none" }, "glm-5.3", TOOLS);
+    // 关键：不能只是"没下发 tool_choice"就完事——那等价服务端默认 auto，约束被反转
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.tools).toBeUndefined();
+  });
+
+  test("DeepSeek 思考模式（reject-when-thinking）：同样撤掉 tools", () => {
+    const body = provider.testApplyToolChoice(
+      { toolChoice: "none", thinking: { enabled: true } },
+      "deepseek-reasoner",
+      TOOLS,
+    );
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.tools).toBeUndefined();
+  });
+
+  test("DeepSeek 关思考时 none 能下发 → tools 保留（不误伤）", () => {
+    const body = provider.testApplyToolChoice(
+      { toolChoice: "none", thinking: { enabled: false } },
+      "deepseek-reasoner",
+      TOOLS,
+    );
+    expect(body.tool_choice).toBe("none");
+    expect(body.tools).toEqual(TOOLS);
+  });
+
+  test("required/具名工具降级为 auto 时**不**撤 tools（放宽约束，保持原行为）", () => {
+    const req = provider.testApplyToolChoice({ toolChoice: "required" }, "glm-5.3", TOOLS);
+    expect(req.tool_choice).toBeUndefined();
+    expect(req.tools).toEqual(TOOLS); // 仍带工具：降级为 auto 是放宽，不是反转
+
+    const named = provider.testApplyToolChoice({ toolChoice: { name: "read" } }, "glm-5.3", TOOLS);
+    expect(named.tool_choice).toBeUndefined();
+    expect(named.tools).toEqual(TOOLS);
+  });
+
+  test("撤 tools 时连带撤 parallel_tool_calls（声明并行却没工具，部分网关会 400）", () => {
+    const body = provider.testApplyToolChoice(
+      { toolChoice: "none", parallelToolCalls: true },
+      "glm-5.3",
+      TOOLS,
+    );
+    expect(body.tools).toBeUndefined();
+    expect(body.parallel_tool_calls).toBeUndefined();
   });
 });
 

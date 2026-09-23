@@ -545,6 +545,13 @@ export class App {
    * 见 rebuildSystemPrompt 里那条「覆盖式重建必须回灌」的注释）。
    */
   private pendingSessionMemoryContent?: string;
+  /**
+   * P2-17：会话内累积的「用户明确约束」，常驻 system prompt（不受消息压缩影响）。
+   *
+   * 用 Set 去重：同一条约束可能在多次压缩里被反复提取（用户强调过的话往往在
+   * 被压缩段里出现多次），不去重会让附件随压缩次数线性膨胀。
+   */
+  private criticalConstraints = new Set<string>();
   private sessionMemory:
     | import("@sid-code/core/session-memory/session-memory.ts").SessionMemoryHandle
     | null = null;
@@ -1187,6 +1194,7 @@ export class App {
       // 收尾要的三个会话级实例（fileReadTracker / cachedMicrocompactState / sessionDir）
       // 只有 App 持有，所以由这里注入，loop 侧只负责在「确认压动了」之后调一次。
       postCompactTail: (info) => this.runNonSummaryPostCompact(info),
+      emergencyFileReattach: (info) => this.runEmergencyFileReattach(info),
       handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
       // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
@@ -2633,6 +2641,112 @@ export class App {
    *
    * 全程 best-effort：收尾任一步失败都不影响已经完成的压缩。
    */
+  /**
+   * P2-17：收下压缩时提取的「用户明确约束」，累积进会话级集合并重建 system prompt，
+   * 让它成为常驻附件（`PRIORITY.CRITICAL_REMINDER`，最高优先级）。
+   *
+   * 封顶 `MAX_CRITICAL_CONSTRAINTS` 条：这是最高优先级附件，无上限增长会挤占注意力
+   * 与静态前缀预算。超限时**保留最早的**而不是最新的 —— 用户最初定的规矩（"别改
+   * 生产配置"）通常比后期的即时纠正更持久，而后者本来就还在近端未压缩的历史里。
+   *
+   * 重建是覆盖式的：`rebuildSystemPrompt` 会带上所有 ctx 字段，与
+   * `injectSessionMemoryAfterCompact` 同一条路径、同一纪律。
+   */
+  private recordCriticalConstraints(constraints: string[]): void {
+    const MAX_CRITICAL_CONSTRAINTS = 10;
+    const before = this.criticalConstraints.size;
+    for (const c of constraints) {
+      if (this.criticalConstraints.size >= MAX_CRITICAL_CONSTRAINTS) break;
+      const t = c.trim();
+      if (t) this.criticalConstraints.add(t);
+    }
+    if (this.criticalConstraints.size === before) return; // 全是重复项，不必重建
+    void (async () => {
+      try {
+        await this.rebuildSystemPrompt();
+        getLogger().info(
+          "APP",
+          `用户约束已常驻 system prompt（${this.criticalConstraints.size} 条）—— 压缩不再吞掉"不要做 X"`,
+        );
+      } catch (e) {
+        getLogger().warn("APP", `用户约束常驻注入失败（不影响压缩）: ${(e as Error)?.message}`);
+      }
+    })();
+  }
+
+  /**
+   * P2-22：emergency / blocking **截断**后的轻量恢复。
+   *
+   * 与 `runNonSummaryPostCompact`（走 `runPostCompact`，读盘注入最多 50K token 正文）
+   * 刻意**不是**同一条路：那条收尾适合摘要压缩（腾出的空间大、注入正文划算），
+   * 而 emergency / blocking 的语义是「剩余极少、连一次 LLM 往返都危险」——
+   * 刚截断腾出的空间立刻塞回 50K 正文，下一轮必然再次截断，而截断是**有损**的
+   * （直接丢历史，不留摘要）。所以这里只注入一条路径清单，代价几十 token。
+   *
+   * 角色交替：`buildEmergencyFilePathReattach` 只产一条 user 消息。截断后的历史末尾
+   * 可能就是 user（保留段以 user 开头、且尚未有 assistant 回复），两条 user 相邻会撞
+   * 校验。故这里先看末尾角色，必要时补一条 assistant ack——与
+   * `emergencyTruncate` 内部对 `emergencyPrefix` 做的同一件事，同一个理由。
+   *
+   * 全程 best-effort：恢复失败绝不能影响已完成的截断（截断本身是保命操作）。
+   *
+   * @returns 实际注入的消息条数（0 = 无最近文件 / 未注入 / 出错）
+   */
+  private runEmergencyFileReattach(info: {
+    trigger: "threshold_blocking" | "threshold_emergency";
+  }): number {
+    try {
+      if (!this.fileReadTracker) return 0;
+      const { buildEmergencyFilePathReattach } =
+        require("@sid-code/core/query/compact/reattach-files.ts") as typeof import("@sid-code/core/query/compact/reattach-files.ts");
+      const msgs = buildEmergencyFilePathReattach(this.fileReadTracker);
+      if (msgs.length === 0) return 0;
+
+      const existing = this.ctxMgr.getMessages();
+      const tail = existing[existing.length - 1];
+      const toAppend = [...msgs];
+      if (tail?.role === "user") {
+        toAppend.push({
+          role: "assistant",
+          content: [{ type: "text", text: "了解，需要文件内容时我会直接读取。" }],
+          _meta: { origin: "compact-reattach" },
+        });
+      }
+      this.ctxMgr.appendReattachMessages(toAppend);
+      getLogger().info(
+        "APP",
+        `${info.trigger} 截断后注入最近文件路径清单（${toAppend.length} 条消息，不含正文）`,
+      );
+      return toAppend.length;
+    } catch (err: any) {
+      getLogger().debug("APP", `紧急截断后的文件路径恢复跳过: ${err?.message ?? err}`);
+      return 0;
+    }
+  }
+
+  /**
+   * P2-21：收尾埋点 sink。`runPostCompact` 不持有会话身份，这里补 `session_id`，
+   * 并与 engine.ts 的 `traceAppendEvent` 走同一条写入路径（collector.writer.appendEvent），
+   * 保证 `PostCompactReattach` 与 `CompactionAttempt` 落在同一 events.jsonl、可直接 join。
+   * collector 为空（trace.enabled=false）时返回 undefined —— 收尾侧据此只写日志。
+   */
+  private postCompactTraceSink():
+    | ((event: { event: string; timestamp: string; data?: Record<string, unknown> }) => void)
+    | undefined {
+    const collector = this.traceCollector;
+    if (!collector) return undefined;
+    return (event) => {
+      try {
+        (collector as any).writer?.appendEvent?.({
+          ...event,
+          session_id: this.sessionState.sessionId,
+        });
+      } catch {
+        /* 埋点写入失败静默，绝不影响压缩收尾 */
+      }
+    };
+  }
+
   private async runNonSummaryPostCompact(info: {
     trigger: "reactive" | "collapse";
     messagesBefore: number;
@@ -2659,6 +2773,10 @@ export class App {
         // 但 collapse 确实调了 LLM。这个字段只喂 adaptive 的样本分类，而没有 coverage
         // 时样本整条不入库，所以这里取值不影响任何统计。
         usedLLM: info.trigger === "collapse",
+        // P2-21：重注入把压缩省下的空间吃回去多少、是否立刻再触发压缩。
+        traceAppendEvent: this.postCompactTraceSink(),
+        // P2-17：被压缩段里的用户约束升级为常驻附件（消息流里的会被下次 strip 剥掉）。
+        onCriticalConstraints: (cs) => this.recordCriticalConstraints(cs),
       });
     } catch {
       // 收尾失败不影响压缩结果本身
@@ -2699,6 +2817,10 @@ export class App {
       isMainAgent: true,
       cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
       sessionDir,
+      // P2-21：转交给 runPostCompact，落 PostCompactReattach 事件。
+      traceAppendEvent: this.postCompactTraceSink(),
+      // P2-17：同上，转交约束收集回调。
+      onCriticalConstraints: (cs: string[]) => this.recordCriticalConstraints(cs),
     }).then((outcome) => {
       // §12.7：压缩后清除系统提示词缓存——压缩后话题可能已转变，
       // 下次构建 system prompt 时应重新召回相关记忆（recall 无独立缓存，仅经 prompt 缓存生效），
@@ -3222,6 +3344,9 @@ export class App {
             typeof (this.permissionChecker as any).describeDenyRules === "function"
               ? (this.permissionChecker as any).describeDenyRules() || undefined
               : undefined,
+          // P2-17：覆盖式重建必须回灌累积的用户约束 —— 漏传一次就把"用户说过不要做 X"
+          // 静默丢掉（与 sessionMemoryContent 同一条纪律，见那里的注释）。
+          criticalReminders: Array.from(this.criticalConstraints),
           // §12 P0-1：CLAUDE.md 变更后记忆类占用会变，重建时同步刷新分段记账
           onSectionTokens: (s) => this.setBaseMemoryTokens(s.memory),
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
@@ -3974,6 +4099,8 @@ export class App {
           typeof (this.permissionChecker as any).describeDenyRules === "function"
             ? (this.permissionChecker as any).describeDenyRules() || undefined
             : undefined,
+        // P2-17：同上 —— 覆盖式重建回灌累积的用户约束。
+        criticalReminders: Array.from(this.criticalConstraints),
         // 延迟工具呈现（见 core/config/deferred-tool-view.ts）
         toolSearchKeepLoaded: this.config.toolSearchKeepLoaded,
         toolSearchDisabled: this.config.toolSearch === false,

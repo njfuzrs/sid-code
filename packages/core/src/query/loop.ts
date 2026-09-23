@@ -137,6 +137,11 @@ import {
   MAX_LOW_YIELD_INTERVENTIONS,
 } from "./low-yield-spin.ts";
 import {
+  observeToolResult,
+  createUnchangedObservationState,
+  UNCHANGED_OBSERVATION_THRESHOLD,
+} from "./unchanged-observation.ts";
+import {
   type MeasuredProgressState,
   MEASURED_PROGRESS_KEY,
   FILE_MUTATING_TOOLS,
@@ -874,6 +879,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             tokensAfter: truncated.tokensAfter,
           });
           if (banner) yield banner;
+          // P2-22：截断真压动了才补恢复。判据与横幅同源（banner 非 null = 实测消息数减少）——
+          // 没压动时注入「最近访问过这些文件」只是往一个没腾出空间的上下文里再加一条消息。
+          if (banner) {
+            const injected = deps.emergencyFileReattach?.({ trigger: "threshold_blocking" }) ?? 0;
+            if (injected > 0) {
+              log.info("QUERY_LOOP", `阻塞级截断后补注入最近文件路径清单（${injected} 条消息）`);
+            }
+          }
         }
       } else {
         switch (compactionLevel) {
@@ -897,6 +910,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 tokensAfter: truncated.tokensAfter,
               });
               if (banner) yield banner;
+              // P2-22：与 blocking 分支同一套轻量恢复（只给路径清单，不读盘、不带正文）。
+              // 判据同横幅：banner 非 null = 实测真压动了。
+              if (banner) {
+                const injected =
+                  deps.emergencyFileReattach?.({ trigger: "threshold_emergency" }) ?? 0;
+                if (injected > 0) {
+                  log.info("QUERY_LOOP", `紧急截断后补注入最近文件路径清单（${injected} 条消息）`);
+                }
+              }
             }
             break;
           case "hard": {
@@ -4723,6 +4745,61 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             } else {
               // 写操作、编辑、其它 bash、有产出工具 = 有进展。
               hadOtherActivity = true;
+            }
+
+            // ─── P2-20：同指纹同返回值空转（运行时口径，只报不拦）───
+            //
+            // 覆盖上面两道阀的盲区：`probes` 只收 bash 只读白名单命令与
+            // read/ls/glob/grep/lsp，`lowYieldSpin` 只收输出是单标量的 bash。
+            // web_fetch / web_search / tool_search，以及「返回一大段完全相同文本」的调用
+            // 两道都不命中 —— 而 digest 的 observationEntropyPathological 判的正是这个形态，
+            // 却只在 /insights 离线算，运行时零动作（同参同返回值连转 22 次也没有任何信号）。
+            //
+            // 这里**不做任何干预**（不注入、不收尾）：工具循环检测默认全关是有实测背书的
+            // 否决（误判率≈100%，见 .agents/notes/rejected/feature/2026-07-14-*），
+            // 那份否决同时指出正确切法是「输入 + 输出双重复」，并说当时卡在「检测器看不到
+            // observation」。本阀就是那个双判据，先采数（触发率 + 工具分布）再谈干预 ——
+            // 阈值 3 从未在运行时验证过误报率，没有分母就拦是在猜。
+            //
+            // 文件落盘类工具（edit/write/notebook_edit）不入本阀：它们的返回值本来就常是
+            // 「已写入」这类固定短语，连续相同是**正常**的，计进去纯噪声。
+            if (!FILE_MUTATING_TOOLS.has(b.name)) {
+              if (!state.unchangedObservation) {
+                state.unchangedObservation = createUnchangedObservationState();
+              }
+              const unchanged = observeToolResult(state.unchangedObservation, {
+                toolName: b.name,
+                input: b.input,
+                output: readOutput(),
+              });
+              if (unchanged.shouldReport) {
+                log.warn(
+                  "QUERY_LOOP",
+                  `同参同返回值空转：\`${unchanged.tool}\` 连续 ${unchanged.run} 次入参与返回值` +
+                    `完全相同（阈值 ${UNCHANGED_OBSERVATION_THRESHOLD}），重复劳动未产出新信息。` +
+                    `本阀只告警不干预`,
+                );
+                if (deps.traceAppendEvent) {
+                  try {
+                    deps.traceAppendEvent({
+                      event: "UnchangedObservationRun",
+                      session_id: sessionState.sessionId,
+                      timestamp: new Date().toISOString(),
+                      data: {
+                        ...turnMetrics(state, sessionState, promptSeq),
+                        tool: unchanged.tool,
+                        run: unchanged.run,
+                        threshold: UNCHANGED_OBSERVATION_THRESHOLD,
+                        // 与离线 digest 的 observationEntropyPathological 同口径同阈值，
+                        // 可直接对照「运行时报过几次」与「周报判了几个病态会话」。
+                        intervened: false,
+                      },
+                    });
+                  } catch {
+                    /* trace 写入失败不阻断主循环 */
+                  }
+                }
+              }
             }
           }
           // ─── P1-4 item 3：低信息量空转检测（独立于上面那道只读探查阀）───

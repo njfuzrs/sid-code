@@ -249,6 +249,21 @@ async function runManualPostCompact(
       // 永远走不到——CommandContext 类型里甚至没有这个字段。代价不是数据错乱，是
       // state.tools / state.deleted 跨多次手动压缩无界增长（长会话真实内存泄漏）。
       cachedMicrocompactState: ctx.cachedMicrocompactState,
+      // P2-21：与 auto 路径同源的重注入压力埋点。手动压缩同样走文件重注入，
+      // 「压完立刻又要压」在这条路径上一样会发生，分母里不能少了它。
+      // collector 为空（trace.enabled=false）→ 不传，收尾侧只写日志。
+      traceAppendEvent: ctx.traceCollector
+        ? (event) => {
+            try {
+              (ctx.traceCollector as any).writer?.appendEvent?.({
+                ...event,
+                session_id: ctx.sessionId,
+              });
+            } catch {
+              /* 埋点写入失败静默 */
+            }
+          }
+        : undefined,
       ...args,
     });
   } catch {

@@ -62,6 +62,27 @@ export interface PostCompactOptions {
   tokensBefore: number;
   /** 是否走了 LLM 摘要（false = 本地截断降级），供自适应策略区分样本 */
   usedLLM: boolean;
+  /**
+   * P2-21：结构化埋点写入（`PostCompactReattach` 事件）。未提供则只写日志。
+   *
+   * 与 `QueryDeps.traceAppendEvent` 同形但**不带 session_id**：这里由调用方在闭包里
+   * 补上（它才知道自己的 sessionId），收尾模块不需要也不该持有会话身份。
+   */
+  traceAppendEvent?: (event: {
+    event: string;
+    timestamp: string;
+    data?: Record<string, unknown>;
+  }) => void;
+  /**
+   * P2-17：把「被压缩掉的那段里，用户明确提出的约束」交给调用方常驻到 system prompt。
+   *
+   * 为什么不在这里直接注入消息：消息流里的约束下一次压缩就被 `strip.ts` 剥掉（那是对的，
+   * 防连环累积），于是约束只活一代。常驻 system prompt 才不受消息历史压缩影响 ——
+   * 与 deny 规则同渠道。回调由 App 实现（它持有 system prompt 重建路径）。
+   *
+   * 需要 `originalMessages`（约束从被压缩段里提取）。未注入则跳过，行为同旧版。
+   */
+  onCriticalConstraints?: (constraints: string[]) => void;
 }
 
 /**
@@ -81,10 +102,17 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
   if (opts.fileReadTracker) {
     try {
       const { buildReattachFileMessages } = await import("./reattach-files.ts");
+      // P2-21：重注入前后各测一次，把「压缩腾出的空间被重注入吃回去多少」变成可复算的数。
+      // 三层预算（5 文件 / 每文件 5K / 合计 50K token）只保证**上界**，不保证
+      // 「注入之后仍在触发点以下」——5 个刚读过的大文件足以把使用率顶回 hard 档，
+      // 于是压完立刻又要压。此前全仓零埋点，这个抖动在生产上完全不可观测
+      // （`willRetriggerNextTurn` 搜遍全仓零命中），只能靠用户报「怎么一直在压缩」。
+      const tokensBeforeReattach = ctxMgr.estimateTokens();
       const fileMsgs = buildReattachFileMessages(opts.fileReadTracker);
       if (fileMsgs.length > 0) {
         ctxMgr.appendReattachMessages(fileMsgs);
         log.info("COMPACT", `Post-compact(${trigger}) 文件恢复注入 ${fileMsgs.length} 条消息`);
+        reportReattachPressure(opts, tokensBeforeReattach, fileMsgs.length);
       }
     } catch (err: any) {
       log.debug("COMPACT", `Post-compact(${trigger}) 文件恢复跳过: ${err?.message ?? err}`);
@@ -123,6 +151,33 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     clearContentTracingState();
   } catch {
     /* 忽略 */
+  }
+
+  // 3.6 P2-17：把被压缩段里的「用户明确约束」升级为常驻 system prompt 附件。
+  //
+  // 缺口：`extractDecisions` 提取的决策点走 `buildDecisionReattachMessages` 注入**消息流**，
+  // 而 `strip.ts` 在下一次压缩前会把它剥掉（防连环累积）→ 约束只活一代；落盘的
+  // decisions.jsonl 全仓没有读取方。于是「用户说过不要做 X」在二次摘要后没有任何兜底。
+  //
+  // 只取 `correction` 类（"不要/别/不应该/don't/should not"）而不是全部决策点：
+  // architecture 类是"选了什么方案"，属于摘要该覆盖的内容，塞进最高优先级的常驻附件
+  // 会把 CRITICAL_REMINDER 稀释成又一个摘要副本 —— 那样它就不再是"约束"通道了。
+  if (opts.onCriticalConstraints && opts.originalMessages) {
+    try {
+      const { extractDecisions } = await import("./decisions.ts");
+      const constraints = extractDecisions(opts.originalMessages)
+        .filter((d) => d.kind === "correction")
+        .map((d) => d.text);
+      if (constraints.length > 0) {
+        opts.onCriticalConstraints(constraints);
+        log.info(
+          "COMPACT",
+          `Post-compact(${trigger}) 提取 ${constraints.length} 条用户约束，已转常驻附件`,
+        );
+      }
+    } catch (err: any) {
+      log.debug("COMPACT", `Post-compact(${trigger}) 用户约束提取跳过: ${err?.message ?? err}`);
+    }
   }
 
   // 4. §4.1：质量校验（覆盖率）。
@@ -180,5 +235,78 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     );
   } catch (err: any) {
     log.debug("HOOK", `PostCompact hook 执行异常（不影响压缩）: ${err?.message ?? err}`);
+  }
+}
+
+/**
+ * P2-21：把「重注入是否把上下文顶回压缩触发点」落成日志 + 结构化埋点。
+ *
+ * 判据用 `getCompactionLevel()` 而不是自己跟 0.7 之类的常数比：那个方法是压缩触发的
+ * **唯一**事实源（含完成缓冲区、动态地板、TokenFreedTracker 扣减）。自己算一遍阈值
+ * 就会与真实触发点漂移，而漂移出来的「会不会再触发」正是这条埋点要回答的问题。
+ *
+ * 只报不改：不因为「注入后会再触发」就少注入文件。重注入解决的是压缩后断片（「更准」），
+ * 少注入会让模型重读文件（多付 1-3 轮），到底哪边划算取决于文件大小分布——而那正是
+ * 本埋点要采集的数据。没有数据就调参是在猜；先把数采上来，再谈要不要动预算。
+ *
+ * 全程 best-effort：埋点失败不影响已完成的重注入。
+ */
+function reportReattachPressure(
+  opts: PostCompactOptions,
+  tokensBeforeReattach: number,
+  injectedMessages: number,
+): void {
+  const log = getLogger();
+  try {
+    const { ctxMgr, trigger } = opts;
+    const tokensAfterReattach = ctxMgr.estimateTokens();
+    const reattachTokens = Math.max(0, tokensAfterReattach - tokensBeforeReattach);
+    const maxTokens = ctxMgr.getMaxTokens();
+    // 「压缩省下的量里有多少被重注入吃回去」——分母是本次压缩真实省下的量。
+    // 省了 0（或反而变多）时这个比例没有意义，置 undefined 而不是填 0/1：
+    // 编一个数会让聚合出的均值描述一个不存在的场景（项目里 P1-12 那类分母错误）。
+    const savedByCompaction = Math.max(0, opts.tokensBefore - tokensBeforeReattach);
+    const clawedBackRatio = savedByCompaction > 0 ? reattachTokens / savedByCompaction : undefined;
+    // 关键判据：注入之后**下一轮**还会不会进压缩档。level !== "none" 即「压完立刻又要压」。
+    const levelAfter = ctxMgr.getCompactionLevel();
+    const willRetriggerNextTurn = levelAfter !== "none";
+
+    if (willRetriggerNextTurn) {
+      log.warn(
+        "COMPACT",
+        `Post-compact(${trigger}) 重注入后仍在压缩档（${levelAfter}）：` +
+          `重注入约 ${reattachTokens} token` +
+          (clawedBackRatio !== undefined
+            ? `（吃回本次压缩省下量的 ${(clawedBackRatio * 100).toFixed(0)}%）`
+            : "") +
+          `，下一轮将立刻再次压缩`,
+      );
+    } else {
+      log.debug(
+        "COMPACT",
+        `Post-compact(${trigger}) 重注入约 ${reattachTokens} token，未回到压缩档`,
+      );
+    }
+
+    opts.traceAppendEvent?.({
+      event: "PostCompactReattach",
+      timestamp: new Date().toISOString(),
+      data: {
+        trigger,
+        injectedMessages,
+        reattachTokens,
+        tokensBeforeReattach,
+        tokensAfterReattach,
+        maxTokens,
+        usageRatioAfterReattach: maxTokens > 0 ? tokensAfterReattach / maxTokens : undefined,
+        savedByCompaction,
+        ...(clawedBackRatio !== undefined ? { clawedBackRatio } : {}),
+        compactionLevelAfter: levelAfter,
+        // 主口径：这条是「压完立刻又要压」的抖动率分子，分母是本事件总数。
+        willRetriggerNextTurn,
+      },
+    });
+  } catch (err: any) {
+    log.debug("COMPACT", `Post-compact 重注入埋点跳过: ${err?.message ?? err}`);
   }
 }

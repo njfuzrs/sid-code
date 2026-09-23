@@ -46,6 +46,7 @@ import {
   generateSessionMemoryAttachment,
   generateSkillListingAttachment,
   generateDenyRulesAttachment,
+  generateCriticalRemindersAttachment,
   generateOutputStyleAttachment,
   DANGEROUS_dynamicAttachment,
 } from "./attachments.ts";
@@ -128,6 +129,16 @@ export interface SystemPromptContext {
    * 前置告知模型哪些操作必被拒绝，避免反复尝试被禁操作浪费轮次。配置态稳定，放 system prompt。
    */
   denyRulesSummary?: string;
+
+  /**
+   * P2-17：用户在会话中明确提出的约束（"不要做 X"）原文列表。
+   *
+   * 走 system prompt 而不是消息流：消息流里的约束会被压缩吞掉 —— 压缩时提取的决策点
+   * 注入为 reattach 消息，而 `strip.ts` 在下一次压缩前会把它剥掉（防连环累积），
+   * 于是约束只活一代；落盘的 decisions.jsonl 又没有任何读取方。
+   * 详见 `generateCriticalRemindersAttachment` 注释。
+   */
+  criticalReminders?: string[];
 
   // 语言偏好
   /**
@@ -553,6 +564,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Todo 列表
   if (ctx.todoList) {
     attachments.push(generateTodoListAttachment(ctx.todoList));
+  }
+
+  // P2-17：用户明确约束（CRITICAL_REMINDER = 1，最高优先级）。
+  // 与 deny 规则同性质（都是"不该做什么"）、同渠道（常驻 system prompt，不受消息压缩影响），
+  // 但优先级更高：deny 规则违反了还有权限层拦一次，用户口头约束没有第二道防线。
+  if (ctx.criticalReminders && ctx.criticalReminders.length > 0) {
+    const crAttachment = generateCriticalRemindersAttachment(ctx.criticalReminders);
+    if (crAttachment) attachments.push(crAttachment);
   }
 
   // 缺口 D：deny 规则约束（前置告知模型哪些操作必被拒绝，避免反复撞墙）。

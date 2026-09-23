@@ -471,6 +471,17 @@ export interface LoopState {
    */
   lowYieldSpin?: import("./low-yield-spin.ts").LowYieldSpinState;
   /**
+   * P2-20：同指纹同返回值空转检测状态（运行时口径，与离线 digest 共用同一阈值）。
+   *
+   * 与上面两道阀都不重合：`repeatedReadonly` 只盯 bash 只读白名单 +
+   * read/ls/glob/grep/lsp；`lowYieldSpin` 只盯 bash 且输出是单标量。
+   * web_fetch / web_search / tool_search、以及返回一大段完全相同文本的调用，
+   * 两道都不命中——而 digest 的 `observationEntropyPathological` 判的正是这个形态，
+   * 却只在 `/insights` 离线算，运行时零动作。本状态给它补上运行时可观测性。
+   * **只报不拦**（有否决记录背书），详见 unchanged-observation.ts 顶部注释。
+   */
+  unchangedObservation?: import("./unchanged-observation.ts").UnchangedObservationState;
+  /**
    * P1-4 item 3：检出低信息量空转后，待下一轮循环开头经 reminderParts 注入的介入提醒。
    * 与 pendingStuckReminder 同机制（检测在工具结果回流、注入在下一轮 reminder 通道），
    * 注入后清空。文案给可执行的替代命令而非训话。
@@ -710,6 +721,23 @@ export interface QueryDeps {
      */
     tokensBefore?: number;
   }) => Promise<void>;
+  /**
+   * P2-22：emergency / blocking **截断**后的轻量恢复——只补一条「最近访问过这些文件」的
+   * 路径清单，不带正文。返回实际注入的消息数（0 = 无最近文件或未注入）。
+   *
+   * 为什么不复用 `postCompactTail`：那条收尾会走 `buildReattachFileMessages`，读盘注入最多
+   * 50K token 正文。emergency / blocking 的语义是「剩余极少、连一次 LLM 往返都危险」，
+   * 刚截断腾出的空间立刻塞回 50K，下一轮必然再次截断——而截断是**有损**的，每次都真丢历史。
+   * 所以这条路径刻意只给路径清单（几十个 token），让模型知道自己刚在动哪几个文件，
+   * 需要哪个就自己 read，而不是瞎猜或从头 glob。
+   *
+   * 走 deps 的理由同 `postCompactTail`：`FileReadTracker` 是 App 持有的会话级实例，
+   * QueryDeps 里没有。可选——未注入则退回当前行为（只截断、不恢复），不报错。
+   */
+  emergencyFileReattach?: (info: {
+    /** 触发来源，仅用于日志区分（两条路径都调同一套 truncate） */
+    trigger: "threshold_blocking" | "threshold_emergency";
+  }) => number;
   /** 处理上下文溢出，返回调整后的 maxTokens 或 null */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */

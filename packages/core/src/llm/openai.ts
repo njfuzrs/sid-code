@@ -539,16 +539,31 @@ export class OpenAIProvider implements Provider {
     const autoOnlyFamily = wire.toolChoice === "auto-only";
     const toolChoice = OpenAIProvider.toToolChoice(params.toolChoice);
 
+    // P2-19：下面四条分支都以「不下发 tool_choice」收场，而不下发 = 服务端默认 = auto。
+    // 对 `required`/指定函数来说这是合理降级（约束放宽，模型仍能自主调用，最坏是多绕一轮）；
+    // 但对 **`none`** 来说它把约束**反转**了——请求的是「禁止调工具」，实际发出去的是
+    // 「随你调」。受害者是 auto-compact 的摘要请求（`tools` + `toolChoice:"none"`，
+    // 意图是带上工具定义命中缓存前缀、同时禁止摘要模型调工具）：GLM 族（auto-only）与
+    // DeepSeek 思考模式（reject-when-thinking）下这条保证彻底不成立，而日志只说
+    // 「已降级」，读起来像一次无害的兼容处理。
+    //
+    // 修法见下方 `mustSuppressTools`：`none` 无法在线格式上表达时，改为**不下发 tools**。
+    // 模型拿不到工具定义就调不了工具，约束由结构保证，不靠服务端默认值。
+    // 代价是这一次请求丢掉工具前缀的 cache 命中（「更省」让位「更准」）——但它只影响
+    // 这两族的 side-call，且「摘要模型乱调工具」本身就要多付一整轮，不是净亏。
+    let toolChoiceSuppressed = false;
     if (toolChoice !== undefined) {
       // compat 声明整个不接受 tool_choice → 不下发（保留模型自主调用）。
       // 放在最前面：它是最强的声明，优先于下面所有按族推导的降级。
       if (compat?.supportsToolChoice === false) {
+        toolChoiceSuppressed = true;
         getLogger().warn(
           "LLM:OPENAI",
           `模型「${params.model ?? this._model}」的 compat 声明 supports_tool_choice=false，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
         );
       } else if (compat?.toolChoiceAutoOnly === true && toolChoice !== "auto") {
         // 仅支持 auto（GLM 形态）→ 降级为不下发（等价服务端默认 auto），而非冒 400。
+        toolChoiceSuppressed = true;
         getLogger().warn(
           "LLM:OPENAI",
           `模型「${params.model ?? this._model}」的 compat 声明 tool_choice_auto_only=true，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
@@ -557,6 +572,7 @@ export class OpenAIProvider implements Provider {
         // DeepSeek 思考模式下 tool_choice 会触发 400，跳过下发（保留模型自主调用）。
         // 日志带上族名：重构后本分支不再只有 DeepSeek 会进（任何 dialect 声明
         // `reject-when-thinking` 的族都会），写死「DeepSeek」会误导排查的人。
+        toolChoiceSuppressed = true;
         getLogger().warn(
           "LLM:OPENAI",
           `协议族「${kind}」思考模式不支持 tool_choice，已跳过下发（请求的 toolChoice=${JSON.stringify(params.toolChoice)}）`,
@@ -566,6 +582,7 @@ export class OpenAIProvider implements Provider {
         // 下发 required/指定函数会被 GLM 拒绝，降级为 auto（不下发即等价服务端默认 auto）而非冒错。
         // compat 显式声明 tool_choice_auto_only=false 时跳过本降级（如 GLM-5.2+ 已放开、
         // 或网关代为转换）—— 显式声明优先于按族推导，这是 compat 的全部意义。
+        toolChoiceSuppressed = true;
         getLogger().warn(
           "LLM:OPENAI",
           `协议族「${kind}」仅支持 tool_choice=auto，已将 ${JSON.stringify(params.toolChoice)} 降级为 auto（不下发）`,
@@ -574,7 +591,25 @@ export class OpenAIProvider implements Provider {
         requestBody.tool_choice = toolChoice;
       }
     }
-    if (params.parallelToolCalls !== undefined) {
+
+    // P2-19：`none` 被降级成「不下发」时，用**撤掉 tools** 来兑现这条约束。
+    // 只对 `none` 这么做：它是唯一一个"不下发"会让语义反转的取值。
+    // `required` / 指定函数降级为 auto 是放宽（仍可能达成目的），保持原行为不动。
+    const mustSuppressTools = toolChoiceSuppressed && toolChoice === "none";
+    if (mustSuppressTools) {
+      const toolCount = Array.isArray(requestBody.tools) ? requestBody.tools.length : 0;
+      delete requestBody.tools;
+      // tools 已撤，parallel_tool_calls 无从生效；留着只会让部分网关对"声明并行调用
+      // 却没给工具"的请求报 400。下面的 parallelToolCalls 下发同样跳过。
+      delete requestBody.parallel_tool_calls;
+      getLogger().warn(
+        "LLM:OPENAI",
+        `模型「${params.model ?? this._model}」无法下发 tool_choice=none，` +
+          `已改为不下发 tools（撤掉 ${toolCount} 个工具定义）以真正禁止工具调用。` +
+          `本次请求丢失工具前缀的 prompt cache 命中，但「禁止调工具」的约束得以成立`,
+      );
+    }
+    if (params.parallelToolCalls !== undefined && !mustSuppressTools) {
       requestBody.parallel_tool_calls = params.parallelToolCalls;
     }
   }

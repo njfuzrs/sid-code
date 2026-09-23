@@ -115,3 +115,47 @@ export function buildReattachFileMessages(
   };
   return [userMsg, ackMsg];
 }
+
+/**
+ * P2-22：**只给路径清单、不带正文**的轻量恢复（emergency / blocking 截断专用）。
+ *
+ * 为什么不直接复用 `buildReattachFileMessages`：那条路径会读盘并注入最多 50K token 正文。
+ * emergency / blocking 的定义是「剩余极少、连一次 LLM 往返都危险」——刚截断腾出的空间
+ * 立刻塞回 50K 正文，是把上下文推回它刚逃离的悬崖，下一轮必然再次截断（截断是有损的，
+ * 每次都真丢历史）。所以这里**一个字节的文件内容都不读**，只列路径。
+ *
+ * 为什么仍要做：截断后模型的体感是断片——它不知道自己刚才在改哪几个文件，于是要么
+ * 瞎猜，要么从头 glob/grep 重新找。给出「你刚才在动这几个文件」这一条线索，代价是
+ * 几十个 token（路径字符串），收益是模型能直接 read 它真正需要的那一个。
+ * 这是刻意的取舍：`emergencyTruncate` 的 miniSummary 已经在列「涉及文件」，但那取的是
+ * **被截掉那段**里出现过的路径；这里取的是 `FileReadTracker` 记的**最近实际读过**的文件，
+ * 两者来源不同——截断段可能根本不含最近的读取（近端消息被保留，路径就不在截断段里）。
+ *
+ * 不注入 assistant ack：调用方（`runEmergencyReattach`）负责维持角色交替，见那里的注释。
+ */
+export function buildEmergencyFilePathReattach(
+  tracker: FileReadTracker,
+  opts?: { maxFiles?: number },
+): Message[] {
+  const maxFiles = opts?.maxFiles ?? POST_COMPACT_MAX_FILES;
+  const recentFiles = tracker.getRecentFiles(maxFiles);
+  if (recentFiles.length === 0) return [];
+
+  const list = recentFiles.map((f) => `- ${f}`).join("\n");
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            `${REATTACH_FILE_PREFIX} 上下文已被紧急截断（不是摘要压缩，较早的历史已直接丢弃）。` +
+            `你在截断前最近访问过这些文件：\n${list}\n\n` +
+            `正文未随本条消息恢复（紧急路径必须省 token）。需要哪个文件就直接 read 它，` +
+            `不要凭记忆改写。`,
+        },
+      ],
+      _meta: { origin: REATTACH_ORIGIN },
+    },
+  ];
+}
