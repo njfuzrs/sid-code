@@ -100,6 +100,10 @@ interface DefaultAppLayoutProps {
   costUSD: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */
+  totalRequests?: number;
+  /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
+  discardedRequests?: number;
   costLimit: number;
   contextPercent: number;
   /** P1-2：压缩触发点百分比（Footer 显示「17%/82%」） */
@@ -182,6 +186,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   stockInputTokens,
   costUSD,
   cacheSavingsUSD,
+  totalRequests,
+  discardedRequests,
   costLimit,
   contextPercent,
   contextTriggerPercent,
@@ -358,6 +364,8 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
           stockInputTokens={stockInputTokens}
           costUSD={costUSD}
           cacheSavingsUSD={cacheSavingsUSD}
+          totalRequests={totalRequests}
+          discardedRequests={discardedRequests}
           costLimit={costLimit}
           contextPercent={contextPercent}
           contextTriggerPercent={contextTriggerPercent}

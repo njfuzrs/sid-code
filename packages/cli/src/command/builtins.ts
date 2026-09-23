@@ -999,7 +999,7 @@ export class StatsCommand implements Command {
     const { SessionState } = await import("@sid-code/core/session/state.ts");
     const ss = ctx.sessionState;
     const totalUsage = ss.getTotalUsage();
-    const totalToolCalls = Object.values(ss.modelUsage).reduce((sum, m) => sum + m.requests, 0);
+    const totalRequests = ss.getTotalRequests();
 
     const lines = [
       "会话统计",
@@ -1007,7 +1007,7 @@ export class StatsCommand implements Command {
       `对话轮数：${ctx.ctxMgr.getTurnCount()}`,
       `消息总数：${ctx.ctxMgr.messageCount()}`,
       `Token 用量：输入 ${totalUsage.inputTokens} / 输出 ${totalUsage.outputTokens}`,
-      `API 请求：${totalToolCalls} 次`,
+      `API 请求：${totalRequests} 次`,
       `预估费用：$${ss.getEffectiveTotalCostUSD().toFixed(4)}`,
       `会话时长：${SessionState.formatDuration(ss.getElapsedMs())}`,
     ];

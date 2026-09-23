@@ -15,6 +15,7 @@ import {
   deriveCacheMetrics,
   deriveWorktree,
   deriveRepoName,
+  deriveRequests,
 } from "@sid-code/cli/ui/hooks/useStatusLineData.ts";
 import { theme } from "@sid-code/cli/ui/semantic-colors.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
@@ -140,5 +141,53 @@ describe("P3-3 — deriveRepoName", () => {
     const name = deriveRepoName(process.cwd());
     // 在本仓库内运行时应拿到 sid-code；否则至少是非空或空串（不抛错即通过）。
     expect(typeof name).toBe("string");
+  });
+});
+
+describe("requests 列 — deriveRequests（API 调用次数 + 白烧后缀）", () => {
+  test("零调用 → null（会话刚开始不显示 ⟳ 0 噪音）", () => {
+    expect(deriveRequests(0, 0)).toBeNull();
+  });
+
+  test("无白烧 → 只显示次数，不带 ✘ 后缀", () => {
+    const r = deriveRequests(12, 0)!;
+    expect(r.text).toBe("⟳ 12");
+    expect(r.text).not.toContain("✘");
+    expect(r.requests).toBe(12);
+    expect(r.discarded).toBe(0);
+  });
+
+  test("有白烧 → 后缀是 requests 的子集语义（12 次里 3 次白烧，不是 12+3）", () => {
+    const r = deriveRequests(12, 3)!;
+    expect(r.text).toBe("⟳ 12 ✘3");
+    // 分子 ≤ 分母：这是"子集"而非"另一批调用"的判据
+    expect(r.discarded).toBeLessThanOrEqual(r.requests);
+  });
+
+  test("白烧占比 ≤20% → 暗色（如实呈现但不喊）", () => {
+    // 2/12 ≈ 16.7%
+    expect(deriveRequests(12, 2)!.discardedColor).toBe(theme.ui.comment);
+  });
+
+  test("白烧占比 >20% → 转黄告警（阈值数与「更省」方向的 20% 对齐，但分母是次数占比）", () => {
+    // 3/12 = 25%
+    expect(deriveRequests(12, 3)!.discardedColor).toBe(theme.status.warning);
+  });
+
+  test("恰好 20% 不告警（边界取严格 >，避免临界抖动）", () => {
+    // 2/10 = 20%
+    expect(deriveRequests(10, 2)!.discardedColor).toBe(theme.ui.comment);
+  });
+
+  test("脏快照：白烧数 > 总数时钳到总数，不渲染自相矛盾的 `⟳ 2 ✘5`", () => {
+    const r = deriveRequests(2, 5)!;
+    expect(r.discarded).toBe(2);
+    expect(r.text).toBe("⟳ 2 ✘2");
+  });
+
+  test("负数白烧按 0 处理（不产出 ✘-1）", () => {
+    const r = deriveRequests(5, -1)!;
+    expect(r.discarded).toBe(0);
+    expect(r.text).toBe("⟳ 5");
   });
 });

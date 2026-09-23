@@ -118,6 +118,12 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     stockInputTokens: 0,
     costUSD: 0,
     cacheSavingsUSD: 0,
+    // /clear 走 sessionState.resetCounters()（清空 modelUsage → requests 归零），
+    // 这里同步把展示侧归零，保持「状态栏计量项与上下文一起清空」的既有约定。
+    // 这也正是本列选 requests 而非 absoluteTurnCount 的理由之一：后者不被 resetCounters
+    // 清零，会出现「token/cost 已归零、轮次还在数」的自相矛盾。
+    totalRequests: 0,
+    discardedRequests: 0,
     contextPercent: 0,
     // P1-2/P1-5：0 / "none" 表示"上游还没推送过"，Footer 会退回只显示 contextPercent
     contextTriggerPercent: 0,

@@ -37,6 +37,8 @@ import {
   WORKTREE_MARK,
   TOKEN_IN,
   TOKEN_OUT,
+  RETRY_MARK,
+  ERROR_MARK,
 } from "../constants/figures.ts";
 import { useStatusLineData, deriveWorktree } from "../hooks/useStatusLineData.ts";
 import { useConfig } from "../contexts/ConfigContext.tsx";
@@ -65,6 +67,10 @@ interface FooterProps {
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /** 会话累计 API 调用次数（SessionState.getTotalRequests()）。0/省略 → 不显示该列。 */
+  totalRequests?: number;
+  /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
+  discardedRequests?: number;
   /**
    * 终端列宽（响应式，随窗口 resize 变化）。用于窄终端下按优先级渐进隐藏区块，
    * 保证状态栏每行不折行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
@@ -292,6 +298,36 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
         <>
           <Text color={theme.status.success}>{amount}</Text>
           <Text color={dim}> saved</Text>
+        </>
+      ),
+    });
+  }
+  // requests：⟳符号(暗) + 调用次数(亮) + 白烧后缀 ✘N(占比>20% 转黄，否则暗)。
+  //
+  // 放在计量段末尾（scroll 之前）是刻意的：它是**会话总账**，与左侧 model/旋钮那簇
+  // 「本轮运行态」不同族，贴在计量流尾部不打断 context→tokens→cost→cache 的读序。
+  //
+  // dropOrder=5.5：比 savings(5) 先丢、比 scroll(6) 后丢。用小数而不是把 scroll 改成 7，
+  // 是为了不动既有六项的相对次序（fitRow 用严格 `>` 取最大值，同值时先出现的先丢，
+  // 改动既有值会连带改变那批段之间的丢弃顺序）。
+  if (data.requests) {
+    metricSegs.push({
+      key: "requests",
+      str: data.requests.text,
+      dropOrder: 5.5,
+      nodes: (
+        <>
+          <Text color={dim}>{RETRY_MARK} </Text>
+          <Text color={val}>{data.requests.requests}</Text>
+          {data.requests.discarded > 0 && (
+            <>
+              <Text color={dim}> </Text>
+              <Text color={data.requests.discardedColor}>
+                {ERROR_MARK}
+                {data.requests.discarded}
+              </Text>
+            </>
+          )}
         </>
       ),
     });

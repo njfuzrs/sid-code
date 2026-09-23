@@ -373,6 +373,13 @@ export class SessionState {
           cacheReadInputTokens: Number((s as ModelUsageStats).cacheReadInputTokens) || 0,
           cacheCreationInputTokens: Number((s as ModelUsageStats).cacheCreationInputTokens) || 0,
           requests: Number((s as ModelUsageStats).requests) || 0,
+          // 作废量必须与 requests 一起回灌：`serializeUsageSnapshot` 是整个 modelUsage
+          // 深拷贝，盘上**本来就有**这两个字段，此前只是回灌时漏读。漏读的后果不是
+          // "少个调试字段"——状态栏的白烧后缀 `⟳ 12 ✘3` 与 `⟳ 12` 同源于一次 resume，
+          // 分子归零而分母（requests）连续，就成了"重试白烧凭空消失"，
+          // 而这正是 requests 相对 absoluteTurn 被选中的理由（口径跨 resume 一致）。
+          discardedRequests: Number((s as ModelUsageStats).discardedRequests) || 0,
+          discardedPromptTokens: Number((s as ModelUsageStats).discardedPromptTokens) || 0,
           costUSD: Number((s as ModelUsageStats).costUSD) || 0,
           cacheSavingsUSD: Number((s as ModelUsageStats).cacheSavingsUSD) || 0,
           provider:
@@ -688,6 +695,50 @@ export class SessionState {
     let total = 0;
     for (const stats of Object.values(this.modelUsage)) {
       total += stats.stockPromptTokens;
+    }
+    return total;
+  }
+
+  /**
+   * 会话累计 API 调用次数（各模型 `requests` 之和）。
+   *
+   * 口径 = **实际发出的 HTTP 请求数**，所以它**包含**：
+   * - 作废重试（`updateUsage` 的 `stats.requests += 1` 落在 `if (!discarded)` **之外**，
+   *   见本文件 updateUsage——prompt 已发到服务端、厂商已计费，就得算一次调用）；
+   * - 子代理调用（app.ts 的 usage sink 同样走 updateUsage）；
+   * - maxTurns 强制总结轮（loop.ts 收尾那次）。
+   *
+   * **不包含** side-call（标题生成 / 记忆召回 / bash 分类等影子调用）——那些只经
+   * `addSideCost`，自有 `side-call-sink` 的计数口径，混进来会让"调用次数"与
+   * `total_api_calls` 对不上。
+   *
+   * 为什么要这个 getter 而不是各处自己 reduce：本仓此前有 3 处逐字抄了同一个
+   * `Object.values(modelUsage).reduce((s, m) => s + m.requests, 0)`
+   * （SessionEnd 统计 / 崩溃快照 / /stats 面板），任一处漏改就产生"同一会话不同
+   * 口径"的漂移。收口到一处后新增消费方（状态栏）不再引入第 4 份实现。
+   */
+  getTotalRequests(): number {
+    let total = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      total += stats.requests;
+    }
+    return total;
+  }
+
+  /**
+   * 会话累计**作废**的 API 调用次数（各模型 `discardedRequests` 之和）。
+   *
+   * 作废 = 超时 / 流内错误后重试，响应被丢弃但 prompt 已完整发出并计费（详见
+   * `ModelUsageStats.discardedRequests`）。它是 {@link getTotalRequests} 的**子集**，
+   * 不是另一批调用——所以状态栏写成 `⟳ 12 ✘3`（12 次里有 3 次白烧），
+   * 不是 `12 + 3`。
+   *
+   * 旧快照无该字段（undefined → 0），对应"这部分历史无从还原"，而不是"真的零白烧"。
+   */
+  getDiscardedRequests(): number {
+    let total = 0;
+    for (const stats of Object.values(this.modelUsage)) {
+      total += stats.discardedRequests ?? 0;
     }
     return total;
   }
