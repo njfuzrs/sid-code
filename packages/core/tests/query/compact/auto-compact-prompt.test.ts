@@ -153,6 +153,29 @@ describe("formatCompactSummary", () => {
     const formatted = formatCompactSummary(raw);
     expect(formatted).toBe("未闭合的摘要");
   });
+
+  it("P2-18：未闭合 analysis 且无 summary 时不得把草稿正文当摘要返回", () => {
+    // 第 2 步已判定「从开标签到文末整段丢弃」，第 4 步此前会从原始 summary 重新出发，
+    // 闭合正则匹配不上未闭合块 → 只剥标签字面量 → 草稿正文成为最终摘要。
+    const formatted = formatCompactSummary("<analysis>foo bar baz");
+    expect(formatted).not.toContain("foo bar baz");
+    expect(formatted).toBe("");
+  });
+
+  it("P2-18：未闭合 analysis + 后续 summary 时只保留 summary 正文", () => {
+    const formatted = formatCompactSummary("<analysis>草稿思考<summary>真正的摘要</summary>");
+    expect(formatted).toBe("真正的摘要");
+    expect(formatted).not.toContain("草稿");
+  });
+
+  it("P2-18：没有草稿可丢弃时仍保持原来的鲁棒回退（不因本次修复变严）", () => {
+    // 只有一对空 summary 标签：没发现待丢弃草稿，走原回退路径（剥标签后为空）。
+    expect(formatCompactSummary("<summary></summary>")).toBe("");
+    // 纯文本无标签：原样 trim 返回，回退行为未变。
+    expect(formatCompactSummary("  纯文本  ")).toBe("纯文本");
+    // 闭合 analysis 被正则剥掉（不计入"未闭合丢弃"），剩余正文照常保留。
+    expect(formatCompactSummary("<analysis>草稿</analysis>正文")).toBe("正文");
+  });
 });
 
 describe("getCompactUserSummaryMessage（post-compact 重组）", () => {

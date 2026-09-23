@@ -163,6 +163,20 @@ export function buildCompactUserPrompt(messages: Message[], customInstructions?:
  *      若无 <summary> 则切到文末，整段丢弃。
  *   3. 提取 <summary>…</summary> 内容；无闭合 summary 标签时用 indexOf 从 <summary> 切到文末。
  *   4. 全部失败（无任何标签）：原样返回 trim 后的文本（鲁棒回退，宁可多留不要清空）。
+ *
+ * ## P2-18：第 4 步不得复活第 2 步已判定丢弃的草稿
+ *
+ * 触发形态：模型只吐出 `<analysis>foo bar baz`（未闭合、无 `<summary>`）。第 2 步算出
+ * 「从开标签到文末整段丢弃」→ `formatted` 变空 → 第 4 步**从原始 summary 重新出发**，
+ * 而闭合标签正则匹配不上未闭合块，只剥掉标签字面量，于是**草稿正文原封不动**成为最终
+ * 摘要注入后续上下文。注释写的是「宁可多留不要清空」，但这里「多留」留的正是草稿本身。
+ *
+ * 修法：第 4 步复用第 2 步的判定而不是重算——已经确认过「这段是待丢弃的草稿」时，
+ * 空结果就是**正确**结果，返回空串。空串由调用方（`doAutoCompact`）判为「本次没拿到
+ * 可用摘要」走失败降级（简单截断 + 占位），这比把草稿当摘要注入诚实：
+ * 前者用户看到「摘要压缩失败」告警，后者是静默的上下文污染。
+ *
+ * 只有在**没有**发现待丢弃草稿时，第 4 步才保持原来的鲁棒回退（无标签纯文本等）。
  */
 export function formatCompactSummary(summary: string): string {
   let formatted = summary;
@@ -174,6 +188,8 @@ export function formatCompactSummary(summary: string): string {
   //    残留的开标签说明上面的正则没匹配上 → 从开标签切到下一个 <summary>（或文末）整段丢弃。
   const lcForAnalysis = formatted.toLowerCase();
   const openAnalysis = lcForAnalysis.indexOf("<analysis>");
+  // P2-18：记下"本函数确实丢弃过一段未闭合草稿"，供第 4 步判断空结果是不是正确结果。
+  const discardedUnclosedAnalysis = openAnalysis !== -1;
   if (openAnalysis !== -1) {
     const nextSummary = lcForAnalysis.indexOf("<summary>", openAnalysis);
     if (nextSummary !== -1) {
@@ -200,9 +216,12 @@ export function formatCompactSummary(summary: string): string {
     formatted = formatted.replace(/<\/?summary>/gi, "");
   }
 
-  // 4. 兜底：剥离后若为空（标签处理意外清空），回退到剥离 analysis 后的原文
+  // 4. 兜底：剥离后若为空（标签处理意外清空），回退到剥离 analysis 后的原文。
+  //    P2-18：但**第 2 步已经丢弃过未闭合草稿**时不回退——那次空结果是它算对了，
+  //    回到原文只会把草稿正文捞回来（闭合标签正则匹配不上未闭合块，只剥标签字面量）。
   const trimmed = formatted.trim();
   if (trimmed.length === 0) {
+    if (discardedUnclosedAnalysis) return "";
     return summary
       .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
       .replace(/<\/?(analysis|summary)>/gi, "")

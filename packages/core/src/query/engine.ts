@@ -77,6 +77,14 @@ export interface QueryEngineDeps {
     messagesBefore: number;
     tokensBefore?: number;
   }) => Promise<void>;
+  /**
+   * P2-22：emergency / blocking 截断后的轻量恢复（只给最近文件**路径清单**，不带正文）。
+   * 返回注入的消息数。可选——未注入则这两条路径只截断、不恢复（行为同旧版）。
+   * 详见 QueryDeps.emergencyFileReattach（含"为什么不复用 postCompactTail"）。
+   */
+  emergencyFileReattach?: (info: {
+    trigger: "threshold_blocking" | "threshold_emergency";
+  }) => number;
   /** 处理上下文溢出 */
   handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
@@ -340,6 +348,7 @@ export class QueryEngine {
       autoCompact: this.deps.autoCompact,
       contextCollapse: this.deps.contextCollapse,
       postCompactTail: this.deps.postCompactTail,
+      emergencyFileReattach: this.deps.emergencyFileReattach,
       handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       abortCurrentRequest: this.deps.abortCurrentRequest,

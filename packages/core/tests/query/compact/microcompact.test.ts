@@ -100,6 +100,9 @@ describe("isNonDiscardableTool", () => {
     const files = {
       edit: "edit.ts",
       write: "write.ts",
+      // P2-16：notebook_edit 此前两个名单都不在，落「未知工具」分支永不被压缩。
+      // 它与 edit/write 同语义（有副作用、输出不可靠重跑复现），归不可丢弃。
+      notebook_edit: "notebook-edit.ts",
       save_memory: "memory.ts",
       ask_user_question: "ask-user-question.ts",
     } as const;
@@ -113,6 +116,13 @@ describe("isNonDiscardableTool", () => {
 
   it("应识别 bash 不是不可丢弃工具", () => {
     expect(isNonDiscardableTool("bash")).toBe(false);
+  });
+
+  it("P2-16：notebook_edit 归不可丢弃（不再落未知工具分支）", () => {
+    expect(isNonDiscardableTool("notebook_edit")).toBe(true);
+    expect(isNonDiscardableTool("notebookedit")).toBe(true);
+    // 与 edit/write 同侧：都不是「可丢弃」（输出不可靠重新执行复现）
+    expect(isDiscardableTool("notebook_edit")).toBe(false);
   });
 });
 
@@ -178,6 +188,30 @@ describe("microcompactMessages", () => {
     const compacted = result.messages[2].content[0];
     if (compacted.type === "tool_result" && typeof compacted.content === "string") {
       expect(compacted.content).toContain("X".repeat(200));
+      expect(compacted.content).toContain("已省略");
+    }
+  });
+
+  it("P2-16：notebook_edit 输出应保留前 200 字符摘要（不再当未知工具原样跳过）", () => {
+    const msgs: Message[] = [
+      { role: "user", content: [{ type: "text", text: "padding" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool_nb", name: "notebook_edit", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool_nb", content: "N".repeat(800) }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "resp 1" }] },
+      { role: "assistant", content: [{ type: "text", text: "resp 2" }] },
+    ];
+
+    const result = microcompactMessages(msgs, { preserveRecentCount: 2, minContentLength: 500 });
+    expect(result.compactedCount).toBe(1);
+    const compacted = result.messages[2].content[0];
+    if (compacted.type === "tool_result" && typeof compacted.content === "string") {
+      expect(compacted.content).toContain("N".repeat(200));
       expect(compacted.content).toContain("已省略");
     }
   });

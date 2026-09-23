@@ -103,6 +103,21 @@ export interface AutoCompactDeps {
    * （旁路请求仍会发出，只是不参与跨路径拉黑）。
    */
   availability?: import("../llm/availability.ts").ModelAvailabilityService;
+  /**
+   * P2-21：结构化埋点写入（转交 `runPostCompact` 落 `PostCompactReattach` 事件）。
+   * 不传则重注入压力只进日志、不进 events.jsonl。
+   */
+  traceAppendEvent?: (event: {
+    event: string;
+    timestamp: string;
+    data?: Record<string, unknown>;
+  }) => void;
+  /**
+   * P2-17：把被压缩段里的「用户明确约束」交给调用方常驻到 system prompt。
+   * 不传则跳过（约束仍只走消息流，下一次压缩会被 strip 剥掉）。
+   * 详见 `PostCompactOptions.onCriticalConstraints`。
+   */
+  onCriticalConstraints?: (constraints: string[]) => void;
 }
 
 /**
@@ -302,7 +317,7 @@ async function doAutoCompact(
     const summarizeBase = stripReinjectedAttachments(stripImages(messages));
     const toSummarize = summarizeBase.slice(0, -PRESERVE_RECENT);
 
-    const { buildCompactUserPrompt, getCompactUserSummaryMessage } =
+    const { buildCompactUserPrompt, getCompactUserSummaryMessage, formatCompactSummary } =
       await import("./compact/auto-compact-prompt.ts");
 
     // T3.1/T3.2：给整个"建流 + 流消费"套 60s 硬超时（Promise.race，不依赖 signal 传播）。
@@ -360,7 +375,14 @@ async function doAutoCompact(
       });
     }
 
-    if (summary) {
+    // P2-18：判据是**剥离草稿之后还剩不剩正文**，不是原始响应非空。
+    // 模型只吐 `<analysis>…`（未闭合、无 <summary>）时原始响应非空，但剥离后正文为空；
+    // 此时若照常走下去，注入的是一条只有续接说明、没有任何摘要内容的 user 消息——
+    // 消息数确实减少（compactWithSummary 判成功）、埋点报 summarized，而模型拿到的
+    // 上下文里压缩段是一片空白。那是比「压缩失败」更难排查的静默信息丢失，
+    // 所以这里与空摘要同等对待：走下方失败降级（简单截断 + 占位 + 用户可见告警）。
+    const summaryBody = summary ? formatCompactSummary(summary).trim() : "";
+    if (summaryBody) {
       // Layer 2：post-compact 消息重组——剥离 analysis 草稿、追加静默续接 +
       // 保留消息提示 + 转录路径提示，让模型压缩后无缝续接而非"断片"。
       const formattedSummary = getCompactUserSummaryMessage(summary, {
@@ -404,7 +426,15 @@ async function doAutoCompact(
         return "summarized";
       }
     } else {
-      // 空摘要也算失败。有摘要但切点无效时上面已经 recordFailure，这里不能再计一次。
+      // 空摘要（含 P2-18：剥离草稿后正文为空）也算失败。
+      // 有摘要但切点无效时上面已经 recordFailure，这里不能再计一次。
+      if (summary) {
+        log.warn(
+          "COMPACT",
+          `摘要响应剥离 analysis 草稿后正文为空（原始 ${summary.length} 字符），` +
+            `按空摘要处理并降级简单截断——不注入空摘要`,
+        );
+      }
       recordFailure();
     }
   } catch (err: any) {
@@ -692,6 +722,10 @@ async function postCompactReattachAndNotify(
     messagesBefore,
     tokensBefore,
     usedLLM,
+    // P2-21：重注入是否把上下文顶回压缩档，只有落到 events.jsonl 才能出趋势。
+    traceAppendEvent: deps.traceAppendEvent,
+    // P2-17：约束升级为常驻附件，绕开「消息流里的约束只活一代」。
+    onCriticalConstraints: deps.onCriticalConstraints,
   });
 }
 

@@ -22,6 +22,12 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
+// P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
+// **同源**，全仓只此一份。两侧各写一个 3 的话，任何一侧调阈值都会出现
+// 「运行时报了但周报不算病态」（或反过来），与本仓 P1-6/7「压缩决策和压缩执行
+// 用两套尺子」同型。方向是离线模块 import 轻模块（那个文件零依赖），
+// 反过来会把 3400 行 + node:fs 的离线 digest 拖进主循环。
+import { UNCHANGED_OBSERVATION_THRESHOLD } from "../query/unchanged-observation.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -3100,8 +3106,8 @@ const POLL_RATIO_THRESHOLD = 0.1;
 const SUBAGENT_IO_THRESHOLD = 50;
 /** editLatency 判病态阈值：首次编辑距开始 > 5min */
 const EDIT_LATENCY_THRESHOLD_MS = 5 * 60 * 1000;
-/** observationEntropy 判空转阈值：同指纹连续 ≥ 3 次且返回值完全不变 */
-const UNCHANGED_OBSERVATION_THRESHOLD = 3;
+// observationEntropy 判空转阈值（同指纹连续 ≥ N 次且返回值完全不变）：
+// 定义在 `query/unchanged-observation.ts`，见文件头部 import 处的说明（P2-20）。
 /** retryWastedRatio 判病态阈值：白烧 token 占已记账 input > 20% */
 const RETRY_WASTED_RATIO_THRESHOLD = 0.2;
 

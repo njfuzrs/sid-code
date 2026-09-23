@@ -21,7 +21,12 @@ export interface Attachment {
 
 /** 附件优先级定义（对标 Claude Code） */
 export const PRIORITY = {
-  /** 关键系统提醒 */
+  /**
+   * 关键系统提醒 —— 用户明确提出的约束（"不要做 X"）。
+   * 生产者：`generateCriticalRemindersAttachment`（P2-17 之前零生产者，见该函数注释）。
+   * 优先级最高：用户口头约束没有第二道防线（不像 deny 规则还有权限层兜底），
+   * 违反就是真违反，注意力位置必须最靠前。
+   */
   CRITICAL_REMINDER: 1,
   /**
    * 当前日期等每日变化的易变值。必须落在 DYNAMIC_BOUNDARY 之后（动态区），
@@ -358,6 +363,54 @@ ${summary.trim()}
       PRIORITY.DENY_RULES,
     ),
     label: "权限约束（deny 规则）",
+  };
+}
+
+/**
+ * P2-17：生成「用户明确约束」常驻附件 —— `PRIORITY.CRITICAL_REMINDER` 的第一个生产者。
+ *
+ * ## 缺口是什么
+ *
+ * `CRITICAL_REMINDER: 1`（最高优先级）此前全仓只有定义那一行，零消费者。于是「用户明确
+ * 说过不要做 X」这类口头约束的**唯一**保留渠道是摘要 prompt 里那句「用户说过不要这样做的
+ * 内容必须保留」—— 靠模型遵从，非结构化强制。两条放大它的事实：
+ *   ① 压缩时提取的决策点走 `buildDecisionReattachMessages` 注入**消息流**，而
+ *      `strip.ts` 会在**下一次**压缩前把它剥掉（防连环累积，那是对的）→ 约束只活一代；
+ *   ② 落盘的 `decisions.jsonl` 全仓**没有任何读取方**，写完就是死数据。
+ * 结果：摘要被二次摘要时，约束没有任何兜底能把它拉回来 —— 博客 §12 的 governance decay。
+ *
+ * ## 为什么做成 system prompt 附件
+ *
+ * 同类机制已经证明过这条路：deny 规则（`generateDenyRulesAttachment`）也是「不该做什么」，
+ * 它常驻 system prompt，因此**不受消息历史压缩影响**。用户临时强调的约束与它同性质，
+ * 只是此前没覆盖到。放 `CRITICAL_REMINDER`（优先级 1，最高）而不是跟 deny 规则一样低：
+ * deny 规则是配置态的兜底（违反了权限层还会拦一次），用户口头约束**没有第二道防线**，
+ * 违反就是真违反，注意力位置必须靠前。
+ *
+ * ## 缓存属性
+ *
+ * 标 `stable`：约束只在压缩时增补，不随请求变化。增补时调用方会重建 system prompt
+ * （与 `sessionMemoryContent` 同路径），这与 P0-1 给 CLAUDE.md 标 stable 是同一笔
+ * trade-off —— 换一次 miss，买此后所有轮次的静态前缀命中。
+ *
+ * @param constraints 约束原文列表（调用方保证已去重、已截断）。空列表返回 null。
+ */
+export function generateCriticalRemindersAttachment(
+  constraints: string[],
+): SystemPromptAttachment | null {
+  const cleaned = constraints.map((c) => c.trim()).filter((c) => c.length > 0);
+  if (cleaned.length === 0) return null;
+  const list = cleaned.map((c) => `- ${c}`).join("\n");
+  return {
+    ...stableAttachment(
+      "criticalReminders",
+      `<user-constraints>
+以下是用户在本次会话中**明确提出**的约束，即使相关对话已被压缩也依然有效，必须持续遵守：
+${list}
+</user-constraints>`,
+      PRIORITY.CRITICAL_REMINDER,
+    ),
+    label: "用户明确约束",
   };
 }
 
