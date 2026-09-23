@@ -4,6 +4,23 @@
  * 当模型认为"完成"后，执行用户配置的 Stop Hooks（如 lint/test），
  * 如果有 blocking error，将错误注入对话让模型自动修复。
  *
+ * ## ⛔ 这是 Stop 语义的唯一实现，不要再造第二份
+ *
+ * P3-2（2026-09-23）：`hook/stop-hook-orchestrator.ts` 曾是**第二份** Stop 实现
+ * （`StopHookOrchestrator` + `createStopHookErrorMessage`，经 `hook/index.ts` 再导出，
+ * packages 内零调用），已删除。删它而不是接它，理由是两者的**耗尽语义相反**：
+ *
+ *   · 本文件（live）：重试预算耗尽 → 仍执行验证，但**放行**（`forceStop: false`），
+ *     把"检查仍未通过"如实呈现给用户。见下方 `budgetExhausted` 一段。
+ *   · 编排器：耗尽 → `preventContinuation: true`，**强制停**。
+ *
+ * 谁把编排器接进 loop，Stop 耗尽就会从「放行」翻成「强制停」—— 而「耗尽后放行」
+ * 是刻意取舍（blog §5.3 / §9.4），不是漏了。一个零调用的类静静躺着，
+ * 与现网行为相反且**不会有任何东西报错**，正是本仓记过的死接线形态。
+ *
+ * 同批删掉的还有 `getMaxStopHookRetries()`（零引用的 getter）：
+ * `MAX_STOP_HOOK_RETRIES` 就在本文件内，要读直接读常量。
+ *
  * 流程：
  *   模型 end_turn → 执行 Stop Hooks → 全部通过 → 正常结束
  *                                    → blocking error → 注入错误 → continue
@@ -143,9 +160,4 @@ export async function* handleStopHooks(
     // 不得据此清零续命预算（否则一个恒抛异常的 hook 会让预算永远回满）。
     return { shouldContinue: false, forceStop: false, errorMessages: [], passed: false };
   }
-}
-
-/** 获取最大重试次数 */
-export function getMaxStopHookRetries(): number {
-  return MAX_STOP_HOOK_RETRIES;
 }

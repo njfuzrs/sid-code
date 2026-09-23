@@ -645,6 +645,12 @@ async function runAgentLoopInner(
         signal,
         heartbeatTimeoutMs: config.streamIdleTimeoutMs,
         overallTimeoutMs: config.streamOverallTimeoutMs,
+        // P3-6：超时事件必须带与上面那些 emitStreamPhase **同一把** key 的身份，
+        // 否则 TimeoutFired 落在 index=-1 上：既 push 不进 timeoutsFired
+        //（fallback 的 reopenReason 读它），也无法按轮次聚合 —— 子代理超时在
+        // digest 里像没发生过。
+        observerIndex: agentStreamIndex,
+        observerAgentId,
       });
     } catch (err) {
       // 漏斗只在「用户/外部 abort」时抛（可重试错误已在内部消化成重试或 error 事件）。
@@ -1150,6 +1156,39 @@ async function runAgentLoopInner(
   // 无法靠 type 过滤。解法：在退出前追加一轮"请总结"，让模型输出结构化结论再退出。
   if (!signal.aborted) {
     log.info("AGENT_LOOP", `达到最大轮次 ${maxTurns}，请求强制总结`);
+
+    // ─── P3-3（2026-09-23）：总结轮发送前必须补齐孤儿 tool_use ───
+    //
+    // 这一轮跑在 while **之外**，所以吃不到循环内那道 `finalizeMessagesForSend`
+    // 兜底（见上方「发送前协议兜底」一段）。而进到这里的路径里有一条会**带着未执行的
+    // tool_use**：未知 stopReason（`response.stopReason` 不认识）时，assistant 已经
+    // 入史（`addMessage({ role: "assistant", content: response.content })`），
+    // 紧接着 `break` 跳出循环 —— 那些 tool_use 永远不会有对应的 tool_result。
+    // 再塞一条 user「请总结」，发出去的历史就是 assistant(tool_use) → user(text)，
+    // 协议上已破配对：OpenAI 族 400，Anthropic 族同样拒。
+    //
+    // 后果比"少一轮总结"重得多：总结轮是把前面 maxTurns 轮产出落地成结论的**唯一**
+    // 机会，它 400 掉之后整段工作只剩 extractFinalText 的启发式 salvage。
+    // 修在产生端（发送前补占位），与主循环同一条原则。
+    {
+      const backfill = finalizeMessagesForSend(ctxMgr.getMessages());
+      if (backfill.changed) {
+        ctxMgr.setMessages(backfill.messages);
+        if (backfill.backfilled.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `P3-3：总结轮发送前补齐 ${backfill.backfilled.length} 个孤儿 tool_use 的占位 tool_result（防 400）`,
+          );
+        }
+        if (backfill.stripped.length > 0) {
+          log.error(
+            "AGENT_LOOP",
+            `P3-3：总结轮发送前切除 ${backfill.stripped.length} 个游离 tool_result`,
+          );
+        }
+      }
+    }
+
     ctxMgr.addMessage({
       role: "user",
       content: [
@@ -1237,6 +1276,10 @@ async function runAgentLoopInner(
         signal,
         heartbeatTimeoutMs: config.streamIdleTimeoutMs,
         overallTimeoutMs: config.streamOverallTimeoutMs,
+        // P3-6：同主流。这里用 20000 号段（与上方 emitStreamPhase 一致），
+        // 否则总结轮超时会记到主流那一格上。
+        observerIndex: summaryStreamIndex,
+        observerAgentId,
       });
       accumulateUsage(totalUsage, summaryResponse.usage);
       emitStreamPhase(
@@ -1252,8 +1295,24 @@ async function runAgentLoopInner(
         lastTextOutput = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       }
 
-      // 添加总结到历史
-      ctxMgr.addMessage({ role: "assistant", content: summaryResponse.content });
+      // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
+      //
+      // 本轮**没有下发 tools**（上方 streamWithResilience 未传 tools），但响应里仍可能
+      // 出现 tool_use：mock 忽略 tools 参数、模型异常、网关回放旧内容都会。它在此轮
+      // 无法执行（既不走 executeTools，也已经在上面那道发送前兜底之后），入历史就是
+      // 一个**新造的**孤儿 —— 这次 400 发生在下一次发送（子代理返回的 messages 被
+      // 父级复用时）。刚在上面补完孤儿、转头自己造一个，是最容易漏的那种对称缺口。
+      const summaryContent = summaryResponse.content.filter((b) => b.type !== "tool_use");
+      if (summaryContent.length < summaryResponse.content.length) {
+        log.warn(
+          "AGENT_LOOP",
+          `P3-3：强制总结轮响应含 ${summaryResponse.content.length - summaryContent.length} 个 tool_use（本轮未传 tools，无法执行），已剥离以防孤儿 → 400`,
+        );
+      }
+      // 全被剥光时不要塞一条空 content 的 assistant —— 空 content 数组同样是协议非法。
+      if (summaryContent.length > 0) {
+        ctxMgr.addMessage({ role: "assistant", content: summaryContent });
+      }
       config.onTurnEnd?.({
         turn: turns + 1,
         textOutput: lastTextOutput,

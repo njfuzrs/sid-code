@@ -4232,7 +4232,21 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 deps.updateGoalState?.((g) => {
                   g.lastEvalReason = result.evalResult?.reason;
                 });
-                setTransition(state, { type: "goal_gate_retry" }, deps, sessionState.sessionId);
+                // P3-1（2026-09-23）：预算已进入 warning 档时记更具体的
+                // `goal_budget_warning`，否则这个变体全仓零 `setTransition` ——
+                // 「预算告警续跑」按 `LoopTransition.type` 统计恒为 0（告警文案本身
+                // 一直在进对话，缺的只是可观测接线）。
+                //
+                // ⚠️ 必须**替换**而不是追加一条事件：一次 continue 只对应一条 transition，
+                // 追加会让「按 type 数续跑次数」的分母凭空多一份 —— 分母口径一变，
+                // 曲线整体平移。所以 `goal_gate_retry` 与 `goal_budget_warning`
+                // 在同一次 continue 上互斥，两者之和才是「Goal 闸门续跑总数」。
+                setTransition(
+                  state,
+                  { type: result.budgetWarning ? "goal_budget_warning" : "goal_gate_retry" },
+                  deps,
+                  sessionState.sessionId,
+                );
                 continue;
               } else {
                 // shouldContinue=false && !completed && !impossible
