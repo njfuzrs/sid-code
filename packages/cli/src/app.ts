@@ -6054,10 +6054,7 @@ export class App {
   /** 构建 SessionEnd 统计数据 */
   private buildSessionEndStats() {
     const totalUsage = this.sessionState.getTotalUsage();
-    const totalRequests = Object.values(this.sessionState.modelUsage).reduce(
-      (sum, s) => sum + s.requests,
-      0,
-    );
+    const totalRequests = this.sessionState.getTotalRequests();
     return {
       model: this.config.model,
       total_tokens_sent: totalUsage.inputTokens,
@@ -6390,7 +6387,7 @@ export class App {
    */
   private countApiCallsForCrash(): number {
     try {
-      return Object.values(this.sessionState.modelUsage).reduce((sum, s) => sum + s.requests, 0);
+      return this.sessionState.getTotalRequests();
     } catch {
       return -1;
     }
@@ -6907,6 +6904,8 @@ export class App {
       stockInputTokens: this.sessionState.getStockPromptTokens(),
       costUSD: this.sessionState.getEffectiveTotalCostUSD(),
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+      totalRequests: this.sessionState.getTotalRequests(),
+      discardedRequests: this.sessionState.getDiscardedRequests(),
       costLimit: this.config.costLimit ?? 0,
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
@@ -7945,6 +7944,8 @@ export class App {
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+                totalRequests: this.sessionState.getTotalRequests(),
+                discardedRequests: this.sessionState.getDiscardedRequests(),
                 ...this.contextDisplayState(),
               });
               // TodoWrite 工具执行后同步 todo 列表到 TUI
@@ -8138,6 +8139,8 @@ export class App {
                 stockInputTokens: this.sessionState.getStockPromptTokens(),
                 costUSD: this.sessionState.getEffectiveTotalCostUSD(),
                 cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+                totalRequests: this.sessionState.getTotalRequests(),
+                discardedRequests: this.sessionState.getDiscardedRequests(),
                 ...this.contextDisplayState(),
                 streamingText: "",
                 streamingThinking: "",
@@ -8259,6 +8262,8 @@ export class App {
           stockInputTokens: this.sessionState.getStockPromptTokens(),
           costUSD: this.sessionState.getEffectiveTotalCostUSD(),
           cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+          totalRequests: this.sessionState.getTotalRequests(),
+          discardedRequests: this.sessionState.getDiscardedRequests(),
           ...this.contextDisplayState(),
           // CM3：本轮结束，清除残留的重试/限流提示。
           retryStatus: null,
@@ -8498,6 +8503,8 @@ export class App {
             stockInputTokens: this.sessionState.getStockPromptTokens(),
             costUSD: this.sessionState.getEffectiveTotalCostUSD(),
             cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
+            totalRequests: this.sessionState.getTotalRequests(),
+            discardedRequests: this.sessionState.getDiscardedRequests(),
             ...this.contextDisplayState(),
           });
           addTransientStatusMessage("error", message, aborted ? 1500 : 5000);

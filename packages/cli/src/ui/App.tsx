@@ -340,6 +340,15 @@ export interface TUIState {
   costUSD: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD: number;
+  /**
+   * 会话累计 API 调用次数（`SessionState.getTotalRequests()`）——状态栏 `⟳ N` 列。
+   *
+   * 口径是「实际发出的 HTTP 请求数」，含重试白烧 / 子代理 / maxTurns 总结轮，
+   * 不含 side-call。**不等于** agent 推进了几步，单一事实源见 getTotalRequests()。
+   */
+  totalRequests: number;
+  /** 其中作废（重试白烧）的次数，是 totalRequests 的**子集**（渲染成 `⟳ 12 ✘3`）。 */
+  discardedRequests: number;
   costLimit: number;
   contextPercent: number;
   /**
@@ -1431,6 +1440,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               stockInputTokens={state.stockInputTokens}
               costUSD={state.costUSD}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              totalRequests={state.totalRequests}
+              discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}
               contextPercent={state.contextPercent}
               contextTriggerPercent={state.contextTriggerPercent}
@@ -1491,6 +1502,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               stockInputTokens={state.stockInputTokens}
               costUSD={state.costUSD}
               cacheSavingsUSD={state.cacheSavingsUSD}
+              totalRequests={state.totalRequests}
+              discardedRequests={state.discardedRequests}
               costLimit={state.costLimit}
               contextPercent={state.contextPercent}
               contextTriggerPercent={state.contextTriggerPercent}

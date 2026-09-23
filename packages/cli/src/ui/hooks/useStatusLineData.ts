@@ -33,6 +33,8 @@ import {
   THINKING_OFF,
   GOAL_MARK,
   PAUSED_MARK,
+  RETRY_MARK,
+  ERROR_MARK,
 } from "../constants/figures.ts";
 import type { PricingModelEntry } from "@sid-code/core/api/cost-tracker.ts";
 
@@ -196,6 +198,65 @@ export function deriveCacheSavings(cacheSavingsUSD: number): { text: string; col
 }
 
 /**
+ * API 调用次数展示派生（requests 列）—— 回答「这次会话调了多少次模型」。
+ *
+ * ## 为什么是 requests，不是 turnCount / absoluteTurn
+ *
+ * 「一轮」有三种互不相等的含义（对话轮 / 循环迭代 / API 调用），本列取**最后一种**。
+ * 另两个候选都被否决，理由是**会与同一行的邻居自相矛盾**：
+ * - `SessionState.absoluteTurnCount` **没有持久化也没有 hydrate**（全仓仅 4 处引用），
+ *   resume 后从 0 重数，而 token/cost 是回灌的 → 同一行「$0.43 全会话」+「3 轮 本进程」。
+ * - `absoluteTurnCount` 也**不被 `resetCounters()` 清零**，`/clear` 后邻居归零它继续数。
+ * - SDK 的 `num_turns` 压根不在 TUI 路径上（TUI 走 `query/engine.ts`，那个计数器在
+ *   `sdk/query-engine.ts`）。
+ *
+ * `requests` 两条都对：resume 连续（随 modelUsage 一起回灌）、`/clear` 与邻居同步归零。
+ *
+ * ## 口径（必须点破，否则会被当成"agent 走到第几步"）
+ *
+ * 它是**实际发出的 HTTP 请求数**，含重试白烧、含子代理调用、含 maxTurns 强制总结轮，
+ * 不含 side-call。所以它**不等于** agent 的推进步数，两者可以差很远。
+ * 完整口径见 `SessionState.getTotalRequests()` 的注释（单一事实源在那里）。
+ *
+ * ## 白烧后缀
+ *
+ * `discarded` 是 `requests` 的**子集**（超时/流内错误后重试，prompt 已计费但响应被丢弃），
+ * 所以渲染成 `⟳ 12 ✘3` = 「12 次里有 3 次白烧」，**不是** 12+3。
+ * 阈值取 **> 20% 转黄**，与 CLAUDE.md「更省」方向的 `retryWastedRatio`（>20% 判病态，
+ * 实现见 `trace/digest.ts` 的 `RETRY_WASTED_RATIO_THRESHOLD`）**取同一个数**，
+ * 以下保持暗色（如实呈现但不喊）。
+ *
+ * ⚠️ 但**分母不同，两者不可互相引用为证**（CLAUDE.md 铁律 3：分母必须和指标一起写死）：
+ * - digest 的是 **token 占比** = 白烧 prompt token ÷ 已记账 input token；
+ * - 本列的是 **次数占比** = 作废次数 ÷ 总调用次数。
+ * 一次白烧的 prompt 可能远大于或小于均值，所以同一会话两个比值可以明显不等。
+ * 这里只借用"20% 以上算病态"这个量级判断，不声称与 digest 同口径；
+ * 也因此**不 import 那个常量**（它随 token 口径演进，绑上会让两个口径被误当成一个）。
+ *
+ * 零值隐藏：一次都没调（会话刚开始）时返回 null，与 tokens/context 列同样的隐藏约定，
+ * 避免 `⟳ 0` 噪音。
+ */
+export function deriveRequests(
+  totalRequests: number,
+  discardedRequests: number,
+): { text: string; requests: number; discarded: number; discardedColor: Color } | null {
+  if (totalRequests <= 0) return null;
+  // 防御：白烧数不该超过总数（两者同源于 updateUsage，理论不可能），钳一下避免
+  // 脏快照渲染出 `⟳ 2 ✘5` 这种自相矛盾的数字。
+  const discarded = Math.max(0, Math.min(discardedRequests, totalRequests));
+  const wastedRatio = discarded / totalRequests;
+  return {
+    text:
+      discarded > 0
+        ? `${RETRY_MARK} ${totalRequests} ${ERROR_MARK}${discarded}`
+        : `${RETRY_MARK} ${totalRequests}`,
+    requests: totalRequests,
+    discarded,
+    discardedColor: wastedRatio > 0.2 ? theme.status.warning : theme.ui.comment,
+  };
+}
+
+/**
  * 推理强度展示派生（effort 列）：档位 → 字形 + 文本 + 语义色。
  * - null（模型不支持档位）→ 返回 null，Footer 不渲染该列。
  * - auto 态 → 空心点 ◌ + 灰色，文本带 (auto) 后缀提示「跟随默认」。
@@ -295,6 +356,13 @@ export interface StatusLineData {
   thinking: { glyph: string; text: string; color: Color } | null;
   /** /goal 列派生（null = 无活跃目标，不渲染该列） */
   goal: { text: string; color: Color } | null;
+  /** API 调用次数列派生（null = 尚未调用过模型，不渲染该列） */
+  requests: {
+    text: string;
+    requests: number;
+    discarded: number;
+    discardedColor: Color;
+  } | null;
 }
 
 export interface StatusLineInput {
@@ -320,6 +388,16 @@ export interface StatusLineInput {
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /**
+   * 会话累计 API 调用次数（`SessionState.getTotalRequests()`）。
+   * 省略 → 视为 0 → 该列不渲染（旧调用方/测试不必改）。
+   */
+  totalRequests?: number;
+  /**
+   * 其中**作废**（重试白烧）的次数（`SessionState.getDiscardedRequests()`）。
+   * 是 totalRequests 的子集，不是另一批调用。
+   */
+  discardedRequests?: number;
 }
 
 /**
@@ -345,6 +423,8 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     model,
     scrollPercent,
     cacheSavingsUSD,
+    totalRequests,
+    discardedRequests,
   } = input;
 
   return useMemo<StatusLineData>(() => {
@@ -390,6 +470,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       effort: deriveEffort(config.effortDisplay, itemColor),
       thinking: deriveThinking(config.thinkingDisplay, itemColor),
       goal: deriveGoal(config.goalDisplay, itemColor),
+      requests: deriveRequests(totalRequests ?? 0, discardedRequests ?? 0),
     };
   }, [
     config.cwd,
@@ -412,5 +493,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     model,
     scrollPercent,
     cacheSavingsUSD,
+    totalRequests,
+    discardedRequests,
   ]);
 }

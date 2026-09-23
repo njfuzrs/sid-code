@@ -143,9 +143,7 @@ export const StatsDialog: React.FC<StatsDialogProps> = ({
 
   // 会话级数据（可选，无 sessionState 时省略对应行）
   // 注：对话轮次由 ctxMgr 维护，本面板不持有 ctxMgr，故只展示 API 请求次数（源自 modelUsage）。
-  const requestCount = sessionState
-    ? Object.values(sessionState.modelUsage).reduce((sum, m) => sum + m.requests, 0)
-    : undefined;
+  const requestCount = sessionState ? sessionState.getTotalRequests() : undefined;
   const durationText = sessionState
     ? SessionState.formatDuration(sessionState.getElapsedMs())
     : undefined;
