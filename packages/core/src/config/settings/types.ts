@@ -202,6 +202,10 @@ const NetworkTimeoutsSchema = lazySchema(() =>
       // PR14：fallback attempt 级无进展上限。必须**独立于** watchdogNoProgressMs 可调 ——
       // 此前二者同值同谓词（都 720s、都读内容进展），是 PR10 收敛三档时漏掉的那一对。
       fallbackStreamTimeoutMs: z.number().positive().optional(),
+      // P3-5：stream-processor 心跳上限。同样必须**独立于** watchdogNoProgressMs ——
+      // 此前二者同值 720s，但谓词不同（本层任意 SSE 事件续命，watchdog 只认业务内容进展），
+      // 于是「只有 keep-alive」形态下本层永不开枪，两层防线实际只有一层。
+      streamHeartbeatTimeoutMs: z.number().positive().optional(),
       maxTimeoutRetries: z.number().nonnegative().optional(),
       maxRetriesPerCall: z.number().nonnegative().optional(),
       retryBackoffBaseMs: z.number().nonnegative().optional(),

@@ -36,6 +36,8 @@ export interface NetworkTimeoutSettings {
   maxSessionDurationMs?: number;
   /** PR14：fallback attempt 级无进展上限（独立于 watchdog，见 ResolvedLoopTimeouts 同名字段） */
   fallbackStreamTimeoutMs?: number;
+  /** P3-5：`query/stream-processor.ts` 的心跳上限（独立于 watchdog，见同名字段注释） */
+  streamHeartbeatTimeoutMs?: number;
   maxTimeoutRetries?: number;
   maxRetriesPerCall?: number;
   retryBackoffBaseMs?: number;
@@ -51,6 +53,34 @@ export interface ResolvedLoopTimeouts {
   headerTimeoutMs: number;
   watchdogCheckIntervalMs: number;
   watchdogNoProgressMs: number;
+  /**
+   * P3-5（2026-09-23）：`query/stream-processor.ts` 首字节**之后**的静默上限，
+   * **与 watchdog 分开的独立一档**。
+   *
+   * ## 为什么必须拆（与 PR14 拆 fallback 那层同型，是漏掉的最后一对）
+   *
+   * 拆之前 `HEARTBEAT_TIMEOUT = netTimeouts.watchdogNoProgressMs`，两层同为 720s。
+   * 但**谓词并不相同**，所以这不是"同一条判据的两层复核"，而是伪阶梯：
+   *
+   *   · 本层（心跳）：任意 SSE 事件都刷新基准（`stream-processor.ts` 在 switch 之前
+   *     无条件 `lastActivityTime = Date.now()`）—— 含 ping / keep-alive / 空 delta。
+   *   · watchdog：只读快照里的 `lastContentProgressAt`，**只有业务内容**
+   *     （text_delta / tool_use / reasoning）才算进展，ping 不续命。
+   *
+   * 于是「只有 keep-alive、没有内容」这个最常见的网关缓冲形态里，心跳**永远不会**开枪
+   * （每个 ping 都把它续命），真正开枪的只会是 watchdog。同值让人误以为有两层防线，
+   * 实际上在该形态下只有一层 —— 而在「连 ping 都断了」的另一形态里两层同时到点，
+   * 先到的那层背全部锅，而"先到"只是几十毫秒的偶然（PR14 实测过一次 70ms 间隔的掩盖）。
+   *
+   * 取 600s：位置刻意在 provider 档② 480s 与 watchdog 720s 之间 —— 谓词更宽松的一层
+   * （ping 也算进展）不该比谓词更严的 watchdog 更晚开枪，否则它永远是死的。
+   * 与 `fallbackStreamTimeoutMs` 同值是可以的：那两层**谓词不同**（一个 attempt 级
+   * 内容进展、一个流级任意事件），且分属不同调用链，不构成同一条链上的伪阶梯。
+   *
+   * ⚠️ 不要回落 `watchdogNoProgressMs`：回落会让"用户只调了 watchdog"变成"两层一起动"，
+   * 同值的老形态就悄悄回来了，且没有任何报错（PR14 那条教训逐字适用）。
+   */
+  streamHeartbeatTimeoutMs: number;
   /**
    * PR14：`fallback.ts` attempt 级"无内容进展"上限，**与 watchdog 分开的独立一档**。
    *
@@ -128,6 +158,9 @@ export const DEFAULTS: Readonly<ResolvedLoopTimeouts> = {
   // 详见 ResolvedLoopTimeouts.fallbackStreamTimeoutMs 的注释。
   // 位置刻意在 ② 480s 与 watchdog 720s 之间：provider 内层先判、外层复核后判。
   fallbackStreamTimeoutMs: 600_000,
+  // P3-5：stream-processor 心跳上限，独立于 watchdog（此前二者同为 720s 但谓词不同，
+  // 详见 ResolvedLoopTimeouts.streamHeartbeatTimeoutMs 的注释）。
+  streamHeartbeatTimeoutMs: 600_000,
   watchdogCheckIntervalMs: 5_000,
   watchdogHeaderGraceMs: 15_000,
   maxTurnDurationMs: 90 * 60_000,
@@ -614,6 +647,11 @@ export function resolveLoopTimeouts(input: LoopTimeoutInputs): ResolvedLoopTimeo
       readEnvMs("SID_CODE_FALLBACK_STREAM_TIMEOUT_MS") ??
       n?.fallbackStreamTimeoutMs ??
       DEFAULTS.fallbackStreamTimeoutMs,
+    // P3-5：同理独立解析，**不回落 watchdogNoProgressMs**。
+    streamHeartbeatTimeoutMs:
+      readEnvMs("SID_CODE_STREAM_HEARTBEAT_TIMEOUT_MS") ??
+      n?.streamHeartbeatTimeoutMs ??
+      DEFAULTS.streamHeartbeatTimeoutMs,
     watchdogHeaderGraceMs:
       readEnvNonNegative("SID_CODE_WATCHDOG_HEADER_GRACE_MS") ??
       n?.watchdogHeaderGraceMs ??

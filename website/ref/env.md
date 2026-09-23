@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **119** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 165 个）交叉核对。
+> 共 **120** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 166 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -134,6 +134,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_CONTENT_PROGRESS_TIMEOUT_MS` | 档②事件级无进展：有字节但无有效内容（缺省 480000） |
 | `SID_CODE_FETCH_ABSOLUTE_TIMEOUT_MS` | fetch 绝对硬顶（缺省关闭；与档③谓词重合，不建议开） |
 | `SID_CODE_FALLBACK_STREAM_TIMEOUT_MS` | fallback attempt 级无进展上限（缺省 600000） |
+| `SID_CODE_STREAM_HEARTBEAT_TIMEOUT_MS` | 流心跳上限，首字节后任意事件续命（缺省 600000） |
 | `SID_CODE_WATCHDOG_NO_PROGRESS_MS` | loop 层无进展复核（缺省 720000） |
 | `SID_CODE_WATCHDOG_CHECK_INTERVAL_MS` | 看门狗检查间隔（缺省 5000） |
 | `SID_CODE_WATCHDOG_HEADER_GRACE_MS` | 首字节余量（缺省 15000） |

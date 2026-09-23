@@ -35,6 +35,20 @@ export interface GoalGateResult {
   feedback?: string;
   /** 评估结果 */
   evalResult?: GoalEvalResult;
+  /**
+   * P3-1（2026-09-23）：本次判定时 Goal token 预算已进入 **warning** 档。
+   *
+   * 供调用方在「即将 continue」时把 `ContinueReason` 记成 `goal_budget_warning`
+   * 而不是笼统的 `goal_gate_retry` —— 这个变体此前**全仓零 `setTransition`**，
+   * 于是「预算告警续跑」按 `LoopTransition.type` 统计恒为 0（告警文案照样进对话，
+   * 所以是可观测缺口，不是功能 bug）。
+   *
+   * ⚠️ 语义是「本轮处于告警档」，**不是**「本轮因告警而续跑」：续跑的决定由下方
+   * 评估阶段做。所以调用方只在 `shouldContinue === true` 时用它换 reason，
+   * 且**替换而非追加**一条事件 —— 一次 continue 必须只对应一条 transition，
+   * 追加会让「按 type 统计续跑次数」的分母凭空多一份（分母口径一变曲线整体平移）。
+   */
+  budgetWarning?: boolean;
 }
 
 export interface GoalGateContext {
@@ -135,6 +149,9 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   // tokensUsed 恒为 0，四处展示报错数，且中途 /goal budget 时上限从 0 重算而失真。
   // checkGoalBudget 两条分支都会累加，无预算时它必返回 "ok"，故下面两个分支自然不触发。
   const budgetStatus = checkGoalBudget(goal, turnUsage);
+  // P3-1：本次是否处于预算告警档。下方每个 `shouldContinue: true` 的 return 都要带上它，
+  // 否则调用方拿不到这个事实、`goal_budget_warning` 继续是死变体。
+  let budgetWarning = false;
   if (goal.tokenBudget) {
     if (budgetStatus === "exceeded") {
       goal.status = "budget_limited";
@@ -155,6 +172,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
       };
     }
     if (budgetStatus === "warning") {
+      budgetWarning = true;
       log.info(
         "GOAL_GATE",
         `预算预警: ratio=${Math.round((goal.tokensUsed / goal.tokenBudget) * 100)}%`,
@@ -191,7 +209,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     );
     emitTraceEvent("eval_skipped", true);
     return {
-      result: { shouldContinue: true, completed: false, impossible: false },
+      result: { shouldContinue: true, completed: false, impossible: false, budgetWarning },
       injectMessages,
       systemMessages,
     };
@@ -288,6 +306,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         impossible: false,
         feedback: impossibleReminder,
         evalResult,
+        budgetWarning,
       },
       injectMessages,
       systemMessages,
@@ -368,6 +387,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
         impossible: false,
         feedback: blockedReminder,
         evalResult,
+        budgetWarning,
       },
       injectMessages,
       systemMessages,
@@ -398,7 +418,14 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
   });
 
   return {
-    result: { shouldContinue: true, completed: false, impossible: false, feedback, evalResult },
+    result: {
+      shouldContinue: true,
+      completed: false,
+      impossible: false,
+      feedback,
+      evalResult,
+      budgetWarning,
+    },
     injectMessages,
     systemMessages,
   };
