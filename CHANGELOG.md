@@ -2,6 +2,331 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.605 (2026-09-23)
+
+### 新功能
+- **analytics** · 三类审计事件门面与埋点 (#89) `19f11536`
+  - **不改 `PolicyLoader.load()` 返回形状**——会翻整条 loader 测试链。信封记在模块级，`load()` 仍返回 `PolicySettings \| null`，生产走 `loadWithMeta()`。
+  - **不给事件加 `event_id`**——幂等在服务端内容指纹。
+  - **不改 `app.ts` 信号路径**——Ctrl+C 不 flush HTTP 缓冲是已知尾巴 T7。
+  - **不把 `limit.reason` 打进护栏事件**——管理员自由文本。
+  - **误报是三态不是 boolean**——客户端无法自动判定，用 boolean 会逼代码猜。
+  - **60s 匹配挂在 `logToolSuccess` 门面**——主循环 / 子代理 / forked 一处覆盖。
+  - [x] `bun run affected-tests:run` 全绿（0 fail）；全量 `bun test` 留给 CI
+  - [x] `make build` 成功
+- **analytics** · HTTP 事件出口接设备凭据，稳定不发一律 throw (#88) `58754b90`
+  - 有设备凭据 → Bearer <cred>（优先于 authHeader）
+  - 无凭据但配了 authHeader → 用 authHeader（企业自建 collector 不认本平台凭据，这条路必须留）
+  - 无凭据且无 authHeader → SkipRemoteExportError("no_auth")，不发、不写盘、不退避
+  - 明文非本地 endpoint → SkipRemoteExportError("plaintext_http")，events 是 POST， 明文会在 301 之前把 metadata body 发出去
+  - 401 → UnauthorizedExportError，不写盘、不退避（与 config/policy.ts:495 同源判断）
+  - 500 / 网络 → 写盘 + 退避，原行为不变
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+- **statusline** · 行1 新增 API 调用次数列 ⟳ N ✘M，并收口 requests 口径 (#87) `307dfb14`
+  - `12` = 本次会话累计 API 调用次数
+  - `✘3` = 其中作废（重试白烧）的次数，是**子集**语义，不是 12+3
+  - 白烧占比 >20% 转黄，≤20% 保持暗色（如实呈现但不喊）
+  - 零调用时整列不渲染，不显示 `⟳ 0`
+  - 窄终端下按 `dropOrder` 被丢弃（比 savings 先丢、比 scroll 后丢），不撑爆行
+  - `SessionState.absoluteTurnCount`：既**不持久化也不 hydrate**（全仓仅 4 处引用）， resume 后从 0 重数，而 token/cost 是回灌的 → 同一行「$0.43 全会话」+「3 轮 本进程」； 也**不被 `resetCounters()` 清零**，`/clear` 后邻居归零它继续数。
+  - `LoopState.turnCount`：每条用户消息归零，且只活在 core 内部，没有事件把它带出来。
+  - SDK 的 `num_turns`：压根不在 TUI 路径上（TUI 走 `query/engine.ts`）。
+- M3 客户端（sid-code）实现 RemotePolicyLoader (#81) `8e21c6cf`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **eval** · 考场收尾 E1 + A3 工程债 D2/D3 (#71) `4846ae86`
+  - **E1**：四份归档 `arms[].caveats` 手补「当时分母掺了」；另写 `results/sensitivity-exam-zeros-2026-09-20.json`。`w3-summary.py` 对已含该 caveat 的文件默认 rc=3 拒绝覆盖（`--force` 才放行）。scored 仍是 54，pass@1 仍是 46.3% / 50.0% / 51.9%。
+  - **D2**：`lib/cc-install-mirror.sh` + `cc-install-mirror-server.py` 托 Node 22.20.0 tarball + `@anthropic-ai/claude-code@2.1.252` 主包 + `linux-x64` / `linux-x64-musl` 平台包。packument 的 `dist.tarball` 当场改写。…
+  - **D3**：`runs/<job>.mem.log` 从 `>` 改 `>>`，行首打 `ROUND`；cc / sid 两条 runner 一起改，`w3-run.sh` 按轮次传 `SID_MEM_ROUND`。
+  - 修完 `llm_fatal` 再跑 `w3-summary.py` 会按新 `classify()` 把 scored 洗成 25/48，历史分母被覆盖。手补 caveat 是唯一不改成绩的披露。
+  - `--ve` 只进 verifier；agent 安装在 agent 容器。写成 `--ve` 宿主探针全绿、每题照样打 nodejs.org。
+  - 08a §3.7 第二条独立失败是 `npm added 1 package` 之后 `claude native binary not installed`。optional dep 失败 npm rc=0。只托主包 = 换了一种假绿。
+  - `python3 -m http.server` 与 uv 镜像同一条根因：`getfqdn("0.0.0.0")` 本机 128s。
+  - sid 臂同样 `> "$MEM_LOG"`；resume 对称性要求两边一起改。
+- **eval** · PR-D 归档 inspect + E1 gap 只披露 + E2 控制变量/指纹闸 (#67) `09d0f1a3`
+  - **PR-D**：`git mv evals/inspect → evals/_archive/inspect-spike`。顶层仍是 11（PR-C 已有 `_archive/`，本 PR −`inspect/`，净零）。四桶规则与去向表写入 `evals/README.md`。`_archive/` 分母 2：`judge-prompts/` + `inspect-spike/`。
+  - **PR-E1**：`w3-summary.py` 的 `denominators` 加 `declared_minus_landed`（只披露、不翻红）。悬空注释 `expected_task_count` 去掉该名字，保留「中途子集偏易 +16.2pp」。
+  - **PR-E2**：`check-controlled-vars.py` 先断言五键存在再跨臂相等（扫描面含 A3 `w3-cc-sonnet-54`）。`taskset_fp.py` 指纹改为 `题数:题名sha16:digest_sha16`，四条跑法脚本共用；W3-54 canonical 钉死 `54:b9c053ee6ba0daa0:44587da4ee10d51b`。
+  - 目录看起来乱，是因为否决实证还在顶层，不是该再删一遍。只归档 `inspect/`；`_diagnoses/` / `cross-provider/` 是活的，不进 `_archive/`。
+  - `declared=66 / scored=54` 的 12 **不是缺陷**：那 12 题从未落盘，判据主动移出分母。恒等式闸在 A2 上假红过，所以这一格不许翻红。
+  - 控制变量与题集版本字段一直在、真跑一遍三组跨臂已一致。缺的是回归保护：只比交集会绿着失效；只哈希题名看不见内容变。
+  - [x] `bun test ./tests/eval/` 全绿（0 fail）
+  - [x] `make build` 成功（末尾自检通过）
+- **identity** · M1 最小可用身份（deviceId + 四方落盘 + 凭据） (#65) `9498ce4d`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **eval** · 三层 provider 边界入 README，judge 按 agent-agnostic 拆 (#66) `e56e0c27`
+  - **PR-B**：三层 provider 边界写进 `evals/README.md` 与 `packages/eval-framework/README.md`；`adapters/codex.ts` 标预留对照位；`external-benchmarks/README.md` 补入库/不入库。⛔ 不含任何 `_meta/` 动作。
+  - **PR-C**：搬 3 个文件进 `packages/eval-framework/judge/`（`prompt-v2.md` / `calibration-types.ts` / `calibrate-pairwise.test.ts`，内容 sha256 不变）；`prompt-v3.md` 留 `evals/_judge/`；`prompt-v0/v1` 进 `evals/_archi…
+  - [x] 带了覆盖本次改动的测试（promptPath 门禁含反向自证；affected-tests 映射覆盖 judge/）
+  - [ ] 全量 `bun test`（留给 CI）
+  - [ ] `make build`（留给 CI）
+  - [x] `bun run lint` 通过
+  - [x] `bun run format:check` 通过
+  - [x] `bun run lint:boundary` 通过
+- **eval** · 证据层 per-job 归档上 HF，差集闸守清单 (#60) `e5b2f19a`
+  - [x] 选测 `./tests/eval/` 全绿（`package.json` 让 affected-tests 判 full，改动只在 eval 脚本；全量交给 CI）
+  - [x] `make build` 成功
+  - [x] `bun run lint` 通过
+  - [x] `bun run format:check` 通过
+  - [x] `bun run lint:boundary` 通过
+
+### 修复
+- **loop** · Agentic Loop 六条 P3——死接线 / 口径漂移 / 可观测配对 (#86) `8aa61678`
+  - 《20260920-AgenticLoop主循环审查-对照博客核出的缺陷》的**最后一组**（P0 → #69/#73，P1 → #79，P2
+  - → #84，本 PR 收尾 P3-1…P3-6）。
+  - 这一组的共同形态是**不会让任何测试变红**：死变体、零调用的类、写反的注释、同值的两层阈值、`index: -1`
+  - 的事件。它们都不影响当前功能，只能靠人去读才能发现——所以每一条都配了反漂移锁，而不是只改代码。
+  - ## 六条分别修了什么
+  - | # | 缺陷 | 取的修法 |
+  - |---|---|---|
+  - | P3-1 | `ContinueReason.goal_budget_warning` 全仓零
+- **context** · 上下文工程 P2/P3 八条——约束常驻、空转可观测、紧急截断补恢复 (#85) `328acc92`
+  - P2-16 notebook_edit 收进 NON_DISCARDABLE_TOOLS：与 edit/write 同语义（有副作用、 输出不可靠重跑复现），此前两个名单都不在，落「未知工具」分支永不被压缩。
+  - P2-17 新增 generateCriticalRemindersAttachment，成为 PRIORITY.CRITICAL_REMINDER 的第一个生产者。runPostCompact 取被压缩段里的 correction 类决策点，经回调常驻 system prompt。与 deny 规则同渠道，不受消息压缩影响——此前约束走消息流， 下一次 strip 就剥掉（只活一代），deci…
+  - P2-18 formatCompactSummary 第 4 步不再复活第 2 步已判丢弃的草稿。模型只吐 `<analysis>foo`（未闭合、无 summary）时草稿正文此前会成为最终摘要注入上下文。 配套 doAutoCompact 判据从「原始响应非空」改为「剥离后正文非空」。
+  - P2-19 applyToolChoice 在 none 下发不了时改为撤掉 tools。GLM（auto-only）与 DeepSeek 思考模式（reject-when-thinking）下「不下发」等价服务端默认 auto， 对 none 是把约束反转了。撤掉工具定义让约束由结构保证，不靠服务端默认值。
+  - P2-20 新增 query/unchanged-observation.ts：同指纹同返回值连续达阈值时 warn + 落 UnchangedObservationRun。阈值与离线 digest 同源（定义在轻模块、digest 导入）。 只报不拦——工具循环检测默认全关有实测背书的否决，先采数再谈干预。
+  - P2-21 runPostCompact 重注入前后各测一次 token，落 PostCompactReattach （clawedBackRatio / willRetriggerNextTurn，判据取 getCompactionLevel 单一事实源）。 auto / manual / reactive / collapse 四条路径都接 sink。
+  - P2-22 新增 buildEmergencyFilePathReattach：emergency/blocking 截断后只注入最近 文件路径清单、不读盘不带正文，经 QueryDeps.emergencyFileReattach 接两处截断点。 不复用 50K 正文重注入——截断是有损的，塞回去下一轮必然再截断。
+  - P3-23 cache-ttl-latch 头部补「生产零调用」小节 + 正反两查门禁。不删代码。
+- **loop** · Agentic Loop 八条 P2——闸门漏杀 / 计数器只增不清 / 协议死路径 (#84) `163e4dee`
+  - **P2-1 形态 A 此前对 Anthropic 整条死掉**：`rawOutputTokensZero` 只有 `openai.ts` 发，`stream-processor` 初值恒 `false`。Anthropic 侧口径取**累积** `cumulativeOutput === 0` 而非本帧增量——增量为 0 只说明"这一帧没新增"，而下游是"任一帧报 true 即置位"。
+  - **P2-3 的副作用比取舍本身更伤**：「耗尽后放行」是刻意取舍，但旧实现在 `>= 3` 时**根本不 `fireStopEvent`**，于是同一条用户消息里失败 3 次之后，**后面真正修完的那一轮也不再验证**——用户配的 lint/test 从第 4 轮起彻底静音，而那恰是最该验证的一轮。
+  - **P2-6 counter 名不副实**：只补失败不清成功，"连续失败"被实现成"累计失败"，用户看到的 "连续 N 次自动压缩都未能减少历史" 里可能有一次其实成功了。
+  - **P2-8 是 opt-in 路径的正确性洞**（默认 `SID_ENABLE_STREAMING_TOOL_EXEC` 未开）：抢跑只挑并发安全工具，但**并发安全 ≠ 无副作用**，开了就是同一工具真的跑两遍、PreToolUse 也 fire 两遍。
+  - **P2-5 不真做 server-tool 续接**：需要 `anthropic.ts` 先保留 `server_tool_use` 块（现被当未知块丢成空 text）+ loop 侧回传，两者缺一不可。本仓 `web_search` 是本地工具，这条分支目前是死路径；未实现前如实收尾比假装推进正确。
+  - **P2-7 不改成 fall-through 走闸门链**：走到那里的事实是「模型连续 3 次吐不出工具参数」，而每道门都靠注入提示再续一轮起作用——对已退化的模型续命只会把同一个退化再跑一遍（CC 死亡螺旋那条教训）。故选硬停、改注释对齐实现。
+  - **AfterAgent 不升级成可 block**：`hook/types.ts` 写明不可 block，那是产品取舍。本条只修清历史的**时机**。
+  - `agentic-loop-p2-unanswered-detector.test.ts`（P2-1，9 例，含「检测器认的 stopReason 集合 = `isEndTurnLikeStopReason` 的集合」反漂移锁）
+- **policy** · 触发率 --limit 切 A 与 B 同一时间窗 (#83) `6ce8e2f8`
+  - [x] 带了覆盖本次改动的测试（旧+新 timestamp 夹逼 `--limit`；无会话不得退回全文件；探针不刷 A）
+  - [ ] 用 `sc-dev` 实际跑过（本 PR 只改离线脚本，用 `bun scripts/policy-trigger-rate.ts` 验）
+- **policy** · 停用后不再续命进程内 deny (#82) `a1908afa`
+  - [x] `bun run affected-tests:run` 全绿（0 fail）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun test` 全量（CI 合并前跑）
+  - [x] `bun run lint:boundary` 通过
+  - [x] 非平凡改动已带 Agent Note
+- **context** · 管线尺子同源、压缩收尾绑到压动事件上 (#80) `30cd6280`
+  - **决策函数和执行函数必须共用一份计算。** hard 档用校准估算进场，管线用 `chars/4` 判「够了吗」——中文密集会话上能差出数倍。
+  - **「成功」必须由实测前后差值定义，收尾必须绑在那个事件上。** 收尾绑在 `autoCompact` 这个函数上，另外两条真的压了上下文的路径（PTL 恢复 / collapse）完全不参与。PTL 恰恰是「窗口已经爆了」的恢复路径，压完模型最需要最近文件，偏偏这条路不重注入。
+- **permission** · 接上 flagSettings 权限规则，沙箱自动放行不再打穿模式硬约束 (#79) `72379fb0`
+  - **默认值翻转**：`defaultSandboxConfig().autoAllowBashIfSandboxed` `true` → `false`。原设计「开了沙箱就别弹窗」的前提是 Seatbelt 兜得住，而 profile 里 `(allow file-write* (subpath "<cwd>"))` 放开了整个工作区 —— 写 `.git/hooks/` 在 OS 层完全合法。…
+  - **自动放行不得越过模式硬约束**（新发现）。文档只记了「跳过确认」，实测发现它把 `plan` 与 `deny-write` 这两个**代码级只读**模式也打穿了：`plan` + `rm -rf src` 修前 `allowed=true dr=other 沙箱保护下自动放行`，无沙箱时是 `allowed=false dr=mode`。这比少弹一次窗严重得多 —— 用户切到 plan 就是…
+  - **回退通道**：新增 `config.sandboxAutoAllowBash`，`cli.ts` 构造 `SandboxConfig` 时接上。不接这一条，翻转后的默认值就成了写死的行为，`SandboxConfig` 里那个字段变成生产不可达的死旋钮（`cli.ts` 此前只覆盖 `enabled`）—— 那等于用一个死缺陷换另一个。
+  - `bun test ./packages/core/tests/permission/` → **534 pass / 0 fail**
+  - `bun run affected-tests:run`（判定 selective，5 目标）→ **4022 pass / 0 fail**
+  - `make build` → 通过，且 grep 确认**无 `will always be undefined` 警告**
+  - `bun run lint` / `format:check` / `lint:boundary` → 全绿（越界依赖 0 处）
+  - `bun run docs:gen-reference` → 已重跑，`sandboxAutoAllowBash` 进 `website/ref/settings.md`
+- **agent** · D6 判定入口、D8 子代理延迟加载、D10 权限留漏斗 2 (#78) `f383f9f9`
+  - **D6** `judgeConcurrencySafe` 提到 `tool-orchestration.ts` 当唯一入口。分区、流式执行器、`app.ts` 抢跑、子代理 fail-closed 都调它。判定抛错返回 `false`。
+  - **D8** 子代理延迟加载的门闩是「隔离 registry 里真有 `tool_search`」——有才发 `activeDefinitions()`，没有就发全量。过滤层放行调度器；隔离池换绑本池实例，activate 不写父会话。延迟名单只进发送副本。
+  - **D10** 删掉死枚举 `permission_denied`。权限拒绝只走漏斗 2。进程内 / spawn 子代理补漏斗 1（含 `hook_blocked`）。forked-agent 漏斗 1 不在本次。
+  - D8 不无条件对齐 `activeDefinitions()`：没有 `tool_search` 时发延迟名单，模型盲调会撞「schema 未发送」。
+  - D8 不复用父级 `ToolSearchTool`：activate 写父 registry，子代理下一轮仍看不到被调出的工具。
+  - D10 不把权限拒绝塞进 `tool_failure`：漏斗 2 已经记清「拦了多少」，混进漏斗 1 正是博客 §14 要禁止的两种相反语义。
+  - [x] `bun test` 全绿（0 fail）——全量 1 fail 已举证为 MCP 超时 flake，见上
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+- **agent** · 堵住 Stop 假停、耗尽打穿、截断漏工具、假压缩、漏发 TurnComplete (#77) `cd202466`
+  - **P1-1 forceStop 真停**：`handleStopHooks` 把 `continue===false` 提到 `decision:block` 之前；`queryLoop` 对 `forceStop` `yield done; return`。Stop Hook 明确说停，后面的 Todo / Goal / `+k` 不再续命。
+  - **P1-2 Stop 走 OR**：`HookAggregator` 与 AfterAgent 同语义（任一 block 即拦）；`handleStopHooks` 按 `allOutputs` 收集全部 block 原因。lint 失败 + test 通过不再被 last-wins 放行。
+  - **P1-3 unanswered 耗尽直接收尾**：不再 fall-through 到 Goal / Token Budget。Goal 激活时连续空手最多 `MAX_UNANSWERED_RETRIES + 1` 轮。
+  - **P1-4 `max_tokens`/`length` 带完整 tool_use**：并入现有 F2 执行分支；截断续写只留给纯文本。`content_filter` 仍不进 F2。
+  - **P1-5 autoCompact 看 success**：四处 `compactWithSummary` 都读 `.success`。切点无效不得 `recordSuccess` / 不得报 `summarized`；空摘要与切点失败不再双计 `recordFailure`；压不动时跳过 post-compact 重注入。
+  - **P1-6 最后一轮仍发 TurnComplete**：`willRunForcedSummary` 加上 `!exitedViaReturn`。每个 `yield done; return` 出口置位，finally 不再误以为还要跑强制总结而漏发锚点。
+  - Stop Hook `continue:false` 修前只打日志；`decision:block` 还抢在 forceStop 前面，永远走自动修复。
+  - 多枚 Stop Hook last-wins：Ralph 验证器里 lint 失败会被后一个 test 通过覆盖。
+- **permission** · 堵住敏感读旁路、记忆串味、acceptEdits rm、hooks 重定向 (#76) `ea597bc8`
+  - **P1-1 敏感读旁路**：bash 危险正则从「`cat` + 特定文件名」改成「读类命令 × 敏感路径」。`grep` / `read_many` 的 `path` 指向凭证文件时走同一道 PathValidator；全树搜索由工具层 `isPathHidden ∪ isSensitivePath` 过滤。`Read(.env)` 规则同时挡住 grep / read_many。CLI、子…
+  - **P1-2 会话记忆串味**：写工具（write/edit/notebook_edit）与空资源禁止写入 sessionMemory。web_fetch 用完整 URL；grep 必须同时有 path 和 pattern。空钥匙会把 hooks / 外域 URL 一并放行。
+  - **P1-3 acceptEdits 的 rm**：`rm`/`rmdir`/`mv` 从自动放行白名单拿掉，并加第二道闸防名单回潮。`mkdir`/`touch`/`cp`/`sed` 保留。路径比较走 `resolveRealPath`，避免 macOS `/var` → `/private/var` 把 cwd 内 mkdir 误判为区外。
+  - **P1-4 hooks 重定向**：safetyCheck 名单抽成 `safety-protected-paths.ts` 单一事实源，bash 重定向检测复用它。`echo x > .git/hooks/pre-commit` 在 always-allow 下需确认，且带 `dangerousCommand`，否则 yesMode/auto 会当普通 ask 放行。
+  - `read .env` 硬 deny，但 `grep path=.env` / `head ~/.ssh/id_rsa` / `cat .env` 修前全部放行。
+  - 会话记忆 key = `toolName + (file_path||command||pattern)`。批准过一次 notebook / 无 path 的 grep / 无 url 的 web_fetch，同工具名下所有调用共用一把空钥匙，整段阶段一都不跑。
+  - 旧 P1-3 把 `rm` 补进 acceptEdits 白名单之后，`rm -rf .` 的 `.` resolve 后就是 cwd，自动放行。文档 §1.1 举的事故例子恰好是 cwd 是家目录时删干净。
+  - safetyCheck 拦 `write .git/hooks`，bash `echo x > .git/hooks/pre-commit` 走另一份重定向名单，漏了 hooks。Seatbelt 允许写整个 cwd，权限层放行 = 文件真的被写。
+- **mcp** · 工具名截 64、CJK 输出按 token 截、接通 isEnabled (#75) `43074a83`
+  - **D4**：`buildMcpToolName` 对最终全名按两段分预算，匹配 API `^[a-zA-Z0-9_-]{1,64}$`，且 `parseMcpToolName` 仍能拆出两段。斜杠命令改调同一函数。
+  - **D5**：MCP 输出快路径按非 ASCII 0.65 tok/char；超限按 token 预算切前缀，不再按「字符数 × 0.5」放行中文。
+  - **D7**：`isEnabled` 接到真正发 schema 的入口（`definitions` / `activeDefinitions` / `definitionsForTools` / `enabled()`）。系统提示词与 SDK `listTools` 改走 `enabled()`。`--dump-tools` 开 `includeDisabled`，避免 CI 零 LSP 时参考…
+  - D4 旧实现只在每一段上截 64，拼完最长 135。超了要么 400，要么被服务端截断后与 registry 对不上——工具看得见、调用失败。只 `slice(0, 64)` 会切掉第二个 `__`，parse 拆不出 tool 段，否决。
+  - D5 旧快路径按英文启发式放行 5 万汉字（≈32501 token，已超默认 25000）。仓规中文一等公民，这是按英文设计的启发式在中文场景失效。
+  - D7 文档建议只在 `assembleToolPool` 过滤。**生产路径 `definitions()` 无 options 时走 `all()`**，那一层过滤是又一根死接线。过滤必须接在真正发 schema 的入口。`get()` / `all()` 仍保留全量，执行器按名查找不 404。
+  - [x] `bun test` 全绿（0 fail）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+- **agent** · 子代理工具大输出走 processToolResult 落盘 (#74) `fb65340f`
+  - [x] `bun test` 全绿（0 fail）——全量 12193 里唯一红的是本 PR 草稿 Note 第三段空，补证据后 `agent-note-gate` 30 pass；选测 2023 pass
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+  - [x] `bun run lint` 通过（oxlint）
+  - [x] `bun run format:check` 通过
+  - [x] `bun run lint:boundary` 通过
+  - [x] 带了覆盖本次改动的测试（bash 超阈值落盘 + read Infinity + 短输出原样）
+  - [ ] 用 `sc-dev` 实际跑过（本改动是执行器落盘，单测已驱动真实 `executeTools` + 写盘断言）
+  - [x] **只改了与本次任务相关的文件**
+- **agent** · 堵住压缩清近端、子代理乱序、协议孤儿三条 P0 (#73) `b916cee2`
+  - **P0-1**：`query/loop.ts` blocking / hard 压缩不再在「边界 push 到数组末尾」之后调 `releaseBeforeBoundary`。与 emergency 档同一套 truncate，近端 tool_result 留给模型。
+  - **P0-2**：子代理 `executeTools` 丢掉两桶分类，改走主循环 `partitionToolCalls` + `getMaxToolConcurrency()`。`Read(a) Edit(c) Read(d)` 保持三批顺序；判定抛错 fail-closed 当 unsafe。
+  - **P0-3 余项**：子循环发送前 `finalizeMessagesForSend`；循环恢复与主循环共用 `buildPendingToolResults`（先补占位再注入 prompt）。`isEndTurnLikeStopReason` 抽到 `message-invariants.ts`。
+  - 压缩把近端清成 `[已释放]` 桩：长会话一压就失忆，TUI 还把桩藏掉。
+  - 子代理两桶分类把后面的 Read 提前到 Edit 之前：explore/verify 读到过期文件会交假结论。#69 明确「不改执行器」，这条只能另开。
+  - 主循环 2026-08-04 事故的翻版还在子循环：loop_recovery 只注入 prompt、发送前裸发 `getCleanedMessages()` → 下一轮 OpenAI/Anthropic 400。
+  - [x] `bun test` 选测全绿（0 fail；全量由 CI 在合并前跑）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+- **context** · 接通上下文工程五条 P0 接线 (#72) `b11c62ef`
+  - **P0-1** CLAUDE.md / deny 规则 / Skill 摘要 / git 快照漏标 `cacheStability`，默认进动态区。四个 generator 包 `stableAttachment()`。
+  - **P0-2** 工具结果聚合预算只在 hard 档回头收敛。`addMessage`（含同角色合并）在入队时调 `applyToolResultBudgetToContent`；read/edit/write/read_many 豁免。
+  - **P0-3** `getCleanedMessages` 的 KEEP_RECENT 窗口前移会改写已发送前缀。`sentIntactToolResultIds` 冻结已完整发给 API 的大输出；已经换成占位的 id 后续轮次继续贴同一份占位。
+  - **P0-4** `NON_DISCARDABLE_TOOLS` 里 `memory`/`askuser` 与真实工具名永不相等。改成 `savememory`/`askuserquestion`，门禁用真实 `tool.name()`。
+  - **P0-5** `isCompactSourceMessage` / `TokenFreedTracker` 生产零调用。接到 `getCompactionLevel` / `findCompressSplitPoint` / snip；Manager 实例化 tracker，首次改写大输出时记账。
+  - P0-1 覆盖几乎所有配了 CLAUDE.md 的生产会话，cache 命中率被系统性拉低。
+  - P0-3 是长会话 cache 命中率的慢性杀手：上一轮完整发出的 tool_result，本轮被窗口前移改成占位。
+  - P0-4 / P0-5 是死接线：测试绿、主循环零命中。
+- **permission** · 堵住 auto/notebook/只读早退三条 P0 绕过路径 (#70) `a30c7e8c`
+  - **P0-1 auto 护栏**：`isSafetyConfirmation` / `classifierMayApprove` 收成共享函数。yesMode、hook allow、auto 三处共用。auto 分类器在 `dangerousCommand` 与 `classifierApprovable:false` 的 safetyCheck（hooks / commands / setti…
+  - **P0-2 notebook_edit 漏网**：`FILE_TOOLS` / `WRITE_TOOLS` / `FILE_PATH_TOOLS` 加上 `notebook_edit`。路径抽取兼容 `notebook_path`。`Edit(...)` 规则覆盖 notebook_edit。always-allow 写 `.git/hooks/*.ipynb` 走 safetyCheck。
+  - **P0-3 bash 只读早退**：从 `READ_ONLY_COMMANDS` 拿掉解释器与构建器（python/node/make/gcc/java…）。版本查询仍走 `--version` 快路径。Step 5.5 的 `allow` 不再跳过 plan / deny-write。
+  - Shift+Tab 能进 auto；分类器 `safe:true` 就能放行写 `.git/hooks`、`cat ~/.ssh/id_rsa`、`sudo ls`。yesMode 守住了同一道确认，auto 没守。
+  - `notebook_edit` 整文件原子写盘，路径字段是 `notebook_path`。always-allow 写 hooks 的 `.ipynb` 直接放行，而同路径的 `write`/`edit` 会 ask。
+  - `python3 foo.py` / `make` 被当成只读，Step 5.5 `allow` 直接 return，plan / deny-write 永远走不到。生产路径会把真实 tool 传入 `check()`，不传 tool 的单测测不到。
+  - 不把 yesMode 的 if 再复制一行到 auto——文档横向观察就是「复制粘贴契约会漏抄」。
+  - 不对全部 safetyCheck 一律禁 auto——会废掉 `classifierApprovable:true`。
+- **agent** · 子代理 F1 连坐空参数、F2 兜底 end_turn 残留工具 (#69) `d3db3b33`
+  - **D3 / F2**：`end_turn` / `stop` / `stop_sequence` 且 content **无** tool_use 才收工；有（非空）tool_use 则 fall-through 执行，不再「成功返回但丢工具」。
+  - **D2 / F1**：不论 `stop_reason`，命中空参数即调 `replaceEmptyParamToolUses` 连坐 + `buildEmptyParamRetryMessage`，上限 `MAX_EMPTY_PARAM_RETRIES`。助手消息以 sanitized 入历史，同轮健康 tool_use 不再变孤儿 400。
+  - 低占用下 F1 重试跳过 `reactiveCompact`（与主循环 P0-2 同口径）。
+  - 只给退化块补 `tool_result`：健康块进历史却永不执行 → 下一轮 OpenAI 族 400。
+  - 只修 D2 不修 D3：更常见的 `end_turn` 残留 tool_use 仍然直接 success。
+  - 不在子代理再发明一张 stop_reason 表：调用主循环纯函数，避免再漂。
+  - [x] `bun test` 选测全绿（0 fail；全量由 CI 在合并前跑）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+- **trace** · hook events.jsonl 顶层落盘身份字段 (#68) `1f843dc1`
+  - [x] `bun test` 选测全绿（本次 diff 范围；全量由 CI 跑）
+  - [x] `make build` 成功
+  - [x] `bun run lint` 通过
+  - [x] `bun run format:check` 通过
+  - [x] `bun run lint:boundary` 通过
+  - [x] 带了覆盖本次改动的测试（读磁盘行，故意不写身份字段时必须红）
+  - [x] 用 worktree 二进制实际跑过（**不是线上 `sid-code`**；也不是软链主仓 `node_modules` 编出来的假产物）
+  - [x] 只改了与本次任务相关的文件
+- **ci** · 钉 bun 1.4.2，消掉本地 1.3 与 CI latest 的仪器分叉 (#64) `3ede9923`
+  - 单文件 / 显式文件列表绿
+  - CI bun **1.4.2** 绿
+  - [x] `bun test` 全绿（0 fail）
+  - [x] `make build` 成功（末尾 `--self-check` 通过）
+  - [x] `bun run lint` 通过（oxlint）
+  - [x] `bun run format:check` 通过
+  - [x] `bun run lint:boundary` 通过
+  - [x] 带了覆盖本次改动的测试（`bun-version-pin` 含 YAML 解析 + 空集自证；`bun-test-spawn-stdio` 含丢掉 stdout 必须红）
+- **harness** · done≠success（C2）+ 网关 401 占位句不得一次 Terminal（C1） (#63) `aa722bf5`
+  - 新增 19 条门禁，全绿
+  - 4 次变异自证均如期变红，其中两次精确定位到「loop 侧标记」与「流内 error 路径」
+  - 变异自证逼出一个真问题：REAL_AUTH_FAILURE_MESSAGES 原本是死代码 （正向白名单要求 invalid token，而 invalid x-api-key 永不含它）， 补复合措辞用例后该表才真的被执行
+  - affected-tests:run 2538 pass / 0 fail；make build 自检 4 项过；lint + boundary 0
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+- **eval** · llm_fatal 自备片段表，正分与满轮 502 不删 (#62) `cb3e608c`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **eval** · cc 臂默认 resume，对照门禁不再把超时未落盘当成权限档不同源 (#58) `dc7cbcac`
+  - **`run-claude-code-contrast.sh` 默认不再 `rm -rf "runs/$JOB"`。** harbor 对同名 job 是 resume。旧行在每一轮（含 `w3-run.sh` classify 后再跑、含额度中断后续跑）把已计分题连同分母清掉。只有显式 `SID_CC_WIPE=1` 才整目录清空。
+  - **`check-comparison-parity.py`：cc 无 `type=result` 事件（超时/被杀，`cc_denials=None` 但 token 非 0）改为 skip**，不算「权限档不同源」。「分数不可互比」现在非 0 退出（rc=1 档位不同源 / rc=2 零样本对照）。以前只打印 ⛔、exit 0。
+  - [x] 只改了与本次任务相关的文件（对话记录 txt 未入库）
+  - [x] 没跑 `make build-bump` 或 `./scripts/release.sh`
+  - [x] 没新增类型错误
+  - [x] 没提交密钥、内网地址、本机绝对路径
+  - [x] 带了覆盖本次改动的测试（含变异自证）
+  - [ ] 全量 `bun test`（本地选测 + harbor 门禁；CI 合并前跑全量）
+
+### 文档
+- **changelog** · 起草 v0.1.605 用户视角更新日志 `8f8da946`
+  - 覆盖 v0.1.604 以来的权限旁路、长会话压缩、状态栏调用次数与远程策略等用户可见变更；评测/CI/内部埋点记入 discarded。
+- GitHub 默认 README 改回中文 (#59) `f61256ab`
+  - 删掉英文副本：英文读者仍需要那段 language note（注释和文档是中文）。
+  - 继续用 `README.zh-CN.md` 当中文：GitHub 不认这个文件名做仓库页。
+  - [x] 选测全绿（本次 diff 只动 README / 官网注释，`affected-tests` 判定为 `tests/website/`）
+  - [x] `make build` 成功（末尾自检通过）
+  - [ ] 全量 `bun test` 交给 CI（docs 改动，本地用选测；CI `test` job 仍跑全量）
+  - [x] 带了 Agent Note：`.agents/notes/implemented/process/2026-09-20-github默认readme改回中文.md`
+- **evals** · 修正 _legacy 与 _meta/_private 死引用 (#57) `da1cbd1a`
+  - `rubric-template.ts`：保留「promptfoo 时代有个旧拷贝」这个事实，标明物理文件已删、历史见 git；不再写「已冻结，禁止修改」
+  - `baseline-sync.ts`：保留「holdout 跑分不得写入公开 yaml」这条约束，标明 `_meta/_private` 从未存在、`evals/_meta/` 已随 PR3a 删除
+  - `evals/README.md:322` / `:329` **未改**（清单 5.1 登记的假阳性：它们在解释历史，不是死引用）
+
+### 其他
+- **evals** · 下线空跑的 real-tasks 污染扫描（B6-10） (#56) `318360d5`
+  - `git rm` `scripts/eval/check-real-tasks-pollution.ts` + `tests/eval/check-real-tasks-pollution.test.ts`
+  - 拆掉 `scripts/git-hooks/pre-commit.sh` 的 `STAGED_REAL_TASKS` 段
+  - 安装器摘要去掉 B6-10；`security-scan.ts` 注释改指新仓 gate12
+  - 仓：<链接已省略>
+  - 提交：`933e9db`（`scripts/check-contamination.py` + CI **gate12**）
+  - 5 个字段与 B6-10 逐字一致；空集 exit 2，不许当通过
+  - 改指 `evals/internal/` —— 没有这个目录
+  - 改指 agent-traj-bench 入库路径 —— sid-code 的 pre-commit 管不到另一个仓
+- **evals** · 删除 real-tasks 组 58 文件，四组旧题集全部下线 (#55) `007bd481`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **evals** · 删除 capability 组 70 文件与十类连带，停掉过程合规评测线 (#53) `077a757f`
+  - capability/{context,harness,memory,plan,router}/ case yaml 54 条
+  - 同目录 5 个 README + 5 个 .gitkeep
+  - bench-runner/capability-{grader,shared}.ts 2 个
+  - _reports/capability-plan-w11{,-after,-baseline} + -w12-d3-preview.md 4 份
+  - scripts/eval/run-{plan,memory,context,router,harness}-capability.ts 5 个
+  - tests/eval/capability-{grader,shared}.test.ts 2 个
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+- **evals** · 删除 architecture 组 131 文件，扫描面收到 real-tasks (#52) `2de51e14`
+  - `git ls-files evals`：**398 → 267**（−131）
+  - `_diagnoses/meta_001-2026-04-30.yaml` 的 `case_path` 换成 bundle 指向，推理链保留（3b.4）
+  - `SCHEMA.md` 字段示例改指仍存在的 `evals/_judge/gold-cases/case_001.yaml`
+  - `holdout-sids.txt` 一字节未动；`gold-cases` 仍 10
+- **evals** · 删除 general 与 holdout 题面，下线 smoke/pass-at-k/泄露链 (#51) `6f83e3b2`
+  - 删：`evals/general/`、holdout 题面 yaml、`_meta/{smoke-cases,critical-cases,holdout-leak-audit,pass-at-k.test.ts}`、`verify-judge-stability.ts`、`migrate-cost-formula.ts`、`run-smoke.ts`、`pass-at-k.ts`、`check…
+  - runner / yaml-loader / list / baseline / tally 扫描面改为 `architecture/` + `real-tasks/`
+  - [x] 改动面测试绿（上表 114 pass）
+  - [x] `make build` 成功（末尾自检通过）
+  - [x] `bun run lint:boundary` 通过（越界 0）
+  - [x] Agent Note 形态校验通过
+  - [ ] `bun test` 全绿（0 fail）—— 改动面绿；全量那批失败与本次无关，交给 CI
+  - [ ] 用 `sc-dev` 实际跑过（本 PR 删的是冻结题集与空门禁，不是交互路径）
+- **release** · bump v0.1.604 (#48) `f349abd2`
+  - ## 改了什么
+  - 发布 v0.1.604：bump 版本号、changelog、北极星快照。制品已上传到 beta 通道，tag `v0.1.604` 打在
+  - bump 提交上。
+  - ## 为什么这么改
+  - main 受 ruleset 保护，bump 提交必须走 PR。合并必须用 merge 不能 squash，否则 tag 会指向游离提交。
+  - ## 怎么验证的
+  - ```text
+  - ./scripts/release.sh --upload --skip-test
+
 ## v0.1.604 (2026-09-18)
 
 ### 新功能
