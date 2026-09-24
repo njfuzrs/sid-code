@@ -463,6 +463,13 @@ export class QueryEngine {
         if (event.kind === "max_turns") {
           this.deps.traceCollector?.recordMaxTurns?.();
         }
+        // 预算硬停：与 max_turns 同一理由埋在这里——collector 只订 hook，
+        // 从 hook 里看不出「预算停了」和「用户中断」的区别，唯一能区分的是
+        // loop 在 done 上显式声明的 budgetExceeded。不在 done 的 return 之前
+        // 上报，信号就到不了 SessionEnd。
+        if (event.kind === "done" && event.budgetExceeded) {
+          this.deps.traceCollector?.recordBudgetExceeded?.(event.budgetExceeded.source);
+        }
         yield event;
         if (event.kind === "done") {
           return;

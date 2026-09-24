@@ -236,6 +236,14 @@ export class TraceCollector {
    * （SessionStart 重建 collector 状态时会连它一起重置，见那里。）
    */
   private hitMaxTurns = false;
+  /**
+   * 本会话是否因预算硬停而结束（本地规则 / 本地配额 / 远程预算 block）。
+   * 由 {@link recordBudgetExceeded} 置位。与 hitMaxTurns 同型：收尾时用来
+   * 把 exit_status 落成 `budget_exceeded`，而不是掉进 `user_interrupt`。
+   * 单向置位；source 只记录是哪一层停的，推断本身不读它。
+   */
+  private hitBudgetExceeded = false;
+  private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
   /** 心跳定时器：每 10 秒写 heartbeat.txt */
@@ -722,8 +730,10 @@ export class TraceCollector {
     // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
     this.prefixTracker.reset();
     this.currentPair = null;
-    // 撞顶标志随会话重置：上个会话撞过顶，不能让这个会话的 exit_status 也落 max_turns。
+    // 撞顶 / 预算硬停标志随会话重置：上个会话的收尾事实不能漏到这个会话。
     this.hitMaxTurns = false;
+    this.hitBudgetExceeded = false;
+    this.budgetExceededSource = undefined;
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
@@ -1854,13 +1864,29 @@ export class TraceCollector {
     // 不是"`stop_reason !== end_turn` 就当撞顶"那类粗糙代理 ——
     // 后者正是这个 bug 的成因，换一个同样粗糙的代理只是把错误挪个位置。
     // 这与「归因与真实信号脱节」那条反模式同型（判据优先级：结构化信号 > 数字边界 > 裸子串）。
+    //
+    // `budget_exceeded` 是同一条反模式的第三条实例（M5 验收 F1，2026-09-24）：
+    // 本地预算 / 配额 / 远程预算 block 都是 yield warning + done + return，
+    // 收尾 reason 落 `exit`，末轮 stop_reason 不是 `end_turn`（远程 block 实测是
+    // `error`，因为停在工具结果之后、下一次请求之前），于是掉进下面的兜底桶，
+    // 记成 `user_interrupt`。判据同样必须是 loop 在 done 上声明的 budgetExceeded
+    // （engine.ts 经 recordBudgetExceeded 上报），不能从 stop_reason 反推。
+    //
+    // 两个标志同时成立时 max_turns 优先：撞顶是更具体的控制流事实，且它本来
+    // 就算 abnormal；预算硬停不算（见 digest.ts）。先判预算会把一次撞顶改写成
+    // 一次预期收尾，abnormal 总数会静默变少。
     const lastPair = this.pairs[this.pairs.length - 1];
     if (input.reason === "exit" || input.reason === "other") {
       this.metadata.exit_status = this.hitMaxTurns
         ? "max_turns"
-        : lastPair?.stop_reason === "end_turn"
-          ? "end_turn"
-          : "user_interrupt";
+        : this.hitBudgetExceeded
+          ? "budget_exceeded"
+          : lastPair?.stop_reason === "end_turn"
+            ? "end_turn"
+            : "user_interrupt";
+      if (this.hitBudgetExceeded && this.budgetExceededSource) {
+        this.metadata.budget_exceeded_source = this.budgetExceededSource;
+      }
     } else {
       this.metadata.exit_status = input.reason;
     }
@@ -2805,6 +2831,26 @@ export class TraceCollector {
    */
   recordMaxTurns(): void {
     this.hitMaxTurns = true;
+  }
+
+  /**
+   * 记录「本轮因预算硬停而结束」。由 `engine.ts` 在收到带 `budgetExceeded`
+   * 的 `done` 事件时调用。
+   *
+   * 与 {@link recordMaxTurns} 同一条理由：预算硬停是 queryLoop 的控制流事实，
+   * 不在任何 hook 事件里。collector 只订 hook，从 SessionEnd 的 `reason=exit`
+   * 加末轮 stop_reason 推不出来「是预算停的」——M5 验收把远程 block 记成了
+   * `user_interrupt`，就是这么来的。
+   *
+   * source 落进 metadata 只为分清是哪一层停的（本地规则 / 配额 / 远程），
+   * exit_status 本身不带它：三条路径的处置是同一个（调预算），不值得拆成
+   * 三个退出状态。
+   *
+   * 不检查 `initialized`，理由同 recordMaxTurns：置一个布尔位不写文件。
+   */
+  recordBudgetExceeded(source: "budget_rule" | "quota" | "remote"): void {
+    this.hitBudgetExceeded = true;
+    this.budgetExceededSource = source;
   }
 
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───

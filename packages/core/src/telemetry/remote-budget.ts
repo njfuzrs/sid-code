@@ -422,6 +422,24 @@ export function checkLoadedRemoteBudget(
   });
 }
 
+/**
+ * 金额展示。分位以上保持两位；不足半分的非零金额改四位。
+ *
+ * `toFixed(2)` 对 `$0.001` 这种验收用的限额会写成 `$0.00`（M5 验收 F3 看到的
+ * `$0.0055 / $0.00`）。半分是两位小数的四舍五入边界：`0.005.toFixed(2)` 是
+ * `0.01`，再小就掉成 `0.00`。
+ *
+ * 不在这里修 float32：`0.01` 存成 float4 再读回是 `0.009999999776482582`，
+ * `toFixed(2)` 会把它四舍五入回 `0.01`，不是 `$0.00` 的成因。列类型是服务端
+ * 的事，客户端改展示解决不了它，也不该假装解决了。
+ */
+export function formatBudgetUsd(amount: number, floorDigits: number): string {
+  if (!Number.isFinite(amount)) return (0).toFixed(floorDigits);
+  const abs = Math.abs(amount);
+  if (abs !== 0 && abs < 0.005) return amount.toFixed(4);
+  return amount.toFixed(floorDigits);
+}
+
 export function formatRemoteBudgetWarning(
   check: Extract<RemoteBudgetCheck, { kind: "ok" }>,
 ): string {
@@ -431,7 +449,7 @@ export function formatRemoteBudgetWarning(
   const period = check.budget.period_key || check.budget.period;
   const verb =
     check.enforcement === "block" ? "已超限，自动停止" : "已超限（告警放行，不结束会话）";
-  return `远程预算 ${scope} ${period} ${verb}（$${check.estimated.toFixed(4)} / $${check.limit.toFixed(2)}，含辅助调用）`;
+  return `远程预算 ${scope} ${period} ${verb}（$${formatBudgetUsd(check.estimated, 4)} / $${formatBudgetUsd(check.limit, 2)}，含辅助调用）`;
 }
 
 /** 仅测试 */

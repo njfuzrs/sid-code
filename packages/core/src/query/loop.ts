@@ -18,7 +18,11 @@ import type { HookSystem } from "../hook/system.ts";
 import type { QuotaManager } from "../llm/quota.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
-import { checkLoadedRemoteBudget, formatRemoteBudgetWarning } from "../telemetry/remote-budget.ts";
+import {
+  checkLoadedRemoteBudget,
+  formatBudgetUsd,
+  formatRemoteBudgetWarning,
+} from "../telemetry/remote-budget.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
@@ -3155,13 +3159,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "system",
               level: "warning",
               terminal: true,
-              text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}），自动停止`,
+              text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}），自动停止`,
             };
             yield {
               kind: "done",
               turns: state.turnCount,
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              // F1：硬停必须显式声明，否则收尾落 user_interrupt（见 types.ts）。
+              budgetExceeded: { source: "budget_rule" },
             };
             exitedViaReturn = true;
             return;
@@ -3170,7 +3176,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             yield {
               kind: "system",
               level: "warning",
-              text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${budgetAlert.currentUSD.toFixed(4)} / $${budgetAlert.limitUSD.toFixed(2)}）`,
+              text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}）`,
             };
           }
         }
@@ -3188,6 +3194,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turns: state.turnCount,
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              // F1：与本地预算硬停同一条归因通道（见 types.ts budgetExceeded）。
+              budgetExceeded: { source: "quota" },
             };
             exitedViaReturn = true;
             return;
@@ -3213,6 +3221,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "done",
               turns: state.turnCount,
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              // F1：远程 block 与本地硬停同一条归因通道（见 types.ts budgetExceeded）。
+              budgetExceeded: { source: "remote" },
             };
             exitedViaReturn = true;
             return;
