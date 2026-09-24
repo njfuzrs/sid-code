@@ -385,9 +385,23 @@ export function matchErrorLexicon(msg: string): LexiconCode | undefined {
   }
 
   // ── 16. 网络 ──
+  //
+  // ⚠️ 这里**没有**裸 `network`。它在面板侧是安全的（只决定显示哪句文案），
+  // 但同一份词表现在也驱动 `classifyError`，而那决定要不要重试：
+  // 裸 `network` 会命中 `network down`、`network partition` 这类**描述故障的散文**，
+  // 把一条确定性失败拖进重试。compact 路径 `maxRetries: 2`、基数 1s：
+  // 第 0、1 次各睡约 1s、2s，第 2 次才放弃（不再睡），单条失败路径约 3s。
+  // bun 单测默认超时 5s，`compact-analytics.test.ts` 里把五条路径串在同一个用例里
+  // 的那条（两条失败路径叠加）因此在 5000ms 被掐断；超时后的事件泄漏进下一个用例，
+  // 让它从「期望 1 收到 1」变成「期望 1 收到 2」。
+  //
+  // 真正的网络故障不靠这个词兜：结构化的走 `getNetworkErrorCode`（ECONNRESET /
+  // ENOTFOUND / EPIPE 等 `.code`），无结构字段的文案走 `classifyError` 末尾的
+  // `RETRYABLE_CONNECTION_MESSAGES`（里面已有 `network error`、`failed to fetch`）。
+  // 所以这里只留**不可能出现在散文里的具体故障短语**。
   if (
     anyOf(lower, [
-      phrase({ word: "network" }),
+      phrase({ word: "network error" }),
       phrase({ word: "econnrefused" }),
       phrase({ word: "enotfound" }),
       phrase({ word: "fetch failed" }),

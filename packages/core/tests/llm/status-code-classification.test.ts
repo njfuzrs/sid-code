@@ -462,4 +462,22 @@ describe("词表不再分叉：classifyError 与 inferErrorCode 对同一批报�
       RetryableError,
     );
   });
+
+  test("裸 network 不把散文故障拖进重试（network down 必须无法分类）", () => {
+    // 2026-09-24 CI 回归：词表把面板侧的裸 `network` 子串原样搬进重试分类器，
+    // `new Error("network down")` 从「无法分类 → 不重试」变成 RetryableError("network_error")。
+    // compact 路径因此对一条确定性失败退避重试（maxRetries 2、基数 1s，约 3s），
+    // compact-analytics.test.ts 把五条路径串在同一用例里的那条在 bun 默认 5s 超时处被掐断，
+    // 超时后的事件泄漏又让下一个用例「期望 1 收到 2」。
+    // 真网络故障不靠这个词：`.code` 走 getNetworkErrorCode，文案走 RETRYABLE_CONNECTION_MESSAGES。
+    for (const prose of ["network down", "network partition between replicas"]) {
+      expect(inferErrorCode(prose)).toBeUndefined();
+      const classified = classifyError(new Error(prose));
+      expect(classified).not.toBeInstanceOf(RetryableError);
+      expect(classified).not.toBeInstanceOf(TerminalError);
+    }
+    // 收窄不得误伤真故障：这两条仍然要重试
+    expect(inferErrorCode("Network error: ENOTFOUND api.example.com")).toBe("network_error");
+    expect(classifyError(new Error("network error"))).toBeInstanceOf(RetryableError);
+  });
 });
