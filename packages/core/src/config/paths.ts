@@ -240,6 +240,11 @@ export const sidPaths = {
    */
   failedUsageLedger: () => sidHomePath("failed-usage-ledger.jsonl"),
   /**
+   * M5：远程预算磁盘缓存（对标 policy-cache.json）。权限 0o600。
+   * 自举：远程 body 不得改 SID_CODE_BUDGET_ENDPOINT。
+   */
+  budgetCache: () => sidHomePath("budget-cache.json"),
+  /**
    * P0-2：会话指标索引（每会话一行摘要，**不受 trajectories LRU 影响**）。
    *
    * ⚠ 路径刻意与 `trajectories/` **同级而非在其下**：轨迹目录受 LRU=100 管辖，

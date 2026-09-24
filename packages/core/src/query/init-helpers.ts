@@ -175,6 +175,14 @@ export async function initTelemetrySystem(
     } catch (err: any) {
       log.debug("TELEMETRY", `账本远程恢复跳过: ${err?.message}`);
     }
+
+    // M5：远程预算启动拉一次。未配 SID_CODE_BUDGET_ENDPOINT 时零操作。
+    try {
+      const { loadEnterpriseBudgetOnce } = await import("../telemetry/remote-budget.ts");
+      await loadEnterpriseBudgetOnce();
+    } catch (err: any) {
+      log.debug("TELEMETRY", `远程预算加载跳过: ${err?.message}`);
+    }
   } catch (err: any) {
     log.warn("TELEMETRY", `遥测初始化失败: ${err.message}`);
   }

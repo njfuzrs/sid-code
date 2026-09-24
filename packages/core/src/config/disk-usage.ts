@@ -99,6 +99,7 @@ const RETENTION: Record<string, { text: string; days: number | null }> = {
     text: "账本远程失败盘：按 sessionId 覆盖，刻意不 24h 过期（丢一行云端永久 $0）",
     days: null,
   },
+  "budget-cache.json": { text: "远程预算缓存（对标 policy-cache；权限 0o600）", days: null },
   "cache-breaks.jsonl": { text: "按大小轮转，保留 1 代", days: null },
 };
 

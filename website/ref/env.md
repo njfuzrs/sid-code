@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **121** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 168 个）交叉核对。
+> 共 **122** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 169 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -61,6 +61,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_IDENTITY_TEAM_ID` | 团队标识（如 infra-platform） |
 | `SID_CODE_POLICY_ENDPOINT` | 远程企业策略 URL（只读环境变量；未设则不拉取，fail-open） |
 | `SID_CODE_USAGE_ENDPOINT` | 用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl） |
+| `SID_CODE_BUDGET_ENDPOINT` | 远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open） |
 
 ## 功能开关
 

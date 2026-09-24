@@ -55,6 +55,7 @@ managed-settings.json
 device-id
 device-credential.json
 policy-cache.json
+budget-cache.json
 failed-usage-ledger.jsonl
 usage-ledger.jsonl
 

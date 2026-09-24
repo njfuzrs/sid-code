@@ -1184,6 +1184,13 @@ export async function main(): Promise<void> {
       const policyManager = new PolicyManager();
       const { settings: policy, meta } = await policyManager.loadWithMeta();
       applyLoadedPolicy(policy, meta);
+      try {
+        const { loadEnterpriseBudgetOnce } =
+          await import("@sid-code/core/telemetry/remote-budget.ts");
+        await loadEnterpriseBudgetOnce();
+      } catch (e) {
+        getLogger().debug("BUDGET", `远程预算启动加载跳过: ${e}`);
+      }
       if (policy) {
         const { isBypassDisabledByPolicy, isModeDisabledByPolicy } =
           await import("@sid-code/core/permission/mode-policy.ts");
