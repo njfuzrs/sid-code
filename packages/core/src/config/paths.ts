@@ -235,6 +235,11 @@ export const sidPaths = {
   /** 用量账本（缓存命中长期统计底座，append-only，默认开、不轮转） */
   usageLedger: () => sidHomePath("usage-ledger.jsonl"),
   /**
+   * M5：账本远程 upsert 失败盘。按 sessionId 覆盖一行，不是 append。
+   * 刻意不 24h 过期（events 的 failed_events 会）：账本丢一行 = 该会话云端永久 $0。
+   */
+  failedUsageLedger: () => sidHomePath("failed-usage-ledger.jsonl"),
+  /**
    * P0-2：会话指标索引（每会话一行摘要，**不受 trajectories LRU 影响**）。
    *
    * ⚠ 路径刻意与 `trajectories/` **同级而非在其下**：轨迹目录受 LRU=100 管辖，

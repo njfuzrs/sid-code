@@ -95,6 +95,10 @@ const RETENTION: Record<string, { text: string; days: number | null }> = {
     days: null,
   },
   "usage-ledger.jsonl": { text: "刻意不轮转（成本/缓存命中率事实源）", days: null },
+  "failed-usage-ledger.jsonl": {
+    text: "账本远程失败盘：按 sessionId 覆盖，刻意不 24h 过期（丢一行云端永久 $0）",
+    days: null,
+  },
   "cache-breaks.jsonl": { text: "按大小轮转，保留 1 代", days: null },
 };
 

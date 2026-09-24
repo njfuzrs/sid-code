@@ -165,6 +165,16 @@ export async function initTelemetrySystem(
     // 零依赖事件 API:绑定 Sink + 注册后端(spec 17 §3.1 / §3.2)
     // 即使 telemetry.exporters 为空也绑定,使 logEvent 队列得以排空(进入 no-op 后端)。
     await initAnalyticsSink(config, sessionState.sessionId);
+
+    // M5：账本失败盘跨会话重放。未配 SID_CODE_USAGE_ENDPOINT 时零操作。
+    // 与 events recoverFromDisk 同款 fire-and-forget，不挡启动。
+    try {
+      const { startUsageLedgerRemoteRecovery } =
+        await import("../telemetry/usage-ledger-remote.ts");
+      startUsageLedgerRemoteRecovery();
+    } catch (err: any) {
+      log.debug("TELEMETRY", `账本远程恢复跳过: ${err?.message}`);
+    }
   } catch (err: any) {
     log.warn("TELEMETRY", `遥测初始化失败: ${err.message}`);
   }
