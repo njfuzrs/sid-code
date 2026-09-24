@@ -1031,6 +1031,69 @@ describe("TraceCollector", () => {
     });
   });
 
+  /**
+   * 预算硬停 → `exit_status = "budget_exceeded"`，**不再落 `user_interrupt`**。
+   *
+   * M5 验收 F1（2026-09-24）：远程预算 block 一次请求都停在工具结果之后，
+   * 收尾 reason=exit、末轮 stop_reason=error，被兜底记成 user_interrupt，
+   * 而没有任何人按 Ctrl-C。本地 BudgetTracker / QuotaManager 是同一形态。
+   *
+   * 与上面 max_turns 那组同构，包括反向自证：不上报时必须仍是 user_interrupt，
+   * 否则一条「无条件返回 budget_exceeded」的实现也能绿。
+   */
+  describe("exit_status = budget_exceeded（预算硬停不再误记成 user_interrupt）", () => {
+    test("上报了预算硬停 → exit_status 落 budget_exceeded（哪怕末轮 stop_reason 是 error）", async () => {
+      await fireSessionStart(hookSystem);
+      // 生产形态（会话 cd672461）：停在工具结果之后、下一次请求之前，stop_reason 是 error
+      await fireModelRound(hookSystem, { stopReason: "error" });
+      collector.recordBudgetExceeded("remote");
+      await hookSystem.fireSessionEndEvent("exit");
+
+      const meta = collector.getMetadata()!;
+      expect(meta.exit_status).toBe("budget_exceeded");
+      expect(meta.budget_exceeded_source).toBe("remote");
+    });
+
+    test("反向自证：没上报时，同样的输入仍落 user_interrupt", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "error" });
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("user_interrupt");
+    });
+
+    test("abort 优先：真被中断时不因超过预算就记成 budget_exceeded", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "error" });
+      collector.recordBudgetExceeded("quota");
+      await hookSystem.fireSessionEndEvent("abort");
+
+      expect(collector.getMetadata()!.exit_status).toBe("abort");
+    });
+
+    test("两个标志同时成立时 max_turns 优先（不让 abnormal 总数变少）", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordMaxTurns();
+      collector.recordBudgetExceeded("budget_rule");
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("max_turns");
+    });
+
+    test("budget_exceeded 连同来源落进 session.traj", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "error" });
+      collector.recordBudgetExceeded("remote");
+      await hookSystem.fireSessionEndEvent("exit");
+
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+      expect(traj.metadata.exit_status).toBe("budget_exceeded");
+      expect(traj.metadata.budget_exceeded_source).toBe("remote");
+    });
+  });
+
   // ─── D3-1 / D3-3：退出落 messages.json + 异常归因 ───
 
   test("D3-1：SessionEnd 落 messages.json，含完整消息历史", async () => {

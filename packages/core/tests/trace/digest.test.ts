@@ -136,6 +136,32 @@ describe("buildDigest 异常检测", () => {
     expect(d.toolSequence[0].tool).toBe("read");
   });
 
+  it("budget_exceeded 单独计一条、不算 abnormal、不报「会话被中断」", () => {
+    // M5 验收 F1：预算硬停是预期行为。放进 abnormal 会让异常清单把一次正常的
+    // 预算停统计成故障，处置方向又错了（去查中断源）。
+    writeSession(
+      "budget01",
+      normalSession({ exit_status: "budget_exceeded", budget_exceeded_source: "remote" }),
+    );
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.exitStatus).toBe("budget_exceeded");
+    expect(d.abnormal).toBe(false);
+    const fact = d.anomalies.find((a) => a.kind === "exit_status_budget_exceeded");
+    expect(fact?.layer).toBe("L0");
+    expect(fact?.severity).toBe("low");
+    expect(fact?.detail).toContain("remote");
+    // 反向：不许把它说成用户中断。
+    expect(d.anomalies.some((a) => a.kind.includes("user_interrupt"))).toBe(false);
+    expect(fact?.detail).not.toContain("中断源");
+  });
+
+  it("没有来源字段时 budget_exceeded 仍然单独计（旧轨迹不该因此消失）", () => {
+    writeSession("budget02", normalSession({ exit_status: "budget_exceeded" }));
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.abnormal).toBe(false);
+    expect(d.anomalies.some((a) => a.kind === "exit_status_budget_exceeded")).toBe(true);
+  });
+
   it("error 退出 → L0 事实 + L1 假设(带证伪条件)", () => {
     writeSession("err00001", normalSession({ exit_status: "error" }));
     const all = listSessions(paths);

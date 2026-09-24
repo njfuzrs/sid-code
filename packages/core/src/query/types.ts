@@ -152,6 +152,23 @@ export type QueryLoopYield =
        * `break-filter-js-from-html` stolen=3 却真正写完脚本，reward=1.0。
        */
       incompleteReason?: DoneIncompleteReason;
+      /**
+       * M5 验收 F1：这次 done 是**预算硬停**，不是模型说完了，也不是用户按了 Ctrl-C。
+       *
+       * 三条路径都会带它（本地 BudgetTracker block / QuotaManager exceeded /
+       * 远程预算 enforcement=block）。它们都是 `yield system warning` + `yield done`
+       * + return，收尾 reason 落 `exit`，末轮 `stop_reason` 又不是 `end_turn`——
+       * collector 的兜底桶会把它记成 `user_interrupt`，**而没有任何人中断过**。
+       * 与 `max_turns` 同型，所以判据同样必须是这条显式声明，不能从 stop_reason 反推。
+       *
+       * 不复用 `incompleteReason`：那个闭集的消费方是 SDK，统一映射成
+       * `error_during_execution`。预算硬停有自己的处置（调预算，不是查中断源），
+       * 混进同一个闭集会让两条归因重新粘在一起。
+       */
+      budgetExceeded?: {
+        /** 哪一层停的。collector 不读它，只留给轨迹里能分清本地/远程。 */
+        source: "budget_rule" | "quota" | "remote";
+      };
     };
 
 /** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */

@@ -1144,8 +1144,37 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // `max_turns` 在名单里：它**以前就被算作 abnormal**（那时它被误记成 `user_interrupt`），
   // 所以留在名单里是让 abnormal 总数保持不变、只修正原因 —— 这次改的是归因，不是判据松紧。
   // 而它确实不是干净收尾：预算耗尽 = 任务没做完。
+  //
+  // `budget_exceeded` **不在**名单里，而且是刻意的：远程/本地预算硬停是配置生效的
+  // 预期行为，不是会话异常。放进去会让「更准」口径的异常清单把一次正常的预算停
+  // 统计成故障，处置方向又错了（M5 验收 F1）。它单独计一条，回答「有多少会话是被
+  // 预算停的」，不回答「有多少会话出了错」。
   const exitStatus = meta.exit_status || traj.info?.exit_status || "unknown";
   const abnormal = ["error", "abort", "user_interrupt", "max_turns"].includes(exitStatus);
+  if (exitStatus === "budget_exceeded") {
+    // 单独计、不算 abnormal（见上面名单处的注释）。severity=low：它是事实记录，
+    // 不是要排查的故障。source 带上是为了分清本地规则 / 配额 / 远程，没有就只报状态。
+    const source =
+      typeof meta.budget_exceeded_source === "string" ? meta.budget_exceeded_source : "";
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "exit_status_budget_exceeded",
+      detail:
+        `exit_status = "budget_exceeded"（预算硬停，预期行为，非用户中断` +
+        (source ? `，来源 ${source}` : "") +
+        `）`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "session.traj"),
+          lineRef: meta.exit_status ? "metadata.exit_status" : "info.exit_status",
+          rawValue: source ? `budget_exceeded:${source}` : "budget_exceeded",
+          mtime: fileMtimeIso(ref.trajPath),
+        },
+      ],
+      pointer: `预算配置（本地 costLimit / budgetRules，或远程 GET /ctl/budget）`,
+    });
+  }
   if (exitStatus === "max_turns") {
     // L0：字面值是客观事实，带出处。
     // 与 user_interrupt 分开成两条的意义在**处置不同**：撞顶要调预算 / 查它为什么绕圈，
@@ -2449,6 +2478,8 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
     const exit = read.corrupt ? "corrupt" : meta.exit_status || traj?.info?.exit_status || "?";
     // 名单与上面 buildDigest 的 abnormal 判据同源（含 max_turns，见那里的注释）。
     // 两处必须一致：会话列表标红、详情页不标，用户会以为自己挑错了会话。
+    // budget_exceeded 不在名单里，理由同 buildDigest：预算硬停是预期行为，标红
+    // 会把人引去查中断源。
     const abnormal =
       read.corrupt || ["error", "abort", "user_interrupt", "max_turns"].includes(exit);
     const when = new Date(ref.mtimeMs).toISOString().slice(5, 16).replace("T", " ");

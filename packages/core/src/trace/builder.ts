@@ -269,6 +269,11 @@ export interface TraceMetadata {
   side_tokens_sent: number;
   side_tokens_received: number;
   exit_status?: string;
+  /**
+   * M5 验收 F1：exit_status 为 budget_exceeded 时，是哪一层停的。
+   * collector 在 recordBudgetExceeded 时写入，builder 原样落进 session.traj。
+   */
+  budget_exceeded_source?: "budget_rule" | "quota" | "remote";
   start_source?: string;
   end_source?: string;
   /**
@@ -459,6 +464,12 @@ export interface TrajectoryMetaOutput {
   side_tokens_sent?: number;
   side_tokens_received?: number;
   exit_status: string;
+  /**
+   * M5 验收 F1：`exit_status === "budget_exceeded"` 时是哪一层停的
+   * （`budget_rule` 本地规则 / `quota` 本地配额 / `remote` 远程预算）。
+   * 其他退出状态不写这个字段。
+   */
+  budget_exceeded_source?: "budget_rule" | "quota" | "remote";
   tools_used: string[];
   files_edited: string[];
   working_directory: string;
@@ -997,6 +1008,10 @@ export function buildTrajectory(
       ? { session_cache_hit_rate: metadata.session_cache_hit_rate }
       : {}),
     exit_status: exitStatus,
+    // F1：只在真是预算硬停时写来源。无条件写会让每份轨迹多一个 undefined 键。
+    ...(metadata.budget_exceeded_source
+      ? { budget_exceeded_source: metadata.budget_exceeded_source }
+      : {}),
     tools_used: Array.from(metadata.tools_used),
     files_edited: Array.from(metadata.files_edited),
     working_directory: metadata.working_directory,
