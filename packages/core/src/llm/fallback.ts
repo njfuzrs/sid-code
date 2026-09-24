@@ -88,7 +88,16 @@ export type QuerySource =
  *
  *  B2：全部 agent 源纳入前台（对照 CC `FOREGROUND_529_RETRY_SOURCES`）。
  *  子代理失败会直接让父代理的任务失败，属于用户等待链路，不是可丢弃的后台调用——
- *  事故 20260730-183103 里两个子代理失败即导致整轮审计残缺，正是把它们当"可丢"的代价。 */
+ *  事故 20260730-183103 里两个子代理失败即导致整轮审计残缺，正是把它们当"可丢"的代价。
+ *
+ *  `memory_recall` 也在这里（2026-09-24）：`recall.ts` 自己传了 `maxRetries: 2`、
+ *  `retryBackoffBaseMs: 1000` 和 15 秒 `deadlineAt`，作者明确给了它两次重试的预算。
+ *  而 529 分支在这些预算生效之前就 return，于是 429 能重试、503/529 一次都不试。
+ *  召回失败不报错（recall.ts 有 catch），用户只是这次会话没有记忆——静默降级比
+ *  报错更难发现。15 秒 deadline 会截断退避，不会出现「后台打满 10 次」。
+ *
+ *  `summary` / `title` / `classifier` **不在**这里，而且全仓没有任何调用方在传它们。
+ *  不要顺手加进来：那三个是真后台，问题是「没人用」，不是「策略错了」。 */
 export const FOREGROUND_SOURCES = new Set<QuerySource>([
   "main_thread",
   "agent",
@@ -100,6 +109,7 @@ export const FOREGROUND_SOURCES = new Set<QuerySource>([
   "compact",
   "goal_eval",
   "hook_agent",
+  "memory_recall",
 ]);
 
 /** 后台查询遇到 529 时是否仍重试 */

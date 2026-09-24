@@ -628,6 +628,37 @@ describe("ModelFallback 增强", () => {
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
   });
 
+  test("memory_recall 遇连续 503 会重试，而不是一次就放弃", async () => {
+    // recall.ts 传了 maxRetries:2 和 15 秒 deadline，但 memory_recall 此前不在
+    // FOREGROUND_SOURCES 里，529 分支在这些预算生效之前就 return。
+    // 召回失败不报错，用户只是这次会话没有记忆。
+    let callCount = 0;
+    const provider: Provider = {
+      name: () => "mock",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        callCount++;
+        yield { type: "error", error: { message: "503 Service Unavailable", statusCode: 503 } };
+      },
+    };
+
+    let dropped = false;
+    const fallback = new ModelFallback(
+      { retryBackoffBaseMs: 1, retryBackoffMaxMs: 5, maxRetries: 2 },
+      { on529Dropped: () => (dropped = true) },
+    );
+
+    await collectEvents(
+      fallback.executeWithFallback(provider, defaultParams, undefined, {
+        querySource: "memory_recall",
+        switchMode: "auto",
+      }),
+    );
+
+    // 1 次首发 + 2 次重试。连续 3 次才换模型，而这里没有备用模型，所以走满预算。
+    expect(callCount).toBe(3);
+    expect(dropped).toBe(false);
+  });
+
   test("后台 529 立即放弃（不重试）", async () => {
     let callCount = 0;
     const provider: Provider = {
@@ -778,6 +809,7 @@ describe("ModelFallback 增强", () => {
     expect(shouldRetry529("summary")).toBe(false);
     expect(shouldRetry529("title")).toBe(false);
     expect(shouldRetry529("classifier")).toBe(false);
+    expect(shouldRetry529("memory_recall")).toBe(true);
     expect(shouldRetry529(undefined)).toBe(true);
   });
 
@@ -786,6 +818,7 @@ describe("ModelFallback 增强", () => {
     expect(FOREGROUND_SOURCES.has("main_thread")).toBe(true);
     expect(FOREGROUND_SOURCES.has("agent")).toBe(true);
     expect(FOREGROUND_SOURCES.has("compact")).toBe(true);
+    expect(FOREGROUND_SOURCES.has("memory_recall")).toBe(true);
     expect(FOREGROUND_SOURCES.has("summary")).toBe(false);
   });
 

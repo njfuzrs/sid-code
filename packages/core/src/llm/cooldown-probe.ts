@@ -122,10 +122,12 @@ export function shouldUseTransientCooldownProbeSlot(cause: CooldownCause | undef
  *
  * 判据只有一句：**这次失败，回答了"限流窗口过了没有"这个问题吗？**
  *
- * - **没回答 → 还回去（返回 true）**：401 认证失败、模型不存在、参数非法、
- *   内容策略拒绝、服务端明确要求别重试、工具调用格式错——这些都是"敲错门"，
- *   与配额窗口毫不相干。让它吃掉窗口里唯一的探针机会，等于一次无关故障
- *   把 S2 的出口锁死一整个窗口。
+ * - **没回答 → 还回去（返回 true）**：401 认证失败、403 无权限、模型不存在、
+ *   参数非法、内容策略拒绝、用量到顶、服务端明确要求别重试、工具调用格式错——
+ *   这些都是"敲错门"，与**这一次**限流窗口毫不相干。让它吃掉窗口里唯一的探针机会，
+ *   等于一次无关故障把 S2 的出口锁死一整个窗口。
+ *   `usage_limit_reached` 也在这里：它是会话 / 周窗口用尽，要等重置或换模型，
+ *   不是这条冷却记录在问的那个短期限流窗口。
  * - **回答了 → 配额留在消耗态（返回 false）**：又撞一次 `rate_limit`、
  *   `quota_exhausted`（配额真的耗尽了）、流是空的——这些确实是"还没恢复"的证据，
  *   继续探只会重复烧请求。让其余路径老老实实等完冷却才是对的。
@@ -140,6 +142,7 @@ export function shouldPreserveTransientCooldownProbeSlot(reason: ProbeFailureRea
     reason === "model_not_found" ||
     reason === "invalid_request" ||
     reason === "content_policy" ||
+    reason === "usage_limit_reached" ||
     reason === "server_declined_retry" ||
     reason === "malformed_tool_call"
   );

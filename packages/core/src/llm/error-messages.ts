@@ -1,4 +1,4 @@
-import { hasBoundaryDigits } from "./errors.ts";
+import { matchErrorLexicon } from "./error-lexicon.ts";
 
 /**
  * 错误码 → 用户友好文案映射表。
@@ -239,222 +239,19 @@ export function codeFromStructured(statusCode?: number, errorType?: string): str
  * 策略：按关键词逐条匹配，返回第一个命中的 code。
  * 找不到时返回 undefined（调用方可 fallback 到通用错误）。
  */
+/**
+ * 从错误消息文本推断 errorCode。
+ *
+ * 实现就是 `error-lexicon.ts` 那一份共享词表 —— `classifyError` 用的是同一个
+ * 函数。此前这里自带一份关键词，两份已经分叉过：面板认得「负载已饱和」，
+ * 重试分类器不认，同一条报文一边显示通用「运行错误」、一边零重试终止整轮。
+ *
+ * 顺序、词边界、数字边界的三条铁律都写在词表文件头，改文案去那里改，
+ * 不要在这里再加一个 `if (lower.includes(...))`。
+ */
 export function inferErrorCode(message: string): string | undefined {
   if (!message) return undefined;
-  const lower = message.toLowerCase();
-
-  // 优先级从高到低（越具体越靠前）
-
-  // 用量上限（2026-09-06）：**必须排在 rate_limit 之前**。
-  // "You've hit your session limit" 里含 "limit"，若先落到 rate_limit 分支，
-  // 它就会被 isTransientErrorCode 判成瞬态 → 请求一恢复就自动清掉卡片；
-  // 而用量到顶需要用户等重置或换模型，属于必须留在界面上的终态错误。
-  // 顺序在这里是**语义正确性**问题，不是风格问题。
-  // 反例先挡（2026-09-06）：官方文案
-  // `Server is temporarily limiting requests (not your usage limit)` 里含 "usage limit"
-  // 这个子串，但页面明确写着它**与计划配额无关**，是短期限流且会自动退避重试。
-  // 若被下面的 usage_limit_reached 吃掉，就会当成终态错误——卡片永久挂着不自动消失，
-  // 而实际请求早已恢复。这正是本仓库修过一次的「限流卡片不消失」同形缺陷。
-  // 判据取"整句否定语"，比调分支顺序更稳（顺序对时它仍含那个子串）。
-  if (lower.includes("temporarily limiting") || lower.includes("not your usage limit")) {
-    return "rate_limit";
-  }
-
-  if (
-    lower.includes("hit your session limit") ||
-    lower.includes("hit your weekly limit") ||
-    lower.includes("hit your opus limit") ||
-    lower.includes("usage limit") ||
-    lower.includes("usage credits required") ||
-    lower.includes("用量上限") ||
-    lower.includes("额度已用尽")
-  ) {
-    return "usage_limit_reached";
-  }
-
-  // 上下文溢出：也要排在 invalid_request（含裸 400 判定）之前 —— 上游常以 400 回它，
-  // 归成"请求参数错误"会把用户引到检查 maxTokens/temperature，而正解是 /compact。
-  if (
-    lower.includes("prompt is too long") ||
-    lower.includes("conversation too long") ||
-    lower.includes("request too large") ||
-    lower.includes("context window") ||
-    lower.includes("context_length_exceeded") ||
-    lower.includes("maximum context length") ||
-    lower.includes("too many tokens") ||
-    (lower.includes("上下文") && lower.includes("超出"))
-  ) {
-    return "context_overflow";
-  }
-
-  if (
-    lower.includes("unauthorized") ||
-    lower.includes("invalid api key") ||
-    lower.includes("api key") ||
-    // cc 官方错误参考页的认证族措辞（2026-09-06）：下一步动作都是「去修凭据」，
-    // 故一律归 auth_failed，不为每种措辞立新码。
-    lower.includes("not logged in") ||
-    lower.includes("login expired") ||
-    lower.includes("could not resolve authentication") ||
-    lower.includes("failed to authenticate") ||
-    lower.includes("authentication failed") ||
-    lower.includes("oauth token") ||
-    lower.includes("apikeyhelper") ||
-    lower.includes("organization has been disabled") ||
-    lower.includes("organization has disabled") ||
-    lower.includes("credentials expired") ||
-    lower.includes("scope requirement")
-  ) {
-    return "auth_failed";
-  }
-  if (
-    lower.includes("model_not_found") ||
-    lower.includes("model not found") ||
-    lower.includes("does not exist") ||
-    // 官方页模型族措辞（2026-09-06）：下一步动作都是「改 model 配置」→ 同一个码。
-    lower.includes("not a recognized model id") ||
-    lower.includes("issue with the selected model") ||
-    lower.includes("is not available with the claude") ||
-    lower.includes("restricted by your organization")
-  ) {
-    return "model_not_found";
-  }
-  // 402 与「余额不足」措辞（2026-09-06 补）：网关族把配额耗尽表达成 402 +
-  // `Insufficient Balance` / `余额不足`，一个都不在原关键词表里 —— 实测
-  // `"402 当前分组余额不足，请充值后再试"` 与 `"Insufficient Balance"` 双双返回
-  // undefined，于是面板标题退化成通用「运行错误」，用户看不出这是要去充值。
-  if (
-    lower.includes("quota") ||
-    lower.includes("insufficient_quota") ||
-    lower.includes("insufficient balance") ||
-    lower.includes("billing") ||
-    lower.includes("余额不足") ||
-    lower.includes("欠费") ||
-    lower.includes("请充值") ||
-    lower.includes("credit balance") ||
-    hasBoundaryDigits(lower, "402")
-  ) {
-    return "quota_exhausted";
-  }
-  if (
-    lower.includes("content_policy") ||
-    lower.includes("content filter") ||
-    lower.includes("safety") ||
-    // 官方拒答文案（2026-09-06）："...appears to violate our Usage Policy"。
-    // 注意与 usage_limit_reached 的区分：那条是额度用尽，这条是内容被拒 ——
-    // 两者都含 "usage"，靠 "usage policy" 整词区分，故本分支必须排在
-    // usage_limit_reached 之后（它先判 "usage limit"，不会抢走 "usage policy"）。
-    lower.includes("usage policy") ||
-    lower.includes("violate our")
-  ) {
-    return "content_policy";
-  }
-  if (
-    lower.includes("invalid_request") ||
-    lower.includes("invalid request") ||
-    // 官方「请求本身不合法」族（2026-09-06）：附件过大 / 参数不被模型支持 /
-    // 多余字段。下一步动作都是「改请求」（换小图、去附件、改 thinking 配置），
-    // 与 context_overflow 的 /compact 不同，故不并入那个码。
-    lower.includes("too large") ||
-    lower.includes("password protected") ||
-    lower.includes("unable to resize") ||
-    lower.includes("extra inputs are not permitted") ||
-    lower.includes("is not supported for this model") ||
-    lower.includes("must be greater than") ||
-    hasBoundaryDigits(lower, "400")
-  ) {
-    return "invalid_request";
-  }
-  // 网关中文限流措辞（2026-09-06 补）：本次事故的直接原因就在这里。真实文本是
-  // 「当前分组上游负载已饱和，请稍后再试 (request id: …)」—— 既无 "429" 也无
-  // "rate limit"，实测 inferErrorCode 返回 undefined，面板于是显示通用「运行错误」，
-  // 而 RetryTelemetry 里明明记着 reopenReason:"rate_limit"。
-  // 结构化 code 才是首选判据（见 lookupErrorMessage 的 code 参数），这里是文本兜底。
-  if (
-    lower.includes("rate_limit") ||
-    lower.includes("rate limit") ||
-    lower.includes("too many requests") ||
-    lower.includes("负载已饱和") ||
-    lower.includes("请求过于频繁") ||
-    lower.includes("请求频率") ||
-    hasBoundaryDigits(lower, "429")
-  ) {
-    return "rate_limit";
-  }
-
-  if (
-    lower.includes("overloaded") ||
-    // "at capacity" / "temporary capacity issue"（官方 529 与 429 文案都用它）。
-    // 收敛 classifyRetryKind 时从那边的正则带过来的，别再丢。
-    lower.includes("capacity") ||
-    hasBoundaryDigits(lower, "529") ||
-    hasBoundaryDigits(lower, "503")
-  ) {
-    return "overloaded";
-  }
-  // 流中途断开（2026-09-06）：官方三条文案 "Server error mid-response" /
-  // "Connection closed mid-response" / "Response stalled mid-stream"。
-  // 归 no_finish_reason（已在瞬态集合里）—— 系统自动重试，恢复后卡片自动消失。
-  // 放在 server_error 之前：这三条含 "server error" 字样，落到 server_error 也算瞬态，
-  // 但 no_finish_reason 的文案才准确说明"响应可能不完整"。
-  if (
-    lower.includes("mid-response") ||
-    lower.includes("mid-stream") ||
-    lower.includes("response stalled") ||
-    lower.includes("connection closed")
-  ) {
-    return "no_finish_reason";
-  }
-  if (
-    lower.includes("text/html") ||
-    lower.includes("错误页") ||
-    lower.includes("no available channel")
-  ) {
-    return "html_error_page";
-  }
-  if (
-    lower.includes("空响应") ||
-    lower.includes("empty_response") ||
-    lower.includes("0 内容事件")
-  ) {
-    return "empty_response";
-  }
-  if (lower.includes("timeout") || lower.includes("超时") || lower.includes("timed out")) {
-    return "timeout";
-  }
-  if (
-    lower.includes("network") ||
-    lower.includes("econnrefused") ||
-    lower.includes("enotfound") ||
-    lower.includes("fetch failed") ||
-    // 官方网络族措辞（2026-09-06）。SSL 证书失败也归这里：下一步都是「查网络 / 代理 / 证书链」，
-    // 且它同属"重试可能有用"的瞬态类（企业网关证书抖动实测会自愈）。
-    lower.includes("unable to connect") ||
-    lower.includes("ssl certificate") ||
-    lower.includes("certificate verification") ||
-    lower.includes("econnreset") ||
-    lower.includes("socket hang up")
-  ) {
-    return "network_error";
-  }
-  if (
-    hasBoundaryDigits(lower, "500") ||
-    hasBoundaryDigits(lower, "502") ||
-    lower.includes("internal server error")
-  ) {
-    return "server_error";
-  }
-  if (lower.includes("未识别的停止原因") || lower.includes("unknown stop")) {
-    return "unknown_stop_reason";
-  }
-  // 子代理因 API 错误提前终止（2026-09-06，官方文案 "Agent terminated early due to an
-  // API error"）。放在最后：它的 <error detail> 里通常还带更具体的根因（429/500…），
-  // 让前面那些更精确的分支优先命中，这里只兜"detail 也说不清"的情况。
-  if (lower.includes("terminated early") || lower.includes("agent terminated")) {
-    return "subagent_failed";
-  }
-
-  return undefined;
+  return matchErrorLexicon(message);
 }
 
 /**
