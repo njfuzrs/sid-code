@@ -184,6 +184,7 @@ Worktree 隔离:
   SID_CODE_IDENTITY_TEAM_ID     团队标识（如 infra-platform）
   SID_CODE_POLICY_ENDPOINT      远程企业策略 URL（只读环境变量；未设则不拉取，fail-open）
   SID_CODE_USAGE_ENDPOINT       用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl）
+  SID_CODE_BUDGET_ENDPOINT      远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open）
 
   功能开关:
   SID_CODE_TOOL_SEARCH          工具延迟加载模式 (true/false/auto/auto:N)

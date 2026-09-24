@@ -18,6 +18,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { QuotaManager } from "../llm/quota.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
+import { checkLoadedRemoteBudget, formatRemoteBudgetWarning } from "../telemetry/remote-budget.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
@@ -3193,6 +3194,30 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
             yield { kind: "system", level: "warning", text: quotaResult.message };
           }
+        }
+      }
+
+      // ─── 远程预算检查（M5；在本地 BudgetTracker / QuotaManager 之后）───
+      // 不改本地 costLimit 硬停。远程默认 alert 只 warning；block 才与本地 exceeded 同款 done。
+      // 两条同时存在时都检查，先到先停，数字不合并。
+      {
+        const remote = checkLoadedRemoteBudget(
+          sessionState.sessionId,
+          sessionState.getEffectiveTotalCostUSD(),
+        );
+        if (remote.kind === "ok" && remote.exceeded) {
+          const text = formatRemoteBudgetWarning(remote);
+          if (remote.enforcement === "block") {
+            yield { kind: "system", level: "warning", terminal: true, text };
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            };
+            exitedViaReturn = true;
+            return;
+          }
+          yield { kind: "system", level: "warning", text };
         }
       }
 
