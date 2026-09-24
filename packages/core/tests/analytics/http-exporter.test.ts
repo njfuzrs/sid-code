@@ -21,6 +21,8 @@ import { assertIsolated } from "../helpers/assert-isolated.ts";
 const realFetch = globalThis.fetch;
 /** 静态回落头，用于「不测鉴权、只测批量/重试」的老用例 */
 const STATIC_AUTH = "Bearer static-token";
+/** 鉴权组的默认 endpoint。按它过滤 stub 记录，才不会把外来请求算进来。 */
+const EVENTS_URL = "https://example.com/events";
 
 describe("HTTP 事件导出器（spec 17 §4.2）", () => {
   let dir: string;
@@ -99,8 +101,14 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
     const files = readdirSync(dir).filter((f) => f.startsWith("failed_events"));
     expect(files.length).toBe(1);
     // 失败会 schedule 一次 QuadraticBackoff 重试，首次延迟约 0、第二次 500ms。
-    // 不 shutdown 的话这个 timer 活过本用例，打进后面换上 fetch stub 的用例，
-    // 让它们的 calls.length 断言偶发 +1（CI 上 Expected 1 Received 7 即此）。
+    // 收尾 shutdown 清掉它，不让 timer 活过本用例 —— 卫生，不是为了修 CI 那条偶发。
+    //
+    // ⚠ 更正（b87f472e 的判断有误）：那次以为「这个 timer 打进后面的用例，让
+    // calls.length 偶发 +1」，补了两处 shutdown。补完 CI 仍然红在同一行。
+    // 实测这个 timer 到期后走 retryFromDisk → retryPreviousBatches，而后者
+    // **排除自己的 batchUUID**（disk-cache.ts:66），扫不到文件，一次 fetch 都不发。
+    // 探针验证：shutdown 后换计数 stub 等 120ms，偷跑次数 = 0。
+    // 真正的成因见下面鉴权组 stubFetch 的注释（断言口径太宽，数到了别的文件的请求）。
     await exporter.shutdown();
   });
 
@@ -164,129 +172,156 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** 记录每次 fetch 的 headers，返回给定状态码 */
-  function stubFetch(status = 200): { calls: Array<Record<string, string>> } {
-    const calls: Array<Record<string, string>> = [];
-    globalThis.fetch = (async (_url: any, opts: any) => {
-      calls.push(opts.headers as Record<string, string>);
+  /**
+   * 记录每次 fetch 的 url + headers，返回给定状态码。
+   *
+   * ⚠ 精确条数一律用 `to(url)` 过滤后再断言，不要直接数 `calls.length`。
+   *
+   * `globalThis.fetch` 是**全局**的，而 bun test 同批多文件跑在同一个进程里：
+   * 别的测试文件留下的定时器（心跳 / 退避重试 / 探针）会在本用例那 20ms 等待窗口里
+   * 打到这个 stub 上，把「calls.length === 1」偶发顶成 4 / 7。
+   *
+   * 实测：CI ubuntu leg 连续两次红在同一行，数字还不一样（`Received: 4` 与
+   * `Received: 7`），而本地全量 `bun test` 12557 pass 复现不了。数字会飘正是
+   * 「外来流量」的指纹——若是本文件自己漏了 timer，次数会是稳定值。
+   *
+   * 所以这里不是「再补一次 shutdown」能修的（b87f472e 试过，仍然红）：
+   * 根因是断言口径太宽，把别人的请求也算成了自己的。按 url 过滤之后，
+   * 断言问的才是它本来要问的那件事——**这个 exporter 自己发了几次**。
+   */
+  function stubFetch(status = 200): {
+    to(url: string): Array<Record<string, string>>;
+  } {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (url: any, opts: any) => {
+      calls.push({ url: String(url), headers: opts.headers as Record<string, string> });
       return new Response("{}", { status });
     }) as any;
-    return { calls };
+    return {
+      to(url: string) {
+        return calls.filter((c) => c.url === url).map((c) => c.headers);
+      },
+    };
   }
 
   test("有设备凭据时带 Bearer", async () => {
     saveDeviceCredential({ credential: "dev-cred-1" });
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
+    const calls = fetched.to(EVENTS_URL);
     expect(calls.length).toBe(1);
     expect(calls[0].Authorization).toBe("Bearer dev-cred-1");
   });
 
   test("设备凭据优先于静态 authHeader", async () => {
     saveDeviceCredential({ credential: "dev-cred-2" });
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       authHeader: STATIC_AUTH,
       batchSize: 1,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
-    expect(calls[0].Authorization).toBe("Bearer dev-cred-2");
+    expect(fetched.to(EVENTS_URL)[0].Authorization).toBe("Bearer dev-cred-2");
   });
 
   test("无凭据但配了 authHeader → 用 authHeader", async () => {
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       authHeader: STATIC_AUTH,
       batchSize: 1,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
+    const calls = fetched.to(EVENTS_URL);
     expect(calls.length).toBe(1);
     expect(calls[0].Authorization).toBe(STATIC_AUTH);
   });
 
   test("过期凭据视为无凭据（fail-open，不发远程）", async () => {
     saveDeviceCredential({ credential: "old", expiresAt: "2020-01-01T00:00:00Z" });
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
-    expect(calls.length).toBe(0);
+    expect(fetched.to(EVENTS_URL).length).toBe(0);
   });
 
   test("无凭据且无 authHeader：不发 fetch、不写磁盘", async () => {
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s1", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 50));
-    expect(calls.length).toBe(0);
+    expect(fetched.to(EVENTS_URL).length).toBe(0);
     expect(existsSync(cacheDir) ? readdirSync(cacheDir) : []).toEqual([]);
   });
 
   test("明文非本地 endpoint：不发 fetch、不写磁盘", async () => {
     saveDeviceCredential({ credential: "dev-cred-3" });
-    const { calls } = stubFetch();
+    const plaintextUrl = "http://corp.example.com/events";
+    const fetched = stubFetch();
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s2", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "http://corp.example.com/events",
+      endpoint: plaintextUrl,
       batchSize: 1,
       diskCache,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 50));
-    expect(calls.length).toBe(0);
+    expect(fetched.to(plaintextUrl).length).toBe(0);
     expect(existsSync(cacheDir) ? readdirSync(cacheDir) : []).toEqual([]);
   });
 
   test("http://127.0.0.1 放行", async () => {
     saveDeviceCredential({ credential: "dev-cred-4" });
-    const { calls } = stubFetch();
+    const loopbackUrl = "http://127.0.0.1:8900/api/v1/events";
+    const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "http://127.0.0.1:8900/api/v1/events",
+      endpoint: loopbackUrl,
       batchSize: 1,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
+    const calls = fetched.to(loopbackUrl);
     expect(calls.length).toBe(1);
     expect(calls[0].Authorization).toBe("Bearer dev-cred-4");
   });
 
   test("响应 401：不写磁盘、不调度退避", async () => {
     saveDeviceCredential({ credential: "revoked" });
-    const { calls } = stubFetch(401);
+    const fetched = stubFetch(401);
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s3", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 80));
-    expect(calls.length).toBe(1); // 退避没再打一次
+    expect(fetched.to(EVENTS_URL).length).toBe(1); // 退避没再打一次
     expect(existsSync(cacheDir) ? readdirSync(cacheDir) : []).toEqual([]);
   });
 
@@ -295,7 +330,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     stubFetch(401);
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
     });
     exporter.send("e1", {});
@@ -305,13 +340,13 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     exporter.send("e3", {});
     await new Promise((r) => setTimeout(r, 20));
     const telemetryWarns = (warnSpy?.mock.calls ?? []).filter(
-      (c) => c[0] === "TELEMETRY" && String(c[1]).includes("401"),
+      (c: unknown[]) => c[0] === "TELEMETRY" && String(c[1]).includes("401"),
     );
     expect(telemetryWarns.length).toBe(1);
   });
 
   test("recoverFromDisk 无凭据时不删已有 failed_events（R1 核心回归）", async () => {
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const leftover = join(cacheDir, "failed_events.old-session.deadbeef.jsonl");
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "new", maxRetries: 8 });
     // 先让 ensureDir 建目录，再放遗留文件
@@ -325,18 +360,18 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
 
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
     });
     await exporter.recoverFromDisk();
-    expect(calls.length).toBe(0);
+    expect(fetched.to(EVENTS_URL).length).toBe(0);
     expect(existsSync(leftover)).toBe(true);
   });
 
   test("recoverFromDisk 有凭据且 200 时删除文件（对照组）", async () => {
     saveDeviceCredential({ credential: "dev-cred-5" });
-    const { calls } = stubFetch();
+    const fetched = stubFetch();
     const leftover = join(cacheDir, "failed_events.old-session.cafebabe.jsonl");
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "new", maxRetries: 8 });
     await diskCache.queueFailedEvents([
@@ -349,12 +384,12 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
 
     const exporter = new HttpExporter({
       name: "ev",
-      endpoint: "https://example.com/events",
+      endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
     });
     await exporter.recoverFromDisk();
-    expect(calls.length).toBe(1);
+    expect(fetched.to(EVENTS_URL).length).toBe(1);
     expect(existsSync(leftover)).toBe(false);
   });
 });

@@ -303,6 +303,58 @@ describe("checkLoadedRemoteBudget + 文案", () => {
     if (check.kind !== "ok") return;
     expect(formatRemoteBudgetWarning(check)).toContain("自动停止");
   });
+
+  test("不足半分的限额显示四位，不写成 $0.00（验收 B3 的 $0.001）", () => {
+    // 验收文案是 `$0.0055 / $0.00`。限额 $0.001 经 toFixed(2) 就是 0.00；
+    // 已用量保持四位。这是展示问题，不是比较问题。
+    __setLastRemoteBudgetForTest({
+      ...sample,
+      limit_usd: 0.001,
+      used_usd: 0.0055,
+      enforcement: "block",
+    });
+    const check = checkLoadedRemoteBudget("other-session", 0);
+    expect(check.kind).toBe("ok");
+    if (check.kind !== "ok") return;
+    const text = formatRemoteBudgetWarning(check);
+    expect(text).toContain("$0.0055 / $0.0010");
+    // 限额金额本身不能是 $0.00。不能对整句断言 not.toContain("$0.00")：
+    // 已用量 $0.0055 的前缀就是 $0.00；也不能 startsWith，因为 "$0.0010"
+    // 同样以 "$0.00" 开头。
+    const limitShown = text.split(" / ")[1]?.match(/\$[0-9.]+/)?.[0];
+    expect(limitShown).toBe("$0.0010");
+  });
+
+  test("float32 读回的 0.01 仍显示 $0.01（toFixed(2) 会把它四舍五入回去）", () => {
+    // 验收把 `$0.00` 归因到 float4 漂移。实测这个漂移值 toFixed(2) 是 "0.01"，
+    // 不是 "0.00"。锁住这个事实，避免下次再为它改列类型。
+    const drifted = new Float32Array([0.01])[0];
+    expect(drifted).toBeLessThan(0.01);
+    __setLastRemoteBudgetForTest({
+      ...sample,
+      limit_usd: drifted,
+      used_usd: 0.0055,
+      enforcement: "block",
+    });
+    const check = checkLoadedRemoteBudget("other-session", 0);
+    expect(check.kind).toBe("ok");
+    if (check.kind !== "ok") return;
+    const text = formatRemoteBudgetWarning(check);
+    expect(text.split(" / ")[1]?.match(/\$[0-9.]+/)?.[0]).toBe("$0.01");
+  });
+
+  test("整额限额仍是两位（不把 $500 显示成四位）", () => {
+    __setLastRemoteBudgetForTest({
+      ...sample,
+      limit_usd: 500,
+      used_usd: 100,
+      enforcement: "alert",
+    });
+    const check = checkLoadedRemoteBudget("other-session", 0);
+    expect(check.kind).toBe("ok");
+    if (check.kind !== "ok") return;
+    expect(formatRemoteBudgetWarning(check)).toContain("/ $500.00");
+  });
 });
 
 describe("生产接线（防死加载器）", () => {
@@ -325,6 +377,23 @@ describe("生产接线（防死加载器）", () => {
     const seg = src.slice(remoteIdx, remoteIdx + 1500);
     expect(seg).toContain('enforcement === "block"');
     expect(seg).toContain("terminal: true");
+  });
+
+  test("三条硬停路径都在 done 上声明 budgetExceeded（F1 归因，防再掉进 user_interrupt）", () => {
+    // 断言的是**字段赋值**而不是标识符出现：只写注释、不写字段，这条必须红。
+    const src = readFileSync(join(import.meta.dir, "../../src/query/loop.ts"), "utf-8");
+    const declared = src.match(/budgetExceeded: \{ source: "(budget_rule|quota|remote)" \}/g) ?? [];
+    expect(declared.sort()).toEqual([
+      'budgetExceeded: { source: "budget_rule" }',
+      'budgetExceeded: { source: "quota" }',
+      'budgetExceeded: { source: "remote" }',
+    ]);
+    // 上报口必须在 engine 里、且在 done 返回之前读这个字段。
+    // 漏了这一接，loop 声明了也到不了 collector，exit_status 照旧是 user_interrupt。
+    const engine = readFileSync(join(import.meta.dir, "../../src/query/engine.ts"), "utf-8");
+    expect(/event\.budgetExceeded/.test(engine)).toBe(true);
+    // `?.` 可选调用也算接上：traceCollector 本身是可选依赖，写成 `.` 反而编不过。
+    expect(/\brecordBudgetExceeded\?\.\(/.test(engine)).toBe(true);
   });
 
   test("cli.ts 启动路径调 loadEnterpriseBudgetOnce()", () => {
