@@ -50,6 +50,7 @@ const TERMINAL: readonly TerminalReason[] = [
   "quota_exhausted",
   "content_policy",
   "invalid_request",
+  "usage_limit_reached",
   "server_declined_retry",
 ] as const satisfies readonly TerminalReason[];
 

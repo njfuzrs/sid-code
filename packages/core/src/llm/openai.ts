@@ -2308,14 +2308,23 @@ export class OpenAIProvider implements Provider {
             if (chunk.error) {
               const msg = chunk.error.message || JSON.stringify(chunk.error);
               dbg(`stream error chunk: ${msg}`);
-              // T6：透传结构化 error.type/code + streamLevel 标记，让 fallback.ts 按
-              // 结构化字段判定重试（OpenAI 族 error 对象常带 type/code 但 message 无关键词）。
+              // 与 anthropic.ts 的 pickUpstreamTag 同一条规则，不要在这里重写一遍：
+              // 空字符串、纯空白、字面量 "error" 都不算拿到了 type。网关回
+              // `"type": ""` 时 `typeof === "string"` 为真但值是假，此前
+              // `chunk.error.type || chunk.error.code` 得到 ""，再配上无条件的
+              // `streamLevel: true`，于是 fallback 必然走 classifyStreamError，
+              // 而那条路径上 type 为空、statusCode 又没往下传 —— 4xx 被兜底成
+              // server_error 重试 10 次。
+              const upstreamTag = pickStreamErrorTag(chunk.error.type, chunk.error.code);
+              const statusCode = streamErrorStatus(chunk.error);
               yield {
                 type: "error",
                 error: {
                   message: `OpenAI 流内错误: ${msg}`,
-                  type: chunk.error.type || chunk.error.code,
-                  streamLevel: true,
+                  // 只有真拿到非空 type 才置 streamLevel。空 type 加无状态码的事件
+                  // 落回 classifyError 的文本路径，而不是进一个没有判据的兜底。
+                  ...(upstreamTag && { type: upstreamTag, streamLevel: true }),
+                  ...(statusCode !== undefined && { statusCode }),
                 },
               };
               return;
@@ -2674,6 +2683,36 @@ export class OpenAIProvider implements Provider {
       }
     }
   }
+}
+
+/**
+ * Chat Completions 流内 error chunk 的上游标签。
+ *
+ * 规则与 anthropic.ts 的 pickUpstreamTag 相同，这里不能 import 那个（它是闭包里的
+ * 局部函数）：空字符串、纯空白、字面量 "error" 都不算。`"type": ""` 是网关的
+ * 真实形态（smoke-8），`typeof === "string"` 为真但值是假。
+ * 优先级 type > code：type 是协议字段，code 是网关扩展。
+ */
+function pickStreamErrorTag(type: unknown, code: unknown): string | undefined {
+  const ok = (v: unknown): v is string => typeof v === "string" && v.trim() !== "" && v !== "error";
+  return ok(type) ? type : ok(code) ? code : undefined;
+}
+
+/**
+ * error chunk 上的 HTTP 语义状态码。Chat Completions 的流内错误通常不带，
+ * 但网关有时会在 error 对象上塞 `status` / `status_code` / `code`（数字）。
+ * 带上它，classifyStreamError 才能按状态码而不是按文案判 4xx。
+ */
+function streamErrorStatus(error: {
+  status?: unknown;
+  status_code?: unknown;
+  code?: unknown;
+}): number | undefined {
+  for (const v of [error.status, error.status_code, error.code]) {
+    if (typeof v === "number" && Number.isInteger(v) && v >= 100 && v < 600) return v;
+    if (typeof v === "string" && /^[1-5]\d\d$/.test(v.trim())) return Number(v.trim());
+  }
+  return undefined;
 }
 
 /**

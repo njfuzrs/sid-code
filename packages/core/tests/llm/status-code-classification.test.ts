@@ -41,7 +41,14 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { classifyError, RetryableError, TerminalError } from "@sid-code/core/llm/errors.ts";
+import {
+  classifyError,
+  classifyStreamError,
+  RetryableError,
+  StreamLevelError,
+  TerminalError,
+} from "@sid-code/core/llm/errors.ts";
+import { inferErrorCode } from "@sid-code/core/llm/error-messages.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
@@ -77,13 +84,13 @@ describe("classifyError：结构化 statusCode 是权威判据", () => {
     expect((c as RetryableError).reason).toBe("rate_limit");
   });
 
-  test("对照：同一条 message 不带 statusCode → 认不出来（这就是原缺陷）", () => {
-    // 保留这条负向断言是刻意的：它记录了「为什么必须透传 statusCode」。
-    // 若哪天 classifyError 能靠别的手段认出它，这条会转红 —— 那时该来读这段注释，
-    // 确认新手段是否可靠，而不是直接删断言。
+  test("同一条中文文案不带 statusCode 也能认出来（词表，不再依赖状态码透传）", () => {
+    // 这条以前是负向断言：记录「文本路径认不出中文，所以必须透传 statusCode」。
+    // 2026-09-24 词表补进了「负载已饱和」，负向断言转红是修复生效的信号，不是回退。
+    // statusCode 仍然是权威判据（见上一条），但不再是唯一判据。
     const c = classifyError(new Error(GATEWAY_429_BODY.error.message));
-    expect(c).not.toBeInstanceOf(RetryableError);
-    expect(c).not.toBeInstanceOf(TerminalError);
+    expect(c).toBeInstanceOf(RetryableError);
+    expect((c as RetryableError).reason).toBe("rate_limit");
   });
 
   test("各类可重试状态码 + 无数字中文文案 → 全部按状态码判定", () => {
@@ -103,14 +110,20 @@ describe("classifyError：结构化 statusCode 是权威判据", () => {
 
   test("终端状态码不因本次改动被误判成可重试", () => {
     // 成对纪律：只钉"该重试的重试了"，把判据全放开也能变绿。
-    //
-    // ⚠️ 这里刻意**不含 403** —— `errors.ts` 的分类表从来没有 403 这一条
-    // （只有 401/404/400），带 statusCode 的 403 会落到"无法分类"而非 Terminal。
-    // 那是与本次改动无关的既有行为，把它写进期望会让这条断言测的是别的东西。
-    // 若日后要补 403，改的是 errors.ts，同时把它加进下面这个数组。
-    for (const status of [401, 404, 400]) {
+    // 403 与 402 都是 2026-09-24 补进分类表的：403 是 key 没权限 / 账号被禁用，
+    // 402 是欠费，两者都不可自愈。此前这段注释把 403 排除在外，那是一道
+    // 阻止修复的注释，不要再加回来。
+    const cases = [
+      [401, "auth_failed"],
+      [403, "auth_failed"],
+      [402, "quota_exhausted"],
+      [404, "model_not_found"],
+      [400, "invalid_request"],
+    ] as const;
+    for (const [status, reason] of cases) {
       const c = classifyError(Object.assign(new Error("上游拒绝"), { status }));
       expect(c).toBeInstanceOf(TerminalError);
+      expect((c as TerminalError).reason).toBe(reason);
     }
   });
 });
@@ -185,14 +198,13 @@ describe("fallback：流内 error 带 statusCode 即进重试（不依赖 stream
     expect(counts.stream).toBe(3);
   });
 
-  test("对照：同样的 429 但事件不带 statusCode → 只发 1 次（记录能力边界）", async () => {
-    // 这条不是"期望的行为"，是**能力边界的留档**：provider 不透传 statusCode 时，
-    // 漏斗手上没有任何可靠判据。所以修复必须落在 provider + 漏斗两侧
-    // （anthropic.ts / openai.ts 三处 yield 都补了 statusCode），
-    // 只改漏斗是修不全的。
+  test("同样的 429 中文文案、事件不带 statusCode → 词表接手，仍然重试", async () => {
+    // 这条以前断言只发 1 次，记录的是「文本路径没有判据」那个能力边界。
+    // 2026-09-24 词表补进了「负载已饱和」，这条边界不再成立：文案本身就是判据。
+    // 真正还在的边界是「文案也不在词表里」（见本文件下方的 D7 用例）。
     const { provider, counts } = gateway429Stream({});
     await drain(makeFallback(), provider);
-    expect(counts.stream).toBe(1);
+    expect(counts.stream).toBe(3);
   });
 
   test("成对：终端状态码（401）不因本改动进重试", async () => {
@@ -270,5 +282,184 @@ describe("provider 透传契约（防「修好一条协议、另一条照旧」�
     expect(src).toContain('trim() !== ""');
     // 且必须把 code 作为次选纳入（这个网关把可用信息放在 code: "rate_limited"）
     expect(src).toMatch(/code/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 第 4 层：两条分类路径对同一批报文给出同一个类别
+// ════════════════════════════════════════════════════════════════════════
+//
+// 四格是 2026-09-24 那次审查要求覆盖的全部形态。缺一格，绿了也说明不了
+// 「有状态码按状态码、没状态码按词表」这两条都成立。
+
+type Cell = { streamLevel: boolean; statusCode?: number; message: string };
+
+/** 把一格走成生产上 fallback.ts 会走的那条分类。 */
+function classifyCell(cell: Cell): { kind: "retry" | "terminal" | "unknown"; reason?: string } {
+  const classified = cell.streamLevel
+    ? classifyStreamError("anthropic", cell.message, undefined, cell.statusCode)
+    : classifyError(
+        cell.statusCode !== undefined
+          ? Object.assign(new Error(cell.message), { status: cell.statusCode })
+          : new Error(cell.message),
+      );
+  if (classified instanceof TerminalError) return { kind: "terminal", reason: classified.reason };
+  if (classified instanceof RetryableError) return { kind: "retry", reason: classified.reason };
+  return { kind: "unknown" };
+}
+
+describe("四格：streamLevel × statusCode 的组合都按同一张表判", () => {
+  const grid: Array<[string, Cell, { kind: string; reason?: string }]> = [
+    [
+      "带 streamLevel + 带 statusCode：503 无 overloaded 字样 → overloaded（D2）",
+      { streamLevel: true, statusCode: 503, message: "Service Unavailable" },
+      { kind: "retry", reason: "overloaded" },
+    ],
+    [
+      "带 streamLevel + 不带 statusCode：只有文案，走词表",
+      { streamLevel: true, statusCode: undefined, message: "当前分组上游负载已饱和，请稍后再试" },
+      { kind: "retry", reason: "rate_limit" },
+    ],
+    [
+      "不带 streamLevel + 带 statusCode：429 中文 → rate_limit",
+      { streamLevel: false, statusCode: 429, message: GATEWAY_429_BODY.error.message },
+      { kind: "retry", reason: "rate_limit" },
+    ],
+    [
+      "不带 streamLevel + 不带 statusCode：中文饱和文案 → rate_limit（D3）",
+      { streamLevel: false, statusCode: undefined, message: GATEWAY_429_BODY.error.message },
+      { kind: "retry", reason: "rate_limit" },
+    ],
+  ];
+
+  for (const [name, cell, expected] of grid) {
+    test(name, () => {
+      expect(classifyCell(cell)).toEqual(expected);
+    });
+  }
+
+  test("带 streamLevel 的 400/404/402 是 Terminal，不是重试（D1）", () => {
+    // 这三格是本次的核心回归：修之前 classifyStreamError 把 statusCode 丢了，
+    // 三条全部兜底成 StreamLevelError("server_error")，各自重试 10 次。
+    const cases = [
+      [400, "invalid_request"],
+      [404, "model_not_found"],
+      [402, "quota_exhausted"],
+    ] as const;
+    for (const [status, reason] of cases) {
+      const c = classifyStreamError("anthropic", "something broke", undefined, status);
+      expect(c).toBeInstanceOf(TerminalError);
+      expect(c).not.toBeInstanceOf(StreamLevelError);
+      expect((c as TerminalError).reason).toBe(reason);
+    }
+  });
+
+  test("D7：纯文本 Service Unavailable（无数字、无 overloaded）仍然不重试", () => {
+    // 认不出的保持 fail-fast。放开它，D1 描述的事故会从反方向发生。
+    const c = classifyError(new Error("Service Unavailable"));
+    expect(c).not.toBeInstanceOf(RetryableError);
+    expect(c).not.toBeInstanceOf(TerminalError);
+  });
+});
+
+describe('真实网关报文回放（不是手写的 new Error("503 Service Unavailable")）', () => {
+  test("503 + body system disk overloaded → overloaded", () => {
+    // 2026-09-24 Claude Code 收到的那条。含 overloaded，两条路径都该判过载。
+    const body = "503 system disk overloaded";
+    expect(classifyCell({ streamLevel: true, statusCode: 503, message: body }).reason).toBe(
+      "overloaded",
+    );
+    expect(classifyCell({ streamLevel: false, statusCode: 503, message: body }).reason).toBe(
+      "overloaded",
+    );
+  });
+
+  test("429 中文 + type 空 + code 缺失 → 不再依赖 code 字段（smoke-8 去掉后来补的 code）", () => {
+    // smoke-8 的 body 是 {"type":"","code":"rate_limited"}。anthropic.ts 后来靠
+    // code 兜住了，所以「只给中文、什么结构化字段都不给」这条从没被验证过。
+    const message = "当前分组上游负载已饱和，请稍后再试";
+    expect(classifyCell({ streamLevel: false, message }).reason).toBe("rate_limit");
+    expect(classifyCell({ streamLevel: true, statusCode: 429, message }).reason).toBe("rate_limit");
+  });
+
+  test("402 + 余额不足 → 终端，不重试", () => {
+    const message = "当前分组余额不足，请充值后再试";
+    for (const cell of [
+      { streamLevel: true, statusCode: 402, message },
+      { streamLevel: false, statusCode: 402, message },
+      { streamLevel: false, message },
+    ] as Cell[]) {
+      expect(classifyCell(cell)).toEqual({ kind: "terminal", reason: "quota_exhausted" });
+    }
+  });
+
+  test("400 + 任意 body → 不重试", () => {
+    const c = classifyCell({
+      streamLevel: true,
+      statusCode: 400,
+      message: "anything at all, even overloaded",
+    });
+    expect(c).toEqual({ kind: "terminal", reason: "invalid_request" });
+  });
+});
+
+describe("词表不再分叉：classifyError 与 inferErrorCode 对同一批报文类别一致", () => {
+  // 一个 overloaded、一个 rate_limit 算不一致。注释防不住这件事——
+  // 两个文件的注释当时就在说同一件事，代码还是分叉了。
+  const messages = [
+    "503 system disk overloaded",
+    "Service Unavailable",
+    "当前分组上游负载已饱和，请稍后再试",
+    "Server is temporarily limiting requests (not your usage limit)",
+    "The API is at capacity",
+    "当前分组余额不足，请充值后再试",
+    "Insufficient Balance",
+    "You've hit your session limit · resets 3:45pm",
+    "额度已用尽",
+    "HTTP 402 Payment Required",
+    "HTTP 403 Forbidden",
+    "429 Too Many Requests",
+    "请求过于频繁",
+  ];
+
+  /** 面板码里只有重试决策真正消费的那部分才参与对账。 */
+  const RETRY_DECISION = new Set([
+    "auth_failed",
+    "model_not_found",
+    "quota_exhausted",
+    "content_policy",
+    "invalid_request",
+    "usage_limit_reached",
+    "rate_limit",
+    "overloaded",
+    "request_timeout",
+    "lock_timeout",
+    "server_error",
+    "timeout",
+    "network_error",
+  ]);
+
+  for (const message of messages) {
+    test(message.slice(0, 40), () => {
+      const panel = inferErrorCode(message);
+      const classified = classifyError(new Error(message));
+      const retry =
+        classified instanceof TerminalError || classified instanceof RetryableError
+          ? classified.reason
+          : undefined;
+      if (panel && RETRY_DECISION.has(panel)) {
+        expect(retry).toBe(panel);
+      } else {
+        // 面板也认不出，或认出来的是面板专属码（context_overflow 等）→ 重试侧不该独有一个码
+        expect(retry).toBeUndefined();
+      }
+    });
+  }
+
+  test("英文词按词边界：capacities / merge conflict 不被误伤", () => {
+    expect(inferErrorCode("the capacities are listed below")).toBeUndefined();
+    expect(classifyError(new Error("git merge conflict in foo.ts"))).not.toBeInstanceOf(
+      RetryableError,
+    );
   });
 });
