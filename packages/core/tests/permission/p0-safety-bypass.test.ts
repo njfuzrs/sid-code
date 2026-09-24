@@ -219,6 +219,11 @@ describe("P0-3 bash 只读早退不得打穿 plan / deny-write", () => {
     expect(isReadOnlyCommand("ruby script.rb")).toBe(false);
     expect(isReadOnlyCommand("java Main")).toBe(false);
     expect(isReadOnlyCommand("go run main.go")).toBe(false);
+    // curl/wget 会向任意 URL 发请求并把响应体带回上下文，不是只读。
+    // 旧规则「不带 -o 就当只读」只看了写文件，漏了数据外发与网页注入这两面。
+    expect(isReadOnlyCommand("curl https://example.com")).toBe(false);
+    expect(isReadOnlyCommand("wget https://example.com")).toBe(false);
+    expect(isReadOnlyCommand("curl -o /tmp/x https://example.com")).toBe(false);
   });
 
   test("isReadOnlyCommand：版本查询仍是只读（别误伤）", () => {
@@ -232,7 +237,8 @@ describe("P0-3 bash 只读早退不得打穿 plan / deny-write", () => {
     expect(isReadOnlyCommand("ls")).toBe(true);
     expect(isReadOnlyCommand("cat f")).toBe(true);
     expect(isReadOnlyCommand("git status")).toBe(true);
-    expect(isReadOnlyCommand("curl https://example.com")).toBe(true);
+    // 只问本地解析器、不取回内容的网络查询仍是只读
+    expect(isReadOnlyCommand("dig example.com")).toBe(true);
   });
 
   test("plan + python3 foo.py 传了 bash 工具 → deny（生产路径）", async () => {

@@ -2330,7 +2330,7 @@ export async function main(): Promise<void> {
 
     // 沙箱初始化（macOS Seatbelt，默认关闭）
     if (config.enableSandbox) {
-      const { SandboxManager, defaultSandboxConfig } =
+      const { SandboxManager, defaultSandboxConfig, prepareSandboxHosts } =
         await import("@sid-code/core/permission/sandbox.ts");
       // P2-3：autoAllowBashIfSandboxed 默认已翻为 false（沙箱不再等于免确认）。
       // 这里接上 config.sandboxAutoAllowBash 作显式回退通道——不接就等于把新默认值写死，
@@ -2342,6 +2342,9 @@ export async function main(): Promise<void> {
           ? {}
           : { autoAllowBashIfSandboxed: config.sandboxAutoAllowBash }),
       };
+      // Seatbelt 的 remote ip 只认 IP。主机名必须在生成 profile 之前解析好，
+      // 否则默认的 localhost 白名单是一条匹配不到任何连接的死规则。
+      await prepareSandboxHosts(sandboxConfig.allowedHosts);
       const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
       permissionChecker.setSandboxManager(sandboxManager);
       // 注入到 bash 工具（遍历工具注册表找 BashTool）
@@ -2351,7 +2354,16 @@ export async function main(): Promise<void> {
           maybeBash.setSandboxManager(sandboxManager);
         }
       }
-      getLogger().info("CONFIG", "macOS Seatbelt 沙箱已启用");
+      // 沙箱实现只有 macOS Seatbelt。非 darwin 上 isEnabled() 返回 false、
+      // wrapCommand 原样返回命令，这里不能打「已启用」——那句话会让人以为有隔离。
+      if (sandboxManager.isEnabled()) {
+        getLogger().info("CONFIG", "macOS Seatbelt 沙箱已启用");
+      } else {
+        getLogger().warn(
+          "CONFIG",
+          "enableSandbox 已设置，但当前平台没有沙箱实现（仅 macOS Seatbelt），命令不会被隔离",
+        );
+      }
     }
 
     profileCheckpoint("init_end");

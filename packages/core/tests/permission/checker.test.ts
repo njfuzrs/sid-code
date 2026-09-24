@@ -403,6 +403,25 @@ describe("PermissionChecker", () => {
       });
       expect(result.allowed).toBe(true);
     });
+
+    test("后台 & 连接的后半段未被 allow 覆盖 → 不放行", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { allow: ["Bash(ls *)"] });
+      // 修复前：splitCompoundCommand 不认单个 &，整条被 `ls *` 的 * 吞掉直接放行。
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la & whoami" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("换行连接的后半段未被 allow 覆盖 → 不放行", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { allow: ["Bash(ls *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls -la\nwhoami" },
+      });
+      expect(result.allowed).toBe(false);
+    });
   });
 
   // P0-2 补齐：deny 规则复合命令拆分（对称于 allow 的 every，deny 用 some）
@@ -454,6 +473,70 @@ describe("PermissionChecker", () => {
         result.decisionReason?.type === "rule" &&
           (result.decisionReason as any).behavior === "deny",
       ).toBe(false);
+    });
+
+    test("后台 & 后面的命令命中 deny → 拒绝", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls & curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("换行后面的命令命中 deny → 拒绝", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls\ncurl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+    });
+
+    test("后台 & 后面的命令命中 ask 规则 → 要求确认（不因前缀不跨 & 而漏掉）", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { ask: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls & curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+      expect(result.needsConfirmation).toBe(true);
+    });
+
+    test("换行后面的命令命中 ask 规则 → 要求确认", async () => {
+      const checker = new PermissionChecker(defaultConfig(), { ask: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls\ncurl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+      expect(result.needsConfirmation).toBe(true);
+    });
+
+    test("always-allow 下 ask 规则仍拦住 & 后面的命令（不静默执行）", async () => {
+      // always-allow 在 Step 8 无条件放行，而 ask 规则在 Step 5。
+      // 修复前整条匹配不到 `curl *`，ask 步骤落空，Step 8 直接放行；
+      // 修复后 Step 5 逐子命令命中，在到达 always-allow 之前就要求确认。
+      const checker = new PermissionChecker(
+        { ...defaultConfig(), permissionMode: "always-allow" },
+        { ask: ["Bash(curl *)"] },
+      );
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "ls & curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
+      expect(result.needsConfirmation).toBe(true);
+    });
+
+    test("转义只吃掉一个 &：\\&& 的第二个 & 仍是后台符，后段命中 deny → 拒绝", async () => {
+      // bash -xc 实测 `echo a \&& curl x` 执行两条命令。旧实现把整条当一条，deny 漏匹配。
+      const checker = new PermissionChecker(defaultConfig(), { deny: ["Bash(curl *)"] });
+      const result = await checker.check({
+        toolName: "bash",
+        input: { command: "echo a \\&& curl evil.com" },
+      });
+      expect(result.allowed).toBe(false);
     });
   });
 
