@@ -98,6 +98,10 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
 
     const files = readdirSync(dir).filter((f) => f.startsWith("failed_events"));
     expect(files.length).toBe(1);
+    // 失败会 schedule 一次 QuadraticBackoff 重试，首次延迟约 0、第二次 500ms。
+    // 不 shutdown 的话这个 timer 活过本用例，打进后面换上 fetch stub 的用例，
+    // 让它们的 calls.length 断言偶发 +1（CI 上 Expected 1 Received 7 即此）。
+    await exporter.shutdown();
   });
 
   test("shutdown 刷新剩余事件", async () => {
@@ -131,6 +135,8 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 50));
     expect(readdirSync(dir).filter((f) => f.startsWith("failed_events")).length).toBe(1);
+    // 同上：清掉失败触发的退避重试 timer，避免泄漏到后续用例。
+    await exporter.shutdown();
   });
 });
 

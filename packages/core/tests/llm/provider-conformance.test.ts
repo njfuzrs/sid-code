@@ -122,7 +122,11 @@ describe("stream-guard", () => {
 
     async function* slowStream(): AsyncGenerator<string> {
       yield "fast";
-      await new Promise((r) => setTimeout(r, 120)); // 超过 stallWarnMs
+      // 间隔必须远大于 stallWarnMs：stall 检测是 setInterval(stallWarnMs) 心跳，
+      // 回调要在第二个事件刷新 lastEventAt 之前跑到才看得到 gap。120ms 对 80ms
+      // 只留 40ms 余量，CI runner 负载高时回调被推迟到第二个事件之后，gap 归零、
+      // 告警永不触发（实测 ubuntu leg 121ms 就红，Received: null）。
+      await new Promise((r) => setTimeout(r, 400));
       yield "slow";
     }
 
