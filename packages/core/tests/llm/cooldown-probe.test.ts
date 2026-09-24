@@ -37,6 +37,7 @@ const ALL_FAILURE_REASONS: ProbeFailureReason[] = [
   "quota_exhausted",
   "content_policy",
   "invalid_request",
+  "usage_limit_reached",
   "server_declined_retry",
   // RetryableReason
   ...ALL_RETRYABLE,
@@ -128,6 +129,7 @@ describe("S5 判定③ shouldPreserveTransientCooldownProbeSlot —— 失败后
     "model_not_found",
     "invalid_request",
     "content_policy",
+    "usage_limit_reached",
     "server_declined_retry",
     "malformed_tool_call",
   ] as const)("%s 发还配额（敲错门，对'限流窗口过了没有'一个字都没回答）", (reason) => {
@@ -147,7 +149,7 @@ describe("S5 判定③ shouldPreserveTransientCooldownProbeSlot —— 失败后
     expect(shouldPreserveTransientCooldownProbeSlot(undefined)).toBe(false);
   });
 
-  test("覆盖率门禁：全部失败 reason 都被显式裁决，且发还集合恰好是这 6 个", () => {
+  test("覆盖率门禁：全部失败 reason 都被显式裁决，且发还集合恰好是这 7 个", () => {
     const preserved = ALL_FAILURE_REASONS.filter(shouldPreserveTransientCooldownProbeSlot);
     expect(preserved.sort()).toEqual([
       "auth_failed",
@@ -156,6 +158,7 @@ describe("S5 判定③ shouldPreserveTransientCooldownProbeSlot —— 失败后
       "malformed_tool_call",
       "model_not_found",
       "server_declined_retry",
+      "usage_limit_reached",
     ]);
   });
 
