@@ -1,6 +1,6 @@
 /**
  * Shell 命令解析器
- * 拆分复合命令（&&, ||, ;, |）+ 检测重定向操作
+ * 拆分复合命令（&&, ||, ;, |, 后台 &, 换行）+ 检测重定向操作
  * 状态机实现，正确处理引号、转义、子 shell
  */
 
@@ -14,13 +14,24 @@ export interface RedirectionInfo {
 
 /**
  * 拆分复合 shell 命令
- * 在 &&、||、;、| 处拆分，正确处理引号和转义
+ * 在 &&、||、;、|、后台 &、换行 处拆分，正确处理引号和转义
  *
  * 示例：
  * - `echo "a && b"` → `["echo \"a && b\""]`（引号内不拆分）
  * - `echo a && rm -rf /` → `["echo a", "rm -rf /"]`
  * - `cat file | grep foo` → `["cat file", "grep foo"]`
  * - `echo 'hello; world'` → `["echo 'hello; world'"]`
+ * - `ls & rm -rf dir` → `["ls", "rm -rf dir"]`（后台 & 是命令分隔符）
+ *
+ * 为什么后台 & 和换行必须算分隔符：权限规则匹配是逐子命令做的
+ * （checker.ts checkDenyRules/checkAllowRules），而 minimatch 的 `*` 不跨分隔符
+ * 只在「整条被拆开」的前提下成立。漏拆时 `allow: ["Bash(ls *)"]` 会把
+ * `ls & rm -rf dir` 整条吞掉放行，`deny: ["Bash(curl *)"]` 也拦不住
+ * `ls &\ncurl evil.com`。对齐 CC splitCommand 把 & 与换行都当分隔符。
+ *
+ * 两个容易误拆的形态要排除：
+ * - `&>` / `&>>` 是「全部输出重定向」，`&` 后面紧跟 `>` 不是后台符。
+ * - `2>&1` / `>&2` 这类 fd 复制里的 `&` 前面是数字或 `>`，不是命令边界。
  */
 export function splitCompoundCommand(cmd: string): string[] {
   const parts: string[] = [];
@@ -151,6 +162,37 @@ export function splitCompoundCommand(cmd: string): string[] {
 
     // 分隔符检测：;
     if (ch === ";") {
+      pushPart(parts, current);
+      current = "";
+      i++;
+      continue;
+    }
+
+    // 分隔符检测：后台 &（单个 &，&& 已在上面处理）
+    //
+    // &> 与 &>> 是「全部输出重定向」不是后台符：& 后面紧跟 > 时整段留给
+    // detectRedirections 去判，这里不拆。
+    //
+    // N>&M / >&N 是 fd 复制（2>&1、>&2）：& 紧跟在数字或 > 后面时同样不是
+    // 命令边界。用「前一个非空白字符」判断，空白隔开的 `cmd & cmd` 不受影响。
+    //
+    // 必须看「前一个字符」而不是「前一个非空白字符」：2>&1 & other 里第二个 &
+    // 前面是空格，它是真后台符；若跳过空白去看，会看到 1 而把它误判成 fd 复制。
+    if (ch === "&" && next !== ">") {
+      const prevCh = i > 0 ? cmd[i - 1] : "";
+      const prevIsDigit = prevCh >= "0" && prevCh <= "9";
+      if (!prevIsDigit && prevCh !== ">") {
+        pushPart(parts, current);
+        current = "";
+        i++;
+        continue;
+      }
+    }
+
+    // 分隔符检测：换行。shell 里换行就是命令分隔符（等价于 ;），
+    // `ls &\ncurl x` 与 `cmd1\ncmd2` 都是两条命令。引号 / 子 shell 内的
+    // 换行已在上面的状态分支里被原样保留，到不了这里。
+    if (ch === "\n") {
       pushPart(parts, current);
       current = "";
       i++;

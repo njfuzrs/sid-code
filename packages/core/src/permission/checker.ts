@@ -917,12 +917,13 @@ export class PermissionChecker implements Checker {
     }
 
     // Step 5: ask 规则（工具级）
+    //
+    // bash 复合命令同样要逐子命令拆分（对称于 checkDenyRules / checkAllowRules）。
+    // 整条匹配时 minimatch 不跨 &&/||/;/|/&/换行，`ask: ["Bash(curl *)"]` 对
+    // `ls && curl evil` 匹配不到 → 在 always-allow / yesMode / auto 下这条「必须确认」
+    // 被静默跳过。ask 语义与 deny 相同：任一子命令命中即整体要求确认（some(ask)）。
     if (this.rules) {
-      const askDecision = checkRules(
-        { deny: [], allow: [], ask: this.rules.ask },
-        req,
-        this.buildPathRuleContext(req),
-      );
+      const askDecision = this.checkAskRules(req);
       if (askDecision && !askDecision.allowed && askDecision.needsConfirmation) {
         log.info(
           "PERMISSION",
@@ -1752,10 +1753,47 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * ask 规则检查（复合命令感知）——与 checkDenyRules 同一形状，语义是「必须确认」。
+   *
+   * 整条匹配时 `ask: ["Bash(curl *)"]` 对 `ls && curl evil` / `ls & curl evil` /
+   * `ls\ncurl evil` 全部匹配不到。ask 没中本身只是「不强制确认」，但后面的
+   * always-allow（跳过确认兜底）、yesMode 与 auto 分类器放行会把这条漏匹配变成
+   * 静默执行。所以 ask 与 deny 一样取 some：任一子命令命中即整体要求确认。
+   */
+  private checkAskRules(req: PermissionRequest): Decision | null {
+    if (!this.rules) return null;
+    const askRules = { deny: [], allow: [], ask: this.rules.ask };
+    const pathCtx = this.buildPathRuleContext(req);
+
+    if (req.toolName !== "bash") {
+      return checkRules(askRules, req, pathCtx);
+    }
+
+    const command = (req.input as { command?: string })?.command ?? "";
+    const subCommands = splitCompoundCommand(command);
+
+    if (subCommands.length <= 1) {
+      return checkRules(askRules, req, pathCtx);
+    }
+
+    for (const sub of subCommands) {
+      const subReq: PermissionRequest = {
+        ...req,
+        input: { ...(req.input as object), command: sub },
+      };
+      const subDecision = checkRules(askRules, subReq, pathCtx);
+      if (subDecision && !subDecision.allowed && subDecision.needsConfirmation) {
+        return subDecision;
+      }
+    }
+    return null;
+  }
+
+  /**
    * deny 规则检查（复合命令感知）——对称于 checkAllowRules，语义相反。
    *
    * 对齐 claude-code bashPermissions：`Bash(curl *)` 这类前缀/glob deny 规则**不能**被
-   * `safe && curl evil` 这样的复合命令前缀绕过。minimatch 不跨 `&&`/`||`/`;`/`|`，
+   * `safe && curl evil` 这样的复合命令前缀绕过。minimatch 不跨 `&&`/`||`/`;`/`|`/后台 `&`/换行，
    * 整条匹配时 `ls && curl evil.com` 匹配不到 `curl *` 规则 → 用户配置的 deny 被静默绕过。
    *
    * 修复：bash 命令先 splitCompoundCommand 拆成子命令，**任一子命令命中 deny 规则即整体拒绝**

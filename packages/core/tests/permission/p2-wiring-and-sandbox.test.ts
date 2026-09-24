@@ -20,7 +20,11 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { PermissionChecker } from "../../src/permission/checker.ts";
 import { defaultConfig } from "../../src/config/config.ts";
-import { SandboxManager, defaultSandboxConfig } from "../../src/permission/sandbox.ts";
+import {
+  SandboxManager,
+  defaultSandboxConfig,
+  prepareSandboxHosts,
+} from "../../src/permission/sandbox.ts";
 import { setFlagSettings } from "../../src/config/settings/settings.ts";
 import {
   setRemotePolicyPermissions,
@@ -248,5 +252,67 @@ describe("P2-3：沙箱自动放行", () => {
     });
     expect(pipe.allowed).toBe(false);
     expect(pipe.decisionReason?.type).toBe("dangerousCommand");
+  });
+});
+
+describe("Seatbelt profile：路径转义与网络白名单", () => {
+  test("路径里的引号与换行被转义，不能提前闭合 (subpath) 字面量", () => {
+    const sb = new SandboxManager(
+      {
+        ...defaultSandboxConfig(),
+        enabled: true,
+        allowedReadPaths: ['a"b\nc'],
+        allowedWritePaths: ['x"y'],
+      },
+      '/tmp/work "quoted"',
+    );
+    const profile = sb.generateSeatbeltProfile();
+
+    // 每条 (subpath ...) 规则的引号必须成对：值里的 " 被转成 \"，换行被剔除。
+    for (const line of profile.split("\n")) {
+      const m = line.match(/subpath (".*")\)/);
+      if (!m) continue;
+      const inner = m[1].slice(1, -1);
+      // 去掉转义后的引号，剩下的 " 必须是 0 个，否则规则被值截断了
+      expect(inner.replace(/\\"/g, "").includes('"')).toBe(false);
+      expect(inner.includes("\n")).toBe(false);
+    }
+    expect(profile).toContain('(subpath "/tmp/work \\"quoted\\"")');
+    expect(profile).toContain('(subpath "a\\"bc")');
+    expect(profile).toContain('(subpath "x\\"y")');
+  });
+
+  test("localhost 解析成 IP 后才写进 remote ip，字面量 localhost 不出现", async () => {
+    await prepareSandboxHosts(["localhost"]);
+    const sb = new SandboxManager(
+      { ...defaultSandboxConfig(), enabled: true, allowedHosts: ["localhost"] },
+      cwd,
+    );
+    const profile = sb.generateSeatbeltProfile();
+    // Seatbelt 的 remote ip 过滤不认主机名，写 "localhost" 等于没放行。
+    expect(profile.includes('remote ip "localhost:*"')).toBe(false);
+    const wroteLoopback =
+      profile.includes('remote ip "127.0.0.1:*"') || profile.includes('remote ip "::1:*"');
+    expect(wroteLoopback).toBe(true);
+  });
+
+  test("IP 字面量不依赖 DNS，原样写入", () => {
+    const sb = new SandboxManager(
+      { ...defaultSandboxConfig(), enabled: true, allowedHosts: ["10.0.0.8"] },
+      cwd,
+    );
+    const profile = sb.generateSeatbeltProfile();
+    expect(profile).toContain('(allow network* (remote ip "10.0.0.8:*"))');
+  });
+
+  test("非 darwin 上 isEnabled() 为 false：开关打开也不等于有隔离", () => {
+    const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, cwd);
+    if (process.platform === "darwin") {
+      expect(sb.isEnabled()).toBe(true);
+    } else {
+      expect(sb.isEnabled()).toBe(false);
+      // 未启用时 wrapCommand 必须原样返回，不能包一层不存在的 sandbox-exec
+      expect(sb.wrapCommand("echo hi")).toBe("echo hi");
+    }
   });
 });

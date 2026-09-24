@@ -72,13 +72,15 @@ const READ_ONLY_COMMANDS = new Set([
   "basename",
   "dirname",
   "realpath",
-  // 网络（只读）
+  // 网络查询（只读：只问本地解析器，不携带用户数据、不取回可执行内容）
   "ping",
   "dig",
   "nslookup",
   "host",
-  "curl",
-  "wget",
+  // curl / wget 不在此列：它们能向任意 URL 发请求并取回响应体。
+  // 「不带 -o 就是只读」不成立——响应体照样回到工具输出、进主模型上下文，
+  // 这正是网页注入的入口。它们的放行由 CONDITIONAL_COMMANDS 恒判为非只读，
+  // 落到权限确认，而不是在工具级直接 allow。
 ]);
 
 /**
@@ -263,10 +265,14 @@ const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   awk: () => true,
   // tee 总是写文件
   tee: () => false,
-  // curl/wget 只有不带 -o/-O 时才是只读
-  curl: (args) =>
-    !args.some((a) => a === "-o" || a === "-O" || a === "--output" || a.startsWith("-o")),
-  wget: (args) => !args.some((a) => a === "-O" || a === "--output-document" || a.startsWith("-O")),
+  // curl/wget 恒非只读。
+  //
+  // 旧规则「不带 -o/-O 就当只读」只看了有没有写文件，漏了两件事：
+  // 请求本身会把 URL 参数里的数据发往任意主机，响应体（含网页里的指令）
+  // 会经工具输出进主模型上下文。-o 只是其中一种副作用，不是唯一的。
+  // 判非只读后它们落到权限确认；用户想免确认需显式配 allow 规则。
+  curl: () => false,
+  wget: () => false,
   // npm/bun 只有特定子命令是只读
   npm: (args) => {
     const sub = args[0];
