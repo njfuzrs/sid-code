@@ -4,7 +4,7 @@
 ⛔ 不许留一个没说明的子目录。对照 terminal-bench：归档目录的文档覆盖率 ≥ 活目录。
 
 当前分母是 **2**（`judge-prompts/` + `inspect-spike/`）。
-⛔ 不是 5 —— `_diagnoses/` / `cross-provider/` 是活的，不进这个桶；
+⛔ 不是 5 —— `cross-provider/` 是活的，不进这个桶；`_diagnoses/` 已于 2026-09-24 删除（输入题集不存在）；
 判据词汇表落在 `agent-traj-bench/docs/eval-criteria/`，不落这里。
 
 | 子目录 | 为什么留 | 谁可能来查 |

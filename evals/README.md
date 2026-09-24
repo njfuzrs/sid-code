@@ -102,7 +102,6 @@ evals/                            # 入库以 `git ls-files evals | wc -l` 为�
 ├── _judge/             18  # ✅ 在用：prompt-v3 + calibration-v3（κ=0.921）+ gold-cases 10 + README
 │                          #   prompt-v2 / types / pairwise 测试已迁 packages/eval-framework/judge/
 ├── _archive/            9  # 退役但要留：judge-prompts/ + inspect-spike/ + README（分母 2）
-├── _diagnoses/         12  # ✅ 在用：5 个 fix_type 归因轴的唯一实例化记录 + SCHEMA.md + runs/
 ├── _reports/           24  # external/（含 evidence 清单）+ .gitkeep
 ├── bench-runner/        8  # 大规模 bench：runner + 3 grader + 4 adapter（capability-{grader,shared} 已删）
 ├── providers/           4  # sid-code 特定的在线 wrapper（⛔ 不是 eval-framework/providers/）
@@ -121,7 +120,8 @@ evals/                            # 入库以 `git ls-files evals | wc -l` 为�
 | `_scores/` | ❌ 删 | 13 号 PR2 |
 | `_runs/`（4 个 jsonl） | ❌ **删数据**，⚠️ **目录名不动** | 13 号 PR2 + `runner.ts` 对外契约 |
 | `inspect/` | → `_archive/inspect-spike/` | 本 PR（PR-D）—— 只这一项 |
-| `_diagnoses/` `cross-provider/` | ✅ **留原地（是活的）** | 两个活入口 / 4 pass 活测试 |
+| `_diagnoses/` | ❌ **删**（2026-09-24） | 输入（四组题集）已不存在，见下方说明 |
+| `cross-provider/` | ✅ **留原地（是活的）** | 4 pass 活测试 |
 | `verify-judge-stability.ts` | ❌ **删** | 13 号 PR3a |
 | `_template.yaml` | ❌ **删** | 13 号 PR2 |
 | `_judge/prompt-v0.md` `prompt-v1.md` | → `_archive/judge-prompts/` | PR-C |
@@ -208,7 +208,7 @@ bun run eval:run --provider sid-code,claude-code
 | ~~`eval-runner.ts` `eval-judge.ts` `_types.ts`~~ | 🔴 **已不在本目录** —— runner 与 judge 迁到 `packages/eval-framework/core/{runner,judge}.ts`，类型定义迁到同目录 `types.ts` |
 | `_judge/prompt-v3.md` `_judge/calibration-v3/` `_judge/gold-cases/` | ✅ **在用**：v3 含 sid-code 硬编码 few-shot，**留本目录**（见 `_judge/README.md`）。κ=0.921 重新校一次要数小时人工标注。agent-agnostic 的 `prompt-v2.md` 已迁 `packages/eval-framework/judge/` |
 | `providers/*.ts` | ✅ 在用：sid-code 特定在线 wrapper（见上方「三层 provider 边界」） |
-| `_diagnoses/` | ✅ 在用：5 个 `fix_type` 归因轴的唯一实例化记录 |
+| ~~`_diagnoses/`~~ | 已删（2026-09-24）：gold 指向的 case 随四组题集删除，`eval:diagnose` / `eval:verify-diagnosis` 同批下线 |
 
 ⚠️ 曾在这一层、**2026-09-18 已删**的一对：`gen-cases-md.ts` → `CASES.md`
 （CASES.md 头部自陈"自动生成，请勿手动编辑"，而其数据源 `_reports/promptfoo-latest.json`
@@ -347,7 +347,7 @@ git ls-files scripts/eval | wc -l
 
 | 目录 | 放什么 | 判据 |
 | --- | --- | --- |
-| **`evals/`** | 评测**体系本身**：四组 case yaml 已全部删除；`holdout/` 只剩 README + 永封 sids、judge 与诊断资产（`_judge/` `_diagnoses/`）、报告（`_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
+| **`evals/`** | 评测**体系本身**：四组 case yaml 已全部删除；`holdout/` 只剩 README + 永封 sids、judge 资产（`_judge/`）、报告（`_reports/`），以及**与 case 数据强耦合的执行代码**（`bench-runner/` `providers/` `scripts/`） | **改一个 case 就要跟着改的代码，放这里** |
 | **`scripts/eval/`** | 评测的**工具与门禁**：跑批入口、聚合、门禁脚本 | **与具体 case 无关、对整个评测集通用的，放这里** |
 
 根下 `.ts` 已清零（`verify-judge-stability.ts` 随 general 下线；`gen-cases-md.ts` 随 CASES.md 下线）。

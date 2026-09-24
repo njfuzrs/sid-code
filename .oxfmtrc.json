@@ -78,7 +78,7 @@
     // 机器产出的 JSON 数据（不是源码）—— 格式化它们等于跟生成器打架：
     // 下次生成又写回原样，于是每次跑生成器 git status 就脏一次。
     //   changelog.json  ← scripts/generate-changelog.ts（只有 release.sh 有资格生成）
-    //   _reports / _diagnoses/runs  ← 评测跑批的转储
+    //   _reports  ← 评测跑批的转储
     //   tests/fixtures/vcr  ← 录制下来的 SSE 回放数据，要与真实 wire 内容保持可比对
     //     （见 content-tracing 的设计：raw.jsonl 已是录制源，VCR 只做回放）
     //   harbor/results/*.json  ← evals/.../harbor/w3-summary.py（`json.dump(indent=2)`）
@@ -89,7 +89,6 @@
     //     所以「让生成器听 formatter 的」这个方向不可行：它得能被原样复现。
     "website/.vitepress/data/changelog.json",
     "evals/_reports/**",
-    "evals/_diagnoses/runs/**",
     "evals/external-benchmarks/harbor/results/**",
     "packages/core/tests/fixtures/vcr/**",
 
