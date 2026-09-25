@@ -183,11 +183,13 @@ class IDEInstallCommand implements Command {
 }
 
 /**
- * lockfile 缺失时的提示文案。纯函数：进程检测的结果由调用方传入，
- * 这样「检测到什么」和「说什么」可以分开测。
+ * lockfile 缺失时的提示文案。
+ *
+ * 故意不导出：它的唯一消费者就是本文件的 explainNoLockfile，
+ * 而命令体系门禁把「零生产调用的导出」算死代码，导出会让基线 +1。
  * 空列表（没检测到，或检测本身失败）必须退回通用文案 —— 一条提示不该点名一个不存在的 IDE。
  */
-export function noLockfileMessage(running: readonly string[]): string {
+function noLockfileMessage(running: readonly string[]): string {
   if (running.length > 0) {
     const names = running.join("、");
     return `检测到 ${names} 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）\n使用 /ide install 安装扩展，安装后重启 IDE`;
