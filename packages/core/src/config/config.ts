@@ -1251,11 +1251,59 @@ async function loadConfigFile(): Promise<Partial<Config>> {
   const settingsPath = join(configDir, "settings.json");
   const appConfigPath = join(configDir, "app.json");
 
-  if (existsSync(settingsPath) || existsSync(appConfigPath)) {
-    return loadNewFormatAsConfig(settingsPath, appConfigPath);
-  }
+  // 用户级 settings.json + app.json 是底。app.json 是内部状态（debug/checkpoint/trace），
+  // 不进 5 层级，单独读。
+  const userConfig =
+    existsSync(settingsPath) || existsSync(appConfigPath)
+      ? await loadNewFormatAsConfig(settingsPath, appConfigPath)
+      : {};
 
-  return {};
+  // 项目级 / 本地级只叠加行为字段。路由流量字段（model/baseURL/provider/availableModels/env）
+  // 不在此放行：信任门控在 loadConfig 之后才摘 hooks/mcpServers，env 也在信任判定前生效，
+  // 恶意仓库若能在 .sid-code/settings.json 里改这些字段，会在用户确认信任之前就把请求
+  // 路由到攻击者端点。详见 .agents/notes 2026-09-25 配置系统对齐。
+  const { getSettings } = await import("./settings/settings.ts");
+  const layered = getSettings();
+  const overlay = pickProjectBehaviorFields(layered.settings);
+  return mergeConfig(userConfig, overlay);
+}
+
+/**
+ * 项目级 / 本地级 settings 允许覆盖到主运行时的字段。
+ *
+ * 只收「行为」字段：改了它们最多改变界面或工具行为，不能把请求路由到别处、
+ * 也不能注入进程环境。路由流量字段（model/baseURL/provider/availableModels/env/mcpServers）
+ * 刻意不在此列，见 loadConfigFile 的注释。
+ */
+const PROJECT_BEHAVIOR_FIELDS = [
+  "language",
+  "theme",
+  "vimMode",
+  "alternateBuffer",
+  "accentColor",
+  "fastMode",
+  "outputStyle",
+  "autoDream",
+  "autoMemory",
+  "effortLevel",
+  "thinkingEnabled",
+  "maxThinkingTokens",
+  "askUserQuestionTimeout",
+  "conflictDetection",
+  "conflictSeverity",
+  "showLineNumbers",
+  "respectGitignore",
+  "disableAllHooks",
+  "includeCoAuthoredBy",
+  "cleanupPeriodDays",
+] as const;
+
+function pickProjectBehaviorFields(settings: Record<string, unknown>): Partial<Config> {
+  const picked: Record<string, unknown> = {};
+  for (const key of PROJECT_BEHAVIOR_FIELDS) {
+    if (settings[key] !== undefined) picked[key] = settings[key];
+  }
+  return picked as Partial<Config>;
 }
 
 /**
@@ -1320,10 +1368,12 @@ function loadFromEnv(): Partial<Config> {
   const env = process.env;
   const base: Partial<Config> = {
     provider: env.SID_CODE_LLM_PROVIDER,
-    model: env.SID_CODE_LLM_MODEL,
+    // G2：SID 名优先，CC 原名兜底。从 CC 迁移的用户沿用 ANTHROPIC_MODEL 不再静默失效。
+    model: env.SID_CODE_LLM_MODEL || env.ANTHROPIC_MODEL,
     // baseURL：SID_CODE_LLM_BASE_URL 优先，OPENAI_BASE_URL 作兼容别名（不确定-4：
-    // 此前只实现了 SID_CODE_LLM_BASE_URL，运维习惯用的 OPENAI_BASE_URL 压根没被读取）。
-    baseURL: env.SID_CODE_LLM_BASE_URL || env.OPENAI_BASE_URL,
+    // 此前只实现了 SID_CODE_LLM_BASE_URL，运维习惯用的 OPENAI_BASE_URL 压根没被读取），
+    // 再兜底 CC 原名 ANTHROPIC_BASE_URL。
+    baseURL: env.SID_CODE_LLM_BASE_URL || env.OPENAI_BASE_URL || env.ANTHROPIC_BASE_URL,
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
     openaiKey: env.OPENAI_API_KEY || env.SID_CODE_LLM_API_KEY,
   };
@@ -1331,7 +1381,8 @@ function loadFromEnv(): Partial<Config> {
   // maxTokens（输出上限）可经 env 显式配置，无需改源码即可放宽/收紧。
   // 设置后会被视为"用户显式配置"（:744），从而跳过模型自动推导、以此值为准。
   // 非法值（NaN / ≤0）静默忽略，回退到默认/推导链路。
-  const envMaxTokens = env.SID_MAX_OUTPUT_TOKENS;
+  // G2：SID_MAX_OUTPUT_TOKENS 优先，CC 原名 CLAUDE_CODE_MAX_OUTPUT_TOKENS 兜底。
+  const envMaxTokens = env.SID_MAX_OUTPUT_TOKENS || env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
   if (envMaxTokens !== undefined && envMaxTokens !== "") {
     const n = Number.parseInt(envMaxTokens, 10);
     if (Number.isFinite(n) && n > 0) base.maxTokens = n;
@@ -1340,7 +1391,8 @@ function loadFromEnv(): Partial<Config> {
   // 工具延迟加载（ToolSearch）env 覆盖：SID_CODE_TOOL_SEARCH 支持
   // true/false/auto/auto:N/纯数字（对标 claude-code ENABLE_TOOL_SEARCH）。
   // 非法值返回 undefined，不覆盖配置文件/默认值。
-  const toolSearchEnv = parseToolSearchEnv(env.SID_CODE_TOOL_SEARCH);
+  // G2：SID_CODE_TOOL_SEARCH 优先，CC 原名 ENABLE_TOOL_SEARCH 兜底。
+  const toolSearchEnv = parseToolSearchEnv(env.SID_CODE_TOOL_SEARCH || env.ENABLE_TOOL_SEARCH);
   if (toolSearchEnv !== undefined) {
     base.toolSearch = toolSearchEnv;
   }

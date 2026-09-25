@@ -405,6 +405,18 @@ export const SettingsSchema = lazySchema(
 
         // 网络超时/重试配置（direct/gateway 场景适配）
         network: NetworkTimeoutsSchema().optional(),
+
+        // G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。
+        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。
+        respectGitignore: z.boolean().optional(),
+        // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
+        // 任一为 true 即禁用。见 hook/registry.ts。
+        disableAllHooks: z.boolean().optional(),
+        // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
+        // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
+        includeCoAuthoredBy: z.boolean().optional(),
+        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。
+        cleanupPeriodDays: z.number().positive().optional(),
       })
       .passthrough(), // 保留未知字段（向前兼容）
 );

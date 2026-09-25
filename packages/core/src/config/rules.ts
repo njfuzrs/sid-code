@@ -43,7 +43,9 @@ export const CLAUDE_MD_FILES = [
 /** 本地私有规则文件名（不检入代码库，优先级最高） */
 export const CLAUDE_LOCAL_FILES = ["CLAUDE.local.md", ".claude/CLAUDE.local.md"] as const;
 
-/** 项目规则目录（.claude/rules/*.md） */
+/** 项目规则目录候选。.sid-code/rules 优先，.claude/rules 兼容读取（G6）。 */
+export const PROJECT_RULES_DIRS = [".sid-code/rules", ".claude/rules"];
+/** @deprecated 使用 PROJECT_RULES_DIRS。保留只为不破坏既有 import。 */
 export const CLAUDE_RULES_DIR = ".claude/rules";
 
 /**
@@ -872,7 +874,13 @@ async function loadRulesFromDir(
  * 加载项目级 .claude/rules/ 目录下的所有 *.md 规则文件（rulesDir 层）。
  */
 async function loadRulesDir(projectRoot: string, seen: Set<string>): Promise<ProjectRules[]> {
-  return loadRulesFromDir(join(projectRoot, CLAUDE_RULES_DIR), "rulesDir", projectRoot, seen);
+  const out: ProjectRules[] = [];
+  // G6：.sid-code/rules 优先，.claude/rules 兼容。两个都存在时都加载，去重由 seen 保证。
+  for (const dir of PROJECT_RULES_DIRS) {
+    const rules = await loadRulesFromDir(join(projectRoot, dir), "rulesDir", projectRoot, seen);
+    out.push(...rules);
+  }
+  return out;
 }
 
 /**
@@ -1208,7 +1216,10 @@ export function watchCLAUDEmd(startDir: string, onChange?: (path: string) => voi
   // M10：目录级监听——.claude/rules/ + 用户级 rules 目录。
   // 目录内 *.md 增删改都触发重建（fs.watch 目录级，recursive 尽力而为）。
   const projectRoot = projectPath ? dirname(projectPath) : startDir;
-  const dirsToWatch: string[] = [join(projectRoot, CLAUDE_RULES_DIR), ...userRulesDirs()];
+  const dirsToWatch: string[] = [
+    ...PROJECT_RULES_DIRS.map((d) => join(projectRoot, d)),
+    ...userRulesDirs(),
+  ];
 
   if (filesToWatch.length === 0 && dirsToWatch.every((d) => !existsSync(d))) {
     log.debug("RULES", "无 CLAUDE.md / rules 目录需要监听");

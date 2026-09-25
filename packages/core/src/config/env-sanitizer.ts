@@ -58,6 +58,13 @@ const ALWAYS_ALLOWED = new Set([
   "SID_CODE_LLM_PROVIDER",
   "SID_CODE_LLM_MODEL",
   "SID_CODE_LLM_BASE_URL",
+  // G2：CC 原名兜底。子进程 env 清理不放行这些名字，loadFromEnv 的 fallback 在子进程里就失效。
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+  "CLAUDE_CONFIG_DIR",
+  "ENABLE_TOOL_SEARCH",
+  "SID_MAX_OUTPUT_TOKENS",
 ]);
 
 /** 黑名单：始终移除的已知敏感变量 */
