@@ -52,7 +52,7 @@ const CLOSE_CODE_HALF_OPEN = 4900;
  */
 const PERMANENT_CLOSE_CODES = new Set([1002, 1003, 1008, 4001, 4003]);
 
-/** 关闭码 → 人话（只覆盖我们会主动分流的那些） */
+/** 关闭码 → 人话（只覆盖我们会主动分流的那些）。回调 reason 就是这段文案。 */
 function describeCloseCode(code: number): string {
   switch (code) {
     case 1002:
@@ -67,6 +67,37 @@ function describeCloseCode(code: number): string {
       return "会话过期或无权限";
     default:
       return `关闭码 ${code}`;
+  }
+}
+
+/**
+ * 连接 URL 必须不含 token。
+ *
+ * S1：query string 会进 nginx access log / APM / 进程列表的旁路。
+ * 调用方（或旧命令行）若把 `?token=` 写进 URL，这里剥掉再连——
+ * 凭证只走 Upgrade 之后的首帧，不走握手元数据。
+ *
+ * 只剥 search/hash，不动 host 与 path。不能复用 normalizeBridgeUrl：
+ * 那个函数还做尾斜杠与大小写归一，是信任键，拿来当连接 URL 会连到另一个路径。
+ * 解析失败时退回原串，让 WebSocket 自己失败，不在这里另发明一种拒法。
+ */
+export function stripTokenQuery(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function isAuthOkFrame(data: string): boolean {
+  try {
+    const parsed = JSON.parse(data) as { type?: unknown };
+    return parsed?.type === "auth_ok";
+  } catch {
+    return false;
   }
 }
 
@@ -94,6 +125,11 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   private onConnectCb?: () => void;
   /** 永久失败回调：让上层能立刻报错，而不是等 10 分钟 */
   private onPermanentFailureCb?: (code: number, reason: string) => void;
+  /**
+   * 首帧鉴权是否已通过。onopen 只代表 TCP/WS 握手完成，对端还没验 token。
+   * auth_ok 之前的业务帧一律丢弃——否则一条抢跑的 user_message 会在凭证被接受前进主循环。
+   */
+  private authenticated = false;
 
   constructor(url: string, authToken?: string) {
     this.url = url;
@@ -119,11 +155,11 @@ export class WebSocketBridgeTransport implements BridgeTransport {
 
   async connect(): Promise<void> {
     this.closedByUser = false;
+    this.authenticated = false;
     return new Promise((resolve, reject) => {
-      const wsUrl = this.authToken
-        ? `${this.url}${this.url.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.authToken)}`
-        : this.url;
-
+      // 防御：调用方误把 token 写进 URL 时，实际握手不含它。无 token 仍允许连——
+      // 拒的职责在中继（第一版必鉴权 → 立刻 4001）。客户端先拒会让「中继没开鉴权的开发回环」变复杂。
+      const wsUrl = stripTokenQuery(this.url);
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -132,10 +168,14 @@ export class WebSocketBridgeTransport implements BridgeTransport {
         // 探活基线必须在这里置一次：否则首个心跳周期里 lastInboundAt 还是 0，
         // 会把一条刚建好、对端只是还没说话的连接立刻判成半开。
         this.lastInboundAt = Date.now();
-        this.startHeartbeat();
-        this.startFlushTimer();
-        this.onConnectCb?.();
-        getLogger().info("BRIDGE", "WebSocket 已连接");
+        if (this.authToken) {
+          // auth 停在传输层，不进 BridgeOutMessage。进了闭集就会有人从 BridgeCore.send 再发一次。
+          this.ws?.send(JSON.stringify({ type: "auth", token: this.authToken, role: "cli" }));
+        } else {
+          // 没有凭证可发：保持今天「连上去等对端关」的行为，不在客户端先拒。
+          this.markAuthenticated();
+        }
+        getLogger().info("BRIDGE", "WebSocket 已握手，等待鉴权");
         resolve();
       };
 
@@ -145,6 +185,11 @@ export class WebSocketBridgeTransport implements BridgeTransport {
         // 而我们的对端是自托管中继，不能假定它会。
         this.lastInboundAt = Date.now();
         const data = typeof event.data === "string" ? event.data : String(event.data);
+        if (!this.authenticated) {
+          if (!isAuthOkFrame(data)) return;
+          this.markAuthenticated();
+          return;
+        }
         this.onDataCb?.(data);
       };
 
@@ -182,7 +227,9 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    // OPEN 只是握手完成。有 token 时 auth_ok 之前仍算没连上——
+    // BridgeCore.send 靠这个判断能不能发业务帧，提前放行等于鉴权前就出站。
+    return this.ws?.readyState === WebSocket.OPEN && this.authenticated;
   }
 
   /** 是否已判定永久失败（认证失败等，重连也没用） */
@@ -197,7 +244,7 @@ export class WebSocketBridgeTransport implements BridgeTransport {
       case WebSocket.CONNECTING:
         return "connecting";
       case WebSocket.OPEN:
-        return "connected";
+        return this.authenticated ? "connected" : "authenticating";
       case WebSocket.CLOSING:
         return "closing";
       case WebSocket.CLOSED:
@@ -223,6 +270,7 @@ export class WebSocketBridgeTransport implements BridgeTransport {
 
   close(): void {
     this.closedByUser = true;
+    this.authenticated = false;
     this.stopHeartbeat();
     this.stopFlushTimer();
     this.uploader.stop();
@@ -233,6 +281,19 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   }
 
   // ─── 内部方法 ───
+
+  /**
+   * auth_ok 之后才算已连接：心跳、批量刷新、上层 onConnect 都从这里起。
+   * 提前到 onopen 会让「对端还没验完」被上层当成可以发业务帧。
+   */
+  private markAuthenticated(): void {
+    if (this.authenticated || this.closedByUser) return;
+    this.authenticated = true;
+    this.startHeartbeat();
+    this.startFlushTimer();
+    this.onConnectCb?.();
+    getLogger().info("BRIDGE", "WebSocket 鉴权通过");
+  }
 
   /** 发送一批消息（uploader 的 postFn） */
   private async sendBatch(batch: BridgeOutMessage[]): Promise<void> {
