@@ -6730,23 +6730,47 @@ export class App {
 
     this.abortController = new AbortController();
 
+    let exitCode = 0;
     try {
       await runner.start();
       log.info("BRIDGE", `Bridge 模式已就绪: ${options.url}`);
       process.stderr.write(`\nBridge 远程控制已启动: ${options.url}\n按 Ctrl+C 退出\n\n`);
 
-      // 常驻：等待退出信号
-      await new Promise<void>((resolve) => {
-        const shutdown = () => resolve();
+      // 常驻：等待退出信号，或传输层判定永久失败（4001/4003/1008）。
+      // 不订这个回调时，坏 token 会停掉重连，进程却一直停在这句「按 Ctrl+C 退出」。
+      await new Promise<void>((resolve, reject) => {
+        const shutdown = () => {
+          process.off("SIGINT", shutdown);
+          process.off("SIGTERM", shutdown);
+          resolve();
+        };
         process.once("SIGINT", shutdown);
         process.once("SIGTERM", shutdown);
+        void runner.waitForPermanentFailure().then(
+          (failure) => {
+            process.off("SIGINT", shutdown);
+            process.off("SIGTERM", shutdown);
+            reject(failure);
+          },
+          () => {
+            /* stop() 取消等待：SIGINT 分支已经 resolve，这里吞掉即可 */
+          },
+        );
       });
+    } catch (err) {
+      exitCode = 1;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`\n${message}\n`);
+      log.error("BRIDGE", message);
     } finally {
       await runner.stop().catch(() => {});
       this.abortController = null;
       this.mcpManager?.closeAll();
       const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
       await runShutdownSequence();
+      // 永久失败必须非 0。常驻到 Ctrl+C 的正常退出保持 0——
+      // 这里不是 headless 任务，没有「预算硬停」那种业务失败要区分。
+      if (exitCode !== 0) process.exit(exitCode);
     }
   }
 
