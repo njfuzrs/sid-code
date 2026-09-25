@@ -2754,10 +2754,15 @@ export async function main(): Promise<void> {
       // 批准者就是它自己，权限体系在这条路径上是**自证的**。所以防线必须在
       // 建连之前、由本机的人给出。
       const { checkBridgeAdmission } = await import("@sid-code/core/bridge/admission.ts");
+      const { isBridgePolicyEnabled, setLocalBridgeEnabled } =
+        await import("@sid-code/core/bridge/bridge-policy.ts");
+      // 本机 settings.json 的 bridge.enabled 只是默认。远程 bridgeEnabled:false 已在
+      // applyLoadedPolicy 写入单例，这里再读 config.bridge 当企业关的来源会把远程 false 盖掉。
+      setLocalBridgeEnabled(config.bridge?.enabled);
       const admission = await checkBridgeAdmission({
         url: cliArgs.bridgeUrl,
         allowInsecure: cliArgs.bridgeInsecure,
-        policyEnabled: config.bridge?.enabled,
+        policyEnabled: isBridgePolicyEnabled(),
         // 只在真有 TTY 时提供 confirm：没有 TTY 就让 admission 走 fail-closed，
         // 而不是在这里"默认放行"——默认放行等于没有这道门。
         confirm: process.stdin.isTTY ? (prompt) => promptYesNo(prompt) : undefined,

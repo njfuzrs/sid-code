@@ -11,6 +11,7 @@ import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credentia
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { sidPaths } from "./paths.ts";
 import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
+import { setBridgePolicy } from "../bridge/bridge-policy.ts";
 import { setPolicyLimits } from "./policy-limits.ts";
 import { setRemotePolicyPermissions } from "./remote-policy-state.ts";
 import { logPolicyEnforced, type PolicyEnforcedOutcome } from "../analytics/events.ts";
@@ -63,6 +64,12 @@ export interface PolicySettings {
   strictPluginOnlyCustomization?:
     | boolean
     | import("./plugin-only-policy.ts").CustomizationSurface[];
+  /**
+   * 远程关掉 Bridge。省略 / undefined = 未配置 = 不关。
+   * false 覆盖本机 settings.json 的 bridge.enabled。true 只是显式允许，
+   * 首次本机确认与 wss 要求仍在。不要做成无认证 flag：开遥控不需要远程字段。
+   */
+  bridgeEnabled?: boolean;
 }
 
 /** 策略加载器接口（可扩展） */
@@ -231,6 +238,7 @@ const ALLOWED_REMOTE_KEYS = new Set([
   "disabledModes",
   "disableBypassPermissionsMode",
   "strictPluginOnlyCustomization",
+  "bridgeEnabled",
 ]);
 
 const BOOTSTRAP_KEYS = new Set(["policyEndpoint", "endpoint", "SID_CODE_POLICY_ENDPOINT"]);
@@ -350,6 +358,9 @@ export function sanitizeRemotePolicy(raw: unknown): PolicySettings | null {
   }
   const pluginOnly = sanitizePluginOnly(input.strictPluginOnlyCustomization);
   if (pluginOnly !== undefined) out.strictPluginOnlyCustomization = pluginOnly;
+  if (typeof input.bridgeEnabled === "boolean") {
+    out.bridgeEnabled = input.bridgeEnabled;
+  }
 
   // 未知顶层键（含自举字段、管理台字段）直接剥掉，不整份丢。
   for (const key of Object.keys(input)) {
@@ -688,8 +699,11 @@ export function loadEnterprisePolicyOnce(): Promise<PolicySettings | null> {
 export function applyLoadedPolicy(policy: PolicySettings | null, meta?: PolicyLoadMeta): void {
   if (policy?.source === "remote") {
     setRemotePolicyPermissions(policy.permissions, true);
+    // 省略 = undefined = 不关。必须每次都写，否则上次的 false 会留在进程里。
+    setBridgePolicy(policy.bridgeEnabled, true);
   } else {
     setRemotePolicyPermissions(undefined, false);
+    setBridgePolicy(undefined, false);
   }
   if (policy) {
     if (policy.policyLimits) {
