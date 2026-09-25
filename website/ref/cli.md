@@ -79,13 +79,13 @@ sid-code 的全部命令行参数与子命令。
 
 | 参数 | 说明 |
 |---|---|
-| `-p, --print` | 无头模式（非交互式，需提供提示词） |
-| `--input-format <fmt>` | 输入格式 (text/stream-json；stream-json 从 stdin 读流式消息) |
-| `--output-format <fmt>` | 输出格式 (text/json/stream-json；stream-json 逐条输出流式消息) |
-| `--include-partial-messages` | stream-json 输出模式下包含部分消息增量 |
+| `-p, --print` | 无头模式（非交互式，需提供提示词或管道输入） |
+| `--input-format <fmt>` | 输入格式 (text/stream-json，默认 text；stream-json 从 stdin 逐条读消息， 且必须同时指定 --output-format stream-json) |
+| `--output-format <fmt>` | 输出格式 (text/json/stream-json，默认 text) |
+| `--include-partial-messages` | 转发 token 级增量（仅 -p 且 --output-format stream-json 时有效） |
 | `--max-turns <n>` | Agent 循环最大轮次 |
-| `--verbose` | 详细输出（无头模式下输出全量消息数组而非仅最终消息） |
-| `--json-schema <path>` | 结构化输出 JSON Schema 文件路径（约束 LLM 输出格式） |
+| `--verbose` | 详细输出（stream-json 必需；json 下输出全量消息数组而非仅最终消息） |
+| `--json-schema <json\|path>` | 结构化输出 JSON Schema（内联 JSON，或以 { 之外字符开头的文件路径） |
 
 ## 系统提示词
 

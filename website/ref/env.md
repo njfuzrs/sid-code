@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **122** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 169 个）交叉核对。
+> 共 **123** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 170 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -142,6 +142,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_WATCHDOG_HEADER_GRACE_MS` | 首字节余量（缺省 15000） |
 | `SID_CODE_RESPONSE_HEADER_TIMEOUT_MS` | 响应头超时（缺省 300000） |
 | `SID_CODE_MAX_SESSION_DURATION_MS` | 单次输入的连续执行总时长上限（缺省 0＝关闭） |
+| `SID_CODE_STDIN_TIMEOUT_MS` | 无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续） |
 | `SID_CODE_MAX_TIMEOUT_RETRIES` | loop 层重试上限（缺省 10） |
 | `SID_CODE_RETRY_BACKOFF_BASE_MS` | 指数退避基数（缺省 5000，带 ±15% jitter） |
 | `SID_CODE_ANTHROPIC_CONTENT_PROGRESS_TIMEOUT_MS` | anthropic 族档②专用覆盖 |

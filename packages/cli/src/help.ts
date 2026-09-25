@@ -9,6 +9,7 @@ sid-code - AI 编程 CLI 工具
 用法:
   sid-code [选项] [提示词]
   sid-code <子命令> [子命令选项]
+  cat file.txt | sid-code -p "分析这个文件"   无头模式下读取管道 stdin（仅 --input-format text）
 
 LLM 配置:
   --provider <name>           LLM 提供商 (anthropic/openai/ollama)
@@ -44,13 +45,14 @@ LLM 配置:
   --cleanup-sessions          手动触发会话清理
 
 无头模式:
-  -p, --print                 无头模式（非交互式，需提供提示词）
-  --input-format <fmt>        输入格式 (text/stream-json；stream-json 从 stdin 读流式消息)
-  --output-format <fmt>       输出格式 (text/json/stream-json；stream-json 逐条输出流式消息)
-  --include-partial-messages  stream-json 输出模式下包含部分消息增量
+  -p, --print                 无头模式（非交互式，需提供提示词或管道输入）
+  --input-format <fmt>        输入格式 (text/stream-json，默认 text；stream-json 从 stdin 逐条读消息，
+                              且必须同时指定 --output-format stream-json)
+  --output-format <fmt>       输出格式 (text/json/stream-json，默认 text)
+  --include-partial-messages  转发 token 级增量（仅 -p 且 --output-format stream-json 时有效）
   --max-turns <n>             Agent 循环最大轮次
-  --verbose                   详细输出（无头模式下输出全量消息数组而非仅最终消息）
-  --json-schema <path>        结构化输出 JSON Schema 文件路径（约束 LLM 输出格式）
+  --verbose                   详细输出（stream-json 必需；json 下输出全量消息数组而非仅最终消息）
+  --json-schema <json|path>   结构化输出 JSON Schema（内联 JSON，或以 { 之外字符开头的文件路径）
 
 系统提示词:
   --system-prompt <text>      覆盖系统提示词
@@ -246,6 +248,7 @@ Worktree 隔离:
   SID_CODE_WATCHDOG_HEADER_GRACE_MS  首字节余量（缺省 15000）
   SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  响应头超时（缺省 300000）
   SID_CODE_MAX_SESSION_DURATION_MS  单次输入的连续执行总时长上限（缺省 0＝关闭）
+  SID_CODE_STDIN_TIMEOUT_MS     无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续）
   SID_CODE_MAX_TIMEOUT_RETRIES  loop 层重试上限（缺省 10）
   SID_CODE_MAX_RETRIES_PER_CALL 单次调用内连接+流式重试的共享上界（缺省 12）
   SID_CODE_RETRY_BACKOFF_BASE_MS  指数退避基数（缺省 5000，带 ±15% jitter）

@@ -131,6 +131,23 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     usage: UsageSchema(),
     session_id: z.string(),
     structured_output: z.unknown().optional(),
+    /**
+     * D1：本次会话里被拒绝、且到结束仍未放行的操作。
+     *
+     * 非交互模式下 ask 会被自动拒绝，模型看得到 tool_result，但 SDK 消费者
+     * 只读 result 消息——没有这个字段就不知道哪些工具根本没跑成。
+     * 可选：没有拒绝时不出现，老消费者不读它也不受影响。
+     */
+    permission_denials: z
+      .array(
+        z.object({
+          tool_name: z.string(),
+          resource: z.string(),
+          count: z.number(),
+          reason: z.string(),
+        }),
+      )
+      .optional(),
   }),
 );
 
@@ -169,6 +186,17 @@ export const SDKResultErrorSchema = lazySchema(() =>
     total_cost_usd: z.number(),
     usage: UsageSchema(),
     session_id: z.string(),
+    /** 同 success 那侧：预算硬停 / 轮次上限时被拒的操作同样要可见。可选，无拒绝时不出现。 */
+    permission_denials: z
+      .array(
+        z.object({
+          tool_name: z.string(),
+          resource: z.string(),
+          count: z.number(),
+          reason: z.string(),
+        }),
+      )
+      .optional(),
   }),
 );
 

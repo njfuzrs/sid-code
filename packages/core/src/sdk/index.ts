@@ -44,6 +44,7 @@ export type { TurnInterruptionState, DeserializeResult } from "./session-recover
 export { extractStructuredOutput, buildStructuredOutputPrompt } from "./structured-output.ts";
 export type { StructuredOutputConfig } from "./structured-output.ts";
 export { runHeadless, runHeadlessStreaming } from "./headless-runner.ts";
+export type { HeadlessRunOutcome } from "./headless-runner.ts";
 export {
   classifyHeadlessStreamText,
   formatHeadlessEvent,

@@ -177,4 +177,119 @@ describe("SDKQueryEngine.submitMessage", () => {
     const last = out[out.length - 1];
     expect(last).toMatchObject({ type: "result", subtype: "success" });
   });
+
+  test("done 带 budgetExceeded → result(error_max_budget_usd)，不是 success", async () => {
+    // B2：预算硬停此前走普通 done，被无条件映射成 success，CI 看到退出码 0。
+    const events: QueryEngineEvent[] = [
+      { kind: "user_message_added" },
+      { kind: "done", turns: 2, budgetExceeded: { source: "quota" } },
+    ];
+    const engine = new SDKQueryEngine(config, makeDriver(events, []));
+    const out: any[] = [];
+    for await (const m of engine.submitMessage("x")) out.push(m);
+    const last = out[out.length - 1];
+    expect(last).toMatchObject({ type: "result", subtype: "error_max_budget_usd" });
+    expect(last.subtype).not.toBe("success");
+    expect(last.errors[0]).toContain("会话花费上限");
+  });
+
+  test("includeStreamEvents 时回调增量转成 stream_event，且先于终止结果", async () => {
+    // G4：生产路径的 token 增量走 setStreamTextCallback，不走事件流。
+    // 引擎必须在 driver 还没吐出下一个事件时就把增量送出去。
+    let onText: ((text: string) => void) | null = null;
+    let release: (() => void) | null = null;
+    const driver: SDKQueryEngineDriver = {
+      async *submitMessage() {
+        yield { kind: "user_message_added" };
+        // 模拟 processStream：整轮结束前只通过回调吐文本。
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        yield { kind: "done", turns: 1 };
+      },
+      getUsage: () => ({ inputTokens: 1, outputTokens: 2 }),
+      getCostUsd: () => 0,
+      getMessages: () => [],
+      setStreamTextCallback(cb) {
+        onText = cb;
+      },
+    };
+    const engine = new SDKQueryEngine({ ...config, includeStreamEvents: true }, driver);
+
+    const seen: string[] = [];
+    const consuming = (async () => {
+      for await (const m of engine.submitMessage("x")) {
+        seen.push(m.type === "stream_event" ? "delta" : m.type);
+      }
+    })();
+
+    // 等引擎挂上回调（submitMessage 的第一段是同步的，一个 tick 足够）。
+    for (let i = 0; i < 10 && !onText; i++) await new Promise((r) => setTimeout(r, 5));
+    onText?.("你");
+    onText?.("好");
+    // 增量必须在 done 之前就可见，否则只是「结束后补发」，不是实时。
+    for (let i = 0; i < 10 && !seen.includes("delta"); i++)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toContain("delta");
+    expect(seen).not.toContain("result");
+
+    release?.();
+    await consuming;
+    expect(seen.indexOf("delta")).toBeLessThan(seen.lastIndexOf("result"));
+  });
+
+  test("增量与终止事件同一刻到达时，增量仍先于 result", async () => {
+    // 生产路径里 processStream 的最后一批 onText 与它 resolve 是同一个同步段：
+    // 回调写进队列的同时，driver 的 next() 也就绪了。如果引擎先排空队列再等事件，
+    // Promise.race 会选中已经就绪的 done，而回调刚写入的增量再没人排——
+    // 终止消息一发就 return，这几个字就丢了。
+    let onText: ((text: string) => void) | null = null;
+    const driver: SDKQueryEngineDriver = {
+      async *submitMessage() {
+        yield { kind: "user_message_added" };
+        onText?.("最后");
+        onText?.("几个字");
+        yield { kind: "done", turns: 1 };
+      },
+      getUsage: () => ({ inputTokens: 1, outputTokens: 2 }),
+      getCostUsd: () => 0,
+      getMessages: () => [],
+      setStreamTextCallback(cb) {
+        onText = cb;
+      },
+    };
+    const engine = new SDKQueryEngine({ ...config, includeStreamEvents: true }, driver);
+
+    const seen: string[] = [];
+    for await (const m of engine.submitMessage("x")) {
+      if (m.type === "stream_event")
+        seen.push((m as { event?: { text?: string } }).event?.text ?? "");
+      else seen.push(m.type);
+    }
+    // init 与 user 在增量之前合成，不属于这次要锁的竞态。
+    const deltas = seen.filter((s) => s !== "system" && s !== "user" && s !== "result");
+    expect(deltas).toEqual(["最后", "几个字"]);
+    expect(seen[seen.length - 1]).toBe("result");
+    expect(seen.indexOf("最后")).toBeLessThan(seen.indexOf("result"));
+  });
+
+  test("driver 提供拒绝清单时，result 带 permission_denials；不提供则字段不出现", async () => {
+    // D1：stream-json 的消费者只读 result 消息。清单为空时不能写空数组——
+    // 那会让「没有拒绝」和「这版还没有这个字段」在老消费者眼里变成两种形状。
+    const events: QueryEngineEvent[] = [{ kind: "done", turns: 1 }];
+    const denial = { tool_name: "Bash", resource: "rm -rf /", count: 1, reason: "非交互自动拒绝" };
+
+    const withDenials = new SDKQueryEngine(config, {
+      ...makeDriver(events, []),
+      getPermissionDenials: () => [denial],
+    });
+    const outA: any[] = [];
+    for await (const m of withDenials.submitMessage("x")) outA.push(m);
+    expect(outA[outA.length - 1].permission_denials).toEqual([denial]);
+
+    const without = new SDKQueryEngine(config, makeDriver(events, []));
+    const outB: any[] = [];
+    for await (const m of without.submitMessage("x")) outB.push(m);
+    expect(outB[outB.length - 1]).not.toHaveProperty("permission_denials");
+  });
 });
