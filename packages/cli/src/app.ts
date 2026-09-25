@@ -77,6 +77,11 @@ import {
   formatHeadlessEvent,
 } from "@sid-code/core/sdk/index.ts";
 import {
+  summarizeDenials,
+  formatDenialSummary,
+  type PermissionDenial,
+} from "@sid-code/core/permission/denial-summary.ts";
+import {
   JitContextManager,
   isJitContextEnabled,
   type JitDiscovery,
@@ -405,6 +410,12 @@ export class App {
   private thinkingMgr: ThinkingManager;
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
+  /**
+   * 本次会话实际生效的花费上限（美元）。quota.costLimit 优先于 --max-budget-usd，
+   * 与传给 QuotaManager 的是同一个数——超限报告里的 limit 必须等于真正触发停止的那个，
+   * 不能回退去读 CLI 原值（两者不同时报告会自相矛盾）。
+   */
+  private effectiveCostLimit?: number;
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
@@ -808,6 +819,7 @@ export class App {
     // 对未配项一律按 0 处理（costLimit<=0 时 check() 恒返回 null），互不依赖。
     const quotaConfig = opts.config.quota;
     const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+    this.effectiveCostLimit = effectiveCostLimit;
     const rpmLimit = quotaConfig?.requestsPerMinute;
     const tpmLimit = quotaConfig?.tokensPerMinute;
     const hasAnyQuota = (effectiveCostLimit ?? 0) > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
@@ -6487,6 +6499,10 @@ export class App {
     this.abortController = new AbortController();
     let runError: Error | null = null;
     let aborted = false;
+    // B2：预算硬停是「配置生效的预期终止」，不是运行时异常，所以不走 runError
+    // （那会把 SessionEnd 标成 error、把 stderr 打成致命错误）。但它也不是成功：
+    // CI 靠退出码判断要不要重跑，exit 0 会让超限的任务被当成跑完了。
+    let budgetExceeded = false;
     // 不确定-1②：headless（-p print）路径此前无会话硬顶——挂死时会无限等待。补齐与 TUI 同源的
     // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
     // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 说明）。
@@ -6514,7 +6530,12 @@ export class App {
     this.planManager?.endExecution();
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
-        if (event.kind === "done") break;
+        if (event.kind === "done") {
+          // 预算硬停：loop 先 yield 一条 system warning（已由 formatHeadlessEvent 打到 stderr），
+          // 再 yield 这条带 budgetExceeded 的 done。这里只记标志，退出码在收尾处决定。
+          if (event.budgetExceeded) budgetExceeded = true;
+          break;
+        }
         // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
         // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
         if (event.kind === "fatal_error") {
@@ -6609,12 +6630,30 @@ export class App {
       if (runError) {
         result.error = { message: runError.message, name: runError.name, aborted };
       }
+      if (budgetExceeded) {
+        // 与 stream-json 的 error_max_budget_usd 同一事实，只是 text/json 路径
+        // 不走 SDK 消息，所以在结果体里单列。limit 取本次生效的花费上限。
+        result.error = {
+          reason: "max_budget_usd",
+          limitUsd: this.effectiveCostLimit,
+          spentUsd: this.sessionState.getEffectiveTotalCostUSD(),
+        };
+        result.is_error = true;
+      }
+      const denials = this.headlessPermissionDenials();
+      if (denials.length > 0) result.permission_denials = denials;
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
       if (runError) {
         process.stderr.write(`\n[error] ${runError.message}\n`);
       }
+    }
+    // D1：非交互下被自动拒绝的操作，text 与 json 都在 stderr 汇总一次。
+    // 写 stderr 是为了不污染 text 模式的 stdout 答案。
+    {
+      const summary = formatDenialSummary(this.headlessPermissionDenials());
+      if (summary) process.stderr.write(`\n${summary}`);
     }
 
     // 清理
@@ -6640,7 +6679,20 @@ export class App {
     // 优雅关闭：刷新遥测/事件缓冲区（500ms 硬超时）后再强制退出（spec 17 §3.4）
     const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
     await runShutdownSequence();
-    process.exit(runError ? 1 : 0);
+    // 预算硬停与运行时异常同为非 0：CI 用退出码判断要不要当失败。
+    // 权限拒绝不在此列——被拒的工具已在结果里列明，任务本身可能仍然完成了。
+    process.exit(runError || budgetExceeded ? 1 : 0);
+  }
+
+  /**
+   * 本次无头会话里被拒绝、且到结束仍未放行的操作（D1）。
+   *
+   * 只读 denial tracking，不触发任何新的权限检查。checker 不在（跳过权限的测试 /
+   * 极端启动失败）时返回空，调用方据此不输出。
+   */
+  private headlessPermissionDenials(): PermissionDenial[] {
+    const tracking = this.permissionChecker?.getDenialTracking?.();
+    return tracking ? summarizeDenials(tracking) : [];
   }
 
   /**
@@ -6718,6 +6770,8 @@ export class App {
       getApiDurationMs: () => this.sessionState.getElapsedMs(),
       setStreamTextCallback: (cb: ((text: string) => void) | null) =>
         this.queryEngine.setStreamTextCallback(cb),
+      // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
+      getPermissionDenials: () => this.headlessPermissionDenials(),
     };
   }
 
@@ -6778,14 +6832,17 @@ export class App {
 
     let runError: Error | null = null;
     let aborted = false;
+    // B2：stream-json 的预算硬停写在结果消息的 subtype 里，进程退出码要跟着它走。
+    let budgetExceeded = false;
     try {
-      await sdkRunHeadless(engine, {
+      const outcome = await sdkRunHeadless(engine, {
         outputFormat: "stream-json",
         verbose: this.config.verbose,
         initialPrompt: input,
         structuredIO,
         commandQueue,
       });
+      budgetExceeded = outcome.budgetExceeded;
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
       aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
@@ -6842,7 +6899,13 @@ export class App {
 
     const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");
     await runShutdownSequence();
-    process.exit(runError ? 1 : 0);
+    // D1：stream-json 的拒绝清单在 result 消息里，stderr 再汇总一次。
+    // stdout 是 NDJSON，汇总只能走 stderr，否则会把一条非 JSON 行塞进消费者的解析流。
+    {
+      const summary = formatDenialSummary(this.headlessPermissionDenials());
+      if (summary) process.stderr.write(`\n${summary}`);
+    }
+    process.exit(runError || budgetExceeded ? 1 : 0);
   }
 
   /** TUI 模式 */

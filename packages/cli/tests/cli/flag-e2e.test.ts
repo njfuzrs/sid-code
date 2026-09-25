@@ -103,6 +103,7 @@ describe("组合约束 P2-1 / P2-2", () => {
         "stream-json",
         "--output-format",
         "stream-json",
+        "--verbose",
         "-p",
         "hi",
       ],
@@ -124,6 +125,59 @@ describe("组合约束 P2-1 / P2-2", () => {
     const r = await run(["--include-partial-messages", "--output-format", "stream-json"]);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("--include-partial-messages");
+  });
+
+  test("--output-format stream-json 缺 --verbose → exit=1（G2）", async () => {
+    const r = await run(["-p", "--output-format", "stream-json", "hi"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--verbose");
+  });
+
+  test("--output-format 非法值 → exit=1 且列出合法值（G1）", async () => {
+    const r = await run(["-p", "--output-format", "jsonl", "hi"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("text / json / stream-json");
+    expect(r.stderr).toContain("jsonl");
+  });
+
+  test("--output-format 不带 -p → 告警但不退出（G1）", async () => {
+    // 不带 -p 会进入交互 TUI，不会自行退出。只看启动早期有没有那句告警，
+    // 然后主动 kill——告警必须在进 TUI 之前打到 stderr。
+    const proc = Bun.spawn(["bun", BOOTSTRAP, "--output-format", "json"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, SID_CODE_DISABLE_PROJECT_RULES: "1", SID_CONFIG_DIR: CONFIG_DIR },
+    });
+    await Bun.sleep(1500);
+    proc.kill();
+    const stderr = await new Response(proc.stderr).text();
+    await proc.exited;
+    expect(stderr).toContain("--output-format 只在 --print 下生效");
+  });
+
+  test("--max-budget-usd 不带 -p → 告警但不退出（B2）", async () => {
+    const proc = Bun.spawn(["bun", BOOTSTRAP, "--max-budget-usd", "1"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, SID_CODE_DISABLE_PROJECT_RULES: "1", SID_CONFIG_DIR: CONFIG_DIR },
+    });
+    await Bun.sleep(1500);
+    proc.kill();
+    const stderr = await new Response(proc.stderr).text();
+    await proc.exited;
+    expect(stderr).toContain("--max-budget-usd 只在 --print 下生效");
+  });
+
+  test("--no-session-persistence 不再是未知选项（bun allowNegative）", async () => {
+    // 声明名若带 no- 前缀，bun 的 parseArgs 在 allowNegative 下直接抛未知选项，
+    // 而 node 不抛——所以这条必须跑真实入口，不能只看源码里有没有这个字符串。
+    // 带 -p 但无 prompt：应走到「需要提示词」，而不是停在「未知选项」。
+    const r = await run(["-p", "--no-session-persistence"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).not.toContain("未知选项");
+    expect(r.stderr).toContain("提示词");
   });
 });
 

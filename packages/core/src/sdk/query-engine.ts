@@ -56,6 +56,16 @@ export interface SDKQueryEngineDriver {
   getApiDurationMs?(): number;
   /** 设置流式文本回调（仅 includeStreamEvents 时使用） */
   setStreamTextCallback?(cb: ((text: string) => void) | null): void;
+  /**
+   * 本次会话里被拒绝、且到结束仍未放行的操作（D1）。
+   * 可选：不实现的 driver（测试 mock、没有权限层的嵌入场景）就当没有拒绝。
+   */
+  getPermissionDenials?(): {
+    tool_name: string;
+    resource: string;
+    count: number;
+    reason: string;
+  }[];
 }
 
 export class SDKQueryEngine {
@@ -117,8 +127,78 @@ export class SDKQueryEngine {
     let terminalEmitted = false;
     let runError: Error | null = null;
 
+    // G4：token 增量在生产路径上不走事件流。queryLoop 的 processStream 是 Promise，
+    // 文本通过 onText 回调桥接（engine.ts 的 setStreamTextCallback），事件流里
+    // 从未产出过 kind:"stream_text"。所以只在 converter 里等 stream_text 事件，
+    // --include-partial-messages 打开了也什么都收不到。
+    // 这里把回调收进队列，每个内核事件吐出前先把队列排空。回调只在
+    // includeStreamEvents 时挂上：不需要增量的调用方保持原行为。
+    //
+    // 不与事件流做竞速。增量只在模型生成期间到来，而那段时间 driver 的
+    // next() 还没 resolve（processStream 是个要等整轮结束的 Promise），
+    // 所以「等下一个事件，等待期间排空队列」就能把增量实时送出去，
+    // 又不会留下一个谁都不 resolve 的 Promise。
+    const pendingDeltas: string[] = [];
+    let deltaNotify: (() => void) | null = null;
+    if (this.config.includeStreamEvents && this.driver.setStreamTextCallback) {
+      this.driver.setStreamTextCallback((text) => {
+        if (!text) return;
+        pendingDeltas.push(text);
+        const notify = deltaNotify;
+        deltaNotify = null;
+        notify?.();
+      });
+    }
+
+    /** 把回调里已到的增量全部转成 stream_event 吐出。 */
+    const flushDeltas = async function* (self: SDKQueryEngine) {
+      while (pendingDeltas.length > 0) {
+        const text = pendingDeltas.shift();
+        if (!text) break;
+        const sdkMsg = convertToSDKMessage({ kind: "stream_text", text }, self.buildCtx());
+        if (sdkMsg) yield sdkMsg;
+      }
+    };
+
     try {
-      for await (const event of this.driver.submitMessage(prompt)) {
+      const driverStream = this.driver.submitMessage(prompt);
+      // 增量与内核事件一起等，而不是「先排空再等事件」。
+      //
+      // 为什么不能先排空：token 回调和 done 事件经常在同一刻到达（processStream
+      // 的最后一批 onText 与它 resolve 是同一个同步段）。如果先把队列吐空、再去
+      // 等下一个事件，这个「下一个」就是已经就绪的 done——Promise.race 选中它
+      // 之后，回调里刚写进队列的增量就没人再排了，而终止消息一发循环就 return。
+      // 结果是 --include-partial-messages 丢掉每轮的最后几个字。
+      //
+      // 所以每一轮都是：等「增量到来」或「下一个内核事件」，谁先到处理谁。
+      // 事件赢了也先把此刻已在队列里的增量吐出去，再处理事件本身——
+      // 终止消息之前的字不能被终止消息吞掉。
+      let nextStep = driverStream.next();
+      let wakeOnDelta: (() => void) | null = null;
+      deltaNotify = () => wakeOnDelta?.();
+
+      for (;;) {
+        const deltaArrived = new Promise<void>((resolve) => {
+          wakeOnDelta = resolve;
+          // 挂上等待的间隙里回调可能已经写进队列。不在这里补一次检查，
+          // 这次增量要等到下一个内核事件才出得去。
+          if (pendingDeltas.length > 0) resolve();
+        });
+        const winner = await Promise.race([
+          nextStep.then((step) => ({ kind: "event" as const, step })),
+          deltaArrived.then(() => ({ kind: "delta" as const })),
+        ]);
+        wakeOnDelta = null;
+
+        // 无论谁赢，先把已经到达的增量吐出去。事件赢了也不例外：
+        // 回调可能就在 next() resolve 的同一个同步段里写进了队列。
+        yield* flushDeltas(this);
+
+        if (winner.kind === "delta") continue;
+        if (winner.step.done) break;
+
+        nextStep = driverStream.next();
+        const event = winner.step.value;
         if (event.kind === "assistant_message") {
           this.turnCount++;
         }
@@ -145,12 +225,29 @@ export class SDKQueryEngine {
     } catch (err) {
       runError = err instanceof Error ? err : new Error(String(err));
       this.aborted = runError.name === "AbortError" || /abort/i.test(runError.message);
+    } finally {
+      // 解除回调：否则下一次 submitMessage 会把增量写进这次已经结束的队列。
+      // 同时放掉还挂着的等待——driver 抛错时 deltaNotify 可能正握着一个永远
+      // 不会被调用的 resolve，不置空的话它会跟着这次调用的闭包活到进程结束。
+      this.driver.setStreamTextCallback?.(null);
+      deltaNotify = null;
+    }
+
+    // 驱动结束后回调里可能还残留增量（最后一批 text 与 done 事件同刻到达）。
+    // 终止消息已经发过就不再补——增量属于它之前的内容。
+    if (!terminalEmitted) {
+      for (const text of pendingDeltas.splice(0)) {
+        const sdkMsg = convertToSDKMessage({ kind: "stream_text", text }, this.buildCtx());
+        if (sdkMsg) yield sdkMsg;
+      }
     }
 
     // ④ 若内核未产出 done/max_turns（异常/提前返回），合成终止消息
     if (!terminalEmitted) {
       if (runError) {
-        yield {
+        // 走 finalizeResult：错误结果同样要带上权限拒绝清单（D1）。
+        // 不走的话，异常收尾的会话在 stream-json 里看不到哪些工具被拒了。
+        yield this.finalizeResult({
           type: "result",
           subtype: "error_during_execution",
           errors: [runError.message],
@@ -161,7 +258,7 @@ export class SDKQueryEngine {
           total_cost_usd: this.driver.getCostUsd(),
           usage: this.driver.getUsage(),
           session_id: this.config.sessionId,
-        };
+        });
       } else {
         // 正常结束但无 done 事件（如 hook_blocked 提前 return）
         yield this.finalizeResult({
@@ -184,13 +281,21 @@ export class SDKQueryEngine {
     }
   }
 
-  /** 用最终的助手文本与 API 耗时补齐 success result */
+  /**
+   * 补齐 result：success 填最终文本与 API 耗时，两种 subtype 都附上权限拒绝清单。
+   *
+   * 拒绝清单放在这里而不是 converter：converter 只看单个事件，看不到会话级的
+   * denial tracking；而每一条 result（含合成的那条）都经过 finalizeResult。
+   * 空清单不写字段——没有拒绝的会话，结果消息与改动前逐字节相同。
+   */
   private finalizeResult(result: SDKResultMessage): SDKResultMessage {
-    if (result.subtype !== "success") return result;
+    const denials = this.driver.getPermissionDenials?.() ?? [];
+    const withDenials = denials.length > 0 ? { ...result, permission_denials: denials } : result;
+    if (withDenials.subtype !== "success") return withDenials;
     return {
-      ...result,
-      result: result.result || this.extractFinalText(),
-      duration_api_ms: result.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
+      ...withDenials,
+      result: withDenials.result || this.extractFinalText(),
+      duration_api_ms: withDenials.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
       usage: this.driver.getUsage(),
       total_cost_usd: this.driver.getCostUsd(),
     };

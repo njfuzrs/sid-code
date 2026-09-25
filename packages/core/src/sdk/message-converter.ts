@@ -13,6 +13,21 @@ import type { DoneIncompleteReason, QueryEngineEvent } from "../query/types.ts";
 import type { SDKMessage } from "./types.ts";
 import type { Usage } from "../llm/types.ts";
 
+/**
+ * 预算硬停的来源翻译成给人看的一句。三条来源的处置不同
+ * （调 --max-budget-usd / 改 budgetRules / 找管理员提远程额度），不能混成一句。
+ */
+function budgetSourceLabel(source: "budget_rule" | "quota" | "remote"): string {
+  switch (source) {
+    case "quota":
+      return "会话花费上限";
+    case "budget_rule":
+      return "预算规则";
+    case "remote":
+      return "远程预算";
+  }
+}
+
 /** SDK 消费者看得到的中断原因。TUI 仍走 kind:done，不读这段文案。 */
 function incompleteReasonMessage(reason: DoneIncompleteReason): string {
   switch (reason) {
@@ -125,6 +140,27 @@ export function convertToSDKMessage(
     case "done":
       // 16 号 C2：`kind: "done"` 对 TUI 是「回到等待输入」，不是「任务成功」。
       // 无条件 subtype=success 会把 TimeoutRetryExhausted / 用户中断标成解出。
+      //
+      // B2：预算硬停同样不是成功。loop 在 costLimit / budget rule / 远程预算
+      // 触顶时 yield 的就是一条普通 done，只在 budgetExceeded 上标了来源。
+      // 不在这里分流的话，`--max-budget-usd` 超限的会话在 stream-json 里
+      // 会以 subtype=success 收尾，CI 看到退出码 0 还以为跑完了。
+      // 映射到 schema 里早就声明、但此前从未产出的 error_max_budget_usd。
+      if (event.budgetExceeded) {
+        return {
+          type: "result",
+          subtype: "error_max_budget_usd",
+          errors: [
+            `已达预算上限（${budgetSourceLabel(event.budgetExceeded.source)}），本次花费 $${ctx.totalCostUsd.toFixed(4)}`,
+          ],
+          duration_ms: nowOf(ctx) - ctx.startTime,
+          num_turns: event.turns,
+          num_turns_without_model_interaction: event.turnsConsumedWithoutAssistant ?? 0,
+          total_cost_usd: ctx.totalCostUsd,
+          usage: { ...ctx.totalUsage },
+          session_id: ctx.sessionId,
+        };
+      }
       if (event.incompleteReason) {
         return {
           type: "result",

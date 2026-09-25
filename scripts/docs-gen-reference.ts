@@ -611,8 +611,12 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   // 可选值语义（`-r` 可不带值开选择器），parseArgs 的 type:"string" 表达不了，
   // 走 packages/cli/src/cli.ts 的 extractResumeArg 预处理
   resume: "可选值语义，走 extractResumeArg 预处理",
-  // 取反式 flag，由 allowNegative 生成，不单独声明
+  // 取反式 flag，由 allowNegative 生成，不单独声明。
+  // --no-session-persistence 同理：声明名不能带 no- 前缀，bun 的 parseArgs 在
+  // allowNegative 下会把「声明名以 no- 开头」直接判成未知选项（node 不判，
+  // 所以只有编译产物暴露）。声明的是 session-persistence，--no- 形式由取反生成。
   "no-trace": "取反式 flag（allowNegative）",
+  "no-session-persistence": "取反式 flag（allowNegative），声明名是 session-persistence",
   // 以下均为子命令级参数，由各子命令自己解析，不进顶层 parseArgs
   diff: "review 子命令参数（packages/cli/src/command/review.ts）",
   timeout: "review 子命令参数（packages/cli/src/command/review.ts）",
@@ -632,6 +636,9 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
 /** 顶层 parseArgs 声明了但刻意不写进 --help 的 flag —— 内部出口，不是用户功能 */
 export const HIDDEN_FLAGS: Record<string, string> = {
   "dump-tools": "文档生成器内部出口（T-3.2），非用户功能",
+  // 用户看到的是 --no-session-persistence（取反式，见 HELP_ONLY_WHITELIST）。
+  // 正向名只是 parseArgs 的声明载体，单独写进 help 会让人以为有两种开关。
+  "session-persistence": "声明载体，用户入口是 --no-session-persistence（allowNegative）",
 };
 
 export interface CliReconcile {

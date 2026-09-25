@@ -899,6 +899,12 @@ class SidCodeAgent(BaseInstalledAgent):
                 # 实测价值:靠它当场定位到一题的 0 分其实是**上游 429 限流**,
                 # 不是能力差距。这两类样本混进同一个分母就是虚低。
                 "sid_errors": result.get("errors"),
+                # 非交互下被自动拒绝、且到结束仍未放行的操作(D1)。
+                # 审计日志的 deny 计数回答「拒了多少次」;这份清单回答「拒的是哪个工具、
+                # 哪条命令」。两者不是同一个数:熔断前的重复拒绝在清单里是一条带 count。
+                # 没有拒绝时字段不出现,这里落 None —— 不能落 [] ,否则「这版还没有这个字段」
+                # 和「确实没被拒」在 metadata 里不可区分。
+                "sid_permission_denials": result.get("permission_denials"),
                 "cache_write_tokens": usage.get("cacheCreationInputTokens"),
             }
         )
