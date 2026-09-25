@@ -9,7 +9,7 @@
  * 启动方式：bun run src/daemon/server.ts
  */
 
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { DaemonConfig, GitHubPREvent } from "./types.ts";
 import { DaemonWorker } from "./worker.ts";
 
@@ -24,9 +24,15 @@ const DEFAULT_CONFIG: DaemonConfig = {
 };
 
 function verifySignature(payload: string, signature: string, secret: string): boolean {
-  if (!secret) return true; // 开发模式无 secret 时跳过验证
+  // 无 secret 不再放行。daemon.ts 已在「无 secret 且未显式开」时不监听；
+  // 本文件作为 import.meta.main 仍可能裸起，裸起且无 secret 必须 401，不能 fork agent。
+  if (!secret) return false;
   const expected = "sha256=" + createHmac("sha256", secret).update(payload).digest("hex");
-  return expected === signature;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  // 长度不等时 timingSafeEqual 会抛。先比长度，不相等就是失败，不把异常漏成 500。
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 function parseGitHubPREvent(body: Record<string, unknown>): GitHubPREvent | null {
