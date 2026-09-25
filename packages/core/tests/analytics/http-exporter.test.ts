@@ -141,8 +141,17 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
       diskCache,
     });
     exporter.send("e1", {});
-    await new Promise((r) => setTimeout(r, 50));
-    expect(readdirSync(dir).filter((f) => f.startsWith("failed_events")).length).toBe(1);
+    // 写盘是异步的（fetch 500 → queueFailedEvents → appendFile），固定 50ms
+    // 在 CI 负载下会先于落盘到期：实测 ubuntu 上 Received 0（153ms 才报失败）。
+    // 等到文件出现再断言，超时才判失败——等的是结果，不是时长。
+    const deadline = Date.now() + 2000;
+    let files: string[] = [];
+    while (Date.now() < deadline) {
+      files = readdirSync(dir).filter((f) => f.startsWith("failed_events"));
+      if (files.length > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(files.length).toBe(1);
     // 同上：清掉失败触发的退避重试 timer，避免泄漏到后续用例。
     await exporter.shutdown();
   });

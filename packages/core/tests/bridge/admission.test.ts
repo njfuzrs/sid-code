@@ -20,6 +20,12 @@ import {
   revokeBridgeUrl,
   buildConfirmPrompt,
 } from "@sid-code/core/bridge/admission.ts";
+import {
+  getTelemetryBus,
+  initTelemetry,
+  shutdownTelemetry,
+} from "@sid-code/core/telemetry/index.ts";
+import { __resetAnalyticsForTest } from "@sid-code/core/analytics/index.ts";
 
 let dir: string;
 let prevConfigDir: string | undefined;
@@ -204,5 +210,51 @@ describe("确认文案", () => {
     expect(prompt).toContain("shell");
     // 用户必须被告知权限体系在这条路径上是自证的，否则会以为还有下一道门
     expect(prompt).toContain("批准者就是它自己");
+  });
+});
+
+describe("准入记防线触发（只记拒绝）", () => {
+  // 默认总线是 enabled:false，recordMetric 直接 return——不先打开，下面的断言恒空且全绿。
+  // 不注册导出器：只读内存历史，不写 ~/.sid-code/。
+  beforeEach(() => {
+    __resetAnalyticsForTest();
+    initTelemetry({ enabled: true, exporters: [] });
+  });
+  afterEach(async () => {
+    await shutdownTelemetry();
+    __resetAnalyticsForTest();
+  });
+
+  function admissionTriggers() {
+    return getTelemetryBus()
+      .getCompletedMetrics()
+      .filter(
+        (m) =>
+          m.name === "sidcode.defense.trigger" &&
+          m.attributes?.["sidcode.defense.layer"] === "bridge_admission",
+      );
+  }
+
+  test("明文且未允许 → blocked + insecure-scheme，reason 不含 URL/token", async () => {
+    const before = admissionTriggers().length;
+    const r = await checkBridgeAdmission({ url: "ws://relay.example.com/ws?token=SECRET" });
+    expect(r.allowed).toBe(false);
+    const added = admissionTriggers().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]!.attributes?.["sidcode.defense.reason"]).toBe("insecure-scheme");
+    expect(added[0]!.attributes?.["sidcode.defense.outcome"]).toBe("blocked");
+    expect(JSON.stringify(added[0]!.attributes)).not.toContain("SECRET");
+    expect(JSON.stringify(added[0]!.attributes)).not.toContain("relay.example.com");
+  });
+
+  test("已信任的合法 wss 放行时不再记一条", async () => {
+    await checkBridgeAdmission({
+      url: "wss://relay.example.com",
+      confirm: async () => true,
+    });
+    const before = admissionTriggers().length;
+    const r = await checkBridgeAdmission({ url: "wss://relay.example.com" });
+    expect(r.allowed).toBe(true);
+    expect(admissionTriggers().length).toBe(before);
   });
 });
