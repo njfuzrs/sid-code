@@ -62,6 +62,16 @@ function includeHidden(): boolean {
  * SID_GLOB_NO_IGNORE=false 时尊重 .gitignore。
  */
 function noIgnore(): boolean {
+  // G5：settings.json 的 respectGitignore 优先于 env。
+  // respectGitignore=false → 不尊重 .gitignore（noIgnore=true）；true → 尊重（noIgnore=false）。
+  // 未设置时保持原行为：env SID_GLOB_NO_IGNORE 缺省 true（不尊重，对齐 CC 默认）。
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    const respect = getSettings().settings.respectGitignore;
+    if (typeof respect === "boolean") return !respect;
+  } catch {
+    /* settings 未初始化时回退 env，不让 glob 因配置系统故障而失败 */
+  }
   return envBool("SID_GLOB_NO_IGNORE", true);
 }
 

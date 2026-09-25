@@ -23,6 +23,7 @@ import {
   type ValidationError,
 } from "./validation.ts";
 import { filterProjectSettings } from "./security.ts";
+import { listManagedSettingsDropIns } from "./constants.ts";
 import { detectSensitiveData } from "../../permission/sensitive.ts";
 import { mergeSettingsRead } from "./merge.ts";
 import {
@@ -188,9 +189,22 @@ export function getSettingsForSource(
 
   const { settings, errors } = parseSettingsFile(path);
 
+  // B2：policySettings 额外合并 managed-settings.d/*.json。字母序后者覆盖前者，
+  // 主文件（managed-settings.json）作为基座，drop-in 在其上叠加。
+  let merged = settings;
+  if (source === "policySettings") {
+    for (const dropIn of listManagedSettingsDropIns()) {
+      const parsed = parseSettingsFile(dropIn);
+      errors.push(...parsed.errors);
+      if (parsed.settings) {
+        merged = mergeSettingsRead((merged ?? {}) as Record<string, unknown>, parsed.settings);
+      }
+    }
+  }
+
   // 安全边界：项目级配置不能设置安全敏感字段
   const finalSettings =
-    settings && source === "projectSettings" ? filterProjectSettings(settings) : settings;
+    merged && source === "projectSettings" ? filterProjectSettings(merged) : merged;
 
   setCachedSource(source, finalSettings);
   return { settings: finalSettings, errors };

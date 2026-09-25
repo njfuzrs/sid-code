@@ -181,6 +181,10 @@ export class HookRegistry {
       (e) => e.eventName === eventName && e.enabled && !(e.once && e.executed),
     );
 
+    // G5：用户级 settings.json 的 disableAllHooks。与企业策略的同名字段是两个来源，
+    // 任一为 true 即全禁用。放在企业门控之前：用户显式关了就不必再逐条问企业策略。
+    if (userDisabledAllHooks()) return [];
+
     // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。
     // 门控读取 config.source，故过滤前把 entry.source 回填到 config.source（entry 与 config 分别存 source）。
     if (this.policyGate) {
@@ -412,5 +416,18 @@ export class HookRegistry {
     for (const entry of this.entries) {
       this.incrementEventIndex(entry.eventName);
     }
+  }
+}
+
+/**
+ * G5：settings.json 的 disableAllHooks。读不到（配置系统未初始化或出错）时返回 false，
+ * 不因配置故障把所有 hook 静默关掉。
+ */
+function userDisabledAllHooks(): boolean {
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    return getSettings().settings.disableAllHooks === true;
+  } catch {
+    return false;
   }
 }

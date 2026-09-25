@@ -23,6 +23,9 @@ export const DEFAULT_PR_ATTRIBUTION = "🤖 Generated with sid-code";
  * @param git 配置的 git 段（可为 undefined，按默认启用处理）
  */
 export function resolveCommitAttribution(git?: GitConfig): string {
+  // G5：settings.json 的 includeCoAuthoredBy=false 是全局总开关，优先于 git 段配置。
+  // 缺省（未设）保持既有行为——默认加归因。
+  if (includeCoAuthoredBy() === false) return "";
   const cfg = git?.commitAttribution;
   // 默认启用（enabled 未设视为 true，保持既有行为）
   if (cfg?.enabled === false) return "";
@@ -56,4 +59,17 @@ export function prAttributionInstruction(git?: GitConfig): string {
   const text = resolvePrAttribution(git);
   if (!text) return "";
   return `在 PR 描述末尾追加一行归因：\n${text}`;
+}
+
+/**
+ * G5：settings.json 的 includeCoAuthoredBy。读不到时返回 undefined，调用方按默认启用处理。
+ */
+function includeCoAuthoredBy(): boolean | undefined {
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    const v = getSettings().settings.includeCoAuthoredBy;
+    return typeof v === "boolean" ? v : undefined;
+  } catch {
+    return undefined;
+  }
 }

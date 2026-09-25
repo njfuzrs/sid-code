@@ -127,6 +127,19 @@ interface StructuredOutput {
   appliedOffset?: number;
 }
 
+/**
+ * settings.json 的 respectGitignore。读不到时返回 undefined，调用方按「尊重」处理（rg 默认）。
+ */
+function respectGitignore(): boolean | undefined {
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    const v = getSettings().settings.respectGitignore;
+    return typeof v === "boolean" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class GrepTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = grepSchema();
@@ -318,6 +331,9 @@ export class GrepTool implements Tool {
 
     // 默认参数增强：始终添加（对标 CC）
     args.push("--hidden");
+    // G5：respectGitignore 缺省 true，对齐 rg 默认（尊重 .gitignore，不传 --no-ignore）。
+    // 显式 false 才加 --no-ignore，让 grep 搜到被忽略的文件。
+    if (respectGitignore() === false) args.push("--no-ignore");
 
     // VCS 目录排除
     for (const glob of VCS_EXCLUDE_GLOBS) {

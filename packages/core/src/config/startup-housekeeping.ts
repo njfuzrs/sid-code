@@ -84,7 +84,22 @@ import { getSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** trajectories 内 session 目录的过期阈值：30 天 */
-const TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * G5：轨迹清理周期。settings.json 的 cleanupPeriodDays 优先，缺省 30 天。
+ * 读 settings 失败时回退默认值，不让清理任务因配置故障而改变行为。
+ */
+function trajectoryMaxAgeMs(): number {
+  try {
+    const { getSettings } = require("./settings/settings.ts");
+    const days = getSettings().settings.cleanupPeriodDays;
+    if (typeof days === "number" && days > 0) return days * 24 * 60 * 60 * 1000;
+  } catch {
+    /* 回退默认 */
+  }
+  return DEFAULT_TRAJECTORY_MAX_AGE_MS;
+}
 
 /**
  * Session Memory 单会话笔记的过期阈值：30 天。
@@ -347,7 +362,7 @@ function cleanupStaleTrajectories(now: number): number {
     const dir = join(sessionsRoot, entry.name);
     try {
       const stat = statSync(dir);
-      if (now - stat.mtimeMs > TRAJECTORY_MAX_AGE_MS) {
+      if (now - stat.mtimeMs > trajectoryMaxAgeMs()) {
         rmSync(dir, { recursive: true, force: true });
         removed++;
       }
