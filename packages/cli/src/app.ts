@@ -5144,6 +5144,28 @@ export class App {
     toolInput?: unknown,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    // Bridge 模式：确认走已注入的远程代理。Bridge 不进 TUI，若仍落到下面的
+    // always-allow 布尔，ask 工具会在本机立刻 false，permission_request 根本不出站。
+    // 不复活 PermissionChecker.requestConfirmation——那个方法全仓零调用，是死代码。
+    const bridgeChecker = this.permissionChecker as {
+      hasBridgePermissionDelegate?: () => boolean;
+      requestBridgePermission?: (req: {
+        toolName: string;
+        toolInput: unknown;
+        description: string;
+        dangerLevel: string;
+      }) => Promise<boolean | null>;
+    } | null;
+    if (bridgeChecker?.hasBridgePermissionDelegate?.() && bridgeChecker.requestBridgePermission) {
+      const allowed = await bridgeChecker.requestBridgePermission({
+        toolName: toolName || req?.toolName || "",
+        toolInput: toolInput ?? req?.input,
+        description,
+        dangerLevel: "unknown",
+      });
+      if (allowed !== null) return allowed;
+    }
+
     // TUI 模式：使用注入的回调
     if (this.tuiConfirmCallback) {
       // 计算与该工具相关的不可达规则（对标 cc Unreachable Rules），失败不阻断
@@ -6718,7 +6740,8 @@ export class App {
         setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
         abort: () => this.abortController?.abort(),
         setPermissionDelegate: (delegate) => {
-          // 仅当 checker 支持 Bridge 代理时注入（PermissionChecker 实现了该方法）
+          // PermissionChecker 的方法。其它 Checker 实现没有 Bridge 代理时不注入——
+          // 不要 (checker as any)，缺方法就保持本地确认。
           const checker = this.permissionChecker as {
             setBridgePermissionDelegate?: (d: typeof delegate) => void;
           } | null;

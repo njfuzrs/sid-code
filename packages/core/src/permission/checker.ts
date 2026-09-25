@@ -307,6 +307,29 @@ export class PermissionChecker implements Checker {
     this.bridgePermissionDelegate = delegate;
   }
 
+  /**
+   * 当前有没有 Bridge 远程确认代理。
+   * App 用它决定走远端还是 TUI——不要读私有字段，也不要 `(checker as any)`。
+   */
+  hasBridgePermissionDelegate(): boolean {
+    return this.bridgePermissionDelegate !== null;
+  }
+
+  /**
+   * 把一次需要人确认的工具交给已注入的 Bridge 代理。
+   * 没有代理时返回 null，调用方继续走 TUI / headless，不要在这里假装拒绝。
+   * 远程不支持「始终允许」，remember 仍由调用方保持 false。
+   */
+  async requestBridgePermission(req: {
+    toolName: string;
+    toolInput: unknown;
+    description: string;
+    dangerLevel: string;
+  }): Promise<boolean | null> {
+    if (!this.bridgePermissionDelegate) return null;
+    return this.bridgePermissionDelegate(req);
+  }
+
   /** 设置 Plan Mode 管理器 */
   setPlanManager(manager: PlanModeManager): void {
     this.planManager = manager;

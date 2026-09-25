@@ -38,6 +38,7 @@ import { readFile, writeFile, mkdir } from "fs/promises";
 import { dirname } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordDefenseTrigger } from "../telemetry/metrics/defense-metrics.ts";
 
 /** 准入判定结果 */
 export type BridgeAdmissionResult =
@@ -131,6 +132,15 @@ export async function revokeBridgeUrl(url: string): Promise<boolean> {
  * 准入判定。顺序刻意如此：**先看能不能用（policy），再看安全形态（scheme），
  * 最后才问人**。反过来会让用户在一个注定被 policy 拒掉的 URL 上白确认一次。
  */
+function noteAdmission(result: BridgeAdmissionResult): BridgeAdmissionResult {
+  // 只记拒绝。放行不是「从拦截态恢复」，记成 recovered 会把允许曲线伪装成防线动作。
+  // reason 用闭集。不要把 URL 塞进来——调用方传入的 raw URL 可能还带着 token。
+  if (!result.allowed) {
+    recordDefenseTrigger("bridge_admission", "blocked", { reason: result.reason });
+  }
+  return result;
+}
+
 export async function checkBridgeAdmission(
   options: BridgeAdmissionOptions,
 ): Promise<BridgeAdmissionResult> {
@@ -139,60 +149,64 @@ export async function checkBridgeAdmission(
   // ① 企业 policy —— 显式 false 才算关闭（undefined = 未配置 = 不拦）
   if (options.policyEnabled === false) {
     log.warn("BRIDGE", "准入拒绝：企业 policy 已禁用 Bridge 远程控制能力");
-    return {
+    return noteAdmission({
       allowed: false,
       reason: "policy-disabled",
       message: "企业策略已禁用 Bridge 远程控制（settings 中 bridge.enabled = false）",
-    };
+    });
   }
 
   // ② URL 合法性
   const key = normalizeBridgeUrl(options.url);
   if (!key) {
-    return {
+    return noteAdmission({
       allowed: false,
       reason: "invalid-url",
       message: `不是合法的 Bridge URL: ${options.url}（需要 ws:// 或 wss://）`,
-    };
+    });
   }
 
   // ③ 明文连接 —— 这条链路上跑的是**认证 token 与远端指令**，
   // 明文意味着同网段任何人都能读到并伪造。要求显式 opt-in。
   if (key.startsWith("ws://") && !options.allowInsecure) {
     log.warn("BRIDGE", `准入拒绝：明文连接 ${options.url} 未显式允许`);
-    return {
+    return noteAdmission({
       allowed: false,
       reason: "insecure-scheme",
       message:
         `拒绝明文 Bridge 连接: ${options.url}\n` +
         `远端指令与认证 token 会以明文经过网络。改用 wss:// ，` +
         `或确认风险后显式加 --bridge-insecure。`,
-    };
+    });
   }
 
   // ④ 已确认过的 URL 直接放行
   const store = await loadStore();
   if (store[key]) {
     log.debug("BRIDGE", `准入通过：${key} 此前已确认（${store[key]!.confirmedAt}）`);
-    return { allowed: true, reason: "already-trusted" };
+    return noteAdmission({ allowed: true, reason: "already-trusted" });
   }
 
   // ⑤ 首次使用 —— 必须问人。无法问 ⇒ 拒绝（fail-closed）。
   if (!options.confirm) {
     log.warn("BRIDGE", `准入拒绝：${key} 首次使用但当前无法交互确认`);
-    return {
+    return noteAdmission({
       allowed: false,
       reason: "non-interactive",
       message:
         `首次连接该 Bridge 端点需要确认，但当前环境无法交互:\n  ${options.url}\n` +
         `请在交互式终端里先运行一次以完成确认。`,
-    };
+    });
   }
 
   const confirmed = await options.confirm(buildConfirmPrompt(options.url));
   if (!confirmed) {
     log.warn("BRIDGE", `准入拒绝：用户拒绝连接 ${key}`);
-    return { allowed: false, reason: "user-declined", message: "已取消：用户拒绝该 Bridge 连接" };
+    return noteAdmission({
+      allowed: false,
+      reason: "user-declined",
+      message: "已取消：用户拒绝该 Bridge 连接",
+    });
   }
 
   if (!options.skipPersist) {
@@ -204,7 +218,7 @@ export async function checkBridgeAdmission(
   }
 
   log.info("BRIDGE", `准入通过：用户确认了 ${key}`);
-  return { allowed: true, reason: "user-confirmed" };
+  return noteAdmission({ allowed: true, reason: "user-confirmed" });
 }
 
 /**
