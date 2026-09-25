@@ -6,6 +6,7 @@
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import { getIDEIntegration } from "@sid-code/core/ide/integration.ts";
 import { detectIDEs } from "@sid-code/core/ide/detect.ts";
+import { detectRunningIDEs } from "@sid-code/core/ide/process-tree.ts";
 
 /** /ide 主命令 */
 export class IDECommand implements Command {
@@ -76,7 +77,7 @@ class IDEStatusCommand implements Command {
         lines.push("", "使用 /ide connect 连接");
       }
     } else if (status !== "connected") {
-      lines.push("", "未发现可用 IDE（需要 IDE 扩展在 ~/.sid-code/ide/ 写入 lockfile）");
+      lines.push("", await explainNoLockfile());
     }
 
     return { kind: "message", message: lines.join("\n") };
@@ -107,10 +108,7 @@ class IDEConnectCommand implements Command {
 
     const detected = await detectIDEs(process.cwd());
     if (detected.length === 0) {
-      return {
-        kind: "message",
-        message: "未发现可用 IDE\n请确认 IDE 扩展已安装并运行（/ide install 可安装扩展）",
-      };
+      return { kind: "message", message: await explainNoLockfile() };
     }
     if (detected.length > 1) {
       const list = detected.map((i) => `  - ${i.name} (${i.url})`).join("\n");
@@ -182,4 +180,21 @@ class IDEInstallCommand implements Command {
       ? { kind: "message", message: `${ideType} 扩展安装成功，请重启 IDE 后使用 /ide connect` }
       : { kind: "error", message: `扩展安装失败: ${result.error ?? "未知错误"}` };
   }
+}
+
+/**
+ * lockfile 缺失时的提示文案。纯函数：进程检测的结果由调用方传入，
+ * 这样「检测到什么」和「说什么」可以分开测。
+ * 空列表（没检测到，或检测本身失败）必须退回通用文案 —— 一条提示不该点名一个不存在的 IDE。
+ */
+export function noLockfileMessage(running: readonly string[]): string {
+  if (running.length > 0) {
+    const names = running.join("、");
+    return `检测到 ${names} 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）\n使用 /ide install 安装扩展，安装后重启 IDE`;
+  }
+  return "未发现可用 IDE\n请确认 IDE 扩展已安装并运行（/ide install 可安装扩展）";
+}
+
+async function explainNoLockfile(): Promise<string> {
+  return noLockfileMessage(await detectRunningIDEs());
 }

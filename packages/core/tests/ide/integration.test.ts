@@ -111,6 +111,24 @@ describe("isProcessRunning", () => {
     // 极大 PID 几乎不可能存在
     expect(isProcessRunning(2_000_000_000)).toBe(false);
   });
+
+  test("EPERM 当活着：没权限发信号不等于进程死了", () => {
+    // 这条判据与 Claude Code 的同名函数**故意相反**：CC 用它做锁接管，
+    // 判 false 是保守的；我们用它做 lockfile 删除，判 false 会清掉一个
+    // 活着的 IDE 的 lockfile。这里只能靠 mock —— 单测进程对自己的 PID
+    // 永远有权限，构造不出真实的 EPERM。
+    const original = process.kill;
+    process.kill = (() => {
+      const err = new Error("operation not permitted") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      throw err;
+    }) as typeof process.kill;
+    try {
+      expect(isProcessRunning(process.pid)).toBe(true);
+    } finally {
+      process.kill = original;
+    }
+  });
 });
 
 // ───────────────────────────── IDESelectionSync ─────────────────────────────

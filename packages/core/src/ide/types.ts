@@ -27,6 +27,12 @@ export interface DetectedIDE {
   name: string;
   /** 监听端口 */
   port: number;
+  /**
+   * IDE 进程 PID（仅当进程仍存活时才有值）。
+   * 用于多个窗口打开同一工作区时的消歧：lockfile 的 PID 落在我们进程的祖先链上，
+   * 说明这个窗口就是启动我们的那个。
+   */
+  pid?: number;
   /** 认证令牌 */
   authToken?: string;
   /** 是否运行在 Windows 上 */
