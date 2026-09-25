@@ -20,6 +20,7 @@
 import type { QueryEngineEvent } from "../query/types.ts";
 import { BridgeCore } from "./bridge-core.ts";
 import { createBridgeTransport } from "./transport.ts";
+import { WebSocketBridgeTransport } from "./ws-transport.ts";
 import {
   formatTextMessage,
   formatToolUseMessage,
@@ -72,11 +73,31 @@ export class BridgeRunner {
   private queue: string[] = [];
   private processing = false;
   private stopped = false;
+  /**
+   * 认证失败 / 策略拒绝这类永久关闭。传输层停了重连，但没人订回调时
+   * CLI 会一直停在「按 Ctrl+C 退出」——验收「坏 token 立刻退出」勾不上。
+   */
+  private permanentFailure: { code: number; reason: string } | null = null;
+  /** runBridge 常驻循环挂在这里：永久失败时立刻 reject，而不是轮询。 */
+  private onPermanentFailureWaiter: ((err: Error) => void) | null = null;
+  /** 用户主动退出时拆掉等待，否则未 reject 的 Promise 会把进程留在事件循环里。 */
+  private cancelPermanentFailureWaiter: (() => void) | null = null;
 
   constructor(deps: BridgeRunnerDeps, options: BridgeRunnerOptions) {
     this.deps = deps;
 
     const transport = createBridgeTransport(options.url, options.authToken);
+    // 工厂返回的接口没有永久失败回调；只有 WS 实现有。SSE 之类以后若出现，不订也不该崩。
+    if (transport instanceof WebSocketBridgeTransport) {
+      transport.setOnPermanentFailure((code, reason) => {
+        this.permanentFailure = { code, reason };
+        const waiter = this.onPermanentFailureWaiter;
+        if (!waiter) return;
+        this.onPermanentFailureWaiter = null;
+        const err = this.consumePermanentFailure();
+        if (err) waiter(err);
+      });
+    }
     this.core = new BridgeCore({
       transport,
       permissionTimeoutMs: options.permissionTimeoutMs,
@@ -92,12 +113,43 @@ export class BridgeRunner {
     this.deps.setPermissionDelegate((req) => proxy.requestPermission(req));
 
     await this.core.start();
+    // connect() 在 onopen 就 resolve，4001 往往紧随其后。让关闭事件先落地，
+    // 否则 runBridge 会先打印「已启动」再退出。
+    await new Promise((r) => setTimeout(r, 0));
+    const failure = this.consumePermanentFailure();
+    if (failure) throw failure;
     getLogger().info("BRIDGE", "Bridge 运行器已启动，等待远程消息");
+  }
+
+  /**
+   * 常驻循环用：永久失败时返回错误，调用方据此非 0 退出。
+   * 取走即清，避免 stop() 的清理关连接被当成第二次失败。
+   */
+  consumePermanentFailure(): Error | null {
+    const failure = this.permanentFailure;
+    if (!failure) return null;
+    this.permanentFailure = null;
+    return new Error(`Bridge 连接被拒绝：${failure.reason}`);
+  }
+
+  /** 常驻期间的下一次永久失败。start() 里已经发生的由调用方先 consume。 */
+  waitForPermanentFailure(): Promise<Error> {
+    const already = this.consumePermanentFailure();
+    if (already) return Promise.resolve(already);
+    return new Promise((resolve, reject) => {
+      this.onPermanentFailureWaiter = resolve;
+      this.cancelPermanentFailureWaiter = () => {
+        this.onPermanentFailureWaiter = null;
+        this.cancelPermanentFailureWaiter = null;
+        reject(new Error("bridge-wait-cancelled"));
+      };
+    });
   }
 
   /** 停止 Bridge 会话（卸载权限代理 + 关闭连接） */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.cancelPermanentFailureWaiter?.();
     this.deps.setPermissionDelegate(null);
     await this.core.stop();
   }
