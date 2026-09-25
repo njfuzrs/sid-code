@@ -62,6 +62,44 @@ describe("config", () => {
     expect(cfg.model).toBe("llama3");
   });
 
+  // 回归：baseURL 只认 SID_CODE_LLM_BASE_URL。
+  // ANTHROPIC_BASE_URL 是 Claude Code 的变量，OPENAI_BASE_URL 是 OpenAI SDK 的通用变量，
+  // 同机并存时两者都会以「env 优先于配置文件」盖掉用户自己的端点（或在 per-model
+  // base_url 存在时每次启动打一条覆盖告警）。空配置目录是为了不读到本机 settings.json。
+  test("loadConfig 不把 ANTHROPIC_BASE_URL / OPENAI_BASE_URL 当作自己的 baseURL", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "sid-cfg-"));
+    const saved = {
+      SID_CONFIG_DIR: process.env.SID_CONFIG_DIR,
+      SID_CODE_LLM_BASE_URL: process.env.SID_CODE_LLM_BASE_URL,
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    };
+    const restore = () => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+    try {
+      process.env.SID_CONFIG_DIR = dir;
+      delete process.env.SID_CODE_LLM_BASE_URL;
+      process.env.OPENAI_BASE_URL = "https://openai.example/v1";
+      process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4000";
+      const ignored = await loadConfig({ provider: "ollama", model: "llama3" });
+      expect(ignored.baseURL).toBe("");
+
+      process.env.SID_CODE_LLM_BASE_URL = "https://sid.example/v1";
+      const own = await loadConfig({ provider: "ollama", model: "llama3" });
+      expect(own.baseURL).toBe("https://sid.example/v1");
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // 回归：per-model base_url 覆盖 env 的提示必须进 _validationDiagnostics，
   // 不能走 getLogger().warn。loadConfig 时 logger 还是 enabled=false 的兜底实例，
   // WARN 只写 stderr，TUI 进 alternate buffer 后被清掉，用户只在加载完成前瞥到一眼。
@@ -106,6 +144,7 @@ describe("config", () => {
       expect(hit[0]!.message).toContain("https://env.example/v1");
       expect(hit[0]!.message).toContain("https://model.example/v1");
       expect(hit[0]!.message).toContain("my-model");
+      expect(hit[0]!.message).not.toContain("OPENAI_BASE_URL");
       expect(stderr.join("")).not.toContain("被模型");
       expect(cfg.baseURL).toBe("https://model.example/v1");
 
