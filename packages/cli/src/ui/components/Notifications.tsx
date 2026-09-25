@@ -86,13 +86,21 @@ export const Notifications: React.FC<NotificationsProps> = ({
       {showStartupWarnings && (
         <Box marginY={1} flexDirection="column">
           {visibleWarnings.map((warning, index) => (
-            <Box key={index} flexDirection="row">
-              <Box width={3}>
-                <Text color={theme.status.warning}>{`${WARNING_MARK} `}</Text>
-              </Box>
-              <Box flexGrow={1}>
-                <Text color={theme.status.warning}>{warning.message}</Text>
-              </Box>
+            // 按行渲染而不是把整段交给一个 Text：文案里的 \n 是为了让 URL 不被按列
+            // 硬切，但整段换行后续行不再经过左侧 3 列标记，会顶格且标记列对不齐。
+            <Box key={index} flexDirection="column">
+              {warning.message.split("\n").map((line, lineIndex) => (
+                <Box key={lineIndex} flexDirection="row">
+                  <Box width={3}>
+                    <Text color={theme.status.warning}>
+                      {lineIndex === 0 ? `${WARNING_MARK} ` : ""}
+                    </Text>
+                  </Box>
+                  <Box flexGrow={1}>
+                    <Text color={theme.status.warning}>{line}</Text>
+                  </Box>
+                </Box>
+              ))}
             </Box>
           ))}
           <Text>按任意键关闭</Text>
