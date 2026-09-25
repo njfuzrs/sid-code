@@ -47,7 +47,13 @@ export type DefenseLayer =
   /** 权限连续拒绝熔断（`permission/denial-tracking.ts`） */
   | "denial_tracking"
   /** 企业策略功能开关（`config/policy-limits.ts`） */
-  | "policy_limits";
+  | "policy_limits"
+  /**
+   * Bridge 准入（`bridge/admission.ts`）。
+   * 同步布尔判定，不记 duration/token——那两列在这层会是恒零假数据。
+   * 只记触发次数与 reason，让「防线在、调用 0」能被复算成非零。
+   */
+  | "bridge_admission";
 
 /**
  * 防线动作结果。

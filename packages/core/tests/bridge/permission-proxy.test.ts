@@ -99,13 +99,36 @@ describe("PermissionProxy", () => {
     expect(await promise).toBe(false);
   });
 
-  test("超时自动拒绝", async () => {
+  test("超时自动拒绝，并出站 permission_expired（不是 error）", async () => {
     const transport = new MockTransport();
     const proxy = new PermissionProxy(transport, 30); // 30ms 超时
 
     const result = await proxy.requestPermission(REQ);
     expect(result).toBe(false);
     expect(proxy.hasPending()).toBe(false);
+
+    const request = transport.written.find((m) => m.type === "permission_request");
+    const expired = transport.written.find((m) => m.type === "status");
+    expect(request?.id).toBeDefined();
+    expect(expired).toBeDefined();
+    const data = expired!.data as { status: string; request_id: string };
+    expect(data.status).toBe("permission_expired");
+    expect(data.request_id).toBe(request!.id);
+    // 管理台按 status 展示。装成 error 会让「没人批」看起来像 agent 崩了。
+    expect(data.status).not.toBe("error");
+  });
+
+  test("超时后写出失败不把拒绝变成抛错", async () => {
+    const transport = new MockTransport();
+    let writes = 0;
+    const original = transport.write.bind(transport);
+    transport.write = async (message) => {
+      writes++;
+      if (writes > 1) throw new Error("连接已死");
+      return original(message);
+    };
+    const proxy = new PermissionProxy(transport, 30);
+    await expect(proxy.requestPermission(REQ)).resolves.toBe(false);
   });
 
   test("发送失败立即拒绝", async () => {

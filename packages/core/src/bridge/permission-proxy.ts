@@ -11,6 +11,7 @@
  */
 
 import type { BridgeTransport, BridgeInMessage, BridgePermissionRequest } from "./types.ts";
+import { formatStatusMessage } from "./bridge-messaging.ts";
 import { getLogger } from "../debug/logger.ts";
 
 export class PermissionProxy {
@@ -43,6 +44,12 @@ export class PermissionProxy {
         this.pendingRequests.delete(requestId);
         getLogger().warn("BRIDGE", `权限请求 ${requestId} 超时，自动拒绝`);
         resolve(false);
+        // 超时已经是拒绝。再告诉控制端「过期」而不是装成 agent 出错——
+        // 管理台按 data.status === "permission_expired" 展示。发送失败忽略：
+        // 连接可能已经死，onclose 里的 cleanup 会再拒一次。
+        void this.transport
+          .write(formatStatusMessage("permission_expired", { request_id: requestId }))
+          .catch(() => {});
       }, this.timeoutMs);
 
       this.pendingRequests.set(requestId, { resolve, timer });
