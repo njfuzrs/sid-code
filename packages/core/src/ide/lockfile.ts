@@ -154,12 +154,23 @@ export async function cleanupStaleLockfiles(): Promise<void> {
   );
 }
 
-/** 检查进程是否存活 */
+/**
+ * 检查进程是否存活。
+ *
+ * 信号 0 不杀进程，只问内核「这个 PID 在不在」。两种失败不能混为一谈：
+ *   - `ESRCH`：进程确实不存在 → 死了
+ *   - `EPERM`：进程**存在**，但属于别的用户，我们没权限给它发信号
+ *
+ * ⚠️ `EPERM` 必须当「活着」处理，这和 Claude Code 的同名函数**故意相反**。
+ * CC 用它做锁接管，判 false 是保守的（别抢一个可能还活着的锁）；
+ * 我们用它做 lockfile **删除**，判 false 会把一个活着的 IDE 的 lockfile 清掉，
+ * 后果是 IDE 明明开着却再也发现不了。删除动作的保守方向是「拿不准就留着」。
+ */
 export function isProcessRunning(pid: number): boolean {
   try {
-    process.kill(pid, 0); // 信号 0 不杀进程，只检查是否存在
+    process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
