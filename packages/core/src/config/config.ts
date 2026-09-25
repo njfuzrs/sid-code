@@ -1370,10 +1370,13 @@ function loadFromEnv(): Partial<Config> {
     provider: env.SID_CODE_LLM_PROVIDER,
     // G2：SID 名优先，CC 原名兜底。从 CC 迁移的用户沿用 ANTHROPIC_MODEL 不再静默失效。
     model: env.SID_CODE_LLM_MODEL || env.ANTHROPIC_MODEL,
-    // baseURL：SID_CODE_LLM_BASE_URL 优先，OPENAI_BASE_URL 作兼容别名（不确定-4：
-    // 此前只实现了 SID_CODE_LLM_BASE_URL，运维习惯用的 OPENAI_BASE_URL 压根没被读取），
-    // 再兜底 CC 原名 ANTHROPIC_BASE_URL。
-    baseURL: env.SID_CODE_LLM_BASE_URL || env.OPENAI_BASE_URL || env.ANTHROPIC_BASE_URL,
+    // baseURL 只认 SID_CODE_LLM_BASE_URL。
+    // 不读 ANTHROPIC_BASE_URL：那是 Claude Code 的变量，同机并存时会把 sid-code 的
+    // 流量静默带到 CC 的本地代理（实测 ~/.zshrc 里给 CC 的 127.0.0.1:4000 每次启动都触发覆盖告警）。
+    // 不读 OPENAI_BASE_URL：它是 OpenAI SDK / 其它工具的通用变量，不是 sid-code 的配置面，
+    // 同机设了就会以「环境变量优先于配置文件」盖掉用户自己的 baseURL，且 --help 把它标成
+    // 「仅 sid-code 生效」是假的。需要临时切端点，设 SID_CODE_LLM_BASE_URL。
+    baseURL: env.SID_CODE_LLM_BASE_URL,
     anthropicKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN,
     openaiKey: env.OPENAI_API_KEY || env.SID_CODE_LLM_API_KEY,
   };
@@ -1708,7 +1711,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
         getLogger().warn(
           "CONFIG",
           `环境变量 baseURL（${envBaseURL}）被默认模型「${first.name}」的 base_url（${first.baseURL}）覆盖。` +
-            `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)。`,
+            `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL)。`,
         );
       }
       config.baseURL = first.baseURL;
@@ -1818,7 +1821,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
  * 如果当前模型不在 availableModels 中，保持顶层字段不变（向后兼容）。
  *
  * baseURL 优先级链（不确定-4，从高到低）：
- *   per-model availableModels[].baseURL  >  env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)  >  默认
+ *   per-model availableModels[].baseURL  >  env(SID_CODE_LLM_BASE_URL)  >  默认
  * per-model 存在时无条件覆盖 env——这是有意设计（多模型各自端点必须独立），但此前静默覆盖，
  * 运维用 env 做临时故障演练/切端点时会"env 明明设了却不生效且无提示"。现改为：覆盖发生且
  * 两者取值不同时给一条 warn，让优先级链可发现。envBaseURL 由调用方传入（合并前 env 的原值）。
@@ -1860,7 +1863,7 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
       getLogger().warn(
         "CONFIG",
         `环境变量 baseURL（${envBaseURL}）被模型「${mc.name}」的 base_url（${mc.baseURL}）覆盖。` +
-          `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL/OPENAI_BASE_URL)。` +
+          `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL)。` +
           `如需 env 生效，请删除该模型的 base_url 配置或直接改模型配置。`,
       );
     }

@@ -59,8 +59,9 @@ const ALWAYS_ALLOWED = new Set([
   "SID_CODE_LLM_MODEL",
   "SID_CODE_LLM_BASE_URL",
   // G2：CC 原名兜底。子进程 env 清理不放行这些名字，loadFromEnv 的 fallback 在子进程里就失效。
+  // ANTHROPIC_BASE_URL 不在此列：baseURL 只认 SID_CODE_LLM_BASE_URL，放行它只会让
+  // 子进程里的 sid-code 继续读到 Claude Code 的端点。
   "ANTHROPIC_MODEL",
-  "ANTHROPIC_BASE_URL",
   "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
   "CLAUDE_CONFIG_DIR",
   "ENABLE_TOOL_SEARCH",
