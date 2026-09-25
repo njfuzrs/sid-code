@@ -11,7 +11,8 @@
  */
 
 import { join } from "path";
-import { homedir } from "os";
+import { homedir, platform } from "os";
+import { existsSync, readdirSync } from "fs";
 import { getSidHome, isInsideSidHome } from "../paths.ts";
 
 export const SETTING_SOURCES = [
@@ -47,7 +48,8 @@ export function getSettingsFilePath(
     case "localSettings":
       return join(projectBase, ".sid-code", "settings.local.json");
     case "policySettings":
-      return "/etc/sid-code/policy.json";
+      // B2：平台差异化的企业管控文件。macOS/Windows 没有 /etc，硬编码 /etc 在那两个平台永不存在。
+      return managedSettingsPath();
     case "flagSettings":
       return null;
   }
@@ -65,4 +67,45 @@ export function getSettingsFilePaths(
     if (path) map.set(path, source);
   }
   return map;
+}
+
+/**
+ * 企业管控文件的平台路径（B2，对齐 CC managedPath）。
+ * - macOS：/Library/Application Support/SidCode/managed-settings.json
+ * - Windows：%PROGRAMDATA%\SidCode\managed-settings.json（缺省 C:\ProgramData）
+ * - Linux 及其它：/etc/sid-code/managed-settings.json
+ *
+ * 历史的 /etc/sid-code/policy.json 与 policy.yaml 已废弃，不再读取。
+ */
+export function managedSettingsPath(): string {
+  return join(managedSettingsDir(), "managed-settings.json");
+}
+
+/** 企业管控 drop-in 目录：managed-settings.d/*.json，字母序后者覆盖前者。 */
+export function managedSettingsDropInDir(): string {
+  return join(managedSettingsDir(), "managed-settings.d");
+}
+
+function managedSettingsDir(): string {
+  const p = platform();
+  if (p === "darwin") return "/Library/Application Support/SidCode";
+  if (p === "win32") return join(process.env.PROGRAMDATA || "C:\\ProgramData", "SidCode");
+  return "/etc/sid-code";
+}
+
+/**
+ * drop-in 目录下的 json 文件，按文件名字母序排列。
+ * 目录不存在或不可读时返回空数组，不抛。
+ */
+export function listManagedSettingsDropIns(): string[] {
+  const dir = managedSettingsDropInDir();
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".json"))
+      .sort()
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
 }

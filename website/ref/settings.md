@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **73** 个顶层字段。其中 47 个由
+> 共 **77** 个顶层字段。其中 51 个由
 > `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），26 个标 ⚠ 的字段
 > 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
 
@@ -44,12 +44,14 @@ settings.json 的全部可配字段、类型与默认值。
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
 | `checkpoint` ⚠ | object | — | Checkpoint 配置 |
 | `classifierModel` | string | — | LLM 分类器使用的模型（默认复用主循环模型 config.model） |
+| `cleanupPeriodDays` | number | ≥0 | cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。 |
 | `conflictDetection` ⚠ | boolean | — | 并发冲突检测配置（Phase 2.4） 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲… |
 | `conflictSeverity` ⚠ | string | — | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻… |
 | `costLimit` | number | ≥0 | 成本配额（美元） |
 | `debug` ⚠ | boolean | — | 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） |
 | `debugLevel` ⚠ | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） |
 | `debugLogFile` ⚠ | string | — | 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
+| `disableAllHooks` | boolean | — | disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源， 任一为 true 即禁用。见 hook/registry.ts。 |
 | `disabledHooks` | array | — | 禁用的 Hook 名列表（/hooks disable -p 持久化端） |
 | `disabledSkills` | array | — | Skill 配置 禁用的 Skill 名称列表 |
 | `disallowedTools` | array | — | 禁用工具名单（拒绝优先于 allowedTools） |
@@ -65,6 +67,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `hooks` | object | — | Hook 和 MCP |
 | `ide` ⚠ | object | — | IDE 集成配置 |
 | `identity` | object | — | M1 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入； deviceId 不在这里配（本机持久 UUID，见 identity/device-id.ts）。 未配置时所有功… |
+| `includeCoAuthoredBy` | boolean | — | includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段… |
 | `jitContext` | boolean | — | JIT 上下文发现 是否启用 JIT 上下文发现（默认 true） |
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。 不设置时… |
 | `maxThinkingTokens` | number | 整数 ≥0 | §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。 env SID_CODE_MAX_THINKING_TOKENS / M… |
@@ -80,6 +83,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `pluginDirs` ⚠ | array | — | 插件配置 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
 | `provider` | string | — | LLM 配置 LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额管控（增强版，向后兼容 costLimit） |
+| `respectGitignore` | boolean | — | G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。 respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。 |
 | `sandboxAutoAllowBash` ⚠ | boolean | — | P2-3：沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 这个开关是 P2-3 把 `autoAllowBashIfSandboxed` 默认值翻成 false 之后的**回退通道**： 不接这一条，新默认值就变成… |
 | `sanitizeEnv` | boolean | — | 环境变量清理 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索配置 |

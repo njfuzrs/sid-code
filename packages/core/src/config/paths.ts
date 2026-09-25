@@ -34,7 +34,13 @@ import { join, resolve, sep } from "path";
  * **新代码一律用 `SID_CONFIG_DIR`。**
  */
 export function getSidHome(): string {
-  for (const override of [process.env.SID_CONFIG_DIR, process.env.SID_CODE_HOME]) {
+  // G2：SID_CONFIG_DIR 是权威名，SID_CODE_HOME 是历史别名，CLAUDE_CONFIG_DIR 是 CC 原名兜底。
+  // 三者都空才回退 ~/.sid-code。CC 用户沿用 CLAUDE_CONFIG_DIR 时配置根目录不再静默落回默认位置。
+  for (const override of [
+    process.env.SID_CONFIG_DIR,
+    process.env.SID_CODE_HOME,
+    process.env.CLAUDE_CONFIG_DIR,
+  ]) {
     if (override && override.trim() !== "") {
       return override;
     }
