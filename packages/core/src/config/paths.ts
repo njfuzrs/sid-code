@@ -203,10 +203,6 @@ export const sidPaths = {
   stateFile: (name: string) => sidHomePath("state", name),
   migrationState: () => sidHomePath("state", "migrations.json"),
   commandUsage: () => sidHomePath("state", "command-usage.json"),
-  /** G7：工具使用统计（7 天半衰期，60 秒防抖写盘） */
-  toolUsage: () => sidHomePath("state", "tool-usage.json"),
-  /** G7：skill 使用统计 */
-  skillUsage: () => sidHomePath("state", "skill-usage.json"),
   trustedExtensions: () => sidHomePath("state", "trusted-extensions.json"),
   trustedProjects: () => sidHomePath("state", "trusted-projects.json"),
   /** 已确认过的 Bridge 中继 URL（D14：--bridge 的一次性准入确认） */

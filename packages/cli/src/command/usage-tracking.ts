@@ -34,24 +34,17 @@ let cache: UsageStore | null = null;
 // 防抖：记录每个命令上次写盘时间
 const lastWriteByCommand = new Map<string, number>();
 
-export type UsageNamespace = "command" | "tool" | "skill";
-
-function usageFilePath(namespace: UsageNamespace = "command"): string {
+function usageFilePath(): string {
   // 测试可通过环境变量重定向，避免污染真实 ~/.sid-code/
-  // SID_CODE_USAGE_FILE 只覆盖 command（历史行为）；tool/skill 走 SID_CONFIG_DIR 下的 sidPaths。
-  if (namespace === "command") {
-    const override = process.env.SID_CODE_USAGE_FILE;
-    if (override) return override;
-    return sidPaths.commandUsage();
-  }
-  if (namespace === "tool") return sidPaths.toolUsage();
-  return sidPaths.skillUsage();
+  const override = process.env.SID_CODE_USAGE_FILE;
+  if (override) return override;
+  return sidPaths.commandUsage();
 }
 
 function loadStore(): UsageStore {
   if (cache) return cache;
   try {
-    const path = usageFilePath("command");
+    const path = usageFilePath();
     if (!existsSync(path)) {
       cache = {};
       return cache;
@@ -67,7 +60,7 @@ function loadStore(): UsageStore {
 
 function saveStore(store: UsageStore): void {
   try {
-    const path = usageFilePath("command");
+    const path = usageFilePath();
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(path, JSON.stringify(store), "utf-8");
@@ -114,76 +107,4 @@ export function recordUsage(commandName: string, now: number = Date.now()): void
 export function _resetUsageCache(): void {
   cache = null;
   lastWriteByCommand.clear();
-  cacheByNamespace.clear();
-  lastWriteByNamespace.clear();
-}
-
-// ── G7：工具 / skill 使用统计 ──
-// 与命令统计共用同一套衰减算法和 60 秒防抖，但各自落盘，避免一个 namespace 的
-// 高频写入把另一个的防抖打乱。
-
-const cacheByNamespace = new Map<UsageNamespace, UsageStore>();
-const lastWriteByNamespace = new Map<string, number>();
-
-function loadStoreFor(namespace: UsageNamespace): UsageStore {
-  const cached = cacheByNamespace.get(namespace);
-  if (cached) return cached;
-  let store: UsageStore = {};
-  try {
-    const path = usageFilePath(namespace);
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8"));
-      if (parsed && typeof parsed === "object") store = parsed;
-    }
-  } catch {
-    store = {};
-  }
-  cacheByNamespace.set(namespace, store);
-  return store;
-}
-
-function saveStoreFor(namespace: UsageNamespace, store: UsageStore): void {
-  try {
-    const path = usageFilePath(namespace);
-    const dir = dirname(path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(path, JSON.stringify(store), "utf-8");
-  } catch {
-    // 写盘失败静默忽略，统计不是热路径的正确性前提
-  }
-}
-
-/**
- * 记录一次工具或 skill 的使用。command 仍走 recordUsage，不进这里。
- * 60 秒内同一 key 只写一次盘，内存计数始终更新。
- */
-export function trackUsage(
-  namespace: Exclude<UsageNamespace, "command">,
-  key: string,
-  now: number = Date.now(),
-): void {
-  const store = loadStoreFor(namespace);
-  const record = store[key] ?? { usageCount: 0, lastUsedAt: 0 };
-  record.usageCount += 1;
-  record.lastUsedAt = now;
-  store[key] = record;
-  const debounceKey = `${namespace}:${key}`;
-  const lastWrite = lastWriteByNamespace.get(debounceKey);
-  if (lastWrite !== undefined && now - lastWrite < DEBOUNCE_MS) return;
-  lastWriteByNamespace.set(debounceKey, now);
-  saveStoreFor(namespace, store);
-}
-
-/** 读取某个 namespace 下的衰减分数（供补全排序 / /doctor 用）。 */
-export function getUsageScoreFor(
-  namespace: UsageNamespace,
-  key: string,
-  now: number = Date.now(),
-): number {
-  const store = namespace === "command" ? loadStore() : loadStoreFor(namespace);
-  const record = store[key];
-  if (!record) return 0;
-  const daysSinceUse = (now - record.lastUsedAt) / DAY_MS;
-  const recencyFactor = Math.pow(0.5, daysSinceUse / HALF_LIFE_DAYS);
-  return record.usageCount * Math.max(recencyFactor, MIN_DECAY_FACTOR);
 }
