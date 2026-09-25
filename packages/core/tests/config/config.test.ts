@@ -100,6 +100,68 @@ describe("config", () => {
     }
   });
 
+  // 回归：per-model base_url 覆盖 env 的提示必须进 _validationDiagnostics，
+  // 不能走 getLogger().warn。loadConfig 时 logger 还是 enabled=false 的兜底实例，
+  // WARN 只写 stderr，TUI 进 alternate buffer 后被清掉，用户只在加载完成前瞥到一眼。
+  // 诊断列表是 TUI 启动横幅与 --print stderr 诊断的共同数据源。
+  test("per-model base_url 覆盖 env 时记入启动诊断且不写 stderr", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "sid-cfg-"));
+    const saved = {
+      SID_CONFIG_DIR: process.env.SID_CONFIG_DIR,
+      SID_CODE_LLM_BASE_URL: process.env.SID_CODE_LLM_BASE_URL,
+    };
+    const restore = () => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+    const stderr: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({
+          model: "my-model",
+          availableModels: [
+            { name: "my-model", provider: "openai", base_url: "https://model.example/v1" },
+          ],
+        }),
+      );
+      process.env.SID_CONFIG_DIR = dir;
+      process.env.SID_CODE_LLM_BASE_URL = "https://env.example/v1";
+      const cfg = await loadConfig({});
+      const warnings = cfg._validationDiagnostics?.warnings ?? [];
+      const hit = warnings.filter((w) => w.path === "baseURL");
+      expect(hit).toHaveLength(1);
+      expect(hit[0]!.message).toContain("https://env.example/v1");
+      expect(hit[0]!.message).toContain("https://model.example/v1");
+      expect(hit[0]!.message).toContain("my-model");
+      expect(hit[0]!.message).not.toContain("OPENAI_BASE_URL");
+      expect(stderr.join("")).not.toContain("被模型");
+      expect(cfg.baseURL).toBe("https://model.example/v1");
+
+      // 值相同不记：否则每条配了 base_url 的模型启动都刷一条横幅，横幅就变成噪音。
+      process.env.SID_CODE_LLM_BASE_URL = "https://model.example/v1";
+      const same = await loadConfig({});
+      const sameHit = (same._validationDiagnostics?.warnings ?? []).filter(
+        (w) => w.path === "baseURL",
+      );
+      expect(sameHit).toHaveLength(0);
+    } finally {
+      process.stderr.write = origWrite;
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // 回归：normalizeConfigKeys 归一化 availableModels 时必须保留用户手写 pricing。
   // 曾漏拷该字段，导致「用户手写价最高优先」被架空（settings.json 里配的价被静默丢弃）。
   test("loadConfig 保留 availableModels 的用户手写 pricing（snake_case 路径）", async () => {

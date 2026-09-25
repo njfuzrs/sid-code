@@ -18,6 +18,7 @@ import {
 } from "@sid-code/core/permission/mode-policy.ts";
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
 import { routeToolProgress } from "./ui/tool-progress-route.ts";
+import { formatStartupWarning } from "./ui/startup-warning.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
@@ -6249,7 +6250,10 @@ export class App {
       });
     });
     diag.warnings.forEach((w, i) => {
-      warnings.push({ id: `startup-warning-${i}-${w.path}`, message: `${w.path}: ${w.message}` });
+      warnings.push({
+        id: `startup-warning-${i}-${w.path}`,
+        message: formatStartupWarning(w.path, w.message),
+      });
     });
     return warnings;
   }

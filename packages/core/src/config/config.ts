@@ -1698,7 +1698,9 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 
   // 从 availableModels 解析当前模型的连接信息，回填顶层字段（含 maxTokens 按模型能力
   // 重算/钳制，已尊重上面登记的 _explicitMaxTokens）。
-  resolveCurrentModelConfig(config, envBaseURL);
+  // 覆盖提示不在这里记：下面的 _validationDiagnostics 赋值是整体替换，
+  // 此刻追加会被它盖掉。envBaseURL 留到赋值之后再用。
+  resolveCurrentModelConfig(config);
 
   // 如果 model 为空但 availableModels 有配置，自动选第一个作为默认模型
   if (!config.model && config.availableModels.length > 0) {
@@ -1706,16 +1708,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     config.model = first.name;
     // 从第一个模型回填 provider / baseURL / apiKey
     if (first.provider) config.provider = first.provider;
-    if (first.baseURL) {
-      if (envBaseURL && envBaseURL !== first.baseURL) {
-        getLogger().warn(
-          "CONFIG",
-          `环境变量 baseURL（${envBaseURL}）被默认模型「${first.name}」的 base_url（${first.baseURL}）覆盖。` +
-            `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL)。`,
-        );
-      }
-      config.baseURL = first.baseURL;
-    }
+    if (first.baseURL) config.baseURL = first.baseURL;
     if (first.apiKey) {
       if (config.provider === "anthropic") config.anthropicKey = first.apiKey;
       else config.openaiKey = first.apiKey;
@@ -1784,6 +1777,11 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     };
   }
 
+  // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
+  // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
+  // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。
+  recordBaseURLOverrideWarning(config, envBaseURL);
+
   // 致命错误：provider / model 无效时必须立即阻止启动（不依赖 logger）。
   // 这是"不修就跑不起来"的唯一该抛首屏的情形。
   if (validation.errors.length > 0) {
@@ -1816,17 +1814,57 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
 }
 
 /**
+ * 把一条启动期提示挂到 config._validationDiagnostics.warnings。
+ *
+ * 给 loadConfig 阶段用：此刻 logger 还没 initLogger，getLogger().warn 会走兜底实例的
+ * stderr 分支，TUI 接管终端后这段输出消失，用户看不到。诊断列表是 TUI 启动横幅和
+ * --print stderr 诊断的共同数据源，挂在这里两条路径都看得见。
+ * 同 path 同 message 不重复追加，防 loadConfig 的两个分支都命中时记两次。
+ */
+function recordStartupWarning(config: Config, path: string, message: string): void {
+  const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
+  if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
+  diag.warnings.push({ path, message });
+}
+
+/**
+ * per-model base_url 覆盖了 env baseURL 时记一条启动提示。
+ * 当前模型命中记「被模型覆盖」；model 为空走默认模型回填时记「被默认模型覆盖」。
+ * 两条互斥：有 model 就不会进默认回填分支。
+ */
+function recordBaseURLOverrideWarning(config: Config, envBaseURL: string | undefined): void {
+  if (!envBaseURL || !config.availableModels?.length) return;
+  const target = config.model
+    ? config.availableModels.find((m) => m.name === config.model)
+    : config.availableModels[0];
+  if (!target?.baseURL || target.baseURL === envBaseURL) return;
+  const which = config.model ? `模型「${target.name}」` : `默认模型「${target.name}」`;
+  // 换行是刻意的：横幅按列硬切，URL 会被从 `https://` 中间切开，
+  // 用户看到的是断掉的地址。两个地址各自成行，窄终端下也能整段读完。
+  recordStartupWarning(
+    config,
+    "baseURL",
+    `环境变量 baseURL 被${which}的 base_url 覆盖\n` +
+      `环境变量：${envBaseURL}\n` +
+      `实际使用：${target.baseURL}\n` +
+      `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL)。\n` +
+      `如需 env 生效，请删除该模型的 base_url 配置或直接改模型配置。`,
+  );
+}
+
+/**
  * 从 availableModels 解析当前模型的完整连接信息，回填到顶层字段。
  * 这样 registry / cli / schema 等消费方无需关心 "信息在模型还是顶层"。
  * 如果当前模型不在 availableModels 中，保持顶层字段不变（向后兼容）。
  *
  * baseURL 优先级链（不确定-4，从高到低）：
  *   per-model availableModels[].baseURL  >  env(SID_CODE_LLM_BASE_URL)  >  默认
- * per-model 存在时无条件覆盖 env——这是有意设计（多模型各自端点必须独立），但此前静默覆盖，
- * 运维用 env 做临时故障演练/切端点时会"env 明明设了却不生效且无提示"。现改为：覆盖发生且
- * 两者取值不同时给一条 warn，让优先级链可发现。envBaseURL 由调用方传入（合并前 env 的原值）。
+ * per-model 存在时无条件覆盖 env——这是有意设计（多模型各自端点必须独立）。
+ * 覆盖发生时的提示不在这里发：本函数是 /model 切换的共同咽喉，运行时再调一次会把
+ * 启动提示重复塞进一份不再刷新到 TUI 的列表。提示由 loadConfig 在诊断赋值之后
+ * 调 recordBaseURLOverrideWarning 记一次。
  */
-export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): void {
+export function resolveCurrentModelConfig(config: Config): void {
   // 别名表刷新（alias → modelId）。放在这里而不是只在启动时注册，是因为本函数是
   // 「启动解析」与「/model 运行时切换」的**共同咽喉**（app.ts 切模型后必调本函数），
   // 挂在这里就不存在「切了模型但别名表还是旧的」窗口。
@@ -1859,14 +1897,6 @@ export function resolveCurrentModelConfig(config: Config, envBaseURL?: string): 
 
   if (mc.provider) config.provider = mc.provider;
   if (mc.baseURL) {
-    if (envBaseURL && envBaseURL !== mc.baseURL) {
-      getLogger().warn(
-        "CONFIG",
-        `环境变量 baseURL（${envBaseURL}）被模型「${mc.name}」的 base_url（${mc.baseURL}）覆盖。` +
-          `优先级：per-model base_url > env(SID_CODE_LLM_BASE_URL)。` +
-          `如需 env 生效，请删除该模型的 base_url 配置或直接改模型配置。`,
-      );
-    }
     config.baseURL = mc.baseURL;
   }
   if (mc.apiKey) {
