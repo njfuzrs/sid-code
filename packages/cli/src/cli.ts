@@ -266,7 +266,12 @@ function parseCLIArgs(): CLIArgs {
         // 恢复会话时分叉出新 id 而非复用原 id（P0-2）：配合 --resume/--continue/--session-id。
         "fork-session": { type: "boolean" },
         // 禁用会话落盘（P1-2 会话控制）：本次会话不写持久化存储（SDK/一次性任务用）。
-        "no-session-persistence": { type: "boolean" },
+        //
+        // ⚠️ 声明名**不能**带 `no-` 前缀。parseArgs 开了 allowNegative，bun 会把
+        // `--no-session-persistence` 当成对 `session-persistence` 的取反；声明名本身
+        // 以 `no-` 开头时，bun 直接抛 Unknown option（node 不抛，所以用 node 复现
+        // 看不出来）。与 `--no-trace` 同一机制：声明正向名，用 `=== false` 判定。
+        "session-persistence": { type: "boolean" },
         // 从 PR 恢复会话上下文（P2-G9）：gh pr view <n> 拉取标题/描述/改动文件；
         // PR body 嵌了会话 id 则 resume 该会话，否则把 PR 上下文注入新会话。
         "from-pr": { type: "string" },
@@ -446,6 +451,23 @@ function parseCLIArgs(): CLIArgs {
     }
   }
 
+  // output-format（G1）：仅 text / json / stream-json。
+  // parseArgs 的 string 没有 choices，非法值此前会静默落进 text 分支——
+  // 用户以为拿到了结构化数据，实际是纯文本，下游解析脚本无声失败。
+  const OUTPUT_FORMATS = ["text", "json", "stream-json"] as const;
+  let outputFormat: (typeof OUTPUT_FORMATS)[number] | undefined;
+  if (values["output-format"] !== undefined) {
+    const raw = String(values["output-format"]).trim().toLowerCase();
+    if ((OUTPUT_FORMATS as readonly string[]).includes(raw)) {
+      outputFormat = raw as (typeof OUTPUT_FORMATS)[number];
+    } else {
+      console.error(
+        `错误: --output-format 只支持 ${OUTPUT_FORMATS.join(" / ")}，收到 "${values["output-format"]}"`,
+      );
+      process.exit(1);
+    }
+  }
+
   // input-format（P2-1）：仅 text / stream-json。
   let inputFormat: Config["inputFormat"] | undefined;
   if (values["input-format"] !== undefined) {
@@ -460,12 +482,15 @@ function parseCLIArgs(): CLIArgs {
     }
   }
 
-  // 组合约束（P2-1 / P2-2，对齐 CC main.tsx:1825/1850）——SDK 流式输入/部分消息依赖 stream-json 输出通道：
+  // 组合约束（P2-1 / P2-2 / G2）——SDK 流式输入/部分消息依赖 stream-json 输出通道：
   //   ① --input-format=stream-json 要求 --output-format=stream-json（双向流式必须成对；
   //      否则 stdin 逐条消息读进来了，回包却走 text/json 单次输出，SDK 对端无法解析）。
   //   ② --include-partial-messages 要求 --print + --output-format=stream-json（部分增量只在
   //      无头 stream-json 输出路径上有意义；交互 TUI 自己就在渲染增量，重复开启无益）。
-  const outFmt = values["output-format"];
+  //   ③ stream-json 要求 --verbose（G2，对齐 CC print.ts）。不强制的话，同一个 --verbose
+  //      在 json 下是「输出全量数组」、在 stream-json 下什么都不改变，SDK 消费者对不齐。
+  // 比较用归一化后的 outputFormat：`" Stream-JSON "` 这种大小写/空白差异不该绕过约束。
+  const outFmt = outputFormat;
   if (inputFormat === "stream-json" && outFmt !== "stream-json") {
     console.error(
       "错误: --input-format stream-json 需要同时指定 --output-format stream-json（双向流式必须成对）。",
@@ -478,6 +503,23 @@ function parseCLIArgs(): CLIArgs {
         "错误: --include-partial-messages 需要同时指定 --print 与 --output-format stream-json。",
       );
       process.exit(1);
+    }
+  }
+  if (values.print === true && outFmt === "stream-json" && values.verbose !== true) {
+    console.error("错误: --print 下 --output-format=stream-json 需要同时指定 --verbose");
+    process.exit(1);
+  }
+  // G1 / B2：这两个 flag 只在 --print 下改变行为。交互模式传了它不会报错退出
+  // （对齐 CC「only works with --print」的宽松处理），但静默忽略会让人以为
+  // TUI 会话也被花销上限或输出格式约束住了。告警写 stderr，不拦启动。
+  if (values.print !== true) {
+    if (outFmt !== undefined) {
+      console.error(
+        `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
+      );
+    }
+    if (values["max-budget-usd"] !== undefined) {
+      console.error("警告: --max-budget-usd 只在 --print 下生效，交互模式已忽略。");
     }
   }
 
@@ -585,7 +627,8 @@ function parseCLIArgs(): CLIArgs {
     // P2-G9：从 PR 恢复（PR 编号）。在会话恢复分支前处理，命中会话 id 则转 resume。
     fromPr: values["from-pr"],
     print: values.print,
-    outputFormat: values["output-format"],
+    // 归一化后的值：非法值已在上面 exit，这里不会再出现大小写/空白差异。
+    outputFormat: outputFormat,
     maxTurns: values["max-turns"] ? parseInt(values["max-turns"]) : undefined,
     verbose: values.verbose,
     jsonSchemaFile: values["json-schema"],
@@ -677,7 +720,10 @@ function parseCLIArgs(): CLIArgs {
     // P0-2 会话分叉。
     forkSession: values["fork-session"],
     // P1-2 禁用会话落盘。
-    noSessionPersistence: values["no-session-persistence"],
+    // 声明的是正向名 session-persistence（见上方 parseArgs 注释）：
+    // `--no-session-persistence` 经 allowNegative 落成 false，显式 `--session-persistence` 落成 true。
+    // 只有显式取反才禁用；不传时是 undefined，不能当成禁用。
+    noSessionPersistence: values["session-persistence"] === false,
     // P2-5 会话显示名。
     sessionName: values.name,
     // P1-1 追加授权目录（multiple → string[]）。
@@ -2728,26 +2774,33 @@ export async function main(): Promise<void> {
         authToken: cliArgs.bridgeToken,
       });
     } else if (config.print) {
-      if (!cliArgs.prompt) {
-        console.error("错误: 无头模式需要提供提示词");
+      // B1：text 输入把管道 stdin 拼进 prompt。stream-json 输入不走这里——
+      // 那种模式下 stdin 由 runHeadlessSDK 的 StructuredIO 逐条消费，
+      // 再读一次会把字节抢走。
+      let prompt = cliArgs.prompt ?? "";
+      if (config.inputFormat !== "stream-json") {
+        const { readPipedStdin } = await import("./utils/piped-stdin.ts");
+        const piped = await readPipedStdin();
+        const pipedText = piped.text.trim() ? piped.text : "";
+        prompt = [prompt, pipedText].filter(Boolean).join("\n");
+      }
+      // resume 带了会话 id 时允许空 prompt：恢复后续跑，不需要新指令。
+      if (!prompt.trim() && !config.resume) {
+        console.error("错误: 无头模式需要提供提示词（位置参数或管道 stdin）");
         process.exit(1);
       }
-      // 解析 --json-schema 文件 → config.jsonSchema（结构化输出约束）
+      // 解析 --json-schema：内联 JSON 或文件路径 → config.jsonSchema（结构化输出约束）
       if (cliArgs.jsonSchemaFile) {
-        try {
-          const { readFileSync } = await import("node:fs");
-          config.jsonSchema = JSON.parse(readFileSync(cliArgs.jsonSchemaFile, "utf-8"));
-        } catch (err) {
-          console.error(
-            `错误: 无法读取/解析 --json-schema 文件 "${cliArgs.jsonSchemaFile}": ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
+        const { parseJsonSchemaArg } = await import("./utils/json-schema-arg.ts");
+        const parsed = parseJsonSchemaArg(cliArgs.jsonSchemaFile);
+        if (!parsed.ok) {
+          console.error(parsed.message);
           process.exit(1);
         }
+        config.jsonSchema = parsed.schema;
       }
       startupTimer.end();
-      await app.runHeadless(cliArgs.prompt);
+      await app.runHeadless(prompt);
     } else {
       profileCheckpoint("render_start");
       const startupDuration = startupTimer.end();

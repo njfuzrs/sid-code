@@ -69,6 +69,11 @@ export interface Checker {
   recordUserDenial?(req: PermissionRequest, reason?: string): void;
   /** 重置 denial tracking（可选，/clear 新一轮对话时调用） */
   resetDenialTracking?(): void;
+  /**
+   * 读取 denial tracking 的当前状态（可选，只读）。
+   * 无头模式收尾时用它汇总「哪些操作被自动拒绝了」——决策本身不在这里改。
+   */
+  getDenialTracking?(): import("./denial-tracking.ts").DenialTrackingState;
   /** 获取与指定工具相关的阴影规则（可选，供权限对话框展示不可达规则提示） */
   getShadowedRulesForTool?(toolName: string): ShadowedRule[];
   /**

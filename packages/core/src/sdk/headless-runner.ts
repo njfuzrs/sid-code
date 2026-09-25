@@ -14,7 +14,16 @@ import type { Writable } from "node:stream";
 import type { StructuredIO } from "./structured-io.ts";
 import type { SDKQueryEngine } from "./query-engine.ts";
 import type { CommandQueue, QueuedCommand } from "./command-queue.ts";
-import type { SDKMessage, StdoutMessage } from "./types.ts";
+import type { SDKMessage, SDKResultMessage, StdoutMessage } from "./types.ts";
+
+/** runHeadless 的收尾状态。调用方用它决定退出码，不能只看「有没有抛异常」。 */
+export interface HeadlessRunOutcome {
+  /**
+   * 是否因预算硬停而结束。stream-json 的结果消息里已经有 error_max_budget_usd，
+   * 但写出消息不等于进程以非 0 退出——CI 看的是退出码。
+   */
+  budgetExceeded: boolean;
+}
 
 /**
  * runHeadlessStreaming — 内层引擎
@@ -106,9 +115,13 @@ export async function runHeadless(
     commandQueue?: CommandQueue;
     output?: Writable;
   },
-): Promise<void> {
+): Promise<HeadlessRunOutcome> {
   const { outputFormat, verbose, initialPrompt } = options;
   const out: Writable = options.output ?? process.stdout;
+  let budgetExceeded = false;
+  const watch = (msg: StdoutMessage) => {
+    if (isBudgetExceededResult(msg)) budgetExceeded = true;
+  };
 
   if (outputFormat === "stream-json") {
     const structuredIO = options.structuredIO;
@@ -122,15 +135,17 @@ export async function runHeadless(
     }
 
     for await (const msg of runHeadlessStreaming(structuredIO, engine, commandQueue)) {
+      watch(msg);
       await structuredIO.write(msg);
     }
-    return;
+    return { budgetExceeded };
   }
 
   // text / json：收集后统一输出
   const messages: SDKMessage[] = [];
   if (initialPrompt) {
     for await (const msg of engine.submitMessage(initialPrompt)) {
+      watch(msg);
       messages.push(msg);
     }
   }
@@ -145,4 +160,13 @@ export async function runHeadless(
     // text
     out.write(extractResultText(messages) + "\n");
   }
+  return { budgetExceeded };
+}
+
+/** result 消息里 subtype 为预算硬停。其余消息（含成功 result）返回 false。 */
+function isBudgetExceededResult(msg: StdoutMessage): boolean {
+  return (
+    (msg as SDKResultMessage).type === "result" &&
+    (msg as SDKResultMessage).subtype === "error_max_budget_usd"
+  );
 }

@@ -123,6 +123,22 @@ describe("convertToSDKMessage", () => {
     });
   });
 
+  test("done 带 budgetExceeded → result(error_max_budget_usd)", () => {
+    // B2：三条来源文案不同，消费侧要能区分该调哪一层的预算。
+    const quota = convertToSDKMessage(
+      { kind: "done", turns: 4, budgetExceeded: { source: "quota" } },
+      ctx,
+    );
+    expect(quota).toMatchObject({ type: "result", subtype: "error_max_budget_usd", num_turns: 4 });
+    expect((quota as { errors: string[] }).errors[0]).toContain("会话花费上限");
+
+    const remote = convertToSDKMessage(
+      { kind: "done", turns: 1, budgetExceeded: { source: "remote" } },
+      ctx,
+    );
+    expect((remote as { errors: string[] }).errors[0]).toContain("远程预算");
+  });
+
   test("hook_blocked → hook_response", () => {
     const out = convertToSDKMessage({ kind: "hook_blocked", reason: "denied" }, ctx);
     expect(out).toMatchObject({
