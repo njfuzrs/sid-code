@@ -65,7 +65,26 @@ describe("D11 · 永久失败关闭码不重试", () => {
     transport.close();
   });
 
-  test("1008 违反策略同样永久失败", async () => {
+  test("1008 admin_disconnect → 永久失败（管理员强制断开，不重连）", async () => {
+    const { server, url } = startServer({ closeWith: { code: 1008, reason: "admin_disconnect" } });
+    cleanup.push(() => server.stop(true));
+
+    const transport = new WebSocketBridgeTransport(url);
+    const failures: Array<{ code: number; reason: string }> = [];
+    transport.setOnPermanentFailure((code, reason) => failures.push({ code, reason }));
+    const closed = new Promise<void>((resolve) => transport.setOnClose(() => resolve()));
+    await transport.connect();
+    await closed;
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(transport.isPermanentlyFailed()).toBe(true);
+    expect(failures).toEqual([{ code: 1008, reason: "管理员强制断开" }]);
+    transport.close();
+  });
+
+  test("1008 但 reason 不是 admin_disconnect → 不永久失败（空闲超时不再走这条）", async () => {
+    // 中继的空闲超时已经改用 1001 idle_timeout。这里钉住的是客户端那一半：
+    // 任何不带 admin_disconnect 的 1008 都当可恢复断开，不能把本机 agent 退出。
     const { server, url } = startServer({ closeWith: { code: 1008, reason: "policy" } });
     cleanup.push(() => server.stop(true));
 
@@ -75,7 +94,22 @@ describe("D11 · 永久失败关闭码不重试", () => {
     await closed;
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(transport.isPermanentlyFailed()).toBe(true);
+    expect(transport.isPermanentlyFailed()).toBe(false);
+    expect(transport.getStats().permanentFailureCount).toBe(0);
+    transport.close();
+  });
+
+  test("1001 idle_timeout → 不永久失败，走重连", async () => {
+    const { server, url } = startServer({ closeWith: { code: 1001, reason: "idle_timeout" } });
+    cleanup.push(() => server.stop(true));
+
+    const transport = new WebSocketBridgeTransport(url);
+    const closed = new Promise<void>((resolve) => transport.setOnClose(() => resolve()));
+    await transport.connect();
+    await closed;
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(transport.isPermanentlyFailed()).toBe(false);
     transport.close();
   });
 

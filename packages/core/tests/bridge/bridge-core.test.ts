@@ -156,6 +156,32 @@ describe("BridgeCore", () => {
     expect(transport.hasStatus("aborted")).toBe(true);
   });
 
+  test("status 保活帧不进主循环（管理台的 ping 不是远程指令）", async () => {
+    const transport = new MockTransport();
+    const received: string[] = [];
+    let aborted = false;
+    const core = new BridgeCore({
+      transport,
+      onUserMessage: (t) => {
+        received.push(t);
+      },
+      onAbort: () => {
+        aborted = true;
+      },
+    });
+    await core.start();
+    const writtenBefore = transport.written.length;
+
+    // 管理台每 20 秒发的就是这一帧。它必须被忽略：
+    // 进了 onUserMessage 就是一条真的远程指令，回了 pong 就是把保活当成控制命令。
+    transport.inject({ type: "status", id: "ka-1", data: { ping: true } });
+    await tick();
+
+    expect(received).toEqual([]);
+    expect(aborted).toBe(false);
+    expect(transport.written.length).toBe(writtenBefore);
+  });
+
   test("非法 JSON 被静默忽略，不崩溃", async () => {
     const transport = new MockTransport();
     const received: string[] = [];

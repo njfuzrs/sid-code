@@ -113,9 +113,11 @@ export class BridgeRunner {
     this.deps.setPermissionDelegate((req) => proxy.requestPermission(req));
 
     await this.core.start();
-    // connect() 在 onopen 就 resolve，4001 往往紧随其后。让关闭事件先落地，
-    // 否则 runBridge 会先打印「已启动」再退出。
-    await new Promise((r) => setTimeout(r, 0));
+    // connect() 在 onopen 就 resolve。服务端在 open 回调里直接 close 时，
+    // 关闭帧与 onopen 在同一轮任务里先后跑完——只让一个微任务会读到
+    // 「还没失败」，runBridge 先打印「已启动」再退出。等的是 start() 在
+    // connect() 之前挂上的那一次关闭，带上限：对端不关时不能把启动挂住。
+    await this.core.closeSeenDuringStart(500);
     const failure = this.consumePermanentFailure();
     if (failure) throw failure;
     getLogger().info("BRIDGE", "Bridge 运行器已启动，等待远程消息");

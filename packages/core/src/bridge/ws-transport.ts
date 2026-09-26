@@ -14,11 +14,10 @@ import { getLogger } from "../debug/logger.ts";
 /** 心跳间隔 */
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /**
- * 探活超时（D12）：发出心跳后，多久没收到**任何**入向消息就判定连接半开。
- * 取 2 个心跳周期 —— 1 个周期会把一次正常的网络抖动误判成半开，
- * 而 3 个周期意味着最坏情况要 90 秒才发现对端已死。
+ * 探活超时取 2 个心跳周期（D12）：1 个周期会把一次正常的网络抖动误判成半开，
+ * 3 个周期意味着最坏情况要 90 秒才发现对端已死。倍数写在判定处而不是这里，
+ * 因为心跳间隔可被测试注入，超时必须跟着它走。
  */
-const HEARTBEAT_TIMEOUT_MS = HEARTBEAT_INTERVAL_MS * 2;
 /** 批量刷新间隔 */
 const BATCH_FLUSH_INTERVAL_MS = 200;
 /** 重连基础延迟 */
@@ -43,14 +42,22 @@ const CLOSE_CODE_HALF_OPEN = 4900;
  *
  * - `1002` 协议错误 —— 我们和对端说的不是同一种协议，重试一万次也一样
  * - `1003` 数据类型不被接受
- * - `1008` 违反策略（服务端明确拒绝）
+ * - `1008` 违反策略 —— **只**在 reason 是 `admin_disconnect` 时永久失败。
+ *   管理台强制断开要让被盗会话的 CLI 退出且不重连；别的 1008（协议层的
+ *   策略码，中继的空闲超时已经不再用它）当可恢复断开，重试能回来。
  * - `4001` 认证失败 —— token 错了，重试不会让它变对
  * - `4003` 会话过期 / 无权限
  *
  * ⚠️ 刻意**不含** 1006（异常关闭，无 close frame）：那恰恰是网络抖动、
  * 代理超时、进程重启的典型码，是**最该重试**的一类。
+ * ⚠️ 也不含 `1001`。中继的空闲超时（`idle_timeout`）与对端先走
+ * （`peer_disconnected`）都用它，两者都该重连。会话在空闲时仍是 paired，
+ * 原 token 重连得回来。
  */
-const PERMANENT_CLOSE_CODES = new Set([1002, 1003, 1008, 4001, 4003]);
+const PERMANENT_CLOSE_CODES = new Set([1002, 1003, 4001, 4003]);
+
+/** 管理台强制断开的 reason。1008 只有带它才是「被踢、别回来」。 */
+const REASON_ADMIN_DISCONNECT = "admin_disconnect";
 
 /** 关闭码 → 人话（只覆盖我们会主动分流的那些）。回调 reason 就是这段文案。 */
 function describeCloseCode(code: number): string {
@@ -60,7 +67,7 @@ function describeCloseCode(code: number): string {
     case 1003:
       return "数据类型不被接受";
     case 1008:
-      return "违反服务端策略";
+      return "管理员强制断开";
     case 4001:
       return "认证失败（token 无效）";
     case 4003:
@@ -102,6 +109,12 @@ function isAuthOkFrame(data: string): boolean {
 }
 
 export class WebSocketBridgeTransport implements BridgeTransport {
+  /**
+   * 心跳间隔。默认 30 秒。
+   * 端到端验证把它调小：真等 65 秒时，主机休眠会把这段计时整个污染掉，
+   * 结论分不清是代码的问题还是机器睡了。生产不传。
+   */
+  static heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS;
   private ws?: WebSocket;
   private url: string;
   private authToken?: string;
@@ -113,8 +126,13 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   /** 已判定永久失败：不再重连，且 isConnected() 之外的调用方靠它区分"断了"与"没救了" */
   private permanentlyFailed = false;
 
-  /** 最后一次收到**任何**入向消息的时间戳（D12 探活的唯一判据） */
+  /**
+   * 最后一次收到**入向消息**的时间戳（D12 探活的基线）。
+   * 探活不看它本身，看的是「心跳发出后它有没有被刷新」——见 startHeartbeat。
+   */
   private lastInboundAt = 0;
+  /** 是否已发出过至少一次心跳。没发过就没有「送回来」可判，不能算静默。 */
+  private heartbeatSent = false;
 
   private reconnectCount = 0;
   private halfOpenDetectedCount = 0;
@@ -156,6 +174,8 @@ export class WebSocketBridgeTransport implements BridgeTransport {
   async connect(): Promise<void> {
     this.closedByUser = false;
     this.authenticated = false;
+    // 重连是一条新连接。上一轮发过的心跳不算这一轮的探活证据。
+    this.heartbeatSent = false;
     return new Promise((resolve, reject) => {
       // 防御：调用方误把 token 写进 URL 时，实际握手不含它。无 token 仍允许连——
       // 拒的职责在中继（第一版必鉴权 → 立刻 4001）。客户端先拒会让「中继没开鉴权的开发回环」变复杂。
@@ -198,7 +218,10 @@ export class WebSocketBridgeTransport implements BridgeTransport {
         this.stopFlushTimer();
 
         // D11：永久失败码不进重试循环，立刻上报。
-        if (!this.closedByUser && PERMANENT_CLOSE_CODES.has(event.code)) {
+        // 1008 单独看 reason：只有管理台强制断开（admin_disconnect）才是永久的。
+        // 空闲超时已经不用 1008，但别的 1008 也不该把本机 agent 直接退出。
+        const adminKicked = event.code === 1008 && event.reason === REASON_ADMIN_DISCONNECT;
+        if (!this.closedByUser && (PERMANENT_CLOSE_CODES.has(event.code) || adminKicked)) {
           this.permanentlyFailed = true;
           this.permanentFailureCount++;
           const reason = describeCloseCode(event.code);
@@ -317,14 +340,22 @@ export class WebSocketBridgeTransport implements BridgeTransport {
    * 后果是连接进入**半开状态**（TCP 层没断、对端进程已死）时，我们会一直往黑洞里
    * 写，而 `isConnected()` **返回 true** —— 它会说谎。半开连接只能靠"发出去的探测
    * 没有回应"发现，没有超时判定就永远发现不了。
+   *
+   * 判据是**自己发出的心跳有没有被送回来**，不是「对端有没有主动说话」。
+   * 中继把心跳原样转发给对端，对端在读；一条活着的链路，这帧会回到这里。
+   * 控制端在权限弹窗前可以一分钟不发任何业务帧——那是人在思考，不是连接死了。
+   * 用「任何入向消息」当判据，会在审批超时的同一秒把自己断开，permission_expired
+   * 也就送不出去。
    */
   private startHeartbeat(): void {
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState !== WebSocket.OPEN) return;
 
       // 先判探活再发新 ping：顺序反了会把刚发出去的 ping 也算进"静默时长"里。
+      // 没有发出去过心跳时不判。刚连上 lastInboundAt 是 onopen 置的，
+      // 对端还没机会把第一帧心跳送回来。
       const silentFor = Date.now() - this.lastInboundAt;
-      if (silentFor > HEARTBEAT_TIMEOUT_MS) {
+      if (this.heartbeatSent && silentFor > WebSocketBridgeTransport.heartbeatIntervalMs * 2) {
         this.halfOpenDetectedCount++;
         getLogger().warn(
           "BRIDGE",
@@ -344,10 +375,11 @@ export class WebSocketBridgeTransport implements BridgeTransport {
         this.ws.send(
           JSON.stringify({ type: "status", data: { ping: true }, timestamp: Date.now() }),
         );
+        this.heartbeatSent = true;
       } catch {
         /* 忽略：写失败下一轮探活会判定 */
       }
-    }, HEARTBEAT_INTERVAL_MS);
+    }, WebSocketBridgeTransport.heartbeatIntervalMs);
   }
 
   private stopHeartbeat(): void {
