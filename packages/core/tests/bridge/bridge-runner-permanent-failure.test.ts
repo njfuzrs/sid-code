@@ -10,7 +10,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { BridgeRunner } from "@sid-code/core/bridge/bridge-runner.ts";
 import { readFileSync } from "fs";
 
-function startRejectingServer(code: number) {
+function startRejectingServer(code: number, reason = "no") {
   const server = Bun.serve({
     port: 0,
     fetch(req, srv) {
@@ -19,7 +19,7 @@ function startRejectingServer(code: number) {
     },
     websocket: {
       open(ws) {
-        ws.close(code, "no");
+        ws.close(code, reason);
       },
       message() {},
     },
@@ -54,11 +54,19 @@ describe("BridgeRunner 永久失败", () => {
     await runner.stop();
   });
 
-  test("1008 → start() 同样拒绝（策略拒绝不是可重试断线）", async () => {
-    const server = startRejectingServer(1008);
+  test("1008 admin_disconnect → start() 拒绝，文案是管理员强制断开", async () => {
+    const server = startRejectingServer(1008, "admin_disconnect");
     servers.push(server);
     const runner = runnerFor(`ws://127.0.0.1:${server.port}/bridge/ws`);
-    await expect(runner.start()).rejects.toThrow(/违反服务端策略/);
+    await expect(runner.start()).rejects.toThrow(/管理员强制断开/);
+    await runner.stop();
+  });
+
+  test("1001 idle_timeout → start() 不拒绝（空闲是可恢复断开，不该退出）", async () => {
+    const server = startRejectingServer(1001, "idle_timeout");
+    servers.push(server);
+    const runner = runnerFor(`ws://127.0.0.1:${server.port}/bridge/ws`);
+    await runner.start();
     await runner.stop();
   });
 

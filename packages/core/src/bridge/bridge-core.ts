@@ -45,6 +45,10 @@ export class BridgeCore {
   private onUserMessage: (text: string) => void | Promise<void>;
   private onAbort?: () => void;
   private started = false;
+  /** 连接关闭时放行。start() 用它确认「紧随握手的拒绝」已经落地。 */
+  private closeWaiters: Array<() => void> = [];
+  /** connect() 之前挂上的那一次等待。关闭若发生在握手 resolve 之前，它已经放行了。 */
+  private earlyClose: Promise<void> | null = null;
 
   constructor(options: BridgeCoreOptions) {
     this.transport = options.transport;
@@ -72,12 +76,19 @@ export class BridgeCore {
     this.transport.setOnClose((code) => {
       getLogger().info("BRIDGE", `连接关闭 (code=${code})`);
       this.permissionProxy.cleanup();
+      const waiters = this.closeWaiters;
+      this.closeWaiters = [];
+      for (const waiter of waiters) waiter();
     });
 
     this.transport.setOnConnect(() => {
       void this.transport.write(formatStatusMessage("ready"));
     });
 
+    // 关闭等待必须在 connect() 之前挂上。服务端在 open 里就 ws.close() 时，
+    // 关闭回调与 onopen 在同一轮任务里先后跑完，connect() 返回的那一刻
+    // 关闭已经发生过了——之后再等，永远等不到。
+    this.earlyClose = this.waitForClose(500);
     await this.transport.connect();
     this.started = true;
     getLogger().info("BRIDGE", "Bridge 已启动");
@@ -124,6 +135,29 @@ export class BridgeCore {
   /** 是否已连接 */
   isConnected(): boolean {
     return this.transport.isConnected();
+  }
+
+  /**
+   * 这次 start() 里、connect() 之前挂上的关闭等待。
+   * 关闭发生在握手 resolve 之前时，返回的 Promise 已经是 resolved。
+   */
+  closeSeenDuringStart(timeoutMs: number): Promise<void> {
+    return this.earlyClose ?? this.waitForClose(timeoutMs);
+  }
+
+  /** 等下一次连接关闭，最多 `timeoutMs`。到点没关也返回。 */
+  waitForClose(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => done(), timeoutMs);
+      // 超时放行后把它摘掉。留着的话，下一次真正的关闭会再 resolve 一次
+      // 早已结束的 Promise，而列表只增不减。
+      const done = () => {
+        clearTimeout(timer);
+        this.closeWaiters = this.closeWaiters.filter((w) => w !== done);
+        resolve();
+      };
+      this.closeWaiters.push(done);
+    });
   }
 
   // ─── 内部方法 ───

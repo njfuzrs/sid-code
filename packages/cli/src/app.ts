@@ -6777,7 +6777,7 @@ export class App {
       log.info("BRIDGE", `Bridge 模式已就绪: ${shown}`);
       process.stderr.write(`\nBridge 远程控制已启动: ${shown}\n按 Ctrl+C 退出\n\n`);
 
-      // 常驻：等待退出信号，或传输层判定永久失败（4001/4003/1008）。
+      // 常驻：等待退出信号，或传输层判定永久失败（4001/4003/1008 admin_disconnect）。
       // 不订这个回调时，坏 token 会停掉重连，进程却一直停在这句「按 Ctrl+C 退出」。
       await new Promise<void>((resolve, reject) => {
         const shutdown = () => {
