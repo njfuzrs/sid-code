@@ -30,7 +30,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `accentColor` | string | — | UI 强调色/品牌色覆盖（/color 持久化端，settings.json accentColor）。存 hex，缺省=跟随主题 ui.active |
 | `allowedDirectories` | array | — | 目录白名单/黑名单 可访问目录白名单（cwd 之外要读写的目录须显式加入；对应 --add-dir） |
 | `allowedTools` | array | — | 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 |
-| `alternateBuffer` | boolean | — | UI 渲染配置 是否启用 alternate buffer（全屏 TUI）模式。 - true（默认，见「幽灵残留根治」方案乙）：全屏 alt-screen 有界视口（ScrollBox+VirtualizedList， overflow… |
+| `alternateBuffer` | boolean | — | UI 渲染配置 是否启用 alternate buffer（全屏 TUI）模式。 - false（默认，ADR-040）：主屏 Static 渲染，历史进终端 scrollback，鼠标原生选中复制。 2026-07-23 曾把默认改成 … |
 | `analytics` ⚠ | object | — | 分析/事件系统配置（spec 17 — analytics 通道） |
 | `anthropicKey` | string | — | Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） |
 | `askUserQuestionTimeout` | string | — | AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应， 按 can… |

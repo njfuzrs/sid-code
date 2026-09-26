@@ -171,8 +171,8 @@ sid-code 的全部命令行参数与子命令。
 
 | 参数 | 说明 |
 |---|---|
-| `--inline` | 回退旧主屏内联模式：历史进终端原生 scrollback、鼠标原生选中复制， 兼容不支持 alt-screen 的终端。默认已改为全屏有界视口（见下）， 仅在需要终端原生 scrollback/选择时用此逃生舱。 |
-| `--alternate-buffer` | 兼容保留（现已是默认）：全屏 Alternate Buffer 有界视口 （应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。默认启用， 物理根治执行中工具溢出 scrollback 的幽灵行残留。 |
+| `--inline` | 主屏内联模式（现已是默认）：历史进终端原生 scrollback、 鼠标原生选中复制。显式写出只为兼容旧脚本。 |
+| `--alternate-buffer` | 全屏 Alternate Buffer 有界视口（应用内虚拟滚动 + 鼠标滚轮 + Ctrl+S Copy Mode）。需要固定视口高度、不让历史进 scrollback 时用。 |
 
 ## Bridge 远程控制
 

@@ -359,12 +359,13 @@ export interface Config {
   // UI 渲染配置
   /**
    * 是否启用 alternate buffer（全屏 TUI）模式。
-   * - true（默认，见「幽灵残留根治」方案乙）：全屏 alt-screen 有界视口（ScrollBox+VirtualizedList，
-   *   overflow=hidden），内容物理上进不了擦不掉的终端 scrollback → 从物理上根治「执行中工具溢出
-   *   scrollback 后擦不掉的幽灵行残留」；应用内滚动/选择/复制/Ctrl+S Copy Mode 已 vendor 对齐 cc。
-   *   对齐 claude-code 内部（ant）默认 = fullscreen 的那条路。
-   * - false（--inline 逃生舱 opt-out）：旧主屏 Static 渲染，历史进终端 scrollback、原生文本选择，
-   *   兼容不支持 alt-screen 的终端；但执行中工具溢出视口会残留幽灵行（故降级为显式选项，非默认）。
+   * - false（默认，ADR-040）：主屏 Static 渲染，历史进终端 scrollback，鼠标原生选中复制。
+   *   2026-07-23 曾把默认改成 true，理由是「执行中工具溢出 scrollback 会留擦不掉的幽灵行」。
+   *   这个理由已过时：主屏路径此后修过 Static 同步折叠（大输出进 scrollback 前就裁好），
+   *   实际长期使用主屏并无幽灵行，而全屏要打开鼠标上报，拖选被应用吃掉，必须先 Ctrl+S
+   *   才能复制。默认回到主屏。
+   * - true（--alternate-buffer 或 /tui on）：全屏 alt-screen 有界视口，应用内虚拟滚动 +
+   *   鼠标滚轮，文本选择走 Ctrl+S Copy Mode。需要固定视口高度、不让历史进 scrollback 时用。
    */
   alternateBuffer?: boolean;
 
@@ -960,8 +961,9 @@ export function defaultConfig(): Config {
     hooks: {},
     mcpServers: {},
     showLineNumbers: true,
-    // 默认 true：全屏 alt-screen 有界视口，物理根治幽灵行残留（方案乙）。--inline 可回退旧主屏路。
-    alternateBuffer: true,
+    // 默认 false：主屏 Static，原生选中复制（ADR-040）。全屏用 --alternate-buffer 或 /tui on。
+    // 2026-07-23 改成 true 的「幽灵行」理由已过时，见 alternateBuffer 字段注释。
+    alternateBuffer: false,
     // 工具延迟加载默认恒开(tst)——对标 claude-code 默认 'tst' 行为。
     // 15 个长尾工具(cron/worktree/task-*/team/workflow/notebook/ask-user 等)
     // + 所有 MCP 工具首轮不注入,由模型经 tool_search 按需调出,首轮省 token。
@@ -1258,13 +1260,21 @@ async function loadConfigFile(): Promise<Partial<Config>> {
       ? await loadNewFormatAsConfig(settingsPath, appConfigPath)
       : {};
 
-  // 项目级 / 本地级只叠加行为字段。路由流量字段（model/baseURL/provider/availableModels/env）
-  // 不在此放行：信任门控在 loadConfig 之后才摘 hooks/mcpServers，env 也在信任判定前生效，
-  // 恶意仓库若能在 .sid-code/settings.json 里改这些字段，会在用户确认信任之前就把请求
-  // 路由到攻击者端点。详见 .agents/notes 2026-09-25 配置系统对齐。
-  const { getSettings } = await import("./settings/settings.ts");
-  const layered = getSettings();
-  const overlay = pickProjectBehaviorFields(layered.settings);
+  // 项目级 / 本地级只叠加行为字段，而且只取这两个来源——不能取 getSettings() 的合并结果。
+  // getSettings() 把 userSettings 放在合并链的最底层，整份拿来再盖一次 userConfig，
+  // 等于把 ~/.sid-code/settings.json 读了两遍：用户自己的字段以「更高一层」的身份盖掉
+  // app.json 里的同名字段（showLineNumbers 两个文件都有），字段归属从此分不清。
+  //
+  // 路由流量字段（model/baseURL/provider/availableModels/env）不在此放行：信任门控在
+  // loadConfig 之后才摘 hooks/mcpServers，env 也在信任判定前生效，恶意仓库若能在
+  // .sid-code/settings.json 里改这些字段，会在用户确认信任之前就把请求路由到攻击者端点。
+  // 详见 .agents/notes 2026-09-25 配置系统对齐。
+  const { getSettingsForSource } = await import("./settings/settings.ts");
+  let overlay: Partial<Config> = {};
+  for (const source of ["projectSettings", "localSettings"] as const) {
+    const { settings } = getSettingsForSource(source);
+    if (settings) overlay = mergeConfig(overlay, pickProjectBehaviorFields(settings));
+  }
   return mergeConfig(userConfig, overlay);
 }
 
@@ -1320,8 +1330,18 @@ async function loadNewFormatAsConfig(
   const { resolveEnvVars } = await import("./env-interpolation.ts");
   const merged: Record<string, unknown> = {};
 
+  // app.json 只贡献 AppConfig 声明过的字段。磁盘上还留着一批不属于它的键
+  // （alternateBuffer / audit / ide / sanitizeEnv ……），是某次把整份运行时配置
+  // 回写进 app.json 的残留，和 settings.json 形成第二份互相矛盾的真相源。
+  // 本函数按「settings 先、app 后」合并，所以是 app.json 的残留盖掉 settings.json
+  // 的显式设置，不是反过来。这些键由迁移 v4 搬回 settings.json 并删除；这里再拦
+  // 一层，是为了迁移还没跑到、或用户手写了新的越界键时行为仍然确定——
+  // app.json 永远不能覆盖 settings.json 里的行为配置。
+  const { APP_CONFIG_OWNED_KEYS } = await import("./app-config.ts");
+
   for (const p of [settingsPath, appConfigPath]) {
     if (!existsSync(p)) continue;
+    const appFile = p === appConfigPath;
     try {
       const raw = JSON.parse(await Bun.file(p).text());
       if (raw && typeof raw === "object") {
@@ -1330,6 +1350,7 @@ async function loadNewFormatAsConfig(
         // 注意：仅一层深合并（非递归）。嵌套 >2 层的对象仍是后者整体覆盖前者。
         // 当前所有配置结构（trace.upload、telemetry.exporters 等）实际只需一层即可。
         for (const [key, value] of Object.entries(raw)) {
+          if (appFile && !APP_CONFIG_OWNED_KEYS.has(key)) continue;
           if (
             value !== null &&
             typeof value === "object" &&
@@ -1461,11 +1482,23 @@ function loadFromEnv(): Partial<Config> {
   return base;
 }
 
-/** 合并配置（后者覆盖前者） */
+/**
+ * 合并配置（后者覆盖前者）。
+ *
+ * 只跳过 `undefined`：它表示「这一层没表态」，不能拿来擦掉更低层已经给出的值。
+ * `false`、`0`、`""` 都是表态，必须保留——布尔开关的「关」就是 `false`，
+ * 把 `false` 当成没给，会让 CLI 层「没传 flag 时返回 undefined」之外的任何
+ * `false`（文件里显式关掉的 alternateBuffer、audit、sanitizeEnv……）被更高一层
+ * 的缺省值盖掉，症状是「我明明写了 false，启动还是 true」。
+ *
+ * 空字符串的旧豁免是为了让「env 读到但没设」的字符串字段不覆盖文件值，
+ * 那个语义现在由各加载层自己保证：loadFromEnv 对没设的变量本来就放 undefined
+ * （`process.env.X` 未设置即为 undefined），不需要在合并时再猜一次。
+ */
 function mergeConfig(base: Partial<Config>, override: Partial<Config>): Partial<Config> {
   const result = { ...base };
   for (const [key, value] of Object.entries(override)) {
-    if (value !== undefined && value !== "") {
+    if (value !== undefined) {
       result[key as keyof Config] = value as any;
     }
   }

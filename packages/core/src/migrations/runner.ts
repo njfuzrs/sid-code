@@ -15,6 +15,7 @@ import { getLogger } from "../debug/logger.ts";
 import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
 import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-host.ts";
+import { migrate as moveStrayAppConfigKeys } from "./move-stray-app-config-keys.ts";
 
 interface Migration {
   version: number;
@@ -38,6 +39,20 @@ const migrations: Migration[] = [
     version: 3,
     name: "rewrite-legacy-release-host",
     migrate: rewriteLegacyReleaseHost,
+  },
+  {
+    version: 4,
+    name: "move-stray-app-config-keys",
+    migrate: moveStrayAppConfigKeys,
+  },
+  {
+    // v4 跑过的机器不会重跑。alternateBuffer 的代码默认从 true 改回 false 之后，
+    // 它退出了可删清单，v4 当时按「值等于旧默认」删掉的 true 无法分辨是灌入还是
+    // 用户开过全屏。v5 再跑一次同一清理：补掉 v4 之后仍残留的、值等于默认的键，
+    // 同时不再碰 alternateBuffer。函数幂等，没有残留时是空操作。
+    version: 5,
+    name: "recheck-dumped-default-keys",
+    migrate: moveStrayAppConfigKeys,
   },
 ];
 

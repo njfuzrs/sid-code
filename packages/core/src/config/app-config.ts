@@ -124,6 +124,32 @@ function getBackupDir(): string {
 const MAX_BACKUPS = 5;
 const MIN_BACKUP_INTERVAL_S = 60;
 
+/**
+ * app.json 合法拥有的顶层键 = AppConfig 的全部字段。
+ *
+ * 这是「app.json 不存行为配置」的机械边界：loadNewFormatAsConfig 读 app.json 时
+ * 丢弃清单外的键，迁移 v4 把清单外的存量键搬回 settings.json。
+ * 新增 AppConfig 字段时必须同时加进这里——漏了的后果是该字段从 app.json 读不出来，
+ * 而不是静默读到一份来源不明的值。
+ */
+export const APP_CONFIG_OWNED_KEYS: ReadonlySet<string> = new Set([
+  "theme",
+  "showLineNumbers",
+  "numStartups",
+  "firstStartTime",
+  "hasCompletedOnboarding",
+  "hints",
+  "lastPricingSyncVersion",
+  "debug",
+  "debugLevel",
+  "debugLogFile",
+  "projects",
+  "checkpoint",
+  "sessionRetention",
+  "trace",
+  "telemetry",
+]);
+
 /** 默认 AppConfig */
 export function createDefaultAppConfig(): AppConfig {
   return {
@@ -170,7 +196,15 @@ function backupCorruptedFile(path: string): void {
 function readFromDisk(path: string): AppConfig {
   const content = readFileSync(path, "utf-8");
   const parsed = JSON.parse(content);
-  return { ...createDefaultAppConfig(), ...parsed };
+  // 同样只收清单内的键。saveAppConfig 以「读出的对象」为底做 {...config, 变更} 回写，
+  // 不过滤的话，清单外的残留键会被每次启动计数 / hint 计数原样写回去，迁移白做。
+  const owned: Record<string, unknown> = {};
+  if (parsed && typeof parsed === "object") {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (APP_CONFIG_OWNED_KEYS.has(key)) owned[key] = value;
+    }
+  }
+  return { ...createDefaultAppConfig(), ...owned };
 }
 
 /**

@@ -79,10 +79,10 @@ type CLIArgs = Partial<Config> & {
  * 解析 TUI 渲染模式（alt-screen 全屏 / 主屏），**同时给出判定依据**。
  *
  * 优先级（高 → 低）：
- *   1. `--inline`            → false（逃生舱，最高优先级）
- *   2. `--alternate-buffer`  → true （显式覆盖自动回退）
+ *   1. `--inline`            → false（显式主屏，最高优先级）
+ *   2. `--alternate-buffer`  → true （显式全屏）
  *   3. TERM_PROGRAM === "Apple_Terminal" → false（自动回退，见下）
- *   4. 其余                  → undefined（交由 config 默认值，当前为 true）
+ *   4. 其余                  → undefined（交由 config 默认值，当前为 false = 主屏）
  *
  * 为什么 Apple_Terminal 要自动回退：Terminal.app 在 alt screen 下对 SGR 1006 鼠标
  * 追踪兼容性差，滚轮/触控板滚不动；主屏模式靠终端原生 scrollback 滚动，任何终端都支持。
@@ -322,7 +322,7 @@ function parseCLIArgs(): CLIArgs {
 
         // UI 渲染（幽灵残留根治方案乙：默认全屏 alt-screen 有界视口）
         inline: { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
-        "alternate-buffer": { type: "boolean" }, // 兼容保留：显式开全屏 alt-screen（现已是默认，此 flag 仅为不破坏旧脚本）
+        "alternate-buffer": { type: "boolean" }, // 显式开全屏 alt-screen（默认是主屏，此 flag 才进入全屏）
 
         // Worktree 隔离（P1-2）：启动时直接进入 worktree
         worktree: { type: "string" }, // --worktree[=name]；不带值时自动命名
@@ -652,11 +652,11 @@ function parseCLIArgs(): CLIArgs {
     bridgeInsecure: values["bridge-insecure"] as boolean | undefined,
     // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
     worktree: values.worktree !== undefined ? values.worktree || true : undefined,
-    // UI 渲染模式（幽灵残留根治方案乙）：默认全屏 alt-screen 有界视口（config 默认 true）。
-    // --inline 逃生舱强制回退旧主屏 Static（false，最高优先级）；--alternate-buffer 兼容保留（显式 true）；
-    // 两者都不给 → undefined → 走 config 默认（true），但对 macOS Terminal.app 自动回退 false
-    // （其 alt screen 下 SGR 1006 鼠标追踪兼容性差，滚轮/触控板滚不动；主屏模式靠终端原生
-    // scrollback 滚动，任何终端都支持。用户可用 --alternate-buffer 显式覆盖此回退）。
+    // UI 渲染模式：默认主屏 Static（config 默认 false），历史进终端 scrollback、原生选中复制。
+    // --inline 显式主屏（false，最高优先级）；--alternate-buffer 显式全屏（true）；
+    // 两者都不给 → undefined → 走 config 默认（false）。macOS Terminal.app 额外强制主屏
+    // （其 alt screen 下 SGR 1006 鼠标追踪兼容性差，滚轮/触控板滚不动，可用
+    // --alternate-buffer 显式覆盖此回退）。
     // 判定与理由由 resolveAlternateBuffer 统一给出（可观测性见该函数注释）。
     alternateBuffer: resolveAlternateBufferDecision({
       inline: values["inline"] === true,
