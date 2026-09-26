@@ -253,6 +253,13 @@ export function restoreTeamTasks(
   );
 
   // 第一遍：分配最终 ID（撞车则取新 ID）。
+  // 计数器抬到「已占用 ID 与快照自身 ID」的最大值之上，理由见 restoreSessionTasks。
+  const bump = (id: string) => {
+    const n = Number(id);
+    if (Number.isFinite(n) && n > idCounter) idCounter = n;
+  };
+  for (const id of tasks.keys()) bump(id);
+  for (const t of valid) bump(t.id);
   const idMap = new Map<string, string>();
   for (const t of valid) {
     idMap.set(t.id, tasks.has(t.id) ? nextId() : t.id);
@@ -319,6 +326,75 @@ export function restoreStructuredTasks(snapshot: StructuredTask[]): void {
     if (Number.isFinite(n) && n > maxId) maxId = n;
   }
   idCounter = maxId;
+}
+
+/** 复制 metadata 并去掉 team 标记（会话清单的不变量：没有团队分区）。 */
+function stripTeamMark(metadata: unknown): Record<string, unknown> {
+  if (!metadata || typeof metadata !== "object") return {};
+  const copy = { ...(metadata as Record<string, unknown>) };
+  delete copy.team;
+  return copy;
+}
+
+/**
+ * 恢复主会话任务（P1-3 会话级落盘的读回）。
+ *
+ * 与 restoreStructuredTasks 的区别：只替换**没有团队标记**的任务，团队分区原样保留。
+ * 两个落盘源（会话文件 / 团队文件）各自恢复时因此不会互相覆盖。
+ * ID 撞车（快照 ID 已被团队任务占用）时重映射到新 ID 并同步重写依赖边，
+ * 与 restoreTeamTasks 同款口径。
+ *
+ * @returns oldId → newId 的重映射表
+ */
+export function restoreSessionTasks(snapshot: StructuredTask[]): Map<string, string> {
+  // 先清掉现有的主会话任务（无团队标记），团队分区不动。
+  for (const t of getAllStructuredTasks()) {
+    const team = (t.metadata as { team?: unknown })?.team;
+    if (typeof team !== "string" || team.length === 0) {
+      detachDependencies(t.id);
+      tasks.delete(t.id);
+    }
+  }
+
+  const valid = snapshot.filter(
+    (t) => t && typeof t.id === "string" && typeof t.subject === "string",
+  );
+
+  // 重映射前把计数器抬到「已占用 ID 与快照自身 ID」的最大值之上。
+  // 只看已占用不够：快照里未撞车的 ID（如 "2"）不会走 nextId，
+  // 而撞车项发出的新 ID 必须同时避开它们，否则后写覆盖先写。
+  const bump = (id: string) => {
+    const n = Number(id);
+    if (Number.isFinite(n) && n > idCounter) idCounter = n;
+  };
+  for (const id of tasks.keys()) bump(id);
+  for (const t of valid) bump(t.id);
+
+  const idMap = new Map<string, string>();
+  for (const t of valid) {
+    idMap.set(t.id, tasks.has(t.id) ? nextId() : t.id);
+  }
+
+  const remapEdges = (ids: unknown): string[] =>
+    Array.isArray(ids)
+      ? (ids as string[]).map((x) => idMap.get(x)).filter((x): x is string => !!x)
+      : [];
+
+  for (const t of valid) {
+    const id = idMap.get(t.id)!;
+    tasks.set(id, {
+      ...t,
+      id,
+      blocks: remapEdges(t.blocks),
+      blockedBy: remapEdges(t.blockedBy),
+      // 会话清单不允许带团队标记：带了就会被下一次会话落盘漏掉、又被团队落盘漏掉。
+      metadata: stripTeamMark(t.metadata),
+    });
+    const n = Number(id);
+    if (Number.isFinite(n) && n > idCounter) idCounter = n;
+  }
+
+  return idMap;
 }
 
 /** 任务是否预分配给了某个具体成员（metadata.member 非空）。 */

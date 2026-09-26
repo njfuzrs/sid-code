@@ -68,6 +68,15 @@ const mod: LocalCommandModule = {
     const trimmed = args.trim();
 
     const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");
+    const { isCronDisabled, MAX_SESSION_CRON_JOBS } = await import("@sid-code/core/cron/types.ts");
+    // 禁用时三态（列出/固定间隔/动态轮询）全部拒绝：动态轮询最终也落成 schedule_wakeup，
+    // 只拦前两种会让模型绕开开关继续建任务。
+    if (isCronDisabled()) {
+      return {
+        type: "text",
+        value: "cron 已被 SID_CODE_DISABLE_CRON 禁用，/loop 不可用。",
+      };
+    }
     const scheduler = getScheduler();
 
     // 用法 4：空跑 → 列出当前定时任务
@@ -117,7 +126,12 @@ const mod: LocalCommandModule = {
         recurring: true,
         durable: false,
       };
-      scheduler.addSessionTask(task);
+      if (!scheduler.addSessionTask(task)) {
+        return {
+          type: "text",
+          value: `已达定时任务上限 (${MAX_SESSION_CRON_JOBS})，请先删除不需要的任务后再建。用 /loop（无参数）查看现有任务。`,
+        };
+      }
 
       const mins = Math.round(result.totalSeconds / 60);
       const everyLabel = mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`;

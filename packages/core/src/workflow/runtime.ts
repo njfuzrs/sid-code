@@ -241,7 +241,7 @@ export class WorkflowRuntime {
     try {
       const result = await this.scheduler.run(() => this.runner.run(prompt, opts, ctx));
       // M5: 真跑成功后追加 journal(失败不缓存,下次重跑)
-      this.journal?.record({ callIndex, fingerprint, result, label });
+      this.journal?.record({ callIndex, fingerprint, result, label, phase });
       this.progress?.onAgentEnd?.(ctx, result !== null);
       return result;
     } catch (err) {

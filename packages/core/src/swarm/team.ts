@@ -125,6 +125,37 @@ export interface TeamOptions {
   teammateMode?: TeammateMode;
 }
 
+/**
+ * 当前正在 run() 的团队（进程内同时只跑一个团队——team_create 是阻塞工具，
+ * 上一个 run 返回后才会有下一次调用）。
+ * 供 send_message 在主代理上下文里按成员名投递：leader 不在 withTeamMember 的
+ * ALS 上下文里，但团队执行期间它确实是这个团队的 leader。
+ */
+let activeTeam: TeamManager | null = null;
+
+/** 当前活跃团队；没有团队在跑时返回 null。 */
+export function getActiveTeam(): TeamManager | null {
+  return activeTeam;
+}
+
+/**
+ * 把 fn 标记为「团队正在运行」。run() 用它包裹执行体，
+ * 正常返回与抛错都清除登记——提取成函数是为了让登记的生命周期
+ * 有一个不依赖子代理执行的测试入口。
+ *
+ * 返回 Promise 而非同步值：run() 的执行体是异步的，若这里同步返回，
+ * finally 会在成员还没跑完时就清除登记，leader 的按名投递整个窗口为空。
+ * fn 若同步抛错，Promise 也会 reject，清除语义不变。
+ */
+export function withActiveTeam<T>(team: TeamManager, fn: () => T | Promise<T>): Promise<T> {
+  activeTeam = team;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (activeTeam === team) activeTeam = null;
+    });
+}
+
 export class TeamManager {
   readonly teamName: string;
   readonly mailbox: Mailbox;
@@ -153,6 +184,11 @@ export class TeamManager {
     }
     // P3-2：显式入参 > SID_TEAMMATE_MODE > in-process。实际可用性在 run() 里探测后可能降级。
     this.teammateMode = resolveTeammateMode(opts.teammateMode);
+  }
+
+  /** 成员名列表（P1-5：send_message 按名寻址时校验收信人）。 */
+  memberNames(): string[] {
+    return this.opts.members.map((m) => m.name);
   }
 
   /** P3-2：当前生效的显示模式（tmux 探测失败后为 in-process）。供调用方汇总展示。 */
@@ -482,38 +518,44 @@ export class TeamManager {
       }, TEAM_HARD_TIMEOUT_MS);
       teamTimer.unref();
     });
-    try {
-      // P2-5：常驻模式下，run() 的结束条件从「所有 Promise resolve」改为
-      // 「全部任务完成且全员空闲，或 leader 已 shutdown 全员」。成员自己的循环
-      // 看不到全局（各自只认领自己能认领的），所以收尾信号由这里统一发：
-      // 条件满足就给每个还在挂起的成员补一条 shutdown_request，它们收到后退出，
-      // Promise.all 随之 resolve。一次性批模式不发，行为与原来一致。
-      const settlePromise = Promise.all(
-        this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal)),
-      );
-      const residentWatch = this.opts.resident
-        ? this.watchResidentShutdown(teamAbortCtl.signal)
-        : null;
+    // P1-5：登记为活跃团队，让 leader（主代理）在 run 期间能用 send_message 按名投递。
+    // withActiveTeam 的 finally 保证抛错也清除，不留悬空登记。
+    // 常驻模式下 run() 会挂起直到收尾，登记必须覆盖整个窗口——
+    // leader 正是在成员空闲等待期间才用得上按名投递。
+    return withActiveTeam(this, async () => {
+      try {
+        // P2-5：常驻模式下，run() 的结束条件从「所有 Promise resolve」改为
+        // 「全部任务完成且全员空闲，或 leader 已 shutdown 全员」。成员自己的循环
+        // 看不到全局（各自只认领自己能认领的），所以收尾信号由这里统一发：
+        // 条件满足就给每个还在挂起的成员补一条 shutdown_request，它们收到后退出，
+        // Promise.all 随之 resolve。一次性批模式不发，行为与原来一致。
+        const settlePromise = Promise.all(
+          this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal)),
+        );
+        const residentWatch = this.opts.resident
+          ? this.watchResidentShutdown(teamAbortCtl.signal)
+          : null;
 
-      const results = await Promise.race([settlePromise, teamTimeoutPromise]);
-      if (residentWatch) residentWatch.stop();
+        const results = await Promise.race([settlePromise, teamTimeoutPromise]);
+        if (residentWatch) residentWatch.stop();
 
-      // P1-3：leader drain 自己的收件箱，消费成员回写的 result 消息（真正闭合通信环——
-      // 成员 send(to:"leader") 至此有了确定的消费方，不再是只写不读的伪通信）。
-      // 结果本身已通过返回值收集，此处 drain 用于：① 让 mailbox 状态归零（标记已读）；
-      // ② 供 leaderMessages 观测/回放（如后续 P3-2 三态显示模式消费）。
-      // 常驻模式下 watchResidentShutdown 已经在过程中 drain 过一批，这里是收尾再 drain 一次，
-      // 两批都留在 leaderMessages 里（按到达顺序）。
-      this.leaderMessages.push(...this.mailbox.drain("leader"));
+        // P1-3：leader drain 自己的收件箱，消费成员回写的 result 消息（真正闭合通信环——
+        // 成员 send(to:"leader") 至此有了确定的消费方，不再是只写不读的伪通信）。
+        // 结果本身已通过返回值收集，此处 drain 用于：① 让 mailbox 状态归零（标记已读）；
+        // ② 供 leaderMessages 观测/回放（如后续 P3-2 三态显示模式消费）。
+        // 常驻模式下 watchResidentShutdown 已经在过程中 drain 过一批，这里是收尾再 drain 一次，
+        // 两批都留在 leaderMessages 里（按到达顺序）。
+        this.leaderMessages.push(...this.mailbox.drain("leader"));
 
-      // 保持成员定义顺序
-      const byName = new Map<string, TeammateResult>();
-      for (const r of results) byName.set(r.name, r);
-      return this.opts.members.map((m) => byName.get(m.name)!);
-    } finally {
-      // 正常完成路径清掉定时器（unref 已保证不阻塞退出，这里避免多余 fire）
-      if (teamTimer) clearTimeout(teamTimer);
-    }
+        // 保持成员定义顺序
+        const byName = new Map<string, TeammateResult>();
+        for (const r of results) byName.set(r.name, r);
+        return this.opts.members.map((m) => byName.get(m.name)!);
+      } finally {
+        // 正常完成路径清掉定时器（unref 已保证不阻塞退出，这里避免多余 fire）
+        if (teamTimer) clearTimeout(teamTimer);
+      }
+    });
   }
 
   /**

@@ -23,7 +23,9 @@ const LEADER = "leader";
 
 const teamMessageSchema = lazySchema(() =>
   z.object({
-    to: z.string().describe(`收信人：其他成员名，或 "${LEADER}" 发给团队负责人（主代理）`),
+    to: z
+      .string()
+      .describe(`收信人：其他成员名、"${LEADER}"（发给团队负责人）、或 "*" 广播给全部其他成员`),
     message: z.string().describe("消息内容"),
     kind: z
       .enum([
@@ -61,7 +63,7 @@ export class TeamMessageTool implements Tool {
   description(): string {
     return `给同团队的其他成员或团队负责人（leader）发消息。仅在你作为团队成员执行任务时可用。
 对方会在下一轮开始时收到你的消息，可用于：向 leader 汇报进展/提问、与依赖你的成员协商接口、把发现同步给 peer。
-收信人写成员名，或写 "${LEADER}" 发给团队负责人。`;
+收信人写成员名、写 "${LEADER}" 发给团队负责人，或写 "*" 广播给全部其他成员。`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -91,9 +93,42 @@ export class TeamMessageTool implements Tool {
     }
 
     const to = params.to.trim();
+    const kind = params.kind ?? "info";
+
+    // "*" 广播：发给除自己以外的全部成员（不含 leader——leader 是协调者，
+    // 广播的语义是「同步给 peer」，发给 leader 要用显式的 to:"leader"）。
+    if (to === "*") {
+      const targets = ctx.memberNames.filter((n) => n !== ctx.memberName);
+      if (targets.length === 0) {
+        return { output: "团队里没有其他成员可广播", isError: true };
+      }
+      try {
+        for (const name of targets) {
+          ctx.mailbox.send({
+            from: ctx.memberName,
+            to: name,
+            content: params.message,
+            kind,
+            timestamp: 0,
+          });
+        }
+      } catch (err: any) {
+        getLogger().warn(
+          "SWARM",
+          `team_message 广播失败 (${ctx.memberName}): ${err?.message ?? err}`,
+        );
+        return { output: `消息广播失败: ${err?.message ?? err}`, isError: true };
+      }
+      return {
+        output: `已广播给 ${targets.length} 个成员（${targets.join(", ")}），对方将在下一轮收到。`,
+      };
+    }
+
     // 收信人必须是 leader 或团队内已知成员——防止消息投进永远没人读的收件箱后静默丢失。
     if (to !== LEADER && !ctx.memberNames.includes(to)) {
-      const known = [LEADER, ...ctx.memberNames.filter((n) => n !== ctx.memberName)].join(", ");
+      const known = [LEADER, "*", ...ctx.memberNames.filter((n) => n !== ctx.memberName)].join(
+        ", ",
+      );
       return { output: `错误: 收信人 "${to}" 不在团队中。可选: ${known}`, isError: true };
     }
     if (to === ctx.memberName) {
@@ -105,7 +140,7 @@ export class TeamMessageTool implements Tool {
         from: ctx.memberName,
         to,
         content: params.message,
-        kind: params.kind ?? "info",
+        kind,
         // 时间戳由 mailbox 侧统一处理；此处传 0 保持与 team.ts 同款「调用方不造时间」口径。
         timestamp: 0,
       });

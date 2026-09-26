@@ -48,3 +48,26 @@ export const DEFAULTS = {
   /** 循环任务最大存活天数（之后自动过期删除） */
   maxAgeDays: 7,
 } as const;
+
+/**
+ * 任务数上限（对齐 CC「单会话最多 50 个任务」，但按 sid 的两级调度拆成两档）。
+ *
+ * - 会话级 50：一个 REPL 会话里 cron_create / schedule_wakeup / /loop 三个入口
+ *   共享这一个上限。无上限时模型在长任务里反复建任务，30s 轮询每轮全量遍历，
+ *   任务膨胀会拖慢主循环。
+ * - daemon 聚合级 500：守护进程跨项目合并全机 durable 任务，套会话级 50 会把
+ *   多项目场景卡死（对齐 CC 云端 Routines 的总数口径）。
+ *
+ * 守卫下沉在 Scheduler.addSessionTask / addDurableTask，三个创建入口无法绕过。
+ */
+export const MAX_SESSION_CRON_JOBS = 50;
+export const MAX_DAEMON_CRON_JOBS = 500;
+
+/** 整体禁用开关。=1 或 =true 视为禁用（对齐 SID_CODE_DISABLE_* 惯例）。 */
+export const DISABLE_CRON_ENV = "SID_CODE_DISABLE_CRON";
+
+/** 当前进程是否禁用了 cron。每次调用现读 env，便于测试切换，不缓存。 */
+export function isCronDisabled(): boolean {
+  const v = process.env[DISABLE_CRON_ENV];
+  return v === "1" || v === "true";
+}

@@ -6,6 +6,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { createStructuredTask } from "../task/structured-task-store.ts";
+import { persistCurrentSessionTasks } from "../task/session-task-store.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -92,6 +93,10 @@ export class TaskCreateTool implements Tool {
       activeForm: params.active_form?.trim() || undefined,
       metadata: params.metadata,
     });
+
+    // P1-3：主会话清单落盘。带团队标记的任务由 team-task-store 负责，这里一律写会话文件
+    // （session-task-store 内部只序列化无团队标记的部分，写多了不会污染团队文件）。
+    persistCurrentSessionTasks();
 
     return {
       output: JSON.stringify({

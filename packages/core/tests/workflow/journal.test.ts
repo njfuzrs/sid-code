@@ -6,6 +6,7 @@
  *  - 改了第 N 个 agent → 前 N-1 命中、第 N 起重跑(指纹失效)
  *  - append-only:崩溃中断后回放能重建缓存
  *  - 指纹只认影响结果的字段(label/phase 变化不破坏缓存)
+ *  - journal 记录携带 phase(P1-4 进度树的数据源),且 phase 不参与指纹
  */
 
 import { test, expect, describe, afterEach } from "bun:test";
@@ -185,5 +186,38 @@ describe("M5 journal — 与 runtime 集成(resume 端到端)", () => {
     expect(secondRuns).toContain("step-B2"); // 改动的真跑了
     expect(secondRuns).not.toContain("step-A"); // 前面的命中
     expect(value).toEqual(["R:step-A", "R:step-B2", "R:step-C"]);
+  });
+
+  test("journal 记录携带 phase，且 phase 变化不破坏缓存命中（P1-4）", async () => {
+    const path = freshJournalPath();
+    const SCRIPT = `export const meta = { name: 'phased', description: 'd' }
+      await phase('扫描');
+      const a = await agent('找入口', { label: 'finder' });
+      await phase('验证');
+      const b = await agent('跑测试', { label: 'verifier' });
+      return [a, b];`;
+
+    const firstRuns: string[] = [];
+    const j1 = new Journal(path);
+    const rt1 = new WorkflowRuntime({ runner: countingRunner(firstRuns), journal: j1 });
+    await runInSandbox(SCRIPT, rt1.buildApi());
+    expect(firstRuns).toEqual(["找入口", "跑测试"]);
+
+    // 记录按 phase 分组可读：扫描 → finder，验证 → verifier
+    const recorded = j1.all();
+    expect(recorded.map((e) => [e.phase, e.label])).toEqual([
+      ["扫描", "finder"],
+      ["验证", "verifier"],
+    ]);
+
+    // 重跑时把 phase 名改掉、任务不变：应全部命中缓存（phase 不参与指纹）
+    const RENAMED = SCRIPT.replace("扫描", "发现").replace("验证", "复核");
+    const secondRuns: string[] = [];
+    const j2 = new Journal(path);
+    j2.load();
+    const rt2 = new WorkflowRuntime({ runner: countingRunner(secondRuns), journal: j2 });
+    const { value } = await runInSandbox(RENAMED, rt2.buildApi());
+    expect(secondRuns).toEqual([]);
+    expect(value).toEqual(["R:找入口", "R:跑测试"]);
   });
 });

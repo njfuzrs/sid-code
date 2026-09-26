@@ -30,6 +30,13 @@ export interface JournalEntry {
   result: unknown;
   /** 显示标签(便于人读 journal) */
   label?: string;
+  /**
+   * 该调用所属的 phase 标题（phase() 切换时的值，opts.phase 优先）。
+   * 只为 /workflows 进度树分组用，不参与指纹——phase 是展示维度，
+   * 改 phase 名不应让 resume 缓存失效（computeFingerprint 已排除 phase）。
+   * 老 journal 没有该字段，读取方按「未分组」处理。
+   */
+  phase?: string;
 }
 
 /** 计算 (prompt, opts) 的稳定指纹。opts 里只取影响结果的字段,顺序无关。 */

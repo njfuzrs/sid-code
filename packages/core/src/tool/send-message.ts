@@ -14,6 +14,10 @@ import {
 } from "../task/index.ts";
 import type { LocalAgentTaskState } from "../task/types.ts";
 import { injectMessageToAgent } from "../agent/message-queue.ts";
+// P1-5：团队上下文里 to 还可以是成员名或 "*"。身份与邮箱都从 ALS 取，
+// 不在团队上下文时这两条分支不存在，行为与原来的纯 task_id 寻址一致。
+import { getTeamMemberContext } from "../swarm/team-context.ts";
+import { getActiveTeam } from "../swarm/team.ts";
 import { SubAgent } from "../agent/sub-agent.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -23,11 +27,56 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 const sendMessageSchema = lazySchema(() =>
   z.object({
-    to: z.string().describe("目标 Agent 的 task_id"),
+    to: z
+      .string()
+      .describe('目标：后台 Agent 的 task_id；在团队中还可写成员名或 "*" 广播给全部成员'),
     message: z.string().describe("要发送的消息内容"),
     summary: z.string().optional().describe("消息摘要（可选，用于通知显示）"),
   }),
 );
+
+/**
+ * 团队上下文内的按名/广播投递。
+ * 不在团队上下文、或 to 既不是成员名也不是 "*" 时返回 null，调用方继续按 task_id 解析。
+ * 这样 task_id 与成员名两类寻址互不干扰：名字只在团队上下文里有意义。
+ */
+function deliverToTeam(to: string, message: string): { output: string; isError?: boolean } | null {
+  // 两个来源：成员执行链里的 ALS 上下文，或主代理侧当前正在 run 的团队。
+  // 前者优先——成员内部调 send_message 应该以成员身份发，而不是冒充 leader。
+  const ctx = getTeamMemberContext();
+  const team = ctx ? null : getActiveTeam();
+  if (!ctx && !team) return null;
+
+  const from = ctx ? ctx.memberName : "leader";
+  const memberNames = ctx ? ctx.memberNames : (team?.memberNames() ?? []);
+  const mailbox = ctx ? ctx.mailbox : team!.mailbox;
+  const kind = "info" as const;
+
+  if (to === "*") {
+    const targets = memberNames.filter((n) => n !== from);
+    if (targets.length === 0) return null; // 没有可广播对象，退回 task_id 解析
+    for (const name of targets) {
+      mailbox.send({ from, to: name, content: message, kind, timestamp: 0 });
+    }
+    return {
+      output: JSON.stringify({
+        status: "broadcast",
+        recipients: targets,
+        message: `已广播给 ${targets.length} 个成员`,
+      }),
+    };
+  }
+
+  if (!memberNames.includes(to) || to === from) return null;
+  mailbox.send({ from, to, content: message, kind, timestamp: 0 });
+  return {
+    output: JSON.stringify({
+      status: "delivered",
+      recipient: to,
+      message: "消息已投递到成员收件箱，对方将在下一轮收到",
+    }),
+  };
+}
 
 export class SendMessageTool implements Tool {
   readonly zodSchema = sendMessageSchema();
@@ -76,6 +125,12 @@ export class SendMessageTool implements Tool {
     if (!to || !message) {
       return { output: "错误: 缺少必需参数 (to, message)", isError: true };
     }
+
+    // P1-5：团队寻址优先于 task_id。leader 侧的团队上下文由 team-create 注入
+    // （见 getTeamMemberContext），成员侧由 team.ts 的 withTeamMember 注入。
+    // 命中成员名/"*" 就走 mailbox，不再落到下面的 task 注册表查找。
+    const teamDelivery = deliverToTeam(to, message);
+    if (teamDelivery) return teamDelivery;
 
     const task = getTask(to);
     if (!task || !isAgentTask(task)) {
