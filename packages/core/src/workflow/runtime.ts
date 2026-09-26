@@ -14,6 +14,7 @@
  */
 
 import { Scheduler } from "./scheduler.ts";
+import { getLogger } from "../debug/logger.ts";
 import { Journal, computeFingerprint } from "./journal.ts";
 import type { AgentOpts, Budget, PipelineStage, WorkflowApi } from "./types.ts";
 
@@ -74,10 +75,38 @@ export interface RuntimeOptions {
   concurrency?: number;
   /** 中止信号 */
   signal?: AbortSignal;
+  /**
+   * meta.phases 声明的标题列表（P2-4 对账用）。
+   * 提供时 phase() 会校验传入标题是否在其中：不在则告警并照常分组（软对账，不阻断）；
+   * 未提供时不对账（测试与没有 phases 声明的脚本行为不变）。
+   */
+  declaredPhases?: readonly string[];
+  /**
+   * 严格对账（P2-4）。true 时 phase() 用了未声明的标题直接抛错，拒绝继续执行。
+   * 默认 false——进度树对不上是展示问题，不该让一次 workflow 跑崩。
+   * CI 防漂移场景由调用方开 SID_CODE_WORKFLOW_STRICT_PHASES 注入 true。
+   */
+  strictPhases?: boolean;
   /** 进度上报 */
   progress?: ProgressSink;
   /** M5: resume journal。提供时 agent() 命中缓存直接返回,否则真跑后追加。 */
   journal?: Journal;
+}
+
+/**
+ * phase() 用了 meta.phases 没声明的标题，且开了严格对账。
+ * 单独的错误类型是为了让调用方（和测试）能区分「对账失败」与脚本自己抛的错。
+ */
+export class UndeclaredPhaseError extends Error {
+  constructor(title: string, declared: readonly string[]) {
+    const list =
+      declared.length > 0 ? declared.map((t) => `"${t}"`).join("、") : "（meta 未声明任何 phase）";
+    super(
+      `[workflow] phase("${title}") 未在 meta.phases 中声明（已声明: ${list}）。` +
+        `严格对账已开启（SID_CODE_WORKFLOW_STRICT_PHASES），拒绝执行。`,
+    );
+    this.name = "UndeclaredPhaseError";
+  }
 }
 
 /** 预算耗尽时 agent() 抛出的错误(可被 budget 守卫识别) */
@@ -110,6 +139,12 @@ export class WorkflowRuntime {
   private readonly progress?: ProgressSink;
   private readonly signal: AbortSignal;
   private readonly journal?: Journal;
+  /** meta.phases 声明的标题（空集 = 不对账） */
+  private declaredPhases: ReadonlySet<string>;
+  /** 严格对账：未声明标题直接抛错 */
+  private readonly strictPhases: boolean;
+  /** 已经告警过的未声明标题（同一标题只告警一次，避免循环里刷屏） */
+  private readonly warnedPhases = new Set<string>();
 
   /** 全局调用序号(贯穿整个 run) */
   private callCounter = 0;
@@ -128,6 +163,8 @@ export class WorkflowRuntime {
     this.signal = opts.signal ?? new AbortController().signal;
     this.journal = opts.journal;
     this.args = opts.args;
+    this.declaredPhases = new Set(opts.declaredPhases ?? []);
+    this.strictPhases = opts.strictPhases ?? false;
 
     const budgetTotal = opts.budgetTotal ?? null;
     const spentReader = opts.spentReader ?? (() => this.localSpent);
@@ -151,6 +188,23 @@ export class WorkflowRuntime {
   /** 累加本地花费(真实 runner 拿到 usage 后回调;测试也可用) */
   addLocalSpent(tokens: number): void {
     this.localSpent += tokens;
+  }
+
+  /**
+   * 临时换成另一份 phase 声明跑一段逻辑（内联子 workflow 用）。
+   *
+   * 子 workflow 复用父 runtime 的调度器/计数器/预算，但它的 phase() 该对它**自己**的
+   * meta.phases 对账——沿用父的声明会把子脚本的合法 phase 全判成未声明。
+   * 跑完（含抛错）恢复原声明，父脚本后续的对账不受影响。
+   */
+  async withDeclaredPhases<T>(phases: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const prev = this.declaredPhases;
+    this.declaredPhases = new Set(phases);
+    try {
+      return await fn();
+    } finally {
+      this.declaredPhases = prev;
+    }
   }
 
   // ---------- 原语实现 ----------
@@ -245,8 +299,22 @@ export class WorkflowRuntime {
     return Promise.all(items.map((item, i) => runItemChain(item, i)));
   };
 
-  /** phase(title) — 切换当前进度组 */
+  /** phase(title) — 切换当前进度组。
+   *  P2-4：有声明列表时对账。未声明的标题默认告警但照常分组（进度树对不上不该崩），
+   *  严格模式（strictPhases）下抛 UndeclaredPhaseError 拒绝继续。 */
   private phase = (title: string): void => {
+    if (this.declaredPhases.size > 0 && !this.declaredPhases.has(title)) {
+      if (this.strictPhases) {
+        throw new UndeclaredPhaseError(title, [...this.declaredPhases]);
+      }
+      if (!this.warnedPhases.has(title)) {
+        this.warnedPhases.add(title);
+        getLogger().warn(
+          "WORKFLOW",
+          `phase("${title}") 未在 meta.phases 中声明，已作为独立分组（声明: ${[...this.declaredPhases].join("、") || "无"}）`,
+        );
+      }
+    }
     this.currentPhase = title;
     this.progress?.onPhase?.(title);
   };

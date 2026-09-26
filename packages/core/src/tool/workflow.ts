@@ -126,6 +126,23 @@ export class WorkflowTool implements Tool {
   }
 
   /**
+   * 会话级输出 token 读口（P2-2：budget 共享池）。
+   *
+   * 由主会话注入，返回「主循环 + 全部子代理/workflow 已累计的输出 token」
+   * （SessionState.getTotalUsage().outputTokens，flow 口径）。workflow 的 token 预算
+   * 按这个池子计——否则用户设 `+500k` 时，主循环已经花掉的 token 不计入，
+   * workflow 会在池子早已超支之后继续烧。
+   *
+   * 未注入时退化为「只计本 run」，保持 headless/测试等没有会话态的调用方行为不变。
+   */
+  private sessionOutputTokensReader?: () => number;
+
+  /** 注入会话级输出 token 读口（app.wireSubAgentUsageSink 与 usage sink 一起接线）。 */
+  setSessionOutputTokensReader(reader: () => number): void {
+    this.sessionOutputTokensReader = reader;
+  }
+
+  /**
    * 注入 hook 系统(根因修复)。WorkflowTool 在 cli.ts 注册时 HookSystem 尚未创建,
    * App 构造 HookSystem 后经此 setter 回填,workflow 内子代理才能触发 Subagent/工具级 hook 与 span。
    */
@@ -317,7 +334,19 @@ export class WorkflowTool implements Tool {
       runner,
       args: params.args,
       budgetTotal: params.budget_total ?? null,
-      spentReader: () => outputTokens,
+      // P2-4：把 meta.phases 的标题交给 runtime 对账。phase() 用了未声明的标题时
+      // 告警（进度树对不上），SID_CODE_WORKFLOW_STRICT_PHASES 开启时改为拒绝执行。
+      declaredPhases: meta.phases?.map((p) => p.title),
+      strictPhases: process.env.SID_CODE_WORKFLOW_STRICT_PHASES === "1",
+      // 共享池：会话读口返回的是「主循环 + 全部子代理（含本 run 已回写的）」输出 token 之和。
+      // 子代理用量在 onResult 里经 usageSink **同步**回写 SessionState，而预算硬门
+      // （runtime.agent 开头的 remaining() 检查）发生在下一次 agent() 调用时——
+      // 此时上一轮的用量已经进了会话累计，所以直接读会话总量就是池子，
+      // 不能再加 outputTokens（那会把本 run 已回写的部分算两次）。
+      // 未注入读口时退化为只计本 run（outputTokens），headless/测试行为不变。
+      spentReader: this.sessionOutputTokensReader
+        ? () => this.sessionOutputTokensReader!()
+        : () => outputTokens,
       journal,
       signal: mergedSignal,
       progress: {
@@ -366,7 +395,13 @@ export class WorkflowTool implements Tool {
           throw new Error("[workflow] 嵌套仅一层:子 workflow 内不能再调 workflow()");
         };
         const childApi = runtime.buildApi(nestedThrow, { args: childArgs });
-        const { value } = await runInSandbox(childSrc, childApi);
+        // 子脚本的 phase() 对它自己的 meta.phases 对账，而不是沿用父脚本的声明
+        // （沿用会把子脚本每个合法 phase 都判成未声明）。跑完恢复父声明。
+        const childMeta = parseAndValidateMeta(childSrc);
+        const childPhases = childMeta.ok ? (childMeta.meta.phases?.map((p) => p.title) ?? []) : [];
+        const value = await runtime.withDeclaredPhases(childPhases, () =>
+          runInSandbox(childSrc, childApi).then((r) => r.value),
+        );
         return value;
       };
 
