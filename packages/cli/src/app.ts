@@ -1435,10 +1435,20 @@ export class App {
       // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
       this.sessionState.updateUsage(model, usage, 0, provider, baseURL);
     };
+    // P2-2：workflow 的 token 预算按「共享池」计——主循环 + 全部子代理已累计的输出 token。
+    // 读的就是上面这个 sink 回写的 SessionState，所以必须和 sink 一起注入：
+    // 只注入 sink 不注入读口，预算门看到的仍是「本 run 独立预算」，主循环花掉的不算数。
+    const sessionOutputTokens = (): number => this.sessionState.getTotalUsage().outputTokens;
     for (const tool of this.toolRegistry.all()) {
-      const maybe = tool as { setUsageSink?: (s: typeof sink) => void };
+      const maybe = tool as {
+        setUsageSink?: (s: typeof sink) => void;
+        setSessionOutputTokensReader?: (r: () => number) => void;
+      };
       if (typeof maybe.setUsageSink === "function") {
         maybe.setUsageSink(sink);
+      }
+      if (typeof maybe.setSessionOutputTokensReader === "function") {
+        maybe.setSessionOutputTokensReader(sessionOutputTokens);
       }
     }
   }

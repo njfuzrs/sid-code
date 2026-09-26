@@ -26,9 +26,21 @@ const teamMessageSchema = lazySchema(() =>
     to: z.string().describe(`收信人：其他成员名，或 "${LEADER}" 发给团队负责人（主代理）`),
     message: z.string().describe("消息内容"),
     kind: z
-      .enum(["task", "result", "info"])
+      .enum([
+        "task",
+        "result",
+        "info",
+        "shutdown_request",
+        "shutdown_response",
+        "plan_approval_request",
+        "plan_approval_response",
+      ])
       .optional()
-      .describe("消息类型：task=派活 / result=交付结果 / info=进展或协商（默认 info）"),
+      .describe(
+        "消息类型：task=派活 / result=交付结果 / info=进展或协商（默认 info）/ " +
+          "shutdown_request=要求对方结束常驻会话 / shutdown_response=确认退出 / " +
+          "plan_approval_request=提交计划等批准 / plan_approval_response=批准或驳回计划",
+      ),
   }),
 );
 
@@ -57,7 +69,11 @@ export class TeamMessageTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
-    const params = input as { to?: string; message?: string; kind?: "task" | "result" | "info" };
+    const params = input as {
+      to?: string;
+      message?: string;
+      kind?: import("../swarm/mailbox.ts").MailKind;
+    };
 
     if (!params.to || !params.message) {
       return { output: "错误: 缺少必需参数 (to, message)", isError: true };

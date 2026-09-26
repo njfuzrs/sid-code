@@ -10,6 +10,24 @@
 import { writeFileSync, readFileSync, readdirSync, renameSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
+/**
+ * 消息类型。
+ * - task/result/info：普通协作消息（派活 / 交付 / 进展）。
+ * - shutdown_request：leader 要求该成员结束常驻会话（P2-5）。成员收到后不再认领新任务，
+ *   回一条 shutdown_response 后退出。
+ * - shutdown_response：成员对 shutdown_request 的确认，带回退出前的状态。
+ * - plan_approval_request：成员进 plan 模式后提交计划，等 leader 批准才继续。
+ * - plan_approval_response：leader 对计划的裁决（content 为 "approve" 或 "reject: 理由"）。
+ */
+export type MailKind =
+  | "task"
+  | "result"
+  | "info"
+  | "shutdown_request"
+  | "shutdown_response"
+  | "plan_approval_request"
+  | "plan_approval_response";
+
 /** 邮件 */
 export interface MailMessage {
   /** 单调递增序号（同一收件箱内有序） */
@@ -17,8 +35,8 @@ export interface MailMessage {
   from: string;
   to: string;
   content: string;
-  /** 可选消息类型：task(任务) / result(结果) / info(通知) */
-  kind?: "task" | "result" | "info";
+  /** 消息类型，缺省按 info 处理 */
+  kind?: MailKind;
   timestamp: number;
 }
 

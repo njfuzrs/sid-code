@@ -15,6 +15,7 @@ import {
   WorkflowRuntime,
   BudgetExceededError,
   AgentLimitError,
+  UndeclaredPhaseError,
   MAX_ITEMS_PER_CALL,
   type AgentRunner,
   type AgentCallContext,
@@ -245,6 +246,75 @@ describe("M1 runtime — 1000 上限后备闸", () => {
     const e = new AgentLimitError();
     expect(e).toBeInstanceOf(Error);
     expect(e.name).toBe("AgentLimitError");
+  });
+});
+
+describe("P2-4 phase() 与 meta.phases 对账", () => {
+  test("未声明的标题：告警但不崩，照常分组", () => {
+    const phases: string[] = [];
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(),
+      declaredPhases: ["Scan", "Fix"],
+      progress: { onPhase: (t) => phases.push(t) },
+    });
+    const api = rt.buildApi();
+    // 不抛错
+    api.phase("Lint");
+    api.phase("Scan");
+    expect(phases).toEqual(["Lint", "Scan"]);
+  });
+
+  test("同一未声明标题只处理一次告警路径，但每次都分组", () => {
+    const phases: string[] = [];
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(),
+      declaredPhases: ["Scan"],
+      progress: { onPhase: (t) => phases.push(t) },
+    });
+    const api = rt.buildApi();
+    api.phase("Lint");
+    api.phase("Lint");
+    expect(phases).toEqual(["Lint", "Lint"]);
+  });
+
+  test("严格模式：未声明标题抛 UndeclaredPhaseError，已声明的照常", () => {
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(),
+      declaredPhases: ["Scan"],
+      strictPhases: true,
+    });
+    const api = rt.buildApi();
+    expect(() => api.phase("Scan")).not.toThrow();
+    expect(() => api.phase("Lint")).toThrow(UndeclaredPhaseError);
+  });
+
+  test("没给声明列表时不对账（既有行为：任意标题都接受）", () => {
+    const phases: string[] = [];
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(),
+      strictPhases: true,
+      progress: { onPhase: (t) => phases.push(t) },
+    });
+    const api = rt.buildApi();
+    expect(() => api.phase("随便什么")).not.toThrow();
+    expect(phases).toEqual(["随便什么"]);
+  });
+
+  test("withDeclaredPhases：子脚本用自己的声明对账，结束后恢复父声明", async () => {
+    const rt = new WorkflowRuntime({
+      runner: makeRunner(),
+      declaredPhases: ["Parent"],
+      strictPhases: true,
+    });
+    const api = rt.buildApi();
+    // 子声明期间，父的 phase 反而算未声明，子的算合法
+    await rt.withDeclaredPhases(["Child"], async () => {
+      expect(() => api.phase("Child")).not.toThrow();
+      expect(() => api.phase("Parent")).toThrow(UndeclaredPhaseError);
+    });
+    // 恢复后父声明重新生效
+    expect(() => api.phase("Parent")).not.toThrow();
+    expect(() => api.phase("Child")).toThrow(UndeclaredPhaseError);
   });
 });
 

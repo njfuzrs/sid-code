@@ -6,7 +6,6 @@
 
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
-import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
@@ -160,8 +159,8 @@ export interface SubAgentTask {
    *  withAgentCwd 上下文里，文件类工具经 getCwd() 自动以此为基准，并发隔离无需 chdir。 */
   cwd?: string;
   /** M4(Dynamic Workflows): 推理强度。workflow agent({effort}) 透传而来。
-   *  low|medium|high → provider reasoningEffort "high"；xhigh|max → "max"
-   *  （provider 层仅接受 high|max，对齐 SendParams.reasoningEffort 契约）。 */
+   *  五档原样交给能力层（sub-agent-effort.ts）按模型族翻译线格式，不再手写塌缩：
+   *  GPT-5.6 族 xhigh 原样透传，DeepSeek/GLM/o-series/Grok 由各族 applier 钳制。 */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Fork 模式：从主对话继承的初始消息序列（由 buildForkMessages 构建）。
    *  存在时子代理不从空上下文起步，而是接续这段父对话历史（prompt cache 友好），
@@ -371,9 +370,8 @@ export interface CustomSubAgentTask {
   type?: string;
   /**
    * P1-1：推理努力程度（skill frontmatter effort 透传而来）。
-   * low|medium|high → provider reasoningEffort "high"；xhigh|max → "max"
-   * （provider 层仅接受 high|max，对齐 SendParams.reasoningEffort 契约）。
-   * 显式指定即开 thinking + 下发 reasoningEffort；不传则关 thinking（与 executeInner 同口径）。
+   * 五档原样交给能力层（sub-agent-effort.ts）按模型族翻译，与 executeInner 同口径：
+   * 显式指定即开 thinking 并下发该族的线格式；不传则关 thinking。
    */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
@@ -1713,8 +1711,7 @@ export class SubAgent {
        *  onTurnEnd 拿到的 info.tools 只是**本轮**的工具，所以窗口状态必须挂在这一层。 */
       let recentActivities: string[] = [];
 
-      // M4(Dynamic Workflows): effort → provider reasoningEffort（仅 high|max 两档）。
-      // low/medium/high → "high"；xhigh/max → "max"（对齐 SendParams.reasoningEffort 契约）。
+      // effort → 线格式，走能力层而不是手写两档映射（见 sub-agent-effort.ts）。
       //
       // H8：子代理 thinking 收口。此前 sendParamsExtra 只在显式传 effort 时给 reasoningEffort，
       // 从不给 thinking 开关——子代理用思考模型时全程沿用服务端默认（enabled），思考不可控，
@@ -1722,31 +1719,25 @@ export class SubAgent {
       // summarize 这类只读调研子代理成本与延迟双放大。
       //
       // 收口规则：thinking 显式跟随 effort——
-      //   • 显式指定 effort（task.effort 非空）→ 视为「要思考」，开 thinking + 下发 reasoningEffort；
+      //   • 显式指定 effort（task.effort 非空）→ 视为「要思考」，由能力层按模型族下发线格式；
       //   • 未指定 effort → 关 thinking（SIDE_CALL_NO_THINK），子代理默认不思考。
       // 显式下发 enabled:false 对不支持思考开关的模型是 no-op（anthropic 忽略；openai.ts 仅对
       // DeepSeek/GLM 下发 thinking:{type:disabled}），不会引发 400，安全。
-      // §12 P2-1 复审：思考预算上限（SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS / settings）
-      // 对子代理同样生效。此前子代理直接手写 thinking/reasoningEffort、绕过 effort.ts 的钳制层，
-      // 用户设了上限却只约束主循环——子代理（尤其并发派多个）才是思考 token 的大头，属于
-      // 「配置了但对最花钱的路径不起作用」。这里按上限把档位降下来，与主循环 adaptive 路径同一映射。
-      const { getMaxThinkingTokensOverride, mapThinkingCapToEffort } =
-        await import("../llm/effort.ts");
-      const thinkingCap = getMaxThinkingTokensOverride();
-      const cappedEffort = thinkingCap !== null ? mapThinkingCapToEffort(thinkingCap) : null;
-      const sendParamsExtra: Partial<SendParams> =
-        task.effort !== undefined
-          ? {
-              thinking: { enabled: true, budgetTokens: 0 },
-              // 上限映射出更低档位时取更低者（只降不升，与 effort.ts applyAnthropicNative 一致）
-              reasoningEffort: ((task.effort === "xhigh" || task.effort === "max") &&
-              cappedEffort === null
-                ? "max"
-                : "high") as "high" | "max",
-              // 透传上限，供 provider 侧 effort 映射层做精确钳制（manual 线格式模型）
-              maxThinkingTokens: thinkingCap ?? undefined,
-            }
-          : { thinking: SIDE_CALL_NO_THINK };
+      //
+      // P2-1：此前这里手写「xhigh|max → max，其余 → high」，绕过 effort.ts 的能力层。
+      // 两个后果：① GPT-5.6 族原生认 xhigh，子代理却把它塌成 max，与主循环透传不一致；
+      // ② 思考预算上限只在「映射出更低档」时粗暴降到 high，manual 模型的精确钳制没生效。
+      // 现在与主循环共用 resolveEffortCapability + applyToSendParams，上限经 maxThinkingTokens
+      // 交给各族 applier（manual 精确钳、adaptive 降档）。
+      const { buildSubAgentEffortParams } = await import("./sub-agent-effort.ts");
+      const spawnCfg = this.registry?.getSpawnConfigForSubAgent?.(task.type);
+      const sendParamsExtra: Partial<SendParams> = buildSubAgentEffortParams({
+        model: activeModel,
+        providerName: activeProvider.name(),
+        // baseURL 只影响 DeepSeek 双端点的族判定；拿不到时按模型名判（退到 OpenAI 兼容端点）。
+        baseURL: spawnCfg?.baseURL,
+        effort: task.effort,
+      });
 
       const loopResult = await runAgentLoop({
         provider: activeProvider,
@@ -2170,19 +2161,18 @@ export class SubAgent {
       let lastTextOutput = "";
       let toolUseCount = 0;
 
-      // P1-1：effort → provider reasoningEffort，与 executeInner 同口径（仅 high|max 两档）。
-      // low/medium/high → "high"；xhigh/max → "max"。显式指定 effort 视为「要思考」，开 thinking；
-      // 未指定则关 thinking（SIDE_CALL_NO_THINK），自定义子代理默认不思考。skill frontmatter
-      // 声明 effort: high 时经此生效（此前 executeCustomInner 从不消费 effort，写了不起作用）。
-      const customSendParamsExtra: Partial<SendParams> =
-        task.effort !== undefined
-          ? {
-              thinking: { enabled: true, budgetTokens: 0 },
-              reasoningEffort: (task.effort === "xhigh" || task.effort === "max"
-                ? "max"
-                : "high") as "high" | "max",
-            }
-          : { thinking: SIDE_CALL_NO_THINK };
+      // P1-1：effort → 线格式，与 executeInner 共用 buildSubAgentEffortParams（能力层按模型族翻译，
+      // 不再手写两档塌缩）。显式指定 effort 视为「要思考」；未指定则关 thinking，自定义子代理默认不思考。
+      // skill frontmatter 声明 effort: high 时经此生效（此前 executeCustomInner 从不消费 effort）。
+      const { buildSubAgentEffortParams: buildCustomEffortParams } =
+        await import("./sub-agent-effort.ts");
+      const customSpawnCfg = this.registry?.getSpawnConfig?.();
+      const customSendParamsExtra: Partial<SendParams> = buildCustomEffortParams({
+        model: activeModel,
+        providerName: activeProvider.name(),
+        baseURL: customSpawnCfg?.baseURL,
+        effort: task.effort,
+      });
 
       const loopResult = await runAgentLoop({
         provider: activeProvider,

@@ -47,7 +47,14 @@ export interface AgentOpts {
 export interface Budget {
   /** 本轮 token 目标;没设则为 null */
   total: number | null;
-  /** 本轮主循环 + 所有 workflow 的输出 token 之和(池子共享) */
+  /**
+   * 已花费的输出 token。
+   *
+   * 语义由宿主注入的 `spentReader` 决定（runtime 自己不累加主循环用量）：
+   * - WorkflowTool 注入了会话读口时 = 主循环 + 全部子代理/workflow 的输出 token 之和
+   *   （共享池，`SessionState.getTotalUsage().outputTokens`）；
+   * - 未注入时 = 仅本 run 的输出 token（headless/测试的兜底）。
+   */
   spent(): number;
   /** max(0, total - spent());没设目标则 Infinity */
   remaining(): number;

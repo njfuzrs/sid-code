@@ -10,7 +10,7 @@
 
 import { join } from "path";
 import { randomBytes } from "crypto";
-import { Mailbox } from "./mailbox.ts";
+import { Mailbox, type MailKind } from "./mailbox.ts";
 import { withTeamMember } from "./team-context.ts";
 import { PermissionSync, type PermissionArbiter } from "./permission-sync.ts";
 import { assignAgentColor, getAgentColor, type AgentColor } from "../agent/color.ts";
@@ -22,6 +22,7 @@ import {
   clearTeamTasks,
   claimNextUnblockedTask,
   isTaskUnblocked,
+  hasUnfinishedTasks,
 } from "../task/structured-task-store.ts";
 import { persistTeamTasks, loadTeamTasks } from "../task/team-task-store.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -92,6 +93,28 @@ export interface TeamOptions {
    * 直到池空（CC 式「teammate 从共享列表认领」）。空/未设 = 仅执行成员各自的 task。
    */
   sharedTasks?: Array<{ subject: string; description: string }>;
+  /**
+   * P2-5：常驻协作模式。
+   *
+   * false（默认）= 一次性批：每个成员做完自己的任务和认领到的共享任务就退出，
+   * `run()` 在 `Promise.all` 全部 resolve 后返回。这是既有行为。
+   *
+   * true = 常驻会话：成员做完活后**不退出**，进入空闲挂起，等三件事之一：
+   * 新的共享任务出现（认领继续干）、leader 经 mailbox 发来 `shutdown_request`（退出）、
+   * 或团队收尾条件满足（全部任务完成且全员空闲，由 `run()` 统一收尾）。
+   * leader 也能在成员等待期间用 `sendToMember` 派发新任务、用 `resolvePlanApproval`
+   * 裁决成员提交的计划。
+   *
+   * 默认关闭是刻意的：常驻会让 `run()` 的耗时由「任务做完」变成「协作结束」，
+   * 而现有调用方（team_create 工具、dependsOn 测试）都按一次性批写。
+   * 开启走显式 opt-in，不改变任何未传该字段的调用方。
+   */
+  resident?: boolean;
+  /**
+   * P2-5：常驻模式下空闲轮询间隔（毫秒）。成员挂起时每隔这么久看一次
+   * 「有没有新任务 / 有没有 shutdown / 团队是否该收尾」。默认 200ms，测试可注入更短的。
+   */
+  residentPollMs?: number;
   /**
    * P3-2：teammate 显示模式（对齐 CC teammateMode）。
    * - "in-process"（默认）：成员输出汇聚回主对话，用 agent 身份色区分。
@@ -234,18 +257,14 @@ export class TeamManager {
    *
    * @returns 成员名不存在时返回 false（不静默丢消息）
    */
-  sendToMember(
-    memberName: string,
-    content: string,
-    kind: "task" | "result" | "info" = "info",
-  ): boolean {
+  sendToMember(memberName: string, content: string, kind: MailKind = "info"): boolean {
     if (!this.opts.members.some((m) => m.name === memberName)) return false;
     this.mailbox.send({ from: "leader", to: memberName, content, kind, timestamp: 0 });
     return true;
   }
 
   /** 广播给全部成员（各自收件箱一份）。返回实际投递的成员数。 */
-  broadcastToMembers(content: string, kind: "task" | "result" | "info" = "info"): number {
+  broadcastToMembers(content: string, kind: MailKind = "info"): number {
     let n = 0;
     for (const m of this.opts.members) {
       this.mailbox.send({ from: "leader", to: m.name, content, kind, timestamp: 0 });
@@ -464,18 +483,28 @@ export class TeamManager {
       teamTimer.unref();
     });
     try {
-      const results = await Promise.race([
-        Promise.all(
-          this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal)),
-        ),
-        teamTimeoutPromise,
-      ]);
+      // P2-5：常驻模式下，run() 的结束条件从「所有 Promise resolve」改为
+      // 「全部任务完成且全员空闲，或 leader 已 shutdown 全员」。成员自己的循环
+      // 看不到全局（各自只认领自己能认领的），所以收尾信号由这里统一发：
+      // 条件满足就给每个还在挂起的成员补一条 shutdown_request，它们收到后退出，
+      // Promise.all 随之 resolve。一次性批模式不发，行为与原来一致。
+      const settlePromise = Promise.all(
+        this.opts.members.map((m) => this.runMember(m, gitRoot, ts, signal, teamAbortCtl.signal)),
+      );
+      const residentWatch = this.opts.resident
+        ? this.watchResidentShutdown(teamAbortCtl.signal)
+        : null;
+
+      const results = await Promise.race([settlePromise, teamTimeoutPromise]);
+      if (residentWatch) residentWatch.stop();
 
       // P1-3：leader drain 自己的收件箱，消费成员回写的 result 消息（真正闭合通信环——
       // 成员 send(to:"leader") 至此有了确定的消费方，不再是只写不读的伪通信）。
       // 结果本身已通过返回值收集，此处 drain 用于：① 让 mailbox 状态归零（标记已读）；
       // ② 供 leaderMessages 观测/回放（如后续 P3-2 三态显示模式消费）。
-      this.leaderMessages = this.mailbox.drain("leader");
+      // 常驻模式下 watchResidentShutdown 已经在过程中 drain 过一批，这里是收尾再 drain 一次，
+      // 两批都留在 leaderMessages 里（按到达顺序）。
+      this.leaderMessages.push(...this.mailbox.drain("leader"));
 
       // 保持成员定义顺序
       const byName = new Map<string, TeammateResult>();
@@ -485,6 +514,112 @@ export class TeamManager {
       // 正常完成路径清掉定时器（unref 已保证不阻塞退出，这里避免多余 fire）
       if (teamTimer) clearTimeout(teamTimer);
     }
+  }
+
+  /**
+   * P2-5：常驻成员挂起，直到有事可做或该退出。
+   *
+   * 每一拍按顺序看三样东西，命中即返回：
+   * 1. signal abort → 返回 shutdown（团队被外部中止）；
+   * 2. 收件箱里的控制消息 → `shutdown_request` 返回 shutdown，其余控制消息
+   *    （plan_approval_response 等）先记下、继续等，因为它们是「醒了之后要用的上下文」
+   *    而不是「现在就有任务」；
+   * 3. 共享池里出现了可认领的任务 → 返回继续（调用方会重新 claim）。
+   *
+   * 控制消息在这里被 drain 走了，不能丢：除 shutdown 外的消息要回灌，
+   * 否则成员真正开始下一个任务时，drainInbox 拿不到 leader 刚发的批准。
+   * 回灌放在返回前统一做。
+   */
+  private async waitForResidentWakeup(
+    memberName: string,
+    signal?: AbortSignal,
+  ): Promise<{ shutdown: boolean; reason: string }> {
+    const pollMs = this.opts.residentPollMs ?? 200;
+    const kept: import("./mailbox.ts").MailMessage[] = [];
+    const outcome = await new Promise<{ shutdown: boolean; reason: string }>((resolve) => {
+      const timer = setInterval(() => {
+        if (signal?.aborted) {
+          clearInterval(timer);
+          resolve({ shutdown: true, reason: "执行被中止" });
+          return;
+        }
+        const msgs = this.mailbox.drain(memberName);
+        for (const m of msgs) {
+          if (m.kind === "shutdown_request") {
+            clearInterval(timer);
+            resolve({ shutdown: true, reason: m.content || "leader 请求退出" });
+            return;
+          }
+          kept.push(m);
+        }
+        // 有可认领的任务就醒。这里只**探测**不认领——认领统一走循环顶部的
+        // claimNextUnblockedTask，避免两处各认一次把同一个任务领走两遍。
+        if (this.hasClaimableTask()) {
+          clearInterval(timer);
+          resolve({ shutdown: false, reason: "" });
+        }
+      }, pollMs);
+      timer.unref?.();
+    });
+    // 挂起期间收到的非 shutdown 消息回灌，让成员下一轮 drainInbox 能读到。
+    for (const m of kept) {
+      this.mailbox.send({ from: m.from, to: m.to, content: m.content, kind: m.kind, timestamp: 0 });
+    }
+    return outcome;
+  }
+
+  /** 共享池里是否有该团队的、未预分配且依赖已满足的 pending 任务。 */
+  private hasClaimableTask(): boolean {
+    for (const t of getTeamTasks(this.teamName)) {
+      if (t.status !== "pending") continue;
+      const member = (t.metadata as { member?: unknown })?.member;
+      if (typeof member === "string" && member.length > 0) continue;
+      if (!isTaskUnblocked(t)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * P2-5：常驻模式的收尾监视。
+   *
+   * 成员做完活会挂起而不是退出，所以 `run()` 不会自己结束。这里轮询两个条件，
+   * 任一满足就给**还没收到 shutdown** 的成员补发 shutdown_request，让它们退出：
+   * - 团队任务全部完成（没有 pending/in_progress）——协作目标达成；
+   * - 外部 signal abort——调用方要收场。
+   *
+   * 同时在每一拍 drain leader 的收件箱。常驻期间成员的 result / plan_approval_request
+   * 是持续到达的，等 run() 结束才 drain 会让「leader 裁决计划」永远发生在成员已经退出之后。
+   *
+   * 返回 stop()：run() 正常结束（比如成员因别的原因全退了）时清掉轮询。
+   */
+  private watchResidentShutdown(signal: AbortSignal): { stop: () => void } {
+    const pollMs = this.opts.residentPollMs ?? 200;
+    const shutdownSent = new Set<string>();
+    const timer = setInterval(() => {
+      // leader 收件箱持续消费：成员的回执和计划审批请求在常驻期间就得可读，
+      // 不能积到 run() 结束。追加而不是覆盖——结束时还有一次收尾 drain。
+      const incoming = this.mailbox.drain("leader");
+      if (incoming.length > 0) this.leaderMessages.push(...incoming);
+
+      const allDone = !hasUnfinishedTasks(this.teamName);
+      if (!allDone && !signal.aborted) return;
+      for (const m of this.opts.members) {
+        if (shutdownSent.has(m.name)) continue;
+        shutdownSent.add(m.name);
+        this.mailbox.send({
+          from: "leader",
+          to: m.name,
+          content: allDone ? "所有任务已完成，团队收尾" : "团队被中止",
+          kind: "shutdown_request",
+          timestamp: 0,
+        });
+      }
+    }, pollMs);
+    timer.unref?.();
+    return {
+      stop: () => clearInterval(timer),
+    };
   }
 
   /**
@@ -662,11 +797,19 @@ export class TeamManager {
       this.markMemberDone(member.name, own.success);
 
       const claimedOutputs: string[] = [];
-      while (!memberSignal?.aborted) {
+      // P2-5：常驻模式下「池空」不是退出条件。成员挂起等三件事：新任务出现、
+      // leader 的 shutdown_request、或 signal abort。一次性批模式保持原行为（池空即退）。
+      let shutdownReason: string | null = null;
+      while (!memberSignal?.aborted && shutdownReason === null) {
         const claimed = claimNextUnblockedTask(member.name, this.teamName, {
           onlyUnassigned: true,
         });
-        if (!claimed) break;
+        if (!claimed) {
+          if (!this.opts.resident) break;
+          const woke = await this.waitForResidentWakeup(member.name, memberSignal);
+          if (woke.shutdown) shutdownReason = woke.reason;
+          continue;
+        }
         persistTeamTasks(this.teamName, this.opts.baseDir);
         log.info(
           "TEAM_TASKS",
@@ -705,6 +848,17 @@ export class TeamManager {
       if (claimedOutputs.length > 0) {
         result.output += claimedOutputs.join("");
         result.claimedTaskCount = claimedOutputs.length;
+      }
+      // 常驻成员是被 shutdown 收尾的：回一条确认，让 leader 知道这个成员是干净退出
+      // 而不是超时或异常。一次性批模式没有 shutdown，不发。
+      if (shutdownReason !== null) {
+        this.mailbox.send({
+          from: member.name,
+          to: "leader",
+          content: `成员 ${member.name} 已退出常驻会话：${shutdownReason}`,
+          kind: "shutdown_response",
+          timestamp: ts,
+        });
       }
     } catch (err: any) {
       result.output = `成员 ${member.name} 执行失败: ${err.message}`;
