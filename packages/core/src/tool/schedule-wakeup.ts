@@ -16,7 +16,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
-import type { CronTask } from "../cron/types.ts";
+import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -97,7 +97,20 @@ export class ScheduleWakeupTool implements Tool {
       fireAt: now + clamped * 1000,
     };
 
-    getScheduler().addSessionTask(task);
+    if (isCronDisabled()) {
+      return {
+        output: "cron 已被 SID_CODE_DISABLE_CRON 禁用，无法安排唤醒。",
+        isError: true,
+      };
+    }
+
+    // 与 cron_create / /loop 共用会话级上限（守卫在 scheduler.addSessionTask）。
+    if (!getScheduler().addSessionTask(task)) {
+      return {
+        output: `已达定时任务上限 (${MAX_SESSION_CRON_JOBS})，请先用 cron_delete 删除不需要的任务`,
+        isError: true,
+      };
+    }
 
     const clampNote =
       clamped !== Math.round(params.delay_seconds)

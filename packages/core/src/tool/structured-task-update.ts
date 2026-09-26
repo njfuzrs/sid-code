@@ -5,6 +5,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { updateStructuredTask } from "../task/structured-task-store.ts";
+import { persistCurrentSessionTasks } from "../task/session-task-store.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -97,6 +98,9 @@ export class TaskUpdateTool implements Tool {
       addBlocks: params.add_blocks,
       addBlockedBy: params.add_blocked_by,
     });
+
+    // P1-3：变更成功才落盘（失败路径 result.ok=false，清单没变，不写盘）。
+    if (result.ok) persistCurrentSessionTasks();
 
     if (!result.ok) {
       return { output: `错误: ${result.error}`, isError: true };

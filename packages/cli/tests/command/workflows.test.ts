@@ -5,6 +5,9 @@
  * 数据源为 task 注册表（getAllTasks + isWorkflowTask）。
  */
 import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import workflowsCmd from "@sid-code/cli/command/commands/workflows/index.ts";
 import type { CommandContext, LocalCommand } from "@sid-code/cli/command/types.ts";
 import { registerTask, clearAllTasks } from "@sid-code/core/task/registry.ts";
@@ -82,5 +85,43 @@ describe("/workflows 命令", () => {
     const mod = await loadCmd();
     const v = ((await mod.call("wf_notexist", EMPTY_CTX)) as { value: string }).value;
     expect(v).toContain("未找到");
+  });
+
+  test("详情按 phase 分组渲染进度树（P1-4）", async () => {
+    // journal 落在 SID_CONFIG_DIR 下，重定向到 tmpdir，不读真实 ~/.sid-code。
+    const prev = process.env.SID_CONFIG_DIR;
+    const home = mkdtempSync(join(tmpdir(), "sid-wf-tree-"));
+    process.env.SID_CONFIG_DIR = home;
+    try {
+      makeWfTask({ runId: "wf_tree", workflowName: "phased" });
+      const journalDir = join(home, "workflows", "journals");
+      mkdirSync(journalDir, { recursive: true });
+      const lines = [
+        { callIndex: 0, fingerprint: "a", result: "找到 3 处", label: "finder", phase: "扫描" },
+        { callIndex: 1, fingerprint: "b", result: "全部通过", label: "verifier", phase: "验证" },
+        { callIndex: 2, fingerprint: "c", result: "无遗漏", label: "finder-2", phase: "扫描" },
+      ];
+      writeFileSync(
+        join(journalDir, "wf_tree.jsonl"),
+        lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+      );
+
+      const mod = await loadCmd();
+      const v = ((await mod.call("wf_tree", EMPTY_CTX)) as { value: string }).value;
+      // phase 为父节点，agent 为子节点（⎿ 树枝），同 phase 的调用归在一起
+      const scanAt = v.indexOf("扫描");
+      const verifyAt = v.indexOf("验证");
+      expect(scanAt).toBeGreaterThan(-1);
+      expect(verifyAt).toBeGreaterThan(scanAt);
+      expect(v.indexOf("finder ")).toBeGreaterThan(scanAt);
+      expect(v.indexOf("finder-2")).toBeGreaterThan(scanAt);
+      expect(v.indexOf("finder-2")).toBeLessThan(verifyAt);
+      expect(v.indexOf("verifier")).toBeGreaterThan(verifyAt);
+      expect(v).toContain("⎿");
+    } finally {
+      if (prev === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prev;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

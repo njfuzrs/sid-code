@@ -18,7 +18,13 @@
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { type CronTask, DEFAULTS } from "./types.ts";
+import {
+  type CronTask,
+  DEFAULTS,
+  MAX_SESSION_CRON_JOBS,
+  MAX_DAEMON_CRON_JOBS,
+  isCronDisabled,
+} from "./types.ts";
 import { computeNextCronRun, jitteredNextFireMs, computeLatestMissedRun } from "./parser.ts";
 import { tryAcquireSchedulerLock, releaseSchedulerLock } from "./lock.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -100,6 +106,13 @@ export class Scheduler {
       }
     }
 
+    // 整体禁用：不启动轮询。已持久化的 durable 任务因此也不会被触发——
+    // 只在工具层拒绝创建挡不住「上次会话留下的任务」。
+    if (isCronDisabled()) {
+      getLogger().info("CRON", "SID_CODE_DISABLE_CRON 已设置，调度器不启动轮询");
+      return;
+    }
+
     const interval = this.opts.checkIntervalMs ?? DEFAULTS.checkIntervalMs;
     this.timer = setInterval(() => this.check(), interval);
     // Bun/Node：不阻止进程退出
@@ -121,18 +134,34 @@ export class Scheduler {
     }
   }
 
-  /** 添加会话级任务 */
-  addSessionTask(task: CronTask): void {
+  /**
+   * 添加会话级任务。
+   * 上限按「本调度器实例管理的会话级任务」计数（对齐 CC 的单会话 50），
+   * 达上限返回 false 且不入队——三个创建入口（cron_create / schedule_wakeup / /loop）
+   * 都走这里，守卫放工具层会被任一入口绕过。
+   */
+  addSessionTask(task: CronTask): boolean {
+    if (this.sessionTasks.size >= this.sessionCap()) return false;
     this.sessionTasks.set(task.id, task);
     this.nextFireAt.delete(task.id); // 重新计算
+    return true;
   }
 
-  /** 添加持久任务 */
-  addDurableTask(task: CronTask): void {
+  /**
+   * 添加持久任务。上限分档：daemon 模式按全机聚合上限（500），
+   * 会话模式与会话级任务共用 50（本实例管理的任务合计）。
+   */
+  addDurableTask(task: CronTask): boolean {
+    const cap = this.durableCap();
+    const used = this.opts.daemonMode
+      ? this.durableTasks.size
+      : this.sessionTasks.size + this.durableTasks.size;
+    if (used >= cap) return false;
     task.durable = true;
     this.durableTasks.set(task.id, task);
     this.nextFireAt.delete(task.id);
     this.persistIfDurable(task);
+    return true;
   }
 
   /** 删除任务（两类都查） */
@@ -145,6 +174,16 @@ export class Scheduler {
     }
     this.nextFireAt.delete(taskId);
     return removed;
+  }
+
+  /** 会话级任务上限（供报错文案使用，与 addSessionTask 的判据同源）。 */
+  sessionCap(): number {
+    return MAX_SESSION_CRON_JOBS;
+  }
+
+  /** 持久任务上限：daemon 聚合全机用高档，会话模式与会话级共用一档。 */
+  durableCap(): number {
+    return this.opts.daemonMode ? MAX_DAEMON_CRON_JOBS : MAX_SESSION_CRON_JOBS;
   }
 
   /** 列出所有任务 */

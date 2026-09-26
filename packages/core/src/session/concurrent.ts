@@ -25,6 +25,12 @@ export interface SessionEntry {
   team?: string;
   /** 可选：模型 */
   model?: string;
+  /**
+   * 仅 kind="teammate"：该成员对应的后台 agent 任务 ID。
+   * teammate 与主会话同进程，按 PID 探活分不清「成员已结束」和「进程还活着」，
+   * 所以 teammate 条目的存活判据是这个任务仍在注册表里且未到终态，而不是 PID。
+   */
+  taskId?: string;
 }
 
 function sessionsDir(): string {
@@ -48,6 +54,33 @@ export function isProcessAlive(pid: number): boolean {
     // EPERM 表示进程存在但无权限发信号（仍算存活）
     return err?.code === "EPERM";
   }
+}
+
+/**
+ * 条目是否仍活跃。
+ * - 普通会话：看 PID（进程死了就是 stale）。
+ * - teammate：同进程子代理，PID 恒为宿主进程。改看其后台任务是否仍在注册表且未终态，
+ *   否则成员跑完后 /ps 会一直挂着一条永远不消失的 teammate 会话。
+ *   任务注册表查不到（进程重启后内存注册表是空的）也算 stale。
+ */
+function isSessionEntryAlive(entry: SessionEntry): boolean {
+  if (entry.kind === "teammate") {
+    if (!entry.taskId) return false;
+    try {
+      // 延迟 import：session 模块不该在加载期就依赖 task 模块（task 侧也引用会话概念）。
+      const { getTask } = require("../task/registry.ts") as {
+        getTask: (id: string) => { status: string } | undefined;
+      };
+      const { isTerminalStatus } = require("../task/types.ts") as {
+        isTerminalStatus: (s: string) => boolean;
+      };
+      const task = getTask(entry.taskId);
+      return !!task && !isTerminalStatus(task.status);
+    } catch {
+      return false;
+    }
+  }
+  return isProcessAlive(entry.pid);
 }
 
 /** 注册当前会话 */
@@ -103,7 +136,7 @@ export function listActiveSessions(): SessionEntry[] {
       continue;
     }
 
-    if (isProcessAlive(entry.pid)) {
+    if (isSessionEntryAlive(entry)) {
       active.push(entry);
     } else {
       // stale：进程已死，清理残留

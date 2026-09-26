@@ -1722,15 +1722,22 @@ export async function main(): Promise<void> {
       }
     }
 
-    // 注册 Cron 调度工具
-    const { CronCreateTool } = await import("@sid-code/core/tool/cron-create.ts");
-    const { CronDeleteTool } = await import("@sid-code/core/tool/cron-delete.ts");
-    const { CronListTool } = await import("@sid-code/core/tool/cron-list.ts");
-    const { ScheduleWakeupTool } = await import("@sid-code/core/tool/schedule-wakeup.ts");
-    toolRegistry.register(new CronCreateTool());
-    toolRegistry.register(new CronDeleteTool());
-    toolRegistry.register(new CronListTool());
-    toolRegistry.register(new ScheduleWakeupTool());
+    // 注册 Cron 调度工具。整体禁用时不注册：模型工具列表里根本看不到，
+    // 比「注册了但调用报错」少一轮无效尝试。调度器层的 start() 门控另行兜住
+    // 已持久化任务，不依赖这里。
+    const { isCronDisabled } = await import("@sid-code/core/cron/types.ts");
+    if (isCronDisabled()) {
+      getLogger().info("CLI", "SID_CODE_DISABLE_CRON 已设置，跳过 cron 工具注册");
+    } else {
+      const { CronCreateTool } = await import("@sid-code/core/tool/cron-create.ts");
+      const { CronDeleteTool } = await import("@sid-code/core/tool/cron-delete.ts");
+      const { CronListTool } = await import("@sid-code/core/tool/cron-list.ts");
+      const { ScheduleWakeupTool } = await import("@sid-code/core/tool/schedule-wakeup.ts");
+      toolRegistry.register(new CronCreateTool());
+      toolRegistry.register(new CronDeleteTool());
+      toolRegistry.register(new CronListTool());
+      toolRegistry.register(new ScheduleWakeupTool());
+    }
 
     // 注册 Swarm 多代理协作工具
     const { TeamCreateTool } = await import("@sid-code/core/tool/team-create.ts");
@@ -2486,6 +2493,19 @@ export async function main(): Promise<void> {
         model: config.model,
       };
       registerSession(sessionEntry);
+
+      // P1-3：恢复本会话上次落盘的任务清单（主会话 TODO，团队清单由 TeamManager 自己恢复）。
+      // 放在注册会话之后——清单恢复失败不应阻止会话注册。
+      try {
+        const { setCurrentSessionId, loadSessionTasks } =
+          await import("@sid-code/core/task/session-task-store.ts");
+        setCurrentSessionId(config.sessionId);
+        if (loadSessionTasks(config.sessionId)) {
+          getLogger().info("CLI", `已恢复会话 ${config.sessionId} 的任务清单`);
+        }
+      } catch (err: any) {
+        getLogger().warn("CLI", `会话任务清单恢复失败: ${err?.message ?? err}`);
+      }
 
       // Cron 调度器：onFire 把 prompt 注入 App 主循环；isLoading 避免 REPL 忙时触发
       const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");

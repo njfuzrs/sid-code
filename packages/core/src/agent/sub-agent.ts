@@ -64,6 +64,10 @@ import {
   writeParentMsg,
 } from "./sub-agent-protocol.ts";
 import { drainAgentMessages } from "./message-queue.ts";
+// P1-2：teammate 会话注册。放在 sub-agent 而不是 team.ts——任务 ID 在本方法内才确定，
+// 且 spawn 回退、异常兜底都在这里，注册/注销包住整个执行体才不会漏。
+import { getTeamMemberContext } from "../swarm/team-context.ts";
+import { registerSession, unregisterSession } from "../session/concurrent.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { cwd } from "process";
@@ -699,6 +703,25 @@ export class SubAgent {
     // 稳定 agentId：贯穿 start → stop，让遥测能把一个子代理的 start/stop 配对成同一 span。
     const agentId = `subagent-${task.type}-${taskId}`;
     const startedAt = Date.now();
+
+    // P1-2：团队成员注册为 kind="teammate" 的活跃会话，/ps 才能看到团队运行态。
+    // 身份从 ALS 取（team.ts 的 withTeamMember 注入），不靠调用方自报。
+    // 非团队上下文（普通子代理）不注册——否则 /ps 会被所有子代理刷屏。
+    const teamCtx = getTeamMemberContext();
+    const teammateSessionId = teamCtx ? `teammate-${teamCtx.teamName}-${teamCtx.memberName}` : null;
+    if (teamCtx && teammateSessionId) {
+      registerSession({
+        sessionId: teammateSessionId,
+        pid: process.pid,
+        kind: "teammate",
+        cwd: task.cwd ?? process.cwd(),
+        startedAt,
+        team: teamCtx.teamName,
+        model: task.model,
+        taskId,
+      });
+    }
+
     try {
       // SubagentStart hook（带预期 model/provider，供遥测按 model 分类）
       const expectedModel =
@@ -783,6 +806,15 @@ export class SubAgent {
           duration_ms: Date.now() - startedAt,
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
+
+      // P1-2：成员结束即注销。与 hook 放同一 finally，覆盖成功、失败、顶层异常三条路径。
+      if (teammateSessionId) {
+        try {
+          unregisterSession(teammateSessionId);
+        } catch {
+          /* 注销失败只留 stale 文件，探活会清 */
+        }
+      }
     }
     return result;
   }
