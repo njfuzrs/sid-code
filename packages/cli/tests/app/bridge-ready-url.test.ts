@@ -3,6 +3,9 @@
  *
  * 准入拒绝已经剥过（admission.test.ts）。runBridge 在 start() 成功后
  * 还会把 URL 打到日志和 stderr，那是另一条路径。
+ *
+ * 不 mock logger 模块：getLogger() 是进程级单例，mock.module 会漏到同进程
+ * 后面的用例（启动横幅、console 护栏）。只替换这一次拿到的实例上的方法。
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
@@ -13,6 +16,7 @@ import { App } from "@sid-code/cli/app.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 const SECRET = "super-secret-token";
 
@@ -38,14 +42,6 @@ describe("App.runBridge · 成功提示", () => {
     const lines: string[] = [];
     const stderr: string[] = [];
 
-    mock.module("@sid-code/core/debug/logger.ts", () => ({
-      getLogger: () => ({
-        info: (_tag: string, message: string) => lines.push(message),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      }),
-    }));
     mock.module("@sid-code/core/bridge/bridge-runner.ts", () => ({
       BridgeRunner: class {
         async start() {}
@@ -58,6 +54,20 @@ describe("App.runBridge · 成功提示", () => {
     mock.module("@sid-code/shared/utils/graceful-shutdown.ts", () => ({
       runShutdownSequence: async () => {},
     }));
+
+    const log = getLogger();
+    const orig = {
+      info: log.info.bind(log),
+      warn: log.warn.bind(log),
+      error: log.error.bind(log),
+      debug: log.debug.bind(log),
+    };
+    log.info = ((tag: string, message: string) => {
+      if (tag === "BRIDGE") lines.push(message);
+    }) as typeof log.info;
+    log.warn = (() => {}) as typeof log.warn;
+    log.error = (() => {}) as typeof log.error;
+    log.debug = (() => {}) as typeof log.debug;
 
     const write = process.stderr.write.bind(process.stderr);
     process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -80,12 +90,18 @@ describe("App.runBridge · 成功提示", () => {
     });
     (app as unknown as { init: () => Promise<void> }).init = async () => {};
 
-    const running = app.runBridge({ url, authToken: "not-in-url" });
-    await Bun.sleep(50);
-    process.kill(process.pid, "SIGINT");
-    await running;
-
-    process.stderr.write = write;
+    try {
+      const running = app.runBridge({ url, authToken: "not-in-url" });
+      await Bun.sleep(50);
+      process.kill(process.pid, "SIGINT");
+      await running;
+    } finally {
+      process.stderr.write = write;
+      log.info = orig.info;
+      log.warn = orig.warn;
+      log.error = orig.error;
+      log.debug = orig.debug;
+    }
 
     const shown = [...lines, ...stderr].join("\n");
     expect(shown).toContain("wss://www.sid-code.cc/traj/api/v1/bridge/ws");
