@@ -1153,6 +1153,15 @@ export async function main(): Promise<void> {
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
 
+    // 把本进程会话 id 回填到 core 全局状态。loadConfig 收尾才生成它，
+    // 而 enter_worktree 在 core 里拿不到 config，只能读这个全局——
+    // 不回填的话落盘的 worktree 状态永远没有 sessionId，启动时就无从判断
+    // 「拥有它的会话还活着没有」，已结束的会话也会被自动 chdir 回去。
+    {
+      const { setSessionId } = await import("@sid-code/core/bootstrap/state.ts");
+      setSessionId(config.sessionId);
+    }
+
     // ── 工作区信任门控（SEC-AUDIT-2026-07-19 P1）─────────────────────────────
     //
     // 位置极其关键：必须在**配置生效之前**。此前这段逻辑在 app.ts 的 doInit（行 ~2248），
@@ -2598,7 +2607,12 @@ export async function main(): Promise<void> {
               process.exit(1);
             }
           } else {
-            // P0-1：恢复上次会话的 worktree（进程重启/crash 后）
+            // P0-1：恢复上次会话的 worktree（进程重启/crash 后）。
+            //
+            // 这里**只校验目录还在不在**就先切进去。要不要因为「拥有它的会话
+            // 已经结束」而放弃，得到下方会话恢复解析出目标 id 之后再判定——
+            // config.resume 在这里还可能是序号或搜索词，不是会话 id，
+            // 此刻比较必然对不上，会把正要恢复的现场提前清掉。
             const { session, cleared } = restoreWorktreeSession(gitRoot);
             if (session) {
               const { enterWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
@@ -2740,6 +2754,34 @@ export async function main(): Promise<void> {
       // D3：登记被恢复的会话 id，供随后启动的自动清理列入受保护名单。
       resumedSessionIdForCleanup = session.id;
       await app.restoreSession(session);
+    }
+
+    // worktree 归属复核。上面的启动恢复只看「目录还在不在」就切了 cwd，
+    // 因为那时还不知道本次要恢复哪个会话。现在知道了：
+    // 拥有这份状态的会话已经结束，且本次不是 resume 它 → 切回主仓并清状态。
+    // 目录与分支不动，清的只是「下次启动要不要自动进去」。
+    if (!config.print && cliArgs.worktree === undefined) {
+      try {
+        const { getCurrentWorktreeSession, clearWorktreeSession } =
+          await import("@sid-code/core/worktree/manager.ts");
+        const wt = getCurrentWorktreeSession();
+        if (wt) {
+          const { shouldAutoEnterWorktree, clearWorktreeState } =
+            await import("@sid-code/core/worktree/persistence.ts");
+          if (!shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {
+            const { exitWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
+            await exitWorktreeCwd(wt.originalCwd);
+            clearWorktreeSession();
+            clearWorktreeState(wt.originalCwd);
+            getLogger().info(
+              "WORKTREE",
+              `worktree 所属会话已结束，不再自动进入: ${wt.worktreeName}`,
+            );
+          }
+        }
+      } catch (err: any) {
+        getLogger().warn("WORKTREE", `worktree 归属复核失败（不阻断）: ${err.message}`);
+      }
     }
 
     // D3：恢复目标已确定（或本次不恢复），此刻才启动后台清理。
