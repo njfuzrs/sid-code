@@ -272,6 +272,84 @@ describe("config", () => {
     });
   });
 
+  // 回归：mergeConfig 曾把 false 与 "" 当成「没给」跳过。后果是文件里显式写的
+  // alternateBuffer:false 会被 CLI 层「没传 flag」时带回的缺省盖掉，启动仍然全屏、
+  // 鼠标上报打开，选文字必须先 Ctrl+S。false 与空字符串都是表态，必须存活。
+  test("loadConfig 保留文件里显式的 false 与空字符串，不被缺省层盖掉", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "sid-cfg-"));
+    const prevHome = process.env.SID_CONFIG_DIR;
+    try {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({ alternateBuffer: false, appendSystemPrompt: "" }),
+      );
+      process.env.SID_CONFIG_DIR = dir;
+      const { resetSettingsCache } = await import("@sid-code/core/config/settings/index.ts");
+      resetSettingsCache();
+      const cfg = await loadConfig({});
+      expect(cfg.alternateBuffer).toBe(false);
+      expect(cfg.appendSystemPrompt).toBe("");
+    } finally {
+      if (prevHome === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prevHome;
+      const { resetSettingsCache } = await import("@sid-code/core/config/settings/index.ts");
+      resetSettingsCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // 回归：app.json 里混进了不属于 AppConfig 的残留键（alternateBuffer 等），按
+  // 「settings 先、app 后」合并且会盖掉 settings.json 的显式值。app.json 只允许
+  // 贡献自己声明过的字段；两边冲突时以 settings.json 为准。
+  test("app.json 的越界键不覆盖 settings.json，声明内的键仍然生效", async () => {
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "sid-cfg-"));
+    const prevHome = process.env.SID_CONFIG_DIR;
+    try {
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ alternateBuffer: false }));
+      writeFileSync(
+        join(dir, "app.json"),
+        JSON.stringify({
+          alternateBuffer: true,
+          audit: false,
+          showLineNumbers: false,
+          numStartups: 7,
+        }),
+      );
+      process.env.SID_CONFIG_DIR = dir;
+      const { resetSettingsCache } = await import("@sid-code/core/config/settings/index.ts");
+      resetSettingsCache();
+      const cfg = await loadConfig({});
+      expect(cfg.alternateBuffer).toBe(false);
+      // audit 没有被 app.json 的残留 false 盖掉，回到默认 true。
+      expect(cfg.audit).toBe(true);
+      // showLineNumbers 是 AppConfig 声明内的字段，app.json 的值仍然生效。
+      expect(cfg.showLineNumbers).toBe(false);
+
+      // 读盘过滤必须贯穿回写：启动计数这种「读出再整份写回」的路径，
+      // 不能把 alternateBuffer 这类越界键原样存回去。
+      const { incrementStartupCount, resetAppConfigCache } =
+        await import("@sid-code/core/config/app-config.ts");
+      resetAppConfigCache();
+      incrementStartupCount();
+      const app = JSON.parse(readFileSync(join(dir, "app.json"), "utf-8"));
+      expect(app.alternateBuffer).toBeUndefined();
+      expect(app.audit).toBeUndefined();
+      expect(app.numStartups).toBe(8);
+    } finally {
+      if (prevHome === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prevHome;
+      const { resetSettingsCache } = await import("@sid-code/core/config/settings/index.ts");
+      resetSettingsCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   describe("isMissingApiKey — 占位符/空值识别", () => {
     test("空 / undefined / 纯空白 → 视为缺失", () => {
       expect(isMissingApiKey(undefined)).toBe(true);
