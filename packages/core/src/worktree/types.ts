@@ -59,6 +59,14 @@ export interface PersistedWorktreeSession {
   tmuxSession?: string;
   /** 持久化时间戳（ms），用于判断陈旧度 */
   savedAt: number;
+  /**
+   * 进入 worktree 的那个 sid-code 会话 id。
+   *
+   * 启动恢复靠它判断归属：拥有者进程还活着，或本次就是 resume 它，才自动 chdir。
+   * 可选是因为 2026-09 之前的落盘没有这个字段——那种状态无从判断归属，
+   * 恢复路径保持原行为（目录还在就恢复），不能因为补了字段就把存量一律清掉。
+   */
+  sessionId?: string;
 }
 
 /** create() 选项 */
