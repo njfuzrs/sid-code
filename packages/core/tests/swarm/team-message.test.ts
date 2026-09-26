@@ -139,3 +139,38 @@ describe("team_message 不被工具过滤裁掉", () => {
     expect(kept).not.toContain("team_message");
   });
 });
+
+describe("team_message 广播（P1-5）", () => {
+  it("to=* 发给除自己外的全部成员，不含 leader 也不含自己", async () => {
+    const res = await asMember("alice", ["alice", "bob", "carol"], () =>
+      tool.execute({ to: "*", message: "接口定了" }),
+    );
+    expect(res.isError).toBeFalsy();
+    expect(res.output).toContain("bob");
+    expect(res.output).toContain("carol");
+
+    const bob = mailbox.drain("bob");
+    const carol = mailbox.drain("carol");
+    expect(bob).toHaveLength(1);
+    expect(carol).toHaveLength(1);
+    expect(bob[0].from).toBe("alice");
+    expect(bob[0].content).toBe("接口定了");
+    // 广播不发给自己，也不发给 leader
+    expect(mailbox.drain("alice")).toHaveLength(0);
+    expect(mailbox.drain("leader")).toHaveLength(0);
+  });
+
+  it("团队里只有自己时广播报错", async () => {
+    const res = await asMember("alice", ["alice"], () => tool.execute({ to: "*", message: "x" }));
+    expect(res.isError).toBe(true);
+    expect(res.output).toContain("没有其他成员");
+  });
+
+  it("未知收信人的报错里包含 * 这个可选项", async () => {
+    const res = await asMember("alice", ["alice", "bob"], () =>
+      tool.execute({ to: "dave", message: "x" }),
+    );
+    expect(res.isError).toBe(true);
+    expect(res.output).toContain("*");
+  });
+});

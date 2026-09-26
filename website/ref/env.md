@@ -18,8 +18,8 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **122** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 171 个）交叉核对。
+> 共 **123** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 172 个）交叉核对。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -73,6 +73,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_DISABLE_TELEMETRY` | 设为 1 禁用遥测 |
 | `SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | 设为 1 禁用非必要网络流量 |
 | `SID_CODE_DISABLE_PROJECT_RULES` | 设为 1 跳过 CLAUDE.md 加载（评测隔离） |
+| `SID_CODE_DISABLE_CRON` | 设为 1 整体禁用定时任务（工具不注册、调度器不轮询、已持久化任务不触发） |
 | `SID_CODE_AUTO_MEMORY` | 后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory) |
 | `SID_MAX_TURNS` | 单条用户消息的软轮次阈值（正整数，缺省不启用）：达阈值时提醒模型收尾，不强制中断 |
 | `SID_ENABLE_LOOP_DETECTION` | 循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启 |

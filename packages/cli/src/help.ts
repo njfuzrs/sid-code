@@ -193,6 +193,7 @@ Worktree 隔离:
   SID_CODE_DISABLE_TELEMETRY    设为 1 禁用遥测
   SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 禁用非必要网络流量
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
+  SID_CODE_DISABLE_CRON     设为 1 整体禁用定时任务（工具不注册、调度器不轮询、已持久化任务不触发）
   SID_CODE_AUTO_MEMORY          后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory)
   SID_MAX_TURNS                 单条用户消息的软轮次阈值（正整数，缺省不启用）：达阈值时提醒模型收尾，不强制中断
   SID_ENABLE_LOOP_DETECTION     循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启

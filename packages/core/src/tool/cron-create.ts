@@ -6,7 +6,7 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { isValidCron } from "../cron/parser.ts";
-import type { CronTask } from "../cron/types.ts";
+import { type CronTask, isCronDisabled } from "../cron/types.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -99,9 +99,22 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
       ...(allowedTools ? { allowedTools } : {}),
     };
 
+    // 整体禁用优先于上限检查：禁用时连「已达上限」都不该说，口径要一致。
+    if (isCronDisabled()) {
+      return {
+        output: "cron 已被 SID_CODE_DISABLE_CRON 禁用，无法创建定时任务。",
+        isError: true,
+      };
+    }
+
     const scheduler = getScheduler();
     if (task.durable) {
-      scheduler.addDurableTask(task);
+      if (!scheduler.addDurableTask(task)) {
+        return {
+          output: `已达定时任务上限 (${scheduler.durableCap()})，请先用 cron_delete 删除不需要的任务`,
+          isError: true,
+        };
+      }
       // 缺口 C1 §4.5：登记本项目到 durable-projects 注册表，
       // 守护进程据此发现「所有项目的」durable 任务（自愈剔除失效项）。
       try {
@@ -111,7 +124,12 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
         /* 注册失败不阻塞任务创建 */
       }
     } else {
-      scheduler.addSessionTask(task);
+      if (!scheduler.addSessionTask(task)) {
+        return {
+          output: `已达定时任务上限 (${scheduler.sessionCap()})，请先用 cron_delete 删除不需要的任务`,
+          isError: true,
+        };
+      }
     }
 
     const typeLabel = task.recurring ? "循环任务（7 天后过期）" : "一次性任务";

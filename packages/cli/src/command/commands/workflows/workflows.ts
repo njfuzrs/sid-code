@@ -105,11 +105,24 @@ const mod: LocalCommandModule = {
         journal.load();
         const entries = journal.all();
         if (entries.length > 0) {
-          lines.push("", `agent 调用快照（${entries.length} 条）:`);
+          // 进度树：按 phase 分组，phase 内按 callIndex 顺序。
+          // 无 phase 的条目（老 journal 或 phase() 之前的调用）归到「未分组」。
+          // 分组顺序按该 phase 首次出现的 callIndex，即脚本实际执行顺序。
+          const groups = new Map<string, typeof entries>();
           for (const entry of entries) {
-            const label = entry.label ?? `call#${entry.callIndex}`;
-            const preview = previewResult(entry.result);
-            lines.push(`  [${entry.callIndex}] ${label}  →  ${preview}`);
+            const key = entry.phase && entry.phase.trim() ? entry.phase : "(未分组)";
+            const list = groups.get(key);
+            if (list) list.push(entry);
+            else groups.set(key, [entry]);
+          }
+          lines.push("", `进度树（${entries.length} 个 agent）:`);
+          for (const [phase, list] of groups) {
+            lines.push(`  ${phase}`);
+            for (const entry of list) {
+              const label = entry.label ?? `call#${entry.callIndex}`;
+              const preview = previewResult(entry.result);
+              lines.push(`    ⎿ [${entry.callIndex}] ${label}  →  ${preview}`);
+            }
           }
         }
       } catch {
