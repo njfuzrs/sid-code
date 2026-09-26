@@ -6760,8 +6760,12 @@ export class App {
     let exitCode = 0;
     try {
       await runner.start();
-      log.info("BRIDGE", `Bridge 模式已就绪: ${options.url}`);
-      process.stderr.write(`\nBridge 远程控制已启动: ${options.url}\n按 Ctrl+C 退出\n\n`);
+      // 成功提示也要剥 query/hash。token 若被写进 --bridge URL，
+      // 准入拒绝已经不回显，这里原样打印会在连上之后再漏一次。
+      const { stripTokenQuery } = await import("@sid-code/core/bridge/ws-transport.ts");
+      const shown = stripTokenQuery(options.url);
+      log.info("BRIDGE", `Bridge 模式已就绪: ${shown}`);
+      process.stderr.write(`\nBridge 远程控制已启动: ${shown}\n按 Ctrl+C 退出\n\n`);
 
       // 常驻：等待退出信号，或传输层判定永久失败（4001/4003/1008）。
       // 不订这个回调时，坏 token 会停掉重连，进程却一直停在这句「按 Ctrl+C 退出」。

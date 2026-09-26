@@ -39,6 +39,7 @@ import { dirname } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordDefenseTrigger } from "../telemetry/metrics/defense-metrics.ts";
+import { stripTokenQuery } from "./ws-transport.ts";
 
 /** 准入判定结果 */
 export type BridgeAdmissionResult =
@@ -156,25 +157,30 @@ export async function checkBridgeAdmission(
     });
   }
 
+  // 展示用。token 常挂在 query 上，拒绝文案与日志发生在建连之前，
+  // 这里不剥，stripTokenQuery 只在 connect() 里就救不了终端回显。
+  // 解析失败时退回原串：非法 URL 本来就要被下面拒绝。
+  const shown = stripTokenQuery(options.url);
+
   // ② URL 合法性
   const key = normalizeBridgeUrl(options.url);
   if (!key) {
     return noteAdmission({
       allowed: false,
       reason: "invalid-url",
-      message: `不是合法的 Bridge URL: ${options.url}（需要 ws:// 或 wss://）`,
+      message: `不是合法的 Bridge URL: ${shown}（需要 ws:// 或 wss://）`,
     });
   }
 
   // ③ 明文连接 —— 这条链路上跑的是**认证 token 与远端指令**，
   // 明文意味着同网段任何人都能读到并伪造。要求显式 opt-in。
   if (key.startsWith("ws://") && !options.allowInsecure) {
-    log.warn("BRIDGE", `准入拒绝：明文连接 ${options.url} 未显式允许`);
+    log.warn("BRIDGE", `准入拒绝：明文连接 ${shown} 未显式允许`);
     return noteAdmission({
       allowed: false,
       reason: "insecure-scheme",
       message:
-        `拒绝明文 Bridge 连接: ${options.url}\n` +
+        `拒绝明文 Bridge 连接: ${shown}\n` +
         `远端指令与认证 token 会以明文经过网络。改用 wss:// ，` +
         `或确认风险后显式加 --bridge-insecure。`,
     });
@@ -194,12 +200,12 @@ export async function checkBridgeAdmission(
       allowed: false,
       reason: "non-interactive",
       message:
-        `首次连接该 Bridge 端点需要确认，但当前环境无法交互:\n  ${options.url}\n` +
+        `首次连接该 Bridge 端点需要确认，但当前环境无法交互:\n  ${shown}\n` +
         `请在交互式终端里先运行一次以完成确认。`,
     });
   }
 
-  const confirmed = await options.confirm(buildConfirmPrompt(options.url));
+  const confirmed = await options.confirm(buildConfirmPrompt(shown));
   if (!confirmed) {
     log.warn("BRIDGE", `准入拒绝：用户拒绝连接 ${key}`);
     return noteAdmission({

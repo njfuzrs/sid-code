@@ -203,6 +203,55 @@ describe("checkBridgeAdmission · 信任记忆", () => {
   });
 });
 
+describe("准入文案不回显 token", () => {
+  const SECRET = "super-secret-token";
+  const url = `wss://relay.example.com/traj/api/v1/bridge/ws?token=${SECRET}#token=${SECRET}`;
+
+  function assertNoToken(text: string) {
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain("token=");
+  }
+
+  test("明文拒绝的 message 不含 query 与 hash", async () => {
+    const r = await checkBridgeAdmission({ url: url.replace("wss://", "ws://") });
+    expect(r.allowed).toBe(false);
+    if (r.allowed) return;
+    expect(r.reason).toBe("insecure-scheme");
+    assertNoToken(r.message);
+    expect(r.message).toContain("ws://relay.example.com/traj/api/v1/bridge/ws");
+  });
+
+  test("无 TTY 拒绝的 message 不含 query 与 hash", async () => {
+    const r = await checkBridgeAdmission({ url });
+    expect(r.allowed).toBe(false);
+    if (r.allowed) return;
+    expect(r.reason).toBe("non-interactive");
+    assertNoToken(r.message);
+  });
+
+  test("非法 URL 的 message 不含 query 与 hash", async () => {
+    const r = await checkBridgeAdmission({ url: `https://relay.example.com/ws?token=${SECRET}` });
+    expect(r.allowed).toBe(false);
+    if (r.allowed) return;
+    expect(r.reason).toBe("invalid-url");
+    assertNoToken(r.message);
+  });
+
+  test("传给 confirm 的 prompt 不含 query 与 hash", async () => {
+    let prompt = "";
+    const r = await checkBridgeAdmission({
+      url,
+      confirm: async (text) => {
+        prompt = text;
+        return false;
+      },
+    });
+    expect(r.allowed).toBe(false);
+    assertNoToken(prompt);
+    expect(prompt).toContain("wss://relay.example.com/traj/api/v1/bridge/ws");
+  });
+});
+
 describe("确认文案", () => {
   test("说清能力与「批准者就是远端」这件事，而不只是问要不要连", async () => {
     const prompt = buildConfirmPrompt("wss://relay.example.com");
