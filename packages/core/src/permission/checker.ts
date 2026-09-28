@@ -863,22 +863,34 @@ export class PermissionChecker implements Checker {
       };
     }
 
-    // Step 3.5: Plan Mode 计划文件提前放行（W11.D4：解锁 plan capability eval）
+    // Step 3.5: 计划文件提前放行（W11.D4：解锁 plan capability eval）
     //
     // 背景：src/plan/prompt.ts 教 LLM 用 write 写计划文件到 ~/.sid-code/plans/plan-*.md，
     // 但默认计划文件在工作区外，Step 4 路径验证会先拒，Step 9 checkPlanMode 的 isPlanFile
-    // 放行逻辑永远走不到。本步骤在 Step 4 之前判断：plan mode + write/edit 计划文件 → 提前放行。
+    // 放行逻辑永远走不到。本步骤在 Step 4 之前判断：write/edit 计划文件 → 提前放行。
     //
-    // 安全：精确匹配 planManager.getPlanFilePath()（不接受路径前缀匹配），避免目录遍历。
+    // P1-1：放行条件从「permissionMode === "plan"」扩到「plan 模式 **或** 执行阶段」。
+    // 理由：approve() 之后 state 回 inactive、权限模式恢复成进入前的值，但批准消息
+    // （plan/prompt.ts）仍明确要求「失败时必须先用 edit 更新计划文件再继续执行」。
+    // 只认 permissionMode === "plan" 时，执行阶段的这一步在交互模式下每次弹窗、
+    // 在无头模式（print / maxTurns>0）下被 isNonInteractive 直接转成拒绝——
+    // 于是 recovery hint 指向一条走不通的路。isExecuting() 正是为「执行阶段」这个
+    // 与三态正交的身份而存在的标志，这里与 Recovery Hook 认同一个标志。
+    //
+    // 安全：仍是精确匹配 planManager.getPlanFilePath()（不接受路径前缀匹配），
+    // 不放宽到 plans/ 目录前缀，所以放行面只多了「同一份计划文件在执行阶段可写」。
+    const pm = this.planManager;
     if (
-      this.config.permissionMode === "plan" &&
-      (req.toolName === "write" || req.toolName === "edit") &&
+      pm &&
       filePath &&
-      this.planManager?.isPlanFile(filePath)
+      (req.toolName === "write" || req.toolName === "edit") &&
+      pm.isPlanFile(filePath) &&
+      (this.config.permissionMode === "plan" || pm.isExecuting())
     ) {
+      const phase = this.config.permissionMode === "plan" ? "plan模式" : "执行阶段";
       log.info(
         "PERMISSION",
-        `${req.toolName}(${filePath.slice(0, 80)}) → 允许(plan模式+计划文件提前放行)`,
+        `${req.toolName}(${filePath.slice(0, 80)}) → 允许(${phase}+计划文件提前放行)`,
       );
       return { allowed: true, decisionReason: { type: "mode", mode: "plan+plan-file" } };
     }

@@ -67,6 +67,89 @@ describe("structured-task-store", () => {
     expect(r.error).toContain("不存在");
   });
 
+  // ---- P0-1 反漂移：依赖边「整体不生效」必须是真的 ----
+  //
+  // 这一组锁的是 updateStructuredTask 的原子性承诺。修复前的形态是：
+  // 逐条「校验即写入」，中途 return 时前面写进去的边没有任何回滚——
+  // 于是调用方拿到 ok:false，图里却真的多出一个环，环上任务永久不可认领，
+  // 而唯一的错误信息已经返回过了，没有第二次机会报这个环。
+  //
+  // 要点：单条边各自合法、只有合起来才成环，所以逐条校验永远发现不了，
+  // 必须让校验阶段看见「本批次此前已通过的边」。
+
+  test("P0-1：同一次调用里混放合法边与成环边，整批不生效（图内零残留）", () => {
+    const a = createStructuredTask({ subject: "A", description: "d" });
+    const b = createStructuredTask({ subject: "B", description: "d" });
+    const c = createStructuredTask({ subject: "C", description: "d" });
+    const d = createStructuredTask({ subject: "D", description: "d" });
+
+    // D 完成后 B、C、A 才能开始；同时 D 被 A 阻塞 —— 最后这条与 D→A 成环。
+    // 前三条在逐条检测下都合法（当时图是空的），第三条 D→A 写进去之后
+    // 第四条 A→D 才成环，所以环是被后一条输入补上的。
+    const r = updateStructuredTask(d.id, {
+      addBlocks: [b.id, c.id, a.id],
+      addBlockedBy: [a.id],
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("循环依赖");
+
+    // 关键断言：失败之后图必须与调用前逐字节相同，一条边都不许留。
+    for (const t of getAllStructuredTasks()) {
+      expect(t.blocks).toEqual([]);
+      expect(t.blockedBy).toEqual([]);
+    }
+  });
+
+  test("P0-1：整批合法时全部边都写入（两阶段不能误伤正常路径）", () => {
+    const a = createStructuredTask({ subject: "A", description: "d" });
+    const b = createStructuredTask({ subject: "B", description: "d" });
+    const c = createStructuredTask({ subject: "C", description: "d" });
+    const d = createStructuredTask({ subject: "D", description: "d" });
+
+    // D 完成后 B、C 才能开始；A 完成后 D 才能开始。无环。
+    const r = updateStructuredTask(d.id, {
+      addBlocks: [b.id, c.id],
+      addBlockedBy: [a.id],
+    });
+
+    expect(r.ok).toBe(true);
+    expect(getStructuredTask(d.id)?.blocks).toEqual([b.id, c.id]);
+    expect(getStructuredTask(d.id)?.blockedBy).toEqual([a.id]);
+    // 双向引用同步
+    expect(getStructuredTask(b.id)?.blockedBy).toEqual([d.id]);
+    expect(getStructuredTask(c.id)?.blockedBy).toEqual([d.id]);
+    expect(getStructuredTask(a.id)?.blocks).toEqual([d.id]);
+  });
+
+  test("P0-1：批内出现不存在的任务时，同批合法边也不许写入", () => {
+    const a = createStructuredTask({ subject: "A", description: "d" });
+    const b = createStructuredTask({ subject: "B", description: "d" });
+
+    const r = updateStructuredTask(a.id, { addBlocks: [b.id, "999"] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("不存在");
+
+    // b 是合法的那条，但它和非法边在同一批，所以也不能生效。
+    expect(getStructuredTask(a.id)?.blocks).toEqual([]);
+    expect(getStructuredTask(b.id)?.blockedBy).toEqual([]);
+  });
+
+  test("P0-1：失败批次不会让任务变成永久不可认领", () => {
+    const a = createStructuredTask({ subject: "A", description: "d" });
+    const b = createStructuredTask({ subject: "B", description: "d" });
+    const c = createStructuredTask({ subject: "C", description: "d" });
+
+    // A→B、B→C 合法，C→A 成环。失败后 A 不应因残留的 C→A 而被永久阻塞。
+    const r = updateStructuredTask(a.id, { addBlocks: [b.id], addBlockedBy: [b.id] });
+    expect(r.ok).toBe(false);
+
+    // 三个任务都必须仍可认领（blockedBy 为空）。
+    for (const t of [a, b, c]) {
+      expect(isTaskUnblocked(getStructuredTask(t.id)!)).toBe(true);
+    }
+  });
+
   test("isTaskUnblocked：上游未完成时阻塞，完成后解锁", () => {
     const a = createStructuredTask({ subject: "A", description: "d" });
     const b = createStructuredTask({ subject: "B", description: "d" });
