@@ -30,7 +30,7 @@ import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
-import { SAFETY_PROTECTED_PATHS } from "./safety-protected-paths.ts";
+import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
 import {
   type DenialTrackingState,
   createDenialTrackingState,
@@ -1548,7 +1548,10 @@ export class PermissionChecker implements Checker {
     reason?: string;
     classifierApprovable: boolean;
   } {
-    const resolved = path.resolve(filePath);
+    // W4：先剥掉 worktree 容器前缀，再判定。worktree 的物理路径本身就含
+    // `.sid-code/worktrees/<slug>/`，不剥的话里面每一个普通源码文件都会被
+    // 下面的 ".sid-code/" 一条命中（理由详见 stripWorktreeContainerPrefix）。
+    const resolved = stripWorktreeContainerPrefix(path.resolve(filePath));
     // 大小写归一化比较：macOS/Windows 大小写不敏感文件系统下，
     // ".ClAuDe/settings.json" 与 ".claude/settings.json" 指向同一文件，
     // 必须归一化后再比对（对标 path-validator normalizeCaseForComparison）。

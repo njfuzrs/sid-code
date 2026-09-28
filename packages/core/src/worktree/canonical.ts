@@ -15,14 +15,68 @@ import { join, dirname, resolve } from "path";
 import { setCwd } from "../bootstrap/state.ts";
 
 /**
+ * 主仓根的推导结果。null = 推不出来（调用方须回退问 git，别拿错路径当真）。
+ */
+function mainRootFromPointer(worktreeDir: string, absGitdir: string): string | null {
+  // git 在每个 linked worktree 的 gitdir 里放一个 commondir，内容指向**共用的 git dir**
+  // （普通布局是 "../.."）。这是 git 自己记录主仓位置的唯一途径，必须读它，
+  // 不能靠"向上两级"硬算——那个层数只在 `<repo>/.git/worktrees/<name>` 这一种布局下成立。
+  let commonRaw = "";
+  try {
+    commonRaw = readFileSync(join(absGitdir, "commondir"), "utf-8").trim();
+  } catch {
+    /* 没有 commondir，下面按"pointer 直指 git dir"处理 */
+  }
+
+  if (!commonRaw) {
+    // 没有 commondir ⇒ 这不是 linked worktree 的 gitdir，而是 `git init --separate-git-dir`
+    // 主 checkout 的 .git 指针：它直接指向仓库的 git dir 本体。
+    // 此时 worktreeDir 自己就是仓库根（实测 `git rev-parse --show-toplevel` 同此）。
+    try {
+      if (statSync(join(absGitdir, "HEAD")).isFile()) return worktreeDir;
+    } catch {
+      /* 不是 git dir，推不出来 */
+    }
+    return null;
+  }
+
+  const commonDir = resolve(absGitdir, commonRaw);
+  const candidate = dirname(commonDir);
+  // 判据不是「候选根下有个 .git 目录」，而是「候选根的 .git **就是** commonDir 本身」。
+  //
+  // 弱判据（只验存在性）会被两种布局蒙过去，两种都实测过：
+  // - `git init --separate-git-dir=<别处>`：commonDir 是那个"别处"，它的父目录跟仓库根
+  //   毫无关系。原实现连这一层都没有（直接向上两级），把仓库根指到了仓库外面。
+  // - 嵌套：外层恰好也是个 git 仓库时，`<候选>/.git` 存在且是目录——于是把**外层无关仓库**
+  //   当成了这个 worktree 的主仓。这条是写本函数时真踩到的（测试里留了护栏）。
+  // 身份相等才能把「这个目录的 .git」和「这个 worktree 共用的 git dir」对上。
+  //
+  // 对不上就返回 null：git 在**任何文件里都没有记录** separate-git-dir 的主 checkout
+  // 路径（实测 grep 整个 git dir 零命中），所以那种布局下正确答案是「推不出来」，
+  // 由 findGitRootForAgent 回退到 `git rev-parse --show-toplevel` 让 git 自己回答。
+  // 编一个路径出来比承认不知道更糟——错的根会把 worktree 建到项目外、且 GC 扫不到。
+  try {
+    const candidateGit = join(candidate, ".git");
+    if (statSync(candidateGit).isDirectory() && resolve(candidateGit) === resolve(commonDir)) {
+      return candidate;
+    }
+  } catch {
+    /* 候选根不是仓库根 */
+  }
+  return null;
+}
+
+/**
  * 定位真正的主仓 .git 目录所在的仓库根（非 worktree pointer）。
  *
  * 从 fromDir 向上遍历，对每层的 .git：
  * - 是目录 → 这就是主仓根，直接返回。
- * - 是文件（worktree pointer，内容 "gitdir: /path/to/main/.git/worktrees/<name>"）
- *   → 解析出主仓 .git 路径，向上两级得到主仓 .git，再向上一级得到仓库根。
+ * - 是文件（pointer file，内容 "gitdir: <path>"）→ 读 pointer 指向的 gitdir 里的
+ *   `commondir` 定位共用 git dir，再取其父目录为主仓根；校验不过则返回 null
+ *   （separate-git-dir 等布局下 git 没有记录主 checkout 路径，见 mainRootFromPointer）。
  *
- * 非 git 环境返回 null。
+ * 非 git 环境、或无法可靠推导时返回 null——调用方（findGitRootForAgent）会回退
+ * 到 `git rev-parse --show-toplevel`。
  */
 export function findCanonicalGitRoot(fromDir: string): string | null {
   let dir = resolve(fromDir);
@@ -36,23 +90,19 @@ export function findCanonicalGitRoot(fromDir: string): string | null {
         return dir;
       }
       if (stat.isFile()) {
-        // worktree 的 .git pointer file
+        // worktree / separate-git-dir 的 .git pointer file
         const content = readFileSync(gitPath, "utf-8").trim();
         const match = content.match(/^gitdir:\s*(.+)$/);
         if (match) {
           const gitdir = match[1].trim();
           // gitdir 可能是相对路径（相对 worktree 目录）或绝对路径
           const absGitdir = resolve(dir, gitdir);
-          // .git/worktrees/<name> → 向上两级 = 主仓 .git
-          const mainGitDir = resolve(absGitdir, "..", "..");
-          const mainRepoRoot = resolve(mainGitDir, "..");
-          try {
-            if (statSync(mainGitDir).isDirectory()) {
-              return mainRepoRoot;
-            }
-          } catch {
-            /* mainGitDir 不存在，继续向上回退 */
-          }
+          const mainRepoRoot = mainRootFromPointer(dir, absGitdir);
+          if (mainRepoRoot) return mainRepoRoot;
+          // 推不出主仓根：不再继续向上找。
+          // 这里确实是一个 git 工作区（.git pointer 有效），继续向上只会撞到
+          // 外层某个无关仓库（比如 /tmp 恰好在某个仓库里）并把它当主仓返回。
+          return null;
         }
       }
     } catch {

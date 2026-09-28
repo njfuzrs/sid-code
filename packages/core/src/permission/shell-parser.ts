@@ -4,7 +4,7 @@
  * 状态机实现，正确处理引号、转义、子 shell
  */
 
-import { SAFETY_PROTECTED_PATHS } from "./safety-protected-paths.ts";
+import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
 
 /** 重定向检测结果 */
 export interface RedirectionInfo {
@@ -277,8 +277,13 @@ export function hasSensitiveRedirection(cmd: string): { sensitive: boolean; targ
   const { hasRedirection, targets } = detectRedirections(cmd);
   if (!hasRedirection) return { sensitive: false, targets: [] };
 
+  // W4：与 checker.safetyCheck 同口径——剥掉 worktree 容器前缀再匹配。
+  // 这两条路必须一起改：名单是同一份（本文件顶部就是为此 import 的），但判定的
+  // **输入**若分叉，就会出现「write 在 worktree 里放行、bash 重定向同一个文件被拦」
+  // 这种不一致。剥离后 worktree 内部真正的敏感目标（`<wt>/.git/hooks/x`）照旧命中，
+  // 报给用户的 target 仍是原始字符串（不拿剥过的路径糊弄人）。
   const sensitiveTargets = targets.filter((target) =>
-    SENSITIVE_REDIRECT_PATHS.some((pattern) => pattern.test(target)),
+    SENSITIVE_REDIRECT_PATHS.some((pattern) => pattern.test(stripWorktreeContainerPrefix(target))),
   );
 
   return {
