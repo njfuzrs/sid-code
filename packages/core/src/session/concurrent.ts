@@ -21,6 +21,17 @@ export interface SessionEntry {
   kind: SessionKind;
   cwd: string;
   startedAt: number;
+  /**
+   * N10：本进程正在**续写**的会话 id（`-c` / `--resume` 恢复的那个旧 id）。
+   * 未 resume 时为 undefined（此时 `sessionId` 自己就是在写的那个）。
+   *
+   * 为什么非它不可：resume 时 `sessionId` 恒是**本进程新生成的 id**（trajectory / PID /
+   * crash marker 用它避免跨进程冲突），而 SessionStore 落盘续写的是**旧 id 的 jsonl**。
+   * 于是活跃表里登记的 id 与"磁盘上真正在被写的文件名"不是一个东西 ——
+   * 别的进程按 `sessionId` 查活跃表，永远查不到"这个旧会话有人正在写"，
+   * 于是它满足淘汰条件就被删掉，而续写方全程无感。
+   */
+  logicalSessionId?: string;
   /** 可选：所属团队（Swarm teammate 用） */
   team?: string;
   /** 可选：模型 */
@@ -91,6 +102,28 @@ export function registerSession(entry: SessionEntry): void {
   } catch (err: any) {
     // 注册失败不应阻塞启动,但需可观测(ERRH-8)
     getLogger().warn("SESSION", `会话注册失败: ${err?.message ?? err}`);
+  }
+}
+
+/**
+ * N10：补登记本进程正在续写的**逻辑会话 id**（resume 之后调用）。
+ *
+ * 必须是"事后补登记"而不是 registerSession 时一次写全：注册跑在启动早期，
+ * 那时还不知道本次要恢复哪个会话（恢复目标在会话选择器 / --resume 解析之后才确定）。
+ *
+ * 幂等、best-effort：条目不存在或写失败都只告警 —— 它是一道**额外**的跨进程保护，
+ * 失败只是退化回"仅本进程保护"，不该让 resume 本身失败。
+ */
+export function registerLogicalSessionId(sessionId: string, logicalSessionId: string): void {
+  try {
+    const p = sessionPath(sessionId);
+    if (!existsSync(p)) return;
+    const entry = JSON.parse(readFileSync(p, "utf-8")) as SessionEntry;
+    if (entry.logicalSessionId === logicalSessionId) return;
+    entry.logicalSessionId = logicalSessionId;
+    writeFileSync(p, JSON.stringify(entry, null, 2));
+  } catch (err: any) {
+    getLogger().warn("SESSION", `补登记续写会话 id 失败（跨进程保护降级）: ${err?.message ?? err}`);
   }
 }
 

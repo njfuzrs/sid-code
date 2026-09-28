@@ -510,10 +510,39 @@ describe("D9：sidechain 文件不被当成损坏文件清理", () => {
     return file;
   }
 
-  /** 真损坏的文件（能解析出行，但没有 session_start ⇒ 解析返回 null）。 */
+  /**
+   * 真损坏的文件：**一条可解析的真实消息都没有** ⇒ 内容确实没救了 ⇒ 可删。
+   *
+   * N1：判据从「解析返回 null」收紧成「解析返回 null **且**没有任何可解析的
+   * user/assistant/tool_result 记录」。原先这个 fixture 写的是一条合法的
+   * `{"type":"user_message",…}`（只是缺 session_start），而那恰恰是 N1 要保护的形态 ——
+   * 「session_start 那一行坏了，后面几百条消息都还在」。按旧判据它会被当损坏文件删掉，
+   * 那正是 N1 记录的真实数据丢失路径。所以这里改成不可解析的垃圾内容，
+   * 让「反向自证清理在工作」这个意图继续成立，而不是靠一个该被保护的文件来自证。
+   */
   function writeCorrupt(name: string): string {
     const file = join(sidPaths.sessions(), name);
-    writeFileSync(file, JSON.stringify({ type: "user_message", message: {} }) + "\n");
+    writeFileSync(file, "}{ 这不是 JSON，也没有任何可解析的记录\n\x00\x01 乱码\n");
+    utimesSync(file, OLD_MTIME_SEC, OLD_MTIME_SEC);
+    return file;
+  }
+
+  /** N1：链断但仍有可解析真实消息的文件（缺 session_start）——**不可删**。 */
+  function writeChainBroken(name: string): string {
+    const file = join(sidPaths.sessions(), name);
+    writeFileSync(
+      file,
+      [
+        "{ 这一行是坏的（原本是 session_start）",
+        JSON.stringify({
+          type: "user_message",
+          message: { role: "user", content: "我的几百条历史之一" },
+          timestamp: OLD_TS,
+          uuid: "u2",
+          parentUuid: "u1",
+        }),
+      ].join("\n") + "\n",
+    );
     utimesSync(file, OLD_MTIME_SEC, OLD_MTIME_SEC);
     return file;
   }
@@ -542,6 +571,41 @@ describe("D9：sidechain 文件不被当成损坏文件清理", () => {
 
     expect(existsSync(sidechainFile)).toBe(true);
     // 反向自证：不加这条，「清理什么都没干」也能让上一条变绿
+    expect(existsSync(corruptFile)).toBe(false);
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // N1：一个内容完全健康的长会话，只要链上某行坏了（写入中断 / 坏块 / flush 只落半行），
+  // 解析就返回 null ⇒ 会话从列表消失 ⇒ 被判 parse-error ⇒ 进可删白名单 ⇒ **文件被永久删除**。
+  // 实测形态：200 条消息、只坏第 100 行的会话，20 天后被自动清理删掉。
+  //
+  // 这两条把「内容还在的文件绝不能删」钉死，并保留反向自证（真垃圾照删）。
+  // ─────────────────────────────────────────────────────────────
+  test("N1：链断但仍有可解析消息 ⇒ 归为 chain-broken，不在可删白名单里", async () => {
+    writeChainBroken("20260101-000000-chainbroken.jsonl");
+    const entries = await getAllSessionFiles(sidPaths.sessions());
+    const entry = entries.find((e) => e.fileName.endsWith("chainbroken.jsonl"));
+
+    expect(entry).toBeDefined();
+    expect(entry!.excludeReason).toBe("chain-broken");
+
+    const { isDeletableExcludeReason } = await import("@sid-code/core/session/utils.ts");
+    expect(isDeletableExcludeReason(entry!.excludeReason)).toBe(false);
+  });
+
+  test("N1：清理不删链断文件（内容还在），但同期真垃圾照删", async () => {
+    const chainBrokenFile = writeChainBroken("20260101-000000-chainbroken.jsonl");
+    const corruptFile = writeCorrupt("really-broken.jsonl");
+
+    await cleanupExpiredSessions(
+      {} as any,
+      { enabled: true, maxAge: "1h", minRetention: "1h" },
+      "brand-new-process-id",
+    );
+
+    // 关键：它的内容还在（坏的只是 session_start 那一行），绝不能删
+    expect(existsSync(chainBrokenFile)).toBe(true);
+    // 反向自证：清理确实在干活，不是"什么都没删"才让上一条变绿
     expect(existsSync(corruptFile)).toBe(false);
   });
 });

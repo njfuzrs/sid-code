@@ -8,7 +8,12 @@ import { stripDateSuffix } from "../llm/model-name-normalize.ts";
 import { join } from "path";
 import { existsSync, readdirSync, statSync } from "fs";
 import type { SessionData } from "./store.ts";
-import { parseSessionJsonl, flushPendingSessionWrites, listAllSessionDirs } from "./store.ts";
+import {
+  parseSessionJsonl,
+  flushPendingSessionWrites,
+  listAllSessionDirs,
+  hasParsableMessageRecords,
+} from "./store.ts";
 // D9：sidechain 的识别判据只在 sidechain.ts 一处（那里也是写入端），不在本文件复刻。
 import { isSidechainContent } from "./sidechain.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -85,7 +90,9 @@ export interface SessionInfo {
  *                     被当损坏文件删掉。判据见 sidechain.ts 的 isSidechainContent。
  * - `read-error`   —— 读文件抛异常。**可能是瞬时故障**（并发写入 / NFS 抖动 / 权限抖动），
  *                     一次读失败就永久删用户数据，代价与成因严重不匹配 → 不删。
- * - `parse-error`  —— 解析器明确返回 null。**真损坏**。
+ * - `parse-error`  —— 解析器返回 null **且文件里一条可解析的真实消息都没有**。**真损坏**。
+ * - `chain-broken` —— N1：解析器返回 null，**但文件里仍有可解析的真实对话记录**。
+ *                     **不是损坏，绝不能删**。见下方 N1 注释块。
  */
 export type SessionExcludeReason =
   | "not-a-file"
@@ -94,13 +101,21 @@ export type SessionExcludeReason =
   | "subagent"
   | "sidechain"
   | "read-error"
-  | "parse-error";
+  | "parse-error"
+  | "chain-broken";
 
 /**
  * D4：可被清理逻辑当作「损坏」删除的成因白名单（**闭集，只有这两个**）。
  *
  * 刻意用白名单而非黑名单：将来 scanSessionDir 新增一种排除成因时，默认落在
  * 「不删」这一侧。反过来（黑名单）会让新成因默认可删——那正是本缺陷的形态。
+ *
+ * ⚠️ N1：**`chain-broken` 刻意不在这里**。它与 `parse-error` 的表象完全相同
+ * （`parseSessionJsonl` 都返回 null），差别只在「文件里还有没有可解析的真实消息」——
+ * 而这个差别决定了删掉它是「清理垃圾」还是「销毁用户几百条历史」。
+ * D4 当初把 `parse-error` 判成真损坏，前提是「返回 null 意味着内容没救了」；
+ * 实测这个前提是错的：绝大多数 null 来自**链断**，而链断 ≠ 内容丢失
+ * （坏行两侧的消息全都在，只是链式回溯走不过去）。
  */
 export const DELETABLE_EXCLUDE_REASONS: readonly SessionExcludeReason[] = [
   "missing-fields",
@@ -338,11 +353,29 @@ async function scanSessionDir(
         !data.createdAt ||
         !data.updatedAt
       ) {
+        // ─────────────────────────────────────────────────────────────
+        // N1：`data === null` 要再分一档。返回 null 只说明「拿不到 session_start ⇒
+        // 组装不出 SessionData」，**不等于这个文件的内容没了**。
+        //
+        // 实测形态：一个 200 条消息、内容完全健康的长会话，只要 session_start 那一行坏了
+        // （首行写入中断 / 坏块），解析就返回 null ⇒ 判成 `parse-error` ⇒ 而 parse-error 在
+        // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ 下次启动自动清理**把文件永久删除**。
+        // 用户视角：一个聊了几百条的会话先从 --list-sessions 里消失，过一天文件也没了。
+        //
+        // 所以这里按「文件里还有没有可解析的真实对话记录」分流：
+        //   - 有  ⇒ `chain-broken`（**不可删**，等人工/迁移脚本救援）
+        //   - 没有 ⇒ `parse-error`（真损坏，可删，语义与 D4 原意一致）
+        // 判据函数与解析器同源（store.ts），不在本文件复刻第二套判据。
+        // ─────────────────────────────────────────────────────────────
+        let excludeReason: SessionExcludeReason = data ? "missing-fields" : "parse-error";
+        if (!data && file.endsWith(".jsonl") && hasParsableMessageRecords(content)) {
+          excludeReason = "chain-broken";
+        }
         return {
           fileName: file,
           dirPath: sessionDir,
           sessionInfo: null,
-          excludeReason: data ? "missing-fields" : "parse-error",
+          excludeReason,
         };
       }
 
