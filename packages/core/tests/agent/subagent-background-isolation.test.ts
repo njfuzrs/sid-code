@@ -170,9 +170,22 @@ describe("W1：isolation=worktree + run_in_background=true", () => {
       isolation: "worktree",
     });
 
-    // 主仓工作区干净——这就是"文件隔离是入场券"的可观测形态
+    // 子代理写的文件落在 worktree 里，没落到主仓——这就是"文件隔离是入场券"的可观测形态
+    expect(existsSync(join(captured.cwd!, "touched.txt"))).toBe(true);
     expect(existsSync(join(repo, "touched.txt"))).toBe(false);
-    expect(git(["status", "--porcelain"], repo)).toBe("");
+
+    // 主仓**被追踪内容**不变。这里刻意不断言 `status --porcelain` 全空：
+    // 有改动的 worktree 会被保留（下一条用例的判据），而它就住在主仓的
+    // `.sid-code/worktrees/` 里，于是这个容器目录本身是一条合法的 untracked 记录。
+    // 报不报它取决于 git 版本（实测 2.53 不报、CI 的 2.55 报 `?? .sid-code/`），
+    // 生产中又被 .gitignore 的 `.sid-code/` 挡掉——三者都与"隔离有没有生效"无关。
+    // 用 -uno 只看追踪内容，判据才落在 W1 真正声称的那件事上。
+    expect(git(["status", "--porcelain", "-uno"], repo)).toBe("");
+    // 且主仓确实没有多出任何**非** .sid-code/ 的 untracked 条目
+    const untracked = git(["status", "--porcelain"], repo)
+      .split("\n")
+      .filter((l) => l.trim() && !l.includes(".sid-code"));
+    expect(untracked).toEqual([]);
   });
 
   it("有改动的隔离 worktree 被保留（fail-closed，不强删用户工作）", async () => {

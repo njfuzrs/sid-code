@@ -18,9 +18,17 @@ export interface SafetyProtectedPath {
 
 /**
  * worktree 容器目录：`<repo>/.sid-code/worktrees/<slug>/` 与 `<repo>/.claude/worktrees/<slug>/`。
- * `[^/]+` 而不是具体 slug 形态——不去猜命名规则（用户命名的词汇 slug 与 agent-<hex> 都算）。
+ *
+ * slug 段用 `(?!\.)[^/]+` 而不是裸 `[^/]+`：不去猜命名规则（用户命名的词汇 slug 与
+ * agent-<hex> 都算），但**必须排除以点开头的段**，否则这一层自己就成了绕过口子——
+ * `.sid-code/worktrees/.git/hooks/pre-commit` 会把 `.git` 当成 slug 吃掉，
+ * 剥出 `<repo>/hooks/pre-commit`，于是 ".git/hooks/" 这条「可执行任意代码、
+ * 绝对禁止自动审批」的守卫整条失效。写这条正则时实测到了这个形态。
+ *
+ * 真实 slug 永远不以点开头：validateWorktreeSlug 只放行词汇 slug，
+ * 临时 worktree 是 agent-/swarm-/wf_/bridge-/job- 前缀（见 cleanup.ts 的 EPHEMERAL_PATTERNS）。
  */
-const WORKTREE_CONTAINER_RE = /(^|\/)\.(?:sid-code|claude)\/worktrees\/[^/]+(?=\/)/g;
+const WORKTREE_CONTAINER_RE = /(^|\/)\.(?:sid-code|claude)\/worktrees\/(?!\.)[^/]+(?=\/)/g;
 
 /**
  * 剥掉路径里的 worktree 容器前缀，让 worktree 内的文件按它在**仓库里的位置**判定（W4）。

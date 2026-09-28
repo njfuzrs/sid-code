@@ -155,6 +155,20 @@ describe("W4：worktree **内部**的敏感路径照旧拦住（不是放宽守�
     expect(r.decisionReason?.type).toBe("safetyCheck");
   });
 
+  test("把 .git 伪装成 slug 也拦得住（剥离不能成为绕过口子）", async () => {
+    const r = await checker({ yesMode: true }).check({
+      toolName: "write",
+      input: {
+        file_path: join(workspace, ".sid-code", "worktrees", ".git", "hooks", "pre-commit"),
+      },
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason?.type).toBe("safetyCheck");
+    expect((r.decisionReason as { classifierApprovable?: boolean }).classifierApprovable).toBe(
+      false,
+    );
+  });
+
   test("worktrees 目录本身（还没进到某个 slug 里）仍算配置目录", async () => {
     const r = await checker({ yesMode: true }).check({
       toolName: "write",
@@ -223,6 +237,17 @@ describe("stripWorktreeContainerPrefix 的边界", () => {
     // worktrees 目录本身（后面没有 slug/文件两段）不剥
     expect(stripWorktreeContainerPrefix("/repo/.sid-code/worktrees/agent-1")).toBe(
       "/repo/.sid-code/worktrees/agent-1",
+    );
+  });
+
+  test("以点开头的段不当 slug：否则剥离本身成了绕过守卫的口子", () => {
+    // 写这条正则时实测到的形态：`.git` 被当成 slug 吃掉 → 剥出 /repo/hooks/pre-commit，
+    // ".git/hooks/"（可执行任意代码、绝对禁止自动审批）整条守卫失效。
+    expect(stripWorktreeContainerPrefix("/repo/.sid-code/worktrees/.git/hooks/pre-commit")).toBe(
+      "/repo/.sid-code/worktrees/.git/hooks/pre-commit",
+    );
+    expect(stripWorktreeContainerPrefix("/repo/.claude/worktrees/.sid-code/settings.json")).toBe(
+      "/repo/.claude/worktrees/.sid-code/settings.json",
     );
   });
 
