@@ -21,7 +21,21 @@ export interface RewindPoint {
   id: number;
   /** 本轮用户消息在 ctxMgr.messages 中的下标（截断到此下标 = 回到该轮之前）。 */
   messageIndex: number;
-  /** 登记时 CheckpointManager 的最新快照 id（空串 = 当时无文件快照，仅能回退对话）。 */
+  /**
+   * 本轮**首个**快照 id（空串 = 本轮至今没建过快照，仅能回退对话）。
+   *
+   * ⚠️ N6：这里必须是「本轮自己的快照」，**不是登记时刻的最新快照**。
+   *
+   * 口径（与 CheckpointManager 单一真相源一致）：快照 sN 存的是「产生 sN 那次工具调用
+   * **之前**」的内容 ⇒ 「回到第 N 轮之前」= `restoreToSnapshot(第 N 轮的首个快照)`。
+   *
+   * 修之前在 `registerPoint` 里取 `getLatestSnapshotId()`，而 `registerPoint` 跑在
+   * **用户输入提交前**、本轮快照还不存在，拿到的是**上一轮**建的快照 ⇒ 回退多撤一整轮
+   * （第 N-1 轮的正确改动被一起回滚）；回退到第 1 轮时更是恒为空串 ⇒
+   * 文件层永远不回滚（最想撤的那次恰恰撤不掉）。
+   *
+   * 所以改为**回填**：登记时留空，本轮首个快照建成时由 `attachSnapshot()` 补上。
+   */
   snapshotId: string;
   /** 用户输入预览（截断展示用）。 */
   inputPreview: string;
@@ -57,10 +71,11 @@ export interface RewindDeps {
   getMessages: () => unknown[];
   /** 整体替换对话消息（截断后写回）。 */
   setMessages: (msgs: unknown[]) => void;
-  /** 取 CheckpointManager 当前最新快照 id（无则返回空串）。 */
-  getLatestSnapshotId: () => string;
   /** 回滚文件到指定快照，返回受影响文件数（未启用/无快照返回 null）。 */
   restoreToSnapshot: (snapshotId: string) => Promise<number | null>;
+  // N6：原有的 `getLatestSnapshotId` 已移除。它此前的唯一用途是在 registerPoint 里取文件锚点，
+  // 而那正是缺陷所在（登记时刻本轮快照还不存在，取到的是上一轮的）。锚点改走 attachSnapshot()
+  // 回填后它就零调用了——留着等于新造一个「只写不读」的注入项（文档 N8 批评的同一形态）。
 }
 
 /** 回退点上限：只保留最近 N 个，防止长会话无限增长。 */
@@ -88,7 +103,10 @@ export class RewindManager {
     const point: RewindPoint = {
       id: this.nextId++,
       messageIndex,
-      snapshotId: this.deps.getLatestSnapshotId(),
+      // N6：登记时刻本轮快照还不存在（registerPoint 跑在输入提交前，快照在工具执行前才建），
+      // 所以这里留空、由 attachSnapshot() 在本轮首个快照建成时回填。
+      // 取 getLatestSnapshotId() 会拿到**上一轮**的快照 ⇒ 回退多撤一整轮，见 RewindPoint.snapshotId。
+      snapshotId: "",
       inputPreview: makePreview(userInput),
       timestamp: nowMs,
     };
@@ -98,6 +116,25 @@ export class RewindManager {
       this.points.splice(0, this.points.length - MAX_REWIND_POINTS);
     }
     return point;
+  }
+
+  /**
+   * N6：把刚建成的快照 id 回填为**当前轮**回退点的文件锚点。
+   *
+   * 由 CheckpointManager 的 onSnapshotCreated 回调驱动（app.ts 接线）。
+   * 只回填最新那个回退点、且**只认第一个**——本轮可能建多个快照（多次工具调用），
+   * 而「回到本轮之前」要回滚到本轮**首个**快照（它记录的才是本轮任何改动发生前的状态）。
+   * 后续快照直接忽略，所以这个方法是幂等的。
+   *
+   * 没有回退点时（非交互入口、或快照发生在首次登记之前）静默忽略：
+   * 文件锚点缺失只会让该点退化为"仅能回退对话"，不该反过来影响快照创建。
+   */
+  attachSnapshot(snapshotId: string): void {
+    if (!snapshotId) return;
+    const current = this.points[this.points.length - 1];
+    if (!current) return;
+    if (current.snapshotId) return; // 本轮已有锚点 ⇒ 保留首个
+    current.snapshotId = snapshotId;
   }
 
   /** 列出回退点（最新在前，供 UI 展示）。 */

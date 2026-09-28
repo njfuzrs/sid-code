@@ -104,6 +104,14 @@ export interface RestoreResult {
     filePath: string;
     action: "restored" | "deleted";
   }>;
+  /**
+   * N4：**未能回滚**的文件路径（磁盘仍停在回滚前的状态）。
+   *
+   * 修复前这类文件既不回滚、也不进 `files`，调用方只能看到
+   * `snapshotsRolledBack: 2` 这种"看着像全回滚了"的数字 ⇒ 静默失败。
+   * 命令层（/rewind、/restore）应当在非空时明确告知用户哪些文件没回滚成功。
+   */
+  failedFiles: string[];
 }
 
 /** 快照摘要 */
@@ -384,6 +392,26 @@ export class CheckpointManager {
       }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // N5：一个文件都没回滚成功时**不能删快照、不能报成功**。
+    //
+    // 修之前是「无条件 removeLastSnapshot + 返回真值对象」，而命令层只判 `if (result)`
+    // ⇒ 打印「已撤销快照 sN:」后跟一个空列表。更糟的是快照已经被删掉，
+    // **连重试的机会都没有**：再敲一次 /undo 会去撤上一个快照。
+    // 一次"空转的成功"永久消耗掉一个快照。
+    //
+    // 现在：results 为空 ⇒ 保留快照 + 返回 null，让命令层如实说「回滚失败」。
+    // 注意快照本身 files 为空的情形不该走到这里（createSnapshot 只在 files.length>0 时入列），
+    // 所以 results 为空必然意味着「该回滚的都失败了」，返回 null 不会误伤正常路径。
+    // ─────────────────────────────────────────────────────────────
+    if (results.length === 0) {
+      log.warn(
+        "CHECKPOINT",
+        `撤销失败：快照 ${lastSnapshot.id} 的 ${lastSnapshot.files.length} 个文件全部未能回滚，保留快照供重试`,
+      );
+      return null;
+    }
+
     // 移除该快照
     this.removeLastSnapshot();
     await this.saveIndex();
@@ -478,6 +506,8 @@ export class CheckpointManager {
     // 收集所有需要回滚的快照（从最新到目标快照之后）
     const snapshotsToRollback = this.index.snapshots.slice(targetIndex + 1).reverse();
     const affectedFiles = new Map<string, { action: "restored" | "deleted" }>();
+    /** N4：回滚失败的文件（含「重建不出内容」与「写盘抛错」两类），用于让静默失败可见。 */
+    const failedFiles: string[] = [];
 
     for (const snapshot of snapshotsToRollback) {
       for (const file of snapshot.files) {
@@ -495,11 +525,32 @@ export class CheckpointManager {
               log.info("CHECKPOINT", `已删除新文件: ${file.filePath}`);
             } catch (err: any) {
               log.warn("CHECKPOINT", `删除文件失败: ${file.filePath} - ${err.message}`);
+              failedFiles.push(file.filePath);
             }
           }
         } else {
-          // 已有文件：恢复到目标快照时的内容
-          const content = await this.rebuildContentAtSnapshot(file.filePath, snapshotId);
+          // ─────────────────────────────────────────────────────────────
+          // 已有文件：恢复到目标快照时的内容。
+          //
+          // N4：`rebuildContentAtSnapshot(file, 目标快照)` 从 targetIndex 往**前**找该文件的
+          // full 基点，于是漏掉一整类文件——**在 targetIndex 之后才被第一次改动的文件**。
+          // 它的首个 SnapshotFile 条目（type:"full"，存着改前的原始内容）落在 targetIndex+k 上，
+          // 所以往前找必然 `baseSnapshotIndex === -1` ⇒ 返回 null ⇒
+          // 旧代码 `if (content !== null)` 不成立 ⇒ **静默跳过：文件不回滚、也不进返回的 files 列表**。
+          //
+          // 后果是用户以为「回到那个时刻了」，实际只回了一部分文件，且 UI 上没有任何提示
+          // （`snapshotsRolledBack: 2` 看着像全回滚了）。叠加 /rewind「先文件后对话」的顺序，
+          // 得到的是两层不一致：对话回到 10 轮前，一部分文件还停在最新。
+          //
+          // 关键是**信息并没有丢**：该文件在目标快照时刻的内容就存在它自己那条首个 full 里
+          // （`existedBefore: true, content: "原始内容"`）——targetIndex 到那条 full 之间没人改过它，
+          // 所以那条 full 记录的「改前内容」**就等于**目标快照时刻的内容。
+          // 所以不是「做不到」，是取数方向走错了：往前找不到时，应改为往后找该文件的首个 full。
+          // ─────────────────────────────────────────────────────────────
+          let content = await this.rebuildContentAtSnapshot(file.filePath, snapshotId);
+          if (content === null) {
+            content = this.readFirstFullContentAfter(file.filePath, targetIndex);
+          }
           if (content !== null) {
             try {
               await Bun.write(file.filePath, content);
@@ -507,7 +558,15 @@ export class CheckpointManager {
               log.info("CHECKPOINT", `已恢复文件: ${file.filePath}`);
             } catch (err: any) {
               log.warn("CHECKPOINT", `恢复文件失败: ${file.filePath} - ${err.message}`);
+              failedFiles.push(file.filePath);
             }
+          } else {
+            // 两个方向都取不到内容（diff 链被淘汰切断等）——绝不能再静默跳过。
+            log.warn(
+              "CHECKPOINT",
+              `无法重建文件在快照 ${snapshotId} 时的内容，该文件未回滚: ${file.filePath}`,
+            );
+            failedFiles.push(file.filePath);
           }
         }
       }
@@ -517,6 +576,13 @@ export class CheckpointManager {
     this.index.snapshots = this.index.snapshots.slice(0, targetIndex + 1);
     await this.saveIndex();
 
+    if (failedFiles.length > 0) {
+      log.warn(
+        "CHECKPOINT",
+        `恢复到 ${snapshotId} 时有 ${failedFiles.length} 个文件未能回滚（磁盘仍是回滚前的状态）: ${failedFiles.join(", ")}`,
+      );
+    }
+
     return {
       targetSnapshotId: snapshotId,
       snapshotsRolledBack: snapshotsToRollback.length,
@@ -524,7 +590,37 @@ export class CheckpointManager {
         filePath,
         action,
       })),
+      // N4：调用方（/rewind、/restore 命令层）据此告知用户「哪些文件没回滚成功」，
+      // 而不是像修复前那样只看 snapshotsRolledBack 以为全成了。
+      failedFiles,
     };
+  }
+
+  /**
+   * N4：取某文件在 `afterIndex` **之后**的首个 `full` 条目的内容。
+   *
+   * 用于「该文件在目标快照之后才第一次被改动」这一类：它的 full 基点在目标快照之后，
+   * 而 full 存的是**改动前**的内容，且目标快照到该 full 之间没有任何针对该文件的条目
+   * （否则那条才是首个），所以这份内容正是它在目标快照时刻的状态。
+   *
+   * 找不到（该文件在之后只有 diff、没有 full）返回 null，由调用方计入回滚失败。
+   */
+  private readFirstFullContentAfter(filePath: string, afterIndex: number): string | null {
+    for (let i = afterIndex + 1; i < this.index.snapshots.length; i++) {
+      const f = this.index.snapshots[i].files.find((x) => x.filePath === filePath);
+      if (!f) continue;
+      if (f.type !== "full") return null; // 首个条目是 diff ⇒ 基点不在此处，交给调用方判失败
+      if (f.compressed && f.content) {
+        try {
+          const buf = Buffer.from(f.content, "base64");
+          return Buffer.from(Bun.gunzipSync(buf)).toString("utf-8");
+        } catch {
+          return null;
+        }
+      }
+      return f.content ?? "";
+    }
+    return null;
   }
 
   /**
@@ -614,17 +710,35 @@ export class CheckpointManager {
   }
 
   /**
-   * 重建指定文件在指定快照之前的内容（用于 undo）
+   * 重建指定文件在指定快照之前的内容（用于 undo）。
+   *
+   * ⚠️ N5：**快照 sN 记录的就已经是「改动前」的内容**，所以这里不能再退一格。
+   *
+   * 「快照 sN 代表哪个时刻」这个换算此前在三个入口各推了一遍，两个推反了，
+   * 现在统一收敛到这条口径（单一真相源）：
+   *
+   *   生产时序恒为 `createSnapshot(files)` → 工具执行改文件（tool-executor 执行前建快照）。
+   *   ⇒ **sN 存的是「产生 sN 那次工具调用之前」的文件内容。**
+   *   ⇒ 「撤销最近一次修改」= 重建到最后一个快照 **自己** 记录的内容
+   *      = `rebuildContentAtSnapshot(filePath, sN)`，**不是** `sN-1`。
+   *
+   * 修之前取 `snapshots[targetIndex - 1]`，把 sN 当成了「sN 之后的状态」，于是产生三种错：
+   *   - 只有一个快照时 `targetIndex === 0` ⇒ 返回 null ⇒ 文件没动，UI 却打印「已撤销快照 s1」
+   *     （空转 + 谎报成功，最危险的一种）；
+   *   - 两次以上编辑时一次 `/undo` **退两步**，把用户上一步的正确修改一起丢掉；
+   *   - `/undo <路径>` 对只改过一次的文件直接打印「没有可撤销的修改」。
+   *
+   * 为什么现有测试没拦住：`manager.test.ts` 的 undo 用例**额外建了一个快照**
+   * （createSnapshot("initial") → 改文件 → createSnapshot("modify")），构造出一个
+   * 「快照数比编辑数多一个」的世界，在那个世界里 `targetIndex - 1` 恰好是对的。
+   * 生产里没有这个额外快照——`createSnapshot` 只在工具**即将**改文件时被调，
+   * 不会先来一发「记录初始状态」。判据必须按生产调用顺序复现，不是按方便断言的顺序构造。
    */
   private async rebuildContentBeforeSnapshot(
     filePath: string,
     snapshotId: string,
   ): Promise<string | null> {
-    const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
-    if (targetIndex === -1 || targetIndex === 0) return null;
-
-    // 重建到前一个快照的内容
-    return this.rebuildContentAtSnapshot(filePath, this.index.snapshots[targetIndex - 1].id);
+    return this.rebuildContentAtSnapshot(filePath, snapshotId);
   }
 
   // ─────────────────────────────────────────────────────────────
