@@ -2565,6 +2565,27 @@ export async function main(): Promise<void> {
     // 改变的只是**启动时机**。
     // ─────────────────────────────────────────────────────────────
     let resumedSessionIdForCleanup: string | undefined;
+
+    // W2：worktree GC 的启动也要等判据齐（与上面这段同一个时序问题，见下方登记处注释）。
+    // 这两个变量由 worktree 启动恢复那段登记，由归属复核之后的 startWorktreeCleanup 消费。
+    let worktreeCleanupGitRoot: string | undefined;
+    let activeWorktreePathForCleanup: string | undefined;
+    const startWorktreeCleanup = async (): Promise<void> => {
+      if (!worktreeCleanupGitRoot) return;
+      const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
+      // 清理本身仍是后台 fire-and-forget（不是关键路径，不该拖慢启动）；
+      // 变的只是它**什么时候**开始跑，以及 skipPath 是不是复核后的事实。
+      cleanupStaleWorktrees(worktreeCleanupGitRoot, 30, activeWorktreePathForCleanup)
+        .then((n) => {
+          if (n > 0 && config.debug) {
+            getLogger().info("WORKTREE", `自动清理: 删除 ${n} 个过期临时 Worktree`);
+          }
+        })
+        .catch(() => {
+          /* 忽略 */
+        });
+    };
+
     const startBackgroundSessionCleanup = async (): Promise<void> => {
       if (config.print) return;
       const { cleanupExpiredSessions, getRetentionSettings } =
@@ -2651,17 +2672,16 @@ export async function main(): Promise<void> {
             }
           }
 
-          // D16：后台清理过期临时 worktree（跳过当前活跃 session）
-          const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
-          cleanupStaleWorktrees(gitRoot, 30, activeWtPath)
-            .then((n) => {
-              if (n > 0 && config.debug) {
-                getLogger().info("WORKTREE", `自动清理: 删除 ${n} 个过期临时 Worktree`);
-              }
-            })
-            .catch(() => {
-              /* 忽略 */
-            });
+          // D16：后台清理过期临时 worktree（跳过当前活跃 session）。
+          //
+          // W2：**只登记，不在这里启动**。此刻 activeWtPath 来自「目录还在不在」这一条
+          // 判据，而「拥有它的会话是不是已经结束」要到下方归属复核（会话 id 解析完）
+          // 才知道。在这里 fire-and-forget 会让 GC 带着一个**马上要被判定为不该进入**
+          // 的路径当 skipPath 跑出去：两次判定用相反的事实，且 GC 与会话选择器并发。
+          // 这与上面 startBackgroundSessionCleanup 是同一个时序问题、同一个修法——
+          // 不是「多传一个参数」，而是把启动时机挪到判据齐了之后。
+          worktreeCleanupGitRoot = gitRoot;
+          activeWorktreePathForCleanup = activeWtPath;
         }
       } catch (err: any) {
         getLogger().warn("WORKTREE", `worktree 启动处理失败（不阻断）: ${err.message}`);
@@ -2793,6 +2813,11 @@ export async function main(): Promise<void> {
             await exitWorktreeCwd(wt.originalCwd);
             clearWorktreeSession();
             clearWorktreeState(wt.originalCwd);
+            // W2：复核判定「不该进入」→ 它就不是本次的活跃 worktree，GC 的 skipPath
+            // 必须跟着撤掉。留着等于让 GC 按一个已被推翻的事实决定跳过谁。
+            // （这个目录本身不会因此被删：它仍受锁检查、改动检查、年龄门槛保护，
+            //   用户命名的 worktree 更是被 isEphemeralWorktree 整体挡在 GC 之外。）
+            activeWorktreePathForCleanup = undefined;
             getLogger().info(
               "WORKTREE",
               `worktree 所属会话已结束，不再自动进入: ${wt.worktreeName}`,
@@ -2806,6 +2831,9 @@ export async function main(): Promise<void> {
 
     // D3：恢复目标已确定（或本次不恢复），此刻才启动后台清理。
     await startBackgroundSessionCleanup();
+
+    // W2：归属复核已给出结论，worktree GC 此刻才启动——skipPath 用的是复核后的事实。
+    await startWorktreeCleanup();
 
     // 根据模式路由
     if (cliArgs.bridgeUrl) {

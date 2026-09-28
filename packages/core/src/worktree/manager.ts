@@ -315,7 +315,7 @@ export class WorktreeManager {
    * 统计 Worktree 变更。
    * 返回 null 表示无法确定状态 —— 调用方必须视为"不安全"（fail-closed）。
    *
-   * @param opts.fast 清理场景：统计**未推送** commit（HEAD --not --remotes，D17）
+   * @param opts.fast 清理场景：统计**这个 worktree 独有**的 commit（W3）
    *                  而非仅相对 original HEAD（后者对 GC 无意义——GC 拿不到原始 HEAD）。
    *
    * ⚠️ fast 模式**不再**跳过 untracked 扫描（2026-08-02 修复真实数据丢失风险）：
@@ -343,19 +343,7 @@ export class WorktreeManager {
 
       let commits = 0;
       if (opts.fast) {
-        // D17：未推送到任何 remote 的 commit（比相对 original HEAD 更准确地反映"会丢失的工作"）
-        try {
-          const out = execFileSync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], {
-            cwd: worktreePath,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          }).trim();
-          commits = parseInt(out, 10);
-          if (Number.isNaN(commits)) commits = 0;
-        } catch {
-          // 无 remote 或命令失败 → fail-closed，视为有未推送 commit
-          commits = changedFiles > 0 ? commits : 1;
-        }
+        commits = this.countUnreachableCommits(worktreePath, changedFiles);
       } else if (originalHeadCommit) {
         // 相对原始 HEAD 的新 commit
         const out = execFileSync("git", ["rev-list", "--count", `${originalHeadCommit}..HEAD`], {
@@ -371,6 +359,61 @@ export class WorktreeManager {
     } catch {
       // Git 命令失败 → 返回 null（fail-closed）
       return null;
+    }
+  }
+
+  /**
+   * GC 口径：统计**只有这个 worktree 才够得到**的 commit —— 即删掉它就会丢的工作。
+   *
+   * ⚠️ 这里曾用 `rev-list --count HEAD --not --remotes`（D17），口径是错的（W3）：
+   * 那条命令在**没有任何 remote** 的仓库里退出码 0，但 `--remotes` 展开为空，
+   * 输出等于 `HEAD` 的全部 commit 数（实测两个 commit 的仓库返回 2）。于是
+   * 「刚从主仓 HEAD 切出、一个新 commit 都没产生的干净 worktree」也被判成
+   * 「有未推送 commit」，GC 在这类仓库上**结构性零触发**——6 小时宽限、锁检查、
+   * 白名单全都走不到删除那一步。而无 remote 是正常的仓库形态（本地实验仓、
+   * 还没加 origin 的新仓），不是检测失败，不该吃 fail-closed。
+   *
+   * 新口径：HEAD 减去「除自己分支外的所有 ref」。本地分支、tag、remote-tracking ref
+   * 任何一个够得到的 commit 都不会因为删这个 worktree 而丢失，所以不算「会丢的工作」。
+   *
+   * 两处容易写错、已各自实测过的细节：
+   * - **不能用 `--all`**：`--all` 隐含 HEAD 自己，排除了自己的分支 ref 也白搭，
+   *   结果恒为 0（真实踩过一次：worktree 明明有独有 commit 也返回 0，假绿）。
+   *   必须显式列 `--branches --tags --remotes` 这几类。
+   * - **`--exclude` 的 pattern 相对 `refs/heads/`**（对应紧随其后的 `--branches`），
+   *   要写 `--exclude=feat` 而不是 `--exclude=refs/heads/feat`；后者不匹配任何 ref，
+   *   静默失效、不报错。
+   */
+  private countUnreachableCommits(worktreePath: string, changedFiles: number): number {
+    const runGit = (args: string[]): string =>
+      execFileSync("git", args, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+
+    try {
+      // 自己检出的分支要排除：它就是这个 worktree 的工作所在，拿它当参照等于自比自。
+      // detached HEAD 时 abbrev-ref 返回字面量 "HEAD"，此时无分支可排。
+      let branch = "";
+      try {
+        const ref = runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+        if (ref && ref !== "HEAD") branch = ref;
+      } catch {
+        /* 拿不到分支名 → 不排除，只会更保守（多算 commit，倾向不删） */
+      }
+
+      const args = ["rev-list", "--count", "HEAD", "--not"];
+      if (branch) args.push(`--exclude=${branch}`);
+      args.push("--branches", "--tags", "--remotes");
+
+      const parsed = parseInt(runGit(args), 10);
+      return Number.isNaN(parsed) ? 1 : parsed;
+    } catch {
+      // 命令真的失败（git 不在 PATH、worktree 的 .git 坏了）→ fail-closed，
+      // 视为有未推送 commit。注意这条**不再**覆盖「无 remote」——那是正常形态，
+      // 上面的新口径能正确算出 0。
+      return changedFiles > 0 ? 0 : 1;
     }
   }
 

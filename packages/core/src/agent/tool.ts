@@ -65,7 +65,7 @@ const subAgentSchema = lazySchema(() => {
       .enum(["worktree"])
       .optional()
       .describe(
-        "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。仅同步模式支持。",
+        "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。同步与后台模式均支持。",
       ),
   });
 });
@@ -340,7 +340,7 @@ ${typeLines}
 派活前请按子任务是否需要写入/执行来选类型：只需搜索分析用 explore，需要改文件或跑命令用 task。
 子代理完成后只返回最终结果。
 设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。
-设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，仅同步模式）。`;
+设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，与 run_in_background 可同时使用）。`;
   }
 
   usageGuide(): string {
@@ -529,6 +529,60 @@ ${typeLines}
     return subAgent;
   }
 
+  /**
+   * 建隔离 worktree，返回隔离后的 cwd 与清理函数（W1）。
+   *
+   * 为什么是 static 且前台后台共用：此前这段逻辑内联在 runSync 里，是**唯一**建
+   * worktree 的地方，而 execute() 在 `run_in_background` 分流时**先**走 runAsync ——
+   * 于是 `isolation=worktree` + `background=true` 的组合（schema 不拒绝它，agent
+   * frontmatter 同时声明这两项也会走到）拿到的既不是报错也不是隔离，而是一次
+   * **静默的主仓写入**：executeInBackground 不建 worktree，子代理 cwd 回退到主会话
+   * 目录，文件工具直接改主仓。一个声明了"改动隔离"的写类 agent 一后台就写主仓。
+   *
+   * 抽成共用函数而不是在后台路径复制一遍：复制会让两条路的清理语义（无改动才删、
+   * 有改动保留）各自漂移，而这正是 fail-closed 承诺所在。
+   */
+  private static async setupIsolation(
+    description: string,
+  ): Promise<
+    { ok: true; cwd: string; cleanup: () => Promise<void> } | { ok: false; error: string }
+  > {
+    const log = getLogger();
+    try {
+      const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
+      // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
+      const gitRoot = findGitRootForAgent(process.cwd());
+      if (!gitRoot) {
+        return { ok: false, error: "错误: isolation=worktree 需要在 Git 仓库中执行" };
+      }
+      const { randomBytes } = await import("crypto");
+      const wtName = `agent-${randomBytes(4).toString("hex")}`;
+      const manager = new WorktreeManager(gitRoot);
+      const session = await manager.create(wtName);
+      // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
+      log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${description}`);
+      // 创建期告警（依赖不一致 / DB）：子代理无 enter_worktree 输出通道，落日志避免静默丢失
+      for (const w of session.setupWarnings ?? []) {
+        log.warn("SUBAGENT", `隔离 Worktree ${wtName} 告警: ${w.split("\n")[0]}`);
+      }
+      return {
+        ok: true,
+        cwd: session.worktreePath,
+        cleanup: async () => {
+          // 无改动则自动删除；有改动则保留（fail-closed，不强删）
+          try {
+            await manager.remove(session, false);
+            log.info("SUBAGENT", `已清理隔离 Worktree: ${session.worktreeName}`);
+          } catch {
+            log.info("SUBAGENT", `保留有改动的隔离 Worktree: ${session.worktreePath}`);
+          }
+        },
+      };
+    } catch (err: any) {
+      return { ok: false, error: `创建隔离 Worktree 失败: ${err.message}` };
+    }
+  }
+
   /** 同步执行子代理 */
   private async runSync(
     params: {
@@ -563,36 +617,10 @@ ${typeLines}
       // 显式 cwd 作为基准目录（worktree 模式会在下方覆盖为隔离工作区路径）
       let isolatedCwd: string | undefined = params.cwd;
       if (params.isolation === "worktree") {
-        try {
-          const { WorktreeManager, findGitRootForAgent } = await import("../worktree/manager.ts");
-          // 用 canonical root 防嵌套（P0-2/B1）：在 worktree 内再隔离时落到主仓
-          const gitRoot = findGitRootForAgent(process.cwd());
-          if (!gitRoot) {
-            return { output: "错误: isolation=worktree 需要在 Git 仓库中执行", isError: true };
-          }
-          const { randomBytes } = await import("crypto");
-          const wtName = `agent-${randomBytes(4).toString("hex")}`;
-          const manager = new WorktreeManager(gitRoot);
-          const session = await manager.create(wtName);
-          isolatedCwd = session.worktreePath;
-          // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
-          log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${params.description}`);
-          // 创建期告警（依赖不一致 / DB）：子代理无 enter_worktree 输出通道，落日志避免静默丢失
-          for (const w of session.setupWarnings ?? []) {
-            log.warn("SUBAGENT", `隔离 Worktree ${wtName} 告警: ${w.split("\n")[0]}`);
-          }
-          isolationCleanup = async () => {
-            // 无改动则自动删除；有改动则保留（fail-closed，不强删）
-            try {
-              await manager.remove(session, false);
-              log.info("SUBAGENT", `已清理隔离 Worktree: ${session.worktreeName}`);
-            } catch {
-              log.info("SUBAGENT", `保留有改动的隔离 Worktree: ${session.worktreePath}`);
-            }
-          };
-        } catch (err: any) {
-          return { output: `创建隔离 Worktree 失败: ${err.message}`, isError: true };
-        }
+        const setup = await SubAgentTool.setupIsolation(params.description);
+        if (!setup.ok) return { output: setup.error, isError: true };
+        isolatedCwd = setup.cwd;
+        isolationCleanup = setup.cleanup;
       }
 
       const subAgent = this.createSubAgentForType(params.type);
@@ -687,6 +715,7 @@ ${typeLines}
       type: string;
       description: string;
       prompt: string;
+      isolation?: "worktree";
       model?: string;
       cwd?: string;
     },
@@ -729,7 +758,14 @@ ${typeLines}
   /** 后台执行逻辑 */
   private async executeInBackground(
     taskId: string,
-    params: { type: string; description: string; prompt: string; model?: string; cwd?: string },
+    params: {
+      type: string;
+      description: string;
+      prompt: string;
+      isolation?: "worktree";
+      model?: string;
+      cwd?: string;
+    },
     abortController: AbortController,
   ): Promise<void> {
     const log = getLogger();
@@ -743,6 +779,25 @@ ${typeLines}
       log.info("SUBAGENT", `后台子代理等待并发 slot 时被中止: ${taskId}`);
       await failAgentTask(taskId, `等待并发 slot 时被中止: ${err?.message ?? err}`).catch(() => {});
       return;
+    }
+
+    // W1：后台路径同样建隔离 worktree。slot 已持有，所以它和前台一样必须在
+    // finally 里清理（下方 isolationCleanup），任何出口都不能漏。
+    let isolatedCwd: string | undefined = params.cwd;
+    let isolationCleanup: (() => Promise<void>) | null = null;
+    if (params.isolation === "worktree") {
+      const setup = await SubAgentTool.setupIsolation(params.description);
+      if (!setup.ok) {
+        // 建不出隔离工作区就**不降级成非隔离执行**：声明 isolation 的 agent 是写类的，
+        // 静默改到主仓正是这条缺陷要消灭的后果。让任务失败、原因写进任务面板。
+        log.error("SUBAGENT", `后台子代理隔离失败: ${taskId} — ${setup.error}`);
+        await failAgentTask(taskId, setup.error).catch(() => {});
+        if (this.onErrorCallback) this.onErrorCallback(setup.error);
+        SubAgentTool.releaseSlot();
+        return;
+      }
+      isolatedCwd = setup.cwd;
+      isolationCleanup = setup.cleanup;
     }
 
     try {
@@ -766,7 +821,9 @@ ${typeLines}
           description: params.description,
           prompt: params.prompt,
           model: params.model, // P2-15: 每次调用可覆盖模型
-          cwd: params.cwd, // P2-15: 每次调用可指定工作目录
+          // W1：isolation=worktree 时这里是隔离工作区路径（否则是调用方显式给的 cwd）。
+          // 经 withAgentCwd 走 ALS，与前台同一机制。
+          cwd: isolatedCwd,
           _taskId: taskId,
           _abortController: abortController,
           _isAsync: true,
@@ -797,6 +854,10 @@ ${typeLines}
     } finally {
       // G2：释放 slot（有排队者则转移给它），与前台共用同一信号量。
       SubAgentTool.releaseSlot();
+      // W1：与前台 runSync 的 finally 同构——无改动则删、有改动则保留。
+      if (isolationCleanup) {
+        await isolationCleanup();
+      }
     }
   }
 }
