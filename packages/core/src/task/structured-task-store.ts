@@ -102,8 +102,16 @@ export interface UpdateResult {
 /**
  * 检测「若在 fromId → toId 之间加一条 blocks 边（from 完成后 to 才能开始）」是否成环。
  * 沿 blocks 方向从 toId 出发做 DFS，若能回到 fromId 说明成环。
+ *
+ * blocksOf 是可注入的邻接查询：校验阶段传入「真实图 + 本批次待写边」的叠加视图，
+ * 这样同一批输入里「前面的边合法、后面的边把环补完整」也能在**不落盘**的前提下被发现。
+ * 这是 P0-1 的修复要点——从前只按真实图逐条检测，前几条已经写进图了才发现第 N 条成环。
  */
-function wouldCreateCycle(fromId: string, toId: string): boolean {
+function wouldCreateCycleIn(
+  blocksOf: (id: string) => readonly string[],
+  fromId: string,
+  toId: string,
+): boolean {
   if (fromId === toId) return true;
   const visited = new Set<string>();
   const stack = [toId];
@@ -112,25 +120,62 @@ function wouldCreateCycle(fromId: string, toId: string): boolean {
     if (cur === fromId) return true;
     if (visited.has(cur)) continue;
     visited.add(cur);
-    const t = tasks.get(cur);
-    if (t) stack.push(...t.blocks);
+    stack.push(...blocksOf(cur));
   }
   return false;
 }
 
-/** 加一条依赖边：blockerId 完成后 blockedId 才能开始。同步维护双向引用。 */
-function addDependencyEdge(blockerId: string, blockedId: string): string | undefined {
-  const blocker = tasks.get(blockerId);
-  const blocked = tasks.get(blockedId);
-  if (!blocker) return `依赖任务 "${blockerId}" 不存在`;
-  if (!blocked) return `依赖任务 "${blockedId}" 不存在`;
-  // blocker.blocks 追加 blockedId：即 blocker → blocked 的边。检测是否成环。
-  if (wouldCreateCycle(blockerId, blockedId)) {
-    return `添加依赖会导致循环依赖（${blockerId} ↔ ${blockedId}）`;
+/** 一条待写入的依赖边：blockerId 完成后 blockedId 才能开始。 */
+interface PendingEdge {
+  blockerId: string;
+  blockedId: string;
+}
+
+/**
+ * 两阶段写依赖边的第一阶段：**只校验，不改任何内存态**。
+ *
+ * 全部边（任务存在性 + 成环）都通过才返回 undefined；任一条失败立即返回错误，
+ * 此时真实图与调用前**逐字节相同**，于是 `updateStructuredTask` 注释承诺的
+ * 「任一失败整体不生效」才真正成立。
+ *
+ * 成环检测必须带上本批次此前已通过校验的边（overlay），否则会漏判：
+ * 四条边 D→B、D→C、D→A、A→D 里，前三条单看都不成环，只有把 D→A 记进 overlay
+ * 之后才能发现第四条 A→D 与它成环。
+ */
+function validateDependencyEdges(edges: readonly PendingEdge[]): string | undefined {
+  // overlay: blockerId → 本批次待追加的 blockedId 列表（仅校验期可见）
+  const overlay = new Map<string, string[]>();
+  const blocksOf = (id: string): readonly string[] => {
+    const base = tasks.get(id)?.blocks ?? [];
+    const extra = overlay.get(id);
+    return extra ? [...base, ...extra] : base;
+  };
+
+  for (const { blockerId, blockedId } of edges) {
+    if (!tasks.has(blockerId)) return `依赖任务 "${blockerId}" 不存在`;
+    if (!tasks.has(blockedId)) return `依赖任务 "${blockedId}" 不存在`;
+    if (wouldCreateCycleIn(blocksOf, blockerId, blockedId)) {
+      return `添加依赖会导致循环依赖（${blockerId} ↔ ${blockedId}）`;
+    }
+    const extra = overlay.get(blockerId);
+    if (extra) extra.push(blockedId);
+    else overlay.set(blockerId, [blockedId]);
   }
-  if (!blocker.blocks.includes(blockedId)) blocker.blocks.push(blockedId);
-  if (!blocked.blockedBy.includes(blockerId)) blocked.blockedBy.push(blockerId);
   return undefined;
+}
+
+/**
+ * 两阶段写依赖边的第二阶段：无条件写入。
+ * 只能在 `validateDependencyEdges` 返回 undefined 之后调用。
+ */
+function applyDependencyEdges(edges: readonly PendingEdge[]): void {
+  for (const { blockerId, blockedId } of edges) {
+    const blocker = tasks.get(blockerId);
+    const blocked = tasks.get(blockedId);
+    if (!blocker || !blocked) continue; // 校验阶段已保证存在，这里只为类型收窄
+    if (!blocker.blocks.includes(blockedId)) blocker.blocks.push(blockedId);
+    if (!blocked.blockedBy.includes(blockerId)) blocked.blockedBy.push(blockerId);
+  }
 }
 
 /** 从依赖图里彻底摘除某任务的所有边（删除任务时用）。 */
@@ -153,18 +198,20 @@ export function updateStructuredTask(id: string, input: UpdateStructuredTaskInpu
     return { ok: true, deleted: true };
   }
 
-  // 依赖边（先校验后写，任一失败整体不生效）
-  if (input.addBlocks) {
-    for (const toId of input.addBlocks) {
-      const err = addDependencyEdge(id, toId); // 本任务完成后 toId 才能开始
-      if (err) return { ok: false, error: err };
-    }
+  // 依赖边：先把本次要加的边全部收集起来，**整批校验通过后**才一次性写入。
+  // 逐条「校验即写入」会留下 P0-1 那种形态：返回 ok:false，但先写的边（含把环补完整的那条）
+  // 已经留在图里，环上的任务从此永久不可认领，而错误只报过一次。
+  const pendingEdges: PendingEdge[] = [];
+  // 本任务完成后 toId 才能开始
+  for (const toId of input.addBlocks ?? []) pendingEdges.push({ blockerId: id, blockedId: toId });
+  // fromId 完成后本任务才能开始
+  for (const fromId of input.addBlockedBy ?? []) {
+    pendingEdges.push({ blockerId: fromId, blockedId: id });
   }
-  if (input.addBlockedBy) {
-    for (const fromId of input.addBlockedBy) {
-      const err = addDependencyEdge(fromId, id); // fromId 完成后本任务才能开始
-      if (err) return { ok: false, error: err };
-    }
+  if (pendingEdges.length > 0) {
+    const err = validateDependencyEdges(pendingEdges);
+    if (err) return { ok: false, error: err };
+    applyDependencyEdges(pendingEdges);
   }
 
   if (input.status !== undefined) task.status = input.status;
