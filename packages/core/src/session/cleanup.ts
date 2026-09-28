@@ -10,6 +10,7 @@ import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles, isDeletableExcludeReason } from "./utils.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { listActiveSessions } from "./concurrent.ts";
 
 /** 会话保留配置 */
 export interface SessionRetentionSettings {
@@ -77,6 +78,37 @@ export async function identifySessionsToDelete(
   const toDelete: SessionFileEntry[] = [];
   const now = Date.now();
 
+  // ─────────────────────────────────────────────────────────────
+  // N10：把**其它活着的进程**正在使用的会话一并纳入保护名单。
+  //
+  // 此前所有保护（currentSessionId / protectedSessionIds）都只覆盖**本进程**：
+  // 两个参数都由调用方从自己的 config / resume 目标传进来，对"隔壁那个 sid-code
+  // 正在续写哪个会话"一无所知。而清理扫的是**全局** sessions/ 目录（跨所有项目），
+  // 于是进程 B 启动时的自动清理会把进程 A 正在续写的会话文件 unlinkSync 掉，
+  // 且 A 侧全程无感（它的写缓冲照常 append 到一个已被删除的 inode 上，
+  // 用户看不到任何报错，直到下次想恢复时才发现整个会话没了）。
+  //
+  // 活跃表（~/.sid-code/active-sessions/）本来就是为"谁还活着"这件事存在的，
+  // 且已有 PID 探活 + stale 自动清理，直接复用即可，不必新造一套机制。
+  // 读失败时保持原有行为（不因为查不到活跃表就拒绝清理），但会记一笔。
+  // ─────────────────────────────────────────────────────────────
+  const activeIds = new Set<string>();
+  try {
+    for (const entry of listActiveSessions()) {
+      activeIds.add(entry.sessionId);
+      // resume 场景下活跃表登记的是**本进程新 id**，而磁盘文件名是**被恢复的旧 id**
+      // （见 app.ts restoreSession 的 Bug3 桥接）。所以还要把该进程正在续写的
+      // 逻辑会话 id 一并收进来，否则保护落不到真正在写的那个文件上。
+      if (entry.logicalSessionId) activeIds.add(entry.logicalSessionId);
+    }
+  } catch (err: any) {
+    getLogger().warn("CLEANUP", `读取活跃会话表失败（跨进程保护降级）: ${err?.message}`);
+  }
+
+  /** 该会话 id 是否被本进程或其它活着的进程占用。 */
+  const isProtectedId = (id: string): boolean =>
+    id === currentSessionId || (protectedSessionIds?.includes(id) ?? false) || activeIds.has(id);
+
   // 过滤出有效会话（排除损坏文件）
   const validSessions = allFiles.filter((entry) => entry.sessionInfo !== null);
 
@@ -107,8 +139,8 @@ export async function identifySessionsToDelete(
     const session = entry.sessionInfo!;
     const lastUpdated = new Date(session.lastUpdated).getTime();
 
-    // 跳过当前会话
-    if (currentSessionId && session.id === currentSessionId) {
+    // 跳过当前会话 + N10：其它活着的进程正在用的会话（见函数顶部 activeIds 注释）。
+    if (isProtectedId(session.id)) {
       continue;
     }
 
@@ -207,7 +239,10 @@ export async function identifySessionsToDelete(
 
     // 损坏文件解析不出 id，无法与 currentSessionId 比对 id；改用文件名匹配
     // （会话文件名恒为 `<id>.jsonl`，见 store.ts 落盘路径），保护正在写入的当前会话。
-    const nameGuards = [currentSessionId, ...(protectedSessionIds ?? [])].filter(
+    //
+    // N10：活跃表里的 id 一并纳入 —— 「正在被别的进程写到一半」恰恰是最容易被读成
+    // 「文件损坏」的状态（读到半行），而它同时又是最不该删的文件。
+    const nameGuards = [currentSessionId, ...(protectedSessionIds ?? []), ...activeIds].filter(
       (id): id is string => !!id,
     );
     if (nameGuards.some((id) => entry.fileName.startsWith(id))) {

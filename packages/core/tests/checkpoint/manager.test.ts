@@ -83,22 +83,30 @@ describe("CheckpointManager", () => {
       expect(snapshots[0].fileCount).toBe(2);
     });
 
-    test("undo 回滚整组文件", async () => {
+    // N5：本用例的时序此前是**反的**，因此它一直是绿的却掩盖了 /undo 三种生产错误。
+    //
+    // 旧写法：写 original → createSnapshot("initial") → 改文件 → createSnapshot("modify") → undo。
+    // 它额外建了一个"initial"快照，构造出「快照数比编辑数多一个」的世界，
+    // 在那个世界里被修掉的 `targetIndex - 1` 恰好指向存着 original 的快照，所以断言能过。
+    //
+    // 生产里没有那个额外快照：`createSnapshot` 只在工具**即将**改文件时被调
+    // （tool-executor 执行前建快照），不会先来一发"记录初始状态"。
+    // 所以下面改成按生产时序：**先建快照，再改文件**。
+    test("undo 回滚整组文件（按生产时序：先建快照再改文件）", async () => {
       const file1 = join(testDir, "file1.txt");
       const file2 = join(testDir, "file2.txt");
 
       writeFileSync(file1, "original1");
       writeFileSync(file2, "original2");
 
-      await manager.createSnapshot([file1, file2], "write", "initial");
+      // 生产时序①：工具执行前建快照 —— 它记录的就是「改动前」的内容。
+      await manager.createSnapshot([file1, file2], "edit", "modify");
 
-      // 修改文件
+      // 生产时序②：工具改文件。
       writeFileSync(file1, "modified1");
       writeFileSync(file2, "modified2");
 
-      await manager.createSnapshot([file1, file2], "edit", "modify");
-
-      // 回滚
+      // 回滚：应回到快照自己记录的内容（= 改动前），不需要再退一格。
       const result = await manager.undo();
       expect(result).toBeTruthy();
       expect(result!.files).toHaveLength(2);

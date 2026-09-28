@@ -44,9 +44,26 @@ const NESTING_GATED_TOOLS = new Set(["sub_agent"]);
 /** 自定义 Agent 额外禁止的工具（自定义 agent 的递归派生同样受嵌套开关约束）。 */
 const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set<string>([]);
 
-/** 内置子代理类型的工具白名单 */
+/**
+ * 内置子代理类型的工具白名单
+ *
+ * ⚠️ P1-3（事实源纪律）：本表与 `agent-definition.ts` 各 agent 的 `tools` 字段是
+ * **交集**关系（见 filterToolsForAgent 的 Layer 2 / Layer 3）。所以在这里声明一个
+ * 定义层没有的工具，等于写了一行**永远不生效**的意图声明——过滤结果里它一定不在。
+ *
+ * 曾经的实际形态：explore / task / plan / verify 四类的白名单都写着 `todo_write`，
+ * 四个定义的 `tools` 字段全都不含它，于是四类子代理全部被裁掉。那一行白名单是死的。
+ *
+ * 现在的口径：**只读子代理（explore / plan / verify）不要 todo**——它们的产出是一份
+ * 报告，不是一串带状态的待办；给了也没人催（子代理循环的回注与门禁只对会写代码的
+ * 类型才有意义）。**task 类型要 todo**，它会写代码、会多步执行，正是清单的用武之地，
+ * 故 `todo_write` 同时进它的白名单**和**定义层 `tools`。
+ * 改动任何一侧都要回头看另一侧，否则又会退回「白名单说可以、定义说不行」。
+ * 反漂移断言在 `tests/agent/subagent-todo.test.ts`。
+ */
 const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
-  explore: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
+  // 只读探索：产出是发现报告，不需要带状态的清单
+  explore: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
   task: [
     "read",
     "write",
@@ -64,18 +81,9 @@ const BUILTIN_AGENT_ALLOWED_TOOLS: Record<string, string[] | null> = {
     "task_update",
     "todo_write",
   ],
-  plan: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get", "todo_write"],
-  verify: [
-    "read",
-    "grep",
-    "glob",
-    "ls",
-    "read_many",
-    "bash",
-    "task_list",
-    "task_get",
-    "todo_write",
-  ], // 对抗式验证：只读 + bash 核实
+  // 只读规划：产出是方案文本
+  plan: ["read", "grep", "glob", "ls", "read_many", "task_list", "task_get"],
+  verify: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get"], // 对抗式验证：只读 + bash 核实
   summarize: null, // null = 不需要工具
   "general-purpose": null, // null = 不限制（由 Layer 3 的 disallowedTools 控制）
 };

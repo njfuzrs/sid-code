@@ -69,15 +69,25 @@ describe("PlanModeManager — 执行阶段(executing)追踪", () => {
     expect(m.isPlanning()).toBe(true);
   });
 
-  test("forceExit() 清执行阶段标志", () => {
+  test("forceExit() 清执行阶段标志（执行阶段中直接取消）", () => {
     const m = new PlanModeManager();
     m.enter();
     m.submitForApproval();
     m.approve();
     expect(m.isExecuting()).toBe(true);
-    // 注：approve 后 state 已 inactive，forceExit 对 inactive 是 no-op，
-    // 故这里验证的是"执行阶段中用户又开 plan 再取消"的链路。
-    m.enter(); // 重新进入 planning（清了 executing）
+    // P1-1：从前 forceExit 对 inactive 无条件早退，而执行阶段的 state 正是 inactive，
+    // 所以它在唯一需要它收尾执行阶段的时刻是 no-op（旧用例只好绕道先 enter() 一次）。
+    // isExecuting() 现在还是权限链 Step 3.5 的放行条件，故必须支持直接取消。
+    m.forceExit();
+    expect(m.isExecuting()).toBe(false);
+  });
+
+  test("forceExit() 在执行阶段中途 enter 再取消也清标志（原链路保持）", () => {
+    const m = new PlanModeManager();
+    m.enter();
+    m.submitForApproval();
+    m.approve();
+    m.enter(); // 重新进入 planning（enter 自己也清 executing）
     m.forceExit(); // 取消
     expect(m.isExecuting()).toBe(false);
   });

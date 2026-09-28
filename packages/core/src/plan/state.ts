@@ -149,9 +149,17 @@ export class PlanModeManager {
     return true;
   }
 
-  /** 强制退出 Plan Mode（用户取消） */
+  /**
+   * 强制退出 Plan Mode（用户取消）。
+   *
+   * P1-1：`state === "inactive"` 时不再无条件 return——执行阶段的 state 正是
+   * inactive 而 isExecuting() 为真，从前那个早退让 forceExit 在**唯一需要它
+   * 收尾执行阶段**的时刻变成 no-op（旧测试甚至把这件事写成了预期）。
+   * 在 isExecuting() 只被 Recovery Hook 读的年代这无害；它现在还是权限链
+   * Step 3.5 的放行条件之一，于是「用户取消」必须真的关掉执行阶段。
+   */
   forceExit(): void {
-    if (this.state === "inactive") return;
+    if (this.state === "inactive" && !this.executing) return;
     const from = this.state;
     this.state = "inactive";
     this.rejectionCount = 0;
@@ -232,11 +240,20 @@ export class PlanModeManager {
 
   /**
    * 记录一次 plan 文件 write/edit 成功
-   * 仅当 plan mode active（planning / awaiting_approval）时记录，inactive 拒绝
-   * 由 app.ts:handlePlanModeTransitions 在工具执行成功后调用
+   * 由 app.ts:handlePlanModeTransitions 在工具执行成功后调用。
+   *
+   * P1-1：接受条件从 `state !== "inactive"` 改为「规划态 **或** 执行阶段」。
+   * 从前用 `state === "inactive"` 当拒绝条件，把执行阶段整个排除了——
+   * approve() 之后 state 正是 inactive 而 isExecuting() 为真（两者刻意正交，
+   * 见 executing 字段注释）。而批准消息要求的「失败先更新计划文件」全部发生在
+   * 执行阶段，于是 plan_recovery 评测读到的 getPlanFileUpdateCount()
+   * 恒等于规划阶段的写入次数，执行阶段的更新一次都不计。
+   *
+   * 用 isActive() || isExecuting() 而不是继续用 state 的取反，是为了让三个
+   * 消费同一语义的地方（Recovery Hook、权限链 Step 3.5、本计数器）认同一个标志。
    */
   recordPlanFileWrite(timestamp: number = Date.now()): boolean {
-    if (this.state === "inactive") return false;
+    if (!this.isActive() && !this.isExecuting()) return false;
     this.planFileUpdates.push(timestamp);
     return true;
   }
@@ -258,6 +275,17 @@ export class PlanModeManager {
    * 支持: 中文/英文编号 + 顶层 dash 项. 嵌套子步骤不计 step.
    * 解析后存入 this.planSteps 供后续对齐使用.
    * 多次调用以最后一次为准 (plan 文件更新).
+   *
+   * P1-2：**非步骤章节下的列表项不计入步骤**。
+   *
+   * 从前这个解析器对每一行只做一件事——排除缩进行，不排除任何章节。于是
+   * buildPlanModePrompt 自己教模型写的「## 决策记录」小节里那几条
+   * 「推迟 X / 替代方案 Y」，以及「## 风险」下的风险描述，全部被数成步骤。
+   * 后果不只是数字难看：countPlanSteps 的结果喂给 buildPlanApprovedMessage，
+   * 而那条「todo 清单必须覆盖全部 N 步」的强制令只在 planStepCount >= 3 时下达——
+   * 口径虚高会**改变是否下达这条指令**，一份只有 1 个真步骤的计划只要写了两条
+   * 决策记录就会触发它。更糟的是同一条批准消息里两条指令互相矛盾：
+   * 一条要求这 N 项都要做，另一条（尊重既有决策）要求其中的决策记录项不许重做。
    */
   parsePlanFromMarkdown(md: string): PlanStep[] {
     if (typeof md !== "string") {
@@ -269,10 +297,21 @@ export class PlanModeManager {
     // 仅匹配顶层 (没有 leading 空格 / tab) 的有序项 "1. xxx" / "1) xxx" 或顶层 "- xxx" / "* xxx".
     const orderedRe = /^(\d+)[.)]\s+(.+)$/;
     const dashRe = /^[-*]\s+(.+)$/;
+    const headingRe = /^#{1,6}\s+(.+)$/;
     let idx = 0;
+    // 当前所在标题是否是「非步骤章节」。文件开头（无标题）视为步骤区，
+    // 保持对不写任何标题的朴素计划的向后兼容。
+    let inNonStepSection = false;
     for (const raw of lines) {
+      const hm = raw.match(headingRe);
+      if (hm) {
+        inNonStepSection = PlanModeManager.isNonStepHeading(hm[1]);
+        continue;
+      }
       // 跳过被缩进的子项
       if (/^\s/.test(raw)) continue;
+      // 非步骤章节下的列表项不是步骤
+      if (inNonStepSection) continue;
       const om = raw.match(orderedRe);
       const dm = !om && raw.match(dashRe);
       if (om) {
@@ -294,6 +333,63 @@ export class PlanModeManager {
     this.planSteps = steps;
     return steps;
   }
+
+  /**
+   * 判断一个 markdown 标题是否属于「非步骤章节」——其下的列表项不该被数成步骤。
+   *
+   * 关键词表刻意只收**计划文件里真实会出现**的那几类，判据是
+   * `plan/prompt.ts` 自己教模型写什么：buildPlanModePrompt 明确要求
+   * 「## 决策记录」（含原因 / 替代方案 / 重新评估条件），阶段 2 要求考虑
+   * 「潜在风险和边界情况」。剩下的是通用非步骤段落（背景 / 现状 / 参考 / 附录…）。
+   *
+   * 不做成「只数 `## 步骤` 章节内的项」的反向口径，理由是向后兼容：
+   * 大量既有计划不写「## 步骤」这个标题，反向口径会让它们的步骤数直接归零，
+   * 把一个虚高的数字换成一个恒为 0 的数字——那会让 >= 3 的强制令永不下达。
+   */
+  private static isNonStepHeading(title: string): boolean {
+    // 去掉 markdown 强调符与前后空白，统一小写便于匹配英文标题
+    const t = title
+      .replace(/[*_`#]/g, "")
+      .trim()
+      .toLowerCase();
+    return PlanModeManager.NON_STEP_HEADING_KEYWORDS.some((kw) => t.includes(kw));
+  }
+
+  /**
+   * 非步骤章节的标题关键词（子串匹配，中英各一组）。
+   * 用子串而非全等：实际标题常带编号或后缀（「## 三、风险与回滚」「## 决策记录（防漂移）」）。
+   */
+  private static readonly NON_STEP_HEADING_KEYWORDS: readonly string[] = [
+    // buildPlanModePrompt 明确要求写的两类
+    "决策记录",
+    "风险",
+    "decision",
+    "risk",
+    // 通用非步骤段落
+    "背景",
+    "现状",
+    "目标",
+    "非目标",
+    "参考",
+    "附录",
+    "备注",
+    "结论",
+    "验收",
+    "边界情况",
+    "未决问题",
+    "background",
+    "context",
+    "goal",
+    "non-goal",
+    "reference",
+    "appendix",
+    "note",
+    "open question",
+    "acceptance",
+    "trade-off",
+    "tradeoff",
+    "alternative",
+  ];
 
   /**
    * 记录一次 actual 工具调用 (在 exit_plan_mode 之后调用方负责调).
