@@ -113,6 +113,25 @@ describe("countChanges(fast) 在无 remote 的仓库里（W3）", () => {
     const changes = new WorktreeManager(repo).countChanges(wt, "", { fast: true });
     expect(changes!.commits).toBe(0);
   });
+
+  // `--exclude` 收的是 pattern 而不是字面 ref 名，所以分支名的形态要单独钉一下。
+  // glob 元字符不用管：git 自己就拒绝含 * ? [ ] 的分支名（实测 check-ref-format 全部报错），
+  // 真正会出现的特殊形态是带斜杠的层级名。
+  it("带斜杠的分支名（feature/x）：干净可删、有独有 commit 则保护", () => {
+    const wtRoot = join(repo, ".sid-code", "worktrees");
+    mkdirSync(wtRoot, { recursive: true });
+
+    const clean = join(wtRoot, "agent-aaaabbbb");
+    git(["worktree", "add", "-q", clean, "-b", "release/2.0"], repo);
+    expect(new WorktreeManager(repo).countChanges(clean, "", { fast: true })!.commits).toBe(0);
+
+    const dirty = join(wtRoot, "agent-ccccdddd");
+    git(["worktree", "add", "-q", dirty, "-b", "feature/x"], repo);
+    commit(dirty, "work.txt", "work\n");
+    expect(
+      new WorktreeManager(repo).countChanges(dirty, "", { fast: true })!.commits,
+    ).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("countChanges(fast) 在有 remote 的仓库里（W3 不回退）", () => {
