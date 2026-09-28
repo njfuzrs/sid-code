@@ -50,6 +50,18 @@ import {
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
 import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
 import { injectReminders } from "../query/reminder-inject.ts";
+// P1-3：子代理侧的 todo 回注与 end_turn 完成度门禁。
+// 复用主循环那份文案构造器（`query/todo-reminder.ts`），不在子循环另写一套——
+// 子代理只是拿不到主循环的**触发机制**，文案语义本身与主代理完全一致，
+// 抄一份文案就是给「做了一半就收尾」这条约束开第二个会各自漂移的事实源。
+import {
+  buildTodoReminder,
+  buildTodoGateMessage,
+  countUnfinished,
+  TODO_REMINDER_CONFIG,
+  MAX_TODO_GATE_RETRIES,
+} from "../query/todo-reminder.ts";
+import type { TodoItem } from "../tool/todo-write.ts";
 
 // ============================================================
 // 配置接口
@@ -193,6 +205,32 @@ export interface AgentLoopConfig {
 }
 
 /**
+ * P1-3：读取**本子代理自己那份** todo 清单。
+ *
+ * 为什么从 registry 里现取而不是让调用方传进来：`sub-agent.ts` 的
+ * `buildIsolatedToolRegistry` 给每个子代理注册了一份**独立的** `TodoWriteTool` 实例
+ * （进程内隔离，避免并发写污染主会话清单）。那份实例的唯一句柄就在传进来的
+ * `tools` 里，从它取才保证读到的是这个子代理的清单，而不是父会话的。
+ *
+ * 用鸭子类型探测 `getTodos`，与本文件其他地方（save_memory 的 withAgentType）同款做法，
+ * 避免为了一个方法把 TodoWriteTool 的具体类型拖进循环层。
+ *
+ * 池里没有 `todo_write`（只读子代理按口径就不该有）时返回 null——
+ * 于是下面两道机制自动整体静默，不需要在调用点再写一次 if。
+ */
+function readSubAgentTodos(tools: ToolRegistry): TodoItem[] | null {
+  try {
+    const tool = tools.get("todo_write") as { getTodos?: () => TodoItem[] } | undefined;
+    if (!tool || typeof tool.getTodos !== "function") return null;
+    const todos = tool.getTodos();
+    return Array.isArray(todos) && todos.length > 0 ? todos : null;
+  } catch {
+    // 取清单失败绝不影响子代理循环本身——回注/门禁是增益，不是必要路径
+    return null;
+  }
+}
+
+/**
  * 子代理单次请求的输出 token 上限（B5-6，§5 新发现 4：给原本的裸魔数定性）。
  *
  * ── 为什么是"保留固定值"而不是"交给 resolveMaxOutputTokens 按模型解析" ──
@@ -333,6 +371,16 @@ async function runAgentLoopInner(
   // D2 / P0-3：空参数 F1 重试计数。与主循环 `state.emptyParamRetryCount` 同口径——跨轮累计，
   // 正常 end_turn 收工时清零。弱模型持续吐 input={} 时必须有上限，否则会空转到 maxTurns。
   let emptyParamRetryCount = 0;
+  // P1-3：子代理侧 todo 回注与 end_turn 门禁的两个计数器。
+  //
+  // 与主循环的偏离是刻意的：主循环那套（reminder-throttle 的条件式封顶、
+  // 压缩后强制重注的 8 处置位、getTodoReminderTurnCounts 从消息历史现算）是为
+  // 「跨用户消息、可被压缩、要防催更噪音」的主会话设计的。子代理是**单次派活、
+  // 一条用户消息、生命周期以轮计**，那套机器搬过来大半是空转。这里只留纯节流：
+  // 距上次注入 ≥ N 轮就重注一次，N 与主循环共用 TODO_REMINDER_CONFIG。
+  let lastTodoReminderTurn = 0;
+  // end_turn 完成度门禁的软续命次数（上限与主循环共用 MAX_TODO_GATE_RETRIES）
+  let todoGateRetryCount = 0;
   // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
   // 在所有出口统一回填）。累计而非每轮重置——用户问的是"这个子代理一共重试了多少次"，
   // 而"第 3 轮重试了 2 次"这种粒度已经在遥测（type=retry + agentId）里了。
@@ -467,6 +515,33 @@ async function runAgentLoopInner(
         }
       } catch {
         /* LSP 未启用 / 收集失败：降级不注入，绝不影响子代理循环 */
+      }
+    }
+
+    // P1-3：周期性回注 todo 清单（子代理侧，对标主循环 query/loop.ts 的 P0-2）。
+    //
+    // 从前子代理这一整段是缺席的：`sub-agent.ts` 特意给每个子代理配了独立的
+    // TodoWriteTool 实例做隔离，但**没有任何东西消费它**——子代理建完清单之后，
+    // 清单不会再回到它的上下文里，它只能靠工作记忆追踪，弱模型必然遗漏。
+    // 这正是主循环 2026-08 修过的根因 1（「todo 写完即沉没」），当时没连带修子循环。
+    //
+    // 只读子代理池里没有 todo_write，readSubAgentTodos 返回 null，这段自动静默。
+    const todosForReminder = readSubAgentTodos(tools);
+    if (todosForReminder && countUnfinished(todosForReminder) > 0) {
+      const turnsSinceReminder = turns - lastTodoReminderTurn;
+      if (turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
+        ctxMgr.addMessage({
+          role: "user",
+          // buildTodoReminder 自带 <system-reminder> 围栏与「请勿向用户提及」声明。
+          // 与上面 LSP 那段同理：子代理走 addMessage({role:"user"})，注入的是一条真正的
+          // user 消息，围栏是它与用户输入唯一的区分手段，不能省。
+          content: [{ type: "text", text: buildTodoReminder(todosForReminder) }],
+        });
+        lastTodoReminderTurn = turns;
+        log.info(
+          "AGENT_LOOP",
+          `P1-3：回注 todo 清单（子代理），未完成 ${countUnfinished(todosForReminder)} 项`,
+        );
       }
     }
 
@@ -909,6 +984,41 @@ async function runAgentLoopInner(
     }
 
     if (isEndTurnLike && !hasPendingToolUse) {
+      // P1-3：end_turn 完成度门禁（子代理侧，对标主循环 query/loop.ts 的 P0-3）。
+      //
+      // 从前子代理提前收尾时没有任何东西拦它——主循环 2026-08 修过的根因 2
+      // （「任务被切成碎片、做了一半就 end_turn」）在子循环里原样存在。
+      // 而子代理恰恰是被派去干一件具体多步活的角色，收尾一半的代价由父代理承担，
+      // 父代理只看到一句「## 结果」，无从知道清单里还剩三项。
+      //
+      // 与主循环的偏离（刻意从简，只保留骨架）：
+      //   - 不做 forgotMark 误判自愈：那套判据依赖「本轮是否有实质正文」的阈值校准，
+      //     主循环有真实转录背书，子代理侧没有同等证据，先不抄一个未经校准的阈值。
+      //   - 续命上限与主循环共用 MAX_TODO_GATE_RETRIES，耗尽即放行（不阻断父代理），
+      //     放行时留一条 warn，让「子代理收尾但清单未尽」在日志里可查。
+      const todosAtEnd = readSubAgentTodos(tools);
+      const unfinishedAtEnd = todosAtEnd ? countUnfinished(todosAtEnd) : 0;
+      if (todosAtEnd && unfinishedAtEnd > 0) {
+        if (todoGateRetryCount < MAX_TODO_GATE_RETRIES) {
+          todoGateRetryCount++;
+          ctxMgr.addMessage({
+            role: "user",
+            // 复用主循环同一份文案（自带 <system-reminder> 围栏）。
+            // alreadyDelivered 传 false：见上文，子代理侧不做「已交付」判定。
+            content: [{ type: "text", text: buildTodoGateMessage(todosAtEnd, false) }],
+          });
+          log.info(
+            "AGENT_LOOP",
+            `P1-3：end_turn 拦截（子代理）——仍有 ${unfinishedAtEnd} 项未完成，` +
+              `软续命 ${todoGateRetryCount}/${MAX_TODO_GATE_RETRIES}`,
+          );
+          continue;
+        }
+        log.warn(
+          "AGENT_LOOP",
+          `P1-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinishedAtEnd} 项未完成（子代理）`,
+        );
+      }
       emptyParamRetryCount = 0;
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
       config.onTurnEnd?.({

@@ -2793,6 +2793,17 @@ export async function main(): Promise<void> {
       getLogger().info("CLI", `恢复会话: ${session.id} (${session.messages.length} 条消息)`);
       // D3：登记被恢复的会话 id，供随后启动的自动清理列入受保护名单。
       resumedSessionIdForCleanup = session.id;
+      // N10：把被恢复的会话 id 补登记进**活跃会话表**，让**其它进程**的自动清理也能看见
+      // 「这个旧会话有人正在续写」。D3 那道保护只作用于本进程（参数由本进程传入），
+      // 隔壁 sid-code 启动时扫的是全局 sessions/ 目录，对此一无所知 ⇒
+      // 实测会把本进程正在续写的会话文件 unlinkSync 掉，而本进程全程无感
+      // （写缓冲照常 append 到已删除的 inode 上，用户看不到任何报错）。
+      try {
+        const { registerLogicalSessionId } = await import("@sid-code/core/session/concurrent.ts");
+        registerLogicalSessionId(config.sessionId, session.id);
+      } catch (err: any) {
+        getLogger().warn("CLI", `补登记续写会话 id 失败（跨进程保护降级）: ${err?.message}`);
+      }
       await app.restoreSession(session);
     }
 

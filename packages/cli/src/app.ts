@@ -400,8 +400,11 @@ export class App {
   /** P2-1 会话回退管理器（Esc+Esc rewind）。每轮输入前登记回退点，UI 选中后截断对话/回滚文件。 */
   private rewindManager: import("@sid-code/core/session/rewind-manager.ts").RewindManager | null =
     null;
-  /** P2-1：CheckpointManager 最近一次快照 id（回退点登记时记录文件锚点）。空串 = 尚无快照。 */
-  private latestCheckpointSnapshotId = "";
+  // N6：原 `latestCheckpointSnapshotId` 字段已删除。它唯一的用途是喂给 RewindManager 的
+  // getLatestSnapshotId 注入项当文件锚点，而那正是缺陷所在（登记时刻本轮快照还不存在，
+  // 拿到的是上一轮的快照 ⇒ 回退多撤一整轮）。锚点改由 onSnapshotCreated →
+  // rewindManager.attachSnapshot() 回填「本轮首个快照」后，这个字段就只写不读了——
+  // 留着等于新造一个死字段（文档 N8 批评的同一形态）。
   private toolRegistry: ToolRegistry;
   private commandRegistry: CommandRegistry;
   /** 统一命令注册表（新体系）。非空时 TUI 命令获取/执行走此注册表 */
@@ -633,15 +636,18 @@ export class App {
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
     this.ctxMgr.setPlanContentProvider(() => this.readActivePlanContent());
-    // P2-1：会话回退管理器。注入 ctxMgr 取/设消息 + CheckpointManager 取最新快照/恢复，
+    // P2-1：会话回退管理器。注入 ctxMgr 取/设消息 + CheckpointManager 恢复，
     // 二者解耦于 RewindManager 内部逻辑（便于单测，且不与 ctxMgr/checkpoint 内部实现耦合）。
+    //
+    // N6：不再注入 getLatestSnapshotId —— 回退点的文件锚点改由 onSnapshotCreated 回调
+    // 调 attachSnapshot() 回填「本轮首个快照」。登记时刻（用户输入提交前）本轮快照还不存在，
+    // 那时取「最新快照」拿到的是上一轮的 ⇒ 回退多撤一整轮。
     {
       const { RewindManager } = require("@sid-code/core/session/rewind-manager.ts");
       this.rewindManager = new RewindManager({
         getMessages: () => this.ctxMgr.getMessages(),
         setMessages: (msgs: unknown[]) =>
           this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
-        getLatestSnapshotId: () => this.latestCheckpointSnapshotId,
         restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
           // D5：checkpoint 必须跟随**逻辑会话 id**，不能用构造期捕获的 `sessionId`。
           // 构造函数比 restoreSession() 早跑，那时 resumedSessionId 还是 null，闭包一旦
@@ -5359,9 +5365,21 @@ export class App {
       // 里 0 条带 lastSnapshotId 或 snapshotIds，恢复端的 for 循环从未执行过一次。
       recordFileChanges: (files, toolName, snapshotId) =>
         this.recordFileChanges(files, toolName, snapshotId),
-      // P2-1：记录最新快照 id，作为下一轮回退点的文件锚点。
+      // N6：把**本轮首个**快照回填为当前回退点的文件锚点。
+      //
+      // 修之前是「记录最新快照 id，作为**下一轮**回退点的锚点」（旧注释原话）——
+      // 而 registerPoint 跑在用户输入提交前、本轮快照尚不存在，于是登记时拿到的是
+      // **上一轮**建的快照。按「快照 sN = 改动前」的口径，restoreToSnapshot(s_{N-1})
+      // 会回到轮 N-1 那次调用之前，比用户要的「轮 N 之前」多退一整轮；
+      // 回退到第 1 轮时锚点更是恒为空串 ⇒ 文件层永不回滚（最想撤的那次恰恰撤不掉）。
+      // attachSnapshot 只认本轮第一个快照，多次工具调用下幂等。
       onSnapshotCreated: (snapshotId) => {
-        this.latestCheckpointSnapshotId = snapshotId;
+        try {
+          this.rewindManager?.attachSnapshot(snapshotId);
+        } catch (e) {
+          // 锚点回填失败只让该回退点退化为「仅能回退对话」，绝不该影响快照创建本身。
+          getLogger().warn("REWIND", `回填回退点文件锚点失败: ${(e as Error)?.message}`);
+        }
       },
       // GAP-01：流式预执行结果缓存查询。有值 → executeTools 复用，跳过重复执行。
       getPrecomputedResult: (toolUseId) => this._streamingToolResults?.get(toolUseId),

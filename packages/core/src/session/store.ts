@@ -26,6 +26,9 @@ import {
   renameSync,
   appendFileSync,
   createReadStream,
+  openSync,
+  readSync,
+  closeSync,
 } from "fs";
 import { createInterface } from "readline";
 import { getLogger } from "../debug/logger.ts";
@@ -194,6 +197,50 @@ function flushFile(filePath: string): void {
     appendFileSync(filePath, queue.join(""));
   } catch (e) {
     getLogger().error("SESSION", `批量写入会话失败: ${filePath} - ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * N9：确保 JSONL 文件以换行符结尾，否则先补一个。
+ *
+ * 治的是一条**静默丢一轮对话**的路径（崩溃 + resume 的组合）：
+ *   1. 进程被 SIGKILL 时最后一批 flush 只落了半行、**且没有换行符**；
+ *   2. `loadTailUuid` 从后往前找第一条能 JSON.parse 的行，正确跳过那条半行、拿到真链尾；
+ *   3. 但 `appendFileSync` 是**裸追加** ⇒ 新记录与那条半行**物理粘连成同一行**；
+ *   4. 一行两个 JSON 对象 ⇒ 解析失败 ⇒ 该行被链式重建跳过 ⇒
+ *      **新记录随半行一起消失**，而 appendMessage 正常返回、界面一切正常。
+ *
+ * 与已接受的取舍（「崩溃瞬间那一批没落盘」）区别很关键：那丢的是用户知道自己没保存成功
+ * 的部分；本路径丢的是崩溃**之后**、用户以为已经保存好的部分——在用户模型里那是数据损坏。
+ *
+ * 代价是每次 resume 一次 1 字节读取（只读尾字节，不整读文件）。
+ * 半行本身仍是坏行（N1 的链断回退兜住它），这里只保证**不再连带吞掉新记录**。
+ */
+function ensureTrailingNewline(filePath: string): void {
+  let fd: number | undefined;
+  try {
+    const size = statSync(filePath).size;
+    if (size === 0) return; // 空文件天然无需补
+    fd = openSync(filePath, "r");
+    const buf = Buffer.alloc(1);
+    readSync(fd, buf, 0, 1, size - 1);
+    closeSync(fd);
+    fd = undefined;
+    if (buf[0] === 0x0a) return; // 已以 \n 结尾
+    appendFileSync(filePath, "\n");
+    getLogger().warn(
+      "SESSION",
+      `会话文件末尾无换行符（疑似上次崩溃留下半行），已补写换行避免与新记录粘连: ${filePath}`,
+    );
+  } catch {
+    // 读不到/补不上都不该阻断写入：最坏退化成修复前的行为，不引入新失败面。
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* 忽略 */
+      }
+    }
   }
 }
 
@@ -371,6 +418,38 @@ export class SessionStore {
     forkedFromSessionId?: string,
   ): void {
     this.currentFile = join(this.sessionDir, `${sessionId}.jsonl`);
+
+    // ─────────────────────────────────────────────────────────────
+    // N15：目标 jsonl 已存在且非空 ⇒ **不能再写一条 session_start**，必须转续写。
+    //
+    // 触发路径：`--session-id <同一个 UUID>` 单独跑多次（CLI 层只约束了它与
+    // --continue/--resume 同用的情形）。startSession 对已存在文件是**追加**语义，于是第 N 次
+    // 运行在文件尾部又写一条 `parentUuid=null` 的 session_start，把一个文件变成 N 条
+    // 互不相连的独立链。而恢复算法「从物理末行沿 parentUuid 回溯到 null 即止」是对的 ——
+    // 它忠实执行「一个文件一条链」的契约，走到第 N 段链头就正常结束，
+    // **前 N-1 段虽然内容完好却在链上完全不可达**。
+    //
+    // 实测代价（本机真实文件）：166 行 / 30 个 session_start / 106 条真实消息 → 恢复出 4 条，
+    // 丢 96%。这不是潜伏缺陷，是已经在丢数据。
+    //
+    // 为什么选「转续写」而不是「报错退出」：`--session-id <已存在 id>` 的用户意图就是
+    // 「继续这个会话」，续写正是它的正确语义，且与 resumeSession 已有的 loadTailUuid
+    // 逻辑天然契合（新记录接上旧链尾 ⇒ 仍是一条完整链）。报错会把一个可正确处理的
+    // 场景变成启动失败，也会让已经变成多段的历史文件永远打不开。
+    // ─────────────────────────────────────────────────────────────
+    if (this.hasNonEmptyFile(this.currentFile)) {
+      this.materialized = true;
+      this.pendingStart = null;
+      ensureTrailingNewline(this.currentFile);
+      this.lastUuid = this.loadTailUuid(this.currentFile);
+      getLogger().warn(
+        "SESSION",
+        `会话文件已存在且非空，转为续写以保持「一文件一条链」不变量（不写第二条 session_start）: ${sessionId}` +
+          (forkedFromSessionId ? `（fork 源 ${forkedFromSessionId} 的历史将接在原链之后）` : ""),
+      );
+      return;
+    }
+
     this.materialized = false;
     const uuid = crypto.randomUUID();
     this.pendingStart = {
@@ -490,6 +569,8 @@ export class SessionStore {
       this.currentFile = jsonlPath;
       this.materialized = true;
       this.pendingStart = null;
+      // N9：续写前补齐可能缺失的行尾换行符，避免新记录与崩溃留下的半行粘连被静默吞掉。
+      ensureTrailingNewline(jsonlPath);
       this.lastUuid = this.loadTailUuid(jsonlPath);
       getLogger().info("SESSION", `会话续写已就绪（resume）: ${sessionId}`);
     } else {
@@ -904,6 +985,27 @@ ${summary}
     return null;
   }
 
+  /** N15：目标会话文件是否已存在且含内容（空文件不算——那是 materialize 建了壳但没落记录）。
+   *  判据用「去空白后非空」而非 size>0：只含空行的文件里没有任何链头，仍应按新会话起写。 */
+  private hasNonEmptyFile(filePath: string): boolean {
+    try {
+      if (!existsSync(filePath)) return false;
+      if (statSync(filePath).size === 0) return false;
+      // 只读首 4KB 判断有无实质内容，避免为一次存在性判断整读大文件。
+      const fd = openSync(filePath, "r");
+      try {
+        const buf = Buffer.alloc(4096);
+        const n = readSync(fd, buf, 0, 4096, 0);
+        return buf.subarray(0, n).toString("utf-8").trim().length > 0;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      // 读不到就按「不存在」处理：保持修复前的行为（新建会话），不引入启动失败。
+      return false;
+    }
+  }
+
   /** P2-9：确保文件已实际创建；首次调用时把延迟的 session_start 记录补写在最前面。 */
   private ensureMaterialized(): void {
     if (this.materialized || !this.currentFile) return;
@@ -1057,12 +1159,71 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
 }
 
 /**
+ * N1：文件里是否还存在**可解析的真实对话记录**（user/assistant/tool_result）。
+ *
+ * 用途只有一个：给「解析返回 null」这件事分档。`parseSessionJsonl` 返回 null 只说明
+ * 「拿不到 session_start ⇒ 组装不出 SessionData」，**不等于内容没了**。
+ * 链断已由 rebuildRecordOrder 的线性回退兜住，但仍有一种残余情形：
+ * **session_start 自己那一行坏了**（首行写入中断 / 坏块）——线性解析同样拿不到 sessionId，
+ * 于是整份返回 null，而后面几百条真实消息明明都在。
+ *
+ * 这种文件被判成 `parse-error` 就会进自动清理的可删白名单、被永久删除。
+ * 所以清理侧需要据此把它归到「不可删」的一档（见 utils.ts 的 `chain-broken`）：
+ * **内容还在的文件绝不能删**，哪怕它已经组装不成一个完整会话对象。
+ */
+export function hasParsableMessageRecords(content: string): boolean {
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line) as { type?: unknown };
+      if (
+        rec?.type === "user_message" ||
+        rec?.type === "assistant_message" ||
+        rec?.type === "tool_result"
+      ) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+/** N1：把所有能 JSON.parse 的行按物理顺序收集（链式重建的降级兜底）。 */
+function linearParseRecords(lines: string[]): SessionRecord[] {
+  const records: SessionRecord[] = [];
+  for (const line of lines) {
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      continue;
+    }
+  }
+  return records;
+}
+
+/**
  * 把物理行顺序的 JSONL 重建为"应当被采信"的记录顺序（P0-1 链式重建）。
  *
  * - 新格式（尾行带 uuid）：从物理尾行沿 parentUuid 反向回溯到链头（parentUuid=null），
  *   过程中用 seenUuids 检测环（P2-11）——一旦发现环立即停止，防止死循环。
  * - 旧格式（尾行无 uuid，或全部行都无法解析出合法尾行）：回退为线性解析全部行，
  *   逐行 try/catch 跳过损坏行，与改造前行为完全一致，零回归。
+ * - **N1：链中途断了（回溯没走到 parentUuid=null 就扫完了全部行）也回退线性解析。**
+ *   成因是链上某一行不是合法 JSON（写入中断 / 坏块 / flush 只落半行），
+ *   而坏行被 `continue` 跳过时 `expectedParentUuid` 没有任何补救路径 ——
+ *   它要找的 uuid 就写在那条坏行里，于是剩下的行一条都对不上，
+ *   链只剩「尾行到坏行之后」这一段，而 `session_start` 被隔在坏行之前永远进不了链。
+ *   后果**不是降级而是全损**：`parseSessionJsonlLines` 拿不到 sessionId ⇒ 整份返回 null ⇒
+ *   会话从列表消失 ⇒ 被判成 `parse-error` ⇒ 进自动清理的可删白名单 ⇒ **文件被永久删除**。
+ *   一个 200 条消息、只坏了第 100 行的会话就这样没了。
+ *
+ *   回退线性解析至少能把两侧完好的记录全部捞回来（这正是「resume 永不丢失真实历史」
+ *   这条不变量的要求）。代价是多进程物理交叉写入时可能把外部分支的记录一起收进来 ——
+ *   但那些记录同样是**真实发生过的对话**，与「整份归零再删掉」相比是明显更优的降级。
+ *   环检测触发时**不**走这条回退：环意味着 uuid 重复，线性解析会产出重复消息，
+ *   保持既有的「提前截断」更安全。
  */
 function rebuildRecordOrder(lines: string[]): SessionRecord[] {
   let tailIdx = -1;
@@ -1079,20 +1240,14 @@ function rebuildRecordOrder(lines: string[]): SessionRecord[] {
 
   if (!tail || typeof (tail as unknown as { uuid?: unknown }).uuid !== "string") {
     // 旧格式或全部行都损坏 → 线性解析兜底
-    const records: SessionRecord[] = [];
-    for (const line of lines) {
-      try {
-        records.push(JSON.parse(line));
-      } catch {
-        continue;
-      }
-    }
-    return records;
+    return linearParseRecords(lines);
   }
 
   const chain: SessionRecord[] = [tail];
   const seenUuids = new Set<string>([tail.uuid]);
   let expectedParentUuid: string | null = tail.parentUuid ?? null;
+  /** N1：环检测触发过 ⇒ 不走线性回退（uuid 重复会让线性解析产出重复消息）。 */
+  let cycleDetected = false;
 
   for (let i = tailIdx - 1; i >= 0 && expectedParentUuid !== null; i--) {
     let rec: (SessionRecord & Record<string, unknown>) | null = null;
@@ -1105,11 +1260,26 @@ function rebuildRecordOrder(lines: string[]): SessionRecord[] {
 
     if (seenUuids.has(rec.uuid)) {
       getLogger().warn("SESSION", `检测到会话记录链出现环（uuid=${rec.uuid}），提前截断恢复内容`);
+      cycleDetected = true;
       break;
     }
     seenUuids.add(rec.uuid);
     chain.push(rec);
     expectedParentUuid = rec.parentUuid ?? null;
+  }
+
+  // N1：链没走到链头（expectedParentUuid 仍非 null）⇒ 中途断了（坏行吃掉了它要找的 uuid）。
+  // 此时半截链里通常没有 session_start，返回它等于让整份会话读成 null 并被当损坏文件删掉。
+  // 回退线性解析，把两侧完好的记录全部捞回来（详见函数头注释）。
+  if (expectedParentUuid !== null && !cycleDetected) {
+    const linear = linearParseRecords(lines);
+    getLogger().warn(
+      "SESSION",
+      `会话记录链中断（缺失 uuid=${expectedParentUuid}，疑似坏行），回退线性解析：` +
+        `链式重建 ${chain.length} 条 → 线性 ${linear.length} 条`,
+    );
+    // 线性解析捞到的记录数不该少于半截链；真少了（极端情况）就保留原链，不做负优化。
+    if (linear.length >= chain.length) return linear;
   }
 
   chain.reverse();
