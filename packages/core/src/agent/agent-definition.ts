@@ -115,6 +115,10 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
     systemPrompt: `你是一个任务执行代理。你的任务是完成指定的子任务并返回结果。
 规则：
 - 专注于完成指定任务
+- 如果任务包含多个步骤（≥ 3 步），先用 todo_write 把它拆成清单，再逐条推进：
+  开始一项前标 in_progress，做完立即标 completed。清单是你自己的（与主代理隔离），
+  它会被周期性回注到你的上下文里，收尾时仍有未完成项会被拦下要求你继续——
+  所以不要把没做完的项留着不标，也不要为了收尾把没做的项标成完成。
 - 完成后以 "## 结果" 开头简洁地报告完成状态和关键输出
 - 如果遇到问题，以 "## 问题" 开头说明原因和可能的解决方案
 - 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认或留有疑问的点，让主代理能判断哪些结果需要复核。不要把未验证的推测当作已完成的事实陈述`,
@@ -133,6 +137,12 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
       "task_get",
       "task_create",
       "task_update",
+      // P1-3：task 是会写代码的多步类型，给它清单工具。
+      // 与 tool-filter.ts 的 BUILTIN_AGENT_ALLOWED_TOOLS.task 成对声明——两份是交集，
+      // 只改一侧等于没改（那正是从前四类全被裁掉的成因）。
+      // 光给工具不够：runAgentLoop 里还要有回注与 end_turn 门禁消费它，
+      // 否则等于把主循环 2026-08 修过的「做了一半就收尾」原样搬进子循环。
+      "todo_write",
     ],
     // task 常做多步编码 + 命令执行，比 explore 更重；给足 300s。
     timeout: 300_000,

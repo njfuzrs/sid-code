@@ -179,3 +179,96 @@ describe("PlanModeManager — getFidelityReport 指标计算", () => {
     expect(r.actualToolCallCount).toBe(0);
   });
 });
+
+// ============================================================
+// P1-2：非步骤章节（决策记录 / 风险 …）下的列表项不算步骤
+//
+// 为什么这组断言必须存在：countPlanSteps 的结果喂给 buildPlanApprovedMessage，
+// 而「todo 清单必须覆盖全部 N 步」这条强制令**只在 planStepCount >= 3 时下达**。
+// 口径虚高不只是数字难看，它会改变是否下达这条指令——一份只有 1 个真步骤的计划，
+// 只要按 buildPlanModePrompt 的要求写了两条决策记录，就会被下达「逐条覆盖」。
+// 更矛盾的是同一条批准消息里另有一句「不要推翻决策记录里的决定」：
+// 一条说这 N 项都要做，一条说其中 2 项不许做。
+//
+// 口径定成「排除非步骤章节」而不是「只数 ## 步骤 章节」，是为了向后兼容——
+// 大量既有计划不写「## 步骤」标题，反向口径会让它们步骤数恒为 0。
+// 下面第一组用例就是锁这个向后兼容的。
+// ============================================================
+describe("PlanModeManager — 步骤计数的章节口径 (P1-2)", () => {
+  test("向后兼容：不写任何标题的朴素计划，顶层项全部算步骤", () => {
+    const m = new PlanModeManager();
+    expect(m.parsePlanFromMarkdown("1. 读文件\n2. 改代码\n3. 跑测试\n").length).toBe(3);
+    expect(m.parsePlanFromMarkdown("- 步骤一\n- 步骤二\n").length).toBe(2);
+  });
+
+  test("向后兼容：只有普通标题（非关键词）时照常计数", () => {
+    const m = new PlanModeManager();
+    const steps = m.parsePlanFromMarkdown("# 我的计划\n\n## 实施步骤\n1. A\n2. B\n");
+    expect(steps.length).toBe(2);
+  });
+
+  test("决策记录小节下的列表项不算步骤（prompt 自己教模型写的那节）", () => {
+    const m = new PlanModeManager();
+    const md = [
+      "## 步骤",
+      "1. 读 package.json",
+      "2. 改 src/cli.ts",
+      "3. 跑 bun test",
+      "",
+      "## 决策记录",
+      "- 推迟 X：依赖未就绪",
+      "- 替代方案：用 Y",
+      "",
+      "## 风险",
+      "- 可能破坏缓存",
+      "* 另一个顶层星号项",
+      "",
+    ].join("\n");
+
+    const steps = m.parsePlanFromMarkdown(md);
+    // 修复前这里是 7：决策记录 2 条 + 风险 2 条都被算进去了
+    expect(steps.length).toBe(3);
+    expect(steps.map((s) => s.description)).toEqual([
+      "读 package.json",
+      "改 src/cli.ts",
+      "跑 bun test",
+    ]);
+  });
+
+  test("标题带编号/后缀也能识别（实际计划里标题很少是光秃秃的关键词）", () => {
+    const m = new PlanModeManager();
+    expect(
+      m.parsePlanFromMarkdown("## 步骤\n- A\n\n## 三、风险与回滚\n- 风险1\n- 风险2\n").length,
+    ).toBe(1);
+    expect(m.parsePlanFromMarkdown("- A\n\n## 决策记录（防漂移）\n- 推迟 X\n").length).toBe(1);
+  });
+
+  test("英文标题同口径（Risks / Background / Decisions）", () => {
+    const m = new PlanModeManager();
+    const md = "## Steps\n1. A\n2. B\n\n## Risks\n- r1\n\n## Background\n- b1\n";
+    expect(m.parsePlanFromMarkdown(md).length).toBe(2);
+  });
+
+  test("非步骤章节之后回到步骤章节要恢复计数（状态不能粘住）", () => {
+    const m = new PlanModeManager();
+    const md = "## 决策记录\n- 推迟 X\n\n## 实施步骤\n1. A\n2. B\n";
+    expect(m.parsePlanFromMarkdown(md).length).toBe(2);
+  });
+
+  test("整份计划只有决策记录时步骤数为 0（不再虚构步骤）", () => {
+    const m = new PlanModeManager();
+    expect(m.parsePlanFromMarkdown("## 决策记录\n- 推迟 X\n- 推迟 Y\n").length).toBe(0);
+  });
+
+  test("缩进子项仍然不计（原有口径不变）", () => {
+    const m = new PlanModeManager();
+    expect(m.parsePlanFromMarkdown("1. A\n   - 子项\n2. B\n").length).toBe(2);
+  });
+
+  test("阈值效应：1 个真步骤 + 2 条决策记录不应跨过 >= 3 的强制令门槛", () => {
+    const m = new PlanModeManager();
+    const md = "## 步骤\n1. 改一个文件\n\n## 决策记录\n- 推迟 A\n- 推迟 B\n";
+    // 修复前是 3，恰好触发「必须逐条覆盖全部 3 步」；修复后是 1，不触发
+    expect(m.parsePlanFromMarkdown(md).length).toBe(1);
+  });
+});
