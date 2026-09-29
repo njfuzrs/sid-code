@@ -26,12 +26,14 @@ import {
   emitStreamStall,
   armIneffectiveCheck,
   emitHttpConnected,
+  emitSseAnomaly,
   cacheDimsFor,
   chunkCountFields,
   makeFetchAbsoluteTimeoutSignal,
 } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
+import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { filterParamsForModel } from "./model-capability-filter.ts";
@@ -117,6 +119,34 @@ interface ToolCallState {
   name: string;
   arguments: string;
   contentIndex: number; // 对应的 content block 索引
+  /** `content_block_start` 发出时的 id / name —— 收尾时与最终值比对，不同则经 stop 修订 */
+  startedId: string;
+  startedName: string;
+  /** 是否已发过 content_block_stop（finish_reason 重复下发 / 统一收尾时防重复关闭） */
+  closed: boolean;
+}
+
+/**
+ * 把一片 tool_call 身份字段（`id` / `function.name`）并入已累积的值。
+ *
+ * OpenAI 协议里它们与 `arguments` 同属 delta 字段，**可能被切碎到多个 chunk**
+ * （`"Re"` + `"ad"`），也可能首片缺席、后片才到。所以不能「首片即锁定」。
+ *
+ * 但也不能无脑拼接：相当一部分 OpenAI 兼容实现（vLLM / 部分网关的重序列化）
+ * 会在**每个** chunk 里重复完整的 id 与 name —— 无脑拼接会得到
+ * `"call_abccall_abc"`，比截断更坏（它能过所有非空校验）。三条规则：
+ *
+ * 1. 与已累积值相同 → 视为重复下发，忽略；
+ * 2. 以已累积值为前缀 → 视为「累积式重发」（发的是到目前为止的全量），整体替换；
+ * 3. 其余 → 视为增量片段，追加。
+ *
+ * 代价：一个恰好与已累积值相同的**真实增量**（`"ab"` + `"ab"`）会被当成重复。
+ * 工具名与 `call_` 前缀 id 不会有这种形态，接受这个代价。
+ */
+export function mergeToolCallIdentityFragment(current: string, fragment: string): string {
+  if (!fragment || fragment === current) return current;
+  if (current && fragment.startsWith(current)) return fragment;
+  return current + fragment;
 }
 
 /**
@@ -2146,6 +2176,167 @@ export class OpenAIProvider implements Provider {
 
     // 空转崩溃修复：收到 [DONE] 后置位，让外层 while 立即退出，不再 reader.read()。
     let streamDone = false;
+    /** 本流是否见过 `[DONE]` 哨兵（区分「正常收尾」与「EOF 收尾」两种出口，仅作遥测） */
+    let sawDone = false;
+    /** reader 已返回 done（TCP 正常关闭）。与 streamDone 一起决定跳出 while */
+    let reachedEof = false;
+    /**
+     * D3：「本流的收尾事实」（usage / stop_reason）是否已交给下游。
+     *
+     * 此前这件事只在 `[DONE]` 分支里做 —— 而 `[DONE]` 是 OpenAI 族的**约定**不是协议，
+     * EOF 收尾、流内 error、字节级超时全都绕过它，于是 `message_delta`（OpenAI 族 usage 的
+     * **唯一**载体，本文件从不发 message_start）不发，主循环账本记 $0，
+     * 而 finally 里的 billing-sink 照记正确值 —— 两套账不一致，且错的是权威那套。
+     * 现在所有出口都经 {@link finishStream} / {@link flushUsageBeforeFailure}，由本标志去重。
+     */
+    let terminalFlushed = false;
+    const usageIsNonZero = (): boolean =>
+      usage.inputTokens > 0 ||
+      usage.outputTokens > 0 ||
+      (usage.cacheReadInputTokens ?? 0) > 0 ||
+      (usage.reasoningTokens ?? 0) > 0;
+
+    /**
+     * 关闭所有还开着的块（reasoning / 文本 / 工具），返回应 yield 的事件。
+     *
+     * finish_reason 到达时与统一收尾时共用这一份：EOF 前没等到 finish_reason 的流，
+     * 工具块此前永远收不到 content_block_stop，消费方的 `input` 停在初始化的 `{}`。
+     */
+    const closeOpenBlocks = (finishReasonForLog: string | null): StreamEvent[] => {
+      const out: StreamEvent[] = [];
+      if (reasoningBlockStarted) {
+        out.push({ type: "content_block_stop", index: nextContentIndex - 1 });
+        reasoningBlockStarted = false;
+      }
+      if (textBlockStarted) {
+        out.push({ type: "content_block_stop", index: textBlockIndex });
+        textBlockStarted = false;
+      }
+      for (const [tcIndex, state] of toolCalls) {
+        if (state.closed) continue;
+        state.closed = true;
+        // F3：工具块关闭时记录最终参数特征——
+        // args_len=0 → identity-only 退化（模型完全没填参数）；
+        // args_len>0 但 JSON.parse 失败 → broken-JSON（参数被发但截断/非法）。
+        // 二者在 stream-processor 都落成 input={}，但根因不同，此日志用于区分。
+        if (debugSse) {
+          let parseOk = true;
+          try {
+            if (state.arguments) JSON.parse(state.arguments);
+            else parseOk = false;
+          } catch {
+            parseOk = false;
+          }
+          dbg(
+            `tool_call close: name=${state.name || "?"} ` +
+              `finish=${finishReasonForLog} args_len=${state.arguments.length} ` +
+              `args_valid_json=${state.arguments.length > 0 && parseOk} ` +
+              `${state.arguments.length === 0 ? "[EMPTY-PARAM 退化]" : ""}`,
+          );
+        }
+        // D8 收尾校验：id 为空时合成一个本流内唯一的 id。
+        //
+        // 为什么合成而不是留空：id 的唯一用途是配对 tool_result，而配对双方
+        // （assistant 的 tool_calls[].id 与 tool 消息的 tool_call_id）都出自我们自己的历史，
+        // 只要两边一致服务端就接受；留空则下一轮必 400（OpenAI 族不匹配即拒）。
+        // name 为空无从合成 —— 只落遥测，交给下游的未知工具处置。
+        if (!state.id || !state.name) {
+          const missing = [!state.id && "id", !state.name && "name"].filter(Boolean);
+          if (!state.id) state.id = `call_sid_${billingFetchId}_${tcIndex}`;
+          getLogger().warn(
+            "SSE",
+            `tool_call[${tcIndex}] 收尾时缺 ${missing.join("/")}（${state.id ? "id 已合成" : ""}），上游未下发`,
+          );
+          emitSseAnomaly(parseObsIndex, {
+            kind: "tool_identity_missing",
+            missing,
+            tool_index: tcIndex,
+            model: this._model,
+          });
+        }
+        const revised = state.id !== state.startedId || state.name !== state.startedName;
+        if (revised && state.name && state.startedName !== state.name) {
+          emitSseAnomaly(parseObsIndex, {
+            kind: "tool_identity_revised",
+            tool_index: tcIndex,
+            started_name: state.startedName,
+            final_name: state.name,
+            id_revised: state.id !== state.startedId,
+            model: this._model,
+          });
+        }
+        out.push(
+          revised
+            ? {
+                type: "content_block_stop",
+                index: state.contentIndex,
+                tool_use: { id: state.id, name: state.name },
+              }
+            : { type: "content_block_stop", index: state.contentIndex },
+        );
+      }
+      return out;
+    };
+
+    /**
+     * 正常收尾（`[DONE]` 或 EOF）的**唯一**出口：关块 → completed 遥测 → message_delta → message_stop。
+     *
+     * `completed` 也挂在这里而不是 `[DONE]` 分支：digest 按 (session, index, 出现顺序)
+     * 把 first_content 与 completed 配对，缺一条就会把 A 轮的 TTFT 配给 B 轮的缓存命中。
+     */
+    const finishStream = (): StreamEvent[] => {
+      const out = closeOpenBlocks(pendingFinishReason);
+      emitStreamPhase(parseObsIndex, "completed", {
+        chunks: totalChunks,
+        empty_chunks: emptyChunks,
+        // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+        ...chunkCountFields(totalChunks, "chunks"),
+        duration_ms: Date.now() - requestStartAt,
+        model: this._model,
+        // D3：两种正常出口在遥测里可区分（EOF 收尾此前连 completed 都不发）
+        end: sawDone ? "done" : "eof",
+        // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
+        // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
+        // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
+        // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
+        ...cacheDimsFor(usage.cacheReadInputTokens ?? 0),
+      });
+      updateStreamStats(parseObsIndex, {
+        chunksReceived: totalChunks,
+        emptyChunks,
+        lastContentProgressAt,
+      });
+      if (!terminalFlushed && (pendingFinishReason || usageIsNonZero())) {
+        terminalFlushed = true;
+        out.push({
+          type: "message_delta",
+          delta: {
+            stop_reason: pendingFinishReason
+              ? OpenAIProvider.mapFinishReason(pendingFinishReason)
+              : null,
+          },
+          usage,
+        });
+        pendingFinishReason = null;
+      }
+      out.push({ type: "message_stop" });
+      return out;
+    };
+
+    /**
+     * 失败出口（流内 error / 超时 / abort）前把**已收到**的 usage 交出去。
+     *
+     * 只在确有量时发：OpenAI 族 usage 在流尾，中途失败时通常还是 0，发一条空 delta
+     * 只会让下游多一次空记账。stop_reason 置 null —— 流确实没有正常结束，
+     * 消费方拿到的 stopReason 与此前一致（本来就是 null），改变的只有 usage 不再丢。
+     * 这些 token 是真实计费的：消费侧 `discardedUsage` / 跨 attempt 累加都按此口径设计。
+     */
+    const flushUsageBeforeFailure = (): StreamEvent[] => {
+      if (terminalFlushed || !usageIsNonZero()) return [];
+      terminalFlushed = true;
+      return [{ type: "message_delta", delta: { stop_reason: null }, usage }];
+    };
+
     try {
       // 缺口 1：记录进入 SSE 消费阶段
       emitStreamPhase(parseObsIndex, "sse_consuming", { model: this._model });
@@ -2241,53 +2432,39 @@ export class OpenAIProvider implements Provider {
         }
 
         const { done, value } = result;
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+        // D1/D2：切行与字段解析走 sse-line.ts 的唯一实现（CRLF/LF/CR 皆认、
+        // `data:` 后空格可选）。此前 `split("\n")` + `startsWith("data: ")` 让无空格的
+        // 网关整流零事件、CRLF 网关 `[DONE]\r` 恒不命中 —— 两者都零报错。
+        let lines: string[];
+        if (done) {
+          // D3：EOF 也是合法收尾。decoder 残留与最后一段未以换行结尾的残行都要处理 ——
+          // 不以换行结尾的最后一个 usage chunk 丢掉，就是一整轮成本记 $0。
+          buffer += decoder.decode();
+          const split = splitSSELines(buffer);
+          lines = split.rest ? [...split.lines, split.rest] : split.lines;
+          buffer = "";
+          reachedEof = true;
+        } else {
+          buffer += decoder.decode(value, { stream: true });
+          const split = splitSSELines(buffer);
+          lines = split.lines;
+          buffer = split.rest;
+        }
 
         for (const line of lines) {
-          if (!line.trim() || line.startsWith(":")) continue;
-          if (!line.startsWith("data: ")) continue;
+          const field = parseSSEField(line);
+          if (!field || field.field !== "data") continue;
 
-          const data = line.slice(6);
-          if (data === "[DONE]") {
+          const data = field.value;
+          if (isDoneSentinel(data)) {
             markContentProgress();
             dbg(
               `[DONE] received after ${Date.now() - requestStartAt}ms chunks=${totalChunks} empty=${emptyChunks}`,
             );
-            // 缺口 1：记录流正常完成 + 更新最终统计
-            emitStreamPhase(parseObsIndex, "completed", {
-              chunks: totalChunks,
-              empty_chunks: emptyChunks,
-              // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
-              ...chunkCountFields(totalChunks, "chunks"),
-              duration_ms: Date.now() - requestStartAt,
-              model: this._model,
-              // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
-              // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
-              // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
-              // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
-              ...cacheDimsFor(usage.cacheReadInputTokens ?? 0),
-            });
-            updateStreamStats(parseObsIndex, {
-              chunksReceived: totalChunks,
-              emptyChunks,
-              lastContentProgressAt,
-            });
-            // [DONE] 前 flush 延迟的 message_delta（此时 usage 已更新）
-            if (pendingFinishReason) {
-              yield {
-                type: "message_delta",
-                delta: {
-                  stop_reason: OpenAIProvider.mapFinishReason(pendingFinishReason),
-                },
-                usage,
-              };
-              pendingFinishReason = null;
-            }
-            yield { type: "message_stop" };
+            sawDone = true;
+            // 收尾事件（completed 遥测 / 延迟的 message_delta / message_stop）不在这里发，
+            // 统一由 while 之后的 finishStream() 发 —— EOF 收尾走的是同一个出口（D3）。
+            //
             // 空转崩溃修复（2026-07 迁移 skill 崩溃复盘）：收到 [DONE] 表示流已逻辑完成，
             // 必须立即跳出、不再 reader.read()。此前用 continue 继续读，正常情况下服务端会
             // 紧接着 EOF 让 read() 返回 done；但某些网关在 [DONE] 后会把 socket 挂起数十秒
@@ -2317,6 +2494,8 @@ export class OpenAIProvider implements Provider {
               // server_error 重试 10 次。
               const upstreamTag = pickStreamErrorTag(chunk.error.type, chunk.error.code);
               const statusCode = streamErrorStatus(chunk.error);
+              // D3：error 事件之后消费方就抛了，已收到的 usage 必须赶在它前面交出去
+              for (const ev of flushUsageBeforeFailure()) yield ev;
               yield {
                 type: "error",
                 error: {
@@ -2439,7 +2618,17 @@ export class OpenAIProvider implements Provider {
               for (const tc of delta.tool_calls) {
                 const tcIndex = tc.index ?? 0;
 
-                if (!toolCalls.has(tcIndex)) {
+                let existing = toolCalls.get(tcIndex);
+                if (existing) {
+                  // D8：id / name 与 arguments 同属 delta 字段，按片合并（不再「首片即锁定」）。
+                  // 最终值与 start 时不同 → 收尾时经 content_block_stop.tool_use 修订下游。
+                  if (typeof tc.id === "string") {
+                    existing.id = mergeToolCallIdentityFragment(existing.id, tc.id);
+                  }
+                  if (typeof tc.function?.name === "string") {
+                    existing.name = mergeToolCallIdentityFragment(existing.name, tc.function.name);
+                  }
+                } else {
                   // 新工具调用开始
                   // 如果文本块已开始，先关闭它
                   if (textBlockStarted) {
@@ -2448,12 +2637,20 @@ export class OpenAIProvider implements Provider {
                   }
 
                   const contentIdx = nextContentIndex;
+                  // content_block_start 必须现在发（否则 arguments 增量无处落位），
+                  // 所以这里的 id / name 可能是空串或半截 —— 见 ToolCallState.startedId。
+                  const id = typeof tc.id === "string" ? tc.id : "";
+                  const name = typeof tc.function?.name === "string" ? tc.function.name : "";
                   const state: ToolCallState = {
-                    id: tc.id || "",
-                    name: tc.function?.name || "",
+                    id,
+                    name,
                     arguments: "",
                     contentIndex: contentIdx,
+                    startedId: id,
+                    startedName: name,
+                    closed: false,
                   };
+                  existing = state;
                   toolCalls.set(tcIndex, state);
                   nextContentIndex = contentIdx + 1;
 
@@ -2469,16 +2666,7 @@ export class OpenAIProvider implements Provider {
                   };
                 }
 
-                const state = toolCalls.get(tcIndex)!;
-
-                // 补充 id（首个 chunk 可能没有 id）
-                if (tc.id && !state.id) {
-                  state.id = tc.id;
-                }
-                // 补充 name
-                if (tc.function?.name && !state.name) {
-                  state.name = tc.function.name;
-                }
+                const state = existing;
 
                 if (tc.function?.arguments) {
                   state.arguments += tc.function.arguments;
@@ -2502,41 +2690,8 @@ export class OpenAIProvider implements Provider {
 
             // 完成：延迟 message_delta，等 usage chunk 到达后再 yield
             if (finishReason) {
-              // 关闭 reasoning 块（如果还没关闭）
-              if (reasoningBlockStarted) {
-                yield { type: "content_block_stop", index: nextContentIndex - 1 };
-                reasoningBlockStarted = false;
-              }
-
-              // 关闭文本块（如果还没关闭）
-              if (textBlockStarted) {
-                yield { type: "content_block_stop", index: textBlockIndex };
-                textBlockStarted = false;
-              }
-
-              // 关闭所有工具调用块
-              for (const [, state] of toolCalls) {
-                // F3：工具块关闭时记录最终参数特征——
-                // args_len=0 → identity-only 退化（模型完全没填参数）；
-                // args_len>0 但 JSON.parse 失败 → broken-JSON（参数被发但截断/非法）。
-                // 二者在 stream-processor 都落成 input={}，但根因不同，此日志用于区分。
-                if (debugSse) {
-                  let parseOk = true;
-                  try {
-                    if (state.arguments) JSON.parse(state.arguments);
-                    else parseOk = state.arguments.length === 0 ? false : true;
-                  } catch {
-                    parseOk = false;
-                  }
-                  dbg(
-                    `tool_call close: name=${state.name || "?"} ` +
-                      `finish=${finishReason} args_len=${state.arguments.length} ` +
-                      `args_valid_json=${state.arguments.length > 0 && parseOk} ` +
-                      `${state.arguments.length === 0 ? "[EMPTY-PARAM 退化]" : ""}`,
-                  );
-                }
-                yield { type: "content_block_stop", index: state.contentIndex };
-              }
+              // 关闭 reasoning / 文本 / 全部工具块（与统一收尾共用一份，含 D8 身份修订）
+              for (const ev of closeOpenBlocks(finishReason)) yield ev;
 
               // §4.4：DeepSeek 特有 insufficient_system_resource（推理系统资源不足中断，
               // deepseek-api.md:2094-2096 明确要求 openai.ts 视为可重试）。此前落 default→end_turn
@@ -2544,6 +2699,7 @@ export class OpenAIProvider implements Provider {
               // 的 classifyError 归为 overloaded → 触发重试/降级链，而非吞掉。
               if (finishReason === "insufficient_system_resource") {
                 dbg(`finish_reason=insufficient_system_resource → 转可重试 error`);
+                for (const ev of flushUsageBeforeFailure()) yield ev;
                 yield {
                   type: "error",
                   error: {
@@ -2560,9 +2716,9 @@ export class OpenAIProvider implements Provider {
           }
         }
 
-        // 空转崩溃修复：[DONE] 已处理完（含 message_stop / 延迟 message_delta 的 yield），
-        // 跳出外层 while，不再 reader.read()（否则会卡在网关延迟关闭的 socket 上空转）。
-        if (streamDone) break;
+        // 空转崩溃修复：收到 [DONE] 即跳出外层 while，不再 reader.read()
+        // （否则会卡在网关延迟关闭的 socket 上空转）。EOF 同样到此为止。
+        if (streamDone || reachedEof) break;
 
         // Fix 2: content progress timeout — 每次 reader.read() settle 后检查
         // 即使 TCP 层有字节到达（空行/ping），只要无有效内容进展就超时中断
@@ -2591,6 +2747,26 @@ export class OpenAIProvider implements Provider {
           throw new Error(`SSE 内容进展超时：${CONTENT_PROGRESS_TIMEOUT_MS / 1000}s 无有效内容`);
         }
       }
+
+      // D3：`[DONE]` 与 EOF 两种正常收尾走同一个出口。
+      // `[DONE]` 是 OpenAI 族的约定、不是 SSE 规范；非流式转流式的网关、合成 SSE 帧的中转站
+      // 都可能直接关连接。此前这条出口之后什么都不发 → usage / stop_reason / completed 全丢。
+      if (!sawDone) {
+        dbg(`EOF without [DONE] after ${Date.now() - requestStartAt}ms chunks=${totalChunks}`);
+        emitSseAnomaly(parseObsIndex, {
+          kind: "eof_without_done",
+          chunks: totalChunks,
+          had_finish_reason: pendingFinishReason !== null,
+          model: this._model,
+        });
+      }
+      for (const ev of finishStream()) yield ev;
+    } catch (err) {
+      // D3：超时 / abort / 读错误等失败出口，把已收到的 usage 赶在异常前交给下游 ——
+      // 消费方的跨 attempt 累加与 discardedUsage 旁路都只认 message_delta 这一个载体。
+      // （调用方提前 return() 的出口无法再 yield，那条由 finally 里的 billing-sink 兜底。）
+      for (const ev of flushUsageBeforeFailure()) yield ev;
+      throw err;
     } finally {
       clearInterval(stallLogger);
       // ─── PR3（档 A）：计费发生侧收口 —— 「钱花了」的权威事实源 ───

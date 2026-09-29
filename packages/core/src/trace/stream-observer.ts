@@ -1129,6 +1129,41 @@ export const TIMER_DRIFT_RATIO = 3;
  * 记录流 stall（长时间无内容进展）。
  * 调用点：openai.ts stall 检查逻辑。
  */
+/**
+ * SSE 线格式异常（parseSSE 发现「上游分帧与我们预期不同」但仍能继续时发一条）。
+ *
+ * 为什么要单独一类事件：这类问题的共同形态是**不报错**——D1（`data:` 无空格）
+ * 整流零事件、D3（无 `[DONE]` 直接 EOF）usage 丢失、D8（tool_call 身份被切碎）
+ * 工具名截断，此前全部静默。修掉之后如果还没有信号，就无法回答
+ * 「这条防线在真实会话里被触发过没有」—— 本仓对新增防线的验收判据恰恰是这个。
+ *
+ * `kind` 闭集：
+ * - `eof_without_done`：流以 EOF 结束、没有 `[DONE]` 哨兵（已走统一收尾补发）
+ * - `tool_identity_revised`：tool_call 的 id/name 在 start 之后才补全或被切碎，已经 stop 修订
+ * - `tool_identity_missing`：收尾时 tool_call 仍无 id（已合成）或无 name
+ */
+export function emitSseAnomaly(
+  index: number,
+  data: {
+    kind: "eof_without_done" | "tool_identity_revised" | "tool_identity_missing";
+    model?: string;
+    [k: string]: unknown;
+  },
+): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "SseAnomaly",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { index, ...data },
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
 export function emitStreamStall(
   index: number,
   data: {
