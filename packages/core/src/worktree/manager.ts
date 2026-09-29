@@ -6,7 +6,7 @@
  *
  * 设计要点：
  * - Fail-Closed：Git 命令失败时 countChanges 返回 null，调用方拒绝删除
- * - Post-Creation Setup：symlink 可配置目录、复制 settings.local、配置共享 hooks、.worktreeinclude
+ * - Post-Creation Setup：symlink 可配置目录、复制 settings.local、.worktreeinclude（不写任何 git config，W6）
  * - 扁平化 slug：避免 Git D/F（目录/文件）冲突
  * - Hook-based VCS：非 git 仓库可经 WorktreeCreate/Remove hook 接管
  * - Canonical root：穿透 worktree pointer 定位主仓根，防嵌套
@@ -23,7 +23,7 @@ import {
   chmodSync,
   lstatSync,
 } from "fs";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 import { getLogger } from "../debug/logger.ts";
 import type { WorktreeSession, WorktreeChanges, CreateWorktreeOptions } from "./types.ts";
 import { validateWorktreeSlug, flattenSlug, branchNameForSlug } from "./slug.ts";
@@ -145,10 +145,16 @@ export class WorktreeManager {
     const originalBranch = this.getCurrentBranch();
     const headCommit = this.getHeadCommit();
 
+    // W9：必须在 resolveBaseTreeish 之前 —— PR 模式的 fetch 会直接改写这条分支。
+    this.assertBranchSafeToReset(branchName);
+
     // 解析基准 ref（P1-3 PR / P2-3 baseRef）
     const baseTreeIsh = this.resolveBaseTreeish(opts, branchName, worktreePath);
 
-    // 创建 worktree（-B 强制重建分支，避免残留分支冲突，D4）
+    // 创建 worktree（-B：分支残留时重建，D4）。
+    // ⚠️ -B 会无条件把已存在的分支拨到 baseTreeIsh，分不清「上次失败留下的空分支」和
+    // 「上面有别人提交的分支」（W9）。后者已由上面的 assertBranchSafeToReset 挡掉，
+    // 走到这里的已存在分支都是「重置不丢任何 commit」的那一种。
     execFileSync("git", ["worktree", "add", "-B", branchName, worktreePath, baseTreeIsh], {
       cwd: this.gitRoot,
       stdio: ["pipe", "pipe", "pipe"],
@@ -286,6 +292,48 @@ export class WorktreeManager {
       log.warn("WORKTREE", `baseRef ${opts.baseRef} 不存在，fallback HEAD`);
     }
     return "HEAD";
+  }
+
+  /**
+   * W9：`worktree add -B` 之前确认重置这条分支不会让任何 commit 失去分支指针。
+   *
+   * 判据与 GC 的 countUnreachableCommits 同源：分支上「除它自己以外任何 branch / tag /
+   * remote ref 都够不到」的 commit 数。> 0 即拒绝 —— 那是别人（或上一次同名会话）的工作，
+   * 重置后只剩 reflog 指着它，而 remove() 的 `branch -D` 会连 reflog 一起删。
+   * 分支不存在 / 残留空分支 → 放行，保住 D4 的幂等性。
+   *
+   * 为什么报错而不是换个分支名继续：换名会让同名 `enter_worktree` 每次落到不同分支上，
+   * 用户以为回到了自己的工作，其实是一条新分支；报错把决定交还给人，且可恢复。
+   */
+  private assertBranchSafeToReset(branchName: string): void {
+    if (!this.refExists(`refs/heads/${branchName}`)) return;
+    let unique: number;
+    try {
+      const out = execFileSync(
+        "git",
+        [
+          "rev-list",
+          "--count",
+          `refs/heads/${branchName}`,
+          "--not",
+          `--exclude=${branchName}`,
+          "--branches",
+          "--tags",
+          "--remotes",
+        ],
+        { cwd: this.gitRoot, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+      ).trim();
+      unique = parseInt(out, 10);
+      if (Number.isNaN(unique)) unique = 1;
+    } catch {
+      unique = 1; // 数不出来按「有工作」处理（fail-closed）
+    }
+    if (unique > 0) {
+      throw new Error(
+        `分支 ${branchName} 已存在且有 ${unique} 个仅在该分支上的 commit，拒绝重置以免丢失工作。` +
+          `请换一个 worktree 名称，或先手动处理该分支（合并 / 重命名 / git branch -D）。`,
+      );
+    }
   }
 
   /** ref 是否存在 */
@@ -496,14 +544,17 @@ export class WorktreeManager {
     // P2-9：等待 git 释放 .git/worktrees/<name>/locked，防后续 branch -D 锁冲突
     await new Promise((resolve) => setTimeout(resolve, GIT_LOCK_WAIT_MS));
 
-    // 删除临时分支
-    try {
-      execFileSync("git", ["branch", "-D", session.worktreeBranch], {
-        cwd: this.gitRoot,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch {
-      // 分支可能已不存在，忽略
+    // 删除临时分支。空字符串 = 调用方确认这不是我们建的分支（GC 读到 detached HEAD
+    // 或用户自己的分支，W8），此时一条分支都不删。
+    if (session.worktreeBranch) {
+      try {
+        execFileSync("git", ["branch", "-D", session.worktreeBranch], {
+          cwd: this.gitRoot,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+      } catch {
+        // 分支可能已不存在，忽略
+      }
     }
 
     // 清理 Git 内部孤立条目
@@ -569,39 +620,24 @@ export class WorktreeManager {
       WorktreeManager.managedSymlinks.set(worktreePath, symlinkedDirs);
     }
 
-    // 2. 配置 core.hooksPath（共享主仓库 hooks，幂等：已正确则跳过，D22）
-    const hooksPath = join(this.gitRoot, ".git", "hooks");
-    if (existsSync(hooksPath)) {
-      try {
-        let current = "";
-        try {
-          current = execFileSync("git", ["config", "--get", "core.hooksPath"], {
-            cwd: worktreePath,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          }).trim();
-        } catch {
-          /* 未设置 */
-        }
-        if (current !== hooksPath) {
-          execFileSync("git", ["config", "core.hooksPath", hooksPath], {
-            cwd: worktreePath,
-            stdio: ["pipe", "pipe", "pipe"],
-          });
-        }
-      } catch {
-        /* 非关键，忽略 */
-      }
-    }
+    // 2.（已删除，W6）曾在这里 `git config core.hooksPath <主仓>/.git/hooks`。
+    // worktree 没有自己的仓库级 config，那条命令写进的是**主仓** .git/config：
+    // 覆盖用户已有的值（husky 的 `.husky`）、remove() 时不还原、且绕过了权限层把
+    // `git config core.hooksPath` 列为 high 危险的那道门。而它想达到的效果本来就是
+    // git 的默认行为 —— 没设 core.hooksPath 时 worktree 直接用主仓 .git/hooks（实测）。
+    // ⛔ 不要加回来，也不要改成 `--worktree`：后者要求先在主仓开 extensions.worktreeConfig，
+    //    同样是改主仓配置。
 
     // 3. 复制 settings.local.json（P1-5）
     if (cfg.copyLocalSettings) {
       this.copyLocalSettings(worktreePath);
     }
 
-    // 4. commit 归因 hook（P2-4，可选）
+    // 4. commit 归因 hook（P2-4，可选）。装不进本 worktree 专属目录时返回告警（W7）
+    const warnings: string[] = [];
     if (cfg.commitAttribution) {
-      this.installCommitAttributionHook(worktreePath);
+      const attrWarn = this.installCommitAttributionHook(worktreePath);
+      if (attrWarn) warnings.push(attrWarn);
     }
 
     // 5. .worktreeinclude 文件复制（P1-4）
@@ -613,7 +649,6 @@ export class WorktreeManager {
 
     // 6. 创建期告警（比 CC 更进一步：把 symlink node_modules 的静默版本错乱 + DB 冲突
     //    变成显式提示；条件不成立时零输出，无噪音）。best-effort，异常不阻断。
-    const warnings: string[] = [];
     try {
       const depWarn = checkDependencyConsistency(worktreePath, this.gitRoot, symlinkedNodeModules);
       if (depWarn) warnings.push(depWarn);
@@ -646,28 +681,58 @@ export class WorktreeManager {
     }
   }
 
-  /** 安装 commit 归因 hook（P2-4） */
-  private installCommitAttributionHook(worktreePath: string): void {
+  /**
+   * 安装 commit 归因 hook（P2-4）。返回告警文本（未安装且用户该知道时），否则 undefined。
+   *
+   * ⚠️ W7：只允许写进**这个 worktree 专属**的 git dir（`--absolute-git-dir`）。
+   * 旧实现把 `rev-parse --git-path hooks` 的结果当相对路径再 join 一次，而那条命令
+   * 返回的是绝对路径、且在未设 core.hooksPath 时指向**主仓** `.git/hooks`
+   * （git 没有 per-worktree hooks 目录，实测 `.git/worktrees/<name>/hooks` 里的脚本不会被执行）。
+   * 结果是「打开开关 → 主仓此后每次 commit 都被追加归因」，worktree 删了 hook 还在。
+   *
+   * 所以现在解析出的 hooks 目录只要落在本 worktree 的 git dir 之外（= 共享目录），
+   * 就不安装。唯一能装上的形态是用户自己开了 extensions.worktreeConfig 并给这个
+   * worktree 设了 per-worktree core.hooksPath —— 那是用户的显式决定，不是我们替他改主仓。
+   * 归因的主通道本来就是 commit 类 skill 注入的 settings.git.commitAttribution，
+   * 不依赖这个 hook。
+   */
+  private installCommitAttributionHook(worktreePath: string): string | undefined {
     const log = getLogger();
-    const hookDir = join(worktreePath, ".git", "hooks");
-    const hookPath = join(hookDir, "prepare-commit-msg");
-    // 不覆盖已存在的 hook
-    if (existsSync(hookPath)) return;
-    // worktree 的 .git 是 pointer file，hooks 实际在主仓 worktrees/<name>/ 下，
-    // 直接用 git rev-parse 找到该 worktree 的 git dir
-    let gitDir = "";
-    try {
-      gitDir = execFileSync("git", ["rev-parse", "--git-path", "hooks"], {
+    const runGit = (args: string[]): string =>
+      execFileSync("git", args, {
         cwd: worktreePath,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
+
+    let hooksDir: string;
+    let ownGitDir: string;
+    try {
+      // --path-format=absolute：不管 git 版本返回相对还是绝对，统一成绝对（git ≥ 2.31）
+      hooksDir = resolve(
+        worktreePath,
+        runGit(["rev-parse", "--path-format=absolute", "--git-path", "hooks"]),
+      );
+      ownGitDir = resolve(runGit(["rev-parse", "--absolute-git-dir"]));
     } catch {
-      return;
+      return undefined;
     }
-    const realHookDir = join(worktreePath, gitDir);
+    if (hooksDir !== ownGitDir && !hooksDir.startsWith(ownGitDir + sep)) {
+      log.warn(
+        "WORKTREE",
+        `commit 归因 hook 未安装：hooks 目录 ${hooksDir} 为主仓共享，写入会影响主仓全部提交（W7）`,
+      );
+      return (
+        "worktree.commitAttribution 已开启但未安装归因 hook：git 的 hooks 目录由主仓与全部 worktree 共享，" +
+        "装进去会改变主仓每一次 commit。归因仍会经 commit 类 skill 按 settings.git.commitAttribution 注入。"
+      );
+    }
+    const realHookDir = hooksDir;
     const realHookPath = join(realHookDir, "prepare-commit-msg");
-    if (existsSync(realHookPath)) return;
+    if (existsSync(realHookPath)) {
+      log.debug("WORKTREE", `已存在 ${realHookPath}，不覆盖，跳过归因 hook 安装`);
+      return undefined;
+    }
 
     // P3-1：归因文本读同一份 config（settings.git.commitAttribution），不再硬编码。
     // enabled=false 时不安装 hook（用户全局关闭归因）。
@@ -687,7 +752,7 @@ export class WorktreeManager {
         "WORKTREE",
         "commit 归因已关闭（settings.git.commitAttribution.enabled=false），跳过 hook 安装",
       );
-      return;
+      return undefined;
     }
 
     // 安全转义：归因文本用单引号包裹注入 shell，转义内部单引号（'\'' 惯用法）。
@@ -710,6 +775,7 @@ fi
     } catch (err: any) {
       log.warn("WORKTREE", `安装 commit 归因 hook 失败（非关键）: ${err.message}`);
     }
+    return undefined;
   }
 
   // ── 辅助方法 ──

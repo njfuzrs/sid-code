@@ -92,7 +92,7 @@ export function setEnabledSettingSources(
 }
 
 /** 当前生效的 SettingSource 列表（受 --setting-sources 过滤，见 setEnabledSettingSources） */
-function getEnabledSettingSources(): readonly SettingSource[] {
+export function getEnabledSettingSources(): readonly SettingSource[] {
   if (enabledDiskSources === null) return SETTING_SOURCES;
   return SETTING_SOURCES.filter((s) => enabledDiskSources!.has(s));
 }

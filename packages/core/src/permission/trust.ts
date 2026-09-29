@@ -7,7 +7,7 @@
 
 import { join } from "path";
 import { homedir } from "os";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -235,6 +235,41 @@ export class TrustManager {
     const trusted = await this.loadTrustedProjects();
     trusted.projects = trusted.projects.filter((p) => p.pathHash !== pathHash);
     await this.saveTrustedProjects(trusted);
+  }
+
+  /**
+   * isTrusted 的同步版本，只读持久化记录（不含 session-only 信任）。
+   *
+   * 给**同步**调用链用的：worktree hook 的读取点（`hasWorktreeCreateHook`）是同步函数，
+   * 且被 cli.ts 的工具注册条件同步调用，改成 async 会把整条链拖成 async。
+   * 判据与 isTrusted 完全一致（路径 hash + 配置 hash），差别只在不认 sessionTrust ——
+   * 那个状态只存在于某一个 TrustManager 实例里，别的调用方本来就拿不到。
+   * 同会话内用户点了「信任」会走 trust() 落盘，这里随后就能读到。
+   */
+  isTrustedSync(): boolean {
+    if (this.isHomeDirectory()) return false;
+    try {
+      const file = trustedProjectsPath();
+      if (!existsSync(file)) return false;
+      const data = JSON.parse(readFileSync(file, "utf-8")) as TrustedProjectsFile;
+      const record = data.projects?.find((p) => p.pathHash === this.getPathHash());
+      if (!record) return false;
+      return record.configHash === this.getConfigHashSync();
+    } catch {
+      return false; // 读不出来一律当未信任（fail-closed）
+    }
+  }
+
+  /** getConfigHash 的同步版本（口径必须与之一字不差，否则同步/异步两条路判出不同结论） */
+  private getConfigHashSync(): string {
+    const settingsPath = join(this.workspacePath, ".sid-code", "settings.json");
+    try {
+      if (!existsSync(settingsPath)) return "empty";
+      const content = readFileSync(settingsPath, "utf-8");
+      return createHash("sha256").update(content).digest("hex").slice(0, 16);
+    } catch {
+      return "error";
+    }
   }
 
   /** 是否为家目录 */
