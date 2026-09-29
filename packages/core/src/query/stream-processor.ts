@@ -386,6 +386,12 @@ export async function processStream(
           const jsonStr = jsonAccumulators.get(event.index);
           if (jsonStr !== undefined) {
             const block = response.content[pos];
+            // D8：provider 在 stop 时修订 tool_use 身份（OpenAI 族 id/name 可能首片缺席或被切碎），
+            // 必须先于 input 解析与 onToolUseComplete 覆盖 —— 否则下游拿到的是 start 时的空串/半截。
+            if (block?.type === "tool_use" && event.tool_use) {
+              block.id = event.tool_use.id;
+              block.name = event.tool_use.name;
+            }
             if (block?.type === "tool_use") {
               // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
               try {

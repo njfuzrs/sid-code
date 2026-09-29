@@ -290,7 +290,22 @@ export type StreamEvent =
       _raw_block?: unknown;
     }
   | { type: "content_block_delta"; index: number; delta: TextDelta | InputJsonDelta }
-  | { type: "content_block_stop"; index: number }
+  | {
+      type: "content_block_stop";
+      index: number;
+      /**
+       * tool_use 块的**最终**身份（仅当它与 `content_block_start` 时发出的不同）。
+       *
+       * OpenAI 族的 `id` / `function.name` 与 `arguments` 同属 delta 字段，可能首片缺席、
+       * 也可能被切碎到多个 chunk；而 `content_block_start` 必须在首片到达时就发出
+       * （否则 arguments 增量无处落位）。于是 start 里的身份可能是空串或半截，
+       * 这里是它的修订通道：消费方在 stop 时若见到本字段，**必须**用它覆盖块上的 id/name，
+       * 且要在解析 input / 回调 onToolUseComplete 之前覆盖。
+       *
+       * 不发这个字段 = start 时的身份就是最终身份（Anthropic 族恒如此）。
+       */
+      tool_use?: { id: string; name: string };
+    }
   | {
       type: "message_delta";
       delta: { stop_reason: string | null };

@@ -435,6 +435,11 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
         const jsonStr = jsonAccumulators.get(event.index);
         if (jsonStr !== undefined) {
           const block = content[event.index];
+          // D8：provider 在 stop 时修订 tool_use 身份（见 StreamEvent.content_block_stop.tool_use）
+          if (block?.type === "tool_use" && event.tool_use) {
+            block.id = event.tool_use.id;
+            block.name = event.tool_use.name;
+          }
           if (block?.type === "tool_use") {
             // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
             try {

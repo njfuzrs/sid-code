@@ -36,6 +36,7 @@
  *   - Vercel AI SDK: packages/openai/src/openai-chat-language-model.ts
  */
 
+import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
 import type { StreamEvent, Usage } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { applyResponsesUsage } from "./openai-usage.ts";
@@ -446,6 +447,10 @@ async function* readSSEEvents(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // 当前事件已收集的行（空行 = 事件分隔时整体交给 parseSSEBlock）。
+  // 切行走 sse-line.ts 的唯一实现：此前按 `indexOf("\n\n")` 切块，CRLF 流下
+  // 永远找不到分隔符，整条流堆在 buffer 里直到 EOF 才被当成**一个**事件解析。
+  let eventLines: string[] = [];
 
   try {
     while (true) {
@@ -455,21 +460,29 @@ async function* readSSEEvents(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-
-      // 按双换行分割事件
-      let boundary: number;
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-        const eventBlock = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-
-        const parsed = parseSSEBlock(eventBlock);
-        if (parsed) yield parsed;
+      const { lines, rest } = splitSSELines(buffer);
+      buffer = rest;
+      for (const line of lines) {
+        if (line === "") {
+          if (eventLines.length > 0) {
+            const parsed = parseSSEBlock(eventLines);
+            eventLines = [];
+            if (parsed) yield parsed;
+          }
+        } else {
+          eventLines.push(line);
+        }
       }
     }
 
-    // 处理尾部数据（无 trailing \n\n 的最后一个事件）
-    if (buffer.trim()) {
-      const parsed = parseSSEBlock(buffer);
+    // 处理尾部数据（无 trailing 空行的最后一个事件）
+    buffer += decoder.decode();
+    const { lines, rest } = splitSSELines(buffer);
+    for (const line of rest ? [...lines, rest] : lines) {
+      if (line !== "") eventLines.push(line);
+    }
+    if (eventLines.length > 0) {
+      const parsed = parseSSEBlock(eventLines);
       if (parsed) yield parsed;
     }
   } finally {
@@ -478,28 +491,31 @@ async function* readSSEEvents(
 }
 
 /**
- * 解析单个 SSE 事件块
+ * 解析单个 SSE 事件块（已切好的行，不含分隔空行）
  * 格式：
  *   event: response.output_text.delta
  *   data: {"type":"response.output_text.delta","delta":"Hello",...}
+ *
+ * 字段语法走 sse-line.ts 的 parseSSEField（冒号后**一个**可选空格、注释行忽略）。
+ * 多行 data 按规范用 `\n` 连接。
  */
-function parseSSEBlock(block: string): ResponsesStreamEvent | null {
+function parseSSEBlock(lines: string[]): ResponsesStreamEvent | null {
   let eventType = "";
-  let data = "";
+  const dataParts: string[] = [];
 
-  for (const line of block.split("\n")) {
-    if (line.startsWith("event:")) {
-      eventType = line.slice(6).trim();
-    } else if (line.startsWith("data:")) {
-      const payload = line.slice(5).trim();
-      if (payload === "[DONE]") return null;
-      data += payload;
-    } else if (line.startsWith(":")) {
-      // SSE 注释（keep-alive），忽略
+  for (const line of lines) {
+    const f = parseSSEField(line);
+    if (!f) continue; // 注释（keep-alive）
+    if (f.field === "event") {
+      eventType = f.value.trim();
+    } else if (f.field === "data") {
+      if (isDoneSentinel(f.value)) return null;
+      dataParts.push(f.value);
     }
   }
 
-  if (!data) return null;
+  const data = dataParts.join("\n");
+  if (!data.trim()) return null;
 
   try {
     const parsed = JSON.parse(data) as ResponsesStreamEvent;
