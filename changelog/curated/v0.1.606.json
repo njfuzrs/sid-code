@@ -1,0 +1,82 @@
+{
+  "version": "0.1.606",
+  "highlight": "会话恢复不再丢历史，无头模式支持管道输入",
+  "userFacing": true,
+  "sections": [
+    {
+      "title": "破坏性变更",
+      "items": [
+        "模型端点只认 SID_CODE_LLM_BASE_URL，ANTHROPIC_BASE_URL 与 OPENAI_BASE_URL 不再生效",
+        "无头模式触发预算硬停时以退出码 1 结束，结果类型为 error_max_budget_usd"
+      ]
+    },
+    {
+      "title": "新功能",
+      "items": [
+        "无头模式可从管道读入提示，例如 cat f.txt | sid-code -p \"总结\"",
+        "企业可通过 SID_CODE_BUDGET_ENDPOINT 远程下发预算上限",
+        "用量账本可经 SID_CODE_USAGE_ENDPOINT 上报，失败自动落盘重放",
+        "企业策略可远程关闭 Bridge",
+        "新增 SID_CODE_DISABLE_CRON 一键禁用定时任务"
+      ]
+    },
+    {
+      "title": "改进",
+      "items": [
+        "TUI 默认回到主屏，可直接拖选复制",
+        "baseURL 被模型配置覆盖时在启动横幅提示",
+        "--include-partial-messages 能收到逐字增量",
+        "无头模式输出被拒绝的工具调用清单",
+        "子代理沿用主会话同一套 effort 档位",
+        "IDE 多窗口打开同一工作区时自动识别当前窗口"
+      ]
+    },
+    {
+      "title": "修复",
+      "items": [
+        "会话文件坏一行不再整份判废并被清理",
+        "崩溃后续写的消息不再被半行吞掉",
+        "-c 不再被空壳或子代理会话文件挡住真正的上次会话",
+        "压缩后回退对话不再静默空转，二进制文件回滚不再损坏",
+        "后台子代理声明 worktree 隔离时不再直接改主仓",
+        "新会话不再被自动切进别的会话的 worktree",
+        "任务依赖成环校验失败时不再留下半写入的环",
+        "复合命令用 & 或换行拼接不再绕过权限确认",
+        "Bridge 不再把 token 回显到日志，权限弹窗犹豫超过一分钟不再被踢下线",
+        "webhook 未配 secret 时拒绝请求",
+        "配置文件里显式写 false 不再被默认值盖回",
+        "预算硬停不再记成用户中断",
+        "定时任务新增会话与全局数量上限"
+      ]
+    }
+  ],
+  "commits": [
+    "d62c99cd",
+    "67a641a8",
+    "c0409e1b",
+    "0af74661",
+    "e1291e6c",
+    "0909ddfa",
+    "853c8ffd",
+    "a5d1a795",
+    "f61d63cb",
+    "c6a20417",
+    "d94359de",
+    "294efc3b",
+    "ede17275",
+    "3028ceb6",
+    "8ceb88ed",
+    "53ebaceb",
+    "25f32a1b",
+    "9dcefe93",
+    "633e5a57",
+    "37f4a917",
+    "026879a5",
+    "90ef8ef2",
+    "cd651f5a",
+    "75ded295"
+  ],
+  "discarded": ["c00c9439", "710ef7dd", "9dc83a4f"],
+  "generatedBy": "manual",
+  "reviewedBy": "human"
+}

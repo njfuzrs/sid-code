@@ -158,6 +158,10 @@ function runHookCommand(
       }
     });
 
+    // hook 不读 stdin 且很快退出（如 `printf /path`）时，写入会以**异步** error 事件报 EPIPE，
+    // 下面的 try/catch 接不住。不挂监听就会顶掉 close 分支里真正的结果（CI ubuntu 上实测：
+    // 本该是「根目录」校验错误，拿到的却是 EPIPE）。stdin 是可选输入，失败一律忽略。
+    proc.stdin?.on("error", () => {});
     try {
       proc.stdin?.write(JSON.stringify(payload));
       proc.stdin?.end();
