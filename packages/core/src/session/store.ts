@@ -35,6 +35,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { resolveProjectRoot, sanitizeProjectKey } from "../memory/paths.ts";
 import { generateSessionId } from "./id.ts";
+import { isSidechainContent } from "./sidechain.ts";
 
 /** 当前会话数据格式版本。1.0=旧版全量 JSON；2.0=JSONL 事件溯源（无链）；3.0=+uuid/parentUuid 链 */
 const CURRENT_VERSION = "3.0";
@@ -792,11 +793,37 @@ export class SessionStore {
       }))
       .sort((a, b) => b.mtime - a.mtime);
 
-    if (files.length === 0) return null;
+    // N2：沿 mtime 降序逐个试，直到第一个能成功 load() 的。原先只取第一名，
+    // 于是一个读不出的文件（空壳 / 坏行 / sidechain）就能遮住真会话：`-c` 报「无会话」，
+    // 而 `-r <id>` 正常。sidechain 在读正文前就排掉——它的 mtime 天然晚于主会话
+    // （子代理在主会话最后一次写入之后还在跑），N3 让它开始落盘后这会成为常态。
+    // 判据复用 isSidechainContent（与 getAllSessionFiles 的 D9 修复同一口径，不写第二套）。
+    const seen = new Set<string>();
+    for (const f of files) {
+      const id = f.name.replace(/\.(json|jsonl)$/, "");
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (f.name.endsWith(".jsonl") && this.isSidechainFile(f.path)) continue;
+      const data = await this.load(id);
+      if (data) return data;
+    }
+    return null;
+  }
 
-    const latest = files[0].name;
-    const id = latest.replace(/\.(json|jsonl)$/, "");
-    return this.load(id);
+  /** N2：只读首 4KB 判定是否为 sidechain 文件（首行 sidechain_start）。读不到按「不是」处理。 */
+  private isSidechainFile(filePath: string): boolean {
+    try {
+      const fd = openSync(filePath, "r");
+      try {
+        const buf = Buffer.alloc(4096);
+        const n = readSync(fd, buf, 0, 4096, 0);
+        return isSidechainContent(buf.subarray(0, n).toString("utf-8"));
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return false;
+    }
   }
 
   /** 列出所有会话 */
