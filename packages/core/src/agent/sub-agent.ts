@@ -652,6 +652,19 @@ export class SubAgent {
    * 优先用 parentSessionId 作前缀（便于溯源归属），拼上 taskId/task 标识做后缀；
    * 二者皆缺时回退一个通用前缀（masking 目录仍隔离，只是不带溯源信息）。
    */
+  /**
+   * N3：三条执行路径共用的 sidechain 开启入口。原先只有 executeInner 内联了
+   * `new SidechainWriter(...)`，默认的 spawn 路径与自定义路径一条都没写——实测 20 个
+   * 真跑过子代理的会话、磁盘 sidechain 文件 0 个。收成一个函数，新增路径只需调它，
+   * 不再靠人在三处分别记住（与 resolveFilteredToolsForTask 收敛同型缺陷是同一做法）。
+   * 缺父会话 id 或 agentId 时返回 undefined，调用方经可选链安全跳过。
+   */
+  private openSidechain(agentId: string | undefined): SidechainWriter | undefined {
+    return this.parentSessionId && agentId
+      ? new SidechainWriter(this.parentSessionId, agentId)
+      : undefined;
+  }
+
   private deriveSubAgentSessionId(taskKey?: string): string {
     const suffix = taskKey || "anon";
     return this.parentSessionId ? `${this.parentSessionId}-sub-${suffix}` : `subagent-${suffix}`;
@@ -1002,6 +1015,7 @@ export class SubAgent {
       signal,
       taskId,
       task._onProgress,
+      { agentId: taskId, agentType: task.type, description: task.description },
     );
   }
 
@@ -1062,7 +1076,13 @@ export class SubAgent {
       base_url: baseURL,
     };
 
-    return this.executeSpawnedInternal(initMsg, tools, signal);
+    // N3：自定义路径无 taskId，按「类型 + 调用序号」派生 sidechain agentId（每次调用唯一，
+    // 同类型并发不共用一个文件；序号语义见 _customAgentSeq 注释）。
+    return this.executeSpawnedInternal(initMsg, tools, signal, undefined, undefined, {
+      agentId: `custom-${task.type ?? "task"}-c${++_customAgentSeq}`,
+      agentType: task.type ?? "custom",
+      description: task.userPrompt?.slice(0, 120) ?? "",
+    });
   }
 
   /** 核心 spawn 逻辑：启动子进程、通信、超时控制 */
@@ -1072,10 +1092,38 @@ export class SubAgent {
     signal?: AbortSignal,
     taskId?: string,
     onProgress?: (snapshot: import("./progress.ts").AgentProgressSnapshot) => void,
+    sidechainMeta?: { agentId?: string; agentType: string; description: string },
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
     const timeout = initMsg.timeout;
+
+    // N3：spawn 路径的 sidechain。LLM 循环在子进程里，但**工具是父进程执行的**
+    // （tool_use 经 stdout 回传），所以父进程手里有 user_prompt + 每次 tool_use/tool_result
+    // + 最终输出——足以还原一份可续跑的对话骨架。子进程每轮的纯文本输出协议里没有
+    // （ChildProgressMessage 只报 lastActivity），这部分缺失与残卷同源，属协议限制。
+    // 结束状态口径与 executeInner 一致：默认 aborted，只有明确成功/失败才改写。
+    const sidechain = this.openSidechain(sidechainMeta?.agentId);
+    let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
+    const sidechainAppend = (
+      role: "user" | "assistant" | "tool",
+      content: ContentBlock[],
+      turn: number,
+    ) => {
+      try {
+        sidechain?.appendMessage(role, content, turn);
+      } catch {
+        /* sidechain 落盘失败静默 */
+      }
+    };
+    if (sidechain) {
+      try {
+        sidechain.start(sidechainMeta!.agentType, sidechainMeta!.description, initMsg.model);
+      } catch {
+        /* 同上 */
+      }
+      sidechainAppend("user", [{ type: "text", text: initMsg.user_prompt }], 0);
+    }
     // 最近活动滑动窗口（跨轮累积，容量 MAX_RECENT_ACTIVITIES）：子进程每轮只报
     // **单条** lastActivity（headless.ts 的 progress 消息），窗口状态必须在父进程这层攒。
     // 与进程内路径（executeInner 的 onTurnEnd）同一形态，只是数据来源是跨进程消息而非
@@ -1200,6 +1248,11 @@ export class SubAgent {
                 break;
 
               case "tool_use": {
+                sidechainAppend(
+                  "assistant",
+                  [{ type: "tool_use", id: msg.id, name: msg.name, input: msg.input }],
+                  spawnTurn,
+                );
                 // 父进程执行工具并返回结果
                 const toolResult = await this.executeToolForChild(
                   msg.name,
@@ -1225,6 +1278,18 @@ export class SubAgent {
                     /* 残卷收集失败不影响子代理执行 */
                   }
                 }
+                sidechainAppend(
+                  "tool",
+                  [
+                    {
+                      type: "tool_result",
+                      tool_use_id: msg.id,
+                      content: toolResult.content,
+                      is_error: toolResult.is_error,
+                    },
+                  ],
+                  spawnTurn,
+                );
                 writeParentMsg(subprocess.stdin, {
                   type: "tool_result",
                   tool_use_id: msg.id,
@@ -1322,6 +1387,8 @@ export class SubAgent {
       await subprocess.exited;
 
       if (!result) {
+        // N3：超时 / 用户中止 → aborted（与 executeInner 的 isTimeout 口径一致），意外退出 → failed。
+        sidechainStatus = timedOut || signal?.aborted ? "aborted" : "failed";
         // P0-1(b)：三条无结果出口（超时 / 被中止 / 意外退出）统一交回残卷。
         //
         // 这是 §1.5(b) 四处落点的第四处。改造前三条出口都是「一句文案 + usage/turns 归零」，
@@ -1378,8 +1445,18 @@ export class SubAgent {
 
       log.info("SUBAGENT", `spawn 完成，耗时 ${((Date.now() - startTime) / 1000).toFixed(1)}秒`);
 
+      if (result.output) {
+        sidechainAppend("assistant", [{ type: "text", text: result.output }], result.turns);
+      }
+      sidechainStatus = result.success ? "completed" : "failed";
       return result;
     } finally {
+      // N3：无论成功/失败/抛出，都写 sidechain_end 收尾（恢复扫描据此过滤已结束的 sidechain）。
+      try {
+        sidechain?.end(sidechainStatus);
+      } catch {
+        /* 静默 */
+      }
       clearTimeout(timeoutId);
       signal?.removeEventListener("abort", onAbort);
       // 确保子进程被终止
@@ -1648,10 +1725,7 @@ export class SubAgent {
 
     // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
     // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
-    const sidechain =
-      this.parentSessionId && taskId
-        ? new SidechainWriter(this.parentSessionId, taskId)
-        : undefined;
+    const sidechain = this.openSidechain(taskId);
     /** P2-10：已持久化到 sidechain 的消息数游标（onTurnEnd 增量落盘用）。 */
     let sidechainCursor = 0;
     /** P2-10：子代理最终结束状态，finally 中据此写 sidechain_end。默认 aborted——
@@ -2143,7 +2217,13 @@ export class SubAgent {
     // B4：观测身份必须「每次调用唯一」，而 masking 的 sessionId 刻意按 task.type
     // 复用（同类型自定义代理共用一个临时目录，见下方注释）。两者目的不同，故分开派生：
     // 复用 sessionId 当观测 id 会让两个同类型并发实例共用快照 key，隔离形同虚设。
-    const observerAgentId = `${this.deriveSubAgentSessionId(task.type)}-c${++_customAgentSeq}`;
+    const customSeq = ++_customAgentSeq;
+    const observerAgentId = `${this.deriveSubAgentSessionId(task.type)}-c${customSeq}`;
+
+    // N3：自定义路径同样落 sidechain（原先 0 处）。agentId 与 spawn 自定义路径同一派生规则。
+    const sidechain = this.openSidechain(`custom-${task.type ?? "task"}-c${customSeq}`);
+    let sidechainCursor = 0;
+    let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
 
     try {
       const ctxMgr = new ContextManager({
@@ -2163,6 +2243,15 @@ export class SubAgent {
         role: "user",
         content: [{ type: "text", text: task.userPrompt }],
       });
+      try {
+        sidechain?.start(
+          task.type ?? "custom",
+          task.userPrompt?.slice(0, 120) ?? "",
+          this.modelOverride || this.model,
+        );
+      } catch {
+        /* sidechain 落盘失败静默 */
+      }
 
       const tools =
         task.allowedTools.length > 0
@@ -2238,6 +2327,23 @@ export class SubAgent {
           const now = Date.now();
           recordTurnLatency(this.modelOverride ?? this.model, now - lastTurnAt);
           lastTurnAt = now;
+          // N3：与 executeInner 同口径——游标增量落盘本轮新增消息。
+          if (sidechain) {
+            try {
+              const all = ctxMgr.getMessages();
+              for (let i = sidechainCursor; i < all.length; i++) {
+                const m = all[i]!;
+                sidechain.appendMessage(
+                  m.role as "user" | "assistant" | "tool",
+                  m.content,
+                  info.turn,
+                );
+              }
+              sidechainCursor = all.length;
+            } catch {
+              /* sidechain 落盘失败静默 */
+            }
+          }
         },
       });
 
@@ -2251,6 +2357,7 @@ export class SubAgent {
       );
 
       if (loopResult.success) {
+        sidechainStatus = "completed";
         return {
           success: true,
           output: finalOutput,
@@ -2267,6 +2374,7 @@ export class SubAgent {
         // 各改一遍必然漂移"教训）。
         const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
         const isTimeout = detached || hardKilled;
+        sidechainStatus = isTimeout ? "aborted" : "failed";
         const snap = salvage.snapshot();
         const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
         const output = buildSalvageOutput(snap, {
@@ -2294,6 +2402,7 @@ export class SubAgent {
       const snap = salvage.snapshot();
       const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
       const isTimeout = detached || hardKilled;
+      sidechainStatus = isTimeout ? "aborted" : "failed";
       if (isTimeout) {
         log.warn("SUBAGENT", `[custom] 墙钟到点抛出（${timeout}ms），交回残卷`);
       } else {
@@ -2311,6 +2420,11 @@ export class SubAgent {
         toolUseCount: snap.toolUseCount,
       };
     } finally {
+      try {
+        sidechain?.end(sidechainStatus);
+      } catch {
+        /* 静默 */
+      }
       clearTimeout(timer);
       if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
     }

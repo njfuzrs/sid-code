@@ -4845,6 +4845,13 @@ export class App {
     removedCount: number,
     meta?: import("@sid-code/core/context/manager.ts").CompactionRecordMeta,
   ): void {
+    // N7：消息数组已被重排，回退点的下标锚点随之失效。放在最前且独立 try：
+    // 它不依赖落盘成败，任何一条压缩路径都必须通知到。
+    try {
+      this.rewindManager?.onMessagesCompacted();
+    } catch {
+      /* 不影响压缩 */
+    }
     try {
       // 诊断记录：三条压缩路径都落（D10）。带上 source 便于事后区分
       // 「摘要压缩」「紧急截断」「渐进式管道」——它们对历史的损耗程度完全不同。
@@ -9148,6 +9155,7 @@ export class App {
           inputPreview: p.inputPreview,
           timestamp: p.timestamp,
           hasSnapshot: !!p.snapshotId,
+          conversationStale: p.conversationStale,
         }));
       },
       // P2-1：执行回退。截断对话（可选回滚文件）后重建首屏，返回结果供 UI 回显。
@@ -9157,13 +9165,15 @@ export class App {
         // 回退物理改写了 ctxMgr.messages，historyItems 仍是旧快照——必须立即重建首屏，
         // 否则被丢弃的消息残留在屏幕上，且下一轮乐观更新基于过时快照。
         // mode=code 只回滚文件、对话未动 → 无需重建（省一次全量 diff 渲染）。
-        if (mode !== "code") rebuildDisplay();
+        // N7：对话锚点失效时什么都没改，同样无需重建。
+        if (mode !== "code" && !result.conversationUnavailable) rebuildDisplay();
         // 上下文/统计计数不重置：回退只截断消息，token 累计等运行时计数保持（与 /clear 区分）。
         return {
           mode: result.mode,
           messagesDropped: result.messagesDropped,
           filesRestored: result.filesRestored,
           fileRestoreSkipped: result.fileRestoreSkipped,
+          conversationUnavailable: result.conversationUnavailable,
         };
       },
       // M4：外部导入审批。读被跳过列表 + 决定回调（持久化 + 重载规则）。

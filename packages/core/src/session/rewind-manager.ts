@@ -39,6 +39,13 @@ export interface RewindPoint {
   snapshotId: string;
   /** 用户输入预览（截断展示用）。 */
   inputPreview: string;
+  /**
+   * N7：对话锚点是否已失效。`messageIndex` 是**数组下标**，而压缩会整体重排消息数组
+   * （40 条 → 8 条），下标指向的坐标系当场不存在。压缩发生时由 `onMessagesCompacted()`
+   * 把登记在压缩之前的点全部置 true。失效的点**仍可做 `code` 回退**（文件锚点是快照 id，
+   * 与消息数组无关），只是不能再截断对话。
+   */
+  conversationStale: boolean;
   /** 登记时间戳（ms）。 */
   timestamp: number;
 }
@@ -63,6 +70,12 @@ export interface RewindResult {
   filesRestored: number;
   /** 文件回滚是否因无快照/未启用而跳过。 */
   fileRestoreSkipped: boolean;
+  /**
+   * N7：对话锚点已失效（压缩过 / 下标越界），本次**什么都没做**——对话未截断、文件未回滚、
+   * 回退点全部保留。修之前这种情况会 `slice(0, 越界下标)` 原样写回（静默空转），
+   * 还按「已丢弃未来」把回退点全清掉。
+   */
+  conversationUnavailable?: boolean;
 }
 
 /** 注入依赖：解耦 ctxMgr / checkpoint 具体实现，便于测试。 */
@@ -108,6 +121,7 @@ export class RewindManager {
       // 取 getLatestSnapshotId() 会拿到**上一轮**的快照 ⇒ 回退多撤一整轮，见 RewindPoint.snapshotId。
       snapshotId: "",
       inputPreview: makePreview(userInput),
+      conversationStale: false,
       timestamp: nowMs,
     };
     this.points.push(point);
@@ -137,6 +151,18 @@ export class RewindManager {
     current.snapshotId = snapshotId;
   }
 
+  /**
+   * N7：消息数组被压缩重排后调用（app.ts 经 compactObserver 接线）。
+   *
+   * 为什么是「作废」而不是「重映射」：压缩把旧消息换成摘要，被摘要掉的那些轮次已不存在，
+   * 没有可映射的目标；而幸存的尾部消息在新数组里的位置取决于摘要+ack 的注入条数，
+   * 按偏移推算是在猜。猜错的代价是截掉用户不想丢的消息，比明确拒绝更坏。
+   * 压缩之后登记的新点不受影响（它们的下标就在新坐标系里）。
+   */
+  onMessagesCompacted(): void {
+    for (const p of this.points) p.conversationStale = true;
+  }
+
   /** 列出回退点（最新在前，供 UI 展示）。 */
   listPoints(): RewindPoint[] {
     return [...this.points].reverse();
@@ -163,6 +189,24 @@ export class RewindManager {
     void nowMs;
     const point = this.getPoint(id);
     if (!point) return null;
+
+    // N7：涉及对话的回退，先校验对话锚点还有效。越界判据是兜底——即便某条改写消息数组的
+    // 路径没通知 onMessagesCompacted，下标超出当前长度也足以说明坐标系已变。
+    // 失效时整次操作不执行（连文件也不回滚）：「对话+代码」只做一半会让两者错位，
+    // 用户看到的结果与选择的档位对不上。
+    if (mode !== "code") {
+      const len = this.deps.getMessages().length;
+      if (point.conversationStale || point.messageIndex > len) {
+        return {
+          point,
+          mode,
+          messagesDropped: 0,
+          filesRestored: 0,
+          fileRestoreSkipped: true,
+          conversationUnavailable: true,
+        };
+      }
+    }
 
     let filesRestored = 0;
     let fileRestoreSkipped = false;

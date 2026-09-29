@@ -209,6 +209,8 @@ export interface RewindPointInfo {
   timestamp: number;
   /** 是否有可回滚的文件快照（无则「对话+代码」模式会跳过文件回滚）。 */
   hasSnapshot: boolean;
+  /** N7：对话锚点已因压缩失效（只能做「仅代码」回退）。 */
+  conversationStale?: boolean;
 }
 
 /**
@@ -223,6 +225,8 @@ export interface RewindResultInfo {
   messagesDropped: number;
   filesRestored: number;
   fileRestoreSkipped: boolean;
+  /** N7：对话锚点失效，本次未做任何改动（对话、文件、回退点均保持原样）。 */
+  conversationUnavailable?: boolean;
 }
 
 /** 权限请求信息 */
