@@ -3569,6 +3569,13 @@ packages/core/src/context/manager.ts:1918:  # 只有一处提及，且是在讲�
 **所以准确的表述是**：todo 清单有压缩后重注（🔬 已确认），
 计划文件的压缩后重注**我没找到，也没有证据说它一定没有**。
 
+> **2026-09-30 更正**：这条已过期。主代理的计划文件压缩后重注**已接线**——
+> `context/manager.ts` 的 `buildPlanReattachMessages` 在 `compactWithSummary` 里消费
+> `setPlanContentProvider` 注入的正文，provider 由 `app.ts` 构造 App 时注册，
+> 只在规划 / 执行阶段返回正文。**子代理刻意不接**：它进不了规划态、不持有计划，
+> 透传主计划会让每个只读子代理压缩一次就被灌入整份计划（理由写在 `agent/sub-agent.ts`
+> 两处 `ContextManager` 构造旁）。原文保留不删，下面那条纪律正是由它示范的。
+
 ⭐ 把这一节留在正文里，是因为它示范了本文开头那条纪律：
 
 > **「我没找到」和「它不存在」是两句不同的话。**

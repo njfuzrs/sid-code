@@ -104,17 +104,12 @@ describe("PermissionSync", () => {
     expect(callCount).toBe(1);
   });
 
-  it("preApprove 预置团队 always-allow", async () => {
-    const ps = new PermissionSync();
-    ps.preApprove(["read", "grep"]);
-    // 即使没有 arbiter，预置工具也直接放行
-    const v = await ps.requestPermission({ teammate: "a", toolName: "read", description: "z" });
-    expect(v).toBe("allow");
-  });
-
+  // P2-2：preApprove（「预置来自 leader 计划的 allowedPrompts」）生产零调用，已删除；
+  // always-allow 缓存只经 leader 裁决 allow-always 进入。
   it("reset 清空缓存和裁决回调", async () => {
     const ps = new PermissionSync();
-    ps.preApprove(["read"]);
+    ps.setArbiter(async () => "allow-always");
+    await ps.requestPermission({ teammate: "a", toolName: "read", description: "z" });
     ps.reset();
     const v = await ps.requestPermission({ teammate: "a", toolName: "read", description: "z" });
     expect(v).toBe("deny"); // 清空后无 arbiter → 拒绝

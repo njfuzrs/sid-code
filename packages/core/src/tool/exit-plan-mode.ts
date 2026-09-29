@@ -12,18 +12,12 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 const exitPlanModeSchema = lazySchema(() =>
   z.object({
     summary: z.string().optional().describe("计划的简短摘要（1-2 句话）"),
-    allowed_prompts: z
-      .array(
-        z.object({
-          tool: z.enum(["bash"]).optional(),
-          prompt: z.string().describe("语义化的操作描述，如 '运行测试'、'安装依赖'"),
-        }),
-      )
-      .optional()
-      .describe(
-        "执行计划所需的权限声明。用户审批计划时一并审批这些权限，减少执行阶段的弹窗。" +
-          '如 [{ "tool": "bash", "prompt": "运行测试" }, { "tool": "bash", "prompt": "安装依赖" }]',
-      ),
+    // P2-2：这里曾有 allowed_prompts，describe 向模型承诺「用户审批计划时一并审批这些权限，
+    // 减少执行阶段的弹窗」。实际没有任何消费方：审批框不展示、不写回 allow 规则，
+    // getAllowedPrompts 与团队 preApprove 全仓零调用。模型按这句承诺规划执行阶段，
+    // 换来一批它没预期的权限拒绝。删掉承诺，而不是补一个消费方——
+    // 声明是「运行测试」这类语义短语，映射不成可安全匹配的 allow 规则。
+    // 旧模型若仍传该字段：zod 默认剥离未知键，不会校验失败。
   }),
 );
 
@@ -109,31 +103,16 @@ export class ExitPlanModeTool implements Tool {
       return { output: "计划文件为空，请先写入计划内容", isError: true };
     }
 
-    const params = (input ?? {}) as {
-      summary?: string;
-      allowed_prompts?: Array<{ tool?: string; prompt: string }>;
-    };
-
-    // 记录执行阶段所需权限（用户审批计划时一并审批）
-    const allowedPrompts = Array.isArray(params.allowed_prompts)
-      ? params.allowed_prompts.filter((p) => p && typeof p.prompt === "string")
-      : [];
-    this.planManager.setAllowedPrompts(allowedPrompts);
+    const params = (input ?? {}) as { summary?: string };
 
     // 提交审批
     this.planManager.submitForApproval();
 
     const summary = params.summary || "";
     const summaryLine = summary ? `\n摘要: ${summary}` : "";
-    const permLine =
-      allowedPrompts.length > 0
-        ? `\n执行阶段需要的权限:\n${allowedPrompts
-            .map((p) => `  - [${p.tool || "bash"}] ${p.prompt}`)
-            .join("\n")}`
-        : "";
 
     return {
-      output: `计划已提交，等待用户审批。${summaryLine}${permLine}\n\n---\n${planContent}\n---`,
+      output: `计划已提交，等待用户审批。${summaryLine}\n\n---\n${planContent}\n---`,
     };
     // 实际的用户审批交互由 App 层的 executeTools 拦截处理
   }

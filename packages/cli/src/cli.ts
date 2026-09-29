@@ -1629,7 +1629,8 @@ export async function main(): Promise<void> {
     const { EnterPlanModeTool } = await import("@sid-code/core/tool/enter-plan-mode.ts");
     const { ExitPlanModeTool } = await import("@sid-code/core/tool/exit-plan-mode.ts");
     const planManager = new PlanModeManager();
-    toolRegistry.register(new EnterPlanModeTool(planManager));
+    // 传 getter 而非值：permissionMode 在会话中会被 Shift+Tab / 规则重载改写
+    toolRegistry.register(new EnterPlanModeTool(planManager, () => config.permissionMode));
     toolRegistry.register(new ExitPlanModeTool(planManager));
 
     // 注册 TodoWrite 工具（执行阶段进度追踪，防 Plan Mode 套娃）

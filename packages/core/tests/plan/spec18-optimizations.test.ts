@@ -3,7 +3,7 @@
  * - 词汇 Slug 命名（worktree 仍在用）
  * - Plan 文件语义命名（中文主题 + 项目分目录 + 时间）
  * - 提醒节流（每 5 轮完整）
- * - allowedPrompts 记录
+ * - allowed_prompts 承诺已删除（P2-2）
  */
 
 import { describe, it, expect } from "bun:test";
@@ -177,22 +177,6 @@ describe("提醒节流", () => {
   });
 });
 
-describe("allowedPrompts", () => {
-  it("set/get 往返", () => {
-    const mgr = new PlanModeManager();
-    mgr.enter();
-    mgr.setAllowedPrompts([{ tool: "bash", prompt: "运行测试" }, { prompt: "安装依赖" }]);
-    const got = mgr.getAllowedPrompts();
-    expect(got.length).toBe(2);
-    expect(got[0].prompt).toBe("运行测试");
-  });
-
-  it("enter 时清空", () => {
-    const mgr = new PlanModeManager();
-    mgr.enter();
-    mgr.setAllowedPrompts([{ prompt: "x" }]);
-    mgr.forceExit();
-    mgr.enter();
-    expect(mgr.getAllowedPrompts().length).toBe(0);
-  });
-});
+// P2-2：这里原有两条 set/get 往返用例，为一个**生产零消费**的字段背书——
+// getAllowedPrompts 全仓只有定义，审批框不展示、不写回规则。字段已删，
+// 「不再向模型承诺」的断言在 tests/plan/p2-p3-plan-defects.test.ts。

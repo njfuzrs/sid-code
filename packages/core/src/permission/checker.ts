@@ -273,8 +273,6 @@ export class PermissionChecker implements Checker {
   private denialTracking: DenialTrackingState = createDenialTrackingState();
   /** 多来源规则加载器 */
   private ruleLoader: RuleLoader;
-  /** 进入 plan 模式前的权限模式（退出时恢复） */
-  private prePlanMode: string | null = null;
   /** 沙箱管理器（可选） */
   private sandboxManager: SandboxManager | null = null;
   /** LLM 命令风险分类器（第二道防线，默认不启用；通过 setBashClassifier 注入） */
@@ -333,16 +331,6 @@ export class PermissionChecker implements Checker {
   /** 设置 Plan Mode 管理器 */
   setPlanManager(manager: PlanModeManager): void {
     this.planManager = manager;
-  }
-
-  /** 记录进入 plan 前的模式（供 plan 继承 bypass 使用） */
-  setPrePlanMode(mode: string): void {
-    this.prePlanMode = mode;
-  }
-
-  /** 清除 prePlanMode（退出 plan 时调用） */
-  clearPrePlanMode(): void {
-    this.prePlanMode = null;
   }
 
   /**
@@ -1972,19 +1960,16 @@ export class PermissionChecker implements Checker {
 
   /**
    * Plan 模式检查（从 check 中提取）
-   * 支持 plan 继承 bypass：如果进入 plan 前是 always-allow，则 plan 模式下也自动放行
+   *
+   * P2-2：这里曾有一段「plan 继承 bypass」——进入 plan 前是 always-allow 就全放行。
+   * 它的输入 `this.prePlanMode` 只能经 setPrePlanMode 赋值，而后者全仓零调用，
+   * 所以这段恒为 false；permission/mode.ts 另有一份同义的 shouldPlanInheritBypass，也零调用。
+   * 两份一起删掉，**刻意不接活**：接活等于让 always-allow 用户的计划模式变成全放行，
+   * 把「计划模式只读」这条硬保证换成一个取决于进入前模式的条件——那是一次权限放宽，
+   * 需要单独立项讨论，不能以「修死代码」的名义顺手打开。
    */
   private checkPlanMode(req: PermissionRequest, filePath: string, resource: string): Decision {
     const log = getLogger();
-
-    // plan 继承 bypass：如果 prePlanMode 是 always-allow，则自动放行（safetyCheck 已在上层拦截）
-    if (this.prePlanMode === "always-allow") {
-      log.info(
-        "PERMISSION",
-        `${req.toolName}(${resource.slice(0, 80)}) → 允许(plan继承always-allow)`,
-      );
-      return { allowed: true, decisionReason: { type: "mode", mode: "plan+bypass" } };
-    }
 
     // 只读工具直接放行
     if (READ_ONLY_TOOLS.has(req.toolName)) {

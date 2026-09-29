@@ -14,7 +14,7 @@ export interface TeamPermissionRequest {
   teammate: string;
   toolName: string;
   description: string;
-  /** 语义化权限声明（对齐 exit_plan_mode allowedPrompts） */
+  /** 语义化权限声明（展示给 leader 的操作描述） */
   prompt?: string;
 }
 
@@ -50,10 +50,9 @@ export class PermissionSync {
     return verdict;
   }
 
-  /** 预置团队级 always-allow（如来自 leader 计划的 allowedPrompts） */
-  preApprove(toolNames: string[]): void {
-    for (const t of toolNames) this.alwaysAllow.add(t);
-  }
+  // P2-2：此处曾有 preApprove(toolNames)，注释称「预置来自 leader 计划的 allowedPrompts」。
+  // 生产零调用，而它承诺消费的 allowedPrompts 本身也已删除（exit_plan_mode 不再收集）。
+  // 团队级 always-allow 只经 leader 裁决 allow-always 这一条路进入缓存。
 
   /** 清空团队权限缓存 */
   reset(): void {

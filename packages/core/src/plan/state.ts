@@ -3,6 +3,9 @@
  * 三态：inactive → planning → awaiting_approval
  * 管理计划文件路径、拒绝计数、状态转换
  *
+ * 计划文件路径的不变量（P3-1）：`getPlanFilePath() !== null ⇔ isActive() || isExecuting()`。
+ * 路径只在 enter() 赋值，只在 forceExit() / 非规划态的 endExecution() 清空。
+ *
  * S6-T07/T08 (ADR-028): 增加 fidelity 追踪 — plan 步骤解析 + actual tool call 对齐.
  */
 
@@ -61,7 +64,14 @@ export class PlanModeManager {
   private rejectionCount = 0;
   private readonly maxRejections = 5;
   private listeners: PlanModeListener[] = [];
-  /** 进入 plan 模式前的权限模式（退出时恢复） */
+  /**
+   * 进入 plan 模式前的权限模式（退出时恢复）。
+   *
+   * P2-1：这是「退出规划后恢复成什么」的**唯一**事实源。从前另有两份：
+   * App._originalPermissionMode（真正被读的那份）与 PermissionChecker.prePlanMode
+   * （setPrePlanMode 零调用、恒为 null）；而这一份因为 enter_plan_mode 工具传 undefined
+   * 同样恒为 null。三份里只有一份活着，另两份的读者拿到的都是空值。
+   */
   private prePlanMode: string | null = null;
   /** 缓存的计划文件所属项目名（同一会话内复用） */
   private planProject: string | null = null;
@@ -69,8 +79,6 @@ export class PlanModeManager {
   private reminderTurn = 0;
   /** 完整提醒间隔（每 N 轮发一次完整提醒，其余发简短提醒） */
   private readonly fullReminderInterval = 5;
-  /** 执行阶段所需权限（exit_plan_mode 声明，用户审批计划时一并审批） */
-  private allowedPrompts: Array<{ tool?: string; prompt: string }> = [];
   /** Plan 文件被 write/edit 成功的时间戳序列（plan_recovery capability 用） */
   private planFileUpdates: number[] = [];
   /**
@@ -94,20 +102,42 @@ export class PlanModeManager {
     return this.prePlanMode;
   }
 
-  /** 进入 Plan Mode */
+  /**
+   * 进入 Plan Mode
+   * @param currentPermissionMode 进入前的权限模式；传 "plan" 视同未知（不能「恢复成 plan」）
+   */
   enter(currentPermissionMode?: string, topic?: string): boolean {
     if (this.state !== "inactive") return false;
     const from = this.state;
     this.state = "planning";
     this.rejectionCount = 0;
     this.reminderTurn = 0;
-    this.allowedPrompts = [];
     this.executing = false;
-    this.prePlanMode = currentPermissionMode || null;
+    this.prePlanMode =
+      currentPermissionMode && currentPermissionMode !== "plan" ? currentPermissionMode : null;
     this.planFilePath = this.generatePlanFilePath(topic);
     this.ensurePlanDir();
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
     return true;
+  }
+
+  /**
+   * P2-1：让状态机跟上「权限模式已经是 plan」这个事实。返回是否本次新进入了规划态。
+   *
+   * 进入规划态有两条路：enter_plan_mode 工具（调 enter()），以及
+   * `--permission-mode plan` / settings / CLAUDE.md 规则——后者只写
+   * `config.permissionMode = "plan"`，从前**没有任何代码调 enter()**：
+   * 权限层的只读硬拦生效了，行为层整段缺席（无计划文件路径、exit_plan_mode 走
+   * 「已进入执行阶段」分支、没有审批），而每轮提醒仍在要求「写计划并提交审批」。
+   *
+   * 由 App 在每个用户回合开始时调用。已在规划 / 待审批时是 no-op；
+   * 进入前的模式记为 null（启动即 plan，没有「之前」），退出时恢复成 default。
+   * 子代理不走这里：子代理被禁止进入规划态（enter_plan_mode 拦 _agentId），
+   * frontmatter 的 permissionMode: plan 对它只意味着只读，这是对的。
+   */
+  syncWithPermissionMode(permissionMode: string | undefined): boolean {
+    if (permissionMode !== "plan" || this.isActive()) return false;
+    return this.enter(undefined);
   }
 
   /** 提交计划等待审批 */
@@ -134,16 +164,19 @@ export class PlanModeManager {
   /**
    * 用户拒绝计划 → 回到 planning 继续修改
    * 返回 true 表示可以继续修改，false 表示超过拒绝上限已强制退出
+   *
+   * P3-1：超限分支改走 forceExit()，让「退出规划」只有一个出口。从前这里直接
+   * 改 state、不清 planFilePath，于是超限退出后路径残留，与「路径在 = 有活跃计划」
+   * 的语义不符（今天没出错只是因为消费方另有 isPlanning/isExecuting 的门）。
    */
   reject(): boolean {
     if (this.state !== "awaiting_approval") return false;
     this.rejectionCount++;
-    const from = this.state;
     if (this.rejectionCount >= this.maxRejections) {
-      this.state = "inactive";
-      this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+      this.forceExit();
       return false;
     }
+    const from = this.state;
     this.state = "planning";
     this.emit({ from, to: this.state, planFilePath: this.planFilePath });
     return true;
@@ -157,28 +190,40 @@ export class PlanModeManager {
    * 收尾执行阶段**的时刻变成 no-op（旧测试甚至把这件事写成了预期）。
    * 在 isExecuting() 只被 Recovery Hook 读的年代这无害；它现在还是权限链
    * Step 3.5 的放行条件之一，于是「用户取消」必须真的关掉执行阶段。
+   *
+   * P3-1：退出时同时清 planFilePath。不变量是
+   * `getPlanFilePath() !== null ⇔ isActive() || isExecuting()`——
+   * 从前 forceExit 清了 planSteps / executing 唯独留着路径，
+   * 下一个按「路径在 = 有活跃计划」写代码的人就会拿到一个已作废的计划文件。
+   * 事件里的 planFilePath 取退出前的值，监听方仍能知道退出的是哪份计划。
    */
   forceExit(): void {
     if (this.state === "inactive" && !this.executing) return;
     const from = this.state;
+    const exitedPlanFilePath = this.planFilePath;
     this.state = "inactive";
     this.rejectionCount = 0;
     this.reminderTurn = 0;
-    this.allowedPrompts = [];
     this.planFileUpdates = [];
     this.planSteps = [];
     this.actualToolCalls = [];
     this.executing = false;
-    this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+    this.planFilePath = null;
+    this.emit({ from, to: this.state, planFilePath: exitedPlanFilePath });
   }
 
   /**
    * 结束执行阶段（清 executing 标志）。
    * 当一轮按计划执行彻底收尾、或用户开启新一轮 plan 时调用。
    * 注意 enter() 已会清零，此方法供"执行完成但未进入新 plan"的显式收尾场景。
+   *
+   * P3-1：执行阶段结束且不在规划态时一并清 planFilePath，维持 forceExit 注释里那条不变量。
+   * 必须判 state：app 在**每个**用户回合开始时调本方法，规划中途用户回一句话
+   * 也会走到这里——那时清路径就把正在写的计划弄丢了。
    */
   endExecution(): void {
     this.executing = false;
+    if (this.state === "inactive") this.planFilePath = null;
   }
 
   // ── 查询方法 ──
@@ -224,16 +269,6 @@ export class PlanModeManager {
   nextReminderIsFull(): boolean {
     this.reminderTurn++;
     return this.reminderTurn === 1 || this.reminderTurn % this.fullReminderInterval === 0;
-  }
-
-  /** 记录执行阶段所需权限（exit_plan_mode 调用） */
-  setAllowedPrompts(prompts: Array<{ tool?: string; prompt: string }>): void {
-    this.allowedPrompts = prompts;
-  }
-
-  /** 获取执行阶段所需权限（审批流程用） */
-  getAllowedPrompts(): ReadonlyArray<{ tool?: string; prompt: string }> {
-    return this.allowedPrompts;
   }
 
   // ── plan_recovery capability 用 ──
@@ -490,48 +525,116 @@ export class PlanModeManager {
   }
 
   /**
-   * 把 actual tool call 与 planSteps 做 fuzzy match.
-   * 规则 (顺序): toolName 字面命中 step.description → 直接命中;
-   *            args 中含路径 / 文件名命中 description → 命中;
-   *            否则返回 null = off-plan.
+   * 把 actual tool call 与 planSteps 对齐，返回**最佳**匹配步骤的 index，对不上返回 null。
+   *
+   * 一个步骤成为候选须同时满足：
+   *   ① 语义对得上 —— 工具名字面出现在描述里，或描述含该工具对应的动作词；
+   *   ② 参数锚定 —— 描述里至少有一个 token 与本次调用的参数值对得上（见 anchorScore）。
+   * 候选里取锚定分最高者；同分时优先尚未被命中的步骤，再按计划顺序。
+   *
+   * P2-3：从前②不是必要条件（动作词命中、锚定失败也 `return step.index`），
+   * 且按计划顺序**第一个**命中即返回。两条合起来：任何一次 read 都会被记成
+   * 「计划第一个读步骤」的执行——实测 `read /etc/hosts` 被算成「读 package.json」，
+   * matchedRatio 凭空 +0.25；计划里后面几个读步骤永远显示未执行。
+   * 保真度报告的全部价值在于「计划外」能被认出来，所以这里宁可漏记（算成 off-plan）
+   * 也不虚报：中文描述不带空格、写不出可锚定 token 的步骤，现在会被判为未命中。
+   *
    * 注意: 一个 step 可被多个 actual 命中 (matchedActualIndices 是 list).
    */
   private matchAgainstPlan(toolName: string, args: unknown): number | null {
     if (this.planSteps.length === 0) return null;
-    const argText = (() => {
-      try {
-        return JSON.stringify(args ?? "").toLowerCase();
-      } catch {
-        return String(args ?? "").toLowerCase();
-      }
-    })();
+    const argValues = PlanModeManager.collectArgValues(args);
+    if (argValues.length === 0) return null;
     const lowerTool = toolName.toLowerCase();
+    const verbs = PlanModeManager.TOOL_VERBS[lowerTool] ?? [];
+
+    let best: { step: PlanStep; score: number } | null = null;
     for (const step of this.planSteps) {
       const desc = step.description.toLowerCase();
-      // 1) tool name 出现在 description
-      if (desc.includes(lowerTool)) return step.index;
-      // 2) description 中含中文动作词与 tool 语义对应
-      const verbMap: Record<string, string[]> = {
-        read: ["读", "查看", "看", "load"],
-        edit: ["改", "修改", "edit"],
-        write: ["写", "创建", "新建", "write"],
-        bash: ["跑", "执行", "运行", "run"],
-        grep: ["搜", "查找", "grep"],
-        glob: ["遍历", "list"],
-        exit_plan_mode: ["exit_plan", "完成", "提交"],
-      };
-      const verbs = verbMap[lowerTool] ?? [];
-      if (verbs.some((v) => desc.includes(v))) {
-        // 还要看 args 是否能锚定到该 step (args 路径 / 关键词 出现在 desc)
-        const tokens = desc.split(/[\s,，、:：（）()「」"'`]+/).filter((t) => t.length >= 2);
-        for (const tk of tokens) {
-          if (tk && argText.includes(tk.toLowerCase())) return step.index;
-        }
-        // 没有 args 锚定但动作词命中: 仍算 match (LLM 在 plan 第 N 步明确说"读 X"，本次 read 即视为对应 step 的执行)
-        return step.index;
+      const semantic = desc.includes(lowerTool) || verbs.some((v) => desc.includes(v));
+      if (!semantic) continue;
+      const score = PlanModeManager.anchorScore(desc, argValues, lowerTool, verbs);
+      if (score === 0) continue;
+      if (
+        !best ||
+        score > best.score ||
+        (score === best.score &&
+          best.step.matchedActualIndices.length > 0 &&
+          step.matchedActualIndices.length === 0)
+      ) {
+        best = { step, score };
       }
     }
-    return null;
+    return best ? best.step.index : null;
+  }
+
+  /** 工具 → 描述里对应的动作词（中英） */
+  private static readonly TOOL_VERBS: Readonly<Record<string, readonly string[]>> = {
+    read: ["读", "查看", "看", "load"],
+    edit: ["改", "修改", "edit"],
+    write: ["写", "创建", "新建", "write"],
+    bash: ["跑", "执行", "运行", "run"],
+    grep: ["搜", "查找", "grep"],
+    glob: ["遍历", "list"],
+    exit_plan_mode: ["exit_plan", "完成", "提交"],
+  };
+
+  /**
+   * 取参数里的**值**（递归收集字符串 / 数字，统一小写），不取键名。
+   * 从前拿整个 JSON.stringify 做子串匹配，键名 `file_path` / `command` 也参与，
+   * 描述里任何碰巧是键名子串的 token 都会锚定成功。
+   */
+  private static collectArgValues(args: unknown): string[] {
+    const out: string[] = [];
+    const walk = (v: unknown, depth: number): void => {
+      if (depth > 4 || v === null || v === undefined) return;
+      if (typeof v === "string") {
+        const t = v.trim().toLowerCase();
+        if (t) out.push(t);
+      } else if (typeof v === "number") {
+        out.push(String(v));
+      } else if (Array.isArray(v)) {
+        for (const x of v) walk(x, depth + 1);
+      } else if (typeof v === "object") {
+        for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
+      }
+    };
+    walk(args, 0);
+    return out;
+  }
+
+  /**
+   * 描述 token 与参数值的锚定分（命中的不同 token 数，0 = 锚定失败）。
+   *
+   * 一个 token 算命中：与某个参数值全等，或与参数值按空白 / 路径分隔符切出的某段全等，
+   * 或（token 长度 ≥ 2 时）是参数值的子串。单字符 token 只认全等，
+   * 否则 `a` 会命中几乎所有参数。工具名与动作词本身不算锚点——它们已经在①里用过了。
+   */
+  private static anchorScore(
+    desc: string,
+    argValues: string[],
+    lowerTool: string,
+    verbs: readonly string[],
+  ): number {
+    const tokens = new Set(
+      desc
+        .split(/[\s,，、:：;；。（）()「」"'`]+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0 && t !== lowerTool && !verbs.includes(t)),
+    );
+    const segments = new Set<string>();
+    for (const v of argValues) {
+      for (const seg of v.split(/[\s/\\]+/)) if (seg) segments.add(seg);
+    }
+    let score = 0;
+    for (const tk of tokens) {
+      const hit =
+        argValues.includes(tk) ||
+        segments.has(tk) ||
+        (tk.length >= 2 && argValues.some((v) => v.includes(tk)));
+      if (hit) score += 1;
+    }
+    return score;
   }
 
   /** 注入点: 单测可 mock now() 控制时间戳 (默认 Date.now) */
