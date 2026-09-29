@@ -37,7 +37,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `edit` | 通过查找替换来编辑文件内容。支持精确/灵活/正则/模糊 4 级匹配策略，自动降级。old_string='' 且文件不存在时创建新文件。 | `file_path` `old_string` `new_string` | `replace_all` |
 | `enter_plan_mode` | 当任务的实现路径存在真实的模糊性，且先获得用户输入能避免大量返工时使用此工具。它将你切换到计划模式，在写代码前探索代码库、设计方案并获得用户审批。 | — | `topic` |
 | `enter_worktree` | 创建一个隔离的 Git Worktree 工作区并进入。 | — | `name` `path` `pr` `tmux` |
-| `exit_plan_mode` | 在计划模式下完成计划编写后使用此工具，请求用户审批。 | — | `summary` `allowed_prompts` |
+| `exit_plan_mode` | 在计划模式下完成计划编写后使用此工具，请求用户审批。 | — | `summary` |
 | `exit_worktree` | 退出当前 Worktree 并返回主工作区。 | — | `action` `discard_changes` |
 | `glob` | 使用 glob 模式查找文件。结果按修改时间降序排列（最近编辑的在前）。支持通配符如 **/*.ts | `pattern` | `path` `ignore` |
 | `grep` | 在文件中搜索匹配正则表达式的内容。基于 ripgrep 构建，支持三种输出模式：files_with_matches（默认，最省 token）、content（显示匹配行和上下文）、count（显示匹配数）。 | `pattern` | `path` `output_mode` `case_insensitive` `glob` `type` `context` `before_context` `after_context` `head_limit` `offset` `max_matches_per_file` `fixed_strings` `multiline` `total_max_matches` |
