@@ -107,6 +107,31 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
     const modeText = MODE_LABELS[result.mode];
     const touchedCode = result.mode === "code" || result.mode === "conversation-and-code";
     const touchedConversation = result.mode !== "code";
+    // N7：对话锚点失效 → 未做任何改动，用警告色说清原因与出路，不显示「已回退」。
+    if (result.conversationUnavailable) {
+      return (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={theme.status.warning}
+          paddingX={1}
+          paddingY={0}
+        >
+          <Text bold color={theme.status.warning}>
+            未回退
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text color={theme.text.secondary}>
+              该轮之后发生过上下文压缩，对话已无法按轮次回退；对话、文件与回退点均未改动。
+            </Text>
+            <Text color={theme.text.secondary}>如只需撤销文件改动，可选「仅代码」。</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text italic>Esc 关闭</Text>
+          </Box>
+        </Box>
+      );
+    }
     return (
       <Box
         flexDirection="column"
@@ -153,14 +178,24 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
           ? "只把文件回滚到该轮快照，保留对话"
           : "该轮无文件快照，无可回滚内容",
       },
-      { value: "conversation", key: "conv", label: "仅对话", desc: "截断对话到该轮之前，不动文件" },
+      {
+        value: "conversation",
+        key: "conv",
+        label: "仅对话",
+        // N7：压缩后对话锚点失效，如实告知而不是让用户点了之后静默空转。
+        desc: selectedPoint.conversationStale
+          ? "该轮之后发生过上下文压缩，对话无法回退"
+          : "截断对话到该轮之前，不动文件",
+      },
       {
         value: "conversation-and-code",
         key: "both",
         label: "对话 + 代码",
-        desc: selectedPoint.hasSnapshot
-          ? "同时把文件回滚到该轮快照"
-          : "该轮无文件快照，将仅回退对话",
+        desc: selectedPoint.conversationStale
+          ? "该轮之后发生过上下文压缩，对话无法回退"
+          : selectedPoint.hasSnapshot
+            ? "同时把文件回滚到该轮快照"
+            : "该轮无文件快照，将仅回退对话",
       },
     ];
     const handleModeSelect = async (mode: ModeValue) => {

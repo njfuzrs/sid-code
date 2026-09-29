@@ -4,6 +4,7 @@
  *
  * 存储策略：
  * - 第一次保存完整内容（>1KB 时 gzip 压缩 + base64）
+ * - 二进制文件（含 NUL / 非法 UTF-8）按原始字节 base64 存 full，不做 diff（N13）
  * - 后续保存增量 diff（LCS 算法）
  * - 每文件最多 50 个 checkpoint，总共最多 200MB，30 天自动清理
  * - 存储路径：~/.sid-code/checkpoints/<session-id>/
@@ -46,6 +47,81 @@ export interface SnapshotFile {
   compressed?: boolean;
   /** 增量差异（type=diff 时） */
   diff?: DiffResult;
+  /**
+   * N13：content 是原始字节的 base64（compressed 时是 gzip 后字节的 base64），不是 UTF-8 文本。
+   * 二进制文件一律存 full（diff 对字节无意义）；缺省 = 文本（老索引无此字段，按文本读）。
+   */
+  binary?: boolean;
+}
+
+/**
+ * N13：快照内容的内存形态。文本走 string（可做 diff），二进制走 Uint8Array（原样字节）。
+ *
+ * 为什么不统一成字节：diff 链、压缩阈值、淘汰重锚定全部建立在 string 上，改成字节
+ * 要重写整条链路，而二进制本来就不做 diff。只在「读入 / 存储 / 写回」三个边界区分两种形态。
+ */
+type FileContent = string | Uint8Array;
+
+/**
+ * N13：按**字节**判定是否二进制——含 NUL，或不是合法 UTF-8。
+ *
+ * 修之前整条链路用 `Bun.file().text()` 读，非法字节被有损替换成 U+FFFD（不抛错、不可逆），
+ * PNG 头 13 字节回滚成 23 字节垃圾。判据不能靠扩展名猜：`rm ./data.bin` 与无扩展名的
+ * 编译产物都会经 bash 入口进快照。
+ * 返回 null = 二进制；否则返回解码后的文本（ignoreBOM 保留 BOM，保证文本也字节级往返）。
+ */
+function decodeTextOrNull(bytes: Uint8Array): string | null {
+  if (bytes.includes(0)) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** N13：两份快照内容是否相同（形态不同即视为不同，触发写 full）。 */
+function sameContent(a: FileContent, b: FileContent): boolean {
+  if (typeof a === "string" || typeof b === "string") return a === b;
+  return Buffer.from(a).equals(Buffer.from(b));
+}
+
+/** N13：从 full 条目解出内容（文本 / 二进制 × 压缩 / 不压缩）。 */
+function decodeFullEntry(f: SnapshotFile): FileContent {
+  if (f.binary) {
+    const raw = Buffer.from(f.content ?? "", "base64");
+    return new Uint8Array(f.compressed ? Bun.gunzipSync(raw) : raw);
+  }
+  if (f.compressed && f.content) {
+    return Buffer.from(Bun.gunzipSync(Buffer.from(f.content, "base64"))).toString("utf-8");
+  }
+  return f.content ?? "";
+}
+
+/** N13：把内容编码进 full 条目（原地改写 content/compressed/binary）。 */
+function encodeFullEntry(
+  f: SnapshotFile,
+  content: FileContent,
+  compressThresholdBytes: number,
+): void {
+  if (typeof content === "string") {
+    f.binary = undefined;
+    if (content.length > compressThresholdBytes) {
+      f.content = Buffer.from(Bun.gzipSync(Buffer.from(content, "utf-8"))).toString("base64");
+      f.compressed = true;
+    } else {
+      f.content = content;
+      f.compressed = false;
+    }
+    return;
+  }
+  f.binary = true;
+  if (content.length > compressThresholdBytes) {
+    f.content = Buffer.from(Bun.gzipSync(content)).toString("base64");
+    f.compressed = true;
+  } else {
+    f.content = Buffer.from(content).toString("base64");
+    f.compressed = false;
+  }
 }
 
 /** 索引文件格式（新版） */
@@ -278,31 +354,31 @@ export class CheckpointManager {
           continue;
         }
 
-        const currentContent = await file.text();
+        // N13：读字节再判定，不再 `file.text()`（那一步对二进制是有损且不可逆的）。
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const currentContent: FileContent = decodeTextOrNull(bytes) ?? bytes;
         const lastContent = await this.getLatestContentForFile(filePath);
 
-        if (lastContent === null) {
-          // 第一次：保存完整内容
-          const compressThreshold = this.config.compressThresholdKb * 1024;
+        // 第一次 / 任一侧是二进制（文本↔二进制切换也在此）：保存完整内容。
+        // diff 只在「上一版与这一版都是文本」时才做。
+        if (
+          lastContent === null ||
+          ((typeof lastContent !== "string" || typeof currentContent !== "string") &&
+            !sameContent(lastContent, currentContent))
+        ) {
           const snapshotFile: SnapshotFile = {
             filePath,
             existedBefore: true,
             type: "full",
           };
-
-          if (currentContent.length > compressThreshold) {
-            // gzip 压缩 + base64
-            const compressed = Bun.gzipSync(Buffer.from(currentContent, "utf-8"));
-            snapshotFile.content = Buffer.from(compressed).toString("base64");
-            snapshotFile.compressed = true;
-          } else {
-            snapshotFile.content = currentContent;
-            snapshotFile.compressed = false;
-          }
-
+          encodeFullEntry(snapshotFile, currentContent, this.config.compressThresholdKb * 1024);
           files.push(snapshotFile);
           this.index.latestFullMap[filePath] = snapshotId;
-        } else if (lastContent !== currentContent) {
+        } else if (
+          typeof lastContent === "string" &&
+          typeof currentContent === "string" &&
+          lastContent !== currentContent
+        ) {
           // 后续：保存增量 diff
           const diff = computeDiff(lastContent, currentContent);
           files.push({
@@ -605,20 +681,16 @@ export class CheckpointManager {
    *
    * 找不到（该文件在之后只有 diff、没有 full）返回 null，由调用方计入回滚失败。
    */
-  private readFirstFullContentAfter(filePath: string, afterIndex: number): string | null {
+  private readFirstFullContentAfter(filePath: string, afterIndex: number): FileContent | null {
     for (let i = afterIndex + 1; i < this.index.snapshots.length; i++) {
       const f = this.index.snapshots[i].files.find((x) => x.filePath === filePath);
       if (!f) continue;
       if (f.type !== "full") return null; // 首个条目是 diff ⇒ 基点不在此处，交给调用方判失败
-      if (f.compressed && f.content) {
-        try {
-          const buf = Buffer.from(f.content, "base64");
-          return Buffer.from(Bun.gunzipSync(buf)).toString("utf-8");
-        } catch {
-          return null;
-        }
+      try {
+        return decodeFullEntry(f);
+      } catch {
+        return null;
       }
-      return f.content ?? "";
     }
     return null;
   }
@@ -646,7 +718,7 @@ export class CheckpointManager {
   /**
    * 获取指定文件在最新快照时的内容
    */
-  private async getLatestContentForFile(filePath: string): Promise<string | null> {
+  private async getLatestContentForFile(filePath: string): Promise<FileContent | null> {
     // 从最新快照往前找，找到第一个包含该文件的快照
     for (let i = this.index.snapshots.length - 1; i >= 0; i--) {
       const snapshot = this.index.snapshots[i];
@@ -664,12 +736,12 @@ export class CheckpointManager {
   private async rebuildContentAtSnapshot(
     filePath: string,
     snapshotId: string,
-  ): Promise<string | null> {
+  ): Promise<FileContent | null> {
     const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
     if (targetIndex === -1) return null;
 
     // 找到最近的 full 快照
-    let baseContent = "";
+    let baseContent: FileContent = "";
     let baseSnapshotIndex = -1;
 
     for (let i = targetIndex; i >= 0; i--) {
@@ -677,13 +749,7 @@ export class CheckpointManager {
       const fileInSnapshot = snapshot.files.find((f) => f.filePath === filePath);
 
       if (fileInSnapshot && fileInSnapshot.type === "full") {
-        if (fileInSnapshot.compressed && fileInSnapshot.content) {
-          const buf = Buffer.from(fileInSnapshot.content, "base64");
-          const decompressed = Bun.gunzipSync(buf);
-          baseContent = Buffer.from(decompressed).toString("utf-8");
-        } else {
-          baseContent = fileInSnapshot.content || "";
-        }
+        baseContent = decodeFullEntry(fileInSnapshot);
         baseSnapshotIndex = i;
         break;
       }
@@ -692,6 +758,10 @@ export class CheckpointManager {
     if (baseSnapshotIndex === -1) {
       return null;
     }
+
+    // N13：二进制基点原样返回。createSnapshot 保证二进制之后不会接 diff
+    // （任一侧是二进制都写 full），所以这里不存在「对字节 apply 文本 diff」的情形。
+    if (typeof baseContent !== "string") return baseContent;
 
     // 逐步 apply diff
     let content = baseContent;
@@ -737,7 +807,7 @@ export class CheckpointManager {
   private async rebuildContentBeforeSnapshot(
     filePath: string,
     snapshotId: string,
-  ): Promise<string | null> {
+  ): Promise<FileContent | null> {
     return this.rebuildContentAtSnapshot(filePath, snapshotId);
   }
 
@@ -816,18 +886,10 @@ export class CheckpointManager {
         // 无法重建（异常）→ 保守失败，调用方应放弃删除旧 full 以免切链。
         return false;
       }
-      // 原地改写为 full（复用压缩阈值逻辑）。
-      const compressThreshold = this.config.compressThresholdKb * 1024;
+      // 原地改写为 full（复用压缩阈值逻辑；N13：与 createSnapshot 同一编码函数）。
       f.type = "full";
       f.diff = undefined;
-      if (rebuilt.length > compressThreshold) {
-        const compressed = Bun.gzipSync(Buffer.from(rebuilt, "utf-8"));
-        f.content = Buffer.from(compressed).toString("base64");
-        f.compressed = true;
-      } else {
-        f.content = rebuilt;
-        f.compressed = false;
-      }
+      encodeFullEntry(f, rebuilt, this.config.compressThresholdKb * 1024);
       this.dirty = true;
       return true;
     }
