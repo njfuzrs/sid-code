@@ -11,10 +11,22 @@
  *   else                    → throw
  *
  * 安全：hook 命令执行有 timeout（默认 30s）+ AbortController，防卡死（D20）。
+ *
+ * W10（2026-09-29）两道补上的边界：
+ * 1. **来源**：`filterProjectSettings` 不过滤 `hooks`，所以一个仓库提交的
+ *    `.sid-code/settings.json` 能带 WorktreeCreate —— clone 之后第一次
+ *    `enter_worktree` 就执行它。启动期信任门控（cli.ts）只 strip 了 `config.hooks`，
+ *    而这里读的是 `getSettings()`，那道门对它不生效。现在项目级来源的 worktree hook
+ *    只在工作区被信任后才认；user / local / policy / flag 来源照旧。
+ * 2. **输出**：hook 打印的路径会被直接 `process.chdir`。现在要求它是绝对路径、
+ *    真实存在的目录，且不是文件系统根 / 主仓根本身（后两者 chdir 进去等于没隔离）。
  */
 
 import { spawn } from "child_process";
-import { getSettings } from "../config/settings/settings.ts";
+import { statSync } from "fs";
+import { isAbsolute, parse, resolve } from "path";
+import { getEnabledSettingSources, getSettingsForSource } from "../config/settings/settings.ts";
+import { TrustManager } from "../permission/trust.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** hook 执行超时（ms） */
@@ -26,21 +38,75 @@ interface HookEntry {
   timeout?: number;
 }
 
-/** 读取指定 worktree hook 的第一个 command 配置 */
+/** 从单个来源的 hooks 段里取第一个 command 型条目 */
+function pickHook(hooks: unknown, event: "WorktreeCreate" | "WorktreeRemove"): HookEntry | null {
+  const entries = (hooks as Record<string, HookEntry[]> | undefined)?.[event];
+  if (!Array.isArray(entries)) return null;
+  return entries.find((e) => e?.command && (e.type ?? "command") === "command") ?? null;
+}
+
+/**
+ * 读取指定 worktree hook 的第一个 command 配置。
+ *
+ * 逐来源读而不是读合并结果：合并后分不出某条 hook 来自哪个文件，
+ * 而「来自仓库提交的 settings.json」恰恰是要单独判信任的那一类（W10）。
+ * 来源顺序沿用 SETTING_SOURCES（user → project → local → flag → policy），
+ * 与合并语义下「数组拼接、第一个命中」的结果一致；并且同样受 --setting-sources 过滤。
+ */
 function getWorktreeHook(
   event: "WorktreeCreate" | "WorktreeRemove",
   gitRoot?: string,
 ): HookEntry | null {
-  try {
-    const { settings } = getSettings(gitRoot);
-    const hooks = settings?.hooks as Record<string, HookEntry[]> | undefined;
-    const entries = hooks?.[event];
-    if (!Array.isArray(entries)) return null;
-    const cmd = entries.find((e) => e?.command && (e.type ?? "command") === "command");
-    return cmd ?? null;
-  } catch {
-    return null;
+  let projectTrusted: boolean | undefined; // 惰性：只在项目级真有 hook 时才读信任记录
+  for (const source of getEnabledSettingSources()) {
+    let hook: HookEntry | null = null;
+    try {
+      hook = pickHook(getSettingsForSource(source, gitRoot).settings?.hooks, event);
+    } catch {
+      continue;
+    }
+    if (!hook) continue;
+    if (source === "projectSettings") {
+      projectTrusted ??= new TrustManager(gitRoot ?? process.cwd()).isTrustedSync();
+      if (!projectTrusted) {
+        getLogger().warn(
+          "WORKTREE",
+          `忽略项目级 ${event} hook：工作区未被信任（信任后方可由仓库配置接管 worktree 创建/删除）`,
+        );
+        continue;
+      }
+    }
+    return hook;
   }
+  return null;
+}
+
+/**
+ * 校验 WorktreeCreate hook 打印的路径（W10）。
+ * 返回规范化后的绝对路径；不合格直接抛错 —— 调用方拿到它就会 chdir 进去。
+ */
+export function validateHookWorktreePath(raw: string, gitRoot: string): string {
+  if (!isAbsolute(raw)) {
+    throw new Error(`WorktreeCreate hook 输出的不是绝对路径: ${raw}`);
+  }
+  const p = resolve(raw);
+  let isDir = false;
+  try {
+    isDir = statSync(p).isDirectory();
+  } catch {
+    /* 不存在 */
+  }
+  if (!isDir) {
+    throw new Error(`WorktreeCreate hook 输出的路径不是已存在的目录: ${p}`);
+  }
+  if (p === parse(p).root) {
+    throw new Error(`WorktreeCreate hook 输出了文件系统根目录，拒绝进入: ${p}`);
+  }
+  if (p === resolve(gitRoot)) {
+    // 进入主仓本身 = 没有隔离，而调用方（子代理 / workflow）以为自己拿到了隔离
+    throw new Error(`WorktreeCreate hook 输出的是主仓根目录，不是隔离工作区: ${p}`);
+  }
+  return p;
 }
 
 /** 是否配置了 WorktreeCreate hook */
@@ -120,10 +186,11 @@ export async function executeWorktreeCreateHook(
     { name: slug, cwd: gitRoot, projectRoot: gitRoot },
     timeoutMs,
   );
-  const worktreePath = out.split("\n").pop()?.trim() ?? "";
-  if (!worktreePath) {
+  const lastLine = out.split("\n").pop()?.trim() ?? "";
+  if (!lastLine) {
     throw new Error("WorktreeCreate hook 未输出 worktree 路径");
   }
+  const worktreePath = validateHookWorktreePath(lastLine, gitRoot);
   log.info("WORKTREE", `Hook 创建 worktree: ${worktreePath}`);
   return { worktreePath };
 }

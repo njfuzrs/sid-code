@@ -15,6 +15,36 @@ import { logWorktreeEvent } from "./analytics.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
+ * W8：GC 删 worktree 时该顺手删的分支。只有「实际检出的分支 == 我们按目录名建的那条」
+ * 才返回它，否则返回空串（remove() 见空串不删任何分支）。
+ *
+ * 旧实现直接 `branchNameForSlug(dir)`，从不问 worktree 实际检出了什么：
+ * - 用户手动 `git worktree add .sid-code/worktrees/agent-xxx feature-login`
+ *   → 去删一条不存在的 `worktree-agent-xxx`，而且
+ * - 仓库里若恰好有一条同名分支（上次同名 worktree 残留）但目录检出的是别的，
+ *   `branch -D` 会把那条无关分支强删，静默成功。
+ * 实际分支是用户自己的（feature-login）时也不删：GC 只负责收我们自己造的东西。
+ */
+function ownedBranchToDelete(worktreePath: string, dir: string): string {
+  try {
+    const actual = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    const expected = branchNameForSlug(dir);
+    if (actual === expected) return expected;
+    getLogger().debug(
+      "WORKTREE",
+      `GC ${dir}：检出的是 ${actual === "HEAD" ? "detached HEAD" : actual}，不是 ${expected}，不删分支`,
+    );
+  } catch {
+    /* 读不到 → 不删任何分支（fail-closed） */
+  }
+  return "";
+}
+
+/**
  * 临时 Worktree 的命名模式（只清理这些，P1-8 / B3）。
  * 覆盖四种来源：
  * - agent-xxxx        子代理隔离（hex / task id）
@@ -170,7 +200,7 @@ export async function cleanupStaleWorktrees(
           worktreePath: fullPath,
           worktreeName: dir,
           sessionId: "",
-          worktreeBranch: branchNameForSlug(dir),
+          worktreeBranch: ownedBranchToDelete(fullPath, dir),
           originalHeadCommit: "",
         },
         true,
