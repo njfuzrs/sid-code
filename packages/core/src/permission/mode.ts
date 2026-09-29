@@ -1,6 +1,6 @@
 /**
  * 权限模式管理
- * 模式继承（plan 继承 bypass）、prePlanMode 记忆、模式切换循环
+ * 模式切换循环（Shift+Tab）与企业策略跳档
  */
 
 /** 权限模式 */
@@ -17,16 +17,12 @@ export type PermissionMode =
 /** 权限模式上下文 */
 export interface PermissionModeContext {
   mode: PermissionMode;
-  /** 进入 plan 模式前的模式（退出时恢复） */
-  prePlanMode?: PermissionMode;
   /** bypassPermissions 是否可用（企业策略可禁用） */
   isBypassAvailable: boolean;
 }
 
-/** plan 模式是否应继承 bypass 行为 */
-export function shouldPlanInheritBypass(ctx: PermissionModeContext): boolean {
-  return ctx.mode === "plan" && ctx.prePlanMode === "always-allow" && ctx.isBypassAvailable;
-}
+// P2-2：此处曾有 shouldPlanInheritBypass（plan 继承 always-allow），全仓零调用，
+// 且 checker 里另有一份输入恒为空的手写副本。两份一并删除，理由见 checker.checkPlanMode 注释。
 
 /** 获取下一个权限模式（循环切换，Shift+Tab） */
 export function getNextPermissionMode(ctx: PermissionModeContext): PermissionMode {

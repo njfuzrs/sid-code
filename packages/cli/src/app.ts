@@ -5485,7 +5485,8 @@ export class App {
           await import("@sid-code/core/plan/recovery.ts");
         const hook = getSharedRecoveryHook();
         const planFilePath = this.planManager.getPlanFilePath() || "";
-        // 执行阶段 plan 文件路径仍保留（approve/deactivate 不清空，仅 forceExit/下次 enter 清）。
+        // 执行阶段 plan 文件路径仍保留（approve 不清空）。P3-1：清空只发生在 forceExit()
+        // （含拒绝超限）与非规划态的 endExecution()；不变量见 PlanModeManager 头注释。
         // 防御：路径为空时跳过（hook 的 isValidContext 也会拒，这里提前 continue 省一次 import）。
         if (!planFilePath) continue;
         const ctx = {
@@ -5571,6 +5572,9 @@ export class App {
    * 但 plan 是**行为模式**——"先规划再执行、先出方案等审批"无法用权限规则表达，
    * 只能靠模型读到约束后自觉，故这条缺失是真实的行为回归，不是纯文案问题。
    *
+   * P2-1 之后第二条路径也会在回合开始时经 syncPlanModeFromPermissionMode() 进入状态机，
+   * `permissionMode === "plan"` 这半边退为兜底（planManager 缺失的精简装配仍靠它）。
+   *
    * 节流沿用 planManager.nextReminderIsFull()（每 N 轮完整版、其余精简版）；
    * planManager 缺失时（无头/精简装配）退化为恒发完整版——宁可多几个 token，
    * 也不能让唯一的约束通道静默失声。
@@ -5581,7 +5585,31 @@ export class App {
     if (!inPlanMode) return null;
     const { buildPlanModeReminder } = await import("@sid-code/core/plan/prompt.ts");
     // 节流：每 N 轮发完整提醒，中间轮次发简短提醒，省 token
-    return buildPlanModeReminder(this.planManager?.nextReminderIsFull() ?? true);
+    return buildPlanModeReminder(
+      this.planManager?.nextReminderIsFull() ?? true,
+      this.planManager?.getPlanFilePath(),
+    );
+  }
+
+  /**
+   * P2-1：权限模式已是 plan、而状态机还停在 inactive 时，补一次 enter()。
+   *
+   * `--permission-mode plan` / settings / CLAUDE.md 规则只写 config.permissionMode，
+   * 从前没有任何代码调 planManager.enter()，于是这条入口只拿到权限层的只读硬拦：
+   * 没有计划文件路径（isPlanFile 恒 false，模型写不了计划）、exit_plan_mode 走
+   * 「已进入执行阶段」的幂等分支（没有审批）、退出后没有可恢复的前一个模式。
+   * 放在每个用户回合开始处而不是构造函数里：CLAUDE.md 规则在 init() 里才生效，
+   * 且运行中重载规则也可能把模式改成 plan。已在规划 / 待审批时 syncWithPermissionMode 是 no-op。
+   */
+  private syncPlanModeFromPermissionMode(): void {
+    if (!this.planManager) return;
+    if (this.planManager.syncWithPermissionMode(this.config.permissionMode)) {
+      getLogger().info(
+        "PLAN",
+        `以 plan 权限模式进入会话 → 进入规划态，计划文件: ${this.planManager.getPlanFilePath()}`,
+      );
+      this.tuiStateUpdater?.({ permissionMode: "plan", isPlanMode: true });
+    }
   }
 
   /** 激活 Plan Mode：切换权限模式（不重建 system prompt，对标 Claude Code） */
@@ -5589,10 +5617,7 @@ export class App {
     const log = getLogger();
     log.info("PLAN", "激活 Plan Mode");
 
-    // 保存原始权限模式（退出时恢复）
-    if (!this._originalPermissionMode) {
-      this._originalPermissionMode = this.config.permissionMode;
-    }
+    // 进入前的权限模式已由 enter_plan_mode 在 planManager.enter() 时记下（P2-1：唯一事实源）
     this.config.permissionMode = "plan";
 
     // 同步 TUI 状态
@@ -5607,10 +5632,11 @@ export class App {
     const log = getLogger();
     log.info("PLAN", "退出 Plan Mode");
 
-    // 恢复原始权限模式
-    const restored = this._originalPermissionMode || "default";
+    // 恢复进入前的权限模式。P2-1：从前这里读 App 自己的 _originalPermissionMode，
+    // 与 planManager.prePlanMode、checker.prePlanMode 共三份，只有这一份被赋过值。
+    // 以 plan 模式启动的会话没有「之前」，getPrePlanMode() 为 null → 恢复成 default。
+    const restored = this.planManager?.getPrePlanMode() || "default";
     this.config.permissionMode = restored;
-    this._originalPermissionMode = null;
 
     // 同步 TUI 状态
     this.tuiStateUpdater?.({ permissionMode: restored, isPlanMode: false });
@@ -5714,9 +5740,6 @@ export class App {
     }
   }
 
-  /** 原始权限模式（Plan Mode 退出时恢复） */
-  private _originalPermissionMode: string | null = null;
-
   /** 启动瞬间 bypass(skip-perms) 是否可用（稳定快照，供键盘循环判断是否纳入 always-allow）。 */
   private readonly bypassAvailableAtLaunch: boolean = false;
 
@@ -5804,7 +5827,6 @@ export class App {
     } = require("@sid-code/core/permission/mode.ts");
     const ctx = {
       mode: this.config.permissionMode,
-      prePlanMode: this._originalPermissionMode || undefined,
       // bypass 用启动快照,不用实时 config.skipPermissions(下方会被本方法改写)。
       isBypassAvailable: this.bypassAvailableAtLaunch,
     };
@@ -6589,6 +6611,8 @@ export class App {
     // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
     // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
     this.planManager?.endExecution();
+    // P2-1：以 plan 权限模式启动（或被 CLAUDE.md 规则改成 plan）的会话在这里进入状态机。
+    this.syncPlanModeFromPermissionMode();
     try {
       for await (const event of this.queryEngine.submitMessage(input)) {
         if (event.kind === "done") {
@@ -8028,6 +8052,8 @@ export class App {
       try {
         // 新用户回合开始：清执行阶段标志（同 runHeadless，详见该处注释）。
         this.planManager?.endExecution();
+        // P2-1：同 runHeadless。
+        this.syncPlanModeFromPermissionMode();
         for await (const event of this.queryEngine.submitMessage(
           userInput,
           displayCommand ? { displayCommand } : undefined,

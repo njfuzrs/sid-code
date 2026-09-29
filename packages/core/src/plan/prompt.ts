@@ -111,13 +111,19 @@ ${
  *
  * 成本控制：完整清单只进 **full 档**（低频，每 N 轮一次），sparse 档保持精简不变。
  *
+ * P2-1：带上计划文件路径。提醒要求「用 write/edit 编辑计划文件」，但从 enter_plan_mode
+ * 以外的入口（`--permission-mode plan` 等）进入时，模型从来没有收到过那条路径——
+ * enter_plan_mode 的 tool_result 是它唯一的来源。路径在同一份计划内不变，不伤缓存。
+ *
  * @param full true=完整提醒，false=简短提醒（默认 true 保持向后兼容）
+ * @param planFilePath 当前计划文件路径；缺省时不输出路径行
  */
-export function buildPlanModeReminder(full: boolean = true): string {
+export function buildPlanModeReminder(full: boolean = true, planFilePath?: string | null): string {
+  const pathLine = planFilePath ? `\n计划文件（唯一允许编辑的文件）：${planFilePath}` : "";
   if (!full) {
     return `<system-reminder>
 [计划模式] 只允许只读操作。如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
-不要反复探索或过度分析——目标是尽快拿出可执行的方案，不是写出完美的设计文档。
+不要反复探索或过度分析——目标是尽快拿出可执行的方案，不是写出完美的设计文档。${pathLine}
 </system-reminder>`;
   }
   return `<system-reminder>
@@ -140,7 +146,7 @@ export function buildPlanModeReminder(full: boolean = true): string {
 
 如果你已完成分析并有清晰方案，立即写计划并调用 exit_plan_mode 提交审批。
 不要反复探索或过度分析——目标是尽快拿出可执行的方案。
-执行计划时遇到工具失败，先用 edit 工具更新计划文件再继续执行。
+执行计划时遇到工具失败，先用 edit 工具更新计划文件再继续执行。${pathLine}
 </system-reminder>`;
 }
 

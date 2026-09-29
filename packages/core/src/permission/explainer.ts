@@ -22,7 +22,6 @@ const MODE_LABELS: Record<string, string> = {
   dontAsk: "从不询问（dontAsk）",
   plan: "计划模式（plan）",
   "plan+plan-file": "计划模式·计划文件放行",
-  "plan+bypass": "计划模式·继承 bypass 放行",
 };
 
 // 注：本文件曾有一张 SOURCE_LABELS（八个 PermissionRuleSource 的中文名），

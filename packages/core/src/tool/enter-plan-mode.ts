@@ -57,7 +57,16 @@ export class EnterPlanModeTool implements Tool {
    */
   readonly resultDisplayMode = "summary" as const;
 
-  constructor(private planManager: PlanModeManager) {}
+  /**
+   * @param getCurrentPermissionMode 读取进入前的权限模式（P2-1）。从前 execute 里
+   *   传 `enter(undefined, …)`，planManager.prePlanMode 恒为 null，「退出后恢复成什么」
+   *   只能靠 App 另存一份；现在 planManager 是唯一事实源，必须在进入时拿到真实值。
+   *   缺省（测试 / 精简装配）时记为 null，退出恢复成 default。
+   */
+  constructor(
+    private planManager: PlanModeManager,
+    private getCurrentPermissionMode?: () => string | undefined,
+  ) {}
 
   name(): string {
     return "enter_plan_mode";
@@ -133,7 +142,7 @@ export class EnterPlanModeTool implements Tool {
     }
 
     const topic = typeof inp?.topic === "string" ? inp.topic : undefined;
-    const ok = this.planManager.enter(undefined, topic);
+    const ok = this.planManager.enter(this.getCurrentPermissionMode?.(), topic);
     if (!ok) {
       return { output: "无法进入计划模式", isError: true };
     }

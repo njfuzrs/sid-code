@@ -1742,6 +1742,14 @@ export class SubAgent {
         sessionId: this.deriveSubAgentSessionId(taskId),
       });
 
+      // P3-2：刻意**不**调 setPlanContentProvider（主代理在 app.ts 构造处接了）。
+      // 子代理不持有计划：enter_plan_mode 拦 _agentId，它进不了规划态；它拿到的是
+      // 主代理拆好的单个子任务，任务描述就是它的全部「计划」，而任务描述在首条 user
+      // 消息里、压缩时由摘要保留。若透传主代理的 provider，执行阶段派出的每个子代理
+      // （含 explore / plan 这类与执行无关的只读代理）压缩一次就会被灌入整份主计划，
+      // 既占窗口又会诱导它去做计划里别的步骤。以后若要让子代理按主计划执行，
+      // 应显式传「本子任务对应的那一段」，而不是在这里补一行 provider。
+
       // P2-10：落 sidechain_start（记录子代理身份，供恢复时展示）。
       sidechain?.start(task.type, task.description, this.modelOverride || this.model);
 
@@ -2231,6 +2239,7 @@ export class SubAgent {
         // 自定义子代理无 taskId，用 task.type 派生独立 masking 会话目录。
         sessionId: this.deriveSubAgentSessionId(task.type),
       });
+      // P3-2：同上，刻意不接 setPlanContentProvider（理由见 executeInner 里 ContextManager 构造处）。
 
       const systemPrompt = await enhanceSubAgentPrompt(
         task.systemPrompt,
