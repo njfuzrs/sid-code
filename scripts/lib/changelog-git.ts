@@ -46,8 +46,12 @@ export function listSemverTags(): string[] {
 }
 
 export function today(): string {
-  // release.sh 在真实时钟下调用；此脚本非 workflow 沙箱，Date 可用
-  return new Date().toISOString().slice(0, 10);
+  // release.sh 在真实时钟下调用；此脚本非 workflow 沙箱，Date 可用。
+  // 必须取**本地**日期：tag 提交日按 git 的 %ad（作者本地时区）算。用 toISOString()（UTC）
+  // 时，+0800 凌晨 0–8 点发版会记成前一天，与 tag 日期错位（v0.1.606 实测 02:32 发版踩到）。
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** tag 指向提交的日期（YYYY-MM-DD）；取不到则返回 today */

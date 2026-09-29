@@ -38,6 +38,14 @@ mock.module("@sid-code/core/bridge/bridge-runner.ts", () => ({
 mock.module("@sid-code/shared/utils/graceful-shutdown.ts", () => ({
   runShutdownSequence: async () => {},
 }));
+// SID_CONFIG_DIR 是空 tmpdir ⇒ 目录缓存为空 ⇒ App 构造时 fire-and-forget 拉 4 个外部模型目录，
+// 进程要等这些 fetch 结束才退出。外网慢时单测稳定踩 5s 超时（实测 12–18s），CI 网络快才一直绿。
+// 这里只验脱敏，不需要外网。
+const realCaps = await import("@sid-code/core/llm/model-capabilities.ts");
+mock.module("@sid-code/core/llm/model-capabilities.ts", () => ({
+  ...realCaps,
+  shouldSyncCatalogs: () => false,
+}));
 
 const log = getLogger();
 log.info = ((tag: string, message: string) => {

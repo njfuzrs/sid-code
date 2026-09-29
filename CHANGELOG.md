@@ -2,6 +2,248 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.606 (2026-09-30)
+
+### 新功能
+- **bridge** · 远程 bridgeEnabled 经单例关掉 Bridge (#105) `53ebaceb`
+  - [x] 只改了 policy、单例、cli 准入读点和测试
+  - [x] 没跑 `make build-bump` 或 `release.sh`
+  - [x] 测试把 `SID_CONFIG_DIR` 指到 tmpdir
+  - [x] 分支 `feat/bridge-policy-enabled`
+- **telemetry** · 账本远程 upsert 出口与对账 --threshold (#91) `75ded295`
+  - 新文件 `packages/core/src/telemetry/usage-ledger-remote.ts`
+  - 鉴权抄 M4 `http.ts`：`applyDeviceAuth` + `isNonLocalHttp`（https 放行，http 仅 loopback）
+  - 失败盘 `~/.sid-code/failed-usage-ledger.jsonl`，按 `sessionId` **覆盖一行**（不是 append）
+  - 跨会话重放挂 `initTelemetrySystem`（与 events `recoverFromDisk` 同款 fire-and-forget）
+  - `pricing-reconcile.ts` 加 `--threshold`（缺省仍 0.1）+ 按 `endpointHost` 分桶， untrusted host 进「可解释排除」段并打印 n 与 host 名单
+  - `bun test ./packages/core/tests/telemetry/usage-ledger-remote.test.ts ./packages/core/tests/telemetry/usage-ledger.test.ts ./tests/scripts/pricing-reconcile.test.ts` → **40 pass / 0 fail**
+  - `bun run affected-tests:run` → **4775 pass / 0 fail**（344 files）
+  - `make build` 成功；`bun run lint` / `lint:boundary` / `format:check` / `verify:agent-note` 绿
+
+### 修复
+- **changelog** · 未打 tag 时版本日期取本地日而非 UTC `8c4c52c7`
+  - today() 用 toISOString()（UTC），而 tag 日期按 git %ad（作者本地时区）取。
+  - +0800 凌晨 0–8 点发版时两者差一天，changelog-integration 的「版本日期与 tag
+  - 提交日一致」断言在 release.sh 门禁里红（v0.1.606 02:32 发版实测踩到）。
+- **session,checkpoint,agent** · 会话持久化与检查点四项 P1（N2/N3/N7/N13） (#117) `d62c99cd`
+  - 新增 4 个回归文件（21 条），均走生产入口：
+  - `tests/session/p1-load-latest-fallback.test.ts`（N2）
+  - `tests/agent/p1-sidechain-all-paths.test.ts`（N3）
+  - `tests/session/p1-rewind-after-compact.test.ts`（N7）
+  - `tests/checkpoint/p1-binary-snapshot.test.ts`（N13）
+  - `tests/checkpoint` + `tests/session` 全目录：316 pass / 0 fail
+  - `bun run affected-tests:run`：2357 pass / 1 fail。失败的是 `cli/tests/app/bridge-ready-url.test.ts` 超时，在基线 `67a641a8` 上复跑同样失败，与本次改动无关
+  - `make build` 自检通过；`lint`、`lint:boundary`、`format:check`、Agent Note 校验均通过
+- **worktree,agent,permission** · 修复 Worktree 隔离 W1–W5 五项缺陷 (#116) `67a641a8`
+  - 新增 5 个测试文件 60 项用例。每一项都做过**变异自证**：把修复逐个改回旧行为，确认对应用例转红、 「仍应拦住／行为不变」的护栏用例保持绿，再还原。W1 mutation 红 4 项、W3 红 2 项、W4 红 10 项、 W2 两种 mutation 分别红 1 项和 4 项。
+  - W3／W5 的判据取自 git 自己的回答（`rev-parse --show-toplevel`）而非写死字符串； W3 走真实入口 `countChanges(fast:true)`，不复刻 git 命令。
+  - W2 是静态时序门禁（这段逻辑在 `main()` 里，跑它要拉起整个 CLI 启动流程），锁的是语句相对顺序 —— 那恰好就是缺陷本身，也是它唯一的复发方式。
+  - 全量 `bun test`：**12808 pass / 0 fail**（888 文件）。`lint`、`format:check`、pre-commit 全部通过（含参考页对账、包边界扫描）。
+  - 本 PR 在独立 worktree 里开发，未触碰主工作区。
+- **session,checkpoint** · 修掉会话持久化与检查点七项 P0 (#115) `c0409e1b`
+  - **N5** `rebuildContentBeforeSnapshot` 不再取 `targetIndex - 1`。这一格错位同时产生三种形态：只有一个快照时**空转却谎报成功**、两次以上编辑时一次 `/undo` **退两步**、`/undo <路径>` 对只改过一次的文件**直接失败**。另外 `undo()` 在全部回滚失败时保留快照并返回 null —— 修前无条件删快照 + 返回…
+  - **N6** rewind 文件锚点改由 `attachSnapshot()` **回填本轮首个快照**。`registerPoint` 跑在用户输入提交前、本轮快照尚不存在，旧写法取到的是**上一轮**快照 ⇒ 回退多撤一整轮；回退到第 1 轮时锚点恒为空串 ⇒ 文件层永不回滚（**最想撤的那次恰恰撤不掉**）。
+  - **N4** `restoreToSnapshot` 补 `readFirstFullContentAfter()`，覆盖「目标快照之后才首次被改」的文件（其首个 full 落在 targetIndex 之后 ⇒ 往前找必然找不到 ⇒ 旧代码**静默跳过**）。信息一直都在，是取数方向走错了。新增 `RestoreResult.failedFiles` 让失败可见 —— 修前只体现为一个看着像全…
+  - `checkpoint/manager.test.ts` 的 undo 用例时序原本是**反的** —— 额外建了个 "initial" 快照，构造出「快照数比编辑数多一个」的世界，在那个世界里被修掉的 `targetIndex - 1` 恰好是对的。这正是它一直绿着却放过三种生产错误的原因。改为按生产时序「先建快照再改文件」。
+  - `session/cleanup.test.ts` 的 `writeCorrupt` fixture 原本写一条合法 `user_message`，而那恰恰是 N1 要保护的形态。改为真正不可解析的内容，并补两条 `chain-broken` 用例。
+  - `bun test` — 12785 pass / 4 fail
+  - `make build` — 通过（含产物自检）
+  - `bun run lint` — 0 warning 0 error
+- **plan,task,agent** · 修复任务规划的 P0-1 与三项 P1 缺陷 (#114) `0af74661`
+  - `checker.ts` Step 3.5：放行条件扩为「plan 模式 **or** `isExecuting()`」。仍是精确路径匹配，**不放宽到 `plans/` 目录前缀**，放行面只多了「同一份计划文件在执行阶段可写」。
+  - `recordPlanFileWrite`：拒绝条件由 `state === "inactive"` 改为 `!isActive() && !isExecuting()`。此前执行阶段的更新一次都不计，`plan_recovery` 评测读到的 count 恒等于规划阶段写入次数。
+  - `forceExit`：不再对 `inactive` 无条件早退。**执行阶段的 `state` 正是 `inactive`**，旧早退让它在唯一需要收尾执行阶段的时刻变成 no-op（旧测试甚至把这点写成了预期注释）。`isExecuting()` 现在还是权限放行条件，「用户取消」必须真的关掉它。
+  - **工具层**：白名单删掉三个只读类型的 `todo_write`；`task` 的定义 `tools` 补上它，两侧成对声明并互相注释。 > 文档记为「四类都拿不到」，复核时发现一处需补充：`general-purpose` 经 `tools: ["*"]` 本就已拿到 `todo_write`，所以**循环层的缺口是现网活着的**，不是接线后才暴露的隐患。
+  - **循环层**（唯一真正改变运行时行为的一层）：`agentic-loop` 补两道机制，复用主循环 `query/todo-reminder.ts` 的文案构造器，不另写一套（抄一份文案就是给同一条约束开第二个会各自漂移的事实源）—— ① 周期性回注清单（对标主循环 P0-2「todo 写完即沉没」）； ② `end_turn` 完成度门禁 + 软续命（对标 P0-3「做了一半就 end_tu…
+  - **提示词层**：`task` 的 systemPrompt 说明清单会被回注、收尾仍有未尽项会被拦下。
+  - `subagent-todo-write-isolation` 的「四类型白名单均含 todo_write」**不传 `tools`**，只测到 Layer 2，为一个生产中不存在的组合背书。改为按生产路径传 `BUILTIN_AGENTS[type].tools`，并加一条机械断言：凡定义层声明了 `todo_write` 的类型，走完整过滤后必须真拿到它。
+  - `state-update-count` 的「approve 后不能再记录」断言的正是 P1-1 的缺陷本体，已反转并写明原委。
+- **bridge** · 控制端静默不再被当成管理员强制断开 (#113) `e1291e6c`
+  - `1008` 只有 reason 是 `admin_disconnect` 才永久失败；`1001 idle_timeout` 与其余 1008 走重连。
+  - 探活改看「发出的心跳有没有被送回来」，不再看「对端有没有主动说话」。对端在权限弹窗前可以一分钟不发任何业务帧，那是人在思考，不是连接死了。
+  - `start()` 在 `connect()` 之前挂上关闭等待。服务端在 `open` 里直接 `close` 时，关闭回调与 `onopen` 在同一轮任务里跑完，只让一个微任务会读到「没失败」，`runBridge` 先打印「已启动」。
+  - `bridge-ready-url` 的 `mock.module` 移进子进程。
+  - 把 `IDLE_TIMEOUT_SECONDS` 调到大于 60 秒。与权限超时重合只是触发条件，调大只是把窗口挪一寸，人犹豫两分钟照样死。
+  - 让管理台周期发 `user_message` 保活。每条都会进 CLI 主循环，变成真的远程指令。
+  - 只改中继、不改 CLI 的探活。端到端第一次跑就暴露了：中继不再误杀之后，CLI 自己的半开探活在 60 秒时把连接断开重连，重连即 4001。
+  - 把 `1008` 从永久失败码里整个删掉。管理员强制断开就不再能让被盗会话的 CLI 退出。所以 1008 保留，但只认 `admin_disconnect` 这一个 reason。
+- **agent,workflow,swarm** · 补齐 P2 五项对齐缺口 (#112) `0909ddfa`
+  - **P2-1 子代理 effort 不再塌缩**。用户入口此前已修（5 档、`/effort` 暴露 xhigh、各族 applier 按能力钳制），但 `executeInner` 与 `executeCustomInner` 仍各写一份「xhigh|max → max，其余 → high」，且子代理不经过能力层。新增 `agent/sub-agent-effort.ts`，两处改为复用主循环…
+  - **P2-2 workflow 预算接共享池**。核实后确认「共享池」是设计意图而不是过时注释。`WorkflowTool` 新增会话读口，`app.ts` 注入 `sessionState.getTotalUsage().outputTokens`（主循环 + 全部子代理的 flow 累计）。未注入时退化为只计本 run。
+  - **P2-3 `/loop` 认尾随 every**。`/loop review PRs every 2 hours` 建 2 小时 cron，任务正文为 `review PRs`，与前导间隔走同一段建任务逻辑。`every` 必须是句尾独立词。
+  - **P2-4 phase() 与 meta.phases 对账**。未声明标题告警但照常分组；`SID_CODE_WORKFLOW_STRICT_PHASES=1` 时抛 `UndeclaredPhaseError` 拒绝执行。内联子 workflow 用自己的 meta 对账。
+  - **P2-5 Agent Teams 常驻模式（opt-in，默认关闭）**。`resident: true` 时成员做完挂起，新任务唤醒、`shutdown_request` 退出、全部任务完成后自动收尾。挂起期间收到的非 shutdown 消息（如 `plan_approval_response`）回灌收件箱不丢。默认不传 = 一次性批，既有调用方行为不变。
+  - P2-1 的根因不是「缺一个档位」，是子代理绕过了能力层自己手写映射。再写一份五档映射会重蹈两处漂移的覆辙，所以直接调用 `applyToSendParams`。
+  - P2-2 的读口不加本 run 的 `outputTokens`：子代理用量在 `onResult` 同步回写 SessionState，预算硬门在下一次 `agent()` 才检查，两者相加会把已回写部分算两次。
+  - P2-4 默认告警不拒绝：phase 对不上是进度树的展示问题，不该让脚本整段跑崩。严格模式留给 CI。
+- **cron,swarm** · 补齐定时任务上限与禁用开关，接通团队协作层半成品 (#111) `853c8ffd`
+  - **P0-1** cron 任务上限：会话级 50、daemon 聚合级 500，守卫在 `Scheduler.addSessionTask` / `addDurableTask`，`cron_create` / `schedule_wakeup` / `/loop` 三个入口都走这里，达上限返回错误且不入队。
+  - **P0-2** 新增 `SID_CODE_DISABLE_CRON`：工具不注册、调度器不轮询（已持久化任务也不触发）、`/loop` 三种用法全拒。
+  - **P1-2** teammate 以 `kind: "teammate"` 注册进活跃会话表，`/ps` 可见；探活看任务终态而非 PID（同进程子代理 PID 恒活着）。
+  - **P1-3** 主会话任务清单按 sessionId 落盘到 `~/.sid-code/tasks/sessions/`，启动时恢复；与团队清单按 `metadata.team` 分区，互不覆盖。
+  - **P1-4** journal 记录携带 `phase`（不参与指纹），`/workflows <runId>` 按 phase 分组渲染进度树。
+  - **P1-5** `team_message` 与 `send_message` 支持按成员名和 `"*"` 广播投递，leader 侧经 `withActiveTeam` 登记。
+  - 上限守卫放工具层会被绕过：`/loop` 直建任务不经 `cron_create`。下沉到 scheduler 的两个 add 方法后，入口再加也不用改。
+  - daemon 不与会话共用 50：它跨项目聚合全机 durable 任务，套会话级上限会把多项目场景卡死，所以单列 500 档。
+- **bridge** · 准入与就绪提示不再回显 URL 里的 token (#110) `a5d1a795`
+  - `checkBridgeAdmission` 写进拒绝文案、确认提示和 BRIDGE 日志的 URL，先剥掉 query 与 hash。
+  - `App.runBridge` 连上之后的 stderr 与日志同样剥离。token 写进 `--bridge` 时，建连前的失败和连上后的成功提示都不再回显。
+  - 信任键仍走 `normalizeBridgeUrl`，连接 URL 仍由 `connect()` 里的 `stripTokenQuery` 处理。本 PR 补的是这两处之前的展示路径。
+  - `bun test packages/core/tests/bridge/admission.test.ts packages/cli/tests/app/bridge-ready-url.test.ts`：24 pass
+  - 锁的是 `message` / confirm prompt / stderr 都不含 `secret`，也不含 `token=`
+- **worktree** · 自动恢复跟随拥有它的会话 (#109) `f61d63cb`
+  - 按 `savedAt` 超时放弃。时间阈值分不清「崩溃没写 session_end、明天想 resume」和「会话早就正常结束了」。
+  - 在 `restoreWorktreeSession` 内部直接清。它比 resume 目标解析更早跑，那时 `config.resume` 还可能是序号或搜索词，比较必然对不上，会把正要恢复的现场提前清掉。判定因此接在会话恢复之后。
+  - 没有 `sessionId` 的存量状态一律清掉。旧落盘无从判断归属，保持原来的恢复行为。
+  - 进程退出时自动 `exit_worktree`。那会把「崩溃后续回来」这条恢复路径一起拆掉，而它正是持久化存在的理由。崩溃没写 `session_end`、注册表里 pid 还活着、`session_end` 后有续写，都照常进入。
+  - [x] **只改了与本次任务相关的文件**（`git status` 里别人的在途改动没动过； 没用过 `rm` / `git checkout --` / `git restore` / `git reset --hard` / `git clean`）
+  - [x] 没跑 `make build-bump` 或 `./scripts/release.sh`（版本号只在发布流程里变）
+  - [x] 没新增类型错误（CI 暂不含 `tsc --noEmit`，靠自觉）
+  - [x] 没提交密钥、内网地址、本机绝对路径
+- **config** · 配置回到单一真相源，TUI 默认改回主屏 (#108) `c6a20417`
+  - `mergeConfig` 只跳过 `undefined`，不再把 `false` 和 `""` 当成「没给」。文件里显式关掉的布尔开关会被缺省盖回默认，这是 TUI 明明写了主屏却启动进全屏的直接原因之一。
+  - `app.json` 只贡献 `AppConfig` 声明过的字段。读盘与回写都过滤，越界键（`alternateBuffer`、`audit`、`ide` 等）不再和 `settings.json` 形成第二份互相矛盾的真相源。
+  - 项目级覆盖只取 `projectSettings` 与 `localSettings`。PR #99 用 `getSettings()` 的合并结果再盖一次，而它包含用户级 settings，等于把 `~/.sid-code/settings.json` 读了两遍。路由字段（`model` / `baseURL` / `provider` / `env`）仍不放行。
+  - `alternateBuffer` 的代码默认从 `true` 改回 `false`（主屏，原生拖选复制）。2026-07-23 改成全屏是为了躲 scrollback 幽灵行，主屏路径此后已修过 Static 同步折叠，全屏的代价是鼠标上报吃掉拖选、必须先 Ctrl+S。`fullscreen.ts` 与 settings schema 的注释本来就写着缺省主屏（ADR-040）。
+  - 迁移 v4 把 `app.json` 的越界键搬回 `settings.json`（已有的不覆盖，值等于默认的不搬），并删除 settings 里那批「整份默认配置被灌进文件、值仍等于默认」的残留键。v5 再跑一次同一清理：`alternateBuffer` 移出可删清单，因为默认改回 `false` 后，文件里的 `true` 分不清是灌入的旧默认还是用户 `/tui on` 开过。
+  - `bun test ./packages/cli/ ./packages/core/tests/config/ ./packages/core/tests/migrations/ --test-name-pattern '^(?!.*\[slow\])'`：2261 pass / 0 fail。
+  - `make build` 退出 0，产物自检通过，构建日志无 warning。
+  - 用 v4 迁移之后的真实配置副本跑 `loadConfig({})`：`alternateBuffer=false`，`model` 与 `effortLevel` 不变；v5 对该配置不删不改任何键。
+- **config** · 启动期 baseURL 覆盖提示进 TUI 横幅 (#107) `d94359de`
+  - 把 `initLogger` 提前到 `loadConfig` 之前。logger 的级别、文件、fileOnly 都来自 `loadConfig` 的结果，顺序反不过来。
+  - 提示留在 `resolveCurrentModelConfig` 里。它是 `/model` 切换、会话恢复、引导完成的共同咽喉，运行时再调会把同一条重复塞进一份不再刷新到 TUI 的列表。顺手删了它已经没人读的 `envBaseURL` 参数。
+  - 改 `wrapAnsi` 让 URL 软换行。它按列硬切，改它影响所有文本。文案侧换行只解决这一条。
+  - [x] 受影响测试全绿（全量 `bun test` 由 CI 在合并前跑）
+  - [x] `make build` 成功
+  - [x] `bun run lint`
+  - [x] `bun run format:check`
+  - [x] `bun run lint:boundary`
+- **config** · baseURL 只认 SID_CODE_LLM_BASE_URL (#106) `294efc3b`
+  - `ANTHROPIC_BASE_URL` 是 Claude Code 的变量。同机 `~/.zshrc` 里给 CC 本地代理 export 了 `<链接已省略> sid-code 都打一条「环境变量 baseURL 被模型 base_url 覆盖」。没配 per-model `base_url` 的模型会被静默带到那个代理。这个兜底是 `748f80…
+  - `OPENAI_BASE_URL` 是 OpenAI SDK 与其它工具共用的名字，同样的覆盖路径。`--help` 把它写成 sid-code 的兼容别名，和「仅 sid-code 生效」放在一起不成立。全仓无测试锁它，本机配置也没有使用。
+  - [x] `bun test`（受影响集，非全量；全量由 CI 在合并前跑）
+  - [x] `make build` 成功
+  - [x] `bun run lint`
+  - [x] `bun run format:check`
+  - [x] `bun run lint:boundary`
+  - [x] 带了能复现原问题的回归用例
+- **bridge** · 权限确认走生产路径，超时回 permission_expired (#104) `ede17275`
+  - [x] 只改了确认路径、代理、准入、防线层和对应测试
+  - [x] 没跑 `make build-bump` 或 `release.sh`
+  - [x] App 测试把 `SID_CONFIG_DIR` 指到 tmpdir（AuditLogger 会写日志）
+  - [x] 分支 `fix/bridge-permission-wiring`，不与 6.1 合并
+- **bridge** · token 迁出 query，改连接后首帧 auth (#103) `3028ceb6`
+  - [x] 只改了传输层、runner、`runBridge`、对应测试和 Agent Note
+  - [x] 没跑 `make build-bump` 或 `release.sh`
+  - [x] 测试用本地 `Bun.serve`，不写 `~/.sid-code/`
+  - [x] 分支 `fix/bridge-auth-first-frame`，不与 6.2 合并
+- **daemon** · webhook 无 secret 拒绝，签名改用 timingSafeEqual (#102) `8ceb88ed`
+  - [x] 只改了本 PR 的文件（`server.ts`、webhook 测试、Agent Note）
+  - [x] 没跑 `make build-bump` 或 `release.sh`
+  - [x] 测试把 workspace / storage 指到 tmpdir
+  - [x] 分支 `fix/daemon-webhook-hmac`
+- **ide** · 多窗口按 PID 祖先消歧，lockfile 全无时点名正在运行的 IDE (#101) `25f32a1b`
+  - 多个 IDE 窗口打开同一工作区时，`detectIDEs` 此前匹配到多于一个就直接返回 null 交给手动选择。现在只在 IDE 内置终端里（`TERM_PROGRAM` 命中 vscode/cursor/windsurf）用 lockfile 的 PID 是否落在本进程祖先链上过滤，只留启动我们的那个窗口。
+  - `/ide status` 与 `/ide connect` 在一个 lockfile 都没有时，此前一律说「未发现可用 IDE」。现在先查进程表，vscode/cursor/windsurf 开着但扩展没装就点名并指向 `/ide install`。
+  - `isProcessRunning` 把 `EPERM` 当进程活着：它决定删不删 lockfile，没权限发信号不等于进程死了。
+  - 祖先消歧只在 IDE 内置终端里做。外部终端里我们的祖先是 shell/tmux，lockfile 的 PID 不可能落在里面，过滤恒为空，自动连接整体失灵。
+  - 进程查询的结果是 `{ ok: true, pids } | { ok: false }` 两态，失败时一个都不滤。「查询失败」和「链是空的」混成同一个空集会让失败被补上的父进程 PID 伪装成一条只有一环的链，消歧据此滤掉所有别的窗口。
+  - 进程检测只列扩展安装路径覆盖得到的三种 IDE。识别出一个我们既没有扩展也装不上的 IDE（JetBrains），只能给出一条兑现不了的提示。
+  - `diffTool` 配置开关、URI handler、Tab 徽章依赖自研 IDE 扩展，方案文档自己标为 P2，本次不做。
+  - [x] `bun test` 全绿（0 fail）—— 跑的是 affected-tests 判定的选测集，全量由 CI 的 test job 负责
+- 配置系统缺口 (#99) `9dcefe93`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **sdk** · 补齐 headless 管道输入、预算退出码与增量转发 (#100) `633e5a57`
+  - **管道 stdin**（B1）：`cat f | sid-code -p "..."` 此前只拿位置参数。新增 `readPipedStdin`，仅非 TTY、仅 `--input-format text` 时读取，3 秒超时告警放行，与 stream-json 的 StructuredIO 互斥。
+  - **预算硬停的退出语义**（B2）：loop 已经在 `done.budgetExceeded` 上标了来源，但 SDK 把它映射成 `success`、进程以 0 退出。改为 `error_max_budget_usd`，text/json 结果体带 `error.reason = max_budget_usd`，两条 headless 路径都以退出码 1 收尾。
+  - **token 增量**（G4）：文本走 `setStreamTextCallback`，事件流里没有 `stream_text`，`--include-partial-messages` 打开了也收不到。SDK 引擎把回调收进队列，与下一个内核事件竞速吐出；先吐已到达的增量再处理事件，避免回调与 done 同一同步段到达时丢掉每轮最后几个字。
+  - **拒绝可见性**（D1）：维持非交互 `ask → 自动 deny`。json 结果与 stream-json 的 result 消息带 `permission_denials`（空清单不写字段），stderr 打汇总与预授权提示。Harbor agent 落进 `sid_permission_denials`。
+  - 不重造第二套预算检查。loop 已有 quota / budget rule / 远程预算三条硬停，CLI flag 继续走 `config.costLimit → QuotaManager`，只修「硬停被当成成功」这一层。
+  - 不把非交互的 ask 改成挂起等确认。headless 没有 TUI 可回退，挂起就是无人应答的流水线。可见性用结果字段和 stderr 补。
+  - `--input-format stream-json` 不与任意输出格式正交。stdin 逐条读进来、回包走 text/json 单次输出时对端无法解析，保持既有的成对约束。
+  - 非 print 下传 `--output-format` / `--max-budget-usd` 用 stderr 告警而不是退出。非法值退出是对的，但交互模式传一个只在 print 下生效的 flag，退出会把已经在用的命令行改成启动失败。
+- **permission** · 堵住复合命令 &/换行绕过，并修正 Seatbelt profile 两处失效 (#98) `37f4a917`
+  - **`splitCompoundCommand` 不认后台 `&` 和换行。** deny/allow 的逐子命令检查都建在它上面， 分隔符漏了拆解就等于没做：`allow: ["Bash(ls *)"]` 把 `ls & whoami` 整条吞掉放行， `deny: ["Bash(curl *)"]` 拦不住换行后面的命令。补上这两种分隔符，排除 `&>` 重定向与 `2>&1` 这类 fd…
+  - **Seatbelt profile 两处写出来就是失效的。** 路径直接插进 `(subpath "...")` 的双引号， 含 `"` 或换行的路径能截断规则、注入一条新的 allow，改为转义。网络白名单把 `localhost` 写进 `remote ip`，而 Seatbelt 的该过滤只认 IP，加上 profile 开头的 `(deny default)`， 默认白名单实际匹配不到…
+  - **`curl` / `wget` 被判只读直接放行。** 旧规则「不带 `-o` 就是只读」只看了写文件，漏了 数据外发与响应体进主模型上下文这两面。改为恒非只读，落到权限确认。 `ping` / `dig` / `nslookup` / `host` 只问本地解析器，保持只读。
+  - `bun test ./packages/cli/ ./packages/core/tests/permission/ ./packages/core/tests/tool/` （`affected-tests` 判定的选测范围）→ **3151 pass / 0 fail**，229 个文件。
+  - `make build` → 产物自检通过，无 `will always be undefined` warning， 产物内含 `prepareSandboxHosts`。
+  - `bun run docs:gen-reference -- --check` → 参考页与源码一致。
+  - `\&&` 的断言改动有实测依据：`bash -xc 'echo SAFE \&& echo PWNED'` 执行的是两条命令， 旧测试期望「不拆分」本身就是一条绕过。
+- **llm** · 重试分类器与面板文案合并为一份共享词表 (#95) `026879a5`
+  - **`classifyError` 改成「有状态码就只看状态码」**。新增 `classifyByHttpStatus`，表与 `error-messages.ts` 的 `codeFromStructured` 对齐，补进此前缺的 402（欠费）与 403（无权限）。 一条 `503 Service Unavailable`（正文既无数字也无 overloaded）此前落到「无法分类」→ 零重…
+  - **`classifyStreamError` 回退时把 statusCode 带进 `classifyError`**。此前写 `classifyError(new Error(message))`，状态码在这一步丢掉，400/404/402 全部兜底成 `StreamLevelError("server_error")` 重试 10 次 —— 三者都是确定性失败。
+  - **词表补进网关中文文案**：「负载已饱和」「余额不足」「请充值」。smoke-8 的 429 此前只靠 结构化 `code` 兜住，纯中文报文在重试侧认不出。
+  - **英文短语改词边界匹配**，`capacity` 不再命中 `capacities`。`conflict` 直接从词表移除 —— 它本身是完整单词，词边界也挡不住 `git merge conflict`。409 只认 `lock timeout` 和状态码。
+  - **`openai.ts` 流内 error chunk 不再无条件置 `streamLevel: true`**，改用 `pickStreamErrorTag` （规则同 `anthropic.ts` 的 `pickUpstreamTag`：空串、纯空白、字面量 `"error"` 都不算）， 并新增 `streamErrorStatus` 透传网关塞在 error 对象上的状态码。
+  - **`memory_recall` 纳入 `FOREGROUND_SOURCES`**。`recall.ts` 自己传了 `maxRetries: 2` 和 15s `deadlineAt`，而 529 分支在这些预算生效前就 return —— 429 能重试、503/529 一次都不试。
+  - **让 `classifyError` 认不出时兜底成可重试**（对齐 `classifyStreamError`）。会把 TypeError 这类确定性故障拖进 10 次退避、每次最长 120s。保留 fail-fast，新增 D7 用例钉住这条边界。
+  - **把 `summary` / `title` / `classifier` 一起加进前台集合**。全仓没有任何调用方在传这三个源， 它们的问题是「没人用」，不是「策略错了」。只加真实在用的 `memory_recall`。
+- **trace** · 预算硬停不再记成 user_interrupt (#94) `90ef8ef2`
+  - `loop.ts` 三条硬停在 `done` 上声明 `budgetExceeded: { source }`（`budget_rule` / `quota` / `remote`）
+  - `engine.ts` 在 `done` 返回前调 `traceCollector.recordBudgetExceeded`
+  - collector 落 `exit_status = "budget_exceeded"`，来源写入 `budget_exceeded_source`；`abort`/`error` 优先，与 `max_turns` 同时成立时 `max_turns` 优先
+  - digest 单独计一条 `exit_status_budget_exceeded`（severity low），**不进** abnormal，列表页不标红
+  - F2 的代码改动（见上，复跑后判定为文档误判）
+  - 金额列 `real` → `double precision`（服务端，且不是这条文案的成因）
+
+### 文档
+- **changelog** · v0.1.606 curated 文案 `aab8abd4`
+
+### 其他
+- **daemon** · webhook 正确签名用例不再真的 clone GitHub，修复本机 5s 超时 `1880c811`
+  - 正确签名分支会让 worker 同步 execFileSync git clone <链接已省略>
+  - 202 要等 clone 返回才发得出去。github.com 不通时 clone 挂到 60s，稳定踩 5s
+  - 单测超时（CI 连 GitHub 快所以一直绿）。测试期间 GIT_ALLOW_PROTOCOL=file，
+  - 让 clone 立即失败；本用例只断言签名判定。5s → 40ms。
+- **bridge** · 成功提示子进程不再拉外部模型目录，修复本机 5s 超时 `8dd1b7ff`
+  - SID_CONFIG_DIR 指向空 tmpdir ⇒ 能力缓存为空 ⇒ App 构造时 fire-and-forget
+  - 拉 4 个外部模型目录，子进程要等这些 fetch 结束才退出。本机外网慢时实测
+  - 12–18s，稳定踩 bun 默认 5s 超时（CI 网络快所以一直绿）。mock 掉
+  - shouldSyncCatalogs 后 0.13s。
+- **evals** · 下线 _diagnoses 诊断归因链 (#96) `c00c9439`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- 修复 http-exporter 退避 timer 泄漏与 stall 用例窗口过窄 (#93) `710ef7dd`
+  - `http-exporter.test.ts` 的两条失败路径用例（「发送失败时写入磁盘缓存」「HTTP 非 2xx 视为失败」）在断言之后补 `await exporter.shutdown()`。
+  - `provider-conformance.test.ts` 的 stall 告警用例把两个事件的间隔从 120ms 拉到 400ms。
+  - [x] `bun test` 受影响目录全绿（1817 pass，0 fail；全量由 CI 跑）
+  - [x] `make build` 成功（末尾自检通过）
+  - [x] `bun run lint` 通过（pre-commit oxlint 通过）
+  - [x] `bun run format:check` 通过（pre-commit oxfmt 通过）
+  - [x] `bun run lint:boundary` 通过（未动跨包导入）
+  - [x] 带了覆盖本次改动的测试（修的就是测试本身）
+- Feat/m5 remote budget (#92) `cd651f5a`
+  - 修 bug：根因是什么？为什么是这个改法而不是别的？
+  - 加功能：解决什么实际问题？
+  - 如果否决过其他方案，写一句为什么否决——省下后来人重走一遍的时间。 关联 issue：Fixes #123 -->
+  - [ ] `bun test` 全绿（0 fail）
+  - [ ] `make build` 成功（末尾 `--self-check` 通过）
+  - [ ] `bun run lint` 通过（oxlint）
+  - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
+  - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- **release** · v0.1.605 (#90) `9dc83a4f`
+  - **新功能**：状态栏显示 API 调用次数与作废重试次数；可从远程端点拉取企业权限策略，停用后进程内拒绝规则一并撤掉；本机稳定设备身份
+  - **改进**：命令行一次性注入的权限规则真正生效；沙箱自动放行不再绕过模式硬约束；压缩后刚读过的文件能接回对话；MCP 长输出按 token 截断
+  - **修复**：敏感文件读旁路（head/grep）、acceptEdits 下 rm/mv 自动放行、`.git/hooks` 重定向写入、notebook 路径权限、解释器被当只读命令、压缩清掉近端对话、子代理结果乱序等
+  - `release.sh --upload` 的全量 `bun test` 门禁通过，5 平台构建 + 本机冒烟 + `--self-check` 通过
+  - G2 产物身份门禁：5 个产物全部 `origin=release commit=8f8da946`
+  - tag ↔ 源码版本号对齐：`git show v0.1.605:package.json` → `0.1.605`
+  - `bun run changelog:check` → 24 个 curated 文件全部通过校验
+
 ## v0.1.605 (2026-09-23)
 
 ### 新功能

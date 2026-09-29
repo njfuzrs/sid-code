@@ -8,7 +8,7 @@
  * 正确签名会让 worker 异步去 clone。测试立刻 stop(true)，不等那个 promise。
  */
 
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeAll, afterAll } from "bun:test";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
@@ -31,6 +31,20 @@ const BODY = JSON.stringify({
 function sign(body: string, secret = SECRET): string {
   return "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
 }
+
+// 正确签名会让 worker 同步 `git clone https://github.com/...`（execFileSync 阻塞事件循环，
+// 202 要等 clone 返回才发得出去）。github.com 不通时 clone 挂到自身 60s 超时，
+// 本测试稳定踩 5s 单测超时；CI 连 GitHub 快所以一直绿。只放行 file 协议让 clone 立即失败，
+// 本测试只断言签名判定，不需要真的 clone。
+let prevGitProtocol: string | undefined;
+beforeAll(() => {
+  prevGitProtocol = process.env.GIT_ALLOW_PROTOCOL;
+  process.env.GIT_ALLOW_PROTOCOL = "file";
+});
+afterAll(() => {
+  if (prevGitProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+  else process.env.GIT_ALLOW_PROTOCOL = prevGitProtocol;
+});
 
 let dir: string;
 const servers: Array<{ stop: (close?: boolean) => void; port: number }> = [];
