@@ -79,8 +79,12 @@ describe("优雅关闭（spec 17 §3.4）", () => {
     const dir = mkdtempSync(join(tmpdir(), "sid-gs-ff-"));
     let fetchCount = 0;
     const origFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      fetchCount++;
+    const FLAGS_URL = "http://127.0.0.1:1/flags";
+    // 只计 flags 端点：全量 bun test 同进程里别的测试的 fire-and-forget 请求也走 globalThis.fetch，
+    // 计全部调用会把它们算成「关闭后定时器还在拉」（CI ubuntu 实测 Expected 4 / Received 6）。
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === FLAGS_URL) fetchCount++;
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
     }) as unknown as typeof fetch;
 
@@ -89,7 +93,7 @@ describe("优雅关闭（spec 17 §3.4）", () => {
       // 20ms 刷新间隔：初始化会立即刷一次，之后每 20ms 一次
       initFeatureFlags({
         configDir: dir,
-        remoteEndpoint: "http://127.0.0.1:1/flags",
+        remoteEndpoint: FLAGS_URL,
         refreshIntervalMs: 20,
       });
       await new Promise((r) => setTimeout(r, 70));
