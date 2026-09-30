@@ -10,7 +10,10 @@
  * 1. 自定义命令（项目 > 用户，由 loader 内部排序）
  * 2. Skills（项目 > 用户 > 内置，由 SkillManager 内部排序）
  * 3. 内置命令（最低优先级）
- * 4. MCP 命令（动态合并，去重）
+ * 4. 插件 / MCP 命令（动态来源，getCommands 时与上面三类一起再过一次 dedupe）
+ *
+ * 保护命令名（D7）：非 builtin 来源占用保护名（名字或别名）一律在 dedupe 里拦下并 warn，
+ * 所有来源共用这一个检查点。
  */
 
 import type { UnifiedCommand } from "./types.ts";
@@ -22,6 +25,7 @@ import {
 } from "./loaders.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { isProtectedCommandName } from "@sid-code/core/command-contract/protected-names.ts";
 
 export interface UnifiedRegistryLoadOptions {
   scanOptions?: ScanOptions;
@@ -47,9 +51,16 @@ export class UnifiedCommandRegistry {
    *
    * 为什么不进 cwd 缓存：插件命令可通过 /reload-plugins 在运行时刷新，
    * 与 cwd 无关。这里维护一份独立快照，loadPlugins/reloadPlugins 时更新，
-   * getCommands 时合并。优先级低于内置命令（pluginName: 前缀天然隔离，不会冲突）。
+   * getCommands 时合并。优先级低于内置命令；pluginName: 前缀只是约定不是结构，
+   * 碰撞统一交给 dedupe（D9）。
    */
   private pluginCommands: UnifiedCommand[] = [];
+
+  /**
+   * 已发出过的碰撞告警（D9）。getCommands 在补全热路径上每次都会对动态来源再跑一次
+   * dedupe，同一个碰撞不去重就会刷屏；按消息文本只报一次。
+   */
+  private warnedCollisions = new Set<string>();
 
   /** 命令集合变更订阅者（P1-2，见 onCommandsChanged） */
   private changeListeners: Array<() => void> = [];
@@ -160,24 +171,16 @@ export class UnifiedCommandRegistry {
     // 过滤：只保留当前启用的命令
     const filtered = allCommands.filter((cmd) => (cmd.isEnabled ? cmd.isEnabled() : true));
 
-    // 合并插件命令（动态来源，去重；pluginName: 前缀天然不与内置/自定义冲突）
-    const existingNames = new Set(filtered.map((c) => c.name));
-    const merged: UnifiedCommand[] = [...filtered];
-    for (const pc of this.pluginCommands) {
-      if (existingNames.has(pc.name)) continue;
-      existingNames.add(pc.name);
-      merged.push(pc);
-    }
-
-    // 合并 MCP 命令（去重，已存在的名称不覆盖）
-    if (mcpCommands && mcpCommands.length > 0) {
-      for (const mc of mcpCommands) {
-        if (existingNames.has(mc.name)) continue;
-        existingNames.add(mc.name);
-        merged.push(mc);
-      }
-    }
-
+    // D9：插件 / MCP 与静态来源走**同一个 dedupe**。
+    //
+    // 修复前这里另起一套合并，`existingNames` 只装 c.name 不装别名 —— 于是一个名叫 `q`
+    // 的插件 / MCP 命令能进列表，而 findCommand「精确 name 优先于别名」会让 `/q` 落到它
+    // 身上（exit 的别名被静默劫持，UI 层只前置拦截字面 exit/quit）。两套合并对同一个问题
+    // 给出两种答案；共用 dedupe 后六个来源一套碰撞规则，并自动获得别名碰撞 warn 与保护名检查。
+    // 成本：命令量级几十到上百，dedupe 是 O(n·别名数) 的一次 Map 扫描。
+    const dynamic = [...this.pluginCommands, ...(mcpCommands ?? [])];
+    if (dynamic.length === 0) return filtered;
+    const merged = this.dedupe([...filtered, ...dynamic]);
     return merged;
   }
 
@@ -253,33 +256,76 @@ export class UnifiedCommandRegistry {
   /**
    * 按数组顺序去重（保留首次出现的，名称 + 别名都参与去重）。
    *
-   * P0-3 别名冲突检测：区分两种"占用"——
-   *   1. 命令名 dedupe（同名命令，后者被优先级更高的前者覆盖）——正常，debug 级。
-   *   2. 别名碰撞（某命令的别名已被别的命令名/别名占用）——静默劫持风险，warn 级 +
-   *      **确定性保留先注册者**（丢弃后写别名，get() 落到先注册命令，不再 last-write-wins）。
-   * 记录首个占用者，便于告警定位。
+   * 所有来源（自定义 / Skill / 内置 / 插件 / MCP）的唯一汇聚点，因此三条规则都放在这里，
+   * 而不是写进各个 loader（写 N 遍，第 N+1 个来源出现时必漏）：
+   *
+   *   0. D7 保护名：非 builtin 来源的**命令名**命中保护名单 → 整条丢弃 + warn；
+   *      非 builtin 来源的**别名**命中保护名单 → 丢该别名 + warn。必须 warn 不能静默，
+   *      否则用户看到的症状是「我的 skill 怎么不生效」。
+   *   1. 命令名 dedupe（同名命令，后者被优先级更高的前者覆盖）—— 正常，debug 级。
+   *      D9：命令名撞上**已被占用的别名**同样丢弃 + warn（否则 findCommand 的
+   *      「精确 name 优先」会让后来者劫持那个别名）。
+   *   2. 别名碰撞（某命令的别名已被别的命令名/别名占用）—— warn 级 +
+   *      **确定性保留先注册者**（丢弃后写别名，不再 last-write-wins）。
    */
   private dedupe(commands: UnifiedCommand[]): UnifiedCommand[] {
-    const log = getLogger();
+    const log = {
+      warn: (category: string, message: string) => {
+        if (this.warnedCollisions.has(message)) return;
+        this.warnedCollisions.add(message);
+        getLogger().warn(category, message);
+      },
+    };
     // token → 首个占用它的命令名（用于告警时指认"被谁占用"）
     const owner = new Map<string, string>();
+    // 被别名（而非命令名）占用的 token，用于区分「同名覆盖」与「名字劫持别名」
+    const aliasTokens = new Set<string>();
     const result: UnifiedCommand[] = [];
     for (const cmd of commands) {
-      if (owner.has(cmd.name)) continue; // 同名命令：优先级更高的已在，丢弃本条
-      owner.set(cmd.name, cmd.name);
-      for (const alias of cmd.aliases ?? []) {
-        const existing = owner.get(alias);
-        if (existing && existing !== cmd.name) {
-          // 别名碰撞：该别名已被 existing 占用 → 保留先注册者，告警提示本命令该别名被忽略
+      const isBuiltin = cmd.source === "builtin";
+      if (!isBuiltin && isProtectedCommandName(cmd.name)) {
+        log.warn(
+          "COMMAND",
+          `保护命令名被忽略: ${cmd.source ?? "unknown"} 来源的 "${cmd.name}" 不能占用 /${cmd.name}（内置逃生通道）`,
+        );
+        continue;
+      }
+      if (owner.has(cmd.name)) {
+        if (aliasTokens.has(cmd.name)) {
           log.warn(
             "COMMAND",
-            `别名冲突: /${alias} 已被 "${existing}" 占用，"${cmd.name}" 的该别名被忽略`,
+            `命令名冲突: /${cmd.name} 已是 "${owner.get(cmd.name)}" 的别名，${cmd.source ?? "unknown"} 来源的 "${cmd.name}" 被忽略`,
           );
-          continue;
         }
-        if (!existing) owner.set(alias, cmd.name);
+        continue; // 同名命令：优先级更高的已在，丢弃本条
       }
-      result.push(cmd);
+      owner.set(cmd.name, cmd.name);
+      let aliases = cmd.aliases;
+      for (const alias of cmd.aliases ?? []) {
+        let drop = false;
+        if (!isBuiltin && isProtectedCommandName(alias)) {
+          log.warn(
+            "COMMAND",
+            `保护命令名被忽略: "${cmd.name}"（${cmd.source ?? "unknown"}）的别名 /${alias} 是内置逃生通道`,
+          );
+          drop = true;
+        } else {
+          const existing = owner.get(alias);
+          if (existing && existing !== cmd.name) {
+            log.warn(
+              "COMMAND",
+              `别名冲突: /${alias} 已被 "${existing}" 占用，"${cmd.name}" 的该别名被忽略`,
+            );
+            drop = true;
+          } else if (!existing) {
+            owner.set(alias, cmd.name);
+            aliasTokens.add(alias);
+          }
+        }
+        if (drop) aliases = (aliases ?? []).filter((a) => a !== alias);
+      }
+      // 别名被丢弃时同步从命令对象上摘掉，否则 findCommand 的别名回退仍会命中它。
+      result.push(aliases === cmd.aliases ? cmd : { ...cmd, aliases });
     }
     return result;
   }
