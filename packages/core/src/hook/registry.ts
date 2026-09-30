@@ -28,6 +28,12 @@ export interface HookRegistryEntry {
   enabled: boolean;
   /** 来源 Skill 名称（Skill 声明的会话级 hook） */
   skillName?: string;
+  /**
+   * P1-6：注册作用域 id（同一次 skill 调用注册的一批 hook 共用一个）。
+   * 模型路径 / fork 路径「调用完就卸」必须按它精确删，否则会连带删掉 inline 路径
+   * 注册、设计上要活到会话结束的同名 hooks。未设置 = 会话作用域。
+   */
+  hookScope?: string;
   /** 一次性 hook：被取用一次后自动失效 */
   once?: boolean;
   /** once hook 是否已被取用 */
@@ -206,7 +212,7 @@ export class HookRegistry {
   registerSessionHook(
     config: HookConfig,
     eventName: HookEventName,
-    options: { matcher?: string; skillName: string; once?: boolean },
+    options: { matcher?: string; skillName: string; once?: boolean; scope?: string },
   ): void {
     if (!this.validateHookConfig(config, eventName)) {
       throw new Error(`无效的 Skill hook 配置: ${eventName} from skill:${options.skillName}`);
@@ -218,6 +224,7 @@ export class HookRegistry {
       matcher: options.matcher,
       enabled: true,
       skillName: options.skillName,
+      hookScope: options.scope,
       once: options.once ?? false,
       executed: false,
     });
@@ -232,12 +239,17 @@ export class HookRegistry {
   }
 
   /**
-   * 移除指定 Skill 注册的所有会话级 hook
+   * 移除指定 Skill 注册的会话级 hook
+   *
+   * @param scope 给定时只删该次调用注册的那一批（P1-6）；省略时删该 skill 的全部 hook
+   *              （skill 卸载 / 会话级清理语义）。调用作用域的卸载**必须**传 scope。
    * @returns 移除的数量
    */
-  removeSkillHooks(skillName: string): number {
+  removeSkillHooks(skillName: string, scope?: string): number {
     const before = this.entries.length;
-    this.entries = this.entries.filter((e) => e.skillName !== skillName);
+    this.entries = this.entries.filter(
+      (e) => e.skillName !== skillName || (scope !== undefined && e.hookScope !== scope),
+    );
     const removed = before - this.entries.length;
     if (removed > 0) this.rebuildEventIndex();
     return removed;

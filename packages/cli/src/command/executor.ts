@@ -262,9 +262,11 @@ export class CommandExecutor {
     // 顺序铁律：权限 → hooks → 执行。被拒的 skill 不能留下 hooks 污染后续工具调用。
     const skill = cmd.skill;
     let registeredHookCount = 0;
+    // P1-6：fork 调用结束即卸载，按本次调用的作用域 id 精确删；inline 不传（长期存活）
+    let hookScope: string | undefined;
 
     if (skill) {
-      const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } =
+      const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks, newSkillHookScope } =
         await import("@sid-code/core/skill/executor.ts");
       const auth = authorizeSkill(skill, { permissionRules: this.ctx.permissionRules });
       if (auth.decision === "deny") {
@@ -278,7 +280,8 @@ export class CommandExecutor {
           return { type: "error", message: `已取消：Skill "${skill.name}" 未获批准。` };
         }
       }
-      registeredHookCount = registerSkillLifecycleHooks(skill, this.ctx.hookSystem);
+      hookScope = cmd.context === "fork" ? newSkillHookScope() : undefined;
+      registeredHookCount = registerSkillLifecycleHooks(skill, this.ctx.hookSystem, hookScope);
     }
 
     try {
@@ -312,7 +315,7 @@ export class CommandExecutor {
     } finally {
       // fork：hooks 作用域仅本次子代理调用，返回后卸载（与 SkillMetaTool.executeDelegate 同口径）。
       if (registeredHookCount > 0 && skill && this.ctx.hookSystem) {
-        const removed = this.ctx.hookSystem.removeSkillHooks(skill.name);
+        const removed = this.ctx.hookSystem.removeSkillHooks(skill.name, hookScope);
         if (removed > 0) {
           getLogger().debug(
             "SKILL",

@@ -35,6 +35,7 @@ import {
   resolveSkillAgentType,
   resolveSkillExecutionContext,
   resolveSkillAllowedTools,
+  newSkillHookScope,
 } from "./executor.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
 import { z } from "zod/v4";
@@ -165,7 +166,10 @@ export class SkillMetaTool implements Tool {
       name: s.name,
       description: s.description,
       whenToUse: s.whenToUse,
-      isBundled: s.loadedFrom === "bundled" || s.isBuiltin === true,
+      // P1-1：只有编译内联（只活在二进制里）的 bundled 享有摘要特权。builtin 目录型 skill
+      // 在磁盘上有完整 SKILL.md，降级后模型可以自己 Read —— 豁免理由对它不成立，
+      // 此前 `|| s.isBuiltin` 让 8 个 builtin 也免于截断，特权面翻倍。
+      isBundled: s.loadedFrom === "bundled",
     }));
   }
 
@@ -236,11 +240,12 @@ export class SkillMetaTool implements Tool {
     // 模型路径 skill 走 delegate 子代理执行。子代理有独立 hookSystem 时，hooks 应注册到子代理侧；
     // 但当前 SubAgent.fromRegistry 复用主 hookSystem，故注册到主 hookSystem 并在 delegate 返回后卸载，
     // 避免 delegate skill 的 hooks 泄漏到主会话（对齐 §18 P0-2 实施方案第 3 点的作用域决策）。
-    const registeredHookCount = registerSkillLifecycleHooks(skill, this.hookSystem);
+    const hookScope = newSkillHookScope();
+    const registeredHookCount = registerSkillLifecycleHooks(skill, this.hookSystem, hookScope);
+    // P0-4：context 优先于 mode，与用户斜杠路径同源
+    const context = resolveSkillExecutionContext(skill);
 
     try {
-      // P0-4：context 优先于 mode，与用户斜杠路径同源
-      const context = resolveSkillExecutionContext(skill);
       // P0-3：模型路径同样跑完整 prompt 处理管道（$ARGUMENTS / ${SKILL_DIR} / !`cmd` ...），
       // 此前只接在用户斜杠路径上，占位符原样进上下文、参数被追加到正文末尾。
       let prompt: string;
@@ -257,13 +262,17 @@ export class SkillMetaTool implements Tool {
       }
       return await this.executeDelegate(skill, prompt, userInput, signal);
     } finally {
-      // delegate skill 的 hooks 是本次调用作用域，返回后卸载（activate 注入主对话则长期存活，
-      // 但 activate 走的是 inline 语义，此处 delegate 分支才卸载）。为简化：只要注册过就卸载，
-      // activate 模式若需长期 hooks 应通过 inline 斜杠路径（SkillCommand）注入。
+      // 模型路径注册的 hooks 是本次调用作用域，返回后卸载（activate 若需长期 hooks 应走
+      // inline 斜杠路径注入）。P1-6：只卸本次调用注册的那一批（按 hookScope 精确删），
+      // 不能按名字删——用户经 /name inline 路径注册的同名 hooks 设计上要活到会话结束，
+      // 按名删会连带清空，且日志还误报成 "delegate"。
       if (registeredHookCount > 0 && this.hookSystem) {
-        const removed = this.hookSystem.removeSkillHooks(skill.name);
+        const removed = this.hookSystem.removeSkillHooks(skill.name, hookScope);
         if (removed > 0) {
-          log.debug("SKILL", `delegate skill "${skill.name}" 返回，卸载 ${removed} 个会话 hook`);
+          log.debug(
+            "SKILL",
+            `${context === "inline" ? "activate" : "delegate"} skill "${skill.name}" 返回，卸载 ${removed} 个本次调用注册的 hook`,
+          );
         }
       }
     }

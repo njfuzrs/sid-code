@@ -6,10 +6,12 @@
  *
  * 预算分配策略：
  *   1. 若全部完整描述能放进预算 → 全部展示完整描述
- *   2. 否则 bundled Skill 享有特权（完整描述不被截断），
- *      剩余预算按非 bundled 数量均分，每条至多 MAX_LISTING_DESC_CHARS
- *   3. 若均分后每条不足 MIN_DESC_LENGTH → 非 bundled 只显示名称
+ *   2. 否则 bundled Skill 享有特权（完整描述不被截断），但特权合计封顶在预算的
+ *      BUNDLED_BUDGET_SHARE 以内；剩余预算按普通条目**整行**均分，每条描述至多 MAX_LISTING_DESC_CHARS
+ *   3. 若均分后每条描述不足 MIN_DESC_LENGTH → 普通条目只显示名称
  */
+
+import { emitSkillDegradation } from "./telemetry.ts";
 
 /** Skill 摘要预算占上下文窗口的比例（1%） */
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01;
@@ -44,7 +46,10 @@ export interface SkillListingEntry {
   name: string;
   description: string;
   whenToUse?: string;
-  /** 是否为 bundled（编译时内置）—— bundled 享有不被截断的特权 */
+  /**
+   * 是否为 bundled（编译时内置、只活在二进制里）—— 享有封顶内不被截断的特权。
+   * ⚠️ 磁盘上有完整 SKILL.md 的 builtin skill **不算**：降级后模型可自己 Read 自救（P1-1）。
+   */
   isBundled?: boolean;
 }
 
@@ -57,7 +62,24 @@ export function computeCharBudget(contextWindowTokens?: number): number {
 }
 
 /**
+ * 特权条目（isBundled）合计最多占预算的比例（P1-1）。
+ *
+ * 为什么要封顶：此前 bundled 特权**没有上限**——bundled 自己吃穿预算时仍全量输出完整描述，
+ * 实测 2000 token 窗口下输出 2539 字符而预算只有 80（超 31 倍）。特权的理由是「降级成名字后
+ * 模型无法自救」，它只能保护**预算内**的那部分；超出封顶的特权条目与普通条目一起参与均分降级。
+ */
+const BUNDLED_BUDGET_SHARE = 0.5;
+
+/**
  * 在预算内格式化 Skill 摘要列表
+ *
+ * 预算核算口径（P1-1）：一律按**整行**（`- name: desc` + 换行）计，不是只算 desc。
+ * 此前均分出来的是「描述上限」，拼行时又加上 `- name: ` 前缀，于是每行都超出
+ * 4 + name.length 字符——预算的定义是上界，按描述算等于拿描述上界冒充行上界。
+ *
+ * 唯一不保证 ≤ 预算的情形是「全部降成只剩名字仍放不下」：名字是可调用的最低信息量，
+ * 再往下只能丢条目，那会让模型连存在都不知道，比超预算更糟。
+ *
  * @returns 形如 `- name: desc` 的多行字符串
  */
 export function formatCommandsWithinBudget(
@@ -69,47 +91,65 @@ export function formatCommandsWithinBudget(
   const budget = computeCharBudget(contextWindowTokens);
 
   const truncate = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s);
+  const rawDesc = (cmd: SkillListingEntry) => (cmd.whenToUse || cmd.description || "").trim();
+  const descOf = (cmd: SkillListingEntry) => truncate(rawDesc(cmd), MAX_LISTING_DESC_CHARS);
 
-  const descOf = (cmd: SkillListingEntry) =>
-    truncate((cmd.whenToUse || cmd.description || "").trim(), MAX_LISTING_DESC_CHARS);
-
-  const fullLine = (cmd: SkillListingEntry) => `- ${cmd.name}: ${descOf(cmd)}`;
+  const prefixOf = (cmd: SkillListingEntry) => `- ${cmd.name}: `;
+  const fullLine = (cmd: SkillListingEntry) => `${prefixOf(cmd)}${descOf(cmd)}`;
   const nameLine = (cmd: SkillListingEntry) => `- ${cmd.name}`;
+  /** 行成本 = 行长 + 换行 */
+  const cost = (line: string) => line.length + 1;
 
   // 1. 尝试全部完整描述
-  const fullTotal = commands.reduce(
-    (sum, c) => sum + fullLine(c).length + 1, // +1 换行
-    0,
-  );
+  const fullTotal = commands.reduce((sum, c) => sum + cost(fullLine(c)), 0);
   if (fullTotal <= budget) {
     return commands.map(fullLine).join("\n");
   }
 
-  // 2. bundled 保留完整，计算剩余预算
-  const bundled = commands.filter((c) => c.isBundled);
-  const rest = commands.filter((c) => !c.isBundled);
-
-  const bundledChars = bundled.reduce((sum, c) => sum + fullLine(c).length + 1, 0);
-  const remainingBudget = budget - bundledChars;
-
-  // 没有非 bundled，或预算已被 bundled 占满 → 只输出 bundled 完整描述
-  if (rest.length === 0 || remainingBudget <= 0) {
-    return commands.map((c) => (c.isBundled ? fullLine(c) : nameLine(c))).join("\n");
+  // 2. 特权条目在封顶内保留完整描述（按原顺序先到先得），超出封顶的降为普通条目
+  const privilegeCap = Math.floor(budget * BUNDLED_BUDGET_SHARE);
+  const privileged = new Set<SkillListingEntry>();
+  let privilegedChars = 0;
+  for (const c of commands) {
+    if (!c.isBundled) continue;
+    const lineCost = cost(fullLine(c));
+    if (privilegedChars + lineCost > privilegeCap) continue;
+    privileged.add(c);
+    privilegedChars += lineCost;
   }
+  const rest = commands.filter((c) => !privileged.has(c));
+  const remainingBudget = budget - privilegedChars;
 
-  // 3. 非 bundled 的每条描述预算
-  const maxDescLen = Math.floor(remainingBudget / rest.length);
+  // 3. 普通条目均分的是「扣掉各自前缀与换行之后」的描述预算，保证整行合计不超 remainingBudget
+  const prefixTotal = rest.reduce((sum, c) => sum + prefixOf(c).length + 1, 0);
+  const maxDescLen = Math.floor((remainingBudget - prefixTotal) / rest.length);
+
   if (maxDescLen < MIN_DESC_LENGTH) {
-    // 预算太紧：非 bundled 只显示名称
-    return commands.map((c) => (c.isBundled ? fullLine(c) : nameLine(c))).join("\n");
+    // 预算太紧：普通条目只显示名称
+    emitSkillDegradation("listing_names_only", {
+      budget,
+      total: commands.length,
+      privileged: privileged.size,
+      names_only: rest.length,
+    });
+    return commands.map((c) => (privileged.has(c) ? fullLine(c) : nameLine(c))).join("\n");
   }
 
-  // 4. 截断非 bundled 描述
+  // 4. 截断普通条目描述
+  const truncatedCount = rest.filter((c) => rawDesc(c).length > maxDescLen).length;
+  if (truncatedCount > 0) {
+    emitSkillDegradation("listing_truncated", {
+      budget,
+      total: commands.length,
+      privileged: privileged.size,
+      truncated: truncatedCount,
+      max_desc_len: maxDescLen,
+    });
+  }
   return commands
     .map((c) => {
-      if (c.isBundled) return fullLine(c);
-      const desc = truncate((c.whenToUse || c.description || "").trim(), maxDescLen);
-      return `- ${c.name}: ${desc}`;
+      if (privileged.has(c)) return fullLine(c);
+      return `${prefixOf(c)}${truncate(descOf(c), maxDescLen)}`;
     })
     .join("\n");
 }

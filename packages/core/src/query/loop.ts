@@ -4743,8 +4743,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           const toolInputs = toolBlocks
             .filter((b) => b.type === "tool_use")
             .map((b) => (b as import("../llm/types.ts").ToolUseBlock).input);
-          deps.onSkillToolResults(toolInputs).catch(() => {
-            /* 激活失败不阻断主循环 */
+          // 刻意不 await：动态发现含动态 import + 磁盘扫描，await 会把它计入每个工具轮（伤更快）。
+          // 晚到的激活由 drainListingDelta 按「真实可见集合 − 已发送」补发，至多晚一轮不会丢（P1-7）。
+          // 协调器内部两段各自 try/catch 已 warn；能漏到这里的是协调器自身的结构性错误，
+          // 恰恰最该知道——不许再 `.catch(() => )` 静默吞掉。
+          deps.onSkillToolResults(toolInputs).catch((err: unknown) => {
+            getLogger().warn(
+              "SKILL",
+              `skill 激活协调器异常（不阻断主循环）: ${err instanceof Error ? err.message : String(err)}`,
+            );
           });
         }
 

@@ -36,8 +36,13 @@ function parseStringList(raw: unknown): string[] | undefined {
  * 增长并常驻首轮上下文，必须掐死。P0-1 改为单一 `Skill` 元工具后工具数恒为 1，
  * skill 数量只影响摘要 listing，而 listing 已有独立预算（250 字符/条 + 1% 上下文窗口，
  * 见 budget.ts）会自行截断。此处仅作为目录被误配/循环链接时的失控保护。
+ *
+ * P1-2：这是**会话内 skill 总量**的上限，真正的执行点在 `SkillManager.addSkillsWithPrecedence`
+ * （全量集合）。loader 这里的检查只是单次扫描的早停——它按 loadAll 的局部数组计数，
+ * 而 discover 调两次 loadAll（builtin + user/project），插件 / MCP / 动态发现三条追加路径
+ * 更是根本不经 loadAll，只靠这里的话真实上限翻倍、动态发现路径上失控保护不存在。
  */
-const MAX_SKILLS = 500;
+export const MAX_SKILLS = 500;
 
 export class SkillLoader {
   private extensionLoader: ExtensionLoader;

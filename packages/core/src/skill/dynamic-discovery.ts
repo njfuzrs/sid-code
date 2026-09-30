@@ -12,13 +12,32 @@ import { existsSync } from "node:fs";
 import { dirname, join, isAbsolute, resolve, relative } from "node:path";
 import { getLogger } from "../debug/logger.ts";
 
+/**
+ * 工具 input 里承载路径的字段名（P1-5）。
+ *
+ * ⚠️ 必须 ⊇ `packages/core/src/tool/*.ts` zod schema 里全部路径类字段名——此前漏了
+ * `ls` 的 `dir_path`：与 glob/grep 同属目录级探查，后两者的 `path` 收了它却没收，
+ * 条件激活触发面静默变窄，且零触发时分不清「没配 paths」与「配了但抓不到」。
+ * 反漂移断言在 `tests/skill/p1-skill-defects.test.ts`（扫 tool 目录做集合比对）。
+ *
+ * `bash` 的 `command` 刻意不收：从任意 shell 命令里抽路径误报率高（git log / npm run）。
+ */
+export const AFFECTED_PATH_FIELDS = [
+  "file_path",
+  "path",
+  "filePath",
+  "notebook_path",
+  "dir_path",
+  "script_path",
+] as const;
+
 /** 从工具调用块中提取受影响的文件路径 */
 export function extractAffectedPaths(input: unknown): string[] {
   if (!input || typeof input !== "object") return [];
   const obj = input as Record<string, unknown>;
   const paths: string[] = [];
 
-  const candidates = [obj.file_path, obj.path, obj.filePath, obj.notebook_path];
+  const candidates = AFFECTED_PATH_FIELDS.map((f) => obj[f]);
   for (const c of candidates) {
     if (typeof c === "string" && c) paths.push(c);
   }

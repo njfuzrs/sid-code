@@ -19,6 +19,9 @@ import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRule } from "../permission/types.ts";
 import { checkSkillPermission, type SkillPermissionRules } from "./permission.ts";
 import { registerSkillHooks } from "./hooks.ts";
+import { emitSkillDegradation } from "./telemetry.ts";
+
+export { newSkillHookScope } from "./hooks.ts";
 
 /** 授权结果 */
 export interface SkillAuthResult {
@@ -68,10 +71,10 @@ export function authorizeSkill(
     return { decision: "allow" };
   } catch (err) {
     // fail-open：权限判定本身出错不阻断 skill（与既有"未接权限=直接放行"行为一致），仅告警
-    log.warn(
-      "SKILL",
-      `skill 权限判定异常（fail-open 放行）: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn("SKILL", `skill 权限判定异常（fail-open 放行）: ${message}`);
+    // P1-3：安全相关的 fail-open，只有本地 warn 就是分母恒 0 的指标
+    emitSkillDegradation("auth_fail_open", { skill: skill.name, error: message });
     return { decision: "allow" };
   }
 }
@@ -175,6 +178,7 @@ export async function resolveSkillAsk(
 
   // 无任何确认通道：保守拒绝（ask 不能静默放行）
   log.warn("SKILL", `skill "${skill.name}" 需确认但无确认通道，拒绝执行`);
+  emitSkillDegradation("ask_no_channel", { skill: skill.name });
   return false;
 }
 
@@ -182,11 +186,14 @@ export async function resolveSkillAsk(
  * P0-2：授权通过后注册 skill 声明的生命周期 hooks。
  *
  * 安全：MCP 来源 skill（loadedFrom="mcp"）禁止注册 hooks（远程来源不可信，能执行任意 shell）。
+ * @param scope 调用作用域 id（P1-6）：调用结束即卸载的路径必须传，卸载时按它精确删；
+ *              inline 长期存活的路径不传。
  * @returns 成功注册的 hook 数量（0 表示无 hooks / 被拒 / 无 hookSystem）
  */
 export function registerSkillLifecycleHooks(
   skill: SkillDefinition,
   hookSystem: HookSystem | undefined,
+  scope?: string,
 ): number {
   if (!hookSystem) return 0;
   if (!skill.hooks || Object.keys(skill.hooks).length === 0) return 0;
@@ -197,7 +204,7 @@ export function registerSkillLifecycleHooks(
     return 0;
   }
 
-  return registerSkillHooks(hookSystem, skill.name, skill.hooks, skill.skillRoot);
+  return registerSkillHooks(hookSystem, skill.name, skill.hooks, skill.skillRoot, scope);
 }
 
 /**
@@ -215,6 +222,7 @@ export function normalizeSkillEffort(
     return v;
   }
   getLogger().warn("SKILL", `skill effort 值非法（忽略）: ${raw}`);
+  emitSkillDegradation("effort_invalid", { value: raw });
   return undefined;
 }
 
