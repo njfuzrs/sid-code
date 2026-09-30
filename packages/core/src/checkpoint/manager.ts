@@ -132,8 +132,16 @@ export interface CheckpointIndex {
   nextId: number;
   /** 按时间顺序排列的快照列表 */
   snapshots: Snapshot[];
-  /** 文件路径 → 最新完整内容的快照 ID（加速查找） */
-  latestFullMap: Record<string, string>;
+  // N8：曾有 `latestFullMap`（文件 → 全局最新 full 快照 id），4 处维护 / 0 处消费，
+  // 且口径就用不上 —— 重建内容要的是「≤ targetIndex 的最近 full」，不是全局最新，
+  // 所以 rebuildContentAtSnapshot 一直走线性倒扫。已删除；旧 index.json 里的该字段
+  // 在 init / 继承时剥离（stripLegacyFields），不再落盘。
+}
+
+/** 剥离旧版 index.json 里已废弃的字段（N8：latestFullMap），避免原样回写落盘。 */
+function stripLegacyFields(index: CheckpointIndex): CheckpointIndex {
+  delete (index as { latestFullMap?: unknown }).latestFullMap;
+  return index;
 }
 
 /** 旧版索引格式（兼容） */
@@ -214,7 +222,6 @@ export class CheckpointManager {
       createdAt: Date.now(),
       nextId: 1,
       snapshots: [],
-      latestFullMap: {},
     };
 
     // 合并默认配置
@@ -250,7 +257,7 @@ export class CheckpointManager {
           this.index = this.migrateLegacyIndex(parsed as LegacyCheckpointIndex);
           await this.saveIndex(); // 立即保存迁移后的索引
         } else {
-          this.index = parsed;
+          this.index = stripLegacyFields(parsed as CheckpointIndex);
         }
       } catch {
         // 索引损坏，重新创建
@@ -259,7 +266,6 @@ export class CheckpointManager {
           createdAt: Date.now(),
           nextId: 1,
           snapshots: [],
-          latestFullMap: {},
         };
       }
     }
@@ -274,7 +280,6 @@ export class CheckpointManager {
     log.info("CHECKPOINT", "检测到旧格式索引，正在迁移...");
 
     const snapshots: Snapshot[] = [];
-    const latestFullMap: Record<string, string> = {};
     let nextId = 1;
 
     // 将每个文件的每个 entry 转换为独立的快照
@@ -297,11 +302,6 @@ export class CheckpointManager {
             },
           ],
         });
-
-        // 更新 latestFullMap
-        if (entry.type === "full") {
-          latestFullMap[filePath] = snapshotId;
-        }
       }
     }
 
@@ -315,7 +315,6 @@ export class CheckpointManager {
       createdAt: legacy.createdAt,
       nextId,
       snapshots,
-      latestFullMap,
     };
   }
 
@@ -373,7 +372,6 @@ export class CheckpointManager {
           };
           encodeFullEntry(snapshotFile, currentContent, this.config.compressThresholdKb * 1024);
           files.push(snapshotFile);
-          this.index.latestFullMap[filePath] = snapshotId;
         } else if (
           typeof lastContent === "string" &&
           typeof currentContent === "string" &&
@@ -825,7 +823,7 @@ export class CheckpointManager {
   // 用 rebuildContentAtSnapshot 重建成内容、原地改写成新 full（重锚定基点），再删旧条目。
   // ─────────────────────────────────────────────────────────────
 
-  /** 写时双层淘汰：先 per-file 版本上限（A），再总量上限（B）。淘汰后重建 latestFullMap。 */
+  /** 写时双层淘汰：先 per-file 版本上限（A），再总量上限（B）。 */
   private async evictIfNeeded(): Promise<void> {
     try {
       await this.evictPerFile();
@@ -833,9 +831,6 @@ export class CheckpointManager {
     } catch (err: any) {
       // 淘汰失败绝不能影响快照本身已成功写入——仅告警。
       getLogger().warn("CHECKPOINT", `checkpoint 淘汰失败（不阻断）: ${err?.message}`);
-    } finally {
-      // 保留铁律 #3：淘汰后重建 latestFullMap，避免加速查找指向已删快照。
-      this.rebuildLatestFullMap();
     }
   }
 
@@ -984,19 +979,6 @@ export class CheckpointManager {
     return Buffer.byteLength(JSON.stringify(this.index, null, 2), "utf-8");
   }
 
-  /** 淘汰后重建 latestFullMap：文件路径 → 最新 full 快照 id（时间序最后一个 full）。 */
-  private rebuildLatestFullMap(): void {
-    const map: Record<string, string> = {};
-    for (const snapshot of this.index.snapshots) {
-      for (const f of snapshot.files) {
-        if (f.type === "full") {
-          map[f.filePath] = snapshot.id; // 后出现的覆盖，最终指向最新 full
-        }
-      }
-    }
-    this.index.latestFullMap = map;
-  }
-
   /** 获取最后一个快照 */
   private getLastSnapshot(): Snapshot | null {
     if (this.index.snapshots.length === 0) return null;
@@ -1057,7 +1039,7 @@ export class CheckpointManager {
       const srcIndex: CheckpointIndex =
         parsed.files && !parsed.snapshots
           ? this.migrateLegacyIndex(parsed as LegacyCheckpointIndex)
-          : (parsed as CheckpointIndex);
+          : stripLegacyFields(parsed as CheckpointIndex);
 
       const snapshots = Array.isArray(srcIndex.snapshots) ? srcIndex.snapshots : [];
       if (snapshots.length === 0) {
@@ -1071,7 +1053,6 @@ export class CheckpointManager {
         createdAt: srcIndex.createdAt ?? Date.now(),
         nextId: typeof srcIndex.nextId === "number" ? srcIndex.nextId : snapshots.length + 1,
         snapshots: structuredClone(snapshots),
-        latestFullMap: structuredClone(srcIndex.latestFullMap ?? {}),
       };
       this.dirty = true;
       await this.saveIndex();

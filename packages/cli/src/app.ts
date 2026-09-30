@@ -113,7 +113,9 @@ import {
   recordSideCall,
   setSideCostCalculator,
   setSideCostObserver,
-  getSideStats,
+  getSessionSideStats,
+  hydrateSideCallBaseline,
+  resetSessionSideStats,
 } from "@sid-code/core/trace/side-call-sink.ts";
 import {
   addBillingObserver,
@@ -427,6 +429,8 @@ export class App {
   private emergencyEnded = false;
   /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
   private sessionStore: SessionStore | null = null;
+  /** N12：/clear 后下一次 persistUsageStats 必须落一条 side_call_stats 归零快照（哪怕全零）。 */
+  private sideStatsClearedPending = false;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
   private resumedSessionId: string | null = null;
   /** P0-2：--fork-session 时记录分叉来源会话 id（非 null 表示当前是分叉会话，新建 jsonl 并把源 id 写入 parentUuid） */
@@ -2492,6 +2496,9 @@ export class App {
         log.info("TUI:CMD", "清空消息历史，重置上下文");
         this.ctxMgr.clear();
         this.sessionState.resetCounters();
+        // N12：影子调用会话维度与 sideCostUSD 同批归零（resetCounters 已清 sideCostUSD）。
+        resetSessionSideStats();
+        this.sideStatsClearedPending = true;
         // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
         // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
         this.sessionState.resetReminderDedupKeys();
@@ -4559,6 +4566,27 @@ export class App {
       }
     }
 
+    // N12：side_call_stats 此前只写不读 —— resume 后影子调用的次数 / token / 失败数 /
+    // byLabel 归因从零开始，下一轮 persistUsageStats 还会用「只含本进程」的值覆盖旧快照。
+    // 回灌成会话基线（不回灌 costUSD 进 SessionState：它已经经上面 usage_stats.sideCostUSD
+    // 回灌过一次，两条路径都喂会让影子成本翻倍）。失败不阻断恢复。
+    if (sessionData.metadata?.["side_call_stats"]) {
+      try {
+        if (hydrateSideCallBaseline(sessionData.metadata["side_call_stats"])) {
+          const s = getSessionSideStats();
+          log.info(
+            "APP",
+            `恢复影子调用统计: calls=${s.apiCalls}, tokens=${s.tokensSent}/${s.tokensReceived}, ` +
+              `failed=${s.failed}, labels=${Object.keys(s.byLabel).length}`,
+          );
+        } else {
+          log.warn("APP", "影子调用统计快照形态不合法，忽略（不阻断）");
+        }
+      } catch (e) {
+        log.warn("APP", `影子调用统计恢复失败（不阻断）: ${(e as Error)?.message}`);
+      }
+    }
+
     // P1-7：从 JSONL metadata 恢复文件修改历史（打通 Checkpoint↔Resume）。
     // 预填 changedFiles（续做时继续累积、去重），并构造一段摘要注入续接提示，
     // 让模型知道"之前改过哪些文件"，无需用户重新说明或自己读 git diff。
@@ -6225,10 +6253,13 @@ export class App {
     // 不进会话 jsonl——resume 后这部分 token/费用在会话维度彻底不可见，「省了多少」测不准
     // （北极星「更省」的采集缺口之一）。这里覆盖式落一条 side_call_stats，与 usage_stats
     // 同频（每轮一条）。只落聚合量 + byLabel 分布，不落 details 全量（避免 JSONL 膨胀）。
+    // N12：落的是会话维度（resume 回灌基线 + 本进程），读取端在 restoreSession。
     try {
-      const s = getSideStats();
-      // 无影子调用时不落盘（避免每轮写一条全零记录）。
-      if (s.apiCalls > 0) {
+      const s = getSessionSideStats();
+      // 无影子调用时不落盘（避免每轮写一条全零记录）；但 /clear 归零后要落一条全零覆盖旧快照，
+      // 否则恢复会读到 clear 前的旧值（与 usage_stats 的归零快照对称）。
+      if (s.apiCalls > 0 || this.sideStatsClearedPending) {
+        this.sideStatsClearedPending = false;
         this.sessionStore.appendMetadata("side_call_stats", {
           apiCalls: s.apiCalls,
           costUSD: s.costUSD,
@@ -6425,7 +6456,9 @@ export class App {
     sideCostUSD?: number;
   } {
     try {
-      const s = getSideStats();
+      // N12：取会话维度，与同一行 costUSD（getEffectiveTotalCostUSD，含 resume 回灌的
+      // sideCostUSD）同口径；取进程维度会让 resume 后的行「成本含历史、token 不含」。
+      const s = getSessionSideStats();
       if (s.apiCalls <= 0) return {};
       return {
         sideInputTokens: s.tokensSent,

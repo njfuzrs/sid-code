@@ -278,6 +278,52 @@ export interface BackfillResult {
 }
 
 /**
+ * 切除游离 tool_result（找不到前置 tool_use 的 tool_result）。
+ *
+ * 被切掉的 tool_use 已永久丢失语义，补占位无意义 → 只能剥离；被剥空的消息整条删除
+ * （避免空 content user 消息）。backfillOrphanToolResults（发送期）与恢复期清洗管道
+ * （session-recovery.ts 第 7 层，N11）共用这一份实现 —— 判据只在 checkMessageHistoryIntegrity
+ * 一处，双写必然漂移。
+ *
+ * 纯函数：无游离时原样返回入参引用；有则返回新数组。
+ */
+export function stripDanglingToolResults(messages: Message[]): {
+  messages: Message[];
+  stripped: DanglingToolResult[];
+} {
+  const { dangling } = checkMessageHistoryIntegrity(messages);
+  if (dangling.length === 0) return { messages, stripped: [] };
+  return { messages: removeDanglingToolResults(messages, dangling), stripped: dangling };
+}
+
+function removeDanglingToolResults(messages: Message[], dangling: DanglingToolResult[]): Message[] {
+  // 按消息下标聚合该消息内需要剥离的游离 tool_use_id（游离可能在任意位置，非只在 [0]）
+  const danglingIdsByMsgIdx = new Map<number, Set<string>>();
+  for (const d of dangling) {
+    const set = danglingIdsByMsgIdx.get(d.messageIndex);
+    if (set) set.add(d.toolUseId);
+    else danglingIdsByMsgIdx.set(d.messageIndex, new Set([d.toolUseId]));
+  }
+
+  const out: Message[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const danglingIds = danglingIdsByMsgIdx.get(i);
+    if (!danglingIds || !Array.isArray(msg.content)) {
+      out.push(msg);
+      continue;
+    }
+    // 剥离该消息内所有游离 tool_result block
+    const kept = msg.content.filter(
+      (b) => !(b.type === "tool_result" && danglingIds.has(b.tool_use_id)),
+    );
+    if (kept.length === 0) continue; // 整条删除（content 被剥空）
+    out.push({ ...msg, content: kept });
+  }
+  return out;
+}
+
+/**
  * 生产端协议兜底：使消息历史满足 tool_use/tool_result 配对，让 OpenAI 400 无法发生。
  *
  * 两类破缺各有正解（顺序执行，互不干扰）：
@@ -306,35 +352,9 @@ export function backfillOrphanToolResults(messages: Message[]): BackfillResult {
   }
 
   // ─── 第一阶段：切除游离 tool_result ───
-  // 游离无对应 tool_use，无法补齐，只能剥离。被剥空的消息整条删除（避免空 content user 消息）。
   const stripped = initial.dangling;
-  let working: Message[] = messages;
-  if (stripped.length > 0) {
-    // 按消息下标聚合该消息内需要剥离的游离 tool_use_id（游离可能在任意位置，非只在 [0]）
-    const danglingIdsByMsgIdx = new Map<number, Set<string>>();
-    for (const d of stripped) {
-      const set = danglingIdsByMsgIdx.get(d.messageIndex);
-      if (set) set.add(d.toolUseId);
-      else danglingIdsByMsgIdx.set(d.messageIndex, new Set([d.toolUseId]));
-    }
-
-    const afterStrip: Message[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const danglingIds = danglingIdsByMsgIdx.get(i);
-      if (!danglingIds || !Array.isArray(msg.content)) {
-        afterStrip.push(msg);
-        continue;
-      }
-      // 剥离该消息内所有游离 tool_result block
-      const kept = msg.content.filter(
-        (b) => !(b.type === "tool_result" && danglingIds.has(b.tool_use_id)),
-      );
-      if (kept.length === 0) continue; // 整条删除（content 被剥空）
-      afterStrip.push({ ...msg, content: kept });
-    }
-    working = afterStrip;
-  }
+  const working: Message[] =
+    stripped.length > 0 ? removeDanglingToolResults(messages, stripped) : messages;
 
   // ─── 第二阶段：在切除后的数组上补孤儿占位 ───
   // 必须基于 working 重新计算孤儿下标（切除游离改变了消息下标，沿用 initial.orphans 会插错位）。

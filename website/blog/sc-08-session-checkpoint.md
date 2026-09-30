@@ -1911,7 +1911,7 @@ if (!tail || typeof tail.uuid !== "string") {
 🔬 注释还强调了兼容性承诺：「与改造前行为**完全一致，零回归**」。
 这是给旧格式兜底路径的正确态度：**新机制失效时，退回到老机制，而不是报错。**
 
-**🔬 而消息层的清洗是一条独立的六层管道**，在另一个文件里
+**🔬 而消息层的清洗是一条独立的七层管道**，在另一个文件里
 （`sdk/session-recovery.ts`，237 行）。它的文件头注释把设计意图写得很清楚：
 
 ```
@@ -1922,6 +1922,7 @@ if (!tail || typeof tail.uuid !== "string") {
   4. filterOrphanedThinkingOnlyMessages    —— 过滤流式中断残留的纯 thinking assistant 消息
   5. filterWhitespaceOnlyAssistantMessages —— 过滤内容被清空后的空白 assistant 消息
   6. validateContentBlockIntegrity         —— 剔除缺失关键字段（id/name/tool_use_id）的不完整 block
+  7. stripDanglingToolResultsFilter        —— 切除游离 tool_result（有结果无调用；第 3 层的反方向）
 ```
 
 逐层看它们各自防什么 —— **每一层都对应一种真实的中断时序**：
@@ -1934,6 +1935,7 @@ if (!tail || typeof tail.uuid !== "string") {
 | 4 | 只有 thinking 没有正文的 assistant 消息 | 流式时用户在 thinking 之后、正文之前按了 `Ctrl+C` |
 | 5 | 纯空白的 assistant 消息 | 上一层清空 content 之后的残壳；某些 API 拒绝空消息 |
 | 6 | 缺 `id`/`name`/`tool_use_id` 的 block | 流式写到一半崩了，block 只有半个字段 |
+| 7 | **游离 `tool_result`**（有结果无调用） | assistant 那条还在缓冲里没落盘，工具结果已作为 user_message 落盘 |
 
 **注意第 4、5 层的因果关系** —— 第 5 层是**在清理第 4 层的副产物**。
 清洗管道自己会产生新的脏数据：你把一条消息的 thinking 块删了，
@@ -1950,7 +1952,7 @@ if (!tail || typeof tail.uuid !== "string") {
 🔬 所以每层都带一个 `ctx.log(reason, detail)` 回调，
 统一打到 `SESSION_RECOVERY` 日志频道 —— **过滤动作本身是可观测的**。
 
-**如果六层合成一个大函数，这个问题就永远查不清了。**
+**如果七层合成一个大函数，这个问题就永远查不清了。**
 
 ### 7.5b 一个我没能验证的点：并行工具调用的 DAG
 
@@ -2427,7 +2429,6 @@ if (lastContent === null) {
   } else {
     snapshotFile.content = currentContent;
   }
-  this.index.latestFullMap[filePath] = snapshotId;      // ← 记住基点
 } else if (lastContent !== currentContent) {
   // 后续：保存增量 diff
   const diff = computeDiff(lastContent, currentContent);
@@ -2628,7 +2629,6 @@ async inheritFrom(srcSessionId: string): Promise<number> {
     sessionId: this.sessionId,
     nextId: typeof srcIndex.nextId === "number" ? srcIndex.nextId : snapshots.length + 1,
     snapshots: structuredClone(snapshots),
-    latestFullMap: structuredClone(srcIndex.latestFullMap ?? {}),
   };
 }
 ```
