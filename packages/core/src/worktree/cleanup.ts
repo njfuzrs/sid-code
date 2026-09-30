@@ -7,9 +7,10 @@
  */
 
 import { existsSync, readdirSync, statSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 import { execFileSync } from "child_process";
-import { WorktreeManager } from "./manager.ts";
+import { WorktreeManager, parseSidLockPid } from "./manager.ts";
+import { isProcessAlive, listActiveSessions } from "../session/concurrent.ts";
 import { branchNameForSlug } from "./slug.ts";
 import { logWorktreeEvent } from "./analytics.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -79,19 +80,28 @@ export function isEphemeralWorktree(dirName: string): boolean {
 export const EPHEMERAL_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
- * 检查 worktree 是否被 git 锁定（B9）。
- * git worktree lock 会在 .git/worktrees/<name>/locked 留标记；
- * 锁定通常意味着另一进程正在使用，不应清理。
+ * 检查 worktree 是否被 git 锁定（B9 / W13）。
+ * git worktree lock 会在 .git/worktrees/<name>/locked 留标记。
+ *
+ * W13：以前全仓没有任何地方写这个标记，这道保护恒为 false。现在 manager.create /
+ * restoreExisting 会以 `sid-code:pid=<pid>` 为理由加锁，所以这里要分三种：
+ * - 理由是 sid-code 的、持有者 pid 还活着 → 锁定（另一个进程正在用）；
+ * - 理由是 sid-code 的、持有者已死 → **不算**锁定：那是崩溃留下的陈旧锁，
+ *   若照样当锁，崩溃遗留的孤儿就永远收不回来（remove() 会先解锁再删）；
+ * - 其它理由（用户手动 `git worktree lock`）→ 锁定，尊重人的显式决定。
  */
 function isWorktreeLocked(gitRoot: string, dirName: string): boolean {
-  try {
-    // 主仓 .git/worktrees/<name>/locked
-    const lockedMarker = join(gitRoot, ".git", "worktrees", dirName, "locked");
-    if (existsSync(lockedMarker)) return true;
-  } catch {
-    /* 忽略 */
-  }
-  // 也读 worktree 内 .git pointer 指向的 git dir 下的 locked
+  const reason = readLockedMarker(gitRoot, dirName);
+  if (reason === null) return false;
+  const pid = parseSidLockPid(reason);
+  if (pid === null) return true;
+  return isProcessAlive(pid);
+}
+
+/** 读 locked 标记内容；不存在返回 null。 */
+function readLockedMarker(gitRoot: string, dirName: string): string | null {
+  const candidates: string[] = [join(gitRoot, ".git", "worktrees", dirName, "locked")];
+  // 也读 worktree 内 .git pointer 指向的 git dir 下的 locked（gitdir 名可能与目录名不同）
   try {
     const gitPointer = join(gitRoot, ".sid-code", "worktrees", dirName, ".git");
     if (existsSync(gitPointer)) {
@@ -102,13 +112,46 @@ function isWorktreeLocked(gitRoot: string, dirName: string): boolean {
         const absGitDir = gitDir.startsWith("/")
           ? gitDir
           : join(gitRoot, ".sid-code", "worktrees", dirName, gitDir);
-        if (existsSync(join(absGitDir, "locked"))) return true;
+        candidates.push(join(absGitDir, "locked"));
       }
     }
   } catch {
     /* 忽略 */
   }
-  return false;
+  for (const marker of candidates) {
+    try {
+      if (existsSync(marker)) return readFileSync(marker, "utf-8");
+    } catch {
+      /* 读不到内容但文件在 → 按用户锁处理（fail-closed） */
+      return "";
+    }
+  }
+  return null;
+}
+
+/**
+ * W14：其它还活着的 sid-code 会话正站在哪些目录里。
+ *
+ * 旧实现只跳过本进程的一条 skipPath，另一个终端里正在跑长任务的 worktree
+ * 对 GC 不可见。活跃会话注册表（~/.sid-code 下的 active sessions）本来就在，
+ * persistence.ts 判「要不要自动 chdir」时已经在用它；删目录这件更不可逆的事反而没查。
+ * 读失败时返回 null：调用方据此放弃本轮清理（fail-closed），而不是当成「没人在用」。
+ */
+function liveSessionCwds(): string[] | null {
+  try {
+    return listActiveSessions()
+      .filter((e) => e.kind === "teammate" || isProcessAlive(e.pid))
+      .map((e) => e.cwd)
+      .filter((c): c is string => typeof c === "string" && c.length > 0)
+      .map((c) => resolve(c));
+  } catch {
+    return null;
+  }
+}
+
+function isUsedByLiveSession(fullPath: string, cwds: string[]): boolean {
+  const root = resolve(fullPath);
+  return cwds.some((c) => c === root || c.startsWith(root + sep));
 }
 
 /**
@@ -136,6 +179,13 @@ export async function cleanupStaleWorktrees(
   try {
     entries = readdirSync(worktreeDir);
   } catch {
+    return 0;
+  }
+
+  // W14：进入循环前取一次活跃会话快照。读不到就整轮不删 —— 不能把「没查到」当「没人在用」。
+  const liveCwds = liveSessionCwds();
+  if (liveCwds === null) {
+    log.debug("WORKTREE", "读不到活跃会话注册表，本轮跳过 worktree GC");
     return 0;
   }
 
@@ -172,6 +222,13 @@ export async function cleanupStaleWorktrees(
     // 锁检查 + 改动检查 + 活跃 session skipPath，三重保护后才动手。
     const ageCutoff = Math.max(cutoffMs, Date.now() - EPHEMERAL_GRACE_MS);
     if (mtimeMs >= ageCutoff) {
+      skipped++;
+      continue;
+    }
+
+    // W14：别的活会话正站在这个 worktree（或它的子目录）里
+    if (isUsedByLiveSession(fullPath, liveCwds)) {
+      log.debug("WORKTREE", `worktree ${dir} 正被其它活跃会话使用，跳过清理`);
       skipped++;
       continue;
     }

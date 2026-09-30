@@ -46,7 +46,7 @@ const state: BootstrapState = {
 
 // --- 工作目录 ---
 
-import { getAgentCwd } from "./cwd-context.ts";
+import { getAgentCwd, setAgentCwd } from "./cwd-context.ts";
 
 export function getCwd(): string {
   // M4(Dynamic Workflows): 若处于某子代理的 worktree 上下文(withAgentCwd),优先返回其 cwd,
@@ -54,6 +54,9 @@ export function getCwd(): string {
   return getAgentCwd() ?? state.cwd;
 }
 export function setCwd(newCwd: string): void {
+  // W16：在子代理的 withAgentCwd 上下文里，写回它自己的 cwd，不碰主会话的 state.cwd。
+  // 否则读（ALS 优先）和写（全局）落在两个位置：子代理的 cd 不生效，主会话目录反被改掉。
+  if (setAgentCwd(newCwd)) return;
   state.cwd = newCwd;
 }
 

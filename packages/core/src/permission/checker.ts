@@ -46,6 +46,7 @@ import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
 import { GIT_DANGER_PATTERNS, normalizeGitGlobalOptions } from "./git-danger-patterns.ts";
 import * as path from "node:path";
+import { getAgentRoot, getAgentCwd } from "../bootstrap/cwd-context.ts";
 import * as os from "node:os";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
@@ -522,6 +523,29 @@ export class PermissionChecker implements Checker {
     return this.pathValidator;
   }
 
+  /**
+   * W12：当前异步链若绑定在某个隔离 worktree 上，而写目标落在它所属主仓的 worktree 之外，
+   * 返回拒绝原因；否则返回 null。worktree 根取进入 withAgentCwd 时绑定的目录（不随 cd 变）。
+   */
+  private detectWorktreeEscape(filePath: string): string | null {
+    const root = getAgentRoot();
+    if (!root) return null;
+    const marker = `${path.sep}.sid-code${path.sep}worktrees${path.sep}`;
+    const idx = root.indexOf(marker);
+    if (idx < 0) return null;
+    const mainRepo = root.slice(0, idx);
+    const real = (p: string) => normalizeCaseForComparison(this.pathValidator.resolveRealPath(p));
+    const within = (p: string, dir: string) => p === dir || p.startsWith(dir + path.sep);
+    const target = real(path.resolve(getAgentCwd() ?? root, filePath));
+    const wt = real(root);
+    if (within(target, wt)) return null;
+    if (!within(target, real(mainRepo))) return null;
+    return (
+      `隔离 worktree 越界写主仓: ${filePath} 不在当前 worktree（${root}）内。` +
+      `请改用相对路径，或以 worktree 根为前缀的绝对路径`
+    );
+  }
+
   /** 获取配置（只读，供子代理 checker 工厂复制配置） */
   getConfig(): Readonly<Config> {
     return this.config;
@@ -881,6 +905,30 @@ export class PermissionChecker implements Checker {
         `${req.toolName}(${filePath.slice(0, 80)}) → 允许(${phase}+计划文件提前放行)`,
       );
       return { allowed: true, decisionReason: { type: "mode", mode: "plan+plan-file" } };
+    }
+
+    // Step 3.8（W12）：隔离 worktree 里的子代理不许把写工具打回主仓。
+    //
+    // 工作区边界（workspacePath）在 checker 构造时冻结为主仓根，子代理派生 checker 时原样复制，
+    // 而 withAgentCwd 只改 getCwd() —— 两份状态没有交汇点。于是跑在
+    // `<主仓>/.sid-code/worktrees/agent-x/` 里的子代理 write 一个 `/<主仓>/src/a.ts`，
+    // isWithinWorkspace 为真、直接放行，改动落进主仓且在 worktree 的 diff 里看不见。
+    // 唯一拦它的曾经只是一句提示词（sub-agent.ts「不要引用主仓的绝对路径」）。
+    //
+    // 判据只看「写目标在不在自己的 worktree 之外、却在它所属的主仓之内」：
+    // - worktree 之外的其它位置（/tmp、~/.sid-code/plans）不归这条管，交给下面的常规路径验证；
+    // - 硬 deny、不给确认：确认框里用户看到的是一个「工作区内」的路径，点了允许就是隔离失效。
+    // ⚠️ 只覆盖文件类写工具。bash 命令正文里的绝对路径不经过这层解析，仍靠 worktree 本身隔离。
+    if (filePath && WRITE_TOOLS.has(req.toolName)) {
+      const escape = this.detectWorktreeEscape(filePath);
+      if (escape) {
+        log.info("PERMISSION", `${req.toolName}(${filePath.slice(0, 80)}) → 拒绝(${escape})`);
+        return {
+          allowed: false,
+          reason: escape,
+          decisionReason: { type: "other", reason: "隔离 worktree 越界写主仓" },
+        };
+      }
     }
 
     // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
