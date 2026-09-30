@@ -16,6 +16,10 @@
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 import { processSkillPrompt } from "@sid-code/core/skill/prompt-processor.ts";
+import {
+  resolveSkillExecutionContext,
+  resolveSkillAllowedTools,
+} from "@sid-code/core/skill/executor.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 export class SkillCommand implements Command {
@@ -25,8 +29,8 @@ export class SkillCommand implements Command {
 
   constructor(skill: SkillDefinition) {
     this.skill = skill;
-    // context 优先于 mode；都未指定时默认 fork（与 skillToCommand 保持一致）
-    this.context = skill.context ?? (skill.mode === "activate" ? "inline" : "fork");
+    // P0-4：与模型路径 / 命令投影同一个事实源（context 优先于 mode，缺省 fork）
+    this.context = resolveSkillExecutionContext(skill);
   }
 
   name(): string {
@@ -152,7 +156,8 @@ export class SkillCommand implements Command {
       const result = await subAgent.executeCustom({
         systemPrompt: "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
-        allowedTools: this.skill.allowedTools ?? [],
+        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
+        allowedTools: resolveSkillAllowedTools(this.skill),
         // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
         maxTurns: this.skill.maxTurns ?? 30,
         effort,

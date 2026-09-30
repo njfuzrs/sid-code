@@ -70,6 +70,11 @@ export interface SkillPermissionRules {
   deny?: string[];
   /** 允许列表 */
   allow?: string[];
+  /**
+   * 确认列表：命中即 ask。必须早于 allow 判定——否则 `allow: ["Skill"]` 通配
+   * 会盖掉精确的 `ask: ["Skill(deploy)"]`，用户配的确认闸静默失效（P0-1）。
+   */
+  ask?: string[];
 }
 
 /**
@@ -77,10 +82,11 @@ export interface SkillPermissionRules {
  *
  * 优先级：
  *   1. deny 规则命中 → deny
- *   2. allow 规则命中 → allow
- *   3. MCP 来源 + 含敏感属性 → ask（远程来源更保守）
- *   4. 仅安全属性 → allow
- *   5. 默认 → ask
+ *   2. ask 规则命中 → ask（早于 allow，见 SkillPermissionRules.ask）
+ *   3. allow 规则命中 → allow
+ *   4. MCP 来源 + 含敏感属性 → ask（远程来源更保守）
+ *   5. 仅安全属性 → allow
+ *   6. 默认 → ask
  */
 export function checkSkillPermission(
   skill: SkillDefinition,
@@ -89,6 +95,7 @@ export function checkSkillPermission(
   const name = skill.name;
 
   if (matchesRule(name, rules.deny)) return "deny";
+  if (matchesRule(name, rules.ask)) return "ask";
   if (matchesRule(name, rules.allow)) return "allow";
 
   const safe = skillHasOnlySafeProperties(skill);

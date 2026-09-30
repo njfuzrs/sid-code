@@ -29,6 +29,7 @@ import type {
 } from "../../command-contract/types.ts";
 import { SubAgent } from "../../agent/sub-agent.ts";
 import { getLogger } from "../../debug/logger.ts";
+import { resolveSkillAllowedTools } from "../executor.ts";
 import { z } from "zod/v4";
 
 /** 工具输入：透传给 skill 的 getPromptForCommand(args) */
@@ -104,7 +105,11 @@ export class BundledSkillTool implements Tool {
       {
         systemPrompt: "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
-        allowedTools: this.cmd.allowedTools ?? [],
+        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
+        allowedTools: resolveSkillAllowedTools({
+          name: this.cmd.name,
+          allowedTools: this.cmd.allowedTools,
+        }),
         // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认，从 10 提到 30
         // （与 sub-agent.ts/skill/meta-tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
         maxTurns: this.cmd.maxTurns ?? 30,
