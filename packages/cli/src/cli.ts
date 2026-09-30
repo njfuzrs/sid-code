@@ -2163,6 +2163,9 @@ export async function main(): Promise<void> {
     if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
       const { MCPManager } = await import("@sid-code/core/mcp/manager.ts");
       mcpManager = new MCPManager();
+      // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含
+      // --strict-mcp-config）、IDE 动态注册、运行时重连都不经过 config 合并层的过滤。
+      mcpManager.policy = config.mcpPolicy;
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。

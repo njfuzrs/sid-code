@@ -509,9 +509,10 @@ export class StreamableHTTPTransport implements Transport {
   }
 
   close(): void {
+    // 主动关闭不触发 onClose（D1）：onClose 只表示「意外断开」，
+    // 五个传输里只有这里曾在 close() 中回调它，会把用户主动断开变成一次自动重连。
     this.closed = true;
     this.sessionId = null;
-    this.onClose?.();
   }
 }
 
@@ -571,44 +572,26 @@ export class SSETransport implements Transport {
   }
 
   private async readSSEStream(body: ReadableStream<Uint8Array>): Promise<void> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
+    // D5：改用共用解析器 parseSSEStream。旧的私有实现要求冒号后必须有空格、
+    // 不处理 CRLF、多行 data 直接串联、且事件状态在每个 chunk 清零——
+    // 前两条任一命中都会让整条 SSE 传输「HTTP 200 但一个事件都解析不出」。
     try {
-      while (!this.closed) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        let eventType = "";
-        let eventData = "";
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            eventData += line.slice(6);
-          } else if (line === "") {
-            // 空行表示事件结束
-            if (eventType === "endpoint" && eventData) {
-              // 服务器告知 POST 端点
-              this.postEndpoint = this.resolveEndpoint(eventData.trim());
-            } else if (eventType === "message" && eventData) {
-              this.handleSSEMessage(eventData);
-            }
-            eventType = "";
-            eventData = "";
+      await parseSSEStream(
+        body,
+        ({ event, data }) => {
+          if (!data) return;
+          if (event === "endpoint") {
+            // 旧 SSE 传输特有握手：服务器告知 POST 端点
+            this.postEndpoint = this.resolveEndpoint(data.trim());
+          } else if (event === "message") {
+            this.handleSSEMessage(data);
           }
-        }
-      }
+        },
+        () => this.closed,
+      );
     } catch {
       // 连接关闭
     } finally {
-      reader.releaseLock();
       if (!this.closed) {
         this.closed = true;
         // SSE 流意外断开，通知上层
