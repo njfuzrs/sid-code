@@ -9,33 +9,19 @@ import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
+import { PROTECTED_COMMAND_NAMES } from "@sid-code/core/command-contract/protected-names.ts";
+import { matchesSensitivePath } from "@sid-code/core/permission/path-validator.ts";
+import { splitShellWords } from "@sid-code/core/tool/bash/parser.ts";
 import { execSync } from "child_process";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "fs";
+import { isAbsolute, relative, resolve, sep } from "path";
 
-/** 保护命令名（不允许被自定义命令覆盖） */
-const PROTECTED_NAMES = new Set([
-  "help",
-  "h",
-  "?",
-  "exit",
-  "quit",
-  "q",
-  "clear",
-  "compact",
-  "cost",
-  "config",
-  "model",
-  "m",
-  "undo",
-  "memory",
-  "mem",
-  "sessions",
-  "rewind",
-  "stats",
-  "init",
-  "mcp",
-]);
+/**
+ * 保护命令名：单一事实源已下沉到 core（D7），注册表 dedupe 对所有非内置来源统一拦截。
+ * 这里保留加载期的早拦，是为了 legacy 回退路径（cli.ts 直接 register 进旧 Registry，
+ * 不经 UnifiedCommandRegistry）也受保护。
+ */
+const PROTECTED_NAMES = PROTECTED_COMMAND_NAMES;
 
 /**
  * 从 markdown 第一行 HTML 注释提取描述
@@ -94,45 +80,157 @@ export function parseCustomCommandOptions(
   return opts;
 }
 
-/**
- * 处理文件注入 @{path}
- * 读取文件内容并替换占位符，文件不存在时抛出错误
- */
-async function processFileInjections(template: string): Promise<string> {
-  const FILE_PATTERN = /@\{([^}]+)\}/g;
-  const matches = [...template.matchAll(FILE_PATTERN)];
-  if (matches.length === 0) return template;
+/** 文件注入单文件读取上限（与 shell 注入 maxBuffer 同口径）；超出部分截断并提示（D15） */
+export const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
 
-  let result = template;
-  for (const match of matches) {
-    const filePath = match[1].trim();
-    try {
-      const absPath = resolve(process.cwd(), filePath);
-      const content = readFileSync(absPath, "utf-8");
-      const ext = filePath.split(".").pop() ?? "";
-      const replacement = `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${ext}\n${content}\n\`\`\``;
-      result = result.replace(match[0], replacement);
-    } catch {
-      throw new Error(`文件注入失败：无法读取 "${filePath}"`);
-    }
+/**
+ * 文件注入 `@{path}` 的放行判定（D15）。
+ *
+ * 修复前是裸 `resolve(cwd, path)` + `readFileSync`：无确认、无路径边界、无大小上限，
+ * 与相邻 30 行的 shell 注入（fail-closed 确认 + timeout + maxBuffer）待遇不对称。
+ * `.sid-code/commands/*.md` 随 git 分发，一行 `@{.env}` 就能让凭据静默进 prompt 出网。
+ *
+ * 分档：cwd 内的普通文件直接放行；**cwd 外**或**命中敏感文件模式**（复用权限系统的
+ * `matchesSensitivePath`，不另写一套）需要用户确认。
+ */
+export function classifyFileInjection(
+  filePath: string,
+  cwd: string,
+): { absPath: string; needsConfirm: boolean; reason?: string } {
+  let absPath = resolve(cwd, filePath);
+  let realCwd = cwd;
+  try {
+    // symlink 解到真实路径再判边界，否则 cwd 内一个指向 ~/.ssh 的链接能绕过
+    absPath = realpathSync(absPath);
+    realCwd = realpathSync(cwd);
+  } catch {
+    // 文件不存在：交给后续读取报错
   }
-  return result;
+  const rel = relative(realCwd, absPath);
+  const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (outside) return { absPath, needsConfirm: true, reason: "位于项目目录之外" };
+  if (matchesSensitivePath(absPath)) {
+    return { absPath, needsConfirm: true, reason: "命中敏感文件模式" };
+  }
+  return { absPath, needsConfirm: false };
+}
+
+/** 读取至多 FILE_INJECTION_MAX_BYTES，超出时截断（不整文件进内存） */
+function readCapped(absPath: string): { content: string; truncatedFrom?: number } {
+  const size = statSync(absPath).size;
+  if (size <= FILE_INJECTION_MAX_BYTES) return { content: readFileSync(absPath, "utf-8") };
+  const buf = Buffer.alloc(FILE_INJECTION_MAX_BYTES);
+  const fd = openSync(absPath, "r");
+  try {
+    readSync(fd, buf, 0, FILE_INJECTION_MAX_BYTES, 0);
+  } finally {
+    closeSync(fd);
+  }
+  return { content: buf.toString("utf-8"), truncatedFrom: size };
+}
+
+/** 模板片段：字面文本（参数替换只作用于它）或注入表达式 */
+type TemplateSegment =
+  | { kind: "text"; text: string }
+  | { kind: "file"; raw: string; path: string }
+  | { kind: "shell"; raw: string; cmd: string };
+
+/** 在**原始模板**上切出注入表达式（D14：用户参数永远不参与扫描） */
+function splitTemplate(template: string): TemplateSegment[] {
+  const PATTERN = /@\{([^}]+)\}|!\{([^}]+)\}/g;
+  const segments: TemplateSegment[] = [];
+  let last = 0;
+  for (const m of template.matchAll(PATTERN)) {
+    const idx = m.index ?? 0;
+    if (idx > last) segments.push({ kind: "text", text: template.slice(last, idx) });
+    if (m[1] !== undefined) segments.push({ kind: "file", raw: m[0], path: m[1].trim() });
+    else segments.push({ kind: "shell", raw: m[0], cmd: m[2].trim() });
+    last = idx + m[0].length;
+  }
+  if (last < template.length) segments.push({ kind: "text", text: template.slice(last) });
+  return segments;
+}
+
+/**
+ * 处理文件注入 @{path}（D15：cwd 外 / 敏感文件需确认，fail-closed；读取有上限；留日志）。
+ * 返回 null 表示用户拒绝（或无确认通道）。文件读不到时抛错。
+ */
+async function processFileInjections(
+  segments: TemplateSegment[],
+  ctx: AppContext,
+): Promise<Map<TemplateSegment, string> | null> {
+  const log = getLogger();
+  const out = new Map<TemplateSegment, string>();
+  const files = segments.filter(
+    (s): s is Extract<TemplateSegment, { kind: "file" }> => s.kind === "file",
+  );
+  if (files.length === 0) return out;
+
+  const cwd = process.cwd();
+  const judged = files.map((seg) => ({ seg, ...classifyFileInjection(seg.path, cwd) }));
+  const risky = judged.filter((j) => j.needsConfirm);
+  if (risky.length > 0) {
+    // 与 shell 注入同取向：无确认通道 = 拒绝；回调抛异常 = 拒绝。
+    if (!ctx.requestUserConfirmation) {
+      log.warn("CUSTOM_CMD", "文件注入需确认但无确认通道，拒绝读取", {
+        paths: risky.map((r) => r.absPath),
+      });
+      return null;
+    }
+    const desc =
+      "自定义命令请求把以下文件内容注入对话（将发送给模型）：\n" +
+      risky.map((r) => `  ${r.absPath}（${r.reason}）`).join("\n");
+    let ok: boolean;
+    try {
+      ok = await ctx.requestUserConfirmation(desc);
+    } catch (err: any) {
+      log.warn("CUSTOM_CMD", `文件注入确认回调异常，保守拒绝: ${err?.message}`);
+      return null;
+    }
+    if (!ok) return null;
+  }
+
+  for (const j of judged) {
+    let read: { content: string; truncatedFrom?: number };
+    try {
+      read = readCapped(j.absPath);
+    } catch {
+      throw new Error(`文件注入失败：无法读取 "${j.seg.path}"`);
+    }
+    log.info("CUSTOM_CMD", `文件注入: ${j.absPath}`, {
+      bytes: read.truncatedFrom ?? Buffer.byteLength(read.content),
+      truncated: read.truncatedFrom !== undefined,
+      confirmed: j.needsConfirm,
+    });
+    const ext = j.seg.path.split(".").pop() ?? "";
+    const note =
+      read.truncatedFrom !== undefined
+        ? `\n... [文件共 ${read.truncatedFrom} 字节，已截断到前 ${FILE_INJECTION_MAX_BYTES} 字节]`
+        : "";
+    out.set(
+      j.seg,
+      `以下是文件 \`${j.seg.path}\` 的内容：\n\`\`\`${ext}\n${read.content}${note}\n\`\`\``,
+    );
+  }
+  return out;
 }
 
 /**
  * 处理 Shell 注入 !{cmd}
- * 执行 shell 命令并将输出替换到模板中
- * 需要用户通过 ctx.confirmShellCommands 确认（如果提供）
+ * 执行 shell 命令并将输出替换到模板中；必须经 ctx.confirmShellCommands 确认（fail-closed）。
+ * 返回 null 表示未确认。
  */
 async function processShellInjections(
-  template: string,
+  segments: TemplateSegment[],
   ctx: AppContext,
-): Promise<{ result: string; confirmed: boolean }> {
-  const SHELL_PATTERN = /!\{([^}]+)\}/g;
-  const matches = [...template.matchAll(SHELL_PATTERN)];
-  if (matches.length === 0) return { result: template, confirmed: true };
+): Promise<Map<TemplateSegment, string> | null> {
+  const out = new Map<TemplateSegment, string>();
+  const shells = segments.filter(
+    (s): s is Extract<TemplateSegment, { kind: "shell" }> => s.kind === "shell",
+  );
+  if (shells.length === 0) return out;
 
-  const commands = matches.map((m) => m[1].trim());
+  const commands = shells.map((s) => s.cmd);
 
   // P2-3：无确认通道 → **拒绝执行**（fail-closed），不再静默直执行。
   //
@@ -144,9 +242,12 @@ async function processShellInjections(
   // 生产路径本来就注入了真实弹窗（app.ts + adapter.ts 双向透传），所以**行为零变化**；
   // 收益是把安全从约定变成结构。取向对齐 Skill 侧的 resolveSkillAsk：
   // 那里三条兜底路径全部 return false，连"回调自己抛异常"都保守拒绝。
+  //
+  // D14：命令列表只来自原始模板（splitTemplate 在参数替换之前切分），所以确认框里
+  // 展示的一定是模板作者写的命令，不会混进用户参数里的 `!{...}`。
   if (!ctx.confirmShellCommands) {
     getLogger().warn("CUSTOM_CMD", "shell 注入需确认但无确认通道，拒绝执行");
-    return { result: template, confirmed: false };
+    return null;
   }
   let confirmed: boolean;
   try {
@@ -154,17 +255,13 @@ async function processShellInjections(
   } catch (err: any) {
     // 回调自身抛异常也保守拒绝：异常不能等于放行。
     getLogger().warn("CUSTOM_CMD", `shell 注入确认回调异常，保守拒绝: ${err?.message}`);
-    return { result: template, confirmed: false };
+    return null;
   }
-  if (!confirmed) {
-    return { result: template, confirmed: false };
-  }
+  if (!confirmed) return null;
 
-  let result = template;
-  for (const match of matches) {
-    const cmd = match[1].trim();
+  for (const seg of shells) {
     try {
-      const output = execSync(cmd, {
+      const output = execSync(seg.cmd, {
         encoding: "utf-8",
         timeout: 10_000,
         maxBuffer: 10 * 1024 * 1024, // 10MB
@@ -172,43 +269,70 @@ async function processShellInjections(
       // 截断超长输出
       const truncated =
         output.length > 10000 ? output.slice(0, 10000) + "\n... [输出已截断]" : output;
-      result = result.replace(match[0], truncated.trimEnd());
+      out.set(seg, truncated.trimEnd());
     } catch (err: any) {
       const errMsg = err.stderr ? err.stderr.toString().trim() : err.message;
-      result = result.replace(match[0], `[命令执行失败: ${errMsg}]`);
+      out.set(seg, `[命令执行失败: ${errMsg}]`);
     }
   }
-  return { result, confirmed: true };
+  return out;
 }
 
 /**
- * 处理完整模板：参数替换 → 文件注入 → Shell 注入
+ * 参数占位符替换（D16），只作用于模板字面文本。
+ *
+ * - `$ARGUMENTS` / `$@` / `$*` / `{{args}}`：全部参数原文；
+ * - `$1`..`$9`：**单位数**（shell 惯例）。修复前是 `\d+`，`第 $10 项` 被当成第 10 个参数；
+ * - `$0`、越界的 `$N`：**保留字面量**。修复前静默变空串，prompt 少一块却看不出来；
+ *   保留字面量既让人看得见，又不妨碍可选参数用法；
+ * - 位置参数按 shell 规则切分（认引号），`"a b" c` 的 `$1` 是 `a b`。
+ *
+ * 单趟正则替换：已代入的参数文本不会被后续规则再次替换（参数里写 `$1` 不会被展开）。
+ */
+export function substituteArgs(text: string, args: string): string {
+  const all = args.trim();
+  let parts: string[] | null = null;
+  return text.replace(/\$ARGUMENTS\b|\$@|\$\*|\{\{args\}\}|\$(\d)/g, (match, digit) => {
+    if (digit === undefined) return all;
+    const i = Number(digit) - 1;
+    parts ??= splitShellWords(all);
+    if (i < 0 || i >= parts.length) return match;
+    return parts[i];
+  });
+}
+
+/**
+ * 处理完整模板（D14）：先在**原始模板**上处理文件注入与 Shell 注入，最后才插入用户参数。
+ *
+ * 修复前顺序是「参数替换 → 文件注入 → Shell 注入」，第 2、3 步扫的是第 1 步的产物，
+ * 于是用户参数里的 `!{...}` / `@{...}` 被当成模板作者写的注入语法执行，
+ * shell 确认框里展示的命令也可能来自用户自己刚敲的参数 —— 确认的前提被打破。
+ * 代价（刻意接受）：`@{$1}` 这种「参数决定注入目标」的写法不再生效。
+ *
+ * 注入结果原样拼回、不参与参数替换：文件内容 / 命令输出里的 `$1` 不会被展开。
  */
 async function processTemplate(
   template: string,
   args: string,
   ctx: AppContext,
-): Promise<{ text: string; confirmed: boolean }> {
-  let result = template;
+): Promise<{ text: string; confirmed: boolean; rejected?: "file" | "shell" }> {
+  const segments = splitTemplate(template);
 
-  // 1. 参数替换（兼容旧语法 $@ 和新语法 {{args}}）
-  const parts = args.trim().split(/\s+/).filter(Boolean);
-  // $ARGUMENTS：CC 迁移兼容——.claude/commands 模板里的字面量占位符（CC SkillTool 做同样展开）。
-  // 必须在 $@ 之前替换：$@ 的正则不会误吞 $ARGUMENTS（\b 边界），但先替换更直观且防未来正则调整踩坑。
-  result = result.replace(/\$ARGUMENTS\b/g, args.trim());
-  result = result.replace(/\$@|\$\*/g, args.trim());
-  result = result.replace(/\$(\d+)/g, (_match, idx) => {
-    const i = parseInt(idx) - 1;
-    return i >= 0 && i < parts.length ? parts[i] : "";
-  });
-  result = result.replace(/\{\{args\}\}/g, args.trim());
+  // 1. 文件注入 @{path}（cwd 外 / 敏感文件需确认）
+  const files = await processFileInjections(segments, ctx);
+  if (!files) return { text: template, confirmed: false, rejected: "file" };
 
-  // 2. 文件注入 @{path}
-  result = await processFileInjections(result);
+  // 2. Shell 注入 !{cmd}（需用户确认）
+  const shells = await processShellInjections(segments, ctx);
+  if (!shells) return { text: template, confirmed: false, rejected: "shell" };
 
-  // 3. Shell 注入 !{cmd}（需用户确认）
-  const { result: shellResult, confirmed } = await processShellInjections(result, ctx);
-  return { text: shellResult, confirmed };
+  // 3. 最后才插入用户参数：此时注入扫描已结束，参数里的 !{} @{} 只是普通文本
+  const text = segments
+    .map((seg) =>
+      seg.kind === "text" ? substituteArgs(seg.text, args) : (files.get(seg) ?? shells.get(seg)!),
+    )
+    .join("");
+  return { text, confirmed: true };
 }
 
 /** 自定义命令实现 */
@@ -242,15 +366,20 @@ export class CustomCommand implements Command {
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     let text: string;
     let confirmed: boolean;
+    let rejected: "file" | "shell" | undefined;
 
     try {
-      ({ text, confirmed } = await processTemplate(this._body, args, ctx));
+      ({ text, confirmed, rejected } = await processTemplate(this._body, args, ctx));
     } catch (err: any) {
       return { kind: "error", message: err.message };
     }
 
     if (!confirmed) {
-      return { kind: "message", message: "已取消：用户拒绝执行 Shell 命令" };
+      return {
+        kind: "message",
+        message:
+          rejected === "file" ? "已取消：用户拒绝注入文件内容" : "已取消：用户拒绝执行 Shell 命令",
+      };
     }
 
     // P2-2：声明了 allowed-tools 或 model 时走 fork 子代理隔离执行——

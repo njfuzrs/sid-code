@@ -66,11 +66,11 @@ describe("CustomCommand", () => {
     expect(result.prompt).toBe("内容:[]");
   });
 
-  test("缺少的参数替换为空字符串", async () => {
+  test("缺少的参数保留字面量（D16：不再静默变空串）", async () => {
     const cmd = new CustomCommand("test", "", "参数1=$1 参数2=$2");
     const result = await cmd.execute("只有一个", {} as any);
     expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("参数1=只有一个 参数2=");
+    expect(result.prompt).toBe("参数1=只有一个 参数2=$2");
   });
 });
 
