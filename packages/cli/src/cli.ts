@@ -2610,9 +2610,11 @@ export async function main(): Promise<void> {
     // 启动时恢复并清理 Worktree（P0-1 / P1-9 / D16），以及 --worktree 启动 flag（P1-2）
     if (!config.print) {
       try {
-        const { findGitRoot, restoreWorktreeSession, setCurrentWorktreeSession } =
+        const { findGitRootForAgent, restoreWorktreeSession, setCurrentWorktreeSession } =
           await import("@sid-code/core/worktree/index.ts");
-        const gitRoot = findGitRoot(process.cwd());
+        // W17：必须是主仓根。`findGitRoot` 是 `--show-toplevel`，在 worktree 里返回 worktree 自己：
+        // 恢复读错 session-config、GC 扫错目录、`--worktree` 建出嵌套 worktree。
+        const gitRoot = findGitRootForAgent(process.cwd());
         if (gitRoot) {
           let activeWtPath: string | undefined;
 

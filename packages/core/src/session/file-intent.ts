@@ -55,6 +55,20 @@ function intentPath(sessionId: string): string {
 }
 
 /**
+ * W15：意图表的键。把 worktree 内的路径折回它在主仓里的位置。
+ *
+ * 子代理 / 并行会话在 `<repo>/.sid-code/worktrees/<slug>/src/a.ts` 里写的，和主仓
+ * `<repo>/src/a.ts` 是同一份逻辑文件（合并时会撞车），但绝对路径字符串不同，
+ * 旧实现按原样比对，跨 worktree 的冲突检测结构性零命中。
+ * slug 段排除以点开头的名字，与 safety-protected-paths 的 WORKTREE_CONTAINER_RE 同口径。
+ */
+export function intentKeyForPath(filePath: string): string {
+  const nfc = filePath.normalize("NFC");
+  const stripped = nfc.replace(/\/\.(?:sid-code|claude)\/worktrees\/(?!\.)[^/]+(?=\/)/g, "");
+  return stripped || nfc;
+}
+
+/**
  * 声明文件编辑意图。
  *
  * @param sessionId 当前会话 ID
@@ -73,7 +87,7 @@ export function declareFileIntent(
   try {
     mkdirSync(intentsDir(), { recursive: true });
 
-    const normalizedPath = filePath.normalize("NFC");
+    const normalizedPath = intentKeyForPath(filePath);
     const now = Date.now();
     const path = intentPath(sessionId);
 
@@ -203,7 +217,7 @@ export function queryFileIntents(
   cwd: string;
   intent: FileIntent;
 }> {
-  const normalizedPath = targetFile.normalize("NFC");
+  const normalizedPath = intentKeyForPath(targetFile);
   const allIntents = queryAllFileIntents();
   const conflicts: Array<{
     sessionId: string;

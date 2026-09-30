@@ -82,19 +82,31 @@ describe("M4 cwd-context — 并发隔离(真并行 worktree 的地基)", () => 
 });
 
 describe("M4 cwd-context — 与 setCwd 全局态共存", () => {
-  test("setCwd 改全局,但 agent 上下文优先", () => {
+  // W16:旧断言是「上下文内 setCwd 改全局、上下文内读不到」——那正是缺陷本身:
+  // 子代理 bash cd 不生效,主会话目录反被改掉。现在写与读落在同一个位置(本上下文)。
+  test("上下文内 setCwd 只改本上下文,不改全局", () => {
     const original = getCwd();
     try {
-      // agent 上下文内,即便全局被改也以 agent cwd 为准
       const r = withAgentCwd("/wt/iso", () => {
-        setCwd("/some/other/global");
-        return getCwd(); // 应仍是 /wt/iso(ALS 优先)
+        setCwd("/wt/iso/sub");
+        return getCwd();
       });
-      expect(r).toBe("/wt/iso");
-      // 上下文外,全局已被改
-      expect(getCwd()).toBe("/some/other/global");
+      expect(r).toBe("/wt/iso/sub");
+      expect(getCwd()).toBe(original);
     } finally {
-      setCwd(original); // 还原,避免污染其他测试
+      setCwd(original);
+    }
+  });
+
+  test("上下文外 setCwd 仍改全局", () => {
+    const original = getCwd();
+    try {
+      setCwd("/some/other/global");
+      expect(getCwd()).toBe("/some/other/global");
+      // 已绑定的 agent 上下文不受全局改动影响
+      expect(withAgentCwd("/wt/iso", () => getCwd())).toBe("/wt/iso");
+    } finally {
+      setCwd(original);
     }
   });
 

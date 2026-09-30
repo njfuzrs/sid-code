@@ -22,8 +22,10 @@ import {
   writeFileSync,
   chmodSync,
   lstatSync,
+  realpathSync,
+  readFileSync,
 } from "fs";
-import { join, resolve, sep } from "path";
+import { join, resolve, sep, isAbsolute } from "path";
 import { getLogger } from "../debug/logger.ts";
 import type { WorktreeSession, WorktreeChanges, CreateWorktreeOptions } from "./types.ts";
 import { validateWorktreeSlug, flattenSlug, branchNameForSlug } from "./slug.ts";
@@ -43,6 +45,76 @@ export type { WorktreeSession, WorktreeChanges } from "./types.ts";
 
 /** git worktree remove 后等待 git 释放锁的时间（ms，P2-9） */
 const GIT_LOCK_WAIT_MS = 100;
+
+/** W13：sid-code 写下的锁理由前缀。GC 靠它认出「这是我们加的锁」并读出持有者 pid。 */
+export const SID_LOCK_REASON_PREFIX = "sid-code:pid=";
+
+/** 解析锁理由里的 pid；不是 sid-code 加的锁返回 null。 */
+export function parseSidLockPid(reason: string): number | null {
+  const m = reason.trim().match(/^sid-code:pid=(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === "EPERM";
+  }
+}
+
+/** 读 worktree 的 locked 文件（git 放在它自己的 gitdir 下）；未锁定返回 null。 */
+export function readWorktreeLockReason(worktreePath: string): string | null {
+  try {
+    const gitPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    const marker = join(gitPath, "locked");
+    if (!existsSync(marker)) return null;
+    return readFileSync(marker, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * W13：以本进程身份锁定 worktree（best-effort，失败不阻断创建）。
+ * 已被别的**活**进程或用户手动锁定时不动；陈旧的 sid-code 锁（持有者已死）换成本进程。
+ */
+export function lockWorktreeForProcess(gitRoot: string, worktreePath: string): void {
+  const reason = readWorktreeLockReason(worktreePath);
+  if (reason !== null) {
+    const pid = parseSidLockPid(reason);
+    if (pid === null) return; // 用户自己加的锁，尊重它
+    if (pid === process.pid) return;
+    if (isPidAlive(pid)) return; // 另一个活进程在用
+    unlockWorktree(gitRoot, worktreePath);
+  }
+  try {
+    execFileSync(
+      "git",
+      ["worktree", "lock", "--reason", `${SID_LOCK_REASON_PREFIX}${process.pid}`, worktreePath],
+      { cwd: gitRoot, stdio: ["pipe", "pipe", "pipe"] },
+    );
+  } catch (err: any) {
+    getLogger().debug("WORKTREE", `锁定 worktree 失败（非关键）: ${err.message}`);
+  }
+}
+
+/** 解锁 worktree（未锁定 / 失败都忽略）。 */
+export function unlockWorktree(gitRoot: string, worktreePath: string): void {
+  try {
+    execFileSync("git", ["worktree", "unlock", worktreePath], {
+      cwd: gitRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch {
+    /* 未锁定时 git 返回非 0，属正常 */
+  }
+}
 
 /**
  * 查找包含给定目录的 Git 仓库根。
@@ -159,6 +231,10 @@ export class WorktreeManager {
       cwd: this.gitRoot,
       stdio: ["pipe", "pipe", "pipe"],
     });
+
+    // W13：给 GC 的「被 git 锁定」保护一个真实的写入点。锁理由带本进程 pid，
+    // GC 据此区分「活进程在用」与「崩溃留下的陈旧锁」（见 cleanup.ts isWorktreeLocked）。
+    lockWorktreeForProcess(this.gitRoot, worktreePath);
 
     // P2-2：sparse-checkout（失败回滚整个 worktree）
     const cfg = getWorktreeConfig(this.gitRoot);
@@ -401,6 +477,10 @@ export class WorktreeManager {
         }).trim();
         commits = parseInt(out, 10);
         if (Number.isNaN(commits)) commits = 0;
+      } else {
+        // W18：没有基线时不能当 0 —— 那等于「不知道起点」被读成「一个新 commit 都没有」。
+        // 退到 GC 的口径：只数别的 ref 都够不到的 commit（删了就会丢的那些）。
+        commits = this.countUnreachableCommits(worktreePath, changedFiles);
       }
 
       return { changedFiles, commits };
@@ -528,6 +608,10 @@ export class WorktreeManager {
       return true;
     }
 
+    // W13：先解掉自己加的锁。被锁定的 worktree 单个 --force 删不掉（git 要求 -f -f），
+    // 会落到下面的 rmSync 兜底，留下 .git/worktrees/<name> 残条。
+    unlockWorktree(this.gitRoot, session.worktreePath);
+
     // 删除 worktree 目录
     try {
       execFileSync("git", ["worktree", "remove", "--force", session.worktreePath], {
@@ -585,6 +669,14 @@ export class WorktreeManager {
     let symlinkedNodeModules = false;
     const symlinkedDirs: string[] = [];
     for (const dir of cfg.symlinkDirectories) {
+      // W11：名单来自 settings（项目级 .sid-code/settings.json 也能设），而 symlinkSync 对
+      // 不存在的目标照样成功。不校验时 `../../x` 会把链接落到 worktree 之外（remove 收不走），
+      // 仓库里一个指向仓库外的同名链接会被原样链进 worktree（实测读到仓库外的文件）。
+      const unsafe = this.unsafeSymlinkReason(dir, worktreePath);
+      if (unsafe) {
+        log.warn("WORKTREE", `跳过 symlinkDirectories 项 ${JSON.stringify(dir)}：${unsafe}`);
+        continue;
+      }
       const src = join(this.gitRoot, dir);
       const dest = join(worktreePath, dir);
       // 防覆盖用户数据（D21）：仅当主仓有、worktree 无时才 symlink
@@ -662,6 +754,39 @@ export class WorktreeManager {
       /* 同上 */
     }
     return warnings;
+  }
+
+  /**
+   * W11：symlinkDirectories 单项的安全校验。返回拒绝原因，安全则返回 null。
+   *
+   * 三条都要过：
+   * - 名字本身是仓库内相对路径（非绝对、无 `..` 段、非空）；
+   * - 链接落点仍在 worktree 内（防 `a/../../x` 这类归一化后跑出去的写法）；
+   * - 源的**真实路径**仍在主仓内。源本身是一个指向仓库外的符号链接时，把它再链进
+   *   worktree 等于给 worktree 开了一条读写仓库外目录的通道，而这条链接不算改动、
+   *   删 worktree 时也不会被检查。
+   */
+  private unsafeSymlinkReason(dir: string, worktreePath: string): string | null {
+    if (typeof dir !== "string" || !dir.trim()) return "名字为空";
+    if (isAbsolute(dir)) return "必须是仓库内的相对路径";
+    if (dir.split(/[\\/]+/).includes("..")) return "不允许包含 .. 段";
+    const within = (p: string, root: string) => p === root || p.startsWith(root + sep);
+    const dest = resolve(worktreePath, dir);
+    if (!within(dest, resolve(worktreePath)) || dest === resolve(worktreePath)) {
+      return "链接落点不在 worktree 内";
+    }
+    const src = resolve(this.gitRoot, dir);
+    if (!existsSync(src)) return null; // 不存在的源下面本来就跳过，不在这里报
+    try {
+      const realSrc = realpathSync(src);
+      const realRoot = realpathSync(this.gitRoot);
+      if (!within(realSrc, realRoot) || realSrc === realRoot) {
+        return `源的真实路径 ${realSrc} 不在主仓内`;
+      }
+    } catch {
+      return "无法解析源的真实路径";
+    }
+    return null;
   }
 
   /** 复制主仓 .sid-code/settings.local.json 到 worktree（P1-5） */
@@ -806,17 +931,39 @@ fi
     }
   }
 
-  private restoreExisting(worktreePath: string, slug: string, branchName: string): WorktreeSession {
-    let headCommit = "";
+  /**
+   * W18：为一个**已存在**的 worktree 推导删除检查用的基线 commit。
+   *
+   * 旧实现取「此刻的 HEAD」，于是 `originalHeadCommit..HEAD` 恒为空，这个 worktree 上
+   * 已有的提交在删除检查里全部变成 0，随后 `branch -D` 把它们只留在 reflog 里。
+   *
+   * 改取它与主仓当前 HEAD 的 merge-base（分叉点）：
+   * - worktree 的提交若已进主线，merge-base 就是它的 HEAD → 0，删了不丢东西；
+   * - 只在 worktree 分支上的提交全部计入。
+   * 推不出来时返回空串，countChanges 见空串会改数「别的 ref 都够不到」的 commit，
+   * 而不是当 0（fail-closed）。
+   */
+  baselineForExisting(worktreePath: string): string {
     try {
-      headCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      const mainHead = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: this.gitRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      return execFileSync("git", ["merge-base", "HEAD", mainHead], {
         cwd: worktreePath,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
     } catch {
-      /* 忽略 */
+      return "";
     }
+  }
+
+  private restoreExisting(worktreePath: string, slug: string, branchName: string): WorktreeSession {
+    const headCommit = this.baselineForExisting(worktreePath);
+    // W13：复用时把锁的持有者换成本进程（陈旧锁 / 无锁都会被换；别的活进程持有的锁不动）。
+    lockWorktreeForProcess(this.gitRoot, worktreePath);
 
     return {
       originalCwd: this.gitRoot,

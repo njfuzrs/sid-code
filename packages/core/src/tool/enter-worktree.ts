@@ -214,15 +214,9 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
 
     // 3. 推导 branch / head 信息
     const name = basename(worktreePath);
-    let headCommit = "";
     let branch = branchNameForSlug(name);
     try {
       const { execFileSync } = await import("child_process");
-      headCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: worktreePath,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
       const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
         cwd: worktreePath,
         encoding: "utf-8",
@@ -233,13 +227,17 @@ Worktree 共享 Git 对象库，创建速度快，磁盘开销小。
       /* 忽略 */
     }
 
+    // W18：基线不能取「此刻的 HEAD」—— 那让 exit_worktree remove 的 `基线..HEAD` 恒为空，
+    // 这个 worktree 上已有的提交在删除检查里消失。改取它与主仓 HEAD 的分叉点。
+    const baseline = new WorktreeManager(targetRoot).baselineForExisting(worktreePath);
+
     const session: WorktreeSession = {
       originalCwd: targetRoot,
       worktreePath,
       worktreeName: name,
       sessionId: "",
       worktreeBranch: branch,
-      originalHeadCommit: headCommit,
+      originalHeadCommit: baseline,
     };
 
     // 4. tmux（可选）

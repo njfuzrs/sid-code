@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { execFileSync } from "child_process";
+import { execFileSync, spawnSync } from "child_process";
 import {
   mkdtempSync,
   rmSync,
@@ -36,7 +36,11 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { WorktreeManager } from "@sid-code/core/worktree/manager.ts";
+import {
+  WorktreeManager,
+  unlockWorktree,
+  SID_LOCK_REASON_PREFIX,
+} from "@sid-code/core/worktree/manager.ts";
 import { cleanupStaleWorktrees, EPHEMERAL_GRACE_MS } from "@sid-code/core/worktree/cleanup.ts";
 
 function git(args: string[], cwd: string): string {
@@ -240,6 +244,15 @@ describe("D. 启动期 GC 宽限期（防孤儿占盘 30 天）", () => {
   it("超宽限且无改动的临时 worktree 被回收", async () => {
     const m = new WorktreeManager(repo);
     const s = await m.create("agent-11111111");
+    // W13：create 会以本进程 pid 加锁，而本进程活着 → GC 正确地不删。
+    // 本用例模拟的是「崩溃遗留的孤儿」，所以把锁的持有者换成一个已退出的 pid。
+    unlockWorktree(repo, s.worktreePath);
+    const dead = spawnSync(process.execPath, ["-e", "0"]).pid ?? 999_999;
+    execFileSync(
+      "git",
+      ["worktree", "lock", "--reason", `${SID_LOCK_REASON_PREFIX}${dead}`, s.worktreePath],
+      { cwd: repo, stdio: ["pipe", "pipe", "pipe"] },
+    );
     ageOut(s.worktreePath);
 
     const n = await cleanupStaleWorktrees(repo, 30);

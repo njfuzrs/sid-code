@@ -87,10 +87,12 @@ export class WorktreeCommand implements Command {
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
     const trimmed = args.trim();
-    const { findGitRoot, getCurrentWorktreeSession } =
+    const { findGitRootForAgent, getCurrentWorktreeSession } =
       await import("@sid-code/core/worktree/manager.ts");
 
-    const gitRoot = findGitRoot(process.cwd());
+    // W17：enter_worktree 之后 process.cwd() 是 worktree，`findGitRoot` 会返回它自己，
+    // `/worktree clean` 扫的就成了 worktree 内部的 .sid-code/worktrees（恒为 0 个）。
+    const gitRoot = findGitRootForAgent(process.cwd());
     if (!gitRoot) {
       return { kind: "message", message: "当前目录不在 Git 仓库中" };
     }
