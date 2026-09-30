@@ -14,7 +14,7 @@ import {
   clearWorktreeSession,
   setCurrentWorktreeSession,
 } from "../worktree/manager.ts";
-import { switchCwd, exitWorktreeCwd } from "../worktree/canonical.ts";
+import { switchCwd, exitWorktreeCwd, notifyWorkspaceChange } from "../worktree/canonical.ts";
 import { clearWorktreeState } from "../worktree/persistence.ts";
 import { killTmuxSession } from "../worktree/tmux.ts";
 import { logWorktreeEvent } from "../worktree/analytics.ts";
@@ -151,6 +151,9 @@ action 为 "keep" 保留 Worktree（默认），"remove" 删除。
     clearWorktreeState(session.originalCwd);
     const { clearCwdDependentCaches } = await import("../worktree/manager.ts");
     await clearCwdDependentCaches();
+    // W22：remove 路径用的是裸 switchCwd（删除失败要能原子回滚），不经 exitWorktreeCwd，
+    // 这里补上工作区切换通知，否则权限规则停在已删掉的那个 worktree 目录上。
+    await notifyWorkspaceChange(session.originalCwd);
     if (session.tmuxSession) {
       killTmuxSession(session.tmuxSession);
     }

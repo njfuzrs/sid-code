@@ -6,7 +6,7 @@
  * 默认 30 天过期，且有未提交修改 / 未合并 commit / 被 git 锁定的一律不碰（fail-closed）。
  */
 
-import { existsSync, readdirSync, statSync, readFileSync } from "fs";
+import { existsSync, readdirSync, statSync, lstatSync, readFileSync } from "fs";
 import { join, resolve, sep } from "path";
 import { execFileSync } from "child_process";
 import { WorktreeManager, parseSidLockPid } from "./manager.ts";
@@ -155,6 +155,67 @@ function isUsedByLiveSession(fullPath: string, cwds: string[]): boolean {
 }
 
 /**
+ * W23：worktree 的「最近一次被使用」时间，取几路信号的最大值。
+ *
+ * 旧实现只看目录本身的 mtime，而目录 mtime 只在目录项增删时更新 —— 改一个已有文件的
+ * 内容不动它（APFS 实测）。于是一个连续几小时只改已有文件的隔离子代理，年龄停在
+ * 创建那一刻，6 小时宽限一到就放行；改完就 commit 的代理工作区又是干净的，
+ * countChanges 也拦不住，最后删掉的是一个还活着的 worktree 和它刚 commit 的分支。
+ *
+ * 现在额外看：
+ * - worktree 自己 gitdir 下的 HEAD / index / logs/HEAD：commit、checkout、add 都会更新；
+ * - `git status` 报出的每个改动 / 未追踪路径自身的 mtime：还没 add 的编辑也算活动。
+ * 任何一路读不到就跳过那一路；目录 mtime 始终是下限，不会比旧实现更早判定过期。
+ */
+export function lastActivityMs(worktreePath: string): number {
+  let latest = statSync(worktreePath).mtimeMs; // 读不到目录 → 抛出，由调用方跳过
+  const bump = (p: string) => {
+    try {
+      const m = statSync(p).mtimeMs;
+      if (m > latest) latest = m;
+    } catch {
+      /* 该路信号不存在 */
+    }
+  };
+  try {
+    const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    for (const f of ["HEAD", "index", join("logs", "HEAD")]) bump(join(gitDir, f));
+  } catch {
+    /* 不是 git 工作区：只剩目录 mtime */
+  }
+  try {
+    const out = execFileSync("git", ["status", "--porcelain", "-z", "-unormal"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const entries = out.split("\0");
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.length < 4) continue;
+      const p = join(worktreePath, e.slice(3));
+      // 与 countRealChanges 同口径：本进程 symlink 进来的 node_modules 等不算用户活动，
+      // statSync 会跟随链接读到主仓目录的 mtime，把每个带 symlink 的孤儿都判成「刚用过」。
+      try {
+        if (lstatSync(p).isSymbolicLink()) continue;
+      } catch {
+        continue;
+      }
+      bump(p);
+      // 重命名 / 复制条目后面紧跟一个原路径字段，跳过它
+      if (e[0] === "R" || e[0] === "C") i++;
+    }
+  } catch {
+    /* status 失败：后面的 countChanges 会返回 null 并跳过这个 worktree */
+  }
+  return latest;
+}
+
+/**
  * 清理过期的临时 Worktree（默认 30 天）。
  *
  * @param gitRoot 主仓根
@@ -206,12 +267,12 @@ export async function cleanupStaleWorktrees(
 
     let mtimeMs: number;
     try {
-      mtimeMs = statSync(fullPath).mtimeMs;
+      mtimeMs = lastActivityMs(fullPath);
     } catch {
       continue;
     }
 
-    // 年龄门槛未到则不碰。
+    // 年龄门槛未到则不碰。年龄 = 最近一次活动（W23，见 lastActivityMs），不是目录 mtime。
     //
     // 为什么临时 worktree 用比 cutoffDays 短得多的阈值（2026-08-02）：
     // 子代理 / workflow 的 worktree 正常寿命是**分钟级**，任务结束即由

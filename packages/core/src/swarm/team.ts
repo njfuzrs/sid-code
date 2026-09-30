@@ -69,6 +69,8 @@ export interface TeammateResult {
   output: string;
   color: AgentColor;
   worktreePath?: string;
+  /** W20：隔离 worktree 的创建期告警（依赖不一致 / DB），无告警时省略。 */
+  setupWarnings?: string[];
   /** P2-2：本成员从共享池额外认领并完成的任务数（0/未认领时省略）。 */
   claimedTaskCount?: number;
 }
@@ -731,6 +733,14 @@ export class TeamManager {
         worktreeSession = await manager.create(wtName);
         result.worktreePath = worktreeSession.worktreePath;
         isolatedCwd = worktreeSession.worktreePath;
+        // W20：创建期告警（lockfile 与主仓不一致 / DB 冲突）。子代理与 workflow 两条路径
+        // 早就落了日志，swarm 一条都没有 —— 而多成员并行恰恰是 symlink 进主仓依赖版本
+        // 最容易出事的场景。落日志之外还挂到成员结果上，让 leader 看到的那份汇总里有它。
+        const warns = worktreeSession.setupWarnings ?? [];
+        for (const w of warns) {
+          log.warn("SWARM", `成员 ${member.name} 的 Worktree ${wtName} 告警: ${w.split("\n")[0]}`);
+        }
+        if (warns.length > 0) result.setupWarnings = [...warns];
       }
 
       const sub = SubAgent.fromRegistry(this.opts.providerRegistry, this.opts.toolRegistry);
@@ -832,6 +842,10 @@ export class TeamManager {
       const own = await runOne(this.buildMemberPrompt(member), member.name);
       result.success = own.success;
       result.output = own.output;
+      if (result.setupWarnings?.length) {
+        result.output =
+          `[Worktree 创建期告警]\n${result.setupWarnings.join("\n")}\n\n` + result.output;
+      }
 
       // P2-2：② 自己的活干完，从共享池继续认领未分配任务，直到池空或被中止（CC 式自协调）。
       // markMemberDone 在 finally 里执行，所以这里先手动置本成员任务完成，

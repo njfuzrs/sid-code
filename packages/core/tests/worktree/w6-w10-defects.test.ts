@@ -117,6 +117,16 @@ describe("W8 GC 按实际检出的分支删除", () => {
     mkdirSync(join(repo, ".sid-code", "worktrees"), { recursive: true });
     git(["worktree", "add", "-q", ...addArgs.slice(0, -1), p, addArgs[addArgs.length - 1]!], repo);
     execFileSync("touch", ["-t", fmtTouch(new Date(Date.now() - 48 * 3600_000)), p]);
+    // W23：GC 还看 gitdir 的 HEAD/index/logs，刚 add 出来的它们是新的，一起拨老
+    const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"], p);
+    for (const f of ["HEAD", "index", join("logs", "HEAD")]) {
+      if (existsSync(join(gitDir, f)))
+        execFileSync("touch", [
+          "-t",
+          fmtTouch(new Date(Date.now() - 48 * 3600_000)),
+          join(gitDir, f),
+        ]);
+    }
     return p;
   }
   function fmtTouch(d: Date): string {

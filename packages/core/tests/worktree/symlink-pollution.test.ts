@@ -104,7 +104,31 @@ async function removeThrows(
 /** 把目录 mtime 调到超出宽限期 */
 function ageOut(path: string): void {
   const t = new Date(Date.now() - EPHEMERAL_GRACE_MS - 3600_000);
-  utimesSync(path, t, t);
+  ageGitSignals(path, t);
+}
+
+/**
+ * W23：GC 的年龄取「最近一次活动」（目录 + gitdir 的 HEAD/index/logs + 改动文件），
+ * 只拨目录 mtime 已经模拟不出一个老 worktree —— 那正是 W23 修掉的盲区。
+ */
+function ageGitSignals(worktreePath: string, t: Date): void {
+  try {
+    const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    for (const f of ["HEAD", "index", join("logs", "HEAD")]) {
+      try {
+        utimesSync(join(gitDir, f), t, t);
+      } catch {
+        /* 该文件不存在 */
+      }
+    }
+  } catch {
+    /* 非 git 工作区 */
+  }
+  utimesSync(worktreePath, t, t);
 }
 
 describe("A. symlink 不算用户改动（孤儿累积的直接根因）", () => {
