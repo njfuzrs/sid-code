@@ -76,7 +76,7 @@ structurally cannot offer**:
 | Capability | What it means |
 | --- | --- |
 | **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
-| **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (32 hook event types, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
+| **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
 | **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
 | **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
 
@@ -87,41 +87,27 @@ Coming from Claude Code, migration is close to zero-cost — see the
 
 | Item | Status |
 | --- | --- |
-| First-party code | 200k+ lines of TypeScript under `packages/` |
-| Engineering loop | 600+ test files, 8000+ unit tests; the full suite runs on every change and must be green before commit |
-| Surface area | 44 built-in tools, 32 hook event types, LSP code intelligence, permission gating, observable trajectories |
-| Evaluation | 30 eval cases (including a holdout set), run before each release to catch regressions |
+| First-party code | 508k lines of TypeScript (including 197k lines of tests) |
+| Engineering loop | 12,875 unit tests, 84.7% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
+| Surface area | 44 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
+| Evaluation | Separate benchmark [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench): 39 SWE-bench-style tasks reverse-built from real sessions |
 
 <!--
-  How these numbers are counted (verified by hand before each release; write round
-  numbers, not exact ones):
-    NOTE (P2-2, 2026-08-11): sources moved from a flat src/ into
-                   packages/{shared,tui-renderer,core,cli}/src/, so the commands below were
-                   updated too. A stale `find src` does not error — it just counts 0, and a
-                   silently broken verification command is worse than a stale number, because
-                   the next person believes they verified it.
-    lines of code  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                   (2026-08-11: 203,533 lines)
-    NOTE (P1-2, 2026-08-13): tests were split into packages/<pkg>/tests/, so a command
-                   covering only `packages/*/src` counts 30 instead of 644 — it does NOT error,
-                   it just silently undercounts by 95%. That is the exact failure this comment
-                   block was written to prevent, and it still happened: the path list must be
-                   updated whenever tests move. Both paths are kept below because a few
-                   colocated *.test.ts files still live under src/.
-    test files     find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l  (644)
-    unit tests     grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                   (8,576; `bun test` itself reports ~9,191 across 652 files because it also
-                    counts dynamically generated cases the static grep cannot see)
-    hook events    member count of the HookEventName enum in packages/core/src/hook/types.ts  (32)
-    built-in tools length of the `sid-code --dump-tools` array (44 — same source as the
-                   generated ref/tools.md). Do NOT write "60+"; that was wrong and is
-                   contradicted by the runtime registry.
-    eval cases     the summary line of `bun run eval:list`  (P0=10 holdout=5 P1=9 P2=6 = 30)
-  This table must stay identical in three places: README.md (Chinese, GitHub default),
-  README.en.md (this file), and website/index.md. Change one, change all three —
-  run the numbers first.
-  (2026-08-12 P2-6 made English the GitHub default; 2026-09-20 put Chinese back on
-   README.md to match sibling repos. English lives here.)
+  How these numbers are counted (re-based 2026-09-30; same source as the homepage stat bar
+  and the author's resume):
+    The old values ("200k+ lines / 600+ test files / 8000+ tests / 32 hook events / 30 eval
+    cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
+    on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
+    The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
+    in the docs-research repo:
+    lines of code  507,914 (production + renderer fork + tests + tooling, minus _vendor/ third-party);
+                   tests 197,130
+    unit tests     12,875 as executed by `bun test` (includes generated cases a static grep misses)
+    coverage       84.7% line coverage of packages/core/src (74,209 / 87,603); engine layer only
+    built-in tools length of the `sid-code --dump-tools` array (44, same source as ref/tools.md)
+    Hook event count is no longer in this table: some of the 32 HookEventName members are
+    reserved and not wired yet, so "32" here would read as 32 usable events. See website/ref/hooks.md.
+  Keep in sync with website/.vitepress/theme/HomeShowcase.vue and README.md (Chinese).
 -->
 
 ## Local development
