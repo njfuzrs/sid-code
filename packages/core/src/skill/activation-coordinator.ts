@@ -183,7 +183,7 @@ export class SkillActivationCoordinator {
         const newDirs = discoverSkillDirsForPaths(paths, this.cwd, this.discoveredDirs);
         for (const dir of newDirs) this.discoveredDirs.add(dir);
         if (newDirs.length > 0) {
-          await this.loadDiscoveredDirs(newDirs);
+          await this.loadDiscoveredDirs(newDirs, paths);
         }
       } catch (err) {
         getLogger().warn(
@@ -195,7 +195,7 @@ export class SkillActivationCoordinator {
   }
 
   /** 加载动态发现的 skills 目录，新 skill 追加进 manager 并标记待注入。 */
-  private async loadDiscoveredDirs(dirs: string[]): Promise<void> {
+  private async loadDiscoveredDirs(dirs: string[], triggerPaths: string[]): Promise<void> {
     const { ExtensionLoader } = await import("../extension/loader.ts");
     const { SkillLoader } = await import("./loader.ts");
     const extLoader = new ExtensionLoader();
@@ -219,9 +219,27 @@ export class SkillActivationCoordinator {
     }
 
     if (newSkills.length > 0) {
+      // P0-6：新发现的 skill 必须过与 init() 同一道条件门。此前这里无条件推进 listing，
+      // 声明了 paths 的 skill 只要同目录链上任意文件被碰到就暴露给模型，且从未进 gated 集合，
+      // meta-tool 的 isGated 按名直调拦截对它同样失效。
+      const unconditional = this.conditional.separate(newSkills);
+      const conditionalNames = newSkills
+        .filter((s) => !unconditional.includes(s))
+        .map((s) => s.name);
+      // 先 gate 再 add：避免 addPluginSkills 触发的 skillsChanged 回调看到一个未 gate 的条件 skill
+      this.manager.gateSkills(conditionalNames);
       this.manager.addPluginSkills(newSkills); // 复用 precedence 追加逻辑
-      for (const s of newSkills) {
+      for (const s of unconditional) {
         if (!s.disableModelInvocation) this.pendingActivated.push(s.name);
+      }
+      // 触发本轮发现的那批路径若恰好匹配新条件 skill 的 paths，同一轮内即激活——
+      // 否则用户得再碰一次同一个文件才能激活它，反直觉。
+      if (conditionalNames.length > 0) {
+        const activated = this.conditional.activateForPaths(triggerPaths, this.cwd);
+        for (const name of activated) {
+          this.manager.ungateSkill(name);
+          this.pendingActivated.push(name);
+        }
       }
       getLogger().info(
         "SKILL",

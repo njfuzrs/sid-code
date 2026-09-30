@@ -37,6 +37,12 @@ export interface ProcessSkillPromptOptions {
   injectBaseDir?: boolean;
   /** 内联 shell 使用的 shell（默认系统默认） */
   shell?: string;
+  /**
+   * 内联 shell 逐条授权（可选）。未提供 = 不设门（用户斜杠路径：用户敲 /skill 即显式意图）。
+   * 模型路径必须提供：模型自主「选一个 skill」不应等于无门禁地触发 shell（P0-3 安全裁决）。
+   * 返回 false 的命令不执行，原位替换为拒绝占位。
+   */
+  authorizeShell?: (command: string) => Promise<boolean>;
 }
 
 export interface SkillPromptContext {
@@ -73,11 +79,11 @@ export async function processSkillPrompt(
     content = content.replace(skillDirRe, "[MCP Skill 不支持 SKILL_DIR 变量]");
   } else if (options.skillRoot) {
     const skillDir = options.skillRoot.replace(/\\/g, "/");
-    content = content.replace(skillDirRe, skillDir);
+    content = content.replace(skillDirRe, () => skillDir);
   }
 
   // Step 6: ${SESSION_ID} 替换（同时认 CC 的 ${CLAUDE_SESSION_ID}）
-  content = content.replace(/\$\{(?:CLAUDE_)?SESSION_ID\}/g, context.sessionId);
+  content = content.replace(/\$\{(?:CLAUDE_)?SESSION_ID\}/g, () => context.sessionId);
 
   // Step 7: 内联 shell 命令 —— 仅非 MCP Skill
   if (isMcp) {
@@ -87,7 +93,12 @@ export async function processSkillPrompt(
       content = content.replace(/!`[^`]+`/g, "[MCP Skill 不允许执行内联 shell 命令]");
     }
   } else {
-    content = await executeShellCommandsInPrompt(content, context.cwd, options.shell);
+    content = await executeShellCommandsInPrompt(
+      content,
+      context.cwd,
+      options.shell,
+      options.authorizeShell,
+    );
   }
 
   return content;
@@ -102,30 +113,35 @@ export function substituteArguments(
   argumentNames?: string[],
 ): string {
   const trimmed = args.trim();
-
-  // $ARGUMENTS / $@ / $* / {{args}} → 完整参数字符串
-  let result = content.replace(/\$ARGUMENTS|\$@|\$\*|\{\{args\}\}/g, trimmed);
-
   const parts = trimmed.split(/\s+/).filter(Boolean);
 
-  // 命名参数：$arg_name → 对应位置的值（在 $1 之前替换，避免与位置参数冲突）
-  if (argumentNames && argumentNames.length > 0) {
-    for (let i = 0; i < argumentNames.length; i++) {
-      const name = argumentNames[i];
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
-      const value = i < parts.length ? parts[i] : "";
-      // 用单词边界避免 $file 误伤 $filename
-      result = result.replace(new RegExp(`\\$${name}\\b`, "g"), value);
-    }
-  }
+  // 命名参数：只收合法标识符（它们要拼进正则）
+  const names = (argumentNames ?? []).filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
 
-  // $1, $2, ... → 位置参数
-  result = result.replace(/\$(\d+)/g, (_m, idx) => {
-    const i = parseInt(idx, 10) - 1;
+  // P0-2：单遍 + 函数形式替换。
+  //   - 函数形式：字符串形式下替换串里的 `$&` / `` $` `` / `$'` 会被当模式解释，
+  //     用户参数就能把 prompt 其他段落搬运/复制到替换点（hooks.ts 同一个坑早已这样修）。
+  //   - 单遍：旧实现分三趟替换，第一趟塞进去的用户输入会被后两趟（$1 / $name）再解析一次。
+  // 交替分支按「长名优先」排，并用单词边界，避免 $file 误伤 $filename；
+  // 命名参数排在 $1 之前，与旧实现的优先级一致。
+  const namedAlt = [...names]
+    .sort((x, y) => y.length - x.length)
+    .map((n) => `\\$${n}\\b`)
+    .join("|");
+  const re = new RegExp(
+    `\\$ARGUMENTS|\\$@|\\$\\*|\\{\\{args\\}\\}${namedAlt ? `|${namedAlt}` : ""}|\\$(\\d+)`,
+    "g",
+  );
+
+  return content.replace(re, (m: string, idx: string | undefined) => {
+    if (idx !== undefined) {
+      const i = parseInt(idx, 10) - 1;
+      return i >= 0 && i < parts.length ? parts[i] : "";
+    }
+    if (m === "$ARGUMENTS" || m === "$@" || m === "$*" || m === "{{args}}") return trimmed;
+    const i = names.indexOf(m.slice(1));
     return i >= 0 && i < parts.length ? parts[i] : "";
   });
-
-  return result;
 }
 
 /**
@@ -135,6 +151,7 @@ export async function executeShellCommandsInPrompt(
   content: string,
   cwd: string,
   shell?: string,
+  authorize?: (command: string) => Promise<boolean>,
 ): Promise<string> {
   const shellRegex = /!`([^`]+)`/g;
   const matches = [...content.matchAll(shellRegex)];
@@ -143,16 +160,30 @@ export async function executeShellCommandsInPrompt(
   let result = content;
   for (const match of matches) {
     const command = match[1];
+    if (authorize) {
+      let ok = false;
+      try {
+        ok = await authorize(command);
+      } catch {
+        ok = false; // 授权本身出错：fail-closed，不执行
+      }
+      if (!ok) {
+        getLogger().warn("SKILL", `内联 shell 未获授权，已跳过: ${command.slice(0, 120)}`);
+        result = result.replace(match[0], () => `[内联 shell 未获授权，未执行: ${command}]`);
+        continue;
+      }
+    }
     try {
       const { stdout } = await execAsync(command, {
         cwd,
         timeout: SHELL_TIMEOUT_MS,
         shell,
       });
-      result = result.replace(match[0], stdout.trim());
+      // 函数形式：shell stdout 里的 `$&` 等同样会被当替换模式（P0-2 同源）
+      result = result.replace(match[0], () => stdout.trim());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      result = result.replace(match[0], `[shell error: ${msg}]`);
+      result = result.replace(match[0], () => `[shell error: ${msg}]`);
     }
   }
 
