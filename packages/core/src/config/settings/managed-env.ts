@@ -15,6 +15,7 @@
 import { getSettings, getSettingsForSource } from "./settings.ts";
 import type { SettingSource } from "./constants.ts";
 import { getLogger } from "../../debug/logger.ts";
+import { isWorkspaceUntrusted } from "../../permission/trust.ts";
 
 /**
  * 可信的 Settings 来源——这些来源的 env 在 Phase 1 就可完整应用。
@@ -126,9 +127,19 @@ export function applySafeConfigEnvironmentVariables(workspacePath?: string): voi
 }
 
 /**
- * Phase 2: 应用所有环境变量（信任对话框通过后）。
+ * Phase 2: 应用所有环境变量（仅在工作区已信任时）。
+ *
+ * D3：cli.ts 里 Phase 2 的调用点排在信任对话框**之前**（对话框要等 TUI 挂载后才弹），
+ * 所以「对话框通过后才跑 Phase 2」这个时序在实现上从来不成立，B 档变量
+ * （ANTHROPIC_BASE_URL / HTTP_PROXY 等）会在用户被问之前写进 process.env。
+ * 门改成读信任门控的结论：未信任 → 不跑，Phase 1 已应用的可信来源全量 + 白名单变量保持不变。
+ * 判定放在函数内部而不是调用点：任何调用方都过同一道门，不靠调用点记得先检查。
  */
 export function applyAllConfigEnvironmentVariables(workspacePath?: string): void {
+  if (isWorkspaceUntrusted()) {
+    getLogger().info("ENV", "Phase 2 跳过：工作区含危险配置且未信任，项目级非白名单环境变量不生效");
+    return;
+  }
   const { settings: merged } = getSettings(workspacePath);
   if (merged.env) {
     const applied = applyEnvFiltered(merged.env as Record<string, string>, true);

@@ -86,3 +86,66 @@ export function filterInvalidPermissionRules(data: any, filePath: string): Valid
 
   return warnings;
 }
+
+/**
+ * 按 Zod issue 的路径把校验失败的值从 data 里摘掉（原地修改），供重新校验。
+ *
+ * 为什么需要它（D10）：Zod 是整体校验语义——`maxTokens: "32768"` 这种类型错误会让
+ * safeParse 整体失败，而 parseSettingsFile 失败时返回 null，于是同一个文件里的
+ * `permissions.deny` 等全部配置跟着一个无关笔误一起消失。预过滤
+ * （filterInvalidPermissionRules）只覆盖了 permissions 三个数组，字段层面问题原样存在。
+ * 这里把"失效粒度 = 错误粒度"落实到任意字段：只摘出错的那个值，其余照常校验通过。
+ *
+ * 数组元素用 splice 摘除：同一数组内先摘大下标，避免前面的摘除让后面的下标错位。
+ *
+ * @returns 是否摘掉了至少一个值。路径为空（根本身不是对象）或路径已不存在时返回 false，
+ *          调用方据此停止重试、整份判失败（那是真正无法局部修复的情形）。
+ */
+export function removeInvalidValues(data: unknown, issues: readonly z.ZodIssue[]): boolean {
+  const paths = issues.map((i) => i.path);
+  if (paths.some((p) => p.length === 0)) return false;
+
+  // 去重 + 按路径逆序（数字段按数值比较），保证同一数组内先删大下标
+  const unique = [...new Map(paths.map((p) => [JSON.stringify(p), p])).values()];
+  unique.sort((a, b) => {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      if (a[i] === b[i]) continue;
+      if (typeof a[i] === "number" && typeof b[i] === "number") {
+        return (b[i] as number) - (a[i] as number);
+      }
+      return String(b[i]).localeCompare(String(a[i]));
+    }
+    return b.length - a.length;
+  });
+
+  let removed = false;
+  for (const path of unique) {
+    // 缺必填字段时 issue 路径指向一个不存在的键（如 availableModels.0.name），摘不到——
+    // 这时往上退一级，摘掉包含它的那个元素 / 对象。退到根仍摘不到就放弃这条。
+    for (let len = path.length; len > 0; len--) {
+      if (removeAt(data, path.slice(0, len))) {
+        removed = true;
+        break;
+      }
+    }
+  }
+  return removed;
+}
+
+function removeAt(data: unknown, path: readonly (string | number)[]): boolean {
+  let parent: any = data;
+  for (const seg of path.slice(0, -1)) {
+    parent = parent?.[seg as any];
+  }
+  if (!parent || typeof parent !== "object") return false;
+  const leaf = path[path.length - 1]!;
+  if (Array.isArray(parent) && typeof leaf === "number") {
+    if (leaf >= parent.length) return false;
+    parent.splice(leaf, 1);
+    return true;
+  }
+  if (!Object.prototype.hasOwnProperty.call(parent, leaf)) return false;
+  delete parent[leaf as any];
+  return true;
+}
