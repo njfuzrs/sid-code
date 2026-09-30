@@ -5,7 +5,7 @@
  * 开头的 "/" 由主补全逻辑（行首斜杠命令）处理，这里只处理非行首的情况。
  */
 
-export interface MidInputSlashCommand {
+interface MidInputSlashCommand {
   /** 完整 token，如 "/com" */
   token: string;
   /** "/" 在输入中的位置 */
@@ -14,7 +14,7 @@ export interface MidInputSlashCommand {
   partialCommand: string;
 }
 
-export function findMidInputSlashCommand(
+function findMidInputSlashCommand(
   input: string,
   cursorOffset: number,
 ): MidInputSlashCommand | null {
@@ -42,7 +42,7 @@ export function findMidInputSlashCommand(
  * `replaceFrom === null` 表示行首命令（情况 A，整行就是命令）；
  * 数字表示中间位置 token 的 `/` 所在列（情况 B），应用补全时只替换 `[replaceFrom, cursorCol)`。
  */
-export interface SlashCompletionTarget {
+interface SlashCompletionTarget {
   query: string;
   replaceFrom: number | null;
 }

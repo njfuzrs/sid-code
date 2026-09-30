@@ -81,7 +81,7 @@ export function parseCustomCommandOptions(
 }
 
 /** 文件注入单文件读取上限（与 shell 注入 maxBuffer 同口径）；超出部分截断并提示（D15） */
-export const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
+const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
  * 文件注入 `@{path}` 的放行判定（D15）。
@@ -93,7 +93,7 @@ export const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
  * 分档：cwd 内的普通文件直接放行；**cwd 外**或**命中敏感文件模式**（复用权限系统的
  * `matchesSensitivePath`，不另写一套）需要用户确认。
  */
-export function classifyFileInjection(
+function classifyFileInjection(
   filePath: string,
   cwd: string,
 ): { absPath: string; needsConfirm: boolean; reason?: string } {
@@ -289,7 +289,7 @@ async function processShellInjections(
  *
  * 单趟正则替换：已代入的参数文本不会被后续规则再次替换（参数里写 `$1` 不会被展开）。
  */
-export function substituteArgs(text: string, args: string): string {
+function substituteArgs(text: string, args: string): string {
   const all = args.trim();
   let parts: string[] | null = null;
   return text.replace(/\$ARGUMENTS\b|\$@|\$\*|\{\{args\}\}|\$(\d)/g, (match, digit) => {

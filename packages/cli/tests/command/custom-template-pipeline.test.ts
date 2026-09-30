@@ -10,12 +10,16 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import {
-  CustomCommand,
-  classifyFileInjection,
-  substituteArgs,
-  FILE_INJECTION_MAX_BYTES,
-} from "@sid-code/cli/command/custom.ts";
+import { CustomCommand } from "@sid-code/cli/command/custom.ts";
+
+/** 与 custom.ts 的 FILE_INJECTION_MAX_BYTES 同值（该常量不导出，避免只为测试留死导出） */
+const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
+
+/** 只做参数替换：无注入的模板 + 空 ctx（不需要任何确认通道） */
+async function substituteArgs(tpl: string, args: string): Promise<string> {
+  const r = await new CustomCommand("t", "d", tpl).execute(args, {} as AppContext);
+  return (r as { prompt: string }).prompt;
+}
 import type { AppContext } from "@sid-code/cli/command/types.ts";
 
 let root: string;
@@ -102,10 +106,11 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
     expect(asked.file).toEqual([]);
   });
 
-  test("../ 跳出 cwd 被判为 cwd 外", () => {
-    const j = classifyFileInjection("../outside/x.txt", proj);
-    expect(j.needsConfirm).toBe(true);
-    expect(j.reason).toContain("项目目录之外");
+  test("../ 跳出 cwd 被判为 cwd 外，确认框里写明原因", async () => {
+    const { c, asked } = ctx({ file: false });
+    await run("@{../outside/x.txt}", "", c);
+    expect(asked.file.length).toBe(1);
+    expect(asked.file[0]).toContain("项目目录之外");
   });
 
   test("绝对路径在 cwd 外：需确认，用户批准后才读", async () => {
@@ -123,8 +128,11 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
     expect(JSON.stringify(r)).not.toContain("OUTSIDE_CONTENT");
   });
 
-  test("cwd 内但命中敏感模式（.env）也要确认", () => {
-    expect(classifyFileInjection(".env", proj).needsConfirm).toBe(true);
+  test("cwd 内但命中敏感模式（.env）也要确认", async () => {
+    const { c, asked } = ctx({ file: false });
+    await run("@{.env}", "", c);
+    expect(asked.file.length).toBe(1);
+    expect(asked.file[0]).toContain("敏感文件");
   });
 
   test("无确认通道 → fail-closed 拒绝（与 shell 注入同取向）", async () => {
@@ -155,24 +163,24 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
 });
 
 describe("D16 参数占位符边界", () => {
-  test("$10 → 第 1 个参数 + 字符 0", () => {
-    expect(substituteArgs("第 $10 项", "AAA")).toBe("第 AAA0 项");
+  test("$10 → 第 1 个参数 + 字符 0", async () => {
+    expect(await substituteArgs("第 $10 项", "AAA")).toBe("第 AAA0 项");
   });
-  test("$0 保留字面量", () => {
-    expect(substituteArgs("[$0]", "AAA")).toBe("[$0]");
+  test("$0 保留字面量", async () => {
+    expect(await substituteArgs("[$0]", "AAA")).toBe("[$0]");
   });
-  test("越界保留字面量，不变空串", () => {
-    expect(substituteArgs("[$5]", "AAA")).toBe("[$5]");
+  test("越界保留字面量，不变空串", async () => {
+    expect(await substituteArgs("[$5]", "AAA")).toBe("[$5]");
   });
-  test("切分认引号", () => {
-    expect(substituteArgs("[$1]", '"a b" c')).toBe("[a b]");
-    expect(substituteArgs("[$2]", "'x y' z")).toBe("[z]");
+  test("切分认引号", async () => {
+    expect(await substituteArgs("[$1]", '"a b" c')).toBe("[a b]");
+    expect(await substituteArgs("[$2]", "'x y' z")).toBe("[z]");
   });
-  test("回归：$@ / $* / $ARGUMENTS / {{args}} 仍是原文", () => {
+  test("回归：$@ / $* / $ARGUMENTS / {{args}} 仍是原文", async () => {
     const a = '"a b" c';
-    expect(substituteArgs("$@|$*|$ARGUMENTS|{{args}}", a)).toBe(`${a}|${a}|${a}|${a}`);
+    expect(await substituteArgs("$@|$*|$ARGUMENTS|{{args}}", a)).toBe(`${a}|${a}|${a}|${a}`);
   });
-  test("参数文本里的 $1 不被二次展开", () => {
-    expect(substituteArgs("$1 $2", "$2 X")).toBe("$2 X");
+  test("参数文本里的 $1 不被二次展开", async () => {
+    expect(await substituteArgs("$1 $2", "$2 X")).toBe("$2 X");
   });
 });
