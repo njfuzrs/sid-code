@@ -343,11 +343,14 @@ export class CommandExecutor {
       // P1-1：skill 来源命令透传 effort / agent 类型 / model（与模型路径 SkillMetaTool 同口径）。
       let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
       let agentType: string | undefined;
+      let allowedTools = cmd.allowedTools ?? [];
       if (skill) {
-        const { normalizeSkillEffort, resolveSkillAgentType } =
+        const { normalizeSkillEffort, resolveSkillAgentType, resolveSkillAllowedTools } =
           await import("@sid-code/core/skill/executor.ts");
         effort = normalizeSkillEffort(skill.effort);
         agentType = await resolveSkillAgentType(skill.agent, skill.name);
+        // P0-5：skill 来源命令未声明 allowed-tools 时给只读默认集，而不是零工具
+        allowedTools = resolveSkillAllowedTools(skill);
       }
 
       const subAgent = SubAgent.fromRegistry(
@@ -366,7 +369,7 @@ export class CommandExecutor {
           ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
           : "你是一个专注的助手，请完成以下任务。",
         userPrompt: prompt,
-        allowedTools: cmd.allowedTools ?? [],
+        allowedTools,
         // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
         // 与常规非 fork 子代理同档：默认从 10 提到 30。
         maxTurns: cmd.maxTurns ?? 30,

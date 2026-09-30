@@ -16,6 +16,7 @@
 import type { UnifiedCommand, CommandContext } from "../command-contract/types.ts";
 import type { SkillDefinition } from "./types.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
+import { resolveSkillExecutionContext } from "./executor.ts";
 
 /**
  * @param isGated 可选的 gate 查询（通常是 `(n) => manager.isGated(n)`）。
@@ -28,9 +29,8 @@ export function skillToCommand(
   skill: SkillDefinition,
   isGated?: (name: string) => boolean,
 ): UnifiedCommand {
-  // context 优先于 mode；都未指定时默认 fork（与旧行为一致）
-  const context: "inline" | "fork" =
-    skill.context ?? (skill.mode === "activate" ? "inline" : "fork");
+  // P0-4：与模型路径 / SkillCommand 同一个事实源（context 优先于 mode，缺省 fork）
+  const context = resolveSkillExecutionContext(skill);
 
   return {
     type: "prompt",

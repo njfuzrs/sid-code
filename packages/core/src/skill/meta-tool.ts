@@ -33,7 +33,10 @@ import {
   registerSkillLifecycleHooks,
   normalizeSkillEffort,
   resolveSkillAgentType,
+  resolveSkillExecutionContext,
+  resolveSkillAllowedTools,
 } from "./executor.ts";
+import { processSkillPrompt } from "./prompt-processor.ts";
 import { z } from "zod/v4";
 
 /** 元工具名（对齐 CC 的 SKILL_TOOL_NAME='Skill'） */
@@ -59,6 +62,8 @@ export class SkillMetaTool implements Tool {
   private permissionRules?: PermissionRule;
   /** 审计第 19 条：activate 分支上报 skill 调用，供压缩时重注入工作流指令 */
   private invokedSkillSink?: (name: string, content: string) => void;
+  /** P0-3：${SESSION_ID} 替换所需的逻辑会话 id（函数形态：resume 后 id 会变，快照会失真） */
+  private sessionIdProvider?: () => string;
 
   constructor(
     manager: SkillManager,
@@ -97,17 +102,23 @@ export class SkillMetaTool implements Tool {
     this.invokedSkillSink = sink;
   }
 
+  /** P0-3：注入逻辑会话 id 读取器（app 侧接 getLogicalSessionId）。未注入时 ${SESSION_ID} 替换为空串。 */
+  setSessionIdProvider(provider: () => string): void {
+    this.sessionIdProvider = provider;
+  }
+
   /**
-   * 按 skill 的 mode 分档（本仓库唯一需要函数形态的工具，见 `tool/types.ts` 的说明）。
+   * 按 skill 的执行上下文分档（本仓库唯一需要函数形态的工具，见 `tool/types.ts` 的说明）。
+   * 口径与 execute() 同源：都调 resolveSkillExecutionContext（P0-4 / P2-3）。
    *
-   * - `activate` 模式：`output` 是 `${header}${skill.prompt}${resources}${inputSection}`
+   * - `activate` / inline：`output` 是 `${header}${skill.prompt}${resources}${inputSection}`
    *   ——**整份 skill 提示词** + 资源清单，注入当前对话上下文用（`executeActivate`）。
    *   动辄数千字符的工作流指令，打到屏幕上纯属噪音 → `"summary"`。
-   * - `delegate` 模式：`output` 是子代理跑完后的**真实工作成果**（`executeDelegate` 返回
+   * - `delegate` / fork：`output` 是子代理跑完后的**真实工作成果**（`executeDelegate` 返回
    *   `result.output`）——那是用户要的交付内容，必须原样展示 → 返回 `undefined` 走默认。
    *
    * 一刀切任何一档都是错的：全 summary 会吞掉 delegate 的交付物，全默认则继续泄漏
-   * activate 的提示词。故按 `input.skill` 查 manager 的实际 mode 判定。
+   * activate 的提示词。故按 `input.skill` 查 manager 的实际执行上下文判定。
    *
    * 容错：skill 查不到 / 未指定时返 `undefined`（原样展示）。那些路径下 `execute` 会走
    * `isError: true` 的错误分支，而消费侧以 `!isError` 为门，本就不受本字段管辖。
@@ -117,8 +128,7 @@ export class SkillMetaTool implements Tool {
     if (typeof skillName !== "string" || !skillName) return undefined;
     const skill = this.manager.getSkill(skillName);
     if (!skill) return undefined;
-    // mode 缺省是 delegate（与 execute() 里 `skill.mode || "delegate"` 保持一致）
-    return (skill.mode || "delegate") === "activate" ? "summary" : undefined;
+    return resolveSkillExecutionContext(skill) === "inline" ? "summary" : undefined;
   }
 
   name(): string {
@@ -229,11 +239,23 @@ export class SkillMetaTool implements Tool {
     const registeredHookCount = registerSkillLifecycleHooks(skill, this.hookSystem);
 
     try {
-      const mode = skill.mode || "delegate";
-      if (mode === "activate") {
-        return await this.executeActivate(skill, userInput);
+      // P0-4：context 优先于 mode，与用户斜杠路径同源
+      const context = resolveSkillExecutionContext(skill);
+      // P0-3：模型路径同样跑完整 prompt 处理管道（$ARGUMENTS / ${SKILL_DIR} / !`cmd` ...），
+      // 此前只接在用户斜杠路径上，占位符原样进上下文、参数被追加到正文末尾。
+      let prompt: string;
+      try {
+        prompt = await this.processPrompt(skill, userInput, context);
+      } catch (err) {
+        return {
+          output: `Skill 提示处理失败: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
       }
-      return await this.executeDelegate(skill, userInput, signal);
+      if (context === "inline") {
+        return await this.executeActivate(skill, prompt, userInput);
+      }
+      return await this.executeDelegate(skill, prompt, userInput, signal);
     } finally {
       // delegate skill 的 hooks 是本次调用作用域，返回后卸载（activate 注入主对话则长期存活，
       // 但 activate 走的是 inline 语义，此处 delegate 分支才卸载）。为简化：只要注册过就卸载，
@@ -248,18 +270,22 @@ export class SkillMetaTool implements Tool {
   }
 
   /** 激活模式：将 Skill 指令和资源目录作为工具结果返回（注入当前对话上下文） */
-  private async executeActivate(skill: SkillDefinition, userInput: string): Promise<ToolResult> {
+  private async executeActivate(
+    skill: SkillDefinition,
+    prompt: string,
+    userInput: string,
+  ): Promise<ToolResult> {
     const log = getLogger();
     log.info("SKILL", `激活 Skill: ${skill.name}`, { mode: "activate" });
 
     const folderStructure = skill.skillRoot ? await scanSkillResources(skill.skillRoot) : "";
-    const header = skill.skillRoot ? `Base directory for this skill: ${skill.skillRoot}\n\n` : "";
     const resources = folderStructure ? `\n\n可用资源:\n${folderStructure}` : "";
-    const inputSection = userInput ? `\n\n用户输入:\n${userInput}` : "";
+    // Base directory 头部由 processSkillPrompt 注入（此前这里手工复刻了一份）
+    const inputSection = this.userInputSection(skill, userInput);
 
     this.manager.activateSkill(skill.name);
 
-    const output = `${header}${skill.prompt}${resources}${inputSection}`;
+    const output = `${prompt}${resources}${inputSection}`;
 
     // 审计第 19 条：在真正执行注入的这一方上报，供压缩时重注入 skill 工作流指令。
     // 上报的是实际进入上下文的完整内容（含 Base directory 头部与资源清单），
@@ -278,6 +304,7 @@ export class SkillMetaTool implements Tool {
   /** delegate 模式：子代理执行，返回最终输出（P1-1：透传 effort/agent） */
   private async executeDelegate(
     skill: SkillDefinition,
+    prompt: string,
     userInput: string,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
@@ -289,8 +316,7 @@ export class SkillMetaTool implements Tool {
 
     // 资源清单 + 绝对目录路径（delegate 子 agent 工作目录是项目目录，需绝对路径读 skill 资源）
     const resourceHint = await this.buildResourceHint(skill);
-    const userPrompt =
-      skill.prompt + resourceHint + (userInput ? `\n\n用户输入:\n${userInput}` : "");
+    const userPrompt = prompt + resourceHint + this.userInputSection(skill, userInput);
 
     // P1-1：effort/agent 透传
     const effort = normalizeSkillEffort(skill.effort);
@@ -312,7 +338,8 @@ export class SkillMetaTool implements Tool {
       {
         systemPrompt: `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`,
         userPrompt,
-        allowedTools: skill.allowedTools || [],
+        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
+        allowedTools: resolveSkillAllowedTools(skill),
         maxTurns,
         timeout,
         // P1-1：effort 透传（provider reasoningEffort 生效）
@@ -329,6 +356,54 @@ export class SkillMetaTool implements Tool {
     });
 
     return { output: result.output, isError: !result.success };
+  }
+
+  /**
+   * P0-3：跑与用户斜杠路径同一条 prompt 处理管道。
+   *
+   * 内联 shell（!`cmd`）的安全裁决：用户敲 /skill 是显式意图；模型自主调用 skill 则意味着
+   * 模型能经「选一个 skill」间接触发 shell。所以模型路径下每条内联命令都按一次 `bash`
+   * 工具调用过子代理 checker（dontAsk：deny/ask 均不执行，只有 allow 规则或安全白名单放行）；
+   * 无 checker 时一律不执行（fail-closed）——绝不把「没生效的能力」变成「生效了但没门禁」。
+   */
+  private processPrompt(
+    skill: SkillDefinition,
+    userInput: string,
+    context: "inline" | "fork",
+  ): Promise<string> {
+    const checker = this.permissionChecker;
+    return processSkillPrompt(
+      skill.prompt,
+      userInput,
+      { cwd: process.cwd(), sessionId: this.sessionIdProvider?.() ?? "" },
+      {
+        skillRoot: skill.skillRoot,
+        loadedFrom: skill.loadedFrom,
+        argumentNames: skill.argumentNames,
+        shell: skill.shell,
+        // inline 注入时带 Base directory 头部；fork 子代理靠 buildResourceHint 给绝对路径
+        injectBaseDir: context === "inline" && Boolean(skill.skillRoot),
+        authorizeShell: async (command) => {
+          if (!checker) return false;
+          const decision = await checker.check({
+            toolName: "bash",
+            input: { command },
+            description: `Skill "${skill.name}" 内联 shell: ${command}`,
+          });
+          return decision.allowed === true && !decision.needsConfirmation;
+        },
+      },
+    );
+  }
+
+  /**
+   * 参数已被 prompt 里的占位符消费时不再追加到末尾（否则同一份输入出现两次）；
+   * 正文没有任何参数占位符时保留旧行为，把输入附在末尾，避免参数静默丢失。
+   */
+  private userInputSection(skill: SkillDefinition, userInput: string): string {
+    if (!userInput) return "";
+    if (skillPromptConsumesArgs(skill)) return "";
+    return `\n\n用户输入:\n${userInput}`;
   }
 
   /**
@@ -366,4 +441,14 @@ ${folderStructure}
 - 用 \`read\` 工具读 references/validations，用 \`bash\` 执行 scripts 时也用上述绝对路径。
 - **切勿**用相对路径直接读这些资源——那会落到项目目录、读取失败。`;
   }
+}
+
+/** prompt 正文是否含参数占位符（$ARGUMENTS / $@ / $* / {{args}} / $1… / $arg_name） */
+function skillPromptConsumesArgs(skill: SkillDefinition): boolean {
+  if (/\$ARGUMENTS|\$@|\$\*|\{\{args\}\}|\$\d/.test(skill.prompt)) return true;
+  for (const n of skill.argumentNames ?? []) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) continue;
+    if (new RegExp(`\\$${n}\\b`).test(skill.prompt)) return true;
+  }
+  return false;
 }
