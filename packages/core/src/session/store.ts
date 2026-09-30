@@ -499,6 +499,7 @@ export class SessionStore {
     const log = getLogger();
     try {
       // 溯源锚点先落，确保即便后续拷贝中途失败也能看出「这是一次分叉」。
+      // 刻意无程序读取端：供外部工具 / 人工排查双向追溯（metadata-reader 门禁白名单登记）。
       this.appendMetadata("forked_from", {
         sessionId: srcSessionId,
         ...(srcTailUuid ? { uuid: srcTailUuid } : {}),
@@ -579,7 +580,8 @@ export class SessionStore {
       getLogger().info("SESSION", `resume 会话无 jsonl，新建续写文件: ${sessionId}`);
       this.startSession(sessionId, model, provider, cwd);
     }
-    // 记录本进程 trajectory 目录 id，桥接两套存储（仅当 id 与会话 id 不同才有意义）
+    // 记录本进程 trajectory 目录 id，桥接两套存储（仅当 id 与会话 id 不同才有意义）。
+    // 刻意无程序读取端：供外部工具 / 人工从 jsonl 反查 trajectory 目录（metadata-reader 门禁白名单登记）。
     if (traceSessionId && traceSessionId !== sessionId) {
       this.appendMetadata("trace_session_id", traceSessionId);
     }

@@ -10,7 +10,19 @@
  * 自动迁移（见 migrateLegacyInputHistory）。旧文件保留不删，避免误伤，但不再写入。
  */
 
-import { appendFileSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import {
+  appendFileSync,
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  openSync,
+  readSync,
+  closeSync,
+  fstatSync,
+  statSync,
+  renameSync,
+} from "fs";
 import { getSidHome, sidHomePath } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -28,8 +40,22 @@ export interface HistoryEntry {
   sessionId: string;
 }
 
-/** 内存保留上限（读取时截断，避免超大文件全量入内存） */
+/** 默认返回上限（UI 只要最近这么多条）。 */
 const MAX_IN_MEMORY = 500;
+
+// N14：history.jsonl 以前只追加、永不轮转，且每次启动 readFileSync + 全量 JSON.parse
+// 之后才截断到 500 条 —— 截断只省了返回值，峰值内存与解析开销随文件单调增长。
+// 现在两道：① 读取从文件尾按块倒读，攒够 limit 条就停；② 追加后超阈值即轮转。
+// 历史索引不是审计日志（每行独立、无 parentUuid 链），丢掉很老的输入没有代价。
+
+/** 倒读块大小。 */
+const TAIL_CHUNK_BYTES = 64 * 1024;
+/** 超过这个体积就轮转（本机实测 789 行 661KB，单行 max 48.6KB）。 */
+const ROTATE_THRESHOLD_BYTES = 8 * 1024 * 1024;
+/** 轮转后最多保留的行数。 */
+const ROTATE_KEEP_LINES = 5000;
+/** 轮转后最多保留的字节（取阈值一半：大行多时按字节先到顶，避免保留量本身又超阈值、每次追加都轮转）。 */
+const ROTATE_KEEP_BYTES = ROTATE_THRESHOLD_BYTES / 2;
 
 const HISTORY_JSONL = (): string => sidHomePath("history.jsonl");
 const LEGACY_INPUT_HISTORY = (): string => sidHomePath("input-history.json");
@@ -43,7 +69,104 @@ export function appendHistoryEntry(entry: HistoryEntry): void {
     appendFileSync(HISTORY_JSONL(), JSON.stringify(entry) + "\n", "utf-8");
   } catch (e) {
     getLogger().warn("HISTORY", `history.jsonl 追加失败（不阻断）: ${(e as Error)?.message}`);
+    return;
   }
+  rotateHistoryIfNeeded();
+}
+
+/**
+ * 超阈值时把 history.jsonl 截到最近 ROTATE_KEEP_LINES 行 / ROTATE_KEEP_BYTES 字节
+ * （先到者为准），tmp + rename 原子替换。失败静默（历史索引非关键路径）。
+ *
+ * 已知取舍：别的进程恰在「读尾部 → rename」这几毫秒内追加的那一行会丢。
+ * 触发频率是「每长到 8MB 一次」，丢的是一条输入历史，不值得为它上跨进程锁。
+ *
+ * @returns 是否发生了轮转（测试用）
+ */
+export function rotateHistoryIfNeeded(opts?: {
+  thresholdBytes?: number;
+  keepLines?: number;
+  keepBytes?: number;
+}): boolean {
+  const path = HISTORY_JSONL();
+  const threshold = opts?.thresholdBytes ?? ROTATE_THRESHOLD_BYTES;
+  try {
+    if (!existsSync(path) || statSync(path).size <= threshold) return false;
+    const keepLines = opts?.keepLines ?? ROTATE_KEEP_LINES;
+    const keepBytes = opts?.keepBytes ?? ROTATE_KEEP_BYTES;
+    const kept: string[] = [];
+    let bytes = 0;
+    readLinesFromTail(path, (line) => {
+      const len = Buffer.byteLength(line, "utf-8") + 1;
+      // 至少保留最新一行，哪怕它自己就超 keepBytes
+      if (kept.length > 0 && bytes + len > keepBytes) return false;
+      kept.push(line);
+      bytes += len;
+      return kept.length < keepLines;
+    });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, kept.reverse().join("\n") + (kept.length > 0 ? "\n" : ""), "utf-8");
+    renameSync(tmp, path);
+    getLogger().info("HISTORY", `history.jsonl 已轮转：保留最近 ${kept.length} 行（${bytes}B）`);
+    return true;
+  } catch (e) {
+    getLogger().warn("HISTORY", `history.jsonl 轮转失败（不阻断）: ${(e as Error)?.message}`);
+    return false;
+  }
+}
+
+/**
+ * 从文件尾按块倒读，逐行（最新在前）回调；回调返回 false 即停止，不再读更早的块。
+ * 按字节 0x0a 切行：UTF-8 里多字节字符的续字节不会是 0x0a，所以块边界不会切坏字符。
+ * 空行跳过。最后一行没有换行符（崩溃半行）也照常回调，由调用方的 JSON.parse 容错。
+ */
+function readLinesFromTail(path: string, onLine: (line: string) => boolean): void {
+  const fd = openSync(path, "r");
+  try {
+    let pos = fstatSync(fd).size;
+    let carry = Buffer.alloc(0); // 当前块之后、尚未遇到行首的残段
+    while (pos > 0) {
+      const len = Math.min(TAIL_CHUNK_BYTES, pos);
+      pos -= len;
+      const chunk = Buffer.allocUnsafe(len);
+      readSync(fd, chunk, 0, len, pos);
+      const buf = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk;
+      let end = buf.length;
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] !== 0x0a) continue;
+        if (end > i + 1 && !emit(buf, i + 1, end, onLine)) return;
+        end = i;
+      }
+      // buf[0, end) 是一行的后半截，行首还在更早的块里
+      carry = buf.subarray(0, end);
+    }
+    if (carry.length > 0) emit(carry, 0, carry.length, onLine);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function emit(buf: Buffer, start: number, end: number, onLine: (line: string) => boolean): boolean {
+  const line = buf.toString("utf-8", start, end).trim();
+  return line ? onLine(line) : true;
+}
+
+function parseHistoryLine(line: string): HistoryEntry | null {
+  try {
+    const rec = JSON.parse(line);
+    if (rec && typeof rec.display === "string") {
+      return {
+        display: rec.display,
+        pastedContents: Array.isArray(rec.pastedContents) ? rec.pastedContents : [],
+        timestamp: typeof rec.timestamp === "string" ? rec.timestamp : "",
+        project: typeof rec.project === "string" ? rec.project : "",
+        sessionId: typeof rec.sessionId === "string" ? rec.sessionId : "",
+      };
+    }
+  } catch {
+    /* 跳过坏行 */
+  }
+  return null;
 }
 
 /**
@@ -60,36 +183,20 @@ export function readHistoryEntries(opts?: { project?: string; limit?: number }):
     migrateLegacyInputHistory();
     if (!existsSync(path)) return [];
   }
-  let raw: string;
+  const limit = opts?.limit ?? MAX_IN_MEMORY;
+  const entries: HistoryEntry[] = [];
+  if (limit <= 0) return entries;
   try {
-    raw = readFileSync(path, "utf-8");
+    // 文件是「最旧在前」追加序，倒读天然得到「最新在前」；攒够 limit 条即停，不碰更早的块。
+    readLinesFromTail(path, (line) => {
+      const e = parseHistoryLine(line);
+      if (e && (!opts?.project || e.project === opts.project)) entries.push(e);
+      return entries.length < limit;
+    });
   } catch {
     return [];
   }
-  const entries: HistoryEntry[] = [];
-  for (const line of raw.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    try {
-      const rec = JSON.parse(t);
-      if (rec && typeof rec.display === "string") {
-        entries.push({
-          display: rec.display,
-          pastedContents: Array.isArray(rec.pastedContents) ? rec.pastedContents : [],
-          timestamp: typeof rec.timestamp === "string" ? rec.timestamp : "",
-          project: typeof rec.project === "string" ? rec.project : "",
-          sessionId: typeof rec.sessionId === "string" ? rec.sessionId : "",
-        });
-      }
-    } catch {
-      /* 跳过坏行 */
-    }
-  }
-  const filtered = opts?.project ? entries.filter((e) => e.project === opts.project) : entries;
-  // 文件是"最旧在前"追加序；调用方要"最新在前"，反转后截断。
-  const reversed = filtered.reverse();
-  const limit = opts?.limit ?? MAX_IN_MEMORY;
-  return reversed.slice(0, limit);
+  return entries;
 }
 
 /**

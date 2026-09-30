@@ -11,6 +11,7 @@
  *   4. filterOrphanedThinkingOnlyMessages —— 过滤流式中断残留的纯 thinking assistant 消息
  *   5. filterWhitespaceOnlyAssistantMessages —— 过滤内容被清空后的空白 assistant 消息
  *   6. validateContentBlockIntegrity —— 剔除缺失关键字段（id/name/tool_use_id）的不完整 block
+ *   7. stripDanglingToolResultsFilter —— 切除游离 tool_result（有结果无调用；第 3 层的反方向）
  *
  * 中断检测三态（对齐 CC 的 none / interrupted_prompt / interrupted_turn）：
  *   - none              正常结束：最后一条是 assistant 消息，或末尾 tool_result 全部
@@ -24,6 +25,7 @@
 
 import type { ContentBlock, Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { stripDanglingToolResults } from "../agent/message-invariants.ts";
 
 /** 中断状态 */
 export type TurnInterruptionState =
@@ -155,6 +157,20 @@ const validateContentBlockIntegrity: MessageFilter = (messages, ctx) => {
   });
 };
 
+/** 第 7 层：切除游离 tool_result（N11）——第 3 层的反方向。
+ *  assistant_message 与作为 user_message 落盘的工具结果写入时机不同，崩溃窗口里丢了
+ *  assistant 那条，剩下的就是找不到 tool_use 的 tool_result。以前这里放行、靠发送期
+ *  finalizeMessagesForSend 兜底切掉：首屏先渲染出来、第一次发送才消失，日志还归到
+ *  「发送前游离切除」，排查会往发送逻辑找。判据与切除直接复用 message-invariants
+ *  的权威实现，不另写一套。放最后：前 6 层删消息可能制造新的游离，须在它们之后判。 */
+const stripDanglingToolResultsFilter: MessageFilter = (messages, ctx) => {
+  const { messages: out, stripped } = stripDanglingToolResults(messages);
+  for (const d of stripped) {
+    ctx.log("游离tool_result切除", `丢弃 tool_result tool_use_id=${d.toolUseId}`);
+  }
+  return out;
+};
+
 const CLEANUP_PIPELINE: MessageFilter[] = [
   migrateLegacyFormats,
   stripInvalidPermissionModes,
@@ -162,6 +178,7 @@ const CLEANUP_PIPELINE: MessageFilter[] = [
   filterOrphanedThinkingOnlyMessages,
   filterWhitespaceOnlyAssistantMessages,
   validateContentBlockIntegrity,
+  stripDanglingToolResultsFilter,
 ];
 
 /** 从末尾 tool_result 消息反查对应的工具名（在倒数第二条 assistant 消息的 tool_use 里找） */

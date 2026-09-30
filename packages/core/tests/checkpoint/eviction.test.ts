@@ -6,7 +6,7 @@
  * - diff 链重锚定：被淘汰的最旧条目含 full 时，后续 diff 自动重锚定为新 full，rebuild 内容仍正确。
  * - B. 总量上限（maxTotalSizeMb）写时删到阈值下，且不破坏最近快照。
  * - cleanupOldSessions 总量超限真删最旧 session 目录（不只 warn）。
- * - nextId 淘汰后不回退；latestFullMap 淘汰后正确。
+ * - nextId 淘汰后不回退。（latestFullMap 已随 N8 删除，回归见 p2-latest-full-map-removed.test.ts）
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -151,33 +151,6 @@ describe("CheckpointManager 淘汰（P1-2）", () => {
     expect(res).not.toBeNull();
     void lastFile;
     void lastContent;
-  });
-
-  test("latestFullMap 淘汰后指向存活快照（不指向已删）", async () => {
-    const m = newManager({
-      maxCheckpointsPerFile: 2,
-      maxTotalSizeMb: 999,
-      compressThresholdKb: 999,
-    });
-    await m.init();
-
-    const file = join(testDir, "map.txt");
-    for (let i = 0; i < 5; i++) {
-      writeFileSync(file, `c${i}`);
-      await m.createSnapshot([file], "write", `e${i}`);
-    }
-
-    // 访问内部 index 校验 latestFullMap 一致性（测试白盒，允许 as any）。
-    const idx = (m as any).index;
-    const liveIds = new Set(idx.snapshots.map((s: any) => s.id));
-    for (const [fp, sid] of Object.entries(idx.latestFullMap as Record<string, string>)) {
-      // 映射的快照必须仍存活。
-      expect(liveIds.has(sid)).toBe(true);
-      // 且该快照里该文件确为 full。
-      const snap = idx.snapshots.find((s: any) => s.id === sid);
-      const f = snap.files.find((x: any) => x.filePath === fp);
-      expect(f?.type).toBe("full");
-    }
   });
 
   test("cleanupOldSessions：总量超限真删最旧 session 目录（不只 warn）", async () => {

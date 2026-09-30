@@ -178,7 +178,114 @@ export function getSideStats(): SideCallStats {
 
 /**
  * 重置（SessionStart 时调用，避免跨会话污染）。
+ *
+ * ⚠️ 只清进程内记录，**不清会话基线**（N12）：restoreSession 回灌基线发生在 doInit 之前，
+ * 而 TraceCollector 的 SessionStart（调本函数）在 doInit 里才 fire —— 清了基线，
+ * resume 回灌的那份数据当场就没了。基线的清空走 resetSessionSideStats（/clear）。
  */
 export function resetSideCallStats(): void {
   _calls = [];
+  _sessionMark = 0;
+}
+
+// ─── 会话维度（N12）：resume 回灌的基线 + 本进程记录 ───
+//
+// 两个视角刻意分开：
+//   - getSideStats()        进程维度，TraceCollector 用（trajectory 按进程重建 pairs，口径不变）；
+//   - getSessionSideStats() 会话维度 = 回灌基线 + 本进程 mark 之后的记录，
+//                            供会话 jsonl 落盘（side_call_stats）与用量账本用。
+// 以前 side_call_stats 只写不读：resume 后 apiCalls / tokens / failed / timedOut / byLabel
+// 全部从零开始，下一轮落盘还会用「只含本进程」的值覆盖掉旧快照 —— 丢的不只是展示，是数据。
+
+/** side_call_stats 落盘 / 回灌的快照形态（不含 details 全量，避免 JSONL 膨胀）。 */
+export interface SideCallSnapshot {
+  apiCalls: number;
+  costUSD: number;
+  tokensSent: number;
+  tokensReceived: number;
+  failed: number;
+  timedOut: number;
+  byLabel: Record<string, { success: number; failed: number }>;
+}
+
+let _baseline: SideCallSnapshot | null = null;
+/** 会话视角的起点下标：/clear 后此前的进程内记录不再计入会话维度。 */
+let _sessionMark = 0;
+
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+
+/**
+ * resume 时用落盘的最后一条 side_call_stats 回灌会话基线。
+ *
+ * **不触发 costObserver**：影子成本已经经 usage_stats.sideCostUSD 回灌进 SessionState，
+ * 这里再通知一次就是双计（北极星铁律④ stock/flow 混用的近亲）。
+ * 形态不合法时整条忽略并返回 false —— 宁可从零开始，也不拿半截脏数据当基线。
+ */
+export function hydrateSideCallBaseline(snapshot: unknown): boolean {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const s = snapshot as Record<string, unknown>;
+  const fields = ["apiCalls", "costUSD", "tokensSent", "tokensReceived", "failed", "timedOut"];
+  // 旧版本落盘可能缺 failed / timedOut（T13 之前），缺失按 0；存在但非法则整条拒绝。
+  for (const f of fields) {
+    if (s[f] !== undefined && !isCount(s[f])) return false;
+  }
+  if (!isCount(s.apiCalls)) return false;
+  const byLabel: SideCallSnapshot["byLabel"] = {};
+  if (s.byLabel !== undefined) {
+    if (!s.byLabel || typeof s.byLabel !== "object" || Array.isArray(s.byLabel)) return false;
+    for (const [label, v] of Object.entries(s.byLabel as Record<string, unknown>)) {
+      const e = v as { success?: unknown; failed?: unknown } | null;
+      if (!e || !isCount(e.success) || !isCount(e.failed)) return false;
+      byLabel[label] = { success: e.success, failed: e.failed };
+    }
+  }
+  _baseline = {
+    apiCalls: s.apiCalls,
+    costUSD: (s.costUSD as number | undefined) ?? 0,
+    tokensSent: (s.tokensSent as number | undefined) ?? 0,
+    tokensReceived: (s.tokensReceived as number | undefined) ?? 0,
+    failed: (s.failed as number | undefined) ?? 0,
+    timedOut: (s.timedOut as number | undefined) ?? 0,
+    byLabel,
+  };
+  return true;
+}
+
+/** 会话维度累计 = 回灌基线 + 本进程 mark 之后的记录。 */
+export function getSessionSideStats(): SideCallSnapshot {
+  const out: SideCallSnapshot = _baseline
+    ? { ..._baseline, byLabel: structuredClone(_baseline.byLabel) }
+    : {
+        apiCalls: 0,
+        costUSD: 0,
+        tokensSent: 0,
+        tokensReceived: 0,
+        failed: 0,
+        timedOut: 0,
+        byLabel: {},
+      };
+  for (let i = _sessionMark; i < _calls.length; i++) {
+    const c = _calls[i]!;
+    out.apiCalls++;
+    out.costUSD += c.costUSD;
+    out.tokensSent += c.inputTokens;
+    out.tokensReceived += c.outputTokens;
+    if (!c.success) {
+      out.failed++;
+      if (c.timedOut) out.timedOut++;
+    }
+    const e = (out.byLabel[c.label] ??= { success: 0, failed: 0 });
+    if (c.success) e.success++;
+    else e.failed++;
+  }
+  return out;
+}
+
+/**
+ * /clear：会话维度归零（清基线 + 把 mark 挪到末尾）。进程内记录保留给 trajectory ——
+ * trajectory 不随 /clear 重开，它的 side_* 口径不该被 /clear 改写。
+ */
+export function resetSessionSideStats(): void {
+  _baseline = null;
+  _sessionMark = _calls.length;
 }
