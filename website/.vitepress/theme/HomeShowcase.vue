@@ -38,18 +38,22 @@
  *      tagline 与定位块合起来正好是 §5 那句价值主张的前后两半，互补而不重叠。
  *
  * ── 能力条数字口径（改之前先跑命令，别凭记忆改）──
- *   ⚠ 三处须一致：本文件、README.md（中文主入口）、README.en.md。
+ *   ⚠ 四处须一致：本文件、README.md（中文主入口）、README.en.md、作者简历。
  *     2026-08-10 教训：工具数从 "60+" 改成 44 时只改了首页，README 漏改，
- *     两份对外文档不一致挂了两周多。改这里时把三处一起 grep 一遍。
+ *     两份对外文档不一致挂了两周多。改这里时把几处一起 grep 一遍。
+ *   2026-09-30 换口径：旧值「20 万+ 行 / 8000+ 单测」是静态扫描口径，与简历
+ *   （`bun test` 实际执行数 + 全仓自研行数）对不上，访客对照两边会以为有一边在造假。
+ *   现在四个数全部取自同一个取数脚本的同一次运行：
+ *     docs-research 仓 scripts/resume-metrics.ts（`--coverage`，约 4 分钟）
  *
- *     自研代码行数  find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
- *                   （2026-08-11 实测 203,533 行，不含 vendor 的 ink fork = packages/tui-renderer）
- *     单测          在仓库根跑 grep -rhoE '\b(it|test)\(' 扫 tests、各包的 tests 与 src
- *                   （只算 .test.ts / .test.tsx；2026-08-13 实测 8,576 个用例 / 644 个文件。
- *                     ⚠ 覆盖路径必须含每个包的 tests 目录 —— 分包后漏掉它会数出 30 而不是 644，
- *                     且**不报错、只静默少数 95%**）
- *     Hook 事件数   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
- *     内置工具数    sid-code --dump-tools 数组长度（2026-07-27 实测 44，与 ref/tools.md 同源）
+ *     自研代码行数  50.8 万：生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方
+ *                   （2026-09-29 实测 507,914 行，其中测试 197,130 行）
+ *     单测          `bun test` 实际执行数，含动态生成用例（2026-09-29 实测 12,875，0 失败）
+ *     引擎行覆盖率  packages/core/src 的行覆盖（2026-09-29 实测 84.7% = 74,209 / 87,603）
+ *                   ⚠ 只报引擎层；CLI/TUI 与渲染层覆盖率明显更低，是有意取舍，别换成全仓口径
+ *     内置工具数    sid-code --dump-tools 数组长度（44，与 ref/tools.md 同源）
+ *   Hook 事件数从能力条撤下：枚举 32 类里有一部分是预留、尚未接线，
+ *   放在「量级证据」位置会引出「哪些是空的」。完整清单见 /ref/hooks。
  *
  * ── 首页交互一律不依赖 JS ──
  *   受众切换用**隐藏 radio + `:checked ~` 兄弟选择器**，纯 CSS，没有任何组件状态。
@@ -67,12 +71,14 @@ interface Stat {
   value: number;
   suffix: string;
   label: string;
+  /** 小数位数，缺省 0（整数加千分位） */
+  decimals?: number;
 }
 const STATS: Stat[] = [
-  { value: 20, suffix: "万+", label: "行自研 TypeScript" },
-  { value: 8000, suffix: "+", label: "单测用例，全绿才提交" },
+  { value: 50.8, suffix: "万", label: "行自研 TypeScript（含测试）", decimals: 1 },
+  { value: 12875, suffix: "", label: "个单测，全绿才合入" },
+  { value: 84.7, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
   { value: 44, suffix: "", label: "个内置工具" },
-  { value: 32, suffix: "类", label: "Hook 事件可插拔" },
 ];
 
 /* ── §5 分开回答两类用户 ── */
@@ -284,7 +290,8 @@ let io: IntersectionObserver | null = null;
 let fallback: ReturnType<typeof setTimeout> | null = null;
 let raf = 0;
 
-function fmt(v: number): string {
+function fmt(v: number, decimals = 0): string {
+  if (decimals > 0) return v.toFixed(decimals);
   return Math.round(v)
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -344,7 +351,7 @@ onUnmounted(() => {
     <section ref="statsEl" class="hs-stats" aria-label="项目规模">
       <div v-for="(s, i) in STATS" :key="s.label" class="hs-stat" :style="{ '--i': i }">
         <span class="hs-stat-n">
-          {{ fmt(shown[i]) }}<span class="hs-stat-u">{{ s.suffix }}</span>
+          {{ fmt(shown[i], s.decimals) }}<span class="hs-stat-u">{{ s.suffix }}</span>
         </span>
         <span class="hs-stat-l">{{ s.label }}</span>
       </div>

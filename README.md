@@ -64,7 +64,7 @@ $ sc
 | 能力 | 说明 |
 | --- | --- |
 | **深度贴合企业环境** | 内部网关计费、内网 GitLab、MCP 接入、团队默认配置分发，按真实企业内网基建做的适配。装上就接得上你公司已有的那套东西 |
-| **模型任你换，harness 整套可改** | 改一行配置换模型（Anthropic / OpenAI / Ollama 三族协议、自动降级），写一个文件加扩展（32 类 Hook 事件、Skill、子代理、MCP），提一个 PR 改内核（44 个内置工具、上下文工程、主循环全部开源） |
+| **模型任你换，harness 整套可改** | 改一行配置换模型（Anthropic / OpenAI / Ollama 三族协议、自动降级），写一个文件加扩展（Hook、Skill、子代理、MCP），提一个 PR 改内核（44 个内置工具、上下文工程、主循环全部开源） |
 | **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里，不进任何人的训练集。既是合规前提，也是持续优化的燃料 |
 | **每一分钱、每一步决策都查得到** | 耗时、成本、决策全留轨迹，默认就开着；发布前跑评测防回退。它同时是我们按版本复算「更快 / 更省 / 更少返工 / 更安全」的唯一度量来源 |
 
@@ -74,32 +74,23 @@ $ sc
 
 | 项 | 现状 |
 | --- | --- |
-| 自研代码 | `packages/` 下 20 万行以上 TypeScript |
-| 工程闭环 | 600+ 测试文件、8000+ 单测用例；每次改代码跑全量，全绿才提交 |
-| 能力面 | 44 个内置工具、32 类 Hook 事件、LSP 代码智能、权限门控、可观测轨迹 |
-| 评测体系 | 30 个 eval case（含 holdout），发布前跑，防功能回退 |
+| 自研代码 | 50.8 万行 TypeScript（含测试 19.7 万行） |
+| 工程闭环 | 12,875 个单测、Agent 引擎行覆盖率 84.7%；每个 PR 在 CI 上跑全量，全绿才合入 |
+| 能力面 | 44 个内置工具、MCP Client / Server、LSP 代码智能、权限门控、可观测轨迹 |
+| 评测体系 | 独立评测集 [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench)：从真实会话逆向构造的 39 道 SWE-bench 风格题 |
 
 <!--
-  数字口径（发版前人工核对一次，写约数不写精确值）：
-    ⚠️ P2-2 分包（2026-08-11）：源码从扁平 src/ 搬到 packages/{shared,tui-renderer,core,cli}/src/。
-       下面的命令已跟着改。仍写 `find src` 不会报错、只会数出 0 —— 复核命令静默失效比数字过期更糟，
-       因为下一个人会以为自己核对过了。
-    代码行数    find packages/{shared,core,cli}/src -name '*.ts' -o -name '*.tsx' | xargs wc -l
-                （2026-08-11 实测 203,533 行）
-    ⚠️ P1-2 测试分包（2026-08-13）：测试搬到了 packages/<包>/tests/，只覆盖 packages/*/src
-       的命令会数出 30 而不是 644 —— **不报错，只静默少数 95%**。这正是本注释块想防的那类
-       故障，却还是又发生了一次：测试目录一动，这里的路径清单必须跟着动。下面同时保留
-       两个路径，因为 src/ 下仍有少量就地放置的 *.test.ts。
-    测试文件    find tests packages/*/tests packages/*/src -name '*.test.ts' -o -name '*.test.tsx' | wc -l（实测 644）
-    单测用例    grep -rhoE '\b(it|test)\(' tests packages/*/tests packages/*/src --include='*.test.ts' --include='*.test.tsx' | wc -l
-                （实测 8,576；`bun test` 自己报 ~9,191 个 / 652 文件，差值是动态生成的用例，
-                  静态 grep 数不到，两个数字都不算错，口径不同而已）
-    Hook 事件   packages/core/src/hook/types.ts 的 HookEventName 枚举成员数（实测 32）
-    内置工具    sid-code --dump-tools 数组长度（实测 44，与脚本生成的 ref/tools.md 同源同值。
-                ⚠️ 此处曾写"60+"，与运行时真值不符 —— website/index.md 早已改对而本文漏改，
-                2026-08-10 补齐。写数字前先跑命令，别照抄旧值）
-    eval case   bun run eval:list 的汇总行（实测 P0=10 holdout=5 P1=9 P2=6 = 30）
-  与 website/index.md 的同一张表须一致，改一处要改两处；README.md（中文主入口）是第三处。
+  数字口径（2026-09-30 换口径，与官网首页能力条、作者简历三处同源）：
+    旧值「20 万行以上 / 600+ 测试文件 / 8000+ 单测 / 32 类 Hook / 30 个 eval case」是静态扫描口径，
+    与简历对不上；且 30 个 eval case 已于 2026-09-18 随 evals/ 旧题集一并删除，继续挂着就是不实陈述。
+    现在前两行的数字全部取自 docs-research 仓 scripts/resume-metrics.ts（`--coverage`）的同一次运行：
+    代码行数    507,914（生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方）；测试 197,130
+    单测用例    `bun test` 实际执行数 12,875（含动态生成用例，静态 grep 数不到）
+    引擎覆盖率  packages/core/src 行覆盖 84.7%（74,209 / 87,603）；只报引擎层，别换成全仓口径
+    内置工具    sid-code --dump-tools 数组长度（44，与脚本生成的 ref/tools.md 同源同值）
+    Hook 事件数不再写进这张表：HookEventName 枚举 32 类里有一部分是预留、尚未接线，
+    放在「现状」里会被读成 32 类都能用。完整清单见 website/ref/hooks.md。
+  与 website/.vitepress/theme/HomeShowcase.vue 的能力条、README.en.md 须一致，改一处要改三处。
   （2026-08-12 P2-6 曾把英文放到 README.md、中文挪到 README.zh-CN.md，为了 GitHub 默认页给英语读者。
    2026-09-20 改回：本仓工作语言与兄弟仓库一致，GitHub 默认页展示中文；英文副本在 README.en.md。）
 -->
