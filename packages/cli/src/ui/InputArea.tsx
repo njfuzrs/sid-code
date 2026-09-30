@@ -29,6 +29,7 @@ import { useUIState, useUIActions, TransientMessageType } from "./contexts/UISta
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
+import { applySlashCompletion, canSubmitSlashCompletionDirectly } from "../command/mid-input.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
 import { useSettings } from "./contexts/SettingsContext.tsx";
 import { reduceVimEngine } from "./vim/transitions.ts";
@@ -335,6 +336,11 @@ export function InputArea({
     suggestions: Suggestion[];
     activeIndex: number;
     mode: CompletionMode;
+    /**
+     * 仅 slash 模式有意义（D4）：null = 行首命令，整行替换；数字 = 中间位置 token 的
+     * `/` 所在列，应用时只替换 `[replaceFrom, cursorCol)`，保留用户已写的前缀。
+     */
+    replaceFrom?: number | null;
   }
   const [completion, setCompletion] = useState<CompletionState>({
     suggestions: [],
@@ -350,10 +356,10 @@ export function InputArea({
   const firstLine = tb.state.lines[0] ?? "";
 
   // / 命令补全
-  const setSlashSuggestions = useCallback((items: Suggestion[]) => {
+  const setSlashSuggestions = useCallback((items: Suggestion[], replaceFrom: number | null) => {
     setCompletion((prev) => {
       if (items.length > 0) {
-        return { suggestions: items, activeIndex: 0, mode: "slash" };
+        return { suggestions: items, activeIndex: 0, mode: "slash", replaceFrom };
       } else if (prev.mode === "slash") {
         return { suggestions: [], activeIndex: 0, mode: "none" };
       }
@@ -361,9 +367,11 @@ export function InputArea({
     });
   }, []);
 
+  // D5：按光标所在行判定，不再把非首行的光标钳成 firstLine.length（与 useAtCompletion 同口径）
   useSlashCompletion({
-    text: firstLine,
-    cursorCol: tb.state.cursorRow === 0 ? tb.state.cursorCol : firstLine.length,
+    lines: tb.state.lines,
+    cursorRow: tb.state.cursorRow,
+    cursorCol: tb.state.cursorCol,
     commands,
     setSuggestions: setSlashSuggestions,
   });
@@ -412,15 +420,22 @@ export function InputArea({
   const applyCompletion = useCallback(
     (suggestion: Suggestion) => {
       const mode = completionMode;
-      if (mode === "slash" || mode === "shell") {
+      if (mode === "slash") {
+        // D4：中间位置只替换 token（replaceFrom 来自检测侧的 startPos），行首才整行替换。
+        // 修复前一律 home + killLine，`帮我看下 /com` → `/compact `，前缀被静默删除。
+        const next = applySlashCompletion(
+          tb.state.lines,
+          tb.state.cursorRow,
+          tb.state.cursorCol,
+          completion.replaceFrom ?? null,
+          suggestion.value,
+        );
+        tb.vimSetBuffer(next.lines, next.cursorRow, next.cursorCol);
+      } else if (mode === "shell") {
         // 替换整行为命令（shell 模式保留 ! 前缀）
         tb.moveCursor("home");
         tb.killLine();
-        if (mode === "shell") {
-          tb.insert("!" + suggestion.value);
-        } else {
-          tb.insert(suggestion.value);
-        }
+        tb.insert("!" + suggestion.value);
       } else if (mode === "at") {
         // 找到 @ 的位置，替换 @ 后的 pattern
         const line = tb.state.lines[tb.state.cursorRow];
@@ -441,7 +456,7 @@ export function InputArea({
       }
       setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
     },
-    [tb, completionMode],
+    [tb, completionMode, completion.replaceFrom],
   );
 
   useEffect(() => {
@@ -740,7 +755,17 @@ export function InputArea({
         const picked = suggestions[activeIndex];
         // 斜杠命令 + 不需要参数 → 单次回车直接执行（对齐 claude-code，省掉"回填再回车"）。
         // 用补全项的规范命令名（value 去掉尾随空格）提交，忽略用户输入的模糊查询。
-        if (completionMode === "slash" && picked && !picked.requiresArgs) {
+        // D4：「忽略用户输入」只在整条输入就是这一个命令 token 时成立；中间位置 / 多行 /
+        // 已带其它内容时直接提交会让用户写的内容凭空消失，这些场景一律只回填。
+        if (
+          completionMode === "slash" &&
+          picked &&
+          canSubmitSlashCompletionDirectly(
+            tb.state.lines,
+            completion.replaceFrom ?? null,
+            picked.requiresArgs,
+          )
+        ) {
           setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
           submitCommandText(picked.value.trim());
           return true;

@@ -13,7 +13,7 @@
 import { useEffect } from "react";
 import type { Suggestion } from "../components/SuggestionsDisplay.tsx";
 import { rankCommandInfos } from "../../command/suggestions.ts";
-import { findMidInputSlashCommand } from "../../command/mid-input.ts";
+import { resolveSlashCompletionTarget } from "../../command/mid-input.ts";
 
 export interface CommandInfo {
   name: string;
@@ -24,63 +24,49 @@ export interface CommandInfo {
 }
 
 export interface UseSlashCompletionProps {
-  /** 当前输入文本（第一行） */
-  text: string;
-  /** 光标在第一行的列位置 */
+  /** 输入框全部行 */
+  lines: readonly string[];
+  /** 光标所在行 */
+  cursorRow: number;
+  /** 光标在所在行的列位置 */
   cursorCol: number;
   /** 所有已注册命令 */
   commands: CommandInfo[];
-  /** 设置建议列表 */
-  setSuggestions: (suggestions: Suggestion[]) => void;
+  /**
+   * 设置建议列表。replaceFrom：null = 行首命令（整行替换）；数字 = 中间位置 token 起点，
+   * 应用补全时只替换该 token（D4）。
+   */
+  setSuggestions: (suggestions: Suggestion[], replaceFrom: number | null) => void;
 }
 
 export function useSlashCompletion({
-  text,
+  lines,
+  cursorRow,
   cursorCol,
   commands,
   setSuggestions,
 }: UseSlashCompletionProps) {
+  // 只有光标所在行参与判定（D5）；依赖取该行文本而不是整个 lines 数组，避免别的行变化触发重算。
+  const line = lines[cursorRow] ?? "";
   useEffect(() => {
-    // 情况 A：行首斜杠命令（/ 开头，光标在第一个空格之前）
-    if (text.startsWith("/")) {
-      const spaceIdx = text.indexOf(" ");
-      if (spaceIdx !== -1 && cursorCol > spaceIdx) {
-        setSuggestions([]);
-        return;
-      }
-      const query = text.slice(1, cursorCol);
-      const ranked = rankCommandInfos(commands, query, 20);
-      setSuggestions(
-        ranked.map((r) => ({
-          label: r.label,
-          value: r.value,
-          description: r.description,
-          icon: "›",
-          tag: "命令",
-          requiresArgs: r.requiresArgs,
-        })),
-      );
+    // 情况 A：行首斜杠命令（仅第 1 行）；情况 B：中间位置斜杠命令（任意行）
+    const target = resolveSlashCompletionTarget(lines, cursorRow, cursorCol);
+    if (!target) {
+      setSuggestions([], null);
       return;
     }
-
-    // 情况 B：中间位置斜杠命令（"help me /com"）
-    const mid = findMidInputSlashCommand(text, cursorCol);
-    if (mid) {
-      const ranked = rankCommandInfos(commands, mid.partialCommand, 20);
-      setSuggestions(
-        ranked.map((r) => ({
-          label: r.label,
-          // 中间位置补全：替换 token 部分，保留前缀
-          value: r.value,
-          description: r.description,
-          icon: "›",
-          tag: "命令",
-          requiresArgs: r.requiresArgs,
-        })),
-      );
-      return;
-    }
-
-    setSuggestions([]);
-  }, [text, cursorCol, commands]);
+    const ranked = rankCommandInfos(commands, target.query, 20);
+    setSuggestions(
+      ranked.map((r) => ({
+        label: r.label,
+        value: r.value,
+        description: r.description,
+        icon: "›",
+        tag: "命令",
+        requiresArgs: r.requiresArgs,
+      })),
+      target.replaceFrom,
+    );
+    // lines 只经 line（当前行）被读取，故依赖写 line 而非整个数组
+  }, [line, cursorRow, cursorCol, commands]);
 }
