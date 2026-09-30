@@ -6,7 +6,7 @@
  *  - opts.model → SubAgentTask.model(M4 模型档位);
  *  - opts.schema → SubAgentTask.schema(M2 结构化输出,返回已校验对象而非文本);
  *  - opts.isolation === 'worktree' → 建临时 worktree,SubAgentTask.cwd 指向它,跑完按
- *    fail-closed 清理(无改动删,有改动留)(M4 真并行);
+ *    fail-closed 清理(无改动删,有改动留)(M4 真并行);建不起来直接抛错,不降级到主仓(W21);
  *  - opts.agentType → SubAgentTask.type(自定义子代理类型);
  *  - 把 usage 回灌 budget(M6 成本归集)。
  *
@@ -86,10 +86,16 @@ export class SubAgentRunner implements AgentRunner {
             }
           };
         } catch (err) {
-          log.warn("WORKFLOW", `worktree 创建失败,降级为非隔离执行: ${(err as Error).message}`);
+          // W21：声明 isolation:"worktree" 等于说「这一路会改文件，必须和主仓分开」。
+          // 旧实现在这里只 warn 然后继续，cwd 留空 → 文件工具回退到主会话目录 →
+          // 一次看起来成功的主仓写入。与 sub_agent 工具（agent/tool.ts setupIsolation）
+          // 对齐：隔离建不起来就是这次 agent() 失败，由 runtime 的 parallel/pipeline 落 null。
+          throw new Error(
+            `[${ctx.label}] isolation=worktree 但 worktree 创建失败,拒绝在主仓执行: ${(err as Error).message}`,
+          );
         }
       } else {
-        log.warn("WORKFLOW", "非 git 仓库,worktree 隔离降级为非隔离执行");
+        throw new Error(`[${ctx.label}] isolation=worktree 需要在 Git 仓库中执行`);
       }
     }
 

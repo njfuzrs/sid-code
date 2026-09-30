@@ -71,7 +71,16 @@ export class RuleLoader {
    */
   private policyRulesFromRemote = false;
 
+  /**
+   * W22：构造时没给目录 = 「工作区就是当前 cwd」。这种实例在 loadAll 时重新取一次 cwd：
+   * cli.ts 在恢复 worktree（chdir）之前就建好了 checker，冻结构造那一刻的 cwd 会让
+   * 启动期的 initRules 读主仓 `.sid-code/`，而不是正站着的 worktree 的。
+   * 显式传了目录的（子代理 checker）不跟随，保持调用方的选择。
+   */
+  private readonly followsCwd: boolean;
+
   constructor(workspacePath?: string) {
+    this.followsCwd = !workspacePath;
     this.workspacePath = workspacePath || process.cwd();
   }
 
@@ -81,6 +90,7 @@ export class RuleLoader {
    */
   async loadAll(): Promise<void> {
     const log = getLogger();
+    if (this.followsCwd) this.workspacePath = process.cwd();
 
     // 并行加载各文件来源。
     // P2-1：新增 policySettings（企业策略，最高优先级、可信源）。
@@ -101,6 +111,36 @@ export class RuleLoader {
     this.invalidateCache();
     const total = this.getAllRules().length;
     log.info("RULE_LOADER", `加载完成，共 ${total} 条规则`);
+  }
+
+  /** 当前读 project / local 两个来源所用的目录（W22） */
+  getWorkspacePath(): string {
+    return this.workspacePath;
+  }
+
+  /**
+   * W22：按新的工作区目录重载 projectSettings / localSettings 两个来源。
+   *
+   * workspacePath 在构造时冻结为当时的 process.cwd()。进入 worktree 发生在构造之后
+   * （cli.ts 先建 checker、再恢复 worktree 并 chdir），于是之后每一次 loadAll 读的都还是
+   * 主仓的 `.sid-code/`，worktree 里那份 settings.local.json（copyLocalSettings 复制进去的，
+   * 或 pr-batch 写进去的）没有任何加载点。只动这两个来源：user / policy / flag / cliArg /
+   * session / command 与工作区目录无关，重载它们只会丢掉运行期加进来的会话规则。
+   * projectSettings 照旧过不可信过滤（loadSettingsFile 内部），换目录不放宽任何东西。
+   */
+  async reloadWorkspaceSources(workspacePath: string): Promise<void> {
+    this.workspacePath = workspacePath;
+    this.clearSource("projectSettings");
+    this.clearSource("localSettings");
+    await Promise.all([
+      this.loadSettingsFile("projectSettings", join(workspacePath, ".sid-code", "settings.json")),
+      this.loadSettingsFile(
+        "localSettings",
+        join(workspacePath, ".sid-code", "settings.local.json"),
+      ),
+    ]);
+    this.invalidateCache();
+    getLogger().info("RULE_LOADER", `工作区规则已按 ${workspacePath} 重载`);
   }
 
   /**

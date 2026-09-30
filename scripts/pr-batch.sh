@@ -480,8 +480,12 @@ prepare) # prepare <layer> <slug>...
     #    于是每个 Read/Edit/Bash 都要人点一次确认。2 路并行时这就不叫自动化了。
     #    与 G7（worktree 里没有 pr-batch.sh）同一类自举缺口：
     #    凡是主仓里未入库的东西，worktree 都没有。
+    # ⚠️ 同一份规则写两处（W19）：`.claude/` 给 open 起的 claude 读，
+    #    `.sid-code/` 给在这个 worktree 里起的 sid-code / sc-dev 读 —— sid-code 的规则加载器
+    #    只读 `<工作区>/.sid-code/settings.local.json`，不读 `.claude/`。只写前者时 pr-batch
+    #    打印「权限已配」，sid-code 却按没有本地规则处理，逐条问你确认，且不报任何错。
     if [[ -f "$SETTINGS_TEMPLATE" ]]; then
-      mkdir -p "$wt/.claude"
+      mkdir -p "$wt/.claude" "$wt/.sid-code"
       # 剥掉 _ 前缀的说明性键（它们是给人看的文档，不是 schema 字段）。
       # 模板里那些 _why / _deliberately_not_allowed 是这份配置最重要的部分 ——
       # 它们记着「为什么 push 和 gh pr create 刻意不放行」，别删模板本身。
@@ -492,7 +496,8 @@ prepare) # prepare <layer> <slug>...
       jq 'walk(if type == "object"
                then with_entries(select(.key | startswith("_") | not))
                else . end)' \
-        "$SETTINGS_TEMPLATE" | expand_paths > "$wt/.claude/settings.local.json"
+        "$SETTINGS_TEMPLATE" | expand_paths \
+        | tee "$wt/.sid-code/settings.local.json" > "$wt/.claude/settings.local.json"
       echo "       权限已配（acceptEdits + Bash 白名单；push / gh pr create 仍需确认）"
     else
       echo "       ⚠️ 缺 ${SETTINGS_TEMPLATE}，该 worktree 会逐步询问权限" >&2
@@ -708,7 +713,7 @@ unlock) # unlock <slug>  —— 清掉陈旧锁（会话崩了但锁还在时用
 
 reperm) # reperm [slug...] —— 把权限模板重新应用到已存在的 worktree。
   # 用于两种情况：① worktree 是在加权限模板之前建的；② 你改了模板要重新下发。
-  # ⚠️ 会**覆盖** worktree 里的 .claude/settings.local.json。
+  # ⚠️ 会**覆盖** worktree 里的 .claude/settings.local.json 与 .sid-code/settings.local.json。
   #    那个文件是本地状态、由本脚本生成，不是人手写的，覆盖是预期行为。
   [[ -f "$SETTINGS_TEMPLATE" ]] || { echo "FATAL: 缺 $SETTINGS_TEMPLATE" >&2; exit 1; }
 
@@ -728,13 +733,15 @@ reperm) # reperm [slug...] —— 把权限模板重新应用到已存在的 wor
   for slug in "${targets[@]}"; do
     wt="$WT_BASE/$slug"
     [[ -d "$wt" ]] || { echo "SKIP ${slug}（worktree 缺失）"; continue; }
-    mkdir -p "$wt/.claude"
+    mkdir -p "$wt/.claude" "$wt/.sid-code"
     # 展开路径占位符，理由同 prepare 里那段注释（留着 $ 则规则永不命中）。
+    # 两处都写，理由同 prepare（W19：sid-code 只读 .sid-code/）。
     jq 'walk(if type == "object"
              then with_entries(select(.key | startswith("_") | not))
              else . end)' \
-      "$SETTINGS_TEMPLATE" | expand_paths > "$wt/.claude/settings.local.json"
-    echo "配好 $wt/.claude/settings.local.json"
+      "$SETTINGS_TEMPLATE" | expand_paths \
+      | tee "$wt/.sid-code/settings.local.json" > "$wt/.claude/settings.local.json"
+    echo "配好 $wt/.claude/settings.local.json + $wt/.sid-code/settings.local.json"
   done
   echo
   echo "⚠️ **已经开着的会话不会热加载这份配置** —— 需要退出该会话再 open 一次。"

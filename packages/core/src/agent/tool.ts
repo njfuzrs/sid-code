@@ -583,6 +583,30 @@ ${typeLines}
     }
   }
 
+  /**
+   * W22：隔离子代理的 checker 换成读它自己 worktree 的 `.sid-code/` 规则。
+   * 旧实现直接用主 checker 派生的那份，规则永远是主仓的，copyLocalSettings 复制进
+   * worktree 的 settings.local.json 没有加载点。派生失败回退共享 checker（不比现在更差）。
+   */
+  private static async bindCheckerToWorktree(
+    subAgent: SubAgent,
+    worktreeDir: string,
+  ): Promise<void> {
+    if (typeof subAgent.getPermissionChecker !== "function") return;
+    const current = subAgent.getPermissionChecker() as {
+      deriveForWorkspace?: (dir: string) => Promise<import("../permission/types.ts").Checker>;
+    } | null;
+    if (!current || typeof current.deriveForWorkspace !== "function") return;
+    try {
+      subAgent.setPermissionChecker(await current.deriveForWorkspace(worktreeDir));
+    } catch (err: any) {
+      getLogger().warn(
+        "SUBAGENT",
+        `隔离 Worktree 权限规则重载失败（回退共享 checker）: ${err?.message ?? err}`,
+      );
+    }
+  }
+
   /** 同步执行子代理 */
   private async runSync(
     params: {
@@ -624,6 +648,9 @@ ${typeLines}
       }
 
       const subAgent = this.createSubAgentForType(params.type);
+      if (isolationCleanup && isolatedCwd) {
+        await SubAgentTool.bindCheckerToWorktree(subAgent, isolatedCwd);
+      }
       // P1-6：注入父会话上下文（sessionId/pid/cwd），子代理继承父会话的并发冲突检测上下文
       if (this.parentSessionId && this.parentPid && this.parentCwd) {
         subAgent.setParentSessionContext({
@@ -802,6 +829,9 @@ ${typeLines}
 
     try {
       const subAgent = this.createSubAgentForType(params.type);
+      if (isolationCleanup && isolatedCwd) {
+        await SubAgentTool.bindCheckerToWorktree(subAgent, isolatedCwd);
+      }
       // P1-6：注入父会话上下文（sessionId/pid/cwd），子代理继承父会话的并发冲突检测上下文
       if (this.parentSessionId && this.parentPid && this.parentCwd) {
         subAgent.setParentSessionContext({

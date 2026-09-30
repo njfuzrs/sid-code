@@ -125,19 +125,50 @@ export function switchCwd(newPath: string): void {
 }
 
 /**
- * 完整的 worktree 进入操作：切 cwd + 清依赖 cwd 的缓存。
+ * W22：主会话工作区（进入 / 退出 worktree）切换后要跟着重载的东西。
+ *
+ * 权限规则的 project / local 两个来源按「工作区目录」读文件，而 checker 在 cli.ts 里
+ * 建于 worktree 恢复**之前**，此后没有任何东西告诉它目录变了 —— worktree 里那份
+ * settings.local.json 永远读不到。worktree 模块不 import permission（方向反了会成环），
+ * 所以反过来由持有 checker 的一方（App）登记回调。
+ */
+type WorkspaceChangeListener = (newCwd: string) => void | Promise<void>;
+const workspaceChangeListeners = new Set<WorkspaceChangeListener>();
+
+/** 登记工作区切换回调，返回注销函数。 */
+export function onWorkspaceChange(fn: WorkspaceChangeListener): () => void {
+  workspaceChangeListeners.add(fn);
+  return () => workspaceChangeListeners.delete(fn);
+}
+
+/** 通知所有登记方工作区已切到 newCwd。单个回调失败不影响其余回调，也不阻断切换本身。 */
+export async function notifyWorkspaceChange(newCwd: string): Promise<void> {
+  for (const fn of [...workspaceChangeListeners]) {
+    try {
+      await fn(newCwd);
+    } catch (err: any) {
+      const { getLogger } = await import("../debug/logger.ts");
+      getLogger().warn("WORKTREE", `工作区切换回调失败: ${err?.message ?? err}`);
+    }
+  }
+}
+
+/**
+ * 完整的 worktree 进入操作：切 cwd + 清依赖 cwd 的缓存 + 通知工作区切换（W22）。
  */
 export async function enterWorktreeCwd(worktreePath: string): Promise<void> {
   switchCwd(worktreePath);
   const { clearCwdDependentCaches } = await import("./manager.ts");
   await clearCwdDependentCaches();
+  await notifyWorkspaceChange(worktreePath);
 }
 
 /**
- * 完整的 worktree 退出操作：切回原 cwd + 清依赖 cwd 的缓存。
+ * 完整的 worktree 退出操作：切回原 cwd + 清依赖 cwd 的缓存 + 通知工作区切换（W22）。
  */
 export async function exitWorktreeCwd(originalCwd: string): Promise<void> {
   switchCwd(originalCwd);
   const { clearCwdDependentCaches } = await import("./manager.ts");
   await clearCwdDependentCaches();
+  await notifyWorkspaceChange(originalCwd);
 }

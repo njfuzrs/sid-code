@@ -1386,6 +1386,7 @@ export class App {
     // 工具级 hook 与 Subagent span 在生产中从未触发。HookSystem 创建后经 setter 接通。
     this.wireToolHookSystem();
     this.wireToolPermissionChecker();
+    this.wireWorkspaceRuleReload();
     // 审计第 19 条：接通 skill 调用上报 → ctxMgr.addInvokedSkill（压缩时重注入 skill 工作流）
     this.wireSkillInvocationSink();
 
@@ -1566,6 +1567,24 @@ export class App {
     } | null;
     if (!checkerWithRules || typeof checkerWithRules.getRules !== "function") return undefined;
     return checkerWithRules.getRules() ?? undefined;
+  }
+
+  /**
+   * W22：进入 / 退出 worktree 后按新目录重载 project / local 权限规则，并重新下发子代理 checker。
+   * 下发给工具的子代理 checker 是 wire 那一刻规则的快照（importFromRuleLoader 复制），
+   * 只重载主 checker 不重新 wire，子代理拿到的仍是旧目录的规则。
+   */
+  private wireWorkspaceRuleReload(): void {
+    if (!this.permissionChecker) return;
+    const checker = this.permissionChecker as {
+      reloadWorkspaceRules?: (dir: string) => Promise<void>;
+    };
+    if (typeof checker.reloadWorkspaceRules !== "function") return;
+    const { onWorkspaceChange } = require("@sid-code/core/worktree/canonical.ts");
+    onWorkspaceChange(async (dir: string) => {
+      await checker.reloadWorkspaceRules!(dir);
+      this.wireToolPermissionChecker();
+    });
   }
 
   private wireToolPermissionChecker(): void {

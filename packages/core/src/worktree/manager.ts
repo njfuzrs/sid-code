@@ -215,13 +215,20 @@ export class WorktreeManager {
     }
 
     const originalBranch = this.getCurrentBranch();
-    const headCommit = this.getHeadCommit();
 
     // W9：必须在 resolveBaseTreeish 之前 —— PR 模式的 fetch 会直接改写这条分支。
     this.assertBranchSafeToReset(branchName);
 
     // 解析基准 ref（P1-3 PR / P2-3 baseRef）
     const baseTreeIsh = this.resolveBaseTreeish(opts, branchName, worktreePath);
+
+    // W26：删除检查的基线必须是**worktree 实际切出的那个 commit**，不是主仓此刻的 HEAD。
+    // 默认 baseRef=fresh 从 origin/<default> 切，而主仓本地落后 / 超前于 origin 是常态：
+    // 旧实现在这里取 getHeadCommit()，于是一个什么都没做的 worktree 在
+    // `originalHeadCommit..HEAD` 里凭空多出 N 个「未合并 commit」，exit_worktree remove
+    // 被 fail-closed 挡住，子代理的自动清理也把它当「有工作」保留下来（孤儿累积）。
+    // 解析不出来才退回主仓 HEAD（与旧行为一致，不比现在更差）。
+    const headCommit = this.resolveCommit(baseTreeIsh) || this.getHeadCommit();
 
     // 创建 worktree（-B：分支残留时重建，D4）。
     // ⚠️ -B 会无条件把已存在的分支拨到 baseTreeIsh，分不清「上次失败留下的空分支」和
@@ -602,9 +609,18 @@ export class WorktreeManager {
 
     // P1-1：Hook 创建的 worktree 走 remove hook（git worktree 始终走 git，即使配了 hook）
     if (session.hookBased) {
-      if (hasWorktreeRemoveHook(this.gitRoot)) {
-        await executeWorktreeRemoveHook(session.worktreePath, this.gitRoot);
+      // W27：没配 WorktreeRemove 时旧实现直接 return true —— 调用方据此报「已删除」，
+      // 目录却原封不动（GC 对非 git 目录的 countChanges 返回 null，也永远不会补删）。
+      // sid-code 不知道 hook 建的目录是怎么来的，不能拿 git / rm 去删，唯一诚实的
+      // 出口是失败：让调用方看到「没删」，而不是一句假的成功。
+      if (!hasWorktreeRemoveHook(this.gitRoot)) {
+        throw new Error(
+          `该 Worktree 由 WorktreeCreate hook 创建，但未配置 WorktreeRemove hook，` +
+            `sid-code 无法安全删除它（目录仍在: ${session.worktreePath}）。` +
+            `请配置 WorktreeRemove hook，或改用 keep 退出后手动清理。`,
+        );
       }
+      await executeWorktreeRemoveHook(session.worktreePath, this.gitRoot);
       return true;
     }
 
@@ -916,6 +932,19 @@ fi
       return result || "HEAD";
     } catch {
       return "HEAD";
+    }
+  }
+
+  /** 把 tree-ish 解析成 commit sha（W26）；解析失败返回空串。 */
+  private resolveCommit(treeIsh: string): string {
+    try {
+      return execFileSync("git", ["rev-parse", "--verify", "--quiet", `${treeIsh}^{commit}`], {
+        cwd: this.gitRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      return "";
     }
   }
 

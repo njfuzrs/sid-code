@@ -363,6 +363,27 @@ export class PermissionChecker implements Checker {
     return derived;
   }
 
+  /**
+   * W22：工作区目录变了（进入 / 退出 worktree）之后，按新目录重载 project / local 规则。
+   * 只换规则来源，不动 workspacePath 与路径边界 —— 边界收窄由 W12 的越界检测负责。
+   */
+  async reloadWorkspaceRules(workspaceDir: string): Promise<void> {
+    await this.ruleLoader.reloadWorkspaceSources(workspaceDir);
+    this.rules = this.ruleLoader.toPermissionRule();
+  }
+
+  /**
+   * W22：为跑在某个 worktree 里的子代理派生一份 checker：规则全部继承自本实例，
+   * 只有 project / local 两个来源换成那个 worktree 自己的 `.sid-code/`。
+   * 不改本实例（主会话、其它子代理共享它）。
+   */
+  async deriveForWorkspace(workspaceDir: string): Promise<PermissionChecker> {
+    const derived = this.deriveWithPermissionMode(this.config.permissionMode as PermissionMode);
+    derived.ruleLoader.importFromRuleLoader(this.ruleLoader);
+    await derived.reloadWorkspaceRules(workspaceDir);
+    return derived;
+  }
+
   /** 设置沙箱管理器 */
   setSandboxManager(manager: SandboxManager): void {
     this.sandboxManager = manager;

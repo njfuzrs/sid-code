@@ -27,7 +27,14 @@ export {
   MAX_SLUG_LENGTH,
 } from "./slug.ts";
 
-export { findCanonicalGitRoot, switchCwd, enterWorktreeCwd, exitWorktreeCwd } from "./canonical.ts";
+export {
+  findCanonicalGitRoot,
+  switchCwd,
+  enterWorktreeCwd,
+  exitWorktreeCwd,
+  onWorkspaceChange,
+  notifyWorkspaceChange,
+} from "./canonical.ts";
 
 export {
   saveWorktreeState,

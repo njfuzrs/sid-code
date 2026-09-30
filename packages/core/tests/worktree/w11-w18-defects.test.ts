@@ -59,7 +59,31 @@ function commit(cwd: string, file: string, msg: string): void {
 /** 让目录看起来比 GC 宽限期老 */
 function ageDir(p: string): void {
   const old = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  utimesSync(p, old, old);
+  ageGitSignals(p, old);
+}
+
+/**
+ * W23：GC 的年龄取「最近一次活动」（目录 + gitdir 的 HEAD/index/logs + 改动文件），
+ * 只拨目录 mtime 已经模拟不出一个老 worktree —— 那正是 W23 修掉的盲区。
+ */
+function ageGitSignals(worktreePath: string, t: Date): void {
+  try {
+    const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    for (const f of ["HEAD", "index", join("logs", "HEAD")]) {
+      try {
+        utimesSync(join(gitDir, f), t, t);
+      } catch {
+        /* 该文件不存在 */
+      }
+    }
+  } catch {
+    /* 非 git 工作区 */
+  }
+  utimesSync(worktreePath, t, t);
 }
 
 /** 一个确定已经退出的 pid */
