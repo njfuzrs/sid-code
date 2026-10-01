@@ -168,9 +168,7 @@ alternate buffer 的终端。代价是执行中的工具输出可能在 scrollba
 
 ### Vim 模式
 
-习惯 vi 键位的，输入框原生支持一套 Vim 引擎（`src/ui/vim/`，纯函数 reducer：
-
-输入 {当前缓冲 + 模式态 + 一个按键} → 输出 {新缓冲 + 新模式态}）：
+习惯 vi 键位的，输入框内置一套 Vim 引擎，覆盖 normal / insert / visual。
 
 ```text
 /vim        本会话开（toggle）

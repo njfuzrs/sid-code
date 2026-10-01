@@ -87,7 +87,7 @@ const AUDIENCES = [
     key: "team",
     tab: "企业",
     items: [
-      "代码与轨迹不出机房，安全审查一次过，不用为合规单独报批",
+      "轨迹、账本、评测全在本地；配本地模型时，代码也不出机房",
       "模型不绑死：网关涨价、换供应商、上自研模型，改配置不换工具",
       "你们的规矩能进 harness，团队默认配置一键分发，policy 可管控",
       "过程数据是你们自己的资产：查成本归属、防功能回退、做团队级优化",
@@ -124,7 +124,7 @@ const FEATURES: Card[] = [
   {
     title: "企业级",
     lead: "装上就接得上你公司已有的那套东西。",
-    desc: "内部网关计费口径、内网 GitLab、企业 SSO、MCP、团队默认配置分发，是按真实企业内网一条条适配出来的，不用先改造企业来适配工具。",
+    desc: "内部网关计费口径、企业 SSO、MCP、团队默认配置分发，面向企业内网设计，不用先改造企业来适配工具。",
     link: "/team/defaults",
     linkText: "团队部署",
     paths: ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9.5 21v-5h5v5"],
@@ -144,7 +144,7 @@ const FEATURES: Card[] = [
   },
   {
     title: "数据主权",
-    lead: "代码和对话不出你的机房。",
+    lead: "轨迹、账本、评测全在本地；配本地模型时，代码也不出机房。",
     desc: "会话轨迹、评测结果、成本账本全落在自己的基础设施里，不进任何人的训练集。数据在自己手上，才谈得上拿它做优化。",
     link: "/use/sessions",
     linkText: "本地落盘",
@@ -529,7 +529,7 @@ onUnmounted(() => {
       <header class="hs-head">
         <span class="hs-orb hs-orb-4" aria-hidden="true" />
         <h2 class="hs-h2">装上试试</h2>
-        <p class="hs-sub">一条命令装完 · macOS 与 Linux · 不需要 sudo</p>
+        <p class="hs-sub">一条命令装完 · macOS 与 Linux · Windows 走 WSL2 · 不需要 sudo</p>
       </header>
 
       <div class="hs-term">
