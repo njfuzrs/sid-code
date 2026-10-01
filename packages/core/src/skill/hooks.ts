@@ -31,8 +31,21 @@ function resolveEvent(name: string): HookEventName | null {
   return (LEGACY_EVENT_MAP as Record<string, HookEventName>)[name] ?? null;
 }
 
+let scopeSeq = 0;
+
+/**
+ * P1-6：生成一次 skill 调用的 hook 作用域 id。
+ * 「调用完就卸」的路径（模型元工具、fork）注册时带上它、卸载时按它删，
+ * 避免按名字删把 inline 路径注册的同名长期 hooks 一起清空。
+ */
+export function newSkillHookScope(): string {
+  scopeSeq += 1;
+  return `call-${Date.now().toString(36)}-${scopeSeq}`;
+}
+
 /**
  * 注册 Skill 声明的生命周期钩子
+ * @param scope 调用作用域 id（见 newSkillHookScope）；省略 = 会话作用域（inline 长期存活）
  * @returns 成功注册的 hook 数量
  */
 export function registerSkillHooks(
@@ -40,6 +53,7 @@ export function registerSkillHooks(
   skillName: string,
   hooksConfig: SkillHooksConfig | undefined,
   skillRoot: string | undefined,
+  scope?: string,
 ): number {
   if (!hooksConfig) return 0;
   const log = getLogger();
@@ -94,6 +108,7 @@ export function registerSkillHooks(
             matcher: def.matcher,
             skillName,
             once: hook.once ?? false,
+            scope,
           });
           count++;
           log.debug("SKILL", `注册 Skill hook: ${skillName} → ${eventName}:${def.matcher ?? "*"}`);
@@ -111,7 +126,11 @@ export function registerSkillHooks(
   return count;
 }
 
-/** 卸载 Skill 声明的所有生命周期钩子 */
-export function unregisterSkillHooks(hookSystem: HookSystem, skillName: string): number {
-  return hookSystem.removeSkillHooks(skillName);
+/** 卸载 Skill 声明的生命周期钩子（传 scope 只卸该次调用注册的那一批） */
+export function unregisterSkillHooks(
+  hookSystem: HookSystem,
+  skillName: string,
+  scope?: string,
+): number {
+  return hookSystem.removeSkillHooks(skillName, scope);
 }

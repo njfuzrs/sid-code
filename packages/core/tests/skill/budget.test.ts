@@ -45,30 +45,36 @@ describe("formatCommandsWithinBudget", () => {
     expect(out).not.toContain("desc");
   });
 
-  test("预算极紧时 bundled 完整、非 bundled 只显示名称", () => {
+  test("预算极紧时 bundled 完整（封顶内）、非 bundled 只显示名称", () => {
     const longDesc = "x".repeat(500);
     const entries = [
       entry("bundled-skill", longDesc, true),
-      entry("user-skill-1", longDesc, false),
-      entry("user-skill-2", longDesc, false),
+      ...Array.from({ length: 10 }, (_, i) => entry(`user-skill-${i}`, longDesc, false)),
     ];
-    // 给一个极小的预算（25 token ≈ 100 字符）
-    const out = formatCommandsWithinBudget(entries, 25);
+    // 窗口 15000 token → 预算 600 字符：bundled 整行 268 ≤ 封顶 300 保留完整；
+    // 剩余 332 扣掉 10 条前缀后均分 < 30 → 普通条目只剩名字。
+    // （P1-1 之前这里用 25 token 窗口 = 1 字符预算，锁的正是「bundled 无封顶、超预算照样全量输出」的缺陷。）
+    const out = formatCommandsWithinBudget(entries, 15_000);
     const lines = out.split("\n");
-    // bundled 保留完整描述（带冒号）
     const bundledLine = lines.find((l) => l.startsWith("- bundled-skill"));
     expect(bundledLine).toContain(":");
-    // 非 bundled 只剩名称（无冒号描述）
-    const userLine = lines.find((l) => l.startsWith("- user-skill-1"));
-    expect(userLine).toBe("- user-skill-1");
+    expect(lines.find((l) => l.startsWith("- user-skill-1"))).toBe("- user-skill-1");
+    expect(out.length).toBeLessThanOrEqual(600);
   });
 
-  test("bundled 享有特权不被截断", () => {
+  test("bundled 享有特权不被截断（封顶内），普通条目被截断", () => {
     const longDesc = "需要保留的完整描述内容".repeat(20);
-    const entries = [entry("core", longDesc, true), entry("other", longDesc, false)];
-    const out = formatCommandsWithinBudget(entries, 30);
-    const coreLine = out.split("\n").find((l) => l.startsWith("- core"));
-    expect(coreLine).toContain(longDesc);
+    const entries = [
+      entry("core", longDesc, true),
+      ...Array.from({ length: 10 }, (_, i) => entry(`other-${i}`, longDesc, false)),
+    ];
+    // 窗口 20000 token → 预算 800 字符：core 整行 229 在封顶 400 内，享有特权
+    const out = formatCommandsWithinBudget(entries, 20_000);
+    const lines = out.split("\n");
+    expect(lines.find((l) => l.startsWith("- core"))).toBe(`- core: ${longDesc}`);
+    const other = lines.find((l) => l.startsWith("- other-0"))!;
+    expect(other.length).toBeLessThan(`- other-0: ${longDesc}`.length);
+    expect(out.length).toBeLessThanOrEqual(800);
   });
 });
 

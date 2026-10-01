@@ -5,7 +5,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import type { SkillDefinition } from "./types.ts";
-import { SkillLoader } from "./loader.ts";
+import { SkillLoader, MAX_SKILLS } from "./loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { ensureBuiltinSkillsReleased } from "./ensure-builtin.ts";
 
@@ -87,16 +87,29 @@ export class SkillManager {
 
   /**
    * 添加 Skill，处理同名覆盖
+   *
+   * P1-2：MAX_SKILLS 失控保护在这里对**全量集合**执行。discover 的两次 loadAll、
+   * 插件 / MCP / 动态发现三条追加路径全都汇到这个函数，放在这里一处即全覆盖。
+   * 同名覆盖不增加总量，故不受上限影响。
+   *
+   * @returns 实际被接纳（新增或覆盖）的 skill；超限被丢弃的不在其中
    */
-  private addSkillsWithPrecedence(newSkills: SkillDefinition[]): void {
+  private addSkillsWithPrecedence(newSkills: SkillDefinition[]): SkillDefinition[] {
     const log = getLogger();
     const skillMap = new Map<string, SkillDefinition>(
       this.skills.map((s) => [s.name.toLowerCase(), s]),
     );
+    const accepted: SkillDefinition[] = [];
+    let dropped = 0;
 
     for (const newSkill of newSkills) {
       const key = newSkill.name.toLowerCase();
       const existingSkill = skillMap.get(key);
+
+      if (!existingSkill && skillMap.size >= MAX_SKILLS) {
+        dropped++;
+        continue;
+      }
 
       if (existingSkill && existingSkill.filePath !== newSkill.filePath) {
         if (existingSkill.isBuiltin) {
@@ -110,30 +123,41 @@ export class SkillManager {
       }
 
       skillMap.set(key, newSkill);
+      accepted.push(newSkill);
+    }
+
+    if (dropped > 0) {
+      log.warn(
+        "SKILL",
+        `Skill 总数已达上限 (${MAX_SKILLS})，丢弃 ${dropped} 个新 Skill（疑似目录误配或循环链接）`,
+      );
     }
 
     this.skills = Array.from(skillMap.values());
+    return accepted;
   }
 
   /**
    * P0-4：追加插件 skills（命名空间前缀 pluginName:skillName 天然避免与内置/用户冲突）。
    * 在 discover 之后调用。同名走标准 precedence（后者覆盖），但前缀隔离下几乎不会同名。
    */
-  addPluginSkills(pluginSkills: SkillDefinition[]): void {
-    if (pluginSkills.length === 0) return;
-    this.addSkillsWithPrecedence(pluginSkills);
+  addPluginSkills(pluginSkills: SkillDefinition[]): SkillDefinition[] {
+    if (pluginSkills.length === 0) return [];
+    // P1-2：只登记被接纳的（超限丢弃的不能进热重载重放清单）
+    const accepted = this.addSkillsWithPrecedence(pluginSkills);
     // P2-3：登记以便热重载后重放（clearSkills 只清 builtin/user/project 重扫结果）。
     // 同 filePath 去重，避免同一 skill 多次 add 后 reload 重复堆叠。
     const known = new Set(this.appendedSkills.map((s) => s.filePath));
-    for (const s of pluginSkills) {
+    for (const s of accepted) {
       if (!known.has(s.filePath)) {
         this.appendedSkills.push(s);
         known.add(s.filePath);
       }
     }
-    getLogger().info("SKILL", `追加 ${pluginSkills.length} 个插件 Skill`);
+    getLogger().info("SKILL", `追加 ${accepted.length} 个插件 Skill`);
     // 斜杠命令快照失效：新 skill 需立即可 /name 调用（否则报「未知命令」）
     this.notifySkillsChanged();
+    return accepted;
   }
 
   /**
@@ -155,10 +179,11 @@ export class SkillManager {
     this.skills = this.skills.filter((s) => !isPlugin(s));
     this.appendedSkills = this.appendedSkills.filter((s) => !isPlugin(s));
 
+    let accepted: SkillDefinition[] = [];
     if (pluginSkills.length > 0) {
-      this.addSkillsWithPrecedence(pluginSkills);
+      accepted = this.addSkillsWithPrecedence(pluginSkills);
       const known = new Set(this.appendedSkills.map((s) => s.filePath));
-      for (const s of pluginSkills) {
+      for (const s of accepted) {
         if (!known.has(s.filePath)) {
           this.appendedSkills.push(s);
           known.add(s.filePath);
@@ -166,9 +191,9 @@ export class SkillManager {
       }
     }
 
-    getLogger().info("SKILL", `插件 Skill 已替换: ${before} → ${pluginSkills.length}`);
+    getLogger().info("SKILL", `插件 Skill 已替换: ${before} → ${accepted.length}`);
     this.notifySkillsChanged();
-    return pluginSkills.length;
+    return accepted.length;
   }
 
   /**

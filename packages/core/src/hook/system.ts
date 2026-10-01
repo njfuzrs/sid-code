@@ -111,14 +111,17 @@ export class HookSystem {
   registerSessionHook(
     config: HookConfig,
     eventName: HookEventName,
-    options: { matcher?: string; skillName: string; once?: boolean },
+    options: { matcher?: string; skillName: string; once?: boolean; scope?: string },
   ): void {
     this.registry.registerSessionHook(config, eventName, options);
   }
 
-  /** 移除指定 Skill 注册的所有会话级 hook，返回移除数量 */
-  removeSkillHooks(skillName: string): number {
-    return this.registry.removeSkillHooks(skillName);
+  /**
+   * 移除指定 Skill 注册的会话级 hook，返回移除数量。
+   * 传 scope 时只删该次调用注册的那一批（P1-6：调用作用域卸载不能按名字删）。
+   */
+  removeSkillHooks(skillName: string, scope?: string): number {
+    return this.registry.removeSkillHooks(skillName, scope);
   }
 
   /** 获取事件处理器（用于触发事件） */

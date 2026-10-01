@@ -67,7 +67,7 @@ export class SkillCommand implements Command {
     }
 
     // ── P0-3：权限判定（用户路径可用主会话弹窗做 ask）──
-    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks } =
+    const { authorizeSkill, resolveSkillAsk, registerSkillLifecycleHooks, newSkillHookScope } =
       await import("@sid-code/core/skill/executor.ts");
     const rawRules =
       ctx.permissionChecker &&
@@ -98,7 +98,9 @@ export class SkillCommand implements Command {
     // ── P0-2：授权通过后注册生命周期 hooks（MCP 来源内部拒绝）──
     // inline 语义把 skill 注入主对话、长期存活，hooks 也应持续到会话结束（不卸载）；
     // fork 在子代理内执行，hooks 作用域限定本次调用，executeFork 返回后卸载。
-    const hookCount = registerSkillLifecycleHooks(this.skill, ctx.hookSystem);
+    // P1-6：fork 调用结束即卸载，按本次调用的作用域 id 精确删；inline 不传 scope（长期存活）
+    const hookScope = this.context === "fork" ? newSkillHookScope() : undefined;
+    const hookCount = registerSkillLifecycleHooks(this.skill, ctx.hookSystem, hookScope);
 
     // fork 模式：子代理独立执行
     if (this.context === "fork") {
@@ -106,7 +108,7 @@ export class SkillCommand implements Command {
         return await this.executeFork(prompt, ctx);
       } finally {
         if (hookCount > 0 && ctx.hookSystem) {
-          ctx.hookSystem.removeSkillHooks(this.skill.name);
+          ctx.hookSystem.removeSkillHooks(this.skill.name, hookScope);
         }
       }
     }

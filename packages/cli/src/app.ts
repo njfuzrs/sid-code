@@ -129,6 +129,7 @@ import {
   setJitTraceSink,
   JIT_EVENT_NAME,
 } from "@sid-code/core/trace/jit-telemetry.ts";
+import { setSkillTraceSink, SKILL_DEGRADATION_EVENT_NAME } from "@sid-code/core/skill/telemetry.ts";
 import {
   setGitOperationObserver,
   resetGitOperationStats,
@@ -3441,6 +3442,13 @@ export class App {
     setJitTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(JIT_EVENT_NAME, data)
+        : null,
+    );
+    // P1-3：Skill 降级 / fail-open / ask 无通道埋点，同款模块级 sink（降级点在 core 纯函数里，
+    // 拿不到 collector）。不接则四处静默降级在轨迹里分母恒 0。
+    setSkillTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(SKILL_DEGRADATION_EVENT_NAME, data)
         : null,
     );
 

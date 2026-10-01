@@ -44,6 +44,12 @@ export class SkillActivationCoordinator {
   private pendingActivated: string[] = [];
   /** P3-2：已发送进 listing 的 skill 名（小写），用于首轮全量 + 后续增量去重 */
   private sentSkillNames = new Set<string>();
+  /**
+   * P1-4：是否已建立过「首轮」基线（init / reinit / 首次 drain 任一发生即为 true）。
+   * 不能用 `sentSkillNames.size === 0` 代理：全条件激活项目里基线集合本就为空，
+   * 首轮分支会一直武装着，第一次真实激活时贴上「首轮全量」文案，归因信息丢失。
+   */
+  private hasSentInitial = false;
 
   constructor(opts: ActivationCoordinatorOptions) {
     this.manager = opts.manager;
@@ -72,6 +78,7 @@ export class SkillActivationCoordinator {
     this.sentSkillNames = new Set(
       this.manager.getListableSkills().map((s) => s.name.toLowerCase()),
     );
+    this.hasSentInitial = true;
     this.pendingActivated = [];
     return gatedNames;
   }
@@ -113,6 +120,7 @@ export class SkillActivationCoordinator {
     this.sentSkillNames = new Set(
       this.manager.getListableSkills().map((s) => s.name.toLowerCase()),
     );
+    this.hasSentInitial = true;
     this.pendingActivated = [];
 
     getLogger().info(
@@ -228,8 +236,10 @@ export class SkillActivationCoordinator {
         .map((s) => s.name);
       // 先 gate 再 add：避免 addPluginSkills 触发的 skillsChanged 回调看到一个未 gate 的条件 skill
       this.manager.gateSkills(conditionalNames);
-      this.manager.addPluginSkills(newSkills); // 复用 precedence 追加逻辑
+      // P1-2：复用 precedence 追加逻辑，总量上限在 manager 层执行；超限被丢弃的不再往下走
+      const accepted = new Set(this.manager.addPluginSkills(newSkills));
       for (const s of unconditional) {
+        if (!accepted.has(s)) continue;
         if (!s.disableModelInvocation) this.pendingActivated.push(s.name);
       }
       // 触发本轮发现的那批路径若恰好匹配新条件 skill 的 paths，同一轮内即激活——
@@ -251,8 +261,13 @@ export class SkillActivationCoordinator {
   /**
    * P3-2：排空待注入的 skill 摘要（增量）。query loop 每轮开始调用一次。
    *
-   * - 首轮（sentSkillNames 为空）：返回全部可 listing 的 skill（全量）。
-   * - 后续轮：只返回**新激活/新发现**且尚未发送过的 skill（增量）。
+   * - 首轮（未调过 init/reinit、也未 drain 过）：返回全部可 listing 的 skill（全量）。
+   * - 后续轮：返回当前可 listing 但尚未发送过的 skill（增量）。
+   *
+   * P1-7：增量**不依赖** pendingActivated 被及时填充，而是直接比对「manager 当前真实可见集合」
+   * 与「已发送集合」。onToolResults 是 fire-and-forget 的，动态发现（含动态 import + 磁盘扫描）
+   * 可能晚于下一轮开头的 drain 完成；此前晚到的激活会被那次 drain 清空 pending 而永久丢失，
+   * 现在至多晚一轮、在再下一轮被自然发现。
    *
    * 返回的文本块由 loop 放进 reminderParts（user 消息，cache-friendly），
    * 不写进 system prompt 静态前缀，避免击穿 prompt cache。
@@ -262,20 +277,14 @@ export class SkillActivationCoordinator {
   drainListingDelta(): string | null {
     const listable = this.manager.getListableSkills();
 
-    let toSend: SkillDefinition[];
-    if (this.sentSkillNames.size === 0) {
-      // 首轮全量
-      toSend = listable;
-    } else {
-      // 增量：只发新激活且未发送过的
-      const pendingSet = new Set(this.pendingActivated.map((n) => n.toLowerCase()));
-      toSend = listable.filter(
-        (s) =>
-          pendingSet.has(s.name.toLowerCase()) && !this.sentSkillNames.has(s.name.toLowerCase()),
-      );
-    }
+    // P1-4：首轮判据是显式布尔，不是「已发送集合是否为空」这个状态副产品
+    const isFirst = !this.hasSentInitial;
+    this.hasSentInitial = true;
 
-    // 清空 pending（无论首轮还是增量，都已消费）
+    // 首轮全量 / 后续增量，都是「可见但未发送过」—— 首轮时已发送集合为空，二者自然统一
+    const toSend = listable.filter((s) => !this.sentSkillNames.has(s.name.toLowerCase()));
+
+    // 清空 pending（它现在只是「有新激活」的提示，不再是增量的唯一数据源）
     this.pendingActivated = [];
 
     if (toSend.length === 0) return null;
@@ -283,7 +292,6 @@ export class SkillActivationCoordinator {
     for (const s of toSend) this.sentSkillNames.add(s.name.toLowerCase());
 
     const lines = toSend.map((s) => `- ${s.name}: ${(s.whenToUse || s.description || "").trim()}`);
-    const isFirst = this.sentSkillNames.size === toSend.length;
     const header = isFirst
       ? "以下 Skill 现可通过 Skill 工具调用："
       : "以下 Skill 因你的文件操作已被激活，现可通过 Skill 工具调用：";
