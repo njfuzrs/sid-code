@@ -61,8 +61,9 @@ describe("UnifiedCommandRegistry.getCommands", () => {
   });
 
   test("合并 MCP 命令并去重", async () => {
-    const reg = new FakeRegistry([localCmd("compact")]);
-    const mcp = [localCmd("compact"), localCmd("mcp-only")];
+    // compact 是保护名（D7），静态那条须标 builtin，否则会被当成非内置来源拦下
+    const reg = new FakeRegistry([localCmd("compact", { source: "builtin" })]);
+    const mcp = [localCmd("compact", { source: "mcp" }), localCmd("mcp-only", { source: "mcp" })];
     const cmds = await reg.getCommands("/tmp", mcp);
     const names = cmds.map((c) => c.name);
     // compact 已存在，MCP 版本不重复加入
