@@ -15,6 +15,7 @@
  *   或 sidHomePath()，禁止再硬编码 homedir()。
  */
 
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { join, resolve, sep } from "path";
 
@@ -151,19 +152,45 @@ export function isInsideSidHome(absolutePath: string): boolean {
  * - state/  ：散落的运行时状态（app.json / command-usage / trusted-extensions 等）
  * - 其余按职责分目录（checkpoints / sessions / projects / trajectories / ...）
  */
+/**
+ * 企业管控文件的平台系统目录（对齐 CC managedPath）。
+ * - macOS：/Library/Application Support/SidCode
+ * - Windows：%PROGRAMDATA%\\SidCode（缺省 C:\\ProgramData）
+ * - Linux 及其它：/etc/sid-code
+ * 硬编码 /etc 在 macOS / Windows 上永不存在，所以必须按平台分。
+ */
+export function managedSettingsSystemDir(): string {
+  if (process.platform === "darwin") return "/Library/Application Support/SidCode";
+  if (process.platform === "win32") {
+    return join(process.env.PROGRAMDATA || "C:\\ProgramData", "SidCode");
+  }
+  return "/etc/sid-code";
+}
+
+/** 候选链里第一个存在的企业策略文件；都不存在时返回 null */
+export function resolveManagedPolicyFile(): string | null {
+  return sidPaths.managedPolicyCandidates().find((p) => existsSync(p)) ?? null;
+}
+
 export const sidPaths = {
   // ── 配置文件 ──
   settings: () => sidHomePath("settings.json"),
   appConfig: () => sidHomePath("app.json"),
+  /** 用户级回退位置（只在系统级文件不存在时生效，见 managedPolicyCandidates） */
   managedSettings: () => sidHomePath("managed-settings.json"),
   /**
-   * 企业策略文件候选路径（P2-1，first-exists-wins，优先级从高到低）：
-   * 1. /etc/sid-code/managed-settings.json —— 系统级企业管控（对齐 CC 系统 managed 路径，最高）
-   * 2. ~/.sid-code/managed-settings.json    —— 用户级 MDM/回退（原 ManagedFileLoader 路径，兼容既有）
-   * 统一后废弃历史上冲突的 /etc/sid-code/policy.json 与 /etc/sid-code/policy.yaml 两个路径。
+   * 企业策略文件候选路径（first-exists-wins，优先级从高到低）——**唯一事实源**（D6）：
+   * 1. 平台系统级路径（见 managedSettingsSystemDir）—— 需要管理员权限才能写
+   * 2. ~/.sid-code/managed-settings.json —— 用户级回退（兼容既有部署）
+   *
+   * settings 链的 policySettings 层、PolicyManager 的 feature 开关、rule-loader 的权限规则、
+   * identity 读取四个消费方都走这一条链。此前三处各有各的路径：macOS 上
+   * `/Library/Application Support/SidCode`、`~/.sid-code`、`/etc/sid-code` 互不重叠，
+   * 管理员放哪都只能生效一部分；feature 开关更是只认用户可写的 `~/.sid-code`，
+   * 用户删掉文件管控就当场消失。系统级排第一，意味着管理员一旦部署，用户级那份即被忽略。
    */
   managedPolicyCandidates: (): string[] => [
-    "/etc/sid-code/managed-settings.json",
+    join(managedSettingsSystemDir(), "managed-settings.json"),
     sidHomePath("managed-settings.json"),
   ],
   globalClaudeMd: () => sidHomePath("CLAUDE.md"),

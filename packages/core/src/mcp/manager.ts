@@ -8,7 +8,8 @@
 
 import type { MCPServerConfig } from "../config/config.ts";
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
-import type { MCPToolDefinition, MCPResource, MCPPrompt } from "./types.ts";
+import type { MCPToolDefinition, MCPResource, MCPPrompt, McpPolicy } from "./types.ts";
+import { isMcpServerAllowed } from "./policy.ts";
 import { MCPConnectionStatus } from "./types.ts";
 import { MCPClient } from "./client.ts";
 import {
@@ -35,6 +36,12 @@ import {
 /** 重连配置 */
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY = 1000; // ms
+/**
+ * 熔断 half-open 探测间隔（D23）：耗尽重连次数进入 FAILED 后，按此周期再试探一次，
+ * 成功即回 CONNECTED 并清零计数。没有这一步，一次 ~31s 的网络中断就会让 server
+ * 在会话余生里永久不可用。
+ */
+const HALF_OPEN_PROBE_INTERVAL = 60_000; // ms
 /** 健康检查间隔 */
 const HEARTBEAT_INTERVAL = 30_000; // ms
 /** 工具描述截断上限 */
@@ -73,6 +80,8 @@ interface ServerState {
   error?: string;
   reconnectAttempts: number;
   heartbeatTimer?: ReturnType<typeof setInterval>;
+  /** half-open 探测定时器（D23，FAILED 后周期性试探恢复） */
+  probeTimer?: ReturnType<typeof setTimeout>;
   resources: MCPResource[];
   prompts: MCPPrompt[];
   instructions?: string;
@@ -235,17 +244,42 @@ export class MCPManager {
    * 未设置时服务器 elicitation 请求全部被 cancel（defaultElicitationHandler）。
    */
   elicitationHandler?: import("./elicitation.ts").ElicitationHandler;
+  /**
+   * 企业 MCP 策略（D13）：denylist / allowlist。
+   *
+   * 放在 manager 而不是 config 合并层，因为 manager 是**所有**连接路径的必经点：
+   * settings/.mcp.json 之外，插件 MCP、`--mcp-config`、IDE 动态注册、运行时 addServer /
+   * 重连、插件热重载都直接进 connectAll / addServer，从不经过 mergeMcpConfigs。
+   * 只在合并层过闸时这些路径全部绕过，deny 只在一条路径上 win。
+   */
+  policy?: McpPolicy;
+  /** closeAll 之后置真，阻止后台重连 / 探测复活连接 */
+  private shutDown = false;
+  /** half-open 探测间隔（测试可调小；缺省 HALF_OPEN_PROBE_INTERVAL） */
+  halfOpenProbeIntervalMs = HALF_OPEN_PROBE_INTERVAL;
+  /** 重连退避基数（测试可调小；缺省 RECONNECT_BASE_DELAY） */
+  reconnectBaseDelayMs = RECONNECT_BASE_DELAY;
+
+  /** 连接前的最后一道策略闸（D13）；被拒时记日志并返回 false */
+  private passesPolicy(name: string, config: MCPServerConfig): boolean {
+    if (!this.policy) return true;
+    if (isMcpServerAllowed(name, config, this.policy)) return true;
+    getLogger().info("MCP", `策略过滤: ${name} 被 mcpPolicy 拒绝，不建立连接`);
+    return false;
+  }
 
   /** 连接所有配置的 MCP 服务器（本地/远程分流并发控制） */
   async connectAll(servers: Record<string, MCPServerConfig>): Promise<Tool[]> {
     const log = getLogger();
     const allTools: Tool[] = [];
 
-    const entries = Object.entries(servers).filter(([, config]) => config.enabled !== false);
-    const skipped = Object.keys(servers).length - entries.length;
+    const enabled = Object.entries(servers).filter(([, config]) => config.enabled !== false);
+    const skipped = Object.keys(servers).length - enabled.length;
     if (skipped > 0) {
       log.info("MCP", `跳过 ${skipped} 个已禁用的 MCP 服务器`);
     }
+    // D13：策略闸下移到连接入口，覆盖插件 / --mcp-config / 热重载等全部来源
+    const entries = enabled.filter(([name, config]) => this.passesPolicy(name, config));
 
     if (entries.length === 0) return allTools;
 
@@ -306,6 +340,10 @@ export class MCPManager {
 
   /** 连接单个 MCP 服务器 */
   async connect(name: string, config: MCPServerConfig, signal?: AbortSignal): Promise<Tool[]> {
+    // D13：公开入口，任何调用方直连也必须过闸（重连循环同样经此）
+    if (!this.passesPolicy(name, config)) {
+      throw new Error(`MCP 服务器 ${name} 被 mcpPolicy 拒绝`);
+    }
     // OAuth 服务器：连接前确保拿到有效 token；首连/凭据失效时触发交互式授权
     if (isOAuthEnabled(config) && config.transport !== "stdio") {
       await this.ensureOAuthToken(name, config);
@@ -631,13 +669,15 @@ export class MCPManager {
 
     // http / http-json 是无长连接的请求-响应传输，不做心跳（重连按请求粒度处理）
     if (!config || config.transport === "http" || config.transport === "http-json") return;
-    if (
-      state.status === MCPConnectionStatus.RECONNECTING ||
-      state.status === MCPConnectionStatus.FAILED
-    )
-      return;
+    // 只有「已连接」才谈得上断线：CONNECTING 期间的关闭由连接入口自己的 catch 处理，
+    // RECONNECTING 说明已在重连，FAILED 由 half-open 探测负责恢复（见 scheduleHalfOpenProbe）。
+    // D1 接通 onClose 之后，这条 guard 防止连接中途断开时并发起第二条重连链。
+    if (state.status !== MCPConnectionStatus.CONNECTED || this.shutDown) return;
 
     this.stopHeartbeat(name);
+    // D23：每一轮断线都是一次新的重连预算。旧实现只在重连成功时清零，
+    // 耗尽一次后计数停在 MAX，之后 while 条件恒假——状态锁 + 计数锁双重锁死。
+    state.reconnectAttempts = 0;
 
     // 清理旧 client
     const oldClient = this.clients.get(name);
@@ -662,7 +702,7 @@ export class MCPManager {
     while (state.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       state.reconnectAttempts++;
       const delay =
-        RECONNECT_BASE_DELAY *
+        this.reconnectBaseDelayMs *
         Math.pow(2, state.reconnectAttempts - 1) *
         (0.7 + Math.random() * 0.6);
       log.info(
@@ -670,6 +710,8 @@ export class MCPManager {
         `${name} 第 ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 次重连，等待 ${Math.round(delay)}ms`,
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
+      // 等待期间被主动断开 / 移除（disconnect 会删 config）→ 放弃重连
+      if (this.serverConfigs.get(name) !== config || this.shutDown) return;
 
       try {
         const tools = await this.connect(name, config);
@@ -692,6 +734,53 @@ export class MCPManager {
 
     log.error("MCP", `${name} 超过最大重连次数 (${MAX_RECONNECT_ATTEMPTS})，标记为失败`);
     this.setStatus(name, MCPConnectionStatus.FAILED, "超过最大重连次数");
+    this.scheduleHalfOpenProbe(name, config);
+  }
+
+  /**
+   * 熔断 half-open（D23）：FAILED 之后按更长周期试探一次，成功则回 CONNECTED
+   * 并清零计数；失败继续等下一个周期。被主动断开 / 移除（config 已换或已删）时自动停止。
+   */
+  private scheduleHalfOpenProbe(name: string, config: MCPServerConfig): void {
+    const state = this.getState(name);
+    this.stopHalfOpenProbe(name);
+    state.probeTimer = setTimeout(async () => {
+      state.probeTimer = undefined;
+      if (this.serverConfigs.get(name) !== config || this.shutDown) return;
+      if (state.status !== MCPConnectionStatus.FAILED) return;
+      const log = getLogger();
+      try {
+        const tools = await this.connect(name, config);
+        if (this.serverConfigs.get(name) !== config) {
+          this.clients.get(name)?.close();
+          return;
+        }
+        state.reconnectAttempts = 0;
+        this.setStatus(name, MCPConnectionStatus.CONNECTED);
+        log.info("MCP", `${name} half-open 探测成功，恢复连接，注册 ${tools.length} 个工具`);
+        this.onToolsRefresh?.(name, tools);
+      } catch (err: any) {
+        log.debug("MCP", `${name} half-open 探测失败: ${err?.message ?? err}`);
+        const client = this.clients.get(name);
+        if (client) {
+          try {
+            client.close();
+          } catch {}
+          this.clients.delete(name);
+        }
+        if (this.serverConfigs.get(name) === config) this.scheduleHalfOpenProbe(name, config);
+      }
+    }, this.halfOpenProbeIntervalMs);
+    // 探测定时器不应阻止进程退出
+    (state.probeTimer as any)?.unref?.();
+  }
+
+  private stopHalfOpenProbe(name: string): void {
+    const state = this.serverStates.get(name);
+    if (state?.probeTimer) {
+      clearTimeout(state.probeTimer);
+      state.probeTimer = undefined;
+    }
   }
 
   // ─── 健康检查 ───
@@ -795,8 +884,11 @@ export class MCPManager {
 
   /** 关闭所有连接 */
   closeAll(): void {
+    // 进入关停：退避中的重连循环与 half-open 探测醒来后不再建连
+    this.shutDown = true;
     for (const [name] of this.serverStates) {
       this.stopHeartbeat(name);
+      this.stopHalfOpenProbe(name);
     }
     for (const [, client] of this.clients) {
       client.close();
@@ -807,6 +899,7 @@ export class MCPManager {
   /** 断开指定名称的单个服务器连接（清理 client / state / config） */
   disconnect(name: string): void {
     this.stopHeartbeat(name);
+    this.stopHalfOpenProbe(name);
     const client = this.clients.get(name);
     if (client) {
       try {
@@ -848,6 +941,9 @@ export class MCPManager {
    */
   async addServer(name: string, config: MCPServerConfig): Promise<Tool[]> {
     const log = getLogger();
+
+    // D13：IDE 动态注册 / 手动添加 / reconnectServer 都走这里，过闸失败不建立任何连接
+    if (!this.passesPolicy(name, config)) return [];
 
     // 同名已存在 → 先清理
     if (this.clients.has(name) || this.serverConfigs.has(name)) {
@@ -954,6 +1050,9 @@ export class MCPManager {
     }
     if (config.transport === "stdio") {
       throw new Error(`stdio 传输的服务器 "${name}" 不支持 OAuth`);
+    }
+    if (!this.passesPolicy(name, config)) {
+      throw new Error(`MCP 服务器 "${name}" 被 mcpPolicy 拒绝`);
     }
 
     // 先断开现有连接

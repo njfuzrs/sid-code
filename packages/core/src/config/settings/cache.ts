@@ -29,8 +29,12 @@ export interface MergedSettings {
 /** Level 1: 会话级合并缓存 */
 let sessionSettingsCache: MergedSettings | null = null;
 
-/** Level 2: 单来源缓存 */
-const perSourceCache = new Map<SettingSource, SettingsJson | null>();
+/**
+ * Level 2: 单来源缓存。
+ * 值是带 errors 的 ParsedSettings（不是裸 SettingsJson）：L1、L3 都带 errors，
+ * 中间层只存 settings 会让 L2 命中时诊断恒为空（见 settings.ts getSettingsForSource）。
+ */
+const perSourceCache = new Map<SettingSource, ParsedSettings>();
 
 /** Level 3: 文件解析缓存 */
 const parseFileCache = new Map<string, ParsedSettings>();
@@ -61,12 +65,12 @@ export function clearCachedParsedFile(path: string): void {
 }
 
 /** 获取单来源缓存（undefined = 未缓存；null = 缓存了"该来源无设置"） */
-export function getCachedSource(source: SettingSource): SettingsJson | null | undefined {
-  return perSourceCache.has(source) ? perSourceCache.get(source) : undefined;
+export function getCachedSource(source: SettingSource): ParsedSettings | undefined {
+  return perSourceCache.get(source);
 }
 
 /** 设置单来源缓存 */
-export function setCachedSource(source: SettingSource, value: SettingsJson | null): void {
+export function setCachedSource(source: SettingSource, value: ParsedSettings): void {
   perSourceCache.set(source, value);
 }
 

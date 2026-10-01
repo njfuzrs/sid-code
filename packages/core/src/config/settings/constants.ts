@@ -7,20 +7,25 @@
  *
  * 设计决策（见 Spec 15 §3.1）：
  * - 不引入 Plugin Settings 层（sid-code 暂无独立插件 Settings 生态）
- * - Policy Settings 简化为单文件 /etc/sid-code/policy.json（暂不需要 MDM/远程下发）
+ * - Policy Settings 走 sidPaths.managedPolicyCandidates（系统级优先、~/.sid-code 回退）
  */
 
 import { join } from "path";
-import { homedir, platform } from "os";
+import { homedir } from "os";
 import { existsSync, readdirSync } from "fs";
-import { getSidHome, isInsideSidHome } from "../paths.ts";
+import {
+  getSidHome,
+  isInsideSidHome,
+  managedSettingsSystemDir,
+  resolveManagedPolicyFile,
+} from "../paths.ts";
 
 export const SETTING_SOURCES = [
   "userSettings", // ~/.sid-code/settings.json — 用户全局
   "projectSettings", // <project>/.sid-code/settings.json — 项目共享（可提交 git）
   "localSettings", // <project>/.sid-code/settings.local.json — 本地私有（gitignored）
   "flagSettings", // --settings CLI 参数（内存来源，无文件）
-  "policySettings", // /etc/sid-code/policy.json — 企业管控
+  "policySettings", // sidPaths.managedPolicyCandidates 首个存在者 — 企业管控
 ] as const;
 
 export type SettingSource = (typeof SETTING_SOURCES)[number];
@@ -48,8 +53,9 @@ export function getSettingsFilePath(
     case "localSettings":
       return join(projectBase, ".sid-code", "settings.local.json");
     case "policySettings":
-      // B2：平台差异化的企业管控文件。macOS/Windows 没有 /etc，硬编码 /etc 在那两个平台永不存在。
-      return managedSettingsPath();
+      // D6：与 PolicyManager / rule-loader 共用 sidPaths.managedPolicyCandidates 候选链
+      // （系统级优先、用户级回退）。都不存在时返回系统级路径，供变更监听挂在正确位置。
+      return resolveManagedPolicyFile() ?? managedSettingsPath();
     case "flagSettings":
       return null;
   }
@@ -70,27 +76,18 @@ export function getSettingsFilePaths(
 }
 
 /**
- * 企业管控文件的平台路径（B2，对齐 CC managedPath）。
- * - macOS：/Library/Application Support/SidCode/managed-settings.json
- * - Windows：%PROGRAMDATA%\SidCode\managed-settings.json（缺省 C:\ProgramData）
- * - Linux 及其它：/etc/sid-code/managed-settings.json
+ * 企业管控文件的系统级路径（平台目录见 paths.ts managedSettingsSystemDir）。
+ * 完整查找顺序是 sidPaths.managedPolicyCandidates（系统级优先、~/.sid-code 回退）。
  *
  * 历史的 /etc/sid-code/policy.json 与 policy.yaml 已废弃，不再读取。
  */
 export function managedSettingsPath(): string {
-  return join(managedSettingsDir(), "managed-settings.json");
+  return join(managedSettingsSystemDir(), "managed-settings.json");
 }
 
-/** 企业管控 drop-in 目录：managed-settings.d/*.json，字母序后者覆盖前者。 */
+/** 企业管控 drop-in 目录：managed-settings.d/*.json，字母序后者覆盖前者。只认系统级目录。 */
 export function managedSettingsDropInDir(): string {
-  return join(managedSettingsDir(), "managed-settings.d");
-}
-
-function managedSettingsDir(): string {
-  const p = platform();
-  if (p === "darwin") return "/Library/Application Support/SidCode";
-  if (p === "win32") return join(process.env.PROGRAMDATA || "C:\\ProgramData", "SidCode");
-  return "/etc/sid-code";
+  return join(managedSettingsSystemDir(), "managed-settings.d");
 }
 
 /**

@@ -55,6 +55,8 @@ export class MCPClient {
   private initialized = false;
   private serverInfo: InitializeResult | null = null;
   private retries: number;
+  /** 是否已被主动 close()（区分「主动关闭」与「意外断开」，见构造函数 onClose 接线） */
+  private closedByUser = false;
 
   /** 工具列表变更回调 */
   onToolsChanged?: () => void;
@@ -101,12 +103,18 @@ export class MCPClient {
       }
     };
 
-    // 监听传输层断线
-    if (this.transport.onClose) {
-      this.transport.onClose = () => {
-        this.onDisconnected?.();
-      };
-    }
+    // 监听传输层断线（D1）。
+    //
+    // 必须无条件赋值：onClose 在各 Transport 上是可选字段声明、构造后值为 undefined，
+    // 旧写法 `if (this.transport.onClose)` 恒假，断线检测整条链路因此是死的。
+    // 不支持断线事件的传输（HTTPTransport）只是永远不调它，赋值无害。
+    //
+    // onClose 的语义是「意外断开」：主动 close() 之后到达的关闭事件一律忽略，
+    // 否则用户/manager 主动断开会被当成断线而触发自动重连。
+    this.transport.onClose = () => {
+      if (this.closedByUser) return;
+      this.onDisconnected?.();
+    };
   }
 
   /**
@@ -422,8 +430,9 @@ export class MCPClient {
     }
   }
 
-  /** 关闭连接 */
+  /** 关闭连接（主动关闭：之后传输层报告的关闭不再上报为断线） */
   close(): void {
+    this.closedByUser = true;
     this.transport.close();
   }
 
