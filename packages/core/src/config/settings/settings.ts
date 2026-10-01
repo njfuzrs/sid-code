@@ -20,9 +20,13 @@ import { SettingsSchema, type SettingsJson } from "./types.ts";
 import {
   formatZodErrors,
   filterInvalidPermissionRules,
+  removeInvalidValues,
   type ValidationError,
 } from "./validation.ts";
-import { filterProjectSettings } from "./security.ts";
+
+/** 单文件字段级修复的最大轮数（每轮摘掉当轮全部出错值后重新校验） */
+const MAX_FIELD_REPAIR_ATTEMPTS = 10;
+import { filterProjectSettings, isUntrustedSettingsFile } from "./security.ts";
 import { listManagedSettingsDropIns } from "./constants.ts";
 import { detectSensitiveData } from "../../permission/sensitive.ts";
 import { mergeSettingsRead } from "./merge.ts";
@@ -54,7 +58,7 @@ let flagSettings: SettingsJson | null = null;
 export function setFlagSettings(settings: SettingsJson | null): void {
   flagSettings = settings;
   setSessionCache(null);
-  setCachedSource("flagSettings", settings);
+  setCachedSource("flagSettings", { settings, errors: [] });
 }
 
 /**
@@ -118,7 +122,9 @@ function parseSettingsFile(path: string): {
   if (cached) {
     return {
       settings: cached.settings ? clone(cached.settings) : null,
-      errors: cached.errors,
+      // 返回副本：调用方（policySettings 的 drop-in 合并）会原地 push，
+      // 直接返回缓存数组会把 drop-in 的错误永久追加进主文件的 L3 条目。
+      errors: [...cached.errors],
     };
   }
 
@@ -139,18 +145,34 @@ function parseSettingsFile(path: string): {
     // 预过滤无效权限规则（不让一条坏规则毒化整个文件）
     const ruleWarnings = filterInvalidPermissionRules(data, path);
 
-    // Zod Schema 验证
-    const result = SettingsSchema().safeParse(data);
-
-    if (!result.success) {
-      const zodErrors = formatZodErrors(result.error, path);
-      const errors = [...ruleWarnings, ...zodErrors];
-      setCachedParsedFile(path, { settings: null, errors });
-      return { settings: null, errors };
+    // Zod Schema 验证。失败时只摘掉出错的那几个值再校验（D10）：Zod 是整体校验语义，
+    // 直接判失败会让一个无关字段的类型笔误（如 maxTokens 写成字符串）连带丢掉同文件里的
+    // permissions.deny 等全部配置，且当时没有任何出口能看见这条错误。
+    // 上限防的是病态 schema 反复报同一路径的死循环；removeInvalidValues 摘不动时也会停。
+    let result = SettingsSchema().safeParse(data);
+    const zodErrors: ValidationError[] = [];
+    for (let attempt = 0; !result.success && attempt < MAX_FIELD_REPAIR_ATTEMPTS; attempt++) {
+      const issues = result.error.issues;
+      zodErrors.push(
+        ...formatZodErrors(result.error, path).map((e) => ({
+          ...e,
+          message: `${e.message}（该值已忽略，其余配置照常生效）`,
+        })),
+      );
+      if (!removeInvalidValues(data, issues)) break;
+      result = SettingsSchema().safeParse(data);
     }
 
-    setCachedParsedFile(path, { settings: result.data, errors: ruleWarnings });
-    return { settings: clone(result.data), errors: ruleWarnings };
+    if (!result.success) {
+      // 走到这里说明错误无法局部摘除（如根本身不是对象）——这才是整份判失败的情形
+      const errors = [...ruleWarnings, ...zodErrors, ...formatZodErrors(result.error, path)];
+      setCachedParsedFile(path, { settings: null, errors });
+      return { settings: null, errors: [...errors] };
+    }
+
+    const errors = [...ruleWarnings, ...zodErrors];
+    setCachedParsedFile(path, { settings: result.data, errors });
+    return { settings: clone(result.data), errors: [...errors] };
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === "ENOENT") {
@@ -178,12 +200,15 @@ export function getSettingsForSource(
 
   const cachedSource = getCachedSource(source);
   if (cachedSource !== undefined) {
-    return { settings: cachedSource, errors: [] };
+    // L2 同时缓存 errors：此前只存 settings、命中时回 errors:[]，于是先被 getSettingsForSource
+    // 填过 L2 的来源（loadConfigFile 就这么做）在 getSettings 合并时诊断恒为空——D10 的
+    // 校验错误因此没有任何出口。
+    return { settings: cachedSource.settings, errors: [...cachedSource.errors] };
   }
 
   const path = getSettingsFilePath(source, workspacePath);
   if (!path) {
-    setCachedSource(source, null);
+    setCachedSource(source, { settings: null, errors: [] });
     return { settings: null, errors: [] };
   }
 
@@ -202,11 +227,22 @@ export function getSettingsForSource(
     }
   }
 
-  // 安全边界：项目级配置不能设置安全敏感字段
-  const finalSettings =
-    merged && source === "projectSettings" ? filterProjectSettings(merged) : merged;
+  // 安全边界：不可信来源不能设置安全敏感字段。
+  // 不只认 projectSettings：被 git 追踪的 settings.local.json 同样会跟着仓库 clone 下来（D1），
+  // 且 localSettings 优先级比 projectSettings 还高，不过滤它等于把后门开在防护最弱、权力最大的一层。
+  const untrusted = merged ? isUntrustedSettingsFile(source, path) : false;
+  if (untrusted && source === "localSettings") {
+    errors.push({
+      file: path,
+      path: "",
+      message:
+        "settings.local.json 已被 git 追踪（会随仓库分发），按不可信来源处理：安全敏感字段已忽略。" +
+        "若确为本机私有配置，请执行 git rm --cached 取消追踪",
+    });
+  }
+  const finalSettings = merged && untrusted ? filterProjectSettings(merged) : merged;
 
-  setCachedSource(source, finalSettings);
+  setCachedSource(source, { settings: finalSettings, errors: [...errors] });
   return { settings: finalSettings, errors };
 }
 

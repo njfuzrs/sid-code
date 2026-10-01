@@ -16,6 +16,9 @@
  *     （projectSettings 的 permissions.* 不可自我授权绕过安全限制）。
  */
 
+import { spawnSync } from "child_process";
+import { existsSync } from "fs";
+import { basename, dirname, join } from "path";
 import type { SettingsJson } from "./types.ts";
 
 /**
@@ -60,4 +63,65 @@ export function filterProjectSettings(settings: SettingsJson): SettingsJson {
     }
   }
   return filtered as SettingsJson;
+}
+
+/**
+ * `settings.local.json` 是否被 git 追踪（D1）。
+ *
+ * 「localSettings 是 gitignored 所以不会跟着仓库来」这个前提不成立：.gitignore 只挡
+ * 「未追踪文件被 git add」，不挡「已追踪文件被 clone 下来」。攻击者 `git add -f` 一次，
+ * 此后每个 clone 的人磁盘上都有它，且 `git check-ignore` 对已追踪文件返回 rc=1、
+ * `git status` 也干净——受害者没有任何可见信号。
+ *
+ * 所以判据落在「这份文件会不会跟着仓库来」本身：被追踪 = 可能是别人写的 = 不可信。
+ * 未追踪 / 不在 git 仓库里 = 只可能是本机写的 = 维持可信（不伤正当的本机 permissionMode 用法）。
+ *
+ * 实现细节：
+ * - 剥掉 GIT_DIR / GIT_INDEX_FILE 等环境变量：在 git hook 里跑时它们指向**别的仓库**，
+ *   不剥会拿那个仓库的 index 判定，结论静默错掉。
+ * - git 不可用（ENOENT 等）时：向上找得到 `.git` 就按追踪处理（fail-closed，因为无法证伪）；
+ *   找不到说明根本不在仓库里，文件不可能是 clone 来的。
+ */
+export function isGitTrackedFile(filePath: string): boolean {
+  if (!existsSync(filePath)) return false;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith("GIT_")) env[k] = v;
+  }
+  const r = spawnSync("git", ["ls-files", "--error-unmatch", "--", basename(filePath)], {
+    cwd: dirname(filePath),
+    env,
+    stdio: ["ignore", "ignore", "ignore"],
+    timeout: 5000,
+  });
+  if (r.error) return hasGitAncestor(dirname(filePath));
+  // 0 = 追踪中；1 = 在仓库里但未追踪；128 = 不在 git 仓库里
+  return r.status === 0;
+}
+
+function hasGitAncestor(dir: string): boolean {
+  let cur = dir;
+  for (;;) {
+    if (existsSync(join(cur, ".git"))) return true;
+    const parent = dirname(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
+}
+
+/**
+ * 某个 settings 来源的这份文件是否为不可信来源（D1）。
+ *
+ * projectSettings 恒不可信；localSettings 只在被 git 追踪时不可信。
+ * settings 加载链（filterProjectSettings）、权限规则加载（rule-loader）、
+ * 工作区信任扫描（trust.ts）三处共用这一个判据——三处各写一份 `source === "projectSettings"`
+ * 正是 D1 的成因：过滤逻辑本身是对的，锚点挂错了 source 名。
+ */
+export function isUntrustedSettingsFile(
+  source: string,
+  filePath: string | null | undefined,
+): boolean {
+  if (source === "projectSettings") return true;
+  if (source === "localSettings" && filePath) return isGitTrackedFile(filePath);
+  return false;
 }

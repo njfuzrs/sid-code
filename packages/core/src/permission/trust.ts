@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { isGitTrackedFile } from "../config/settings/security.ts";
 
 /** 信任检查项 */
 export interface TrustCheckItem {
@@ -49,6 +50,24 @@ export function getPendingTrust(): PendingTrust | null {
 /** 清空待确认快照（用户已做决定后调用） */
 export function clearPendingTrust(): void {
   pendingTrust = null;
+}
+
+/**
+ * 本进程的工作区是否处于「有危险配置且未信任」状态（D3）。
+ *
+ * 由 cli.ts 的信任门控在配置生效前写入，Phase 2 全量 env 注入读它决定跑不跑。
+ * 不能靠 pendingTrust 判断：非交互模式不登记快照，但同样是未信任。
+ * 用户在 TrustDialog 里点「信任」后**不**清掉它：信任的语义是「下次启动完整加载」
+ * （hooks / MCP 同样不热加载），本会话继续按降级配置跑，env 与它们保持一致。
+ */
+let workspaceUntrusted = false;
+
+export function setWorkspaceUntrusted(value: boolean): void {
+  workspaceUntrusted = value;
+}
+
+export function isWorkspaceUntrusted(): boolean {
+  return workspaceUntrusted;
 }
 
 /** 信任状态 */
@@ -97,11 +116,27 @@ export class TrustManager {
    */
   async scanDangerousConfigs(): Promise<TrustCheckItem[]> {
     const items: TrustCheckItem[] = [];
-    const settingsPath = join(this.workspacePath, ".sid-code", "settings.json");
-
-    if (!existsSync(settingsPath)) {
-      return items;
+    for (const settingsPath of this.untrustedSettingsFiles()) {
+      await this.scanSettingsFile(settingsPath, items);
     }
+    return items;
+  }
+
+  /**
+   * 需要过信任门的项目配置文件：settings.json 恒在列；settings.local.json 只在被 git 追踪时
+   * 在列（D1/D3：被追踪 = 会随 clone 分发 = 可能是别人写的）。未追踪的 local 文件是本机
+   * 私有配置，把它也拉进来只会让每个用本机 hooks 的人每次改配置都被问一遍。
+   */
+  private untrustedSettingsFiles(): string[] {
+    const dir = join(this.workspacePath, ".sid-code");
+    const files = [join(dir, "settings.json")];
+    const local = join(dir, "settings.local.json");
+    if (isGitTrackedFile(local)) files.push(local);
+    return files;
+  }
+
+  private async scanSettingsFile(settingsPath: string, items: TrustCheckItem[]): Promise<void> {
+    if (!existsSync(settingsPath)) return;
 
     try {
       const content = await Bun.file(settingsPath).text();
@@ -158,8 +193,6 @@ export class TrustManager {
     } catch (err: any) {
       getLogger().warn("TRUST", `扫描 ${settingsPath} 失败: ${err.message}`);
     }
-
-    return items;
   }
 
   /**
@@ -262,14 +295,29 @@ export class TrustManager {
 
   /** getConfigHash 的同步版本（口径必须与之一字不差，否则同步/异步两条路判出不同结论） */
   private getConfigHashSync(): string {
-    const settingsPath = join(this.workspacePath, ".sid-code", "settings.json");
     try {
-      if (!existsSync(settingsPath)) return "empty";
-      const content = readFileSync(settingsPath, "utf-8");
-      return createHash("sha256").update(content).digest("hex").slice(0, 16);
+      return this.hashConfigContents(
+        this.untrustedSettingsFiles().map((p) => (existsSync(p) ? readFileSync(p, "utf-8") : null)),
+      );
     } catch {
       return "error";
     }
+  }
+
+  /**
+   * 配置内容 hash。只有 settings.json 时口径与历史完全一致（既有信任记录不失效）；
+   * 被追踪的 settings.local.json 存在时把它拼进来——否则信任之后攻击者改 local 文件
+   * 不会触发重新确认。
+   */
+  private hashConfigContents(contents: (string | null)[]): string {
+    const [main, ...rest] = contents;
+    if (rest.length === 0) {
+      if (main === null || main === undefined) return "empty";
+      return createHash("sha256").update(main).digest("hex").slice(0, 16);
+    }
+    const h = createHash("sha256");
+    for (const c of contents) h.update(c === null ? "\0<absent>\0" : `\0${c.length}\0${c}`);
+    return h.digest("hex").slice(0, 16);
   }
 
   /** 是否为家目录 */
@@ -285,11 +333,12 @@ export class TrustManager {
 
   /** 获取配置内容 hash（用于检测配置变更） */
   private async getConfigHash(): Promise<string> {
-    const settingsPath = join(this.workspacePath, ".sid-code", "settings.json");
     try {
-      if (!existsSync(settingsPath)) return "empty";
-      const content = await Bun.file(settingsPath).text();
-      return createHash("sha256").update(content).digest("hex").slice(0, 16);
+      const contents: (string | null)[] = [];
+      for (const p of this.untrustedSettingsFiles()) {
+        contents.push(existsSync(p) ? await Bun.file(p).text() : null);
+      }
+      return this.hashConfigContents(contents);
     } catch {
       return "error";
     }

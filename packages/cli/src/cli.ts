@@ -1178,12 +1178,15 @@ export async function main(): Promise<void> {
     // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
     if (!config.skipPermissions && !config.yesMode) {
       try {
-        const { TrustManager, setPendingTrust } =
+        const { TrustManager, setPendingTrust, setWorkspaceUntrusted } =
           await import("@sid-code/core/permission/trust.ts");
         const trustMgr = new TrustManager(process.cwd());
         const dangerousItems = await trustMgr.scanDangerousConfigs();
         if (dangerousItems.length > 0 && !(await trustMgr.isTrusted())) {
           const log = getLogger();
+          // D3：env 走的是 getSettings()（链 B）直写 process.env，不经过这里的 config，
+          // 下面摘 hooks / mcpServers 摘不到它。登记未信任状态，Phase 2 全量 env 据此不跑。
+          setWorkspaceUntrusted(true);
           // fail-closed：先摘掉危险配置，无论后续是否有 UI 来问
           const stripped: string[] = [];
           for (const item of dangerousItems) {
@@ -1201,10 +1204,10 @@ export async function main(): Promise<void> {
               stripped.push("mcpServers");
             }
             // env_vars / bash_permissions 不在此 strip，各有原因：
-            // - env_vars：Config 上**没有**顶层 env 字段（env 只存在于 MCPServerConfig
-            //   内部，见 config.ts:36）。settings.json 的 env 段目前不会进 Config，
-            //   摘 mcpServers 时其内嵌 env 已一并失效。仍在 items 里上报，让用户看到
-            //   项目声明了环境变量这个事实。
+            // - env_vars：Config 上**没有**顶层 env 字段，settings.json 的顶层 env 段走
+            //   getSettings()（链 B）由 managed-env 直写 process.env，这里摘不到。
+            //   它的门是上面的 setWorkspaceUntrusted(true)：Phase 2 读它不跑，
+            //   项目级 env 只剩 Phase 1 的白名单变量生效。
             // - bash_permissions：权限规则由 rule-loader 的 SECURITY_SENSITIVE_FIELDS
             //   走独立通道过滤，在此重复删会连带破坏 user 级规则。
           }
@@ -1508,8 +1511,11 @@ export async function main(): Promise<void> {
       config._needsOnboarding = true;
     }
 
-    // Settings 系统：Phase 2 全量环境变量（信任边界之后）+ 启动文件变更监听。
-    // 当前无独立信任对话框 UI，以"通过 API Key 校验、确定在此项目运行"为信任边界。
+    // Settings 系统：Phase 2 全量环境变量 + 启动文件变更监听。
+    // 信任边界是上文的工作区信任门控（不是 API Key 校验——那只说明你配了密钥，
+    // 与这个项目可不可信无关）。门控判未信任时 applyAllConfigEnvironmentVariables 内部直接返回；
+    // TrustDialog 虽要等 TUI 挂载后才弹，但用户点「信任」的语义是下次启动完整加载，
+    // 本会话 env 与被摘掉的 hooks / MCP 保持同一口径（D3）。
     if (!config.print) {
       try {
         const { applyAllConfigEnvironmentVariables } =
