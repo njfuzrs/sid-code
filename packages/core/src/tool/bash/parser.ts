@@ -623,6 +623,14 @@ function splitOutsideQuotes(
 }
 
 /**
+ * 按 shell 惯例切分参数（认单/双引号与反斜杠转义），供命令模板的 `$1..$9` 使用。
+ * 与 Bash 解析共用同一个 tokenize，避免仓库里再多一套引号切分（D16）。
+ */
+export function splitShellWords(input: string): string[] {
+  return tokenize(input);
+}
+
+/**
  * 简单的 shell 词法分析（处理引号和转义）
  */
 function tokenize(cmd: string): string[] {
