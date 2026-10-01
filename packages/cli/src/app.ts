@@ -1551,6 +1551,11 @@ export class App {
       if (typeof maybe.setInvokedSkillSink === "function") {
         maybe.setInvokedSkillSink((name, content) => this.ctxMgr.addInvokedSkill(name, content));
       }
+      // P0-3：模型路径 prompt 管道的 ${SESSION_ID} 替换（函数形态：resume 后逻辑 id 会变）
+      const withSession = tool as { setSessionIdProvider?: (fn: () => string) => void };
+      if (typeof withSession.setSessionIdProvider === "function") {
+        withSession.setSessionIdProvider(() => this.getLogicalSessionId());
+      }
     }
   }
 

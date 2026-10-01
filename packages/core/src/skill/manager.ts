@@ -253,6 +253,16 @@ export class SkillManager {
     this.notifySkillsChanged();
   }
 
+  /**
+   * 追加 gate（非覆盖）。P0-6：运行时动态发现的条件 skill 要并入既有 gated 集合，
+   * 用覆盖式 setGatedSkills 会把 init 时 gate 住、尚未触发的条件 skill 一起放出来。
+   */
+  gateSkills(names: string[]): void {
+    if (names.length === 0) return;
+    for (const n of names) this.gatedSkillNames.add(n.toLowerCase());
+    this.notifySkillsChanged();
+  }
+
   /** 解除某个 skill 的 gate（激活后从 listing 隐藏 → 暴露）。 */
   ungateSkill(name: string): void {
     if (!this.gatedSkillNames.delete(name.toLowerCase())) return;

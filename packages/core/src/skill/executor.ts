@@ -56,9 +56,13 @@ export function authorizeSkill(
       return { decision: "deny", reason: `Skill "${skill.name}" 被权限规则拒绝` };
     }
     if (decision === "ask") {
+      // 规则命中与敏感属性是两种不同成因，确认弹窗里的理由要对得上
+      const byRule = (skillRules.ask?.length ?? 0) > 0;
       return {
         decision: "ask",
-        reason: `Skill "${skill.name}" 含敏感能力（hooks/allowedTools/shell 等）或来自 MCP，需确认`,
+        reason: byRule
+          ? `Skill "${skill.name}" 命中 permissions.ask 规则，需确认`
+          : `Skill "${skill.name}" 含敏感能力（hooks/allowedTools/shell 等）或来自 MCP，需确认`,
       };
     }
     return { decision: "allow" };
@@ -74,7 +78,7 @@ export function authorizeSkill(
 
 /**
  * 从统一权限规则（permissions.allow/deny/ask）里抽取 skill 相关规则，
- * 转成 checkSkillPermission 认识的 { allow, deny } 形态。
+ * 转成 checkSkillPermission 认识的 { allow, deny, ask } 形态。
  *
  * 识别形态（大小写不敏感的工具名）：
  *   - "Skill(<name>)" / "skill(<name>)" —— 精确 skill 名
@@ -84,7 +88,7 @@ export function authorizeSkill(
  */
 function extractSkillRules(skillName: string, rules?: PermissionRule): SkillPermissionRules {
   if (!rules) return {};
-  const out: SkillPermissionRules = { allow: [], deny: [] };
+  const out: SkillPermissionRules = { allow: [], deny: [], ask: [] };
 
   const collect = (list: string[] | undefined, into: string[]) => {
     if (!list) return;
@@ -114,6 +118,8 @@ function extractSkillRules(skillName: string, rules?: PermissionRule): SkillPerm
 
   collect(rules.deny, out.deny!);
   collect(rules.allow, out.allow!);
+  // P0-1：ask 曾在这里被丢弃（类型层就没有容器），配了等于没配
+  collect(rules.ask, out.ask!);
   return out;
 }
 
@@ -239,4 +245,42 @@ export async function resolveSkillAgentType(
     );
     return undefined;
   }
+}
+
+/**
+ * P0-4：skill 执行上下文的单一事实源（inline 注入 / fork 子代理）。
+ *
+ * `context`（CC 权威字段）优先于 `mode`；都未指定默认 fork。此前模型路径（SkillMetaTool）
+ * 只认 mode，`context: inline` 的约束型 skill 经模型调用被 fork 进子代理，约束对主对话
+ * 一次都没生效。用户斜杠路径、命令投影、模型路径三处都必须调这里，别再各写一份。
+ */
+export function resolveSkillExecutionContext(
+  skill: Pick<SkillDefinition, "context" | "mode">,
+): "inline" | "fork" {
+  return skill.context ?? (skill.mode === "activate" ? "inline" : "fork");
+}
+
+/**
+ * P0-5：skill 未声明 `allowed-tools` 时 fork 子代理使用的默认工具集（只读）。
+ *
+ * 下游 executeCustom 把空数组解释为「零工具」，而此前三处调用方都写 `allowedTools || []`，
+ * 把「未声明」与「声明为空」塌缩成同一个值——照文档最小示例写的 delegate skill 一个工具
+ * 都没有，且无报错。skill 是声明式资产，作者不写就该有安全的默认值而不是零能力：
+ * 只读四件套同时满足最小权限与「能跑起来」。要写/执行能力须在 frontmatter 显式声明。
+ */
+export const DEFAULT_SKILL_ALLOWED_TOOLS: readonly string[] = ["read", "grep", "glob", "ls"];
+
+/**
+ * P0-5：解析 fork 子代理实际可用的工具名。
+ * 未声明 → 只读默认集并 warn；显式声明（含显式空数组）→ 原样尊重。
+ */
+export function resolveSkillAllowedTools(
+  skill: Pick<SkillDefinition, "name" | "allowedTools">,
+): string[] {
+  if (skill.allowedTools !== undefined) return [...skill.allowedTools];
+  getLogger().warn(
+    "SKILL",
+    `skill "${skill.name}" 未声明 allowed-tools，已按只读默认集放行: ${DEFAULT_SKILL_ALLOWED_TOOLS.join(", ")}`,
+  );
+  return [...DEFAULT_SKILL_ALLOWED_TOOLS];
 }
