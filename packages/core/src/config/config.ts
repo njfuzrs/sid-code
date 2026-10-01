@@ -1810,6 +1810,20 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     };
   }
 
+  // 链 B（settings/*.json 的 SettingsSchema 校验）的诊断此前没有任何出口：15 个生产
+  // getSettings() 调用点全部只取 .settings（D10）。于是一个字段类型写错，用户连一行提示都看不到。
+  // 挂进 warnings（不是 errors）：坏值已被字段级摘除、其余配置照常生效，不属于"跑不起来"。
+  // 放在整体赋值之后，理由同下面的 baseURL 提示。
+  try {
+    const { getSettings } = await import("./settings/settings.ts");
+    for (const e of getSettings().errors) {
+      const where = e.file ? `${e.file}${e.path ? `#${e.path}` : ""}` : e.path;
+      recordStartupWarning(config, where || "settings", e.message);
+    }
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
   // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
   // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。

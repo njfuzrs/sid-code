@@ -10,7 +10,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
-import { SECURITY_SENSITIVE_FIELDS } from "../config/settings/security.ts";
+import { SECURITY_SENSITIVE_FIELDS, isUntrustedSettingsFile } from "../config/settings/security.ts";
 import type {
   PermissionRuleSource,
   SourcedPermissionRule,
@@ -238,10 +238,12 @@ export class RuleLoader {
       const content = await Bun.file(filePath).text();
       const settings: SettingsFile = JSON.parse(content);
 
-      // 安全边界（P0-3 §5.2.5）：projectSettings 是不可信来源。
+      // 安全边界（P0-3 §5.2.5）：projectSettings 是不可信来源；被 git 追踪的
+      // settings.local.json 同样不可信（D1：它会随 clone 分发，且优先级比 project 更高）。
       // ① 检测并告警注入的安全敏感顶层字段（settings 层面的过滤由 settings.ts
       //    filterProjectSettings 兜底，这里仅做审计告警，让攻击行为可见）。
-      if (source === "projectSettings") {
+      const untrusted = isUntrustedSettingsFile(source, filePath);
+      if (untrusted) {
         const injected = Object.keys(settings).filter((k) => UNTRUSTED_PROJECT_SETTINGS.has(k));
         if (injected.length > 0) {
           log.warn(
@@ -257,8 +259,8 @@ export class RuleLoader {
 
       let rules = this.parsePermissions(settings.permissions, source);
 
-      // ② projectSettings 不可自我授权：剔除危险的 allow 规则（deny/ask 收紧安全，保留）。
-      if (source === "projectSettings") {
+      // ② 不可信来源不可自我授权：剔除危险的 allow 规则（deny/ask 收紧安全，保留）。
+      if (untrusted) {
         rules = this.filterUntrustedProjectRules(rules, filePath);
       }
 

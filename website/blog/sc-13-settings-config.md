@@ -92,7 +92,7 @@ outline: [2, 3]
 | **source** | 来源 | 一份 settings 的物理出处。一个来源 = 一个文件（或一个内存注入点） |
 | **user settings** | 用户全局设置 | `~/.sid-code/settings.json`。你自己的偏好，跟着你走 |
 | **project settings** | 项目共享设置 | `<项目>/.sid-code/settings.json`。**会提交进 git，团队共享** |
-| **local settings** | 项目本地设置 | `<项目>/.sid-code/settings.local.json`。**gitignored**，只属于你这台机器 |
+| **local settings** | 项目本地设置 | `<项目>/.sid-code/settings.local.json`。**gitignored**，本意只属于你这台机器（但被 `git add -f` 追踪后会随仓库分发，此时按不可信处理，见 §5.2） |
 | **flag settings** | 命令行设置 | `--settings <文件或 JSON>`。本次运行有效，**无对应磁盘文件** |
 | **policy settings** | 企业管控设置 | 管理员下发的强制策略。**优先级最高，用户不能覆盖** |
 | **managed-settings.json** | 托管设置文件 | 企业策略的文件形态落点之一 |
@@ -762,14 +762,22 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
 过滤在加载链里执行（`settings.ts:190-192`）：
 
 ```ts
-const finalSettings =
-  settings && source === "projectSettings" ? filterProjectSettings(settings) : settings;
+const untrusted = merged ? isUntrustedSettingsFile(source, path) : false;
+const finalSettings = merged && untrusted ? filterProjectSettings(merged) : merged;
 ```
 
-**注意只对 `projectSettings` 过滤，不对 `localSettings` 过滤。**
-为什么？因为 `settings.local.json` 是 gitignored 的——它**不会跟着仓库来**，
-它只可能是你自己在这台机器上写的。这就是"信任边界"这个词的实际含义：
-**边界不划在"文件在哪个目录"，而划在"这份内容有没有可能是别人写的"。**
+**`projectSettings` 恒过滤；`localSettings` 只在它被 git 追踪时过滤。**
+这里有一个很容易写错的前提：「`settings.local.json` 是 gitignored 的，所以不会跟着仓库来」。
+**它不成立。** `.gitignore` 只挡「未追踪文件被 `git add`」，不挡「已追踪文件被 clone 下来」——
+攻击者 `git add -f` 一次，此后每个 clone 的人磁盘上都有它，而且 `git check-ignore`
+对已追踪文件返回「不忽略」、`git status` 也干净，受害者没有任何可见信号。
+更糟的是 `localSettings` 的优先级比 `projectSettings` 还高。
+
+所以判据要落在「会不会跟着仓库来」本身：`git ls-files --error-unmatch` 说它被追踪，
+就按不可信处理（settings 过滤、权限规则的自我授权剥离、信任扫描三处共用
+`isUntrustedSettingsFile` 这一个判据）；未追踪或不在仓库里，才是只可能由你本机写的。
+这就是"信任边界"这个词的实际含义：
+**边界不划在"文件在哪个目录"或"文件叫什么名字"，而划在"这份内容有没有可能是别人写的"。**
 
 这 9 个字段的共性：**它们都是关掉某道防线的开关**。
 逐条给攻击场景：
@@ -848,14 +856,20 @@ Phase 1: applySafeConfigEnvironmentVariables()   (managed-env.ts:104)
 │     → SAFE_ENV_VARS，17 个（managed-env.ts:30-53）
 │
 │           ┌────────────────────────────┐
-│           │      信任对话框             │
-│           │  "你信任这个目录吗？"        │
+│           │  工作区信任门控（cli.ts）    │
+│           │  有危险配置且未信任？        │
 │           └────────────────────────────┘
 │
-Phase 2: applyAllConfigEnvironmentVariables()    (managed-env.ts:129)
-│  信任通过后调用
+Phase 2: applyAllConfigEnvironmentVariables()    (managed-env.ts)
+│  门控判「已信任 / 无危险配置」才生效；未信任时函数内部直接返回
 │  → 合并设置的**全部** env（含项目级的所有变量）
 ```
+
+⚠️ 这里的门是**信任门控的结论**，不是 TrustDialog 本身。对话框要等 TUI 挂载后才弹，
+而 Phase 2 的调用点远早于它——早期实现就栽在这里：时序图画的是「对话框 → Phase 2」，
+代码里却是 Phase 2 先跑完，`ANTHROPIC_BASE_URL` 在用户被问之前就进了 `process.env`。
+现在判定放进 `applyAllConfigEnvironmentVariables` 内部，任何调用方都过同一道门；
+用户在对话框里点「信任」的语义是**下次启动**完整加载，与被摘掉的 hooks / MCP 同口径。
 
 **两份清单，方向相反**：
 
@@ -888,7 +902,7 @@ function applyEnvFiltered(env: Record<string, string>, allAllowed: boolean): num
 
 拿 `TZ` 检验：攻击者把时区设成 `UTC+14`，最坏后果是日志时间戳不对。不构成安全事件 → 可入白名单。
 拿 `ANTHROPIC_BASE_URL` 检验：改它 = 流量劫持 → 不能入白名单（它既不在白名单也不在保护名单，
-所以它落在"Phase 2 才生效"这一档——**信任对话框是它唯一的门**）。
+所以它落在"Phase 2 才生效"这一档——**工作区信任门控是它唯一的门**）。
 
 **保护名单为什么连企业策略都不能覆盖**：这看起来违反"policy 优先级最高"。
 但 `PATH` / `LD_PRELOAD` 这类变量一旦可被配置改写，
@@ -2829,8 +2843,8 @@ function filterProjectSettings(settings: Record<string, unknown>) {
   return filtered;
 }
 
-// 只对 projectSettings 过滤（localSettings 是 gitignored，不会跟着仓库来）
-const final = source === "projectSettings" ? filterProjectSettings(parsed) : parsed;
+// projectSettings 恒过滤；localSettings 被 git 追踪时同样过滤（gitignore 挡不住 git add -f）
+const final = isUntrusted(source, path) ? filterProjectSettings(parsed) : parsed;
 ```
 
 **env 三档**：

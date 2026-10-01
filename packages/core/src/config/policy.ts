@@ -9,7 +9,7 @@ import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
-import { sidPaths } from "./paths.ts";
+import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
 import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
 import { setBridgePolicy } from "../bridge/bridge-policy.ts";
 import { setPolicyLimits } from "./policy-limits.ts";
@@ -114,16 +114,18 @@ export class ManagedFileLoader implements PolicyLoader {
 
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
-    const filePath = sidPaths.managedSettings();
-
-    if (!existsSync(filePath)) return null;
+    // D6/D7：走与 settings 链、rule-loader 相同的候选链（系统级优先）。此前只读
+    // ~/.sid-code/managed-settings.json——用户自己可写的位置，policyLimits /
+    // disableBypassPermissionsMode 这类最强档管控在任何平台都能被用户删文件绕过。
+    const filePath = resolveManagedPolicyFile();
+    if (!filePath) return null;
 
     // 安全检查：文件权限应为 600（只有所有者可读写）
     try {
       const stats = statSync(filePath);
       const mode = stats.mode & 0o777;
       if (mode !== 0o600) {
-        log.warn("POLICY", `managed-settings.json 权限不安全 (${mode.toString(8)})，建议设为 600`);
+        log.warn("POLICY", `${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`);
       }
     } catch {
       // 权限检查失败不阻塞加载
