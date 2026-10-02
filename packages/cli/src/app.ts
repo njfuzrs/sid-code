@@ -5530,8 +5530,27 @@ export class App {
     const log = getLogger();
     const followup: ContentBlock[] = [];
 
+    // B17：执行阶段（approve 之后）的每次真实调用都喂给 fidelity 追踪，批末落一条快照事件。
+    // 从前 recordActualToolCall 生产零调用，getFidelityReport() 永远是 0/0，
+    // 官网却写着「能看到对齐度」——采集在、消费方无、用户看不到。
+    let fidelityTouched = false;
+    // 取批开始时的状态：同批里排在 exit_plan_mode 之后的调用是在规划态下执行的，
+    // 不能因为循环走到它们时已经 approve 了就算成执行动作。
+    const executingAtBatchStart = this.planManager.isExecuting();
+
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
+
+      // 失败的调用也算「实际调用」：对齐度问的是它做了什么，不是做成了什么。
+      // 规划态自身的两个工具不算执行动作。
+      if (
+        executingAtBatchStart &&
+        block.name !== "exit_plan_mode" &&
+        block.name !== "enter_plan_mode"
+      ) {
+        this.planManager.recordActualToolCall(block.name, block.input);
+        fidelityTouched = true;
+      }
 
       // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
       //
@@ -5586,6 +5605,9 @@ export class App {
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
         const approvalFollowup = await this.handlePlanApproval();
         if (approvalFollowup) followup.push(...approvalFollowup);
+        // 批准时先落一条 0 调用快照：计划步数在这一刻就确定了，
+        // 批准后会话立刻结束的情况下 /insights 也能看到「计划 N 步 / 实际 0 次」。
+        if (this.planManager.isExecuting()) fidelityTouched = true;
       }
 
       // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
@@ -5608,7 +5630,25 @@ export class App {
       }
     }
 
+    if (fidelityTouched) this.recordPlanFidelitySnapshot();
+
     return followup.length > 0 ? { followup } : {};
+  }
+
+  /**
+   * B17：把当前计划的 fidelity 报告落成 `PlanFidelity` 事件（快照语义，digest 取每份计划的末条）。
+   * 不写进 metadata：metadata 是会话级的，一个会话可以有多份计划；事件天然按时间序带出处。
+   * NaN（计划 0 步）不能进 JSON，比值交给 digest 由计数重算。
+   */
+  private recordPlanFidelitySnapshot(): void {
+    if (!this.planManager) return;
+    const r = this.planManager.getFidelityReport();
+    this.traceCollector?.recordCustomEvent?.("PlanFidelity", {
+      plan_file: this.planManager.getPlanFilePath() ?? "",
+      plan_step_count: r.planStepCount,
+      actual_tool_call_count: r.actualToolCallCount,
+      off_plan_count: r.offPlanCount,
+    });
   }
 
   /**
