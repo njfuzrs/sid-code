@@ -10,15 +10,16 @@
  *     └── reference_*.md     (外部引用)
  *
  * 安全设计：
- * - 使用 canonical git root（而非 cwd）作为路径键，确保同一仓库的所有
- *   工作树共享记忆。
+ * - 记忆目录键用**主仓根**（`git rev-parse --git-common-dir` 派生，见
+ *   `resolveMemoryProjectRoot`），确保同一仓库的所有 worktree 共享记忆。
+ *   ⚠️ 不是 `--show-toplevel`：它在 linked worktree 里返回 worktree 自己（B14 实测）。
  * - 拒绝相对路径、根路径、UNC 路径、null 字节。
  * - autoMemoryDirectory 覆盖配置不允许来自 projectSettings（防止恶意仓库
  *   把记忆目录指向 ~/.ssh）—— 此约束由调用方保证，本模块只提供校验函数。
  */
 
 import { homedir } from "os";
-import { join, isAbsolute, resolve, sep } from "path";
+import { join, isAbsolute, resolve, sep, basename, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { getSidHome, isInsideSidHome } from "../config/paths.ts";
@@ -129,11 +130,17 @@ const projectRootCache = new Map<string, string>();
 /** 清空项目根缓存（供测试在改 SID_CONFIG_DIR / git 状态后复位） */
 export function clearProjectRootCache(): void {
   projectRootCache.clear();
+  memoryRootCache.clear();
 }
 
 /**
  * 解析项目的 canonical root。
- * 优先取 git 顶层目录（同仓库多 worktree 共享记忆），失败时回退传入路径。
+ * 优先取 git 顶层目录（`--show-toplevel`），失败时回退传入路径。
+ *
+ * ⚠️ `--show-toplevel` 在 linked worktree 里返回的是 **worktree 自己**的根，
+ * 所以这里派生的键是「每个 worktree 一份」。会话目录、session-memory、团队记忆本地缓存、
+ * mcp.local.json 用的都是它 —— 对会话类数据这正是想要的（worktree 就是用来并行做不同事的）。
+ * **长期记忆要跨 worktree 共享，用的是 `resolveMemoryProjectRoot`，别混用**（B14）。
  *
  * 防御（P0-2）：若解析结果落在配置根 ~/.sid-code 之内（典型场景：进程 cwd
  * 恰为 ~/.sid-code，git 顶层或 resolve(cwd) 都会指向配置目录），则拒绝该根，
@@ -175,6 +182,70 @@ function resolveProjectRootUncached(cwd: string): string {
   return root;
 }
 
+/** `resolveMemoryProjectRoot` 的进程内缓存，key 口径同 `projectRootCache` */
+const memoryRootCache = new Map<string, string>();
+
+/**
+ * 解析**长期记忆**的项目根：同一仓库的主 checkout 与全部 linked worktree 归一到主仓根。
+ *
+ * ─── B14：为什么不能复用 `resolveProjectRoot` ───
+ *
+ * 旧实现记忆键走 `--show-toplevel`，模块头注释、官网 `use/memory.md`、术语表三处都写着
+ * 「同仓多 worktree 共享记忆」，而真实行为是**不共享**：`git worktree add` 实测
+ * 主仓 toplevel = `/tmp/wtp/main`，worktree toplevel = `/tmp/wtp/wt`（自己）。
+ * 现有单测 mock 的是 execSync 的返回值，测不到 git 的真实行为 —— 文档照抄注释，
+ * 注释写的是意图，整条链上没有一处验过结果。
+ *
+ * 判据：`git rev-parse --git-common-dir` 指向全部 worktree 共用的 git dir。
+ * - 普通布局下它是 `<主仓>/.git` ⇒ 去掉末尾 `.git` 即主仓根；
+ * - 主仓里可能返回**相对路径**（`.git` / 子目录下 `../.git`）⇒ 必须 `resolve(cwd, …)`；
+ *   刻意不用 `--path-format=absolute`（git ≥ 2.31 才有，老 git 会整条失败退回旧键）；
+ * - common dir 不叫 `.git`（`--separate-git-dir`、bare 仓库）⇒ git 没有记录主 checkout
+ *   在哪（见 `worktree/canonical.ts` 的 mainRootFromPointer 实测），**推不出来就回退**
+ *   `resolveProjectRoot`，不编一个路径。
+ *
+ * 防御沿用：结果落进配置根就回退 homedir()（与 `resolveProjectRoot` 同一道 P0-2 防御）。
+ */
+export function resolveMemoryProjectRoot(cwd: string = process.cwd()): string {
+  const cacheKey = `${cwd}\0${getSidHome()}`;
+  const cached = memoryRootCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let root: string | undefined;
+  try {
+    const common = execSync("git rev-parse --git-common-dir", {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    })
+      .toString()
+      .trim();
+    if (common) {
+      const abs = resolve(cwd, common);
+      if (basename(abs) === ".git") root = dirname(abs);
+    }
+  } catch {
+    // 非 git 仓库或 git 不可用 → 走下面的回退
+  }
+
+  const resolved =
+    root === undefined ? resolveProjectRoot(cwd) : isInsideSidHome(root) ? homedir() : root;
+  memoryRootCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+/**
+ * B14 兼容：本 worktree 在**旧键**（`--show-toplevel` 派生）下的记忆目录。
+ * 新旧键相同（主 checkout、非 git 目录、推不出主仓根）时返回 undefined —— 无事可迁。
+ * 供 `MemoryStore` 首次加载时把老 worktree 攒下的记忆并入共享目录（见 store.ts）。
+ */
+export function getLegacyWorktreeMemPath(cwd: string = process.cwd()): string | undefined {
+  const oldKey = sanitizeProjectKey(resolveProjectRoot(cwd));
+  const newKey = sanitizeProjectKey(resolveMemoryProjectRoot(cwd));
+  if (oldKey === newKey) return undefined;
+  return join(projectsRoot(), oldKey, "memory");
+}
+
 /**
  * 获取记忆目录路径（不自动创建）。
  * @param cwd 工作目录（默认 process.cwd()）
@@ -185,7 +256,8 @@ export function getAutoMemPath(cwd: string = process.cwd(), override?: string): 
     const validated = validateMemoryPath(override);
     if (validated) return validated;
   }
-  const root = resolveProjectRoot(cwd);
+  // B14：长期记忆跨 worktree 共享，用主仓根派生键（不是 resolveProjectRoot）
+  const root = resolveMemoryProjectRoot(cwd);
   const key = sanitizeProjectKey(root);
   return join(projectsRoot(), key, "memory");
 }
@@ -241,9 +313,10 @@ function sanitizeSessionId(raw: string | undefined): string | null {
  * 3. **resume 读到别人的笔记**：恢复一个两周前的会话，文件里躺的是这两周内
  *    其它会话留下的内容，与恢复出来的对话历史完全不对应。
  *
- * 注意 `resolveProjectRoot` 取的是 git toplevel，所以旧路径连**同仓库的多个
- * worktree** 也共用一份。那对长期记忆是刻意设计（见本文件头部注释），
- * 但对会话级笔记是错的：worktree 的存在意义就是并行做不同的事。
+ * 注意 `resolveProjectRoot` 取的是 git toplevel，它在 linked worktree 里返回
+ * worktree 自己，所以会话级笔记天然按 worktree 分开 —— 这对会话级笔记是对的：
+ * worktree 的存在意义就是并行做不同的事。（长期记忆要共享，走的是
+ * `resolveMemoryProjectRoot`，B14。）
  *
  * 新布局：`~/.sid-code/projects/<key>/session-memory/<sessionId>.md`。
  * 单独一层子目录（而不是 `.session_memory-<id>.md` 平铺）是为了让清理能
