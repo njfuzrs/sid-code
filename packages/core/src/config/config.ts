@@ -1177,7 +1177,12 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
       // 见 docs/bugfixes/done/20260807-遥测落盘恒空-配置undefined覆盖默认值.md
       const telemetry: Record<string, unknown> = {
         enabled: v.enabled ?? false,
-        exporters: Array.isArray(v.exporters) ? v.exporters : [],
+        // 字符串简写 `["jsonl"]` 归一成 `[{ type: "jsonl" }]`（B41 ①）。
+        // 不归一的话分派按 `.type` 走、字符串元素 type 为 undefined ⇒ 导出器被静默丢弃，
+        // 而校验 warning 只在 debug 级可见 —— 官网示例曾恰好是这种写法，照抄即零落盘。
+        exporters: Array.isArray(v.exporters)
+          ? v.exporters.map((e: unknown) => (typeof e === "string" ? { type: e } : e))
+          : [],
       };
       const batchSize = v.batch_size ?? v.batchSize;
       const flushIntervalMs = v.flush_interval_ms ?? v.flushIntervalMs;

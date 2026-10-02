@@ -47,7 +47,10 @@ describe("recordTtftHistogram", () => {
     const [m] = metricsOf(TTFT_METRIC);
     expect(m).toBeDefined();
     expect(m.type).toBe("histogram");
-    expect(m.value).toBe(3983);
+    // 入参毫秒、出口秒（规范 time_to_first_chunk 单位为 s）
+    expect(m.value).toBeCloseTo(3.983, 6);
+    expect(m.unit).toBe("s");
+    expect(m.attributes["gen_ai.operation.name"]).toBe("chat");
     // model 是这个指标的命根子：同底层模型不同网关路由的 TTFT 差 17 倍，
     // 没有它就只能跨路由汇总，而那个数是假的。
     expect(m.attributes["gen_ai.request.model"]).toBe("deepseek-v4-pro");
@@ -55,14 +58,18 @@ describe("recordTtftHistogram", () => {
     expect(m.buckets?.bounds.length).toBeGreaterThan(0);
   });
 
-  test("桶边界必须严格递增，且覆盖到 30s 以上（慢尾巴才是用户流失点）", () => {
+  test("桶边界严格递增、取规范推荐值，且覆盖到 30s 以上（慢尾巴才是用户流失点）", () => {
     recordTtftHistogram(100, "m");
     const bounds = metricsOf(TTFT_METRIC)[0].buckets!.bounds;
     for (let i = 1; i < bounds.length; i++) {
       expect(bounds[i]).toBeGreaterThan(bounds[i - 1]);
     }
     // 实测慢首字节有 102.8s 的样本，截在 10s 会把病态样本全压进同一个尾桶
-    expect(bounds[bounds.length - 1]).toBeGreaterThanOrEqual(30_000);
+    expect(bounds[bounds.length - 1]).toBeGreaterThanOrEqual(30);
+    // 跨工具可比的前提：桶边界与 OTel GenAI 推荐值逐项一致
+    expect(bounds).toEqual([
+      0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
+    ]);
   });
 
   test("0 / 负值不落——那是基准缺失或时钟异常，不是'很快'", () => {

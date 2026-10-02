@@ -73,13 +73,13 @@ function createProbe() {
 }
 
 /**
- * 会话根 span 的判据：kind + name 形如 `invoke_agent <model>` + 没有父。
+ * 会话根 span 的判据：kind + name 为 `invoke_agent sid-code`（OTel GenAI 约定 `invoke_agent {agent.name}`）+ 没有父。
  * 子代理 span 的 name 是 `invoke_agent explore` / `invoke_agent task`（agent 类型名），
  * 所以只有连 name 一起锁住才分得开「会话根」与「子代理」。
  */
 function findSessionRootSpans(spans: SpanData[]): SpanData[] {
   return spans.filter(
-    (s) => s.kind === "invoke_agent" && s.name === `invoke_agent ${MODEL}` && !s.parentSpanId,
+    (s) => s.kind === "invoke_agent" && s.name === "invoke_agent sid-code" && !s.parentSpanId,
   );
 }
 
@@ -101,7 +101,7 @@ describe("SessionStart 探针接线顺序（会话根 span 恒不落盘）", () 
     expect(roots.length).toBe(1);
     // 锁语义而非计数：这三项任一不成立，下游 APM 都重建不出会话树
     expect(roots[0]!.kind).toBe("invoke_agent");
-    expect(roots[0]!.name).toBe(`invoke_agent ${MODEL}`);
+    expect(roots[0]!.name).toBe("invoke_agent sid-code");
     expect(roots[0]!.parentSpanId).toBeUndefined();
   });
 

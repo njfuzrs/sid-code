@@ -272,7 +272,7 @@ describe("OtlpTelemetryExporter traces payload", () => {
 // ============================================================
 describe("OtlpTelemetryExporter metrics payload", () => {
   const point = (overrides: Partial<MetricPoint> = {}): MetricPoint => ({
-    name: "gen_ai.client.token.usage",
+    name: "gen_ai.client.inference.usage.input_tokens",
     value: 1024,
     timestamp: 1_700_000_000_000,
     attributes: { "gen_ai.request.model": "gpt-4" },
@@ -284,12 +284,20 @@ describe("OtlpTelemetryExporter metrics payload", () => {
     const e = new OtlpTelemetryExporter();
     const payload = e.buildMetricsPayload([point()]) as any;
     const metric = payload.resourceMetrics[0].scopeMetrics[0].metrics[0];
-    expect(metric.name).toBe("gen_ai.client.token.usage");
+    expect(metric.name).toBe("gen_ai.client.inference.usage.input_tokens");
     // AGGREGATION_TEMPORALITY_DELTA=1：我们每次上报的是增量而非累计值
     expect(metric.sum.aggregationTemporality).toBe(1);
     expect(metric.sum.isMonotonic).toBe(true);
     expect(metric.sum.dataPoints[0].asDouble).toBe(1024);
     expect(metric.sum.dataPoints[0].timeUnixNano).toBe("1700000000000000000");
+  });
+
+  test("unit 原样进 OTLP Metric.unit；没给就不带这个键", () => {
+    const e = new OtlpTelemetryExporter();
+    const withUnit = e.buildMetricsPayload([point({ unit: "{token}" })]) as any;
+    expect(withUnit.resourceMetrics[0].scopeMetrics[0].metrics[0].unit).toBe("{token}");
+    const noUnit = e.buildMetricsPayload([point()]) as any;
+    expect("unit" in noUnit.resourceMetrics[0].scopeMetrics[0].metrics[0]).toBe(false);
   });
 
   test("gauge 走 gauge", () => {
@@ -395,13 +403,13 @@ describe("OtlpTelemetryExporter metrics payload", () => {
   test("同名 metric 合并为一个 Metric 条目下的多个 data point", () => {
     const e = new OtlpTelemetryExporter();
     const payload = e.buildMetricsPayload([
-      point({ attributes: { "gen_ai.token.type": "input" }, value: 100 }),
-      point({ attributes: { "gen_ai.token.type": "output" }, value: 20 }),
+      point({ attributes: { "gen_ai.token.modality": "unknown" }, value: 100 }),
+      point({ attributes: { "gen_ai.token.modality": "text" }, value: 20 }),
       point({ name: "sidcode.cost.usd", value: 0.42 }),
     ]) as any;
     const metrics = payload.resourceMetrics[0].scopeMetrics[0].metrics;
     expect(metrics).toHaveLength(2);
-    expect(metrics[0].name).toBe("gen_ai.client.token.usage");
+    expect(metrics[0].name).toBe("gen_ai.client.inference.usage.input_tokens");
     expect(metrics[0].sum.dataPoints).toHaveLength(2);
     expect(metrics[1].name).toBe("sidcode.cost.usd");
     expect(metrics[1].sum.dataPoints[0].asDouble).toBe(0.42);
@@ -410,12 +418,14 @@ describe("OtlpTelemetryExporter metrics payload", () => {
   test("维度标签落到 data point 的 attributes", () => {
     const e = new OtlpTelemetryExporter();
     const payload = e.buildMetricsPayload([
-      point({ attributes: { "gen_ai.request.model": "gpt-4", "gen_ai.token.type": "input" } }),
+      point({
+        attributes: { "gen_ai.request.model": "gpt-4", "gen_ai.token.modality": "unknown" },
+      }),
     ]) as any;
     const dp = payload.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0];
     expect(dp.attributes).toEqual([
       { key: "gen_ai.request.model", value: { stringValue: "gpt-4" } },
-      { key: "gen_ai.token.type", value: { stringValue: "input" } },
+      { key: "gen_ai.token.modality", value: { stringValue: "unknown" } },
     ]);
   });
 });
