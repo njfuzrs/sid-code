@@ -1,8 +1,9 @@
 /**
- * Goal 评估器 — 独立评估者
+ * Goal 评估器
  *
  * 评估器是 /goal 的核心——它决定目标是否达成。
- * 使用独立小模型（haiku 级别）做评估，架构级防自欺。
+ * 评估模型由 resolveGoalEvaluatorModel 解析（goal.evaluatorModel → subAgentModels.default → 主模型）。
+ * 只有配了独立模型才是「独立评估者」；两项都没配时就是主模型给自己打分，/goal 设定时会提示。
  * 主要判据是 Evidence Log（结构化证据链），对话上下文仅作补充。
  */
 
