@@ -41,6 +41,13 @@ describe("/tui 命令", () => {
 });
 
 describe("/fast 命令", () => {
+  // B30：/fast 不删、不隐藏，唯一约束是「写着的就是真的」。
+  // 这条 description 原样进官网 ref/slash-commands.md；网关接入真 fast 能力之前，
+  // 谁把「预留」两个字删了（让用户以为切了能加速），这里就红。
+  test("公开描述自标预留状态（官网参考页数据源）", () => {
+    expect(fastCmd.description).toContain("预留");
+  });
+
   test("无参展示开关态 + 网关能力尾注", async () => {
     const mod = await loadFast();
     const r = await mod.call("", makeCtx({ fastMode: false }));

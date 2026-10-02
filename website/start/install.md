@@ -8,7 +8,7 @@ description: 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构�
 一条命令装完。这页还列了三类最常见的失败，以及它们的**原样报错文本**——
 照着报错找对应小节就行，不用通读。
 
-支持 macOS 与 Linux，`arm64` 与 `x64`。Windows 目前不支持（脚本会直接报错退出，不会装坏东西）。
+支持 macOS 与 Linux，`arm64` 与 `x64`。Windows 原生不支持（Git Bash 等会直接报错退出，不会装坏东西），走 WSL2 跑同一条命令即可。
 
 ## 快速上手
 
@@ -71,7 +71,7 @@ sid-code **不带模型**。装完只是有了这个壳，还得告诉它去哪�
 
 ```text
 ╔══════════════════════════════════════╗
-║   安装完成！v0.1.592
+║   安装完成！v<版本号>
 ╚══════════════════════════════════════╝
 
   现在可以运行：
@@ -92,7 +92,7 @@ sid-code **不带模型**。装完只是有了这个壳，还得告诉它去哪�
 
 ```bash
 # 锁定某个版本（回滚场景）
-curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSION=0.1.590 bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSION=<版本号> bash
 ```
 
 | 环境变量 | 作用 |
@@ -100,7 +100,7 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSI
 | `SID_CODE_VERSION` | 锁定安装版本，默认读服务器通道指针 |
 | `SID_CODE_CHANNEL` | 发布通道 `stable`（默认）/ `beta`，见下节 |
 | `SID_CONFIG_DIR` | 配置目录，默认 `~/.sid-code` |
-| `RELEASE_BASE` | 下载地址前缀，默认内置团队服务器 |
+| `RELEASE_BASE` | 下载地址前缀，默认官网下载地址 |
 
 ## 抢先版（beta 通道）
 
@@ -205,16 +205,16 @@ uname -m    # Apple Silicon 原生应该输出 arm64
 <!--
   ⚠ 标题必须把两个症状都写出来（曾叫「失败三：权限相关」）。
   本页的设计承诺是「照着报错找对应小节」，而这一节里第一个报错其实是**连不上服务器**，
-  权限问题只是第二种——叫「权限相关」会让内网/VPN 没连的人在目录里扫一遍标题后跳过它。
+  权限问题只是第二种——叫「权限相关」会让连不上服务器的人在目录里扫一遍标题后跳过它。
 -->
 
 ### 失败三：下载失败，或权限不对
 
 ```text
-  ❌ 下载失败: https://www.sid-code.cc/releases/sid-code/0.1.592/sid-code-0.1.592-darwin-arm64.tar.gz
+  ❌ 下载失败: https://www.sid-code.cc/releases/sid-code/<版本号>/sid-code-<版本号>-darwin-arm64.tar.gz
 ```
 
-看到这个**大概率不是权限，而是连不上服务器**（服务器在团队内网，需要公司网络或 VPN）。先单独试一下：
+看到这个**大概率不是权限，而是连不上服务器**（确认能访问 www.sid-code.cc，检查代理设置或防火墙是否放行）。先单独试一下：
 
 ```bash
 curl -I https://www.sid-code.cc/releases/sid-code/latest.txt

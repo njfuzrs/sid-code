@@ -169,7 +169,7 @@ Worktree 隔离:
   SID_STRONG_MODEL              强力档模型覆盖（旁路调用用，最高权威）
 
   轨迹采集:
-  SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
+  SID_CODE_TRACE                设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace）
   SID_CODE_TRACE_OUTPUT_DIR     自定义轨迹输出目录
   SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
   SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
