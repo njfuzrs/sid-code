@@ -176,7 +176,7 @@ CLAUDE.md 是你手写的，记忆是模型用 `save_memory` 存的，跨会话�
 - API Key、token、密码等凭证明文
 - 已经在 CLAUDE.md 里的规则
 
-存储在 `~/.sid-code/projects/<项目键>/memory/` 下。项目键用 **git 顶层目录**派生，
+存储在 `~/.sid-code/projects/<项目键>/memory/` 下。项目键用**主仓根目录**派生（`git rev-parse --git-common-dir`），
 所以同一个仓库的多个 worktree 共享同一份记忆——在 worktree 里攒的记忆回主仓照样在。
 
 管理命令：
@@ -237,8 +237,9 @@ SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
 按上面那条合并链，越靠后越优先。`CLAUDE.local.md` 最大。
 
 **我在 worktree 里让它记的东西，回主仓没了。**
-不该发生——记忆按 git 顶层目录分桶，多 worktree 共享。真遇到这情况先确认那个
-worktree 是不是同一个仓库的（`git rev-parse --show-toplevel` 对比一下）。
+不该发生——记忆按主仓根目录分桶，多 worktree 共享。真遇到这情况先确认那个
+worktree 是不是同一个仓库的（两边各跑一次 `git rev-parse --path-format=absolute --git-common-dir`，
+结果应相同）。注意 `--show-toplevel` 在 worktree 里返回的是 worktree 自己，用它对比会误判。
 
 **记忆里存了敏感信息怎么办。**
 `/memory delete <名字>` 删掉。系统提示词里已经禁止存凭证，但如果你在对话里贴过
