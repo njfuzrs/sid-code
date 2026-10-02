@@ -17,7 +17,10 @@ export class IDECommand implements Command {
     return [];
   }
   description() {
-    return "IDE 集成管理（status/connect/disconnect/install）";
+    return "IDE 集成管理";
+  }
+  argumentHint() {
+    return "[status|connect|disconnect|install]";
   }
 
   subCommands(): Command[] {
