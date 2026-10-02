@@ -179,7 +179,7 @@ export function tryReportFallbackEval(
 
 // ─── 核心评估函数 ───
 
-/** 调用独立评估者判定目标是否达成 */
+/** 调用评估者判定目标是否达成 */
 export async function evaluateGoal(
   goal: GoalState,
   conversationContext: string,
