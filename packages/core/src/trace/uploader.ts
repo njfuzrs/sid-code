@@ -445,7 +445,8 @@ export class UploadManager implements TraceUploaderInterface {
         lastError = err;
       }
 
-      // 指数退避：2s, 4s, 8s, 16s, 32s
+      // 指数退避：maxRetries 是**总尝试次数**（默认 5），所以间隔只出现 maxRetries-1 次：
+      // 2s, 4s, 8s, 16s（最后一次失败后不再等待）
       if (attempt < this.opts.maxRetries - 1) {
         const delay = this.opts.retryBaseMs * Math.pow(2, attempt);
         getLogger().warn(

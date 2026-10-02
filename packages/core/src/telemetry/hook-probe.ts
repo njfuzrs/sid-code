@@ -11,6 +11,7 @@ import type { SpanHandle } from "./bus.ts";
 import type { TokenMeter } from "./metrics/token-meter.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
+import { normalizeCacheUsage } from "../llm/types.ts";
 import { addRequestContent, addResponseContent, addToolContent } from "./content-tracing.ts";
 import { clearPendingRootSpan, writePendingRootSpan } from "./root-span-recovery.ts";
 import { HookEventName } from "../hook/types.ts";
@@ -170,9 +171,12 @@ export class TelemetryHookProbe {
   }
 
   private handleSessionStart(input: SessionStartInput): void {
-    // 创建顶层 invoke_agent span
+    // 创建顶层 invoke_agent span。
+    // 名字按 OTel GenAI 约定取 `invoke_agent {gen_ai.agent.name}`（曾用模型名：
+    // 那会让同一个 agent 换个模型就成了另一种操作，后端按 span 名聚合时被拆散）。
+    // 模型仍在 gen_ai.request.model 属性上，不丢信息。
     const traceContext = this.bus.startTrace();
-    const name = `invoke_agent ${this.config.model}`;
+    const name = "invoke_agent sid-code";
     const attributes: Attributes = {
       [ATTR.OPERATION_NAME]: "invoke_agent",
       [ATTR.AGENT_NAME]: "sid-code",
@@ -278,6 +282,7 @@ export class TelemetryHookProbe {
           outputTokens: usage.outputTokens ?? 0,
           cacheReadInputTokens: usage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          reasoningTokens: usage.reasoningTokens,
         },
         costUSD: input.llm_response.cost_usd ?? 0,
         sessionId: this.config.sessionId,
@@ -287,10 +292,7 @@ export class TelemetryHookProbe {
     // 结束 chat span，附加属性
     const enriched = this.collectEnrichedAttributes("chat", input);
     this.llmSpan?.setAttributes({
-      [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
-      [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
-      [ATTR.CACHE_READ_TOKENS]: usage.cacheReadInputTokens ?? 0,
-      [ATTR.CACHE_CREATION_TOKENS]: usage.cacheCreationInputTokens ?? 0,
+      ...usageAttributes(usage, this.config.provider),
       [ATTR.FINISH_REASONS]: input.llm_response.stop_reason ?? "unknown",
       [ATTR.COST_USD]: input.llm_response.cost_usd ?? 0,
       [ATTR.CACHE_SAVINGS_USD]: input.llm_response.cache_savings_usd ?? 0,
@@ -301,16 +303,25 @@ export class TelemetryHookProbe {
   }
 
   private handlePostToolUse(input: PostToolUseInput): void {
-    // 注意：此 span 在 PostToolUse 事件中创建并立即结束，span.durationMs ≈ 0，
-    // 不反映工具的真实执行耗时。真实耗时通过 sidcode.tool.duration_ms 属性记录。
+    // 此 span 在 PostToolUse（工具已跑完）时才创建，所以起点按 duration_ms **回填**：
+    // 曾经是「创建即结束」，durationMs ≈ 0，Jaeger 瀑布图上所有工具都是一根 0µs 的竖线，
+    // 整个会话看起来全是模型时间 —— 恰好误导「慢在模型还是慢在工具」这个问题（B42 实测）。
+    // sidcode.tool.duration_ms 属性保留，供不看 span 时长的旧消费方继续用。
     const enriched = this.collectEnrichedAttributes("execute_tool", input);
-    const toolSpan = this.bus.startSpan("execute_tool", `execute_tool ${input.tool_name}`, {
-      [ATTR.OPERATION_NAME]: "execute_tool",
-      [ATTR.TOOL_NAME]: input.tool_name,
-      [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
-      [ATTR.SUCCESS]: !input.is_error,
-      ...(enriched as Attributes),
-    });
+    const toolDuration =
+      typeof input.duration_ms === "number" && input.duration_ms > 0 ? input.duration_ms : 0;
+    const toolSpan = this.bus.startSpan(
+      "execute_tool",
+      `execute_tool ${input.tool_name}`,
+      {
+        [ATTR.OPERATION_NAME]: "execute_tool",
+        [ATTR.TOOL_NAME]: input.tool_name,
+        [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
+        [ATTR.SUCCESS]: !input.is_error,
+        ...(enriched as Attributes),
+      },
+      { startTime: Date.now() - toolDuration },
+    );
     // 如果有真实耗时，记录为属性
     if (input.duration_ms !== undefined) {
       toolSpan.setAttribute("sidcode.tool.duration_ms", input.duration_ms);
@@ -412,14 +423,7 @@ export class TelemetryHookProbe {
     if (span) {
       span.setAttributes({
         [ATTR.SUCCESS]: input.success ?? true,
-        ...(usage
-          ? {
-              [ATTR.INPUT_TOKENS]: usage.inputTokens ?? 0,
-              [ATTR.OUTPUT_TOKENS]: usage.outputTokens ?? 0,
-              [ATTR.CACHE_READ_TOKENS]: usage.cacheReadInputTokens ?? 0,
-              [ATTR.CACHE_CREATION_TOKENS]: usage.cacheCreationInputTokens ?? 0,
-            }
-          : {}),
+        ...(usage ? usageAttributes(usage, input.provider ?? this.config.provider) : {}),
         ...(input.turns !== undefined ? { [ATTR.TOTAL_TURNS]: input.turns } : {}),
         ...(input.duration_ms !== undefined
           ? { "sidcode.subagent.duration_ms": input.duration_ms }
@@ -458,4 +462,41 @@ export class TelemetryHookProbe {
       this.pendingRootSessionId = undefined;
     }
   }
+}
+
+/**
+ * 把一次调用的 usage 映射成 OTel GenAI span 属性。
+ *
+ * 规范要求 `gen_ai.usage.input_tokens` **含**缓存命中与写入（cache_read / cache_write
+ * 都 SHOULD be included in input_tokens）。两族 provider 原始口径不同：Anthropic 的
+ * input_tokens 是未命中余量，OpenAI 族的 prompt_tokens 已含命中 —— 直接透传会让同一个
+ * 属性在两族下语义不同，跨 provider 看板上的 input 就不可比。统一走 normalizeCacheUsage。
+ */
+function usageAttributes(
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+    reasoningTokens?: number;
+  },
+  provider: string,
+): Attributes {
+  const norm = normalizeCacheUsage(
+    {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    },
+    provider,
+  );
+  return {
+    [ATTR.INPUT_TOKENS]: norm.promptTotal,
+    [ATTR.OUTPUT_TOKENS]: norm.outputTokens,
+    [ATTR.CACHE_READ_TOKENS]: norm.cacheHitTokens,
+    [ATTR.CACHE_WRITE_TOKENS]: norm.cacheWriteTokens,
+    // 推理 token 只在有值时落：0 会把「非思考模型」与「网关未透传」混成一个数
+    ...(usage.reasoningTokens ? { [ATTR.REASONING_TOKENS]: usage.reasoningTokens } : {}),
+  };
 }

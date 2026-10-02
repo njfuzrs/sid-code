@@ -1315,7 +1315,8 @@ export class TelemetryCommand implements Command {
     if (!bus.isEnabled()) {
       return {
         kind: "message",
-        message: "遥测未启用。在 ~/.sid-code/app.json 中设置 telemetry.enabled: true",
+        message:
+          "遥测未启用。在 ~/.sid-code/settings.json（或 ~/.sid-code/app.json）中设置 telemetry.enabled: true",
       };
     }
 
@@ -1391,7 +1392,8 @@ export class TelemetryCommand implements Command {
       const agg = aggregateMetrics(metrics);
       // 过滤掉已在总览中展示的指标
       const extraMetrics = Object.entries(agg).filter(
-        ([name]) => name !== "gen_ai.client.token.usage" && name !== "sidcode.cost.usd",
+        ([name]) =>
+          !name.startsWith("gen_ai.client.inference.usage.") && name !== "sidcode.cost.usd",
       );
       if (extraMetrics.length > 0) {
         lines.push("", "其他指标:");
@@ -1418,7 +1420,7 @@ export class TelemetryCommand implements Command {
 
 /** Metric 名称 → 中文标签映射 */
 const METRIC_LABELS: Record<string, string> = {
-  "gen_ai.client.token.usage": "Token 消耗",
+  "gen_ai.client.operation.time_to_first_chunk": "首内容延迟 TTFT (s)",
   "sidcode.cost.usd": "费用 (USD)",
   "sidcode.cost.cache_savings_usd": "缓存节省 (USD)",
   "sidcode.budget.remaining_usd": "预算剩余 (USD)",

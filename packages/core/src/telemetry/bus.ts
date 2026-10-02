@@ -34,10 +34,12 @@ export class SpanHandle {
     private _name: string,
     private _kind: SpanKind,
     initialAttributes?: Attributes,
+    startTime?: number,
   ) {
-    this._startTime = Date.now();
+    this._startTime = startTime ?? Date.now();
     if (initialAttributes) this._attributes = { ...initialAttributes };
     traceContext.pushSpan(spanId);
+    bus.markActive(spanId, this._startTime);
   }
 
   /** 已经过的毫秒数（用于计算 TTFT 等） */
@@ -98,6 +100,7 @@ export class SpanHandle {
     };
 
     this.traceContext.popSpan();
+    this.bus.markEnded(this.spanId);
     this.bus.enqueueSpan(spanData);
   }
 }
@@ -118,6 +121,8 @@ const MAX_HISTORY_METRICS = 2000;
 /** 遥测总线 */
 export class TelemetryBus {
   private spanQueue: SpanData[] = [];
+  /** 活跃 span 的起点（spanId → Unix ms），供回填起点时钳到父 span 之内 */
+  private activeStartTimes = new Map<string, number>();
   private metricQueue: MetricPoint[] = [];
   private exporters: TelemetryExporter[] = [];
   private flushTimer?: ReturnType<typeof setInterval>;
@@ -192,18 +197,36 @@ export class TelemetryBus {
     return this.traceContext;
   }
 
-  /** 创建新 Span */
-  startSpan(kind: SpanKind, name: string, attributes?: Attributes): SpanHandle {
+  /**
+   * 创建新 Span。
+   *
+   * `opts.startTime`（Unix 毫秒）用于**事后补建**的 span：观测点只在操作结束后才拿得到
+   * 数据时（如 PostToolUse 才知道工具跑了多久），按真实起点回填，瀑布图上的长度才是真的。
+   */
+  startSpan(
+    kind: SpanKind,
+    name: string,
+    attributes?: Attributes,
+    opts?: { startTime?: number },
+  ): SpanHandle {
     const ctx = this.traceContext;
     if (!ctx) {
       // 没有活跃 trace 时自动创建
       this.startTrace();
-      return this.startSpan(kind, name, attributes);
+      return this.startSpan(kind, name, attributes, opts);
     }
 
     const spanId = generateSpanId();
     const parentSpanId = ctx.currentSpanId;
-    return new SpanHandle(this, ctx, spanId, parentSpanId, name, kind, attributes);
+    // 回填的起点不得早于父 span 的起点：duration 的计时基准与父 span 不同源
+    // （如工具耗时可能把父 span 开始前的排队也算进去），越界会让子 span 在瀑布图上
+    // 画到父的左边，被后端判成时间错位。
+    let startTime = opts?.startTime;
+    if (startTime !== undefined && parentSpanId !== undefined) {
+      const parentStart = this.activeStartTimes.get(parentSpanId);
+      if (parentStart !== undefined && startTime < parentStart) startTime = parentStart;
+    }
+    return new SpanHandle(this, ctx, spanId, parentSpanId, name, kind, attributes, startTime);
   }
 
   /** 记录 Metric 数据点 */
@@ -220,6 +243,16 @@ export class TelemetryBus {
     if (this.metricQueue.length >= this.config.batchSize) {
       this.flushMetrics().catch(() => {});
     }
+  }
+
+  /** @internal 由 SpanHandle 构造时调用 */
+  markActive(spanId: string, startTime: number): void {
+    this.activeStartTimes.set(spanId, startTime);
+  }
+
+  /** @internal 由 SpanHandle.end() 调用 */
+  markEnded(spanId: string): void {
+    this.activeStartTimes.delete(spanId);
   }
 
   /** 将完成的 Span 加入队列（由 SpanHandle.end() 调用） */

@@ -57,11 +57,16 @@ export interface SpanData {
 
 /** Metric 数据点 */
 export interface MetricPoint {
-  name: string; // 如 "gen_ai.client.token.usage"
+  name: string; // 如 "gen_ai.client.inference.usage.input_tokens"
   value: number;
   timestamp: number;
   attributes: Attributes; // 维度标签
   type: "counter" | "histogram" | "gauge";
+  /**
+   * UCUM 单位（如 `"s"`、`"{token}"`），原样进 OTLP `Metric.unit`。
+   * GenAI 语义约定对每个标准 metric 都规定了单位；缺了它，后端只能把秒和毫秒当同一个数。
+   */
+  unit?: string;
   /**
    * 分桶（仅 `type: "histogram"` 有意义）。**不带它的 histogram 会被 OTLP 导出器
    * 降级成 gauge**，这个降级是刻意保留的：硬造 bucket 边界得出的分布是错的
@@ -85,19 +90,19 @@ export interface MetricPoint {
 }
 
 /**
- * TTFT 直方图的桶边界（毫秒）。
+ * TTFT 直方图的桶边界（**秒**），取 OTel GenAI 语义约定
+ * `gen_ai.client.operation.time_to_first_chunk` 的推荐值（SHOULD）。
  *
- * 取值依据是实测分布而非拍脑袋：`deepseek-v4-pro` 的 TTFT p50 已经到 3983ms，
- * 而 `glm-5.3` 之类走本地路由的在 500ms 内（见 `trace/latency-by-model.ts` 的表）。
- * 边界必须同时覆盖这两端，否则一族全落进首桶、另一族全落进尾桶，
- * 分布图上看不出任何东西 —— 那正是"有指标但值是废的"那类缺陷。
- *
- * 尾部特意拉到 60s：慢首字节实测有 102.8s 的样本（见 `agent/agentic-loop.ts` 的
- * P2-6 注释），截在 10s 会把所有病态样本压进同一个尾桶，
- * 而"慢尾巴才是用户流失点"正是要看的东西。
+ * 之前用的是自定义毫秒边界（100ms…60s）。换成规范值的理由是**跨工具可比**：
+ * 两个都按规范桶上报的 agent，放进同一个看板才能直接比分位，自定义边界只能各看各的。
+ * 规范桶依然满足当初定边界的两条要求：
+ * - 低端覆盖本地路由（`glm-5.3` 一类 <500ms）与 `deepseek-v4-pro` p50 3983ms 两端，
+ *   否则一族全落首桶、另一族全落尾桶，分布图上看不出任何东西；
+ * - 尾部到 81.92s，比原来的 60s 更长 —— 慢首字节实测有 102.8s 的样本
+ *   （见 `agent/agentic-loop.ts` 的 P2-6 注释），"慢尾巴才是用户流失点"。
  */
-export const TTFT_BUCKET_BOUNDS_MS = [
-  100, 250, 500, 1000, 2000, 3000, 5000, 8000, 15000, 30000, 60000,
+export const TTFT_BUCKET_BOUNDS_S = [
+  0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
 ] as const;
 
 /**
@@ -146,7 +151,9 @@ export const ATTR = {
   INPUT_TOKENS: "gen_ai.usage.input_tokens",
   OUTPUT_TOKENS: "gen_ai.usage.output_tokens",
   CACHE_READ_TOKENS: "gen_ai.usage.cache_read.input_tokens",
-  CACHE_CREATION_TOKENS: "gen_ai.usage.cache_creation.input_tokens",
+  // 规范名是 cache_write（曾用 cache_creation，那是 Anthropic API 的字段名，不是 OTel 的）
+  CACHE_WRITE_TOKENS: "gen_ai.usage.cache_write.input_tokens",
+  REASONING_TOKENS: "gen_ai.usage.reasoning.output_tokens",
   FINISH_REASONS: "gen_ai.response.finish_reasons",
   CONVERSATION_ID: "gen_ai.conversation.id",
   AGENT_NAME: "gen_ai.agent.name",
