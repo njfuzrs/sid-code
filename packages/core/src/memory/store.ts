@@ -18,9 +18,9 @@
 
 import { join, basename } from "path";
 import { existsSync, mkdirSync } from "fs";
-import { readdir, stat, unlink, rename } from "fs/promises";
+import { readdir, stat, unlink, rename, copyFile, writeFile } from "fs/promises";
 import { getLogger } from "../debug/logger.ts";
-import { getAutoMemPath } from "./paths.ts";
+import { getAutoMemPath, getLegacyWorktreeMemPath } from "./paths.ts";
 import { sidHomePath } from "../config/paths.ts";
 import { MEMORY_LIMITS, MEMORY_TYPES, isMemoryType, type MemoryType } from "./types.ts";
 import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
@@ -55,6 +55,8 @@ interface LegacyMemoryData {
 
 const LEGACY_FILE = "memories.json";
 const INDEX_FILE = "MEMORY.md";
+/** B14：旧 worktree 记忆目录已并入共享目录的标记文件（写在旧目录里） */
+const LEGACY_WORKTREE_MERGED_MARKER = ".merged-into-shared-memory";
 
 /** 模块级摘要缓存（预取和正式调用共享） */
 let summaryCacheEntry: { summary: string | null; timestamp: number; key: string } | null = null;
@@ -423,6 +425,10 @@ export class MemoryStore {
   private globalDir: string;
   private projectDir: string | null;
   private projectRoot: string | null;
+  /** B14：本 worktree 旧键下的记忆目录；仅在用默认派生（无 projectMemoryDir 覆盖）时有值 */
+  private legacyWorktreeDir: string | null = null;
+  /** B14：本次 load 是否真的并入过文件（并入过就要重建项目索引） */
+  private legacyWorktreeMerged = false;
   /** 内存缓存：scope → key → entry */
   private globalEntries: Map<string, MemoryEntry> = new Map();
   private projectEntries: Map<string, MemoryEntry> = new Map();
@@ -456,6 +462,9 @@ export class MemoryStore {
     this.globalDir = opts?.globalMemoryDir ?? sidHomePath("memory");
     this.projectRoot = projectRoot ?? null;
     this.projectDir = opts?.projectMemoryDir ?? (projectRoot ? getAutoMemPath(projectRoot) : null);
+    if (projectRoot && !opts?.projectMemoryDir) {
+      this.legacyWorktreeDir = getLegacyWorktreeMemPath(projectRoot) ?? null;
+    }
   }
 
   /** 获取项目记忆目录（供召回/提示词注入使用） */
@@ -498,6 +507,9 @@ export class MemoryStore {
         await this.migrateLegacyFile(oldProjectJson, this.projectDir, "project");
       }
       await this.migrateLegacyIfNeeded(this.projectDir, "project");
+      if (this.legacyWorktreeDir) {
+        await this.mergeLegacyWorktreeMemory(this.legacyWorktreeDir, this.projectDir);
+      }
     }
 
     // 2026-07-30：修掉 memoryFilename 的双前缀后，**存量**文件仍叫
@@ -526,8 +538,72 @@ export class MemoryStore {
     // 不存在的文件——那正是本次要修的「Read 报文件不存在」，不能自己再造一遍。
     // 放在 loaded=true 之后：writeIndex 依赖 loadDir 填好的 files 映射。
     if (globalRenamed) await this.writeIndex(this.globalDir, this.globalEntries);
-    if (projectRenamed && this.projectDir) {
+    if ((projectRenamed || this.legacyWorktreeMerged) && this.projectDir) {
+      this.legacyWorktreeMerged = false;
       await this.writeIndex(this.projectDir, this.projectEntries);
+    }
+  }
+
+  /**
+   * B14 兼容：把本 worktree 在旧键（`--show-toplevel` 派生）下攒的记忆并入共享目录。
+   *
+   * 记忆键从「每个 worktree 一份」改成「主仓一份」后，老 worktree 的记忆还在旧目录里，
+   * 不处理的话用户视角就是**记忆凭空消失**（数据在盘上，只是程序不再去那里找）——
+   * 正是本仓「静默丢数据」类事故的形态，所以不能默认「反正是新键，旧的无所谓」。
+   *
+   * 选「首次加载时一次性并入」而不是「读时兼容（新键没有就查老键）」：
+   * - 读时兼容要让 load / get / list / delete / 索引注入**每条读路径**都认两个目录，
+   *   漏一条就是「看得见删不掉」；并入后只有一个目录是事实源。
+   * - 读时兼容下 worktree 之间仍然不共享老记忆（各查各的老键），没修到用户要的行为。
+   *
+   * 三条安全约束：
+   * - **复制不移动**，旧目录原样保留（失败可人工找回）；
+   * - **目标已有同名文件就跳过**（主仓与 worktree 各存过同一 key 时，保留共享目录那份，
+   *   不覆盖用户数据）；不复制 `MEMORY.md`，由下面 loadDir 之后的 writeIndex 重建；
+   * - 并完在旧目录写一个标记文件，之后不再并 —— 否则用户在共享目录删掉的记忆
+   *   会在下次启动时从旧目录「复活」。
+   */
+  private async mergeLegacyWorktreeMemory(legacyDir: string, targetDir: string): Promise<void> {
+    const marker = join(legacyDir, LEGACY_WORKTREE_MERGED_MARKER);
+    if (!existsSync(legacyDir) || existsSync(marker)) return;
+    const log = getLogger();
+    let names: string[];
+    try {
+      names = await readdir(legacyDir);
+    } catch {
+      return;
+    }
+    const copied: string[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".md") || name === INDEX_FILE) continue;
+      const to = join(targetDir, name);
+      if (existsSync(to)) continue;
+      try {
+        if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+        await copyFile(join(legacyDir, name), to);
+        copied.push(name);
+      } catch (e) {
+        log.warn(
+          "MEMORY",
+          `B14 并入旧 worktree 记忆失败（跳过）: ${name} — ${(e as Error)?.message}`,
+        );
+      }
+    }
+    try {
+      await writeFile(
+        marker,
+        `已于 ${new Date().toISOString()} 并入 ${targetDir}（复制 ${copied.length} 条；本目录保留未删除）\n`,
+        "utf8",
+      );
+    } catch {
+      /* 标记写失败：下次启动再并一次，目标已存在的会被跳过，只多一次扫描 */
+    }
+    if (copied.length > 0) {
+      this.legacyWorktreeMerged = true;
+      log.info(
+        "MEMORY",
+        `B14：worktree 记忆改为与主仓共享，已从 ${legacyDir} 并入 ${copied.length} 条到 ${targetDir}（旧目录保留）`,
+      );
     }
   }
 

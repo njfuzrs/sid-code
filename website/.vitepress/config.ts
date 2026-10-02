@@ -271,7 +271,7 @@ export default defineConfig({
   ...(canUseAbsoluteUrls() ? { sitemap: { hostname: `${siteHostname()}/` } } : {}),
   lang: "zh-CN",
   title: "sid-code",
-  description: "跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主",
+  description: "长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座",
 
   base: "/",
   cleanUrls: true,
