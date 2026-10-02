@@ -292,4 +292,30 @@ describe("SDKQueryEngine.submitMessage", () => {
     for await (const m of without.submitMessage("x")) outB.push(m);
     expect(outB[outB.length - 1]).not.toHaveProperty("permission_denials");
   });
+
+  test("B26：StructuredOutput 校验通过的载荷写进 result.structured_output，且能过 schema", async () => {
+    // schemas.ts 早就定义了这个字段，但此前没有一处写它——消费者只能去流里捞未校验的 tool_use 入参。
+    const events: QueryEngineEvent[] = [{ kind: "done", turns: 1 }];
+    const payload = { language: "TypeScript", functionCount: 2 };
+
+    const withOutput = new SDKQueryEngine(config, {
+      ...makeDriver(events, []),
+      getStructuredOutput: () => payload,
+    });
+    const outA: any[] = [];
+    for await (const m of withOutput.submitMessage("x")) outA.push(m);
+    const resultA = outA[outA.length - 1];
+    expect(resultA.subtype).toBe("success");
+    expect(resultA.structured_output).toEqual(payload);
+    expect(SDKMessageSchema().safeParse(resultA).success).toBe(true);
+
+    // 没捕获到（未开 schema / 重试耗尽）→ 字段不出现，而不是 null 或空对象
+    const without = new SDKQueryEngine(config, {
+      ...makeDriver(events, []),
+      getStructuredOutput: () => undefined,
+    });
+    const outB: any[] = [];
+    for await (const m of without.submitMessage("x")) outB.push(m);
+    expect(outB[outB.length - 1]).not.toHaveProperty("structured_output");
+  });
 });
