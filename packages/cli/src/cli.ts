@@ -2172,6 +2172,14 @@ export async function main(): Promise<void> {
       // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含
       // --strict-mcp-config）、IDE 动态注册、运行时重连都不经过 config 合并层的过滤。
       mcpManager.policy = config.mcpPolicy;
+      // B21：授权 URL 此前只走 log.info——不开 --debug 时 logger 停在 WARN 级（审计日志），
+      // URL 被静默丢掉，而 performOAuthFlow 会在回调上干等 5 分钟。用户看到的是
+      // 「MCP 连不上、也没有任何提示」。必须直出 stderr：stdout 是无头模式的结构化输出通道。
+      mcpManager.onOAuthAuthorizationUrl = (serverName, url) => {
+        process.stderr.write(
+          `\n[MCP] ${serverName} 需要 OAuth 授权，请在浏览器打开以下 URL（5 分钟内有效）:\n${url}\n\n`,
+        );
+      };
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
@@ -2209,6 +2217,17 @@ export async function main(): Promise<void> {
           .connectAll(allMcpServers)
           .then(async (mcpTools) => {
             for (const tool of mcpTools) toolRegistry.register(tool);
+            // B22：_ctx_mcp_server_count 此前无人回填、恒为 0。计的是**连上的**数，不是配置数——
+            // 后者在配置里就能看到，分析时真正缺的是「这个会话实际有几个 server 可用」。
+            try {
+              const { MCPConnectionStatus: S } = await import("@sid-code/core/mcp/types.ts");
+              const { setMcpServerCount } = await import("@sid-code/core/analytics/metadata.ts");
+              setMcpServerCount(
+                mgrForSkills.getStatus().filter((s) => s.status === S.CONNECTED).length,
+              );
+            } catch {
+              /* 遥测回填失败不阻断 MCP 接入 */
+            }
             if (mcpTools.length > 0) {
               // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
               // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。

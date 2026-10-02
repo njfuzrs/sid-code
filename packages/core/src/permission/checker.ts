@@ -239,6 +239,16 @@ const READ_ONLY_TOOLS = new Set([
   // 其在无头模式被拒是符合设计的，不在本次放行范围内。
   "hypothesis_register",
   "hypothesis_challenge",
+  // 2026-10-02（B22，同一形态第二次）：MCP 工具默认延迟加载（registry.isToolDeferred），
+  // tool_search 是把它们调进上下文的**唯一入口**。它只改 registry 的激活集，不碰 fs /
+  // 网络 / 子进程，readOnly() 也是 true；不在本表 → 无头模式与子代理一律 deny。
+  // 实测：配了 6 个 MCP、5 个连上（88 个工具），模型主动 `tool_search("context7")`
+  // 两次都被「非交互模式自动拒绝」，最后退回 web_fetch；本机历史 70+ 会话 mcp__ 调用 0 次。
+  // 放行它不等于放行 MCP 工具：被调出来的 mcp__* 每次调用仍各自走权限判定。
+  "tool_search",
+  // 只列出已连接 server 的资源元数据（内存里的 serverStates），同样零副作用。
+  // 对照：ReadMcpResource 会把 blob 落盘、且返回外部不可信内容，**刻意不放行**。
+  "ListMcpResources",
 ]);
 
 /** 会话记忆最大条目数 */
