@@ -57,7 +57,7 @@ sid-code -p "用 changelog-entry skill 生成一条变更记录"
 { "trust_project_extensions": true }
 ```
 
-交互模式不受影响——它会弹确认让你决定。详见[下方](#项目级-skill-写了但模型说不存在)。
+交互模式下首次加载会弹确认让你决定（答 `y` 才加载并记住，内容变了会再问）。详见[下方](#项目级-skill-写了但模型说不存在)。
 :::
 
 ## 8 个内置 Skill
@@ -175,7 +175,7 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 - 在 `~/.sid-code/app.json` 设 `"trust_project_extensions": true`（CI 里常用）
 - 或把 Skill 挪到用户级 `~/.sid-code/skills/`（不受信任门槛约束）
 
-交互模式不受影响，会弹确认给你决定。
+交互模式下启动时会弹确认给你决定：答 `y` 才加载并记住；拒绝、空回车、没有交互终端，或会话已开始后才新加进来的文件，都是本次不加载、下次启动再问。
 
 ### 怎么确认 Skill 到底加载了几个
 
