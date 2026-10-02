@@ -155,6 +155,30 @@ export interface SessionIndexEntry {
    * 也不把一个已知的谎报当结论用。
    */
   traj_corrupt_detected_by?: "session_end" | "startup_scan";
+
+  /**
+   * B11：本会话的权限决策汇总（口径见 `trace/decision-metrics.ts`）。
+   *
+   * **键不存在 = 该版本还没接这个埋点**；接了但本会话一次鉴权都没有时落全 0 —— 两者必须分得开，
+   * 否则 B11 上线后分不清「埋点没生效」与「这次真没鉴权」（与 `ttft_n` 恒落同一理由）。
+   * 只存计数与原始耗时样本，不存比率：比率不能跨会话合并，样本可以。
+   */
+  permission?: {
+    total: number;
+    prompted: number;
+    denied: number;
+    rule_hits: number;
+    prompt_durations_ms: number[];
+    by_tool: Record<string, { n: number; prompted: number }>;
+    by_reason: Record<string, { n: number; prompted: number }>;
+  };
+
+  /**
+   * B12：「一次 edit 成功」——单位是**文件 × 会话**，不是调用次数。
+   * `files` 是分母（本会话真实执行过 edit 的文件数），`first_try_ok` 是分子。
+   * 键不存在的语义同上：旧版本行，不是「零个文件」。
+   */
+  edit_first_try?: { files: number; first_try_ok: number };
 }
 
 /** 应用 `SID_CODE_SESSION_INDEX` 重定向。语义与 `applyLedgerPathOverride` 一致 */
@@ -313,6 +337,8 @@ export function buildSessionIndexEntry(
     /** 与 `traj_corrupt` 成对：检测过就必须说清是谁检的 */
     traj_corrupt_detected_by?: "session_end" | "startup_scan";
     compactions?: number;
+    permission?: import("./decision-metrics.ts").PermissionDecisionStats;
+    edit_first_try?: import("./decision-metrics.ts").EditFirstTryStats;
   },
 ): SessionIndexEntry {
   const num = (v: unknown, fallback = 0): number => (typeof v === "number" ? v : fallback);
@@ -357,6 +383,27 @@ export function buildSessionIndexEntry(
           // 检测者与结论成对落盘：只有结论没有来源时，存量行里的 false 与真检测出来的
           // false 又分不开了（存量行的判据就是本字段缺失）。
           traj_corrupt_detected_by: extra.traj_corrupt_detected_by ?? "session_end",
+        }
+      : {}),
+    ...(extra.permission
+      ? {
+          permission: {
+            total: extra.permission.total,
+            prompted: extra.permission.prompted,
+            denied: extra.permission.denied,
+            rule_hits: extra.permission.ruleHits,
+            prompt_durations_ms: [...extra.permission.promptDurationsMs],
+            by_tool: structuredClone(extra.permission.byTool),
+            by_reason: structuredClone(extra.permission.byReason),
+          },
+        }
+      : {}),
+    ...(extra.edit_first_try
+      ? {
+          edit_first_try: {
+            files: extra.edit_first_try.files,
+            first_try_ok: extra.edit_first_try.firstTryOk,
+          },
         }
       : {}),
   };
