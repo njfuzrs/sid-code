@@ -156,7 +156,8 @@ describe("组合约束 P2-1 / P2-2", () => {
     expect(stderr).toContain("--output-format 只在 --print 下生效");
   });
 
-  test("--max-budget-usd 不带 -p → 告警但不退出（B2）", async () => {
+  // B18：交互模式已接线 --max-budget-usd，原「告警并忽略」改为不告警。
+  test("--max-budget-usd 不带 -p → 不再告警「交互模式已忽略」（B18）", async () => {
     const proc = Bun.spawn(["bun", BOOTSTRAP, "--max-budget-usd", "1"], {
       stdin: "ignore",
       stdout: "pipe",
@@ -167,7 +168,7 @@ describe("组合约束 P2-1 / P2-2", () => {
     proc.kill();
     const stderr = await new Response(proc.stderr).text();
     await proc.exited;
-    expect(stderr).toContain("--max-budget-usd 只在 --print 下生效");
+    expect(stderr).not.toContain("--max-budget-usd 只在 --print 下生效");
   });
 
   test("--no-session-persistence 不再是未知选项（bun allowNegative）", async () => {

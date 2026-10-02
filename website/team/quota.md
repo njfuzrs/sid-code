@@ -61,19 +61,17 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 
 ### costLimit 与 --max-budget-usd 的关系
 
-这里有个**必须知道的覆盖关系**：
+两者都在时**取更严的那个**，不比优先级：
 
 ```ts
-// src/app.ts:480
-const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+// packages/core/src/llm/quota.ts
+export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): number
+// 两侧正数取 min；0 / 未设 = 这一侧不限，不参与比较
 ```
 
-`quota.costLimit` 用 `??` 兜住了 `costLimit`（也就是 `--max-budget-usd` 落到的字段）。
-意思是：**只要配置里有 `quota.costLimit`，命令行的 `--max-budget-usd` 就静默失效。**
-
-如果你的团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#快速上手)），
-那么全团队的 `--max-budget-usd` 默认都不起作用。想让命令行参数生效，得先把
-配置里的 `quota.costLimit` 删掉。
+所以团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#快速上手)），
+成员传 `--max-budget-usd 0.5` 仍按 0.5 拦；反过来，成员**没法**用命令行参数把团队上限放宽。
+交互模式与 `-p` 走的是同一个值。
 
 统计口径值得点一句：配额检查用的是 `getEffectiveTotalCostUSD()`
 （`src/query/loop.ts:1612`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
