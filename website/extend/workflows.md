@@ -127,6 +127,7 @@ journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only�
 脚本格式硬性要求（`src/tool/workflow.ts:55-56`）：
 
 - 必须以 `export const meta = { name, description }` 纯字面量开头（不能是变量引用）
+- `meta.phases` 可选，是**对象数组**、每项含字符串 `title`：`phases: [{ title: "探查" }]`（写成字符串数组会被拒）
 - 纯 JavaScript，**不能含 TypeScript 类型标注**（跑在 vm 沙箱里，不经过 tsc）
 - 随后用 `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()` / `args` / `budget` 编写
 
@@ -136,12 +137,16 @@ journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only�
 export const meta = {
   name: "audit-modules",
   description: "审计 command/ 下各子目录的命令实现",
-  phases: ["探查", "审计", "汇总"],
+  phases: [{ title: "探查" }, { title: "审计" }, { title: "汇总" }],
 };
 
 // phase() 切换进度组，log() 透传叙述行（都只影响展示，不影响结果）
 const dirs = await agent("列出 src/command/commands/ 下所有子目录", {
-  schema: { dirs: { type: "array", items: { type: "string" } } },
+  schema: {
+    type: "object",
+    properties: { dirs: { type: "array", items: { type: "string" } } },
+    required: ["dirs"],
+  },
   phase: "探查",
 });
 

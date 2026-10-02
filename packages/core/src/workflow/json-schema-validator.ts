@@ -250,8 +250,69 @@ export function formatSchemaErrors(errors: SchemaError[]): string {
 }
 
 /**
+ * 根层「可识别」的 JSON Schema 关键字(draft 2020-12 核心 + 校验 + 注解词表)。
+ * 不要求本校验器都实现——只用来判断「这个对象到底是不是在写 JSON Schema」。
+ */
+const KNOWN_SCHEMA_KEYWORDS = new Set([
+  "$schema",
+  "$id",
+  "$ref",
+  "$defs",
+  "$anchor",
+  "$comment",
+  "definitions",
+  "type",
+  "enum",
+  "const",
+  "properties",
+  "required",
+  "additionalProperties",
+  "patternProperties",
+  "propertyNames",
+  "minProperties",
+  "maxProperties",
+  "dependentRequired",
+  "dependentSchemas",
+  "unevaluatedProperties",
+  "items",
+  "prefixItems",
+  "contains",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "minContains",
+  "maxContains",
+  "unevaluatedItems",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "format",
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "multipleOf",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "title",
+  "description",
+  "default",
+  "examples",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+  "nullable",
+]);
+
+/**
  * 轻量校验 schema 本身是否像个合法 JSON Schema(对标 cc 的 ajv.validateSchema)。
- * 只做基本结构检查:必须是对象,type(若有)取值合法。不合法返回错误串。
+ * 只做基本结构检查:必须是对象,type(若有)取值合法,非空时至少含一个可识别关键字。
+ * 不合法返回错误串。
  */
 export function checkSchemaShape(schema: unknown): string | null {
   if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
@@ -267,6 +328,16 @@ export function checkSchemaShape(schema: unknown): string | null {
     "boolean",
     "null",
   ]);
+  // B19:`{ dirs: { type: "array" } }` 这种漏写根层 type/properties 的对象,
+  // validateNode 一个关键字都不认识 → 对任何值都返回 valid:true,结构化输出零报错地失效。
+  // 只拦「有键但全不认识」;空对象 `{}` 是 JSON Schema 里显式的「接受任意值」,放行。
+  const keys = Object.keys(s);
+  if (keys.length > 0 && !keys.some((k) => KNOWN_SCHEMA_KEYWORDS.has(k))) {
+    return (
+      `schema 没有可识别的 JSON Schema 关键字(收到的键: ${keys.slice(0, 5).join(", ")}),` +
+      `是不是漏了根层的 type: "object" / properties?`
+    );
+  }
   if (s.type !== undefined) {
     const types = Array.isArray(s.type) ? s.type : [s.type];
     for (const t of types) {
