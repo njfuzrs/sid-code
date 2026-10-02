@@ -47,7 +47,7 @@ sid-code auth status
 认证状态:
 
   Provider:     openai
-  主模型:       glm-5.2
+  主模型:       gpt-5.4
   API Key:      ✓ 已配置  sk-R…Ykle（长度 51）
   Key 来源:     模型级 (available_models[].apiKey)
   baseURL:      https://your-gateway.example.com/v1
@@ -102,7 +102,7 @@ sid-code auth status
 
 ```text
 ✗ OpenAI 响应 Content-Type=text/html; charset=utf-8（非 SSE，疑似网关错误页）
-  model=glm-5.2 body=<!doctype html> <html lang="en"> ...
+  model=gpt-5.4 body=<!doctype html> <html lang="en"> ...
 ```
 
 这个方向不报 404，而是拿回一个 **HTTP 200 的 HTML 页面**。
@@ -111,7 +111,7 @@ sid-code 会识别出"Content-Type 不是 event-stream，这是伪装成成功�
 
 ::: warning 为什么不能靠"能启动"来判断配对了
 两种配错都**不阻碍启动**——sid-code 照样进 TUI，输入框照样能打字，
-问题要等你发第一条消息才炸，而且中间还夹着 11 次重试和 fallback 切换，报错会被冲得很远。
+问题要等你发第一条消息才炸，而且中间还夹着若干次流式重试和 fallback 切换，报错会被冲得很远。
 所以配完永远先跑一次 `sid-code auth status`，别等发消息。
 :::
 
@@ -288,7 +288,7 @@ curl -s https://your-gateway.example.com/v1/models \
 
 ### 一直在重试然后失败
 
-日志里出现 `[FALLBACK] 连接阶段尝试 1/11` 这种，说明请求确实发出去了但被拒。
+日志里出现 `[FALLBACK] 流式阶段尝试 …` 这种，说明请求确实发出去了但被拒。
 先用上面的 `/v1` 规则对一遍 `base_url`，再确认 key 和网络（网关在内网的话要连 VPN）。
 
 ## 相关

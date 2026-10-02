@@ -20,7 +20,7 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 ## 快速上手
 
 配置文件就是一份普通的 `settings.json`。以仓库里的模板 `scripts/team-defaults.template.json`
-为起点改（下面把内网网关地址换成了占位值）：
+为起点改（网关地址已是占位符，换成你自己的）：
 
 ```json
 {

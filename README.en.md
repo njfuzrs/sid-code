@@ -71,11 +71,11 @@ Every step is visible in the terminal, and <kbd>Esc</kbd> interrupts at any poin
 On features, this tracks Claude Code closely — agentic loop, tool calling, permission
 gating, hooks, skills, and MCP all have working counterparts. The differences below
 aren't claims of "we did it better"; they're things a **closed-source commercial product
-structurally cannot offer**:
+is structurally positioned not to offer**:
 
 | Capability | What it means |
 | --- | --- |
-| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
+| **Fits enterprise plumbing** | Internal gateway billing, MCP integrations, team-wide default config distribution — designed for enterprise networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
 | **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
 | **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
 | **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
