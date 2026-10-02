@@ -217,7 +217,7 @@ Worktree 隔离:
   FORCE_COLOR                   强制颜色级别 (0-3)
 
   调试/诊断:
-  SID_CODE_DEBUG                设为 1 启用调试输出（到 stderr）
+  SID_CODE_DEBUG                设为 1 等同 --debug（写 debug.log），同时把 ink 渲染层日志打到 stderr
   SID_CODE_PROFILE_STARTUP      设为 1 启用启动性能打点
   SID_CODE_DEBUG_SSE            设为 1 启用 SSE 诊断日志
   SID_CODE_PERFETTO_TRACE       启用 Perfetto 追踪输出（性能分析）

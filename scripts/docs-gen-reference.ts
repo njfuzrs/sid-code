@@ -798,13 +798,13 @@ function renderCli(helpSrc: string, rec: CliReconcile): string {
 // 数据源 6：环境变量（help.ts 环境变量段 × 源码 process.env 扫描）
 // ============================================================
 
-interface EnvVar {
+export interface EnvVar {
   group: string;
   name: string;
   desc: string;
 }
 
-function parseHelpEnvVars(helpSrc: string): EnvVar[] {
+export function parseHelpEnvVars(helpSrc: string): EnvVar[] {
   const lines = helpBody(helpSrc);
   const out: EnvVar[] = [];
   let inSection = false;
