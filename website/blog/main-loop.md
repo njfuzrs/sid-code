@@ -93,7 +93,7 @@ if (isEndTurnLike && !hasPendingToolUse) {
 | todo 完成度 | 清单仍有未勾选项 | 3 | `loop.ts:3056` |
 | 假设交付门禁 | 登记表有未结清假设 | 1 或 2（分档） | `loop.ts:3139` |
 | token 预算续写 | 本轮带了 `+500k` 预算指令 | 按预算 | `loop.ts:3263` |
-| Goal Gate | 独立评估者判定未达成 | 按配置 | `loop.ts:3308` |
+| Goal Gate | 评估模型判定未达成 | 按配置 | `loop.ts:3308` |
 
 顺序不是随便排的：不依赖 todo 的排在依赖 todo 的前面。
 "未答复兜底"放在 todo 闸门之前，因为完成度校验链原本全以 todo 存在为前提，
