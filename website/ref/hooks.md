@@ -19,7 +19,7 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
 > 共 **32** 类 Hook 事件（从 `HookEventName` 枚举导出），
-> 其中 **17** 类当前有真实触发点。
+> 其中 **18** 类当前有真实触发点。
 >
 > **第一列就是你写进 `settings.json` 的键名。** 两种写法运行时等价
 > （`pre_tool_use` 与 `PreToolUse` 都认，内部会归一化），本表优先给 snake_case——
@@ -49,7 +49,7 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 | `stop_failure` | ✗ | `StopFailure` | （枚举已定义，等接线） |
 | `setup` | ✗ | `Setup` | （枚举已定义，等接线） |
 | `permission_request` | ✓ | `PermissionRequest` | 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 |
-| `permission_denied` | ✗ | `PermissionDenied` | （枚举已定义，等接线） |
+| `permission_denied` | ✓ | `PermissionDenied` | 主循环权限拒绝后触发（弹窗被拒 / 超时 / 规则直拒），仅通知、不可改判。子代理路径暂未接。 |
 | `config_change` | ✗ | `ConfigChange` | （枚举已定义，等接线） |
 | `file_changed` | ✗ | `FileChanged` | （枚举已定义，等接线） |
 | `cwd_changed` | ✗ | `CwdChanged` | （枚举已定义，等接线） |

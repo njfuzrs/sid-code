@@ -30,6 +30,7 @@ import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
+import { recordPermissionDecision } from "../permission/decision-telemetry.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
@@ -305,6 +306,11 @@ export function logPermissionAllow(
     needsPrompt: boolean;
     durationMs?: number;
     context?: PermissionContext;
+    /**
+     * B11：放行的成因（rule / mode / sessionMemory …）。只进本地轨迹，**不进遥测**：
+     * 遥测侧 permission_allow 的字段集维持原样，避免改动外发 schema。
+     */
+    reasonType?: PermissionDenyReasonType;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -313,6 +319,17 @@ export function logPermissionAllow(
     needed_prompt: opts.needsPrompt,
     execution_context: v(opts.context ?? "main"),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+  });
+  // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
+  // 不受遥测开关管辖：轨迹是本地数据，不外发。
+  recordPermissionDecision({
+    tool: toolName,
+    outcome: "allow",
+    prompted: opts.needsPrompt,
+    source: opts.source,
+    ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
+    context: opts.context ?? "main",
+    ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
 
@@ -352,6 +369,15 @@ export function logPermissionDeny(
     execution_context: v(opts.context ?? "main"),
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+  });
+  recordPermissionDecision({
+    tool: toolName,
+    outcome: "deny",
+    prompted: opts.needsPrompt,
+    source: opts.source,
+    ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
+    context: opts.context ?? "main",
+    ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
 
