@@ -369,6 +369,6 @@ lockfile 一致 + 没有 DB 标记时是零输出的，这是设计——不制�
 
 - [子代理](/extend/subagents) —— 并行执行时 worktree 隔离怎么用
 - [会话管理](/use/sessions) —— worktree 里的会话与主仓共享记忆，但会话按目录分桶
-- [记忆与 CLAUDE.md](/use/memory) —— 记忆按 git 顶层目录分桶，多 worktree 共享
+- [记忆与 CLAUDE.md](/use/memory) —— 记忆按主仓根目录分桶，多 worktree 共享
 - [settings.json 字段](/ref/settings) —— `worktree` 段完整字段
 - [CLI 参数与子命令](/ref/cli) —— `--worktree` 参数

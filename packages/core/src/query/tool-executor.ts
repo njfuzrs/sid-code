@@ -893,6 +893,32 @@ export async function executeTools(
  * 与既有的 PostToolUseFailure 调用点一致：`.catch()` 吞掉 hook 自身异常并只打日志。
  * 这一层是可观测性补齐，不能成为新的失败源——工具本来就已经失败了，不该再叠一个。
  */
+/**
+ * B33：fire PermissionDenied hook。不 await、异常吞掉 —— 通知类 hook 不能拖慢或打断
+ * 拒绝结果回传模型（与 firePostToolUseFailure 同策略）。
+ */
+function firePermissionDenied(
+  deps: ToolExecutorDeps,
+  toolName: string,
+  toolInput: unknown,
+  reason: string,
+  source: "user" | "rule" | "hook" | "auto",
+): void {
+  try {
+    const fired = deps.hookSystem?.firePermissionDeniedEvent?.(
+      toolName,
+      (toolInput ?? {}) as Record<string, unknown>,
+      reason,
+      source,
+    );
+    void fired?.catch?.((e: any) =>
+      getLogger().error("HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
+    );
+  } catch (e: any) {
+    getLogger().error("HOOK", `permission_denied hook 触发异常: ${e?.message ?? e}`);
+  }
+}
+
 function firePostToolUseFailure(
   deps: ToolExecutorDeps,
   block: ToolUseBlock,
@@ -1020,7 +1046,13 @@ export async function resolveToolPermission(
   if (decision.allowed) {
     // 漏斗 2 · 权限（P0-1）：规则直接放行，未打扰用户。needsPrompt=false 是关键区分——
     // 「静默放行」与「弹窗后批准」在「HITL 打扰了多少次」这个问题上是相反的证据。
-    logPermissionAllow(block.name, { source: "rule", needsPrompt: false });
+    logPermissionAllow(block.name, {
+      source: "rule",
+      needsPrompt: false,
+      durationMs: Date.now() - permStartedAt,
+      // B11：放行成因（rule / mode / sessionMemory …）。规则命中率的分子就是 reasonType="rule"。
+      reasonType: decision.decisionReason?.type,
+    });
     return null;
   }
 
@@ -1151,6 +1183,15 @@ export async function resolveToolPermission(
         reasonType: decision.decisionReason?.type,
       });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
+      // B33：PermissionDenied hook 接线（此前 15 个预留事件之一，有 fire 方法无调用点）。
+      // 与 B11 同一出口：企业场景「权限被拒通知到 IM」靠它。
+      firePermissionDenied(
+        deps,
+        block.name,
+        observableInput,
+        result.decision.reason ?? denyContent,
+        result.source === "user" ? "user" : result.source === "hook" ? "hook" : "auto",
+      );
       // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
       // 耗时含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
       firePostToolUseFailure(deps, block, denyContent, observableInput, Date.now() - permStartedAt);
@@ -1168,6 +1209,8 @@ export async function resolveToolPermission(
       source: normalizePermissionSource(result.source),
       needsPrompt: true,
       durationMs: Date.now() - permStartedAt,
+      // 与拒绝分支同口径：成因取弹窗前那次 check（"为什么要问"），不是谁批的。
+      reasonType: decision.decisionReason?.type,
     });
     return null;
   }
@@ -1192,6 +1235,15 @@ export async function resolveToolPermission(
     durationMs: Date.now() - permStartedAt,
     reasonType: decision.decisionReason?.type,
   });
+  // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
+  // 记作 auto，deny 规则命中记作 rule —— 两者处置相反，hook 侧需要能分开。
+  firePermissionDenied(
+    deps,
+    block.name,
+    observableInput,
+    explanation,
+    decision.decisionReason?.type === "rule" ? "rule" : "auto",
+  );
   // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
   firePostToolUseFailure(
     deps,

@@ -2157,7 +2157,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           ? (((ps.requests - ps.failed - ps.timedOut) / ps.requests) * 100).toFixed(0)
           : "N/A";
       // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
-      const ttft = ps.ttft_p50 ? ` TTFT(首字节)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+      const ttft = ps.ttft_p50 ? ` TTFT(首内容)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
       // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
       const gen = ps.gen_p50 ? ` 生成P50=${(ps.gen_p50 / 1000).toFixed(1)}s` : "";
       // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟

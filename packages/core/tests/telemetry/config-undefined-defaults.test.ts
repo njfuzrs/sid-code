@@ -99,7 +99,7 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
     bus.addExporter(exporter);
 
     bus.recordMetric({
-      name: "gen_ai.client.token.usage",
+      name: "gen_ai.client.inference.usage.input_tokens",
       value: 42,
       timestamp: 1_700_000_000_000,
       attributes: {},
@@ -110,7 +110,7 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
 
     expect(metricBatches).toHaveLength(1);
     expect(metricBatches[0]!.length).toBe(1);
-    expect(metricBatches[0]![0]!.name).toBe("gen_ai.client.token.usage");
+    expect(metricBatches[0]![0]!.name).toBe("gen_ai.client.inference.usage.input_tokens");
 
     await bus.shutdown();
   });

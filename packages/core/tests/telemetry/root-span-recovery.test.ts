@@ -343,7 +343,7 @@ describe("标记的写入与清除（正常路径零残留）", () => {
       await Bun.file(pendingRootSpanPath("sess-marker")).text(),
     ) as PendingRootSpanMarker;
     expect(marker.session_id).toBe("sess-marker");
-    expect(marker.name).toBe("invoke_agent glm-5.3");
+    expect(marker.name).toBe("invoke_agent sid-code");
     expect(marker.pid).toBe(process.pid);
     expect(marker.attributes[ATTR.AGENT_NAME]).toBe("sid-code");
 
@@ -864,7 +864,7 @@ describe("验收：kill -9 的会话经重建后满足 PR2 的三条判据", () 
     expect(roots.length).toBe(1);
     expect(roots[0]!.kind).toBe("invoke_agent");
     expect(roots[0]!.attributes[ATTR.AGENT_NAME]).toBe("sid-code");
-    expect(roots[0]!.name).toBe("invoke_agent glm-5.3");
+    expect(roots[0]!.name).toBe("invoke_agent sid-code");
 
     // 每个子 span 都能一路走到根（langfuse 式 orphan check）
     const byId = new Map(all.map((s) => [s.spanId, s]));

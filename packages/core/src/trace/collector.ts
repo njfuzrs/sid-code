@@ -41,6 +41,16 @@ import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
+import {
+  setPermissionDecisionObserver,
+  type PermissionDecisionEvent,
+} from "../permission/decision-telemetry.ts";
+import {
+  accumulatePermissionDecision,
+  emptyPermissionDecisionStats,
+  EditFirstTryTracker,
+  type PermissionDecisionStats,
+} from "./decision-metrics.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -311,6 +321,10 @@ export class TraceCollector {
   private harnessEditCount = 0;
   private harnessEditFirstPass = 0;
   private harnessProtocols: Record<string, number> = {};
+
+  // ── B11 / B12：会话级权限决策与「一次 edit 成功」累加器（口径见 decision-metrics.ts）──
+  private permissionStats: PermissionDecisionStats = emptyPermissionDecisionStats();
+  private readonly editFirstTry = new EditFirstTryTracker();
 
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
   private readonly tokenEstimator = new TokenEstimator();
@@ -649,6 +663,9 @@ export class TraceCollector {
    * 必须在 SessionStart 之前调用。
    */
   registerHooks(hookSystem: HookSystem): void {
+    // B11：权限决策不走 hook（鉴权点没有对应的"已决策"事件，PermissionDenied 只覆盖一半），
+    // 走 decision-telemetry 的模块级观察者。与 hook 同一时机注入，保证「采集启用」⇔「决策进轨迹」。
+    setPermissionDecisionObserver((e) => this.handlePermissionDecision(e));
     const eventNames = [
       HookEventName.SessionStart,
       HookEventName.BeforeModel,
@@ -737,6 +754,9 @@ export class TraceCollector {
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
+    // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
+    this.permissionStats = emptyPermissionDecisionStats();
+    this.editFirstTry.reset();
 
     // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
     // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
@@ -1536,6 +1556,9 @@ export class TraceCollector {
       }
     }
 
+    // B12：按「文件 × 会话」记第一次 edit 是否成功（只看 PostToolUse，见 decision-metrics.ts 口径）
+    this.editFirstTry.record(input.tool_name, input.tool_input, input.is_error ?? false);
+
     // 如果有 edit_meta，累积 Harness 编辑统计
     if (input.edit_meta) {
       this.harnessEditCount++;
@@ -1581,6 +1604,23 @@ export class TraceCollector {
     } else {
       getLogger().info("AUDIT:TOOL", auditMsg);
     }
+  }
+
+  // ─── 权限决策（B11）───
+
+  private handlePermissionDecision(e: PermissionDecisionEvent): void {
+    if (!this.initialized) return;
+    accumulatePermissionDecision(this.permissionStats, e);
+    // 逐条落 events.jsonl：会话级累计只够画曲线，排查「哪条规则在吵」要回到单条事件
+    this.recordCustomEvent("PermissionDecision", {
+      tool_name: e.tool,
+      outcome: e.outcome,
+      prompted: e.prompted,
+      source: e.source,
+      ...(e.reasonType ? { reason_type: e.reasonType } : {}),
+      execution_context: e.context,
+      ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
+    });
   }
 
   // ─── PostToolUseFailure ───
@@ -2359,6 +2399,8 @@ export class TraceCollector {
           traj_corrupt: m?.trajCorrupt,
           traj_corrupt_detected_by: "session_end",
           compactions: this.metadata.compactions.length,
+          permission: this.permissionStats,
+          edit_first_try: this.editFirstTry.stats(),
         }),
       );
     } catch (err: any) {
@@ -2657,6 +2699,10 @@ export class TraceCollector {
             ts: Math.floor(Date.now() / 1000),
             app_version: this.metadata.app_version,
             compactions: this.metadata.compactions.length,
+            // 与 compactions 同理：这两项是 collector 自己累计的事实，增量行也能如实给出
+            //（不像 real_errors 要等 digest），崩溃会话的样本因此不丢
+            permission: this.permissionStats,
+            edit_first_try: this.editFirstTry.stats(),
           },
         ),
       );

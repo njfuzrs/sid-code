@@ -23,7 +23,8 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 /telemetry
 ```
 
-它会即时显示当前会话的 **Span 树 + Metric 汇总**（内存数据，不需要开 telemetry 配置）。
+它会即时显示当前会话的 **Span 树 + Metric 汇总**（内存数据）。前提是开了 `telemetry.enabled`（默认关，
+开法见下文[开启完整遥测](#开启完整遥测与-perfetto-导出)），没开时它只提示「遥测未启用」。
 想看更早的会话，用下面这条命令读落盘轨迹：
 
 想知道刚才那次会话到底发生了什么，一条命令：
@@ -63,7 +64,7 @@ L1 假设层 (1) — 待验证,先消解证伪条件再采信:
   · StructuredOutput {functionCount,language}
 
 Provider 健康:
-  openai       请求:3 成功率:100% 整轮均耗:5.4s TTFT(首字节)P50=1.9s 生成P50=3.1s
+  openai       请求:3 成功率:100% 整轮均耗:5.4s TTFT(首内容)P50=1.9s 生成P50=3.1s
 ```
 
 值得注意的是这个工具的输出结构：**L0 事实层带出处、L1 假设层带证伪条件**。
@@ -72,7 +73,8 @@ Provider 健康:
 实际查 `messages.json` 会看到 `abnormal: false` / `exit=end_turn`，
 说明这个 `error` 状态与真实的异常终止并不等价。
 
-`TTFT(首字节)P50=1.9s` 这行是延迟优化的直接依据。
+`TTFT(首内容)P50=1.9s` 这行是延迟优化的直接依据。TTFT 计的是**首个任意内容 chunk**（含 thinking / tool_use），
+不是首字节（TTFB）——首字节受网关缓冲策略影响，跨路由不可比。
 
 ## 落盘了什么
 
@@ -182,7 +184,7 @@ sid-code --no-trace
 - 鉴权头 `X-Upload-Token`，完整性头 `X-Content-SHA256`
 - 默认 gzip level 6 压缩，`Content-Type: application/gzip`
 - 表单字段：`file` / `session_id` / `file_type` / `tool_source`，可选 `user_id` / `device_id`
-- 30 秒超时；失败按指数退避重试 5 次（2s→4s→8s→16s→32s）
+- 30 秒超时；失败最多尝试 5 次，间隔指数退避 2s→4s→8s→16s（最后一次失败后不再等待）
 - 服务端返回非空 `sha256` 时会做二次校验，不一致算失败重试
 
 失败的进持久化重试队列。补传：
@@ -270,14 +272,13 @@ done
 
 ### 开启完整遥测与 Perfetto 导出
 
-`/telemetry` 命令本身不需要开配置就能跑（它读的是内存里 always-on 的轻量记录）。
-要拿到完整遥测体系（Metric 聚合 + JSONL 落盘 + Provider 健康），在 `~/.sid-code/settings.json` 配：
+`/telemetry` 与下面所有导出器都依赖 `telemetry.enabled`（**默认 `false`**）。在 `~/.sid-code/settings.json` 配：
 
 ```json
 {
   "telemetry": {
     "enabled": true,
-    "exporters": ["jsonl"]
+    "exporters": [{ "type": "jsonl" }]
   }
 }
 ```
@@ -287,10 +288,132 @@ done
 | 字段 | 作用 | 默认 |
 | --- | --- | --- |
 | `telemetry.enabled` | 是否启用完整遥测 | `false` |
-| `telemetry.exporters` | 导出器列表：`"console"`（调试）/`"jsonl"`（落盘 `~/.sid-code/telemetry/`，50MB 轮转保留 5 个） | — |
+| `telemetry.exporters` | 导出器列表，元素写 `{ "type": "…" }`（字符串简写 `"jsonl"` 也接受）：`console`（调试）/ `jsonl`（落盘 `~/.sid-code/telemetry/`，50MB 轮转保留 5 个）/ `otlp`（发往你的 OTel 后端，见[导出到 OTel 后端](#导出到-otel-后端-otlp)） | `[]` |
 | `telemetry.batchSize` | 批量导出大小 | `512` |
 | `telemetry.flushIntervalMs` | 刷新间隔 | `5000`ms |
 | `telemetry.maxQueueSize` | 最大队列 | `2048` |
+
+### 导出到 OTel 后端（OTLP）
+
+想把 span 和 metric 送进团队已有的观测栈（Jaeger、OpenTelemetry Collector，或任何接 OTLP/HTTP 的后端），
+加一个 `otlp` 导出器：
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "exporters": [{ "type": "jsonl" }, { "type": "otlp" }]
+  }
+}
+```
+
+协议是 **OTLP/HTTP + JSON**（`src/telemetry/exporters/otlp.ts`，零依赖），端点与认证读 OTel 标准环境变量：
+
+| 环境变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 基础端点，自动追加 `/v1/traces`、`/v1/metrics` | `http://localhost:4318` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `_METRICS_ENDPOINT` | 单信号端点，**原样使用不追加路径** | — |
+| `OTEL_EXPORTER_OTLP_HEADERS` | 认证头，`k1=v1,k2=v2` | — |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | 单次请求超时（ms） | `10000` |
+| `OTEL_SERVICE_NAME` | `service.name` 资源属性 | `sid-code` |
+| `OTEL_RESOURCE_ATTRIBUTES` | 额外资源属性，`k1=v1,k2=v2` | — |
+
+也可以写在导出器的 `options` 里（`endpoint` / `tracesEndpoint` / `metricsEndpoint` / `headers` / `timeoutMs` /
+`serviceName`），显式配置优先于环境变量。导出是批量异步的，失败只记一条 `[TELEMETRY] … 导出失败 (otlp)`，不影响会话。
+
+**只支持 HTTP + JSON**。后端只收 gRPC 或 protobuf 时，在中间放一个 OpenTelemetry Collector 做转换（见下文第 5 步）。
+
+#### 本机跑通一遍（不用 docker）
+
+已验证组合：Jaeger v2.21.0、otelcol-contrib 0.162.0（macOS arm64；Linux 换 `linux-amd64` 包）。
+
+**1. 起 Jaeger**（单二进制，内存存储，UI 在 16686，OTLP 收 4317 gRPC / 4318 HTTP）：
+
+```bash
+mkdir -p ~/tools/jaeger && cd ~/tools/jaeger
+gh release download v2.21.0 -R jaegertracing/jaeger \
+  -p 'jaeger-2.21.0-darwin-arm64.tar.gz' -p 'jaeger-2.21.0-darwin-arm64.sha256sum.txt'
+tar xzf jaeger-2.21.0-darwin-arm64.tar.gz
+shasum -a 256 -c jaeger-2.21.0-darwin-arm64.sha256sum.txt
+./jaeger-2.21.0-darwin-arm64/jaeger      # 前台运行，另开一个终端继续
+```
+
+**2. 打开导出器**：按上面的 JSON 在 `~/.sid-code/settings.json` 里加 `otlp`。
+
+**3. 跑一次会话**：
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_SERVICE_NAME=sid-code-demo \
+no_proxy=127.0.0.1,localhost \
+sid-code -p "用 bash 跑 sleep 1 && echo hi，一句话回答"
+```
+
+`no_proxy` 别省：开了系统代理时，发往 127.0.0.1 的请求会被代理截走，表现为导出超时。
+
+**4. 看瀑布图**：浏览器打开 <http://127.0.0.1:16686>：
+
+1. 顶栏 **Search** → 左侧 **Service** 选 `sid-code-demo` → 左下 **Find Traces**
+2. 右侧每行是一次会话（标题 `invoke_agent sid-code`），点进去就是瀑布图：左列 span 树，右列时间轴
+3. 点任意 span 展开 **Tags**，看 `gen_ai.*` 属性；右上角可切 **GenAI View**
+
+终端里那条 `指标导出失败 (otlp): OTLP HTTP 404` 是**正常的**：Jaeger 只收 traces，不收 metrics。
+Jaeger 默认内存存储，进程一停数据就没了。
+
+**5.（可选）中间加一层 Collector**：metrics 也要收、或后端要 gRPC 时用。`config.yaml`：
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http: { endpoint: 127.0.0.1:4320 }
+processors:
+  batch: {}
+exporters:
+  otlp/jaeger: { endpoint: 127.0.0.1:4317, tls: { insecure: true } }
+  file/metrics: { path: ./metrics.jsonl }
+service:
+  pipelines:
+    traces:  { receivers: [otlp], processors: [batch], exporters: [otlp/jaeger] }
+    metrics: { receivers: [otlp], processors: [batch], exporters: [file/metrics] }
+```
+
+```bash
+mkdir -p ~/tools/otelcol && cd ~/tools/otelcol
+gh release download v0.162.0 -R open-telemetry/opentelemetry-collector-releases \
+  -p 'otelcol-contrib_0.162.0_darwin_arm64.tar.gz'
+tar xzf otelcol-contrib_0.162.0_darwin_arm64.tar.gz
+./otelcol-contrib --config=config.yaml
+```
+
+把第 3 步的端点换成 `http://127.0.0.1:4320`：traces 经 Collector 转 gRPC 进 Jaeger，metrics 落进 `metrics.jsonl`。
+要看 metrics 曲线，就把 `file/metrics` 换成 Prometheus 等后端的 exporter。
+
+#### 导出了什么（OTel GenAI 语义约定）
+
+属性与命名对齐 [OTel GenAI 语义约定](https://github.com/open-telemetry/semantic-conventions-genai)。这套约定目前还是 **Development** 状态，
+上游改名时我们跟着改。项目自有字段放在 `sidcode.*` 下。
+
+**Span**（一次会话一棵树）：
+
+| Span | kind | 关键属性 |
+| --- | --- | --- |
+| `invoke_agent sid-code`（根；子代理为 `invoke_agent <类型>`） | INTERNAL | `gen_ai.agent.name`、`gen_ai.conversation.id`、`gen_ai.request.model` |
+| `chat <model>` | CLIENT | `gen_ai.provider.name`、`gen_ai.usage.input_tokens`（**含**缓存命中与写入）、`output_tokens`、`cache_read.input_tokens`、`cache_write.input_tokens`、`reasoning.output_tokens`、`gen_ai.response.finish_reasons`、`sidcode.cost.usd` |
+| `execute_tool <tool>` | INTERNAL | `gen_ai.tool.name`、`gen_ai.tool.call.id`；失败时 status=ERROR 并带 `exception.*` |
+
+工具 span 的时长就是工具真实耗时，瀑布图上能直接看出慢在模型还是慢在工具。
+
+**Metric**：
+
+| Metric | 类型 | 单位 |
+| --- | --- | --- |
+| `gen_ai.client.inference.usage.{input,output,cache_read.input,cache_write.input,reasoning.output}_tokens` | Counter | `{token}` |
+| `gen_ai.client.operation.time_to_first_chunk` | Histogram（规范推荐桶） | `s` |
+| `sidcode.cost.usd` / `sidcode.cost.cache_savings_usd` | Counter | `USD` |
+| `sidcode.agent.turns` | Histogram | `{turn}` |
+
+prompt 与工具输出原文**默认不导出**。内容级 tracing 是独立开关（`SID_CODE_CONTENT_TRACING=1` 等四道闸门，见
+`src/telemetry/content-tracing.ts`），企业要求「不落原文」时保持默认即可。
 
 ### 导出 Perfetto trace
 

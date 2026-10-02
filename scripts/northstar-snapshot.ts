@@ -195,8 +195,32 @@ export interface NorthstarSnapshot {
      */
     countedSessions: number;
   };
-  /** 更少返工 */
-  fewerRedos: { real_errors_per_session: Metric; pathological_session_rate: Metric };
+  /**
+   * 更少返工。
+   *
+   * `edit_first_try_rate`（B12）：单位是**文件 × 会话**，分母 = 真实执行过 edit 的文件数，
+   * 不是 edit 调用次数（按次数算会让反复返工的文件权重更大，稀释返工信号）。
+   */
+  fewerRedos: {
+    real_errors_per_session: Metric;
+    pathological_session_rate: Metric;
+    edit_first_try_rate: Metric;
+  };
+  /**
+   * 更安全（B11）。全部取自 session-index 的 `permission` 字段；**旧版本行（键不存在）不进分母**。
+   *
+   * - `hitl_rate` = 弹窗问过人的决策数 ÷ 全部权限决策数（分母是决策数，不是会话数）
+   * - `rule_hit_rate` = 成因为 rule 的决策数 ÷ 全部权限决策数
+   * - 确认耗时 p50/p95 只取弹过窗的决策，n 是耗时样本数
+   */
+  safer: {
+    hitl_rate: Metric;
+    rule_hit_rate: Metric;
+    prompt_duration_p50: Metric;
+    prompt_duration_p95: Metric;
+    /** 带 permission 字段的会话行数 —— 为 0 说明窗口内全是 B11 之前的版本，不是"没鉴权" */
+    sessions_with_field: number;
+  };
   /** 底座 · 可度量（含 P2-14 轨迹损坏率） */
   foundation: {
     defense_trigger_rate: Metric;
@@ -394,6 +418,31 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     .filter((v) => typeof v === "number" && v >= 0);
   const pathologicalCount = settled.filter((e) => (e.pathological?.length ?? 0) > 0).length;
 
+  // B12：一次 edit 成功率。按文件 × 会话在 token 总量式的「总分子 ÷ 总分母」上算，
+  // 不是各会话比率的平均 —— 后者让只改了 1 个文件的会话与改了 30 个的等权。
+  // 不按 exit_status 过滤：这两个数是 collector 自己累计的事实，增量行同样可信。
+  let editFiles = 0;
+  let editFirstOk = 0;
+  for (const e of index) {
+    if (!e.edit_first_try) continue;
+    editFiles += e.edit_first_try.files;
+    editFirstOk += e.edit_first_try.first_try_ok;
+  }
+
+  // ── 更安全（B11）──
+  const withPerm = index.filter((e) => e.permission !== undefined);
+  let permTotal = 0;
+  let permPrompted = 0;
+  let permRuleHits = 0;
+  const promptDurations: number[] = [];
+  for (const e of withPerm) {
+    const p = e.permission!;
+    permTotal += p.total;
+    permPrompted += p.prompted;
+    permRuleHits += p.rule_hits;
+    promptDurations.push(...p.prompt_durations_ms);
+  }
+
   // ── 底座 ──
   const defenseCount = index.filter((e) => e.defense_triggered === true).length;
 
@@ -468,6 +517,39 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         `${IDX}:pathological（仅有终态会话）`,
         "ratio",
       ),
+      edit_first_try_rate: metric(
+        editFiles > 0 ? editFirstOk / editFiles : null,
+        editFiles,
+        `${IDX}:edit_first_try（文件×会话 · 分母=执行过 edit 的文件数 · 不含 write）`,
+        "ratio",
+      ),
+    },
+    safer: {
+      hitl_rate: metric(
+        permTotal > 0 ? permPrompted / permTotal : null,
+        permTotal,
+        `${IDX}:permission.prompted（分母=权限决策数）`,
+        "ratio",
+      ),
+      rule_hit_rate: metric(
+        permTotal > 0 ? permRuleHits / permTotal : null,
+        permTotal,
+        `${IDX}:permission.rule_hits（分母=权限决策数）`,
+        "ratio",
+      ),
+      prompt_duration_p50: metric(
+        percentile(promptDurations, 0.5),
+        promptDurations.length,
+        `${IDX}:permission.prompt_durations_ms`,
+        "ms",
+      ),
+      prompt_duration_p95: metric(
+        percentile(promptDurations, 0.95),
+        promptDurations.length,
+        `${IDX}:permission.prompt_durations_ms`,
+        "ms",
+      ),
+      sessions_with_field: withPerm.length,
     },
     foundation: {
       defense_trigger_rate: metric(
@@ -644,7 +726,7 @@ export interface MetricDelta {
  * 由 `northstar-snapshot.test.ts` 断言"每个方向至少有一项进了对比表" ——
  * 加了指标忘了加对比是静默失效，不会有任何东西报错。
  */
-const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric]> = [
+const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric | undefined]> = [
   ["更快 · 端到端 p50", (s) => s.faster.e2e_p50],
   ["更快 · 端到端 p95", (s) => s.faster.e2e_p95],
   ["更快 · 首字节 p50", (s) => s.faster.ttft_p50],
@@ -653,9 +735,23 @@ const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric]> = [
   ["更省 · 单会话轮数", (s) => s.cheaper.turns_per_session],
   ["更少返工 · 单会话真错误", (s) => s.fewerRedos.real_errors_per_session],
   ["更少返工 · 病态会话率", (s) => s.fewerRedos.pathological_session_rate],
+  // B11/B12 新增项用可选链：northstar/ 下已入库的旧快照 JSON 没有这些字段，
+  // 对比时要落成「旧版无此指标」（n=0、值 —），而不是整份对比崩掉。
+  ["更少返工 · 一次 edit 成功率", (s) => s.fewerRedos?.edit_first_try_rate],
+  ["更安全 · HITL 介入率", (s) => s.safer?.hitl_rate],
+  ["更安全 · 规则命中率", (s) => s.safer?.rule_hit_rate],
+  ["更安全 · 确认耗时 p95", (s) => s.safer?.prompt_duration_p95],
   ["底座 · 防线触发率", (s) => s.foundation.defense_trigger_rate],
   ["底座 · 轨迹损坏率", (s) => s.foundation.traj_corrupt_rate],
 ];
+
+/** 旧快照缺某个指标时的占位：value=null 渲染为 —，n=0 必然触发样本不足护栏 */
+const MISSING_METRIC: Metric = {
+  value: null,
+  n: 0,
+  source: "（该版本快照无此指标）",
+  unit: "ratio",
+};
 
 /** 低于此样本量的对比一律标 ⚠ 不下结论。见 MetricDelta.underpowered */
 export const MIN_SAMPLES_FOR_CONCLUSION = 20;
@@ -665,8 +761,9 @@ export function compareSnapshots(
   after: NorthstarSnapshot,
 ): MetricDelta[] {
   return COMPARE_KEYS.map(([key, pick]) => {
-    const b = pick(before);
-    const a = pick(after);
+    const a = pick(after) ?? MISSING_METRIC;
+    // 缺字段 = 生成那份快照的版本还没有这个指标。单位跟随另一侧，免得渲染成错单位
+    const b = pick(before) ?? { ...MISSING_METRIC, unit: a.unit };
     const deltaRatio =
       b.value !== null && a.value !== null && b.value !== 0 ? a.value / b.value - 1 : null;
     return {
@@ -827,6 +924,20 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   L.push("更少返工:");
   L.push(row("单会话真错误", s.fewerRedos.real_errors_per_session));
   L.push(row("病态会话率", s.fewerRedos.pathological_session_rate));
+  L.push(row("一次 edit 成功率", s.fewerRedos.edit_first_try_rate));
+  L.push("");
+
+  L.push("更安全（权限决策）:");
+  L.push(row("HITL 介入率", s.safer.hitl_rate));
+  L.push(row("规则命中率", s.safer.rule_hit_rate));
+  L.push(row("确认耗时 p50", s.safer.prompt_duration_p50));
+  L.push(row("确认耗时 p95", s.safer.prompt_duration_p95));
+  if (s.safer.sessions_with_field === 0) {
+    // 明说：n=0 的成因是「窗口内全是 B11 之前的版本」，不是「这些会话没鉴权」
+    L.push("  （无带 permission 字段的会话：窗口内的行由 B11 埋点之前的版本产生，属预期）");
+  } else if (s.safer.prompt_duration_p50.n === 0) {
+    L.push("  （确认耗时 n=0：没有一次真弹过窗 —— 本机多跑在免确认档位上，属预期，不是接线缺陷）");
+  }
   L.push("");
 
   L.push("底座（可度量）:");
@@ -904,6 +1015,9 @@ export function renderMarkdown(s: NorthstarSnapshot): string {
   L.push(r("更省", "缓存命中率", s.cheaper.cache_hit_rate));
   L.push(r("更少返工", "单会话真错误", s.fewerRedos.real_errors_per_session));
   L.push(r("更少返工", "病态会话率", s.fewerRedos.pathological_session_rate));
+  L.push(r("更少返工", "一次 edit 成功率", s.fewerRedos.edit_first_try_rate));
+  L.push(r("更安全", "HITL 介入率", s.safer.hitl_rate));
+  L.push(r("更安全", "规则命中率", s.safer.rule_hit_rate));
   L.push(r("底座", "防线触发率", s.foundation.defense_trigger_rate));
   L.push(r("底座", "轨迹损坏率", s.foundation.traj_corrupt_rate));
   L.push("");

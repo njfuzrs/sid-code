@@ -301,12 +301,14 @@ export class OtlpTelemetryExporter implements TelemetryExporter {
       asDouble: p.value,
     }));
 
-    // 同名 metric 的 type 取首个点为准（同名混用 type 是上游 bug，不在此处兜）
+    // 同名 metric 的 type / unit 取首个点为准（同名混用是上游 bug，不在此处兜）
     const type = points[0]?.type ?? "gauge";
+    const unit = points[0]?.unit;
+    const head: Record<string, unknown> = unit ? { name, unit } : { name };
 
     if (type === "counter") {
       return {
-        name,
+        ...head,
         sum: {
           dataPoints,
           // AGGREGATION_TEMPORALITY_DELTA=1：每次上报是增量，不是累计值
@@ -326,14 +328,14 @@ export class OtlpTelemetryExporter implements TelemetryExporter {
       // 聚合端可自行做直方图。
       if (histogram) {
         return {
-          name,
+          ...head,
           histogram: { dataPoints: histogram, aggregationTemporality: 1 },
         };
       }
-      return { name, gauge: { dataPoints } };
+      return { ...head, gauge: { dataPoints } };
     }
 
-    return { name, gauge: { dataPoints } };
+    return { ...head, gauge: { dataPoints } };
   }
 
   /**
