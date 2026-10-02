@@ -52,11 +52,19 @@ const HookEntrySchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * MCP 传输方式枚举：合法值的唯一事实源。
+ * config/schema.ts 的校验器从这里的 `.options` 派生，不再手写名单——
+ * 手写名单曾漏掉 ws / http-json，照官网填 ws 会被报「无效值」（B36 / D129）。
+ * 新增传输方式时只改这一处，并在 mcp/manager.ts 补对应分支。
+ */
+export const MCPTransportEnum = z.enum(["stdio", "http", "http-json", "sse", "ws"]);
+
 /** MCP 服务器 Schema */
 const MCPServerSchema = lazySchema(() =>
   z
     .object({
-      transport: z.enum(["stdio", "http", "http-json", "sse", "ws"]),
+      transport: MCPTransportEnum,
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
