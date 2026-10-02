@@ -5,13 +5,17 @@
  * 设计原则：
  * 1. 幂等——每个迁移可以安全重复执行
  * 2. 顺序执行——按版本号递增执行
- * 3. 失败不阻塞——迁移失败记录警告，不阻止启动
- * 4. 版本号只在全部成功后更新
+ * 3. 失败不阻塞——迁移失败记一条启动告警（见 warnings.ts），不阻止启动
+ * 4. 水位线不越过第一个失败的迁移：v1 失败、v2–v5 成功 ⇒ 水位线停在 0，
+ *    修好后下次启动 v1 重跑（B35 / D128）。前提是每个迁移都幂等，这在第 1 条里已要求。
+ * 5. 团队默认的增量补全不挂在水位线上，每次启动都跑（见 backfill-team-defaults.ts）
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordMigrationWarning } from "./warnings.ts";
+import { backfillNewTemplateKeys } from "./backfill-team-defaults.ts";
 import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
 import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-host.ts";
@@ -116,35 +120,53 @@ function setStoredMigrationVersion(version: number): void {
  * 在启动流程中调用，失败不阻塞启动
  */
 export function runMigrations(): void {
-  if (CURRENT_VERSION === 0) return; // 无迁移可执行
-
   const currentVersion = getStoredMigrationVersion();
-  if (currentVersion >= CURRENT_VERSION) return;
 
-  let allSucceeded = true;
-  let lastSuccessVersion = currentVersion;
+  if (currentVersion < CURRENT_VERSION) {
+    // 水位线推进到「第一个失败版本之前」。旧实现推到「最后成功的版本」：v1 失败、
+    // v2–v5 成功 ⇒ 写成 5，v1 永远不再跑，修好 settings.json 也补不回来（D128）。
+    let watermark = currentVersion;
+    let blocked = false;
 
-  for (const m of migrations) {
-    if (m.version <= currentVersion) continue;
+    for (const m of migrations) {
+      if (m.version <= currentVersion) continue;
 
-    try {
-      m.migrate();
-      lastSuccessVersion = m.version;
-    } catch (err) {
-      // P2-7：降级为 debug，不直写 stderr。runMigrations 在 initLogger 之前调用，
-      // getLogger() 拿到的是 enabled:false 兜底实例，debug 级会被静默吞掉
-      // （logger.ts:288-301 只有 ERROR/WARN 走 stderr，INFO/DEBUG 直接 return），
-      // 不再泄漏终端。迁移失败用户无从处置，判据 A 要求不惊扰。
-      getLogger().debug("MIGRATION", `迁移 ${m.name} (v${m.version}) 失败（不阻塞）: ${err}`);
-      allSucceeded = false;
-      // 继续执行后续迁移（某些迁移可能互相独立）
+      try {
+        m.migrate();
+        if (!blocked) watermark = m.version;
+      } catch (err) {
+        reportFailure(`迁移 ${m.name} (v${m.version})`, err);
+        blocked = true;
+        // 继续执行后续迁移（互相独立，且都幂等，下次随失败那条一起重跑无害）
+      }
     }
+
+    if (watermark > currentVersion) setStoredMigrationVersion(watermark);
   }
 
-  // 更新版本号到最后成功的版本
-  if (lastSuccessVersion > currentVersion) {
-    setStoredMigrationVersion(allSucceeded ? CURRENT_VERSION : lastSuccessVersion);
+  // 增量补全只在 v1 已完成后跑：v1 没成功时它下次会全量重跑，这里再记一份基线是多余的，
+  // 还会让同一个损坏文件报两条告警。v1 本轮刚成功时已记下基线，这里哈希相同直接返回。
+  if (getStoredMigrationVersion() < 1) return;
+  try {
+    backfillNewTemplateKeys();
+  } catch (err) {
+    reportFailure("团队默认配置补全", err);
   }
+}
+
+/**
+ * 迁移失败：debug 日志 + 一条启动告警。
+ * 只记 debug 等于没记——runMigrations 在 initLogger 之前调用，兜底 logger 吞掉 debug 级
+ * （logger.ts 只有 ERROR/WARN 走 stderr）。也不直写 stderr：TUI 接管终端后裸输出会留游离行。
+ * 告警由 loadConfig 并进启动诊断，横幅与 --print 都看得见（B35 / D128）。
+ */
+function reportFailure(what: string, err: unknown): void {
+  const reason = err instanceof Error ? err.message : String(err);
+  getLogger().debug("MIGRATION", `${what} 失败（不阻塞）: ${reason}`);
+  recordMigrationWarning(
+    "migrations",
+    `${what} 失败，已跳过、未改动配置：${reason}\n修好后下次启动会自动重试。`,
+  );
 }
 
 /** 获取当前迁移版本（供调试使用） */
