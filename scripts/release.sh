@@ -862,6 +862,12 @@ for entry in "${TARGETS[@]}"; do
         "$OUT_DIR/sid-code" --self-check \
             || fail "自检失败：$PLATFORM 产物缺失关键修复（git-status 锚点等），发布中止"
         ok "编译产物自检通过（${PLATFORM}）"
+        # B24：对编译产物跑一次子命令。review 曾因从磁盘相对路径读 SKILL.md 在 /$bunfs/
+        # 里必挂，而单测只读源码树、全绿。--self-check 已真跑 Skill 加载函数；这里再挡住
+        # 「子命令分发本身在产物里坏了」。--help 不调 LLM，发布路径保持离线。
+        "$OUT_DIR/sid-code" review --help 2>&1 | grep -q "sid-code review" \
+            || fail "冒烟测试失败：$PLATFORM 产物的 review 子命令无法运行，发布中止"
+        ok "review 子命令冒烟通过（${PLATFORM}）"
         SELF_SMOKE_DONE=true
     fi
 

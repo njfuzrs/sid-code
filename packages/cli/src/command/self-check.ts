@@ -15,6 +15,7 @@
  * 什么都塞的"全量健康检查"。当前覆盖：
  *   1. git-status 仲裁锚点（方向 1）：generateGitStatusAttachment 输出必须含"启动快照"锚点句。
  *   2. 无进展止损阀（方向 2/4/6）：repeated-readonly-guard 的探查命令识别与卡住判定生效。
+ *   （另有内置 skill 嵌入、内嵌 ripgrep、review 子命令 Skill 加载三条，见各自函数注释。）
  */
 
 import { chmodSync, unlinkSync } from "node:fs";
@@ -178,6 +179,32 @@ async function checkEmbeddedSkills(): Promise<CheckResult> {
 }
 
 /**
+ * 校验 5：`sid-code review` 能在编译产物里加载 code-review Skill 提示词（B24）。
+ *
+ * 背景：review 曾用 `import.meta.url` + 相对路径读 SKILL.md，编译后模块在 `/$bunfs/`，
+ * 线上版一跑就报「SKILL.md 不存在」。单测只读源码树，测不到用户运行的那份二进制，
+ * 所以这条断言必须由**二进制自己**跑真实的加载函数（不是重新实现一遍判定）。
+ * 判据挑「坏了会变」的信号：正文非空且含 SKILL.md 的固定标题行。
+ */
+async function checkReviewSkillLoadable(): Promise<CheckResult> {
+  const name = "review 子命令可加载 code-review Skill";
+  try {
+    const { loadCodeReviewSkillPrompt } = await import("./review.ts");
+    const body = await loadCodeReviewSkillPrompt();
+    if (body.length < 100 || !body.includes("# Code Review")) {
+      return {
+        name,
+        ok: false,
+        detail: `正文异常（${body.length} 字符、缺「# Code Review」标题），嵌入内容疑似损坏`,
+      };
+    }
+    return { name, ok: true, detail: `正文 ${body.length} 字符` };
+  } catch (e: any) {
+    return { name, ok: false, detail: `加载失败：${e?.message ?? String(e)}` };
+  }
+}
+
+/**
  * 校验 4：内嵌 ripgrep 是**当前平台可执行**的二进制。
  *
  * 背景：`packages/core/vendor/rg-embed` 是 bun --compile 的固定嵌入路径，属于跨命令共享的可变状态。
@@ -273,6 +300,7 @@ export async function runSelfCheck(): Promise<boolean> {
     checkStuckGuard(),
     checkEmbeddedSkills(),
     checkEmbeddedRipgrep(),
+    checkReviewSkillLoadable(),
   ]);
   const allOk = results.every((r) => r.ok);
 
