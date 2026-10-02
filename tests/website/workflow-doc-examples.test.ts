@@ -11,8 +11,9 @@
  *   ② 示例里出现的每个 schema 都过 `checkSchemaShape`
  *   ③ 每个 schema 真的在约束东西：一个明显不对的值（字符串 "hello"）必须被拒
  *
- * stub 不调模型：agent() 带 schema 时按 schema 合成一个最小合规值返回，
- * 不带 schema 时返回一个空对象，足以让示例里的后续步骤（`.dirs`、`.issues?.length`）跑通。
+ * stub 不调模型：agent() 带 schema 时按 schema 合成一个最小合规值返回；
+ * 不带 schema 时返回**字符串**——与真实运行时一致（sub-agent-runner 无 schema 返回最终文本）。
+ * 这样示例若「没给 schema 却读 `.issues` 字段」（D59）会在这里直接抛错，而不是静默得到 0。
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -70,7 +71,7 @@ function makeStubApi(): { api: WorkflowApi; schemas: Record<string, unknown>[] }
         schemas.push(schema);
         return synthesize(schema);
       }
-      return {};
+      return "stub 文本结果";
     },
     parallel: async (thunks) => Promise.all(thunks.map((t) => t())),
     pipeline: async (items, ...stages) =>

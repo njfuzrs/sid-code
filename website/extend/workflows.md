@@ -11,7 +11,7 @@ description: 什么时候该用多 agent 编排、pipeline 和 parallel 怎么�
 
 - 判断一个任务该用 Workflow 还是一堆普通子代理就够
 - 写出能跑的编排脚本，选对 `pipeline` 还是 `parallel`
-- 跑挂了用 `resumeFromRunId` 续上，不浪费已完成的 agent 调用
+- 跑挂了用 `resume_from_run_id` 续上，不浪费已完成的 agent 调用
 - 用 `/workflows` 看进度、用 `/batch` 当用户入口
 
 ::: tip 为什么它叫「Dynamic」
@@ -58,7 +58,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 /workflows wf_a3f2  # 看某个 run 的详情
 ```
 
-`/workflows`（别名 `/wf`）是**查看入口**，不做 resume——resume 完全由 Workflow 工具的 `resumeFromRunId` 参数提供（`src/command/commands/workflows/index.ts:9-22`）。
+`/workflows`（别名 `/wf`）是**查看入口**，不做 resume——resume 完全由 Workflow 工具的 `resume_from_run_id` 参数提供（`src/command/commands/workflows/index.ts:9-22`）。
 
 无参列出所有 run（运行中优先、按开始时间倒序）；带 runId 看详情，含各 `agent()` 调用的结果预览——快照读自 `~/.sid-code/workflows/journals/<runId>.jsonl`。
 
@@ -74,7 +74,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 | 执行 | 每个 item 独立穿过所有 stage，不同 item 的 stage 可交错 | 所有 thunk 同时启动，`Promise.all` 等全部完成 |
 | 墙钟 | 更短——最慢单链决定总时间 | 更长——stage N 要等全部 stage N-1 完成 |
 | 错误 | 某 stage 抛错 → 该 item 落 null，跳过剩余 stage，其他 item 不受影响 | 每个 thunk 抛错落 null，调用本身不 reject |
-| 上限 | 4096 items/call | 4096 items/call |
+| 上限 | 4096 items/call；单 run 共 ≤ 1000 个 agent | 4096 items/call；单 run 共 ≤ 1000 个 agent |
 | 什么时候用 | **默认** | 仅当 stage N 需要全部 stage N-1 结果时才用屏障 |
 
 **只有一种情况该用 `parallel`**：后一步必须等前一步全部完成。比如「先并行审计 10 个模块、拿到全部结果后再综合排序」——综合这一步需要全部审计结果，这时才上屏障。
@@ -101,9 +101,9 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 
 这是 Workflow 相对「派一堆子代理」的核心优势。流程：
 
-1. Workflow 工具跑完（或中途失败）会返回 `scriptPath` 和 `runId`
+1. Workflow 工具跑完（或中途失败）会返回 `script_path` 和 `runId`
 2. 编辑脚本文件修复问题
-3. 用 `{ scriptPath: "<path>", resumeFromRunId: "<runId>" }` 重跑
+3. 用 `{ script_path: "<path>", resume_from_run_id: "<runId>" }` 重跑
 4. 未改动的 `agent()` 调用直接返回缓存，只重跑改动及其之后的
 
 缓存键是 `callIndex`（全局自增序号）+ `fingerprint`（prompt + opts 的 sha256 前 16 位 hex，`src/workflow/journal.ts:36-52`）。指纹只纳入影响结果的字段（`prompt`/`schema`/`model`/`effort`/`agentType`/`isolation`），排除展示用的 `label`/`phase`。
@@ -151,25 +151,32 @@ const dirs = await agent("列出 src/command/commands/ 下所有子目录", {
 });
 
 // pipeline：每个目录独立穿过「审计→记录」两个 stage，不同目录可交错
+// 不带 schema 的 agent() 返回的是字符串；下一步要读 .issues，所以这里必须给 schema
 const results = await pipeline(
   dirs.dirs,
   (dir) =>
     agent(`审计 ${dir} 目录的命令实现，找出未处理的错误分支`, {
       agentType: "verify",
       phase: "审计",
+      schema: {
+        type: "object",
+        properties: { issues: { type: "array", items: { type: "string" } } },
+        required: ["issues"],
+      },
     }),
-  (audit) => {
-    log(`完成审计，发现 ${audit.issues?.length ?? 0} 处`);
-    return audit;
+  (audit, dir) => {
+    log(`${dir} 审计完成，发现 ${audit.issues.length} 处`);
+    return { dir, issues: audit.issues };
   }
 );
 
-// parallel 在这里才合理：汇总需要全部审计结果
-const summary = await parallel([
-  () => agent(`把 ${results.length} 份审计结果合并成一份报告`, { phase: "汇总" }),
-]);
+// 汇总要等全部审计结果——pipeline 已经 await 完，直接调 agent() 即可，不需要再包 parallel
+const summary = await agent(
+  `把以下 ${results.length} 份审计结果合并成一份报告：${JSON.stringify(results)}`,
+  { phase: "汇总" }
+);
 
-return summary[0];
+return summary;
 ```
 
 跑挂了想改「审计」那步的 prompt，只改脚本里那行，重跑时探查那步命中缓存、审计那步及之后重跑。
@@ -192,7 +199,7 @@ return summary[0];
 
 1. **resume**：派子代理跑挂了只能从头再来；Workflow 的 journal 让改脚本后续跑
 2. **结构化编排**：`pipeline`/`parallel` 精确控制并发与顺序，子代理只能一个个串行或全并行
-3. **预算控制**：`budgetTotal` 给整次编排一个 token 硬顶，子代理没有编排级预算
+3. **预算控制**：`budget_total` 给整次编排一个 token 硬顶，子代理没有编排级预算
 
 ### 脚本里能用 `await import` 吗
 
