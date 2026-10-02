@@ -642,7 +642,11 @@ reason 间接感知。
 
 🔬 **源码实读**（`packages/core/src/goal/` + `packages/core/src/query/goal-gate.ts`）。
 
-**做法**：还是用独立评估者，但**不让它去对话里「挖」证据**，而是提前把证据攒好。
+**做法**：还是用评估者，但**不让它去对话里「挖」证据**，而是提前把证据攒好。
+
+> ⚠️ **评估者独立不独立取决于配置**：取值顺序是 `goal.evaluatorModel` → `subAgentModels.default` → 主模型，
+> 没有内置的 Haiku 回退。两项都没配时就是主模型给自己打分——设目标时会提示一次，
+> `/goal status` 显示当前评估者。建议配一个独立的轻量模型。
 
 ```text
 每次工具执行完，harness 自动从结果里抽一条结构化证据：
@@ -792,7 +796,7 @@ Evidence Log 的收集逻辑本身就是代码，代码会有 bug。抽取规则
    ├─▶ [L3564] Todo Gate           待办清单还有未完成项 → 拦回去
    ├─▶ [L3645] Hypothesis Gate     还有未结清的假设 → 拦回去
    ├─▶ [L3772] Token Budget 续写   预算没花完 → 催继续深挖（注意：语义相反）
-   └─▶ [L3839] ★ Goal Gate         独立评估者判定目标是否达成
+   └─▶ [L3839] ★ Goal Gate         评估者判定目标是否达成
    │
    └─▶ 全部放行 → 这一轮真的结束
 ```
@@ -1883,6 +1887,9 @@ const evaluatorModel =
   effectiveGoalConfig.evaluatorModel || config.subAgentModels?.default || config.model;
 ```
 
+> 2026-10 更新：这段取值已抽成 `resolveGoalEvaluatorModel()`（`goal/config.ts`），loop 与 `/goal`
+> 命令共用；解析为主模型时设目标会提示「评估者 = 主模型」。
+
 **根因 B：降级方向错了。** ← **这一条是本章的核心教训**
 
 原来的 catch 分支是这样：
@@ -2549,7 +2556,7 @@ it("reset 后重新计数", () => { /* → false */ });
 | 空转 | spin | 连续「调用相同 + 返回值不变」，≥3 判病态 |
 | 快速路径 | fast-path | 不调 LLM，用规则直接判定完成 |
 | 目标 | Goal / `objective` | 用户给的**完成条件**，必须有真假值 |
-| 评估者 | evaluator | 判断「目标是否达成」的独立小模型 |
+| 评估者 | evaluator | 判断「目标是否达成」的模型（sid-code 中可配，未配置时回退主模型） |
 | 前缀缓存 | prompt cache | 前缀匹配，越靠前的内容改动代价越大 |
 | 软提醒 | reminder / nag | 塞一句提示，流程不变。最轻一档 |
 | 软续命 | retry | 不放行 end_turn，把模型踢回去。中间一档 |

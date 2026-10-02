@@ -215,7 +215,7 @@ export async function handleGoalGate(ctx: GoalGateContext): Promise<{
     };
   }
 
-  // 4. 调用独立评估者
+  // 4. 调用评估者（模型由 resolveGoalEvaluatorModel 解析，未配置时就是主模型）
   const conversationContext = extractEvalContext(messages, goalConfig.evalContextMaxChars);
   // P1-1: Goal Gate 只在 end_turn 处理链触发，故 stopReason 恒为 "end_turn"。
   // 取最后一条 assistant 消息的文本长度供报告型 fast-path 判据。
