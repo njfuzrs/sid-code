@@ -38,13 +38,10 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 超限时的真实输出（把上限设成 `0.0001` 复现）：
 
 ```text
-⚠️  成本已超出配额（$0.0040 / $0.00），自动停止
+⚠️  成本已超出配额（$0.0040 / $0.0001），自动停止
 ```
 
-::: warning 上限显示成 $0.00 不是 bug
-告警文案对上限只保留两位小数（`src/llm/quota.ts:108-112` 的 `toFixed(2)`），
-所以设了不到 1 分钱的上限会显示成 `$0.00`。**拦截本身是按真实值算的**，只是显示取整。
-:::
+上限和当前花费一样显示到小数点后 4 位，所以不到 1 分钱的上限也能看清。
 
 "自动停止"的语义是：当前这一轮 agentic loop 就地终止（`src/query/loop.ts:1613-1617`
 发一条 terminal 系统消息后 `return`），不是整个进程退出。交互模式下你还能继续对话——
@@ -79,7 +76,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 
 ### 四级预警
 
-`costLimit` 不是只在 100% 才吭声，有四档（`src/llm/quota.ts:85-93`）：
+`costLimit` 不是只在 100% 才吭声，有四档（`packages/core/src/llm/quota.ts` 的 `check()`）：
 
 | 比例 | 级别 | 行为 |
 | --- | --- | --- |
@@ -88,7 +85,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 | ≥ 95% | `critical` | 黄色告警"即将超限！" |
 | ≥ 100% | `exceeded` | **终止本轮** |
 
-**只在级别升级时告警一次**（`quota.ts:97-102`），不会每轮重复刷同一档。
+**只在级别升级时告警一次**（同一函数里的 `lastAlertLevel` 判断），不会每轮重复刷同一档。
 `/clear` 会重置告警级别（`src/app.ts:1613`），所以清空上下文后又会从 info 档开始提醒。
 
 ### RPM / TPM 的实际状态
@@ -147,7 +144,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 超限行为实测（`period: session` + `limit_usd: 0.0001` + `action: block`）：
 
 ```text
-⚠️  预算规则 "测试预算" 已超限（$0.0055 / $0.00），自动停止
+⚠️  预算规则 "测试预算" 已超限（$0.0055 / $0.0001），自动停止
 ```
 
 ::: warning action 三档里只有两档真的不一样
