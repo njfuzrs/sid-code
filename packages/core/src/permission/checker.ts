@@ -292,6 +292,18 @@ export class PermissionChecker implements Checker {
       }) => Promise<boolean>)
     | null = null;
 
+  /**
+   * B25：SDK stream-json 双向流下，ask 可以交给宿主（`can_use_tool`）。
+   * 置 true 后 isNonInteractive() 返回 false，ask 不再被就地判 deny，而是回 needsConfirmation
+   * 交给 App.requestUserConfirmation → 宿主。宿主超时 / 断开时那一侧按 deny 闭合（仍 fail-closed）。
+   * 只在 `--input-format stream-json` 下打开：没有 stdin 回路时问了也没人答。
+   */
+  private externalAskChannel = false;
+
+  setExternalAskChannel(enabled: boolean): void {
+    this.externalAskChannel = enabled;
+  }
+
   /** 设置 Bridge 远程权限代理（null 清除，回退到本地确认） */
   setBridgePermissionDelegate(
     delegate:
@@ -358,6 +370,7 @@ export class PermissionChecker implements Checker {
     if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
     if (this.bridgePermissionDelegate)
       derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
+    if (this.externalAskChannel) derived.setExternalAskChannel(true);
     // 运行时扩展的允许目录白名单也一并继承（用户 /add-dir 授权对子代理同样生效）。
     for (const dir of this.getAllowedDirectories()) derived.addAllowedDirectory(dir);
     return derived;
@@ -2084,6 +2097,8 @@ export class PermissionChecker implements Checker {
 
   /** 检测是否处于非交互模式 */
   private isNonInteractive(): boolean {
+    // B25：有外部 ask 通道（SDK 宿主）时不是「无人可问」
+    if (this.externalAskChannel) return false;
     // print 模式（单次输出）或 maxTurns > 0（批处理模式）视为非交互
     return (
       this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)

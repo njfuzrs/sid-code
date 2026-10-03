@@ -22,7 +22,25 @@ export type PermissionBehavior = "allow" | "deny" | "always_allow";
 
 export interface PermissionBridgeOptions {
   structuredIO: StructuredIO;
+  /**
+   * ⚠️ 生产接线（app.ts runHeadlessSDK）**刻意不传**：走到 ask 通道时 PreToolUse
+   * 已经在 tool-executor 里 fire 过一次（preToolUseCache），这里再传就会 fire 两次。
+   * 保留它是给「绕开 tool-executor、直接拿这个函数当权限检查器」的嵌入方用的。
+   */
   hookSystem?: HookSystem;
+  /**
+   * 宿主迟迟不答时的上限，到点按 deny 处理（fail-closed）。0 = 不设上限。
+   * 默认 60s，与 Bridge 的 PermissionProxy 同值：两者都是「把 ask 交给远端」。
+   */
+  timeoutMs?: number;
+}
+
+/** 宿主不答 can_use_tool 时的默认上限（见 PermissionBridgeOptions.timeoutMs）。 */
+export const SDK_PERMISSION_TIMEOUT_MS = 60_000;
+
+export interface SDKCanUseToolCallOptions {
+  /** 本轮的 abort 信号：interrupt / 会话超时时放弃等待，按 deny 闭合 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -32,14 +50,39 @@ export interface PermissionBridgeOptions {
  */
 export function createSDKCanUseTool(opts: PermissionBridgeOptions) {
   const { structuredIO, hookSystem } = opts;
+  const timeoutMs = opts.timeoutMs ?? SDK_PERMISSION_TIMEOUT_MS;
 
   return async (
     toolName: string,
     toolInput: unknown,
     toolUseId: string,
+    callOpts: SDKCanUseToolCallOptions = {},
   ): Promise<PermissionBehavior> => {
+    // 一个 controller 收三种「别等了」：Hook 先决定 / 外部 abort / 超时。
+    // 超时与 abort 都让 sendRequest reject —— 调用方必须把 reject 当 deny（fail-closed）。
     const hookAbortController = new AbortController();
+    const external = callOpts.signal;
+    const onExternalAbort = () => hookAbortController.abort();
+    if (external?.aborted) hookAbortController.abort();
+    else external?.addEventListener("abort", onExternalAbort, { once: true });
+    const timer = timeoutMs > 0 ? setTimeout(() => hookAbortController.abort(), timeoutMs) : null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      external?.removeEventListener("abort", onExternalAbort);
+    };
+    try {
+      return await decide(hookAbortController, toolName, toolInput, toolUseId);
+    } finally {
+      cleanup();
+    }
+  };
 
+  async function decide(
+    hookAbortController: AbortController,
+    toolName: string,
+    toolInput: unknown,
+    toolUseId: string,
+  ): Promise<PermissionBehavior> {
     // Hook 评估（无 Hook 时永不 resolve，交给 SDK 宿主决定）
     const hookPromise: Promise<PermissionBehavior | null> = hookSystem
       ? executePermissionHook(hookSystem, toolName, toolInput, hookAbortController.signal)
@@ -79,7 +122,7 @@ export function createSDKCanUseTool(opts: PermissionBridgeOptions) {
     const sdkResult = await sdkPromise;
     structuredIO.trackResolvedToolUseId(toolUseId);
     return sdkResult.behavior;
-  };
+  }
 }
 
 /**
