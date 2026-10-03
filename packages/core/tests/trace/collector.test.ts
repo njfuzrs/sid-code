@@ -1452,6 +1452,48 @@ describe("TraceCollector", () => {
     expect(uploadedSessionId).toBe("upload-sess");
   });
 
+  // auto_upload 曾是死配置：config 层解析齐全却无人读取，配了 false 照样自动传。
+  // 两条路径都要断言——SessionEnd 上传与 SessionStart 启动补传，任一漏掉都是自动外发。
+  async function runSessionWithUploader(autoUpload: boolean | undefined) {
+    const calls = { upload: 0, backfill: 0 };
+    const mockUploader = {
+      uploadSession: async () => {
+        calls.upload++;
+        return { allConfirmed: true };
+      },
+      backfillPendingSessions: async () => {
+        calls.backfill++;
+        return { pending: 0, attempted: 0, uploaded: 0 };
+      },
+    };
+    const c = new TraceCollector({ outputDir: testDir, autoUpload }, mockUploader);
+    const hs = new HookSystem();
+    hs.setSessionId(`auto-upload-${String(autoUpload)}`);
+    hs.setCwd("/tmp");
+    c.registerHooks(hs);
+    await hs.fireSessionStartEvent("startup");
+    await fireModelRound(hs, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+    });
+    await hs.fireSessionEndEvent("exit");
+    // 启动补传是 fire-and-forget，让微任务跑干再断言
+    await new Promise((r) => setTimeout(r, 0));
+    return calls;
+  }
+
+  test("autoUpload=false：SessionEnd 不上传，SessionStart 不做启动补传", async () => {
+    const calls = await runSessionWithUploader(false);
+    expect(calls.upload).toBe(0);
+    expect(calls.backfill).toBe(0);
+  });
+
+  test("autoUpload 未设置（默认 true）：两条自动路径都照常触发", async () => {
+    const calls = await runSessionWithUploader(undefined);
+    expect(calls.upload).toBe(1);
+    expect(calls.backfill).toBe(1);
+  });
+
   // ─── Harness 数据消费 ───
 
   test("handleAfterModel 在 input.harness_context 有值时存入 currentPair.harness_turn_context", async () => {
