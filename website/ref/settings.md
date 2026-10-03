@@ -18,9 +18,8 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **77** 个顶层字段。其中 51 个由
-> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），26 个标 ⚠ 的字段
-> 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
+> 共 **78** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
 `.sid-code/settings.local.json`（项目级本地，gitignore，最优先）。
@@ -31,74 +30,75 @@ settings.json 的全部可配字段、类型与默认值。
 | `allowedDirectories` | array | — | 可访问目录白名单（cwd 之外要读写的目录须显式加入；对应 --add-dir） |
 | `allowedTools` | array | — | 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 |
 | `alternateBuffer` | boolean | — | 是否启用 alternate buffer（全屏 TUI）模式。 - false（默认）：主屏 Static 渲染，历史进终端 scrollback，鼠标原生选中复制。 2026-07-23 曾把默认改成 true，理由是「执行中工具溢出 scrollback 会留擦不掉的幽灵行」。… |
-| `analytics` ⚠ | object | — | 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行（子键见[下文](#key-analytics)） |
+| `analytics` | object | — | 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行（子键见[下文](#key-analytics)） |
 | `anthropicKey` | string | — | Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） |
 | `askUserQuestionTimeout` | string | — | AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。… |
-| `audit` ⚠ | boolean | — | 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地， 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。 |
-| `auditLogFile` ⚠ | string | — | 审计日志落点（缺省 sidPaths.auditLog，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
-| `autoDream` ⚠ | boolean | — | autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
-| `autoMemory` ⚠ | boolean | — | auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感项目 / 不想消耗后台 token）。… |
+| `audit` | boolean | — | 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地， 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。 |
+| `auditLogFile` | string | — | 审计日志落点（缺省 sidPaths.auditLog，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
+| `autoDream` | boolean | — | autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
+| `autoMemory` | boolean | — | auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感项目 / 不想消耗后台 token）。… |
 | `autoUpdate` | enum | `off` / `notify` / `auto` | 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭 |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
-| `checkpoint` ⚠ | object | — | 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等（子键见[下文](#key-checkpoint)） |
+| `bridge` | object | — | Bridge 远程控制配置（D14 准入） |
+| `checkpoint` | object | — | 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等（子键见[下文](#key-checkpoint)） |
 | `classifierModel` | string | — | LLM 分类器使用的模型（默认复用主循环模型 config.model） |
 | `cleanupPeriodDays` | number | >0 | 会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。 |
-| `conflictDetection` ⚠ | boolean | — | 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲突检测（单用户独占环境 / 不想被打扰）。 |
-| `conflictSeverity` ⚠ | string | — | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻止操作（不弹框，自动按 stop 处理）… |
+| `conflictDetection` | boolean | — | 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲突检测（单用户独占环境 / 不想被打扰）。 |
+| `conflictSeverity` | enum | `warn` / `block` / `off` | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻止操作（不弹框，自动按 stop 处理）… |
 | `costLimit` | number | >0 | 单会话花费上限（美元） |
-| `debug` ⚠ | boolean | — | 调试日志总开关（等同 -d / --debug），写 debug.log。 |
-| `debugLevel` ⚠ | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） |
-| `debugLogFile` ⚠ | string | — | 调试日志落点（缺省 sidPaths.debugLog，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
+| `debug` | boolean | — | 调试日志总开关（等同 -d / --debug），写 debug.log。 |
+| `debugLevel` | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） |
+| `debugLogFile` | string | — | 调试日志落点（缺省 sidPaths.debugLog，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
 | `disableAllHooks` | boolean | — | 一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源， 任一为 true 即禁用。。 |
 | `disabledHooks` | array | — | 禁用的 Hook 名列表（/hooks disable -p 持久化端） |
 | `disabledSkills` | array | — | 禁用的 Skill 名称列表 |
 | `disallowedTools` | array | — | 禁用工具名单（拒绝优先于 allowedTools） |
 | `effortLevel` | enum | `low` / `medium` / `high` / `xhigh` / `max` | 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。 |
 | `enableLLMClassifier` | boolean | — | 是否启用 LLM 命令风险分类器（第二道防线，默认 false 保守） |
-| `enableSandbox` ⚠ | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
+| `enableSandbox` | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
 | `env` | object | — | 环境变量 |
 | `fallbackModel` | string | — | 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 |
 | `fallbackSwitchMode` | enum | `ask` / `auto` / `off` | 主模型重试耗尽后的降级模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。 可选——未设时消费点按 "ask" 兜底（生产默认询问）。 |
 | `fastMode` | boolean | — | Fast Mode 开关（/fast 持久化端，settings.json fastMode）。缺省 = false。 语义：偏好更快的输出端点/服务档位。… |
 | `git` | object | — | Git 集成配置（commit / PR 归因）（子键见[下文](#key-git)） |
-| `goal` ⚠ | object | — | /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值）（子键见[下文](#key-goal)） |
+| `goal` | object | — | /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值）（子键见[下文](#key-goal)） |
 | `hooks` | object | — | Hooks（按事件分组） |
-| `ide` ⚠ | object | — | IDE 集成配置（自动连接、发现超时、写盘前 diff 预览）（子键见[下文](#key-ide)） |
+| `ide` | object | — | IDE 集成配置（自动连接、发现超时、写盘前 diff 预览）（子键见[下文](#key-ide)） |
 | `identity` | object | — | 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入； deviceId 不在这里配（本机持久 UUID）。 未配置时所有功能照常——身份通道 fail-open。（子键见[下文](#key-identity)） |
 | `includeCoAuthoredBy` | boolean | — | commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。 |
 | `jitContext` | boolean | — | 是否启用 JIT 上下文发现（默认 true） |
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 |
 | `maxThinkingTokens` | number | 整数 >0 | 思考 token 预算上限（settings.json maxThinkingTokens）。 env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。… |
 | `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
-| `mcpPolicy` ⚠ | object | — | MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。（子键见[下文](#key-mcppolicy)） |
+| `mcpPolicy` | object | — | MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。（子键见[下文](#key-mcppolicy)） |
 | `mcpServers` | object | — | MCP 服务器 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值）（子键见[下文](#key-network)） |
 | `openaiKey` | string | — | OpenAI 兼容端点的 API 密钥（provider=openai/ollama 等；env OPENAI_API_KEY 优先） |
-| `outputStyle` ⚠ | string | — | 输出风格名（settings.json outputStyle）。 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。 不设置时不注入任何风格约束。 |
+| `outputStyle` | string | — | 输出风格名（settings.json outputStyle）。 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。 不设置时不注入任何风格约束。 |
 | `permissionMode` | enum | `default` / `manual` / `always-allow` / `deny-write` / `acceptEdits` / `plan` / `dontAsk` / `auto` / `dangerously-skip-permissions` | 默认权限模式（manual 是 default 的别名） |
 | `permissions` | object | — | 权限配置（子键见[下文](#key-permissions)） |
-| `pluginDirs` ⚠ | array | — | 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
+| `pluginDirs` | array | — | 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
 | `provider` | string | — | LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额（子键见[下文](#key-quota)） |
 | `respectGitignore` | boolean | — | grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。 |
-| `sandboxAutoAllowBash` ⚠ | boolean | — | 沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 |
+| `sandboxAutoAllowBash` | boolean | — | 沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 |
 | `sanitizeEnv` | boolean | — | 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索（子键见[下文](#key-search)） |
-| `sessionRetention` ⚠ | object | — | 会话自动清理配置（按保留时长 / 数量）（子键见[下文](#key-sessionretention)） |
-| `showLineNumbers` ⚠ | boolean | — | 代码块是否显示行号（默认 true） |
-| `speculativeClassifier` ⚠ | boolean | — | 分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。… |
+| `sessionRetention` | object | — | 会话自动清理配置（按保留时长 / 数量）（子键见[下文](#key-sessionretention)） |
+| `showLineNumbers` | boolean | — | 代码块是否显示行号（默认 true） |
+| `speculativeClassifier` | boolean | — | 分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。… |
 | `statusLine` | object | — | 可自定义状态栏（settings.json statusLine）。 { type: "command", command: "&lt;脚本>", padding?: number }。缺省 = 走内置聚合状态栏。 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。（子键见[下文](#key-statusline)） |
 | `subAgentModels` | object | — | 子代理模型映射 |
-| `teamMemory` ⚠ | object | — | 团队记忆同步配置（共享目录模型）（子键见[下文](#key-teammemory)） |
-| `telemetry` ⚠ | object | — | 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp）（子键见[下文](#key-telemetry)） |
+| `teamMemory` | object | — | 团队记忆同步配置（共享目录模型）（子键见[下文](#key-teammemory)） |
+| `telemetry` | object | — | 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp）（子键见[下文](#key-telemetry)） |
 | `theme` | string | — | UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 |
 | `thinkingEnabled` | boolean | — | 思考开关初值（/think 持久化端，settings.json thinkingEnabled）。 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。 |
-| `toolSearch` ⚠ | union | — | 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。 |
-| `toolSearchKeepLoaded` ⚠ | array | — | 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。 |
-| `trace` ⚠ | object | — | 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点）（子键见[下文](#key-trace)） |
+| `toolSearch` | union | — | 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。 |
+| `toolSearchKeepLoaded` | array | — | 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。 |
+| `trace` | object | — | 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点）（子键见[下文](#key-trace)） |
 | `trustProjectExtensions` | boolean | — | 是否信任项目级扩展（跳过信任检查，默认 false） |
 | `vimMode` | boolean | — | Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false |
 | `webFetchExtractModel` | string | — | WebFetch 隔离提炼使用的模型（默认复用主循环模型）。 |
@@ -145,7 +145,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `evaluatorModel` | string | 评估者模型（默认使用 subAgentModels.verify 或回退到 haiku 级别模型） |
+| `evaluatorModel` | string | 评估者模型。取值顺序见 resolveGoalEvaluatorModel： goal.evaluatorModel → subAgentModels.default → 主模型。 刻意不读 subAgentModels.verify，也**没有**任何内置 haiku 回退——两项都没配时就是主模型自评。 |
 | `defaultTokenBudget` | number | 默认 Token 预算（0 = 无限制） |
 | `defaultMaxTurns` | number | 默认最大轮次（同时也是 Goal Gate 续命上限） |
 | `reminderInterval` | number | reminder 回注间隔（轮次） |
@@ -290,7 +290,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `deviceId` | string | 设备标识 |
 | `toolSource` | string | 工具来源标识（默认 "sid-code"） |
 | `maxRetries` | number | 单文件最大重试次数（默认 5） |
-| `retryBaseMs` | number | 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） |
+| `retryBaseMs` | number | 指数退避基数毫秒（默认 2000；maxRetries=5 时间隔为 2s→4s→8s→16s） |
 | `compress` | boolean | 是否 gzip 压缩后上传（默认 true） |
 | `healthCheckIntervalMs` | number | 心跳检测间隔毫秒（默认 60000） |
 | `maxQueueRetries` | number | 持久化重试队列最大重试次数（默认 50，覆盖约 24 小时） |

@@ -51,7 +51,7 @@ description: 全部 Hook 事件的配置键名、是否会触发与触发时机�
 | `stop_failure` | ✗ | `StopFailure` | （枚举已定义，等接线） |
 | `setup` | ✗ | `Setup` | （枚举已定义，等接线） |
 | `permission_request` | ✓ | `PermissionRequest` | 权限需用户确认时触发，与分类器、用户弹窗并行竞争、先到先决。可 block（返回 deny 则拒绝该工具）。 |
-| `permission_denied` | ✓ | `PermissionDenied` | 主循环权限拒绝后触发（弹窗被拒 / 超时 / 规则直拒），仅通知、不可改判。子代理路径暂未接。 |
+| `permission_denied` | ✓ | `PermissionDenied` | 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 |
 | `config_change` | ✗ | `ConfigChange` | （枚举已定义，等接线） |
 | `file_changed` | ✗ | `FileChanged` | （枚举已定义，等接线） |
 | `cwd_changed` | ✗ | `CwdChanged` | （枚举已定义，等接线） |

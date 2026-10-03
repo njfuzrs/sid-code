@@ -165,6 +165,7 @@ alternate buffer 的终端。代价是执行中的工具输出可能在 scrollba
 | `/diff` | 看工作区 git diff |
 | `/undo` | 撤销最近一次文件修改 |
 | `/doctor` | 环境自检 |
+| `/commands` | 浏览全部可用命令（内置、自定义、MCP 带来的），别名 `/cmds`；自定义命令放在 `.sid-code/commands/` 或 `~/.sid-code/commands/` 下的 `.md` 文件里 |
 
 ### Vim 模式
 

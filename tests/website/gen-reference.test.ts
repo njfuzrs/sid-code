@@ -180,12 +180,14 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
     // passthrough 字段（写了能用但 schema 未声明）也必须在表里，且逐行标了 ⚠。
     // 只数表格行里的 ⚠——导语里也写了一个 ⚠（"11 个标 ⚠ 的字段"），
     // 拿整段 body 数会多算一个。
+    // B32 之后 passthrough 字段已全部入 schema，数量可以是 0；但不能是负数（表里少了 schema 字段）
     const passthroughCount = keys.length - schemaKeys.length;
-    expect(passthroughCount).toBeGreaterThan(0);
+    expect(passthroughCount).toBeGreaterThanOrEqual(0);
     const markedRows = tableRows(body).filter((cells) => cells[0].includes("⚠"));
     expect(markedRows.length).toBe(passthroughCount);
     // 且导语声明的数量要与实际标记数一致（导语数字也是生成的，不能对不上）
-    expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    if (passthroughCount > 0) expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    else expect(body).toContain(`共 **${keys.length}** 个顶层字段，全部由`);
   });
 
   test("ref/cli 的 parseArgs flag 计数与源码一致", () => {
@@ -464,6 +466,14 @@ describe("叙述覆盖度门禁 · 端到端", () => {
     expect(proc.stdout.toString()).toContain("个内置命令");
   }, 60_000);
 
+  test("--coverage-strict 在存量为 0 时退 0（pre-commit 调的就是它）", () => {
+    const proc = Bun.spawnSync(
+      ["bun", "run", "scripts/docs-gen-reference.ts", "--coverage-strict"],
+      { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(proc.exitCode, proc.stdout.toString()).toBe(0);
+  }, 60_000);
+
   test("覆盖统计自洽：covered + uncovered + exempt == 命令总数", () => {
     const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
     const r = checkNarrativeCoverage(keys);
@@ -471,17 +481,17 @@ describe("叙述覆盖度门禁 · 端到端", () => {
     expect(r.total).toBe(keys.length);
   });
 
-  test("存量基线只减不增（改动不得让未覆盖命令变多）", () => {
-    // 基线随存量清理下调；这条断言的作用是防"新增命令又不写文档"把数字顶回去。
-    // 2026-07 核对时为 18。清到 0 后把 pre-commit 换成 --coverage-strict。
-    const BASELINE = 18;
+  test("存量已清零：每个内置命令都至少被一篇指南页提到", () => {
+    // 2026-07 核对时为 18，2026-10-03 清到 0，pre-commit 随之换成 --coverage-strict。
+    // 基线就是 0：不该进指南的命令走 NARRATIVE_EXEMPT（要写理由），不要上调这个数。
+    const BASELINE = 0;
     const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
     const { uncovered } = checkNarrativeCoverage(keys);
     expect(
       uncovered.length,
       `未覆盖命令数升到 ${uncovered.length}（基线 ${BASELINE}）：${uncovered.join(" ")}\n` +
         `新增命令请同时在 start/use/extend/team 下补一段说明；` +
-        `若确为存量清理导致下降，请同步下调 BASELINE。`,
+        `确不该进指南的命令加进 NARRATIVE_EXEMPT 并写理由。`,
     ).toBeLessThanOrEqual(BASELINE);
   });
 });
@@ -679,5 +689,92 @@ describe("参考页生成器 · 清洗（B34：不该上官网的东西别搬上
     ];
     expect(findDuplicateEnvVars(vars)).toEqual(["SID_X"]);
     expect(findDuplicateEnvVars(parseHelpEnvVars(read("packages/cli/src/help.ts")))).toEqual([]);
+  });
+});
+
+/**
+ * pre-commit 接线：触发范围必须覆盖生成器的全部输入。
+ *
+ * 2026-10-03 前触发条件只列 help.ts / cli.ts / tool / command / config / hook，
+ * 而生成器还扫 4 个包全部 src/（fire*Event 调用点、process.env 读取点）与
+ * website 全部 .md（llms.txt）—— 实测至少 78 个影响生成结果的文件落在范围外，
+ * 改它们提交照过、到 CI 才红。这里不读注释，直接把 hook 里的正则拿出来对真实路径求值。
+ */
+describe("参考页生成器 · pre-commit 接线", () => {
+  const HOOK = read("scripts/git-hooks/pre-commit.sh");
+  const grepPattern = (varName: string): RegExp => {
+    const m = HOOK.match(new RegExp(`^${varName}=.*grep -E '([^']+)'`, "m"));
+    expect(m, `pre-commit.sh 里找不到 ${varName} 的 grep -E 正则`).not.toBeNull();
+    return new RegExp(m![1]);
+  };
+  const triggersCheck = (path: string) =>
+    grepPattern("STAGED_REF_SOURCES").test(path) || grepPattern("STAGED_REF_PAGES").test(path);
+
+  test("生成器读取的每一类输入都会触发 --check", () => {
+    const mustTrigger = [
+      // 原 6 个数据源
+      "packages/cli/src/help.ts",
+      "packages/cli/src/cli.ts",
+      "packages/core/src/tool/read.ts",
+      "packages/cli/src/command/lsp.ts",
+      "packages/core/src/config/config.ts",
+      "packages/core/src/hook/types.ts",
+      // fire*Event 调用点（hooks.md「是否会触发」）
+      "packages/cli/src/app.ts",
+      "packages/core/src/agent/sub-agent.ts",
+      "packages/core/src/query/stop-hooks.ts",
+      // process.env 读取点（env.md 页尾），4 个包都扫
+      "packages/core/src/trace/collector.ts",
+      "packages/shared/src/index.ts",
+      "packages/tui-renderer/src/ink.tsx",
+      // llms.txt 汇总全部页面 frontmatter
+      "website/use/interactive.md",
+      "website/ref/glossary.md",
+      "website/index.md",
+      "website/ref/cli.md",
+      "website/public/llms.txt",
+      // 生成器自身
+      "scripts/docs-gen-reference.ts",
+    ];
+    for (const p of mustTrigger) expect(triggersCheck(p), `${p} 应触发 --check`).toBe(true);
+  });
+
+  test("与生成无关的路径不触发（范围放宽不等于每次都跑）", () => {
+    for (const p of [
+      "packages/core/tests/x.test.ts",
+      "evals/a.yaml",
+      "README.md",
+      "website/.vitepress/config.ts",
+    ]) {
+      expect(triggersCheck(p), `${p} 不应触发 --check`).toBe(false);
+    }
+  });
+
+  test("hook 的触发目录覆盖生成器 PKG_SRC_DIRS 的每个包", () => {
+    const gen = read("scripts/docs-gen-reference.ts");
+    const m = gen.match(/const PKG_SRC_DIRS = \[([^\]]+)\]/);
+    expect(m).not.toBeNull();
+    const pkgs = [...m![1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    expect(pkgs.length).toBeGreaterThanOrEqual(4);
+    for (const pkg of pkgs) {
+      expect(triggersCheck(`packages/${pkg}/src/any.ts`), `packages/${pkg}/src 应触发`).toBe(true);
+    }
+  });
+
+  test("删除文件也触发（--diff-filter 含 D）", () => {
+    for (const v of ["STAGED_REF_SOURCES", "STAGED_REF_PAGES", "STAGED_CMD_SOURCES"]) {
+      const line = HOOK.match(new RegExp(`^${v}=.*$`, "m"))?.[0] ?? "";
+      expect(line, `${v} 的 --diff-filter 应含 D`).toMatch(/--diff-filter=[A-Z]*D/);
+    }
+  });
+
+  test("叙述覆盖度是阻断模式：调 --coverage-strict 且失败会 exit 1", () => {
+    const code = HOOK.split("\n")
+      .filter((l) => !l.trim().startsWith("#"))
+      .join("\n");
+    expect(code).toContain('docs-gen-reference.ts" --coverage-strict');
+    expect(code).not.toMatch(/--coverage\s*\|\|\s*true/);
+    const block = code.slice(code.indexOf("--coverage-strict"));
+    expect(block.slice(0, block.indexOf("fi\nfi"))).toContain("exit 1");
   });
 });

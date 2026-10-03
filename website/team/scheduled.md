@@ -32,7 +32,7 @@ daemon 怎么装成系统服务、GitHub PR 怎么自动触发 code review。
 
 ::: tip `/loop` 和 `/goal` 不一样
 `/loop` 是"按固定间隔重复跑同一件事"，`/goal` 是"干到达标为止"。两者都涉及多次执行，
-但终止条件不同：`/loop` 靠你取消或任务完成，`/goal` 靠独立评估者判定。见
+但终止条件不同：`/loop` 靠你取消或任务完成，`/goal` 靠评估模型按证据判定。见
 [Plan Mode 与 Todo](/use/plan-mode) 的 `/goal` 章节。
 :::
 

@@ -325,6 +325,11 @@ export async function runForkedAgent(
           // reasonType 固定 "other"：这条路走的是调用方注入的 `canUseTool` 回调，
           // 拿不到 `PermissionDecisionReason` —— **不猜**。填一个像模像样的
           // "rule" 会让读数的人以为有规则参与，而那是编的。
+          //
+          // B33：这里**刻意不** fire PermissionDenied hook。forked 的调用方全是内部旁路
+          // （记忆提取 / dream / session-memory / `/btw`），拒绝来自调用方注入的工具裁剪，
+          // 是设计内行为而非用户的权限策略生效 —— fire 出去会让「权限被拒通知到 IM」
+          // 被内部 side-call 刷屏（`/btw` 每次都全拒）。主循环与子代理两条路径已接。
           logPermissionDeny(tu.name, {
             source: "other",
             needsPrompt: false,
