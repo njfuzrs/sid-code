@@ -54,8 +54,12 @@ export type SDKControlInitialize = z.infer<
 
 // ─── 传输层消息（stdin/stdout 上的所有消息） ───
 
-/** 来自 stdin 的消息：用户消息 / 控制响应 / 心跳 */
-export type StdinMessage = SDKUserMessage | SDKControlResponse | { type: "keep_alive" };
+/** 来自 stdin 的消息：用户消息 / 控制请求（宿主 → CLI）/ 控制响应 / 心跳 */
+export type StdinMessage =
+  | SDKUserMessage
+  | SDKControlRequest
+  | SDKControlResponse
+  | { type: "keep_alive" };
 
-/** 写往 stdout 的消息：SDK 数据/系统消息 / 控制请求 */
-export type StdoutMessage = SDKMessage | SDKControlRequest;
+/** 写往 stdout 的消息：SDK 数据/系统消息 / 控制请求 / 控制响应（回宿主的 interrupt 等，B25） */
+export type StdoutMessage = SDKMessage | SDKControlRequest | SDKControlResponse;

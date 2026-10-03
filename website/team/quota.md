@@ -90,15 +90,12 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 
 ### RPM / TPM 的实际状态
 
-`requestsPerMinute` 和 `tokensPerMinute` 会被读进 `QuotaManager`，
-滑动窗口也在正常记账（`recordRequest` 每轮都调，`src/query/loop.ts:1577-1581`）。
+RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（每分钟 token 数）。
+这两个字段分别对应 `quota.requestsPerMinute` 和 `quota.tokensPerMinute`。
 
-**但计算等待时长的 `checkRateLimit()` 目前没有任何生产调用方**——
-全仓 grep 只有它自己的定义和单测（`tests/llm/quota.test.ts`）。
-也就是说：这两个字段配上去不报错、窗口在转，但**不会真的限速**。
-
-如实说这一点，因为「以为限了、其实没限」比「知道没限」危险得多。
-需要硬限速的话，现在得做在网关侧。
+**已接线**：超过 RPM / TPM 上限时，主循环在发下一轮请求前本地主动等待，
+等窗口滑过再继续（`packages/core/src/query/loop.ts` 的 `checkRateLimit()`）。
+等待期间按 `Esc` 可中断——不会卡住会话。
 
 ## 按周期的预算规则
 

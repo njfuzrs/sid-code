@@ -301,6 +301,8 @@ export interface ToolExecutorDeps {
     toolName: string,
     toolInput: unknown,
     signal?: AbortSignal,
+    /** B25：SDK 宿主的 can_use_tool 要带真实 tool_use_id，宿主才能和 assistant 消息对上 */
+    toolUseId?: string,
   ) => Promise<boolean>;
   /**
    * Plan Mode 状态转换处理。
@@ -1147,7 +1149,14 @@ export async function resolveToolPermission(
         userDecision: (req, resolve) => {
           // H7：透传本轮 signal，弹窗期间被 abort 时回调侧解除弹窗（按拒绝闭合），杜绝孤儿弹窗。
           void deps
-            .requestUserConfirmation(desc, permReq, block.name, block.input, deps.getAbortSignal())
+            .requestUserConfirmation(
+              desc,
+              permReq,
+              block.name,
+              block.input,
+              deps.getAbortSignal(),
+              block.id,
+            )
             .then((confirmed) => {
               if (!resolve.isResolved()) {
                 resolve.resolve({

@@ -32,8 +32,8 @@ export { SDKQueryEngine } from "./query-engine.ts";
 export type { SDKQueryEngineConfig, SDKQueryEngineDriver } from "./query-engine.ts";
 
 // ─── 控制协议 / 桥接 / 恢复 ───
-export { createSDKCanUseTool } from "./permission-bridge.ts";
-export type { PermissionBridgeOptions } from "./permission-bridge.ts";
+export { createSDKCanUseTool, SDK_PERMISSION_TIMEOUT_MS } from "./permission-bridge.ts";
+export type { PermissionBridgeOptions, SDKCanUseToolCallOptions } from "./permission-bridge.ts";
 export {
   SdkControlClientTransport,
   SdkControlServerTransport,
@@ -44,7 +44,7 @@ export type { TurnInterruptionState, DeserializeResult } from "./session-recover
 export { extractStructuredOutput, buildStructuredOutputPrompt } from "./structured-output.ts";
 export type { StructuredOutputConfig } from "./structured-output.ts";
 export { runHeadless, runHeadlessStreaming } from "./headless-runner.ts";
-export type { HeadlessRunOutcome } from "./headless-runner.ts";
+export type { HeadlessRunOutcome, HeadlessControlHandlers } from "./headless-runner.ts";
 export {
   classifyHeadlessStreamText,
   formatHeadlessEvent,

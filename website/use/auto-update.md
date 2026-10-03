@@ -39,7 +39,7 @@ SID_CODE_AUTO_UPDATE=off sid-code
 ```bash
 sid-code update                         # 装最新稳定版
 SID_CODE_CHANNEL=beta sid-code update   # 装抢先版
-sid-code update --version 0.1.602       # 装指定稳定版（回滚也走这条）
+sid-code update --version <版本号>       # 装指定稳定版（回滚也走这条）
 ```
 
 ## 详细说明
@@ -84,7 +84,7 @@ cat ~/.sid-code/updates/last-update.log
 知道要回到哪一版就指定版本号：
 
 ```bash
-sid-code update --version 0.1.602
+sid-code update --version <版本号>
 ```
 
 前提是服务器上还留着那个版本目录。配置和会话数据不受影响，只换二进制。
