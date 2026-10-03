@@ -92,6 +92,42 @@ describe("PermissionChecker", () => {
     });
   });
 
+  /**
+   * B22（2026-10-02，与上面假设登记表同一形态）：MCP 工具默认延迟加载，tool_search 是唯一入口。
+   * 它不在 READ_ONLY_TOOLS → 无头模式 / 子代理里一律被拒，模型主动搜 context7 两次都被拦，
+   * 本机 70+ 会话 mcp__ 调用恒为 0。断言放行，同时锁住「放行入口 ≠ 放行 MCP 工具本身」。
+   */
+  describe("MCP 发现入口在无头模式下不被误拒", () => {
+    for (const tool of ["tool_search", "ListMcpResources"]) {
+      test(`${tool} 无头模式（print）放行`, async () => {
+        const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+        const r = await checker.check({ toolName: tool, input: { query: "context7" } });
+        expect(r.allowed).toBe(true);
+      });
+
+      test(`${tool} 仍可被 disallowedTools 关掉`, async () => {
+        const checker = new PermissionChecker({ ...defaultConfig(), disallowedTools: [tool] });
+        const r = await checker.check({ toolName: tool, input: { query: "x" } });
+        expect(r.allowed).toBe(false);
+      });
+    }
+
+    test("对照：ReadMcpResource（落盘 + 外部不可信内容）无头模式仍被拒", async () => {
+      const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+      const r = await checker.check({
+        toolName: "ReadMcpResource",
+        input: { server: "s", uri: "file:///x" },
+      });
+      expect(r.allowed).toBe(false);
+    });
+
+    test("对照：被调出来的 mcp__* 工具本身不因此放行", async () => {
+      const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+      const r = await checker.check({ toolName: "mcp__context7__query-docs", input: {} });
+      expect(r.allowed).toBe(false);
+    });
+  });
+
   test("grep 和 glob 自动放行", async () => {
     const checker = new PermissionChecker(defaultConfig());
     const r1 = await checker.check({ toolName: "grep", input: { pattern: "foo" } });
