@@ -52,11 +52,19 @@ const HookEntrySchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * MCP 传输方式枚举：合法值的唯一事实源。
+ * config/schema.ts 的校验器从这里的 `.options` 派生，不再手写名单——
+ * 手写名单曾漏掉 ws / http-json，照官网填 ws 会被报「无效值」（B36 / D129）。
+ * 新增传输方式时只改这一处，并在 mcp/manager.ts 补对应分支。
+ */
+export const MCPTransportEnum = z.enum(["stdio", "http", "http-json", "sse", "ws"]);
+
 /** MCP 服务器 Schema */
 const MCPServerSchema = lazySchema(() =>
   z
     .object({
-      transport: z.enum(["stdio", "http", "http-json", "sse", "ws"]),
+      transport: MCPTransportEnum,
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
@@ -126,13 +134,21 @@ const ModelConfigSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * 预算周期 / 动作 / 搜索后端枚举：同 MCPTransportEnum，是 config/schema.ts 校验器的事实源。
+ * 校验器从 `.options` 派生，不再手写第二份名单（B36 同形态收口）。
+ */
+export const BudgetPeriodEnum = z.enum(["session", "hourly", "daily", "weekly", "monthly"]);
+export const BudgetActionEnum = z.enum(["alert", "downgrade", "block"]);
+export const SearchBackendEnum = z.enum(["searxng", "brave", "tavily", "duckduckgo"]);
+
 /** 预算规则 Schema */
 const BudgetRuleSchema = lazySchema(() =>
   z
     .object({
       id: z.string(),
       name: z.string(),
-      period: z.enum(["session", "hourly", "daily", "weekly", "monthly"]),
+      period: BudgetPeriodEnum,
       limit_usd: z.number().positive(),
       scope: z.object({ model: z.string().optional() }).passthrough().optional(),
       thresholds: z
@@ -143,7 +159,7 @@ const BudgetRuleSchema = lazySchema(() =>
         })
         .passthrough()
         .optional(),
-      action: z.enum(["alert", "downgrade", "block"]).optional(),
+      action: BudgetActionEnum.optional(),
     })
     .passthrough(),
 );
@@ -175,7 +191,7 @@ const IdentitySettingsSchema = lazySchema(() =>
 const SearchSchema = lazySchema(() =>
   z
     .object({
-      backend: z.enum(["searxng", "brave", "tavily", "duckduckgo"]).optional(),
+      backend: SearchBackendEnum.optional(),
       searxngUrl: z.string().optional(),
       braveApiKey: z.string().optional(),
       tavilyApiKey: z.string().optional(),
@@ -406,8 +422,9 @@ export const SettingsSchema = lazySchema(
         // 网络超时/重试配置（direct/gateway 场景适配）
         network: NetworkTimeoutsSchema().optional(),
 
-        // G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。
-        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。
+        // G5：行为控制字段。
+
+        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。
         respectGitignore: z.boolean().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
@@ -415,7 +432,7 @@ export const SettingsSchema = lazySchema(
         // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
         // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
         includeCoAuthoredBy: z.boolean().optional(),
-        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。
+        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。
         cleanupPeriodDays: z.number().positive().optional(),
 
         // B32：以下 27 个字段此前只在 Config 接口声明、靠本 schema 的 .passthrough() 生效 ——

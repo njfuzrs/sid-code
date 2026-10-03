@@ -35,6 +35,12 @@ export class StructuredIO {
   /** 输出队列（保证写入序列化） */
   private writeQueue: StdoutMessage[] = [];
   private writing = false;
+  /**
+   * 输入流已结束（宿主关了 stdin / 进程断开）。
+   * 之后发出的控制请求不可能再等到响应——必须立即 reject，否则 can_use_tool
+   * 会一直挂到超时，fail-closed 变成「卡死 N 分钟后 fail-closed」。
+   */
+  private inputClosed = false;
 
   private input: Readable;
   private output: Writable;
@@ -49,7 +55,10 @@ export class StructuredIO {
    * - user → yield 给主循环
    * - control_response → 匹配并解析 pending 请求（不 yield）
    * - keep_alive → 静默忽略
+   * - control_request → yield 给调用方分发（interrupt 等；见 headless-runner）
    * - 其他 → 作为 StdinMessage yield
+   *
+   * 输入流结束时 reject 全部未决请求：宿主断开 = 不会再有响应。
    */
   async *read(): AsyncGenerator<StdinMessage> {
     for await (const line of ndjsonLines(this.input)) {
@@ -80,10 +89,12 @@ export class StructuredIO {
           break;
 
         default:
-          // 未知消息类型，仍 yield 给主循环兜底
+          // control_request 与未知消息类型都 yield 给主循环，由它决定回什么
           yield msg as unknown as StdinMessage;
       }
     }
+    this.inputClosed = true;
+    this.rejectAllPending("SDK 宿主输入流已关闭");
   }
 
   /**
@@ -129,6 +140,10 @@ export class StructuredIO {
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error("Request aborted"));
+        return;
+      }
+      if (this.inputClosed) {
+        reject(new Error("SDK 宿主输入流已关闭"));
         return;
       }
 

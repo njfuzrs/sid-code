@@ -228,10 +228,27 @@ export class HeadlessExecutor {
  * 从 `sid-code -p --output-format json` 的 stdout 抽取最终文本。
  * 输出形如 { session_id, role, content: [{type:"text",text}], usage }。
  * 兼容 review.ts 旧口径（final_response / text 字段）。
+ *
+ * 子进程开了 debug（app.json `debug: true`）时，-p 模式的 debug logger 会把日志打到 stdout、
+ * 排在 JSON 前面，整段 JSON.parse 失败，调用方拿到的「报告」就是原始输出（B24 实测）。
+ * 所以整段解析失败时，再从最后一个行首独占一行的 `{` 起重试：JSON 是 pretty-print 的，
+ * 嵌套对象都带缩进，字符串里的换行是转义的 `\n`，只有顶层 `{` 会形成 "\n{\n"。
  */
 export function extractFinalResponse(stdout: string): string {
   const trimmed = stdout.trim();
   if (!trimmed) return "";
+  const fromJson = extractFromJson(trimmed);
+  if (fromJson !== null) return fromJson;
+  const idx = trimmed.lastIndexOf("\n{\n");
+  if (idx >= 0) {
+    const tail = extractFromJson(trimmed.slice(idx + 1));
+    if (tail !== null) return tail;
+  }
+  return trimmed;
+}
+
+/** 解析成功返回抽到的文本（可能是原文），解析失败返回 null。 */
+function extractFromJson(trimmed: string): string | null {
   try {
     const parsed = JSON.parse(trimmed);
     if (typeof parsed.final_response === "string") return parsed.final_response;
@@ -245,6 +262,6 @@ export function extractFinalResponse(stdout: string): string {
     }
     return trimmed;
   } catch {
-    return trimmed;
+    return null;
   }
 }

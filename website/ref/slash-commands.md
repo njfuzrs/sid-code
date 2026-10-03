@@ -10,7 +10,7 @@ description: 交互模式里可用的全部斜杠命令。
 <!--
   本页由脚本生成，请勿手工编辑
   AUTO-GEN:START 与 AUTO-GEN:END 标记之间的内容由
-  scripts/docs-gen-reference.ts 从源码生成（数据源：BUILTIN_COMMANDS + legacy 注册表），
+  scripts/docs-gen-reference.ts 从源码生成（数据源：packages/cli/src/command/loaders.ts loadBuiltinCommands()，BUILTIN_COMMANDS + legacy 桥接），
   手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
   需要补充说明请写在标记之外——那部分内容会被保留。
   （此提示写给维护者，HTML 注释不会渲染给终端用户。）
@@ -46,7 +46,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/deny` | 添加 deny 权限规则（默认当前会话，-p 持久化） | — | `<规则> [-p] [--scope user\|project]` |
 | `/diff` | 显示当前工作区 git diff（--staged 看已暂存改动） | — | `[--staged\|--cached]` |
 | `/doctor` | 环境自检诊断（版本/运行时/配置/git/ripgrep/模型/MCP）；--disk 看磁盘占用与保留策略 | `/checkup` | — |
-| `/effort` | 显示或切换推理强度档位（low/medium/high/max/auto） | — | `low\|medium\|high\|max\|auto` |
+| `/effort` | 显示或切换推理强度档位（low/medium/high/xhigh/max/auto） | — | `low\|medium\|high\|xhigh\|max\|auto` |
 | `/exit` | 退出程序 | `/quit` `/q` | — |
 | `/export` | 导出对话到剪贴板或文件 | `/save` | `[clipboard\|file\|<path>] [json\|md]` |
 | `/fast` | 切换 Fast Mode 偏好（网关对等能力就绪前为预留开关） | — | `[on\|off]` |
@@ -75,7 +75,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/skills` | Skills 管理 | — | — |
 | `/stats` | 显示当前会话统计信息 | — | — |
 | `/status` | 显示会话状态概览（模型/目录/token/provider/skills） | — | — |
-| `/statusline` | 配置自定义状态栏脚本（stdin JSON → stdout 状态栏，对齐 CC） | — | — |
+| `/statusline` | 配置自定义状态栏脚本（stdin JSON → stdout 状态栏） | — | — |
 | `/telemetry` | 显示当前会话遥测摘要（Span 树 + Metric 汇总） | `/tele` | — |
 | `/terminal-setup` | 为当前终端安装 Shift+Enter 换行键绑定（VSCode/Cursor/Windsurf 等） | — | — |
 | `/theme` | 显示或切换主题（-p 持久化） | — | `[name\|list] [-p]` |
