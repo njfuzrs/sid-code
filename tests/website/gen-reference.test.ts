@@ -162,12 +162,14 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
     // passthrough 字段（写了能用但 schema 未声明）也必须在表里，且逐行标了 ⚠。
     // 只数表格行里的 ⚠——导语里也写了一个 ⚠（"11 个标 ⚠ 的字段"），
     // 拿整段 body 数会多算一个。
+    // B32 之后 passthrough 字段已全部入 schema，数量可以是 0；但不能是负数（表里少了 schema 字段）
     const passthroughCount = keys.length - schemaKeys.length;
-    expect(passthroughCount).toBeGreaterThan(0);
+    expect(passthroughCount).toBeGreaterThanOrEqual(0);
     const markedRows = tableRows(body).filter((cells) => cells[0].includes("⚠"));
     expect(markedRows.length).toBe(passthroughCount);
     // 且导语声明的数量要与实际标记数一致（导语数字也是生成的，不能对不上）
-    expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    if (passthroughCount > 0) expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    else expect(body).toContain(`共 **${keys.length}** 个顶层字段，全部由`);
   });
 
   test("ref/cli 的 parseArgs flag 计数与源码一致", () => {
