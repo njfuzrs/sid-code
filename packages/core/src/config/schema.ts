@@ -11,6 +11,12 @@ import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 import { MODEL_COMPAT_KEYS, COMPAT_KEY_ALIASES, COMPAT_KEY_SET } from "../llm/model-compat.ts";
 // VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
 import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
+import {
+  MCPTransportEnum,
+  BudgetPeriodEnum,
+  BudgetActionEnum,
+  SearchBackendEnum,
+} from "./settings/types.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -96,8 +102,10 @@ function getValidSubagentTypes(): Set<string> {
   return new Set<string>(["default", ...getActiveAgentTypes()]);
 }
 
-/** 有效的 MCP 传输类型 */
-const VALID_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
+/** 有效的 MCP 传输类型：从 settings Zod 枚举派生，与 mcp/manager.ts 的实现分支同源。
+ *  曾手写为 stdio/http/sse，漏了 ws / http-json，导致合法配置被报「无效值」（B36）——
+ *  与上面 Hook 事件名那次是同一形态：手写名单与事实源漂移。 */
+const VALID_MCP_TRANSPORTS: ReadonlySet<string> = new Set(MCPTransportEnum.options);
 
 /** 明显的占位符 API Key */
 const PLACEHOLDER_PATTERNS = [
@@ -215,9 +223,11 @@ export function validateConfig(config: Config): ValidationResult {
         });
       }
 
-      // http/sse 类型必须有 url
+      // 远程传输（http / http-json / sse / ws）必须有 url：manager.ts 建连时缺 url 直接抛错
       if (
-        (serverConfig.transport === "http" || serverConfig.transport === "sse") &&
+        serverConfig.transport &&
+        serverConfig.transport !== "stdio" &&
+        VALID_MCP_TRANSPORTS.has(serverConfig.transport) &&
         !serverConfig.url
       ) {
         errors.push({
@@ -669,8 +679,9 @@ export function validateConfig(config: Config): ValidationResult {
     }
 
     if (Array.isArray(q.budgetRules)) {
-      const VALID_BUDGET_PERIODS = new Set(["session", "hourly", "daily", "weekly", "monthly"]);
-      const VALID_BUDGET_ACTIONS = new Set(["alert", "downgrade", "block"]);
+      // 从 Zod 枚举派生（B36 同形态收口），不手写第二份名单
+      const VALID_BUDGET_PERIODS: ReadonlySet<string> = new Set(BudgetPeriodEnum.options);
+      const VALID_BUDGET_ACTIONS: ReadonlySet<string> = new Set(BudgetActionEnum.options);
       const seenRuleIds = new Set<string>();
 
       q.budgetRules.forEach((rule, index) => {
@@ -907,7 +918,8 @@ export function validateConfig(config: Config): ValidationResult {
   // 验证 search 配置：backend 枚举 + 组合一致性
   if (config.search) {
     const s = config.search;
-    const VALID_SEARCH_BACKENDS = new Set(["searxng", "brave", "tavily", "duckduckgo"]);
+    // 从 Zod 枚举派生（B36 同形态收口）；brave / tavily 「合法但未实现」的告警在下面单独处理
+    const VALID_SEARCH_BACKENDS: ReadonlySet<string> = new Set(SearchBackendEnum.options);
     if (s.backend !== undefined) {
       if (!VALID_SEARCH_BACKENDS.has(s.backend)) {
         warnings.push({
