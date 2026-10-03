@@ -483,6 +483,11 @@ export class App {
     discardedTextLength: number;
   }) => void;
   private queryEngine: QueryEngine;
+  /** B26：--json-schema 模式下注册的 StructuredOutput 工具，收尾时取校验通过的载荷写进 result */
+  private structuredOutputTool: {
+    hasCapturedOutput: boolean;
+    getCapturedOutput(): unknown;
+  } | null = null;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /**
@@ -3138,6 +3143,7 @@ export class App {
       const { StructuredOutputTool, structuredOutputPromptSuffix } =
         await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
+      this.structuredOutputTool = structuredTool;
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
       log.info("APP", `--json-schema 模式：注册 StructuredOutput 工具 + system prompt 后缀`);
@@ -6792,6 +6798,8 @@ export class App {
       }
       const denials = this.headlessPermissionDenials();
       if (denials.length > 0) result.permission_denials = denials;
+      const structured = this.capturedStructuredOutput();
+      if (structured !== undefined) result.structured_output = structured;
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
@@ -6951,7 +6959,14 @@ export class App {
         this.queryEngine.setStreamTextCallback(cb),
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
+      getStructuredOutput: () => this.capturedStructuredOutput(),
     };
+  }
+
+  /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
+  private capturedStructuredOutput(): unknown {
+    const tool = this.structuredOutputTool;
+    return tool?.hasCapturedOutput ? tool.getCapturedOutput() : undefined;
   }
 
   /**

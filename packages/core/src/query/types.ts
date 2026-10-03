@@ -169,6 +169,12 @@ export type QueryLoopYield =
         /** 哪一层停的。collector 不读它，只留给轨迹里能分清本地/远程。 */
         source: "budget_rule" | "quota" | "remote";
       };
+      /**
+       * B26 顺带：这次 done 是「StructuredOutput 已捕获合规载荷」后的就地收尾 —— 任务正常交付。
+       * 末轮 stop_reason 是 `tool_use`，不声明就会被 collector 兜底桶记成 `user_interrupt`
+       * （与 budgetExceeded / max_turns 同一条反模式），所以判据必须是这条显式声明。
+       */
+      structuredOutputDelivered?: true;
     };
 
 /** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */
