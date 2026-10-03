@@ -334,17 +334,21 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 ### 5.3 渲染底座：只经 `ui/render-port/` 使用，不读旧底座、不搬 cc ✅
 
-**现状（2026-10，B9 / T0.2）**：渲染底座正在整层替换（设计文档《TUI 渲染底座重构 —— 整体设计》）。
+**现状（2026-10，B9 / T1.3）**：渲染底座正在整层替换（设计文档《TUI 渲染底座重构 —— 整体设计》）。
 旧底座 `packages/tui-renderer` 是经泄露快照引入的 cc ink 衍生版，B9 要把它换成「以 MIT 上游 ink 为起点、自研差异部分」的新底座。
-在此期间三条规则：
+在此期间四条规则：
 
 1. **只经端口导入**。CLI（`src` 与 `tests`）里所有渲染能力从 `ui/render-port/*.ts` 取
    （`components` / `hooks` / `measure` / `text` / `termio` / `runtime` / `testing` / `types`，分组理由见该目录 `README.md`）。
    直接写 `@sid-code/tui-renderer/*` 或 `@sid-code/tui/*` 会被 `bun run lint:boundary` 拦下。
 2. **不读旧底座、不搬 cc 做法**。以前这里写的是「遇 cc 做法默认能搬，先去 `src/ink` 找」，**已作废**：
    B9 要求旧代码只回答「应该表现成什么样」，不当代码来源。要了解某个能力的行为，读 `packages/tui/SPEC.md` 的契约（T0.3 起）和端口的 `SURFACE.md`，不打开 `.vendor-src/`。
-3. **端口缺能力 → 先在端口里加，再用**。在对应端口模块加一行 re-export，跑 `bun run tui:surface` 重生成 `SURFACE.md` 并一起提交。
+3. **端口缺能力 → 先在端口里加，再用**。端口模块是切换层（T1.3 起），实现在 `legacy/` 与 `next/` 两个子目录：
+   在 `legacy/<模块>.ts` 加 re-export，在 `next/<模块>.ts` 加实现或 `notImplemented*` 占位，再把名字加进切换层的解构导出；
+   `next-switch.test.ts` 会核对两边导出同一组符号。最后跑 `bun run tui:surface` 重生成 `SURFACE.md` 并一起提交。
    这一步的意义是让「新底座也必须提供它」被看见。别为了绕开端口而在组件里直连底座。
+4. **`SID_TUI_RENDERER=legacy|next` 选底座**（默认 legacy，只在 `render-port/select.ts` 读一次）。next 目前是骨架，
+   未实现的能力一用就抛 `NotImplementedError`，信息里带负责的任务号，这是预期行为，不要往组件里加兜底。
 
 当前已有、组件可以直接用的能力（都从端口取）：
 

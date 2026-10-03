@@ -1,9 +1,9 @@
-/** 渲染入口与实例。加载它等于加载整套引擎，见 README.md。 */
-import legacyInstances from "@sid-code/tui-renderer/instances.ts";
-
-export { default as render } from "@sid-code/tui-renderer/root.ts";
-export { drainStdin } from "@sid-code/tui-renderer/ink.tsx";
-export { setSuppressTerminalProbe } from "@sid-code/tui-renderer/terminal.ts";
+/**
+ * 渲染入口与实例。加载它等于加载整套引擎，见 README.md。
+ * 按 `SID_TUI_RENDERER` 选 legacy / next 实现（select.ts），写法同 components.ts。
+ */
+import { RENDERER } from "./select.ts";
+import type * as Impl from "./legacy/runtime.ts";
 
 /**
  * 渲染实例上 CLI 与契约测试会调用的方法，即新底座必须提供的实例能力（B9 / T0.5 遗留）。
@@ -45,9 +45,16 @@ export const RENDER_INSTANCE_METHODS = [
   "detachForShutdown",
 ] as const satisfies readonly (keyof RenderInstance)[];
 
+const impl: typeof Impl =
+  RENDERER === "next"
+    ? ((await import("./next/runtime.ts")) as unknown as typeof Impl)
+    : await import("./legacy/runtime.ts");
+
+export const { render, drainStdin, setSuppressTerminalProbe } = impl;
+
 /** 按 stdout 取当前挂载的渲染实例；没挂载返回 undefined。CLI 拿实例一律走这里。 */
 export function getRenderInstance(
   stdout: NodeJS.WriteStream = process.stdout,
 ): RenderInstance | undefined {
-  return legacyInstances.get(stdout);
+  return impl.getRenderInstance(stdout);
 }

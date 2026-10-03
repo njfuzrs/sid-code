@@ -4,7 +4,24 @@ CLI（`packages/cli/src` 与 `packages/cli/tests`）**只经这里**拿渲染底
 直接写 `@sid-code/tui-renderer/*` 会被 `bun run lint:boundary` 拦下。
 这样换底座（B9：旧底座 → `packages/tui`）只动这个目录，不动 100 个组件。
 
-当前只有 legacy 实现：每个模块都是对 `@sid-code/tui-renderer` 的纯 re-export，行为零变化。
+## 两套实现与切换（T1.3）
+
+```
+render-port/
+  select.ts            ← 唯一读 SID_TUI_RENDERER 的地方（legacy | next，默认 legacy，拼错回落并告警）
+  <模块>.ts            ← 切换层：按 RENDERER 用字面量动态 import legacy/ 或 next/，解构再导出
+  legacy/<模块>.ts     ← 对 @sid-code/tui-renderer 的纯 re-export（T0.2 原样搬入，行为零变化）
+  next/<模块>.ts       ← 新底座 @sid-code/tui；未实现的符号是 notImplemented* 占位，用时抛错并带任务号
+```
+
+- **选择只做一次**：Box/Text 的宿主类型和 render 的 reconciler 必须同源（设计文档 D-4）。
+  每个模块各读各的 env，中途改 env 就会混用两套底座。
+- **两套都打进二进制，只求值一套**：字面量动态 import + 顶层 await，`bun build --compile` 能静态看见两边。
+  前提是没有 `require()` 链进端口模块（顶层 await 模块不能被 require）。T1.3 时实测 58 个 require 目标的静态闭包都不经过端口。
+- **未实现就抛，不做 no-op**：CLI 有大量 `?.` 可选链，空实现会把「新底座少了一块」藏起来。
+  同理 `next/runtime.ts` 的 `getRenderInstance` 直接返回上游 Ink 实例、不包 adapter：契约 X7 在 next 上就该红。
+- **类型按 legacy 断言**：next 要实现的就是 legacy 的端口面。导出名一致由 `tests/render-port/next-switch.test.ts` 运行时核对（CI 没有 tsc）。
+- 相似度门禁 `bun run tui:similarity` 扫 `packages/tui/src` 和 `next/`，判据见 `scripts/tui-similarity.ts` 头注释。
 
 ## 为什么拆成按依赖闭包分组的多个模块，而不是一个 index.ts
 

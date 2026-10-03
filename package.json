@@ -43,6 +43,7 @@
     "tui:surface": "bun run scripts/tui-surface.ts",
     "tui:spec": "bun run scripts/verify-tui-spec.ts",
     "tui:bench": "bun run scripts/tui-bench-report.ts",
+    "tui:similarity": "bun run scripts/tui-similarity.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
     "format": "oxfmt packages tests scripts evals website",
     "format:check": "oxfmt --check packages tests scripts evals website",
@@ -119,6 +120,7 @@
     "@types/tinycolor2": "^1.4.6",
     "@xterm/headless": "6.0.0",
     "eval-framework": "workspace:*",
+    "jscpd": "5.4.0",
     "oxfmt": "0.64.0",
     "oxlint": "1.78.0",
     "type-fest": "^5.8.0"

@@ -1,8 +1,15 @@
-/** 宿主组件。见 README.md。 */
-export { default as Box } from "@sid-code/tui-renderer/components/Box.tsx";
-export { default as Text } from "@sid-code/tui-renderer/components/Text.tsx";
-// 注意：这不是上游 ink 的 print-once <Static>，里面的项可以原地重渲（设计文档 D-3）
-export { Static } from "@sid-code/tui-renderer/_vendor/Static.tsx";
-export { Ansi } from "@sid-code/tui-renderer/Ansi.tsx";
-export { RawAnsi } from "@sid-code/tui-renderer/components/RawAnsi.tsx";
-export { AlternateScreen } from "@sid-code/tui-renderer/components/AlternateScreen.tsx";
+/**
+ * 宿主组件。按 `SID_TUI_RENDERER` 选 legacy / next 实现，见 README.md 与 select.ts。
+ *
+ * 两边都是字面量动态 import，`bun build --compile` 会把两套都打进产物（D-4），
+ * 运行时只求值选中的那一套。next 的类型按 legacy 断言：新底座要实现的就是 legacy 的端口面。
+ */
+import { RENDERER } from "./select.ts";
+import type * as Impl from "./legacy/components.ts";
+
+const impl: typeof Impl =
+  RENDERER === "next"
+    ? ((await import("./next/components.ts")) as unknown as typeof Impl)
+    : await import("./legacy/components.ts");
+
+export const { Box, Text, Static, Ansi, RawAnsi, AlternateScreen } = impl;

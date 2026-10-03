@@ -20,7 +20,7 @@ import {
 import { enableFrameThrottle } from "@sid-code/cli/ui/render-port/testing.ts";
 import { mountTTY, tick, ttyStreams } from "./tty-streams.ts";
 
-const RUNTIME_SRC = join(import.meta.dir, "../../src/ui/render-port/runtime.ts");
+const RUNTIME_SRC = join(import.meta.dir, "../../src/ui/render-port/runtime.ts"); // 接口定义在切换层，不在 legacy/
 
 describe("X7 实例能力面", () => {
   test("X7: 挂载后 getRenderInstance 返回的实例上，清单里每个方法都是函数", () => {

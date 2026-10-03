@@ -1,4 +1,15 @@
-/** 布局测量。见 README.md。 */
-export { default as measureElement } from "@sid-code/tui-renderer/measure-element.ts";
-export { getBoundingBox } from "@sid-code/tui-renderer/_vendor/get-bounding-box.ts";
-export { ResizeObserver } from "@sid-code/tui-renderer/_vendor/resize-observer.ts";
+/**
+ * 布局测量。按 `SID_TUI_RENDERER` 选 legacy / next 实现，见 README.md 与 select.ts。
+ *
+ * 两边都是字面量动态 import，`bun build --compile` 会把两套都打进产物（D-4），
+ * 运行时只求值选中的那一套。next 的类型按 legacy 断言：新底座要实现的就是 legacy 的端口面。
+ */
+import { RENDERER } from "./select.ts";
+import type * as Impl from "./legacy/measure.ts";
+
+const impl: typeof Impl =
+  RENDERER === "next"
+    ? ((await import("./next/measure.ts")) as unknown as typeof Impl)
+    : await import("./legacy/measure.ts");
+
+export const { measureElement, getBoundingBox, ResizeObserver } = impl;
