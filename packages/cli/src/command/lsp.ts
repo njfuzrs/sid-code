@@ -39,7 +39,10 @@ export class LSPCommand implements Command {
     return [];
   }
   description() {
-    return "LSP 代码智能管理（status/reload）";
+    return "LSP 代码智能管理";
+  }
+  argumentHint() {
+    return "[status|reload]";
   }
 
   subCommands(): Command[] {

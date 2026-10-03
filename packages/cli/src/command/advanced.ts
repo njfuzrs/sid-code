@@ -188,7 +188,10 @@ export class CronCommand implements Command {
     return ["schedule"];
   }
   description() {
-    return "管理定时任务 (list/delete)";
+    return "管理定时任务（列出 / 删除）";
+  }
+  argumentHint() {
+    return "[list|delete <id>]";
   }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {

@@ -11,6 +11,12 @@ import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 import { MODEL_COMPAT_KEYS, COMPAT_KEY_ALIASES, COMPAT_KEY_SET } from "../llm/model-compat.ts";
 // VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
 import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
+import {
+  MCPTransportEnum,
+  BudgetPeriodEnum,
+  BudgetActionEnum,
+  SearchBackendEnum,
+} from "./settings/types.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -52,7 +58,7 @@ const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama", "replay"]);
 /** 有效的权限模式
  *  - "manual"：CC 别名，等价 "default"（在 config.ts 归一层映射为 default）
  *  - "auto"：分类器自动裁决模式，可经 --permission-mode auto 显式进入（需分类器可用） */
-const VALID_PERMISSION_MODES = new Set([
+export const PERMISSION_MODES = [
   "default",
   "manual",
   "always-allow",
@@ -62,13 +68,16 @@ const VALID_PERMISSION_MODES = new Set([
   "dontAsk",
   "auto",
   "dangerously-skip-permissions",
-]);
+] as const;
+// 导出成元组是给参考页生成器自省用的（B34 / D115）：ref/settings.md 的取值列直接读它，
+// 不再抄注释里的「N 种模式」——那句注释曾停在 6 种，而这里已经是 9 种。
+const VALID_PERMISSION_MODES = new Set<string>(PERMISSION_MODES);
 
 /**
  * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。
  *
  * 为什么必须派生：这里曾是一份手写的 12 条 snake_case 清单，而 registry 真正认的是
- * `HookEventName` 枚举（37 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
+ * `HookEventName` 枚举（32 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
  * ——`resolveEventName()` 对两种写法都返回有效事件。两边一漂移就产生**假告警**：
  * 用户按 `ref/hooks.md`（从枚举生成的权威参考页）写 `"PreToolUse"`，hook 实际能正常触发，
  * 却会收到一条 `未知的事件名 "PreToolUse"` 的警告，然后去怀疑自己配错了。
@@ -93,8 +102,10 @@ function getValidSubagentTypes(): Set<string> {
   return new Set<string>(["default", ...getActiveAgentTypes()]);
 }
 
-/** 有效的 MCP 传输类型 */
-const VALID_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
+/** 有效的 MCP 传输类型：从 settings Zod 枚举派生，与 mcp/manager.ts 的实现分支同源。
+ *  曾手写为 stdio/http/sse，漏了 ws / http-json，导致合法配置被报「无效值」（B36）——
+ *  与上面 Hook 事件名那次是同一形态：手写名单与事实源漂移。 */
+const VALID_MCP_TRANSPORTS: ReadonlySet<string> = new Set(MCPTransportEnum.options);
 
 /** 明显的占位符 API Key */
 const PLACEHOLDER_PATTERNS = [
@@ -212,9 +223,11 @@ export function validateConfig(config: Config): ValidationResult {
         });
       }
 
-      // http/sse 类型必须有 url
+      // 远程传输（http / http-json / sse / ws）必须有 url：manager.ts 建连时缺 url 直接抛错
       if (
-        (serverConfig.transport === "http" || serverConfig.transport === "sse") &&
+        serverConfig.transport &&
+        serverConfig.transport !== "stdio" &&
+        VALID_MCP_TRANSPORTS.has(serverConfig.transport) &&
         !serverConfig.url
       ) {
         errors.push({
@@ -666,8 +679,9 @@ export function validateConfig(config: Config): ValidationResult {
     }
 
     if (Array.isArray(q.budgetRules)) {
-      const VALID_BUDGET_PERIODS = new Set(["session", "hourly", "daily", "weekly", "monthly"]);
-      const VALID_BUDGET_ACTIONS = new Set(["alert", "downgrade", "block"]);
+      // 从 Zod 枚举派生（B36 同形态收口），不手写第二份名单
+      const VALID_BUDGET_PERIODS: ReadonlySet<string> = new Set(BudgetPeriodEnum.options);
+      const VALID_BUDGET_ACTIONS: ReadonlySet<string> = new Set(BudgetActionEnum.options);
       const seenRuleIds = new Set<string>();
 
       q.budgetRules.forEach((rule, index) => {
@@ -904,7 +918,8 @@ export function validateConfig(config: Config): ValidationResult {
   // 验证 search 配置：backend 枚举 + 组合一致性
   if (config.search) {
     const s = config.search;
-    const VALID_SEARCH_BACKENDS = new Set(["searxng", "brave", "tavily", "duckduckgo"]);
+    // 从 Zod 枚举派生（B36 同形态收口）；brave / tavily 「合法但未实现」的告警在下面单独处理
+    const VALID_SEARCH_BACKENDS: ReadonlySet<string> = new Set(SearchBackendEnum.options);
     if (s.backend !== undefined) {
       if (!VALID_SEARCH_BACKENDS.has(s.backend)) {
         warnings.push({

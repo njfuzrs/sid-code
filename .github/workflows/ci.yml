@@ -312,8 +312,11 @@ jobs:
   # 而 GitHub 把 skipped 的必需检查算作**通过**——那正好是最危险的假绿。
   # 必须无条件运行，然后自己判 needs 的结果。
   #
-  # ⚠️ 判据用「不含 failure/cancelled」而不是「全部 == success」：skipped 也要算通过，
-  # 否则将来任何一个带 if 条件的 job 被跳过都会把整道门禁卡死。
+  # ⚠️ 判据是**白名单**「每个 needs 结果 ∈ {success, skipped}」，不是黑名单「不含 failure/cancelled」：
+  #   · skipped 要算通过，否则将来任何一个带 if 条件的 job 被跳过都会把整道门禁卡死；
+  #   · 黑名单会放过闭集外的取值。实测（PR #148，run 37016782507）macOS runner 容量不足，
+  #     job 没被领取就被放弃，needs 结果是 `abandoned`，旧判据输出「✅ 全部检查通过」——
+  #     macOS 一条测试都没跑，汇聚门却是绿的。白名单下没见过的取值一律拒绝（fail-closed）。
   all-checks-passed:
     # 加 job 只改这一行，不动分支保护
     needs: [test, lint]
@@ -322,13 +325,17 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Verdict
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          echo "test=${{ needs.test.result }}  lint=${{ needs.lint.result }}"
-          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::上游 job 有失败或被取消，拒绝放行"
+          echo "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          if ! echo "$NEEDS_JSON" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null; then
+            echo "::error::上游 job 结果不全是 success/skipped（失败 / 取消 / 未被 runner 领取等），拒绝放行"
             exit 1
           fi
           echo "✅ 全部检查通过"
 
-  # 面向用户的文档门禁不在这里：那部分在 website/，由 pre-commit 的
-  # `docs-gen-reference.ts --check` 与 pre-push 的站点构建（死链检查）守着。
+  # 参考页反漂移与叙述覆盖度**在这里有兜底**：test job 的全量 bun test 含
+  # tests/website/gen-reference.test.ts，它会跑 `docs-gen-reference.ts --check` 与
+  # `--coverage-strict`，所以本地 --no-verify 绕过 pre-commit 也合不进 main。
+  # pre-commit 只是让同一道门在提交时就红。站点构建（死链检查）只在 pre-push。

@@ -525,6 +525,25 @@ export interface ProcessPathologyStats {
   retryWastedRatio?: number;
   /** retryWastedRatio > 0.20 */
   retryWastedPathological: boolean;
+
+  /**
+   * B47：计费恒等式左边 —— 应当产生计费事件的建连数。
+   *
+   * 口径：`HttpConnected` 中 status 为 2xx 且 content_type 不是 `text/html` 的条数。
+   * 两类排除都不是"钱没记上"：非 2xx 的 Responses 路径在 provider 判 `!response.ok`
+   * 后直接返回（厂商不计费）；`text/html` 是网关伪装成 200 的错误页，被 Content-Type
+   * 守卫在解析前拦下。把它们算进左边会让每次网关报错都触发一条假异常。
+   */
+  billableConnections: number;
+  /**
+   * B47：计费恒等式右边 —— `BilledRequest` 事件数（`billing-sink` 去重后落盘）。
+   *
+   * `undefined` = 本会话一条都没有，即**老轨迹**（B47 之前的版本不落这个事件）。
+   * 此时不判恒等式：把 0 当右边会让全部历史会话报红。
+   */
+  billedRequests?: number;
+  /** billedRequests 已知且 ≠ billableConnections */
+  billingIdentityBroken: boolean;
 }
 
 /**
@@ -3312,6 +3331,23 @@ export function computeProcessPathology(
       ? retryWastedTokens / recordedInput
       : undefined;
 
+  // ── 指标 7（B47）：计费恒等式 `可计费建连数 == BilledRequest 数` ──
+  // 只在单测里断言的恒等式等于没在线上验证过：这里逐会话复算，不等就进 anomaly。
+  // 它抓"新增调用链绕过入账"与"上报点只覆盖部分出口"；抓不住"绕过 provider 自发 fetch"
+  // （两边一起少），那条由 scripts/pricing-reconcile.ts 对官方账单兜底。
+  const billableConnections = events.filter((e) => {
+    if (e.event !== "HttpConnected") return false;
+    const d = e.data as any;
+    const status = typeof d?.status === "number" ? d.status : 200;
+    if (status < 200 || status >= 300) return false;
+    const ct = typeof d?.content_type === "string" ? d.content_type.toLowerCase() : "";
+    return !ct.includes("text/html");
+  }).length;
+  const billedCount = events.filter((e) => e.event === "BilledRequest").length;
+  const billedRequests = billedCount > 0 ? billedCount : undefined;
+  const billingIdentityBroken =
+    billedRequests !== undefined && billedRequests !== billableConnections;
+
   return {
     pollRatio,
     pollCalls,
@@ -3338,6 +3374,9 @@ export function computeProcessPathology(
     retryWastedRatio,
     retryWastedPathological:
       retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
+    billableConnections,
+    billedRequests,
+    billingIdentityBroken,
   };
 }
 
@@ -3448,6 +3487,27 @@ function describePathology(
         lossy: true, // 均值估算，非精确重发量：见 ProcessPathologyStats.retryWastedTokens 注释
       },
     );
+  }
+  if (p.billingIdentityBroken) {
+    // 定级 high（其余病态项是 medium）：这不是"过程可疑"，是钱的账对不上 ——
+    // 少了是漏记（账单会高于自报），多了是重复上报（去重失效）。两个方向都是确证缺陷。
+    const diff = p.billedRequests! - p.billableConnections;
+    out.push({
+      layer: "L0",
+      severity: "high",
+      kind: "billing_identity_broken",
+      detail:
+        `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
+        `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=HttpConnected（status 2xx 且非 text/html）数 vs event=BilledRequest 数",
+          rawValue: `billable_conn=${p.billableConnections} billed=${p.billedRequests}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+    });
   }
   return out;
 }
