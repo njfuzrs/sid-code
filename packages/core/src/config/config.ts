@@ -227,7 +227,7 @@ export interface Config {
   /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
   vimMode?: boolean;
   /**
-   * P1-5 可自定义状态栏（settings.json statusLine，对标 claude-code）。
+   * P1-5 可自定义状态栏（settings.json statusLine）。
    * { type: "command", command: "<脚本>", padding?: number }。缺省 = 走内置聚合状态栏。
    * 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。
    */
@@ -244,7 +244,7 @@ export interface Config {
    */
   thinkingEnabled?: boolean;
   /**
-   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。
+   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens）。
    * env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。
    * 透传到 SendParams.maxThinkingTokens，由 effort.ts 钳制思考预算。缺省 = 不钳制。
    */
@@ -252,16 +252,17 @@ export interface Config {
 
   /**
    * AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。
-   * 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应，
+   * 交互模式下弹出提问对话框后，若用户在此时长内不响应，
    * 按 cancelled 自动解除（模型收到"请选默认继续"），避免带 TUI handler 的编排器/后台
    * 子代理场景被单个提问无限期阻塞。
-   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守，对齐 CC 默认）。
+   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守）。
    * 注意：headless/SDK/CI 无 handler 时本就返回 unavailable 不阻塞，本设置只作用于交互态。
    */
   askUserQuestionTimeout?: string;
 
   // 权限配置
-  // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
+  // 合法取值以 config/schema.ts 的 PERMISSION_MODES 为准，参考页从那里自省，这里不写数字。
+  /** 默认权限模式（manual 是 default 的别名） */
   permissionMode: string;
   skipPermissions: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
@@ -338,9 +339,13 @@ export interface Config {
   // 同理，写给维护者的话要放在字段**之间**的空行区，别紧贴字段上方——
   // 紧贴就会被当成该字段的用户可见描述抓进参考页。
 
-  /** 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） */
+  /**
+   * 调试日志总开关（等同 -d / --debug），写 debug.log。
+   *
+   * 真正决定「开不开 debug logger」的就是它（cli.ts 构造 logger 那一支）。
+   */
   debug: boolean;
-  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） */
+  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） */
   debugLevel: string;
   /** 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） */
   debugLogFile: string;
@@ -382,10 +387,10 @@ export interface Config {
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
-  // /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG）
+  /** /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值） */
   goal?: Partial<import("../goal/config.ts").GoalConfig>;
 
-  // 成本配额（美元）
+  /** 单会话花费上限（美元） */
   costLimit?: number;
 
   // 配额管控（增强版，向后兼容 costLimit）
@@ -491,7 +496,7 @@ export interface Config {
    */
   includePartialMessages?: boolean;
 
-  // Checkpoint 配置
+  /** 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等 */
   checkpoint?: CheckpointConfig;
 
   // Git 集成配置（P3-1：可配置归因）
@@ -503,7 +508,7 @@ export interface Config {
 
   // 工具延迟加载（ToolSearch）
   /**
-   * 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。
+   * 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。
    *
    * 取值：
    *   - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。
@@ -520,8 +525,7 @@ export interface Config {
   /**
    * 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。
    *
-   * sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己
-   * 声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
+   * 用户侧开关（不依赖 MCP server 自己声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
    * 都得先花一轮 tool_search 往返；此名单让用户钉死 3-5 个高频工具首轮可见，省往返延迟。
    *
    * 支持两种形态：
@@ -546,7 +550,7 @@ export interface Config {
   /**
    * WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。
    *
-   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。
+   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼。
    * 配一个便宜的小模型能显著降本——提炼输入可达 6 万字符，用主模型跑并不划算。
    */
   webFetchExtractModel?: string;
@@ -585,7 +589,7 @@ export interface Config {
   /** 团队记忆同步配置（共享目录模型） */
   teamMemory?: TeamMemoryConfig;
 
-  // 会话保留配置
+  /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
 
   // 搜索配置
@@ -598,16 +602,16 @@ export interface Config {
    */
   identity?: IdentityConfig;
 
-  // 轨迹采集配置
+  /** 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点） */
   trace?: TraceConfig;
 
-  // 遥测配置（OTel 兼容的结构化 Trace）
+  /** 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp） */
   telemetry?: TelemetryConfig;
 
-  // 分析/事件系统配置（spec 17 — analytics 通道）
+  /** 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行 */
   analytics?: AnalyticsConfig;
 
-  // IDE 集成配置
+  /** IDE 集成配置（自动连接、发现超时、写盘前 diff 预览） */
   ide?: IDEConfig;
 
   /** Bridge 远程控制配置（D14 准入） */

@@ -10,7 +10,7 @@ sid-code 的全部命令行参数与子命令。
 <!--
   本页由脚本生成，请勿手工编辑
   AUTO-GEN:START 与 AUTO-GEN:END 标记之间的内容由
-  scripts/docs-gen-reference.ts 从源码生成（数据源：src/cli.ts parseArgs × src/help.ts 双源交叉对账），
+  scripts/docs-gen-reference.ts 从源码生成（数据源：packages/cli/src/cli.ts parseArgs × packages/cli/src/help.ts 双源交叉对账），
   手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
   需要补充说明请写在标记之外——那部分内容会被保留。
   （此提示写给维护者，HTML 注释不会渲染给终端用户。）
@@ -62,7 +62,7 @@ sid-code 的全部命令行参数与子命令。
 ### sid-code mcp {#sub-mcp}
 
 ```text
-用法: sid-code mcp <list|get|add|remove> [参数] [--json]
+用法: sid-code mcp <list|get|add|remove|pending|approve|reject|serve> [参数] [--json]
 示例: sid-code mcp list
       sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp --scope user
       sid-code mcp remove fs
@@ -78,7 +78,7 @@ sid-code 的全部命令行参数与子命令。
 
 | 参数 | 说明 |
 |---|---|
-| `--provider <name>` | LLM 提供商 (anthropic/openai/ollama) |
+| `--provider <name>` | LLM 提供商协议族 (anthropic/openai/ollama；openai 族含 Chat Completions 与 Responses) |
 | `-m, --model <name>` | 模型名称 |
 | `--fallback-model <name>` | 主模型失败时的降级模型（须在 available_models 中） |
 | `--max-tokens <n>` | 响应最大 token 数 |
@@ -89,9 +89,9 @@ sid-code 的全部命令行参数与子命令。
 
 | 参数 | 说明 |
 |---|---|
-| `--permission-mode <mode>` | 权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk) |
+| `--permission-mode <mode>` | 权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名) |
 | `--dangerously-skip-permissions` | 跳过所有权限检查（仅限沙箱环境） |
-| `-y, --yes` | 自动批准所有权限请求 |
+| `-y, --yes` | 自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions） |
 | `--allowed-tools <list>` | 工具白名单（逗号分隔，如 "read,grep,bash"） |
 | `--disallowed-tools <list>` | 工具黑名单（逗号分隔） |
 | `--allow-tool <rule>` | 追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔） |
