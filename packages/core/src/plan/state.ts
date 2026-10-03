@@ -113,6 +113,10 @@ export class PlanModeManager {
     this.rejectionCount = 0;
     this.reminderTurn = 0;
     this.executing = false;
+    // B17：fidelity 追踪按「一份计划」计。同一会话第二次进入规划时不清，
+    // 上一份计划执行期的调用会被算进这一份的「实际调用数 / 偏离数」。
+    this.planSteps = [];
+    this.actualToolCalls = [];
     this.prePlanMode =
       currentPermissionMode && currentPermissionMode !== "plan" ? currentPermissionMode : null;
     this.planFilePath = this.generatePlanFilePath(topic);
@@ -616,9 +620,12 @@ export class PlanModeManager {
     lowerTool: string,
     verbs: readonly string[],
   ): number {
+    // B17：`*` 也是分隔符。模型写计划几乎总用加粗（`1. **读取 package.json**`），
+    // 不切掉的话 token 是 `package.json**`，任何参数都对不上 —— 真实会话里
+    // 严格按计划执行的 2 次 read 被记成 2 次偏离。`_` 不切：它常出现在文件名里。
     const tokens = new Set(
       desc
-        .split(/[\s,，、:：;；。（）()「」"'`]+/)
+        .split(/[\s,，、:：;；。（）()「」"'`*]+/)
         .map((t) => t.trim())
         .filter((t) => t.length > 0 && t !== lowerTool && !verbs.includes(t)),
     );
