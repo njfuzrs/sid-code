@@ -128,6 +128,17 @@ export function resolveAlternateBufferDecision(env: {
 }
 
 /**
+ * `SID_CODE_DEBUG` 是否开启调试模式（B27）。
+ *
+ * 取值口径必须与 `packages/tui-renderer/src/_vendor/debug.ts` 一致（`1` / `true`）：
+ * 同一个变量在两处读，一处认 `true` 一处不认，用户就会看到「ink 日志出来了、debug.log 没有」
+ * 这种半开状态，比完全不生效更难排查。
+ */
+export function isDebugEnvEnabled(raw: string | undefined): boolean {
+  return raw === "1" || raw === "true";
+}
+
+/**
  * 校验 UUID v4 格式（--session-id 用）。CC 要求 --session-id 必须是合法 UUID。
  * 宽松匹配 8-4-4-4-12 十六进制形态（不强制 version/variant 位，兼容外部编排生成的 uuid）。
  */
@@ -330,6 +341,7 @@ function parseCLIArgs(): CLIArgs {
         // 目录授权（P1-1）：追加额外可访问目录（可重复）。映射到 config.allowedDirectories。
         "add-dir": { type: "string", multiple: true },
         // 花费上限美元（P1-9）：映射到 config.costLimit，超限终止。
+        // 交互模式与 -p 都生效；与 quota.costLimit 取更严的那个（B18）。
         "max-budget-usd": { type: "string" },
         // IDE 自动连接（A-4 子集）：等价于 SID_CODE_AUTO_CONNECT_IDE=true / config.ide.autoConnect。
         ide: { type: "boolean" },
@@ -509,18 +521,17 @@ function parseCLIArgs(): CLIArgs {
     console.error("错误: --print 下 --output-format=stream-json 需要同时指定 --verbose");
     process.exit(1);
   }
-  // G1 / B2：这两个 flag 只在 --print 下改变行为。交互模式传了它不会报错退出
+  // G1 / B2：--output-format 只在 --print 下改变行为。交互模式传了它不会报错退出
   // （对齐 CC「only works with --print」的宽松处理），但静默忽略会让人以为
-  // TUI 会话也被花销上限或输出格式约束住了。告警写 stderr，不拦启动。
-  if (values.print !== true) {
-    if (outFmt !== undefined) {
-      console.error(
-        `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
-      );
-    }
-    if (values["max-budget-usd"] !== undefined) {
-      console.error("警告: --max-budget-usd 只在 --print 下生效，交互模式已忽略。");
-    }
+  // TUI 会话也被输出格式约束住了。告警写 stderr，不拦启动。
+  //
+  // B18（2026-10-02）：--max-budget-usd 原来也在这里被告警并忽略。但交互模式的
+  // QuotaManager 本来就在跑（quota.costLimit 在 TUI 里是生效的），所以那不是能力缺失，
+  // 只是参数没接进去 —— 现在两种模式都经 resolveEffectiveCostLimit 生效，告警随之删除。
+  if (values.print !== true && outFmt !== undefined) {
+    console.error(
+      `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
+    );
   }
 
   // setting-sources（P1-6）：逗号分隔子集 user/project/local。
@@ -636,7 +647,9 @@ function parseCLIArgs(): CLIArgs {
     // P1-4：合并了 --append-system-prompt 与 --append-system-prompt-file 的内容
     appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
-    debug: values.debug,
+    // B27：SID_CODE_DEBUG=1 与 --debug 等价。帮助文本、ref/env、排障页三处都在教这个变量，
+    // 此前代码里只有 tui-renderer 的 ink stderr 读它，debug.log 从不因它开启。
+    debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG),
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
     pluginDirs: values["plugin-dir"],
@@ -1774,15 +1787,20 @@ export async function main(): Promise<void> {
     const { CustomCommandLoader } = await import("./command/custom.ts");
     const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
+    // B20：交互模式此前直接返回全部文件 + 持久化，等于打开任何目录都静默信任它带的扩展。
+    // 现在启动阶段（TUI 起来之前）走 stdin y/N 确认，只有确认过的才加载并记住；
+    // 无 TTY / TUI 已接管 stdin 时 fail-closed（不加载、不持久化）。-p 维持跳过。
+    const { createTrustPrompt } = await import("@sid-code/core/extension/trust-prompt.ts");
+    const trustPrompt = createTrustPrompt({
+      print: !!config.print,
+      confirm: process.stdin.isTTY && !cliArgs.bridgeUrl ? (m) => promptYesNo(m) : undefined,
+      projectDir: process.cwd(),
+      warn: (m) => getLogger().warn("TRUST", m),
+    });
     const scanOptions = {
       trustManager,
       trustProjectExtensions: config.trustProjectExtensions,
-      onUntrusted: async (files: any[]) => {
-        if (config.print) return [];
-        const log = getLogger();
-        log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
-        return files;
-      },
+      onUntrusted: trustPrompt.onUntrusted,
       // additional 层（对齐 CC）：--add-dir 授权的目录，其 .sid-code/{type}/ 与
       // .claude/{type}/ 下的 skills/commands/agents 一并加载。此前 --add-dir 只影响
       // 文件访问白名单，授权目录自带的 skill 加载不进来。
@@ -2174,6 +2192,14 @@ export async function main(): Promise<void> {
       // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含
       // --strict-mcp-config）、IDE 动态注册、运行时重连都不经过 config 合并层的过滤。
       mcpManager.policy = config.mcpPolicy;
+      // B21：授权 URL 此前只走 log.info——不开 --debug 时 logger 停在 WARN 级（审计日志），
+      // URL 被静默丢掉，而 performOAuthFlow 会在回调上干等 5 分钟。用户看到的是
+      // 「MCP 连不上、也没有任何提示」。必须直出 stderr：stdout 是无头模式的结构化输出通道。
+      mcpManager.onOAuthAuthorizationUrl = (serverName, url) => {
+        process.stderr.write(
+          `\n[MCP] ${serverName} 需要 OAuth 授权，请在浏览器打开以下 URL（5 分钟内有效）:\n${url}\n\n`,
+        );
+      };
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
@@ -2211,6 +2237,17 @@ export async function main(): Promise<void> {
           .connectAll(allMcpServers)
           .then(async (mcpTools) => {
             for (const tool of mcpTools) toolRegistry.register(tool);
+            // B22：_ctx_mcp_server_count 此前无人回填、恒为 0。计的是**连上的**数，不是配置数——
+            // 后者在配置里就能看到，分析时真正缺的是「这个会话实际有几个 server 可用」。
+            try {
+              const { MCPConnectionStatus: S } = await import("@sid-code/core/mcp/types.ts");
+              const { setMcpServerCount } = await import("@sid-code/core/analytics/metadata.ts");
+              setMcpServerCount(
+                mgrForSkills.getStatus().filter((s) => s.status === S.CONNECTED).length,
+              );
+            } catch {
+              /* 遥测回填失败不阻断 MCP 接入 */
+            }
             if (mcpTools.length > 0) {
               // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
               // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
@@ -2933,6 +2970,8 @@ export async function main(): Promise<void> {
       if (config.debug) {
         getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
       }
+      // stdin 即将归 Ink：此后热重载遇到的新未信任扩展只记日志，下次启动再问
+      trustPrompt.closePrompting();
       await app.runTUI(cliArgs.prompt);
     }
   } catch (err) {

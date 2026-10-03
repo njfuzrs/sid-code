@@ -47,7 +47,7 @@ import {
   clearPendingInput,
   canRestoreCanceledInput,
 } from "./ui/pending-input.ts";
-import { QuotaManager } from "@sid-code/core/llm/quota.ts";
+import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
 import { getIdentity } from "@sid-code/core/identity/index.ts";
@@ -419,11 +419,12 @@ export class App {
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
   /**
-   * 本次会话实际生效的花费上限（美元）。quota.costLimit 优先于 --max-budget-usd，
+   * 本次会话实际生效的花费上限（美元；0 = 不限）。B18：quota.costLimit 与
+   * 顶层 costLimit（--max-budget-usd 落在这里）取更严的那个，见 resolveEffectiveCostLimit。
    * 与传给 QuotaManager 的是同一个数——超限报告里的 limit 必须等于真正触发停止的那个，
    * 不能回退去读 CLI 原值（两者不同时报告会自相矛盾）。
    */
-  private effectiveCostLimit?: number;
+  private effectiveCostLimit = 0;
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
@@ -841,11 +842,14 @@ export class App {
     // ——速率限制配置静默失效、无任何警告。三者任一有值就该创建：QuotaManager 内部
     // 对未配项一律按 0 处理（costLimit<=0 时 check() 恒返回 null），互不依赖。
     const quotaConfig = opts.config.quota;
-    const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+    const effectiveCostLimit = resolveEffectiveCostLimit(
+      quotaConfig?.costLimit,
+      opts.config.costLimit,
+    );
     this.effectiveCostLimit = effectiveCostLimit;
     const rpmLimit = quotaConfig?.requestsPerMinute;
     const tpmLimit = quotaConfig?.tokensPerMinute;
-    const hasAnyQuota = (effectiveCostLimit ?? 0) > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
+    const hasAnyQuota = effectiveCostLimit > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
     if (hasAnyQuota) {
       this.quotaManager = new QuotaManager({
         costLimit: effectiveCostLimit,
@@ -5567,8 +5571,27 @@ export class App {
     const log = getLogger();
     const followup: ContentBlock[] = [];
 
+    // B17：执行阶段（approve 之后）的每次真实调用都喂给 fidelity 追踪，批末落一条快照事件。
+    // 从前 recordActualToolCall 生产零调用，getFidelityReport() 永远是 0/0，
+    // 官网却写着「能看到对齐度」——采集在、消费方无、用户看不到。
+    let fidelityTouched = false;
+    // 取批开始时的状态：同批里排在 exit_plan_mode 之后的调用是在规划态下执行的，
+    // 不能因为循环走到它们时已经 approve 了就算成执行动作。
+    const executingAtBatchStart = this.planManager.isExecuting();
+
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
+
+      // 失败的调用也算「实际调用」：对齐度问的是它做了什么，不是做成了什么。
+      // 规划态自身的两个工具不算执行动作。
+      if (
+        executingAtBatchStart &&
+        block.name !== "exit_plan_mode" &&
+        block.name !== "enter_plan_mode"
+      ) {
+        this.planManager.recordActualToolCall(block.name, block.input);
+        fidelityTouched = true;
+      }
 
       // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
       //
@@ -5623,6 +5646,9 @@ export class App {
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
         const approvalFollowup = await this.handlePlanApproval();
         if (approvalFollowup) followup.push(...approvalFollowup);
+        // 批准时先落一条 0 调用快照：计划步数在这一刻就确定了，
+        // 批准后会话立刻结束的情况下 /insights 也能看到「计划 N 步 / 实际 0 次」。
+        if (this.planManager.isExecuting()) fidelityTouched = true;
       }
 
       // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
@@ -5645,7 +5671,25 @@ export class App {
       }
     }
 
+    if (fidelityTouched) this.recordPlanFidelitySnapshot();
+
     return followup.length > 0 ? { followup } : {};
+  }
+
+  /**
+   * B17：把当前计划的 fidelity 报告落成 `PlanFidelity` 事件（快照语义，digest 取每份计划的末条）。
+   * 不写进 metadata：metadata 是会话级的，一个会话可以有多份计划；事件天然按时间序带出处。
+   * NaN（计划 0 步）不能进 JSON，比值交给 digest 由计数重算。
+   */
+  private recordPlanFidelitySnapshot(): void {
+    if (!this.planManager) return;
+    const r = this.planManager.getFidelityReport();
+    this.traceCollector?.recordCustomEvent?.("PlanFidelity", {
+      plan_file: this.planManager.getPlanFilePath() ?? "",
+      plan_step_count: r.planStepCount,
+      actual_tool_call_count: r.actualToolCallCount,
+      off_plan_count: r.offPlanCount,
+    });
   }
 
   /**
@@ -6822,7 +6866,7 @@ export class App {
         // 不走 SDK 消息，所以在结果体里单列。limit 取本次生效的花费上限。
         result.error = {
           reason: "max_budget_usd",
-          limitUsd: this.effectiveCostLimit,
+          limitUsd: this.effectiveCostLimit || undefined,
           spentUsd: this.sessionState.getEffectiveTotalCostUSD(),
         };
         result.is_error = true;
@@ -7035,8 +7079,9 @@ export class App {
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
         maxTurns: this.config.maxTurns || undefined,
-        // P1-9：花费上限透传到 SDK 引擎（超限终止）。
-        maxBudgetUsd: this.config.costLimit || undefined,
+        // P1-9：花费上限透传到 SDK 引擎（超限终止）。B18：与 QuotaManager 同一个数，
+        // 否则 quota.costLimit 更严时 SDK 侧的 error_max_budget_usd 报的是另一个上限。
+        maxBudgetUsd: this.effectiveCostLimit || undefined,
         systemPrompt: this.config.systemPrompt || undefined,
         jsonSchema: this.config.jsonSchema,
         // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
@@ -7221,7 +7266,8 @@ export class App {
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
-      costLimit: this.config.costLimit ?? 0,
+      // B18：状态栏百分比的分母必须是真正会拦的那个上限。
+      costLimit: this.effectiveCostLimit,
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,

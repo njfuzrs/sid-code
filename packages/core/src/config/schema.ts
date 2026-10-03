@@ -77,7 +77,7 @@ const VALID_PERMISSION_MODES = new Set<string>(PERMISSION_MODES);
  * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。
  *
  * 为什么必须派生：这里曾是一份手写的 12 条 snake_case 清单，而 registry 真正认的是
- * `HookEventName` 枚举（37 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
+ * `HookEventName` 枚举（32 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
  * ——`resolveEventName()` 对两种写法都返回有效事件。两边一漂移就产生**假告警**：
  * 用户按 `ref/hooks.md`（从枚举生成的权威参考页）写 `"PreToolUse"`，hook 实际能正常触发，
  * 却会收到一条 `未知的事件名 "PreToolUse"` 的警告，然后去怀疑自己配错了。

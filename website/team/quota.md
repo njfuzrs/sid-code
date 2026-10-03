@@ -38,13 +38,10 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 超限时的真实输出（把上限设成 `0.0001` 复现）：
 
 ```text
-⚠️  成本已超出配额（$0.0040 / $0.00），自动停止
+⚠️  成本已超出配额（$0.0040 / $0.0001），自动停止
 ```
 
-::: warning 上限显示成 $0.00 不是 bug
-告警文案对上限只保留两位小数（`src/llm/quota.ts:108-112` 的 `toFixed(2)`），
-所以设了不到 1 分钱的上限会显示成 `$0.00`。**拦截本身是按真实值算的**，只是显示取整。
-:::
+上限和当前花费一样显示到小数点后 4 位，所以不到 1 分钱的上限也能看清。
 
 "自动停止"的语义是：当前这一轮 agentic loop 就地终止（`src/query/loop.ts:1613-1617`
 发一条 terminal 系统消息后 `return`），不是整个进程退出。交互模式下你还能继续对话——
@@ -61,19 +58,17 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 
 ### costLimit 与 --max-budget-usd 的关系
 
-这里有个**必须知道的覆盖关系**：
+两者都在时**取更严的那个**，不比优先级：
 
 ```ts
-// src/app.ts:480
-const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+// packages/core/src/llm/quota.ts
+export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): number
+// 两侧正数取 min；0 / 未设 = 这一侧不限，不参与比较
 ```
 
-`quota.costLimit` 用 `??` 兜住了 `costLimit`（也就是 `--max-budget-usd` 落到的字段）。
-意思是：**只要配置里有 `quota.costLimit`，命令行的 `--max-budget-usd` 就静默失效。**
-
-如果你的团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#快速上手)），
-那么全团队的 `--max-budget-usd` 默认都不起作用。想让命令行参数生效，得先把
-配置里的 `quota.costLimit` 删掉。
+所以团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#快速上手)），
+成员传 `--max-budget-usd 0.5` 仍按 0.5 拦；反过来，成员**没法**用命令行参数把团队上限放宽。
+交互模式与 `-p` 走的是同一个值。
 
 统计口径值得点一句：配额检查用的是 `getEffectiveTotalCostUSD()`
 （`src/query/loop.ts:1612`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
@@ -81,7 +76,7 @@ const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
 
 ### 四级预警
 
-`costLimit` 不是只在 100% 才吭声，有四档（`src/llm/quota.ts:85-93`）：
+`costLimit` 不是只在 100% 才吭声，有四档（`packages/core/src/llm/quota.ts` 的 `check()`）：
 
 | 比例 | 级别 | 行为 |
 | --- | --- | --- |
@@ -90,7 +85,7 @@ const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
 | ≥ 95% | `critical` | 黄色告警"即将超限！" |
 | ≥ 100% | `exceeded` | **终止本轮** |
 
-**只在级别升级时告警一次**（`quota.ts:97-102`），不会每轮重复刷同一档。
+**只在级别升级时告警一次**（同一函数里的 `lastAlertLevel` 判断），不会每轮重复刷同一档。
 `/clear` 会重置告警级别（`src/app.ts:1613`），所以清空上下文后又会从 info 档开始提醒。
 
 ### RPM / TPM 的实际状态
@@ -146,7 +141,7 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 超限行为实测（`period: session` + `limit_usd: 0.0001` + `action: block`）：
 
 ```text
-⚠️  预算规则 "测试预算" 已超限（$0.0055 / $0.00），自动停止
+⚠️  预算规则 "测试预算" 已超限（$0.0055 / $0.0001），自动停止
 ```
 
 ::: warning action 三档里只有两档真的不一样

@@ -80,7 +80,7 @@ MCP:
   --betas <beta>              额外 anthropic-beta 头值（可重复或逗号分隔）
 
 限制控制:
-  --max-budget-usd <amount>   花费上限（美元，超限终止）
+  --max-budget-usd <amount>   花费上限（美元，超限终止；与 quota.costLimit 取更严的）
 
 IDE:
   --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）
@@ -217,7 +217,7 @@ Worktree 隔离:
   FORCE_COLOR                   强制颜色级别 (0-3)
 
   调试/诊断:
-  SID_CODE_DEBUG                设为 1 启用调试输出（到 stderr）
+  SID_CODE_DEBUG                设为 1 等同 --debug（写 debug.log），同时把 ink 渲染层日志打到 stderr
   SID_CODE_PROFILE_STARTUP      设为 1 启用启动性能打点
   SID_CODE_DEBUG_SSE            设为 1 启用 SSE 诊断日志
   SID_CODE_PERFETTO_TRACE       启用 Perfetto 追踪输出（性能分析）

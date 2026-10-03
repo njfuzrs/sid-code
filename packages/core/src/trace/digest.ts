@@ -1854,6 +1854,27 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 缺失所致）。digest 读 events.jsonl 的 SubagentStart/Stop 配对成 span，按相邻间隔判串行，
   // 关联 status 成败——让任何消费者（模型/人）无需回 raw.jsonl 交叉验证即可下结论，
   // 消灭 §8.2 的"全部 SUCCESS"误判。
+  // ── B17：计划对齐度（fidelity）——每份计划一行 L0 事实 ──
+  // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
+  // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
+  for (const f of aggregatePlanFidelity(events)) {
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "plan_fidelity",
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanFidelity（每份计划取末条快照）",
+          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
   const subAgents = buildSubAgentSummary(events);
   if (subAgents && subAgents.total > 0) {
     // L0 事实：几成几败（客观计数，带出处）
@@ -3072,6 +3093,36 @@ export function aggregateJitStats(
     elapsedP95: percentile(sortedElapsed, 0.95),
     topFiles,
   };
+}
+
+/** B17：一份计划的对齐度快照（`PlanFidelity` 事件的末条）。 */
+export interface PlanFidelityStats {
+  planFile: string;
+  planStepCount: number;
+  actualToolCallCount: number;
+  offPlanCount: number;
+}
+
+/**
+ * 聚合 `PlanFidelity` 事件：app 每批工具调用后落一条**累计快照**，所以同一份计划只取末条，
+ * 按首次出现顺序输出。累加会把 N 次快照算成 N 倍调用数。
+ */
+export function aggregatePlanFidelity(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanFidelityStats[] {
+  const byPlan = new Map<string, PlanFidelityStats>();
+  for (const e of events) {
+    if (e.event !== "PlanFidelity" || !e.data) continue;
+    const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+    // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    byPlan.set(planFile, {
+      planFile,
+      planStepCount: num(e.data.plan_step_count),
+      actualToolCallCount: num(e.data.actual_tool_call_count),
+      offPlanCount: num(e.data.off_plan_count),
+    });
+  }
+  return [...byPlan.values()];
 }
 
 /**
