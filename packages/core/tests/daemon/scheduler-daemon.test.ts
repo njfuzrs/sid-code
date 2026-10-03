@@ -22,6 +22,7 @@ import {
 } from "@sid-code/core/daemon/durable-projects.ts";
 import { extractFinalResponse } from "@sid-code/core/daemon/headless-executor.ts";
 import { Scheduler } from "@sid-code/core/cron/scheduler.ts";
+import { grantDurableTask } from "@sid-code/core/cron/durable-grants.ts";
 import type { CronTask } from "@sid-code/core/cron/types.ts";
 
 let tmpHome: string;
@@ -208,6 +209,8 @@ describe("Scheduler daemon 模式 catch-up", () => {
     mkdirSync(join(dir, ".sid-code"), { recursive: true });
     writeFileSync(join(dir, ".sid-code", "scheduled_tasks.json"), JSON.stringify([task]));
     registerDurableProject(dir);
+    // 模拟「本机创建」：直接写文件的任务没有本机授权，驱动者会拒绝执行（B43）
+    grantDurableTask(dir, { ...task, workspaceDir: task.workspaceDir ?? dir });
     return dir;
   }
 

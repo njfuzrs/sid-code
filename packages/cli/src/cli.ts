@@ -1366,6 +1366,8 @@ export async function main(): Promise<void> {
         logFile: config.debugLogFile,
         console: !isTUI,
         fileOnly: isTUI,
+        // 无头模式 stdout 只留结果（text / json / stream-json），日志一律 stderr
+        consoleToStderr: !isTUI,
         mutedCategories: ["UI:MD", "TUI:STATE", "TUI:RESIZE", "STREAM_WRITER"],
       });
 
@@ -2563,6 +2565,10 @@ export async function main(): Promise<void> {
         isLoading: () => app.isBusy?.() ?? false,
         sessionId: config.sessionId,
         workspaceDir: process.cwd(),
+        // B43：只有 TUI 会话有提示词注入器，能真正执行 durable 任务。
+        // `-p` / bridge 会话（包括 daemon fork 出来的子进程）抢到驱动权就会把任务
+        // 认领掉（一次性任务删除、循环任务推进 lastFiredAt）却永远执行不了。
+        driveDurable: !config.print && !cliArgs.bridgeUrl,
       });
       scheduler.start();
 

@@ -38,6 +38,13 @@ export interface LoggerOptions {
   jsonLogFile?: string;
   /** 追加模式写入（审计日志跨会话累积用，默认 false=覆盖） */
   append?: boolean;
+  /**
+   * 控制台输出全部走 stderr（默认 false：ERROR 走 stderr，其余走 stdout）。
+   * 无头模式（`-p`）必须开：stdout 是结果通道，`--output-format json` 的消费方
+   * （daemon、/review、脚本）按整段 stdout 解析。B43 实测 debug 默认开启时 stdout 里
+   * 先是几百行日志、最后才是 JSON，daemon 落盘的 job 输出就是这一整坨日志。
+   */
+  consoleToStderr?: boolean;
 }
 
 // ANSI 颜色码
@@ -122,6 +129,7 @@ class Logger {
       jsonLog: options.jsonLog ?? false,
       jsonLogFile: options.jsonLogFile,
       append: options.append ?? false,
+      consoleToStderr: options.consoleToStderr ?? false,
     };
   }
 
@@ -304,7 +312,7 @@ class Logger {
   private writeToConsole(level: LogLevel, message: string): void {
     if (!this.options.console) return;
     // message 已包含 ANSI 颜色
-    if (level === LogLevel.ERROR) {
+    if (level === LogLevel.ERROR || this.options.consoleToStderr) {
       console.error(message);
     } else {
       console.log(message);

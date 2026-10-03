@@ -19,17 +19,9 @@
  *   -h, --help           显示帮助
  */
 
-import { parseArgs } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
-
-interface DaemonCliOptions {
-  webhook: boolean;
-  interval?: number;
-  maxConcurrent?: number;
-  allowedTools?: string[];
-  help: boolean;
-}
+import { parseDaemonArgs, type DaemonCliOptions } from "./daemon-args.ts";
 
 function printHelp(): void {
   console.log(`sid-code daemon — 本地调度守护进程
@@ -54,51 +46,6 @@ function printHelp(): void {
   守护进程无人值守，默认安全：未声明白名单的任务以只读 (plan) 模式运行，
   绝不 auto-commit/push (红线 G-13)。每个 job 结果落 trajectories/daemon-jobs。`);
 }
-
-function parseDaemonArgs(args: string[]): { sub: string; opts: DaemonCliOptions } {
-  // 提取子命令（第一个不以 - 开头且属于已知子命令的）
-  let sub = "start";
-  const subIdx = args.findIndex((a) => !a.startsWith("-"));
-  if (subIdx !== -1 && KNOWN_SUBS.has(args[subIdx])) {
-    sub = args[subIdx];
-  }
-
-  try {
-    const { values } = parseArgs({
-      args: args.filter((a) => a !== sub),
-      options: {
-        webhook: { type: "boolean" },
-        interval: { type: "string" },
-        "max-concurrent": { type: "string" },
-        "allowed-tools": { type: "string" },
-        help: { type: "boolean", short: "h" },
-      },
-      allowPositionals: true,
-    });
-    return {
-      sub,
-      opts: {
-        webhook: !!values.webhook,
-        interval: values.interval ? parseInt(values.interval, 10) : undefined,
-        maxConcurrent: values["max-concurrent"]
-          ? parseInt(values["max-concurrent"], 10)
-          : undefined,
-        allowedTools: values["allowed-tools"]
-          ? String(values["allowed-tools"])
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : undefined,
-        help: !!values.help,
-      },
-    };
-  } catch (err: any) {
-    console.error(`错误: ${err.message}\n使用 sid-code daemon --help 查看用法`);
-    process.exit(1);
-  }
-}
-
-const KNOWN_SUBS = new Set(["start", "status", "stop", "restart", "logs", "install", "uninstall"]);
 
 /** 守护进程日志文件路径 */
 function daemonLogFile(): string {

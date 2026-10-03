@@ -84,7 +84,12 @@ export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG) {
           return Response.json({ error: "invalid signature" }, { status: 401 });
         }
 
-        const body = JSON.parse(rawBody) as Record<string, unknown>;
+        let body: Record<string, unknown>;
+        try {
+          body = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch {
+          return Response.json({ error: "invalid json" }, { status: 400 });
+        }
         const event = req.headers.get("x-github-event");
 
         if (event !== "pull_request") {
