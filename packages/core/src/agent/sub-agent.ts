@@ -1538,6 +1538,22 @@ export class SubAgent {
           context: "subagent",
           reasonType: decision.decisionReason?.type,
         });
+        // B33：spawn 路径同样 fire PermissionDenied（与进程内 `agent/tool-executor.ts` 同口径）。
+        // fire-and-forget：通知类 hook 不得拖慢拒绝回传。
+        try {
+          void this.hookSystem
+            ?.firePermissionDeniedEvent?.(
+              name,
+              (effectiveInput ?? {}) as Record<string, unknown>,
+              reason,
+              decision.decisionReason?.type === "rule" ? "rule" : "auto",
+            )
+            ?.catch?.((e: any) =>
+              log.error("SUBAGENT:HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
+            );
+        } catch (e: any) {
+          log.error("SUBAGENT:HOOK", `permission_denied 触发异常（忽略）: ${e?.message ?? e}`);
+        }
         return { content: `权限拒绝: ${reason}`, is_error: true };
       }
     }

@@ -59,7 +59,7 @@ export enum HookEventName {
   Setup = "Setup",
   /** 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 */
   PermissionRequest = "PermissionRequest",
-  /** 主循环权限拒绝后触发（弹窗被拒 / 超时 / 规则直拒），仅通知、不可改判。子代理路径暂未接。 */
+  /** 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 */
   PermissionDenied = "PermissionDenied",
   /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   ConfigChange = "ConfigChange",
