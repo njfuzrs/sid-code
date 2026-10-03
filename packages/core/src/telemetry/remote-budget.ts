@@ -23,7 +23,7 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
+import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
 import { isNonLocalHttp } from "../config/policy.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -313,7 +313,10 @@ function interpret(
     return null;
   }
   if (result.status === 401 || result.status >= 500) {
-    log.warn("BUDGET", `远程预算 HTTP ${result.status}（fail-open，当没配）`);
+    log.warn(
+      "BUDGET",
+      `远程预算 HTTP ${result.status}（fail-open，当没配）${result.status === 401 ? `。${RELOGIN_HINT}` : ""}`,
+    );
     lastBudget = null;
     return null;
   }

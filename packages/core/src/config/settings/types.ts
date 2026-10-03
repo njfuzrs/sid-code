@@ -187,6 +187,20 @@ const IdentitySettingsSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * P2 统一后端地址。读取走 identity/backend-url.ts（bootstrap 快速路径直接读文件），不进 Config。
+ * 必须是具名 schema：内联 `.passthrough()` 会截断 docs-gen-reference 的 SettingsSchema 注释扫描
+ * （它以第一个 `.passthrough()` 为终点），后面所有字段的说明会静默消失。
+ */
+const BackendSettingsSchema = lazySchema(() =>
+  z
+    .object({
+      /** 后端对外地址（即服务端 PUBLIC_BASE_URL）；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 */
+      url: z.string().optional(),
+    })
+    .passthrough(),
+);
+
 /** 搜索配置 Schema */
 const SearchSchema = lazySchema(() =>
   z
@@ -415,6 +429,9 @@ export const SettingsSchema = lazySchema(
 
         // M1 身份注入（可注入，非登录）。项目级不可覆盖——见 SECURITY_SENSITIVE_FIELDS。
         identity: IdentitySettingsSchema().optional(),
+
+        // 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。
+        backend: BackendSettingsSchema().optional(),
 
         // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
         statusLine: StatusLineSchema().optional(),

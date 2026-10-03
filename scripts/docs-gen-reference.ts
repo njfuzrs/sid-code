@@ -905,6 +905,7 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   interval: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   "max-concurrent": "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   json: "agents / mcp / auth 子命令参数",
+  verify: "auth status 子命令参数（packages/cli/src/command/auth.ts，调 /ctl/whoami 核验凭据）",
   scope: "mcp 子命令参数（packages/cli/src/command/mcp-cli.ts）",
   // bootstrap 零导入快速路径（与 --version / --self-check 同层），刻意不进顶层 parseArgs。
   // 理由：门禁要在**任何环境**下都能问构建身份 —— 配置缺失、~/.sid-code/ 不存在、

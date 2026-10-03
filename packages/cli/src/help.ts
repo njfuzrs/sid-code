@@ -146,8 +146,10 @@ Worktree 隔离:
                                 示例: sid-code mcp list
                                       sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp --scope user
                                       sid-code mcp remove fs
-  auth                        认证配置诊断
-                                用法: sid-code auth status [--json]
+  auth                        企业登录（飞书）与认证诊断
+                                用法: sid-code auth <login|logout|status> [--json] [--verify]
+                                别名: sid-code login / sid-code logout
+                                login 需先配置 backend.url（或 SID_CODE_BACKEND_URL）
 
 环境变量:
   ANTHROPIC_API_KEY             Anthropic API 密钥
@@ -181,6 +183,7 @@ Worktree 隔离:
   SID_CODE_IDENTITY_USER_ID     用户标识（如 zhangsan@corp.com）
   SID_CODE_IDENTITY_ORG_ID      组织标识（如 corp-shanghai）
   SID_CODE_IDENTITY_TEAM_ID     团队标识（如 infra-platform）
+  SID_CODE_BACKEND_URL          企业后端地址（覆盖 settings 的 backend.url；auth login 用它）
   SID_CODE_POLICY_ENDPOINT      远程企业策略 URL（只读环境变量；未设则不拉取，fail-open）
   SID_CODE_USAGE_ENDPOINT       用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl）
   SID_CODE_BUDGET_ENDPOINT      远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open）

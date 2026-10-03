@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **78** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **79** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
@@ -39,6 +39,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `autoMemory` | boolean | — | auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感项目 / 不想消耗后台 token）。… |
 | `autoUpdate` | enum | `off` / `notify` / `auto` | 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭 |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
+| `backend` | object | — | 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。（子键见[下文](#key-backend)） |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
 | `bridge` | object | — | Bridge 远程控制配置（D14 准入） |
@@ -119,6 +120,12 @@ settings.json 的全部可配字段、类型与默认值。
 | `featureFlagEndpoint` | string | Feature Flag 远程端点（可选） |
 | `flags` | Record<string, string \| number \| boolean \| Record<string, unknown>> | 本地 Feature Flag 定义 |
 | `backends` | AnalyticsBackendConfig[] | 远程事件导出后端列表 |
+
+### `backend` {#key-backend}
+
+| 子键 | 类型 | 说明 |
+|---|---|---|
+| `url` | string | 后端对外地址（即服务端 PUBLIC_BASE_URL）；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 |
 
 ### `checkpoint` {#key-checkpoint}
 

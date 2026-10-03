@@ -33,7 +33,7 @@ sid-code 的全部命令行参数与子命令。
 | `sid-code update` | 下载并替换二进制到最新版（不动 ~/.sid-code/ 数据） |
 | `sid-code agents` | 列出所有可用子代理（内置/自定义/插件）（用法见[下文](#sub-agents)） |
 | `sid-code mcp` | 管理 MCP 服务器配置（不启动会话）（用法见[下文](#sub-mcp)） |
-| `sid-code auth` | 认证配置诊断（用法见[下文](#sub-auth)） |
+| `sid-code auth` | 企业登录（飞书）与认证诊断（用法见[下文](#sub-auth)） |
 
 ### sid-code review {#sub-review}
 
@@ -71,7 +71,9 @@ sid-code 的全部命令行参数与子命令。
 ### sid-code auth {#sub-auth}
 
 ```text
-用法: sid-code auth status [--json]
+用法: sid-code auth <login|logout|status> [--json] [--verify]
+别名: sid-code login / sid-code logout
+login 需先配置 backend.url（或 SID_CODE_BACKEND_URL）
 ```
 
 ## LLM 配置

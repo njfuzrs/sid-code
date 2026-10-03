@@ -49,6 +49,9 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   // 不允许项目级 settings 把会话归属到别的 org / user。身份是审计 actor，
   // 被仓库 settings.json 改掉等于让恶意项目伪造成本归属。
   "identity",
+  // P2：backend.url 决定设备凭据发往哪里（登录 / 市场 / 远程 MCP origin 校验）。
+  // 仓库 settings.json 能改它，就能把员工凭据导到攻击者端点。
+  "backend",
 ]);
 
 /**
