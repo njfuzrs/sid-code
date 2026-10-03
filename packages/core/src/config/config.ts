@@ -701,7 +701,7 @@ export interface TraceUploadConfig {
   toolSource?: string;
   /** 单文件最大重试次数（默认 5） */
   maxRetries?: number;
-  /** 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） */
+  /** 指数退避基数毫秒（默认 2000；maxRetries=5 时间隔为 2s→4s→8s→16s） */
   retryBaseMs?: number;
   /** 是否 gzip 压缩后上传（默认 true） */
   compress?: boolean;
