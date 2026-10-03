@@ -296,9 +296,13 @@ sid-code 回 `{"type":"control_response","response":{"subtype":"success","reques
 ```bash
 git diff main...HEAD > /tmp/pr.diff
 sid-code review --diff /tmp/pr.diff
+
+# 或者直接从 stdin 读 diff
+git diff main...HEAD | sid-code review
 ```
 
-`review` 是独立子命令，比自己拼 `-p` 提示词更省事——它内部走的是 `code-review` Skill。
+`review` 是独立子命令，比自己拼 `-p` 提示词更省事——它内部走的是 `code-review` Skill，
+提示词随二进制编译期嵌入。Markdown 报告写到 stdout，进度信息写到 stderr，可以直接重定向成文件。
 
 ## 权限怎么办
 

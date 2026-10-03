@@ -9,7 +9,7 @@
  * 流程:
  *   1. 解析 args (--diff / --model / --timeout / --help)
  *   2. 读 unified diff (stdin 或 --diff 文件)
- *   3. 加载 src/skill/builtin/code-review/SKILL.md body
+ *   3. 取编译期嵌入的 code-review SKILL.md 正文（EMBEDDED_BUILTIN_SKILLS）
  *   4. 拼 system prompt + 用户 query, spawn sid-code 主进程 -p 无头模式
  *   5. 把 final response markdown 写到 stdout
  *
@@ -18,10 +18,11 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveExecutable } from "@sid-code/core/bootstrap/resolve-executable.ts";
+// 复用 daemon 的抽取器：-p --output-format json 现在输出 { content: ContentBlock[] }，
+// 本文件原先自带的版本只认 final_response / text，抽不到就把整段原始 JSON 当报告吐出（B24 实测）。
+import { extractFinalResponse } from "@sid-code/core/daemon/headless-executor.ts";
 
 interface ReviewOptions {
   diffPath?: string;
@@ -88,15 +89,32 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf-8");
 }
 
-function loadCodeReviewSkillPrompt(): string {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const skillFile = join(__dirname, "..", "skill", "builtin", "code-review", "SKILL.md");
-  if (!existsSync(skillFile)) {
-    throw new Error(`code-review SKILL.md 不存在: ${skillFile}`);
+/**
+ * 取 code-review SKILL.md 正文（去掉 YAML frontmatter）。
+ *
+ * ⚠️ 只读编译期嵌入的 EMBEDDED_BUILTIN_SKILLS，不读磁盘（B24）：
+ *   原实现用 `import.meta.url` + 相对路径读 SKILL.md，两种运行形态都坏——
+ *   ① 编译产物里模块在 `/$bunfs/` 虚拟文件系统，磁盘上没有这个文件；
+ *   ② P2-2 分包后 SKILL.md 在 core 包，cli 包下的相对路径在源码树里也解析不到。
+ *   单测只读源码树里的 SKILL.md，所以一直全绿。嵌入清单由 make build / release.sh
+ *   重新生成并已入库，两种形态读到的是同一份字节；与 /review bundled skill 同源。
+ *
+ * 导出供 --self-check 在编译产物里真跑一次（单测跑不到 /$bunfs/ 那条路径）。
+ */
+export async function loadCodeReviewSkillPrompt(): Promise<string> {
+  const { EMBEDDED_BUILTIN_SKILLS } =
+    await import("@sid-code/core/skill/builtin-embedded.generated.ts");
+  const entry = EMBEDDED_BUILTIN_SKILLS.find((s) => s.name === "code-review");
+  if (!entry?.rawContent) {
+    throw new Error(
+      "嵌入清单里没有 code-review Skill（漏跑 embed-builtin-skills.ts？请重新 make build）",
+    );
   }
-  const md = readFileSync(skillFile, "utf-8");
+  const md = entry.rawContent;
   const match = md.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-  return match ? match[1] : md;
+  const body = (match ? match[1] : md).trim();
+  if (!body) throw new Error("嵌入的 code-review SKILL.md 正文为空");
+  return body;
 }
 
 function buildSystemPrompt(skillBody: string): string {
@@ -178,22 +196,6 @@ async function spawnSidCode(
   });
 }
 
-function extractFinalResponse(stdout: string): string {
-  // sid-code -p --output-format json 输出形如:
-  //   { "session_id": ..., "final_response": "...", "tools_called": [...], ... }
-  const trimmed = stdout.trim();
-  if (!trimmed) return "";
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed.final_response === "string") return parsed.final_response;
-    if (typeof parsed.text === "string") return parsed.text;
-    return trimmed;
-  } catch {
-    // 不是 JSON, 直接返回原文
-    return trimmed;
-  }
-}
-
 export async function handleReviewCommand(args: string[]): Promise<void> {
   const opts = parseReviewArgs(args);
   if (opts.help) {
@@ -223,7 +225,7 @@ export async function handleReviewCommand(args: string[]): Promise<void> {
   // 2. 加载 SKILL.md body
   let skillBody: string;
   try {
-    skillBody = loadCodeReviewSkillPrompt();
+    skillBody = await loadCodeReviewSkillPrompt();
   } catch (err: any) {
     console.error(`错误: 加载 code-review Skill 失败: ${err.message}`);
     process.exit(1);
