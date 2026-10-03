@@ -49,7 +49,7 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 | `stop_failure` | ✗ | `StopFailure` | （枚举已定义，等接线） |
 | `setup` | ✗ | `Setup` | （枚举已定义，等接线） |
 | `permission_request` | ✓ | `PermissionRequest` | 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 |
-| `permission_denied` | ✓ | `PermissionDenied` | 主循环权限拒绝后触发（弹窗被拒 / 超时 / 规则直拒），仅通知、不可改判。子代理路径暂未接。 |
+| `permission_denied` | ✓ | `PermissionDenied` | 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 |
 | `config_change` | ✗ | `ConfigChange` | （枚举已定义，等接线） |
 | `file_changed` | ✗ | `FileChanged` | （枚举已定义，等接线） |
 | `cwd_changed` | ✗ | `CwdChanged` | （枚举已定义，等接线） |
