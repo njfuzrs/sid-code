@@ -63,15 +63,16 @@ describe("包边界：packages/ 下的真实依赖方向", () => {
     expect(scan.edges.get("core→cli") ?? 0).toBe(0);
   });
 
-  test("rank 表自洽：shared(0) < tui-renderer(1) < core(2) < cli(3)", () => {
+  test("rank 表自洽：shared(0) < tui-renderer(1) = tui(1) < core(2) < cli(3)", () => {
     // 锁住顺序本身。曾经的设计方案里 §2.1 与 §4.4 自相矛盾（tui-renderer 到底是不是叶子），
     // 择一之后必须钉死，否则「把 rank 调一下让门禁变绿」是最省事也最有害的修法。
-    expect(PACKAGES.map((p) => PACKAGE_RANK[p])).toEqual([0, 1, 2, 3]);
+    // B9 / T1.2：新底座 tui 与旧底座同层，T9 删旧底座后这里回到 4 项。
+    expect(PACKAGES.map((p) => PACKAGE_RANK[p])).toEqual([0, 1, 1, 2, 3]);
   });
 });
 
 describe("包边界门禁自身有效性（防假绿）", () => {
-  test("扫描器真的扫到了 4 个包的源码", () => {
+  test("扫描器真的扫到了全部包的源码", () => {
     // 路径指错 / 包改名 → 扫到 0 个文件 → 违规恒为 0 → 门禁永远绿。
     // scanPackagesMode 内部对 0 文件会抛，这里再断一次规模下限，双保险。
     expect([...scan.sizes.keys()].sort()).toEqual([...PACKAGES].sort());

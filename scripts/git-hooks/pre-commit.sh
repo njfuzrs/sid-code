@@ -251,7 +251,7 @@ fi
 # tsc 也照样绿 —— 没有专门的门禁，"core 不知道 TUI 存在"这条分包核心不变量
 # 会在几次「随手 import 一下」之后静默失效，而那时已经很难追责到具体某次提交。
 # ============================================================================
-STAGED_PKG_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(shared|tui-renderer|core|cli)/src/.*\.(ts|tsx)$' || true)
+STAGED_PKG_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(shared|tui-renderer|tui|core|cli)/src/.*\.(ts|tsx)$' || true)
 
 if [ -n "$STAGED_PKG_TS" ]; then
   echo "[pre-commit] 包边界扫描（packages/ 全仓）..."

@@ -37,6 +37,9 @@ import { join, relative, resolve } from "node:path";
 export const PACKAGE_RANK: Record<string, number> = {
   shared: 0,
   "tui-renderer": 1,
+  // B9 / T1.2：新渲染底座与旧底座同层（都是 CLI 之下、core 无从知道的渲染层）。
+  // 它目前零内部依赖（上游 ink 原样），rank 1 只约束「不许往上导 core / cli」。
+  tui: 1,
   core: 2,
   cli: 3,
 };
@@ -250,8 +253,8 @@ export function scanSrcMode(srcRoot: string): {
   return { violations, edges, sizes };
 }
 
-/** 参与边界校验的 4 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
-export const PACKAGES = ["shared", "tui-renderer", "core", "cli"] as const;
+/** 参与边界校验的 5 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
+export const PACKAGES = ["shared", "tui-renderer", "tui", "core", "cli"] as const;
 
 /**
  * 在真实 `packages/` 结构上校验包边界（拆包**后**的门禁路径）。
