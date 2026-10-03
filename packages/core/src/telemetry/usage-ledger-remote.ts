@@ -25,7 +25,7 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth } from "../identity/credential.ts";
+import { applyDeviceAuth, RELOGIN_HINT } from "../identity/credential.ts";
 import { isNonLocalHttp } from "../config/policy.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -254,7 +254,10 @@ async function sendUsageLedger(entry: UsageLedgerEntry): Promise<"skipped" | "se
       signal: controller.signal,
     });
     if (response.status === 401) {
-      warnOnce("401", "账本远程上报 401：设备凭据无效或已吊销，本会话不再重试、不写失败盘");
+      warnOnce(
+        "401",
+        `账本远程上报 401：设备凭据无效或已吊销，本会话不再重试、不写失败盘。${RELOGIN_HINT}`,
+      );
       throw new UnauthorizedExportError();
     }
     if (response.status === 413) {

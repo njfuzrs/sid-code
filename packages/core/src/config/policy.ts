@@ -7,7 +7,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
-import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
+import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
 import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
@@ -597,7 +597,10 @@ function interpretRemoteResponse(
   }
 
   if (result.status === 401) {
-    log.warn("POLICY", `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销`);
+    log.warn(
+      "POLICY",
+      `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销，${RELOGIN_HINT}`,
+    );
     const cached = usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
     rememberLoadMeta({
       source: cached ? "remote" : "none",

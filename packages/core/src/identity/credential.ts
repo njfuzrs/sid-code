@@ -23,6 +23,19 @@ export interface DeviceCredential {
   expiresAt?: string;
   /** ISO 8601 签发时间 */
   enrolledAt?: string;
+  /**
+   * P2 飞书登录态：凭据绑定到的人。只用于客户端展示与 getIdentity() 的 userId；
+   * 服务端归因只认 device.user_ref，这里写什么都伪造不了归属。注册码流程没有这一段。
+   */
+  user?: CredentialUser;
+}
+
+export interface CredentialUser {
+  /** 后端 users 表主键（字符串化） */
+  id?: string;
+  name?: string;
+  /** 飞书 union_id，跨应用稳定，优先作为 userId */
+  unionId?: string;
 }
 
 interface CredentialFile {
@@ -31,6 +44,24 @@ interface CredentialFile {
   expiresAt?: unknown;
   enrolled_at?: unknown;
   enrolledAt?: unknown;
+  user?: unknown;
+}
+
+function parseUser(raw: unknown): CredentialUser | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const rec = raw as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => {
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
+    if (typeof v !== "string") return undefined;
+    const t = v.trim();
+    return t === "" ? undefined : t;
+  };
+  const user: CredentialUser = {
+    id: str(rec.id),
+    name: str(rec.name),
+    unionId: str(rec.union_id) ?? str(rec.unionId),
+  };
+  return user.id || user.name || user.unionId ? user : undefined;
 }
 
 let cached: DeviceCredential | null | undefined;
@@ -55,7 +86,8 @@ function parseCredential(raw: string): DeviceCredential | null {
     (typeof parsed.enrolled_at === "string" && parsed.enrolled_at) ||
     (typeof parsed.enrolledAt === "string" && parsed.enrolledAt) ||
     undefined;
-  return { credential, expiresAt, enrolledAt };
+  const user = parseUser(parsed.user);
+  return { credential, expiresAt, enrolledAt, ...(user ? { user } : {}) };
 }
 
 function readFromDisk(): DeviceCredential | null {
@@ -119,6 +151,12 @@ export function getUsableCredentialToken(now = Date.now()): string | undefined {
   return cred.credential;
 }
 
+/**
+ * 服务端 401（凭据被吊销 / 过期 / 设备解绑）时统一追加的提示。
+ * 各处 401 告警都拼这一句，用户只需要记住一个动作。
+ */
+export const RELOGIN_HINT = "请执行 sid-code auth login 重新登录";
+
 /** 给 M2/M3 控制面请求用。无可用凭据时原样返回 headers。 */
 export function applyDeviceAuth(headers: Record<string, string>): Record<string, string> {
   const token = getUsableCredentialToken();
@@ -138,6 +176,15 @@ export function saveDeviceCredential(cred: DeviceCredential): void {
       credential: cred.credential,
       ...(cred.expiresAt ? { expires_at: cred.expiresAt } : {}),
       ...(cred.enrolledAt ? { enrolled_at: cred.enrolledAt } : {}),
+      ...(cred.user
+        ? {
+            user: {
+              ...(cred.user.id ? { id: cred.user.id } : {}),
+              ...(cred.user.name ? { name: cred.user.name } : {}),
+              ...(cred.user.unionId ? { union_id: cred.user.unionId } : {}),
+            },
+          }
+        : {}),
     },
     null,
     2,
