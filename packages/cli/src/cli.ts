@@ -1785,15 +1785,20 @@ export async function main(): Promise<void> {
     const { CustomCommandLoader } = await import("./command/custom.ts");
     const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
+    // B20：交互模式此前直接返回全部文件 + 持久化，等于打开任何目录都静默信任它带的扩展。
+    // 现在启动阶段（TUI 起来之前）走 stdin y/N 确认，只有确认过的才加载并记住；
+    // 无 TTY / TUI 已接管 stdin 时 fail-closed（不加载、不持久化）。-p 维持跳过。
+    const { createTrustPrompt } = await import("@sid-code/core/extension/trust-prompt.ts");
+    const trustPrompt = createTrustPrompt({
+      print: !!config.print,
+      confirm: process.stdin.isTTY && !cliArgs.bridgeUrl ? (m) => promptYesNo(m) : undefined,
+      projectDir: process.cwd(),
+      warn: (m) => getLogger().warn("TRUST", m),
+    });
     const scanOptions = {
       trustManager,
       trustProjectExtensions: config.trustProjectExtensions,
-      onUntrusted: async (files: any[]) => {
-        if (config.print) return [];
-        const log = getLogger();
-        log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
-        return files;
-      },
+      onUntrusted: trustPrompt.onUntrusted,
       // additional 层（对齐 CC）：--add-dir 授权的目录，其 .sid-code/{type}/ 与
       // .claude/{type}/ 下的 skills/commands/agents 一并加载。此前 --add-dir 只影响
       // 文件访问白名单，授权目录自带的 skill 加载不进来。
@@ -2959,6 +2964,8 @@ export async function main(): Promise<void> {
       if (config.debug) {
         getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
       }
+      // stdin 即将归 Ink：此后热重载遇到的新未信任扩展只记日志，下次启动再问
+      trustPrompt.closePrompting();
       await app.runTUI(cliArgs.prompt);
     }
   } catch (err) {
