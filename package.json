@@ -41,6 +41,7 @@
     "lint:fix": "oxlint packages tests scripts evals website --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",
     "tui:surface": "bun run scripts/tui-surface.ts",
+    "tui:spec": "bun run scripts/verify-tui-spec.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
     "format": "oxfmt packages tests scripts evals website",
     "format:check": "oxfmt --check packages tests scripts evals website",
