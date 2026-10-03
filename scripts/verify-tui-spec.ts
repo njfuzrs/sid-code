@@ -8,14 +8,15 @@
  *
  * 1. 每行契约格式合法：ID 属于闭集分组、全文唯一，来源非空。
  * 2. 测试列是已有测试时：文件存在，且包含给出的片段（测试名或 `ID:` 前缀）。
- * 3. 测试列是待办时：只能是 `⏳ T0.5`（端口契约测试）或 `⏳ T<x.y>`（x ≥ 1，要等后续任务，如真实 PTY）。
- *    T0.4 已落地，`⏳ T0.4 …` 不再合法 —— 场景契约直接引用 `term-bench/scenarios.tsx` 的 `S<n>: {`。
+ * 3. 测试列是待办时：只能是 `⏳ T<x.y>`（x ≥ 1，要等后续任务，如真实 PTY）。
+ *    阶段 0 已全部落地，`⏳ T0.x` 一律不合法 —— 场景契约引用 `term-bench/scenarios.tsx` 的 `S<n>: {`，
+ *    其余引用 `packages/cli/tests/render-port/` 下的测试文件与 `ID:` 片段。
  * 4. 反向：`packages/cli/tests/render-port/` 里以 `"<ID>: "` 开头的测试名，ID 必须在 SPEC 里存在
  *    （防止契约改名 / 删掉后测试成了孤儿）。
  *
  * 用法：
  *   bun run tui:spec            # 校验，失败退 1
- *   bun run tui:spec --report   # 额外打印覆盖率（已测 / 待 T0.5 / 待后续任务，按分组）
+ *   bun run tui:spec --report   # 额外打印覆盖率（已测 / 待后续任务，按分组）
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -39,7 +40,6 @@ export interface Contract {
 
 export type TestRef =
   | { kind: "existing"; file: string; fragment: string }
-  | { kind: "pending-contract" }
   | { kind: "pending-later"; task: string };
 
 const ID_RE = new RegExp(`^(${GROUPS.join("|")})(\\d+)([a-z]?)$`);
@@ -63,21 +63,20 @@ export function parseSpec(md: string): Contract[] {
 }
 
 export function parseTestRef(cell: string): TestRef | { kind: "invalid"; reason: string } {
-  if (cell === "⏳ T0.5") return { kind: "pending-contract" };
   const later = /^⏳ (T[1-9]\d*\.\d+)$/.exec(cell);
   if (later) return { kind: "pending-later", task: later[1]! };
   if (/^⏳ T0\./.test(cell)) {
     return {
       kind: "invalid",
       reason:
-        "阶段 0 只剩 T0.5 能挂待办（T0.4 场景请直接引用 term-bench/scenarios.tsx 的 `S<n>: {`）",
+        "阶段 0 已落地，不能再挂 T0.x 待办（场景引用 term-bench/scenarios.tsx 的 `S<n>: {`，其余写端口测试）",
     };
   }
   const existing = /^`([^`]+)`\s+(.+)$/.exec(cell);
   if (existing) return { kind: "existing", file: existing[1]!, fragment: existing[2]!.trim() };
   return {
     kind: "invalid",
-    reason: "测试列只能是 `文件` 片段 / ⏳ T0.5 / ⏳ T<x.y>（x ≥ 1）",
+    reason: "测试列只能是 `文件` 片段 / ⏳ T<x.y>（x ≥ 1）",
   };
 }
 
@@ -160,7 +159,6 @@ export function coverage(contracts: Contract[]) {
       group: g,
       total: cs.length,
       tested: kinds.filter((k) => k === "existing").length,
-      contract: kinds.filter((k) => k === "pending-contract").length,
       later: kinds.filter((k) => k === "pending-later").length,
     };
   });
@@ -170,10 +168,10 @@ export function coverage(contracts: Contract[]) {
 if (import.meta.main) {
   const { contracts, errors } = verify(readFileSync(SPEC_PATH, "utf8"));
   if (process.argv.includes("--report")) {
-    console.log("分组  总数  已测  待T0.5  待后续");
+    console.log("分组  总数  已测  待后续");
     for (const r of coverage(contracts)) {
       console.log(
-        `${r.group.padEnd(4)} ${String(r.total).padStart(5)} ${String(r.tested).padStart(5)} ${String(r.contract).padStart(7)} ${String(r.later).padStart(7)}`,
+        `${r.group.padEnd(4)} ${String(r.total).padStart(5)} ${String(r.tested).padStart(5)} ${String(r.later).padStart(7)}`,
       );
     }
   }

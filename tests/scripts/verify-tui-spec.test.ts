@@ -18,7 +18,7 @@ import {
 } from "../../scripts/verify-tui-spec.ts";
 
 /** 每个分组各一条合法待办契约，作为合成 SPEC 的底座（否则「分组为空」会淹没要测的错误）。 */
-const BASE = GROUPS.map((g) => `| ${g}90 | 行为 | 来源 | ⏳ T0.5 |`).join("\n");
+const BASE = GROUPS.map((g) => `| ${g}90 | 行为 | 来源 | ⏳ T1.1 |`).join("\n");
 
 function errorsOf(extra: string, setup?: (root: string) => void): string[] {
   const root = join(tmpdir(), `tui-spec-${process.pid}-${Math.random().toString(36).slice(2)}`);
@@ -37,7 +37,7 @@ describe("解析", () => {
     const md = [
       "| ID | 行为 | 来源 | 测试 |",
       "| --- | --- | --- | --- |",
-      "| R1 | a | b | ⏳ T0.5 |",
+      "| R1 | a | b | ⏳ T1.1 |",
       "| 模式 | 底座：开 | 底座：关 | CLI：开 | CLI：关 |",
       "| bracketed paste | x | y | z | w |",
     ].join("\n");
@@ -45,11 +45,12 @@ describe("解析", () => {
   });
 
   test("单元格里转义的 \\| 不当列分隔", () => {
-    expect(parseSpec("| T2 | a \\| b | c | ⏳ T0.5 |")[0]!.behavior).toBe("a \\| b");
+    expect(parseSpec("| T2 | a \\| b | c | ⏳ T1.1 |")[0]!.behavior).toBe("a \\| b");
   });
 
   test("测试列三种形态", () => {
-    expect(parseTestRef("⏳ T0.5")).toEqual({ kind: "pending-contract" });
+    // T0.5 已落地：阶段 0 的待办全部关闭，新契约不能再挂「待 T0.5」
+    expect(parseTestRef("⏳ T0.5").kind).toBe("invalid");
     expect(parseTestRef("⏳ T8.1")).toEqual({ kind: "pending-later", task: "T8.1" });
     // T0.4 已落地：场景契约必须直接引用 scenarios.tsx，不能再挂「待 T0.4」
     expect(parseTestRef("⏳ T0.4 S3").kind).toBe("invalid");
@@ -85,17 +86,17 @@ describe("变异自证：每类错误都会红", () => {
   });
 
   test("ID 重复", () => {
-    expect(errorsOf("| R90 | 又一条 | 来源 | ⏳ T0.5 |").some((e) => e.includes("ID 重复"))).toBe(
+    expect(errorsOf("| R90 | 又一条 | 来源 | ⏳ T1.1 |").some((e) => e.includes("ID 重复"))).toBe(
       true,
     );
   });
 
   test("分组不在闭集", () => {
-    expect(errorsOf("| Z1 | a | b | ⏳ T0.5 |").some((e) => e.includes("分组不在闭集"))).toBe(true);
+    expect(errorsOf("| Z1 | a | b | ⏳ T1.1 |").some((e) => e.includes("分组不在闭集"))).toBe(true);
   });
 
   test("来源为空", () => {
-    expect(errorsOf("| R91 | a |  | ⏳ T0.5 |").some((e) => e.includes("来源为空"))).toBe(true);
+    expect(errorsOf("| R91 | a |  | ⏳ T1.1 |").some((e) => e.includes("来源为空"))).toBe(true);
   });
 
   test("测试列非法", () => {
