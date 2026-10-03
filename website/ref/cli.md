@@ -173,7 +173,7 @@ sid-code 的全部命令行参数与子命令。
 
 | 参数 | 说明 |
 |---|---|
-| `--max-budget-usd <amount>` | 花费上限（美元，超限终止） |
+| `--max-budget-usd <amount>` | 花费上限（美元，超限终止；与 quota.costLimit 取更严的） |
 
 ## IDE
 

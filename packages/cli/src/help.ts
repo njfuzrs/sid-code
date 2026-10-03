@@ -80,7 +80,7 @@ MCP:
   --betas <beta>              额外 anthropic-beta 头值（可重复或逗号分隔）
 
 限制控制:
-  --max-budget-usd <amount>   花费上限（美元，超限终止）
+  --max-budget-usd <amount>   花费上限（美元，超限终止；与 quota.costLimit 取更严的）
 
 IDE:
   --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）

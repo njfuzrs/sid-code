@@ -184,10 +184,10 @@ Todo 不只是给你看的进度条，它是模型自己的工作记忆。长任
 非终态的目标会一起恢复，继续推进。`/clear` 会落一个 `__CLEARED__` 哨兵防止"幽灵目标复活"。
 
 ::: warning `/goal` 与 Token Budget 续写互斥
-`/goal` 和 `--max-budget-usd` 的"超预算续写"语义冲突——一个要停、一个要续。
-同时用的话 `/goal` 优先（`src/query/loop.ts:2144-2146`）。要给 `/goal` 任务设成本上限，
-用 `/goal budget <tokens>` 设 Token 预算，或用 `quota.costLimit` 做硬顶（见
-[成本与用量](/use/cost) 的坑一）。
+消息里写 `+500k` 这类预算指令会触发续写（预算没花完就让模型接着干），与 `/goal` 互斥：
+goal 激活时跳过续写，由 goal 自己的 Token 预算接管。要给 `/goal` 任务封顶成本，
+用 `/goal budget <tokens>`，或用 `--max-budget-usd` / `quota.costLimit` 做花费硬顶
+（两者取更严的，见[成本与用量](/use/cost#设花费上限)）。
 :::
 
 ### `/goal`、Plan Mode、`/loop` 三者怎么选

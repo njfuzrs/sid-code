@@ -341,6 +341,7 @@ function parseCLIArgs(): CLIArgs {
         // 目录授权（P1-1）：追加额外可访问目录（可重复）。映射到 config.allowedDirectories。
         "add-dir": { type: "string", multiple: true },
         // 花费上限美元（P1-9）：映射到 config.costLimit，超限终止。
+        // 交互模式与 -p 都生效；与 quota.costLimit 取更严的那个（B18）。
         "max-budget-usd": { type: "string" },
         // IDE 自动连接（A-4 子集）：等价于 SID_CODE_AUTO_CONNECT_IDE=true / config.ide.autoConnect。
         ide: { type: "boolean" },
@@ -520,18 +521,17 @@ function parseCLIArgs(): CLIArgs {
     console.error("错误: --print 下 --output-format=stream-json 需要同时指定 --verbose");
     process.exit(1);
   }
-  // G1 / B2：这两个 flag 只在 --print 下改变行为。交互模式传了它不会报错退出
+  // G1 / B2：--output-format 只在 --print 下改变行为。交互模式传了它不会报错退出
   // （对齐 CC「only works with --print」的宽松处理），但静默忽略会让人以为
-  // TUI 会话也被花销上限或输出格式约束住了。告警写 stderr，不拦启动。
-  if (values.print !== true) {
-    if (outFmt !== undefined) {
-      console.error(
-        `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
-      );
-    }
-    if (values["max-budget-usd"] !== undefined) {
-      console.error("警告: --max-budget-usd 只在 --print 下生效，交互模式已忽略。");
-    }
+  // TUI 会话也被输出格式约束住了。告警写 stderr，不拦启动。
+  //
+  // B18（2026-10-02）：--max-budget-usd 原来也在这里被告警并忽略。但交互模式的
+  // QuotaManager 本来就在跑（quota.costLimit 在 TUI 里是生效的），所以那不是能力缺失，
+  // 只是参数没接进去 —— 现在两种模式都经 resolveEffectiveCostLimit 生效，告警随之删除。
+  if (values.print !== true && outFmt !== undefined) {
+    console.error(
+      `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
+    );
   }
 
   // setting-sources（P1-6）：逗号分隔子集 user/project/local。
