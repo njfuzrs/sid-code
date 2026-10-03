@@ -1,6 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { validateConfig } from "@sid-code/core/config/schema.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
+import {
+  MCPTransportEnum,
+  BudgetPeriodEnum,
+  BudgetActionEnum,
+  SearchBackendEnum,
+} from "@sid-code/core/config/settings/types.ts";
 
 describe("Config Validation", () => {
   const baseConfig: Config = {
@@ -220,6 +226,73 @@ describe("Config Validation", () => {
     const result = validateConfig(config);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.path.includes("mcpServers"))).toBe(true);
+  });
+
+  describe("MCP transport 合法值与 Zod 枚举同源（B36）", () => {
+    // 哨兵：遍历 Zod 枚举逐个过校验器。手写名单曾漏 ws / http-json，
+    // 照官网 team/migrate.md 填 ws 会报「无效值」；名单再漂移这里会红。
+    for (const transport of MCPTransportEnum.options) {
+      test(`transport "${transport}" 不报 transport 错误`, () => {
+        const server =
+          transport === "stdio"
+            ? { transport, command: "echo" }
+            : { transport, url: "https://example.invalid/mcp" };
+        const result = validateConfig({ ...baseConfig, mcpServers: { s: server } } as Config);
+        expect(result.errors.filter((e) => e.path.startsWith("mcpServers."))).toEqual([]);
+      });
+    }
+
+    test("枚举外的值仍报无效值，且提示里列出全部合法值", () => {
+      const result = validateConfig({
+        ...baseConfig,
+        mcpServers: { s: { transport: "grpc", url: "https://x.invalid" } },
+      } as unknown as Config);
+      const err = result.errors.find((e) => e.path === "mcpServers.s.transport");
+      expect(err).toBeDefined();
+      for (const t of MCPTransportEnum.options) expect(err!.message).toContain(t);
+    });
+
+    test("ws / http-json 缺 url 报错（与 manager.ts 建连抛错一致）", () => {
+      for (const transport of ["ws", "http-json"] as const) {
+        const result = validateConfig({
+          ...baseConfig,
+          mcpServers: { s: { transport } },
+        } as Config);
+        expect(result.errors.some((e) => e.path === "mcpServers.s.url")).toBe(true);
+      }
+    });
+  });
+
+  describe("budget / search 枚举名单与 Zod 同源（B36 同形态收口）", () => {
+    // 哨兵：遍历 Zod 枚举，每个合法值都不应被报成「无效值」。名单漂移这里会红。
+    for (const period of BudgetPeriodEnum.options) {
+      for (const action of BudgetActionEnum.options) {
+        test(`budgetRules period="${period}" action="${action}" 不报无效值`, () => {
+          const result = validateConfig({
+            ...baseConfig,
+            quota: { budgetRules: [{ id: "r", name: "r", period, action, limit_usd: 1 }] },
+          } as Config);
+          const bad = result.warnings.filter(
+            (w) =>
+              (w.path.endsWith(".period") || w.path.endsWith(".action")) &&
+              w.message.includes("无效值"),
+          );
+          expect(bad).toEqual([]);
+        });
+      }
+    }
+
+    for (const backend of SearchBackendEnum.options) {
+      test(`search.backend="${backend}" 不报无效值`, () => {
+        const result = validateConfig({ ...baseConfig, search: { backend } } as Config);
+        // brave / tavily 有「尚未实现」告警、searxng 有缺 url 告警，这里只锁「无效值」那一条
+        expect(
+          result.warnings.filter(
+            (w) => w.path === "search.backend" && w.message.includes("无效值"),
+          ),
+        ).toEqual([]);
+      });
+    }
   });
 
   describe("模型引用类字段（fallbackModel / classifierModel / goal.evaluatorModel）", () => {

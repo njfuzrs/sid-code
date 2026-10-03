@@ -107,6 +107,11 @@ export interface AppContext {
   sessionState: SessionState;
   /** 将文本注入对话并触发 LLM 响应（自定义命令用） */
   sendToLLM?: (text: string) => Promise<void>;
+  /**
+   * 一次性提示（不进对话、不喂 LLM）。交互模式接状态栏瞬态通知；无头模式为 undefined。
+   * B16：/goal 设定时提示「评估者 = 主模型」—— submit_prompt 的提示词只喂 LLM、不上屏，需要这条旁路。
+   */
+  notify?: (text: string) => void;
   /** 自定义命令列表（/help 显示用） */
   customCommands?: Array<{ name: string; description: string }>;
   /** Shell 注入确认回调（自定义命令 !{cmd} 语法用），返回 true 表示用户确认 */

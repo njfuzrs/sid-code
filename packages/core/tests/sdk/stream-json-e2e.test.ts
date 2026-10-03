@@ -210,3 +210,99 @@ describe("runHeadlessStreaming 直接消费队列", () => {
     expect(msgs.some((m) => m.type === "result")).toBe(true);
   });
 });
+
+describe("runHeadlessStreaming 控制请求分发（B25）", () => {
+  function setup() {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-ctl", model: "m", now: () => 0, uuid: () => "u" },
+      simpleDriver("ok"),
+    );
+    return { input, output, io, queue, engine };
+  }
+
+  test("interrupt → 调 onInterrupt 并回 success；其余 subtype 回 error，不静默丢弃", async () => {
+    const { input, output, io, queue, engine } = setup();
+    const collected = collect(output);
+    let interrupts = 0;
+    input.write(
+      ndjsonStringify({
+        type: "control_request",
+        request_id: "a",
+        request: { subtype: "interrupt" },
+      }) + "\n",
+    );
+    input.write(
+      ndjsonStringify({
+        type: "control_request",
+        request_id: "b",
+        request: { subtype: "get_context_usage" },
+      }) + "\n",
+    );
+    input.end();
+    await runHeadless(engine, {
+      outputFormat: "stream-json",
+      structuredIO: io,
+      commandQueue: queue,
+      controlHandlers: { onInterrupt: () => interrupts++ },
+    });
+    output.end();
+    const lines = await collected;
+    const a = lines.find((l) => l.type === "control_response" && l.response.request_id === "a");
+    const b = lines.find((l) => l.type === "control_response" && l.response.request_id === "b");
+    expect(interrupts).toBe(1);
+    expect(a.response.subtype).toBe("success");
+    expect(b.response.subtype).toBe("error");
+    expect(b.response.error).toContain("get_context_usage");
+  });
+
+  test("轮次进行中也能读到 stdin（控制消息不等本轮结束）", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let interruptedDuringTurn = false;
+    const driver = simpleDriver("ok");
+    const slowDriver: SDKQueryEngineDriver = {
+      ...driver,
+      async *submitMessage(text: string) {
+        await gate; // 本轮卡在这里，直到 interrupt 到达
+        yield* driver.submitMessage(text);
+      },
+    };
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-ctl2", model: "m", now: () => 0, uuid: () => "u" },
+      slowDriver,
+    );
+    const collected = collect(output);
+    const run = runHeadless(engine, {
+      outputFormat: "stream-json",
+      initialPrompt: "go",
+      structuredIO: io,
+      commandQueue: queue,
+      controlHandlers: {
+        onInterrupt: () => {
+          interruptedDuringTurn = true;
+          release();
+        },
+      },
+    });
+    input.write(
+      ndjsonStringify({
+        type: "control_request",
+        request_id: "i",
+        request: { subtype: "interrupt" },
+      }) + "\n",
+    );
+    input.end();
+    await run;
+    output.end();
+    await collected;
+    expect(interruptedDuringTurn).toBe(true);
+  });
+});

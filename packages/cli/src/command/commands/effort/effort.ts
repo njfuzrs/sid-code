@@ -14,7 +14,7 @@ import {
  *
  * 用法:
  *   /effort              - 显示当前推理强度档位 + 模型能力
- *   /effort <level>      - 切换档位：low / medium / high / max
+ *   /effort <level>      - 切换档位：low / medium / high / xhigh / max
  *   /effort auto         - 恢复 auto（跟随模型默认，不显式下发）
  *   /effort <level> -p   - 切换并持久化到 settings.json（跨会话生效，别名 --persist / save）
  *   /effort help         - 显示用法
