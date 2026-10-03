@@ -180,6 +180,23 @@ describe("M2 validator — checkSchemaShape", () => {
   test("非法 type → 报错", () => {
     expect(checkSchemaShape({ type: "banana" })).not.toBe(null);
   });
+  test("B19：没有任何可识别关键字的 schema → 报错（否则对任何值都 valid:true）", () => {
+    // 官网 workflows.md 曾经的写法：漏了根层 type/properties
+    const bad = { dirs: { type: "array", items: { type: "string" } } };
+    // 先锁住它为什么危险：校验器对它确实什么都不约束
+    expect(validateAgainstSchema(bad, { dirs: 123 }).valid).toBe(true);
+    expect(validateAgainstSchema(bad, "hello").valid).toBe(true);
+    // 所以必须在 shape 这一步就拦下
+    const err = checkSchemaShape(bad);
+    expect(err).not.toBe(null);
+    expect(err).toContain("dirs");
+  });
+  test("B19：空对象 {} 是「接受任意值」，放行；只有注解关键字也放行", () => {
+    expect(checkSchemaShape({})).toBe(null);
+    expect(checkSchemaShape({ description: "任意" })).toBe(null);
+    expect(checkSchemaShape({ anyOf: [{ type: "string" }] })).toBe(null);
+    expect(checkSchemaShape({ $ref: "#/$defs/x" })).toBe(null);
+  });
 });
 
 describe("M2 validator — formatSchemaErrors", () => {
