@@ -32,7 +32,13 @@ export async function initTraceCollector(
     // 那两条外发通道**：轨迹上传（本处）与告警 webhook（provider-health.ts）。
     // 它们只看自己的开关，从不问隐私级别——配了 essential-traffic 的用户以为
     // 限制了数据外发，实际整份轨迹照传。这类缺陷比崩溃危险，因为它静默。
-    const { isEssentialTrafficOnly } = await import("../analytics/privacy-level.ts");
+    const { isEssentialTrafficOnly, setConfiguredPrivacyLevel } =
+      await import("../analytics/privacy-level.ts");
+    // 配置文件里的 privacy_level 原本只在 initTelemetrySystem 里注入，而那一步在本函数
+    // **之后**才跑（app.ts 先 initTraceCollector 再 initTelemetrySystem）——于是
+    // settings.json 写 `analytics.privacy_level: "essential-traffic"` 拦不住轨迹上传，
+    // 只有环境变量能拦。这里提前注入一次；后面那次注入的是同一个值，幂等。
+    if (config.analytics?.privacyLevel) setConfiguredPrivacyLevel(config.analytics.privacyLevel);
     if (traceConfig.upload?.url && traceConfig.upload?.token && isEssentialTrafficOnly()) {
       log.info("TRACE", "隐私级别为 essential-traffic，轨迹上传已禁用（仅本地留存）");
     } else if (traceConfig.upload?.url && traceConfig.upload?.token) {
@@ -54,13 +60,23 @@ export async function initTraceCollector(
         // §6.4：传入模型定价列表，使上传前 cost 校正能用权威 pricing 重算
         availableModels: config.availableModels,
       });
-      uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
-      // 死配置修复：`queue_scan_interval_ms` 同样从未生效——全文只有心跳一个
-      // setInterval，processRetryQueue 的唯一调用点是 `--upload-traces` 手动命令。
-      // 于是"配了自动补传"是个错觉。这里把它真正接上。
-      uploadMgr.startQueueScan(traceConfig.upload.queueScanIntervalMs ?? 300_000);
+      // auto_upload=false：保留 uploader 给手动通道（/debug 上传快照），
+      // 但不起任何自动外发的定时器（心跳探测也是一次外发请求）。
+      const autoUpload = traceConfig.upload.autoUpload !== false;
+      if (autoUpload) {
+        uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
+        // 死配置修复：`queue_scan_interval_ms` 同样从未生效——全文只有心跳一个
+        // setInterval，processRetryQueue 的唯一调用点是 `--upload-traces` 手动命令。
+        // 于是"配了自动补传"是个错觉。这里把它真正接上。
+        uploadMgr.startQueueScan(traceConfig.upload.queueScanIntervalMs ?? 300_000);
+      }
       uploader = uploadMgr;
-      log.info("TRACE", `上传已启用: ${traceConfig.upload.url}`);
+      log.info(
+        "TRACE",
+        autoUpload
+          ? `上传已启用: ${traceConfig.upload.url}`
+          : `上传已配置但 auto_upload=false，仅手动上传: ${traceConfig.upload.url}`,
+      );
       // P0 最后一道防线（启动补传）刻意**不在这里**触发，而是由 collector 在
       // SessionStart 里调 —— 那里才有 resume 感知的权威 trace session id。
       // ⚠️ 不要改成在此处传 `config.sessionId`：那是**进程**会话 id，resume 时与
@@ -76,6 +92,7 @@ export async function initTraceCollector(
         // 不传（undefined）时由 collector 侧解析 env 兜底 SID_CODE_TRACE_NO_RAW，
         // 所以这里原样透传而不是先 `?? true` —— 提前定死会把 env 通道堵掉。
         recordRawPayloads: traceConfig.recordRawPayloads,
+        autoUpload: traceConfig.upload?.autoUpload,
       },
       uploader,
     );

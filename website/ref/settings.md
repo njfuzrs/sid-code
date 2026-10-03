@@ -18,9 +18,8 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **77** 个顶层字段。其中 51 个由
-> `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出），26 个标 ⚠ 的字段
-> 靠 schema 的 `.passthrough()` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。
+> 共 **78** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
 `.sid-code/settings.local.json`（项目级本地，gitignore，最优先）。
@@ -31,74 +30,75 @@ settings.json 的全部可配字段、类型与默认值。
 | `allowedDirectories` | array | — | 目录白名单/黑名单 可访问目录白名单（cwd 之外要读写的目录须显式加入；对应 --add-dir） |
 | `allowedTools` | array | — | 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 |
 | `alternateBuffer` | boolean | — | UI 渲染配置 是否启用 alternate buffer（全屏 TUI）模式。 - false（默认，ADR-040）：主屏 Static 渲染，历史进终端 scrollback，鼠标原生选中复制。 2026-07-23 曾把默认改成 … |
-| `analytics` ⚠ | object | — | 分析/事件系统配置（spec 17 — analytics 通道） |
+| `analytics` | object | — | 分析/事件系统配置（spec 17 — analytics 通道） |
 | `anthropicKey` | string | — | Anthropic API 密钥（provider=anthropic 时必填；env ANTHROPIC_API_KEY 优先） |
 | `askUserQuestionTimeout` | string | — | AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应， 按 can… |
-| `audit` ⚠ | boolean | — | 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地， 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。 ⚠ 与 debug 是 if/else 关系而非并行两条日志（cli… |
-| `auditLogFile` ⚠ | string | — | 审计日志落点（缺省 sidPaths.auditLog()，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
-| `autoDream` ⚠ | boolean | — | G10：autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
-| `autoMemory` ⚠ | boolean | — | M2：auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感… |
+| `audit` | boolean | — | 审计日志开关（零配置常驻：不依赖 debug，始终把 WARN/ERROR 关键事件落本地， 出问题必有现场。只写本地、不外传。默认开，audit:false 可关）。 ⚠ 与 debug 是 if/else 关系而非并行两条日志（cli… |
+| `auditLogFile` | string | — | 审计日志落点（缺省 sidPaths.auditLog()，即 ~/.sid-code/audit.log；自带 10MB 轮转 + 留 1 备份） |
+| `autoDream` | boolean | — | G10：autoDream 自主记忆巩固开关（settings.json autoDream）。 默认关闭——开启后会话结束经三级 gate 判断是否跑后台记忆巩固/剪枝。 |
+| `autoMemory` | boolean | — | M2：auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感… |
 | `autoUpdate` | enum | `off` / `notify` / `auto` | 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭 |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
-| `checkpoint` ⚠ | object | — | Checkpoint 配置 |
+| `bridge` | object | — | Bridge 远程控制配置（D14 准入） |
+| `checkpoint` | object | — | Checkpoint 配置 |
 | `classifierModel` | string | — | LLM 分类器使用的模型（默认复用主循环模型 config.model） |
 | `cleanupPeriodDays` | number | ≥0 | cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。 |
-| `conflictDetection` ⚠ | boolean | — | 并发冲突检测配置（Phase 2.4） 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲… |
-| `conflictSeverity` ⚠ | string | — | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻… |
+| `conflictDetection` | boolean | — | 并发冲突检测配置（Phase 2.4） 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲… |
+| `conflictSeverity` | enum | `warn` / `block` / `off` | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻… |
 | `costLimit` | number | ≥0 | 成本配额（美元） |
-| `debug` ⚠ | boolean | — | 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） |
-| `debugLevel` ⚠ | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） |
-| `debugLogFile` ⚠ | string | — | 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
+| `debug` | boolean | — | 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） |
+| `debugLevel` | string | — | 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） |
+| `debugLogFile` | string | — | 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） |
 | `disableAllHooks` | boolean | — | disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源， 任一为 true 即禁用。见 hook/registry.ts。 |
 | `disabledHooks` | array | — | 禁用的 Hook 名列表（/hooks disable -p 持久化端） |
 | `disabledSkills` | array | — | Skill 配置 禁用的 Skill 名称列表 |
 | `disallowedTools` | array | — | 禁用工具名单（拒绝优先于 allowedTools） |
 | `effortLevel` | enum | `low` / `medium` / `high` / `xhigh` / `max` | 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。 |
 | `enableLLMClassifier` | boolean | — | LLM 命令风险分类器（P0-3 迭代 II） 是否启用 LLM 命令风险分类器（第二道防线，默认 false 保守） |
-| `enableSandbox` ⚠ | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
+| `enableSandbox` | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
 | `env` | object | — | 环境变量 |
 | `fallbackModel` | string | — | 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 |
 | `fallbackSwitchMode` | enum | `ask` / `auto` / `off` | 主模型重试耗尽后的降级模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。 可选——未设时消费点（app.ts）按 "ask" 兜底（生产默认询问）。 |
 | `fastMode` | boolean | — | Fast Mode 开关（/fast 持久化端，settings.json fastMode）。缺省 = false。 语义：偏好更快的输出端点/服务档位。当前网关未提供对等 fast 能力，故此开关为「预留」—— 已透传到 fallba… |
 | `git` | object | — | Git 集成配置（P3-1：可配置归因） |
-| `goal` ⚠ | object | — | /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG） |
+| `goal` | object | — | /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG） |
 | `hooks` | object | — | Hook 和 MCP |
-| `ide` ⚠ | object | — | IDE 集成配置 |
+| `ide` | object | — | IDE 集成配置 |
 | `identity` | object | — | M1 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入； deviceId 不在这里配（本机持久 UUID，见 identity/device-id.ts）。 未配置时所有功… |
 | `includeCoAuthoredBy` | boolean | — | includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段… |
 | `jitContext` | boolean | — | JIT 上下文发现 是否启用 JIT 上下文发现（默认 true） |
 | `language` | enum | `zh` / `en` / `auto` | 输出语言偏好：`zh` 中文优先（缺省）, `en` 英文优先, `auto` 跟随用户输入语言。 优先级：`--language` > `SID_LANGUAGE` 环境变量 > settings.json > 缺省（zh）。 不设置时… |
 | `maxThinkingTokens` | number | 整数 ≥0 | §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。 env SID_CODE_MAX_THINKING_TOKENS / M… |
 | `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
-| `mcpPolicy` ⚠ | object | — | B1：MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。 |
+| `mcpPolicy` | object | — | B1：MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。 |
 | `mcpServers` | object | — | MCP 服务器 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值，见 network-profile.ts） |
 | `openaiKey` | string | — | OpenAI 兼容端点的 API 密钥（provider=openai/ollama 等；env OPENAI_API_KEY 优先） |
-| `outputStyle` ⚠ | string | — | G12：输出风格名（settings.json outputStyle）。 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。 不设置时不… |
+| `outputStyle` | string | — | G12：输出风格名（settings.json outputStyle）。 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。 不设置时不… |
 | `permissionMode` | string | — | 权限配置 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk |
 | `permissions` | object | — | 权限配置 |
-| `pluginDirs` ⚠ | array | — | 插件配置 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
+| `pluginDirs` | array | — | 插件配置 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
 | `provider` | string | — | LLM 配置 LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额管控（增强版，向后兼容 costLimit） |
 | `respectGitignore` | boolean | — | G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。 respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。 |
-| `sandboxAutoAllowBash` ⚠ | boolean | — | P2-3：沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 这个开关是 P2-3 把 `autoAllowBashIfSandboxed` 默认值翻成 false 之后的**回退通道**： 不接这一条，新默认值就变成… |
+| `sandboxAutoAllowBash` | boolean | — | P2-3：沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 这个开关是 P2-3 把 `autoAllowBashIfSandboxed` 默认值翻成 false 之后的**回退通道**： 不接这一条，新默认值就变成… |
 | `sanitizeEnv` | boolean | — | 环境变量清理 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索配置 |
-| `sessionRetention` ⚠ | object | — | 会话保留配置 |
-| `showLineNumbers` ⚠ | boolean | — | UI 配置 代码块是否显示行号（默认 true） |
-| `speculativeClassifier` ⚠ | boolean | — | GAP-04：分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。 安全不… |
+| `sessionRetention` | object | — | 会话保留配置 |
+| `showLineNumbers` | boolean | — | UI 配置 代码块是否显示行号（默认 true） |
+| `speculativeClassifier` | boolean | — | GAP-04：分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。 安全不… |
 | `statusLine` | object | — | P1-5 可自定义状态栏（settings.json statusLine，对标 claude-code）。 { type: "command", command: "&lt;脚本>", padding?: number }。缺省 = 走内置聚… |
 | `subAgentModels` | object | — | 子代理模型映射 |
-| `teamMemory` ⚠ | object | — | 团队记忆同步（E.11 协作护城河） 团队记忆同步配置（共享目录模型） |
-| `telemetry` ⚠ | object | — | 遥测配置（OTel 兼容的结构化 Trace） |
+| `teamMemory` | object | — | 团队记忆同步（E.11 协作护城河） 团队记忆同步配置（共享目录模型） |
+| `telemetry` | object | — | 遥测配置（OTel 兼容的结构化 Trace） |
 | `theme` | string | — | UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 |
 | `thinkingEnabled` | boolean | — | 思考开关初值（/think 持久化端，settings.json thinkingEnabled）。 缺省 = auto（跟随模型/provider 默认）。运行时态在 App.runtimeThinking，本字段仅作启动初值。 |
-| `toolSearch` ⚠ | union | — | 工具延迟加载（ToolSearch） 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。 取值： - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。… |
-| `toolSearchKeepLoaded` ⚠ | array | — | 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。 sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己 声明 a… |
-| `trace` ⚠ | object | — | 轨迹采集配置 |
+| `toolSearch` | union | — | 工具延迟加载（ToolSearch） 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。 取值： - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。… |
+| `toolSearchKeepLoaded` | array | — | 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。 sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己 声明 a… |
+| `trace` | object | — | 轨迹采集配置 |
 | `trustProjectExtensions` | boolean | — | 扩展安全配置 是否信任项目级扩展（跳过信任检查，默认 false） |
 | `vimMode` | boolean | — | Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false |
 | `webFetchExtractModel` | string | — | WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。 配一个便宜的小模型能显著… |

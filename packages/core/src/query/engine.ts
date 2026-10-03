@@ -470,6 +470,10 @@ export class QueryEngine {
         if (event.kind === "done" && event.budgetExceeded) {
           this.deps.traceCollector?.recordBudgetExceeded?.(event.budgetExceeded.source);
         }
+        // 同理：StructuredOutput 交付收尾的末轮 stop_reason 是 tool_use，只能靠这条声明归到 end_turn。
+        if (event.kind === "done" && event.structuredOutputDelivered) {
+          this.deps.traceCollector?.recordStructuredOutputDelivered?.();
+        }
         yield event;
         if (event.kind === "done") {
           return;
