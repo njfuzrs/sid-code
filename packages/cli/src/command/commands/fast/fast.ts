@@ -6,7 +6,7 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
  *
  * 设计取舍（重要）：CC 的 Fast Mode 是 Opus 系列专属的输出加速端点。我们走公司网关，
  * 网关当前**没有对等的 fast 端点/服务档位**，fallback 层的 `fastMode` 也标注为「预留，暂未启用」
- * （src/llm/fallback.ts:202），消费点为空。
+ * （packages/core/src/llm/fallback.ts 的 `FallbackConfig.fastMode`），消费点为空。
  *
  * 因此本命令**不造假开关**：它切换的是预留配置 config.fastMode（会透传到 fallback 层），
  * 但会诚实告知「当前网关未提供对等能力，开启暂无实际加速」。待网关支持后，这里无需改动即可生效。

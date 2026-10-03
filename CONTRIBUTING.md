@@ -341,6 +341,11 @@ pending）。现在加 job 只改 `all-checks-passed` 的 `needs` 一行，不�
 而且 PR 页面一片绿。`tests/release-flow-contract.test.ts` 有一条断言机械地拦这个
 （`needs` 必须覆盖除自己以外的全部 job）。
 
+⚠️ **判据是白名单**：每个上游结果必须是 `success` 或 `skipped`，其余一律拒绝。
+不要改回「不含 failure/cancelled」的黑名单 —— macOS runner 容量不足时 job 会以
+`abandoned` 结束（一条测试都没跑），黑名单会把它判成通过（PR #148 实测）。
+看到 macOS 因「not acquired by Runner」红了，处理是 `gh run rerun --failed`，不是放宽判据。
+
 另外开了两个自动化，**目的是让人只需要 review**：
 
 - **auto-merge**：`gh pr merge <n> --auto --merge` 挂上之后，CI 绿了自动合，

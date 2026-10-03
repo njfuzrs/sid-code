@@ -73,7 +73,7 @@ sid-code -r 5
 
 存储位置是 `~/.sid-code/sessions/<项目目录派生的键>/<session-id>.jsonl`，
 一行一条事件（JSON Lines）。同一个项目的会话归在一个子目录下，所以
-`-c` 在不同项目里continue 到的是各自最近的那次，不会串台。
+`-c` 在不同项目里 continue 到的是各自最近的那次，不会串台。
 
 清理策略默认值：
 
@@ -150,8 +150,8 @@ sid-code --cleanup-sessions
 
 ### `/status` 与 `/stats`：一眼概览 vs 会话统计
 
-这两个都给你看当前会话状态，但侧重不同（`src/command/commands/status/status.ts`、
-`src/command/builtins.ts:880`）：
+这两个都给你看当前会话状态，但侧重不同（`packages/cli/src/command/commands/status/status.ts`、
+`packages/cli/src/command/builtins.ts`）：
 
 | 命令 | 回答什么 | 形态 |
 | --- | --- | --- |

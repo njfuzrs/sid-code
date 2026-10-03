@@ -468,6 +468,8 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
   //   ② 丢掉 if: always() → 上游失败时本 job 变 skipped，而 GitHub 把 skipped 的
   //      必需检查算作**通过**
   //   ③ 判据写成「全部 == success」→ 将来任何带 if 条件的 job 被跳过就整体卡死
+  //   ④ 判据写成黑名单「不含 failure/cancelled」→ 闭集外的取值被放行。实测 PR #148：
+  //      macOS runner 没领到 job，needs 结果是 `abandoned`，汇聚门判了「✅ 全部检查通过」
   describe("汇聚门 all-checks-passed 不得静默变成假绿", () => {
     /** 解析后的 jobs 映射；YAML 1.1 会把裸 `on` 当布尔真键，这里只取 jobs 不受影响。 */
     function jobsOf(): Record<string, Record<string, unknown>> {
@@ -497,12 +499,41 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
       expect(jobsOf()["all-checks-passed"]?.if).toBe("always()");
     });
 
-    test("判据看 failure/cancelled，不看「全部 success」", () => {
+    /** Verdict 步骤里的 run 脚本 */
+    function verdictScript(): string {
       const steps = jobsOf()["all-checks-passed"]?.steps as Array<Record<string, string>>;
-      const script = steps.map((s) => s.run ?? "").join("\n");
-      expect(script).toContain("contains(needs.*.result, 'failure')");
-      expect(script).toContain("contains(needs.*.result, 'cancelled')");
-      expect(script).toMatch(/exit 1/);
+      return steps.map((s) => s.run ?? "").join("\n");
+    }
+
+    test("判据读全部 needs（toJSON），是白名单而不是 failure/cancelled 黑名单", () => {
+      const steps = jobsOf()["all-checks-passed"]?.steps as Array<Record<string, unknown>>;
+      // 读全部 needs 而不是逐个点名：点名会和 needs 列表漂移，新 job 的结论就没人看
+      expect(
+        steps.some((s) => (s.env as Record<string, string>)?.NEEDS_JSON === "${{ toJSON(needs) }}"),
+      ).toBe(true);
+      expect(verdictScript()).not.toContain("contains(needs.*.result, 'failure')");
+      expect(verdictScript()).toMatch(/exit 1/);
+    });
+
+    // 行为断言：把 workflow 里那条 jq 表达式抽出来，喂真实形态的 needs 跑一遍。
+    // abandoned 是 PR #148 的实测取值；旧黑名单判据对它放行。
+    test.each([
+      [{ test: "success", lint: "success" }, true],
+      [{ test: "skipped", lint: "success" }, true],
+      [{ test: "failure", lint: "success" }, false],
+      [{ test: "cancelled", lint: "success" }, false],
+      [{ test: "abandoned", lint: "success" }, false],
+      [{ test: "some_future_value", lint: "success" }, false],
+    ])("needs=%j → 放行=%p", (results, pass) => {
+      const m = verdictScript().match(/jq -e '([^']+)'/);
+      expect(m).not.toBeNull();
+      const needs = Object.fromEntries(
+        Object.entries(results).map(([k, r]) => [k, { result: r, outputs: {} }]),
+      );
+      const proc = Bun.spawnSync(["jq", "-e", m![1]], {
+        stdin: new TextEncoder().encode(JSON.stringify(needs)),
+      });
+      expect(proc.exitCode === 0).toBe(pass);
     });
   });
 

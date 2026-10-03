@@ -251,6 +251,34 @@ function firePostToolUseFailure(
   }
 }
 
+/**
+ * B33：子代理路径 fire PermissionDenied hook，与主循环 `query/tool-executor.ts` 同名 helper 同策略：
+ * 不 await、异常吞掉 —— 通知类 hook 不能拖慢或打断拒绝结果回传。
+ *
+ * 子代理结构上没有弹窗通道，所以 source 只有两档：deny 规则命中记 "rule"，
+ * 其余（ask 被 dontAsk 降级、fail-closed 兜底）记 "auto" —— 两者处置相反，hook 侧要能分开。
+ * 主循环接线后子代理仍漏着，等于「权限被拒通知到 IM」只覆盖一半调用路径。
+ */
+function firePermissionDenied(
+  hookSystem: HookSystem | undefined,
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+  reason: string,
+  source: "rule" | "auto",
+): void {
+  if (!hookSystem) return;
+  const log = getLogger();
+  try {
+    void hookSystem
+      .firePermissionDeniedEvent?.(toolName, toolInput ?? {}, reason, source)
+      ?.catch?.((e: any) =>
+        log.error("SUBAGENT:HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
+      );
+  } catch (e: any) {
+    log.error("SUBAGENT:HOOK", `permission_denied 触发异常（忽略）: ${e?.message ?? e}`);
+  }
+}
+
 /** 执行单个工具 */
 async function executeSingleTool(
   block: ContentBlock & { type: "tool_use" },
@@ -363,6 +391,13 @@ async function executeSingleTool(
         context: "subagent",
         reasonType: decision.decisionReason?.type,
       });
+      firePermissionDenied(
+        hookSystem,
+        block.name,
+        effectiveInput,
+        reason,
+        decision.decisionReason?.type === "rule" ? "rule" : "auto",
+      );
       // Pre/Post 配对：权限拒绝也要补 Failure 收尾。
       firePostToolUseFailure(
         hookSystem,
@@ -408,6 +443,13 @@ async function executeSingleTool(
         context: "subagent",
         reasonType: "other",
       });
+      firePermissionDenied(
+        hookSystem,
+        block.name,
+        effectiveInput,
+        "未配置权限检查器，写类操作默认拒绝（fail-closed）",
+        "auto",
+      );
       // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
       firePostToolUseFailure(
         hookSystem,
