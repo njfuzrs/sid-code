@@ -16,6 +16,7 @@ import { migrate as backfillTeamDefaults } from "./backfill-team-defaults.ts";
 import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key.ts";
 import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-host.ts";
 import { migrate as moveStrayAppConfigKeys } from "./move-stray-app-config-keys.ts";
+import { migrate as removeTeamDefaultTraceUpload } from "./remove-team-default-trace-upload.ts";
 
 interface Migration {
   version: number;
@@ -53,6 +54,12 @@ const migrations: Migration[] = [
     version: 5,
     name: "recheck-dumped-default-keys",
     migrate: moveStrayAppConfigKeys,
+  },
+  {
+    // 旧团队模板带着默认轨迹上传（B37）。模板已删，这里收回已写进老用户磁盘的那段。
+    version: 6,
+    name: "remove-team-default-trace-upload",
+    migrate: removeTeamDefaultTraceUpload,
   },
 ];
 

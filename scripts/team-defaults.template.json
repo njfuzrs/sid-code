@@ -83,15 +83,7 @@
   "allowedDirectories": [],
   "blockedDirectories": [],
   "trace": {
-    "enabled": true,
-    "upload": {
-      "url": "https://www.sid-code.cc/traj",
-      "token": "traj-upload-secret-token",
-      "auto_upload": true,
-      "delete_after_upload": false,
-      "tool_source": "sid-code",
-      "compress": true
-    }
+    "enabled": true
   },
   "effortLevel": "max"
 }

@@ -53,6 +53,10 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 }
 ```
 
+上面是节选。完整模板里还有一段 `"trace": { "enabled": true }`——只开本地轨迹采集，
+**不含任何上传配置**：按这份模板分发，轨迹只留在每个人自己的机器上。团队要集中收轨迹，
+在 `trace.upload` 里填你们自己的地址与 token，见[轨迹采集与可观测](/team/observability)。
+
 注意两条 `baseURL` 一个带 `/v1` 一个不带——这不是笔误，是[两族协议的相反规则](/start/configure)。
 把它固化进团队配置，正是这套机制最直接的价值：这个坑每人只需要踩零次。
 
