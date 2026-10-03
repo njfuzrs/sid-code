@@ -120,31 +120,61 @@ UserPromptSubmit: 1
 
 ### 本地保留多少
 
-默认保留最近 **100** 个会话目录，超了按修改时间 LRU 清理（`src/trace/collector.ts:180-181`）。
+默认保留最近 **100** 个会话目录，超了按修改时间 LRU 清理（`packages/core/src/trace/collector.ts` 的 `maxSessionsRetained`）。
 清理有个偏向：**优先删已上传的**（数据已在远端），未上传的即使更旧也尽量留
-（`collector.ts:194-198`），避免丢掉还没采集走的数据。
+（看 `.uploaded` 标记），避免丢掉还没采集走的数据。
 
 ## 关掉与打开
 
-采集默认启用。关掉：
+采集默认启用，轨迹写在本机 `~/.sid-code/trajectories/`。关掉：
 
 ```bash
 sid-code --no-trace
 ```
 
-上传默认**不发生**——`trace.upload` 段没配 `url` / `token` 就只在本地存。
-这是刻意的：代码里不硬编码任何上传地址（`src/cli.ts:505-507`）。
+**上传默认不发生，必须手动打开**——`trace.upload` 里同时有 `url` 和 `token` 才会上传，
+缺任何一个就只在本地存（`packages/core/src/query/init-helpers.ts` 的 `initTraceCollector`）。
+代码里不硬编码任何上传地址，官网安装拿到的[团队默认模板](/team/defaults)也只带
+`"trace": { "enabled": true }`，不含上传配置。
 
-## 上传到轨迹平台
+::: warning 2026-10 之前装过的用户请自查一次
+旧版团队模板曾带着一段指向 `www.sid-code.cc/traj` 的 `trace.upload`，
+经官网安装或启动补全写进了 `~/.sid-code/settings.json`。新版启动时会自动移除这一段
+（只认旧模板那一对 url + token，你自己配的上传不受影响），并在终端打一行提示。
+想确认现状：
 
-配置写在 `~/.sid-code/settings.json`：
+```bash
+grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
+```
+:::
+
+## 上传到你自己的轨迹平台
+
+### 三种打开方式
+
+按「持久 → 临时」排，优先级从低到高（后者覆盖前者）：
+
+| 方式 | 写法 | 适合 |
+| --- | --- | --- |
+| 用户配置 | `~/.sid-code/settings.json` 的 `trace.upload` | 自己的开发机、长期开着 |
+| 环境变量 | `SID_CODE_TRACE=1` + `SID_CODE_TRACE_UPLOAD_URL` + `SID_CODE_TRACE_UPLOAD_TOKEN` | CI、容器、临时一台机器 |
+| 命令行 | `--trace-upload-url <url> --trace-upload-token <tok>` | 单次会话 |
+
+环境变量那行三个**缺一不可**：只设 URL / TOKEN、不设 `SID_CODE_TRACE=1` 时整组被忽略，
+仍按 settings.json 走；设了 `SID_CODE_TRACE=1` 但没给 URL / TOKEN，会把 settings.json
+里的上传配置**覆盖成空**（环境变量那层整块替换 `trace`，不是按字段合并）。
+
+**项目级 `.sid-code/settings.json` 里写 `trace` 不生效**：项目配置只放行界面与行为类字段，
+不放行任何外发地址——否则克隆一个仓库就可能把你的轨迹改道到别人的服务器。
+
+### 配置示例
 
 ```json
 {
   "trace": {
     "enabled": true,
     "upload": {
-      "url": "http://your-platform.example.com/traj",
+      "url": "https://your-platform.example.com/traj",
       "token": "${TRAJ_UPLOAD_TOKEN}",
       "auto_upload": true,
       "delete_after_upload": false,
@@ -156,46 +186,57 @@ sid-code --no-trace
 }
 ```
 
-`url` 要**含路径前缀**（如 `/traj`），上传器会在后面拼 `/api/v1/upload/session-file`
-（`src/trace/uploader.ts:255-256`）。
+`url` 要**含路径前缀**（如 `/traj`），上传器会在后面拼 `/api/v1/upload/session-file`。
 
-::: warning token 别写明文
-用 `${TRAJ_UPLOAD_TOKEN}` 占位符。这份配置如果通过[团队默认配置](/team/defaults)
-分发，就是一个全团队都能 `curl` 到的文件。
+::: warning token 别写明文，也别全员共用一个
+用 `${TRAJ_UPLOAD_TOKEN}` 占位符，值放环境变量。更要紧的是**别把上传配置塞进分发给别人的
+[团队默认配置](/team/defaults)**：那份文件全团队都能 `curl` 到，一旦挂到公网安装链路，
+每个装了的人都会把轨迹传给你，而且没有任何报错提醒他们。团队要集中收轨迹，
+让每个人在自己的 settings.json 里填，最好一人一个 token。
 :::
 
-三个开关是**独立**的，别混为一谈（`src/cli.ts:505-511`）：
+### 开关与字段
 
-| 开关 | 控制什么 | 默认 |
+开关是**独立**的，别混为一谈：
+
+| 字段 | 控制什么 | 默认 |
 | --- | --- | --- |
-| `trace.enabled` | 是否采集（关了就什么都不落盘） | `true` |
-| `trace.upload.url` + `token` | 是否上传（有配置才传） | 未配置 |
-| `trace.upload.auto_upload` | 会话结束自动传，还是等手动 | `true` |
-| `trace.upload.delete_after_upload` | 传完删本地 | `false`（本地留全量副本） |
+| `trace.enabled` | 是否采集（关了就什么都不落盘，也就无从上传） | `true` |
+| `trace.upload.url` + `token` | 是否具备上传能力（两个都有才算配置） | 未配置 |
+| `trace.upload.auto_upload` | `true`：会话结束自动传 + 启动时补传历史未传会话；`false`：只在本地留，等你手动 `--upload-traces` | `true` |
+| `trace.upload.delete_after_upload` | 传完删本地数据文件（保留 metadata 快照） | `false` |
+| `trace.upload.compress` | gzip 压缩后上传 | `true` |
+| `trace.upload.user_id` / `device_id` | 团队聚合的分组键，多人传到同一平台时区分来源 | `device_id` 缺省用本机持久 id |
+| `trace.upload.tool_source` | 来源标识 | `"sid-code"` |
+| `trace.upload.max_retries` | 单文件总尝试次数 | `5` |
 
-`--trace-upload-disabled` 是最高优先级的强制关闭，覆盖配置文件。
-临时排查隐私敏感项目时用它。
+另有三道**强制关闭**，都覆盖上面的配置：
+
+- `--trace-upload-disabled`：本次会话不上传（采集照常）。
+- `--no-trace`：连采集一起关。
+- `SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`（或 `analytics.privacy_level: "essential-traffic"`）：
+  隐私级别最严档，轨迹上传与其它非必要外发一起禁用，只在本地留存。
 
 ### 上传的实际形态
 
-`POST <url>/api/v1/upload/session-file`，`multipart/form-data`
-（`src/trace/uploader.ts:246-266`）：
+`POST <url>/api/v1/upload/session-file`，`multipart/form-data`：
 
 - 鉴权头 `X-Upload-Token`，完整性头 `X-Content-SHA256`
 - 默认 gzip level 6 压缩，`Content-Type: application/gzip`
 - 表单字段：`file` / `session_id` / `file_type` / `tool_source`，可选 `user_id` / `device_id`
 - 30 秒超时；失败最多尝试 5 次，间隔指数退避 2s→4s→8s→16s（最后一次失败后不再等待）
 - 服务端返回非空 `sha256` 时会做二次校验，不一致算失败重试
+- `auto_upload: true` 时另有两个后台动作：每 60 秒探一次 `<url>/api/v1/health`，
+  每 5 分钟扫一次重试队列；启动时补传最多 20 个缺 `.uploaded` 标记的历史会话
 
-失败的进持久化重试队列。补传：
+失败的进持久化重试队列。手动补传（`auto_upload: false` 时这是唯一的上传入口）：
 
 ```bash
 sid-code --upload-traces
 ```
 
-`user_id` / `device_id` 是团队聚合的分组键——多人上传到同一平台时靠它们区分来源。
-
 ## 能回答什么问题
+
 
 按你实际想知道的事分：
 
@@ -443,7 +484,7 @@ Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid
 标题生成 / 记忆召回这些影子调用的用量，此前只在 `SessionEnd` 同步一次——
 会话崩溃或被杀就永久丢失，即便 provider 已经计费。现在改成
 `setSideStatsObserver` 在每次影子调用后立即同步并落盘
-（`src/trace/collector.ts:186-191`、`collector.ts:1740-1750`）。
+（`packages/core/src/trace/collector.ts`）。
 所以现在崩溃的会话也能拿到影子调用花费。
 
 **2. 但 `enabled: false` 时什么都没有。** 关了采集就没有事后诊断的可能。
