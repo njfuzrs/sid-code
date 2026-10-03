@@ -26,7 +26,10 @@ import { basename, join, relative, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 
-/** ink v7.1.1 `src/` 的 git tree OID（= T1.1 提交 aa3102f6 里的 `packages/tui/src`）。 */
+/**
+ * ink v7.1.1 `src/` 的 git tree OID（= T1.1 提交 8fd9048d 里的 `packages/tui/src`）。
+ * 用 tree 而不是 commit 号：分支变基会改 commit 号，tree OID 只跟内容有关，不受影响。
+ */
 export const UPSTREAM_TREE = "c14ef7b43c4353f4ff5a1a0688d285a549606770";
 
 /**
