@@ -52,11 +52,19 @@ const HookEntrySchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * MCP 传输方式枚举：合法值的唯一事实源。
+ * config/schema.ts 的校验器从这里的 `.options` 派生，不再手写名单——
+ * 手写名单曾漏掉 ws / http-json，照官网填 ws 会被报「无效值」（B36 / D129）。
+ * 新增传输方式时只改这一处，并在 mcp/manager.ts 补对应分支。
+ */
+export const MCPTransportEnum = z.enum(["stdio", "http", "http-json", "sse", "ws"]);
+
 /** MCP 服务器 Schema */
 const MCPServerSchema = lazySchema(() =>
   z
     .object({
-      transport: z.enum(["stdio", "http", "http-json", "sse", "ws"]),
+      transport: MCPTransportEnum,
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
@@ -126,13 +134,21 @@ const ModelConfigSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * 预算周期 / 动作 / 搜索后端枚举：同 MCPTransportEnum，是 config/schema.ts 校验器的事实源。
+ * 校验器从 `.options` 派生，不再手写第二份名单（B36 同形态收口）。
+ */
+export const BudgetPeriodEnum = z.enum(["session", "hourly", "daily", "weekly", "monthly"]);
+export const BudgetActionEnum = z.enum(["alert", "downgrade", "block"]);
+export const SearchBackendEnum = z.enum(["searxng", "brave", "tavily", "duckduckgo"]);
+
 /** 预算规则 Schema */
 const BudgetRuleSchema = lazySchema(() =>
   z
     .object({
       id: z.string(),
       name: z.string(),
-      period: z.enum(["session", "hourly", "daily", "weekly", "monthly"]),
+      period: BudgetPeriodEnum,
       limit_usd: z.number().positive(),
       scope: z.object({ model: z.string().optional() }).passthrough().optional(),
       thresholds: z
@@ -143,7 +159,7 @@ const BudgetRuleSchema = lazySchema(() =>
         })
         .passthrough()
         .optional(),
-      action: z.enum(["alert", "downgrade", "block"]).optional(),
+      action: BudgetActionEnum.optional(),
     })
     .passthrough(),
 );
@@ -175,7 +191,7 @@ const IdentitySettingsSchema = lazySchema(() =>
 const SearchSchema = lazySchema(() =>
   z
     .object({
-      backend: z.enum(["searxng", "brave", "tavily", "duckduckgo"]).optional(),
+      backend: SearchBackendEnum.optional(),
       searxngUrl: z.string().optional(),
       braveApiKey: z.string().optional(),
       tavilyApiKey: z.string().optional(),
