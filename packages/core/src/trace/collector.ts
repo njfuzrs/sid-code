@@ -253,6 +253,8 @@ export class TraceCollector {
    * 单向置位；source 只记录是哪一层停的，推断本身不读它。
    */
   private hitBudgetExceeded = false;
+  /** B26：本轮以 StructuredOutput 交付收尾（{@link recordStructuredOutputDelivered}），收尾归 end_turn */
+  private hitStructuredOutputDelivered = false;
   private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
@@ -750,6 +752,7 @@ export class TraceCollector {
     // 撞顶 / 预算硬停标志随会话重置：上个会话的收尾事实不能漏到这个会话。
     this.hitMaxTurns = false;
     this.hitBudgetExceeded = false;
+    this.hitStructuredOutputDelivered = false;
     this.budgetExceededSource = undefined;
 
     // 重置辅助调用统计（避免跨会话污染）
@@ -1921,7 +1924,7 @@ export class TraceCollector {
         ? "max_turns"
         : this.hitBudgetExceeded
           ? "budget_exceeded"
-          : lastPair?.stop_reason === "end_turn"
+          : lastPair?.stop_reason === "end_turn" || this.hitStructuredOutputDelivered
             ? "end_turn"
             : "user_interrupt";
       if (this.hitBudgetExceeded && this.budgetExceededSource) {
@@ -2897,6 +2900,16 @@ export class TraceCollector {
   recordBudgetExceeded(source: "budget_rule" | "quota" | "remote"): void {
     this.hitBudgetExceeded = true;
     this.budgetExceededSource = source;
+  }
+
+  /**
+   * 记录「本轮以 StructuredOutput 交付收尾」。由 `engine.ts` 在收到带
+   * `structuredOutputDelivered` 的 `done` 时调用。理由同 {@link recordBudgetExceeded}：
+   * 末轮 stop_reason 是 tool_use，从 SessionEnd 推不出「正常交付」，不声明就落 user_interrupt。
+   * max_turns / budget_exceeded 仍优先（更具体的控制流事实）。
+   */
+  recordStructuredOutputDelivered(): void {
+    this.hitStructuredOutputDelivered = true;
   }
 
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───

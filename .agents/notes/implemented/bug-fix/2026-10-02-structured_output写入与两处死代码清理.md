@@ -34,7 +34,27 @@ Date: 2026-10-02
   - 同上 `--output-format stream-json --verbose` → 末条 result `{"subtype":"success","num_turns":3,"structured_output":{"functionCount":2,"language":"TypeScript"}}`
 - `bun run affected-tests:run` 2019 pass / 0 fail；`make build` 自检通过且无 `will always be undefined`。
 
-**顺带发现（不在本次范围，未修）**：第一次端到端不带 `--max-turns`，模型在 StructuredOutput 已返回成功后
-又连续调了它 99 次同参（`trace-digest 20261002-212543-660c152b`：`observation_entropy_zero run=99`，
-102 次 API、$1.06），最后被手动停掉。工具成功后没有任何东西让主循环收尾——SubAgent 路径靠
-`hasCapturedOutput` 旁路结束，顶层 `-p` 路径没有这个出口。这是独立缺陷，应另开条目。
+## 追加（2026-10-03）：顶层主循环在 StructuredOutput 交付后收尾
+
+**决定了什么**：第一次端到端不带 `--max-turns` 时，模型在 StructuredOutput 已返回成功后
+又同参连调 99 次（会话 `20261002-212543-660c152b`：`observation_entropy_zero run=99`，102 次 API、$1.06）。
+子代理路径靠 `hasCapturedOutput` 旁路结束，顶层 `queryLoop` 没有这个出口。本 PR 一并修：
+
+- `query/loop.ts`：工具批执行完后，本批含 StructuredOutput 且注册表里那个工具 `hasCapturedOutput === true`
+  → `yield done`（带 `structuredOutputDelivered: true`）并 return。
+- `query/types.ts` / `query/engine.ts` / `trace/collector.ts`：done 上的这条显式声明经 engine 上报
+  `recordStructuredOutputDelivered()`，collector 收尾时归 `end_turn`。不加它，末轮 stop_reason 是 `tool_use`，
+  会掉进 `user_interrupt` 兜底桶（实测 `20261003-120708-72a3b7af` 就是这样）——与 budget_exceeded / max_turns 同一条反模式。
+
+**放弃了什么**：
+- 判据用「本轮调过 StructuredOutput」：校验失败的那次也会被当成交付，模型失去按错误重试的机会。只认工具自报的 `hasCapturedOutput`。
+- 靠提示词让模型「调一次就停」：原本的系统提示已经写了「恰好调用一次」，实测 GLM-5.2 照样连调 99 次，提示词约束不住。
+- 在 SDK 引擎层截断：只能管 stream-json，`-p --output-format json` 走的是同一个 queryLoop，必须修在循环里。
+
+**拿什么证明它生效了**：
+- `tests/query/structured-output-terminates-loop.test.ts`：真 StructuredOutputTool + 「每轮都再调一次」的 mock 模型。
+  合规 → 1 次请求、done 带声明；先不合规后合规 → 2 次请求。**变异自证**：出口条件改成恒假 → 2 fail；恢复 → 2 pass。
+- `tests/trace/collector.test.ts` 新增三条：上报 → end_turn；不上报（反向自证）→ user_interrupt；max_turns 优先。
+- 编译产物端到端，**不带 `--max-turns`**：json / stream-json 都拿到 `{"language":"TypeScript","functionCount":2}`；
+  `trace-digest 20261003-120930-2e4fd51a` → `[end_turn]`、API 2 次、$0.0085（修前 102 次、$1.06）。
+- `affected-tests:run` 3501 pass / 0 fail；lint / format / 包边界 / `make build` 自检通过。
