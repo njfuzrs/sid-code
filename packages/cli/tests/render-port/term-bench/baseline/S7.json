@@ -1,0 +1,331 @@
+{
+  "scenario": "S7",
+  "exitCode": 0,
+  "total": {
+    "bytes": 1117,
+    "eraseScreen": 1,
+    "eraseScrollback": 0,
+    "syncBegin": 1,
+    "syncEnd": 1,
+    "altEnter": 1,
+    "altExit": 2,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "进入 alt-screen",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "any",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 564,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 1,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 0 行",
+        "第 1 行",
+        "第 2 行",
+        "第 3 行",
+        "第 4 行",
+        "第 5 行",
+        "第 6 行",
+        "第 7 行",
+        "第 8 行",
+        "第 9 行",
+        "第 10 行",
+        "第 11 行",
+        "第 12 行",
+        "第 13 行",
+        "第 14 行",
+        "第 15 行",
+        "第 16 行",
+        "第 17 行",
+        "第 18 行",
+        "第 19 行",
+        "第 20 行",
+        "第 21 行",
+        "第 22 行",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 23,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "滚动到第 20 行",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "any",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 284,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 20 行",
+        "第 21 行",
+        "第 22 行",
+        "第 23 行",
+        "第 24 行",
+        "第 25 行",
+        "第 26 行",
+        "第 27 行",
+        "第 28 行",
+        "第 29 行",
+        "第 30 行",
+        "第 31 行",
+        "第 32 行",
+        "第 33 行",
+        "第 34 行",
+        "第 35 行",
+        "第 36 行",
+        "第 37 行",
+        "第 38 行",
+        "第 39 行",
+        "第 40 行",
+        "第 41 行",
+        "第 42 行",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 23,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Copy Mode 开（鼠标关）",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 32,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 20 行",
+        "第 21 行",
+        "第 22 行",
+        "第 23 行",
+        "第 24 行",
+        "第 25 行",
+        "第 26 行",
+        "第 27 行",
+        "第 28 行",
+        "第 29 行",
+        "第 30 行",
+        "第 31 行",
+        "第 32 行",
+        "第 33 行",
+        "第 34 行",
+        "第 35 行",
+        "第 36 行",
+        "第 37 行",
+        "第 38 行",
+        "第 39 行",
+        "第 40 行",
+        "第 41 行",
+        "第 42 行",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 23,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Copy Mode 关（鼠标开）",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "drag",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 32,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 20 行",
+        "第 21 行",
+        "第 22 行",
+        "第 23 行",
+        "第 24 行",
+        "第 25 行",
+        "第 26 行",
+        "第 27 行",
+        "第 28 行",
+        "第 29 行",
+        "第 30 行",
+        "第 31 行",
+        "第 32 行",
+        "第 33 行",
+        "第 34 行",
+        "第 35 行",
+        "第 36 行",
+        "第 37 行",
+        "第 38 行",
+        "第 39 行",
+        "第 40 行",
+        "第 41 行",
+        "第 42 行",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 23,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "卸载后（回主屏）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 0,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 205,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 2,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 0,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

@@ -49,8 +49,10 @@ describe("解析", () => {
   });
 
   test("测试列三种形态", () => {
-    expect(parseTestRef("⏳ T0.4 S3")).toEqual({ kind: "pending-diff", scenario: "S3" });
     expect(parseTestRef("⏳ T0.5")).toEqual({ kind: "pending-contract" });
+    expect(parseTestRef("⏳ T8.1")).toEqual({ kind: "pending-later", task: "T8.1" });
+    // T0.4 已落地：场景契约必须直接引用 scenarios.tsx，不能再挂「待 T0.4」
+    expect(parseTestRef("⏳ T0.4 S3").kind).toBe("invalid");
     expect(parseTestRef("`a/b.test.ts` I1:")).toEqual({
       kind: "existing",
       file: "a/b.test.ts",

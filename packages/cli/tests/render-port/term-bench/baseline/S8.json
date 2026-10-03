@@ -1,0 +1,135 @@
+{
+  "scenario": "S8",
+  "exitCode": 0,
+  "total": {
+    "bytes": 343,
+    "eraseScreen": 2,
+    "eraseScrollback": 0,
+    "syncBegin": 3,
+    "syncEnd": 3,
+    "altEnter": 1,
+    "altExit": 1,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "主界面（raw mode 已开）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "none",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 65,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["主界面"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "外部编辑器中",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 10,
+        "y": 0,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 57,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 1,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["编辑器画面"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "编辑器退出后",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "none",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 47,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 1,
+        "osc": {}
+      },
+      "screen": ["主界面"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 174,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["主界面"],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

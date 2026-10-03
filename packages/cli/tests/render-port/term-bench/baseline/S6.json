@@ -1,0 +1,152 @@
+{
+  "scenario": "S6",
+  "exitCode": 0,
+  "total": {
+    "bytes": 818,
+    "eraseScreen": 2,
+    "eraseScrollback": 2,
+    "syncBegin": 4,
+    "syncEnd": 4,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "宽 80",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 219,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                            右",
+        "长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行",
+        "长行长行长行长行长行长行长行长行长行长行"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "窄 40",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 4,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 226,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                    右",
+        "长行长行长行长行长行长行长行长行长行长行",
+        "长行长行长行长行长行长行长行长行长行长行",
+        "长行长行长行长行长行长行长行长行长行长行"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "连续两次 resize 回 80",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 224,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                            右",
+        "长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行",
+        "长行长行长行长行长行长行长行长行长行长行"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [
+        "左                                                                            右",
+        "长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行长行",
+        "长行长行长行长行长行长行长行长行长行长行"
+      ],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

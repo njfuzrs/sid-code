@@ -1,0 +1,1484 @@
+{
+  "scenario": "S3",
+  "exitCode": 0,
+  "total": {
+    "bytes": 2355,
+    "eraseScreen": 1,
+    "eraseScrollback": 1,
+    "syncBegin": 6,
+    "syncEnd": 6,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "一项完成",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 69,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["● read 完成", "思考中…"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "read",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "bash 执行中",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 65,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["● read 完成", "○ bash 执行中", "思考中…"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "read",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "○ bash 执行中",
+              "style": "fg=3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "bash 完成（原地 reconcile）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 67,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["● read 完成", "● bash 完成  ", "回答完成"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "read",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "● bash 完成",
+              "style": "fg=2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "执行中项被挤进 scrollback",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 965,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "● fill4 完成",
+        "● fill5 完成",
+        "● fill6 完成",
+        "● fill7 完成",
+        "● fill8 完成",
+        "● fill9 完成",
+        "● fill10 完成",
+        "● fill11 完成",
+        "● fill12 完成",
+        "● fill13 完成",
+        "● fill14 完成",
+        "● fill15 完成",
+        "● fill16 完成",
+        "● fill17 完成",
+        "● fill18 完成",
+        "● fill19 完成",
+        "● fill20 完成",
+        "● fill21 完成",
+        "● fill22 完成",
+        "● fill23 完成",
+        "● fill24 完成",
+        "● fill25 完成",
+        "回答完成"
+      ],
+      "scrollback": [
+        "● read 完成",
+        "● bash 完成  ",
+        "○ long 执行中",
+        "● fill0 完成",
+        "● fill1 完成",
+        "● fill2 完成",
+        "● fill3 完成"
+      ],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill4",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill5",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill6",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill7",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill8",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill9",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill10",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill11",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill12",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill13",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 10,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill14",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill15",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 12,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill16",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 13,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill17",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 14,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill18",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 15,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill19",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 16,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill20",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 17,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill21",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 18,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill22",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 19,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill23",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 20,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill24",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 21,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill25",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "屏外项完成",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1040,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "● fill4 完成",
+        "● fill5 完成",
+        "● fill6 完成",
+        "● fill7 完成",
+        "● fill8 完成",
+        "● fill9 完成",
+        "● fill10 完成",
+        "● fill11 完成",
+        "● fill12 完成",
+        "● fill13 完成",
+        "● fill14 完成",
+        "● fill15 完成",
+        "● fill16 完成",
+        "● fill17 完成",
+        "● fill18 完成",
+        "● fill19 完成",
+        "● fill20 完成",
+        "● fill21 完成",
+        "● fill22 完成",
+        "● fill23 完成",
+        "● fill24 完成",
+        "● fill25 完成",
+        "回答完成"
+      ],
+      "scrollback": [
+        "● read 完成",
+        "● bash 完成",
+        "● long 完成",
+        "● fill0 完成",
+        "● fill1 完成",
+        "● fill2 完成",
+        "● fill3 完成"
+      ],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill4",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill5",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill6",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill7",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill8",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill9",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill10",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill11",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill12",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill13",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 10,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill14",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill15",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 12,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill16",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 13,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill17",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 14,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill18",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 15,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill19",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 16,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill20",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 17,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill21",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 18,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill22",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 19,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill23",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 20,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill24",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 21,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill25",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [
+        "● fill4 完成",
+        "● fill5 完成",
+        "● fill6 完成",
+        "● fill7 完成",
+        "● fill8 完成",
+        "● fill9 完成",
+        "● fill10 完成",
+        "● fill11 完成",
+        "● fill12 完成",
+        "● fill13 完成",
+        "● fill14 完成",
+        "● fill15 完成",
+        "● fill16 完成",
+        "● fill17 完成",
+        "● fill18 完成",
+        "● fill19 完成",
+        "● fill20 完成",
+        "● fill21 完成",
+        "● fill22 完成",
+        "● fill23 完成",
+        "● fill24 完成",
+        "● fill25 完成",
+        "回答完成"
+      ],
+      "scrollback": [
+        "● read 完成",
+        "● bash 完成",
+        "● long 完成",
+        "● fill0 完成",
+        "● fill1 完成",
+        "● fill2 完成",
+        "● fill3 完成"
+      ],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill4",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill5",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill6",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill7",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill8",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill9",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill10",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill11",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill12",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill13",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 10,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill14",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill15",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 12,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill16",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 13,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill17",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 14,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill18",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 15,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill19",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 16,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill20",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 17,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill21",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 18,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill22",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 19,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill23",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 20,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill24",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        },
+        {
+          "y": 21,
+          "runs": [
+            {
+              "text": "●",
+              "style": "fg=2"
+            },
+            {
+              "text": "fill25",
+              "style": "fg=2"
+            },
+            {
+              "text": "完成",
+              "style": "fg=2"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

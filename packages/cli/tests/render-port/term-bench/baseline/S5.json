@@ -1,0 +1,1025 @@
+{
+  "scenario": "S5",
+  "exitCode": 0,
+  "total": {
+    "bytes": 4032,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 4,
+    "syncEnd": 4,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "表格 80 列",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 11,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1719,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "┌─────────────┬──────┬─────────────────────────┐",
+        "│ 名称        │ 类型 │ 说明                    │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Box         │ 组件 │ Flexbox 容器            │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Text        │ 组件 │ 文本，支持 粗体 与 代码 │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ stringWidth │ 函数 │ CJK 宽 2、emoji 宽 2    │",
+        "└─────────────┴──────┴─────────────────────────┘"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "┌─────────────┬──────┬─────────────────────────┐",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "名称",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "类型",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "说明",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Box",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Flexbox",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "容器",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Text",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "文本，支持",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "粗体",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": " 与",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "代码",
+              "style": "fg=#94e2d5"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "stringWidth",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "函数",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "CJK",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "宽",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "2、emoji",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "宽",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "2",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "└─────────────┴──────┴─────────────────────────┘",
+              "style": "fg=#45475a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "表格 40 列",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 13,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1095,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "┌─────────────┬──────┬───────────────┐          ",
+        "│ 名称        │ 类型 │ 说明          │          ",
+        "├─────────────┼──────┼───────────────┤          ",
+        "│ Box         │ 组件 │ Flexbox 容器  │          ",
+        "├─────────────┼──────┼───────────────┤          ",
+        "│ Text        │ 组件 │ 文本，支持    │          ",
+        "│             │      │ 粗体 与 代码  │          ",
+        "├─────────────┼──────┼───────────────┤          ",
+        "│ stringWidth │ 函数 │ CJK 宽        │          ",
+        "│             │      │ 2、emoji 宽 2 │",
+        "└─────────────┴──────┴───────────────┘"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "┌─────────────┬──────┬───────────────┐",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "名称",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "类型",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "说明",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼───────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Box",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Flexbox",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "容器",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼───────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Text",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "文本，支持",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "粗体",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": " 与 ",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "代码",
+              "style": "fg=#94e2d5"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼───────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "stringWidth",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "函数",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "CJK 宽 ",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 10,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "2、emoji 宽 2",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "└─────────────┴──────┴───────────────┘",
+              "style": "fg=#45475a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "表格 120 列",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 11,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1069,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "┌─────────────┬──────┬─────────────────────────┐",
+        "│ 名称        │ 类型 │ 说明                    │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Box         │ 组件 │ Flexbox 容器            │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Text        │ 组件 │ 文本，支持 粗体 与 代码 │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ stringWidth │ 函数 │ CJK 宽 2、emoji 宽 2    │",
+        "└─────────────┴──────┴─────────────────────────┘",
+        "                                      ",
+        "                                                                                ",
+        "                                                                                "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "┌─────────────┬──────┬─────────────────────────┐",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "名称",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "类型",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "说明",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Box",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Flexbox",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "容器",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Text",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "文本，支持",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "粗体",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": " 与 ",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "代码",
+              "style": "fg=#94e2d5"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "stringWidth",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "函数",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "CJK 宽 2、emoji 宽 2",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "└─────────────┴──────┴─────────────────────────┘",
+              "style": "fg=#45475a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 11,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [
+        "",
+        "┌─────────────┬──────┬─────────────────────────┐",
+        "│ 名称        │ 类型 │ 说明                    │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Box         │ 组件 │ Flexbox 容器            │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ Text        │ 组件 │ 文本，支持 粗体 与 代码 │",
+        "├─────────────┼──────┼─────────────────────────┤",
+        "│ stringWidth │ 函数 │ CJK 宽 2、emoji 宽 2    │",
+        "└─────────────┴──────┴─────────────────────────┘",
+        "                                      ",
+        "                                                                                ",
+        "                                                                                "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "┌─────────────┬──────┬─────────────────────────┐",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 2,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "名称",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "类型",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "说明",
+              "style": "fg=#89b4fa b"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Box",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Flexbox",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "容器",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "Text",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "组件",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "文本，支持",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "粗体",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": " 与 ",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "代码",
+              "style": "fg=#94e2d5"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "├─────────────┼──────┼─────────────────────────┤",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 8,
+          "runs": [
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "stringWidth",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "函数",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            },
+            {
+              "text": "CJK 宽 2、emoji 宽 2",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "│",
+              "style": "fg=#45475a"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "└─────────────┴──────┴─────────────────────────┘",
+              "style": "fg=#45475a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

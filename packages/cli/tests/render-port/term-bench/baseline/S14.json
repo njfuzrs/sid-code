@@ -1,0 +1,117 @@
+{
+  "scenario": "S14",
+  "exitCode": 0,
+  "total": {
+    "bytes": 402,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 2,
+    "syncEnd": 2,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "0": 2,
+      "2": 2,
+      "9": 1,
+      "21337": 3
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "标题 + tab 忙",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 148,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "标题去 ANSI + tab 空闲",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 105,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}
