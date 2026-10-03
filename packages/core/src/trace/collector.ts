@@ -2318,6 +2318,8 @@ export class TraceCollector {
               edit_latency: digest.pathology.editLatencyPathological,
               observation_entropy: digest.pathology.observationEntropyPathological,
               retry_wasted_tokens: digest.pathology.retryWastedPathological,
+              // B47：计费恒等式不成立（钱的账对不上，不是过程可疑）
+              billing_identity: digest.pathology.billingIdentityBroken,
             })
               .filter(([, v]) => v)
               .map(([k]) => k)
