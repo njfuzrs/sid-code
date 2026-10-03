@@ -261,7 +261,8 @@ export interface Config {
   askUserQuestionTimeout?: string;
 
   // 权限配置
-  // 合法取值以 config/schema.ts 的 VALID_PERMISSION_MODES 为准（含 manual 别名、auto、dangerously-skip-permissions）
+  // 合法取值以 config/schema.ts 的 PERMISSION_MODES 为准，参考页从那里自省，这里不写数字。
+  /** 默认权限模式（manual 是 default 的别名） */
   permissionMode: string;
   skipPermissions: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
@@ -338,9 +339,13 @@ export interface Config {
   // 同理，写给维护者的话要放在字段**之间**的空行区，别紧贴字段上方——
   // 紧贴就会被当成该字段的用户可见描述抓进参考页。
 
-  /** 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） */
+  /**
+   * 调试日志总开关（等同 -d / --debug），写 debug.log。
+   *
+   * 真正决定「开不开 debug logger」的就是它（cli.ts 构造 logger 那一支）。
+   */
   debug: boolean;
-  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） */
+  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） */
   debugLevel: string;
   /** 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） */
   debugLogFile: string;
@@ -382,10 +387,10 @@ export interface Config {
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
-  // /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG）
+  /** /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值） */
   goal?: Partial<import("../goal/config.ts").GoalConfig>;
 
-  // 成本配额（美元）
+  /** 单会话花费上限（美元） */
   costLimit?: number;
 
   // 配额管控（增强版，向后兼容 costLimit）
@@ -491,7 +496,7 @@ export interface Config {
    */
   includePartialMessages?: boolean;
 
-  // Checkpoint 配置
+  /** 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等 */
   checkpoint?: CheckpointConfig;
 
   // Git 集成配置（P3-1：可配置归因）
@@ -503,7 +508,7 @@ export interface Config {
 
   // 工具延迟加载（ToolSearch）
   /**
-   * 工具延迟加载模式（默认 false 关闭）。
+   * 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。
    *
    * 取值：
    *   - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。
@@ -584,7 +589,7 @@ export interface Config {
   /** 团队记忆同步配置（共享目录模型） */
   teamMemory?: TeamMemoryConfig;
 
-  // 会话保留配置
+  /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
 
   // 搜索配置
@@ -597,16 +602,16 @@ export interface Config {
    */
   identity?: IdentityConfig;
 
-  // 轨迹采集配置
+  /** 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点） */
   trace?: TraceConfig;
 
-  // 遥测配置（OTel 兼容的结构化 Trace）
+  /** 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp） */
   telemetry?: TelemetryConfig;
 
-  // 分析/事件系统配置（spec 17 — analytics 通道）
+  /** 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行 */
   analytics?: AnalyticsConfig;
 
-  // IDE 集成配置
+  /** IDE 集成配置（自动连接、发现超时、写盘前 diff 预览） */
   ide?: IDEConfig;
 
   /** Bridge 远程控制配置（D14 准入） */

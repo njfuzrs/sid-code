@@ -28,6 +28,10 @@ import {
   findStalePages,
   checkNarrativeCoverage,
   __coverageInternals,
+  sanitizeDescription,
+  clipSentences,
+  findDuplicateEnvVars,
+  parseHelpEnvVars,
   HELP_ONLY_WHITELIST,
   HIDDEN_FLAGS,
   MARKER_START,
@@ -49,7 +53,21 @@ function autoGenBody(page: string): string {
   expect(s, `${page}.md 应含完整 AUTO-GEN:START 标记`).toBeGreaterThanOrEqual(0);
   const e = src.indexOf(MARKER_END, s + MARKER_START.length);
   expect(e, `${page}.md 应在 START 之后含 AUTO-GEN:END 标记`).toBeGreaterThan(s);
-  return src.slice(s, e);
+  const body = src.slice(s, e);
+  // settings 页在主表之后还有「对象字段的子键」小表（B34 / D119）。计数与非空断言针对的是
+  // 主表（一行一个顶层字段），子键小表要单独断言，见 subKeySection。
+  const sub = body.indexOf(SUBKEY_HEADING);
+  return sub >= 0 ? body.slice(0, sub) : body;
+}
+
+const SUBKEY_HEADING = "\n## 对象字段的子键";
+
+/** settings 页的子键小节（主表之后那部分） */
+function subKeySection(): string {
+  const src = read("website/ref/settings.md");
+  const s = src.indexOf(SUBKEY_HEADING);
+  expect(s, "settings.md 应含「对象字段的子键」小节").toBeGreaterThan(0);
+  return src.slice(s, src.indexOf(MARKER_END, s));
 }
 
 /** 数表格数据行（跳过表头与分隔行），返回首列去掉 backtick/反斜杠的名字 */
@@ -560,5 +578,106 @@ describe("参考页生成器 · 产物可被 VitePress 安全渲染", () => {
       (f) => !f.startsWith("node_modules") && !f.startsWith(".vitepress"),
     ).length;
     expect(declared).toBe(actual);
+  });
+});
+
+describe("参考页生成器 · 清洗（B34：不该上官网的东西别搬上去）", () => {
+  test("permissionMode 取值从 PERMISSION_MODES 自省，不抄注释（D115）", async () => {
+    const { PERMISSION_MODES } = await import("@sid-code/core/config/schema.ts");
+    const row = tableRows(autoGenBody("settings")).find((r) => r[0] === "`permissionMode`");
+    expect(row, "settings 表应含 permissionMode").toBeDefined();
+    expect(row![1]).toBe("enum");
+    for (const m of PERMISSION_MODES) expect(row![2]).toContain(`\`${m}\``);
+    // 最宽的两档恰是 D30 / D33 争议所在，漏掉它们参考页就会打脸讲稿
+    expect(row![2]).toContain("`dangerously-skip-permissions`");
+    expect(row![2]).toContain("`auto`");
+    expect(row![3]).not.toMatch(/\d+ 种/);
+  });
+
+  test("内部编号与源码行号剥干净（D117）", () => {
+    const cases: Array<[string, string]> = [
+      ["G10：autoDream 自主记忆巩固开关", "autoDream 自主记忆巩固开关"],
+      ["分析/事件系统配置（spec 17 — analytics 通道）", "分析/事件系统配置（analytics 通道）"],
+      [
+        "WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。",
+        "WebFetch 隔离提炼使用的模型（默认复用主循环模型）。",
+      ],
+      ["Git 集成配置（P3-1：可配置归因）", "Git 集成配置（可配置归因）"],
+      ["调试日志级别（缺省 DEBUG，见 cli.ts:1230）", "调试日志级别（缺省 DEBUG）"],
+      ["GAP-04：分类器并行预启动", "分类器并行预启动"],
+      ["放弃 §17.5「隔离上下文窗口」", "放弃「隔离上下文窗口」"],
+    ];
+    for (const [raw, want] of cases) expect(sanitizeDescription(raw)).toBe(want);
+    // 反向：正常文本里长得像编号的子串不能误伤
+    for (const keep of ["自带 10MB 轮转", "v2 协议", "OAuth 2.1", "GPT4o 模型", "abcG5x"]) {
+      expect(sanitizeDescription(keep)).toBe(keep);
+    }
+  });
+
+  test("ref/settings 与 ref/hooks 说明列内部编号 0 命中（D117 / D122 闭环判据）", () => {
+    const pattern =
+      /(?<![A-Za-z0-9_.-])(?:SEC-AUDIT|GAP-\d|ADR-\d|spec \d|§\d|Phase \d|P\d-\d|E\.\d|[GMB]\d+(?![A-Za-z0-9]))|\.tsx?:\d/;
+    for (const page of ["settings", "hooks"]) {
+      for (const cells of tableRows(autoGenBody(page))) {
+        // hooks 表实际四列（配置键 | 会触发 | 枚举名 | 触发时机），说明在第 4 列
+        const col = page === "hooks" ? 3 : DESC_COL[page];
+        expect(cells[col], `${page} ${cells[0]}`).not.toMatch(pattern);
+      }
+    }
+  });
+
+  test("分组行注释不拼进字段说明（D118）", () => {
+    const byName = new Map(
+      tableRows(autoGenBody("settings")).map((r) => [
+        r[0].replace(/`/g, "").replace(/\s*⚠$/, ""),
+        r[3],
+      ]),
+    );
+    expect(byName.get("provider")).not.toMatch(/^LLM 配置/);
+    expect(byName.get("allowedDirectories")).not.toMatch(/^目录白名单\/黑名单/);
+    expect(byName.get("disabledSkills")).not.toMatch(/^Skill 配置/);
+    expect(byName.get("hooks")).not.toBe("Hook 和 MCP");
+  });
+
+  test("按句截断：不截在半句中间；首句超长时保留完整首句（D118）", () => {
+    const s = "第一句话。第二句话比较长一些。第三句。";
+    expect(clipSentences(s, 12)).toBe("第一句话。…");
+    expect(clipSentences(s, 100)).toBe(s);
+    const long = "这是一个没有句号而且很长很长很长很长很长很长的首句";
+    expect(clipSentences(long, 5)).toBe(long);
+    // 页面上任何被截断的说明都以完整句子结尾
+    for (const cells of tableRows(autoGenBody("settings"))) {
+      const d = cells[3];
+      // 截断点只能落在句末或列表项之间（列表项以右括号 / 引号收尾），不能落在词中间
+      if (d.endsWith("…")) expect(d, cells[0]).toMatch(/[。！？；）)」]…$/);
+    }
+  });
+
+  test("对象字段展开子键，trace.upload 上传入口可查（D119）", () => {
+    const body = subKeySection();
+    for (const k of ["url", "token", "autoUpload", "deleteAfterUpload"]) {
+      expect(body, `trace.upload.${k}`).toMatch(
+        new RegExp(`#### \`trace\\.upload\`[\\s\\S]*\\| \`${k}\` \\|`),
+      );
+    }
+    for (const f of ["trace", "telemetry", "checkpoint", "teamMemory", "quota", "network"]) {
+      expect(body, `${f} 子键小节`).toContain(`### \`${f}\``);
+    }
+  });
+
+  test("hooks 页不再承诺载荷字段，并说明只有 PascalCase 的事件（D121 / D122）", () => {
+    const src = read("website/ref/hooks.md");
+    expect(src).not.toContain("载荷字段");
+    expect(autoGenBody("hooks")).toMatch(/\d+ 个事件\*\*没有 snake_case 别名\*\*/);
+  });
+
+  test("help 环境变量段重复登记会被识别（D123）", () => {
+    const vars = [
+      { group: "a", name: "SID_X", desc: "1" },
+      { group: "b", name: "SID_X", desc: "2" },
+      { group: "b", name: "SID_Y", desc: "3" },
+    ];
+    expect(findDuplicateEnvVars(vars)).toEqual(["SID_X"]);
+    expect(findDuplicateEnvVars(parseHelpEnvVars(read("packages/cli/src/help.ts")))).toEqual([]);
   });
 });
