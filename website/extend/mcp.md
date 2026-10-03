@@ -156,6 +156,43 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 - **远程服务器的凭据用 `headers` 里的 `${VAR}`**，因为 `headers` 会展开——不必把
   token 明文写进 `.mcp.json` 或落到磁盘上。
 
+## 需要登录的远程 server（OAuth）
+
+远程 server 要求 OAuth 登录时，在配置里加一个空的 `oauth` 对象即可，其余全部自动发现：
+
+```json
+{
+  "mcpServers": {
+    "internal-api": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "oauth": {}
+    }
+  }
+}
+```
+
+首次连接时的流程（2026-10-02 用本地 OAuth mock 端到端实测）：
+
+1. 按 RFC 9728 / RFC 8414 发现授权服务器，没配 `clientId` 就动态注册一个
+2. 在 `127.0.0.1` 起一个临时回调端口，把授权 URL 打到 **stderr**：
+
+   ```text
+   [MCP] internal-api 需要 OAuth 授权，请在浏览器打开以下 URL（5 分钟内有效）:
+   https://auth.example.com/authorize?response_type=code&client_id=...&code_challenge_method=S256&...
+   ```
+
+3. 在浏览器里同意后，回调拿到授权码，用 PKCE（S256）换 token，然后连接 server
+
+token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期后，
+下次连接会用 refresh token 静默刷新，不会再弹授权；授权服务器轮换了 refresh token 也会一并保存。
+
+::: warning 目前的验证范围
+上面这套流程只在本地 mock 授权服务器上跑通过，还没有对接过真实的第三方授权服务器。
+接你们自己的 server 时如果卡在发现阶段，可以在 `oauth` 里显式给
+`authServerMetadataUrl`（必须是 `https://`）。
+:::
+
 ## 四层作用域与优先级
 
 | scope | 位置 | 谁能看到 |
@@ -304,6 +341,19 @@ ReadMcpResource     读取指定资源，参数 server + uri
 ```
 
 所以正确的提问方式不是"你有 xx 工具吗"，而是直接说要干的事——模型会自己去搜。
+
+::: tip 无头模式（`-p`）下搜到了也要放行才能调
+`tool_search` 本身在任何模式下都不需要确认。但它调出来的 MCP 工具会像普通工具一样
+走权限判定，而无头模式没人能点确认，所以会被自动拒绝。要在 `-p` 里用 MCP，
+就把对应工具加进白名单：
+
+```bash
+sid-code -p "用 context7 查 Bun.serve 的 idleTimeout 默认值" \
+  --allowed-tools "mcp__context7__resolve-library-id,mcp__context7__query-docs"
+```
+
+或者在 `settings.json` 的 `allowedTools` 里长期配置。
+:::
 
 真的需要某个工具**首轮就可见**，用 `toolSearchKeepLoaded` 豁免（支持 `mcp__server__*` 通配）：
 

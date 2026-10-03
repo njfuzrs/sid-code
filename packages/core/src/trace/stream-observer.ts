@@ -668,6 +668,49 @@ export function emitHttpConnected(
   }
 }
 
+// ─── BilledRequest 事件（B47：计费恒等式落到真实轨迹） ───
+
+/**
+ * 记录一次权威计费事件（= 一次 fetch 的钱，无论谁发起）。调用点：`llm/billing-sink.ts`
+ * 的 `recordBilledRequest` **去重之后**。
+ *
+ * 为什么要落盘：`HttpConnected == 计费事件数` 这条恒等式此前只在单测里断言，
+ * 计费事件只通知内存观察者，真实会话里没法数 —— 「修好了」只能从测试推，
+ * 不能从轨迹证。落成独立事件后 `trace/digest.ts` 逐会话复算，不等即报异常。
+ *
+ * 放在去重之后而非 provider 里：同一 fetch 被 emit 两次时只能落一条，
+ * 否则恒等式右边会被重复上报撑大，把"漏记"掩盖成"平衡"。
+ */
+export function emitBilledRequest(data: {
+  fetch_id: string;
+  index: number;
+  model: string;
+  provider: string;
+  agent_id?: string;
+  caller?: string;
+  /** 已由主循环入账（本事件只作核对） */
+  accounted: boolean;
+  /** 消费侧是否为它加钱（= shouldChargeBilledRequest），落盘便于离线核对双记 */
+  charged: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "BilledRequest",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: data as unknown as Record<string, unknown>,
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
 // ─── TimeoutRetry 事件（缺口 4） ───
 
 /**

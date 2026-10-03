@@ -34,7 +34,10 @@ export class MCPEnhancedCommand implements Command {
     return [];
   }
   description() {
-    return "MCP 服务器管理";
+    return "MCP 服务器管理（无参打开交互面板）";
+  }
+  argumentHint() {
+    return "[list|add|remove|enable|disable|test|authenticate|prompts|prompt|resources] [参数]";
   }
 
   subCommands(): Command[] {

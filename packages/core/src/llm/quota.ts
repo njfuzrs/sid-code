@@ -20,6 +20,28 @@ export interface QuotaConfig {
   tokensPerMinute?: number; // 每分钟 token 数上限
 }
 
+/**
+ * 合并两个花费上限来源，返回本次会话真正生效的上限（美元；0 = 不限）。
+ *
+ * B18（2026-10-02）：原来是 `quota.costLimit ?? costLimit`，即「配置盖参数」。
+ * 而公网团队默认配置自带 `quota.costLimit: 100`，于是用户 `--max-budget-usd 0.5`
+ * **主动收紧**反而被放宽成 100 —— 方向错了。上限是「只许收紧」的语义，
+ * 两个来源不存在「谁优先」，谁更严听谁的。
+ *
+ * ⚠️ 0 / 负数 / undefined 都是「这一侧不限」，**不参与取 min**：
+ * 0 是评测容器显式关闸门的正当写法（见 config/schema.ts 那段注释），
+ * 把它当成「最严」会让任何正数上限都变成 0 —— 等于把闸门整个关掉。
+ */
+export function resolveEffectiveCostLimit(
+  quotaCostLimit: number | undefined,
+  topLevelCostLimit: number | undefined,
+): number {
+  const positives = [quotaCostLimit, topLevelCostLimit].filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0,
+  );
+  return positives.length > 0 ? Math.min(...positives) : 0;
+}
+
 export class QuotaManager {
   private costLimit: number;
   private rpmLimit: number;
@@ -105,10 +127,10 @@ export class QuotaManager {
 
     const percent = (ratio * 100).toFixed(0);
     const messages: Record<AlertLevel, string> = {
-      info: `成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(2)}）`,
-      warning: `⚠ 成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(2)}），请注意控制用量`,
-      critical: `⚠ 成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(2)}），即将超限！`,
-      exceeded: `成本已超出配额（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(2)}），自动停止`,
+      info: `成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(4)}）`,
+      warning: `⚠ 成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(4)}），请注意控制用量`,
+      critical: `⚠ 成本已达配额 ${percent}%（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(4)}），即将超限！`,
+      exceeded: `成本已超出配额（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(4)}），自动停止`,
     };
 
     return { level, message: messages[level] };

@@ -525,6 +525,25 @@ export interface ProcessPathologyStats {
   retryWastedRatio?: number;
   /** retryWastedRatio > 0.20 */
   retryWastedPathological: boolean;
+
+  /**
+   * B47：计费恒等式左边 —— 应当产生计费事件的建连数。
+   *
+   * 口径：`HttpConnected` 中 status 为 2xx 且 content_type 不是 `text/html` 的条数。
+   * 两类排除都不是"钱没记上"：非 2xx 的 Responses 路径在 provider 判 `!response.ok`
+   * 后直接返回（厂商不计费）；`text/html` 是网关伪装成 200 的错误页，被 Content-Type
+   * 守卫在解析前拦下。把它们算进左边会让每次网关报错都触发一条假异常。
+   */
+  billableConnections: number;
+  /**
+   * B47：计费恒等式右边 —— `BilledRequest` 事件数（`billing-sink` 去重后落盘）。
+   *
+   * `undefined` = 本会话一条都没有，即**老轨迹**（B47 之前的版本不落这个事件）。
+   * 此时不判恒等式：把 0 当右边会让全部历史会话报红。
+   */
+  billedRequests?: number;
+  /** billedRequests 已知且 ≠ billableConnections */
+  billingIdentityBroken: boolean;
 }
 
 /**
@@ -1835,6 +1854,27 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 缺失所致）。digest 读 events.jsonl 的 SubagentStart/Stop 配对成 span，按相邻间隔判串行，
   // 关联 status 成败——让任何消费者（模型/人）无需回 raw.jsonl 交叉验证即可下结论，
   // 消灭 §8.2 的"全部 SUCCESS"误判。
+  // ── B17：计划对齐度（fidelity）——每份计划一行 L0 事实 ──
+  // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
+  // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
+  for (const f of aggregatePlanFidelity(events)) {
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "plan_fidelity",
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanFidelity（每份计划取末条快照）",
+          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
   const subAgents = buildSubAgentSummary(events);
   if (subAgents && subAgents.total > 0) {
     // L0 事实：几成几败（客观计数，带出处）
@@ -3055,6 +3095,36 @@ export function aggregateJitStats(
   };
 }
 
+/** B17：一份计划的对齐度快照（`PlanFidelity` 事件的末条）。 */
+export interface PlanFidelityStats {
+  planFile: string;
+  planStepCount: number;
+  actualToolCallCount: number;
+  offPlanCount: number;
+}
+
+/**
+ * 聚合 `PlanFidelity` 事件：app 每批工具调用后落一条**累计快照**，所以同一份计划只取末条，
+ * 按首次出现顺序输出。累加会把 N 次快照算成 N 倍调用数。
+ */
+export function aggregatePlanFidelity(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanFidelityStats[] {
+  const byPlan = new Map<string, PlanFidelityStats>();
+  for (const e of events) {
+    if (e.event !== "PlanFidelity" || !e.data) continue;
+    const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+    // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    byPlan.set(planFile, {
+      planFile,
+      planStepCount: num(e.data.plan_step_count),
+      actualToolCallCount: num(e.data.actual_tool_call_count),
+      offPlanCount: num(e.data.off_plan_count),
+    });
+  }
+  return [...byPlan.values()];
+}
+
 /**
  * 聚合 todo 实时性度量（2026-08-02，方案 §8.3）。
  *
@@ -3261,6 +3331,23 @@ export function computeProcessPathology(
       ? retryWastedTokens / recordedInput
       : undefined;
 
+  // ── 指标 7（B47）：计费恒等式 `可计费建连数 == BilledRequest 数` ──
+  // 只在单测里断言的恒等式等于没在线上验证过：这里逐会话复算，不等就进 anomaly。
+  // 它抓"新增调用链绕过入账"与"上报点只覆盖部分出口"；抓不住"绕过 provider 自发 fetch"
+  // （两边一起少），那条由 scripts/pricing-reconcile.ts 对官方账单兜底。
+  const billableConnections = events.filter((e) => {
+    if (e.event !== "HttpConnected") return false;
+    const d = e.data as any;
+    const status = typeof d?.status === "number" ? d.status : 200;
+    if (status < 200 || status >= 300) return false;
+    const ct = typeof d?.content_type === "string" ? d.content_type.toLowerCase() : "";
+    return !ct.includes("text/html");
+  }).length;
+  const billedCount = events.filter((e) => e.event === "BilledRequest").length;
+  const billedRequests = billedCount > 0 ? billedCount : undefined;
+  const billingIdentityBroken =
+    billedRequests !== undefined && billedRequests !== billableConnections;
+
   return {
     pollRatio,
     pollCalls,
@@ -3287,6 +3374,9 @@ export function computeProcessPathology(
     retryWastedRatio,
     retryWastedPathological:
       retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
+    billableConnections,
+    billedRequests,
+    billingIdentityBroken,
   };
 }
 
@@ -3397,6 +3487,27 @@ function describePathology(
         lossy: true, // 均值估算，非精确重发量：见 ProcessPathologyStats.retryWastedTokens 注释
       },
     );
+  }
+  if (p.billingIdentityBroken) {
+    // 定级 high（其余病态项是 medium）：这不是"过程可疑"，是钱的账对不上 ——
+    // 少了是漏记（账单会高于自报），多了是重复上报（去重失效）。两个方向都是确证缺陷。
+    const diff = p.billedRequests! - p.billableConnections;
+    out.push({
+      layer: "L0",
+      severity: "high",
+      kind: "billing_identity_broken",
+      detail:
+        `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
+        `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=HttpConnected（status 2xx 且非 text/html）数 vs event=BilledRequest 数",
+          rawValue: `billable_conn=${p.billableConnections} billed=${p.billedRequests}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+    });
   }
   return out;
 }

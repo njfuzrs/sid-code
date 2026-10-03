@@ -239,6 +239,16 @@ const READ_ONLY_TOOLS = new Set([
   // 其在无头模式被拒是符合设计的，不在本次放行范围内。
   "hypothesis_register",
   "hypothesis_challenge",
+  // 2026-10-02（B22，同一形态第二次）：MCP 工具默认延迟加载（registry.isToolDeferred），
+  // tool_search 是把它们调进上下文的**唯一入口**。它只改 registry 的激活集，不碰 fs /
+  // 网络 / 子进程，readOnly() 也是 true；不在本表 → 无头模式与子代理一律 deny。
+  // 实测：配了 6 个 MCP、5 个连上（88 个工具），模型主动 `tool_search("context7")`
+  // 两次都被「非交互模式自动拒绝」，最后退回 web_fetch；本机历史 70+ 会话 mcp__ 调用 0 次。
+  // 放行它不等于放行 MCP 工具：被调出来的 mcp__* 每次调用仍各自走权限判定。
+  "tool_search",
+  // 只列出已连接 server 的资源元数据（内存里的 serverStates），同样零副作用。
+  // 对照：ReadMcpResource 会把 blob 落盘、且返回外部不可信内容，**刻意不放行**。
+  "ListMcpResources",
 ]);
 
 /** 会话记忆最大条目数 */
@@ -291,6 +301,18 @@ export class PermissionChecker implements Checker {
         dangerLevel: string;
       }) => Promise<boolean>)
     | null = null;
+
+  /**
+   * B25：SDK stream-json 双向流下，ask 可以交给宿主（`can_use_tool`）。
+   * 置 true 后 isNonInteractive() 返回 false，ask 不再被就地判 deny，而是回 needsConfirmation
+   * 交给 App.requestUserConfirmation → 宿主。宿主超时 / 断开时那一侧按 deny 闭合（仍 fail-closed）。
+   * 只在 `--input-format stream-json` 下打开：没有 stdin 回路时问了也没人答。
+   */
+  private externalAskChannel = false;
+
+  setExternalAskChannel(enabled: boolean): void {
+    this.externalAskChannel = enabled;
+  }
 
   /** 设置 Bridge 远程权限代理（null 清除，回退到本地确认） */
   setBridgePermissionDelegate(
@@ -358,6 +380,7 @@ export class PermissionChecker implements Checker {
     if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
     if (this.bridgePermissionDelegate)
       derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
+    if (this.externalAskChannel) derived.setExternalAskChannel(true);
     // 运行时扩展的允许目录白名单也一并继承（用户 /add-dir 授权对子代理同样生效）。
     for (const dir of this.getAllowedDirectories()) derived.addAllowedDirectory(dir);
     return derived;
@@ -2084,6 +2107,8 @@ export class PermissionChecker implements Checker {
 
   /** 检测是否处于非交互模式 */
   private isNonInteractive(): boolean {
+    // B25：有外部 ask 通道（SDK 宿主）时不是「无人可问」
+    if (this.externalAskChannel) return false;
     // print 模式（单次输出）或 maxTurns > 0（批处理模式）视为非交互
     return (
       this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)

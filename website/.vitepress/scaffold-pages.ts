@@ -154,7 +154,12 @@ const REF_GENERATED: Array<[string, string, string, string]> = [
     "SettingsSchema().shape + Config 接口",
   ],
   ["ref/env.md", "环境变量", "全部可用环境变量及其作用。", "src/help.ts + 源码扫描"],
-  ["ref/hooks.md", "Hook 事件", "全部 Hook 事件的名称、触发时机与载荷字段。", "HookEventName 枚举"],
+  [
+    "ref/hooks.md",
+    "Hook 事件",
+    "全部 Hook 事件的配置键名、是否会触发与触发时机。",
+    "HookEventName 枚举",
+  ],
 ];
 
 const placeholder = (title: string, desc: string, todo: string) => `---

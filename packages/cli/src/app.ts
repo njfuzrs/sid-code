@@ -47,7 +47,7 @@ import {
   clearPendingInput,
   canRestoreCanceledInput,
 } from "./ui/pending-input.ts";
-import { QuotaManager } from "@sid-code/core/llm/quota.ts";
+import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
 import { getIdentity } from "@sid-code/core/identity/index.ts";
@@ -74,6 +74,7 @@ import {
   StructuredIO,
   CommandQueue,
   runHeadless as sdkRunHeadless,
+  createSDKCanUseTool,
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "@sid-code/core/sdk/index.ts";
@@ -418,11 +419,12 @@ export class App {
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
   /**
-   * 本次会话实际生效的花费上限（美元）。quota.costLimit 优先于 --max-budget-usd，
+   * 本次会话实际生效的花费上限（美元；0 = 不限）。B18：quota.costLimit 与
+   * 顶层 costLimit（--max-budget-usd 落在这里）取更严的那个，见 resolveEffectiveCostLimit。
    * 与传给 QuotaManager 的是同一个数——超限报告里的 limit 必须等于真正触发停止的那个，
    * 不能回退去读 CLI 原值（两者不同时报告会自相矛盾）。
    */
-  private effectiveCostLimit?: number;
+  private effectiveCostLimit = 0;
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
@@ -483,6 +485,11 @@ export class App {
     discardedTextLength: number;
   }) => void;
   private queryEngine: QueryEngine;
+  /** B26：--json-schema 模式下注册的 StructuredOutput 工具，收尾时取校验通过的载荷写进 result */
+  private structuredOutputTool: {
+    hasCapturedOutput: boolean;
+    getCapturedOutput(): unknown;
+  } | null = null;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /**
@@ -541,6 +548,11 @@ export class App {
         signal?: AbortSignal,
       ) => Promise<"yes" | "no" | "always" | "always-persist">)
     | null = null;
+  /**
+   * B25：SDK 双向流下把 ask 交给宿主的 can_use_tool。只在 runHeadlessSDK 且
+   * `--input-format stream-json` 时注入，其余模式恒 null。
+   */
+  private sdkCanUseTool: ReturnType<typeof createSDKCanUseTool> | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -830,11 +842,14 @@ export class App {
     // ——速率限制配置静默失效、无任何警告。三者任一有值就该创建：QuotaManager 内部
     // 对未配项一律按 0 处理（costLimit<=0 时 check() 恒返回 null），互不依赖。
     const quotaConfig = opts.config.quota;
-    const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+    const effectiveCostLimit = resolveEffectiveCostLimit(
+      quotaConfig?.costLimit,
+      opts.config.costLimit,
+    );
     this.effectiveCostLimit = effectiveCostLimit;
     const rpmLimit = quotaConfig?.requestsPerMinute;
     const tpmLimit = quotaConfig?.tokensPerMinute;
-    const hasAnyQuota = (effectiveCostLimit ?? 0) > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
+    const hasAnyQuota = effectiveCostLimit > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
     if (hasAnyQuota) {
       this.quotaManager = new QuotaManager({
         costLimit: effectiveCostLimit,
@@ -3138,6 +3153,7 @@ export class App {
       const { StructuredOutputTool, structuredOutputPromptSuffix } =
         await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
+      this.structuredOutputTool = structuredTool;
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
       log.info("APP", `--json-schema 模式：注册 StructuredOutput 工具 + system prompt 后缀`);
@@ -5227,7 +5243,32 @@ export class App {
     toolName?: string,
     toolInput?: unknown,
     signal?: AbortSignal,
+    toolUseId?: string,
   ): Promise<boolean> {
+    // B25：SDK 双向流——ask 转给宿主（can_use_tool）。
+    // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
+    // 与「-p 无人可问时 fail-closed」同一口径，只是多了一个可以问的人。
+    if (this.sdkCanUseTool) {
+      try {
+        const behavior = await this.sdkCanUseTool(
+          toolName || req?.toolName || "",
+          toolInput ?? req?.input,
+          toolUseId || `sdk-${Date.now()}`,
+          { signal },
+        );
+        if (behavior === "always_allow" && req && this.permissionChecker?.rememberDecision) {
+          this.permissionChecker.rememberDecision(req, true);
+        }
+        return behavior === "allow" || behavior === "always_allow";
+      } catch (err) {
+        getLogger().info(
+          "PERMISSION",
+          `SDK 宿主未给出 can_use_tool 决定，按拒绝处理: ${(err as Error)?.message ?? err}`,
+        );
+        return false;
+      }
+    }
+
     // Bridge 模式：确认走已注入的远程代理。Bridge 不进 TUI，若仍落到下面的
     // always-allow 布尔，ask 工具会在本机立刻 false，permission_request 根本不出站。
     // 不复活 PermissionChecker.requestConfirmation——那个方法全仓零调用，是死代码。
@@ -5382,8 +5423,8 @@ export class App {
       // 保证 PreToolUse 只 fire 一次且 permissionDecision 能注入权限层。
       preToolUseCache: new Map(),
       getAbortSignal: () => this.abortController?.signal,
-      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal) =>
-        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),
+      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal, toolUseId) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal, toolUseId),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
@@ -5530,8 +5571,27 @@ export class App {
     const log = getLogger();
     const followup: ContentBlock[] = [];
 
+    // B17：执行阶段（approve 之后）的每次真实调用都喂给 fidelity 追踪，批末落一条快照事件。
+    // 从前 recordActualToolCall 生产零调用，getFidelityReport() 永远是 0/0，
+    // 官网却写着「能看到对齐度」——采集在、消费方无、用户看不到。
+    let fidelityTouched = false;
+    // 取批开始时的状态：同批里排在 exit_plan_mode 之后的调用是在规划态下执行的，
+    // 不能因为循环走到它们时已经 approve 了就算成执行动作。
+    const executingAtBatchStart = this.planManager.isExecuting();
+
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
+
+      // 失败的调用也算「实际调用」：对齐度问的是它做了什么，不是做成了什么。
+      // 规划态自身的两个工具不算执行动作。
+      if (
+        executingAtBatchStart &&
+        block.name !== "exit_plan_mode" &&
+        block.name !== "enter_plan_mode"
+      ) {
+        this.planManager.recordActualToolCall(block.name, block.input);
+        fidelityTouched = true;
+      }
 
       // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
       //
@@ -5586,6 +5646,9 @@ export class App {
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
         const approvalFollowup = await this.handlePlanApproval();
         if (approvalFollowup) followup.push(...approvalFollowup);
+        // 批准时先落一条 0 调用快照：计划步数在这一刻就确定了，
+        // 批准后会话立刻结束的情况下 /insights 也能看到「计划 N 步 / 实际 0 次」。
+        if (this.planManager.isExecuting()) fidelityTouched = true;
       }
 
       // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
@@ -5608,7 +5671,25 @@ export class App {
       }
     }
 
+    if (fidelityTouched) this.recordPlanFidelitySnapshot();
+
     return followup.length > 0 ? { followup } : {};
+  }
+
+  /**
+   * B17：把当前计划的 fidelity 报告落成 `PlanFidelity` 事件（快照语义，digest 取每份计划的末条）。
+   * 不写进 metadata：metadata 是会话级的，一个会话可以有多份计划；事件天然按时间序带出处。
+   * NaN（计划 0 步）不能进 JSON，比值交给 digest 由计数重算。
+   */
+  private recordPlanFidelitySnapshot(): void {
+    if (!this.planManager) return;
+    const r = this.planManager.getFidelityReport();
+    this.traceCollector?.recordCustomEvent?.("PlanFidelity", {
+      plan_file: this.planManager.getPlanFilePath() ?? "",
+      plan_step_count: r.planStepCount,
+      actual_tool_call_count: r.actualToolCallCount,
+      off_plan_count: r.offPlanCount,
+    });
   }
 
   /**
@@ -6785,13 +6866,15 @@ export class App {
         // 不走 SDK 消息，所以在结果体里单列。limit 取本次生效的花费上限。
         result.error = {
           reason: "max_budget_usd",
-          limitUsd: this.effectiveCostLimit,
+          limitUsd: this.effectiveCostLimit || undefined,
           spentUsd: this.sessionState.getEffectiveTotalCostUSD(),
         };
         result.is_error = true;
       }
       const denials = this.headlessPermissionDenials();
       if (denials.length > 0) result.permission_denials = denials;
+      const structured = this.capturedStructuredOutput();
+      if (structured !== undefined) result.structured_output = structured;
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
@@ -6951,7 +7034,14 @@ export class App {
         this.queryEngine.setStreamTextCallback(cb),
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
+      getStructuredOutput: () => this.capturedStructuredOutput(),
     };
+  }
+
+  /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
+  private capturedStructuredOutput(): unknown {
+    const tool = this.structuredOutputTool;
+    return tool?.hasCapturedOutput ? tool.getCapturedOutput() : undefined;
   }
 
   /**
@@ -6971,14 +7061,27 @@ export class App {
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
 
+    // B25：只有 stdin 也是 stream-json 时才有回路——宿主能读到 can_use_tool，也能回 control_response。
+    // 仅 `--output-format stream-json`（stdin 是 prompt 文本或空）时问了也没人答，维持 fail-closed。
+    // 不传 hookSystem：PreToolUse 已在 tool-executor 里 fire 过（preToolUseCache），再传会 fire 两次。
+    const hostAskChannel = this.config.inputFormat === "stream-json";
+    const askChecker = this.permissionChecker as {
+      setExternalAskChannel?: (enabled: boolean) => void;
+    } | null;
+    if (hostAskChannel) {
+      this.sdkCanUseTool = createSDKCanUseTool({ structuredIO });
+      askChecker?.setExternalAskChannel?.(true);
+    }
+
     const engine = new SDKQueryEngine(
       {
         cwd: process.cwd(),
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
         maxTurns: this.config.maxTurns || undefined,
-        // P1-9：花费上限透传到 SDK 引擎（超限终止）。
-        maxBudgetUsd: this.config.costLimit || undefined,
+        // P1-9：花费上限透传到 SDK 引擎（超限终止）。B18：与 QuotaManager 同一个数，
+        // 否则 quota.costLimit 更严时 SDK 侧的 error_max_budget_usd 报的是另一个上限。
+        maxBudgetUsd: this.effectiveCostLimit || undefined,
         systemPrompt: this.config.systemPrompt || undefined,
         jsonSchema: this.config.jsonSchema,
         // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
@@ -7020,6 +7123,17 @@ export class App {
         initialPrompt: input,
         structuredIO,
         commandQueue,
+        controlHandlers: {
+          // B25：interrupt 只中止当前轮，不结束会话——abort 后立刻换一个新的 controller，
+          // 否则下一条 user 消息一开轮就拿到已 aborted 的 signal，出生即死。
+          // reason 用 "user-cancel"：已登记 ABORT_REASONS，语义上就是宿主侧的「用户取消」。
+          onInterrupt: () => {
+            const current = this.abortController;
+            if (!current || current.signal.aborted) return;
+            this.abortController = new AbortController();
+            current.abort("user-cancel");
+          },
+        },
       });
       budgetExceeded = outcome.budgetExceeded;
     } catch (err: any) {
@@ -7039,6 +7153,10 @@ export class App {
     } finally {
       if (sdkSessionTimer) clearTimeout(sdkSessionTimer);
       this.abortController = null;
+      if (hostAskChannel) {
+        this.sdkCanUseTool = null;
+        askChecker?.setExternalAskChannel?.(false);
+      }
     }
 
     // session_end hook（与文本/JSON 模式一致：abort/error/exit 三态）
@@ -7148,7 +7266,8 @@ export class App {
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
-      costLimit: this.config.costLimit ?? 0,
+      // B18：状态栏百分比的分母必须是真正会拦的那个上限。
+      costLimit: this.effectiveCostLimit,
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,

@@ -69,9 +69,24 @@ describe("sid-code review 子命令 - 文件契约", () => {
 });
 
 describe("sid-code review 子命令 - 参数与 Skill 加载契约", () => {
-  test("review.ts 引用 code-review Skill 的 SKILL.md 路径", () => {
-    const content = readFileSync(REVIEW_TS, "utf-8");
-    expect(content).toMatch(/builtin.*code-review.*SKILL\.md/);
+  test("loadCodeReviewSkillPrompt 返回嵌入的 code-review 正文（与源码树 SKILL.md 一致）", async () => {
+    // B24：真跑加载函数，而不是 grep 源码里有没有路径字面量——后者在路径算错时照样绿。
+    const { loadCodeReviewSkillPrompt } = await import("@sid-code/cli/command/review.ts");
+    const body = await loadCodeReviewSkillPrompt();
+    expect(body).toContain("# Code Review");
+    expect(body.startsWith("---")).toBe(false);
+    const md = readFileSync(SKILL_FILE, "utf-8");
+    const diskBody = md.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/)![1].trim();
+    expect(body).toBe(diskBody);
+  });
+
+  test("review.ts 不从磁盘相对路径读 Skill（编译产物里模块在 /$bunfs/，B24）", () => {
+    // 去掉块注释与行注释再断言：注释里解释「为什么不用 import.meta.url」不该让门禁红
+    const code = readFileSync(REVIEW_TS, "utf-8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/import\.meta\.(url|dir)/);
+    expect(code).toMatch(/EMBEDDED_BUILTIN_SKILLS/);
   });
 
   test("review.ts 系统提示注入了 RL-001 / RL-007 守护语义", () => {
