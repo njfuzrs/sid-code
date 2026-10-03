@@ -483,10 +483,9 @@ export class TeamManager {
   /**
    * 执行所有成员任务，返回汇总结果。
    *
-   * 隔离模型说明：process.chdir 是进程级全局状态，并发成员无法各自持有独立 cwd。
-   * 因此：
-   * - 隔离成员（isolated，会改文件）→ 串行执行（chdir 进 worktree → 跑 → 切回），互不踩 cwd
-   * - 非隔离成员（只读/不依赖 cwd）→ 并发执行
+   * 隔离模型说明：全部成员并发执行（Promise.all）。隔离成员（isolated，会改文件）
+   * 各自跑在自己的 worktree 里，cwd 经 SubAgentTask.cwd → withAgentCwd（AsyncLocalStorage）
+   * 按调用链传递，不碰进程级的 process.chdir，因此不存在并发踩 cwd 的竞态（见下方 B7）。
    * 结束后清理无改动的 worktree（fail-closed，有改动则保留）。
    *
    * @param stampMs 时间戳（由调用方传入，避免内部依赖 Date.now 便于测试）
