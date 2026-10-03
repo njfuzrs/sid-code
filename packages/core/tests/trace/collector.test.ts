@@ -1094,6 +1094,39 @@ describe("TraceCollector", () => {
     });
   });
 
+  /**
+   * B26 顺带：`--json-schema` 下 StructuredOutput 交付后主循环就地收尾，末轮 stop_reason 是 tool_use。
+   * 实测（会话 20261003-120708-72a3b7af）它曾被记成 user_interrupt —— 与上面两组同一条反模式。
+   */
+  describe("exit_status = end_turn（StructuredOutput 交付收尾不误记成 user_interrupt）", () => {
+    test("上报了交付收尾 → 末轮 tool_use 也落 end_turn", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordStructuredOutputDelivered();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("end_turn");
+    });
+
+    test("反向自证：没上报时，同样的输入仍落 user_interrupt", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("user_interrupt");
+    });
+
+    test("max_turns 优先：同时撞顶时仍记 max_turns", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordMaxTurns();
+      collector.recordStructuredOutputDelivered();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("max_turns");
+    });
+  });
+
   // ─── D3-1 / D3-3：退出落 messages.json + 异常归因 ───
 
   test("D3-1：SessionEnd 落 messages.json，含完整消息历史", async () => {
