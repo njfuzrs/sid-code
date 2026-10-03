@@ -8901,6 +8901,8 @@ export class App {
           sendToLLM: async (text) => {
             await callbacks.onUserInput(text);
           },
+          // B16：命令层一次性提示走状态栏瞬态通知（8s），不进对话历史
+          notify: (text) => this.statusNotifier?.("command_notice", text, 8000),
           customCommands: this.getCustomCommandsSummary(),
           confirmShellCommands: async (commands) => {
             return new Promise<boolean>((resolve) => {

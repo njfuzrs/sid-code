@@ -228,7 +228,7 @@ import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
+import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -4196,7 +4196,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
         }
 
-        // ─── /goal：Goal Gate（独立评估者判定目标是否满足）───
+        // ─── /goal：Goal Gate（评估者判定目标是否满足）───
         // 位于 Gate 链最末——只有前三道 Gate 全部放行，才轮到 Goal Gate 做最终判定。
         // Plan Mode 中暂停 Goal Gate（计划模式不执行操作，不应评估完成度）。
         if (deps.getGoalState) {
@@ -4204,14 +4204,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
           if (goal && goal.status === "active" && !inPlanMode) {
             try {
-              // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.default > 主模型
-              // 注意：刻意跳过 subAgentModels.verify —— verify 语义是"对抗验证子代理"（需强模型、慢），
-              // 而 goal 评估是"快速判是否完成"（需快模型、512 token JSON）。复用 verify 会让强慢模型
-              // 撞上短超时必然失败（见 20260707 排查 P0-1/P1-4）。两者解耦。
-              const evaluatorModel =
-                effectiveGoalConfig.evaluatorModel ||
-                config.subAgentModels?.default ||
-                config.model;
+              // 评估者模型：goal.evaluatorModel > subAgentModels.default > 主模型（刻意跳过 verify，
+              // 理由见 resolveGoalEvaluatorModel）。与 /goal 命令的提示共用同一个解析函数。
+              const evaluatorModel = resolveGoalEvaluatorModel({
+                model: config.model,
+                goal: effectiveGoalConfig,
+                subAgentModels: config.subAgentModels,
+              }).model;
               // F4（2026-09-03）：provider 按**评估器模型名**解析，读该模型在
               // availableModels 里声明的 provider/apiKey/baseURL。
               //
