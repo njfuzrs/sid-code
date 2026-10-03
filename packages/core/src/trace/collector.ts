@@ -102,6 +102,13 @@ export interface CollectorOptions {
    * 不传时由 {@link resolveRecordRawPayloads} 解析 env 兜底。
    */
   recordRawPayloads?: boolean;
+  /**
+   * 是否自动上传（默认 true）。对应 `trace.upload.auto_upload`。
+   * false 时 SessionEnd 不上传、SessionStart 不做启动补传，只在本地留存；
+   * 手动通道（`--upload-traces`、`/debug` 上传快照）不受影响。
+   * 此前这个字段在 config 层解析齐全却无人读取，配了 false 照样自动传。
+   */
+  autoUpload?: boolean;
 }
 
 /** 关闭 raw.jsonl 内容记录的环境变量（兜底通道，优先级低于显式配置） */
@@ -207,6 +214,8 @@ export class TraceCollector {
   private resumedPairOffset: number = 0;
   private writer!: TraceWriter;
   private uploader: TraceUploaderInterface | null;
+  /** 见 CollectorOptions.autoUpload */
+  private readonly autoUpload: boolean;
   private readonly outputDir: string;
   /** 本地最大保留会话数（LRU 清理用，默认 100） */
   private readonly maxSessionsRetained: number;
@@ -253,6 +262,8 @@ export class TraceCollector {
    * 单向置位；source 只记录是哪一层停的，推断本身不读它。
    */
   private hitBudgetExceeded = false;
+  /** B26：本轮以 StructuredOutput 交付收尾（{@link recordStructuredOutputDelivered}），收尾归 end_turn */
+  private hitStructuredOutputDelivered = false;
   private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
@@ -344,6 +355,7 @@ export class TraceCollector {
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
     this.recordRawPayloads = resolveRecordRawPayloads(options.recordRawPayloads);
     this.uploader = uploader;
+    this.autoUpload = options.autoUpload !== false;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
     // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
@@ -750,6 +762,7 @@ export class TraceCollector {
     // 撞顶 / 预算硬停标志随会话重置：上个会话的收尾事实不能漏到这个会话。
     this.hitMaxTurns = false;
     this.hitBudgetExceeded = false;
+    this.hitStructuredOutputDelivered = false;
     this.budgetExceededSource = undefined;
 
     // 重置辅助调用统计（避免跨会话污染）
@@ -978,7 +991,7 @@ export class TraceCollector {
     // `resumed_from`，即真实轨迹目录名）。用进程 id 当护栏会空转 —— 见 init-helpers 注释。
     //
     // fire-and-forget + 全量 catch：采集永不阻塞主循环（不变量 1）。
-    if (this.uploader?.backfillPendingSessions) {
+    if (this.autoUpload && this.uploader?.backfillPendingSessions) {
       void this.uploader
         .backfillPendingSessions({ currentSessionId: traceSessionId })
         .then((r) => {
@@ -1921,7 +1934,7 @@ export class TraceCollector {
         ? "max_turns"
         : this.hitBudgetExceeded
           ? "budget_exceeded"
-          : lastPair?.stop_reason === "end_turn"
+          : lastPair?.stop_reason === "end_turn" || this.hitStructuredOutputDelivered
             ? "end_turn"
             : "user_interrupt";
       if (this.hitBudgetExceeded && this.budgetExceededSource) {
@@ -2025,7 +2038,12 @@ export class TraceCollector {
     //   - 传不完不再假装「后台继续」，而是**明确交给下次启动的补传**
     //     （backfill.ts，判据是 `.uploaded` 标记缺失，与退出路径解耦）。
     // 这样退出快 + 不丢数据同时成立，而不是用体验换正确性。
-    if (this.uploader) {
+    if (this.uploader && !this.autoUpload) {
+      getLogger().info(
+        "TRACE",
+        "auto_upload=false，会话结束不自动上传（可用 --upload-traces 手动补传）",
+      );
+    } else if (this.uploader) {
       const budgetMs = this.uploadBudgetMs;
       if (budgetMs <= 0) {
         // 预算为 0 = 调用方明确要求不在退出路径等上传（如信号退出）。
@@ -2318,6 +2336,8 @@ export class TraceCollector {
               edit_latency: digest.pathology.editLatencyPathological,
               observation_entropy: digest.pathology.observationEntropyPathological,
               retry_wasted_tokens: digest.pathology.retryWastedPathological,
+              // B47：计费恒等式不成立（钱的账对不上，不是过程可疑）
+              billing_identity: digest.pathology.billingIdentityBroken,
             })
               .filter(([, v]) => v)
               .map(([k]) => k)
@@ -2897,6 +2917,16 @@ export class TraceCollector {
   recordBudgetExceeded(source: "budget_rule" | "quota" | "remote"): void {
     this.hitBudgetExceeded = true;
     this.budgetExceededSource = source;
+  }
+
+  /**
+   * 记录「本轮以 StructuredOutput 交付收尾」。由 `engine.ts` 在收到带
+   * `structuredOutputDelivered` 的 `done` 时调用。理由同 {@link recordBudgetExceeded}：
+   * 末轮 stop_reason 是 tool_use，从 SessionEnd 推不出「正常交付」，不声明就落 user_interrupt。
+   * max_turns / budget_exceeded 仍优先（更具体的控制流事实）。
+   */
+  recordStructuredOutputDelivered(): void {
+    this.hitStructuredOutputDelivered = true;
   }
 
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───

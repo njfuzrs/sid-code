@@ -27,6 +27,7 @@ import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
 import { stripReadEfficiencyHint } from "../tool/read.ts";
+import { STRUCTURED_OUTPUT_TOOL_NAME } from "../tool/structured-output-tool.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { logContextAssembled } from "../analytics/events.ts";
 import { ModelFallback } from "../llm/fallback.ts";
@@ -227,7 +228,7 @@ import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
+import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -4195,7 +4196,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
         }
 
-        // ─── /goal：Goal Gate（独立评估者判定目标是否满足）───
+        // ─── /goal：Goal Gate（评估者判定目标是否满足）───
         // 位于 Gate 链最末——只有前三道 Gate 全部放行，才轮到 Goal Gate 做最终判定。
         // Plan Mode 中暂停 Goal Gate（计划模式不执行操作，不应评估完成度）。
         if (deps.getGoalState) {
@@ -4203,14 +4204,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
           if (goal && goal.status === "active" && !inPlanMode) {
             try {
-              // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.default > 主模型
-              // 注意：刻意跳过 subAgentModels.verify —— verify 语义是"对抗验证子代理"（需强模型、慢），
-              // 而 goal 评估是"快速判是否完成"（需快模型、512 token JSON）。复用 verify 会让强慢模型
-              // 撞上短超时必然失败（见 20260707 排查 P0-1/P1-4）。两者解耦。
-              const evaluatorModel =
-                effectiveGoalConfig.evaluatorModel ||
-                config.subAgentModels?.default ||
-                config.model;
+              // 评估者模型：goal.evaluatorModel > subAgentModels.default > 主模型（刻意跳过 verify，
+              // 理由见 resolveGoalEvaluatorModel）。与 /goal 命令的提示共用同一个解析函数。
+              const evaluatorModel = resolveGoalEvaluatorModel({
+                model: config.model,
+                goal: effectiveGoalConfig,
+                subAgentModels: config.subAgentModels,
+              }).model;
               // F4（2026-09-03）：provider 按**评估器模型名**解析，读该模型在
               // availableModels 里声明的 provider/apiKey/baseURL。
               //
@@ -4721,6 +4721,32 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         state.emptyParamRetryCount = 0;
         // 方案②：工具成功执行 → 模型已在正常推进（非"只思考不答复"），清零未答复计数
         state.unansweredRetryCount = 0;
+
+        // B26 顺带：`--json-schema` 下 StructuredOutput 已捕获合规载荷 = 任务交付完毕，就地收尾。
+        // 子代理路径（agentic-loop）靠 hasCapturedOutput 旁路结束，顶层主循环此前没有这个出口：
+        // 实测模型拿到成功返回后同参连调 99 次（会话 20261002-212543-660c152b，102 次 API / $1.06），
+        // 只有 maxTurns 能停住它。判据只认工具自报的 hasCapturedOutput，不认「本轮调过它」——
+        // 校验不通过的那次必须照常续轮，让模型按回喂的错误重试。
+        if (
+          toolBlocks.some((b) => b.type === "tool_use" && b.name === STRUCTURED_OUTPUT_TOOL_NAME)
+        ) {
+          const so = toolRegistry.get(STRUCTURED_OUTPUT_TOOL_NAME) as
+            | { hasCapturedOutput?: boolean }
+            | undefined;
+          if (so?.hasCapturedOutput === true) {
+            log.info("QUERY_LOOP", "StructuredOutput 已捕获合规输出，主循环收尾");
+            turnStopReason = "end_turn";
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              structuredOutputDelivered: true,
+            };
+            exitedViaReturn = true;
+            return;
+          }
+        }
 
         // ⚠️ PR1（§5.1 B1 / §5.7）：这里**原先**还有一处 `deps.updateSessionMemory?.()`
         // 的工具轮触发（"本轮工具结果已入历史，增量提取"），**已刻意删除**。

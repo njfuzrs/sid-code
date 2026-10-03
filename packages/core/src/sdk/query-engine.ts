@@ -66,6 +66,11 @@ export interface SDKQueryEngineDriver {
     count: number;
     reason: string;
   }[];
+  /**
+   * B26：`--json-schema` 下 StructuredOutput 工具最近一次**校验通过**的载荷。
+   * 返回 undefined = 没开 schema 或模型没交出合规输出，result 不写该字段。
+   */
+  getStructuredOutput?(): unknown;
 }
 
 export class SDKQueryEngine {
@@ -292,8 +297,12 @@ export class SDKQueryEngine {
     const denials = this.driver.getPermissionDenials?.() ?? [];
     const withDenials = denials.length > 0 ? { ...result, permission_denials: denials } : result;
     if (withDenials.subtype !== "success") return withDenials;
+    // B26：schema 定义了 structured_output 却从未写入，消费者只能去流里捞未校验的 tool_use 入参。
+    // 只在 success 上写：错误结果的 schema 没有这个字段，且失败时的「部分载荷」不该冒充结果。
+    const structured = this.driver.getStructuredOutput?.();
     return {
       ...withDenials,
+      ...(structured !== undefined ? { structured_output: structured } : {}),
       result: withDenials.result || this.extractFinalText(),
       duration_api_ms: withDenials.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
       usage: this.driver.getUsage(),

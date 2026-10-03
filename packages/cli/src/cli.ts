@@ -128,6 +128,17 @@ export function resolveAlternateBufferDecision(env: {
 }
 
 /**
+ * `SID_CODE_DEBUG` 是否开启调试模式（B27）。
+ *
+ * 取值口径必须与 `packages/tui-renderer/src/_vendor/debug.ts` 一致（`1` / `true`）：
+ * 同一个变量在两处读，一处认 `true` 一处不认，用户就会看到「ink 日志出来了、debug.log 没有」
+ * 这种半开状态，比完全不生效更难排查。
+ */
+export function isDebugEnvEnabled(raw: string | undefined): boolean {
+  return raw === "1" || raw === "true";
+}
+
+/**
  * 校验 UUID v4 格式（--session-id 用）。CC 要求 --session-id 必须是合法 UUID。
  * 宽松匹配 8-4-4-4-12 十六进制形态（不强制 version/variant 位，兼容外部编排生成的 uuid）。
  */
@@ -636,7 +647,9 @@ function parseCLIArgs(): CLIArgs {
     // P1-4：合并了 --append-system-prompt 与 --append-system-prompt-file 的内容
     appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
-    debug: values.debug,
+    // B27：SID_CODE_DEBUG=1 与 --debug 等价。帮助文本、ref/env、排障页三处都在教这个变量，
+    // 此前代码里只有 tui-renderer 的 ink stderr 读它，debug.log 从不因它开启。
+    debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG),
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
     pluginDirs: values["plugin-dir"],
@@ -1619,7 +1632,7 @@ export async function main(): Promise<void> {
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
-    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
+    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol/codeAction 等 10 操作）。
     // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
     const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
     toolRegistry.register(new LSPTool());
@@ -2177,6 +2190,14 @@ export async function main(): Promise<void> {
       // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含
       // --strict-mcp-config）、IDE 动态注册、运行时重连都不经过 config 合并层的过滤。
       mcpManager.policy = config.mcpPolicy;
+      // B21：授权 URL 此前只走 log.info——不开 --debug 时 logger 停在 WARN 级（审计日志），
+      // URL 被静默丢掉，而 performOAuthFlow 会在回调上干等 5 分钟。用户看到的是
+      // 「MCP 连不上、也没有任何提示」。必须直出 stderr：stdout 是无头模式的结构化输出通道。
+      mcpManager.onOAuthAuthorizationUrl = (serverName, url) => {
+        process.stderr.write(
+          `\n[MCP] ${serverName} 需要 OAuth 授权，请在浏览器打开以下 URL（5 分钟内有效）:\n${url}\n\n`,
+        );
+      };
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
@@ -2214,6 +2235,17 @@ export async function main(): Promise<void> {
           .connectAll(allMcpServers)
           .then(async (mcpTools) => {
             for (const tool of mcpTools) toolRegistry.register(tool);
+            // B22：_ctx_mcp_server_count 此前无人回填、恒为 0。计的是**连上的**数，不是配置数——
+            // 后者在配置里就能看到，分析时真正缺的是「这个会话实际有几个 server 可用」。
+            try {
+              const { MCPConnectionStatus: S } = await import("@sid-code/core/mcp/types.ts");
+              const { setMcpServerCount } = await import("@sid-code/core/analytics/metadata.ts");
+              setMcpServerCount(
+                mgrForSkills.getStatus().filter((s) => s.status === S.CONNECTED).length,
+              );
+            } catch {
+              /* 遥测回填失败不阻断 MCP 接入 */
+            }
             if (mcpTools.length > 0) {
               // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
               // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
@@ -2908,7 +2940,9 @@ export async function main(): Promise<void> {
         prompt = [prompt, pipedText].filter(Boolean).join("\n");
       }
       // resume 带了会话 id 时允许空 prompt：恢复后续跑，不需要新指令。
-      if (!prompt.trim() && !config.resume) {
+      // B25：stream-json 输入也允许——首条 prompt 由宿主经 stdin 的 `user` 消息送来，
+      // 嵌入方（IDE / SDK 宿主）常常是先握手、先发控制请求，再发第一条消息。
+      if (!prompt.trim() && !config.resume && config.inputFormat !== "stream-json") {
         console.error("错误: 无头模式需要提供提示词（位置参数或管道 stdin）");
         process.exit(1);
       }
