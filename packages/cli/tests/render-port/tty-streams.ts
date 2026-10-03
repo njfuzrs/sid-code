@@ -10,8 +10,8 @@
  */
 import { PassThrough } from "node:stream";
 import type React from "react";
-import { inkInstances } from "@sid-code/cli/ui/render-port/runtime.ts";
-import { renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
+import { getRenderInstance } from "@sid-code/cli/ui/render-port/runtime.ts";
+import { forgetRenderInstance, renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
 
 export const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
@@ -63,7 +63,7 @@ export function mountTTY(
     exitOnCtrlC: extra.exitOnCtrlC ?? false,
     onFrame: extra.onFrame,
   } as Parameters<typeof renderSync>[1]);
-  const ink = inkInstances.get(s.stdout) as unknown as LegacyInk;
+  const ink = getRenderInstance(s.stdout)!;
   return {
     inst,
     ink,
@@ -71,24 +71,8 @@ export function mountTTY(
     teardown() {
       (s.stdout as unknown as { isTTY: boolean }).isTTY = false;
       inst.unmount();
-      inkInstances.delete(s.stdout);
+      forgetRenderInstance(s.stdout);
     },
-  };
-}
-
-/**
- * 契约测试要碰的旧底座实例方法。端口目前只导出 `inkInstances`（CLI 也是这么拿实例的），
- * 这里把用到的方法列成显式类型，next 实现要提供同名能力。
- */
-export interface LegacyInk {
-  setAltScreenActive(active: boolean, mouseTracking?: boolean): void;
-  setSelectionBgColor(color: string): void;
-  forceRedraw(): void;
-  copySelectionNoClear(): string;
-  detachForShutdown(): void;
-  selection: {
-    anchor: { col: number; row: number } | null;
-    focus: { col: number; row: number } | null;
   };
 }
 

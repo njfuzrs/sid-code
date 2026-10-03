@@ -11,7 +11,7 @@
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useApp } from "./render-port/hooks.ts";
-import { inkInstances } from "./render-port/runtime.ts";
+import { getRenderInstance } from "./render-port/runtime.ts";
 import {
   killAllRunningTasks,
   hasRunningTasks,
@@ -856,7 +856,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const b = matchBinding(key);
     if (b?.action !== "app:clearScreen") return false;
     log.info("UI:APP", "Ctrl+L：清屏（保留历史与上下文）");
-    inkInstances.get(process.stdout)?.forceRedraw();
+    getRenderInstance()?.forceRedraw();
     return true;
   });
 

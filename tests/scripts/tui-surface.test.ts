@@ -132,7 +132,7 @@ describe("真实仓库：清单与签名", () => {
       "RawAnsi",
       "Ansi",
       "render",
-      "inkInstances",
+      "getRenderInstance",
       "drainStdin",
       "setSuppressTerminalProbe",
       "useStdout",
@@ -146,6 +146,8 @@ describe("真实仓库：清单与签名", () => {
     }
     // ScrollBox 只出现在注释里，不是依赖
     expect(surface.symbols.has("ScrollBox")).toBe(false);
+    // 实例注册表不再外露：CLI 拿实例只走 getRenderInstance（契约 X7）
+    expect(surface.symbols.has("inkInstances")).toBe(false);
   });
 
   test("CLI 的终端模式直写都被扫到（§1.5）", () => {

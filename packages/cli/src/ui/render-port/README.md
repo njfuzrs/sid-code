@@ -19,8 +19,8 @@ CLI（`packages/cli/src` 与 `packages/cli/tests`）**只经这里**拿渲染底
 | `measure.ts` | measureElement / getBoundingBox / ResizeObserver | 3 |
 | `text.ts` | stringWidth、colorize 三函数、styled-chars 五函数 | 4 |
 | `termio.ts` | OSC 工具、BEL、supportsHyperlinks | 5 |
-| `runtime.ts` | render / 实例注册表 / drainStdin / 探查抑制 —— **整套引擎** | 86 |
-| `testing.ts` | 测试用 render / renderSync | — |
+| `runtime.ts` | render / `getRenderInstance` + `RenderInstance` 实例能力面 / drainStdin / 探查抑制 —— **整套引擎** | 86 |
+| `testing.ts` | 测试用 render / renderSync / `enableFrameThrottle` / `forgetRenderInstance` | — |
 | `types.ts` | 仅类型 | 0（编译后消失） |
 
 `cli.ts` 会话选择器与 `/copy` 等命令对 `runtime.ts` / `termio.ts` 用的是**动态 import**，
@@ -30,3 +30,14 @@ CLI（`packages/cli/src` 与 `packages/cli/tests`）**只经这里**拿渲染底
 
 `SURFACE.md` 是 `bun run tui:surface` 生成的，列出 CLI 用到的全部符号 / props / 环境变量 /
 stdout 直写。新增一个导出前先想清楚：新底座也必须提供它。
+
+## 实例能力面：`getRenderInstance` 而不是注册表
+
+CLI 拿渲染实例只走 `getRenderInstance(stdout)`，返回类型是端口自有的 `RenderInstance`，
+只列真实调用点用到的方法。旧底座的 `instances` Map 不再导出：Map 暴露的是「旧底座 Ink 类的全部
+公开方法」，新底座不可能也不应该照抄。
+
+CI 没有 `tsc`，而 CLI 的调用都是 `?.forceRedraw()` 这种可选链 —— 新底座少实现一个方法时
+**不会报错，只会静默变成 no-op**。所以方法名同时列在 `RENDER_INSTANCE_METHODS`，
+`tests/render-port/render-instance.test.tsx`（契约 X7）运行时逐个核对，并反查接口与清单一致。
+

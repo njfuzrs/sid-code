@@ -10,7 +10,7 @@
 import React, { useSyncExternalStore } from "react";
 import { AlternateScreen, Box, Static, Text } from "../../../src/ui/render-port/components.ts";
 import { useTabStatus, useTerminalTitle } from "../../../src/ui/render-port/hooks.ts";
-import { inkInstances, render } from "../../../src/ui/render-port/runtime.ts";
+import { getRenderInstance, render } from "../../../src/ui/render-port/runtime.ts";
 import { MarkdownAnsi } from "../../../src/ui/components/MarkdownAnsi.tsx";
 import { SettingsProvider } from "../../../src/ui/contexts/SettingsContext.tsx";
 import { TableRenderer } from "../../../src/ui/components/TableRenderer.tsx";
@@ -339,7 +339,7 @@ export const SCENARIOS: Record<string, Scenario> = {
         </KeypressProvider>,
       );
       ctx.step("主界面（raw mode 已开）");
-      const ink = inkInstances.get(process.stdout);
+      const ink = getRenderInstance();
       ink?.enterAlternateScreen();
       process.stdout.write("编辑器画面");
       await ctx.settle();
@@ -358,7 +358,7 @@ export const SCENARIOS: Record<string, Scenario> = {
       ctx.step("主屏");
       process.stdout.write("\x1b[1;1H污染");
       ctx.step("被外部写入污染");
-      inkInstances.get(process.stdout)?.forceRedraw();
+      getRenderInstance()?.forceRedraw();
       await ctx.settle();
       ctx.step("主屏 forceRedraw 后");
       inst.unmount();
@@ -370,7 +370,7 @@ export const SCENARIOS: Record<string, Scenario> = {
       );
       ctx.step("alt-screen");
       process.stdout.write("\x1b[2;1H污染");
-      inkInstances.get(process.stdout)?.forceRedraw();
+      getRenderInstance()?.forceRedraw();
       await ctx.settle();
       ctx.step("alt forceRedraw 后");
       alt.unmount();
@@ -407,10 +407,10 @@ export const SCENARIOS: Record<string, Scenario> = {
       // 短命实例（会话选择器）→ 主 TUI 交接；期间到达分片的 DA1 回复
       const picker = await mountWith(ctx, <Text>选择会话</Text>);
       ctx.step("选择器");
-      ctx.note("picker-registered", String(inkInstances.get(process.stdout) !== undefined));
+      ctx.note("picker-registered", String(getRenderInstance() !== undefined));
       picker.unmount();
       await ctx.settle();
-      ctx.note("after-picker-unmount", String(inkInstances.get(process.stdout) !== undefined));
+      ctx.note("after-picker-unmount", String(getRenderInstance() !== undefined));
       const typed = store("");
       function Main() {
         useKeypress(KeypressPriority.Normal, (k) => {
@@ -482,7 +482,7 @@ export const SCENARIOS: Record<string, Scenario> = {
       ctx.type("\x1b[<0;10;2m");
       await ctx.settle();
       ctx.step("拖选");
-      const ink = inkInstances.get(process.stdout);
+      const ink = getRenderInstance();
       ctx.note("selected", ink?.copySelectionNoClear() ?? "(无实例)");
       // 双击选词
       ink?.clearTextSelection();

@@ -9,8 +9,9 @@ import React, { useState } from "react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import { Box, Text } from "@sid-code/cli/ui/render-port/components.ts";
+import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 import { useInput } from "@sid-code/cli/ui/render-port/hooks.ts";
+import { enableFrameThrottle } from "@sid-code/cli/ui/render-port/testing.ts";
 import { drainStdin } from "@sid-code/cli/ui/render-port/runtime.ts";
 import {
   ENABLE_MOUSE,
@@ -48,23 +49,27 @@ afterEach(() => {
 
 describe("R2 帧调度", () => {
   test("R2: 同一 tick 内多次提交合并：microtask 后出 leading 帧，16ms 内只再补一个 trailing 帧", async () => {
-    // NODE_ENV=test 时 reconciler 走 onImmediateRender（无节流），要测真实调度得临时切掉
-    setEnv("NODE_ENV", "production");
-    const s = ttyStreams();
-    let frames = 0;
-    // rerender 走 updateContainerSync，提交是同步的；调度合并只发生在「提交 → 出帧」这一段
-    const m = mountTTY(<Text>n=0</Text>, s, { onFrame: () => frames++ });
-    await tick();
-    const base = frames;
-    for (let i = 1; i <= 5; i++) m.inst.rerender(<Text>n={i}</Text>);
-    expect(frames).toBe(base); // 同步阶段不出帧
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(frames).toBe(base + 1); // leading：microtask 里出一帧
-    await tick(50);
-    expect(frames).toBe(base + 2); // trailing：只补一帧，不是 5 帧
-    expect(s.out()).toContain("5");
-    m.teardown();
+    // 测试环境默认同步出帧（R13），要测真实调度得显式打开
+    const restore = enableFrameThrottle();
+    try {
+      const s = ttyStreams();
+      let frames = 0;
+      // rerender 走 updateContainerSync，提交是同步的；调度合并只发生在「提交 → 出帧」这一段
+      const m = mountTTY(<Text>n=0</Text>, s, { onFrame: () => frames++ });
+      await tick();
+      const base = frames;
+      for (let i = 1; i <= 5; i++) m.inst.rerender(<Text>n={i}</Text>);
+      expect(frames).toBe(base); // 同步阶段不出帧
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(frames).toBe(base + 1); // leading：microtask 里出一帧
+      await tick(50);
+      expect(frames).toBe(base + 2); // trailing：只补一帧，不是 5 帧
+      expect(s.out()).toContain("5");
+      m.teardown();
+    } finally {
+      restore(); // 断言失败也要恢复，否则后面整批测试都变成异步出帧
+    }
   });
 });
 
@@ -260,19 +265,17 @@ describe("M5 选区背景色", () => {
   async function selectHello(color: string | null) {
     chalk.level = 3;
     const s = ttyStreams();
-    const m = mountTTY(
-      <Box flexDirection="column">
-        <Text>hello world</Text>
-      </Box>,
-      s,
-    );
+    const m = mountTTY(<Keys label="hello world" />, s);
     await tick();
     m.ink.setAltScreenActive(true, false);
     if (color !== null) m.ink.setSelectionBgColor(color);
-    m.ink.selection.anchor = { col: 0, row: 0 };
-    m.ink.selection.focus = { col: 4, row: 0 };
     s.clear();
-    m.ink.forceRedraw();
+    // 真实鼠标输入拖选第 1 行 1–5 列（SGR：按下 → 拖动 → 释放），不碰选区内部状态
+    s.stdin.write("\x1b[<0;1;1M");
+    await tick();
+    s.stdin.write("\x1b[<32;5;1M");
+    await tick();
+    s.stdin.write("\x1b[<0;5;1m");
     await tick();
     const out = s.out();
     const text = m.ink.copySelectionNoClear();

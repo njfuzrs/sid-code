@@ -36,6 +36,7 @@
 | R10 | SIGCONT 恢复：alt-screen 下内容视为过期，整屏重绘并重新打开鼠标跟踪 | `ink.tsx:218` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` R10: |
 | R11 | **已完成区（现名 `Static`）的项可以原地重渲**：items 引用不变时 memo 跳过；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
 | R12 | 非 TTY 输出（`stdout.isTTY` 为假）每帧写整帧，不做增量 diff | `ink.tsx:288` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R12: |
+| R13 | 测试环境默认**每次提交同步出帧**（不节流），`lastFrame()` 在 rerender 之后立即可读；只有测帧调度的用例经端口 `enableFrameThrottle()` 打开真实调度（R2） | `reconciler.ts:292`、`ink.tsx:329` | `packages/cli/tests/render-port/render-instance.test.tsx` R13: |
 
 ## L 布局
 
@@ -123,6 +124,7 @@
 | X4 | `detachForShutdown`：标记已卸载、取消待发的节流渲染、drain stdin、退出 raw mode；不经 React 卸载，不写任何终端序列 | `ink.tsx:1147-1165` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` X4: |
 | X5 | `enterAlternateScreen` / `exitAlternateScreen`（外部编辑器前后）：退出后终端模式与进入前一致 | `ink.tsx:509`、`ink.tsx:546` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S8: { |
 | X6 | 实例按 stdout 注册（`instances`），卸载时移除；同一 stdout 上前一个实例卸载后新实例能接手 | `root.ts:100`、`root.ts:147` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S11: { |
+| X7 | 端口 `getRenderInstance(stdout)` 返回的实例提供 `RENDER_INSTANCE_METHODS` 列出的全部方法（`RenderInstance` 类型）；CLI 与测试拿实例只走这一个入口 | CLI `packages/cli/src/ui/render-port/runtime.ts` | `packages/cli/tests/render-port/render-instance.test.tsx` X7: |
 
 ## P 性能
 

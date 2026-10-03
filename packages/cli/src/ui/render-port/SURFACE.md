@@ -1,5 +1,5 @@
 <!-- 本文件由 scripts/tui-surface.ts 生成，勿手改。重新生成：bun run tui:surface -->
-<!-- surface-signature: 86596cdab3208057 -->
+<!-- surface-signature: ff8eceb706de4a9b -->
 
 # 渲染端口面（CLI 对渲染底座的全部依赖）
 
@@ -7,7 +7,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 签名只由**集合**决定（符号 / props / 环境变量），计数是生成时快照，日常 UI 改动会让它漂移，不影响签名。
 
 - 消费底座的源码文件：**101** 个（`packages/cli/src`，不含 `ui/render-port/` 自身）
-- 直接 import 底座的测试文件：**19** 个（`packages/cli/tests`）
+- 直接 import 底座的测试文件：**26** 个（`packages/cli/tests`）
 - 符号：**44** 个；宿主组件 props：**51** 种；底座读取的环境变量：**38** 个
 
 ## 1. 符号（按引用文件数降序）
@@ -23,7 +23,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 | `setClipboard` | 4 | `render-port/termio.ts` | 含动态 import |
 | `useStdin` | 3 | `render-port/hooks.ts` |  |
 | `Ansi` | 2 | `render-port/components.ts` |  |
-| `inkInstances` | 2 | `render-port/runtime.ts` |  |
+| `getRenderInstance` | 2 | `render-port/runtime.ts` |  |
 | `render` | 2 | `render-port/runtime.ts` | 含动态 import |
 | `ResizeObserver` | 2 | `render-port/measure.ts` |  |
 | `AlternateScreen` | 1 | `render-port/components.ts` |  |
@@ -193,6 +193,13 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 ## 5. 直接 import 底座的测试文件
 
+- `packages/cli/tests/render-port/contracts-layout-text.test.tsx`
+- `packages/cli/tests/render-port/contracts-runtime.test.tsx`
+- `packages/cli/tests/render-port/render-instance.test.tsx`
+- `packages/cli/tests/render-port/static-reconcile.test.tsx`
+- `packages/cli/tests/render-port/stdin-dual-reader.test.tsx`
+- `packages/cli/tests/render-port/term-bench/scenarios.tsx`
+- `packages/cli/tests/render-port/tty-streams.ts`
 - `packages/cli/tests/ui/components/CoreRendering.test.tsx`
 - `packages/cli/tests/ui/components/HotkeyChoiceList.test.tsx`
 - `packages/cli/tests/ui/components/LoadingIndicator.test.tsx`
