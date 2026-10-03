@@ -1,5 +1,5 @@
 <!-- 本文件由 scripts/tui-surface.ts 生成，勿手改。重新生成：bun run tui:surface -->
-<!-- surface-signature: 29cf74045cf8f618 -->
+<!-- surface-signature: 86596cdab3208057 -->
 
 # 渲染端口面（CLI 对渲染底座的全部依赖）
 
@@ -14,50 +14,50 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 | 符号 | 引用文件数 | 来源模块 | 备注 |
 | --- | ---: | --- | --- |
-| `Box` | 70 | `components/Box.tsx` |  |
-| `Text` | 68 | `components/Text.tsx` |  |
-| `Color` | 24 | `styles.ts` | 仅类型 |
-| `useStdout` | 13 | `_vendor/use-stdout.ts` |  |
-| `stringWidth` | 8 | `stringWidth.ts` |  |
-| `DOMElement` | 6 | `dom.ts` | 仅类型 |
-| `setClipboard` | 4 | `termio/osc.ts` | 含动态 import |
-| `useStdin` | 3 | `hooks/use-stdin.ts` |  |
-| `Ansi` | 2 | `Ansi.tsx` |  |
-| `inkInstances` | 2 | `instances.ts` |  |
-| `render` | 2 | `root.ts` | 含动态 import |
-| `ResizeObserver` | 2 | `_vendor/resize-observer.ts` |  |
-| `AlternateScreen` | 1 | `components/AlternateScreen.tsx` |  |
-| `AnsiColor` | 1 | `styles.ts` | 仅类型 |
-| `applyColor` | 1 | `colorize.ts` |  |
-| `applyTextStyles` | 1 | `colorize.ts` |  |
-| `BEL` | 1 | `termio/ansi.ts` |  |
-| `ClockContext` | 1 | `components/ClockContext.tsx` |  |
-| `colorize` | 1 | `colorize.ts` |  |
-| `drainStdin` | 1 | `ink.tsx` | 含动态 import |
-| `getBoundingBox` | 1 | `_vendor/get-bounding-box.ts` |  |
-| `measureElement` | 1 | `measure-element.ts` |  |
-| `osc` | 1 | `termio/osc.ts` |  |
-| `OSC` | 1 | `termio/osc.ts` |  |
-| `Props` | 1 | `components/Text.tsx` | 仅类型 |
-| `RawAnsi` | 1 | `components/RawAnsi.tsx` |  |
-| `setSuppressTerminalProbe` | 1 | `terminal.ts` | 含动态 import |
-| `Static` | 1 | `_vendor/Static.tsx` |  |
-| `StyledChar` | 1 | `_vendor/styled-chars.ts` | 仅类型 |
-| `styledCharsWidth` | 1 | `_vendor/styled-chars.ts` |  |
-| `supportsHyperlinks` | 1 | `supports-hyperlinks.ts` |  |
-| `TabStatusKind` | 1 | `hooks/use-tab-status.ts` | 仅类型 |
-| `TerminalSizeContext` | 1 | `components/TerminalSizeContext.tsx` |  |
-| `TerminalWriteContext` | 1 | `useTerminalNotification.ts` |  |
-| `toStyledCharacters` | 1 | `_vendor/styled-chars.ts` |  |
-| `useAnimationFrame` | 1 | `hooks/use-animation-frame.ts` |  |
-| `useApp` | 1 | `hooks/use-app.ts` |  |
-| `useInput` | 1 | `hooks/use-input.ts` |  |
-| `useTabStatus` | 1 | `hooks/use-tab-status.ts` |  |
-| `useTerminalTitle` | 1 | `hooks/use-terminal-title.ts` |  |
-| `widestLineFromStyledChars` | 1 | `_vendor/styled-chars.ts` |  |
-| `wordBreakStyledChars` | 1 | `_vendor/styled-chars.ts` |  |
-| `wrapForMultiplexer` | 1 | `termio/osc.ts` |  |
-| `wrapStyledChars` | 1 | `_vendor/styled-chars.ts` |  |
+| `Box` | 70 | `render-port/components.ts` |  |
+| `Text` | 68 | `render-port/components.ts` |  |
+| `Color` | 24 | `render-port/types.ts` | 仅类型 |
+| `useStdout` | 13 | `render-port/hooks.ts` |  |
+| `stringWidth` | 8 | `render-port/text.ts` |  |
+| `DOMElement` | 6 | `render-port/types.ts` | 仅类型 |
+| `setClipboard` | 4 | `render-port/termio.ts` | 含动态 import |
+| `useStdin` | 3 | `render-port/hooks.ts` |  |
+| `Ansi` | 2 | `render-port/components.ts` |  |
+| `inkInstances` | 2 | `render-port/runtime.ts` |  |
+| `render` | 2 | `render-port/runtime.ts` | 含动态 import |
+| `ResizeObserver` | 2 | `render-port/measure.ts` |  |
+| `AlternateScreen` | 1 | `render-port/components.ts` |  |
+| `AnsiColor` | 1 | `render-port/types.ts` | 仅类型 |
+| `applyColor` | 1 | `render-port/text.ts` |  |
+| `applyTextStyles` | 1 | `render-port/text.ts` |  |
+| `BEL` | 1 | `render-port/termio.ts` |  |
+| `ClockContext` | 1 | `render-port/hooks.ts` |  |
+| `colorize` | 1 | `render-port/text.ts` |  |
+| `drainStdin` | 1 | `render-port/runtime.ts` | 含动态 import |
+| `getBoundingBox` | 1 | `render-port/measure.ts` |  |
+| `measureElement` | 1 | `render-port/measure.ts` |  |
+| `osc` | 1 | `render-port/termio.ts` |  |
+| `OSC` | 1 | `render-port/termio.ts` |  |
+| `RawAnsi` | 1 | `render-port/components.ts` |  |
+| `setSuppressTerminalProbe` | 1 | `render-port/runtime.ts` | 含动态 import |
+| `Static` | 1 | `render-port/components.ts` |  |
+| `StyledChar` | 1 | `render-port/types.ts` | 仅类型 |
+| `styledCharsWidth` | 1 | `render-port/text.ts` |  |
+| `supportsHyperlinks` | 1 | `render-port/termio.ts` |  |
+| `TabStatusKind` | 1 | `render-port/types.ts` | 仅类型 |
+| `TerminalSizeContext` | 1 | `render-port/hooks.ts` |  |
+| `TerminalWriteContext` | 1 | `render-port/hooks.ts` |  |
+| `TextProps` | 1 | `render-port/types.ts` | 仅类型 |
+| `toStyledCharacters` | 1 | `render-port/text.ts` |  |
+| `useAnimationFrame` | 1 | `render-port/hooks.ts` |  |
+| `useApp` | 1 | `render-port/hooks.ts` |  |
+| `useInput` | 1 | `render-port/hooks.ts` |  |
+| `useTabStatus` | 1 | `render-port/hooks.ts` |  |
+| `useTerminalTitle` | 1 | `render-port/hooks.ts` |  |
+| `widestLineFromStyledChars` | 1 | `render-port/text.ts` |  |
+| `wordBreakStyledChars` | 1 | `render-port/text.ts` |  |
+| `wrapForMultiplexer` | 1 | `render-port/termio.ts` |  |
+| `wrapStyledChars` | 1 | `render-port/text.ts` |  |
 
 ## 2. 宿主组件 props（按出现次数降序）
 

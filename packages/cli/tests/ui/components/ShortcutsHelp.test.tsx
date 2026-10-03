@@ -9,7 +9,7 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { ShortcutsHelp } from "@sid-code/cli/ui/components/ShortcutsHelp.tsx";
 
 describe("K1 — ShortcutsHelp 从表生成", () => {

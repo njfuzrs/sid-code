@@ -9,9 +9,9 @@
  */
 
 import React from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
+import { useStdout } from "../render-port/hooks.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import type { HistoryItem } from "../types.ts";
 import { QuittingDisplay } from "./QuittingDisplay.tsx";

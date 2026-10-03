@@ -9,7 +9,7 @@
 import { describe, test, expect } from "bun:test";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { ModelDialog } from "@sid-code/cli/ui/components/ModelDialog.tsx";
 import { KeypressProvider } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import type { ModelProfile } from "@sid-code/core/llm/model-profile.ts";

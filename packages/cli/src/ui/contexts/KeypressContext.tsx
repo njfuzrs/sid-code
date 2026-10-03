@@ -15,7 +15,7 @@
  */
 
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from "react";
-import useStdin from "@sid-code/tui-renderer/hooks/use-stdin.ts";
+import { useStdin } from "../render-port/hooks.ts";
 import { MultiMap } from "mnemonist";
 import { ESC } from "../utils/input.ts";
 import { parseMouseEvent } from "../utils/mouse.ts";

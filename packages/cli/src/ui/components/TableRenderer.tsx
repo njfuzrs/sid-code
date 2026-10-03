@@ -4,16 +4,16 @@
  */
 
 import React, { useMemo } from "react";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import type { StyledChar } from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
+import { Text } from "../render-port/components.ts";
+import { Box } from "../render-port/components.ts";
+import type { StyledChar } from "../render-port/types.ts";
 import {
   toStyledCharacters,
   styledCharsWidth,
   wrapStyledChars,
   widestLineFromStyledChars,
   wordBreakStyledChars,
-} from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
+} from "../render-port/text.ts";
 import { styledCharsToString } from "@alcalzone/ansi-tokenize";
 import { theme } from "../semantic-colors.ts";
 import { renderInlineMarkdown } from "../markdown.ts";

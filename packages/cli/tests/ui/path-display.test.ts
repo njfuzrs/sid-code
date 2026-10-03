@@ -16,7 +16,7 @@ import {
   fitPathToWidth,
   fitTextToWidth,
 } from "@sid-code/cli/ui/utils/path-display.ts";
-import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { stringWidth } from "@sid-code/cli/ui/render-port/text.ts";
 
 const CWD = "/Users/me/Code/person/sid-code";
 const HOME = "/Users/me";

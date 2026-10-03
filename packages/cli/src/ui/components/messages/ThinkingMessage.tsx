@@ -10,9 +10,9 @@
  */
 
 import React from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { ClockContext } from "@sid-code/tui-renderer/components/ClockContext.tsx";
+import { Box } from "../../render-port/components.ts";
+import { Text } from "../../render-port/components.ts";
+import { ClockContext } from "../../render-port/hooks.ts";
 import { theme } from "../../semantic-colors.ts";
 import { THINKING_MARK, CURSOR } from "../../constants/figures.ts";
 import { formatLargeNumber } from "../../utils/format-number.ts";

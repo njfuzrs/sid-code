@@ -28,7 +28,11 @@ import {
   extractImports,
   scanPackagesMode,
   scanPackageTestsMode,
+  scanRenderPortMode,
+  RENDER_PORT_DIR,
 } from "../../scripts/pkg-boundary-scan.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const PACKAGES_ROOT = join(REPO_ROOT, "packages");
@@ -84,7 +88,8 @@ describe("包边界门禁自身有效性（防假绿）", () => {
     // 若 extractImports 或 bare specifier 正则失效，违规会是 0，但边也会是 0。
     // 「零违规 + 零边」是假绿的典型指纹，「零违规 + 大量合法边」才是真的干净。
     expect(scan.edges.get("cli→core") ?? 0).toBeGreaterThan(100);
-    expect(scan.edges.get("cli→tui-renderer") ?? 0).toBeGreaterThan(50);
+    // B9 / T0.2 后 CLI 对底座的导入全部收进 ui/render-port/（实测 36 条），下限随之下调。
+    expect(scan.edges.get("cli→tui-renderer") ?? 0).toBeGreaterThan(20);
     expect(scan.edges.get("core→shared") ?? 0).toBeGreaterThan(0);
   });
 
@@ -151,5 +156,56 @@ describe("包内测试的边界（P1-2 测试迁进包后新增的扫描面）",
       `import { x } from "../../core/src/tool/registry.ts";\nexport const y = x;\n`,
     );
     expect(imports.map((i) => i.spec)).toContain("../../core/src/tool/registry.ts");
+  });
+});
+
+describe("渲染端口：CLI 只能经 ui/render-port/ 拿渲染底座（B9 / T0.2）", () => {
+  const rp = scanRenderPortMode(REPO_ROOT);
+
+  test("零绕过端口的底座导入（src + tests）", () => {
+    const detail = rp.violations.map((v) => `  ${v.file}:${v.line}  ${v.spec}`).join("\n");
+    expect(
+      rp.violations.length,
+      `以下文件绕过端口直连渲染底座，切底座时会静默留在旧底座上：\n${detail}\n\n` +
+        `修法：改成从 ${RENDER_PORT_DIR}/*.ts 导入；端口缺这个符号就先在端口里加上`,
+    ).toBe(0);
+  });
+
+  test("防假绿：扫描面非空，端口内确实有底座导入", () => {
+    // 「零违规 + 端口内零导入」= 要么扫错了目录，要么端口被绕空了
+    expect(rp.files).toBeGreaterThan(200); // 实测 475（cli src + tests）
+    expect(rp.portEdges).toBeGreaterThan(20);
+  });
+
+  test("变异自证：在 CLI 里直连底座会被检出，端口目录内则放行", () => {
+    // 落在 tmpdir 的仿真仓库里，不碰真实工作区（并行任务安全）
+    const fake = join(tmpdir(), `render-port-mutation-${process.pid}-${Date.now()}`);
+    try {
+      mkdirSync(join(fake, RENDER_PORT_DIR), { recursive: true });
+      mkdirSync(join(fake, "packages/cli/tests"), { recursive: true });
+      writeFileSync(
+        join(fake, "packages/cli/src/ui/Bad.tsx"),
+        `import Box from "@sid-code/tui-renderer/components/Box.tsx";\n` +
+          `import { X } from "@sid-code/tui/index.ts";\n` +
+          `// import Y from "@sid-code/tui-renderer/y.ts";\n`,
+      );
+      writeFileSync(
+        join(fake, "packages/cli/tests/bad.test.ts"),
+        `const { render } = await import("@sid-code/tui-renderer/root.ts");\n`,
+      );
+      writeFileSync(
+        join(fake, RENDER_PORT_DIR, "components.ts"),
+        `export { default as Box } from "@sid-code/tui-renderer/components/Box.tsx";\n`,
+      );
+      const r = scanRenderPortMode(fake);
+      expect(r.violations.map((v) => `${v.file}:${v.spec}`).sort()).toEqual([
+        "packages/cli/src/ui/Bad.tsx:@sid-code/tui-renderer/components/Box.tsx",
+        "packages/cli/src/ui/Bad.tsx:@sid-code/tui/index.ts",
+        "packages/cli/tests/bad.test.ts:@sid-code/tui-renderer/root.ts",
+      ]);
+      expect(r.portEdges).toBe(1);
+    } finally {
+      rmSync(fake, { recursive: true, force: true });
+    }
   });
 });

@@ -5,7 +5,7 @@
  * 参考 gemini-cli/packages/core/src/utils/terminalSerializer.ts
  */
 
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "../render-port/types.ts";
 
 export interface AnsiToken {
   text: string;

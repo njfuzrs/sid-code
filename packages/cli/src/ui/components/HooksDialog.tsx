@@ -9,8 +9,8 @@
  */
 
 import React, { useState, useMemo } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";

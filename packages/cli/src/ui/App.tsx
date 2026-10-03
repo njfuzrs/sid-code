@@ -10,8 +10,8 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import useApp from "@sid-code/tui-renderer/hooks/use-app.ts";
-import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { useApp } from "./render-port/hooks.ts";
+import { inkInstances } from "./render-port/runtime.ts";
 import {
   killAllRunningTasks,
   hasRunningTasks,

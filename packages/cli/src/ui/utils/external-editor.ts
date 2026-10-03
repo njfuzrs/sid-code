@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { inkInstances } from "../render-port/runtime.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**

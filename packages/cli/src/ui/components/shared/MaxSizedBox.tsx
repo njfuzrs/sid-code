@@ -6,10 +6,10 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { ResizeObserver } from "@sid-code/tui-renderer/_vendor/resize-observer.ts";
-import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
+import { Box } from "../../render-port/components.ts";
+import { Text } from "../../render-port/components.ts";
+import { ResizeObserver } from "../../render-port/measure.ts";
+import type { DOMElement } from "../../render-port/types.ts";
 import { theme } from "../../semantic-colors.ts";
 import { useOverflowActions } from "../../contexts/OverflowContext.tsx";
 import { formatCollapsedSummary } from "../../constants/collapse.ts";

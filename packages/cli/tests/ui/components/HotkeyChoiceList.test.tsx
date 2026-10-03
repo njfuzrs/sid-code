@@ -15,7 +15,7 @@
 import { test, expect, describe } from "bun:test";
 import React from "react";
 import { PassThrough } from "node:stream";
-import { renderSync } from "@sid-code/tui-renderer/root.ts";
+import { renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
 import { KeypressProvider, ESC_TIMEOUT } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import { HotkeyChoiceList } from "@sid-code/cli/ui/components/shared/HotkeyChoiceList.tsx";
 import { buildPermissionChoices } from "@sid-code/cli/ui/components/permission-choices.ts";

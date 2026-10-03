@@ -17,12 +17,12 @@
  */
 
 import React, { useCallback, useRef, useEffect, useState } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { Box } from "./render-port/components.ts";
+import { Text } from "./render-port/components.ts";
+import { useStdout } from "./render-port/hooks.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "./render-port/types.ts";
 import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";

@@ -11,10 +11,10 @@
  */
 
 import React, { useState, useCallback, useMemo, useEffect } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import useInput from "@sid-code/tui-renderer/hooks/use-input.ts";
-import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { Box } from "./render-port/components.ts";
+import { Text } from "./render-port/components.ts";
+import { useInput } from "./render-port/hooks.ts";
+import { useStdout } from "./render-port/hooks.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { SessionInfo } from "@sid-code/core/session/utils.ts";
 import {

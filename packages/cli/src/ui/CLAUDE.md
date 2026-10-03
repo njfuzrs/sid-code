@@ -18,7 +18,7 @@ paths: ["src/ui/**", "src/ink/**"]
 规范分**五层**，从下到上：每一层都建立在下一层之上，改东西前先定位你改的是**哪一层**，只读那一层 + 它依赖的下层。
 
 ```text
-L5 工程约束    改完必做、渲染底座(src/ink fork)、怎么验证      ← 所有改动都受约束
+L5 工程约束    改完必做、渲染端口(ui/render-port)、怎么验证      ← 所有改动都受约束
 L4 交互体验    输入/中断/提示/反馈/危险操作/键盘          ← "好不好用"
 L3 消息流      消息语义类型、工具生命周期、折叠、流式      ← 屏幕主体
 L2 组合规则    排版表达状态、布局留白、对齐成列            ← 怎么拼
@@ -30,7 +30,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - ✅ **已落地**：代码里已实现，照着用、改到时对齐，别推翻。
 - ⚠️ **待补**：方向认可但还没做全，新需求碰到了就补上，补时遵循这里的设计。
 
-> 注：渲染底座是 vendor 进 `src/ink/` 的 ink fork（已脱离 npm 包），cc 的渲染能力基本都有，**不存在"受 ink 限制做不了"的硬边界**。遇 cc 做法默认能搬，先去 `src/ink` 找——详见 L5.3。
+> 注：渲染底座正在整层替换（B9）。组件**只经 `ui/render-port/` 导入**渲染能力，**不要去读、也不要从旧底座（`packages/tui-renderer` / `.vendor-src/`）或 cc 源码搬代码**——详见 L5.3。
 
 **元原则（贯穿五层，记不住别的就记这三条）：**
 
@@ -206,10 +206,10 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 ### 3.4 流式渲染：逐字可见，已完成与进行中分离 ✅
 
-> **渲染底座 = vendor 进 `src/ink` 的 ink fork**（已脱离 node_modules 的 `@jrichman/ink`）。cc 的渲染能力**本项目都有**，不是"做不了"——见 L5.3。
+> **渲染能力一律经 `ui/render-port/` 取**（B9 重构中，见 L5.3）。下文提到的底座文件名只说明能力出处，不是让你去读那里的代码。
 
 - **逐字输出可见** ✅，不要憋到结束才一次性吐出（`StreamingMessage.tsx`）。
-- **已完成消息走 Static + blit 缓存，进行中消息重渲** ✅：`src/ink/_vendor/Static.tsx` 承载已完成消息（`MainScreenLayout.tsx` 已用），items 引用不变时 memo 跳过重渲；`src/ink/node-cache.ts` 用 WeakMap 缓存各节点 layout bounds 做 blit + 局部清除（O(dirty) 而非 O(mounted)）。新组件让"已完成区"items 引用稳定即可吃到这套缓存，不要每帧重建数组。
+- **已完成消息走 Static + blit 缓存，进行中消息重渲** ✅：端口的 `Static`（`render-port/components.ts`）承载已完成消息（`MainScreenLayout.tsx` 已用），items 引用不变时 memo 跳过重渲；底座内部按节点缓存 layout bounds 做 blit + 局部清除（O(dirty) 而非 O(mounted)，契约 P3）。新组件让"已完成区"items 引用稳定即可吃到这套缓存，不要每帧重建数组。
 - **流式内容按视口高度 tail 截断** ✅：动态区流式内容若高度 ≥ 终端行数会触发全屏重打闪烁，正解是按视口高度对流式内容做 tail 截断（见 memory `main-screen-streaming-flicker-rootcause.md`，根因已随 fork 迁移更新）。
 - **follow-scroll / selection** ✅：fork 的 `selection.ts` 已有 `shiftSelectionForFollow` / `captureScrolledRows`，selection 引擎在 `ink.tsx` 已完整接线，`src/ui` 的 `MouseContext` / `ScrollProvider` 也接了。需要跟随滚动到底 / 文本选中复制时，用 fork 既有能力，别自造。
 
@@ -217,7 +217,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 - 增行 `+` 绿、删行 `-` 红、上下文行常态（`DiffRenderer.tsx` / `diffAnsiLines.ts`）。
 - 语法高亮走 `CodeColorizer.tsx`。
-- **RawAnsi 快路径** ✅：fork 的 `src/ink/components/RawAnsi.tsx` 接收"已按列宽换行的 ANSI 行数组"，单个 Yoga leaf + 常量 measure 直接 `output.write()`，跳过 `<Ansi>→React 树→Yoga→squash→重序列化` 的往返。长 diff / 高亮代码这类已是终端就绪的内容用它（`diffAnsiLines.ts` 生产 ANSI 行 → `DiffRenderer` 已在用）。
+- **RawAnsi 快路径** ✅：端口的 `RawAnsi`（`render-port/components.ts`）接收"已按列宽换行的 ANSI 行数组"，单个 Yoga leaf + 常量 measure 直接 `output.write()`，跳过 `<Ansi>→React 树→Yoga→squash→重序列化` 的往返。长 diff / 高亮代码这类已是终端就绪的内容用它（`diffAnsiLines.ts` 生产 ANSI 行 → `DiffRenderer` 已在用）。
 - ANSI 由 TS 侧（`diffAnsiLines.ts`）生产即可，不需要 cc 的 NAPI ColorDiff（Rust 模块）——RawAnsi 只关心"喂进来的是终端就绪 ANSI 行"，不关心谁生产。
 
 ---
@@ -314,7 +314,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 两条路子，**按改动性质选，涉及布局的一律选第一条**：
 
 **① 整帧渲染（首选，涉及对齐 / 列宽 / 换行时必须用）**：
-`@sid-code/tui-renderer/_vendor/testing.tsx` 的 `render()` 能在测试里真渲染组件并用
+`@sid-code/cli/ui/render-port/testing.ts` 的 `render()` 能在测试里真渲染组件并用
 `lastFrame()` 取整帧字符串（PassThrough 假 stdout，非 TTY 下 ink 输出整帧）。
 配 `{ columns }` 可指定终端宽度，`strip-ansi` 去色后逐行断言。**仓库里已有 10+ 个组件这么测**
 （`tests/ui/components/*.test.tsx`），不是新路子。
@@ -332,23 +332,33 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - 颜色：`themeManager.getSemanticColors()` 看**实际解析出的值**（定义 ≠ 生效）。
 - 关键计算：进度条 0/1 边界、`stringWidth` 对齐、tail 截断行数等纯函数直接打印验证。
 
-### 5.3 渲染底座：vendor 进 `src/ink` 的 ink fork ✅
+### 5.3 渲染底座：只经 `ui/render-port/` 使用，不读旧底座、不搬 cc ✅
 
-**现状（2026-06，已脱离 node_modules）**：组件 import 的不是 npm 包，而是本地 `src/ink/`——ink fork 整套 vendor 进了仓库（import 路径形如 `"../../ink/components/Box.js"`，`node_modules` 已无 ink / @jrichman）。**cc 的渲染能力本项目基本都有**，遇到 cc 做法默认"能搬"，先去 `src/ink` 找对应文件，别假设做不了：
+**现状（2026-10，B9 / T0.2）**：渲染底座正在整层替换（设计文档《TUI 渲染底座重构 —— 整体设计》）。
+旧底座 `packages/tui-renderer` 是经泄露快照引入的 cc ink 衍生版，B9 要把它换成「以 MIT 上游 ink 为起点、自研差异部分」的新底座。
+在此期间三条规则：
 
-| 能力 | 位置 | 状态 |
+1. **只经端口导入**。CLI（`src` 与 `tests`）里所有渲染能力从 `ui/render-port/*.ts` 取
+   （`components` / `hooks` / `measure` / `text` / `termio` / `runtime` / `testing` / `types`，分组理由见该目录 `README.md`）。
+   直接写 `@sid-code/tui-renderer/*` 或 `@sid-code/tui/*` 会被 `bun run lint:boundary` 拦下。
+2. **不读旧底座、不搬 cc 做法**。以前这里写的是「遇 cc 做法默认能搬，先去 `src/ink` 找」，**已作废**：
+   B9 要求旧代码只回答「应该表现成什么样」，不当代码来源。要了解某个能力的行为，读 `packages/tui/SPEC.md` 的契约（T0.3 起）和端口的 `SURFACE.md`，不打开 `.vendor-src/`。
+3. **端口缺能力 → 先在端口里加，再用**。在对应端口模块加一行 re-export，跑 `bun run tui:surface` 重生成 `SURFACE.md` 并一起提交。
+   这一步的意义是让「新底座也必须提供它」被看见。别为了绕开端口而在组件里直连底座。
+
+当前已有、组件可以直接用的能力（都从端口取）：
+
+| 能力 | 端口 | 状态 |
 |------|------|------|
-| RawAnsi 快路径（终端就绪 ANSI 行直写） | `src/ink/components/RawAnsi.tsx` | ✅ `DiffRenderer` 已用 |
-| Static 已完成区 + memo 跳重渲 | `src/ink/_vendor/Static.tsx` | ✅ `MainScreenLayout` 已用 |
-| blit / 节点 layout 缓存（WeakMap，O(dirty)） | `src/ink/node-cache.ts` | ✅ renderer 已驱动 |
-| selection 引擎（选中 / 复制 / 高亮） | `src/ink/selection.ts` + `ink.tsx` | ✅ 已接线，`MouseContext`/`ScrollProvider` 已接 |
-| follow-scroll（跟随滚动到底） | `src/ink/selection.ts` `shiftSelectionForFollow` / `captureScrolledRows` | ✅ 引擎已具备 |
-| hyperlink（OSC 8 检测） | `src/ink/supports-hyperlinks.ts` | ✅ |
-| 行级 diff / 同步输出 / focus / measure | `log-update.ts` / `focus.ts` / `measure-*.ts` | ✅ |
+| RawAnsi 快路径（终端就绪 ANSI 行直写） | `render-port/components.ts` `RawAnsi` | ✅ `DiffRenderer` 已用 |
+| 已完成区（memo Box，**项可原地重渲**，不是上游 ink 的 print-once `<Static>`） | `render-port/components.ts` `Static` | ✅ `MainScreenLayout` 已用 |
+| 布局测量 | `render-port/measure.ts` | ✅ |
+| 文本宽度 / 着色 / styled-chars | `render-port/text.ts` | ✅ |
+| OSC / 剪贴板 / 超链接判定 | `render-port/termio.ts` | ✅ |
+| 整帧渲染测试 | `render-port/testing.ts` | ✅ 非 TTY 整帧，测不到增量 diff 与闪烁 |
 
-- 唯一确实没有的是 cc 的 **NAPI ColorDiff（Rust 模块）**——但不需要：RawAnsi 只吃"终端就绪 ANSI 行"，由 TS 侧 `diffAnsiLines.ts` 生产即可。
-- 改渲染相关代码时，**直接读 `src/ink/` 对应源码**（fork 全在仓库里，可改可读），而不是把它当黑盒 npm 包绕开。需要新渲染能力 → 先看 fork 有没有，再考虑加层。
-- 历史包袱提醒：早期 memory / 文档可能仍说"用 `@jrichman/ink`、搬不了 cc fork"——**那是迁移前的旧状态，已失效**，以本节为准。
+- 选区引擎、follow-scroll、blit 缓存这些在引擎内部，组件不直接碰，经 `AlternateScreen` / `MouseContext` / `ScrollProvider` 间接使用。
+- 历史包袱提醒：早期 memory / 文档里「`src/ink` fork 可随便读改」「cc 能力默认能搬」的说法**已失效**，以本节为准。
 
 ---
 
@@ -367,7 +377,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | L3 折叠 | 每处自编 "还有很多…" | 统一 `… +N more` + `(ctrl+o 展开)` |
 | L4 危险 | 删除确认默认聚焦"确定" | 默认聚焦"取消" + 标红警告 |
 | L4 提示 | 每次都显示同一条 onboarding | `hasSeen*` / `*HintCount < N` 衰减 |
-| L5 渲染 | 把 `src/ink` 当黑盒 npm 包绕开、以为搬不了 cc 能力 | 直接读改 `src/ink` fork 源码，复用其 RawAnsi/Static/blit/selection |
+| L5 渲染 | 组件里直接 `import … from "@sid-code/tui-renderer/…"`，或打开旧底座 / cc 源码照着搬 | 从 `ui/render-port/*.ts` 导入；端口缺能力就在端口里加一行 re-export，并重跑 `bun run tui:surface` |
 
 ---
 
@@ -383,7 +393,7 @@ Claude 会按五层定位问题：
 - **L2 组合**：盒子套盒子？`.length` 算宽？只靠颜色区分状态？→ 按 2.1-2.3 改
 - **L3 消息流**：消息语义混渲？工具状态不流转？长内容不折叠？→ 按 3.1-3.5 改
 - **L4 交互**：会丢输入？中断没出路？提示唠叨？危险操作没挡？→ 按 A-G 改
-- **L5**：跑 test + build；渲染相关先读 `src/ink` fork 源码、复用既有能力（5.3）
+- **L5**：跑 test + build；渲染能力只经 `ui/render-port/` 取，缺了先查 `SURFACE.md`、再在端口里加（5.3）
 
 按场景选措辞：
 

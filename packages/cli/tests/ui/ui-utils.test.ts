@@ -13,7 +13,7 @@ import {
   getResultSummary,
   getThinkThought,
 } from "@sid-code/cli/ui/ui-utils.ts";
-import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { stringWidth } from "@sid-code/cli/ui/render-port/text.ts";
 
 describe("isDiffContent", () => {
   const editDiff =
