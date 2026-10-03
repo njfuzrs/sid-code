@@ -335,5 +335,7 @@ jobs:
           fi
           echo "✅ 全部检查通过"
 
-  # 面向用户的文档门禁不在这里：那部分在 website/，由 pre-commit 的
-  # `docs-gen-reference.ts --check` 与 pre-push 的站点构建（死链检查）守着。
+  # 参考页反漂移与叙述覆盖度**在这里有兜底**：test job 的全量 bun test 含
+  # tests/website/gen-reference.test.ts，它会跑 `docs-gen-reference.ts --check` 与
+  # `--coverage-strict`，所以本地 --no-verify 绕过 pre-commit 也合不进 main。
+  # pre-commit 只是让同一道门在提交时就红。站点构建（死链检查）只在 pre-push。

@@ -21,7 +21,7 @@
  *   bun run scripts/docs-gen-reference.ts --check    # 对账：不一致退 1（pre-commit 门禁调用）
  *   bun run scripts/docs-gen-reference.ts --stale    # 报告 >90 天未复核的指南页（只告警不阻塞）
  *   bun run scripts/docs-gen-reference.ts --coverage # 报告只在 ref/ 出现、无指南页介绍的命令（告警）
- *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（存量清完后启用）
+ *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（pre-commit 调用；2026-10-03 存量清零后启用）
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -1254,7 +1254,7 @@ export function checkNarrativeCoverage(cmdNames: string[]): CoverageResult {
  * 报告叙述覆盖度。
  *
  * @param strict true = 有未覆盖命令则返回非零（阻断）。
- *   当前存量 21 个未覆盖，先走告警模式；存量清完后把 pre-commit 的调用改成 --coverage-strict。
+ *   2026-10-03 存量清零，pre-commit 已改调 --coverage-strict；--coverage 只留给人工查看。
  */
 function reportCoverage(cmdNames: string[], strict: boolean): number {
   const { uncovered, covered, exempt, total } = checkNarrativeCoverage(cmdNames);
@@ -1279,8 +1279,8 @@ function reportCoverage(cmdNames: string[], strict: boolean): number {
 
   if (!strict) {
     console.log(
-      `\n  当前为告警模式（存量未清完，不阻断）。清完后把 pre-commit 的调用换成\n` +
-        `  --coverage-strict，"做了功能不写文档"在物理上就进不了仓库。`,
+      `\n  当前为告警模式（--coverage，不阻断）。pre-commit 调的是 --coverage-strict，\n` +
+        `  这些命令在提交时会被拦下；确不该写进指南的，加进 NARRATIVE_EXEMPT 并写理由。`,
     );
     return 0;
   }
