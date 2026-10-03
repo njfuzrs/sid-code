@@ -19,13 +19,22 @@ Date: 2026-10-02
 - **只在手写名单里补上 ws / http-json**：修了这一次，下一次新增传输方式还会漂移。
   这是继 Hook 事件名（`schema.ts` 注释记录的假告警）之后同一形态的第二例，补名单治不了形态。
 - **改文档把 ws 删掉**：文档是对的（运行时真支持），错在校验器。
-- **顺手把 schema.ts 里其它手写 `new Set([...])`（budget period/action、search backend 等）一起派生**：
-  它们目前与 Zod 一致、不在本任务范围，且部分名单刻意对齐的是实现分支而非 Zod
-  （如 telemetry exporter），混进来会扩大 review 面。
+- **把 schema.ts 里剩下的手写名单全部派生**：只做了有 Zod 枚举的三份
+  （`BudgetPeriodEnum` / `BudgetActionEnum` / `SearchBackendEnum`，从 `settings/types.ts` 导出），
+  其余四份刻意不动，因为它们的事实源**不是 Zod**，硬套 Zod 反而是把名单对齐到错的源：
+  - `VALID_PROVIDERS`：Zod 里 `provider` 是 `z.string()`，真源是 `llm/registry.ts` 的 switch + `replay` 特判；
+  - `VALID_PERMISSION_MODES`：已在 B34 ① 处理，且 #145（B27）正在改同一段，动它必冲突；
+  - `VALID_EXPORTER_TYPES`：Zod 里没有 telemetry 段，真源是 `telemetry/index.ts` 的 `createExporter` switch；
+    `feat/otlp-export-closure` 正在改 `telemetry/types.ts`，现在抽常量会和它冲突；
+  - `VALID_BACKEND_TYPES`：真源是 `query/init-helpers.ts` 的分派。
+  这两份「对齐实现分支」的名单要派生，正确做法是在实现模块导出常量、switch 与校验器共用，
+  属于另一件事，等 OTLP 那条线合入后再做。
 
 ## 拿什么证明它生效了
 
 - `bun test ./packages/core/tests/config/schema.test.ts`：46 pass / 0 fail，新增哨兵遍历
   `MCPTransportEnum.options` 逐个过 `validateConfig` 断言无 `mcpServers.*` error。
-- 变异自证：把集合改回 `new Set(["stdio","http","sse"])`，4 条新测试变红
+- 追加三份派生后：65 pass / 0 fail；新增哨兵遍历 period × action 全组合与全部 search backend。
+  变异自证：三份集合缩小为子集 → 18 条红，恢复后全绿。
+- 变异自证（MCP）：把集合改回 `new Set(["stdio","http","sse"])`，4 条新测试变红
   （http-json、ws、提示文案缺值、缺 url 校验），恢复后全绿。

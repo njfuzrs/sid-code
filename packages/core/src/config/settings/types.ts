@@ -134,13 +134,21 @@ const ModelConfigSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * 预算周期 / 动作 / 搜索后端枚举：同 MCPTransportEnum，是 config/schema.ts 校验器的事实源。
+ * 校验器从 `.options` 派生，不再手写第二份名单（B36 同形态收口）。
+ */
+export const BudgetPeriodEnum = z.enum(["session", "hourly", "daily", "weekly", "monthly"]);
+export const BudgetActionEnum = z.enum(["alert", "downgrade", "block"]);
+export const SearchBackendEnum = z.enum(["searxng", "brave", "tavily", "duckduckgo"]);
+
 /** 预算规则 Schema */
 const BudgetRuleSchema = lazySchema(() =>
   z
     .object({
       id: z.string(),
       name: z.string(),
-      period: z.enum(["session", "hourly", "daily", "weekly", "monthly"]),
+      period: BudgetPeriodEnum,
       limit_usd: z.number().positive(),
       scope: z.object({ model: z.string().optional() }).passthrough().optional(),
       thresholds: z
@@ -151,7 +159,7 @@ const BudgetRuleSchema = lazySchema(() =>
         })
         .passthrough()
         .optional(),
-      action: z.enum(["alert", "downgrade", "block"]).optional(),
+      action: BudgetActionEnum.optional(),
     })
     .passthrough(),
 );
@@ -183,7 +191,7 @@ const IdentitySettingsSchema = lazySchema(() =>
 const SearchSchema = lazySchema(() =>
   z
     .object({
-      backend: z.enum(["searxng", "brave", "tavily", "duckduckgo"]).optional(),
+      backend: SearchBackendEnum.optional(),
       searxngUrl: z.string().optional(),
       braveApiKey: z.string().optional(),
       tavilyApiKey: z.string().optional(),

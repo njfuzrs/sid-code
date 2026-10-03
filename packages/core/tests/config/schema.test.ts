@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { validateConfig } from "@sid-code/core/config/schema.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
-import { MCPTransportEnum } from "@sid-code/core/config/settings/types.ts";
+import {
+  MCPTransportEnum,
+  BudgetPeriodEnum,
+  BudgetActionEnum,
+  SearchBackendEnum,
+} from "@sid-code/core/config/settings/types.ts";
 
 describe("Config Validation", () => {
   const baseConfig: Config = {
@@ -256,6 +261,38 @@ describe("Config Validation", () => {
         expect(result.errors.some((e) => e.path === "mcpServers.s.url")).toBe(true);
       }
     });
+  });
+
+  describe("budget / search 枚举名单与 Zod 同源（B36 同形态收口）", () => {
+    // 哨兵：遍历 Zod 枚举，每个合法值都不应被报成「无效值」。名单漂移这里会红。
+    for (const period of BudgetPeriodEnum.options) {
+      for (const action of BudgetActionEnum.options) {
+        test(`budgetRules period="${period}" action="${action}" 不报无效值`, () => {
+          const result = validateConfig({
+            ...baseConfig,
+            quota: { budgetRules: [{ id: "r", name: "r", period, action, limit_usd: 1 }] },
+          } as Config);
+          const bad = result.warnings.filter(
+            (w) =>
+              (w.path.endsWith(".period") || w.path.endsWith(".action")) &&
+              w.message.includes("无效值"),
+          );
+          expect(bad).toEqual([]);
+        });
+      }
+    }
+
+    for (const backend of SearchBackendEnum.options) {
+      test(`search.backend="${backend}" 不报无效值`, () => {
+        const result = validateConfig({ ...baseConfig, search: { backend } } as Config);
+        // brave / tavily 有「尚未实现」告警、searxng 有缺 url 告警，这里只锁「无效值」那一条
+        expect(
+          result.warnings.filter(
+            (w) => w.path === "search.backend" && w.message.includes("无效值"),
+          ),
+        ).toEqual([]);
+      });
+    }
   });
 
   describe("模型引用类字段（fallbackModel / classifierModel / goal.evaluatorModel）", () => {
