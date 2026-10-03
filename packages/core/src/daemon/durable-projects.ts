@@ -9,11 +9,14 @@
  * 守护进程启动时读该清单，逐个项目加载其 scheduled_tasks.json 合并调度。
  * 项目被删 / json 不存在时从清单剔除（自愈）。
  *
- * 这是 C1 唯一需要触碰会话内层的地方（cron_create 加一行登记）。
+ * 登记发生在 Scheduler.addDurableTask 写盘成功之后（B43：此前在 cron_create 里登记，
+ * 且失败被吞；任何其他入口建的 durable 任务都不会被 daemon 发现）。
+ * 注册表是多进程读改写的，一律包在文件互斥里并原子写，否则两个项目同时登记会互相覆盖。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { readFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname, resolve } from "path";
+import { withFileMutex, writeAtomic } from "../cron/durable-store.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -41,14 +44,11 @@ function read(): RegistryContent {
   }
 }
 
+/** 写失败抛错：登记失败意味着 daemon 永远发现不了这个项目，不能静默 */
 function write(content: RegistryContent): void {
   const path = registryPath();
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(content, null, 2));
-  } catch (err: any) {
-    getLogger().warn("DAEMON", `写入 durable-projects 注册表失败: ${err?.message ?? err}`);
-  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeAtomic(path, JSON.stringify(content, null, 2));
 }
 
 /**
@@ -56,13 +56,16 @@ function write(content: RegistryContent): void {
  * 幂等：已登记则不重复。
  */
 export function registerDurableProject(projectDir: string): void {
-  const dir = projectDir.trim();
+  const dir = projectDir.trim() ? resolve(projectDir.trim()) : "";
   if (!dir) return;
-  const content = read();
-  if (content.projects.includes(dir)) return;
-  content.projects.push(dir);
-  content.updatedAt = Date.now();
-  write(content);
+  mkdirSync(dirname(registryPath()), { recursive: true });
+  withFileMutex(registryPath(), () => {
+    const content = read();
+    if (content.projects.includes(dir)) return;
+    content.projects.push(dir);
+    content.updatedAt = Date.now();
+    write(content);
+  });
 }
 
 /**
@@ -71,31 +74,41 @@ export function registerDurableProject(projectDir: string): void {
  * 返回清理后的有效项目列表。
  */
 export function listDurableProjects(): string[] {
-  const content = read();
-  const valid: string[] = [];
-  let changed = false;
+  const isValid = (dir: string) =>
+    existsSync(dir) && existsSync(join(dir, ".sid-code", "scheduled_tasks.json"));
+  const snapshot = read();
+  if (snapshot.projects.every(isValid)) return snapshot.projects;
 
-  for (const dir of content.projects) {
-    const jsonPath = join(dir, ".sid-code", "scheduled_tasks.json");
-    if (existsSync(dir) && existsSync(jsonPath)) {
-      valid.push(dir);
-    } else {
-      changed = true; // 剔除失效项
-    }
+  // 有失效项才进互斥自愈：在锁内重读，避免把别的进程刚登记的项目一并抹掉
+  try {
+    mkdirSync(dirname(registryPath()), { recursive: true });
+    return withFileMutex(registryPath(), () => {
+      const content = read();
+      const valid = content.projects.filter(isValid);
+      if (valid.length !== content.projects.length) {
+        write({ projects: valid, updatedAt: Date.now() });
+      }
+      return valid;
+    });
+  } catch (err: any) {
+    getLogger().warn(
+      "DAEMON",
+      `durable-projects 自愈写回失败（本轮按有效项继续）: ${err?.message ?? err}`,
+    );
+    return snapshot.projects.filter(isValid);
   }
-
-  if (changed) {
-    write({ projects: valid, updatedAt: Date.now() });
-  }
-  return valid;
 }
 
 /** 显式移除一个项目根（运维/测试用） */
 export function unregisterDurableProject(projectDir: string): void {
-  const content = read();
-  const idx = content.projects.indexOf(projectDir.trim());
-  if (idx === -1) return;
-  content.projects.splice(idx, 1);
-  content.updatedAt = Date.now();
-  write(content);
+  const dir = resolve(projectDir.trim());
+  mkdirSync(dirname(registryPath()), { recursive: true });
+  withFileMutex(registryPath(), () => {
+    const content = read();
+    const idx = content.projects.indexOf(dir);
+    if (idx === -1) return;
+    content.projects.splice(idx, 1);
+    content.updatedAt = Date.now();
+    write(content);
+  });
 }

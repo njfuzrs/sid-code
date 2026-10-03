@@ -50,24 +50,20 @@ export class DaemonWorker {
       // （外部可控），字符串插值进 shell 会命令注入。数组参数不经 shell 解析。
       const { execFileSync } = await import("node:child_process");
       let diff: string;
-      try {
-        execFileSync("git", ["fetch", "origin", event.base_branch, "--depth", "1"], {
-          cwd: workdir,
-          stdio: "pipe",
-          timeout: 30_000,
-        });
-        diff = execFileSync("git", ["diff", `origin/${event.base_branch}...HEAD`], {
-          cwd: workdir,
-          encoding: "utf-8",
-          timeout: 30_000,
-        });
-      } catch {
-        diff = execFileSync("git", ["diff", "HEAD~1"], {
-          cwd: workdir,
-          encoding: "utf-8",
-          timeout: 30_000,
-        });
-      }
+      // B43：fetch 不能带 --depth 1——会把已有的完整历史截断，merge-base 又找不到了。
+      // 失败直接抛（外层记 error），不再兜底 HEAD~1：那条兜底在浅克隆里同样不存在，
+      // 且「审了一个错的 diff」比「明确报错」更糟。
+      execFileSync("git", ["fetch", "--no-tags", "origin", event.base_branch], {
+        cwd: workdir,
+        stdio: "pipe",
+        timeout: 120_000,
+      });
+      diff = execFileSync("git", ["diff", `origin/${event.base_branch}...HEAD`], {
+        cwd: workdir,
+        encoding: "utf-8",
+        timeout: 60_000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
 
       // 缺口 C1-0：真正调用 code-review Skill —— fork 无头子进程，而非占位摘要。
       const job: HeadlessJob = {

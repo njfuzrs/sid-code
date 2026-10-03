@@ -7,12 +7,32 @@ import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types
 import { getScheduler } from "../cron/scheduler.ts";
 import { isValidCron } from "../cron/parser.ts";
 import { type CronTask, isCronDisabled } from "../cron/types.ts";
+import { durableFilePath } from "../cron/durable-store.ts";
+import type { Scheduler } from "../cron/scheduler.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
 function shortId(): string {
   return randomBytes(4).toString("hex");
+}
+
+/**
+ * 告诉模型（和用户）这个 durable 任务到点由谁来跑。
+ * 「已持久化」不等于「会执行」：会话关了又没有 daemon，任务就只是躺在盘上。
+ */
+function describeDriver(scheduler: Scheduler): string {
+  const hint = "需运行 `sid-code daemon start`（或 `sid-code daemon install`）才会继续执行";
+  switch (scheduler.durableDriver()) {
+    case "daemon":
+      return "触发方: 本机守护进程（会话关闭后照常执行）";
+    case "self":
+      return `触发方: 当前会话。会话关闭后${hint}`;
+    case "other-session":
+      return `触发方: 同项目的另一个会话。它关闭后${hint}`;
+    case "none":
+      return `触发方: 暂无（守护进程未运行，也没有交互会话在驱动本项目）。到点不会执行，${hint}`;
+  }
 }
 
 const cronCreateSchema = lazySchema(() =>
@@ -48,9 +68,10 @@ export class CronCreateTool implements Tool {
 - "0 9 * * 1-5" — 工作日早上 9 点
 - "30 14 4 4 *" — 4月4日下午2:30（配合 recurring=false 为一次性）
 
-recurring: true（默认）= 循环触发，7 天后自动过期
+recurring: true（默认）= 循环触发；会话级 7 天后自动过期，durable 不过期（需手动删除）
 recurring: false = 触发一次后自动删除
-durable: true = 持久化到磁盘，跨会话存活（默认 false）
+durable: true = 持久化到 <项目>/.sid-code/scheduled_tasks.json，跨会话存活（默认 false）。
+  会话开着时由会话触发；会话关了由 sid-code daemon 触发（daemon 不在则到点不会执行）
 allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务有意义，缺省默认只读）`;
   }
 
@@ -109,19 +130,22 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
 
     const scheduler = getScheduler();
     if (task.durable) {
-      if (!scheduler.addDurableTask(task)) {
+      // 写盘与 durable-projects 登记都在 addDurableTask 里，失败抛错。
+      // B43：此前写盘失败（或根本没写）也回「已持久化」，登记失败被吞。
+      let added: boolean;
+      try {
+        added = scheduler.addDurableTask(task);
+      } catch (err: any) {
+        return {
+          output: `错误: 持久任务写盘失败，任务未创建: ${err?.message ?? err}`,
+          isError: true,
+        };
+      }
+      if (!added) {
         return {
           output: `已达定时任务上限 (${scheduler.durableCap()})，请先用 cron_delete 删除不需要的任务`,
           isError: true,
         };
-      }
-      // 缺口 C1 §4.5：登记本项目到 durable-projects 注册表，
-      // 守护进程据此发现「所有项目的」durable 任务（自愈剔除失效项）。
-      try {
-        const { registerDurableProject } = await import("../daemon/durable-projects.ts");
-        registerDurableProject(process.cwd());
-      } catch {
-        /* 注册失败不阻塞任务创建 */
       }
     } else {
       if (!scheduler.addSessionTask(task)) {
@@ -132,15 +156,20 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
       }
     }
 
-    const typeLabel = task.recurring ? "循环任务（7 天后过期）" : "一次性任务";
-    const durableLabel = task.durable ? "，已持久化" : "";
+    const typeLabel = task.recurring
+      ? task.durable
+        ? "循环任务（不自动过期）"
+        : "循环任务（7 天后过期）"
+      : "一次性任务";
+    const durableLabel = task.durable ? `，已写入 ${durableFilePath(task.workspaceDir!)}` : "";
+    const driverLabel = task.durable ? `\n${describeDriver(scheduler)}` : "";
     const toolsLabel = allowedTools
       ? `\n预授权工具: ${allowedTools.join(", ")}`
       : task.durable
         ? "\n预授权工具: 无（守护进程将以只读模式执行）"
         : "";
     return {
-      output: `已创建${typeLabel}${durableLabel}，ID: ${task.id}\ncron: ${task.cron}${toolsLabel}`,
+      output: `已创建${typeLabel}${durableLabel}，ID: ${task.id}\ncron: ${task.cron}${toolsLabel}${driverLabel}`,
     };
   }
 }
