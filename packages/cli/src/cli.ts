@@ -128,6 +128,17 @@ export function resolveAlternateBufferDecision(env: {
 }
 
 /**
+ * `SID_CODE_DEBUG` 是否开启调试模式（B27）。
+ *
+ * 取值口径必须与 `packages/tui-renderer/src/_vendor/debug.ts` 一致（`1` / `true`）：
+ * 同一个变量在两处读，一处认 `true` 一处不认，用户就会看到「ink 日志出来了、debug.log 没有」
+ * 这种半开状态，比完全不生效更难排查。
+ */
+export function isDebugEnvEnabled(raw: string | undefined): boolean {
+  return raw === "1" || raw === "true";
+}
+
+/**
  * 校验 UUID v4 格式（--session-id 用）。CC 要求 --session-id 必须是合法 UUID。
  * 宽松匹配 8-4-4-4-12 十六进制形态（不强制 version/variant 位，兼容外部编排生成的 uuid）。
  */
@@ -636,7 +647,9 @@ function parseCLIArgs(): CLIArgs {
     // P1-4：合并了 --append-system-prompt 与 --append-system-prompt-file 的内容
     appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
-    debug: values.debug,
+    // B27：SID_CODE_DEBUG=1 与 --debug 等价。帮助文本、ref/env、排障页三处都在教这个变量，
+    // 此前代码里只有 tui-renderer 的 ink stderr 读它，debug.log 从不因它开启。
+    debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG),
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
     pluginDirs: values["plugin-dir"],
