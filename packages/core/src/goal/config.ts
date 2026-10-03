@@ -5,7 +5,11 @@
  */
 
 export interface GoalConfig {
-  /** 评估者模型（默认使用 subAgentModels.verify 或回退到 haiku 级别模型） */
+  /**
+   * 评估者模型。取值顺序见 resolveGoalEvaluatorModel：
+   * goal.evaluatorModel → subAgentModels.default → 主模型。
+   * 刻意不读 subAgentModels.verify，也**没有**任何内置 haiku 回退——两项都没配时就是主模型自评。
+   */
   evaluatorModel?: string;
   /** 默认 Token 预算（0 = 无限制） */
   defaultTokenBudget: number;
@@ -39,3 +43,29 @@ export const DEFAULT_GOAL_CONFIG: GoalConfig = {
   evaluatorTimeout: 25000, // 25 秒超时（deepseek-v4-pro 首字节 5-15s，8s 必超）
   evalContextMaxChars: 12000, // 评估器上下文上限（保证长报告不被截断）
 };
+
+/** 评估者模型的来源：用于 /goal 设定时提示「评估者 = 主模型」与 /goal status 展示。 */
+export type GoalEvaluatorSource = "goal.evaluatorModel" | "subAgentModels.default" | "main";
+
+/**
+ * 解析 /goal 评估者模型（loop.ts 的 Goal Gate 与 /goal 命令共用这一个事实源，
+ * 否则「提示说的评估者」与「实际调用的评估者」会再次漂移——B16 就是注释与实现三处不一致）。
+ *
+ * 优先级：goal.evaluatorModel > subAgentModels.default > 主模型。
+ * 刻意跳过 subAgentModels.verify：verify 语义是"对抗验证子代理"（需强模型、慢），
+ * goal 评估是"快速判是否完成"（512 token JSON），复用会撞短超时（20260707 P0-1/P1-4）。
+ *
+ * 刻意**不**在未配置时自动挑一个"轻量模型"：模型目录随 provider 而异，
+ * 按模型名硬编码分级既不可靠也违反项目约定。未配置时如实回退主模型，由调用方提示用户。
+ */
+export function resolveGoalEvaluatorModel(config: {
+  model: string;
+  goal?: Partial<GoalConfig>;
+  subAgentModels?: { default?: string };
+}): { model: string; source: GoalEvaluatorSource } {
+  const fromGoal = config.goal?.evaluatorModel;
+  if (fromGoal) return { model: fromGoal, source: "goal.evaluatorModel" };
+  const fromSub = config.subAgentModels?.default;
+  if (fromSub) return { model: fromSub, source: "subAgentModels.default" };
+  return { model: config.model, source: "main" };
+}

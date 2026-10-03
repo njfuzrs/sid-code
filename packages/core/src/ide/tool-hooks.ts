@@ -17,7 +17,7 @@
  */
 
 import type { MCPManager } from "../mcp/manager.ts";
-import { showDiffInIDE, closeAllDiffTabs, closeDiffTab, newDiffTabName } from "./diff.ts";
+import { showDiffInIDE, closeDiffTab, newDiffTabName } from "./diff.ts";
 import type { DiffResult } from "./diff.ts";
 import { IDE_SERVER_NAME } from "./integration.ts";
 import { getIDEDiffRuntime } from "./runtime.ts";
@@ -120,14 +120,4 @@ export async function negotiateContentViaIDE(
       await closeDiffTab(mcpManager, tabName);
       return { proceed: true, content: newContent, userEdited: false };
   }
-}
-
-/**
- * Agent 循环结束时清理 IDE 中残留的 diff 标签页。
- * 在主循环 end_turn / abort 时调用。
- */
-export async function cleanupIDEDiffTabs(mcpManager?: MCPManager): Promise<void> {
-  const manager = mcpManager ?? getIDEDiffRuntime()?.mcpManager;
-  if (!manager) return;
-  await closeAllDiffTabs(manager);
 }

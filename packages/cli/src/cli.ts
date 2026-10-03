@@ -1619,7 +1619,7 @@ export async function main(): Promise<void> {
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
-    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
+    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol/codeAction 等 10 操作）。
     // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
     const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
     toolRegistry.register(new LSPTool());

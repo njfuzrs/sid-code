@@ -406,8 +406,9 @@ export const SettingsSchema = lazySchema(
         // 网络超时/重试配置（direct/gateway 场景适配）
         network: NetworkTimeoutsSchema().optional(),
 
-        // G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。
-        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。
+        // G5：行为控制字段。
+
+        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。
         respectGitignore: z.boolean().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
@@ -415,10 +416,49 @@ export const SettingsSchema = lazySchema(
         // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
         // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
         includeCoAuthoredBy: z.boolean().optional(),
-        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。
+        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。
         cleanupPeriodDays: z.number().positive().optional(),
+
+        // B32：以下 27 个字段此前只在 Config 接口声明、靠本 schema 的 .passthrough() 生效 ——
+        // 写了能用，但拼错没有任何提示。补进来之后它们进了「已知键」集合，未知键告警
+        // （config.ts 的 recordUnknownSettingKeys）才不会把它们误报成拼写错误。
+        //
+        // 类型只写到「不比运行时更严」：用户级 settings.json 的运行时取值走 loadConfigFile 的
+        // 原始 JSON，不经本 schema；这里判不合法只会多一条提示 + 摘掉 getSettings() 视图里
+        // 的那个值，不会让一个原本能用的值失效。对象一律 passthrough 空壳：子字段由各自
+        // 消费点解析，在这里写死结构 = 第二份会漂移的事实源。
+        trace: z.object({}).passthrough().optional(),
+        telemetry: z.object({}).passthrough().optional(),
+        analytics: z.object({}).passthrough().optional(),
+        ide: z.object({}).passthrough().optional(),
+        bridge: z.object({}).passthrough().optional(),
+        teamMemory: z.object({}).passthrough().optional(),
+        sessionRetention: z.object({}).passthrough().optional(),
+        checkpoint: z.object({}).passthrough().optional(),
+        goal: z.object({}).passthrough().optional(),
+        mcpPolicy: z.object({}).passthrough().optional(),
+        // boolean | "auto" | 百分比数字，与 Config.toolSearch / parseToolSearchConfig 同口径
+        toolSearch: z.union([z.boolean(), z.literal("auto"), z.number()]).optional(),
+        toolSearchKeepLoaded: z.array(z.string()).optional(),
+        pluginDirs: z.array(z.string()).optional(),
+        showLineNumbers: z.boolean().optional(),
+        enableSandbox: z.boolean().optional(),
+        // 缺省 = undefined = 走 SandboxConfig 默认值；显式写才覆盖（回退语义在 cli.ts 构造处）
+        sandboxAutoAllowBash: z.boolean().optional(),
+        speculativeClassifier: z.boolean().optional(),
+        outputStyle: z.string().optional(),
+        autoDream: z.boolean().optional(),
+        autoMemory: z.boolean().optional(),
+        conflictDetection: z.boolean().optional(),
+        // cli.ts 对非法值回退 warn；这里判不合法同样等价于"未设 → 默认 warn"，只多一条提示
+        conflictSeverity: z.enum(["warn", "block", "off"]).optional(),
+        audit: z.boolean().optional(),
+        auditLogFile: z.string().optional(),
+        debug: z.boolean().optional(),
+        debugLevel: z.string().optional(),
+        debugLogFile: z.string().optional(),
       })
-      .passthrough(), // 保留未知字段（向前兼容）
+      .passthrough(), // 保留未知字段（向前兼容）；未知键只告警不拒绝，见 config.ts recordUnknownSettingKeys
 );
 
 /** 从 Schema 推导 TypeScript 类型 */

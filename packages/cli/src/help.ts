@@ -12,7 +12,7 @@ sid-code - AI 编程 CLI 工具
   cat file.txt | sid-code -p "分析这个文件"   无头模式下读取管道 stdin（仅 --input-format text）
 
 LLM 配置:
-  --provider <name>           LLM 提供商 (anthropic/openai/ollama)
+  --provider <name>           LLM 提供商协议族 (anthropic/openai/ollama；openai 族含 Chat Completions 与 Responses)
   -m, --model <name>          模型名称
   --fallback-model <name>     主模型失败时的降级模型（须在 available_models 中）
   --max-tokens <n>            响应最大 token 数
@@ -20,9 +20,9 @@ LLM 配置:
   --language <lang>          输出语言偏好 (zh/en/auto/unset)；也可用 SID_LANGUAGE 环境变量
 
 权限配置:
-  --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk)
+  --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名)
   --dangerously-skip-permissions  跳过所有权限检查（仅限沙箱环境）
-  -y, --yes                   自动批准所有权限请求
+  -y, --yes                   自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions）
   --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
   --allow-tool <rule>         追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔）
@@ -142,7 +142,7 @@ Worktree 隔离:
   agents                      列出所有可用子代理（内置/自定义/插件）
                                 用法: sid-code agents [--json] [--setting-sources user,project,local]
   mcp                         管理 MCP 服务器配置（不启动会话）
-                                用法: sid-code mcp <list|get|add|remove> [参数] [--json]
+                                用法: sid-code mcp <list|get|add|remove|pending|approve|reject|serve> [参数] [--json]
                                 示例: sid-code mcp list
                                       sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp --scope user
                                       sid-code mcp remove fs
@@ -158,7 +158,7 @@ Worktree 隔离:
   SID_CODE_LLM_MODEL            模型名称（仅 sid-code 生效）
   SID_CODE_LLM_BASE_URL         自定义 API 基础 URL（仅 sid-code 生效）
   SID_CODE_LLM_API_KEY          OpenAI 兼容端点的 API 密钥（仅 sid-code 生效）
-  SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
+  SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/xhigh/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
   SID_CODE_THINKING             思考开关覆盖 (on/off/auto)
   SID_CODE_MAX_THINKING_TOKENS  思考 token 预算上限；兼容 MAX_THINKING_TOKENS，优先于 settings.maxThinkingTokens
   SID_MAX_OUTPUT_TOKENS         最大输出 token 数覆盖（缺省 32768）
@@ -169,7 +169,7 @@ Worktree 隔离:
   SID_STRONG_MODEL              强力档模型覆盖（旁路调用用，最高权威）
 
   轨迹采集:
-  SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
+  SID_CODE_TRACE                设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace）
   SID_CODE_TRACE_OUTPUT_DIR     自定义轨迹输出目录
   SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
   SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
@@ -275,7 +275,6 @@ Worktree 隔离:
 
   高级/实验性:
   SID_CODE_PROTOCOL_STRICT      设为 1 启用协议严格模式（默认宽容模式只告警）
-  SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  HTTP 响应头超时毫秒
   SID_CODE_WEBHOOK_SECRET       Webhook 认证 token（daemon 使用）
   SID_CODE_SSE_PORT             IDE SSE 端口（IDE 自动发现）
   SID_DISABLE_STRICT_TOOLS      设为 1 禁用 strict 工具模式

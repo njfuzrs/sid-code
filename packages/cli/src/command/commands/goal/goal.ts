@@ -10,7 +10,8 @@ import type { LocalCommandResult } from "../../types.ts";
 import { createGoal } from "@sid-code/core/goal/state.ts";
 import type { GoalState, GoalStatus } from "@sid-code/core/goal/state.ts";
 import { buildFirstTurnPrompt, buildResumeTurnPrompt } from "@sid-code/core/goal/reminder.ts";
-import { DEFAULT_GOAL_CONFIG } from "@sid-code/core/goal/config.ts";
+import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "@sid-code/core/goal/config.ts";
+import type { GoalEvaluatorSource } from "@sid-code/core/goal/config.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 const log = getLogger();
@@ -60,6 +61,28 @@ const mod: LocalCommandModule = {
   },
 };
 
+/**
+ * B16：评估者独立性的如实提示。未配 goal.evaluatorModel / subAgentModels.default 时
+ * 评估者就是主模型，「防自欺」的前提不成立——设定目标时明确告诉用户，而不是替用户挑一个模型
+ * （按模型名硬编码分级既不可靠，也违反项目约定）。
+ */
+export const EVALUATOR_IS_MAIN_HINT =
+  "评估者 = 主模型（未配置 goal.evaluatorModel），等于主模型给自己打分；建议在 settings.json 配一个独立的轻量模型";
+
+const EVALUATOR_SOURCE_TEXT: Record<GoalEvaluatorSource, string> = {
+  "goal.evaluatorModel": "goal.evaluatorModel",
+  "subAgentModels.default": "subAgentModels.default",
+  main: "未配置，回退主模型 = 自评",
+};
+
+function resolveEvaluator(ctx: CommandContext): { model: string; source: GoalEvaluatorSource } {
+  return resolveGoalEvaluatorModel({
+    model: ctx.config?.model ?? "",
+    goal: ctx.config?.goal,
+    subAgentModels: ctx.config?.subAgentModels,
+  });
+}
+
 // ─── 子命令实现 ───
 
 async function setGoal(objective: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -93,7 +116,12 @@ async function doSetGoal(objective: string, ctx: CommandContext): Promise<LocalC
 
   // 注入到运行时
   ctx.setGoalState?.(goal);
-  logLifecycle("create", goal);
+  const evaluator = resolveEvaluator(ctx);
+  logLifecycle("create", goal, {
+    evaluatorModel: evaluator.model,
+    evaluatorSource: evaluator.source,
+  });
+  if (evaluator.source === "main") ctx.notify?.(EVALUATOR_IS_MAIN_HINT);
 
   // 返回 submit_prompt，第一轮直接以目标作为指令
   return {
@@ -128,11 +156,17 @@ function showGoalStatus(ctx: CommandContext): LocalCommandResult {
     budgetLine,
     evidenceLine,
     goal.lastEvalReason ? `上次评估: ${goal.lastEvalReason}` : "",
+    evaluatorLine(ctx),
     ``,
     `提示: 达最大轮次或 Token 预算前，模型会持续推进直至目标达成；随时可按 ESC 介入，或用 /goal turns <n> 调整轮次上限、/goal pause 暂停。`,
   ].filter(Boolean);
 
   return { type: "text", value: lines.join("\n") };
+}
+
+function evaluatorLine(ctx: CommandContext): string {
+  const { model, source } = resolveEvaluator(ctx);
+  return `评估者: ${model || "(未知)"}（${EVALUATOR_SOURCE_TEXT[source]}）`;
 }
 
 function pauseGoal(ctx: CommandContext): LocalCommandResult {
