@@ -41,7 +41,10 @@ class RecordingSubAgent {
 function makeTeam(teamName: string, members: TeammateSpec[], extra?: Partial<TeamOptions>) {
   return new TeamManager({
     teamName,
-    members,
+    // 本文件测的是常驻/收尾语义，与隔离无关。不关隔离的话 cwd 就在仓库里，
+    // 每个成员都会真跑一次 git worktree add（本机约 1s，CI macOS 上 >2s），
+    // 「池空即退」的 <2s 断言量到的就是建 worktree 的耗时而不是挂起与否。
+    members: members.map((m) => ({ isolated: false, ...m })),
     providerRegistry: {} as any,
     toolRegistry: {} as any,
     baseDir: dir,
