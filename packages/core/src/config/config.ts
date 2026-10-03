@@ -1779,6 +1779,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       );
     }
     config._needsOnboarding = true;
+    // settings.json 损坏时常落到这条分支（读不出模型），而迁移失败告警恰恰就是在说这件事
+    await collectMigrationWarnings(config);
     // 收尾 sessionId 后提前返回，跳过 provider/model 致命校验（详见下方 return 前逻辑）
     if (!config.sessionId) {
       const { generateSessionId } = await import("../session/id.ts");
@@ -1841,6 +1843,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     /* 诊断收集失败不影响启动 */
   }
 
+  await collectMigrationWarnings(config);
+
   // B32：未知顶层键告警（拼错的字段此前静默不生效）。同样放在整体赋值之后。
   try {
     await recordUnknownSettingKeys(config);
@@ -1896,6 +1900,20 @@ function recordStartupWarning(config: Config, path: string, message: string): vo
   const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
   if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
   diag.warnings.push({ path, message });
+}
+
+/**
+ * 迁移失败告警（B35 / D128）并进启动诊断。runMigrations 跑在 logger 之前，
+ * 只能暂存在 migrations/warnings.ts，到这里统一出口（横幅与 --print 共用）。
+ * 必须在 _validationDiagnostics 整体赋值之后调用，否则会被盖掉。
+ */
+async function collectMigrationWarnings(config: Config): Promise<void> {
+  try {
+    const { getMigrationWarnings } = await import("../migrations/warnings.ts");
+    for (const w of getMigrationWarnings()) recordStartupWarning(config, w.path, w.message);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
 }
 
 /**
