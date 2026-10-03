@@ -20,7 +20,7 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 ## 快速上手
 
 配置文件就是一份普通的 `settings.json`。以仓库里的模板 `scripts/team-defaults.template.json`
-为起点改（下面把内网网关地址换成了占位值）：
+为起点改（网关地址已是占位符，换成你自己的）：
 
 ```json
 {
@@ -52,6 +52,10 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
   "effortLevel": "max"
 }
 ```
+
+上面是节选。完整模板里还有一段 `"trace": { "enabled": true }`——只开本地轨迹采集，
+**不含任何上传配置**：按这份模板分发，轨迹只留在每个人自己的机器上。团队要集中收轨迹，
+在 `trace.upload` 里填你们自己的地址与 token，见[轨迹采集与可观测](/team/observability)。
 
 注意两条 `baseURL` 一个带 `/v1` 一个不带——这不是笔误，是[两族协议的相反规则](/start/configure)。
 把它固化进团队配置，正是这套机制最直接的价值：这个坑每人只需要踩零次。
@@ -149,13 +153,21 @@ allowedDirectories, blockedDirectories, trace, effortLevel
 - 补全读的是**原始 JSON 文本**，不过 Zod round-trip、不展开 env 占位符。
   所以 `availableModels[].apiKey` 这类嵌套字段不会被 strip，`${MY_KEY}` 不会落盘成明文。
 
-### 只补一次
+### 模板加了新键：只补新加的那几个
 
-幂等靠迁移水位线保证：`~/.sid-code/state/migrations.json` 里的 `migrationVersion`
-（`src/migrations/runner.ts:38-46`）。实测水位线从 `0` 走到 `1` 后，再启动不会重复补。
+补全分两段，记在 `~/.sid-code/state/migrations.json` 里：
 
-推论：**用户补全后又主动删掉某个键，下次启动不会被加回来。**
-这正是期望行为——删除是一种表态。
+- **首次升级**：迁移 v1 把模板里你缺的顶层键全部补上，同时记下当时模板的顶层键集合
+  （`teamDefaults.keys`）和内容哈希。
+- **之后每次启动**：模板哈希没变就什么都不做；变了，只补「这次模板的键 − 上次记录的键」
+  里你缺的那几个，再更新记录。这一段不挂在全局迁移水位线 `migrationVersion` 上，
+  所以水位线早就到顶的老用户也照样能拿到。
+
+推论：**用户补全后又主动删掉某个键，下次启动不会被加回来**——它在上次记录的键集合里，
+不算「新加的」。删除是一种表态。
+
+一个边界：从没有这份记录的旧版本升级上来时，sid-code 分不清「模板后来才加的键」和
+「你自己删掉的键」，所以第一次只把当前模板记为基线、不补任何键。在这之后模板新加的键才会补。
 
 ### 单一事实源
 
@@ -167,7 +179,9 @@ allowedDirectories, blockedDirectories, trace, effortLevel
 补全用的是**编译进二进制的模板**，不是服务器上那份。所以你用
 `--upload-team-defaults` 更新服务器配置后：新装用户立刻拿到新版，
 **老用户的补全仍按二进制里的旧模板走**——要让老用户也拿到新字段，需要改
-`scripts/team-defaults.template.json` 并发一个新版本。
+`scripts/team-defaults.template.json` 并发一个新版本。老用户升级后下次启动，
+模板里**新加的顶层键**会补进去（只补他们没有的）；已有键的取值变了不会同步，
+那种要统一约束的，走 [policy](/team/policy)。
 :::
 
 ## 常见问题
@@ -210,9 +224,16 @@ ls -l ~/.sid-code/settings.json
 
 ### 配置文件损坏了会怎样
 
-补全逻辑读不动 JSON 时**直接抛错并跳过**，绝不覆盖（`settings.ts:386-389`）。
-迁移 runner 记一条警告继续启动（`src/migrations/runner.ts:91-95`），不阻塞。
-你会在日志里看到 `⚠️ 迁移 backfill-team-defaults (v1) 失败`。
+补全逻辑读不动 JSON 时**直接抛错并跳过**，绝不覆盖，也不阻塞启动。
+启动时会提示一次（TUI 启动横幅；`-p` 模式打在 stderr）：
+
+```text
+迁移 backfill-team-defaults (v1) 失败，已跳过、未改动配置：…
+修好后下次启动会自动重试。
+```
+
+失败的那条迁移不会被记成「已完成」：迁移水位线停在它之前，修好文件后下次启动它会重跑，
+补全照常生效。
 
 ## 相关
 

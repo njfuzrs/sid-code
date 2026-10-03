@@ -1619,7 +1619,7 @@ export async function main(): Promise<void> {
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
-    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
+    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol/codeAction 等 10 操作）。
     // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
     const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
     toolRegistry.register(new LSPTool());
@@ -2922,7 +2922,9 @@ export async function main(): Promise<void> {
         prompt = [prompt, pipedText].filter(Boolean).join("\n");
       }
       // resume 带了会话 id 时允许空 prompt：恢复后续跑，不需要新指令。
-      if (!prompt.trim() && !config.resume) {
+      // B25：stream-json 输入也允许——首条 prompt 由宿主经 stdin 的 `user` 消息送来，
+      // 嵌入方（IDE / SDK 宿主）常常是先握手、先发控制请求，再发第一条消息。
+      if (!prompt.trim() && !config.resume && config.inputFormat !== "stream-json") {
         console.error("错误: 无头模式需要提供提示词（位置参数或管道 stdin）");
         process.exit(1);
       }

@@ -10,7 +10,7 @@ description: 全部可用环境变量及其作用。
 <!--
   本页由脚本生成，请勿手工编辑
   AUTO-GEN:START 与 AUTO-GEN:END 标记之间的内容由
-  scripts/docs-gen-reference.ts 从源码生成（数据源：src/help.ts + 源码扫描），
+  scripts/docs-gen-reference.ts 从源码生成（数据源：packages/cli/src/help.ts + 源码扫描），
   手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
   需要补充说明请写在标记之外——那部分内容会被保留。
   （此提示写给维护者，HTML 注释不会渲染给终端用户。）
@@ -18,8 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **123** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 共 **122** 个环境变量，取自 `sid-code --help` 的环境变量段，
 > 并与源码里实际的 `process.env` 读取点（扫到 173 个）交叉核对。
+> 扫到的 173 个里 118 个在上表、55 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -34,7 +35,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_LLM_MODEL` | 模型名称（仅 sid-code 生效） |
 | `SID_CODE_LLM_BASE_URL` | 自定义 API 基础 URL（仅 sid-code 生效） |
 | `SID_CODE_LLM_API_KEY` | OpenAI 兼容端点的 API 密钥（仅 sid-code 生效） |
-| `SID_CODE_EFFORT_LEVEL` | 推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL |
+| `SID_CODE_EFFORT_LEVEL` | 推理强度档位 (low/medium/high/xhigh/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL |
 | `SID_CODE_THINKING` | 思考开关覆盖 (on/off/auto) |
 | `SID_CODE_MAX_THINKING_TOKENS` | 思考 token 预算上限；兼容 MAX_THINKING_TOKENS，优先于 settings.maxThinkingTokens |
 | `SID_MAX_OUTPUT_TOKENS` | 最大输出 token 数覆盖（缺省 32768） |
@@ -48,7 +49,7 @@ description: 全部可用环境变量及其作用。
 
 | 变量 | 说明 |
 |---|---|
-| `SID_CODE_TRACE` | 设为 1 或 true 启用轨迹采集 |
+| `SID_CODE_TRACE` | 设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace） |
 | `SID_CODE_TRACE_OUTPUT_DIR` | 自定义轨迹输出目录 |
 | `SID_CODE_TRACE_NO_RAW` | 设为 1 不把 prompt/响应原文写进 raw.jsonl |
 | `SID_CODE_TRACE_UPLOAD_URL` | 轨迹上传平台地址 |
@@ -178,7 +179,6 @@ description: 全部可用环境变量及其作用。
 | 变量 | 说明 |
 |---|---|
 | `SID_CODE_PROTOCOL_STRICT` | 设为 1 启用协议严格模式（默认宽容模式只告警） |
-| `SID_CODE_RESPONSE_HEADER_TIMEOUT_MS` | HTTP 响应头超时毫秒 |
 | `SID_CODE_WEBHOOK_SECRET` | Webhook 认证 token（daemon 使用） |
 | `SID_CODE_SSE_PORT` | IDE SSE 端口（IDE 自动发现） |
 | `SID_DISABLE_STRICT_TOOLS` | 设为 1 禁用 strict 工具模式 |

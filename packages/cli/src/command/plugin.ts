@@ -43,7 +43,10 @@ export class PluginCommand implements Command {
     return ["plugins"];
   }
   description() {
-    return "插件管理 (list/info/install/uninstall/enable/disable)";
+    return "插件管理";
+  }
+  argumentHint() {
+    return "[list|info|install|uninstall|enable|disable] [插件名]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {

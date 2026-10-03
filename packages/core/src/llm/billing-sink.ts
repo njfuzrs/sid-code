@@ -56,6 +56,7 @@
 
 import type { Usage } from "./types.ts";
 import { resolvePricing, priceTierAt } from "../api/cost-tracker.ts";
+import { emitBilledRequest } from "../trace/stream-observer.ts";
 
 /** 一次真实计费请求（= 一次 fetch，无论成功失败、无论谁发起的） */
 export interface BilledRequest {
@@ -205,6 +206,26 @@ export function recordBilledRequest(req: BilledRequest): void {
     } catch {
       /* 时段统计失败不影响入账 */
     }
+    // B47：落 events.jsonl，让恒等式能在真实轨迹上复算（见 emitBilledRequest）。
+    // 与时段统计同理放在去重之后、观察者之前：落盘与"谁记这笔钱"无关，全部 fetch 都落。
+    emitBilledRequest({
+      fetch_id: req.fetchId,
+      index: req.index,
+      model: req.model,
+      provider: req.provider,
+      ...(req.agentId && { agent_id: req.agentId }),
+      ...(req.callerLabel && { caller: req.callerLabel }),
+      accounted: req.accounted,
+      charged: shouldChargeBilledRequest(req),
+      input_tokens: req.usage.inputTokens ?? 0,
+      output_tokens: req.usage.outputTokens ?? 0,
+      ...(req.usage.cacheReadInputTokens !== undefined && {
+        cache_read_tokens: req.usage.cacheReadInputTokens,
+      }),
+      ...(req.usage.cacheCreationInputTokens !== undefined && {
+        cache_creation_tokens: req.usage.cacheCreationInputTokens,
+      }),
+    });
     for (const fn of observers) {
       try {
         fn(req);

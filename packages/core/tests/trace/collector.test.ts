@@ -1094,6 +1094,39 @@ describe("TraceCollector", () => {
     });
   });
 
+  /**
+   * B26 顺带：`--json-schema` 下 StructuredOutput 交付后主循环就地收尾，末轮 stop_reason 是 tool_use。
+   * 实测（会话 20261003-120708-72a3b7af）它曾被记成 user_interrupt —— 与上面两组同一条反模式。
+   */
+  describe("exit_status = end_turn（StructuredOutput 交付收尾不误记成 user_interrupt）", () => {
+    test("上报了交付收尾 → 末轮 tool_use 也落 end_turn", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordStructuredOutputDelivered();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("end_turn");
+    });
+
+    test("反向自证：没上报时，同样的输入仍落 user_interrupt", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("user_interrupt");
+    });
+
+    test("max_turns 优先：同时撞顶时仍记 max_turns", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      collector.recordMaxTurns();
+      collector.recordStructuredOutputDelivered();
+      await hookSystem.fireSessionEndEvent("exit");
+
+      expect(collector.getMetadata()!.exit_status).toBe("max_turns");
+    });
+  });
+
   // ─── D3-1 / D3-3：退出落 messages.json + 异常归因 ───
 
   test("D3-1：SessionEnd 落 messages.json，含完整消息历史", async () => {
@@ -1417,6 +1450,48 @@ describe("TraceCollector", () => {
 
     expect(uploadCalled).toBe(true);
     expect(uploadedSessionId).toBe("upload-sess");
+  });
+
+  // auto_upload 曾是死配置：config 层解析齐全却无人读取，配了 false 照样自动传。
+  // 两条路径都要断言——SessionEnd 上传与 SessionStart 启动补传，任一漏掉都是自动外发。
+  async function runSessionWithUploader(autoUpload: boolean | undefined) {
+    const calls = { upload: 0, backfill: 0 };
+    const mockUploader = {
+      uploadSession: async () => {
+        calls.upload++;
+        return { allConfirmed: true };
+      },
+      backfillPendingSessions: async () => {
+        calls.backfill++;
+        return { pending: 0, attempted: 0, uploaded: 0 };
+      },
+    };
+    const c = new TraceCollector({ outputDir: testDir, autoUpload }, mockUploader);
+    const hs = new HookSystem();
+    hs.setSessionId(`auto-upload-${String(autoUpload)}`);
+    hs.setCwd("/tmp");
+    c.registerHooks(hs);
+    await hs.fireSessionStartEvent("startup");
+    await fireModelRound(hs, {
+      messages: [{ role: "user", content: "hi" }],
+      contentBlocks: [{ type: "text", text: "hello" }],
+    });
+    await hs.fireSessionEndEvent("exit");
+    // 启动补传是 fire-and-forget，让微任务跑干再断言
+    await new Promise((r) => setTimeout(r, 0));
+    return calls;
+  }
+
+  test("autoUpload=false：SessionEnd 不上传，SessionStart 不做启动补传", async () => {
+    const calls = await runSessionWithUploader(false);
+    expect(calls.upload).toBe(0);
+    expect(calls.backfill).toBe(0);
+  });
+
+  test("autoUpload 未设置（默认 true）：两条自动路径都照常触发", async () => {
+    const calls = await runSessionWithUploader(undefined);
+    expect(calls.upload).toBe(1);
+    expect(calls.backfill).toBe(1);
   });
 
   // ─── Harness 数据消费 ───
