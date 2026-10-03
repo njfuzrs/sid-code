@@ -170,6 +170,10 @@ sid-code 承担的是**自动配置**那一半：command 在 PATH 里就自动�
 
 `command` 和 `extensionToLanguage` 两个字段必填，缺任一个那条会被跳过并给出警告。
 
+改完 `lsp.json` 不用重启：会话里跑 `/lsp reload` 会关掉旧的语言服务器、按新配置重新初始化。
+`/lsp`（等同 `/lsp status`）看系统状态与每个语言服务器是否就绪。
+无头（`-p`）与 Bridge 模式不启动 LSP，这时 `/lsp` 会显示「未启动」，不是故障。
+
 ## 常见问题
 
 ### 怎么判断 LSP 到底有没有生效
