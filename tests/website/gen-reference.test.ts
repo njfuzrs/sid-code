@@ -28,6 +28,10 @@ import {
   findStalePages,
   checkNarrativeCoverage,
   __coverageInternals,
+  sanitizeDescription,
+  clipSentences,
+  findDuplicateEnvVars,
+  parseHelpEnvVars,
   HELP_ONLY_WHITELIST,
   HIDDEN_FLAGS,
   MARKER_START,
@@ -49,7 +53,21 @@ function autoGenBody(page: string): string {
   expect(s, `${page}.md 应含完整 AUTO-GEN:START 标记`).toBeGreaterThanOrEqual(0);
   const e = src.indexOf(MARKER_END, s + MARKER_START.length);
   expect(e, `${page}.md 应在 START 之后含 AUTO-GEN:END 标记`).toBeGreaterThan(s);
-  return src.slice(s, e);
+  const body = src.slice(s, e);
+  // settings 页在主表之后还有「对象字段的子键」小表（B34 / D119）。计数与非空断言针对的是
+  // 主表（一行一个顶层字段），子键小表要单独断言，见 subKeySection。
+  const sub = body.indexOf(SUBKEY_HEADING);
+  return sub >= 0 ? body.slice(0, sub) : body;
+}
+
+const SUBKEY_HEADING = "\n## 对象字段的子键";
+
+/** settings 页的子键小节（主表之后那部分） */
+function subKeySection(): string {
+  const src = read("website/ref/settings.md");
+  const s = src.indexOf(SUBKEY_HEADING);
+  expect(s, "settings.md 应含「对象字段的子键」小节").toBeGreaterThan(0);
+  return src.slice(s, src.indexOf(MARKER_END, s));
 }
 
 /** 数表格数据行（跳过表头与分隔行），返回首列去掉 backtick/反斜杠的名字 */
@@ -162,12 +180,14 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
     // passthrough 字段（写了能用但 schema 未声明）也必须在表里，且逐行标了 ⚠。
     // 只数表格行里的 ⚠——导语里也写了一个 ⚠（"11 个标 ⚠ 的字段"），
     // 拿整段 body 数会多算一个。
+    // B32 之后 passthrough 字段已全部入 schema，数量可以是 0；但不能是负数（表里少了 schema 字段）
     const passthroughCount = keys.length - schemaKeys.length;
-    expect(passthroughCount).toBeGreaterThan(0);
+    expect(passthroughCount).toBeGreaterThanOrEqual(0);
     const markedRows = tableRows(body).filter((cells) => cells[0].includes("⚠"));
     expect(markedRows.length).toBe(passthroughCount);
     // 且导语声明的数量要与实际标记数一致（导语数字也是生成的，不能对不上）
-    expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    if (passthroughCount > 0) expect(body).toContain(`${passthroughCount} 个标 ⚠ 的字段`);
+    else expect(body).toContain(`共 **${keys.length}** 个顶层字段，全部由`);
   });
 
   test("ref/cli 的 parseArgs flag 计数与源码一致", () => {
@@ -446,6 +466,14 @@ describe("叙述覆盖度门禁 · 端到端", () => {
     expect(proc.stdout.toString()).toContain("个内置命令");
   }, 60_000);
 
+  test("--coverage-strict 在存量为 0 时退 0（pre-commit 调的就是它）", () => {
+    const proc = Bun.spawnSync(
+      ["bun", "run", "scripts/docs-gen-reference.ts", "--coverage-strict"],
+      { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(proc.exitCode, proc.stdout.toString()).toBe(0);
+  }, 60_000);
+
   test("覆盖统计自洽：covered + uncovered + exempt == 命令总数", () => {
     const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
     const r = checkNarrativeCoverage(keys);
@@ -453,17 +481,17 @@ describe("叙述覆盖度门禁 · 端到端", () => {
     expect(r.total).toBe(keys.length);
   });
 
-  test("存量基线只减不增（改动不得让未覆盖命令变多）", () => {
-    // 基线随存量清理下调；这条断言的作用是防"新增命令又不写文档"把数字顶回去。
-    // 2026-07 核对时为 18。清到 0 后把 pre-commit 换成 --coverage-strict。
-    const BASELINE = 18;
+  test("存量已清零：每个内置命令都至少被一篇指南页提到", () => {
+    // 2026-07 核对时为 18，2026-10-03 清到 0，pre-commit 随之换成 --coverage-strict。
+    // 基线就是 0：不该进指南的命令走 NARRATIVE_EXEMPT（要写理由），不要上调这个数。
+    const BASELINE = 0;
     const keys = tableRowKeys(autoGenBody("slash-commands")).map((k) => k.replace(/^\//, ""));
     const { uncovered } = checkNarrativeCoverage(keys);
     expect(
       uncovered.length,
       `未覆盖命令数升到 ${uncovered.length}（基线 ${BASELINE}）：${uncovered.join(" ")}\n` +
         `新增命令请同时在 start/use/extend/team 下补一段说明；` +
-        `若确为存量清理导致下降，请同步下调 BASELINE。`,
+        `确不该进指南的命令加进 NARRATIVE_EXEMPT 并写理由。`,
     ).toBeLessThanOrEqual(BASELINE);
   });
 });
@@ -560,5 +588,193 @@ describe("参考页生成器 · 产物可被 VitePress 安全渲染", () => {
       (f) => !f.startsWith("node_modules") && !f.startsWith(".vitepress"),
     ).length;
     expect(declared).toBe(actual);
+  });
+});
+
+describe("参考页生成器 · 清洗（B34：不该上官网的东西别搬上去）", () => {
+  test("permissionMode 取值从 PERMISSION_MODES 自省，不抄注释（D115）", async () => {
+    const { PERMISSION_MODES } = await import("@sid-code/core/config/schema.ts");
+    const row = tableRows(autoGenBody("settings")).find((r) => r[0] === "`permissionMode`");
+    expect(row, "settings 表应含 permissionMode").toBeDefined();
+    expect(row![1]).toBe("enum");
+    for (const m of PERMISSION_MODES) expect(row![2]).toContain(`\`${m}\``);
+    // 最宽的两档恰是 D30 / D33 争议所在，漏掉它们参考页就会打脸讲稿
+    expect(row![2]).toContain("`dangerously-skip-permissions`");
+    expect(row![2]).toContain("`auto`");
+    expect(row![3]).not.toMatch(/\d+ 种/);
+  });
+
+  test("内部编号与源码行号剥干净（D117）", () => {
+    const cases: Array<[string, string]> = [
+      ["G10：autoDream 自主记忆巩固开关", "autoDream 自主记忆巩固开关"],
+      ["分析/事件系统配置（spec 17 — analytics 通道）", "分析/事件系统配置（analytics 通道）"],
+      [
+        "WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。",
+        "WebFetch 隔离提炼使用的模型（默认复用主循环模型）。",
+      ],
+      ["Git 集成配置（P3-1：可配置归因）", "Git 集成配置（可配置归因）"],
+      ["调试日志级别（缺省 DEBUG，见 cli.ts:1230）", "调试日志级别（缺省 DEBUG）"],
+      ["GAP-04：分类器并行预启动", "分类器并行预启动"],
+      ["放弃 §17.5「隔离上下文窗口」", "放弃「隔离上下文窗口」"],
+    ];
+    for (const [raw, want] of cases) expect(sanitizeDescription(raw)).toBe(want);
+    // 反向：正常文本里长得像编号的子串不能误伤
+    for (const keep of ["自带 10MB 轮转", "v2 协议", "OAuth 2.1", "GPT4o 模型", "abcG5x"]) {
+      expect(sanitizeDescription(keep)).toBe(keep);
+    }
+  });
+
+  test("ref/settings 与 ref/hooks 说明列内部编号 0 命中（D117 / D122 闭环判据）", () => {
+    const pattern =
+      /(?<![A-Za-z0-9_.-])(?:SEC-AUDIT|GAP-\d|ADR-\d|spec \d|§\d|Phase \d|P\d-\d|E\.\d|[GMB]\d+(?![A-Za-z0-9]))|\.tsx?:\d/;
+    for (const page of ["settings", "hooks"]) {
+      for (const cells of tableRows(autoGenBody(page))) {
+        // hooks 表实际四列（配置键 | 会触发 | 枚举名 | 触发时机），说明在第 4 列
+        const col = page === "hooks" ? 3 : DESC_COL[page];
+        expect(cells[col], `${page} ${cells[0]}`).not.toMatch(pattern);
+      }
+    }
+  });
+
+  test("分组行注释不拼进字段说明（D118）", () => {
+    const byName = new Map(
+      tableRows(autoGenBody("settings")).map((r) => [
+        r[0].replace(/`/g, "").replace(/\s*⚠$/, ""),
+        r[3],
+      ]),
+    );
+    expect(byName.get("provider")).not.toMatch(/^LLM 配置/);
+    expect(byName.get("allowedDirectories")).not.toMatch(/^目录白名单\/黑名单/);
+    expect(byName.get("disabledSkills")).not.toMatch(/^Skill 配置/);
+    expect(byName.get("hooks")).not.toBe("Hook 和 MCP");
+  });
+
+  test("按句截断：不截在半句中间；首句超长时保留完整首句（D118）", () => {
+    const s = "第一句话。第二句话比较长一些。第三句。";
+    expect(clipSentences(s, 12)).toBe("第一句话。…");
+    expect(clipSentences(s, 100)).toBe(s);
+    const long = "这是一个没有句号而且很长很长很长很长很长很长的首句";
+    expect(clipSentences(long, 5)).toBe(long);
+    // 页面上任何被截断的说明都以完整句子结尾
+    for (const cells of tableRows(autoGenBody("settings"))) {
+      const d = cells[3];
+      // 截断点只能落在句末或列表项之间（列表项以右括号 / 引号收尾），不能落在词中间
+      if (d.endsWith("…")) expect(d, cells[0]).toMatch(/[。！？；）)」]…$/);
+    }
+  });
+
+  test("对象字段展开子键，trace.upload 上传入口可查（D119）", () => {
+    const body = subKeySection();
+    for (const k of ["url", "token", "autoUpload", "deleteAfterUpload"]) {
+      expect(body, `trace.upload.${k}`).toMatch(
+        new RegExp(`#### \`trace\\.upload\`[\\s\\S]*\\| \`${k}\` \\|`),
+      );
+    }
+    for (const f of ["trace", "telemetry", "checkpoint", "teamMemory", "quota", "network"]) {
+      expect(body, `${f} 子键小节`).toContain(`### \`${f}\``);
+    }
+  });
+
+  test("hooks 页不再承诺载荷字段，并说明只有 PascalCase 的事件（D121 / D122）", () => {
+    const src = read("website/ref/hooks.md");
+    expect(src).not.toContain("载荷字段");
+    expect(autoGenBody("hooks")).toMatch(/\d+ 个事件\*\*没有 snake_case 别名\*\*/);
+  });
+
+  test("help 环境变量段重复登记会被识别（D123）", () => {
+    const vars = [
+      { group: "a", name: "SID_X", desc: "1" },
+      { group: "b", name: "SID_X", desc: "2" },
+      { group: "b", name: "SID_Y", desc: "3" },
+    ];
+    expect(findDuplicateEnvVars(vars)).toEqual(["SID_X"]);
+    expect(findDuplicateEnvVars(parseHelpEnvVars(read("packages/cli/src/help.ts")))).toEqual([]);
+  });
+});
+
+/**
+ * pre-commit 接线：触发范围必须覆盖生成器的全部输入。
+ *
+ * 2026-10-03 前触发条件只列 help.ts / cli.ts / tool / command / config / hook，
+ * 而生成器还扫 4 个包全部 src/（fire*Event 调用点、process.env 读取点）与
+ * website 全部 .md（llms.txt）—— 实测至少 78 个影响生成结果的文件落在范围外，
+ * 改它们提交照过、到 CI 才红。这里不读注释，直接把 hook 里的正则拿出来对真实路径求值。
+ */
+describe("参考页生成器 · pre-commit 接线", () => {
+  const HOOK = read("scripts/git-hooks/pre-commit.sh");
+  const grepPattern = (varName: string): RegExp => {
+    const m = HOOK.match(new RegExp(`^${varName}=.*grep -E '([^']+)'`, "m"));
+    expect(m, `pre-commit.sh 里找不到 ${varName} 的 grep -E 正则`).not.toBeNull();
+    return new RegExp(m![1]);
+  };
+  const triggersCheck = (path: string) =>
+    grepPattern("STAGED_REF_SOURCES").test(path) || grepPattern("STAGED_REF_PAGES").test(path);
+
+  test("生成器读取的每一类输入都会触发 --check", () => {
+    const mustTrigger = [
+      // 原 6 个数据源
+      "packages/cli/src/help.ts",
+      "packages/cli/src/cli.ts",
+      "packages/core/src/tool/read.ts",
+      "packages/cli/src/command/lsp.ts",
+      "packages/core/src/config/config.ts",
+      "packages/core/src/hook/types.ts",
+      // fire*Event 调用点（hooks.md「是否会触发」）
+      "packages/cli/src/app.ts",
+      "packages/core/src/agent/sub-agent.ts",
+      "packages/core/src/query/stop-hooks.ts",
+      // process.env 读取点（env.md 页尾），4 个包都扫
+      "packages/core/src/trace/collector.ts",
+      "packages/shared/src/index.ts",
+      "packages/tui-renderer/src/ink.tsx",
+      // llms.txt 汇总全部页面 frontmatter
+      "website/use/interactive.md",
+      "website/ref/glossary.md",
+      "website/index.md",
+      "website/ref/cli.md",
+      "website/public/llms.txt",
+      // 生成器自身
+      "scripts/docs-gen-reference.ts",
+    ];
+    for (const p of mustTrigger) expect(triggersCheck(p), `${p} 应触发 --check`).toBe(true);
+  });
+
+  test("与生成无关的路径不触发（范围放宽不等于每次都跑）", () => {
+    for (const p of [
+      "packages/core/tests/x.test.ts",
+      "evals/a.yaml",
+      "README.md",
+      "website/.vitepress/config.ts",
+    ]) {
+      expect(triggersCheck(p), `${p} 不应触发 --check`).toBe(false);
+    }
+  });
+
+  test("hook 的触发目录覆盖生成器 PKG_SRC_DIRS 的每个包", () => {
+    const gen = read("scripts/docs-gen-reference.ts");
+    const m = gen.match(/const PKG_SRC_DIRS = \[([^\]]+)\]/);
+    expect(m).not.toBeNull();
+    const pkgs = [...m![1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    expect(pkgs.length).toBeGreaterThanOrEqual(4);
+    for (const pkg of pkgs) {
+      expect(triggersCheck(`packages/${pkg}/src/any.ts`), `packages/${pkg}/src 应触发`).toBe(true);
+    }
+  });
+
+  test("删除文件也触发（--diff-filter 含 D）", () => {
+    for (const v of ["STAGED_REF_SOURCES", "STAGED_REF_PAGES", "STAGED_CMD_SOURCES"]) {
+      const line = HOOK.match(new RegExp(`^${v}=.*$`, "m"))?.[0] ?? "";
+      expect(line, `${v} 的 --diff-filter 应含 D`).toMatch(/--diff-filter=[A-Z]*D/);
+    }
+  });
+
+  test("叙述覆盖度是阻断模式：调 --coverage-strict 且失败会 exit 1", () => {
+    const code = HOOK.split("\n")
+      .filter((l) => !l.trim().startsWith("#"))
+      .join("\n");
+    expect(code).toContain('docs-gen-reference.ts" --coverage-strict');
+    expect(code).not.toMatch(/--coverage\s*\|\|\s*true/);
+    const block = code.slice(code.indexOf("--coverage-strict"));
+    expect(block.slice(0, block.indexOf("fi\nfi"))).toContain("exit 1");
   });
 });

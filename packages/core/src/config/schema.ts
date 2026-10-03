@@ -58,7 +58,7 @@ const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama", "replay"]);
 /** 有效的权限模式
  *  - "manual"：CC 别名，等价 "default"（在 config.ts 归一层映射为 default）
  *  - "auto"：分类器自动裁决模式，可经 --permission-mode auto 显式进入（需分类器可用） */
-const VALID_PERMISSION_MODES = new Set([
+export const PERMISSION_MODES = [
   "default",
   "manual",
   "always-allow",
@@ -68,7 +68,10 @@ const VALID_PERMISSION_MODES = new Set([
   "dontAsk",
   "auto",
   "dangerously-skip-permissions",
-]);
+] as const;
+// 导出成元组是给参考页生成器自省用的（B34 / D115）：ref/settings.md 的取值列直接读它，
+// 不再抄注释里的「N 种模式」——那句注释曾停在 6 种，而这里已经是 9 种。
+const VALID_PERMISSION_MODES = new Set<string>(PERMISSION_MODES);
 
 /**
  * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。

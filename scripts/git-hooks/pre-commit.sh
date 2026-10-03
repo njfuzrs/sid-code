@@ -29,19 +29,27 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 # ============================================================================
 # T-3.8: 参考页反漂移门禁（官网方案 §4.5.2 机制一）
 #
-# 改了参考页的 6 个数据源之一（help.ts / tool/ / command/ / config/ / hook/），
-# 就必须重新生成 website/ref/ 下的参考页。不一致则**阻止提交**。
+# 生成器（scripts/docs-gen-reference.ts）读到的输入一变，就必须重新生成
+# website/ref/ 下 6 页与 website/public/llms.txt。不一致则**阻止提交**。
 #
 # 这道门禁的保证是：源码改了但文档没跟着改，物理上进不了仓库。
 # 参考表一旦漂移就是骗人——用户照着文档写了一个不存在的参数，比没有文档更糟。
 #
-# 注意只在数据源变动时才跑：--check 要起一次 bun 进程 dump 工具定义（约 1s），
-# 每次提交都跑会让无关提交也变慢，久了就会被 --no-verify 绕过。
+# 触发范围 = 生成器**实际读取**的全部输入，不是「看起来像数据源」的那几个目录：
+#   · 4 个包的全部 src/（生成器的 PKG_SRC_DIRS）：hooks.md 的「是否会触发」扫全部
+#     `fire*Event` 调用点（app.ts / agent/ / trace/ / query/ …），env.md 页尾
+#     「未列入上表的读取点」扫全部 `process.env` —— 都不在 help/tool/command/config/hook 里。
+#   · website/ 下全部 .md：llms.txt 汇总**每一页**的 frontmatter，手写页改 description
+#     同样会让它过期。
+#   · 生成器自身。
+# 2026-10-03 之前只列 6 个目录，实测至少 78 个会影响生成结果的源文件落在范围外：改它们
+# 提交照过，要等 PR 的 CI（tests/website/gen-reference.test.ts 跑 --check）才红。
+# 当初收窄是为了省 --check 的耗时，实测只要 0.6s，不值得拿漏判去换。
+# 删除也算（--diff-filter 含 D）：删掉一个触发点或一页文档同样会改变生成结果。
+# 反漂移断言：tests/website/gen-reference.test.ts「pre-commit 接线」。
 # ============================================================================
-# P2-2 分包：源码在 packages/{cli,core}/src/ 下。锚点必须跟着改 ——
-# 仍写 `^src/` 会永远匹配不到，于是这道对账**静默不再触发**（比没有门禁更糟）。
-STAGED_REF_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(cli|core)/src/(help\.ts|cli\.ts|tool/|command/|config/|hook/)' || true)
-STAGED_REF_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(ref/|public/llms\.txt)' || true)
+STAGED_REF_SOURCES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^(packages/[^/]+/src/|scripts/docs-gen-reference\.ts$)' || true)
+STAGED_REF_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(.+\.md$|public/llms\.txt$)' || true)
 
 if [ -n "$STAGED_REF_SOURCES" ] || [ -n "$STAGED_REF_PAGES" ]; then
   echo "[pre-commit] T-3.8 参考页与源码对账（改动涉及参考页数据源）..."
@@ -61,19 +69,23 @@ fi
 # 没进教程"：用户不会读一张 60 行的表来发现能力。2026-07 覆盖度核对实测
 # 62 个命令里 21 个处于这个状态（详见 docs/reference/官网文档覆盖度核对报告.md）。
 #
-# 触发条件复用命令注册表相关改动（packages/cli/src/command/），与 T-3.8 同源，不额外拖慢无关提交。
+# 触发条件：命令注册表（packages/cli/src/command/）或指南页改动。
 #
-# ⚠ 当前是**告警模式**（--coverage，恒退 0），因为存量 18 个未清完；
-#    存量清零后把下面的 --coverage 改成 --coverage-strict 并去掉 `|| true`，
-#    "做了功能不写文档"就在物理上进不了仓库。
+# 2026-10-03 存量清零（最后两个 /commands、/lsp 已补进 use/interactive、extend/lsp），
+# 改为 --coverage-strict 阻断，"做了功能不写文档"进不了仓库。
+# 确实不该进指南的命令，加进 docs-gen-reference.ts 的 NARRATIVE_EXEMPT 并写理由；
+# 不要改回告警模式 —— 告警模式下存量从 0 回涨，不会有任何东西报错。
 # ============================================================================
-# P2-2 分包：command/ 归 cli 包（`^src/command/` 锚点已失效，见上方同类注释）。
-STAGED_CMD_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/cli/src/command/' || true)
+STAGED_CMD_SOURCES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^packages/cli/src/command/' || true)
 STAGED_GUIDE_PAGES=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^website/(start|use|extend|team)/' || true)
 
 if [ -n "$STAGED_CMD_SOURCES" ] || [ -n "$STAGED_GUIDE_PAGES" ]; then
   echo "[pre-commit] 叙述覆盖度检查（命令是否只存在于 ref/ 参考表）..."
-  bun run "$REPO_ROOT/scripts/docs-gen-reference.ts" --coverage || true
+  if ! bun run "$REPO_ROOT/scripts/docs-gen-reference.ts" --coverage-strict; then
+    echo "[pre-commit] ❌ 有内置命令只出现在 ref/ 参考表、没有任何指南页介绍，commit 中止"
+    echo "             修复：在 website/{start,use,extend,team}/ 下补一段；确不该写的加进 NARRATIVE_EXEMPT"
+    exit 1
+  fi
 fi
 
 # ============================================================================

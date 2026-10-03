@@ -74,6 +74,7 @@ import {
   StructuredIO,
   CommandQueue,
   runHeadless as sdkRunHeadless,
+  createSDKCanUseTool,
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "@sid-code/core/sdk/index.ts";
@@ -483,6 +484,11 @@ export class App {
     discardedTextLength: number;
   }) => void;
   private queryEngine: QueryEngine;
+  /** B26：--json-schema 模式下注册的 StructuredOutput 工具，收尾时取校验通过的载荷写进 result */
+  private structuredOutputTool: {
+    hasCapturedOutput: boolean;
+    getCapturedOutput(): unknown;
+  } | null = null;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /**
@@ -541,6 +547,11 @@ export class App {
         signal?: AbortSignal,
       ) => Promise<"yes" | "no" | "always" | "always-persist">)
     | null = null;
+  /**
+   * B25：SDK 双向流下把 ask 交给宿主的 can_use_tool。只在 runHeadlessSDK 且
+   * `--input-format stream-json` 时注入，其余模式恒 null。
+   */
+  private sdkCanUseTool: ReturnType<typeof createSDKCanUseTool> | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -3138,6 +3149,7 @@ export class App {
       const { StructuredOutputTool, structuredOutputPromptSuffix } =
         await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
+      this.structuredOutputTool = structuredTool;
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
       log.info("APP", `--json-schema 模式：注册 StructuredOutput 工具 + system prompt 后缀`);
@@ -5227,7 +5239,32 @@ export class App {
     toolName?: string,
     toolInput?: unknown,
     signal?: AbortSignal,
+    toolUseId?: string,
   ): Promise<boolean> {
+    // B25：SDK 双向流——ask 转给宿主（can_use_tool）。
+    // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
+    // 与「-p 无人可问时 fail-closed」同一口径，只是多了一个可以问的人。
+    if (this.sdkCanUseTool) {
+      try {
+        const behavior = await this.sdkCanUseTool(
+          toolName || req?.toolName || "",
+          toolInput ?? req?.input,
+          toolUseId || `sdk-${Date.now()}`,
+          { signal },
+        );
+        if (behavior === "always_allow" && req && this.permissionChecker?.rememberDecision) {
+          this.permissionChecker.rememberDecision(req, true);
+        }
+        return behavior === "allow" || behavior === "always_allow";
+      } catch (err) {
+        getLogger().info(
+          "PERMISSION",
+          `SDK 宿主未给出 can_use_tool 决定，按拒绝处理: ${(err as Error)?.message ?? err}`,
+        );
+        return false;
+      }
+    }
+
     // Bridge 模式：确认走已注入的远程代理。Bridge 不进 TUI，若仍落到下面的
     // always-allow 布尔，ask 工具会在本机立刻 false，permission_request 根本不出站。
     // 不复活 PermissionChecker.requestConfirmation——那个方法全仓零调用，是死代码。
@@ -5382,8 +5419,8 @@ export class App {
       // 保证 PreToolUse 只 fire 一次且 permissionDecision 能注入权限层。
       preToolUseCache: new Map(),
       getAbortSignal: () => this.abortController?.signal,
-      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal) =>
-        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),
+      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal, toolUseId) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal, toolUseId),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
@@ -6792,6 +6829,8 @@ export class App {
       }
       const denials = this.headlessPermissionDenials();
       if (denials.length > 0) result.permission_denials = denials;
+      const structured = this.capturedStructuredOutput();
+      if (structured !== undefined) result.structured_output = structured;
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
@@ -6951,7 +6990,14 @@ export class App {
         this.queryEngine.setStreamTextCallback(cb),
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
+      getStructuredOutput: () => this.capturedStructuredOutput(),
     };
+  }
+
+  /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
+  private capturedStructuredOutput(): unknown {
+    const tool = this.structuredOutputTool;
+    return tool?.hasCapturedOutput ? tool.getCapturedOutput() : undefined;
   }
 
   /**
@@ -6970,6 +7016,18 @@ export class App {
     const structuredIO = new StructuredIO(process.stdin, process.stdout);
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
+
+    // B25：只有 stdin 也是 stream-json 时才有回路——宿主能读到 can_use_tool，也能回 control_response。
+    // 仅 `--output-format stream-json`（stdin 是 prompt 文本或空）时问了也没人答，维持 fail-closed。
+    // 不传 hookSystem：PreToolUse 已在 tool-executor 里 fire 过（preToolUseCache），再传会 fire 两次。
+    const hostAskChannel = this.config.inputFormat === "stream-json";
+    const askChecker = this.permissionChecker as {
+      setExternalAskChannel?: (enabled: boolean) => void;
+    } | null;
+    if (hostAskChannel) {
+      this.sdkCanUseTool = createSDKCanUseTool({ structuredIO });
+      askChecker?.setExternalAskChannel?.(true);
+    }
 
     const engine = new SDKQueryEngine(
       {
@@ -7020,6 +7078,17 @@ export class App {
         initialPrompt: input,
         structuredIO,
         commandQueue,
+        controlHandlers: {
+          // B25：interrupt 只中止当前轮，不结束会话——abort 后立刻换一个新的 controller，
+          // 否则下一条 user 消息一开轮就拿到已 aborted 的 signal，出生即死。
+          // reason 用 "user-cancel"：已登记 ABORT_REASONS，语义上就是宿主侧的「用户取消」。
+          onInterrupt: () => {
+            const current = this.abortController;
+            if (!current || current.signal.aborted) return;
+            this.abortController = new AbortController();
+            current.abort("user-cancel");
+          },
+        },
       });
       budgetExceeded = outcome.budgetExceeded;
     } catch (err: any) {
@@ -7039,6 +7108,10 @@ export class App {
     } finally {
       if (sdkSessionTimer) clearTimeout(sdkSessionTimer);
       this.abortController = null;
+      if (hostAskChannel) {
+        this.sdkCanUseTool = null;
+        askChecker?.setExternalAskChannel?.(false);
+      }
     }
 
     // session_end hook（与文本/JSON 模式一致：abort/error/exit 三态）

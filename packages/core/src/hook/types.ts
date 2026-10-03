@@ -57,7 +57,7 @@ export enum HookEventName {
   StopFailure = "StopFailure",
   /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   Setup = "Setup",
-  /** 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 */
+  /** 权限需用户确认时触发，与分类器、用户弹窗并行竞争、先到先决。可 block（返回 deny 则拒绝该工具）。 */
   PermissionRequest = "PermissionRequest",
   /** 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 */
   PermissionDenied = "PermissionDenied",

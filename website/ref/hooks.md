@@ -1,11 +1,11 @@
 ---
 title: Hook 事件
-description: 全部 Hook 事件的名称、触发时机与载荷字段。
+description: 全部 Hook 事件的配置键名、是否会触发与触发时机。
 ---
 
 # Hook 事件
 
-全部 Hook 事件的名称、触发时机与载荷字段。
+全部 Hook 事件的配置键名、是否会触发与触发时机。
 
 <!--
   本页由脚本生成，请勿手工编辑
@@ -24,6 +24,8 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 > **第一列就是你写进 `settings.json` 的键名。** 两种写法运行时等价
 > （`pre_tool_use` 与 `PreToolUse` 都认，内部会归一化），本表优先给 snake_case——
 > 与[配置 Hook](/extend/hooks) 的示例保持一致，少一处需要读者自己换算的地方。
+> 第一列是 PascalCase、枚举名列为 — 的 7 个事件**没有 snake_case 别名**，
+> 配置里只能写这一种（不是漏写）。
 >
 > 「会触发」列标 ✗ 的事件枚举已定义但**当前无调用点，配了不会被调用**——
 > 这是实现现状，不是文档遗漏。它与「名字合不合法」是两个独立维度：
@@ -48,7 +50,7 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 | `stop` | ✓ | `Stop` | 助手回答收尾、准备停止时触发。可 block（注入错误并重试修复）。 |
 | `stop_failure` | ✗ | `StopFailure` | （枚举已定义，等接线） |
 | `setup` | ✗ | `Setup` | （枚举已定义，等接线） |
-| `permission_request` | ✓ | `PermissionRequest` | 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 |
+| `permission_request` | ✓ | `PermissionRequest` | 权限需用户确认时触发，与分类器、用户弹窗并行竞争、先到先决。可 block（返回 deny 则拒绝该工具）。 |
 | `permission_denied` | ✓ | `PermissionDenied` | 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 |
 | `config_change` | ✗ | `ConfigChange` | （枚举已定义，等接线） |
 | `file_changed` | ✗ | `FileChanged` | （枚举已定义，等接线） |
@@ -59,8 +61,8 @@ description: 全部 Hook 事件的名称、触发时机与载荷字段。
 | `AfterPermissionCheck` | ✗ | — | （枚举已定义，等接线） |
 | `BeforeHookExecution` | ✗ | — | （枚举已定义，等接线） |
 | `AfterHookExecution` | ✗ | — | （枚举已定义，等接线） |
-| `instructions_loaded` | ✓ | `InstructionsLoaded` | G11：指令加载到上下文（CLAUDE.md / rules 加载后触发） |
-| `teammate_idle` | ✓ | `TeammateIdle` | G11：团队代理空闲（可 block，用于团队协作场景） |
+| `instructions_loaded` | ✓ | `InstructionsLoaded` | 指令加载到上下文（CLAUDE.md / rules 加载后触发） |
+| `teammate_idle` | ✓ | `TeammateIdle` | 团队代理空闲（可 block，用于团队协作场景） |
 | `elicitation` | ✗ | `Elicitation` | （枚举已定义，等接线） |
 | `elicitation_result` | ✗ | `ElicitationResult` | （枚举已定义，等接线） |
 

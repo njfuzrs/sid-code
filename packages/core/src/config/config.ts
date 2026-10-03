@@ -227,7 +227,7 @@ export interface Config {
   /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
   vimMode?: boolean;
   /**
-   * P1-5 可自定义状态栏（settings.json statusLine，对标 claude-code）。
+   * P1-5 可自定义状态栏（settings.json statusLine）。
    * { type: "command", command: "<脚本>", padding?: number }。缺省 = 走内置聚合状态栏。
    * 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。
    */
@@ -244,7 +244,7 @@ export interface Config {
    */
   thinkingEnabled?: boolean;
   /**
-   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。
+   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens）。
    * env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。
    * 透传到 SendParams.maxThinkingTokens，由 effort.ts 钳制思考预算。缺省 = 不钳制。
    */
@@ -252,16 +252,17 @@ export interface Config {
 
   /**
    * AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。
-   * 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应，
+   * 交互模式下弹出提问对话框后，若用户在此时长内不响应，
    * 按 cancelled 自动解除（模型收到"请选默认继续"），避免带 TUI handler 的编排器/后台
    * 子代理场景被单个提问无限期阻塞。
-   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守，对齐 CC 默认）。
+   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守）。
    * 注意：headless/SDK/CI 无 handler 时本就返回 unavailable 不阻塞，本设置只作用于交互态。
    */
   askUserQuestionTimeout?: string;
 
   // 权限配置
-  // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
+  // 合法取值以 config/schema.ts 的 PERMISSION_MODES 为准，参考页从那里自省，这里不写数字。
+  /** 默认权限模式（manual 是 default 的别名） */
   permissionMode: string;
   skipPermissions: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
@@ -338,9 +339,13 @@ export interface Config {
   // 同理，写给维护者的话要放在字段**之间**的空行区，别紧贴字段上方——
   // 紧贴就会被当成该字段的用户可见描述抓进参考页。
 
-  /** 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） */
+  /**
+   * 调试日志总开关（等同 -d / --debug），写 debug.log。
+   *
+   * 真正决定「开不开 debug logger」的就是它（cli.ts 构造 logger 那一支）。
+   */
   debug: boolean;
-  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） */
+  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） */
   debugLevel: string;
   /** 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） */
   debugLogFile: string;
@@ -382,10 +387,10 @@ export interface Config {
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
-  // /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG）
+  /** /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值） */
   goal?: Partial<import("../goal/config.ts").GoalConfig>;
 
-  // 成本配额（美元）
+  /** 单会话花费上限（美元） */
   costLimit?: number;
 
   // 配额管控（增强版，向后兼容 costLimit）
@@ -491,7 +496,7 @@ export interface Config {
    */
   includePartialMessages?: boolean;
 
-  // Checkpoint 配置
+  /** 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等 */
   checkpoint?: CheckpointConfig;
 
   // Git 集成配置（P3-1：可配置归因）
@@ -503,7 +508,7 @@ export interface Config {
 
   // 工具延迟加载（ToolSearch）
   /**
-   * 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。
+   * 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。
    *
    * 取值：
    *   - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。
@@ -520,8 +525,7 @@ export interface Config {
   /**
    * 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。
    *
-   * sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己
-   * 声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
+   * 用户侧开关（不依赖 MCP server 自己声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
    * 都得先花一轮 tool_search 往返；此名单让用户钉死 3-5 个高频工具首轮可见，省往返延迟。
    *
    * 支持两种形态：
@@ -546,7 +550,7 @@ export interface Config {
   /**
    * WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。
    *
-   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。
+   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼。
    * 配一个便宜的小模型能显著降本——提炼输入可达 6 万字符，用主模型跑并不划算。
    */
   webFetchExtractModel?: string;
@@ -585,7 +589,7 @@ export interface Config {
   /** 团队记忆同步配置（共享目录模型） */
   teamMemory?: TeamMemoryConfig;
 
-  // 会话保留配置
+  /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
 
   // 搜索配置
@@ -598,16 +602,16 @@ export interface Config {
    */
   identity?: IdentityConfig;
 
-  // 轨迹采集配置
+  /** 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点） */
   trace?: TraceConfig;
 
-  // 遥测配置（OTel 兼容的结构化 Trace）
+  /** 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp） */
   telemetry?: TelemetryConfig;
 
-  // 分析/事件系统配置（spec 17 — analytics 通道）
+  /** 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行 */
   analytics?: AnalyticsConfig;
 
-  // IDE 集成配置
+  /** IDE 集成配置（自动连接、发现超时、写盘前 diff 预览） */
   ide?: IDEConfig;
 
   /** Bridge 远程控制配置（D14 准入） */
@@ -701,7 +705,7 @@ export interface TraceUploadConfig {
   toolSource?: string;
   /** 单文件最大重试次数（默认 5） */
   maxRetries?: number;
-  /** 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） */
+  /** 指数退避基数毫秒（默认 2000；maxRetries=5 时间隔为 2s→4s→8s→16s） */
   retryBaseMs?: number;
   /** 是否 gzip 压缩后上传（默认 true） */
   compress?: boolean;
@@ -983,6 +987,95 @@ function resolveEnvPlaceholder(value: string | undefined): string | undefined {
 }
 
 /**
+ * settings 键 → Config 字段的别名表（snake_case / YAML 风格写法）。
+ *
+ * 提到模块级是为了让未知键告警（recordUnknownSettingKeys）复用同一份：这里登记的别名
+ * 运行时确实生效，不能被报成「未知」。
+ */
+const SETTINGS_KEY_ALIASES: Record<string, keyof Config> = {
+  provider: "provider",
+  model: "model",
+  fallback_model: "fallbackModel",
+  fallback_switch_mode: "fallbackSwitchMode",
+  anthropic_key: "anthropicKey",
+  openai_api_key: "openaiKey",
+  base_url: "baseURL",
+  max_tokens: "maxTokens",
+  available_models: "availableModels",
+  permission_mode: "permissionMode",
+  ask_user_question_timeout: "askUserQuestionTimeout",
+  skip_permissions: "skipPermissions",
+  allowed_tools: "allowedTools",
+  disallowed_tools: "disallowedTools",
+  yes_mode: "yesMode",
+  allowed_directories: "allowedDirectories",
+  blocked_directories: "blockedDirectories",
+  session_id: "sessionId",
+  continue: "continue",
+  resume: "resume",
+  print: "print",
+  output_format: "outputFormat",
+  max_turns: "maxTurns",
+  system_prompt: "systemPrompt",
+  append_system_prompt: "appendSystemPrompt",
+  system_prompt_file: "systemPromptFile",
+  debug: "debug",
+  debug_level: "debugLevel",
+  debug_log_file: "debugLogFile",
+  audit: "audit",
+  audit_log_file: "auditLogFile",
+  hooks: "hooks",
+  mcp_servers: "mcpServers",
+  mcp_policy: "mcpPolicy",
+  mcpPolicy: "mcpPolicy",
+  sub_agent_models: "subAgentModels",
+  goal: "goal",
+  cost_limit: "costLimit",
+  show_line_numbers: "showLineNumbers",
+  quota: "quota",
+  disabled_skills: "disabledSkills",
+  disabled_hooks: "disabledHooks",
+  trust_project_extensions: "trustProjectExtensions",
+  checkpoint: "checkpoint",
+  git: "git",
+  jit_context: "jitContext",
+  tool_search: "toolSearch",
+  tool_search_keep_loaded: "toolSearchKeepLoaded",
+  sanitize_env: "sanitizeEnv",
+  enable_llm_classifier: "enableLLMClassifier",
+  classifier_model: "classifierModel",
+  // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
+  web_fetch_extract_model: "webFetchExtractModel",
+  web_fetch_isolate: "webFetchIsolate",
+  // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
+  // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
+  max_thinking_tokens: "maxThinkingTokens",
+  speculative_classifier: "speculativeClassifier",
+  // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
+  // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
+  enable_sandbox: "enableSandbox",
+  sandbox_auto_allow_bash: "sandboxAutoAllowBash",
+  team_memory: "teamMemory",
+  identity: "identity",
+  trace: "trace",
+  search: "search",
+  telemetry: "telemetry",
+  analytics: "analytics",
+  language: "language",
+  output_style: "outputStyle",
+  outputStyle: "outputStyle",
+  auto_dream: "autoDream",
+  autoDream: "autoDream",
+  auto_memory: "autoMemory",
+  autoMemory: "autoMemory",
+  theme: "theme",
+  vimMode: "vimMode",
+  alternateBuffer: "alternateBuffer",
+  accentColor: "accentColor",
+  fastMode: "fastMode",
+};
+
+/**
  * 将 YAML 字段名转换为 Config 字段名。
  *
  * 注意 keyMap 的兜底语义 `keyMap[k] || k`：未登记的键**原样保留**——这是 settings.json
@@ -996,88 +1089,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   if (!raw || typeof raw !== "object") {
     return {};
   }
-  const keyMap: Record<string, keyof Config> = {
-    provider: "provider",
-    model: "model",
-    fallback_model: "fallbackModel",
-    fallback_switch_mode: "fallbackSwitchMode",
-    anthropic_key: "anthropicKey",
-    openai_api_key: "openaiKey",
-    base_url: "baseURL",
-    max_tokens: "maxTokens",
-    available_models: "availableModels",
-    permission_mode: "permissionMode",
-    ask_user_question_timeout: "askUserQuestionTimeout",
-    skip_permissions: "skipPermissions",
-    allowed_tools: "allowedTools",
-    disallowed_tools: "disallowedTools",
-    yes_mode: "yesMode",
-    allowed_directories: "allowedDirectories",
-    blocked_directories: "blockedDirectories",
-    session_id: "sessionId",
-    continue: "continue",
-    resume: "resume",
-    print: "print",
-    output_format: "outputFormat",
-    max_turns: "maxTurns",
-    system_prompt: "systemPrompt",
-    append_system_prompt: "appendSystemPrompt",
-    system_prompt_file: "systemPromptFile",
-    debug: "debug",
-    debug_level: "debugLevel",
-    debug_log_file: "debugLogFile",
-    audit: "audit",
-    audit_log_file: "auditLogFile",
-    hooks: "hooks",
-    mcp_servers: "mcpServers",
-    mcp_policy: "mcpPolicy",
-    mcpPolicy: "mcpPolicy",
-    sub_agent_models: "subAgentModels",
-    goal: "goal",
-    cost_limit: "costLimit",
-    show_line_numbers: "showLineNumbers",
-    quota: "quota",
-    disabled_skills: "disabledSkills",
-    disabled_hooks: "disabledHooks",
-    trust_project_extensions: "trustProjectExtensions",
-    checkpoint: "checkpoint",
-    git: "git",
-    jit_context: "jitContext",
-    tool_search: "toolSearch",
-    tool_search_keep_loaded: "toolSearchKeepLoaded",
-    sanitize_env: "sanitizeEnv",
-    enable_llm_classifier: "enableLLMClassifier",
-    classifier_model: "classifierModel",
-    // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
-    web_fetch_extract_model: "webFetchExtractModel",
-    web_fetch_isolate: "webFetchIsolate",
-    // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
-    // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
-    max_thinking_tokens: "maxThinkingTokens",
-    speculative_classifier: "speculativeClassifier",
-    // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
-    // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
-    enable_sandbox: "enableSandbox",
-    sandbox_auto_allow_bash: "sandboxAutoAllowBash",
-    team_memory: "teamMemory",
-    identity: "identity",
-    trace: "trace",
-    search: "search",
-    telemetry: "telemetry",
-    analytics: "analytics",
-    language: "language",
-    output_style: "outputStyle",
-    outputStyle: "outputStyle",
-    auto_dream: "autoDream",
-    autoDream: "autoDream",
-    auto_memory: "autoMemory",
-    autoMemory: "autoMemory",
-    theme: "theme",
-    vimMode: "vimMode",
-    alternateBuffer: "alternateBuffer",
-    accentColor: "accentColor",
-    fastMode: "fastMode",
-  };
+  const keyMap = SETTINGS_KEY_ALIASES;
 
   const result: any = {};
   for (const [yamlKey, value] of Object.entries(raw as Record<string, any>)) {
@@ -1767,6 +1779,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       );
     }
     config._needsOnboarding = true;
+    // settings.json 损坏时常落到这条分支（读不出模型），而迁移失败告警恰恰就是在说这件事
+    await collectMigrationWarnings(config);
     // 收尾 sessionId 后提前返回，跳过 provider/model 致命校验（详见下方 return 前逻辑）
     if (!config.sessionId) {
       const { generateSessionId } = await import("../session/id.ts");
@@ -1829,6 +1843,15 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     /* 诊断收集失败不影响启动 */
   }
 
+  await collectMigrationWarnings(config);
+
+  // B32：未知顶层键告警（拼错的字段此前静默不生效）。同样放在整体赋值之后。
+  try {
+    await recordUnknownSettingKeys(config);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
   // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
   // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。
@@ -1877,6 +1900,54 @@ function recordStartupWarning(config: Config, path: string, message: string): vo
   const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
   if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
   diag.warnings.push({ path, message });
+}
+
+/**
+ * 迁移失败告警（B35 / D128）并进启动诊断。runMigrations 跑在 logger 之前，
+ * 只能暂存在 migrations/warnings.ts，到这里统一出口（横幅与 --print 共用）。
+ * 必须在 _validationDiagnostics 整体赋值之后调用，否则会被盖掉。
+ */
+async function collectMigrationWarnings(config: Config): Promise<void> {
+  try {
+    const { getMigrationWarnings } = await import("../migrations/warnings.ts");
+    for (const w of getMigrationWarnings()) recordStartupWarning(config, w.path, w.message);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+}
+
+/**
+ * settings.json 顶层出现未知键时记一条启动提示（B32），带 did-you-mean。
+ *
+ * 已知集合 = SettingsSchema 声明的键 ∪ 别名表（snake_case 写法运行时确实生效）∪ `$schema`
+ *（编辑器补全用，惯例键）。只查用户 / 项目 / 本地三个文件：managed-settings.json 里放的是
+ * 企业策略键（policyLimits、allowManagedHooksOnly……），走另一套解析，混进来全是误报。
+ *
+ * 读的是 getSettingsForSource 的结果而不是重新读盘：`.passthrough()` 会把未知键原样带出来，
+ * 这里正好拿到它们。
+ */
+async function recordUnknownSettingKeys(config: Config): Promise<void> {
+  const { getSettingsForSource, getEnabledSettingSources } = await import("./settings/settings.ts");
+  const { getSettingsFilePath } = await import("./settings/constants.ts");
+  const { SettingsSchema } = await import("./settings/types.ts");
+  const { findUnknownSettingKeys } = await import("./settings/validation.ts");
+  const { levenshteinDistance } = await import("../tool/path-utils.ts");
+
+  const declared = Object.keys(SettingsSchema().shape);
+  const known = new Set([...declared, ...Object.keys(SETTINGS_KEY_ALIASES), "$schema"]);
+  const enabled = new Set(getEnabledSettingSources());
+  for (const source of ["userSettings", "projectSettings", "localSettings"] as const) {
+    if (!enabled.has(source)) continue;
+    const { settings } = getSettingsForSource(source);
+    if (!settings) continue;
+    const file = getSettingsFilePath(source) ?? source;
+    for (const u of findUnknownSettingKeys(settings, known, declared, levenshteinDistance)) {
+      const hint = u.suggestion
+        ? `，是否想写「${u.suggestion}」？`
+        : "（可能是拼写错误或新版本才有的字段）";
+      recordStartupWarning(config, `${file}#${u.key}`, `未知配置项「${u.key}」不会生效${hint}`);
+    }
+  }
 }
 
 /**
