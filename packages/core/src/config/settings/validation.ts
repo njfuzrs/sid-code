@@ -149,3 +149,44 @@ function removeAt(data: unknown, path: readonly (string | number)[]): boolean {
   delete parent[leaf as any];
   return true;
 }
+
+/** 未知顶层键 + 编辑距离最近的已知键（没有足够近的就不给建议） */
+export interface UnknownSettingKey {
+  key: string;
+  suggestion?: string;
+}
+
+/**
+ * 找出 settings 对象里不在已知集合中的顶层键（B32）。
+ *
+ * 为什么只告警不拒绝：SettingsSchema 用 `.passthrough()` 的初衷是向前兼容 ——
+ * 新版本写进去的字段，旧版本读到时不能删也不能拒。所以这里只把「看起来像拼错」
+ * 的键报出来，值照常保留。
+ *
+ * did-you-mean 的阈值：编辑距离 ≤ 2 且严格小于键长的一半。后一条防短键误配
+ * （`ide` 与 `id` 距离 1，但 `foo` 也和 `ide` 距离 3 以内的一堆键都"像"）。
+ */
+export function findUnknownSettingKeys(
+  settings: Record<string, unknown>,
+  known: ReadonlySet<string>,
+  suggestFrom: readonly string[],
+  distance: (a: string, b: string) => number,
+): UnknownSettingKey[] {
+  const out: UnknownSettingKey[] = [];
+  for (const key of Object.keys(settings)) {
+    if (known.has(key)) continue;
+    let best: string | undefined;
+    let bestDist = Infinity;
+    const lower = key.toLowerCase();
+    for (const cand of suggestFrom) {
+      const d = distance(lower, cand.toLowerCase());
+      if (d < bestDist) {
+        bestDist = d;
+        best = cand;
+      }
+    }
+    const ok = best !== undefined && bestDist <= 2 && bestDist * 2 < key.length;
+    out.push(ok ? { key, suggestion: best } : { key });
+  }
+  return out;
+}

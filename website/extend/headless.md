@@ -149,7 +149,7 @@ WARN / ERROR 级日志走的是 stderr（即使没开 debug，关键错误也会
 所以 `2>/dev/null` 丢掉 stderr 是安全的，反过来则不行。
 :::
 
-## ⚠ 坑二：`--json-schema` 的结果不在 stdout 上
+## 用 `--json-schema` 取结构化结果
 
 `--json-schema` 用来约束模型输出成结构化 JSON：
 
@@ -165,38 +165,28 @@ cat > /tmp/schema.json <<'EOF'
 }
 EOF
 
-sid-code -p "分析 calc.ts，给出语言与顶层函数个数。" --json-schema /tmp/schema.json
+sid-code -p "分析 calc.ts，给出语言与顶层函数个数。" \
+  --json-schema /tmp/schema.json --output-format json 2>/dev/null \
+  | jq .structured_output
 ```
 
 机制是：给模型挂一个 `StructuredOutput` 工具，工具的 inputSchema 就是你的 schema，
 并在系统提示里强制要求"最后必须调一次它"。模型调用时按 schema 递归校验，
 不合规就把错误回喂让它重试。
 
-**但在 `-p` 路径上，校验通过的那份结构化数据不会出现在 stdout 上。** 实测输出是模型的散文：
+**校验通过的那份载荷在结果的 `structured_output` 字段里**：
 
-```text
-已完成。`calc.ts` 中恰好有两个顶层函数 `add` 和 `total`，语言为 TypeScript，结构化输出已返回。
-```
+- `--output-format json`：顶层对象的 `structured_output`；
+- `--output-format stream-json`：最后一条 `type: "result"`（`subtype: "success"`）消息的 `structured_output`。
 
-`--output-format json` 也一样——它取的是最后一条 assistant 消息，不是工具捕获的载荷。
-所以别指望管道里能直接拿到那个对象。
+取的是**最后一次校验通过**的调用，被打回重试的那几次不会混进来。
+模型始终没交出合规输出（重试耗尽、或根本没调工具）时**这个字段不出现**，
+脚本里请先判断它是否存在，别把缺失当成空对象。
 
-实际能用的做法二选一：
-
-**① 不用 `--json-schema`，直接在提示词里要 JSON**（最省事，脚本里最常用）：
-
-```bash
-sid-code -p '分析 calc.ts。只输出 JSON，形如 {"language":"...","functionCount":0}，不要解释。' \
-  --output-format json 2>/dev/null \
-  | jq -r '.content[] | select(.type=="text") | .text' \
-  | jq .
-```
-
-**② 用 `--output-format stream-json`**，从流里捞 `StructuredOutput` 的 tool_use 入参
-（`result.result` 仍是模型的文本收尾，不是结构化载荷）。
-
-`--json-schema` 真正发挥作用的地方是**它对模型的约束力**——不合 schema 会被打回重试。
-把它当"提高模型产出 JSON 正确率的手段"，而不是"取结构化结果的通道"。
+::: tip 别从 stdout 的文本里取
+`--output-format text`（默认）只输出模型的散文收尾，`content` / `result.result`
+也是文本，都不是结构化载荷。需要对象就用 `json` 或 `stream-json` 读 `structured_output`。
+:::
 
 ## 组合约束
 

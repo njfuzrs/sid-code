@@ -700,7 +700,7 @@ export interface TraceUploadConfig {
   toolSource?: string;
   /** 单文件最大重试次数（默认 5） */
   maxRetries?: number;
-  /** 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） */
+  /** 指数退避基数毫秒（默认 2000；maxRetries=5 时间隔为 2s→4s→8s→16s） */
   retryBaseMs?: number;
   /** 是否 gzip 压缩后上传（默认 true） */
   compress?: boolean;
@@ -982,6 +982,95 @@ function resolveEnvPlaceholder(value: string | undefined): string | undefined {
 }
 
 /**
+ * settings 键 → Config 字段的别名表（snake_case / YAML 风格写法）。
+ *
+ * 提到模块级是为了让未知键告警（recordUnknownSettingKeys）复用同一份：这里登记的别名
+ * 运行时确实生效，不能被报成「未知」。
+ */
+const SETTINGS_KEY_ALIASES: Record<string, keyof Config> = {
+  provider: "provider",
+  model: "model",
+  fallback_model: "fallbackModel",
+  fallback_switch_mode: "fallbackSwitchMode",
+  anthropic_key: "anthropicKey",
+  openai_api_key: "openaiKey",
+  base_url: "baseURL",
+  max_tokens: "maxTokens",
+  available_models: "availableModels",
+  permission_mode: "permissionMode",
+  ask_user_question_timeout: "askUserQuestionTimeout",
+  skip_permissions: "skipPermissions",
+  allowed_tools: "allowedTools",
+  disallowed_tools: "disallowedTools",
+  yes_mode: "yesMode",
+  allowed_directories: "allowedDirectories",
+  blocked_directories: "blockedDirectories",
+  session_id: "sessionId",
+  continue: "continue",
+  resume: "resume",
+  print: "print",
+  output_format: "outputFormat",
+  max_turns: "maxTurns",
+  system_prompt: "systemPrompt",
+  append_system_prompt: "appendSystemPrompt",
+  system_prompt_file: "systemPromptFile",
+  debug: "debug",
+  debug_level: "debugLevel",
+  debug_log_file: "debugLogFile",
+  audit: "audit",
+  audit_log_file: "auditLogFile",
+  hooks: "hooks",
+  mcp_servers: "mcpServers",
+  mcp_policy: "mcpPolicy",
+  mcpPolicy: "mcpPolicy",
+  sub_agent_models: "subAgentModels",
+  goal: "goal",
+  cost_limit: "costLimit",
+  show_line_numbers: "showLineNumbers",
+  quota: "quota",
+  disabled_skills: "disabledSkills",
+  disabled_hooks: "disabledHooks",
+  trust_project_extensions: "trustProjectExtensions",
+  checkpoint: "checkpoint",
+  git: "git",
+  jit_context: "jitContext",
+  tool_search: "toolSearch",
+  tool_search_keep_loaded: "toolSearchKeepLoaded",
+  sanitize_env: "sanitizeEnv",
+  enable_llm_classifier: "enableLLMClassifier",
+  classifier_model: "classifierModel",
+  // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
+  web_fetch_extract_model: "webFetchExtractModel",
+  web_fetch_isolate: "webFetchIsolate",
+  // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
+  // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
+  max_thinking_tokens: "maxThinkingTokens",
+  speculative_classifier: "speculativeClassifier",
+  // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
+  // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
+  enable_sandbox: "enableSandbox",
+  sandbox_auto_allow_bash: "sandboxAutoAllowBash",
+  team_memory: "teamMemory",
+  identity: "identity",
+  trace: "trace",
+  search: "search",
+  telemetry: "telemetry",
+  analytics: "analytics",
+  language: "language",
+  output_style: "outputStyle",
+  outputStyle: "outputStyle",
+  auto_dream: "autoDream",
+  autoDream: "autoDream",
+  auto_memory: "autoMemory",
+  autoMemory: "autoMemory",
+  theme: "theme",
+  vimMode: "vimMode",
+  alternateBuffer: "alternateBuffer",
+  accentColor: "accentColor",
+  fastMode: "fastMode",
+};
+
+/**
  * 将 YAML 字段名转换为 Config 字段名。
  *
  * 注意 keyMap 的兜底语义 `keyMap[k] || k`：未登记的键**原样保留**——这是 settings.json
@@ -995,88 +1084,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   if (!raw || typeof raw !== "object") {
     return {};
   }
-  const keyMap: Record<string, keyof Config> = {
-    provider: "provider",
-    model: "model",
-    fallback_model: "fallbackModel",
-    fallback_switch_mode: "fallbackSwitchMode",
-    anthropic_key: "anthropicKey",
-    openai_api_key: "openaiKey",
-    base_url: "baseURL",
-    max_tokens: "maxTokens",
-    available_models: "availableModels",
-    permission_mode: "permissionMode",
-    ask_user_question_timeout: "askUserQuestionTimeout",
-    skip_permissions: "skipPermissions",
-    allowed_tools: "allowedTools",
-    disallowed_tools: "disallowedTools",
-    yes_mode: "yesMode",
-    allowed_directories: "allowedDirectories",
-    blocked_directories: "blockedDirectories",
-    session_id: "sessionId",
-    continue: "continue",
-    resume: "resume",
-    print: "print",
-    output_format: "outputFormat",
-    max_turns: "maxTurns",
-    system_prompt: "systemPrompt",
-    append_system_prompt: "appendSystemPrompt",
-    system_prompt_file: "systemPromptFile",
-    debug: "debug",
-    debug_level: "debugLevel",
-    debug_log_file: "debugLogFile",
-    audit: "audit",
-    audit_log_file: "auditLogFile",
-    hooks: "hooks",
-    mcp_servers: "mcpServers",
-    mcp_policy: "mcpPolicy",
-    mcpPolicy: "mcpPolicy",
-    sub_agent_models: "subAgentModels",
-    goal: "goal",
-    cost_limit: "costLimit",
-    show_line_numbers: "showLineNumbers",
-    quota: "quota",
-    disabled_skills: "disabledSkills",
-    disabled_hooks: "disabledHooks",
-    trust_project_extensions: "trustProjectExtensions",
-    checkpoint: "checkpoint",
-    git: "git",
-    jit_context: "jitContext",
-    tool_search: "toolSearch",
-    tool_search_keep_loaded: "toolSearchKeepLoaded",
-    sanitize_env: "sanitizeEnv",
-    enable_llm_classifier: "enableLLMClassifier",
-    classifier_model: "classifierModel",
-    // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
-    web_fetch_extract_model: "webFetchExtractModel",
-    web_fetch_isolate: "webFetchIsolate",
-    // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
-    // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
-    max_thinking_tokens: "maxThinkingTokens",
-    speculative_classifier: "speculativeClassifier",
-    // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
-    // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
-    enable_sandbox: "enableSandbox",
-    sandbox_auto_allow_bash: "sandboxAutoAllowBash",
-    team_memory: "teamMemory",
-    identity: "identity",
-    trace: "trace",
-    search: "search",
-    telemetry: "telemetry",
-    analytics: "analytics",
-    language: "language",
-    output_style: "outputStyle",
-    outputStyle: "outputStyle",
-    auto_dream: "autoDream",
-    autoDream: "autoDream",
-    auto_memory: "autoMemory",
-    autoMemory: "autoMemory",
-    theme: "theme",
-    vimMode: "vimMode",
-    alternateBuffer: "alternateBuffer",
-    accentColor: "accentColor",
-    fastMode: "fastMode",
-  };
+  const keyMap = SETTINGS_KEY_ALIASES;
 
   const result: any = {};
   for (const [yamlKey, value] of Object.entries(raw as Record<string, any>)) {
@@ -1828,6 +1836,13 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     /* 诊断收集失败不影响启动 */
   }
 
+  // B32：未知顶层键告警（拼错的字段此前静默不生效）。同样放在整体赋值之后。
+  try {
+    await recordUnknownSettingKeys(config);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
   // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
   // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。
@@ -1876,6 +1891,40 @@ function recordStartupWarning(config: Config, path: string, message: string): vo
   const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
   if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
   diag.warnings.push({ path, message });
+}
+
+/**
+ * settings.json 顶层出现未知键时记一条启动提示（B32），带 did-you-mean。
+ *
+ * 已知集合 = SettingsSchema 声明的键 ∪ 别名表（snake_case 写法运行时确实生效）∪ `$schema`
+ *（编辑器补全用，惯例键）。只查用户 / 项目 / 本地三个文件：managed-settings.json 里放的是
+ * 企业策略键（policyLimits、allowManagedHooksOnly……），走另一套解析，混进来全是误报。
+ *
+ * 读的是 getSettingsForSource 的结果而不是重新读盘：`.passthrough()` 会把未知键原样带出来，
+ * 这里正好拿到它们。
+ */
+async function recordUnknownSettingKeys(config: Config): Promise<void> {
+  const { getSettingsForSource, getEnabledSettingSources } = await import("./settings/settings.ts");
+  const { getSettingsFilePath } = await import("./settings/constants.ts");
+  const { SettingsSchema } = await import("./settings/types.ts");
+  const { findUnknownSettingKeys } = await import("./settings/validation.ts");
+  const { levenshteinDistance } = await import("../tool/path-utils.ts");
+
+  const declared = Object.keys(SettingsSchema().shape);
+  const known = new Set([...declared, ...Object.keys(SETTINGS_KEY_ALIASES), "$schema"]);
+  const enabled = new Set(getEnabledSettingSources());
+  for (const source of ["userSettings", "projectSettings", "localSettings"] as const) {
+    if (!enabled.has(source)) continue;
+    const { settings } = getSettingsForSource(source);
+    if (!settings) continue;
+    const file = getSettingsFilePath(source) ?? source;
+    for (const u of findUnknownSettingKeys(settings, known, declared, levenshteinDistance)) {
+      const hint = u.suggestion
+        ? `，是否想写「${u.suggestion}」？`
+        : "（可能是拼写错误或新版本才有的字段）";
+      recordStartupWarning(config, `${file}#${u.key}`, `未知配置项「${u.key}」不会生效${hint}`);
+    }
+  }
 }
 
 /**

@@ -43,6 +43,7 @@ export function toAppContext(ctx: CommandContext): AppContext {
     exitRequested: false,
     sessionState: ctx.sessionState,
     sendToLLM: ctx.sendToLLM,
+    notify: ctx.notify,
     customCommands: ctx.customCommands,
     confirmShellCommands: ctx.confirmShellCommands,
     // P0-3：skill 权限判定所需的确认通道 / 原始规则 / checker（双向桥接保持一致）
@@ -119,6 +120,7 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     getThinkingState: appCtx.getThinkingState,
     sessionState: appCtx.sessionState,
     sendToLLM: appCtx.sendToLLM,
+    notify: appCtx.notify,
     customCommands: appCtx.customCommands,
     confirmShellCommands: appCtx.confirmShellCommands,
     // P0-3：skill 权限 ask 的确认通道 + 原始权限规则。缺任一项时 ask 决策保守拒绝。

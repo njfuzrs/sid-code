@@ -21,7 +21,7 @@
  *   bun run scripts/docs-gen-reference.ts --check    # 对账：不一致退 1（pre-commit 门禁调用）
  *   bun run scripts/docs-gen-reference.ts --stale    # 报告 >90 天未复核的指南页（只告警不阻塞）
  *   bun run scripts/docs-gen-reference.ts --coverage # 报告只在 ref/ 出现、无指南页介绍的命令（告警）
- *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（存量清完后启用）
+ *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（pre-commit 调用；2026-10-03 存量清零后启用）
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -478,57 +478,9 @@ interface SettingField {
  * 它们不是 settings.json 可配项，倒进来会造出"写了也没用"的假字段——比漏写更糟。
  */
 const PASSTHROUGH_FIELDS: Array<[string, string]> = [
-  ["trace", "object"],
-  ["telemetry", "object"],
-  ["analytics", "object"],
-  ["ide", "object"],
-  ["teamMemory", "object"],
-  ["sessionRetention", "object"],
-  ["checkpoint", "object"],
-  ["toolSearch", "union"],
-  ["pluginDirs", "array"],
-  ["showLineNumbers", "boolean"],
-  ["goal", "object"],
-  // §5.1 补录：三字段均在 Config 接口声明 + 有消费点 + SettingsSchema 未声明（靠 .passthrough() 生效），
-  // 用户写进 settings.json 能生效，此前漏进白名单导致 ref/settings.md 不含它们。
-  // 证据：config.ts:451(enableSandbox)+cli.ts:1808 消费；config.ts:144(outputStyle)+app.ts:2225/2689 消费；
-  // config.ts:449(speculativeClassifier)+tool-executor.ts:770/checker.ts:1148 消费。
-  ["enableSandbox", "boolean"],
-  // P2-3（2026-09-22）：沙箱自动放行 bash 的显式 opt-in。满足同一四条判据——
-  // Config 有声明（config.ts sandboxAutoAllowBash）+ keyMap 已登记 + 有真实消费点
-  // （cli.ts 构造 SandboxConfig）+ SettingsSchema 未声明（靠 .passthrough() 生效）。
-  ["sandboxAutoAllowBash", "boolean"],
-  ["outputStyle", "string"],
-  ["speculativeClassifier", "boolean"],
-  // 二次补录（2026-08-26）：同样满足「Config 有声明 + keyMap 已登记（故 settings.json
-  // 写了能生效）+ 有真实消费点 + SettingsSchema 未声明」四条。
-  //
-  // 纳入判据是**持久化配置旋钮**，不是「Config 里所有非 schema 字段」——
-  // print / resume / continue / maxTurns / outputFormat / sessionId 等属**单次调用态**
-  // （每次跑给一次的 CLI 参数），写进 settings.json 会得到"永久无头模式"这类荒谬语义，
-  // 故一律不收。判据与既有条目一致：trace / checkpoint / showLineNumbers 都是 app.json
-  // 侧的持久旋钮，所以 debug / audit 家族同样够格。
-  //
-  // 证据（消费点，均非测试）：
-  //   autoDream            app.ts:3388
-  //   autoMemory           app.ts:3336（经 isAutoMemoryEnabled）
-  //   conflictDetection    cli.ts:1466
-  //   conflictSeverity     cli.ts:1468 + tool/write.ts:237 + tool/edit.ts:514
-  //   mcpPolicy            config.ts:1441 → mcp/policy.ts 三层门控
-  //   toolSearchKeepLoaded query/loop.ts:741 + query/init-helpers.ts:414
-  //   audit / auditLogFile cli.ts:1247 / cli.ts:1256（零配置常驻审计日志）
-  //   debug*               cli.ts:1223 / :1230 / :1236（真正决定开不开调试日志的那一支）
-  ["autoDream", "boolean"],
-  ["autoMemory", "boolean"],
-  ["conflictDetection", "boolean"],
-  ["conflictSeverity", "string"],
-  ["mcpPolicy", "object"],
-  ["toolSearchKeepLoaded", "array"],
-  ["audit", "boolean"],
-  ["auditLogFile", "string"],
-  ["debug", "boolean"],
-  ["debugLevel", "string"],
-  ["debugLogFile", "string"],
+  // B32（2026-10-02）：原先这里的 27 个字段已全部补进 SettingsSchema（含漏登记的 bridge），
+  // 清单清空。机制保留：以后再有「Config 有声明 + 有消费点 + schema 未声明」的字段，
+  // 先补 schema；补不了（类型表达不出来）才登记到这里，页面会自动标 ⚠。
 ];
 
 /**
@@ -582,9 +534,14 @@ async function loadSettingFields(): Promise<SettingField[]> {
 
 function renderSettingFields(fields: SettingField[]): string {
   const pass = fields.filter((f) => f.passthroughOnly);
-  let out = `> 共 **${fields.length}** 个顶层字段。其中 ${fields.length - pass.length} 个由\n`;
-  out += `> \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出），${pass.length} 个标 ⚠ 的字段\n`;
-  out += `> 靠 schema 的 \`.passthrough()\` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。\n\n`;
+  // B32 之后 passthrough 补录清单为空是常态；导语按实际数量分支，别写出「0 个标 ⚠」这种句子
+  let out = pass.length
+    ? `> 共 **${fields.length}** 个顶层字段。其中 ${fields.length - pass.length} 个由\n` +
+      `> \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出），${pass.length} 个标 ⚠ 的字段\n` +
+      `> 靠 schema 的 \`.passthrough()\` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。\n`
+    : `> 共 **${fields.length}** 个顶层字段，全部由 \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出）。\n`;
+  // 与 config.ts recordUnknownSettingKeys 的行为对账：未知键不拒绝（向前兼容），但启动会提示
+  out += `> 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。\n\n`;
   out += `配置文件位置：\`~/.sid-code/settings.json\`（用户级）、\`.sid-code/settings.json\`（项目级，优先）、\n`;
   out += `\`.sid-code/settings.local.json\`（项目级本地，gitignore，最优先）。\n\n`;
   out += `| 字段 | 类型 | 取值 / 约束 | 说明 |\n|---|---|---|---|\n`;
@@ -705,6 +662,12 @@ interface HelpEntry {
   group: string;
   flags: string;
   desc: string;
+  /**
+   * 子命令的续行原文（用法 / 选项 / 示例），保留换行与相对缩进。
+   * 只有子命令段填它：参数表一格一行没问题，子命令的多行用法压进一格再截断会丢掉
+   * 子命令清单本身（D112：`mcp` 一格正好截在 `<list|get|add|remove>` 处）。
+   */
+  detail?: string[];
 }
 
 /** 取 printHelp 的模板字符串正文 */
@@ -761,14 +724,58 @@ function parseHelpSubcommands(helpSrc: string): HelpEntry[] {
     if (!inSection) continue;
     const m = line.match(/^ {2}([a-z][a-z-]*)\s{2,}(.*)$/);
     if (m) {
-      last = { group: "子命令", flags: m[1], desc: m[2].trim() };
+      last = { group: "子命令", flags: m[1], desc: m[2].trim(), detail: [] };
       entries.push(last);
       continue;
     }
-    const cont = line.match(/^\s{6,}(\S.*)$/);
-    if (cont && last) last.desc = `${last.desc} ${cont[1].trim()}`.trim();
+    // 续行不再拼进 desc：保留原文行，渲染时进独立的「用法」小节（D112）
+    if (/^\s{6,}\S/.test(line) && last) last.detail!.push(line);
+  }
+  // 去掉公共前导缩进，保留续行之间的相对缩进（「选项:」下各行要对齐）
+  for (const e of entries) {
+    const lines = e.detail!;
+    const indent = Math.min(...lines.map((l) => l.match(/^ */)![0].length));
+    e.detail = lines.map((l) => l.slice(indent));
   }
   return entries;
+}
+
+function subAnchor(name: string): string {
+  return `sub-${name}`;
+}
+
+/**
+ * 解释「参数条目数」与「parseArgs flag 数」为什么不相等（D113 ②）。
+ *
+ * 两个数口径不同：条目按 help 文本的行计，flag 按 parseArgs 声明计。一行可能写两个顶层
+ * flag（不同时出现在两个计数里），也可能写一个顶层没声明的入口（取反式 / 快速路径）；
+ * 反过来 HIDDEN_FLAGS 声明了但不写进 help。差值由这三类构成——**按数据算，不写死**，
+ * 否则下次加一个 flag 这句话就又成了一句骗人的解释。
+ */
+function describeCountGap(entries: HelpEntry[], rec: CliReconcile): string {
+  const declared = new Set(rec.parseArgsFlags);
+  const helpOnly: string[] = [];
+  const multi: string[] = [];
+  for (const e of entries) {
+    const flags = [...e.flags.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    const top = flags.filter((f) => declared.has(f));
+    if (top.length === 0) helpOnly.push(`\`${e.flags}\``);
+    else if (top.length > 1) multi.push(`\`${e.flags}\``);
+  }
+  const hidden = rec.parseArgsFlags.filter((f) => f in HIDDEN_FLAGS).map((f) => `\`--${f}\``);
+  if (entries.length === rec.parseArgsFlags.length && !helpOnly.length && !multi.length) {
+    return "两个数逐一对应。";
+  }
+  const single = entries.length - helpOnly.length - multi.length;
+  const parts: string[] = [`${single} 条各对应 1 个顶层 flag`];
+  if (helpOnly.length)
+    parts.push(
+      `${helpOnly.length} 条不对应顶层声明（${helpOnly.join("、")}：取反式或快速路径入口）`,
+    );
+  if (multi.length) parts.push(`${multi.length} 条一行写了多个 flag（${multi.join("、")}）`);
+  if (hidden.length)
+    parts.push(`${hidden.length} 个声明了但刻意不写进帮助（${hidden.join("、")}）`);
+  return `两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，${parts.join("；")}。`;
 }
 
 function renderCli(helpSrc: string, rec: CliReconcile): string {
@@ -778,10 +785,19 @@ function renderCli(helpSrc: string, rec: CliReconcile): string {
   let out = `> 共 **${entries.length}** 个参数条目、**${subs.length}** 个子命令。\n`;
   out += `> 描述取自 \`sid-code --help\`，并与 \`packages/cli/src/cli.ts\` 的 \`parseArgs\` 声明\n`;
   out += `> （**参数能不能用的唯一权威**，共 ${rec.parseArgsFlags.length} 个 flag）交叉对账：\n`;
-  out += `> "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。\n\n`;
+  out += `> "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。\n`;
+  out += `> ${describeCountGap(entries, rec)}\n\n`;
 
   out += `## 子命令\n\n| 子命令 | 说明 |\n|---|---|\n`;
-  for (const s of subs) out += `| \`sid-code ${cell(s.flags)}\` | ${clip(s.desc, 200)} |\n`;
+  for (const s of subs) {
+    const more = s.detail?.length ? `（用法见[下文](#${subAnchor(s.flags)})）` : "";
+    out += `| \`sid-code ${cell(s.flags)}\` | ${clip(s.desc, 200)}${more} |\n`;
+  }
+  // 多行用法单独成节、原样进代码块：表格一格装不下，截断会丢掉子命令清单（D112）
+  for (const s of subs) {
+    if (!s.detail?.length) continue;
+    out += `\n### sid-code ${s.flags} {#${subAnchor(s.flags)}}\n\n\`\`\`text\n${s.detail.join("\n")}\n\`\`\`\n`;
+  }
 
   let group = "";
   for (const e of entries) {
@@ -1238,7 +1254,7 @@ export function checkNarrativeCoverage(cmdNames: string[]): CoverageResult {
  * 报告叙述覆盖度。
  *
  * @param strict true = 有未覆盖命令则返回非零（阻断）。
- *   当前存量 21 个未覆盖，先走告警模式；存量清完后把 pre-commit 的调用改成 --coverage-strict。
+ *   2026-10-03 存量清零，pre-commit 已改调 --coverage-strict；--coverage 只留给人工查看。
  */
 function reportCoverage(cmdNames: string[], strict: boolean): number {
   const { uncovered, covered, exempt, total } = checkNarrativeCoverage(cmdNames);
@@ -1263,8 +1279,8 @@ function reportCoverage(cmdNames: string[], strict: boolean): number {
 
   if (!strict) {
     console.log(
-      `\n  当前为告警模式（存量未清完，不阻断）。清完后把 pre-commit 的调用换成\n` +
-        `  --coverage-strict，"做了功能不写文档"在物理上就进不了仓库。`,
+      `\n  当前为告警模式（--coverage，不阻断）。pre-commit 调的是 --coverage-strict，\n` +
+        `  这些命令在提交时会被拦下；确不该写进指南的，加进 NARRATIVE_EXEMPT 并写理由。`,
     );
     return 0;
   }

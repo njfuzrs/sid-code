@@ -680,7 +680,10 @@ export class MemoryCommand implements Command {
     return ["mem"];
   }
   description() {
-    return "管理记忆（auto/external/set/get/delete/list/search/show/reload）";
+    return "管理记忆（无参打开交互面板）";
+  }
+  argumentHint() {
+    return "[auto|external|set|get|delete|list|search|show|reload] [参数]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -1583,7 +1586,10 @@ export class CacheCommand implements Command {
     return [];
   }
   description() {
-    return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）";
+    return "显示缓存命中率 / 省钱长期统计";
+  }
+  argumentHint() {
+    return "[--period day|week|month] [--model <name>] [--breaks] [--history] [--prune <N>]";
   }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
@@ -1792,7 +1798,10 @@ export class TraceCommand implements Command {
     return ["digest"];
   }
   description() {
-    return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图, --prune-index N 裁剪会话索引)";
+    return "排查会话：把当前 / 指定会话轨迹嚼碎成结构化摘要（--health 健康看板，--cache 缓存视图）";
+  }
+  argumentHint() {
+    return "[<id>] [--list] [--full] [--health] [--cache [--days N]] [--prune-index N]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
