@@ -4,6 +4,7 @@ import {LegacyRoot} from 'react-reconciler/constants.js';
 import reconciler from './reconciler.js';
 import renderer from './renderer.js';
 import {createNode, type DOMElement} from './dom.js';
+import {type Screen} from './screen/screen.js';
 
 export type RenderToStringOptions = {
 	/**
@@ -44,7 +45,21 @@ console.log(output);
 const renderToString = (
 	node: ReactNode,
 	options?: RenderToStringOptions,
-): string => {
+): string => renderOnce(node, options).text;
+
+/**
+sid-code（B9 / T3.1）：同 `renderToString`，但返回动态区的 cell 级屏幕缓冲（不含 `<Static>` 输出）。
+屏幕缓冲的对拍测试用它：同一棵树在旧底座上首帧写出的字节 = `serializeScreen(renderToScreen(...))`。
+*/
+export const renderToScreen = (
+	node: ReactNode,
+	options?: RenderToStringOptions,
+): Screen => renderOnce(node, options).screen!;
+
+const renderOnce = (
+	node: ReactNode,
+	options?: RenderToStringOptions,
+): {text: string; screen?: Screen} => {
 	const columns = options?.columns ?? 80;
 
 	// Create a standalone root node — no stdout, stdin, or terminal bindings
@@ -108,7 +123,7 @@ const renderToString = (
 
 		// Yoga layout has already been calculated by onComputeLayout during commit.
 		// Render the DOM tree to a string — this captures the dynamic (non-static) output.
-		const {output} = renderer(rootNode, false);
+		const {output, screen} = renderer(rootNode, false);
 
 		// Tear down: unmount the tree so the reconciler cleans up child nodes
 		// and runs effect cleanup functions. Child Yoga nodes are freed by the
@@ -136,10 +151,10 @@ const renderToString = (
 			: capturedStaticOutput;
 
 		if (normalizedStaticOutput && output) {
-			return normalizedStaticOutput + '\n' + output;
+			return {text: normalizedStaticOutput + '\n' + output, screen};
 		}
 
-		return normalizedStaticOutput || output;
+		return {text: normalizedStaticOutput || output, screen};
 	} finally {
 		// Ensure native Yoga memory is freed even if rendering or teardown threw.
 		// Yoga nodes are WASM-backed and not garbage collected.

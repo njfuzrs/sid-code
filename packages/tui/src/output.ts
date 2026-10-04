@@ -1,11 +1,8 @@
-import sliceAnsi from 'slice-ansi';
-import stringWidth from 'string-width';
-import {
-	type StyledChar,
-	styledCharsFromTokens,
-	styledCharsToString,
-	tokenize,
-} from '@alcalzone/ansi-tokenize';
+// sid-code（B9 / T3.1）：输出落到 cell 级屏幕缓冲（screen/），见 UPSTREAM-DIFF.md
+import {sliceColumns} from './text/slice.js';
+import {stringWidth} from './text/width.js';
+import {Screen} from './screen/screen.js';
+import {screenToString} from './screen/serialize.js';
 import {type OutputTransformer} from './render-node-to-output.js';
 
 /**
@@ -50,18 +47,6 @@ type UnclipOperation = {
 class OutputCaches {
 	widths = new Map<string, number>();
 	blockWidths = new Map<string, number>();
-	styledChars = new Map<string, StyledChar[]>();
-
-	getStyledChars(line: string): StyledChar[] {
-		let cached = this.styledChars.get(line);
-		if (cached === undefined) {
-			cached = styledCharsFromTokens(tokenize(line));
-			this.styledChars.set(line, cached);
-		}
-
-		return cached;
-	}
-
 	getStringWidth(text: string): number {
 		let cached = this.widths.get(text);
 		if (cached === undefined) {
@@ -136,25 +121,21 @@ export default class Output {
 		});
 	}
 
-	get(): {output: string; height: number} {
-		// Initialize output array with a specific set of rows, so that margin/padding at the bottom is preserved
-		const output: StyledChar[][] = [];
+	get(screen: Screen = this.getScreen()): {output: string; height: number} {
+		return {
+			output: screenToString(screen),
+			height: this.height,
+		};
+	}
 
-		for (let y = 0; y < this.height; y++) {
-			const row: StyledChar[] = [];
-
-			for (let x = 0; x < this.width; x++) {
-				row.push({
-					type: 'char',
-					value: ' ',
-					fullWidth: false,
-					styles: [],
-				});
-			}
-
-			output.push(row);
-		}
-
+	/**
+	 * sid-code（B9 / T3.1）：操作序列落到 cell 级屏幕缓冲。上游在这里拼 `StyledChar[][]` 再转字符串；
+	 * 这里落到 `Screen`，帧 diff（T3.2）直接比单元，`get()` 只是它的纯文本形态。
+	 * 裁剪规则保持上游：先按列切文本、左边被裁时整段移到裁剪框左边界；右边界交给 Screen
+	 * （压在边界上的宽字符整个丢掉，契约 T4）。
+	 */
+	getScreen(): Screen {
+		const screen = new Screen(this.width, this.height);
 		const clips: Clip[] = [];
 
 		for (const operation of this.operations) {
@@ -170,6 +151,7 @@ export default class Output {
 				const {text, transformers} = operation;
 				let {x, y} = operation;
 				let lines = text.split('\n');
+				let maxX = screen.width;
 
 				const clip = clips.at(-1);
 
@@ -204,12 +186,14 @@ export default class Output {
 							const width = this.caches.getStringWidth(line);
 							const to = x + width > clip.x2! ? clip.x2! - x : width;
 
-							return sliceAnsi(line, from, to);
+							return sliceColumns(line, from, to);
 						});
 
 						if (x < clip.x1!) {
 							x = clip.x1!;
 						}
+
+						maxX = Math.min(maxX, clip.x2!);
 					}
 
 					if (clipVertically) {
@@ -225,95 +209,16 @@ export default class Output {
 					}
 				}
 
-				let offsetY = 0;
-
 				for (let [index, line] of lines.entries()) {
-					const currentLine = output[y + offsetY];
-
-					// Line can be missing if `text` is taller than height of pre-initialized `this.output`
-					if (!currentLine) {
-						continue;
-					}
-
 					for (const transformer of transformers) {
 						line = transformer(line, index);
 					}
 
-					const characters = this.caches.getStyledChars(line);
-					let offsetX = x;
-
-					// Nothing to write (e.g. line was clipped away).
-					if (characters.length === 0) {
-						offsetY++;
-						continue;
-					}
-
-					const spaceCell: StyledChar = {
-						type: 'char',
-						value: ' ',
-						fullWidth: false,
-						styles: [],
-					};
-
-					// Wide characters (e.g. CJK) occupy two cells: a leading
-					// cell with the character and a trailing placeholder with
-					// value ''. When an overlapping write lands in the middle
-					// of a wide character, the boundary cells need cleanup so
-					// the terminal never renders a half-visible wide character.
-					if (
-						currentLine[offsetX]?.value === '' &&
-						offsetX > 0 &&
-						this.caches.getStringWidth(currentLine[offsetX - 1]?.value ?? '') >
-							1
-					) {
-						currentLine[offsetX - 1] = spaceCell;
-					}
-
-					for (const character of characters) {
-						currentLine[offsetX] = character;
-
-						// Determine printed width using string-width to align with measurement
-						const characterWidth = Math.max(
-							1,
-							this.caches.getStringWidth(character.value),
-						);
-
-						// For multi-column characters, clear following cells to avoid stray spaces/artifacts
-						if (characterWidth > 1) {
-							for (let index = 1; index < characterWidth; index++) {
-								currentLine[offsetX + index] = {
-									type: 'char',
-									value: '',
-									fullWidth: false,
-									styles: character.styles,
-								};
-							}
-						}
-
-						offsetX += characterWidth;
-					}
-
-					if (currentLine[offsetX]?.value === '') {
-						currentLine[offsetX] = spaceCell;
-					}
-
-					offsetY++;
+					screen.writeLine(x, y + index, line, 0, maxX);
 				}
 			}
 		}
 
-		const generatedOutput = output
-			.map(line => {
-				// See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
-				const lineWithoutEmptyItems = line.filter(item => item !== undefined);
-
-				return styledCharsToString(lineWithoutEmptyItems).trimEnd();
-			})
-			.join('\n');
-
-		return {
-			output: generatedOutput,
-			height: output.length,
-		};
+		return screen;
 	}
 }

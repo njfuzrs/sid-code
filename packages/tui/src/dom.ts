@@ -1,5 +1,6 @@
 import Yoga, {type Node as YogaNode} from 'yoga-layout';
 import measureText from './measure-text.js';
+import {stringWidth} from './text/width.js';
 import {type Styles} from './styles.js';
 import wrapText from './wrap-text.js';
 import squashTextNodes from './squash-text-nodes.js';
@@ -238,8 +239,21 @@ const measureTextNode = function (
 
 	const textWrap = node.style?.textWrap ?? 'wrap';
 	const wrappedText = wrapText(text, width, textWrap);
+	const wrapped = measureText(wrappedText);
 
-	return measureText(wrappedText);
+	// sid-code（B9 / T3.1，契约 T4）：换行后仍比可用宽度宽的行（宽字符被挤到 1 列、VS16 宽字符压在行尾），
+	// 按 ceil(行宽 / 可用宽) 计行数，与旧底座的布局高度一致。多出来的行是空行：
+	// 屏幕缓冲写不下的宽字符整个丢掉，不劈半
+	if (width >= 1 && wrapped.width > width) {
+		let height = 0;
+		for (const line of wrappedText.split('\n')) {
+			height += Math.max(1, Math.ceil(stringWidth(line) / width));
+		}
+
+		return {width: wrapped.width, height};
+	}
+
+	return wrapped;
 };
 
 const findClosestYogaNode = (node?: DOMNode): YogaNode | undefined => {

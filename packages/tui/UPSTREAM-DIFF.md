@@ -40,3 +40,8 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T2.3 | `src/terminal/clipboard.ts`（新增） | `setClipboard()`：返回 OSC 52 序列；本机剪贴板 fire-and-forget（跳过 SSH，linux 试探链带缓存）；tmux 等 `load-buffer` 2s，成功才包裹且里层固定 BEL；执行器可注入 | `/copy`、`/bug`、`/export`、`/debug` 依赖；上游没有 | O6、M3 |
 | T2.3 | `src/terminal/hyperlinks.ts`（新增） | `supportsHyperlinks()`：库判定为真即真，否则按 6 个终端名（`TERM_PROGRAM` / `LC_TERMINAL` 精确）或 `TERM` 含小写 `kitty` 补判 | markdown 渲染的 OSC 8 链接依赖；npm `supports-hyperlinks` 不认识这几个终端 | O4、O6 |
 | T2.3 | `package.json` | 新增 `supports-hyperlinks@4.5.0`（与根 package.json 同版本） | 同上 | O4 |
+| T3.1 | `src/screen/`（新增：`screen.ts`、`pools.ts`、`serialize.ts`） | cell 级屏幕缓冲：每格 = 字形簇 + 列宽（宽 / 窄 / spacer）+ 样式 id + 超链接 id；样式池缓存 `(from, to)` 的 SGR 切换序列；可改写的超链接（`OSC 8 ;; url BEL`）改成 `id=<url 的 Java 式 hash>`，其余链接码当样式原样保留；覆盖写入劈开宽字符时剩下的半格还原成默认空白；tab 推到屏幕绝对列的 8 的倍数；序列化时默认空白用 `CSI n C` 跳过、含 U+FE0F 的宽字形簇做宽度补偿 | 帧 diff（T3.2）要逐格比较；规则全部对拍旧底座首帧（`tests/fixtures/screen-vectors.json`） | R3、R9、T3、T4 |
+| T3.1 | `src/output.ts` | `get()` 改为先落 `Screen` 再转纯文本；新增 `getScreen()`；`slice-ansi` 换成 `text/slice.ts` 的 `sliceColumns`，右裁剪边界交给 Screen（压边界的宽字符整个丢掉） | 同上 | R3、T4 |
+| T3.1 | `src/renderer.ts`、`src/render-to-string.ts` | 渲染结果多带一个 `screen`；新增 `renderToScreen()` | 对拍测试与 T3.2 的 diff 都要拿屏幕缓冲 | R3 |
+| T3.1 | `src/sanitize-ansi.ts` | 带冒号子参数的 SGR（`ESC[4:3m`）整条丢弃 | ansi-tokenize 不认识，会把 `[4:3m` 当可见字符落格；旧底座丢弃 | R3 |
+| T3.1 | `src/dom.ts` | 文本测量：换行后仍比可用宽度宽的行，按 `ceil(行宽 / 可用宽)` 计行数 | 宽字符被挤到 1 列、VS16 宽字符压在行尾时，旧底座的布局高度就是这样算的（多出来的是空行） | T4 |

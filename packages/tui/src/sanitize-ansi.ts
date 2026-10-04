@@ -1,6 +1,8 @@
 import {hasAnsiControlCharacters, tokenizeAnsi} from './ansi-tokenizer.js';
 
-const sgrParametersRegex = /^[\d:;]*$/;
+// sid-code（B9 / T3.1）：去掉冒号。带冒号子参数的 SGR（`ESC[4:3m` 波浪下划线、`ESC[38:2::r:g:bm`）
+// ansi-tokenize 不认识，会把 `[4:3m` 当成可见字符落格；旧底座整条丢弃，与之对齐
+const sgrParametersRegex = /^[\d;]*$/;
 
 // Strip ANSI escape sequences that would conflict with Ink's layout.
 // Preserved: SGR sequences (colors, bold, etc. - end with 'm') and
