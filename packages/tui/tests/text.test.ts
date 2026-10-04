@@ -5,6 +5,8 @@
  * 这里只读向量、不 import 旧底座 —— T9 删掉旧底座后本测试照样成立。
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import vectors from "./fixtures/text-vectors.json";
 import {
   reorderBidi,
@@ -138,5 +140,29 @@ describe("T3 bidi", () => {
     expect(terminalNeedsSoftwareBidi({ TERM_PROGRAM: "vscode" }, "darwin")).toBe(true);
     expect(terminalNeedsSoftwareBidi({ TERM_PROGRAM: "iTerm.app" }, "darwin")).toBe(false);
     expect(terminalNeedsSoftwareBidi({}, "linux")).toBe(false);
+  });
+});
+
+describe("向量测试不依赖旧底座", () => {
+  test("packages/tui/tests 下没有任何文件 import 旧底座或向量生成器", () => {
+    // 生成器顶层 import 旧底座；测试经它拿常量，等于间接依赖旧底座，T9 删掉后就挂（T2.2 踩过一次）
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(e.name)) {
+          const src = readFileSync(p, "utf8");
+          if (
+            /from\s+["'][^"']*(tui-renderer|scripts\/tui-[a-z-]+)|import\(\s*["'][^"']*(tui-renderer|scripts\/tui-[a-z-]+)/.test(
+              src,
+            )
+          )
+            offenders.push(p);
+        }
+      }
+    };
+    walk(import.meta.dir);
+    expect(offenders).toEqual([]);
   });
 });

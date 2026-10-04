@@ -15,8 +15,12 @@ import {
   wrapStyledChars,
 } from "../src/text/styled-chars.ts";
 
-// 与生成器同一份输入（生成器里的常量没导出成 JSON，这里按向量的形状反推长度做防空检查）
-const { COLORS, COLOR_TEXTS, TEXT_STYLES } = await import("../../../scripts/tui-text-vectors.ts");
+// 输入随向量一起入库，不 import 生成器（它顶层 import 旧底座，T9 删掉旧底座后会挂）
+const {
+  colors: COLORS,
+  texts: COLOR_TEXTS,
+  styles: TEXT_STYLES,
+} = vectors.color.inputs as { colors: string[]; texts: string[]; styles: object[] };
 
 type ByLevel = {
   foreground: string[][];

@@ -318,7 +318,12 @@ function buildColor() {
     };
   }
   chalk.level = saved;
-  return { byLevel, levels: LEVEL_ENVS.map((env) => [env, levelUnder(env)]) };
+  return {
+    // 输入也入库：测试只读这份 JSON，不 import 本脚本（本脚本顶层就 import 旧底座）
+    inputs: { colors: COLORS, texts: COLOR_TEXTS, styles: TEXT_STYLES },
+    byLevel,
+    levels: LEVEL_ENVS.map((env) => [env, levelUnder(env)]),
+  };
 }
 
 if (import.meta.main) {

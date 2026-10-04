@@ -7699,6 +7699,86 @@
   ]
  ],
  "color": {
+  "inputs": {
+   "colors": [
+    "ansi:red",
+    "ansi:blueBright",
+    "ansi:whiteBright",
+    "ansi:gray",
+    "ansi:bold",
+    "ansi:constructor",
+    "ansi:",
+    "ANSI:red",
+    "red",
+    "#ff8800",
+    "#f80",
+    "#",
+    "#zzz",
+    "  #ff0000",
+    "rgb(1,2,3)",
+    "rgb( 1, 2, 3 )",
+    "rgb(300,0,0)",
+    "rgb(1.5,2,3)",
+    "rgb(1,2,3) ",
+    "ansi256(200)",
+    "ansi256( 5 )",
+    "ansi256(999)",
+    "ansi256(-1)",
+    "ansi256(5)x",
+    ""
+   ],
+   "texts": [
+    "ab",
+    "",
+    "a\nb",
+    "\u001b[31mx\u001b[39m"
+   ],
+   "styles": [
+    {
+     "bold": true
+    },
+    {
+     "dim": true
+    },
+    {
+     "italic": true
+    },
+    {
+     "underline": true
+    },
+    {
+     "strikethrough": true
+    },
+    {
+     "inverse": true
+    },
+    {
+     "bold": true,
+     "dim": true
+    },
+    {
+     "color": "#ff0000",
+     "backgroundColor": "ansi:blue",
+     "bold": true,
+     "inverse": true,
+     "underline": true
+    },
+    {
+     "bold": true,
+     "dim": true,
+     "italic": true,
+     "underline": true,
+     "strikethrough": true,
+     "inverse": true,
+     "color": "ansi:red",
+     "backgroundColor": "rgb(1,2,3)"
+    },
+    {
+     "bold": false
+    },
+    {}
+   ]
+  },
   "byLevel": {
    "0": {
     "foreground": [

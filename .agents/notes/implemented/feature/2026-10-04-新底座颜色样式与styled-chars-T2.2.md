@@ -51,3 +51,7 @@ Date: 2026-10-04
 - ⚠️ 新变量名 `SID_CODE_TMUX_TRUECOLOR` 不会出现在 `website/ref/env.md` 里：参考页生成器的 `PKG_SRC_DIRS`
   不扫 `packages/tui`（只扫 shared / tui-renderer / core / cli）。T9 删旧底座时必须把 `tui` 加进去，
   否则 D125 那批变量会从参考页静默消失。
+- ⚠️ 补正：初版 `color-styled.test.ts` 为了拿输入常量 import 了 `scripts/tui-text-vectors.ts`，而这个脚本在顶层
+  import 旧底座，等于间接依赖旧底座，T9 删掉旧底座后这个测试会挂。已改为把输入也写进向量 JSON
+  （`color.inputs`），并在 `text.test.ts` 加了元测试：`packages/tui/tests` 下任何文件 import 旧底座或 `scripts/tui-*`
+  都会转红。把旧写法放回去验证过，元测试确实变红。
