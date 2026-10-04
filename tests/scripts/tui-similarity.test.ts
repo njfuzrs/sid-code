@@ -73,6 +73,17 @@ describe("tui-similarity 判定", () => {
     expect(r.violations).toHaveLength(1);
   });
 
+  test("新底座文件里有中文注释时，上游继承块仍被认出（jscpd 偏移是字节，不是字符）", () => {
+    // 继承块前放中文注释（每个汉字 3 字节 / 1 字符），后面跟一段新底座自己的代码（两边都没有）。
+    // 按字符串下标切，切片会整体后移、吃进后面那段新代码 → 上游里找不到 → 误报违规。
+    const comment = `// ${"这是一段用来制造多字节偏移的中文注释".repeat(4)}\n`;
+    // 不以 export 开头：旧底座夹具在同一位置也是 export，jscpd 会把重复块多延伸一个 token
+    const ownCode = `const ownOnly = (xs: number[]) => xs.filter((x) => x % 7 === 3).map((x) => x * 11);\nvoid ownOnly;\n`;
+    const r = fixture("cjk", comment + UPSTREAM_FN + "\n" + ownCode);
+    expect(r.violations).toEqual([]);
+    expect(r.inherited).toBe(1);
+  });
+
   test("防空转：扫到的文件数低于下限就抛", () => {
     const base = join(work, "empty");
     mkdirSync(join(base, "n"), { recursive: true });

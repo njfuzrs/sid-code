@@ -6,7 +6,7 @@ import { Box, render, renderToString, Text } from "../../src/index.ts";
 
 const App = () => (
   <Box borderStyle="round" padding={1} width={30}>
-    <Text color="green">hello 你好</Text>
+    <Text color="ansi:green">hello 你好</Text>
   </Box>
 );
 

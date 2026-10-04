@@ -6,7 +6,7 @@ import { RENDERER } from "@sid-code/cli/ui/render-port/select.ts";
 
 const inst = await render(
   <Box borderStyle="round" paddingX={1}>
-    <Text color="green">renderer={RENDERER}</Text>
+    <Text color="ansi:green">renderer={RENDERER}</Text>
   </Box>,
   { patchConsole: false, exitOnCtrlC: false },
 );

@@ -9,3 +9,11 @@ export {
 	wrapText,
 } from './truncate.js';
 export {reorderBidi, terminalNeedsSoftwareBidi} from './bidi.js';
+export {
+	type StyledChar,
+	styledCharsWidth,
+	toStyledCharacters,
+	widestLineFromStyledChars,
+	wordBreakStyledChars,
+	wrapStyledChars,
+} from './styled-chars.js';

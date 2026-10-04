@@ -171,10 +171,12 @@ export function scan(opts: {
       const n = side(a) === "new" ? a : b;
       const l = n === a ? b : a;
       const newRel = upstreamRelative(n.name.slice("new/".length), opts.newDirs);
-      const fragment = readFileSync(join(work, n.name), "utf8").slice(
-        n.startLoc.position,
-        n.endLoc.position,
-      );
+      // jscpd 的 position 是 UTF-8 **字节**偏移，不是 JS 字符串下标。按字符串切的话，
+      // 文件里只要有中文注释，切出来的就是别处的文本，「是否来自上游」的判定随之失真
+      // （T2.2 实测：上游原样的 ansi256 分支被判成违规）。
+      const fragment = readFileSync(join(work, n.name))
+        .subarray(n.startLoc.position, n.endLoc.position)
+        .toString("utf8");
       const upstreamFile = join(opts.upstreamDir, newRel);
       const fromUpstream =
         existsSync(upstreamFile) &&

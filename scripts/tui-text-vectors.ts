@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 从旧底座生成文本工具的测试向量（B9 / T2.1，契约 T1 / T2 / T3）。
+ * 从旧底座生成文本工具的测试向量（B9 / T2.1 契约 T1 / T2 / T3；T2.2 颜色与 styled-chars，契约 T6）。
  *
  * 新底座的文本工具是对着这份向量写、对着这份向量测的：旧底座只回答「输出应该是什么」，
  * 不提供实现（设计文档 D-5）。向量入库，所以 T9 删掉旧底座之后测试照样能跑；
@@ -23,6 +23,9 @@ const OUT = join(ROOT, "packages/tui/tests/fixtures/text-vectors.json");
 const { stringWidth } = await import("../packages/tui-renderer/src/stringWidth.ts");
 const { default: wrapText } = await import("../packages/tui-renderer/src/wrap-text.ts");
 const { reorderBidi } = await import("../packages/tui-renderer/src/bidi.ts");
+const colorizeMod = await import("../packages/tui-renderer/src/colorize.ts");
+const styled = await import("../packages/tui-renderer/src/_vendor/styled-chars.ts");
+const { default: chalk } = await import("chalk");
 
 /** 换行 / 截断语料：每条都对应一类对拍时发现过的差异，加新条目时写清楚为什么。 */
 export const WRAP_CORPUS = [
@@ -90,6 +93,137 @@ export const BIDI_CORPUS = [
   "x́ שלוםְ",
 ];
 
+/** 颜色写法：每种合法写法一条，加上对拍时确认过「原样返回」的边界。 */
+export const COLORS = [
+  "ansi:red",
+  "ansi:blueBright",
+  "ansi:whiteBright",
+  "ansi:gray", // chalk 有 gray 属性，但不在 16 色名单里
+  "ansi:bold", // chalk 的样式名，不是颜色
+  "ansi:constructor",
+  "ansi:",
+  "ANSI:red",
+  "red", // 裸名：端口 Color 类型要求 ansi: 前缀
+  "#ff8800",
+  "#f80",
+  "#",
+  "#zzz",
+  "  #ff0000",
+  "rgb(1,2,3)",
+  "rgb( 1, 2, 3 )",
+  "rgb(300,0,0)",
+  "rgb(1.5,2,3)",
+  "rgb(1,2,3) ",
+  "ansi256(200)",
+  "ansi256( 5 )",
+  "ansi256(999)",
+  "ansi256(-1)",
+  "ansi256(5)x",
+  "",
+];
+
+export const TEXT_STYLES = [
+  { bold: true },
+  { dim: true },
+  { italic: true },
+  { underline: true },
+  { strikethrough: true },
+  { inverse: true },
+  { bold: true, dim: true },
+  { color: "#ff0000", backgroundColor: "ansi:blue", bold: true, inverse: true, underline: true },
+  {
+    bold: true,
+    dim: true,
+    italic: true,
+    underline: true,
+    strikethrough: true,
+    inverse: true,
+    color: "ansi:red",
+    backgroundColor: "rgb(1,2,3)",
+  },
+  { bold: false },
+  {},
+];
+
+/** 颜色输入的文本：普通、空串、多行、已带样式。 */
+export const COLOR_TEXTS = ["ab", "", "a\nb", "\x1b[31mx\x1b[39m"];
+
+/**
+ * 颜色级别修正的环境矩阵（与 chalk 自动探测出的初始级别组合）。
+ * 每条在子进程里跑旧底座，记录修正后的 chalk.level。
+ */
+export const LEVEL_ENVS: Record<string, string>[] = [
+  { FORCE_COLOR: "0" },
+  { FORCE_COLOR: "1" },
+  { FORCE_COLOR: "2" },
+  { FORCE_COLOR: "3" },
+  { FORCE_COLOR: "1", TERM_PROGRAM: "vscode" },
+  { FORCE_COLOR: "2", TERM_PROGRAM: "vscode" },
+  { FORCE_COLOR: "3", TERM_PROGRAM: "vscode" },
+  { FORCE_COLOR: "2", TERM_PROGRAM: "VSCode" }, // 区分大小写
+  { FORCE_COLOR: "2", TMUX: "x" },
+  { FORCE_COLOR: "3", TMUX: "x" },
+  { FORCE_COLOR: "3", TMUX: "" }, // 空 TMUX 不算
+  { FORCE_COLOR: "3", TMUX: "x", CLAUDE_CODE_TMUX_TRUECOLOR: "1" },
+  { FORCE_COLOR: "3", TMUX: "x", CLAUDE_CODE_TMUX_TRUECOLOR: "0" }, // 任意非空都算开
+  { FORCE_COLOR: "3", TMUX: "x", CLAUDE_CODE_TMUX_TRUECOLOR: "" },
+  { FORCE_COLOR: "2", TMUX: "x", TERM_PROGRAM: "vscode" }, // 先升后降
+  { FORCE_COLOR: "3", TERM: "tmux-256color" }, // 只看 TMUX，不看 TERM
+];
+
+/** 旧底座在给定环境下修正后的 chalk.level（子进程，模块加载时判定）。 */
+function levelUnder(env: Record<string, string>): number {
+  const clean = { ...process.env };
+  for (const k of [
+    "TMUX",
+    "TERM_PROGRAM",
+    "COLORTERM",
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "TERM",
+    "CLAUDE_CODE_TMUX_TRUECOLOR",
+  ])
+    delete clean[k];
+  const code = `await import(${JSON.stringify(join(ROOT, "packages/tui-renderer/src/colorize.ts"))});
+    const { default: chalk } = await import("chalk"); process.stdout.write(String(chalk.level));`;
+  const r = Bun.spawnSync([process.execPath, "-e", code], { env: { ...clean, ...env }, cwd: ROOT });
+  const out = r.stdout.toString().trim();
+  if (!/^[0-3]$/.test(out)) throw new Error(`子进程没给出级别：${out} ${r.stderr.toString()}`);
+  return Number(out);
+}
+
+/** styled-chars 语料：每条都对应一类对拍时确认过的边界。 */
+export const STYLED_CORPUS = [
+  "\x1b[31mhello\x1b[39m 中文 world  x",
+  "ab cdefgh", // 词放不下但不超行宽 → 换行；超行宽 → 硬折并先填满当前行
+  "a 中文中",
+  "中文中",
+  "abcdef ghi",
+  "  ab", // 行首空白丢掉
+  "ab  ", // 行尾空白放不下 → 换行且丢掉，留一个空行
+  "a  b",
+  "a\tb c", // \t 算空白
+  "\t\tab cd",
+  "ab \tcd",
+  "a\t b",
+  "a\nb", // \n 不是空白，属于词
+  "\nab cd",
+  "ab\n",
+  "a\u3000b c", // 全角空格不是空白
+  "a\u00a0b", // 不换行空格不是空白
+  "é́ab cd", // 组合附标
+  "ab\u0301 c",
+  "\u0301中",
+  "x 😀😀",
+  "क्ष क्ष", // tokenizer 报窄，实占 2 格
+  "\x1b[31m  ab\x1b[39m",
+  "\x1b]8;;http://x\x07link text\x1b]8;;\x07 after",
+  " ",
+  "  ",
+  "",
+];
+export const STYLED_COLUMNS = [-1, 0, 1, 2, 3, 4, 5, 6, 8, 12];
+
 /** 全码位宽度压成游程：[起始码位, 宽度]，宽度变化处开一段。代理区跳过（单独的代理不是合法字符）。 */
 function widthRuns(): [number, number][] {
   const runs: [number, number][] = [];
@@ -134,7 +268,57 @@ function build() {
     })),
     // 结果是簇序号的排列（styleId 即原下标）
     bidi: BIDI_CORPUS.map((text) => [text, reorderBidi(clusters(text)).map((c) => c.styleId)]),
+    color: buildColor(),
+    styledChars: STYLED_CORPUS.map((text) => {
+      const chars = styled.toStyledCharacters(text);
+      return {
+        text,
+        chars,
+        width: styled.styledCharsWidth(chars),
+        words: styled.wordBreakStyledChars(chars).map((w) => w.map((c) => chars.indexOf(c))),
+        // 换行结果记字符下标：同时钉住「返回输入里的同一批对象」
+        wrap: Object.fromEntries(
+          STYLED_COLUMNS.map((c) => {
+            const lines = styled.wrapStyledChars(chars, c);
+            return [
+              c,
+              {
+                lines: lines.map((l) => l.map((ch) => chars.indexOf(ch))),
+                widest: styled.widestLineFromStyledChars(lines),
+              },
+            ];
+          }),
+        ),
+      };
+    }),
   };
+}
+
+/** 颜色：四个 chalk 级别下的 colorize（前景 / 背景）、applyColor、applyTextStyles，以及级别修正矩阵。 */
+function buildColor() {
+  const saved = chalk.level;
+  const byLevel: Record<string, unknown> = {};
+  for (const level of [0, 1, 2, 3] as const) {
+    chalk.level = level;
+    byLevel[level] = {
+      foreground: COLOR_TEXTS.map((t) =>
+        COLORS.map((c) => colorizeMod.colorize(t, c, "foreground")),
+      ),
+      background: COLOR_TEXTS.map((t) =>
+        COLORS.map((c) => colorizeMod.colorize(t, c, "background")),
+      ),
+      applyColor: COLORS.map((c) => colorizeMod.applyColor("ab", c as never)),
+      undefinedColor: [
+        colorizeMod.colorize("ab", undefined, "foreground"),
+        colorizeMod.applyColor("ab", undefined),
+      ],
+      textStyles: COLOR_TEXTS.map((t) =>
+        TEXT_STYLES.map((st) => colorizeMod.applyTextStyles(t, st as never)),
+      ),
+    };
+  }
+  chalk.level = saved;
+  return { byLevel, levels: LEVEL_ENVS.map((env) => [env, levelUnder(env)]) };
 }
 
 if (import.meta.main) {
