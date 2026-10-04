@@ -680,7 +680,7 @@ function parseCLIArgs(): CLIArgs {
     // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
     // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。
     // "是否上传 / 是否本地保留 / 上传后是否删除" 是独立开关，由配置文件各字段控制：
-    //   trace.upload.url / token      → 是否上传（有配置才上传）
+    //   trace.upload.url / token      → 是否上传（有配置才上传；url 缺省取 backend.url）
     //   trace.upload.auto_upload      → 会话结束自动上传还是手动
     //   trace.upload.delete_after_upload → 上传成功后是否删本地（默认 false = 保留）
     // --trace-upload-disabled 可强制关闭上传（最高优先级，覆盖配置文件）。
@@ -922,7 +922,8 @@ async function handleUploadTraces(config: Config): Promise<void> {
   const traceUpload = config.trace?.upload;
   if (!traceUpload?.url || !traceUpload?.token) {
     console.error(
-      "错误: 未配置上传地址或 token，请在配置文件或通过 --trace-upload-url / --trace-upload-token 参数指定",
+      "错误: 未配置上传地址或 token。地址缺省取 backend.url，token 在 trace.upload.token 配置，\n" +
+        "      或通过 --trace-upload-url / --trace-upload-token 参数指定",
     );
     process.exit(1);
   }

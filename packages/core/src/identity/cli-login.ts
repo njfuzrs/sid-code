@@ -4,10 +4,10 @@
  * 流程（对应设计文档 §5.2）：
  *   1. 本地生成 verifier V、challenge C=S256(V)、cli_state s
  *   2. 起 127.0.0.1:P 回调服务器（复用 MCP 的 oauth-callback-server）
- *   3. 浏览器打开 {backend}/api/v1/auth/feishu/cli/start?port=P&challenge=C&cli_state=s&device_id=D
+ *   3. 浏览器打开 {backend}/auth/feishu/cli/start?port=P&challenge=C&cli_state=s&device_id=D
  *   4. 后端走完飞书授权，302 回 http://127.0.0.1:P/callback?code=L&state=s
  *   5. 校验 state==s（防登录 CSRF：别人把他的登录码塞给你）
- *   6. POST {backend}/api/v1/auth/cli/exchange {code:L, verifier:V, device_id, platform, ver}
+ *   6. POST {backend}/auth/cli/exchange {code:L, verifier:V, device_id, platform, ver}
  *   7. saveDeviceCredential()，凭据里带上 user 段
  *
  * 本地 PKCE 防的是同机其他进程截获 L：截到 L 拿不到 V，换不出凭据。
@@ -26,7 +26,7 @@ import {
   type CredentialUser,
   type DeviceCredential,
 } from "./credential.ts";
-import { backendApiUrl } from "./backend-url.ts";
+import { backendUrl as endpointUrl } from "./endpoints.ts";
 
 /** 等用户在浏览器里完成飞书授权的上限。后端 state 10 分钟过期，这里留出余量。 */
 export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -80,7 +80,7 @@ export function buildCliStartUrl(
   backendUrl: string,
   params: { port: number; challenge: string; cliState: string; deviceId: string },
 ): string {
-  const u = new URL(backendApiUrl(backendUrl, "/auth/feishu/cli/start"));
+  const u = new URL(endpointUrl(backendUrl, "auth", "/feishu/cli/start"));
   u.searchParams.set("port", String(params.port));
   u.searchParams.set("challenge", params.challenge);
   u.searchParams.set("challenge_method", "S256");
@@ -147,7 +147,7 @@ export async function exchangeLoginCode(
 ): Promise<DeviceCredential> {
   let resp: Response;
   try {
-    resp = await fetchImpl(backendApiUrl(backendUrl, "/auth/cli/exchange"), {
+    resp = await fetchImpl(endpointUrl(backendUrl, "auth", "/cli/exchange"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({
@@ -277,7 +277,7 @@ export async function performCliLogout(
   let remoteDetail: string | undefined;
   if (backendUrl && token) {
     try {
-      const resp = await fetchImpl(backendApiUrl(backendUrl, "/auth/cli/logout"), {
+      const resp = await fetchImpl(endpointUrl(backendUrl, "auth", "/cli/logout"), {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
@@ -312,7 +312,7 @@ export async function verifyCredentialRemote(
   fetchImpl: typeof fetch = fetch,
 ): Promise<WhoAmIOutcome> {
   try {
-    const resp = await fetchImpl(backendApiUrl(backendUrl, "/ctl/whoami"), {
+    const resp = await fetchImpl(endpointUrl(backendUrl, "whoami"), {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
     });

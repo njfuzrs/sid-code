@@ -22,6 +22,7 @@ import {
 import { readFile, writeFile } from "node:fs/promises";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
 
 // ─── 接口定义 ───
@@ -209,7 +210,7 @@ export class UploadManager implements TraceUploaderInterface {
 
   /**
    * 启动心跳检测
-   * 定时 GET {baseUrl}/api/v1/health，更新 serverReachable 状态
+   * 定时 GET 健康检查端点（路径见 identity/endpoints.ts），更新 serverReachable 状态
    * @param intervalMs 检测间隔，默认 60 秒
    */
   startHealthCheck(intervalMs = 60_000): void {
@@ -283,7 +284,7 @@ export class UploadManager implements TraceUploaderInterface {
 
   private async checkHealth(): Promise<void> {
     try {
-      const resp = await fetch(`${this.opts.baseUrl}/api/v1/health`, {
+      const resp = await fetch(backendUrl(this.opts.baseUrl, "health"), {
         signal: AbortSignal.timeout(5_000),
       });
       this.serverReachable = resp.ok;
@@ -386,7 +387,7 @@ export class UploadManager implements TraceUploaderInterface {
         if (this.opts.deviceId) formData.append("device_id", this.opts.deviceId);
 
         // 发送请求（30 秒超时）
-        const response = await fetch(`${this.opts.baseUrl}/api/v1/upload/session-file`, {
+        const response = await fetch(backendUrl(this.opts.baseUrl, "upload", "/session-file"), {
           method: "POST",
           headers: {
             "X-Upload-Token": this.opts.token,

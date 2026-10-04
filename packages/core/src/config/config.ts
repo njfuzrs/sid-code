@@ -685,7 +685,7 @@ export interface BridgeConfig {
 
 /** 轨迹上传配置 */
 export interface TraceUploadConfig {
-  /** trajectory-platform URL，含路径前缀，如 http://<your-server>/traj */
+  /** trajectory-platform URL，含路径前缀，如 https://<your-server>/traj。缺省取 backend.url */
   url: string;
   /** X-Upload-Token 认证 token */
   token: string;
@@ -837,11 +837,11 @@ export interface AnalyticsBackendConfig {
 export interface AnalyticsConfig {
   /** 隐私级别覆盖（环境变量优先级更高） */
   privacyLevel?: PrivacyLevel;
-  /** Feature Flag 远程端点（可选） */
+  /** 已弃用：Feature Flag 远程端点。配了 backend.url 时被忽略（地址由它推出），只作兼容 */
   featureFlagEndpoint?: string;
   /** 本地 Feature Flag 定义 */
   flags?: Record<string, string | number | boolean | Record<string, unknown>>;
-  /** 远程事件导出后端列表 */
+  /** 第三方事件 collector 列表（OTLP / 自建）。企业后端不用配这里：配了 backend.url 即内置上报 */
   backends?: AnalyticsBackendConfig[];
 }
 
@@ -1302,7 +1302,7 @@ async function loadConfigFile(): Promise<Partial<Config>> {
  * 也不能注入进程环境。路由流量字段（model/baseURL/provider/availableModels/env/mcpServers）
  * 刻意不在此列，见 loadConfigFile 的注释。
  */
-const PROJECT_BEHAVIOR_FIELDS = [
+export const PROJECT_BEHAVIOR_FIELDS = [
   "language",
   "theme",
   "vimMode",
@@ -1465,9 +1465,10 @@ function loadFromEnv(): Partial<Config> {
       enabled: true,
       outputDir: env.SID_CODE_TRACE_OUTPUT_DIR,
     };
-    if (env.SID_CODE_TRACE_UPLOAD_URL && env.SID_CODE_TRACE_UPLOAD_TOKEN) {
+    // 只给 token 也构造 upload 段：url 缺省时 loadConfig 会回落到 backend.url。
+    if (env.SID_CODE_TRACE_UPLOAD_TOKEN) {
       traceConfig.upload = {
-        url: env.SID_CODE_TRACE_UPLOAD_URL,
+        url: env.SID_CODE_TRACE_UPLOAD_URL ?? "",
         token: env.SID_CODE_TRACE_UPLOAD_TOKEN,
         userId: env.SID_CODE_TRACE_USER_ID,
         deviceId: env.SID_CODE_TRACE_DEVICE_ID,
@@ -1719,6 +1720,17 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   }
 
   const config = merged as Config;
+
+  // trace.upload.url 缺省时取 backend.url（U6）：以前要把同一个地址在两处各抄一遍，
+  // 抄错一处就是「轨迹发往 A、事件发往 B」。token 仍单独配——数据面用共享
+  // X-Upload-Token 是服务端冻结约束，只统一地址、不统一鉴权。
+  // 显式配了 trace.upload.url 仍然尊重（数据面允许独立部署），不一致时由
+  // init-helpers 在 logger 就绪后告警一次。
+  if (config.trace?.upload && !config.trace.upload.url) {
+    const { resolveBackendUrl } = await import("../identity/backend-url.ts");
+    const backend = resolveBackendUrl();
+    if (backend) config.trace.upload.url = backend.url;
+  }
 
   // trace 上传未显式配 userId / deviceId 时回落到全局 identity。
   // 不删 SID_CODE_TRACE_*：显式配置仍优先（与规划「并存、不删旧变量」一致）。

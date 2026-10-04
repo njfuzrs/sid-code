@@ -157,12 +157,17 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 | 方式 | 写法 | 适合 |
 | --- | --- | --- |
 | 用户配置 | `~/.sid-code/settings.json` 的 `trace.upload` | 自己的开发机、长期开着 |
-| 环境变量 | `SID_CODE_TRACE=1` + `SID_CODE_TRACE_UPLOAD_URL` + `SID_CODE_TRACE_UPLOAD_TOKEN` | CI、容器、临时一台机器 |
+| 环境变量 | `SID_CODE_TRACE=1` + `SID_CODE_TRACE_UPLOAD_TOKEN`（+ 可选 `SID_CODE_TRACE_UPLOAD_URL`） | CI、容器、临时一台机器 |
 | 命令行 | `--trace-upload-url <url> --trace-upload-token <tok>` | 单次会话 |
 
-环境变量那行三个**缺一不可**：只设 URL / TOKEN、不设 `SID_CODE_TRACE=1` 时整组被忽略，
-仍按 settings.json 走；设了 `SID_CODE_TRACE=1` 但没给 URL / TOKEN，会把 settings.json
-里的上传配置**覆盖成空**（环境变量那层整块替换 `trace`，不是按字段合并）。
+**上传地址缺省取 `backend.url`**：已经配了企业后端地址的，只需要再配 token，
+不用把同一个地址抄第二遍。显式写了 `trace.upload.url` 仍以它为准；它和 `backend.url`
+不一致时启动会告警一次（轨迹和控制面数据会落到两个后端）。token 始终单独配置，
+上传端点用的是共享 `X-Upload-Token`，不是设备凭据。
+
+环境变量那行：不设 `SID_CODE_TRACE=1` 时整组被忽略，仍按 settings.json 走；
+设了 `SID_CODE_TRACE=1` 但没给 TOKEN，会把 settings.json 里的上传配置**覆盖成空**
+（环境变量那层整块替换 `trace`，不是按字段合并）。
 
 **项目级 `.sid-code/settings.json` 里写 `trace` 不生效**：项目配置只放行界面与行为类字段，
 不放行任何外发地址——否则克隆一个仓库就可能把你的轨迹改道到别人的服务器。
@@ -187,6 +192,7 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 ```
 
 `url` 要**含路径前缀**（如 `/traj`），上传器会在后面拼 `/api/v1/upload/session-file`。
+上传到企业后端时可以整行不写，地址会取 `backend.url`。
 
 ::: warning token 别写明文，也别全员共用一个
 用 `${TRAJ_UPLOAD_TOKEN}` 占位符，值放环境变量。更要紧的是**别把上传配置塞进分发给别人的
@@ -202,7 +208,7 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 | 字段 | 控制什么 | 默认 |
 | --- | --- | --- |
 | `trace.enabled` | 是否采集（关了就什么都不落盘，也就无从上传） | `true` |
-| `trace.upload.url` + `token` | 是否具备上传能力（两个都有才算配置） | 未配置 |
+| `trace.upload.url` + `token` | 是否具备上传能力（两个都有才算配置；`url` 缺省取 `backend.url`） | 未配置 |
 | `trace.upload.auto_upload` | `true`：会话结束自动传 + 启动时补传历史未传会话；`false`：只在本地留，等你手动 `--upload-traces` | `true` |
 | `trace.upload.delete_after_upload` | 传完删本地数据文件（保留 metadata 快照） | `false` |
 | `trace.upload.compress` | gzip 压缩后上传 | `true` |
