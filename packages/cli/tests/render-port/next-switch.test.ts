@@ -77,11 +77,11 @@ describe("legacy / next 导出同一组符号", () => {
 
 describe("next 骨架：未实现的符号用时就抛", () => {
   test("函数 / 值 / 组件三种占位都抛 NotImplementedError，并带任务号", async () => {
-    const text = await import("../../src/ui/render-port/next/text.ts");
-    expect(() => text.stringWidth("x")).toThrow(/stringWidth 尚未实现（T2\.1）/);
-    const termio = await import("../../src/ui/render-port/next/termio.ts");
-    expect(() => termio.OSC.SET_TITLE).toThrow(/OSC 尚未实现（T2\.3）/);
+    // 样本刻意挑阶段 2（T2.x 纯工具）之后才实现的符号，免得每做完一个工具任务这里就要换样本
     const measure = await import("../../src/ui/render-port/next/measure.ts");
+    expect(() => (measure.measureElement as () => unknown)()).toThrow(
+      /measureElement 尚未实现（T4\.3）/,
+    );
     expect(() => new measure.ResizeObserver(() => {})).toThrow(/ResizeObserver 尚未实现/);
     const comps = await import("../../src/ui/render-port/next/components.ts");
     expect(() => (comps.Static as unknown as () => unknown)()).toThrow(/Static 尚未实现（T4\.2）/);

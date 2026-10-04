@@ -1,7 +1,7 @@
 /** next 实现：文本宽度与着色（T2.1 / T2.2）。 */
 import { notImplementedFn } from "./not-implemented.ts";
 
-export const stringWidth = notImplementedFn("stringWidth", "T2.1");
+export { stringWidth } from "@sid-code/tui/text/index.ts";
 export const applyColor = notImplementedFn("applyColor", "T2.2");
 export const applyTextStyles = notImplementedFn("applyTextStyles", "T2.2");
 export const colorize = notImplementedFn("colorize", "T2.2");

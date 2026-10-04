@@ -1,9 +1,9 @@
-import wrapAnsi from 'wrap-ansi';
-import cliTruncate from 'cli-truncate';
+import {wrapText as wrapTextColumns} from './text/truncate.js';
 import {type Styles} from './styles.js';
 
 const cache: Record<string, string> = {};
 
+// sid-code（B9 / T2.1）：换行与截断改走 text/truncate.ts，语义对齐旧底座（契约 T2），见 UPSTREAM-DIFF.md
 const wrapText = (
 	text: string,
 	maxWidth: number,
@@ -16,37 +16,7 @@ const wrapText = (
 		return cachedText;
 	}
 
-	let wrappedText = text;
-
-	if (wrapType === 'wrap') {
-		wrappedText = wrapAnsi(text, maxWidth, {
-			trim: false,
-			hard: true,
-		});
-	}
-
-	if (wrapType === 'hard') {
-		wrappedText = wrapAnsi(text, maxWidth, {
-			trim: false,
-			hard: true,
-			wordWrap: false,
-		});
-	}
-
-	if (wrapType!.startsWith('truncate')) {
-		let position: 'end' | 'middle' | 'start' = 'end';
-
-		if (wrapType === 'truncate-middle') {
-			position = 'middle';
-		}
-
-		if (wrapType === 'truncate-start') {
-			position = 'start';
-		}
-
-		wrappedText = cliTruncate(text, maxWidth, {position});
-	}
-
+	const wrappedText = wrapTextColumns(text, maxWidth, wrapType ?? 'wrap');
 	cache[cacheKey] = wrappedText;
 
 	return wrappedText;

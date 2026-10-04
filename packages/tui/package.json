@@ -13,6 +13,7 @@
     "ansi-escapes": "7.3.0",
     "ansi-styles": "6.2.3",
     "auto-bind": "5.0.1",
+    "bidi-js": "1.0.3",
     "chalk": "5.6.2",
     "cli-boxes": "4.0.1",
     "cli-cursor": "4.0.0",

@@ -1,4 +1,5 @@
-import widestLine from 'widest-line';
+// sid-code（B9 / T2.1）：列宽改走 text/width.ts（契约 T1），见 UPSTREAM-DIFF.md
+import {widestLine} from './text/width.js';
 import indentString from 'indent-string';
 import Yoga from 'yoga-layout';
 import wrapText from './wrap-text.js';

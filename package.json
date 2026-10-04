@@ -44,6 +44,7 @@
     "tui:spec": "bun run scripts/verify-tui-spec.ts",
     "tui:bench": "bun run scripts/tui-bench-report.ts",
     "tui:similarity": "bun run scripts/tui-similarity.ts",
+    "tui:text-vectors": "bun run scripts/tui-text-vectors.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
     "format": "oxfmt packages tests scripts evals website",
     "format:check": "oxfmt --check packages tests scripts evals website",

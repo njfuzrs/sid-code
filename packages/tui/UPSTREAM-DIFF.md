@@ -27,3 +27,9 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 
 | 提交 | 文件 | 改了什么 | 为什么 | 契约 ID |
 | --- | --- | --- | --- | --- |
+| T2.1 | `src/text/width.ts`（新增） | 列宽 = `Bun.stringWidth(…, {ambiguousIsNarrow: true})`；`widestLine` | 全码位对拍旧底座一致；npm `string-width` 有 478 个码位不同（天城文连字等，终端实占 2 格） | T1 |
+| T2.1 | `src/text/slice.ts`（新增） | 按列切 ANSI 文本：宽字符不劈半、零宽字符跟随前一个字符、样式开头补齐结尾关闭 | 截断的基础操作；上游没有等价物（`slice-ansi` 在零宽字符与 OSC 8 关闭上行为不同） | T2 |
+| T2.1 | `src/text/truncate.ts`（新增） | 换行走 `Bun.wrapAnsi`；四种截断自写，省略号在样式之外、保留 `\t` / `\n` | 上游 `wrap-ansi@10` 在 CJK / ZWJ / `\t` 上与旧底座不同；`cli-truncate` 把省略号放进 SGR 内、吞掉零宽字符 | T2 |
+| T2.1 | `src/text/bidi.ts`（新增） | 只在 win32 / `WT_SESSION` / VS Code 下用 `bidi-js` 做 UAX #9 重排，按字符簇翻转 | 上游无 bidi；这几类终端不自己重排 RTL | T3 |
+| T2.1 | `src/wrap-text.ts` | 实现改为调用 `text/truncate.ts` 的 `wrapText`，保留缓存 | 让 `<Text wrap>` 走对齐旧底座的语义 | T2 |
+| T2.1 | `src/measure-text.ts`、`src/render-node-to-output.ts` | `widest-line` 换成 `text/width.ts` 的 `widestLine` | 测量与换行必须用同一把尺子，否则布局按一种宽度、换行按另一种 | T1 |
