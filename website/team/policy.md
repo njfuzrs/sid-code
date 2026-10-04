@@ -242,8 +242,11 @@ deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 
 （见前文路径分裂），这里存在实现层面的张力。**目前这套更适合"团队约定 + 防误操作"，
 不适合"防内部对抗"。**
 
-**3. 远程策略下发未实现。** `RemotePolicyLoader` 是预留接口
-（`src/config/policy.ts:91` 起），没有实现。策略只能靠文件分发。
+**3. 远程策略随 `backend.url` 自动生效。** 配了企业后端地址（`backend.url` 或
+`SID_CODE_BACKEND_URL`）并执行过 `sid-code auth login` 后，启动时会拉取
+`GET <backend.url>/api/v1/ctl/policy`，不需要再单独配策略地址。拉取失败时按 fail-open 处理，
+有未过期的缓存就用缓存。用 `sid-code auth status --verify` 确认这条通道是否真的连通。
+旧的 `SID_CODE_POLICY_ENDPOINT` 已弃用，只在没配 `backend.url` 时生效。
 
 **4. `SID_CODE_DISABLE_POLICY_SKILLS=1` 能关掉 managed 层扩展**
 （`src/extension/loader.ts:184`）。这是个**本地环境变量**——企业下发的 managed skill

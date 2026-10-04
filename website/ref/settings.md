@@ -117,15 +117,15 @@ settings.json 的全部可配字段、类型与默认值。
 | 子键 | 类型 | 说明 |
 |---|---|---|
 | `privacyLevel` | PrivacyLevel | 隐私级别覆盖（环境变量优先级更高） |
-| `featureFlagEndpoint` | string | Feature Flag 远程端点（可选） |
+| `featureFlagEndpoint` | string | 已弃用：Feature Flag 远程端点。配了 backend.url 时被忽略（地址由它推出），只作兼容 |
 | `flags` | Record<string, string \| number \| boolean \| Record<string, unknown>> | 本地 Feature Flag 定义 |
-| `backends` | AnalyticsBackendConfig[] | 远程事件导出后端列表 |
+| `backends` | AnalyticsBackendConfig[] | 第三方事件 collector 列表（OTLP / 自建）。企业后端不用配这里：配了 backend.url 即内置上报 |
 
 ### `backend` {#key-backend}
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `url` | string | 后端对外地址（即服务端 PUBLIC_BASE_URL）；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 |
+| `url` | string | 企业后端地址（即服务端 PUBLIC_BASE_URL），全部企业通道（登录 / 策略 / 预算 / 账本 / 事件 / flag / 轨迹上传）由它推出路径；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 |
 
 ### `checkpoint` {#key-checkpoint}
 
@@ -289,7 +289,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `url` | string | trajectory-platform URL，含路径前缀，如 http://&lt;your-server>/traj |
+| `url` | string | trajectory-platform URL，含路径前缀，如 https://&lt;your-server>/traj。缺省取 backend.url |
 | `token` | string | X-Upload-Token 认证 token |
 | `autoUpload` | boolean | 是否自动上传（默认 true，false 则仅本地保存） |
 | `deleteAfterUpload` | boolean | 上传成功后是否删除本地文件（默认 false = 保留本地全量副本）。 false: 云端 + 本地各保留一份完整数据（开发调试阶段推荐）。 true: 上传确认后清理本地数据文件（仅保留 metadata snapshot）。 |

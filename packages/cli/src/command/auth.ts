@@ -4,9 +4,11 @@
  *   auth login    P2：用飞书身份登录企业后端（backend.url），一次完成认证 + 设备注册，
  *                 凭据落 ~/.sid-code/device-credential.json。顶层 `sid-code login` 是别名。
  *   auth logout   通知后端解绑本设备（尽力而为），删本地凭据。
- *   auth status   两段：① 企业登录态（谁登录的、凭据是否过期、后端地址）；
- *                 ② 模型 API Key 诊断（provider / 主模型 / Key 来源 / baseURL / 是否经网关）。
- *                 默认不发网络请求；加 --verify 才调 /ctl/whoami 确认服务端没吊销。
+ *   auth status   三段：① 企业登录态（谁登录的、凭据是否过期、后端地址）；
+ *                 ② 企业通道（策略 / 预算 / 账本 / 事件 / flag / 轨迹逐条：地址、来源、本地状态）；
+ *                 ③ 模型 API Key 诊断（provider / 主模型 / Key 来源 / baseURL / 是否经网关）。
+ *                 默认不发网络请求；加 --verify 才调 /ctl/whoami 确认服务端没吊销，
+ *                 并对每条企业通道发一次**不写数据**的探测（判据见 identity/backend-channels.ts）。
  *
  * 登录的是 sid-code 自己的企业后端，不是模型厂商账户——模型 Key 仍走 settings.json / 环境变量。
  */
@@ -182,6 +184,14 @@ async function cmdStatus(asJson: boolean, verify: boolean): Promise<void> {
   const login = await collectLoginStatus(verify);
   const { loadConfig } = await import("@sid-code/core/config/config.ts");
   const config = await loadConfig({});
+  const { collectBackendChannels, renderBackendChannels } =
+    await import("@sid-code/core/identity/backend-channels.ts");
+  // 逐条列出企业通道：以前这里只有「✓ 凭据有效」，用户据此以为全通了（U4）
+  const channels = await collectBackendChannels({
+    probe: verify,
+    traceUpload: config.trace?.upload ?? null,
+    featureFlagEndpoint: config.analytics?.featureFlagEndpoint,
+  });
 
   const activeModel = config.availableModels.find((m) => m.name === config.model);
   // 顶层 key 按 provider 选择（config 用 anthropicKey / openaiKey 两套顶层字段，无统一 apiKey）。
@@ -214,11 +224,13 @@ async function cmdStatus(asJson: boolean, verify: boolean): Promise<void> {
 
   if (asJson) {
     // 模型诊断字段保持在顶层（向后兼容既有脚本），登录态挂在 login 下
-    console.log(JSON.stringify({ ...report, login }, null, 2));
+    console.log(JSON.stringify({ ...report, login, channels }, null, 2));
     return;
   }
 
   printLoginStatus(login);
+  for (const line of renderBackendChannels(channels)) console.log(line);
+  console.log("");
   console.log("模型认证:\n");
   console.log(`  Provider:     ${report.provider}`);
   console.log(`  主模型:       ${report.model}`);

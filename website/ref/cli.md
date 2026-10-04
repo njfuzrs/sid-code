@@ -74,6 +74,7 @@ sid-code 的全部命令行参数与子命令。
 用法: sid-code auth <login|logout|status> [--json] [--verify]
 别名: sid-code login / sid-code logout
 login 需先配置 backend.url（或 SID_CODE_BACKEND_URL）
+status 逐条列出企业通道；--verify 对每条发一次不写数据的探测
 ```
 
 ## LLM 配置

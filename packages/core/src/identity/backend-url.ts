@@ -1,11 +1,12 @@
 /**
  * 统一后端地址 `backend.url`（P2 引入）。
  *
- * 登录（auth login）、P5 插件市场、P4 远程 MCP 的 origin 校验共用这一个值，
- * 不再每个功能各读各的 endpoint 环境变量。已有的 SID_CODE_*_ENDPOINT 暂时不动。
+ * 控制面与数据面全部通道（登录 / 策略 / 预算 / 账本 / 事件 / flag / 轨迹上传）共用这一个值。
+ * 各通道不要直接读本模块：一律走 `./endpoints.ts` 的 `resolveEndpoint()`，路径只在那里拼。
+ * 曾经每条通道各读各的 SID_CODE_*_ENDPOINT，配了 backend.url 且登录成功后事件 / 账本 /
+ * 策略照样静默不发（20261004 七条通道六种取址）。
  *
- * 取值形如 `https://www.sid-code.cc/traj`（即服务端的 PUBLIC_BASE_URL），
- * API 路径由调用方拼 `/api/v1/...`。
+ * 取值形如 `https://www.sid-code.cc/traj`（即服务端的 PUBLIC_BASE_URL）。
  *
  * 优先级：环境变量 SID_CODE_BACKEND_URL > managed-settings.json > ~/.sid-code/settings.json。
  * **项目级 settings 不参与**：后端地址决定设备凭据发往哪里，仓库里的 settings.json
@@ -67,10 +68,17 @@ export function normalizeBackendUrl(input: string): { url: string; origin: strin
 }
 
 /**
- * 解析当前生效的后端地址。未配置返回 null（不是错误：没有后端的部署照常工作）。
- * 配了但不合法也返回 null，并告警。
+ * 解析结果的三种形态。「配了但不合法」必须和「没配」分开：
+ * 前者不得降级去用旧的 SID_CODE_*_ENDPOINT（那等于让一个写错的地址悄悄换了出口）。
  */
-export function resolveBackendUrl(): ResolvedBackendUrl | null {
+export type BackendUrlInspection =
+  | { kind: "ok"; backend: ResolvedBackendUrl }
+  | { kind: "invalid"; source: BackendUrlSource; raw: string }
+  | { kind: "none" };
+
+const warnedInvalid = new Set<string>();
+
+export function inspectBackendUrl(): BackendUrlInspection {
   const candidates: Array<[BackendUrlSource, string | undefined]> = [
     ["env", process.env.SID_CODE_BACKEND_URL?.trim() || undefined],
   ];
@@ -82,18 +90,31 @@ export function resolveBackendUrl(): ResolvedBackendUrl | null {
     if (!raw) continue;
     const norm = normalizeBackendUrl(raw);
     if (!norm) {
-      getLogger().warn(
-        "IDENTITY",
-        `backend.url（来源 ${source}）不合法，只允许 https:// 或 http://127.0.0.1|localhost：${raw}`,
-      );
-      return null;
+      // 每条通道都会解析一次，同一个错值只告警一次，否则日志被刷屏
+      const key = `${source}\0${raw}`;
+      if (!warnedInvalid.has(key)) {
+        warnedInvalid.add(key);
+        getLogger().warn(
+          "IDENTITY",
+          `backend.url（来源 ${source}）不合法，只允许 https:// 或 http://127.0.0.1|localhost：${raw}`,
+        );
+      }
+      return { kind: "invalid", source, raw };
     }
-    return { ...norm, source };
+    return { kind: "ok", backend: { ...norm, source } };
   }
-  return null;
+  return { kind: "none" };
 }
 
-/** 拼 API 地址：`${backend}/api/v1${path}` */
-export function backendApiUrl(base: string, path: string): string {
-  return `${base.replace(/\/+$/, "")}/api/v1${path.startsWith("/") ? path : `/${path}`}`;
+/**
+ * 解析当前生效的后端地址。未配置返回 null（不是错误：没有后端的部署照常工作）。
+ * 配了但不合法也返回 null，并告警。
+ */
+export function resolveBackendUrl(): ResolvedBackendUrl | null {
+  const r = inspectBackendUrl();
+  return r.kind === "ok" ? r.backend : null;
+}
+
+export function __resetBackendUrlWarningsForTest(): void {
+  warnedInvalid.clear();
 }

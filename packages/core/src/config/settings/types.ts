@@ -195,7 +195,7 @@ const IdentitySettingsSchema = lazySchema(() =>
 const BackendSettingsSchema = lazySchema(() =>
   z
     .object({
-      /** 后端对外地址（即服务端 PUBLIC_BASE_URL）；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 */
+      /** 企业后端地址（即服务端 PUBLIC_BASE_URL），全部企业通道（登录 / 策略 / 预算 / 账本 / 事件 / flag / 轨迹上传）由它推出路径；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 */
       url: z.string().optional(),
     })
     .passthrough(),
