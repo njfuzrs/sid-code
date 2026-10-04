@@ -36,3 +36,7 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T2.2 | `src/colorize.ts`（整文件改写） | 颜色名必须带 `ansi:` 前缀，只认 16 色名单（`ansi:gray` 等原样返回）；新增 `applyColor` / `applyTextStyles`（六个布尔样式按固定顺序叠加，颜色在外、背景最外）；模块加载时按终端修正进程级 `chalk.level`（vscode 256→真彩，非空 `TMUX` 真彩→256，`SID_CODE_TMUX_TRUECOLOR` / 旧名 `CLAUDE_CODE_TMUX_TRUECOLOR` 跳过降级） | 端口 `Color` 类型就是 `ansi:` 前缀形式；叠加顺序决定字节序列，差分测试逐字节比；tmux 默认不透传真彩 | T6、O5 |
 | T2.2 | `src/text/styled-chars.ts`（新增） | styled-chars 五函数：宽度按 `stringWidth` 而非 tokenizer 的 `fullWidth`；只有空格和 `\t` 算空白；换行丢行首 / 断点处空白、超宽词硬折 | TableRenderer 依赖；上游没有等价物 | T6 |
 | T2.2 | `package.json` | `chalk` 5.6.2 → 6.0.0，新增 `@sid-code/shared` | 与 CLI 共用同一个 chalk 实例（markdown 渲染也改它的 level），两个版本就是两个单例；`Color` 类型在 shared | T6 |
+| T2.3 | `src/terminal/osc.ts`（新增） | `OSC` 编号表、`osc()`（kitty 用 ST、其余 BEL，加载时判定）、`wrapForMultiplexer()`（调用时读环境，`TMUX` 优先于 `STY`） | 上游没有 OSC 工具；CLI 的标题 / 通知 / 剪贴板都要用 | O6 |
+| T2.3 | `src/terminal/clipboard.ts`（新增） | `setClipboard()`：返回 OSC 52 序列；本机剪贴板 fire-and-forget（跳过 SSH，linux 试探链带缓存）；tmux 等 `load-buffer` 2s，成功才包裹且里层固定 BEL；执行器可注入 | `/copy`、`/bug`、`/export`、`/debug` 依赖；上游没有 | O6、M3 |
+| T2.3 | `src/terminal/hyperlinks.ts`（新增） | `supportsHyperlinks()`：库判定为真即真，否则按 6 个终端名（`TERM_PROGRAM` / `LC_TERMINAL` 精确）或 `TERM` 含小写 `kitty` 补判 | markdown 渲染的 OSC 8 链接依赖；npm `supports-hyperlinks` 不认识这几个终端 | O4、O6 |
+| T2.3 | `package.json` | 新增 `supports-hyperlinks@4.5.0`（与根 package.json 同版本） | 同上 | O4 |

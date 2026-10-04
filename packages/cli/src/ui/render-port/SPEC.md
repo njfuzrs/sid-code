@@ -105,6 +105,7 @@
 | O3 | OSC 9;4 进度条；卸载时清除 | `useTerminalNotification.ts:18`、`ink.tsx:1756` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S14: { |
 | O4 | OSC 8 超链接只在 `supportsHyperlinks()` 为真时输出 | `supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` O4: |
 | O5 | 终端识别读取的环境变量全集见 `SURFACE.md` §3。`CLAUDE_CODE_*` 调试变量在新底座改名或删除（D125）；`CLAUDE_CODE_ACCESSIBILITY` 控制无障碍模式下隐藏光标，改名时保留功能 | `SURFACE.md` §3、`components/App.tsx:230`、`components/App.tsx:488` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` O5: |
+| O6 | termio 端口面（`OSC` 表、`osc`、`wrapForMultiplexer`、`setClipboard`、`supportsHyperlinks`）在两套底座上逐字节一致：OSC 终止符 kitty 用 ST、其余 BEL，加载时判定；`TMUX` 优先于 `STY` 包裹 DCS；剪贴板跳过 SSH、linux 依次试 wl-copy / xclip / xsel 并记住结果、tmux 等 `load-buffer`（2s，`LC_TERMINAL=iTerm2` 不带 `-w`）成功才包裹且里层固定 BEL | `termio/osc.ts:18`、`termio/osc.ts:35`、`termio/osc.ts:135`、`supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-termio.test.ts` O6: |
 
 ## E 错误与输出护栏
 
