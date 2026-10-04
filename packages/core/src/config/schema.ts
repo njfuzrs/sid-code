@@ -834,7 +834,7 @@ export function validateConfig(config: Config): ValidationResult {
       if (!upload.url) {
         errors.push({
           path: "trace.upload.url",
-          message: "上传 URL 不能为空",
+          message: "上传 URL 不能为空（缺省取 backend.url，两者都没配）",
           value: upload.url,
         });
       }

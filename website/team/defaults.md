@@ -222,6 +222,24 @@ ls -l ~/.sid-code/settings.json
 补全逻辑不展开占位符、原样落盘，所以这样写是安全的。key 本身走你现有的
 密钥分发渠道，不进这份会被全团队 `curl` 到的文件。
 
+### 怎么让全员接上企业后端
+
+团队配置里放一行地址，员工各自登录一次：
+
+```json
+{ "backend": { "url": "https://<你的后端>/traj" } }
+```
+
+```bash
+sid-code auth login
+sid-code auth status --verify   # 七条通道逐条显示连通结果
+```
+
+只填 base，不填任何 `/api/v1/...` 路径。登录、策略、预算、账本、事件、flag、轨迹上传的地址
+都由它推出，不需要再配 `SID_CODE_*_ENDPOINT` 或 `analytics.backends`。轨迹上传另需
+`trace.upload.token`。这一行必须放在用户级或 managed 配置里，仓库里的
+`.sid-code/settings.json` 写了也不生效（防止克隆一个仓库就把设备凭据导到别处）。
+
 ### 配置文件损坏了会怎样
 
 补全逻辑读不动 JSON 时**直接抛错并跳过**，绝不覆盖，也不阻塞启动。

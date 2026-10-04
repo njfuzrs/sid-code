@@ -4,7 +4,7 @@
  *
  * 检查项：sid-code 版本、运行时（Bun/平台）、配置目录与 settings.json、
  * 当前工作目录是否 git 仓库、ripgrep 可用性、当前模型 provider 配置完整性、
- * MCP server 连接状态。
+ * MCP server 连接状态、企业后端通道。
  *
  * 视觉遵循 src/ui/CLAUDE.md：状态用 figures.ts 单色字形（✔/✘/⚠），禁彩色 emoji。
  * 绝不打印任何密钥值，api_key 只报「已配置/未配置」。
@@ -65,6 +65,66 @@ function checkLargeRuleFiles(cwd: string): CheckItem[] {
         `内容未被截断（全部生效），但会推高每轮请求成本，建议拆分到 .claude/rules/ 下按主题分文件。`,
     };
   });
+}
+
+/**
+ * 企业后端通道（§3.4-3）。只读本地，不发网络——要真实探测用 `sid-code auth status --verify`。
+ * 没配 backend.url 的个人用户不报 warn：没有后端照常工作。已登录却没配才是 warn。
+ */
+async function checkBackendChannels(ctx: CommandContext): Promise<CheckItem[]> {
+  try {
+    const { collectBackendChannels } = await import("@sid-code/core/identity/backend-channels.ts");
+    const { getDeviceCredential } = await import("@sid-code/core/identity/credential.ts");
+    const report = await collectBackendChannels({
+      traceUpload: ctx.config.trace?.upload ?? null,
+      featureFlagEndpoint: ctx.config.analytics?.featureFlagEndpoint,
+    });
+    const loggedIn = Boolean(getDeviceCredential()?.user);
+    if (report.backend.kind === "invalid") {
+      return [
+        {
+          status: "fail",
+          label: "企业后端",
+          detail: `backend.url 不合法（来源 ${report.backend.source}）：只允许 https:// 或 loopback http`,
+        },
+      ];
+    }
+    if (report.backend.kind === "none") {
+      return loggedIn
+        ? [
+            {
+              status: "warn",
+              label: "企业后端",
+              detail: "已登录但未配置 backend.url：策略 / 预算 / 账本 / 事件 / flag 都不会发往后端",
+            },
+          ]
+        : [];
+    }
+    const missing = report.channels.filter((c) => !c.configured).map((c) => c.label);
+    const legacy = report.channels
+      .filter((c) => c.source?.startsWith("legacy"))
+      .map((c) => c.label);
+    const items: CheckItem[] = [
+      {
+        status: missing.length > 0 ? "warn" : "ok",
+        label: "企业后端",
+        detail:
+          `${report.backend.backend.url}（来源 ${report.backend.backend.source}）` +
+          (missing.length > 0 ? `；未生效通道：${missing.join(" / ")}` : "；七条通道均已配置") +
+          "。真实连通性用 sid-code auth status --verify",
+      },
+    ];
+    if (legacy.length > 0) {
+      items.push({
+        status: "warn",
+        label: "企业后端",
+        detail: `${legacy.join(" / ")} 仍在用已弃用的旧配置，改为只配 backend.url`,
+      });
+    }
+    return items;
+  } catch (err) {
+    return [{ status: "warn", label: "企业后端", detail: `检查失败：${(err as Error).message}` }];
+  }
 }
 
 /** 检查 cwd 是否 git 仓库。 */
@@ -333,6 +393,9 @@ const mod: LocalCommandModule = {
 
     // MCP
     items.push(...checkMCP(ctx));
+
+    // 企业后端通道（未配置 / 不合法 / 旧配置）
+    items.push(...(await checkBackendChannels(ctx)));
 
     // P2-2：规则文件体积告警（只告警不截断，对齐 CC doctorContextWarnings）
     items.push(...checkLargeRuleFiles(ctx.cwd));

@@ -24,11 +24,8 @@ import {
   saveDeviceCredential,
   setIdentityConfig,
 } from "@sid-code/core/identity/index.ts";
-import {
-  backendApiUrl,
-  normalizeBackendUrl,
-  resolveBackendUrl,
-} from "@sid-code/core/identity/backend-url.ts";
+import { normalizeBackendUrl, resolveBackendUrl } from "@sid-code/core/identity/backend-url.ts";
+import { backendUrl } from "@sid-code/core/identity/endpoints.ts";
 import {
   CliLoginError,
   buildCliStartUrl,
@@ -182,8 +179,8 @@ describe("backend.url", () => {
     expect((filtered as any).backend).toBeUndefined();
   });
 
-  test("backendApiUrl 拼 /api/v1", () => {
-    expect(backendApiUrl("https://a.example/traj/", "/auth/cli/exchange")).toBe(
+  test("backendUrl 拼 /api/v1 + 通道路径 + 子路径", () => {
+    expect(backendUrl("https://a.example/traj/", "auth", "/cli/exchange")).toBe(
       "https://a.example/traj/api/v1/auth/cli/exchange",
     );
   });

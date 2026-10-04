@@ -150,6 +150,7 @@ Worktree 隔离:
                                 用法: sid-code auth <login|logout|status> [--json] [--verify]
                                 别名: sid-code login / sid-code logout
                                 login 需先配置 backend.url（或 SID_CODE_BACKEND_URL）
+                                status 逐条列出企业通道；--verify 对每条发一次不写数据的探测
 
 环境变量:
   ANTHROPIC_API_KEY             Anthropic API 密钥
@@ -174,7 +175,7 @@ Worktree 隔离:
   SID_CODE_TRACE                设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace）
   SID_CODE_TRACE_OUTPUT_DIR     自定义轨迹输出目录
   SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
-  SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
+  SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址（缺省取 backend.url）
   SID_CODE_TRACE_UPLOAD_TOKEN   上传认证 token
   SID_CODE_TRACE_USER_ID        用户标识（仅轨迹上传；未设时回落到 SID_CODE_IDENTITY_USER_ID）
   SID_CODE_TRACE_DEVICE_ID      设备标识（仅轨迹上传；未设时回落到本机持久 device-id）
@@ -183,10 +184,11 @@ Worktree 隔离:
   SID_CODE_IDENTITY_USER_ID     用户标识（如 zhangsan@corp.com）
   SID_CODE_IDENTITY_ORG_ID      组织标识（如 corp-shanghai）
   SID_CODE_IDENTITY_TEAM_ID     团队标识（如 infra-platform）
-  SID_CODE_BACKEND_URL          企业后端地址（覆盖 settings 的 backend.url；auth login 用它）
-  SID_CODE_POLICY_ENDPOINT      远程企业策略 URL（只读环境变量；未设则不拉取，fail-open）
-  SID_CODE_USAGE_ENDPOINT       用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl）
-  SID_CODE_BUDGET_ENDPOINT      远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open）
+  SID_CODE_BACKEND_URL          企业后端地址（覆盖 settings 的 backend.url）。登录 / 策略 / 预算 / 账本 /
+                                事件 / flag / 轨迹上传全部由它推出路径，只填 base（如 https://<后端>/traj）
+  SID_CODE_POLICY_ENDPOINT      已弃用：远程策略完整 URL。仅在未配 backend.url 时生效，下个版本删除
+  SID_CODE_USAGE_ENDPOINT       已弃用：账本上报完整 URL。仅在未配 backend.url 时生效，下个版本删除
+  SID_CODE_BUDGET_ENDPOINT      已弃用：远程预算完整 URL。仅在未配 backend.url 时生效，下个版本删除
 
   功能开关:
   SID_CODE_TOOL_SEARCH          工具延迟加载模式 (true/false/auto/auto:N)

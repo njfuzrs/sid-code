@@ -17,10 +17,10 @@ import {
   applyLoadedPolicy,
   getLastPolicyLoad,
   __resetRemotePolicyLoaderForTest,
-  isNonLocalHttp,
   sanitizeRemotePolicy,
   POLICY_CACHE_STALE_MS,
 } from "@sid-code/core/config/policy.ts";
+import { isNonLocalHttp } from "@sid-code/core/identity/endpoints.ts";
 import {
   __resetCredentialCacheForTest,
   saveDeviceCredential,

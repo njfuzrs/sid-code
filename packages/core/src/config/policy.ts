@@ -1,6 +1,6 @@
 /**
  * 策略层抽象
- * 支持本地文件策略（managed-settings.json）和远程策略（SID_CODE_POLICY_ENDPOINT）
+ * 支持本地文件策略（managed-settings.json）和远程策略（backend.url 推出的 GET /ctl/policy）
  * first-source-wins：只取最高优先级的来源，不合并
  */
 
@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
+import { resolveEndpoint } from "../identity/endpoints.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
 import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
@@ -156,8 +157,9 @@ export class ManagedFileLoader implements PolicyLoader {
  *   `POLICY_CACHE_STALE_MS`。缺一条就当无远程策略，不得续命已撤销的 deny。
  *
  * 其它：
- * - 未设 `SID_CODE_POLICY_ENDPOINT` → 立即 null，零请求（不是错误）
- * - `http://` 且 host 不是 localhost/127.0.0.1 → 拒绝请求并 warn，当 null
+ * - 地址来自 `resolveEndpoint("policy")`（backend.url 推出；旧 SID_CODE_POLICY_ENDPOINT 仅作兼容）
+ * - 未配置 → 立即 null，零请求（不是错误；`auth status` 会显示「未配置」）
+ * - 明文非本地地址由 resolveEndpoint 统一拒绝并告警，这里拿到的就是 null
  * - 200 + 空对象 `{source:"remote"}` 才是「远程明确下发了什么都不禁」（会盖掉本地）
  *
  * `supportsPolling` 保持 true，但 PolicyManager 本里程碑不轮询——生效延迟 = 下次重启。
@@ -168,17 +170,8 @@ export class RemotePolicyLoader implements PolicyLoader {
 
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
-    const endpoint = process.env.SID_CODE_POLICY_ENDPOINT?.trim();
+    const endpoint = resolveEndpoint("policy")?.url;
     if (!endpoint) return null;
-
-    if (isNonLocalHttp(endpoint)) {
-      log.warn(
-        "POLICY",
-        `SID_CODE_POLICY_ENDPOINT 拒绝明文非本地地址（只允许 https:// 或 http://127.0.0.1|localhost）: ${endpoint}`,
-      );
-      rememberLoadMeta({ source: "none", outcome: "error", durationMs: 0 });
-      return null;
-    }
 
     let cache = readPolicyCache();
     if (cache && cache.endpoint !== endpoint) cache = null;
@@ -243,6 +236,7 @@ const ALLOWED_REMOTE_KEYS = new Set([
   "bridgeEnabled",
 ]);
 
+// 远程 body 不得改自己的取址（自举）。旧变量名保留在名单里：老服务端可能还会回显它。
 const BOOTSTRAP_KEYS = new Set(["policyEndpoint", "endpoint", "SID_CODE_POLICY_ENDPOINT"]);
 
 interface PolicyCacheFile {
@@ -264,24 +258,6 @@ let warnedCorruptCache = false;
 /** 进程内默认链只 fetch 一次：cli 与 app 共用。自定义 loaders 的 PolicyManager 不走这里。 */
 let inFlightDefaultLoad: Promise<PolicySettings | null> | null = null;
 let defaultLoadResult: PolicySettings | null | undefined;
-
-/**
- * 明文 HTTP 且 host 不是 loopback → 拒绝。
- * https 一律放行（证书校验交给运行时）。非法 URL 也当拒绝。
- */
-export function isNonLocalHttp(endpoint: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    return true;
-  }
-  const proto = url.protocol.toLowerCase();
-  if (proto === "https:") return false;
-  if (proto !== "http:") return true;
-  const host = url.hostname.toLowerCase();
-  return host !== "127.0.0.1" && host !== "localhost";
-}
 
 /**
  * 剥未知键、强制 source="remote"、丢掉自举字段。
